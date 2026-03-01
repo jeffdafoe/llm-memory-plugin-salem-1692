@@ -4,7 +4,6 @@ namespace App\Door\ZChat\Entity;
 
 use App\Door\ZChat\Entity\Enum\RoomType;
 use App\Door\ZChat\Repository\RoomRepository;
-use App\Entity\Board;
 use App\Entity\User;
 use Doctrine\Common\Collections\ArrayCollection;
 use Doctrine\Common\Collections\Collection;
@@ -16,16 +15,12 @@ use Symfony\Component\Uid\Uuid;
 #[ORM\Entity(repositoryClass: RoomRepository::class)]
 #[ORM\Table(name: 'zchat_room', schema: 'doors')]
 #[ORM\HasLifecycleCallbacks]
-#[ORM\UniqueConstraint(name: 'zchat_unique_board_room_slug', columns: ['board_id', 'slug'])]
+#[ORM\UniqueConstraint(name: 'zchat_unique_room_slug', columns: ['slug'])]
 class Room
 {
     #[ORM\Id]
     #[ORM\Column(type: UuidType::NAME, unique: true)]
     private Uuid $id;
-
-    #[ORM\ManyToOne]
-    #[ORM\JoinColumn(nullable: true)]
-    private ?Board $board = null;
 
     #[ORM\Column(length: 50)]
     private string $slug;
@@ -100,17 +95,6 @@ class Room
     public function getId(): Uuid
     {
         return $this->id;
-    }
-
-    public function getBoard(): ?Board
-    {
-        return $this->board;
-    }
-
-    public function setBoard(?Board $board): static
-    {
-        $this->board = $board;
-        return $this;
     }
 
     public function getSlug(): string

@@ -24,10 +24,12 @@ apt install -y git ansible curl
 
 # Clone repository
 echo -e "\033[1m[2/4] Cloning ZBBS repository...\033[0m"
-if [ -d "/opt/zbbs" ]; then
-    echo "Directory /opt/zbbs already exists. Pulling latest..."
+if [ -d "/opt/zbbs/.git" ]; then
+    echo "Git repo exists. Pulling latest..."
     cd /opt/zbbs
     git pull
+elif [ -d "/opt/zbbs" ]; then
+    echo "Directory exists (no git). Skipping clone."
 else
     git clone https://github.com/jeffdafoe/zbbs.git /opt/zbbs
 fi
