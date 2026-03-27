@@ -7,7 +7,6 @@
 .ai/
 .claude/
 .mcp.json
-.discuss.json
 CLAUDE.md
 
 # Node
@@ -29,3 +28,4 @@ infrastructure/local-secrets.yml
 # System
 .DS_Store
 Thumbs.db
+.agent.json
