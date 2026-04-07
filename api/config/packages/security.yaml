@@ -29,6 +29,11 @@ security:
             pattern: ^/api/settings/public
             stateless: true
             security: false
+        village:
+            pattern: ^/api/village
+            stateless: true
+            custom_authenticators:
+                - App\Security\LlmMemoryAuthenticator
         api:
             pattern: ^/api
             stateless: true
@@ -41,6 +46,7 @@ security:
         - { path: ^/api/login, roles: PUBLIC_ACCESS }
         - { path: ^/api/register, roles: PUBLIC_ACCESS }
         - { path: ^/api/settings/public, roles: PUBLIC_ACCESS }
+        - { path: ^/api/village, roles: ROLE_VILLAGE_USER }
         - { path: ^/api, roles: IS_AUTHENTICATED_FULLY }
 
     role_hierarchy:

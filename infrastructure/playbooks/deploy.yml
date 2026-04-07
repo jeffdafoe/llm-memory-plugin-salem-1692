@@ -15,14 +15,13 @@
       debug:
         msg: "Deploying to {{ deploy_environment }} environment"
 
-    - name: Pull latest code from release branch
+    - name: Pull latest code from {{ deploy_branch }} branch
       git:
         repo: "{{ git_repository }}"
         dest: "{{ repo_root }}"
-        version: "{{ deploy_branch | default('release') }}"
+        version: "{{ deploy_branch | default('main') }}"
         force: yes
       when: deploy_environment == 'production'
-      become_user: "{{ app_user }}"
 
     - name: Create deployment directory
       file:
@@ -55,7 +54,7 @@
         path: "{{ project_root }}/api/.env.local"
         state: absent
 
-    - name: Install Composer dependencies (this may take a few minutes)
+    - name: Install Composer dependencies
       shell: |
         . /etc/profile.d/zbbs.sh && composer install --no-interaction {{ '--no-dev --optimize-autoloader' if deploy_environment == 'production' else '' }} 2>&1
       args:
@@ -64,9 +63,8 @@
       register: composer_output
 
     - name: Composer output
-      shell: |
-        echo "{{ composer_output.stdout }}"
-      changed_when: false
+      debug:
+        msg: "{{ composer_output.stdout_lines }}"
 
     - name: Check if JWT private key exists
       stat:
@@ -147,14 +145,8 @@
         pending_migrations: "{{ migration_files.files | sort(attribute='path') | rejectattr('path', 'search', '(' + (applied_list | map('regex_escape') | join('|')) + ')') | list if applied_list | length > 0 else migration_files.files | sort(attribute='path') }}"
 
     - name: Display migration status
-      shell: |
-        echo ""
-        echo "  Migrations: {{ migration_files.files | length }} total, {{ applied_list | length }} applied, {{ pending_migrations | length }} pending"
-        {% for m in pending_migrations %}
-        echo "    - {{ m.path | basename }}"
-        {% endfor %}
-        echo ""
-      changed_when: false
+      debug:
+        msg: "Migrations: {{ migration_files.files | length }} total, {{ applied_list | length }} applied, {{ pending_migrations | length }} pending"
 
     - name: Run pending SQL migrations
       shell: |
@@ -165,25 +157,35 @@
         label: "{{ item.path | basename }}"
       when: run_migrations | default(false) | bool
 
-    - name: Clear Symfony cache (this may take a few minutes)
+    - name: Clear Symfony cache
       shell: |
         . /etc/profile.d/zbbs.sh && php bin/console cache:clear
       args:
         chdir: "{{ project_root }}/api"
       become_user: "{{ app_user }}"
 
-    - name: Install npm dependencies
+    - name: Install village client npm dependencies
       npm:
-        path: "{{ project_root }}/clients/modern"
+        path: "{{ project_root }}/clients/village"
         state: present
       become_user: "{{ app_user }}"
 
-    - name: Build Angular for production
-      command: ng build --configuration=production
+    - name: Build village client for production
+      command: npx vite build
       args:
-        chdir: "{{ project_root }}/clients/modern"
+        chdir: "{{ project_root }}/clients/village"
       when: deploy_environment == 'production'
       become_user: "{{ app_user }}"
+
+    - name: Deploy PHP-FPM pool configuration
+      template:
+        src: ../roles/php/templates/php-fpm-pool.conf.j2
+        dest: "/etc/php/{{ php_version }}/fpm/pool.d/{{ project_name }}.conf"
+
+    - name: Deploy nginx site configuration
+      template:
+        src: "../roles/nginx/templates/{{ 'site-development.conf.j2' if deploy_environment == 'development' else 'site-production.conf.j2' }}"
+        dest: "/etc/nginx/sites-available/{{ project_name }}.conf"
 
     - name: Restart PHP-FPM
       service:
@@ -196,13 +198,5 @@
         state: reloaded
 
     - name: Display deployment complete message
-      shell: |
-        echo ""
-        echo "==================================="
-        echo "  Deploy complete!"
-        echo "==================================="
-        echo ""
-        echo "  Environment: {{ deploy_environment }}"
-        echo "  Branch:      {{ deploy_branch | default('release') }}"
-        echo ""
-      changed_when: false
+      debug:
+        msg: "Deploy complete! Environment: {{ deploy_environment }}, Branch: {{ deploy_branch | default('main') }}"
