@@ -37,16 +37,16 @@
       become_user: "{{ app_user }}"
       when: symfony_running.stdout == ""
 
-    - name: Check if Angular dev server is already running
-      shell: pgrep -f "ng serve" || true
-      register: angular_running
+    - name: Check if village dev server is already running
+      shell: pgrep -f "vite.*village" || true
+      register: village_running
       changed_when: false
 
-    - name: Start Angular dev server
+    - name: Start village dev server
       shell: |
-        . /etc/profile.d/zbbs.sh && cd {{ project_root }}/clients/modern && nohup npx ng serve --port=4201 --host=0.0.0.0 --proxy-config proxy.conf.json > /tmp/angular-dev.log 2>&1 &
+        . /etc/profile.d/zbbs.sh && cd {{ project_root }}/clients/village && nohup npx vite --port=4300 --host=0.0.0.0 > /tmp/village-dev.log 2>&1 &
       become_user: "{{ app_user }}"
-      when: angular_running.stdout == ""
+      when: village_running.stdout == ""
 
     - name: Wait for Symfony to be ready
       uri:
@@ -58,12 +58,12 @@
       delay: 2
       ignore_errors: yes
 
-    - name: Wait for Angular to be ready
+    - name: Wait for village dev server to be ready
       uri:
-        url: "http://localhost:4201"
+        url: "http://localhost:4300"
         status_code: [200]
-      register: angular_result
-      until: angular_result is not failed
+      register: village_result
+      until: village_result is not failed
       retries: 15
       delay: 3
       ignore_errors: yes
@@ -74,8 +74,6 @@
           Development servers:
 
           Symfony API:  http://{{ server_name }}/api
-          Angular UI:   http://{{ server_name }}/modern
-          Mercure:      http://localhost:3001  (proxied from :{{ mercure_port }})
+          Village:      http://localhost:4300
 
           Symfony direct:  http://localhost:8001
-          Angular direct:  http://localhost:4201

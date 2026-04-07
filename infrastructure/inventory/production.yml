@@ -1,16 +1,16 @@
 all:
   hosts:
     vps:
-      ansible_host: YOUR_VPS_IP_HERE
-      ansible_user: YOUR_SSH_USER
+      ansible_host: 165.245.142.212
+      ansible_user: claude
       ansible_ssh_private_key_file: ~/.ssh/id_rsa
   vars:
     deploy_environment: production
     project_root: /var/www/zbbs
-    server_name: zbbs.example.com
-    deploy_branch: release
+    server_name: zbbs.llm-memory.net
+    deploy_branch: main
     database_name: zbbs
     database_user: zbbs
     database_password: "{{ lookup('env', 'ZBBS_DB_PASSWORD') }}"
-    mercure_jwt_secret: "{{ lookup('env', 'MERCURE_JWT_SECRET') }}"
     jwt_key_passphrase: "{{ lookup('env', 'ZBBS_JWT_PASSPHRASE') }}"
+    app_secret: "{{ lookup('env', 'ZBBS_APP_SECRET') }}"

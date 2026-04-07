@@ -1,2 +1,42 @@
-# Development configuration
-{% extends "site-base.conf.j2" %}
+server {
+    listen 80;
+    server_name {{ server_name }};
+
+    root {{ project_root }}/clients/landing;
+    index index.html;
+
+    # Landing page (root)
+    location = / {
+        index index.html;
+    }
+
+    # Symfony API — all /api/ requests go to PHP-FPM front controller
+    location /api/ {
+        fastcgi_pass unix:/run/php/php{{ php_version }}-fpm-{{ project_name }}.sock;
+        include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME {{ project_root }}/api/public/index.php;
+        fastcgi_param DOCUMENT_ROOT {{ project_root }}/api/public;
+        fastcgi_param SCRIPT_NAME /index.php;
+        fastcgi_param REQUEST_URI $request_uri;
+        fastcgi_param HTTP_AUTHORIZATION $http_authorization;
+    }
+
+    location = /api {
+        return 301 /api/;
+    }
+
+    # Terminal client
+    location /terminal/ {
+        alias {{ project_root }}/clients/terminal/dist/;
+        try_files $uri $uri/ =404;
+    }
+
+    location = /terminal {
+        return 301 /terminal/;
+    }
+
+    # Landing page fallback
+    location / {
+        try_files $uri $uri/ =404;
+    }
+}

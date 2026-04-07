@@ -1,5 +1,5 @@
 ---
-- name: Set up ZBBS development/production deploy_environment
+- name: Set up ZBBS environment
   hosts: all
   become: yes
   vars_files:
@@ -10,16 +10,15 @@
       include_tasks: ../tasks/load-secrets.yml
       when: deploy_environment == 'development'
 
-    - name: Display deploy_environment
+    - name: Display environment
       debug:
-        msg: "Setting up {{ deploy_environment }} deploy_environment on {{ inventory_hostname }}"
+        msg: "Setting up {{ deploy_environment }} environment on {{ inventory_hostname }}"
 
   roles:
     - role: ../roles/common
     - role: ../roles/php
     - role: ../roles/postgresql
     - role: ../roles/nodejs
-    - role: ../roles/mercure
     - role: ../roles/nginx
 
   post_tasks:
@@ -31,37 +30,18 @@
       when: deploy_environment == 'development'
 
     - name: Remind to add hosts file entry
-      shell: |
-        echo ""
-        echo "  NOTE: Add this line to C:\Windows\System32\drivers\etc\hosts"
-        echo "  (requires running notepad as Administrator):"
-        echo ""
-        echo "  127.0.0.1 {{ server_name }}"
-        echo ""
+      debug:
+        msg: "Add this line to C:\\Windows\\System32\\drivers\\etc\\hosts: 127.0.0.1 {{ server_name }}"
       when: deploy_environment == 'development' and hosts_check.rc != 0
-      changed_when: false
 
-    - name: Display setup complete message
-      shell: |
-        echo ""
-        echo "==================================="
-        echo "  Setup complete!"
-        echo "==================================="
-        echo ""
-        echo "  Environment:  {{ deploy_environment }}"
-        echo "  Project root: {{ project_root }}"
-        {% if deploy_environment == 'development' %}
-        echo "  Site:         http://{{ server_name }}"
-        {% endif %}
-        echo ""
-        echo "  PHP:          {{ php_version }}"
-        echo "  PostgreSQL:   {{ postgresql_version }}"
-        echo "  Node.js:      {{ nodejs_version }}"
-        echo ""
-        echo "  Database:     {{ database_name }}"
-        echo "  DB user:      {{ database_user }}"
-        echo ""
-        echo "  Next step:"
-        echo "  Run deploy.yml to install dependencies and build"
-        echo ""
-      changed_when: false
+    - name: Display setup complete
+      debug:
+        msg: >-
+          Setup complete!
+          Environment: {{ deploy_environment }},
+          Project root: {{ project_root }},
+          PHP: {{ php_version }},
+          PostgreSQL: {{ postgresql_version }},
+          Node.js: {{ nodejs_version }},
+          Database: {{ database_name }} / {{ database_user }}.
+          Next step: Run deploy.yml to install dependencies and build.

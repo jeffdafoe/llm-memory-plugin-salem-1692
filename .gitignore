@@ -25,6 +25,10 @@ api/.env.*.local
 # Infrastructure secrets (prompted on first Ansible run)
 infrastructure/local-secrets.yml
 
+# Commercial assets (purchased, not redistributable)
+clients/village/assets/tilesets/mana-seed/
+clients/village/public/assets/tilesets/
+
 # System
 .DS_Store
 Thumbs.db
