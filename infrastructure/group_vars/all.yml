@@ -1,7 +1,7 @@
 # Shared variables across all environments
 
 # PHP
-php_version: "8.3"
+php_version: "8.4"
 php_extensions:
   - php{{ php_version }}-cli
   - php{{ php_version }}-fpm
@@ -18,12 +18,9 @@ postgresql_version: "17"
 # Node.js
 nodejs_version: "20"
 
-# Mercure
-mercure_version: "0.16.0"
-mercure_port: 3000
-
 # Project
 project_name: zbbs
 repo_root: /opt/zbbs
 project_root: /var/www/zbbs
+app_user: www-data
 git_repository: "git@github.com:jeffdafoe/zbbs.git"
