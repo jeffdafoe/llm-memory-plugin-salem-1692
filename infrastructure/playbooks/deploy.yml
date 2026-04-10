@@ -103,7 +103,7 @@
 
     - name: Check which migrations have been applied
       shell: |
-        sudo -u postgres psql -d {{ database_name }} -t -A -c "SELECT migration_id FROM migrations_applied;"
+        sudo -u postgres psql -d {{ database_name }} -t -A -c "SELECT migration_name FROM migrations_applied;"
       register: applied_migrations
       changed_when: false
 
@@ -122,7 +122,7 @@
     - name: Run pending SQL migrations
       shell: |
         sudo -u postgres psql -d {{ database_name }} -f "{{ item.path }}" && \
-        sudo -u postgres psql -d {{ database_name }} -c "INSERT INTO migrations_applied (migration_id) VALUES ('{{ item.path | basename | replace('_up.sql', '') }}');"
+        sudo -u postgres psql -d {{ database_name }} -c "INSERT INTO migrations_applied (migration_name) VALUES ('{{ item.path | basename | replace('_up.sql', '') }}');"
       loop: "{{ pending_migrations }}"
       loop_control:
         label: "{{ item.path | basename }}"
