@@ -13,15 +13,19 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # Pull latest
-echo -e "\033[1m[1/2] Pulling latest code...\033[0m"
+echo -e "\033[1m[1/3] Pulling latest code...\033[0m"
 cd /opt/zbbs
 git pull
 
 # Run deploy playbook
-echo -e "\033[1m[2/2] Running deploy...\033[0m"
+echo -e "\033[1m[2/3] Running deploy...\033[0m"
 cd /opt/zbbs/infrastructure
 export ANSIBLE_CONFIG=/opt/zbbs/infrastructure/ansible.cfg
 ansible-playbook -i inventory/production.yml playbooks/deploy.yml
+
+# Verify service is running
+echo -e "\033[1m[3/3] Verifying service...\033[0m"
+systemctl is-active zbbs-engine
 
 echo ""
 echo -e "\033[1;32m==================================="
