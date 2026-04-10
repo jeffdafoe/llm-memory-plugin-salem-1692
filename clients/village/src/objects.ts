@@ -10,7 +10,7 @@ export interface PlacedObject {
 }
 
 const STORAGE_KEY = "village_objects";
-const VILLAGE_VERSION = 2; // bump this to regenerate the initial village
+const VILLAGE_VERSION = 3; // bump this to regenerate the initial village
 let objects: PlacedObject[] = [];
 let nextId = 1;
 
@@ -189,6 +189,11 @@ function generateInitialVillage(): void {
 
     // Wagon on the road
     place("wagon-covered", midX - 8, midY);
+
+    // Bridge over the river (sprite on top of water tiles)
+    const bridgeY = midY + Math.floor(Math.sin(riverBaseX * 0.1) * 1);
+    const bridgeX = riverBaseX + Math.floor(Math.sin(bridgeY * 0.15) * 2) + 1;
+    place("bridge", bridgeX, bridgeY);
 
     saveObjects();
 }
