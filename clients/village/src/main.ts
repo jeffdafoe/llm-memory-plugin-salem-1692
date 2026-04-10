@@ -5,6 +5,8 @@ import { showConfigPanel } from "./panels";
 import { Camera } from "./camera";
 import { Renderer } from "./renderer";
 import { createMap } from "./map";
+import { loadObjects, clearObjects } from "./objects";
+import { Editor } from "./editor";
 
 const app = document.getElementById("app")!;
 
@@ -28,6 +30,11 @@ function startGame(): void {
 
     // Top bar
     createTopBar(app, (panel) => {
+        if (panel === "editor") {
+            editor.toggle(app);
+            return;
+        }
+
         if (activePanel === panel) {
             // Close current panel
             if (panelEl) {
@@ -52,9 +59,11 @@ function startGame(): void {
                     panelEl = null;
                 },
                 () => {
-                    // Config changed — regenerate map and recenter camera
+                    // Config changed — regenerate map, re-populate objects, recenter
                     const newMap = createMap();
                     renderer.setMap(newMap);
+                    clearObjects();
+                    loadObjects();
                     camera.recenter();
                     renderer.resize();
                 }
@@ -70,6 +79,21 @@ function startGame(): void {
     const camera = new Camera();
     const map = createMap();
     const renderer = new Renderer(canvasEl, camera, map);
+    const editor = new Editor(canvasEl, camera);
+
+    // Pass editor to renderer for overlay drawing
+    renderer.setEditor(editor);
+
+    // Update Edit button style when editor toggles
+    editor.setToggleCallback((active) => {
+        const btn = document.getElementById("editor-toggle-btn");
+        if (btn) {
+            btn.classList.toggle("editor-active", active);
+        }
+    });
+
+    // Load placed objects (or generate initial village)
+    loadObjects();
 
     camera.attach(canvasEl);
 
