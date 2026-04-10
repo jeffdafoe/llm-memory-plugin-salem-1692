@@ -84,16 +84,7 @@ export function createMap(): WangTerrainType[][] {
         }
     }
 
-    // Bridge — cobblestone where horizontal road crosses the river
-    for (let dy = -1; dy <= 1; dy++) {
-        const roadY = midY + Math.floor(Math.sin(riverBaseX * 0.1) * 1) + dy;
-        for (let dx = -1; dx <= 4; dx++) {
-            const bridgeX = riverBaseX + Math.floor(Math.sin(roadY * 0.15) * 2) + dx;
-            if (bridgeX >= 0 && bridgeX < width && roadY >= 0 && roadY < height) {
-                map[roadY][bridgeX] = Terrain.STONE;
-            }
-        }
-    }
+    // Bridge crossing — keep water tiles here, the bridge sprite goes on top
 
     // Forest clusters — dark grass patches (trees will be objects later)
     const forestAreas = [
