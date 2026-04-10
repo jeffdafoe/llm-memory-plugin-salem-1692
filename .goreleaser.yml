@@ -1,12 +1,12 @@
 version: 2
 
-project_name: zbbs
+project_name: salem-1692
 
 builds:
-  - id: zbbs
+  - id: salem
     main: .
     dir: engine
-    binary: zbbs
+    binary: salem
     ldflags:
       - -s -w
     env:
@@ -20,16 +20,16 @@ builds:
       - arm64
 
 archives:
-  - id: zbbs
+  - id: salem
     ids:
-      - zbbs
+      - salem
     formats:
       - tar.gz
     format_overrides:
       - goos: windows
         formats:
           - zip
-    name_template: "zbbs_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    name_template: "salem-1692_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
 
 checksum:
   name_template: checksums.txt

@@ -48,7 +48,7 @@
     # Go engine build
     - name: Build Go engine
       shell: |
-        cd {{ project_root }}/engine && go build -o zbbs .
+        cd {{ project_root }}/engine && go build -o salem .
       environment:
         GOPATH: /root/go
         PATH: "/usr/local/go/bin:/root/go/bin:{{ ansible_env.PATH }}"
@@ -90,14 +90,14 @@
     # Environment file
     - name: Create env directory
       file:
-        path: /etc/zbbs
+        path: /etc/salem-1692
         state: directory
         mode: "0750"
 
     - name: Deploy environment file
       template:
-        src: ../templates/zbbs-env.j2
-        dest: /etc/zbbs/env
+        src: ../templates/salem-env.j2
+        dest: /etc/salem-1692/env
         mode: "0640"
         owner: root
         group: "{{ app_user }}"
@@ -153,8 +153,8 @@
     # Systemd service
     - name: Deploy systemd service
       template:
-        src: ../templates/zbbs-engine.service.j2
-        dest: /etc/systemd/system/zbbs-engine.service
+        src: ../templates/salem-engine.service.j2
+        dest: /etc/systemd/system/salem-engine.service
       register: service_file
 
     - name: Reload systemd
@@ -164,7 +164,7 @@
 
     - name: Enable and restart engine
       systemd:
-        name: zbbs-engine
+        name: salem-engine
         enabled: yes
         state: restarted
 
