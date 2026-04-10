@@ -1,4 +1,4 @@
-module github.com/jeffdafoe/zbbs/engine
+module github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine
 
 go 1.23
 

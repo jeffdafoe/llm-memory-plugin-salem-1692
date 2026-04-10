@@ -10,8 +10,8 @@ nodejs_version: "20"
 engine_port: 8090
 
 # Project
-project_name: zbbs
-repo_root: /opt/zbbs
-project_root: /var/www/zbbs
+project_name: llm-memory-salem-1692
+repo_root: /opt/llm-memory-salem-1692
+project_root: /var/www/llm-memory-salem-1692
 app_user: www-data
-git_repository: "https://github.com/jeffdafoe/zbbs.git"
+git_repository: "https://github.com/jeffdafoe/llm-memory-plugin-salem-1692.git"
