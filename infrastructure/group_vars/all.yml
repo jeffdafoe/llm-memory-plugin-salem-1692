@@ -14,4 +14,4 @@ project_name: zbbs
 repo_root: /opt/zbbs
 project_root: /var/www/zbbs
 app_user: www-data
-git_repository: "git@github.com:jeffdafoe/zbbs.git"
+git_repository: "https://github.com/jeffdafoe/zbbs.git"
