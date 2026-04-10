@@ -10,6 +10,7 @@ export interface PlacedObject {
 }
 
 const STORAGE_KEY = "village_objects";
+const VILLAGE_VERSION = 2; // bump this to regenerate the initial village
 let objects: PlacedObject[] = [];
 let nextId = 1;
 
@@ -41,7 +42,7 @@ export function clearObjects(): void {
 }
 
 function saveObjects(): void {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ objects, nextId }));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ objects, nextId, version: VILLAGE_VERSION }));
 }
 
 export function loadObjects(): void {
@@ -49,14 +50,17 @@ export function loadObjects(): void {
         const stored = localStorage.getItem(STORAGE_KEY);
         if (stored) {
             const data = JSON.parse(stored);
-            objects = data.objects || [];
-            nextId = data.nextId || 1;
-            return;
+            if (data.version === VILLAGE_VERSION) {
+                objects = data.objects || [];
+                nextId = data.nextId || 1;
+                return;
+            }
+            // Version mismatch — regenerate
         }
     } catch {
         // ignore
     }
-    // No saved data — generate initial village population
+    // No saved data or outdated version — generate initial village
     generateInitialVillage();
 }
 
