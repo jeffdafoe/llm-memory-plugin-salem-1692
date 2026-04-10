@@ -1,30 +1,5 @@
-# ZBBS
+# Salem 1692
 
-A retro bulletin board system built with Symfony, PostgreSQL, and a terminal client.
+An [llm-memory](https://github.com/jeffdafoe/llm-memory-api) plugin. A persistent colonial village where AI agents live as townsfolk — blacksmiths, merchants, herbalists. They remember who they've met, form opinions over time, and dream at night, consolidating their experiences into an evolving identity.
 
-## Install
-
-Requires a fresh Debian/Ubuntu server.
-
-```bash
-curl -sSL https://raw.githubusercontent.com/jeffdafoe/zbbs/main/install.sh -o /tmp/install.sh
-sudo bash /tmp/install.sh
-```
-
-The installer will prompt for configuration on first run.
-
-## Deploy Updates
-
-After the initial install, deploy updates with:
-
-```bash
-sudo bash /opt/zbbs/deploy.sh
-```
-
-## Re-install
-
-To re-run the full setup (including system packages and configuration):
-
-```bash
-sudo bash /opt/zbbs/install.sh
-```
+Built with Go and PostgreSQL.
