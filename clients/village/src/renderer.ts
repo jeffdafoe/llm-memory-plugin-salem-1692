@@ -4,6 +4,9 @@ import { Camera } from "./camera";
 import { Tileset } from "./sprites";
 import { getMapDimensions } from "./map";
 import { WANG_LOOKUP } from "./wang-lookup";
+import { getObjectsSortedByDepth } from "./objects";
+import { getCatalogItem } from "./catalog";
+import { Editor } from "./editor";
 
 // Background color — earthy brown for the wilderness outside the map
 const BG_COLOR = "#3e3222";
@@ -23,6 +26,19 @@ const TERRAIN_COLORS: Record<number, string> = {
     6: "#2e5984",  // deep water
 };
 
+// Sprite sheet image cache — shared across all objects using the same sheet
+const sheetCache = new Map<string, HTMLImageElement>();
+
+function getSheet(src: string): HTMLImageElement {
+    let img = sheetCache.get(src);
+    if (!img) {
+        img = new Image();
+        img.src = src;
+        sheetCache.set(src, img);
+    }
+    return img;
+}
+
 export class Renderer {
     private canvas: HTMLCanvasElement;
     private ctx: CanvasRenderingContext2D;
@@ -30,6 +46,7 @@ export class Renderer {
     private map: WangTerrainType[][];
     private wangTileset: Tileset;
     private sparkleTileset: Tileset;
+    private editor: Editor | null = null;
 
     constructor(canvas: HTMLCanvasElement, camera: Camera, map: WangTerrainType[][]) {
         this.canvas = canvas;
@@ -40,6 +57,10 @@ export class Renderer {
         this.wangTileset = new Tileset("/assets/tilesets/wang.png", WANG_SRC_SIZE);
         this.sparkleTileset = new Tileset("/assets/tilesets/water-sparkles.png", WANG_SRC_SIZE);
         this.ctx.imageSmoothingEnabled = false;
+    }
+
+    setEditor(editor: Editor): void {
+        this.editor = editor;
     }
 
     setMap(map: WangTerrainType[][]): void {
@@ -81,7 +102,7 @@ export class Renderer {
         const startRow = Math.max(0, Math.floor(viewTop / TILE_SIZE));
         const endRow = Math.min(mapHeight - 1, Math.ceil(viewBottom / TILE_SIZE));
 
-        // Draw visible tiles
+        // Draw visible terrain tiles
         for (let y = startRow; y <= endRow; y++) {
             for (let x = startCol; x <= endCol; x++) {
                 if (y >= this.map.length || x >= this.map[y].length) {
@@ -115,6 +136,47 @@ export class Renderer {
                 }
             }
         }
+
+        // Draw objects — sorted by Y for depth ordering
+        this.renderObjects(ctx, viewLeft, viewTop, viewRight, viewBottom);
+
+        // Draw editor overlays (ghost preview, selection highlight)
+        this.editor?.renderOverlay(ctx);
+    }
+
+    private renderObjects(
+        ctx: CanvasRenderingContext2D,
+        viewLeft: number, viewTop: number,
+        viewRight: number, viewBottom: number
+    ): void {
+        const sorted = getObjectsSortedByDepth();
+        const SCALE = 2; // 16px native → 32px render
+
+        for (const obj of sorted) {
+            const item = getCatalogItem(obj.catalogId);
+            if (!item) continue;
+
+            const sheet = getSheet(item.sheet);
+            if (!sheet.complete || sheet.naturalWidth === 0) continue;
+
+            // Destination size (scaled 2x from native 16px art)
+            const destW = item.srcW * SCALE;
+            const destH = item.srcH * SCALE;
+
+            // Position: anchor point is at (obj.x, obj.y)
+            const drawX = obj.x - destW * item.anchorX;
+            const drawY = obj.y - destH * item.anchorY;
+
+            // Frustum cull
+            if (drawX + destW < viewLeft || drawX > viewRight) continue;
+            if (drawY + destH < viewTop || drawY > viewBottom) continue;
+
+            ctx.drawImage(
+                sheet,
+                item.srcX, item.srcY, item.srcW, item.srcH,
+                drawX, drawY, destW, destH
+            );
+        }
     }
 
     // Look up and draw the correct wang tile based on corner terrain types.
@@ -144,34 +206,12 @@ export class Renderer {
     }
 
     // Get the terrain type for a corner of a tile.
-    // A corner is shared by 4 tiles. The corner terrain is the terrain
-    // of the tile at (tileX + dx, tileY + dy) offset, where dx/dy indicate
-    // which corner (-1/-1 = top-left, +1/-1 = top-right, etc.).
-    // For wang corner tiles, each corner samples from 4 neighboring tiles
-    // and picks the dominant terrain. But the simpler (and correct for Mana Seed)
-    // approach: the corner terrain equals the terrain of the tile that the
-    // corner is "inside" of — i.e. the tile at the diagonal offset.
-    //
-    // Actually, for Tiled's corner wang tiles, each corner of a tile gets
-    // a terrain value. The convention is:
-    // - TL corner of tile (x,y) = terrain at (x,y) if homogeneous,
-    //   but for transitions, the corner is the terrain that "owns" that corner.
-    //
-    // The simplest working approach: each corner takes the terrain from
-    // the diagonal neighbor. If that neighbor is off-map, use the tile's own terrain.
     private getCornerTerrain(tileX: number, tileY: number, dx: number, dy: number): WangTerrainType {
         const dims = getMapDimensions();
 
         // The 4 tiles that share this corner
         const tiles: WangTerrainType[] = [];
 
-        // Which tiles share a corner depends on which corner we're looking at.
-        // For the top-left corner of tile (x,y), the 4 tiles sharing it are:
-        //   (x,y), (x-1,y), (x,y-1), (x-1,y-1)
-        // For top-right: (x,y), (x+1,y), (x,y-1), (x+1,y-1)
-        // etc.
-        //
-        // The offsets for the 4 tiles sharing a corner:
         const ox = dx < 0 ? -1 : 0;
         const oy = dy < 0 ? -1 : 0;
 
@@ -186,7 +226,6 @@ export class Renderer {
         }
 
         // Pick the most common terrain among the sharing tiles
-        // This gives smooth transitions — the majority terrain "wins" each corner
         if (tiles.length === 0) {
             return this.map[tileY][tileX];
         }

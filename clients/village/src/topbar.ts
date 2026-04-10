@@ -20,6 +20,16 @@ export function createTopBar(container: HTMLElement, onPanel: PanelCallback): HT
     const right = document.createElement("div");
     right.className = "top-bar-right";
 
+    // Edit button
+    const editBtn = document.createElement("button");
+    editBtn.textContent = "Edit";
+    editBtn.className = "top-bar-btn";
+    editBtn.id = "editor-toggle-btn";
+    editBtn.addEventListener("click", () => {
+        onPanel("editor");
+    });
+    right.appendChild(editBtn);
+
     // Config button
     const configBtn = document.createElement("button");
     configBtn.textContent = "Config";
