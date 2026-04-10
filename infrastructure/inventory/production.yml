@@ -1,9 +1,8 @@
 all:
   hosts:
-    vps:
-      ansible_host: 165.245.142.212
-      ansible_user: claude
-      ansible_ssh_private_key_file: ~/.ssh/id_rsa
+    localhost:
+      ansible_connection: local
+      ansible_python_interpreter: /usr/bin/python3
   vars:
     deploy_environment: production
     project_root: /var/www/zbbs
@@ -11,6 +10,4 @@ all:
     deploy_branch: main
     database_name: zbbs
     database_user: zbbs
-    database_password: "{{ lookup('env', 'ZBBS_DB_PASSWORD') }}"
-    jwt_key_passphrase: "{{ lookup('env', 'ZBBS_JWT_PASSPHRASE') }}"
-    app_secret: "{{ lookup('env', 'ZBBS_APP_SECRET') }}"
+    llm_memory_api_url: "http://127.0.0.1:3100"
