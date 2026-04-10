@@ -186,10 +186,5 @@ function generateInitialVillage(): void {
     // Wagon on the road
     place("wagon-covered", midX - 8, midY);
 
-    // Bridge over the river (at the road crossing)
-    const bridgeY = midY + Math.floor(Math.sin(riverBaseX * 0.1) * 1);
-    const bridgeX = riverBaseX + Math.floor(Math.sin(bridgeY * 0.15) * 2) + 1;
-    place("bridge", bridgeX, bridgeY);
-
     saveObjects();
 }

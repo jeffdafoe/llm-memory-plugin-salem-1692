@@ -1,0 +1,13 @@
+These sheets have a lot of empty space, but that's intentional. It's to account for future updates.
+I'll be filling out the different furniture styles over time so that each style has the same pieces of furniture.
+I'll even be adding wholly new furniture styles to go along with the existing ones.
+I'll also be adding more universal pieces that don't specifically match one of the styles.
+In order to facilitate the sheets growing, I wanted them to have a maximum width (no more than 512 in this case) from the start.
+That way, when I expand the sheets someday, I can add more to the bottom and it won't affect your cell counts.
+
+If there are any particular pieces of furniture you'd like to see in a future update, please let me know in the comments section of the product.
+
+https://seliel-the-shaper.itch.io/cozy-furnishings
+
+Thanks! 
+Seliel the Shaper
