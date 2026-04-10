@@ -37,6 +37,14 @@
         - migrations
       when: repo_root != project_root
 
+    - name: Set ownership on deployed code
+      file:
+        path: "{{ project_root }}"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        recurse: yes
+      when: repo_root != project_root
+
     # Go engine build
     - name: Build Go engine
       shell: |
