@@ -1,22 +1,13 @@
 # Shared variables across all environments
 
-# PHP
-php_version: "8.4"
-php_extensions:
-  - php{{ php_version }}-cli
-  - php{{ php_version }}-fpm
-  - php{{ php_version }}-pgsql
-  - php{{ php_version }}-intl
-  - php{{ php_version }}-mbstring
-  - php{{ php_version }}-xml
-  - php{{ php_version }}-curl
-  - php{{ php_version }}-zip
-
 # PostgreSQL
 postgresql_version: "17"
 
-# Node.js
+# Node.js (for village client build)
 nodejs_version: "20"
+
+# Engine
+engine_port: 8080
 
 # Project
 project_name: zbbs
