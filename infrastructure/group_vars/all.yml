@@ -7,7 +7,7 @@ postgresql_version: "17"
 nodejs_version: "20"
 
 # Engine
-engine_port: 8080
+engine_port: 8090
 
 # Project
 project_name: zbbs
