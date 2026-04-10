@@ -1,0 +1,5 @@
+Each tilesheet has a pair of numbers at the end of the filename: 16x16, 32x32, 64x48, etc.
+This value is what you should slice the sheet at when you load it into your game engine.
+But please note that many cells won't line up if your map editor is also set to those same dimensions.
+Slice the sheets at whatever their filename calls for, but keep your map editor at 16x16!
+This way you'll be able to slot the larger pieces together with some overlap of empty tiles within the cell, if necessary.

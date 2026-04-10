@@ -1,0 +1,9 @@
+The included "summer forest wang tiles" image has every single permutation of 6 different ground textures with a mminimum unit size of 2x2 tiles.
+I've already set all this up in the TSX file, so all you need to do is select a terrain brush and draw any ground texture.
+All textures will seamlessly blend with all other ground textures if you use the terrain brushes.
+
+You'll run into problems when you add different elevations into the mix, so you'll still need to place your cliff tiles manually.
+
+One quirk of Tiled's WANG brushes, is that you can't draw them on an empty canvas.
+You must first fill the space with one of the tiles from the wang tileset.
+So just use the paint bucket to fill an area with grass, dirt, or water, then start drawing with the brushes.
