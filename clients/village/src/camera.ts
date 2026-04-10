@@ -61,6 +61,18 @@ export class Camera {
         canvas.addEventListener("wheel", (e) => this.onWheel(e, canvas), { passive: false });
     }
 
+    // Convert screen pixel coordinates to world coordinates
+    screenToWorld(screenX: number, screenY: number, canvasWidth: number, canvasHeight: number): { x: number; y: number } {
+        return {
+            x: this.x + (screenX - canvasWidth / 2) / this.zoom,
+            y: this.y + (screenY - canvasHeight / 2) / this.zoom,
+        };
+    }
+
+    isDragging(): boolean {
+        return this.dragging;
+    }
+
     apply(ctx: CanvasRenderingContext2D, canvasWidth: number, canvasHeight: number): void {
         ctx.setTransform(1, 0, 0, 1, 0, 0);
         ctx.translate(canvasWidth / 2, canvasHeight / 2);

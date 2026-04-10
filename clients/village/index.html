@@ -247,6 +247,102 @@
         .panel-btn:hover {
             background: #5a5a38;
         }
+
+        /* Editor panel */
+        .editor-panel {
+            position: fixed;
+            top: 40px;
+            left: 0;
+            width: 240px;
+            height: calc(100% - 40px);
+            background: #1e1e12;
+            border-right: 1px solid #3a3a20;
+            z-index: 100;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+        }
+        .editor-tools {
+            display: flex;
+            gap: 6px;
+            padding: 8px 12px;
+            border-bottom: 1px solid #3a3a20;
+        }
+        .editor-tool-btn {
+            flex: 1;
+            padding: 6px 8px;
+            background: #2a2a1a;
+            border: 1px solid #4a4a30;
+            border-radius: 3px;
+            color: #a09070;
+            font-family: Georgia, "Times New Roman", serif;
+            font-size: 12px;
+            cursor: pointer;
+        }
+        .editor-tool-btn:hover:not(:disabled) {
+            background: #3a3a28;
+            color: #c8b87a;
+        }
+        .editor-tool-btn.active {
+            background: #4a4a30;
+            color: #c8b87a;
+            border-color: #6a6a40;
+        }
+        .editor-tool-btn:disabled {
+            opacity: 0.4;
+            cursor: default;
+        }
+        .editor-catalog {
+            flex: 1;
+            overflow-y: auto;
+            padding: 8px 0;
+        }
+        .catalog-section {
+            margin-bottom: 4px;
+        }
+        .catalog-label {
+            font-size: 11px;
+            color: #8a7a50;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            padding: 6px 12px 4px;
+        }
+        .catalog-grid {
+            display: flex;
+            flex-direction: column;
+        }
+        .catalog-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 4px 12px;
+            cursor: pointer;
+            border: 1px solid transparent;
+        }
+        .catalog-item:hover {
+            background: #2a2a1a;
+        }
+        .catalog-item.selected {
+            background: #3a3a28;
+            border-color: #6a6a40;
+        }
+        .catalog-item canvas {
+            flex-shrink: 0;
+            background: #151510;
+            border-radius: 3px;
+        }
+        .catalog-item-name {
+            font-size: 12px;
+            color: #a09070;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .top-bar-btn.editor-active {
+            background: #4a4a30;
+            color: #c8b87a;
+            border-color: #8a7a50;
+        }
     </style>
 </head>
 <body>
