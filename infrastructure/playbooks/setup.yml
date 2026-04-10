@@ -16,12 +16,25 @@
 
   roles:
     - role: ../roles/common
-    - role: ../roles/php
     - role: ../roles/postgresql
     - role: ../roles/nodejs
     - role: ../roles/nginx
 
   post_tasks:
+    - name: Install Go (if not present)
+      shell: |
+        if ! command -v go &> /dev/null; then
+          curl -sL https://go.dev/dl/go1.23.6.linux-amd64.tar.gz | tar -C /usr/local -xzf -
+        fi
+      args:
+        creates: /usr/local/go/bin/go
+
+    - name: Add Go to system PATH
+      copy:
+        content: 'export PATH=$PATH:/usr/local/go/bin'
+        dest: /etc/profile.d/golang.sh
+        mode: '0644'
+
     - name: Check hosts file for development entry
       shell: grep -q "{{ server_name }}" /mnt/c/Windows/System32/drivers/etc/hosts
       register: hosts_check
@@ -40,8 +53,8 @@
           Setup complete!
           Environment: {{ deploy_environment }},
           Project root: {{ project_root }},
-          PHP: {{ php_version }},
+          Go: 1.23,
           PostgreSQL: {{ postgresql_version }},
           Node.js: {{ nodejs_version }},
           Database: {{ database_name }} / {{ database_user }}.
-          Next step: Run deploy.yml to install dependencies and build.
+          Next step: Run deploy.yml to build and deploy.
