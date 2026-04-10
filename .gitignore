@@ -28,6 +28,7 @@ infrastructure/local-secrets.yml
 # Commercial assets (purchased, not redistributable)
 clients/village/assets/tilesets/mana-seed/
 clients/village/public/assets/tilesets/
+clients/village/dist/assets/tilesets/mana-seed/
 
 # System
 .DS_Store
