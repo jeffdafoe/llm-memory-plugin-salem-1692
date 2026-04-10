@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ZBBS Village</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        html, body {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background: #000;
+            font-family: Georgia, "Times New Roman", serif;
+            color: #d4c5a0;
+        }
+        canvas {
+            display: block;
+        }
+        #app {
+            width: 100%;
+            height: 100%;
+        }
+
+        /* Auth screens */
+        .auth-wrapper {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #1a1a10;
+        }
+        .auth-box {
+            width: 320px;
+            padding: 40px;
+            background: #2a2a1a;
+            border: 1px solid #4a4a30;
+            border-radius: 4px;
+        }
+        .auth-box h1 {
+            font-size: 24px;
+            color: #c8b87a;
+            margin-bottom: 4px;
+            text-align: center;
+        }
+        .auth-subtitle {
+            font-size: 14px;
+            color: #8a7a50;
+            text-align: center;
+            margin-bottom: 24px;
+            font-style: italic;
+        }
+        .auth-error {
+            background: #3a1a1a;
+            border: 1px solid #6a2a2a;
+            color: #d49090;
+            padding: 8px 12px;
+            margin-bottom: 16px;
+            border-radius: 3px;
+            font-size: 13px;
+        }
+        .auth-box input {
+            width: 100%;
+            padding: 10px 12px;
+            margin-bottom: 12px;
+            background: #1a1a10;
+            border: 1px solid #4a4a30;
+            border-radius: 3px;
+            color: #d4c5a0;
+            font-family: Georgia, "Times New Roman", serif;
+            font-size: 14px;
+        }
+        .auth-box input::placeholder {
+            color: #6a6a50;
+        }
+        .auth-box input:focus {
+            outline: none;
+            border-color: #8a7a50;
+        }
+        .auth-box button {
+            width: 100%;
+            padding: 10px;
+            background: #4a4a30;
+            border: 1px solid #6a6a40;
+            border-radius: 3px;
+            color: #d4c5a0;
+            font-family: Georgia, "Times New Roman", serif;
+            font-size: 14px;
+            cursor: pointer;
+            margin-top: 4px;
+        }
+        .auth-box button:hover {
+            background: #5a5a38;
+        }
+        .auth-box button:disabled {
+            opacity: 0.5;
+            cursor: default;
+        }
+        .auth-toggle {
+            text-align: center;
+            margin-top: 16px;
+            font-size: 13px;
+            color: #8a7a50;
+        }
+        .auth-toggle a {
+            color: #c8b87a;
+            text-decoration: none;
+        }
+        .auth-toggle a:hover {
+            text-decoration: underline;
+        }
+        .passphrase-display {
+            background: #1a1a10;
+            border: 2px solid #c8b87a;
+            padding: 16px;
+            margin: 16px 0;
+            text-align: center;
+            font-size: 20px;
+            font-family: 'Courier New', monospace;
+            color: #c8b87a;
+            letter-spacing: 1px;
+            border-radius: 3px;
+            user-select: all;
+        }
+        .auth-hint {
+            font-size: 13px;
+            color: #8a7a50;
+            text-align: center;
+            margin-bottom: 16px;
+        }
+
+        /* Top bar */
+        .top-bar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: #1a1a10;
+            border-bottom: 1px solid #3a3a20;
+            padding: 0 16px;
+        }
+        .top-bar-left {
+            font-size: 14px;
+            color: #c8b87a;
+            font-weight: bold;
+        }
+        .top-bar-right {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+        .top-bar-btn {
+            background: none;
+            border: 1px solid #4a4a30;
+            color: #a09070;
+            font-family: Georgia, "Times New Roman", serif;
+            font-size: 12px;
+            padding: 4px 12px;
+            border-radius: 3px;
+            cursor: pointer;
+        }
+        .top-bar-btn:hover {
+            background: #2a2a1a;
+            color: #c8b87a;
+        }
+        .top-bar-agent {
+            font-size: 12px;
+            color: #8a7a50;
+        }
+
+        /* Side panels */
+        .side-panel {
+            position: fixed;
+            top: 40px;
+            right: 0;
+            width: 280px;
+            height: calc(100% - 40px);
+            background: #1e1e12;
+            border-left: 1px solid #3a3a20;
+            z-index: 100;
+            overflow-y: auto;
+        }
+        .panel-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 16px;
+            border-bottom: 1px solid #3a3a20;
+        }
+        .panel-header h2 {
+            font-size: 14px;
+            color: #c8b87a;
+            font-weight: normal;
+        }
+        .panel-close {
+            background: none;
+            border: none;
+            color: #8a7a50;
+            font-size: 14px;
+            cursor: pointer;
+            padding: 2px 6px;
+        }
+        .panel-close:hover {
+            color: #c8b87a;
+        }
+        .panel-body {
+            padding: 16px;
+        }
+        .field-group {
+            margin-bottom: 16px;
+        }
+        .field-group label {
+            display: block;
+            font-size: 12px;
+            color: #8a7a50;
+            margin-bottom: 4px;
+        }
+        .field-group input {
+            width: 100%;
+            padding: 6px 10px;
+            background: #1a1a10;
+            border: 1px solid #4a4a30;
+            border-radius: 3px;
+            color: #d4c5a0;
+            font-family: Georgia, "Times New Roman", serif;
+            font-size: 13px;
+        }
+        .field-group input:focus {
+            outline: none;
+            border-color: #8a7a50;
+        }
+        .panel-btn {
+            width: 100%;
+            padding: 8px;
+            background: #4a4a30;
+            border: 1px solid #6a6a40;
+            border-radius: 3px;
+            color: #d4c5a0;
+            font-family: Georgia, "Times New Roman", serif;
+            font-size: 13px;
+            cursor: pointer;
+        }
+        .panel-btn:hover {
+            background: #5a5a38;
+        }
+    </style>
+  <script type="module" crossorigin src="/assets/index-Bc4cML6k.js"></script>
+</head>
+<body>
+    <div id="app"></div>
+</body>
+</html>

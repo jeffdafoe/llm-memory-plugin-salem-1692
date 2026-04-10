@@ -11,7 +11,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Load environment variables
 set -a
-. /etc/zbbs/env
+. /etc/salem-1692/env
 set +a
 
-"$SCRIPT_DIR/engine/zbbs" reset-password "$1"
+"$SCRIPT_DIR/engine/salem" reset-password "$1"

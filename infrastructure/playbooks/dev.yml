@@ -34,19 +34,19 @@
 
     - name: Build Go engine
       shell: |
-        cd {{ project_root }}/engine && go build -o zbbs .
+        cd {{ project_root }}/engine && go build -o salem .
       environment:
         GOPATH: /root/go
         PATH: "/usr/local/go/bin:/root/go/bin:{{ ansible_env.PATH }}"
 
     - name: Check if engine is already running
-      shell: pgrep -f "zbbs" || true
+      shell: pgrep -f "salem" || true
       register: engine_running
       changed_when: false
 
     - name: Start engine
       shell: |
-        set -a && . /etc/zbbs/env && set +a && cd {{ project_root }}/engine && nohup ./zbbs > /tmp/zbbs-engine.log 2>&1 &
+        set -a && . /etc/salem-1692/env && set +a && cd {{ project_root }}/engine && nohup ./salem > /tmp/salem-engine.log 2>&1 &
       become_user: "{{ app_user }}"
       when: engine_running.stdout == ""
 

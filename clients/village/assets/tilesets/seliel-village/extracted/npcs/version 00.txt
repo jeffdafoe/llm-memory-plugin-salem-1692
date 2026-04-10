@@ -1,0 +1,8 @@
+Each (non-animal) NPC here has a "v00" variant. Version zero zero.
+
+Each v00 has the exact same color palette as every other v00.
+
+This can make it easier to set up palette swaps if you plan to change your sprite colors at runtime.
+Use the "bonus NPC palette reference.png" sheet to find palettes to swap out from v00.
+
+If you're not doing it that way, then don't use v00, it's an ugly palette :-)
