@@ -1,7 +1,0 @@
-export APP_ENV={{ 'prod' if deploy_environment == 'production' else 'dev' }}
-export APP_SECRET={{ app_secret | default('change_me_in_production') }}
-export DATABASE_URL="postgresql://{{ database_user }}:{{ database_password }}@127.0.0.1:5432/{{ database_name }}?serverVersion={{ postgresql_version }}"
-export JWT_SECRET_KEY={{ project_root }}/api/config/jwt/private.pem
-export JWT_PUBLIC_KEY={{ project_root }}/api/config/jwt/public.pem
-export JWT_PASSPHRASE={{ jwt_key_passphrase }}
-export LLM_MEMORY_API_URL={{ llm_memory_api_url | default('http://127.0.0.1:3100') }}

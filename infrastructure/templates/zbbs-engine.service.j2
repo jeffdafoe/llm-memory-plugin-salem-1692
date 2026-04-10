@@ -1,0 +1,15 @@
+[Unit]
+Description=ZBBS Engine
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User={{ app_user }}
+WorkingDirectory={{ project_root }}
+EnvironmentFile=/etc/zbbs/env
+ExecStart={{ project_root }}/engine/zbbs
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
