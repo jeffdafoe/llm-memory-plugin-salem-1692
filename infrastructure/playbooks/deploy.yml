@@ -14,13 +14,8 @@
       debug:
         msg: "Deploying to {{ deploy_environment }} environment"
 
-    - name: Pull latest code from {{ deploy_branch }} branch
-      git:
-        repo: "{{ git_repository }}"
-        dest: "{{ repo_root }}"
-        version: "{{ deploy_branch | default('main') }}"
-        force: yes
-      when: deploy_environment == 'production'
+    # Git pull is handled by deploy.sh before Ansible runs.
+    # Ansible just syncs from repo_root (/opt/zbbs) to project_root (/var/www/zbbs).
 
     - name: Create deployment directory
       file:
