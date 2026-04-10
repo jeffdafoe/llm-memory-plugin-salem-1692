@@ -1,0 +1,19 @@
+A lot of people download this asset without reading the user license, so I put this here to make sure you understand a very important clause!
+
+This art is totally free, but must NOT be used alongside ANY generative AI content!
+
+AI images? No!
+AI voice acting? No!
+AI music? No!
+AI code? No!
+
+Whatever new uses they come up with for AI in the future, the answer will always be no!
+
+If you insist on using genAI anywhere in your development pipeline, I ask that you please delete these assets now.
+I do not want my art to appear in any game that uses genAI in any way.
+
+The full Mana Seed User License can be found here: https://selieltheshaper.weebly.com/user-license.html
+It is written in plain english, please take a moment to read over the headers at least, so there are no surprises for you later.
+
+Thank you for your time,
+Seliel the Shaper

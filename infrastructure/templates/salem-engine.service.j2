@@ -1,13 +1,13 @@
 [Unit]
-Description=ZBBS Engine
+Description=Salem 1692 Engine
 After=network.target postgresql.service
 
 [Service]
 Type=simple
 User={{ app_user }}
 WorkingDirectory={{ project_root }}
-EnvironmentFile=/etc/zbbs/env
-ExecStart={{ project_root }}/engine/zbbs
+EnvironmentFile=/etc/salem-1692/env
+ExecStart={{ project_root }}/engine/salem
 Restart=on-failure
 RestartSec=5
 

@@ -16,6 +16,8 @@ node_modules/
 clients/terminal/dist/
 clients/terminal/test-results/
 clients/modern/dist/
+engine/salem
+engine/salem.exe
 engine/zbbs
 engine/zbbs.exe
 engine/jwt/
