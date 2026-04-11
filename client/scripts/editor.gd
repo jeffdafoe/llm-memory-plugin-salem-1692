@@ -2,6 +2,9 @@ extends CanvasLayer
 ## Editor — handles object placement, selection, drag-to-move, and deletion.
 ## Sits on a CanvasLayer so UI elements stay screen-fixed.
 ## Coordinates with camera.gd (disables left-click pan when active).
+##
+## Drag tracking uses _input (not _unhandled_input) so UI Controls
+## on the CanvasLayer can't swallow mouse motion during a drag.
 
 signal object_selected(asset_id: String)
 signal object_deselected
@@ -42,6 +45,30 @@ func _ready() -> void:
     # Ghost needs to be in the world space, not canvas layer
     world.add_child(ghost_sprite)
 
+## _input runs BEFORE GUI Controls process events, so drag motion
+## can't be swallowed by the editor panel or top bar.
+func _input(event: InputEvent) -> void:
+    if not active:
+        return
+
+    # Once a drag is active, we own all mouse events until release
+    if _dragging or _drag_pending:
+        if event is InputEventMouseMotion:
+            if _drag_pending:
+                var dist: float = event.position.distance_to(_drag_mouse_start)
+                if dist >= _drag_threshold:
+                    _drag_pending = false
+                    _dragging = true
+            if _dragging:
+                _drag_move(event.position)
+                # Consume so nothing else (camera, UI) reacts
+                get_viewport().set_input_as_handled()
+
+        if event is InputEventMouseButton:
+            if event.button_index == MOUSE_BUTTON_LEFT and not event.pressed:
+                _on_left_release(event.position)
+                get_viewport().set_input_as_handled()
+
 func _unhandled_input(event: InputEvent) -> void:
     if not active:
         return
@@ -50,11 +77,8 @@ func _unhandled_input(event: InputEvent) -> void:
         if event.button_index == MOUSE_BUTTON_LEFT:
             if event.pressed:
                 _on_left_press(event.position)
-            else:
-                _on_left_release(event.position)
 
         if event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
-            # Right-click cancels placement mode
             if current_mode == Mode.PLACE:
                 set_mode(Mode.SELECT)
 
@@ -62,13 +86,6 @@ func _unhandled_input(event: InputEvent) -> void:
         if current_mode == Mode.PLACE and ghost_sprite.visible:
             ghost_sprite.global_position = _screen_to_world(event.position)
             _apply_ghost_offset()
-        if _drag_pending:
-            var dist: float = event.position.distance_to(_drag_mouse_start)
-            if dist >= _drag_threshold:
-                _drag_pending = false
-                _dragging = true
-        if _dragging:
-            _drag_move(event.position)
 
     # Keyboard shortcuts
     if event is InputEventKey and event.pressed:
@@ -94,8 +111,6 @@ func _on_left_press(screen_pos: Vector2) -> void:
                 get_viewport().set_input_as_handled()
             else:
                 _deselect()
-                # Don't consume — let camera handle it for pan via middle-click
-                # (left-click pan is disabled when editor is active)
 
 func _on_left_release(screen_pos: Vector2) -> void:
     if _dragging:
@@ -167,13 +182,16 @@ func _find_object_at(screen_pos: Vector2) -> Node2D:
     for child in world.get_node("Objects").get_children():
         if child.get_child_count() == 0:
             continue
-        var sprite = child.get_child(0) as Sprite2D
+        # First child is always the Sprite2D; skip SelectionBorder nodes
+        var sprite: Sprite2D = null
+        for grandchild in child.get_children():
+            if grandchild is Sprite2D:
+                sprite = grandchild
+                break
         if sprite == null:
             continue
 
         # Build the sprite's bounding rect in world coordinates
-        # sprite.position is relative to the container (anchor offset)
-        # sprite.scale is 2x, texture region gives native size
         var tex = sprite.texture
         if tex == null:
             continue
@@ -206,7 +224,11 @@ func _deselect() -> void:
 
 func _add_selection_border(node: Node2D) -> void:
     _remove_selection_border()
-    var sprite = node.get_child(0) as Sprite2D
+    var sprite: Sprite2D = null
+    for child in node.get_children():
+        if child is Sprite2D:
+            sprite = child
+            break
     if sprite == null:
         return
     var tex = sprite.texture
@@ -277,6 +299,8 @@ func _drag_end(screen_pos: Vector2) -> void:
     selected_object.position = new_pos
     # Persist the move to the server
     world.move_object(selected_object, new_pos)
+    # Update the selection border position (it moves with the container
+    # since it's a child, so no action needed)
 
 # --- Coordinate conversion ---
 
