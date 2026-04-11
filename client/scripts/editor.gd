@@ -337,8 +337,8 @@ func _drag_move(screen_pos: Vector2) -> void:
     var current_world: Vector2 = _screen_to_world(screen_pos)
     var delta: Vector2 = current_world - _drag_start_world
     var new_pos: Vector2 = _drag_start_obj_pos + delta
-    print("DRAG: delta=", delta, " new_pos=", new_pos, " old_pos=", selected_object.position)
-    selected_object.position = new_pos
+    print("DRAG: node=", selected_object.name, " children=", selected_object.get_child_count(), " gpos_before=", selected_object.global_position)
+    selected_object.global_position = new_pos
 
 func _drag_end(screen_pos: Vector2) -> void:
     if selected_object == null:
@@ -346,7 +346,8 @@ func _drag_end(screen_pos: Vector2) -> void:
     var current_world: Vector2 = _screen_to_world(screen_pos)
     var delta: Vector2 = current_world - _drag_start_world
     var new_pos: Vector2 = _drag_start_obj_pos + delta
-    selected_object.position = new_pos
+    selected_object.global_position = new_pos
+    print("DRAG END: final_pos=", new_pos, " gpos=", selected_object.global_position)
     world.move_object(selected_object, new_pos)
 
 # --- Terrain painting ---
