@@ -5,8 +5,10 @@ import { showConfigPanel } from "./panels";
 import { Camera } from "./camera";
 import { Renderer } from "./renderer";
 import { createMap } from "./map";
-import { loadObjects, clearObjects } from "./objects";
+import { loadObjects, clearObjects, getObjects } from "./objects";
 import { Editor } from "./editor";
+import { fetchVillageMe } from "./village-api";
+import { getCatalogItem } from "./catalog";
 
 const app = document.getElementById("app")!;
 
@@ -95,6 +97,14 @@ function startGame(): void {
     // Load placed objects (or generate initial village)
     loadObjects();
 
+    // Check if user has editor permissions
+    fetchVillageMe().then(me => {
+        if (me?.canEdit) {
+            const btn = document.getElementById("editor-toggle-btn");
+            if (btn) btn.style.display = "";
+        }
+    });
+
     camera.attach(canvasEl);
 
     function handleResize(): void {
@@ -102,6 +112,54 @@ function startGame(): void {
     }
     window.addEventListener("resize", handleResize);
     handleResize();
+
+    // Tooltip for object info on hover
+    const tooltip = document.createElement("div");
+    tooltip.className = "village-tooltip";
+    app.appendChild(tooltip);
+
+    canvasEl.addEventListener("mousemove", (e) => {
+        if (editor.isActive()) {
+            tooltip.style.display = "none";
+            return;
+        }
+        const rect = canvasEl.getBoundingClientRect();
+        const screenX = e.clientX - rect.left;
+        const screenY = e.clientY - rect.top;
+        const world = camera.screenToWorld(screenX, screenY, canvasEl.width, canvasEl.height);
+
+        // Find object under cursor
+        const SCALE = 2;
+        let found: { name: string; owner: string } | null = null;
+        for (const obj of getObjects()) {
+            const item = getCatalogItem(obj.catalogId);
+            if (!item) continue;
+            const destW = item.srcW * SCALE;
+            const destH = item.srcH * SCALE;
+            const drawX = obj.x - destW * item.anchorX;
+            const drawY = obj.y - destH * item.anchorY;
+            if (world.x >= drawX && world.x <= drawX + destW &&
+                world.y >= drawY && world.y <= drawY + destH) {
+                if (obj.owner) {
+                    found = { name: item.name, owner: obj.owner };
+                    break;
+                }
+            }
+        }
+
+        if (found) {
+            tooltip.textContent = `${found.name} — ${found.owner}`;
+            tooltip.style.display = "";
+            tooltip.style.left = (e.clientX + 12) + "px";
+            tooltip.style.top = (e.clientY - 8) + "px";
+        } else {
+            tooltip.style.display = "none";
+        }
+    });
+
+    canvasEl.addEventListener("mouseleave", () => {
+        tooltip.style.display = "none";
+    });
 
     function frame(): void {
         renderer.render();

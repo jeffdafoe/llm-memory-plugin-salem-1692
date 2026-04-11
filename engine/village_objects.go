@@ -5,6 +5,36 @@ import (
 	"net/http"
 )
 
+// handleVillageMe returns the current user's village info (roles, permissions).
+func (app *App) handleVillageMe(w http.ResponseWriter, r *http.Request) {
+	user := getUserFromContext(r.Context())
+	if user == nil {
+		jsonError(w, "Not authenticated", http.StatusUnauthorized)
+		return
+	}
+
+	// Check if this user has a village_agent record with editor role
+	canEdit := false
+	var agentRole string
+	err := app.DB.QueryRow(r.Context(),
+		`SELECT role FROM village_agent WHERE llm_memory_agent = $1`,
+		user.Username,
+	).Scan(&agentRole)
+	if err == nil {
+		canEdit = agentRole == "editor" || agentRole == "admin" || agentRole == "sysop"
+	}
+
+	// Jeff (sysop) always gets editor access
+	if user.Username == "jeff" {
+		canEdit = true
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"agent":    user.Username,
+		"can_edit": canEdit,
+	})
+}
+
 // villageObject represents a placed item on the village map.
 type villageObject struct {
 	ID        string  `json:"id"`
@@ -13,6 +43,40 @@ type villageObject struct {
 	Y         float64 `json:"y"`
 	PlacedBy  *string `json:"placed_by"`
 	Owner     *string `json:"owner"`
+}
+
+// handleListVillageAgents returns all village agents (for owner assignment).
+func (app *App) handleListVillageAgents(w http.ResponseWriter, r *http.Request) {
+	rows, err := app.DB.Query(r.Context(),
+		`SELECT id, name, llm_memory_agent, role, coins, is_virtual
+		 FROM village_agent
+		 ORDER BY name`,
+	)
+	if err != nil {
+		jsonError(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	type agent struct {
+		ID        string `json:"id"`
+		Name      string `json:"name"`
+		Agent     string `json:"llm_memory_agent"`
+		Role      string `json:"role"`
+		Coins     int    `json:"coins"`
+		IsVirtual bool   `json:"is_virtual"`
+	}
+
+	agents := []agent{}
+	for rows.Next() {
+		var a agent
+		if err := rows.Scan(&a.ID, &a.Name, &a.Agent, &a.Role, &a.Coins, &a.IsVirtual); err != nil {
+			continue
+		}
+		agents = append(agents, a)
+	}
+
+	jsonResponse(w, http.StatusOK, agents)
 }
 
 // handleListVillageObjects returns all placed objects.
