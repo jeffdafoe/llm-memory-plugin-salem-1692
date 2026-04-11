@@ -91,12 +91,16 @@ export function createMap(): WangTerrainType[][] {
         }
     }
 
-    // Narrow the road gradually over 5 tiles approaching the bridge
+    // Gradually narrow the road approaching the bridge over ~10 tiles per side.
+    // The 3-wide road tapers to 1-wide at the riverbank.
     const bridgeRiverX = riverBaseX + Math.floor(Math.sin(bridgeRoadY * 0.15) * 2);
-    const approachLen = 5;
-    for (let dist = 1; dist <= approachLen; dist++) {
-        // How many tiles wide at this distance (3 at far end, 1 at river)
-        const halfWidth = dist <= 2 ? 0 : 1; // 1-wide for 2 tiles, then 3-wide
+    const taperLen = 10;
+    for (let dist = 1; dist <= taperLen; dist++) {
+        // Fraction: 0.0 at river, 1.0 at full road width
+        const t = dist / taperLen;
+        // Road half-width: 0 (1-wide) near river, 1 (3-wide) at far end
+        // Smooth step: use the fraction directly
+        const halfWidth = t < 0.5 ? 0 : 1;
 
         for (const side of [-1, 1]) {
             const bx = side === -1
@@ -104,7 +108,6 @@ export function createMap(): WangTerrainType[][] {
                 : bridgeRiverX + 2 + dist;  // right bank
             if (bx < 0 || bx >= width) continue;
 
-            // Clear the full 3-wide road to grass first
             for (let dy = -1; dy <= 1; dy++) {
                 const ry = bridgeRoadY + dy;
                 if (ry >= 0 && ry < height) {
