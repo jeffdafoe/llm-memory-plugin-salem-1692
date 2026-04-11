@@ -5,10 +5,9 @@ import { showConfigPanel } from "./panels";
 import { Camera } from "./camera";
 import { Renderer } from "./renderer";
 import { createMap } from "./map";
-import { loadObjects, clearObjects, getObjects } from "./objects";
+import { loadObjects, clearObjects } from "./objects";
 import { Editor } from "./editor";
 import { fetchVillageMe, fetchVillageAgents, VillageAgent } from "./village-api";
-import { getCatalogItem } from "./catalog";
 
 const app = document.getElementById("app")!;
 
@@ -122,78 +121,21 @@ function startGame(): void {
     window.addEventListener("resize", handleResize);
     handleResize();
 
-    // Tooltip for object info on hover
-    const tooltip = document.createElement("div");
-    tooltip.className = "village-tooltip";
-    app.appendChild(tooltip);
-
+    // Track mouse position for canvas-rendered tooltip
+    let mouseScreen: { x: number; y: number } | null = null;
     canvasEl.addEventListener("mousemove", (e) => {
-        if (editor.isActive()) {
-            tooltip.style.display = "none";
-            return;
-        }
         const rect = canvasEl.getBoundingClientRect();
-        const screenX = e.clientX - rect.left;
-        const screenY = e.clientY - rect.top;
-        const world = camera.screenToWorld(screenX, screenY, canvasEl.width, canvasEl.height);
-
-        // Check if hovering an outdoor agent dot
-        const DOT_RADIUS = 8;
-        let tooltipText = "";
-        for (const agent of currentAgents) {
-            if (agent.locationType !== "outdoor" || agent.locationX == null || agent.locationY == null) continue;
-            const dx = world.x - agent.locationX;
-            const dy = world.y - agent.locationY;
-            if (dx * dx + dy * dy < DOT_RADIUS * DOT_RADIUS) {
-                tooltipText = agent.name;
-                break;
-            }
-        }
-
-        // Check if hovering an object
-        if (!tooltipText) {
-            const SCALE = 2;
-            for (const obj of getObjects()) {
-                const item = getCatalogItem(obj.catalogId);
-                if (!item) continue;
-                const destW = item.srcW * SCALE;
-                const destH = item.srcH * SCALE;
-                const drawX = obj.x - destW * item.anchorX;
-                const drawY = obj.y - destH * item.anchorY;
-                if (world.x >= drawX && world.x <= drawX + destW &&
-                    world.y >= drawY && world.y <= drawY + destH) {
-                    // Build tooltip: name, owner, who's inside
-                    const parts: string[] = [item.name];
-                    // Show owner's display name if we have it
-                    if (obj.owner) {
-                        const ownerAgent = currentAgents.find(a => a.llmMemoryAgent === obj.owner);
-                        parts.push("Owner: " + (ownerAgent?.name || obj.owner));
-                    }
-                    const inside = currentAgents.filter(a =>
-                        a.locationType === "inside" && a.locationObjectId === obj.id
-                    );
-                    if (inside.length > 0) {
-                        parts.push("Inside: " + inside.map(a => a.name).join(", "));
-                    }
-                    tooltipText = parts.join("\n");
-                    break;
-                }
-            }
-        }
-
-        if (tooltipText) {
-            tooltip.textContent = tooltipText;
-            tooltip.style.display = "";
-            tooltip.style.left = (e.clientX + 12) + "px";
-            tooltip.style.top = (e.clientY - 8) + "px";
-        } else {
-            tooltip.style.display = "none";
-        }
+        mouseScreen = { x: e.clientX - rect.left, y: e.clientY - rect.top };
     });
-
     canvasEl.addEventListener("mouseleave", () => {
-        tooltip.style.display = "none";
+        mouseScreen = null;
     });
+    // Pass state to renderer for canvas-drawn tooltips
+    renderer.setTooltipState(() => ({
+        mouse: mouseScreen,
+        agents: currentAgents,
+        editorActive: editor.isActive(),
+    }));
 
     function frame(): void {
         renderer.render();
