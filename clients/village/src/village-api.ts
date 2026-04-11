@@ -68,6 +68,19 @@ export async function fetchVillageAgents(): Promise<VillageAgent[]> {
     return [];
 }
 
+export async function moveObjectPosition(objectId: string, x: number, y: number): Promise<boolean> {
+    try {
+        const resp = await apiFetch(`/api/village/objects/${objectId}/position`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ x, y }),
+        });
+        return resp.ok;
+    } catch {
+        return false;
+    }
+}
+
 export async function setObjectOwner(objectId: string, owner: string | null): Promise<boolean> {
     try {
         const resp = await apiFetch(`/api/village/objects/${objectId}/owner`, {

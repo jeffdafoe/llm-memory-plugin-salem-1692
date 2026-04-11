@@ -186,7 +186,7 @@ export class Renderer {
         if (lines.length === 0) {
             const SCALE = 2;
             for (const obj of getObjects()) {
-                const item = getCatalogItem(obj.catalogId);
+                const item = getCatalogItem(obj.assetId, obj.currentState);
                 if (!item) continue;
                 const destW = item.srcW * SCALE;
                 const destH = item.srcH * SCALE;
@@ -277,7 +277,7 @@ export class Renderer {
         const SCALE = 2; // 16px native → 32px render
 
         for (const obj of sorted) {
-            const item = getCatalogItem(obj.catalogId);
+            const item = getCatalogItem(obj.assetId, obj.currentState);
             if (!item) continue;
 
             const sheet = getSheet(item.sheet);
