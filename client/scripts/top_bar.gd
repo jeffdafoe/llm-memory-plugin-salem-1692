@@ -3,9 +3,11 @@ extends PanelContainer
 ## Built programmatically to match the dark brown/gold theme.
 
 signal edit_toggled(active: bool)
+signal config_pressed
 signal logout_pressed
 
 var edit_button: Button = null
+var config_button: Button = null
 var logout_button: Button = null
 var username_label: Label = null
 var _editor_active: bool = false
@@ -79,6 +81,11 @@ func _ready() -> void:
     edit_button.visible = false
     edit_button.pressed.connect(_on_edit_pressed)
     right_box.add_child(edit_button)
+
+    # Config button
+    config_button = _make_button("Config")
+    config_button.pressed.connect(_on_config_pressed)
+    right_box.add_child(config_button)
 
     # Logout button
     logout_button = _make_button("Logout")
@@ -169,6 +176,9 @@ func _update_edit_button_style() -> void:
         normal_style.content_margin_bottom = 4.0
         edit_button.add_theme_stylebox_override("normal", normal_style)
         edit_button.add_theme_color_override("font_color", COLOR_TEXT)
+
+func _on_config_pressed() -> void:
+    config_pressed.emit()
 
 func _on_logout_pressed() -> void:
     _editor_active = false

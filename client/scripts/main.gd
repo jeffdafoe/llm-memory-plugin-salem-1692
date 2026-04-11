@@ -4,6 +4,7 @@ extends Node2D
 
 const TopBarScript = preload("res://scripts/top_bar.gd")
 const EditorPanelScript = preload("res://scripts/editor_panel.gd")
+const ConfigPanelScript = preload("res://scripts/config_panel.gd")
 
 @onready var world: Node2D = $World
 @onready var camera: Camera2D = $Camera
@@ -12,6 +13,7 @@ const EditorPanelScript = preload("res://scripts/editor_panel.gd")
 # UI elements (created after auth)
 var top_bar: PanelContainer = null
 var editor_panel: PanelContainer = null
+var config_panel: Control = null
 
 # Login screen (added as a CanvasLayer so it renders on top of everything)
 var login_screen: Control = null
@@ -82,6 +84,8 @@ func _on_catalog_ready() -> void:
     # Build catalog in editor panel now that assets are loaded
     if editor_panel != null:
         editor_panel.build_catalog()
+    if config_panel != null:
+        config_panel.build_reference()
 
 func _build_ui() -> void:
     # Top bar — lives on the editor CanvasLayer
@@ -92,7 +96,19 @@ func _build_ui() -> void:
 
     # Wire top bar signals after it's in the tree and _ready has run
     top_bar.edit_toggled.connect(_on_edit_toggled)
+    top_bar.config_pressed.connect(_on_config_pressed)
     top_bar.logout_pressed.connect(_on_logout)
+
+    # Config panel — full-screen overlay on a higher CanvasLayer
+    var config_layer = CanvasLayer.new()
+    config_layer.name = "ConfigLayer"
+    config_layer.layer = 5  # Above editor, below login
+    get_parent().add_child(config_layer)
+
+    config_panel = Control.new()
+    config_panel.set_script(ConfigPanelScript)
+    config_layer.add_child(config_panel)
+    config_panel.visible = false
 
     # Editor side panel — also on the editor CanvasLayer, hidden by default
     editor_panel = PanelContainer.new()
@@ -108,6 +124,10 @@ func _build_ui() -> void:
     editor.object_selected.connect(_on_editor_object_selected)
     editor.object_deselected.connect(_on_editor_object_deselected)
     editor.mode_changed.connect(_on_editor_mode_changed)
+
+func _on_config_pressed() -> void:
+    if config_panel != null:
+        config_panel.visible = not config_panel.visible
 
 func _on_edit_toggled(active: bool) -> void:
     editor_panel.visible = active
