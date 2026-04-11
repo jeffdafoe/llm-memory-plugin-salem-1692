@@ -5,8 +5,9 @@ all:
       ansible_python_interpreter: /usr/bin/python3
   vars:
     deploy_environment: production
-    project_root: /var/www/zbbs
+    project_root: /var/www/llm-memory-salem-1692
     server_name: zbbs.llm-memory.net
+    village_server_name: village.llm-memory.net
     deploy_branch: main
     database_name: zbbs
     database_user: zbbs
