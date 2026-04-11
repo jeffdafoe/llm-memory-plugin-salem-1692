@@ -74,11 +74,14 @@ func _ready() -> void:
     _content.add_theme_constant_override("separation", 12)
     _panel.add_child(_content)
 
-func _unhandled_input(event: InputEvent) -> void:
+func _input(event: InputEvent) -> void:
     if not visible:
         return
     if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
         _close()
+        get_viewport().set_input_as_handled()
+    # Consume all mouse clicks when popup is visible so editor doesn't process them
+    if event is InputEventMouseButton and event.pressed:
         get_viewport().set_input_as_handled()
 
 func _on_bg_input(event: InputEvent) -> void:

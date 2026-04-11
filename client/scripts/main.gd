@@ -125,7 +125,10 @@ func _build_ui() -> void:
     config_layer.add_child(asset_popup)
     asset_popup.visible = false
     asset_popup.place_requested.connect(_on_popup_place_requested)
-    asset_popup.closed.connect(func(): camera.modal_open = false)
+    asset_popup.closed.connect(func():
+        camera.modal_open = false
+        editor.popup_open = false
+    )
 
     # Wire panel signals to editor
     editor_panel.asset_selected.connect(_on_panel_asset_selected)
@@ -167,9 +170,11 @@ func _on_asset_inspect_requested(asset_id: String) -> void:
     if asset_popup != null:
         asset_popup.show_asset(asset_id)
         camera.modal_open = true
+        editor.popup_open = true
 
 func _on_popup_place_requested(asset_id: String) -> void:
     camera.modal_open = false
+    editor.popup_open = false
     editor.select_asset_for_placement(asset_id)
 
 func _on_panel_asset_selected(asset_id: String) -> void:
