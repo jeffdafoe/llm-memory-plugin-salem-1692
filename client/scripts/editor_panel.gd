@@ -323,8 +323,11 @@ func _add_catalog_item(grid: GridContainer, asset: Dictionary) -> void:
     grid.add_child(item)
 
 func _on_item_input(event: InputEvent, item: Control, asset_id: String) -> void:
-    if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
-        asset_inspect_requested.emit(asset_id)
+    if event is InputEventMouseButton and event.pressed:
+        if event.button_index == MOUSE_BUTTON_LEFT:
+            _select_catalog_item(item, asset_id)
+        if event.button_index == MOUSE_BUTTON_RIGHT:
+            asset_inspect_requested.emit(asset_id)
 
 func _on_item_hover(item: Control, hovering: bool) -> void:
     if item == _selected_item:
