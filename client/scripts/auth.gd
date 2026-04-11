@@ -38,9 +38,14 @@ func login(user: String, password: String) -> void:
         "password": password,
     })
 
+    var url: String = api_base + "/llm/admin/login"
+    print("Auth: POST " + url + " payload=" + payload)
+
     http.request_completed.connect(_on_login_response.bind(http))
     var headers = ["Content-Type: application/json"]
-    http.request(api_base + "/llm/admin/login", headers, HTTPClient.METHOD_POST, payload)
+    var err = http.request(url, headers, HTTPClient.METHOD_POST, payload)
+    if err != OK:
+        push_error("Auth: request() returned error " + str(err))
 
 func _on_login_response(result: int, response_code: int, headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest) -> void:
     http.queue_free()
