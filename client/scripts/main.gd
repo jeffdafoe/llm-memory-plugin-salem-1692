@@ -11,10 +11,10 @@ func _ready() -> void:
     # Always generate terrain — it's visible behind the login screen
     world.build_terrain()
 
-    # Center camera on the map
+    # Center camera on the map (terrain is 2x scaled, so world coordinates are 32px per tile)
     camera.position = Vector2(
-        world.map_width * 16 / 2.0,
-        world.map_height * 16 / 2.0
+        world.map_width * 32 / 2.0,
+        world.map_height * 32 / 2.0
     )
 
     # Show login screen while checking auth

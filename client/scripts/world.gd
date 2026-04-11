@@ -144,12 +144,14 @@ func _place_object(data: Dictionary) -> void:
     container.set_meta("object_id", obj_id)
     container.set_meta("asset_id", asset_id)
 
+    # Sprites are 16px native, world is 32px scale — render at 2x
     var sprite = Sprite2D.new()
     sprite.texture = texture
     sprite.centered = false
+    sprite.scale = Vector2(2, 2)
     sprite.position = Vector2(
-        -texture.region.size.x * anchor_x,
-        -texture.region.size.y * anchor_y
+        -texture.region.size.x * 2 * anchor_x,
+        -texture.region.size.y * 2 * anchor_y
     )
 
     container.add_child(sprite)
@@ -177,9 +179,10 @@ func add_object(asset_id: String, world_pos: Vector2) -> void:
     var sprite = Sprite2D.new()
     sprite.texture = texture
     sprite.centered = false
+    sprite.scale = Vector2(2, 2)
     sprite.position = Vector2(
-        -texture.region.size.x * anchor_x,
-        -texture.region.size.y * anchor_y
+        -texture.region.size.x * 2 * anchor_x,
+        -texture.region.size.y * 2 * anchor_y
     )
     container.add_child(sprite)
     objects_node.add_child(container)
