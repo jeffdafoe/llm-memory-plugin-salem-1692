@@ -25,10 +25,9 @@ engine/jwt/
 # Infrastructure secrets (prompted on first Ansible run)
 infrastructure/local-secrets.yml
 
-# Commercial assets (purchased, not redistributable)
-clients/village/assets/tilesets/mana-seed/
-clients/village/public/assets/tilesets/
-clients/village/dist/assets/tilesets/mana-seed/
+# Tilesets — only free/ is tracked, everything else is purchased/commercial
+clients/village/assets/tilesets/*
+!clients/village/assets/tilesets/free/
 
 # System
 .DS_Store
