@@ -1,0 +1,21 @@
+TMX and TSX are file types associated with Tiled, a free tilemap editor.
+Download it (100% free) here: https://thorbjorn.itch.io/tiled
+
+Tiled is an excellent, feature rich, and FREE map editor. I recommend it over whatever you're using now.
+Build your maps in Tiled, then import/export them into whatever game engine you're using.
+Search online for "Tiled to XYZ" where XYZ is whatever game engine you're using.
+There are Tiled importers for Unity, Godot, GameMaker Studio, Unreal Engine, RPG Maker, and maybe more.
+
+TMX is a map file. Open these in Tiled to examine the sample maps I've made for you.
+TSX are your tileset files, every image needs an associated TSX for use in Tiled.
+When you open one of my maps, it should automatically find the associated TSX files used in the map.
+But if the map has red exes all over it, you'll need to tell Tiled where the TSX files are (hint: they're in the "TSX files" folder).
+You might then need to tell it where the images are (the PNGs with the art).
+Just click on the prompt at the top of the Tiled editor to rectify any reference errors.
+You can make your own TSX files from within Tiled, but I recommend loading up mine first.
+My TSX files will have the appropriate tile sizes and terrain brushes already setup, a boon for new users.
+
+If you have trouble with something, you can join the Mana Seed Discord server and ask me or other members for help.
+You can find the Discord link (and rules) here:
+https://selieltheshaper.weebly.com/discord.html
+Please read the rules: you will need to properly introduce yourself before you can participate.

@@ -1,0 +1,6 @@
+In the "village accessories 16x16.png" file, you'll find a bunch of wooden signs for shops.
+In the "village accessories 16x32.png" file you'll find a bunch of hanging cloth pendants with similar trade goods imagery.
+
+Both the wooden signs and the cloth pendants are meant to go on top of their blank counterparts found in the other sheets:
+"village accessories 32x32.png" and "village accessories 48x80.png" both have signposts equiped to hang a wooden sign or cloth banner.
+You should make an object for the signpost in your game, then swap out a separate smaller object on top of it to represent the wooden or cloth sign part.

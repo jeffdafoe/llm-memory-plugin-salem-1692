@@ -1,0 +1,11 @@
+This is an autotile that lets you use a terrain brush to paint the larger outer walls of your forest maps.
+
+These tiles are each 128x128 pixels.
+If your map editor can't handle that size tile, then you may not be able to use this in the intended way.
+
+Examine the "tree wall autotile setup.png" image to see how the autotile should be setup in your map editor.
+Each one is made up of an 8x8 tile "supertile".
+The 16x16 subtiles were taken straight from the main forest tileset.
+
+A version of the tree wall with only the leaves ("canopy only") is included to help you manage players going underneath the trees.
+Place your own collision accordingly!
