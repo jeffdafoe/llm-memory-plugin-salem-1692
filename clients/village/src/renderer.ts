@@ -57,8 +57,8 @@ export class Renderer {
         this.camera = camera;
         this.map = map;
         // Wang tiles sheet is 16px native — we scale to 32px when drawing
-        this.wangTileset = new Tileset("/assets/tilesets/wang.png", WANG_SRC_SIZE);
-        this.sparkleTileset = new Tileset("/assets/tilesets/water-sparkles.png", WANG_SRC_SIZE);
+        this.wangTileset = new Tileset("/tilesets/wang.png", WANG_SRC_SIZE);
+        this.sparkleTileset = new Tileset("/tilesets/water-sparkles.png", WANG_SRC_SIZE);
         this.ctx.imageSmoothingEnabled = false;
     }
 

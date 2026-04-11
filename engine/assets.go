@@ -4,6 +4,13 @@ import (
 	"net/http"
 )
 
+// TilesetPack represents a source tileset pack (e.g. from itch.io)
+type TilesetPack struct {
+	ID   string  `json:"id"`
+	Name string  `json:"name"`
+	URL  *string `json:"url"`
+}
+
 // Asset represents a logical game object (tree, stall, wagon, etc.)
 type Asset struct {
 	ID           string       `json:"id"`
@@ -13,6 +20,8 @@ type Asset struct {
 	AnchorX      float64      `json:"anchor_x"`
 	AnchorY      float64      `json:"anchor_y"`
 	Layer        string       `json:"layer"`
+	PackID       *string      `json:"pack_id"`
+	Pack         *TilesetPack `json:"pack,omitempty"`
 	States       []AssetState `json:"states"`
 }
 
@@ -26,12 +35,30 @@ type AssetState struct {
 	SrcH  int    `json:"src_h"`
 }
 
-// handleListAssets returns all assets with their states, grouped and ready for rendering.
-// Used by both the village client (to build its catalog) and the admin reference sheet.
+// handleListAssets returns all assets with their states and pack info.
+// Used by the village client (catalog) and the asset reference panel.
 func (app *App) handleListAssets(w http.ResponseWriter, r *http.Request) {
-	// Fetch all assets
+	// Fetch all tileset packs
+	packs := map[string]*TilesetPack{}
+	packRows, err := app.DB.Query(r.Context(),
+		`SELECT id, name, url FROM tileset_pack ORDER BY name`,
+	)
+	if err != nil {
+		jsonError(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	defer packRows.Close()
+	for packRows.Next() {
+		var p TilesetPack
+		if err := packRows.Scan(&p.ID, &p.Name, &p.URL); err != nil {
+			continue
+		}
+		packs[p.ID] = &p
+	}
+
+	// Fetch all assets with pack_id
 	assetRows, err := app.DB.Query(r.Context(),
-		`SELECT id, name, category, default_state, anchor_x, anchor_y, layer
+		`SELECT id, name, category, default_state, anchor_x, anchor_y, layer, pack_id
 		 FROM asset
 		 ORDER BY category, name`,
 	)
@@ -42,15 +69,20 @@ func (app *App) handleListAssets(w http.ResponseWriter, r *http.Request) {
 	defer assetRows.Close()
 
 	assets := []Asset{}
-	assetIndex := map[string]int{} // asset ID → index in assets slice
+	assetIndex := map[string]int{}
 
 	for assetRows.Next() {
 		var a Asset
 		if err := assetRows.Scan(&a.ID, &a.Name, &a.Category, &a.DefaultState,
-			&a.AnchorX, &a.AnchorY, &a.Layer); err != nil {
+			&a.AnchorX, &a.AnchorY, &a.Layer, &a.PackID); err != nil {
 			continue
 		}
 		a.States = []AssetState{}
+		if a.PackID != nil {
+			if pack, ok := packs[*a.PackID]; ok {
+				a.Pack = pack
+			}
+		}
 		assetIndex[a.ID] = len(assets)
 		assets = append(assets, a)
 	}
