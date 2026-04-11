@@ -12,10 +12,15 @@ func _ready() -> void:
     world.build_terrain()
 
     # Set camera bounds to match the terrain (2x scaled = 32px per tile)
-    camera.map_bounds = Rect2(0, 0, world.map_width * 32, world.map_height * 32)
+    # Terrain extends into negative tile coordinates, so bounds start negative
+    var pad_x: int = (world.map_width - 80) / 2
+    var pad_y: int = (world.map_height - 45) / 2
+    camera.map_bounds = Rect2(
+        -pad_x * 32, -pad_y * 32,
+        world.map_width * 32, world.map_height * 32
+    )
 
-    # Center camera on the original village area (tiles 0-80, 0-45)
-    # Same position as before the map expansion
+    # Center camera on the village crossroads (same position as always)
     camera.position = Vector2(40 * 32.0, 22 * 32.0)
 
     # Show login screen while checking auth

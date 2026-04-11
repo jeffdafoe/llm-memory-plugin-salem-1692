@@ -46,17 +46,21 @@ func _generate_terrain() -> void:
     var gen = MapGenerator.new(map_width, map_height, 42)
     map_data = gen.generate()
 
-    # Get the atlas source id from the tileset
+    # The village center is at array position (pad_x + 40, pad_y + 22).
+    # We want that to map to the same world-pixel position as before (1280, 704).
+    # With 2x terrain scale, tilemap tile (40, 22) = pixel (40*32, 22*32) = (1280, 704).
+    # So we paint the array with an offset: array (0,0) → tilemap tile (40 - pad_x - 40, 22 - pad_y - 22)
+    # Simplified: array index (ax, ay) → tilemap tile (ax - pad_x, ay - pad_y)
+    var pad_x: int = gen.pad_x
+    var pad_y: int = gen.pad_y
+
     var tile_set: TileSet = terrain.tile_set
     var source_id: int = tile_set.get_source_id(0)
 
-    # Paint each cell using the wang lookup table directly.
-    # For each tile, look at its 4 corner terrains (from neighboring cells),
-    # find the matching wang tile, and set it.
     for y in range(map_height):
         for x in range(map_width):
             var wang_pos: Vector2i = _get_wang_tile(x, y)
-            terrain.set_cell(Vector2i(x, y), source_id, wang_pos)
+            terrain.set_cell(Vector2i(x - pad_x, y - pad_y), source_id, wang_pos)
 
 ## Look up the correct wang tile for a map position based on corner terrains.
 func _get_wang_tile(x: int, y: int) -> Vector2i:
