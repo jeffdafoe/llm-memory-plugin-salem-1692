@@ -18,9 +18,9 @@ func _ready() -> void:
 
 func _on_login_pressed() -> void:
     var user: String = username_field.text.strip_edges()
-    var pass: String = password_field.text
+    var password: String = password_field.text
 
-    if user == "" or pass == "":
+    if user == "" or password == "":
         error_label.text = "Username and password required"
         return
 
@@ -32,7 +32,7 @@ func _on_login_pressed() -> void:
     if not Auth.auth_ready.is_connected(_on_auth_result):
         Auth.auth_ready.connect(_on_auth_result, CONNECT_ONE_SHOT)
 
-    Auth.login(user, pass)
+    Auth.login(user, password)
 
 func _on_auth_result() -> void:
     login_button.disabled = false
