@@ -35,6 +35,7 @@ func _ready() -> void:
 
 func _load_catalog() -> void:
     var http = HTTPRequest.new()
+    http.accept_gzip = false
     add_child(http)
 
     http.request_completed.connect(_on_catalog_loaded.bind(http))
