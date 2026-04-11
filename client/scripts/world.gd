@@ -92,7 +92,11 @@ func _load_village() -> void:
     add_child(http)
 
     http.request_completed.connect(_on_village_loaded.bind(http))
-    var error = http.request(api_base + "/api/village/objects")
+    var headers: PackedStringArray = []
+    var auth_header: String = Auth.get_auth_header()
+    if auth_header != "":
+        headers.append("Authorization: " + auth_header)
+    var error = http.request(api_base + "/api/village/objects", headers)
     if error != OK:
         push_error("Failed to request village objects: " + str(error))
 
@@ -196,6 +200,9 @@ func _save_object(asset_id: String, state: String, pos: Vector2, node: Node2D) -
 
     http.request_completed.connect(_on_object_saved.bind(http, node))
     var headers_arr = ["Content-Type: application/json"]
+    var auth_header: String = Auth.get_auth_header()
+    if auth_header != "":
+        headers_arr.append("Authorization: " + auth_header)
     http.request(api_base + "/api/village/objects", headers_arr, HTTPClient.METHOD_POST, payload)
 
 func _on_object_saved(result: int, response_code: int, headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest, node: Node2D) -> void:
@@ -223,5 +230,9 @@ func _delete_object(obj_id) -> void:
     var http = HTTPRequest.new()
     http.accept_gzip = false
     add_child(http)
+    var headers: PackedStringArray = []
+    var auth_header: String = Auth.get_auth_header()
+    if auth_header != "":
+        headers.append("Authorization: " + auth_header)
     http.request_completed.connect(func(r, c, h, b): http.queue_free())
-    http.request(api_base + "/api/village/objects/" + str(obj_id), [], HTTPClient.METHOD_DELETE)
+    http.request(api_base + "/api/village/objects/" + str(obj_id), headers, HTTPClient.METHOD_DELETE)
