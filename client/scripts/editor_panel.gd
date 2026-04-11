@@ -7,6 +7,7 @@ signal asset_inspect_requested(asset_id: String)
 signal delete_requested
 signal terrain_mode_toggled(active: bool)
 signal terrain_type_selected(terrain_type: int)
+signal owner_changed(owner: String)
 
 # Theme colors (matching top bar / login screen)
 const COLOR_BG = Color(0.12, 0.09, 0.07, 0.95)
@@ -34,6 +35,8 @@ var _selection_info: VBoxContainer = null
 var _selection_label: Label = null
 var _placed_by_label: Label = null
 var _owner_label: Label = null
+var _owner_dropdown: OptionButton = null
+var _ignoring_dropdown: bool = false
 var _catalog_container: VBoxContainer = null
 var _terrain_picker: VBoxContainer = null
 var _catalog_scroll: ScrollContainer = null
@@ -41,6 +44,9 @@ var _selected_item: Control = null
 var _selected_asset_id: String = ""
 var _terrain_active: bool = false
 var _selected_terrain_item: Control = null
+
+# Reference to world for agent name lookups — set by main.gd
+var world: Node2D = null
 
 # Track category sections for collapsing
 var _category_sections: Dictionary = {}
@@ -149,6 +155,36 @@ func _ready() -> void:
     _owner_label.add_theme_font_size_override("font_size", 12)
     _owner_label.visible = false
     _selection_info.add_child(_owner_label)
+
+    # Owner dropdown — lets editor assign/change object ownership
+    var owner_header = Label.new()
+    owner_header.text = "OWNER"
+    owner_header.add_theme_color_override("font_color", COLOR_LABEL)
+    owner_header.add_theme_font_size_override("font_size", 11)
+    _selection_info.add_child(owner_header)
+
+    _owner_dropdown = OptionButton.new()
+    _owner_dropdown.add_theme_font_override("font", _font)
+    _owner_dropdown.add_theme_font_size_override("font_size", 13)
+    _owner_dropdown.add_theme_color_override("font_color", COLOR_TEXT)
+    var dropdown_style = StyleBoxFlat.new()
+    dropdown_style.bg_color = COLOR_BTN_BG
+    dropdown_style.border_width_left = 1
+    dropdown_style.border_width_top = 1
+    dropdown_style.border_width_right = 1
+    dropdown_style.border_width_bottom = 1
+    dropdown_style.border_color = COLOR_BTN_BORDER
+    dropdown_style.corner_radius_left_top = 3
+    dropdown_style.corner_radius_right_top = 3
+    dropdown_style.corner_radius_left_bottom = 3
+    dropdown_style.corner_radius_right_bottom = 3
+    dropdown_style.content_margin_left = 6.0
+    dropdown_style.content_margin_right = 6.0
+    dropdown_style.content_margin_top = 4.0
+    dropdown_style.content_margin_bottom = 4.0
+    _owner_dropdown.add_theme_stylebox_override("normal", dropdown_style)
+    _owner_dropdown.item_selected.connect(_on_owner_selected)
+    _selection_info.add_child(_owner_dropdown)
 
     var sel_sep = HSeparator.new()
     sel_sep.add_theme_color_override("separator_color", Color(0.4, 0.32, 0.2, 0.4))
@@ -399,6 +435,22 @@ func _set_tool_active(btn: Button, active: bool) -> void:
         btn.add_theme_stylebox_override("normal", style)
         btn.add_theme_color_override("font_color", COLOR_TEXT)
 
+func _on_owner_selected(index: int) -> void:
+    if _ignoring_dropdown:
+        return
+    var agent_key: String = _owner_dropdown.get_item_metadata(index)
+    owner_changed.emit(agent_key)
+
+    # Update the owner label immediately
+    if agent_key != "":
+        var display_name: String = agent_key
+        if world != null:
+            display_name = world.get_owner_display_name(agent_key)
+        _owner_label.text = "Owner: " + display_name
+        _owner_label.visible = true
+    else:
+        _owner_label.visible = false
+
 func _on_select_pressed() -> void:
     # Deselect catalog item
     if _selected_item != null:
@@ -437,10 +489,31 @@ func show_selection(info: Dictionary) -> void:
 
     var owner: String = info.get("owner", "")
     if owner != "":
-        _owner_label.text = "Owner: " + owner
+        var display_name: String = owner
+        if world != null:
+            display_name = world.get_owner_display_name(owner)
+        _owner_label.text = "Owner: " + display_name
         _owner_label.visible = true
     else:
         _owner_label.visible = false
+
+    # Populate owner dropdown from agent list
+    _ignoring_dropdown = true
+    _owner_dropdown.clear()
+    _owner_dropdown.add_item("No owner", 0)
+    _owner_dropdown.set_item_metadata(0, "")
+    var selected_index: int = 0
+    if world != null:
+        var idx: int = 1
+        for agent_key in world.agent_list:
+            var display: String = world.agent_names.get(agent_key, agent_key)
+            _owner_dropdown.add_item(display, idx)
+            _owner_dropdown.set_item_metadata(idx, agent_key)
+            if agent_key == owner:
+                selected_index = idx
+            idx += 1
+    _owner_dropdown.selected = selected_index
+    _ignoring_dropdown = false
 
 ## Called when editor exits place mode (right-click cancel, escape, etc.)
 func clear_catalog_selection() -> void:

@@ -20,6 +20,8 @@ var placed_objects: Dictionary = {}
 
 # Agent lookup: llm_memory_agent name → display name
 var agent_names: Dictionary = {}
+# Ordered list of agent keys for dropdowns
+var agent_list: Array = []
 
 # API base
 var api_base: String = ""
@@ -379,6 +381,33 @@ func _on_agents_loaded(result: int, response_code: int, headers: PackedStringArr
         var display_name: String = agent.get("name", "")
         if llm_name != "" and display_name != "":
             agent_names[llm_name] = display_name
+            agent_list.append(llm_name)
+    agent_list.sort()
+
+## Set the owner of an object and persist to the server.
+func set_object_owner(node: Node2D, owner: String) -> void:
+    var obj_id = node.get_meta("object_id", null)
+    if obj_id == null:
+        return
+    node.set_meta("owner", owner)
+    _update_object_owner(obj_id, owner)
+
+func _update_object_owner(obj_id, owner: String) -> void:
+    var http = HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+
+    var owner_value = null
+    if owner != "":
+        owner_value = owner
+    var payload = JSON.stringify({"owner": owner_value})
+
+    var headers_arr = ["Content-Type: application/json"]
+    var auth_header: String = Auth.get_auth_header()
+    if auth_header != "":
+        headers_arr.append("Authorization: " + auth_header)
+    http.request_completed.connect(func(r, c, h, b): http.queue_free())
+    http.request(api_base + "/api/village/objects/" + str(obj_id) + "/owner", headers_arr, HTTPClient.METHOD_PATCH, payload)
 
 ## Resolve an owner identifier to a display name.
 ## Returns the display name if found, otherwise the raw owner string.
