@@ -167,6 +167,12 @@ function buildAssetsBody(body: HTMLElement): void {
             idEl.textContent = asset.id;
             card.appendChild(idEl);
 
+            // Metadata
+            const metaEl = document.createElement("div");
+            metaEl.className = "asset-card-meta";
+            metaEl.textContent = `layer: ${asset.layer}  anchor: (${asset.anchorX}, ${asset.anchorY})  states: ${asset.states.length}`;
+            card.appendChild(metaEl);
+
             // Pack info
             if (asset.pack) {
                 const packEl = document.createElement("div");
