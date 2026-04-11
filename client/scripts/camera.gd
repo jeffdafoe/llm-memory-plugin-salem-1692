@@ -1,6 +1,9 @@
 extends Camera2D
 ## Camera with pan (left/middle-click drag or touch drag) and zoom (scroll wheel or pinch).
 ## Clamped to the map bounds so grey void is never visible.
+##
+## When editor_active is true, left-click pan is disabled (editor owns left-click).
+## Middle-click pan always works regardless of editor state.
 
 # Zoom limits
 const ZOOM_MIN: float = 0.5
@@ -10,14 +13,22 @@ const ZOOM_STEP: float = 0.1
 # Map bounds in world coordinates (set by Main after terrain is built)
 var map_bounds: Rect2 = Rect2(0, 0, 2304, 1664)  # 72*32, 52*32
 
+# When true, left-click is reserved for the editor — only middle-click pans
+var editor_active: bool = false
+
 # Pan state
 var _panning: bool = false
 var _pan_start: Vector2 = Vector2.ZERO
 
 func _unhandled_input(event: InputEvent) -> void:
-    # Left-click or middle-click pan
+    # Pan: middle-click always, left-click only when editor is not active
     if event is InputEventMouseButton:
-        if event.button_index == MOUSE_BUTTON_LEFT or event.button_index == MOUSE_BUTTON_MIDDLE:
+        var is_pan_button: bool = false
+        if event.button_index == MOUSE_BUTTON_MIDDLE:
+            is_pan_button = true
+        if event.button_index == MOUSE_BUTTON_LEFT and not editor_active:
+            is_pan_button = true
+        if is_pan_button:
             _panning = event.pressed
             if _panning:
                 _pan_start = event.position

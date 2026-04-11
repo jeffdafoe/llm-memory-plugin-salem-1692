@@ -233,6 +233,30 @@ func remove_object(node: Node2D) -> void:
         _delete_object(obj_id)
     node.queue_free()
 
+## Move an object to a new position and persist it to the server.
+func move_object(node: Node2D, new_pos: Vector2) -> void:
+    var obj_id = node.get_meta("object_id", null)
+    if obj_id == null:
+        return
+    _update_object_position(obj_id, new_pos)
+
+func _update_object_position(obj_id, pos: Vector2) -> void:
+    var http = HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+
+    var payload = JSON.stringify({
+        "x": pos.x,
+        "y": pos.y
+    })
+
+    var headers_arr = ["Content-Type: application/json"]
+    var auth_header: String = Auth.get_auth_header()
+    if auth_header != "":
+        headers_arr.append("Authorization: " + auth_header)
+    http.request_completed.connect(func(r, c, h, b): http.queue_free())
+    http.request(api_base + "/api/village/objects/" + str(obj_id), headers_arr, HTTPClient.METHOD_PATCH, payload)
+
 func _delete_object(obj_id) -> void:
     var http = HTTPRequest.new()
     http.accept_gzip = false
