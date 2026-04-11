@@ -262,6 +262,9 @@ func add_object(asset_id: String, world_pos: Vector2) -> void:
 
     var container = Node2D.new()
     container.position = world_pos
+    container.set_meta("asset_id", asset_id)
+    container.set_meta("placed_by", Auth.username)
+    container.set_meta("owner", "")
 
     var sprite = Sprite2D.new()
     sprite.texture = texture
