@@ -43,3 +43,10 @@ zoom_out={
 
 textures/canvas_textures/default_texture_filter=0
 renderer/rendering_method="gl_compatibility"
+textures/canvas_textures/default_texture_repeat=2
+environment/defaults/default_clear_color=Color(0.05, 0.03, 0.02, 1)
+
+[rendering/2d]
+
+snap/snap_2d_transforms_to_pixel=true
+snap/snap_2d_vertices_to_pixel=true
