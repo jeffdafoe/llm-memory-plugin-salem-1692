@@ -20,6 +20,24 @@ var editor_active: bool = false
 var _panning: bool = false
 var _pan_start: Vector2 = Vector2.ZERO
 
+## Zoom runs in _input so it works even when editor UI Controls
+## (ScrollContainer, PanelContainer) would otherwise consume scroll events.
+func _input(event: InputEvent) -> void:
+    if event is InputEventMouseButton and event.pressed:
+        if event.button_index == MOUSE_BUTTON_WHEEL_UP:
+            _zoom_at(event.position, ZOOM_STEP)
+            get_viewport().set_input_as_handled()
+        if event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+            _zoom_at(event.position, -ZOOM_STEP)
+            get_viewport().set_input_as_handled()
+
+    # Pinch zoom also in _input for same reason
+    if event is InputEventMagnifyGesture:
+        var new_zoom: float = clampf(zoom.x * event.factor, ZOOM_MIN, ZOOM_MAX)
+        zoom = Vector2(new_zoom, new_zoom)
+        _clamp_position()
+        get_viewport().set_input_as_handled()
+
 func _unhandled_input(event: InputEvent) -> void:
     # Pan: middle-click always, left-click only when editor is not active
     if event is InputEventMouseButton:
@@ -33,12 +51,6 @@ func _unhandled_input(event: InputEvent) -> void:
             if _panning:
                 _pan_start = event.position
 
-        # Scroll wheel zoom
-        if event.button_index == MOUSE_BUTTON_WHEEL_UP and event.pressed:
-            _zoom_at(event.position, ZOOM_STEP)
-        if event.button_index == MOUSE_BUTTON_WHEEL_DOWN and event.pressed:
-            _zoom_at(event.position, -ZOOM_STEP)
-
     # Pan motion
     if event is InputEventMouseMotion and _panning:
         var delta: Vector2 = event.position - _pan_start
@@ -49,12 +61,6 @@ func _unhandled_input(event: InputEvent) -> void:
     # Touch support — single finger pan
     if event is InputEventScreenDrag:
         position -= event.relative / zoom
-        _clamp_position()
-
-    # Touch support — pinch zoom handled via InputEventMagnifyGesture
-    if event is InputEventMagnifyGesture:
-        var new_zoom: float = clampf(zoom.x * event.factor, ZOOM_MIN, ZOOM_MAX)
-        zoom = Vector2(new_zoom, new_zoom)
         _clamp_position()
 
 func _zoom_at(mouse_pos: Vector2, step: float) -> void:
