@@ -11,9 +11,9 @@ var _panning: bool = false
 var _pan_start: Vector2 = Vector2.ZERO
 
 func _unhandled_input(event: InputEvent) -> void:
-    # Middle-click pan
+    # Left-click or middle-click pan
     if event is InputEventMouseButton:
-        if event.button_index == MOUSE_BUTTON_MIDDLE:
+        if event.button_index == MOUSE_BUTTON_LEFT or event.button_index == MOUSE_BUTTON_MIDDLE:
             _panning = event.pressed
             if _panning:
                 _pan_start = event.position
