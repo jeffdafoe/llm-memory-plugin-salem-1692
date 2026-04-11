@@ -1,0 +1,16 @@
+# Godot import cache
+.godot/
+
+# Export output
+dist/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Readme files from asset packs (not needed in repo)
+assets/tilesets/**/Mana Seed readme.txt
+assets/tilesets/**/*old version*
+assets/tilesets/**/*deprecated*
+assets/tilesets/**/mockups/
+assets/tilesets/**/sample map/

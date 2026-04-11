@@ -1,5 +1,5 @@
 ---
-- name: Set up ZBBS environment
+- name: Set up Salem 1692 environment
   hosts: all
   become: yes
   vars_files:
@@ -17,7 +17,7 @@
   roles:
     - role: ../roles/common
     - role: ../roles/postgresql
-    - role: ../roles/nodejs
+    - role: ../roles/godot
     - role: ../roles/nginx
 
   post_tasks:

@@ -1,0 +1,74 @@
+---
+# Install Godot Engine for headless export on the server
+
+- name: Check if Godot is already installed at correct version
+  command: "{{ godot_bin }} --version"
+  register: godot_installed
+  changed_when: false
+  failed_when: false
+
+- name: Download Godot {{ godot_version }}
+  get_url:
+    url: "https://github.com/godotengine/godot/releases/download/{{ godot_version }}-stable/Godot_v{{ godot_version }}-stable_linux.x86_64.zip"
+    dest: /tmp/godot.zip
+    mode: "0644"
+  when: godot_installed.rc != 0 or godot_version not in (godot_installed.stdout | default(''))
+
+- name: Extract Godot binary
+  unarchive:
+    src: /tmp/godot.zip
+    dest: /tmp/
+    remote_src: yes
+  when: godot_installed.rc != 0 or godot_version not in (godot_installed.stdout | default(''))
+
+- name: Install Godot binary
+  copy:
+    src: "/tmp/Godot_v{{ godot_version }}-stable_linux.x86_64"
+    dest: "{{ godot_bin }}"
+    remote_src: yes
+    mode: "0755"
+  when: godot_installed.rc != 0 or godot_version not in (godot_installed.stdout | default(''))
+
+- name: Clean up Godot download
+  file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /tmp/godot.zip
+    - "/tmp/Godot_v{{ godot_version }}-stable_linux.x86_64"
+
+# Export templates — needed for HTML5 export
+# The .tpz is ~1.2GB so we download only once and skip if already present
+
+- name: Create export templates directory
+  file:
+    path: "/root/.local/share/godot/export_templates/{{ godot_version }}.stable"
+    state: directory
+    mode: "0755"
+
+- name: Check if web export template exists
+  stat:
+    path: "/root/.local/share/godot/export_templates/{{ godot_version }}.stable/web_release.zip"
+  register: web_template
+
+- name: Download export templates
+  get_url:
+    url: "https://github.com/godotengine/godot/releases/download/{{ godot_version }}-stable/Godot_v{{ godot_version }}-stable_export_templates.tpz"
+    dest: /tmp/godot_templates.tpz
+    mode: "0644"
+    timeout: 300
+  when: not web_template.stat.exists
+
+- name: Extract web export templates
+  shell: |
+    cd /tmp
+    unzip -o godot_templates.tpz 'templates/web*' 'templates/version.txt'
+    mv templates/web* "/root/.local/share/godot/export_templates/{{ godot_version }}.stable/"
+    mv templates/version.txt "/root/.local/share/godot/export_templates/{{ godot_version }}.stable/"
+    rm -rf templates
+  when: not web_template.stat.exists
+
+- name: Clean up templates download
+  file:
+    path: /tmp/godot_templates.tpz
+    state: absent
