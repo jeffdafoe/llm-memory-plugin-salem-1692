@@ -15,11 +15,14 @@ var selected_object: Node2D = null
 var ghost_sprite: Sprite2D = null
 var active: bool = false
 
+# Selection border node — added as child of selected object
+var _selection_border: Node2D = null
+
 # Drag-to-move state
 var _dragging: bool = false
 var _drag_start_world: Vector2 = Vector2.ZERO
 var _drag_start_obj_pos: Vector2 = Vector2.ZERO
-var _drag_threshold: float = 4.0  # Pixels before drag starts
+var _drag_threshold: float = 4.0  # Screen pixels before drag starts
 var _drag_pending: bool = false
 var _drag_mouse_start: Vector2 = Vector2.ZERO
 
@@ -191,24 +194,63 @@ func _find_object_at(screen_pos: Vector2) -> Node2D:
 func _select_object(node: Node2D) -> void:
     _deselect()
     selected_object = node
-    # Highlight selected object
-    var sprite = node.get_child(0) as Sprite2D
-    if sprite != null:
-        sprite.modulate = Color(1.2, 1.2, 1.0, 1.0)
+    _add_selection_border(node)
     var asset_id: String = node.get_meta("asset_id", "")
     object_selected.emit(asset_id)
 
 func _deselect() -> void:
     if selected_object != null:
-        var sprite = selected_object.get_child(0) as Sprite2D
-        if sprite != null:
-            sprite.modulate = Color(1, 1, 1, 1)
+        _remove_selection_border()
         selected_object = null
         object_deselected.emit()
+
+func _add_selection_border(node: Node2D) -> void:
+    _remove_selection_border()
+    var sprite = node.get_child(0) as Sprite2D
+    if sprite == null:
+        return
+    var tex = sprite.texture
+    if tex == null:
+        return
+
+    # Calculate the sprite's rect relative to the container
+    var region_size: Vector2 = tex.get_size()
+    var world_size: Vector2 = region_size * sprite.scale
+    var rect_pos: Vector2 = sprite.position
+    var padding: float = 3.0
+
+    _selection_border = Node2D.new()
+    _selection_border.name = "SelectionBorder"
+    _selection_border.z_index = 999
+    node.add_child(_selection_border)
+
+    # Draw the border using a Line2D rectangle
+    var border = Line2D.new()
+    border.width = 2.0
+    border.default_color = Color(0.85, 0.75, 0.35, 0.9)
+    border.closed = true
+
+    var x0: float = rect_pos.x - padding
+    var y0: float = rect_pos.y - padding
+    var x1: float = rect_pos.x + world_size.x + padding
+    var y1: float = rect_pos.y + world_size.y + padding
+
+    border.add_point(Vector2(x0, y0))
+    border.add_point(Vector2(x1, y0))
+    border.add_point(Vector2(x1, y1))
+    border.add_point(Vector2(x0, y1))
+
+    _selection_border.add_child(border)
+
+func _remove_selection_border() -> void:
+    if _selection_border != null:
+        _selection_border.queue_free()
+        _selection_border = null
 
 func _delete_selected() -> void:
     if selected_object == null:
         return
+    _remove_selection_border()
     world.remove_object(selected_object)
     selected_object = null
     object_deselected.emit()
