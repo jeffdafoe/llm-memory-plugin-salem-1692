@@ -3,6 +3,9 @@
 import { getConfig } from "./config";
 import { getToken } from "./auth";
 
+// Remove stale localStorage from the old client-side storage era
+localStorage.removeItem("village_objects");
+
 export interface PlacedObject {
     id: string;
     catalogId: string;
