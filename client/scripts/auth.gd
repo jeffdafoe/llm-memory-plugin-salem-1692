@@ -45,13 +45,20 @@ func login(user: String, password: String) -> void:
 func _on_login_response(result: int, response_code: int, headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest) -> void:
     http.queue_free()
 
+    var body_text: String = body.get_string_from_utf8()
+
     if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
-        push_error("Login failed: code=" + str(response_code))
+        push_error("Login failed: result=" + str(result) + " code=" + str(response_code) + " body=" + body_text)
+        # Emit auth_ready so the login screen can reset
+        authenticated = false
+        auth_ready.emit()
         return
 
-    var json = JSON.parse_string(body.get_string_from_utf8())
+    var json = JSON.parse_string(body_text)
     if json == null or not json.has("session_token"):
-        push_error("Login response missing session_token")
+        push_error("Login response missing session_token: " + body_text)
+        authenticated = false
+        auth_ready.emit()
         return
 
     session_token = json["session_token"]

@@ -36,7 +36,7 @@ func _on_login_pressed() -> void:
 
 func _on_auth_result() -> void:
     login_button.disabled = false
-    login_button.text = "Login"
+    login_button.text = "Enter"
 
     if Auth.authenticated:
         # Login succeeded — hide this screen
