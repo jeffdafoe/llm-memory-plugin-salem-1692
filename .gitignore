@@ -34,3 +34,4 @@ clients/village/dist/assets/tilesets/mana-seed/
 .DS_Store
 Thumbs.db
 .agent.json
+engine/engine.exe
