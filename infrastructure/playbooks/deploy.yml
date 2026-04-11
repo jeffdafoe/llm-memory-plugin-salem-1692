@@ -102,6 +102,17 @@
         label: "{{ item.path | basename }}"
       when: run_migrations | default(false) | bool
 
+    # Copy persistent commercial tilesets into client project before Godot export.
+    # These files are gitignored and deployed manually via scp.
+    # The Godot export packs them into the .pck file.
+    - name: Copy commercial tilesets into client for Godot export
+      synchronize:
+        src: "{{ project_root }}/tilesets/"
+        dest: "{{ project_root }}/client/assets/tilesets/"
+        rsync_opts:
+          - "--ignore-existing"
+      delegate_to: "{{ inventory_hostname }}"
+
     # Godot client export
     - name: Create client dist directory
       file:
