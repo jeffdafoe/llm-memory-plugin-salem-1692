@@ -235,9 +235,9 @@ async function generateInitialVillage(): Promise<void> {
     place("lamppost", midX - 2, midY + 2);
     place("lamppost-sign", midX + 2, midY + 2);
 
-    placeRandom("barrel", midX - 5, midY);
+    placeRandom("stump-small", midX - 5, midY);
     placeRandom("crate", midX - 5, midY + 1);
-    placeRandom("barrel", midX + 5, midY);
+    placeRandom("stump-small", midX + 5, midY);
     placeRandom("wood-pile", midX + 5, midY + 1);
 
     place("wagon-covered", midX - 8, midY);
