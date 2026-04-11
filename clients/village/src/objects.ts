@@ -10,7 +10,7 @@ export interface PlacedObject {
 }
 
 const STORAGE_KEY = "village_objects";
-const VILLAGE_VERSION = 5; // bump this to regenerate the initial village
+const VILLAGE_VERSION = 6; // bump this to regenerate the initial village
 let objects: PlacedObject[] = [];
 let nextId = 1;
 

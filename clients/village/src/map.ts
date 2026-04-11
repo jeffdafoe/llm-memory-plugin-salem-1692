@@ -84,7 +84,14 @@ export function createMap(): WangTerrainType[][] {
         }
     }
 
-    // No terrain bridge — the bridge sprite renders on top of the water
+    // Narrow approach roads (1 tile wide) leading to the bridge sprite
+    const bridgeRoadY = midY + Math.floor(Math.sin(riverBaseX * 0.1) * 1);
+    for (let dx = -2; dx <= 5; dx++) {
+        const bx = riverBaseX + Math.floor(Math.sin(bridgeRoadY * 0.15) * 2) + dx;
+        if (bx >= 0 && bx < width && bridgeRoadY >= 0 && bridgeRoadY < height) {
+            map[bridgeRoadY][bx] = Terrain.DIRT_PATH;
+        }
+    }
 
     // Forest clusters — dark grass patches (trees will be objects later)
     const forestAreas = [
