@@ -1,11 +1,21 @@
 extends Node2D
-## Main scene — handles auth flow and bootstraps the village viewer.
+## Main scene — handles auth flow, bootstraps the village viewer,
+## and wires up the editor UI (top bar + side panel).
+
+const TopBarScript = preload("res://scripts/top_bar.gd")
+const EditorPanelScript = preload("res://scripts/editor_panel.gd")
 
 @onready var world: Node2D = $World
 @onready var camera: Camera2D = $Camera
+@onready var editor: CanvasLayer = $Editor
+
+# UI elements (created after auth)
+var top_bar: PanelContainer = null
+var editor_panel: PanelContainer = null
 
 # Login screen (added as a CanvasLayer so it renders on top of everything)
 var login_screen: Control = null
+var login_layer: CanvasLayer = null
 
 func _ready() -> void:
     # Always generate terrain — it's visible behind the login screen
@@ -25,8 +35,9 @@ func _ready() -> void:
 
     # Show login screen while checking auth
     var login_scene = load("res://scenes/login_screen.tscn")
-    var login_layer = CanvasLayer.new()
+    login_layer = CanvasLayer.new()
     login_layer.name = "LoginLayer"
+    login_layer.layer = 10  # Above editor UI
     login_screen = login_scene.instantiate()
     login_layer.add_child(login_screen)
     add_child(login_layer)
@@ -51,8 +62,87 @@ func _on_authenticated() -> void:
     if not Auth.logged_in.is_connected(_on_authenticated):
         Auth.logged_in.connect(_on_authenticated)
 
+    # Build UI if not already created
+    if top_bar == null:
+        _build_ui()
+
+    # Update username display
+    top_bar.set_username(Auth.username)
+    top_bar.set_edit_visible(Auth.can_edit)
+    top_bar.visible = true
+
     # Load objects now that we're authenticated
     if Catalog.loaded:
-        world.load_objects()
+        _on_catalog_ready()
     else:
-        Catalog.catalog_loaded.connect(world.load_objects)
+        Catalog.catalog_loaded.connect(_on_catalog_ready)
+
+func _on_catalog_ready() -> void:
+    world.load_objects()
+    # Build catalog in editor panel now that assets are loaded
+    if editor_panel != null:
+        editor_panel.build_catalog()
+
+func _build_ui() -> void:
+    # Top bar — lives on the editor CanvasLayer
+    # Set script before adding to tree so _ready() fires correctly
+    top_bar = PanelContainer.new()
+    top_bar.set_script(TopBarScript)
+    editor.add_child(top_bar)
+
+    # Wire top bar signals after it's in the tree and _ready has run
+    top_bar.edit_toggled.connect(_on_edit_toggled)
+    top_bar.logout_pressed.connect(_on_logout)
+
+    # Editor side panel — also on the editor CanvasLayer, hidden by default
+    editor_panel = PanelContainer.new()
+    editor_panel.set_script(EditorPanelScript)
+    editor.add_child(editor_panel)
+    editor_panel.visible = false
+
+    # Wire panel signals to editor
+    editor_panel.asset_selected.connect(_on_panel_asset_selected)
+    editor_panel.delete_requested.connect(_on_panel_delete)
+
+    # Wire editor signals to panel
+    editor.object_selected.connect(_on_editor_object_selected)
+    editor.object_deselected.connect(_on_editor_object_deselected)
+    editor.mode_changed.connect(_on_editor_mode_changed)
+
+func _on_edit_toggled(active: bool) -> void:
+    editor_panel.visible = active
+    editor.active = active
+    camera.editor_active = active
+    if not active:
+        editor.set_mode(editor.Mode.SELECT)
+
+func _on_logout() -> void:
+    Auth.logout()
+    # Hide UI, show login screen
+    if top_bar != null:
+        top_bar.visible = false
+    if editor_panel != null:
+        editor_panel.visible = false
+    editor.active = false
+    camera.editor_active = false
+    if login_screen != null:
+        login_screen.visible = true
+
+func _on_panel_asset_selected(asset_id: String) -> void:
+    editor.select_asset_for_placement(asset_id)
+
+func _on_panel_delete() -> void:
+    editor.delete_selection()
+
+func _on_editor_object_selected(asset_id: String) -> void:
+    if editor_panel != null:
+        editor_panel.show_selection(asset_id)
+
+func _on_editor_object_deselected() -> void:
+    if editor_panel != null:
+        editor_panel.show_selection("")
+
+func _on_editor_mode_changed(mode) -> void:
+    # When editor exits place mode (escape, right-click), clear catalog selection
+    if mode == editor.Mode.SELECT and editor_panel != null:
+        editor_panel.clear_catalog_selection()
