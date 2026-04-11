@@ -3,8 +3,9 @@ extends CanvasLayer
 ## Sits on a CanvasLayer so UI elements stay screen-fixed.
 ## Coordinates with camera.gd (disables left-click pan when active).
 ##
-## Drag tracking uses _input (not _unhandled_input) so UI Controls
-## on the CanvasLayer can't swallow mouse motion during a drag.
+## All mouse handling runs in _input (before GUI Controls) to prevent the
+## editor panel from swallowing events. A position check skips clicks
+## that land on the UI panel area.
 
 signal object_selected(asset_id: String)
 signal object_deselected
@@ -18,44 +19,54 @@ var selected_object: Node2D = null
 var ghost_sprite: Sprite2D = null
 var active: bool = false
 
-# Terrain painting state
-var _terrain_type: int = 0  # Currently selected terrain type (1-6)
-var _terrain_painting: bool = false  # True while mouse is held down painting
-var _terrain_save_timer: float = 0.0  # Debounce save after painting
-const TERRAIN_SAVE_DELAY: float = 2.0  # Seconds after last paint to auto-save
-
 # Selection border node — added as child of selected object
 var _selection_border: Node2D = null
+
+# Terrain painting state
+var _terrain_type: int = 0
+var _terrain_painting: bool = false
+var _terrain_save_timer: float = 0.0
+const TERRAIN_SAVE_DELAY: float = 2.0
 
 # Drag-to-move state
 var _dragging: bool = false
 var _drag_start_world: Vector2 = Vector2.ZERO
 var _drag_start_obj_pos: Vector2 = Vector2.ZERO
-var _drag_threshold: float = 4.0  # Screen pixels before drag starts
+var _drag_threshold: float = 4.0
 var _drag_pending: bool = false
 var _drag_mouse_start: Vector2 = Vector2.ZERO
+
+# UI panel area — clicks here belong to the UI, not the map
+const PANEL_WIDTH: float = 240.0
+const TOP_BAR_HEIGHT: float = 40.0
 
 # References
 @onready var world: Node2D = get_node("/root/Main/World")
 @onready var camera: Camera2D = get_node("/root/Main/Camera")
 
 func _ready() -> void:
-    # Create ghost sprite for placement preview
-    # Scale 2x to match placed objects (16px native sprites rendered at 32px)
     ghost_sprite = Sprite2D.new()
     ghost_sprite.centered = false
     ghost_sprite.scale = Vector2(2, 2)
     ghost_sprite.modulate = Color(1, 1, 1, 0.5)
     ghost_sprite.visible = false
     ghost_sprite.z_index = 1000
-    # Ghost needs to be in the world space, not canvas layer
     world.add_child(ghost_sprite)
 
-## _input runs BEFORE GUI Controls process events, so drag motion
-## and terrain painting can't be swallowed by the editor panel or top bar.
+## Returns true if the screen position is over the editor UI panel area.
+func _is_over_ui(pos: Vector2) -> bool:
+    if pos.y < TOP_BAR_HEIGHT:
+        return true
+    if pos.x < PANEL_WIDTH:
+        return true
+    return false
+
+## All mouse input runs here — before GUI Controls can consume events.
 func _input(event: InputEvent) -> void:
     if not active:
         return
+
+    # --- Active operations that own all input until done ---
 
     # Terrain painting: hold mouse to paint continuously
     if _terrain_painting:
@@ -69,7 +80,7 @@ func _input(event: InputEvent) -> void:
                 get_viewport().set_input_as_handled()
         return
 
-    # Once a drag is active, we own all mouse events until release
+    # Drag in progress: own all mouse events until release
     if _dragging or _drag_pending:
         if event is InputEventMouseMotion:
             if _drag_pending:
@@ -79,26 +90,26 @@ func _input(event: InputEvent) -> void:
                     _dragging = true
             if _dragging:
                 _drag_move(event.position)
-                # Consume so nothing else (camera, UI) reacts
                 get_viewport().set_input_as_handled()
-
         if event is InputEventMouseButton:
             if event.button_index == MOUSE_BUTTON_LEFT and not event.pressed:
                 _on_left_release(event.position)
                 get_viewport().set_input_as_handled()
-
-func _unhandled_input(event: InputEvent) -> void:
-    if not active:
         return
 
+    # --- New interactions (skip if over UI) ---
+
     if event is InputEventMouseButton:
-        if event.button_index == MOUSE_BUTTON_LEFT:
-            if event.pressed:
-                _on_left_press(event.position)
+        if _is_over_ui(event.position):
+            return
+
+        if event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
+            _on_left_press(event.position)
 
         if event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
             if current_mode == Mode.PLACE:
                 set_mode(Mode.SELECT)
+                get_viewport().set_input_as_handled()
 
     if event is InputEventMouseMotion:
         if current_mode == Mode.PLACE and ghost_sprite.visible:
@@ -109,8 +120,10 @@ func _unhandled_input(event: InputEvent) -> void:
     if event is InputEventKey and event.pressed:
         if event.keycode == KEY_DELETE and selected_object != null:
             _delete_selected()
+            get_viewport().set_input_as_handled()
         if event.keycode == KEY_ESCAPE:
             set_mode(Mode.SELECT)
+            get_viewport().set_input_as_handled()
 
 func _on_left_press(screen_pos: Vector2) -> void:
     match current_mode:
@@ -121,7 +134,6 @@ func _on_left_press(screen_pos: Vector2) -> void:
             var hit = _find_object_at(screen_pos)
             if hit != null:
                 _select_object(hit)
-                # Start potential drag
                 _drag_pending = true
                 _drag_mouse_start = screen_pos
                 _drag_start_world = _screen_to_world(screen_pos)
@@ -150,6 +162,7 @@ func set_mode(new_mode: Mode) -> void:
         _deselect()
     _dragging = false
     _drag_pending = false
+    _terrain_painting = false
     mode_changed.emit(new_mode)
 
 ## Called by the editor panel when the user picks an asset from the catalog.
@@ -162,7 +175,6 @@ func select_asset_for_placement(asset_id: String) -> void:
     current_mode = Mode.PLACE
     _deselect()
 
-    # Set up ghost sprite preview
     var state_info = Catalog.get_state(asset_id)
     if state_info == null:
         return
@@ -184,8 +196,6 @@ func _apply_ghost_offset() -> void:
     var anchor_y: float = asset.get("anchorY", asset.get("anchor_y", 0.85))
     var tex = ghost_sprite.texture
     if tex != null:
-        # Offset is in local coords (pre-scale), so use raw texture size
-        # The 2x scale on the sprite handles world sizing
         ghost_sprite.offset = Vector2(
             -tex.region.size.x * anchor_x,
             -tex.region.size.y * anchor_y
@@ -205,7 +215,6 @@ func _find_object_at(screen_pos: Vector2) -> Node2D:
     for child in world.get_node("Objects").get_children():
         if child.get_child_count() == 0:
             continue
-        # First child is always the Sprite2D; skip SelectionBorder nodes
         var sprite: Sprite2D = null
         for grandchild in child.get_children():
             if grandchild is Sprite2D:
@@ -214,7 +223,6 @@ func _find_object_at(screen_pos: Vector2) -> Node2D:
         if sprite == null:
             continue
 
-        # Build the sprite's bounding rect in world coordinates
         var tex = sprite.texture
         if tex == null:
             continue
@@ -224,7 +232,6 @@ func _find_object_at(screen_pos: Vector2) -> Node2D:
         var rect = Rect2(rect_origin, world_size)
 
         if rect.has_point(world_pos):
-            # Among overlapping sprites, prefer the one whose anchor is closest
             var dist: float = child.position.distance_to(world_pos)
             if dist < best_dist:
                 best_dist = dist
@@ -258,7 +265,6 @@ func _add_selection_border(node: Node2D) -> void:
     if tex == null:
         return
 
-    # Calculate the sprite's rect relative to the container
     var region_size: Vector2 = tex.get_size()
     var world_size: Vector2 = region_size * sprite.scale
     var rect_pos: Vector2 = sprite.position
@@ -269,7 +275,6 @@ func _add_selection_border(node: Node2D) -> void:
     _selection_border.z_index = 999
     node.add_child(_selection_border)
 
-    # Draw the border using a Line2D rectangle
     var border = Line2D.new()
     border.width = 2.0
     border.default_color = Color(0.85, 0.75, 0.35, 0.9)
@@ -300,7 +305,6 @@ func _delete_selected() -> void:
     selected_object = null
     object_deselected.emit()
 
-## Delete the currently selected object (called by panel's Delete button).
 func delete_selection() -> void:
     _delete_selected()
 
@@ -320,10 +324,7 @@ func _drag_end(screen_pos: Vector2) -> void:
     var delta: Vector2 = current_world - _drag_start_world
     var new_pos: Vector2 = _drag_start_obj_pos + delta
     selected_object.position = new_pos
-    # Persist the move to the server
     world.move_object(selected_object, new_pos)
-    # Update the selection border position (it moves with the container
-    # since it's a child, so no action needed)
 
 # --- Terrain painting ---
 
@@ -336,7 +337,6 @@ func _paint_terrain_at(screen_pos: Vector2) -> void:
     world.paint_terrain(tile.x, tile.y, _terrain_type)
 
 func _process(delta: float) -> void:
-    # Debounced terrain save — saves 2 seconds after the last paint stroke
     if _terrain_save_timer > 0:
         _terrain_save_timer -= delta
         if _terrain_save_timer <= 0:
