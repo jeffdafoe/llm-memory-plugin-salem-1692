@@ -24,11 +24,10 @@ var api_base: String = ""
 
 func _ready() -> void:
     # Determine the API base URL.
-    # In production the API is on the same origin.
-    # For local dev, use the zbbs.local hostname.
+    # Godot's HTTPRequest needs full URLs, even in the browser.
     if OS.has_feature("web"):
-        # In browser, use relative URL (same origin)
-        api_base = ""
+        # Get the page origin via JavaScript (e.g. "https://village.llm-memory.net")
+        api_base = JavaScriptBridge.eval("window.location.origin", true)
     else:
         api_base = "http://zbbs.local"
 
