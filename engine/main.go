@@ -93,6 +93,9 @@ func main() {
 	mux.HandleFunc("PATCH /api/users/{id}", app.requireRole("ROLE_SYSOP", app.handleUpdateUser))
 	mux.HandleFunc("DELETE /api/users/{id}", app.requireRole("ROLE_SYSOP", app.handleDeleteUser))
 
+	// Asset catalog (public — needed by village client on load)
+	mux.HandleFunc("GET /api/assets", app.handleListAssets)
+
 	// llm-memory authenticated routes — village
 	mux.HandleFunc("GET /api/village/me", app.requireLLMMemory(app.handleVillageMe))
 	mux.HandleFunc("GET /api/village/agents", app.requireLLMMemory(app.handleListVillageAgents))
@@ -102,6 +105,8 @@ func main() {
 	mux.HandleFunc("POST /api/village/objects/bulk", app.requireLLMMemory(app.handleBulkCreateVillageObjects))
 	mux.HandleFunc("DELETE /api/village/objects/{id}", app.requireLLMMemory(app.handleDeleteVillageObject))
 	mux.HandleFunc("PATCH /api/village/objects/{id}/owner", app.requireLLMMemory(app.handleSetVillageObjectOwner))
+	mux.HandleFunc("PATCH /api/village/objects/{id}/state", app.requireLLMMemory(app.handleSetVillageObjectState))
+	mux.HandleFunc("PATCH /api/village/objects/{id}/position", app.requireLLMMemory(app.handleMoveVillageObject))
 
 	// CORS middleware for Angular client
 	handler := corsMiddleware(mux)

@@ -8,7 +8,8 @@ localStorage.removeItem("village_objects");
 
 export interface PlacedObject {
     id: string;
-    catalogId: string;
+    assetId: string;
+    currentState: string;
     x: number;   // world pixel position (anchor point)
     y: number;
     owner?: string | null;
@@ -30,7 +31,8 @@ export async function loadObjects(): Promise<void> {
             if (data.length > 0) {
                 objects = data.map((o: any) => ({
                     id: o.id,
-                    catalogId: o.catalog_id,
+                    assetId: o.asset_id,
+                    currentState: o.current_state,
                     x: o.x,
                     y: o.y,
                     owner: o.owner,
@@ -50,19 +52,20 @@ export async function loadObjects(): Promise<void> {
     }
 }
 
-export async function addObject(catalogId: string, x: number, y: number): Promise<PlacedObject> {
+export async function addObject(assetId: string, x: number, y: number): Promise<PlacedObject> {
     // Try API first
     try {
         const resp = await apiFetch("/api/village/objects", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ catalog_id: catalogId, x, y }),
+            body: JSON.stringify({ asset_id: assetId, x, y }),
         });
         if (resp.ok) {
             const data = await resp.json();
             const obj: PlacedObject = {
                 id: data.id,
-                catalogId: data.catalog_id,
+                assetId: data.asset_id,
+                currentState: data.current_state,
                 x: data.x,
                 y: data.y,
                 owner: data.owner,
@@ -77,7 +80,8 @@ export async function addObject(catalogId: string, x: number, y: number): Promis
     // Local fallback
     const obj: PlacedObject = {
         id: `local_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-        catalogId,
+        assetId,
+        currentState: "default",
         x,
         y,
     };
@@ -138,16 +142,16 @@ async function generateInitialVillage(): Promise<void> {
     }
 
     // Collect all objects to bulk-create
-    const batch: Array<{ catalog_id: string; x: number; y: number }> = [];
+    const batch: Array<{ asset_id: string; x: number; y: number }> = [];
 
-    function place(catalogId: string, tileX: number, tileY: number): void {
-        batch.push({ catalog_id: catalogId, x: tileX * TILE + TILE / 2, y: tileY * TILE + TILE / 2 });
+    function place(assetId: string, tileX: number, tileY: number): void {
+        batch.push({ asset_id: assetId, x: tileX * TILE + TILE / 2, y: tileY * TILE + TILE / 2 });
     }
 
-    function placeRandom(catalogId: string, tileX: number, tileY: number): void {
+    function placeRandom(assetId: string, tileX: number, tileY: number): void {
         const ox = (rand() - 0.5) * TILE * 0.6;
         const oy = (rand() - 0.5) * TILE * 0.4;
-        batch.push({ catalog_id: catalogId, x: tileX * TILE + TILE / 2 + ox, y: tileY * TILE + TILE / 2 + oy });
+        batch.push({ asset_id: assetId, x: tileX * TILE + TILE / 2 + ox, y: tileY * TILE + TILE / 2 + oy });
     }
 
     const treeTypes = ["tree-maple", "tree-chestnut", "tree-birch"];
@@ -241,7 +245,7 @@ async function generateInitialVillage(): Promise<void> {
     // Bridge
     const bridgeY = midY + Math.floor(Math.sin(riverBaseX * 0.1) * 1);
     const bridgeX = riverBaseX + Math.floor(Math.sin(bridgeY * 0.15) * 2) + 1;
-    batch.push({ catalog_id: "bridge", x: bridgeX * TILE + TILE / 2, y: bridgeY * TILE + TILE });
+    batch.push({ asset_id: "bridge", x: bridgeX * TILE + TILE / 2, y: bridgeY * TILE + TILE });
 
     // Try bulk create via API
     try {
@@ -254,7 +258,8 @@ async function generateInitialVillage(): Promise<void> {
             const data = await resp.json();
             objects = data.map((o: any) => ({
                 id: o.id,
-                catalogId: o.catalog_id,
+                assetId: o.asset_id,
+                currentState: o.current_state,
                 x: o.x,
                 y: o.y,
                 owner: o.owner,
@@ -269,7 +274,8 @@ async function generateInitialVillage(): Promise<void> {
     for (const item of batch) {
         objects.push({
             id: `local_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-            catalogId: item.catalog_id,
+            assetId: item.asset_id,
+            currentState: "default",
             x: item.x,
             y: item.y,
         });
