@@ -3,6 +3,7 @@ extends PanelContainer
 ## and an asset catalog grouped by category. Shows when Edit mode is active.
 
 signal asset_selected(asset_id: String)
+signal asset_inspect_requested(asset_id: String)
 signal delete_requested
 signal terrain_mode_toggled(active: bool)
 signal terrain_type_selected(terrain_type: int)
@@ -23,7 +24,7 @@ const COLOR_ITEM_BORDER = Color(0.42, 0.42, 0.25, 1.0)
 
 const PANEL_WIDTH: float = 240.0
 const TOP_BAR_HEIGHT: float = 40.0
-const THUMB_SIZE: int = 48
+const CELL_SIZE: int = 52  # Grid cell size — sprites render proportionally within
 
 var _font: Font = null
 var _select_button: Button = null
@@ -218,9 +219,9 @@ func _add_catalog_item(grid: GridContainer, asset: Dictionary) -> void:
     var asset_id: String = asset.get("id", "")
     var asset_name: String = asset.get("name", asset_id)
 
-    # Container for the thumbnail
+    # Container — fixed cell size, sprite renders proportionally inside
     var item = PanelContainer.new()
-    item.custom_minimum_size = Vector2(THUMB_SIZE + 4, THUMB_SIZE + 4)
+    item.custom_minimum_size = Vector2(CELL_SIZE, CELL_SIZE)
     item.tooltip_text = asset_name
 
     var item_style = StyleBoxFlat.new()
@@ -238,19 +239,31 @@ func _add_catalog_item(grid: GridContainer, asset: Dictionary) -> void:
     item.set_meta("asset_id", asset_id)
     item.set_meta("style_normal", item_style)
 
-    # Render the sprite thumbnail
+    # Render the sprite at its proportional size within the cell
     var state_info = Catalog.get_state(asset_id)
     if state_info != null:
         var texture = Catalog.get_sprite_texture(state_info)
         if texture != null:
+            var center = CenterContainer.new()
+            center.custom_minimum_size = Vector2(CELL_SIZE - 4, CELL_SIZE - 4)
+            item.add_child(center)
+
             var tex_rect = TextureRect.new()
             tex_rect.texture = texture
-            tex_rect.expand_mode = TextureRect.EXPAND_FIT_WIDTH_PROPORTIONAL
+            # Proportional sizing: scale to fit cell while keeping aspect ratio
+            # Small sprites stay small, big sprites fill the cell
+            var native_size: Vector2 = texture.get_size()
+            var max_dim: float = CELL_SIZE - 8.0
+            var scale_factor: float = minf(max_dim / native_size.x, max_dim / native_size.y)
+            # Don't upscale beyond 3x so tiny sprites don't look huge
+            if scale_factor > 3.0:
+                scale_factor = 3.0
+            tex_rect.custom_minimum_size = native_size * scale_factor
+            tex_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
             tex_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-            tex_rect.custom_minimum_size = Vector2(THUMB_SIZE, THUMB_SIZE)
-            item.add_child(tex_rect)
+            center.add_child(tex_rect)
 
-    # Mouse interaction
+    # Click opens inspect popup instead of immediately placing
     item.gui_input.connect(_on_item_input.bind(item, asset_id))
     item.mouse_entered.connect(_on_item_hover.bind(item, true))
     item.mouse_exited.connect(_on_item_hover.bind(item, false))
@@ -259,7 +272,7 @@ func _add_catalog_item(grid: GridContainer, asset: Dictionary) -> void:
 
 func _on_item_input(event: InputEvent, item: Control, asset_id: String) -> void:
     if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
-        _select_catalog_item(item, asset_id)
+        asset_inspect_requested.emit(asset_id)
 
 func _on_item_hover(item: Control, hovering: bool) -> void:
     if item == _selected_item:

@@ -5,6 +5,7 @@ extends Node2D
 const TopBarScript = preload("res://scripts/top_bar.gd")
 const EditorPanelScript = preload("res://scripts/editor_panel.gd")
 const ConfigPanelScript = preload("res://scripts/config_panel.gd")
+const AssetPopupScript = preload("res://scripts/asset_popup.gd")
 
 @onready var world: Node2D = $World
 @onready var camera: Camera2D = $Camera
@@ -14,6 +15,7 @@ const ConfigPanelScript = preload("res://scripts/config_panel.gd")
 var top_bar: PanelContainer = null
 var editor_panel: PanelContainer = null
 var config_panel: Control = null
+var asset_popup: Control = null
 
 # Login screen (added as a CanvasLayer so it renders on top of everything)
 var login_screen: Control = null
@@ -117,8 +119,17 @@ func _build_ui() -> void:
     editor.add_child(editor_panel)
     editor_panel.visible = false
 
+    # Asset inspect popup — on the config layer (above editor)
+    asset_popup = Control.new()
+    asset_popup.set_script(AssetPopupScript)
+    config_layer.add_child(asset_popup)
+    asset_popup.visible = false
+    asset_popup.place_requested.connect(_on_popup_place_requested)
+    asset_popup.closed.connect(func(): camera.modal_open = false)
+
     # Wire panel signals to editor
     editor_panel.asset_selected.connect(_on_panel_asset_selected)
+    editor_panel.asset_inspect_requested.connect(_on_asset_inspect_requested)
     editor_panel.delete_requested.connect(_on_panel_delete)
     editor_panel.terrain_mode_toggled.connect(_on_terrain_mode_toggled)
     editor_panel.terrain_type_selected.connect(_on_terrain_type_selected)
@@ -151,6 +162,15 @@ func _on_logout() -> void:
     camera.editor_active = false
     if login_screen != null:
         login_screen.visible = true
+
+func _on_asset_inspect_requested(asset_id: String) -> void:
+    if asset_popup != null:
+        asset_popup.show_asset(asset_id)
+        camera.modal_open = true
+
+func _on_popup_place_requested(asset_id: String) -> void:
+    camera.modal_open = false
+    editor.select_asset_for_placement(asset_id)
 
 func _on_panel_asset_selected(asset_id: String) -> void:
     editor.select_asset_for_placement(asset_id)
