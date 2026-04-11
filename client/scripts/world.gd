@@ -99,6 +99,11 @@ func save_terrain() -> void:
     http_req.request_completed.connect(func(r, c, h, b): http_req.queue_free())
     http_req.request(api_base + "/api/village/terrain", headers_arr, HTTPClient.METHOD_PUT, payload)
 
+## Reload terrain from the server. Called on initial load and
+## when another client saves terrain changes.
+func reload_terrain() -> void:
+    _load_terrain()
+
 func _load_terrain() -> void:
     var http_req = HTTPRequest.new()
     http_req.accept_gzip = false
