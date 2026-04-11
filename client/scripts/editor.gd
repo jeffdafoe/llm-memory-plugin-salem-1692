@@ -19,6 +19,9 @@ var selected_object: Node2D = null
 var ghost_sprite: Sprite2D = null
 var active: bool = false
 
+# When true, a popup overlay is open — skip all map input
+var popup_open: bool = false
+
 # Selection border node — added as child of selected object
 var _selection_border: Node2D = null
 
@@ -64,6 +67,8 @@ func _is_over_ui(pos: Vector2) -> bool:
 ## All mouse input runs here — before GUI Controls can consume events.
 func _input(event: InputEvent) -> void:
     if not active:
+        return
+    if popup_open:
         return
 
     # --- Active operations that own all input until done ---
