@@ -1,27 +1,21 @@
 extends RefCounted
 ## Procedural village map generator.
-## Produces a 2D array of terrain indices matching the wang tile system.
-##
-## The village center (crossroads) is always at array position
-## (VILLAGE_W/2, VILLAGE_H/2) = (40, 22). When the map is larger than
-## the original 80x45, extra space is added equally on all sides.
+## The village center (crossroads) stays at array position (pad_x+40, pad_y+22).
+## When the map is larger than 80x45, extra space extends in all directions
+## with forest, narrowing roads, and scattered clearings.
 
 const T = preload("res://scripts/terrain.gd")
 
-# Actual map size in tiles
 var width: int = 80
 var height: int = 45
 
-# The original village layout size
 const VILLAGE_W: int = 80
 const VILLAGE_H: int = 45
 
-# Offset from array index to village coordinates.
-# The village occupies array positions [pad_x .. pad_x+VILLAGE_W) horizontally.
+# Padding: how many extra tiles on each side beyond the original village
 var pad_x: int = 0
 var pad_y: int = 0
 
-# Seeded PRNG for deterministic generation
 var _seed: int = 0
 
 func _init(map_width: int = 80, map_height: int = 45, seed: int = 42) -> void:
@@ -35,7 +29,6 @@ func _rand() -> float:
     _seed = (_seed * 16807 + 0) % 2147483647
     return float(_seed) / 2147483647.0
 
-## Generate the terrain map as a 2D array [y][x] of terrain indices.
 func generate() -> Array:
     var map_data: Array = []
 
@@ -53,33 +46,54 @@ func generate() -> Array:
     var mid_x: int = pad_x + VILLAGE_W / 2
     var mid_y: int = pad_y + VILLAGE_H / 2
 
-    # Horizontal road — extends full width, narrows near edges
+    # Village boundary (the original 80x45 area)
+    var village_left: int = pad_x
+    var village_right: int = pad_x + VILLAGE_W
+    var village_top: int = pad_y
+    var village_bottom: int = pad_y + VILLAGE_H
+
+    # --- Roads ---
+    # Full width/height, but narrow from 3-wide to 1-wide outside the village boundary
     for x in range(width):
         var curve: int = int(sin(x * 0.1) * 1)
-        var dist_edge: int = mini(x, width - 1 - x)
+        # Distance outside the village boundary
+        var dist_outside: int = 0
+        if x < village_left:
+            dist_outside = village_left - x
+        elif x >= village_right:
+            dist_outside = x - village_right + 1
+
         var road_half: int = 1
-        if dist_edge < 6:
-            road_half = 0  # Single tile path at the very edge
+        if dist_outside > 8:
+            road_half = 0  # Single tile trail
+        elif dist_outside > 0:
+            road_half = 1  # Still 3-wide briefly, then narrow
 
         for dy in range(-road_half, road_half + 1):
             var ry: int = mid_y + curve + dy
             if ry >= 0 and ry < height:
                 map_data[ry][x] = T.DIRT_PATH
 
-    # Vertical road — extends full height, narrows near edges
     for y in range(height):
         var curve: int = int(sin(y * 0.08) * 1)
-        var dist_edge: int = mini(y, height - 1 - y)
+        var dist_outside: int = 0
+        if y < village_top:
+            dist_outside = village_top - y
+        elif y >= village_bottom:
+            dist_outside = y - village_bottom + 1
+
         var road_half: int = 1
-        if dist_edge < 6:
+        if dist_outside > 8:
             road_half = 0
+        elif dist_outside > 0:
+            road_half = 1
 
         for dx in range(-road_half, road_half + 1):
             var rx: int = mid_x + curve + dx
             if rx >= 0 and rx < width:
                 map_data[y][rx] = T.DIRT_PATH
 
-    # River (positioned relative to village area)
+    # --- River ---
     var river_base_x: int = pad_x + int(VILLAGE_W * 0.78)
     var bridge_road_y: int = mid_y + int(sin(river_base_x * 0.1) * 1)
 
@@ -125,7 +139,17 @@ func generate() -> Array:
                     else:
                         map_data[ry][bx] = T.DIRT_PATH
 
-    # Forest clusters (offset to village area)
+    # --- Cobblestone town square ---
+    for dy in range(-2, 3):
+        for dx in range(-2, 3):
+            if dx * dx + dy * dy <= 5:
+                var sx: int = mid_x + dx
+                var sy: int = mid_y + dy
+                if sx >= 0 and sx < width and sy >= 0 and sy < height:
+                    map_data[sy][sx] = T.STONE
+
+    # --- Forest ---
+    # Original village forest clusters (same positions)
     var forest_areas: Array = [
         {"cx": pad_x + 8, "cy": pad_y + 6, "r": 6},
         {"cx": pad_x + VILLAGE_W - 8, "cy": pad_y + 6, "r": 5},
@@ -133,6 +157,24 @@ func generate() -> Array:
         {"cx": pad_x + int(VILLAGE_W * 0.6), "cy": pad_y + int(VILLAGE_H * 0.72), "r": 4},
         {"cx": pad_x + 4, "cy": pad_y + int(VILLAGE_H * 0.4), "r": 3},
     ]
+
+    # Add forest clusters in the expanded areas
+    # Scattered throughout the new space outside the village
+    var forest_seed: int = 314
+    for i in range(30):
+        forest_seed = (forest_seed * 16807 + 0) % 2147483647
+        var fx: int = forest_seed % width
+        forest_seed = (forest_seed * 16807 + 0) % 2147483647
+        var fy: int = forest_seed % height
+        forest_seed = (forest_seed * 16807 + 0) % 2147483647
+        var fr: int = 3 + (forest_seed % 5)
+
+        # Only place clusters outside the village core (with some buffer)
+        var in_village: bool = (fx > village_left + 4 and fx < village_right - 4 and
+                                fy > village_top + 4 and fy < village_bottom - 4)
+        if not in_village:
+            forest_areas.append({"cx": fx, "cy": fy, "r": fr})
+
     for area in forest_areas:
         for dy in range(-area["r"], area["r"] + 1):
             for dx in range(-area["r"], area["r"] + 1):
@@ -144,16 +186,7 @@ func generate() -> Array:
                     if map_data[ty][tx] == T.GRASS or map_data[ty][tx] == T.GRASS_DARK:
                         map_data[ty][tx] = T.GRASS_DARK
 
-    # Cobblestone town square at the crossroads
-    for dy in range(-2, 3):
-        for dx in range(-2, 3):
-            if dx * dx + dy * dy <= 5:
-                var sx: int = mid_x + dx
-                var sy: int = mid_y + dy
-                if sx >= 0 and sx < width and sy >= 0 and sy < height:
-                    map_data[sy][sx] = T.STONE
-
-    # Dense dark grass border around map edges
+    # --- Dense forest border around map edges ---
     var border_seed: int = 99
     var border_depth: int = 8
     for y in range(height):
