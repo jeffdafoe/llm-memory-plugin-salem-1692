@@ -25,10 +25,12 @@ engine/jwt/
 # Infrastructure secrets (prompted on first Ansible run)
 infrastructure/local-secrets.yml
 
-# Tilesets — only free/ is tracked, everything else is purchased/commercial
-clients/village/assets/tilesets/*
-!clients/village/assets/tilesets/free/
-clients/village/dist/assets/tilesets/
+# Tilesets — commercial assets are NOT tracked in git
+# Deployed manually via scp to the VPS. Only free/ is tracked.
+client/assets/tilesets/*
+!client/assets/tilesets/free/
+# Keep the tileset resource file (just references, no pixel data)
+!client/assets/tilesets/wang_tileset.tres
 
 # System
 .DS_Store
