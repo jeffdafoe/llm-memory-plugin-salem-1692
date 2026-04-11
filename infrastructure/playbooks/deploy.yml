@@ -53,40 +53,6 @@
         GOPATH: /root/go
         PATH: "/usr/local/go/bin:/root/go/bin:{{ ansible_env.PATH }}"
 
-    # JWT keypair (unencrypted — Go reads the PEM directly)
-    - name: Create JWT key directory
-      file:
-        path: "{{ project_root }}/engine/jwt"
-        state: directory
-        owner: "{{ app_user }}"
-        mode: "0700"
-
-    - name: Generate JWT private key
-      command: >
-        openssl genpkey -out {{ project_root }}/engine/jwt/private.pem
-        -algorithm rsa -pkeyopt rsa_keygen_bits:4096
-      args:
-        creates: "{{ project_root }}/engine/jwt/private.pem"
-
-    - name: Set JWT private key permissions
-      file:
-        path: "{{ project_root }}/engine/jwt/private.pem"
-        owner: "{{ app_user }}"
-        mode: "0600"
-
-    - name: Extract JWT public key
-      command: >
-        openssl pkey -in {{ project_root }}/engine/jwt/private.pem
-        -out {{ project_root }}/engine/jwt/public.pem -pubout
-      args:
-        creates: "{{ project_root }}/engine/jwt/public.pem"
-
-    - name: Set JWT public key permissions
-      file:
-        path: "{{ project_root }}/engine/jwt/public.pem"
-        owner: "{{ app_user }}"
-        mode: "0644"
-
     # Environment file
     - name: Create env directory
       file:
