@@ -12,8 +12,8 @@ const WangLookup = preload("res://scripts/wang_lookup.gd")
 const SRC_TILE_SIZE: int = 16
 # Rendered tile size in world space (2x native)
 const TILE_SIZE: int = 32
-# Extra pixels on each tile to prevent sub-pixel seams
-const OVERLAP: int = 3
+# Minimum screen pixels of overlap to prevent seams at any zoom level
+const MIN_SCREEN_OVERLAP: float = 1.5
 
 # Wang tileset texture — loaded from the atlas
 var wang_texture: Texture2D = null
@@ -50,13 +50,18 @@ func _draw() -> void:
     var top_left: Vector2 = inv * Vector2.ZERO
     var bottom_right: Vector2 = inv * viewport_size
 
+    # Calculate overlap in world pixels based on current zoom
+    # At low zoom, we need more world pixels to achieve 1+ screen pixel overlap
+    var zoom: float = canvas_transform.get_scale().x
+    var overlap: float = MIN_SCREEN_OVERLAP / zoom
+
     # Convert to tile coordinates (with some margin for overlap)
     var start_x: int = clampi(int(floor(top_left.x / TILE_SIZE)) + pad_x - 1, 0, map_width - 1)
     var start_y: int = clampi(int(floor(top_left.y / TILE_SIZE)) + pad_y - 1, 0, map_height - 1)
     var end_x: int = clampi(int(ceil(bottom_right.x / TILE_SIZE)) + pad_x + 1, 0, map_width - 1)
     var end_y: int = clampi(int(ceil(bottom_right.y / TILE_SIZE)) + pad_y + 1, 0, map_height - 1)
 
-    # Draw visible tiles with 1px overlap
+    # Draw visible tiles with zoom-adjusted overlap
     for y in range(start_y, end_y + 1):
         for x in range(start_x, end_x + 1):
             var wang_pos: Vector2i = _get_wang_tile(x, y)
@@ -69,15 +74,14 @@ func _draw() -> void:
                 SRC_TILE_SIZE
             )
 
-            # Destination in world space — 2x scale + 1px overlap
-            # Matches old TypeScript renderer: 16px source -> 33px dest
+            # Destination in world space — 2x scale + zoom-adjusted overlap
             var world_x: float = (x - pad_x) * TILE_SIZE
             var world_y: float = (y - pad_y) * TILE_SIZE
             var dst_rect: Rect2 = Rect2(
                 world_x,
                 world_y,
-                TILE_SIZE + OVERLAP,
-                TILE_SIZE + OVERLAP
+                TILE_SIZE + overlap,
+                TILE_SIZE + overlap
             )
 
             draw_texture_rect_region(wang_texture, dst_rect, src_rect)
