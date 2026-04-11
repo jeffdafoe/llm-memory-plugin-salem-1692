@@ -4,6 +4,7 @@
 
 [sub_resource type="TileSetAtlasSource" id="TileSetAtlasSource_sn8ig"]
 texture = ExtResource("1_ghojc")
+use_texture_padding = true
 0:0/0 = 0
 1:0/0 = 0
 2:0/0 = 0
