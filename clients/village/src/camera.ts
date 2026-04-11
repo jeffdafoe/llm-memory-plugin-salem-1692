@@ -9,6 +9,7 @@ export class Camera {
 
     // Drag state
     private dragging = false;
+    private dragSuppressed = false;
     private dragStartX = 0;
     private dragStartY = 0;
     private cameraStartX = 0;
@@ -73,6 +74,16 @@ export class Camera {
         return this.dragging;
     }
 
+    // Suppress camera drag — used when the editor is dragging an object
+    suppressDrag(): void {
+        this.dragSuppressed = true;
+        this.dragging = false;
+    }
+
+    unsuppressDrag(): void {
+        this.dragSuppressed = false;
+    }
+
     apply(ctx: CanvasRenderingContext2D, canvasWidth: number, canvasHeight: number): void {
         ctx.setTransform(1, 0, 0, 1, 0, 0);
         ctx.translate(canvasWidth / 2, canvasHeight / 2);
@@ -81,6 +92,7 @@ export class Camera {
     }
 
     private onMouseDown(e: MouseEvent): void {
+        if (this.dragSuppressed) return;
         this.dragging = true;
         this.dragStartX = e.clientX;
         this.dragStartY = e.clientY;

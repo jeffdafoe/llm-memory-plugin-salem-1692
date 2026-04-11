@@ -1,8 +1,9 @@
--- Revert ZBBS-006: drop village_object, restore village_building tables
-
+-- ZBBS-006 rollback
 DROP TABLE IF EXISTS village_object;
+DROP TABLE IF EXISTS asset_state;
+DROP TABLE IF EXISTS asset;
 
--- Restore original building tables
+-- Restore old building tables
 CREATE TABLE village_building (
     id UUID NOT NULL DEFAULT gen_random_uuid(),
     tile_x INT NOT NULL,
