@@ -13,7 +13,7 @@ const SRC_TILE_SIZE: int = 16
 # Rendered tile size in world space (2x native)
 const TILE_SIZE: int = 32
 # Extra pixels on each tile to prevent sub-pixel seams
-const OVERLAP: int = 1
+const OVERLAP: int = 3
 
 # Wang tileset texture — loaded from the atlas
 var wang_texture: Texture2D = null
