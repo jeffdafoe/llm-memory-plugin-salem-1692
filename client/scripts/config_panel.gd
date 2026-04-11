@@ -23,8 +23,10 @@ const TOP_BAR_HEIGHT: float = 40.0
 const CARD_WIDTH: float = 240.0
 
 var _font: Font = null
+var _scroll: ScrollContainer = null
 var _content: VBoxContainer = null
 var _summary_label: Label = null
+const SCROLL_SPEED: float = 60.0
 
 func _ready() -> void:
     _font = load("res://assets/fonts/IMFellEnglish-Regular.ttf")
@@ -72,6 +74,7 @@ func _ready() -> void:
 
     # Scrollable content
     var scroll = ScrollContainer.new()
+    _scroll = scroll
     scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
     scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
@@ -88,9 +91,18 @@ func _ready() -> void:
     _summary_label.add_theme_font_size_override("font_size", 12)
     _content.add_child(_summary_label)
 
-func _unhandled_input(event: InputEvent) -> void:
+## Handle scroll manually — the camera and editor _input handlers
+## run before GUI Controls, so the ScrollContainer never gets scroll events.
+func _input(event: InputEvent) -> void:
     if not visible:
         return
+    if event is InputEventMouseButton and event.pressed:
+        if event.button_index == MOUSE_BUTTON_WHEEL_UP:
+            _scroll.scroll_vertical -= int(SCROLL_SPEED)
+            get_viewport().set_input_as_handled()
+        if event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+            _scroll.scroll_vertical += int(SCROLL_SPEED)
+            get_viewport().set_input_as_handled()
     if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
         _close()
         get_viewport().set_input_as_handled()
