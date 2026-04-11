@@ -18,7 +18,7 @@ server {
     include /etc/letsencrypt/options-ssl-nginx.conf;
     ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
 
-    root {{ project_root }}/clients/village/dist;
+    root {{ project_root }}/client/dist;
     index index.html;
 
     # Proxy /llm/admin/* to llm-memory API /v1/admin/*
