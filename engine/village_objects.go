@@ -45,40 +45,6 @@ type villageObject struct {
 	Owner     *string `json:"owner"`
 }
 
-// handleListVillageAgents returns all village agents (for owner assignment).
-func (app *App) handleListVillageAgents(w http.ResponseWriter, r *http.Request) {
-	rows, err := app.DB.Query(r.Context(),
-		`SELECT id, name, llm_memory_agent, role, coins, is_virtual
-		 FROM village_agent
-		 ORDER BY name`,
-	)
-	if err != nil {
-		jsonError(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-	defer rows.Close()
-
-	type agent struct {
-		ID        string `json:"id"`
-		Name      string `json:"name"`
-		Agent     string `json:"llm_memory_agent"`
-		Role      string `json:"role"`
-		Coins     int    `json:"coins"`
-		IsVirtual bool   `json:"is_virtual"`
-	}
-
-	agents := []agent{}
-	for rows.Next() {
-		var a agent
-		if err := rows.Scan(&a.ID, &a.Name, &a.Agent, &a.Role, &a.Coins, &a.IsVirtual); err != nil {
-			continue
-		}
-		agents = append(agents, a)
-	}
-
-	jsonResponse(w, http.StatusOK, agents)
-}
-
 // handleListVillageObjects returns all placed objects.
 func (app *App) handleListVillageObjects(w http.ResponseWriter, r *http.Request) {
 	rows, err := app.DB.Query(r.Context(),

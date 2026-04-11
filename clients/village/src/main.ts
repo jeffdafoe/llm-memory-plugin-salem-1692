@@ -7,7 +7,7 @@ import { Renderer } from "./renderer";
 import { createMap } from "./map";
 import { loadObjects, clearObjects, getObjects } from "./objects";
 import { Editor } from "./editor";
-import { fetchVillageMe } from "./village-api";
+import { fetchVillageMe, fetchVillageAgents, VillageAgent } from "./village-api";
 import { getCatalogItem } from "./catalog";
 
 const app = document.getElementById("app")!;
@@ -105,6 +105,15 @@ function startGame(): void {
         }
     });
 
+    // Fetch agents and refresh periodically (every 30s)
+    let currentAgents: VillageAgent[] = [];
+    async function refreshAgents(): Promise<void> {
+        currentAgents = await fetchVillageAgents();
+        renderer.setAgents(currentAgents);
+    }
+    refreshAgents();
+    setInterval(refreshAgents, 30000);
+
     camera.attach(canvasEl);
 
     function handleResize(): void {
@@ -128,27 +137,50 @@ function startGame(): void {
         const screenY = e.clientY - rect.top;
         const world = camera.screenToWorld(screenX, screenY, canvasEl.width, canvasEl.height);
 
-        // Find object under cursor
-        const SCALE = 2;
-        let found: { name: string; owner: string } | null = null;
-        for (const obj of getObjects()) {
-            const item = getCatalogItem(obj.catalogId);
-            if (!item) continue;
-            const destW = item.srcW * SCALE;
-            const destH = item.srcH * SCALE;
-            const drawX = obj.x - destW * item.anchorX;
-            const drawY = obj.y - destH * item.anchorY;
-            if (world.x >= drawX && world.x <= drawX + destW &&
-                world.y >= drawY && world.y <= drawY + destH) {
-                if (obj.owner) {
-                    found = { name: item.name, owner: obj.owner };
+        // Check if hovering an outdoor agent dot
+        const DOT_RADIUS = 8;
+        let tooltipText = "";
+        for (const agent of currentAgents) {
+            if (agent.locationType !== "outdoor" || agent.locationX == null || agent.locationY == null) continue;
+            const dx = world.x - agent.locationX;
+            const dy = world.y - agent.locationY;
+            if (dx * dx + dy * dy < DOT_RADIUS * DOT_RADIUS) {
+                tooltipText = agent.name;
+                break;
+            }
+        }
+
+        // Check if hovering an object (building/structure)
+        if (!tooltipText) {
+            const SCALE = 2;
+            for (const obj of getObjects()) {
+                const item = getCatalogItem(obj.catalogId);
+                if (!item) continue;
+                const destW = item.srcW * SCALE;
+                const destH = item.srcH * SCALE;
+                const drawX = obj.x - destW * item.anchorX;
+                const drawY = obj.y - destH * item.anchorY;
+                if (world.x >= drawX && world.x <= drawX + destW &&
+                    world.y >= drawY && world.y <= drawY + destH) {
+                    const parts: string[] = [item.name];
+                    if (obj.owner) parts.push(`Owner: ${obj.owner}`);
+                    // List agents inside this object
+                    const inside = currentAgents.filter(a =>
+                        a.locationType === "inside" && a.locationObjectId === obj.id
+                    );
+                    if (inside.length > 0) {
+                        parts.push("Inside: " + inside.map(a => a.name).join(", "));
+                    }
+                    if (parts.length > 1 || inside.length > 0) {
+                        tooltipText = parts.join(" — ");
+                    }
                     break;
                 }
             }
         }
 
-        if (found) {
-            tooltip.textContent = `${found.name} — ${found.owner}`;
+        if (tooltipText) {
+            tooltip.textContent = tooltipText;
             tooltip.style.display = "";
             tooltip.style.left = (e.clientX + 12) + "px";
             tooltip.style.top = (e.clientY - 8) + "px";

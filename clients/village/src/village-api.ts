@@ -38,6 +38,10 @@ export interface VillageAgent {
     role: string;
     coins: number;
     isVirtual: boolean;
+    locationType: string;       // 'off-map' | 'outdoor' | 'inside'
+    locationObjectId: string | null;
+    locationX: number | null;
+    locationY: number | null;
 }
 
 export async function fetchVillageAgents(): Promise<VillageAgent[]> {
@@ -52,6 +56,10 @@ export async function fetchVillageAgents(): Promise<VillageAgent[]> {
                 role: a.role,
                 coins: a.coins,
                 isVirtual: a.is_virtual,
+                locationType: a.location_type || "off-map",
+                locationObjectId: a.location_object_id || null,
+                locationX: a.location_x ?? null,
+                locationY: a.location_y ?? null,
             }));
         }
     } catch {
