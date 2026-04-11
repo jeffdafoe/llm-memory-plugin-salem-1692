@@ -4,6 +4,8 @@ extends PanelContainer
 
 signal asset_selected(asset_id: String)
 signal delete_requested
+signal terrain_mode_toggled(active: bool)
+signal terrain_type_selected(terrain_type: int)
 
 # Theme colors (matching top bar / login screen)
 const COLOR_BG = Color(0.12, 0.09, 0.07, 0.95)
@@ -26,14 +28,29 @@ const THUMB_SIZE: int = 48
 var _font: Font = null
 var _select_button: Button = null
 var _delete_button: Button = null
+var _terrain_button: Button = null
 var _selection_info: VBoxContainer = null
 var _selection_label: Label = null
 var _catalog_container: VBoxContainer = null
+var _terrain_picker: VBoxContainer = null
+var _catalog_scroll: ScrollContainer = null
 var _selected_item: Control = null
 var _selected_asset_id: String = ""
+var _terrain_active: bool = false
+var _selected_terrain_item: Control = null
 
 # Track category sections for collapsing
 var _category_sections: Dictionary = {}
+
+# Terrain type names and colors for the picker
+const TERRAIN_TYPES = [
+    {"id": 1, "name": "Dirt", "color": Color(0.55, 0.38, 0.22)},
+    {"id": 2, "name": "Light Grass", "color": Color(0.40, 0.55, 0.25)},
+    {"id": 3, "name": "Dark Grass", "color": Color(0.25, 0.40, 0.15)},
+    {"id": 4, "name": "Cobblestone", "color": Color(0.50, 0.50, 0.48)},
+    {"id": 5, "name": "Shallow Water", "color": Color(0.30, 0.50, 0.65)},
+    {"id": 6, "name": "Deep Water", "color": Color(0.15, 0.30, 0.55)},
+]
 
 func _ready() -> void:
     _font = load("res://assets/fonts/IMFellEnglish-Regular.ttf")
@@ -80,6 +97,15 @@ func _ready() -> void:
     _delete_button.disabled = true
     tools_box.add_child(_delete_button)
 
+    # Second row of tools
+    var tools_box2 = HBoxContainer.new()
+    tools_box2.add_theme_constant_override("separation", 6)
+    vbox.add_child(tools_box2)
+
+    _terrain_button = _make_tool_button("Terrain")
+    _terrain_button.pressed.connect(_on_terrain_pressed)
+    tools_box2.add_child(_terrain_button)
+
     # Set select as active by default
     _set_tool_active(_select_button, true)
 
@@ -111,17 +137,32 @@ func _ready() -> void:
     sel_sep.add_theme_color_override("separator_color", Color(0.4, 0.32, 0.2, 0.4))
     _selection_info.add_child(sel_sep)
 
+    # Terrain type picker (hidden by default, shown when Terrain tool active)
+    _terrain_picker = VBoxContainer.new()
+    _terrain_picker.visible = false
+    _terrain_picker.add_theme_constant_override("separation", 4)
+    vbox.add_child(_terrain_picker)
+
+    var terrain_header = Label.new()
+    terrain_header.text = "TERRAIN TYPE"
+    terrain_header.add_theme_color_override("font_color", COLOR_LABEL)
+    terrain_header.add_theme_font_size_override("font_size", 11)
+    _terrain_picker.add_child(terrain_header)
+
+    for t in TERRAIN_TYPES:
+        _add_terrain_item(t)
+
     # Scrollable catalog area
-    var scroll = ScrollContainer.new()
-    scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-    scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-    vbox.add_child(scroll)
+    _catalog_scroll = ScrollContainer.new()
+    _catalog_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+    _catalog_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    _catalog_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+    vbox.add_child(_catalog_scroll)
 
     _catalog_container = VBoxContainer.new()
     _catalog_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     _catalog_container.add_theme_constant_override("separation", 4)
-    scroll.add_child(_catalog_container)
+    _catalog_scroll.add_child(_catalog_container)
 
 ## Build the catalog UI from the loaded asset data.
 ## Called after Catalog.catalog_loaded.
@@ -363,3 +404,106 @@ func clear_catalog_selection() -> void:
         _selected_item = null
         _selected_asset_id = ""
     _set_tool_active(_select_button, true)
+
+# --- Terrain painting ---
+
+func _add_terrain_item(t: Dictionary) -> void:
+    var item = PanelContainer.new()
+    item.custom_minimum_size = Vector2(0, 32)
+
+    var item_style = StyleBoxFlat.new()
+    item_style.bg_color = Color(0.15, 0.12, 0.08, 1.0)
+    item_style.border_width_left = 1
+    item_style.border_width_top = 1
+    item_style.border_width_right = 1
+    item_style.border_width_bottom = 1
+    item_style.border_color = Color(0.3, 0.24, 0.15, 0.5)
+    item_style.corner_radius_left_top = 3
+    item_style.corner_radius_right_top = 3
+    item_style.corner_radius_left_bottom = 3
+    item_style.corner_radius_right_bottom = 3
+    item_style.content_margin_left = 8.0
+    item_style.content_margin_right = 8.0
+    item_style.content_margin_top = 4.0
+    item_style.content_margin_bottom = 4.0
+    item.add_theme_stylebox_override("panel", item_style)
+    item.set_meta("terrain_id", t["id"])
+    item.set_meta("style_normal", item_style)
+
+    var hbox = HBoxContainer.new()
+    hbox.add_theme_constant_override("separation", 8)
+    item.add_child(hbox)
+
+    # Color swatch
+    var swatch = ColorRect.new()
+    swatch.custom_minimum_size = Vector2(20, 20)
+    swatch.color = t["color"]
+    hbox.add_child(swatch)
+
+    # Name
+    var label = Label.new()
+    label.text = t["name"]
+    label.add_theme_color_override("font_color", COLOR_TEXT)
+    label.add_theme_font_override("font", _font)
+    label.add_theme_font_size_override("font_size", 14)
+    label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+    hbox.add_child(label)
+
+    item.gui_input.connect(_on_terrain_item_input.bind(item, t["id"]))
+    _terrain_picker.add_child(item)
+
+func _on_terrain_item_input(event: InputEvent, item: Control, terrain_id: int) -> void:
+    if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+        # Deselect previous
+        if _selected_terrain_item != null:
+            var old_style: StyleBoxFlat = _selected_terrain_item.get_meta("style_normal")
+            _selected_terrain_item.add_theme_stylebox_override("panel", old_style)
+
+        _selected_terrain_item = item
+        var sel_style: StyleBoxFlat = item.get_meta("style_normal").duplicate()
+        sel_style.bg_color = COLOR_ITEM_SELECTED
+        sel_style.border_color = COLOR_ITEM_BORDER
+        item.add_theme_stylebox_override("panel", sel_style)
+
+        terrain_type_selected.emit(terrain_id)
+
+func _on_terrain_pressed() -> void:
+    _terrain_active = not _terrain_active
+    _set_tool_active(_terrain_button, _terrain_active)
+
+    if _terrain_active:
+        # Show terrain picker, hide catalog
+        _terrain_picker.visible = true
+        _catalog_scroll.visible = false
+        _set_tool_active(_select_button, false)
+        # Deselect any asset
+        if _selected_item != null:
+            var old_style: StyleBoxFlat = _selected_item.get_meta("style_normal")
+            _selected_item.add_theme_stylebox_override("panel", old_style)
+            _selected_item = null
+            _selected_asset_id = ""
+    else:
+        # Hide terrain picker, show catalog
+        _terrain_picker.visible = false
+        _catalog_scroll.visible = true
+        _set_tool_active(_select_button, true)
+        # Deselect terrain item
+        if _selected_terrain_item != null:
+            var old_style: StyleBoxFlat = _selected_terrain_item.get_meta("style_normal")
+            _selected_terrain_item.add_theme_stylebox_override("panel", old_style)
+            _selected_terrain_item = null
+
+    terrain_mode_toggled.emit(_terrain_active)
+
+## Called externally to exit terrain mode (e.g., when switching to select)
+func exit_terrain_mode() -> void:
+    if _terrain_active:
+        _terrain_active = false
+        _set_tool_active(_terrain_button, false)
+        _terrain_picker.visible = false
+        _catalog_scroll.visible = true
+        if _selected_terrain_item != null:
+            var old_style: StyleBoxFlat = _selected_terrain_item.get_meta("style_normal")
+            _selected_terrain_item.add_theme_stylebox_override("panel", old_style)
+            _selected_terrain_item = null

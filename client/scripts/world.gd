@@ -33,26 +33,135 @@ func _ready() -> void:
     else:
         api_base = "http://zbbs.local"
 
-## Generate and paint terrain — no API needed, runs immediately.
+## Build terrain — try loading saved data from API first,
+## fall back to procedural generation if none exists.
 func build_terrain() -> void:
-    _generate_terrain()
+    _generate_terrain()  # Generate first so something is visible immediately
+    _load_terrain()      # Then try to load saved terrain (overwrites if found)
 
 ## Load placed objects from the API — called after catalog is ready.
 func load_objects() -> void:
     _load_village()
 
+## Paint a terrain cell and update the wang tiles for it and neighbors.
+func paint_terrain(tile_x: int, tile_y: int, terrain_type: int) -> void:
+    # Convert tile coords to array indices
+    var pad_x: int = (map_width - 80) / 2
+    var pad_y: int = (map_height - 45) / 2
+    var ax: int = tile_x + pad_x
+    var ay: int = tile_y + pad_y
+
+    if ax < 0 or ax >= map_width or ay < 0 or ay >= map_height:
+        return
+
+    map_data[ay][ax] = terrain_type
+
+    # Repaint this cell and its neighbors (wang tiles depend on neighbors)
+    for dy in range(-1, 2):
+        for dx in range(-1, 2):
+            var nx: int = ax + dx
+            var ny: int = ay + dy
+            if nx >= 0 and nx < map_width and ny >= 0 and ny < map_height:
+                var wang_pos: Vector2i = _get_wang_tile(nx, ny)
+                var source_id: int = terrain.tile_set.get_source_id(0)
+                terrain.set_cell(Vector2i(nx - pad_x, ny - pad_y), source_id, wang_pos)
+
+## Save the current terrain to the server.
+func save_terrain() -> void:
+    # Flatten map_data to a byte array
+    var bytes: PackedByteArray = PackedByteArray()
+    bytes.resize(map_width * map_height)
+    var idx: int = 0
+    for y in range(map_height):
+        for x in range(map_width):
+            bytes[idx] = map_data[y][x]
+            idx += 1
+
+    var b64: String = Marshalls.raw_to_base64(bytes)
+
+    var http_req = HTTPRequest.new()
+    http_req.accept_gzip = false
+    add_child(http_req)
+
+    var payload = JSON.stringify({
+        "width": map_width,
+        "height": map_height,
+        "data": b64
+    })
+
+    var headers_arr = ["Content-Type: application/json"]
+    var auth_header: String = Auth.get_auth_header()
+    if auth_header != "":
+        headers_arr.append("Authorization: " + auth_header)
+    http_req.request_completed.connect(func(r, c, h, b): http_req.queue_free())
+    http_req.request(api_base + "/api/village/terrain", headers_arr, HTTPClient.METHOD_PUT, payload)
+
+func _load_terrain() -> void:
+    var http_req = HTTPRequest.new()
+    http_req.accept_gzip = false
+    add_child(http_req)
+
+    http_req.request_completed.connect(_on_terrain_loaded.bind(http_req))
+    var headers: PackedStringArray = []
+    var auth_header: String = Auth.get_auth_header()
+    if auth_header != "":
+        headers.append("Authorization: " + auth_header)
+    http_req.request(api_base + "/api/village/terrain", headers)
+
+func _on_terrain_loaded(result: int, response_code: int, headers: PackedStringArray, body: PackedByteArray, http_req: HTTPRequest) -> void:
+    http_req.queue_free()
+
+    if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
+        # No saved terrain — keep the procedurally generated one
+        return
+
+    var json = JSON.parse_string(body.get_string_from_utf8())
+    if json == null:
+        return
+
+    var saved_width: int = json.get("width", 0)
+    var saved_height: int = json.get("height", 0)
+    var data_b64: String = json.get("data", "")
+
+    if saved_width != map_width or saved_height != map_height:
+        push_warning("Saved terrain size mismatch, ignoring")
+        return
+
+    var bytes: PackedByteArray = Marshalls.base64_to_raw(data_b64)
+    if bytes.size() != map_width * map_height:
+        push_warning("Terrain data size mismatch")
+        return
+
+    # Overwrite map_data with saved terrain
+    var idx: int = 0
+    for y in range(map_height):
+        for x in range(map_width):
+            map_data[y][x] = bytes[idx]
+            idx += 1
+
+    # Repaint the entire tilemap
+    _paint_tilemap()
+
 func _generate_terrain() -> void:
     # Generate the logical map
     var gen = MapGenerator.new(map_width, map_height, 42)
     map_data = gen.generate()
+    _paint_tilemap()
 
-    # The village center is at array position (pad_x + 40, pad_y + 22).
-    # We want that to map to the same world-pixel position as before (1280, 704).
-    # With 2x terrain scale, tilemap tile (40, 22) = pixel (40*32, 22*32) = (1280, 704).
-    # So we paint the array with an offset: array (0,0) → tilemap tile (40 - pad_x - 40, 22 - pad_y - 22)
-    # Simplified: array index (ax, ay) → tilemap tile (ax - pad_x, ay - pad_y)
-    var pad_x: int = gen.pad_x
-    var pad_y: int = gen.pad_y
+## Convert a world position to tilemap tile coordinates.
+## Returns the tile coordinate (accounting for offset and 2x scale).
+func world_to_tile(world_pos: Vector2) -> Vector2i:
+    # Terrain is scaled 2x so each tile is 32 world pixels
+    return Vector2i(
+        int(floor(world_pos.x / 32.0)),
+        int(floor(world_pos.y / 32.0))
+    )
+
+## Repaint the entire tilemap from map_data. Called after generation or
+## after loading saved terrain from the server.
+func _paint_tilemap() -> void:
+    var pad_x: int = (map_width - 80) / 2
+    var pad_y: int = (map_height - 45) / 2
 
     var tile_set: TileSet = terrain.tile_set
     var source_id: int = tile_set.get_source_id(0)
@@ -255,7 +364,7 @@ func _update_object_position(obj_id, pos: Vector2) -> void:
     if auth_header != "":
         headers_arr.append("Authorization: " + auth_header)
     http.request_completed.connect(func(r, c, h, b): http.queue_free())
-    http.request(api_base + "/api/village/objects/" + str(obj_id), headers_arr, HTTPClient.METHOD_PATCH, payload)
+    http.request(api_base + "/api/village/objects/" + str(obj_id) + "/position", headers_arr, HTTPClient.METHOD_PATCH, payload)
 
 func _delete_object(obj_id) -> void:
     var http = HTTPRequest.new()

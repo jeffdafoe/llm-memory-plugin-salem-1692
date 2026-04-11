@@ -10,13 +10,19 @@ signal object_selected(asset_id: String)
 signal object_deselected
 signal mode_changed(mode: Mode)
 
-enum Mode { SELECT, PLACE, MOVE }
+enum Mode { SELECT, PLACE, MOVE, TERRAIN }
 
 var current_mode: Mode = Mode.SELECT
 var selected_asset_id: String = ""
 var selected_object: Node2D = null
 var ghost_sprite: Sprite2D = null
 var active: bool = false
+
+# Terrain painting state
+var _terrain_type: int = 0  # Currently selected terrain type (1-6)
+var _terrain_painting: bool = false  # True while mouse is held down painting
+var _terrain_save_timer: float = 0.0  # Debounce save after painting
+const TERRAIN_SAVE_DELAY: float = 2.0  # Seconds after last paint to auto-save
 
 # Selection border node — added as child of selected object
 var _selection_border: Node2D = null
@@ -46,9 +52,21 @@ func _ready() -> void:
     world.add_child(ghost_sprite)
 
 ## _input runs BEFORE GUI Controls process events, so drag motion
-## can't be swallowed by the editor panel or top bar.
+## and terrain painting can't be swallowed by the editor panel or top bar.
 func _input(event: InputEvent) -> void:
     if not active:
+        return
+
+    # Terrain painting: hold mouse to paint continuously
+    if _terrain_painting:
+        if event is InputEventMouseMotion:
+            _paint_terrain_at(event.position)
+            get_viewport().set_input_as_handled()
+        if event is InputEventMouseButton:
+            if event.button_index == MOUSE_BUTTON_LEFT and not event.pressed:
+                _terrain_painting = false
+                _terrain_save_timer = TERRAIN_SAVE_DELAY
+                get_viewport().set_input_as_handled()
         return
 
     # Once a drag is active, we own all mouse events until release
@@ -111,6 +129,11 @@ func _on_left_press(screen_pos: Vector2) -> void:
                 get_viewport().set_input_as_handled()
             else:
                 _deselect()
+        Mode.TERRAIN:
+            if _terrain_type > 0:
+                _terrain_painting = true
+                _paint_terrain_at(screen_pos)
+                get_viewport().set_input_as_handled()
 
 func _on_left_release(screen_pos: Vector2) -> void:
     if _dragging:
@@ -301,6 +324,23 @@ func _drag_end(screen_pos: Vector2) -> void:
     world.move_object(selected_object, new_pos)
     # Update the selection border position (it moves with the container
     # since it's a child, so no action needed)
+
+# --- Terrain painting ---
+
+func set_terrain_type(terrain_type: int) -> void:
+    _terrain_type = terrain_type
+
+func _paint_terrain_at(screen_pos: Vector2) -> void:
+    var world_pos: Vector2 = _screen_to_world(screen_pos)
+    var tile: Vector2i = world.world_to_tile(world_pos)
+    world.paint_terrain(tile.x, tile.y, _terrain_type)
+
+func _process(delta: float) -> void:
+    # Debounced terrain save — saves 2 seconds after the last paint stroke
+    if _terrain_save_timer > 0:
+        _terrain_save_timer -= delta
+        if _terrain_save_timer <= 0:
+            world.save_terrain()
 
 # --- Coordinate conversion ---
 
