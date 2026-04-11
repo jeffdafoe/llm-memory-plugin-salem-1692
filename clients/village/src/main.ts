@@ -6,6 +6,7 @@ import { Camera } from "./camera";
 import { Renderer } from "./renderer";
 import { createMap } from "./map";
 import { loadObjects, clearObjects } from "./objects";
+import { loadCatalog } from "./catalog";
 import { Editor } from "./editor";
 import { fetchVillageMe, fetchVillageAgents, VillageAgent } from "./village-api";
 
@@ -64,7 +65,7 @@ function startGame(): void {
                     const newMap = createMap();
                     renderer.setMap(newMap);
                     clearObjects();
-                    loadObjects();
+                    loadCatalog().then(() => loadObjects());
                     camera.recenter();
                     renderer.resize();
                 }
@@ -93,8 +94,8 @@ function startGame(): void {
         }
     });
 
-    // Load placed objects (or generate initial village)
-    loadObjects();
+    // Load asset catalog from API, then load placed objects
+    loadCatalog().then(() => loadObjects());
 
     // Check if user has editor permissions
     fetchVillageMe().then(me => {
