@@ -32,6 +32,8 @@ var _delete_button: Button = null
 var _terrain_button: Button = null
 var _selection_info: VBoxContainer = null
 var _selection_label: Label = null
+var _placed_by_label: Label = null
+var _owner_label: Label = null
 var _catalog_container: VBoxContainer = null
 var _terrain_picker: VBoxContainer = null
 var _catalog_scroll: ScrollContainer = null
@@ -133,6 +135,20 @@ func _ready() -> void:
     _selection_label.add_theme_font_size_override("font_size", 14)
     _selection_label.autowrap_mode = TextServer.AUTOWRAP_WORD
     _selection_info.add_child(_selection_label)
+
+    _placed_by_label = Label.new()
+    _placed_by_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+    _placed_by_label.add_theme_font_override("font", _font)
+    _placed_by_label.add_theme_font_size_override("font_size", 12)
+    _placed_by_label.visible = false
+    _selection_info.add_child(_placed_by_label)
+
+    _owner_label = Label.new()
+    _owner_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+    _owner_label.add_theme_font_override("font", _font)
+    _owner_label.add_theme_font_size_override("font_size", 12)
+    _owner_label.visible = false
+    _selection_info.add_child(_owner_label)
 
     var sel_sep = HSeparator.new()
     sel_sep.add_theme_color_override("separator_color", Color(0.4, 0.32, 0.2, 0.4))
@@ -398,16 +414,33 @@ func _on_delete_pressed() -> void:
     delete_requested.emit()
 
 ## Called by editor when an object is selected/deselected on the map.
-func show_selection(asset_id: String) -> void:
+func show_selection(info: Dictionary) -> void:
+    var asset_id: String = info.get("asset_id", "")
     if asset_id == "":
         _selection_info.visible = false
         _delete_button.disabled = true
+        _placed_by_label.visible = false
+        _owner_label.visible = false
         return
     _selection_info.visible = true
     _delete_button.disabled = false
     var asset = Catalog.assets.get(asset_id, {})
     var name: String = asset.get("name", asset_id)
     _selection_label.text = name
+
+    var placed_by: String = info.get("placed_by", "")
+    if placed_by != "":
+        _placed_by_label.text = "Placed by: " + placed_by
+        _placed_by_label.visible = true
+    else:
+        _placed_by_label.visible = false
+
+    var owner: String = info.get("owner", "")
+    if owner != "":
+        _owner_label.text = "Owner: " + owner
+        _owner_label.visible = true
+    else:
+        _owner_label.visible = false
 
 ## Called when editor exits place mode (right-click cancel, escape, etc.)
 func clear_catalog_selection() -> void:

@@ -183,13 +183,13 @@ func _on_panel_asset_selected(asset_id: String) -> void:
 func _on_panel_delete() -> void:
     editor.delete_selection()
 
-func _on_editor_object_selected(asset_id: String) -> void:
+func _on_editor_object_selected(info: Dictionary) -> void:
     if editor_panel != null:
-        editor_panel.show_selection(asset_id)
+        editor_panel.show_selection(info)
 
 func _on_editor_object_deselected() -> void:
     if editor_panel != null:
-        editor_panel.show_selection("")
+        editor_panel.show_selection({})
 
 func _on_terrain_mode_toggled(active: bool) -> void:
     if active:
