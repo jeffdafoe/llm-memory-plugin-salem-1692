@@ -35,6 +35,12 @@ func connect_to_server() -> void:
         _reconnect_timer = RECONNECT_DELAY
 
 func _process(delta: float) -> void:
+    # Handle terrain reload debounce
+    if _terrain_reload_timer > 0:
+        _terrain_reload_timer -= delta
+        if _terrain_reload_timer <= 0 and world != null:
+            world.reload_terrain()
+
     # Handle reconnect timer
     if _socket == null:
         if _reconnect_timer > 0:
@@ -78,6 +84,8 @@ func _handle_message(data: String) -> void:
             _on_object_owner_changed(event_data)
         "object_state_changed":
             _on_object_state_changed(event_data)
+        "terrain_updated":
+            _on_terrain_updated()
 
 func _on_object_created(data: Dictionary) -> void:
     if world == null:
@@ -123,6 +131,14 @@ func _on_object_owner_changed(data: Dictionary) -> void:
     if owner == null:
         owner = ""
     node.set_meta("owner", owner)
+
+# Debounce terrain reloads — painting triggers frequent saves
+var _terrain_reload_timer: float = 0.0
+const TERRAIN_RELOAD_DELAY: float = 1.0
+
+func _on_terrain_updated() -> void:
+    # Debounce: reset timer on each event, only reload after a pause
+    _terrain_reload_timer = TERRAIN_RELOAD_DELAY
 
 func _on_object_state_changed(data: Dictionary) -> void:
     if world == null:

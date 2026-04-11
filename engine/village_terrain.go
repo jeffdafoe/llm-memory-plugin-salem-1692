@@ -87,4 +87,5 @@ func (app *App) handleSaveTerrain(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+	app.Hub.Broadcast(WorldEvent{Type: "terrain_updated", Data: nil})
 }
