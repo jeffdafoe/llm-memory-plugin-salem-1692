@@ -1,10 +1,10 @@
 // In-game village editor — catalog sidebar, click-to-place, select & delete
 
-import { CATALOG, CatalogItem, getCatalogItem } from "./catalog";
+import { Asset, getAssetsByCategory, getCatalogItem } from "./catalog";
 import { addObject, getObjects, removeObject } from "./objects";
 import { Camera } from "./camera";
 import { TILE_SIZE } from "./constants";
-import { fetchVillageAgents, setObjectOwner, VillageAgent } from "./village-api";
+import { fetchVillageAgents, setObjectOwner, moveObjectPosition, VillageAgent } from "./village-api";
 import { getMapDimensions } from "./map";
 
 type EditorMode = "select" | "place";
@@ -15,11 +15,18 @@ export class Editor {
     private panel: HTMLElement | null = null;
     private active = false;
     private mode: EditorMode = "select";
-    private selectedCatalogId: string | null = null;
+    private selectedAssetId: string | null = null;
     private selectedObjectId: string | null = null;
     private ghostPos: { x: number; y: number } | null = null;
     private onToggle: ((active: boolean) => void) | null = null;
     private agents: VillageAgent[] = [];
+
+    // Drag-to-move state
+    private dragging = false;
+    private dragObjectId: string | null = null;
+    private dragStartWorld: { x: number; y: number } | null = null;
+    private dragOriginalPos: { x: number; y: number } | null = null;
+    private edgePanTimer: number | null = null;
 
     constructor(canvas: HTMLCanvasElement, camera: Camera) {
         this.canvas = canvas;
@@ -46,11 +53,13 @@ export class Editor {
     private activate(container: HTMLElement): void {
         this.active = true;
         this.mode = "select";
-        this.selectedCatalogId = null;
+        this.selectedAssetId = null;
         this.selectedObjectId = null;
         this.createPanel(container);
         this.canvas.addEventListener("click", this.handleCanvasClick);
+        this.canvas.addEventListener("mousedown", this.handleCanvasMouseDown);
         this.canvas.addEventListener("mousemove", this.handleCanvasMouseMove);
+        this.canvas.addEventListener("mouseup", this.handleCanvasMouseUp);
         this.canvas.addEventListener("contextmenu", this.handleRightClick);
         this.canvas.style.cursor = "default";
 
@@ -63,23 +72,26 @@ export class Editor {
 
     private deactivate(): void {
         this.active = false;
-        this.selectedCatalogId = null;
+        this.selectedAssetId = null;
         this.selectedObjectId = null;
         this.ghostPos = null;
+        this.cancelDrag();
         if (this.panel) {
             this.panel.remove();
             this.panel = null;
         }
         this.canvas.removeEventListener("click", this.handleCanvasClick);
+        this.canvas.removeEventListener("mousedown", this.handleCanvasMouseDown);
         this.canvas.removeEventListener("mousemove", this.handleCanvasMouseMove);
+        this.canvas.removeEventListener("mouseup", this.handleCanvasMouseUp);
         this.canvas.removeEventListener("contextmenu", this.handleRightClick);
         this.canvas.style.cursor = "default";
     }
 
     // Get the ghost preview position and catalog item for rendering
-    getGhost(): { item: CatalogItem; x: number; y: number } | null {
-        if (!this.active || !this.selectedCatalogId || !this.ghostPos) return null;
-        const item = getCatalogItem(this.selectedCatalogId);
+    getGhost(): { item: ReturnType<typeof getCatalogItem>; x: number; y: number } | null {
+        if (!this.active || !this.selectedAssetId || !this.ghostPos) return null;
+        const item = getCatalogItem(this.selectedAssetId);
         if (!item) return null;
         return { item, x: this.ghostPos.x, y: this.ghostPos.y };
     }
@@ -90,13 +102,14 @@ export class Editor {
     }
 
     private handleCanvasClick = async (e: MouseEvent): Promise<void> => {
-        if (this.camera.isDragging()) return;
+        // Don't handle click if we just finished a drag
+        if (this.camera.isDragging() || this.dragging) return;
         const world = this.screenToWorld(e);
         if (!world) return;
 
-        if (this.mode === "place" && this.selectedCatalogId) {
-            // Place the selected catalog item
-            await addObject(this.selectedCatalogId, world.x, world.y);
+        if (this.mode === "place" && this.selectedAssetId) {
+            // Place the selected asset
+            await addObject(this.selectedAssetId, world.x, world.y);
         } else if (this.mode === "select") {
             // Try to select an object near the click
             this.selectedObjectId = this.findObjectAt(world.x, world.y);
@@ -104,8 +117,54 @@ export class Editor {
         }
     };
 
+    private handleCanvasMouseDown = (e: MouseEvent): void => {
+        if (this.mode !== "select" || !this.selectedObjectId) return;
+
+        const world = this.screenToWorld(e);
+        if (!world) return;
+
+        // Check if mousedown is on the currently selected object
+        const hitId = this.findObjectAt(world.x, world.y);
+        if (hitId !== this.selectedObjectId) return;
+
+        // Start dragging the selected object
+        const obj = getObjects().find(o => o.id === this.selectedObjectId);
+        if (!obj) return;
+
+        this.dragging = true;
+        this.dragObjectId = this.selectedObjectId;
+        this.dragStartWorld = { x: world.x, y: world.y };
+        this.dragOriginalPos = { x: obj.x, y: obj.y };
+        this.canvas.style.cursor = "grabbing";
+
+        // Suppress camera panning while dragging an object
+        this.camera.suppressDrag();
+
+        // Start edge-pan timer (checks mouse position each frame)
+        this.startEdgePan(e);
+    };
+
     private handleCanvasMouseMove = (e: MouseEvent): void => {
-        if (this.mode === "place" && this.selectedCatalogId) {
+        if (this.dragging && this.dragObjectId && this.dragStartWorld && this.dragOriginalPos) {
+            // Update object position based on mouse delta
+            const world = this.screenToWorld(e);
+            if (!world) return;
+
+            const dx = world.x - this.dragStartWorld.x;
+            const dy = world.y - this.dragStartWorld.y;
+
+            const obj = getObjects().find(o => o.id === this.dragObjectId);
+            if (obj) {
+                obj.x = this.dragOriginalPos.x + dx;
+                obj.y = this.dragOriginalPos.y + dy;
+            }
+
+            // Update edge-pan based on screen position
+            this.updateEdgePan(e);
+            return;
+        }
+
+        if (this.mode === "place" && this.selectedAssetId) {
             const world = this.screenToWorld(e);
             if (world) {
                 this.ghostPos = world;
@@ -113,17 +172,133 @@ export class Editor {
         }
     };
 
+    private handleCanvasMouseUp = async (_e: MouseEvent): Promise<void> => {
+        if (!this.dragging || !this.dragObjectId) return;
+
+        const obj = getObjects().find(o => o.id === this.dragObjectId);
+        this.stopEdgePan();
+        this.camera.unsuppressDrag();
+        this.canvas.style.cursor = "default";
+
+        // Persist the new position to the API
+        if (obj) {
+            await moveObjectPosition(this.dragObjectId, obj.x, obj.y);
+        }
+
+        // Clear drag state after a short delay so the click handler doesn't fire
+        const wasDragging = this.dragging;
+        this.dragObjectId = null;
+        this.dragStartWorld = null;
+        this.dragOriginalPos = null;
+        if (wasDragging) {
+            setTimeout(() => { this.dragging = false; }, 50);
+        }
+    };
+
     private handleRightClick = (e: MouseEvent): void => {
         e.preventDefault();
+        if (this.dragging) {
+            // Cancel drag — restore original position
+            if (this.dragObjectId && this.dragOriginalPos) {
+                const obj = getObjects().find(o => o.id === this.dragObjectId);
+                if (obj) {
+                    obj.x = this.dragOriginalPos.x;
+                    obj.y = this.dragOriginalPos.y;
+                }
+            }
+            this.cancelDrag();
+            return;
+        }
         if (this.mode === "place") {
             // Cancel placement
             this.mode = "select";
-            this.selectedCatalogId = null;
+            this.selectedAssetId = null;
             this.ghostPos = null;
             this.canvas.style.cursor = "default";
             this.clearCatalogSelection();
         }
     };
+
+    private cancelDrag(): void {
+        this.dragging = false;
+        this.dragObjectId = null;
+        this.dragStartWorld = null;
+        this.dragOriginalPos = null;
+        this.stopEdgePan();
+        this.camera.unsuppressDrag();
+        this.canvas.style.cursor = "default";
+    }
+
+    // Edge panning — scroll the camera when dragging near viewport edges
+    private lastScreenPos: { x: number; y: number } | null = null;
+    private static EDGE_ZONE = 60; // pixels from edge where panning starts
+    private static EDGE_PAN_SPEED = 8; // world pixels per frame at full strength
+
+    private startEdgePan(e: MouseEvent): void {
+        this.lastScreenPos = { x: e.clientX, y: e.clientY };
+        this.stopEdgePan();
+        const tick = () => {
+            if (!this.dragging || !this.lastScreenPos || !this.dragStartWorld || !this.dragOriginalPos) return;
+
+            const rect = this.canvas.getBoundingClientRect();
+            const sx = this.lastScreenPos.x - rect.left;
+            const sy = this.lastScreenPos.y - rect.top;
+            const w = this.canvas.width;
+            const h = this.canvas.height;
+
+            let panX = 0;
+            let panY = 0;
+            const zone = Editor.EDGE_ZONE;
+            const speed = Editor.EDGE_PAN_SPEED / this.camera.zoom;
+
+            // Calculate pan amount based on distance into the edge zone
+            if (sx < zone) {
+                panX = -speed * (1 - sx / zone);
+            } else if (sx > w - zone) {
+                panX = speed * (1 - (w - sx) / zone);
+            }
+            if (sy < zone) {
+                panY = -speed * (1 - sy / zone);
+            } else if (sy > h - zone) {
+                panY = speed * (1 - (h - sy) / zone);
+            }
+
+            if (panX !== 0 || panY !== 0) {
+                // Move camera
+                this.camera.x += panX;
+                this.camera.y += panY;
+
+                // Also shift the drag start so the object follows the pan
+                this.dragStartWorld.x -= panX;
+                this.dragStartWorld.y -= panY;
+
+                // Recalculate object position
+                const world = this.camera.screenToWorld(sx, sy, w, h);
+                const dx = world.x - this.dragStartWorld.x;
+                const dy = world.y - this.dragStartWorld.y;
+                const obj = getObjects().find(o => o.id === this.dragObjectId);
+                if (obj) {
+                    obj.x = this.dragOriginalPos.x + dx;
+                    obj.y = this.dragOriginalPos.y + dy;
+                }
+            }
+
+            this.edgePanTimer = requestAnimationFrame(tick);
+        };
+        this.edgePanTimer = requestAnimationFrame(tick);
+    }
+
+    private updateEdgePan(e: MouseEvent): void {
+        this.lastScreenPos = { x: e.clientX, y: e.clientY };
+    }
+
+    private stopEdgePan(): void {
+        if (this.edgePanTimer !== null) {
+            cancelAnimationFrame(this.edgePanTimer);
+            this.edgePanTimer = null;
+        }
+        this.lastScreenPos = null;
+    }
 
     private screenToWorld(e: MouseEvent): { x: number; y: number } | null {
         const rect = this.canvas.getBoundingClientRect();
@@ -147,7 +322,7 @@ export class Editor {
         let closest: { id: string; dist: number } | null = null;
 
         for (const obj of objects) {
-            const item = getCatalogItem(obj.catalogId);
+            const item = getCatalogItem(obj.assetId, obj.currentState);
             if (!item) continue;
 
             const destW = item.srcW * SCALE;
@@ -203,7 +378,7 @@ export class Editor {
         // Select tool
         panel.querySelector("#tool-select")!.addEventListener("click", () => {
             this.mode = "select";
-            this.selectedCatalogId = null;
+            this.selectedAssetId = null;
             this.ghostPos = null;
             this.canvas.style.cursor = "default";
             this.clearCatalogSelection();
@@ -226,7 +401,7 @@ export class Editor {
         const catalogEl = this.panel?.querySelector("#editor-catalog");
         if (!catalogEl) return;
 
-        const categories: Array<{ id: CatalogItem["category"]; label: string }> = [
+        const categories: Array<{ id: Asset["category"]; label: string }> = [
             { id: "tree", label: "Trees" },
             { id: "nature", label: "Nature" },
             { id: "structure", label: "Structures" },
@@ -234,7 +409,7 @@ export class Editor {
         ];
 
         for (const cat of categories) {
-            const items = CATALOG.filter(i => i.category === cat.id);
+            const items = getAssetsByCategory(cat.id);
             if (items.length === 0) continue;
 
             const section = document.createElement("div");
@@ -244,11 +419,15 @@ export class Editor {
             const grid = document.createElement("div");
             grid.className = "catalog-grid";
 
-            for (const item of items) {
+            for (const asset of items) {
+                // Resolve the default state sprite for the thumbnail
+                const item = getCatalogItem(asset.id);
+                if (!item) continue;
+
                 const cell = document.createElement("div");
                 cell.className = "catalog-item";
-                cell.dataset.catalogId = item.id;
-                cell.title = item.name;
+                cell.dataset.assetId = asset.id;
+                cell.title = asset.name;
 
                 // Create a canvas thumbnail
                 const thumb = document.createElement("canvas");
@@ -273,11 +452,11 @@ export class Editor {
 
                 const label = document.createElement("span");
                 label.className = "catalog-item-name";
-                label.textContent = item.name;
+                label.textContent = asset.name;
                 cell.appendChild(label);
 
                 cell.addEventListener("click", () => {
-                    this.selectCatalogItem(item.id);
+                    this.selectAsset(asset.id);
                 });
 
                 grid.appendChild(cell);
@@ -288,15 +467,15 @@ export class Editor {
         }
     }
 
-    private selectCatalogItem(id: string): void {
+    private selectAsset(id: string): void {
         this.mode = "place";
-        this.selectedCatalogId = id;
+        this.selectedAssetId = id;
         this.selectedObjectId = null;
         this.canvas.style.cursor = "crosshair";
 
         // Highlight in catalog
         this.clearCatalogSelection();
-        const cell = this.panel?.querySelector(`[data-catalog-id="${id}"]`);
+        const cell = this.panel?.querySelector(`[data-asset-id="${id}"]`);
         cell?.classList.add("selected");
 
         this.updateDeleteButton();
@@ -331,9 +510,9 @@ export class Editor {
             return;
         }
 
-        const item = getCatalogItem(obj.catalogId);
+        const item = getCatalogItem(obj.assetId, obj.currentState);
         const info = selPanel.querySelector("#selection-info") as HTMLElement;
-        info.textContent = item?.name || obj.catalogId;
+        info.textContent = item?.name || obj.assetId;
 
         const select = selPanel.querySelector("#owner-select") as HTMLSelectElement;
         select.value = obj.owner || "";
@@ -373,7 +552,7 @@ export class Editor {
 
         // Ghost preview
         const ghost = this.getGhost();
-        if (ghost) {
+        if (ghost && ghost.item) {
             const SCALE = 2;
             const destW = ghost.item.srcW * SCALE;
             const destH = ghost.item.srcH * SCALE;
@@ -397,7 +576,7 @@ export class Editor {
             const objects = getObjects();
             const obj = objects.find(o => o.id === this.selectedObjectId);
             if (obj) {
-                const item = getCatalogItem(obj.catalogId);
+                const item = getCatalogItem(obj.assetId, obj.currentState);
                 if (item) {
                     const SCALE = 2;
                     const destW = item.srcW * SCALE;

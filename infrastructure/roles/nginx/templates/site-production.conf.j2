@@ -44,6 +44,16 @@ server {
         return 301 /terminal/;
     }
 
+    # Admin pages
+    location /admin/assets/ {
+        alias {{ project_root }}/clients/admin/assets/;
+        try_files $uri $uri/ =404;
+    }
+
+    location = /admin/assets {
+        return 301 /admin/assets/;
+    }
+
     # Village client
     location /village/ {
         alias {{ project_root }}/clients/village/dist/;
