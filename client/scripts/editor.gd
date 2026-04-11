@@ -7,7 +7,7 @@ extends CanvasLayer
 ## editor panel from swallowing events. A position check skips clicks
 ## that land on the UI panel area.
 
-signal object_selected(asset_id: String)
+signal object_selected(info: Dictionary)
 signal object_deselected
 signal mode_changed(mode: Mode)
 
@@ -256,8 +256,11 @@ func _select_object(node: Node2D) -> void:
     _deselect()
     selected_object = node
     _add_selection_border(node)
-    var asset_id: String = node.get_meta("asset_id", "")
-    object_selected.emit(asset_id)
+    object_selected.emit({
+        "asset_id": node.get_meta("asset_id", ""),
+        "placed_by": node.get_meta("placed_by", ""),
+        "owner": node.get_meta("owner", ""),
+    })
 
 func _deselect() -> void:
     if selected_object != null:

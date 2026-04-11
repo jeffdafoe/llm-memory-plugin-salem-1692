@@ -222,6 +222,8 @@ func _place_object(data: Dictionary) -> void:
     container.position = Vector2(obj_x, obj_y)
     container.set_meta("object_id", obj_id)
     container.set_meta("asset_id", asset_id)
+    container.set_meta("placed_by", data.get("placed_by", ""))
+    container.set_meta("owner", data.get("owner", ""))
 
     # Sprites are 16px native, world is 32px scale — render at 2x
     var sprite = Sprite2D.new()
@@ -298,6 +300,8 @@ func _on_object_saved(result: int, response_code: int, headers: PackedStringArra
     if json != null and json.has("id"):
         var obj_id = json["id"]
         node.set_meta("object_id", obj_id)
+        node.set_meta("placed_by", json.get("placed_by", ""))
+        node.set_meta("owner", json.get("owner", ""))
         placed_objects[obj_id] = node
 
 ## Remove an object from the world and the server.
