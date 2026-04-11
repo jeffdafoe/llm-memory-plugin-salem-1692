@@ -71,6 +71,20 @@ func _init() -> void:
         atlas.create_tile(coords)
         var tile_data: TileData = atlas.get_tile_data(coords, 0)
         tile_data.terrain_set = 0
+
+        # Set the center terrain — Godot needs this for set_cells_terrain_connect.
+        # Use the most common corner as the center terrain.
+        var corner_counts: Dictionary = {}
+        for c in corners:
+            corner_counts[c] = corner_counts.get(c, 0) + 1
+        var best_terrain: int = corners[0]
+        var best_count: int = 0
+        for c in corner_counts:
+            if corner_counts[c] > best_count:
+                best_count = corner_counts[c]
+                best_terrain = c
+        tile_data.terrain = best_terrain
+
         tile_data.set_terrain_peering_bit(TileSet.CELL_NEIGHBOR_TOP_LEFT_CORNER, corners[0])
         tile_data.set_terrain_peering_bit(TileSet.CELL_NEIGHBOR_TOP_RIGHT_CORNER, corners[1])
         tile_data.set_terrain_peering_bit(TileSet.CELL_NEIGHBOR_BOTTOM_RIGHT_CORNER, corners[2])
