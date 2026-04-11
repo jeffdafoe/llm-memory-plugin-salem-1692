@@ -4,6 +4,7 @@ extends Node2D
 ## and loads placed objects from the Go API.
 
 const MapGenerator = preload("res://scripts/map_generator.gd")
+const WangLookup = preload("res://scripts/wang_lookup.gd")
 
 @onready var terrain: TileMapLayer = $Terrain
 @onready var objects_node: Node2D = $Objects
@@ -19,8 +20,12 @@ var placed_objects: Dictionary = {}
 # API base
 var api_base: String = ""
 
-# TileSet atlas source id (the wang sheet)
-var atlas_source_id: int = 0
+# Seeded PRNG for wang tile variant selection
+var _wang_seed: int = 7
+
+func _wang_rand() -> int:
+    _wang_seed = (_wang_seed * 16807 + 0) % 2147483647
+    return _wang_seed
 
 func _ready() -> void:
     if OS.has_feature("web"):
@@ -41,31 +46,45 @@ func _generate_terrain() -> void:
     var gen = MapGenerator.new(map_width, map_height, 42)
     map_data = gen.generate()
 
-    # Paint terrain using Godot's terrain system.
-    # Group cells by terrain type, then use set_cells_terrain_connect
-    # which automatically picks the right wang tile for each cell.
-    # Terrain indices in the map are 1-based (1=dirt..6=deep water),
-    # Godot terrain indices are 0-based (0=dirt..5=deep water).
+    # Get the atlas source id from the tileset
+    var tile_set: TileSet = terrain.tile_set
+    var source_id: int = tile_set.get_source_id(0)
 
-    # Collect cells per terrain type
-    var terrain_cells: Dictionary = {}  # terrain_index (0-based) -> Array of Vector2i
-    for i in range(6):
-        terrain_cells[i] = []
-
+    # Paint each cell using the wang lookup table directly.
+    # For each tile, look at its 4 corner terrains (from neighboring cells),
+    # find the matching wang tile, and set it.
     for y in range(map_height):
         for x in range(map_width):
-            var t: int = map_data[y][x] - 1  # Convert 1-based to 0-based
-            terrain_cells[t].append(Vector2i(x, y))
+            var wang_pos: Vector2i = _get_wang_tile(x, y)
+            terrain.set_cell(Vector2i(x, y), source_id, wang_pos)
 
-    # Paint each terrain type. Order matters — paint base terrain first,
-    # then overlay terrains. This lets Godot resolve the corner transitions.
-    # Paint from most common (grass) outward so transitions look right.
-    var paint_order: Array = [1, 2, 0, 3, 4, 5]  # light grass, dark grass, dirt, cobble, shallow, deep
+## Look up the correct wang tile for a map position based on corner terrains.
+func _get_wang_tile(x: int, y: int) -> Vector2i:
+    # Each tile's appearance depends on the terrain at its 4 corners.
+    # A corner is shared between 4 tiles. The corner terrain is the
+    # terrain of the tile at that diagonal position.
+    var tl: int = _get_terrain(x - 1, y - 1)
+    var tr: int = _get_terrain(x, y - 1)
+    var br: int = _get_terrain(x, y)
+    var bl: int = _get_terrain(x - 1, y)
 
-    for terrain_idx in paint_order:
-        var cells: Array = terrain_cells[terrain_idx]
-        if cells.size() > 0:
-            terrain.set_cells_terrain_connect(cells, 0, terrain_idx)
+    var key: String = "%d,%d,%d,%d" % [tl, tr, br, bl]
+
+    if WangLookup.WANG_LOOKUP.has(key):
+        var options: Array = WangLookup.WANG_LOOKUP[key]
+        # Pick a random variant for visual variety
+        var idx: int = _wang_rand() % options.size()
+        var tile = options[idx]
+        return Vector2i(tile[0], tile[1])
+
+    # Fallback — solid light grass
+    return Vector2i(1, 2)
+
+## Get the terrain index at a map position, clamping at edges.
+func _get_terrain(x: int, y: int) -> int:
+    x = clampi(x, 0, map_width - 1)
+    y = clampi(y, 0, map_height - 1)
+    return map_data[y][x]
 
 func _load_village() -> void:
     var http = HTTPRequest.new()
