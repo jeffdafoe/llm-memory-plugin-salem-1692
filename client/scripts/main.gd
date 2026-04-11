@@ -119,6 +119,8 @@ func _build_ui() -> void:
     # Wire panel signals to editor
     editor_panel.asset_selected.connect(_on_panel_asset_selected)
     editor_panel.delete_requested.connect(_on_panel_delete)
+    editor_panel.terrain_mode_toggled.connect(_on_terrain_mode_toggled)
+    editor_panel.terrain_type_selected.connect(_on_terrain_type_selected)
 
     # Wire editor signals to panel
     editor.object_selected.connect(_on_editor_object_selected)
@@ -162,7 +164,17 @@ func _on_editor_object_deselected() -> void:
     if editor_panel != null:
         editor_panel.show_selection("")
 
+func _on_terrain_mode_toggled(active: bool) -> void:
+    if active:
+        editor.set_mode(editor.Mode.TERRAIN)
+    else:
+        editor.set_mode(editor.Mode.SELECT)
+
+func _on_terrain_type_selected(terrain_type: int) -> void:
+    editor.set_terrain_type(terrain_type)
+
 func _on_editor_mode_changed(mode) -> void:
     # When editor exits place mode (escape, right-click), clear catalog selection
     if mode == editor.Mode.SELECT and editor_panel != null:
         editor_panel.clear_catalog_selection()
+        editor_panel.exit_terrain_mode()
