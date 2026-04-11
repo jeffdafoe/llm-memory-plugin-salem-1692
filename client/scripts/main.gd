@@ -6,6 +6,7 @@ const TopBarScript = preload("res://scripts/top_bar.gd")
 const EditorPanelScript = preload("res://scripts/editor_panel.gd")
 const ConfigPanelScript = preload("res://scripts/config_panel.gd")
 const AssetPopupScript = preload("res://scripts/asset_popup.gd")
+const ObjectTooltipScript = preload("res://scripts/object_tooltip.gd")
 
 @onready var world: Node2D = $World
 @onready var camera: Camera2D = $Camera
@@ -16,6 +17,7 @@ var top_bar: PanelContainer = null
 var editor_panel: PanelContainer = null
 var config_panel: Control = null
 var asset_popup: Control = null
+var object_tooltip: CanvasLayer = null
 
 # Login screen (added as a CanvasLayer so it renders on top of everything)
 var login_screen: Control = null
@@ -129,6 +131,13 @@ func _build_ui() -> void:
         camera.modal_open = false
         editor.popup_open = false
     )
+
+    # Object tooltip — shows owner info on hover when not in edit mode
+    object_tooltip = CanvasLayer.new()
+    object_tooltip.set_script(ObjectTooltipScript)
+    object_tooltip.world = world
+    object_tooltip.editor = editor
+    add_child(object_tooltip)
 
     # Wire panel signals to editor
     editor_panel.asset_selected.connect(_on_panel_asset_selected)

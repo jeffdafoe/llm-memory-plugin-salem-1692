@@ -18,6 +18,9 @@ var map_height: int = 90
 # Placed objects keyed by server id
 var placed_objects: Dictionary = {}
 
+# Agent lookup: llm_memory_agent name → display name
+var agent_names: Dictionary = {}
+
 # API base
 var api_base: String = ""
 
@@ -49,6 +52,7 @@ func load_objects() -> void:
         return
     _objects_loaded = true
     _load_village()
+    _load_agents()
 
 ## Paint a terrain cell. The custom renderer reads map_data directly
 ## and redraws every frame, so we just update the data.
@@ -346,3 +350,39 @@ func _delete_object(obj_id) -> void:
         headers.append("Authorization: " + auth_header)
     http.request_completed.connect(func(r, c, h, b): http.queue_free())
     http.request(api_base + "/api/village/objects/" + str(obj_id), headers, HTTPClient.METHOD_DELETE)
+
+## Fetch village agents to build the owner display name lookup.
+func _load_agents() -> void:
+    var http = HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+
+    http.request_completed.connect(_on_agents_loaded.bind(http))
+    var headers: PackedStringArray = []
+    var auth_header: String = Auth.get_auth_header()
+    if auth_header != "":
+        headers.append("Authorization: " + auth_header)
+    http.request(api_base + "/api/village/agents", headers)
+
+func _on_agents_loaded(result: int, response_code: int, headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest) -> void:
+    http.queue_free()
+
+    if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
+        return
+
+    var json = JSON.parse_string(body.get_string_from_utf8())
+    if json == null or not (json is Array):
+        return
+
+    for agent in json:
+        var llm_name: String = agent.get("llm_memory_agent", "")
+        var display_name: String = agent.get("name", "")
+        if llm_name != "" and display_name != "":
+            agent_names[llm_name] = display_name
+
+## Resolve an owner identifier to a display name.
+## Returns the display name if found, otherwise the raw owner string.
+func get_owner_display_name(owner: String) -> String:
+    if owner == "":
+        return ""
+    return agent_names.get(owner, owner)
