@@ -336,7 +336,11 @@ func _drag_move(screen_pos: Vector2) -> void:
     var current_world: Vector2 = _screen_to_world(screen_pos)
     var delta: Vector2 = current_world - _drag_start_world
     var new_pos: Vector2 = _drag_start_obj_pos + delta
-    selected_object.global_position = new_pos
+    # Force visual refresh — hide, move, show. Without this, the HTML5
+    # renderer leaves a ghost of the sprite at the old position.
+    selected_object.visible = false
+    selected_object.position = new_pos
+    selected_object.visible = true
 
 func _drag_end(screen_pos: Vector2) -> void:
     if selected_object == null:
@@ -344,7 +348,7 @@ func _drag_end(screen_pos: Vector2) -> void:
     var current_world: Vector2 = _screen_to_world(screen_pos)
     var delta: Vector2 = current_world - _drag_start_world
     var new_pos: Vector2 = _drag_start_obj_pos + delta
-    selected_object.global_position = new_pos
+    selected_object.position = new_pos
     world.move_object(selected_object, new_pos)
 
 # --- Terrain painting ---
