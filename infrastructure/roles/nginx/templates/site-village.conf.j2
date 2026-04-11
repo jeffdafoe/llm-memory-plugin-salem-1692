@@ -69,14 +69,10 @@ server {
         proxy_set_header Authorization $http_authorization;
     }
 
-# Admin pages
-    location /admin/assets/ {
-        alias {{ project_root }}/clients/admin/assets/;
-        try_files $uri $uri/ =404;
-    }
-
-    location = /admin/assets {
-        return 301 /admin/assets/;
+    # Tilesets — persistent directory for all sprite sheets (purchased and free)
+    location /tilesets/ {
+        alias {{ project_root }}/tilesets/;
+        try_files $uri =404;
     }
 
     # Static village viewer files (SPA fallback)

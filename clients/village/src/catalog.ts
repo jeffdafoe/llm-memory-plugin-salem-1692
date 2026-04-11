@@ -10,6 +10,12 @@ export interface AssetState {
     srcH: number;
 }
 
+export interface TilesetPack {
+    id: string;
+    name: string;
+    url: string | null;
+}
+
 export interface Asset {
     id: string;
     name: string;
@@ -18,6 +24,7 @@ export interface Asset {
     anchorX: number;
     anchorY: number;
     layer: "objects" | "above";
+    pack: TilesetPack | null;
     states: AssetState[];
 }
 
@@ -57,6 +64,7 @@ export async function loadCatalog(): Promise<void> {
             anchorX: a.anchor_x,
             anchorY: a.anchor_y,
             layer: a.layer,
+            pack: a.pack ? { id: a.pack.id, name: a.pack.name, url: a.pack.url } : null,
             states: (a.states || []).map((s: any) => ({
                 state: s.state,
                 sheet: s.sheet,
