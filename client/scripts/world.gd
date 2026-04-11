@@ -273,6 +273,9 @@ func add_object(asset_id: String, world_pos: Vector2) -> void:
     )
     container.add_child(sprite)
     objects_node.add_child(container)
+    # Force visual refresh — same HTML5 y-sort renderer bug as drag-to-move
+    container.visible = false
+    container.visible = true
 
     _save_object(asset_id, default_state, world_pos, container)
 
