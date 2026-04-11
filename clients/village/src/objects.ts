@@ -1,67 +1,102 @@
-// Placed objects — stores what's on the map and handles persistence
+// Placed objects — stores what's on the map, loaded from server API
 
 import { getConfig } from "./config";
+import { getToken } from "./auth";
 
 export interface PlacedObject {
     id: string;
     catalogId: string;
     x: number;   // world pixel position (anchor point)
     y: number;
+    owner?: string | null;
 }
 
-const STORAGE_KEY = "village_objects";
-const VILLAGE_VERSION = 10; // bump this to regenerate the initial village
 let objects: PlacedObject[] = [];
-let nextId = 1;
+let loaded = false;
 
 export function getObjects(): PlacedObject[] {
     return objects;
 }
 
-export function addObject(catalogId: string, x: number, y: number): PlacedObject {
+// Fetch all objects from the server
+export async function loadObjects(): Promise<void> {
+    try {
+        const resp = await apiFetch("/api/village/objects");
+        if (resp.ok) {
+            const data = await resp.json();
+            objects = data.map((o: any) => ({
+                id: o.id,
+                catalogId: o.catalog_id,
+                x: o.x,
+                y: o.y,
+                owner: o.owner,
+            }));
+            loaded = true;
+            return;
+        }
+    } catch {
+        // API unavailable — fall through to generate locally
+    }
+
+    // If API fails (e.g. no auth, local dev), generate locally
+    if (!loaded) {
+        generateInitialVillage();
+        loaded = true;
+    }
+}
+
+export async function addObject(catalogId: string, x: number, y: number): Promise<PlacedObject> {
+    // Try API first
+    try {
+        const resp = await apiFetch("/api/village/objects", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ catalog_id: catalogId, x, y }),
+        });
+        if (resp.ok) {
+            const data = await resp.json();
+            const obj: PlacedObject = {
+                id: data.id,
+                catalogId: data.catalog_id,
+                x: data.x,
+                y: data.y,
+                owner: data.owner,
+            };
+            objects.push(obj);
+            return obj;
+        }
+    } catch {
+        // Fall through to local
+    }
+
+    // Local fallback
     const obj: PlacedObject = {
-        id: `obj_${nextId++}`,
+        id: `local_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
         catalogId,
         x,
         y,
     };
     objects.push(obj);
-    saveObjects();
     return obj;
 }
 
-export function removeObject(id: string): void {
+export async function removeObject(id: string): Promise<void> {
+    // Try API first
+    try {
+        const resp = await apiFetch(`/api/village/objects/${id}`, { method: "DELETE" });
+        if (resp.ok || resp.status === 404) {
+            objects = objects.filter(o => o.id !== id);
+            return;
+        }
+    } catch {
+        // Fall through to local
+    }
     objects = objects.filter(o => o.id !== id);
-    saveObjects();
 }
 
 export function clearObjects(): void {
     objects = [];
-    nextId = 1;
-    saveObjects();
-}
-
-function saveObjects(): void {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ objects, nextId, version: VILLAGE_VERSION }));
-}
-
-export function loadObjects(): void {
-    try {
-        const stored = localStorage.getItem(STORAGE_KEY);
-        if (stored) {
-            const data = JSON.parse(stored);
-            if (data.version === VILLAGE_VERSION) {
-                objects = data.objects || [];
-                nextId = data.nextId || 1;
-                return;
-            }
-            // Version mismatch — regenerate
-        }
-    } catch {
-        // ignore
-    }
-    // No saved data or outdated version — generate initial village
-    generateInitialVillage();
+    loaded = false;
 }
 
 // Get objects sorted by Y position for depth-correct rendering
@@ -69,38 +104,50 @@ export function getObjectsSortedByDepth(): PlacedObject[] {
     return [...objects].sort((a, b) => a.y - b.y);
 }
 
-// Populate the village with initial objects to make it look alive
-function generateInitialVillage(): void {
+// API helper with auth token
+function apiFetch(url: string, init?: RequestInit): Promise<Response> {
+    const token = getToken();
+    const headers: Record<string, string> = {
+        ...(init?.headers as Record<string, string> || {}),
+    };
+    if (token) {
+        headers["Authorization"] = `Bearer ${token}`;
+    }
+    return fetch(url, { ...init, headers });
+}
+
+// Populate the village with initial objects (used when API has no data or is unavailable)
+async function generateInitialVillage(): Promise<void> {
     const config = getConfig();
-    const TILE = 32; // render tile size
+    const TILE = 32;
     const w = config.mapWidth;
     const h = config.mapHeight;
     const midX = Math.floor(w / 2);
     const midY = Math.floor(h / 2);
     const riverBaseX = Math.floor(w * 0.78);
 
-    // Seeded random for deterministic placement
     let seed = 137;
     function rand(): number {
         seed = (seed * 16807 + 0) % 2147483647;
         return seed / 2147483647;
     }
 
-    // Helper: add object at tile position (converts to world pixels)
+    // Collect all objects to bulk-create
+    const batch: Array<{ catalog_id: string; x: number; y: number }> = [];
+
     function place(catalogId: string, tileX: number, tileY: number): void {
-        addObject(catalogId, tileX * TILE + TILE / 2, tileY * TILE + TILE / 2);
+        batch.push({ catalog_id: catalogId, x: tileX * TILE + TILE / 2, y: tileY * TILE + TILE / 2 });
     }
 
-    // Helper: add with sub-tile offset for natural variation
     function placeRandom(catalogId: string, tileX: number, tileY: number): void {
         const ox = (rand() - 0.5) * TILE * 0.6;
         const oy = (rand() - 0.5) * TILE * 0.4;
-        addObject(catalogId, tileX * TILE + TILE / 2 + ox, tileY * TILE + TILE / 2 + oy);
+        batch.push({ catalog_id: catalogId, x: tileX * TILE + TILE / 2 + ox, y: tileY * TILE + TILE / 2 + oy });
     }
 
     const treeTypes = ["tree-maple", "tree-chestnut", "tree-birch"];
 
-    // Forest clusters — place trees in the dark grass areas
+    // Forest clusters
     const forestAreas = [
         { cx: 8, cy: 6, r: 5 },
         { cx: w - 8, cy: 6, r: 4 },
@@ -125,7 +172,7 @@ function generateInitialVillage(): void {
         }
     }
 
-    // Border trees — along the map edges
+    // Border trees
     for (let x = 1; x < w - 1; x += 3) {
         if (rand() < 0.6) {
             const tree = treeTypes[Math.floor(rand() * treeTypes.length)];
@@ -141,7 +188,6 @@ function generateInitialVillage(): void {
             const tree = treeTypes[Math.floor(rand() * treeTypes.length)];
             placeRandom(tree, 1 + Math.floor(rand() * 2), y);
         }
-        // Skip trees on the right border near the river
         if (rand() < 0.4 && Math.abs(y - midY) > 3) {
             const tree = treeTypes[Math.floor(rand() * treeTypes.length)];
             placeRandom(tree, w - 2 - Math.floor(rand() * 2), y);
@@ -152,11 +198,10 @@ function generateInitialVillage(): void {
     for (let i = 0; i < 20; i++) {
         const x = 3 + Math.floor(rand() * (w - 6));
         const y = 3 + Math.floor(rand() * (h - 6));
-        // Don't place on roads, water, or town square
         if (Math.abs(x - midX) < 4 && Math.abs(y - midY) < 4) continue;
-        if (Math.abs(y - midY) < 2) continue; // horizontal road
-        if (Math.abs(x - midX) < 2) continue; // vertical road
-        if (Math.abs(x - riverBaseX) < 4) continue; // river
+        if (Math.abs(y - midY) < 2) continue;
+        if (Math.abs(x - midX) < 2) continue;
+        if (Math.abs(x - riverBaseX) < 4) continue;
 
         const r = rand();
         if (r < 0.3) placeRandom("bush", x, y);
@@ -174,27 +219,54 @@ function generateInitialVillage(): void {
         }
     }
 
-    // Town square — well, market stalls, lamp posts
+    // Town square
     place("well-roof", midX, midY - 2);
     place("stall-tiled", midX - 4, midY - 1);
     place("stall-wood", midX + 4, midY - 1);
     place("lamppost", midX - 2, midY + 2);
     place("lamppost-sign", midX + 2, midY + 2);
 
-    // Barrels and crates near market stalls
     placeRandom("barrel", midX - 5, midY);
     placeRandom("crate", midX - 5, midY + 1);
     placeRandom("barrel", midX + 5, midY);
     placeRandom("wood-pile", midX + 5, midY + 1);
 
-    // Wagon on the road
     place("wagon-covered", midX - 8, midY);
 
-    // Bridge over the river (sprite on top of water tiles)
+    // Bridge
     const bridgeY = midY + Math.floor(Math.sin(riverBaseX * 0.1) * 1);
     const bridgeX = riverBaseX + Math.floor(Math.sin(bridgeY * 0.15) * 2) + 1;
-    // Offset down slightly so the arch sits centered on the water
-    addObject("bridge", bridgeX * TILE + TILE / 2, bridgeY * TILE + TILE);
+    batch.push({ catalog_id: "bridge", x: bridgeX * TILE + TILE / 2, y: bridgeY * TILE + TILE });
 
-    saveObjects();
+    // Try bulk create via API
+    try {
+        const resp = await apiFetch("/api/village/objects/bulk", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ objects: batch }),
+        });
+        if (resp.ok) {
+            const data = await resp.json();
+            objects = data.map((o: any) => ({
+                id: o.id,
+                catalogId: o.catalog_id,
+                x: o.x,
+                y: o.y,
+                owner: o.owner,
+            }));
+            return;
+        }
+    } catch {
+        // API unavailable — store locally
+    }
+
+    // Local fallback
+    for (const item of batch) {
+        objects.push({
+            id: `local_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+            catalogId: item.catalog_id,
+            x: item.x,
+            y: item.y,
+        });
+    }
 }

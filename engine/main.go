@@ -93,8 +93,12 @@ func main() {
 	mux.HandleFunc("PATCH /api/users/{id}", app.requireRole("ROLE_SYSOP", app.handleUpdateUser))
 	mux.HandleFunc("DELETE /api/users/{id}", app.requireRole("ROLE_SYSOP", app.handleDeleteUser))
 
-	// llm-memory authenticated routes
-	mux.HandleFunc("GET /api/village/buildings", app.requireLLMMemory(app.handleVillageBuildings))
+	// llm-memory authenticated routes — village
+	mux.HandleFunc("GET /api/village/objects", app.requireLLMMemory(app.handleListVillageObjects))
+	mux.HandleFunc("POST /api/village/objects", app.requireLLMMemory(app.handleCreateVillageObject))
+	mux.HandleFunc("POST /api/village/objects/bulk", app.requireLLMMemory(app.handleBulkCreateVillageObjects))
+	mux.HandleFunc("DELETE /api/village/objects/{id}", app.requireLLMMemory(app.handleDeleteVillageObject))
+	mux.HandleFunc("PATCH /api/village/objects/{id}/owner", app.requireLLMMemory(app.handleSetVillageObjectOwner))
 
 	// CORS middleware for Angular client
 	handler := corsMiddleware(mux)

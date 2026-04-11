@@ -81,15 +81,14 @@ export class Editor {
         return this.active ? this.selectedObjectId : null;
     }
 
-    private handleCanvasClick = (e: MouseEvent): void => {
+    private handleCanvasClick = async (e: MouseEvent): Promise<void> => {
         if (this.camera.isDragging()) return;
-        // Ignore if the mouse moved significantly (was a drag, not a click)
         const world = this.screenToWorld(e);
         if (!world) return;
 
         if (this.mode === "place" && this.selectedCatalogId) {
             // Place the selected catalog item
-            addObject(this.selectedCatalogId, world.x, world.y);
+            await addObject(this.selectedCatalogId, world.x, world.y);
         } else if (this.mode === "select") {
             // Try to select an object near the click
             this.selectedObjectId = this.findObjectAt(world.x, world.y);
@@ -193,9 +192,9 @@ export class Editor {
         });
 
         // Delete button
-        panel.querySelector("#tool-delete")!.addEventListener("click", () => {
+        panel.querySelector("#tool-delete")!.addEventListener("click", async () => {
             if (this.selectedObjectId) {
-                removeObject(this.selectedObjectId);
+                await removeObject(this.selectedObjectId);
                 this.selectedObjectId = null;
                 this.updateDeleteButton();
             }
