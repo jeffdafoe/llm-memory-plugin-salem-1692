@@ -23,9 +23,23 @@ var modal_open: bool = false
 var _panning: bool = false
 var _pan_start: Vector2 = Vector2.ZERO
 
-## Zoom runs in _input so it works even when editor UI Controls
-## (ScrollContainer, PanelContainer) would otherwise consume scroll events.
-## Skipped when a modal overlay (config panel) is open so it can scroll.
+## UI panel area — clicks here belong to the editor UI, not the camera
+const PANEL_WIDTH: float = 240.0
+const TOP_BAR_HEIGHT: float = 40.0
+
+## Returns true if the screen position is over the editor UI panel area.
+func _is_over_ui(pos: Vector2) -> bool:
+    if not editor_active:
+        return pos.y < TOP_BAR_HEIGHT
+    if pos.y < TOP_BAR_HEIGHT:
+        return true
+    if pos.x < PANEL_WIDTH:
+        return true
+    return false
+
+## All camera input runs in _input so it works even when editor UI Controls
+## (ScrollContainer, PanelContainer) would otherwise consume events in
+## _unhandled_input. A position check skips clicks on the UI panel area.
 func _input(event: InputEvent) -> void:
     if modal_open:
         return
@@ -45,9 +59,13 @@ func _input(event: InputEvent) -> void:
         _clamp_position()
         get_viewport().set_input_as_handled()
 
-func _unhandled_input(event: InputEvent) -> void:
     # Pan: middle-click always, left-click only when editor is not active
     if event is InputEventMouseButton:
+        if _is_over_ui(event.position):
+            # Stop any active pan if mouse enters UI
+            if not event.pressed:
+                _panning = false
+            return
         var is_pan_button: bool = false
         if event.button_index == MOUSE_BUTTON_MIDDLE:
             is_pan_button = true
