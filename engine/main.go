@@ -94,6 +94,9 @@ func main() {
 	mux.HandleFunc("DELETE /api/users/{id}", app.requireRole("ROLE_SYSOP", app.handleDeleteUser))
 
 	// llm-memory authenticated routes — village
+	mux.HandleFunc("GET /api/village/me", app.requireLLMMemory(app.handleVillageMe))
+	mux.HandleFunc("GET /api/village/agents", app.requireLLMMemory(app.handleListVillageAgents))
+	mux.HandleFunc("POST /api/village/agents/{id}/move", app.requireLLMMemory(app.handleMoveAgent))
 	mux.HandleFunc("GET /api/village/objects", app.requireLLMMemory(app.handleListVillageObjects))
 	mux.HandleFunc("POST /api/village/objects", app.requireLLMMemory(app.handleCreateVillageObject))
 	mux.HandleFunc("POST /api/village/objects/bulk", app.requireLLMMemory(app.handleBulkCreateVillageObjects))
