@@ -10,7 +10,7 @@ export interface PlacedObject {
 }
 
 const STORAGE_KEY = "village_objects";
-const VILLAGE_VERSION = 8; // bump this to regenerate the initial village
+const VILLAGE_VERSION = 9; // bump this to regenerate the initial village
 let objects: PlacedObject[] = [];
 let nextId = 1;
 
@@ -193,7 +193,8 @@ function generateInitialVillage(): void {
     // Bridge over the river (sprite on top of water tiles)
     const bridgeY = midY + Math.floor(Math.sin(riverBaseX * 0.1) * 1);
     const bridgeX = riverBaseX + Math.floor(Math.sin(bridgeY * 0.15) * 2) + 1;
-    place("bridge", bridgeX, bridgeY);
+    // Offset down slightly so the arch sits centered on the water
+    addObject("bridge", bridgeX * TILE + TILE / 2, bridgeY * TILE + TILE);
 
     saveObjects();
 }

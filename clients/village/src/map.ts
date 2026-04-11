@@ -91,32 +91,30 @@ export function createMap(): WangTerrainType[][] {
         }
     }
 
-    // Narrow the road from 3 tiles to 1 tile approaching the bridge
-    // Overwrite the 3-wide road near the river with grass, then lay 1-wide path
+    // Narrow the road gradually over 5 tiles approaching the bridge
     const bridgeRiverX = riverBaseX + Math.floor(Math.sin(bridgeRoadY * 0.15) * 2);
-    for (let dist = 1; dist <= 3; dist++) {
-        // Left side approach
-        const lx = bridgeRiverX - dist;
-        if (lx >= 0 && lx < width) {
-            // Clear the wide road to grass, then draw narrow center path
+    const approachLen = 5;
+    for (let dist = 1; dist <= approachLen; dist++) {
+        // How many tiles wide at this distance (3 at far end, 1 at river)
+        const halfWidth = dist <= 2 ? 0 : 1; // 1-wide for 2 tiles, then 3-wide
+
+        for (const side of [-1, 1]) {
+            const bx = side === -1
+                ? bridgeRiverX - dist       // left bank
+                : bridgeRiverX + 2 + dist;  // right bank
+            if (bx < 0 || bx >= width) continue;
+
+            // Clear the full 3-wide road to grass first
             for (let dy = -1; dy <= 1; dy++) {
                 const ry = bridgeRoadY + dy;
-                if (ry >= 0 && ry < height && dy !== 0 && dist <= 2) {
-                    map[ry][lx] = Terrain.GRASS;
+                if (ry >= 0 && ry < height) {
+                    if (Math.abs(dy) > halfWidth) {
+                        map[ry][bx] = Terrain.GRASS;
+                    } else {
+                        map[ry][bx] = Terrain.DIRT_PATH;
+                    }
                 }
             }
-            map[bridgeRoadY][lx] = Terrain.DIRT_PATH;
-        }
-        // Right side approach
-        const rx = bridgeRiverX + 2 + dist;
-        if (rx >= 0 && rx < width) {
-            for (let dy = -1; dy <= 1; dy++) {
-                const ry = bridgeRoadY + dy;
-                if (ry >= 0 && ry < height && dy !== 0 && dist <= 2) {
-                    map[ry][rx] = Terrain.GRASS;
-                }
-            }
-            map[bridgeRoadY][rx] = Terrain.DIRT_PATH;
         }
     }
 
