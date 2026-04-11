@@ -6,7 +6,7 @@ extends Camera2D
 ## Middle-click pan always works regardless of editor state.
 
 # Zoom limits
-const ZOOM_MIN: float = 0.5
+const ZOOM_MIN: float = 0.25
 const ZOOM_MAX: float = 6.0
 const ZOOM_STEP: float = 0.1
 
