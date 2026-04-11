@@ -214,7 +214,7 @@ async function generateInitialVillage(): Promise<void> {
 
         const r = rand();
         if (r < 0.3) placeRandom("bush", x, y);
-        else if (r < 0.5) placeRandom("bush-small", x, y);
+        else if (r < 0.5) placeRandom("bush", x, y);
         else if (r < 0.7) placeRandom("rock-small", x, y);
         else if (r < 0.85) placeRandom("stump", x, y);
         else placeRandom("log-pile", x, y);

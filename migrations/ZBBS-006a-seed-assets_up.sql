@@ -20,7 +20,7 @@ INSERT INTO asset (id, name, category, anchor_x, anchor_y, layer) VALUES
     ('rock-water', 'River Rock', 'nature', 0.5, 0.85, 'objects'),
     ('stump', 'Tree Stump', 'nature', 0.5, 0.85, 'objects'),
     ('log-pile', 'Log Pile', 'nature', 0.5, 0.85, 'objects'),
-    ('bush-small', 'Small Bush', 'nature', 0.5, 0.85, 'objects');
+    ('lily-pad', 'Lily Pad', 'nature', 0.5, 0.85, 'objects');
 
 INSERT INTO asset_state (asset_id, state, sheet, src_x, src_y, src_w, src_h) VALUES
     ('bush', 'default', '/assets/tilesets/mana-seed/summer-forest/summer sheets/summer 32x32.png', 0, 0, 32, 32),
@@ -29,7 +29,7 @@ INSERT INTO asset_state (asset_id, state, sheet, src_x, src_y, src_w, src_h) VAL
     ('rock-water', 'default', '/assets/tilesets/mana-seed/summer-forest/summer sheets/summer 32x32.png', 96, 0, 32, 32),
     ('stump', 'default', '/assets/tilesets/mana-seed/summer-forest/summer sheets/summer 32x32.png', 128, 0, 32, 32),
     ('log-pile', 'default', '/assets/tilesets/mana-seed/summer-forest/summer sheets/summer 32x32.png', 160, 0, 32, 32),
-    ('bush-small', 'default', '/assets/tilesets/mana-seed/summer-forest/summer sheets/summer 32x32.png', 192, 0, 32, 32);
+    ('lily-pad', 'default', '/assets/tilesets/mana-seed/summer-forest/summer sheets/summer 32x32.png', 192, 0, 32, 32);
 
 -- Medium nature (48x32)
 INSERT INTO asset (id, name, category, anchor_x, anchor_y, layer) VALUES
@@ -74,9 +74,9 @@ INSERT INTO asset (id, name, category, anchor_x, anchor_y, layer) VALUES
 
 INSERT INTO asset_state (asset_id, state, sheet, src_x, src_y, src_w, src_h) VALUES
     ('well-empty', 'default', '/assets/tilesets/mana-seed/village-accessories/village accessories 48x80.png', 0, 0, 48, 80),
-    ('well-bucket', 'default', '/assets/tilesets/mana-seed/village-accessories/village accessories 48x80.png', 48, 0, 48, 80),
-    ('well-roof', 'default', '/assets/tilesets/mana-seed/village-accessories/village accessories 48x80.png', 96, 0, 48, 80),
-    ('well-wishing', 'default', '/assets/tilesets/mana-seed/village-accessories/village accessories 48x80.png', 144, 0, 48, 80),
+    ('well-bucket', 'default', '/assets/tilesets/mana-seed/village-accessories/village accessories 48x80.png', 96, 0, 48, 80),
+    ('well-roof', 'default', '/assets/tilesets/mana-seed/village-accessories/village accessories 48x80.png', 144, 0, 48, 80),
+    ('well-wishing', 'default', '/assets/tilesets/mana-seed/village-accessories/village accessories 48x80.png', 48, 0, 48, 80),
     ('shop-front', 'default', '/assets/tilesets/mana-seed/village-accessories/village accessories 48x80.png', 192, 0, 48, 80);
 
 -- Market stalls — each is ONE asset with open/closed states
