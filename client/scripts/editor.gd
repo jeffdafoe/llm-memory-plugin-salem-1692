@@ -159,13 +159,32 @@ func _place_at_mouse(screen_pos: Vector2) -> void:
 func _find_object_at(screen_pos: Vector2) -> Node2D:
     var world_pos: Vector2 = _screen_to_world(screen_pos)
     var best_node: Node2D = null
-    var best_dist: float = 32.0  # Max selection radius in world pixels
+    var best_dist: float = INF
 
     for child in world.get_node("Objects").get_children():
-        var dist: float = child.position.distance_to(world_pos)
-        if dist < best_dist:
-            best_dist = dist
-            best_node = child
+        if child.get_child_count() == 0:
+            continue
+        var sprite = child.get_child(0) as Sprite2D
+        if sprite == null:
+            continue
+
+        # Build the sprite's bounding rect in world coordinates
+        # sprite.position is relative to the container (anchor offset)
+        # sprite.scale is 2x, texture region gives native size
+        var tex = sprite.texture
+        if tex == null:
+            continue
+        var region_size: Vector2 = tex.get_size()
+        var world_size: Vector2 = region_size * sprite.scale
+        var rect_origin: Vector2 = child.position + sprite.position
+        var rect = Rect2(rect_origin, world_size)
+
+        if rect.has_point(world_pos):
+            # Among overlapping sprites, prefer the one whose anchor is closest
+            var dist: float = child.position.distance_to(world_pos)
+            if dist < best_dist:
+                best_dist = dist
+                best_node = child
 
     return best_node
 
