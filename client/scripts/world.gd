@@ -40,7 +40,13 @@ func build_terrain() -> void:
     _load_terrain()      # Then try to load saved terrain (overwrites if found)
 
 ## Load placed objects from the API — called after catalog is ready.
+## Guards against duplicate calls (auth flow can trigger this twice).
+var _objects_loaded: bool = false
+
 func load_objects() -> void:
+    if _objects_loaded:
+        return
+    _objects_loaded = true
     _load_village()
 
 ## Paint a terrain cell and update the wang tiles for it and neighbors.
