@@ -1,13 +1,13 @@
 version: 2
 updates:
-  - package-ecosystem: composer
-    directory: /api
+  - package-ecosystem: npm
+    directory: /clients/village
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
 
-  - package-ecosystem: npm
-    directory: /clients/modern
+  - package-ecosystem: gomod
+    directory: /engine
     schedule:
       interval: weekly
     open-pull-requests-limit: 10
