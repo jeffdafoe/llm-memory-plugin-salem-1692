@@ -20,7 +20,7 @@ const COLOR_STATE_BORDER = Color(0.3, 0.24, 0.15, 0.5)
 
 const THUMB_SIZE: int = 64
 const TOP_BAR_HEIGHT: float = 40.0
-const CARD_WIDTH: float = 240.0
+const CARD_WIDTH: float = 200.0
 
 var _font: Font = null
 var _scroll: ScrollContainer = null
@@ -77,7 +77,7 @@ func _ready() -> void:
     _scroll = scroll
     scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
     scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+    scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
     panel.add_child(scroll)
 
     _content = VBoxContainer.new()
