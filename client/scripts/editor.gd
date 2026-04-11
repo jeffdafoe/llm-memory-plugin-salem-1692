@@ -93,6 +93,7 @@ func _input(event: InputEvent) -> void:
                 if dist >= _drag_threshold:
                     _drag_pending = false
                     _dragging = true
+                    print("DRAG ENGAGED at dist=", dist)
             if _dragging:
                 _drag_move(event.position)
                 get_viewport().set_input_as_handled()
@@ -335,7 +336,9 @@ func _drag_move(screen_pos: Vector2) -> void:
         return
     var current_world: Vector2 = _screen_to_world(screen_pos)
     var delta: Vector2 = current_world - _drag_start_world
-    selected_object.position = _drag_start_obj_pos + delta
+    var new_pos: Vector2 = _drag_start_obj_pos + delta
+    print("DRAG: delta=", delta, " new_pos=", new_pos, " old_pos=", selected_object.position)
+    selected_object.position = new_pos
 
 func _drag_end(screen_pos: Vector2) -> void:
     if selected_object == null:
