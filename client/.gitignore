@@ -8,9 +8,6 @@ dist/
 .DS_Store
 Thumbs.db
 
-# Readme files from asset packs (not needed in repo)
-assets/tilesets/**/Mana Seed readme.txt
-assets/tilesets/**/*old version*
-assets/tilesets/**/*deprecated*
-assets/tilesets/**/mockups/
-assets/tilesets/**/sample map/
+# Commercial tilesets — purchased assets, not for public repos
+# These are deployed to the server separately
+assets/tilesets/mana-seed/
