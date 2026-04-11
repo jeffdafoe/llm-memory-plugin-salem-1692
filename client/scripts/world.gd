@@ -11,7 +11,7 @@ const WangLookup = preload("res://scripts/wang_lookup.gd")
 
 # The generated map data — 2D array [y][x] of terrain indices (1-based)
 var map_data: Array = []
-var map_width: int = 80
+var map_width: int = 64
 var map_height: int = 48
 
 # Placed objects keyed by server id
