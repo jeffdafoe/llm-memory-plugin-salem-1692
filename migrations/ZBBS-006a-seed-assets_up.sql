@@ -49,16 +49,16 @@ INSERT INTO asset_state (asset_id, state, sheet, src_x, src_y, src_w, src_h) VAL
 
 -- Small props (32x32)
 INSERT INTO asset (id, name, category, anchor_x, anchor_y, layer) VALUES
-    ('barrel', 'Barrel', 'prop', 0.5, 0.85, 'objects'),
-    ('barrel-open', 'Open Barrel', 'prop', 0.5, 0.85, 'objects'),
+    ('stump-small', 'Small Stump', 'nature', 0.5, 0.85, 'objects'),
+    ('stump-axe', 'Stump (Axe)', 'nature', 0.5, 0.85, 'objects'),
     ('wood-pile', 'Wood Pile', 'prop', 0.5, 0.85, 'objects'),
     ('wood-shelter', 'Wood Shelter', 'prop', 0.5, 0.85, 'objects'),
     ('crate', 'Crate', 'prop', 0.5, 0.85, 'objects'),
     ('millstone', 'Millstone', 'prop', 0.5, 0.85, 'objects');
 
 INSERT INTO asset_state (asset_id, state, sheet, src_x, src_y, src_w, src_h) VALUES
-    ('barrel', 'default', '/assets/tilesets/mana-seed/village-accessories/village accessories 32x32.png', 0, 0, 32, 32),
-    ('barrel-open', 'default', '/assets/tilesets/mana-seed/village-accessories/village accessories 32x32.png', 32, 0, 32, 32),
+    ('stump-small', 'default', '/assets/tilesets/mana-seed/village-accessories/village accessories 32x32.png', 0, 0, 32, 32),
+    ('stump-axe', 'default', '/assets/tilesets/mana-seed/village-accessories/village accessories 32x32.png', 32, 0, 32, 32),
     ('wood-pile', 'default', '/assets/tilesets/mana-seed/village-accessories/village accessories 32x32.png', 64, 0, 32, 32),
     ('wood-shelter', 'default', '/assets/tilesets/mana-seed/village-accessories/village accessories 32x32.png', 96, 0, 32, 32),
     ('crate', 'default', '/assets/tilesets/mana-seed/village-accessories/village accessories 32x32.png', 0, 32, 32, 32),
@@ -70,14 +70,14 @@ INSERT INTO asset (id, name, category, anchor_x, anchor_y, layer) VALUES
     ('well-bucket', 'Well (Bucket)', 'structure', 0.5, 0.85, 'objects'),
     ('well-roof', 'Well (Roofed)', 'structure', 0.5, 0.85, 'objects'),
     ('well-wishing', 'Wishing Well', 'structure', 0.5, 0.85, 'objects'),
-    ('shop-front', 'Shop Front', 'structure', 0.5, 0.85, 'objects');
+    ('message-board', 'Message Board', 'prop', 0.5, 0.85, 'objects');
 
 INSERT INTO asset_state (asset_id, state, sheet, src_x, src_y, src_w, src_h) VALUES
     ('well-empty', 'default', '/assets/tilesets/mana-seed/village-accessories/village accessories 48x80.png', 0, 0, 48, 80),
     ('well-bucket', 'default', '/assets/tilesets/mana-seed/village-accessories/village accessories 48x80.png', 96, 0, 48, 80),
     ('well-roof', 'default', '/assets/tilesets/mana-seed/village-accessories/village accessories 48x80.png', 144, 0, 48, 80),
     ('well-wishing', 'default', '/assets/tilesets/mana-seed/village-accessories/village accessories 48x80.png', 48, 0, 48, 80),
-    ('shop-front', 'default', '/assets/tilesets/mana-seed/village-accessories/village accessories 48x80.png', 192, 0, 48, 80);
+    ('message-board', 'default', '/assets/tilesets/mana-seed/village-accessories/village accessories 48x80.png', 192, 0, 48, 80);
 
 -- Market stalls — each is ONE asset with open/closed states
 INSERT INTO asset (id, name, category, default_state, anchor_x, anchor_y, layer) VALUES

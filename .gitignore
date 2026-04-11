@@ -28,6 +28,7 @@ infrastructure/local-secrets.yml
 # Tilesets — only free/ is tracked, everything else is purchased/commercial
 clients/village/assets/tilesets/*
 !clients/village/assets/tilesets/free/
+clients/village/dist/assets/tilesets/
 
 # System
 .DS_Store
