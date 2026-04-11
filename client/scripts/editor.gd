@@ -219,6 +219,7 @@ func _place_at_mouse(screen_pos: Vector2) -> void:
         return
     var world_pos: Vector2 = _screen_to_world(screen_pos)
     world.add_object(selected_asset_id, world_pos)
+    set_mode(Mode.SELECT)
 
 func _find_object_at(screen_pos: Vector2) -> Node2D:
     var world_pos: Vector2 = _screen_to_world(screen_pos)
