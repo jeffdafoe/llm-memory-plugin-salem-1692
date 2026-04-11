@@ -3,7 +3,6 @@ module github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine
 go 1.25.0
 
 require (
-	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/jackc/pgx/v5 v5.7.4
 	golang.org/x/crypto v0.50.0
 )

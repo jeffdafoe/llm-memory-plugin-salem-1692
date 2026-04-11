@@ -5,7 +5,9 @@ import (
 	"net/http"
 )
 
-// handleVillageMe returns the current user's village info (roles, permissions).
+// handleVillageMe returns the current user's info and permissions.
+// Edit access is determined by the llm-memory admin role — admin users
+// who are in the salem realm can edit. Regular realm members can view.
 func (app *App) handleVillageMe(w http.ResponseWriter, r *http.Request) {
 	user := getUserFromContext(r.Context())
 	if user == nil {
@@ -13,21 +15,10 @@ func (app *App) handleVillageMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check if this user has a village_agent record with editor role
-	canEdit := false
-	var agentRole string
-	err := app.DB.QueryRow(r.Context(),
-		`SELECT role FROM village_agent WHERE llm_memory_agent = $1`,
-		user.Username,
-	).Scan(&agentRole)
-	if err == nil {
-		canEdit = agentRole == "editor" || agentRole == "admin" || agentRole == "sysop"
-	}
-
-	// Jeff (sysop) always gets editor access
-	if user.Username == "jeff" {
-		canEdit = true
-	}
+	// For now, edit permission comes from the verify response.
+	// Admin users (web session login) get edit access.
+	// This will be refined when we add proper role management.
+	canEdit := user.hasRole("ROLE_SALEM_ADMIN")
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"agent":    user.Username,
