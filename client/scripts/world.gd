@@ -24,13 +24,16 @@ var atlas_source_id: int = 0
 
 func _ready() -> void:
     if OS.has_feature("web"):
-        api_base = ""
+        api_base = JavaScriptBridge.eval("window.location.origin", true)
     else:
         api_base = "http://zbbs.local"
 
-## Called by Main after catalog is loaded.
-func build() -> void:
+## Generate and paint terrain — no API needed, runs immediately.
+func build_terrain() -> void:
     _generate_terrain()
+
+## Load placed objects from the API — called after catalog is ready.
+func load_objects() -> void:
     _load_village()
 
 func _generate_terrain() -> void:
