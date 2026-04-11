@@ -198,6 +198,7 @@
         src: "/etc/nginx/sites-available/{{ village_server_name }}.conf"
         dest: "/etc/nginx/sites-enabled/{{ village_server_name }}.conf"
         state: link
+        force: yes
       when: village_server_name is defined
 
     - name: Reload nginx
