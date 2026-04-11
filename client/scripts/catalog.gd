@@ -1,10 +1,11 @@
 extends Node
 ## Autoloaded singleton — loads the asset catalog from the Go API.
+## Downloads spritesheets via HTTP and caches them as textures.
 ## Other scripts access it via the global `Catalog` name.
 
 signal catalog_loaded
 
-# True once the catalog has been fetched and parsed
+# True once the catalog AND all sheets have been fetched
 var loaded: bool = false
 
 # All assets keyed by asset id
@@ -16,17 +17,17 @@ var categories: Dictionary = {}
 # Tileset packs keyed by pack id
 var packs: Dictionary = {}
 
-# Sprite sheet texture cache — keyed by sheet path, value is Texture2D
+# Sprite sheet texture cache — keyed by sheet path, value is ImageTexture
 var sheet_cache: Dictionary = {}
+
+# Sheets currently being downloaded
+var _pending_sheets: int = 0
 
 # Base URL for the Go API
 var api_base: String = ""
 
 func _ready() -> void:
-    # Determine the API base URL.
-    # Godot's HTTPRequest needs full URLs, even in the browser.
     if OS.has_feature("web"):
-        # Get the page origin via JavaScript (e.g. "https://village.llm-memory.net")
         api_base = JavaScriptBridge.eval("window.location.origin", true)
     else:
         api_base = "http://zbbs.local"
@@ -56,8 +57,70 @@ func _on_catalog_loaded(result: int, response_code: int, headers: PackedStringAr
         return
 
     _parse_catalog(json)
-    loaded = true
-    catalog_loaded.emit()
+
+    # Collect all unique sheet paths and download them
+    var unique_sheets: Dictionary = {}
+    for asset_id in assets:
+        var asset = assets[asset_id]
+        for state in asset.get("states", []):
+            var sheet: String = state.get("sheet", "")
+            if sheet != "" and not unique_sheets.has(sheet):
+                unique_sheets[sheet] = true
+
+    _pending_sheets = unique_sheets.size()
+    if _pending_sheets == 0:
+        loaded = true
+        catalog_loaded.emit()
+        return
+
+    print("Catalog: downloading ", _pending_sheets, " spritesheets...")
+    for sheet_path in unique_sheets:
+        _download_sheet(sheet_path)
+
+func _download_sheet(sheet_path: String) -> void:
+    var http = HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+
+    # Sheet paths are like "/tilesets/mana-seed/..." — served by nginx
+    var url: String = api_base + sheet_path
+
+    http.request_completed.connect(_on_sheet_downloaded.bind(http, sheet_path))
+    var err = http.request(url)
+    if err != OK:
+        push_error("Failed to request sheet: " + sheet_path + " error=" + str(err))
+        _pending_sheets -= 1
+        _check_all_sheets_loaded()
+
+func _on_sheet_downloaded(result: int, response_code: int, headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest, sheet_path: String) -> void:
+    http.queue_free()
+
+    if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
+        push_error("Sheet download failed: " + sheet_path + " code=" + str(response_code))
+        _pending_sheets -= 1
+        _check_all_sheets_loaded()
+        return
+
+    # Create an Image from the PNG data and convert to ImageTexture
+    var image = Image.new()
+    var err = image.load_png_from_buffer(body)
+    if err != OK:
+        push_error("Failed to decode sheet PNG: " + sheet_path)
+        _pending_sheets -= 1
+        _check_all_sheets_loaded()
+        return
+
+    var texture = ImageTexture.create_from_image(image)
+    sheet_cache[sheet_path] = texture
+
+    _pending_sheets -= 1
+    _check_all_sheets_loaded()
+
+func _check_all_sheets_loaded() -> void:
+    if _pending_sheets <= 0:
+        print("Catalog: all sheets loaded (", sheet_cache.size(), " textures)")
+        loaded = true
+        catalog_loaded.emit()
 
 func _parse_catalog(data: Array) -> void:
     for item in data:
@@ -78,7 +141,7 @@ func _parse_catalog(data: Array) -> void:
                 packs[pack_id] = pack
 
 ## Get the sprite info for an asset in a given state.
-## Returns a dictionary with sheet, srcX, srcY, srcW, srcH
+## Returns a dictionary with sheet, src_x, src_y, src_w, src_h
 ## or null if not found.
 func get_state(asset_id: String, state: String = "") -> Variant:
     var asset = assets.get(asset_id)
@@ -91,7 +154,7 @@ func get_state(asset_id: String, state: String = "") -> Variant:
 
     # If no state specified, use the asset's default_state or first state
     if state == "":
-        state = asset.get("defaultState", "default")
+        state = asset.get("defaultState", asset.get("default_state", "default"))
 
     for s in states:
         if s.get("state", "") == state:
@@ -100,22 +163,9 @@ func get_state(asset_id: String, state: String = "") -> Variant:
     # Fallback to first state
     return states[0]
 
-## Load and cache a spritesheet texture.
-## Sheet paths from the API are like "/assets/tilesets/mana-seed/..."
-## In Godot these map to "res://assets/tilesets/mana-seed/..."
+## Get the cached texture for a spritesheet.
 func get_sheet_texture(sheet_path: String) -> Texture2D:
-    if sheet_cache.has(sheet_path):
-        return sheet_cache[sheet_path]
-
-    # Convert API path to Godot resource path
-    var res_path: String = "res:/" + sheet_path
-    if not ResourceLoader.exists(res_path):
-        push_error("Sheet not found: " + res_path)
-        return null
-
-    var texture: Texture2D = load(res_path)
-    sheet_cache[sheet_path] = texture
-    return texture
+    return sheet_cache.get(sheet_path)
 
 ## Get an AtlasTexture for a specific sprite on a sheet.
 ## This is the main way to get a drawable texture for an asset state.
@@ -123,14 +173,15 @@ func get_sprite_texture(state_info: Dictionary) -> AtlasTexture:
     var sheet_path: String = state_info.get("sheet", "")
     var sheet_texture: Texture2D = get_sheet_texture(sheet_path)
     if sheet_texture == null:
+        push_warning("Sheet not loaded: " + sheet_path)
         return null
 
     var atlas = AtlasTexture.new()
     atlas.atlas = sheet_texture
     atlas.region = Rect2(
-        state_info.get("srcX", 0),
-        state_info.get("srcY", 0),
-        state_info.get("srcW", 0),
-        state_info.get("srcH", 0)
+        state_info.get("src_x", state_info.get("srcX", 0)),
+        state_info.get("src_y", state_info.get("srcY", 0)),
+        state_info.get("src_w", state_info.get("srcW", 0)),
+        state_info.get("src_h", state_info.get("srcH", 0))
     )
     return atlas
