@@ -24,23 +24,25 @@ export async function loadObjects(): Promise<void> {
         const resp = await apiFetch("/api/village/objects");
         if (resp.ok) {
             const data = await resp.json();
-            objects = data.map((o: any) => ({
-                id: o.id,
-                catalogId: o.catalog_id,
-                x: o.x,
-                y: o.y,
-                owner: o.owner,
-            }));
-            loaded = true;
-            return;
+            if (data.length > 0) {
+                objects = data.map((o: any) => ({
+                    id: o.id,
+                    catalogId: o.catalog_id,
+                    x: o.x,
+                    y: o.y,
+                    owner: o.owner,
+                }));
+                loaded = true;
+                return;
+            }
+            // Empty DB — generate initial village
         }
     } catch {
         // API unavailable — fall through to generate locally
     }
 
-    // If API fails (e.g. no auth, local dev), generate locally
     if (!loaded) {
-        generateInitialVillage();
+        await generateInitialVillage();
         loaded = true;
     }
 }
