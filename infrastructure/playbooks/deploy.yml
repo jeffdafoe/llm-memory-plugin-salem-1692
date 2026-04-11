@@ -176,9 +176,9 @@
         owner: "{{ app_user }}"
         mode: "0755"
 
-    - name: Sync repo tilesets to persistent location
+    - name: Sync free tilesets to persistent location
       synchronize:
-        src: "{{ project_root }}/clients/village/assets/tilesets/"
+        src: "{{ project_root }}/clients/village/assets/tilesets/free/"
         dest: "{{ project_root }}/tilesets/"
       delegate_to: "{{ inventory_hostname }}"
 
