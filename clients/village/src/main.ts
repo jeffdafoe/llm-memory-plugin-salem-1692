@@ -150,7 +150,7 @@ function startGame(): void {
             }
         }
 
-        // Check if hovering an object (building/structure)
+        // Check if hovering an object
         if (!tooltipText) {
             const SCALE = 2;
             for (const obj of getObjects()) {
@@ -162,18 +162,20 @@ function startGame(): void {
                 const drawY = obj.y - destH * item.anchorY;
                 if (world.x >= drawX && world.x <= drawX + destW &&
                     world.y >= drawY && world.y <= drawY + destH) {
+                    // Build tooltip: name, owner, who's inside
                     const parts: string[] = [item.name];
-                    if (obj.owner) parts.push(`Owner: ${obj.owner}`);
-                    // List agents inside this object
+                    // Show owner's display name if we have it
+                    if (obj.owner) {
+                        const ownerAgent = currentAgents.find(a => a.llmMemoryAgent === obj.owner);
+                        parts.push("Owner: " + (ownerAgent?.name || obj.owner));
+                    }
                     const inside = currentAgents.filter(a =>
                         a.locationType === "inside" && a.locationObjectId === obj.id
                     );
                     if (inside.length > 0) {
                         parts.push("Inside: " + inside.map(a => a.name).join(", "));
                     }
-                    if (parts.length > 1 || inside.length > 0) {
-                        tooltipText = parts.join(" — ");
-                    }
+                    tooltipText = parts.join("\n");
                     break;
                 }
             }
