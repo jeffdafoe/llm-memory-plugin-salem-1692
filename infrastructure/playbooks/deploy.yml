@@ -137,10 +137,19 @@
       when: run_migrations | default(false) | bool
 
     # Godot client export
+    - name: Create client dist directory
+      file:
+        path: "{{ project_root }}/client/dist"
+        state: directory
+        owner: "{{ app_user }}"
+        mode: "0755"
+
     - name: Export Godot client for web
       command: >
         {{ godot_bin }} --headless --path {{ project_root }}/client
         --export-release "Web" dist/index.html
+      environment:
+        GODOT_SILENCE_ROOT_WARNING: "1"
       when: deploy_environment == 'production'
 
     # Systemd service
