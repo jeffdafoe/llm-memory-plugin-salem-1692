@@ -65,7 +65,6 @@ export function showConfigPanel(
         assetsTab.classList.remove("active");
         configBody.style.display = "";
         assetsBody.style.display = "none";
-        panel.classList.remove("side-panel-wide");
     });
 
     assetsTab.addEventListener("click", () => {
@@ -73,7 +72,6 @@ export function showConfigPanel(
         configTab.classList.remove("active");
         assetsBody.style.display = "";
         configBody.style.display = "none";
-        panel.classList.add("side-panel-wide");
     });
 
     container.appendChild(panel);
@@ -222,7 +220,7 @@ function buildAssetsBody(body: HTMLElement): void {
 const sheetCache = new Map<string, HTMLImageElement>();
 
 function drawStateSprite(canvas: HTMLCanvasElement, state: { sheet: string; srcX: number; srcY: number; srcW: number; srcH: number }): void {
-    const maxThumb = 64;
+    const maxThumb = 96;
     const scale = Math.min(2, maxThumb / state.srcW, maxThumb / state.srcH);
     const w = Math.round(state.srcW * scale);
     const h = Math.round(state.srcH * scale);
