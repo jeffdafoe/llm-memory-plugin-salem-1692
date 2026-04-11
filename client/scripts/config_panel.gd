@@ -1,7 +1,8 @@
 extends Control
-## Config panel — full-screen overlay showing all assets with their state
-## variants. Opens when Config button is pressed. Click anywhere outside
-## or press Escape to close.
+## Config panel — full-screen overlay showing all assets in a card grid
+## with metadata and state variant thumbnails. Matches the old TypeScript
+## layout: category headers, multi-column cards, asset ID, layer info,
+## anchor, state count, pack name, and state thumbnails with labels.
 
 signal closed
 
@@ -12,15 +13,18 @@ const COLOR_BORDER = Color(0.45, 0.35, 0.22, 1.0)
 const COLOR_TEXT = Color(0.85, 0.75, 0.55, 1.0)
 const COLOR_TEXT_DIM = Color(0.63, 0.56, 0.44, 1.0)
 const COLOR_LABEL = Color(0.54, 0.48, 0.31, 1.0)
-const COLOR_ITEM_BG = Color(0.15, 0.12, 0.08, 1.0)
-const COLOR_ITEM_BORDER = Color(0.3, 0.24, 0.15, 0.5)
-const COLOR_STATE_ACTIVE = Color(0.85, 0.75, 0.35, 0.9)
+const COLOR_CARD_BG = Color(0.15, 0.12, 0.08, 1.0)
+const COLOR_CARD_BORDER = Color(0.35, 0.28, 0.17, 0.7)
+const COLOR_STATE_DEFAULT = Color(0.85, 0.75, 0.35, 0.9)
+const COLOR_STATE_BORDER = Color(0.3, 0.24, 0.15, 0.5)
 
-const THUMB_SIZE: int = 48
+const THUMB_SIZE: int = 64
 const TOP_BAR_HEIGHT: float = 40.0
+const CARD_WIDTH: float = 240.0
 
 var _font: Font = null
 var _content: VBoxContainer = null
+var _summary_label: Label = null
 
 func _ready() -> void:
     _font = load("res://assets/fonts/IMFellEnglish-Regular.ttf")
@@ -41,14 +45,12 @@ func _ready() -> void:
 
     # Center panel
     var panel = PanelContainer.new()
-    panel.anchor_left = 0.1
-    panel.anchor_right = 0.9
+    panel.anchor_left = 0.02
+    panel.anchor_right = 0.98
     panel.anchor_top = 0.0
     panel.anchor_bottom = 1.0
-    panel.offset_top = TOP_BAR_HEIGHT + 8
-    panel.offset_bottom = -8
-    panel.offset_left = 0
-    panel.offset_right = 0
+    panel.offset_top = TOP_BAR_HEIGHT + 4
+    panel.offset_bottom = -4
 
     var panel_style = StyleBoxFlat.new()
     panel_style.bg_color = COLOR_PANEL_BG
@@ -63,40 +65,28 @@ func _ready() -> void:
     panel_style.corner_radius_right_bottom = 4
     panel_style.content_margin_left = 16.0
     panel_style.content_margin_right = 16.0
-    panel_style.content_margin_top = 16.0
-    panel_style.content_margin_bottom = 16.0
+    panel_style.content_margin_top = 12.0
+    panel_style.content_margin_bottom = 12.0
     panel.add_theme_stylebox_override("panel", panel_style)
     add_child(panel)
 
-    # Scrollable content inside the panel
-    var margin = MarginContainer.new()
-    margin.size_flags_vertical = Control.SIZE_EXPAND_FILL
-    margin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    panel.add_child(margin)
-
+    # Scrollable content
     var scroll = ScrollContainer.new()
     scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
     scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-    margin.add_child(scroll)
+    panel.add_child(scroll)
 
     _content = VBoxContainer.new()
     _content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    _content.add_theme_constant_override("separation", 16)
+    _content.add_theme_constant_override("separation", 12)
     scroll.add_child(_content)
 
-    # Header
-    var header = Label.new()
-    header.text = "Asset Reference"
-    header.add_theme_color_override("font_color", COLOR_TEXT)
-    header.add_theme_font_override("font", _font)
-    header.add_theme_font_size_override("font_size", 24)
-    header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-    _content.add_child(header)
-
-    var sep = HSeparator.new()
-    sep.add_theme_color_override("separator_color", Color(0.4, 0.32, 0.2, 0.4))
-    _content.add_child(sep)
+    # Summary line
+    _summary_label = Label.new()
+    _summary_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+    _summary_label.add_theme_font_size_override("font_size", 12)
+    _content.add_child(_summary_label)
 
 func _unhandled_input(event: InputEvent) -> void:
     if not visible:
@@ -115,10 +105,18 @@ func _close() -> void:
 
 ## Build the asset reference from the loaded catalog.
 func build_reference() -> void:
-    # Clear existing content (keep header and separator)
+    # Clear existing content (keep summary label)
     var children = _content.get_children()
-    for i in range(2, children.size()):
+    for i in range(1, children.size()):
         children[i].queue_free()
+
+    # Count totals
+    var total_assets: int = Catalog.assets.size()
+    var total_states: int = 0
+    for asset_id in Catalog.assets:
+        var asset = Catalog.assets[asset_id]
+        total_states += asset.get("states", []).size()
+    _summary_label.text = str(total_assets) + " assets, " + str(total_states) + " states"
 
     # Group assets by category
     var cat_names: Array = Catalog.categories.keys()
@@ -137,83 +135,108 @@ func _add_category_section(cat_name: String, assets: Array) -> void:
     header.add_theme_font_size_override("font_size", 16)
     _content.add_child(header)
 
+    # Wrapping grid — use a FlowContainer-style layout via GridContainer
+    # with enough columns to fill the width
+    var grid = GridContainer.new()
+    grid.columns = 6
+    grid.add_theme_constant_override("h_separation", 8)
+    grid.add_theme_constant_override("v_separation", 8)
+    grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    _content.add_child(grid)
+
     # Sort assets by name
     var sorted_assets = assets.duplicate()
     sorted_assets.sort_custom(func(a, b): return a.get("name", a.get("id", "")) < b.get("name", b.get("id", "")))
 
     for asset in sorted_assets:
-        _add_asset_row(asset)
+        _add_asset_card(grid, asset)
 
-func _add_asset_row(asset: Dictionary) -> void:
+func _add_asset_card(grid: GridContainer, asset: Dictionary) -> void:
     var asset_id: String = asset.get("id", "")
     var asset_name: String = asset.get("name", asset_id)
     var states: Array = asset.get("states", [])
     var default_state: String = asset.get("defaultState", asset.get("default_state", "default"))
+    var anchor_x: float = asset.get("anchorX", asset.get("anchor_x", 0.5))
+    var anchor_y: float = asset.get("anchorY", asset.get("anchor_y", 0.85))
+    var layer: String = asset.get("layer", "objects")
     var pack = asset.get("pack", {})
     var pack_name: String = ""
     if pack is Dictionary:
         pack_name = pack.get("name", "")
 
-    # Row container with background
-    var row = PanelContainer.new()
-    var row_style = StyleBoxFlat.new()
-    row_style.bg_color = COLOR_ITEM_BG
-    row_style.border_width_left = 1
-    row_style.border_width_top = 1
-    row_style.border_width_right = 1
-    row_style.border_width_bottom = 1
-    row_style.border_color = COLOR_ITEM_BORDER
-    row_style.corner_radius_left_top = 3
-    row_style.corner_radius_right_top = 3
-    row_style.corner_radius_left_bottom = 3
-    row_style.corner_radius_right_bottom = 3
-    row_style.content_margin_left = 8.0
-    row_style.content_margin_right = 8.0
-    row_style.content_margin_top = 6.0
-    row_style.content_margin_bottom = 6.0
-    row.add_theme_stylebox_override("panel", row_style)
-    _content.add_child(row)
+    # Card container
+    var card = PanelContainer.new()
+    card.custom_minimum_size = Vector2(CARD_WIDTH, 0)
+    card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 
-    var hbox = HBoxContainer.new()
-    hbox.add_theme_constant_override("separation", 12)
-    row.add_child(hbox)
+    var card_style = StyleBoxFlat.new()
+    card_style.bg_color = COLOR_CARD_BG
+    card_style.border_width_left = 1
+    card_style.border_width_top = 1
+    card_style.border_width_right = 1
+    card_style.border_width_bottom = 1
+    card_style.border_color = COLOR_CARD_BORDER
+    card_style.corner_radius_left_top = 3
+    card_style.corner_radius_right_top = 3
+    card_style.corner_radius_left_bottom = 3
+    card_style.corner_radius_right_bottom = 3
+    card_style.content_margin_left = 8.0
+    card_style.content_margin_right = 8.0
+    card_style.content_margin_top = 6.0
+    card_style.content_margin_bottom = 6.0
+    card.add_theme_stylebox_override("panel", card_style)
+    grid.add_child(card)
 
-    # Asset info (name + pack)
-    var info_box = VBoxContainer.new()
-    info_box.custom_minimum_size = Vector2(160, 0)
-    info_box.add_theme_constant_override("separation", 2)
-    hbox.add_child(info_box)
+    var vbox = VBoxContainer.new()
+    vbox.add_theme_constant_override("separation", 2)
+    card.add_child(vbox)
 
+    # Asset name (bold)
     var name_label = Label.new()
     name_label.text = asset_name
     name_label.add_theme_color_override("font_color", COLOR_TEXT)
     name_label.add_theme_font_override("font", _font)
     name_label.add_theme_font_size_override("font_size", 14)
-    info_box.add_child(name_label)
+    vbox.add_child(name_label)
 
+    # Asset ID
+    var id_label = Label.new()
+    id_label.text = asset_id
+    id_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+    id_label.add_theme_font_size_override("font_size", 10)
+    vbox.add_child(id_label)
+
+    # Metadata line: layer, anchor, states count
+    var meta_label = Label.new()
+    meta_label.text = "layer: " + layer + " anchor: (" + str(anchor_x) + ", " + str(anchor_y) + ") states: " + str(states.size())
+    meta_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+    meta_label.add_theme_font_size_override("font_size", 10)
+    vbox.add_child(meta_label)
+
+    # Pack name
     if pack_name != "":
         var pack_label = Label.new()
         pack_label.text = pack_name
         pack_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
-        pack_label.add_theme_font_size_override("font_size", 11)
-        info_box.add_child(pack_label)
+        pack_label.add_theme_font_size_override("font_size", 10)
+        vbox.add_child(pack_label)
 
-    # State thumbnails
+    # State thumbnails row
     var states_box = HBoxContainer.new()
-    states_box.add_theme_constant_override("separation", 8)
-    hbox.add_child(states_box)
+    states_box.add_theme_constant_override("separation", 6)
+    vbox.add_child(states_box)
 
     for state in states:
-        _add_state_thumb(states_box, asset_id, state, state.get("state", "") == default_state)
+        _add_state_thumb(states_box, state, state.get("state", "") == default_state)
 
-func _add_state_thumb(container: HBoxContainer, asset_id: String, state: Dictionary, is_default: bool) -> void:
+func _add_state_thumb(container: HBoxContainer, state: Dictionary, is_default: bool) -> void:
     var state_name: String = state.get("state", "")
 
     var vbox = VBoxContainer.new()
     vbox.add_theme_constant_override("separation", 2)
     container.add_child(vbox)
 
-    # Thumbnail with border if default state
+    # Thumbnail with border
     var thumb_panel = PanelContainer.new()
     var thumb_style = StyleBoxFlat.new()
     thumb_style.bg_color = Color(0.1, 0.08, 0.05, 1.0)
@@ -222,9 +245,9 @@ func _add_state_thumb(container: HBoxContainer, asset_id: String, state: Diction
     thumb_style.border_width_right = 1
     thumb_style.border_width_bottom = 1
     if is_default:
-        thumb_style.border_color = COLOR_STATE_ACTIVE
+        thumb_style.border_color = COLOR_STATE_DEFAULT
     else:
-        thumb_style.border_color = COLOR_ITEM_BORDER
+        thumb_style.border_color = COLOR_STATE_BORDER
     thumb_style.corner_radius_left_top = 2
     thumb_style.corner_radius_right_top = 2
     thumb_style.corner_radius_left_bottom = 2
@@ -248,11 +271,11 @@ func _add_state_thumb(container: HBoxContainer, asset_id: String, state: Diction
 
     # State name label
     var label = Label.new()
-    label.text = state_name
+    label.text = state_name.to_upper()
     label.add_theme_font_size_override("font_size", 10)
     label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
     if is_default:
-        label.add_theme_color_override("font_color", COLOR_STATE_ACTIVE)
+        label.add_theme_color_override("font_color", COLOR_STATE_DEFAULT)
     else:
         label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
     vbox.add_child(label)
