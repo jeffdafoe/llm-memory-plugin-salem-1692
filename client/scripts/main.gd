@@ -11,7 +11,8 @@ func _ready() -> void:
     # Always generate terrain — it's visible behind the login screen
     world.build_terrain()
 
-    # Center camera on the map (terrain is 2x scaled, so world coordinates are 32px per tile)
+    # Set camera bounds to match the terrain (2x scaled = 32px per tile)
+    camera.map_bounds = Rect2(0, 0, world.map_width * 32, world.map_height * 32)
     camera.position = Vector2(
         world.map_width * 32 / 2.0,
         world.map_height * 32 / 2.0
