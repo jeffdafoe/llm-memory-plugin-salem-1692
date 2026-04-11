@@ -168,11 +168,18 @@
         enabled: yes
         state: restarted
 
-    # Sync village client dist to runtime (tilesets go alongside the built JS)
-    - name: Sync village tilesets to dist
+    # Sync repo tilesets to persistent tilesets directory (no --delete so purchased assets survive)
+    - name: Create persistent tilesets directory
+      file:
+        path: "{{ project_root }}/tilesets"
+        state: directory
+        owner: "{{ app_user }}"
+        mode: "0755"
+
+    - name: Sync repo tilesets to persistent location
       synchronize:
-        src: "{{ project_root }}/clients/village/assets/"
-        dest: "{{ project_root }}/clients/village/dist/assets/"
+        src: "{{ project_root }}/clients/village/assets/tilesets/"
+        dest: "{{ project_root }}/tilesets/"
       delegate_to: "{{ inventory_hostname }}"
 
     # Nginx
