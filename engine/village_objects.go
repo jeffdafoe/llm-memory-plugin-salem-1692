@@ -107,14 +107,16 @@ func (app *App) handleCreateVillageObject(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	jsonResponse(w, http.StatusCreated, villageObject{
+	obj := villageObject{
 		ID:           id,
 		AssetID:      req.AssetID,
 		CurrentState: defaultState,
 		X:            req.X,
 		Y:            req.Y,
 		PlacedBy:     placedBy,
-	})
+	}
+	jsonResponse(w, http.StatusCreated, obj)
+	app.Hub.Broadcast(WorldEvent{Type: "object_created", Data: obj})
 }
 
 // handleDeleteVillageObject removes an object from the map.
@@ -138,6 +140,7 @@ func (app *App) handleDeleteVillageObject(w http.ResponseWriter, r *http.Request
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+	app.Hub.Broadcast(WorldEvent{Type: "object_deleted", Data: map[string]string{"id": id}})
 }
 
 // handleSetVillageObjectOwner assigns or changes the owner of an object.
@@ -170,6 +173,7 @@ func (app *App) handleSetVillageObjectOwner(w http.ResponseWriter, r *http.Reque
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+	app.Hub.Broadcast(WorldEvent{Type: "object_owner_changed", Data: map[string]interface{}{"id": id, "owner": req.Owner}})
 }
 
 // handleSetVillageObjectState changes the current state of a placed object.
@@ -220,6 +224,7 @@ func (app *App) handleSetVillageObjectState(w http.ResponseWriter, r *http.Reque
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+	app.Hub.Broadcast(WorldEvent{Type: "object_state_changed", Data: map[string]string{"id": id, "state": req.State}})
 }
 
 // handleMoveVillageObject updates the position of a placed object.
@@ -253,6 +258,7 @@ func (app *App) handleMoveVillageObject(w http.ResponseWriter, r *http.Request) 
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+	app.Hub.Broadcast(WorldEvent{Type: "object_moved", Data: map[string]interface{}{"id": id, "x": req.X, "y": req.Y}})
 }
 
 // handleBulkCreateVillageObjects places multiple objects at once (for initial village population).

@@ -7,6 +7,7 @@ const EditorPanelScript = preload("res://scripts/editor_panel.gd")
 const ConfigPanelScript = preload("res://scripts/config_panel.gd")
 const AssetPopupScript = preload("res://scripts/asset_popup.gd")
 const ObjectTooltipScript = preload("res://scripts/object_tooltip.gd")
+const EventClientScript = preload("res://scripts/event_client.gd")
 
 @onready var world: Node2D = $World
 @onready var camera: Camera2D = $Camera
@@ -18,6 +19,7 @@ var editor_panel: PanelContainer = null
 var config_panel: Control = null
 var asset_popup: Control = null
 var object_tooltip: CanvasLayer = null
+var event_client: Node = null
 
 # Login screen (added as a CanvasLayer so it renders on top of everything)
 var login_screen: Control = null
@@ -76,6 +78,14 @@ func _on_authenticated() -> void:
     top_bar.set_username(Auth.username)
     top_bar.set_edit_visible(Auth.can_edit)
     top_bar.visible = true
+
+    # Connect WebSocket event stream for real-time sync
+    if event_client == null:
+        event_client = Node.new()
+        event_client.set_script(EventClientScript)
+        add_child(event_client)
+    event_client.world = world
+    event_client.connect_to_server()
 
     # Load objects now that we're authenticated
     if Catalog.loaded:

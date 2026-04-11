@@ -16,6 +16,7 @@ import (
 type App struct {
 	DB           *pgxpool.Pool
 	LLMMemoryURL string // base URL for llm-memory auth verification
+	Hub          *EventHub
 }
 
 func main() {
@@ -38,6 +39,7 @@ func main() {
 	app := &App{
 		DB:           pool,
 		LLMMemoryURL: llmMemoryURL,
+		Hub:          NewEventHub(),
 	}
 
 	// Build router
@@ -62,15 +64,19 @@ func main() {
 	mux.HandleFunc("GET /api/village/terrain", app.requireLLMMemory(app.handleGetTerrain))
 	mux.HandleFunc("PUT /api/village/terrain", app.requireLLMMemory(app.handleSaveTerrain))
 
+	// WebSocket — real-time world events stream
+	mux.HandleFunc("GET /api/village/events", app.handleVillageEvents)
+
 	// CORS middleware for Godot web client
 	handler := corsMiddleware(mux)
 
 	server := &http.Server{
-		Addr:         ":" + port,
-		Handler:      handler,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 30 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:        ":" + port,
+		Handler:     handler,
+		ReadTimeout: 10 * time.Second,
+		// No WriteTimeout — WebSocket connections are long-lived.
+		// Individual write deadlines are set per-message in the WS handler.
+		IdleTimeout: 120 * time.Second,
 	}
 
 	// Graceful shutdown
