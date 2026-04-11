@@ -8,7 +8,11 @@ extends Node2D
 
 const WangLookup = preload("res://scripts/wang_lookup.gd")
 
+# Native tile size in the wang atlas (16px Mana Seed tiles)
+const SRC_TILE_SIZE: int = 16
+# Rendered tile size in world space (2x native)
 const TILE_SIZE: int = 32
+# Extra pixels on each tile to prevent sub-pixel seams
 const OVERLAP: int = 1
 
 # Wang tileset texture — loaded from the atlas
@@ -57,15 +61,16 @@ func _draw() -> void:
         for x in range(start_x, end_x + 1):
             var wang_pos: Vector2i = _get_wang_tile(x, y)
 
-            # Source rect in the wang atlas (32x32 tiles in 2048x1024 texture)
+            # Source rect in the wang atlas (16x16 native tiles in 1024x512 texture)
             var src_rect: Rect2 = Rect2(
-                wang_pos.x * TILE_SIZE,
-                wang_pos.y * TILE_SIZE,
-                TILE_SIZE,
-                TILE_SIZE
+                wang_pos.x * SRC_TILE_SIZE,
+                wang_pos.y * SRC_TILE_SIZE,
+                SRC_TILE_SIZE,
+                SRC_TILE_SIZE
             )
 
-            # Destination in world space — 1px overlap on each side
+            # Destination in world space — 2x scale + 1px overlap
+            # Matches old TypeScript renderer: 16px source -> 33px dest
             var world_x: float = (x - pad_x) * TILE_SIZE
             var world_y: float = (y - pad_y) * TILE_SIZE
             var dst_rect: Rect2 = Rect2(
