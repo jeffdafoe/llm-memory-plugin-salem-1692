@@ -13,10 +13,10 @@ func _ready() -> void:
 
     # Set camera bounds to match the terrain (2x scaled = 32px per tile)
     camera.map_bounds = Rect2(0, 0, world.map_width * 32, world.map_height * 32)
-    camera.position = Vector2(
-        world.map_width * 32 / 2.0,
-        world.map_height * 32 / 2.0
-    )
+
+    # Center camera on the original village area (tiles 0-80, 0-45)
+    # Same position as before the map expansion
+    camera.position = Vector2(40 * 32.0, 22 * 32.0)
 
     # Show login screen while checking auth
     var login_scene = load("res://scenes/login_screen.tscn")
