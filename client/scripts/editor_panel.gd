@@ -255,9 +255,9 @@ func _add_catalog_item(grid: GridContainer, asset: Dictionary) -> void:
             var native_size: Vector2 = texture.get_size()
             var max_dim: float = CELL_SIZE - 8.0
             var scale_factor: float = minf(max_dim / native_size.x, max_dim / native_size.y)
-            # Don't upscale beyond 3x so tiny sprites don't look huge
-            if scale_factor > 3.0:
-                scale_factor = 3.0
+            # Cap at 2x (matching world scale) so small items stay small
+            if scale_factor > 2.0:
+                scale_factor = 2.0
             tex_rect.custom_minimum_size = native_size * scale_factor
             tex_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
             tex_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
