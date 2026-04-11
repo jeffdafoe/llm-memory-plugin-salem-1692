@@ -31,6 +31,7 @@ func _ready() -> void:
 ## Try to log in with username and password via llm-memory admin login.
 func login(user: String, password: String) -> void:
     var http = HTTPRequest.new()
+    http.accept_gzip = false
     add_child(http)
 
     var payload = JSON.stringify({
@@ -39,7 +40,6 @@ func login(user: String, password: String) -> void:
     })
 
     var url: String = api_base + "/llm/admin/login"
-    print("Auth: POST " + url + " payload=" + payload)
 
     http.request_completed.connect(_on_login_response.bind(http))
     var headers = ["Content-Type: application/json"]
@@ -75,6 +75,7 @@ func _on_login_response(result: int, response_code: int, headers: PackedStringAr
 ## Verify the stored token by calling the Go engine's /api/me endpoint.
 func _verify_token() -> void:
     var http = HTTPRequest.new()
+    http.accept_gzip = false
     add_child(http)
 
     http.request_completed.connect(_on_verify_response.bind(http))

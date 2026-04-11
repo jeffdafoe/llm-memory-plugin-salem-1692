@@ -88,6 +88,7 @@ func _get_terrain(x: int, y: int) -> int:
 
 func _load_village() -> void:
     var http = HTTPRequest.new()
+    http.accept_gzip = false
     add_child(http)
 
     http.request_completed.connect(_on_village_loaded.bind(http))
@@ -183,6 +184,7 @@ func add_object(asset_id: String, world_pos: Vector2) -> void:
 
 func _save_object(asset_id: String, state: String, pos: Vector2, node: Node2D) -> void:
     var http = HTTPRequest.new()
+    http.accept_gzip = false
     add_child(http)
 
     var payload = JSON.stringify({
@@ -219,6 +221,7 @@ func remove_object(node: Node2D) -> void:
 
 func _delete_object(obj_id) -> void:
     var http = HTTPRequest.new()
+    http.accept_gzip = false
     add_child(http)
     http.request_completed.connect(func(r, c, h, b): http.queue_free())
     http.request(api_base + "/api/village/objects/" + str(obj_id), [], HTTPClient.METHOD_DELETE)
