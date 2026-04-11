@@ -4,7 +4,7 @@ import { Camera } from "./camera";
 import { Tileset } from "./sprites";
 import { getMapDimensions } from "./map";
 import { WANG_LOOKUP } from "./wang-lookup";
-import { getObjectsSortedByDepth } from "./objects";
+import { getObjectsSortedByDepth, getObjects } from "./objects";
 import { getCatalogItem } from "./catalog";
 import { Editor } from "./editor";
 import { VillageAgent } from "./village-api";
@@ -49,6 +49,7 @@ export class Renderer {
     private sparkleTileset: Tileset;
     private editor: Editor | null = null;
     private agents: VillageAgent[] = [];
+    private tooltipState: (() => { mouse: { x: number; y: number } | null; agents: VillageAgent[]; editorActive: boolean }) | null = null;
 
     constructor(canvas: HTMLCanvasElement, camera: Camera, map: WangTerrainType[][]) {
         this.canvas = canvas;
@@ -67,6 +68,10 @@ export class Renderer {
 
     setAgents(agents: VillageAgent[]): void {
         this.agents = agents;
+    }
+
+    setTooltipState(fn: () => { mouse: { x: number; y: number } | null; agents: VillageAgent[]; editorActive: boolean }): void {
+        this.tooltipState = fn;
     }
 
     setMap(map: WangTerrainType[][]): void {
@@ -151,6 +156,89 @@ export class Renderer {
 
         // Draw editor overlays (ghost preview, selection highlight)
         this.editor?.renderOverlay(ctx);
+
+        // Draw canvas-based tooltip (in screen space)
+        this.renderTooltip(ctx);
+    }
+
+    private renderTooltip(ctx: CanvasRenderingContext2D): void {
+        if (!this.tooltipState) return;
+        const state = this.tooltipState();
+        if (!state.mouse || state.editorActive) return;
+
+        const world = this.camera.screenToWorld(state.mouse.x, state.mouse.y, this.canvas.width, this.canvas.height);
+        const agents = state.agents;
+
+        // Check outdoor agent dots
+        let lines: string[] = [];
+        const DOT_RADIUS = 8;
+        for (const agent of agents) {
+            if (agent.locationType !== "outdoor" || agent.locationX == null || agent.locationY == null) continue;
+            const dx = world.x - agent.locationX;
+            const dy = world.y - agent.locationY;
+            if (dx * dx + dy * dy < DOT_RADIUS * DOT_RADIUS) {
+                lines = [agent.name];
+                break;
+            }
+        }
+
+        // Check objects
+        if (lines.length === 0) {
+            const SCALE = 2;
+            for (const obj of getObjects()) {
+                const item = getCatalogItem(obj.catalogId);
+                if (!item) continue;
+                const destW = item.srcW * SCALE;
+                const destH = item.srcH * SCALE;
+                const drawX = obj.x - destW * item.anchorX;
+                const drawY = obj.y - destH * item.anchorY;
+                if (world.x >= drawX && world.x <= drawX + destW &&
+                    world.y >= drawY && world.y <= drawY + destH) {
+                    lines.push(item.name);
+                    if (obj.owner) {
+                        const ownerAgent = agents.find(a => a.llmMemoryAgent === obj.owner);
+                        lines.push("Owner: " + (ownerAgent?.name || obj.owner));
+                    }
+                    const inside = agents.filter(a =>
+                        a.locationType === "inside" && a.locationObjectId === obj.id
+                    );
+                    if (inside.length > 0) {
+                        lines.push("Inside: " + inside.map(a => a.name).join(", "));
+                    }
+                    break;
+                }
+            }
+        }
+
+        if (lines.length === 0) return;
+
+        // Draw in screen space
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.font = "12px Georgia, serif";
+        const padding = 6;
+        const lineHeight = 16;
+        const maxWidth = Math.max(...lines.map(l => ctx.measureText(l).width));
+        const boxW = maxWidth + padding * 2;
+        const boxH = lines.length * lineHeight + padding * 2;
+        let tx = state.mouse.x + 14;
+        let ty = state.mouse.y - 10;
+        // Keep on screen
+        if (tx + boxW > this.canvas.width) tx = state.mouse.x - boxW - 4;
+        if (ty + boxH > this.canvas.height) ty = this.canvas.height - boxH;
+        if (ty < 0) ty = 0;
+
+        ctx.fillStyle = "rgba(26, 26, 16, 0.92)";
+        ctx.strokeStyle = "#4a4a30";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.roundRect(tx, ty, boxW, boxH, 3);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = "#d4c5a0";
+        for (let i = 0; i < lines.length; i++) {
+            ctx.fillText(lines[i], tx + padding, ty + padding + (i + 1) * lineHeight - 4);
+        }
     }
 
     private renderAgentDots(
