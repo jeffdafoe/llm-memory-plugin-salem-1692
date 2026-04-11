@@ -20,11 +20,12 @@ export function createTopBar(container: HTMLElement, onPanel: PanelCallback): HT
     const right = document.createElement("div");
     right.className = "top-bar-right";
 
-    // Edit button
+    // Edit button (hidden until permissions are checked)
     const editBtn = document.createElement("button");
     editBtn.textContent = "Edit";
     editBtn.className = "top-bar-btn";
     editBtn.id = "editor-toggle-btn";
+    editBtn.style.display = "none";
     editBtn.addEventListener("click", () => {
         onPanel("editor");
     });

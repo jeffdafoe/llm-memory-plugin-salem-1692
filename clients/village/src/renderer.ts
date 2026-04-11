@@ -7,6 +7,7 @@ import { WANG_LOOKUP } from "./wang-lookup";
 import { getObjectsSortedByDepth } from "./objects";
 import { getCatalogItem } from "./catalog";
 import { Editor } from "./editor";
+import { VillageAgent } from "./village-api";
 
 // Background color — earthy brown for the wilderness outside the map
 const BG_COLOR = "#3e3222";
@@ -47,6 +48,7 @@ export class Renderer {
     private wangTileset: Tileset;
     private sparkleTileset: Tileset;
     private editor: Editor | null = null;
+    private agents: VillageAgent[] = [];
 
     constructor(canvas: HTMLCanvasElement, camera: Camera, map: WangTerrainType[][]) {
         this.canvas = canvas;
@@ -61,6 +63,10 @@ export class Renderer {
 
     setEditor(editor: Editor): void {
         this.editor = editor;
+    }
+
+    setAgents(agents: VillageAgent[]): void {
+        this.agents = agents;
     }
 
     setMap(map: WangTerrainType[][]): void {
@@ -140,8 +146,38 @@ export class Renderer {
         // Draw objects — sorted by Y for depth ordering
         this.renderObjects(ctx, viewLeft, viewTop, viewRight, viewBottom);
 
+        // Draw outdoor agent dots
+        this.renderAgentDots(ctx, viewLeft, viewTop, viewRight, viewBottom);
+
         // Draw editor overlays (ghost preview, selection highlight)
         this.editor?.renderOverlay(ctx);
+    }
+
+    private renderAgentDots(
+        ctx: CanvasRenderingContext2D,
+        viewLeft: number, viewTop: number,
+        viewRight: number, viewBottom: number
+    ): void {
+        const DOT_RADIUS = 6;
+        for (const agent of this.agents) {
+            if (agent.locationType !== "outdoor" || agent.locationX == null || agent.locationY == null) continue;
+
+            const x = agent.locationX;
+            const y = agent.locationY;
+
+            // Frustum cull
+            if (x < viewLeft - DOT_RADIUS || x > viewRight + DOT_RADIUS) continue;
+            if (y < viewTop - DOT_RADIUS || y > viewBottom + DOT_RADIUS) continue;
+
+            // Draw dot with outline
+            ctx.beginPath();
+            ctx.arc(x, y, DOT_RADIUS, 0, Math.PI * 2);
+            ctx.fillStyle = agent.isVirtual ? "#c8b87a" : "#7ab8c8";
+            ctx.fill();
+            ctx.strokeStyle = "#1a1a10";
+            ctx.lineWidth = 2;
+            ctx.stroke();
+        }
     }
 
     private renderObjects(

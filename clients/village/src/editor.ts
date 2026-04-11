@@ -4,6 +4,7 @@ import { CATALOG, CatalogItem, getCatalogItem } from "./catalog";
 import { addObject, getObjects, removeObject } from "./objects";
 import { Camera } from "./camera";
 import { TILE_SIZE } from "./constants";
+import { fetchVillageAgents, setObjectOwner, VillageAgent } from "./village-api";
 import { getMapDimensions } from "./map";
 
 type EditorMode = "select" | "place";
@@ -18,6 +19,7 @@ export class Editor {
     private selectedObjectId: string | null = null;
     private ghostPos: { x: number; y: number } | null = null;
     private onToggle: ((active: boolean) => void) | null = null;
+    private agents: VillageAgent[] = [];
 
     constructor(canvas: HTMLCanvasElement, camera: Camera) {
         this.canvas = canvas;
@@ -51,6 +53,12 @@ export class Editor {
         this.canvas.addEventListener("mousemove", this.handleCanvasMouseMove);
         this.canvas.addEventListener("contextmenu", this.handleRightClick);
         this.canvas.style.cursor = "default";
+
+        // Load agents for owner dropdown
+        fetchVillageAgents().then(agents => {
+            this.agents = agents;
+            this.populateOwnerDropdown();
+        });
     }
 
     private deactivate(): void {
@@ -171,6 +179,16 @@ export class Editor {
             <div class="editor-tools">
                 <button class="editor-tool-btn active" id="tool-select">Select</button>
                 <button class="editor-tool-btn" id="tool-delete" disabled>Delete</button>
+            </div>
+            <div class="editor-selection" id="editor-selection" style="display:none">
+                <div class="catalog-label">Selected Object</div>
+                <div class="selection-info" id="selection-info"></div>
+                <div class="field-group">
+                    <label>Owner</label>
+                    <select id="owner-select">
+                        <option value="">— none —</option>
+                    </select>
+                </div>
             </div>
             <div class="editor-catalog" id="editor-catalog"></div>
         `;
@@ -295,6 +313,58 @@ export class Editor {
         if (btn) {
             btn.disabled = !this.selectedObjectId;
         }
+        this.updateSelectionPanel();
+    }
+
+    private updateSelectionPanel(): void {
+        const selPanel = this.panel?.querySelector("#editor-selection") as HTMLElement | null;
+        if (!selPanel) return;
+
+        if (!this.selectedObjectId) {
+            selPanel.style.display = "none";
+            return;
+        }
+
+        const obj = getObjects().find(o => o.id === this.selectedObjectId);
+        if (!obj) {
+            selPanel.style.display = "none";
+            return;
+        }
+
+        const item = getCatalogItem(obj.catalogId);
+        const info = selPanel.querySelector("#selection-info") as HTMLElement;
+        info.textContent = item?.name || obj.catalogId;
+
+        const select = selPanel.querySelector("#owner-select") as HTMLSelectElement;
+        select.value = obj.owner || "";
+
+        selPanel.style.display = "";
+    }
+
+    private populateOwnerDropdown(): void {
+        const select = this.panel?.querySelector("#owner-select") as HTMLSelectElement | null;
+        if (!select) return;
+
+        // Keep the "none" option, add agents
+        select.innerHTML = '<option value="">— none —</option>';
+        for (const agent of this.agents) {
+            const opt = document.createElement("option");
+            opt.value = agent.llmMemoryAgent;
+            opt.textContent = agent.name + (agent.isVirtual ? " (VA)" : "");
+            select.appendChild(opt);
+        }
+
+        // Handle owner change
+        select.onchange = async () => {
+            if (!this.selectedObjectId) return;
+            const owner = select.value || null;
+            const ok = await setObjectOwner(this.selectedObjectId, owner);
+            if (ok) {
+                // Update local state
+                const obj = getObjects().find(o => o.id === this.selectedObjectId);
+                if (obj) obj.owner = owner;
+            }
+        };
     }
 
     // Draw editor overlays (ghost preview, selection highlight)
