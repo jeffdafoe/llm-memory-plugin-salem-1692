@@ -84,11 +84,20 @@ export function createMap(): WangTerrainType[][] {
         }
     }
 
-    // Narrow approach roads (1 tile wide) leading to the bridge sprite
+    // Narrow approach roads on each bank leading to the bridge sprite
     const bridgeRoadY = midY + Math.floor(Math.sin(riverBaseX * 0.1) * 1);
-    for (let dx = -2; dx <= 5; dx++) {
-        const bx = riverBaseX + Math.floor(Math.sin(bridgeRoadY * 0.15) * 2) + dx;
-        if (bx >= 0 && bx < width && bridgeRoadY >= 0 && bridgeRoadY < height) {
+    const bridgeRiverX = riverBaseX + Math.floor(Math.sin(bridgeRoadY * 0.15) * 2);
+    // Left bank approach (2 tiles leading up to the river)
+    for (let dx = -2; dx <= -1; dx++) {
+        const bx = bridgeRiverX + dx;
+        if (bx >= 0 && bx < width) {
+            map[bridgeRoadY][bx] = Terrain.DIRT_PATH;
+        }
+    }
+    // Right bank approach (2 tiles past the river)
+    for (let dx = 3; dx <= 4; dx++) {
+        const bx = bridgeRiverX + dx;
+        if (bx >= 0 && bx < width) {
             map[bridgeRoadY][bx] = Terrain.DIRT_PATH;
         }
     }
