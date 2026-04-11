@@ -168,6 +168,13 @@
         enabled: yes
         state: restarted
 
+    # Sync village client dist to runtime (tilesets go alongside the built JS)
+    - name: Sync village tilesets to dist
+      synchronize:
+        src: "{{ project_root }}/clients/village/assets/"
+        dest: "{{ project_root }}/clients/village/dist/assets/"
+      delegate_to: "{{ inventory_hostname }}"
+
     # Nginx
     - name: Deploy nginx site configuration
       template:
@@ -179,6 +186,19 @@
         src: "/etc/nginx/sites-available/{{ project_name }}.conf"
         dest: "/etc/nginx/sites-enabled/{{ project_name }}.conf"
         state: link
+
+    - name: Deploy village nginx configuration
+      template:
+        src: "../roles/nginx/templates/site-village.conf.j2"
+        dest: "/etc/nginx/sites-available/{{ village_server_name }}.conf"
+      when: village_server_name is defined
+
+    - name: Enable village nginx site
+      file:
+        src: "/etc/nginx/sites-available/{{ village_server_name }}.conf"
+        dest: "/etc/nginx/sites-enabled/{{ village_server_name }}.conf"
+        state: link
+      when: village_server_name is defined
 
     - name: Reload nginx
       service:

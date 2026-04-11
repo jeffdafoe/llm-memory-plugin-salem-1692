@@ -1,0 +1,94 @@
+# {{ village_server_name }}
+# Village viewer with auth proxied to llm-memory API
+
+# HTTP -> HTTPS redirect
+server {
+    listen 80;
+    server_name {{ village_server_name }};
+    return 301 https://$host$request_uri;
+}
+
+# HTTPS
+server {
+    listen 443 ssl;
+    server_name {{ village_server_name }};
+
+    ssl_certificate /etc/letsencrypt/live/{{ village_server_name }}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/{{ village_server_name }}/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+    root {{ project_root }}/clients/village/dist;
+    index index.html;
+
+    # Proxy /llm/admin/* to llm-memory API /v1/admin/*
+    location /llm/admin/ {
+        proxy_pass http://127.0.0.1:3100/v1/admin/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Authorization $http_authorization;
+    }
+
+    # Proxy /llm/api/* to llm-memory API /api/* (registration endpoints)
+    location /llm/api/ {
+        proxy_pass http://127.0.0.1:3100/api/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Proxy /llm/agent/* to llm-memory API /v1/agent/*
+    location /llm/agent/ {
+        proxy_pass http://127.0.0.1:3100/v1/agent/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Authorization $http_authorization;
+    }
+
+    # Asset catalog API — proxy to Go engine (public, no auth)
+    location = /api/assets {
+        proxy_pass http://127.0.0.1:{{ engine_port }};
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Village API — proxy to Go engine
+    location /api/village/ {
+        proxy_pass http://127.0.0.1:{{ engine_port }};
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Authorization $http_authorization;
+    }
+
+# Admin pages
+    location /admin/assets/ {
+        alias {{ project_root }}/clients/admin/assets/;
+        try_files $uri $uri/ =404;
+    }
+
+    location = /admin/assets {
+        return 301 /admin/assets/;
+    }
+
+    # Static village viewer files (SPA fallback)
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Security headers
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+
+    access_log /var/log/nginx/village_access.log;
+    error_log /var/log/nginx/village_error.log;
+}
