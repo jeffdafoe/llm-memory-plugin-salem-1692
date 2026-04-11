@@ -2,10 +2,9 @@ extends RefCounted
 ## Procedural village map generator.
 ## Produces a 2D array of terrain indices matching the wang tile system.
 ##
-## The village features (roads, river, cobblestone square) are positioned
-## using the original 80x45 layout coordinates at the top-left of the map.
-## When the map is larger, the extra space extends to the right and bottom
-## so existing object positions remain valid.
+## The village center (crossroads) is always at array position
+## (VILLAGE_W/2, VILLAGE_H/2) = (40, 22). When the map is larger than
+## the original 80x45, extra space is added equally on all sides.
 
 const T = preload("res://scripts/terrain.gd")
 
@@ -13,9 +12,14 @@ const T = preload("res://scripts/terrain.gd")
 var width: int = 80
 var height: int = 45
 
-# The original village layout size — features are positioned within this area
+# The original village layout size
 const VILLAGE_W: int = 80
 const VILLAGE_H: int = 45
+
+# Offset from array index to village coordinates.
+# The village occupies array positions [pad_x .. pad_x+VILLAGE_W) horizontally.
+var pad_x: int = 0
+var pad_y: int = 0
 
 # Seeded PRNG for deterministic generation
 var _seed: int = 0
@@ -24,6 +28,8 @@ func _init(map_width: int = 80, map_height: int = 45, seed: int = 42) -> void:
     width = map_width
     height = map_height
     _seed = seed
+    pad_x = (width - VILLAGE_W) / 2
+    pad_y = (height - VILLAGE_H) / 2
 
 func _rand() -> float:
     _seed = (_seed * 16807 + 0) % 2147483647
@@ -43,60 +49,38 @@ func generate() -> Array:
                 row.append(T.GRASS)
         map_data.append(row)
 
-    # Village features use the original 80x45 coordinates (no offset).
-    # mid_x and mid_y are the crossroads center — same as the old client.
-    var mid_y: int = VILLAGE_H / 2
-    var mid_x: int = VILLAGE_W / 2
+    # Village center in array coordinates
+    var mid_x: int = pad_x + VILLAGE_W / 2
+    var mid_y: int = pad_y + VILLAGE_H / 2
 
-    # Horizontal road — 3 tiles wide, extends full map width
+    # Horizontal road — extends full width, narrows near edges
     for x in range(width):
         var curve: int = int(sin(x * 0.1) * 1)
-        for dy in range(-1, 2):
+        var dist_edge: int = mini(x, width - 1 - x)
+        var road_half: int = 1
+        if dist_edge < 6:
+            road_half = 0  # Single tile path at the very edge
+
+        for dy in range(-road_half, road_half + 1):
             var ry: int = mid_y + curve + dy
             if ry >= 0 and ry < height:
                 map_data[ry][x] = T.DIRT_PATH
 
-    # Vertical road — extends full map height
+    # Vertical road — extends full height, narrows near edges
     for y in range(height):
         var curve: int = int(sin(y * 0.08) * 1)
-        for dx in range(-1, 2):
+        var dist_edge: int = mini(y, height - 1 - y)
+        var road_half: int = 1
+        if dist_edge < 6:
+            road_half = 0
+
+        for dx in range(-road_half, road_half + 1):
             var rx: int = mid_x + curve + dx
             if rx >= 0 and rx < width:
                 map_data[y][rx] = T.DIRT_PATH
 
-    # Roads narrow to single-tile paths near the edges (trails into the forest)
-    var narrow_depth: int = 12
-    for x in range(width):
-        var dist_left: int = x
-        var dist_right: int = width - 1 - x
-        var dist_edge: int = mini(dist_left, dist_right)
-        if dist_edge < narrow_depth:
-            var curve: int = int(sin(x * 0.1) * 1)
-            # Erase the outer lanes, keep only center
-            for dy in [-1, 1]:
-                var ry: int = mid_y + curve + dy
-                if ry >= 0 and ry < height:
-                    if dist_edge < narrow_depth / 2:
-                        map_data[ry][x] = T.GRASS_DARK
-                    else:
-                        map_data[ry][x] = T.DIRT_PATH
-
-    for y in range(height):
-        var dist_top: int = y
-        var dist_bottom: int = height - 1 - y
-        var dist_edge: int = mini(dist_top, dist_bottom)
-        if dist_edge < narrow_depth:
-            var curve: int = int(sin(y * 0.08) * 1)
-            for dx in [-1, 1]:
-                var rx: int = mid_x + curve + dx
-                if rx >= 0 and rx < width:
-                    if dist_edge < narrow_depth / 2:
-                        map_data[y][rx] = T.GRASS_DARK
-                    else:
-                        map_data[y][rx] = T.DIRT_PATH
-
-    # River along the eastern side
-    var river_base_x: int = int(VILLAGE_W * 0.78)
+    # River (positioned relative to village area)
+    var river_base_x: int = pad_x + int(VILLAGE_W * 0.78)
     var bridge_road_y: int = mid_y + int(sin(river_base_x * 0.1) * 1)
 
     for y in range(height):
@@ -141,13 +125,13 @@ func generate() -> Array:
                     else:
                         map_data[ry][bx] = T.DIRT_PATH
 
-    # Forest clusters (same positions as original)
+    # Forest clusters (offset to village area)
     var forest_areas: Array = [
-        {"cx": 8, "cy": 6, "r": 6},
-        {"cx": VILLAGE_W - 8, "cy": 6, "r": 5},
-        {"cx": 6, "cy": VILLAGE_H - 8, "r": 5},
-        {"cx": int(VILLAGE_W * 0.6), "cy": int(VILLAGE_H * 0.72), "r": 4},
-        {"cx": 4, "cy": int(VILLAGE_H * 0.4), "r": 3},
+        {"cx": pad_x + 8, "cy": pad_y + 6, "r": 6},
+        {"cx": pad_x + VILLAGE_W - 8, "cy": pad_y + 6, "r": 5},
+        {"cx": pad_x + 6, "cy": pad_y + VILLAGE_H - 8, "r": 5},
+        {"cx": pad_x + int(VILLAGE_W * 0.6), "cy": pad_y + int(VILLAGE_H * 0.72), "r": 4},
+        {"cx": pad_x + 4, "cy": pad_y + int(VILLAGE_H * 0.4), "r": 3},
     ]
     for area in forest_areas:
         for dy in range(-area["r"], area["r"] + 1):
