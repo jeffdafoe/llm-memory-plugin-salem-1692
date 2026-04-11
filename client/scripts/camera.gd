@@ -16,13 +16,20 @@ var map_bounds: Rect2 = Rect2(0, 0, 2304, 1664)  # 72*32, 52*32
 # When true, left-click is reserved for the editor — only middle-click pans
 var editor_active: bool = false
 
+# When true, a modal overlay is open — don't zoom on scroll
+var modal_open: bool = false
+
 # Pan state
 var _panning: bool = false
 var _pan_start: Vector2 = Vector2.ZERO
 
 ## Zoom runs in _input so it works even when editor UI Controls
 ## (ScrollContainer, PanelContainer) would otherwise consume scroll events.
+## Skipped when a modal overlay (config panel) is open so it can scroll.
 func _input(event: InputEvent) -> void:
+    if modal_open:
+        return
+
     if event is InputEventMouseButton and event.pressed:
         if event.button_index == MOUSE_BUTTON_WHEEL_UP:
             _zoom_at(event.position, ZOOM_STEP)

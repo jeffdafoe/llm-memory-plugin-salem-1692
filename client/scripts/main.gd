@@ -109,6 +109,7 @@ func _build_ui() -> void:
     config_panel.set_script(ConfigPanelScript)
     config_layer.add_child(config_panel)
     config_panel.visible = false
+    config_panel.closed.connect(func(): camera.modal_open = false)
 
     # Editor side panel — also on the editor CanvasLayer, hidden by default
     editor_panel = PanelContainer.new()
@@ -130,6 +131,7 @@ func _build_ui() -> void:
 func _on_config_pressed() -> void:
     if config_panel != null:
         config_panel.visible = not config_panel.visible
+        camera.modal_open = config_panel.visible
 
 func _on_edit_toggled(active: bool) -> void:
     editor_panel.visible = active
