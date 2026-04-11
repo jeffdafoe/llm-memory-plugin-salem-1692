@@ -1,12 +1,13 @@
 extends Node2D
 ## World — manages terrain and placed objects.
-## Generates terrain procedurally, paints it using Godot's terrain autotiling,
-## and loads placed objects from the Go API.
+## Generates terrain procedurally, renders using custom wang tile renderer
+## (with 1px overlap to prevent seams), and loads placed objects from the Go API.
 
 const MapGenerator = preload("res://scripts/map_generator.gd")
 const WangLookup = preload("res://scripts/wang_lookup.gd")
+const TerrainRendererScript = preload("res://scripts/terrain_renderer.gd")
 
-@onready var terrain: TileMapLayer = $Terrain
+var terrain_renderer: Node2D = null
 @onready var objects_node: Node2D = $Objects
 
 # The generated map data — 2D array [y][x] of terrain indices (1-based)
@@ -20,22 +21,22 @@ var placed_objects: Dictionary = {}
 # API base
 var api_base: String = ""
 
-# Seeded PRNG for wang tile variant selection
-var _wang_seed: int = 7
-
-func _wang_rand() -> int:
-    _wang_seed = (_wang_seed * 16807 + 0) % 2147483647
-    return _wang_seed
-
 func _ready() -> void:
     if OS.has_feature("web"):
         api_base = JavaScriptBridge.eval("window.location.origin", true)
     else:
         api_base = "http://zbbs.local"
 
-## Build terrain — try loading saved data from API first,
-## fall back to procedural generation if none exists.
+## Build terrain — create custom renderer, generate terrain data,
+## then try loading saved data from API (overwrites if found).
 func build_terrain() -> void:
+    # Create custom terrain renderer (replaces TileMapLayer)
+    terrain_renderer = Node2D.new()
+    terrain_renderer.set_script(TerrainRendererScript)
+    # Insert before Objects so terrain draws underneath
+    add_child(terrain_renderer)
+    move_child(terrain_renderer, 0)
+
     _generate_terrain()  # Generate first so something is visible immediately
     _load_terrain()      # Then try to load saved terrain (overwrites if found)
 
@@ -49,9 +50,9 @@ func load_objects() -> void:
     _objects_loaded = true
     _load_village()
 
-## Paint a terrain cell and update the wang tiles for it and neighbors.
+## Paint a terrain cell. The custom renderer reads map_data directly
+## and redraws every frame, so we just update the data.
 func paint_terrain(tile_x: int, tile_y: int, terrain_type: int) -> void:
-    # Convert tile coords to array indices
     var pad_x: int = (map_width - 80) / 2
     var pad_y: int = (map_height - 45) / 2
     var ax: int = tile_x + pad_x
@@ -61,16 +62,6 @@ func paint_terrain(tile_x: int, tile_y: int, terrain_type: int) -> void:
         return
 
     map_data[ay][ax] = terrain_type
-
-    # Repaint this cell and its neighbors (wang tiles depend on neighbors)
-    for dy in range(-1, 2):
-        for dx in range(-1, 2):
-            var nx: int = ax + dx
-            var ny: int = ay + dy
-            if nx >= 0 and nx < map_width and ny >= 0 and ny < map_height:
-                var wang_pos: Vector2i = _get_wang_tile(nx, ny)
-                var source_id: int = terrain.tile_set.get_source_id(0)
-                terrain.set_cell(Vector2i(nx - pad_x, ny - pad_y), source_id, wang_pos)
 
 ## Save the current terrain to the server.
 func save_terrain() -> void:
@@ -145,14 +136,14 @@ func _on_terrain_loaded(result: int, response_code: int, headers: PackedStringAr
             map_data[y][x] = bytes[idx]
             idx += 1
 
-    # Repaint the entire tilemap
-    _paint_tilemap()
+    # Sync renderer with updated map data
+    _sync_renderer()
 
 func _generate_terrain() -> void:
     # Generate the logical map
     var gen = MapGenerator.new(map_width, map_height, 42)
     map_data = gen.generate()
-    _paint_tilemap()
+    _sync_renderer()
 
 ## Convert a world position to tilemap tile coordinates.
 ## Returns the tile coordinate (accounting for offset and 2x scale).
@@ -163,47 +154,16 @@ func world_to_tile(world_pos: Vector2) -> Vector2i:
         int(floor(world_pos.y / 32.0))
     )
 
-## Repaint the entire tilemap from map_data. Called after generation or
-## after loading saved terrain from the server.
-func _paint_tilemap() -> void:
-    var pad_x: int = (map_width - 80) / 2
-    var pad_y: int = (map_height - 45) / 2
-
-    var tile_set: TileSet = terrain.tile_set
-    var source_id: int = tile_set.get_source_id(0)
-
-    for y in range(map_height):
-        for x in range(map_width):
-            var wang_pos: Vector2i = _get_wang_tile(x, y)
-            terrain.set_cell(Vector2i(x - pad_x, y - pad_y), source_id, wang_pos)
-
-## Look up the correct wang tile for a map position based on corner terrains.
-func _get_wang_tile(x: int, y: int) -> Vector2i:
-    # Each tile's appearance depends on the terrain at its 4 corners.
-    # A corner is shared between 4 tiles. The corner terrain is the
-    # terrain of the tile at that diagonal position.
-    var tl: int = _get_terrain(x - 1, y - 1)
-    var tr: int = _get_terrain(x, y - 1)
-    var br: int = _get_terrain(x, y)
-    var bl: int = _get_terrain(x - 1, y)
-
-    var key: String = "%d,%d,%d,%d" % [tl, tr, br, bl]
-
-    if WangLookup.WANG_LOOKUP.has(key):
-        var options: Array = WangLookup.WANG_LOOKUP[key]
-        # Pick a random variant for visual variety
-        var idx: int = _wang_rand() % options.size()
-        var tile = options[idx]
-        return Vector2i(tile[0], tile[1])
-
-    # Fallback — solid light grass
-    return Vector2i(1, 2)
-
-## Get the terrain index at a map position, clamping at edges.
-func _get_terrain(x: int, y: int) -> int:
-    x = clampi(x, 0, map_width - 1)
-    y = clampi(y, 0, map_height - 1)
-    return map_data[y][x]
+## Sync the terrain renderer with current map_data.
+## The renderer draws tiles each frame with 1px overlap.
+func _sync_renderer() -> void:
+    if terrain_renderer == null:
+        return
+    terrain_renderer.map_data = map_data
+    terrain_renderer.map_width = map_width
+    terrain_renderer.map_height = map_height
+    terrain_renderer.pad_x = (map_width - 80) / 2
+    terrain_renderer.pad_y = (map_height - 45) / 2
 
 func _load_village() -> void:
     var http = HTTPRequest.new()
