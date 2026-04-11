@@ -38,7 +38,6 @@ func _ready() -> void:
     bg.anchors_preset = Control.PRESET_FULL_RECT
     bg.anchor_right = 1.0
     bg.anchor_bottom = 1.0
-    bg.gui_input.connect(_on_bg_input)
     add_child(bg)
 
     # Centered panel — smaller than config, just for one asset
@@ -80,13 +79,13 @@ func _input(event: InputEvent) -> void:
     if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
         _close()
         get_viewport().set_input_as_handled()
-    # Consume all mouse clicks when popup is visible so editor doesn't process them
-    if event is InputEventMouseButton and event.pressed:
-        get_viewport().set_input_as_handled()
-
-func _on_bg_input(event: InputEvent) -> void:
+    # Handle all mouse clicks — close if outside panel, block if inside
     if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
-        _close()
+        # Check if click is outside the panel rect (on the dim background)
+        var panel_rect: Rect2 = _panel.get_global_rect()
+        if not panel_rect.has_point(event.position):
+            _close()
+        get_viewport().set_input_as_handled()
 
 signal closed
 

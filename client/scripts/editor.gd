@@ -100,6 +100,14 @@ func _input(event: InputEvent) -> void:
             if event.button_index == MOUSE_BUTTON_LEFT and not event.pressed:
                 _on_left_release(event.position)
                 get_viewport().set_input_as_handled()
+            # Right-click cancels drag and snaps object back
+            if event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
+                _cancel_drag()
+                get_viewport().set_input_as_handled()
+        # Escape also cancels drag
+        if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
+            _cancel_drag()
+            get_viewport().set_input_as_handled()
         return
 
     # --- New interactions (skip if over UI) ---
@@ -314,6 +322,13 @@ func delete_selection() -> void:
     _delete_selected()
 
 # --- Drag-to-move ---
+
+func _cancel_drag() -> void:
+    if _dragging and selected_object != null:
+        # Snap object back to original position
+        selected_object.position = _drag_start_obj_pos
+    _dragging = false
+    _drag_pending = false
 
 func _drag_move(screen_pos: Vector2) -> void:
     if selected_object == null:
