@@ -13,8 +13,13 @@ const ZOOM_STEP: float = 0.1
 # Map bounds in world coordinates (set by Main after terrain is built)
 var map_bounds: Rect2 = Rect2(0, 0, 2304, 1664)  # 72*32, 52*32
 
-# When true, left-click is reserved for the editor — only middle-click pans
+# When true, left-click is reserved for the editor — only middle/right-click pans.
+# Exception: if the editor didn't consume the left-click (empty space hit),
+# the editor_ref.left_click_used flag will be false and we allow panning.
 var editor_active: bool = false
+
+# Reference to the editor node — set by main.gd so camera can check left_click_used
+var editor_ref: CanvasLayer = null
 
 # When true, a modal overlay is open — don't zoom on scroll
 var modal_open: bool = false
@@ -73,8 +78,13 @@ func _input(event: InputEvent) -> void:
             is_pan_button = true
         if event.button_index == MOUSE_BUTTON_RIGHT:
             is_pan_button = true
-        if event.button_index == MOUSE_BUTTON_LEFT and not editor_active:
-            is_pan_button = true
+        if event.button_index == MOUSE_BUTTON_LEFT:
+            # In editor mode, only pan if editor didn't use the click (empty space)
+            if not editor_active:
+                is_pan_button = true
+            else:
+                if editor_ref != null and not editor_ref.left_click_used:
+                    is_pan_button = true
         if is_pan_button:
             _panning = event.pressed
             if _panning:
