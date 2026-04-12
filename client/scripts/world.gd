@@ -296,8 +296,7 @@ func _save_object(asset_id: String, state: String, pos: Vector2, node: Node2D) -
     add_child(http)
 
     var payload = JSON.stringify({
-        "assetId": asset_id,
-        "currentState": state,
+        "asset_id": asset_id,
         "x": pos.x,
         "y": pos.y
     })
