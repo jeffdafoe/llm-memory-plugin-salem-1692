@@ -18,6 +18,14 @@ const MIN_SCREEN_OVERLAP: float = 1.5
 # Wang tileset texture — loaded from the atlas
 var wang_texture: Texture2D = null
 
+# Water sparkle overlay — 3 variants of 4 frames, 600ms per frame
+var sparkle_texture: Texture2D = null
+var _sparkle_frame: int = 0
+var _sparkle_timer: float = 0.0
+const SPARKLE_FRAME_DURATION: float = 0.6
+const SPARKLE_FRAME_COUNT: int = 4
+const SPARKLE_VARIANTS: int = 3
+
 # Map data reference — set by world.gd
 var map_data: Array = []
 var map_width: int = 200
@@ -32,8 +40,17 @@ var _wang_seed_base: int = 7
 
 func _ready() -> void:
     wang_texture = load("res://assets/tilesets/wang.png")
+    # Load sparkle sheet if available (commercial asset, may not exist locally)
+    var sparkle_path: String = "res://assets/tilesets/mana-seed/summer-forest/summer animations/summer water sparkles B 16x16.png"
+    if ResourceLoader.exists(sparkle_path):
+        sparkle_texture = load(sparkle_path)
 
-func _process(_delta: float) -> void:
+func _process(delta: float) -> void:
+    # Advance sparkle animation timer
+    _sparkle_timer += delta
+    if _sparkle_timer >= SPARKLE_FRAME_DURATION:
+        _sparkle_timer -= SPARKLE_FRAME_DURATION
+        _sparkle_frame = (_sparkle_frame + 1) % SPARKLE_FRAME_COUNT
     # Redraw every frame so tiles are always at correct screen positions
     queue_redraw()
 
@@ -85,6 +102,37 @@ func _draw() -> void:
             )
 
             draw_texture_rect_region(wang_texture, dst_rect, src_rect)
+
+    # Draw water sparkle overlays on water tiles
+    if sparkle_texture != null:
+        for y in range(start_y, end_y + 1):
+            for x in range(start_x, end_x + 1):
+                var terrain_type: int = _get_terrain(x, y)
+                # Terrain types 5 (shallow water) and 6 (deep water)
+                if terrain_type == 5 or terrain_type == 6:
+                    # Pick a deterministic sparkle variant (0-2) per tile
+                    var variant_hash: int = ((x * 31337) + (y * 65539)) % 2147483647
+                    if variant_hash < 0:
+                        variant_hash = -variant_hash
+                    var variant: int = variant_hash % SPARKLE_VARIANTS
+
+                    # Source rect: current frame in this variant's row
+                    var spark_src: Rect2 = Rect2(
+                        _sparkle_frame * SRC_TILE_SIZE,
+                        variant * SRC_TILE_SIZE,
+                        SRC_TILE_SIZE,
+                        SRC_TILE_SIZE
+                    )
+
+                    var world_x: float = (x - pad_x) * TILE_SIZE
+                    var world_y: float = (y - pad_y) * TILE_SIZE
+                    var spark_dst: Rect2 = Rect2(
+                        world_x, world_y,
+                        TILE_SIZE + overlap,
+                        TILE_SIZE + overlap
+                    )
+
+                    draw_texture_rect_region(sparkle_texture, spark_dst, spark_src)
 
 ## Wang tile lookup — same logic as world.gd but self-contained.
 func _get_wang_tile(x: int, y: int) -> Vector2i:
