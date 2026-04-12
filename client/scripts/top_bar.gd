@@ -160,14 +160,14 @@ func _update_edit_button_style() -> void:
         edit_button.add_theme_stylebox_override("normal", active_style)
         edit_button.add_theme_color_override("font_color", Color(0.78, 0.72, 0.48, 1.0))
     else:
-        # Reset to default style
+        # Reset to default style (must match _make_button's normal style)
         var normal_style = StyleBoxFlat.new()
-        normal_style.bg_color = COLOR_BTN_BG
+        normal_style.bg_color = Color(0.17, 0.14, 0.10, 1.0)
         normal_style.border_width_left = 1
         normal_style.border_width_top = 1
         normal_style.border_width_right = 1
         normal_style.border_width_bottom = 1
-        normal_style.border_color = COLOR_BTN_BORDER
+        normal_style.border_color = Color(0.35, 0.28, 0.18, 1.0)
         normal_style.corner_radius_left_top = 3
         normal_style.corner_radius_right_top = 3
         normal_style.corner_radius_left_bottom = 3
@@ -177,7 +177,13 @@ func _update_edit_button_style() -> void:
         normal_style.content_margin_top = 4.0
         normal_style.content_margin_bottom = 4.0
         edit_button.add_theme_stylebox_override("normal", normal_style)
-        edit_button.add_theme_color_override("font_color", COLOR_TEXT)
+        edit_button.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+
+## Force the edit button to a specific state (called externally when edit
+## mode is closed by something other than the button, e.g., ESC key).
+func set_edit_active(active: bool) -> void:
+    _editor_active = active
+    _update_edit_button_style()
 
 func _on_config_pressed() -> void:
     config_pressed.emit()
