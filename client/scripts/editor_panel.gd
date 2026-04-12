@@ -763,70 +763,61 @@ func _build_attachments(asset_id: String) -> void:
         var overlay_id: String = overlay.get("id", "")
         var overlay_name: String = overlay.get("name", overlay_id)
 
-        var item = PanelContainer.new()
-        item.custom_minimum_size = Vector2(CELL_SIZE, CELL_SIZE)
-        item.tooltip_text = overlay_name
+        var btn = Button.new()
+        btn.custom_minimum_size = Vector2(CELL_SIZE, CELL_SIZE)
+        btn.tooltip_text = overlay_name
 
-        var item_style = StyleBoxFlat.new()
-        item_style.bg_color = Color(0.15, 0.12, 0.08, 1.0)
-        item_style.border_width_left = 1
-        item_style.border_width_top = 1
-        item_style.border_width_right = 1
-        item_style.border_width_bottom = 1
-        item_style.border_color = Color(0.3, 0.24, 0.15, 0.5)
-        item_style.corner_radius_left_top = 2
-        item_style.corner_radius_right_top = 2
-        item_style.corner_radius_left_bottom = 2
-        item_style.corner_radius_right_bottom = 2
-        item.add_theme_stylebox_override("panel", item_style)
+        var btn_style = StyleBoxFlat.new()
+        btn_style.bg_color = Color(0.15, 0.12, 0.08, 1.0)
+        btn_style.border_width_left = 1
+        btn_style.border_width_top = 1
+        btn_style.border_width_right = 1
+        btn_style.border_width_bottom = 1
+        btn_style.border_color = Color(0.3, 0.24, 0.15, 0.5)
+        btn_style.corner_radius_left_top = 2
+        btn_style.corner_radius_right_top = 2
+        btn_style.corner_radius_left_bottom = 2
+        btn_style.corner_radius_right_bottom = 2
+        btn_style.content_margin_left = 2.0
+        btn_style.content_margin_right = 2.0
+        btn_style.content_margin_top = 2.0
+        btn_style.content_margin_bottom = 2.0
+        btn.add_theme_stylebox_override("normal", btn_style)
+
+        var hover_style = btn_style.duplicate()
+        hover_style.bg_color = COLOR_ITEM_HOVER
+        btn.add_theme_stylebox_override("hover", hover_style)
+
+        var pressed_style = btn_style.duplicate()
+        pressed_style.bg_color = COLOR_ITEM_SELECTED
+        btn.add_theme_stylebox_override("pressed", pressed_style)
 
         var state_info = Catalog.get_state(overlay_id)
         if state_info != null:
             var texture = Catalog.get_sprite_texture(state_info)
             if texture != null:
-                var center = CenterContainer.new()
-                center.custom_minimum_size = Vector2(CELL_SIZE - 4, CELL_SIZE - 4)
-                item.add_child(center)
-
                 var tex_rect = TextureRect.new()
                 tex_rect.texture = texture
-                var native_size: Vector2 = texture.get_size()
-                var max_dim: float = CELL_SIZE - 8.0
-                var scale_factor: float = minf(max_dim / native_size.x, max_dim / native_size.y)
-                if scale_factor > 2.0:
-                    scale_factor = 2.0
-                tex_rect.custom_minimum_size = native_size * scale_factor
                 tex_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
                 tex_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-                center.add_child(tex_rect)
+                tex_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+                btn.add_child(tex_rect)
 
-        # Click attaches this overlay to the selected object
-        item.gui_input.connect(_on_attachment_input.bind(overlay_id))
-        item.mouse_entered.connect(func():
-            var hover = item_style.duplicate()
-            hover.bg_color = COLOR_ITEM_HOVER
-            item.add_theme_stylebox_override("panel", hover)
-        )
-        item.mouse_exited.connect(func():
-            item.add_theme_stylebox_override("panel", item_style)
-        )
-        _attachments_grid.add_child(item)
+        btn.pressed.connect(_on_attachment_clicked.bind(overlay_id))
+        _attachments_grid.add_child(btn)
 
-func _on_attachment_input(event: InputEvent, overlay_asset_id: String) -> void:
-    print("_on_attachment_input: event=", event, " asset=", overlay_asset_id)
-    if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
-        print("_on_attachment_input: ATTACHING ", overlay_asset_id)
-        attachment_requested.emit(overlay_asset_id)
-        # Brief flash on the header to confirm attachment was placed
-        var attach_label = _attachments_section.get_child(0)
-        if attach_label is Label:
-            attach_label.text = "ATTACHED!"
-            attach_label.add_theme_color_override("font_color", Color(0.5, 0.8, 0.3, 1.0))
-            var timer = get_tree().create_timer(1.0)
-            timer.timeout.connect(func():
-                attach_label.text = "ATTACHMENTS"
-                attach_label.add_theme_color_override("font_color", COLOR_LABEL)
-            )
+func _on_attachment_clicked(overlay_asset_id: String) -> void:
+    attachment_requested.emit(overlay_asset_id)
+    # Brief flash on the header to confirm attachment was placed
+    var attach_label = _attachments_section.get_child(0)
+    if attach_label is Label:
+        attach_label.text = "ATTACHED!"
+        attach_label.add_theme_color_override("font_color", Color(0.5, 0.8, 0.3, 1.0))
+        var timer = get_tree().create_timer(1.0)
+        timer.timeout.connect(func():
+            attach_label.text = "ATTACHMENTS"
+            attach_label.add_theme_color_override("font_color", COLOR_LABEL)
+        )
 
 ## Called externally to exit terrain mode (e.g., when switching to select)
 func exit_terrain_mode() -> void:
