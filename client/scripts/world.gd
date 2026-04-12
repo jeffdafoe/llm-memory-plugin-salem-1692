@@ -23,6 +23,9 @@ var agent_names: Dictionary = {}
 # Ordered list of agent keys for dropdowns
 var agent_list: Array = []
 
+# Event client reference — set by main.gd for marking local objects
+var event_client: Node = null
+
 # API base
 var api_base: String = ""
 
@@ -320,6 +323,9 @@ func _on_object_saved(result: int, response_code: int, headers: PackedStringArra
         node.set_meta("placed_by", json.get("placed_by", ""))
         node.set_meta("owner", json.get("owner", ""))
         placed_objects[obj_id] = node
+        # Mark as locally created so the WS echo doesn't duplicate it
+        if event_client != null:
+            event_client.mark_local_object(obj_id)
 
 ## Remove an object from the world and the server.
 func remove_object(node: Node2D) -> void:
