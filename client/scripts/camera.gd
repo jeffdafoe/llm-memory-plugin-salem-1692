@@ -45,12 +45,14 @@ func _input(event: InputEvent) -> void:
         return
 
     if event is InputEventMouseButton and event.pressed:
-        if event.button_index == MOUSE_BUTTON_WHEEL_UP:
-            _zoom_at(event.position, ZOOM_STEP)
-            get_viewport().set_input_as_handled()
-        if event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-            _zoom_at(event.position, -ZOOM_STEP)
-            get_viewport().set_input_as_handled()
+        # Don't zoom when scrolling over the editor sidebar
+        if not _is_over_ui(event.position):
+            if event.button_index == MOUSE_BUTTON_WHEEL_UP:
+                _zoom_at(event.position, ZOOM_STEP)
+                get_viewport().set_input_as_handled()
+            if event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+                _zoom_at(event.position, -ZOOM_STEP)
+                get_viewport().set_input_as_handled()
 
     # Pinch zoom also in _input for same reason
     if event is InputEventMagnifyGesture:
@@ -59,7 +61,7 @@ func _input(event: InputEvent) -> void:
         _clamp_position()
         get_viewport().set_input_as_handled()
 
-    # Pan: middle-click always, left-click only when editor is not active
+    # Pan: middle-click and right-click always, left-click only when editor is not active
     if event is InputEventMouseButton:
         if _is_over_ui(event.position):
             # Stop any active pan if mouse enters UI
@@ -68,6 +70,8 @@ func _input(event: InputEvent) -> void:
             return
         var is_pan_button: bool = false
         if event.button_index == MOUSE_BUTTON_MIDDLE:
+            is_pan_button = true
+        if event.button_index == MOUSE_BUTTON_RIGHT:
             is_pan_button = true
         if event.button_index == MOUSE_BUTTON_LEFT and not editor_active:
             is_pan_button = true
