@@ -353,6 +353,26 @@ func _add_catalog_item(grid: GridContainer, asset: Dictionary) -> void:
             tex_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
             center.add_child(tex_rect)
 
+            # Animate if multi-frame
+            var frame_count: int = state_info.get("frame_count", 1)
+            var frame_rate: float = state_info.get("frame_rate", 0.0)
+            if frame_count > 1 and frame_rate > 0:
+                var sprite_frames: SpriteFrames = Catalog.get_sprite_frames(state_info)
+                if sprite_frames != null:
+                    var all_frames: Array = []
+                    for i in range(sprite_frames.get_frame_count("default")):
+                        all_frames.append(sprite_frames.get_frame_texture("default", i))
+                    if all_frames.size() > 1:
+                        var timer = Timer.new()
+                        timer.wait_time = 1.0 / frame_rate
+                        timer.autostart = true
+                        var frame_idx: Array = [0]
+                        timer.timeout.connect(func():
+                            frame_idx[0] = (frame_idx[0] + 1) % all_frames.size()
+                            tex_rect.texture = all_frames[frame_idx[0]]
+                        )
+                        item.add_child(timer)
+
     # Click opens inspect popup instead of immediately placing
     item.gui_input.connect(_on_item_input.bind(item, asset_id))
     item.mouse_entered.connect(_on_item_hover.bind(item, true))
