@@ -21,7 +21,7 @@ git pull
 echo -e "\033[1m[2/3] Running deploy...\033[0m"
 cd /opt/llm-memory-salem-1692/infrastructure
 export ANSIBLE_CONFIG=/opt/llm-memory-salem-1692/infrastructure/ansible.cfg
-ansible-playbook -i inventory/production.yml playbooks/deploy.yml
+ansible-playbook -i inventory/production.yml playbooks/deploy.yml -e run_migrations=true
 
 # Verify service is running
 echo -e "\033[1m[3/3] Verifying service...\033[0m"
