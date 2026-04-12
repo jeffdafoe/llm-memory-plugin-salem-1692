@@ -813,7 +813,9 @@ func _build_attachments(asset_id: String) -> void:
         _attachments_grid.add_child(item)
 
 func _on_attachment_input(event: InputEvent, overlay_asset_id: String) -> void:
+    print("_on_attachment_input: event=", event, " asset=", overlay_asset_id)
     if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+        print("_on_attachment_input: ATTACHING ", overlay_asset_id)
         attachment_requested.emit(overlay_asset_id)
         # Brief flash on the header to confirm attachment was placed
         var attach_label = _attachments_section.get_child(0)
