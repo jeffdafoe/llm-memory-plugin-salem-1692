@@ -110,15 +110,18 @@ func _draw() -> void:
                 var terrain_type: int = _get_terrain(x, y)
                 # Terrain types 5 (shallow water) and 6 (deep water)
                 if terrain_type == 5 or terrain_type == 6:
-                    # Pick a deterministic sparkle variant (0-2) per tile
-                    var variant_hash: int = ((x * 31337) + (y * 65539)) % 2147483647
-                    if variant_hash < 0:
-                        variant_hash = -variant_hash
-                    var variant: int = variant_hash % SPARKLE_VARIANTS
+                    # Pick a deterministic sparkle variant (0-2) and frame offset
+                    # per tile so they don't all animate in sync
+                    var tile_hash: int = ((x * 31337) + (y * 65539)) % 2147483647
+                    if tile_hash < 0:
+                        tile_hash = -tile_hash
+                    var variant: int = tile_hash % SPARKLE_VARIANTS
+                    var frame_offset: int = (tile_hash / SPARKLE_VARIANTS) % SPARKLE_FRAME_COUNT
+                    var frame: int = (_sparkle_frame + frame_offset) % SPARKLE_FRAME_COUNT
 
                     # Source rect: current frame in this variant's row
                     var spark_src: Rect2 = Rect2(
-                        _sparkle_frame * SRC_TILE_SIZE,
+                        frame * SRC_TILE_SIZE,
                         variant * SRC_TILE_SIZE,
                         SRC_TILE_SIZE,
                         SRC_TILE_SIZE
@@ -126,10 +129,12 @@ func _draw() -> void:
 
                     var world_x: float = (x - pad_x) * TILE_SIZE
                     var world_y: float = (y - pad_y) * TILE_SIZE
+                    # No overlap on sparkles — they're transparent overlays,
+                    # overlap would stretch dots into neighboring grass tiles
                     var spark_dst: Rect2 = Rect2(
                         world_x, world_y,
-                        TILE_SIZE + overlap,
-                        TILE_SIZE + overlap
+                        TILE_SIZE,
+                        TILE_SIZE
                     )
 
                     draw_texture_rect_region(sparkle_texture, spark_dst, spark_src)
