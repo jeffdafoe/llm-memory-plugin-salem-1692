@@ -714,9 +714,10 @@ func _on_terrain_pressed() -> void:
             _selected_item = null
             _selected_asset_id = ""
     else:
-        # Hide terrain picker, show catalog
+        # Hide terrain picker, restore catalog only if nothing selected
         _terrain_picker.visible = false
-        _catalog_scroll.visible = true
+        if not _selection_info.visible:
+            _catalog_scroll.visible = true
         _set_tool_active(_select_button, true)
         # Deselect terrain item
         if _selected_terrain_item != null:
@@ -825,7 +826,9 @@ func exit_terrain_mode() -> void:
         _terrain_active = false
         _set_tool_active(_terrain_button, false)
         _terrain_picker.visible = false
-        _catalog_scroll.visible = true
+        # Only restore catalog if nothing is selected (selection hides catalog)
+        if not _selection_info.visible:
+            _catalog_scroll.visible = true
         if _selected_terrain_item != null:
             var old_style: StyleBoxFlat = _selected_terrain_item.get_meta("style_normal")
             _selected_terrain_item.add_theme_stylebox_override("panel", old_style)
