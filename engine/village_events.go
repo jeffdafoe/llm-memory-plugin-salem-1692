@@ -45,6 +45,8 @@ func (h *EventHub) Broadcast(event WorldEvent) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
+	log.Printf("Broadcasting %s to %d clients", event.Type, len(h.clients))
+
 	for client := range h.clients {
 		select {
 		case client.send <- data:
