@@ -241,17 +241,12 @@ func _ready() -> void:
     attach_header.add_theme_font_size_override("font_size", 11)
     _attachments_section.add_child(attach_header)
 
-    var attach_scroll = ScrollContainer.new()
-    attach_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-    attach_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-    _attachments_section.add_child(attach_scroll)
-
     _attachments_grid = GridContainer.new()
     _attachments_grid.columns = 4
     _attachments_grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     _attachments_grid.add_theme_constant_override("h_separation", 4)
     _attachments_grid.add_theme_constant_override("v_separation", 4)
-    attach_scroll.add_child(_attachments_grid)
+    _attachments_section.add_child(_attachments_grid)
 
     var sel_sep = HSeparator.new()
     sel_sep.add_theme_color_override("separator_color", Color(0.4, 0.32, 0.2, 0.4))
