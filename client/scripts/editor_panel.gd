@@ -729,7 +729,9 @@ func _build_attachments(asset_id: String) -> void:
     for child in _attachments_grid.get_children():
         child.queue_free()
 
+    print("_build_attachments: asset_id=", asset_id)
     var slots: Array = Catalog.get_slots(asset_id)
+    print("_build_attachments: slots=", slots)
     if slots.is_empty():
         _attachments_section.visible = false
         return
@@ -739,10 +741,12 @@ func _build_attachments(asset_id: String) -> void:
     for slot in slots:
         var slot_name: String = slot.get("slot_name", "")
         var fitting: Array = Catalog.get_assets_for_slot(slot_name)
+        print("_build_attachments: slot=", slot_name, " fitting=", fitting.size())
         for fit_asset in fitting:
             if not overlays.has(fit_asset):
                 overlays.append(fit_asset)
 
+    print("_build_attachments: total overlays=", overlays.size())
     if overlays.is_empty():
         _attachments_section.visible = false
         return
