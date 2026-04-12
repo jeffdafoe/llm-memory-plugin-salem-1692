@@ -215,8 +215,9 @@ func get_assets_for_slot(slot_name: String) -> Array:
     var result: Array = []
     for asset_id in assets:
         var asset = assets[asset_id]
-        var fits: String = asset.get("fits_slot", "")
-        if fits == slot_name:
+        var fits = asset.get("fits_slot", null)
+        # fits_slot can be null (JSON null) or a string — only match actual strings
+        if fits != null and fits is String and fits == slot_name:
             result.append(asset)
     result.sort_custom(func(a, b): return a.get("name", "") < b.get("name", ""))
     return result
