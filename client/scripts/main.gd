@@ -29,6 +29,9 @@ func _ready() -> void:
     # Always generate terrain — it's visible behind the login screen
     world.build_terrain()
 
+    # Give camera a reference to the editor for left-click pan coordination
+    camera.editor_ref = editor
+
     # Set camera bounds to match the terrain (2x scaled = 32px per tile)
     # Terrain extends into negative tile coordinates, so bounds start negative
     var pad_x: int = (world.map_width - 80) / 2

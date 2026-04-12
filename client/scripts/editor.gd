@@ -22,6 +22,10 @@ var active: bool = false
 # When true, a popup overlay is open — skip all map input
 var popup_open: bool = false
 
+# Set to true when the editor consumes a left-click (object hit, placement, etc.)
+# Camera checks this to decide whether left-click should pan.
+var left_click_used: bool = false
+
 # Selection border node — added as child of selected object
 var _selection_border: Node2D = null
 
@@ -117,7 +121,10 @@ func _input(event: InputEvent) -> void:
             return
 
         if event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
+            left_click_used = false
             _on_left_press(event.position)
+        if event.button_index == MOUSE_BUTTON_LEFT and not event.pressed:
+            left_click_used = false
 
         if event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
             if current_mode == Mode.PLACE:
@@ -142,6 +149,7 @@ func _on_left_press(screen_pos: Vector2) -> void:
     match current_mode:
         Mode.PLACE:
             _place_at_mouse(screen_pos)
+            left_click_used = true
             get_viewport().set_input_as_handled()
         Mode.SELECT:
             var hit = _find_object_at(screen_pos)
@@ -151,13 +159,16 @@ func _on_left_press(screen_pos: Vector2) -> void:
                 _drag_mouse_start = screen_pos
                 _drag_start_world = _screen_to_world(screen_pos)
                 _drag_start_obj_pos = hit.position
+                left_click_used = true
                 get_viewport().set_input_as_handled()
             else:
                 _deselect()
+                # Don't set left_click_used — let camera pan on empty space
         Mode.TERRAIN:
             if _terrain_type > 0:
                 _terrain_painting = true
                 _paint_terrain_at(screen_pos)
+                left_click_used = true
                 get_viewport().set_input_as_handled()
 
 func _on_left_release(screen_pos: Vector2) -> void:
