@@ -209,6 +209,26 @@ func get_sprite_frames(state_info: Dictionary) -> SpriteFrames:
 
     return frames
 
+## Get all assets that fit a given slot name.
+## Returns an array of asset dictionaries.
+func get_assets_for_slot(slot_name: String) -> Array:
+    var result: Array = []
+    for asset_id in assets:
+        var asset = assets[asset_id]
+        var fits: String = asset.get("fits_slot", "")
+        if fits == slot_name:
+            result.append(asset)
+    result.sort_custom(func(a, b): return a.get("name", "") < b.get("name", ""))
+    return result
+
+## Get the slots defined on an asset.
+## Returns an array of slot dictionaries [{slot_name, offset_x, offset_y}].
+func get_slots(asset_id: String) -> Array:
+    var asset = assets.get(asset_id)
+    if asset == null:
+        return []
+    return asset.get("slots", [])
+
 ## Get an AtlasTexture for a specific sprite on a sheet.
 ## This is the main way to get a drawable texture for an asset state.
 func get_sprite_texture(state_info: Dictionary) -> AtlasTexture:

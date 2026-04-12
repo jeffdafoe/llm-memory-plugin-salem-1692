@@ -11,6 +11,14 @@ type TilesetPack struct {
 	URL  *string `json:"url"`
 }
 
+// AssetSlot defines a named attachment point on an asset (e.g., campfire has a "top" slot).
+// Overlay assets declare which slot they fit via FitsSlot.
+type AssetSlot struct {
+	SlotName string `json:"slot_name"`
+	OffsetX  int    `json:"offset_x"`
+	OffsetY  int    `json:"offset_y"`
+}
+
 // Asset represents a logical game object (tree, stall, wagon, etc.)
 type Asset struct {
 	ID           string       `json:"id"`
@@ -21,8 +29,10 @@ type Asset struct {
 	AnchorY      float64      `json:"anchor_y"`
 	Layer        string       `json:"layer"`
 	PackID       *string      `json:"pack_id"`
+	FitsSlot     *string      `json:"fits_slot"`
 	Pack         *TilesetPack `json:"pack,omitempty"`
 	States       []AssetState `json:"states"`
+	Slots        []AssetSlot  `json:"slots"`
 }
 
 // AssetState is one visual variant of an asset (sprite coordinates for a specific state).
@@ -59,9 +69,9 @@ func (app *App) handleListAssets(w http.ResponseWriter, r *http.Request) {
 		packs[p.ID] = &p
 	}
 
-	// Fetch all assets with pack_id
+	// Fetch all assets with pack_id and fits_slot
 	assetRows, err := app.DB.Query(r.Context(),
-		`SELECT id, name, category, default_state, anchor_x, anchor_y, layer, pack_id
+		`SELECT id, name, category, default_state, anchor_x, anchor_y, layer, pack_id, fits_slot
 		 FROM asset
 		 ORDER BY category, name`,
 	)
@@ -77,10 +87,11 @@ func (app *App) handleListAssets(w http.ResponseWriter, r *http.Request) {
 	for assetRows.Next() {
 		var a Asset
 		if err := assetRows.Scan(&a.ID, &a.Name, &a.Category, &a.DefaultState,
-			&a.AnchorX, &a.AnchorY, &a.Layer, &a.PackID); err != nil {
+			&a.AnchorX, &a.AnchorY, &a.Layer, &a.PackID, &a.FitsSlot); err != nil {
 			continue
 		}
 		a.States = []AssetState{}
+		a.Slots = []AssetSlot{}
 		if a.PackID != nil {
 			if pack, ok := packs[*a.PackID]; ok {
 				a.Pack = pack
@@ -111,6 +122,29 @@ func (app *App) handleListAssets(w http.ResponseWriter, r *http.Request) {
 		}
 		if idx, ok := assetIndex[assetID]; ok {
 			assets[idx].States = append(assets[idx].States, s)
+		}
+	}
+
+	// Fetch all slots and attach to their parent asset
+	slotRows, err := app.DB.Query(r.Context(),
+		`SELECT asset_id, slot_name, offset_x, offset_y
+		 FROM asset_slot
+		 ORDER BY asset_id, slot_name`,
+	)
+	if err != nil {
+		jsonError(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	defer slotRows.Close()
+
+	for slotRows.Next() {
+		var assetID string
+		var s AssetSlot
+		if err := slotRows.Scan(&assetID, &s.SlotName, &s.OffsetX, &s.OffsetY); err != nil {
+			continue
+		}
+		if idx, ok := assetIndex[assetID]; ok {
+			assets[idx].Slots = append(assets[idx].Slots, s)
 		}
 	}
 
