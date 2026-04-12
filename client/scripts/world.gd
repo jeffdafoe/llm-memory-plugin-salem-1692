@@ -319,11 +319,16 @@ func _on_object_saved(result: int, response_code: int, headers: PackedStringArra
     var json = JSON.parse_string(body.get_string_from_utf8())
     if json != null and json.has("id"):
         var obj_id = json["id"]
+        # If the WS echo arrived first, it created a duplicate — remove it
+        if placed_objects.has(obj_id):
+            var ws_node = placed_objects[obj_id]
+            if ws_node != node:
+                ws_node.queue_free()
         node.set_meta("object_id", obj_id)
         node.set_meta("placed_by", json.get("placed_by", ""))
         node.set_meta("owner", json.get("owner", ""))
         placed_objects[obj_id] = node
-        # Mark as locally created so the WS echo doesn't duplicate it
+        # Mark as locally created so any late WS echo is ignored
         if event_client != null:
             event_client.mark_local_object(obj_id)
 
@@ -387,6 +392,7 @@ func _on_agents_loaded(result: int, response_code: int, headers: PackedStringArr
     http.queue_free()
 
     if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
+        push_error("Failed to load agents: result=" + str(result) + " code=" + str(response_code))
         return
 
     var json = JSON.parse_string(body.get_string_from_utf8())
