@@ -574,9 +574,11 @@ func show_selection(info: Dictionary) -> void:
         _placed_by_label.visible = false
         _owner_label.visible = false
         _attachments_section.visible = false
+        _catalog_scroll.visible = true  # Restore catalog when deselected
         return
     _selection_info.visible = true
     _delete_button.disabled = false
+    _catalog_scroll.visible = false  # Hide catalog when object is selected
     var asset = Catalog.assets.get(asset_id, {})
     var name: String = asset.get("name", asset_id)
     _selection_label.text = name
