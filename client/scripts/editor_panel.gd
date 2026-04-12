@@ -796,12 +796,9 @@ func _build_attachments(asset_id: String) -> void:
         if state_info != null:
             var texture = Catalog.get_sprite_texture(state_info)
             if texture != null:
-                var tex_rect = TextureRect.new()
-                tex_rect.texture = texture
-                tex_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-                tex_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-                tex_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
-                btn.add_child(tex_rect)
+                btn.icon = texture
+                btn.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
+                btn.expand_icon = true
 
         btn.pressed.connect(_on_attachment_clicked.bind(overlay_id))
         _attachments_grid.add_child(btn)
