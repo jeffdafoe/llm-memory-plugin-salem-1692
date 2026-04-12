@@ -85,6 +85,8 @@ func _handle_message(data: String) -> void:
             _on_object_moved(event_data)
         "object_owner_changed":
             _on_object_owner_changed(event_data)
+        "object_display_name_changed":
+            _on_object_display_name_changed(event_data)
         "object_state_changed":
             _on_object_state_changed(event_data)
         "terrain_updated":
@@ -142,6 +144,18 @@ func _on_object_owner_changed(data: Dictionary) -> void:
     if owner == null:
         owner = ""
     node.set_meta("owner", owner)
+
+func _on_object_display_name_changed(data: Dictionary) -> void:
+    if world == null:
+        return
+    var obj_id = data.get("id", "")
+    if not world.placed_objects.has(obj_id):
+        return
+    var node: Node2D = world.placed_objects[obj_id]
+    var display_name = data.get("display_name", "")
+    if display_name == null:
+        display_name = ""
+    node.set_meta("display_name", display_name)
 
 # Debounce terrain reloads — painting triggers frequent saves
 var _terrain_reload_timer: float = 0.0

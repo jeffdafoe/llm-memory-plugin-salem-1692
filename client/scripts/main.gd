@@ -157,6 +157,7 @@ func _build_ui() -> void:
     editor_panel.terrain_mode_toggled.connect(_on_terrain_mode_toggled)
     editor_panel.terrain_type_selected.connect(_on_terrain_type_selected)
     editor_panel.owner_changed.connect(_on_owner_changed)
+    editor_panel.display_name_changed.connect(_on_display_name_changed)
     editor_panel.world = world
 
     # Wire editor signals to panel
@@ -174,6 +175,7 @@ func _on_edit_toggled(active: bool) -> void:
     editor.active = active
     camera.editor_active = active
     if not active:
+        editor._deselect()
         editor.set_mode(editor.Mode.SELECT)
 
 func _on_logout() -> void:
@@ -216,6 +218,10 @@ func _on_editor_object_deselected() -> void:
 func _on_owner_changed(owner: String) -> void:
     if editor.selected_object != null:
         world.set_object_owner(editor.selected_object, owner)
+
+func _on_display_name_changed(display_name: String) -> void:
+    if editor.selected_object != null:
+        world.set_object_display_name(editor.selected_object, display_name)
 
 func _on_terrain_mode_toggled(active: bool) -> void:
     if active:

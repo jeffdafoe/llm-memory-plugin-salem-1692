@@ -96,17 +96,18 @@ func _make_button(label: String) -> Button:
     var btn = Button.new()
     btn.text = label
     btn.flat = false
-    btn.add_theme_color_override("font_color", COLOR_TEXT)
+    btn.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+    btn.add_theme_color_override("font_hover_color", COLOR_TEXT)
     btn.add_theme_font_override("font", _font)
     btn.add_theme_font_size_override("font_size", 16)
 
     var normal_style = StyleBoxFlat.new()
-    normal_style.bg_color = COLOR_BTN_BG
+    normal_style.bg_color = Color(0.17, 0.14, 0.10, 1.0)
     normal_style.border_width_left = 1
     normal_style.border_width_top = 1
     normal_style.border_width_right = 1
     normal_style.border_width_bottom = 1
-    normal_style.border_color = COLOR_BTN_BORDER
+    normal_style.border_color = Color(0.35, 0.28, 0.18, 1.0)
     normal_style.corner_radius_left_top = 3
     normal_style.corner_radius_right_top = 3
     normal_style.corner_radius_left_bottom = 3
@@ -118,7 +119,8 @@ func _make_button(label: String) -> Button:
     btn.add_theme_stylebox_override("normal", normal_style)
 
     var hover_style = normal_style.duplicate()
-    hover_style.bg_color = Color(0.17, 0.17, 0.10, 1.0)
+    hover_style.bg_color = COLOR_BTN_BG
+    hover_style.border_color = COLOR_BTN_BORDER
     btn.add_theme_stylebox_override("hover", hover_style)
 
     var pressed_style = normal_style.duplicate()

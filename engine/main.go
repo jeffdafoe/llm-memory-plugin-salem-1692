@@ -57,6 +57,7 @@ func main() {
 	mux.HandleFunc("POST /api/village/objects/bulk", app.requireLLMMemory(app.handleBulkCreateVillageObjects))
 	mux.HandleFunc("DELETE /api/village/objects/{id}", app.requireLLMMemory(app.handleDeleteVillageObject))
 	mux.HandleFunc("PATCH /api/village/objects/{id}/owner", app.requireLLMMemory(app.handleSetVillageObjectOwner))
+	mux.HandleFunc("PATCH /api/village/objects/{id}/name", app.requireLLMMemory(app.handleSetVillageObjectDisplayName))
 	mux.HandleFunc("PATCH /api/village/objects/{id}/state", app.requireLLMMemory(app.handleSetVillageObjectState))
 	mux.HandleFunc("PATCH /api/village/objects/{id}/position", app.requireLLMMemory(app.handleMoveVillageObject))
 

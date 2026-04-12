@@ -8,6 +8,7 @@ signal delete_requested
 signal terrain_mode_toggled(active: bool)
 signal terrain_type_selected(terrain_type: int)
 signal owner_changed(owner: String)
+signal display_name_changed(display_name: String)
 
 # Theme colors (matching top bar / login screen)
 const COLOR_BG = Color(0.12, 0.09, 0.07, 0.95)
@@ -37,6 +38,8 @@ var _placed_by_label: Label = null
 var _owner_label: Label = null
 var _owner_dropdown: OptionButton = null
 var _ignoring_dropdown: bool = false
+var _name_input: LineEdit = null
+var _ignoring_name_input: bool = false
 var _catalog_container: VBoxContainer = null
 var _terrain_picker: VBoxContainer = null
 var _catalog_scroll: ScrollContainer = null
@@ -155,6 +158,41 @@ func _ready() -> void:
     _owner_label.add_theme_font_size_override("font_size", 12)
     _owner_label.visible = false
     _selection_info.add_child(_owner_label)
+
+    # Display name input — lets editor assign a custom name to the object
+    var name_header = Label.new()
+    name_header.text = "NAME"
+    name_header.add_theme_color_override("font_color", COLOR_LABEL)
+    name_header.add_theme_font_size_override("font_size", 11)
+    _selection_info.add_child(name_header)
+
+    _name_input = LineEdit.new()
+    _name_input.placeholder_text = "e.g. General Store"
+    _name_input.add_theme_font_override("font", _font)
+    _name_input.add_theme_font_size_override("font_size", 13)
+    _name_input.add_theme_color_override("font_color", COLOR_TEXT)
+    _name_input.add_theme_color_override("font_placeholder_color", Color(0.45, 0.40, 0.30, 1.0))
+    _name_input.max_length = 100
+    var name_input_style = StyleBoxFlat.new()
+    name_input_style.bg_color = COLOR_BTN_BG
+    name_input_style.border_width_left = 1
+    name_input_style.border_width_top = 1
+    name_input_style.border_width_right = 1
+    name_input_style.border_width_bottom = 1
+    name_input_style.border_color = COLOR_BTN_BORDER
+    name_input_style.corner_radius_left_top = 3
+    name_input_style.corner_radius_right_top = 3
+    name_input_style.corner_radius_left_bottom = 3
+    name_input_style.corner_radius_right_bottom = 3
+    name_input_style.content_margin_left = 6.0
+    name_input_style.content_margin_right = 6.0
+    name_input_style.content_margin_top = 4.0
+    name_input_style.content_margin_bottom = 4.0
+    _name_input.add_theme_stylebox_override("normal", name_input_style)
+    _name_input.add_theme_stylebox_override("focus", name_input_style)
+    _name_input.text_submitted.connect(_on_name_submitted)
+    _name_input.focus_exited.connect(_on_name_focus_lost)
+    _selection_info.add_child(_name_input)
 
     # Owner dropdown — lets editor assign/change object ownership
     var owner_header = Label.new()
@@ -438,6 +476,17 @@ func _set_tool_active(btn: Button, active: bool) -> void:
         btn.add_theme_stylebox_override("normal", style)
         btn.add_theme_color_override("font_color", COLOR_TEXT)
 
+func _on_name_submitted(new_text: String) -> void:
+    if _ignoring_name_input:
+        return
+    _name_input.release_focus()
+    display_name_changed.emit(new_text.strip_edges())
+
+func _on_name_focus_lost() -> void:
+    if _ignoring_name_input:
+        return
+    display_name_changed.emit(_name_input.text.strip_edges())
+
 func _on_owner_selected(index: int) -> void:
     if _ignoring_dropdown:
         return
@@ -499,6 +548,11 @@ func show_selection(info: Dictionary) -> void:
         _owner_label.visible = true
     else:
         _owner_label.visible = false
+
+    # Populate display name input
+    _ignoring_name_input = true
+    _name_input.text = info.get("display_name", "")
+    _ignoring_name_input = false
 
     # Populate owner dropdown from agent list
     _ignoring_dropdown = true

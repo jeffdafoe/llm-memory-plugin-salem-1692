@@ -238,6 +238,7 @@ func _place_object(data: Dictionary) -> void:
     container.set_meta("asset_id", asset_id)
     container.set_meta("placed_by", data.get("placed_by", ""))
     container.set_meta("owner", data.get("owner", ""))
+    container.set_meta("display_name", data.get("display_name", ""))
 
     # Sprites are 16px native, world is 32px scale — render at 2x
     var sprite = Sprite2D.new()
@@ -273,6 +274,7 @@ func add_object(asset_id: String, world_pos: Vector2) -> void:
     container.set_meta("asset_id", asset_id)
     container.set_meta("placed_by", Auth.username)
     container.set_meta("owner", "")
+    container.set_meta("display_name", "")
 
     var sprite = Sprite2D.new()
     sprite.texture = texture
@@ -326,6 +328,7 @@ func _on_object_saved(result: int, response_code: int, headers: PackedStringArra
         node.set_meta("object_id", obj_id)
         node.set_meta("placed_by", json.get("placed_by", ""))
         node.set_meta("owner", json.get("owner", ""))
+        node.set_meta("display_name", json.get("display_name", ""))
         placed_objects[obj_id] = node
         # Mark as locally created so any late WS echo is ignored
         if event_client != null:
@@ -430,6 +433,31 @@ func _update_object_owner(obj_id, owner: String) -> void:
         headers_arr.append("Authorization: " + auth_header)
     http.request_completed.connect(func(r, c, h, b): http.queue_free())
     http.request(api_base + "/api/village/objects/" + str(obj_id) + "/owner", headers_arr, HTTPClient.METHOD_PATCH, payload)
+
+## Set the display name of an object and persist to the server.
+func set_object_display_name(node: Node2D, display_name: String) -> void:
+    var obj_id = node.get_meta("object_id", null)
+    if obj_id == null:
+        return
+    node.set_meta("display_name", display_name)
+    _update_object_display_name(obj_id, display_name)
+
+func _update_object_display_name(obj_id, display_name: String) -> void:
+    var http = HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+
+    var name_value = null
+    if display_name != "":
+        name_value = display_name
+    var payload = JSON.stringify({"display_name": name_value})
+
+    var headers_arr = ["Content-Type: application/json"]
+    var auth_header: String = Auth.get_auth_header()
+    if auth_header != "":
+        headers_arr.append("Authorization: " + auth_header)
+    http.request_completed.connect(func(r, c, h, b): http.queue_free())
+    http.request(api_base + "/api/village/objects/" + str(obj_id) + "/name", headers_arr, HTTPClient.METHOD_PATCH, payload)
 
 ## Resolve an owner identifier to a display name.
 ## Returns the display name if found, otherwise the raw owner string.
