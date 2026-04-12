@@ -167,6 +167,48 @@ func get_state(asset_id: String, state: String = "") -> Variant:
 func get_sheet_texture(sheet_path: String) -> Texture2D:
     return sheet_cache.get(sheet_path)
 
+## Returns true if a state has animation frames (frame_count > 1).
+func is_animated(state_info: Dictionary) -> bool:
+    var frame_count: int = state_info.get("frame_count", 1)
+    return frame_count > 1
+
+## Build a SpriteFrames resource for an animated state.
+## Returns null if the state is static (frame_count <= 1) or the sheet isn't loaded.
+## The animation is named "default" and loops automatically.
+func get_sprite_frames(state_info: Dictionary) -> SpriteFrames:
+    var frame_count: int = state_info.get("frame_count", 1)
+    var frame_rate: float = state_info.get("frame_rate", 0.0)
+    if frame_count <= 1:
+        return null
+
+    var sheet_path: String = state_info.get("sheet", "")
+    var sheet_texture: Texture2D = get_sheet_texture(sheet_path)
+    if sheet_texture == null:
+        return null
+
+    var src_x: int = state_info.get("src_x", state_info.get("srcX", 0))
+    var src_y: int = state_info.get("src_y", state_info.get("srcY", 0))
+    var src_w: int = state_info.get("src_w", state_info.get("srcW", 0))
+    var src_h: int = state_info.get("src_h", state_info.get("srcH", 0))
+
+    var frames = SpriteFrames.new()
+    # SpriteFrames comes with a "default" animation — configure it
+    frames.set_animation_speed("default", frame_rate)
+    frames.set_animation_loop("default", true)
+
+    # Remove the default empty frame that SpriteFrames starts with
+    if frames.get_frame_count("default") > 0:
+        frames.remove_frame("default", 0)
+
+    # Build atlas textures for each frame — consecutive horizontally
+    for i in range(frame_count):
+        var atlas = AtlasTexture.new()
+        atlas.atlas = sheet_texture
+        atlas.region = Rect2(src_x + (i * src_w), src_y, src_w, src_h)
+        frames.add_frame("default", atlas)
+
+    return frames
+
 ## Get an AtlasTexture for a specific sprite on a sheet.
 ## This is the main way to get a drawable texture for an asset state.
 func get_sprite_texture(state_info: Dictionary) -> AtlasTexture:

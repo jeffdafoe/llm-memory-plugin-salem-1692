@@ -25,14 +25,17 @@ type Asset struct {
 	States       []AssetState `json:"states"`
 }
 
-// AssetState is one visual variant of an asset (sprite coordinates for a specific state)
+// AssetState is one visual variant of an asset (sprite coordinates for a specific state).
+// Animated states have frame_count > 1 — frames are consecutive horizontally in the sheet.
 type AssetState struct {
-	State string `json:"state"`
-	Sheet string `json:"sheet"`
-	SrcX  int    `json:"src_x"`
-	SrcY  int    `json:"src_y"`
-	SrcW  int    `json:"src_w"`
-	SrcH  int    `json:"src_h"`
+	State      string  `json:"state"`
+	Sheet      string  `json:"sheet"`
+	SrcX       int     `json:"src_x"`
+	SrcY       int     `json:"src_y"`
+	SrcW       int     `json:"src_w"`
+	SrcH       int     `json:"src_h"`
+	FrameCount int     `json:"frame_count"`
+	FrameRate  float64 `json:"frame_rate"`
 }
 
 // handleListAssets returns all assets with their states and pack info.
@@ -89,7 +92,7 @@ func (app *App) handleListAssets(w http.ResponseWriter, r *http.Request) {
 
 	// Fetch all states and attach to their parent asset
 	stateRows, err := app.DB.Query(r.Context(),
-		`SELECT asset_id, state, sheet, src_x, src_y, src_w, src_h
+		`SELECT asset_id, state, sheet, src_x, src_y, src_w, src_h, frame_count, frame_rate
 		 FROM asset_state
 		 ORDER BY asset_id, state`,
 	)
@@ -103,7 +106,7 @@ func (app *App) handleListAssets(w http.ResponseWriter, r *http.Request) {
 		var assetID string
 		var s AssetState
 		if err := stateRows.Scan(&assetID, &s.State, &s.Sheet,
-			&s.SrcX, &s.SrcY, &s.SrcW, &s.SrcH); err != nil {
+			&s.SrcX, &s.SrcY, &s.SrcW, &s.SrcH, &s.FrameCount, &s.FrameRate); err != nil {
 			continue
 		}
 		if idx, ok := assetIndex[assetID]; ok {

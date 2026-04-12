@@ -151,20 +151,19 @@ func _find_object_at(screen_pos: Vector2) -> Node2D:
     for child in world.get_node("Objects").get_children():
         if child.get_child_count() == 0:
             continue
-        var sprite: Sprite2D = null
+        var sprite_node: Node2D = null
         for grandchild in child.get_children():
-            if grandchild is Sprite2D:
-                sprite = grandchild
+            if grandchild is Sprite2D or grandchild is AnimatedSprite2D:
+                sprite_node = grandchild
                 break
-        if sprite == null:
+        if sprite_node == null:
             continue
 
-        var tex = sprite.texture
-        if tex == null:
+        var region_size: Vector2 = _get_sprite_size(sprite_node)
+        if region_size == Vector2.ZERO:
             continue
-        var region_size: Vector2 = tex.get_size()
-        var world_size: Vector2 = region_size * sprite.scale
-        var rect_origin: Vector2 = child.position + sprite.position
+        var world_size: Vector2 = region_size * sprite_node.scale
+        var rect_origin: Vector2 = child.position + sprite_node.position
         var rect = Rect2(rect_origin, world_size)
 
         if rect.has_point(world_pos):
@@ -174,6 +173,20 @@ func _find_object_at(screen_pos: Vector2) -> Node2D:
                 best_node = child
 
     return best_node
+
+## Get texture size from either Sprite2D or AnimatedSprite2D.
+func _get_sprite_size(sprite_node: Node2D) -> Vector2:
+    if sprite_node is Sprite2D:
+        var tex = sprite_node.texture
+        if tex != null:
+            return tex.get_size()
+    if sprite_node is AnimatedSprite2D:
+        var frames: SpriteFrames = sprite_node.sprite_frames
+        if frames != null and frames.get_frame_count("default") > 0:
+            var tex = frames.get_frame_texture("default", 0)
+            if tex != null:
+                return tex.get_size()
+    return Vector2.ZERO
 
 func _screen_to_world(screen_pos: Vector2) -> Vector2:
     var viewport: Viewport = get_viewport()

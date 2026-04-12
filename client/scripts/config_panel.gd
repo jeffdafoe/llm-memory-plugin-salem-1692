@@ -243,6 +243,8 @@ func _add_asset_card(grid: GridContainer, asset: Dictionary) -> void:
 
 func _add_state_thumb(container: HBoxContainer, state: Dictionary, is_default: bool) -> void:
     var state_name: String = state.get("state", "")
+    var frame_count: int = state.get("frame_count", 1)
+    var frame_rate: float = state.get("frame_rate", 0.0)
 
     var vbox = VBoxContainer.new()
     vbox.add_theme_constant_override("separation", 2)
@@ -275,6 +277,24 @@ func _add_state_thumb(container: HBoxContainer, state: Dictionary, is_default: b
         tex_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
         tex_rect.custom_minimum_size = Vector2(THUMB_SIZE, THUMB_SIZE)
         thumb_panel.add_child(tex_rect)
+
+        # Animate multi-frame states by cycling the texture
+        if frame_count > 1 and frame_rate > 0:
+            var all_frames: Array = []
+            var sprite_frames: SpriteFrames = Catalog.get_sprite_frames(state)
+            if sprite_frames != null:
+                for i in range(sprite_frames.get_frame_count("default")):
+                    all_frames.append(sprite_frames.get_frame_texture("default", i))
+            if all_frames.size() > 1:
+                var timer = Timer.new()
+                timer.wait_time = 1.0 / frame_rate
+                timer.autostart = true
+                var frame_idx: Array = [0]  # wrapped in array for closure capture
+                timer.timeout.connect(func():
+                    frame_idx[0] = (frame_idx[0] + 1) % all_frames.size()
+                    tex_rect.texture = all_frames[frame_idx[0]]
+                )
+                thumb_panel.add_child(timer)
     else:
         var placeholder = ColorRect.new()
         placeholder.custom_minimum_size = Vector2(THUMB_SIZE, THUMB_SIZE)

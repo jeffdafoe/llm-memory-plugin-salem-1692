@@ -125,7 +125,7 @@ func show_asset(asset_id: String) -> void:
     name_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
     _content.add_child(name_label)
 
-    # Large preview — proportionally scaled
+    # Large preview — proportionally scaled, animated if multi-frame
     var state_info = Catalog.get_state(asset_id)
     if state_info != null:
         var texture = Catalog.get_sprite_texture(state_info)
@@ -145,6 +145,9 @@ func show_asset(asset_id: String) -> void:
             tex_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
             tex_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
             preview_container.add_child(tex_rect)
+
+            # Animate if multi-frame
+            _animate_texture_rect(tex_rect, state_info, preview_container)
 
     # Metadata
     var meta_box = VBoxContainer.new()
@@ -248,6 +251,9 @@ func _add_state_thumb(container: HBoxContainer, state: Dictionary, is_default: b
         tex_rect.custom_minimum_size = Vector2(STATE_THUMB_SIZE, STATE_THUMB_SIZE)
         thumb_panel.add_child(tex_rect)
 
+        # Animate if multi-frame
+        _animate_texture_rect(tex_rect, state, thumb_panel)
+
     var label = Label.new()
     label.text = state_name.to_upper()
     label.add_theme_font_size_override("font_size", 10)
@@ -257,6 +263,33 @@ func _add_state_thumb(container: HBoxContainer, state: Dictionary, is_default: b
     else:
         label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
     vbox.add_child(label)
+
+## Add a timer-based animation to a TextureRect for multi-frame states.
+func _animate_texture_rect(tex_rect: TextureRect, state_info: Dictionary, parent: Node) -> void:
+    var frame_count: int = state_info.get("frame_count", 1)
+    var frame_rate: float = state_info.get("frame_rate", 0.0)
+    if frame_count <= 1 or frame_rate <= 0:
+        return
+
+    var sprite_frames: SpriteFrames = Catalog.get_sprite_frames(state_info)
+    if sprite_frames == null:
+        return
+
+    var all_frames: Array = []
+    for i in range(sprite_frames.get_frame_count("default")):
+        all_frames.append(sprite_frames.get_frame_texture("default", i))
+    if all_frames.size() <= 1:
+        return
+
+    var timer = Timer.new()
+    timer.wait_time = 1.0 / frame_rate
+    timer.autostart = true
+    var frame_idx: Array = [0]
+    timer.timeout.connect(func():
+        frame_idx[0] = (frame_idx[0] + 1) % all_frames.size()
+        tex_rect.texture = all_frames[frame_idx[0]]
+    )
+    parent.add_child(timer)
 
 func _on_place_pressed() -> void:
     visible = false

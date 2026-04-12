@@ -229,20 +229,15 @@ func _find_object_at(screen_pos: Vector2) -> Node2D:
     for child in world.get_node("Objects").get_children():
         if child.get_child_count() == 0:
             continue
-        var sprite: Sprite2D = null
-        for grandchild in child.get_children():
-            if grandchild is Sprite2D:
-                sprite = grandchild
-                break
-        if sprite == null:
+        var sprite_node: Node2D = _get_sprite_child(child)
+        if sprite_node == null:
             continue
 
-        var tex = sprite.texture
-        if tex == null:
+        var region_size: Vector2 = _get_sprite_size(sprite_node)
+        if region_size == Vector2.ZERO:
             continue
-        var region_size: Vector2 = tex.get_size()
-        var world_size: Vector2 = region_size * sprite.scale
-        var rect_origin: Vector2 = child.position + sprite.position
+        var world_size: Vector2 = region_size * sprite_node.scale
+        var rect_origin: Vector2 = child.position + sprite_node.position
         var rect = Rect2(rect_origin, world_size)
 
         if rect.has_point(world_pos):
@@ -252,6 +247,27 @@ func _find_object_at(screen_pos: Vector2) -> Node2D:
                 best_node = child
 
     return best_node
+
+## Find the sprite or animated sprite child of an object container.
+func _get_sprite_child(node: Node2D) -> Node2D:
+    for child in node.get_children():
+        if child is Sprite2D or child is AnimatedSprite2D:
+            return child
+    return null
+
+## Get the texture size of a sprite node (works for both Sprite2D and AnimatedSprite2D).
+func _get_sprite_size(sprite_node: Node2D) -> Vector2:
+    if sprite_node is Sprite2D:
+        var tex = sprite_node.texture
+        if tex != null:
+            return tex.get_size()
+    if sprite_node is AnimatedSprite2D:
+        var frames: SpriteFrames = sprite_node.sprite_frames
+        if frames != null and frames.get_frame_count("default") > 0:
+            var tex = frames.get_frame_texture("default", 0)
+            if tex != null:
+                return tex.get_size()
+    return Vector2.ZERO
 
 func _select_object(node: Node2D) -> void:
     _deselect()
@@ -272,20 +288,16 @@ func _deselect() -> void:
 
 func _add_selection_border(node: Node2D) -> void:
     _remove_selection_border()
-    var sprite: Sprite2D = null
-    for child in node.get_children():
-        if child is Sprite2D:
-            sprite = child
-            break
-    if sprite == null:
-        return
-    var tex = sprite.texture
-    if tex == null:
+    var sprite_node: Node2D = _get_sprite_child(node)
+    if sprite_node == null:
         return
 
-    var region_size: Vector2 = tex.get_size()
-    var world_size: Vector2 = region_size * sprite.scale
-    var rect_pos: Vector2 = sprite.position
+    var region_size: Vector2 = _get_sprite_size(sprite_node)
+    if region_size == Vector2.ZERO:
+        return
+
+    var world_size: Vector2 = region_size * sprite_node.scale
+    var rect_pos: Vector2 = sprite_node.position
     var padding: float = 3.0
 
     _selection_border = Node2D.new()
