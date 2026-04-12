@@ -85,6 +85,7 @@ func _on_authenticated() -> void:
         event_client.set_script(EventClientScript)
         add_child(event_client)
     event_client.world = world
+    world.event_client = event_client
     event_client.connect_to_server()
 
     # Load objects now that we're authenticated

@@ -10,6 +10,9 @@ var _url: String = ""
 # Reference to world — set by main.gd after auth
 var world: Node2D = null
 
+# IDs of objects we created locally — skip WS events for these
+var _local_object_ids: Dictionary = {}
+
 # Reconnect state
 var _reconnect_timer: float = 0.0
 const RECONNECT_DELAY: float = 3.0
@@ -87,12 +90,20 @@ func _handle_message(data: String) -> void:
         "terrain_updated":
             _on_terrain_updated()
 
+## Call this after placing an object locally so we ignore the WS echo.
+func mark_local_object(obj_id: String) -> void:
+    _local_object_ids[obj_id] = true
+
 func _on_object_created(data: Dictionary) -> void:
     if world == null:
         return
     var obj_id = data.get("id", "")
     # Skip if we already have this object (we placed it ourselves)
     if world.placed_objects.has(obj_id):
+        return
+    # Skip if this is our own creation echoed back via WS
+    if _local_object_ids.has(obj_id):
+        _local_object_ids.erase(obj_id)
         return
     # Place it using the same method as initial load
     world._place_object(data)
