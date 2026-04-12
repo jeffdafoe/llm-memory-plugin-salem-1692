@@ -244,12 +244,21 @@ func _add_state_thumb(container: HBoxContainer, state: Dictionary, is_default: b
 
     var texture = Catalog.get_sprite_texture(state)
     if texture != null:
+        var center = CenterContainer.new()
+        center.custom_minimum_size = Vector2(STATE_THUMB_SIZE, STATE_THUMB_SIZE)
+        thumb_panel.add_child(center)
+
         var tex_rect = TextureRect.new()
         tex_rect.texture = texture
-        tex_rect.expand_mode = TextureRect.EXPAND_FIT_WIDTH_PROPORTIONAL
+        var native_size: Vector2 = texture.get_size()
+        var max_dim: float = STATE_THUMB_SIZE - 4.0
+        var scale_factor: float = minf(max_dim / native_size.x, max_dim / native_size.y)
+        if scale_factor > 2.0:
+            scale_factor = 2.0
+        tex_rect.custom_minimum_size = native_size * scale_factor
+        tex_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
         tex_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-        tex_rect.custom_minimum_size = Vector2(STATE_THUMB_SIZE, STATE_THUMB_SIZE)
-        thumb_panel.add_child(tex_rect)
+        center.add_child(tex_rect)
 
         # Animate if multi-frame
         _animate_texture_rect(tex_rect, state, thumb_panel)
