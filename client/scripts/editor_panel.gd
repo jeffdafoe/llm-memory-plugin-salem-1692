@@ -132,6 +132,7 @@ func _ready() -> void:
     # Selection info (hidden when nothing selected)
     _selection_info = VBoxContainer.new()
     _selection_info.visible = false
+    _selection_info.size_flags_vertical = Control.SIZE_EXPAND_FILL
     _selection_info.add_theme_constant_override("separation", 4)
     vbox.add_child(_selection_info)
 
@@ -230,6 +231,7 @@ func _ready() -> void:
     # Attachments section — shown when selected object has slots
     _attachments_section = VBoxContainer.new()
     _attachments_section.visible = false
+    _attachments_section.size_flags_vertical = Control.SIZE_EXPAND_FILL
     _attachments_section.add_theme_constant_override("separation", 4)
     _selection_info.add_child(_attachments_section)
 
@@ -242,7 +244,6 @@ func _ready() -> void:
     var attach_scroll = ScrollContainer.new()
     attach_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
     attach_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-    attach_scroll.custom_minimum_size = Vector2(0, 120)
     _attachments_section.add_child(attach_scroll)
 
     _attachments_grid = GridContainer.new()
