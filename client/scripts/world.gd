@@ -209,7 +209,8 @@ func _on_village_loaded(result: int, response_code: int, headers: PackedStringAr
         for obj in json:
             _place_object(obj)
 
-## Create a Sprite2D node for a placed village object.
+## Create a sprite node for a placed village object.
+## Uses AnimatedSprite2D for multi-frame assets, Sprite2D for static ones.
 func _place_object(data: Dictionary) -> void:
     var asset_id: String = data.get("assetId", data.get("asset_id", ""))
     var current_state: String = data.get("currentState", data.get("current_state", ""))
@@ -240,19 +241,39 @@ func _place_object(data: Dictionary) -> void:
     container.set_meta("owner", data.get("owner", ""))
     container.set_meta("display_name", data.get("display_name", ""))
 
-    # Sprites are 16px native, world is 32px scale — render at 2x
-    var sprite = Sprite2D.new()
-    sprite.texture = texture
-    sprite.centered = false
-    sprite.scale = Vector2(2, 2)
-    sprite.position = Vector2(
-        -texture.region.size.x * 2 * anchor_x,
-        -texture.region.size.y * 2 * anchor_y
-    )
-
-    container.add_child(sprite)
+    var sprite_node: Node2D = _create_sprite_node(state_info, texture, anchor_x, anchor_y)
+    container.add_child(sprite_node)
     objects_node.add_child(container)
     placed_objects[obj_id] = container
+
+## Create the appropriate sprite node for an asset state.
+## Returns AnimatedSprite2D for multi-frame states, Sprite2D for static ones.
+func _create_sprite_node(state_info: Dictionary, texture: AtlasTexture, anchor_x: float, anchor_y: float) -> Node2D:
+    var sprite_frames: SpriteFrames = Catalog.get_sprite_frames(state_info)
+
+    if sprite_frames != null:
+        # Animated — use AnimatedSprite2D
+        var anim_sprite = AnimatedSprite2D.new()
+        anim_sprite.sprite_frames = sprite_frames
+        anim_sprite.centered = false
+        anim_sprite.scale = Vector2(2, 2)
+        anim_sprite.position = Vector2(
+            -texture.region.size.x * 2 * anchor_x,
+            -texture.region.size.y * 2 * anchor_y
+        )
+        anim_sprite.play("default")
+        return anim_sprite
+    else:
+        # Static — use Sprite2D
+        var sprite = Sprite2D.new()
+        sprite.texture = texture
+        sprite.centered = false
+        sprite.scale = Vector2(2, 2)
+        sprite.position = Vector2(
+            -texture.region.size.x * 2 * anchor_x,
+            -texture.region.size.y * 2 * anchor_y
+        )
+        return sprite
 
 ## Add a new object to the world (from the editor).
 func add_object(asset_id: String, world_pos: Vector2) -> void:
@@ -276,15 +297,8 @@ func add_object(asset_id: String, world_pos: Vector2) -> void:
     container.set_meta("owner", "")
     container.set_meta("display_name", "")
 
-    var sprite = Sprite2D.new()
-    sprite.texture = texture
-    sprite.centered = false
-    sprite.scale = Vector2(2, 2)
-    sprite.position = Vector2(
-        -texture.region.size.x * 2 * anchor_x,
-        -texture.region.size.y * 2 * anchor_y
-    )
-    container.add_child(sprite)
+    var sprite_node: Node2D = _create_sprite_node(state_info, texture, anchor_x, anchor_y)
+    container.add_child(sprite_node)
     objects_node.add_child(container)
     # Force visual refresh — same HTML5 y-sort renderer bug as drag-to-move
     container.visible = false

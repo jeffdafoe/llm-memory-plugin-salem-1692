@@ -175,7 +175,6 @@ func _on_object_state_changed(data: Dictionary) -> void:
     var new_state: String = data.get("state", "")
     var asset_id: String = node.get_meta("asset_id", "")
 
-    # Update the sprite texture to reflect the new state
     var state_info = Catalog.get_state(asset_id, new_state)
     if state_info == null:
         return
@@ -183,8 +182,15 @@ func _on_object_state_changed(data: Dictionary) -> void:
     if texture == null:
         return
 
-    # Find the sprite child and update it
+    var asset = Catalog.assets.get(asset_id, {})
+    var anchor_x: float = asset.get("anchorX", asset.get("anchor_x", 0.5))
+    var anchor_y: float = asset.get("anchorY", asset.get("anchor_y", 0.85))
+
+    # Remove old sprite child and replace with new one (handles Sprite2D <-> AnimatedSprite2D swap)
     for child in node.get_children():
-        if child is Sprite2D:
-            child.texture = texture
+        if child is Sprite2D or child is AnimatedSprite2D:
+            child.queue_free()
             break
+
+    var new_sprite: Node2D = world._create_sprite_node(state_info, texture, anchor_x, anchor_y)
+    node.add_child(new_sprite)
