@@ -28,19 +28,20 @@ func (app *App) handleVillageMe(w http.ResponseWriter, r *http.Request) {
 
 // villageObject represents a placed item on the village map.
 type villageObject struct {
-	ID           string  `json:"id"`
-	AssetID      string  `json:"asset_id"`
-	CurrentState string  `json:"current_state"`
-	X            float64 `json:"x"`
-	Y            float64 `json:"y"`
-	PlacedBy     *string `json:"placed_by"`
-	Owner        *string `json:"owner"`
+	ID          string  `json:"id"`
+	AssetID     string  `json:"asset_id"`
+	CurrentState string `json:"current_state"`
+	X           float64 `json:"x"`
+	Y           float64 `json:"y"`
+	PlacedBy    *string `json:"placed_by"`
+	Owner       *string `json:"owner"`
+	DisplayName *string `json:"display_name"`
 }
 
 // handleListVillageObjects returns all placed objects.
 func (app *App) handleListVillageObjects(w http.ResponseWriter, r *http.Request) {
 	rows, err := app.DB.Query(r.Context(),
-		`SELECT id, asset_id, current_state, x, y, placed_by, owner
+		`SELECT id, asset_id, current_state, x, y, placed_by, owner, display_name
 		 FROM village_object
 		 ORDER BY created_at`,
 	)
@@ -54,7 +55,7 @@ func (app *App) handleListVillageObjects(w http.ResponseWriter, r *http.Request)
 	for rows.Next() {
 		var obj villageObject
 		if err := rows.Scan(&obj.ID, &obj.AssetID, &obj.CurrentState,
-			&obj.X, &obj.Y, &obj.PlacedBy, &obj.Owner); err != nil {
+			&obj.X, &obj.Y, &obj.PlacedBy, &obj.Owner, &obj.DisplayName); err != nil {
 			continue
 		}
 		objects = append(objects, obj)
@@ -174,6 +175,39 @@ func (app *App) handleSetVillageObjectOwner(w http.ResponseWriter, r *http.Reque
 
 	w.WriteHeader(http.StatusNoContent)
 	app.Hub.Broadcast(WorldEvent{Type: "object_owner_changed", Data: map[string]interface{}{"id": id, "owner": req.Owner}})
+}
+
+// handleSetVillageObjectDisplayName assigns or changes the display name of an object.
+func (app *App) handleSetVillageObjectDisplayName(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		jsonError(w, "Missing object ID", http.StatusBadRequest)
+		return
+	}
+
+	var req struct {
+		DisplayName *string `json:"display_name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	result, err := app.DB.Exec(r.Context(),
+		`UPDATE village_object SET display_name = $1 WHERE id = $2`,
+		req.DisplayName, id,
+	)
+	if err != nil {
+		jsonError(w, "Failed to update display name", http.StatusInternalServerError)
+		return
+	}
+	if result.RowsAffected() == 0 {
+		jsonError(w, "Object not found", http.StatusNotFound)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+	app.Hub.Broadcast(WorldEvent{Type: "object_display_name_changed", Data: map[string]interface{}{"id": id, "display_name": req.DisplayName}})
 }
 
 // handleSetVillageObjectState changes the current state of a placed object.

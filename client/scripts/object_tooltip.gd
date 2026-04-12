@@ -67,11 +67,6 @@ func _ready() -> void:
     add_child(_tooltip_panel)
 
 func _input(event: InputEvent) -> void:
-    # Only show tooltip when editor is not active
-    if editor != null and editor.active:
-        _hide_tooltip()
-        return
-
     if event is InputEventMouseMotion:
         _update_hover(event.position)
 
@@ -84,6 +79,11 @@ func _update_hover(screen_pos: Vector2) -> void:
         _hide_tooltip()
         return
 
+    # Skip if over editor panel area
+    if editor != null and editor.active and screen_pos.x < 240.0:
+        _hide_tooltip()
+        return
+
     var hit = _find_object_at(screen_pos)
     if hit == null:
         _hide_tooltip()
@@ -92,6 +92,9 @@ func _update_hover(screen_pos: Vector2) -> void:
     if hit != _hovered_node:
         _hovered_node = hit
         _show_tooltip(hit)
+
+    if not _tooltip_panel.visible:
+        return
 
     # Position tooltip near cursor, offset so it doesn't overlap
     _tooltip_panel.position = Vector2(screen_pos.x + 16, screen_pos.y - 8)
@@ -108,11 +111,22 @@ func _update_hover(screen_pos: Vector2) -> void:
 
 func _show_tooltip(node: Node2D) -> void:
     var asset_id: String = node.get_meta("asset_id", "")
-    var asset = Catalog.assets.get(asset_id, {})
-    var name: String = asset.get("name", asset_id)
-    _name_label.text = name
-
     var owner: String = node.get_meta("owner", "")
+    var display_name_meta: String = node.get_meta("display_name", "")
+    var is_editing: bool = editor != null and editor.active
+
+    # In viewer mode, only show tooltip if object has an owner or display name
+    if not is_editing and owner == "" and display_name_meta == "":
+        _hide_tooltip()
+        return
+
+    # Show display_name if set, otherwise fall back to catalog asset name
+    if display_name_meta != "":
+        _name_label.text = display_name_meta
+    else:
+        var asset = Catalog.assets.get(asset_id, {})
+        _name_label.text = asset.get("name", asset_id)
+
     if owner != "":
         var display_name: String = world.get_owner_display_name(owner)
         _owner_label.text = display_name
