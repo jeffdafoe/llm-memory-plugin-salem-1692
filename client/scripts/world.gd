@@ -378,14 +378,15 @@ func _save_attachment(asset_id: String, pos: Vector2, parent_id: String, node: N
     http.request(api_base + "/api/village/objects", headers_arr, HTTPClient.METHOD_POST, payload)
 
 ## Add a new object to the world (from the editor).
-func add_object(asset_id: String, world_pos: Vector2) -> void:
+## Returns the created container node so the editor can auto-select it.
+func add_object(asset_id: String, world_pos: Vector2) -> Node2D:
     var state_info = Catalog.get_state(asset_id)
     if state_info == null:
-        return
+        return null
 
     var texture: AtlasTexture = Catalog.get_sprite_texture(state_info)
     if texture == null:
-        return
+        return null
 
     var asset = Catalog.assets.get(asset_id, {})
     var anchor_x: float = asset.get("anchorX", asset.get("anchor_x", 0.5))
@@ -407,6 +408,7 @@ func add_object(asset_id: String, world_pos: Vector2) -> void:
     container.visible = true
 
     _save_object(asset_id, default_state, world_pos, container)
+    return container
 
 func _save_object(asset_id: String, state: String, pos: Vector2, node: Node2D) -> void:
     var http = HTTPRequest.new()

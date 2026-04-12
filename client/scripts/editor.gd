@@ -229,8 +229,11 @@ func _place_at_mouse(screen_pos: Vector2) -> void:
     if selected_asset_id == "":
         return
     var world_pos: Vector2 = _screen_to_world(screen_pos)
-    world.add_object(selected_asset_id, world_pos)
+    var placed_node: Node2D = world.add_object(selected_asset_id, world_pos)
     set_mode(Mode.SELECT)
+    # Auto-select the newly placed object so attachments show immediately
+    if placed_node != null:
+        _select_object(placed_node)
 
 func _find_object_at(screen_pos: Vector2) -> Node2D:
     var world_pos: Vector2 = _screen_to_world(screen_pos)
