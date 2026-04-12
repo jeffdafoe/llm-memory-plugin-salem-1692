@@ -206,7 +206,19 @@ func _on_village_loaded(result: int, response_code: int, headers: PackedStringAr
         return
 
     if json is Array:
+        # Two-pass load: base objects first, then attachments.
+        # Attachments need their parent to already exist in placed_objects.
+        var base_objects: Array = []
+        var attachments: Array = []
         for obj in json:
+            var attached_to = obj.get("attached_to", null)
+            if attached_to != null and attached_to != "":
+                attachments.append(obj)
+            else:
+                base_objects.append(obj)
+        for obj in base_objects:
+            _place_object(obj)
+        for obj in attachments:
             _place_object(obj)
 
 ## Create a sprite node for a placed village object.
