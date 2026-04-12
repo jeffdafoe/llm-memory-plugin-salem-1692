@@ -211,12 +211,15 @@ func _on_village_loaded(result: int, response_code: int, headers: PackedStringAr
 
 ## Create a sprite node for a placed village object.
 ## Uses AnimatedSprite2D for multi-frame assets, Sprite2D for static ones.
+## Handles attached objects — if attached_to is set, the object renders as
+## a child of the parent object at the slot's offset position.
 func _place_object(data: Dictionary) -> void:
     var asset_id: String = data.get("assetId", data.get("asset_id", ""))
     var current_state: String = data.get("currentState", data.get("current_state", ""))
     var obj_x: float = data.get("x", 0.0)
     var obj_y: float = data.get("y", 0.0)
     var obj_id = data.get("id", 0)
+    var attached_to = data.get("attached_to", null)
 
     var state_info = Catalog.get_state(asset_id, current_state)
     if state_info == null:
@@ -234,16 +237,37 @@ func _place_object(data: Dictionary) -> void:
 
     # Container node at the anchor point for y-sorting
     var container = Node2D.new()
-    container.position = Vector2(obj_x, obj_y)
     container.set_meta("object_id", obj_id)
     container.set_meta("asset_id", asset_id)
     container.set_meta("placed_by", data.get("placed_by", ""))
     container.set_meta("owner", data.get("owner", ""))
     container.set_meta("display_name", data.get("display_name", ""))
+    container.set_meta("attached_to", attached_to if attached_to != null else "")
 
     var sprite_node: Node2D = _create_sprite_node(state_info, texture, anchor_x, anchor_y)
     container.add_child(sprite_node)
-    objects_node.add_child(container)
+
+    # If attached to a parent, add as child of parent node at slot offset
+    if attached_to != null and attached_to != "" and placed_objects.has(attached_to):
+        var parent_node: Node2D = placed_objects[attached_to]
+        var parent_asset_id: String = parent_node.get_meta("asset_id", "")
+        var slots: Array = Catalog.get_slots(parent_asset_id)
+        var fits_slot: String = asset.get("fits_slot", "")
+
+        # Find the matching slot offset
+        var slot_offset: Vector2 = Vector2.ZERO
+        for slot in slots:
+            if slot.get("slot_name", "") == fits_slot:
+                slot_offset = Vector2(slot.get("offset_x", 0), slot.get("offset_y", 0))
+                break
+
+        container.position = slot_offset
+        container.z_index = 1  # Render on top of parent
+        parent_node.add_child(container)
+    else:
+        container.position = Vector2(obj_x, obj_y)
+        objects_node.add_child(container)
+
     placed_objects[obj_id] = container
 
 ## Create the appropriate sprite node for an asset state.
@@ -274,6 +298,72 @@ func _create_sprite_node(state_info: Dictionary, texture: AtlasTexture, anchor_x
             -texture.region.size.y * 2 * anchor_y
         )
         return sprite
+
+## Attach an overlay asset to a placed parent object (from the editor).
+## The overlay renders as a child node at the parent's slot offset.
+func add_attachment(overlay_asset_id: String, parent_node: Node2D) -> void:
+    var parent_id = parent_node.get_meta("object_id", null)
+    if parent_id == null:
+        return
+
+    var state_info = Catalog.get_state(overlay_asset_id)
+    if state_info == null:
+        return
+
+    var texture: AtlasTexture = Catalog.get_sprite_texture(state_info)
+    if texture == null:
+        return
+
+    var asset = Catalog.assets.get(overlay_asset_id, {})
+    var anchor_x: float = asset.get("anchorX", asset.get("anchor_x", 0.5))
+    var anchor_y: float = asset.get("anchorY", asset.get("anchor_y", 0.85))
+    var fits_slot: String = asset.get("fits_slot", "")
+
+    # Find the slot offset on the parent
+    var parent_asset_id: String = parent_node.get_meta("asset_id", "")
+    var slots: Array = Catalog.get_slots(parent_asset_id)
+    var slot_offset: Vector2 = Vector2.ZERO
+    for slot in slots:
+        if slot.get("slot_name", "") == fits_slot:
+            slot_offset = Vector2(slot.get("offset_x", 0), slot.get("offset_y", 0))
+            break
+
+    var container = Node2D.new()
+    container.position = slot_offset
+    container.z_index = 1
+    container.set_meta("asset_id", overlay_asset_id)
+    container.set_meta("placed_by", Auth.username)
+    container.set_meta("owner", "")
+    container.set_meta("display_name", "")
+    container.set_meta("attached_to", str(parent_id))
+
+    var sprite_node: Node2D = _create_sprite_node(state_info, texture, anchor_x, anchor_y)
+    container.add_child(sprite_node)
+    parent_node.add_child(container)
+    # Force visual refresh
+    container.visible = false
+    container.visible = true
+
+    _save_attachment(overlay_asset_id, parent_node.position, str(parent_id), container)
+
+func _save_attachment(asset_id: String, pos: Vector2, parent_id: String, node: Node2D) -> void:
+    var http = HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+
+    var payload = JSON.stringify({
+        "asset_id": asset_id,
+        "x": pos.x,
+        "y": pos.y,
+        "attached_to": parent_id
+    })
+
+    http.request_completed.connect(_on_object_saved.bind(http, node))
+    var headers_arr = ["Content-Type: application/json"]
+    var auth_header: String = Auth.get_auth_header()
+    if auth_header != "":
+        headers_arr.append("Authorization: " + auth_header)
+    http.request(api_base + "/api/village/objects", headers_arr, HTTPClient.METHOD_POST, payload)
 
 ## Add a new object to the world (from the editor).
 func add_object(asset_id: String, world_pos: Vector2) -> void:

@@ -28,20 +28,21 @@ func (app *App) handleVillageMe(w http.ResponseWriter, r *http.Request) {
 
 // villageObject represents a placed item on the village map.
 type villageObject struct {
-	ID          string  `json:"id"`
-	AssetID     string  `json:"asset_id"`
-	CurrentState string `json:"current_state"`
-	X           float64 `json:"x"`
-	Y           float64 `json:"y"`
-	PlacedBy    *string `json:"placed_by"`
-	Owner       *string `json:"owner"`
-	DisplayName *string `json:"display_name"`
+	ID           string  `json:"id"`
+	AssetID      string  `json:"asset_id"`
+	CurrentState string  `json:"current_state"`
+	X            float64 `json:"x"`
+	Y            float64 `json:"y"`
+	PlacedBy     *string `json:"placed_by"`
+	Owner        *string `json:"owner"`
+	DisplayName  *string `json:"display_name"`
+	AttachedTo   *string `json:"attached_to"`
 }
 
 // handleListVillageObjects returns all placed objects.
 func (app *App) handleListVillageObjects(w http.ResponseWriter, r *http.Request) {
 	rows, err := app.DB.Query(r.Context(),
-		`SELECT id, asset_id, current_state, x, y, placed_by, owner, display_name
+		`SELECT id, asset_id, current_state, x, y, placed_by, owner, display_name, attached_to
 		 FROM village_object
 		 ORDER BY created_at`,
 	)
@@ -55,7 +56,7 @@ func (app *App) handleListVillageObjects(w http.ResponseWriter, r *http.Request)
 	for rows.Next() {
 		var obj villageObject
 		if err := rows.Scan(&obj.ID, &obj.AssetID, &obj.CurrentState,
-			&obj.X, &obj.Y, &obj.PlacedBy, &obj.Owner, &obj.DisplayName); err != nil {
+			&obj.X, &obj.Y, &obj.PlacedBy, &obj.Owner, &obj.DisplayName, &obj.AttachedTo); err != nil {
 			continue
 		}
 		objects = append(objects, obj)
@@ -67,9 +68,10 @@ func (app *App) handleListVillageObjects(w http.ResponseWriter, r *http.Request)
 // handleCreateVillageObject places a new object on the map.
 func (app *App) handleCreateVillageObject(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		AssetID string  `json:"asset_id"`
-		X       float64 `json:"x"`
-		Y       float64 `json:"y"`
+		AssetID    string  `json:"asset_id"`
+		X          float64 `json:"x"`
+		Y          float64 `json:"y"`
+		AttachedTo *string `json:"attached_to"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, "Invalid request body", http.StatusBadRequest)
@@ -99,9 +101,9 @@ func (app *App) handleCreateVillageObject(w http.ResponseWriter, r *http.Request
 
 	id := newUUIDv7()
 	_, err = app.DB.Exec(r.Context(),
-		`INSERT INTO village_object (id, asset_id, current_state, x, y, placed_by)
-		 VALUES ($1, $2, $3, $4, $5, $6)`,
-		id, req.AssetID, defaultState, req.X, req.Y, placedBy,
+		`INSERT INTO village_object (id, asset_id, current_state, x, y, placed_by, attached_to)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		id, req.AssetID, defaultState, req.X, req.Y, placedBy, req.AttachedTo,
 	)
 	if err != nil {
 		jsonError(w, "Failed to create object", http.StatusInternalServerError)
@@ -115,6 +117,7 @@ func (app *App) handleCreateVillageObject(w http.ResponseWriter, r *http.Request
 		X:            req.X,
 		Y:            req.Y,
 		PlacedBy:     placedBy,
+		AttachedTo:   req.AttachedTo,
 	}
 	jsonResponse(w, http.StatusCreated, obj)
 	app.Hub.Broadcast(WorldEvent{Type: "object_created", Data: obj})

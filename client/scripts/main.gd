@@ -158,6 +158,7 @@ func _build_ui() -> void:
     editor_panel.terrain_type_selected.connect(_on_terrain_type_selected)
     editor_panel.owner_changed.connect(_on_owner_changed)
     editor_panel.display_name_changed.connect(_on_display_name_changed)
+    editor_panel.attachment_requested.connect(_on_attachment_requested)
     editor_panel.world = world
 
     # Wire editor signals to panel
@@ -222,6 +223,10 @@ func _on_owner_changed(owner: String) -> void:
 func _on_display_name_changed(display_name: String) -> void:
     if editor.selected_object != null:
         world.set_object_display_name(editor.selected_object, display_name)
+
+func _on_attachment_requested(overlay_asset_id: String) -> void:
+    if editor.selected_object != null:
+        world.add_attachment(overlay_asset_id, editor.selected_object)
 
 func _on_terrain_mode_toggled(active: bool) -> void:
     if active:

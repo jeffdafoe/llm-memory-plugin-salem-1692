@@ -9,6 +9,7 @@ signal terrain_mode_toggled(active: bool)
 signal terrain_type_selected(terrain_type: int)
 signal owner_changed(owner: String)
 signal display_name_changed(display_name: String)
+signal attachment_requested(overlay_asset_id: String)
 
 # Theme colors (matching top bar / login screen)
 const COLOR_BG = Color(0.12, 0.09, 0.07, 0.95)
@@ -47,6 +48,8 @@ var _selected_item: Control = null
 var _selected_asset_id: String = ""
 var _terrain_active: bool = false
 var _selected_terrain_item: Control = null
+var _attachments_section: VBoxContainer = null
+var _attachments_grid: GridContainer = null
 
 # Reference to world for agent name lookups — set by main.gd
 var world: Node2D = null
@@ -223,6 +226,24 @@ func _ready() -> void:
     _owner_dropdown.add_theme_stylebox_override("normal", dropdown_style)
     _owner_dropdown.item_selected.connect(_on_owner_selected)
     _selection_info.add_child(_owner_dropdown)
+
+    # Attachments section — shown when selected object has slots
+    _attachments_section = VBoxContainer.new()
+    _attachments_section.visible = false
+    _attachments_section.add_theme_constant_override("separation", 4)
+    _selection_info.add_child(_attachments_section)
+
+    var attach_header = Label.new()
+    attach_header.text = "ATTACHMENTS"
+    attach_header.add_theme_color_override("font_color", COLOR_LABEL)
+    attach_header.add_theme_font_size_override("font_size", 11)
+    _attachments_section.add_child(attach_header)
+
+    _attachments_grid = GridContainer.new()
+    _attachments_grid.columns = 4
+    _attachments_grid.add_theme_constant_override("h_separation", 4)
+    _attachments_grid.add_theme_constant_override("v_separation", 4)
+    _attachments_section.add_child(_attachments_grid)
 
     var sel_sep = HSeparator.new()
     sel_sep.add_theme_color_override("separator_color", Color(0.4, 0.32, 0.2, 0.4))
@@ -545,12 +566,16 @@ func show_selection(info: Dictionary) -> void:
         _delete_button.disabled = true
         _placed_by_label.visible = false
         _owner_label.visible = false
+        _attachments_section.visible = false
         return
     _selection_info.visible = true
     _delete_button.disabled = false
     var asset = Catalog.assets.get(asset_id, {})
     var name: String = asset.get("name", asset_id)
     _selection_label.text = name
+
+    # Show attachments if this asset has slots
+    _build_attachments(asset_id)
 
     var placed_by: String = info.get("placed_by", "")
     if placed_by != "":
@@ -691,6 +716,89 @@ func _on_terrain_pressed() -> void:
             _selected_terrain_item = null
 
     terrain_mode_toggled.emit(_terrain_active)
+
+## Build the attachments grid for a selected object's slots.
+func _build_attachments(asset_id: String) -> void:
+    # Clear existing attachment items
+    for child in _attachments_grid.get_children():
+        child.queue_free()
+
+    var slots: Array = Catalog.get_slots(asset_id)
+    if slots.is_empty():
+        _attachments_section.visible = false
+        return
+
+    # Collect all overlay assets that fit any of this object's slots
+    var overlays: Array = []
+    for slot in slots:
+        var slot_name: String = slot.get("slot_name", "")
+        var fitting: Array = Catalog.get_assets_for_slot(slot_name)
+        for fit_asset in fitting:
+            if not overlays.has(fit_asset):
+                overlays.append(fit_asset)
+
+    if overlays.is_empty():
+        _attachments_section.visible = false
+        return
+
+    _attachments_section.visible = true
+
+    for overlay in overlays:
+        var overlay_id: String = overlay.get("id", "")
+        var overlay_name: String = overlay.get("name", overlay_id)
+
+        var item = PanelContainer.new()
+        item.custom_minimum_size = Vector2(CELL_SIZE, CELL_SIZE)
+        item.tooltip_text = overlay_name
+
+        var item_style = StyleBoxFlat.new()
+        item_style.bg_color = Color(0.15, 0.12, 0.08, 1.0)
+        item_style.border_width_left = 1
+        item_style.border_width_top = 1
+        item_style.border_width_right = 1
+        item_style.border_width_bottom = 1
+        item_style.border_color = Color(0.3, 0.24, 0.15, 0.5)
+        item_style.corner_radius_left_top = 2
+        item_style.corner_radius_right_top = 2
+        item_style.corner_radius_left_bottom = 2
+        item_style.corner_radius_right_bottom = 2
+        item.add_theme_stylebox_override("panel", item_style)
+
+        var state_info = Catalog.get_state(overlay_id)
+        if state_info != null:
+            var texture = Catalog.get_sprite_texture(state_info)
+            if texture != null:
+                var center = CenterContainer.new()
+                center.custom_minimum_size = Vector2(CELL_SIZE - 4, CELL_SIZE - 4)
+                item.add_child(center)
+
+                var tex_rect = TextureRect.new()
+                tex_rect.texture = texture
+                var native_size: Vector2 = texture.get_size()
+                var max_dim: float = CELL_SIZE - 8.0
+                var scale_factor: float = minf(max_dim / native_size.x, max_dim / native_size.y)
+                if scale_factor > 2.0:
+                    scale_factor = 2.0
+                tex_rect.custom_minimum_size = native_size * scale_factor
+                tex_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+                tex_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+                center.add_child(tex_rect)
+
+        # Click attaches this overlay to the selected object
+        item.gui_input.connect(_on_attachment_input.bind(overlay_id))
+        item.mouse_entered.connect(func():
+            var hover = item_style.duplicate()
+            hover.bg_color = COLOR_ITEM_HOVER
+            item.add_theme_stylebox_override("panel", hover)
+        )
+        item.mouse_exited.connect(func():
+            item.add_theme_stylebox_override("panel", item_style)
+        )
+        _attachments_grid.add_child(item)
+
+func _on_attachment_input(event: InputEvent, overlay_asset_id: String) -> void:
+    if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+        attachment_requested.emit(overlay_asset_id)
 
 ## Called externally to exit terrain mode (e.g., when switching to select)
 func exit_terrain_mode() -> void:
