@@ -18,13 +18,15 @@ const MIN_SCREEN_OVERLAP: float = 1.5
 # Wang tileset texture — loaded from the atlas
 var wang_texture: Texture2D = null
 
-# Water sparkle overlay — 3 variants of 4 frames, 600ms per frame
+# Water sparkle overlay — 3 rows x 4 columns = 12 total frames, 600ms each.
+# Each tile cycles through all 12 frames with a per-tile offset.
 var sparkle_texture: Texture2D = null
 var _sparkle_frame: int = 0
 var _sparkle_timer: float = 0.0
 const SPARKLE_FRAME_DURATION: float = 0.6
-const SPARKLE_FRAME_COUNT: int = 4
-const SPARKLE_VARIANTS: int = 3
+const SPARKLE_COLS: int = 4
+const SPARKLE_ROWS: int = 3
+const SPARKLE_TOTAL_FRAMES: int = 12  # 3 rows x 4 cols
 
 # Map data reference — set by world.gd
 var map_data: Array = []
@@ -50,7 +52,7 @@ func _process(delta: float) -> void:
     _sparkle_timer += delta
     if _sparkle_timer >= SPARKLE_FRAME_DURATION:
         _sparkle_timer -= SPARKLE_FRAME_DURATION
-        _sparkle_frame = (_sparkle_frame + 1) % SPARKLE_FRAME_COUNT
+        _sparkle_frame = (_sparkle_frame + 1) % SPARKLE_TOTAL_FRAMES
     # Redraw every frame so tiles are always at correct screen positions
     queue_redraw()
 
@@ -110,19 +112,20 @@ func _draw() -> void:
                 var terrain_type: int = _get_terrain(x, y)
                 # Terrain types 5 (shallow water) and 6 (deep water)
                 if terrain_type == 5 or terrain_type == 6:
-                    # Pick a deterministic sparkle variant (0-2) and frame offset
-                    # per tile so they don't all animate in sync
+                    # Per-tile frame offset so tiles don't all animate in sync
                     var tile_hash: int = ((x * 31337) + (y * 65539)) % 2147483647
                     if tile_hash < 0:
                         tile_hash = -tile_hash
-                    var variant: int = tile_hash % SPARKLE_VARIANTS
-                    var frame_offset: int = (tile_hash / SPARKLE_VARIANTS) % SPARKLE_FRAME_COUNT
-                    var frame: int = (_sparkle_frame + frame_offset) % SPARKLE_FRAME_COUNT
+                    var frame_offset: int = tile_hash % SPARKLE_TOTAL_FRAMES
+                    var frame: int = (_sparkle_frame + frame_offset) % SPARKLE_TOTAL_FRAMES
 
-                    # Source rect: current frame in this variant's row
+                    # Convert linear frame index to row (variant) and column
+                    var col: int = frame % SPARKLE_COLS
+                    var row: int = frame / SPARKLE_COLS
+
                     var spark_src: Rect2 = Rect2(
-                        frame * SRC_TILE_SIZE,
-                        variant * SRC_TILE_SIZE,
+                        col * SRC_TILE_SIZE,
+                        row * SRC_TILE_SIZE,
                         SRC_TILE_SIZE,
                         SRC_TILE_SIZE
                     )
