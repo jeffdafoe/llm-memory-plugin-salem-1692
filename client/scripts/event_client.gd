@@ -107,6 +107,19 @@ func _on_object_created(data: Dictionary) -> void:
     if _local_object_ids.has(obj_id):
         _local_object_ids.erase(obj_id)
         return
+    # Skip if this is an attachment we just created locally —
+    # the parent already has it as a child but we don't have the server ID yet
+    var attached_to = data.get("attached_to", null)
+    if attached_to != null and attached_to != "":
+        if world.placed_objects.has(attached_to):
+            var parent_node: Node2D = world.placed_objects[attached_to]
+            var asset_id: String = data.get("asset_id", "")
+            for child in parent_node.get_children():
+                if child.has_meta("asset_id") and child.get_meta("asset_id") == asset_id:
+                    # Already have this attachment locally — just record the server ID
+                    child.set_meta("object_id", obj_id)
+                    world.placed_objects[obj_id] = child
+                    return
     # Place it using the same method as initial load
     world._place_object(data)
 

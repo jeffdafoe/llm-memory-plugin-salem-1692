@@ -808,6 +808,16 @@ func _build_attachments(asset_id: String) -> void:
 func _on_attachment_input(event: InputEvent, overlay_asset_id: String) -> void:
     if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
         attachment_requested.emit(overlay_asset_id)
+        # Brief flash on the header to confirm attachment was placed
+        var attach_label = _attachments_section.get_child(0)
+        if attach_label is Label:
+            attach_label.text = "ATTACHED!"
+            attach_label.add_theme_color_override("font_color", Color(0.5, 0.8, 0.3, 1.0))
+            var timer = get_tree().create_timer(1.0)
+            timer.timeout.connect(func():
+                attach_label.text = "ATTACHMENTS"
+                attach_label.add_theme_color_override("font_color", COLOR_LABEL)
+            )
 
 ## Called externally to exit terrain mode (e.g., when switching to select)
 func exit_terrain_mode() -> void:
