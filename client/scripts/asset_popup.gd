@@ -154,7 +154,7 @@ func show_asset(asset_id: String) -> void:
     meta_box.add_theme_constant_override("separation", 2)
     _content.add_child(meta_box)
 
-    _add_meta_line(meta_box, "ID: " + asset_id)
+    _add_id_row(meta_box, asset_id)
     _add_meta_line(meta_box, "Category: " + category)
     _add_meta_line(meta_box, "Layer: " + layer + "  Anchor: (" + str(anchor_x) + ", " + str(anchor_y) + ")")
     if pack_name != "":
@@ -216,6 +216,55 @@ func _add_meta_line(container: VBoxContainer, text: String) -> void:
     label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
     label.add_theme_font_size_override("font_size", 12)
     container.add_child(label)
+
+## ID row with a small "copy" button. Click copies the UUID to the clipboard.
+func _add_id_row(container: VBoxContainer, asset_id: String) -> void:
+    var row = HBoxContainer.new()
+    row.add_theme_constant_override("separation", 8)
+    container.add_child(row)
+
+    var label = Label.new()
+    label.text = "ID: " + asset_id
+    label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+    label.add_theme_font_size_override("font_size", 12)
+    row.add_child(label)
+
+    var copy_btn = Button.new()
+    copy_btn.text = "copy"
+    copy_btn.add_theme_color_override("font_color", COLOR_TEXT)
+    copy_btn.add_theme_font_size_override("font_size", 11)
+
+    var btn_style = StyleBoxFlat.new()
+    btn_style.bg_color = COLOR_BTN_BG
+    btn_style.border_width_left = 1
+    btn_style.border_width_top = 1
+    btn_style.border_width_right = 1
+    btn_style.border_width_bottom = 1
+    btn_style.border_color = COLOR_BTN_BORDER
+    btn_style.corner_radius_left_top = 2
+    btn_style.corner_radius_right_top = 2
+    btn_style.corner_radius_left_bottom = 2
+    btn_style.corner_radius_right_bottom = 2
+    btn_style.content_margin_left = 6.0
+    btn_style.content_margin_right = 6.0
+    btn_style.content_margin_top = 2.0
+    btn_style.content_margin_bottom = 2.0
+    copy_btn.add_theme_stylebox_override("normal", btn_style)
+
+    copy_btn.pressed.connect(func():
+        DisplayServer.clipboard_set(asset_id)
+        copy_btn.text = "copied"
+        var t = Timer.new()
+        t.wait_time = 1.0
+        t.one_shot = true
+        t.timeout.connect(func():
+            copy_btn.text = "copy"
+            t.queue_free()
+        )
+        copy_btn.add_child(t)
+        t.start()
+    )
+    row.add_child(copy_btn)
 
 func _add_state_thumb(container: HBoxContainer, state: Dictionary, is_default: bool) -> void:
     var state_name: String = state.get("state", "")
