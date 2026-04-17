@@ -80,6 +80,7 @@ func _on_authenticated() -> void:
     # Update username display
     top_bar.set_username(Auth.username)
     top_bar.set_edit_visible(Auth.can_edit)
+    top_bar.set_config_visible(Auth.can_edit)
     top_bar.visible = true
 
     # Connect WebSocket event stream for real-time sync
@@ -102,8 +103,6 @@ func _on_catalog_ready() -> void:
     # Build catalog in editor panel now that assets are loaded
     if editor_panel != null:
         editor_panel.build_catalog()
-    if config_panel != null:
-        config_panel.build_reference()
 
 func _build_ui() -> void:
     # Top bar — lives on the editor CanvasLayer
@@ -186,9 +185,13 @@ func _on_logout() -> void:
     Auth.logout()
     # Hide UI, show login screen
     if top_bar != null:
+        top_bar.set_edit_visible(false)
+        top_bar.set_config_visible(false)
         top_bar.visible = false
     if editor_panel != null:
         editor_panel.visible = false
+    if config_panel != null:
+        config_panel.visible = false
     editor.active = false
     camera.editor_active = false
     if login_screen != null:

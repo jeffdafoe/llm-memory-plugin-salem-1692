@@ -65,6 +65,10 @@ func main() {
 	mux.HandleFunc("GET /api/village/terrain", app.requireLLMMemory(app.handleGetTerrain))
 	mux.HandleFunc("PUT /api/village/terrain", app.requireLLMMemory(app.handleSaveTerrain))
 
+	// World day/night cycle
+	mux.HandleFunc("GET /api/village/world", app.requireLLMMemory(app.handleGetWorldState))
+	mux.HandleFunc("POST /api/village/world/force-phase", app.requireLLMMemory(app.handleForcePhase))
+
 	// WebSocket — real-time world events stream
 	mux.HandleFunc("GET /api/village/events", app.handleVillageEvents)
 
@@ -80,12 +84,17 @@ func main() {
 		IdleTimeout: 120 * time.Second,
 	}
 
-	// Graceful shutdown
+	// Graceful shutdown — signals cancel the ticker context and trigger
+	// server.Shutdown. The ticker goroutine exits on ctx.Done().
+	tickerCtx, cancelTicker := context.WithCancel(context.Background())
+	go app.runPhaseTicker(tickerCtx)
+
 	go func() {
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 		<-sigChan
 		log.Println("Shutting down...")
+		cancelTicker()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		server.Shutdown(ctx)
