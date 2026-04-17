@@ -73,6 +73,9 @@ func main() {
 	mux.HandleFunc("GET /api/village/terrain", app.requireLLMMemory(app.handleGetTerrain))
 	mux.HandleFunc("PUT /api/village/terrain", app.requireLLMMemory(app.handleSaveTerrain))
 
+	// NPCs — placed villagers with sprite catalog info inlined
+	mux.HandleFunc("GET /api/village/npcs", app.requireLLMMemory(app.handleListNPCs))
+
 	// World day/night cycle + daily rotation
 	mux.HandleFunc("GET /api/village/world", app.requireLLMMemory(app.handleGetWorldState))
 	mux.HandleFunc("POST /api/village/world/force-phase", app.requireLLMMemory(app.handleForcePhase))
