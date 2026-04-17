@@ -38,14 +38,29 @@ type Asset struct {
 // AssetState is one visual variant of an asset (sprite coordinates for a specific state).
 // Animated states have frame_count > 1 — frames are consecutive horizontally in the sheet.
 type AssetState struct {
-	State      string  `json:"state"`
-	Sheet      string  `json:"sheet"`
-	SrcX       int     `json:"src_x"`
-	SrcY       int     `json:"src_y"`
-	SrcW       int     `json:"src_w"`
-	SrcH       int     `json:"src_h"`
-	FrameCount int     `json:"frame_count"`
-	FrameRate  float64 `json:"frame_rate"`
+	State      string      `json:"state"`
+	Sheet      string      `json:"sheet"`
+	SrcX       int         `json:"src_x"`
+	SrcY       int         `json:"src_y"`
+	SrcW       int         `json:"src_w"`
+	SrcH       int         `json:"src_h"`
+	FrameCount int         `json:"frame_count"`
+	FrameRate  float64     `json:"frame_rate"`
+	Light      *AssetLight `json:"light,omitempty"`
+}
+
+// AssetLight describes the PointLight2D parameters for a light-emitting state.
+// Only lit states (e.g. 'lit' variants of lamps/torches/campfires) have a row
+// in asset_state_light and therefore a populated Light field. The client reads
+// this and attaches a PointLight2D to the sprite at runtime.
+type AssetLight struct {
+	Color            string  `json:"color"`             // hex #RRGGBB
+	Radius           int     `json:"radius"`            // world pixels
+	Energy           float64 `json:"energy"`            // brightness multiplier
+	OffsetX          int     `json:"offset_x"`          // light center offset from sprite origin
+	OffsetY          int     `json:"offset_y"`
+	FlickerAmplitude float64 `json:"flicker_amplitude"` // 0 = steady
+	FlickerPeriodMs  int     `json:"flicker_period_ms"`
 }
 
 // handleListAssets returns all assets with their states and pack info.
@@ -101,11 +116,16 @@ func (app *App) handleListAssets(w http.ResponseWriter, r *http.Request) {
 		assets = append(assets, a)
 	}
 
-	// Fetch all states and attach to their parent asset
+	// Fetch all states, LEFT JOIN asset_state_light so lit states carry their
+	// light params inline. Most rows come back with NULL light columns.
 	stateRows, err := app.DB.Query(r.Context(),
-		`SELECT asset_id, state, sheet, src_x, src_y, src_w, src_h, frame_count, frame_rate
-		 FROM asset_state
-		 ORDER BY asset_id, state`,
+		`SELECT s.asset_id, s.state, s.sheet, s.src_x, s.src_y, s.src_w, s.src_h,
+		        s.frame_count, s.frame_rate,
+		        l.color, l.radius, l.energy, l.offset_x, l.offset_y,
+		        l.flicker_amplitude, l.flicker_period_ms
+		 FROM asset_state s
+		 LEFT JOIN asset_state_light l ON l.state_id = s.id
+		 ORDER BY s.asset_id, s.state`,
 	)
 	if err != nil {
 		jsonError(w, "Internal server error", http.StatusInternalServerError)
@@ -116,9 +136,29 @@ func (app *App) handleListAssets(w http.ResponseWriter, r *http.Request) {
 	for stateRows.Next() {
 		var assetID string
 		var s AssetState
+		var lightColor *string
+		var lightRadius *int
+		var lightEnergy *float64
+		var lightOffsetX, lightOffsetY *int
+		var lightFlickerAmp *float64
+		var lightFlickerPeriod *int
 		if err := stateRows.Scan(&assetID, &s.State, &s.Sheet,
-			&s.SrcX, &s.SrcY, &s.SrcW, &s.SrcH, &s.FrameCount, &s.FrameRate); err != nil {
+			&s.SrcX, &s.SrcY, &s.SrcW, &s.SrcH, &s.FrameCount, &s.FrameRate,
+			&lightColor, &lightRadius, &lightEnergy,
+			&lightOffsetX, &lightOffsetY,
+			&lightFlickerAmp, &lightFlickerPeriod); err != nil {
 			continue
+		}
+		if lightColor != nil {
+			s.Light = &AssetLight{
+				Color:            *lightColor,
+				Radius:           *lightRadius,
+				Energy:           *lightEnergy,
+				OffsetX:          *lightOffsetX,
+				OffsetY:          *lightOffsetY,
+				FlickerAmplitude: *lightFlickerAmp,
+				FlickerPeriodMs:  *lightFlickerPeriod,
+			}
 		}
 		if idx, ok := assetIndex[assetID]; ok {
 			assets[idx].States = append(assets[idx].States, s)
