@@ -23,7 +23,15 @@ const PHASE_TRANSITION_DURATION := 1.5  # seconds — tween from day to night co
 # The generated map data — 2D array [y][x] of terrain indices (1-based)
 var map_data: Array = []
 var map_width: int = 200
-var map_height: int = 90
+var map_height: int = 180
+
+# World origin offset — where world (0,0) sits inside the grid.
+# Horizontally centered (pad_x = (200-80)/2 = 60). Vertically biased so the
+# existing village sits in the southern half of the grid and there's 90 rows
+# of space north of origin for building. ZBBS-041 grew the map northward;
+# pad_y = 22 + 90 to keep world (0,0) anchored to the same tile as before.
+var pad_x: int = 60
+var pad_y: int = 112
 
 # Placed objects keyed by server id
 var placed_objects: Dictionary = {}
@@ -79,8 +87,6 @@ func load_objects() -> void:
 ## Paint a terrain cell. The custom renderer reads map_data directly
 ## and redraws every frame, so we just update the data.
 func paint_terrain(tile_x: int, tile_y: int, terrain_type: int) -> void:
-    var pad_x: int = (map_width - 80) / 2
-    var pad_y: int = (map_height - 45) / 2
     var ax: int = tile_x + pad_x
     var ay: int = tile_y + pad_y
 
@@ -289,8 +295,8 @@ func _sync_renderer() -> void:
     terrain_renderer.map_data = map_data
     terrain_renderer.map_width = map_width
     terrain_renderer.map_height = map_height
-    terrain_renderer.pad_x = (map_width - 80) / 2
-    terrain_renderer.pad_y = (map_height - 45) / 2
+    terrain_renderer.pad_x = pad_x
+    terrain_renderer.pad_y = pad_y
 
 func _load_village() -> void:
     var http = HTTPRequest.new()

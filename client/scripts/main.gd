@@ -33,11 +33,10 @@ func _ready() -> void:
     camera.editor_ref = editor
 
     # Set camera bounds to match the terrain (2x scaled = 32px per tile)
-    # Terrain extends into negative tile coordinates, so bounds start negative
-    var pad_x: int = (world.map_width - 80) / 2
-    var pad_y: int = (world.map_height - 45) / 2
+    # Terrain extends into negative tile coordinates, so bounds start negative.
+    # pad_x/pad_y live on World — asymmetric after ZBBS-041 (more space north).
     camera.map_bounds = Rect2(
-        -pad_x * 32, -pad_y * 32,
+        -world.pad_x * 32, -world.pad_y * 32,
         world.map_width * 32, world.map_height * 32
     )
 

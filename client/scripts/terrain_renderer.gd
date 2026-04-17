@@ -28,12 +28,12 @@ const SPARKLE_COLS: int = 4
 const SPARKLE_ROWS: int = 3
 const SPARKLE_TOTAL_FRAMES: int = 12  # 3 rows x 4 cols
 
-# Map data reference — set by world.gd
+# Map data reference — set by world.gd via _sync_renderer
 var map_data: Array = []
 var map_width: int = 200
-var map_height: int = 90
+var map_height: int = 180
 
-# Tile offset (array index to world position)
+# Tile offset (array index to world position); overwritten from world.gd
 var pad_x: int = 0
 var pad_y: int = 0
 
