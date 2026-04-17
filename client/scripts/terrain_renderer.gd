@@ -28,6 +28,16 @@ const SPARKLE_COLS: int = 4
 const SPARKLE_ROWS: int = 3
 const SPARKLE_TOTAL_FRAMES: int = 12  # 3 rows x 4 cols
 
+# Tall grass overlay — 5 frames horizontal, 400ms each. Applied to a sparse
+# fraction of Dark Grass tiles (hash-based) so patches ruffle in the wind.
+var tallgrass_texture: Texture2D = null
+var _tallgrass_frame: int = 0
+var _tallgrass_timer: float = 0.0
+const TALLGRASS_FRAME_DURATION: float = 0.4
+const TALLGRASS_TOTAL_FRAMES: int = 5
+const TALLGRASS_NATIVE_SIZE: int = 32  # already at render scale, no 2x upscale
+const TALLGRASS_DENSITY_PCT: int = 15  # % of Dark Grass tiles that get the overlay
+
 # Map data reference — set by world.gd
 var map_data: Array = []
 var map_width: int = 200
@@ -46,6 +56,10 @@ func _ready() -> void:
     var sparkle_path: String = "res://assets/tilesets/mana-seed/summer-forest/summer animations/summer water sparkles B 16x16.png"
     if ResourceLoader.exists(sparkle_path):
         sparkle_texture = load(sparkle_path)
+    # Load tall grass sheet if available
+    var tallgrass_path: String = "res://assets/tilesets/mana-seed/summer-forest/summer animations/summer tall grass effect 32x32.png"
+    if ResourceLoader.exists(tallgrass_path):
+        tallgrass_texture = load(tallgrass_path)
 
 func _process(delta: float) -> void:
     # Advance sparkle animation timer
@@ -53,6 +67,11 @@ func _process(delta: float) -> void:
     if _sparkle_timer >= SPARKLE_FRAME_DURATION:
         _sparkle_timer -= SPARKLE_FRAME_DURATION
         _sparkle_frame = (_sparkle_frame + 1) % SPARKLE_TOTAL_FRAMES
+    # Advance tall grass animation timer
+    _tallgrass_timer += delta
+    if _tallgrass_timer >= TALLGRASS_FRAME_DURATION:
+        _tallgrass_timer -= TALLGRASS_FRAME_DURATION
+        _tallgrass_frame = (_tallgrass_frame + 1) % TALLGRASS_TOTAL_FRAMES
     # Redraw every frame so tiles are always at correct screen positions
     queue_redraw()
 
@@ -141,6 +160,39 @@ func _draw() -> void:
                     )
 
                     draw_texture_rect_region(sparkle_texture, spark_dst, spark_src)
+
+    # Draw tall grass overlay on a sparse subset of Dark Grass tiles
+    if tallgrass_texture != null:
+        for y in range(start_y, end_y + 1):
+            for x in range(start_x, end_x + 1):
+                var terrain_type: int = _get_terrain(x, y)
+                if terrain_type != 3:
+                    continue
+                # Separate hash from sparkle so the two don't correlate
+                var tg_hash: int = ((x * 73856093) ^ (y * 19349663)) & 2147483647
+                # Density gate: only TALLGRASS_DENSITY_PCT % of Dark Grass tiles get overlay
+                if tg_hash % 100 >= TALLGRASS_DENSITY_PCT:
+                    continue
+                # Per-tile phase offset so tufts don't animate in sync
+                var frame_offset: int = tg_hash % TALLGRASS_TOTAL_FRAMES
+                var frame: int = (_tallgrass_frame + frame_offset) % TALLGRASS_TOTAL_FRAMES
+
+                var tg_src: Rect2 = Rect2(
+                    frame * TALLGRASS_NATIVE_SIZE,
+                    0,
+                    TALLGRASS_NATIVE_SIZE,
+                    TALLGRASS_NATIVE_SIZE
+                )
+
+                var world_x: float = (x - pad_x) * TILE_SIZE
+                var world_y: float = (y - pad_y) * TILE_SIZE
+                var tg_dst: Rect2 = Rect2(
+                    world_x, world_y,
+                    TILE_SIZE,
+                    TILE_SIZE
+                )
+
+                draw_texture_rect_region(tallgrass_texture, tg_dst, tg_src)
 
 ## Wang tile lookup — same logic as world.gd but self-contained.
 func _get_wang_tile(x: int, y: int) -> Vector2i:
