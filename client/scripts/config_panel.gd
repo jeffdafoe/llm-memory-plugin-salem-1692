@@ -198,7 +198,6 @@ func _build_layout() -> void:
 
     btn_row.add_child(_make_button("Force Day", func(): _send_force("day")))
     btn_row.add_child(_make_button("Force Night", func(): _send_force("night")))
-    btn_row.add_child(_make_button("Toggle", func(): _send_force("toggle")))
     btn_row.add_child(_make_button("Force Rotate", _send_force_rotate))
 
     _status_label = _make_label("", COLOR_TEXT_DIM, 12)

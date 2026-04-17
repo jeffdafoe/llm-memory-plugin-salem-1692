@@ -27,8 +27,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 )
 
 const (
@@ -470,39 +468,19 @@ func (app *App) handleForcePhase(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Phase string `json:"phase"` // "day", "night", or "toggle"
+		Phase string `json:"phase"` // "day" or "night"
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
 
-	target := req.Phase
-	if target == "toggle" {
-		var current string
-		if err := app.DB.QueryRow(r.Context(),
-			`SELECT phase FROM world_phase WHERE id = 1`,
-		).Scan(&current); err != nil {
-			if err == pgx.ErrNoRows {
-				jsonError(w, "World phase not initialized", http.StatusInternalServerError)
-			} else {
-				jsonError(w, "Internal server error", http.StatusInternalServerError)
-			}
-			return
-		}
-		if current == phaseDay {
-			target = phaseNight
-		} else {
-			target = phaseDay
-		}
-	}
-
-	if target != phaseDay && target != phaseNight {
-		jsonError(w, `phase must be "day", "night", or "toggle"`, http.StatusBadRequest)
+	if req.Phase != phaseDay && req.Phase != phaseNight {
+		jsonError(w, `phase must be "day" or "night"`, http.StatusBadRequest)
 		return
 	}
 
-	affected, err := app.applyTransition(r.Context(), target)
+	affected, err := app.applyTransition(r.Context(), req.Phase)
 	if err != nil {
 		log.Printf("world_phase: force-phase failed: %v", err)
 		jsonError(w, "Failed to apply transition", http.StatusInternalServerError)
@@ -510,7 +488,7 @@ func (app *App) handleForcePhase(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"phase":            target,
+		"phase":            req.Phase,
 		"objects_affected": affected,
 	})
 }
