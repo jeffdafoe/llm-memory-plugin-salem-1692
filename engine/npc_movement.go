@@ -19,6 +19,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"math"
 	"net/http"
@@ -117,8 +118,7 @@ func finalFacingForPath(startX, startY float64, path []pathPoint) string {
 }
 
 // handleWalkTo is POST /api/village/npcs/{id}/walk-to. Body: {x, y, speed?}.
-// Computes a path and fires npc_walking. Cancels any existing walk first,
-// using the NPC's interpolated current position as the new start.
+// Thin wrapper around startNPCWalk that validates auth and decodes the body.
 func (app *App) handleWalkTo(w http.ResponseWriter, r *http.Request) {
 	user := getUserFromContext(r.Context())
 	if user == nil {
@@ -146,8 +146,45 @@ func (app *App) handleWalkTo(w http.ResponseWriter, r *http.Request) {
 		speed = defaultNPCSpeed
 	}
 
-	// Determine current position: either the in-memory walk's interpolated
-	// spot (if we're walking) or the NPC's persisted current_x/y.
+	result, err := app.startNPCWalk(r.Context(), npcID, req.X, req.Y, speed)
+	if err != nil {
+		if err.Error() == "npc not found" {
+			jsonError(w, "NPC not found", http.StatusNotFound)
+			return
+		}
+		if err.Error() == "no path" {
+			jsonError(w, "No path to target", http.StatusBadRequest)
+			return
+		}
+		log.Printf("npc walk: %v", err)
+		jsonError(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, http.StatusOK, result)
+}
+
+// startNPCWalkResult is the summary returned to both HTTP callers and
+// internal behavior code.
+type startNPCWalkResult struct {
+	PathLength  int     `json:"path_length"`
+	DurationSec float64 `json:"duration_sec"`
+	FinalFacing string  `json:"final_facing"`
+	AlreadyThere bool   `json:"already_there,omitempty"`
+}
+
+// startNPCWalk computes a path from the NPC's current position (interpolated
+// if a walk is in progress) to (targetX, targetY), cancels any existing walk,
+// schedules arrival via time.AfterFunc, and broadcasts npc_walking. Behavior
+// code (lamplighter etc.) calls this for each leg of a routine.
+//
+// If the target tile is impassable (e.g., walking to a lamp which itself is
+// an obstacle) we fall back to findPathToAdjacent and path to a walkable
+// neighbor of the target — so "walk to this lamp" means "walk up to it."
+func (app *App) startNPCWalk(ctx context.Context, npcID string, targetX, targetY, speed float64) (*startNPCWalkResult, error) {
+	if speed <= 0 {
+		speed = defaultNPCSpeed
+	}
+
 	app.NPCMovement.mu.Lock()
 	existing := app.NPCMovement.active[npcID]
 	app.NPCMovement.mu.Unlock()
@@ -155,40 +192,35 @@ func (app *App) handleWalkTo(w http.ResponseWriter, r *http.Request) {
 	var startX, startY float64
 	if existing != nil {
 		startX, startY = existing.currentPosition()
-		// Cancel the old timer — we'll schedule a new arrival below.
 		if existing.timer != nil {
 			existing.timer.Stop()
 		}
 	} else {
-		if err := app.DB.QueryRow(r.Context(),
+		if err := app.DB.QueryRow(ctx,
 			`SELECT current_x, current_y FROM npc WHERE id = $1`, npcID,
 		).Scan(&startX, &startY); err != nil {
-			jsonError(w, "NPC not found", http.StatusNotFound)
-			return
+			return nil, fmt.Errorf("npc not found")
 		}
 	}
 
-	// Pathfind from current to target.
-	grid, err := app.loadWalkGrid(r.Context())
+	grid, err := app.loadWalkGrid(ctx)
 	if err != nil {
-		log.Printf("npc walk: walkgrid load failed: %v", err)
-		jsonError(w, "Internal server error", http.StatusInternalServerError)
-		return
+		return nil, fmt.Errorf("walkgrid: %w", err)
 	}
 	startTile := gridPoint{}
 	startTile.X, startTile.Y = worldToTile(startX, startY)
 	goalTile := gridPoint{}
-	goalTile.X, goalTile.Y = worldToTile(req.X, req.Y)
+	goalTile.X, goalTile.Y = worldToTile(targetX, targetY)
 
+	// Try exact path first; fall back to adjacent if goal is impassable.
 	tilePath := findPath(grid, startTile, goalTile)
+	if tilePath == nil && !grid.canWalk(goalTile.X, goalTile.Y) {
+		tilePath, _ = findPathToAdjacent(grid, startTile, goalTile)
+	}
 	if tilePath == nil {
-		jsonError(w, "No path to target", http.StatusBadRequest)
-		return
+		return nil, fmt.Errorf("no path")
 	}
 
-	// Convert to world waypoints, skipping the first tile (it's the NPC's
-	// current tile — she's already there). The last waypoint is the target
-	// tile's center.
 	worldPath := make([]pathPoint, 0, len(tilePath))
 	for i, t := range tilePath {
 		if i == 0 {
@@ -197,9 +229,10 @@ func (app *App) handleWalkTo(w http.ResponseWriter, r *http.Request) {
 		worldPath = append(worldPath, tileToWorld(t.X, t.Y))
 	}
 	if len(worldPath) == 0 {
-		// Start and goal tile are the same — no-op walk. Treat as arrival.
-		jsonResponse(w, http.StatusOK, map[string]any{"already_there": true})
-		return
+		// Start and goal tile are the same — walk is a no-op. Fire arrival
+		// immediately so behavior hooks advance to the next step.
+		go app.applyArrival(npcID)
+		return &startNPCWalkResult{AlreadyThere: true, FinalFacing: ""}, nil
 	}
 
 	facing := finalFacingForPath(startX, startY, worldPath)
@@ -235,22 +268,29 @@ func (app *App) handleWalkTo(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 
-	jsonResponse(w, http.StatusOK, map[string]any{
-		"path_length":  len(worldPath),
-		"duration_sec": duration,
-		"final_facing": facing,
-	})
+	return &startNPCWalkResult{
+		PathLength:  len(worldPath),
+		DurationSec: duration,
+		FinalFacing: facing,
+	}, nil
 }
 
 // applyArrival runs when an active walk's timer fires. Persists the NPC's
-// final position + facing, broadcasts npc_arrived, and clears in-memory
-// state. Idempotent on missing state (timer could fire after a manual
-// cancellation; we just no-op).
+// final position + facing, broadcasts npc_arrived, clears in-memory state,
+// and invokes any active behavior's advance hook so scheduled routines
+// (lamplighter, washerwoman, ...) step to the next action.
+//
+// Idempotent on missing walk state — a timer that fires after manual
+// cancellation is a no-op.
 func (app *App) applyArrival(npcID string) {
 	app.NPCMovement.mu.Lock()
 	walk := app.NPCMovement.active[npcID]
 	if walk == nil {
 		app.NPCMovement.mu.Unlock()
+		// Still give behavior a chance to advance — a no-op walk (same tile
+		// source and destination) fires arrival without ever registering a
+		// walk in NPCMovement.active.
+		app.advanceBehavior(npcID)
 		return
 	}
 	delete(app.NPCMovement.active, npcID)
@@ -274,4 +314,6 @@ func (app *App) applyArrival(npcID string) {
 			"facing": walk.finalFacing,
 		},
 	})
+
+	app.advanceBehavior(npcID)
 }

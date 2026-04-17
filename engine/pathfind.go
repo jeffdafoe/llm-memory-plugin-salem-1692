@@ -129,6 +129,38 @@ func (q aStarQueue) Swap(i, j int)       { q[i], q[j] = q[j], q[i]; q[i].index =
 func (q *aStarQueue) Push(x interface{}) { item := x.(*aStarItem); item.index = len(*q); *q = append(*q, item) }
 func (q *aStarQueue) Pop() interface{}   { old := *q; n := len(old); x := old[n-1]; *q = old[:n-1]; return x }
 
+// findPathToAdjacent finds the shortest path from start to any walkable tile
+// adjacent to goal (goal itself may be impassable — typical for lamps/trees
+// you want to walk TO but not onto). Returns (path, neighbor_tile_reached)
+// or (nil, zero) if no neighbor is both walkable and reachable. Tries the 4
+// cardinal neighbors and keeps the shortest result.
+func findPathToAdjacent(g *walkGrid, start, goal gridPoint) ([]gridPoint, gridPoint) {
+	candidates := []gridPoint{
+		{goal.X, goal.Y + 1}, // south (preferred approach from below)
+		{goal.X, goal.Y - 1},
+		{goal.X - 1, goal.Y},
+		{goal.X + 1, goal.Y},
+	}
+	var best []gridPoint
+	var bestNeighbor gridPoint
+	bestLen := -1
+	for _, n := range candidates {
+		if !g.canWalk(n.X, n.Y) {
+			continue
+		}
+		path := findPath(g, start, n)
+		if path == nil {
+			continue
+		}
+		if bestLen < 0 || len(path) < bestLen {
+			best = path
+			bestNeighbor = n
+			bestLen = len(path)
+		}
+	}
+	return best, bestNeighbor
+}
+
 // findPath returns a tile-path from start to goal (inclusive of both).
 // Returns nil if no path exists. Manhattan heuristic, 4-connected.
 //

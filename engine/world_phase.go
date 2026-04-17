@@ -226,9 +226,19 @@ func (app *App) applyTransition(ctx context.Context, newPhase string) (int, erro
 		return 0, fmt.Errorf("invalid phase %q", newPhase)
 	}
 
-	flips, err := app.determineTransitionFlips(ctx, tag)
-	if err != nil {
-		return 0, err
+	// If the village has a lamplighter on duty, he takes over the per-object
+	// flips — walks the route, lights/extinguishes each object individually
+	// on arrival. Skip the bulk flip here so objects stay unflipped until he
+	// arrives at them.
+	_, _, _, _, _, hasLamplighter := app.findLamplighter(ctx)
+
+	var flips []pendingFlip
+	if !hasLamplighter {
+		var err error
+		flips, err = app.determineTransitionFlips(ctx, tag)
+		if err != nil {
+			return 0, err
+		}
 	}
 
 	if _, err := app.DB.Exec(ctx,
@@ -248,7 +258,8 @@ func (app *App) applyTransition(ctx context.Context, newPhase string) (int, erro
 	app.scheduleFlips(flips)
 
 	// CanvasModulate tween starts immediately at the boundary; per-object
-	// flips land via scheduleFlips as their spread windows elapse.
+	// flips land via scheduleFlips (or the lamplighter's route) as their
+	// windows elapse.
 	app.Hub.Broadcast(WorldEvent{
 		Type: "world_phase_changed",
 		Data: map[string]interface{}{
@@ -257,8 +268,18 @@ func (app *App) applyTransition(ctx context.Context, newPhase string) (int, erro
 		},
 	})
 
-	log.Printf("world_phase: transitioned to %s (%d flips scheduled)", newPhase, len(flips))
-	return len(flips), nil
+	var lamplighterStops int
+	if hasLamplighter {
+		stops, err := app.startLamplighterRoute(ctx, tag)
+		if err != nil {
+			log.Printf("world_phase: lamplighter route failed: %v", err)
+		}
+		lamplighterStops = stops
+	}
+
+	log.Printf("world_phase: transitioned to %s (%d bulk flips, %d lamplighter stops)",
+		newPhase, len(flips), lamplighterStops)
+	return len(flips) + lamplighterStops, nil
 }
 
 // determineTransitionFlips returns the per-object flips needed to move every
