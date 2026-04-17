@@ -163,9 +163,8 @@ func _render_pending_npcs() -> void:
         _render_npc(npc)
     _pending_npcs = still_pending
 
-## Build a static Sprite2D for an NPC at its current_x/y. Milestone 1a uses
-## frame (col 0, row 0) of the sheet as a placeholder — we'll pick a
-## facing-specific frame once the animation catalog is seeded.
+## Build an AnimatedSprite2D for an NPC with all directions × (idle, walk)
+## animations loaded from the catalog. Starts in idle for the NPC's facing.
 func _render_npc(npc: Dictionary) -> void:
     var npc_id: String = npc.get("id", "")
     if npc_id == "" or placed_npcs.has(npc_id):
@@ -178,26 +177,105 @@ func _render_npc(npc: Dictionary) -> void:
 
     var fw: int = int(sprite_data.get("frame_width", 32))
     var fh: int = int(sprite_data.get("frame_height", 32))
+    var animations: Array = sprite_data.get("animations", [])
 
-    var atlas = AtlasTexture.new()
-    atlas.atlas = sheet
-    atlas.region = Rect2(0, 0, fw, fh)
+    # Build one named SpriteFrames animation per (direction, kind), e.g.
+    # "south_walk", "east_idle". Rows and frame counts come from the catalog.
+    var sprite_frames := SpriteFrames.new()
+    for anim in animations:
+        var direction: String = anim.get("direction", "")
+        var kind: String = anim.get("animation", "")
+        var anim_name: String = direction + "_" + kind
+        if direction == "" or kind == "":
+            continue
+        sprite_frames.add_animation(anim_name)
+        sprite_frames.set_animation_speed(anim_name, float(anim.get("frame_rate", 6.0)))
+        sprite_frames.set_animation_loop(anim_name, true)
+        var row_index: int = int(anim.get("row_index", 0))
+        var frame_count: int = int(anim.get("frame_count", 1))
+        for i in range(frame_count):
+            var atlas := AtlasTexture.new()
+            atlas.atlas = sheet
+            atlas.region = Rect2(i * fw, row_index * fh, fw, fh)
+            sprite_frames.add_frame(anim_name, atlas)
 
-    var container = Node2D.new()
+    var facing: String = npc.get("facing", "south")
+
+    var container := Node2D.new()
     container.set_meta("npc_id", npc_id)
     container.set_meta("display_name", npc.get("display_name", ""))
+    container.set_meta("facing", facing)
     container.position = Vector2(npc.get("current_x", 0.0), npc.get("current_y", 0.0))
 
-    var s = Sprite2D.new()
-    s.texture = atlas
-    s.centered = false
-    s.scale = Vector2(2, 2)
-    # Anchor the sprite so its feet sit at the NPC's world position.
-    s.position = Vector2(-fw * 2 * 0.5, -fh * 2 * 0.9)
-    container.add_child(s)
+    var anim_sprite := AnimatedSprite2D.new()
+    anim_sprite.sprite_frames = sprite_frames
+    anim_sprite.centered = false
+    anim_sprite.scale = Vector2(2, 2)
+    # Anchor the sprite so its feet sit at the container's position.
+    anim_sprite.position = Vector2(-fw * 2 * 0.5, -fh * 2 * 0.9)
+    container.add_child(anim_sprite)
+
+    var idle_name := facing + "_idle"
+    if sprite_frames.has_animation(idle_name):
+        anim_sprite.play(idle_name)
 
     objects_node.add_child(container)
     placed_npcs[npc_id] = container
+
+## Facing direction from a movement vector. |dx| vs |dy| picks the dominant
+## axis, sign picks N/S/E/W. Matches the server's deriveFacing so server and
+## client always agree on the animation to play.
+func facing_from_vec(v: Vector2) -> String:
+    if abs(v.x) > abs(v.y):
+        return "east" if v.x > 0 else "west"
+    return "south" if v.y > 0 else "north"
+
+## Play (direction + "_" + kind) on an NPC's sprite. No-op if the container
+## is missing an AnimatedSprite2D child or the animation doesn't exist.
+func play_npc_animation(container: Node2D, facing: String, kind: String) -> void:
+    for child in container.get_children():
+        if child is AnimatedSprite2D:
+            var anim_name := facing + "_" + kind
+            if child.sprite_frames != null and child.sprite_frames.has_animation(anim_name):
+                if child.animation != anim_name:
+                    child.play(anim_name)
+            return
+
+## Each frame, tick any NPC whose "walking" meta is set. Walks along the path
+## stored at walk_start time and interpolates position; swaps facing when the
+## current leg's direction of travel changes. Arrival cleanup happens in the
+## npc_arrived WS handler, not here.
+func _process(delta: float) -> void:
+    for npc_id in placed_npcs:
+        var container: Node2D = placed_npcs[npc_id]
+        if container.has_meta("walking"):
+            _tick_npc_walk(container)
+
+func _tick_npc_walk(container: Node2D) -> void:
+    var walk = container.get_meta("walking")
+    var now_s: float = Time.get_ticks_msec() / 1000.0
+    var elapsed: float = now_s - walk["started_at_s"]
+    var remaining: float = elapsed * walk["speed"]
+
+    var prev: Vector2 = walk["start_pos"]
+    var path: Array = walk["path"]
+    for wp in path:
+        var leg_dist: float = prev.distance_to(wp)
+        if leg_dist <= 0.01:
+            prev = wp
+            continue
+        if remaining <= leg_dist:
+            var t: float = remaining / leg_dist
+            container.position = prev.lerp(wp, t)
+            var new_facing: String = facing_from_vec(wp - prev)
+            if container.get_meta("facing", "") != new_facing:
+                container.set_meta("facing", new_facing)
+                play_npc_animation(container, new_facing, "walk")
+            return
+        remaining -= leg_dist
+        prev = wp
+    # Past the end — snap to final waypoint. Real cleanup waits for npc_arrived.
+    container.position = path[path.size() - 1]
 
 ## Paint a terrain cell. The custom renderer reads map_data directly
 ## and redraws every frame, so we just update the data.

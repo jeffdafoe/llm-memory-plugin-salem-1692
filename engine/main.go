@@ -25,6 +25,9 @@ type App struct {
 	// timer elapsed. Prevents zombie flips from an earlier Force Night landing
 	// after a subsequent Force Day.
 	WorldEventGen atomic.Uint64
+
+	// NPCMovement tracks active NPC walks. Lookup by NPC id; mutex-guarded.
+	NPCMovement *NPCMovement
 }
 
 func main() {
@@ -48,6 +51,7 @@ func main() {
 		DB:           pool,
 		LLMMemoryURL: llmMemoryURL,
 		Hub:          NewEventHub(),
+		NPCMovement:  newNPCMovement(),
 	}
 
 	// Build router
@@ -75,6 +79,7 @@ func main() {
 
 	// NPCs — placed villagers with sprite catalog info inlined
 	mux.HandleFunc("GET /api/village/npcs", app.requireLLMMemory(app.handleListNPCs))
+	mux.HandleFunc("POST /api/village/npcs/{id}/walk-to", app.requireLLMMemory(app.handleWalkTo))
 
 	// World day/night cycle + daily rotation
 	mux.HandleFunc("GET /api/village/world", app.requireLLMMemory(app.handleGetWorldState))
