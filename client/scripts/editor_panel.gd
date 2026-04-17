@@ -62,7 +62,6 @@ const TERRAIN_TYPES = [
     {"id": 1, "name": "Dirt", "color": Color(0.55, 0.38, 0.22)},
     {"id": 2, "name": "Light Grass", "color": Color(0.40, 0.55, 0.25)},
     {"id": 3, "name": "Dark Grass", "color": Color(0.25, 0.40, 0.15)},
-    {"id": 7, "name": "Tall Grass", "color": Color(0.30, 0.55, 0.20)},
     {"id": 4, "name": "Cobblestone", "color": Color(0.50, 0.50, 0.48)},
     {"id": 5, "name": "Shallow Water", "color": Color(0.30, 0.50, 0.65)},
     {"id": 6, "name": "Deep Water", "color": Color(0.15, 0.30, 0.55)},
