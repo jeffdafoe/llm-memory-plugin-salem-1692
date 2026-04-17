@@ -36,7 +36,6 @@ var _tallgrass_timer: float = 0.0
 const TALLGRASS_FRAME_DURATION: float = 0.4
 const TALLGRASS_TOTAL_FRAMES: int = 5
 const TALLGRASS_NATIVE_SIZE: int = 32  # already at render scale, no 2x upscale
-const TALLGRASS_DENSITY_PCT: int = 15  # % of Dark Grass tiles that get the overlay
 
 # Map data reference — set by world.gd
 var map_data: Array = []
@@ -161,19 +160,14 @@ func _draw() -> void:
 
                     draw_texture_rect_region(sparkle_texture, spark_dst, spark_src)
 
-    # Draw tall grass overlay on a sparse subset of Dark Grass tiles
+    # Draw tall grass overlay on every Tall Grass terrain tile (paintable type 7)
     if tallgrass_texture != null:
         for y in range(start_y, end_y + 1):
             for x in range(start_x, end_x + 1):
-                var terrain_type: int = _get_terrain(x, y)
-                if terrain_type != 3:
-                    continue
-                # Separate hash from sparkle so the two don't correlate
-                var tg_hash: int = ((x * 73856093) ^ (y * 19349663)) & 2147483647
-                # Density gate: only TALLGRASS_DENSITY_PCT % of Dark Grass tiles get overlay
-                if tg_hash % 100 >= TALLGRASS_DENSITY_PCT:
+                if _get_terrain(x, y) != 7:
                     continue
                 # Per-tile phase offset so tufts don't animate in sync
+                var tg_hash: int = ((x * 73856093) ^ (y * 19349663)) & 2147483647
                 var frame_offset: int = tg_hash % TALLGRASS_TOTAL_FRAMES
                 var frame: int = (_tallgrass_frame + frame_offset) % TALLGRASS_TOTAL_FRAMES
 
@@ -195,11 +189,13 @@ func _draw() -> void:
                 draw_texture_rect_region(tallgrass_texture, tg_dst, tg_src)
 
 ## Wang tile lookup — same logic as world.gd but self-contained.
+## Tall Grass (7) reuses the Dark Grass (3) wang identity so it blends naturally
+## with existing grass tiles. The overlay is what makes it visually distinct.
 func _get_wang_tile(x: int, y: int) -> Vector2i:
-    var tl: int = _get_terrain(x - 1, y - 1)
-    var tr: int = _get_terrain(x, y - 1)
-    var br: int = _get_terrain(x, y)
-    var bl: int = _get_terrain(x - 1, y)
+    var tl: int = _wang_terrain(x - 1, y - 1)
+    var tr: int = _wang_terrain(x, y - 1)
+    var br: int = _wang_terrain(x, y)
+    var bl: int = _wang_terrain(x - 1, y)
 
     var key: String = "%d,%d,%d,%d" % [tl, tr, br, bl]
 
@@ -220,3 +216,11 @@ func _get_terrain(x: int, y: int) -> int:
     x = clampi(x, 0, map_width - 1)
     y = clampi(y, 0, map_height - 1)
     return map_data[y][x]
+
+## Terrain type as seen by the wang tile lookup. Tall Grass (7) is treated as
+## Dark Grass (3) so painted tall-grass patches blend with surrounding grass.
+func _wang_terrain(x: int, y: int) -> int:
+    var t: int = _get_terrain(x, y)
+    if t == 7:
+        return 3
+    return t
