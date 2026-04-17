@@ -65,9 +65,10 @@ func main() {
 	mux.HandleFunc("GET /api/village/terrain", app.requireLLMMemory(app.handleGetTerrain))
 	mux.HandleFunc("PUT /api/village/terrain", app.requireLLMMemory(app.handleSaveTerrain))
 
-	// World day/night cycle
+	// World day/night cycle + daily rotation
 	mux.HandleFunc("GET /api/village/world", app.requireLLMMemory(app.handleGetWorldState))
 	mux.HandleFunc("POST /api/village/world/force-phase", app.requireLLMMemory(app.handleForcePhase))
+	mux.HandleFunc("POST /api/village/world/force-rotate", app.requireLLMMemory(app.handleForceRotate))
 
 	// WebSocket — real-time world events stream
 	mux.HandleFunc("GET /api/village/events", app.handleVillageEvents)
