@@ -247,3 +247,37 @@ func _on_editor_mode_changed(mode) -> void:
     if mode == editor.Mode.SELECT and editor_panel != null:
         editor_panel.clear_catalog_selection()
         editor_panel.exit_terrain_mode()
+
+## Dev test: Shift+Left-click anywhere sends the first NPC walking to that
+## point. Stopgap until proper NPC selection lands in milestone 1b. The
+## server returns a 400 when the target isn't reachable (all obstacle tiles
+## blocking), which we silently ignore here.
+func _input(event: InputEvent) -> void:
+    if not (event is InputEventMouseButton):
+        return
+    if not event.pressed or event.button_index != MOUSE_BUTTON_LEFT:
+        return
+    if not event.shift_pressed:
+        return
+    if world == null or world.placed_npcs.is_empty():
+        return
+    var target: Vector2 = get_global_mouse_position()
+    var first_id: String = ""
+    for npc_id in world.placed_npcs:
+        first_id = npc_id
+        break
+    _walk_npc(first_id, target)
+    get_viewport().set_input_as_handled()
+
+func _walk_npc(npc_id: String, target: Vector2) -> void:
+    var http = HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    http.request_completed.connect(func(_r, _c, _h, _b): http.queue_free())
+    var payload = JSON.stringify({"x": target.x, "y": target.y})
+    var headers := ["Content-Type: application/json"]
+    var auth_header: String = Auth.get_auth_header()
+    if auth_header != "":
+        headers.append("Authorization: " + auth_header)
+    http.request(Auth.api_base + "/api/village/npcs/" + npc_id + "/walk-to",
+        headers, HTTPClient.METHOD_POST, payload)
