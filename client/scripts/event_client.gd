@@ -91,6 +91,8 @@ func _handle_message(data: String) -> void:
             _on_object_state_changed(event_data)
         "terrain_updated":
             _on_terrain_updated()
+        "world_phase_changed":
+            _on_world_phase_changed(event_data)
 
 ## Call this after placing an object locally so we ignore the WS echo.
 func mark_local_object(obj_id: String) -> void:
@@ -207,3 +209,14 @@ func _on_object_state_changed(data: Dictionary) -> void:
 
     var new_sprite: Node2D = world._create_sprite_node(state_info, texture, anchor_x, anchor_y)
     node.add_child(new_sprite)
+
+    # State flipped — update the light to match. Lit states get a glow, unlit
+    # states strip it. This also drives the day/night lamp cycle via the bulk
+    # UPDATE in the engine's phase transition.
+    world.attach_state_light(node, state_info)
+
+func _on_world_phase_changed(data: Dictionary) -> void:
+    if world == null:
+        return
+    var phase: String = data.get("phase", "day")
+    world.set_phase(phase, true)

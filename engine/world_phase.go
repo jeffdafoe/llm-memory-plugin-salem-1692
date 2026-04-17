@@ -262,6 +262,17 @@ func (app *App) applyTransition(ctx context.Context, newPhase string) (int, erro
 		})
 	}
 
+	// Tell every connected client the world clock moved. Clients use this to
+	// tween CanvasModulate between day and night color. Emit after the
+	// per-object events so the darken/brighten runs alongside the state flips.
+	app.Hub.Broadcast(WorldEvent{
+		Type: "world_phase_changed",
+		Data: map[string]interface{}{
+			"phase":              newPhase,
+			"last_transition_at": time.Now().UTC().Format(time.RFC3339),
+		},
+	})
+
 	log.Printf("world_phase: transitioned to %s (%d objects flipped)", newPhase, len(changes))
 	return len(changes), nil
 }

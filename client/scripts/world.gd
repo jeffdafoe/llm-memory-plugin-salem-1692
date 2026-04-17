@@ -10,6 +10,16 @@ const TerrainRendererScript = preload("res://scripts/terrain_renderer.gd")
 var terrain_renderer: Node2D = null
 @onready var objects_node: Node2D = $Objects
 
+# Day/night atmosphere — CanvasModulate tints the whole World subtree at night.
+# PointLight2D children on lit objects carve warm pools out of that tint.
+var canvas_modulate: CanvasModulate = null
+var current_phase: String = "day"
+var _light_gradient_texture: Texture2D = null
+
+const DAY_COLOR := Color(1.0, 1.0, 1.0, 1.0)
+const NIGHT_COLOR := Color(0.42, 0.46, 0.68, 1.0)
+const PHASE_TRANSITION_DURATION := 1.5  # seconds — tween from day to night color
+
 # The generated map data — 2D array [y][x] of terrain indices (1-based)
 var map_data: Array = []
 var map_width: int = 200
@@ -45,8 +55,15 @@ func build_terrain() -> void:
     add_child(terrain_renderer)
     move_child(terrain_renderer, 0)
 
+    # CanvasModulate tints everything under World (terrain + objects) for the
+    # day/night cycle. UI lives on separate CanvasLayers and stays bright.
+    canvas_modulate = CanvasModulate.new()
+    canvas_modulate.color = DAY_COLOR
+    add_child(canvas_modulate)
+
     _generate_terrain()  # Generate first so something is visible immediately
     _load_terrain()      # Then try to load saved terrain (overwrites if found)
+    _load_world_phase()  # Then sync modulate to the server's current phase
 
 ## Load placed objects from the API — called after catalog is ready.
 ## Guards against duplicate calls (auth flow can trigger this twice).
@@ -106,6 +123,102 @@ func save_terrain() -> void:
 ## when another client saves terrain changes.
 func reload_terrain() -> void:
     _load_terrain()
+
+## Apply a world phase change. Tweens CanvasModulate toward the target color
+## so darken/brighten happens smoothly. Pass tween=false for the initial load
+## so the scene doesn't briefly flash the wrong color.
+func set_phase(phase: String, tween: bool = true) -> void:
+    current_phase = phase
+    if canvas_modulate == null:
+        return
+    var target_color: Color = NIGHT_COLOR if phase == "night" else DAY_COLOR
+    if tween:
+        var t = create_tween()
+        t.tween_property(canvas_modulate, "color", target_color, PHASE_TRANSITION_DURATION)
+    else:
+        canvas_modulate.color = target_color
+
+## Fetch the server's current world phase and sync CanvasModulate to match.
+## Called once at build_terrain so clients opening the page at night don't
+## start in bright day before the first WS event lands.
+func _load_world_phase() -> void:
+    var http = HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    http.request_completed.connect(_on_world_phase_loaded.bind(http))
+    var headers: PackedStringArray = []
+    var auth_header: String = Auth.get_auth_header()
+    if auth_header != "":
+        headers.append("Authorization: " + auth_header)
+    http.request(api_base + "/api/village/world", headers)
+
+func _on_world_phase_loaded(result: int, response_code: int, headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest) -> void:
+    http.queue_free()
+    if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
+        return
+    var json = JSON.parse_string(body.get_string_from_utf8())
+    if json == null:
+        return
+    var phase: String = json.get("phase", "day")
+    set_phase(phase, false)  # instant — no tween on first load
+
+## Lazily build the shared soft-radial gradient texture used by every
+## PointLight2D. One texture, reused across all lit objects.
+func _get_light_gradient() -> Texture2D:
+    if _light_gradient_texture != null:
+        return _light_gradient_texture
+    var gradient = Gradient.new()
+    gradient.set_color(0, Color(1.0, 1.0, 1.0, 1.0))
+    gradient.set_color(1, Color(1.0, 1.0, 1.0, 0.0))
+    var tex = GradientTexture2D.new()
+    tex.gradient = gradient
+    tex.fill = GradientTexture2D.FILL_RADIAL
+    tex.fill_from = Vector2(0.5, 0.5)
+    tex.fill_to = Vector2(1.0, 0.5)
+    tex.width = 256
+    tex.height = 256
+    _light_gradient_texture = tex
+    return tex
+
+## Attach (or re-attach) a PointLight2D to a container based on its current
+## state's light params. Removes any existing light first. No-op when the
+## state has no light data (most states). Called on object placement and
+## on object_state_changed.
+func attach_state_light(container: Node2D, state_info: Dictionary) -> void:
+    for child in container.get_children():
+        if child is PointLight2D:
+            child.queue_free()
+
+    var light_data = state_info.get("light", null)
+    if light_data == null or not (light_data is Dictionary):
+        return
+
+    var light = PointLight2D.new()
+    light.texture = _get_light_gradient()
+    var color_str: String = light_data.get("color", "#FFAA55")
+    light.color = Color.html(color_str)
+    light.energy = light_data.get("energy", 1.0)
+    # The gradient's transparent edge sits at 128px from center (256px texture,
+    # fill_from=center, fill_to=edge). Scale so the outer edge lands at the
+    # configured world-pixel radius.
+    var radius: float = light_data.get("radius", 96)
+    light.texture_scale = radius / 128.0
+    light.offset = Vector2(
+        light_data.get("offset_x", 0),
+        light_data.get("offset_y", 0)
+    )
+    # Optional flicker: sinusoidal-ish tween on energy. Two-leg tween per cycle.
+    var amp: float = light_data.get("flicker_amplitude", 0.0)
+    var period_ms: int = light_data.get("flicker_period_ms", 0)
+    if amp > 0.0 and period_ms > 0:
+        var base_energy: float = light.energy
+        var half_period: float = (period_ms / 1000.0) / 2.0
+        var flicker_tween = light.create_tween()
+        flicker_tween.set_loops()
+        flicker_tween.tween_property(light, "energy", base_energy * (1.0 + amp), half_period)
+        flicker_tween.tween_property(light, "energy", base_energy * (1.0 - amp), half_period)
+
+    container.add_child(light)
 
 func _load_terrain() -> void:
     var http_req = HTTPRequest.new()
@@ -258,6 +371,7 @@ func _place_object(data: Dictionary) -> void:
 
     var sprite_node: Node2D = _create_sprite_node(state_info, texture, anchor_x, anchor_y)
     container.add_child(sprite_node)
+    attach_state_light(container, state_info)
 
     # If attached to a parent, add as child of parent node at slot offset
     if attached_to != null and attached_to != "" and placed_objects.has(attached_to):
@@ -351,6 +465,7 @@ func add_attachment(overlay_asset_id: String, parent_node: Node2D) -> void:
 
     var sprite_node: Node2D = _create_sprite_node(state_info, texture, anchor_x, anchor_y)
     container.add_child(sprite_node)
+    attach_state_light(container, state_info)
     parent_node.add_child(container)
     # Force visual refresh
     container.visible = false
@@ -402,6 +517,7 @@ func add_object(asset_id: String, world_pos: Vector2) -> Node2D:
 
     var sprite_node: Node2D = _create_sprite_node(state_info, texture, anchor_x, anchor_y)
     container.add_child(sprite_node)
+    attach_state_light(container, state_info)
     objects_node.add_child(container)
     # Force visual refresh — same HTML5 y-sort renderer bug as drag-to-move
     container.visible = false
