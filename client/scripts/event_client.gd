@@ -93,6 +93,10 @@ func _handle_message(data: String) -> void:
             _on_terrain_updated()
         "world_phase_changed":
             _on_world_phase_changed(event_data)
+        "npc_walking":
+            _on_npc_walking(event_data)
+        "npc_arrived":
+            _on_npc_arrived(event_data)
 
 ## Call this after placing an object locally so we ignore the WS echo.
 func mark_local_object(obj_id: String) -> void:
@@ -220,3 +224,57 @@ func _on_world_phase_changed(data: Dictionary) -> void:
         return
     var phase: String = data.get("phase", "day")
     world.set_phase(phase, true)
+
+## Server says an NPC is starting a waypoint walk. Store the path + start
+## time on the container's "walking" meta; world._process will tick it every
+## frame until npc_arrived lands. Picks the initial facing from the first leg
+## so the walk animation starts correctly.
+func _on_npc_walking(data: Dictionary) -> void:
+    if world == null:
+        return
+    var npc_id: String = data.get("id", "")
+    if not world.placed_npcs.has(npc_id):
+        return
+    var container: Node2D = world.placed_npcs[npc_id]
+
+    var start_pos := Vector2(
+        float(data.get("start_x", 0.0)),
+        float(data.get("start_y", 0.0))
+    )
+    var path: Array = []
+    for p in data.get("path", []):
+        path.append(Vector2(float(p.get("x", 0.0)), float(p.get("y", 0.0))))
+    if path.is_empty():
+        return
+
+    var walk := {
+        "start_pos": start_pos,
+        "path": path,
+        "speed": float(data.get("speed", 48.0)),
+        "started_at_s": Time.get_ticks_msec() / 1000.0,
+    }
+    container.set_meta("walking", walk)
+
+    # Kick off walk animation in the first leg's direction.
+    var first_dir: Vector2 = path[0] - start_pos
+    var facing: String = world.facing_from_vec(first_dir)
+    container.set_meta("facing", facing)
+    world.play_npc_animation(container, facing, "walk")
+
+## Server says the NPC arrived at its destination. Snap position + facing,
+## clear walking meta, switch to idle animation.
+func _on_npc_arrived(data: Dictionary) -> void:
+    if world == null:
+        return
+    var npc_id: String = data.get("id", "")
+    if not world.placed_npcs.has(npc_id):
+        return
+    var container: Node2D = world.placed_npcs[npc_id]
+    var final_x: float = float(data.get("x", 0.0))
+    var final_y: float = float(data.get("y", 0.0))
+    var facing: String = data.get("facing", "south")
+
+    container.position = Vector2(final_x, final_y)
+    container.set_meta("facing", facing)
+    container.remove_meta("walking")
+    world.play_npc_animation(container, facing, "idle")
