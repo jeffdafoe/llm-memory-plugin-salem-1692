@@ -36,12 +36,17 @@ var _dawn_time: String = ""
 var _dusk_time: String = ""
 var _timezone: String = ""
 var _server_time: String = ""
+var _rotation_time: String = ""
+var _last_rotation_at: String = ""
+var _next_rotation_at: String = ""
 
 # UI elements that update without a full rebuild
 var _phase_value: Label = null
 var _next_countdown: Label = null
 var _last_transition_value: Label = null
 var _server_time_value: Label = null
+var _next_rotation_countdown: Label = null
+var _last_rotation_value: Label = null
 var _status_label: Label = null
 
 var _refresh_timer: Timer = null
@@ -163,6 +168,26 @@ func _build_layout() -> void:
 
     _add_separator()
 
+    # Daily rotation (rotatable assets — notice boards, laundry)
+    var rotation_header = _make_label("Daily rotation", COLOR_LABEL, 14)
+    _content.add_child(rotation_header)
+
+    var rot_next_row = HBoxContainer.new()
+    rot_next_row.add_theme_constant_override("separation", 12)
+    _content.add_child(rot_next_row)
+    rot_next_row.add_child(_make_label("Next rotation:", COLOR_LABEL, 14))
+    _next_rotation_countdown = _make_label("—", COLOR_TEXT, 14)
+    rot_next_row.add_child(_next_rotation_countdown)
+
+    var rot_last_row = HBoxContainer.new()
+    rot_last_row.add_theme_constant_override("separation", 12)
+    _content.add_child(rot_last_row)
+    rot_last_row.add_child(_make_label("Last rotation:", COLOR_LABEL, 14))
+    _last_rotation_value = _make_label("—", COLOR_TEXT_DIM, 14)
+    rot_last_row.add_child(_last_rotation_value)
+
+    _add_separator()
+
     # Force-phase controls
     var force_header = _make_label("Force phase (dev/admin)", COLOR_LABEL, 14)
     _content.add_child(force_header)
@@ -174,6 +199,7 @@ func _build_layout() -> void:
     btn_row.add_child(_make_button("Force Day", func(): _send_force("day")))
     btn_row.add_child(_make_button("Force Night", func(): _send_force("night")))
     btn_row.add_child(_make_button("Toggle", func(): _send_force("toggle")))
+    btn_row.add_child(_make_button("Force Rotate", _send_force_rotate))
 
     _status_label = _make_label("", COLOR_TEXT_DIM, 12)
     _content.add_child(_status_label)
@@ -278,6 +304,9 @@ func _on_state_response(result: int, response_code: int, _headers: PackedStringA
     _dusk_time = json.get("dusk_time", "")
     _timezone = json.get("timezone", "")
     _server_time = json.get("server_time", "")
+    _rotation_time = json.get("rotation_time", "")
+    _last_rotation_at = json.get("last_rotation_at", "")
+    _next_rotation_at = json.get("next_rotation_at", "")
 
     _refresh_labels()
 
@@ -288,29 +317,43 @@ func _refresh_labels() -> void:
     )
     _last_transition_value.text = _format_iso_local(_last_transition_at)
     _server_time_value.text = _format_iso_local(_server_time) + "  (" + _timezone + ")"
+    if _last_rotation_value != null:
+        _last_rotation_value.text = _format_iso_local(_last_rotation_at)
     _update_countdown()
 
 ## Ticks once per second when the panel is visible — updates only the
-## countdown label so the rest of the UI doesn't flicker.
+## countdown labels so the rest of the UI doesn't flicker.
 func _update_countdown() -> void:
     if _next_transition_at == "":
         _next_countdown.text = "—"
-        return
-    var delta_s: int = _iso_seconds_until(_next_transition_at)
+    else:
+        var phase_countdown: String = _format_countdown_until(_next_transition_at)
+        if phase_countdown == "":
+            _next_countdown.text = "(any moment)"
+        else:
+            _next_countdown.text = phase_countdown + " → " + _next_transition_phase.to_upper()
+
+    if _next_rotation_countdown != null:
+        if _next_rotation_at == "":
+            _next_rotation_countdown.text = "—"
+        else:
+            var rot_countdown: String = _format_countdown_until(_next_rotation_at)
+            _next_rotation_countdown.text = rot_countdown if rot_countdown != "" else "(any moment)"
+
+## Format the "h m s" countdown from now to the given RFC3339 timestamp.
+## Returns an empty string if the timestamp is already in the past.
+func _format_countdown_until(iso: String) -> String:
+    var delta_s: int = _iso_seconds_until(iso)
     if delta_s <= 0:
-        _next_countdown.text = "(any moment)"
-        return
+        return ""
     var h: int = int(delta_s / 3600)
     var m: int = int((delta_s % 3600) / 60)
     var s: int = delta_s % 60
-    var countdown: String
     if h > 0:
-        countdown = "%dh %dm %ds" % [h, m, s]
-    elif m > 0:
-        countdown = "%dm %ds" % [m, s]
-    else:
-        countdown = "%ds" % s
-    _next_countdown.text = countdown + " → " + _next_transition_phase.to_upper()
+        return "%dh %dm %ds" % [h, m, s]
+    if m > 0:
+        return "%dm %ds" % [m, s]
+    return "%ds" % s
 
 ## Parse an RFC3339 string into seconds-from-now using local clock. Godot's
 ## Time APIs handle "YYYY-MM-DDTHH:MM:SSZ" via Time.get_unix_time_from_datetime_string.
@@ -365,6 +408,39 @@ func _on_force_response(result: int, response_code: int, _headers: PackedStringA
         applied = json.get("phase", requested)
         affected = int(json.get("objects_affected", 0))
     _set_status("Forced " + applied.to_upper() + " — " + str(affected) + " objects updated", false)
+    fetch_state()
+
+## POST /api/village/world/force-rotate — kicks the daily rotation pass
+## immediately. Affected objects flip over each asset's transition_spread_seconds
+## window so updates trickle in rather than all landing at once.
+func _send_force_rotate() -> void:
+    var http = HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    http.request_completed.connect(_on_force_rotate_response.bind(http))
+    var headers = [
+        "Authorization: " + Auth.get_auth_header(),
+        "Content-Type: application/json",
+    ]
+    http.request(Auth.api_base + "/api/village/world/force-rotate", headers, HTTPClient.METHOD_POST, "{}")
+    _set_status("Forcing rotation...", false)
+
+func _on_force_rotate_response(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest) -> void:
+    http.queue_free()
+    if result != HTTPRequest.RESULT_SUCCESS:
+        _set_status("Force rotate failed: network error", true)
+        return
+    if response_code == 403:
+        _set_status("Admin access required", true)
+        return
+    if response_code != 200:
+        _set_status("Force rotate failed (" + str(response_code) + ")", true)
+        return
+    var json = JSON.parse_string(body.get_string_from_utf8())
+    var affected: int = 0
+    if typeof(json) == TYPE_DICTIONARY:
+        affected = int(json.get("objects_affected", 0))
+    _set_status("Rotation scheduled — " + str(affected) + " objects over their spread windows", false)
     fetch_state()
 
 func _set_status(text: String, is_error: bool) -> void:

@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	mathrand "math/rand/v2"
 	"net/http"
 	"strconv"
 	"strings"
@@ -39,19 +40,31 @@ const (
 
 	tickerInterval = 60 * time.Second
 
-	defaultTimezone = "America/New_York"
-	defaultDawn     = "07:00"
-	defaultDusk     = "19:00"
+	defaultTimezone     = "America/New_York"
+	defaultDawn         = "07:00"
+	defaultDusk         = "19:00"
+	defaultRotationTime = "00:00"
 )
 
 // worldConfig bundles the runtime state plus the admin-tunable settings.
 type worldConfig struct {
 	Phase            string
 	LastTransitionAt time.Time
+	LastRotationAt   time.Time
 	DawnTime         string // "HH:MM"
 	DuskTime         string
+	RotationTime     string // "HH:MM"
 	Timezone         string
 	Location         *time.Location
+}
+
+// pendingFlip is one scheduled village_object.current_state change. Applied
+// by scheduleFlips — either immediately (SpreadSeconds=0) or at a random
+// offset uniformly in [0, SpreadSeconds) seconds into the future.
+type pendingFlip struct {
+	ObjectID      string
+	NewState      string
+	SpreadSeconds int
 }
 
 // loadWorldConfig reads the world_phase row and the three world_* settings.
@@ -59,20 +72,22 @@ type worldConfig struct {
 // ticker before an admin has set anything.
 func (app *App) loadWorldConfig(ctx context.Context) (*worldConfig, error) {
 	cfg := &worldConfig{
-		DawnTime: defaultDawn,
-		DuskTime: defaultDusk,
-		Timezone: defaultTimezone,
+		DawnTime:     defaultDawn,
+		DuskTime:     defaultDusk,
+		RotationTime: defaultRotationTime,
+		Timezone:     defaultTimezone,
 	}
 
 	err := app.DB.QueryRow(ctx,
-		`SELECT phase, last_transition_at FROM world_phase WHERE id = 1`,
-	).Scan(&cfg.Phase, &cfg.LastTransitionAt)
+		`SELECT phase, last_transition_at, last_rotation_at FROM world_phase WHERE id = 1`,
+	).Scan(&cfg.Phase, &cfg.LastTransitionAt, &cfg.LastRotationAt)
 	if err != nil {
 		return nil, fmt.Errorf("load world_phase: %w", err)
 	}
 
 	rows, err := app.DB.Query(ctx,
-		`SELECT key, value FROM setting WHERE key IN ('world_dawn_time', 'world_dusk_time', 'world_timezone')`,
+		`SELECT key, value FROM setting
+		 WHERE key IN ('world_dawn_time', 'world_dusk_time', 'world_rotation_time', 'world_timezone')`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("load world settings: %w", err)
@@ -92,6 +107,8 @@ func (app *App) loadWorldConfig(ctx context.Context) (*worldConfig, error) {
 			cfg.DawnTime = *value
 		case "world_dusk_time":
 			cfg.DuskTime = *value
+		case "world_rotation_time":
+			cfg.RotationTime = *value
 		case "world_timezone":
 			cfg.Timezone = *value
 		}
@@ -182,13 +199,19 @@ func nextBoundary(now time.Time, dawnH, dawnM, duskH, duskM int) (phase string, 
 	return phaseDay, now
 }
 
-// applyTransition moves the world to the given phase: bulk-updates every
-// village_object that has a state tagged for the new phase, broadcasts one
-// object_state_changed event per affected row, and stamps world_phase with
-// the new phase + last_transition_at.
+// applyTransition moves the world to the given phase. Resolves the target
+// state per asset (DISTINCT ON picks the lowest-id tagged state deterministically
+// if an asset ever has multiple states under one tag), stamps world_phase
+// synchronously, then hands per-object flips off to scheduleFlips — which may
+// spread them over time per asset.transition_spread_seconds.
 //
-// Safe to call even when the current phase already matches — the UPDATE just
-// produces zero rows, but last_transition_at still advances.
+// The world_phase_changed broadcast fires immediately so clients start the
+// CanvasModulate tween right at the boundary. Lamp/torch/campfire glows
+// trickle in as scheduled flips land over the spread window.
+//
+// Safe to call when the current phase already matches — determineTransitionFlips
+// filters rows whose current_state already equals the target, so scheduleFlips
+// gets an empty list.
 func (app *App) applyTransition(ctx context.Context, newPhase string) (int, error) {
 	var tag string
 	switch newPhase {
@@ -200,71 +223,22 @@ func (app *App) applyTransition(ctx context.Context, newPhase string) (int, erro
 		return 0, fmt.Errorf("invalid phase %q", newPhase)
 	}
 
-	tx, err := app.DB.Begin(ctx)
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback(ctx)
-
-	// DISTINCT ON picks a single target state per asset deterministically,
-	// even if the catalog ever ends up with multiple states under the same
-	// tag for one asset. Lowest state id wins — matches insertion order.
-	rows, err := tx.Query(ctx,
-		`WITH target_states AS (
-		    SELECT DISTINCT ON (s.asset_id) s.asset_id, s.state AS target_state
-		    FROM asset_state s
-		    JOIN asset_state_tag t ON t.state_id = s.id
-		    WHERE t.tag = $1
-		    ORDER BY s.asset_id, s.id
-		)
-		UPDATE village_object o
-		SET current_state = ts.target_state
-		FROM target_states ts
-		WHERE o.asset_id = ts.asset_id
-		  AND o.current_state IS DISTINCT FROM ts.target_state
-		RETURNING o.id, o.current_state`,
-		tag,
-	)
+	flips, err := app.determineTransitionFlips(ctx, tag)
 	if err != nil {
 		return 0, err
 	}
 
-	type change struct {
-		ID    string `json:"id"`
-		State string `json:"state"`
-	}
-	var changes []change
-	for rows.Next() {
-		var c change
-		if err := rows.Scan(&c.ID, &c.State); err != nil {
-			rows.Close()
-			return 0, err
-		}
-		changes = append(changes, c)
-	}
-	rows.Close()
-
-	if _, err := tx.Exec(ctx,
+	if _, err := app.DB.Exec(ctx,
 		`UPDATE world_phase SET phase = $1, last_transition_at = NOW() WHERE id = 1`,
 		newPhase,
 	); err != nil {
 		return 0, err
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return 0, err
-	}
+	app.scheduleFlips(flips)
 
-	for _, c := range changes {
-		app.Hub.Broadcast(WorldEvent{
-			Type: "object_state_changed",
-			Data: map[string]string{"id": c.ID, "state": c.State},
-		})
-	}
-
-	// Tell every connected client the world clock moved. Clients use this to
-	// tween CanvasModulate between day and night color. Emit after the
-	// per-object events so the darken/brighten runs alongside the state flips.
+	// CanvasModulate tween starts immediately at the boundary; per-object
+	// flips land via scheduleFlips as their spread windows elapse.
 	app.Hub.Broadcast(WorldEvent{
 		Type: "world_phase_changed",
 		Data: map[string]interface{}{
@@ -273,22 +247,102 @@ func (app *App) applyTransition(ctx context.Context, newPhase string) (int, erro
 		},
 	})
 
-	log.Printf("world_phase: transitioned to %s (%d objects flipped)", newPhase, len(changes))
-	return len(changes), nil
+	log.Printf("world_phase: transitioned to %s (%d flips scheduled)", newPhase, len(flips))
+	return len(flips), nil
 }
 
-// runPhaseTicker is the background loop that fires scheduled transitions.
+// determineTransitionFlips returns the per-object flips needed to move every
+// village_object into the target state for the given tag ('day-active' or
+// 'night-active'). Each flip carries the owning asset's transition_spread_seconds
+// so scheduleFlips can spread them individually.
+func (app *App) determineTransitionFlips(ctx context.Context, tag string) ([]pendingFlip, error) {
+	rows, err := app.DB.Query(ctx,
+		`WITH target_states AS (
+		    SELECT DISTINCT ON (s.asset_id) s.asset_id, s.state AS target_state
+		    FROM asset_state s
+		    JOIN asset_state_tag t ON t.state_id = s.id
+		    WHERE t.tag = $1
+		    ORDER BY s.asset_id, s.id
+		)
+		SELECT o.id, ts.target_state, a.transition_spread_seconds
+		FROM village_object o
+		JOIN target_states ts ON ts.asset_id = o.asset_id
+		JOIN asset a ON a.id = o.asset_id
+		WHERE o.current_state IS DISTINCT FROM ts.target_state`,
+		tag,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var flips []pendingFlip
+	for rows.Next() {
+		var f pendingFlip
+		if err := rows.Scan(&f.ObjectID, &f.NewState, &f.SpreadSeconds); err != nil {
+			return nil, err
+		}
+		flips = append(flips, f)
+	}
+	return flips, nil
+}
+
+// scheduleFlips queues each flip via time.AfterFunc. Flips with SpreadSeconds > 0
+// fire at a uniform-random offset in [0, SpreadSeconds) seconds; flips with
+// SpreadSeconds == 0 fire immediately on a fresh goroutine (still async, but
+// at ~zero delay).
+//
+// Each fired flip does its own idempotent UPDATE + broadcast, so flips from
+// a given transition are independent — if the engine restarts mid-window, the
+// startup catch-up (applyTransition with the current phase) will re-schedule
+// any objects still in the wrong state.
+func (app *App) scheduleFlips(flips []pendingFlip) {
+	for _, f := range flips {
+		flip := f
+		var delay time.Duration
+		if flip.SpreadSeconds > 0 {
+			delay = time.Duration(mathrand.IntN(flip.SpreadSeconds)) * time.Second
+		}
+		time.AfterFunc(delay, func() {
+			app.applyFlip(flip)
+		})
+	}
+}
+
+// applyFlip performs a single pending state change. Uses a fresh background
+// context since this runs on an independent timer long after the originating
+// request is gone. The IS DISTINCT FROM guard keeps it idempotent.
+func (app *App) applyFlip(flip pendingFlip) {
+	ctx := context.Background()
+	_, err := app.DB.Exec(ctx,
+		`UPDATE village_object SET current_state = $2
+		 WHERE id = $1 AND current_state IS DISTINCT FROM $2`,
+		flip.ObjectID, flip.NewState,
+	)
+	if err != nil {
+		log.Printf("flip: object %s -> %s failed: %v", flip.ObjectID, flip.NewState, err)
+		return
+	}
+	app.Hub.Broadcast(WorldEvent{
+		Type: "object_state_changed",
+		Data: map[string]string{"id": flip.ObjectID, "state": flip.NewState},
+	})
+}
+
+// runPhaseTicker is the background loop that fires scheduled world events.
 // Wakes every tickerInterval, reads the latest config (so live setting edits
-// take effect without a restart), and transitions if a boundary has been
-// crossed since last_transition_at.
+// take effect without a restart), and transitions day/night or applies the
+// daily rotation if the corresponding boundary has been crossed since the
+// last processed timestamp.
 func (app *App) runPhaseTicker(ctx context.Context) {
 	log.Printf("world_phase: ticker started (%s interval)", tickerInterval)
 	ticker := time.NewTicker(tickerInterval)
 	defer ticker.Stop()
 
-	// Kick once at startup so a server that came up mid-phase catches up
-	// without waiting for the first tick.
+	// Kick once at startup so a server that came up mid-phase (or after a
+	// missed rotation) catches up without waiting for the first tick.
 	app.checkAndTransition(ctx)
+	app.checkAndRotate(ctx)
 
 	for {
 		select {
@@ -297,6 +351,7 @@ func (app *App) runPhaseTicker(ctx context.Context) {
 			return
 		case <-ticker.C:
 			app.checkAndTransition(ctx)
+			app.checkAndRotate(ctx)
 		}
 	}
 }
@@ -340,6 +395,8 @@ func (app *App) checkAndTransition(ctx context.Context) {
 
 // handleGetWorldState returns the current phase plus timing info the client
 // uses to render the config panel (last transition, next boundary, tunables).
+// Also carries rotation state so the panel can show a "next rotation in Xh Ym"
+// countdown alongside the phase countdown.
 func (app *App) handleGetWorldState(w http.ResponseWriter, r *http.Request) {
 	cfg, err := app.loadWorldConfig(r.Context())
 	if err != nil {
@@ -357,19 +414,28 @@ func (app *App) handleGetWorldState(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "Invalid dusk time setting", http.StatusInternalServerError)
 		return
 	}
+	rotH, rotM, err := parseHM(cfg.RotationTime)
+	if err != nil {
+		jsonError(w, "Invalid rotation time setting", http.StatusInternalServerError)
+		return
+	}
 
 	now := time.Now().In(cfg.Location)
 	nextPhase, nextAt := nextBoundary(now, dawnH, dawnM, duskH, duskM)
+	nextRotationAt := nextRotationBoundary(now, rotH, rotM)
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"phase":                cfg.Phase,
-		"last_transition_at":   cfg.LastTransitionAt.UTC().Format(time.RFC3339),
-		"dawn_time":            cfg.DawnTime,
-		"dusk_time":            cfg.DuskTime,
-		"timezone":             cfg.Timezone,
-		"server_time":          now.Format(time.RFC3339),
-		"next_transition_at":   nextAt.UTC().Format(time.RFC3339),
+		"phase":                 cfg.Phase,
+		"last_transition_at":    cfg.LastTransitionAt.UTC().Format(time.RFC3339),
+		"dawn_time":             cfg.DawnTime,
+		"dusk_time":             cfg.DuskTime,
+		"timezone":              cfg.Timezone,
+		"server_time":           now.Format(time.RFC3339),
+		"next_transition_at":    nextAt.UTC().Format(time.RFC3339),
 		"next_transition_phase": nextPhase,
+		"rotation_time":         cfg.RotationTime,
+		"last_rotation_at":      cfg.LastRotationAt.UTC().Format(time.RFC3339),
+		"next_rotation_at":      nextRotationAt.UTC().Format(time.RFC3339),
 	})
 }
 
