@@ -321,6 +321,7 @@ func _add_category_section(cat_name: String, assets: Array) -> void:
     grid.columns = 4
     grid.add_theme_constant_override("h_separation", 4)
     grid.add_theme_constant_override("v_separation", 4)
+    grid.visible = false
     section.add_child(grid)
 
     # Toggle collapse on header click
