@@ -15,7 +15,7 @@ CREATE TABLE npc_sprite (
     sheet VARCHAR(255) NOT NULL,
     frame_width INT NOT NULL DEFAULT 32,
     frame_height INT NOT NULL DEFAULT 32,
-    pack_id UUID REFERENCES tileset_pack(id)
+    pack_id VARCHAR(60) REFERENCES tileset_pack(id)
 );
 
 CREATE TABLE npc_sprite_animation (
@@ -44,7 +44,7 @@ CREATE TABLE npc (
 
 -- Seed: NPC pack + one sprite + one test NPC at the crossroads (1280, 704).
 INSERT INTO tileset_pack (id, name, url) VALUES (
-    '11111111-2222-3333-4444-555555555555',
+    'mana-seed-npc-1',
     'Mana Seed NPC Pack #1',
     'https://seliel-the-shaper.itch.io/'
 );
@@ -53,7 +53,7 @@ INSERT INTO npc_sprite (id, name, sheet, pack_id) VALUES (
     '22222222-3333-4444-5555-666666666666',
     'Woman A (v00)',
     '/tilesets/mana-seed/npc/woman_A_v00.png',
-    '11111111-2222-3333-4444-555555555555'
+    'mana-seed-npc-1'
 );
 
 INSERT INTO npc (display_name, sprite_id, home_x, home_y, current_x, current_y, facing) VALUES (
