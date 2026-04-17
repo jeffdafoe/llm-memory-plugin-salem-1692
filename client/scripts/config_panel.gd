@@ -1,32 +1,51 @@
 extends Control
-## Config panel — full-screen overlay showing all assets in a card grid
-## with metadata and state variant thumbnails. Matches the old TypeScript
-## layout: category headers, multi-column cards, asset ID, layer info,
-## anchor, state count, pack name, and state thumbnails with labels.
+## Config panel — admin controls for world-level settings.
+## Currently: day/night phase display + force-toggle buttons.
+## Fetches state from GET /api/village/world; force-phase via
+## POST /api/village/world/force-phase (admin only).
 
 signal closed
 
-# Theme colors
 const COLOR_BG = Color(0.05, 0.03, 0.02, 0.85)
 const COLOR_PANEL_BG = Color(0.12, 0.09, 0.07, 0.98)
 const COLOR_BORDER = Color(0.45, 0.35, 0.22, 1.0)
 const COLOR_TEXT = Color(0.85, 0.75, 0.55, 1.0)
 const COLOR_TEXT_DIM = Color(0.63, 0.56, 0.44, 1.0)
 const COLOR_LABEL = Color(0.54, 0.48, 0.31, 1.0)
-const COLOR_CARD_BG = Color(0.15, 0.12, 0.08, 1.0)
-const COLOR_CARD_BORDER = Color(0.35, 0.28, 0.17, 0.7)
-const COLOR_STATE_DEFAULT = Color(0.85, 0.75, 0.35, 0.9)
-const COLOR_STATE_BORDER = Color(0.3, 0.24, 0.15, 0.5)
+const COLOR_VALUE = Color(0.92, 0.82, 0.55, 1.0)
+const COLOR_BTN_BG = Color(0.35, 0.25, 0.12, 1.0)
+const COLOR_BTN_BORDER = Color(0.55, 0.42, 0.25, 1.0)
+const COLOR_BTN_HOVER_BG = Color(0.45, 0.32, 0.15, 1.0)
+const COLOR_STATUS_OK = Color(0.55, 0.78, 0.45, 0.9)
+const COLOR_STATUS_ERR = Color(0.85, 0.45, 0.40, 0.9)
 
-const THUMB_SIZE: int = 64
 const TOP_BAR_HEIGHT: float = 40.0
-const CARD_WIDTH: float = 200.0
+const REFRESH_INTERVAL: float = 1.0  # countdown ticker
+const REFETCH_INTERVAL: float = 10.0  # poll server state
 
 var _font: Font = null
-var _scroll: ScrollContainer = null
+var _panel: PanelContainer = null
 var _content: VBoxContainer = null
-var _summary_label: Label = null
-const SCROLL_SPEED: float = 60.0
+
+# Live values (most recent from server)
+var _phase: String = ""
+var _last_transition_at: String = ""   # RFC3339
+var _next_transition_at: String = ""   # RFC3339
+var _next_transition_phase: String = ""
+var _dawn_time: String = ""
+var _dusk_time: String = ""
+var _timezone: String = ""
+var _server_time: String = ""
+
+# UI elements that update without a full rebuild
+var _phase_value: Label = null
+var _next_countdown: Label = null
+var _last_transition_value: Label = null
+var _server_time_value: Label = null
+var _status_label: Label = null
+
+var _refresh_timer: Timer = null
+var _refetch_timer: Timer = null
 
 func _ready() -> void:
     _font = load("res://assets/fonts/IMFellEnglish-Regular.ttf")
@@ -45,14 +64,12 @@ func _ready() -> void:
     bg.gui_input.connect(_on_bg_input)
     add_child(bg)
 
-    # Center panel
-    var panel = PanelContainer.new()
-    panel.anchor_left = 0.02
-    panel.anchor_right = 0.98
-    panel.anchor_top = 0.0
-    panel.anchor_bottom = 1.0
-    panel.offset_top = TOP_BAR_HEIGHT + 4
-    panel.offset_bottom = -4
+    # Centered panel — doesn't need the full height; give it a readable width
+    _panel = PanelContainer.new()
+    _panel.anchor_left = 0.25
+    _panel.anchor_right = 0.75
+    _panel.anchor_top = 0.15
+    _panel.anchor_bottom = 0.85
 
     var panel_style = StyleBoxFlat.new()
     panel_style.bg_color = COLOR_PANEL_BG
@@ -65,259 +82,293 @@ func _ready() -> void:
     panel_style.corner_radius_right_top = 4
     panel_style.corner_radius_left_bottom = 4
     panel_style.corner_radius_right_bottom = 4
-    panel_style.content_margin_left = 16.0
-    panel_style.content_margin_right = 16.0
-    panel_style.content_margin_top = 12.0
-    panel_style.content_margin_bottom = 12.0
-    panel.add_theme_stylebox_override("panel", panel_style)
-    add_child(panel)
-
-    # Scrollable content
-    var scroll = ScrollContainer.new()
-    _scroll = scroll
-    scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-    scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
-    panel.add_child(scroll)
+    panel_style.content_margin_left = 28.0
+    panel_style.content_margin_right = 28.0
+    panel_style.content_margin_top = 24.0
+    panel_style.content_margin_bottom = 24.0
+    _panel.add_theme_stylebox_override("panel", panel_style)
+    add_child(_panel)
 
     _content = VBoxContainer.new()
-    _content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    _content.add_theme_constant_override("separation", 12)
-    scroll.add_child(_content)
+    _content.add_theme_constant_override("separation", 14)
+    _panel.add_child(_content)
 
-    # Summary line
-    _summary_label = Label.new()
-    _summary_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
-    _summary_label.add_theme_font_size_override("font_size", 12)
-    _content.add_child(_summary_label)
+    _build_layout()
 
-## Handle scroll manually — the camera and editor _input handlers
-## run before GUI Controls, so the ScrollContainer never gets scroll events.
+    # Timers for live UI updates. Refresh ticks the countdown every second;
+    # refetch pulls fresh server state every 10s so the Config screen stays
+    # honest about the phase even without user interaction.
+    _refresh_timer = Timer.new()
+    _refresh_timer.wait_time = REFRESH_INTERVAL
+    _refresh_timer.autostart = false
+    _refresh_timer.timeout.connect(_update_countdown)
+    add_child(_refresh_timer)
+
+    _refetch_timer = Timer.new()
+    _refetch_timer.wait_time = REFETCH_INTERVAL
+    _refetch_timer.autostart = false
+    _refetch_timer.timeout.connect(fetch_state)
+    add_child(_refetch_timer)
+
+    visibility_changed.connect(_on_visibility_changed)
+
+func _build_layout() -> void:
+    var title = Label.new()
+    title.text = "World Controls"
+    title.add_theme_color_override("font_color", COLOR_TEXT)
+    title.add_theme_font_override("font", _font)
+    title.add_theme_font_size_override("font_size", 28)
+    title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+    _content.add_child(title)
+
+    _add_separator()
+
+    # Phase row — big, readable
+    var phase_row = HBoxContainer.new()
+    phase_row.add_theme_constant_override("separation", 12)
+    _content.add_child(phase_row)
+
+    var phase_label = _make_label("Current phase:", COLOR_LABEL, 18)
+    phase_row.add_child(phase_label)
+
+    _phase_value = _make_label("—", COLOR_VALUE, 22)
+    phase_row.add_child(_phase_value)
+
+    # Countdown row
+    var count_row = HBoxContainer.new()
+    count_row.add_theme_constant_override("separation", 12)
+    _content.add_child(count_row)
+
+    count_row.add_child(_make_label("Next transition:", COLOR_LABEL, 14))
+    _next_countdown = _make_label("—", COLOR_TEXT, 14)
+    count_row.add_child(_next_countdown)
+
+    # Last-transition row
+    var last_row = HBoxContainer.new()
+    last_row.add_theme_constant_override("separation", 12)
+    _content.add_child(last_row)
+
+    last_row.add_child(_make_label("Last transition:", COLOR_LABEL, 14))
+    _last_transition_value = _make_label("—", COLOR_TEXT_DIM, 14)
+    last_row.add_child(_last_transition_value)
+
+    # Server time row
+    var stime_row = HBoxContainer.new()
+    stime_row.add_theme_constant_override("separation", 12)
+    _content.add_child(stime_row)
+
+    stime_row.add_child(_make_label("World clock:", COLOR_LABEL, 14))
+    _server_time_value = _make_label("—", COLOR_TEXT_DIM, 14)
+    stime_row.add_child(_server_time_value)
+
+    _add_separator()
+
+    # Force-phase controls
+    var force_header = _make_label("Force phase (dev/admin)", COLOR_LABEL, 14)
+    _content.add_child(force_header)
+
+    var btn_row = HBoxContainer.new()
+    btn_row.add_theme_constant_override("separation", 8)
+    _content.add_child(btn_row)
+
+    btn_row.add_child(_make_button("Force Day", func(): _send_force("day")))
+    btn_row.add_child(_make_button("Force Night", func(): _send_force("night")))
+    btn_row.add_child(_make_button("Toggle", func(): _send_force("toggle")))
+
+    _status_label = _make_label("", COLOR_TEXT_DIM, 12)
+    _content.add_child(_status_label)
+
+func _make_label(text: String, color: Color, size: int) -> Label:
+    var lbl = Label.new()
+    lbl.text = text
+    lbl.add_theme_color_override("font_color", color)
+    lbl.add_theme_font_size_override("font_size", size)
+    return lbl
+
+func _make_button(text: String, cb: Callable) -> Button:
+    var btn = Button.new()
+    btn.text = text
+    btn.add_theme_color_override("font_color", COLOR_TEXT)
+    btn.add_theme_color_override("font_hover_color", COLOR_VALUE)
+    btn.add_theme_font_override("font", _font)
+    btn.add_theme_font_size_override("font_size", 16)
+
+    var normal = StyleBoxFlat.new()
+    normal.bg_color = COLOR_BTN_BG
+    normal.border_width_left = 1
+    normal.border_width_top = 1
+    normal.border_width_right = 1
+    normal.border_width_bottom = 1
+    normal.border_color = COLOR_BTN_BORDER
+    normal.corner_radius_left_top = 3
+    normal.corner_radius_right_top = 3
+    normal.corner_radius_left_bottom = 3
+    normal.corner_radius_right_bottom = 3
+    normal.content_margin_left = 14.0
+    normal.content_margin_right = 14.0
+    normal.content_margin_top = 6.0
+    normal.content_margin_bottom = 6.0
+    btn.add_theme_stylebox_override("normal", normal)
+
+    var hover = normal.duplicate()
+    hover.bg_color = COLOR_BTN_HOVER_BG
+    btn.add_theme_stylebox_override("hover", hover)
+
+    btn.pressed.connect(cb)
+    return btn
+
+func _add_separator() -> void:
+    var sep = HSeparator.new()
+    sep.add_theme_constant_override("separation", 2)
+    _content.add_child(sep)
+
+## Input handling — close on ESC or left-click outside the panel. Matches the
+## asset popup's "click outside to dismiss" feel.
 func _input(event: InputEvent) -> void:
     if not visible:
         return
-    if event is InputEventMouseButton and event.pressed:
-        if event.button_index == MOUSE_BUTTON_WHEEL_UP:
-            _scroll.scroll_vertical -= int(SCROLL_SPEED)
-            get_viewport().set_input_as_handled()
-        if event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-            _scroll.scroll_vertical += int(SCROLL_SPEED)
-            get_viewport().set_input_as_handled()
     if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
         _close()
         get_viewport().set_input_as_handled()
 
 func _on_bg_input(event: InputEvent) -> void:
     if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
-        _close()
+        var panel_rect: Rect2 = _panel.get_global_rect()
+        if not panel_rect.has_point(event.position):
+            _close()
 
 func _close() -> void:
     visible = false
     closed.emit()
 
-## Build the asset reference from the loaded catalog.
-func build_reference() -> void:
-    # Clear existing content (keep summary label)
-    var children = _content.get_children()
-    for i in range(1, children.size()):
-        children[i].queue_free()
-
-    # Count totals
-    var total_assets: int = Catalog.assets.size()
-    var total_states: int = 0
-    for asset_id in Catalog.assets:
-        var asset = Catalog.assets[asset_id]
-        total_states += asset.get("states", []).size()
-    _summary_label.text = str(total_assets) + " assets, " + str(total_states) + " states"
-
-    # Group assets by category
-    var cat_names: Array = Catalog.categories.keys()
-    cat_names.sort()
-
-    for cat_name in cat_names:
-        var assets: Array = Catalog.categories[cat_name]
-        _add_category_section(cat_name, assets)
-
-func _add_category_section(cat_name: String, assets: Array) -> void:
-    # Category header
-    var header = Label.new()
-    header.text = cat_name.to_upper()
-    header.add_theme_color_override("font_color", COLOR_LABEL)
-    header.add_theme_font_override("font", _font)
-    header.add_theme_font_size_override("font_size", 16)
-    _content.add_child(header)
-
-    # Wrapping grid — use a FlowContainer-style layout via GridContainer
-    # with enough columns to fill the width
-    var grid = GridContainer.new()
-    grid.columns = 6
-    grid.add_theme_constant_override("h_separation", 8)
-    grid.add_theme_constant_override("v_separation", 8)
-    grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    _content.add_child(grid)
-
-    # Sort assets by name
-    var sorted_assets = assets.duplicate()
-    sorted_assets.sort_custom(func(a, b): return a.get("name", a.get("id", "")) < b.get("name", b.get("id", "")))
-
-    for asset in sorted_assets:
-        _add_asset_card(grid, asset)
-
-func _add_asset_card(grid: GridContainer, asset: Dictionary) -> void:
-    var asset_id: String = asset.get("id", "")
-    var asset_name: String = asset.get("name", asset_id)
-    var states: Array = asset.get("states", [])
-    var default_state: String = asset.get("defaultState", asset.get("default_state", "default"))
-    var anchor_x: float = asset.get("anchorX", asset.get("anchor_x", 0.5))
-    var anchor_y: float = asset.get("anchorY", asset.get("anchor_y", 0.85))
-    var layer: String = asset.get("layer", "objects")
-    var pack = asset.get("pack", {})
-    var pack_name: String = ""
-    if pack is Dictionary:
-        pack_name = pack.get("name", "")
-
-    # Card container
-    var card = PanelContainer.new()
-    card.custom_minimum_size = Vector2(CARD_WIDTH, 0)
-    card.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-
-    var card_style = StyleBoxFlat.new()
-    card_style.bg_color = COLOR_CARD_BG
-    card_style.border_width_left = 1
-    card_style.border_width_top = 1
-    card_style.border_width_right = 1
-    card_style.border_width_bottom = 1
-    card_style.border_color = COLOR_CARD_BORDER
-    card_style.corner_radius_left_top = 3
-    card_style.corner_radius_right_top = 3
-    card_style.corner_radius_left_bottom = 3
-    card_style.corner_radius_right_bottom = 3
-    card_style.content_margin_left = 8.0
-    card_style.content_margin_right = 8.0
-    card_style.content_margin_top = 6.0
-    card_style.content_margin_bottom = 6.0
-    card.add_theme_stylebox_override("panel", card_style)
-    grid.add_child(card)
-
-    var vbox = VBoxContainer.new()
-    vbox.add_theme_constant_override("separation", 2)
-    card.add_child(vbox)
-
-    # Asset name (bold)
-    var name_label = Label.new()
-    name_label.text = asset_name
-    name_label.add_theme_color_override("font_color", COLOR_TEXT)
-    name_label.add_theme_font_override("font", _font)
-    name_label.add_theme_font_size_override("font_size", 14)
-    vbox.add_child(name_label)
-
-    # Asset ID
-    var id_label = Label.new()
-    id_label.text = asset_id
-    id_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
-    id_label.add_theme_font_size_override("font_size", 10)
-    vbox.add_child(id_label)
-
-    # Metadata line: layer, anchor, states count
-    var meta_label = Label.new()
-    meta_label.text = "layer: " + layer + " anchor: (" + str(anchor_x) + ", " + str(anchor_y) + ") states: " + str(states.size())
-    meta_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
-    meta_label.add_theme_font_size_override("font_size", 10)
-    vbox.add_child(meta_label)
-
-    # Pack name
-    if pack_name != "":
-        var pack_label = Label.new()
-        pack_label.text = pack_name
-        pack_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
-        pack_label.add_theme_font_size_override("font_size", 10)
-        vbox.add_child(pack_label)
-
-    # State thumbnails row
-    var states_box = HBoxContainer.new()
-    states_box.add_theme_constant_override("separation", 6)
-    vbox.add_child(states_box)
-
-    for state in states:
-        _add_state_thumb(states_box, state, state.get("state", "") == default_state)
-
-func _add_state_thumb(container: HBoxContainer, state: Dictionary, is_default: bool) -> void:
-    var state_name: String = state.get("state", "")
-    var frame_count: int = state.get("frame_count", 1)
-    var frame_rate: float = state.get("frame_rate", 0.0)
-
-    var vbox = VBoxContainer.new()
-    vbox.add_theme_constant_override("separation", 2)
-    container.add_child(vbox)
-
-    # Thumbnail with border
-    var thumb_panel = PanelContainer.new()
-    var thumb_style = StyleBoxFlat.new()
-    thumb_style.bg_color = Color(0.1, 0.08, 0.05, 1.0)
-    thumb_style.border_width_left = 1
-    thumb_style.border_width_top = 1
-    thumb_style.border_width_right = 1
-    thumb_style.border_width_bottom = 1
-    if is_default:
-        thumb_style.border_color = COLOR_STATE_DEFAULT
+func _on_visibility_changed() -> void:
+    if visible:
+        fetch_state()
+        _refresh_timer.start()
+        _refetch_timer.start()
     else:
-        thumb_style.border_color = COLOR_STATE_BORDER
-    thumb_style.corner_radius_left_top = 2
-    thumb_style.corner_radius_right_top = 2
-    thumb_style.corner_radius_left_bottom = 2
-    thumb_style.corner_radius_right_bottom = 2
-    thumb_panel.add_theme_stylebox_override("panel", thumb_style)
-    vbox.add_child(thumb_panel)
+        _refresh_timer.stop()
+        _refetch_timer.stop()
+        _set_status("", false)
 
-    var texture = Catalog.get_sprite_texture(state)
-    if texture != null:
-        var center = CenterContainer.new()
-        center.custom_minimum_size = Vector2(THUMB_SIZE, THUMB_SIZE)
-        thumb_panel.add_child(center)
+## Fetch current world state from the server and refresh the UI.
+func fetch_state() -> void:
+    var http = HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    http.request_completed.connect(_on_state_response.bind(http))
+    var headers = ["Authorization: " + Auth.get_auth_header()]
+    http.request(Auth.api_base + "/api/village/world", headers)
 
-        var tex_rect = TextureRect.new()
-        tex_rect.texture = texture
-        # Proportional sizing: scale to fit cell, cap at 2x so small sprites stay small
-        var native_size: Vector2 = texture.get_size()
-        var max_dim: float = THUMB_SIZE - 4.0
-        var scale_factor: float = minf(max_dim / native_size.x, max_dim / native_size.y)
-        if scale_factor > 2.0:
-            scale_factor = 2.0
-        tex_rect.custom_minimum_size = native_size * scale_factor
-        tex_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-        tex_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-        center.add_child(tex_rect)
+func _on_state_response(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest) -> void:
+    http.queue_free()
+    if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
+        _set_status("Failed to load world state (" + str(response_code) + ")", true)
+        return
+    var json = JSON.parse_string(body.get_string_from_utf8())
+    if typeof(json) != TYPE_DICTIONARY:
+        _set_status("Malformed world state response", true)
+        return
 
-        # Animate multi-frame states by cycling the texture
-        if frame_count > 1 and frame_rate > 0:
-            var all_frames: Array = []
-            var sprite_frames: SpriteFrames = Catalog.get_sprite_frames(state)
-            if sprite_frames != null:
-                for i in range(sprite_frames.get_frame_count("default")):
-                    all_frames.append(sprite_frames.get_frame_texture("default", i))
-            if all_frames.size() > 1:
-                var timer = Timer.new()
-                timer.wait_time = 1.0 / frame_rate
-                timer.autostart = true
-                var frame_idx: Array = [0]  # wrapped in array for closure capture
-                timer.timeout.connect(func():
-                    frame_idx[0] = (frame_idx[0] + 1) % all_frames.size()
-                    tex_rect.texture = all_frames[frame_idx[0]]
-                )
-                thumb_panel.add_child(timer)
+    _phase = json.get("phase", "")
+    _last_transition_at = json.get("last_transition_at", "")
+    _next_transition_at = json.get("next_transition_at", "")
+    _next_transition_phase = json.get("next_transition_phase", "")
+    _dawn_time = json.get("dawn_time", "")
+    _dusk_time = json.get("dusk_time", "")
+    _timezone = json.get("timezone", "")
+    _server_time = json.get("server_time", "")
+
+    _refresh_labels()
+
+func _refresh_labels() -> void:
+    _phase_value.text = _phase.to_upper() if _phase != "" else "—"
+    _phase_value.add_theme_color_override("font_color",
+        COLOR_VALUE if _phase == "day" else Color(0.55, 0.62, 0.95, 1.0) if _phase == "night" else COLOR_TEXT_DIM
+    )
+    _last_transition_value.text = _format_iso_local(_last_transition_at)
+    _server_time_value.text = _format_iso_local(_server_time) + "  (" + _timezone + ")"
+    _update_countdown()
+
+## Ticks once per second when the panel is visible — updates only the
+## countdown label so the rest of the UI doesn't flicker.
+func _update_countdown() -> void:
+    if _next_transition_at == "":
+        _next_countdown.text = "—"
+        return
+    var delta_s: int = _iso_seconds_until(_next_transition_at)
+    if delta_s <= 0:
+        _next_countdown.text = "(any moment)"
+        return
+    var h: int = int(delta_s / 3600)
+    var m: int = int((delta_s % 3600) / 60)
+    var s: int = delta_s % 60
+    var countdown: String
+    if h > 0:
+        countdown = "%dh %dm %ds" % [h, m, s]
+    elif m > 0:
+        countdown = "%dm %ds" % [m, s]
     else:
-        var placeholder = ColorRect.new()
-        placeholder.custom_minimum_size = Vector2(THUMB_SIZE, THUMB_SIZE)
-        placeholder.color = Color(0.2, 0.15, 0.1, 1.0)
-        thumb_panel.add_child(placeholder)
+        countdown = "%ds" % s
+    _next_countdown.text = countdown + " → " + _next_transition_phase.to_upper()
 
-    # State name label
-    var label = Label.new()
-    label.text = state_name.to_upper()
-    label.add_theme_font_size_override("font_size", 10)
-    label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-    if is_default:
-        label.add_theme_color_override("font_color", COLOR_STATE_DEFAULT)
-    else:
-        label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
-    vbox.add_child(label)
+## Parse an RFC3339 string into seconds-from-now using local clock. Godot's
+## Time APIs handle "YYYY-MM-DDTHH:MM:SSZ" via Time.get_unix_time_from_datetime_string.
+func _iso_seconds_until(iso: String) -> int:
+    var ts := Time.get_unix_time_from_datetime_string(iso)
+    if ts == 0:
+        return 0
+    var now_ts := Time.get_unix_time_from_system()
+    return int(ts - now_ts)
+
+## Convert an RFC3339 UTC timestamp into "YYYY-MM-DD HH:MM:SS" local time for
+## display. Keeps things readable without a heavy date-formatting dep.
+func _format_iso_local(iso: String) -> String:
+    if iso == "":
+        return "—"
+    var ts := Time.get_unix_time_from_datetime_string(iso)
+    if ts == 0:
+        return iso
+    var dt: Dictionary = Time.get_datetime_dict_from_unix_time(int(ts))
+    return "%04d-%02d-%02d %02d:%02d:%02d" % [dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second]
+
+## POST the force-phase action. Refetches state on success so the UI reflects
+## the new phase + new last_transition_at.
+func _send_force(phase: String) -> void:
+    var http = HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    http.request_completed.connect(_on_force_response.bind(http, phase))
+    var headers = [
+        "Authorization: " + Auth.get_auth_header(),
+        "Content-Type: application/json",
+    ]
+    var payload = JSON.stringify({"phase": phase})
+    http.request(Auth.api_base + "/api/village/world/force-phase", headers, HTTPClient.METHOD_POST, payload)
+    _set_status("Forcing " + phase + "...", false)
+
+func _on_force_response(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest, requested: String) -> void:
+    http.queue_free()
+    if result != HTTPRequest.RESULT_SUCCESS:
+        _set_status("Force " + requested + " failed: network error", true)
+        return
+    if response_code == 403:
+        _set_status("Admin access required", true)
+        return
+    if response_code != 200:
+        _set_status("Force " + requested + " failed (" + str(response_code) + ")", true)
+        return
+    var json = JSON.parse_string(body.get_string_from_utf8())
+    var applied: String = requested
+    var affected: int = 0
+    if typeof(json) == TYPE_DICTIONARY:
+        applied = json.get("phase", requested)
+        affected = int(json.get("objects_affected", 0))
+    _set_status("Forced " + applied.to_upper() + " — " + str(affected) + " objects updated", false)
+    fetch_state()
+
+func _set_status(text: String, is_error: bool) -> void:
+    if _status_label == null:
+        return
+    _status_label.text = text
+    _status_label.add_theme_color_override("font_color", COLOR_STATUS_ERR if is_error else COLOR_STATUS_OK)

@@ -82,8 +82,10 @@ func _ready() -> void:
     edit_button.pressed.connect(_on_edit_pressed)
     right_box.add_child(edit_button)
 
-    # Config button
+    # Config button — hidden until auth confirms can_edit, since the panel now
+    # contains admin-only world controls instead of the old asset reference.
     config_button = _make_button("Config")
+    config_button.visible = false
     config_button.pressed.connect(_on_config_pressed)
     right_box.add_child(config_button)
 
@@ -134,6 +136,9 @@ func set_username(name: String) -> void:
 
 func set_edit_visible(show: bool) -> void:
     edit_button.visible = show
+
+func set_config_visible(show: bool) -> void:
+    config_button.visible = show
 
 func _on_edit_pressed() -> void:
     _editor_active = not _editor_active
