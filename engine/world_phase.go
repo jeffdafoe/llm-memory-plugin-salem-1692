@@ -61,10 +61,15 @@ type worldConfig struct {
 // pendingFlip is one scheduled village_object.current_state change. Applied
 // by scheduleFlips — either immediately (SpreadSeconds=0) or at a random
 // offset uniformly in [0, SpreadSeconds) seconds into the future.
+//
+// Gen captures App.WorldEventGen at schedule time so applyFlip can detect
+// "my transition has been superseded" and bail without overwriting a newer
+// transition's target state.
 type pendingFlip struct {
 	ObjectID      string
 	NewState      string
 	SpreadSeconds int
+	Gen           uint64
 }
 
 // loadWorldConfig reads the world_phase row and the three world_* settings.
@@ -235,6 +240,13 @@ func (app *App) applyTransition(ctx context.Context, newPhase string) (int, erro
 		return 0, err
 	}
 
+	// Bump generation AFTER the DB write so anything racing against it sees a
+	// consistent snapshot. Flips scheduled below carry this gen; any older
+	// pending flips are now stale.
+	gen := app.WorldEventGen.Add(1)
+	for i := range flips {
+		flips[i].Gen = gen
+	}
 	app.scheduleFlips(flips)
 
 	// CanvasModulate tween starts immediately at the boundary; per-object
@@ -312,7 +324,15 @@ func (app *App) scheduleFlips(flips []pendingFlip) {
 // applyFlip performs a single pending state change. Uses a fresh background
 // context since this runs on an independent timer long after the originating
 // request is gone. The IS DISTINCT FROM guard keeps it idempotent.
+//
+// Drops the flip if a newer world event (transition or rotation) has fired
+// since scheduling. Without this, rapid Force Night → Force Day would let
+// stale "turn on" flips land after the "turn off" transition, briefly
+// re-lighting objects that should stay dark.
 func (app *App) applyFlip(flip pendingFlip) {
+	if flip.Gen != app.WorldEventGen.Load() {
+		return
+	}
 	ctx := context.Background()
 	_, err := app.DB.Exec(ctx,
 		`UPDATE village_object SET current_state = $2
