@@ -1,0 +1,3 @@
+-- ZBBS-049 down
+
+ALTER TABLE npc DROP COLUMN IF EXISTS behavior;

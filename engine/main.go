@@ -28,6 +28,11 @@ type App struct {
 
 	// NPCMovement tracks active NPC walks. Lookup by NPC id; mutex-guarded.
 	NPCMovement *NPCMovement
+
+	// NPCBehaviors tracks active scheduled NPC routines (lamplighter ...).
+	// One per NPC; advanced from applyArrival so each waypoint chains into
+	// the next state-machine step.
+	NPCBehaviors *NPCBehaviors
 }
 
 func main() {
@@ -52,6 +57,7 @@ func main() {
 		LLMMemoryURL: llmMemoryURL,
 		Hub:          NewEventHub(),
 		NPCMovement:  newNPCMovement(),
+		NPCBehaviors: newNPCBehaviors(),
 	}
 
 	// Build router
