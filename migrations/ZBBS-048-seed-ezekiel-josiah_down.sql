@@ -1,0 +1,11 @@
+-- ZBBS-048 down
+
+DELETE FROM npc WHERE display_name IN ('Ezekiel Crane', 'Josiah Thorne');
+DELETE FROM npc_sprite_animation WHERE sprite_id IN (
+    '33333333-4444-5555-6666-777777777777',
+    '44444444-5555-6666-7777-888888888888'
+);
+DELETE FROM npc_sprite WHERE id IN (
+    '33333333-4444-5555-6666-777777777777',
+    '44444444-5555-6666-7777-888888888888'
+);
