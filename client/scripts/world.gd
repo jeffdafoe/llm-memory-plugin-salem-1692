@@ -83,6 +83,121 @@ func load_objects() -> void:
     _objects_loaded = true
     _load_village()
     _load_agents()
+    _load_npcs()
+
+# NPC rendering — static for milestone 1a, no movement or animation.
+# Sprite sheets are cached per path so multiple NPCs sharing a sheet share
+# one texture.
+var placed_npcs: Dictionary = {}    # id -> Node2D (sprite container)
+var _npc_sheets: Dictionary = {}    # sheet_path -> ImageTexture
+var _pending_npcs: Array = []       # NPC dicts whose sheet is still downloading
+
+func _load_npcs() -> void:
+    var http = HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    http.request_completed.connect(_on_npcs_loaded.bind(http))
+    var headers: PackedStringArray = []
+    var auth_header: String = Auth.get_auth_header()
+    if auth_header != "":
+        headers.append("Authorization: " + auth_header)
+    http.request(api_base + "/api/village/npcs", headers)
+
+func _on_npcs_loaded(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest) -> void:
+    http.queue_free()
+    if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
+        push_warning("NPC load failed: " + str(response_code))
+        return
+    var json = JSON.parse_string(body.get_string_from_utf8())
+    if json == null or not (json is Array):
+        return
+
+    # Collect unique sheet paths across all NPCs, kick off one download per sheet.
+    var unique_sheets: Dictionary = {}
+    for npc in json:
+        var sprite = npc.get("sprite", null)
+        if sprite == null:
+            continue
+        var sheet: String = sprite.get("sheet", "")
+        if sheet != "" and not _npc_sheets.has(sheet) and not unique_sheets.has(sheet):
+            unique_sheets[sheet] = true
+    _pending_npcs = json
+    if unique_sheets.is_empty():
+        _render_pending_npcs()
+        return
+    for sheet_path in unique_sheets:
+        _download_npc_sheet(sheet_path)
+
+func _download_npc_sheet(sheet_path: String) -> void:
+    var http = HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    http.request_completed.connect(_on_npc_sheet_downloaded.bind(http, sheet_path))
+    http.request(api_base + sheet_path)
+
+func _on_npc_sheet_downloaded(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest, sheet_path: String) -> void:
+    http.queue_free()
+    if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
+        push_warning("NPC sheet download failed: " + sheet_path + " code=" + str(response_code))
+        return
+    var image = Image.new()
+    if image.load_png_from_buffer(body) != OK:
+        push_warning("NPC sheet decode failed: " + sheet_path)
+        return
+    _npc_sheets[sheet_path] = ImageTexture.create_from_image(image)
+    # Render everyone whose sheet is now ready.
+    _render_pending_npcs()
+
+## Render any pending NPCs whose sprite sheet is loaded. Called per sheet
+## completion so NPCs appear as their sheet arrives.
+func _render_pending_npcs() -> void:
+    var still_pending: Array = []
+    for npc in _pending_npcs:
+        var sprite = npc.get("sprite", null)
+        if sprite == null:
+            continue
+        var sheet_path: String = sprite.get("sheet", "")
+        if not _npc_sheets.has(sheet_path):
+            still_pending.append(npc)
+            continue
+        _render_npc(npc)
+    _pending_npcs = still_pending
+
+## Build a static Sprite2D for an NPC at its current_x/y. Milestone 1a uses
+## frame (col 0, row 0) of the sheet as a placeholder — we'll pick a
+## facing-specific frame once the animation catalog is seeded.
+func _render_npc(npc: Dictionary) -> void:
+    var npc_id: String = npc.get("id", "")
+    if npc_id == "" or placed_npcs.has(npc_id):
+        return
+    var sprite_data: Dictionary = npc.get("sprite", {})
+    var sheet_path: String = sprite_data.get("sheet", "")
+    var sheet: ImageTexture = _npc_sheets.get(sheet_path)
+    if sheet == null:
+        return
+
+    var fw: int = int(sprite_data.get("frame_width", 32))
+    var fh: int = int(sprite_data.get("frame_height", 32))
+
+    var atlas = AtlasTexture.new()
+    atlas.atlas = sheet
+    atlas.region = Rect2(0, 0, fw, fh)
+
+    var container = Node2D.new()
+    container.set_meta("npc_id", npc_id)
+    container.set_meta("display_name", npc.get("display_name", ""))
+    container.position = Vector2(npc.get("current_x", 0.0), npc.get("current_y", 0.0))
+
+    var s = Sprite2D.new()
+    s.texture = atlas
+    s.centered = false
+    s.scale = Vector2(2, 2)
+    # Anchor the sprite so its feet sit at the NPC's world position.
+    s.position = Vector2(-fw * 2 * 0.5, -fh * 2 * 0.9)
+    container.add_child(s)
+
+    objects_node.add_child(container)
+    placed_npcs[npc_id] = container
 
 ## Paint a terrain cell. The custom renderer reads map_data directly
 ## and redraws every frame, so we just update the data.
