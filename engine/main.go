@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -17,6 +18,13 @@ type App struct {
 	DB           *pgxpool.Pool
 	LLMMemoryURL string // base URL for llm-memory auth verification
 	Hub          *EventHub
+
+	// WorldEventGen increments on every applyTransition / applyRotation call.
+	// Each pendingFlip scheduled by those calls captures the gen in effect at
+	// schedule time; applyFlip bails if a newer event has fired before its
+	// timer elapsed. Prevents zombie flips from an earlier Force Night landing
+	// after a subsequent Force Day.
+	WorldEventGen atomic.Uint64
 }
 
 func main() {

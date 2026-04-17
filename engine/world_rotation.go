@@ -44,6 +44,10 @@ func (app *App) applyRotation(ctx context.Context) (int, error) {
 		return 0, err
 	}
 
+	gen := app.WorldEventGen.Add(1)
+	for i := range flips {
+		flips[i].Gen = gen
+	}
 	app.scheduleFlips(flips)
 	log.Printf("world_rotation: %d flips scheduled", len(flips))
 	return len(flips), nil
