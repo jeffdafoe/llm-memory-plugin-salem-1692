@@ -17,15 +17,31 @@ var _local_object_ids: Dictionary = {}
 var _reconnect_timer: float = 0.0
 const RECONNECT_DELAY: float = 3.0
 
-func connect_to_server() -> void:
-    if _socket != null:
-        _socket.close()
+# Token currently bound to the open / opening connection. Used to make
+# connect_to_server idempotent — calling it twice with the same token
+# (which happens when both auth_ready and logged_in fire on a single
+# verify) is a no-op rather than a teardown + reconnect race that
+# leaves the server logging spurious 401s.
+var _connected_token: String = ""
 
+func connect_to_server() -> void:
     # No token → no point connecting. Auth.session_expired handler will bring
     # us back here once the user re-authenticates.
     if Auth.session_token == "":
+        if _socket != null:
+            _socket.close()
         _socket = null
+        _connected_token = ""
         return
+
+    # Already connecting / connected with the same token — leave alone.
+    if _socket != null and _connected_token == Auth.session_token:
+        var state = _socket.get_ready_state()
+        if state == WebSocketPeer.STATE_OPEN or state == WebSocketPeer.STATE_CONNECTING:
+            return
+
+    if _socket != null:
+        _socket.close()
 
     var base: String = ""
     if OS.has_feature("web"):
@@ -39,11 +55,13 @@ func connect_to_server() -> void:
     _url = base.replace("https://", "wss://").replace("http://", "ws://") \
         + "/api/village/events?token=" + Auth.session_token.uri_encode()
 
+    _connected_token = Auth.session_token
     _socket = WebSocketPeer.new()
     var err = _socket.connect_to_url(_url)
     if err != OK:
         push_error("WebSocket connect failed: " + str(err))
         _socket = null
+        _connected_token = ""
         _reconnect_timer = RECONNECT_DELAY
 
 func _process(delta: float) -> void:

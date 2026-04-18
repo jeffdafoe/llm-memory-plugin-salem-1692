@@ -100,10 +100,12 @@ func _on_authenticated() -> void:
     # _load_terrain ran before the user authenticated.
     _flush_unsaved_terrain_or_reload()
 
-    # Load objects now that we're authenticated
+    # Load objects now that we're authenticated. Guard against the duplicate
+    # connect — _on_authenticated runs twice on a single verify (auth_ready
+    # + logged_in both fire from Auth._on_verify_response).
     if Catalog.loaded:
         _on_catalog_ready()
-    else:
+    elif not Catalog.catalog_loaded.is_connected(_on_catalog_ready):
         Catalog.catalog_loaded.connect(_on_catalog_ready)
 
 func _flush_unsaved_terrain_or_reload() -> void:
