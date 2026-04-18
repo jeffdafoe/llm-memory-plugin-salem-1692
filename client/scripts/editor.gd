@@ -353,15 +353,42 @@ func _add_selection_border(node: Node2D) -> void:
     _selection_border.z_index = 999
     node.add_child(_selection_border)
 
+    var border_color := Color(0.85, 0.75, 0.35, 0.9)
+    var handle_color := Color(1.0, 0.92, 0.55, 1.0)
+
     var border = Line2D.new()
     border.width = 2.0
-    border.default_color = Color(0.85, 0.75, 0.35, 0.9)
+    border.default_color = border_color
     border.closed = true
     border.add_point(rect.position)
     border.add_point(rect.position + Vector2(rect.size.x, 0))
     border.add_point(rect.position + rect.size)
     border.add_point(rect.position + Vector2(0, rect.size.y))
     _selection_border.add_child(border)
+
+    # Drag handles — small filled squares at the midpoint of each side so
+    # users can see the rect is interactive. The actual hit zone is the
+    # whole edge (see _hit_test_footprint_edge), the handles just signal
+    # affordance. World-pixel sized; consistent with the fixed-width border.
+    var handle_size: float = 12.0
+    var mid_top: Vector2    = rect.position + Vector2(rect.size.x / 2, 0)
+    var mid_bottom: Vector2 = rect.position + Vector2(rect.size.x / 2, rect.size.y)
+    var mid_left: Vector2   = rect.position + Vector2(0, rect.size.y / 2)
+    var mid_right: Vector2  = rect.position + Vector2(rect.size.x, rect.size.y / 2)
+    for center in [mid_top, mid_bottom, mid_left, mid_right]:
+        _selection_border.add_child(_make_handle(center, handle_size, handle_color))
+
+func _make_handle(center: Vector2, size: float, color: Color) -> Polygon2D:
+    var half: float = size / 2.0
+    var poly := Polygon2D.new()
+    poly.color = color
+    poly.polygon = PackedVector2Array([
+        center + Vector2(-half, -half),
+        center + Vector2( half, -half),
+        center + Vector2( half,  half),
+        center + Vector2(-half,  half),
+    ])
+    return poly
 
 ## Compute the footprint rect in container-LOCAL coordinates (so the
 ## border draws correctly when added as a child of the placed object).
