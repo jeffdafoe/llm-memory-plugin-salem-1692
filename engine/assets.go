@@ -30,6 +30,7 @@ type Asset struct {
 	Layer        string       `json:"layer"`
 	PackID       *string      `json:"pack_id"`
 	FitsSlot     *string      `json:"fits_slot"`
+	ZIndex       int          `json:"z_index"` // Godot CanvasItem z; <0 renders below NPCs (bridges, ground decals)
 	Pack         *TilesetPack `json:"pack,omitempty"`
 	States       []AssetState `json:"states"`
 	Slots        []AssetSlot  `json:"slots"`
@@ -86,7 +87,7 @@ func (app *App) handleListAssets(w http.ResponseWriter, r *http.Request) {
 
 	// Fetch all assets with pack_id and fits_slot
 	assetRows, err := app.DB.Query(r.Context(),
-		`SELECT id, name, category, default_state, anchor_x, anchor_y, layer, pack_id, fits_slot
+		`SELECT id, name, category, default_state, anchor_x, anchor_y, layer, pack_id, fits_slot, z_index
 		 FROM asset
 		 ORDER BY category, name`,
 	)
@@ -102,7 +103,7 @@ func (app *App) handleListAssets(w http.ResponseWriter, r *http.Request) {
 	for assetRows.Next() {
 		var a Asset
 		if err := assetRows.Scan(&a.ID, &a.Name, &a.Category, &a.DefaultState,
-			&a.AnchorX, &a.AnchorY, &a.Layer, &a.PackID, &a.FitsSlot); err != nil {
+			&a.AnchorX, &a.AnchorY, &a.Layer, &a.PackID, &a.FitsSlot, &a.ZIndex); err != nil {
 			continue
 		}
 		a.States = []AssetState{}
