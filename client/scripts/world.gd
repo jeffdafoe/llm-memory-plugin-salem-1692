@@ -640,6 +640,7 @@ func _place_object(data: Dictionary) -> void:
     var asset = Catalog.assets.get(asset_id, {})
     var anchor_x: float = asset.get("anchorX", asset.get("anchor_x", 0.5))
     var anchor_y: float = asset.get("anchorY", asset.get("anchor_y", 0.85))
+    var asset_z_index: int = int(asset.get("z_index", 0))
 
     # Container node at the anchor point for y-sorting
     var container = Node2D.new()
@@ -673,6 +674,10 @@ func _place_object(data: Dictionary) -> void:
         parent_node.add_child(container)
     else:
         container.position = Vector2(obj_x, obj_y)
+        # asset.z_index lets ground-layer overlays (bridges, decals) render
+        # below NPCs regardless of where the NPC's feet are along the y axis.
+        # Default 0 keeps the previous y-sort behavior for everything else.
+        container.z_index = asset_z_index
         objects_node.add_child(container)
 
     placed_objects[obj_id] = container

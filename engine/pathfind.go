@@ -75,16 +75,18 @@ func (app *App) loadWalkGrid(ctx context.Context) (*walkGrid, error) {
 		g.walkable[i] = b != 5 && b != 6
 	}
 
-	// Mark obstacle objects' footprints impassable. Multi-tile structures
-	// (wells, wagons, houses) block footprint_w tiles centered on the anchor
-	// tile horizontally, and footprint_h tiles extending north (smaller Y)
-	// from the anchor tile. Default 1×1 keeps the previous behavior for
-	// small obstacles like rocks and stumps.
+	// Mark obstacle / passage objects' footprints. Order matters: obstacles
+	// stamp impassable first, passages stamp walkable second so a bridge
+	// always wins over the water it spans (or any other obstacle below it).
+	// Both follow the same footprint geometry — footprint_w tiles centered
+	// on the anchor tile horizontally, footprint_h tiles extending north
+	// from the anchor tile. Default 1×1.
 	rows, err := app.DB.Query(ctx,
-		`SELECT o.x, o.y, a.footprint_w, a.footprint_h
+		`SELECT o.x, o.y, a.footprint_w, a.footprint_h, a.is_obstacle, a.is_passage
 		 FROM village_object o
 		 JOIN asset a ON a.id = o.asset_id
-		 WHERE a.is_obstacle = TRUE AND o.attached_to IS NULL`,
+		 WHERE (a.is_obstacle = TRUE OR a.is_passage = TRUE) AND o.attached_to IS NULL
+		 ORDER BY a.is_passage`, // obstacles (FALSE) come before passages (TRUE)
 	)
 	if err != nil {
 		return nil, fmt.Errorf("load obstacles: %w", err)
@@ -93,7 +95,8 @@ func (app *App) loadWalkGrid(ctx context.Context) (*walkGrid, error) {
 	for rows.Next() {
 		var wx, wy float64
 		var fw, fh int
-		if err := rows.Scan(&wx, &wy, &fw, &fh); err != nil {
+		var isObstacle, isPassage bool
+		if err := rows.Scan(&wx, &wy, &fw, &fh, &isObstacle, &isPassage); err != nil {
 			continue
 		}
 		ax, ay := worldToTile(wx, wy)
@@ -103,6 +106,7 @@ func (app *App) loadWalkGrid(ctx context.Context) (*walkGrid, error) {
 		// anyway since anchors don't always sit on a tile boundary.
 		halfL := fw / 2
 		halfR := fw - halfL - 1
+		walkable := isPassage // passage overrides; otherwise obstacle blocks
 		for ty := ay - fh + 1; ty <= ay; ty++ {
 			if ty < 0 || ty >= mapH {
 				continue
@@ -111,7 +115,7 @@ func (app *App) loadWalkGrid(ctx context.Context) (*walkGrid, error) {
 				if tx < 0 || tx >= mapW {
 					continue
 				}
-				g.walkable[ty*mapW+tx] = false
+				g.walkable[ty*mapW+tx] = walkable
 			}
 		}
 	}
