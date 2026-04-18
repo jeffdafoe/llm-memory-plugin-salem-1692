@@ -352,6 +352,9 @@ func _get_sprite_child(node: Node2D) -> Node2D:
     return null
 
 ## Get the texture size of a sprite node (works for both Sprite2D and AnimatedSprite2D).
+## For AnimatedSprite2D, objects use a "default" animation; NPCs use direction-based
+## names ("south_idle", etc.). Prefer the currently playing animation, then "default",
+## then any available animation as a last resort.
 func _get_sprite_size(sprite_node: Node2D) -> Vector2:
     if sprite_node is Sprite2D:
         var tex = sprite_node.texture
@@ -359,8 +362,19 @@ func _get_sprite_size(sprite_node: Node2D) -> Vector2:
             return tex.get_size()
     if sprite_node is AnimatedSprite2D:
         var frames: SpriteFrames = sprite_node.sprite_frames
-        if frames != null and frames.get_frame_count("default") > 0:
-            var tex = frames.get_frame_texture("default", 0)
+        if frames == null:
+            return Vector2.ZERO
+        var anim_name: String = String(sprite_node.animation)
+        if anim_name == "" or not frames.has_animation(anim_name):
+            if frames.has_animation("default"):
+                anim_name = "default"
+            else:
+                var names: PackedStringArray = frames.get_animation_names()
+                if names.is_empty():
+                    return Vector2.ZERO
+                anim_name = names[0]
+        if frames.get_frame_count(anim_name) > 0:
+            var tex = frames.get_frame_texture(anim_name, 0)
             if tex != null:
                 return tex.get_size()
     return Vector2.ZERO
