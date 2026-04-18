@@ -89,7 +89,11 @@ func main() {
 	mux.HandleFunc("POST /api/village/npcs", app.requireLLMMemory(app.handleCreateNPC))
 	mux.HandleFunc("DELETE /api/village/npcs/{id}", app.requireLLMMemory(app.handleDeleteNPC))
 	mux.HandleFunc("POST /api/village/npcs/{id}/walk-to", app.requireLLMMemory(app.handleWalkTo))
+	mux.HandleFunc("PATCH /api/village/npcs/{id}/display-name", app.requireLLMMemory(app.handleSetNPCDisplayName))
+	mux.HandleFunc("PATCH /api/village/npcs/{id}/behavior", app.requireLLMMemory(app.handleSetNPCBehavior))
+	mux.HandleFunc("PATCH /api/village/npcs/{id}/agent", app.requireLLMMemory(app.handleSetNPCAgent))
 	mux.HandleFunc("GET /api/village/npc-sprites", app.requireLLMMemory(app.handleListNPCSprites))
+	mux.HandleFunc("GET /api/village/npc-behaviors", app.requireLLMMemory(app.handleListNPCBehaviors))
 
 	// World day/night cycle + daily rotation
 	mux.HandleFunc("GET /api/village/world", app.requireLLMMemory(app.handleGetWorldState))

@@ -179,6 +179,9 @@ func _build_ui() -> void:
     editor_panel.display_name_changed.connect(_on_display_name_changed)
     editor_panel.attachment_requested.connect(_on_attachment_requested)
     editor_panel.npc_sprite_selected.connect(_on_panel_npc_sprite_selected)
+    editor_panel.npc_name_changed.connect(_on_npc_name_changed)
+    editor_panel.npc_behavior_changed.connect(_on_npc_behavior_changed)
+    editor_panel.npc_agent_changed.connect(_on_npc_agent_changed)
     editor_panel.world = world
 
     # Wire editor signals to panel
@@ -186,6 +189,7 @@ func _build_ui() -> void:
     editor.object_deselected.connect(_on_editor_object_deselected)
     editor.npc_selected.connect(_on_editor_npc_selected)
     editor.npc_deselected.connect(_on_editor_npc_deselected)
+    world.npc_metadata_changed.connect(_on_npc_metadata_changed)
     editor.mode_changed.connect(_on_editor_mode_changed)
 
 func _on_config_pressed() -> void:
@@ -269,6 +273,35 @@ func _on_owner_changed(owner: String) -> void:
 func _on_display_name_changed(display_name: String) -> void:
     if editor.selected_object != null:
         world.set_object_display_name(editor.selected_object, display_name)
+
+func _on_npc_name_changed(display_name: String) -> void:
+    if editor.selected_npc != null:
+        world.set_npc_display_name(editor.selected_npc, display_name)
+
+func _on_npc_behavior_changed(behavior: String) -> void:
+    if editor.selected_npc != null:
+        world.set_npc_behavior(editor.selected_npc, behavior)
+
+func _on_npc_agent_changed(agent: String) -> void:
+    if editor.selected_npc != null:
+        world.set_npc_agent(editor.selected_npc, agent)
+
+# Refresh the selection panel if the changed NPC is the one we have selected.
+# Handles the cross-admin case: another admin edits the NPC while we have it
+# open. Our own PATCH also comes through this path (idempotent).
+func _on_npc_metadata_changed(npc_id: String) -> void:
+    if editor.selected_npc == null or editor_panel == null:
+        return
+    var selected_id: String = editor.selected_npc.get_meta("npc_id", "")
+    if selected_id != npc_id:
+        return
+    var info := {
+        "npc_id": npc_id,
+        "display_name": editor.selected_npc.get_meta("display_name", ""),
+        "behavior": editor.selected_npc.get_meta("behavior", ""),
+        "llm_memory_agent": editor.selected_npc.get_meta("llm_memory_agent", ""),
+    }
+    editor_panel.show_npc_selection(info)
 
 func _on_attachment_requested(overlay_asset_id: String) -> void:
     if editor.selected_object != null:

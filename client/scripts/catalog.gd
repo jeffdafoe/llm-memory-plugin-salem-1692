@@ -4,6 +4,7 @@ extends Node
 ## Other scripts access it via the global `Catalog` name.
 
 signal catalog_loaded
+signal npc_behaviors_loaded
 
 # True once the catalog AND all sheets have been fetched
 var loaded: bool = false
@@ -23,6 +24,13 @@ var sheet_cache: Dictionary = {}
 # Sheets currently being downloaded
 var _pending_sheets: int = 0
 
+# NPC behavior catalog — array of {slug, display_name} dictionaries
+# Populated asynchronously after _ready(); editor_panel reads this when the
+# NPC behavior dropdown is built. Small list (single digits), fetch in parallel
+# with the main asset catalog.
+var npc_behaviors: Array = []
+var npc_behaviors_loaded_flag: bool = false
+
 # Base URL for the Go API
 var api_base: String = ""
 
@@ -33,6 +41,7 @@ func _ready() -> void:
         api_base = "http://zbbs.local"
 
     _load_catalog()
+    _load_npc_behaviors()
 
 func _load_catalog() -> void:
     var http = HTTPRequest.new()
@@ -121,6 +130,32 @@ func _check_all_sheets_loaded() -> void:
         print("Catalog: all sheets loaded (", sheet_cache.size(), " textures)")
         loaded = true
         catalog_loaded.emit()
+
+func _load_npc_behaviors() -> void:
+    var http = HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+
+    http.request_completed.connect(_on_npc_behaviors_loaded.bind(http))
+    var err = http.request(api_base + "/api/village/npc-behaviors")
+    if err != OK:
+        push_error("Failed to request npc behaviors: " + str(err))
+
+func _on_npc_behaviors_loaded(result: int, response_code: int, headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest) -> void:
+    http.queue_free()
+
+    if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
+        push_error("NPC behaviors request failed: result=" + str(result) + " code=" + str(response_code))
+        return
+
+    var json = JSON.parse_string(body.get_string_from_utf8())
+    if json == null or not (json is Array):
+        push_error("Failed to parse npc-behaviors JSON")
+        return
+
+    npc_behaviors = json
+    npc_behaviors_loaded_flag = true
+    npc_behaviors_loaded.emit()
 
 func _parse_catalog(data: Array) -> void:
     for item in data:
