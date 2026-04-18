@@ -75,9 +75,14 @@ func (app *App) loadWalkGrid(ctx context.Context) (*walkGrid, error) {
 		g.walkable[i] = b != 5 && b != 6
 	}
 
-	// Mark obstacle objects' tiles impassable.
+	// Mark obstacle objects' footprints impassable. Multi-tile structures
+	// (wells, wagons, houses) block footprint_w tiles centered on the anchor
+	// tile horizontally, and footprint_h tiles extending north (smaller Y)
+	// from the anchor tile. Default 1×1 keeps the previous behavior for
+	// small obstacles like rocks and stumps.
 	rows, err := app.DB.Query(ctx,
-		`SELECT o.x, o.y FROM village_object o
+		`SELECT o.x, o.y, a.footprint_w, a.footprint_h
+		 FROM village_object o
 		 JOIN asset a ON a.id = o.asset_id
 		 WHERE a.is_obstacle = TRUE AND o.attached_to IS NULL`,
 	)
@@ -87,12 +92,27 @@ func (app *App) loadWalkGrid(ctx context.Context) (*walkGrid, error) {
 	defer rows.Close()
 	for rows.Next() {
 		var wx, wy float64
-		if err := rows.Scan(&wx, &wy); err != nil {
+		var fw, fh int
+		if err := rows.Scan(&wx, &wy, &fw, &fh); err != nil {
 			continue
 		}
-		tx, ty := worldToTile(wx, wy)
-		if tx >= 0 && tx < mapW && ty >= 0 && ty < mapH {
-			g.walkable[ty*mapW+tx] = false
+		ax, ay := worldToTile(wx, wy)
+		// Center the width on the anchor tile. For even widths the extra
+		// tile lands on the left (asymmetric by one) — the alternative is
+		// arbitrarily picking a side, and visual placement is approximate
+		// anyway since anchors don't always sit on a tile boundary.
+		halfL := fw / 2
+		halfR := fw - halfL - 1
+		for ty := ay - fh + 1; ty <= ay; ty++ {
+			if ty < 0 || ty >= mapH {
+				continue
+			}
+			for tx := ax - halfL; tx <= ax+halfR; tx++ {
+				if tx < 0 || tx >= mapW {
+					continue
+				}
+				g.walkable[ty*mapW+tx] = false
+			}
 		}
 	}
 	return g, nil
