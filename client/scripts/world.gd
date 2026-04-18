@@ -290,7 +290,9 @@ func paint_terrain(tile_x: int, tile_y: int, terrain_type: int) -> void:
 
     map_data[ay][ax] = terrain_type
 
-## Save the current terrain to the server.
+## Save the current terrain to the server. Caches the payload to localStorage
+## first so an unsent / failed save survives a refresh — main.gd flushes the
+## cache after re-auth (see _flush_unsaved_terrain).
 func save_terrain() -> void:
     # Flatten map_data to a byte array
     var bytes: PackedByteArray = PackedByteArray()
@@ -303,6 +305,16 @@ func save_terrain() -> void:
 
     var b64: String = Marshalls.raw_to_base64(bytes)
 
+    # Persist before send. If the request is rejected, dies on the wire, or the
+    # tab is closed before the response, the bytes are still recoverable on the
+    # next authenticated session.
+    _cache_unsaved_terrain(b64)
+
+    # No token → no point in sending. The cache will be flushed after re-auth.
+    # This stops the silent retry storm that masked the original wendy-paint bug.
+    if Auth.get_auth_header() == "":
+        return
+
     var http_req = HTTPRequest.new()
     http_req.accept_gzip = false
     add_child(http_req)
@@ -313,15 +325,74 @@ func save_terrain() -> void:
         "data": b64
     })
 
-    var headers_arr = ["Content-Type: application/json"]
-    var auth_header: String = Auth.get_auth_header()
-    if auth_header != "":
-        headers_arr.append("Authorization: " + auth_header)
+    var headers_arr = [
+        "Content-Type: application/json",
+        "Authorization: " + Auth.get_auth_header(),
+    ]
     http_req.request_completed.connect(func(r, c, h, b):
         http_req.queue_free()
+        if c == 204:
+            _clear_unsaved_terrain()
         Auth.check_response(c)
     )
     http_req.request(api_base + "/api/village/terrain", headers_arr, HTTPClient.METHOD_PUT, payload)
+
+# --- Unsaved-terrain localStorage cache ---
+#
+# Painted bytes that haven't been confirmed by the server live here. Web-only
+# (no localStorage off-web); main.gd flushes after _on_authenticated.
+
+const UNSAVED_TERRAIN_KEY: String = "salem_terrain_unsaved"
+
+func _cache_unsaved_terrain(b64: String) -> void:
+    if not OS.has_feature("web"):
+        return
+    var payload: String = JSON.stringify({
+        "width": map_width,
+        "height": map_height,
+        "data": b64,
+        "saved_at": Time.get_unix_time_from_system(),
+    })
+    # Wrap in JSON.stringify on the JS side too so embedded quotes survive.
+    JavaScriptBridge.eval("localStorage.setItem('%s', %s)" % [UNSAVED_TERRAIN_KEY, JSON.stringify(payload)])
+
+func _clear_unsaved_terrain() -> void:
+    if not OS.has_feature("web"):
+        return
+    JavaScriptBridge.eval("localStorage.removeItem('%s')" % UNSAVED_TERRAIN_KEY)
+
+## Returns the cached payload (width/height/data/saved_at dict) or null if
+## nothing is pending. Called from main.gd after re-auth.
+func get_unsaved_terrain() -> Variant:
+    if not OS.has_feature("web"):
+        return null
+    var raw = JavaScriptBridge.eval("localStorage.getItem('%s') || ''" % UNSAVED_TERRAIN_KEY, true)
+    if not (raw is String) or raw == "":
+        return null
+    return JSON.parse_string(raw)
+
+## Restore a cached payload into map_data and immediately re-attempt the save.
+## Used by main.gd after re-auth to recover paints the user did while offline
+## or against a stale token.
+func restore_unsaved_terrain(payload: Dictionary) -> void:
+    var saved_width: int = int(payload.get("width", 0))
+    var saved_height: int = int(payload.get("height", 0))
+    var data_b64: String = payload.get("data", "")
+    if saved_width != map_width or saved_height != map_height:
+        # Map dimensions changed under us — safer to discard than corrupt.
+        _clear_unsaved_terrain()
+        return
+    var bytes: PackedByteArray = Marshalls.base64_to_raw(data_b64)
+    if bytes.size() != map_width * map_height:
+        _clear_unsaved_terrain()
+        return
+    var idx: int = 0
+    for y in range(map_height):
+        for x in range(map_width):
+            map_data[y][x] = bytes[idx]
+            idx += 1
+    _sync_renderer()
+    save_terrain()
 
 ## Reload terrain from the server. Called on initial load and
 ## when another client saves terrain changes.

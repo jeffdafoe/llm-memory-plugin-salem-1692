@@ -94,11 +94,24 @@ func _on_authenticated() -> void:
     world.event_client = event_client
     event_client.connect_to_server()
 
+    # Recover terrain edits that didn't make it to the server (e.g. paints
+    # done after a silent session expiry). If there's nothing buffered,
+    # re-pull the saved terrain — covers the case where the boot-time
+    # _load_terrain ran before the user authenticated.
+    _flush_unsaved_terrain_or_reload()
+
     # Load objects now that we're authenticated
     if Catalog.loaded:
         _on_catalog_ready()
     else:
         Catalog.catalog_loaded.connect(_on_catalog_ready)
+
+func _flush_unsaved_terrain_or_reload() -> void:
+    var pending = world.get_unsaved_terrain()
+    if pending is Dictionary:
+        world.restore_unsaved_terrain(pending)
+    else:
+        world.reload_terrain()
 
 func _on_catalog_ready() -> void:
     world.load_objects()

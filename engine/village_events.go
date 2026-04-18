@@ -26,6 +26,12 @@ type EventHub struct {
 type wsClient struct {
 	conn *websocket.Conn
 	send chan []byte
+
+	// sessionToken is the llm-memory token presented at the WS upgrade.
+	// Re-verified inside the ping loop so an idle client whose session
+	// expires (or is revoked by a deploy) gets pushed back to the login
+	// screen instead of silently losing edits.
+	sessionToken string
 }
 
 func NewEventHub() *EventHub {
@@ -81,7 +87,26 @@ var upgrader = websocket.Upgrader{
 }
 
 // handleVillageEvents upgrades to WebSocket and streams world events.
+// The token is supplied as a query param (?token=...) since browsers can't
+// set custom headers on WebSocket connections. The session is re-verified
+// inside the ping ticker so idle clients learn about expiry without having
+// to make a doomed authed request first.
 func (app *App) handleVillageEvents(w http.ResponseWriter, r *http.Request) {
+	token := r.URL.Query().Get("token")
+	if res := app.verifyLLMMemoryToken(token); !res.Valid {
+		// Reject before the upgrade so the client sees a real HTTP status.
+		// 401 covers both missing and invalid tokens — the client treats
+		// either as session-expired and bounces to the login screen.
+		status := http.StatusUnauthorized
+		if res.Reason == "realm" {
+			status = http.StatusForbidden
+		} else if res.Reason == "service" {
+			status = http.StatusServiceUnavailable
+		}
+		http.Error(w, "Auth required", status)
+		return
+	}
+
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("WebSocket upgrade failed: %v", err)
@@ -89,8 +114,9 @@ func (app *App) handleVillageEvents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	client := &wsClient{
-		conn: conn,
-		send: make(chan []byte, 64),
+		conn:         conn,
+		send:         make(chan []byte, 64),
+		sessionToken: token,
 	}
 	app.Hub.addClient(client)
 
@@ -114,11 +140,26 @@ func (app *App) handleVillageEvents(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 
-	// Ping ticker to keep connection alive
+	// Ping + session check ticker. Each tick: re-verify the session, then
+	// send a keepalive ping. If the session went bad, push a session_expired
+	// event through the send channel so the client can react before we close.
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
+			if res := app.verifyLLMMemoryToken(client.sessionToken); !res.Valid && res.Reason != "service" {
+				// Don't tear down on transient llm-memory unavailability — only
+				// on a definitive "your token is no good" verdict.
+				evt, _ := json.Marshal(WorldEvent{Type: "session_expired", Data: nil})
+				select {
+				case client.send <- evt:
+				default:
+				}
+				// Brief delay so the writer can flush the event before close.
+				time.Sleep(100 * time.Millisecond)
+				app.Hub.removeClient(client)
+				return
+			}
 			conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
 				return
