@@ -78,11 +78,17 @@ func (app *App) loadWalkGrid(ctx context.Context) (*walkGrid, error) {
 	// Mark obstacle / passage objects' footprints. Order matters: obstacles
 	// stamp impassable first, passages stamp walkable second so a bridge
 	// always wins over the water it spans (or any other obstacle below it).
-	// Both follow the same footprint geometry — footprint_w tiles centered
-	// on the anchor tile horizontally, footprint_h tiles extending north
-	// from the anchor tile. Default 1×1.
+	//
+	// Footprint geometry is computed from the actual sprite world bounds
+	// rather than rounded tile counts. Sprite size = footprint_{w,h} tiles
+	// pixels; the anchor sits at (anchor_x, anchor_y) fractions of the
+	// sprite (default 0.5 / 0.85 — the visual feet). Every tile that the
+	// sprite rectangle intersects gets stamped, so a 4-tile-wide sprite
+	// placed half-tile off-center correctly blocks 5 tiles instead of 4.
+	// Without this, a bridge whose anchor sits between tile boundaries
+	// stops one tile short of the river it's meant to span.
 	rows, err := app.DB.Query(ctx,
-		`SELECT o.x, o.y, a.footprint_w, a.footprint_h, a.is_obstacle, a.is_passage
+		`SELECT o.x, o.y, a.footprint_w, a.footprint_h, a.anchor_x, a.anchor_y, a.is_passage
 		 FROM village_object o
 		 JOIN asset a ON a.id = o.asset_id
 		 WHERE (a.is_obstacle = TRUE OR a.is_passage = TRUE) AND o.attached_to IS NULL
@@ -95,23 +101,30 @@ func (app *App) loadWalkGrid(ctx context.Context) (*walkGrid, error) {
 	for rows.Next() {
 		var wx, wy float64
 		var fw, fh int
-		var isObstacle, isPassage bool
-		if err := rows.Scan(&wx, &wy, &fw, &fh, &isObstacle, &isPassage); err != nil {
+		var anchorX, anchorY float64
+		var isPassage bool
+		if err := rows.Scan(&wx, &wy, &fw, &fh, &anchorX, &anchorY, &isPassage); err != nil {
 			continue
 		}
-		ax, ay := worldToTile(wx, wy)
-		// Center the width on the anchor tile. For even widths the extra
-		// tile lands on the left (asymmetric by one) — the alternative is
-		// arbitrarily picking a side, and visual placement is approximate
-		// anyway since anchors don't always sit on a tile boundary.
-		halfL := fw / 2
-		halfR := fw - halfL - 1
+		spriteW := float64(fw) * tileSize
+		spriteH := float64(fh) * tileSize
+		left := wx - anchorX*spriteW
+		right := wx + (1.0-anchorX)*spriteW
+		top := wy - anchorY*spriteH
+		bottom := wy + (1.0-anchorY)*spriteH
+		// epsilon trims tiles that the sprite touches only at the boundary
+		// (e.g. a sprite ending exactly at x=2080 shouldn't claim tile 65).
+		const epsilon = 0.001
+		leftTile := padX + int(math.Floor(left/tileSize))
+		rightTile := padX + int(math.Floor((right-epsilon)/tileSize))
+		topTile := padY + int(math.Floor(top/tileSize))
+		bottomTile := padY + int(math.Floor((bottom-epsilon)/tileSize))
 		walkable := isPassage // passage overrides; otherwise obstacle blocks
-		for ty := ay - fh + 1; ty <= ay; ty++ {
+		for ty := topTile; ty <= bottomTile; ty++ {
 			if ty < 0 || ty >= mapH {
 				continue
 			}
-			for tx := ax - halfL; tx <= ax+halfR; tx++ {
+			for tx := leftTile; tx <= rightTile; tx++ {
 				if tx < 0 || tx >= mapW {
 					continue
 				}
