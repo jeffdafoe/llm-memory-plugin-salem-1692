@@ -11,6 +11,9 @@ signal owner_changed(owner: String)
 signal display_name_changed(display_name: String)
 signal attachment_requested(overlay_asset_id: String)
 signal npc_sprite_selected(sprite: Dictionary, sheet: Texture2D, npc_name: String)
+signal npc_name_changed(display_name: String)
+signal npc_behavior_changed(behavior: String)
+signal npc_agent_changed(agent: String)
 
 # Theme colors (matching top bar / login screen)
 const COLOR_BG = Color(0.12, 0.09, 0.07, 0.95)
@@ -59,8 +62,10 @@ var _asset_fields_section: VBoxContainer = null
 # NPC-specific fields (behavior, linked llm_memory_agent). Mutually exclusive
 # with _asset_fields_section.
 var _npc_fields_section: VBoxContainer = null
-var _npc_behavior_label: Label = null
-var _npc_agent_label: Label = null
+var _npc_name_edit: LineEdit = null
+var _npc_behavior_dropdown: OptionButton = null
+var _npc_agent_dropdown: OptionButton = null
+var _ignoring_npc_inputs: bool = false
 
 # NPC placement catalog section — sits at the bottom of _catalog_container
 # alongside the asset categories. Lets admins drop new villagers.
@@ -280,24 +285,79 @@ func _ready() -> void:
     attach_scroll.add_child(_attachments_grid)
 
     # NPC-only block — shown in place of _asset_fields_section when an NPC is
-    # selected. Minimal for now: behavior + linked llm_memory_agent.
+    # selected. Editable name, behavior picker, and agent picker. Each field
+    # commits independently (Enter/focus_exit on name, item_selected on dropdowns).
     _npc_fields_section = VBoxContainer.new()
     _npc_fields_section.visible = false
     _npc_fields_section.add_theme_constant_override("separation", 4)
     _selection_info.add_child(_npc_fields_section)
 
-    _npc_behavior_label = Label.new()
-    _npc_behavior_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
-    _npc_behavior_label.add_theme_font_override("font", _font)
-    _npc_behavior_label.add_theme_font_size_override("font_size", 12)
-    _npc_fields_section.add_child(_npc_behavior_label)
+    var npc_name_header = Label.new()
+    npc_name_header.text = "NAME"
+    npc_name_header.add_theme_color_override("font_color", COLOR_LABEL)
+    npc_name_header.add_theme_font_size_override("font_size", 11)
+    _npc_fields_section.add_child(npc_name_header)
 
-    _npc_agent_label = Label.new()
-    _npc_agent_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
-    _npc_agent_label.add_theme_font_override("font", _font)
-    _npc_agent_label.add_theme_font_size_override("font_size", 12)
-    _npc_agent_label.autowrap_mode = TextServer.AUTOWRAP_WORD
-    _npc_fields_section.add_child(_npc_agent_label)
+    _npc_name_edit = LineEdit.new()
+    _npc_name_edit.add_theme_font_override("font", _font)
+    _npc_name_edit.add_theme_font_size_override("font_size", 13)
+    _npc_name_edit.add_theme_color_override("font_color", COLOR_TEXT)
+    _npc_name_edit.placeholder_text = "Villager"
+    var npc_name_style = StyleBoxFlat.new()
+    npc_name_style.bg_color = Color(0.08, 0.07, 0.05, 1.0)
+    npc_name_style.border_width_left = 1
+    npc_name_style.border_width_top = 1
+    npc_name_style.border_width_right = 1
+    npc_name_style.border_width_bottom = 1
+    npc_name_style.border_color = Color(0.3, 0.24, 0.15, 0.8)
+    npc_name_style.content_margin_left = 6.0
+    npc_name_style.content_margin_right = 6.0
+    npc_name_style.content_margin_top = 4.0
+    npc_name_style.content_margin_bottom = 4.0
+    _npc_name_edit.add_theme_stylebox_override("normal", npc_name_style)
+    _npc_name_edit.text_submitted.connect(_on_npc_name_submitted)
+    _npc_name_edit.focus_exited.connect(_on_npc_name_focus_lost)
+    _npc_fields_section.add_child(_npc_name_edit)
+
+    var npc_behavior_header = Label.new()
+    npc_behavior_header.text = "BEHAVIOR"
+    npc_behavior_header.add_theme_color_override("font_color", COLOR_LABEL)
+    npc_behavior_header.add_theme_font_size_override("font_size", 11)
+    _npc_fields_section.add_child(npc_behavior_header)
+
+    _npc_behavior_dropdown = OptionButton.new()
+    _npc_behavior_dropdown.add_theme_font_override("font", _font)
+    _npc_behavior_dropdown.add_theme_font_size_override("font_size", 13)
+    _npc_behavior_dropdown.add_theme_color_override("font_color", COLOR_TEXT)
+    var behavior_style = StyleBoxFlat.new()
+    behavior_style.bg_color = Color(0.08, 0.07, 0.05, 1.0)
+    behavior_style.border_width_left = 1
+    behavior_style.border_width_top = 1
+    behavior_style.border_width_right = 1
+    behavior_style.border_width_bottom = 1
+    behavior_style.border_color = Color(0.3, 0.24, 0.15, 0.8)
+    behavior_style.content_margin_left = 6.0
+    behavior_style.content_margin_right = 6.0
+    behavior_style.content_margin_top = 4.0
+    behavior_style.content_margin_bottom = 4.0
+    _npc_behavior_dropdown.add_theme_stylebox_override("normal", behavior_style)
+    _npc_behavior_dropdown.item_selected.connect(_on_npc_behavior_selected)
+    _npc_fields_section.add_child(_npc_behavior_dropdown)
+
+    var npc_agent_header = Label.new()
+    npc_agent_header.text = "AGENT"
+    npc_agent_header.add_theme_color_override("font_color", COLOR_LABEL)
+    npc_agent_header.add_theme_font_size_override("font_size", 11)
+    _npc_fields_section.add_child(npc_agent_header)
+
+    _npc_agent_dropdown = OptionButton.new()
+    _npc_agent_dropdown.add_theme_font_override("font", _font)
+    _npc_agent_dropdown.add_theme_font_size_override("font_size", 13)
+    _npc_agent_dropdown.add_theme_color_override("font_color", COLOR_TEXT)
+    # Same stylebox as behavior dropdown (shared visual language).
+    _npc_agent_dropdown.add_theme_stylebox_override("normal", behavior_style)
+    _npc_agent_dropdown.item_selected.connect(_on_npc_agent_selected)
+    _npc_fields_section.add_child(_npc_agent_dropdown)
 
     var sel_sep = HSeparator.new()
     sel_sep.add_theme_color_override("separator_color", Color(0.4, 0.32, 0.2, 0.4))
@@ -772,6 +832,33 @@ func _on_name_focus_lost() -> void:
         return
     display_name_changed.emit(_name_input.text.strip_edges())
 
+func _on_npc_name_submitted(new_text: String) -> void:
+    if _ignoring_npc_inputs:
+        return
+    _npc_name_edit.release_focus()
+    var trimmed: String = new_text.strip_edges()
+    if trimmed != "":
+        npc_name_changed.emit(trimmed)
+
+func _on_npc_name_focus_lost() -> void:
+    if _ignoring_npc_inputs:
+        return
+    var trimmed: String = _npc_name_edit.text.strip_edges()
+    if trimmed != "":
+        npc_name_changed.emit(trimmed)
+
+func _on_npc_behavior_selected(index: int) -> void:
+    if _ignoring_npc_inputs:
+        return
+    var slug: String = _npc_behavior_dropdown.get_item_metadata(index)
+    npc_behavior_changed.emit(slug)
+
+func _on_npc_agent_selected(index: int) -> void:
+    if _ignoring_npc_inputs:
+        return
+    var agent_key: String = _npc_agent_dropdown.get_item_metadata(index)
+    npc_agent_changed.emit(agent_key)
+
 func _on_owner_selected(index: int) -> void:
     if _ignoring_dropdown:
         return
@@ -882,21 +969,51 @@ func show_npc_selection(info: Dictionary) -> void:
     _catalog_scroll.visible = false
 
     var display_name: String = info.get("display_name", "")
-    if display_name == "":
-        display_name = "(unnamed)"
-    _selection_label.text = display_name
+    _selection_label.text = display_name if display_name != "" else "(unnamed)"
 
-    var behavior: String = info.get("behavior", "")
-    if behavior == "":
-        _npc_behavior_label.text = "Behavior: —"
-    else:
-        _npc_behavior_label.text = "Behavior: " + behavior
+    _ignoring_npc_inputs = true
 
-    var agent: String = info.get("llm_memory_agent", "")
-    if agent == "":
-        _npc_agent_label.text = "Agent: —"
-    else:
-        _npc_agent_label.text = "Agent: " + agent
+    # Drop focus on the name edit before replacing its text — otherwise a
+    # focus_exited fires after we've already swapped to a different NPC and
+    # emits the old name against the new selection.
+    _npc_name_edit.release_focus()
+    _npc_name_edit.text = display_name
+
+    # Populate behavior dropdown from Catalog.npc_behaviors. Index 0 is always
+    # "(none)" mapped to empty string — represents a null behavior server-side.
+    _npc_behavior_dropdown.clear()
+    _npc_behavior_dropdown.add_item("(none)", 0)
+    _npc_behavior_dropdown.set_item_metadata(0, "")
+    var selected_behavior_index: int = 0
+    var current_behavior: String = info.get("behavior", "")
+    var bi: int = 1
+    for b in Catalog.npc_behaviors:
+        _npc_behavior_dropdown.add_item(b.get("display_name", b.get("slug", "")), bi)
+        _npc_behavior_dropdown.set_item_metadata(bi, b.get("slug", ""))
+        if b.get("slug", "") == current_behavior:
+            selected_behavior_index = bi
+        bi += 1
+    _npc_behavior_dropdown.selected = selected_behavior_index
+
+    # Agent dropdown reuses the same village_agent list that powers the owner
+    # dropdown on assets. Index 0 is "(none)" → unlink.
+    _npc_agent_dropdown.clear()
+    _npc_agent_dropdown.add_item("(none)", 0)
+    _npc_agent_dropdown.set_item_metadata(0, "")
+    var selected_agent_index: int = 0
+    var current_agent: String = info.get("llm_memory_agent", "")
+    if world != null:
+        var ai: int = 1
+        for agent_key in world.agent_list:
+            var display: String = world.agent_names.get(agent_key, agent_key)
+            _npc_agent_dropdown.add_item(display, ai)
+            _npc_agent_dropdown.set_item_metadata(ai, agent_key)
+            if agent_key == current_agent:
+                selected_agent_index = ai
+            ai += 1
+    _npc_agent_dropdown.selected = selected_agent_index
+
+    _ignoring_npc_inputs = false
 
 ## Called when editor exits place mode (right-click cancel, escape, etc.)
 func clear_catalog_selection() -> void:

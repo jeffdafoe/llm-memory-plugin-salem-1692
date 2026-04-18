@@ -270,6 +270,229 @@ func (app *App) handleCreateNPC(w http.ResponseWriter, r *http.Request) {
 	app.Hub.Broadcast(WorldEvent{Type: "npc_created", Data: npc})
 }
 
+// NPCBehavior is a row from npc_behavior — the allowed values for npc.behavior.
+// The editor panel fetches this list to populate the behavior dropdown.
+type NPCBehavior struct {
+	Slug        string `json:"slug"`
+	DisplayName string `json:"display_name"`
+}
+
+// handleListNPCBehaviors returns all behaviors that can be assigned to an NPC.
+// Public to any authenticated salem user — the catalog is not sensitive and
+// non-admins who can see NPC details may want to know what behaviors exist.
+func (app *App) handleListNPCBehaviors(w http.ResponseWriter, r *http.Request) {
+	rows, err := app.DB.Query(r.Context(),
+		`SELECT slug, display_name FROM npc_behavior ORDER BY display_name`,
+	)
+	if err != nil {
+		jsonError(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	behaviors := []NPCBehavior{}
+	for rows.Next() {
+		var b NPCBehavior
+		if err := rows.Scan(&b.Slug, &b.DisplayName); err != nil {
+			continue
+		}
+		behaviors = append(behaviors, b)
+	}
+
+	jsonResponse(w, http.StatusOK, behaviors)
+}
+
+// handleSetNPCDisplayName renames a placed NPC. Admin only. Broadcasts
+// npc_display_name_changed so every client refreshes the villager's label.
+// Blank names are rejected — use the create-time default "Villager" instead
+// of letting a rename clear the label.
+func (app *App) handleSetNPCDisplayName(w http.ResponseWriter, r *http.Request) {
+	user := getUserFromContext(r.Context())
+	if user == nil || !user.hasRole("ROLE_SALEM_ADMIN") {
+		jsonError(w, "Admin role required", http.StatusForbidden)
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		jsonError(w, "Missing NPC ID", http.StatusBadRequest)
+		return
+	}
+
+	var req struct {
+		DisplayName string `json:"display_name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	req.DisplayName = strings.TrimSpace(req.DisplayName)
+	if req.DisplayName == "" {
+		jsonError(w, "display_name is required", http.StatusBadRequest)
+		return
+	}
+
+	result, err := app.DB.Exec(r.Context(),
+		`UPDATE npc SET display_name = $1 WHERE id = $2`,
+		req.DisplayName, id,
+	)
+	if err != nil {
+		jsonError(w, "Failed to update display name", http.StatusInternalServerError)
+		return
+	}
+	if result.RowsAffected() == 0 {
+		jsonError(w, "NPC not found", http.StatusNotFound)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+	app.Hub.Broadcast(WorldEvent{Type: "npc_display_name_changed", Data: map[string]interface{}{
+		"id":           id,
+		"display_name": req.DisplayName,
+	}})
+}
+
+// handleSetNPCBehavior assigns or clears the behavior of an NPC. Admin only.
+// A null/empty behavior clears the field. The FK on npc.behavior enforces
+// validity against npc_behavior.slug, but we pre-check to return a clean 400
+// rather than a generic 500 on invalid input.
+//
+// Live-route note: changing behavior mid-route does not interrupt an ongoing
+// walk. The current walk-to AfterFunc still fires and applyArrival runs the
+// normal lamplighter chain if the behavior was lamplighter at walk START.
+// The next phase transition will look up the current behavior fresh and pick
+// whoever is currently tagged.
+func (app *App) handleSetNPCBehavior(w http.ResponseWriter, r *http.Request) {
+	user := getUserFromContext(r.Context())
+	if user == nil || !user.hasRole("ROLE_SALEM_ADMIN") {
+		jsonError(w, "Admin role required", http.StatusForbidden)
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		jsonError(w, "Missing NPC ID", http.StatusBadRequest)
+		return
+	}
+
+	var req struct {
+		Behavior *string `json:"behavior"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	// Normalize empty string to null so the client can send either.
+	if req.Behavior != nil {
+		trimmed := strings.TrimSpace(*req.Behavior)
+		if trimmed == "" {
+			req.Behavior = nil
+		} else {
+			req.Behavior = &trimmed
+		}
+	}
+
+	if req.Behavior != nil {
+		var exists bool
+		if err := app.DB.QueryRow(r.Context(),
+			`SELECT EXISTS(SELECT 1 FROM npc_behavior WHERE slug = $1)`,
+			*req.Behavior,
+		).Scan(&exists); err != nil {
+			jsonError(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+		if !exists {
+			jsonError(w, "Unknown behavior", http.StatusBadRequest)
+			return
+		}
+	}
+
+	result, err := app.DB.Exec(r.Context(),
+		`UPDATE npc SET behavior = $1 WHERE id = $2`,
+		req.Behavior, id,
+	)
+	if err != nil {
+		jsonError(w, "Failed to update behavior", http.StatusInternalServerError)
+		return
+	}
+	if result.RowsAffected() == 0 {
+		jsonError(w, "NPC not found", http.StatusNotFound)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+	app.Hub.Broadcast(WorldEvent{Type: "npc_behavior_changed", Data: map[string]interface{}{
+		"id":       id,
+		"behavior": req.Behavior,
+	}})
+}
+
+// handleSetNPCAgent links or unlinks the llm_memory_agent for an NPC.
+// Admin only. Broadcasts npc_agent_changed. A null/empty value unlinks.
+// The agent slug must match a row in village_agent — this scopes the picker
+// to characters registered for this village rather than any global llm-memory
+// actor.
+func (app *App) handleSetNPCAgent(w http.ResponseWriter, r *http.Request) {
+	user := getUserFromContext(r.Context())
+	if user == nil || !user.hasRole("ROLE_SALEM_ADMIN") {
+		jsonError(w, "Admin role required", http.StatusForbidden)
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		jsonError(w, "Missing NPC ID", http.StatusBadRequest)
+		return
+	}
+
+	var req struct {
+		LLMMemoryAgent *string `json:"llm_memory_agent"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.LLMMemoryAgent != nil {
+		trimmed := strings.TrimSpace(*req.LLMMemoryAgent)
+		if trimmed == "" {
+			req.LLMMemoryAgent = nil
+		} else {
+			req.LLMMemoryAgent = &trimmed
+		}
+	}
+
+	if req.LLMMemoryAgent != nil {
+		var exists bool
+		if err := app.DB.QueryRow(r.Context(),
+			`SELECT EXISTS(SELECT 1 FROM village_agent WHERE llm_memory_agent = $1)`,
+			*req.LLMMemoryAgent,
+		).Scan(&exists); err != nil {
+			jsonError(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+		if !exists {
+			jsonError(w, "Unknown agent", http.StatusBadRequest)
+			return
+		}
+	}
+
+	result, err := app.DB.Exec(r.Context(),
+		`UPDATE npc SET llm_memory_agent = $1 WHERE id = $2`,
+		req.LLMMemoryAgent, id,
+	)
+	if err != nil {
+		jsonError(w, "Failed to update agent", http.StatusInternalServerError)
+		return
+	}
+	if result.RowsAffected() == 0 {
+		jsonError(w, "NPC not found", http.StatusNotFound)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+	app.Hub.Broadcast(WorldEvent{Type: "npc_agent_changed", Data: map[string]interface{}{
+		"id":               id,
+		"llm_memory_agent": req.LLMMemoryAgent,
+	}})
+}
+
 // handleDeleteNPC removes a placed NPC. Admin only. Broadcasts npc_deleted
 // so every connected client removes the sprite.
 func (app *App) handleDeleteNPC(w http.ResponseWriter, r *http.Request) {

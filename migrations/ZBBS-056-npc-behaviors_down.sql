@@ -1,0 +1,6 @@
+BEGIN;
+
+ALTER TABLE npc DROP CONSTRAINT IF EXISTS fk_npc_behavior;
+DROP TABLE IF EXISTS npc_behavior;
+
+COMMIT;

@@ -3,6 +3,10 @@ extends Node2D
 ## Generates terrain procedurally, renders using custom wang tile renderer
 ## (with 1px overlap to prevent seams), and loads placed objects from the Go API.
 
+## Emitted after an NPC's metadata is updated from a WS broadcast. Listeners
+## (main.gd) refresh the editor panel if the changed NPC is currently selected.
+signal npc_metadata_changed(npc_id: String)
+
 const MapGenerator = preload("res://scripts/map_generator.gd")
 const WangLookup = preload("res://scripts/wang_lookup.gd")
 const TerrainRendererScript = preload("res://scripts/terrain_renderer.gd")
@@ -174,6 +178,51 @@ func get_or_load_npc_sheet(sheet_path: String, callback: Callable) -> void:
         callback.call(tex)
     )
     http.request(api_base + sheet_path)
+
+## Apply a server-broadcast display name change to the local NPC. Idempotent —
+## our own PATCH triggered the broadcast too, so this runs for both the admin
+## who made the change and any other connected clients.
+func apply_npc_display_name_change(data: Dictionary) -> void:
+    var npc_id: String = data.get("id", "")
+    if npc_id == "":
+        return
+    var container: Node2D = placed_npcs.get(npc_id, null)
+    if container == null:
+        return
+    container.set_meta("display_name", data.get("display_name", ""))
+    npc_metadata_changed.emit(npc_id)
+
+## Apply a server-broadcast behavior change. data.behavior may be null for
+## behavior cleared — the JSON null decodes to Godot null.
+func apply_npc_behavior_change(data: Dictionary) -> void:
+    var npc_id: String = data.get("id", "")
+    if npc_id == "":
+        return
+    var container: Node2D = placed_npcs.get(npc_id, null)
+    if container == null:
+        return
+    var behavior = data.get("behavior", null)
+    if behavior == null:
+        container.remove_meta("behavior")
+    else:
+        container.set_meta("behavior", str(behavior))
+    npc_metadata_changed.emit(npc_id)
+
+## Apply a server-broadcast agent link change. data.llm_memory_agent may be
+## null for unlinked.
+func apply_npc_agent_change(data: Dictionary) -> void:
+    var npc_id: String = data.get("id", "")
+    if npc_id == "":
+        return
+    var container: Node2D = placed_npcs.get(npc_id, null)
+    if container == null:
+        return
+    var agent = data.get("llm_memory_agent", null)
+    if agent == null:
+        container.remove_meta("llm_memory_agent")
+    else:
+        container.set_meta("llm_memory_agent", str(agent))
+    npc_metadata_changed.emit(npc_id)
 
 ## Remove an NPC from the world by id. Called by the npc_deleted WS handler
 ## on all connected clients, not just the one that initiated the delete.
@@ -1067,6 +1116,63 @@ func _update_object_display_name(obj_id, display_name: String) -> void:
         Auth.check_response(c)
     )
     http.request(api_base + "/api/village/objects/" + str(obj_id) + "/name", headers_arr, HTTPClient.METHOD_PATCH, payload)
+
+## Set the display name of an NPC and persist to the server.
+## Stashes the name on the container immediately for optimistic UI; the
+## npc_display_name_changed WS broadcast echoes it back and is idempotent.
+func set_npc_display_name(container: Node2D, display_name: String) -> void:
+    var npc_id = container.get_meta("npc_id", null)
+    if npc_id == null:
+        return
+    container.set_meta("display_name", display_name)
+    _patch_npc(npc_id, "display-name", {"display_name": display_name})
+
+## Set the behavior of an NPC (or clear it if behavior == ""). Persists to
+## the server. Empty string is normalized to null in the payload.
+func set_npc_behavior(container: Node2D, behavior: String) -> void:
+    var npc_id = container.get_meta("npc_id", null)
+    if npc_id == null:
+        return
+    var value = null
+    if behavior != "":
+        value = behavior
+        container.set_meta("behavior", behavior)
+    else:
+        container.remove_meta("behavior")
+    _patch_npc(npc_id, "behavior", {"behavior": value})
+
+## Link or unlink the llm_memory_agent for an NPC. Empty string unlinks.
+func set_npc_agent(container: Node2D, agent: String) -> void:
+    var npc_id = container.get_meta("npc_id", null)
+    if npc_id == null:
+        return
+    var value = null
+    if agent != "":
+        value = agent
+        container.set_meta("llm_memory_agent", agent)
+    else:
+        container.remove_meta("llm_memory_agent")
+    _patch_npc(npc_id, "agent", {"llm_memory_agent": value})
+
+func _patch_npc(npc_id, suffix: String, payload_dict: Dictionary) -> void:
+    var http = HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+
+    var headers_arr = ["Content-Type: application/json"]
+    var auth_header: String = Auth.get_auth_header()
+    if auth_header != "":
+        headers_arr.append("Authorization: " + auth_header)
+    http.request_completed.connect(func(r, c, h, b):
+        http.queue_free()
+        Auth.check_response(c)
+    )
+    http.request(
+        api_base + "/api/village/npcs/" + str(npc_id) + "/" + suffix,
+        headers_arr,
+        HTTPClient.METHOD_PATCH,
+        JSON.stringify(payload_dict)
+    )
 
 ## Resolve an owner identifier to a display name.
 ## Returns the display name if found, otherwise the raw owner string.
