@@ -59,7 +59,12 @@ func build_terrain() -> void:
     # Create custom terrain renderer (replaces TileMapLayer)
     terrain_renderer = Node2D.new()
     terrain_renderer.set_script(TerrainRendererScript)
-    # Insert before Objects so terrain draws underneath
+    # z_index well below 0 so ground overlays (bridges and other assets with
+    # negative z_index, see asset.z_index) still render above the terrain
+    # while staying below NPCs at z_index = 0. Tree order alone isn't enough
+    # because z_index takes priority over sibling order.
+    terrain_renderer.z_index = -100
+    # Insert before Objects so terrain draws underneath at equal z (defensive)
     add_child(terrain_renderer)
     move_child(terrain_renderer, 0)
 
