@@ -182,6 +182,8 @@ func _build_ui() -> void:
     editor_panel.npc_name_changed.connect(_on_npc_name_changed)
     editor_panel.npc_behavior_changed.connect(_on_npc_behavior_changed)
     editor_panel.npc_agent_changed.connect(_on_npc_agent_changed)
+    editor_panel.npc_home_structure_changed.connect(_on_npc_home_structure_changed)
+    editor_panel.npc_work_structure_changed.connect(_on_npc_work_structure_changed)
     editor_panel.world = world
 
     # Wire editor signals to panel
@@ -286,6 +288,14 @@ func _on_npc_agent_changed(agent: String) -> void:
     if editor.selected_npc != null:
         world.set_npc_agent(editor.selected_npc, agent)
 
+func _on_npc_home_structure_changed(structure_id: String) -> void:
+    if editor.selected_npc != null:
+        world.set_npc_home_structure(editor.selected_npc, structure_id)
+
+func _on_npc_work_structure_changed(structure_id: String) -> void:
+    if editor.selected_npc != null:
+        world.set_npc_work_structure(editor.selected_npc, structure_id)
+
 # Refresh the selection panel if the changed NPC is the one we have selected.
 # Handles the cross-admin case: another admin edits the NPC while we have it
 # open. Our own PATCH also comes through this path (idempotent).
@@ -300,6 +310,8 @@ func _on_npc_metadata_changed(npc_id: String) -> void:
         "display_name": editor.selected_npc.get_meta("display_name", ""),
         "behavior": editor.selected_npc.get_meta("behavior", ""),
         "llm_memory_agent": editor.selected_npc.get_meta("llm_memory_agent", ""),
+        "home_structure_id": editor.selected_npc.get_meta("home_structure_id", ""),
+        "work_structure_id": editor.selected_npc.get_meta("work_structure_id", ""),
     }
     editor_panel.show_npc_selection(info)
 

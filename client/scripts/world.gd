@@ -224,6 +224,30 @@ func apply_npc_agent_change(data: Dictionary) -> void:
         container.set_meta("llm_memory_agent", str(agent))
     npc_metadata_changed.emit(npc_id)
 
+## Apply a server-broadcast home structure change. data.home_structure_id
+## may be null for unlinked.
+func apply_npc_home_structure_change(data: Dictionary) -> void:
+    _apply_npc_structure_meta(data, "home_structure_id")
+
+## Apply a server-broadcast work structure change. data.work_structure_id
+## may be null for unlinked.
+func apply_npc_work_structure_change(data: Dictionary) -> void:
+    _apply_npc_structure_meta(data, "work_structure_id")
+
+func _apply_npc_structure_meta(data: Dictionary, field: String) -> void:
+    var npc_id: String = data.get("id", "")
+    if npc_id == "":
+        return
+    var container: Node2D = placed_npcs.get(npc_id, null)
+    if container == null:
+        return
+    var value = data.get(field, null)
+    if value == null:
+        container.set_meta(field, "")
+    else:
+        container.set_meta(field, str(value))
+    npc_metadata_changed.emit(npc_id)
+
 ## Remove an NPC from the world by id. Called by the npc_deleted WS handler
 ## on all connected clients, not just the one that initiated the delete.
 func remove_npc_by_id(npc_id: String) -> void:
@@ -328,6 +352,8 @@ func _render_npc(npc: Dictionary) -> void:
     container.set_meta("facing", facing)
     container.set_meta("behavior", npc.get("behavior", ""))
     container.set_meta("llm_memory_agent", npc.get("llm_memory_agent", ""))
+    container.set_meta("home_structure_id", npc.get("home_structure_id", ""))
+    container.set_meta("work_structure_id", npc.get("work_structure_id", ""))
     container.position = Vector2(npc.get("current_x", 0.0), npc.get("current_y", 0.0))
     container.z_index = OBJECT_Z
 
@@ -1153,6 +1179,43 @@ func set_npc_agent(container: Node2D, agent: String) -> void:
     else:
         container.remove_meta("llm_memory_agent")
     _patch_npc(npc_id, "agent", {"llm_memory_agent": value})
+
+## Link or unlink the home structure for an NPC. Empty string unlinks.
+func set_npc_home_structure(container: Node2D, structure_id: String) -> void:
+    _set_npc_structure(container, "home-structure", "home_structure_id", structure_id)
+
+## Link or unlink the work structure for an NPC. Empty string unlinks.
+func set_npc_work_structure(container: Node2D, structure_id: String) -> void:
+    _set_npc_structure(container, "work-structure", "work_structure_id", structure_id)
+
+func _set_npc_structure(container: Node2D, suffix: String, field: String, structure_id: String) -> void:
+    var npc_id = container.get_meta("npc_id", null)
+    if npc_id == null:
+        return
+    var value = null
+    if structure_id != "":
+        value = structure_id
+    container.set_meta(field, structure_id)
+    _patch_npc(npc_id, suffix, {field: value})
+
+## Returns all placed objects in the 'structure' asset category as
+## [{id, label}] dicts, sorted by label. Used to populate the editor's
+## Home / Work dropdowns.
+func get_structure_objects() -> Array:
+    var out: Array = []
+    for obj_id in placed_objects:
+        var node: Node2D = placed_objects[obj_id]
+        var asset_id: String = node.get_meta("asset_id", "")
+        if asset_id == "":
+            continue
+        var asset: Dictionary = Catalog.assets.get(asset_id, {})
+        if asset.get("category", "") != "structure":
+            continue
+        var display_name: String = node.get_meta("display_name", "")
+        var label: String = display_name if display_name != "" else asset.get("name", asset_id)
+        out.append({"id": str(obj_id), "label": label})
+    out.sort_custom(func(a, b): return a.label < b.label)
+    return out
 
 func _patch_npc(npc_id, suffix: String, payload_dict: Dictionary) -> void:
     var http = HTTPRequest.new()
