@@ -103,6 +103,7 @@ func (app *App) handleVillageEvents(w http.ResponseWriter, r *http.Request) {
 		} else if res.Reason == "service" {
 			status = http.StatusServiceUnavailable
 		}
+		log.Printf("WS auth reject: reason=%q tokenLen=%d", res.Reason, len(token))
 		http.Error(w, "Auth required", status)
 		return
 	}
