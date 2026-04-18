@@ -16,6 +16,11 @@ func _ready() -> void:
     # Focus the username field
     username_field.grab_focus()
 
+## Set a message on the error_label (used when re-showing the screen after
+## a mid-session 401). Empty string clears it.
+func set_message(message: String) -> void:
+    error_label.text = message
+
 func _on_login_pressed() -> void:
     var user: String = username_field.text.strip_edges()
     var password: String = password_field.text

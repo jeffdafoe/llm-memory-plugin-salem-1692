@@ -2,8 +2,9 @@ extends Node
 ## Autoloaded singleton — handles authentication with the llm-memory API.
 ## Stores session token in browser localStorage.
 
-signal auth_ready  # Emitted when auth check completes (logged in or not)
-signal logged_in   # Emitted on successful login
+signal auth_ready        # Emitted when auth check completes (logged in or not)
+signal logged_in         # Emitted on successful login
+signal session_expired   # Emitted when the server rejects our token with 401 mid-session
 
 # Current auth state
 var authenticated: bool = false
@@ -118,6 +119,28 @@ func get_auth_header() -> String:
     if session_token == "":
         return ""
     return "Bearer " + session_token
+
+## Called by HTTP callbacks when the server returns 401. Clears the dead
+## token and emits session_expired so the UI can re-show the login screen.
+## Idempotent — safe to call from multiple concurrent in-flight requests.
+func notify_session_expired() -> void:
+    if session_token == "":
+        return  # Already cleared — subsequent 401s are noise
+    session_token = ""
+    authenticated = false
+    username = ""
+    can_edit = false
+    _clear_token()
+    session_expired.emit()
+
+## Helper for HTTP callbacks. Returns true if the response was authed, false
+## on 401 (after notifying). Callers use this to short-circuit their success
+## path when auth fails.
+func check_response(response_code: int) -> bool:
+    if response_code == 401:
+        notify_session_expired()
+        return false
+    return true
 
 # --- localStorage helpers (browser only) ---
 

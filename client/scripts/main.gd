@@ -58,6 +58,9 @@ func _ready() -> void:
     else:
         Auth.auth_ready.connect(_on_auth_ready)
 
+    # React to mid-session 401s — drop the user back on the login screen.
+    Auth.session_expired.connect(_on_session_expired)
+
 func _on_auth_ready() -> void:
     if Auth.authenticated:
         _on_authenticated()
@@ -182,7 +185,14 @@ func _on_edit_toggled(active: bool) -> void:
 
 func _on_logout() -> void:
     Auth.logout()
-    # Hide UI, show login screen
+    _show_login_screen("")
+
+## Called when the server rejects our token mid-session. Reuses the logout
+## UI flip and surfaces a message so the user knows why they're back here.
+func _on_session_expired() -> void:
+    _show_login_screen("Session expired — please log in again.")
+
+func _show_login_screen(message: String) -> void:
     if top_bar != null:
         top_bar.set_edit_visible(false)
         top_bar.set_config_visible(false)
@@ -195,6 +205,8 @@ func _on_logout() -> void:
     camera.editor_active = false
     if login_screen != null:
         login_screen.visible = true
+        if login_screen.has_method("set_message"):
+            login_screen.set_message(message)
 
 func _on_asset_inspect_requested(asset_id: String) -> void:
     if asset_popup != null:
@@ -273,7 +285,10 @@ func _walk_npc(npc_id: String, target: Vector2) -> void:
     var http = HTTPRequest.new()
     http.accept_gzip = false
     add_child(http)
-    http.request_completed.connect(func(_r, _c, _h, _b): http.queue_free())
+    http.request_completed.connect(func(_r, c, _h, _b):
+        http.queue_free()
+        Auth.check_response(c)
+    )
     var payload = JSON.stringify({"x": target.x, "y": target.y})
     var headers := ["Content-Type: application/json"]
     var auth_header: String = Auth.get_auth_header()
