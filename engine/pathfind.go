@@ -14,8 +14,10 @@ package main
 // single tile containing their world position — good enough for trees and
 // small props; misses some spread on larger buildings. Refine later.
 //
-// A* uses 4-connected neighbors (no diagonals) and Manhattan heuristic. Cost
-// per step = 1.
+// A* uses 4-connected neighbors (no diagonals) and Manhattan heuristic.
+// Step cost is per-tile (see terrainCost): roads (dirt, cobblestone) and
+// bridge surfaces are 1; grass is 3 so NPCs visibly prefer roads when a
+// reasonable detour exists.
 
 import (
 	"container/heap"
@@ -43,17 +45,49 @@ type pathPoint struct {
 	Y float64 `json:"y"`
 }
 
-// walkGrid holds per-tile passability for a single path query. Built fresh
-// each pathfind so we see current terrain + current object placements.
+// walkGrid holds per-tile A* step cost for a single path query. Built
+// fresh each pathfind so we see current terrain + current object
+// placements. 0 = impassable; positive values are the cost of stepping
+// ONTO that tile. Higher cost discourages routing through that terrain.
+//
+// Surface costs (terrainCost): dirt and cobblestone = 1 (roads/paths,
+// preferred), grass = 3 (off-road, NPCs avoid when a short-ish road
+// detour exists). Water = 0. Bridge passage tiles get cost 1 so NPCs
+// treat them like a continuation of the road. Heuristic stays Manhattan
+// × 1 — admissible because min cost is 1.
 type walkGrid struct {
-	walkable []bool // row-major, size mapW*mapH
+	cost []uint8 // row-major, size mapW*mapH; 0 = impassable
 }
 
 func (g *walkGrid) canWalk(x, y int) bool {
 	if x < 0 || x >= mapW || y < 0 || y >= mapH {
 		return false
 	}
-	return g.walkable[y*mapW+x]
+	return g.cost[y*mapW+x] > 0
+}
+
+func (g *walkGrid) costAt(x, y int) int {
+	if x < 0 || x >= mapW || y < 0 || y >= mapH {
+		return 0
+	}
+	return int(g.cost[y*mapW+x])
+}
+
+// terrainCost maps a terrain byte to its step cost. Tuned so a 3-tile
+// road detour beats a 1-tile shortcut across grass — strong enough that
+// NPCs visibly prefer roads, gentle enough that grass isn't off-limits
+// when the road would be a long way around.
+func terrainCost(b byte) uint8 {
+	switch b {
+	case 1, 4: // dirt, cobblestone
+		return 1
+	case 2, 3: // light_grass, dark_grass
+		return 3
+	case 5, 6: // shallow_water, deep_water
+		return 0
+	default:
+		return 1 // unknown terrain — assume walkable, cheap
+	}
 }
 
 // loadWalkGrid reads terrain + obstacle-tagged village_objects and builds a
@@ -69,10 +103,9 @@ func (app *App) loadWalkGrid(ctx context.Context) (*walkGrid, error) {
 		return nil, fmt.Errorf("terrain size mismatch: got %d, want %d", len(terrain), mapW*mapH)
 	}
 
-	g := &walkGrid{walkable: make([]bool, mapW*mapH)}
+	g := &walkGrid{cost: make([]uint8, mapW*mapH)}
 	for i, b := range terrain {
-		// Types 5 (shallow water) and 6 (deep water) are impassable.
-		g.walkable[i] = b != 5 && b != 6
+		g.cost[i] = terrainCost(b)
 	}
 
 	// Mark obstacle / passage objects' footprints. Order matters: obstacles
@@ -105,7 +138,12 @@ func (app *App) loadWalkGrid(ctx context.Context) (*walkGrid, error) {
 			continue
 		}
 		ax, ay := worldToTile(wx, wy)
-		walkable := isPassage // passage overrides; otherwise obstacle blocks
+		// Passages stamp cost = 1 (treat the bridge surface as a road).
+		// Obstacles stamp 0 (impassable).
+		var stamp uint8 = 0
+		if isPassage {
+			stamp = 1
+		}
 		for ty := ay - fTop; ty <= ay+fBottom; ty++ {
 			if ty < 0 || ty >= mapH {
 				continue
@@ -114,7 +152,7 @@ func (app *App) loadWalkGrid(ctx context.Context) (*walkGrid, error) {
 				if tx < 0 || tx >= mapW {
 					continue
 				}
-				g.walkable[ty*mapW+tx] = walkable
+				g.cost[ty*mapW+tx] = stamp
 			}
 		}
 	}
@@ -242,7 +280,7 @@ func findPath(g *walkGrid, start, goal gridPoint) []gridPoint {
 			if !g.canWalk(next.X, next.Y) {
 				continue
 			}
-			tentativeG := current.gCost + 1
+			tentativeG := current.gCost + g.costAt(next.X, next.Y)
 			if existing, ok := gScore[next]; ok && tentativeG >= existing {
 				continue
 			}
