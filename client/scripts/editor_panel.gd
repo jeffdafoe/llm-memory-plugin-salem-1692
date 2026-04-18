@@ -14,6 +14,8 @@ signal npc_sprite_selected(sprite: Dictionary, sheet: Texture2D, npc_name: Strin
 signal npc_name_changed(display_name: String)
 signal npc_behavior_changed(behavior: String)
 signal npc_agent_changed(agent: String)
+signal npc_home_structure_changed(structure_id: String)
+signal npc_work_structure_changed(structure_id: String)
 
 # Theme colors (matching top bar / login screen)
 const COLOR_BG = Color(0.12, 0.09, 0.07, 0.95)
@@ -65,6 +67,8 @@ var _npc_fields_section: VBoxContainer = null
 var _npc_name_edit: LineEdit = null
 var _npc_behavior_dropdown: OptionButton = null
 var _npc_agent_dropdown: OptionButton = null
+var _npc_home_structure_dropdown: OptionButton = null
+var _npc_work_structure_dropdown: OptionButton = null
 var _ignoring_npc_inputs: bool = false
 
 # NPC placement catalog section — sits at the bottom of _catalog_container
@@ -358,6 +362,34 @@ func _ready() -> void:
     _npc_agent_dropdown.add_theme_stylebox_override("normal", behavior_style)
     _npc_agent_dropdown.item_selected.connect(_on_npc_agent_selected)
     _npc_fields_section.add_child(_npc_agent_dropdown)
+
+    var npc_home_header = Label.new()
+    npc_home_header.text = "HOME"
+    npc_home_header.add_theme_color_override("font_color", COLOR_LABEL)
+    npc_home_header.add_theme_font_size_override("font_size", 11)
+    _npc_fields_section.add_child(npc_home_header)
+
+    _npc_home_structure_dropdown = OptionButton.new()
+    _npc_home_structure_dropdown.add_theme_font_override("font", _font)
+    _npc_home_structure_dropdown.add_theme_font_size_override("font_size", 13)
+    _npc_home_structure_dropdown.add_theme_color_override("font_color", COLOR_TEXT)
+    _npc_home_structure_dropdown.add_theme_stylebox_override("normal", behavior_style)
+    _npc_home_structure_dropdown.item_selected.connect(_on_npc_home_structure_selected)
+    _npc_fields_section.add_child(_npc_home_structure_dropdown)
+
+    var npc_work_header = Label.new()
+    npc_work_header.text = "WORK"
+    npc_work_header.add_theme_color_override("font_color", COLOR_LABEL)
+    npc_work_header.add_theme_font_size_override("font_size", 11)
+    _npc_fields_section.add_child(npc_work_header)
+
+    _npc_work_structure_dropdown = OptionButton.new()
+    _npc_work_structure_dropdown.add_theme_font_override("font", _font)
+    _npc_work_structure_dropdown.add_theme_font_size_override("font_size", 13)
+    _npc_work_structure_dropdown.add_theme_color_override("font_color", COLOR_TEXT)
+    _npc_work_structure_dropdown.add_theme_stylebox_override("normal", behavior_style)
+    _npc_work_structure_dropdown.item_selected.connect(_on_npc_work_structure_selected)
+    _npc_fields_section.add_child(_npc_work_structure_dropdown)
 
     var sel_sep = HSeparator.new()
     sel_sep.add_theme_color_override("separator_color", Color(0.4, 0.32, 0.2, 0.4))
@@ -859,6 +891,18 @@ func _on_npc_agent_selected(index: int) -> void:
     var agent_key: String = _npc_agent_dropdown.get_item_metadata(index)
     npc_agent_changed.emit(agent_key)
 
+func _on_npc_home_structure_selected(index: int) -> void:
+    if _ignoring_npc_inputs:
+        return
+    var structure_id: String = _npc_home_structure_dropdown.get_item_metadata(index)
+    npc_home_structure_changed.emit(structure_id)
+
+func _on_npc_work_structure_selected(index: int) -> void:
+    if _ignoring_npc_inputs:
+        return
+    var structure_id: String = _npc_work_structure_dropdown.get_item_metadata(index)
+    npc_work_structure_changed.emit(structure_id)
+
 func _on_owner_selected(index: int) -> void:
     if _ignoring_dropdown:
         return
@@ -1013,7 +1057,32 @@ func show_npc_selection(info: Dictionary) -> void:
             ai += 1
     _npc_agent_dropdown.selected = selected_agent_index
 
+    # Home / Work dropdowns list every placed structure. Same "(none)"
+    # convention as the other dropdowns.
+    var current_home: String = info.get("home_structure_id", "")
+    var current_work: String = info.get("work_structure_id", "")
+    _populate_structure_dropdown(_npc_home_structure_dropdown, current_home)
+    _populate_structure_dropdown(_npc_work_structure_dropdown, current_work)
+
     _ignoring_npc_inputs = false
+
+func _populate_structure_dropdown(dropdown: OptionButton, current_id: String) -> void:
+    dropdown.clear()
+    dropdown.add_item("(none)", 0)
+    dropdown.set_item_metadata(0, "")
+    var selected: int = 0
+    if world == null:
+        dropdown.selected = 0
+        return
+    var structures: Array = world.get_structure_objects()
+    var idx: int = 1
+    for s in structures:
+        dropdown.add_item(s.get("label", ""), idx)
+        dropdown.set_item_metadata(idx, s.get("id", ""))
+        if s.get("id", "") == current_id:
+            selected = idx
+        idx += 1
+    dropdown.selected = selected
 
 ## Called when editor exits place mode (right-click cancel, escape, etc.)
 func clear_catalog_selection() -> void:

@@ -24,6 +24,7 @@ import (
 	"log"
 	mathrand "math/rand/v2"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -32,8 +33,20 @@ const tagRotatable = "rotatable"
 // applyRotation computes the per-object flips for a single rotation pass,
 // stamps world_phase.last_rotation_at, and hands the flips to scheduleFlips.
 // Returns the number of objects scheduled to rotate.
+//
+// If a washerwoman or town_crier NPC is on duty, their domain (laundry or
+// notice-board tagged states) is excluded from the bulk flip and walked
+// per-object by the NPC instead.
 func (app *App) applyRotation(ctx context.Context) (int, error) {
-	flips, err := app.determineRotationFlips(ctx)
+	var exclude []string
+	if _, ok := app.findNPCWithBehavior(ctx, behaviorWasherwoman); ok {
+		exclude = append(exclude, tagLaundry)
+	}
+	if _, ok := app.findNPCWithBehavior(ctx, behaviorTownCrier); ok {
+		exclude = append(exclude, tagNoticeBoard)
+	}
+
+	flips, err := app.determineRotationFlipsScoped(ctx, rotationScope{ExcludeTags: exclude})
 	if err != nil {
 		return 0, err
 	}
@@ -49,8 +62,58 @@ func (app *App) applyRotation(ctx context.Context) (int, error) {
 		flips[i].Gen = gen
 	}
 	app.scheduleFlips(flips)
-	log.Printf("world_rotation: %d flips scheduled", len(flips))
-	return len(flips), nil
+
+	// Dispatch per-object NPC routes for the domains we excluded above.
+	var washerStops, crierStops int
+	if containsString(exclude, tagLaundry) {
+		n, err := app.startWasherwomanRoute(ctx)
+		if err != nil {
+			log.Printf("world_rotation: washerwoman route failed: %v", err)
+		}
+		washerStops = n
+	}
+	if containsString(exclude, tagNoticeBoard) {
+		n, err := app.startTownCrierRoute(ctx)
+		if err != nil {
+			log.Printf("world_rotation: town_crier route failed: %v", err)
+		}
+		crierStops = n
+	}
+
+	log.Printf("world_rotation: %d bulk flips, %d washerwoman stops, %d town_crier stops",
+		len(flips), washerStops, crierStops)
+	return len(flips) + washerStops + crierStops, nil
+}
+
+func containsString(xs []string, s string) bool {
+	for _, x := range xs {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
+
+// rotationScope narrows the candidate set for a rotation pass. Tag scopes
+// down to objects whose current state carries that tag; ExcludeTags removes
+// objects whose current state carries any listed tag. Both empty = full
+// rotatable pool.
+type rotationScope struct {
+	Tag         string
+	ExcludeTags []string
+}
+
+// determineRotationFlips is the unscoped variant — used by code paths that
+// just want all rotatable flips without NPC-domain filtering.
+func (app *App) determineRotationFlips(ctx context.Context) ([]pendingFlip, error) {
+	return app.determineRotationFlipsScoped(ctx, rotationScope{})
+}
+
+// determineRotationFlipsForTag returns flips only for objects whose current
+// state carries the given tag. Used by washerwoman / town_crier to build
+// their per-domain route.
+func (app *App) determineRotationFlipsForTag(ctx context.Context, tag string) ([]pendingFlip, error) {
+	return app.determineRotationFlipsScoped(ctx, rotationScope{Tag: tag})
 }
 
 // rotationCandidate holds one object that currently sits in a rotatable state,
@@ -63,22 +126,34 @@ type rotationCandidate struct {
 	SpreadSeconds int
 }
 
-// determineRotationFlips loads every village_object currently in a rotatable
-// state, groups them by asset, and picks a new state per object according to
-// the asset's rotation_algo. Emits one pendingFlip per object whose new state
-// differs from its current state (single-state pools are a no-op for
-// random_per_object — they've nowhere else to go).
-func (app *App) determineRotationFlips(ctx context.Context) ([]pendingFlip, error) {
-	// 1. Candidates: objects currently in a rotatable-tagged state.
-	candRows, err := app.DB.Query(ctx,
-		`SELECT o.id, o.asset_id, o.current_state, a.rotation_algo, a.transition_spread_seconds
+// determineRotationFlipsScoped loads every village_object currently in a
+// rotatable state (optionally narrowed by scope), groups them by asset, and
+// picks a new state per object according to the asset's rotation_algo.
+// Emits one pendingFlip per object whose new state differs from its current
+// state (single-state pools are a no-op for random_per_object — they've
+// nowhere else to go).
+func (app *App) determineRotationFlipsScoped(ctx context.Context, scope rotationScope) ([]pendingFlip, error) {
+	// 1. Candidates: objects currently in a rotatable-tagged state, further
+	//    filtered by scope. The candidate's current state must have the
+	//    rotatable tag AND (if Tag set) also the scope tag AND (if
+	//    ExcludeTags set) none of the excluded tags.
+	query := `SELECT o.id, o.asset_id, o.current_state, a.rotation_algo, a.transition_spread_seconds
 		 FROM village_object o
 		 JOIN asset a ON a.id = o.asset_id
 		 JOIN asset_state s ON s.asset_id = o.asset_id AND s.state = o.current_state
 		 JOIN asset_state_tag t ON t.state_id = s.id
-		 WHERE t.tag = $1`,
-		tagRotatable,
-	)
+		 WHERE t.tag = $1`
+	args := []interface{}{tagRotatable}
+	if scope.Tag != "" {
+		args = append(args, scope.Tag)
+		query += ` AND EXISTS (SELECT 1 FROM asset_state_tag t2 WHERE t2.state_id = s.id AND t2.tag = $2)`
+	}
+	if len(scope.ExcludeTags) > 0 {
+		args = append(args, scope.ExcludeTags)
+		query += ` AND NOT EXISTS (SELECT 1 FROM asset_state_tag t2 WHERE t2.state_id = s.id AND t2.tag = ANY($` +
+			strconv.Itoa(len(args)) + `))`
+	}
+	candRows, err := app.DB.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

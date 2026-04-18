@@ -43,18 +43,27 @@ type NPCSpriteAnim struct {
 // NPC is a placed NPC instance. current_x/y is the last persisted position
 // (updated on waypoint arrival in later milestones, not per tick). facing is
 // the direction the sprite should render.
+//
+// HomeStructureID and WorkStructureID are optional references to
+// village_object rows (category=structure). When HomeStructureID is set,
+// behavior routes use the structure's coords for the return-walk leg;
+// HomeX/HomeY are kept as a fallback for NPCs without an assigned house.
+// WorkStructureID is data-only as of Milestone 5 — reserved for future
+// idle/daytime behaviors.
 type NPC struct {
-	ID             string     `json:"id"`
-	DisplayName    string     `json:"display_name"`
-	SpriteID       string     `json:"sprite_id"`
-	HomeX          float64    `json:"home_x"`
-	HomeY          float64    `json:"home_y"`
-	CurrentX       float64    `json:"current_x"`
-	CurrentY       float64    `json:"current_y"`
-	Facing         string     `json:"facing"`
-	Behavior       *string    `json:"behavior"`
-	LLMMemoryAgent *string    `json:"llm_memory_agent"`
-	Sprite         *NPCSprite `json:"sprite,omitempty"`
+	ID              string     `json:"id"`
+	DisplayName     string     `json:"display_name"`
+	SpriteID        string     `json:"sprite_id"`
+	HomeX           float64    `json:"home_x"`
+	HomeY           float64    `json:"home_y"`
+	CurrentX        float64    `json:"current_x"`
+	CurrentY        float64    `json:"current_y"`
+	Facing          string     `json:"facing"`
+	Behavior        *string    `json:"behavior"`
+	LLMMemoryAgent  *string    `json:"llm_memory_agent"`
+	HomeStructureID *string    `json:"home_structure_id"`
+	WorkStructureID *string    `json:"work_structure_id"`
+	Sprite          *NPCSprite `json:"sprite,omitempty"`
 }
 
 // loadNPCSprites returns the sprite catalog as a map keyed by sprite id,
@@ -154,7 +163,8 @@ func (app *App) handleListNPCs(w http.ResponseWriter, r *http.Request) {
 
 	npcRows, err := app.DB.Query(ctx,
 		`SELECT id, display_name, sprite_id, home_x, home_y,
-		        current_x, current_y, facing, behavior, llm_memory_agent
+		        current_x, current_y, facing, behavior, llm_memory_agent,
+		        home_structure_id, work_structure_id
 		 FROM npc
 		 ORDER BY display_name`,
 	)
@@ -168,7 +178,8 @@ func (app *App) handleListNPCs(w http.ResponseWriter, r *http.Request) {
 	for npcRows.Next() {
 		var n NPC
 		if err := npcRows.Scan(&n.ID, &n.DisplayName, &n.SpriteID,
-			&n.HomeX, &n.HomeY, &n.CurrentX, &n.CurrentY, &n.Facing, &n.Behavior, &n.LLMMemoryAgent); err != nil {
+			&n.HomeX, &n.HomeY, &n.CurrentX, &n.CurrentY, &n.Facing, &n.Behavior, &n.LLMMemoryAgent,
+			&n.HomeStructureID, &n.WorkStructureID); err != nil {
 			continue
 		}
 		if s, ok := sprites[n.SpriteID]; ok {
@@ -490,6 +501,92 @@ func (app *App) handleSetNPCAgent(w http.ResponseWriter, r *http.Request) {
 	app.Hub.Broadcast(WorldEvent{Type: "npc_agent_changed", Data: map[string]interface{}{
 		"id":               id,
 		"llm_memory_agent": req.LLMMemoryAgent,
+	}})
+}
+
+// handleSetNPCHomeStructure links or clears the NPC's home structure.
+// Admin only. A null / empty payload clears the link, falling the NPC back
+// to its scalar home_x/home_y. When set, the structure must reference an
+// existing village_object row (any category — the editor constrains the
+// dropdown to category=structure, but the server doesn't enforce it).
+// Broadcasts npc_home_structure_changed.
+func (app *App) handleSetNPCHomeStructure(w http.ResponseWriter, r *http.Request) {
+	app.patchNPCStructure(w, r, "home_structure_id", "npc_home_structure_changed", "home_structure_id")
+}
+
+// handleSetNPCWorkStructure links or clears the NPC's work structure.
+// Admin only. Milestone 5 ships this as data only — no behavior reads it
+// yet. Broadcasts npc_work_structure_changed.
+func (app *App) handleSetNPCWorkStructure(w http.ResponseWriter, r *http.Request) {
+	app.patchNPCStructure(w, r, "work_structure_id", "npc_work_structure_changed", "work_structure_id")
+}
+
+// patchNPCStructure is the shared implementation for the home/work
+// structure PATCH endpoints. column is the npc column to update; event is
+// the WS event type; field is the JSON field name in the request body and
+// broadcast data.
+func (app *App) patchNPCStructure(w http.ResponseWriter, r *http.Request, column, event, field string) {
+	user := getUserFromContext(r.Context())
+	if user == nil || !user.hasRole("ROLE_SALEM_ADMIN") {
+		jsonError(w, "Admin role required", http.StatusForbidden)
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		jsonError(w, "Missing NPC ID", http.StatusBadRequest)
+		return
+	}
+
+	// Request body is a single field matching `field` (e.g. home_structure_id).
+	// Decode into a generic map rather than a struct so both handlers share code.
+	var raw map[string]*string
+	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+		jsonError(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	val := raw[field]
+	if val != nil {
+		trimmed := strings.TrimSpace(*val)
+		if trimmed == "" {
+			val = nil
+		} else {
+			val = &trimmed
+		}
+	}
+
+	// Verify the structure id references a real object when set.
+	if val != nil {
+		var exists bool
+		if err := app.DB.QueryRow(r.Context(),
+			`SELECT EXISTS(SELECT 1 FROM village_object WHERE id = $1)`, *val,
+		).Scan(&exists); err != nil {
+			jsonError(w, "Internal server error", http.StatusInternalServerError)
+			return
+		}
+		if !exists {
+			jsonError(w, "Unknown structure", http.StatusBadRequest)
+			return
+		}
+	}
+
+	// Column is fixed per-caller, not user input — safe to interpolate.
+	result, err := app.DB.Exec(r.Context(),
+		`UPDATE npc SET `+column+` = $1 WHERE id = $2`,
+		val, id,
+	)
+	if err != nil {
+		jsonError(w, "Failed to update structure link", http.StatusInternalServerError)
+		return
+	}
+	if result.RowsAffected() == 0 {
+		jsonError(w, "NPC not found", http.StatusNotFound)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+	app.Hub.Broadcast(WorldEvent{Type: event, Data: map[string]interface{}{
+		"id":  id,
+		field: val,
 	}})
 }
 

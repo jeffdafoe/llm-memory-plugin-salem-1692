@@ -115,6 +115,8 @@ func main() {
 	authed("PATCH /api/village/npcs/{id}/display-name", app.handleSetNPCDisplayName)
 	authed("PATCH /api/village/npcs/{id}/behavior", app.handleSetNPCBehavior)
 	authed("PATCH /api/village/npcs/{id}/agent", app.handleSetNPCAgent)
+	authed("PATCH /api/village/npcs/{id}/home-structure", app.handleSetNPCHomeStructure)
+	authed("PATCH /api/village/npcs/{id}/work-structure", app.handleSetNPCWorkStructure)
 	authed("GET /api/village/npc-sprites", app.handleListNPCSprites)
 	authed("GET /api/village/npc-behaviors", app.handleListNPCBehaviors)
 

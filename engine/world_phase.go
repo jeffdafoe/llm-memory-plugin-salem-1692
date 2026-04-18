@@ -230,7 +230,7 @@ func (app *App) applyTransition(ctx context.Context, newPhase string) (int, erro
 	// flips — walks the route, lights/extinguishes each object individually
 	// on arrival. Skip the bulk flip here so objects stay unflipped until he
 	// arrives at them.
-	_, _, _, _, _, hasLamplighter := app.findLamplighter(ctx)
+	_, hasLamplighter := app.findNPCWithBehavior(ctx, behaviorLamplighter)
 
 	var flips []pendingFlip
 	if !hasLamplighter {

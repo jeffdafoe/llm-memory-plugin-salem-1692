@@ -139,6 +139,12 @@ func _handle_message(data: String) -> void:
         "npc_agent_changed":
             if world != null:
                 world.apply_npc_agent_change(event_data)
+        "npc_home_structure_changed":
+            if world != null:
+                world.apply_npc_home_structure_change(event_data)
+        "npc_work_structure_changed":
+            if world != null:
+                world.apply_npc_work_structure_change(event_data)
         "session_expired":
             # Server's ping loop noticed our session went bad. Route through
             # the same path as a 401 on a REST request so the UI behavior
