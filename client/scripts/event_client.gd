@@ -129,6 +129,31 @@ func _handle_message(data: String) -> void:
             # the same path as a 401 on a REST request so the UI behavior
             # is consistent (login screen pops up, editor goes inactive).
             Auth.notify_session_expired()
+        "asset_footprint_updated":
+            _on_asset_footprint_updated(event_data)
+
+## Apply a server-broadcast footprint change to the local catalog and
+## redraw the selection border if the affected asset is the one currently
+## selected in the editor. The local PATCH path also updates the catalog
+## (optimistically), so this handler is mostly for OTHER clients learning
+## about the change — but it runs unconditionally; the values are
+## idempotent.
+func _on_asset_footprint_updated(data: Dictionary) -> void:
+    var asset_id: String = data.get("asset_id", "")
+    if asset_id == "" or not Catalog.assets.has(asset_id):
+        return
+    var asset = Catalog.assets[asset_id]
+    asset["footprint_left"]   = int(data.get("left",   0))
+    asset["footprint_right"]  = int(data.get("right",  0))
+    asset["footprint_top"]    = int(data.get("top",    0))
+    asset["footprint_bottom"] = int(data.get("bottom", 0))
+    Catalog.assets[asset_id] = asset
+    # Refresh the selection border if the change affects the currently
+    # selected object. Editor lives at /root/Main/Editor.
+    var editor = get_node_or_null("/root/Main/Editor")
+    if editor != null and editor.selected_object != null:
+        if editor.selected_object.get_meta("asset_id", "") == asset_id:
+            editor._add_selection_border(editor.selected_object)
 
 ## Call this after placing an object locally so we ignore the WS echo.
 func mark_local_object(obj_id: String) -> void:
