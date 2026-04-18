@@ -146,6 +146,56 @@ func _download_npc_sheet(sheet_path: String) -> void:
     http.request_completed.connect(_on_npc_sheet_downloaded.bind(http, sheet_path))
     http.request(api_base + sheet_path)
 
+## Get a cached NPC sheet texture, or download it and invoke the callback
+## when ready. Used by editor_panel's NPC placement thumbnails so it doesn't
+## need its own sheet cache. Callback receives one ImageTexture argument
+## (or is called with null on failure — currently we just don't call it,
+## keeping the pattern the same as _on_npc_sheet_downloaded).
+func get_or_load_npc_sheet(sheet_path: String, callback: Callable) -> void:
+    if sheet_path == "":
+        return
+    if _npc_sheets.has(sheet_path):
+        callback.call(_npc_sheets[sheet_path])
+        return
+    var http = HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    http.request_completed.connect(func(result: int, code: int, _hdrs: PackedStringArray, body: PackedByteArray):
+        http.queue_free()
+        if result != HTTPRequest.RESULT_SUCCESS or code != 200:
+            push_warning("NPC sheet download failed: " + sheet_path + " code=" + str(code))
+            return
+        var image = Image.new()
+        if image.load_png_from_buffer(body) != OK:
+            push_warning("NPC sheet decode failed: " + sheet_path)
+            return
+        var tex = ImageTexture.create_from_image(image)
+        _npc_sheets[sheet_path] = tex
+        callback.call(tex)
+    )
+    http.request(api_base + sheet_path)
+
+## Handle an npc_created broadcast — adds the new villager to placed_npcs
+## and renders it (downloading the sheet first if it's an unseen sprite).
+## Same flow as _on_npcs_loaded for a single NPC.
+func add_npc_from_broadcast(data: Dictionary) -> void:
+    if not (data is Dictionary):
+        return
+    var npc_id: String = data.get("id", "")
+    if npc_id == "" or placed_npcs.has(npc_id):
+        return
+    var sprite = data.get("sprite", null)
+    if sprite == null:
+        return
+    var sheet_path: String = sprite.get("sheet", "")
+    if sheet_path == "":
+        return
+    _pending_npcs.append(data)
+    if _npc_sheets.has(sheet_path):
+        _render_pending_npcs()
+    else:
+        _download_npc_sheet(sheet_path)
+
 func _on_npc_sheet_downloaded(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest, sheet_path: String) -> void:
     http.queue_free()
     if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:

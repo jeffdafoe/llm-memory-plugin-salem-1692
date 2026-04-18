@@ -124,6 +124,9 @@ func _handle_message(data: String) -> void:
             _on_npc_walking(event_data)
         "npc_arrived":
             _on_npc_arrived(event_data)
+        "npc_created":
+            if world != null:
+                world.add_npc_from_broadcast(event_data)
         "session_expired":
             # Server's ping loop noticed our session went bad. Route through
             # the same path as a 401 on a REST request so the UI behavior

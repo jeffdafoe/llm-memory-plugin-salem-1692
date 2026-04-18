@@ -178,6 +178,7 @@ func _build_ui() -> void:
     editor_panel.owner_changed.connect(_on_owner_changed)
     editor_panel.display_name_changed.connect(_on_display_name_changed)
     editor_panel.attachment_requested.connect(_on_attachment_requested)
+    editor_panel.npc_sprite_selected.connect(_on_panel_npc_sprite_selected)
     editor_panel.world = world
 
     # Wire editor signals to panel
@@ -238,6 +239,9 @@ func _on_popup_place_requested(asset_id: String) -> void:
 
 func _on_panel_asset_selected(asset_id: String) -> void:
     editor.select_asset_for_placement(asset_id)
+
+func _on_panel_npc_sprite_selected(sprite: Dictionary, sheet: Texture2D, npc_name: String) -> void:
+    editor.select_npc_sprite_for_placement(sprite, sheet, npc_name)
 
 func _on_panel_delete() -> void:
     editor.delete_selection()

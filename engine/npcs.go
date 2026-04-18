@@ -9,7 +9,10 @@ package main
 // agent linkage on top.
 
 import (
+	"context"
+	"encoding/json"
 	"net/http"
+	"strings"
 )
 
 // NPCSprite describes a character sprite sheet. One row = one character
@@ -54,18 +57,15 @@ type NPC struct {
 	Sprite         *NPCSprite `json:"sprite,omitempty"`
 }
 
-// handleListNPCs returns every NPC with its sprite + animations inlined.
-// Sprite pack info is resolved per sprite. Same shape as the asset catalog
-// endpoint to keep the client side consistent.
-func (app *App) handleListNPCs(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-
-	// Packs first so we can attach them to sprites below.
+// loadNPCSprites returns the sprite catalog as a map keyed by sprite id,
+// with animations and pack metadata attached. Shared by the sprite-list
+// endpoint (catalog lookup for placement) and the NPC-list endpoint (which
+// inlines each NPC's sprite for rendering).
+func (app *App) loadNPCSprites(ctx context.Context) (map[string]*NPCSprite, error) {
 	packs := map[string]*TilesetPack{}
 	packRows, err := app.DB.Query(ctx, `SELECT id, name, url FROM tileset_pack`)
 	if err != nil {
-		jsonError(w, "Internal server error", http.StatusInternalServerError)
-		return
+		return nil, err
 	}
 	for packRows.Next() {
 		var p TilesetPack
@@ -75,7 +75,6 @@ func (app *App) handleListNPCs(w http.ResponseWriter, r *http.Request) {
 	}
 	packRows.Close()
 
-	// Sprites.
 	sprites := map[string]*NPCSprite{}
 	spriteRows, err := app.DB.Query(ctx,
 		`SELECT id, name, sheet, frame_width, frame_height, pack_id
@@ -83,8 +82,7 @@ func (app *App) handleListNPCs(w http.ResponseWriter, r *http.Request) {
 		 ORDER BY name`,
 	)
 	if err != nil {
-		jsonError(w, "Internal server error", http.StatusInternalServerError)
-		return
+		return nil, err
 	}
 	for spriteRows.Next() {
 		var s NPCSprite
@@ -101,15 +99,13 @@ func (app *App) handleListNPCs(w http.ResponseWriter, r *http.Request) {
 	}
 	spriteRows.Close()
 
-	// Animations attached to their sprite.
 	animRows, err := app.DB.Query(ctx,
 		`SELECT sprite_id, direction, animation, row_index, frame_count, frame_rate
 		 FROM npc_sprite_animation
 		 ORDER BY sprite_id, direction, animation`,
 	)
 	if err != nil {
-		jsonError(w, "Internal server error", http.StatusInternalServerError)
-		return
+		return nil, err
 	}
 	for animRows.Next() {
 		var spriteID string
@@ -124,7 +120,38 @@ func (app *App) handleListNPCs(w http.ResponseWriter, r *http.Request) {
 	}
 	animRows.Close()
 
-	// NPCs + inline sprite pointer.
+	return sprites, nil
+}
+
+// handleListNPCSprites returns the sprite catalog (templates available for
+// placement), ordered by name. Used by the editor panel to render an NPC
+// placement catalog analogous to the asset catalog.
+func (app *App) handleListNPCSprites(w http.ResponseWriter, r *http.Request) {
+	sprites, err := app.loadNPCSprites(r.Context())
+	if err != nil {
+		jsonError(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	out := make([]*NPCSprite, 0, len(sprites))
+	for _, s := range sprites {
+		out = append(out, s)
+	}
+	// Stable alphabetical order so the editor panel's render is deterministic.
+	// loadNPCSprites orders the SQL, but the map iteration loses it.
+	sortNPCSpritesByName(out)
+	jsonResponse(w, http.StatusOK, out)
+}
+
+// handleListNPCs returns every NPC with its sprite + animations inlined.
+// Same shape as the asset catalog endpoint to keep the client side consistent.
+func (app *App) handleListNPCs(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	sprites, err := app.loadNPCSprites(ctx)
+	if err != nil {
+		jsonError(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
 	npcRows, err := app.DB.Query(ctx,
 		`SELECT id, display_name, sprite_id, home_x, home_y,
 		        current_x, current_y, facing, behavior, llm_memory_agent
@@ -151,4 +178,94 @@ func (app *App) handleListNPCs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, http.StatusOK, npcs)
+}
+
+// sortNPCSpritesByName is an insertion sort — the list is always small
+// (a handful of character sheets), no need for a generic sort import.
+func sortNPCSpritesByName(s []*NPCSprite) {
+	for i := 1; i < len(s); i++ {
+		for j := i; j > 0 && s[j-1].Name > s[j].Name; j-- {
+			s[j-1], s[j] = s[j], s[j-1]
+		}
+	}
+}
+
+// handleCreateNPC places a new NPC on the map. Admin only. Both home_x/y and
+// current_x/y are initialized to the placement point so the villager "lives"
+// where they're placed. behavior and llm_memory_agent stay null at creation —
+// linking to an agent or assigning a routine is a separate admin action.
+//
+// Broadcasts npc_created so other connected clients render the new NPC.
+func (app *App) handleCreateNPC(w http.ResponseWriter, r *http.Request) {
+	user := getUserFromContext(r.Context())
+	if user == nil || !user.hasRole("ROLE_SALEM_ADMIN") {
+		jsonError(w, "Admin role required", http.StatusForbidden)
+		return
+	}
+
+	var req struct {
+		Name     string  `json:"name"`
+		SpriteID string  `json:"sprite_id"`
+		X        float64 `json:"x"`
+		Y        float64 `json:"y"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	req.Name = strings.TrimSpace(req.Name)
+	if req.Name == "" {
+		req.Name = "Villager"
+	}
+	if req.SpriteID == "" {
+		jsonError(w, "sprite_id is required", http.StatusBadRequest)
+		return
+	}
+
+	// Verify the sprite exists so the FK insert returns a friendly error
+	// rather than a generic 500.
+	var spriteCount int
+	if err := app.DB.QueryRow(r.Context(),
+		`SELECT COUNT(*) FROM npc_sprite WHERE id = $1`, req.SpriteID,
+	).Scan(&spriteCount); err != nil || spriteCount == 0 {
+		jsonError(w, "Unknown sprite_id", http.StatusBadRequest)
+		return
+	}
+
+	id := newUUIDv7()
+	_, err := app.DB.Exec(r.Context(),
+		`INSERT INTO npc (id, display_name, sprite_id, home_x, home_y,
+		                  current_x, current_y, facing)
+		 VALUES ($1, $2, $3, $4, $5, $4, $5, 'south')`,
+		id, req.Name, req.SpriteID, req.X, req.Y,
+	)
+	if err != nil {
+		jsonError(w, "Failed to create NPC", http.StatusInternalServerError)
+		return
+	}
+
+	// Build the response with the full sprite inlined so the client can
+	// render immediately without a follow-up fetch — same shape as
+	// handleListNPCs returns per-NPC.
+	sprites, err := app.loadNPCSprites(r.Context())
+	if err != nil {
+		jsonError(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	npc := NPC{
+		ID:          id,
+		DisplayName: req.Name,
+		SpriteID:    req.SpriteID,
+		HomeX:       req.X,
+		HomeY:       req.Y,
+		CurrentX:    req.X,
+		CurrentY:    req.Y,
+		Facing:      "south",
+	}
+	if s, ok := sprites[req.SpriteID]; ok {
+		npc.Sprite = s
+	}
+
+	jsonResponse(w, http.StatusCreated, npc)
+	app.Hub.Broadcast(WorldEvent{Type: "npc_created", Data: npc})
 }
