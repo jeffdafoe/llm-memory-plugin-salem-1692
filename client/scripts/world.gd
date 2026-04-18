@@ -175,6 +175,17 @@ func get_or_load_npc_sheet(sheet_path: String, callback: Callable) -> void:
     )
     http.request(api_base + sheet_path)
 
+## Remove an NPC from the world by id. Called by the npc_deleted WS handler
+## on all connected clients, not just the one that initiated the delete.
+func remove_npc_by_id(npc_id: String) -> void:
+    if npc_id == "":
+        return
+    var container: Node2D = placed_npcs.get(npc_id, null)
+    if container == null:
+        return
+    placed_npcs.erase(npc_id)
+    container.queue_free()
+
 ## Handle an npc_created broadcast — adds the new villager to placed_npcs
 ## and renders it (downloading the sheet first if it's an unseen sprite).
 ## Same flow as _on_npcs_loaded for a single NPC.

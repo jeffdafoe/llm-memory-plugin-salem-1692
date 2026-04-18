@@ -269,3 +269,31 @@ func (app *App) handleCreateNPC(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusCreated, npc)
 	app.Hub.Broadcast(WorldEvent{Type: "npc_created", Data: npc})
 }
+
+// handleDeleteNPC removes a placed NPC. Admin only. Broadcasts npc_deleted
+// so every connected client removes the sprite.
+func (app *App) handleDeleteNPC(w http.ResponseWriter, r *http.Request) {
+	user := getUserFromContext(r.Context())
+	if user == nil || !user.hasRole("ROLE_SALEM_ADMIN") {
+		jsonError(w, "Admin role required", http.StatusForbidden)
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		jsonError(w, "Missing NPC ID", http.StatusBadRequest)
+		return
+	}
+	result, err := app.DB.Exec(r.Context(),
+		`DELETE FROM npc WHERE id = $1`, id,
+	)
+	if err != nil {
+		jsonError(w, "Failed to delete NPC", http.StatusInternalServerError)
+		return
+	}
+	if result.RowsAffected() == 0 {
+		jsonError(w, "NPC not found", http.StatusNotFound)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+	app.Hub.Broadcast(WorldEvent{Type: "npc_deleted", Data: map[string]string{"id": id}})
+}
