@@ -49,6 +49,7 @@ type NPC struct {
 	CurrentX       float64    `json:"current_x"`
 	CurrentY       float64    `json:"current_y"`
 	Facing         string     `json:"facing"`
+	Behavior       *string    `json:"behavior"`
 	LLMMemoryAgent *string    `json:"llm_memory_agent"`
 	Sprite         *NPCSprite `json:"sprite,omitempty"`
 }
@@ -126,7 +127,7 @@ func (app *App) handleListNPCs(w http.ResponseWriter, r *http.Request) {
 	// NPCs + inline sprite pointer.
 	npcRows, err := app.DB.Query(ctx,
 		`SELECT id, display_name, sprite_id, home_x, home_y,
-		        current_x, current_y, facing, llm_memory_agent
+		        current_x, current_y, facing, behavior, llm_memory_agent
 		 FROM npc
 		 ORDER BY display_name`,
 	)
@@ -140,7 +141,7 @@ func (app *App) handleListNPCs(w http.ResponseWriter, r *http.Request) {
 	for npcRows.Next() {
 		var n NPC
 		if err := npcRows.Scan(&n.ID, &n.DisplayName, &n.SpriteID,
-			&n.HomeX, &n.HomeY, &n.CurrentX, &n.CurrentY, &n.Facing, &n.LLMMemoryAgent); err != nil {
+			&n.HomeX, &n.HomeY, &n.CurrentX, &n.CurrentY, &n.Facing, &n.Behavior, &n.LLMMemoryAgent); err != nil {
 			continue
 		}
 		if s, ok := sprites[n.SpriteID]; ok {

@@ -216,6 +216,8 @@ func _render_npc(npc: Dictionary) -> void:
     container.set_meta("npc_id", npc_id)
     container.set_meta("display_name", npc.get("display_name", ""))
     container.set_meta("facing", facing)
+    container.set_meta("behavior", npc.get("behavior", ""))
+    container.set_meta("llm_memory_agent", npc.get("llm_memory_agent", ""))
     container.position = Vector2(npc.get("current_x", 0.0), npc.get("current_y", 0.0))
     container.z_index = OBJECT_Z
 

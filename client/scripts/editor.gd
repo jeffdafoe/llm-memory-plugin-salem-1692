@@ -9,6 +9,8 @@ extends CanvasLayer
 
 signal object_selected(info: Dictionary)
 signal object_deselected
+signal npc_selected(info: Dictionary)
+signal npc_deselected
 signal mode_changed(mode: Mode)
 
 enum Mode { SELECT, PLACE, MOVE, TERRAIN }
@@ -16,8 +18,12 @@ enum Mode { SELECT, PLACE, MOVE, TERRAIN }
 var current_mode: Mode = Mode.SELECT
 var selected_asset_id: String = ""
 var selected_object: Node2D = null
+var selected_npc: Node2D = null
 var ghost_sprite: Sprite2D = null
 var active: bool = false
+
+# NPC selection border (added as a child of the selected NPC container)
+var _npc_selection_border: Node2D = null
 
 # When true, a popup overlay is open — skip all map input
 var popup_open: bool = false
@@ -155,6 +161,9 @@ func _input(event: InputEvent) -> void:
             if current_mode == Mode.PLACE:
                 set_mode(Mode.SELECT)
                 get_viewport().set_input_as_handled()
+            elif current_mode == Mode.SELECT and selected_npc != null:
+                _deselect_npc()
+                get_viewport().set_input_as_handled()
 
     if event is InputEventMouseMotion:
         if current_mode == Mode.PLACE and ghost_sprite.visible:
@@ -167,7 +176,12 @@ func _input(event: InputEvent) -> void:
             _delete_selected()
             get_viewport().set_input_as_handled()
         if event.keycode == KEY_ESCAPE:
-            set_mode(Mode.SELECT)
+            # In SELECT mode with an NPC selected, Esc deselects the NPC
+            # rather than re-running set_mode(SELECT), which would no-op.
+            if current_mode == Mode.SELECT and selected_npc != null:
+                _deselect_npc()
+            else:
+                set_mode(Mode.SELECT)
             get_viewport().set_input_as_handled()
 
 func _on_left_press(screen_pos: Vector2) -> void:
@@ -177,6 +191,27 @@ func _on_left_press(screen_pos: Vector2) -> void:
             left_click_used = true
             get_viewport().set_input_as_handled()
         Mode.SELECT:
+            # If an NPC is already selected, clicks either switch to a different
+            # NPC or command the selected one to walk. The server's
+            # findPathToAdjacent handles obstacle targets by routing to the
+            # nearest walkable neighbor — same mechanism the lamplighter uses.
+            if selected_npc != null:
+                var npc_hit_sel: Node2D = _find_npc_at(screen_pos)
+                if npc_hit_sel != null and npc_hit_sel != selected_npc:
+                    _select_npc(npc_hit_sel)
+                    left_click_used = true
+                    get_viewport().set_input_as_handled()
+                    return
+                if npc_hit_sel == selected_npc:
+                    # Re-click on the same NPC — no-op. Use right-click/Esc to deselect.
+                    left_click_used = true
+                    get_viewport().set_input_as_handled()
+                    return
+                _walk_selected_npc(screen_pos)
+                left_click_used = true
+                get_viewport().set_input_as_handled()
+                return
+
             # If there's already a selected object and the click is on its
             # footprint border edge, start a drag-resize instead of falling
             # through to object selection / drag-move.
@@ -187,6 +222,16 @@ func _on_left_press(screen_pos: Vector2) -> void:
                     left_click_used = true
                     get_viewport().set_input_as_handled()
                     return
+
+            # NPC hit-testing takes priority over objects. NPCs stand on top of
+            # obstacles z-wise, and clicking a villager should select the villager,
+            # not whatever asset happens to share that screen pixel.
+            var npc_hit: Node2D = _find_npc_at(screen_pos)
+            if npc_hit != null:
+                _select_npc(npc_hit)
+                left_click_used = true
+                get_viewport().set_input_as_handled()
+                return
 
             var hit = _find_object_at(screen_pos)
             if hit != null:
@@ -220,6 +265,7 @@ func set_mode(new_mode: Mode) -> void:
         selected_asset_id = ""
     if new_mode != Mode.SELECT:
         _deselect()
+        _deselect_npc()
     _dragging = false
     _drag_pending = false
     _terrain_painting = false
@@ -321,6 +367,7 @@ func _get_sprite_size(sprite_node: Node2D) -> Vector2:
 
 func _select_object(node: Node2D) -> void:
     _deselect()
+    _deselect_npc()
     selected_object = node
     _add_selection_border(node)
     object_selected.emit({
@@ -335,6 +382,116 @@ func _deselect() -> void:
         _remove_selection_border()
         selected_object = null
         object_deselected.emit()
+
+# --- NPC selection ---
+
+## Find an NPC by point-in-sprite-rect, same approach as _find_object_at but
+## walks world.placed_npcs (Dictionary<id, Node2D>). Returns the container node
+## so callers can read meta for the info panel / walk command.
+func _find_npc_at(screen_pos: Vector2) -> Node2D:
+    var world_pos: Vector2 = _screen_to_world(screen_pos)
+    var best_node: Node2D = null
+    var best_dist: float = INF
+
+    for npc_id in world.placed_npcs:
+        var container: Node2D = world.placed_npcs[npc_id]
+        if container == null:
+            continue
+        var sprite_node: Node2D = _get_sprite_child(container)
+        if sprite_node == null:
+            continue
+        var region_size: Vector2 = _get_sprite_size(sprite_node)
+        if region_size == Vector2.ZERO:
+            continue
+        var world_size: Vector2 = region_size * sprite_node.scale
+        var rect_origin: Vector2 = container.position + sprite_node.position
+        var rect = Rect2(rect_origin, world_size)
+        if rect.has_point(world_pos):
+            var dist: float = container.position.distance_to(world_pos)
+            if dist < best_dist:
+                best_dist = dist
+                best_node = container
+
+    return best_node
+
+func _select_npc(container: Node2D) -> void:
+    _deselect()
+    _deselect_npc()
+    selected_npc = container
+    _add_npc_selection_border(container)
+    npc_selected.emit({
+        "npc_id": container.get_meta("npc_id", ""),
+        "display_name": container.get_meta("display_name", ""),
+        "behavior": container.get_meta("behavior", ""),
+        "llm_memory_agent": container.get_meta("llm_memory_agent", ""),
+    })
+
+func _deselect_npc() -> void:
+    if selected_npc != null:
+        _remove_npc_selection_border()
+        selected_npc = null
+        npc_deselected.emit()
+
+## Simple cyan box around the NPC's sprite bounds. No drag handles — NPCs
+## don't have a resizable pathfinding footprint, they walk by A* from the
+## server. Different color from the object selection border (gold) so users
+## know which kind of thing they've grabbed.
+func _add_npc_selection_border(container: Node2D) -> void:
+    _remove_npc_selection_border()
+    var sprite_node: Node2D = _get_sprite_child(container)
+    if sprite_node == null:
+        return
+    var region_size: Vector2 = _get_sprite_size(sprite_node)
+    if region_size == Vector2.ZERO:
+        return
+    var world_size: Vector2 = region_size * sprite_node.scale
+    var origin: Vector2 = sprite_node.position  # local to container
+
+    _npc_selection_border = Node2D.new()
+    _npc_selection_border.name = "NPCSelectionBorder"
+    _npc_selection_border.z_index = 999
+    container.add_child(_npc_selection_border)
+
+    var border := Line2D.new()
+    border.width = 2.0
+    border.default_color = Color(0.35, 0.85, 0.95, 0.9)
+    border.closed = true
+    border.add_point(origin)
+    border.add_point(origin + Vector2(world_size.x, 0))
+    border.add_point(origin + world_size)
+    border.add_point(origin + Vector2(0, world_size.y))
+    _npc_selection_border.add_child(border)
+
+func _remove_npc_selection_border() -> void:
+    if _npc_selection_border != null:
+        _npc_selection_border.queue_free()
+        _npc_selection_border = null
+
+## Command the currently-selected NPC to walk to the clicked world point.
+## The server handles pathfinding, obstacle avoidance, and walk-to-adjacent
+## for obstacle targets (findPathToAdjacent). 400 on unreachable is
+## silently ignored — the NPC just doesn't move.
+func _walk_selected_npc(screen_pos: Vector2) -> void:
+    if selected_npc == null:
+        return
+    var npc_id: String = selected_npc.get_meta("npc_id", "")
+    if npc_id == "":
+        return
+    var target: Vector2 = _screen_to_world(screen_pos)
+    var http = HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    http.request_completed.connect(func(_r, c, _h, _b):
+        http.queue_free()
+        Auth.check_response(c)
+    )
+    var payload = JSON.stringify({"x": target.x, "y": target.y})
+    var headers := ["Content-Type: application/json"]
+    var auth_header: String = Auth.get_auth_header()
+    if auth_header != "":
+        headers.append("Authorization: " + auth_header)
+    http.request(Auth.api_base + "/api/village/npcs/" + npc_id + "/walk-to",
+        headers, HTTPClient.METHOD_POST, payload)
 
 ## Draw the selected object's footprint as a tile-aligned rectangle. Each
 ## edge is grabbable (see _hit_test_footprint_edge) so the user can drag
