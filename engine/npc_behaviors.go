@@ -27,8 +27,9 @@ const (
 	behaviorWasherwoman = "washerwoman"
 	behaviorTownCrier   = "town_crier"
 
-	tagLaundry      = "laundry"
-	tagNoticeBoard  = "notice-board"
+	tagLaundry          = "laundry"
+	tagNoticeBoard      = "notice-board"
+	tagLamplighterTarget = "lamplighter-target"
 )
 
 // routeStop is one object an NPC visits on its scheduled route.
@@ -258,18 +259,22 @@ func (app *App) startLamplighterRoute(ctx context.Context, targetTag string) (in
 		return 0, nil
 	}
 
+	// Narrow the lamplighter's route to states that also carry the
+	// lamplighter-target tag. Other day/night-active objects (campfires)
+	// are left to the bulk transition in applyTransition.
 	rows, err := app.DB.Query(ctx,
 		`WITH target_states AS (
 		    SELECT DISTINCT ON (s.asset_id) s.asset_id, s.state AS target_state
 		    FROM asset_state s
-		    JOIN asset_state_tag t ON t.state_id = s.id
-		    WHERE t.tag = $1
+		    JOIN asset_state_tag t  ON t.state_id  = s.id AND t.tag  = $1
+		    JOIN asset_state_tag t2 ON t2.state_id = s.id AND t2.tag = $2
 		    ORDER BY s.asset_id, s.id
 		)
 		SELECT o.id, ts.target_state, o.x, o.y
 		FROM village_object o
 		JOIN target_states ts ON ts.asset_id = o.asset_id
-		WHERE o.current_state IS DISTINCT FROM ts.target_state`, targetTag,
+		WHERE o.current_state IS DISTINCT FROM ts.target_state`,
+		targetTag, tagLamplighterTarget,
 	)
 	if err != nil {
 		return 0, err

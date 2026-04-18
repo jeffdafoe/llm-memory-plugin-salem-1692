@@ -227,18 +227,18 @@ func (app *App) applyTransition(ctx context.Context, newPhase string) (int, erro
 	}
 
 	// If the village has a lamplighter on duty, he takes over the per-object
-	// flips — walks the route, lights/extinguishes each object individually
-	// on arrival. Skip the bulk flip here so objects stay unflipped until he
-	// arrives at them.
+	// flips for lamplighter-target objects — walks the route, lights or
+	// extinguishes each one individually on arrival. Non-lamp day/night
+	// objects (campfires) still flip in the bulk pass.
 	_, hasLamplighter := app.findNPCWithBehavior(ctx, behaviorLamplighter)
 
-	var flips []pendingFlip
-	if !hasLamplighter {
-		var err error
-		flips, err = app.determineTransitionFlips(ctx, tag)
-		if err != nil {
-			return 0, err
-		}
+	var excludeTag string
+	if hasLamplighter {
+		excludeTag = tagLamplighterTarget
+	}
+	flips, err := app.determineTransitionFlips(ctx, tag, excludeTag)
+	if err != nil {
+		return 0, err
 	}
 
 	if _, err := app.DB.Exec(ctx,
@@ -286,10 +286,13 @@ func (app *App) applyTransition(ctx context.Context, newPhase string) (int, erro
 // village_object into the target state for the given tag ('day-active' or
 // 'night-active'). Each flip carries the owning asset's transition_spread_seconds
 // so scheduleFlips can spread them individually.
-func (app *App) determineTransitionFlips(ctx context.Context, tag string) ([]pendingFlip, error) {
-	rows, err := app.DB.Query(ctx,
-		`WITH target_states AS (
-		    SELECT DISTINCT ON (s.asset_id) s.asset_id, s.state AS target_state
+//
+// When excludeTag is non-empty, objects whose asset has a target_state also
+// carrying excludeTag are dropped from the bulk flip — they're expected to
+// be handled by an NPC route (e.g. lamplighter-target).
+func (app *App) determineTransitionFlips(ctx context.Context, tag, excludeTag string) ([]pendingFlip, error) {
+	query := `WITH target_states AS (
+		    SELECT DISTINCT ON (s.asset_id) s.asset_id, s.id AS target_state_id, s.state AS target_state
 		    FROM asset_state s
 		    JOIN asset_state_tag t ON t.state_id = s.id
 		    WHERE t.tag = $1
@@ -299,9 +302,15 @@ func (app *App) determineTransitionFlips(ctx context.Context, tag string) ([]pen
 		FROM village_object o
 		JOIN target_states ts ON ts.asset_id = o.asset_id
 		JOIN asset a ON a.id = o.asset_id
-		WHERE o.current_state IS DISTINCT FROM ts.target_state`,
-		tag,
-	)
+		WHERE o.current_state IS DISTINCT FROM ts.target_state`
+	args := []interface{}{tag}
+	if excludeTag != "" {
+		args = append(args, excludeTag)
+		query += ` AND NOT EXISTS (
+		    SELECT 1 FROM asset_state_tag t2 WHERE t2.state_id = ts.target_state_id AND t2.tag = $2
+		)`
+	}
+	rows, err := app.DB.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
