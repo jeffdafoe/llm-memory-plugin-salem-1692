@@ -878,7 +878,7 @@ func show_npc_selection(info: Dictionary) -> void:
     _selection_info.visible = true
     _asset_fields_section.visible = false
     _npc_fields_section.visible = true
-    _delete_button.disabled = true  # NPC delete not in this milestone
+    _delete_button.disabled = false
     _catalog_scroll.visible = false
 
     var display_name: String = info.get("display_name", "")

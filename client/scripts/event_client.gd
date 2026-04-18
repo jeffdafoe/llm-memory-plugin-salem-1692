@@ -127,6 +127,9 @@ func _handle_message(data: String) -> void:
         "npc_created":
             if world != null:
                 world.add_npc_from_broadcast(event_data)
+        "npc_deleted":
+            if world != null:
+                world.remove_npc_by_id(event_data.get("id", ""))
         "session_expired":
             # Server's ping loop noticed our session went bad. Route through
             # the same path as a 401 on a REST request so the UI behavior

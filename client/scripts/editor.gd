@@ -179,9 +179,13 @@ func _input(event: InputEvent) -> void:
 
     # Keyboard shortcuts
     if event is InputEventKey and event.pressed:
-        if event.keycode == KEY_DELETE and selected_object != null:
-            _delete_selected()
-            get_viewport().set_input_as_handled()
+        if event.keycode == KEY_DELETE:
+            if selected_npc != null:
+                _delete_selected_npc()
+                get_viewport().set_input_as_handled()
+            elif selected_object != null:
+                _delete_selected()
+                get_viewport().set_input_as_handled()
         if event.keycode == KEY_ESCAPE:
             # In SELECT mode with an NPC selected, Esc deselects the NPC
             # rather than re-running set_mode(SELECT), which would no-op.
@@ -800,7 +804,37 @@ func _delete_selected() -> void:
     object_deselected.emit()
 
 func delete_selection() -> void:
-    _delete_selected()
+    # An NPC takes precedence over an object selection — matches the
+    # selection priority in _on_left_press. In practice only one or the
+    # other is set at a time.
+    if selected_npc != null:
+        _delete_selected_npc()
+    else:
+        _delete_selected()
+
+## DELETE /api/village/npcs/{id}. The npc_deleted WS event handles the
+## actual removal from placed_npcs + node cleanup on every client including
+## this one, so we just fire the request and clear our local selection.
+func _delete_selected_npc() -> void:
+    if selected_npc == null:
+        return
+    var npc_id: String = selected_npc.get_meta("npc_id", "")
+    if npc_id == "":
+        return
+    var http = HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    http.request_completed.connect(func(_r, c, _h, _b):
+        http.queue_free()
+        Auth.check_response(c)
+    )
+    var headers: PackedStringArray = []
+    var auth_header: String = Auth.get_auth_header()
+    if auth_header != "":
+        headers.append("Authorization: " + auth_header)
+    http.request(Auth.api_base + "/api/village/npcs/" + npc_id,
+        headers, HTTPClient.METHOD_DELETE)
+    _deselect_npc()
 
 # --- Drag-to-move ---
 
