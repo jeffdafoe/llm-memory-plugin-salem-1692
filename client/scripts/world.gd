@@ -20,6 +20,13 @@ const DAY_COLOR := Color(1.0, 1.0, 1.0, 1.0)
 const NIGHT_COLOR := Color(0.42, 0.46, 0.68, 1.0)
 const PHASE_TRANSITION_DURATION := 1.5  # seconds — tween from day to night color
 
+# Layer baseline — terrain renders at z=0 (default), ground overlays sit at
+# asset.z_index = 1 (bridges, future road decals), everything else (objects,
+# NPCs) sits at OBJECT_Z. Migration ZBBS-052 sets asset.z_index = 10 for
+# everything except passages so the catalog already returns the right value;
+# OBJECT_Z is the in-code default for NPCs and the legacy fallback.
+const OBJECT_Z: int = 10
+
 # The generated map data — 2D array [y][x] of terrain indices (1-based)
 var map_data: Array = []
 var map_width: int = 200
@@ -59,12 +66,9 @@ func build_terrain() -> void:
     # Create custom terrain renderer (replaces TileMapLayer)
     terrain_renderer = Node2D.new()
     terrain_renderer.set_script(TerrainRendererScript)
-    # z_index well below 0 so ground overlays (bridges and other assets with
-    # negative z_index, see asset.z_index) still render above the terrain
-    # while staying below NPCs at z_index = 0. Tree order alone isn't enough
-    # because z_index takes priority over sibling order.
-    terrain_renderer.z_index = -100
-    # Insert before Objects so terrain draws underneath at equal z (defensive)
+    # Terrain at default z = 0 (the ground). Ground overlays (bridges, etc)
+    # sit just above at asset.z_index = 1; characters and regular objects
+    # sit at z = OBJECT_Z = 10 (see _place_object / _place_npc).
     add_child(terrain_renderer)
     move_child(terrain_renderer, 0)
 
@@ -213,6 +217,7 @@ func _render_npc(npc: Dictionary) -> void:
     container.set_meta("display_name", npc.get("display_name", ""))
     container.set_meta("facing", facing)
     container.position = Vector2(npc.get("current_x", 0.0), npc.get("current_y", 0.0))
+    container.z_index = OBJECT_Z
 
     var anim_sprite := AnimatedSprite2D.new()
     anim_sprite.sprite_frames = sprite_frames
@@ -645,7 +650,7 @@ func _place_object(data: Dictionary) -> void:
     var asset = Catalog.assets.get(asset_id, {})
     var anchor_x: float = asset.get("anchorX", asset.get("anchor_x", 0.5))
     var anchor_y: float = asset.get("anchorY", asset.get("anchor_y", 0.85))
-    var asset_z_index: int = int(asset.get("z_index", 0))
+    var asset_z_index: int = int(asset.get("z_index", OBJECT_Z))
 
     # Container node at the anchor point for y-sorting
     var container = Node2D.new()
