@@ -287,6 +287,8 @@ func fetch_state() -> void:
 
 func _on_state_response(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest) -> void:
     http.queue_free()
+    if not Auth.check_response(response_code):
+        return
     if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
         _set_status("Failed to load world state (" + str(response_code) + ")", true)
         return
@@ -391,6 +393,8 @@ func _send_force(phase: String) -> void:
 
 func _on_force_response(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest, requested: String) -> void:
     http.queue_free()
+    if not Auth.check_response(response_code):
+        return
     if result != HTTPRequest.RESULT_SUCCESS:
         _set_status("Force " + requested + " failed: network error", true)
         return
@@ -426,6 +430,8 @@ func _send_force_rotate() -> void:
 
 func _on_force_rotate_response(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest) -> void:
     http.queue_free()
+    if not Auth.check_response(response_code):
+        return
     if result != HTTPRequest.RESULT_SUCCESS:
         _set_status("Force rotate failed: network error", true)
         return

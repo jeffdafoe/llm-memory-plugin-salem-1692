@@ -105,6 +105,8 @@ func _load_npcs() -> void:
 
 func _on_npcs_loaded(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest) -> void:
     http.queue_free()
+    if not Auth.check_response(response_code):
+        return
     if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
         push_warning("NPC load failed: " + str(response_code))
         return
@@ -315,7 +317,10 @@ func save_terrain() -> void:
     var auth_header: String = Auth.get_auth_header()
     if auth_header != "":
         headers_arr.append("Authorization: " + auth_header)
-    http_req.request_completed.connect(func(r, c, h, b): http_req.queue_free())
+    http_req.request_completed.connect(func(r, c, h, b):
+        http_req.queue_free()
+        Auth.check_response(c)
+    )
     http_req.request(api_base + "/api/village/terrain", headers_arr, HTTPClient.METHOD_PUT, payload)
 
 ## Reload terrain from the server. Called on initial load and
@@ -353,6 +358,8 @@ func _load_world_phase() -> void:
 
 func _on_world_phase_loaded(result: int, response_code: int, headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest) -> void:
     http.queue_free()
+    if not Auth.check_response(response_code):
+        return
     if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
         return
     var json = JSON.parse_string(body.get_string_from_utf8())
@@ -434,6 +441,8 @@ func _load_terrain() -> void:
 func _on_terrain_loaded(result: int, response_code: int, headers: PackedStringArray, body: PackedByteArray, http_req: HTTPRequest) -> void:
     http_req.queue_free()
 
+    if not Auth.check_response(response_code):
+        return
     if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
         # No saved terrain — keep the procedurally generated one
         return
@@ -508,6 +517,8 @@ func _load_village() -> void:
 func _on_village_loaded(result: int, response_code: int, headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest) -> void:
     http.queue_free()
 
+    if not Auth.check_response(response_code):
+        return
     if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
         push_error("Village load failed: result=" + str(result) + " code=" + str(response_code))
         return
@@ -746,6 +757,8 @@ func _save_object(asset_id: String, state: String, pos: Vector2, node: Node2D) -
 func _on_object_saved(result: int, response_code: int, headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest, node: Node2D) -> void:
     http.queue_free()
 
+    if not Auth.check_response(response_code):
+        return
     if result != HTTPRequest.RESULT_SUCCESS or response_code < 200 or response_code >= 300:
         push_error("Failed to save object")
         return
@@ -796,7 +809,10 @@ func _update_object_position(obj_id, pos: Vector2) -> void:
     var auth_header: String = Auth.get_auth_header()
     if auth_header != "":
         headers_arr.append("Authorization: " + auth_header)
-    http.request_completed.connect(func(r, c, h, b): http.queue_free())
+    http.request_completed.connect(func(r, c, h, b):
+        http.queue_free()
+        Auth.check_response(c)
+    )
     http.request(api_base + "/api/village/objects/" + str(obj_id) + "/position", headers_arr, HTTPClient.METHOD_PATCH, payload)
 
 func _delete_object(obj_id) -> void:
@@ -807,7 +823,10 @@ func _delete_object(obj_id) -> void:
     var auth_header: String = Auth.get_auth_header()
     if auth_header != "":
         headers.append("Authorization: " + auth_header)
-    http.request_completed.connect(func(r, c, h, b): http.queue_free())
+    http.request_completed.connect(func(r, c, h, b):
+        http.queue_free()
+        Auth.check_response(c)
+    )
     http.request(api_base + "/api/village/objects/" + str(obj_id), headers, HTTPClient.METHOD_DELETE)
 
 ## Fetch village agents to build the owner display name lookup.
@@ -826,6 +845,8 @@ func _load_agents() -> void:
 func _on_agents_loaded(result: int, response_code: int, headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest) -> void:
     http.queue_free()
 
+    if not Auth.check_response(response_code):
+        return
     if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
         push_error("Failed to load agents: result=" + str(result) + " code=" + str(response_code))
         return
@@ -864,7 +885,10 @@ func _update_object_owner(obj_id, owner: String) -> void:
     var auth_header: String = Auth.get_auth_header()
     if auth_header != "":
         headers_arr.append("Authorization: " + auth_header)
-    http.request_completed.connect(func(r, c, h, b): http.queue_free())
+    http.request_completed.connect(func(r, c, h, b):
+        http.queue_free()
+        Auth.check_response(c)
+    )
     http.request(api_base + "/api/village/objects/" + str(obj_id) + "/owner", headers_arr, HTTPClient.METHOD_PATCH, payload)
 
 ## Set the display name of an object and persist to the server.
@@ -889,7 +913,10 @@ func _update_object_display_name(obj_id, display_name: String) -> void:
     var auth_header: String = Auth.get_auth_header()
     if auth_header != "":
         headers_arr.append("Authorization: " + auth_header)
-    http.request_completed.connect(func(r, c, h, b): http.queue_free())
+    http.request_completed.connect(func(r, c, h, b):
+        http.queue_free()
+        Auth.check_response(c)
+    )
     http.request(api_base + "/api/village/objects/" + str(obj_id) + "/name", headers_arr, HTTPClient.METHOD_PATCH, payload)
 
 ## Resolve an owner identifier to a display name.
