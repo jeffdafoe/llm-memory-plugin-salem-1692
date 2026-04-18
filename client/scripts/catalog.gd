@@ -41,7 +41,13 @@ func _ready() -> void:
         api_base = "http://zbbs.local"
 
     _load_catalog()
-    _load_npc_behaviors()
+
+    # npc-behaviors is an authed endpoint. Defer until login completes —
+    # autoload _ready() runs before the user has a session token.
+    if Auth.authenticated:
+        _load_npc_behaviors()
+    else:
+        Auth.logged_in.connect(_load_npc_behaviors)
 
 func _load_catalog() -> void:
     var http = HTTPRequest.new()
@@ -137,12 +143,19 @@ func _load_npc_behaviors() -> void:
     add_child(http)
 
     http.request_completed.connect(_on_npc_behaviors_loaded.bind(http))
-    var err = http.request(api_base + "/api/village/npc-behaviors")
+    var headers: PackedStringArray = []
+    var auth_header: String = Auth.get_auth_header()
+    if auth_header != "":
+        headers.append("Authorization: " + auth_header)
+    var err = http.request(api_base + "/api/village/npc-behaviors", headers)
     if err != OK:
         push_error("Failed to request npc behaviors: " + str(err))
 
 func _on_npc_behaviors_loaded(result: int, response_code: int, headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest) -> void:
     http.queue_free()
+
+    if not Auth.check_response(response_code):
+        return
 
     if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
         push_error("NPC behaviors request failed: result=" + str(result) + " code=" + str(response_code))

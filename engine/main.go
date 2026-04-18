@@ -60,48 +60,68 @@ func main() {
 		NPCBehaviors: newNPCBehaviors(),
 	}
 
-	// Build router
+	// Build router. Routes are registered via two helpers: authed() wraps
+	// the handler in requireLLMMemory; public() leaves it unwrapped. Default
+	// is authed — anything public must explicitly opt out, so forgetting to
+	// authenticate a new route is caught by review, not shipped to prod.
 	mux := http.NewServeMux()
+	authed := func(pattern string, handler http.HandlerFunc) {
+		mux.HandleFunc(pattern, app.requireLLMMemory(handler))
+	}
+	public := func(pattern string, handler http.HandlerFunc) {
+		mux.HandleFunc(pattern, handler)
+	}
 
-	// Asset catalog (public — needed by client on load before auth)
-	mux.HandleFunc("GET /api/assets", app.handleListAssets)
-	mux.HandleFunc("PATCH /api/assets/{id}/footprint", app.requireLLMMemory(app.handlePatchAssetFootprint))
+	// Public routes — explicitly unauthenticated. Keep this list short and
+	// justify each entry in a comment.
+	//
+	// /api/assets: the client loads the asset catalog on boot, before the
+	// user logs in, so the initial scene has textures to render.
+	//
+	// /api/village/events: WebSocket. Browsers can't attach Authorization
+	// headers to WS handshakes, so the endpoint auths via ?token= query
+	// param inside handleVillageEvents — effectively authed, just not via
+	// middleware.
+	public("GET /api/assets", app.handleListAssets)
+	public("GET /api/village/events", app.handleVillageEvents)
 
-	// All other routes require llm-memory auth (salem realm membership)
-	mux.HandleFunc("GET /api/me", app.requireLLMMemory(app.handleVillageMe))
-	mux.HandleFunc("GET /api/village/agents", app.requireLLMMemory(app.handleListVillageAgents))
-	mux.HandleFunc("POST /api/village/agents/{id}/move", app.requireLLMMemory(app.handleMoveAgent))
-	mux.HandleFunc("GET /api/village/objects", app.requireLLMMemory(app.handleListVillageObjects))
-	mux.HandleFunc("POST /api/village/objects", app.requireLLMMemory(app.handleCreateVillageObject))
-	mux.HandleFunc("POST /api/village/objects/bulk", app.requireLLMMemory(app.handleBulkCreateVillageObjects))
-	mux.HandleFunc("DELETE /api/village/objects/{id}", app.requireLLMMemory(app.handleDeleteVillageObject))
-	mux.HandleFunc("PATCH /api/village/objects/{id}/owner", app.requireLLMMemory(app.handleSetVillageObjectOwner))
-	mux.HandleFunc("PATCH /api/village/objects/{id}/name", app.requireLLMMemory(app.handleSetVillageObjectDisplayName))
-	mux.HandleFunc("PATCH /api/village/objects/{id}/state", app.requireLLMMemory(app.handleSetVillageObjectState))
-	mux.HandleFunc("PATCH /api/village/objects/{id}/position", app.requireLLMMemory(app.handleMoveVillageObject))
+	// Identity / catalog edits
+	authed("GET /api/me", app.handleVillageMe)
+	authed("PATCH /api/assets/{id}/footprint", app.handlePatchAssetFootprint)
+
+	// Agents
+	authed("GET /api/village/agents", app.handleListVillageAgents)
+	authed("POST /api/village/agents/{id}/move", app.handleMoveAgent)
+
+	// Placed objects
+	authed("GET /api/village/objects", app.handleListVillageObjects)
+	authed("POST /api/village/objects", app.handleCreateVillageObject)
+	authed("POST /api/village/objects/bulk", app.handleBulkCreateVillageObjects)
+	authed("DELETE /api/village/objects/{id}", app.handleDeleteVillageObject)
+	authed("PATCH /api/village/objects/{id}/owner", app.handleSetVillageObjectOwner)
+	authed("PATCH /api/village/objects/{id}/name", app.handleSetVillageObjectDisplayName)
+	authed("PATCH /api/village/objects/{id}/state", app.handleSetVillageObjectState)
+	authed("PATCH /api/village/objects/{id}/position", app.handleMoveVillageObject)
 
 	// Terrain grid
-	mux.HandleFunc("GET /api/village/terrain", app.requireLLMMemory(app.handleGetTerrain))
-	mux.HandleFunc("PUT /api/village/terrain", app.requireLLMMemory(app.handleSaveTerrain))
+	authed("GET /api/village/terrain", app.handleGetTerrain)
+	authed("PUT /api/village/terrain", app.handleSaveTerrain)
 
 	// NPCs — placed villagers with sprite catalog info inlined
-	mux.HandleFunc("GET /api/village/npcs", app.requireLLMMemory(app.handleListNPCs))
-	mux.HandleFunc("POST /api/village/npcs", app.requireLLMMemory(app.handleCreateNPC))
-	mux.HandleFunc("DELETE /api/village/npcs/{id}", app.requireLLMMemory(app.handleDeleteNPC))
-	mux.HandleFunc("POST /api/village/npcs/{id}/walk-to", app.requireLLMMemory(app.handleWalkTo))
-	mux.HandleFunc("PATCH /api/village/npcs/{id}/display-name", app.requireLLMMemory(app.handleSetNPCDisplayName))
-	mux.HandleFunc("PATCH /api/village/npcs/{id}/behavior", app.requireLLMMemory(app.handleSetNPCBehavior))
-	mux.HandleFunc("PATCH /api/village/npcs/{id}/agent", app.requireLLMMemory(app.handleSetNPCAgent))
-	mux.HandleFunc("GET /api/village/npc-sprites", app.requireLLMMemory(app.handleListNPCSprites))
-	mux.HandleFunc("GET /api/village/npc-behaviors", app.requireLLMMemory(app.handleListNPCBehaviors))
+	authed("GET /api/village/npcs", app.handleListNPCs)
+	authed("POST /api/village/npcs", app.handleCreateNPC)
+	authed("DELETE /api/village/npcs/{id}", app.handleDeleteNPC)
+	authed("POST /api/village/npcs/{id}/walk-to", app.handleWalkTo)
+	authed("PATCH /api/village/npcs/{id}/display-name", app.handleSetNPCDisplayName)
+	authed("PATCH /api/village/npcs/{id}/behavior", app.handleSetNPCBehavior)
+	authed("PATCH /api/village/npcs/{id}/agent", app.handleSetNPCAgent)
+	authed("GET /api/village/npc-sprites", app.handleListNPCSprites)
+	authed("GET /api/village/npc-behaviors", app.handleListNPCBehaviors)
 
 	// World day/night cycle + daily rotation
-	mux.HandleFunc("GET /api/village/world", app.requireLLMMemory(app.handleGetWorldState))
-	mux.HandleFunc("POST /api/village/world/force-phase", app.requireLLMMemory(app.handleForcePhase))
-	mux.HandleFunc("POST /api/village/world/force-rotate", app.requireLLMMemory(app.handleForceRotate))
-
-	// WebSocket — real-time world events stream
-	mux.HandleFunc("GET /api/village/events", app.handleVillageEvents)
+	authed("GET /api/village/world", app.handleGetWorldState)
+	authed("POST /api/village/world/force-phase", app.handleForcePhase)
+	authed("POST /api/village/world/force-rotate", app.handleForceRotate)
 
 	// CORS middleware for Godot web client
 	handler := corsMiddleware(mux)
