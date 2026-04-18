@@ -10,6 +10,7 @@ signal terrain_type_selected(terrain_type: int)
 signal owner_changed(owner: String)
 signal display_name_changed(display_name: String)
 signal attachment_requested(overlay_asset_id: String)
+signal npc_sprite_selected(sprite: Dictionary, sheet: Texture2D, npc_name: String)
 
 # Theme colors (matching top bar / login screen)
 const COLOR_BG = Color(0.12, 0.09, 0.07, 0.95)
@@ -60,6 +61,13 @@ var _asset_fields_section: VBoxContainer = null
 var _npc_fields_section: VBoxContainer = null
 var _npc_behavior_label: Label = null
 var _npc_agent_label: Label = null
+
+# NPC placement catalog section — sits at the bottom of _catalog_container
+# alongside the asset categories. Lets admins drop new villagers.
+var _npc_catalog_section: VBoxContainer = null
+var _npc_catalog_grid: GridContainer = null
+var _npc_name_input: LineEdit = null
+var _npc_sprites_loaded: bool = false
 
 # Reference to world for agent name lookups — set by main.gd
 var world: Node2D = null
@@ -329,6 +337,9 @@ func build_catalog() -> void:
     for child in _catalog_container.get_children():
         child.queue_free()
     _category_sections.clear()
+    _npc_catalog_section = null
+    _npc_catalog_grid = null
+    _npc_name_input = null
 
     # Sort categories for consistent ordering
     var cat_names: Array = Catalog.categories.keys()
@@ -337,6 +348,11 @@ func build_catalog() -> void:
     for cat_name in cat_names:
         var assets: Array = Catalog.categories[cat_name]
         _add_category_section(cat_name, assets)
+
+    # NPCs catalog — always appears at the bottom. Populated asynchronously
+    # from GET /api/village/npc-sprites once thumbnails' sheets download.
+    _build_npc_catalog_section()
+    _load_npc_sprites()
 
 func _add_category_section(cat_name: String, assets: Array) -> void:
     var section = VBoxContainer.new()
@@ -454,6 +470,187 @@ func _on_item_input(event: InputEvent, item: Control, asset_id: String) -> void:
             _select_catalog_item(item, asset_id)
         if event.button_index == MOUSE_BUTTON_RIGHT:
             asset_inspect_requested.emit(asset_id)
+
+## Append an NPC placement section below the asset categories. Name input
+## at the top, sprite thumbnail grid below. Thumbnails are populated once
+## sheets download (see _load_npc_sprites).
+func _build_npc_catalog_section() -> void:
+    _npc_catalog_section = VBoxContainer.new()
+    _npc_catalog_section.add_theme_constant_override("separation", 4)
+    _catalog_container.add_child(_npc_catalog_section)
+
+    var header = Button.new()
+    header.text = "VILLAGERS"
+    header.flat = true
+    header.add_theme_color_override("font_color", COLOR_LABEL)
+    header.add_theme_font_size_override("font_size", 11)
+    header.alignment = HORIZONTAL_ALIGNMENT_LEFT
+    _npc_catalog_section.add_child(header)
+
+    # Wrap name input + grid so they share the header's collapse state.
+    var body = VBoxContainer.new()
+    body.add_theme_constant_override("separation", 4)
+    body.visible = false
+    _npc_catalog_section.add_child(body)
+    header.pressed.connect(func(): body.visible = not body.visible)
+
+    var name_label = Label.new()
+    name_label.text = "Name (applied on drop)"
+    name_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+    name_label.add_theme_font_size_override("font_size", 11)
+    body.add_child(name_label)
+
+    _npc_name_input = LineEdit.new()
+    _npc_name_input.placeholder_text = "e.g. Goody Smith"
+    _npc_name_input.add_theme_font_override("font", _font)
+    _npc_name_input.add_theme_font_size_override("font_size", 13)
+    _npc_name_input.add_theme_color_override("font_color", COLOR_TEXT)
+    _npc_name_input.add_theme_color_override("font_placeholder_color", Color(0.45, 0.40, 0.30, 1.0))
+    _npc_name_input.max_length = 100
+    var input_style = StyleBoxFlat.new()
+    input_style.bg_color = COLOR_BTN_BG
+    input_style.border_width_left = 1
+    input_style.border_width_top = 1
+    input_style.border_width_right = 1
+    input_style.border_width_bottom = 1
+    input_style.border_color = COLOR_BTN_BORDER
+    input_style.corner_radius_left_top = 3
+    input_style.corner_radius_right_top = 3
+    input_style.corner_radius_left_bottom = 3
+    input_style.corner_radius_right_bottom = 3
+    input_style.content_margin_left = 6.0
+    input_style.content_margin_right = 6.0
+    input_style.content_margin_top = 4.0
+    input_style.content_margin_bottom = 4.0
+    _npc_name_input.add_theme_stylebox_override("normal", input_style)
+    _npc_name_input.add_theme_stylebox_override("focus", input_style)
+    body.add_child(_npc_name_input)
+
+    _npc_catalog_grid = GridContainer.new()
+    _npc_catalog_grid.columns = 4
+    _npc_catalog_grid.add_theme_constant_override("h_separation", 4)
+    _npc_catalog_grid.add_theme_constant_override("v_separation", 4)
+    body.add_child(_npc_catalog_grid)
+
+## Fetch the NPC sprite catalog from the server, then ask world.gd to load
+## each sheet (using its shared cache). Once a sheet arrives, build that
+## thumbnail. Thumbnails appear as sheets download — parallels the async
+## asset catalog render.
+func _load_npc_sprites() -> void:
+    if _npc_sprites_loaded:
+        return
+    _npc_sprites_loaded = true
+    var http = HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    http.request_completed.connect(_on_npc_sprites_loaded.bind(http))
+    var headers: PackedStringArray = []
+    var auth_header: String = Auth.get_auth_header()
+    if auth_header != "":
+        headers.append("Authorization: " + auth_header)
+    http.request(Auth.api_base + "/api/village/npc-sprites", headers)
+
+func _on_npc_sprites_loaded(result: int, code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest) -> void:
+    http.queue_free()
+    if not Auth.check_response(code):
+        return
+    if result != HTTPRequest.RESULT_SUCCESS or code != 200:
+        push_warning("NPC sprites load failed: " + str(code))
+        return
+    var json = JSON.parse_string(body.get_string_from_utf8())
+    if json == null or not (json is Array):
+        return
+    if _npc_catalog_grid == null:
+        return  # panel was torn down before response arrived
+    if world == null:
+        return
+    for sprite in json:
+        var sheet_path: String = sprite.get("sheet", "")
+        if sheet_path == "":
+            continue
+        # Defer thumbnail creation until the sheet texture is available.
+        # world.get_or_load_npc_sheet handles the cache hit/miss; callback
+        # fires either synchronously (cache hit) or after the download.
+        world.get_or_load_npc_sheet(sheet_path, func(tex: Texture2D):
+            _add_npc_catalog_item(sprite, tex)
+        )
+
+## Build one NPC sprite thumbnail. Click selects this sprite for placement
+## — main.gd routes the signal to editor.select_npc_sprite_for_placement.
+func _add_npc_catalog_item(sprite: Dictionary, sheet: Texture2D) -> void:
+    if _npc_catalog_grid == null or sheet == null:
+        return
+    var fw: int = int(sprite.get("frame_width", 32))
+    var fh: int = int(sprite.get("frame_height", 32))
+    var sprite_name: String = sprite.get("name", "villager")
+
+    var item = PanelContainer.new()
+    item.custom_minimum_size = Vector2(CELL_SIZE, CELL_SIZE)
+    item.tooltip_text = sprite_name
+
+    var item_style = StyleBoxFlat.new()
+    item_style.bg_color = Color(0.15, 0.12, 0.08, 1.0)
+    item_style.border_width_left = 1
+    item_style.border_width_top = 1
+    item_style.border_width_right = 1
+    item_style.border_width_bottom = 1
+    item_style.border_color = Color(0.3, 0.24, 0.15, 0.5)
+    item_style.corner_radius_left_top = 2
+    item_style.corner_radius_right_top = 2
+    item_style.corner_radius_left_bottom = 2
+    item_style.corner_radius_right_bottom = 2
+    item.add_theme_stylebox_override("panel", item_style)
+    item.set_meta("style_normal", item_style)
+
+    var center = CenterContainer.new()
+    center.custom_minimum_size = Vector2(CELL_SIZE - 4, CELL_SIZE - 4)
+    item.add_child(center)
+
+    var atlas := AtlasTexture.new()
+    atlas.atlas = sheet
+    # Frame 0 of row 0 = south-facing idle (Mana Seed NPC pack convention).
+    atlas.region = Rect2(0, 0, fw, fh)
+
+    var tex_rect = TextureRect.new()
+    tex_rect.texture = atlas
+    var native_size: Vector2 = Vector2(fw, fh)
+    var max_dim: float = CELL_SIZE - 8.0
+    var scale_factor: float = minf(max_dim / native_size.x, max_dim / native_size.y)
+    if scale_factor > 2.0:
+        scale_factor = 2.0
+    tex_rect.custom_minimum_size = native_size * scale_factor
+    tex_rect.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+    tex_rect.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+    center.add_child(tex_rect)
+
+    item.mouse_entered.connect(_on_item_hover.bind(item, true))
+    item.mouse_exited.connect(_on_item_hover.bind(item, false))
+    item.gui_input.connect(func(event: InputEvent):
+        if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+            _on_npc_catalog_item_selected(item, sprite, sheet)
+    )
+
+    _npc_catalog_grid.add_child(item)
+
+func _on_npc_catalog_item_selected(item: Control, sprite: Dictionary, sheet: Texture2D) -> void:
+    # Visual highlight only — don't route through _select_catalog_item because
+    # that emits asset_selected("") which would kick the editor back into
+    # SELECT mode and wipe the placement we're about to enter.
+    if _selected_item != null:
+        var old_style: StyleBoxFlat = _selected_item.get_meta("style_normal")
+        _selected_item.add_theme_stylebox_override("panel", old_style)
+    _selected_item = item
+    _selected_asset_id = ""
+    var selected_style: StyleBoxFlat = item.get_meta("style_normal").duplicate()
+    selected_style.bg_color = COLOR_ITEM_SELECTED
+    selected_style.border_color = COLOR_ITEM_BORDER
+    item.add_theme_stylebox_override("panel", selected_style)
+    _set_tool_active(_select_button, false)
+
+    var npc_name: String = ""
+    if _npc_name_input != null:
+        npc_name = _npc_name_input.text.strip_edges()
+    npc_sprite_selected.emit(sprite, sheet, npc_name)
 
 func _on_item_hover(item: Control, hovering: bool) -> void:
     if item == _selected_item:

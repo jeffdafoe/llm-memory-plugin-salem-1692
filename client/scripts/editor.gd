@@ -22,6 +22,13 @@ var selected_npc: Node2D = null
 var ghost_sprite: Sprite2D = null
 var active: bool = false
 
+# NPC placement state — when _placing_npc is true, the PLACE-mode click path
+# creates a new NPC via POST /api/village/npcs instead of placing an object.
+# Mutually exclusive with selected_asset_id being set.
+var _placing_npc: bool = false
+var _placing_npc_sprite: Dictionary = {}
+var _placing_npc_name: String = ""
+
 # NPC selection border (added as a child of the selected NPC container)
 var _npc_selection_border: Node2D = null
 
@@ -263,6 +270,8 @@ func set_mode(new_mode: Mode) -> void:
     if new_mode != Mode.PLACE:
         ghost_sprite.visible = false
         selected_asset_id = ""
+        _placing_npc = false
+        _placing_npc_sprite = {}
     if new_mode != Mode.SELECT:
         _deselect()
         _deselect_npc()
@@ -278,8 +287,11 @@ func select_asset_for_placement(asset_id: String) -> void:
         return
 
     selected_asset_id = asset_id
+    _placing_npc = false
+    _placing_npc_sprite = {}
     current_mode = Mode.PLACE
     _deselect()
+    _deselect_npc()
 
     var state_info = Catalog.get_state(asset_id)
     if state_info == null:
@@ -294,7 +306,43 @@ func select_asset_for_placement(asset_id: String) -> void:
     _apply_ghost_offset()
     mode_changed.emit(Mode.PLACE)
 
+## Called by the editor panel when the user picks an NPC sprite template.
+## Switches the editor into placement mode with a ghost showing the south-
+## idle frame of the selected sprite. `sheet` is the preloaded ImageTexture
+## so we don't re-download it.
+func select_npc_sprite_for_placement(sprite: Dictionary, sheet: Texture2D, npc_name: String) -> void:
+    if sprite == null or sprite.is_empty() or sheet == null:
+        set_mode(Mode.SELECT)
+        return
+
+    selected_asset_id = ""
+    _placing_npc = true
+    _placing_npc_sprite = sprite
+    _placing_npc_name = npc_name
+    current_mode = Mode.PLACE
+    _deselect()
+    _deselect_npc()
+
+    var fw: int = int(sprite.get("frame_width", 32))
+    var fh: int = int(sprite.get("frame_height", 32))
+
+    # Frame 0 of row 0 = south-facing idle. Matches the rendering default in
+    # world._render_npc (it plays facing + "_idle" with facing default "south").
+    var atlas := AtlasTexture.new()
+    atlas.atlas = sheet
+    atlas.region = Rect2(0, 0, fw, fh)
+
+    ghost_sprite.texture = atlas
+    ghost_sprite.visible = true
+    # Match world._render_npc's feet-anchoring: sprite top-left is offset
+    # (-fw/2, -fh*0.9) from the NPC's position, in texture pixels (the ghost
+    # has scale 2, so the world-pixel shift is double).
+    ghost_sprite.offset = Vector2(-fw * 0.5, -fh * 0.9)
+    mode_changed.emit(Mode.PLACE)
+
 func _apply_ghost_offset() -> void:
+    if _placing_npc:
+        return  # NPC ghost offset is set once in select_npc_sprite_for_placement
     if selected_asset_id == "":
         return
     var asset = Catalog.assets.get(selected_asset_id, {})
@@ -308,6 +356,9 @@ func _apply_ghost_offset() -> void:
         )
 
 func _place_at_mouse(screen_pos: Vector2) -> void:
+    if _placing_npc:
+        _place_npc_at_mouse(screen_pos)
+        return
     if selected_asset_id == "":
         return
     var world_pos: Vector2 = _screen_to_world(screen_pos)
@@ -316,6 +367,38 @@ func _place_at_mouse(screen_pos: Vector2) -> void:
     # Auto-select the newly placed object so attachments show immediately
     if placed_node != null:
         _select_object(placed_node)
+
+## POST /api/village/npcs at the click location. Server handles auth (admin
+## only), sprite validation, insert, and broadcast. The npc_created WS event
+## will arrive and render the new villager — we return to SELECT mode
+## immediately without auto-selecting (the broadcast handler creates the
+## Node2D; we don't have a local reference to pass to _select_npc).
+func _place_npc_at_mouse(screen_pos: Vector2) -> void:
+    var sprite_id: String = _placing_npc_sprite.get("id", "")
+    if sprite_id == "":
+        set_mode(Mode.SELECT)
+        return
+    var world_pos: Vector2 = _screen_to_world(screen_pos)
+    var payload = JSON.stringify({
+        "name": _placing_npc_name,
+        "sprite_id": sprite_id,
+        "x": world_pos.x,
+        "y": world_pos.y,
+    })
+    var http = HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    http.request_completed.connect(func(_r, c, _h, _b):
+        http.queue_free()
+        Auth.check_response(c)
+    )
+    var headers := ["Content-Type: application/json"]
+    var auth_header: String = Auth.get_auth_header()
+    if auth_header != "":
+        headers.append("Authorization: " + auth_header)
+    http.request(Auth.api_base + "/api/village/npcs", headers,
+        HTTPClient.METHOD_POST, payload)
+    set_mode(Mode.SELECT)
 
 func _find_object_at(screen_pos: Vector2) -> Node2D:
     var world_pos: Vector2 = _screen_to_world(screen_pos)
