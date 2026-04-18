@@ -505,8 +505,6 @@ func _cancel_footprint_resize() -> void:
     _add_selection_border(selected_object)
     _footprint_resize_side = ""
 
-    _selection_border.add_child(border)
-
 func _remove_selection_border() -> void:
     if _selection_border != null:
         _selection_border.queue_free()
