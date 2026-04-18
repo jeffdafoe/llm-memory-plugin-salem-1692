@@ -51,6 +51,16 @@ var _selected_terrain_item: Control = null
 var _attachments_section: VBoxContainer = null
 var _attachments_grid: GridContainer = null
 
+# Asset-specific fields (owner / name input / attachments) live under this
+# VBox so the whole block can be hidden when an NPC is selected instead.
+var _asset_fields_section: VBoxContainer = null
+
+# NPC-specific fields (behavior, linked llm_memory_agent). Mutually exclusive
+# with _asset_fields_section.
+var _npc_fields_section: VBoxContainer = null
+var _npc_behavior_label: Label = null
+var _npc_agent_label: Label = null
+
 # Reference to world for agent name lookups — set by main.gd
 var world: Node2D = null
 
@@ -149,26 +159,33 @@ func _ready() -> void:
     _selection_label.autowrap_mode = TextServer.AUTOWRAP_WORD
     _selection_info.add_child(_selection_label)
 
+    # Asset-only block — hidden when an NPC is selected so the panel doesn't
+    # show inapplicable fields (owner, attachments, etc.)
+    _asset_fields_section = VBoxContainer.new()
+    _asset_fields_section.add_theme_constant_override("separation", 4)
+    _asset_fields_section.size_flags_vertical = Control.SIZE_EXPAND_FILL
+    _selection_info.add_child(_asset_fields_section)
+
     _placed_by_label = Label.new()
     _placed_by_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
     _placed_by_label.add_theme_font_override("font", _font)
     _placed_by_label.add_theme_font_size_override("font_size", 12)
     _placed_by_label.visible = false
-    _selection_info.add_child(_placed_by_label)
+    _asset_fields_section.add_child(_placed_by_label)
 
     _owner_label = Label.new()
     _owner_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
     _owner_label.add_theme_font_override("font", _font)
     _owner_label.add_theme_font_size_override("font_size", 12)
     _owner_label.visible = false
-    _selection_info.add_child(_owner_label)
+    _asset_fields_section.add_child(_owner_label)
 
     # Display name input — lets editor assign a custom name to the object
     var name_header = Label.new()
     name_header.text = "NAME"
     name_header.add_theme_color_override("font_color", COLOR_LABEL)
     name_header.add_theme_font_size_override("font_size", 11)
-    _selection_info.add_child(name_header)
+    _asset_fields_section.add_child(name_header)
 
     _name_input = LineEdit.new()
     _name_input.placeholder_text = "e.g. General Store"
@@ -196,14 +213,14 @@ func _ready() -> void:
     _name_input.add_theme_stylebox_override("focus", name_input_style)
     _name_input.text_submitted.connect(_on_name_submitted)
     _name_input.focus_exited.connect(_on_name_focus_lost)
-    _selection_info.add_child(_name_input)
+    _asset_fields_section.add_child(_name_input)
 
     # Owner dropdown — lets editor assign/change object ownership
     var owner_header = Label.new()
     owner_header.text = "OWNER"
     owner_header.add_theme_color_override("font_color", COLOR_LABEL)
     owner_header.add_theme_font_size_override("font_size", 11)
-    _selection_info.add_child(owner_header)
+    _asset_fields_section.add_child(owner_header)
 
     _owner_dropdown = OptionButton.new()
     _owner_dropdown.add_theme_font_override("font", _font)
@@ -226,14 +243,14 @@ func _ready() -> void:
     dropdown_style.content_margin_bottom = 4.0
     _owner_dropdown.add_theme_stylebox_override("normal", dropdown_style)
     _owner_dropdown.item_selected.connect(_on_owner_selected)
-    _selection_info.add_child(_owner_dropdown)
+    _asset_fields_section.add_child(_owner_dropdown)
 
     # Attachments section — shown when selected object has slots
     _attachments_section = VBoxContainer.new()
     _attachments_section.visible = false
     _attachments_section.size_flags_vertical = Control.SIZE_EXPAND_FILL
     _attachments_section.add_theme_constant_override("separation", 4)
-    _selection_info.add_child(_attachments_section)
+    _asset_fields_section.add_child(_attachments_section)
 
     var attach_header = Label.new()
     attach_header.text = "ATTACHMENTS"
@@ -253,6 +270,26 @@ func _ready() -> void:
     _attachments_grid.add_theme_constant_override("h_separation", 4)
     _attachments_grid.add_theme_constant_override("v_separation", 4)
     attach_scroll.add_child(_attachments_grid)
+
+    # NPC-only block — shown in place of _asset_fields_section when an NPC is
+    # selected. Minimal for now: behavior + linked llm_memory_agent.
+    _npc_fields_section = VBoxContainer.new()
+    _npc_fields_section.visible = false
+    _npc_fields_section.add_theme_constant_override("separation", 4)
+    _selection_info.add_child(_npc_fields_section)
+
+    _npc_behavior_label = Label.new()
+    _npc_behavior_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+    _npc_behavior_label.add_theme_font_override("font", _font)
+    _npc_behavior_label.add_theme_font_size_override("font_size", 12)
+    _npc_fields_section.add_child(_npc_behavior_label)
+
+    _npc_agent_label = Label.new()
+    _npc_agent_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+    _npc_agent_label.add_theme_font_override("font", _font)
+    _npc_agent_label.add_theme_font_size_override("font_size", 12)
+    _npc_agent_label.autowrap_mode = TextServer.AUTOWRAP_WORD
+    _npc_fields_section.add_child(_npc_agent_label)
 
     var sel_sep = HSeparator.new()
     sel_sep.add_theme_color_override("separator_color", Color(0.4, 0.32, 0.2, 0.4))
@@ -580,6 +617,8 @@ func show_selection(info: Dictionary) -> void:
         _catalog_scroll.visible = true  # Restore catalog when deselected
         return
     _selection_info.visible = true
+    _asset_fields_section.visible = true
+    _npc_fields_section.visible = false
     _delete_button.disabled = false
     _catalog_scroll.visible = false  # Hide catalog when object is selected
     var asset = Catalog.assets.get(asset_id, {})
@@ -628,6 +667,39 @@ func show_selection(info: Dictionary) -> void:
             idx += 1
     _owner_dropdown.selected = selected_index
     _ignoring_dropdown = false
+
+## Called by editor when an NPC is selected/deselected. Reuses the selection
+## panel but swaps to NPC-only fields (no owner, no attachments, no delete
+## until placement/delete ships in a follow-up).
+func show_npc_selection(info: Dictionary) -> void:
+    var npc_id: String = info.get("npc_id", "")
+    if npc_id == "":
+        _selection_info.visible = false
+        _npc_fields_section.visible = false
+        _catalog_scroll.visible = true
+        return
+    _selection_info.visible = true
+    _asset_fields_section.visible = false
+    _npc_fields_section.visible = true
+    _delete_button.disabled = true  # NPC delete not in this milestone
+    _catalog_scroll.visible = false
+
+    var display_name: String = info.get("display_name", "")
+    if display_name == "":
+        display_name = "(unnamed)"
+    _selection_label.text = display_name
+
+    var behavior: String = info.get("behavior", "")
+    if behavior == "":
+        _npc_behavior_label.text = "Behavior: —"
+    else:
+        _npc_behavior_label.text = "Behavior: " + behavior
+
+    var agent: String = info.get("llm_memory_agent", "")
+    if agent == "":
+        _npc_agent_label.text = "Agent: —"
+    else:
+        _npc_agent_label.text = "Agent: " + agent
 
 ## Called when editor exits place mode (right-click cancel, escape, etc.)
 func clear_catalog_selection() -> void:
