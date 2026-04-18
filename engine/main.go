@@ -65,6 +65,7 @@ func main() {
 
 	// Asset catalog (public — needed by client on load before auth)
 	mux.HandleFunc("GET /api/assets", app.handleListAssets)
+	mux.HandleFunc("PATCH /api/assets/{id}/footprint", app.requireLLMMemory(app.handlePatchAssetFootprint))
 
 	// All other routes require llm-memory auth (salem realm membership)
 	mux.HandleFunc("GET /api/me", app.requireLLMMemory(app.handleVillageMe))

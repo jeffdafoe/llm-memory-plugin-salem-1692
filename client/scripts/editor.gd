@@ -26,8 +26,20 @@ var popup_open: bool = false
 # Camera checks this to decide whether left-click should pan.
 var left_click_used: bool = false
 
-# Selection border node — added as child of selected object
+# Selection border node — added as child of selected object. Outlines the
+# asset's PATHFIND footprint (per-side tile counts from the catalog), not
+# the sprite pixel rect, so what you see is what the pathfinder blocks.
+# Each of the 4 edges is grabbable to drag-resize that side. See
+# _on_footprint_edge_press / _on_footprint_drag.
 var _selection_border: Node2D = null
+
+# Footprint drag state. _footprint_resize_side is one of: "" (no drag),
+# "left", "right", "top", "bottom".
+const TILE_SIZE: float = 32.0
+const FOOTPRINT_EDGE_HIT_PX: float = 8.0  # screen-pixel hit slop on each side
+var _footprint_resize_side: String = ""
+var _footprint_resize_start_value: int = 0
+var _footprint_resize_start_world: Vector2 = Vector2.ZERO
 
 # Terrain painting state
 var _terrain_type: int = 0
@@ -76,6 +88,19 @@ func _input(event: InputEvent) -> void:
         return
 
     # --- Active operations that own all input until done ---
+
+    # Footprint resize in progress — owns mouse motion + release.
+    if _footprint_resize_side != "":
+        if event is InputEventMouseMotion:
+            _on_footprint_drag(event.position)
+            get_viewport().set_input_as_handled()
+        if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and not event.pressed:
+            _commit_footprint_resize()
+            get_viewport().set_input_as_handled()
+        if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
+            _cancel_footprint_resize()
+            get_viewport().set_input_as_handled()
+        return
 
     # Terrain painting: hold mouse to paint continuously
     if _terrain_painting:
@@ -152,6 +177,17 @@ func _on_left_press(screen_pos: Vector2) -> void:
             left_click_used = true
             get_viewport().set_input_as_handled()
         Mode.SELECT:
+            # If there's already a selected object and the click is on its
+            # footprint border edge, start a drag-resize instead of falling
+            # through to object selection / drag-move.
+            if selected_object != null:
+                var side: String = _hit_test_footprint_edge(screen_pos, selected_object)
+                if side != "":
+                    _begin_footprint_resize(side, screen_pos)
+                    left_click_used = true
+                    get_viewport().set_input_as_handled()
+                    return
+
             var hit = _find_object_at(screen_pos)
             if hit != null:
                 _select_object(hit)
@@ -300,19 +336,17 @@ func _deselect() -> void:
         selected_object = null
         object_deselected.emit()
 
+## Draw the selected object's footprint as a tile-aligned rectangle. Each
+## edge is grabbable (see _hit_test_footprint_edge) so the user can drag
+## the side in or out and the change persists to asset.footprint_*.
+## Falls back to a 1×1 (anchor tile only) outline when the asset has no
+## footprint data — still serves as a selection indicator.
 func _add_selection_border(node: Node2D) -> void:
     _remove_selection_border()
-    var sprite_node: Node2D = _get_sprite_child(node)
-    if sprite_node == null:
-        return
 
-    var region_size: Vector2 = _get_sprite_size(sprite_node)
-    if region_size == Vector2.ZERO:
+    var rect: Rect2 = _footprint_rect_local(node)
+    if rect.size == Vector2.ZERO:
         return
-
-    var world_size: Vector2 = region_size * sprite_node.scale
-    var rect_pos: Vector2 = sprite_node.position
-    var padding: float = 3.0
 
     _selection_border = Node2D.new()
     _selection_border.name = "SelectionBorder"
@@ -323,16 +357,153 @@ func _add_selection_border(node: Node2D) -> void:
     border.width = 2.0
     border.default_color = Color(0.85, 0.75, 0.35, 0.9)
     border.closed = true
+    border.add_point(rect.position)
+    border.add_point(rect.position + Vector2(rect.size.x, 0))
+    border.add_point(rect.position + rect.size)
+    border.add_point(rect.position + Vector2(0, rect.size.y))
+    _selection_border.add_child(border)
 
-    var x0: float = rect_pos.x - padding
-    var y0: float = rect_pos.y - padding
-    var x1: float = rect_pos.x + world_size.x + padding
-    var y1: float = rect_pos.y + world_size.y + padding
+## Compute the footprint rect in container-LOCAL coordinates (so the
+## border draws correctly when added as a child of the placed object).
+## Tile-aligned: anchor tile + footprint_left/right/top/bottom in tile
+## counts, all converted to world pixels via TILE_SIZE.
+func _footprint_rect_local(node: Node2D) -> Rect2:
+    var asset_id: String = node.get_meta("asset_id", "")
+    var asset = Catalog.assets.get(asset_id, {})
+    var fL: int = int(asset.get("footprint_left", 0))
+    var fR: int = int(asset.get("footprint_right", 0))
+    var fT: int = int(asset.get("footprint_top", 0))
+    var fB: int = int(asset.get("footprint_bottom", 0))
 
-    border.add_point(Vector2(x0, y0))
-    border.add_point(Vector2(x1, y0))
-    border.add_point(Vector2(x1, y1))
-    border.add_point(Vector2(x0, y1))
+    # Anchor tile from the container's world position. floor() so the
+    # math matches engine/pathfind.go's worldToTile.
+    var anchor_tile_x: int = int(floor(node.position.x / TILE_SIZE))
+    var anchor_tile_y: int = int(floor(node.position.y / TILE_SIZE))
+
+    var world_left: float = (anchor_tile_x - fL) * TILE_SIZE
+    var world_right: float = (anchor_tile_x + fR + 1) * TILE_SIZE
+    var world_top: float = (anchor_tile_y - fT) * TILE_SIZE
+    var world_bottom: float = (anchor_tile_y + fB + 1) * TILE_SIZE
+
+    return Rect2(
+        Vector2(world_left, world_top) - node.position,
+        Vector2(world_right - world_left, world_bottom - world_top)
+    )
+
+## Hit-test the screen position against the four edges of the selected
+## object's footprint border. Returns "left" / "right" / "top" / "bottom"
+## or "" if no edge was hit. Slop scales with zoom so the hit area stays
+## a consistent size on screen.
+func _hit_test_footprint_edge(screen_pos: Vector2, node: Node2D) -> String:
+    var world_pos: Vector2 = _screen_to_world(screen_pos)
+    var rect: Rect2 = _footprint_rect_local(node)
+    var origin: Vector2 = node.position
+    var left: float = rect.position.x + origin.x
+    var right: float = left + rect.size.x
+    var top: float = rect.position.y + origin.y
+    var bottom: float = top + rect.size.y
+
+    var zoom: float = get_viewport().get_canvas_transform().get_scale().x
+    if zoom <= 0.0:
+        zoom = 1.0
+    var slop: float = FOOTPRINT_EDGE_HIT_PX / zoom
+
+    var on_left: bool = abs(world_pos.x - left) <= slop and world_pos.y >= top - slop and world_pos.y <= bottom + slop
+    var on_right: bool = abs(world_pos.x - right) <= slop and world_pos.y >= top - slop and world_pos.y <= bottom + slop
+    var on_top: bool = abs(world_pos.y - top) <= slop and world_pos.x >= left - slop and world_pos.x <= right + slop
+    var on_bottom: bool = abs(world_pos.y - bottom) <= slop and world_pos.x >= left - slop and world_pos.x <= right + slop
+
+    # Corner overlap is fine — left/right take precedence over top/bottom
+    # so corners drag horizontally first. Arbitrary but consistent.
+    if on_left:
+        return "left"
+    if on_right:
+        return "right"
+    if on_top:
+        return "top"
+    if on_bottom:
+        return "bottom"
+    return ""
+
+func _begin_footprint_resize(side: String, screen_pos: Vector2) -> void:
+    if selected_object == null:
+        return
+    var asset_id: String = selected_object.get_meta("asset_id", "")
+    var asset = Catalog.assets.get(asset_id, {})
+    _footprint_resize_side = side
+    _footprint_resize_start_value = int(asset.get("footprint_" + side, 0))
+    _footprint_resize_start_world = _screen_to_world(screen_pos)
+
+## Translate the cursor's world-space delta on the dragged axis into a
+## tile-count delta, update the local catalog optimistically, and redraw
+## the border. PATCH only fires on release so a wiggly drag doesn't
+## hammer the server.
+func _on_footprint_drag(screen_pos: Vector2) -> void:
+    if selected_object == null or _footprint_resize_side == "":
+        return
+    var world_pos: Vector2 = _screen_to_world(screen_pos)
+    # Each side's "outward" direction grows the footprint on that side.
+    var delta_world: float
+    match _footprint_resize_side:
+        "left":   delta_world = _footprint_resize_start_world.x - world_pos.x  # drag west grows
+        "right":  delta_world = world_pos.x - _footprint_resize_start_world.x  # drag east grows
+        "top":    delta_world = _footprint_resize_start_world.y - world_pos.y  # drag north grows
+        "bottom": delta_world = world_pos.y - _footprint_resize_start_world.y  # drag south grows
+        _:        return
+    var delta_tiles: int = int(round(delta_world / TILE_SIZE))
+    var new_value: int = max(0, _footprint_resize_start_value + delta_tiles)
+
+    var asset_id: String = selected_object.get_meta("asset_id", "")
+    var asset = Catalog.assets.get(asset_id, {})
+    if asset == null or asset.is_empty():
+        return
+    if int(asset.get("footprint_" + _footprint_resize_side, 0)) == new_value:
+        return  # no change since last redraw — skip the work
+    asset["footprint_" + _footprint_resize_side] = new_value
+    Catalog.assets[asset_id] = asset
+    _add_selection_border(selected_object)
+
+func _commit_footprint_resize() -> void:
+    if selected_object == null or _footprint_resize_side == "":
+        _footprint_resize_side = ""
+        return
+    var asset_id: String = selected_object.get_meta("asset_id", "")
+    var asset = Catalog.assets.get(asset_id, {})
+    var payload = JSON.stringify({
+        "left":   int(asset.get("footprint_left", 0)),
+        "right":  int(asset.get("footprint_right", 0)),
+        "top":    int(asset.get("footprint_top", 0)),
+        "bottom": int(asset.get("footprint_bottom", 0)),
+    })
+    var http = HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    var headers := ["Content-Type: application/json"]
+    var auth_header: String = Auth.get_auth_header()
+    if auth_header != "":
+        headers.append("Authorization: " + auth_header)
+    http.request_completed.connect(func(_r, c, _h, _b):
+        http.queue_free()
+        Auth.check_response(c)
+        # Server broadcast will keep the catalog in sync for everyone else;
+        # we already applied the change locally for snappy feedback.
+    )
+    http.request(Auth.api_base + "/api/assets/" + asset_id + "/footprint",
+        headers, HTTPClient.METHOD_PATCH, payload)
+    _footprint_resize_side = ""
+
+func _cancel_footprint_resize() -> void:
+    if selected_object == null or _footprint_resize_side == "":
+        _footprint_resize_side = ""
+        return
+    # Roll the local catalog back to the value we had at drag start so the
+    # border snaps to where the user found it.
+    var asset_id: String = selected_object.get_meta("asset_id", "")
+    var asset = Catalog.assets.get(asset_id, {})
+    asset["footprint_" + _footprint_resize_side] = _footprint_resize_start_value
+    Catalog.assets[asset_id] = asset
+    _add_selection_border(selected_object)
+    _footprint_resize_side = ""
 
     _selection_border.add_child(border)
 
