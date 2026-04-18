@@ -21,14 +21,23 @@ func connect_to_server() -> void:
     if _socket != null:
         _socket.close()
 
+    # No token → no point connecting. Auth.session_expired handler will bring
+    # us back here once the user re-authenticates.
+    if Auth.session_token == "":
+        _socket = null
+        return
+
     var base: String = ""
     if OS.has_feature("web"):
         base = JavaScriptBridge.eval("window.location.origin", true)
     else:
         base = "http://zbbs.local"
 
-    # Convert http(s) to ws(s)
-    _url = base.replace("https://", "wss://").replace("http://", "ws://") + "/api/village/events"
+    # Convert http(s) to ws(s). Token rides in the URL because browsers can't
+    # set custom headers on WebSocket handshakes; rebuilt on every connect so
+    # reconnects after re-login pick up the fresh token.
+    _url = base.replace("https://", "wss://").replace("http://", "ws://") \
+        + "/api/village/events?token=" + Auth.session_token.uri_encode()
 
     _socket = WebSocketPeer.new()
     var err = _socket.connect_to_url(_url)
@@ -97,6 +106,11 @@ func _handle_message(data: String) -> void:
             _on_npc_walking(event_data)
         "npc_arrived":
             _on_npc_arrived(event_data)
+        "session_expired":
+            # Server's ping loop noticed our session went bad. Route through
+            # the same path as a 401 on a REST request so the UI behavior
+            # is consistent (login screen pops up, editor goes inactive).
+            Auth.notify_session_expired()
 
 ## Call this after placing an object locally so we ignore the WS echo.
 func mark_local_object(obj_id: String) -> void:
