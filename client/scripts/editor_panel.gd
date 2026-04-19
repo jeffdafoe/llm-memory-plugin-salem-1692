@@ -1108,11 +1108,15 @@ func _on_owner_selected(index: int) -> void:
     else:
         _owner_label.visible = false
 
-## Returns true if the NPC container is currently within one tile of the
-## given structure's door tile. Used to grey out Go Home / Go to Work when
-## the villager is already there.
+## Returns true if the villager is currently INSIDE the given structure.
+## The inside flag alone isn't sufficient (could be inside their work
+## instead of home), so we additionally check that their persisted
+## position is near the structure's door tile. Both conditions: greyed
+## out only when they're genuinely there.
 func _is_npc_at_structure_door(npc_container: Node2D, structure_id: String) -> bool:
     if npc_container == null or structure_id == "" or world == null:
+        return false
+    if not bool(npc_container.get_meta("inside", false)):
         return false
     var structure: Node2D = world.placed_objects.get(structure_id, null)
     if structure == null:
