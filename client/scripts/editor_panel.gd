@@ -62,11 +62,13 @@ var _selected_asset_id: String = ""
 var _terrain_active: bool = false
 var _selected_terrain_item: Control = null
 var _attachments_section: VBoxContainer = null
-# "Can be entered" toggle — a per-asset flag that controls whether the
-# asset is a valid home/work target and shows a door marker in the editor.
-var _enterable_checkbox: CheckBox = null
-# The asset_id the enterable checkbox currently reflects, so we know what
-# to PATCH on toggle. Set in show_selection.
+# "Can be entered" per-asset flag. Uses a Yes/No dropdown because the
+# built-in CheckBox widget renders empty / vanishes under this project's
+# theme, and the dropdown matches the visual language of the surrounding
+# owner / behavior pickers.
+var _enterable_dropdown: OptionButton = null
+# The asset_id the enterable dropdown currently reflects, so we know what
+# to PATCH on change. Set in show_selection.
 var _enterable_asset_id: String = ""
 var _ignoring_enterable_toggle: bool = false
 # People section — lists NPCs whose home/work structure is the currently
@@ -318,15 +320,35 @@ func _ready() -> void:
     _attachments_grid.add_theme_constant_override("v_separation", 4)
     attach_scroll.add_child(_attachments_grid)
 
-    # Enterable toggle — per-asset flag controlling whether this object is
-    # a valid home/work target and whether the door marker appears.
-    _enterable_checkbox = CheckBox.new()
-    _enterable_checkbox.text = "Can be entered"
-    _enterable_checkbox.add_theme_font_override("font", _font)
-    _enterable_checkbox.add_theme_font_size_override("font_size", 13)
-    _enterable_checkbox.add_theme_color_override("font_color", COLOR_TEXT)
-    _enterable_checkbox.toggled.connect(_on_enterable_toggled)
-    _asset_fields_section.add_child(_enterable_checkbox)
+    # Enterable per-asset flag — Yes/No dropdown in the same visual style
+    # as the owner / behavior pickers. Header label lives above.
+    var enterable_header = Label.new()
+    enterable_header.text = "CAN BE ENTERED"
+    enterable_header.add_theme_color_override("font_color", COLOR_LABEL)
+    enterable_header.add_theme_font_size_override("font_size", 11)
+    _asset_fields_section.add_child(enterable_header)
+
+    var enterable_style = StyleBoxFlat.new()
+    enterable_style.bg_color = Color(0.08, 0.07, 0.05, 1.0)
+    enterable_style.border_width_left = 1
+    enterable_style.border_width_top = 1
+    enterable_style.border_width_right = 1
+    enterable_style.border_width_bottom = 1
+    enterable_style.border_color = Color(0.3, 0.24, 0.15, 0.8)
+    enterable_style.content_margin_left = 6.0
+    enterable_style.content_margin_right = 6.0
+    enterable_style.content_margin_top = 3.0
+    enterable_style.content_margin_bottom = 3.0
+
+    _enterable_dropdown = OptionButton.new()
+    _enterable_dropdown.add_theme_font_override("font", _font)
+    _enterable_dropdown.add_theme_font_size_override("font_size", 13)
+    _enterable_dropdown.add_theme_color_override("font_color", COLOR_TEXT)
+    _enterable_dropdown.add_theme_stylebox_override("normal", enterable_style)
+    _enterable_dropdown.add_item("No", 0)
+    _enterable_dropdown.add_item("Yes", 1)
+    _enterable_dropdown.item_selected.connect(_on_enterable_selected)
+    _asset_fields_section.add_child(_enterable_dropdown)
 
     # People section — NPCs whose home or work is this structure. Clicking a
     # row selects that villager (and pans the camera to them). Only populated
@@ -1079,10 +1101,10 @@ func _on_owner_selected(index: int) -> void:
     else:
         _owner_label.visible = false
 
-func _on_enterable_toggled(pressed: bool) -> void:
+func _on_enterable_selected(index: int) -> void:
     if _ignoring_enterable_toggle or _enterable_asset_id == "":
         return
-    asset_enterable_toggled.emit(_enterable_asset_id, pressed)
+    asset_enterable_toggled.emit(_enterable_asset_id, index == 1)
 
 ## Fill the People section with buttons for each NPC whose home or work is
 ## the given structure. Hides the section if the selection isn't a
@@ -1169,10 +1191,10 @@ func show_selection(info: Dictionary) -> void:
     # Show attachments if this asset has slots
     _build_attachments(asset_id)
 
-    # Sync the enterable checkbox to this asset's current value.
+    # Sync the enterable dropdown to this asset's current value.
     _ignoring_enterable_toggle = true
     _enterable_asset_id = asset_id
-    _enterable_checkbox.button_pressed = bool(asset.get("enterable", false))
+    _enterable_dropdown.selected = 1 if bool(asset.get("enterable", false)) else 0
     _ignoring_enterable_toggle = false
 
     # People list — structures only. Shown when someone's home or work is

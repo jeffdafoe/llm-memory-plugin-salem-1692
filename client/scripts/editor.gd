@@ -977,7 +977,10 @@ func _draw_door_marker_contents(asset: Dictionary) -> void:
     # unset so the admin can tell at a glance whether a real door tile is
     # placed or they're looking at the placeholder.
     var fill := Polygon2D.new()
-    fill.color = Color(1.0, 0.92, 0.55, 0.65) if is_set else Color(1.0, 0.92, 0.55, 0.25)
+    # Near-opaque blue when placed so the door reads clearly on every
+    # background; greyed-out when unset so the placeholder doesn't look
+    # like a real commitment.
+    fill.color = Color(0.25, 0.55, 1.0, 0.9) if is_set else Color(0.55, 0.55, 0.55, 0.5)
     fill.polygon = PackedVector2Array([
         Vector2(-half, -half),
         Vector2( half, -half),
@@ -987,7 +990,7 @@ func _draw_door_marker_contents(asset: Dictionary) -> void:
     _door_marker.add_child(fill)
     var outline := Line2D.new()
     outline.width = 2.0
-    outline.default_color = Color(0.85, 0.75, 0.35, 0.95) if is_set else Color(0.85, 0.75, 0.35, 0.6)
+    outline.default_color = Color(0.15, 0.35, 0.85, 1.0) if is_set else Color(0.45, 0.45, 0.45, 0.9)
     outline.closed = true
     outline.add_point(Vector2(-half, -half))
     outline.add_point(Vector2( half, -half))
