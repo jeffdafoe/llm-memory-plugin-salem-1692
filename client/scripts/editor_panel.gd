@@ -21,6 +21,7 @@ signal npc_work_assign_requested
 signal npc_run_cycle_requested
 signal npc_go_home_requested
 signal npc_go_to_work_requested
+signal npc_select_requested(npc_id: String)
 
 # Theme colors (matching top bar / login screen)
 const COLOR_BG = Color(0.12, 0.09, 0.07, 0.95)
@@ -60,6 +61,10 @@ var _selected_asset_id: String = ""
 var _terrain_active: bool = false
 var _selected_terrain_item: Control = null
 var _attachments_section: VBoxContainer = null
+# People section — lists NPCs whose home/work structure is the currently
+# selected asset. See _populate_people_section.
+var _people_section: VBoxContainer = null
+var _people_list: VBoxContainer = null
 var _attachments_grid: GridContainer = null
 
 # Asset-specific fields (owner / name input / attachments) live under this
@@ -304,6 +309,25 @@ func _ready() -> void:
     _attachments_grid.add_theme_constant_override("h_separation", 4)
     _attachments_grid.add_theme_constant_override("v_separation", 4)
     attach_scroll.add_child(_attachments_grid)
+
+    # People section — NPCs whose home or work is this structure. Clicking a
+    # row selects that villager (and pans the camera to them). Only populated
+    # when the selected object is a structure; hidden otherwise. Populated
+    # in show_selection from world.placed_npcs.
+    _people_section = VBoxContainer.new()
+    _people_section.visible = false
+    _people_section.add_theme_constant_override("separation", 4)
+    _asset_fields_section.add_child(_people_section)
+
+    var people_header = Label.new()
+    people_header.text = "PEOPLE"
+    people_header.add_theme_color_override("font_color", COLOR_LABEL)
+    people_header.add_theme_font_size_override("font_size", 11)
+    _people_section.add_child(people_header)
+
+    _people_list = VBoxContainer.new()
+    _people_list.add_theme_constant_override("separation", 2)
+    _people_section.add_child(_people_list)
 
     # NPC-only block — shown in place of _asset_fields_section when an NPC is
     # selected. Editable name, behavior picker, and agent picker. Each field
@@ -1037,6 +1061,54 @@ func _on_owner_selected(index: int) -> void:
     else:
         _owner_label.visible = false
 
+## Fill the People section with buttons for each NPC whose home or work is
+## the given structure. Hides the section if the selection isn't a
+## structure or if nobody lives/works there.
+func _populate_people_section(object_id: String, asset_id: String) -> void:
+    for child in _people_list.get_children():
+        child.queue_free()
+    if object_id == "" or world == null:
+        _people_section.visible = false
+        return
+    var asset = Catalog.assets.get(asset_id, {})
+    if asset.get("category", "") != "structure":
+        _people_section.visible = false
+        return
+
+    var any: bool = false
+    for npc_id in world.placed_npcs:
+        var container: Node2D = world.placed_npcs[npc_id]
+        if container == null:
+            continue
+        var home_id: String = str(container.get_meta("home_structure_id", ""))
+        var work_id: String = str(container.get_meta("work_structure_id", ""))
+        var is_home: bool = home_id == object_id
+        var is_work: bool = work_id == object_id
+        if not is_home and not is_work:
+            continue
+        any = true
+        var label: String = str(container.get_meta("display_name", ""))
+        if label == "":
+            label = "(unnamed)"
+        var tag: String = ""
+        if is_home and is_work:
+            tag = "[H+W]"
+        elif is_home:
+            tag = "[H]"
+        else:
+            tag = "[W]"
+        var row := Button.new()
+        row.text = label + "  " + tag
+        row.add_theme_font_override("font", _font)
+        row.add_theme_font_size_override("font_size", 13)
+        row.add_theme_color_override("font_color", COLOR_TEXT)
+        row.alignment = HORIZONTAL_ALIGNMENT_LEFT
+        var current_id: String = str(npc_id)
+        row.pressed.connect(func(): npc_select_requested.emit(current_id))
+        _people_list.add_child(row)
+
+    _people_section.visible = any
+
 func _on_select_pressed() -> void:
     # Deselect catalog item
     if _selected_item != null:
@@ -1073,6 +1145,10 @@ func show_selection(info: Dictionary) -> void:
 
     # Show attachments if this asset has slots
     _build_attachments(asset_id)
+
+    # People list — structures only. Shown when someone's home or work is
+    # this specific object_id.
+    _populate_people_section(info.get("object_id", ""), asset_id)
 
     var placed_by: String = info.get("placed_by", "")
     if placed_by != "":

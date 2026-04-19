@@ -204,6 +204,7 @@ func _build_ui() -> void:
     editor_panel.npc_run_cycle_requested.connect(_on_npc_run_cycle_requested)
     editor_panel.npc_go_home_requested.connect(_on_npc_go_home_requested)
     editor_panel.npc_go_to_work_requested.connect(_on_npc_go_to_work_requested)
+    editor_panel.npc_select_requested.connect(_on_npc_select_requested)
     editor_panel.world = world
 
     # Wire editor signals to panel
@@ -345,6 +346,16 @@ func _on_npc_run_cycle_requested() -> void:
         headers.append("Authorization: " + auth_header)
     http.request(Auth.api_base + "/api/village/npcs/" + npc_id + "/run-cycle",
         headers, HTTPClient.METHOD_POST, "{}")
+
+## Panel People list clicked. Selects the villager (even when hidden
+## indoors) and pans the camera to them so the admin can see where the
+## villager lives/works.
+func _on_npc_select_requested(npc_id: String) -> void:
+    if npc_id == "" or not world.placed_npcs.has(npc_id):
+        return
+    var container: Node2D = world.placed_npcs[npc_id]
+    editor._select_npc(container)
+    camera.center_on(container.position)
 
 func _on_npc_go_home_requested() -> void:
     _post_npc_action("go-home")
