@@ -168,6 +168,8 @@ func _handle_message(data: String) -> void:
                 world.apply_npc_inside_change(event_data)
         "asset_door_updated":
             _on_asset_door_updated(event_data)
+        "asset_enterable_updated":
+            _on_asset_enterable_updated(event_data)
         "session_expired":
             # Server's ping loop noticed our session went bad. Route through
             # the same path as a 401 on a REST request so the UI behavior
@@ -205,6 +207,25 @@ func _on_asset_door_updated(data: Dictionary) -> void:
         if editor.selected_object.get_meta("asset_id", "") == asset_id:
             if editor.has_method("refresh_door_marker"):
                 editor.refresh_door_marker()
+
+## Apply a server-broadcast enterable toggle. Updates the catalog so the
+## door marker and structure picker react on the next selection; if the
+## toggled asset is currently selected, refresh the door marker right away
+## (appear or disappear depending on the new value).
+func _on_asset_enterable_updated(data: Dictionary) -> void:
+    var asset_id: String = data.get("asset_id", "")
+    if asset_id == "" or not Catalog.assets.has(asset_id):
+        return
+    var asset = Catalog.assets[asset_id]
+    asset["enterable"] = bool(data.get("enterable", false))
+    Catalog.assets[asset_id] = asset
+    var editor = get_node_or_null("/root/Main/Editor")
+    if editor != null and editor.selected_object != null:
+        if editor.selected_object.get_meta("asset_id", "") == asset_id:
+            # _add_door_marker() tears down and rebuilds — use it for both
+            # appear and disappear paths so we don't need a separate branch.
+            if editor.has_method("_add_door_marker"):
+                editor._add_door_marker(editor.selected_object)
 
 func _on_asset_footprint_updated(data: Dictionary) -> void:
     var asset_id: String = data.get("asset_id", "")
