@@ -58,6 +58,13 @@ var _footprint_resize_start_world: Vector2 = Vector2.ZERO
 # when the selected object is a structure. The marker is a child of the
 # structure node; _door_marker_asset_id pins which asset it belongs to so
 # a mid-drag asset broadcast doesn't repaint over our in-flight change.
+# NPC-selected left-click-to-walk is deferred until release so the user
+# can left-drag the map to pan. Press sets _npc_walk_pending; motion past
+# the drag threshold cancels it (it was a pan, not a walk); release with
+# the flag still set fires the walk to the original click position.
+var _npc_walk_pending: bool = false
+var _npc_walk_start_screen: Vector2 = Vector2.ZERO
+
 var _door_marker: Node2D = null
 var _door_marker_asset_id: String = ""
 var _door_dragging: bool = false
@@ -185,6 +192,12 @@ func _input(event: InputEvent) -> void:
             _on_left_press(event.position)
         if event.button_index == MOUSE_BUTTON_LEFT and not event.pressed:
             left_click_used = false
+            # A still-pending walk means the mouse didn't move far enough
+            # during the press to be considered a pan — fire the walk now.
+            if _npc_walk_pending:
+                _walk_selected_npc(_npc_walk_start_screen)
+                _npc_walk_pending = false
+                get_viewport().set_input_as_handled()
 
         if event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
             if current_mode == Mode.PLACE:
@@ -200,6 +213,12 @@ func _input(event: InputEvent) -> void:
                 get_viewport().set_input_as_handled()
 
     if event is InputEventMouseMotion:
+        # If an NPC is selected and the mouse moves past the drag threshold
+        # before release, treat the gesture as a pan rather than a walk —
+        # cancel the pending walk so release is a no-op.
+        if _npc_walk_pending:
+            if event.position.distance_to(_npc_walk_start_screen) >= _drag_threshold:
+                _npc_walk_pending = false
         if current_mode == Mode.PLACE and ghost_sprite.visible:
             ghost_sprite.global_position = _screen_to_world(event.position)
             _apply_ghost_offset()
@@ -252,9 +271,14 @@ func _on_left_press(screen_pos: Vector2) -> void:
                     left_click_used = true
                     get_viewport().set_input_as_handled()
                     return
-                _walk_selected_npc(screen_pos)
-                left_click_used = true
-                get_viewport().set_input_as_handled()
+                # Empty space with an NPC selected: defer the walk-to
+                # command until mouse release so the user can left-drag the
+                # map to pan without triggering a walk. Leave left_click_used
+                # false so camera starts pan speculatively; if the mouse
+                # moves past the drag threshold _npc_walk_pending flips off
+                # and release becomes a no-op.
+                _npc_walk_pending = true
+                _npc_walk_start_screen = screen_pos
                 return
 
             # If the selected object has a door marker and the click lands on
