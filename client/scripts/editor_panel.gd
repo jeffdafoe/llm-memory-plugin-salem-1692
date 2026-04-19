@@ -1108,6 +1108,24 @@ func _on_owner_selected(index: int) -> void:
     else:
         _owner_label.visible = false
 
+## Returns true if the NPC container is currently within one tile of the
+## given structure's door tile. Used to grey out Go Home / Go to Work when
+## the villager is already there.
+func _is_npc_at_structure_door(npc_container: Node2D, structure_id: String) -> bool:
+    if npc_container == null or structure_id == "" or world == null:
+        return false
+    var structure: Node2D = world.placed_objects.get(structure_id, null)
+    if structure == null:
+        return false
+    var asset_id: String = structure.get_meta("asset_id", "")
+    var asset: Dictionary = Catalog.assets.get(asset_id, {})
+    var door_world: Vector2 = structure.position
+    var dox = asset.get("door_offset_x", null)
+    var doy = asset.get("door_offset_y", null)
+    if dox != null and doy != null:
+        door_world += Vector2(float(dox) * 32.0, float(doy) * 32.0)
+    return npc_container.position.distance_to(door_world) < 48.0
+
 func _on_enterable_selected(index: int) -> void:
     if _ignoring_enterable_toggle or _enterable_asset_id == "":
         return
@@ -1320,10 +1338,20 @@ func show_npc_selection(info: Dictionary) -> void:
     # Run Cycle is only meaningful when a behavior is assigned.
     if _npc_run_cycle_button != null:
         _npc_run_cycle_button.disabled = current_behavior == ""
+    # Go Home / Go to Work disabled when (a) no such structure linked, or
+    # (b) the villager is already standing at that structure's door tile.
+    # Position-based check rather than the inside flag, because inside can
+    # be true for work too.
+    var npc_id: String = info.get("npc_id", "")
+    var npc_container: Node2D = null
+    if world != null and npc_id != "" and world.placed_npcs.has(npc_id):
+        npc_container = world.placed_npcs[npc_id]
     if _npc_go_home_button != null:
-        _npc_go_home_button.disabled = _npc_home_current_id == ""
+        _npc_go_home_button.disabled = _npc_home_current_id == "" \
+            or _is_npc_at_structure_door(npc_container, _npc_home_current_id)
     if _npc_go_to_work_button != null:
-        _npc_go_to_work_button.disabled = _npc_work_current_id == ""
+        _npc_go_to_work_button.disabled = _npc_work_current_id == "" \
+            or _is_npc_at_structure_door(npc_container, _npc_work_current_id)
 
     _ignoring_npc_inputs = false
 

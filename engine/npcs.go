@@ -189,6 +189,14 @@ func (app *App) handleListNPCs(w http.ResponseWriter, r *http.Request) {
 		if s, ok := sprites[n.SpriteID]; ok {
 			n.Sprite = s
 		}
+		// Interpolate for active walks so a client loading mid-walk sees
+		// the NPC at their currently-visible position rather than the
+		// pre-walk DB snapshot.
+		app.NPCMovement.mu.Lock()
+		if w := app.NPCMovement.active[n.ID]; w != nil {
+			n.CurrentX, n.CurrentY = w.currentPosition()
+		}
+		app.NPCMovement.mu.Unlock()
 		npcs = append(npcs, n)
 	}
 
