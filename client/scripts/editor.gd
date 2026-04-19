@@ -245,7 +245,10 @@ func _on_left_press(screen_pos: Vector2) -> void:
                     get_viewport().set_input_as_handled()
                     return
                 if npc_hit_sel == selected_npc:
-                    # Re-click on the same NPC — no-op. Use right-click/Esc to deselect.
+                    # Re-click on the same NPC deselects (matches the intuitive
+                    # "click again to toggle off" pattern). Right-click / Esc
+                    # still work as alternatives.
+                    _deselect_npc()
                     left_click_used = true
                     get_viewport().set_input_as_handled()
                     return
@@ -373,9 +376,14 @@ func _try_assign_structure(screen_pos: Vector2, is_home: bool) -> void:
         world.set_npc_work_structure(selected_npc, structure_id)
     set_mode(Mode.SELECT)
 
-## Called by the editor panel when the user picks an asset from the catalog.
+## Called by the editor panel when the user picks an asset from the catalog,
+## or when the user presses the Select tool button (asset_id == "").
+## Pressing Select with something selected also clears the selection — that's
+## the panel-driven deselect.
 func select_asset_for_placement(asset_id: String) -> void:
     if asset_id == "":
+        _deselect()
+        _deselect_npc()
         set_mode(Mode.SELECT)
         return
 

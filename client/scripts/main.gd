@@ -202,6 +202,8 @@ func _build_ui() -> void:
     editor_panel.npc_home_assign_requested.connect(_on_npc_home_assign_requested)
     editor_panel.npc_work_assign_requested.connect(_on_npc_work_assign_requested)
     editor_panel.npc_run_cycle_requested.connect(_on_npc_run_cycle_requested)
+    editor_panel.npc_go_home_requested.connect(_on_npc_go_home_requested)
+    editor_panel.npc_go_to_work_requested.connect(_on_npc_go_to_work_requested)
     editor_panel.world = world
 
     # Wire editor signals to panel
@@ -342,6 +344,35 @@ func _on_npc_run_cycle_requested() -> void:
     if auth_header != "":
         headers.append("Authorization: " + auth_header)
     http.request(Auth.api_base + "/api/village/npcs/" + npc_id + "/run-cycle",
+        headers, HTTPClient.METHOD_POST, "{}")
+
+func _on_npc_go_home_requested() -> void:
+    _post_npc_action("go-home")
+
+func _on_npc_go_to_work_requested() -> void:
+    _post_npc_action("go-to-work")
+
+## Shared POST body for the three selected-NPC action buttons (go-home,
+## go-to-work, run-cycle). Reads the selected NPC's id, fires a fire-and-
+## forget POST to /api/village/npcs/{id}/{action}.
+func _post_npc_action(action: String) -> void:
+    if editor.selected_npc == null:
+        return
+    var npc_id: String = editor.selected_npc.get_meta("npc_id", "")
+    if npc_id == "":
+        return
+    var http := HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    http.request_completed.connect(func(_r, c, _h, _b):
+        http.queue_free()
+        Auth.check_response(c)
+    )
+    var headers := ["Content-Type: application/json"]
+    var auth_header: String = Auth.get_auth_header()
+    if auth_header != "":
+        headers.append("Authorization: " + auth_header)
+    http.request(Auth.api_base + "/api/village/npcs/" + npc_id + "/" + action,
         headers, HTTPClient.METHOD_POST, "{}")
 
 # Refresh the selection panel if the changed NPC is the one we have selected.
