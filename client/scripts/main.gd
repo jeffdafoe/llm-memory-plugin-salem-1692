@@ -205,6 +205,7 @@ func _build_ui() -> void:
     editor_panel.npc_go_home_requested.connect(_on_npc_go_home_requested)
     editor_panel.npc_go_to_work_requested.connect(_on_npc_go_to_work_requested)
     editor_panel.npc_select_requested.connect(_on_npc_select_requested)
+    editor_panel.asset_enterable_toggled.connect(_on_asset_enterable_toggled)
     editor_panel.world = world
 
     # Wire editor signals to panel
@@ -346,6 +347,24 @@ func _on_npc_run_cycle_requested() -> void:
         headers.append("Authorization: " + auth_header)
     http.request(Auth.api_base + "/api/village/npcs/" + npc_id + "/run-cycle",
         headers, HTTPClient.METHOD_POST, "{}")
+
+## Admin toggled the "Can be entered" checkbox on the selected asset.
+## Fires a PATCH; asset_enterable_updated broadcast echoes to all clients.
+func _on_asset_enterable_toggled(asset_id: String, enterable: bool) -> void:
+    var payload = JSON.stringify({"enterable": enterable})
+    var http := HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    http.request_completed.connect(func(_r, c, _h, _b):
+        http.queue_free()
+        Auth.check_response(c)
+    )
+    var headers := ["Content-Type: application/json"]
+    var auth_header: String = Auth.get_auth_header()
+    if auth_header != "":
+        headers.append("Authorization: " + auth_header)
+    http.request(Auth.api_base + "/api/assets/" + asset_id + "/enterable",
+        headers, HTTPClient.METHOD_PATCH, payload)
 
 ## Panel People list clicked. Selects the villager (even when hidden
 ## indoors) and pans the camera to them so the admin can see where the

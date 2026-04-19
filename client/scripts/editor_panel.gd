@@ -22,6 +22,7 @@ signal npc_run_cycle_requested
 signal npc_go_home_requested
 signal npc_go_to_work_requested
 signal npc_select_requested(npc_id: String)
+signal asset_enterable_toggled(asset_id: String, enterable: bool)
 
 # Theme colors (matching top bar / login screen)
 const COLOR_BG = Color(0.12, 0.09, 0.07, 0.95)
@@ -61,6 +62,13 @@ var _selected_asset_id: String = ""
 var _terrain_active: bool = false
 var _selected_terrain_item: Control = null
 var _attachments_section: VBoxContainer = null
+# "Can be entered" toggle — a per-asset flag that controls whether the
+# asset is a valid home/work target and shows a door marker in the editor.
+var _enterable_checkbox: CheckBox = null
+# The asset_id the enterable checkbox currently reflects, so we know what
+# to PATCH on toggle. Set in show_selection.
+var _enterable_asset_id: String = ""
+var _ignoring_enterable_toggle: bool = false
 # People section — lists NPCs whose home/work structure is the currently
 # selected asset. See _populate_people_section.
 var _people_section: VBoxContainer = null
@@ -309,6 +317,16 @@ func _ready() -> void:
     _attachments_grid.add_theme_constant_override("h_separation", 4)
     _attachments_grid.add_theme_constant_override("v_separation", 4)
     attach_scroll.add_child(_attachments_grid)
+
+    # Enterable toggle — per-asset flag controlling whether this object is
+    # a valid home/work target and whether the door marker appears.
+    _enterable_checkbox = CheckBox.new()
+    _enterable_checkbox.text = "Can be entered"
+    _enterable_checkbox.add_theme_font_override("font", _font)
+    _enterable_checkbox.add_theme_font_size_override("font_size", 13)
+    _enterable_checkbox.add_theme_color_override("font_color", COLOR_TEXT)
+    _enterable_checkbox.toggled.connect(_on_enterable_toggled)
+    _asset_fields_section.add_child(_enterable_checkbox)
 
     # People section — NPCs whose home or work is this structure. Clicking a
     # row selects that villager (and pans the camera to them). Only populated
@@ -1061,6 +1079,11 @@ func _on_owner_selected(index: int) -> void:
     else:
         _owner_label.visible = false
 
+func _on_enterable_toggled(pressed: bool) -> void:
+    if _ignoring_enterable_toggle or _enterable_asset_id == "":
+        return
+    asset_enterable_toggled.emit(_enterable_asset_id, pressed)
+
 ## Fill the People section with buttons for each NPC whose home or work is
 ## the given structure. Hides the section if the selection isn't a
 ## structure or if nobody lives/works there.
@@ -1071,7 +1094,7 @@ func _populate_people_section(object_id: String, asset_id: String) -> void:
         _people_section.visible = false
         return
     var asset = Catalog.assets.get(asset_id, {})
-    if asset.get("category", "") != "structure":
+    if not bool(asset.get("enterable", false)):
         _people_section.visible = false
         return
 
@@ -1145,6 +1168,12 @@ func show_selection(info: Dictionary) -> void:
 
     # Show attachments if this asset has slots
     _build_attachments(asset_id)
+
+    # Sync the enterable checkbox to this asset's current value.
+    _ignoring_enterable_toggle = true
+    _enterable_asset_id = asset_id
+    _enterable_checkbox.button_pressed = bool(asset.get("enterable", false))
+    _ignoring_enterable_toggle = false
 
     # People list — structures only. Shown when someone's home or work is
     # this specific object_id.

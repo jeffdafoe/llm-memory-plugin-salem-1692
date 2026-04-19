@@ -365,7 +365,7 @@ func _try_assign_structure(screen_pos: Vector2, is_home: bool) -> void:
         return
     var asset_id: String = hit.get_meta("asset_id", "")
     var asset: Dictionary = Catalog.assets.get(asset_id, {})
-    if asset.get("category", "") != "structure":
+    if not bool(asset.get("enterable", false)):
         return
     var structure_id: String = hit.get_meta("object_id", "")
     if structure_id == "":
@@ -910,7 +910,7 @@ func _add_door_marker(node: Node2D) -> void:
     _remove_door_marker()
     var asset_id: String = node.get_meta("asset_id", "")
     var asset = Catalog.assets.get(asset_id, {})
-    if asset.get("category", "") != "structure":
+    if not bool(asset.get("enterable", false)):
         return
 
     _door_marker_asset_id = asset_id

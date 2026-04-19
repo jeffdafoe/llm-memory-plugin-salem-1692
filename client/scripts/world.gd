@@ -1245,7 +1245,7 @@ func get_structure_objects() -> Array:
         if asset_id == "":
             continue
         var asset: Dictionary = Catalog.assets.get(asset_id, {})
-        if asset.get("category", "") != "structure":
+        if not bool(asset.get("enterable", false)):
             continue
         var display_name: String = node.get_meta("display_name", "")
         var label: String = display_name if display_name != "" else asset.get("name", asset_id)
