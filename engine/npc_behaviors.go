@@ -546,3 +546,96 @@ func (app *App) currentWorldPhase(ctx context.Context) (string, error) {
 	).Scan(&phase)
 	return phase, err
 }
+
+// handleGoHome and handleGoToWork send the NPC directly to their home or
+// work structure's door tile, skipping any behavior-specific route. On
+// arrival the NPC flips inside=true via the shared Phase="returning" hook
+// in advanceBehavior — same mechanism the full behavior cycle uses on its
+// return leg.
+func (app *App) handleGoHome(w http.ResponseWriter, r *http.Request) {
+	app.handleGoToStructure(w, r, "home")
+}
+
+func (app *App) handleGoToWork(w http.ResponseWriter, r *http.Request) {
+	app.handleGoToStructure(w, r, "work")
+}
+
+// handleGoToStructure is the shared body of go-home / go-to-work. kind is
+// "home" or "work" and selects which structure column to resolve.
+func (app *App) handleGoToStructure(w http.ResponseWriter, r *http.Request, kind string) {
+	user := getUserFromContext(r.Context())
+	if user == nil || !user.hasRole("ROLE_SALEM_ADMIN") {
+		jsonError(w, "Admin access required", http.StatusForbidden)
+		return
+	}
+	npcID := r.PathValue("id")
+	if npcID == "" {
+		jsonError(w, "Missing npc id", http.StatusBadRequest)
+		return
+	}
+
+	structureCol := "home_structure_id"
+	if kind == "work" {
+		structureCol = "work_structure_id"
+	}
+
+	var curX, curY, destX, destY float64
+	var structureID *string
+	err := app.DB.QueryRow(r.Context(),
+		`SELECT n.current_x, n.current_y, n.`+structureCol+`,
+		        COALESCE(s.x + a.door_offset_x * 32.0, s.x, 0),
+		        COALESCE(s.y + a.door_offset_y * 32.0, s.y, 0)
+		 FROM npc n
+		 LEFT JOIN village_object s ON s.id = n.`+structureCol+`
+		 LEFT JOIN asset a ON a.id = s.asset_id
+		 WHERE n.id = $1`, npcID,
+	).Scan(&curX, &curY, &structureID, &destX, &destY)
+	if err != nil {
+		jsonError(w, "NPC not found", http.StatusNotFound)
+		return
+	}
+	if structureID == nil {
+		jsonError(w, "NPC has no "+kind+" structure assigned", http.StatusBadRequest)
+		return
+	}
+
+	npc := &behaviorNPC{ID: npcID, CurX: curX, CurY: curY, HomeX: destX, HomeY: destY}
+	app.interpolateCurrentPos(npc)
+
+	if err := app.startReturnWalk(r.Context(), npc, destX, destY, "go-"+kind); err != nil {
+		log.Printf("go-%s %s: %v", kind, npcID, err)
+		jsonError(w, "Failed to start walk", http.StatusInternalServerError)
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]any{
+		"npc_id": npcID,
+		"kind":   kind,
+	})
+}
+
+// startReturnWalk cancels any in-flight behavior, installs a zero-stop
+// Phase="returning" route so the arrival hook flips inside=true, and kicks
+// off the walk to the destination. The NPC is visible during the walk
+// (inside=false) and hidden on arrival.
+func (app *App) startReturnWalk(ctx context.Context, npc *behaviorNPC, destX, destY float64, label string) error {
+	app.setNPCInside(ctx, npc.ID, false)
+	route := &npcRoute{
+		NPCID:   npc.ID,
+		Stops:   []routeStop{},
+		StopIdx: 0,
+		HomeX:   destX,
+		HomeY:   destY,
+		Phase:   "returning",
+	}
+	app.NPCBehaviors.mu.Lock()
+	app.NPCBehaviors.active[npc.ID] = route
+	app.NPCBehaviors.mu.Unlock()
+
+	if _, err := app.startNPCWalk(ctx, npc.ID, destX, destY, defaultNPCSpeed); err != nil {
+		app.clearBehavior(npc.ID)
+		return err
+	}
+	log.Printf("%s: %s walking to %.0f,%.0f", label, npc.ID, destX, destY)
+	return nil
+}
