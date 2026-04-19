@@ -6,9 +6,24 @@ extends Camera2D
 ## Middle-click pan always works regardless of editor state.
 
 # Zoom limits
-const ZOOM_MIN: float = 0.1
+## Minimum zoom floor. Loaded from /api/village/world at startup and
+## reapplied on the zoom_settings_changed broadcast so admins can retune
+## the floor without a client restart.
+var ZOOM_MIN: float = 0.3
 const ZOOM_MAX: float = 6.0
 const ZOOM_STEP: float = 0.1
+
+## Called from world.gd after the world config is loaded (and from the
+## zoom_settings_changed WS handler) with the floor appropriate for the
+## viewing user. If the new floor would leave the camera too close, clamp
+## down to match. Too-far case is naturally fine.
+func set_zoom_floor(value: float) -> void:
+    if value <= 0:
+        return
+    ZOOM_MIN = value
+    if zoom.x < ZOOM_MIN:
+        zoom = Vector2(ZOOM_MIN, ZOOM_MIN)
+        _clamp_position()
 
 # Map bounds in world coordinates (set by Main after terrain is built)
 var map_bounds: Rect2 = Rect2(0, 0, 2304, 1664)  # 72*32, 52*32

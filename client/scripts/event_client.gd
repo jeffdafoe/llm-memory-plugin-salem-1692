@@ -170,6 +170,9 @@ func _handle_message(data: String) -> void:
             _on_asset_door_updated(event_data)
         "asset_enterable_updated":
             _on_asset_enterable_updated(event_data)
+        "zoom_settings_changed":
+            if world != null:
+                world.apply_zoom_floor_from_config(event_data)
         "session_expired":
             # Server's ping loop noticed our session went bad. Route through
             # the same path as a 401 on a REST request so the UI behavior
