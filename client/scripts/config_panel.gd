@@ -78,8 +78,8 @@ func _ready() -> void:
     _panel = PanelContainer.new()
     _panel.anchor_left = 0.25
     _panel.anchor_right = 0.75
-    _panel.anchor_top = 0.15
-    _panel.anchor_bottom = 0.85
+    _panel.anchor_top = 0.08
+    _panel.anchor_bottom = 0.92
 
     var panel_style = StyleBoxFlat.new()
     panel_style.bg_color = COLOR_PANEL_BG
@@ -361,16 +361,20 @@ func _on_state_response(result: int, response_code: int, _headers: PackedStringA
     _last_rotation_at = json.get("last_rotation_at", "")
     _next_rotation_at = json.get("next_rotation_at", "")
 
-    # Populate zoom edits only when the server value changed since last
-    # fetch — keeps a mid-edit admin from getting their text overwritten
-    # by the 10s poll.
+    # Populate zoom edits only when (a) the server value changed since
+    # last fetch AND (b) the edit doesn't currently have keyboard focus.
+    # Focus check prevents the 10s poll from blowing away text the admin
+    # is actively typing — which was the "can't edit past the first
+    # time" bug.
     var admin_str: String = _format_zoom(json.get("zoom_min_admin", null))
     var regular_str: String = _format_zoom(json.get("zoom_min_regular", null))
     if _zoom_admin_edit != null and admin_str != _last_loaded_zoom_admin:
-        _zoom_admin_edit.text = admin_str
+        if not _zoom_admin_edit.has_focus():
+            _zoom_admin_edit.text = admin_str
         _last_loaded_zoom_admin = admin_str
     if _zoom_regular_edit != null and regular_str != _last_loaded_zoom_regular:
-        _zoom_regular_edit.text = regular_str
+        if not _zoom_regular_edit.has_focus():
+            _zoom_regular_edit.text = regular_str
         _last_loaded_zoom_regular = regular_str
 
     _refresh_labels()
