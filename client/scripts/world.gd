@@ -243,9 +243,9 @@ func apply_npc_agent_change(data: Dictionary) -> void:
         container.set_meta("llm_memory_agent", str(agent))
     npc_metadata_changed.emit(npc_id)
 
-## Apply a server-broadcast inside flip. Hides / shows the sprite on the map;
-## the editor panel and selection machinery still treat the NPC as present so
-## admins can edit indoor villagers.
+## Apply a server-broadcast inside flip. Visibility depends on the asset
+## of the structure the villager is inside — plain houses hide the sprite,
+## market stall / see-through buildings keep them visible.
 func apply_npc_inside_change(data: Dictionary) -> void:
     var npc_id: String = data.get("id", "")
     if npc_id == "":
@@ -254,11 +254,28 @@ func apply_npc_inside_change(data: Dictionary) -> void:
     if container == null:
         return
     var inside: bool = bool(data.get("inside", false))
+    var inside_structure_id_val = data.get("inside_structure_id", null)
+    var inside_structure_id: String = str(inside_structure_id_val) if inside_structure_id_val != null else ""
     container.set_meta("inside", inside)
-    container.visible = not inside
+    container.set_meta("inside_structure_id", inside_structure_id)
+    container.visible = _compute_npc_visible(inside, inside_structure_id)
     # Buttons that depend on location (Go Home / Go to Work) refresh via
     # the metadata-changed path, so nudge the panel when inside flips.
     npc_metadata_changed.emit(npc_id)
+
+## Resolve whether an NPC should be rendered given the inside flag and
+## which structure they're inside. For structures whose asset has
+## visible_when_inside=true (see-through buildings like market stalls),
+## the villager stays on screen at the door tile.
+func _compute_npc_visible(inside: bool, inside_structure_id: String) -> bool:
+    if not inside:
+        return true
+    if inside_structure_id == "" or not placed_objects.has(inside_structure_id):
+        return false
+    var structure: Node2D = placed_objects[inside_structure_id]
+    var asset_id: String = structure.get_meta("asset_id", "")
+    var asset: Dictionary = Catalog.assets.get(asset_id, {})
+    return bool(asset.get("visible_when_inside", false))
 
 ## Apply a server-broadcast home structure change. data.home_structure_id
 ## may be null for unlinked.
@@ -391,8 +408,11 @@ func _render_npc(npc: Dictionary) -> void:
     container.set_meta("home_structure_id", npc.get("home_structure_id", ""))
     container.set_meta("work_structure_id", npc.get("work_structure_id", ""))
     var inside: bool = bool(npc.get("inside", false))
+    var inside_structure_id_val = npc.get("inside_structure_id", null)
+    var inside_structure_id: String = str(inside_structure_id_val) if inside_structure_id_val != null else ""
     container.set_meta("inside", inside)
-    container.visible = not inside
+    container.set_meta("inside_structure_id", inside_structure_id)
+    container.visible = _compute_npc_visible(inside, inside_structure_id)
     container.position = Vector2(npc.get("current_x", 0.0), npc.get("current_y", 0.0))
     container.z_index = OBJECT_Z
 

@@ -67,6 +67,11 @@ type NPC struct {
 	// door tile after a behavior cycle). Client hides the sprite when set;
 	// the next cycle flips it back on exit.
 	Inside          bool       `json:"inside"`
+	// InsideStructureID points at the specific village_object the villager
+	// is currently inside. Nullable; only meaningful when Inside=true.
+	// Used to drive occupancy-sensitive state flipping (market stall
+	// open/closed) and future "who's in this building" UIs.
+	InsideStructureID *string  `json:"inside_structure_id"`
 	Sprite          *NPCSprite `json:"sprite,omitempty"`
 }
 
@@ -168,7 +173,7 @@ func (app *App) handleListNPCs(w http.ResponseWriter, r *http.Request) {
 	npcRows, err := app.DB.Query(ctx,
 		`SELECT id, display_name, sprite_id, home_x, home_y,
 		        current_x, current_y, facing, behavior, llm_memory_agent,
-		        home_structure_id, work_structure_id, inside
+		        home_structure_id, work_structure_id, inside, inside_structure_id
 		 FROM npc
 		 ORDER BY display_name`,
 	)
@@ -183,7 +188,7 @@ func (app *App) handleListNPCs(w http.ResponseWriter, r *http.Request) {
 		var n NPC
 		if err := npcRows.Scan(&n.ID, &n.DisplayName, &n.SpriteID,
 			&n.HomeX, &n.HomeY, &n.CurrentX, &n.CurrentY, &n.Facing, &n.Behavior, &n.LLMMemoryAgent,
-			&n.HomeStructureID, &n.WorkStructureID, &n.Inside); err != nil {
+			&n.HomeStructureID, &n.WorkStructureID, &n.Inside, &n.InsideStructureID); err != nil {
 			continue
 		}
 		if s, ok := sprites[n.SpriteID]; ok {

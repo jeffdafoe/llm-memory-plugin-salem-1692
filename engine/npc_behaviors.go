@@ -47,12 +47,17 @@ type routeStop struct {
 // "returning" after the last stop so arrival at home doesn't trigger a
 // state flip.
 type npcRoute struct {
-	NPCID   string
-	Stops   []routeStop
-	StopIdx int
-	HomeX   float64
-	HomeY   float64
-	Phase   string // "active" or "returning"
+	NPCID             string
+	Stops             []routeStop
+	StopIdx           int
+	HomeX             float64
+	HomeY             float64
+	Phase             string // "active" or "returning"
+	// TargetStructureID is the id of the structure the NPC is returning
+	// INTO (home for behavior cycles, home/work for manual go-home /
+	// go-to-work). On arrival it becomes the NPC's inside_structure_id
+	// so occupancy-driven state flipping knows where they landed.
+	TargetStructureID string
 }
 
 // NPCBehaviors tracks active behavior state machines keyed by NPC id.
@@ -116,8 +121,10 @@ func (app *App) advanceBehavior(npcID string) {
 		return
 	}
 	// Phase == "returning" — we just arrived home. Mark the villager
-	// inside (clients hide the sprite) and clear the route state.
-	app.setNPCInside(context.Background(), npcID, true)
+	// inside (clients hide the sprite for non-see-through structures;
+	// market-stall-type assets flip to their "occupied" state via the
+	// refresh inside setNPCInside) and clear the route state.
+	app.setNPCInside(context.Background(), npcID, true, route.TargetStructureID)
 	app.clearBehavior(npcID)
 }
 
@@ -133,12 +140,17 @@ func (app *App) clearBehavior(npcID string) {
 // structure's asset door offset applied, when set) or falling back to the
 // scalar home_x / home_y otherwise.
 type behaviorNPC struct {
-	ID       string
-	Behavior string
-	CurX     float64
-	CurY     float64
-	HomeX    float64
-	HomeY    float64
+	ID                string
+	Behavior          string
+	CurX              float64
+	CurY              float64
+	HomeX             float64
+	HomeY             float64
+	// HomeStructureID is the structure the NPC returns INTO at the end
+	// of a route. Used to set inside_structure_id on arrival so
+	// occupancy-driven state flipping knows which building to check.
+	// Empty when the NPC has no home structure linked.
+	HomeStructureID   string
 }
 
 // homeCoordsSQL resolves the NPC's home target position. Preference order:
@@ -157,16 +169,20 @@ const homeCoordsSQL = `
 // interpolated current position replaces the last-persisted current_x/y.
 func (app *App) findNPCWithBehavior(ctx context.Context, slug string) (*behaviorNPC, bool) {
 	n := behaviorNPC{Behavior: slug}
+	var homeStructureID *string
 	err := app.DB.QueryRow(ctx,
-		`SELECT n.id, n.current_x, n.current_y, `+homeCoordsSQL+`
+		`SELECT n.id, n.current_x, n.current_y, `+homeCoordsSQL+`, n.home_structure_id
 		 FROM npc n
 		 LEFT JOIN village_object s ON s.id = n.home_structure_id
 		 LEFT JOIN asset a ON a.id = s.asset_id
 		 WHERE n.behavior = $1
 		 LIMIT 1`, slug,
-	).Scan(&n.ID, &n.CurX, &n.CurY, &n.HomeX, &n.HomeY)
+	).Scan(&n.ID, &n.CurX, &n.CurY, &n.HomeX, &n.HomeY, &homeStructureID)
 	if err != nil {
 		return nil, false
+	}
+	if homeStructureID != nil {
+		n.HomeStructureID = *homeStructureID
 	}
 
 	app.interpolateCurrentPos(&n)
@@ -179,18 +195,22 @@ func (app *App) findNPCWithBehavior(ctx context.Context, slug string) (*behavior
 func (app *App) loadBehaviorNPCByID(ctx context.Context, npcID string) (*behaviorNPC, bool) {
 	var n behaviorNPC
 	var behavior *string
+	var homeStructureID *string
 	err := app.DB.QueryRow(ctx,
-		`SELECT n.id, COALESCE(n.behavior, ''), n.current_x, n.current_y, `+homeCoordsSQL+`
+		`SELECT n.id, COALESCE(n.behavior, ''), n.current_x, n.current_y, `+homeCoordsSQL+`, n.home_structure_id
 		 FROM npc n
 		 LEFT JOIN village_object s ON s.id = n.home_structure_id
 		 LEFT JOIN asset a ON a.id = s.asset_id
 		 WHERE n.id = $1`, npcID,
-	).Scan(&n.ID, &behavior, &n.CurX, &n.CurY, &n.HomeX, &n.HomeY)
+	).Scan(&n.ID, &behavior, &n.CurX, &n.CurY, &n.HomeX, &n.HomeY, &homeStructureID)
 	if err != nil {
 		return nil, false
 	}
 	if behavior != nil {
 		n.Behavior = *behavior
+	}
+	if homeStructureID != nil {
+		n.HomeStructureID = *homeStructureID
 	}
 
 	app.interpolateCurrentPos(&n)
@@ -275,14 +295,15 @@ func (app *App) startNPCRoute(ctx context.Context, npc *behaviorNPC, stops []rou
 	if len(stops) == 0 {
 		return nil
 	}
-	app.setNPCInside(ctx, npc.ID, false)
+	app.setNPCInside(ctx, npc.ID, false, "")
 	route := &npcRoute{
-		NPCID:   npc.ID,
-		Stops:   stops,
-		StopIdx: 0,
-		HomeX:   npc.HomeX,
-		HomeY:   npc.HomeY,
-		Phase:   "active",
+		NPCID:             npc.ID,
+		Stops:             stops,
+		StopIdx:           0,
+		HomeX:             npc.HomeX,
+		HomeY:             npc.HomeY,
+		Phase:             "active",
+		TargetStructureID: npc.HomeStructureID,
 	}
 	app.NPCBehaviors.mu.Lock()
 	app.NPCBehaviors.active[npc.ID] = route
@@ -297,24 +318,127 @@ func (app *App) startNPCRoute(ctx context.Context, npc *behaviorNPC, stops []rou
 	return nil
 }
 
-// setNPCInside writes the inside flag and broadcasts npc_inside_changed
-// when the value actually changes. Swallows DB errors (logs them) — a
-// stuck inside flag is a cosmetic issue, not worth failing the caller.
-func (app *App) setNPCInside(ctx context.Context, npcID string, inside bool) {
-	tag, err := app.DB.Exec(ctx,
-		`UPDATE npc SET inside = $2 WHERE id = $1 AND inside IS DISTINCT FROM $2`,
-		npcID, inside,
-	)
+// setNPCInside writes the inside flag + inside_structure_id and broadcasts
+// npc_inside_changed when the pair actually changes. structureID is only
+// consulted when inside=true; on inside=false we always clear it. After
+// the NPC state changes, the affected structures (previous and/or new)
+// get their occupancy-tagged state recomputed so market stalls and
+// similar see-through buildings flip open/closed automatically.
+func (app *App) setNPCInside(ctx context.Context, npcID string, inside bool, structureID string) {
+	var newInsideID *string
+	if inside && structureID != "" {
+		s := structureID
+		newInsideID = &s
+	}
+	// Read the previous value so we know which structure to re-evaluate
+	// when the NPC is MOVING between buildings (rare today but cheap to
+	// handle). Also used for the no-op early exit.
+	var prev struct {
+		Inside              bool
+		InsideStructureID   *string
+	}
+	err := app.DB.QueryRow(ctx,
+		`SELECT inside, inside_structure_id FROM npc WHERE id = $1`, npcID,
+	).Scan(&prev.Inside, &prev.InsideStructureID)
 	if err != nil {
-		log.Printf("setNPCInside(%s=%v): %v", npcID, inside, err)
+		log.Printf("setNPCInside read(%s): %v", npcID, err)
 		return
 	}
-	if tag.RowsAffected() == 0 {
+	if prev.Inside == inside && stringPtrEq(prev.InsideStructureID, newInsideID) {
+		return
+	}
+	if _, err := app.DB.Exec(ctx,
+		`UPDATE npc SET inside = $2, inside_structure_id = $3 WHERE id = $1`,
+		npcID, inside, newInsideID,
+	); err != nil {
+		log.Printf("setNPCInside write(%s): %v", npcID, err)
 		return
 	}
 	app.Hub.Broadcast(WorldEvent{
 		Type: "npc_inside_changed",
-		Data: map[string]any{"id": npcID, "inside": inside},
+		Data: map[string]any{
+			"id":                  npcID,
+			"inside":              inside,
+			"inside_structure_id": newInsideID,
+		},
+	})
+	// Re-evaluate occupancy-driven state for any structure whose roster
+	// just changed. Previous structure may go from occupied to empty;
+	// new structure may go from empty to occupied.
+	touched := map[string]bool{}
+	if prev.InsideStructureID != nil {
+		touched[*prev.InsideStructureID] = true
+	}
+	if newInsideID != nil {
+		touched[*newInsideID] = true
+	}
+	for sid := range touched {
+		app.refreshStructureOccupancyState(ctx, sid)
+	}
+}
+
+func stringPtrEq(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
+}
+
+// refreshStructureOccupancyState flips a structure's current_state based
+// on how many NPCs are currently inside it. Only structures whose asset
+// has states tagged "occupied" and "unoccupied" participate — everything
+// else is a no-op.
+func (app *App) refreshStructureOccupancyState(ctx context.Context, structureID string) {
+	var assetID string
+	var currentState string
+	if err := app.DB.QueryRow(ctx,
+		`SELECT asset_id, current_state FROM village_object WHERE id = $1`, structureID,
+	).Scan(&assetID, &currentState); err != nil {
+		return
+	}
+
+	// Look up the two tagged states. If either is missing, the asset
+	// isn't wired for occupancy flipping — leave it alone.
+	var occupiedState, unoccupiedState string
+	if err := app.DB.QueryRow(ctx,
+		`SELECT state FROM asset_state s
+		 JOIN asset_state_tag t ON t.state_id = s.id
+		 WHERE s.asset_id = $1 AND t.tag = 'occupied' LIMIT 1`, assetID,
+	).Scan(&occupiedState); err != nil {
+		return
+	}
+	if err := app.DB.QueryRow(ctx,
+		`SELECT state FROM asset_state s
+		 JOIN asset_state_tag t ON t.state_id = s.id
+		 WHERE s.asset_id = $1 AND t.tag = 'unoccupied' LIMIT 1`, assetID,
+	).Scan(&unoccupiedState); err != nil {
+		return
+	}
+
+	var occupants int
+	if err := app.DB.QueryRow(ctx,
+		`SELECT COUNT(*) FROM npc WHERE inside_structure_id = $1`, structureID,
+	).Scan(&occupants); err != nil {
+		return
+	}
+
+	target := unoccupiedState
+	if occupants > 0 {
+		target = occupiedState
+	}
+	if target == currentState {
+		return
+	}
+	if _, err := app.DB.Exec(ctx,
+		`UPDATE village_object SET current_state = $2 WHERE id = $1`,
+		structureID, target,
+	); err != nil {
+		log.Printf("refreshStructureOccupancyState(%s): %v", structureID, err)
+		return
+	}
+	app.Hub.Broadcast(WorldEvent{
+		Type: "object_state_changed",
+		Data: map[string]string{"id": structureID, "state": target},
 	})
 }
 
@@ -613,7 +737,7 @@ func (app *App) handleGoToStructure(w http.ResponseWriter, r *http.Request, kind
 	npc := &behaviorNPC{ID: npcID, CurX: curX, CurY: curY, HomeX: destX, HomeY: destY}
 	app.interpolateCurrentPos(npc)
 
-	if err := app.startReturnWalk(r.Context(), npc, destX, destY, "go-"+kind); err != nil {
+	if err := app.startReturnWalk(r.Context(), npc, destX, destY, *structureID, "go-"+kind); err != nil {
 		log.Printf("go-%s %s: %v", kind, npcID, err)
 		jsonError(w, "Failed to start walk", http.StatusInternalServerError)
 		return
@@ -629,15 +753,16 @@ func (app *App) handleGoToStructure(w http.ResponseWriter, r *http.Request, kind
 // Phase="returning" route so the arrival hook flips inside=true, and kicks
 // off the walk to the destination. The NPC is visible during the walk
 // (inside=false) and hidden on arrival.
-func (app *App) startReturnWalk(ctx context.Context, npc *behaviorNPC, destX, destY float64, label string) error {
-	app.setNPCInside(ctx, npc.ID, false)
+func (app *App) startReturnWalk(ctx context.Context, npc *behaviorNPC, destX, destY float64, targetStructureID, label string) error {
+	app.setNPCInside(ctx, npc.ID, false, "")
 	route := &npcRoute{
-		NPCID:   npc.ID,
-		Stops:   []routeStop{},
-		StopIdx: 0,
-		HomeX:   destX,
-		HomeY:   destY,
-		Phase:   "returning",
+		NPCID:             npc.ID,
+		Stops:             []routeStop{},
+		StopIdx:           0,
+		HomeX:             destX,
+		HomeY:             destY,
+		Phase:             "returning",
+		TargetStructureID: targetStructureID,
 	}
 	app.NPCBehaviors.mu.Lock()
 	app.NPCBehaviors.active[npc.ID] = route

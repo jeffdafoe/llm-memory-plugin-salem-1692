@@ -90,6 +90,7 @@ func main() {
 	authed("PATCH /api/assets/{id}/footprint", app.handlePatchAssetFootprint)
 	authed("PATCH /api/assets/{id}/door", app.handlePatchAssetDoor)
 	authed("PATCH /api/assets/{id}/enterable", app.handlePatchAssetEnterable)
+	authed("PATCH /api/assets/{id}/visible-when-inside", app.handlePatchAssetVisibleWhenInside)
 
 	// Agents
 	authed("GET /api/village/agents", app.handleListVillageAgents)

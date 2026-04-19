@@ -99,9 +99,19 @@ func _ready() -> void:
     _panel.add_theme_stylebox_override("panel", panel_style)
     add_child(_panel)
 
+    # Wrap the content in a ScrollContainer so taller panels (once the
+    # zoom rows + anything else that lands later are added) don't clip
+    # off the bottom of the viewport.
+    var scroll := ScrollContainer.new()
+    scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+    scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+    _panel.add_child(scroll)
+
     _content = VBoxContainer.new()
     _content.add_theme_constant_override("separation", 14)
-    _panel.add_child(_content)
+    _content.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    scroll.add_child(_content)
 
     _build_layout()
 
