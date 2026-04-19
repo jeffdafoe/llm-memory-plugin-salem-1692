@@ -151,6 +151,12 @@ type behaviorNPC struct {
 	// occupancy-driven state flipping knows which building to check.
 	// Empty when the NPC has no home structure linked.
 	HomeStructureID   string
+	// HasCustomSchedule reports whether the NPC's per-NPC schedule
+	// fields (interval + start + end) are all set. When true, the
+	// per-NPC scheduler owns dispatching this NPC — the legacy global
+	// rotation path (applyRotation) must NOT fire their route or the
+	// laundry would rotate twice a day.
+	HasCustomSchedule bool
 }
 
 // homeCoordsSQL resolves the NPC's home target position. Preference order:
@@ -167,23 +173,31 @@ const homeCoordsSQL = `
 // findNPCWithBehavior returns the NPC tagged with the given behavior slug,
 // resolving home coords through homeCoordsSQL. If the NPC is mid-walk, its
 // interpolated current position replaces the last-persisted current_x/y.
+//
+// HasCustomSchedule is set when the NPC owns its own scheduling (the per-
+// NPC scheduler will dispatch them); callers that want to avoid double-
+// firing from the legacy rotation path check this before starting a route.
 func (app *App) findNPCWithBehavior(ctx context.Context, slug string) (*behaviorNPC, bool) {
 	n := behaviorNPC{Behavior: slug}
 	var homeStructureID *string
+	var interval, startH, endH *int
 	err := app.DB.QueryRow(ctx,
-		`SELECT n.id, n.current_x, n.current_y, `+homeCoordsSQL+`, n.home_structure_id
+		`SELECT n.id, n.current_x, n.current_y, `+homeCoordsSQL+`, n.home_structure_id,
+		        n.schedule_interval_hours, n.active_start_hour, n.active_end_hour
 		 FROM npc n
 		 LEFT JOIN village_object s ON s.id = n.home_structure_id
 		 LEFT JOIN asset a ON a.id = s.asset_id
 		 WHERE n.behavior = $1
 		 LIMIT 1`, slug,
-	).Scan(&n.ID, &n.CurX, &n.CurY, &n.HomeX, &n.HomeY, &homeStructureID)
+	).Scan(&n.ID, &n.CurX, &n.CurY, &n.HomeX, &n.HomeY, &homeStructureID,
+		&interval, &startH, &endH)
 	if err != nil {
 		return nil, false
 	}
 	if homeStructureID != nil {
 		n.HomeStructureID = *homeStructureID
 	}
+	n.HasCustomSchedule = interval != nil && startH != nil && endH != nil
 
 	app.interpolateCurrentPos(&n)
 	return &n, true
@@ -196,13 +210,16 @@ func (app *App) loadBehaviorNPCByID(ctx context.Context, npcID string) (*behavio
 	var n behaviorNPC
 	var behavior *string
 	var homeStructureID *string
+	var interval, startH, endH *int
 	err := app.DB.QueryRow(ctx,
-		`SELECT n.id, COALESCE(n.behavior, ''), n.current_x, n.current_y, `+homeCoordsSQL+`, n.home_structure_id
+		`SELECT n.id, COALESCE(n.behavior, ''), n.current_x, n.current_y, `+homeCoordsSQL+`, n.home_structure_id,
+		        n.schedule_interval_hours, n.active_start_hour, n.active_end_hour
 		 FROM npc n
 		 LEFT JOIN village_object s ON s.id = n.home_structure_id
 		 LEFT JOIN asset a ON a.id = s.asset_id
 		 WHERE n.id = $1`, npcID,
-	).Scan(&n.ID, &behavior, &n.CurX, &n.CurY, &n.HomeX, &n.HomeY, &homeStructureID)
+	).Scan(&n.ID, &behavior, &n.CurX, &n.CurY, &n.HomeX, &n.HomeY, &homeStructureID,
+		&interval, &startH, &endH)
 	if err != nil {
 		return nil, false
 	}
@@ -212,6 +229,7 @@ func (app *App) loadBehaviorNPCByID(ctx context.Context, npcID string) (*behavio
 	if homeStructureID != nil {
 		n.HomeStructureID = *homeStructureID
 	}
+	n.HasCustomSchedule = interval != nil && startH != nil && endH != nil
 
 	app.interpolateCurrentPos(&n)
 	return &n, true

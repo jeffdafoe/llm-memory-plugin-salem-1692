@@ -72,7 +72,19 @@ type NPC struct {
 	// Used to drive occupancy-sensitive state flipping (market stall
 	// open/closed) and future "who's in this building" UIs.
 	InsideStructureID *string  `json:"inside_structure_id"`
-	Sprite          *NPCSprite `json:"sprite,omitempty"`
+	// ScheduleOffsetHours is the per-NPC offset off the world boundary.
+	// Only the worker behavior reads it today (shifts arrive/leave off
+	// dawn/dusk). See npc_scheduler.go for full interpretation.
+	ScheduleOffsetHours int `json:"schedule_offset_hours"`
+	// ScheduleIntervalHours + ActiveStartHour + ActiveEndHour are the
+	// per-NPC cadence knobs for interval behaviors (washerwoman,
+	// town_crier). All three must be set together or all three left null
+	// (enforced at the DB level). Null falls back to the legacy
+	// world_rotation_time trigger for those behaviors.
+	ScheduleIntervalHours *int       `json:"schedule_interval_hours"`
+	ActiveStartHour       *int       `json:"active_start_hour"`
+	ActiveEndHour         *int       `json:"active_end_hour"`
+	Sprite                *NPCSprite `json:"sprite,omitempty"`
 }
 
 // loadNPCSprites returns the sprite catalog as a map keyed by sprite id,
@@ -173,7 +185,9 @@ func (app *App) handleListNPCs(w http.ResponseWriter, r *http.Request) {
 	npcRows, err := app.DB.Query(ctx,
 		`SELECT id, display_name, sprite_id, home_x, home_y,
 		        current_x, current_y, facing, behavior, llm_memory_agent,
-		        home_structure_id, work_structure_id, inside, inside_structure_id
+		        home_structure_id, work_structure_id, inside, inside_structure_id,
+		        schedule_offset_hours, schedule_interval_hours,
+		        active_start_hour, active_end_hour
 		 FROM npc
 		 ORDER BY display_name`,
 	)
@@ -188,7 +202,9 @@ func (app *App) handleListNPCs(w http.ResponseWriter, r *http.Request) {
 		var n NPC
 		if err := npcRows.Scan(&n.ID, &n.DisplayName, &n.SpriteID,
 			&n.HomeX, &n.HomeY, &n.CurrentX, &n.CurrentY, &n.Facing, &n.Behavior, &n.LLMMemoryAgent,
-			&n.HomeStructureID, &n.WorkStructureID, &n.Inside, &n.InsideStructureID); err != nil {
+			&n.HomeStructureID, &n.WorkStructureID, &n.Inside, &n.InsideStructureID,
+			&n.ScheduleOffsetHours, &n.ScheduleIntervalHours,
+			&n.ActiveStartHour, &n.ActiveEndHour); err != nil {
 			continue
 		}
 		if s, ok := sprites[n.SpriteID]; ok {
@@ -518,6 +534,106 @@ func (app *App) handleSetNPCAgent(w http.ResponseWriter, r *http.Request) {
 	app.Hub.Broadcast(WorldEvent{Type: "npc_agent_changed", Data: map[string]interface{}{
 		"id":               id,
 		"llm_memory_agent": req.LLMMemoryAgent,
+	}})
+}
+
+// handleSetNPCSchedule updates the per-NPC scheduling knobs in one atomic
+// PATCH. Admin only. Accepts:
+//
+//   schedule_offset_hours — required, int in [-23, 23]. Worker behavior
+//     reads this; others ignore.
+//   schedule_interval_hours, active_start_hour, active_end_hour — all
+//     three or none. The DB CHECK constraint schedule_all_or_none
+//     enforces this; the handler pre-validates to return a clean 400.
+//
+// Clears last_shift_tick_at so the new schedule re-evaluates on the next
+// server tick rather than waiting up to 12h for the following boundary.
+// Broadcasts npc_schedule_changed with the full new schedule payload.
+func (app *App) handleSetNPCSchedule(w http.ResponseWriter, r *http.Request) {
+	user := getUserFromContext(r.Context())
+	if user == nil || !user.hasRole("ROLE_SALEM_ADMIN") {
+		jsonError(w, "Admin role required", http.StatusForbidden)
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		jsonError(w, "Missing NPC ID", http.StatusBadRequest)
+		return
+	}
+
+	var req struct {
+		ScheduleOffsetHours   *int `json:"schedule_offset_hours"`
+		ScheduleIntervalHours *int `json:"schedule_interval_hours"`
+		ActiveStartHour       *int `json:"active_start_hour"`
+		ActiveEndHour         *int `json:"active_end_hour"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.ScheduleOffsetHours == nil {
+		jsonError(w, "schedule_offset_hours required", http.StatusBadRequest)
+		return
+	}
+	if *req.ScheduleOffsetHours < -23 || *req.ScheduleOffsetHours > 23 {
+		jsonError(w, "schedule_offset_hours must be between -23 and 23", http.StatusBadRequest)
+		return
+	}
+	// All-or-none for the window triple.
+	cadenceSet := 0
+	if req.ScheduleIntervalHours != nil {
+		cadenceSet++
+	}
+	if req.ActiveStartHour != nil {
+		cadenceSet++
+	}
+	if req.ActiveEndHour != nil {
+		cadenceSet++
+	}
+	if cadenceSet != 0 && cadenceSet != 3 {
+		jsonError(w, "schedule_interval_hours, active_start_hour, and active_end_hour must be set together", http.StatusBadRequest)
+		return
+	}
+	if req.ScheduleIntervalHours != nil && (*req.ScheduleIntervalHours < 1 || *req.ScheduleIntervalHours > 24) {
+		jsonError(w, "schedule_interval_hours must be between 1 and 24", http.StatusBadRequest)
+		return
+	}
+	if req.ActiveStartHour != nil && (*req.ActiveStartHour < 0 || *req.ActiveStartHour > 23) {
+		jsonError(w, "active_start_hour must be between 0 and 23", http.StatusBadRequest)
+		return
+	}
+	if req.ActiveEndHour != nil && (*req.ActiveEndHour < 0 || *req.ActiveEndHour > 23) {
+		jsonError(w, "active_end_hour must be between 0 and 23", http.StatusBadRequest)
+		return
+	}
+
+	result, err := app.DB.Exec(r.Context(),
+		`UPDATE npc SET
+		    schedule_offset_hours = $2,
+		    schedule_interval_hours = $3,
+		    active_start_hour = $4,
+		    active_end_hour = $5,
+		    last_shift_tick_at = NULL
+		 WHERE id = $1`,
+		id, *req.ScheduleOffsetHours,
+		req.ScheduleIntervalHours, req.ActiveStartHour, req.ActiveEndHour,
+	)
+	if err != nil {
+		jsonError(w, "Failed to update schedule", http.StatusInternalServerError)
+		return
+	}
+	if result.RowsAffected() == 0 {
+		jsonError(w, "NPC not found", http.StatusNotFound)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+	app.Hub.Broadcast(WorldEvent{Type: "npc_schedule_changed", Data: map[string]interface{}{
+		"id":                      id,
+		"schedule_offset_hours":   *req.ScheduleOffsetHours,
+		"schedule_interval_hours": req.ScheduleIntervalHours,
+		"active_start_hour":       req.ActiveStartHour,
+		"active_end_hour":         req.ActiveEndHour,
 	}})
 }
 

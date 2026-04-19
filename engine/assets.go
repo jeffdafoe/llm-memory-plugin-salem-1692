@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 )
@@ -63,6 +64,9 @@ type Asset struct {
 
 // AssetState is one visual variant of an asset (sprite coordinates for a specific state).
 // Animated states have frame_count > 1 — frames are consecutive horizontally in the sheet.
+// Tags come from asset_state_tag and drive scheduled behaviors (rotatable,
+// day-active / night-active, lamplighter-target, laundry, notice-board,
+// occupied / unoccupied). Empty slice when no tags are set.
 type AssetState struct {
 	State      string      `json:"state"`
 	Sheet      string      `json:"sheet"`
@@ -72,6 +76,7 @@ type AssetState struct {
 	SrcH       int         `json:"src_h"`
 	FrameCount int         `json:"frame_count"`
 	FrameRate  float64     `json:"frame_rate"`
+	Tags       []string    `json:"tags"`
 	Light      *AssetLight `json:"light,omitempty"`
 }
 
@@ -150,13 +155,19 @@ func (app *App) handleListAssets(w http.ResponseWriter, r *http.Request) {
 
 	// Fetch all states, LEFT JOIN asset_state_light so lit states carry their
 	// light params inline. Most rows come back with NULL light columns.
+	// Tags aggregated via array_agg so each state ships with its tag set
+	// in one trip — FILTER drops the NULL row array_agg emits for states
+	// without any tags.
 	stateRows, err := app.DB.Query(r.Context(),
 		`SELECT s.asset_id, s.state, s.sheet, s.src_x, s.src_y, s.src_w, s.src_h,
 		        s.frame_count, s.frame_rate,
 		        l.color, l.radius, l.energy, l.offset_x, l.offset_y,
-		        l.flicker_amplitude, l.flicker_period_ms
+		        l.flicker_amplitude, l.flicker_period_ms,
+		        COALESCE(array_agg(t.tag) FILTER (WHERE t.tag IS NOT NULL), '{}')
 		 FROM asset_state s
 		 LEFT JOIN asset_state_light l ON l.state_id = s.id
+		 LEFT JOIN asset_state_tag t ON t.state_id = s.id
+		 GROUP BY s.id, l.state_id
 		 ORDER BY s.asset_id, s.state`,
 	)
 	if err != nil {
@@ -178,8 +189,12 @@ func (app *App) handleListAssets(w http.ResponseWriter, r *http.Request) {
 			&s.SrcX, &s.SrcY, &s.SrcW, &s.SrcH, &s.FrameCount, &s.FrameRate,
 			&lightColor, &lightRadius, &lightEnergy,
 			&lightOffsetX, &lightOffsetY,
-			&lightFlickerAmp, &lightFlickerPeriod); err != nil {
+			&lightFlickerAmp, &lightFlickerPeriod,
+			&s.Tags); err != nil {
 			continue
+		}
+		if s.Tags == nil {
+			s.Tags = []string{}
 		}
 		if lightColor != nil {
 			s.Light = &AssetLight{
@@ -452,4 +467,162 @@ func (app *App) handlePatchAssetVisibleWhenInside(w http.ResponseWriter, r *http
 	})
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// allowedStateTags enumerates the tag vocabulary the admin UI can set.
+// New tags require a code change so the vocabulary stays coherent —
+// free-form typing would fragment the set (typos, "lamplighter_target" vs
+// "lamplighter-target"). Mirror of the constants in world_phase.go /
+// world_rotation.go / npc_behaviors.go.
+var allowedStateTags = map[string]bool{
+	"rotatable":          true,
+	"day-active":         true,
+	"night-active":       true,
+	"lamplighter-target": true,
+	"laundry":            true,
+	"notice-board":       true,
+	"occupied":           true,
+	"unoccupied":         true,
+}
+
+// handleListStateTags returns the tag allowlist so the admin UI can
+// populate its picker from server truth rather than a hard-coded client
+// list. Any authenticated user can read it.
+func (app *App) handleListStateTags(w http.ResponseWriter, r *http.Request) {
+	tags := make([]string, 0, len(allowedStateTags))
+	for tag := range allowedStateTags {
+		tags = append(tags, tag)
+	}
+	// Stable alphabetical order so the UI dropdown is predictable.
+	for i := 1; i < len(tags); i++ {
+		for j := i; j > 0 && tags[j-1] > tags[j]; j-- {
+			tags[j-1], tags[j] = tags[j], tags[j-1]
+		}
+	}
+	jsonResponse(w, http.StatusOK, tags)
+}
+
+// handleAddStateTag adds one tag to an asset state. Idempotent via
+// ON CONFLICT DO NOTHING on the composite PK. Admin only.
+// Broadcasts asset_state_tags_updated so every client refreshes its
+// copy of the state's tag set.
+func (app *App) handleAddStateTag(w http.ResponseWriter, r *http.Request) {
+	user := getUserFromContext(r.Context())
+	if user == nil || !user.hasRole("ROLE_SALEM_ADMIN") {
+		jsonError(w, "Admin access required", http.StatusForbidden)
+		return
+	}
+
+	assetID := r.PathValue("id")
+	state := r.PathValue("state")
+	if assetID == "" || state == "" {
+		jsonError(w, "Missing asset id or state", http.StatusBadRequest)
+		return
+	}
+
+	var req struct {
+		Tag string `json:"tag"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	if !allowedStateTags[req.Tag] {
+		jsonError(w, "Unknown tag", http.StatusBadRequest)
+		return
+	}
+
+	// Resolve state_id here rather than requiring the client to know the
+	// integer PK — asset id + state name is the stable pair the editor
+	// already holds.
+	var stateID int
+	err := app.DB.QueryRow(r.Context(),
+		`SELECT id FROM asset_state WHERE asset_id = $1 AND state = $2`,
+		assetID, state,
+	).Scan(&stateID)
+	if err != nil {
+		jsonError(w, "State not found", http.StatusNotFound)
+		return
+	}
+
+	if _, err := app.DB.Exec(r.Context(),
+		`INSERT INTO asset_state_tag (state_id, tag) VALUES ($1, $2)
+		 ON CONFLICT (state_id, tag) DO NOTHING`,
+		stateID, req.Tag,
+	); err != nil {
+		jsonError(w, "Failed to add tag", http.StatusInternalServerError)
+		return
+	}
+
+	app.broadcastStateTags(r.Context(), assetID, state, stateID)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleRemoveStateTag removes one tag from an asset state. Admin only.
+// No-op if the pair wasn't present — the DELETE matches zero rows but
+// the client's mental model still converges. Broadcasts regardless.
+func (app *App) handleRemoveStateTag(w http.ResponseWriter, r *http.Request) {
+	user := getUserFromContext(r.Context())
+	if user == nil || !user.hasRole("ROLE_SALEM_ADMIN") {
+		jsonError(w, "Admin access required", http.StatusForbidden)
+		return
+	}
+
+	assetID := r.PathValue("id")
+	state := r.PathValue("state")
+	tag := r.PathValue("tag")
+	if assetID == "" || state == "" || tag == "" {
+		jsonError(w, "Missing asset id, state, or tag", http.StatusBadRequest)
+		return
+	}
+
+	var stateID int
+	err := app.DB.QueryRow(r.Context(),
+		`SELECT id FROM asset_state WHERE asset_id = $1 AND state = $2`,
+		assetID, state,
+	).Scan(&stateID)
+	if err != nil {
+		jsonError(w, "State not found", http.StatusNotFound)
+		return
+	}
+
+	if _, err := app.DB.Exec(r.Context(),
+		`DELETE FROM asset_state_tag WHERE state_id = $1 AND tag = $2`,
+		stateID, tag,
+	); err != nil {
+		jsonError(w, "Failed to remove tag", http.StatusInternalServerError)
+		return
+	}
+
+	app.broadcastStateTags(r.Context(), assetID, state, stateID)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// broadcastStateTags reads the current tag set for the given state and
+// fans it out to all clients. Used by both add and remove so the payload
+// is always the full authoritative set, not a diff.
+func (app *App) broadcastStateTags(ctx context.Context, assetID, state string, stateID int) {
+	rows, err := app.DB.Query(ctx,
+		`SELECT tag FROM asset_state_tag WHERE state_id = $1 ORDER BY tag`,
+		stateID,
+	)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	tags := []string{}
+	for rows.Next() {
+		var tag string
+		if err := rows.Scan(&tag); err == nil {
+			tags = append(tags, tag)
+		}
+	}
+	app.Hub.Broadcast(WorldEvent{
+		Type: "asset_state_tags_updated",
+		Data: map[string]any{
+			"asset_id": assetID,
+			"state":    state,
+			"tags":     tags,
+		},
+	})
 }
