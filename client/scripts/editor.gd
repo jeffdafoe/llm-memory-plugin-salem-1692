@@ -571,6 +571,7 @@ func _select_object(node: Node2D) -> void:
     _add_door_marker(node)
     object_selected.emit({
         "asset_id": node.get_meta("asset_id", ""),
+        "object_id": node.get_meta("object_id", ""),
         "placed_by": node.get_meta("placed_by", ""),
         "owner": node.get_meta("owner", ""),
         "display_name": node.get_meta("display_name", ""),
@@ -971,8 +972,12 @@ func _draw_door_marker_contents(asset: Dictionary) -> void:
         return
     var half: float = TILE_SIZE / 2.0 - 2.0
     var is_set: bool = asset.get("door_offset_x", null) != null
+    # Same yellow family as the selection border so the marker reads as
+    # "part of the editor affordance." Opacity differs between set and
+    # unset so the admin can tell at a glance whether a real door tile is
+    # placed or they're looking at the placeholder.
     var fill := Polygon2D.new()
-    fill.color = Color(0.35, 0.65, 0.95, 0.55) if is_set else Color(0.55, 0.55, 0.55, 0.35)
+    fill.color = Color(1.0, 0.92, 0.55, 0.65) if is_set else Color(1.0, 0.92, 0.55, 0.25)
     fill.polygon = PackedVector2Array([
         Vector2(-half, -half),
         Vector2( half, -half),
@@ -982,7 +987,7 @@ func _draw_door_marker_contents(asset: Dictionary) -> void:
     _door_marker.add_child(fill)
     var outline := Line2D.new()
     outline.width = 2.0
-    outline.default_color = Color(0.2, 0.45, 0.85, 0.95) if is_set else Color(0.6, 0.6, 0.6, 0.8)
+    outline.default_color = Color(0.85, 0.75, 0.35, 0.95) if is_set else Color(0.85, 0.75, 0.35, 0.6)
     outline.closed = true
     outline.add_point(Vector2(-half, -half))
     outline.add_point(Vector2( half, -half))

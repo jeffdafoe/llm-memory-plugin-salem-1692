@@ -139,3 +139,10 @@ func _clamp_position() -> void:
         position.y = map_bounds.position.y + map_bounds.size.y / 2.0
     else:
         position.y = clampf(position.y, min_y, max_y)
+
+## Jump the camera to a world position, clamped to map bounds. Used by the
+## panel's People list to focus on the selected villager — especially
+## useful when they're indoors and otherwise invisible on the map.
+func center_on(world_pos: Vector2) -> void:
+    position = world_pos
+    _clamp_position()
