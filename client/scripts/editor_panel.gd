@@ -16,6 +16,10 @@ signal npc_behavior_changed(behavior: String)
 signal npc_agent_changed(agent: String)
 signal npc_home_structure_changed(structure_id: String)
 signal npc_work_structure_changed(structure_id: String)
+# Combined schedule change — all four fields sent together. interval/start/end
+# are -1 to mean "null" (legacy / no cadence); offset is always an integer.
+# The handler maps -1 back to null in the PATCH payload.
+signal npc_schedule_changed(offset: int, interval: int, start: int, end: int)
 signal npc_home_assign_requested
 signal npc_work_assign_requested
 signal npc_run_cycle_requested
@@ -104,6 +108,19 @@ var _npc_work_clear_button: Button = null
 var _npc_run_cycle_button: Button = null
 var _npc_go_home_button: Button = null
 var _npc_go_to_work_button: Button = null
+# Schedule section — four knobs + a "use cadence window" checkbox that
+# clusters the three nullable fields together. The offset field is always
+# visible; the three cadence fields enable/disable together. Applied on
+# the Save button press — avoids PATCH-per-keystroke.
+var _npc_schedule_section: VBoxContainer = null
+var _npc_offset_spin: SpinBox = null
+var _npc_cadence_check: CheckBox = null
+var _npc_interval_spin: SpinBox = null
+var _npc_start_spin: SpinBox = null
+var _npc_end_spin: SpinBox = null
+var _npc_schedule_save_button: Button = null
+var _npc_cadence_row: HBoxContainer = null
+var _npc_cadence_row2: HBoxContainer = null
 # Cached IDs so clear buttons know what's currently assigned (also drives
 # whether the clear button is visible).
 var _npc_home_current_id: String = ""
@@ -568,6 +585,95 @@ func _ready() -> void:
     _npc_run_cycle_button.add_theme_stylebox_override("normal", behavior_style)
     _npc_run_cycle_button.pressed.connect(func(): npc_run_cycle_requested.emit())
     _npc_fields_section.add_child(_npc_run_cycle_button)
+
+    # Schedule section — shift offset for workers; cadence window for
+    # washerwoman / town_crier. Fields always visible; admin picks what
+    # matters for the NPC's behavior. Server ignores fields that don't
+    # apply to the chosen behavior.
+    _npc_schedule_section = VBoxContainer.new()
+    _npc_schedule_section.add_theme_constant_override("separation", 4)
+    _npc_fields_section.add_child(_npc_schedule_section)
+
+    var sched_header = Label.new()
+    sched_header.text = "SCHEDULE"
+    sched_header.add_theme_color_override("font_color", COLOR_LABEL)
+    sched_header.add_theme_font_size_override("font_size", 11)
+    _npc_schedule_section.add_child(sched_header)
+
+    var offset_row = HBoxContainer.new()
+    offset_row.add_theme_constant_override("separation", 6)
+    _npc_schedule_section.add_child(offset_row)
+    var offset_lbl = Label.new()
+    offset_lbl.text = "Offset (h)"
+    offset_lbl.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+    offset_lbl.add_theme_font_size_override("font_size", 11)
+    offset_row.add_child(offset_lbl)
+    _npc_offset_spin = SpinBox.new()
+    _npc_offset_spin.min_value = -23
+    _npc_offset_spin.max_value = 23
+    _npc_offset_spin.step = 1
+    _npc_offset_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    offset_row.add_child(_npc_offset_spin)
+
+    _npc_cadence_check = CheckBox.new()
+    _npc_cadence_check.text = "Use cadence window"
+    _npc_cadence_check.add_theme_color_override("font_color", COLOR_TEXT)
+    _npc_cadence_check.add_theme_font_size_override("font_size", 11)
+    _npc_cadence_check.toggled.connect(_on_cadence_toggled)
+    _npc_schedule_section.add_child(_npc_cadence_check)
+
+    _npc_cadence_row = HBoxContainer.new()
+    _npc_cadence_row.add_theme_constant_override("separation", 6)
+    _npc_schedule_section.add_child(_npc_cadence_row)
+    var int_lbl = Label.new()
+    int_lbl.text = "Every (h)"
+    int_lbl.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+    int_lbl.add_theme_font_size_override("font_size", 11)
+    _npc_cadence_row.add_child(int_lbl)
+    _npc_interval_spin = SpinBox.new()
+    _npc_interval_spin.min_value = 1
+    _npc_interval_spin.max_value = 24
+    _npc_interval_spin.step = 1
+    _npc_interval_spin.value = 3
+    _npc_interval_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    _npc_cadence_row.add_child(_npc_interval_spin)
+
+    _npc_cadence_row2 = HBoxContainer.new()
+    _npc_cadence_row2.add_theme_constant_override("separation", 6)
+    _npc_schedule_section.add_child(_npc_cadence_row2)
+    var start_lbl = Label.new()
+    start_lbl.text = "Start"
+    start_lbl.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+    start_lbl.add_theme_font_size_override("font_size", 11)
+    _npc_cadence_row2.add_child(start_lbl)
+    _npc_start_spin = SpinBox.new()
+    _npc_start_spin.min_value = 0
+    _npc_start_spin.max_value = 23
+    _npc_start_spin.step = 1
+    _npc_start_spin.value = 9
+    _npc_start_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    _npc_cadence_row2.add_child(_npc_start_spin)
+    var end_lbl = Label.new()
+    end_lbl.text = "End"
+    end_lbl.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+    end_lbl.add_theme_font_size_override("font_size", 11)
+    _npc_cadence_row2.add_child(end_lbl)
+    _npc_end_spin = SpinBox.new()
+    _npc_end_spin.min_value = 0
+    _npc_end_spin.max_value = 23
+    _npc_end_spin.step = 1
+    _npc_end_spin.value = 18
+    _npc_end_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    _npc_cadence_row2.add_child(_npc_end_spin)
+
+    _npc_schedule_save_button = Button.new()
+    _npc_schedule_save_button.text = "Save Schedule"
+    _npc_schedule_save_button.add_theme_font_override("font", _font)
+    _npc_schedule_save_button.add_theme_font_size_override("font_size", 13)
+    _npc_schedule_save_button.add_theme_color_override("font_color", COLOR_TEXT)
+    _npc_schedule_save_button.add_theme_stylebox_override("normal", behavior_style)
+    _npc_schedule_save_button.pressed.connect(_on_schedule_save_pressed)
+    _npc_schedule_section.add_child(_npc_schedule_save_button)
 
     var sel_sep = HSeparator.new()
     sel_sep.add_theme_color_override("separator_color", Color(0.4, 0.32, 0.2, 0.4))
@@ -1057,6 +1163,34 @@ func _on_npc_name_focus_lost() -> void:
     if trimmed != "":
         npc_name_changed.emit(trimmed)
 
+## Toggles the three cadence SpinBoxes enabled/disabled together. Visual
+## disable only — the save handler also checks the checkbox state when
+## building the payload, so unchecked always sends null regardless of
+## the SpinBox values.
+func _on_cadence_toggled(enabled: bool) -> void:
+    if _npc_interval_spin != null:
+        _npc_interval_spin.editable = enabled
+    if _npc_start_spin != null:
+        _npc_start_spin.editable = enabled
+    if _npc_end_spin != null:
+        _npc_end_spin.editable = enabled
+
+## Emits the schedule-changed signal with the four current field values.
+## interval/start/end are sent as -1 when cadence is unchecked (handler
+## downstream converts to null JSON). offset is always sent.
+func _on_schedule_save_pressed() -> void:
+    if _ignoring_npc_inputs:
+        return
+    var offset: int = int(_npc_offset_spin.value)
+    var interval: int = -1
+    var start_h: int = -1
+    var end_h: int = -1
+    if _npc_cadence_check.button_pressed:
+        interval = int(_npc_interval_spin.value)
+        start_h = int(_npc_start_spin.value)
+        end_h = int(_npc_end_spin.value)
+    npc_schedule_changed.emit(offset, interval, start_h, end_h)
+
 func _on_npc_behavior_selected(index: int) -> void:
     if _ignoring_npc_inputs:
         return
@@ -1389,6 +1523,25 @@ func show_npc_selection(info: Dictionary) -> void:
     if _npc_go_to_work_button != null:
         var at_work: bool = _is_npc_at_structure_door(npc_container, _npc_work_current_id)
         _npc_go_to_work_button.disabled = _npc_work_current_id == "" or at_work
+
+    # Schedule fields — offset always populated; cadence fields populated
+    # only when all three are non-null (schedule_all_or_none in DB).
+    if _npc_offset_spin != null:
+        _npc_offset_spin.value = int(info.get("schedule_offset_hours", 0))
+    var interval_raw = info.get("schedule_interval_hours", null)
+    var start_raw = info.get("active_start_hour", null)
+    var end_raw = info.get("active_end_hour", null)
+    var has_cadence: bool = interval_raw != null and start_raw != null and end_raw != null
+    if _npc_cadence_check != null:
+        _npc_cadence_check.button_pressed = has_cadence
+    if has_cadence:
+        _npc_interval_spin.value = int(interval_raw)
+        _npc_start_spin.value = int(start_raw)
+        _npc_end_spin.value = int(end_raw)
+    # Mirror the enable/disable state the toggle would set, since setting
+    # button_pressed programmatically does fire `toggled` — but do it
+    # explicitly in case future Godot changes that.
+    _on_cadence_toggled(has_cadence)
 
     _ignoring_npc_inputs = false
 

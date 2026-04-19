@@ -654,14 +654,24 @@ func _select_npc(container: Node2D) -> void:
     _deselect_npc()
     selected_npc = container
     _add_npc_selection_border(container)
-    npc_selected.emit({
+    # Schedule fields — interval/start/end carried only when all three
+    # are set (mirrors the all-or-none contract at the DB layer). The
+    # panel checks for the presence of schedule_interval_hours to show
+    # the cadence-off state.
+    var info: Dictionary = {
         "npc_id": container.get_meta("npc_id", ""),
         "display_name": container.get_meta("display_name", ""),
         "behavior": container.get_meta("behavior", ""),
         "llm_memory_agent": container.get_meta("llm_memory_agent", ""),
         "home_structure_id": container.get_meta("home_structure_id", ""),
         "work_structure_id": container.get_meta("work_structure_id", ""),
-    })
+        "schedule_offset_hours": container.get_meta("schedule_offset_hours", 0),
+    }
+    if container.has_meta("schedule_interval_hours"):
+        info["schedule_interval_hours"] = container.get_meta("schedule_interval_hours")
+        info["active_start_hour"] = container.get_meta("active_start_hour")
+        info["active_end_hour"] = container.get_meta("active_end_hour")
+    npc_selected.emit(info)
 
 func _deselect_npc() -> void:
     if selected_npc != null:

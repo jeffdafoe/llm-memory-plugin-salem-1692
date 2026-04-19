@@ -287,6 +287,31 @@ func apply_npc_home_structure_change(data: Dictionary) -> void:
 func apply_npc_work_structure_change(data: Dictionary) -> void:
     _apply_npc_structure_meta(data, "work_structure_id")
 
+## Apply a server-broadcast schedule update. Mirrors the PATCH payload:
+## offset is always present, interval/start/end are null when cadence is
+## off. Emits npc_metadata_changed so the editor panel re-populates when
+## this NPC is the current selection on another client.
+func apply_npc_schedule_change(data: Dictionary) -> void:
+    var npc_id: String = data.get("id", "")
+    if npc_id == "":
+        return
+    var container: Node2D = placed_npcs.get(npc_id, null)
+    if container == null:
+        return
+    container.set_meta("schedule_offset_hours", int(data.get("schedule_offset_hours", 0)))
+    var interval = data.get("schedule_interval_hours", null)
+    var start_h = data.get("active_start_hour", null)
+    var end_h = data.get("active_end_hour", null)
+    if interval == null or start_h == null or end_h == null:
+        container.remove_meta("schedule_interval_hours")
+        container.remove_meta("active_start_hour")
+        container.remove_meta("active_end_hour")
+    else:
+        container.set_meta("schedule_interval_hours", int(interval))
+        container.set_meta("active_start_hour", int(start_h))
+        container.set_meta("active_end_hour", int(end_h))
+    npc_metadata_changed.emit(npc_id)
+
 func _apply_npc_structure_meta(data: Dictionary, field: String) -> void:
     var npc_id: String = data.get("id", "")
     if npc_id == "":
@@ -407,6 +432,17 @@ func _render_npc(npc: Dictionary) -> void:
     container.set_meta("llm_memory_agent", npc.get("llm_memory_agent", ""))
     container.set_meta("home_structure_id", npc.get("home_structure_id", ""))
     container.set_meta("work_structure_id", npc.get("work_structure_id", ""))
+    container.set_meta("schedule_offset_hours", int(npc.get("schedule_offset_hours", 0)))
+    # interval/start/end are optional (all-or-none). Only set meta when the
+    # server actually sent values so the editor panel can distinguish
+    # "null cadence" from 0-valued cadence.
+    var _interval = npc.get("schedule_interval_hours", null)
+    var _start_h = npc.get("active_start_hour", null)
+    var _end_h = npc.get("active_end_hour", null)
+    if _interval != null and _start_h != null and _end_h != null:
+        container.set_meta("schedule_interval_hours", int(_interval))
+        container.set_meta("active_start_hour", int(_start_h))
+        container.set_meta("active_end_hour", int(_end_h))
     var inside: bool = bool(npc.get("inside", false))
     var inside_structure_id_val = npc.get("inside_structure_id", null)
     var inside_structure_id: String = str(inside_structure_id_val) if inside_structure_id_val != null else ""
@@ -1267,6 +1303,33 @@ func set_npc_home_structure(container: Node2D, structure_id: String) -> void:
 ## Link or unlink the work structure for an NPC. Empty string unlinks.
 func set_npc_work_structure(container: Node2D, structure_id: String) -> void:
     _set_npc_structure(container, "work-structure", "work_structure_id", structure_id)
+
+## Update the NPC's schedule in one atomic PATCH. interval/start/end are
+## sent as null when their arguments are -1 (cadence disabled); otherwise
+## as integers. The server's all-or-none CHECK guarantees consistent state.
+func set_npc_schedule(container: Node2D, offset: int, interval: int, start_h: int, end_h: int) -> void:
+    var npc_id = container.get_meta("npc_id", null)
+    if npc_id == null:
+        return
+    var payload: Dictionary = {"schedule_offset_hours": offset}
+    if interval >= 0:
+        payload["schedule_interval_hours"] = interval
+        payload["active_start_hour"] = start_h
+        payload["active_end_hour"] = end_h
+    else:
+        payload["schedule_interval_hours"] = null
+        payload["active_start_hour"] = null
+        payload["active_end_hour"] = null
+    container.set_meta("schedule_offset_hours", offset)
+    if interval >= 0:
+        container.set_meta("schedule_interval_hours", interval)
+        container.set_meta("active_start_hour", start_h)
+        container.set_meta("active_end_hour", end_h)
+    else:
+        container.remove_meta("schedule_interval_hours")
+        container.remove_meta("active_start_hour")
+        container.remove_meta("active_end_hour")
+    _patch_npc(npc_id, "schedule", payload)
 
 func _set_npc_structure(container: Node2D, suffix: String, field: String, structure_id: String) -> void:
     var npc_id = container.get_meta("npc_id", null)

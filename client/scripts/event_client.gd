@@ -163,6 +163,9 @@ func _handle_message(data: String) -> void:
         "npc_work_structure_changed":
             if world != null:
                 world.apply_npc_work_structure_change(event_data)
+        "npc_schedule_changed":
+            if world != null:
+                world.apply_npc_schedule_change(event_data)
         "npc_inside_changed":
             if world != null:
                 world.apply_npc_inside_change(event_data)
