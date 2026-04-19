@@ -19,6 +19,7 @@ package main
 import (
 	"context"
 	"log"
+	"net/http"
 	"sync"
 )
 
@@ -114,7 +115,9 @@ func (app *App) advanceBehavior(npcID string) {
 		}
 		return
 	}
-	// Phase == "returning" — we just arrived home.
+	// Phase == "returning" — we just arrived home. Mark the villager
+	// inside (clients hide the sprite) and clear the route state.
+	app.setNPCInside(context.Background(), npcID, true)
 	app.clearBehavior(npcID)
 }
 
@@ -126,27 +129,39 @@ func (app *App) clearBehavior(npcID string) {
 
 // behaviorNPC is the per-NPC context a route starter needs: the NPC id,
 // its current position (for route origin), and its home position (for the
-// return-walk leg). Home coords come from home_structure_id when set,
-// falling back to the scalar home_x / home_y otherwise.
+// return-walk leg). Home coords come from home_structure_id (with the
+// structure's asset door offset applied, when set) or falling back to the
+// scalar home_x / home_y otherwise.
 type behaviorNPC struct {
-	ID     string
-	CurX   float64
-	CurY   float64
-	HomeX  float64
-	HomeY  float64
+	ID       string
+	Behavior string
+	CurX     float64
+	CurY     float64
+	HomeX    float64
+	HomeY    float64
 }
 
+// homeCoordsSQL resolves the NPC's home target position. Preference order:
+//   1. home_structure.x/y + asset.door_offset_x/y * tileSize  (door tile)
+//   2. home_structure.x/y                                      (adjacent fallback, pre-door)
+//   3. n.home_x / n.home_y                                     (no structure linked)
+//
+// The arithmetic uses the COALESCE short-circuit: adding a NULL door offset
+// yields NULL, so the next COALESCE argument (plain structure x) takes over.
+const homeCoordsSQL = `
+    COALESCE(s.x + a.door_offset_x * 32.0, s.x, n.home_x),
+    COALESCE(s.y + a.door_offset_y * 32.0, s.y, n.home_y)`
+
 // findNPCWithBehavior returns the NPC tagged with the given behavior slug,
-// resolving their home coords from home_structure_id (if set) or falling
-// back to the scalar home_x / home_y columns. If the NPC is mid-walk, its
+// resolving home coords through homeCoordsSQL. If the NPC is mid-walk, its
 // interpolated current position replaces the last-persisted current_x/y.
 func (app *App) findNPCWithBehavior(ctx context.Context, slug string) (*behaviorNPC, bool) {
-	var n behaviorNPC
+	n := behaviorNPC{Behavior: slug}
 	err := app.DB.QueryRow(ctx,
-		`SELECT n.id, n.current_x, n.current_y,
-		        COALESCE(s.x, n.home_x), COALESCE(s.y, n.home_y)
+		`SELECT n.id, n.current_x, n.current_y, `+homeCoordsSQL+`
 		 FROM npc n
 		 LEFT JOIN village_object s ON s.id = n.home_structure_id
+		 LEFT JOIN asset a ON a.id = s.asset_id
 		 WHERE n.behavior = $1
 		 LIMIT 1`, slug,
 	).Scan(&n.ID, &n.CurX, &n.CurY, &n.HomeX, &n.HomeY)
@@ -154,15 +169,43 @@ func (app *App) findNPCWithBehavior(ctx context.Context, slug string) (*behavior
 		return nil, false
 	}
 
-	// If the NPC is mid-walk, interpolate so the route starts from where
-	// they visually are, not the last persisted waypoint.
+	app.interpolateCurrentPos(&n)
+	return &n, true
+}
+
+// loadBehaviorNPCByID loads a specific NPC (not by behavior slug) for the
+// run-cycle trigger, which targets one NPC directly rather than whichever
+// villager happens to carry that behavior.
+func (app *App) loadBehaviorNPCByID(ctx context.Context, npcID string) (*behaviorNPC, bool) {
+	var n behaviorNPC
+	var behavior *string
+	err := app.DB.QueryRow(ctx,
+		`SELECT n.id, COALESCE(n.behavior, ''), n.current_x, n.current_y, `+homeCoordsSQL+`
+		 FROM npc n
+		 LEFT JOIN village_object s ON s.id = n.home_structure_id
+		 LEFT JOIN asset a ON a.id = s.asset_id
+		 WHERE n.id = $1`, npcID,
+	).Scan(&n.ID, &behavior, &n.CurX, &n.CurY, &n.HomeX, &n.HomeY)
+	if err != nil {
+		return nil, false
+	}
+	if behavior != nil {
+		n.Behavior = *behavior
+	}
+
+	app.interpolateCurrentPos(&n)
+	return &n, true
+}
+
+// interpolateCurrentPos overrides CurX/CurY with the interpolated walk
+// position when the NPC is mid-walk, so routes start from where they
+// visually are rather than the last persisted waypoint.
+func (app *App) interpolateCurrentPos(n *behaviorNPC) {
 	app.NPCMovement.mu.Lock()
 	if w := app.NPCMovement.active[n.ID]; w != nil {
 		n.CurX, n.CurY = w.currentPosition()
 	}
 	app.NPCMovement.mu.Unlock()
-
-	return &n, true
 }
 
 // routeCandidate is one object to visit with a pre-computed target state.
@@ -224,10 +267,15 @@ func buildRouteStops(grid *walkGrid, startX, startY float64, candidates []routeC
 // startNPCRoute installs the behavior state machine for the given NPC and
 // kicks off the walk to the first stop. Cancels any prior route on the same
 // NPC so rapid triggers (e.g. Force Day / Force Night spam) supersede cleanly.
+//
+// If the NPC is currently marked inside (their sprite is hidden on clients),
+// flip inside=false and broadcast first so they visually "step out the door"
+// before the walk animation starts.
 func (app *App) startNPCRoute(ctx context.Context, npc *behaviorNPC, stops []routeStop, label string) error {
 	if len(stops) == 0 {
 		return nil
 	}
+	app.setNPCInside(ctx, npc.ID, false)
 	route := &npcRoute{
 		NPCID:   npc.ID,
 		Stops:   stops,
@@ -249,16 +297,44 @@ func (app *App) startNPCRoute(ctx context.Context, npc *behaviorNPC, stops []rou
 	return nil
 }
 
-// startLamplighterRoute builds a nearest-neighbor route over objects whose
-// asset has a state with targetTag ('day-active' at dawn, 'night-active' at
-// dusk) and whose current state differs from the tagged target. Returns the
-// number of stops queued.
+// setNPCInside writes the inside flag and broadcasts npc_inside_changed
+// when the value actually changes. Swallows DB errors (logs them) — a
+// stuck inside flag is a cosmetic issue, not worth failing the caller.
+func (app *App) setNPCInside(ctx context.Context, npcID string, inside bool) {
+	tag, err := app.DB.Exec(ctx,
+		`UPDATE npc SET inside = $2 WHERE id = $1 AND inside IS DISTINCT FROM $2`,
+		npcID, inside,
+	)
+	if err != nil {
+		log.Printf("setNPCInside(%s=%v): %v", npcID, inside, err)
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		return
+	}
+	app.Hub.Broadcast(WorldEvent{
+		Type: "npc_inside_changed",
+		Data: map[string]any{"id": npcID, "inside": inside},
+	})
+}
+
+// startLamplighterRoute looks up the lamplighter NPC and runs the route.
+// targetTag is 'day-active' at dawn (turning lamps off) or 'night-active'
+// at dusk (turning lamps on).
 func (app *App) startLamplighterRoute(ctx context.Context, targetTag string) (int, error) {
 	npc, ok := app.findNPCWithBehavior(ctx, behaviorLamplighter)
 	if !ok {
 		return 0, nil
 	}
+	return app.startLamplighterRouteForNPC(ctx, npc, targetTag)
+}
 
+// startLamplighterRouteForNPC builds a nearest-neighbor route over objects
+// whose asset has a state with targetTag and whose current state differs
+// from the tagged target. Separated from startLamplighterRoute so the
+// run-cycle trigger can target a specific NPC rather than "whichever NPC
+// has behavior=lamplighter."
+func (app *App) startLamplighterRouteForNPC(ctx context.Context, npc *behaviorNPC, targetTag string) (int, error) {
 	// Narrow the lamplighter's route to states that also carry the
 	// lamplighter-target tag. Other day/night-active objects (campfires)
 	// are left to the bulk transition in applyTransition.
@@ -314,7 +390,13 @@ func (app *App) startRotationRoute(ctx context.Context, slug, domainTag, label s
 	if !ok {
 		return 0, nil
 	}
+	return app.startRotationRouteForNPC(ctx, npc, domainTag, label)
+}
 
+// startRotationRouteForNPC is the per-NPC variant used by the run-cycle
+// trigger. Same rotation logic, but targets a specific villager regardless
+// of which (if any) carries the behavior slug on the npc table.
+func (app *App) startRotationRouteForNPC(ctx context.Context, npc *behaviorNPC, domainTag, label string) (int, error) {
 	flips, err := app.determineRotationFlipsForTag(ctx, domainTag)
 	if err != nil {
 		return 0, err
@@ -389,4 +471,78 @@ func (app *App) flipsToCandidates(ctx context.Context, flips []pendingFlip) ([]r
 		})
 	}
 	return cands, nil
+}
+
+// handleRunNPCCycle triggers the behavior route for a specific NPC on
+// demand, bypassing the day/night schedule. Admin only. For lamplighter the
+// target tag is chosen from the CURRENT world phase (day => turn lamps off,
+// night => turn lamps on), matching the dawn/dusk semantics.
+func (app *App) handleRunNPCCycle(w http.ResponseWriter, r *http.Request) {
+	user := getUserFromContext(r.Context())
+	if user == nil || !user.hasRole("ROLE_SALEM_ADMIN") {
+		jsonError(w, "Admin access required", http.StatusForbidden)
+		return
+	}
+	npcID := r.PathValue("id")
+	if npcID == "" {
+		jsonError(w, "Missing npc id", http.StatusBadRequest)
+		return
+	}
+
+	npc, ok := app.loadBehaviorNPCByID(r.Context(), npcID)
+	if !ok {
+		jsonError(w, "NPC not found", http.StatusNotFound)
+		return
+	}
+	if npc.Behavior == "" {
+		jsonError(w, "NPC has no behavior assigned", http.StatusBadRequest)
+		return
+	}
+
+	stops, err := app.dispatchBehaviorForNPC(r.Context(), npc)
+	if err != nil {
+		log.Printf("run-cycle %s (%s): %v", npcID, npc.Behavior, err)
+		jsonError(w, "Failed to run cycle", http.StatusInternalServerError)
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]any{
+		"npc_id":   npcID,
+		"behavior": npc.Behavior,
+		"stops":    stops,
+	})
+}
+
+// dispatchBehaviorForNPC routes to the appropriate per-NPC start*Route
+// variant based on the NPC's behavior slug. Returns the number of stops
+// queued (0 is legitimate — nothing to do right now).
+func (app *App) dispatchBehaviorForNPC(ctx context.Context, npc *behaviorNPC) (int, error) {
+	switch npc.Behavior {
+	case behaviorLamplighter:
+		phase, err := app.currentWorldPhase(ctx)
+		if err != nil {
+			return 0, err
+		}
+		targetTag := "night-active"
+		if phase == "day" {
+			targetTag = "day-active"
+		}
+		return app.startLamplighterRouteForNPC(ctx, npc, targetTag)
+	case behaviorWasherwoman:
+		return app.startRotationRouteForNPC(ctx, npc, tagLaundry, "washerwoman")
+	case behaviorTownCrier:
+		return app.startRotationRouteForNPC(ctx, npc, tagNoticeBoard, "town_crier")
+	}
+	return 0, nil
+}
+
+// currentWorldPhase reads the singleton world_phase row for the run-cycle
+// dispatcher. Kept local so the behavior file doesn't pull the broader
+// world config loader.
+func (app *App) currentWorldPhase(ctx context.Context) (string, error) {
+	var phase string
+	err := app.DB.QueryRow(ctx,
+		`SELECT phase FROM world_phase WHERE id = 1`,
+	).Scan(&phase)
+	return phase, err
 }

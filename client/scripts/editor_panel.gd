@@ -18,6 +18,7 @@ signal npc_home_structure_changed(structure_id: String)
 signal npc_work_structure_changed(structure_id: String)
 signal npc_home_assign_requested
 signal npc_work_assign_requested
+signal npc_run_cycle_requested
 
 # Theme colors (matching top bar / login screen)
 const COLOR_BG = Color(0.12, 0.09, 0.07, 0.95)
@@ -76,6 +77,7 @@ var _npc_home_pick_button: Button = null
 var _npc_home_clear_button: Button = null
 var _npc_work_pick_button: Button = null
 var _npc_work_clear_button: Button = null
+var _npc_run_cycle_button: Button = null
 # Cached IDs so clear buttons know what's currently assigned (also drives
 # whether the clear button is visible).
 var _npc_home_current_id: String = ""
@@ -433,6 +435,17 @@ func _ready() -> void:
     _npc_work_clear_button.custom_minimum_size = Vector2(24, 0)
     _npc_work_clear_button.pressed.connect(func(): npc_work_structure_changed.emit(""))
     work_row.add_child(_npc_work_clear_button)
+
+    # Trigger the NPC's behavior cycle on demand — lamplighter rounds,
+    # laundry rotation, etc. Enabled only when a behavior is assigned.
+    _npc_run_cycle_button = Button.new()
+    _npc_run_cycle_button.text = "Run Cycle"
+    _npc_run_cycle_button.add_theme_font_override("font", _font)
+    _npc_run_cycle_button.add_theme_font_size_override("font_size", 13)
+    _npc_run_cycle_button.add_theme_color_override("font_color", COLOR_TEXT)
+    _npc_run_cycle_button.add_theme_stylebox_override("normal", behavior_style)
+    _npc_run_cycle_button.pressed.connect(func(): npc_run_cycle_requested.emit())
+    _npc_fields_section.add_child(_npc_run_cycle_button)
 
     var sel_sep = HSeparator.new()
     sel_sep.add_theme_color_override("separator_color", Color(0.4, 0.32, 0.2, 0.4))
@@ -1144,6 +1157,10 @@ func show_npc_selection(info: Dictionary) -> void:
     _npc_work_current_id = info.get("work_structure_id", "")
     _refresh_home_button_label()
     _refresh_work_button_label()
+
+    # Run Cycle is only meaningful when a behavior is assigned.
+    if _npc_run_cycle_button != null:
+        _npc_run_cycle_button.disabled = current_behavior == ""
 
     _ignoring_npc_inputs = false
 

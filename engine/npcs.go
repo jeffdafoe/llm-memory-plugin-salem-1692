@@ -63,6 +63,10 @@ type NPC struct {
 	LLMMemoryAgent  *string    `json:"llm_memory_agent"`
 	HomeStructureID *string    `json:"home_structure_id"`
 	WorkStructureID *string    `json:"work_structure_id"`
+	// Inside is true while the villager is "home" (arrived at their home
+	// door tile after a behavior cycle). Client hides the sprite when set;
+	// the next cycle flips it back on exit.
+	Inside          bool       `json:"inside"`
 	Sprite          *NPCSprite `json:"sprite,omitempty"`
 }
 
@@ -164,7 +168,7 @@ func (app *App) handleListNPCs(w http.ResponseWriter, r *http.Request) {
 	npcRows, err := app.DB.Query(ctx,
 		`SELECT id, display_name, sprite_id, home_x, home_y,
 		        current_x, current_y, facing, behavior, llm_memory_agent,
-		        home_structure_id, work_structure_id
+		        home_structure_id, work_structure_id, inside
 		 FROM npc
 		 ORDER BY display_name`,
 	)
@@ -179,7 +183,7 @@ func (app *App) handleListNPCs(w http.ResponseWriter, r *http.Request) {
 		var n NPC
 		if err := npcRows.Scan(&n.ID, &n.DisplayName, &n.SpriteID,
 			&n.HomeX, &n.HomeY, &n.CurrentX, &n.CurrentY, &n.Facing, &n.Behavior, &n.LLMMemoryAgent,
-			&n.HomeStructureID, &n.WorkStructureID); err != nil {
+			&n.HomeStructureID, &n.WorkStructureID, &n.Inside); err != nil {
 			continue
 		}
 		if s, ok := sprites[n.SpriteID]; ok {

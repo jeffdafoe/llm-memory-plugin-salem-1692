@@ -41,6 +41,11 @@ type Asset struct {
 	FootprintRight  int          `json:"footprint_right"`
 	FootprintTop    int          `json:"footprint_top"`
 	FootprintBottom int          `json:"footprint_bottom"`
+	// Door tile offset in tiles from the placement origin. NULL for
+	// non-structures or structures that haven't had a door placed yet;
+	// home-routing falls back to findPathToAdjacent in that case.
+	DoorOffsetX     *int         `json:"door_offset_x"`
+	DoorOffsetY     *int         `json:"door_offset_y"`
 	Pack            *TilesetPack `json:"pack,omitempty"`
 	States          []AssetState `json:"states"`
 	Slots           []AssetSlot  `json:"slots"`
@@ -99,7 +104,8 @@ func (app *App) handleListAssets(w http.ResponseWriter, r *http.Request) {
 	assetRows, err := app.DB.Query(r.Context(),
 		`SELECT id, name, category, default_state, anchor_x, anchor_y, layer, pack_id, fits_slot,
 		        z_index, is_obstacle, is_passage,
-		        footprint_left, footprint_right, footprint_top, footprint_bottom
+		        footprint_left, footprint_right, footprint_top, footprint_bottom,
+		        door_offset_x, door_offset_y
 		 FROM asset
 		 ORDER BY category, name`,
 	)
@@ -117,7 +123,8 @@ func (app *App) handleListAssets(w http.ResponseWriter, r *http.Request) {
 		if err := assetRows.Scan(&a.ID, &a.Name, &a.Category, &a.DefaultState,
 			&a.AnchorX, &a.AnchorY, &a.Layer, &a.PackID, &a.FitsSlot,
 			&a.ZIndex, &a.IsObstacle, &a.IsPassage,
-			&a.FootprintLeft, &a.FootprintRight, &a.FootprintTop, &a.FootprintBottom); err != nil {
+			&a.FootprintLeft, &a.FootprintRight, &a.FootprintTop, &a.FootprintBottom,
+			&a.DoorOffsetX, &a.DoorOffsetY); err != nil {
 			continue
 		}
 		a.States = []AssetState{}
@@ -269,6 +276,63 @@ func (app *App) handlePatchAssetFootprint(w http.ResponseWriter, r *http.Request
 			"right":    *req.Right,
 			"top":      *req.Top,
 			"bottom":   *req.Bottom,
+		},
+	})
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handlePatchAssetDoor updates the door tile offset for a structure asset.
+// Drag-to-place from the editor sends {x, y} in tile units relative to the
+// placement origin. Passing both as null clears the door (back to the
+// "nearest adjacent walkable" fallback).
+func (app *App) handlePatchAssetDoor(w http.ResponseWriter, r *http.Request) {
+	user := getUserFromContext(r.Context())
+	if user == nil || !user.hasRole("ROLE_SALEM_ADMIN") {
+		jsonError(w, "Admin access required", http.StatusForbidden)
+		return
+	}
+
+	id := r.PathValue("id")
+	if id == "" {
+		jsonError(w, "Missing asset id", http.StatusBadRequest)
+		return
+	}
+
+	var req struct {
+		X *int `json:"x"`
+		Y *int `json:"y"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	// Both-or-neither: either both coords are set (pick a tile) or both are
+	// null (clear the door). Partial is a client bug.
+	if (req.X == nil) != (req.Y == nil) {
+		jsonError(w, "x and y must both be set or both null", http.StatusBadRequest)
+		return
+	}
+
+	tag, err := app.DB.Exec(r.Context(),
+		`UPDATE asset SET door_offset_x = $1, door_offset_y = $2 WHERE id = $3`,
+		req.X, req.Y, id,
+	)
+	if err != nil {
+		jsonError(w, "Failed to update door", http.StatusInternalServerError)
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		jsonError(w, "Asset not found", http.StatusNotFound)
+		return
+	}
+
+	app.Hub.Broadcast(WorldEvent{
+		Type: "asset_door_updated",
+		Data: map[string]any{
+			"asset_id": id,
+			"x":        req.X,
+			"y":        req.Y,
 		},
 	})
 
