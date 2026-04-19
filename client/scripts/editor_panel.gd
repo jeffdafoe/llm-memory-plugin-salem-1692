@@ -16,6 +16,8 @@ signal npc_behavior_changed(behavior: String)
 signal npc_agent_changed(agent: String)
 signal npc_home_structure_changed(structure_id: String)
 signal npc_work_structure_changed(structure_id: String)
+signal npc_home_assign_requested
+signal npc_work_assign_requested
 
 # Theme colors (matching top bar / login screen)
 const COLOR_BG = Color(0.12, 0.09, 0.07, 0.95)
@@ -67,8 +69,17 @@ var _npc_fields_section: VBoxContainer = null
 var _npc_name_edit: LineEdit = null
 var _npc_behavior_dropdown: OptionButton = null
 var _npc_agent_dropdown: OptionButton = null
-var _npc_home_structure_dropdown: OptionButton = null
-var _npc_work_structure_dropdown: OptionButton = null
+# Home / Work are pickers now, not dropdowns — clicking _npc_home_pick_button
+# puts the editor into ASSIGN_HOME mode so the user clicks a structure on the
+# map. Clear button unlinks. Label shows the current structure name.
+var _npc_home_pick_button: Button = null
+var _npc_home_clear_button: Button = null
+var _npc_work_pick_button: Button = null
+var _npc_work_clear_button: Button = null
+# Cached IDs so clear buttons know what's currently assigned (also drives
+# whether the clear button is visible).
+var _npc_home_current_id: String = ""
+var _npc_work_current_id: String = ""
 var _ignoring_npc_inputs: bool = false
 
 # NPC placement catalog section — sits at the bottom of _catalog_container
@@ -369,13 +380,29 @@ func _ready() -> void:
     npc_home_header.add_theme_font_size_override("font_size", 11)
     _npc_fields_section.add_child(npc_home_header)
 
-    _npc_home_structure_dropdown = OptionButton.new()
-    _npc_home_structure_dropdown.add_theme_font_override("font", _font)
-    _npc_home_structure_dropdown.add_theme_font_size_override("font_size", 13)
-    _npc_home_structure_dropdown.add_theme_color_override("font_color", COLOR_TEXT)
-    _npc_home_structure_dropdown.add_theme_stylebox_override("normal", behavior_style)
-    _npc_home_structure_dropdown.item_selected.connect(_on_npc_home_structure_selected)
-    _npc_fields_section.add_child(_npc_home_structure_dropdown)
+    var home_row := HBoxContainer.new()
+    home_row.add_theme_constant_override("separation", 4)
+    _npc_fields_section.add_child(home_row)
+
+    _npc_home_pick_button = Button.new()
+    _npc_home_pick_button.add_theme_font_override("font", _font)
+    _npc_home_pick_button.add_theme_font_size_override("font_size", 13)
+    _npc_home_pick_button.add_theme_color_override("font_color", COLOR_TEXT)
+    _npc_home_pick_button.add_theme_stylebox_override("normal", behavior_style)
+    _npc_home_pick_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    _npc_home_pick_button.alignment = HORIZONTAL_ALIGNMENT_LEFT
+    _npc_home_pick_button.pressed.connect(func(): npc_home_assign_requested.emit())
+    home_row.add_child(_npc_home_pick_button)
+
+    _npc_home_clear_button = Button.new()
+    _npc_home_clear_button.text = "×"
+    _npc_home_clear_button.add_theme_font_override("font", _font)
+    _npc_home_clear_button.add_theme_font_size_override("font_size", 13)
+    _npc_home_clear_button.add_theme_color_override("font_color", COLOR_TEXT)
+    _npc_home_clear_button.add_theme_stylebox_override("normal", behavior_style)
+    _npc_home_clear_button.custom_minimum_size = Vector2(24, 0)
+    _npc_home_clear_button.pressed.connect(func(): npc_home_structure_changed.emit(""))
+    home_row.add_child(_npc_home_clear_button)
 
     var npc_work_header = Label.new()
     npc_work_header.text = "WORK"
@@ -383,13 +410,29 @@ func _ready() -> void:
     npc_work_header.add_theme_font_size_override("font_size", 11)
     _npc_fields_section.add_child(npc_work_header)
 
-    _npc_work_structure_dropdown = OptionButton.new()
-    _npc_work_structure_dropdown.add_theme_font_override("font", _font)
-    _npc_work_structure_dropdown.add_theme_font_size_override("font_size", 13)
-    _npc_work_structure_dropdown.add_theme_color_override("font_color", COLOR_TEXT)
-    _npc_work_structure_dropdown.add_theme_stylebox_override("normal", behavior_style)
-    _npc_work_structure_dropdown.item_selected.connect(_on_npc_work_structure_selected)
-    _npc_fields_section.add_child(_npc_work_structure_dropdown)
+    var work_row := HBoxContainer.new()
+    work_row.add_theme_constant_override("separation", 4)
+    _npc_fields_section.add_child(work_row)
+
+    _npc_work_pick_button = Button.new()
+    _npc_work_pick_button.add_theme_font_override("font", _font)
+    _npc_work_pick_button.add_theme_font_size_override("font_size", 13)
+    _npc_work_pick_button.add_theme_color_override("font_color", COLOR_TEXT)
+    _npc_work_pick_button.add_theme_stylebox_override("normal", behavior_style)
+    _npc_work_pick_button.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    _npc_work_pick_button.alignment = HORIZONTAL_ALIGNMENT_LEFT
+    _npc_work_pick_button.pressed.connect(func(): npc_work_assign_requested.emit())
+    work_row.add_child(_npc_work_pick_button)
+
+    _npc_work_clear_button = Button.new()
+    _npc_work_clear_button.text = "×"
+    _npc_work_clear_button.add_theme_font_override("font", _font)
+    _npc_work_clear_button.add_theme_font_size_override("font_size", 13)
+    _npc_work_clear_button.add_theme_color_override("font_color", COLOR_TEXT)
+    _npc_work_clear_button.add_theme_stylebox_override("normal", behavior_style)
+    _npc_work_clear_button.custom_minimum_size = Vector2(24, 0)
+    _npc_work_clear_button.pressed.connect(func(): npc_work_structure_changed.emit(""))
+    work_row.add_child(_npc_work_clear_button)
 
     var sel_sep = HSeparator.new()
     sel_sep.add_theme_color_override("separator_color", Color(0.4, 0.32, 0.2, 0.4))
@@ -891,17 +934,54 @@ func _on_npc_agent_selected(index: int) -> void:
     var agent_key: String = _npc_agent_dropdown.get_item_metadata(index)
     npc_agent_changed.emit(agent_key)
 
-func _on_npc_home_structure_selected(index: int) -> void:
-    if _ignoring_npc_inputs:
+## Update the Home / Work picker button labels while in structure-picking
+## mode. Called by main when editor enters/exits ASSIGN_HOME / ASSIGN_WORK.
+## While picking, the row is frozen on "Click a structure (Esc)" to cue the
+## user to look at the map rather than the panel.
+func set_assigning_home(active: bool) -> void:
+    if _npc_home_pick_button == null:
         return
-    var structure_id: String = _npc_home_structure_dropdown.get_item_metadata(index)
-    npc_home_structure_changed.emit(structure_id)
+    if active:
+        _npc_home_pick_button.text = "Click a structure (Esc)"
+        _npc_home_pick_button.disabled = true
+        _npc_home_clear_button.disabled = true
+    else:
+        _npc_home_pick_button.disabled = false
+        _npc_home_clear_button.disabled = false
+        _refresh_home_button_label()
 
-func _on_npc_work_structure_selected(index: int) -> void:
-    if _ignoring_npc_inputs:
+func set_assigning_work(active: bool) -> void:
+    if _npc_work_pick_button == null:
         return
-    var structure_id: String = _npc_work_structure_dropdown.get_item_metadata(index)
-    npc_work_structure_changed.emit(structure_id)
+    if active:
+        _npc_work_pick_button.text = "Click a structure (Esc)"
+        _npc_work_pick_button.disabled = true
+        _npc_work_clear_button.disabled = true
+    else:
+        _npc_work_pick_button.disabled = false
+        _npc_work_clear_button.disabled = false
+        _refresh_work_button_label()
+
+func _refresh_home_button_label() -> void:
+    _npc_home_pick_button.text = _label_for_structure(_npc_home_current_id)
+    _npc_home_clear_button.visible = _npc_home_current_id != ""
+
+func _refresh_work_button_label() -> void:
+    _npc_work_pick_button.text = _label_for_structure(_npc_work_current_id)
+    _npc_work_clear_button.visible = _npc_work_current_id != ""
+
+func _label_for_structure(structure_id: String) -> String:
+    if structure_id == "":
+        return "(none — click to set)"
+    if world == null:
+        return structure_id
+    for s in world.get_structure_objects():
+        if s.get("id", "") == structure_id:
+            return s.get("label", structure_id)
+    # Structure got deleted or hasn't rendered yet — show the id as a
+    # fallback so the user isn't staring at an empty button.
+    return structure_id
+
 
 func _on_owner_selected(index: int) -> void:
     if _ignoring_dropdown:
@@ -1057,32 +1137,15 @@ func show_npc_selection(info: Dictionary) -> void:
             ai += 1
     _npc_agent_dropdown.selected = selected_agent_index
 
-    # Home / Work dropdowns list every placed structure. Same "(none)"
-    # convention as the other dropdowns.
-    var current_home: String = info.get("home_structure_id", "")
-    var current_work: String = info.get("work_structure_id", "")
-    _populate_structure_dropdown(_npc_home_structure_dropdown, current_home)
-    _populate_structure_dropdown(_npc_work_structure_dropdown, current_work)
+    # Home / Work are click-to-assign now. The picker button shows the
+    # current structure's display name (or an inviting placeholder); the
+    # clear × button is only visible when something is actually set.
+    _npc_home_current_id = info.get("home_structure_id", "")
+    _npc_work_current_id = info.get("work_structure_id", "")
+    _refresh_home_button_label()
+    _refresh_work_button_label()
 
     _ignoring_npc_inputs = false
-
-func _populate_structure_dropdown(dropdown: OptionButton, current_id: String) -> void:
-    dropdown.clear()
-    dropdown.add_item("(none)", 0)
-    dropdown.set_item_metadata(0, "")
-    var selected: int = 0
-    if world == null:
-        dropdown.selected = 0
-        return
-    var structures: Array = world.get_structure_objects()
-    var idx: int = 1
-    for s in structures:
-        dropdown.add_item(s.get("label", ""), idx)
-        dropdown.set_item_metadata(idx, s.get("id", ""))
-        if s.get("id", "") == current_id:
-            selected = idx
-        idx += 1
-    dropdown.selected = selected
 
 ## Called when editor exits place mode (right-click cancel, escape, etc.)
 func clear_catalog_selection() -> void:

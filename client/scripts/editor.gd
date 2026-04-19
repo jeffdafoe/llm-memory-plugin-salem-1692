@@ -13,7 +13,7 @@ signal npc_selected(info: Dictionary)
 signal npc_deselected
 signal mode_changed(mode: Mode)
 
-enum Mode { SELECT, PLACE, MOVE, TERRAIN }
+enum Mode { SELECT, PLACE, MOVE, TERRAIN, ASSIGN_HOME, ASSIGN_WORK }
 
 var current_mode: Mode = Mode.SELECT
 var selected_asset_id: String = ""
@@ -168,6 +168,11 @@ func _input(event: InputEvent) -> void:
             if current_mode == Mode.PLACE:
                 set_mode(Mode.SELECT)
                 get_viewport().set_input_as_handled()
+            elif current_mode == Mode.ASSIGN_HOME or current_mode == Mode.ASSIGN_WORK:
+                # Cancel structure picking, return to normal select with NPC
+                # still selected so the panel stays on the same villager.
+                set_mode(Mode.SELECT)
+                get_viewport().set_input_as_handled()
             elif current_mode == Mode.SELECT and selected_npc != null:
                 _deselect_npc()
                 get_viewport().set_input_as_handled()
@@ -189,7 +194,11 @@ func _input(event: InputEvent) -> void:
         if event.keycode == KEY_ESCAPE:
             # In SELECT mode with an NPC selected, Esc deselects the NPC
             # rather than re-running set_mode(SELECT), which would no-op.
-            if current_mode == Mode.SELECT and selected_npc != null:
+            # In ASSIGN_HOME/ASSIGN_WORK, Esc cancels picking but keeps the
+            # NPC selected (set_mode(SELECT) preserves selection).
+            if current_mode == Mode.ASSIGN_HOME or current_mode == Mode.ASSIGN_WORK:
+                set_mode(Mode.SELECT)
+            elif current_mode == Mode.SELECT and selected_npc != null:
                 _deselect_npc()
             else:
                 set_mode(Mode.SELECT)
@@ -262,6 +271,14 @@ func _on_left_press(screen_pos: Vector2) -> void:
                 _paint_terrain_at(screen_pos)
                 left_click_used = true
                 get_viewport().set_input_as_handled()
+        Mode.ASSIGN_HOME:
+            _try_assign_structure(screen_pos, true)
+            left_click_used = true
+            get_viewport().set_input_as_handled()
+        Mode.ASSIGN_WORK:
+            _try_assign_structure(screen_pos, false)
+            left_click_used = true
+            get_viewport().set_input_as_handled()
 
 func _on_left_release(screen_pos: Vector2) -> void:
     if _dragging:
@@ -276,13 +293,54 @@ func set_mode(new_mode: Mode) -> void:
         selected_asset_id = ""
         _placing_npc = false
         _placing_npc_sprite = {}
-    if new_mode != Mode.SELECT:
+    # ASSIGN_HOME / ASSIGN_WORK intentionally preserve the NPC (and any
+    # object) selection — the whole point is to act on the currently
+    # selected NPC. Only PLACE/TERRAIN/MOVE force a clean slate.
+    if new_mode != Mode.SELECT and new_mode != Mode.ASSIGN_HOME and new_mode != Mode.ASSIGN_WORK:
         _deselect()
         _deselect_npc()
     _dragging = false
     _drag_pending = false
     _terrain_painting = false
     mode_changed.emit(new_mode)
+
+## Enter structure-picking mode for the currently selected NPC. Called from
+## main when the user clicks the Set Home / Set Work button in the editor
+## panel. If nothing is selected, no-op (the button shouldn't be clickable
+## in that state anyway).
+func begin_assign_home() -> void:
+    if selected_npc == null:
+        return
+    set_mode(Mode.ASSIGN_HOME)
+
+func begin_assign_work() -> void:
+    if selected_npc == null:
+        return
+    set_mode(Mode.ASSIGN_WORK)
+
+## Hit-test for a structure under the mouse; if found, PATCH the NPC's
+## home_structure_id or work_structure_id and return to SELECT mode. Clicks
+## that miss or hit a non-structure are ignored so the user can keep trying
+## without leaving the mode.
+func _try_assign_structure(screen_pos: Vector2, is_home: bool) -> void:
+    if selected_npc == null:
+        set_mode(Mode.SELECT)
+        return
+    var hit: Node2D = _find_object_at(screen_pos)
+    if hit == null:
+        return
+    var asset_id: String = hit.get_meta("asset_id", "")
+    var asset: Dictionary = Catalog.assets.get(asset_id, {})
+    if asset.get("category", "") != "structure":
+        return
+    var structure_id: String = hit.get_meta("object_id", "")
+    if structure_id == "":
+        return
+    if is_home:
+        world.set_npc_home_structure(selected_npc, structure_id)
+    else:
+        world.set_npc_work_structure(selected_npc, structure_id)
+    set_mode(Mode.SELECT)
 
 ## Called by the editor panel when the user picks an asset from the catalog.
 func select_asset_for_placement(asset_id: String) -> void:

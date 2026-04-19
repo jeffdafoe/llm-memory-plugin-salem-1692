@@ -199,6 +199,8 @@ func _build_ui() -> void:
     editor_panel.npc_agent_changed.connect(_on_npc_agent_changed)
     editor_panel.npc_home_structure_changed.connect(_on_npc_home_structure_changed)
     editor_panel.npc_work_structure_changed.connect(_on_npc_work_structure_changed)
+    editor_panel.npc_home_assign_requested.connect(_on_npc_home_assign_requested)
+    editor_panel.npc_work_assign_requested.connect(_on_npc_work_assign_requested)
     editor_panel.world = world
 
     # Wire editor signals to panel
@@ -311,6 +313,12 @@ func _on_npc_work_structure_changed(structure_id: String) -> void:
     if editor.selected_npc != null:
         world.set_npc_work_structure(editor.selected_npc, structure_id)
 
+func _on_npc_home_assign_requested() -> void:
+    editor.begin_assign_home()
+
+func _on_npc_work_assign_requested() -> void:
+    editor.begin_assign_work()
+
 # Refresh the selection panel if the changed NPC is the one we have selected.
 # Handles the cross-admin case: another admin edits the NPC while we have it
 # open. Our own PATCH also comes through this path (idempotent).
@@ -344,8 +352,15 @@ func _on_terrain_type_selected(terrain_type: int) -> void:
     editor.set_terrain_type(terrain_type)
 
 func _on_editor_mode_changed(mode) -> void:
+    if editor_panel == null:
+        return
     # When editor exits place mode (escape, right-click), clear catalog selection
-    if mode == editor.Mode.SELECT and editor_panel != null:
+    if mode == editor.Mode.SELECT:
         editor_panel.clear_catalog_selection()
         editor_panel.exit_terrain_mode()
+    # Drive the home/work picker button labels so the user sees the hint
+    # "Click a structure (Esc)" while in assign mode and snaps back to the
+    # current structure name when they exit.
+    editor_panel.set_assigning_home(mode == editor.Mode.ASSIGN_HOME)
+    editor_panel.set_assigning_work(mode == editor.Mode.ASSIGN_WORK)
 
