@@ -1166,10 +1166,40 @@ func _drag_end(screen_pos: Vector2) -> void:
 func set_terrain_type(terrain_type: int) -> void:
     _terrain_type = terrain_type
 
+## Screen-pixel radius of the terrain brush. Kept constant so the cursor
+## footprint feels the same physical size no matter how far the camera is
+## zoomed — the tile count scales inversely with zoom.
+const TERRAIN_BRUSH_SCREEN_RADIUS: float = 18.0
+
 func _paint_terrain_at(screen_pos: Vector2) -> void:
     var world_pos: Vector2 = _screen_to_world(screen_pos)
-    var tile: Vector2i = world.world_to_tile(world_pos)
-    world.paint_terrain(tile.x, tile.y, _terrain_type)
+    var zoom: float = camera.zoom.x
+    if zoom <= 0:
+        zoom = 1.0
+    var world_radius: float = TERRAIN_BRUSH_SCREEN_RADIUS / zoom
+    var tile_radius: float = world_radius / TILE_SIZE
+    # At normal zoom the brush is sub-tile; always paint the center tile so
+    # a click at zoom=1 still does something.
+    var center_tile: Vector2i = world.world_to_tile(world_pos)
+    if tile_radius < 0.5:
+        world.paint_terrain(center_tile.x, center_tile.y, _terrain_type)
+        return
+    # Iterate the square that bounds the circle, keep only tiles whose
+    # center is within world_radius of the click. Circle feels more natural
+    # than the axis-aligned square wendy would otherwise end up with.
+    var tile_reach: int = int(ceil(tile_radius))
+    var r2: float = world_radius * world_radius
+    for dy in range(-tile_reach, tile_reach + 1):
+        for dx in range(-tile_reach, tile_reach + 1):
+            var tx: int = center_tile.x + dx
+            var ty: int = center_tile.y + dy
+            # Distance from click point to the tile's center in world px.
+            var tile_center := Vector2(
+                float(tx) * TILE_SIZE + TILE_SIZE / 2.0,
+                float(ty) * TILE_SIZE + TILE_SIZE / 2.0,
+            )
+            if tile_center.distance_squared_to(world_pos) <= r2:
+                world.paint_terrain(tx, ty, _terrain_type)
 
 func _process(delta: float) -> void:
     if _terrain_save_timer > 0:
