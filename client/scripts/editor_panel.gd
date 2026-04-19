@@ -328,17 +328,24 @@ func _ready() -> void:
     enterable_header.add_theme_font_size_override("font_size", 11)
     _asset_fields_section.add_child(enterable_header)
 
+    # Match the owner dropdown's stylebox exactly — warmer brown bg,
+    # rounded corners, slightly larger padding — so the two pickers read
+    # as part of the same family.
     var enterable_style = StyleBoxFlat.new()
-    enterable_style.bg_color = Color(0.08, 0.07, 0.05, 1.0)
+    enterable_style.bg_color = COLOR_BTN_BG
     enterable_style.border_width_left = 1
     enterable_style.border_width_top = 1
     enterable_style.border_width_right = 1
     enterable_style.border_width_bottom = 1
-    enterable_style.border_color = Color(0.3, 0.24, 0.15, 0.8)
+    enterable_style.border_color = COLOR_BTN_BORDER
+    enterable_style.corner_radius_left_top = 3
+    enterable_style.corner_radius_right_top = 3
+    enterable_style.corner_radius_left_bottom = 3
+    enterable_style.corner_radius_right_bottom = 3
     enterable_style.content_margin_left = 6.0
     enterable_style.content_margin_right = 6.0
-    enterable_style.content_margin_top = 3.0
-    enterable_style.content_margin_bottom = 3.0
+    enterable_style.content_margin_top = 4.0
+    enterable_style.content_margin_bottom = 4.0
 
     _enterable_dropdown = OptionButton.new()
     _enterable_dropdown.add_theme_font_override("font", _font)
