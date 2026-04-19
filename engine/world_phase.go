@@ -42,6 +42,12 @@ const (
 	defaultDawn         = "07:00"
 	defaultDusk         = "19:00"
 	defaultRotationTime = "00:00"
+
+	// Zoom floors applied client-side — admins can see further out than
+	// regular users. Stored in the setting table so an admin can retune
+	// without a redeploy.
+	defaultZoomMinAdmin   = 0.1
+	defaultZoomMinRegular = 0.3
 )
 
 // worldConfig bundles the runtime state plus the admin-tunable settings.
@@ -54,6 +60,8 @@ type worldConfig struct {
 	RotationTime     string // "HH:MM"
 	Timezone         string
 	Location         *time.Location
+	ZoomMinAdmin     float64
+	ZoomMinRegular   float64
 }
 
 // pendingFlip is one scheduled village_object.current_state change. Applied
@@ -75,10 +83,12 @@ type pendingFlip struct {
 // ticker before an admin has set anything.
 func (app *App) loadWorldConfig(ctx context.Context) (*worldConfig, error) {
 	cfg := &worldConfig{
-		DawnTime:     defaultDawn,
-		DuskTime:     defaultDusk,
-		RotationTime: defaultRotationTime,
-		Timezone:     defaultTimezone,
+		DawnTime:       defaultDawn,
+		DuskTime:       defaultDusk,
+		RotationTime:   defaultRotationTime,
+		Timezone:       defaultTimezone,
+		ZoomMinAdmin:   defaultZoomMinAdmin,
+		ZoomMinRegular: defaultZoomMinRegular,
 	}
 
 	err := app.DB.QueryRow(ctx,
@@ -90,7 +100,8 @@ func (app *App) loadWorldConfig(ctx context.Context) (*worldConfig, error) {
 
 	rows, err := app.DB.Query(ctx,
 		`SELECT key, value FROM setting
-		 WHERE key IN ('world_dawn_time', 'world_dusk_time', 'world_rotation_time', 'world_timezone')`,
+		 WHERE key IN ('world_dawn_time', 'world_dusk_time', 'world_rotation_time',
+		               'world_timezone', 'world_zoom_min_admin', 'world_zoom_min_regular')`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("load world settings: %w", err)
@@ -114,6 +125,14 @@ func (app *App) loadWorldConfig(ctx context.Context) (*worldConfig, error) {
 			cfg.RotationTime = *value
 		case "world_timezone":
 			cfg.Timezone = *value
+		case "world_zoom_min_admin":
+			if f, err := strconv.ParseFloat(*value, 64); err == nil {
+				cfg.ZoomMinAdmin = f
+			}
+		case "world_zoom_min_regular":
+			if f, err := strconv.ParseFloat(*value, 64); err == nil {
+				cfg.ZoomMinRegular = f
+			}
 		}
 	}
 
@@ -484,7 +503,85 @@ func (app *App) handleGetWorldState(w http.ResponseWriter, r *http.Request) {
 		"rotation_time":         cfg.RotationTime,
 		"last_rotation_at":      cfg.LastRotationAt.UTC().Format(time.RFC3339),
 		"next_rotation_at":      nextRotationAt.UTC().Format(time.RFC3339),
+		"zoom_min_admin":        cfg.ZoomMinAdmin,
+		"zoom_min_regular":      cfg.ZoomMinRegular,
 	})
+}
+
+// handleSetZoomSettings lets an admin retune the two client-side zoom floors.
+// Both values are optional in the request; omitted fields are left alone.
+func (app *App) handleSetZoomSettings(w http.ResponseWriter, r *http.Request) {
+	user := getUserFromContext(r.Context())
+	if user == nil || !user.hasRole("ROLE_SALEM_ADMIN") {
+		jsonError(w, "Admin access required", http.StatusForbidden)
+		return
+	}
+
+	var req struct {
+		ZoomMinAdmin   *float64 `json:"zoom_min_admin"`
+		ZoomMinRegular *float64 `json:"zoom_min_regular"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.ZoomMinAdmin == nil && req.ZoomMinRegular == nil {
+		jsonError(w, "Provide zoom_min_admin and/or zoom_min_regular", http.StatusBadRequest)
+		return
+	}
+	// Sanity floor/ceiling. 0.01 is already absurdly far out, 10.0 gigantic close.
+	for _, v := range []*float64{req.ZoomMinAdmin, req.ZoomMinRegular} {
+		if v == nil {
+			continue
+		}
+		if *v < 0.01 || *v > 10.0 {
+			jsonError(w, "zoom value out of range", http.StatusBadRequest)
+			return
+		}
+	}
+
+	if req.ZoomMinAdmin != nil {
+		if err := app.upsertSetting(r.Context(), "world_zoom_min_admin", strconv.FormatFloat(*req.ZoomMinAdmin, 'f', -1, 64)); err != nil {
+			log.Printf("set zoom_min_admin: %v", err)
+			jsonError(w, "Failed to save zoom_min_admin", http.StatusInternalServerError)
+			return
+		}
+	}
+	if req.ZoomMinRegular != nil {
+		if err := app.upsertSetting(r.Context(), "world_zoom_min_regular", strconv.FormatFloat(*req.ZoomMinRegular, 'f', -1, 64)); err != nil {
+			log.Printf("set zoom_min_regular: %v", err)
+			jsonError(w, "Failed to save zoom_min_regular", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	// Broadcast so every connected client reloads its zoom floor without
+	// having to refresh. Payload carries the freshly-persisted values
+	// (load from DB so we emit truth, not the request).
+	cfg, err := app.loadWorldConfig(r.Context())
+	if err != nil {
+		log.Printf("reload after zoom save: %v", err)
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	app.Hub.Broadcast(WorldEvent{
+		Type: "zoom_settings_changed",
+		Data: map[string]float64{
+			"zoom_min_admin":   cfg.ZoomMinAdmin,
+			"zoom_min_regular": cfg.ZoomMinRegular,
+		},
+	})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// upsertSetting writes a single key/value to the setting table.
+func (app *App) upsertSetting(ctx context.Context, key, value string) error {
+	_, err := app.DB.Exec(ctx,
+		`INSERT INTO setting (key, value) VALUES ($1, $2)
+		 ON CONFLICT (key) DO UPDATE SET value = $2`,
+		key, value,
+	)
+	return err
 }
 
 // handleForcePhase lets an admin jump the world to a specific phase (or toggle)

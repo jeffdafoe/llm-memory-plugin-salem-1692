@@ -623,6 +623,22 @@ func _on_world_phase_loaded(result: int, response_code: int, headers: PackedStri
     var phase: String = json.get("phase", "day")
     set_phase(phase, false)  # instant — no tween on first load
 
+    # Apply the zoom floor appropriate for this user's role. Admins get
+    # the "admin" floor (typically lower, so they can see further out).
+    apply_zoom_floor_from_config(json)
+
+## Pick the right zoom floor from a world config dict and push it to the
+## camera. Used by the initial load and by the zoom_settings_changed WS
+## event when an admin retunes the values.
+func apply_zoom_floor_from_config(cfg: Dictionary) -> void:
+    var key: String = "zoom_min_admin" if Auth.can_edit else "zoom_min_regular"
+    var value = cfg.get(key, null)
+    if value == null:
+        return
+    var camera = get_node_or_null("/root/Main/Camera")
+    if camera != null and camera.has_method("set_zoom_floor"):
+        camera.set_zoom_floor(float(value))
+
 ## Lazily build the shared soft-radial gradient texture used by every
 ## PointLight2D. One texture, reused across all lit objects.
 func _get_light_gradient() -> Texture2D:

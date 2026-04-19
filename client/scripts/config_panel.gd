@@ -42,6 +42,11 @@ var _next_rotation_at: String = ""
 
 # UI elements that update without a full rebuild
 var _phase_value: Label = null
+var _zoom_admin_edit: LineEdit = null
+var _zoom_regular_edit: LineEdit = null
+# Echoed into the edits on each fetch so edits don't get blown away mid-type.
+var _last_loaded_zoom_admin: String = ""
+var _last_loaded_zoom_regular: String = ""
 var _next_countdown: Label = null
 var _last_transition_value: Label = null
 var _server_time_value: Label = null
@@ -200,8 +205,55 @@ func _build_layout() -> void:
     btn_row.add_child(_make_button("Force Night", func(): _send_force("night")))
     btn_row.add_child(_make_button("Force Rotate", _send_force_rotate))
 
+    _add_separator()
+    # Zoom floor controls — two values, one for admins (typically more
+    # zoomed-out, wider overview), one for everyone else. The client picks
+    # which one to apply based on Auth.can_edit at load time and whenever
+    # zoom_settings_changed fires.
+    var zoom_header = _make_label("Minimum zoom", COLOR_LABEL, 14)
+    _content.add_child(zoom_header)
+
+    var zoom_admin_row = HBoxContainer.new()
+    zoom_admin_row.add_theme_constant_override("separation", 8)
+    _content.add_child(zoom_admin_row)
+    zoom_admin_row.add_child(_make_label("Admins", COLOR_TEXT_DIM, 13))
+    _zoom_admin_edit = _make_number_edit()
+    zoom_admin_row.add_child(_zoom_admin_edit)
+
+    var zoom_regular_row = HBoxContainer.new()
+    zoom_regular_row.add_theme_constant_override("separation", 8)
+    _content.add_child(zoom_regular_row)
+    zoom_regular_row.add_child(_make_label("Everyone else", COLOR_TEXT_DIM, 13))
+    _zoom_regular_edit = _make_number_edit()
+    zoom_regular_row.add_child(_zoom_regular_edit)
+
+    var zoom_btn_row = HBoxContainer.new()
+    zoom_btn_row.add_theme_constant_override("separation", 8)
+    _content.add_child(zoom_btn_row)
+    zoom_btn_row.add_child(_make_button("Save zoom", _send_zoom_save))
+
     _status_label = _make_label("", COLOR_TEXT_DIM, 12)
     _content.add_child(_status_label)
+
+func _make_number_edit() -> LineEdit:
+    var edit = LineEdit.new()
+    edit.custom_minimum_size = Vector2(80, 0)
+    edit.add_theme_color_override("font_color", COLOR_TEXT)
+    edit.add_theme_font_override("font", _font)
+    edit.add_theme_font_size_override("font_size", 14)
+    var s = StyleBoxFlat.new()
+    s.bg_color = Color(0.08, 0.07, 0.05, 1.0)
+    s.border_width_left = 1
+    s.border_width_top = 1
+    s.border_width_right = 1
+    s.border_width_bottom = 1
+    s.border_color = COLOR_BTN_BORDER
+    s.content_margin_left = 6.0
+    s.content_margin_right = 6.0
+    s.content_margin_top = 4.0
+    s.content_margin_bottom = 4.0
+    edit.add_theme_stylebox_override("normal", s)
+    return edit
 
 func _make_label(text: String, color: Color, size: int) -> Label:
     var lbl = Label.new()
@@ -309,7 +361,55 @@ func _on_state_response(result: int, response_code: int, _headers: PackedStringA
     _last_rotation_at = json.get("last_rotation_at", "")
     _next_rotation_at = json.get("next_rotation_at", "")
 
+    # Populate zoom edits only when the server value changed since last
+    # fetch — keeps a mid-edit admin from getting their text overwritten
+    # by the 10s poll.
+    var admin_str: String = _format_zoom(json.get("zoom_min_admin", null))
+    var regular_str: String = _format_zoom(json.get("zoom_min_regular", null))
+    if _zoom_admin_edit != null and admin_str != _last_loaded_zoom_admin:
+        _zoom_admin_edit.text = admin_str
+        _last_loaded_zoom_admin = admin_str
+    if _zoom_regular_edit != null and regular_str != _last_loaded_zoom_regular:
+        _zoom_regular_edit.text = regular_str
+        _last_loaded_zoom_regular = regular_str
+
     _refresh_labels()
+
+func _format_zoom(value) -> String:
+    if value == null:
+        return ""
+    return str(float(value))
+
+## POST /api/village/world/zoom-settings with both current edit values.
+## Parse failures surface in the status label rather than silently sending
+## garbage.
+func _send_zoom_save() -> void:
+    var admin_val := _zoom_admin_edit.text.strip_edges()
+    var regular_val := _zoom_regular_edit.text.strip_edges()
+    if not admin_val.is_valid_float() or not regular_val.is_valid_float():
+        _set_status("Zoom values must be numbers (e.g. 0.1)", true)
+        return
+    var payload = JSON.stringify({
+        "zoom_min_admin":   float(admin_val),
+        "zoom_min_regular": float(regular_val),
+    })
+    var http = HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    http.request_completed.connect(func(_r, c, _h, _b):
+        http.queue_free()
+        if c == 204:
+            _set_status("Zoom floors saved", false)
+        else:
+            _set_status("Zoom save failed (" + str(c) + ")", true)
+        Auth.check_response(c)
+    )
+    var headers = [
+        "Content-Type: application/json",
+        "Authorization: " + Auth.get_auth_header(),
+    ]
+    http.request(Auth.api_base + "/api/village/world/zoom-settings",
+        headers, HTTPClient.METHOD_POST, payload)
 
 func _refresh_labels() -> void:
     _phase_value.text = _phase.to_upper() if _phase != "" else "—"
