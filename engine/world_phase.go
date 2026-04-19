@@ -36,8 +36,6 @@ const (
 	tagDayActive   = "day-active"
 	tagNightActive = "night-active"
 
-	tickerInterval = 60 * time.Second
-
 	defaultTimezone     = "America/New_York"
 	defaultDawn         = "07:00"
 	defaultDusk         = "19:00"
@@ -394,33 +392,6 @@ func (app *App) applyFlip(flip pendingFlip) {
 		Type: "object_state_changed",
 		Data: map[string]string{"id": flip.ObjectID, "state": flip.NewState},
 	})
-}
-
-// runPhaseTicker is the background loop that fires scheduled world events.
-// Wakes every tickerInterval, reads the latest config (so live setting edits
-// take effect without a restart), and transitions day/night or applies the
-// daily rotation if the corresponding boundary has been crossed since the
-// last processed timestamp.
-func (app *App) runPhaseTicker(ctx context.Context) {
-	log.Printf("world_phase: ticker started (%s interval)", tickerInterval)
-	ticker := time.NewTicker(tickerInterval)
-	defer ticker.Stop()
-
-	// Kick once at startup so a server that came up mid-phase (or after a
-	// missed rotation) catches up without waiting for the first tick.
-	app.checkAndTransition(ctx)
-	app.checkAndRotate(ctx)
-
-	for {
-		select {
-		case <-ctx.Done():
-			log.Println("world_phase: ticker stopping")
-			return
-		case <-ticker.C:
-			app.checkAndTransition(ctx)
-			app.checkAndRotate(ctx)
-		}
-	}
 }
 
 // checkAndTransition does one iteration of the scheduler loop. It's safe to

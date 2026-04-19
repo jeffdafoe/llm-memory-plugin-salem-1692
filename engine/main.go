@@ -91,6 +91,9 @@ func main() {
 	authed("PATCH /api/assets/{id}/door", app.handlePatchAssetDoor)
 	authed("PATCH /api/assets/{id}/enterable", app.handlePatchAssetEnterable)
 	authed("PATCH /api/assets/{id}/visible-when-inside", app.handlePatchAssetVisibleWhenInside)
+	authed("GET /api/assets/state-tags", app.handleListStateTags)
+	authed("POST /api/assets/{id}/states/{state}/tags", app.handleAddStateTag)
+	authed("DELETE /api/assets/{id}/states/{state}/tags/{tag}", app.handleRemoveStateTag)
 
 	// Agents
 	authed("GET /api/village/agents", app.handleListVillageAgents)
@@ -120,6 +123,7 @@ func main() {
 	authed("PATCH /api/village/npcs/{id}/agent", app.handleSetNPCAgent)
 	authed("PATCH /api/village/npcs/{id}/home-structure", app.handleSetNPCHomeStructure)
 	authed("PATCH /api/village/npcs/{id}/work-structure", app.handleSetNPCWorkStructure)
+	authed("PATCH /api/village/npcs/{id}/schedule", app.handleSetNPCSchedule)
 	authed("POST /api/village/npcs/{id}/run-cycle", app.handleRunNPCCycle)
 	authed("POST /api/village/npcs/{id}/go-home", app.handleGoHome)
 	authed("POST /api/village/npcs/{id}/go-to-work", app.handleGoToWork)
@@ -147,7 +151,7 @@ func main() {
 	// Graceful shutdown — signals cancel the ticker context and trigger
 	// server.Shutdown. The ticker goroutine exits on ctx.Done().
 	tickerCtx, cancelTicker := context.WithCancel(context.Background())
-	go app.runPhaseTicker(tickerCtx)
+	go app.runServerTick(tickerCtx)
 
 	go func() {
 		sigChan := make(chan os.Signal, 1)
