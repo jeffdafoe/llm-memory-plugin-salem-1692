@@ -175,6 +175,8 @@ func _handle_message(data: String) -> void:
             _on_asset_enterable_updated(event_data)
         "asset_visible_when_inside_updated":
             _on_asset_visible_when_inside_updated(event_data)
+        "asset_stand_updated":
+            _on_asset_stand_updated(event_data)
         "zoom_settings_changed":
             if world != null:
                 world.apply_zoom_floor_from_config(event_data)
@@ -263,6 +265,40 @@ func _on_asset_visible_when_inside_updated(data: Dictionary) -> void:
         if structure.get_meta("asset_id", "") != asset_id:
             continue
         container.visible = world._compute_npc_visible(true, inside_id)
+
+## Apply a server-broadcast stand-offset update. Updates the catalog so
+## future inside transitions render at the new position, and
+## repositions any NPC currently inside a structure of this asset type
+## so the change is visible immediately.
+func _on_asset_stand_updated(data: Dictionary) -> void:
+    var asset_id: String = data.get("asset_id", "")
+    if asset_id == "" or not Catalog.assets.has(asset_id):
+        return
+    var asset = Catalog.assets[asset_id]
+    var x = data.get("x", null)
+    var y = data.get("y", null)
+    if x == null or y == null:
+        asset["stand_offset_x"] = null
+        asset["stand_offset_y"] = null
+    else:
+        asset["stand_offset_x"] = int(x)
+        asset["stand_offset_y"] = int(y)
+    Catalog.assets[asset_id] = asset
+    if world == null:
+        return
+    for npc_id in world.placed_npcs:
+        var container: Node2D = world.placed_npcs[npc_id]
+        if container == null:
+            continue
+        if not bool(container.get_meta("inside", false)):
+            continue
+        var inside_id: String = str(container.get_meta("inside_structure_id", ""))
+        if inside_id == "" or not world.placed_objects.has(inside_id):
+            continue
+        var structure: Node2D = world.placed_objects[inside_id]
+        if structure.get_meta("asset_id", "") != asset_id:
+            continue
+        world._apply_stand_offset_if_applicable(container, true, inside_id)
 
 func _on_asset_footprint_updated(data: Dictionary) -> void:
     var asset_id: String = data.get("asset_id", "")

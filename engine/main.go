@@ -91,6 +91,7 @@ func main() {
 	authed("PATCH /api/assets/{id}/door", app.handlePatchAssetDoor)
 	authed("PATCH /api/assets/{id}/enterable", app.handlePatchAssetEnterable)
 	authed("PATCH /api/assets/{id}/visible-when-inside", app.handlePatchAssetVisibleWhenInside)
+	authed("PATCH /api/assets/{id}/stand", app.handlePatchAssetStand)
 	authed("GET /api/assets/state-tags", app.handleListStateTags)
 	authed("POST /api/assets/{id}/states/{state}/tags", app.handleAddStateTag)
 	authed("DELETE /api/assets/{id}/states/{state}/tags/{tag}", app.handleRemoveStateTag)
