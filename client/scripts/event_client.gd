@@ -135,7 +135,7 @@ func _handle_message(data: String) -> void:
         "object_state_changed":
             _on_object_state_changed(event_data)
         "terrain_updated":
-            _on_terrain_updated()
+            _on_terrain_updated(event_data)
         "world_phase_changed":
             _on_world_phase_changed(event_data)
         "npc_walking":
@@ -305,7 +305,13 @@ func _on_object_display_name_changed(data: Dictionary) -> void:
 var _terrain_reload_timer: float = 0.0
 const TERRAIN_RELOAD_DELAY: float = 1.0
 
-func _on_terrain_updated() -> void:
+func _on_terrain_updated(data: Dictionary) -> void:
+    # Skip our own echoes. The painter already has exactly what they sent;
+    # re-fetching races against any tiles they paint between the PUT and
+    # the reload (TERRAIN_RELOAD_DELAY = 1s) and clobbers them.
+    var updated_by: String = str(data.get("updated_by", ""))
+    if updated_by != "" and updated_by == Auth.username:
+        return
     # Debounce: reset timer on each event, only reload after a pause
     _terrain_reload_timer = TERRAIN_RELOAD_DELAY
 

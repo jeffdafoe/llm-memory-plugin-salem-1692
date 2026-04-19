@@ -87,5 +87,12 @@ func (app *App) handleSaveTerrain(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
-	app.Hub.Broadcast(WorldEvent{Type: "terrain_updated", Data: nil})
+	// Include the saving user so each client can skip the reload when the
+	// broadcast is an echo of its own save. Without this, the painter's
+	// client re-fetches terrain ~1s after sending it, and any tile they
+	// paint in that window gets clobbered by the pre-latest server state.
+	app.Hub.Broadcast(WorldEvent{
+		Type: "terrain_updated",
+		Data: map[string]string{"updated_by": user.Username},
+	})
 }
