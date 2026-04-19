@@ -147,9 +147,21 @@ const (
 
 // mostRecentWorkerBoundary returns the most recent arrive/leave boundary at
 // or before now for a worker with the given offset, plus which kind it was.
-// Considers yesterday, today, and tomorrow candidates so offsets that push
-// arrive/leave across midnight resolve correctly. time.Date normalizes
-// overflow hours, so 19:00 + 10h → 05:00 the next day.
+//
+// Offset semantics are "trim the workday from both ends":
+//   arrive = dawn + offset     (positive offset = arrive later)
+//   leave  = dusk - offset     (positive offset = leave earlier)
+//
+// So offset=0 is a full dawn-to-dusk shift; offset=+1 shrinks the day by
+// one hour at each edge (arrive 1h after dawn, leave 1h before dusk);
+// offset=-1 widens the workday past sunrise and sunset. Offset is
+// clamped by the DB to [-23, 23] but values where leave precedes arrive
+// within the same day produce a degenerate zero-or-negative shift —
+// admin responsibility to avoid.
+//
+// Considers yesterday, today, and tomorrow candidates so offsets that
+// push arrive/leave across midnight resolve correctly. time.Date
+// normalizes overflow, so 7:00 + 20h → 03:00 the next day.
 func mostRecentWorkerBoundary(now time.Time, dawnH, dawnM, duskH, duskM, offsetHours int) (time.Time, workerBoundaryKind) {
 	loc := now.Location()
 	y, mo, d := now.Date()
@@ -163,7 +175,7 @@ func mostRecentWorkerBoundary(now time.Time, dawnH, dawnM, duskH, duskM, offsetH
 	for i, dayOffset := range []int{-1, 0, 1} {
 		base := time.Date(y, mo, d+dayOffset, 0, 0, 0, 0, loc)
 		arrive := base.Add(time.Duration(dawnH)*time.Hour + time.Duration(dawnM)*time.Minute + offset)
-		leave := base.Add(time.Duration(duskH)*time.Hour + time.Duration(duskM)*time.Minute + offset)
+		leave := base.Add(time.Duration(duskH)*time.Hour + time.Duration(duskM)*time.Minute - offset)
 		cands[i*2] = candidate{arrive, workerArrive}
 		cands[i*2+1] = candidate{leave, workerLeave}
 	}
