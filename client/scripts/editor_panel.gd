@@ -1347,11 +1347,11 @@ func show_npc_selection(info: Dictionary) -> void:
     if world != null and npc_id != "" and world.placed_npcs.has(npc_id):
         npc_container = world.placed_npcs[npc_id]
     if _npc_go_home_button != null:
-        _npc_go_home_button.disabled = _npc_home_current_id == "" \
-            or _is_npc_at_structure_door(npc_container, _npc_home_current_id)
+        var at_home: bool = _is_npc_at_structure_door(npc_container, _npc_home_current_id)
+        _npc_go_home_button.disabled = _npc_home_current_id == "" or at_home
     if _npc_go_to_work_button != null:
-        _npc_go_to_work_button.disabled = _npc_work_current_id == "" \
-            or _is_npc_at_structure_door(npc_container, _npc_work_current_id)
+        var at_work: bool = _is_npc_at_structure_door(npc_container, _npc_work_current_id)
+        _npc_go_to_work_button.disabled = _npc_work_current_id == "" or at_work
 
     _ignoring_npc_inputs = false
 
