@@ -295,9 +295,15 @@ func _on_owner_changed(owner: String) -> void:
     if editor.selected_object != null:
         world.set_object_owner(editor.selected_object, owner)
 
-func _on_display_name_changed(display_name: String) -> void:
-    if editor.selected_object != null:
-        world.set_object_display_name(editor.selected_object, display_name)
+func _on_display_name_changed(display_name: String, object_id: String) -> void:
+    # Route via the id rather than editor.selected_object: deselection
+    # hides the panel which triggers focus_exited on the name input, and
+    # by then selected_object is already null. The id keeps the save
+    # pointed at the right object.
+    if object_id == "" or not world.placed_objects.has(object_id):
+        return
+    var node: Node2D = world.placed_objects[object_id]
+    world.set_object_display_name(node, display_name)
 
 func _on_npc_name_changed(display_name: String) -> void:
     if editor.selected_npc != null:
