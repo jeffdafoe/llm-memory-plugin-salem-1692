@@ -98,6 +98,25 @@ func load_objects() -> void:
     _load_agents()
     _load_npcs()
 
+## Tear down all placed objects and NPCs so load_objects can run cleanly again.
+## Used by the WS reconnect resync path — any events that fired while the
+## socket was closed are gone forever, so we rebuild from REST rather than
+## trying to reconcile. Keeps the NPC sheet texture cache since those files
+## don't change mid-session.
+func reset_world_state() -> void:
+    for obj_id in placed_objects:
+        var node: Node2D = placed_objects[obj_id]
+        if is_instance_valid(node):
+            node.queue_free()
+    placed_objects.clear()
+    for npc_id in placed_npcs:
+        var container: Node2D = placed_npcs[npc_id]
+        if is_instance_valid(container):
+            container.queue_free()
+    placed_npcs.clear()
+    _pending_npcs.clear()
+    _objects_loaded = false
+
 # NPC rendering — static for milestone 1a, no movement or animation.
 # Sprite sheets are cached per path so multiple NPCs sharing a sheet share
 # one texture.

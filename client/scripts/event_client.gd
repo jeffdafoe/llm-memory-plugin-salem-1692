@@ -3,9 +3,19 @@ extends Node
 ## dispatches world events (object created/moved/deleted/owner/state changes)
 ## to the World node so all viewers stay in sync.
 
+## Emitted when the WS reopens after a prior disconnect in the same session.
+## Main uses this to trigger a full world resync — any events that fired
+## while the socket was closed are gone, so we rebuild state from REST.
+signal reconnected
+
 var _socket: WebSocketPeer = null
 var _connected: bool = false
 var _url: String = ""
+
+# True once we've had at least one successful WS open in this session.
+# Used to distinguish initial connect (no resync needed) from reconnect
+# after a drop (resync needed).
+var _initial_connect_done: bool = false
 
 # Reference to world — set by main.gd after auth
 var world: Node2D = null
@@ -85,6 +95,14 @@ func _process(delta: float) -> void:
     if state == WebSocketPeer.STATE_OPEN:
         if not _connected:
             _connected = true
+            if _initial_connect_done:
+                # Clear pending echo-suppression — any object IDs we were
+                # tracking locally were for operations that completed (or
+                # didn't) during the gap; the resync will reconcile.
+                _local_object_ids.clear()
+                reconnected.emit()
+            else:
+                _initial_connect_done = true
         # Read all available messages
         while _socket.get_available_packet_count() > 0:
             var data = _socket.get_packet().get_string_from_utf8()

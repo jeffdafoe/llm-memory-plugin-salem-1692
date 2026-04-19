@@ -90,6 +90,7 @@ func _on_authenticated() -> void:
         event_client = Node.new()
         event_client.set_script(EventClientScript)
         add_child(event_client)
+        event_client.reconnected.connect(_on_ws_reconnected)
     event_client.world = world
     world.event_client = event_client
     event_client.connect_to_server()
@@ -107,6 +108,20 @@ func _on_authenticated() -> void:
         _on_catalog_ready()
     elif not Catalog.catalog_loaded.is_connected(_on_catalog_ready):
         Catalog.catalog_loaded.connect(_on_catalog_ready)
+
+## WebSocket reopened after a disconnect (browser tab backgrounded overnight,
+## network blip, etc). Any events that fired during the gap — most visibly
+## world_phase_changed at dawn/dusk — are gone. Tear down the rendered world
+## and refetch everything from REST to match server truth.
+func _on_ws_reconnected() -> void:
+    if editor != null:
+        editor._deselect()
+        editor._deselect_npc()
+    world.reset_world_state()
+    world.reload_terrain()
+    world._load_world_phase()
+    if Catalog.loaded:
+        world.load_objects()
 
 func _flush_unsaved_terrain_or_reload() -> void:
     var pending = world.get_unsaved_terrain()
