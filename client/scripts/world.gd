@@ -256,6 +256,9 @@ func apply_npc_inside_change(data: Dictionary) -> void:
     var inside: bool = bool(data.get("inside", false))
     container.set_meta("inside", inside)
     container.visible = not inside
+    # Buttons that depend on location (Go Home / Go to Work) refresh via
+    # the metadata-changed path, so nudge the panel when inside flips.
+    npc_metadata_changed.emit(npc_id)
 
 ## Apply a server-broadcast home structure change. data.home_structure_id
 ## may be null for unlinked.

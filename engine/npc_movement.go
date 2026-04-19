@@ -195,6 +195,17 @@ func (app *App) startNPCWalk(ctx context.Context, npcID string, targetX, targetY
 		if existing.timer != nil {
 			existing.timer.Stop()
 		}
+		// The interrupted walk's applyArrival will never fire, so persist
+		// the interpolated position here. Without this, a client that
+		// refreshes during a chain of supersessions sees the NPC at some
+		// stale pre-first-walk position — the "villagers at random spots"
+		// symptom.
+		if _, err := app.DB.Exec(ctx,
+			`UPDATE npc SET current_x = $2, current_y = $3 WHERE id = $1`,
+			npcID, startX, startY,
+		); err != nil {
+			log.Printf("persist interrupted pos for %s: %v", npcID, err)
+		}
 	} else {
 		if err := app.DB.QueryRow(ctx,
 			`SELECT current_x, current_y FROM npc WHERE id = $1`, npcID,
