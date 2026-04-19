@@ -120,7 +120,8 @@ func (app *App) loadWalkGrid(ctx context.Context) (*walkGrid, error) {
 	rows, err := app.DB.Query(ctx,
 		`SELECT o.x, o.y,
 		        a.footprint_left, a.footprint_right, a.footprint_top, a.footprint_bottom,
-		        a.is_passage
+		        a.is_passage,
+		        a.door_offset_x, a.door_offset_y
 		 FROM village_object o
 		 JOIN asset a ON a.id = o.asset_id
 		 WHERE (a.is_obstacle = TRUE OR a.is_passage = TRUE) AND o.attached_to IS NULL
@@ -130,11 +131,20 @@ func (app *App) loadWalkGrid(ctx context.Context) (*walkGrid, error) {
 		return nil, fmt.Errorf("load obstacles: %w", err)
 	}
 	defer rows.Close()
+
+	// Door tiles that fall inside a footprint need to be re-stamped walkable
+	// after the obstacle pass. Collect them here; un-stamp at the end so we
+	// don't accidentally re-block them with a later structure's footprint.
+	type doorTile struct{ x, y int }
+	var doorTiles []doorTile
+
 	for rows.Next() {
 		var wx, wy float64
 		var fLeft, fRight, fTop, fBottom int
 		var isPassage bool
-		if err := rows.Scan(&wx, &wy, &fLeft, &fRight, &fTop, &fBottom, &isPassage); err != nil {
+		var doorX, doorY *int
+		if err := rows.Scan(&wx, &wy, &fLeft, &fRight, &fTop, &fBottom, &isPassage,
+			&doorX, &doorY); err != nil {
 			continue
 		}
 		ax, ay := worldToTile(wx, wy)
@@ -155,7 +165,23 @@ func (app *App) loadWalkGrid(ctx context.Context) (*walkGrid, error) {
 				g.cost[ty*mapW+tx] = stamp
 			}
 		}
+		if doorX != nil && doorY != nil {
+			doorTiles = append(doorTiles, doorTile{ax + *doorX, ay + *doorY})
+		}
 	}
+
+	// Punch walkable holes for every door tile. This means an NPC can path
+	// directly to the door even when it sits inside the footprint (so the
+	// persisted arrival position is the door tile, not an adjacent
+	// fallback), and lets future walkable-interior structures do the same.
+	// Cost 1 matches the passage/road stamp.
+	for _, d := range doorTiles {
+		if d.x < 0 || d.x >= mapW || d.y < 0 || d.y >= mapH {
+			continue
+		}
+		g.cost[d.y*mapW+d.x] = 1
+	}
+
 	return g, nil
 }
 
