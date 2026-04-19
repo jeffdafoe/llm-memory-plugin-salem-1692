@@ -347,6 +347,10 @@ func _on_npc_run_cycle_requested() -> void:
         headers.append("Authorization: " + auth_header)
     http.request(Auth.api_base + "/api/village/npcs/" + npc_id + "/run-cycle",
         headers, HTTPClient.METHOD_POST, "{}")
+    # Once a cycle is kicked off, the admin is typically done with this
+    # villager for a while — deselect so the map / structures are clickable
+    # again without right-clicking first.
+    editor._deselect_npc()
 
 ## Admin toggled the "Can be entered" checkbox on the selected asset.
 ## Fires a PATCH; asset_enterable_updated broadcast echoes to all clients.
