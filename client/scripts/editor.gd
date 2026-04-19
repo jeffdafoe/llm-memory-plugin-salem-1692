@@ -1239,6 +1239,58 @@ func _process(delta: float) -> void:
         _terrain_save_timer -= delta
         if _terrain_save_timer <= 0:
             world.save_terrain()
+    if _should_edge_pan():
+        _edge_pan(delta)
+
+## Auto-pan the camera when the mouse approaches the viewport edge during
+## an active placement/drag/paint operation. Ghost-sprite placement,
+## object drag-to-move, and terrain painting all benefit from being able
+## to scroll the map without releasing the mouse. Mirror of the pattern
+## most isometric/top-down editors use.
+const EDGE_PAN_MARGIN: float = 48.0
+const EDGE_PAN_SPEED: float = 800.0  # world pixels per second at margin edge
+
+func _should_edge_pan() -> bool:
+    if not active:
+        return false
+    if popup_open:
+        return false
+    if current_mode == Mode.PLACE and ghost_sprite != null and ghost_sprite.visible:
+        return true
+    if _dragging:
+        return true
+    if _terrain_painting:
+        return true
+    return false
+
+func _edge_pan(delta: float) -> void:
+    var vp = get_viewport()
+    if vp == null:
+        return
+    var mouse: Vector2 = vp.get_mouse_position()
+    var size: Vector2 = vp.get_visible_rect().size
+    # Don't pan while the mouse is in the UI strip (top bar / left panel)
+    # — the user isn't trying to reach the map edge from there.
+    if mouse.x < PANEL_WIDTH or mouse.y < TOP_BAR_HEIGHT:
+        return
+
+    var pan := Vector2.ZERO
+    var map_left: float = PANEL_WIDTH
+    if mouse.x < map_left + EDGE_PAN_MARGIN:
+        pan.x = -(1.0 - (mouse.x - map_left) / EDGE_PAN_MARGIN)
+    elif mouse.x > size.x - EDGE_PAN_MARGIN:
+        pan.x = 1.0 - (size.x - mouse.x) / EDGE_PAN_MARGIN
+    var map_top: float = TOP_BAR_HEIGHT
+    if mouse.y < map_top + EDGE_PAN_MARGIN:
+        pan.y = -(1.0 - (mouse.y - map_top) / EDGE_PAN_MARGIN)
+    elif mouse.y > size.y - EDGE_PAN_MARGIN:
+        pan.y = 1.0 - (size.y - mouse.y) / EDGE_PAN_MARGIN
+
+    if pan == Vector2.ZERO:
+        return
+    var zoom: float = camera.zoom.x if camera.zoom.x > 0 else 1.0
+    camera.position += pan * EDGE_PAN_SPEED * delta / zoom
+    camera._clamp_position()
 
 # --- Coordinate conversion ---
 
