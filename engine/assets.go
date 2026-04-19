@@ -57,6 +57,14 @@ type Asset struct {
 	// see-through structures like market stalls where the admin wants the
 	// NPC visible at the door tile.
 	VisibleWhenInside bool       `json:"visible_when_inside"`
+	// StandOffsetX/Y is a pure-render position offset for NPCs who are
+	// inside a visible_when_inside structure. The NPC still walks to
+	// the door tile (pathfinding target); on arrival the client
+	// repositions them to structure_anchor + stand_offset * tile_size
+	// so they render behind the counter rather than in the doorway.
+	// NULL falls back to door position (NPC stays at the door tile).
+	StandOffsetX    *int         `json:"stand_offset_x"`
+	StandOffsetY    *int         `json:"stand_offset_y"`
 	Pack            *TilesetPack `json:"pack,omitempty"`
 	States          []AssetState `json:"states"`
 	Slots           []AssetSlot  `json:"slots"`
@@ -120,7 +128,8 @@ func (app *App) handleListAssets(w http.ResponseWriter, r *http.Request) {
 		`SELECT id, name, category, default_state, anchor_x, anchor_y, layer, pack_id, fits_slot,
 		        z_index, is_obstacle, is_passage,
 		        footprint_left, footprint_right, footprint_top, footprint_bottom,
-		        door_offset_x, door_offset_y, enterable, visible_when_inside
+		        door_offset_x, door_offset_y, enterable, visible_when_inside,
+		        stand_offset_x, stand_offset_y
 		 FROM asset
 		 ORDER BY category, name`,
 	)
@@ -139,7 +148,8 @@ func (app *App) handleListAssets(w http.ResponseWriter, r *http.Request) {
 			&a.AnchorX, &a.AnchorY, &a.Layer, &a.PackID, &a.FitsSlot,
 			&a.ZIndex, &a.IsObstacle, &a.IsPassage,
 			&a.FootprintLeft, &a.FootprintRight, &a.FootprintTop, &a.FootprintBottom,
-			&a.DoorOffsetX, &a.DoorOffsetY, &a.Enterable, &a.VisibleWhenInside); err != nil {
+			&a.DoorOffsetX, &a.DoorOffsetY, &a.Enterable, &a.VisibleWhenInside,
+			&a.StandOffsetX, &a.StandOffsetY); err != nil {
 			continue
 		}
 		a.States = []AssetState{}
@@ -354,6 +364,63 @@ func (app *App) handlePatchAssetDoor(w http.ResponseWriter, r *http.Request) {
 
 	app.Hub.Broadcast(WorldEvent{
 		Type: "asset_door_updated",
+		Data: map[string]any{
+			"asset_id": id,
+			"x":        req.X,
+			"y":        req.Y,
+		},
+	})
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handlePatchAssetStand updates the stand-offset for visible_when_inside
+// assets — the tile offset where an NPC renders when they're "inside" a
+// see-through structure like a market stall. Distinct from door offset:
+// door is a walkable pathfind target; stand is a pure-render position
+// (usually inside the unwalkable footprint). Pass null / null to clear
+// (NPC falls back to the door tile on arrival, current behavior).
+func (app *App) handlePatchAssetStand(w http.ResponseWriter, r *http.Request) {
+	user := getUserFromContext(r.Context())
+	if user == nil || !user.hasRole("ROLE_SALEM_ADMIN") {
+		jsonError(w, "Admin access required", http.StatusForbidden)
+		return
+	}
+
+	id := r.PathValue("id")
+	if id == "" {
+		jsonError(w, "Missing asset id", http.StatusBadRequest)
+		return
+	}
+
+	var req struct {
+		X *int `json:"x"`
+		Y *int `json:"y"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	if (req.X == nil) != (req.Y == nil) {
+		jsonError(w, "x and y must both be set or both null", http.StatusBadRequest)
+		return
+	}
+
+	tag, err := app.DB.Exec(r.Context(),
+		`UPDATE asset SET stand_offset_x = $1, stand_offset_y = $2 WHERE id = $3`,
+		req.X, req.Y, id,
+	)
+	if err != nil {
+		jsonError(w, "Failed to update stand offset", http.StatusInternalServerError)
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		jsonError(w, "Asset not found", http.StatusNotFound)
+		return
+	}
+
+	app.Hub.Broadcast(WorldEvent{
+		Type: "asset_stand_updated",
 		Data: map[string]any{
 			"asset_id": id,
 			"x":        req.X,

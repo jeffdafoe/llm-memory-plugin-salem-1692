@@ -259,6 +259,7 @@ func apply_npc_inside_change(data: Dictionary) -> void:
     container.set_meta("inside", inside)
     container.set_meta("inside_structure_id", inside_structure_id)
     container.visible = _compute_npc_visible(inside, inside_structure_id)
+    _apply_stand_offset_if_applicable(container, inside, inside_structure_id)
     # Buttons that depend on location (Go Home / Go to Work) refresh via
     # the metadata-changed path, so nudge the panel when inside flips.
     npc_metadata_changed.emit(npc_id)
@@ -276,6 +277,36 @@ func _compute_npc_visible(inside: bool, inside_structure_id: String) -> bool:
     var asset_id: String = structure.get_meta("asset_id", "")
     var asset: Dictionary = Catalog.assets.get(asset_id, {})
     return bool(asset.get("visible_when_inside", false))
+
+## Reposition a visible-inside NPC to the structure's stand offset tile
+## when one is configured. Called on inside=true transitions and on
+## initial load so the NPC renders behind the counter rather than at
+## the doorway. Silently returns without moving the NPC when the
+## structure doesn't have a stand offset set (fall back to the arrival
+## position, which is the door tile).
+func _apply_stand_offset_if_applicable(container: Node2D, inside: bool, inside_structure_id: String) -> void:
+    if not inside or inside_structure_id == "":
+        return
+    if not placed_objects.has(inside_structure_id):
+        return
+    var structure: Node2D = placed_objects[inside_structure_id]
+    var asset_id: String = structure.get_meta("asset_id", "")
+    var asset: Dictionary = Catalog.assets.get(asset_id, {})
+    if not bool(asset.get("visible_when_inside", false)):
+        return
+    var sx = asset.get("stand_offset_x", null)
+    var sy = asset.get("stand_offset_y", null)
+    if sx == null or sy == null:
+        return
+    # Snap to tile center so the sprite sits visually aligned with the
+    # structure tiles rather than at the anchor corner.
+    const TILE: float = 32.0
+    var anchor_tile_x: int = int(floor(structure.position.x / TILE))
+    var anchor_tile_y: int = int(floor(structure.position.y / TILE))
+    container.position = Vector2(
+        (anchor_tile_x + int(sx)) * TILE + TILE / 2.0,
+        (anchor_tile_y + int(sy)) * TILE + TILE / 2.0,
+    )
 
 ## Apply a server-broadcast home structure change. data.home_structure_id
 ## may be null for unlinked.
@@ -450,6 +481,10 @@ func _render_npc(npc: Dictionary) -> void:
     container.set_meta("inside_structure_id", inside_structure_id)
     container.visible = _compute_npc_visible(inside, inside_structure_id)
     container.position = Vector2(npc.get("current_x", 0.0), npc.get("current_y", 0.0))
+    # Stand offset overrides the server-provided current_x/y when inside
+    # a visible_when_inside structure — NPCs render behind the counter
+    # rather than at the door tile they actually walked to.
+    _apply_stand_offset_if_applicable(container, inside, inside_structure_id)
     container.z_index = OBJECT_Z
 
     var anim_sprite := AnimatedSprite2D.new()
