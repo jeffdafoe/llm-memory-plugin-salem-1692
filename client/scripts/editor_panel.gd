@@ -612,11 +612,11 @@ func _ready() -> void:
     _npc_offset_spin.min_value = -23
     _npc_offset_spin.max_value = 23
     _npc_offset_spin.step = 1
-    # Commit on each keystroke so the Save button reads the freshly-typed
-    # value even when focus moves mid-edit. Default false means the value
-    # only commits on LineEdit focus_exited, which fires AFTER the button
-    # click handler runs — so the handler sees the stale pre-edit value.
+    # Commit on each keystroke so value_changed fires on every edit —
+    # matches the auto-save-on-change pattern used by the behavior /
+    # home / work pickers so admins don't need to remember a Save button.
     _npc_offset_spin.update_on_text_changed = true
+    _npc_offset_spin.value_changed.connect(_on_schedule_field_changed)
     _npc_offset_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     offset_row.add_child(_npc_offset_spin)
 
@@ -625,6 +625,7 @@ func _ready() -> void:
     _npc_cadence_check.add_theme_color_override("font_color", COLOR_TEXT)
     _npc_cadence_check.add_theme_font_size_override("font_size", 11)
     _npc_cadence_check.toggled.connect(_on_cadence_toggled)
+    _npc_cadence_check.toggled.connect(func(_v): _schedule_save_debounced())
     _npc_schedule_section.add_child(_npc_cadence_check)
 
     _npc_cadence_row = HBoxContainer.new()
@@ -641,6 +642,7 @@ func _ready() -> void:
     _npc_interval_spin.step = 1
     _npc_interval_spin.value = 3
     _npc_interval_spin.update_on_text_changed = true
+    _npc_interval_spin.value_changed.connect(_on_schedule_field_changed)
     _npc_interval_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     _npc_cadence_row.add_child(_npc_interval_spin)
 
@@ -658,6 +660,7 @@ func _ready() -> void:
     _npc_start_spin.step = 1
     _npc_start_spin.value = 9
     _npc_start_spin.update_on_text_changed = true
+    _npc_start_spin.value_changed.connect(_on_schedule_field_changed)
     _npc_start_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     _npc_cadence_row2.add_child(_npc_start_spin)
     var end_lbl = Label.new()
@@ -671,6 +674,7 @@ func _ready() -> void:
     _npc_end_spin.step = 1
     _npc_end_spin.value = 18
     _npc_end_spin.update_on_text_changed = true
+    _npc_end_spin.value_changed.connect(_on_schedule_field_changed)
     _npc_end_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     _npc_cadence_row2.add_child(_npc_end_spin)
 
@@ -1187,6 +1191,21 @@ func _on_cadence_toggled(enabled: bool) -> void:
 ## interval/start/end are sent as -1 when cadence is unchecked (handler
 ## downstream converts to null JSON). offset is always sent.
 func _on_schedule_save_pressed() -> void:
+    _emit_schedule_changed()
+
+## Auto-save on any SpinBox value change. Matches the behavior /
+## home / work pickers that also save immediately on change, so admins
+## don't need a separate Save button to make the SCHEDULE section stick.
+func _on_schedule_field_changed(_value: float) -> void:
+    _emit_schedule_changed()
+
+## Alias for the cadence checkbox handler lambda — same semantics as
+## any other field change.
+func _schedule_save_debounced() -> void:
+    _emit_schedule_changed()
+
+## Shared emitter for all three auto-save paths.
+func _emit_schedule_changed() -> void:
     if _ignoring_npc_inputs:
         return
     var offset: int = int(_npc_offset_spin.value)

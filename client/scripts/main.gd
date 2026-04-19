@@ -444,14 +444,25 @@ func _on_npc_metadata_changed(npc_id: String) -> void:
     var selected_id: String = editor.selected_npc.get_meta("npc_id", "")
     if selected_id != npc_id:
         return
+    # Keep this in sync with editor._select_npc — show_npc_selection reads
+    # whatever keys are present and defaults missing ones to 0 / null, so
+    # forgetting schedule_offset_hours here made the SpinBox reset to 0
+    # after every successful Save Schedule PATCH. Any new NPC field the
+    # panel renders MUST be included here too.
+    var container: Node2D = editor.selected_npc
     var info := {
         "npc_id": npc_id,
-        "display_name": editor.selected_npc.get_meta("display_name", ""),
-        "behavior": editor.selected_npc.get_meta("behavior", ""),
-        "llm_memory_agent": editor.selected_npc.get_meta("llm_memory_agent", ""),
-        "home_structure_id": editor.selected_npc.get_meta("home_structure_id", ""),
-        "work_structure_id": editor.selected_npc.get_meta("work_structure_id", ""),
+        "display_name": container.get_meta("display_name", ""),
+        "behavior": container.get_meta("behavior", ""),
+        "llm_memory_agent": container.get_meta("llm_memory_agent", ""),
+        "home_structure_id": container.get_meta("home_structure_id", ""),
+        "work_structure_id": container.get_meta("work_structure_id", ""),
+        "schedule_offset_hours": container.get_meta("schedule_offset_hours", 0),
     }
+    if container.has_meta("schedule_interval_hours"):
+        info["schedule_interval_hours"] = container.get_meta("schedule_interval_hours")
+        info["active_start_hour"] = container.get_meta("active_start_hour")
+        info["active_end_hour"] = container.get_meta("active_end_hour")
     editor_panel.show_npc_selection(info)
 
 func _on_attachment_requested(overlay_asset_id: String) -> void:
