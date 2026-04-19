@@ -519,22 +519,26 @@ func (app *App) handleRunNPCCycle(w http.ResponseWriter, r *http.Request) {
 func (app *App) dispatchBehaviorForNPC(ctx context.Context, npc *behaviorNPC) (int, error) {
 	switch npc.Behavior {
 	case behaviorLamplighter:
+		// Manual trigger: pick whichever target tag actually has work to
+		// do. Fixed phase-based targets fail at equilibrium (all lamps
+		// match the current phase, no candidates, silent no-op). So try
+		// the "preview next cycle" target first (opposite of current
+		// phase); if that's already done, fall back to the current-phase
+		// target. Effectively each click alternates: light them up →
+		// turn them off → light them up.
 		phase, err := app.currentWorldPhase(ctx)
 		if err != nil {
 			return 0, err
 		}
-		// Manual trigger previews the NEXT scheduled cycle rather than the
-		// current one. Lamps in equilibrium with the current phase (day =>
-		// unlit, night => lit) produce zero candidates under current-phase
-		// semantics, so the user clicks and nothing happens. Inverting the
-		// target tag makes Run Cycle always do something visible: at day
-		// the lamplighter lights the lamps as if dusk were coming; at night
-		// he puts them out as if dawn were coming.
-		targetTag := "day-active"
-		if phase == "day" {
-			targetTag = "night-active"
+		first, second := "night-active", "day-active"
+		if phase == "night" {
+			first, second = "day-active", "night-active"
 		}
-		return app.startLamplighterRouteForNPC(ctx, npc, targetTag)
+		n, err := app.startLamplighterRouteForNPC(ctx, npc, first)
+		if err != nil || n > 0 {
+			return n, err
+		}
+		return app.startLamplighterRouteForNPC(ctx, npc, second)
 	case behaviorWasherwoman:
 		return app.startRotationRouteForNPC(ctx, npc, tagLaundry, "washerwoman")
 	case behaviorTownCrier:
