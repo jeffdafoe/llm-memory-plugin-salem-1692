@@ -409,6 +409,17 @@ func _on_npc_walking(data: Dictionary) -> void:
         "started_at_s": Time.get_ticks_msec() / 1000.0,
     }
     container.set_meta("walking", walk)
+    # If the NPC was indoors when the walk started, the inside_changed
+    # broadcast should have un-hidden them — but defensively ensure it
+    # here so a reordered / missed event doesn't leave them invisible
+    # during their entire walk (looks like a teleport on arrival).
+    container.set_meta("inside", false)
+    container.visible = true
+    # The walk begins at start_pos; if the container is still parked at
+    # the pre-walk persisted position (e.g., inside=true kept it frozen),
+    # snap to the broadcast start so interpolation begins from the right
+    # spot rather than jumping mid-path.
+    container.position = start_pos
 
     # Kick off walk animation in the first leg's direction.
     var first_dir: Vector2 = path[0] - start_pos
