@@ -612,6 +612,11 @@ func _ready() -> void:
     _npc_offset_spin.min_value = -23
     _npc_offset_spin.max_value = 23
     _npc_offset_spin.step = 1
+    # Commit on each keystroke so the Save button reads the freshly-typed
+    # value even when focus moves mid-edit. Default false means the value
+    # only commits on LineEdit focus_exited, which fires AFTER the button
+    # click handler runs — so the handler sees the stale pre-edit value.
+    _npc_offset_spin.update_on_text_changed = true
     _npc_offset_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     offset_row.add_child(_npc_offset_spin)
 
@@ -635,6 +640,7 @@ func _ready() -> void:
     _npc_interval_spin.max_value = 24
     _npc_interval_spin.step = 1
     _npc_interval_spin.value = 3
+    _npc_interval_spin.update_on_text_changed = true
     _npc_interval_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     _npc_cadence_row.add_child(_npc_interval_spin)
 
@@ -651,6 +657,7 @@ func _ready() -> void:
     _npc_start_spin.max_value = 23
     _npc_start_spin.step = 1
     _npc_start_spin.value = 9
+    _npc_start_spin.update_on_text_changed = true
     _npc_start_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     _npc_cadence_row2.add_child(_npc_start_spin)
     var end_lbl = Label.new()
@@ -663,6 +670,7 @@ func _ready() -> void:
     _npc_end_spin.max_value = 23
     _npc_end_spin.step = 1
     _npc_end_spin.value = 18
+    _npc_end_spin.update_on_text_changed = true
     _npc_end_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     _npc_cadence_row2.add_child(_npc_end_spin)
 
