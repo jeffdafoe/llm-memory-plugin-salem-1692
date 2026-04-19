@@ -80,7 +80,11 @@ const TERRAIN_SAVE_DELAY: float = 2.0
 var _dragging: bool = false
 var _drag_start_world: Vector2 = Vector2.ZERO
 var _drag_start_obj_pos: Vector2 = Vector2.ZERO
-var _drag_threshold: float = 4.0
+## 4px was too tight — a normal mouse wobble during a click would cross
+## it and either (a) drag a structure slightly (hence the "stuff keeps
+## moving north" drift) or (b) cancel an NPC walk-pending so the release
+## does nothing. 10px tolerates wobble but still feels like a click.
+var _drag_threshold: float = 10.0
 var _drag_pending: bool = false
 var _drag_mouse_start: Vector2 = Vector2.ZERO
 
