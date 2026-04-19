@@ -967,20 +967,16 @@ func _door_marker_local_from_tile_offset(node: Node2D, offset_tiles: Vector2) ->
     )
     return world_center - node.position
 
-func _draw_door_marker_contents(asset: Dictionary) -> void:
+func _draw_door_marker_contents(_asset: Dictionary) -> void:
     if _door_marker == null:
         return
     var half: float = TILE_SIZE / 2.0 - 2.0
-    var is_set: bool = asset.get("door_offset_x", null) != null
-    # Same yellow family as the selection border so the marker reads as
-    # "part of the editor affordance." Opacity differs between set and
-    # unset so the admin can tell at a glance whether a real door tile is
-    # placed or they're looking at the placeholder.
+    # Always blue when shown — when enterable=false the marker isn't
+    # drawn at all, so a separate "unset" styling is unnecessary. The
+    # placeholder position is just a starting point for the admin to
+    # drag onto the actual door tile.
     var fill := Polygon2D.new()
-    # Near-opaque blue when placed so the door reads clearly on every
-    # background; greyed-out when unset so the placeholder doesn't look
-    # like a real commitment.
-    fill.color = Color(0.25, 0.55, 1.0, 0.9) if is_set else Color(0.55, 0.55, 0.55, 0.5)
+    fill.color = Color(0.25, 0.55, 1.0, 0.9)
     fill.polygon = PackedVector2Array([
         Vector2(-half, -half),
         Vector2( half, -half),
@@ -990,7 +986,7 @@ func _draw_door_marker_contents(asset: Dictionary) -> void:
     _door_marker.add_child(fill)
     var outline := Line2D.new()
     outline.width = 2.0
-    outline.default_color = Color(0.15, 0.35, 0.85, 1.0) if is_set else Color(0.45, 0.45, 0.45, 0.9)
+    outline.default_color = Color(0.15, 0.35, 0.85, 1.0)
     outline.closed = true
     outline.add_point(Vector2(-half, -half))
     outline.add_point(Vector2( half, -half))
