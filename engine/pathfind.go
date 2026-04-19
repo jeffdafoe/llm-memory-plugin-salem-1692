@@ -133,9 +133,15 @@ func (app *App) loadWalkGrid(ctx context.Context) (*walkGrid, error) {
 	defer rows.Close()
 
 	// Door tiles that fall inside a footprint need to be re-stamped walkable
-	// after the obstacle pass. Collect them here; un-stamp at the end so we
-	// don't accidentally re-block them with a later structure's footprint.
-	type doorTile struct{ x, y int }
+	// after the obstacle pass. We also remember the enclosing footprint so
+	// we can carve a corridor from the door to the nearest footprint edge —
+	// a door deep inside a footprint is unreachable otherwise (surrounded
+	// by obstacle tiles).
+	type doorTile struct {
+		x, y                   int
+		fpMinX, fpMaxX         int
+		fpMinY, fpMaxY         int
+	}
 	var doorTiles []doorTile
 
 	for rows.Next() {
@@ -166,20 +172,71 @@ func (app *App) loadWalkGrid(ctx context.Context) (*walkGrid, error) {
 			}
 		}
 		if doorX != nil && doorY != nil {
-			doorTiles = append(doorTiles, doorTile{ax + *doorX, ay + *doorY})
+			doorTiles = append(doorTiles, doorTile{
+				x:      ax + *doorX,
+				y:      ay + *doorY,
+				fpMinX: ax - fLeft,
+				fpMaxX: ax + fRight,
+				fpMinY: ay - fTop,
+				fpMaxY: ay + fBottom,
+			})
 		}
 	}
 
-	// Punch walkable holes for every door tile. This means an NPC can path
-	// directly to the door even when it sits inside the footprint (so the
-	// persisted arrival position is the door tile, not an adjacent
-	// fallback), and lets future walkable-interior structures do the same.
-	// Cost 1 matches the passage/road stamp.
+	// Punch walkable holes for every door tile. Cost 1 matches the passage
+	// stamp. For a door tile that sits inside its structure's footprint,
+	// also carve a 1-tile-wide corridor to the nearest footprint edge so
+	// the door is reachable — without the corridor the door is surrounded
+	// by obstacle tiles and pathfind reports "no path".
+	stampWalk := func(tx, ty int) {
+		if tx < 0 || tx >= mapW || ty < 0 || ty >= mapH {
+			return
+		}
+		g.cost[ty*mapW+tx] = 1
+	}
 	for _, d := range doorTiles {
-		if d.x < 0 || d.x >= mapW || d.y < 0 || d.y >= mapH {
+		stampWalk(d.x, d.y)
+		// Door outside footprint — no corridor needed.
+		if d.x < d.fpMinX || d.x > d.fpMaxX || d.y < d.fpMinY || d.y > d.fpMaxY {
 			continue
 		}
-		g.cost[d.y*mapW+d.x] = 1
+		// Pick the footprint edge closest to the door and carve toward it.
+		distW := d.x - d.fpMinX
+		distE := d.fpMaxX - d.x
+		distN := d.y - d.fpMinY
+		distS := d.fpMaxY - d.y
+		minDist := distW
+		dir := "w"
+		if distE < minDist {
+			minDist = distE
+			dir = "e"
+		}
+		if distN < minDist {
+			minDist = distN
+			dir = "n"
+		}
+		if distS < minDist {
+			minDist = distS
+			dir = "s"
+		}
+		switch dir {
+		case "w":
+			for tx := d.x - 1; tx >= d.fpMinX; tx-- {
+				stampWalk(tx, d.y)
+			}
+		case "e":
+			for tx := d.x + 1; tx <= d.fpMaxX; tx++ {
+				stampWalk(tx, d.y)
+			}
+		case "n":
+			for ty := d.y - 1; ty >= d.fpMinY; ty-- {
+				stampWalk(d.x, ty)
+			}
+		case "s":
+			for ty := d.y + 1; ty <= d.fpMaxY; ty++ {
+				stampWalk(d.x, ty)
+			}
+		}
 	}
 
 	return g, nil
