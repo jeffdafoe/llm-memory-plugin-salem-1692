@@ -1342,7 +1342,6 @@ func show_npc_selection(info: Dictionary) -> void:
     # (b) the villager is already standing at that structure's door tile.
     # Position-based check rather than the inside flag, because inside can
     # be true for work too.
-    var npc_id: String = info.get("npc_id", "")
     var npc_container: Node2D = null
     if world != null and npc_id != "" and world.placed_npcs.has(npc_id):
         npc_container = world.placed_npcs[npc_id]
