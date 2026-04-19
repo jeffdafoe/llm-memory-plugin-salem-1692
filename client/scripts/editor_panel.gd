@@ -23,6 +23,7 @@ signal npc_go_home_requested
 signal npc_go_to_work_requested
 signal npc_select_requested(npc_id: String)
 signal asset_enterable_toggled(asset_id: String, enterable: bool)
+signal asset_visible_when_inside_toggled(asset_id: String, visible: bool)
 
 # Theme colors (matching top bar / login screen)
 const COLOR_BG = Color(0.12, 0.09, 0.07, 0.95)
@@ -67,7 +68,8 @@ var _attachments_section: VBoxContainer = null
 # theme, and the dropdown matches the visual language of the surrounding
 # owner / behavior pickers.
 var _enterable_dropdown: OptionButton = null
-# The asset_id the enterable dropdown currently reflects, so we know what
+var _visible_when_inside_dropdown: OptionButton = null
+# The asset_id the two above dropdowns currently reflect, so we know what
 # to PATCH on change. Set in show_selection.
 var _enterable_asset_id: String = ""
 var _ignoring_enterable_toggle: bool = false
@@ -356,6 +358,25 @@ func _ready() -> void:
     _enterable_dropdown.add_item("Yes", 1)
     _enterable_dropdown.item_selected.connect(_on_enterable_selected)
     _asset_fields_section.add_child(_enterable_dropdown)
+
+    # Visible-when-inside — see-through buildings (market stall) keep the
+    # villager sprite visible at the door tile. Same style as the
+    # enterable picker.
+    var visible_header = Label.new()
+    visible_header.text = "VISIBLE WHEN INSIDE"
+    visible_header.add_theme_color_override("font_color", COLOR_LABEL)
+    visible_header.add_theme_font_size_override("font_size", 11)
+    _asset_fields_section.add_child(visible_header)
+
+    _visible_when_inside_dropdown = OptionButton.new()
+    _visible_when_inside_dropdown.add_theme_font_override("font", _font)
+    _visible_when_inside_dropdown.add_theme_font_size_override("font_size", 13)
+    _visible_when_inside_dropdown.add_theme_color_override("font_color", COLOR_TEXT)
+    _visible_when_inside_dropdown.add_theme_stylebox_override("normal", enterable_style)
+    _visible_when_inside_dropdown.add_item("No", 0)
+    _visible_when_inside_dropdown.add_item("Yes", 1)
+    _visible_when_inside_dropdown.item_selected.connect(_on_visible_when_inside_selected)
+    _asset_fields_section.add_child(_visible_when_inside_dropdown)
 
     # People section — NPCs whose home or work is this structure. Clicking a
     # row selects that villager (and pans the camera to them). Only populated
@@ -1135,6 +1156,11 @@ func _on_enterable_selected(index: int) -> void:
         return
     asset_enterable_toggled.emit(_enterable_asset_id, index == 1)
 
+func _on_visible_when_inside_selected(index: int) -> void:
+    if _ignoring_enterable_toggle or _enterable_asset_id == "":
+        return
+    asset_visible_when_inside_toggled.emit(_enterable_asset_id, index == 1)
+
 ## Fill the People section with buttons for each NPC whose home or work is
 ## the given structure. Hides the section if the selection isn't a
 ## structure or if nobody lives/works there.
@@ -1220,10 +1246,12 @@ func show_selection(info: Dictionary) -> void:
     # Show attachments if this asset has slots
     _build_attachments(asset_id)
 
-    # Sync the enterable dropdown to this asset's current value.
+    # Sync both asset-level dropdowns (enterable + visible-when-inside).
     _ignoring_enterable_toggle = true
     _enterable_asset_id = asset_id
     _enterable_dropdown.selected = 1 if bool(asset.get("enterable", false)) else 0
+    if _visible_when_inside_dropdown != null:
+        _visible_when_inside_dropdown.selected = 1 if bool(asset.get("visible_when_inside", false)) else 0
     _ignoring_enterable_toggle = false
 
     # People list — structures only. Shown when someone's home or work is

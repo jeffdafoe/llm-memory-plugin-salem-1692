@@ -189,7 +189,7 @@ func (app *App) startNPCWalk(ctx context.Context, npcID string, targetX, targetY
 	// were inside (if any). Flip inside=false so the client un-hides the
 	// sprite before the walk animation starts. No-op when already outside
 	// (setNPCInside guards on IS DISTINCT FROM).
-	app.setNPCInside(ctx, npcID, false)
+	app.setNPCInside(ctx, npcID, false, "")
 
 	app.NPCMovement.mu.Lock()
 	existing := app.NPCMovement.active[npcID]

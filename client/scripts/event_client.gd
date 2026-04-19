@@ -170,6 +170,8 @@ func _handle_message(data: String) -> void:
             _on_asset_door_updated(event_data)
         "asset_enterable_updated":
             _on_asset_enterable_updated(event_data)
+        "asset_visible_when_inside_updated":
+            _on_asset_visible_when_inside_updated(event_data)
         "zoom_settings_changed":
             if world != null:
                 world.apply_zoom_floor_from_config(event_data)
@@ -229,6 +231,35 @@ func _on_asset_enterable_updated(data: Dictionary) -> void:
             # appear and disappear paths so we don't need a separate branch.
             if editor.has_method("_add_door_marker"):
                 editor._add_door_marker(editor.selected_object)
+
+## Apply a server-broadcast visible_when_inside toggle. Updates the
+## catalog so future inside flips render correctly, and nudges any
+## currently-inside NPC of this structure type so they appear/disappear
+## immediately rather than waiting for their next state change.
+func _on_asset_visible_when_inside_updated(data: Dictionary) -> void:
+    var asset_id: String = data.get("asset_id", "")
+    if asset_id == "" or not Catalog.assets.has(asset_id):
+        return
+    var asset = Catalog.assets[asset_id]
+    asset["visible_when_inside"] = bool(data.get("visible_when_inside", false))
+    Catalog.assets[asset_id] = asset
+    if world == null:
+        return
+    # Re-evaluate visibility for every NPC that's currently inside a
+    # structure of this asset.
+    for npc_id in world.placed_npcs:
+        var container: Node2D = world.placed_npcs[npc_id]
+        if container == null:
+            continue
+        if not bool(container.get_meta("inside", false)):
+            continue
+        var inside_id: String = str(container.get_meta("inside_structure_id", ""))
+        if inside_id == "" or not world.placed_objects.has(inside_id):
+            continue
+        var structure: Node2D = world.placed_objects[inside_id]
+        if structure.get_meta("asset_id", "") != asset_id:
+            continue
+        container.visible = world._compute_npc_visible(true, inside_id)
 
 func _on_asset_footprint_updated(data: Dictionary) -> void:
     var asset_id: String = data.get("asset_id", "")

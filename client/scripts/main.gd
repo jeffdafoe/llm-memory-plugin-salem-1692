@@ -206,6 +206,7 @@ func _build_ui() -> void:
     editor_panel.npc_go_to_work_requested.connect(_on_npc_go_to_work_requested)
     editor_panel.npc_select_requested.connect(_on_npc_select_requested)
     editor_panel.asset_enterable_toggled.connect(_on_asset_enterable_toggled)
+    editor_panel.asset_visible_when_inside_toggled.connect(_on_asset_visible_when_inside_toggled)
     editor_panel.world = world
 
     # Wire editor signals to panel
@@ -355,7 +356,15 @@ func _on_npc_run_cycle_requested() -> void:
 ## Admin toggled the "Can be entered" checkbox on the selected asset.
 ## Fires a PATCH; asset_enterable_updated broadcast echoes to all clients.
 func _on_asset_enterable_toggled(asset_id: String, enterable: bool) -> void:
-    var payload = JSON.stringify({"enterable": enterable})
+    _patch_asset_flag(asset_id, "enterable", "enterable", enterable)
+
+## Admin toggled the "Visible when inside" dropdown — controls whether
+## an NPC's sprite hides on inside=true or stays rendered at the door.
+func _on_asset_visible_when_inside_toggled(asset_id: String, visible: bool) -> void:
+    _patch_asset_flag(asset_id, "visible-when-inside", "visible_when_inside", visible)
+
+func _patch_asset_flag(asset_id: String, path_suffix: String, field: String, value: bool) -> void:
+    var payload = JSON.stringify({field: value})
     var http := HTTPRequest.new()
     http.accept_gzip = false
     add_child(http)
@@ -367,7 +376,7 @@ func _on_asset_enterable_toggled(asset_id: String, enterable: bool) -> void:
     var auth_header: String = Auth.get_auth_header()
     if auth_header != "":
         headers.append("Authorization: " + auth_header)
-    http.request(Auth.api_base + "/api/assets/" + asset_id + "/enterable",
+    http.request(Auth.api_base + "/api/assets/" + asset_id + "/" + path_suffix,
         headers, HTTPClient.METHOD_PATCH, payload)
 
 ## Panel People list clicked. Selects the villager (even when hidden
