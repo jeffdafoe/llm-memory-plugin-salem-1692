@@ -1134,6 +1134,11 @@ func _on_agents_loaded(result: int, response_code: int, headers: PackedStringArr
     if json == null or not (json is Array):
         return
 
+    # Reset before refilling — load_agents can run again (WS reconnect
+    # resync, re-auth flow) and appending would leave duplicates in the
+    # editor panel's agent dropdown.
+    agent_list.clear()
+    agent_names.clear()
     for agent in json:
         var llm_name: String = agent.get("llm_memory_agent", "")
         var display_name: String = agent.get("name", "")
