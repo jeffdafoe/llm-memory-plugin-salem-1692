@@ -1137,13 +1137,13 @@ func _populate_people_section(object_id: String, asset_id: String) -> void:
             label = "(unnamed)"
         var tag: String = ""
         if is_home and is_work:
-            tag = "[H+W]"
+            tag = "  (home & work)"
         elif is_home:
-            tag = "[H]"
+            tag = "  (home)"
         else:
-            tag = "[W]"
+            tag = "  (work)"
         var row := Button.new()
-        row.text = label + "  " + tag
+        row.text = label + tag
         row.add_theme_font_override("font", _font)
         row.add_theme_font_size_override("font_size", 13)
         row.add_theme_color_override("font_color", COLOR_TEXT)
