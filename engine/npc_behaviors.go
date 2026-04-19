@@ -523,9 +523,16 @@ func (app *App) dispatchBehaviorForNPC(ctx context.Context, npc *behaviorNPC) (i
 		if err != nil {
 			return 0, err
 		}
-		targetTag := "night-active"
+		// Manual trigger previews the NEXT scheduled cycle rather than the
+		// current one. Lamps in equilibrium with the current phase (day =>
+		// unlit, night => lit) produce zero candidates under current-phase
+		// semantics, so the user clicks and nothing happens. Inverting the
+		// target tag makes Run Cycle always do something visible: at day
+		// the lamplighter lights the lamps as if dusk were coming; at night
+		// he puts them out as if dawn were coming.
+		targetTag := "day-active"
 		if phase == "day" {
-			targetTag = "day-active"
+			targetTag = "night-active"
 		}
 		return app.startLamplighterRouteForNPC(ctx, npc, targetTag)
 	case behaviorWasherwoman:
