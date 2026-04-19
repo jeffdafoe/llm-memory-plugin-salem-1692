@@ -199,6 +199,7 @@ func _build_ui() -> void:
     editor_panel.npc_agent_changed.connect(_on_npc_agent_changed)
     editor_panel.npc_home_structure_changed.connect(_on_npc_home_structure_changed)
     editor_panel.npc_work_structure_changed.connect(_on_npc_work_structure_changed)
+    editor_panel.npc_schedule_changed.connect(_on_npc_schedule_changed)
     editor_panel.npc_home_assign_requested.connect(_on_npc_home_assign_requested)
     editor_panel.npc_work_assign_requested.connect(_on_npc_work_assign_requested)
     editor_panel.npc_run_cycle_requested.connect(_on_npc_run_cycle_requested)
@@ -324,6 +325,13 @@ func _on_npc_home_structure_changed(structure_id: String) -> void:
 func _on_npc_work_structure_changed(structure_id: String) -> void:
     if editor.selected_npc != null:
         world.set_npc_work_structure(editor.selected_npc, structure_id)
+
+## Admin edited the schedule fields and hit Save. interval/start/end are
+## -1 when the cadence checkbox is unchecked — world.set_npc_schedule maps
+## those to null in the JSON payload.
+func _on_npc_schedule_changed(offset: int, interval: int, start_h: int, end_h: int) -> void:
+    if editor.selected_npc != null:
+        world.set_npc_schedule(editor.selected_npc, offset, interval, start_h, end_h)
 
 func _on_npc_home_assign_requested() -> void:
     editor.begin_assign_home()
