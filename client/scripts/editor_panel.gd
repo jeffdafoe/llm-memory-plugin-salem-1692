@@ -8,7 +8,7 @@ signal delete_requested
 signal terrain_mode_toggled(active: bool)
 signal terrain_type_selected(terrain_type: int)
 signal owner_changed(owner: String)
-signal display_name_changed(display_name: String)
+signal display_name_changed(display_name: String, object_id: String)
 signal attachment_requested(overlay_asset_id: String)
 signal npc_sprite_selected(sprite: Dictionary, sheet: Texture2D, npc_name: String)
 signal npc_name_changed(display_name: String)
@@ -55,6 +55,11 @@ var _owner_dropdown: OptionButton = null
 var _ignoring_dropdown: bool = false
 var _name_input: LineEdit = null
 var _ignoring_name_input: bool = false
+# Remember which object the name input currently reflects so a later
+# focus_exited can save to THAT id — even if the editor's selection has
+# already cleared (deselection fires focus_exited as a side effect of
+# hiding the panel).
+var _name_input_object_id: String = ""
 var _catalog_container: VBoxContainer = null
 var _terrain_picker: VBoxContainer = null
 var _catalog_scroll: ScrollContainer = null
@@ -1027,15 +1032,15 @@ func _set_tool_active(btn: Button, active: bool) -> void:
         btn.add_theme_color_override("font_color", COLOR_TEXT)
 
 func _on_name_submitted(new_text: String) -> void:
-    if _ignoring_name_input:
+    if _ignoring_name_input or _name_input_object_id == "":
         return
     _name_input.release_focus()
-    display_name_changed.emit(new_text.strip_edges())
+    display_name_changed.emit(new_text.strip_edges(), _name_input_object_id)
 
 func _on_name_focus_lost() -> void:
-    if _ignoring_name_input:
+    if _ignoring_name_input or _name_input_object_id == "":
         return
-    display_name_changed.emit(_name_input.text.strip_edges())
+    display_name_changed.emit(_name_input.text.strip_edges(), _name_input_object_id)
 
 func _on_npc_name_submitted(new_text: String) -> void:
     if _ignoring_npc_inputs:
@@ -1278,6 +1283,7 @@ func show_selection(info: Dictionary) -> void:
     # Populate display name input
     _ignoring_name_input = true
     _name_input.text = info.get("display_name", "")
+    _name_input_object_id = info.get("object_id", "")
     _ignoring_name_input = false
 
     # Populate owner dropdown from agent list
