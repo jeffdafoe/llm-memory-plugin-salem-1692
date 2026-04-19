@@ -163,6 +163,11 @@ func _handle_message(data: String) -> void:
         "npc_work_structure_changed":
             if world != null:
                 world.apply_npc_work_structure_change(event_data)
+        "npc_inside_changed":
+            if world != null:
+                world.apply_npc_inside_change(event_data)
+        "asset_door_updated":
+            _on_asset_door_updated(event_data)
         "session_expired":
             # Server's ping loop noticed our session went bad. Route through
             # the same path as a 401 on a REST request so the UI behavior
@@ -177,6 +182,30 @@ func _handle_message(data: String) -> void:
 ## (optimistically), so this handler is mostly for OTHER clients learning
 ## about the change — but it runs unconditionally; the values are
 ## idempotent.
+## Apply a server-broadcast door offset change. Mirrors the local PATCH path
+## (which also updates the catalog optimistically). x/y may be null, meaning
+## the door was cleared. Refreshes the door marker if the affected asset is
+## the one currently selected in the editor.
+func _on_asset_door_updated(data: Dictionary) -> void:
+    var asset_id: String = data.get("asset_id", "")
+    if asset_id == "" or not Catalog.assets.has(asset_id):
+        return
+    var asset = Catalog.assets[asset_id]
+    var x = data.get("x", null)
+    var y = data.get("y", null)
+    if x == null or y == null:
+        asset["door_offset_x"] = null
+        asset["door_offset_y"] = null
+    else:
+        asset["door_offset_x"] = int(x)
+        asset["door_offset_y"] = int(y)
+    Catalog.assets[asset_id] = asset
+    var editor = get_node_or_null("/root/Main/Editor")
+    if editor != null and editor.selected_object != null:
+        if editor.selected_object.get_meta("asset_id", "") == asset_id:
+            if editor.has_method("refresh_door_marker"):
+                editor.refresh_door_marker()
+
 func _on_asset_footprint_updated(data: Dictionary) -> void:
     var asset_id: String = data.get("asset_id", "")
     if asset_id == "" or not Catalog.assets.has(asset_id):

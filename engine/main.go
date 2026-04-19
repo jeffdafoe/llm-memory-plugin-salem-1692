@@ -88,6 +88,7 @@ func main() {
 	// Identity / catalog edits
 	authed("GET /api/me", app.handleVillageMe)
 	authed("PATCH /api/assets/{id}/footprint", app.handlePatchAssetFootprint)
+	authed("PATCH /api/assets/{id}/door", app.handlePatchAssetDoor)
 
 	// Agents
 	authed("GET /api/village/agents", app.handleListVillageAgents)
@@ -117,6 +118,7 @@ func main() {
 	authed("PATCH /api/village/npcs/{id}/agent", app.handleSetNPCAgent)
 	authed("PATCH /api/village/npcs/{id}/home-structure", app.handleSetNPCHomeStructure)
 	authed("PATCH /api/village/npcs/{id}/work-structure", app.handleSetNPCWorkStructure)
+	authed("POST /api/village/npcs/{id}/run-cycle", app.handleRunNPCCycle)
 	authed("GET /api/village/npc-sprites", app.handleListNPCSprites)
 	authed("GET /api/village/npc-behaviors", app.handleListNPCBehaviors)
 

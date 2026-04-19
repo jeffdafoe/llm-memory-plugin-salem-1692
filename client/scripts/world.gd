@@ -243,6 +243,20 @@ func apply_npc_agent_change(data: Dictionary) -> void:
         container.set_meta("llm_memory_agent", str(agent))
     npc_metadata_changed.emit(npc_id)
 
+## Apply a server-broadcast inside flip. Hides / shows the sprite on the map;
+## the editor panel and selection machinery still treat the NPC as present so
+## admins can edit indoor villagers.
+func apply_npc_inside_change(data: Dictionary) -> void:
+    var npc_id: String = data.get("id", "")
+    if npc_id == "":
+        return
+    var container: Node2D = placed_npcs.get(npc_id, null)
+    if container == null:
+        return
+    var inside: bool = bool(data.get("inside", false))
+    container.set_meta("inside", inside)
+    container.visible = not inside
+
 ## Apply a server-broadcast home structure change. data.home_structure_id
 ## may be null for unlinked.
 func apply_npc_home_structure_change(data: Dictionary) -> void:
@@ -373,6 +387,9 @@ func _render_npc(npc: Dictionary) -> void:
     container.set_meta("llm_memory_agent", npc.get("llm_memory_agent", ""))
     container.set_meta("home_structure_id", npc.get("home_structure_id", ""))
     container.set_meta("work_structure_id", npc.get("work_structure_id", ""))
+    var inside: bool = bool(npc.get("inside", false))
+    container.set_meta("inside", inside)
+    container.visible = not inside
     container.position = Vector2(npc.get("current_x", 0.0), npc.get("current_y", 0.0))
     container.z_index = OBJECT_Z
 

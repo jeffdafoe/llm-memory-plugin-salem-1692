@@ -54,6 +54,15 @@ var _footprint_resize_side: String = ""
 var _footprint_resize_start_value: int = 0
 var _footprint_resize_start_world: Vector2 = Vector2.ZERO
 
+# Door marker drag state — editor for asset.door_offset_{x,y}. Only shown
+# when the selected object is a structure. The marker is a child of the
+# structure node; _door_marker_asset_id pins which asset it belongs to so
+# a mid-drag asset broadcast doesn't repaint over our in-flight change.
+var _door_marker: Node2D = null
+var _door_marker_asset_id: String = ""
+var _door_dragging: bool = false
+var _door_drag_start_offset: Vector2 = Vector2.ZERO  # tile offset (could be -Inf,-Inf for "none")
+
 # Terrain painting state
 var _terrain_type: int = 0
 var _terrain_painting: bool = false
@@ -112,6 +121,19 @@ func _input(event: InputEvent) -> void:
             get_viewport().set_input_as_handled()
         if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
             _cancel_footprint_resize()
+            get_viewport().set_input_as_handled()
+        return
+
+    # Door marker drag in progress — same ownership pattern as footprint.
+    if _door_dragging:
+        if event is InputEventMouseMotion:
+            _door_drag_motion(event.position)
+            get_viewport().set_input_as_handled()
+        if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and not event.pressed:
+            _commit_door_drag()
+            get_viewport().set_input_as_handled()
+        if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
+            _cancel_door_drag()
             get_viewport().set_input_as_handled()
         return
 
@@ -228,6 +250,15 @@ func _on_left_press(screen_pos: Vector2) -> void:
                     get_viewport().set_input_as_handled()
                     return
                 _walk_selected_npc(screen_pos)
+                left_click_used = true
+                get_viewport().set_input_as_handled()
+                return
+
+            # If the selected object has a door marker and the click lands on
+            # it, start a door drag. This takes priority over footprint edges
+            # so the marker stays reachable when it overlaps a border.
+            if selected_object != null and _hit_test_door_marker(screen_pos):
+                _begin_door_drag(screen_pos)
                 left_click_used = true
                 get_viewport().set_input_as_handled()
                 return
@@ -529,6 +560,7 @@ func _select_object(node: Node2D) -> void:
     _deselect_npc()
     selected_object = node
     _add_selection_border(node)
+    _add_door_marker(node)
     object_selected.emit({
         "asset_id": node.get_meta("asset_id", ""),
         "placed_by": node.get_meta("placed_by", ""),
@@ -539,6 +571,7 @@ func _select_object(node: Node2D) -> void:
 func _deselect() -> void:
     if selected_object != null:
         _remove_selection_border()
+        _remove_door_marker()
         selected_object = null
         object_deselected.emit()
 
@@ -855,10 +888,199 @@ func _remove_selection_border() -> void:
         _selection_border.queue_free()
         _selection_border = null
 
+# --- Door marker ---
+#
+# Per-asset door_offset_x / door_offset_y sets the walkable tile an NPC
+# targets when going home. The marker is only shown on structures and only
+# while the structure is selected. Dragging it snaps to the tile grid and
+# PATCHes /api/assets/{id}/door on release.
+
+## Draw the door marker as a child of the selected structure, or do nothing
+## if the asset isn't a structure.
+func _add_door_marker(node: Node2D) -> void:
+    _remove_door_marker()
+    var asset_id: String = node.get_meta("asset_id", "")
+    var asset = Catalog.assets.get(asset_id, {})
+    if asset.get("category", "") != "structure":
+        return
+
+    _door_marker_asset_id = asset_id
+    _door_marker = Node2D.new()
+    _door_marker.name = "DoorMarker"
+    _door_marker.z_index = 1000
+    node.add_child(_door_marker)
+
+    var offset_tiles: Vector2 = _current_door_offset_tiles(asset, node)
+    _door_marker.position = _door_marker_local_from_tile_offset(node, offset_tiles)
+    _draw_door_marker_contents(asset)
+
+## Re-render the door marker's contents. Called after a successful PATCH
+## echo so a concurrent admin's change repaints locally. Position is
+## driven by the asset catalog — same lookup as the initial draw.
+func refresh_door_marker() -> void:
+    if selected_object == null or _door_marker == null:
+        return
+    if _door_dragging:
+        # Let the drag finish first; a mid-drag remote change will be
+        # reconciled on the next selection anyway.
+        return
+    var asset_id: String = selected_object.get_meta("asset_id", "")
+    var asset = Catalog.assets.get(asset_id, {})
+    var offset_tiles: Vector2 = _current_door_offset_tiles(asset, selected_object)
+    _door_marker.position = _door_marker_local_from_tile_offset(selected_object, offset_tiles)
+    # Clear existing visuals and redraw so the "unset" vs "set" styling updates.
+    for child in _door_marker.get_children():
+        child.queue_free()
+    _draw_door_marker_contents(asset)
+
+## Returns the door offset (in tile units) currently stored on the asset. If
+## unset, defaults to (0, +1) — one tile south of anchor — which tends to be
+## the "front" for Salem's building sprites. A ghost styling in the marker
+## tells the user it's the placeholder, not an intentional value.
+func _current_door_offset_tiles(asset: Dictionary, node: Node2D) -> Vector2:
+    var ox = asset.get("door_offset_x", null)
+    var oy = asset.get("door_offset_y", null)
+    if ox == null or oy == null:
+        return Vector2(0, int(asset.get("footprint_bottom", 0)) + 1)
+    return Vector2(int(ox), int(oy))
+
+## Convert a tile offset from the structure's anchor tile to a LOCAL
+## coordinate (relative to the structure node). Positions the marker at
+## tile CENTER so the visual dot aligns with the pathfinder's target.
+func _door_marker_local_from_tile_offset(node: Node2D, offset_tiles: Vector2) -> Vector2:
+    var anchor_tile_x: int = int(floor(node.position.x / TILE_SIZE))
+    var anchor_tile_y: int = int(floor(node.position.y / TILE_SIZE))
+    var target_tile_x: int = anchor_tile_x + int(offset_tiles.x)
+    var target_tile_y: int = anchor_tile_y + int(offset_tiles.y)
+    var world_center = Vector2(
+        target_tile_x * TILE_SIZE + TILE_SIZE / 2.0,
+        target_tile_y * TILE_SIZE + TILE_SIZE / 2.0,
+    )
+    return world_center - node.position
+
+func _draw_door_marker_contents(asset: Dictionary) -> void:
+    if _door_marker == null:
+        return
+    var half: float = TILE_SIZE / 2.0 - 2.0
+    var is_set: bool = asset.get("door_offset_x", null) != null
+    var fill := Polygon2D.new()
+    fill.color = Color(0.35, 0.65, 0.95, 0.55) if is_set else Color(0.55, 0.55, 0.55, 0.35)
+    fill.polygon = PackedVector2Array([
+        Vector2(-half, -half),
+        Vector2( half, -half),
+        Vector2( half,  half),
+        Vector2(-half,  half),
+    ])
+    _door_marker.add_child(fill)
+    var outline := Line2D.new()
+    outline.width = 2.0
+    outline.default_color = Color(0.2, 0.45, 0.85, 0.95) if is_set else Color(0.6, 0.6, 0.6, 0.8)
+    outline.closed = true
+    outline.add_point(Vector2(-half, -half))
+    outline.add_point(Vector2( half, -half))
+    outline.add_point(Vector2( half,  half))
+    outline.add_point(Vector2(-half,  half))
+    _door_marker.add_child(outline)
+
+func _remove_door_marker() -> void:
+    if _door_marker != null:
+        _door_marker.queue_free()
+        _door_marker = null
+    _door_marker_asset_id = ""
+    _door_dragging = false
+
+## Hit-test a screen position against the currently visible door marker.
+## Returns true if the click landed on the marker so the caller can start
+## a drag instead of falling through to normal selection behavior.
+func _hit_test_door_marker(screen_pos: Vector2) -> bool:
+    if _door_marker == null or selected_object == null:
+        return false
+    var world_pos: Vector2 = _screen_to_world(screen_pos)
+    var marker_world: Vector2 = selected_object.position + _door_marker.position
+    var half: float = TILE_SIZE / 2.0
+    return abs(world_pos.x - marker_world.x) <= half and abs(world_pos.y - marker_world.y) <= half
+
+func _begin_door_drag(screen_pos: Vector2) -> void:
+    _door_dragging = true
+    var asset_id: String = selected_object.get_meta("asset_id", "")
+    var asset = Catalog.assets.get(asset_id, {})
+    _door_drag_start_offset = _current_door_offset_tiles(asset, selected_object)
+
+## Snap the dragged marker to the tile under the mouse and update the
+## in-memory asset entry so the visual reflects the pending change. The
+## actual PATCH fires on release.
+func _door_drag_motion(screen_pos: Vector2) -> void:
+    if not _door_dragging or selected_object == null or _door_marker == null:
+        return
+    var world_pos: Vector2 = _screen_to_world(screen_pos)
+    var anchor_tile_x: int = int(floor(selected_object.position.x / TILE_SIZE))
+    var anchor_tile_y: int = int(floor(selected_object.position.y / TILE_SIZE))
+    var target_tile_x: int = int(floor(world_pos.x / TILE_SIZE))
+    var target_tile_y: int = int(floor(world_pos.y / TILE_SIZE))
+    var offset_tiles := Vector2(target_tile_x - anchor_tile_x, target_tile_y - anchor_tile_y)
+    _door_marker.position = _door_marker_local_from_tile_offset(selected_object, offset_tiles)
+    # Optimistic local update so a redraw renders the "set" styling.
+    var asset_id: String = selected_object.get_meta("asset_id", "")
+    var asset = Catalog.assets.get(asset_id, {})
+    asset["door_offset_x"] = int(offset_tiles.x)
+    asset["door_offset_y"] = int(offset_tiles.y)
+    Catalog.assets[asset_id] = asset
+    for child in _door_marker.get_children():
+        child.queue_free()
+    _draw_door_marker_contents(asset)
+
+func _commit_door_drag() -> void:
+    if not _door_dragging or selected_object == null:
+        _door_dragging = false
+        return
+    _door_dragging = false
+    var asset_id: String = selected_object.get_meta("asset_id", "")
+    var asset = Catalog.assets.get(asset_id, {})
+    var ox = asset.get("door_offset_x", null)
+    var oy = asset.get("door_offset_y", null)
+    if ox == null or oy == null:
+        return
+    # No-op if we're back at the starting value (user clicked and released
+    # without moving).
+    if Vector2(int(ox), int(oy)) == _door_drag_start_offset:
+        return
+    var payload = JSON.stringify({"x": int(ox), "y": int(oy)})
+    var http := HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    http.request_completed.connect(func(_r, c, _h, _b):
+        http.queue_free()
+        Auth.check_response(c)
+    )
+    var headers := ["Content-Type: application/json"]
+    var auth_header: String = Auth.get_auth_header()
+    if auth_header != "":
+        headers.append("Authorization: " + auth_header)
+    http.request(Auth.api_base + "/api/assets/" + asset_id + "/door",
+        headers, HTTPClient.METHOD_PATCH, payload)
+
+func _cancel_door_drag() -> void:
+    if not _door_dragging or selected_object == null:
+        _door_dragging = false
+        return
+    var asset_id: String = selected_object.get_meta("asset_id", "")
+    var asset = Catalog.assets.get(asset_id, {})
+    if _door_drag_start_offset.x == 0 and _door_drag_start_offset.y == int(asset.get("footprint_bottom", 0)) + 1:
+        # Started from the placeholder default — restore "unset."
+        asset["door_offset_x"] = null
+        asset["door_offset_y"] = null
+    else:
+        asset["door_offset_x"] = int(_door_drag_start_offset.x)
+        asset["door_offset_y"] = int(_door_drag_start_offset.y)
+    Catalog.assets[asset_id] = asset
+    refresh_door_marker()
+    _door_dragging = false
+
 func _delete_selected() -> void:
     if selected_object == null:
         return
     _remove_selection_border()
+    _remove_door_marker()
     world.remove_object(selected_object)
     selected_object = null
     object_deselected.emit()
