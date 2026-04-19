@@ -271,6 +271,20 @@ func _on_left_press(screen_pos: Vector2) -> void:
                     left_click_used = true
                     get_viewport().set_input_as_handled()
                     return
+                # No NPC hit — check for an object hit so the user can
+                # switch selection from a villager to a structure without
+                # needing right-click/Esc first. _select_object deselects
+                # the NPC internally.
+                var obj_hit_sel = _find_object_at(screen_pos)
+                if obj_hit_sel != null:
+                    _select_object(obj_hit_sel)
+                    _drag_pending = true
+                    _drag_mouse_start = screen_pos
+                    _drag_start_world = _screen_to_world(screen_pos)
+                    _drag_start_obj_pos = obj_hit_sel.position
+                    left_click_used = true
+                    get_viewport().set_input_as_handled()
+                    return
                 # Empty space with an NPC selected: defer the walk-to
                 # command until mouse release so the user can left-drag the
                 # map to pan without triggering a walk. Leave left_click_used
