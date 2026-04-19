@@ -374,7 +374,10 @@ func _on_npc_select_requested(npc_id: String) -> void:
         return
     var container: Node2D = world.placed_npcs[npc_id]
     editor._select_npc(container)
-    camera.center_on(container.position)
+    # global_position rather than position so we don't miss any parent
+    # transform (Objects node, y-sort, etc) that would make raw position
+    # local-only.
+    camera.center_on(container.global_position)
 
 func _on_npc_go_home_requested() -> void:
     _post_npc_action("go-home")
