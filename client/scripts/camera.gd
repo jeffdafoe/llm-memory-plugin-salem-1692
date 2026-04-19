@@ -107,6 +107,14 @@ func _input(event: InputEvent) -> void:
 
     # Pan motion
     if event is InputEventMouseMotion and _panning:
+        # Safeguard: if the release event got eaten by a higher-priority
+        # handler (e.g. a UI button press consuming the mouseup) and left
+        # _panning wedged true, the button_mask on subsequent motion events
+        # is still 0 — meaning no button is actually held. Clear the flag
+        # and bail so the map doesn't pan without user input.
+        if event.button_mask == 0:
+            _panning = false
+            return
         var delta: Vector2 = event.position - _pan_start
         _pan_start = event.position
         position -= delta / zoom
