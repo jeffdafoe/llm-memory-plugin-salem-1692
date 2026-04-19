@@ -284,6 +284,13 @@ func _on_asset_stand_updated(data: Dictionary) -> void:
         asset["stand_offset_x"] = int(x)
         asset["stand_offset_y"] = int(y)
     Catalog.assets[asset_id] = asset
+    # Nudge the editor's stand marker when the affected asset is selected
+    # on this client too — reconciles a concurrent admin's drag.
+    var editor = get_node_or_null("/root/Main/Editor")
+    if editor != null and editor.selected_object != null:
+        if editor.selected_object.get_meta("asset_id", "") == asset_id:
+            if editor.has_method("refresh_stand_marker"):
+                editor.refresh_stand_marker()
     if world == null:
         return
     for npc_id in world.placed_npcs:

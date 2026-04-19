@@ -67,6 +67,14 @@ var _npc_walk_start_screen: Vector2 = Vector2.ZERO
 
 var _door_marker: Node2D = null
 var _door_marker_asset_id: String = ""
+# Stand marker — orange counterpart to the blue door marker. Only shown
+# when the asset is enterable AND visible_when_inside (market-stall style
+# structures where the NPC renders inside the footprint). Falls back to
+# the door position when stand_offset is unset.
+var _stand_marker: Node2D = null
+var _stand_marker_asset_id: String = ""
+var _stand_dragging: bool = false
+var _stand_drag_start_offset: Vector2 = Vector2.ZERO
 var _door_dragging: bool = false
 var _door_drag_start_offset: Vector2 = Vector2.ZERO  # tile offset (could be -Inf,-Inf for "none")
 
@@ -145,6 +153,19 @@ func _input(event: InputEvent) -> void:
             get_viewport().set_input_as_handled()
         if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
             _cancel_door_drag()
+            get_viewport().set_input_as_handled()
+        return
+
+    # Stand marker drag — same pattern as door, independent state.
+    if _stand_dragging:
+        if event is InputEventMouseMotion:
+            _stand_drag_motion(event.position)
+            get_viewport().set_input_as_handled()
+        if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and not event.pressed:
+            _commit_stand_drag()
+            get_viewport().set_input_as_handled()
+        if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
+            _cancel_stand_drag()
             get_viewport().set_input_as_handled()
         return
 
@@ -296,6 +317,14 @@ func _on_left_press(screen_pos: Vector2) -> void:
             # so the marker stays reachable when it overlaps a border.
             if selected_object != null and _hit_test_door_marker(screen_pos):
                 _begin_door_drag(screen_pos)
+                left_click_used = true
+                get_viewport().set_input_as_handled()
+                return
+
+            # Stand marker has the same priority rules as the door marker —
+            # a click on it starts a drag before any other interpretation.
+            if selected_object != null and _hit_test_stand_marker(screen_pos):
+                _begin_stand_drag(screen_pos)
                 left_click_used = true
                 get_viewport().set_input_as_handled()
                 return
@@ -603,6 +632,7 @@ func _select_object(node: Node2D) -> void:
     selected_object = node
     _add_selection_border(node)
     _add_door_marker(node)
+    _add_stand_marker(node)
     object_selected.emit({
         "asset_id": node.get_meta("asset_id", ""),
         "object_id": node.get_meta("object_id", ""),
@@ -615,6 +645,7 @@ func _deselect() -> void:
     if selected_object != null:
         _remove_selection_border()
         _remove_door_marker()
+        _remove_stand_marker()
         selected_object = null
         object_deselected.emit()
 
@@ -1115,6 +1146,161 @@ func _commit_door_drag() -> void:
     http.request(Auth.api_base + "/api/assets/" + asset_id + "/door",
         headers, HTTPClient.METHOD_PATCH, payload)
 
+## Stand marker — orange per-asset render position for NPCs inside a
+## visible_when_inside structure. The pattern mirrors the door marker
+## (add/remove/refresh/hit-test/drag/commit/cancel) so the two are
+## predictable side-by-side, with independent drag state.
+
+func _add_stand_marker(node: Node2D) -> void:
+    _remove_stand_marker()
+    var asset_id: String = node.get_meta("asset_id", "")
+    var asset = Catalog.assets.get(asset_id, {})
+    # Only meaningful for see-through structures. Enterable gate keeps it
+    # aligned with the door marker's visibility rules — no stand without
+    # a way in.
+    if not bool(asset.get("enterable", false)):
+        return
+    if not bool(asset.get("visible_when_inside", false)):
+        return
+
+    _stand_marker_asset_id = asset_id
+    _stand_marker = Node2D.new()
+    _stand_marker.name = "StandMarker"
+    _stand_marker.z_index = 1001  # one above the door marker
+    node.add_child(_stand_marker)
+
+    var offset_tiles: Vector2 = _current_stand_offset_tiles(asset, node)
+    _stand_marker.position = _door_marker_local_from_tile_offset(node, offset_tiles)
+    _draw_stand_marker_contents(asset)
+
+func refresh_stand_marker() -> void:
+    if selected_object == null or _stand_marker == null:
+        return
+    if _stand_dragging:
+        return
+    var asset_id: String = selected_object.get_meta("asset_id", "")
+    var asset = Catalog.assets.get(asset_id, {})
+    var offset_tiles: Vector2 = _current_stand_offset_tiles(asset, selected_object)
+    _stand_marker.position = _door_marker_local_from_tile_offset(selected_object, offset_tiles)
+    for child in _stand_marker.get_children():
+        child.queue_free()
+    _draw_stand_marker_contents(asset)
+
+## Default when unset: fall back to the door offset so the marker starts
+## somewhere sensible (usually the walkable entry tile). Admin drags it
+## to the desired render tile, typically deeper into the footprint.
+func _current_stand_offset_tiles(asset: Dictionary, node: Node2D) -> Vector2:
+    var sx = asset.get("stand_offset_x", null)
+    var sy = asset.get("stand_offset_y", null)
+    if sx == null or sy == null:
+        return _current_door_offset_tiles(asset, node)
+    return Vector2(int(sx), int(sy))
+
+func _draw_stand_marker_contents(_asset: Dictionary) -> void:
+    if _stand_marker == null:
+        return
+    var half: float = TILE_SIZE / 2.0 - 2.0
+    # Orange — distinct from the blue door marker. Slight transparency so
+    # the tile underneath still reads.
+    var fill := Polygon2D.new()
+    fill.color = Color(1.0, 0.6, 0.15, 0.85)
+    fill.polygon = PackedVector2Array([
+        Vector2(-half, -half),
+        Vector2( half, -half),
+        Vector2( half,  half),
+        Vector2(-half,  half),
+    ])
+    _stand_marker.add_child(fill)
+    var outline := Line2D.new()
+    outline.width = 2.0
+    outline.default_color = Color(0.85, 0.4, 0.1, 1.0)
+    outline.closed = true
+    outline.add_point(Vector2(-half, -half))
+    outline.add_point(Vector2( half, -half))
+    outline.add_point(Vector2( half,  half))
+    outline.add_point(Vector2(-half,  half))
+    _stand_marker.add_child(outline)
+
+func _remove_stand_marker() -> void:
+    if _stand_marker != null:
+        _stand_marker.queue_free()
+        _stand_marker = null
+    _stand_marker_asset_id = ""
+    _stand_dragging = false
+
+func _hit_test_stand_marker(screen_pos: Vector2) -> bool:
+    if _stand_marker == null or selected_object == null:
+        return false
+    var world_pos: Vector2 = _screen_to_world(screen_pos)
+    var marker_world: Vector2 = selected_object.position + _stand_marker.position
+    var half: float = TILE_SIZE / 2.0
+    return abs(world_pos.x - marker_world.x) <= half and abs(world_pos.y - marker_world.y) <= half
+
+func _begin_stand_drag(_screen_pos: Vector2) -> void:
+    _stand_dragging = true
+    var asset_id: String = selected_object.get_meta("asset_id", "")
+    var asset = Catalog.assets.get(asset_id, {})
+    _stand_drag_start_offset = _current_stand_offset_tiles(asset, selected_object)
+
+func _stand_drag_motion(screen_pos: Vector2) -> void:
+    if not _stand_dragging or selected_object == null or _stand_marker == null:
+        return
+    var world_pos: Vector2 = _screen_to_world(screen_pos)
+    var anchor_tile_x: int = int(floor(selected_object.position.x / TILE_SIZE))
+    var anchor_tile_y: int = int(floor(selected_object.position.y / TILE_SIZE))
+    var target_tile_x: int = int(floor(world_pos.x / TILE_SIZE))
+    var target_tile_y: int = int(floor(world_pos.y / TILE_SIZE))
+    var offset_tiles := Vector2(target_tile_x - anchor_tile_x, target_tile_y - anchor_tile_y)
+    _stand_marker.position = _door_marker_local_from_tile_offset(selected_object, offset_tiles)
+    var asset_id: String = selected_object.get_meta("asset_id", "")
+    var asset = Catalog.assets.get(asset_id, {})
+    asset["stand_offset_x"] = int(offset_tiles.x)
+    asset["stand_offset_y"] = int(offset_tiles.y)
+    Catalog.assets[asset_id] = asset
+    for child in _stand_marker.get_children():
+        child.queue_free()
+    _draw_stand_marker_contents(asset)
+
+func _commit_stand_drag() -> void:
+    if not _stand_dragging or selected_object == null:
+        _stand_dragging = false
+        return
+    _stand_dragging = false
+    var asset_id: String = selected_object.get_meta("asset_id", "")
+    var asset = Catalog.assets.get(asset_id, {})
+    var sx = asset.get("stand_offset_x", null)
+    var sy = asset.get("stand_offset_y", null)
+    if sx == null or sy == null:
+        return
+    if Vector2(int(sx), int(sy)) == _stand_drag_start_offset:
+        return
+    var payload = JSON.stringify({"x": int(sx), "y": int(sy)})
+    var http := HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    http.request_completed.connect(func(_r, c, _h, _b):
+        http.queue_free()
+        Auth.check_response(c)
+    )
+    var headers := ["Content-Type: application/json"]
+    var auth_header: String = Auth.get_auth_header()
+    if auth_header != "":
+        headers.append("Authorization: " + auth_header)
+    http.request(Auth.api_base + "/api/assets/" + asset_id + "/stand",
+        headers, HTTPClient.METHOD_PATCH, payload)
+
+func _cancel_stand_drag() -> void:
+    if not _stand_dragging or selected_object == null:
+        _stand_dragging = false
+        return
+    var asset_id: String = selected_object.get_meta("asset_id", "")
+    var asset = Catalog.assets.get(asset_id, {})
+    asset["stand_offset_x"] = int(_stand_drag_start_offset.x)
+    asset["stand_offset_y"] = int(_stand_drag_start_offset.y)
+    Catalog.assets[asset_id] = asset
+    refresh_stand_marker()
+    _stand_dragging = false
+
 func _cancel_door_drag() -> void:
     if not _door_dragging or selected_object == null:
         _door_dragging = false
@@ -1137,6 +1323,7 @@ func _delete_selected() -> void:
         return
     _remove_selection_border()
     _remove_door_marker()
+    _remove_stand_marker()
     world.remove_object(selected_object)
     selected_object = null
     object_deselected.emit()
