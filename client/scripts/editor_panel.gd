@@ -604,14 +604,24 @@ func _ready() -> void:
     offset_row.add_theme_constant_override("separation", 6)
     _npc_schedule_section.add_child(offset_row)
     var offset_lbl = Label.new()
-    offset_lbl.text = "Offset (h)"
+    # Label names what this actually controls in user terms: how many
+    # minutes the worker arrives after sunrise and leaves before sunset.
+    # Negative values widen the workday past sunrise / sunset. The old
+    # label "Offset (h)" was too cryptic about both the unit and the
+    # semantics.
+    offset_lbl.text = "Sunrise/sunset offset (min)"
     offset_lbl.add_theme_color_override("font_color", COLOR_TEXT_DIM)
     offset_lbl.add_theme_font_size_override("font_size", 11)
+    offset_lbl.tooltip_text = "Positive = arrive later after sunrise, leave earlier before sunset (trims the workday). Negative = widen the workday past sunrise/sunset. 0 = full sunrise-to-sunset shift. Steps in 15-minute increments, but you can type any value."
     offset_row.add_child(offset_lbl)
     _npc_offset_spin = SpinBox.new()
-    _npc_offset_spin.min_value = -23
-    _npc_offset_spin.max_value = 23
-    _npc_offset_spin.step = 1
+    # Minutes since ZBBS-066. Range is ±23h in minutes. Step 15 so the
+    # spinner arrows jump in quarter-hour increments (Jeff's primary use
+    # case is Ezekiel arriving 15 min after sunrise and leaving 15 min
+    # before sunset). Users can still type any integer minute value.
+    _npc_offset_spin.min_value = -1380
+    _npc_offset_spin.max_value = 1380
+    _npc_offset_spin.step = 15
     # Commit on each keystroke so value_changed fires on every edit —
     # matches the auto-save-on-change pattern used by the behavior /
     # home / work pickers so admins don't need to remember a Save button.
@@ -1554,7 +1564,7 @@ func show_npc_selection(info: Dictionary) -> void:
     # Schedule fields — offset always populated; cadence fields populated
     # only when all three are non-null (schedule_all_or_none in DB).
     if _npc_offset_spin != null:
-        _npc_offset_spin.value = int(info.get("schedule_offset_hours", 0))
+        _npc_offset_spin.value = int(info.get("schedule_offset_minutes", 0))
     var interval_raw = info.get("schedule_interval_hours", null)
     var start_raw = info.get("active_start_hour", null)
     var end_raw = info.get("active_end_hour", null)

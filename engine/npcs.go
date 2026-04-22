@@ -72,10 +72,12 @@ type NPC struct {
 	// Used to drive occupancy-sensitive state flipping (market stall
 	// open/closed) and future "who's in this building" UIs.
 	InsideStructureID *string  `json:"inside_structure_id"`
-	// ScheduleOffsetHours is the per-NPC offset off the world boundary.
-	// Only the worker behavior reads it today (shifts arrive/leave off
-	// dawn/dusk). See npc_scheduler.go for full interpretation.
-	ScheduleOffsetHours int `json:"schedule_offset_hours"`
+	// ScheduleOffsetMinutes is the per-NPC offset off the world boundary,
+	// in minutes. Only the worker behavior reads it today (shifts
+	// arrive/leave off dawn/dusk). See npc_scheduler.go for interpretation.
+	// ZBBS-064 shipped this as hours; ZBBS-066 widened to minutes so
+	// half/quarter-hour shifts work.
+	ScheduleOffsetMinutes int `json:"schedule_offset_minutes"`
 	// ScheduleIntervalHours + ActiveStartHour + ActiveEndHour are the
 	// per-NPC cadence knobs for interval behaviors (washerwoman,
 	// town_crier). All three must be set together or all three left null
@@ -186,7 +188,7 @@ func (app *App) handleListNPCs(w http.ResponseWriter, r *http.Request) {
 		`SELECT id, display_name, sprite_id, home_x, home_y,
 		        current_x, current_y, facing, behavior, llm_memory_agent,
 		        home_structure_id, work_structure_id, inside, inside_structure_id,
-		        schedule_offset_hours, schedule_interval_hours,
+		        schedule_offset_minutes, schedule_interval_hours,
 		        active_start_hour, active_end_hour
 		 FROM npc
 		 ORDER BY display_name`,
@@ -203,7 +205,7 @@ func (app *App) handleListNPCs(w http.ResponseWriter, r *http.Request) {
 		if err := npcRows.Scan(&n.ID, &n.DisplayName, &n.SpriteID,
 			&n.HomeX, &n.HomeY, &n.CurrentX, &n.CurrentY, &n.Facing, &n.Behavior, &n.LLMMemoryAgent,
 			&n.HomeStructureID, &n.WorkStructureID, &n.Inside, &n.InsideStructureID,
-			&n.ScheduleOffsetHours, &n.ScheduleIntervalHours,
+			&n.ScheduleOffsetMinutes, &n.ScheduleIntervalHours,
 			&n.ActiveStartHour, &n.ActiveEndHour); err != nil {
 			continue
 		}
@@ -540,8 +542,9 @@ func (app *App) handleSetNPCAgent(w http.ResponseWriter, r *http.Request) {
 // handleSetNPCSchedule updates the per-NPC scheduling knobs in one atomic
 // PATCH. Admin only. Accepts:
 //
-//   schedule_offset_hours — required, int in [-23, 23]. Worker behavior
-//     reads this; others ignore.
+//   schedule_offset_minutes — required, int in [-1380, 1380] (±23h). Worker
+//     behavior reads this; others ignore. ZBBS-066 widened this from
+//     schedule_offset_hours so half/quarter-hour shifts work.
 //   schedule_interval_hours, active_start_hour, active_end_hour — all
 //     three or none. The DB CHECK constraint schedule_all_or_none
 //     enforces this; the handler pre-validates to return a clean 400.
@@ -562,7 +565,7 @@ func (app *App) handleSetNPCSchedule(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		ScheduleOffsetHours   *int `json:"schedule_offset_hours"`
+		ScheduleOffsetMinutes *int `json:"schedule_offset_minutes"`
 		ScheduleIntervalHours *int `json:"schedule_interval_hours"`
 		ActiveStartHour       *int `json:"active_start_hour"`
 		ActiveEndHour         *int `json:"active_end_hour"`
@@ -571,12 +574,12 @@ func (app *App) handleSetNPCSchedule(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
-	if req.ScheduleOffsetHours == nil {
-		jsonError(w, "schedule_offset_hours required", http.StatusBadRequest)
+	if req.ScheduleOffsetMinutes == nil {
+		jsonError(w, "schedule_offset_minutes required", http.StatusBadRequest)
 		return
 	}
-	if *req.ScheduleOffsetHours < -23 || *req.ScheduleOffsetHours > 23 {
-		jsonError(w, "schedule_offset_hours must be between -23 and 23", http.StatusBadRequest)
+	if *req.ScheduleOffsetMinutes < -1380 || *req.ScheduleOffsetMinutes > 1380 {
+		jsonError(w, "schedule_offset_minutes must be between -1380 and 1380", http.StatusBadRequest)
 		return
 	}
 	// All-or-none for the window triple.
@@ -609,13 +612,13 @@ func (app *App) handleSetNPCSchedule(w http.ResponseWriter, r *http.Request) {
 
 	result, err := app.DB.Exec(r.Context(),
 		`UPDATE npc SET
-		    schedule_offset_hours = $2,
+		    schedule_offset_minutes = $2,
 		    schedule_interval_hours = $3,
 		    active_start_hour = $4,
 		    active_end_hour = $5,
 		    last_shift_tick_at = NULL
 		 WHERE id = $1`,
-		id, *req.ScheduleOffsetHours,
+		id, *req.ScheduleOffsetMinutes,
 		req.ScheduleIntervalHours, req.ActiveStartHour, req.ActiveEndHour,
 	)
 	if err != nil {
@@ -630,7 +633,7 @@ func (app *App) handleSetNPCSchedule(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 	app.Hub.Broadcast(WorldEvent{Type: "npc_schedule_changed", Data: map[string]interface{}{
 		"id":                      id,
-		"schedule_offset_hours":   *req.ScheduleOffsetHours,
+		"schedule_offset_minutes": *req.ScheduleOffsetMinutes,
 		"schedule_interval_hours": req.ScheduleIntervalHours,
 		"active_start_hour":       req.ActiveStartHour,
 		"active_end_hour":         req.ActiveEndHour,
