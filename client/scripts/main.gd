@@ -329,9 +329,9 @@ func _on_npc_work_structure_changed(structure_id: String) -> void:
 ## Admin edited the schedule fields and hit Save. interval/start/end are
 ## -1 when the cadence checkbox is unchecked — world.set_npc_schedule maps
 ## those to null in the JSON payload.
-func _on_npc_schedule_changed(offset: int, interval: int, start_h: int, end_h: int) -> void:
+func _on_npc_schedule_changed(offset: int, interval: int, start_h: int, end_h: int, lateness: int) -> void:
     if editor.selected_npc != null:
-        world.set_npc_schedule(editor.selected_npc, offset, interval, start_h, end_h)
+        world.set_npc_schedule(editor.selected_npc, offset, interval, start_h, end_h, lateness)
 
 func _on_npc_home_assign_requested() -> void:
     editor.begin_assign_home()
@@ -458,6 +458,7 @@ func _on_npc_metadata_changed(npc_id: String) -> void:
         "home_structure_id": container.get_meta("home_structure_id", ""),
         "work_structure_id": container.get_meta("work_structure_id", ""),
         "schedule_offset_minutes": container.get_meta("schedule_offset_minutes", 0),
+        "lateness_window_minutes": container.get_meta("lateness_window_minutes", 0),
     }
     if container.has_meta("schedule_interval_hours"):
         info["schedule_interval_hours"] = container.get_meta("schedule_interval_hours")

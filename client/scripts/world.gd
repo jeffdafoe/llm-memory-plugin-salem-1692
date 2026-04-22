@@ -330,6 +330,7 @@ func apply_npc_schedule_change(data: Dictionary) -> void:
     if container == null:
         return
     container.set_meta("schedule_offset_minutes", int(data.get("schedule_offset_minutes", 0)))
+    container.set_meta("lateness_window_minutes", int(data.get("lateness_window_minutes", 0)))
     var interval = data.get("schedule_interval_hours", null)
     var start_h = data.get("active_start_hour", null)
     var end_h = data.get("active_end_hour", null)
@@ -464,6 +465,7 @@ func _render_npc(npc: Dictionary) -> void:
     container.set_meta("home_structure_id", npc.get("home_structure_id", ""))
     container.set_meta("work_structure_id", npc.get("work_structure_id", ""))
     container.set_meta("schedule_offset_minutes", int(npc.get("schedule_offset_minutes", 0)))
+    container.set_meta("lateness_window_minutes", int(npc.get("lateness_window_minutes", 0)))
     # interval/start/end are optional (all-or-none). Only set meta when the
     # server actually sent values so the editor panel can distinguish
     # "null cadence" from 0-valued cadence.
@@ -1342,11 +1344,15 @@ func set_npc_work_structure(container: Node2D, structure_id: String) -> void:
 ## Update the NPC's schedule in one atomic PATCH. interval/start/end are
 ## sent as null when their arguments are -1 (cadence disabled); otherwise
 ## as integers. The server's all-or-none CHECK guarantees consistent state.
-func set_npc_schedule(container: Node2D, offset: int, interval: int, start_h: int, end_h: int) -> void:
+## lateness is the per-NPC lateness_window_minutes (ZBBS-067).
+func set_npc_schedule(container: Node2D, offset: int, interval: int, start_h: int, end_h: int, lateness: int) -> void:
     var npc_id = container.get_meta("npc_id", null)
     if npc_id == null:
         return
-    var payload: Dictionary = {"schedule_offset_minutes": offset}
+    var payload: Dictionary = {
+        "schedule_offset_minutes": offset,
+        "lateness_window_minutes": lateness,
+    }
     if interval >= 0:
         payload["schedule_interval_hours"] = interval
         payload["active_start_hour"] = start_h
@@ -1356,6 +1362,7 @@ func set_npc_schedule(container: Node2D, offset: int, interval: int, start_h: in
         payload["active_start_hour"] = null
         payload["active_end_hour"] = null
     container.set_meta("schedule_offset_minutes", offset)
+    container.set_meta("lateness_window_minutes", lateness)
     if interval >= 0:
         container.set_meta("schedule_interval_hours", interval)
         container.set_meta("active_start_hour", start_h)

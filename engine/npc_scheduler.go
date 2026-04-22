@@ -34,9 +34,38 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/binary"
+	"hash/fnv"
 	"log"
 	"time"
 )
+
+// deterministicLatenessMinutes computes a per-boundary lateness offset in
+// [0, window) minutes. Asymmetric on purpose — the NPC fires at or after
+// the nominal boundary, never before — so the last_shift_tick_at stamp
+// (which records the nominal boundary) still monotonically trails the
+// actual dispatch.
+//
+// The offset is a function of (npc_id, boundary_unix) so it's stable
+// across ticks and across server restarts. Without stability the NPC
+// would re-roll every tick and never cross its own lateness threshold
+// as clock time advances.
+//
+// FNV-1a is plenty for this: not cryptographic, but well-distributed
+// enough that "each NPC rolls a different number for each boundary"
+// produces a visibly non-clockwork village.
+func deterministicLatenessMinutes(npcID string, boundary time.Time, windowMinutes int) int {
+	if windowMinutes <= 0 {
+		return 0
+	}
+	h := fnv.New64a()
+	h.Write([]byte(npcID))
+	h.Write([]byte{0})
+	var ts [8]byte
+	binary.BigEndian.PutUint64(ts[:], uint64(boundary.Unix()))
+	h.Write(ts[:])
+	return int(h.Sum64() % uint64(windowMinutes))
+}
 
 const behaviorWorker = "worker"
 
@@ -80,9 +109,12 @@ func (app *App) dispatchScheduledBehaviors(ctx context.Context) {
 // workerRow bundles everything the worker scheduler needs to decide whether
 // to dispatch this tick. Door coords are pre-resolved server-side via the
 // same COALESCE chain go-home / go-to-work use. ScheduleOffset is minutes.
+// LatenessWindow is the ±fuzz window for when the NPC actually fires
+// relative to the nominal boundary (ZBBS-067).
 type workerRow struct {
 	ID                    string
 	ScheduleOffsetMinutes int
+	LatenessWindow        int
 	LastShiftTickAt       sql.NullTime
 	InsideStructureID     sql.NullString
 	CurrentX              float64
@@ -102,7 +134,8 @@ type workerRow struct {
 // can't walk a shift until an admin fills them in.
 func (app *App) loadWorkerRows(ctx context.Context) ([]workerRow, error) {
 	rows, err := app.DB.Query(ctx,
-		`SELECT n.id, n.schedule_offset_minutes, n.last_shift_tick_at,
+		`SELECT n.id, n.schedule_offset_minutes, n.lateness_window_minutes,
+		        n.last_shift_tick_at,
 		        n.inside_structure_id, n.current_x, n.current_y,
 		        n.home_structure_id,
 		        COALESCE(hs.x + ha.door_offset_x * 32.0, hs.x),
@@ -126,7 +159,8 @@ func (app *App) loadWorkerRows(ctx context.Context) ([]workerRow, error) {
 	var out []workerRow
 	for rows.Next() {
 		var w workerRow
-		if err := rows.Scan(&w.ID, &w.ScheduleOffsetMinutes, &w.LastShiftTickAt,
+		if err := rows.Scan(&w.ID, &w.ScheduleOffsetMinutes, &w.LatenessWindow,
+			&w.LastShiftTickAt,
 			&w.InsideStructureID, &w.CurrentX, &w.CurrentY,
 			&w.HomeStructureID, &w.HomeDoorX, &w.HomeDoorY,
 			&w.WorkStructureID, &w.WorkDoorX, &w.WorkDoorY); err != nil {
@@ -197,12 +231,24 @@ func mostRecentWorkerBoundary(now time.Time, dawnH, dawnM, duskH, duskM, offsetM
 // The dispatch is skipped (but the boundary is still stamped) when the NPC
 // is already inside the target structure — a fresh restart with NPCs
 // correctly parked shouldn't walk them in place.
+//
+// Lateness window (ZBBS-067): when w.LatenessWindow > 0, the NPC waits
+// a deterministic offset past the nominal boundary before firing. The
+// stamp still records the nominal boundary, so once we've fired we
+// stay idempotent exactly like the zero-lateness case.
 func (app *App) evaluateWorkerSchedule(ctx context.Context, w *workerRow, now time.Time, dawnH, dawnM, duskH, duskM int) {
 	boundaryAt, kind := mostRecentWorkerBoundary(now, dawnH, dawnM, duskH, duskM, w.ScheduleOffsetMinutes)
 	if boundaryAt.IsZero() {
 		return
 	}
 	if w.LastShiftTickAt.Valid && !w.LastShiftTickAt.Time.Before(boundaryAt) {
+		return
+	}
+	// Hold off until the nominal boundary plus the per-NPC lateness
+	// offset. Don't stamp yet — we haven't acted on this boundary.
+	lateMinutes := deterministicLatenessMinutes(w.ID, boundaryAt, w.LatenessWindow)
+	effectiveAt := boundaryAt.Add(time.Duration(lateMinutes) * time.Minute)
+	if now.Before(effectiveAt) {
 		return
 	}
 
@@ -242,12 +288,13 @@ func (app *App) evaluateWorkerSchedule(ctx context.Context, w *workerRow, now ti
 // fields) aren't returned and fall back to the legacy world_rotation_time
 // trigger via applyRotation.
 type rotationRow struct {
-	ID                    string
-	Behavior              string
-	ScheduleInterval      int
-	ActiveStartHour       int
-	ActiveEndHour         int
-	LastShiftTickAt       sql.NullTime
+	ID               string
+	Behavior         string
+	ScheduleInterval int
+	ActiveStartHour  int
+	ActiveEndHour    int
+	LatenessWindow   int
+	LastShiftTickAt  sql.NullTime
 }
 
 // loadCustomScheduledRotationNPCs returns every washerwoman / town_crier
@@ -257,7 +304,7 @@ type rotationRow struct {
 func (app *App) loadCustomScheduledRotationNPCs(ctx context.Context) ([]rotationRow, error) {
 	rows, err := app.DB.Query(ctx,
 		`SELECT id, behavior, schedule_interval_hours, active_start_hour,
-		        active_end_hour, last_shift_tick_at
+		        active_end_hour, lateness_window_minutes, last_shift_tick_at
 		 FROM npc
 		 WHERE behavior IN ($1, $2)
 		   AND schedule_interval_hours IS NOT NULL`,
@@ -272,7 +319,8 @@ func (app *App) loadCustomScheduledRotationNPCs(ctx context.Context) ([]rotation
 	for rows.Next() {
 		var r rotationRow
 		if err := rows.Scan(&r.ID, &r.Behavior, &r.ScheduleInterval,
-			&r.ActiveStartHour, &r.ActiveEndHour, &r.LastShiftTickAt); err != nil {
+			&r.ActiveStartHour, &r.ActiveEndHour, &r.LatenessWindow,
+			&r.LastShiftTickAt); err != nil {
 			log.Printf("scheduler: scan rotation row: %v", err)
 			continue
 		}
@@ -331,6 +379,13 @@ func (app *App) evaluateRotationSchedule(ctx context.Context, r *rotationRow, no
 		return
 	}
 	if r.LastShiftTickAt.Valid && !r.LastShiftTickAt.Time.Before(boundaryAt) {
+		return
+	}
+	// Same lateness treatment as worker (ZBBS-067): hold until the
+	// nominal firing plus a deterministic per-boundary offset.
+	lateMinutes := deterministicLatenessMinutes(r.ID, boundaryAt, r.LatenessWindow)
+	effectiveAt := boundaryAt.Add(time.Duration(lateMinutes) * time.Minute)
+	if now.Before(effectiveAt) {
 		return
 	}
 
