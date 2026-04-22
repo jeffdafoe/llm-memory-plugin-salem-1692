@@ -11,8 +11,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // NPCSprite describes a character sprite sheet. One row = one character
@@ -83,9 +86,15 @@ type NPC struct {
 	// town_crier). All three must be set together or all three left null
 	// (enforced at the DB level). Null falls back to the legacy
 	// world_rotation_time trigger for those behaviors.
-	ScheduleIntervalHours *int       `json:"schedule_interval_hours"`
-	ActiveStartHour       *int       `json:"active_start_hour"`
-	ActiveEndHour         *int       `json:"active_end_hour"`
+	ScheduleIntervalHours *int `json:"schedule_interval_hours"`
+	ActiveStartHour       *int `json:"active_start_hour"`
+	ActiveEndHour         *int `json:"active_end_hour"`
+	// LatenessWindowMinutes fuzzes scheduled behavior firing times in
+	// an asymmetric window after the nominal boundary. The per-boundary
+	// offset is deterministic (hash of npc_id + boundary) so it's
+	// stable across ticks and restarts. 0 = deterministic boundary
+	// firing (ZBBS-064 behavior). Capped at 180.
+	LatenessWindowMinutes int        `json:"lateness_window_minutes"`
 	Sprite                *NPCSprite `json:"sprite,omitempty"`
 }
 
@@ -189,7 +198,8 @@ func (app *App) handleListNPCs(w http.ResponseWriter, r *http.Request) {
 		        current_x, current_y, facing, behavior, llm_memory_agent,
 		        home_structure_id, work_structure_id, inside, inside_structure_id,
 		        schedule_offset_minutes, schedule_interval_hours,
-		        active_start_hour, active_end_hour
+		        active_start_hour, active_end_hour,
+		        lateness_window_minutes
 		 FROM npc
 		 ORDER BY display_name`,
 	)
@@ -206,7 +216,8 @@ func (app *App) handleListNPCs(w http.ResponseWriter, r *http.Request) {
 			&n.HomeX, &n.HomeY, &n.CurrentX, &n.CurrentY, &n.Facing, &n.Behavior, &n.LLMMemoryAgent,
 			&n.HomeStructureID, &n.WorkStructureID, &n.Inside, &n.InsideStructureID,
 			&n.ScheduleOffsetMinutes, &n.ScheduleIntervalHours,
-			&n.ActiveStartHour, &n.ActiveEndHour); err != nil {
+			&n.ActiveStartHour, &n.ActiveEndHour,
+			&n.LatenessWindowMinutes); err != nil {
 			continue
 		}
 		if s, ok := sprites[n.SpriteID]; ok {
@@ -569,6 +580,7 @@ func (app *App) handleSetNPCSchedule(w http.ResponseWriter, r *http.Request) {
 		ScheduleIntervalHours *int `json:"schedule_interval_hours"`
 		ActiveStartHour       *int `json:"active_start_hour"`
 		ActiveEndHour         *int `json:"active_end_hour"`
+		LatenessWindowMinutes *int `json:"lateness_window_minutes"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, "Invalid request body", http.StatusBadRequest)
@@ -581,6 +593,15 @@ func (app *App) handleSetNPCSchedule(w http.ResponseWriter, r *http.Request) {
 	if *req.ScheduleOffsetMinutes < -1380 || *req.ScheduleOffsetMinutes > 1380 {
 		jsonError(w, "schedule_offset_minutes must be between -1380 and 1380", http.StatusBadRequest)
 		return
+	}
+	// lateness_window_minutes is optional on PATCH — a client can omit it
+	// to keep the current value. Default for new NPCs is 0 (DB default).
+	// When provided, range-check against the same bounds the DB enforces.
+	if req.LatenessWindowMinutes != nil {
+		if *req.LatenessWindowMinutes < 0 || *req.LatenessWindowMinutes > 180 {
+			jsonError(w, "lateness_window_minutes must be between 0 and 180", http.StatusBadRequest)
+			return
+		}
 	}
 	// All-or-none for the window triple.
 	cadenceSet := 0
@@ -610,23 +631,32 @@ func (app *App) handleSetNPCSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result, err := app.DB.Exec(r.Context(),
+	// COALESCE on lateness_window_minutes lets a PATCH that omits the
+	// field keep the existing value — existing clients that only send
+	// the schedule-triple continue to work unchanged. RETURNING reads
+	// back the effective value so the broadcast carries ground truth
+	// for every field.
+	var effectiveLateness int
+	err := app.DB.QueryRow(r.Context(),
 		`UPDATE npc SET
 		    schedule_offset_minutes = $2,
 		    schedule_interval_hours = $3,
 		    active_start_hour = $4,
 		    active_end_hour = $5,
+		    lateness_window_minutes = COALESCE($6, lateness_window_minutes),
 		    last_shift_tick_at = NULL
-		 WHERE id = $1`,
+		 WHERE id = $1
+		 RETURNING lateness_window_minutes`,
 		id, *req.ScheduleOffsetMinutes,
 		req.ScheduleIntervalHours, req.ActiveStartHour, req.ActiveEndHour,
-	)
+		req.LatenessWindowMinutes,
+	).Scan(&effectiveLateness)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			jsonError(w, "NPC not found", http.StatusNotFound)
+			return
+		}
 		jsonError(w, "Failed to update schedule", http.StatusInternalServerError)
-		return
-	}
-	if result.RowsAffected() == 0 {
-		jsonError(w, "NPC not found", http.StatusNotFound)
 		return
 	}
 
@@ -637,6 +667,7 @@ func (app *App) handleSetNPCSchedule(w http.ResponseWriter, r *http.Request) {
 		"schedule_interval_hours": req.ScheduleIntervalHours,
 		"active_start_hour":       req.ActiveStartHour,
 		"active_end_hour":         req.ActiveEndHour,
+		"lateness_window_minutes": effectiveLateness,
 	}})
 }
 

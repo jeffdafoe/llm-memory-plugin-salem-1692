@@ -19,7 +19,7 @@ signal npc_work_structure_changed(structure_id: String)
 # Combined schedule change — all four fields sent together. interval/start/end
 # are -1 to mean "null" (legacy / no cadence); offset is always an integer.
 # The handler maps -1 back to null in the PATCH payload.
-signal npc_schedule_changed(offset: int, interval: int, start: int, end: int)
+signal npc_schedule_changed(offset: int, interval: int, start: int, end: int, lateness: int)
 signal npc_home_assign_requested
 signal npc_work_assign_requested
 signal npc_run_cycle_requested
@@ -114,6 +114,7 @@ var _npc_go_to_work_button: Button = null
 # the Save button press — avoids PATCH-per-keystroke.
 var _npc_schedule_section: VBoxContainer = null
 var _npc_offset_spin: SpinBox = null
+var _npc_lateness_spin: SpinBox = null
 var _npc_cadence_check: CheckBox = null
 var _npc_interval_spin: SpinBox = null
 var _npc_start_spin: SpinBox = null
@@ -622,13 +623,38 @@ func _ready() -> void:
     _npc_offset_spin.min_value = -1380
     _npc_offset_spin.max_value = 1380
     _npc_offset_spin.step = 15
-    # Commit on each keystroke so value_changed fires on every edit —
-    # matches the auto-save-on-change pattern used by the behavior /
-    # home / work pickers so admins don't need to remember a Save button.
-    _npc_offset_spin.update_on_text_changed = true
+    # NOT update_on_text_changed: with step=15 Godot rounds the value on
+    # every keystroke, so typing "15" collapses to 0 after the "1" lands
+    # before the "5" can. Value commits on Enter / blur instead — the
+    # conventional behavior for a numeric text field. Other schedule
+    # SpinBoxes keep update_on_text_changed because their step is 1 (no
+    # rounding mid-type).
     _npc_offset_spin.value_changed.connect(_on_schedule_field_changed)
     _npc_offset_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     offset_row.add_child(_npc_offset_spin)
+
+    # Lateness window — fuzzes the actual firing time within [nominal,
+    # nominal+window) minutes. Per-NPC, per-boundary offset is
+    # deterministic (seeded by NPC id + boundary) so the village feels
+    # organic but any single NPC stays predictable across restarts.
+    var lateness_row = HBoxContainer.new()
+    lateness_row.add_theme_constant_override("separation", 6)
+    _npc_schedule_section.add_child(lateness_row)
+    var lateness_lbl = Label.new()
+    lateness_lbl.text = "Lateness window (min)"
+    lateness_lbl.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+    lateness_lbl.add_theme_font_size_override("font_size", 11)
+    lateness_lbl.tooltip_text = "Fuzzes the actual fire time within [nominal, nominal+window) minutes. 0 = always fires exactly at the nominal boundary. 30 = NPC fires 0-29 min after nominal, always late, never early. Offset is seeded by NPC id + boundary so it's stable across ticks and server restarts."
+    lateness_row.add_child(lateness_lbl)
+    _npc_lateness_spin = SpinBox.new()
+    _npc_lateness_spin.min_value = 0
+    _npc_lateness_spin.max_value = 180
+    _npc_lateness_spin.step = 15
+    # Same as offset SpinBox: no update_on_text_changed because step>1
+    # would clobber typing mid-edit.
+    _npc_lateness_spin.value_changed.connect(_on_schedule_field_changed)
+    _npc_lateness_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    lateness_row.add_child(_npc_lateness_spin)
 
     _npc_cadence_check = CheckBox.new()
     _npc_cadence_check.text = "Use cadence window"
@@ -1219,6 +1245,7 @@ func _emit_schedule_changed() -> void:
     if _ignoring_npc_inputs:
         return
     var offset: int = int(_npc_offset_spin.value)
+    var lateness: int = int(_npc_lateness_spin.value) if _npc_lateness_spin != null else 0
     var interval: int = -1
     var start_h: int = -1
     var end_h: int = -1
@@ -1226,7 +1253,7 @@ func _emit_schedule_changed() -> void:
         interval = int(_npc_interval_spin.value)
         start_h = int(_npc_start_spin.value)
         end_h = int(_npc_end_spin.value)
-    npc_schedule_changed.emit(offset, interval, start_h, end_h)
+    npc_schedule_changed.emit(offset, interval, start_h, end_h, lateness)
 
 func _on_npc_behavior_selected(index: int) -> void:
     if _ignoring_npc_inputs:
@@ -1565,6 +1592,8 @@ func show_npc_selection(info: Dictionary) -> void:
     # only when all three are non-null (schedule_all_or_none in DB).
     if _npc_offset_spin != null:
         _npc_offset_spin.value = int(info.get("schedule_offset_minutes", 0))
+    if _npc_lateness_spin != null:
+        _npc_lateness_spin.value = int(info.get("lateness_window_minutes", 0))
     var interval_raw = info.get("schedule_interval_hours", null)
     var start_raw = info.get("active_start_hour", null)
     var end_raw = info.get("active_end_hour", null)
