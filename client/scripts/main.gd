@@ -446,7 +446,7 @@ func _on_npc_metadata_changed(npc_id: String) -> void:
         return
     # Keep this in sync with editor._select_npc — show_npc_selection reads
     # whatever keys are present and defaults missing ones to 0 / null, so
-    # forgetting schedule_offset_hours here made the SpinBox reset to 0
+    # forgetting schedule_offset_minutes here made the SpinBox reset to 0
     # after every successful Save Schedule PATCH. Any new NPC field the
     # panel renders MUST be included here too.
     var container: Node2D = editor.selected_npc
@@ -457,7 +457,7 @@ func _on_npc_metadata_changed(npc_id: String) -> void:
         "llm_memory_agent": container.get_meta("llm_memory_agent", ""),
         "home_structure_id": container.get_meta("home_structure_id", ""),
         "work_structure_id": container.get_meta("work_structure_id", ""),
-        "schedule_offset_hours": container.get_meta("schedule_offset_hours", 0),
+        "schedule_offset_minutes": container.get_meta("schedule_offset_minutes", 0),
     }
     if container.has_meta("schedule_interval_hours"):
         info["schedule_interval_hours"] = container.get_meta("schedule_interval_hours")

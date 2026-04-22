@@ -696,7 +696,7 @@ func _select_npc(container: Node2D) -> void:
         "llm_memory_agent": container.get_meta("llm_memory_agent", ""),
         "home_structure_id": container.get_meta("home_structure_id", ""),
         "work_structure_id": container.get_meta("work_structure_id", ""),
-        "schedule_offset_hours": container.get_meta("schedule_offset_hours", 0),
+        "schedule_offset_minutes": container.get_meta("schedule_offset_minutes", 0),
     }
     if container.has_meta("schedule_interval_hours"):
         info["schedule_interval_hours"] = container.get_meta("schedule_interval_hours")

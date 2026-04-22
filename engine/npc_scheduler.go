@@ -5,9 +5,10 @@ package main
 // Runs every server tick (via runServerTickOnce) and walks every NPC whose
 // behavior opts into per-NPC scheduling:
 //
-//   worker: schedule_offset_hours shifts arrive/leave off dawn/dusk. Walks
-//     home → work door at arrive time, work → home door at leave time.
-//     Per-NPC; each worker has their own offset.
+//   worker: schedule_offset_minutes shifts arrive/leave off dawn/dusk.
+//     Walks home → work door at arrive time, work → home door at leave
+//     time. Per-NPC; each worker has their own offset. Minutes (not
+//     hours) since ZBBS-066 so quarter/half-hour shifts work.
 //
 //   washerwoman / town_crier: when schedule_interval_hours + active_start_hour
 //     + active_end_hour are all set on the NPC, fires at active_start_hour,
@@ -78,14 +79,14 @@ func (app *App) dispatchScheduledBehaviors(ctx context.Context) {
 
 // workerRow bundles everything the worker scheduler needs to decide whether
 // to dispatch this tick. Door coords are pre-resolved server-side via the
-// same COALESCE chain go-home / go-to-work use.
+// same COALESCE chain go-home / go-to-work use. ScheduleOffset is minutes.
 type workerRow struct {
-	ID                string
-	ScheduleOffset    int
-	LastShiftTickAt   sql.NullTime
-	InsideStructureID sql.NullString
-	CurrentX          float64
-	CurrentY          float64
+	ID                    string
+	ScheduleOffsetMinutes int
+	LastShiftTickAt       sql.NullTime
+	InsideStructureID     sql.NullString
+	CurrentX              float64
+	CurrentY              float64
 
 	HomeStructureID string
 	HomeDoorX       float64
@@ -101,7 +102,7 @@ type workerRow struct {
 // can't walk a shift until an admin fills them in.
 func (app *App) loadWorkerRows(ctx context.Context) ([]workerRow, error) {
 	rows, err := app.DB.Query(ctx,
-		`SELECT n.id, n.schedule_offset_hours, n.last_shift_tick_at,
+		`SELECT n.id, n.schedule_offset_minutes, n.last_shift_tick_at,
 		        n.inside_structure_id, n.current_x, n.current_y,
 		        n.home_structure_id,
 		        COALESCE(hs.x + ha.door_offset_x * 32.0, hs.x),
@@ -125,7 +126,7 @@ func (app *App) loadWorkerRows(ctx context.Context) ([]workerRow, error) {
 	var out []workerRow
 	for rows.Next() {
 		var w workerRow
-		if err := rows.Scan(&w.ID, &w.ScheduleOffset, &w.LastShiftTickAt,
+		if err := rows.Scan(&w.ID, &w.ScheduleOffsetMinutes, &w.LastShiftTickAt,
 			&w.InsideStructureID, &w.CurrentX, &w.CurrentY,
 			&w.HomeStructureID, &w.HomeDoorX, &w.HomeDoorY,
 			&w.WorkStructureID, &w.WorkDoorX, &w.WorkDoorY); err != nil {
@@ -148,24 +149,25 @@ const (
 // mostRecentWorkerBoundary returns the most recent arrive/leave boundary at
 // or before now for a worker with the given offset, plus which kind it was.
 //
-// Offset semantics are "trim the workday from both ends":
+// Offset semantics are "trim the workday from both ends" (in minutes since
+// ZBBS-066):
 //   arrive = dawn + offset     (positive offset = arrive later)
 //   leave  = dusk - offset     (positive offset = leave earlier)
 //
-// So offset=0 is a full dawn-to-dusk shift; offset=+1 shrinks the day by
-// one hour at each edge (arrive 1h after dawn, leave 1h before dusk);
-// offset=-1 widens the workday past sunrise and sunset. Offset is
-// clamped by the DB to [-23, 23] but values where leave precedes arrive
-// within the same day produce a degenerate zero-or-negative shift —
-// admin responsibility to avoid.
+// So offset=0 is a full dawn-to-dusk shift; offset=+60 shrinks the day by
+// one hour at each edge; offset=+15 trims 15 min off each edge; offset=-60
+// widens the workday past sunrise and sunset. The DB CHECK clamps to
+// [-1380, 1380] (±23h) but values where leave precedes arrive within the
+// same day produce a degenerate zero-or-negative shift — admin
+// responsibility to avoid.
 //
 // Considers yesterday, today, and tomorrow candidates so offsets that
 // push arrive/leave across midnight resolve correctly. time.Date
 // normalizes overflow, so 7:00 + 20h → 03:00 the next day.
-func mostRecentWorkerBoundary(now time.Time, dawnH, dawnM, duskH, duskM, offsetHours int) (time.Time, workerBoundaryKind) {
+func mostRecentWorkerBoundary(now time.Time, dawnH, dawnM, duskH, duskM, offsetMinutes int) (time.Time, workerBoundaryKind) {
 	loc := now.Location()
 	y, mo, d := now.Date()
-	offset := time.Duration(offsetHours) * time.Hour
+	offset := time.Duration(offsetMinutes) * time.Minute
 
 	type candidate struct {
 		t    time.Time
@@ -196,7 +198,7 @@ func mostRecentWorkerBoundary(now time.Time, dawnH, dawnM, duskH, duskM, offsetH
 // is already inside the target structure — a fresh restart with NPCs
 // correctly parked shouldn't walk them in place.
 func (app *App) evaluateWorkerSchedule(ctx context.Context, w *workerRow, now time.Time, dawnH, dawnM, duskH, duskM int) {
-	boundaryAt, kind := mostRecentWorkerBoundary(now, dawnH, dawnM, duskH, duskM, w.ScheduleOffset)
+	boundaryAt, kind := mostRecentWorkerBoundary(now, dawnH, dawnM, duskH, duskM, w.ScheduleOffsetMinutes)
 	if boundaryAt.IsZero() {
 		return
 	}
