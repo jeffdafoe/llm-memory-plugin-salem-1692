@@ -1387,11 +1387,7 @@ func _refresh_obj_tags_ui() -> void:
         _obj_tags_chips_box.add_child(empty)
     else:
         for tag in _obj_tags_current_list:
-            var chip = Button.new()
-            chip.text = str(tag) + " ✕"
-            chip.add_theme_font_size_override("font_size", 11)
-            chip.pressed.connect(_on_obj_tag_chip_pressed.bind(str(tag)))
-            _obj_tags_chips_box.add_child(chip)
+            _obj_tags_chips_box.add_child(_build_tag_chip(str(tag)))
 
     if _obj_tags_add_dropdown == null:
         return
@@ -1402,6 +1398,51 @@ func _refresh_obj_tags_ui() -> void:
     for tag in Catalog.object_tags:
         if not current_set.has(str(tag)):
             _obj_tags_add_dropdown.add_item(str(tag))
+
+## Render a removable tag chip. Styled as a pill with the tag name and a
+## separate X button so we're not relying on font coverage for the close
+## glyph (IMFellEnglish doesn't ship ✕ and falls back to garbage).
+func _build_tag_chip(tag: String) -> Control:
+    var pill = PanelContainer.new()
+    var pill_style = StyleBoxFlat.new()
+    pill_style.bg_color = Color(0.23, 0.17, 0.08, 1.0)
+    pill_style.border_width_left = 1
+    pill_style.border_width_top = 1
+    pill_style.border_width_right = 1
+    pill_style.border_width_bottom = 1
+    pill_style.border_color = COLOR_BTN_BORDER
+    pill_style.corner_radius_left_top = 8
+    pill_style.corner_radius_right_top = 8
+    pill_style.corner_radius_left_bottom = 8
+    pill_style.corner_radius_right_bottom = 8
+    pill_style.content_margin_left = 8.0
+    pill_style.content_margin_right = 4.0
+    pill_style.content_margin_top = 2.0
+    pill_style.content_margin_bottom = 2.0
+    pill.add_theme_stylebox_override("panel", pill_style)
+
+    var row = HBoxContainer.new()
+    row.add_theme_constant_override("separation", 6)
+    pill.add_child(row)
+
+    var label = Label.new()
+    label.text = tag
+    label.add_theme_color_override("font_color", COLOR_TEXT)
+    label.add_theme_font_size_override("font_size", 11)
+    row.add_child(label)
+
+    var x_btn = Button.new()
+    x_btn.text = "x"
+    x_btn.flat = true
+    x_btn.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+    x_btn.add_theme_color_override("font_hover_color", Color(1, 0.6, 0.5))
+    x_btn.add_theme_font_size_override("font_size", 11)
+    x_btn.custom_minimum_size = Vector2(14, 14)
+    x_btn.focus_mode = Control.FOCUS_NONE
+    x_btn.pressed.connect(_on_obj_tag_chip_pressed.bind(tag))
+    row.add_child(x_btn)
+
+    return pill
 
 func _on_obj_tag_add_pressed() -> void:
     if _obj_tags_add_dropdown == null or _obj_tags_add_dropdown.selected < 0:
