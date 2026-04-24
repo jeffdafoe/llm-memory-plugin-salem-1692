@@ -185,11 +185,12 @@ func (app *App) startNPCWalk(ctx context.Context, npcID string, targetX, targetY
 		speed = defaultNPCSpeed
 	}
 
-	// Any walk implies the NPC is stepping out of whatever structure they
-	// were inside (if any). Flip inside=false so the client un-hides the
-	// sprite before the walk animation starts. No-op when already outside
-	// (setNPCInside guards on IS DISTINCT FROM).
-	app.setNPCInside(ctx, npcID, false, "")
+	// NOTE: inside=false used to flip HERE, before pathfinding. That left
+	// an NPC outside their structure (and any occupancy-tagged state flipped
+	// to "unoccupied") when pathfinding later returned "no path" — 400 to
+	// the caller but permanent state damage until manually fixed. The flip
+	// is now deferred until we know a real walk is going to start, see
+	// below.
 
 	app.NPCMovement.mu.Lock()
 	existing := app.NPCMovement.active[npcID]
@@ -247,10 +248,17 @@ func (app *App) startNPCWalk(ctx context.Context, npcID string, targetX, targetY
 	}
 	if len(worldPath) == 0 {
 		// Start and goal tile are the same — walk is a no-op. Fire arrival
-		// immediately so behavior hooks advance to the next step.
+		// immediately so behavior hooks advance to the next step. Don't
+		// flip inside here: if the NPC was inside their structure, walking
+		// to their own tile shouldn't pop them out.
 		go app.applyArrival(npcID)
 		return &startNPCWalkResult{AlreadyThere: true, FinalFacing: ""}, nil
 	}
+
+	// Path verified. NOW it's safe to flip inside=false so the client can
+	// un-hide the sprite for the walk animation. setNPCInside is a no-op
+	// when already outside (guards on IS DISTINCT FROM).
+	app.setNPCInside(ctx, npcID, false, "")
 
 	facing := finalFacingForPath(startX, startY, worldPath)
 	startedAt := time.Now()
