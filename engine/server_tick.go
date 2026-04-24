@@ -53,4 +53,5 @@ func (app *App) runServerTickOnce(ctx context.Context) {
 	app.checkAndTransition(ctx)
 	app.checkAndRotate(ctx)
 	app.dispatchScheduledBehaviors(ctx)
+	app.dispatchSocialSchedules(ctx)
 }
