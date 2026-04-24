@@ -135,6 +135,17 @@ func _on_catalog_ready() -> void:
     # Build catalog in editor panel now that assets are loaded
     if editor_panel != null:
         editor_panel.build_catalog()
+        # Populate the social-hour tag dropdown. If tags are already loaded
+        # by the time we get here, push them immediately; otherwise wait on
+        # the one-shot signal.
+        if Catalog.state_tags_loaded_flag:
+            editor_panel.set_social_tag_options(Catalog.state_tags)
+        elif not Catalog.state_tags_loaded.is_connected(_on_state_tags_loaded):
+            Catalog.state_tags_loaded.connect(_on_state_tags_loaded)
+
+func _on_state_tags_loaded() -> void:
+    if editor_panel != null:
+        editor_panel.set_social_tag_options(Catalog.state_tags)
 
 func _build_ui() -> void:
     # Top bar — lives on the editor CanvasLayer
@@ -200,6 +211,7 @@ func _build_ui() -> void:
     editor_panel.npc_home_structure_changed.connect(_on_npc_home_structure_changed)
     editor_panel.npc_work_structure_changed.connect(_on_npc_work_structure_changed)
     editor_panel.npc_schedule_changed.connect(_on_npc_schedule_changed)
+    editor_panel.npc_social_changed.connect(_on_npc_social_changed)
     editor_panel.npc_home_assign_requested.connect(_on_npc_home_assign_requested)
     editor_panel.npc_work_assign_requested.connect(_on_npc_work_assign_requested)
     editor_panel.npc_run_cycle_requested.connect(_on_npc_run_cycle_requested)
@@ -333,6 +345,12 @@ func _on_npc_schedule_changed(offset: int, interval: int, start_h: int, end_h: i
     if editor.selected_npc != null:
         world.set_npc_schedule(editor.selected_npc, offset, interval, start_h, end_h, lateness)
 
+## Social-hour schedule changed (ZBBS-068). Empty tag clears the schedule
+## (start_h/end_h ignored in that case).
+func _on_npc_social_changed(tag: String, start_h: int, end_h: int) -> void:
+    if editor.selected_npc != null:
+        world.set_npc_social(editor.selected_npc, tag, start_h, end_h)
+
 func _on_npc_home_assign_requested() -> void:
     editor.begin_assign_home()
 
@@ -464,6 +482,10 @@ func _on_npc_metadata_changed(npc_id: String) -> void:
         info["schedule_interval_hours"] = container.get_meta("schedule_interval_hours")
         info["active_start_hour"] = container.get_meta("active_start_hour")
         info["active_end_hour"] = container.get_meta("active_end_hour")
+    if container.has_meta("social_tag"):
+        info["social_tag"] = container.get_meta("social_tag")
+        info["social_start_hour"] = container.get_meta("social_start_hour")
+        info["social_end_hour"] = container.get_meta("social_end_hour")
     editor_panel.show_npc_selection(info)
 
 func _on_attachment_requested(overlay_asset_id: String) -> void:

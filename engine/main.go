@@ -125,6 +125,7 @@ func main() {
 	authed("PATCH /api/village/npcs/{id}/home-structure", app.handleSetNPCHomeStructure)
 	authed("PATCH /api/village/npcs/{id}/work-structure", app.handleSetNPCWorkStructure)
 	authed("PATCH /api/village/npcs/{id}/schedule", app.handleSetNPCSchedule)
+	authed("PATCH /api/village/npcs/{id}/social", app.handleSetNPCSocial)
 	authed("POST /api/village/npcs/{id}/run-cycle", app.handleRunNPCCycle)
 	authed("POST /api/village/npcs/{id}/go-home", app.handleGoHome)
 	authed("POST /api/village/npcs/{id}/go-to-work", app.handleGoToWork)

@@ -27,6 +27,11 @@ var _current_asset_id: String = ""
 func _ready() -> void:
     _font = load("res://assets/fonts/IMFellEnglish-Regular.ttf")
 
+    # Keep the open inspector in sync when another admin (or our own click)
+    # mutates tags — Catalog re-emits after applying the WS payload.
+    if not Catalog.state_tags_changed.is_connected(_on_catalog_state_tags_changed):
+        Catalog.state_tags_changed.connect(_on_catalog_state_tags_changed)
+
     # Full-screen overlay
     anchors_preset = Control.PRESET_FULL_RECT
     anchor_right = 1.0
@@ -174,6 +179,12 @@ func show_asset(asset_id: String) -> void:
 
         for state in states:
             _add_state_thumb(states_flow, state, state.get("state", "") == default_state)
+
+        # Tag editor — single compact block that targets one state at a time.
+        # Simpler than per-thumb editing and scales better when an asset has
+        # many states. The state picker defaults to the default state since
+        # that's what admins want to tag 95% of the time.
+        _add_tag_editor(asset_id, states, default_state)
 
     # Place button
     var btn_container = CenterContainer.new()
@@ -352,3 +363,191 @@ func _animate_texture_rect(tex_rect: TextureRect, state_info: Dictionary, parent
 func _on_place_pressed() -> void:
     visible = false
     place_requested.emit(_current_asset_id)
+
+# Tag editor state — rebuilt each time show_asset renders. Held as member
+# vars so the state picker + apply/remove buttons can read the current
+# selection without threading it through signal args.
+var _tag_editor_asset_id: String = ""
+var _tag_editor_states: Array = []
+var _tag_editor_selected_state: String = ""
+var _tag_editor_chips_box: HBoxContainer = null
+var _tag_editor_add_dropdown: OptionButton = null
+var _tag_editor_state_dropdown: OptionButton = null
+
+## Compact state-tag editor. One state picker on top, then the current
+## tags for that state as clickable chips (click to remove), then an
+## "Add tag" dropdown/button. Uses the existing POST/DELETE endpoints
+## and the WS asset_state_tags_updated event to refresh after mutations.
+func _add_tag_editor(asset_id: String, states: Array, default_state: String) -> void:
+    _tag_editor_asset_id = asset_id
+    _tag_editor_states = states
+    _tag_editor_selected_state = default_state
+
+    var tags_header = Label.new()
+    tags_header.text = "TAGS"
+    tags_header.add_theme_color_override("font_color", COLOR_LABEL)
+    tags_header.add_theme_font_size_override("font_size", 12)
+    _content.add_child(tags_header)
+
+    # State picker — only shown when there are 2+ states; single-state
+    # assets render the state name as a label instead.
+    if states.size() > 1:
+        var picker_row = HBoxContainer.new()
+        picker_row.add_theme_constant_override("separation", 6)
+        _content.add_child(picker_row)
+        var picker_lbl = Label.new()
+        picker_lbl.text = "State"
+        picker_lbl.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+        picker_lbl.add_theme_font_size_override("font_size", 11)
+        picker_row.add_child(picker_lbl)
+        _tag_editor_state_dropdown = OptionButton.new()
+        var default_idx: int = 0
+        for i in range(states.size()):
+            var sname: String = states[i].get("state", "")
+            _tag_editor_state_dropdown.add_item(sname)
+            if sname == default_state:
+                default_idx = i
+        _tag_editor_state_dropdown.select(default_idx)
+        _tag_editor_state_dropdown.item_selected.connect(_on_tag_editor_state_selected)
+        _tag_editor_state_dropdown.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+        picker_row.add_child(_tag_editor_state_dropdown)
+    else:
+        var single_lbl = Label.new()
+        single_lbl.text = "State: " + default_state
+        single_lbl.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+        single_lbl.add_theme_font_size_override("font_size", 11)
+        _content.add_child(single_lbl)
+
+    _tag_editor_chips_box = HBoxContainer.new()
+    _tag_editor_chips_box.add_theme_constant_override("separation", 4)
+    _content.add_child(_tag_editor_chips_box)
+
+    var add_row = HBoxContainer.new()
+    add_row.add_theme_constant_override("separation", 6)
+    _content.add_child(add_row)
+    _tag_editor_add_dropdown = OptionButton.new()
+    _tag_editor_add_dropdown.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    add_row.add_child(_tag_editor_add_dropdown)
+    var add_btn = Button.new()
+    add_btn.text = "Add tag"
+    add_btn.add_theme_font_size_override("font_size", 11)
+    add_btn.pressed.connect(_on_tag_editor_add_pressed)
+    add_row.add_child(add_btn)
+
+    _refresh_tag_editor_chips()
+    _refresh_tag_editor_add_options()
+
+func _on_tag_editor_state_selected(index: int) -> void:
+    if _tag_editor_state_dropdown == null:
+        return
+    _tag_editor_selected_state = _tag_editor_state_dropdown.get_item_text(index)
+    _refresh_tag_editor_chips()
+    _refresh_tag_editor_add_options()
+
+## Find the selected state dict in _tag_editor_states and return its tags
+## array (empty when no tags or state missing).
+func _current_state_tags() -> Array:
+    for s in _tag_editor_states:
+        if s.get("state", "") == _tag_editor_selected_state:
+            var tags = s.get("tags", [])
+            if tags is Array:
+                return tags
+            return []
+    return []
+
+func _refresh_tag_editor_chips() -> void:
+    if _tag_editor_chips_box == null:
+        return
+    for child in _tag_editor_chips_box.get_children():
+        child.queue_free()
+    var current = _current_state_tags()
+    if current.size() == 0:
+        var empty = Label.new()
+        empty.text = "(none)"
+        empty.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+        empty.add_theme_font_size_override("font_size", 11)
+        _tag_editor_chips_box.add_child(empty)
+        return
+    for tag in current:
+        var chip = Button.new()
+        chip.text = str(tag) + " ✕"
+        chip.add_theme_font_size_override("font_size", 11)
+        chip.pressed.connect(_on_tag_chip_pressed.bind(str(tag)))
+        _tag_editor_chips_box.add_child(chip)
+
+## Repopulate the "add" dropdown with tags from the Catalog allowlist minus
+## the ones already set on the current state.
+func _refresh_tag_editor_add_options() -> void:
+    if _tag_editor_add_dropdown == null:
+        return
+    _tag_editor_add_dropdown.clear()
+    var current := _current_state_tags()
+    var current_set: Dictionary = {}
+    for t in current:
+        current_set[str(t)] = true
+    for tag in Catalog.state_tags:
+        if not current_set.has(str(tag)):
+            _tag_editor_add_dropdown.add_item(str(tag))
+
+func _on_tag_editor_add_pressed() -> void:
+    if _tag_editor_add_dropdown == null or _tag_editor_add_dropdown.selected < 0:
+        return
+    var tag: String = _tag_editor_add_dropdown.get_item_text(_tag_editor_add_dropdown.selected)
+    _post_tag(tag)
+
+func _on_tag_chip_pressed(tag: String) -> void:
+    _delete_tag(tag)
+
+## POST /api/assets/{id}/states/{state}/tags — body: {"tag": "xxx"}.
+## Response is 204; the WS asset_state_tags_updated event fans out the new
+## tag set, and we update our local Catalog copy in the handler below.
+func _post_tag(tag: String) -> void:
+    var http = HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    http.request_completed.connect(_on_tag_mutate_complete.bind(http))
+    var headers: PackedStringArray = ["Content-Type: application/json"]
+    var auth_header: String = Auth.get_auth_header()
+    if auth_header != "":
+        headers.append("Authorization: " + auth_header)
+    var url: String = Auth.api_base + "/api/assets/" + _tag_editor_asset_id + "/states/" + _tag_editor_selected_state + "/tags"
+    var body: String = JSON.stringify({"tag": tag})
+    var err = http.request(url, headers, HTTPClient.METHOD_POST, body)
+    if err != OK:
+        push_error("Failed to POST tag: " + str(err))
+
+## DELETE /api/assets/{id}/states/{state}/tags/{tag}.
+func _delete_tag(tag: String) -> void:
+    var http = HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    http.request_completed.connect(_on_tag_mutate_complete.bind(http))
+    var headers: PackedStringArray = []
+    var auth_header: String = Auth.get_auth_header()
+    if auth_header != "":
+        headers.append("Authorization: " + auth_header)
+    var url: String = Auth.api_base + "/api/assets/" + _tag_editor_asset_id + "/states/" + _tag_editor_selected_state + "/tags/" + tag
+    var err = http.request(url, headers, HTTPClient.METHOD_DELETE)
+    if err != OK:
+        push_error("Failed to DELETE tag: " + str(err))
+
+func _on_tag_mutate_complete(result: int, response_code: int, _headers: PackedStringArray, _body: PackedByteArray, http: HTTPRequest) -> void:
+    http.queue_free()
+    if not Auth.check_response(response_code):
+        return
+    if result != HTTPRequest.RESULT_SUCCESS or response_code >= 300:
+        push_error("Tag mutation failed: code=" + str(response_code))
+        return
+    # The WS event asset_state_tags_updated will arrive separately and
+    # refresh Catalog's cached tag set, at which point we re-render from
+    # fresh state. Nothing to do here beyond error surfacing.
+
+## Called via Catalog.state_tags_changed after the WS event refreshes the
+## cached tag list. Catalog already updated its state dict; we just need
+## to re-render chips if the popup is open on the affected asset/state.
+func _on_catalog_state_tags_changed(asset_id: String, state: String, _tags: Array) -> void:
+    if not visible or _tag_editor_asset_id != asset_id:
+        return
+    if _tag_editor_selected_state == state:
+        _refresh_tag_editor_chips()
+        _refresh_tag_editor_add_options()

@@ -166,6 +166,16 @@ func _handle_message(data: String) -> void:
         "npc_schedule_changed":
             if world != null:
                 world.apply_npc_schedule_change(event_data)
+        "npc_social_updated":
+            if world != null:
+                world.apply_npc_social_updated(event_data)
+        "asset_state_tags_updated":
+            var asset_id: String = str(event_data.get("asset_id", ""))
+            var state: String = str(event_data.get("state", ""))
+            var tags_raw = event_data.get("tags", [])
+            var tags: Array = tags_raw if tags_raw is Array else []
+            if asset_id != "" and state != "":
+                Catalog.apply_state_tags_updated(asset_id, state, tags)
         "npc_inside_changed":
             if world != null:
                 world.apply_npc_inside_change(event_data)

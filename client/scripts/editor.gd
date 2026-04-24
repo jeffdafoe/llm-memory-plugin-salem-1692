@@ -703,6 +703,10 @@ func _select_npc(container: Node2D) -> void:
         info["schedule_interval_hours"] = container.get_meta("schedule_interval_hours")
         info["active_start_hour"] = container.get_meta("active_start_hour")
         info["active_end_hour"] = container.get_meta("active_end_hour")
+    if container.has_meta("social_tag"):
+        info["social_tag"] = container.get_meta("social_tag")
+        info["social_start_hour"] = container.get_meta("social_start_hour")
+        info["social_end_hour"] = container.get_meta("social_end_hour")
     npc_selected.emit(info)
 
 func _deselect_npc() -> void:
