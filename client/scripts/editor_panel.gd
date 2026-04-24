@@ -1872,14 +1872,17 @@ func _make_villager_row(npc_id: String, display_name: String, container: Node2D)
 
     var behavior_label := Label.new()
     behavior_label.add_theme_font_override("font", _font)
-    behavior_label.add_theme_font_size_override("font_size", 11)
+    # Sub-line size is 12, not 11 — IMFellEnglish has irregular widths
+    # and renders raggedly at very small sizes (visible gaps inside
+    # words). 12 still reads as secondary against the 13 primary line.
+    behavior_label.add_theme_font_size_override("font_size", 12)
     behavior_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
     behavior_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
     vb.add_child(behavior_label)
 
     var location_label := Label.new()
     location_label.add_theme_font_override("font", _font)
-    location_label.add_theme_font_size_override("font_size", 11)
+    location_label.add_theme_font_size_override("font_size", 12)
     location_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
     location_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
     vb.add_child(location_label)

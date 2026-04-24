@@ -258,7 +258,12 @@ func _on_edit_toggled(active: bool) -> void:
     if top_bar != null:
         top_bar.set_cursor_tile_visible(active)
     if not active:
+        # Clear both kinds of selection — object AND NPC — so
+        # re-entering edit mode lands on the default browse view
+        # (Catalog/Villagers tab) rather than the inspector for
+        # whatever was last selected.
         editor._deselect()
+        editor._deselect_npc()
         editor.set_mode(editor.Mode.SELECT)
 
 func _on_logout() -> void:
