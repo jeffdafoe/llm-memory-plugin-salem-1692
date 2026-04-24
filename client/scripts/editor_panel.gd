@@ -20,6 +20,9 @@ signal npc_work_structure_changed(structure_id: String)
 # are -1 to mean "null" (legacy / no cadence); offset is always an integer.
 # The handler maps -1 back to null in the PATCH payload.
 signal npc_schedule_changed(offset: int, interval: int, start: int, end: int, lateness: int)
+# Social-hour overlay (ZBBS-068). Empty tag == "clear the schedule" (and
+# start/end are ignored in that case). Applied all-or-none server-side.
+signal npc_social_changed(tag: String, start_hour: int, end_hour: int)
 signal npc_home_assign_requested
 signal npc_work_assign_requested
 signal npc_run_cycle_requested
@@ -122,6 +125,15 @@ var _npc_end_spin: SpinBox = null
 var _npc_schedule_save_button: Button = null
 var _npc_cadence_row: HBoxContainer = null
 var _npc_cadence_row2: HBoxContainer = null
+# Social-hour overlay UI (ZBBS-068). Like cadence, it's gated by a checkbox
+# so the panel can express "no social schedule" distinct from "scheduled at
+# hour 0." Tag dropdown is populated from GET /api/assets/state-tags.
+var _npc_social_check: CheckBox = null
+var _npc_social_tag_dropdown: OptionButton = null
+var _npc_social_start_spin: SpinBox = null
+var _npc_social_end_spin: SpinBox = null
+var _npc_social_row: HBoxContainer = null
+var _npc_social_tag_row: HBoxContainer = null
 # Cached IDs so clear buttons know what's currently assigned (also drives
 # whether the clear button is visible).
 var _npc_home_current_id: String = ""
@@ -723,6 +735,70 @@ func _ready() -> void:
     _npc_schedule_save_button.pressed.connect(_on_schedule_save_pressed)
     _npc_schedule_section.add_child(_npc_schedule_save_button)
 
+    # Social-hour section — orthogonal overlay on behavior (ZBBS-068).
+    # Any NPC can opt into a daily window where they walk to the nearest
+    # structure carrying a named state tag (e.g. the tavern) and head
+    # home when the window ends. Checkbox gates the three fields the same
+    # way "Use cadence window" gates the rotation triple.
+    var social_header = Label.new()
+    social_header.text = "SOCIAL HOUR"
+    social_header.add_theme_color_override("font_color", COLOR_LABEL)
+    social_header.add_theme_font_size_override("font_size", 11)
+    _npc_schedule_section.add_child(social_header)
+
+    _npc_social_check = CheckBox.new()
+    _npc_social_check.text = "Gathers at tagged structure"
+    _npc_social_check.add_theme_color_override("font_color", COLOR_TEXT)
+    _npc_social_check.add_theme_font_size_override("font_size", 11)
+    _npc_social_check.toggled.connect(_on_social_toggled)
+    _npc_social_check.toggled.connect(func(_v): _emit_social_changed())
+    _npc_schedule_section.add_child(_npc_social_check)
+
+    _npc_social_tag_row = HBoxContainer.new()
+    _npc_social_tag_row.add_theme_constant_override("separation", 6)
+    _npc_schedule_section.add_child(_npc_social_tag_row)
+    var social_tag_lbl = Label.new()
+    social_tag_lbl.text = "Tag"
+    social_tag_lbl.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+    social_tag_lbl.add_theme_font_size_override("font_size", 11)
+    _npc_social_tag_row.add_child(social_tag_lbl)
+    _npc_social_tag_dropdown = OptionButton.new()
+    _npc_social_tag_dropdown.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    _npc_social_tag_dropdown.item_selected.connect(func(_i): _emit_social_changed())
+    _npc_social_tag_row.add_child(_npc_social_tag_dropdown)
+
+    _npc_social_row = HBoxContainer.new()
+    _npc_social_row.add_theme_constant_override("separation", 6)
+    _npc_schedule_section.add_child(_npc_social_row)
+    var social_start_lbl = Label.new()
+    social_start_lbl.text = "Start"
+    social_start_lbl.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+    social_start_lbl.add_theme_font_size_override("font_size", 11)
+    _npc_social_row.add_child(social_start_lbl)
+    _npc_social_start_spin = SpinBox.new()
+    _npc_social_start_spin.min_value = 0
+    _npc_social_start_spin.max_value = 23
+    _npc_social_start_spin.step = 1
+    _npc_social_start_spin.value = 19
+    _npc_social_start_spin.update_on_text_changed = true
+    _npc_social_start_spin.value_changed.connect(func(_v): _emit_social_changed())
+    _npc_social_start_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    _npc_social_row.add_child(_npc_social_start_spin)
+    var social_end_lbl = Label.new()
+    social_end_lbl.text = "End"
+    social_end_lbl.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+    social_end_lbl.add_theme_font_size_override("font_size", 11)
+    _npc_social_row.add_child(social_end_lbl)
+    _npc_social_end_spin = SpinBox.new()
+    _npc_social_end_spin.min_value = 0
+    _npc_social_end_spin.max_value = 23
+    _npc_social_end_spin.step = 1
+    _npc_social_end_spin.value = 22
+    _npc_social_end_spin.update_on_text_changed = true
+    _npc_social_end_spin.value_changed.connect(func(_v): _emit_social_changed())
+    _npc_social_end_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    _npc_social_row.add_child(_npc_social_end_spin)
+
     var sel_sep = HSeparator.new()
     sel_sep.add_theme_color_override("separator_color", Color(0.4, 0.32, 0.2, 0.4))
     _selection_info.add_child(sel_sep)
@@ -1223,6 +1299,43 @@ func _on_cadence_toggled(enabled: bool) -> void:
     if _npc_end_spin != null:
         _npc_end_spin.editable = enabled
 
+## Gates the social-hour fields the same way cadence does. Editable state
+## follows the checkbox so a disabled schedule can't push stale values
+## through the auto-save.
+func _on_social_toggled(enabled: bool) -> void:
+    if _npc_social_tag_dropdown != null:
+        _npc_social_tag_dropdown.disabled = not enabled
+    if _npc_social_start_spin != null:
+        _npc_social_start_spin.editable = enabled
+    if _npc_social_end_spin != null:
+        _npc_social_end_spin.editable = enabled
+
+## Emits npc_social_changed with the current field values. When the
+## checkbox is off or the tag dropdown is empty, emit an empty tag — the
+## handler converts that into a null-clear payload.
+func _emit_social_changed() -> void:
+    if _ignoring_npc_inputs:
+        return
+    if _npc_social_check == null or not _npc_social_check.button_pressed:
+        npc_social_changed.emit("", 0, 0)
+        return
+    var tag: String = ""
+    if _npc_social_tag_dropdown != null and _npc_social_tag_dropdown.selected >= 0:
+        tag = _npc_social_tag_dropdown.get_item_text(_npc_social_tag_dropdown.selected)
+    var start_h: int = int(_npc_social_start_spin.value)
+    var end_h: int = int(_npc_social_end_spin.value)
+    npc_social_changed.emit(tag, start_h, end_h)
+
+## Populate the social tag dropdown from the server allowlist. Called by
+## main.gd after it fetches /api/assets/state-tags. Idempotent — clears
+## existing items first so a reload doesn't duplicate entries.
+func set_social_tag_options(tags: Array) -> void:
+    if _npc_social_tag_dropdown == null:
+        return
+    _npc_social_tag_dropdown.clear()
+    for tag in tags:
+        _npc_social_tag_dropdown.add_item(str(tag))
+
 ## Emits the schedule-changed signal with the four current field values.
 ## interval/start/end are sent as -1 when cadence is unchecked (handler
 ## downstream converts to null JSON). offset is always sent.
@@ -1608,6 +1721,25 @@ func show_npc_selection(info: Dictionary) -> void:
     # button_pressed programmatically does fire `toggled` — but do it
     # explicitly in case future Godot changes that.
     _on_cadence_toggled(has_cadence)
+
+    # Social-hour fields — same all-or-none shape as cadence.
+    var social_tag_raw = info.get("social_tag", null)
+    var social_start_raw = info.get("social_start_hour", null)
+    var social_end_raw = info.get("social_end_hour", null)
+    var has_social: bool = social_tag_raw != null and social_tag_raw != "" and social_start_raw != null and social_end_raw != null
+    if _npc_social_check != null:
+        _npc_social_check.button_pressed = has_social
+    if has_social and _npc_social_tag_dropdown != null:
+        # Select the matching tag in the dropdown, or leave at index 0 if
+        # the tag isn't in the list (e.g. it was removed from the allowlist
+        # server-side since this NPC was configured).
+        for i in range(_npc_social_tag_dropdown.item_count):
+            if _npc_social_tag_dropdown.get_item_text(i) == str(social_tag_raw):
+                _npc_social_tag_dropdown.select(i)
+                break
+        _npc_social_start_spin.value = int(social_start_raw)
+        _npc_social_end_spin.value = int(social_end_raw)
+    _on_social_toggled(has_social)
 
     _ignoring_npc_inputs = false
 
