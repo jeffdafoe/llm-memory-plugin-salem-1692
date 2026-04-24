@@ -550,6 +550,7 @@ var allowedStateTags = map[string]bool{
 	"notice-board":       true,
 	"occupied":           true,
 	"unoccupied":         true,
+	"tavern":             true,
 }
 
 // handleListStateTags returns the tag allowlist so the admin UI can
