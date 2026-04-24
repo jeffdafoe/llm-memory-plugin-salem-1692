@@ -550,7 +550,16 @@ var allowedStateTags = map[string]bool{
 	"notice-board":       true,
 	"occupied":           true,
 	"unoccupied":         true,
-	"tavern":             true,
+}
+
+// Per-instance tags (ZBBS-069) — role tags applied to a specific placed
+// village_object, not to an asset template. 'tavern' sits here because
+// "this particular building IS the tavern" is instance-level by nature:
+// the same asset might have one instance as a tavern and others as
+// regular houses. Identity tags like 'laundry' or 'notice-board' stay
+// in allowedStateTags above because they genuinely are asset properties.
+var allowedObjectTags = map[string]bool{
+	"tavern": true,
 }
 
 // handleListStateTags returns the tag allowlist so the admin UI can

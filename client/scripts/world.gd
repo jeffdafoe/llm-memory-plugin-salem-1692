@@ -954,6 +954,10 @@ func _place_object(data: Dictionary) -> void:
     container.set_meta("owner", data.get("owner", ""))
     container.set_meta("display_name", data.get("display_name", ""))
     container.set_meta("attached_to", attached_to if attached_to != null else "")
+    # Per-instance tags (ZBBS-069). Server always sends an array (possibly
+    # empty); accept either an Array or omit-as-null and normalize.
+    var tags_raw = data.get("tags", [])
+    container.set_meta("tags", tags_raw if tags_raw is Array else [])
 
     var sprite_node: Node2D = _create_sprite_node(state_info, texture, anchor_x, anchor_y)
     container.add_child(sprite_node)
@@ -1404,6 +1408,58 @@ func set_npc_social(container: Node2D, tag: String, start_h: int, end_h: int) ->
         container.set_meta("social_start_hour", start_h)
         container.set_meta("social_end_hour", end_h)
     _patch_npc(npc_id, "social", payload)
+
+## POST /api/village/objects/{id}/tags — add a per-instance tag. The WS
+## event village_object_tags_updated comes back with the authoritative set
+## and refreshes the selection panel if it's showing this object.
+func add_object_tag(object_id: String, tag: String) -> void:
+    var http = HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    http.request_completed.connect(func(_r, code, _h, _b):
+        http.queue_free()
+        if code >= 300:
+            push_error("Add object tag failed: " + str(code))
+    )
+    var headers: PackedStringArray = ["Content-Type: application/json"]
+    var auth_header: String = Auth.get_auth_header()
+    if auth_header != "":
+        headers.append("Authorization: " + auth_header)
+    var url: String = Auth.api_base + "/api/village/objects/" + object_id + "/tags"
+    var body: String = JSON.stringify({"tag": tag})
+    http.request(url, headers, HTTPClient.METHOD_POST, body)
+
+## DELETE /api/village/objects/{id}/tags/{tag}.
+func remove_object_tag(object_id: String, tag: String) -> void:
+    var http = HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    http.request_completed.connect(func(_r, code, _h, _b):
+        http.queue_free()
+        if code >= 300:
+            push_error("Remove object tag failed: " + str(code))
+    )
+    var headers: PackedStringArray = []
+    var auth_header: String = Auth.get_auth_header()
+    if auth_header != "":
+        headers.append("Authorization: " + auth_header)
+    var url: String = Auth.api_base + "/api/village/objects/" + object_id + "/tags/" + tag
+    http.request(url, headers, HTTPClient.METHOD_DELETE)
+
+## WS event — another admin (or ourselves) added or removed a tag on a
+## placed object. Update our container meta, then fan out a local signal
+## so the selection panel re-renders its tag chips if this object is open.
+signal object_tags_updated(object_id: String, tags: Array)
+
+func apply_object_tags_updated(data: Dictionary) -> void:
+    var object_id: String = str(data.get("object_id", ""))
+    if object_id == "" or not placed_objects.has(object_id):
+        return
+    var tags_raw = data.get("tags", [])
+    var tags: Array = tags_raw if tags_raw is Array else []
+    var node: Node2D = placed_objects[object_id]
+    node.set_meta("tags", tags)
+    object_tags_updated.emit(object_id, tags)
 
 ## WS event — another admin edited the social-hour schedule. Update our
 ## container meta and tell the panel to refresh if it's the selected NPC.

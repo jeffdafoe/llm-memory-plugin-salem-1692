@@ -639,6 +639,7 @@ func _select_object(node: Node2D) -> void:
         "placed_by": node.get_meta("placed_by", ""),
         "owner": node.get_meta("owner", ""),
         "display_name": node.get_meta("display_name", ""),
+        "tags": node.get_meta("tags", []),
     })
 
 func _deselect() -> void:

@@ -124,11 +124,11 @@ func mostRecentSocialBoundary(now time.Time, startH, endH int) (time.Time, socia
 	return latestT, latestKind
 }
 
-// findNearestStructureByTag returns the closest village_object whose asset
-// has any state carrying targetTag, measured by squared Euclidean distance
-// from (fromX, fromY). Returns the door-offset-adjusted coords so callers
-// can pass them straight into startReturnWalk. Empty id + nil error means
-// no match.
+// findNearestStructureByTag returns the closest village_object carrying
+// targetTag (per-instance tag, not asset-state tag), measured by squared
+// Euclidean distance from (fromX, fromY). Returns the door-offset-adjusted
+// coords so callers can pass them straight into startReturnWalk. Empty id
+// + nil error means no match.
 func (app *App) findNearestStructureByTag(ctx context.Context, targetTag string, fromX, fromY float64) (string, float64, float64, error) {
 	row := app.DB.QueryRow(ctx,
 		`SELECT o.id,
@@ -136,11 +136,8 @@ func (app *App) findNearestStructureByTag(ctx context.Context, targetTag string,
 		        COALESCE(o.y + a.door_offset_y * 32.0, o.y)
 		 FROM village_object o
 		 JOIN asset a ON a.id = o.asset_id
-		 WHERE EXISTS (
-		     SELECT 1 FROM asset_state s
-		     JOIN asset_state_tag t ON t.state_id = s.id
-		     WHERE s.asset_id = o.asset_id AND t.tag = $1
-		 )
+		 JOIN village_object_tag vot ON vot.object_id = o.id
+		 WHERE vot.tag = $1
 		 ORDER BY (o.x - $2) * (o.x - $2) + (o.y - $3) * (o.y - $3)
 		 LIMIT 1`,
 		targetTag, fromX, fromY,

@@ -731,8 +731,11 @@ func (app *App) handleSetNPCSocial(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if allSet {
-		if !allowedStateTags[*req.SocialTag] {
-			jsonError(w, "Unknown social_tag (see /api/assets/state-tags)", http.StatusBadRequest)
+		// social_tag is a per-instance object tag (ZBBS-069), validated
+		// against allowedObjectTags — not the asset-state allowlist,
+		// which describes identity-level tags.
+		if !allowedObjectTags[*req.SocialTag] {
+			jsonError(w, "Unknown social_tag (see /api/village/object-tags)", http.StatusBadRequest)
 			return
 		}
 		if *req.SocialStartHour < 0 || *req.SocialStartHour > 23 {
