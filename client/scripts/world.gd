@@ -919,6 +919,36 @@ func _on_village_loaded(result: int, response_code: int, headers: PackedStringAr
         for obj in attachments:
             _place_object(obj)
 
+    # NPCs and objects load in parallel (two independent HTTP requests).
+    # If the NPC response arrived first, any NPCs currently "inside" a
+    # visible_when_inside structure were rendered at the raw door tile
+    # because _apply_stand_offset_if_applicable couldn't find their
+    # structure in placed_objects yet. Now that objects are loaded,
+    # re-run the stand-offset pass so those NPCs snap to their proper
+    # behind-the-counter positions.
+    _reapply_stand_offsets_for_inside_npcs()
+
+## Re-run the stand-offset adjustment for every NPC whose inside flag is
+## true and whose inside_structure_id now resolves. Safe to call multiple
+## times — _apply_stand_offset_if_applicable is a no-op for NPCs whose
+## structure lacks visible_when_inside + stand offset.
+func _reapply_stand_offsets_for_inside_npcs() -> void:
+    for npc_id in placed_npcs:
+        var container: Node2D = placed_npcs[npc_id]
+        if container == null:
+            continue
+        var inside: bool = bool(container.get_meta("inside", false))
+        if not inside:
+            continue
+        var inside_structure_id: String = str(container.get_meta("inside_structure_id", ""))
+        if inside_structure_id == "":
+            continue
+        # Refresh visibility too — an NPC marked inside with no resolved
+        # structure earlier would have been hidden; with the structure
+        # now loaded, visible_when_inside may flip them back on.
+        container.visible = _compute_npc_visible(inside, inside_structure_id)
+        _apply_stand_offset_if_applicable(container, inside, inside_structure_id)
+
 ## Create a sprite node for a placed village object.
 ## Uses AnimatedSprite2D for multi-frame assets, Sprite2D for static ones.
 ## Handles attached objects — if attached_to is set, the object renders as
