@@ -162,6 +162,20 @@ func (app *App) evaluateSocialSchedule(ctx context.Context, s *socialRow, now ti
 	if boundaryAt.IsZero() {
 		return
 	}
+	// Diagnostic log to debug why the scheduler appears to fire every tick
+	// despite a seemingly correct stamp. Remove once the root cause is
+	// settled.
+	log.Printf("social-scheduler: eval %s now=%s boundary=%s kind=%d stamp_valid=%v stamp=%s before=%v",
+		s.ID, now.Format(time.RFC3339), boundaryAt.Format(time.RFC3339), int(kind),
+		s.SocialLastBoundaryAt.Valid,
+		func() string {
+			if s.SocialLastBoundaryAt.Valid {
+				return s.SocialLastBoundaryAt.Time.Format(time.RFC3339)
+			}
+			return "NULL"
+		}(),
+		s.SocialLastBoundaryAt.Valid && s.SocialLastBoundaryAt.Time.Before(boundaryAt),
+	)
 	if s.SocialLastBoundaryAt.Valid && !s.SocialLastBoundaryAt.Time.Before(boundaryAt) {
 		return
 	}
