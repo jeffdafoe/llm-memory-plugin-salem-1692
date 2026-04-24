@@ -55,6 +55,9 @@ var _select_button: Button = null
 var _delete_button: Button = null
 var _terrain_button: Button = null
 var _selection_info: VBoxContainer = null
+# ScrollContainer wrapping _selection_info. Show/hide this instead of
+# _selection_info itself so the scroll viewport actually claims space.
+var _selection_info_scroll: ScrollContainer = null
 var _selection_label: Label = null
 var _placed_by_label: Label = null
 var _owner_label: Label = null
@@ -233,12 +236,29 @@ func _ready() -> void:
     sep.add_theme_color_override("separator_color", Color(0.4, 0.32, 0.2, 0.4))
     vbox.add_child(sep)
 
-    # Selection info (hidden when nothing selected)
+    # Selection info (hidden when nothing selected). Wrapped in a
+    # ScrollContainer so long selections (NPC with all schedule + social
+    # fields expanded, or an asset with many attachments) don't push the
+    # bottom of the panel off-screen. The scroll container takes the
+    # expand-fill slot so it grows with the panel; the inner VBox holds
+    # natural height.
+    var _selection_scroll = ScrollContainer.new()
+    _selection_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+    _selection_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    _selection_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+    _selection_scroll.visible = false
+    vbox.add_child(_selection_scroll)
+
     _selection_info = VBoxContainer.new()
-    _selection_info.visible = false
-    _selection_info.size_flags_vertical = Control.SIZE_EXPAND_FILL
+    _selection_info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     _selection_info.add_theme_constant_override("separation", 4)
-    vbox.add_child(_selection_info)
+    _selection_scroll.add_child(_selection_info)
+
+    # _selection_info's own `visible` flag drives whether the scroll
+    # container above shows. Route show/hide through this setter-like
+    # pair of calls so existing call sites (show_selection, etc.) keep
+    # working without knowing the container changed.
+    _selection_info_scroll = _selection_scroll
 
     var sel_header = Label.new()
     sel_header.text = "SELECTED"
@@ -1684,14 +1704,14 @@ func _on_delete_pressed() -> void:
 func show_selection(info: Dictionary) -> void:
     var asset_id: String = info.get("asset_id", "")
     if asset_id == "":
-        _selection_info.visible = false
+        _selection_info_scroll.visible = false
         _delete_button.disabled = true
         _placed_by_label.visible = false
         _owner_label.visible = false
         _attachments_section.visible = false
         _catalog_scroll.visible = true  # Restore catalog when deselected
         return
-    _selection_info.visible = true
+    _selection_info_scroll.visible = true
     _asset_fields_section.visible = true
     _npc_fields_section.visible = false
     _delete_button.disabled = false
@@ -1768,11 +1788,11 @@ func show_selection(info: Dictionary) -> void:
 func show_npc_selection(info: Dictionary) -> void:
     var npc_id: String = info.get("npc_id", "")
     if npc_id == "":
-        _selection_info.visible = false
+        _selection_info_scroll.visible = false
         _npc_fields_section.visible = false
         _catalog_scroll.visible = true
         return
-    _selection_info.visible = true
+    _selection_info_scroll.visible = true
     _asset_fields_section.visible = false
     _npc_fields_section.visible = true
     _delete_button.disabled = false
@@ -1980,7 +2000,7 @@ func _on_terrain_pressed() -> void:
     else:
         # Hide terrain picker, restore catalog only if nothing selected
         _terrain_picker.visible = false
-        if not _selection_info.visible:
+        if not _selection_info_scroll.visible:
             _catalog_scroll.visible = true
         _set_tool_active(_select_button, true)
         # Deselect terrain item
@@ -2085,7 +2105,7 @@ func exit_terrain_mode() -> void:
         _set_tool_active(_terrain_button, false)
         _terrain_picker.visible = false
         # Only restore catalog if nothing is selected (selection hides catalog)
-        if not _selection_info.visible:
+        if not _selection_info_scroll.visible:
             _catalog_scroll.visible = true
         if _selected_terrain_item != null:
             var old_style: StyleBoxFlat = _selected_terrain_item.get_meta("style_normal")
