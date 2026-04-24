@@ -73,6 +73,23 @@ var _name_input_object_id: String = ""
 var _catalog_container: VBoxContainer = null
 var _terrain_picker: VBoxContainer = null
 var _catalog_scroll: ScrollContainer = null
+# View tabs — "Catalog" (placement palette) and "Villagers" (browser of
+# placed NPCs). Sit between the tool buttons and the scrollable content
+# region. Only one of _catalog_scroll / _villagers_scroll is visible at
+# a time. The _active_view string drives which one is restored when the
+# selection panel or terrain picker releases the content region.
+var _view_tabs_row: HBoxContainer = null
+var _catalog_tab_button: Button = null
+var _villagers_tab_button: Button = null
+var _villagers_scroll: ScrollContainer = null
+var _villagers_list: VBoxContainer = null
+var _villagers_filter_input: LineEdit = null
+var _active_view: String = "catalog"
+# npc_id → row PanelContainer, so selection sync can scroll to and
+# highlight the currently-selected villager without rebuilding.
+var _villager_rows: Dictionary = {}
+# The npc_id currently highlighted in the Villagers list (empty = none).
+var _villagers_selected_id: String = ""
 var _selected_item: Control = null
 var _selected_asset_id: String = ""
 var _terrain_active: bool = false
@@ -235,6 +252,24 @@ func _ready() -> void:
     var sep = HSeparator.new()
     sep.add_theme_color_override("separator_color", Color(0.4, 0.32, 0.2, 0.4))
     vbox.add_child(sep)
+
+    # View tabs — Catalog (placement palette) / Villagers (browse placed
+    # NPCs). Hidden whenever a selection or the terrain picker takes over
+    # the content region, restored alongside whatever tab was active.
+    _view_tabs_row = HBoxContainer.new()
+    _view_tabs_row.add_theme_constant_override("separation", 2)
+    vbox.add_child(_view_tabs_row)
+
+    _catalog_tab_button = _make_view_tab_button("Catalog")
+    _catalog_tab_button.pressed.connect(_on_catalog_tab_pressed)
+    _view_tabs_row.add_child(_catalog_tab_button)
+
+    _villagers_tab_button = _make_view_tab_button("Villagers")
+    _villagers_tab_button.pressed.connect(_on_villagers_tab_pressed)
+    _view_tabs_row.add_child(_villagers_tab_button)
+
+    _set_view_tab_active(_catalog_tab_button, true)
+    _set_view_tab_active(_villagers_tab_button, false)
 
     # Selection info (hidden when nothing selected). Wrapped in a
     # ScrollContainer so long selections (NPC with all schedule + social
@@ -893,6 +928,41 @@ func _ready() -> void:
     _catalog_container.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     _catalog_container.add_theme_constant_override("separation", 4)
     _catalog_scroll.add_child(_catalog_container)
+
+    # Villagers browser — alphabetical list of all placed NPCs with a
+    # name filter. Sits alongside _catalog_scroll; visibility toggled by
+    # the Catalog / Villagers tab buttons. See _show_browse_surfaces and
+    # rebuild_villagers_list for the state management + content rules.
+    _villagers_scroll = ScrollContainer.new()
+    _villagers_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+    _villagers_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    _villagers_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+    _villagers_scroll.visible = false
+    vbox.add_child(_villagers_scroll)
+
+    var villagers_body = VBoxContainer.new()
+    villagers_body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    villagers_body.add_theme_constant_override("separation", 6)
+    _villagers_scroll.add_child(villagers_body)
+
+    # Name-substring filter. Reuses name_input_style from earlier in
+    # _ready so the input visually matches the rest of the panel's text
+    # fields without declaring another StyleBoxFlat.
+    _villagers_filter_input = LineEdit.new()
+    _villagers_filter_input.placeholder_text = "Filter by name"
+    _villagers_filter_input.add_theme_font_override("font", _font)
+    _villagers_filter_input.add_theme_font_size_override("font_size", 13)
+    _villagers_filter_input.add_theme_color_override("font_color", COLOR_TEXT)
+    _villagers_filter_input.add_theme_color_override("font_placeholder_color", Color(0.45, 0.40, 0.30, 1.0))
+    _villagers_filter_input.add_theme_stylebox_override("normal", name_input_style)
+    _villagers_filter_input.add_theme_stylebox_override("focus", name_input_style)
+    _villagers_filter_input.text_changed.connect(_on_villagers_filter_changed)
+    villagers_body.add_child(_villagers_filter_input)
+
+    _villagers_list = VBoxContainer.new()
+    _villagers_list.add_theme_constant_override("separation", 2)
+    _villagers_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    villagers_body.add_child(_villagers_list)
 
 ## Build the catalog UI from the loaded asset data.
 ## Called after Catalog.catalog_loaded.
@@ -1638,6 +1708,288 @@ func _on_visible_when_inside_selected(index: int) -> void:
         return
     asset_visible_when_inside_toggled.emit(_enterable_asset_id, index == 1)
 
+## Build the Catalog/Villagers tab button. Base style is COLOR_BTN_BG,
+## active state swaps in the brighter ACTIVE background used by the
+## main tool buttons. Both tabs grow to share the sidebar width evenly.
+func _make_view_tab_button(label: String) -> Button:
+    var btn := Button.new()
+    btn.text = label
+    btn.add_theme_font_override("font", _font)
+    btn.add_theme_font_size_override("font_size", 13)
+    btn.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+    btn.add_theme_color_override("font_hover_color", COLOR_TEXT)
+    btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    btn.focus_mode = Control.FOCUS_NONE
+    return btn
+
+## Apply inactive/active styling to a tab button. Active tab gets the
+## brighter ACTIVE_BG + a bottom border so it reads as the current pane.
+func _set_view_tab_active(btn: Button, active: bool) -> void:
+    var style := StyleBoxFlat.new()
+    style.content_margin_left = 8.0
+    style.content_margin_right = 8.0
+    style.content_margin_top = 5.0
+    style.content_margin_bottom = 5.0
+    style.corner_radius_top_left = 3
+    style.corner_radius_top_right = 3
+    if active:
+        style.bg_color = COLOR_BTN_ACTIVE_BG
+        style.border_width_bottom = 2
+        style.border_color = COLOR_BTN_ACTIVE_BORDER
+        btn.add_theme_color_override("font_color", COLOR_TEXT)
+    else:
+        style.bg_color = COLOR_BTN_BG
+        style.border_width_bottom = 1
+        style.border_color = COLOR_BTN_BORDER
+        btn.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+    btn.add_theme_stylebox_override("normal", style)
+    btn.add_theme_stylebox_override("hover", style)
+    btn.add_theme_stylebox_override("pressed", style)
+
+func _on_catalog_tab_pressed() -> void:
+    if _active_view == "catalog":
+        return
+    _active_view = "catalog"
+    _set_view_tab_active(_catalog_tab_button, true)
+    _set_view_tab_active(_villagers_tab_button, false)
+    _show_browse_surfaces()
+
+func _on_villagers_tab_pressed() -> void:
+    if _active_view == "villagers":
+        return
+    _active_view = "villagers"
+    _set_view_tab_active(_catalog_tab_button, false)
+    _set_view_tab_active(_villagers_tab_button, true)
+    _show_browse_surfaces()
+
+## Render the content region that sits below the tab bar. Exactly one
+## of _terrain_picker / _catalog_scroll / _villagers_scroll is shown,
+## picked by _terrain_active and _active_view. No-op while the selection
+## inspector is visible — _hide_browse_surfaces owns that case.
+func _show_browse_surfaces() -> void:
+    _view_tabs_row.visible = not _terrain_active
+    if _terrain_active:
+        _terrain_picker.visible = true
+        _catalog_scroll.visible = false
+        _villagers_scroll.visible = false
+        return
+    _terrain_picker.visible = false
+    if _active_view == "villagers":
+        _catalog_scroll.visible = false
+        _villagers_scroll.visible = true
+        rebuild_villagers_list()
+    else:
+        _catalog_scroll.visible = true
+        _villagers_scroll.visible = false
+
+## Hide every browse surface — called when a selection panel takes over
+## the content region. Tabs hide too; they reappear when selection clears.
+func _hide_browse_surfaces() -> void:
+    _view_tabs_row.visible = false
+    _catalog_scroll.visible = false
+    _villagers_scroll.visible = false
+    _terrain_picker.visible = false
+
+func _on_villagers_filter_changed(_text: String) -> void:
+    rebuild_villagers_list()
+
+## Rebuild the Villagers list from world.placed_npcs. Cheap enough to
+## run on tab activation, WS list-changed events, and filter keystrokes.
+## Alphabetical by display_name; unnamed NPCs sort to the bottom under
+## "(unnamed)".
+func rebuild_villagers_list() -> void:
+    if _villagers_list == null or world == null:
+        return
+    for child in _villagers_list.get_children():
+        child.queue_free()
+    _villager_rows.clear()
+
+    var npc_entries: Array = []
+    for npc_id in world.placed_npcs:
+        var container: Node2D = world.placed_npcs[npc_id]
+        if container == null:
+            continue
+        var display_name: String = str(container.get_meta("display_name", ""))
+        var sort_name: String = display_name if display_name != "" else "(unnamed)"
+        npc_entries.append({
+            "id": str(npc_id),
+            "sort_name": sort_name,
+            "display_name": sort_name,
+            "container": container,
+        })
+    npc_entries.sort_custom(func(a, b): return a["sort_name"].to_lower() < b["sort_name"].to_lower())
+
+    var filter_text: String = ""
+    if _villagers_filter_input != null:
+        filter_text = _villagers_filter_input.text.to_lower()
+    for entry in npc_entries:
+        if filter_text != "" and not entry["sort_name"].to_lower().contains(filter_text):
+            continue
+        var row := _make_villager_row(entry["id"], entry["display_name"], entry["container"])
+        _villagers_list.add_child(row)
+        _villager_rows[entry["id"]] = row
+
+    _refresh_villager_row_highlight()
+
+## Three-line row: name / behavior / landmark-relative location. Row
+## uses PanelContainer + gui_input rather than a Button because Buttons
+## don't render multi-line text cleanly under this theme.
+func _make_villager_row(npc_id: String, display_name: String, container: Node2D) -> Control:
+    var row := PanelContainer.new()
+    row.mouse_filter = Control.MOUSE_FILTER_STOP
+    row.set_meta("npc_id", npc_id)
+
+    var normal_style := StyleBoxFlat.new()
+    normal_style.bg_color = Color(0, 0, 0, 0)
+    normal_style.content_margin_left = 6.0
+    normal_style.content_margin_right = 6.0
+    normal_style.content_margin_top = 4.0
+    normal_style.content_margin_bottom = 4.0
+    row.add_theme_stylebox_override("panel", normal_style)
+
+    var hover_style := normal_style.duplicate()
+    hover_style.bg_color = COLOR_ITEM_HOVER
+    var selected_style := normal_style.duplicate()
+    selected_style.bg_color = COLOR_ITEM_SELECTED
+    selected_style.border_width_left = 2
+    selected_style.border_color = COLOR_BTN_ACTIVE_BORDER
+    row.set_meta("style_normal", normal_style)
+    row.set_meta("style_hover", hover_style)
+    row.set_meta("style_selected", selected_style)
+
+    var vb := VBoxContainer.new()
+    vb.add_theme_constant_override("separation", 0)
+    vb.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    row.add_child(vb)
+
+    var name_label := Label.new()
+    name_label.text = display_name
+    name_label.add_theme_font_override("font", _font)
+    name_label.add_theme_font_size_override("font_size", 13)
+    name_label.add_theme_color_override("font_color", COLOR_TEXT)
+    name_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    vb.add_child(name_label)
+
+    var behavior_label := Label.new()
+    behavior_label.add_theme_font_override("font", _font)
+    behavior_label.add_theme_font_size_override("font_size", 11)
+    behavior_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+    behavior_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    vb.add_child(behavior_label)
+
+    var location_label := Label.new()
+    location_label.add_theme_font_override("font", _font)
+    location_label.add_theme_font_size_override("font_size", 11)
+    location_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+    location_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    vb.add_child(location_label)
+
+    row.set_meta("name_label", name_label)
+    row.set_meta("behavior_label", behavior_label)
+    row.set_meta("location_label", location_label)
+
+    _update_villager_row_text(row, container)
+
+    row.mouse_entered.connect(func(): _on_villager_row_hover(row, true))
+    row.mouse_exited.connect(func(): _on_villager_row_hover(row, false))
+    row.gui_input.connect(func(ev): _on_villager_row_gui_input(ev, npc_id))
+    return row
+
+## Format the behavior + location text on a villager row.
+func _update_villager_row_text(row: PanelContainer, container: Node2D) -> void:
+    var behavior: String = str(container.get_meta("behavior", ""))
+    var behavior_text: String = behavior if behavior != "" else "no behavior"
+    var behavior_label: Label = row.get_meta("behavior_label")
+    if behavior_label != null:
+        behavior_label.text = behavior_text
+    var location_label: Label = row.get_meta("location_label")
+    if location_label != null:
+        location_label.text = _format_npc_location(container)
+
+## Build a human-readable location string. Inside a structure → its name.
+## Outside → nearest placed_object by world distance, no distance cap
+## (nearest landmark is almost always more recognizable than raw coords).
+## Only falls back to tile coords when the village has zero placed_objects.
+func _format_npc_location(container: Node2D) -> String:
+    if world == null:
+        return ""
+    var inside: bool = bool(container.get_meta("inside", false))
+    var inside_id: String = str(container.get_meta("inside_structure_id", ""))
+    if inside and inside_id != "" and world.placed_objects.has(inside_id):
+        return "inside " + _object_display_name(world.placed_objects[inside_id])
+    var pos: Vector2 = container.position
+    var best_label: String = ""
+    var best_dist_sq: float = INF
+    for obj_id in world.placed_objects:
+        var obj: Node2D = world.placed_objects[obj_id]
+        if obj == null:
+            continue
+        var d: float = pos.distance_squared_to(obj.position)
+        if d < best_dist_sq:
+            best_dist_sq = d
+            best_label = _object_display_name(obj)
+    if best_label != "":
+        return "near " + best_label
+    var tile_x: int = int(floor(pos.x / 32.0))
+    var tile_y: int = int(floor(pos.y / 32.0))
+    return "at %d, %d" % [tile_x, tile_y]
+
+## Preferred label for a placed_object: its instance display_name, or
+## the asset's catalog name as a fallback.
+func _object_display_name(obj: Node2D) -> String:
+    var label: String = str(obj.get_meta("display_name", ""))
+    if label != "":
+        return label
+    var asset_id: String = str(obj.get_meta("asset_id", ""))
+    var asset = Catalog.assets.get(asset_id, {})
+    return asset.get("name", asset_id)
+
+func _on_villager_row_hover(row: PanelContainer, entered: bool) -> void:
+    # Don't overwrite the selected-row highlight on hover.
+    if row.get_meta("npc_id", "") == _villagers_selected_id:
+        return
+    var target: StyleBoxFlat
+    if entered:
+        target = row.get_meta("style_hover")
+    else:
+        target = row.get_meta("style_normal")
+    row.add_theme_stylebox_override("panel", target)
+
+func _on_villager_row_gui_input(ev: InputEvent, npc_id: String) -> void:
+    if ev is InputEventMouseButton and ev.pressed and ev.button_index == MOUSE_BUTTON_LEFT:
+        # Same signal the in-panel People list uses — main.gd already
+        # handles select + camera.center_on in _on_npc_select_requested.
+        npc_select_requested.emit(npc_id)
+
+## Apply the selected-row highlight to whichever row matches
+## _villagers_selected_id, and scroll it into view. Non-matching rows
+## are reset to their normal style (clears any stale hover state too).
+func _refresh_villager_row_highlight() -> void:
+    for npc_id in _villager_rows:
+        var row: PanelContainer = _villager_rows[npc_id]
+        if row == null:
+            continue
+        var style: StyleBoxFlat
+        if str(npc_id) == _villagers_selected_id:
+            style = row.get_meta("style_selected")
+        else:
+            style = row.get_meta("style_normal")
+        row.add_theme_stylebox_override("panel", style)
+    # Scroll the selected row into view. Godot's ScrollContainer has
+    # ensure_control_visible for exactly this, but it lives on Container
+    # and needs the row's layout to have resolved — defer to next frame.
+    if _villagers_selected_id != "" and _villager_rows.has(_villagers_selected_id):
+        var row: Control = _villager_rows[_villagers_selected_id]
+        if _villagers_scroll != null and row != null:
+            _villagers_scroll.call_deferred("ensure_control_visible", row)
+
+## Called by main.gd when an NPC is selected (from map or from the
+## Villagers list). Updates _villagers_selected_id and re-styles the
+## rows so selection stays in sync across surfaces.
+func sync_villager_selection(npc_id: String) -> void:
+    _villagers_selected_id = npc_id
+    _refresh_villager_row_highlight()
+
 ## Fill the People section with buttons for each NPC whose home or work is
 ## the given structure. Hides the section if the selection isn't a
 ## structure or if nobody lives/works there.
@@ -1709,13 +2061,13 @@ func show_selection(info: Dictionary) -> void:
         _placed_by_label.visible = false
         _owner_label.visible = false
         _attachments_section.visible = false
-        _catalog_scroll.visible = true  # Restore catalog when deselected
+        _show_browse_surfaces()  # Restore the active tab's view on deselect
         return
     _selection_info_scroll.visible = true
     _asset_fields_section.visible = true
     _npc_fields_section.visible = false
     _delete_button.disabled = false
-    _catalog_scroll.visible = false  # Hide catalog when object is selected
+    _hide_browse_surfaces()  # Selection inspector takes over the content region
     var asset = Catalog.assets.get(asset_id, {})
     var name: String = asset.get("name", asset_id)
     _selection_label.text = name
@@ -1790,13 +2142,15 @@ func show_npc_selection(info: Dictionary) -> void:
     if npc_id == "":
         _selection_info_scroll.visible = false
         _npc_fields_section.visible = false
-        _catalog_scroll.visible = true
+        sync_villager_selection("")
+        _show_browse_surfaces()
         return
     _selection_info_scroll.visible = true
     _asset_fields_section.visible = false
     _npc_fields_section.visible = true
     _delete_button.disabled = false
-    _catalog_scroll.visible = false
+    sync_villager_selection(npc_id)
+    _hide_browse_surfaces()
 
     var display_name: String = info.get("display_name", "")
     _selection_label.text = display_name if display_name != "" else "(unnamed)"
@@ -1987,9 +2341,8 @@ func _on_terrain_pressed() -> void:
     _set_tool_active(_terrain_button, _terrain_active)
 
     if _terrain_active:
-        # Show terrain picker, hide catalog
-        _terrain_picker.visible = true
-        _catalog_scroll.visible = false
+        # Terrain picker takes over — hide tab bar + catalog/villagers.
+        _show_browse_surfaces()
         _set_tool_active(_select_button, false)
         # Deselect any asset
         if _selected_item != null:
@@ -1998,10 +2351,11 @@ func _on_terrain_pressed() -> void:
             _selected_item = null
             _selected_asset_id = ""
     else:
-        # Hide terrain picker, restore catalog only if nothing selected
-        _terrain_picker.visible = false
+        # Hide terrain picker; restore browse view unless something is selected.
         if not _selection_info_scroll.visible:
-            _catalog_scroll.visible = true
+            _show_browse_surfaces()
+        else:
+            _terrain_picker.visible = false
         _set_tool_active(_select_button, true)
         # Deselect terrain item
         if _selected_terrain_item != null:
@@ -2103,10 +2457,12 @@ func exit_terrain_mode() -> void:
     if _terrain_active:
         _terrain_active = false
         _set_tool_active(_terrain_button, false)
-        _terrain_picker.visible = false
-        # Only restore catalog if nothing is selected (selection hides catalog)
+        # Restore the active tab's view only if nothing is selected
+        # (selection hides all browse surfaces).
         if not _selection_info_scroll.visible:
-            _catalog_scroll.visible = true
+            _show_browse_surfaces()
+        else:
+            _terrain_picker.visible = false
         if _selected_terrain_item != null:
             var old_style: StyleBoxFlat = _selected_terrain_item.get_meta("style_normal")
             _selected_terrain_item.add_theme_stylebox_override("panel", old_style)
