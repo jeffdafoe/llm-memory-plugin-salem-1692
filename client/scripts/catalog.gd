@@ -6,6 +6,7 @@ extends Node
 signal catalog_loaded
 signal npc_behaviors_loaded
 signal state_tags_loaded
+signal object_tags_loaded
 # Fired when the WS asset_state_tags_updated event lands — the asset popup
 # subscribes to this so an open inspector refreshes after another admin
 # adds or removes a tag.
@@ -43,6 +44,12 @@ var npc_behaviors_loaded_flag: bool = false
 var state_tags: Array = []
 var state_tags_loaded_flag: bool = false
 
+# Per-instance object tag allowlist (ZBBS-069). Different from state_tags
+# above — this controls what tags you can apply to individual placed
+# objects via the selection panel (e.g. 'tavern').
+var object_tags: Array = []
+var object_tags_loaded_flag: bool = false
+
 # Base URL for the Go API
 var api_base: String = ""
 
@@ -59,9 +66,11 @@ func _ready() -> void:
     if Auth.authenticated:
         _load_npc_behaviors()
         _load_state_tags()
+        _load_object_tags()
     else:
         Auth.logged_in.connect(_load_npc_behaviors)
         Auth.logged_in.connect(_load_state_tags)
+        Auth.logged_in.connect(_load_object_tags)
 
 func _load_catalog() -> void:
     var http = HTTPRequest.new()
@@ -211,6 +220,34 @@ func _on_state_tags_loaded(result: int, response_code: int, headers: PackedStrin
     state_tags = json
     state_tags_loaded_flag = true
     state_tags_loaded.emit()
+
+func _load_object_tags() -> void:
+    var http = HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    http.request_completed.connect(_on_object_tags_loaded.bind(http))
+    var headers: PackedStringArray = []
+    var auth_header: String = Auth.get_auth_header()
+    if auth_header != "":
+        headers.append("Authorization: " + auth_header)
+    var err = http.request(api_base + "/api/village/object-tags", headers)
+    if err != OK:
+        push_error("Failed to request object tags: " + str(err))
+
+func _on_object_tags_loaded(result: int, response_code: int, headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest) -> void:
+    http.queue_free()
+    if not Auth.check_response(response_code):
+        return
+    if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
+        push_error("Object tags request failed: result=" + str(result) + " code=" + str(response_code))
+        return
+    var json = JSON.parse_string(body.get_string_from_utf8())
+    if json == null or not (json is Array):
+        push_error("Failed to parse object-tags JSON")
+        return
+    object_tags = json
+    object_tags_loaded_flag = true
+    object_tags_loaded.emit()
 
 ## Called from event_client when the WS asset_state_tags_updated event
 ## arrives. Updates our cached copy of the asset's state tags so downstream

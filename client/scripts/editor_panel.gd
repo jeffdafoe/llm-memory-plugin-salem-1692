@@ -134,6 +134,14 @@ var _npc_social_start_spin: SpinBox = null
 var _npc_social_end_spin: SpinBox = null
 var _npc_social_row: HBoxContainer = null
 var _npc_social_tag_row: HBoxContainer = null
+
+# Per-instance tag editor for placed objects (ZBBS-069). Chips rendered
+# into _obj_tags_chips_box as removable buttons; the add dropdown shows
+# allowlist minus already-applied tags.
+var _obj_tags_chips_box: HBoxContainer = null
+var _obj_tags_add_dropdown: OptionButton = null
+var _obj_tags_current_id: String = ""
+var _obj_tags_current_list: Array = []
 # Cached IDs so clear buttons know what's currently assigned (also drives
 # whether the clear button is visible).
 var _npc_home_current_id: String = ""
@@ -330,6 +338,32 @@ func _ready() -> void:
     _owner_dropdown.add_theme_stylebox_override("normal", dropdown_style)
     _owner_dropdown.item_selected.connect(_on_owner_selected)
     _asset_fields_section.add_child(_owner_dropdown)
+
+    # Per-instance tag editor (ZBBS-069). Applies to THIS placed object,
+    # not to the asset template. Populated by _populate_object_tags in
+    # show_selection. Allowlist comes from Catalog.object_tags, updates
+    # via POST/DELETE on /api/village/objects/{id}/tags.
+    var obj_tags_header = Label.new()
+    obj_tags_header.text = "TAGS"
+    obj_tags_header.add_theme_color_override("font_color", COLOR_LABEL)
+    obj_tags_header.add_theme_font_size_override("font_size", 11)
+    _asset_fields_section.add_child(obj_tags_header)
+
+    _obj_tags_chips_box = HBoxContainer.new()
+    _obj_tags_chips_box.add_theme_constant_override("separation", 4)
+    _asset_fields_section.add_child(_obj_tags_chips_box)
+
+    var obj_tags_add_row = HBoxContainer.new()
+    obj_tags_add_row.add_theme_constant_override("separation", 6)
+    _asset_fields_section.add_child(obj_tags_add_row)
+    _obj_tags_add_dropdown = OptionButton.new()
+    _obj_tags_add_dropdown.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    obj_tags_add_row.add_child(_obj_tags_add_dropdown)
+    var obj_tags_add_btn = Button.new()
+    obj_tags_add_btn.text = "Add tag"
+    obj_tags_add_btn.add_theme_font_size_override("font_size", 11)
+    obj_tags_add_btn.pressed.connect(_on_obj_tag_add_pressed)
+    obj_tags_add_row.add_child(obj_tags_add_btn)
 
     # Attachments section — shown when selected object has slots
     _attachments_section = VBoxContainer.new()
@@ -1327,14 +1361,70 @@ func _emit_social_changed() -> void:
     npc_social_changed.emit(tag, start_h, end_h)
 
 ## Populate the social tag dropdown from the server allowlist. Called by
-## main.gd after it fetches /api/assets/state-tags. Idempotent — clears
-## existing items first so a reload doesn't duplicate entries.
+## main.gd after it fetches the object-tags allowlist (social_tag is
+## itself a per-instance object tag, so this dropdown draws from the same
+## source as _obj_tags_add_dropdown). Idempotent.
 func set_social_tag_options(tags: Array) -> void:
     if _npc_social_tag_dropdown == null:
         return
     _npc_social_tag_dropdown.clear()
     for tag in tags:
         _npc_social_tag_dropdown.add_item(str(tag))
+
+## Refresh the per-instance tag UI for the currently-selected object.
+## Chips box is redrawn from _obj_tags_current_list; the add dropdown
+## lists any allowlist tag not already applied.
+func _refresh_obj_tags_ui() -> void:
+    if _obj_tags_chips_box == null:
+        return
+    for child in _obj_tags_chips_box.get_children():
+        child.queue_free()
+    if _obj_tags_current_list.size() == 0:
+        var empty = Label.new()
+        empty.text = "(none)"
+        empty.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+        empty.add_theme_font_size_override("font_size", 11)
+        _obj_tags_chips_box.add_child(empty)
+    else:
+        for tag in _obj_tags_current_list:
+            var chip = Button.new()
+            chip.text = str(tag) + " ✕"
+            chip.add_theme_font_size_override("font_size", 11)
+            chip.pressed.connect(_on_obj_tag_chip_pressed.bind(str(tag)))
+            _obj_tags_chips_box.add_child(chip)
+
+    if _obj_tags_add_dropdown == null:
+        return
+    _obj_tags_add_dropdown.clear()
+    var current_set: Dictionary = {}
+    for t in _obj_tags_current_list:
+        current_set[str(t)] = true
+    for tag in Catalog.object_tags:
+        if not current_set.has(str(tag)):
+            _obj_tags_add_dropdown.add_item(str(tag))
+
+func _on_obj_tag_add_pressed() -> void:
+    if _obj_tags_add_dropdown == null or _obj_tags_add_dropdown.selected < 0:
+        return
+    if _obj_tags_current_id == "":
+        return
+    var tag: String = _obj_tags_add_dropdown.get_item_text(_obj_tags_add_dropdown.selected)
+    if world != null:
+        world.add_object_tag(_obj_tags_current_id, tag)
+
+func _on_obj_tag_chip_pressed(tag: String) -> void:
+    if _obj_tags_current_id == "":
+        return
+    if world != null:
+        world.remove_object_tag(_obj_tags_current_id, tag)
+
+## Called by main.gd when the WS village_object_tags_updated event lands
+## (via world.object_tags_updated). Refresh if this is the selected object.
+func apply_object_tags_external(object_id: String, tags: Array) -> void:
+    if _obj_tags_current_id != object_id:
+        return
+    _obj_tags_current_list = tags
+    _refresh_obj_tags_ui()
 
 ## Emits the schedule-changed signal with the four current field values.
 ## interval/start/end are sent as -1 when cadence is unchecked (handler
@@ -1614,6 +1704,12 @@ func show_selection(info: Dictionary) -> void:
             idx += 1
     _owner_dropdown.selected = selected_index
     _ignoring_dropdown = false
+
+    # Per-instance tags for the selected object.
+    _obj_tags_current_id = info.get("object_id", "")
+    var tags_raw = info.get("tags", [])
+    _obj_tags_current_list = tags_raw if tags_raw is Array else []
+    _refresh_obj_tags_ui()
 
 ## Called by editor when an NPC is selected/deselected. Reuses the selection
 ## panel but swaps to NPC-only fields (no owner, no attachments, no delete

@@ -176,6 +176,9 @@ func _handle_message(data: String) -> void:
             var tags: Array = tags_raw if tags_raw is Array else []
             if asset_id != "" and state != "":
                 Catalog.apply_state_tags_updated(asset_id, state, tags)
+        "village_object_tags_updated":
+            if world != null:
+                world.apply_object_tags_updated(event_data)
         "npc_inside_changed":
             if world != null:
                 world.apply_npc_inside_change(event_data)

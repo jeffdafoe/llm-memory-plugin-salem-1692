@@ -28,23 +28,36 @@ func (app *App) handleVillageMe(w http.ResponseWriter, r *http.Request) {
 
 // villageObject represents a placed item on the village map.
 type villageObject struct {
-	ID           string  `json:"id"`
-	AssetID      string  `json:"asset_id"`
-	CurrentState string  `json:"current_state"`
-	X            float64 `json:"x"`
-	Y            float64 `json:"y"`
-	PlacedBy     *string `json:"placed_by"`
-	Owner        *string `json:"owner"`
-	DisplayName  *string `json:"display_name"`
-	AttachedTo   *string `json:"attached_to"`
+	ID           string   `json:"id"`
+	AssetID      string   `json:"asset_id"`
+	CurrentState string   `json:"current_state"`
+	X            float64  `json:"x"`
+	Y            float64  `json:"y"`
+	PlacedBy     *string  `json:"placed_by"`
+	Owner        *string  `json:"owner"`
+	DisplayName  *string  `json:"display_name"`
+	AttachedTo   *string  `json:"attached_to"`
+	// Per-instance tags (ZBBS-069) — role tags applied to THIS placed
+	// object. Always a (possibly empty) array, never null, so client code
+	// can iterate without a nil check.
+	Tags []string `json:"tags"`
 }
 
 // handleListVillageObjects returns all placed objects.
+// LEFT JOIN LATERAL keeps the one-row-per-object shape while folding the
+// object's tag set into a PG array in a single round-trip.
 func (app *App) handleListVillageObjects(w http.ResponseWriter, r *http.Request) {
 	rows, err := app.DB.Query(r.Context(),
-		`SELECT id, asset_id, current_state, x, y, placed_by, owner, display_name, attached_to
-		 FROM village_object
-		 ORDER BY created_at`,
+		`SELECT o.id, o.asset_id, o.current_state, o.x, o.y,
+		        o.placed_by, o.owner, o.display_name, o.attached_to,
+		        COALESCE(t.tags, ARRAY[]::varchar[])
+		 FROM village_object o
+		 LEFT JOIN LATERAL (
+		     SELECT array_agg(tag ORDER BY tag) AS tags
+		     FROM village_object_tag
+		     WHERE object_id = o.id
+		 ) t ON TRUE
+		 ORDER BY o.created_at`,
 	)
 	if err != nil {
 		jsonError(w, "Internal server error", http.StatusInternalServerError)
@@ -56,7 +69,8 @@ func (app *App) handleListVillageObjects(w http.ResponseWriter, r *http.Request)
 	for rows.Next() {
 		var obj villageObject
 		if err := rows.Scan(&obj.ID, &obj.AssetID, &obj.CurrentState,
-			&obj.X, &obj.Y, &obj.PlacedBy, &obj.Owner, &obj.DisplayName, &obj.AttachedTo); err != nil {
+			&obj.X, &obj.Y, &obj.PlacedBy, &obj.Owner, &obj.DisplayName, &obj.AttachedTo,
+			&obj.Tags); err != nil {
 			continue
 		}
 		objects = append(objects, obj)

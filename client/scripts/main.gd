@@ -135,17 +135,26 @@ func _on_catalog_ready() -> void:
     # Build catalog in editor panel now that assets are loaded
     if editor_panel != null:
         editor_panel.build_catalog()
-        # Populate the social-hour tag dropdown. If tags are already loaded
-        # by the time we get here, push them immediately; otherwise wait on
-        # the one-shot signal.
-        if Catalog.state_tags_loaded_flag:
-            editor_panel.set_social_tag_options(Catalog.state_tags)
-        elif not Catalog.state_tags_loaded.is_connected(_on_state_tags_loaded):
-            Catalog.state_tags_loaded.connect(_on_state_tags_loaded)
+        # Push the object-tag allowlist — drives both the social-hour tag
+        # dropdown and the per-instance tag editor. If tags are already
+        # loaded, push immediately; otherwise subscribe for the one-shot.
+        if Catalog.object_tags_loaded_flag:
+            editor_panel.set_social_tag_options(Catalog.object_tags)
+        elif not Catalog.object_tags_loaded.is_connected(_on_object_tags_loaded):
+            Catalog.object_tags_loaded.connect(_on_object_tags_loaded)
+    # Tag mutations broadcast back via this world signal — forward to the
+    # panel so the chips refresh in place.
+    if world != null and editor_panel != null:
+        if not world.object_tags_updated.is_connected(_on_object_tags_updated_from_world):
+            world.object_tags_updated.connect(_on_object_tags_updated_from_world)
 
-func _on_state_tags_loaded() -> void:
+func _on_object_tags_loaded() -> void:
     if editor_panel != null:
-        editor_panel.set_social_tag_options(Catalog.state_tags)
+        editor_panel.set_social_tag_options(Catalog.object_tags)
+
+func _on_object_tags_updated_from_world(object_id: String, tags: Array) -> void:
+    if editor_panel != null:
+        editor_panel.apply_object_tags_external(object_id, tags)
 
 func _build_ui() -> void:
     # Top bar — lives on the editor CanvasLayer

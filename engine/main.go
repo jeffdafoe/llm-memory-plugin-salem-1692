@@ -109,6 +109,9 @@ func main() {
 	authed("PATCH /api/village/objects/{id}/name", app.handleSetVillageObjectDisplayName)
 	authed("PATCH /api/village/objects/{id}/state", app.handleSetVillageObjectState)
 	authed("PATCH /api/village/objects/{id}/position", app.handleMoveVillageObject)
+	authed("GET /api/village/object-tags", app.handleListObjectTags)
+	authed("POST /api/village/objects/{id}/tags", app.handleAddObjectTag)
+	authed("DELETE /api/village/objects/{id}/tags/{tag}", app.handleRemoveObjectTag)
 
 	// Terrain grid
 	authed("GET /api/village/terrain", app.handleGetTerrain)
