@@ -353,15 +353,25 @@ func _ready() -> void:
     _obj_tags_chips_box.add_theme_constant_override("separation", 4)
     _asset_fields_section.add_child(_obj_tags_chips_box)
 
+    # Add-tag row. Dropdown + button use the same styles the rest of the
+    # selection panel does (dropdown_style for OptionButtons, behavior_style
+    # for action buttons — see shared/notes/codebase/salem-editor-ui-styles).
     var obj_tags_add_row = HBoxContainer.new()
     obj_tags_add_row.add_theme_constant_override("separation", 6)
     _asset_fields_section.add_child(obj_tags_add_row)
     _obj_tags_add_dropdown = OptionButton.new()
     _obj_tags_add_dropdown.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    _obj_tags_add_dropdown.add_theme_color_override("font_color", COLOR_TEXT)
+    _obj_tags_add_dropdown.add_theme_font_override("font", _font)
+    _obj_tags_add_dropdown.add_theme_font_size_override("font_size", 12)
+    _obj_tags_add_dropdown.add_theme_stylebox_override("normal", dropdown_style)
     obj_tags_add_row.add_child(_obj_tags_add_dropdown)
     var obj_tags_add_btn = Button.new()
     obj_tags_add_btn.text = "Add tag"
-    obj_tags_add_btn.add_theme_font_size_override("font_size", 11)
+    obj_tags_add_btn.add_theme_color_override("font_color", COLOR_TEXT)
+    obj_tags_add_btn.add_theme_font_override("font", _font)
+    obj_tags_add_btn.add_theme_font_size_override("font_size", 12)
+    obj_tags_add_btn.add_theme_stylebox_override("normal", dropdown_style)
     obj_tags_add_btn.pressed.connect(_on_obj_tag_add_pressed)
     obj_tags_add_row.add_child(obj_tags_add_btn)
 
