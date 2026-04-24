@@ -163,9 +163,41 @@ func _clamp_position() -> void:
     else:
         position.y = clampf(position.y, min_y, max_y)
 
-## Jump the camera to a world position, clamped to map bounds. Used by the
-## panel's People list to focus on the selected villager — especially
-## useful when they're indoors and otherwise invisible on the map.
+## Smooth tween duration when center_on is called from the sidebar list.
+const CENTER_ON_DURATION: float = 0.3
+
+var _center_on_tween: Tween = null
+
+## Smoothly pan the camera to a world position, clamped to map bounds.
+## Used by the sidebar Villagers browser and the selection panel's People
+## list to focus on a selected villager — especially useful when they're
+## indoors and otherwise invisible on the map. Replaces any in-flight
+## tween so rapid clicks always target the latest request.
 func center_on(world_pos: Vector2) -> void:
-    position = world_pos
-    _clamp_position()
+    var target: Vector2 = _clamp_position_value(world_pos)
+    if _center_on_tween != null and _center_on_tween.is_valid():
+        _center_on_tween.kill()
+    _center_on_tween = create_tween()
+    _center_on_tween.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+    _center_on_tween.tween_property(self, "position", target, CENTER_ON_DURATION)
+
+## Compute the clamped position for an arbitrary target without mutating
+## the camera. Mirrors the logic in _clamp_position so the tween lands
+## inside map bounds instead of being clamped mid-flight.
+func _clamp_position_value(target: Vector2) -> Vector2:
+    var viewport_size: Vector2 = get_viewport_rect().size
+    var half_view: Vector2 = viewport_size / (2.0 * zoom)
+    var min_x: float = map_bounds.position.x + half_view.x
+    var min_y: float = map_bounds.position.y + half_view.y
+    var max_x: float = map_bounds.end.x - half_view.x
+    var max_y: float = map_bounds.end.y - half_view.y
+    var out := Vector2.ZERO
+    if min_x > max_x:
+        out.x = map_bounds.position.x + map_bounds.size.x / 2.0
+    else:
+        out.x = clampf(target.x, min_x, max_x)
+    if min_y > max_y:
+        out.y = map_bounds.position.y + map_bounds.size.y / 2.0
+    else:
+        out.y = clampf(target.y, min_y, max_y)
+    return out

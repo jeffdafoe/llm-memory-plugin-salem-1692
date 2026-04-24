@@ -13,6 +13,11 @@ signal npc_selected(info: Dictionary)
 signal npc_deselected
 signal mode_changed(mode: Mode)
 
+## Emitted on every mouse motion over the map (not over sidebar / top bar)
+## while edit mode is active. Throttled to only fire when the tile changes.
+## Wired by main.gd to update the top-bar cursor-tile readout.
+signal cursor_tile_changed(tile_x: int, tile_y: int)
+
 enum Mode { SELECT, PLACE, MOVE, TERRAIN, ASSIGN_HOME, ASSIGN_WORK }
 
 var current_mode: Mode = Mode.SELECT
@@ -38,6 +43,10 @@ var popup_open: bool = false
 # Set to true when the editor consumes a left-click (object hit, placement, etc.)
 # Camera checks this to decide whether left-click should pan.
 var left_click_used: bool = false
+
+# Throttle state for cursor_tile_changed — don't re-emit every pixel of
+# mouse motion, only when the hovered tile actually changes.
+var _last_cursor_tile: Vector2i = Vector2i(-9999, -9999)
 
 # Selection border node — added as child of selected object. Outlines the
 # asset's PATHFIND footprint (per-side tile counts from the catalog), not
@@ -127,6 +136,16 @@ func _input(event: InputEvent) -> void:
         return
     if popup_open:
         return
+
+    # Cursor tile readout — emit before the "active operation" early
+    # returns so the readout keeps updating during drags, placements,
+    # terrain painting, etc. Only when the cursor is over the map.
+    if event is InputEventMouseMotion and not _is_over_ui(event.position):
+        var world_pos: Vector2 = world.get_global_mouse_position()
+        var tile: Vector2i = world.world_to_tile(world_pos)
+        if tile != _last_cursor_tile:
+            _last_cursor_tile = tile
+            cursor_tile_changed.emit(tile.x, tile.y)
 
     # --- Active operations that own all input until done ---
 

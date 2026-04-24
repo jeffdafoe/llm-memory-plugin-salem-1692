@@ -10,6 +10,10 @@ var edit_button: Button = null
 var config_button: Button = null
 var logout_button: Button = null
 var username_label: Label = null
+## Cursor tile readout — only visible in edit mode. Shows the tile the
+## mouse is hovering over so admins can place things at specific
+## coordinates and interpret list-view "at X,Y" fallbacks.
+var cursor_tile_label: Label = null
 var _editor_active: bool = false
 
 # Theme colors (matching login screen)
@@ -66,6 +70,18 @@ func _ready() -> void:
     right_box.add_theme_constant_override("separation", 8)
     right_box.alignment = BoxContainer.ALIGNMENT_END
     hbox.add_child(right_box)
+
+    # Cursor tile readout. Placed before the username so it reads
+    # "Tile: 42, 17   jeff   Edit  Config  Logout" from left to right.
+    # Hidden outside edit mode — this is admin-only information.
+    cursor_tile_label = Label.new()
+    cursor_tile_label.text = ""
+    cursor_tile_label.visible = false
+    cursor_tile_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+    cursor_tile_label.add_theme_font_override("font", _font)
+    cursor_tile_label.add_theme_font_size_override("font_size", 14)
+    cursor_tile_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+    right_box.add_child(cursor_tile_label)
 
     # Username label
     username_label = Label.new()
@@ -133,6 +149,22 @@ func _make_button(label: String) -> Button:
 
 func set_username(name: String) -> void:
     username_label.text = name
+
+## Update the cursor tile readout. Called from main.gd when the editor
+## emits a cursor_tile_changed signal.
+func set_cursor_tile(x: int, y: int) -> void:
+    if cursor_tile_label == null:
+        return
+    cursor_tile_label.text = "Tile: %d, %d" % [x, y]
+
+## Show or hide the cursor tile readout. Called when edit mode is toggled
+## and when the mouse leaves the map area.
+func set_cursor_tile_visible(show: bool) -> void:
+    if cursor_tile_label == null:
+        return
+    cursor_tile_label.visible = show
+    if not show:
+        cursor_tile_label.text = ""
 
 func set_edit_visible(show: bool) -> void:
     edit_button.visible = show

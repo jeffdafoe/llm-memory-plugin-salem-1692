@@ -7,6 +7,11 @@ extends Node2D
 ## (main.gd) refresh the editor panel if the changed NPC is currently selected.
 signal npc_metadata_changed(npc_id: String)
 
+## Emitted when the placed_npcs dictionary gains or loses an entry — NPC
+## created or deleted from anywhere (local placement or WS broadcast).
+## The sidebar Villagers browser rebuilds its list on this signal.
+signal npc_list_changed
+
 const MapGenerator = preload("res://scripts/map_generator.gd")
 const WangLookup = preload("res://scripts/wang_lookup.gd")
 const TerrainRendererScript = preload("res://scripts/terrain_renderer.gd")
@@ -368,6 +373,7 @@ func remove_npc_by_id(npc_id: String) -> void:
         return
     placed_npcs.erase(npc_id)
     container.queue_free()
+    npc_list_changed.emit()
 
 ## Handle an npc_created broadcast — adds the new villager to placed_npcs
 ## and renders it (downloading the sheet first if it's an unseen sprite).
@@ -511,6 +517,7 @@ func _render_npc(npc: Dictionary) -> void:
 
     objects_node.add_child(container)
     placed_npcs[npc_id] = container
+    npc_list_changed.emit()
 
 ## Facing direction from a movement vector. |dx| vs |dy| picks the dominant
 ## axis, sign picks N/S/E/W. Matches the server's deriveFacing so server and

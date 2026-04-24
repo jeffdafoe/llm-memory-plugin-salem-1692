@@ -237,7 +237,14 @@ func _build_ui() -> void:
     editor.npc_selected.connect(_on_editor_npc_selected)
     editor.npc_deselected.connect(_on_editor_npc_deselected)
     world.npc_metadata_changed.connect(_on_npc_metadata_changed)
+    # Villagers browser refreshes on both list changes (create/delete)
+    # and per-NPC metadata changes (rename / behavior / inside-flip).
+    world.npc_list_changed.connect(_on_villagers_list_should_refresh)
+    world.npc_metadata_changed.connect(func(_id): _on_villagers_list_should_refresh())
     editor.mode_changed.connect(_on_editor_mode_changed)
+    # Cursor tile readout — editor emits on mouse motion over the map,
+    # top bar renders the coords. Hidden whenever edit mode turns off.
+    editor.cursor_tile_changed.connect(_on_cursor_tile_changed)
 
 func _on_config_pressed() -> void:
     if config_panel != null:
@@ -248,6 +255,8 @@ func _on_edit_toggled(active: bool) -> void:
     editor_panel.visible = active
     editor.active = active
     camera.editor_active = active
+    if top_bar != null:
+        top_bar.set_cursor_tile_visible(active)
     if not active:
         editor._deselect()
         editor.set_mode(editor.Mode.SELECT)
@@ -299,6 +308,8 @@ func _on_panel_delete() -> void:
 
 func _on_editor_object_selected(info: Dictionary) -> void:
     if editor_panel != null:
+        # Selecting a non-NPC object clears the Villagers list highlight.
+        editor_panel.sync_villager_selection("")
         editor_panel.show_selection(info)
 
 func _on_editor_object_deselected() -> void:
@@ -496,6 +507,21 @@ func _on_npc_metadata_changed(npc_id: String) -> void:
         info["social_start_hour"] = container.get_meta("social_start_hour")
         info["social_end_hour"] = container.get_meta("social_end_hour")
     editor_panel.show_npc_selection(info)
+
+## Rebuild the Villagers list when it's actually visible. Wired to
+## world.npc_list_changed (create/delete) and npc_metadata_changed
+## (rename / behavior / inside-flip). No-op when the tab isn't open —
+## the list rebuilds on activation anyway.
+func _on_villagers_list_should_refresh(_ignored = null) -> void:
+    if editor_panel == null:
+        return
+    if editor_panel._villagers_scroll != null and editor_panel._villagers_scroll.visible:
+        editor_panel.rebuild_villagers_list()
+
+## Editor reports the tile under the cursor; top bar renders it.
+func _on_cursor_tile_changed(tile_x: int, tile_y: int) -> void:
+    if top_bar != null:
+        top_bar.set_cursor_tile(tile_x, tile_y)
 
 func _on_attachment_requested(overlay_asset_id: String) -> void:
     if editor.selected_object != null:
