@@ -162,29 +162,35 @@ func (app *App) evaluateSocialSchedule(ctx context.Context, s *socialRow, now ti
 	if boundaryAt.IsZero() {
 		return
 	}
-	// Diagnostic log to debug why the scheduler appears to fire every tick
-	// despite a seemingly correct stamp. Remove once the root cause is
-	// settled.
-	log.Printf("social-scheduler: eval %s now=%s boundary=%s kind=%d stamp_valid=%v stamp=%s before=%v",
-		s.ID, now.Format(time.RFC3339), boundaryAt.Format(time.RFC3339), int(kind),
-		s.SocialLastBoundaryAt.Valid,
-		func() string {
-			if s.SocialLastBoundaryAt.Valid {
-				return s.SocialLastBoundaryAt.Time.Format(time.RFC3339)
-			}
-			return "NULL"
-		}(),
-		s.SocialLastBoundaryAt.Valid && s.SocialLastBoundaryAt.Time.Before(boundaryAt),
-	)
 	if s.SocialLastBoundaryAt.Valid && !s.SocialLastBoundaryAt.Time.Before(boundaryAt) {
 		return
 	}
 
-	var targetStructureID string
-	var destX, destY float64
-	label := "social-enter"
+	// stampBoundary marks this boundary as processed so future ticks skip.
+	// Called from every early-exit below so the scheduler doesn't spin on
+	// no-op evaluations (e.g. NPC isn't at the tavern, no tagged structure
+	// exists, etc.).
+	stampBoundary := func() {
+		if _, err := app.DB.Exec(ctx,
+			`UPDATE npc SET social_last_boundary_at = $2 WHERE id = $1`,
+			s.ID, boundaryAt,
+		); err != nil {
+			log.Printf("social-scheduler: stamp %s: %v", s.ID, err)
+		}
+	}
+
 	switch kind {
 	case socialEnter:
+		// Only walk the NPC in if they aren't already inside a tavern-tagged
+		// structure. If they are (e.g. admin placed them there manually),
+		// just stamp and exit — no redundant walk.
+		if s.InsideStructureID.Valid {
+			alreadyAtTavern, err := app.structureHasTag(ctx, s.InsideStructureID.String, s.SocialTag)
+			if err == nil && alreadyAtTavern {
+				stampBoundary()
+				return
+			}
+		}
 		id, dx, dy, err := app.findNearestStructureByTag(ctx, s.SocialTag, s.CurrentX, s.CurrentY)
 		if err != nil {
 			log.Printf("social-scheduler: find %s for %s: %v", s.SocialTag, s.ID, err)
@@ -193,38 +199,61 @@ func (app *App) evaluateSocialSchedule(ctx context.Context, s *socialRow, now ti
 		if id == "" {
 			// No tagged structure exists. Stamp so we don't retry every
 			// tick until the window ends; admin fixes by tagging a state.
-			if _, err := app.DB.Exec(ctx,
-				`UPDATE npc SET social_last_boundary_at = $2 WHERE id = $1`,
-				s.ID, boundaryAt,
-			); err != nil {
-				log.Printf("social-scheduler: stamp %s: %v", s.ID, err)
-			}
+			stampBoundary()
 			return
 		}
-		targetStructureID = id
-		destX, destY = dx, dy
-	case socialLeave:
-		targetStructureID = s.HomeStructureID
-		destX, destY = s.HomeDoorX, s.HomeDoorY
-		label = "social-leave"
-	}
-
-	alreadyThere := s.InsideStructureID.Valid && s.InsideStructureID.String == targetStructureID
-	if !alreadyThere {
 		npc := &behaviorNPC{ID: s.ID, CurX: s.CurrentX, CurY: s.CurrentY}
 		app.interpolateCurrentPos(npc)
-		if err := app.startReturnWalk(ctx, npc, destX, destY, targetStructureID, label); err != nil {
-			log.Printf("social-scheduler: %s %s dispatch: %v", label, s.ID, err)
+		if err := app.startReturnWalk(ctx, npc, dx, dy, id, "social-enter"); err != nil {
+			log.Printf("social-scheduler: social-enter %s dispatch: %v", s.ID, err)
 			return
 		}
-	}
+		stampBoundary()
 
-	if _, err := app.DB.Exec(ctx,
-		`UPDATE npc SET social_last_boundary_at = $2 WHERE id = $1`,
-		s.ID, boundaryAt,
-	); err != nil {
-		log.Printf("social-scheduler: stamp %s: %v", s.ID, err)
+	case socialLeave:
+		// Critical: only walk NPC home if they're CURRENTLY inside a
+		// tavern-tagged structure. Earlier versions walked every NPC home
+		// at every leave boundary — which meant an admin setting social
+		// hours mid-day yanked workers out of their shops because the
+		// "most recent boundary ≤ now" was a leave boundary. That isn't
+		// the intent: leave is the tavern→home transition, not a policy
+		// enforced from any location.
+		if !s.InsideStructureID.Valid {
+			stampBoundary()
+			return
+		}
+		atTavern, err := app.structureHasTag(ctx, s.InsideStructureID.String, s.SocialTag)
+		if err != nil {
+			log.Printf("social-scheduler: tag check %s: %v", s.ID, err)
+			return
+		}
+		if !atTavern {
+			// NPC is inside a non-tavern structure (likely their work or
+			// home). Nothing to leave from. Stamp and exit.
+			stampBoundary()
+			return
+		}
+		npc := &behaviorNPC{ID: s.ID, CurX: s.CurrentX, CurY: s.CurrentY}
+		app.interpolateCurrentPos(npc)
+		if err := app.startReturnWalk(ctx, npc, s.HomeDoorX, s.HomeDoorY, s.HomeStructureID, "social-leave"); err != nil {
+			log.Printf("social-scheduler: social-leave %s dispatch: %v", s.ID, err)
+			return
+		}
+		stampBoundary()
 	}
+}
+
+// structureHasTag reports whether the placed object carries the given
+// per-instance tag. Used by the social scheduler to check whether an NPC
+// is "at the tavern" before dispatching a tavern-related walk.
+func (app *App) structureHasTag(ctx context.Context, objectID, tag string) (bool, error) {
+	var present bool
+	err := app.DB.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM village_object_tag
+		               WHERE object_id = $1 AND tag = $2)`,
+		objectID, tag,
+	).Scan(&present)
+	return present, err
 }
 
 // dispatchSocialSchedules is the per-tick entry, called from runServerTick.
