@@ -36,6 +36,12 @@ var editor_active: bool = false
 # Reference to the editor node — set by main.gd so camera can check left_click_used
 var editor_ref: CanvasLayer = null
 
+# Reference to the editor side panel — used by _is_over_ui to query the
+# actual rendered panel bounds rather than trusting a hardcoded width.
+# The selection panel grows wider than the default tool palette when an NPC
+# is selected (extra controls, scrollbar), so a constant lies. Set by main.gd.
+var editor_panel_ref: Control = null
+
 # When true, a modal overlay is open — don't zoom on scroll
 var modal_open: bool = false
 
@@ -43,17 +49,24 @@ var modal_open: bool = false
 var _panning: bool = false
 var _pan_start: Vector2 = Vector2.ZERO
 
-## UI panel area — clicks here belong to the editor UI, not the camera
-const PANEL_WIDTH: float = 240.0
+## UI panel area — fallback constants used when editor_panel_ref isn't set yet
+## (e.g. very early frames before main.gd has wired up the reference).
+const PANEL_WIDTH_FALLBACK: float = 240.0
 const TOP_BAR_HEIGHT: float = 40.0
 
 ## Returns true if the screen position is over the editor UI panel area.
+## Prefers the live panel rect when available so the boundary tracks any
+## width changes (e.g. NPC selection makes the panel wider than the default).
 func _is_over_ui(pos: Vector2) -> bool:
     if not editor_active:
         return pos.y < TOP_BAR_HEIGHT
     if pos.y < TOP_BAR_HEIGHT:
         return true
-    if pos.x < PANEL_WIDTH:
+    if editor_panel_ref != null and editor_panel_ref.visible:
+        var panel_rect: Rect2 = editor_panel_ref.get_global_rect()
+        if pos.x < panel_rect.end.x:
+            return true
+    elif pos.x < PANEL_WIDTH_FALLBACK:
         return true
     return false
 

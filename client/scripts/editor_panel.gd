@@ -586,10 +586,27 @@ func _ready() -> void:
     sprite_row.add_theme_constant_override("separation", 6)
     _npc_fields_section.add_child(sprite_row)
 
+    # Reusable input/button stylebox — same shape the BEHAVIOR/AGENT dropdowns
+    # below use, declared inline so this section can be moved/edited
+    # independently of those dropdowns.
+    var sprite_btn_style = StyleBoxFlat.new()
+    sprite_btn_style.bg_color = Color(0.08, 0.07, 0.05, 1.0)
+    sprite_btn_style.border_width_left = 1
+    sprite_btn_style.border_width_top = 1
+    sprite_btn_style.border_width_right = 1
+    sprite_btn_style.border_width_bottom = 1
+    sprite_btn_style.border_color = Color(0.3, 0.24, 0.15, 0.8)
+    sprite_btn_style.content_margin_left = 6.0
+    sprite_btn_style.content_margin_right = 6.0
+    sprite_btn_style.content_margin_top = 4.0
+    sprite_btn_style.content_margin_bottom = 4.0
+
     _npc_sprite_label = Label.new()
-    _npc_sprite_label.add_theme_color_override("font_color", COLOR_TEXT)
+    _npc_sprite_label.add_theme_font_override("font", _font)
     _npc_sprite_label.add_theme_font_size_override("font_size", 13)
+    _npc_sprite_label.add_theme_color_override("font_color", COLOR_TEXT)
     _npc_sprite_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    _npc_sprite_label.size_flags_vertical = Control.SIZE_SHRINK_CENTER
     _npc_sprite_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
     sprite_row.add_child(_npc_sprite_label)
 
@@ -598,6 +615,8 @@ func _ready() -> void:
     _npc_sprite_change_button.add_theme_font_override("font", _font)
     _npc_sprite_change_button.add_theme_font_size_override("font_size", 12)
     _npc_sprite_change_button.add_theme_color_override("font_color", COLOR_TEXT)
+    _npc_sprite_change_button.add_theme_stylebox_override("normal", sprite_btn_style)
+    _npc_sprite_change_button.size_flags_vertical = Control.SIZE_SHRINK_CENTER
     _npc_sprite_change_button.pressed.connect(_on_npc_sprite_change_pressed)
     sprite_row.add_child(_npc_sprite_change_button)
 
