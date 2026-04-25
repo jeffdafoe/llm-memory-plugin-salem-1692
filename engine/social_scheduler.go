@@ -44,6 +44,7 @@ type socialRow struct {
 	HomeStructureID      string
 	HomeDoorX            float64
 	HomeDoorY            float64
+	AgentOverrideUntil   sql.NullTime
 }
 
 // loadSocialRows returns every NPC with a complete social schedule AND a
@@ -57,7 +58,8 @@ func (app *App) loadSocialRows(ctx context.Context) ([]socialRow, error) {
 		        n.current_x, n.current_y,
 		        n.home_structure_id,
 		        COALESCE(hs.x + ha.door_offset_x * 32.0, hs.x),
-		        COALESCE(hs.y + ha.door_offset_y * 32.0, hs.y)
+		        COALESCE(hs.y + ha.door_offset_y * 32.0, hs.y),
+		        n.agent_override_until
 		 FROM npc n
 		 JOIN village_object hs ON hs.id = n.home_structure_id
 		 JOIN asset ha         ON ha.id = hs.asset_id
@@ -75,7 +77,8 @@ func (app *App) loadSocialRows(ctx context.Context) ([]socialRow, error) {
 		if err := rows.Scan(&s.ID, &s.SocialTag, &s.SocialStartMinute, &s.SocialEndMinute,
 			&s.SocialLastBoundaryAt, &s.InsideStructureID,
 			&s.CurrentX, &s.CurrentY,
-			&s.HomeStructureID, &s.HomeDoorX, &s.HomeDoorY); err != nil {
+			&s.HomeStructureID, &s.HomeDoorX, &s.HomeDoorY,
+			&s.AgentOverrideUntil); err != nil {
 			log.Printf("social-scheduler: scan: %v", err)
 			continue
 		}
@@ -161,6 +164,10 @@ func (app *App) findNearestStructureByTag(ctx context.Context, targetTag string,
 // matching structure) so we don't spin against the same boundary every
 // tick for the rest of the window.
 func (app *App) evaluateSocialSchedule(ctx context.Context, s *socialRow, now time.Time) {
+	// Agent override: see evaluateWorkerSchedule for the model.
+	if s.AgentOverrideUntil.Valid && now.Before(s.AgentOverrideUntil.Time) {
+		return
+	}
 	boundaryAt, kind := mostRecentSocialBoundary(now, s.SocialStartMinute, s.SocialEndMinute)
 	if boundaryAt.IsZero() {
 		return
