@@ -406,12 +406,26 @@ func stringPtrEq(a, b *string) bool {
 // on how many NPCs are currently inside it. Only structures whose asset
 // has states tagged "occupied" and "unoccupied" participate — everything
 // else is a no-op.
+//
+// Two per-asset modifiers (ZBBS-070) refine the binary "anyone inside =
+// occupied" rule:
+//   - asset.occupied_min_count: minimum headcount to flip to occupied.
+//     Defaults to 1, set to 2 for the tavern (keeper alone shouldn't
+//     make the hearth glow as if it's a gathering).
+//   - asset.occupied_night_only: when true, the occupied state is
+//     suppressed during day phase regardless of headcount. The tavern
+//     goes dark at dawn even if patrons are still inside.
 func (app *App) refreshStructureOccupancyState(ctx context.Context, structureID string) {
 	var assetID string
 	var currentState string
+	var minCount int
+	var nightOnly bool
 	if err := app.DB.QueryRow(ctx,
-		`SELECT asset_id, current_state FROM village_object WHERE id = $1`, structureID,
-	).Scan(&assetID, &currentState); err != nil {
+		`SELECT vo.asset_id, vo.current_state, a.occupied_min_count, a.occupied_night_only
+		 FROM village_object vo
+		 JOIN asset a ON a.id = vo.asset_id
+		 WHERE vo.id = $1`, structureID,
+	).Scan(&assetID, &currentState, &minCount, &nightOnly); err != nil {
 		return
 	}
 
@@ -440,9 +454,23 @@ func (app *App) refreshStructureOccupancyState(ctx context.Context, structureID 
 		return
 	}
 
+	// Decide target. Default to unoccupied; flip to occupied only when
+	// the headcount threshold is met AND the night-only gate (if set)
+	// passes. Phase comes from world_phase — single row, queried per
+	// flip rather than cached so admins force-toggling phase from the
+	// config panel takes effect immediately.
 	target := unoccupiedState
-	if occupants > 0 {
-		target = occupiedState
+	if occupants >= minCount {
+		if nightOnly {
+			var phase string
+			if err := app.DB.QueryRow(ctx, `SELECT phase FROM world_phase LIMIT 1`).Scan(&phase); err == nil {
+				if phase == "night" {
+					target = occupiedState
+				}
+			}
+		} else {
+			target = occupiedState
+		}
 	}
 	if target == currentState {
 		return
@@ -458,6 +486,37 @@ func (app *App) refreshStructureOccupancyState(ctx context.Context, structureID 
 		Type: "object_state_changed",
 		Data: map[string]string{"id": structureID, "state": target},
 	})
+}
+
+// refreshNightOnlyOccupancyStates re-evaluates every village_object
+// whose asset has occupied_night_only=true. Called from the day/night
+// phase transitions so taverns light up at dusk and go dark at dawn
+// without anyone needing to walk in or out. Without this, an
+// already-occupied tavern wouldn't change at the boundary because the
+// per-NPC inside_structure_id flip is what normally drives a refresh.
+func (app *App) refreshNightOnlyOccupancyStates(ctx context.Context) {
+	rows, err := app.DB.Query(ctx,
+		`SELECT vo.id
+		 FROM village_object vo
+		 JOIN asset a ON a.id = vo.asset_id
+		 WHERE a.occupied_night_only = TRUE`,
+	)
+	if err != nil {
+		log.Printf("refreshNightOnlyOccupancyStates: %v", err)
+		return
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	for _, id := range ids {
+		app.refreshStructureOccupancyState(ctx, id)
+	}
 }
 
 // startLamplighterRoute looks up the lamplighter NPC and runs the route.
