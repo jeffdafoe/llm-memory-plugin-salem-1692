@@ -52,6 +52,13 @@ func (app *App) runServerTick(ctx context.Context) {
 func (app *App) runServerTickOnce(ctx context.Context) {
 	app.checkAndTransition(ctx)
 	app.checkAndRotate(ctx)
+	// Agent dispatch runs FIRST among the per-NPC handlers. When an agent
+	// commits to a move, executeAgentMoveTo sets agent_override_until before
+	// returning, so the worker / rotation / social schedulers below see the
+	// override at load time and short-circuit (M6.1 short-circuits added in
+	// ZBBS-072). Order matters: if scheduled behaviors ran first, they could
+	// dispatch a worker walk that the agent then countermanded.
+	app.dispatchAgentTicks(ctx)
 	app.dispatchScheduledBehaviors(ctx)
 	app.dispatchSocialSchedules(ctx)
 }

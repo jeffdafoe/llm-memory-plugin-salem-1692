@@ -33,6 +33,10 @@ type App struct {
 	// One per NPC; advanced from applyArrival so each waypoint chains into
 	// the next state-machine step.
 	NPCBehaviors *NPCBehaviors
+
+	// agentTickClient drives /v1/agent/tick calls for LLM-controlled NPCs.
+	// Created once at startup and shared across server-tick dispatches.
+	agentTickClient *agentTickClient
 }
 
 func main() {
@@ -53,11 +57,12 @@ func main() {
 	}
 
 	app := &App{
-		DB:           pool,
-		LLMMemoryURL: llmMemoryURL,
-		Hub:          NewEventHub(),
-		NPCMovement:  newNPCMovement(),
-		NPCBehaviors: newNPCBehaviors(),
+		DB:              pool,
+		LLMMemoryURL:    llmMemoryURL,
+		Hub:             NewEventHub(),
+		NPCMovement:     newNPCMovement(),
+		NPCBehaviors:    newNPCBehaviors(),
+		agentTickClient: newAgentTickClient(llmMemoryURL),
 	}
 
 	// Build router. Routes are registered via two helpers: authed() wraps
