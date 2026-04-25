@@ -84,9 +84,11 @@ func _input(event: InputEvent) -> void:
     # Pan: middle-click and right-click always, left-click only when editor is not active
     if event is InputEventMouseButton:
         if _is_over_ui(event.position):
-            # Stop any active pan if mouse enters UI
-            if not event.pressed:
-                _panning = false
+            # Any mouse interaction with the UI ends any active map pan —
+            # both press and release. Without this, _panning could stay
+            # wedged true across a UI interaction (e.g. clicking a scrollbar)
+            # and subsequent motion events would pan the map.
+            _panning = false
             return
         var is_pan_button: bool = false
         if event.button_index == MOUSE_BUTTON_MIDDLE:
@@ -115,13 +117,23 @@ func _input(event: InputEvent) -> void:
         if event.button_mask == 0:
             _panning = false
             return
+        # If the cursor moves into the UI panel mid-pan (e.g. user grabs the
+        # selection panel's scrollbar while still holding a button), end the
+        # pan rather than continuing to translate the map from scrollbar
+        # motion. Resuming would need a fresh click on the map.
+        if _is_over_ui(event.position):
+            _panning = false
+            return
         var delta: Vector2 = event.position - _pan_start
         _pan_start = event.position
         position -= delta / zoom
         _clamp_position()
 
-    # Touch support — single finger pan
+    # Touch support — single finger pan. Same UI-area gate as mouse motion
+    # so a touch drag inside the panel doesn't pan the map underneath.
     if event is InputEventScreenDrag:
+        if _is_over_ui(event.position):
+            return
         position -= event.relative / zoom
         _clamp_position()
 
