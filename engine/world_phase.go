@@ -285,6 +285,14 @@ func (app *App) applyTransition(ctx context.Context, newPhase string) (int, erro
 		},
 	})
 
+	// Re-evaluate occupancy for night-only structures (ZBBS-070). The
+	// per-NPC inside_structure_id flip is what normally drives an
+	// occupancy refresh; without this hook a tavern that was occupied
+	// at dusk wouldn't light up at the transition because no one is
+	// "entering" to trigger the flip. Symmetric: at dawn the tavern
+	// goes dark even if patrons are still inside.
+	app.refreshNightOnlyOccupancyStates(ctx)
+
 	var lamplighterStops int
 	if hasLamplighter {
 		stops, err := app.startLamplighterRoute(ctx, tag)

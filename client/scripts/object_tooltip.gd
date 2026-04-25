@@ -14,6 +14,7 @@ const COLOR_TEXT_DIM = Color(0.63, 0.56, 0.44, 1.0)
 var _tooltip_panel: PanelContainer = null
 var _name_label: Label = null
 var _owner_label: Label = null
+var _inside_label: Label = null
 var _font: Font = null
 
 # References set by main.gd
@@ -63,6 +64,18 @@ func _ready() -> void:
     _owner_label.add_theme_font_size_override("font_size", 12)
     _owner_label.visible = false
     vbox.add_child(_owner_label)
+
+    # Lists current occupants — the placed NPCs whose
+    # inside_structure_id matches this object. Wraps so the line can
+    # accommodate a busy tavern without the panel growing unbounded.
+    _inside_label = Label.new()
+    _inside_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+    _inside_label.add_theme_font_override("font", _font)
+    _inside_label.add_theme_font_size_override("font_size", 12)
+    _inside_label.autowrap_mode = TextServer.AUTOWRAP_WORD
+    _inside_label.custom_minimum_size = Vector2(220, 0)
+    _inside_label.visible = false
+    vbox.add_child(_inside_label)
 
     add_child(_tooltip_panel)
 
@@ -115,8 +128,14 @@ func _show_tooltip(node: Node2D) -> void:
     var display_name_meta: String = node.get_meta("display_name", "")
     var is_editing: bool = editor != null and editor.active
 
-    # In viewer mode, only show tooltip if object has an owner or display name
-    if not is_editing and owner == "" and display_name_meta == "":
+    # Build the inside-occupant list up front — it influences whether
+    # the tooltip is shown at all in viewer mode.
+    var object_id: String = node.get_meta("object_id", "")
+    var inside_names: String = _format_inside_occupants(object_id)
+
+    # In viewer mode, show the tooltip if anything informative would
+    # appear: owner, custom display name, or current occupants.
+    if not is_editing and owner == "" and display_name_meta == "" and inside_names == "":
         _hide_tooltip()
         return
 
@@ -129,12 +148,48 @@ func _show_tooltip(node: Node2D) -> void:
 
     if owner != "":
         var display_name: String = world.get_owner_display_name(owner)
-        _owner_label.text = display_name
+        _owner_label.text = "Owner: " + display_name
         _owner_label.visible = true
     else:
         _owner_label.visible = false
 
+    if inside_names != "":
+        _inside_label.text = "Inside: " + inside_names
+        _inside_label.visible = true
+    else:
+        _inside_label.visible = false
+
     _tooltip_panel.visible = true
+
+## Build a comma-and-grammar-joined list of NPC display names whose
+## inside_structure_id matches the given object id. Returns "" when no
+## one is inside, "alice" for one, "alice and bob" for two, "alice, bob,
+## and carol" for three or more (Oxford comma). Sorted alphabetically
+## so the list reads consistently across hovers.
+func _format_inside_occupants(object_id: String) -> String:
+    if object_id == "" or world == null:
+        return ""
+    var names: Array = []
+    for npc_id in world.placed_npcs:
+        var container: Node2D = world.placed_npcs[npc_id]
+        if container == null:
+            continue
+        var inside_id: String = str(container.get_meta("inside_structure_id", ""))
+        if inside_id != object_id:
+            continue
+        var display_name: String = str(container.get_meta("display_name", ""))
+        if display_name == "":
+            display_name = "(unnamed)"
+        names.append(display_name)
+    if names.is_empty():
+        return ""
+    names.sort_custom(func(a, b): return a.to_lower() < b.to_lower())
+    if names.size() == 1:
+        return names[0]
+    if names.size() == 2:
+        return names[0] + " and " + names[1]
+    var head: Array = names.slice(0, names.size() - 1)
+    return ", ".join(head) + ", and " + names[names.size() - 1]
 
 func _hide_tooltip() -> void:
     if _tooltip_panel.visible:
