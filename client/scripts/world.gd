@@ -1020,6 +1020,12 @@ func _on_village_loaded(result: int, response_code: int, headers: PackedStringAr
     # behind-the-counter positions.
     _reapply_stand_offsets_for_inside_npcs()
 
+    # Same load-order race for the Villagers list: location labels read from
+    # placed_objects to resolve "near Meeting House"-style strings, so if the
+    # list rebuilt before objects loaded everyone shows "at X,Y". Re-emit so
+    # the panel rebuilds with proper landmark labels now that objects exist.
+    npc_list_changed.emit()
+
 ## Re-run the stand-offset adjustment for every NPC whose inside flag is
 ## true and whose inside_structure_id now resolves. Safe to call multiple
 ## times — _apply_stand_offset_if_applicable is a no-op for NPCs whose
