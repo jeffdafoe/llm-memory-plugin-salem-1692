@@ -149,6 +149,10 @@ type workerRow struct {
 	SocialTag         sql.NullString
 	SocialStartMinute sql.NullInt64
 	SocialEndMinute   sql.NullInt64
+
+	// Agent override (ZBBS-072, M6.1). Valid && in the future = an LLM
+	// agent owns the NPC for this window; the scheduler steps aside.
+	AgentOverrideUntil sql.NullTime
 }
 
 // loadWorkerRows selects every worker NPC with both home and work
@@ -165,7 +169,8 @@ func (app *App) loadWorkerRows(ctx context.Context) ([]workerRow, error) {
 		        n.work_structure_id,
 		        COALESCE(ws.x + wa.door_offset_x * 32.0, ws.x),
 		        COALESCE(ws.y + wa.door_offset_y * 32.0, ws.y),
-		        n.social_tag, n.social_start_minute, n.social_end_minute
+		        n.social_tag, n.social_start_minute, n.social_end_minute,
+		        n.agent_override_until
 		 FROM npc n
 		 JOIN village_object hs ON hs.id = n.home_structure_id
 		 JOIN asset ha         ON ha.id = hs.asset_id
@@ -187,7 +192,8 @@ func (app *App) loadWorkerRows(ctx context.Context) ([]workerRow, error) {
 			&w.InsideStructureID, &w.CurrentX, &w.CurrentY,
 			&w.HomeStructureID, &w.HomeDoorX, &w.HomeDoorY,
 			&w.WorkStructureID, &w.WorkDoorX, &w.WorkDoorY,
-			&w.SocialTag, &w.SocialStartMinute, &w.SocialEndMinute); err != nil {
+			&w.SocialTag, &w.SocialStartMinute, &w.SocialEndMinute,
+			&w.AgentOverrideUntil); err != nil {
 			log.Printf("scheduler: scan worker row: %v", err)
 			continue
 		}
@@ -283,6 +289,13 @@ func mostRecentWorkerBoundary(now time.Time, startMin, endMin int) (time.Time, w
 // set, otherwise the global dawn/dusk pair (same shift NPCs without
 // per-NPC overrides used to get via the offset=0 path).
 func (app *App) evaluateWorkerSchedule(ctx context.Context, w *workerRow, now time.Time, dawnMin, duskMin int) {
+	// Agent override: when an LLM agent owns the NPC, step aside entirely.
+	// The /agent/tick endpoint forward-stamps last_shift_tick_at to the
+	// override expiry, so the boundary missed during this window is dropped
+	// rather than dispatched the moment the override clears.
+	if w.AgentOverrideUntil.Valid && now.Before(w.AgentOverrideUntil.Time) {
+		return
+	}
 	startMin, endMin := resolveWorkerWindow(w, dawnMin, duskMin)
 	boundaryAt, kind := mostRecentWorkerBoundary(now, startMin, endMin)
 	if boundaryAt.IsZero() {
@@ -357,13 +370,14 @@ func (app *App) evaluateWorkerSchedule(ctx context.Context, w *workerRow, now ti
 // fields) aren't returned and fall back to the legacy world_rotation_time
 // trigger via applyRotation.
 type rotationRow struct {
-	ID               string
-	Behavior         string
-	ScheduleInterval int
-	ActiveStartHour  int
-	ActiveEndHour    int
-	LatenessWindow   int
-	LastShiftTickAt  sql.NullTime
+	ID                 string
+	Behavior           string
+	ScheduleInterval   int
+	ActiveStartHour    int
+	ActiveEndHour      int
+	LatenessWindow     int
+	LastShiftTickAt    sql.NullTime
+	AgentOverrideUntil sql.NullTime
 }
 
 // loadCustomScheduledRotationNPCs returns every washerwoman / town_crier
@@ -373,7 +387,8 @@ type rotationRow struct {
 func (app *App) loadCustomScheduledRotationNPCs(ctx context.Context) ([]rotationRow, error) {
 	rows, err := app.DB.Query(ctx,
 		`SELECT id, behavior, schedule_interval_hours, active_start_hour,
-		        active_end_hour, lateness_window_minutes, last_shift_tick_at
+		        active_end_hour, lateness_window_minutes, last_shift_tick_at,
+		        agent_override_until
 		 FROM npc
 		 WHERE behavior IN ($1, $2)
 		   AND schedule_interval_hours IS NOT NULL`,
@@ -389,7 +404,7 @@ func (app *App) loadCustomScheduledRotationNPCs(ctx context.Context) ([]rotation
 		var r rotationRow
 		if err := rows.Scan(&r.ID, &r.Behavior, &r.ScheduleInterval,
 			&r.ActiveStartHour, &r.ActiveEndHour, &r.LatenessWindow,
-			&r.LastShiftTickAt); err != nil {
+			&r.LastShiftTickAt, &r.AgentOverrideUntil); err != nil {
 			log.Printf("scheduler: scan rotation row: %v", err)
 			continue
 		}
@@ -443,6 +458,10 @@ func mostRecentRotationFiring(now time.Time, startH, endH, intervalH int) time.T
 // when no route candidates are available (empty laundry set etc.) so the
 // scheduler doesn't keep retrying a no-op for the rest of the window.
 func (app *App) evaluateRotationSchedule(ctx context.Context, r *rotationRow, now time.Time) {
+	// Agent override: see evaluateWorkerSchedule for the model.
+	if r.AgentOverrideUntil.Valid && now.Before(r.AgentOverrideUntil.Time) {
+		return
+	}
 	boundaryAt := mostRecentRotationFiring(now, r.ActiveStartHour, r.ActiveEndHour, r.ScheduleInterval)
 	if boundaryAt.IsZero() {
 		return
