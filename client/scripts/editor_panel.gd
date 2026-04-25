@@ -2014,21 +2014,32 @@ func _populate_people_section(object_id: String, asset_id: String) -> void:
             continue
         var home_id: String = str(container.get_meta("home_structure_id", ""))
         var work_id: String = str(container.get_meta("work_structure_id", ""))
+        var inside_id: String = str(container.get_meta("inside_structure_id", ""))
         var is_home: bool = home_id == object_id
         var is_work: bool = work_id == object_id
-        if not is_home and not is_work:
+        # Also list NPCs who are CURRENTLY inside this structure even if
+        # they don't live or work here — the social scheduler walks NPCs
+        # to tagged structures (e.g. a tavern they don't own), and an
+        # admin selecting that structure expects to see who's actually
+        # there, not just who belongs there.
+        var is_inside: bool = inside_id == object_id
+        if not is_home and not is_work and not is_inside:
             continue
         any = true
         var label: String = str(container.get_meta("display_name", ""))
         if label == "":
             label = "(unnamed)"
-        var tag: String = ""
-        if is_home and is_work:
-            tag = "  (home & work)"
-        elif is_home:
-            tag = "  (home)"
-        else:
-            tag = "  (work)"
+        # Build the role suffix by joining whichever relations apply.
+        # Order: home, work, inside — so "(home, currently inside)" reads
+        # naturally for a villager standing in their own house.
+        var parts: Array = []
+        if is_home:
+            parts.append("home")
+        if is_work:
+            parts.append("work")
+        if is_inside:
+            parts.append("currently inside")
+        var tag: String = "  (" + ", ".join(parts) + ")"
         var row := Button.new()
         row.text = label + tag
         row.add_theme_font_override("font", _font)
