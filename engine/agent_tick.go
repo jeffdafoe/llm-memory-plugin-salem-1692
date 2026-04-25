@@ -67,7 +67,15 @@ type agentNPCRow struct {
 // Future co-location grouping (M6.5) will run NPCs at the same location in
 // sequential rounds so they can react to each other's speech.
 func (app *App) dispatchAgentTicks(ctx context.Context) {
-	now := time.Now()
+	cfg, err := app.loadWorldConfig(ctx)
+	if err != nil {
+		log.Printf("agent-tick: load config: %v", err)
+		return
+	}
+	// Use world timezone — Salem's "game time" is the configured world
+	// timezone (America/New_York by default), not the server's UTC clock.
+	// Same pattern the worker scheduler uses.
+	now := time.Now().In(cfg.Location)
 	if now.Hour() < agentTickActiveStartHour || now.Hour() >= agentTickActiveEndHour {
 		// Outside active hours — skip entirely. Avoids burning budget while
 		// the village sleeps. Game-hour boundaries during the night will be
