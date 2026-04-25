@@ -63,6 +63,15 @@ var event_client: Node = null
 # API base
 var api_base: String = ""
 
+# Cached "HH:MM" dawn/dusk strings from /api/village/world. The editor
+# panel reads these (via get_dawn_minute / get_dusk_minute) so it can
+# prepopulate empty NPC schedule windows from the global defaults.
+# Initialized to the engine's defaults (defaultDawn / defaultDusk in
+# engine/world_phase.go) so the panel still has sane numbers if the
+# panel renders before _on_world_phase_loaded completes.
+var dawn_time_str: String = "07:00"
+var dusk_time_str: String = "19:00"
+
 func _ready() -> void:
     if OS.has_feature("web"):
         api_base = JavaScriptBridge.eval("window.location.origin", true)
@@ -427,9 +436,10 @@ func apply_npc_work_structure_change(data: Dictionary) -> void:
     _apply_npc_structure_meta(data, "work_structure_id")
 
 ## Apply a server-broadcast schedule update. Mirrors the PATCH payload:
-## offset is always present, interval/start/end are null when cadence is
-## off. Emits npc_metadata_changed so the editor panel re-populates when
-## this NPC is the current selection on another client.
+## start_minute/end_minute may be null (worker inherits dawn/dusk),
+## interval/start/end are null when cadence is off, lateness is always
+## present. Emits npc_metadata_changed so the editor panel re-populates
+## when this NPC is the current selection on another client.
 func apply_npc_schedule_change(data: Dictionary) -> void:
     var npc_id: String = data.get("id", "")
     if npc_id == "":
@@ -437,8 +447,15 @@ func apply_npc_schedule_change(data: Dictionary) -> void:
     var container: Node2D = placed_npcs.get(npc_id, null)
     if container == null:
         return
-    container.set_meta("schedule_offset_minutes", int(data.get("schedule_offset_minutes", 0)))
     container.set_meta("lateness_window_minutes", int(data.get("lateness_window_minutes", 0)))
+    var start_min = data.get("schedule_start_minute", null)
+    var end_min = data.get("schedule_end_minute", null)
+    if start_min == null or end_min == null:
+        container.remove_meta("schedule_start_minute")
+        container.remove_meta("schedule_end_minute")
+    else:
+        container.set_meta("schedule_start_minute", int(start_min))
+        container.set_meta("schedule_end_minute", int(end_min))
     var interval = data.get("schedule_interval_hours", null)
     var start_h = data.get("active_start_hour", null)
     var end_h = data.get("active_end_hour", null)
@@ -555,8 +572,15 @@ func _render_npc(npc: Dictionary) -> void:
     container.set_meta("llm_memory_agent", npc.get("llm_memory_agent", ""))
     container.set_meta("home_structure_id", npc.get("home_structure_id", ""))
     container.set_meta("work_structure_id", npc.get("work_structure_id", ""))
-    container.set_meta("schedule_offset_minutes", int(npc.get("schedule_offset_minutes", 0)))
     container.set_meta("lateness_window_minutes", int(npc.get("lateness_window_minutes", 0)))
+    # Worker work-window (ZBBS-071) — carry only when both are set so the
+    # editor panel can distinguish "NULL inherits dawn/dusk" from the
+    # 0/0 minute literal.
+    var _sched_start = npc.get("schedule_start_minute", null)
+    var _sched_end = npc.get("schedule_end_minute", null)
+    if _sched_start != null and _sched_end != null:
+        container.set_meta("schedule_start_minute", int(_sched_start))
+        container.set_meta("schedule_end_minute", int(_sched_end))
     # interval/start/end are optional (all-or-none). Only set meta when the
     # server actually sent values so the editor panel can distinguish
     # "null cadence" from 0-valued cadence.
@@ -567,14 +591,15 @@ func _render_npc(npc: Dictionary) -> void:
         container.set_meta("schedule_interval_hours", int(_interval))
         container.set_meta("active_start_hour", int(_start_h))
         container.set_meta("active_end_hour", int(_end_h))
-    # Social-hour overlay (ZBBS-068) — carry only when all three are set.
+    # Social-hour overlay (ZBBS-068, minute-precision since ZBBS-071) —
+    # carry only when all three are set.
     var _social_tag = npc.get("social_tag", null)
-    var _social_start = npc.get("social_start_hour", null)
-    var _social_end = npc.get("social_end_hour", null)
+    var _social_start = npc.get("social_start_minute", null)
+    var _social_end = npc.get("social_end_minute", null)
     if _social_tag != null and _social_tag != "" and _social_start != null and _social_end != null:
         container.set_meta("social_tag", str(_social_tag))
-        container.set_meta("social_start_hour", int(_social_start))
-        container.set_meta("social_end_hour", int(_social_end))
+        container.set_meta("social_start_minute", int(_social_start))
+        container.set_meta("social_end_minute", int(_social_end))
     var inside: bool = bool(npc.get("inside", false))
     var inside_structure_id_val = npc.get("inside_structure_id", null)
     var inside_structure_id: String = str(inside_structure_id_val) if inside_structure_id_val != null else ""
@@ -819,9 +844,36 @@ func _on_world_phase_loaded(result: int, response_code: int, headers: PackedStri
     var phase: String = json.get("phase", "day")
     set_phase(phase, false)  # instant — no tween on first load
 
+    # Cache dawn/dusk so the editor panel can prepopulate empty NPC
+    # schedule windows from the global defaults. Format is "HH:MM".
+    dawn_time_str = json.get("dawn_time", dawn_time_str)
+    dusk_time_str = json.get("dusk_time", dusk_time_str)
+
     # Apply the zoom floor appropriate for this user's role. Admins get
     # the "admin" floor (typically lower, so they can see further out).
     apply_zoom_floor_from_config(json)
+
+## Parse "HH:MM" into minutes-of-day. Returns fallback when the cached
+## string is empty or malformed (e.g. world-config request hasn't completed
+## yet, or the server returned a bad value).
+func _parse_hm_to_minute(s: String, fallback: int) -> int:
+    var parts := s.split(":")
+    if parts.size() != 2:
+        return fallback
+    var h := int(parts[0])
+    var m := int(parts[1])
+    if h < 0 or h > 23 or m < 0 or m > 59:
+        return fallback
+    return h * 60 + m
+
+## Dawn/dusk in minutes-of-day from the cached world-config strings.
+## Editor panel uses these to prepopulate the SCHEDULE start/end spinners
+## when the NPC's per-NPC window is NULL (inheriting global defaults).
+func get_dawn_minute() -> int:
+    return _parse_hm_to_minute(dawn_time_str, 7 * 60)
+
+func get_dusk_minute() -> int:
+    return _parse_hm_to_minute(dusk_time_str, 19 * 60)
 
 ## Pick the right zoom floor from a world config dict and push it to the
 ## camera. Used by the initial load and by the zoom_settings_changed WS
@@ -1481,18 +1533,24 @@ func set_npc_home_structure(container: Node2D, structure_id: String) -> void:
 func set_npc_work_structure(container: Node2D, structure_id: String) -> void:
     _set_npc_structure(container, "work-structure", "work_structure_id", structure_id)
 
-## Update the NPC's schedule in one atomic PATCH. interval/start/end are
-## sent as null when their arguments are -1 (cadence disabled); otherwise
-## as integers. The server's all-or-none CHECK guarantees consistent state.
+## Update the NPC's schedule in one atomic PATCH. start_min/end_min are
+## sent as null when -1 (worker inherits dawn/dusk); otherwise as
+## integers. interval/start/end are likewise null when -1 (cadence
+## disabled). The server's all-or-none CHECKs guarantee consistent state.
 ## lateness is the per-NPC lateness_window_minutes (ZBBS-067).
-func set_npc_schedule(container: Node2D, offset: int, interval: int, start_h: int, end_h: int, lateness: int) -> void:
+func set_npc_schedule(container: Node2D, start_min: int, end_min: int, interval: int, start_h: int, end_h: int, lateness: int) -> void:
     var npc_id = container.get_meta("npc_id", null)
     if npc_id == null:
         return
     var payload: Dictionary = {
-        "schedule_offset_minutes": offset,
         "lateness_window_minutes": lateness,
     }
+    if start_min >= 0 and end_min >= 0:
+        payload["schedule_start_minute"] = start_min
+        payload["schedule_end_minute"] = end_min
+    else:
+        payload["schedule_start_minute"] = null
+        payload["schedule_end_minute"] = null
     if interval >= 0:
         payload["schedule_interval_hours"] = interval
         payload["active_start_hour"] = start_h
@@ -1501,8 +1559,13 @@ func set_npc_schedule(container: Node2D, offset: int, interval: int, start_h: in
         payload["schedule_interval_hours"] = null
         payload["active_start_hour"] = null
         payload["active_end_hour"] = null
-    container.set_meta("schedule_offset_minutes", offset)
     container.set_meta("lateness_window_minutes", lateness)
+    if start_min >= 0 and end_min >= 0:
+        container.set_meta("schedule_start_minute", start_min)
+        container.set_meta("schedule_end_minute", end_min)
+    else:
+        container.remove_meta("schedule_start_minute")
+        container.remove_meta("schedule_end_minute")
     if interval >= 0:
         container.set_meta("schedule_interval_hours", interval)
         container.set_meta("active_start_hour", start_h)
@@ -1513,28 +1576,29 @@ func set_npc_schedule(container: Node2D, offset: int, interval: int, start_h: in
         container.remove_meta("active_end_hour")
     _patch_npc(npc_id, "schedule", payload)
 
-## Update the NPC's social-hour overlay (ZBBS-068). Empty tag clears the
-## schedule server-side (payload sends nulls for all three fields).
-## Otherwise tag + start + end are committed atomically.
-func set_npc_social(container: Node2D, tag: String, start_h: int, end_h: int) -> void:
+## Update the NPC's social-hour overlay (ZBBS-068, minute-precision since
+## ZBBS-071). Empty tag clears the schedule server-side (payload sends
+## nulls for all three fields). Otherwise tag + start_min + end_min are
+## committed atomically.
+func set_npc_social(container: Node2D, tag: String, start_min: int, end_min: int) -> void:
     var npc_id = container.get_meta("npc_id", null)
     if npc_id == null:
         return
     var payload: Dictionary = {}
     if tag == "":
         payload["social_tag"] = null
-        payload["social_start_hour"] = null
-        payload["social_end_hour"] = null
+        payload["social_start_minute"] = null
+        payload["social_end_minute"] = null
         container.remove_meta("social_tag")
-        container.remove_meta("social_start_hour")
-        container.remove_meta("social_end_hour")
+        container.remove_meta("social_start_minute")
+        container.remove_meta("social_end_minute")
     else:
         payload["social_tag"] = tag
-        payload["social_start_hour"] = start_h
-        payload["social_end_hour"] = end_h
+        payload["social_start_minute"] = start_min
+        payload["social_end_minute"] = end_min
         container.set_meta("social_tag", tag)
-        container.set_meta("social_start_hour", start_h)
-        container.set_meta("social_end_hour", end_h)
+        container.set_meta("social_start_minute", start_min)
+        container.set_meta("social_end_minute", end_min)
     _patch_npc(npc_id, "social", payload)
 
 ## POST /api/village/objects/{id}/tags — add a per-instance tag. The WS
@@ -1599,16 +1663,16 @@ func apply_npc_social_updated(data: Dictionary) -> void:
     if container == null:
         return
     var tag = data.get("social_tag", null)
-    var start_h = data.get("social_start_hour", null)
-    var end_h = data.get("social_end_hour", null)
-    if tag == null or tag == "" or start_h == null or end_h == null:
+    var start_min = data.get("social_start_minute", null)
+    var end_min = data.get("social_end_minute", null)
+    if tag == null or tag == "" or start_min == null or end_min == null:
         container.remove_meta("social_tag")
-        container.remove_meta("social_start_hour")
-        container.remove_meta("social_end_hour")
+        container.remove_meta("social_start_minute")
+        container.remove_meta("social_end_minute")
     else:
         container.set_meta("social_tag", str(tag))
-        container.set_meta("social_start_hour", int(start_h))
-        container.set_meta("social_end_hour", int(end_h))
+        container.set_meta("social_start_minute", int(start_min))
+        container.set_meta("social_end_minute", int(end_min))
     npc_metadata_changed.emit(npc_id)
 
 func _set_npc_structure(container: Node2D, suffix: String, field: String, structure_id: String) -> void:

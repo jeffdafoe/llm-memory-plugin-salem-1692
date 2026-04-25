@@ -5,10 +5,14 @@ package main
 // Runs every server tick (via runServerTickOnce) and walks every NPC whose
 // behavior opts into per-NPC scheduling:
 //
-//   worker: schedule_offset_minutes shifts arrive/leave off dawn/dusk.
-//     Walks home → work door at arrive time, work → home door at leave
-//     time. Per-NPC; each worker has their own offset. Minutes (not
-//     hours) since ZBBS-066 so quarter/half-hour shifts work.
+//   worker: schedule_start_minute / schedule_end_minute give an absolute
+//     window in minutes-of-day (1-min precision). NPC walks home → work
+//     door at the start boundary, work → home door at the end boundary.
+//     Wraps midnight when start > end (e.g. tavernkeeper 17:00–05:00).
+//     Both NULL = use the global dawn/dusk window — admins get the full
+//     daylight shift without re-stamping individual workers when the
+//     world's dawn/dusk shifts. Per-NPC; each worker carries their own
+//     pair. ZBBS-071 replaced the older schedule_offset_minutes scalar.
 //
 //   washerwoman / town_crier: when schedule_interval_hours + active_start_hour
 //     + active_end_hour are all set on the NPC, fires at active_start_hour,
@@ -87,6 +91,9 @@ func (app *App) dispatchScheduledBehaviors(ctx context.Context) {
 		log.Printf("scheduler: bad dusk time %q: %v", cfg.DuskTime, err)
 		return
 	}
+	// Dawn/dusk in minutes-of-day for the worker scheduler's NULL-fallback.
+	dawnMin := dawnH*60 + dawnM
+	duskMin := duskH*60 + duskM
 	now := time.Now().In(cfg.Location)
 
 	workers, err := app.loadWorkerRows(ctx)
@@ -94,7 +101,7 @@ func (app *App) dispatchScheduledBehaviors(ctx context.Context) {
 		log.Printf("scheduler: load workers: %v", err)
 	}
 	for i := range workers {
-		app.evaluateWorkerSchedule(ctx, &workers[i], now, dawnH, dawnM, duskH, duskM)
+		app.evaluateWorkerSchedule(ctx, &workers[i], now, dawnMin, duskMin)
 	}
 
 	rotators, err := app.loadCustomScheduledRotationNPCs(ctx)
@@ -108,19 +115,24 @@ func (app *App) dispatchScheduledBehaviors(ctx context.Context) {
 
 // workerRow bundles everything the worker scheduler needs to decide whether
 // to dispatch this tick. Door coords are pre-resolved server-side via the
-// same COALESCE chain go-home / go-to-work use. ScheduleOffset is minutes.
+// same COALESCE chain go-home / go-to-work use.
+//
+// ScheduleStartMinute / ScheduleEndMinute are the absolute window in
+// minutes-of-day. Both NULL together = inherit dawn/dusk (the
+// schedule_window_all_or_none CHECK guarantees they travel as a pair).
 // LatenessWindow is the ±fuzz window for when the NPC actually fires
 // relative to the nominal boundary (ZBBS-067). Social fields travel along
 // so the worker scheduler can step aside whenever the NPC has an active
 // social window — see evaluateWorkerSchedule for why.
 type workerRow struct {
-	ID                    string
-	ScheduleOffsetMinutes int
-	LatenessWindow        int
-	LastShiftTickAt       sql.NullTime
-	InsideStructureID     sql.NullString
-	CurrentX              float64
-	CurrentY              float64
+	ID                   string
+	ScheduleStartMinute  sql.NullInt64
+	ScheduleEndMinute    sql.NullInt64
+	LatenessWindow       int
+	LastShiftTickAt      sql.NullTime
+	InsideStructureID    sql.NullString
+	CurrentX             float64
+	CurrentY             float64
 
 	HomeStructureID string
 	HomeDoorX       float64
@@ -130,12 +142,13 @@ type workerRow struct {
 	WorkDoorX       float64
 	WorkDoorY       float64
 
-	// Social schedule overlap (ZBBS-068). All three are NULL together
-	// (the all-or-none CHECK) — Valid==false means no social schedule
-	// configured, in which case the worker scheduler runs normally.
-	SocialTag       sql.NullString
-	SocialStartHour sql.NullInt64
-	SocialEndHour   sql.NullInt64
+	// Social schedule overlap (ZBBS-068, minute-precision since ZBBS-071).
+	// All three are NULL together (the all-or-none CHECK) — Valid==false
+	// means no social schedule configured, in which case the worker
+	// scheduler runs normally.
+	SocialTag         sql.NullString
+	SocialStartMinute sql.NullInt64
+	SocialEndMinute   sql.NullInt64
 }
 
 // loadWorkerRows selects every worker NPC with both home and work
@@ -143,8 +156,8 @@ type workerRow struct {
 // can't walk a shift until an admin fills them in.
 func (app *App) loadWorkerRows(ctx context.Context) ([]workerRow, error) {
 	rows, err := app.DB.Query(ctx,
-		`SELECT n.id, n.schedule_offset_minutes, n.lateness_window_minutes,
-		        n.last_shift_tick_at,
+		`SELECT n.id, n.schedule_start_minute, n.schedule_end_minute,
+		        n.lateness_window_minutes, n.last_shift_tick_at,
 		        n.inside_structure_id, n.current_x, n.current_y,
 		        n.home_structure_id,
 		        COALESCE(hs.x + ha.door_offset_x * 32.0, hs.x),
@@ -152,7 +165,7 @@ func (app *App) loadWorkerRows(ctx context.Context) ([]workerRow, error) {
 		        n.work_structure_id,
 		        COALESCE(ws.x + wa.door_offset_x * 32.0, ws.x),
 		        COALESCE(ws.y + wa.door_offset_y * 32.0, ws.y),
-		        n.social_tag, n.social_start_hour, n.social_end_hour
+		        n.social_tag, n.social_start_minute, n.social_end_minute
 		 FROM npc n
 		 JOIN village_object hs ON hs.id = n.home_structure_id
 		 JOIN asset ha         ON ha.id = hs.asset_id
@@ -169,12 +182,12 @@ func (app *App) loadWorkerRows(ctx context.Context) ([]workerRow, error) {
 	var out []workerRow
 	for rows.Next() {
 		var w workerRow
-		if err := rows.Scan(&w.ID, &w.ScheduleOffsetMinutes, &w.LatenessWindow,
-			&w.LastShiftTickAt,
+		if err := rows.Scan(&w.ID, &w.ScheduleStartMinute, &w.ScheduleEndMinute,
+			&w.LatenessWindow, &w.LastShiftTickAt,
 			&w.InsideStructureID, &w.CurrentX, &w.CurrentY,
 			&w.HomeStructureID, &w.HomeDoorX, &w.HomeDoorY,
 			&w.WorkStructureID, &w.WorkDoorX, &w.WorkDoorY,
-			&w.SocialTag, &w.SocialStartHour, &w.SocialEndHour); err != nil {
+			&w.SocialTag, &w.SocialStartMinute, &w.SocialEndMinute); err != nil {
 			log.Printf("scheduler: scan worker row: %v", err)
 			continue
 		}
@@ -183,17 +196,17 @@ func (app *App) loadWorkerRows(ctx context.Context) ([]workerRow, error) {
 	return out, nil
 }
 
-// hourInSocialWindow reports whether the given hour falls within
-// [start, end). Wraps around midnight when start > end (e.g. a 22-02
-// late-night tavern shift treats 23 and 01 as in-window).
-func hourInSocialWindow(hour, startH, endH int) bool {
-	if startH == endH {
+// minuteInSocialWindow reports whether the given minute-of-day falls within
+// [start, end). Wraps around midnight when start > end (e.g. a 22:00–02:00
+// late-night tavern shift treats 23:00 and 01:00 as in-window).
+func minuteInSocialWindow(minute, startMin, endMin int) bool {
+	if startMin == endMin {
 		return false
 	}
-	if startH < endH {
-		return hour >= startH && hour < endH
+	if startMin < endMin {
+		return minute >= startMin && minute < endMin
 	}
-	return hour >= startH || hour < endH
+	return minute >= startMin || minute < endMin
 }
 
 // workerBoundaryKind is which side of the shift a boundary sits on.
@@ -204,28 +217,29 @@ const (
 	workerLeave
 )
 
+// resolveWorkerWindow returns the effective (start, end) minute-of-day pair
+// for the worker. Per-NPC values win; both NULL falls back to the global
+// dawn/dusk pair so admins get a full daylight shift without setting fields.
+func resolveWorkerWindow(w *workerRow, dawnMin, duskMin int) (startMin, endMin int) {
+	if w.ScheduleStartMinute.Valid && w.ScheduleEndMinute.Valid {
+		return int(w.ScheduleStartMinute.Int64), int(w.ScheduleEndMinute.Int64)
+	}
+	return dawnMin, duskMin
+}
+
 // mostRecentWorkerBoundary returns the most recent arrive/leave boundary at
-// or before now for a worker with the given offset, plus which kind it was.
+// or before now for a worker with the given absolute window. Window wraps
+// midnight when startMin > endMin (e.g. tavernkeeper 17:00–05:00). Considers
+// yesterday/today/tomorrow so wrap windows resolve correctly near midnight,
+// matching mostRecentRotationFiring.
 //
-// Offset semantics are "trim the workday from both ends" (in minutes since
-// ZBBS-066):
-//   arrive = dawn + offset     (positive offset = arrive later)
-//   leave  = dusk - offset     (positive offset = leave earlier)
-//
-// So offset=0 is a full dawn-to-dusk shift; offset=+60 shrinks the day by
-// one hour at each edge; offset=+15 trims 15 min off each edge; offset=-60
-// widens the workday past sunrise and sunset. The DB CHECK clamps to
-// [-1380, 1380] (±23h) but values where leave precedes arrive within the
-// same day produce a degenerate zero-or-negative shift — admin
-// responsibility to avoid.
-//
-// Considers yesterday, today, and tomorrow candidates so offsets that
-// push arrive/leave across midnight resolve correctly. time.Date
-// normalizes overflow, so 7:00 + 20h → 03:00 the next day.
-func mostRecentWorkerBoundary(now time.Time, dawnH, dawnM, duskH, duskM, offsetMinutes int) (time.Time, workerBoundaryKind) {
+//	arrive = startMin  (NPC walks home → work)
+//	leave  = endMin    (NPC walks work → home; on the next calendar day for
+//	                    a wrap window so the (arrive, leave) pair belongs to
+//	                    the same shift instance)
+func mostRecentWorkerBoundary(now time.Time, startMin, endMin int) (time.Time, workerBoundaryKind) {
 	loc := now.Location()
 	y, mo, d := now.Date()
-	offset := time.Duration(offsetMinutes) * time.Minute
 
 	type candidate struct {
 		t    time.Time
@@ -234,8 +248,12 @@ func mostRecentWorkerBoundary(now time.Time, dawnH, dawnM, duskH, duskM, offsetM
 	var cands [6]candidate
 	for i, dayOffset := range []int{-1, 0, 1} {
 		base := time.Date(y, mo, d+dayOffset, 0, 0, 0, 0, loc)
-		arrive := base.Add(time.Duration(dawnH)*time.Hour + time.Duration(dawnM)*time.Minute + offset)
-		leave := base.Add(time.Duration(duskH)*time.Hour + time.Duration(duskM)*time.Minute - offset)
+		arrive := base.Add(time.Duration(startMin) * time.Minute)
+		leave := base.Add(time.Duration(endMin) * time.Minute)
+		if endMin <= startMin {
+			// Wrap window: leave belongs to the day after arrive.
+			leave = leave.Add(24 * time.Hour)
+		}
 		cands[i*2] = candidate{arrive, workerArrive}
 		cands[i*2+1] = candidate{leave, workerLeave}
 	}
@@ -260,8 +278,13 @@ func mostRecentWorkerBoundary(now time.Time, dawnH, dawnM, duskH, duskM, offsetM
 // a deterministic offset past the nominal boundary before firing. The
 // stamp still records the nominal boundary, so once we've fired we
 // stay idempotent exactly like the zero-lateness case.
-func (app *App) evaluateWorkerSchedule(ctx context.Context, w *workerRow, now time.Time, dawnH, dawnM, duskH, duskM int) {
-	boundaryAt, kind := mostRecentWorkerBoundary(now, dawnH, dawnM, duskH, duskM, w.ScheduleOffsetMinutes)
+//
+// Window resolution: per-NPC absolute window if both schedule_*_minute are
+// set, otherwise the global dawn/dusk pair (same shift NPCs without
+// per-NPC overrides used to get via the offset=0 path).
+func (app *App) evaluateWorkerSchedule(ctx context.Context, w *workerRow, now time.Time, dawnMin, duskMin int) {
+	startMin, endMin := resolveWorkerWindow(w, dawnMin, duskMin)
+	boundaryAt, kind := mostRecentWorkerBoundary(now, startMin, endMin)
 	if boundaryAt.IsZero() {
 		return
 	}
@@ -285,8 +308,9 @@ func (app *App) evaluateWorkerSchedule(ctx context.Context, w *workerRow, now ti
 	// we don't keep re-evaluating the same suppressed shift change every
 	// tick; the next boundary (the social-leave at end of window, then
 	// tomorrow's worker-arrive) will land normally.
-	if w.SocialTag.Valid && w.SocialStartHour.Valid && w.SocialEndHour.Valid {
-		if hourInSocialWindow(effectiveAt.Hour(), int(w.SocialStartHour.Int64), int(w.SocialEndHour.Int64)) {
+	if w.SocialTag.Valid && w.SocialStartMinute.Valid && w.SocialEndMinute.Valid {
+		nowMin := effectiveAt.Hour()*60 + effectiveAt.Minute()
+		if minuteInSocialWindow(nowMin, int(w.SocialStartMinute.Int64), int(w.SocialEndMinute.Int64)) {
 			if _, err := app.DB.Exec(ctx,
 				`UPDATE npc SET last_shift_tick_at = $2 WHERE id = $1`,
 				w.ID, boundaryAt,

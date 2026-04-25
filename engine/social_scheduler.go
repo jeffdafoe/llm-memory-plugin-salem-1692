@@ -13,6 +13,9 @@ package main
 //     (startReturnWalk then sets inside=true on arrival at the home
 //     structure — matches the worker-leave path).
 //
+// Window is in minutes-of-day (1-min precision since ZBBS-071) and wraps
+// midnight when start > end.
+//
 // Idempotency: social_last_boundary_at stamps the processed boundary and is
 // kept SEPARATE from last_shift_tick_at so the worker/rotation schedulers
 // can't collide with this one. Edits to the social fields should clear
@@ -32,8 +35,8 @@ import (
 type socialRow struct {
 	ID                   string
 	SocialTag            string
-	SocialStartHour      int
-	SocialEndHour        int
+	SocialStartMinute    int
+	SocialEndMinute      int
 	SocialLastBoundaryAt sql.NullTime
 	InsideStructureID    sql.NullString
 	CurrentX             float64
@@ -49,7 +52,7 @@ type socialRow struct {
 // home_structure_id since social-leave has no destination without one.
 func (app *App) loadSocialRows(ctx context.Context) ([]socialRow, error) {
 	rows, err := app.DB.Query(ctx,
-		`SELECT n.id, n.social_tag, n.social_start_hour, n.social_end_hour,
+		`SELECT n.id, n.social_tag, n.social_start_minute, n.social_end_minute,
 		        n.social_last_boundary_at, n.inside_structure_id,
 		        n.current_x, n.current_y,
 		        n.home_structure_id,
@@ -69,7 +72,7 @@ func (app *App) loadSocialRows(ctx context.Context) ([]socialRow, error) {
 	var out []socialRow
 	for rows.Next() {
 		var s socialRow
-		if err := rows.Scan(&s.ID, &s.SocialTag, &s.SocialStartHour, &s.SocialEndHour,
+		if err := rows.Scan(&s.ID, &s.SocialTag, &s.SocialStartMinute, &s.SocialEndMinute,
 			&s.SocialLastBoundaryAt, &s.InsideStructureID,
 			&s.CurrentX, &s.CurrentY,
 			&s.HomeStructureID, &s.HomeDoorX, &s.HomeDoorY); err != nil {
@@ -89,11 +92,11 @@ const (
 )
 
 // mostRecentSocialBoundary returns the most recent enter/leave boundary at
-// or before now. Window wraps midnight when start > end (e.g. 20-02 for a
-// late-night tavern shift). Considers yesterday/today/tomorrow so wrap
-// windows resolve correctly near midnight — same approach as
-// mostRecentWorkerBoundary / mostRecentRotationFiring.
-func mostRecentSocialBoundary(now time.Time, startH, endH int) (time.Time, socialBoundaryKind) {
+// or before now. Window wraps midnight when startMin > endMin (e.g. 20:00
+// to 02:00 for a late-night tavern shift). Considers yesterday/today/
+// tomorrow so wrap windows resolve correctly near midnight — same
+// approach as mostRecentWorkerBoundary / mostRecentRotationFiring.
+func mostRecentSocialBoundary(now time.Time, startMin, endMin int) (time.Time, socialBoundaryKind) {
 	loc := now.Location()
 	y, mo, d := now.Date()
 
@@ -104,9 +107,9 @@ func mostRecentSocialBoundary(now time.Time, startH, endH int) (time.Time, socia
 	var cands [6]candidate
 	for i, dayOffset := range []int{-1, 0, 1} {
 		base := time.Date(y, mo, d+dayOffset, 0, 0, 0, 0, loc)
-		start := base.Add(time.Duration(startH) * time.Hour)
-		end := base.Add(time.Duration(endH) * time.Hour)
-		if endH <= startH {
+		start := base.Add(time.Duration(startMin) * time.Minute)
+		end := base.Add(time.Duration(endMin) * time.Minute)
+		if endMin <= startMin {
 			end = end.Add(24 * time.Hour)
 		}
 		cands[i*2] = candidate{start, socialEnter}
@@ -158,7 +161,7 @@ func (app *App) findNearestStructureByTag(ctx context.Context, targetTag string,
 // matching structure) so we don't spin against the same boundary every
 // tick for the rest of the window.
 func (app *App) evaluateSocialSchedule(ctx context.Context, s *socialRow, now time.Time) {
-	boundaryAt, kind := mostRecentSocialBoundary(now, s.SocialStartHour, s.SocialEndHour)
+	boundaryAt, kind := mostRecentSocialBoundary(now, s.SocialStartMinute, s.SocialEndMinute)
 	if boundaryAt.IsZero() {
 		return
 	}

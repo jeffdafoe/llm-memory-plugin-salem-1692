@@ -732,17 +732,21 @@ func _select_npc(container: Node2D) -> void:
         "llm_memory_agent": container.get_meta("llm_memory_agent", ""),
         "home_structure_id": container.get_meta("home_structure_id", ""),
         "work_structure_id": container.get_meta("work_structure_id", ""),
-        "schedule_offset_minutes": container.get_meta("schedule_offset_minutes", 0),
         "lateness_window_minutes": container.get_meta("lateness_window_minutes", 0),
     }
+    # Worker work-window: present only when the NPC has overridden the
+    # global dawn/dusk default. Missing keys signal "inherit" to the panel.
+    if container.has_meta("schedule_start_minute"):
+        info["schedule_start_minute"] = container.get_meta("schedule_start_minute")
+        info["schedule_end_minute"] = container.get_meta("schedule_end_minute")
     if container.has_meta("schedule_interval_hours"):
         info["schedule_interval_hours"] = container.get_meta("schedule_interval_hours")
         info["active_start_hour"] = container.get_meta("active_start_hour")
         info["active_end_hour"] = container.get_meta("active_end_hour")
     if container.has_meta("social_tag"):
         info["social_tag"] = container.get_meta("social_tag")
-        info["social_start_hour"] = container.get_meta("social_start_hour")
-        info["social_end_hour"] = container.get_meta("social_end_hour")
+        info["social_start_minute"] = container.get_meta("social_start_minute")
+        info["social_end_minute"] = container.get_meta("social_end_minute")
     npc_selected.emit(info)
 
 func _deselect_npc() -> void:

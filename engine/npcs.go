@@ -75,12 +75,14 @@ type NPC struct {
 	// Used to drive occupancy-sensitive state flipping (market stall
 	// open/closed) and future "who's in this building" UIs.
 	InsideStructureID *string  `json:"inside_structure_id"`
-	// ScheduleOffsetMinutes is the per-NPC offset off the world boundary,
-	// in minutes. Only the worker behavior reads it today (shifts
-	// arrive/leave off dawn/dusk). See npc_scheduler.go for interpretation.
-	// ZBBS-064 shipped this as hours; ZBBS-066 widened to minutes so
-	// half/quarter-hour shifts work.
-	ScheduleOffsetMinutes int `json:"schedule_offset_minutes"`
+	// ScheduleStartMinute / ScheduleEndMinute are the per-NPC absolute work
+	// window in minutes-of-day (1-min precision). Only the worker behavior
+	// reads them. Both NULL = inherit dawn/dusk at evaluation time. The
+	// schedule_window_all_or_none DB CHECK guarantees they travel as a pair.
+	// Window wraps midnight when start > end (tavernkeeper 17:00–05:00).
+	// ZBBS-071 replaced the older schedule_offset_minutes scalar.
+	ScheduleStartMinute *int `json:"schedule_start_minute"`
+	ScheduleEndMinute   *int `json:"schedule_end_minute"`
 	// ScheduleIntervalHours + ActiveStartHour + ActiveEndHour are the
 	// per-NPC cadence knobs for interval behaviors (washerwoman,
 	// town_crier). All three must be set together or all three left null
@@ -95,14 +97,14 @@ type NPC struct {
 	// stable across ticks and restarts. 0 = deterministic boundary
 	// firing (ZBBS-064 behavior). Capped at 180.
 	LatenessWindowMinutes int `json:"lateness_window_minutes"`
-	// SocialTag + SocialStartHour + SocialEndHour are the per-NPC social
-	// hour knobs (ZBBS-068). Orthogonal to `behavior`: any NPC can opt in.
-	// All three set together or all three null (enforced by the
-	// social_all_or_none DB CHECK).
-	SocialTag       *string    `json:"social_tag"`
-	SocialStartHour *int       `json:"social_start_hour"`
-	SocialEndHour   *int       `json:"social_end_hour"`
-	Sprite          *NPCSprite `json:"sprite,omitempty"`
+	// SocialTag + SocialStartMinute + SocialEndMinute are the per-NPC
+	// social hour knobs (ZBBS-068, minute-precision since ZBBS-071).
+	// Orthogonal to `behavior`: any NPC can opt in. All three set together
+	// or all three null (enforced by the social_all_or_none DB CHECK).
+	SocialTag         *string    `json:"social_tag"`
+	SocialStartMinute *int       `json:"social_start_minute"`
+	SocialEndMinute   *int       `json:"social_end_minute"`
+	Sprite            *NPCSprite `json:"sprite,omitempty"`
 }
 
 // loadNPCSprites returns the sprite catalog as a map keyed by sprite id,
@@ -204,10 +206,11 @@ func (app *App) handleListNPCs(w http.ResponseWriter, r *http.Request) {
 		`SELECT id, display_name, sprite_id, home_x, home_y,
 		        current_x, current_y, facing, behavior, llm_memory_agent,
 		        home_structure_id, work_structure_id, inside, inside_structure_id,
-		        schedule_offset_minutes, schedule_interval_hours,
+		        schedule_start_minute, schedule_end_minute,
+		        schedule_interval_hours,
 		        active_start_hour, active_end_hour,
 		        lateness_window_minutes,
-		        social_tag, social_start_hour, social_end_hour
+		        social_tag, social_start_minute, social_end_minute
 		 FROM npc
 		 ORDER BY display_name`,
 	)
@@ -223,10 +226,11 @@ func (app *App) handleListNPCs(w http.ResponseWriter, r *http.Request) {
 		if err := npcRows.Scan(&n.ID, &n.DisplayName, &n.SpriteID,
 			&n.HomeX, &n.HomeY, &n.CurrentX, &n.CurrentY, &n.Facing, &n.Behavior, &n.LLMMemoryAgent,
 			&n.HomeStructureID, &n.WorkStructureID, &n.Inside, &n.InsideStructureID,
-			&n.ScheduleOffsetMinutes, &n.ScheduleIntervalHours,
+			&n.ScheduleStartMinute, &n.ScheduleEndMinute,
+			&n.ScheduleIntervalHours,
 			&n.ActiveStartHour, &n.ActiveEndHour,
 			&n.LatenessWindowMinutes,
-			&n.SocialTag, &n.SocialStartHour, &n.SocialEndHour); err != nil {
+			&n.SocialTag, &n.SocialStartMinute, &n.SocialEndMinute); err != nil {
 			continue
 		}
 		if s, ok := sprites[n.SpriteID]; ok {
@@ -634,12 +638,14 @@ func (app *App) handleSetNPCAgent(w http.ResponseWriter, r *http.Request) {
 // handleSetNPCSchedule updates the per-NPC scheduling knobs in one atomic
 // PATCH. Admin only. Accepts:
 //
-//   schedule_offset_minutes — required, int in [-1380, 1380] (±23h). Worker
-//     behavior reads this; others ignore. ZBBS-066 widened this from
-//     schedule_offset_hours so half/quarter-hour shifts work.
-//   schedule_interval_hours, active_start_hour, active_end_hour — all
-//     three or none. The DB CHECK constraint schedule_all_or_none
-//     enforces this; the handler pre-validates to return a clean 400.
+//	schedule_start_minute / schedule_end_minute — both null or both set
+//	  (int 0–1439, minutes-of-day). Worker behavior reads this absolute
+//	  window; others ignore. Both null = inherit dawn/dusk at evaluation
+//	  time. Window wraps midnight when start > end (ZBBS-071).
+//	schedule_interval_hours, active_start_hour, active_end_hour — all
+//	  three or none. The DB CHECK constraint schedule_all_or_none
+//	  enforces this; the handler pre-validates to return a clean 400.
+//	lateness_window_minutes — optional. Omit to keep the current value.
 //
 // Clears last_shift_tick_at so the new schedule re-evaluates on the next
 // server tick rather than waiting up to 12h for the following boundary.
@@ -657,7 +663,8 @@ func (app *App) handleSetNPCSchedule(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		ScheduleOffsetMinutes *int `json:"schedule_offset_minutes"`
+		ScheduleStartMinute   *int `json:"schedule_start_minute"`
+		ScheduleEndMinute     *int `json:"schedule_end_minute"`
 		ScheduleIntervalHours *int `json:"schedule_interval_hours"`
 		ActiveStartHour       *int `json:"active_start_hour"`
 		ActiveEndHour         *int `json:"active_end_hour"`
@@ -667,14 +674,25 @@ func (app *App) handleSetNPCSchedule(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
-	if req.ScheduleOffsetMinutes == nil {
-		jsonError(w, "schedule_offset_minutes required", http.StatusBadRequest)
+
+	// All-or-none for the absolute window pair.
+	startSet := req.ScheduleStartMinute != nil
+	endSet := req.ScheduleEndMinute != nil
+	if startSet != endSet {
+		jsonError(w, "schedule_start_minute and schedule_end_minute must be set together (both null to inherit dawn/dusk)", http.StatusBadRequest)
 		return
 	}
-	if *req.ScheduleOffsetMinutes < -1380 || *req.ScheduleOffsetMinutes > 1380 {
-		jsonError(w, "schedule_offset_minutes must be between -1380 and 1380", http.StatusBadRequest)
-		return
+	if startSet {
+		if *req.ScheduleStartMinute < 0 || *req.ScheduleStartMinute > 1439 {
+			jsonError(w, "schedule_start_minute must be between 0 and 1439", http.StatusBadRequest)
+			return
+		}
+		if *req.ScheduleEndMinute < 0 || *req.ScheduleEndMinute > 1439 {
+			jsonError(w, "schedule_end_minute must be between 0 and 1439", http.StatusBadRequest)
+			return
+		}
 	}
+
 	// lateness_window_minutes is optional on PATCH — a client can omit it
 	// to keep the current value. Default for new NPCs is 0 (DB default).
 	// When provided, range-check against the same bounds the DB enforces.
@@ -684,7 +702,8 @@ func (app *App) handleSetNPCSchedule(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// All-or-none for the window triple.
+
+	// All-or-none for the cadence triple.
 	cadenceSet := 0
 	if req.ScheduleIntervalHours != nil {
 		cadenceSet++
@@ -720,15 +739,17 @@ func (app *App) handleSetNPCSchedule(w http.ResponseWriter, r *http.Request) {
 	var effectiveLateness int
 	err := app.DB.QueryRow(r.Context(),
 		`UPDATE npc SET
-		    schedule_offset_minutes = $2,
-		    schedule_interval_hours = $3,
-		    active_start_hour = $4,
-		    active_end_hour = $5,
-		    lateness_window_minutes = COALESCE($6, lateness_window_minutes),
+		    schedule_start_minute = $2,
+		    schedule_end_minute = $3,
+		    schedule_interval_hours = $4,
+		    active_start_hour = $5,
+		    active_end_hour = $6,
+		    lateness_window_minutes = COALESCE($7, lateness_window_minutes),
 		    last_shift_tick_at = NULL
 		 WHERE id = $1
 		 RETURNING lateness_window_minutes`,
-		id, *req.ScheduleOffsetMinutes,
+		id,
+		req.ScheduleStartMinute, req.ScheduleEndMinute,
 		req.ScheduleIntervalHours, req.ActiveStartHour, req.ActiveEndHour,
 		req.LatenessWindowMinutes,
 	).Scan(&effectiveLateness)
@@ -744,7 +765,8 @@ func (app *App) handleSetNPCSchedule(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 	app.Hub.Broadcast(WorldEvent{Type: "npc_schedule_changed", Data: map[string]interface{}{
 		"id":                      id,
-		"schedule_offset_minutes": *req.ScheduleOffsetMinutes,
+		"schedule_start_minute":   req.ScheduleStartMinute,
+		"schedule_end_minute":     req.ScheduleEndMinute,
 		"schedule_interval_hours": req.ScheduleIntervalHours,
 		"active_start_hour":       req.ActiveStartHour,
 		"active_end_hour":         req.ActiveEndHour,
@@ -752,17 +774,20 @@ func (app *App) handleSetNPCSchedule(w http.ResponseWriter, r *http.Request) {
 	}})
 }
 
-// handleSetNPCSocial updates the per-NPC social-hour schedule (ZBBS-068).
-// Admin only. All three fields must be set together (all or none), matching
-// the social_all_or_none DB CHECK. Clears social_last_boundary_at so the
-// new window evaluates on the next tick rather than waiting out the current
-// boundary. Broadcasts npc_social_updated.
+// handleSetNPCSocial updates the per-NPC social-hour schedule (ZBBS-068,
+// minute-precision since ZBBS-071). Admin only. All three fields must be
+// set together (all or none), matching the social_all_or_none DB CHECK.
+// Clears social_last_boundary_at so the new window evaluates on the next
+// tick rather than waiting out the current boundary. Broadcasts
+// npc_social_updated.
 //
 // Payload:
-//   social_tag        — string. One of the allowed state tags. null/empty
-//                       to clear the schedule (along with the two hours).
-//   social_start_hour — int [0,23]. Inclusive.
-//   social_end_hour   — int [0,23]. Window wraps midnight when start > end.
+//
+//	social_tag           — string. One of the allowed object tags. null
+//	                       or empty to clear the schedule.
+//	social_start_minute  — int [0,1439]. Minutes-of-day, inclusive start.
+//	social_end_minute    — int [0,1439]. Window wraps midnight when
+//	                       start > end (late-night gatherings).
 func (app *App) handleSetNPCSocial(w http.ResponseWriter, r *http.Request) {
 	user := getUserFromContext(r.Context())
 	if user == nil || !user.hasRole("ROLE_SALEM_ADMIN") {
@@ -779,9 +804,9 @@ func (app *App) handleSetNPCSocial(w http.ResponseWriter, r *http.Request) {
 	// "null" from "value". Clients clear the schedule by sending all three
 	// as null (or an empty tag string).
 	var req struct {
-		SocialTag       *string `json:"social_tag"`
-		SocialStartHour *int    `json:"social_start_hour"`
-		SocialEndHour   *int    `json:"social_end_hour"`
+		SocialTag         *string `json:"social_tag"`
+		SocialStartMinute *int    `json:"social_start_minute"`
+		SocialEndMinute   *int    `json:"social_end_minute"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, "Invalid request body", http.StatusBadRequest)
@@ -791,14 +816,14 @@ func (app *App) handleSetNPCSocial(w http.ResponseWriter, r *http.Request) {
 	// Normalize empty-string tag to null-tag so admins can clear by sending
 	// an empty string from a form field.
 	tagEmpty := req.SocialTag == nil || *req.SocialTag == ""
-	startMissing := req.SocialStartHour == nil
-	endMissing := req.SocialEndHour == nil
+	startMissing := req.SocialStartMinute == nil
+	endMissing := req.SocialEndMinute == nil
 
 	// All-or-none: either everything's set or everything's cleared.
 	allSet := !tagEmpty && !startMissing && !endMissing
 	allClear := tagEmpty && startMissing && endMissing
 	if !allSet && !allClear {
-		jsonError(w, "social_tag, social_start_hour, and social_end_hour must be set together (or all cleared)", http.StatusBadRequest)
+		jsonError(w, "social_tag, social_start_minute, and social_end_minute must be set together (or all cleared)", http.StatusBadRequest)
 		return
 	}
 
@@ -810,12 +835,12 @@ func (app *App) handleSetNPCSocial(w http.ResponseWriter, r *http.Request) {
 			jsonError(w, "Unknown social_tag (see /api/village/object-tags)", http.StatusBadRequest)
 			return
 		}
-		if *req.SocialStartHour < 0 || *req.SocialStartHour > 23 {
-			jsonError(w, "social_start_hour must be between 0 and 23", http.StatusBadRequest)
+		if *req.SocialStartMinute < 0 || *req.SocialStartMinute > 1439 {
+			jsonError(w, "social_start_minute must be between 0 and 1439", http.StatusBadRequest)
 			return
 		}
-		if *req.SocialEndHour < 0 || *req.SocialEndHour > 23 {
-			jsonError(w, "social_end_hour must be between 0 and 23", http.StatusBadRequest)
+		if *req.SocialEndMinute < 0 || *req.SocialEndMinute > 1439 {
+			jsonError(w, "social_end_minute must be between 0 and 1439", http.StatusBadRequest)
 			return
 		}
 	}
@@ -825,8 +850,8 @@ func (app *App) handleSetNPCSocial(w http.ResponseWriter, r *http.Request) {
 	var endParam interface{}
 	if allSet {
 		tagParam = *req.SocialTag
-		startParam = *req.SocialStartHour
-		endParam = *req.SocialEndHour
+		startParam = *req.SocialStartMinute
+		endParam = *req.SocialEndMinute
 	} else {
 		tagParam = nil
 		startParam = nil
@@ -836,8 +861,8 @@ func (app *App) handleSetNPCSocial(w http.ResponseWriter, r *http.Request) {
 	tag, err := app.DB.Exec(r.Context(),
 		`UPDATE npc SET
 		    social_tag = $2,
-		    social_start_hour = $3,
-		    social_end_hour = $4,
+		    social_start_minute = $3,
+		    social_end_minute = $4,
 		    social_last_boundary_at = NULL
 		 WHERE id = $1`,
 		id, tagParam, startParam, endParam,
@@ -853,10 +878,10 @@ func (app *App) handleSetNPCSocial(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusNoContent)
 	app.Hub.Broadcast(WorldEvent{Type: "npc_social_updated", Data: map[string]interface{}{
-		"id":                id,
-		"social_tag":        req.SocialTag,
-		"social_start_hour": req.SocialStartHour,
-		"social_end_hour":   req.SocialEndHour,
+		"id":                  id,
+		"social_tag":          req.SocialTag,
+		"social_start_minute": req.SocialStartMinute,
+		"social_end_minute":   req.SocialEndMinute,
 	}})
 }
 
