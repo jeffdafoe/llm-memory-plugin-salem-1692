@@ -123,6 +123,7 @@ func main() {
 	authed("DELETE /api/village/npcs/{id}", app.handleDeleteNPC)
 	authed("POST /api/village/npcs/{id}/walk-to", app.handleWalkTo)
 	authed("PATCH /api/village/npcs/{id}/display-name", app.handleSetNPCDisplayName)
+	authed("PATCH /api/village/npcs/{id}/sprite", app.handleSetNPCSprite)
 	authed("PATCH /api/village/npcs/{id}/behavior", app.handleSetNPCBehavior)
 	authed("PATCH /api/village/npcs/{id}/agent", app.handleSetNPCAgent)
 	authed("PATCH /api/village/npcs/{id}/home-structure", app.handleSetNPCHomeStructure)

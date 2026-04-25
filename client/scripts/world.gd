@@ -216,6 +216,109 @@ func apply_npc_display_name_change(data: Dictionary) -> void:
     container.set_meta("display_name", data.get("display_name", ""))
     npc_metadata_changed.emit(npc_id)
 
+## Apply a server-broadcast sprite swap. Rebuilds the AnimatedSprite2D with
+## new SpriteFrames. The container, position, and meta (other than sprite
+## fields) are preserved — sprite swap is purely visual.
+##
+## Same async-sheet pattern as add_npc_from_broadcast: if the new sheet
+## isn't cached, kick off a download and re-apply once it lands.
+func apply_npc_sprite_change(data: Dictionary) -> void:
+    var npc_id: String = data.get("id", "")
+    if npc_id == "":
+        return
+    var container: Node2D = placed_npcs.get(npc_id, null)
+    if container == null:
+        return
+    var sprite_data = data.get("sprite", null)
+    if sprite_data == null:
+        return
+    var sheet_path: String = sprite_data.get("sheet", "")
+    if sheet_path == "":
+        return
+
+    # Defer to the shared sheet cache. If cached, callback fires
+    # synchronously; otherwise after the download completes.
+    get_or_load_npc_sheet(sheet_path, func(sheet: Texture2D):
+        _swap_npc_sprite(npc_id, sprite_data, sheet)
+    )
+
+func _swap_npc_sprite(npc_id: String, sprite_data: Dictionary, sheet: Texture2D) -> void:
+    var container: Node2D = placed_npcs.get(npc_id, null)
+    if container == null or sheet == null:
+        return
+
+    var fw: int = int(sprite_data.get("frame_width", 32))
+    var fh: int = int(sprite_data.get("frame_height", 32))
+    var sprite_frames := _build_npc_sprite_frames(sprite_data, sheet)
+
+    # Preserve current facing + animation kind so the new sprite picks up
+    # mid-walk seamlessly. Default to facing meta (or south) if no anim.
+    var facing: String = str(container.get_meta("facing", "south"))
+    var current_anim: String = ""
+    var existing_sprite: AnimatedSprite2D = null
+    for child in container.get_children():
+        if child is AnimatedSprite2D:
+            existing_sprite = child
+            current_anim = child.animation
+            break
+
+    var new_sprite := AnimatedSprite2D.new()
+    new_sprite.sprite_frames = sprite_frames
+    new_sprite.centered = false
+    new_sprite.scale = Vector2(2, 2)
+    new_sprite.position = Vector2(-fw * 2 * 0.5, -fh * 2 * 0.9)
+
+    # Replay the same animation if the new sheet has it; otherwise fall back
+    # to facing_idle or the first available animation. Avoids a frozen sprite.
+    var play_name: String = ""
+    if current_anim != "" and sprite_frames.has_animation(current_anim):
+        play_name = current_anim
+    else:
+        var idle_name: String = facing + "_idle"
+        if sprite_frames.has_animation(idle_name):
+            play_name = idle_name
+        else:
+            var anims: PackedStringArray = sprite_frames.get_animation_names()
+            if anims.size() > 0:
+                play_name = anims[0]
+    if play_name != "":
+        new_sprite.play(play_name)
+
+    if existing_sprite != null:
+        existing_sprite.queue_free()
+    container.add_child(new_sprite)
+
+    container.set_meta("sprite_id", sprite_data.get("id", ""))
+    container.set_meta("sprite_name", sprite_data.get("name", ""))
+    npc_metadata_changed.emit(npc_id)
+
+## Build a SpriteFrames from a sprite catalog entry. Shared by initial NPC
+## render and live sprite swaps. One animation per (direction, kind) pair —
+## "south_walk", "east_idle", etc. Frames are AtlasTexture regions on the
+## sheet, laid out horizontally per row.
+func _build_npc_sprite_frames(sprite_data: Dictionary, sheet: Texture2D) -> SpriteFrames:
+    var fw: int = int(sprite_data.get("frame_width", 32))
+    var fh: int = int(sprite_data.get("frame_height", 32))
+    var animations: Array = sprite_data.get("animations", [])
+    var sprite_frames := SpriteFrames.new()
+    for anim in animations:
+        var direction: String = anim.get("direction", "")
+        var kind: String = anim.get("animation", "")
+        var anim_name: String = direction + "_" + kind
+        if direction == "" or kind == "":
+            continue
+        sprite_frames.add_animation(anim_name)
+        sprite_frames.set_animation_speed(anim_name, float(anim.get("frame_rate", 6.0)))
+        sprite_frames.set_animation_loop(anim_name, true)
+        var row_index: int = int(anim.get("row_index", 0))
+        var frame_count: int = int(anim.get("frame_count", 1))
+        for i in range(frame_count):
+            var atlas := AtlasTexture.new()
+            atlas.atlas = sheet
+            atlas.region = Rect2(i * fw, row_index * fh, fw, fh)
+            sprite_frames.add_frame(anim_name, atlas)
+    return sprite_frames
+
 ## Apply a server-broadcast behavior change. data.behavior may be null for
 ## behavior cleared — the JSON null decodes to Godot null.
 func apply_npc_behavior_change(data: Dictionary) -> void:
@@ -438,32 +541,14 @@ func _render_npc(npc: Dictionary) -> void:
 
     var fw: int = int(sprite_data.get("frame_width", 32))
     var fh: int = int(sprite_data.get("frame_height", 32))
-    var animations: Array = sprite_data.get("animations", [])
-
-    # Build one named SpriteFrames animation per (direction, kind), e.g.
-    # "south_walk", "east_idle". Rows and frame counts come from the catalog.
-    var sprite_frames := SpriteFrames.new()
-    for anim in animations:
-        var direction: String = anim.get("direction", "")
-        var kind: String = anim.get("animation", "")
-        var anim_name: String = direction + "_" + kind
-        if direction == "" or kind == "":
-            continue
-        sprite_frames.add_animation(anim_name)
-        sprite_frames.set_animation_speed(anim_name, float(anim.get("frame_rate", 6.0)))
-        sprite_frames.set_animation_loop(anim_name, true)
-        var row_index: int = int(anim.get("row_index", 0))
-        var frame_count: int = int(anim.get("frame_count", 1))
-        for i in range(frame_count):
-            var atlas := AtlasTexture.new()
-            atlas.atlas = sheet
-            atlas.region = Rect2(i * fw, row_index * fh, fw, fh)
-            sprite_frames.add_frame(anim_name, atlas)
+    var sprite_frames := _build_npc_sprite_frames(sprite_data, sheet)
 
     var facing: String = npc.get("facing", "south")
 
     var container := Node2D.new()
     container.set_meta("npc_id", npc_id)
+    container.set_meta("sprite_id", sprite_data.get("id", ""))
+    container.set_meta("sprite_name", sprite_data.get("name", ""))
     container.set_meta("display_name", npc.get("display_name", ""))
     container.set_meta("facing", facing)
     container.set_meta("behavior", npc.get("behavior", ""))
