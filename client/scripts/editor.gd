@@ -105,13 +105,27 @@ var _drag_threshold: float = 10.0
 var _drag_pending: bool = false
 var _drag_mouse_start: Vector2 = Vector2.ZERO
 
-# UI panel area — clicks here belong to the UI, not the map
-const PANEL_WIDTH: float = 240.0
+# UI panel area — fallback constant used when editor_panel_ref isn't set.
+# The selection panel is wider than this when an NPC is selected, so prefer
+# the live rect via _panel_right_edge() at runtime.
+const PANEL_WIDTH_FALLBACK: float = 240.0
 const TOP_BAR_HEIGHT: float = 40.0
 
 # References
 @onready var world: Node2D = get_node("/root/Main/World")
 @onready var camera: Camera2D = get_node("/root/Main/Camera")
+
+# Editor side panel — set by main.gd. Used by _is_over_ui and _edge_pan to
+# compute the live UI/map boundary instead of trusting PANEL_WIDTH_FALLBACK.
+var editor_panel_ref: Control = null
+
+## Right edge of the editor panel in viewport coordinates. Tracks panel
+## width changes (selection makes it wider). Falls back to a constant if
+## the panel reference hasn't been wired yet or the panel is hidden.
+func _panel_right_edge() -> float:
+    if editor_panel_ref != null and editor_panel_ref.visible:
+        return editor_panel_ref.get_global_rect().end.x
+    return PANEL_WIDTH_FALLBACK
 
 func _ready() -> void:
     ghost_sprite = Sprite2D.new()
@@ -126,7 +140,7 @@ func _ready() -> void:
 func _is_over_ui(pos: Vector2) -> bool:
     if pos.y < TOP_BAR_HEIGHT:
         return true
-    if pos.x < PANEL_WIDTH:
+    if pos.x < _panel_right_edge():
         return true
     return false
 
@@ -1495,11 +1509,12 @@ func _edge_pan(delta: float) -> void:
     var size: Vector2 = vp.get_visible_rect().size
     # Don't pan while the mouse is in the UI strip (top bar / left panel)
     # — the user isn't trying to reach the map edge from there.
-    if mouse.x < PANEL_WIDTH or mouse.y < TOP_BAR_HEIGHT:
+    var panel_edge: float = _panel_right_edge()
+    if mouse.x < panel_edge or mouse.y < TOP_BAR_HEIGHT:
         return
 
     var pan := Vector2.ZERO
-    var map_left: float = PANEL_WIDTH
+    var map_left: float = panel_edge
     if mouse.x < map_left + EDGE_PAN_MARGIN:
         pan.x = -(1.0 - (mouse.x - map_left) / EDGE_PAN_MARGIN)
     elif mouse.x > size.x - EDGE_PAN_MARGIN:

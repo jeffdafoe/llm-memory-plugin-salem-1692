@@ -187,6 +187,10 @@ func _build_ui() -> void:
     editor_panel.set_script(EditorPanelScript)
     editor.add_child(editor_panel)
     editor_panel.visible = false
+    # Camera queries this rect at hit-test time so the UI/map boundary tracks
+    # the panel's actual width (the selection panel is wider than the default).
+    camera.editor_panel_ref = editor_panel
+    editor.editor_panel_ref = editor_panel
 
     # Asset inspect popup — on the config layer (above editor)
     asset_popup = Control.new()
