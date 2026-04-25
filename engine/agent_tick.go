@@ -425,6 +425,9 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		}
 		// Speech is instant — no override needed. The Hub broadcast lets
 		// any listening clients render the speech bubble in real time.
+		// Engine log is the visible-to-humans record until the Godot client
+		// gets an npc_spoke handler (see tasks/pending/salem-speech-bubble-ui).
+		log.Printf("npc_spoke: %s says %q", r.DisplayName, text)
 		app.Hub.Broadcast(WorldEvent{
 			Type: "npc_spoke",
 			Data: map[string]interface{}{
