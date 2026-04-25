@@ -383,18 +383,19 @@ func _on_npc_work_structure_changed(structure_id: String) -> void:
     if editor.selected_npc != null:
         world.set_npc_work_structure(editor.selected_npc, structure_id)
 
-## Admin edited the schedule fields and hit Save. interval/start/end are
+## Admin edited the schedule fields and hit Save. start_min/end_min are -1
+## when the work-window is NULL-inheriting dawn/dusk; interval/start/end are
 ## -1 when the cadence checkbox is unchecked — world.set_npc_schedule maps
-## those to null in the JSON payload.
-func _on_npc_schedule_changed(offset: int, interval: int, start_h: int, end_h: int, lateness: int) -> void:
+## both -1 sentinels to null in the JSON payload.
+func _on_npc_schedule_changed(start_min: int, end_min: int, interval: int, start_h: int, end_h: int, lateness: int) -> void:
     if editor.selected_npc != null:
-        world.set_npc_schedule(editor.selected_npc, offset, interval, start_h, end_h, lateness)
+        world.set_npc_schedule(editor.selected_npc, start_min, end_min, interval, start_h, end_h, lateness)
 
-## Social-hour schedule changed (ZBBS-068). Empty tag clears the schedule
-## (start_h/end_h ignored in that case).
-func _on_npc_social_changed(tag: String, start_h: int, end_h: int) -> void:
+## Social-hour schedule changed (ZBBS-068, minute precision since ZBBS-071).
+## Empty tag clears the schedule (start_min/end_min ignored in that case).
+func _on_npc_social_changed(tag: String, start_min: int, end_min: int) -> void:
     if editor.selected_npc != null:
-        world.set_npc_social(editor.selected_npc, tag, start_h, end_h)
+        world.set_npc_social(editor.selected_npc, tag, start_min, end_min)
 
 func _on_npc_home_assign_requested() -> void:
     editor.begin_assign_home()
@@ -539,9 +540,9 @@ func _on_npc_metadata_changed(npc_id: String) -> void:
         return
     # Keep this in sync with editor._select_npc — show_npc_selection reads
     # whatever keys are present and defaults missing ones to 0 / null, so
-    # forgetting schedule_offset_minutes here made the SpinBox reset to 0
-    # after every successful Save Schedule PATCH. Any new NPC field the
-    # panel renders MUST be included here too.
+    # forgetting a field here made the SpinBox reset to 0 after every
+    # successful Save Schedule PATCH. Any new NPC field the panel renders
+    # MUST be included here too.
     var container: Node2D = editor.selected_npc
     var info := {
         "npc_id": npc_id,
@@ -552,17 +553,21 @@ func _on_npc_metadata_changed(npc_id: String) -> void:
         "llm_memory_agent": container.get_meta("llm_memory_agent", ""),
         "home_structure_id": container.get_meta("home_structure_id", ""),
         "work_structure_id": container.get_meta("work_structure_id", ""),
-        "schedule_offset_minutes": container.get_meta("schedule_offset_minutes", 0),
         "lateness_window_minutes": container.get_meta("lateness_window_minutes", 0),
     }
+    # Worker work-window: present only when the NPC has overridden the
+    # global dawn/dusk default. Missing keys signal "inherit" to the panel.
+    if container.has_meta("schedule_start_minute"):
+        info["schedule_start_minute"] = container.get_meta("schedule_start_minute")
+        info["schedule_end_minute"] = container.get_meta("schedule_end_minute")
     if container.has_meta("schedule_interval_hours"):
         info["schedule_interval_hours"] = container.get_meta("schedule_interval_hours")
         info["active_start_hour"] = container.get_meta("active_start_hour")
         info["active_end_hour"] = container.get_meta("active_end_hour")
     if container.has_meta("social_tag"):
         info["social_tag"] = container.get_meta("social_tag")
-        info["social_start_hour"] = container.get_meta("social_start_hour")
-        info["social_end_hour"] = container.get_meta("social_end_hour")
+        info["social_start_minute"] = container.get_meta("social_start_minute")
+        info["social_end_minute"] = container.get_meta("social_end_minute")
     editor_panel.show_npc_selection(info)
 
 ## Rebuild the Villagers list when it's actually visible. Wired to

@@ -16,13 +16,17 @@ signal npc_behavior_changed(behavior: String)
 signal npc_agent_changed(agent: String)
 signal npc_home_structure_changed(structure_id: String)
 signal npc_work_structure_changed(structure_id: String)
-# Combined schedule change — all four fields sent together. interval/start/end
-# are -1 to mean "null" (legacy / no cadence); offset is always an integer.
-# The handler maps -1 back to null in the PATCH payload.
-signal npc_schedule_changed(offset: int, interval: int, start: int, end: int, lateness: int)
-# Social-hour overlay (ZBBS-068). Empty tag == "clear the schedule" (and
-# start/end are ignored in that case). Applied all-or-none server-side.
-signal npc_social_changed(tag: String, start_hour: int, end_hour: int)
+# Combined schedule change — all six fields sent together.
+#   start_min / end_min: absolute work-window minutes-of-day (0–1439). Both
+#     -1 means "inherit dawn/dusk" (sent to server as null/null). All-or-none
+#     mirrors the schedule_window_all_or_none DB CHECK.
+#   interval / start / end: rotation cadence triple. -1 means "no cadence".
+#   lateness: lateness_window_minutes (0–180). Always sent.
+signal npc_schedule_changed(start_min: int, end_min: int, interval: int, start: int, end: int, lateness: int)
+# Social-hour overlay (ZBBS-068, minute-precision since ZBBS-071). Empty tag
+# == "clear the schedule" (and start_min/end_min are ignored in that case).
+# Applied all-or-none server-side.
+signal npc_social_changed(tag: String, start_min: int, end_min: int)
 signal npc_home_assign_requested
 signal npc_work_assign_requested
 signal npc_run_cycle_requested
@@ -138,12 +142,20 @@ var _npc_work_clear_button: Button = null
 var _npc_run_cycle_button: Button = null
 var _npc_go_home_button: Button = null
 var _npc_go_to_work_button: Button = null
-# Schedule section — four knobs + a "use cadence window" checkbox that
-# clusters the three nullable fields together. The offset field is always
-# visible; the three cadence fields enable/disable together. Applied on
-# the Save button press — avoids PATCH-per-keystroke.
+# Schedule section — absolute work-window pair (HH:MM start / HH:MM end)
+# + lateness + cadence triple. The start/end pair is nullable: when both
+# server values are NULL the worker inherits the global dawn/dusk window,
+# and the spinners display those defaults so the admin can see what the
+# NPC is actually doing. _npc_schedule_window_is_null tracks whether the
+# spinner values came from prepopulation (NULL state) or real overrides;
+# the first user-driven value_changed flips the flag and starts emitting
+# concrete minutes to the server.
 var _npc_schedule_section: VBoxContainer = null
-var _npc_offset_spin: SpinBox = null
+var _npc_start_hour_spin: SpinBox = null
+var _npc_start_minute_spin: SpinBox = null
+var _npc_end_hour_spin: SpinBox = null
+var _npc_end_minute_spin: SpinBox = null
+var _npc_schedule_window_is_null: bool = true
 var _npc_lateness_spin: SpinBox = null
 var _npc_cadence_check: CheckBox = null
 var _npc_interval_spin: SpinBox = null
@@ -154,11 +166,14 @@ var _npc_cadence_row: HBoxContainer = null
 var _npc_cadence_row2: HBoxContainer = null
 # Social-hour overlay UI (ZBBS-068). Like cadence, it's gated by a checkbox
 # so the panel can express "no social schedule" distinct from "scheduled at
-# hour 0." Tag dropdown is populated from GET /api/assets/state-tags.
+# minute 0." Tag dropdown is populated from GET /api/assets/state-tags.
+# HH:MM precision since ZBBS-071.
 var _npc_social_check: CheckBox = null
 var _npc_social_tag_dropdown: OptionButton = null
-var _npc_social_start_spin: SpinBox = null
-var _npc_social_end_spin: SpinBox = null
+var _npc_social_start_hour_spin: SpinBox = null
+var _npc_social_start_minute_spin: SpinBox = null
+var _npc_social_end_hour_spin: SpinBox = null
+var _npc_social_end_minute_spin: SpinBox = null
 var _npc_social_row: HBoxContainer = null
 var _npc_social_tag_row: HBoxContainer = null
 
@@ -766,37 +781,25 @@ func _ready() -> void:
     sched_header.add_theme_font_size_override("font_size", 11)
     _npc_schedule_section.add_child(sched_header)
 
-    var offset_row = HBoxContainer.new()
-    offset_row.add_theme_constant_override("separation", 6)
-    _npc_schedule_section.add_child(offset_row)
-    var offset_lbl = Label.new()
-    # Label names what this actually controls in user terms: how many
-    # minutes the worker arrives after sunrise and leaves before sunset.
-    # Negative values widen the workday past sunrise / sunset. The old
-    # label "Offset (h)" was too cryptic about both the unit and the
-    # semantics.
-    offset_lbl.text = "Sunrise/sunset offset (min)"
-    offset_lbl.add_theme_color_override("font_color", COLOR_TEXT_DIM)
-    offset_lbl.add_theme_font_size_override("font_size", 11)
-    offset_lbl.tooltip_text = "Positive = arrive later after sunrise, leave earlier before sunset (trims the workday). Negative = widen the workday past sunrise/sunset. 0 = full sunrise-to-sunset shift. Steps in 15-minute increments, but you can type any value."
-    offset_row.add_child(offset_lbl)
-    _npc_offset_spin = SpinBox.new()
-    # Minutes since ZBBS-066. Range is ±23h in minutes. Step 15 so the
-    # spinner arrows jump in quarter-hour increments (Jeff's primary use
-    # case is Ezekiel arriving 15 min after sunrise and leaving 15 min
-    # before sunset). Users can still type any integer minute value.
-    _npc_offset_spin.min_value = -1380
-    _npc_offset_spin.max_value = 1380
-    _npc_offset_spin.step = 15
-    # NOT update_on_text_changed: with step=15 Godot rounds the value on
-    # every keystroke, so typing "15" collapses to 0 after the "1" lands
-    # before the "5" can. Value commits on Enter / blur instead — the
-    # conventional behavior for a numeric text field. Other schedule
-    # SpinBoxes keep update_on_text_changed because their step is 1 (no
-    # rounding mid-type).
-    _npc_offset_spin.value_changed.connect(_on_schedule_field_changed)
-    _npc_offset_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    offset_row.add_child(_npc_offset_spin)
+    # Start / End — absolute work-window in HH:MM. Both NULL on the server
+    # means "inherit dawn/dusk", in which case the spinners are
+    # prepopulated with the current global values so the admin can see and
+    # edit from there. _npc_schedule_window_is_null tracks the NULL state;
+    # the first real user value_changed flips it false and we start sending
+    # concrete minutes.
+    var start_row = _build_hm_row("Start",
+        _on_schedule_window_field_changed,
+        "Worker arrives at this time of day.")
+    _npc_schedule_section.add_child(start_row.row)
+    _npc_start_hour_spin = start_row.hour_spin
+    _npc_start_minute_spin = start_row.minute_spin
+
+    var end_row = _build_hm_row("End",
+        _on_schedule_window_field_changed,
+        "Worker leaves at this time of day. End < start wraps past midnight (e.g. 17:00–05:00 for a tavernkeeper).")
+    _npc_schedule_section.add_child(end_row.row)
+    _npc_end_hour_spin = end_row.hour_spin
+    _npc_end_minute_spin = end_row.minute_spin
 
     # Lateness window — fuzzes the actual firing time within [nominal,
     # nominal+window) minutes. Per-NPC, per-boundary offset is
@@ -814,9 +817,8 @@ func _ready() -> void:
     _npc_lateness_spin = SpinBox.new()
     _npc_lateness_spin.min_value = 0
     _npc_lateness_spin.max_value = 180
-    _npc_lateness_spin.step = 15
-    # Same as offset SpinBox: no update_on_text_changed because step>1
-    # would clobber typing mid-edit.
+    _npc_lateness_spin.step = 1
+    _npc_lateness_spin.update_on_text_changed = true
     _npc_lateness_spin.value_changed.connect(_on_schedule_field_changed)
     _npc_lateness_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     lateness_row.add_child(_npc_lateness_spin)
@@ -920,37 +922,26 @@ func _ready() -> void:
     _npc_social_tag_dropdown.item_selected.connect(func(_i): _emit_social_changed())
     _npc_social_tag_row.add_child(_npc_social_tag_dropdown)
 
-    _npc_social_row = HBoxContainer.new()
-    _npc_social_row.add_theme_constant_override("separation", 6)
-    _npc_schedule_section.add_child(_npc_social_row)
-    var social_start_lbl = Label.new()
-    social_start_lbl.text = "Start"
-    social_start_lbl.add_theme_color_override("font_color", COLOR_TEXT_DIM)
-    social_start_lbl.add_theme_font_size_override("font_size", 11)
-    _npc_social_row.add_child(social_start_lbl)
-    _npc_social_start_spin = SpinBox.new()
-    _npc_social_start_spin.min_value = 0
-    _npc_social_start_spin.max_value = 23
-    _npc_social_start_spin.step = 1
-    _npc_social_start_spin.value = 19
-    _npc_social_start_spin.update_on_text_changed = true
-    _npc_social_start_spin.value_changed.connect(func(_v): _emit_social_changed())
-    _npc_social_start_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    _npc_social_row.add_child(_npc_social_start_spin)
-    var social_end_lbl = Label.new()
-    social_end_lbl.text = "End"
-    social_end_lbl.add_theme_color_override("font_color", COLOR_TEXT_DIM)
-    social_end_lbl.add_theme_font_size_override("font_size", 11)
-    _npc_social_row.add_child(social_end_lbl)
-    _npc_social_end_spin = SpinBox.new()
-    _npc_social_end_spin.min_value = 0
-    _npc_social_end_spin.max_value = 23
-    _npc_social_end_spin.step = 1
-    _npc_social_end_spin.value = 22
-    _npc_social_end_spin.update_on_text_changed = true
-    _npc_social_end_spin.value_changed.connect(func(_v): _emit_social_changed())
-    _npc_social_end_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    _npc_social_row.add_child(_npc_social_end_spin)
+    # HH:MM start / end rows. Default 19:00 / 22:00 so a freshly-checked
+    # social schedule lands in the typical evening tavern window.
+    var social_start_row = _build_hm_row("Start",
+        func(_v): _emit_social_changed(),
+        "Time of day the NPC walks to the nearest matching structure.")
+    _npc_schedule_section.add_child(social_start_row.row)
+    _npc_social_start_hour_spin = social_start_row.hour_spin
+    _npc_social_start_minute_spin = social_start_row.minute_spin
+    _npc_social_start_hour_spin.value = 19
+
+    var social_end_row = _build_hm_row("End",
+        func(_v): _emit_social_changed(),
+        "Time of day the NPC walks home. End < start wraps past midnight.")
+    _npc_schedule_section.add_child(social_end_row.row)
+    _npc_social_end_hour_spin = social_end_row.hour_spin
+    _npc_social_end_minute_spin = social_end_row.minute_spin
+    _npc_social_end_hour_spin.value = 22
+    # Hold _npc_social_row at the start row so legacy show/hide code that
+    # toggled visibility on the single row still affects the visible UI.
+    _npc_social_row = social_start_row.row
 
     var sel_sep = HSeparator.new()
     sel_sep.add_theme_color_override("separator_color", Color(0.4, 0.32, 0.2, 0.4))
@@ -1493,10 +1484,14 @@ func _on_cadence_toggled(enabled: bool) -> void:
 func _on_social_toggled(enabled: bool) -> void:
     if _npc_social_tag_dropdown != null:
         _npc_social_tag_dropdown.disabled = not enabled
-    if _npc_social_start_spin != null:
-        _npc_social_start_spin.editable = enabled
-    if _npc_social_end_spin != null:
-        _npc_social_end_spin.editable = enabled
+    if _npc_social_start_hour_spin != null:
+        _npc_social_start_hour_spin.editable = enabled
+    if _npc_social_start_minute_spin != null:
+        _npc_social_start_minute_spin.editable = enabled
+    if _npc_social_end_hour_spin != null:
+        _npc_social_end_hour_spin.editable = enabled
+    if _npc_social_end_minute_spin != null:
+        _npc_social_end_minute_spin.editable = enabled
 
 ## Emits npc_social_changed with the current field values. When the
 ## checkbox is off or the tag dropdown is empty, emit an empty tag — the
@@ -1510,9 +1505,9 @@ func _emit_social_changed() -> void:
     var tag: String = ""
     if _npc_social_tag_dropdown != null and _npc_social_tag_dropdown.selected >= 0:
         tag = _npc_social_tag_dropdown.get_item_text(_npc_social_tag_dropdown.selected)
-    var start_h: int = int(_npc_social_start_spin.value)
-    var end_h: int = int(_npc_social_end_spin.value)
-    npc_social_changed.emit(tag, start_h, end_h)
+    var start_min: int = int(_npc_social_start_hour_spin.value) * 60 + int(_npc_social_start_minute_spin.value)
+    var end_min: int = int(_npc_social_end_hour_spin.value) * 60 + int(_npc_social_end_minute_spin.value)
+    npc_social_changed.emit(tag, start_min, end_min)
 
 ## Populate the social tag dropdown from the server allowlist. Called by
 ## main.gd after it fetches the object-tags allowlist (social_tag is
@@ -1621,16 +1616,27 @@ func apply_object_tags_external(object_id: String, tags: Array) -> void:
     _obj_tags_current_list = tags
     _refresh_obj_tags_ui()
 
-## Emits the schedule-changed signal with the four current field values.
-## interval/start/end are sent as -1 when cadence is unchecked (handler
-## downstream converts to null JSON). offset is always sent.
+## Emits the schedule-changed signal with the current field values.
+## start_min/end_min are -1 when the window is NULL-inheriting dawn/dusk;
+## interval/start/end are -1 when cadence is unchecked. The handler
+## downstream converts -1 to null in the PATCH payload.
 func _on_schedule_save_pressed() -> void:
     _emit_schedule_changed()
 
-## Auto-save on any SpinBox value change. Matches the behavior /
-## home / work pickers that also save immediately on change, so admins
-## don't need a separate Save button to make the SCHEDULE section stick.
+## Auto-save on any SpinBox value change for fields that don't affect the
+## window's NULL state (lateness, cadence). Matches the behavior / home /
+## work pickers that also save immediately on change, so admins don't need
+## a separate Save button to make the SCHEDULE section stick.
 func _on_schedule_field_changed(_value: float) -> void:
+    _emit_schedule_changed()
+
+## Auto-save for the four window spinners (start HH/MM, end HH/MM). The
+## first user-driven change flips the NPC out of NULL-inherits-dawn/dusk
+## and into "concrete window," so subsequent emits send actual minutes.
+func _on_schedule_window_field_changed(_value: float) -> void:
+    if _ignoring_npc_inputs:
+        return
+    _npc_schedule_window_is_null = false
     _emit_schedule_changed()
 
 ## Alias for the cadence checkbox handler lambda — same semantics as
@@ -1642,7 +1648,11 @@ func _schedule_save_debounced() -> void:
 func _emit_schedule_changed() -> void:
     if _ignoring_npc_inputs:
         return
-    var offset: int = int(_npc_offset_spin.value)
+    var start_min: int = -1
+    var end_min: int = -1
+    if not _npc_schedule_window_is_null:
+        start_min = int(_npc_start_hour_spin.value) * 60 + int(_npc_start_minute_spin.value)
+        end_min = int(_npc_end_hour_spin.value) * 60 + int(_npc_end_minute_spin.value)
     var lateness: int = int(_npc_lateness_spin.value) if _npc_lateness_spin != null else 0
     var interval: int = -1
     var start_h: int = -1
@@ -1651,7 +1661,45 @@ func _emit_schedule_changed() -> void:
         interval = int(_npc_interval_spin.value)
         start_h = int(_npc_start_spin.value)
         end_h = int(_npc_end_spin.value)
-    npc_schedule_changed.emit(offset, interval, start_h, end_h, lateness)
+    npc_schedule_changed.emit(start_min, end_min, interval, start_h, end_h, lateness)
+
+## Build a reusable Start/End HH:MM row. Returns a dict with the row
+## container plus the two SpinBox children, so the caller can wire them
+## into its own state. The change_handler takes a float (Godot's
+## value_changed payload) so it matches existing _on_schedule_field_changed
+## signatures.
+func _build_hm_row(label_text: String, change_handler: Callable, tooltip: String = "") -> Dictionary:
+    var row = HBoxContainer.new()
+    row.add_theme_constant_override("separation", 6)
+    var lbl = Label.new()
+    lbl.text = label_text
+    lbl.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+    lbl.add_theme_font_size_override("font_size", 11)
+    if tooltip != "":
+        lbl.tooltip_text = tooltip
+    row.add_child(lbl)
+    var hh = SpinBox.new()
+    hh.min_value = 0
+    hh.max_value = 23
+    hh.step = 1
+    hh.update_on_text_changed = true
+    hh.value_changed.connect(change_handler)
+    hh.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    row.add_child(hh)
+    var colon = Label.new()
+    colon.text = ":"
+    colon.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+    colon.add_theme_font_size_override("font_size", 11)
+    row.add_child(colon)
+    var mm = SpinBox.new()
+    mm.min_value = 0
+    mm.max_value = 59
+    mm.step = 1
+    mm.update_on_text_changed = true
+    mm.value_changed.connect(change_handler)
+    mm.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    row.add_child(mm)
+    return {"row": row, "hour_spin": hh, "minute_spin": mm}
 
 func _on_npc_behavior_selected(index: int) -> void:
     if _ignoring_npc_inputs:
@@ -2308,10 +2356,36 @@ func show_npc_selection(info: Dictionary) -> void:
         var at_work: bool = _is_npc_at_structure_door(npc_container, _npc_work_current_id)
         _npc_go_to_work_button.disabled = _npc_work_current_id == "" or at_work
 
-    # Schedule fields — offset always populated; cadence fields populated
-    # only when all three are non-null (schedule_all_or_none in DB).
-    if _npc_offset_spin != null:
-        _npc_offset_spin.value = int(info.get("schedule_offset_minutes", 0))
+    # Schedule window — both NULL means "inherit dawn/dusk", in which case
+    # we prepopulate the spinners from the global defaults so the admin
+    # can see what the NPC is actually doing. The is-null flag stays true
+    # until the user actually changes a value (handled by
+    # _on_schedule_window_field_changed), keeping NULL as a real persistent
+    # state rather than a one-time fill.
+    var start_raw_min = info.get("schedule_start_minute", null)
+    var end_raw_min = info.get("schedule_end_minute", null)
+    _npc_schedule_window_is_null = start_raw_min == null or end_raw_min == null
+    var start_min: int
+    var end_min: int
+    if _npc_schedule_window_is_null:
+        # Pull dawn/dusk from world; if the world hasn't loaded the config
+        # yet, world.get_*_minute() returns the engine defaults so the
+        # spinners still show plausible values.
+        if world != null:
+            start_min = world.get_dawn_minute()
+            end_min = world.get_dusk_minute()
+        else:
+            start_min = 7 * 60
+            end_min = 19 * 60
+    else:
+        start_min = int(start_raw_min)
+        end_min = int(end_raw_min)
+    if _npc_start_hour_spin != null:
+        _npc_start_hour_spin.value = start_min / 60
+        _npc_start_minute_spin.value = start_min % 60
+    if _npc_end_hour_spin != null:
+        _npc_end_hour_spin.value = end_min / 60
+        _npc_end_minute_spin.value = end_min % 60
     if _npc_lateness_spin != null:
         _npc_lateness_spin.value = int(info.get("lateness_window_minutes", 0))
     var interval_raw = info.get("schedule_interval_hours", null)
@@ -2329,11 +2403,12 @@ func show_npc_selection(info: Dictionary) -> void:
     # explicitly in case future Godot changes that.
     _on_cadence_toggled(has_cadence)
 
-    # Social-hour fields — same all-or-none shape as cadence.
+    # Social-hour fields — same all-or-none shape as cadence. Minute
+    # precision since ZBBS-071.
     var social_tag_raw = info.get("social_tag", null)
-    var social_start_raw = info.get("social_start_hour", null)
-    var social_end_raw = info.get("social_end_hour", null)
-    var has_social: bool = social_tag_raw != null and social_tag_raw != "" and social_start_raw != null and social_end_raw != null
+    var social_start_raw_min = info.get("social_start_minute", null)
+    var social_end_raw_min = info.get("social_end_minute", null)
+    var has_social: bool = social_tag_raw != null and social_tag_raw != "" and social_start_raw_min != null and social_end_raw_min != null
     if _npc_social_check != null:
         _npc_social_check.button_pressed = has_social
     if has_social and _npc_social_tag_dropdown != null:
@@ -2344,8 +2419,12 @@ func show_npc_selection(info: Dictionary) -> void:
             if _npc_social_tag_dropdown.get_item_text(i) == str(social_tag_raw):
                 _npc_social_tag_dropdown.select(i)
                 break
-        _npc_social_start_spin.value = int(social_start_raw)
-        _npc_social_end_spin.value = int(social_end_raw)
+        var social_start_min: int = int(social_start_raw_min)
+        var social_end_min: int = int(social_end_raw_min)
+        _npc_social_start_hour_spin.value = social_start_min / 60
+        _npc_social_start_minute_spin.value = social_start_min % 60
+        _npc_social_end_hour_spin.value = social_end_min / 60
+        _npc_social_end_minute_spin.value = social_end_min % 60
     _on_social_toggled(has_social)
 
     _ignoring_npc_inputs = false
