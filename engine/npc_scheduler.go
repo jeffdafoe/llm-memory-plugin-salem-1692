@@ -110,7 +110,9 @@ func (app *App) dispatchScheduledBehaviors(ctx context.Context) {
 // to dispatch this tick. Door coords are pre-resolved server-side via the
 // same COALESCE chain go-home / go-to-work use. ScheduleOffset is minutes.
 // LatenessWindow is the ±fuzz window for when the NPC actually fires
-// relative to the nominal boundary (ZBBS-067).
+// relative to the nominal boundary (ZBBS-067). Social fields travel along
+// so the worker scheduler can step aside whenever the NPC has an active
+// social window — see evaluateWorkerSchedule for why.
 type workerRow struct {
 	ID                    string
 	ScheduleOffsetMinutes int
@@ -127,6 +129,13 @@ type workerRow struct {
 	WorkStructureID string
 	WorkDoorX       float64
 	WorkDoorY       float64
+
+	// Social schedule overlap (ZBBS-068). All three are NULL together
+	// (the all-or-none CHECK) — Valid==false means no social schedule
+	// configured, in which case the worker scheduler runs normally.
+	SocialTag       sql.NullString
+	SocialStartHour sql.NullInt64
+	SocialEndHour   sql.NullInt64
 }
 
 // loadWorkerRows selects every worker NPC with both home and work
@@ -142,7 +151,8 @@ func (app *App) loadWorkerRows(ctx context.Context) ([]workerRow, error) {
 		        COALESCE(hs.y + ha.door_offset_y * 32.0, hs.y),
 		        n.work_structure_id,
 		        COALESCE(ws.x + wa.door_offset_x * 32.0, ws.x),
-		        COALESCE(ws.y + wa.door_offset_y * 32.0, ws.y)
+		        COALESCE(ws.y + wa.door_offset_y * 32.0, ws.y),
+		        n.social_tag, n.social_start_hour, n.social_end_hour
 		 FROM npc n
 		 JOIN village_object hs ON hs.id = n.home_structure_id
 		 JOIN asset ha         ON ha.id = hs.asset_id
@@ -163,13 +173,27 @@ func (app *App) loadWorkerRows(ctx context.Context) ([]workerRow, error) {
 			&w.LastShiftTickAt,
 			&w.InsideStructureID, &w.CurrentX, &w.CurrentY,
 			&w.HomeStructureID, &w.HomeDoorX, &w.HomeDoorY,
-			&w.WorkStructureID, &w.WorkDoorX, &w.WorkDoorY); err != nil {
+			&w.WorkStructureID, &w.WorkDoorX, &w.WorkDoorY,
+			&w.SocialTag, &w.SocialStartHour, &w.SocialEndHour); err != nil {
 			log.Printf("scheduler: scan worker row: %v", err)
 			continue
 		}
 		out = append(out, w)
 	}
 	return out, nil
+}
+
+// hourInSocialWindow reports whether the given hour falls within
+// [start, end). Wraps around midnight when start > end (e.g. a 22-02
+// late-night tavern shift treats 23 and 01 as in-window).
+func hourInSocialWindow(hour, startH, endH int) bool {
+	if startH == endH {
+		return false
+	}
+	if startH < endH {
+		return hour >= startH && hour < endH
+	}
+	return hour >= startH || hour < endH
 }
 
 // workerBoundaryKind is which side of the shift a boundary sits on.
@@ -250,6 +274,27 @@ func (app *App) evaluateWorkerSchedule(ctx context.Context, w *workerRow, now ti
 	effectiveAt := boundaryAt.Add(time.Duration(lateMinutes) * time.Minute)
 	if now.Before(effectiveAt) {
 		return
+	}
+
+	// Suppress this dispatch when the NPC has an active social schedule
+	// covering effectiveAt. The social_scheduler owns the NPC's location
+	// during their social window — without this guard, a worker-leave
+	// whose lateness pushes it past the social-enter boundary will yank
+	// the NPC out of the tavern and walk them home, undoing the social
+	// walk that already fired on an earlier tick. Stamp the boundary so
+	// we don't keep re-evaluating the same suppressed shift change every
+	// tick; the next boundary (the social-leave at end of window, then
+	// tomorrow's worker-arrive) will land normally.
+	if w.SocialTag.Valid && w.SocialStartHour.Valid && w.SocialEndHour.Valid {
+		if hourInSocialWindow(effectiveAt.Hour(), int(w.SocialStartHour.Int64), int(w.SocialEndHour.Int64)) {
+			if _, err := app.DB.Exec(ctx,
+				`UPDATE npc SET last_shift_tick_at = $2 WHERE id = $1`,
+				w.ID, boundaryAt,
+			); err != nil {
+				log.Printf("scheduler: stamp (social-suppressed) %s: %v", w.ID, err)
+			}
+			return
+		}
 	}
 
 	var targetStructureID string
