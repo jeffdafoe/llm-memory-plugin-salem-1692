@@ -28,6 +28,7 @@ signal npc_work_assign_requested
 signal npc_run_cycle_requested
 signal npc_go_home_requested
 signal npc_go_to_work_requested
+signal npc_sprite_change_requested(npc_id: String, current_sprite_id: String)
 signal npc_select_requested(npc_id: String)
 signal asset_enterable_toggled(asset_id: String, enterable: bool)
 signal asset_visible_when_inside_toggled(asset_id: String, visible: bool)
@@ -121,6 +122,12 @@ var _npc_fields_section: VBoxContainer = null
 var _npc_name_edit: LineEdit = null
 var _npc_behavior_dropdown: OptionButton = null
 var _npc_agent_dropdown: OptionButton = null
+# SPRITE row — read-only label of current sprite name + Change… button that
+# opens the modal picker. NPC's current sprite_id is stashed for the picker.
+var _npc_sprite_label: Label = null
+var _npc_sprite_change_button: Button = null
+var _npc_current_sprite_id: String = ""
+var _npc_current_id: String = ""
 # Home / Work are pickers now, not dropdowns — clicking _npc_home_pick_button
 # puts the editor into ASSIGN_HOME mode so the user clicks a structure on the
 # map. Clear button unlinks. Label shows the current structure name.
@@ -565,6 +572,34 @@ func _ready() -> void:
     _npc_name_edit.text_submitted.connect(_on_npc_name_submitted)
     _npc_name_edit.focus_exited.connect(_on_npc_name_focus_lost)
     _npc_fields_section.add_child(_npc_name_edit)
+
+    # SPRITE — current sprite name displayed read-only with a Change… button
+    # that opens the modal picker. main.gd handles the picker + PATCH; the
+    # WS broadcast then drives the visual swap on every connected client.
+    var npc_sprite_header = Label.new()
+    npc_sprite_header.text = "SPRITE"
+    npc_sprite_header.add_theme_color_override("font_color", COLOR_LABEL)
+    npc_sprite_header.add_theme_font_size_override("font_size", 11)
+    _npc_fields_section.add_child(npc_sprite_header)
+
+    var sprite_row = HBoxContainer.new()
+    sprite_row.add_theme_constant_override("separation", 6)
+    _npc_fields_section.add_child(sprite_row)
+
+    _npc_sprite_label = Label.new()
+    _npc_sprite_label.add_theme_color_override("font_color", COLOR_TEXT)
+    _npc_sprite_label.add_theme_font_size_override("font_size", 13)
+    _npc_sprite_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    _npc_sprite_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+    sprite_row.add_child(_npc_sprite_label)
+
+    _npc_sprite_change_button = Button.new()
+    _npc_sprite_change_button.text = "Change…"
+    _npc_sprite_change_button.add_theme_font_override("font", _font)
+    _npc_sprite_change_button.add_theme_font_size_override("font_size", 12)
+    _npc_sprite_change_button.add_theme_color_override("font_color", COLOR_TEXT)
+    _npc_sprite_change_button.pressed.connect(_on_npc_sprite_change_pressed)
+    sprite_row.add_child(_npc_sprite_change_button)
 
     var npc_behavior_header = Label.new()
     npc_behavior_header.text = "BEHAVIOR"
@@ -1611,6 +1646,13 @@ func _on_npc_agent_selected(index: int) -> void:
     var agent_key: String = _npc_agent_dropdown.get_item_metadata(index)
     npc_agent_changed.emit(agent_key)
 
+## Forward to main.gd which owns the modal picker. Carries the current
+## sprite_id so the picker can highlight it.
+func _on_npc_sprite_change_pressed() -> void:
+    if _npc_current_id == "":
+        return
+    npc_sprite_change_requested.emit(_npc_current_id, _npc_current_sprite_id)
+
 ## Update the Home / Work picker button labels while in structure-picking
 ## mode. Called by main when editor enters/exits ASSIGN_HOME / ASSIGN_WORK.
 ## While picking, the row is frozen on "Click a structure (Esc)" to cue the
@@ -2176,6 +2218,17 @@ func show_npc_selection(info: Dictionary) -> void:
     # emits the old name against the new selection.
     _npc_name_edit.release_focus()
     _npc_name_edit.text = display_name
+
+    # Stash the NPC + sprite identity for the Change… button. Show the
+    # sprite name (or its id as a fallback) so admins can tell which sheet
+    # is currently in use without opening the picker.
+    _npc_current_id = npc_id
+    _npc_current_sprite_id = str(info.get("sprite_id", ""))
+    var sprite_name: String = str(info.get("sprite_name", ""))
+    if sprite_name == "":
+        sprite_name = _npc_current_sprite_id if _npc_current_sprite_id != "" else "(unknown)"
+    _npc_sprite_label.text = sprite_name
+    _npc_sprite_label.tooltip_text = sprite_name
 
     # Populate behavior dropdown from Catalog.npc_behaviors. Index 0 is always
     # "(none)" mapped to empty string — represents a null behavior server-side.

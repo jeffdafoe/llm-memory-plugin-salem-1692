@@ -6,6 +6,7 @@ const TopBarScript = preload("res://scripts/top_bar.gd")
 const EditorPanelScript = preload("res://scripts/editor_panel.gd")
 const ConfigPanelScript = preload("res://scripts/config_panel.gd")
 const AssetPopupScript = preload("res://scripts/asset_popup.gd")
+const NPCSpritePickerScript = preload("res://scripts/npc_sprite_picker.gd")
 const ObjectTooltipScript = preload("res://scripts/object_tooltip.gd")
 const EventClientScript = preload("res://scripts/event_client.gd")
 
@@ -18,6 +19,7 @@ var top_bar: PanelContainer = null
 var editor_panel: PanelContainer = null
 var config_panel: Control = null
 var asset_popup: Control = null
+var npc_sprite_picker: Control = null
 var object_tooltip: CanvasLayer = null
 var event_client: Node = null
 
@@ -197,6 +199,19 @@ func _build_ui() -> void:
         editor.popup_open = false
     )
 
+    # NPC sprite picker — modal overlay above the editor. Same layer as the
+    # asset popup; ownership of camera/editor input flags handled symmetrically.
+    npc_sprite_picker = Control.new()
+    npc_sprite_picker.set_script(NPCSpritePickerScript)
+    npc_sprite_picker.world = world
+    config_layer.add_child(npc_sprite_picker)
+    npc_sprite_picker.visible = false
+    npc_sprite_picker.sprite_selected.connect(_on_npc_sprite_picker_selected)
+    npc_sprite_picker.closed.connect(func():
+        camera.modal_open = false
+        editor.popup_open = false
+    )
+
     # Object tooltip — shows owner info on hover when not in edit mode
     object_tooltip = CanvasLayer.new()
     object_tooltip.set_script(ObjectTooltipScript)
@@ -227,6 +242,7 @@ func _build_ui() -> void:
     editor_panel.npc_go_home_requested.connect(_on_npc_go_home_requested)
     editor_panel.npc_go_to_work_requested.connect(_on_npc_go_to_work_requested)
     editor_panel.npc_select_requested.connect(_on_npc_select_requested)
+    editor_panel.npc_sprite_change_requested.connect(_on_npc_sprite_change_requested)
     editor_panel.asset_enterable_toggled.connect(_on_asset_enterable_toggled)
     editor_panel.asset_visible_when_inside_toggled.connect(_on_asset_visible_when_inside_toggled)
     editor_panel.world = world
@@ -449,6 +465,36 @@ func _on_npc_select_requested(npc_id: String) -> void:
     # local-only.
     camera.center_on(container.global_position)
 
+## Editor panel's "Change…" button on the SPRITE row was clicked. Open the
+## modal picker for this NPC, highlighting the current sprite.
+func _on_npc_sprite_change_requested(npc_id: String, current_sprite_id: String) -> void:
+    if npc_sprite_picker == null:
+        return
+    npc_sprite_picker.show_for_npc(npc_id, current_sprite_id)
+    camera.modal_open = true
+    editor.popup_open = true
+
+## Picker emitted a selection. PATCH the NPC's sprite_id and let the WS
+## broadcast (npc_sprite_changed) drive the visual swap on every client,
+## including this one. No need to update local state imperatively.
+func _on_npc_sprite_picker_selected(npc_id: String, sprite_id: String) -> void:
+    if npc_id == "" or sprite_id == "":
+        return
+    var http := HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    http.request_completed.connect(func(_r, c, _h, _b):
+        http.queue_free()
+        Auth.check_response(c)
+    )
+    var headers := ["Content-Type: application/json"]
+    var auth_header: String = Auth.get_auth_header()
+    if auth_header != "":
+        headers.append("Authorization: " + auth_header)
+    var payload: String = JSON.stringify({"sprite_id": sprite_id})
+    http.request(Auth.api_base + "/api/village/npcs/" + npc_id + "/sprite",
+        headers, HTTPClient.METHOD_PATCH, payload)
+
 func _on_npc_go_home_requested() -> void:
     _post_npc_action("go-home")
 
@@ -495,6 +541,8 @@ func _on_npc_metadata_changed(npc_id: String) -> void:
     var container: Node2D = editor.selected_npc
     var info := {
         "npc_id": npc_id,
+        "sprite_id": container.get_meta("sprite_id", ""),
+        "sprite_name": container.get_meta("sprite_name", ""),
         "display_name": container.get_meta("display_name", ""),
         "behavior": container.get_meta("behavior", ""),
         "llm_memory_agent": container.get_meta("llm_memory_agent", ""),

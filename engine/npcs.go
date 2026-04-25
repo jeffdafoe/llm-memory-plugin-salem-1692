@@ -417,6 +417,78 @@ func (app *App) handleSetNPCDisplayName(w http.ResponseWriter, r *http.Request) 
 	}})
 }
 
+// handleSetNPCSprite swaps the sprite sheet used to render an NPC. Admin only.
+// Useful for fixing a placement-time mismatch (e.g. tavernkeeper got placed
+// with a generic villager sprite). Body: {sprite_id}. Broadcasts
+// npc_sprite_changed with the full sprite (sheet + animations) inlined so
+// every client can rebuild the AnimatedSprite2D without a follow-up fetch —
+// same shape as handleCreateNPC's broadcast.
+func (app *App) handleSetNPCSprite(w http.ResponseWriter, r *http.Request) {
+	user := getUserFromContext(r.Context())
+	if user == nil || !user.hasRole("ROLE_SALEM_ADMIN") {
+		jsonError(w, "Admin role required", http.StatusForbidden)
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		jsonError(w, "Missing NPC ID", http.StatusBadRequest)
+		return
+	}
+
+	var req struct {
+		SpriteID string `json:"sprite_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	req.SpriteID = strings.TrimSpace(req.SpriteID)
+	if req.SpriteID == "" {
+		jsonError(w, "sprite_id is required", http.StatusBadRequest)
+		return
+	}
+
+	// Verify the sprite exists so the FK update returns a friendly error
+	// rather than a generic 500.
+	var spriteCount int
+	if err := app.DB.QueryRow(r.Context(),
+		`SELECT COUNT(*) FROM npc_sprite WHERE id = $1`, req.SpriteID,
+	).Scan(&spriteCount); err != nil || spriteCount == 0 {
+		jsonError(w, "Unknown sprite_id", http.StatusBadRequest)
+		return
+	}
+
+	result, err := app.DB.Exec(r.Context(),
+		`UPDATE npc SET sprite_id = $1 WHERE id = $2`,
+		req.SpriteID, id,
+	)
+	if err != nil {
+		jsonError(w, "Failed to update sprite", http.StatusInternalServerError)
+		return
+	}
+	if result.RowsAffected() == 0 {
+		jsonError(w, "NPC not found", http.StatusNotFound)
+		return
+	}
+
+	// Inline the full sprite so the client can rebuild without re-fetching.
+	sprites, err := app.loadNPCSprites(r.Context())
+	if err != nil {
+		jsonError(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	data := map[string]interface{}{
+		"id":        id,
+		"sprite_id": req.SpriteID,
+	}
+	if s, ok := sprites[req.SpriteID]; ok {
+		data["sprite"] = s
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+	app.Hub.Broadcast(WorldEvent{Type: "npc_sprite_changed", Data: data})
+}
+
 // handleSetNPCBehavior assigns or clears the behavior of an NPC. Admin only.
 // A null/empty behavior clears the field. The FK on npc.behavior enforces
 // validity against npc_behavior.slug, but we pre-check to return a clean 400

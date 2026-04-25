@@ -151,6 +151,9 @@ func _handle_message(data: String) -> void:
         "npc_display_name_changed":
             if world != null:
                 world.apply_npc_display_name_change(event_data)
+        "npc_sprite_changed":
+            if world != null:
+                world.apply_npc_sprite_change(event_data)
         "npc_behavior_changed":
             if world != null:
                 world.apply_npc_behavior_change(event_data)
