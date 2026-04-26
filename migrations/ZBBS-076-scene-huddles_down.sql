@@ -1,0 +1,6 @@
+BEGIN;
+
+ALTER TABLE npc DROP COLUMN IF EXISTS current_huddle_id;
+DROP TABLE IF EXISTS scene_huddle;
+
+COMMIT;

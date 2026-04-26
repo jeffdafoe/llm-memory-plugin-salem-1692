@@ -393,6 +393,21 @@ func (app *App) setNPCInside(ctx context.Context, npcID string, inside bool, str
 	for sid := range touched {
 		app.refreshStructureOccupancyState(ctx, sid)
 	}
+
+	// Scene huddle membership (ZBBS-076). Runs AFTER the inside_structure
+	// _id flip so the huddle queries see the new state. Order matters:
+	// leave the old huddle before joining the new one — otherwise the
+	// emptiness check on the old huddle would still see this NPC as a
+	// participant via current_huddle_id and not conclude it.
+	if prev.InsideStructureID != nil &&
+		(newInsideID == nil || *prev.InsideStructureID != *newInsideID) {
+		app.leaveHuddle(ctx, npcID)
+	}
+	if newInsideID != nil {
+		if _, err := app.joinOrCreateHuddle(ctx, npcID, *newInsideID); err != nil {
+			log.Printf("setNPCInside join huddle %s: %v", npcID, err)
+		}
+	}
 }
 
 func stringPtrEq(a, b *string) bool {
