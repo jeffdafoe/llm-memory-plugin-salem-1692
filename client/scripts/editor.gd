@@ -1265,14 +1265,16 @@ func refresh_stand_marker() -> void:
         child.queue_free()
     _draw_stand_marker_contents(asset)
 
-## Default when unset: fall back to the door offset so the marker starts
-## somewhere sensible (usually the walkable entry tile). Admin drags it
-## to the desired render tile, typically deeper into the footprint.
+## Default when unset: door offset PLUS one tile east, so the orange
+## stand square doesn't sit directly on the blue door square (where it
+## would hide the door). Admin drags onto the desired render tile,
+## typically deeper into the footprint.
 func _current_stand_offset_tiles(asset: Dictionary, node: Node2D) -> Vector2:
     var sx = asset.get("stand_offset_x", null)
     var sy = asset.get("stand_offset_y", null)
     if sx == null or sy == null:
-        return _current_door_offset_tiles(asset, node)
+        var door_tiles: Vector2 = _current_door_offset_tiles(asset, node)
+        return Vector2(door_tiles.x + 1, door_tiles.y)
     return Vector2(int(sx), int(sy))
 
 func _draw_stand_marker_contents(_asset: Dictionary) -> void:
