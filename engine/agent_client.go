@@ -1,15 +1,17 @@
 package main
 
-// HTTP client for llm-memory-api's /agent/tick endpoint.
+// HTTP client for llm-memory-api's /v1/chat/send?wait=true endpoint.
 //
-// Sends perception or full message-history bodies and parses tool-call
-// responses. The agent's API key comes from village_agent.llm_memory_api_key —
-// same column the rest of the salem→llm-memory-api integration uses.
+// One client per engine instance, authenticated as the `salem-engine` actor
+// via API key. Each call is a wait=true chat send to one NPC, returning that
+// NPC's reply (text + tool_calls) inline. Persistent chat_messages history on
+// the API side accumulates across iterations and across game-days, so the
+// harness loop in agent_tick.go never holds a local messages[] — it just
+// reads the latest reply each iteration and feeds the next tool result back.
 //
-// Connection model: stateless. Each call is a fresh HTTP request with the
-// agent's API key as a Bearer token. The /v1 middleware in llm-memory-api
-// accepts API keys after MEM-2026-04-25 (commit c06640d) — sessions aren't
-// needed for service-to-service callers.
+// Auth: salem-engine has realms=['salem'] and reaches the four salem NPCs via
+// the realm-overlap rule in canAccessVirtualAgent. The engine key comes from
+// LLM_MEMORY_ENGINE_KEY at startup.
 
 import (
 	"bytes"
@@ -22,127 +24,111 @@ import (
 	"time"
 )
 
-// agentToolDef is the neutral tool spec (matches the providers/index.js opts.tools
-// contract on the API side: { name, description, parameters }). Parameters is a
-// JSON Schema. Marshaled directly into the request body.
+// agentToolDef is the neutral tool spec sent in tools_offered. Matches the
+// providers/index.js opts.tools contract on the API side.
 type agentToolDef struct {
 	Name        string                 `json:"name"`
 	Description string                 `json:"description"`
 	Parameters  map[string]interface{} `json:"parameters"`
 }
 
-// agentMessage is the OpenAI-shape conversation entry. Role is one of
-// "user" | "assistant" | "tool". Content holds plain text. Assistant messages
-// MAY also carry ToolCalls (the LLM asking the engine to do something).
-// Tool messages MUST carry ToolCallID matching the assistant's tool_call id.
-type agentMessage struct {
-	Role       string             `json:"role"`
-	Content    string             `json:"content"`
-	ToolCalls  []agentMessageCall `json:"tool_calls,omitempty"`
-	ToolCallID string             `json:"tool_call_id,omitempty"`
-}
-
-// agentMessageCall is the OpenAI-shape tool-call entry inside an assistant
-// message. Arguments is a JSON-string (per OpenAI's API), distinct from the
-// parsed-input shape returned in /agent/tick responses.
-type agentMessageCall struct {
-	ID       string                  `json:"id"`
-	Type     string                  `json:"type"` // always "function"
-	Function agentMessageCallDetails `json:"function"`
-}
-
-type agentMessageCallDetails struct {
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"`
-}
-
-// agentTickRequest is the /agent/tick body. Exactly one of Perception or
-// Messages must be set — the route rejects both.
-type agentTickRequest struct {
-	Perception string         `json:"perception,omitempty"`
-	Messages   []agentMessage `json:"messages,omitempty"`
-	Tools      []agentToolDef `json:"tools,omitempty"`
-	System     string         `json:"system,omitempty"`
-}
-
-// agentToolCall is the parsed tool-call returned in /agent/tick responses.
-// Distinct from agentMessageCall: input is already an object, not a string.
+// agentToolCall is a parsed tool-call from the NPC's reply. Same neutral
+// {id, name, input} shape the API returns; translation to OpenAI shape for
+// upstream providers happens on the API side in buildToolUseMessages.
 type agentToolCall struct {
 	ID    string                 `json:"id"`
 	Name  string                 `json:"name"`
 	Input map[string]interface{} `json:"input"`
 }
 
-// agentTickResponse is the /agent/tick response body.
-type agentTickResponse struct {
-	Agent     string          `json:"agent"`
-	Text      string          `json:"text"`
-	ToolCalls []agentToolCall `json:"tool_calls"`
-	Usage     struct {
-		InputTokens  int     `json:"input_tokens"`
-		OutputTokens int     `json:"output_tokens"`
-		Cost         float64 `json:"cost,omitempty"`
-	} `json:"usage"`
-	Cost float64 `json:"cost"`
+// chatSendRequest is the /v1/chat/send body. ToolCallID is set when this
+// message is the engine's reply to a previous observation tool call;
+// omitted on the first iteration (the initial perception).
+type chatSendRequest struct {
+	ToAgents     []string       `json:"to_agents"`
+	Message      string         `json:"message"`
+	ToolsOffered []agentToolDef `json:"tools_offered,omitempty"`
+	ToolCallID   string         `json:"tool_call_id,omitempty"`
+	Wait         bool           `json:"wait"`
 }
 
-// agentTickError lets callers distinguish rate-limit / cost-limit responses
-// from generic failures so the engine can fall through to scheduler-only
-// behavior gracefully.
-type agentTickError struct {
+// chatSendReply is the inline VA reply returned when wait=true.
+type chatSendReply struct {
+	Text      string          `json:"text"`
+	ToolCalls []agentToolCall `json:"tool_calls"`
+}
+
+// chatSendResponse — only the field the engine reads. The route also returns
+// from_agent / to_agents / sent_at, but the harness doesn't need them.
+type chatSendResponse struct {
+	Reply *chatSendReply `json:"reply"`
+}
+
+// chatError lets callers distinguish auth / rate-limit / upstream failures
+// from generic HTTP failures. Status comes from the API side; 502 is the
+// canonical "LLM provider failed" code for wait=true callers.
+type chatError struct {
 	Status int
 	Code   string
 	Body   string
 }
 
-func (e *agentTickError) Error() string {
-	return fmt.Sprintf("agent/tick %d %s: %s", e.Status, e.Code, e.Body)
+func (e *chatError) Error() string {
+	return fmt.Sprintf("chat/send %d %s: %s", e.Status, e.Code, e.Body)
 }
 
-// agentTickClient is reusable across calls — one client per engine instance.
-// The HTTP client is shared (idempotent, thread-safe) and inherits the
-// process-wide connection pool.
-type agentTickClient struct {
-	baseURL string
-	http    *http.Client
+// npcChatClient is reusable across NPCs and ticks. Holds the salem-engine
+// API key — every chat originates from salem-engine, only to_agents differs.
+type npcChatClient struct {
+	baseURL   string
+	engineKey string
+	http      *http.Client
 }
 
-func newAgentTickClient(baseURL string) *agentTickClient {
-	return &agentTickClient{
-		baseURL: baseURL,
-		// 90s timeout fits inside the API-side 120s default and leaves room
-		// for retries within a single tick budget if added later.
+func newNPCChatClient(baseURL, engineKey string) *npcChatClient {
+	return &npcChatClient{
+		baseURL:   baseURL,
+		engineKey: engineKey,
+		// 90s — wait=true blocks on the upstream LLM call. handleDirectChat
+		// re-throws on failure (HTTP 502), so this client gets a clean error
+		// instead of polling for an [Error] sentinel.
 		http: &http.Client{Timeout: 90 * time.Second},
 	}
 }
 
-// callTick sends the request and returns the parsed response. apiKey is the
-// agent's plaintext API key from village_agent.llm_memory_api_key. ctx is
-// honored for cancellation but not for the HTTP timeout — the http.Client
-// timeout governs that independently.
-func (c *agentTickClient) callTick(ctx context.Context, apiKey string, req agentTickRequest) (*agentTickResponse, error) {
-	body, err := json.Marshal(req)
+// sendChat sends a wait=true chat to one NPC and returns the inline reply.
+// On iter 0 of a tick, message is the perception and toolCallID is empty.
+// On iter N>0, message is the tool-result text and toolCallID matches the
+// prior assistant tool_call.id from the NPC's last reply.
+func (c *npcChatClient) sendChat(ctx context.Context, npcAgentName, message, toolCallID string, tools []agentToolDef) (*chatSendReply, error) {
+	body, err := json.Marshal(chatSendRequest{
+		ToAgents:     []string{npcAgentName},
+		Message:      message,
+		ToolsOffered: tools,
+		ToolCallID:   toolCallID,
+		Wait:         true,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("marshal tick request: %w", err)
+		return nil, fmt.Errorf("marshal chat request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(c.baseURL, "/")+"/v1/agent/tick", bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST",
+		strings.TrimRight(c.baseURL, "/")+"/v1/chat/send", bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("build tick request: %w", err)
+		return nil, fmt.Errorf("build chat request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+	httpReq.Header.Set("Authorization", "Bearer "+c.engineKey)
 
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("tick http: %w", err)
+		return nil, fmt.Errorf("chat http: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBytes, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// Try to extract the API's structured error code; fall back to status.
 		var errBody struct {
 			Error struct {
 				Code    string `json:"code"`
@@ -150,16 +136,21 @@ func (c *agentTickClient) callTick(ctx context.Context, apiKey string, req agent
 			} `json:"error"`
 		}
 		_ = json.Unmarshal(respBytes, &errBody)
-		return nil, &agentTickError{
+		return nil, &chatError{
 			Status: resp.StatusCode,
 			Code:   errBody.Error.Code,
 			Body:   string(respBytes),
 		}
 	}
 
-	var out agentTickResponse
+	var out chatSendResponse
 	if err := json.Unmarshal(respBytes, &out); err != nil {
-		return nil, fmt.Errorf("parse tick response: %w (body: %s)", err, string(respBytes))
+		return nil, fmt.Errorf("parse chat response: %w (body: %s)", err, string(respBytes))
 	}
-	return &out, nil
+	if out.Reply == nil {
+		// wait=true should always return reply; if it doesn't, the route's
+		// no-reply-pending path tripped (multi-recipient or non-VA target).
+		return nil, fmt.Errorf("chat response missing reply (body: %s)", string(respBytes))
+	}
+	return out.Reply, nil
 }

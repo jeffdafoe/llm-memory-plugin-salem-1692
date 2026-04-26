@@ -165,95 +165,82 @@ func (app *App) loadAgentNPCRows(ctx context.Context) ([]agentNPCRow, error) {
 // runAgentTick is the harness loop for one NPC. Stamps last_agent_tick_at
 // at the end so a partial failure doesn't burn the hour — the next tick
 // retries.
+//
+// Transport: each iteration is one wait=true chat_send to the NPC. The chat
+// history on the API side IS the conversation accumulator — the engine no
+// longer holds a local messages[]. Iter 0 sends the perception; subsequent
+// iterations send the tool-result text keyed to the prior assistant
+// tool_call.id. handleDirectChat rebuilds OpenAI-shape messages[] from the
+// stored chat rows on every call.
+//
+// Multi-tool turns: the harness only resolves ONE observation tool per
+// iteration (or executes the first commit tool if any). Multi-tool replies
+// are rare in practice; if they happen, the model gets another iteration to
+// re-request anything we skipped. This keeps the chat-message shape clean
+// (one tool_call_id per row) without bundling logic on the engine side.
 func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time.Time) {
 	perception, locationName := app.buildAgentPerception(ctx, r, hourStart)
 	tools := agentToolSpec()
 
-	messages := []agentMessage{}
-	currentRequest := agentTickRequest{
-		Perception: perception,
-		Tools:      tools,
-	}
+	currentMessage := perception
+	currentToolCallID := ""
 
 	var commitCall *agentToolCall
 	for iter := 0; iter < agentTickBudget; iter++ {
-		resp, err := app.agentTickClient.callTick(ctx, r.APIKey, currentRequest)
+		reply, err := app.npcChatClient.sendChat(ctx, r.LLMMemoryAgent, currentMessage, currentToolCallID, tools)
 		if err != nil {
 			log.Printf("agent-tick %s iter=%d: %v", r.DisplayName, iter, err)
 			return
 		}
 
-		// First iteration: seed the running messages array with the original
-		// perception so subsequent iterations can keep adding to it.
-		if iter == 0 {
-			messages = append(messages, agentMessage{Role: "user", Content: perception})
-		}
-
-		// Append assistant response to the running conversation. Even when
-		// only tool_calls are emitted (text=""), we keep the entry so the
-		// LLM sees its own prior tool requests in subsequent rounds.
-		assistantMsg := agentMessage{
-			Role:    "assistant",
-			Content: resp.Text,
-		}
-		for _, tc := range resp.ToolCalls {
-			argsBytes, _ := json.Marshal(tc.Input)
-			assistantMsg.ToolCalls = append(assistantMsg.ToolCalls, agentMessageCall{
-				ID:   tc.ID,
-				Type: "function",
-				Function: agentMessageCallDetails{
-					Name:      tc.Name,
-					Arguments: string(argsBytes),
-				},
-			})
-		}
-		messages = append(messages, assistantMsg)
-
-		if len(resp.ToolCalls) == 0 {
-			// No tool call — model committed via plain text. Treat it as a
-			// "done" with the text as the speech content (best-effort
-			// recovery; ideally the model uses the tools).
+		if len(reply.ToolCalls) == 0 {
+			// No tool — synthesize a speak with the reply text. Same fallback
+			// as the old /agent/tick path; the engine always commits so the
+			// audit trail stays intact.
 			commitCall = &agentToolCall{
 				ID:    fmt.Sprintf("synthetic-text-%d", iter),
 				Name:  "speak",
-				Input: map[string]interface{}{"text": resp.Text},
+				Input: map[string]interface{}{"text": reply.Text},
 			}
 			break
 		}
 
-		// Resolve every tool call returned this iteration. If ANY of them is
-		// a commit tool, execute it and exit the loop. Observation tools get
-		// resolved and their results appended for the next iteration.
-		hadCommit := false
-		for i := range resp.ToolCalls {
-			tc := &resp.ToolCalls[i]
+		// Prefer commit tool if any (matches prior precedence). Otherwise
+		// take the first observation tool. Anything beyond [0] is dropped —
+		// see comment on the function for why.
+		var observation *agentToolCall
+		for i := range reply.ToolCalls {
+			tc := &reply.ToolCalls[i]
 			if isCommitTool(tc.Name) {
 				commitCall = tc
-				hadCommit = true
 				break
 			}
-			result := app.resolveObservationTool(ctx, r, tc, locationName)
-			messages = append(messages, agentMessage{
-				Role:       "tool",
-				ToolCallID: tc.ID,
-				Content:    result,
-			})
+			if observation == nil {
+				observation = tc
+			}
 		}
-		if hadCommit {
+		if commitCall != nil {
+			break
+		}
+		if observation == nil {
+			// All tool_calls unrecognized as commit or observation. Defensive
+			// — agentToolSpec is fixed — but treat as no-op done so the tick
+			// still terminates with an audit row.
+			commitCall = &agentToolCall{
+				ID:    fmt.Sprintf("synthetic-unknown-%d", iter),
+				Name:  "done",
+				Input: map[string]interface{}{},
+			}
 			break
 		}
 
-		// Continue the loop with the accumulated history. Drop perception
-		// from this point on — it's now in messages[0].
-		currentRequest = agentTickRequest{
-			Messages: messages,
-			Tools:    tools,
-		}
+		toolResult := app.resolveObservationTool(ctx, r, observation, locationName)
+		currentMessage = toolResult
+		currentToolCallID = observation.ID
 	}
 
-	// Budget exhausted without a commit — synthesize a "done" so we always
-	// terminate the tick cleanly. Costs the equivalent of one wasted hour
-	// for the NPC; rare, and the agent will get a fresh chance next hour.
+	// Budget exhausted without a commit — synthesize "done" so we always
+	// terminate cleanly. Costs the NPC one wasted hour; rare.
 	if commitCall == nil {
 		commitCall = &agentToolCall{
 			ID:    "synthetic-budget-exhausted",

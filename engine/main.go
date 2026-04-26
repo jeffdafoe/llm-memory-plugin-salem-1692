@@ -34,9 +34,10 @@ type App struct {
 	// the next state-machine step.
 	NPCBehaviors *NPCBehaviors
 
-	// agentTickClient drives /v1/agent/tick calls for LLM-controlled NPCs.
-	// Created once at startup and shared across server-tick dispatches.
-	agentTickClient *agentTickClient
+	// npcChatClient drives /v1/chat/send?wait=true calls for LLM-controlled
+	// NPCs, authenticated as `salem-engine`. Created once at startup and
+	// shared across server-tick dispatches.
+	npcChatClient *npcChatClient
 }
 
 func main() {
@@ -44,6 +45,10 @@ func main() {
 	databaseURL := requireEnv("DATABASE_URL")
 	port := getEnv("PORT", "8080")
 	llmMemoryURL := getEnv("LLM_MEMORY_URL", "http://127.0.0.1:3100")
+	// Engine API key for the salem-engine actor on llm-memory-api. Every chat
+	// to an NPC originates from salem-engine; realm overlap on the API side
+	// grants it access to all NPCs in the salem realm.
+	engineKey := requireEnv("LLM_MEMORY_ENGINE_KEY")
 
 	// Connect to database
 	pool, err := pgxpool.New(context.Background(), databaseURL)
@@ -62,7 +67,7 @@ func main() {
 		Hub:             NewEventHub(),
 		NPCMovement:     newNPCMovement(),
 		NPCBehaviors:    newNPCBehaviors(),
-		agentTickClient: newAgentTickClient(llmMemoryURL),
+		npcChatClient: newNPCChatClient(llmMemoryURL, engineKey),
 	}
 
 	// Build router. Routes are registered via two helpers: authed() wraps
