@@ -35,6 +35,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand"
 	"strings"
 	"time"
 )
@@ -780,6 +781,14 @@ func (app *App) resolveMoveDestination(ctx context.Context, r *agentNPCRow, dest
 //
 // All offsets are tile-unit ints; multiplied by tileSize=32.0 to get the
 // pixel coordinate the walk dispatcher expects.
+//
+// Visitor jitter (ZBBS-075): when several NPCs walk to the same loiter
+// point in close succession (e.g. four villagers heading to the well),
+// landing all of them on the same pixel is visually confusing — they
+// stack and look like one sprite. We add a small ±half-tile random
+// offset to the loiter target so they cluster naturally instead. Owners
+// (door path) get no jitter — their arrive/inside flow assumes the door
+// tile exactly. Same for the anchor fallback.
 func pickWalkTarget(r *agentNPCRow, structureID string, ox, oy float64,
 	loiterX, loiterY, doorX, doorY sql.NullInt32) (float64, float64) {
 	const tileSize = 32.0
@@ -787,12 +796,24 @@ func pickWalkTarget(r *agentNPCRow, structureID string, ox, oy float64,
 		(r.WorkStructureID.Valid && r.WorkStructureID.String == structureID)
 
 	if !isOwner && loiterX.Valid && loiterY.Valid {
-		return ox + float64(loiterX.Int32)*tileSize, oy + float64(loiterY.Int32)*tileSize
+		baseX := ox + float64(loiterX.Int32)*tileSize
+		baseY := oy + float64(loiterY.Int32)*tileSize
+		jx, jy := loiterJitter()
+		return baseX + jx, baseY + jy
 	}
 	if doorX.Valid && doorY.Valid {
 		return ox + float64(doorX.Int32)*tileSize, oy + float64(doorY.Int32)*tileSize
 	}
 	return ox, oy
+}
+
+// loiterJitter returns a small random offset in pixels for visitor walk
+// targets so multiple NPCs heading to the same loiter point spread out
+// naturally instead of stacking on one pixel. Range is roughly half a
+// tile in each direction.
+func loiterJitter() (float64, float64) {
+	const jitterRange = 14.0 // pixels; half-tile-ish
+	return (rand.Float64()*2 - 1) * jitterRange, (rand.Float64()*2 - 1) * jitterRange
 }
 
 // stripOccupantHomeSuffix detects strings like "Goody Smith's home" /
