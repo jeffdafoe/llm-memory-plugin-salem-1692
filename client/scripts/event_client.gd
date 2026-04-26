@@ -182,6 +182,15 @@ func _handle_message(data: String) -> void:
         "village_object_tags_updated":
             if world != null:
                 world.apply_object_tags_updated(event_data)
+        "object_loiter_offset_changed":
+            if world != null:
+                world.apply_object_loiter_offset_changed(event_data)
+            # Refresh the loiter marker if it's painting this exact placement.
+            var editor = get_node_or_null("/root/Main/Editor")
+            if editor != null and editor.selected_object != null:
+                if editor.selected_object.get_meta("object_id", "") == str(event_data.get("id", "")):
+                    if editor.has_method("refresh_loiter_marker"):
+                        editor.refresh_loiter_marker()
         "npc_inside_changed":
             if world != null:
                 world.apply_npc_inside_change(event_data)

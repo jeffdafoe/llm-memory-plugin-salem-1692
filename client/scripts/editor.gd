@@ -86,6 +86,17 @@ var _stand_dragging: bool = false
 var _stand_drag_start_offset: Vector2 = Vector2.ZERO
 var _door_dragging: bool = false
 var _door_drag_start_offset: Vector2 = Vector2.ZERO  # tile offset (could be -Inf,-Inf for "none")
+# Loiter marker (ZBBS-075) — green per-INSTANCE marker for where visiting
+# NPCs stand outside this placement. Distinct from door (per-asset entry
+# tile) and stand (per-asset interior render). Always shown for any
+# selected placement; admins drag onto a sensible loiter spot for places
+# people visit, ignore otherwise. Pinned to object_id (placement uuid),
+# not asset_id, since the same Mana Seed asset may be a tavern in one
+# placement and a plain house in another with different loiter needs.
+var _loiter_marker: Node2D = null
+var _loiter_marker_object_id: String = ""
+var _loiter_dragging: bool = false
+var _loiter_drag_start_offset: Vector2 = Vector2.ZERO
 
 # Terrain painting state
 var _terrain_type: int = 0
@@ -199,6 +210,19 @@ func _input(event: InputEvent) -> void:
             get_viewport().set_input_as_handled()
         if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
             _cancel_stand_drag()
+            get_viewport().set_input_as_handled()
+        return
+
+    # Loiter marker drag — same shape as door/stand, per-instance state.
+    if _loiter_dragging:
+        if event is InputEventMouseMotion:
+            _loiter_drag_motion(event.position)
+            get_viewport().set_input_as_handled()
+        if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and not event.pressed:
+            _commit_loiter_drag()
+            get_viewport().set_input_as_handled()
+        if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
+            _cancel_loiter_drag()
             get_viewport().set_input_as_handled()
         return
 
@@ -358,6 +382,14 @@ func _on_left_press(screen_pos: Vector2) -> void:
             # a click on it starts a drag before any other interpretation.
             if selected_object != null and _hit_test_stand_marker(screen_pos):
                 _begin_stand_drag(screen_pos)
+                left_click_used = true
+                get_viewport().set_input_as_handled()
+                return
+
+            # Loiter marker — same priority. Click takes precedence over
+            # footprint-edge / drag-move / re-select.
+            if selected_object != null and _hit_test_loiter_marker(screen_pos):
+                _begin_loiter_drag(screen_pos)
                 left_click_used = true
                 get_viewport().set_input_as_handled()
                 return
@@ -666,6 +698,7 @@ func _select_object(node: Node2D) -> void:
     _add_selection_border(node)
     _add_door_marker(node)
     _add_stand_marker(node)
+    _add_loiter_marker(node)
     object_selected.emit({
         "asset_id": node.get_meta("asset_id", ""),
         "object_id": node.get_meta("object_id", ""),
@@ -680,6 +713,7 @@ func _deselect() -> void:
         _remove_selection_border()
         _remove_door_marker()
         _remove_stand_marker()
+        _remove_loiter_marker()
         selected_object = null
         object_deselected.emit()
 
@@ -1363,12 +1397,180 @@ func _cancel_door_drag() -> void:
     refresh_door_marker()
     _door_dragging = false
 
+# --- Loiter marker (ZBBS-075) ---
+#
+# Per-instance green marker for "where visitors stand outside this
+# placement." Always shown when a placement is selected (no enterable /
+# tag gating — admins can ignore the marker on placements that don't
+# warrant a loiter spot). State lives on the village_object row, not the
+# asset, so two placements of the same Mana Seed sprite can have
+# different loiter spots.
+#
+# Default position when unset: falls back to the asset's door_offset (one
+# south of anchor when the asset has no door_offset either). The intent
+# is the marker starts somewhere visible so the admin can grab and drag
+# it onto the actual loiter spot — same UX as the door/stand markers.
+
+func _add_loiter_marker(node: Node2D) -> void:
+    _remove_loiter_marker()
+    var object_id: String = node.get_meta("object_id", "")
+    if object_id == "":
+        return
+    _loiter_marker_object_id = object_id
+    _loiter_marker = Node2D.new()
+    _loiter_marker.name = "LoiterMarker"
+    _loiter_marker.z_index = 1002  # above door (1000) and stand (1001)
+    node.add_child(_loiter_marker)
+
+    var offset_tiles: Vector2 = _current_loiter_offset_tiles(node)
+    _loiter_marker.position = _door_marker_local_from_tile_offset(node, offset_tiles)
+    _draw_loiter_marker_contents(node)
+
+func refresh_loiter_marker() -> void:
+    if selected_object == null or _loiter_marker == null:
+        return
+    if _loiter_dragging:
+        return
+    var offset_tiles: Vector2 = _current_loiter_offset_tiles(selected_object)
+    _loiter_marker.position = _door_marker_local_from_tile_offset(selected_object, offset_tiles)
+    for child in _loiter_marker.get_children():
+        child.queue_free()
+    _draw_loiter_marker_contents(selected_object)
+
+## Returns the loiter offset (in tile units) currently stored on the
+## placement's container meta. Falls back to the asset's door_offset
+## when unset; ultimately falls back to (0, footprint_bottom + 1).
+func _current_loiter_offset_tiles(node: Node2D) -> Vector2:
+    var lx = node.get_meta("loiter_offset_x", null)
+    var ly = node.get_meta("loiter_offset_y", null)
+    if lx != null and ly != null:
+        return Vector2(int(lx), int(ly))
+    var asset_id: String = node.get_meta("asset_id", "")
+    var asset = Catalog.assets.get(asset_id, {})
+    var dx = asset.get("door_offset_x", null)
+    var dy = asset.get("door_offset_y", null)
+    if dx != null and dy != null:
+        return Vector2(int(dx), int(dy))
+    return Vector2(0, int(asset.get("footprint_bottom", 0)) + 1)
+
+## Green outlined circle for loiter — distinct from blue square (door)
+## and orange square (stand). Filled lighter when loiter_offset is unset
+## (placeholder), filled solid when set (an actual configured spot).
+## Gathering-point placements get a gold tint instead of green so they
+## stand out as village-level rally spots (the well, market, etc.).
+func _draw_loiter_marker_contents(node: Node2D) -> void:
+    if _loiter_marker == null:
+        return
+    var radius: float = TILE_SIZE / 2.0 - 3.0
+    var is_set: bool = node.get_meta("loiter_offset_x", null) != null and node.get_meta("loiter_offset_y", null) != null
+    var tags: Array = node.get_meta("tags", [])
+    var is_gather: bool = tags.has("gathering-point")
+
+    var fill_color: Color
+    var outline_color: Color
+    if is_gather:
+        fill_color = Color(1.0, 0.85, 0.25, 0.85 if is_set else 0.45)
+        outline_color = Color(0.75, 0.55, 0.10, 1.0)
+    else:
+        fill_color = Color(0.30, 0.85, 0.45, 0.85 if is_set else 0.40)
+        outline_color = Color(0.10, 0.55, 0.25, 1.0)
+
+    # Build a 24-vertex polygon to approximate the circle. Polygon2D fill
+    # under Line2D outline matches the door/stand square pattern.
+    var poly := PackedVector2Array()
+    var segments: int = 24
+    for i in range(segments):
+        var t: float = float(i) / float(segments) * TAU
+        poly.append(Vector2(cos(t) * radius, sin(t) * radius))
+    var fill := Polygon2D.new()
+    fill.color = fill_color
+    fill.polygon = poly
+    _loiter_marker.add_child(fill)
+
+    var outline := Line2D.new()
+    outline.width = 2.0
+    outline.default_color = outline_color
+    outline.closed = true
+    for i in range(segments):
+        var t: float = float(i) / float(segments) * TAU
+        outline.add_point(Vector2(cos(t) * radius, sin(t) * radius))
+    _loiter_marker.add_child(outline)
+
+func _remove_loiter_marker() -> void:
+    if _loiter_marker != null:
+        _loiter_marker.queue_free()
+        _loiter_marker = null
+    _loiter_marker_object_id = ""
+    _loiter_dragging = false
+
+func _hit_test_loiter_marker(screen_pos: Vector2) -> bool:
+    if _loiter_marker == null or selected_object == null:
+        return false
+    var world_pos: Vector2 = _screen_to_world(screen_pos)
+    var marker_world: Vector2 = selected_object.position + _loiter_marker.position
+    var radius: float = TILE_SIZE / 2.0
+    return world_pos.distance_to(marker_world) <= radius
+
+func _begin_loiter_drag(_screen_pos: Vector2) -> void:
+    _loiter_dragging = true
+    _loiter_drag_start_offset = _current_loiter_offset_tiles(selected_object)
+
+func _loiter_drag_motion(screen_pos: Vector2) -> void:
+    if not _loiter_dragging or selected_object == null or _loiter_marker == null:
+        return
+    var world_pos: Vector2 = _screen_to_world(screen_pos)
+    var anchor_tile_x: int = int(floor(selected_object.position.x / TILE_SIZE))
+    var anchor_tile_y: int = int(floor(selected_object.position.y / TILE_SIZE))
+    var target_tile_x: int = int(floor(world_pos.x / TILE_SIZE))
+    var target_tile_y: int = int(floor(world_pos.y / TILE_SIZE))
+    var offset_tiles := Vector2(target_tile_x - anchor_tile_x, target_tile_y - anchor_tile_y)
+    _loiter_marker.position = _door_marker_local_from_tile_offset(selected_object, offset_tiles)
+    # Optimistic local update so the marker renders the "set" styling.
+    selected_object.set_meta("loiter_offset_x", int(offset_tiles.x))
+    selected_object.set_meta("loiter_offset_y", int(offset_tiles.y))
+    for child in _loiter_marker.get_children():
+        child.queue_free()
+    _draw_loiter_marker_contents(selected_object)
+
+func _commit_loiter_drag() -> void:
+    if not _loiter_dragging or selected_object == null:
+        _loiter_dragging = false
+        return
+    _loiter_dragging = false
+    var lx = selected_object.get_meta("loiter_offset_x", null)
+    var ly = selected_object.get_meta("loiter_offset_y", null)
+    if lx == null or ly == null:
+        return
+    if Vector2(int(lx), int(ly)) == _loiter_drag_start_offset:
+        return
+    var object_id: String = selected_object.get_meta("object_id", "")
+    if object_id == "":
+        return
+    world.set_object_loiter_offset(object_id, int(lx), int(ly))
+
+func _cancel_loiter_drag() -> void:
+    if not _loiter_dragging or selected_object == null:
+        _loiter_dragging = false
+        return
+    # Restore the in-memory meta to whatever it was when we started.
+    # If the drag started from the door fallback (no loiter set yet), we
+    # restore null/null so the marker repaints in placeholder styling.
+    var lx_initial = selected_object.get_meta("loiter_offset_x", null)
+    var ly_initial = selected_object.get_meta("loiter_offset_y", null)
+    if lx_initial != null and ly_initial != null and Vector2(int(lx_initial), int(ly_initial)) != _loiter_drag_start_offset:
+        # Was previously set, restore the previous value.
+        selected_object.set_meta("loiter_offset_x", int(_loiter_drag_start_offset.x))
+        selected_object.set_meta("loiter_offset_y", int(_loiter_drag_start_offset.y))
+    refresh_loiter_marker()
+    _loiter_dragging = false
+
 func _delete_selected() -> void:
     if selected_object == null:
         return
     _remove_selection_border()
     _remove_door_marker()
     _remove_stand_marker()
+    _remove_loiter_marker()
     world.remove_object(selected_object)
     selected_object = null
     object_deselected.emit()
