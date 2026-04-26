@@ -690,12 +690,71 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 	}
 	sections = append(sections, strings.Join(destLines, "\n"))
 
-	// 5. Decision prompt.
+	// 5. Recent block (M6.4.6) — what other NPCs said at this NPC's
+	// current location in the last 30 minutes. Sourced from
+	// agent_action_log where action_type='speak' and the payload's
+	// structure_id matches this NPC's inside_structure_id. Excludes the
+	// NPC's own speeches (those are already in their chat history with
+	// the engine). Capped at 5 most-recent lines, oldest first so the
+	// LLM reads them in chronological order. Skipped when the NPC is
+	// outside (no structure context to filter by).
+	if r.InsideStructureID.Valid {
+		recentLines := app.recentSpeechAtStructure(ctx, r.InsideStructureID.String, r.ID, 30*time.Minute, 5)
+		if len(recentLines) > 0 {
+			sections = append(sections, "Recent:\n"+strings.Join(recentLines, "\n"))
+		}
+	}
+
+	// 6. Decision prompt.
 	sections = append(sections, "Decide what to do this hour. You may use look_around first to see who is here, "+
 		"then commit with move_to (walk to a named place), chore (run a quick errand by category), "+
 		"speak (say something), or done (rest).")
 
 	return strings.Join(sections, "\n\n"), locationName
+}
+
+// recentSpeechAtStructure pulls recent speak audit rows whose payload
+// records the same structure_id as the perceiving NPC's current
+// location. Returns "Speaker said: \"text\"" lines in chronological
+// order (oldest → newest). Excludes the perceiver's own utterances.
+//
+// Window is wall-clock minutes; in Salem's no-time-acceleration model
+// that maps directly to game-minutes. Capped at the requested count.
+func (app *App) recentSpeechAtStructure(ctx context.Context, structureID, excludeNpcID string, window time.Duration, limit int) []string {
+	rows, err := app.DB.Query(ctx,
+		`SELECT n.display_name, al.payload->>'text' AS text
+		 FROM agent_action_log al
+		 JOIN npc n ON n.id = al.npc_id
+		 WHERE al.action_type = 'speak'
+		   AND al.result = 'ok'
+		   AND al.payload->>'structure_id' = $1
+		   AND al.npc_id::text != $2
+		   AND al.occurred_at > NOW() - $3::interval
+		 ORDER BY al.occurred_at DESC
+		 LIMIT $4`,
+		structureID, excludeNpcID, fmt.Sprintf("%d seconds", int(window.Seconds())), limit)
+	if err != nil {
+		log.Printf("recent-speech: query: %v", err)
+		return nil
+	}
+	defer rows.Close()
+	// Pull rows in DESC order, then reverse to chronological for output.
+	var collected []string
+	for rows.Next() {
+		var name, text string
+		if err := rows.Scan(&name, &text); err != nil {
+			continue
+		}
+		if text == "" {
+			continue
+		}
+		collected = append(collected, fmt.Sprintf("  %s said: \"%s\"", name, text))
+	}
+	// Reverse in place so oldest comes first.
+	for i, j := 0, len(collected)-1; i < j; i, j = i+1, j-1 {
+		collected[i], collected[j] = collected[j], collected[i]
+	}
+	return collected
 }
 
 // categoryTagList returns the categoryObjectTags map as a sorted []string
@@ -764,7 +823,22 @@ func (app *App) resolveLookAround(ctx context.Context, r *agentNPCRow, locationN
 // state changes and writes an agent_action_log row. Failures during
 // execution still write a row with result='failed' so the audit trail
 // captures every decision attempt.
+//
+// Speak commits stash the speaker's current inside_structure_id into
+// the audit payload as `structure_id` so the recent-block perception
+// query (M6.4.6) can find which speeches happened at a given location
+// without needing a schema migration. Reading
+// `payload->>'structure_id'` from agent_action_log is enough.
 func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agentToolCall) {
+	// Augment the speak payload with the structure_id so the recent
+	// block can query "what was said here recently." Other tools don't
+	// need this — only speak surfaces in others' perceptions.
+	if tc.Name == "speak" && r.InsideStructureID.Valid {
+		if tc.Input == nil {
+			tc.Input = map[string]interface{}{}
+		}
+		tc.Input["structure_id"] = r.InsideStructureID.String
+	}
 	payload, _ := json.Marshal(tc.Input)
 	result := "ok"
 	errStr := ""
