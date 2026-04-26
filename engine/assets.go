@@ -575,6 +575,7 @@ var allowedObjectTags = map[string]bool{
 	"meeting-house":    true,
 	"well":             true,
 	"outhouse":         true,
+	"inn":              true,
 	"gathering-point":  true,
 }
 
@@ -590,6 +591,7 @@ var categoryObjectTags = map[string]bool{
 	"meeting-house": true,
 	"well":          true,
 	"outhouse":      true,
+	"inn":           true,
 }
 
 // handleListStateTags returns the tag allowlist so the admin UI can
