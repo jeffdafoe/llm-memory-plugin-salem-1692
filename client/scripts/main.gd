@@ -9,6 +9,7 @@ const AssetPopupScript = preload("res://scripts/asset_popup.gd")
 const NPCSpritePickerScript = preload("res://scripts/npc_sprite_picker.gd")
 const ObjectTooltipScript = preload("res://scripts/object_tooltip.gd")
 const EventClientScript = preload("res://scripts/event_client.gd")
+const TalkPanelScript = preload("res://scripts/talk_panel.gd")
 
 @onready var world: Node2D = $World
 @onready var camera: Camera2D = $Camera
@@ -22,6 +23,8 @@ var asset_popup: Control = null
 var npc_sprite_picker: Control = null
 var object_tooltip: CanvasLayer = null
 var event_client: Node = null
+var talk_panel: PanelContainer = null
+var talk_panel_layer: CanvasLayer = null
 
 # Login screen (added as a CanvasLayer so it renders on top of everything)
 var login_screen: Control = null
@@ -229,6 +232,18 @@ func _build_ui() -> void:
     object_tooltip.world = world
     object_tooltip.editor = editor
     add_child(object_tooltip)
+
+    # Talk panel (M6.7) — docked right side, always visible. Hides
+    # itself when the user has no PC row (exists=false from /pc/me).
+    # On a separate CanvasLayer so it sits above the editor layer
+    # and doesn't get hidden by edit-mode toggles.
+    talk_panel_layer = CanvasLayer.new()
+    talk_panel_layer.name = "TalkPanelLayer"
+    talk_panel_layer.layer = 4  # above editor (default 1), below config (5)
+    add_child(talk_panel_layer)
+    talk_panel = PanelContainer.new()
+    talk_panel.set_script(TalkPanelScript)
+    talk_panel_layer.add_child(talk_panel)
 
     # Wire panel signals to editor
     editor_panel.asset_selected.connect(_on_panel_asset_selected)

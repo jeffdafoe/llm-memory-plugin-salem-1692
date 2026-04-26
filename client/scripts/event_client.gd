@@ -185,6 +185,9 @@ func _handle_message(data: String) -> void:
         "object_loiter_offset_changed":
             if world != null:
                 world.apply_object_loiter_offset_changed(event_data)
+        "npc_spoke":
+            if world != null:
+                world.apply_npc_spoke(event_data)
             # Refresh the loiter marker if it's painting this exact placement.
             var editor = get_node_or_null("/root/Main/Editor")
             if editor != null and editor.selected_object != null:
