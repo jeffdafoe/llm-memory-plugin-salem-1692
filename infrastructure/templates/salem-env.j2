@@ -1,3 +1,4 @@
 DATABASE_URL=postgresql://{{ database_user }}:{{ database_password }}@127.0.0.1:5432/{{ database_name }}
 PORT={{ engine_port }}
 LLM_MEMORY_URL={{ llm_memory_api_url | default('http://127.0.0.1:3100') }}
+LLM_MEMORY_ENGINE_KEY={{ llm_memory_engine_key }}
