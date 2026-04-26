@@ -120,7 +120,7 @@ func _ready() -> void:
     box.add_child(btn_row)
 
     _whisper_btn = Button.new()
-    _whisper_btn.text = "Whisper"
+    _whisper_btn.text = "Speak to..."
     _whisper_btn.disabled = true
     _whisper_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     _whisper_btn.pressed.connect(_on_whisper_pressed)
