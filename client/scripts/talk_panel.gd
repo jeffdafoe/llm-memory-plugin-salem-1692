@@ -518,7 +518,9 @@ func _send_current_text() -> void:
         return
 
     speech_input.text = ""
-    _append_log_line("You", text, "player")
+    # No local echo — /pc/speak writes an audit_log row that fans out via the
+    # npc_spoke WS event, which _on_npc_spoke renders. Local echo here would
+    # duplicate the line as "You" and then the player's character name.
     _post_speak(text)
     _refocus_if_open()
 
