@@ -36,6 +36,11 @@ import (
 // huddle_id and returns the huddle UUID. Idempotent: if the NPC is
 // already in the structure's active huddle, no change.
 //
+// On join, also records acquaintance with everyone else already in
+// the huddle (M6.4.5). Co-presence in a structure constitutes an
+// introduction — even before either party speaks, they've at least
+// been in each other's space and can recognize each other on sight.
+//
 // Called from setNPCInside whenever an NPC's inside_structure_id flips
 // to a non-null value.
 func (app *App) joinOrCreateHuddle(ctx context.Context, npcID, structureID string) (string, error) {
@@ -65,12 +70,42 @@ func (app *App) joinOrCreateHuddle(ctx context.Context, npcID, structureID strin
 
 	// Set the NPC's current_huddle_id. Skips the UPDATE if already
 	// matching to avoid a redundant write on idempotent calls.
-	_, err = app.DB.Exec(ctx,
+	if _, err := app.DB.Exec(ctx,
 		`UPDATE npc SET current_huddle_id = $2
 		 WHERE id = $1 AND (current_huddle_id IS DISTINCT FROM $2)`,
 		npcID, huddleID,
-	)
-	return huddleID, err
+	); err != nil {
+		return huddleID, err
+	}
+
+	// Record acquaintance with anyone else already in this huddle.
+	// Both directions written so the symmetry holds. ON CONFLICT
+	// DO NOTHING preserves the original first_interacted_at timestamp.
+	if _, err := app.DB.Exec(ctx,
+		`INSERT INTO npc_acquaintance (npc_id, other_name)
+		 SELECT $1, n.display_name
+		   FROM npc n
+		  WHERE n.current_huddle_id::text = $2
+		    AND n.id != $1
+		 ON CONFLICT DO NOTHING`,
+		npcID, huddleID,
+	); err != nil {
+		log.Printf("scene-huddle: record acquaintance %s: %v", npcID, err)
+	}
+	if _, err := app.DB.Exec(ctx,
+		`INSERT INTO npc_acquaintance (npc_id, other_name)
+		 SELECT n.id, me.display_name
+		   FROM npc n, npc me
+		  WHERE n.current_huddle_id::text = $1
+		    AND me.id = $2
+		    AND n.id != $2
+		 ON CONFLICT DO NOTHING`,
+		huddleID, npcID,
+	); err != nil {
+		log.Printf("scene-huddle: record reverse acquaintance for %s: %v", npcID, err)
+	}
+
+	return huddleID, nil
 }
 
 // leaveHuddle clears the NPC's current_huddle_id and concludes the
