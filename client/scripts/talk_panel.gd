@@ -37,9 +37,10 @@ var _speak_btn: Button = null
 var _open_button: Button = null
 
 func _ready() -> void:
-    custom_minimum_size = Vector2(280, 0)
+    # Wider panel so the input + member buttons aren't cramped.
+    custom_minimum_size = Vector2(360, 0)
     set_anchors_preset(Control.PRESET_RIGHT_WIDE)
-    offset_left = -290
+    offset_left = -370
     offset_right = -10
     offset_top = 50
     offset_bottom = -10
@@ -119,18 +120,16 @@ func _ready() -> void:
     btn_row.add_theme_constant_override("separation", 4)
     box.add_child(btn_row)
 
-    _whisper_btn = Button.new()
-    _whisper_btn.text = "Speak to..."
-    _whisper_btn.disabled = true
-    _whisper_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    _whisper_btn.pressed.connect(_on_whisper_pressed)
-    btn_row.add_child(_whisper_btn)
-
+    # Single Speak button. Label updates based on selection: addresses
+    # the picked NPC if one is highlighted in HERE, otherwise broadcasts
+    # to the room. One button replaces the prior Whisper/Speak Aloud
+    # split — same backend, consolidated UI.
     _speak_btn = Button.new()
-    _speak_btn.text = "Speak Aloud"
+    _speak_btn.text = "Speak (to room)"
     _speak_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     _speak_btn.pressed.connect(_on_speak_pressed)
     btn_row.add_child(_speak_btn)
+    _whisper_btn = _speak_btn  # legacy ref retained for state-update code below
 
     if world != null and not world.npc_spoke.is_connected(_on_world_npc_spoke):
         world.npc_spoke.connect(_on_world_npc_spoke)
@@ -211,21 +210,23 @@ func _on_state(state: Dictionary) -> void:
     if not still_here:
         _selected_target_agent = ""
         _selected_target_name = ""
-    _whisper_btn.disabled = (_selected_target_agent == "")
-    _whisper_btn.text = ("Speak to " + _selected_target_name) if _selected_target_name != "" else "Speak to..."
+    # Single Speak button: label tracks current selection. Always
+    # enabled — broadcast is the fallback when no NPC is targeted.
+    _speak_btn.text = ("Speak to " + _selected_target_name) if _selected_target_name != "" else "Speak (to room)"
 
 func _on_text_submitted(text: String) -> void:
+    _do_speak_smart(text)
+
+func _on_speak_pressed() -> void:
+    _do_speak_smart(_input.text)
+
+## Single entry point — addressed if a target is selected, broadcast
+## otherwise. Replaces the prior whisper/speak split.
+func _do_speak_smart(text: String) -> void:
     if _selected_target_agent != "":
         _do_whisper(text)
     else:
         _do_speak(text)
-
-func _on_whisper_pressed() -> void:
-    if _selected_target_agent != "":
-        _do_whisper(_input.text)
-
-func _on_speak_pressed() -> void:
-    _do_speak(_input.text)
 
 func _do_whisper(text: String) -> void:
     if text.strip_edges() == "" or _selected_target_agent == "":
