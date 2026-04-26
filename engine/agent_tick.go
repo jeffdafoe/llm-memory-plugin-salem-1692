@@ -785,12 +785,14 @@ func (app *App) coLocatedHuddleMembers(ctx context.Context, npcID string) []stri
 		    )
 		    AND n.id::text != $1
 		 UNION ALL
-		 -- PCs in the same huddle.
-		 SELECT pc.actor_name AS name, NULL::varchar AS role, 'pc' AS kind,
+		 -- PCs in the same huddle. Display by character_name (in-world
+		 -- identity), gated against npc_acquaintance.other_name = the
+		 -- character_name (set when the PC joined the huddle).
+		 SELECT pc.character_name AS name, NULL::varchar AS role, 'pc' AS kind,
 		        EXISTS(
 		            SELECT 1 FROM npc_acquaintance a
 		             WHERE a.npc_id::text = $1
-		               AND a.other_name = pc.actor_name
+		               AND a.other_name = pc.character_name
 		        ) AS acquainted
 		   FROM pc_position pc
 		  WHERE pc.current_huddle_id IS NOT NULL
@@ -840,13 +842,15 @@ func (app *App) coLocatedHuddleMembers(ctx context.Context, npcID string) []stri
 // that maps directly to game-minutes. Capped at the requested count.
 func (app *App) recentSpeechAtStructure(ctx context.Context, structureID, excludeNpcID string, window time.Duration, limit int) []string {
 	rows, err := app.DB.Query(ctx,
-		`SELECT n.display_name, al.payload->>'text' AS text
+		// Reads speaker_name directly so PC speech (npc_id NULL) lands
+		// in the same query — no JOIN to npc. excludeNpcID filters out
+		// the perceiving NPC's own speeches; PCs always pass through.
+		`SELECT al.speaker_name, al.payload->>'text' AS text
 		 FROM agent_action_log al
-		 JOIN npc n ON n.id = al.npc_id
 		 WHERE al.action_type = 'speak'
 		   AND al.result = 'ok'
 		   AND al.payload->>'structure_id' = $1
-		   AND al.npc_id::text != $2
+		   AND (al.npc_id IS NULL OR al.npc_id::text != $2)
 		   AND al.occurred_at > NOW() - $3::interval
 		 ORDER BY al.occurred_at DESC
 		 LIMIT $4`,
@@ -1020,9 +1024,9 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 	// commit already happened (or already failed); the audit row is a
 	// best-effort record.
 	_, err := app.DB.Exec(ctx,
-		`INSERT INTO agent_action_log (npc_id, source, action_type, payload, result, error)
-		 VALUES ($1, 'agent', $2, $3, $4, NULLIF($5, ''))`,
-		r.ID, tc.Name, payload, result, errStr,
+		`INSERT INTO agent_action_log (npc_id, speaker_name, source, action_type, payload, result, error)
+		 VALUES ($1, $2, 'agent', $3, $4, $5, NULLIF($6, ''))`,
+		r.ID, r.DisplayName, tc.Name, payload, result, errStr,
 	)
 	if err != nil {
 		log.Printf("agent-tick: audit insert %s/%s: %v", r.DisplayName, tc.Name, err)
