@@ -33,7 +33,7 @@ package main
 //   - POST /api/village/pc/speak   → broadcast to current huddle.
 //                                     agent_action_log row with
 //                                     speaker_name=character_name,
-//                                     source='pc'. Co-located NPCs
+//                                     source='player'. Co-located NPCs
 //                                     get an event tick.
 
 import (
@@ -279,10 +279,14 @@ func (app *App) handlePCSay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// from_agent is required for user-session auth (not auto-derived
+	// like it is for agent API key auth). Set it to the authenticated
+	// user's actor name so the chat is recorded as from the player.
 	body, _ := json.Marshal(map[string]interface{}{
-		"to_agents": []string{req.Target},
-		"message":   req.Text,
-		"wait":      true,
+		"from_agent": user.Username,
+		"to_agents":  []string{req.Target},
+		"message":    req.Text,
+		"wait":       true,
 	})
 
 	upstreamURL := strings.TrimRight(app.LLMMemoryURL, "/") + "/v1/chat/send"
@@ -311,7 +315,7 @@ func (app *App) handlePCSay(w http.ResponseWriter, r *http.Request) {
 }
 
 // handlePCSpeak — broadcast to everyone in the PC's current huddle.
-// Records as agent_action_log row with source='pc', action_type='speak',
+// Records as agent_action_log row with source='player', action_type='speak',
 // speaker_name=character_name. Triggers event-tick on co-located
 // agentized NPCs (subject to 5-min cost guard).
 func (app *App) handlePCSpeak(w http.ResponseWriter, r *http.Request) {
@@ -352,7 +356,7 @@ func (app *App) handlePCSpeak(w http.ResponseWriter, r *http.Request) {
 
 	if _, err := app.DB.Exec(r.Context(),
 		`INSERT INTO agent_action_log (npc_id, speaker_name, source, action_type, payload, result)
-		 VALUES (NULL, $1, 'pc', 'speak', $2, 'ok')`,
+		 VALUES (NULL, $1, 'player', 'speak', $2, 'ok')`,
 		charName.String, payload,
 	); err != nil {
 		log.Printf("pc/speak audit insert: %v", err)
