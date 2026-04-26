@@ -1,312 +1,767 @@
-extends PanelContainer
+extends CanvasLayer
 
-## Talk panel (M6.7) — minimal UI for player conversation.
+## Talk panel — Salem 1692 conversation drawer.
 ##
-## Always-on panel docked to the right edge in play mode (and edit
-## mode for now — gating to play-only is a future polish). Sections:
-##   - Header: "You are <character_name> at <location>"
-##   - Here: list of huddle members (NPCs + other PCs). Click an NPC
-##     to select them as the whisper target; speak goes to the room.
-##   - Recent: rolling log of speech around the PC (whispers + room
-##     broadcasts via the world.npc_spoke signal).
-##   - Input: text field + buttons "Whisper to X" / "Speak Aloud".
+## Broadcast-only player chat. Nearby members are informational chips, not
+## targeting buttons; the LLMs decide who's being addressed from context.
 ##
-## State is fetched from POST /api/village/pc/me on a 10-second
-## timer; ambient speech updates come immediately via the
-## world.npc_spoke WS-derived signal so the recent log feels live.
+## Closed state shows a "Talk (N nearby)" launcher pill. Open state slides up
+## a bottom drawer (desktop, anchored bottom-right) or a 60vh bottom sheet
+## (mobile, full-width). The user closes/opens it explicitly — the refresh
+## timer never forces visibility.
+##
+## Mounted as a CanvasLayer from main.gd (talk_panel_layer). The script
+## owns layer ordering itself.
+##
+## Runtime dependencies:
+##   - /root/Auth (api_base + get_auth_header())
+##   - /root/Main/World.npc_spoke(name, text, kind) signal
+##   - POST /api/village/pc/me  → state
+##   - POST /api/village/pc/speak {text}  → broadcast
 
-const REFRESH_INTERVAL: float = 10.0
+const REFRESH_INTERVAL := 10.0
+const DESKTOP_MIN_WIDTH := 580.0
+const DESKTOP_MIN_HEIGHT := 400.0
+const MOBILE_BREAKPOINT := 720.0
+const MOBILE_SHEET_VH := 0.60
+const MOBILE_SHEET_FOCUSED_VH := 0.82
+const MAX_LOG_LINES := 80
 
-@onready var world: Node2D = get_node_or_null("/root/Main/World")
+var root: Control
 
-var _state: Dictionary = {}
-var _selected_target_agent: String = ""
-var _selected_target_name: String = ""
-var _refresh_timer: float = 0.0
+var launcher_anchor: MarginContainer
+var talk_launcher: Button
 
-var _header_label: Label = null
-var _members_list: VBoxContainer = null
-var _replies_box: VBoxContainer = null
-var _replies_scroll: ScrollContainer = null
-var _input: LineEdit = null
-var _whisper_btn: Button = null
-var _speak_btn: Button = null
-# Floating "Talk" reopen button — sibling Control on the same
-# CanvasLayer, only visible when the panel is closed. Created lazily
-# on first close so we don't pay the layout cost up front.
-var _open_button: Button = null
+var sheet_anchor: MarginContainer
+var talk_sheet: PanelContainer
+
+var context_label: Label
+var subcontext_label: Label
+var close_button: Button
+var nearby_scroll: ScrollContainer
+var nearby_flow: HFlowContainer
+var log_scroll: ScrollContainer
+var log_vbox: VBoxContainer
+var speech_input: TextEdit
+var speak_button: Button
+
+var refresh_timer: Timer
+var http_me: HTTPRequest
+var http_speak: HTTPRequest
+
+var pc_exists := false
+var character_name := ""
+var structure_name := ""
+var home_name := ""
+var huddle_members: Array = []
+
+var is_open := false
+var user_closed := false
+var has_ever_seen_huddle := false
+var first_encounter_pulse_done := false
+var unread_count := 0
+var is_mobile := false
+var input_focused := false
+var _pending_focus := false
+
 
 func _ready() -> void:
-    # Wider panel so the input + member buttons aren't cramped.
-    custom_minimum_size = Vector2(360, 0)
-    set_anchors_preset(Control.PRESET_RIGHT_WIDE)
-    offset_left = -370
-    offset_right = -10
-    offset_top = 50
-    offset_bottom = -10
+    layer = 4
 
-    var bg := StyleBoxFlat.new()
-    bg.bg_color = Color(0.10, 0.08, 0.06, 0.88)
-    bg.border_color = Color(0.45, 0.35, 0.20, 1.0)
-    bg.set_border_width_all(1)
-    bg.content_margin_left = 8
-    bg.content_margin_right = 8
-    bg.content_margin_top = 8
-    bg.content_margin_bottom = 8
-    add_theme_stylebox_override("panel", bg)
+    _build_tree()
+    _apply_theme()
+    _connect_signals()
+    _connect_world_signal()
 
-    var box := VBoxContainer.new()
-    box.add_theme_constant_override("separation", 6)
-    add_child(box)
+    get_viewport().size_changed.connect(_on_viewport_size_changed)
+    _update_responsive_layout()
 
-    # Header row — title label + close (x) button on the right.
-    var header_row := HBoxContainer.new()
-    header_row.add_theme_constant_override("separation", 6)
-    box.add_child(header_row)
+    refresh_timer.start()
+    _refresh_state()
+    _update_visibility_from_state()
 
-    _header_label = Label.new()
-    _header_label.text = "Loading..."
-    _header_label.add_theme_color_override("font_color", Color(0.95, 0.92, 0.80))
-    _header_label.add_theme_font_size_override("font_size", 13)
-    _header_label.autowrap_mode = TextServer.AUTOWRAP_WORD
-    _header_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    header_row.add_child(_header_label)
 
-    var close_btn := Button.new()
-    close_btn.text = "x"
-    close_btn.flat = true
-    close_btn.add_theme_color_override("font_color", Color(0.78, 0.66, 0.45))
-    close_btn.add_theme_color_override("font_hover_color", Color(1.0, 0.6, 0.5))
-    close_btn.add_theme_font_size_override("font_size", 14)
-    close_btn.custom_minimum_size = Vector2(20, 20)
-    close_btn.focus_mode = Control.FOCUS_NONE
-    close_btn.pressed.connect(_on_close_pressed)
-    header_row.add_child(close_btn)
+func _build_tree() -> void:
+    root = Control.new()
+    root.name = "TalkRoot"
+    root.set_anchors_preset(Control.PRESET_FULL_RECT)
+    # The root must let mouse events fall through everywhere except the actual
+    # interactive controls; otherwise we eat clicks meant for the world.
+    root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    add_child(root)
 
-    var members_header := Label.new()
-    members_header.text = "HERE"
-    members_header.add_theme_color_override("font_color", Color(0.78, 0.66, 0.45))
-    members_header.add_theme_font_size_override("font_size", 10)
-    box.add_child(members_header)
+    _build_launcher()
+    _build_sheet()
 
-    _members_list = VBoxContainer.new()
-    _members_list.add_theme_constant_override("separation", 2)
-    box.add_child(_members_list)
+    http_me = HTTPRequest.new()
+    add_child(http_me)
 
-    var replies_header := Label.new()
-    replies_header.text = "RECENT"
-    replies_header.add_theme_color_override("font_color", Color(0.78, 0.66, 0.45))
-    replies_header.add_theme_font_size_override("font_size", 10)
-    box.add_child(replies_header)
+    http_speak = HTTPRequest.new()
+    add_child(http_speak)
 
-    _replies_scroll = ScrollContainer.new()
-    _replies_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
-    _replies_scroll.custom_minimum_size = Vector2(0, 220)
-    _replies_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-    box.add_child(_replies_scroll)
+    refresh_timer = Timer.new()
+    refresh_timer.wait_time = REFRESH_INTERVAL
+    refresh_timer.one_shot = false
+    add_child(refresh_timer)
 
-    _replies_box = VBoxContainer.new()
-    _replies_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    _replies_box.add_theme_constant_override("separation", 4)
-    _replies_scroll.add_child(_replies_box)
 
-    _input = LineEdit.new()
-    _input.placeholder_text = "Type a line..."
-    _input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    _input.text_submitted.connect(_on_text_submitted)
-    box.add_child(_input)
+func _build_launcher() -> void:
+    launcher_anchor = MarginContainer.new()
+    launcher_anchor.name = "LauncherAnchor"
+    launcher_anchor.set_anchors_preset(Control.PRESET_FULL_RECT)
+    launcher_anchor.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    root.add_child(launcher_anchor)
 
-    var btn_row := HBoxContainer.new()
-    btn_row.add_theme_constant_override("separation", 4)
-    box.add_child(btn_row)
+    var outer := VBoxContainer.new()
+    outer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    outer.size_flags_vertical = Control.SIZE_EXPAND_FILL
+    outer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    launcher_anchor.add_child(outer)
 
-    # Single Speak button. Label updates based on selection: addresses
-    # the picked NPC if one is highlighted in HERE, otherwise broadcasts
-    # to the room. One button replaces the prior Whisper/Speak Aloud
-    # split — same backend, consolidated UI.
-    _speak_btn = Button.new()
-    _speak_btn.text = "Speak (to room)"
-    _speak_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    _speak_btn.pressed.connect(_on_speak_pressed)
-    btn_row.add_child(_speak_btn)
-    _whisper_btn = _speak_btn  # legacy ref retained for state-update code below
+    var top_spacer := Control.new()
+    top_spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
+    top_spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    outer.add_child(top_spacer)
 
-    if world != null and not world.npc_spoke.is_connected(_on_world_npc_spoke):
-        world.npc_spoke.connect(_on_world_npc_spoke)
+    var row := HBoxContainer.new()
+    row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    outer.add_child(row)
 
-    refresh()
+    var left_spacer := Control.new()
+    left_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    left_spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    row.add_child(left_spacer)
 
-func _process(delta: float) -> void:
-    _refresh_timer += delta
-    if _refresh_timer >= REFRESH_INTERVAL:
-        _refresh_timer = 0
-        refresh()
+    talk_launcher = Button.new()
+    talk_launcher.name = "TalkLauncher"
+    talk_launcher.text = "Talk"
+    talk_launcher.custom_minimum_size = Vector2(150, 48)
+    talk_launcher.focus_mode = Control.FOCUS_ALL
+    talk_launcher.mouse_filter = Control.MOUSE_FILTER_STOP
+    row.add_child(talk_launcher)
 
-## GET-equivalent (POST per project convention) of /api/village/pc/me.
-## Updates header + member list. Hides the panel entirely when the
-## response says exists=false (no PC seeded yet).
-func refresh() -> void:
-    var http := HTTPRequest.new()
-    http.accept_gzip = false
-    add_child(http)
-    http.request_completed.connect(func(_r, c, _h, body):
-        http.queue_free()
-        if c >= 200 and c < 300:
-            var parsed = JSON.parse_string(body.get_string_from_utf8())
-            if parsed is Dictionary:
-                _on_state(parsed)
-    )
-    var headers: PackedStringArray = ["Content-Type: application/json"]
-    var auth: String = Auth.get_auth_header()
-    if auth != "":
-        headers.append("Authorization: " + auth)
-    http.request(Auth.api_base + "/api/village/pc/me", headers, HTTPClient.METHOD_POST, "{}")
 
-func _on_state(state: Dictionary) -> void:
-    _state = state
-    if not state.get("exists", false):
-        _header_label.text = "No character (creation flow not yet wired)"
+func _build_sheet() -> void:
+    sheet_anchor = MarginContainer.new()
+    sheet_anchor.name = "SheetAnchor"
+    sheet_anchor.set_anchors_preset(Control.PRESET_FULL_RECT)
+    sheet_anchor.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    sheet_anchor.visible = false
+    root.add_child(sheet_anchor)
+
+    var outer := VBoxContainer.new()
+    outer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    outer.size_flags_vertical = Control.SIZE_EXPAND_FILL
+    outer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    sheet_anchor.add_child(outer)
+
+    var top_spacer := Control.new()
+    top_spacer.size_flags_vertical = Control.SIZE_EXPAND_FILL
+    top_spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    outer.add_child(top_spacer)
+
+    var row := HBoxContainer.new()
+    row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    outer.add_child(row)
+
+    var left_spacer := Control.new()
+    left_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    left_spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    row.add_child(left_spacer)
+
+    talk_sheet = PanelContainer.new()
+    talk_sheet.name = "TalkSheet"
+    talk_sheet.mouse_filter = Control.MOUSE_FILTER_STOP
+    talk_sheet.size_flags_horizontal = Control.SIZE_SHRINK_END
+    talk_sheet.size_flags_vertical = Control.SIZE_SHRINK_END
+    talk_sheet.custom_minimum_size = Vector2(DESKTOP_MIN_WIDTH, DESKTOP_MIN_HEIGHT)
+    row.add_child(talk_sheet)
+
+    var pad := MarginContainer.new()
+    pad.add_theme_constant_override("margin_left", 14)
+    pad.add_theme_constant_override("margin_right", 14)
+    pad.add_theme_constant_override("margin_top", 12)
+    pad.add_theme_constant_override("margin_bottom", 12)
+    talk_sheet.add_child(pad)
+
+    var vbox := VBoxContainer.new()
+    vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    vbox.size_flags_vertical = Control.SIZE_EXPAND_FILL
+    vbox.add_theme_constant_override("separation", 10)
+    pad.add_child(vbox)
+
+    _build_header(vbox)
+    _build_nearby(vbox)
+    _build_log(vbox)
+    _build_input(vbox)
+
+
+func _build_header(parent: Control) -> void:
+    var header := HBoxContainer.new()
+    header.custom_minimum_size = Vector2(0, 48)
+    header.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    parent.add_child(header)
+
+    var context_box := VBoxContainer.new()
+    context_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    header.add_child(context_box)
+
+    context_label = Label.new()
+    context_label.clip_text = true
+    context_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+    context_box.add_child(context_label)
+
+    subcontext_label = Label.new()
+    subcontext_label.clip_text = true
+    subcontext_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+    context_box.add_child(subcontext_label)
+
+    close_button = Button.new()
+    close_button.text = "×"
+    close_button.custom_minimum_size = Vector2(46, 44)
+    close_button.focus_mode = Control.FOCUS_ALL
+    close_button.mouse_filter = Control.MOUSE_FILTER_STOP
+    header.add_child(close_button)
+
+
+func _build_nearby(parent: Control) -> void:
+    nearby_scroll = ScrollContainer.new()
+    nearby_scroll.custom_minimum_size = Vector2(0, 42)
+    nearby_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+    nearby_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+    parent.add_child(nearby_scroll)
+
+    nearby_flow = HFlowContainer.new()
+    nearby_flow.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    nearby_flow.add_theme_constant_override("h_separation", 6)
+    nearby_flow.add_theme_constant_override("v_separation", 6)
+    nearby_scroll.add_child(nearby_flow)
+
+
+func _build_log(parent: Control) -> void:
+    log_scroll = ScrollContainer.new()
+    log_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    log_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+    log_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+    log_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+    parent.add_child(log_scroll)
+
+    log_vbox = VBoxContainer.new()
+    log_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    log_vbox.add_theme_constant_override("separation", 8)
+    log_scroll.add_child(log_vbox)
+
+
+func _build_input(parent: Control) -> void:
+    var row := HBoxContainer.new()
+    row.custom_minimum_size = Vector2(0, 72)
+    row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    row.add_theme_constant_override("separation", 10)
+    parent.add_child(row)
+
+    speech_input = TextEdit.new()
+    speech_input.placeholder_text = "Speak to those gathered here…"
+    speech_input.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
+    speech_input.custom_minimum_size = Vector2(0, 66)
+    speech_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    speech_input.size_flags_vertical = Control.SIZE_EXPAND_FILL
+    speech_input.focus_mode = Control.FOCUS_ALL
+    speech_input.mouse_filter = Control.MOUSE_FILTER_STOP
+    row.add_child(speech_input)
+
+    speak_button = Button.new()
+    speak_button.text = "Speak"
+    speak_button.custom_minimum_size = Vector2(104, 66)
+    speak_button.focus_mode = Control.FOCUS_ALL
+    speak_button.mouse_filter = Control.MOUSE_FILTER_STOP
+    row.add_child(speak_button)
+
+
+func _connect_signals() -> void:
+    talk_launcher.pressed.connect(open)
+    close_button.pressed.connect(close)
+    speak_button.pressed.connect(_on_speak_pressed)
+
+    refresh_timer.timeout.connect(_refresh_state)
+    http_me.request_completed.connect(_on_me_completed)
+    http_speak.request_completed.connect(_on_speak_completed)
+
+    speech_input.focus_entered.connect(_on_input_focus_entered)
+    speech_input.focus_exited.connect(_on_input_focus_exited)
+    speech_input.gui_input.connect(_on_speech_input_gui_input)
+
+
+func _connect_world_signal() -> void:
+    var world := get_node_or_null("/root/Main/World")
+    if world != null and world.has_signal("npc_spoke"):
+        world.npc_spoke.connect(_on_npc_spoke)
+
+
+func open() -> void:
+    if not pc_exists or huddle_members.is_empty():
         return
-    visible = true
-    var char_name = str(state.get("character_name", "?"))
-    var location = str(state.get("structure_name", "outside"))
-    var home = str(state.get("home_name", ""))
-    var header = "%s @ %s" % [char_name, location]
-    if home != "" and home != location:
-        header += " (lodging: %s)" % home
-    _header_label.text = header
 
-    # HERE list is informational (per broadcast-by-default model).
-    # NPCs render as labels; their LLMs decide who's being addressed
-    # from the speech context. No targeting buttons.
-    for c in _members_list.get_children():
-        c.queue_free()
-    var members: Array = state.get("huddle_members", [])
-    if members.is_empty():
-        var none = Label.new()
-        none.text = "  (no one nearby)"
-        none.add_theme_color_override("font_color", Color(0.65, 0.55, 0.40))
-        none.add_theme_font_size_override("font_size", 12)
-        _members_list.add_child(none)
-    for m in members:
-        var name_str = str(m.get("name", "?"))
-        var role = m.get("role", null)
-        var label = Label.new()
-        var line = "  " + name_str
-        if role != null and role != "":
-            line += "  (" + str(role) + ")"
-        label.text = line
-        label.add_theme_color_override("font_color", Color(0.95, 0.92, 0.80))
-        label.add_theme_font_size_override("font_size", 12)
-        _members_list.add_child(label)
-    _selected_target_agent = ""
-    _selected_target_name = ""
-    _speak_btn.text = "Speak"
+    is_open = true
+    user_closed = false
+    unread_count = 0
 
-func _on_text_submitted(text: String) -> void:
-    _do_speak_smart(text)
+    sheet_anchor.visible = true
+    talk_launcher.visible = false
+
+    _update_launcher_text()
+    _focus_input_after_open()
+    _scroll_log_to_bottom_deferred()
+
+
+func close() -> void:
+    is_open = false
+    user_closed = true
+    sheet_anchor.visible = false
+    _update_visibility_from_state()
+
+
+func _focus_input_after_open() -> void:
+    _pending_focus = true
+    call_deferred("_deferred_focus_input")
+
+
+func _deferred_focus_input() -> void:
+    # First focus pass on the next frame after show().
+    await get_tree().process_frame
+
+    if not is_open:
+        return
+
+    speech_input.grab_focus()
+    call_deferred("_second_deferred_focus_input")
+
+
+func _second_deferred_focus_input() -> void:
+    # Second focus pass — HTML5 sometimes drops the first one.
+    if not is_open:
+        return
+
+    speech_input.grab_focus()
+    _pending_focus = false
+
+
+func _refresh_state() -> void:
+    var err := http_me.request(
+        _api_url("/api/village/pc/me"),
+        _auth_headers(),
+        HTTPClient.METHOD_POST,
+        ""
+    )
+
+    if err != OK:
+        push_warning("TalkPanel pc/me request failed: %s" % err)
+
+
+func _on_me_completed(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
+    if result != HTTPRequest.RESULT_SUCCESS or response_code < 200 or response_code >= 300:
+        _set_no_pc_state()
+        return
+
+    var data = JSON.parse_string(body.get_string_from_utf8())
+    if typeof(data) != TYPE_DICTIONARY:
+        return
+
+    _apply_pc_state(data)
+
+
+func _apply_pc_state(data: Dictionary) -> void:
+    pc_exists = bool(data.get("exists", false))
+
+    if not pc_exists:
+        _set_no_pc_state()
+        return
+
+    character_name = str(data.get("character_name", ""))
+    structure_name = str(data.get("structure_name", ""))
+    home_name = str(data.get("home_name", ""))
+
+    var members = data.get("huddle_members", [])
+    if typeof(members) == TYPE_ARRAY:
+        huddle_members = members
+    else:
+        huddle_members = []
+
+    _update_context_labels()
+    _update_nearby_chips()
+    _update_launcher_text()
+    _update_visibility_from_state()
+    _maybe_auto_attention_for_first_encounter()
+
+
+func _set_no_pc_state() -> void:
+    pc_exists = false
+    huddle_members = []
+    is_open = false
+    sheet_anchor.visible = false
+    talk_launcher.visible = false
+    _update_context_labels()
+    _clear_nearby_chips()
+
+
+func _update_visibility_from_state() -> void:
+    if not pc_exists or huddle_members.is_empty():
+        is_open = false
+        sheet_anchor.visible = false
+        talk_launcher.visible = false
+        return
+
+    if is_open:
+        sheet_anchor.visible = true
+        talk_launcher.visible = false
+    else:
+        sheet_anchor.visible = false
+        talk_launcher.visible = true
+
+
+func _update_context_labels() -> void:
+    if not pc_exists:
+        context_label.text = "No character"
+        subcontext_label.text = ""
+        return
+
+    var who := "You"
+    if not character_name.is_empty():
+        who = character_name
+
+    var where := "the village"
+    if not structure_name.is_empty():
+        where = structure_name
+
+    context_label.text = "%s at %s" % [who, where]
+
+    if home_name.is_empty():
+        subcontext_label.text = ""
+    else:
+        subcontext_label.text = "lodging: %s" % home_name
+
+
+func _update_nearby_chips() -> void:
+    _clear_nearby_chips()
+
+    for member in huddle_members:
+        if typeof(member) != TYPE_DICTIONARY:
+            continue
+
+        var member_name := str(member.get("name", "Unknown"))
+        var role := str(member.get("role", ""))
+        var chip_text := member_name
+        if not role.is_empty():
+            chip_text = "%s · %s" % [member_name, role]
+        nearby_flow.add_child(_make_chip(chip_text))
+
+
+func _clear_nearby_chips() -> void:
+    for child in nearby_flow.get_children():
+        child.queue_free()
+
+
+func _make_chip(text: String) -> Control:
+    # PanelContainer + Label is more reliable than a Label with a stylebox
+    # override, especially across HTML5 themes.
+    var panel := PanelContainer.new()
+    panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+    var style := StyleBoxFlat.new()
+    style.bg_color = Color(0.18, 0.13, 0.08, 0.95)
+    style.border_color = Color(0.42, 0.32, 0.19, 0.95)
+    style.border_width_left = 1
+    style.border_width_right = 1
+    style.border_width_top = 1
+    style.border_width_bottom = 1
+    style.corner_radius_top_left = 999
+    style.corner_radius_top_right = 999
+    style.corner_radius_bottom_left = 999
+    style.corner_radius_bottom_right = 999
+    style.content_margin_left = 10
+    style.content_margin_right = 10
+    style.content_margin_top = 4
+    style.content_margin_bottom = 4
+    panel.add_theme_stylebox_override("panel", style)
+
+    var label := Label.new()
+    label.text = text
+    label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    label.add_theme_color_override("font_color", Color(0.78, 0.68, 0.50, 1.0))
+    panel.add_child(label)
+
+    return panel
+
 
 func _on_speak_pressed() -> void:
-    _do_speak_smart(_input.text)
+    _send_current_text()
 
-## Single entry point — addressed if a target is selected, broadcast
-## otherwise. Replaces the prior whisper/speak split.
-func _do_speak_smart(text: String) -> void:
-    if _selected_target_agent != "":
-        _do_whisper(text)
-    else:
-        _do_speak(text)
 
-func _do_whisper(text: String) -> void:
-    if text.strip_edges() == "" or _selected_target_agent == "":
+func _on_speech_input_gui_input(event: InputEvent) -> void:
+    # Enter sends; Shift+Enter inserts a newline.
+    if event is InputEventKey:
+        var key := event as InputEventKey
+        if key.pressed and not key.echo:
+            if key.keycode == KEY_ENTER or key.keycode == KEY_KP_ENTER:
+                if key.shift_pressed:
+                    return
+
+                get_viewport().set_input_as_handled()
+                _send_current_text()
+
+
+func _send_current_text() -> void:
+    var text := speech_input.text.strip_edges()
+    if text.is_empty():
+        _refocus_if_open()
         return
-    # No local echo — /pc/say writes an audit_log row that fans out via
-    # the npc_spoke WS event. _on_world_npc_spoke renders the line once.
-    # Adding a local echo here would duplicate it.
-    _input.text = ""
-    _post_pc_chat("/api/village/pc/say", JSON.stringify({
-        "target": _selected_target_agent,
-        "text": text,
-    }), true)
 
-func _do_speak(text: String) -> void:
-    if text.strip_edges() == "":
-        return
-    _input.text = ""
-    _post_pc_chat("/api/village/pc/speak", JSON.stringify({
-        "text": text,
-    }), false)
+    speech_input.text = ""
+    _append_log_line("You", text, "player")
+    _post_speak(text)
+    _refocus_if_open()
 
-func _post_pc_chat(path: String, body: String, expect_reply: bool) -> void:
-    var http := HTTPRequest.new()
-    http.accept_gzip = false
-    add_child(http)
-    http.request_completed.connect(func(_r, c, _h, resp_body):
-        http.queue_free()
-        if c < 200 or c >= 300:
-            _append_reply("[server error %d]" % c, Color(1.0, 0.5, 0.5))
-            return
-        if expect_reply:
-            var parsed = JSON.parse_string(resp_body.get_string_from_utf8())
-            if parsed is Dictionary:
-                var reply = parsed.get("reply", null)
-                if reply is Dictionary:
-                    var reply_text = str(reply.get("text", "")).strip_edges()
-                    if reply_text != "":
-                        _append_reply(_selected_target_name + ": " + reply_text, Color(0.95, 0.92, 0.80))
+
+func _post_speak(text: String) -> void:
+    var body := JSON.stringify({ "text": text })
+
+    speak_button.disabled = true
+
+    var err := http_speak.request(
+        _api_url("/api/village/pc/speak"),
+        _auth_headers(),
+        HTTPClient.METHOD_POST,
+        body
     )
-    var headers: PackedStringArray = ["Content-Type: application/json"]
-    var auth: String = Auth.get_auth_header()
-    if auth != "":
-        headers.append("Authorization: " + auth)
-    http.request(Auth.api_base + path, headers, HTTPClient.METHOD_POST, body)
 
-## Close button — hide the panel and surface the floating "Talk"
-## reopen button. Created lazily so the layout doesn't carry a
-## hidden Control until the user actually closes the panel once.
-func _on_close_pressed() -> void:
-    visible = false
-    if _open_button == null:
-        _open_button = Button.new()
-        _open_button.text = "Talk"
-        _open_button.set_anchors_preset(Control.PRESET_TOP_RIGHT)
-        _open_button.offset_top = 60
-        _open_button.offset_left = -80
-        _open_button.offset_right = -10
-        _open_button.offset_bottom = 90
-        _open_button.add_theme_font_size_override("font_size", 12)
-        var bg := StyleBoxFlat.new()
-        bg.bg_color = Color(0.10, 0.08, 0.06, 0.88)
-        bg.border_color = Color(0.45, 0.35, 0.20, 1.0)
-        bg.set_border_width_all(1)
-        _open_button.add_theme_stylebox_override("normal", bg)
-        _open_button.add_theme_color_override("font_color", Color(0.95, 0.92, 0.80))
-        _open_button.pressed.connect(_on_open_pressed)
-        get_parent().add_child(_open_button)
-    _open_button.visible = true
+    if err != OK:
+        speak_button.disabled = false
+        push_warning("TalkPanel speak request failed: %s" % err)
 
-func _on_open_pressed() -> void:
-    visible = true
-    if _open_button != null:
-        _open_button.visible = false
-    refresh()
 
-## WS-derived signal — any speech broadcast in the village. We render
-## all of it for now (no proximity filter); when speech bubbles land
-## the bubble will handle proximity, this panel keeps the full log.
-func _on_world_npc_spoke(name: String, text: String, _kind: String) -> void:
-    _append_reply(name + ": " + text, Color(0.95, 0.92, 0.80))
+func _on_speak_completed(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
+    speak_button.disabled = false
 
-func _append_reply(text: String, color: Color) -> void:
-    var label = Label.new()
-    label.text = text
-    label.autowrap_mode = TextServer.AUTOWRAP_WORD
-    label.add_theme_color_override("font_color", color)
-    label.add_theme_font_size_override("font_size", 12)
-    _replies_box.add_child(label)
-    while _replies_box.get_child_count() > 80:
-        _replies_box.get_child(0).queue_free()
+    if result != HTTPRequest.RESULT_SUCCESS or response_code < 200 or response_code >= 300:
+        push_warning("TalkPanel speak failed: code=%s body=%s" % [
+            response_code,
+            body.get_string_from_utf8()
+        ])
+
+
+func _on_npc_spoke(speaker_name: String, text: String, kind: String = "") -> void:
+    _append_log_line(speaker_name, text, kind)
+
+
+func _append_log_line(speaker: String, text: String, kind: String = "") -> void:
+    var was_at_bottom := _is_log_near_bottom()
+
+    var entry := VBoxContainer.new()
+    entry.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    entry.add_theme_constant_override("separation", 2)
+
+    var name_label := Label.new()
+    name_label.text = speaker
+    name_label.clip_text = true
+    name_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+
+    var text_label := Label.new()
+    text_label.text = "“%s”" % text
+    text_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+    text_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+    if kind == "player":
+        name_label.add_theme_color_override("font_color", Color(0.95, 0.78, 0.45, 1.0))
+        text_label.add_theme_color_override("font_color", Color(0.95, 0.86, 0.68, 1.0))
+    else:
+        name_label.add_theme_color_override("font_color", Color(0.70, 0.58, 0.39, 1.0))
+        text_label.add_theme_color_override("font_color", Color(0.82, 0.76, 0.64, 1.0))
+
+    entry.add_child(name_label)
+    entry.add_child(text_label)
+    log_vbox.add_child(entry)
+
+    while log_vbox.get_child_count() > MAX_LOG_LINES:
+        log_vbox.get_child(0).queue_free()
+
+    if is_open:
+        if was_at_bottom:
+            _scroll_log_to_bottom_deferred()
+    else:
+        unread_count += 1
+        _update_launcher_text()
+
+
+func _is_log_near_bottom() -> bool:
+    var bar := log_scroll.get_v_scroll_bar()
+    if bar == null:
+        return true
+
+    return bar.value >= bar.max_value - bar.page - 24.0
+
+
+func _scroll_log_to_bottom_deferred() -> void:
+    call_deferred("_scroll_log_to_bottom")
+
+
+func _scroll_log_to_bottom() -> void:
     await get_tree().process_frame
-    var sb = _replies_scroll.get_v_scroll_bar()
-    if sb != null:
-        _replies_scroll.scroll_vertical = int(sb.max_value)
+    var bar := log_scroll.get_v_scroll_bar()
+    if bar != null:
+        bar.value = bar.max_value
+
+
+func _update_launcher_text() -> void:
+    var count := huddle_members.size()
+
+    if count <= 0:
+        talk_launcher.text = "Talk"
+    elif unread_count > 0:
+        talk_launcher.text = "Talk (%d nearby) • %d new" % [count, unread_count]
+    else:
+        talk_launcher.text = "Talk (%d nearby)" % count
+
+
+func _maybe_auto_attention_for_first_encounter() -> void:
+    if huddle_members.is_empty():
+        return
+
+    if has_ever_seen_huddle:
+        return
+
+    has_ever_seen_huddle = true
+
+    if not first_encounter_pulse_done:
+        first_encounter_pulse_done = true
+        call_deferred("_pulse_launcher")
+
+
+func _pulse_launcher() -> void:
+    if not is_instance_valid(talk_launcher):
+        return
+
+    await get_tree().process_frame
+
+    talk_launcher.pivot_offset = talk_launcher.size * 0.5
+
+    var tween := create_tween()
+    tween.set_loops(3)
+    tween.tween_property(talk_launcher, "scale", Vector2(1.06, 1.06), 0.22)
+    tween.tween_property(talk_launcher, "scale", Vector2.ONE, 0.22)
+
+
+func _on_input_focus_entered() -> void:
+    input_focused = true
+    _update_responsive_layout()
+
+    if is_mobile:
+        call_deferred("_mobile_refit_after_keyboard")
+
+
+func _on_input_focus_exited() -> void:
+    input_focused = false
+    _update_responsive_layout()
+
+
+func _mobile_refit_after_keyboard() -> void:
+    # Two frames: first lets the OS keyboard come up, second lets the resulting
+    # viewport size_changed propagate before we re-fit.
+    await get_tree().process_frame
+    await get_tree().process_frame
+
+    if is_mobile and is_open:
+        _update_responsive_layout()
+
+
+func _refocus_if_open() -> void:
+    if is_open:
+        call_deferred("_second_deferred_focus_input")
+
+
+func _on_viewport_size_changed() -> void:
+    _update_responsive_layout()
+
+
+func _update_responsive_layout() -> void:
+    var size := get_viewport().get_visible_rect().size
+    is_mobile = size.x <= MOBILE_BREAKPOINT
+
+    if is_mobile:
+        launcher_anchor.add_theme_constant_override("margin_left", 12)
+        launcher_anchor.add_theme_constant_override("margin_right", 12)
+        launcher_anchor.add_theme_constant_override("margin_top", 12)
+        launcher_anchor.add_theme_constant_override("margin_bottom", 14)
+
+        sheet_anchor.add_theme_constant_override("margin_left", 0)
+        sheet_anchor.add_theme_constant_override("margin_right", 0)
+        sheet_anchor.add_theme_constant_override("margin_top", 0)
+        sheet_anchor.add_theme_constant_override("margin_bottom", 0)
+
+        talk_sheet.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+        var vh := MOBILE_SHEET_VH
+        if input_focused:
+            vh = MOBILE_SHEET_FOCUSED_VH
+        talk_sheet.custom_minimum_size = Vector2(0, max(320.0, size.y * vh))
+
+        talk_launcher.custom_minimum_size = Vector2(180, 52)
+    else:
+        launcher_anchor.add_theme_constant_override("margin_left", 18)
+        launcher_anchor.add_theme_constant_override("margin_right", 22)
+        launcher_anchor.add_theme_constant_override("margin_top", 18)
+        launcher_anchor.add_theme_constant_override("margin_bottom", 22)
+
+        sheet_anchor.add_theme_constant_override("margin_left", 18)
+        sheet_anchor.add_theme_constant_override("margin_right", 22)
+        sheet_anchor.add_theme_constant_override("margin_top", 18)
+        sheet_anchor.add_theme_constant_override("margin_bottom", 22)
+
+        talk_sheet.size_flags_horizontal = Control.SIZE_SHRINK_END
+        talk_sheet.custom_minimum_size = Vector2(DESKTOP_MIN_WIDTH, DESKTOP_MIN_HEIGHT)
+
+        talk_launcher.custom_minimum_size = Vector2(150, 48)
+
+
+func _apply_theme() -> void:
+    var sheet_style := StyleBoxFlat.new()
+    sheet_style.bg_color = Color(0.115, 0.085, 0.055, 0.94)
+    sheet_style.border_color = Color(0.55, 0.42, 0.24, 0.95)
+    sheet_style.border_width_left = 1
+    sheet_style.border_width_right = 1
+    sheet_style.border_width_top = 1
+    sheet_style.border_width_bottom = 1
+    sheet_style.corner_radius_top_left = 10
+    sheet_style.corner_radius_top_right = 10
+    sheet_style.corner_radius_bottom_left = 10
+    sheet_style.corner_radius_bottom_right = 10
+    sheet_style.shadow_color = Color(0, 0, 0, 0.45)
+    sheet_style.shadow_size = 18
+    sheet_style.shadow_offset = Vector2(0, 6)
+    talk_sheet.add_theme_stylebox_override("panel", sheet_style)
+
+    context_label.add_theme_color_override("font_color", Color(0.95, 0.82, 0.58, 1.0))
+    subcontext_label.add_theme_color_override("font_color", Color(0.68, 0.58, 0.43, 1.0))
+    speech_input.add_theme_color_override("font_color", Color(0.92, 0.84, 0.70, 1.0))
+    speech_input.add_theme_color_override("font_placeholder_color", Color(0.58, 0.50, 0.40, 1.0))
+
+
+func _api_url(path: String) -> String:
+    var auth := get_node_or_null("/root/Auth")
+    if auth == null:
+        return path
+
+    return str(auth.api_base).rstrip("/") + path
+
+
+func _auth_headers() -> PackedStringArray:
+    var headers := PackedStringArray()
+    headers.append("Content-Type: application/json")
+
+    var auth := get_node_or_null("/root/Auth")
+    if auth != null:
+        var value := str(auth.get_auth_header())
+        if not value.is_empty():
+            headers.append("Authorization: " + value)
+
+    return headers
