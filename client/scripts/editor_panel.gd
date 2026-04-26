@@ -452,6 +452,27 @@ func _ready() -> void:
     obj_tags_add_btn.pressed.connect(_on_obj_tag_add_pressed)
     obj_tags_add_row.add_child(obj_tags_add_btn)
 
+    # Marker legend — explains the colored handles that appear on the
+    # selected placement in the world. Admins won't immediately know
+    # what blue square / orange square / green or gold circle mean, and
+    # mouse-hover tooltips on world-space markers would require Area2D
+    # plumbing per marker. Static legend in the panel is simpler and
+    # always-visible while a placement is selected.
+    var markers_header = Label.new()
+    markers_header.text = "MARKERS"
+    markers_header.add_theme_color_override("font_color", COLOR_LABEL)
+    markers_header.add_theme_font_size_override("font_size", 11)
+    _asset_fields_section.add_child(markers_header)
+
+    _add_marker_legend_row(Color(0.25, 0.55, 1.0, 0.9), false,
+        "Door — entry tile NPCs walk to")
+    _add_marker_legend_row(Color(1.0, 0.65, 0.20, 0.9), false,
+        "Stand — interior render position")
+    _add_marker_legend_row(Color(0.30, 0.85, 0.45, 0.9), true,
+        "Loiter — where visitors stand outside")
+    _add_marker_legend_row(Color(1.0, 0.85, 0.25, 0.9), true,
+        "Gather — village rally point (gathering-point tag)")
+
     # Attachments section — shown when selected object has slots
     _attachments_section = VBoxContainer.new()
     _attachments_section.visible = false
@@ -1592,6 +1613,47 @@ func _build_tag_chip(tag: String) -> Control:
     row.add_child(x_btn)
 
     return pill
+
+## Add one row to the marker legend in the placement properties panel.
+## Each row is a small colored swatch (square or circle) followed by a
+## description. Used so admins can decode the colored handles drawn on
+## the selected placement in the world.
+func _add_marker_legend_row(swatch_color: Color, is_circle: bool, description: String) -> void:
+    var row = HBoxContainer.new()
+    row.add_theme_constant_override("separation", 8)
+    _asset_fields_section.add_child(row)
+
+    # Swatch — small ColorRect for the square markers, or a Polygon2D
+    # circle in a Control for the loiter/gather circle markers.
+    var swatch_size: Vector2 = Vector2(12, 12)
+    var swatch: Control
+    if is_circle:
+        swatch = Control.new()
+        swatch.custom_minimum_size = swatch_size
+        var circle := Polygon2D.new()
+        circle.color = swatch_color
+        var poly := PackedVector2Array()
+        var segments: int = 16
+        var radius: float = 5.0
+        for i in range(segments):
+            var t: float = float(i) / float(segments) * TAU
+            poly.append(Vector2(cos(t) * radius + 6.0, sin(t) * radius + 6.0))
+        circle.polygon = poly
+        swatch.add_child(circle)
+    else:
+        var rect := ColorRect.new()
+        rect.color = swatch_color
+        rect.custom_minimum_size = swatch_size
+        swatch = rect
+    row.add_child(swatch)
+
+    var desc = Label.new()
+    desc.text = description
+    desc.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+    desc.add_theme_font_size_override("font_size", 10)
+    desc.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    desc.autowrap_mode = TextServer.AUTOWRAP_WORD
+    row.add_child(desc)
 
 func _on_obj_tag_add_pressed() -> void:
     if _obj_tags_add_dropdown == null or _obj_tags_add_dropdown.selected < 0:

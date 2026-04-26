@@ -1438,8 +1438,11 @@ func refresh_loiter_marker() -> void:
     _draw_loiter_marker_contents(selected_object)
 
 ## Returns the loiter offset (in tile units) currently stored on the
-## placement's container meta. Falls back to the asset's door_offset
-## when unset; ultimately falls back to (0, footprint_bottom + 1).
+## placement's container meta. Falls back to the asset's door_offset PLUS
+## one tile south when unset, so the placeholder marker doesn't sit
+## directly on the blue door marker (where the green/gold circle would
+## be hidden under the door square). Ultimately falls back to
+## (0, footprint_bottom + 2).
 func _current_loiter_offset_tiles(node: Node2D) -> Vector2:
     var lx = node.get_meta("loiter_offset_x", null)
     var ly = node.get_meta("loiter_offset_y", null)
@@ -1450,8 +1453,8 @@ func _current_loiter_offset_tiles(node: Node2D) -> Vector2:
     var dx = asset.get("door_offset_x", null)
     var dy = asset.get("door_offset_y", null)
     if dx != null and dy != null:
-        return Vector2(int(dx), int(dy))
-    return Vector2(0, int(asset.get("footprint_bottom", 0)) + 1)
+        return Vector2(int(dx), int(dy) + 1)
+    return Vector2(0, int(asset.get("footprint_bottom", 0)) + 2)
 
 ## Green outlined circle for loiter — distinct from blue square (door)
 ## and orange square (stand). Filled lighter when loiter_offset is unset
