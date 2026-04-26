@@ -273,6 +273,14 @@ func _on_asset_visible_when_inside_updated(data: Dictionary) -> void:
     var asset = Catalog.assets[asset_id]
     asset["visible_when_inside"] = bool(data.get("visible_when_inside", false))
     Catalog.assets[asset_id] = asset
+    # Stand marker visibility depends on this flag — refresh if the
+    # currently-selected placement uses this asset. Mirrors the
+    # enterable handler's door-marker refresh.
+    var editor = get_node_or_null("/root/Main/Editor")
+    if editor != null and editor.selected_object != null:
+        if editor.selected_object.get_meta("asset_id", "") == asset_id:
+            if editor.has_method("_add_stand_marker"):
+                editor._add_stand_marker(editor.selected_object)
     if world == null:
         return
     # Re-evaluate visibility for every NPC that's currently inside a
