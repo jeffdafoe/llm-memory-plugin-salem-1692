@@ -417,7 +417,9 @@ func (app *App) handlePCSpeak(w http.ResponseWriter, r *http.Request) {
 		},
 	})
 
-	app.triggerCoLocatedTicks(context.Background(), structureID.String, "", fmt.Sprintf("pc-spoke (%s)", charName.String))
+	// PC-initiated → force=true so cost guard doesn't suppress
+	// reactions. Storm risk is bounded by human typing speed.
+	app.triggerCoLocatedTicks(context.Background(), structureID.String, "", fmt.Sprintf("pc-spoke (%s)", charName.String), true)
 
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -321,8 +321,14 @@ func (app *App) stampAgentTick(ctx context.Context, r *agentNPCRow, hourStart ti
 // triggerImmediateTick fires an out-of-band agent tick for one NPC in
 // response to an event (someone speaks at their location, they arrive
 // somewhere with another agent present, etc.). Bypasses the per-NPC
-// hour-offset gate, but respects the agentMinTickGap cost guard so an
-// NPC can't be tick-stormed by a chain of events.
+// hour-offset gate.
+//
+// Cost guard: when force=false, respects agentMinTickGap so an NPC
+// can't be tick-stormed by a chain of NPC-to-NPC reactions. When
+// force=true (PC-initiated triggers), the guard is bypassed — PCs
+// type at human pace so the storm risk is bounded by a real person's
+// speed, and we WANT every NPC in the room to potentially react to
+// the player's words.
 //
 // Reuses the same dawn/dusk inheritance as the dispatcher by re-loading
 // world config on the spot — event ticks are rare relative to baseline
@@ -331,7 +337,7 @@ func (app *App) stampAgentTick(ctx context.Context, r *agentNPCRow, hourStart ti
 //
 // Safe to call from goroutines (the engine's async paths). Failures are
 // logged and don't propagate — event ticks are best-effort.
-func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string) {
+func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, force bool) {
 	cfg, err := app.loadWorldConfig(ctx)
 	if err != nil {
 		log.Printf("event-tick %s (%s): load config: %v", npcID, reason, err)
@@ -375,11 +381,10 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string) 
 		return
 	}
 
-	// Cost guard: no two ticks closer than agentMinTickGap, regardless
-	// of source. last_agent_tick_at is stamped to hourStart for baseline
-	// ticks but to time.Now() for event ticks (see below) — both shapes
-	// are safely Before-comparable.
-	if r.LastAgentTickAt.Valid && time.Since(r.LastAgentTickAt.Time) < agentMinTickGap {
+	// Cost guard (NPC-triggered only). PC-triggered (force=true) skips
+	// this so multiple co-located NPCs can respond to the same player
+	// broadcast. Storm risk is bounded by human typing speed.
+	if !force && r.LastAgentTickAt.Valid && time.Since(r.LastAgentTickAt.Time) < agentMinTickGap {
 		return
 	}
 
@@ -404,11 +409,11 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string) 
 
 // triggerCoLocatedTicks fires immediate ticks for every other agentized
 // NPC at the given structureID (excluding excludeNpcID, the source of
-// the event). Used by the speak commit and the arrival hook so nearby
-// agents can react in-band rather than waiting for their next baseline
-// tick. Each affected NPC still passes through the cost guard in
-// triggerImmediateTick — no tick storms.
-func (app *App) triggerCoLocatedTicks(ctx context.Context, structureID, excludeNpcID, reason string) {
+// the event). Used by the speak commit, arrival hook, and PC speech.
+// Each affected NPC's tick is gated by the cost guard in
+// triggerImmediateTick UNLESS force=true (PC-initiated — see that
+// function's comment for rationale).
+func (app *App) triggerCoLocatedTicks(ctx context.Context, structureID, excludeNpcID, reason string, force bool) {
 	if structureID == "" {
 		return
 	}
@@ -435,7 +440,7 @@ func (app *App) triggerCoLocatedTicks(ctx context.Context, structureID, excludeN
 		}
 	}
 	for _, id := range ids {
-		go app.triggerImmediateTick(context.Background(), id, reason)
+		go app.triggerImmediateTick(context.Background(), id, reason, force)
 	}
 }
 
@@ -1023,7 +1028,7 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		// guard in triggerImmediateTick prevents tick storms when both
 		// parties are agents and a back-and-forth develops.
 		if r.InsideStructureID.Valid {
-			app.triggerCoLocatedTicks(ctx, r.InsideStructureID.String, r.ID, "heard-speech")
+			app.triggerCoLocatedTicks(ctx, r.InsideStructureID.String, r.ID, "heard-speech", false)
 		}
 
 	case "done":
