@@ -166,10 +166,9 @@ func (app *App) leaveHuddle(ctx context.Context, npcID string) {
 
 // joinOrCreateHuddleForPC mirrors joinOrCreateHuddle but for PC actors.
 // PCs are tracked in pc_position rather than npc, so the membership
-// update goes there instead. Acquaintance recording also runs both
-// directions: every NPC currently in the huddle becomes acquainted
-// with the PC by name, and the PC's first-meeting timestamp gets
-// stamped against each NPC.
+// update goes there instead. NPCs become acquainted with the PC's
+// character_name (the in-world identity, not the actor_name system
+// identity) — that's the name they greet by in their perception.
 //
 // PCs don't have their own npc_acquaintance row (they aren't NPCs);
 // only NPCs track who they know. The PC's view of "do I know X?" is
@@ -204,15 +203,17 @@ func (app *App) joinOrCreateHuddleForPC(ctx context.Context, actorName, structur
 		return huddleID, err
 	}
 
-	// Each NPC in this huddle now knows the PC by name (one-way; PC's
-	// own awareness is UI-side).
+	// Each NPC in this huddle now knows the PC by character_name —
+	// the in-world identity. The acquaintance is one-way; PC's own
+	// awareness is UI-side.
 	if _, err := app.DB.Exec(ctx,
 		`INSERT INTO npc_acquaintance (npc_id, other_name)
-		 SELECT n.id, $1
-		   FROM npc n
-		  WHERE n.current_huddle_id::text = $2
+		 SELECT n.id, pc.character_name
+		   FROM npc n, pc_position pc
+		  WHERE n.current_huddle_id::text = $1
+		    AND pc.actor_name = $2
 		 ON CONFLICT DO NOTHING`,
-		actorName, huddleID,
+		huddleID, actorName,
 	); err != nil {
 		log.Printf("scene-huddle: record PC->NPC acquaintance: %v", err)
 	}
