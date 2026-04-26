@@ -715,12 +715,44 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 		}
 	}
 
+	// 7. Feedback from last action (M6.4.8) — when the NPC's most
+	// recent commit failed (move_to to an unknown destination, chore
+	// with an unknown category, etc.), surface the error so the LLM
+	// has a chance to self-correct on the next tick. Without this,
+	// failures are silent and the model keeps repeating the same
+	// failing call. Only the immediately-prior action is surfaced;
+	// older failures are presumably forgotten / superseded.
+	if feedback := app.lastActionFeedback(ctx, r.ID); feedback != "" {
+		sections = append(sections, "[Can't do that] "+feedback)
+	}
+
 	// 6. Decision prompt.
 	sections = append(sections, "Decide what to do this hour. You may use look_around first to see who is here, "+
 		"then commit with move_to (walk to a named place), chore (run a quick errand by category), "+
 		"speak (say something), or done (rest).")
 
 	return strings.Join(sections, "\n\n"), locationName
+}
+
+// lastActionFeedback returns a one-line error description from the
+// NPC's most-recent failed action_log row (within the past hour).
+// Empty string when the last action was successful or there's no
+// recent action. The hour cap prevents stale feedback from following
+// an NPC across long quiet periods.
+func (app *App) lastActionFeedback(ctx context.Context, npcID string) string {
+	var actionType, result, errMsg string
+	err := app.DB.QueryRow(ctx,
+		`SELECT action_type, result, COALESCE(error, '')
+		 FROM agent_action_log
+		 WHERE npc_id::text = $1
+		   AND occurred_at > NOW() - INTERVAL '1 hour'
+		 ORDER BY occurred_at DESC LIMIT 1`,
+		npcID,
+	).Scan(&actionType, &result, &errMsg)
+	if err != nil || result == "ok" || errMsg == "" {
+		return ""
+	}
+	return fmt.Sprintf("Your last %s attempt failed: %s. Try a different approach.", actionType, errMsg)
 }
 
 // coLocatedHuddleMembers returns "Here:" lines for every other NPC in
