@@ -298,12 +298,21 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 	app.stampAgentTick(ctx, r, hourStart)
 }
 
-// stampAgentTick records that we've ticked this NPC for this in-world hour.
-// Subsequent server ticks within the hour will skip this NPC.
+// stampAgentTick records that we've ticked this NPC. Stamps to
+// time.Now() (NOT hourStart) so the agentMinTickGap cost guard
+// reads an accurate elapsed time. The baseline-gate check
+// (`!last.Before(hourStart)` in dispatchAgentTicks) still works:
+// any time.Now() within the current hour is >= hourStart.
+//
+// Earlier versions stamped to hourStart, which made the cost guard
+// useless — `time.Since(hourStart)` was always near the full hour,
+// so event-tick triggers cascaded freely. Tick storms ensued when
+// two co-located agents reacted to each other's speech.
 func (app *App) stampAgentTick(ctx context.Context, r *agentNPCRow, hourStart time.Time) {
+	_ = hourStart // kept for signature stability; baseline gate uses Before()
 	if _, err := app.DB.Exec(ctx,
 		`UPDATE npc SET last_agent_tick_at = $2 WHERE id = $1`,
-		r.ID, hourStart,
+		r.ID, time.Now(),
 	); err != nil {
 		log.Printf("agent-tick: stamp %s: %v", r.DisplayName, err)
 	}
