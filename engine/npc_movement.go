@@ -18,6 +18,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -341,4 +342,20 @@ func (app *App) applyArrival(npcID string) {
 	})
 
 	app.advanceBehavior(npcID)
+
+	// Event-tick co-located agents on agent-driven arrivals (M6.5
+	// pre-staging via ZBBS-075). When an agentized NPC enters a
+	// structure, fire immediate ticks on any OTHER agentized NPCs
+	// already inside so they can react to the entrance. Background
+	// (scheduler-driven) NPC arrivals don't trigger ticks — only
+	// agent-on-agent. Cost guard inside triggerImmediateTick prevents
+	// tick storms.
+	var arriverIsAgent bool
+	var insideID sql.NullString
+	if err := app.DB.QueryRow(ctx,
+		`SELECT inside_structure_id, llm_memory_agent IS NOT NULL FROM npc WHERE id = $1`,
+		npcID,
+	).Scan(&insideID, &arriverIsAgent); err == nil && arriverIsAgent && insideID.Valid {
+		app.triggerCoLocatedTicks(ctx, insideID.String, npcID, "arrival")
+	}
 }

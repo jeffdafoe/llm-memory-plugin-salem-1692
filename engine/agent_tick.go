@@ -31,7 +31,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha1"
 	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -44,7 +46,27 @@ const (
 	agentTickBudget          = 6
 	agentTickActiveStartHour = 6
 	agentTickActiveEndHour   = 21 // exclusive — last active hour is 20:00-21:00
+	// Per-NPC tick offset window. The dispatcher staggers each NPC's
+	// baseline tick within the game-hour using a deterministic hash of
+	// their UUID — Ezekiel might fire at hour+7min, John at hour+23min,
+	// etc. Spreads load on the LLM provider and avoids the artificial
+	// "everyone decides at the same instant" feel.
+	agentTickOffsetWindow = 3300 // seconds within an hour (55 min, leaves 5 min slack at end)
+	// Minimum gap between any two ticks for the same NPC, regardless of
+	// trigger source (baseline or event). Cost guard against tick storms
+	// when several NPCs co-locate and react to each other.
+	agentMinTickGap = 5 * time.Minute
 )
+
+// npcTickOffsetSeconds returns the per-NPC tick offset within the
+// game-hour, deterministic from the NPC's UUID. SHA1 hash → first 4
+// bytes as uint32 → mod agentTickOffsetWindow. Stable across restarts
+// and migrations — no schema column needed.
+func npcTickOffsetSeconds(npcID string) int {
+	sum := sha1.Sum([]byte(npcID))
+	val := binary.BigEndian.Uint32(sum[:4])
+	return int(val % uint32(agentTickOffsetWindow))
+}
 
 // agentNPCRow bundles everything the harness loop needs for one NPC.
 //
@@ -114,11 +136,21 @@ func (app *App) dispatchAgentTicks(ctx context.Context) {
 	}
 
 	hourStart := time.Date(now.Year(), now.Month(), now.Day(), now.Hour(), 0, 0, 0, now.Location())
+	secondsIntoHour := int(now.Sub(hourStart).Seconds())
 	for i := range rows {
 		r := &rows[i]
 		// Skip NPCs already ticked this hour. Stamp uses hourStart so we don't
 		// double-fire when the dispatcher runs multiple times per hour.
 		if r.LastAgentTickAt.Valid && !r.LastAgentTickAt.Time.Before(hourStart) {
+			continue
+		}
+		// Staggered cadence: each NPC has a deterministic offset within the
+		// hour. They tick when wall-clock time crosses (hourStart + offset),
+		// not at the boundary itself. Spreads load and avoids
+		// everyone-decides-at-noon synchronization. The first server tick
+		// of any hour where wall-clock has already passed offset will catch
+		// up — no cumulative drift.
+		if secondsIntoHour < npcTickOffsetSeconds(r.ID) {
 			continue
 		}
 		app.runAgentTick(ctx, r, hourStart, dawnMin, duskMin)
@@ -274,6 +306,123 @@ func (app *App) stampAgentTick(ctx context.Context, r *agentNPCRow, hourStart ti
 		r.ID, hourStart,
 	); err != nil {
 		log.Printf("agent-tick: stamp %s: %v", r.DisplayName, err)
+	}
+}
+
+// triggerImmediateTick fires an out-of-band agent tick for one NPC in
+// response to an event (someone speaks at their location, they arrive
+// somewhere with another agent present, etc.). Bypasses the per-NPC
+// hour-offset gate, but respects the agentMinTickGap cost guard so an
+// NPC can't be tick-stormed by a chain of events.
+//
+// Reuses the same dawn/dusk inheritance as the dispatcher by re-loading
+// world config on the spot — event ticks are rare relative to baseline
+// ticks, so the extra query is fine. Active-hours guard still applies:
+// no event ticks while the village sleeps.
+//
+// Safe to call from goroutines (the engine's async paths). Failures are
+// logged and don't propagate — event ticks are best-effort.
+func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string) {
+	cfg, err := app.loadWorldConfig(ctx)
+	if err != nil {
+		log.Printf("event-tick %s (%s): load config: %v", npcID, reason, err)
+		return
+	}
+	now := time.Now().In(cfg.Location)
+	if now.Hour() < agentTickActiveStartHour || now.Hour() >= agentTickActiveEndHour {
+		return
+	}
+
+	// Load the single NPC row. Mirrors loadAgentNPCRows but for one id.
+	row := app.DB.QueryRow(ctx,
+		`SELECT n.id, n.display_name, n.llm_memory_agent,
+		        va.llm_memory_api_key,
+		        va.role,
+		        n.inside_structure_id, n.current_x, n.current_y,
+		        n.home_structure_id, n.work_structure_id,
+		        n.last_agent_tick_at,
+		        n.schedule_start_minute, n.schedule_end_minute,
+		        COALESCE(wo.display_name, wa.name) AS work_label,
+		        COALESCE(ho.display_name, ha.name) AS home_label
+		 FROM npc n
+		 JOIN village_agent va ON va.llm_memory_agent = n.llm_memory_agent
+		 LEFT JOIN village_object wo ON wo.id = n.work_structure_id
+		 LEFT JOIN asset wa ON wa.id = wo.asset_id
+		 LEFT JOIN village_object ho ON ho.id = n.home_structure_id
+		 LEFT JOIN asset ha ON ha.id = ho.asset_id
+		 WHERE n.id = $1 AND n.llm_memory_agent IS NOT NULL`,
+		npcID)
+	var r agentNPCRow
+	if err := row.Scan(&r.ID, &r.DisplayName, &r.LLMMemoryAgent,
+		&r.APIKey, &r.Role,
+		&r.InsideStructureID, &r.CurrentX, &r.CurrentY,
+		&r.HomeStructureID, &r.WorkStructureID,
+		&r.LastAgentTickAt,
+		&r.ScheduleStartMinute, &r.ScheduleEndMinute,
+		&r.WorkLabel, &r.HomeLabel); err != nil {
+		if err != sql.ErrNoRows {
+			log.Printf("event-tick %s (%s): load row: %v", npcID, reason, err)
+		}
+		return
+	}
+
+	// Cost guard: no two ticks closer than agentMinTickGap, regardless
+	// of source. last_agent_tick_at is stamped to hourStart for baseline
+	// ticks but to time.Now() for event ticks (see below) — both shapes
+	// are safely Before-comparable.
+	if r.LastAgentTickAt.Valid && time.Since(r.LastAgentTickAt.Time) < agentMinTickGap {
+		return
+	}
+
+	// Dawn/dusk for the schedule-note inheritance — same parse path the
+	// dispatcher uses.
+	dawnMin, duskMin := 6*60, 18*60
+	if dh, dm, err := parseHM(cfg.DawnTime); err == nil {
+		dawnMin = dh*60 + dm
+	}
+	if dh, dm, err := parseHM(cfg.DuskTime); err == nil {
+		duskMin = dh*60 + dm
+	}
+
+	// Event-tick stamp uses time.Now (not hourStart) so the cost guard
+	// reads the actual moment of the event, and the baseline gate
+	// (last_agent_tick_at < hourStart) STILL passes for the next hour
+	// boundary — event ticks don't cancel the next hour's baseline.
+	hourStart := time.Date(now.Year(), now.Month(), now.Day(), now.Hour(), 0, 0, 0, now.Location())
+	log.Printf("event-tick %s: %s", r.DisplayName, reason)
+	app.runAgentTick(ctx, &r, hourStart, dawnMin, duskMin)
+}
+
+// triggerCoLocatedTicks fires immediate ticks for every other agentized
+// NPC at the given structureID (excluding excludeNpcID, the source of
+// the event). Used by the speak commit and the arrival hook so nearby
+// agents can react in-band rather than waiting for their next baseline
+// tick. Each affected NPC still passes through the cost guard in
+// triggerImmediateTick — no tick storms.
+func (app *App) triggerCoLocatedTicks(ctx context.Context, structureID, excludeNpcID, reason string) {
+	if structureID == "" {
+		return
+	}
+	rows, err := app.DB.Query(ctx,
+		`SELECT n.id FROM npc n
+		 WHERE n.inside_structure_id = $1
+		   AND n.llm_memory_agent IS NOT NULL
+		   AND n.id != $2`,
+		structureID, excludeNpcID)
+	if err != nil {
+		log.Printf("event-tick co-located query (%s): %v", reason, err)
+		return
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err == nil {
+			ids = append(ids, id)
+		}
+	}
+	for _, id := range ids {
+		go app.triggerImmediateTick(context.Background(), id, reason)
 	}
 }
 
@@ -661,6 +810,12 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 				"at":     time.Now().UTC().Format(time.RFC3339),
 			},
 		})
+		// Event-tick co-located agents so they can react in-band. Cost
+		// guard in triggerImmediateTick prevents tick storms when both
+		// parties are agents and a back-and-forth develops.
+		if r.InsideStructureID.Valid {
+			app.triggerCoLocatedTicks(ctx, r.InsideStructureID.String, r.ID, "heard-speech")
+		}
 
 	case "done":
 		// No state change. Audit row preserves the decision.
