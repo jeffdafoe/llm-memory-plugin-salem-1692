@@ -95,6 +95,18 @@ func (app *App) dispatchAgentTicks(ctx context.Context) {
 		return
 	}
 
+	// Dawn/dusk in minutes-of-day for the schedule-note inheritance in
+	// buildAgentPerception. Same parse the worker scheduler does — a worker
+	// NPC with NULL schedule columns inherits this pair as their effective
+	// shift, so the perception should surface those values for the LLM.
+	dawnMin, duskMin := 6*60, 18*60
+	if dh, dm, err := parseHM(cfg.DawnTime); err == nil {
+		dawnMin = dh*60 + dm
+	}
+	if dh, dm, err := parseHM(cfg.DuskTime); err == nil {
+		duskMin = dh*60 + dm
+	}
+
 	rows, err := app.loadAgentNPCRows(ctx)
 	if err != nil {
 		log.Printf("agent-tick: load rows: %v", err)
@@ -109,7 +121,7 @@ func (app *App) dispatchAgentTicks(ctx context.Context) {
 		if r.LastAgentTickAt.Valid && !r.LastAgentTickAt.Time.Before(hourStart) {
 			continue
 		}
-		app.runAgentTick(ctx, r, hourStart)
+		app.runAgentTick(ctx, r, hourStart, dawnMin, duskMin)
 	}
 }
 
@@ -179,8 +191,8 @@ func (app *App) loadAgentNPCRows(ctx context.Context) ([]agentNPCRow, error) {
 // are rare in practice; if they happen, the model gets another iteration to
 // re-request anything we skipped. This keeps the chat-message shape clean
 // (one tool_call_id per row) without bundling logic on the engine side.
-func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time.Time) {
-	perception, locationName := app.buildAgentPerception(ctx, r, hourStart)
+func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time.Time, dawnMin, duskMin int) {
+	perception, locationName := app.buildAgentPerception(ctx, r, hourStart, dawnMin, duskMin)
 	tools := agentToolSpec()
 
 	currentMessage := perception
@@ -370,7 +382,7 @@ func isCommitTool(name string) bool {
 //
 // Returns (perception, currentLocationName). The location name is also
 // passed to the look_around resolver so it doesn't have to re-query.
-func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourStart time.Time) (string, string) {
+func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourStart time.Time, dawnMin, duskMin int) (string, string) {
 	locationName := "the open village"
 	if r.InsideStructureID.Valid {
 		var name sql.NullString
@@ -478,11 +490,20 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 	}
 	sections = append(sections, strings.Join(identityLines, "\n"))
 
-	// 2. Schedule note. Both ends required (matches the npc_scheduler.go
-	// "both-or-neither" contract). Wrap-midnight when start > end.
-	if r.ScheduleStartMinute.Valid && r.ScheduleEndMinute.Valid {
-		startMin := int(r.ScheduleStartMinute.Int32)
-		endMin := int(r.ScheduleEndMinute.Int32)
+	// 2. Schedule note. Mirror npc_scheduler.go's resolveWorkerWindow:
+	// per-NPC start/end win when both are set; both-NULL falls back to the
+	// world's dawn/dusk (the same shift the worker scheduler applies at
+	// runtime). Skipped only when the NPC has no work assignment at all
+	// (workLabel empty) — there's no "shift" to talk about.
+	if workLabel != "" {
+		var startMin, endMin int
+		if r.ScheduleStartMinute.Valid && r.ScheduleEndMinute.Valid {
+			startMin = int(r.ScheduleStartMinute.Int32)
+			endMin = int(r.ScheduleEndMinute.Int32)
+		} else {
+			startMin = dawnMin
+			endMin = duskMin
+		}
 		nowMin := hourStart.Hour()*60 + hourStart.Minute()
 		var onShift bool
 		if startMin <= endMin {
