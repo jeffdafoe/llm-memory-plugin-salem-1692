@@ -46,17 +46,28 @@ const (
 )
 
 // agentNPCRow bundles everything the harness loop needs for one NPC.
+//
+// WorkLabel / HomeLabel are the thematic display labels for the NPC's work
+// and home structures — village_object.display_name when set, otherwise the
+// raw asset.name. They drive the identity-recap section of the perception so
+// the model can ground "your work is the Tavern" rather than guessing from
+// an undifferentiated destination list.
 type agentNPCRow struct {
-	ID                 string
-	DisplayName        string
-	LLMMemoryAgent     string
-	APIKey             string
-	InsideStructureID  sql.NullString
-	CurrentX           float64
-	CurrentY           float64
-	HomeStructureID    sql.NullString
-	WorkStructureID    sql.NullString
-	LastAgentTickAt    sql.NullTime
+	ID                  string
+	DisplayName         string
+	LLMMemoryAgent      string
+	APIKey              string
+	Role                string
+	InsideStructureID   sql.NullString
+	CurrentX            float64
+	CurrentY            float64
+	HomeStructureID     sql.NullString
+	WorkStructureID     sql.NullString
+	LastAgentTickAt     sql.NullTime
+	WorkLabel           sql.NullString
+	HomeLabel           sql.NullString
+	ScheduleStartMinute sql.NullInt32
+	ScheduleEndMinute   sql.NullInt32
 }
 
 // dispatchAgentTicks is the per-server-tick entry. Loaded NPCs are processed
@@ -104,15 +115,28 @@ func (app *App) dispatchAgentTicks(ctx context.Context) {
 // loadAgentNPCRows pulls every NPC with a linked virtual agent + a configured
 // API key. NPCs without a VA aren't agentized and run on the existing
 // scheduler only.
+//
+// LEFT JOINs to village_object/asset for work and home resolve the NPC's
+// thematic labels in one round trip. COALESCE(o.display_name, a.name)
+// matches the destination-list and move_to resolver so the model sees one
+// consistent name for each place across the perception.
 func (app *App) loadAgentNPCRows(ctx context.Context) ([]agentNPCRow, error) {
 	rows, err := app.DB.Query(ctx,
 		`SELECT n.id, n.display_name, n.llm_memory_agent,
 		        va.llm_memory_api_key,
+		        va.role,
 		        n.inside_structure_id, n.current_x, n.current_y,
 		        n.home_structure_id, n.work_structure_id,
-		        n.last_agent_tick_at
+		        n.last_agent_tick_at,
+		        n.schedule_start_minute, n.schedule_end_minute,
+		        COALESCE(wo.display_name, wa.name) AS work_label,
+		        COALESCE(ho.display_name, ha.name) AS home_label
 		 FROM npc n
 		 JOIN village_agent va ON va.llm_memory_agent = n.llm_memory_agent
+		 LEFT JOIN village_object wo ON wo.id = n.work_structure_id
+		 LEFT JOIN asset wa ON wa.id = wo.asset_id
+		 LEFT JOIN village_object ho ON ho.id = n.home_structure_id
+		 LEFT JOIN asset ha ON ha.id = ho.asset_id
 		 WHERE n.llm_memory_agent IS NOT NULL`)
 	if err != nil {
 		return nil, err
@@ -124,9 +148,12 @@ func (app *App) loadAgentNPCRows(ctx context.Context) ([]agentNPCRow, error) {
 		var r agentNPCRow
 		if err := rows.Scan(&r.ID, &r.DisplayName, &r.LLMMemoryAgent,
 			&r.APIKey,
+			&r.Role,
 			&r.InsideStructureID, &r.CurrentX, &r.CurrentY,
 			&r.HomeStructureID, &r.WorkStructureID,
-			&r.LastAgentTickAt); err != nil {
+			&r.LastAgentTickAt,
+			&r.ScheduleStartMinute, &r.ScheduleEndMinute,
+			&r.WorkLabel, &r.HomeLabel); err != nil {
 			log.Printf("agent-tick: scan: %v", err)
 			continue
 		}
@@ -311,9 +338,21 @@ func isCommitTool(name string) bool {
 }
 
 // buildAgentPerception constructs the user-message text the LLM sees on the
-// first iteration. Minimal for M6.3 — location, time, list of valid named
-// destinations. Acquaintance gating, recent block, scheduler-default
-// injection are M6.4 work.
+// first iteration. Sections (in order):
+//
+//   1. Identity recap — name, role, home label, work label. Stable across
+//      ticks for a given NPC unless the editor reassigns work/home.
+//   2. Schedule note — usual work hours and whether the current time falls
+//      inside or outside that window. Omitted when the NPC has no schedule.
+//   3. Right-now — current location and timestamp.
+//   4. Destinations — home and work called out individually, then up to 8
+//      other walkable structures ranked by distance from the NPC.
+//   5. Decision prompt.
+//
+// All location labels resolve via COALESCE(village_object.display_name,
+// asset.name) so thematic names (Tavern, Inn, Blacksmith) appear when set
+// and the raw asset name is the fallback. The same COALESCE is used by
+// executeAgentMoveTo's resolver so the model's label survives the round trip.
 //
 // Returns (perception, currentLocationName). The location name is also
 // passed to the look_around resolver so it doesn't have to re-query.
@@ -322,47 +361,122 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 	if r.InsideStructureID.Valid {
 		var name sql.NullString
 		_ = app.DB.QueryRow(ctx,
-			`SELECT a.name FROM village_object o JOIN asset a ON a.id = o.asset_id WHERE o.id = $1`,
+			`SELECT COALESCE(o.display_name, a.name)
+			 FROM village_object o JOIN asset a ON a.id = o.asset_id
+			 WHERE o.id = $1`,
 			r.InsideStructureID.String).Scan(&name)
 		if name.Valid && name.String != "" {
 			locationName = name.String
 		}
 	}
 
-	// Destinations: distinct asset names with door_offset set (walkable-into).
-	// Filtered to assets with at least one placed instance so the LLM doesn't
-	// pick a destination that has no actual structure.
-	var destinations []string
-	rows, _ := app.DB.Query(ctx,
-		`SELECT DISTINCT a.name
-		 FROM asset a
-		 JOIN village_object o ON o.asset_id = a.id
-		 WHERE a.door_offset_x IS NOT NULL AND a.door_offset_y IS NOT NULL
-		 ORDER BY a.name`)
-	if rows != nil {
-		for rows.Next() {
+	// "Other places" — distinct labels, excluding home and work labels (those
+	// are called out individually above). MIN(distance²) per label so when a
+	// label maps to multiple placed structures (e.g. multiple unnamed Red
+	// Houses) the closest one drives the ranking. Capped at 8.
+	homeLabel := ""
+	if r.HomeLabel.Valid {
+		homeLabel = r.HomeLabel.String
+	}
+	workLabel := ""
+	if r.WorkLabel.Valid {
+		workLabel = r.WorkLabel.String
+	}
+
+	var others []string
+	otherRows, _ := app.DB.Query(ctx,
+		`SELECT label
+		 FROM (
+		     SELECT COALESCE(o.display_name, a.name) AS label,
+		            MIN((o.x - $1) * (o.x - $1) + (o.y - $2) * (o.y - $2)) AS min_d
+		     FROM village_object o
+		     JOIN asset a ON a.id = o.asset_id
+		     WHERE a.door_offset_x IS NOT NULL AND a.door_offset_y IS NOT NULL
+		     GROUP BY COALESCE(o.display_name, a.name)
+		 ) labelled
+		 WHERE label IS NOT NULL AND label != ''
+		   AND label != $3
+		   AND label != $4
+		 ORDER BY min_d ASC
+		 LIMIT 8`,
+		r.CurrentX, r.CurrentY, homeLabel, workLabel)
+	if otherRows != nil {
+		for otherRows.Next() {
 			var n string
-			if err := rows.Scan(&n); err == nil && n != "" {
-				destinations = append(destinations, n)
+			if err := otherRows.Scan(&n); err == nil && n != "" {
+				others = append(others, n)
 			}
 		}
-		rows.Close()
+		otherRows.Close()
 	}
 
-	timeStr := hourStart.Format("Monday 15:04")
-	dest := "(none catalogued)"
-	if len(destinations) > 0 {
-		dest = strings.Join(destinations, ", ")
+	var sections []string
+
+	// 1. Identity recap.
+	identityLines := []string{fmt.Sprintf("You are %s the %s.", r.DisplayName, r.Role)}
+	if homeLabel != "" {
+		identityLines = append(identityLines, fmt.Sprintf("Your home is %s.", homeLabel))
+	}
+	if workLabel != "" {
+		identityLines = append(identityLines, fmt.Sprintf("Your work is %s.", workLabel))
+	}
+	sections = append(sections, strings.Join(identityLines, "\n"))
+
+	// 2. Schedule note. Both ends required (matches the npc_scheduler.go
+	// "both-or-neither" contract). Wrap-midnight when start > end.
+	if r.ScheduleStartMinute.Valid && r.ScheduleEndMinute.Valid {
+		startMin := int(r.ScheduleStartMinute.Int32)
+		endMin := int(r.ScheduleEndMinute.Int32)
+		nowMin := hourStart.Hour()*60 + hourStart.Minute()
+		var onShift bool
+		if startMin <= endMin {
+			onShift = nowMin >= startMin && nowMin < endMin
+		} else {
+			// Wraps midnight (e.g. 16:00 to 03:00 next day).
+			onShift = nowMin >= startMin || nowMin < endMin
+		}
+		shiftWord := "off shift"
+		if onShift {
+			shiftWord = "on shift"
+		}
+		sections = append(sections, fmt.Sprintf(
+			"Your usual hours at your work are %s–%s. The time is now %s — you would currently be %s.",
+			formatHHMM(startMin), formatHHMM(endMin), hourStart.Format("15:04"), shiftWord,
+		))
 	}
 
-	perception := fmt.Sprintf(
-		"You are %s. You are at %s. The time is %s.\n\n"+
-			"Available destinations: %s.\n\n"+
-			"Decide what to do this hour. You may use look_around first to see who is here, "+
-			"then commit with move_to (walk to a destination), speak (say something), or done (rest).",
-		r.DisplayName, locationName, timeStr, dest,
-	)
-	return perception, locationName
+	// 3. Right-now.
+	sections = append(sections, fmt.Sprintf(
+		"You are at %s. The time is %s.",
+		locationName, hourStart.Format("Monday 15:04"),
+	))
+
+	// 4. Destinations.
+	var destLines []string
+	if homeLabel != "" {
+		destLines = append(destLines, fmt.Sprintf("Your home: %s.", homeLabel))
+	}
+	if workLabel != "" && workLabel != homeLabel {
+		destLines = append(destLines, fmt.Sprintf("Your work: %s.", workLabel))
+	}
+	if len(others) > 0 {
+		destLines = append(destLines, fmt.Sprintf("Other places nearby: %s.", strings.Join(others, ", ")))
+	}
+	if len(destLines) == 0 {
+		destLines = append(destLines, "Available destinations: (none catalogued).")
+	}
+	sections = append(sections, strings.Join(destLines, "\n"))
+
+	// 5. Decision prompt.
+	sections = append(sections, "Decide what to do this hour. You may use look_around first to see who is here, "+
+		"then commit with move_to (walk to a destination), speak (say something), or done (rest).")
+
+	return strings.Join(sections, "\n\n"), locationName
+}
+
+// formatHHMM renders a minutes-since-midnight value as "HH:MM".
+func formatHHMM(minutes int) string {
+	return fmt.Sprintf("%02d:%02d", minutes/60, minutes%60)
 }
 
 // resolveObservationTool runs an observation tool against engine state and
@@ -466,15 +580,19 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 	}
 }
 
-// executeAgentMoveTo finds the destination structure by asset name and
+// executeAgentMoveTo finds the destination structure by thematic label and
 // dispatches a walk. Sets agent_override_until to a fixed 30-minute window
 // covering the walk + arrival, and forward-stamps last_shift_tick_at to
 // the same timestamp so the existing scheduler doesn't snap the NPC back
 // to a missed worker boundary when override expires.
 //
-// Match strategy: case-insensitive prefix on asset.name. If multiple match,
-// pick the one nearest the NPC's current position. Returns an error if no
-// match — surfaces as "failed" in the audit log.
+// Match strategy: case-insensitive prefix on COALESCE(display_name, name).
+// This mirrors the perception's destination labels — when a placed object
+// has display_name "Tavern" the LLM emitting move_to("Tavern") resolves
+// to that object via display_name; otherwise it falls through to the raw
+// asset name (e.g. "Red House (Medium)"). If multiple match, pick the one
+// nearest the NPC's current position. Returns an error if no match —
+// surfaces as "failed" in the audit log.
 func (app *App) executeAgentMoveTo(ctx context.Context, r *agentNPCRow, dest string) error {
 	row := app.DB.QueryRow(ctx,
 		`SELECT o.id,
@@ -482,7 +600,7 @@ func (app *App) executeAgentMoveTo(ctx context.Context, r *agentNPCRow, dest str
 		        COALESCE(o.y + a.door_offset_y * 32.0, o.y)
 		 FROM village_object o
 		 JOIN asset a ON a.id = o.asset_id
-		 WHERE a.name ILIKE $1 || '%'
+		 WHERE COALESCE(o.display_name, a.name) ILIKE $1 || '%'
 		   AND a.door_offset_x IS NOT NULL
 		 ORDER BY (o.x - $2) * (o.x - $2) + (o.y - $3) * (o.y - $3)
 		 LIMIT 1`,
