@@ -179,8 +179,8 @@ func _on_state(state: Dictionary) -> void:
         if target == "":
             btn.disabled = true
             btn.tooltip_text = "Cannot whisper to other players (yet)"
-        var t_target := target
-        var t_name := name_str
+        var t_target: String = target
+        var t_name: String = name_str
         btn.pressed.connect(func():
             _selected_target_agent = t_target
             _selected_target_name = t_name
