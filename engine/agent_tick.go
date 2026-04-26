@@ -755,20 +755,23 @@ func (app *App) lastActionFeedback(ctx context.Context, npcID string) string {
 	return fmt.Sprintf("Your last %s attempt failed: %s. Try a different approach.", actionType, errMsg)
 }
 
-// coLocatedHuddleMembers returns "Here:" lines for every other NPC in
-// the perceiving NPC's current scene huddle. Each line is either the
-// other NPC's display name (when acquainted) or a generic descriptor
-// derived from their role (when not). Empty result when the NPC isn't
-// in a huddle, or is the only one in their huddle.
+// coLocatedHuddleMembers returns "Here:" lines for every other NPC and
+// PC in the perceiving NPC's current scene huddle. Each line is either
+// the other party's name (when acquainted) or a generic descriptor
+// (when not). Empty result when the NPC isn't in a huddle, or is the
+// only one in their huddle.
 //
-// Acquaintance is read from npc_acquaintance — the perception only
-// shows full names for parties this NPC has previously met (huddle
-// co-presence, prior conversation, etc.). The descriptor fallback
-// uses the role label first ("the blacksmith"), then falls back to
-// "a stranger" when no role is set.
+// NPCs and PCs are unioned in one query — both populations participate
+// in scene huddles. Acquaintance is read from npc_acquaintance — the
+// perception only shows full names for parties this NPC has previously
+// met (huddle co-presence, prior conversation). The descriptor
+// fallback for unknown NPCs uses their role label ("the blacksmith");
+// for unknown PCs it's always "a traveler" (PCs don't have engine-
+// assigned roles — they're identified by character, not occupation).
 func (app *App) coLocatedHuddleMembers(ctx context.Context, npcID string) []string {
 	rows, err := app.DB.Query(ctx,
-		`SELECT n.display_name, va.role,
+		// NPCs in the same huddle (excluding self).
+		`SELECT n.display_name AS name, va.role, 'npc' AS kind,
 		        EXISTS(
 		            SELECT 1 FROM npc_acquaintance a
 		             WHERE a.npc_id::text = $1
@@ -781,7 +784,20 @@ func (app *App) coLocatedHuddleMembers(ctx context.Context, npcID string) []stri
 		        SELECT current_huddle_id FROM npc WHERE id::text = $1
 		    )
 		    AND n.id::text != $1
-		  ORDER BY n.display_name`,
+		 UNION ALL
+		 -- PCs in the same huddle.
+		 SELECT pc.actor_name AS name, NULL::varchar AS role, 'pc' AS kind,
+		        EXISTS(
+		            SELECT 1 FROM npc_acquaintance a
+		             WHERE a.npc_id::text = $1
+		               AND a.other_name = pc.actor_name
+		        ) AS acquainted
+		   FROM pc_position pc
+		  WHERE pc.current_huddle_id IS NOT NULL
+		    AND pc.current_huddle_id = (
+		        SELECT current_huddle_id FROM npc WHERE id::text = $1
+		    )
+		  ORDER BY name`,
 		npcID)
 	if err != nil {
 		log.Printf("here-block: query: %v", err)
@@ -790,10 +806,10 @@ func (app *App) coLocatedHuddleMembers(ctx context.Context, npcID string) []stri
 	defer rows.Close()
 	var lines []string
 	for rows.Next() {
-		var name string
+		var name, kind string
 		var role sql.NullString
 		var acquainted bool
-		if err := rows.Scan(&name, &role, &acquainted); err != nil {
+		if err := rows.Scan(&name, &role, &kind, &acquainted); err != nil {
 			continue
 		}
 		if acquainted {
@@ -801,10 +817,15 @@ func (app *App) coLocatedHuddleMembers(ctx context.Context, npcID string) []stri
 			continue
 		}
 		// Descriptor fallback for unknown others.
-		if role.Valid && role.String != "" {
-			lines = append(lines, "  the "+role.String)
-		} else {
-			lines = append(lines, "  a stranger")
+		switch kind {
+		case "pc":
+			lines = append(lines, "  a traveler")
+		default:
+			if role.Valid && role.String != "" {
+				lines = append(lines, "  the "+role.String)
+			} else {
+				lines = append(lines, "  a stranger")
+			}
 		}
 	}
 	return lines

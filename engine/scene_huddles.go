@@ -138,12 +138,14 @@ func (app *App) leaveHuddle(ctx context.Context, npcID string) {
 		return
 	}
 
-	// If the huddle now has zero participants, conclude it. PCs aren't
-	// counted yet (they'd live in a separate pc_position table when
-	// added) — once PCs exist, this query will need to also count them.
+	// If the huddle now has zero participants (NPCs + PCs), conclude it.
+	// Counts both populations since PCs and NPCs are equally citizens of
+	// a scene huddle.
 	var remaining int
 	if err := app.DB.QueryRow(ctx,
-		`SELECT COUNT(*) FROM npc WHERE current_huddle_id::text = $1`,
+		`SELECT
+		     (SELECT COUNT(*) FROM npc WHERE current_huddle_id::text = $1) +
+		     (SELECT COUNT(*) FROM pc_position WHERE current_huddle_id::text = $1)`,
 		huddleID.String,
 	).Scan(&remaining); err != nil {
 		log.Printf("scene-huddle: count remaining for %s: %v", huddleID.String, err)
@@ -159,5 +161,107 @@ func (app *App) leaveHuddle(ctx context.Context, npcID string) {
 			return
 		}
 		log.Printf("scene-huddle: concluded %s (last participant left)", huddleID.String)
+	}
+}
+
+// joinOrCreateHuddleForPC mirrors joinOrCreateHuddle but for PC actors.
+// PCs are tracked in pc_position rather than npc, so the membership
+// update goes there instead. Acquaintance recording also runs both
+// directions: every NPC currently in the huddle becomes acquainted
+// with the PC by name, and the PC's first-meeting timestamp gets
+// stamped against each NPC.
+//
+// PCs don't have their own npc_acquaintance row (they aren't NPCs);
+// only NPCs track who they know. The PC's view of "do I know X?" is
+// instead handled UI-side — the village viewer's chat panel knows
+// who the PC has spoken to.
+func (app *App) joinOrCreateHuddleForPC(ctx context.Context, actorName, structureID string) (string, error) {
+	var huddleID string
+	err := app.DB.QueryRow(ctx,
+		`SELECT id::text FROM scene_huddle
+		 WHERE structure_id = $1 AND concluded_at IS NULL
+		 ORDER BY created_at DESC LIMIT 1`,
+		structureID,
+	).Scan(&huddleID)
+	if err == sql.ErrNoRows {
+		err = app.DB.QueryRow(ctx,
+			`INSERT INTO scene_huddle (structure_id) VALUES ($1) RETURNING id::text`,
+			structureID,
+		).Scan(&huddleID)
+		if err != nil {
+			return "", err
+		}
+		log.Printf("scene-huddle: created %s at structure %s (PC %s)", huddleID, structureID, actorName)
+	} else if err != nil {
+		return "", err
+	}
+
+	if _, err := app.DB.Exec(ctx,
+		`UPDATE pc_position SET current_huddle_id = $2
+		 WHERE actor_name = $1 AND (current_huddle_id IS DISTINCT FROM $2)`,
+		actorName, huddleID,
+	); err != nil {
+		return huddleID, err
+	}
+
+	// Each NPC in this huddle now knows the PC by name (one-way; PC's
+	// own awareness is UI-side).
+	if _, err := app.DB.Exec(ctx,
+		`INSERT INTO npc_acquaintance (npc_id, other_name)
+		 SELECT n.id, $1
+		   FROM npc n
+		  WHERE n.current_huddle_id::text = $2
+		 ON CONFLICT DO NOTHING`,
+		actorName, huddleID,
+	); err != nil {
+		log.Printf("scene-huddle: record PC->NPC acquaintance: %v", err)
+	}
+
+	return huddleID, nil
+}
+
+// leaveHuddleForPC mirrors leaveHuddle for PC actors. Clears the PC's
+// current_huddle_id and concludes the huddle if the count drops to 0.
+func (app *App) leaveHuddleForPC(ctx context.Context, actorName string) {
+	var huddleID sql.NullString
+	if err := app.DB.QueryRow(ctx,
+		`SELECT current_huddle_id::text FROM pc_position WHERE actor_name = $1`,
+		actorName,
+	).Scan(&huddleID); err != nil {
+		log.Printf("scene-huddle: read PC current_huddle_id for %s: %v", actorName, err)
+		return
+	}
+	if !huddleID.Valid {
+		return
+	}
+
+	if _, err := app.DB.Exec(ctx,
+		`UPDATE pc_position SET current_huddle_id = NULL WHERE actor_name = $1`,
+		actorName,
+	); err != nil {
+		log.Printf("scene-huddle: clear PC current_huddle_id for %s: %v", actorName, err)
+		return
+	}
+
+	var remaining int
+	if err := app.DB.QueryRow(ctx,
+		`SELECT
+		     (SELECT COUNT(*) FROM npc WHERE current_huddle_id::text = $1) +
+		     (SELECT COUNT(*) FROM pc_position WHERE current_huddle_id::text = $1)`,
+		huddleID.String,
+	).Scan(&remaining); err != nil {
+		log.Printf("scene-huddle: count remaining for %s: %v", huddleID.String, err)
+		return
+	}
+	if remaining == 0 {
+		if _, err := app.DB.Exec(ctx,
+			`UPDATE scene_huddle SET concluded_at = NOW()
+			 WHERE id::text = $1 AND concluded_at IS NULL`,
+			huddleID.String,
+		); err != nil {
+			log.Printf("scene-huddle: conclude %s: %v", huddleID.String, err)
+			return
+		}
+		log.Printf("scene-huddle: concluded %s (last participant — PC %s left)", huddleID.String, actorName)
 	}
 }
