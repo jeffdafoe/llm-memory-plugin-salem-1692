@@ -1138,6 +1138,12 @@ func _place_object(data: Dictionary) -> void:
     # empty); accept either an Array or omit-as-null and normalize.
     var tags_raw = data.get("tags", [])
     container.set_meta("tags", tags_raw if tags_raw is Array else [])
+    # Per-instance loiter offset (ZBBS-075). Tile-unit ints, both nullable.
+    # Stored as variants so the editor can distinguish "not set" (null)
+    # from "set to (0, 0)" (legitimate origin offset). Marker code handles
+    # the null branch by falling back to the door offset.
+    container.set_meta("loiter_offset_x", data.get("loiter_offset_x", null))
+    container.set_meta("loiter_offset_y", data.get("loiter_offset_y", null))
 
     var sprite_node: Node2D = _create_sprite_node(state_info, texture, anchor_x, anchor_y)
     container.add_child(sprite_node)
@@ -1637,6 +1643,44 @@ func remove_object_tag(object_id: String, tag: String) -> void:
         headers.append("Authorization: " + auth_header)
     var url: String = Auth.api_base + "/api/village/objects/" + object_id + "/tags/" + tag
     http.request(url, headers, HTTPClient.METHOD_DELETE)
+
+## PATCH /api/village/objects/{id}/loiter-offset — set the per-instance
+## loiter offset where visiting NPCs stand. Both values are tile-unit ints,
+## or both null to clear the override (engine falls back to door_offset).
+func set_object_loiter_offset(object_id: String, ox, oy) -> void:
+    var http = HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    http.request_completed.connect(func(_r, code, _h, _b):
+        http.queue_free()
+        if code >= 300:
+            push_error("Set loiter offset failed: " + str(code))
+    )
+    var headers: PackedStringArray = ["Content-Type: application/json"]
+    var auth_header: String = Auth.get_auth_header()
+    if auth_header != "":
+        headers.append("Authorization: " + auth_header)
+    var url: String = Auth.api_base + "/api/village/objects/" + object_id + "/loiter-offset"
+    var body_dict: Dictionary = {
+        "loiter_offset_x": ox,
+        "loiter_offset_y": oy,
+    }
+    http.request(url, headers, HTTPClient.METHOD_PATCH, JSON.stringify(body_dict))
+
+## WS event — loiter offset changed (us or another admin). Update meta
+## and emit a signal so the marker can repaint if this object is selected.
+signal object_loiter_offset_changed(object_id: String, ox, oy)
+
+func apply_object_loiter_offset_changed(data: Dictionary) -> void:
+    var object_id: String = str(data.get("id", ""))
+    if object_id == "" or not placed_objects.has(object_id):
+        return
+    var node: Node2D = placed_objects[object_id]
+    var ox = data.get("loiter_offset_x", null)
+    var oy = data.get("loiter_offset_y", null)
+    node.set_meta("loiter_offset_x", ox)
+    node.set_meta("loiter_offset_y", oy)
+    object_loiter_offset_changed.emit(object_id, ox, oy)
 
 ## WS event — another admin (or ourselves) added or removed a tag on a
 ## placed object. Update our container meta, then fan out a local signal
