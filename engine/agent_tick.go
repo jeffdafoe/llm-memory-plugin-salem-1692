@@ -404,10 +404,14 @@ func (app *App) triggerCoLocatedTicks(ctx context.Context, structureID, excludeN
 		return
 	}
 	rows, err := app.DB.Query(ctx,
+		// excludeNpcID is empty when the speaker isn't an NPC (PC speak).
+		// Comparing n.id (UUID) to the empty text "" fails PG's implicit
+		// cast — the query errors and no NPCs get event-ticked. Guard with
+		// a length check so empty just skips the exclusion.
 		`SELECT n.id FROM npc n
 		 WHERE n.inside_structure_id = $1
 		   AND n.llm_memory_agent IS NOT NULL
-		   AND n.id != $2`,
+		   AND ($2 = '' OR n.id::text != $2)`,
 		structureID, excludeNpcID)
 	if err != nil {
 		log.Printf("event-tick co-located query (%s): %v", reason, err)

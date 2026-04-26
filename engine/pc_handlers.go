@@ -253,6 +253,12 @@ func homeStringValue(s sql.NullString) string {
 	return ""
 }
 
+// handlePCSay — addressed speech. Two writes happen:
+//   1. /v1/chat/send to the addressee for the inline LLM reply.
+//   2. agent_action_log + WS broadcast so others in the room
+//      overhear (same path as /pc/speak's broadcast).
+// This is NOT a private whisper — that name was misleading. It's
+// directed in-room speech.
 func (app *App) handlePCSay(w http.ResponseWriter, r *http.Request) {
 	user := getUserFromContext(r.Context())
 	if user == nil {
@@ -277,6 +283,43 @@ func (app *App) handlePCSay(w http.ResponseWriter, r *http.Request) {
 	if authHeader == "" {
 		jsonError(w, "Missing Authorization header", http.StatusUnauthorized)
 		return
+	}
+
+	// Look up PC's character_name + structure for the audit-log overhear.
+	var charName, structureID sql.NullString
+	if err := app.DB.QueryRow(r.Context(),
+		`SELECT character_name, inside_structure_id::text FROM pc_position WHERE actor_name = $1`,
+		user.Username,
+	).Scan(&charName, &structureID); err != nil {
+		log.Printf("pc/say lookup pc_position: %v", err)
+	}
+
+	// Audit-log entry for the room to overhear. Includes target_name in
+	// payload so future perception passes can render "Jefferey said to
+	// John Ellis: '...'" instead of an unaddressed line. Best-effort:
+	// failure here doesn't block the chat.
+	if charName.Valid && structureID.Valid {
+		audit, _ := json.Marshal(map[string]interface{}{
+			"text":         req.Text,
+			"structure_id": structureID.String,
+			"target_name":  req.Target,
+		})
+		if _, err := app.DB.Exec(r.Context(),
+			`INSERT INTO agent_action_log (npc_id, speaker_name, source, action_type, payload, result)
+			 VALUES (NULL, $1, 'player', 'speak', $2, 'ok')`,
+			charName.String, audit,
+		); err != nil {
+			log.Printf("pc/say audit insert: %v", err)
+		}
+		app.Hub.Broadcast(WorldEvent{
+			Type: "npc_spoke",
+			Data: map[string]interface{}{
+				"name": charName.String,
+				"text": req.Text,
+				"at":   time.Now().UTC().Format(time.RFC3339),
+				"kind": "pc",
+			},
+		})
 	}
 
 	// from_agent is required for user-session auth (not auto-derived
