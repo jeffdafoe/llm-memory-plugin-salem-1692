@@ -172,9 +172,9 @@ func _on_state(state: Dictionary) -> void:
     var char_name = str(state.get("character_name", "?"))
     var location = str(state.get("structure_name", "outside"))
     var home = str(state.get("home_name", ""))
-    var header = "You are %s, at %s." % [char_name, location]
-    if home != "":
-        header += "\nYou lodge at %s." % home
+    var header = "%s @ %s" % [char_name, location]
+    if home != "" and home != location:
+        header += " (lodging: %s)" % home
     _header_label.text = header
 
     # Rebuild member list. Whisper toggles persist iff the same NPC
@@ -212,7 +212,7 @@ func _on_state(state: Dictionary) -> void:
         _selected_target_agent = ""
         _selected_target_name = ""
     _whisper_btn.disabled = (_selected_target_agent == "")
-    _whisper_btn.text = ("Whisper to " + _selected_target_name) if _selected_target_name != "" else "Whisper"
+    _whisper_btn.text = ("Speak to " + _selected_target_name) if _selected_target_name != "" else "Speak to..."
 
 func _on_text_submitted(text: String) -> void:
     if _selected_target_agent != "":
@@ -230,8 +230,9 @@ func _on_speak_pressed() -> void:
 func _do_whisper(text: String) -> void:
     if text.strip_edges() == "" or _selected_target_agent == "":
         return
-    var line = "%s (whisper to %s): %s" % [_state.get("character_name", "you"), _selected_target_name, text]
-    _append_reply(line, Color(0.65, 0.85, 1.0))
+    # No local echo — /pc/say writes an audit_log row that fans out via
+    # the npc_spoke WS event. _on_world_npc_spoke renders the line once.
+    # Adding a local echo here would duplicate it.
     _input.text = ""
     _post_pc_chat("/api/village/pc/say", JSON.stringify({
         "target": _selected_target_agent,
