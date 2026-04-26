@@ -1687,6 +1687,19 @@ func apply_object_loiter_offset_changed(data: Dictionary) -> void:
 ## so the selection panel re-renders its tag chips if this object is open.
 signal object_tags_updated(object_id: String, tags: Array)
 
+## WS event — an NPC (or PC) spoke. Carries name/text/kind so the
+## talk panel and (eventually) speech bubble can render. Emitted
+## by event_client when an `npc_spoke` event lands.
+signal npc_spoke(name: String, text: String, kind: String)
+
+func apply_npc_spoke(data: Dictionary) -> void:
+    var name: String = str(data.get("name", ""))
+    var text: String = str(data.get("text", ""))
+    var kind: String = str(data.get("kind", "npc"))
+    if name == "" or text == "":
+        return
+    npc_spoke.emit(name, text, kind)
+
 func apply_object_tags_updated(data: Dictionary) -> void:
     var object_id: String = str(data.get("object_id", ""))
     if object_id == "" or not placed_objects.has(object_id):
