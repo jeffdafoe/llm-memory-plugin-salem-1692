@@ -41,6 +41,12 @@ type villageObject struct {
 	// object. Always a (possibly empty) array, never null, so client code
 	// can iterate without a nil check.
 	Tags []string `json:"tags"`
+	// Per-instance loiter offset (ZBBS-075) — tile-unit offset from this
+	// placement's origin where visiting NPCs stand. NULL means "no
+	// override; fall back to the asset's door_offset." Editor renders a
+	// draggable pin on the placement when set.
+	LoiterOffsetX *int `json:"loiter_offset_x"`
+	LoiterOffsetY *int `json:"loiter_offset_y"`
 }
 
 // handleListVillageObjects returns all placed objects.
@@ -50,7 +56,8 @@ func (app *App) handleListVillageObjects(w http.ResponseWriter, r *http.Request)
 	rows, err := app.DB.Query(r.Context(),
 		`SELECT o.id, o.asset_id, o.current_state, o.x, o.y,
 		        o.placed_by, o.owner, o.display_name, o.attached_to,
-		        COALESCE(t.tags, ARRAY[]::varchar[])
+		        COALESCE(t.tags, ARRAY[]::varchar[]),
+		        o.loiter_offset_x, o.loiter_offset_y
 		 FROM village_object o
 		 LEFT JOIN LATERAL (
 		     SELECT array_agg(tag ORDER BY tag) AS tags
@@ -70,7 +77,8 @@ func (app *App) handleListVillageObjects(w http.ResponseWriter, r *http.Request)
 		var obj villageObject
 		if err := rows.Scan(&obj.ID, &obj.AssetID, &obj.CurrentState,
 			&obj.X, &obj.Y, &obj.PlacedBy, &obj.Owner, &obj.DisplayName, &obj.AttachedTo,
-			&obj.Tags); err != nil {
+			&obj.Tags,
+			&obj.LoiterOffsetX, &obj.LoiterOffsetY); err != nil {
 			continue
 		}
 		objects = append(objects, obj)
@@ -310,6 +318,59 @@ func (app *App) handleMoveVillageObject(w http.ResponseWriter, r *http.Request) 
 
 	w.WriteHeader(http.StatusNoContent)
 	app.Hub.Broadcast(WorldEvent{Type: "object_moved", Data: map[string]interface{}{"id": id, "x": req.X, "y": req.Y}})
+}
+
+// handleSetVillageObjectLoiterOffset (ZBBS-075) updates the per-instance
+// loiter offset where visiting NPCs stand outside this placement. Both
+// values are tile-unit integers; null clears the override and reverts to
+// asset.door_offset behavior.
+//
+// Body: { loiter_offset_x: int|null, loiter_offset_y: int|null }
+//
+// "Both or neither": if one is set the other must be too. The agent
+// resolver always reads them together so a mixed state would be ambiguous.
+func (app *App) handleSetVillageObjectLoiterOffset(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		jsonError(w, "Missing object ID", http.StatusBadRequest)
+		return
+	}
+
+	var req struct {
+		LoiterOffsetX *int `json:"loiter_offset_x"`
+		LoiterOffsetY *int `json:"loiter_offset_y"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	if (req.LoiterOffsetX == nil) != (req.LoiterOffsetY == nil) {
+		jsonError(w, "loiter_offset_x and loiter_offset_y must both be set or both null", http.StatusBadRequest)
+		return
+	}
+
+	result, err := app.DB.Exec(r.Context(),
+		`UPDATE village_object SET loiter_offset_x = $1, loiter_offset_y = $2 WHERE id = $3`,
+		req.LoiterOffsetX, req.LoiterOffsetY, id,
+	)
+	if err != nil {
+		jsonError(w, "Failed to update loiter offset", http.StatusInternalServerError)
+		return
+	}
+	if result.RowsAffected() == 0 {
+		jsonError(w, "Object not found", http.StatusNotFound)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+	app.Hub.Broadcast(WorldEvent{
+		Type: "object_loiter_offset_changed",
+		Data: map[string]interface{}{
+			"id":              id,
+			"loiter_offset_x": req.LoiterOffsetX,
+			"loiter_offset_y": req.LoiterOffsetY,
+		},
+	})
 }
 
 // handleBulkCreateVillageObjects places multiple objects at once (for initial village population).

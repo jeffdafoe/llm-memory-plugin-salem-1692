@@ -553,13 +553,43 @@ var allowedStateTags = map[string]bool{
 }
 
 // Per-instance tags (ZBBS-069) — role tags applied to a specific placed
-// village_object, not to an asset template. 'tavern' sits here because
-// "this particular building IS the tavern" is instance-level by nature:
-// the same asset might have one instance as a tavern and others as
-// regular houses. Identity tags like 'laundry' or 'notice-board' stay
+// village_object, not to an asset template. Instance-level by nature: the
+// same Mana Seed asset can serve as a tavern in one placement and a plain
+// house in another. Identity tags like 'laundry' or 'notice-board' stay
 // in allowedStateTags above because they genuinely are asset properties.
+//
+// Categorical tags (ZBBS-075) — ones the agent perception treats as
+// destination categories AND the chore tool resolves against:
+//
+//   - tavern, smithy, shop, meeting-house, well, outhouse — public roles
+//   - gathering-point — flag-tag marking a placement as a default
+//     destination for "be social" idle drift; coexists with a category
+//     tag (the village well, e.g., is both 'well' and 'gathering-point').
+//
+// All categorical tags are equally usable as social_tag values for the
+// social scheduler — the system is uniform.
 var allowedObjectTags = map[string]bool{
-	"tavern": true,
+	"tavern":           true,
+	"smithy":           true,
+	"shop":             true,
+	"meeting-house":    true,
+	"well":             true,
+	"outhouse":         true,
+	"gathering-point":  true,
+}
+
+// categoryObjectTags is the subset of allowedObjectTags that mark a
+// placement as a thematic destination for the agent perception's "Other
+// places nearby" list and as a target for the chore tool. Excludes
+// gathering-point (which is a flag, not a category) and any future tag
+// that's purely behavioral.
+var categoryObjectTags = map[string]bool{
+	"tavern":        true,
+	"smithy":        true,
+	"shop":          true,
+	"meeting-house": true,
+	"well":          true,
+	"outhouse":      true,
 }
 
 // handleListStateTags returns the tag allowlist so the admin UI can
