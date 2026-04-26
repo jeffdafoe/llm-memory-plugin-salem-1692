@@ -176,43 +176,32 @@ func _on_state(state: Dictionary) -> void:
         header += " (lodging: %s)" % home
     _header_label.text = header
 
-    # Rebuild member list. Whisper toggles persist iff the same NPC
-    # is still here; otherwise reset.
+    # HERE list is informational (per broadcast-by-default model).
+    # NPCs render as labels; their LLMs decide who's being addressed
+    # from the speech context. No targeting buttons.
     for c in _members_list.get_children():
         c.queue_free()
-    var still_here := false
     var members: Array = state.get("huddle_members", [])
     if members.is_empty():
         var none = Label.new()
         none.text = "  (no one nearby)"
         none.add_theme_color_override("font_color", Color(0.65, 0.55, 0.40))
+        none.add_theme_font_size_override("font_size", 12)
         _members_list.add_child(none)
     for m in members:
         var name_str = str(m.get("name", "?"))
-        var target = str(m.get("target_agent", ""))
-        var btn = Button.new()
-        btn.text = name_str
-        btn.toggle_mode = true
-        if target != "" and target == _selected_target_agent:
-            btn.button_pressed = true
-            still_here = true
-        if target == "":
-            btn.disabled = true
-            btn.tooltip_text = "Cannot whisper to other players (yet)"
-        var t_target: String = target
-        var t_name: String = name_str
-        btn.pressed.connect(func():
-            _selected_target_agent = t_target
-            _selected_target_name = t_name
-            refresh()
-        )
-        _members_list.add_child(btn)
-    if not still_here:
-        _selected_target_agent = ""
-        _selected_target_name = ""
-    # Single Speak button: label tracks current selection. Always
-    # enabled — broadcast is the fallback when no NPC is targeted.
-    _speak_btn.text = ("Speak to " + _selected_target_name) if _selected_target_name != "" else "Speak (to room)"
+        var role = m.get("role", null)
+        var label = Label.new()
+        var line = "  " + name_str
+        if role != null and role != "":
+            line += "  (" + str(role) + ")"
+        label.text = line
+        label.add_theme_color_override("font_color", Color(0.95, 0.92, 0.80))
+        label.add_theme_font_size_override("font_size", 12)
+        _members_list.add_child(label)
+    _selected_target_agent = ""
+    _selected_target_name = ""
+    _speak_btn.text = "Speak"
 
 func _on_text_submitted(text: String) -> void:
     _do_speak_smart(text)

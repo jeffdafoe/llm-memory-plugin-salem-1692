@@ -356,6 +356,6 @@ func (app *App) applyArrival(npcID string) {
 		`SELECT inside_structure_id, llm_memory_agent IS NOT NULL FROM npc WHERE id = $1`,
 		npcID,
 	).Scan(&insideID, &arriverIsAgent); err == nil && arriverIsAgent && insideID.Valid {
-		app.triggerCoLocatedTicks(ctx, insideID.String, npcID, "arrival")
+		app.triggerCoLocatedTicks(ctx, insideID.String, npcID, "arrival", false)
 	}
 }
