@@ -690,7 +690,17 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 	}
 	sections = append(sections, strings.Join(destLines, "\n"))
 
-	// 5. Recent block (M6.4.6) — what other NPCs said at this NPC's
+	// 5. Here block (M6.4.5) — who else is in this NPC's current scene
+	// huddle. Sourced from npc.current_huddle_id; matched against this
+	// NPC's acquaintances so unknown others render as descriptors
+	// ("the blacksmith") rather than full names ("Ezekiel Crane").
+	// Skipped when the NPC isn't in a huddle (alone or outdoors).
+	hereLines := app.coLocatedHuddleMembers(ctx, r.ID)
+	if len(hereLines) > 0 {
+		sections = append(sections, "Here:\n"+strings.Join(hereLines, "\n"))
+	}
+
+	// 6. Recent block (M6.4.6) — what other NPCs said at this NPC's
 	// current location in the last 30 minutes. Sourced from
 	// agent_action_log where action_type='speak' and the payload's
 	// structure_id matches this NPC's inside_structure_id. Excludes the
@@ -711,6 +721,61 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 		"speak (say something), or done (rest).")
 
 	return strings.Join(sections, "\n\n"), locationName
+}
+
+// coLocatedHuddleMembers returns "Here:" lines for every other NPC in
+// the perceiving NPC's current scene huddle. Each line is either the
+// other NPC's display name (when acquainted) or a generic descriptor
+// derived from their role (when not). Empty result when the NPC isn't
+// in a huddle, or is the only one in their huddle.
+//
+// Acquaintance is read from npc_acquaintance — the perception only
+// shows full names for parties this NPC has previously met (huddle
+// co-presence, prior conversation, etc.). The descriptor fallback
+// uses the role label first ("the blacksmith"), then falls back to
+// "a stranger" when no role is set.
+func (app *App) coLocatedHuddleMembers(ctx context.Context, npcID string) []string {
+	rows, err := app.DB.Query(ctx,
+		`SELECT n.display_name, va.role,
+		        EXISTS(
+		            SELECT 1 FROM npc_acquaintance a
+		             WHERE a.npc_id::text = $1
+		               AND a.other_name = n.display_name
+		        ) AS acquainted
+		   FROM npc n
+		   LEFT JOIN village_agent va ON va.llm_memory_agent = n.llm_memory_agent
+		  WHERE n.current_huddle_id IS NOT NULL
+		    AND n.current_huddle_id = (
+		        SELECT current_huddle_id FROM npc WHERE id::text = $1
+		    )
+		    AND n.id::text != $1
+		  ORDER BY n.display_name`,
+		npcID)
+	if err != nil {
+		log.Printf("here-block: query: %v", err)
+		return nil
+	}
+	defer rows.Close()
+	var lines []string
+	for rows.Next() {
+		var name string
+		var role sql.NullString
+		var acquainted bool
+		if err := rows.Scan(&name, &role, &acquainted); err != nil {
+			continue
+		}
+		if acquainted {
+			lines = append(lines, "  "+name)
+			continue
+		}
+		// Descriptor fallback for unknown others.
+		if role.Valid && role.String != "" {
+			lines = append(lines, "  the "+role.String)
+		} else {
+			lines = append(lines, "  a stranger")
+		}
+	}
+	return lines
 }
 
 // recentSpeechAtStructure pulls recent speak audit rows whose payload
