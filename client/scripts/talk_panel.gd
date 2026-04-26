@@ -31,6 +31,10 @@ var _replies_scroll: ScrollContainer = null
 var _input: LineEdit = null
 var _whisper_btn: Button = null
 var _speak_btn: Button = null
+# Floating "Talk" reopen button — sibling Control on the same
+# CanvasLayer, only visible when the panel is closed. Created lazily
+# on first close so we don't pay the layout cost up front.
+var _open_button: Button = null
 
 func _ready() -> void:
     custom_minimum_size = Vector2(280, 0)
@@ -54,12 +58,29 @@ func _ready() -> void:
     box.add_theme_constant_override("separation", 6)
     add_child(box)
 
+    # Header row — title label + close (x) button on the right.
+    var header_row := HBoxContainer.new()
+    header_row.add_theme_constant_override("separation", 6)
+    box.add_child(header_row)
+
     _header_label = Label.new()
     _header_label.text = "Loading..."
     _header_label.add_theme_color_override("font_color", Color(0.95, 0.92, 0.80))
     _header_label.add_theme_font_size_override("font_size", 13)
     _header_label.autowrap_mode = TextServer.AUTOWRAP_WORD
-    box.add_child(_header_label)
+    _header_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    header_row.add_child(_header_label)
+
+    var close_btn := Button.new()
+    close_btn.text = "x"
+    close_btn.flat = true
+    close_btn.add_theme_color_override("font_color", Color(0.78, 0.66, 0.45))
+    close_btn.add_theme_color_override("font_hover_color", Color(1.0, 0.6, 0.5))
+    close_btn.add_theme_font_size_override("font_size", 14)
+    close_btn.custom_minimum_size = Vector2(20, 20)
+    close_btn.focus_mode = Control.FOCUS_NONE
+    close_btn.pressed.connect(_on_close_pressed)
+    header_row.add_child(close_btn)
 
     var members_header := Label.new()
     members_header.text = "HERE"
@@ -248,6 +269,36 @@ func _post_pc_chat(path: String, body: String, expect_reply: bool) -> void:
     if auth != "":
         headers.append("Authorization: " + auth)
     http.request(Auth.api_base + path, headers, HTTPClient.METHOD_POST, body)
+
+## Close button — hide the panel and surface the floating "Talk"
+## reopen button. Created lazily so the layout doesn't carry a
+## hidden Control until the user actually closes the panel once.
+func _on_close_pressed() -> void:
+    visible = false
+    if _open_button == null:
+        _open_button = Button.new()
+        _open_button.text = "Talk"
+        _open_button.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+        _open_button.offset_top = 60
+        _open_button.offset_left = -80
+        _open_button.offset_right = -10
+        _open_button.offset_bottom = 90
+        _open_button.add_theme_font_size_override("font_size", 12)
+        var bg := StyleBoxFlat.new()
+        bg.bg_color = Color(0.10, 0.08, 0.06, 0.88)
+        bg.border_color = Color(0.45, 0.35, 0.20, 1.0)
+        bg.set_border_width_all(1)
+        _open_button.add_theme_stylebox_override("normal", bg)
+        _open_button.add_theme_color_override("font_color", Color(0.95, 0.92, 0.80))
+        _open_button.pressed.connect(_on_open_pressed)
+        get_parent().add_child(_open_button)
+    _open_button.visible = true
+
+func _on_open_pressed() -> void:
+    visible = true
+    if _open_button != null:
+        _open_button.visible = false
+    refresh()
 
 ## WS-derived signal — any speech broadcast in the village. We render
 ## all of it for now (no proximity filter); when speech bubbles land
