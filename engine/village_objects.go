@@ -1,8 +1,12 @@
 package main
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
+	"log"
 	"net/http"
+	"time"
 )
 
 // handleVillageMe returns the current user's info and permissions.
@@ -329,6 +333,14 @@ func (app *App) handleMoveVillageObject(w http.ResponseWriter, r *http.Request) 
 //
 // "Both or neither": if one is set the other must be too. The agent
 // resolver always reads them together so a mixed state would be ambiguous.
+//
+// Side effect: NPCs currently standing at the OLD loiter position get
+// re-walked to the NEW one. Without this, an admin moving a placement's
+// loiter pin while NPCs are visiting would leave them stuck in the
+// original (now likely visually wrong) spot — e.g. inside the well sprite
+// after the loiter pin moves to the adjacent tile. Owners of this
+// placement (home or work) are skipped — their position is governed by
+// the scheduler/inside-structure flow, not the loiter pin.
 func (app *App) handleSetVillageObjectLoiterOffset(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
@@ -346,6 +358,27 @@ func (app *App) handleSetVillageObjectLoiterOffset(w http.ResponseWriter, r *htt
 	}
 	if (req.LoiterOffsetX == nil) != (req.LoiterOffsetY == nil) {
 		jsonError(w, "loiter_offset_x and loiter_offset_y must both be set or both null", http.StatusBadRequest)
+		return
+	}
+
+	// Read OLD offset + asset door fallback BEFORE the UPDATE so we can
+	// compute the position visitors would have walked to. Same fallback
+	// chain pickWalkTarget uses (loiter → door → anchor).
+	var oldLoiterX, oldLoiterY sql.NullInt32
+	var doorX, doorY sql.NullInt32
+	var anchorX, anchorY float64
+	if err := app.DB.QueryRow(r.Context(),
+		`SELECT o.loiter_offset_x, o.loiter_offset_y,
+		        a.door_offset_x, a.door_offset_y,
+		        o.x, o.y
+		 FROM village_object o JOIN asset a ON a.id = o.asset_id
+		 WHERE o.id = $1`,
+		id).Scan(&oldLoiterX, &oldLoiterY, &doorX, &doorY, &anchorX, &anchorY); err != nil {
+		if err == sql.ErrNoRows {
+			jsonError(w, "Object not found", http.StatusNotFound)
+			return
+		}
+		jsonError(w, "Failed to read placement", http.StatusInternalServerError)
 		return
 	}
 
@@ -371,6 +404,13 @@ func (app *App) handleSetVillageObjectLoiterOffset(w http.ResponseWriter, r *htt
 			"loiter_offset_y": req.LoiterOffsetY,
 		},
 	})
+
+	// Fire-and-forget the visitor relocate; failures are logged but don't
+	// fail the PATCH response (the offset itself is already saved).
+	go app.relocateVisitorsAfterLoiterChange(
+		context.Background(), id, anchorX, anchorY,
+		oldLoiterX, oldLoiterY, req.LoiterOffsetX, req.LoiterOffsetY, doorX, doorY,
+	)
 }
 
 // handleBulkCreateVillageObjects places multiple objects at once (for initial village population).
@@ -450,4 +490,96 @@ func (app *App) handleBulkCreateVillageObjects(w http.ResponseWriter, r *http.Re
 	}
 
 	jsonResponse(w, http.StatusCreated, created)
+}
+
+// relocateVisitorsAfterLoiterChange walks any NPC currently standing
+// near the OLD loiter position to the NEW one when an admin moves a
+// placement's loiter pin. Owners (this placement is their home or work)
+// are skipped — their position belongs to the scheduler/inside-structure
+// flow, not the loiter pin.
+//
+// "Near" is defined as within 1.5 tiles of the OLD position — covers the
+// loiterJitter spread (~half tile) plus the typical walk-arrival fuzz.
+//
+// Each relocate is dispatched as an independent walk via startReturnWalk,
+// stamping agent_override_until so the scheduler doesn't yank the NPC
+// back mid-walk. NEW position is jittered per-NPC so a cluster of
+// visitors at the moved spot stays spread out.
+func (app *App) relocateVisitorsAfterLoiterChange(
+	ctx context.Context, objectID string, anchorX, anchorY float64,
+	oldLoiterX, oldLoiterY sql.NullInt32,
+	newOffsetX, newOffsetY *int,
+	doorX, doorY sql.NullInt32,
+) {
+	const tileSize = 32.0
+	const nearRadius = 1.5 * tileSize
+	const nearRadiusSq = nearRadius * nearRadius
+
+	// OLD pixel position — same fallback chain as pickWalkTarget.
+	oldPx, oldPy := anchorX, anchorY
+	switch {
+	case oldLoiterX.Valid && oldLoiterY.Valid:
+		oldPx = anchorX + float64(oldLoiterX.Int32)*tileSize
+		oldPy = anchorY + float64(oldLoiterY.Int32)*tileSize
+	case doorX.Valid && doorY.Valid:
+		oldPx = anchorX + float64(doorX.Int32)*tileSize
+		oldPy = anchorY + float64(doorY.Int32)*tileSize
+	}
+
+	// NEW pixel position — same fallback chain.
+	newPx, newPy := anchorX, anchorY
+	switch {
+	case newOffsetX != nil && newOffsetY != nil:
+		newPx = anchorX + float64(*newOffsetX)*tileSize
+		newPy = anchorY + float64(*newOffsetY)*tileSize
+	case doorX.Valid && doorY.Valid:
+		newPx = anchorX + float64(doorX.Int32)*tileSize
+		newPy = anchorY + float64(doorY.Int32)*tileSize
+	}
+
+	// Find candidates: NPCs inside the near-radius of OLD that don't own
+	// this placement. Exclude NPCs already walking — startReturnWalk on a
+	// moving NPC stomps the in-flight walk; we'd rather let it land first
+	// and (if relevant) re-relocate on a subsequent admin move.
+	rows, err := app.DB.Query(ctx,
+		`SELECT id, current_x, current_y FROM npc
+		 WHERE (current_x - $1) * (current_x - $1) + (current_y - $2) * (current_y - $2) < $3
+		   AND (home_structure_id IS NULL OR home_structure_id::text != $4)
+		   AND (work_structure_id IS NULL OR work_structure_id::text != $4)`,
+		oldPx, oldPy, nearRadiusSq, objectID)
+	if err != nil {
+		log.Printf("relocateVisitors: query: %v", err)
+		return
+	}
+	defer rows.Close()
+
+	type candidate struct {
+		ID  string
+		CurX, CurY float64
+	}
+	var candidates []candidate
+	for rows.Next() {
+		var c candidate
+		if err := rows.Scan(&c.ID, &c.CurX, &c.CurY); err == nil {
+			candidates = append(candidates, c)
+		}
+	}
+
+	for _, c := range candidates {
+		jx, jy := loiterJitter()
+		targetX, targetY := newPx+jx, newPy+jy
+		npc := &behaviorNPC{ID: c.ID, CurX: c.CurX, CurY: c.CurY}
+		app.interpolateCurrentPos(npc)
+		if err := app.startReturnWalk(ctx, npc, targetX, targetY, objectID, "loiter-relocate"); err != nil {
+			log.Printf("relocateVisitors: startReturnWalk %s: %v", c.ID, err)
+			continue
+		}
+		overrideUntil := time.Now().Add(30 * time.Minute)
+		if _, err := app.DB.Exec(ctx,
+			`UPDATE npc SET agent_override_until = $2, last_shift_tick_at = $2 WHERE id = $1`,
+			c.ID, overrideUntil,
+		); err != nil {
+			log.Printf("relocateVisitors: stamp override %s: %v", c.ID, err)
+		}
+	}
 }

@@ -1458,6 +1458,10 @@ func _current_loiter_offset_tiles(node: Node2D) -> Vector2:
 ## (placeholder), filled solid when set (an actual configured spot).
 ## Gathering-point placements get a gold tint instead of green so they
 ## stand out as village-level rally spots (the well, market, etc.).
+##
+## A small always-visible Label2D below the marker explains what the
+## circle is — admins won't immediately know what a green/gold dot
+## means, so the visual carries its own legend ("loiter" / "gather").
 func _draw_loiter_marker_contents(node: Node2D) -> void:
     if _loiter_marker == null:
         return
@@ -1468,12 +1472,17 @@ func _draw_loiter_marker_contents(node: Node2D) -> void:
 
     var fill_color: Color
     var outline_color: Color
+    var caption: String
     if is_gather:
         fill_color = Color(1.0, 0.85, 0.25, 0.85 if is_set else 0.45)
         outline_color = Color(0.75, 0.55, 0.10, 1.0)
+        caption = "gather"
     else:
         fill_color = Color(0.30, 0.85, 0.45, 0.85 if is_set else 0.40)
         outline_color = Color(0.10, 0.55, 0.25, 1.0)
+        caption = "loiter"
+    if not is_set:
+        caption += " (drag)"
 
     # Build a 24-vertex polygon to approximate the circle. Polygon2D fill
     # under Line2D outline matches the door/stand square pattern.
@@ -1495,6 +1504,19 @@ func _draw_loiter_marker_contents(node: Node2D) -> void:
         var t: float = float(i) / float(segments) * TAU
         outline.add_point(Vector2(cos(t) * radius, sin(t) * radius))
     _loiter_marker.add_child(outline)
+
+    # Caption — Label2D in world space, sized small. Always-on so the
+    # marker carries its own legend; no mouse-hover plumbing needed.
+    # White outline on a colored fill keeps it legible on any terrain.
+    var caption_label := Label2D.new()
+    caption_label.text = caption
+    caption_label.position = Vector2(0.0, radius + 4.0)
+    caption_label.modulate = outline_color
+    caption_label.outline_modulate = Color(1.0, 1.0, 1.0, 0.95)
+    caption_label.outline_size = 4
+    caption_label.font_size = 10
+    caption_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+    _loiter_marker.add_child(caption_label)
 
 func _remove_loiter_marker() -> void:
     if _loiter_marker != null:
