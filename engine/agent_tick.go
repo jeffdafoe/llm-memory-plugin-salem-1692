@@ -106,6 +106,13 @@ func (app *App) dispatchAgentTicks(ctx context.Context) {
 		log.Printf("agent-tick: load config: %v", err)
 		return
 	}
+	// Admin kill switch — when world_agent_ticks_paused is set, suppress
+	// all agent-tick dispatch. Other schedulers (worker, social, lamplighter,
+	// rotation) continue running so the village still moves and we can
+	// observe deterministic behavior in isolation.
+	if cfg.AgentTicksPaused {
+		return
+	}
 	// Use world timezone — Salem's "game time" is the configured world
 	// timezone (America/New_York by default), not the server's UTC clock.
 	// Same pattern the worker scheduler uses.

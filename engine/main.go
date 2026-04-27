@@ -158,6 +158,7 @@ func main() {
 	authed("POST /api/village/world/force-phase", app.handleForcePhase)
 	authed("POST /api/village/world/force-rotate", app.handleForceRotate)
 	authed("POST /api/village/world/zoom-settings", app.handleSetZoomSettings)
+	authed("POST /api/village/world/agent-ticks", app.handleSetAgentTicksPaused)
 
 	// CORS middleware for Godot web client
 	handler := corsMiddleware(mux)

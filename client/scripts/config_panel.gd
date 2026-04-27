@@ -39,11 +39,13 @@ var _server_time: String = ""
 var _rotation_time: String = ""
 var _last_rotation_at: String = ""
 var _next_rotation_at: String = ""
+var _agent_ticks_paused: bool = false
 
 # UI elements that update without a full rebuild
 var _phase_value: Label = null
 var _zoom_admin_edit: LineEdit = null
 var _zoom_regular_edit: LineEdit = null
+var _agent_ticks_paused_check: CheckBox = null
 # Echoed into the edits on each fetch so edits don't get blown away mid-type.
 var _last_loaded_zoom_admin: String = ""
 var _last_loaded_zoom_regular: String = ""
@@ -216,6 +218,25 @@ func _build_layout() -> void:
     btn_row.add_child(_make_button("Force Rotate", _send_force_rotate))
 
     _add_separator()
+    # Agent-tick kill switch — pauses LLM agent ticks while leaving the
+    # deterministic schedulers running. Useful when an NPC is in a bad
+    # loop or the model is misbehaving and you want to observe the village
+    # without agent activity.
+    var ticks_header = _make_label("Agent ticks", COLOR_LABEL, 14)
+    _content.add_child(ticks_header)
+
+    var ticks_row = HBoxContainer.new()
+    ticks_row.add_theme_constant_override("separation", 8)
+    _content.add_child(ticks_row)
+    _agent_ticks_paused_check = CheckBox.new()
+    _agent_ticks_paused_check.text = "Pause agent ticks"
+    _agent_ticks_paused_check.add_theme_color_override("font_color", COLOR_TEXT)
+    _agent_ticks_paused_check.add_theme_font_override("font", _font)
+    _agent_ticks_paused_check.add_theme_font_size_override("font_size", 14)
+    _agent_ticks_paused_check.toggled.connect(_on_agent_ticks_toggled)
+    ticks_row.add_child(_agent_ticks_paused_check)
+
+    _add_separator()
     # Zoom floor controls — two values, one for admins (typically more
     # zoomed-out, wider overview), one for everyone else. The client picks
     # which one to apply based on Auth.can_edit at load time and whenever
@@ -370,6 +391,12 @@ func _on_state_response(result: int, response_code: int, _headers: PackedStringA
     _rotation_time = json.get("rotation_time", "")
     _last_rotation_at = json.get("last_rotation_at", "")
     _next_rotation_at = json.get("next_rotation_at", "")
+    _agent_ticks_paused = bool(json.get("agent_ticks_paused", false))
+    # Echo the server value into the checkbox WITHOUT triggering the toggled
+    # callback (set_pressed_no_signal), or we'd POST-back-to-the-server every
+    # poll cycle. Skip the update when the user is actively interacting.
+    if _agent_ticks_paused_check != null and not _agent_ticks_paused_check.has_focus():
+        _agent_ticks_paused_check.set_pressed_no_signal(_agent_ticks_paused)
 
     # Populate zoom edits only when (a) the server value changed since
     # last fetch AND (b) the edit doesn't currently have keyboard focus.
@@ -567,3 +594,33 @@ func _set_status(text: String, is_error: bool) -> void:
         return
     _status_label.text = text
     _status_label.add_theme_color_override("font_color", COLOR_STATUS_ERR if is_error else COLOR_STATUS_OK)
+
+## POST /api/village/world/agent-ticks {paused: bool} when the admin toggles
+## the checkbox. Status reflects success/failure; the next poll cycle echoes
+## the server value back into the checkbox.
+func _on_agent_ticks_toggled(pressed: bool) -> void:
+    var payload = JSON.stringify({"paused": pressed})
+    var http = HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    http.request_completed.connect(func(_r, c, _h, _b):
+        http.queue_free()
+        if c == 200:
+            _set_status("Agent ticks " + ("paused" if pressed else "resumed"), false)
+        elif c == 403:
+            _set_status("Admin access required", true)
+            # Revert the checkbox since the server rejected the change.
+            if _agent_ticks_paused_check != null:
+                _agent_ticks_paused_check.set_pressed_no_signal(_agent_ticks_paused)
+        else:
+            _set_status("Toggle failed (" + str(c) + ")", true)
+            if _agent_ticks_paused_check != null:
+                _agent_ticks_paused_check.set_pressed_no_signal(_agent_ticks_paused)
+        Auth.check_response(c)
+    )
+    var headers = [
+        "Content-Type: application/json",
+        "Authorization: " + Auth.get_auth_header(),
+    ]
+    http.request(Auth.api_base + "/api/village/world/agent-ticks",
+        headers, HTTPClient.METHOD_POST, payload)
