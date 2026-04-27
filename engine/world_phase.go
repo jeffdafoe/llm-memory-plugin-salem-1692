@@ -60,6 +60,12 @@ type worldConfig struct {
 	Location         *time.Location
 	ZoomMinAdmin     float64
 	ZoomMinRegular   float64
+	// AgentTicksPaused, when true, suppresses the LLM agent-tick dispatcher
+	// (dispatchAgentTicks). Worker schedulers, social hours, lamplighter,
+	// and rotation continue running — only the agent loop is halted. Used
+	// to stop agent activity mid-session when a bad loop or misbehaving
+	// model is being investigated, without taking the whole engine down.
+	AgentTicksPaused bool
 }
 
 // pendingFlip is one scheduled village_object.current_state change. Applied
@@ -99,7 +105,8 @@ func (app *App) loadWorldConfig(ctx context.Context) (*worldConfig, error) {
 	rows, err := app.DB.Query(ctx,
 		`SELECT key, value FROM setting
 		 WHERE key IN ('world_dawn_time', 'world_dusk_time', 'world_rotation_time',
-		               'world_timezone', 'world_zoom_min_admin', 'world_zoom_min_regular')`,
+		               'world_timezone', 'world_zoom_min_admin', 'world_zoom_min_regular',
+		               'world_agent_ticks_paused')`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("load world settings: %w", err)
@@ -131,6 +138,8 @@ func (app *App) loadWorldConfig(ctx context.Context) (*worldConfig, error) {
 			if f, err := strconv.ParseFloat(*value, 64); err == nil {
 				cfg.ZoomMinRegular = f
 			}
+		case "world_agent_ticks_paused":
+			cfg.AgentTicksPaused = *value == "true"
 		}
 	}
 
@@ -484,7 +493,49 @@ func (app *App) handleGetWorldState(w http.ResponseWriter, r *http.Request) {
 		"next_rotation_at":      nextRotationAt.UTC().Format(time.RFC3339),
 		"zoom_min_admin":        cfg.ZoomMinAdmin,
 		"zoom_min_regular":      cfg.ZoomMinRegular,
+		"agent_ticks_paused":    cfg.AgentTicksPaused,
 	})
+}
+
+// handleSetAgentTicksPaused lets an admin halt or resume the LLM agent-tick
+// dispatcher at runtime without restarting the engine. Worker, social,
+// lamplighter, and rotation schedulers continue running regardless — only
+// the agent loop is gated by this flag. Persists in the setting table so the
+// state survives restarts.
+func (app *App) handleSetAgentTicksPaused(w http.ResponseWriter, r *http.Request) {
+	user := getUserFromContext(r.Context())
+	if user == nil || !user.hasRole("ROLE_SALEM_ADMIN") {
+		jsonError(w, "Admin access required", http.StatusForbidden)
+		return
+	}
+
+	var req struct {
+		Paused *bool `json:"paused"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.Paused == nil {
+		jsonError(w, "Provide paused (boolean)", http.StatusBadRequest)
+		return
+	}
+
+	value := "false"
+	if *req.Paused {
+		value = "true"
+	}
+	if err := app.upsertSetting(r.Context(), "world_agent_ticks_paused", value); err != nil {
+		log.Printf("set agent_ticks_paused: %v", err)
+		jsonError(w, "Failed to save agent_ticks_paused", http.StatusInternalServerError)
+		return
+	}
+
+	app.Hub.Broadcast(WorldEvent{
+		Type: "agent_ticks_paused_changed",
+		Data: map[string]bool{"paused": *req.Paused},
+	})
+	jsonResponse(w, http.StatusOK, map[string]bool{"paused": *req.Paused})
 }
 
 // handleSetZoomSettings lets an admin retune the two client-side zoom floors.
