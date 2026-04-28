@@ -357,5 +357,8 @@ func (app *App) applyArrival(npcID string) {
 		npcID,
 	).Scan(&insideID, &arriverIsAgent); err == nil && arriverIsAgent && insideID.Valid {
 		app.triggerCoLocatedTicks(ctx, insideID.String, npcID, "arrival", false)
+		// Cascade origin — fire the chronicler alongside the reactor
+		// ticks. Once per arrival, not per in-cascade NPC reaction.
+		app.cascadeOriginFireChronicler("arrival", insideID.String)
 	}
 }

@@ -149,6 +149,17 @@ func (app *App) dispatchAgentTicks(ctx context.Context) {
 		return
 	}
 
+	// Day-one chronicler design: NPCs go reactive-only (no autonomous
+	// hourly baseline ticks). Reactive event-ticks (PC speech, NPC
+	// arrival, NPC speech inside a cascade) continue to fire through
+	// existing handlers. The npc_baseline_ticks_enabled setting is the
+	// kill switch / safety valve — if reactive-only feels too sparse,
+	// flip it on to restore the prior cadence.
+	baselineEnabled := app.loadSetting(ctx, "npc_baseline_ticks_enabled", "false") == "true"
+	if !baselineEnabled {
+		return
+	}
+
 	hourStart := time.Date(now.Year(), now.Month(), now.Day(), now.Hour(), 0, 0, 0, now.Location())
 	secondsIntoHour := int(now.Sub(hourStart).Seconds())
 	for i := range rows {
@@ -783,6 +794,39 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 		}
 	}
 
+	// Atmosphere — the chronicler's most recent set_environment text.
+	// Empty when the chronicler hasn't fired yet (fresh deploy) or
+	// when world_environment is otherwise empty. The chronicler writes
+	// at phase boundaries and cascade origins; what's here is the
+	// village's current ambient texture.
+	if atm := app.latestEnvironmentText(ctx); atm != "" {
+		sections = append(sections, "Atmosphere: "+atm)
+	}
+
+	// Recent events visible to this NPC — village-scope events plus
+	// any local-scope events at the NPC's current structure plus any
+	// private-scope events targeted at this NPC. Last 7 game-days,
+	// capped per-scope at recentEventsCount entries (so up to 3x
+	// recentEventsCount total in the worst case, but typically much
+	// less since local and private events are sparse).
+	since := time.Now().Add(-recentEventsWindow)
+	var visibleEvents []string
+	visibleEvents = append(visibleEvents,
+		app.recentVisibleEvents(ctx, "village", "", since, recentEventsCount)...)
+	if r.InsideStructureID.Valid {
+		visibleEvents = append(visibleEvents,
+			app.recentVisibleEvents(ctx, "local", r.InsideStructureID.String, since, recentEventsCount)...)
+	}
+	visibleEvents = append(visibleEvents,
+		app.recentVisibleEvents(ctx, "private", r.ID, since, recentEventsCount)...)
+	if len(visibleEvents) > 0 {
+		var lines []string
+		for _, e := range visibleEvents {
+			lines = append(lines, "- "+e)
+		}
+		sections = append(sections, "What has happened recently:\n"+strings.Join(lines, "\n"))
+	}
+
 	// 7. Feedback from last action (M6.4.8) — when the NPC's most
 	// recent commit failed (move_to to an unknown destination, chore
 	// with an unknown category, etc.), surface the error so the LLM
@@ -1013,19 +1057,7 @@ func (app *App) resolveRecall(ctx context.Context, r *agentNPCRow, query string)
 		log.Printf("agent-tick %s recall: %v", r.DisplayName, err)
 		return "You tried to recall but the memory wouldn't come."
 	}
-	if len(hits) == 0 {
-		return "Nothing comes to mind."
-	}
-	var b strings.Builder
-	b.WriteString("You remember:\n\n")
-	for _, h := range hits {
-		b.WriteString("— ")
-		b.WriteString(h.SourceFile)
-		b.WriteString(" —\n")
-		b.WriteString(h.ChunkText)
-		b.WriteString("\n\n")
-	}
-	return strings.TrimRight(b.String(), "\n")
+	return formatRecallHits(hits, app.namespaceDisplayName)
 }
 
 // executeAgentCommit translates the LLM's chosen commit tool into engine
