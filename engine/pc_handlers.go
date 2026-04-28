@@ -445,5 +445,11 @@ func (app *App) handlePCSpeak(w http.ResponseWriter, r *http.Request) {
 	// later, that arrival is its own new scene.
 	app.triggerCoLocatedTicks(context.Background(), structureID.String, "", fmt.Sprintf("pc-spoke (%s)", charName.String), true, newUUIDv7())
 
+	// Cascade origin — fire the chronicler alongside the co-located
+	// reactor ticks. Fire-and-forget; chronicler runs in a goroutine
+	// so it doesn't block the WebSocket response. Only fires once per
+	// scene-start (here), not for in-cascade NPC reactions.
+	app.cascadeOriginFireChronicler(fmt.Sprintf("pc-spoke (%s)", charName.String), structureID.String)
+
 	w.WriteHeader(http.StatusNoContent)
 }
