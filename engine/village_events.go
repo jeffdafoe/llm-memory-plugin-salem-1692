@@ -20,13 +20,33 @@ import (
 // can't be reached at upgrade time.
 const defaultPCIdleTimeoutSeconds = 60
 
+// minPCIdleTimeoutSeconds floors any admin-configured value. A timeout
+// short enough that idleTimeout/2 produces a sub-5s ping cadence is
+// almost certainly a misconfiguration — the keepalive overhead
+// outweighs the value of detecting drops faster, and we don't want a
+// hot loop on every WS connection. Logged as a warning when clamped.
+const minPCIdleTimeoutSeconds = 10
+
+// settingLookupTimeout caps the DB call inside the WS upgrade path.
+// loadPCIdleTimeout has a safe default to fall back to, so blocking
+// the upgrade indefinitely on a stalled DB would defeat the purpose of
+// this PR (false-live clients in Hub.clients).
+const settingLookupTimeout = 500 * time.Millisecond
+
 // loadPCIdleTimeout reads pc_idle_timeout_seconds from the setting table.
 // Returns the parsed duration or the default if the row is missing,
 // NULL, non-numeric, or non-positive. Read on every WebSocket upgrade
 // (cheap single-row lookup) so an admin can re-tune without a restart.
-func (app *App) loadPCIdleTimeout() time.Duration {
+//
+// Bounded by settingLookupTimeout so a stalled DB can't park the
+// upgrade — if we can't get the setting in 500ms, fall back to the
+// default rather than holding up the handler.
+func (app *App) loadPCIdleTimeout(ctx context.Context) time.Duration {
+	ctx, cancel := context.WithTimeout(ctx, settingLookupTimeout)
+	defer cancel()
+
 	var v sql.NullString
-	err := app.DB.QueryRow(context.Background(),
+	err := app.DB.QueryRow(ctx,
 		`SELECT value FROM setting WHERE key = $1`, "pc_idle_timeout_seconds").Scan(&v)
 	if err != nil || !v.Valid {
 		return time.Duration(defaultPCIdleTimeoutSeconds) * time.Second
@@ -35,6 +55,10 @@ func (app *App) loadPCIdleTimeout() time.Duration {
 	if err != nil || n <= 0 {
 		log.Printf("pc_idle_timeout_seconds: bad value %q, falling back to %ds", v.String, defaultPCIdleTimeoutSeconds)
 		return time.Duration(defaultPCIdleTimeoutSeconds) * time.Second
+	}
+	if n < minPCIdleTimeoutSeconds {
+		log.Printf("pc_idle_timeout_seconds: value %d below floor, clamping to %ds", n, minPCIdleTimeoutSeconds)
+		n = minPCIdleTimeoutSeconds
 	}
 	return time.Duration(n) * time.Second
 }
@@ -56,11 +80,30 @@ type wsClient struct {
 	conn *websocket.Conn
 	send chan []byte
 
+	// writeMu serializes writes to conn. gorilla/websocket permits one
+	// concurrent reader and one concurrent writer; this Hub has the
+	// writer goroutine emitting broadcast events and the ping ticker
+	// goroutine emitting keepalive pings — both call WriteMessage. The
+	// previous code had no synchronization; the configurable ping
+	// cadence introduced in this commit can shrink the window where a
+	// race goes unnoticed, so all writes now hold this mutex.
+	writeMu sync.Mutex
+
 	// sessionToken is the llm-memory token presented at the WS upgrade.
 	// Re-verified inside the ping loop so an idle client whose session
 	// expires (or is revoked by a deploy) gets pushed back to the login
 	// screen instead of silently losing edits.
 	sessionToken string
+}
+
+// safeWrite serializes WriteMessage calls against any other writer on
+// the same connection. Returns the underlying WriteMessage error so
+// callers can decide whether to bail.
+func (c *wsClient) safeWrite(messageType int, data []byte, deadline time.Duration) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	c.conn.SetWriteDeadline(time.Now().Add(deadline))
+	return c.conn.WriteMessage(messageType, data)
 }
 
 func NewEventHub() *EventHub {
@@ -143,6 +186,14 @@ func (app *App) handleVillageEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Load the idle-timeout setting BEFORE registering with the Hub.
+	// loadPCIdleTimeout has a bounded context; if the DB stalled and we
+	// were already in Hub.clients, the false-live entry would be exactly
+	// what this PR is meant to eliminate. Done before addClient so any
+	// upstream stall fails out without ever joining the Hub.
+	idleTimeout := app.loadPCIdleTimeout(r.Context())
+	pingInterval := idleTimeout / 2
+
 	client := &wsClient{
 		conn:         conn,
 		send:         make(chan []byte, 64),
@@ -160,19 +211,12 @@ func (app *App) handleVillageEvents(w http.ResponseWriter, r *http.Request) {
 	// idempotent so the writer's later call is a no-op.
 	defer app.Hub.removeClient(client)
 
-	// Read deadline + ping cadence both come from the same setting so
-	// the ping always fires within the deadline window. Loaded per
-	// connection (cheap single-row query) so an admin can retune
-	// without restarting the engine.
-	idleTimeout := app.loadPCIdleTimeout()
-	pingInterval := idleTimeout / 2
-
-	// Writer goroutine — sends events to the client
+	// Writer goroutine — sends events to the client. Goes through
+	// safeWrite so it doesn't race the ping ticker on the same conn.
 	go func() {
 		defer app.Hub.removeClient(client)
 		for msg := range client.send {
-			conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-			if err := conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+			if err := client.safeWrite(websocket.TextMessage, msg, 10*time.Second); err != nil {
 				return
 			}
 		}
@@ -190,6 +234,7 @@ func (app *App) handleVillageEvents(w http.ResponseWriter, r *http.Request) {
 	// Ping + session check ticker. Each tick: re-verify the session, then
 	// send a keepalive ping. If the session went bad, push a session_expired
 	// event through the send channel so the client can react before we close.
+	// All writes go through safeWrite to serialize with the writer goroutine.
 	go func() {
 		ticker := time.NewTicker(pingInterval)
 		defer ticker.Stop()
@@ -207,8 +252,7 @@ func (app *App) handleVillageEvents(w http.ResponseWriter, r *http.Request) {
 				app.Hub.removeClient(client)
 				return
 			}
-			conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+			if err := client.safeWrite(websocket.PingMessage, nil, 10*time.Second); err != nil {
 				return
 			}
 		}
