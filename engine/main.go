@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -38,6 +39,27 @@ type App struct {
 	// NPCs, authenticated as `salem-engine`. Created once at startup and
 	// shared across server-tick dispatches.
 	npcChatClient *npcChatClient
+
+	// NPCDisplayNames maps an agent slug (= namespace) to the NPC's
+	// human-readable display_name. Refreshed by refreshNPCDisplayNames
+	// every server tick so newly added agents are visible to the recall
+	// result formatter without engine restart. Misses fall through to
+	// a one-shot DB lookup in namespaceDisplayName.
+	//
+	// Guarded by NPCDisplayNamesMu — written once per server tick by
+	// the refresh function; read on every recall result formatter call,
+	// which can happen from any goroutine (NPC ticks, chronicler fires).
+	NPCDisplayNames   map[string]string
+	NPCDisplayNamesMu sync.RWMutex
+
+	// ChroniclerSem caps the number of concurrent cascade-origin
+	// chronicler fires in flight. Cascade origins (PC speech, NPC
+	// arrival) can bunch — this prevents a slow / hung chat API from
+	// piling up unbounded goroutines. Cascade fires arriving while the
+	// slot is full are skipped (logged) rather than queued. Capacity 2
+	// is enough for the realistic event rate; bump if drops are
+	// observed in practice.
+	ChroniclerSem chan struct{}
 }
 
 func main() {
@@ -62,13 +84,19 @@ func main() {
 	}
 
 	app := &App{
-		DB:              pool,
-		LLMMemoryURL:    llmMemoryURL,
-		Hub:             NewEventHub(),
-		NPCMovement:     newNPCMovement(),
-		NPCBehaviors:    newNPCBehaviors(),
+		DB:            pool,
+		LLMMemoryURL:  llmMemoryURL,
+		Hub:           NewEventHub(),
+		NPCMovement:   newNPCMovement(),
+		NPCBehaviors:  newNPCBehaviors(),
 		npcChatClient: newNPCChatClient(llmMemoryURL, engineKey),
+		// Capacity 2 — concurrent cascade chronicler fires. PC speech +
+		// NPC arrival can briefly overlap; more than that gets skipped.
+		ChroniclerSem: make(chan struct{}, 2),
 	}
+	// Prime the display-name map so reactive ticks before the first
+	// server-tick refresh have data. Cheap; bounded by NPC count.
+	app.refreshNPCDisplayNames(context.Background())
 
 	// Build router. Routes are registered via two helpers: authed() wraps
 	// the handler in requireLLMMemory; public() leaves it unwrapped. Default

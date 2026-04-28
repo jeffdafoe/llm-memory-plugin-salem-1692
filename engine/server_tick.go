@@ -52,7 +52,17 @@ func (app *App) runServerTick(ctx context.Context) {
 func (app *App) runServerTickOnce(ctx context.Context) {
 	app.checkAndTransition(ctx)
 	app.checkAndRotate(ctx)
-	// Agent dispatch runs FIRST among the per-NPC handlers. When an agent
+	// Refresh the agent slug → display_name map every server tick so
+	// the recall result formatter has fresh data even when other
+	// dispatchers short-circuit (paused, asleep, baseline disabled).
+	// Reactive ticks fire at any hour and need the map; cheap query.
+	app.refreshNPCDisplayNames(ctx)
+	// Chronicler runs next so any atmosphere or events it writes at the
+	// phase boundary land in world_environment / world_events before NPCs
+	// (or anything else this tick) build perceptions. Cheap when no
+	// boundary just crossed — single setting read + comparison.
+	app.dispatchChroniclerPhase(ctx)
+	// Agent dispatch runs next among the per-NPC handlers. When an agent
 	// commits to a move, executeAgentMoveTo sets agent_override_until before
 	// returning, so the worker / rotation / social schedulers below see the
 	// override at load time and short-circuit (M6.1 short-circuits added in
