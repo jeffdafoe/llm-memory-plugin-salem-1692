@@ -437,7 +437,13 @@ func (app *App) handlePCSpeak(w http.ResponseWriter, r *http.Request) {
 
 	// PC-initiated → force=true so cost guard doesn't suppress
 	// reactions. Storm risk is bounded by human typing speed.
-	app.triggerCoLocatedTicks(context.Background(), structureID.String, "", fmt.Sprintf("pc-spoke (%s)", charName.String), true)
+	//
+	// Cascade origin (MEM-121): mint a fresh scene UUID. Every NPC's
+	// reaction tick to this PC speech, every nested speak fan-out from
+	// those ticks, will inherit the same UUID. Walks initiated during
+	// reactions don't carry it forward — when the NPC arrives somewhere
+	// later, that arrival is its own new scene.
+	app.triggerCoLocatedTicks(context.Background(), structureID.String, "", fmt.Sprintf("pc-spoke (%s)", charName.String), true, newUUIDv7())
 
 	w.WriteHeader(http.StatusNoContent)
 }

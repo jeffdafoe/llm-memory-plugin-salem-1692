@@ -160,7 +160,13 @@ func (app *App) dispatchAgentTicks(ctx context.Context) {
 		if secondsIntoHour < npcTickOffsetSeconds(r.ID) {
 			continue
 		}
-		app.runAgentTick(ctx, r, hourStart, dawnMin, duskMin)
+		// Baseline hourly ticks are their own one-NPC scenes — they
+		// aren't part of a speech/arrival cascade. If the NPC speaks
+		// during the tick, the speak commit will fan out via
+		// triggerCoLocatedTicks with the SAME sceneID and the scene
+		// naturally grows; if not, the scene is just this NPC's
+		// perception + tool calls + terminal commit.
+		app.runAgentTick(ctx, r, hourStart, dawnMin, duskMin, newUUIDv7())
 	}
 }
 
@@ -241,8 +247,26 @@ func (app *App) loadAgentNPCRows(ctx context.Context) ([]agentNPCRow, error) {
 // move/chore put a walk in flight, done means no further action. Multi-
 // tool replies in a single iteration are rare; if they happen, anything
 // past [0] is dropped and the model gets another iteration.
-func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time.Time, dawnMin, duskMin int) {
+//
+// sceneID (MEM-121) is the cascade UUID this tick belongs to. Minted at
+// the cascade origin (PC speak / NPC arrival / baseline tick) and
+// inherited unchanged by every reactive tick the cascade fires off. It
+// rides on every sendChat the harness emits and is passed forward into
+// executeAgentCommit, which forwards into triggerCoLocatedTicks for the
+// speak case so nested speech reactions stay in the same scene.
+func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time.Time, dawnMin, duskMin int, sceneID string) {
 	app.stampAgentTick(ctx, r, hourStart)
+	// Defensive — every sim tick should have a sceneID. The three
+	// minting points (baseline dispatcher, PC-speak handler, arrival
+	// hook) all pass newUUIDv7(). An empty value here means a future
+	// call site forgot to mint or newUUIDv7 returned empty; the API
+	// would silently accept the row with NULL scene_id and we'd lose
+	// grouping with no obvious signal. Log so the bug is visible
+	// without auto-minting (which would split a cascade into a fresh
+	// scene mid-flight and hide the upstream issue).
+	if sceneID == "" {
+		log.Printf("agent-tick %s: missing sceneID — every sim tick should carry one", r.DisplayName)
+	}
 	perception, locationName := app.buildAgentPerception(ctx, r, hourStart, dawnMin, duskMin)
 	tools := agentToolSpec()
 
@@ -251,7 +275,7 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 
 	var commitCall *agentToolCall
 	for iter := 0; iter < agentTickBudget; iter++ {
-		reply, err := app.npcChatClient.sendChat(ctx, r.LLMMemoryAgent, currentMessage, currentToolCallID, tools)
+		reply, err := app.npcChatClient.sendChat(ctx, r.LLMMemoryAgent, currentMessage, currentToolCallID, sceneID, tools)
 		if err != nil {
 			log.Printf("agent-tick %s iter=%d: %v", r.DisplayName, iter, err)
 			return
@@ -305,7 +329,7 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			// the table — without it, models tend to default to "done"
 			// after speaking ("I responded, my turn's over"). Non-directive
 			// nudge: doesn't name a specific action, just affirms agency.
-			app.executeAgentCommit(ctx, r, speakCall)
+			app.executeAgentCommit(ctx, r, speakCall, sceneID)
 			currentMessage = "[OK] You spoke. Continue your turn — you may move or run a chore now, or call done if you're staying put."
 			currentToolCallID = speakCall.ID
 			continue
@@ -340,7 +364,7 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 		}
 	}
 
-	app.executeAgentCommit(ctx, r, commitCall)
+	app.executeAgentCommit(ctx, r, commitCall, sceneID)
 	app.stampAgentTick(ctx, r, hourStart)
 }
 
@@ -383,7 +407,12 @@ func (app *App) stampAgentTick(ctx context.Context, r *agentNPCRow, hourStart ti
 //
 // Safe to call from goroutines (the engine's async paths). Failures are
 // logged and don't propagate — event ticks are best-effort.
-func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, force bool) {
+//
+// sceneID (MEM-121) is the cascade UUID this reactive tick belongs to.
+// Inherited from the cascade origin and forwarded into runAgentTick so
+// every chat row and provider call this NPC produces while reacting
+// shares the same scene.
+func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, force bool, sceneID string) {
 	cfg, err := app.loadWorldConfig(ctx)
 	if err != nil {
 		log.Printf("event-tick %s (%s): load config: %v", npcID, reason, err)
@@ -450,7 +479,7 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, 
 	// boundary — event ticks don't cancel the next hour's baseline.
 	hourStart := time.Date(now.Year(), now.Month(), now.Day(), now.Hour(), 0, 0, 0, now.Location())
 	log.Printf("event-tick %s: %s", r.DisplayName, reason)
-	app.runAgentTick(ctx, &r, hourStart, dawnMin, duskMin)
+	app.runAgentTick(ctx, &r, hourStart, dawnMin, duskMin, sceneID)
 }
 
 // triggerCoLocatedTicks fires immediate ticks for every other agentized
@@ -459,7 +488,15 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, 
 // Each affected NPC's tick is gated by the cost guard in
 // triggerImmediateTick UNLESS force=true (PC-initiated — see that
 // function's comment for rationale).
-func (app *App) triggerCoLocatedTicks(ctx context.Context, structureID, excludeNpcID, reason string, force bool) {
+//
+// sceneID (MEM-121) is the cascade UUID this fan-out belongs to. The
+// caller — a cascade origin (PC speak / NPC arrival) or a propagating
+// speak commit inside another tick — passes the UUID so every reactive
+// tick lands in the same scene. Each goroutine calls
+// triggerImmediateTick with context.Background(), intentionally
+// detached from the parent ctx; sceneID has to ride along as an
+// argument because it can't propagate via context.WithValue.
+func (app *App) triggerCoLocatedTicks(ctx context.Context, structureID, excludeNpcID, reason string, force bool, sceneID string) {
 	if structureID == "" {
 		return
 	}
@@ -486,7 +523,7 @@ func (app *App) triggerCoLocatedTicks(ctx context.Context, structureID, excludeN
 		}
 	}
 	for _, id := range ids {
-		go app.triggerImmediateTick(context.Background(), id, reason, force)
+		go app.triggerImmediateTick(context.Background(), id, reason, force, sceneID)
 	}
 }
 
@@ -1023,7 +1060,13 @@ func (app *App) resolveLookAround(ctx context.Context, r *agentNPCRow, locationN
 // query (M6.4.6) can find which speeches happened at a given location
 // without needing a schema migration. Reading
 // `payload->>'structure_id'` from agent_action_log is enough.
-func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agentToolCall) {
+//
+// sceneID (MEM-121) is the cascade UUID of the tick this commit
+// originated from. Forwarded to triggerCoLocatedTicks on the speak
+// case so reactor ticks land in the same scene; ignored for non-speak
+// commits because move/chore/done don't fan out (move triggers an
+// arrival LATER, after the walk completes, which is its own new scene).
+func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agentToolCall, sceneID string) {
 	// Augment the speak payload with the structure_id so the recent
 	// block can query "what was said here recently." Other tools don't
 	// need this — only speak surfaces in others' perceptions.
@@ -1082,7 +1125,7 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		// guard in triggerImmediateTick prevents tick storms when both
 		// parties are agents and a back-and-forth develops.
 		if r.InsideStructureID.Valid {
-			app.triggerCoLocatedTicks(ctx, r.InsideStructureID.String, r.ID, "heard-speech", false)
+			app.triggerCoLocatedTicks(ctx, r.InsideStructureID.String, r.ID, "heard-speech", false, sceneID)
 		}
 
 	case "done":
