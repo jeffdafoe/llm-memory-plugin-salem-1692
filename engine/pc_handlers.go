@@ -279,6 +279,24 @@ func (app *App) handlePCSay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Verify the target is an agentized NPC. Non-agent villagers (npc rows
+	// without llm_memory_agent) are physically present but conversationally
+	// invisible — addressing them silently fails because there's no virtual
+	// agent on the memory-api side to receive the chat.
+	var hasAgent bool
+	if err := app.DB.QueryRow(r.Context(),
+		`SELECT EXISTS(SELECT 1 FROM npc WHERE llm_memory_agent = $1)`,
+		req.Target,
+	).Scan(&hasAgent); err != nil {
+		log.Printf("pc/say target check: %v", err)
+		jsonError(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+	if !hasAgent {
+		jsonError(w, "target is not addressable", http.StatusBadRequest)
+		return
+	}
+
 	authHeader := r.Header.Get("Authorization")
 	if authHeader == "" {
 		jsonError(w, "Missing Authorization header", http.StatusUnauthorized)

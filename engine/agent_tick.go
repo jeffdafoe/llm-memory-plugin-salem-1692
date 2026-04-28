@@ -464,14 +464,11 @@ func (app *App) triggerCoLocatedTicks(ctx context.Context, structureID, excludeN
 // successive ticks.
 func agentToolSpec() []agentToolDef {
 	return []agentToolDef{
-		{
-			Name:        "look_around",
-			Description: "Observe who and what is at your current location. Returns a description.",
-			Parameters: map[string]interface{}{
-				"type":       "object",
-				"properties": map[string]interface{}{},
-			},
-		},
+		// look_around used to be here. Dropped because the perception
+		// already includes a "Here:" block listing co-located NPCs/PCs
+		// from scene_huddle membership — same information, no extra
+		// round-trip. Removing the tool cuts one harness iteration off
+		// every tick.
 		{
 			Name:        "move_to",
 			Description: "Walk to a named structure or person's home in Salem. The engine handles pathfinding.",
@@ -795,7 +792,11 @@ func (app *App) lastActionFeedback(ctx context.Context, npcID string) string {
 // assigned roles — they're identified by character, not occupation).
 func (app *App) coLocatedHuddleMembers(ctx context.Context, npcID string) []string {
 	rows, err := app.DB.Query(ctx,
-		// NPCs in the same huddle (excluding self).
+		// NPCs in the same huddle (excluding self). Only agentized NPCs
+		// (llm_memory_agent IS NOT NULL) appear — non-agent villagers are
+		// physically present but conversationally invisible. Otherwise
+		// agents would address them by name and get nothing back, breaking
+		// immersion.
 		`SELECT n.display_name AS name, va.role, 'npc' AS kind,
 		        EXISTS(
 		            SELECT 1 FROM npc_acquaintance a
@@ -809,6 +810,7 @@ func (app *App) coLocatedHuddleMembers(ctx context.Context, npcID string) []stri
 		        SELECT current_huddle_id FROM npc WHERE id::text = $1
 		    )
 		    AND n.id::text != $1
+		    AND n.llm_memory_agent IS NOT NULL
 		 UNION ALL
 		 -- PCs in the same huddle. Display by character_name (in-world
 		 -- identity), gated against npc_acquaintance.other_name = the
