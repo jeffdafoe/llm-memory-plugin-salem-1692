@@ -20,10 +20,12 @@
 
 BEGIN;
 
--- Phase enum — reusable elsewhere in the engine if anything else wants
--- to log "what phase did this happen in." Three slots per Salem day,
+-- Phase enum — three narrative phases per Salem day (dawn, midday, dusk),
 -- computed from existing world_dawn_time / world_dusk_time settings.
-CREATE TYPE world_phase AS ENUM ('dawn', 'midday', 'dusk');
+-- Named chronicler_phase to avoid collision with the existing world_phase
+-- table (ZBBS-038, day/night singleton). The day/night cycle and the
+-- chronicler's three-phase narrative beat are different axes.
+CREATE TYPE chronicler_phase AS ENUM ('dawn', 'midday', 'dusk');
 
 -- Event visibility scopes. Village = everyone perceives. Local = only
 -- NPCs at the matching structure perceive. Private = only the named
@@ -39,7 +41,7 @@ CREATE TABLE world_environment (
     id      BIGSERIAL PRIMARY KEY,
     text    TEXT NOT NULL,
     set_by  TEXT NOT NULL DEFAULT 'salem-chronicler',
-    phase   world_phase,  -- NULL when set outside a phase fire (cascade-origin)
+    phase   chronicler_phase,  -- NULL when set outside a phase fire (cascade-origin)
     set_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX ix_world_environment_set_at ON world_environment (set_at DESC);
