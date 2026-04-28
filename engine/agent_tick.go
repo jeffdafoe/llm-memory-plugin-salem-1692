@@ -225,11 +225,13 @@ func (app *App) loadAgentNPCRows(ctx context.Context) ([]agentNPCRow, error) {
 // tool_call.id. handleDirectChat rebuilds OpenAI-shape messages[] from the
 // stored chat rows on every call.
 //
-// Multi-tool turns: the harness only resolves ONE observation tool per
-// iteration (or executes the first commit tool if any). Multi-tool replies
-// are rare in practice; if they happen, the model gets another iteration to
-// re-request anything we skipped. This keeps the chat-message shape clean
-// (one tool_call_id per row) without bundling logic on the engine side.
+// Multi-tool turns: the harness resolves ONE tool per iteration. Speak
+// is non-terminal — after a speak fires, the loop continues so the model
+// can follow through with a move/chore in the same tick (e.g. "I'll go
+// close the stall" → move_to). Move/chore/done terminate the loop:
+// move/chore put a walk in flight, done means no further action. Multi-
+// tool replies in a single iteration are rare; if they happen, anything
+// past [0] is dropped and the model gets another iteration.
 func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time.Time, dawnMin, duskMin int) {
 	perception, locationName := app.buildAgentPerception(ctx, r, hourStart, dawnMin, duskMin)
 	tools := agentToolSpec()
@@ -257,27 +259,51 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			break
 		}
 
-		// Prefer commit tool if any (matches prior precedence). Otherwise
-		// take the first observation tool. Anything beyond [0] is dropped —
-		// see comment on the function for why.
-		var observation *agentToolCall
+		// Pick the first tool_call to act on. Terminal commits (move_to,
+		// chore, done) win over speak; speak wins over an unrecognized
+		// observation. This preserves the prior precedence and avoids
+		// emitting two physical actions in one tick.
+		var terminalCall, speakCall, observation *agentToolCall
 		for i := range reply.ToolCalls {
 			tc := &reply.ToolCalls[i]
-			if isCommitTool(tc.Name) {
-				commitCall = tc
-				break
-			}
-			if observation == nil {
-				observation = tc
+			switch tc.Name {
+			case "move_to", "chore", "done":
+				if terminalCall == nil {
+					terminalCall = tc
+				}
+			case "speak":
+				if speakCall == nil {
+					speakCall = tc
+				}
+			default:
+				if observation == nil {
+					observation = tc
+				}
 			}
 		}
-		if commitCall != nil {
+
+		if terminalCall != nil {
+			commitCall = terminalCall
 			break
 		}
+
+		if speakCall != nil {
+			// Execute the speak inline (audit + WS broadcast + co-located
+			// event-ticks) but DON'T terminate the loop. The model gets to
+			// follow through with a move/chore/done on the next iteration.
+			// Pass an empty tool_result back so the chat message is well-
+			// formed (tool_call_id matches), but no payload to bias the
+			// model's next choice.
+			app.executeAgentCommit(ctx, r, speakCall)
+			currentMessage = ""
+			currentToolCallID = speakCall.ID
+			continue
+		}
+
 		if observation == nil {
-			// All tool_calls unrecognized as commit or observation. Defensive
-			// — agentToolSpec is fixed — but treat as no-op done so the tick
-			// still terminates with an audit row.
+			// All tool_calls unrecognized. Defensive — agentToolSpec is
+			// fixed — but treat as no-op done so the tick still terminates
+			// with an audit row.
 			commitCall = &agentToolCall{
 				ID:    fmt.Sprintf("synthetic-unknown-%d", iter),
 				Name:  "done",
@@ -291,8 +317,10 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 		currentToolCallID = observation.ID
 	}
 
-	// Budget exhausted without a commit — synthesize "done" so we always
-	// terminate cleanly. Costs the NPC one wasted hour; rare.
+	// Budget exhausted without a terminal commit — synthesize "done" so we
+	// always terminate cleanly. Note: any speak commits during the loop
+	// have already been executed; this only writes the audit row for the
+	// final terminal action.
 	if commitCall == nil {
 		commitCall = &agentToolCall{
 			ID:    "synthetic-budget-exhausted",
@@ -471,13 +499,13 @@ func agentToolSpec() []agentToolDef {
 		// every tick.
 		{
 			Name:        "move_to",
-			Description: "Walk to a named structure or person's home in Salem. The engine handles pathfinding.",
+			Description: "Walk to a named structure, your own home or work, or a neighbor's home. The engine handles pathfinding.",
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"destination": map[string]interface{}{
 						"type":        "string",
-						"description": "Structure name ('Smithy', 'Tavern', 'Home') or a neighbor's home ('Goody Smith's home').",
+						"description": "A structure name ('Smithy', 'Tavern', 'Meeting House'), your own place ('home', 'work', 'my house'), or a neighbor's home ('Goody Smith's home').",
 					},
 				},
 				"required": []string{"destination"},
@@ -1119,7 +1147,20 @@ func (app *App) executeAgentMoveTo(ctx context.Context, r *agentNPCRow, dest str
 // walk_y) lookup for both move_to and the look-around-arrival path it
 // reuses. See executeAgentMoveTo's comment for the resolution order.
 func (app *App) resolveMoveDestination(ctx context.Context, r *agentNPCRow, dest string) (string, float64, float64, error) {
-	// 1. Occupant-named home? Strip trailing "'s home" / "'s house" and
+	// 1. Self-reference keywords. The model often says move_to("home") or
+	// move_to("my work") rather than the explicit structure name — and the
+	// tool description even claims "Home" works. Resolve these against
+	// this NPC's own home_structure_id / work_structure_id without
+	// relying on a name match. Case-insensitive, accepts a few common
+	// phrasings.
+	if structureID, x, y, ok, err := app.resolveSelfReference(ctx, r, dest); ok || err != nil {
+		if err != nil {
+			return "", 0, 0, err
+		}
+		return structureID, x, y, nil
+	}
+
+	// 2. Occupant-named home? Strip trailing "'s home" / "'s house" and
 	// look up the owner's home_structure_id. We accept either suffix
 	// because the perception emits "X's home" but the LLM may rephrase.
 	if owner, ok := stripOccupantHomeSuffix(dest); ok {
@@ -1215,6 +1256,61 @@ func pickWalkTarget(r *agentNPCRow, structureID string, ox, oy float64,
 func loiterJitter() (float64, float64) {
 	const jitterRange = 14.0 // pixels; half-tile-ish
 	return (rand.Float64()*2 - 1) * jitterRange, (rand.Float64()*2 - 1) * jitterRange
+}
+
+// resolveSelfReference handles destinations that point at this NPC's own
+// home or workplace. Returns (id, walkX, walkY, true, nil) when matched,
+// (_, _, _, false, nil) when not a self-reference, or an error if a
+// match was attempted but the lookup failed (e.g. NPC has no home set).
+//
+// Owners walk to the door tile (no jitter) — same flow scheduled worker
+// arrivals use, so the existing inside/stand-offset rendering chain
+// stays intact.
+func (app *App) resolveSelfReference(ctx context.Context, r *agentNPCRow, dest string) (string, float64, float64, bool, error) {
+	d := strings.ToLower(strings.TrimSpace(dest))
+	homePhrases := map[string]bool{
+		"home": true, "my home": true, "back home": true,
+		"house": true, "my house": true, "go home": true,
+	}
+	workPhrases := map[string]bool{
+		"work": true, "my work": true, "the shop": true,
+		"my shop": true, "go to work": true, "the workplace": true,
+		"my workplace": true,
+	}
+
+	var targetID string
+	switch {
+	case homePhrases[d]:
+		if !r.HomeStructureID.Valid || r.HomeStructureID.String == "" {
+			return "", 0, 0, true, fmt.Errorf("you have no home assigned")
+		}
+		targetID = r.HomeStructureID.String
+	case workPhrases[d]:
+		if !r.WorkStructureID.Valid || r.WorkStructureID.String == "" {
+			return "", 0, 0, true, fmt.Errorf("you have no work assigned")
+		}
+		targetID = r.WorkStructureID.String
+	default:
+		return "", 0, 0, false, nil
+	}
+
+	row := app.DB.QueryRow(ctx,
+		`SELECT o.id::text, o.x, o.y,
+		        o.loiter_offset_x, o.loiter_offset_y,
+		        a.door_offset_x, a.door_offset_y, a.footprint_bottom
+		 FROM village_object o JOIN asset a ON a.id = o.asset_id
+		 WHERE o.id::text = $1`,
+		targetID)
+	var oID string
+	var ox, oy float64
+	var loiterX, loiterY sql.NullInt32
+	var doorX, doorY sql.NullInt32
+	var footprintBottom int
+	if err := row.Scan(&oID, &ox, &oy, &loiterX, &loiterY, &doorX, &doorY, &footprintBottom); err != nil {
+		return "", 0, 0, true, err
+	}
+	wx, wy := pickWalkTarget(r, oID, ox, oy, loiterX, loiterY, doorX, doorY, footprintBottom)
+	return oID, wx, wy, true, nil
 }
 
 // stripOccupantHomeSuffix detects strings like "Goody Smith's home" /
