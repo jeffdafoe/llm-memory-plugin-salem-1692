@@ -9,7 +9,7 @@ package main
 //   1. Build a minimal perception (location, time, scheduler default,
 //      list of named destinations).
 //   2. POST /agent/tick with perception + tool spec.
-//   3. If response carries observation tool_calls (look_around, recall),
+//   3. If response carries observation tool_calls (recall),
 //      resolve them against engine state, append to messages, re-POST.
 //   4. If response carries a commit tool_call (move_to, speak, done),
 //      execute it against engine state, write an agent_action_log row,
@@ -46,6 +46,13 @@ const (
 	agentTickBudget          = 6
 	agentTickActiveStartHour = 6
 	agentTickActiveEndHour   = 21 // exclusive — last active hour is 20:00-21:00
+	// Top-K notes returned per recall. The API groups by (namespace,
+	// source_file) so each row is one note.
+	recallResultLimit = 5
+	// Defensive cap on the query length the model can submit to recall.
+	// The tool schema is just `string`, so a runaway model could otherwise
+	// dump kilobytes of text into the embedding pipeline.
+	recallQueryMaxChars = 500
 	// Per-NPC tick offset window. The dispatcher staggers each NPC's
 	// baseline tick within the game-hour using a deterministic hash of
 	// their UUID — Ezekiel might fire at hour+7min, John at hour+23min,
@@ -540,11 +547,6 @@ func (app *App) triggerCoLocatedTicks(ctx context.Context, structureID, excludeN
 // successive ticks.
 func agentToolSpec() []agentToolDef {
 	return []agentToolDef{
-		// look_around used to be here. Dropped because the perception
-		// already includes a "Here:" block listing co-located NPCs/PCs
-		// from scene_huddle membership — same information, no extra
-		// round-trip. Removing the tool cuts one harness iteration off
-		// every tick.
 		{
 			Name:        "move_to",
 			Description: "Walk to a named structure, your own home or work, or a neighbor's home. The engine handles pathfinding.",
@@ -592,11 +594,25 @@ func agentToolSpec() []agentToolDef {
 				"properties": map[string]interface{}{},
 			},
 		},
+		{
+			Name:        "recall",
+			Description: "Try to remember something — search your past notes, dreams, and impressions for anything relevant. Use this when you want to recall what you know about a person, place, or event. Phrase the query in your own words.",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"query": map[string]interface{}{
+						"type":        "string",
+						"description": "What you're trying to remember.",
+					},
+				},
+				"required": []string{"query"},
+			},
+		},
 	}
 }
 
 // isCommitTool reports whether the named tool, when emitted, ends the
-// harness loop. Observation tools (look_around, recall) don't.
+// harness loop. Observation tools (recall) don't.
 func isCommitTool(name string) bool {
 	switch name {
 	case "move_to", "chore", "speak", "done":
@@ -627,8 +643,9 @@ func isCommitTool(name string) bool {
 // linkage from npc — that way a placement is identifiable as "Goody Smith's
 // house" even when the placement itself has no display_name.
 //
-// Returns (perception, currentLocationName). The location name is also
-// passed to the look_around resolver so it doesn't have to re-query.
+// Returns (perception, currentLocationName). The location name is plumbed
+// through to resolveObservationTool for any future location-aware
+// observation tool that wants it without a re-query.
 func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourStart time.Time, dawnMin, duskMin int) (string, string) {
 	locationName := "the open village"
 	if r.InsideStructureID.Valid {
@@ -825,9 +842,9 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 	}
 
 	// 6. Decision prompt.
-	sections = append(sections, "Decide what to do this hour. You may use look_around first to see who is here, "+
-		"then commit with move_to (walk to a named place), chore (run a quick errand by category), "+
-		"speak (say something), or done (rest).")
+	sections = append(sections, "Decide what to do this hour, then commit with move_to (walk to a named place), "+
+		"chore (run a quick errand by category), speak (say something), or done (rest). "+
+		"You can also use recall first if you want to remember anything specific.")
 
 	return strings.Join(sections, "\n\n"), locationName
 }
@@ -1011,43 +1028,51 @@ func formatHHMM(minutes int) string {
 }
 
 // resolveObservationTool runs an observation tool against engine state and
-// returns the text the LLM sees as the tool result. M6.3 implements only
-// look_around; recall and assess_person are M6.4+ work.
+// returns the text the LLM sees as the tool result.
 func (app *App) resolveObservationTool(ctx context.Context, r *agentNPCRow, tc *agentToolCall, locationName string) string {
 	switch tc.Name {
-	case "look_around":
-		return app.resolveLookAround(ctx, r, locationName)
+	case "recall":
+		query, _ := tc.Input["query"].(string)
+		return app.resolveRecall(ctx, r, query)
 	}
 	return fmt.Sprintf("[Unknown observation tool: %s]", tc.Name)
 }
 
-// resolveLookAround reports who else shares the NPC's current location.
-// Inside-structure NPCs see other NPCs in the same structure; outside NPCs
-// see no one specific (we'd need a position-radius query for the open map,
-// deferred to a future tick).
-func (app *App) resolveLookAround(ctx context.Context, r *agentNPCRow, locationName string) string {
-	if !r.InsideStructureID.Valid {
-		return fmt.Sprintf("You are out in %s. No one specific is at hand.", locationName)
+// resolveRecall queries the NPC's own namespace via /v1/memory/search and
+// formats the top-K note hits as a tool-result text block. agentTickBudget
+// is the natural ceiling on how many recalls a single tick can spend — no
+// soft cap here. Empty results return "Nothing comes to mind." so the
+// model has a clean signal that the search ran but found nothing.
+func (app *App) resolveRecall(ctx context.Context, r *agentNPCRow, query string) string {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return "You tried to remember something but couldn't form the question."
 	}
-	rows, err := app.DB.Query(ctx,
-		`SELECT display_name FROM npc
-		 WHERE inside_structure_id = $1 AND id != $2`,
-		r.InsideStructureID.String, r.ID)
+	if len(query) > recallQueryMaxChars {
+		query = query[:recallQueryMaxChars]
+	}
+	if strings.TrimSpace(r.LLMMemoryAgent) == "" {
+		log.Printf("agent-tick %s recall: missing llm memory agent", r.DisplayName)
+		return "You tried to recall but the memory wouldn't come."
+	}
+	hits, err := app.npcChatClient.searchMemory(ctx, r.LLMMemoryAgent, query, recallResultLimit)
 	if err != nil {
-		return fmt.Sprintf("You are at %s. (Engine error querying who is here.)", locationName)
+		log.Printf("agent-tick %s recall: %v", r.DisplayName, err)
+		return "You tried to recall but the memory wouldn't come."
 	}
-	defer rows.Close()
-	var names []string
-	for rows.Next() {
-		var n string
-		if err := rows.Scan(&n); err == nil {
-			names = append(names, n)
-		}
+	if len(hits) == 0 {
+		return "Nothing comes to mind."
 	}
-	if len(names) == 0 {
-		return fmt.Sprintf("You are at %s. No one else is here.", locationName)
+	var b strings.Builder
+	b.WriteString("You remember:\n\n")
+	for _, h := range hits {
+		b.WriteString("— ")
+		b.WriteString(h.SourceFile)
+		b.WriteString(" —\n")
+		b.WriteString(h.ChunkText)
+		b.WriteString("\n\n")
 	}
-	return fmt.Sprintf("You are at %s. Also here: %s.", locationName, strings.Join(names, ", "))
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // executeAgentCommit translates the LLM's chosen commit tool into engine
