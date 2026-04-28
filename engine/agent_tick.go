@@ -1124,7 +1124,7 @@ func (app *App) resolveMoveDestination(ctx context.Context, r *agentNPCRow, dest
 		row := app.DB.QueryRow(ctx,
 			`SELECT n.home_structure_id::text, o.id::text, o.x, o.y,
 			        o.loiter_offset_x, o.loiter_offset_y,
-			        a.door_offset_x, a.door_offset_y
+			        a.door_offset_x, a.door_offset_y, a.footprint_bottom
 			 FROM npc n
 			 JOIN village_object o ON o.id = n.home_structure_id
 			 JOIN asset a ON a.id = o.asset_id
@@ -1136,8 +1136,9 @@ func (app *App) resolveMoveDestination(ctx context.Context, r *agentNPCRow, dest
 		var ox, oy float64
 		var loiterX, loiterY sql.NullInt32
 		var doorX, doorY sql.NullInt32
-		if err := row.Scan(&hsID, &oID, &ox, &oy, &loiterX, &loiterY, &doorX, &doorY); err == nil {
-			wx, wy := pickWalkTarget(r, hsID, ox, oy, loiterX, loiterY, doorX, doorY)
+		var footprintBottom int
+		if err := row.Scan(&hsID, &oID, &ox, &oy, &loiterX, &loiterY, &doorX, &doorY, &footprintBottom); err == nil {
+			wx, wy := pickWalkTarget(r, hsID, ox, oy, loiterX, loiterY, doorX, doorY, footprintBottom)
 			return oID, wx, wy, nil
 		} else if err != sql.ErrNoRows {
 			return "", 0, 0, err
@@ -1150,7 +1151,7 @@ func (app *App) resolveMoveDestination(ctx context.Context, r *agentNPCRow, dest
 	row := app.DB.QueryRow(ctx,
 		`SELECT o.id::text, o.x, o.y,
 		        o.loiter_offset_x, o.loiter_offset_y,
-		        a.door_offset_x, a.door_offset_y
+		        a.door_offset_x, a.door_offset_y, a.footprint_bottom
 		 FROM village_object o
 		 JOIN asset a ON a.id = o.asset_id
 		 WHERE COALESCE(o.display_name, a.name) ILIKE $1 || '%'
@@ -1161,20 +1162,23 @@ func (app *App) resolveMoveDestination(ctx context.Context, r *agentNPCRow, dest
 	var ox, oy float64
 	var loiterX, loiterY sql.NullInt32
 	var doorX, doorY sql.NullInt32
-	if err := row.Scan(&oID, &ox, &oy, &loiterX, &loiterY, &doorX, &doorY); err != nil {
+	var footprintBottom int
+	if err := row.Scan(&oID, &ox, &oy, &loiterX, &loiterY, &doorX, &doorY, &footprintBottom); err != nil {
 		if err == sql.ErrNoRows {
 			return "", 0, 0, fmt.Errorf("no structure matches %q", dest)
 		}
 		return "", 0, 0, err
 	}
-	wx, wy := pickWalkTarget(r, oID, ox, oy, loiterX, loiterY, doorX, doorY)
+	wx, wy := pickWalkTarget(r, oID, ox, oy, loiterX, loiterY, doorX, doorY, footprintBottom)
 	return oID, wx, wy, nil
 }
 
 // pickWalkTarget chooses the walk-to coordinates for an agent-initiated
 // move. Owners (NPC's own home or work) walk to door_offset so the
 // existing arrive/inside/stand_offset rendering chain stays intact.
-// Visitors prefer loiter_offset, falling back to door_offset, then anchor.
+// Visitors land at the placement's effective loiter spot (the same one
+// the editor's green marker renders at) — see effectiveLoiterTile in
+// village_objects.go for the resolution formula.
 //
 // All offsets are tile-unit ints; multiplied by tileSize=32.0 to get the
 // pixel coordinate the walk dispatcher expects.
@@ -1182,21 +1186,19 @@ func (app *App) resolveMoveDestination(ctx context.Context, r *agentNPCRow, dest
 // Visitor jitter (ZBBS-075): when several NPCs walk to the same loiter
 // point in close succession (e.g. four villagers heading to the well),
 // landing all of them on the same pixel is visually confusing — they
-// stack and look like one sprite. We add a small ±half-tile random
-// offset to the loiter target so they cluster naturally instead. Owners
-// (door path) get no jitter — their arrive/inside flow assumes the door
-// tile exactly. Same for the anchor fallback.
+// stack and look like one sprite. A small ±half-tile random offset
+// spreads them out naturally. Owners (door path) get no jitter — their
+// arrive/inside flow assumes the door tile exactly.
 func pickWalkTarget(r *agentNPCRow, structureID string, ox, oy float64,
-	loiterX, loiterY, doorX, doorY sql.NullInt32) (float64, float64) {
+	loiterX, loiterY, doorX, doorY sql.NullInt32, footprintBottom int) (float64, float64) {
 	const tileSize = 32.0
 	isOwner := (r.HomeStructureID.Valid && r.HomeStructureID.String == structureID) ||
 		(r.WorkStructureID.Valid && r.WorkStructureID.String == structureID)
 
-	if !isOwner && loiterX.Valid && loiterY.Valid {
-		baseX := ox + float64(loiterX.Int32)*tileSize
-		baseY := oy + float64(loiterY.Int32)*tileSize
+	if !isOwner {
+		lx, ly := effectiveLoiterTile(loiterX, loiterY, doorX, doorY, footprintBottom)
 		jx, jy := loiterJitter()
-		return baseX + jx, baseY + jy
+		return ox + float64(lx)*tileSize + jx, oy + float64(ly)*tileSize + jy
 	}
 	if doorX.Valid && doorY.Valid {
 		return ox + float64(doorX.Int32)*tileSize, oy + float64(doorY.Int32)*tileSize
@@ -1245,7 +1247,7 @@ func (app *App) executeAgentChore(ctx context.Context, r *agentNPCRow, category 
 	row := app.DB.QueryRow(ctx,
 		`SELECT o.id::text, o.x, o.y,
 		        o.loiter_offset_x, o.loiter_offset_y,
-		        a.door_offset_x, a.door_offset_y
+		        a.door_offset_x, a.door_offset_y, a.footprint_bottom
 		 FROM village_object o
 		 JOIN asset a ON a.id = o.asset_id
 		 JOIN village_object_tag vot ON vot.object_id = o.id
@@ -1257,13 +1259,14 @@ func (app *App) executeAgentChore(ctx context.Context, r *agentNPCRow, category 
 	var ox, oy float64
 	var loiterX, loiterY sql.NullInt32
 	var doorX, doorY sql.NullInt32
-	if err := row.Scan(&oID, &ox, &oy, &loiterX, &loiterY, &doorX, &doorY); err != nil {
+	var footprintBottom int
+	if err := row.Scan(&oID, &ox, &oy, &loiterX, &loiterY, &doorX, &doorY, &footprintBottom); err != nil {
 		if err == sql.ErrNoRows {
 			return fmt.Errorf("no placement tagged %q", category)
 		}
 		return err
 	}
-	wx, wy := pickWalkTarget(r, oID, ox, oy, loiterX, loiterY, doorX, doorY)
+	wx, wy := pickWalkTarget(r, oID, ox, oy, loiterX, loiterY, doorX, doorY, footprintBottom)
 
 	npc := &behaviorNPC{ID: r.ID, CurX: r.CurrentX, CurY: r.CurrentY}
 	app.interpolateCurrentPos(npc)

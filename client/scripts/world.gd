@@ -1140,10 +1140,16 @@ func _place_object(data: Dictionary) -> void:
     container.set_meta("tags", tags_raw if tags_raw is Array else [])
     # Per-instance loiter offset (ZBBS-075). Tile-unit ints, both nullable.
     # Stored as variants so the editor can distinguish "not set" (null)
-    # from "set to (0, 0)" (legitimate origin offset). Marker code handles
-    # the null branch by falling back to the door offset.
+    # from "set to (0, 0)" (legitimate origin offset). The fill state of
+    # the green marker (placeholder vs. configured) reads these.
     container.set_meta("loiter_offset_x", data.get("loiter_offset_x", null))
     container.set_meta("loiter_offset_y", data.get("loiter_offset_y", null))
+    # Effective loiter — the canonical position the marker renders at AND
+    # the engine's visitor walk-resolver targets. Computed server-side via
+    # effectiveLoiterTile (engine/village_objects.go). Single source of
+    # truth — never recompute the placeholder formula on the client.
+    container.set_meta("effective_loiter_offset_x", data.get("effective_loiter_offset_x", null))
+    container.set_meta("effective_loiter_offset_y", data.get("effective_loiter_offset_y", null))
 
     var sprite_node: Node2D = _create_sprite_node(state_info, texture, anchor_x, anchor_y)
     container.add_child(sprite_node)
@@ -1680,6 +1686,10 @@ func apply_object_loiter_offset_changed(data: Dictionary) -> void:
     var oy = data.get("loiter_offset_y", null)
     node.set_meta("loiter_offset_x", ox)
     node.set_meta("loiter_offset_y", oy)
+    # Server recomputes effective on every change and broadcasts both;
+    # store both so the marker stays in sync without recomputing.
+    node.set_meta("effective_loiter_offset_x", data.get("effective_loiter_offset_x", null))
+    node.set_meta("effective_loiter_offset_y", data.get("effective_loiter_offset_y", null))
     object_loiter_offset_changed.emit(object_id, ox, oy)
 
 ## WS event — another admin (or ourselves) added or removed a tag on a

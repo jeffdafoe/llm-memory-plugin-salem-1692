@@ -51,6 +51,41 @@ type villageObject struct {
 	// draggable pin on the placement when set.
 	LoiterOffsetX *int `json:"loiter_offset_x"`
 	LoiterOffsetY *int `json:"loiter_offset_y"`
+	// Effective loiter offset — the position the editor renders the green
+	// dot at AND the agent walk-resolver targets. Computed via
+	// effectiveLoiterTile from the per-instance override + asset door +
+	// footprint_bottom. Always populated. Single source of truth: both
+	// editor and engine consume this rather than reimplementing the
+	// fallback formula.
+	EffectiveLoiterX int `json:"effective_loiter_offset_x"`
+	EffectiveLoiterY int `json:"effective_loiter_offset_y"`
+}
+
+// effectiveLoiterTile returns the canonical loiter offset (tile units)
+// for a placement. The editor renders the green loiter marker at this
+// position; the agent walk resolver targets it for visitor moves.
+//
+// Resolution order:
+//
+//  1. Per-instance loiter_offset, when set.
+//  2. Asset door_offset + 1 tile south, when door is set. This is the
+//     "natural" loiter spot — visitors stand just below the door tile,
+//     out of the way of arriving/leaving traffic.
+//  3. Anchor-relative (0, footprint_bottom + 2) — the absolute fallback
+//     when an asset has neither door nor configured loiter. Two tiles
+//     below the bottom of the visible footprint.
+//
+// Single source of truth: keep this function the only implementation
+// of the formula. Both pickWalkTarget (engine-internal) and
+// handleListVillageObjects (API to editor) call it.
+func effectiveLoiterTile(loiterX, loiterY, doorX, doorY sql.NullInt32, footprintBottom int) (int, int) {
+	if loiterX.Valid && loiterY.Valid {
+		return int(loiterX.Int32), int(loiterY.Int32)
+	}
+	if doorX.Valid && doorY.Valid {
+		return int(doorX.Int32), int(doorY.Int32) + 1
+	}
+	return 0, footprintBottom + 2
 }
 
 // handleListVillageObjects returns all placed objects.
@@ -61,8 +96,10 @@ func (app *App) handleListVillageObjects(w http.ResponseWriter, r *http.Request)
 		`SELECT o.id, o.asset_id, o.current_state, o.x, o.y,
 		        o.placed_by, o.owner, o.display_name, o.attached_to,
 		        COALESCE(t.tags, ARRAY[]::varchar[]),
-		        o.loiter_offset_x, o.loiter_offset_y
+		        o.loiter_offset_x, o.loiter_offset_y,
+		        a.door_offset_x, a.door_offset_y, a.footprint_bottom
 		 FROM village_object o
+		 JOIN asset a ON a.id = o.asset_id
 		 LEFT JOIN LATERAL (
 		     SELECT array_agg(tag ORDER BY tag) AS tags
 		     FROM village_object_tag
@@ -79,12 +116,25 @@ func (app *App) handleListVillageObjects(w http.ResponseWriter, r *http.Request)
 	objects := []villageObject{}
 	for rows.Next() {
 		var obj villageObject
+		var doorX, doorY sql.NullInt32
+		var footprintBottom int
+		var rawLoiterX, rawLoiterY sql.NullInt32
 		if err := rows.Scan(&obj.ID, &obj.AssetID, &obj.CurrentState,
 			&obj.X, &obj.Y, &obj.PlacedBy, &obj.Owner, &obj.DisplayName, &obj.AttachedTo,
 			&obj.Tags,
-			&obj.LoiterOffsetX, &obj.LoiterOffsetY); err != nil {
+			&rawLoiterX, &rawLoiterY,
+			&doorX, &doorY, &footprintBottom); err != nil {
 			continue
 		}
+		if rawLoiterX.Valid {
+			v := int(rawLoiterX.Int32)
+			obj.LoiterOffsetX = &v
+		}
+		if rawLoiterY.Valid {
+			v := int(rawLoiterY.Int32)
+			obj.LoiterOffsetY = &v
+		}
+		obj.EffectiveLoiterX, obj.EffectiveLoiterY = effectiveLoiterTile(rawLoiterX, rawLoiterY, doorX, doorY, footprintBottom)
 		objects = append(objects, obj)
 	}
 
@@ -361,19 +411,21 @@ func (app *App) handleSetVillageObjectLoiterOffset(w http.ResponseWriter, r *htt
 		return
 	}
 
-	// Read OLD offset + asset door fallback BEFORE the UPDATE so we can
-	// compute the position visitors would have walked to. Same fallback
-	// chain pickWalkTarget uses (loiter → door → anchor).
+	// Read OLD offset + asset door + footprint_bottom BEFORE the UPDATE so
+	// we can compute the position visitors would have walked to. Asset
+	// fields feed effectiveLoiterTile for both the old (pre-update) and new
+	// (post-update) targets.
 	var oldLoiterX, oldLoiterY sql.NullInt32
 	var doorX, doorY sql.NullInt32
 	var anchorX, anchorY float64
+	var footprintBottom int
 	if err := app.DB.QueryRow(r.Context(),
 		`SELECT o.loiter_offset_x, o.loiter_offset_y,
-		        a.door_offset_x, a.door_offset_y,
+		        a.door_offset_x, a.door_offset_y, a.footprint_bottom,
 		        o.x, o.y
 		 FROM village_object o JOIN asset a ON a.id = o.asset_id
 		 WHERE o.id = $1`,
-		id).Scan(&oldLoiterX, &oldLoiterY, &doorX, &doorY, &anchorX, &anchorY); err != nil {
+		id).Scan(&oldLoiterX, &oldLoiterY, &doorX, &doorY, &footprintBottom, &anchorX, &anchorY); err != nil {
 		if err == sql.ErrNoRows {
 			jsonError(w, "Object not found", http.StatusNotFound)
 			return
@@ -395,13 +447,21 @@ func (app *App) handleSetVillageObjectLoiterOffset(w http.ResponseWriter, r *htt
 		return
 	}
 
+	// Compute new effective values for the broadcast — clients (editor)
+	// render the green dot at the effective position regardless of whether
+	// loiter_offset itself is set, so the WS payload carries both.
+	newRawX, newRawY := intPtrToNullInt32(req.LoiterOffsetX), intPtrToNullInt32(req.LoiterOffsetY)
+	effX, effY := effectiveLoiterTile(newRawX, newRawY, doorX, doorY, footprintBottom)
+
 	w.WriteHeader(http.StatusNoContent)
 	app.Hub.Broadcast(WorldEvent{
 		Type: "object_loiter_offset_changed",
 		Data: map[string]interface{}{
-			"id":              id,
-			"loiter_offset_x": req.LoiterOffsetX,
-			"loiter_offset_y": req.LoiterOffsetY,
+			"id":                        id,
+			"loiter_offset_x":           req.LoiterOffsetX,
+			"loiter_offset_y":           req.LoiterOffsetY,
+			"effective_loiter_offset_x": effX,
+			"effective_loiter_offset_y": effY,
 		},
 	})
 
@@ -409,8 +469,18 @@ func (app *App) handleSetVillageObjectLoiterOffset(w http.ResponseWriter, r *htt
 	// fail the PATCH response (the offset itself is already saved).
 	go app.relocateVisitorsAfterLoiterChange(
 		context.Background(), id, anchorX, anchorY,
-		oldLoiterX, oldLoiterY, req.LoiterOffsetX, req.LoiterOffsetY, doorX, doorY,
+		oldLoiterX, oldLoiterY, newRawX, newRawY, doorX, doorY, footprintBottom,
 	)
+}
+
+// intPtrToNullInt32 converts a *int (the JSON-decoded shape used in PATCH
+// bodies) into a sql.NullInt32 (the shape effectiveLoiterTile expects).
+// nil pointer becomes Valid=false; otherwise Valid=true with the int value.
+func intPtrToNullInt32(p *int) sql.NullInt32 {
+	if p == nil {
+		return sql.NullInt32{}
+	}
+	return sql.NullInt32{Int32: int32(*p), Valid: true}
 }
 
 // handleBulkCreateVillageObjects places multiple objects at once (for initial village population).
@@ -508,34 +578,23 @@ func (app *App) handleBulkCreateVillageObjects(w http.ResponseWriter, r *http.Re
 func (app *App) relocateVisitorsAfterLoiterChange(
 	ctx context.Context, objectID string, anchorX, anchorY float64,
 	oldLoiterX, oldLoiterY sql.NullInt32,
-	newOffsetX, newOffsetY *int,
+	newLoiterX, newLoiterY sql.NullInt32,
 	doorX, doorY sql.NullInt32,
+	footprintBottom int,
 ) {
 	const tileSize = 32.0
 	const nearRadius = 1.5 * tileSize
 	const nearRadiusSq = nearRadius * nearRadius
 
-	// OLD pixel position — same fallback chain as pickWalkTarget.
-	oldPx, oldPy := anchorX, anchorY
-	switch {
-	case oldLoiterX.Valid && oldLoiterY.Valid:
-		oldPx = anchorX + float64(oldLoiterX.Int32)*tileSize
-		oldPy = anchorY + float64(oldLoiterY.Int32)*tileSize
-	case doorX.Valid && doorY.Valid:
-		oldPx = anchorX + float64(doorX.Int32)*tileSize
-		oldPy = anchorY + float64(doorY.Int32)*tileSize
-	}
+	// OLD pixel position — effective loiter using the pre-update raw values.
+	oldLx, oldLy := effectiveLoiterTile(oldLoiterX, oldLoiterY, doorX, doorY, footprintBottom)
+	oldPx := anchorX + float64(oldLx)*tileSize
+	oldPy := anchorY + float64(oldLy)*tileSize
 
-	// NEW pixel position — same fallback chain.
-	newPx, newPy := anchorX, anchorY
-	switch {
-	case newOffsetX != nil && newOffsetY != nil:
-		newPx = anchorX + float64(*newOffsetX)*tileSize
-		newPy = anchorY + float64(*newOffsetY)*tileSize
-	case doorX.Valid && doorY.Valid:
-		newPx = anchorX + float64(doorX.Int32)*tileSize
-		newPy = anchorY + float64(doorY.Int32)*tileSize
-	}
+	// NEW pixel position — effective loiter using the post-update raw values.
+	newLx, newLy := effectiveLoiterTile(newLoiterX, newLoiterY, doorX, doorY, footprintBottom)
+	newPx := anchorX + float64(newLx)*tileSize
+	newPy := anchorY + float64(newLy)*tileSize
 
 	// Find candidates: NPCs inside the near-radius of OLD that don't own
 	// this placement. Exclude NPCs already walking — startReturnWalk on a
