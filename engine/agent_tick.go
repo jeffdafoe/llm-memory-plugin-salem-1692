@@ -760,7 +760,7 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 	// LLM reads them in chronological order. Skipped when the NPC is
 	// outside (no structure context to filter by).
 	if r.InsideStructureID.Valid {
-		recentLines := app.recentSpeechAtStructure(ctx, r.InsideStructureID.String, r.ID, 30*time.Minute, 5)
+		recentLines := app.recentSpeechAtStructure(ctx, r.InsideStructureID.String, r.DisplayName, 30*time.Minute, 5)
 		if len(recentLines) > 0 {
 			sections = append(sections, "Recent:\n"+strings.Join(recentLines, "\n"))
 		}
@@ -892,25 +892,27 @@ func (app *App) coLocatedHuddleMembers(ctx context.Context, npcID string) []stri
 // recentSpeechAtStructure pulls recent speak audit rows whose payload
 // records the same structure_id as the perceiving NPC's current
 // location. Returns "Speaker said: \"text\"" lines in chronological
-// order (oldest → newest). Excludes the perceiver's own utterances.
+// order (oldest → newest). The perceiver's own utterances appear as
+// "You said: ..." so the NPC sees their own commitments without the
+// disorientation of being referred to in third person in their own
+// perception.
 //
 // Window is wall-clock minutes; in Salem's no-time-acceleration model
 // that maps directly to game-minutes. Capped at the requested count.
-func (app *App) recentSpeechAtStructure(ctx context.Context, structureID, excludeNpcID string, window time.Duration, limit int) []string {
+func (app *App) recentSpeechAtStructure(ctx context.Context, structureID, perceiverName string, window time.Duration, limit int) []string {
 	rows, err := app.DB.Query(ctx,
 		// Reads speaker_name directly so PC speech (npc_id NULL) lands
-		// in the same query — no JOIN to npc. excludeNpcID filters out
-		// the perceiving NPC's own speeches; PCs always pass through.
+		// in the same query — no JOIN to npc. Includes the perceiver's
+		// own utterances; the formatter rewrites them to second person.
 		`SELECT al.speaker_name, al.payload->>'text' AS text
 		 FROM agent_action_log al
 		 WHERE al.action_type = 'speak'
 		   AND al.result = 'ok'
 		   AND al.payload->>'structure_id' = $1
-		   AND (al.npc_id IS NULL OR al.npc_id::text != $2)
-		   AND al.occurred_at > NOW() - $3::interval
+		   AND al.occurred_at > NOW() - $2::interval
 		 ORDER BY al.occurred_at DESC
-		 LIMIT $4`,
-		structureID, excludeNpcID, fmt.Sprintf("%d seconds", int(window.Seconds())), limit)
+		 LIMIT $3`,
+		structureID, fmt.Sprintf("%d seconds", int(window.Seconds())), limit)
 	if err != nil {
 		log.Printf("recent-speech: query: %v", err)
 		return nil
@@ -926,7 +928,11 @@ func (app *App) recentSpeechAtStructure(ctx context.Context, structureID, exclud
 		if text == "" {
 			continue
 		}
-		collected = append(collected, fmt.Sprintf("  %s said: \"%s\"", name, text))
+		if name == perceiverName {
+			collected = append(collected, fmt.Sprintf("  You said: \"%s\"", text))
+		} else {
+			collected = append(collected, fmt.Sprintf("  %s said: \"%s\"", name, text))
+		}
 	}
 	// Reverse in place so oldest comes first.
 	for i, j := 0, len(collected)-1; i < j; i, j = i+1, j-1 {
