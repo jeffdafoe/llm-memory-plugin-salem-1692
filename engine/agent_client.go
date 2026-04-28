@@ -43,12 +43,16 @@ type agentToolCall struct {
 
 // chatSendRequest is the /v1/chat/send body. ToolCallID is set when this
 // message is the engine's reply to a previous observation tool call;
-// omitted on the first iteration (the initial perception).
+// omitted on the first iteration (the initial perception). SceneID is the
+// MEM-121 scene UUID — minted at a cascade origin (PC speak / NPC arrival
+// / baseline tick) and inherited by every reactive tick in that cascade,
+// so the admin chat list can group same-scene rows together.
 type chatSendRequest struct {
 	ToAgents     []string       `json:"to_agents"`
 	Message      string         `json:"message"`
 	ToolsOffered []agentToolDef `json:"tools_offered,omitempty"`
 	ToolCallID   string         `json:"tool_call_id,omitempty"`
+	SceneID      string         `json:"scene_id,omitempty"`
 	Wait         bool           `json:"wait"`
 }
 
@@ -99,13 +103,16 @@ func newNPCChatClient(baseURL, engineKey string) *npcChatClient {
 // sendChat sends a wait=true chat to one NPC and returns the inline reply.
 // On iter 0 of a tick, message is the perception and toolCallID is empty.
 // On iter N>0, message is the tool-result text and toolCallID matches the
-// prior assistant tool_call.id from the NPC's last reply.
-func (c *npcChatClient) sendChat(ctx context.Context, npcAgentName, message, toolCallID string, tools []agentToolDef) (*chatSendReply, error) {
+// prior assistant tool_call.id from the NPC's last reply. sceneID is the
+// MEM-121 cascade UUID — empty string means "no scene" (treated as NULL
+// server-side, equivalent to companion-mode).
+func (c *npcChatClient) sendChat(ctx context.Context, npcAgentName, message, toolCallID, sceneID string, tools []agentToolDef) (*chatSendReply, error) {
 	body, err := json.Marshal(chatSendRequest{
 		ToAgents:     []string{npcAgentName},
 		Message:      message,
 		ToolsOffered: tools,
 		ToolCallID:   toolCallID,
+		SceneID:      sceneID,
 		Wait:         true,
 	})
 	if err != nil {

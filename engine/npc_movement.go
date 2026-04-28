@@ -356,6 +356,11 @@ func (app *App) applyArrival(npcID string) {
 		`SELECT inside_structure_id, llm_memory_agent IS NOT NULL FROM npc WHERE id = $1`,
 		npcID,
 	).Scan(&insideID, &arriverIsAgent); err == nil && arriverIsAgent && insideID.Valid {
-		app.triggerCoLocatedTicks(ctx, insideID.String, npcID, "arrival", false)
+		// Cascade origin (MEM-121): a fresh scene UUID for the
+		// arrival. Walks finish seconds-to-minutes of game time after
+		// the move_to that started them, so by the time we get here
+		// it's a new scene, not a continuation of whatever scene
+		// triggered the original move_to.
+		app.triggerCoLocatedTicks(ctx, insideID.String, npcID, "arrival", false, newUUIDv7())
 	}
 }
