@@ -19,10 +19,13 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 const (
@@ -346,6 +349,7 @@ func (app *App) fireChronicler(ctx context.Context, reason chroniclerFireReason)
 			text, _ := tc.Input["text"].(string)
 			text = strings.TrimSpace(text)
 			scopeType, _ := tc.Input["scope_type"].(string)
+			scopeType = strings.TrimSpace(scopeType)
 			scopeTarget, _ := tc.Input["scope_target"].(string)
 			scopeTarget = strings.TrimSpace(scopeTarget)
 			if scopeType == "" {
@@ -562,6 +566,9 @@ func (app *App) buildChroniclerNPCRoster(ctx context.Context) string {
 		}
 		byLoc[structLabel] = append(byLoc[structLabel], entry)
 	}
+	if err := rows.Err(); err != nil {
+		log.Printf("chronicler npc roster rows: %v", err)
+	}
 
 	if len(byLoc) == 0 && len(openAir) == 0 {
 		return ""
@@ -644,6 +651,13 @@ func (app *App) buildActivityDigest(ctx context.Context, since time.Time) string
 		default:
 			per[name].Other += cnt
 		}
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("chronicler digest rows: %v", err)
+		// Don't return a partial digest — better to render no section
+		// than a misleading "village has been quiet" when iteration
+		// failed mid-stream.
+		return ""
 	}
 	if len(per) == 0 {
 		return "Since your last attention, the village has been quiet."
@@ -753,6 +767,9 @@ func (app *App) recentEnvironmentTexts(ctx context.Context, n int) []string {
 			out = append(out, t)
 		}
 	}
+	if err := rows.Err(); err != nil {
+		log.Printf("recent environment rows: %v", err)
+	}
 	return out
 }
 
@@ -762,7 +779,13 @@ func (app *App) latestEnvironmentText(ctx context.Context) string {
 	var t sql.NullString
 	err := app.DB.QueryRow(ctx,
 		`SELECT text FROM world_environment ORDER BY set_at DESC, id DESC LIMIT 1`).Scan(&t)
+	// Distinguish "no rows yet" (fresh deploy / chronicler hasn't fired)
+	// from real DB errors. Only the latter deserves a log line; both
+	// return empty so the perception just omits the atmosphere line.
 	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			log.Printf("latest environment: %v", err)
+		}
 		return ""
 	}
 	if !t.Valid {
@@ -783,36 +806,37 @@ func (app *App) latestEnvironmentText(ctx context.Context) string {
 //
 // Returns up to limit rows occurring after `since`, most recent first.
 func (app *App) recentVisibleEvents(ctx context.Context, scope, target string, since time.Time, limit int) []string {
-	var rows *sql.Rows
-	var err error
+	// Build query + args per scope, then issue a single Query call so we
+	// don't need to declare the concrete row-type variable (app.DB is
+	// pgx; *sql.Rows would mismatch).
+	var query string
+	var args []any
 	switch scope {
 	case "village":
-		rows, err = app.DB.Query(ctx,
-			`SELECT text FROM world_events
-			 WHERE scope_type = 'village' AND occurred_at > $1
-			 ORDER BY occurred_at DESC, id DESC LIMIT $2`,
-			since, limit)
+		query = `SELECT text FROM world_events
+		         WHERE scope_type = 'village' AND occurred_at > $1
+		         ORDER BY occurred_at DESC, id DESC LIMIT $2`
+		args = []any{since, limit}
 	case "local":
 		if target == "" {
 			return nil
 		}
-		rows, err = app.DB.Query(ctx,
-			`SELECT text FROM world_events
-			 WHERE scope_type = 'local' AND scope_target = $1 AND occurred_at > $2
-			 ORDER BY occurred_at DESC, id DESC LIMIT $3`,
-			target, since, limit)
+		query = `SELECT text FROM world_events
+		         WHERE scope_type = 'local' AND scope_target = $1 AND occurred_at > $2
+		         ORDER BY occurred_at DESC, id DESC LIMIT $3`
+		args = []any{target, since, limit}
 	case "private":
 		if target == "" {
 			return nil
 		}
-		rows, err = app.DB.Query(ctx,
-			`SELECT text FROM world_events
-			 WHERE scope_type = 'private' AND scope_target = $1 AND occurred_at > $2
-			 ORDER BY occurred_at DESC, id DESC LIMIT $3`,
-			target, since, limit)
+		query = `SELECT text FROM world_events
+		         WHERE scope_type = 'private' AND scope_target = $1 AND occurred_at > $2
+		         ORDER BY occurred_at DESC, id DESC LIMIT $3`
+		args = []any{target, since, limit}
 	default:
 		return nil
 	}
+	rows, err := app.DB.Query(ctx, query, args...)
 	if err != nil {
 		log.Printf("recent events (%s): %v", scope, err)
 		return nil
@@ -824,6 +848,9 @@ func (app *App) recentVisibleEvents(ctx context.Context, scope, target string, s
 		if err := rows.Scan(&t); err == nil {
 			out = append(out, t)
 		}
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("recent events (%s) rows: %v", scope, err)
 	}
 	return out
 }
@@ -900,6 +927,12 @@ func (app *App) refreshNPCDisplayNames(ctx context.Context) {
 		if slug != "" {
 			m[slug] = name
 		}
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("refresh display names rows: %v", err)
+		// Don't replace the existing map with a partial one — keep
+		// whatever was there from the previous successful refresh.
+		return
 	}
 	app.NPCDisplayNamesMu.Lock()
 	app.NPCDisplayNames = m
@@ -989,6 +1022,12 @@ func (app *App) parseSettingTime(ctx context.Context, key string) time.Time {
 // saveChroniclerPhaseState records that the chronicler successfully
 // fired for the given phase at the given boundary timestamp. Only
 // called by phase fires, not cascade fires.
+//
+// Does NOT write last_chronicler_attention_at — that's owned by
+// fireChronicler so there's a single writer using actual completion
+// time. Otherwise this would clobber fireChronicler's Now() with the
+// earlier boundary timestamp and reopen the digest window between
+// boundaryAt and completion.
 func (app *App) saveChroniclerPhaseState(ctx context.Context, phase string, boundaryAt time.Time) {
 	if err := app.upsertSetting(ctx, "last_chronicler_phase_fired_at", boundaryAt.UTC().Format(time.RFC3339Nano)); err != nil {
 		log.Printf("chronicler save phase fired_at: %v", err)
@@ -996,10 +1035,6 @@ func (app *App) saveChroniclerPhaseState(ctx context.Context, phase string, boun
 	if err := app.upsertSetting(ctx, "last_chronicler_fired_phase", phase); err != nil {
 		log.Printf("chronicler save fired_phase: %v", err)
 	}
-	// Phase fires also update attention — they too consumed the model's
-	// turn and should reset the digest cutoff for subsequent cascade
-	// fires.
-	app.saveChroniclerAttentionState(ctx, boundaryAt)
 }
 
 // saveChroniclerAttentionState records the timestamp of any successful
