@@ -291,11 +291,12 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			// Execute the speak inline (audit + WS broadcast + co-located
 			// event-ticks) but DON'T terminate the loop. The model gets to
 			// follow through with a move/chore/done on the next iteration.
-			// Pass an empty tool_result back so the chat message is well-
-			// formed (tool_call_id matches), but no payload to bias the
-			// model's next choice.
+			// The tool_result reminds the model that action is still on
+			// the table — without it, models tend to default to "done"
+			// after speaking ("I responded, my turn's over"). Non-directive
+			// nudge: doesn't name a specific action, just affirms agency.
 			app.executeAgentCommit(ctx, r, speakCall)
-			currentMessage = ""
+			currentMessage = "[OK] You spoke. Continue your turn — you may move or run a chore now, or call done if you're staying put."
 			currentToolCallID = speakCall.ID
 			continue
 		}
