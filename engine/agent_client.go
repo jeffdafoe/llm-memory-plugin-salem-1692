@@ -161,3 +161,70 @@ func (c *npcChatClient) sendChat(ctx context.Context, npcAgentName, message, too
 	}
 	return out.Reply, nil
 }
+
+// searchMemoryRequest is the /v1/memory/search body. The engine searches
+// scoped to the NPC's own namespace — recall is "this NPC's memory only,"
+// no cross-namespace peeking.
+type searchMemoryRequest struct {
+	Query     string `json:"query"`
+	Namespace string `json:"namespace"`
+	Limit     int    `json:"limit"`
+}
+
+// searchMemoryHit is one note-grouped result. The API returns the
+// best-matching chunk per (namespace, source_file) plus chunk_count
+// reflecting how many chunks of this note matched the candidate pool.
+type searchMemoryHit struct {
+	SourceFile string  `json:"source_file"`
+	Heading    string  `json:"heading"`
+	ChunkText  string  `json:"chunk_text"`
+	Namespace  string  `json:"namespace"`
+	Similarity float64 `json:"similarity"`
+	ChunkCount int     `json:"chunk_count"`
+}
+
+type searchMemoryResponse struct {
+	Results []searchMemoryHit `json:"results"`
+}
+
+// searchMemory hits /v1/memory/search with the engine's API key. Realm
+// overlap (salem-engine has realms=['salem']) gates which namespaces it
+// can read — sufficient for any of the four salem NPCs.
+func (c *npcChatClient) searchMemory(ctx context.Context, namespace, query string, limit int) ([]searchMemoryHit, error) {
+	body, err := json.Marshal(searchMemoryRequest{
+		Query:     query,
+		Namespace: namespace,
+		Limit:     limit,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("marshal search request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST",
+		strings.TrimRight(c.baseURL, "/")+"/v1/memory/search", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("build search request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+c.engineKey)
+
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("search http: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read search response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("search %d: %s", resp.StatusCode, string(respBytes))
+	}
+
+	var out searchMemoryResponse
+	if err := json.Unmarshal(respBytes, &out); err != nil {
+		return nil, fmt.Errorf("parse search response: %w (body: %s)", err, string(respBytes))
+	}
+	return out.Results, nil
+}
