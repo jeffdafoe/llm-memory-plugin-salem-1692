@@ -1445,18 +1445,25 @@ func refresh_loiter_marker() -> void:
 ## directly on the blue door marker (where the green/gold circle would
 ## be hidden under the door square). Ultimately falls back to
 ## (0, footprint_bottom + 2).
+## Returns the effective loiter offset (tile units) for the placement.
+## The server is the single source of truth — `effectiveLoiterTile` in
+## engine/village_objects.go computes the canonical value and surfaces it
+## via /api/village/objects and the object_loiter_offset_changed WS event.
+## We just read what the server provided. The placeholder/explicit
+## distinction (for marker fill alpha) is handled separately in
+## _draw_loiter_marker_contents by checking the raw loiter_offset meta.
 func _current_loiter_offset_tiles(node: Node2D) -> Vector2:
+    var ex = node.get_meta("effective_loiter_offset_x", null)
+    var ey = node.get_meta("effective_loiter_offset_y", null)
+    if ex != null and ey != null:
+        return Vector2(int(ex), int(ey))
+    # Server didn't supply an effective value — should not happen post-deploy.
+    # Fall back to the explicit loiter if set, else origin.
     var lx = node.get_meta("loiter_offset_x", null)
     var ly = node.get_meta("loiter_offset_y", null)
     if lx != null and ly != null:
         return Vector2(int(lx), int(ly))
-    var asset_id: String = node.get_meta("asset_id", "")
-    var asset = Catalog.assets.get(asset_id, {})
-    var dx = asset.get("door_offset_x", null)
-    var dy = asset.get("door_offset_y", null)
-    if dx != null and dy != null:
-        return Vector2(int(dx), int(dy) + 1)
-    return Vector2(0, int(asset.get("footprint_bottom", 0)) + 2)
+    return Vector2(0, 0)
 
 ## Green outlined circle for loiter — distinct from blue square (door)
 ## and orange square (stand). Filled lighter when loiter_offset is unset
