@@ -294,9 +294,12 @@ func (app *App) fireChronicler(ctx context.Context, reason chroniclerFireReason)
 	currentMessage := perception
 	currentToolCallID := ""
 	chatSucceeded := false
+	// Group this fire's harness iterations under one scene_id (MEM-121)
+	// so the admin UI can collapse them into a single expandable row.
+	sceneID := newUUIDv7()
 
 	for iter := 0; iter < chroniclerTickBudget; iter++ {
-		reply, err := app.npcChatClient.sendChat(ctx, chroniclerAgent, currentMessage, currentToolCallID, tools)
+		reply, err := app.npcChatClient.sendChat(ctx, chroniclerAgent, currentMessage, currentToolCallID, sceneID, tools)
 		if err != nil {
 			log.Printf("chronicler iter=%d: %v", iter, err)
 			if !chatSucceeded {
