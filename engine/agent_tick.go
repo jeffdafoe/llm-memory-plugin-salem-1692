@@ -215,8 +215,17 @@ func (app *App) loadAgentNPCRows(ctx context.Context) ([]agentNPCRow, error) {
 }
 
 // runAgentTick is the harness loop for one NPC. Stamps last_agent_tick_at
-// at the end so a partial failure doesn't burn the hour — the next tick
-// retries.
+// twice: once at the start (to close the cost-guard race window — see
+// below) and once at the end (refresh, so a partial failure doesn't burn
+// the hour and the next tick retries cleanly).
+//
+// Cost-guard race: triggerImmediateTick reads last_agent_tick_at to gate
+// NPC-triggered event ticks. If we only stamp at the end of runAgentTick,
+// any speech/movement event that fires during this NPC's in-flight loop
+// reads a stale stamp (from the previous hour) and the cost guard
+// passes, allowing a concurrent runAgentTick goroutine for the same NPC.
+// Stamping at the start makes the cost guard see this tick's start time
+// while the loop is still running, blocking concurrent re-entry.
 //
 // Transport: each iteration is one wait=true chat_send to the NPC. The chat
 // history on the API side IS the conversation accumulator — the engine no
@@ -233,6 +242,7 @@ func (app *App) loadAgentNPCRows(ctx context.Context) ([]agentNPCRow, error) {
 // tool replies in a single iteration are rare; if they happen, anything
 // past [0] is dropped and the model gets another iteration.
 func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time.Time, dawnMin, duskMin int) {
+	app.stampAgentTick(ctx, r, hourStart)
 	perception, locationName := app.buildAgentPerception(ctx, r, hourStart, dawnMin, duskMin)
 	tools := agentToolSpec()
 
