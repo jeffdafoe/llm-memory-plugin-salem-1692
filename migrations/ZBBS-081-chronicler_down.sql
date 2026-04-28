@@ -7,7 +7,7 @@ DROP INDEX IF EXISTS ix_world_environment_set_at;
 DROP TABLE IF EXISTS world_environment;
 
 DROP TYPE IF EXISTS event_scope;
-DROP TYPE IF EXISTS world_phase;
+DROP TYPE IF EXISTS chronicler_phase;
 
 DELETE FROM setting WHERE key IN (
     'overseer_mood',
