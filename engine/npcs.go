@@ -211,7 +211,8 @@ func (app *App) handleListNPCs(w http.ResponseWriter, r *http.Request) {
 		        active_start_hour, active_end_hour,
 		        lateness_window_minutes,
 		        social_tag, social_start_minute, social_end_minute
-		 FROM npc
+		 FROM actor
+		 WHERE login_username IS NULL
 		 ORDER BY display_name`,
 	)
 	if err != nil {
@@ -304,8 +305,8 @@ func (app *App) handleCreateNPC(w http.ResponseWriter, r *http.Request) {
 
 	id := newUUIDv7()
 	_, err := app.DB.Exec(r.Context(),
-		`INSERT INTO npc (id, display_name, sprite_id, home_x, home_y,
-		                  current_x, current_y, facing)
+		`INSERT INTO actor (id, display_name, sprite_id, home_x, home_y,
+		                    current_x, current_y, facing)
 		 VALUES ($1, $2, $3, $4, $5, $4, $5, 'south')`,
 		id, req.Name, req.SpriteID, req.X, req.Y,
 	)
@@ -402,7 +403,7 @@ func (app *App) handleSetNPCDisplayName(w http.ResponseWriter, r *http.Request) 
 	}
 
 	result, err := app.DB.Exec(r.Context(),
-		`UPDATE npc SET display_name = $1 WHERE id = $2`,
+		`UPDATE actor SET display_name = $1 WHERE id = $2`,
 		req.DisplayName, id,
 	)
 	if err != nil {
@@ -463,7 +464,7 @@ func (app *App) handleSetNPCSprite(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, err := app.DB.Exec(r.Context(),
-		`UPDATE npc SET sprite_id = $1 WHERE id = $2`,
+		`UPDATE actor SET sprite_id = $1 WHERE id = $2`,
 		req.SpriteID, id,
 	)
 	if err != nil {
@@ -548,7 +549,7 @@ func (app *App) handleSetNPCBehavior(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, err := app.DB.Exec(r.Context(),
-		`UPDATE npc SET behavior = $1 WHERE id = $2`,
+		`UPDATE actor SET behavior = $1 WHERE id = $2`,
 		req.Behavior, id,
 	)
 	if err != nil {
@@ -603,7 +604,7 @@ func (app *App) handleSetNPCAgent(w http.ResponseWriter, r *http.Request) {
 	if req.LLMMemoryAgent != nil {
 		var exists bool
 		if err := app.DB.QueryRow(r.Context(),
-			`SELECT EXISTS(SELECT 1 FROM village_agent WHERE llm_memory_agent = $1)`,
+			`SELECT EXISTS(SELECT 1 FROM actor WHERE llm_memory_agent = $1)`,
 			*req.LLMMemoryAgent,
 		).Scan(&exists); err != nil {
 			jsonError(w, "Internal server error", http.StatusInternalServerError)
@@ -616,7 +617,7 @@ func (app *App) handleSetNPCAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result, err := app.DB.Exec(r.Context(),
-		`UPDATE npc SET llm_memory_agent = $1 WHERE id = $2`,
+		`UPDATE actor SET llm_memory_agent = $1 WHERE id = $2`,
 		req.LLMMemoryAgent, id,
 	)
 	if err != nil {
@@ -738,7 +739,7 @@ func (app *App) handleSetNPCSchedule(w http.ResponseWriter, r *http.Request) {
 	// for every field.
 	var effectiveLateness int
 	err := app.DB.QueryRow(r.Context(),
-		`UPDATE npc SET
+		`UPDATE actor SET
 		    schedule_start_minute = $2,
 		    schedule_end_minute = $3,
 		    schedule_interval_hours = $4,
@@ -859,7 +860,7 @@ func (app *App) handleSetNPCSocial(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tag, err := app.DB.Exec(r.Context(),
-		`UPDATE npc SET
+		`UPDATE actor SET
 		    social_tag = $2,
 		    social_start_minute = $3,
 		    social_end_minute = $4,
@@ -952,7 +953,7 @@ func (app *App) patchNPCStructure(w http.ResponseWriter, r *http.Request, column
 
 	// Column is fixed per-caller, not user input — safe to interpolate.
 	result, err := app.DB.Exec(r.Context(),
-		`UPDATE npc SET `+column+` = $1 WHERE id = $2`,
+		`UPDATE actor SET `+column+` = $1 WHERE id = $2`,
 		val, id,
 	)
 	if err != nil {
@@ -985,7 +986,7 @@ func (app *App) handleDeleteNPC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := app.DB.Exec(r.Context(),
-		`DELETE FROM npc WHERE id = $1`, id,
+		`DELETE FROM actor WHERE id = $1`, id,
 	)
 	if err != nil {
 		jsonError(w, "Failed to delete NPC", http.StatusInternalServerError)

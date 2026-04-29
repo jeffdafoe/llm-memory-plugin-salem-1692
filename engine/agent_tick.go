@@ -208,17 +208,16 @@ func (app *App) dispatchAgentTicks(ctx context.Context) {
 func (app *App) loadAgentNPCRows(ctx context.Context) ([]agentNPCRow, error) {
 	rows, err := app.DB.Query(ctx,
 		`SELECT n.id, n.display_name, n.llm_memory_agent,
-		        va.llm_memory_api_key,
-		        va.role,
+		        n.llm_memory_api_key,
+		        n.role,
 		        n.inside_structure_id, n.current_x, n.current_y,
 		        n.home_structure_id, n.work_structure_id,
 		        n.last_agent_tick_at,
 		        n.schedule_start_minute, n.schedule_end_minute,
 		        COALESCE(wo.display_name, wa.name) AS work_label,
 		        COALESCE(ho.display_name, ha.name) AS home_label,
-		        va.coins, va.hunger, va.thirst, va.tiredness
-		 FROM npc n
-		 JOIN village_agent va ON va.llm_memory_agent = n.llm_memory_agent
+		        n.coins, n.hunger, n.thirst, n.tiredness
+		 FROM actor n
 		 LEFT JOIN village_object wo ON wo.id = n.work_structure_id
 		 LEFT JOIN asset wa ON wa.id = wo.asset_id
 		 LEFT JOIN village_object ho ON ho.id = n.home_structure_id
@@ -450,7 +449,7 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 func (app *App) stampAgentTick(ctx context.Context, r *agentNPCRow, hourStart time.Time) {
 	_ = hourStart // kept for signature stability; baseline gate uses Before()
 	if _, err := app.DB.Exec(ctx,
-		`UPDATE npc SET last_agent_tick_at = $2 WHERE id = $1`,
+		`UPDATE actor SET last_agent_tick_at = $2 WHERE id = $1`,
 		r.ID, time.Now(),
 	); err != nil {
 		log.Printf("agent-tick: stamp %s: %v", r.DisplayName, err)
@@ -502,17 +501,16 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, 
 	// Load the single NPC row. Mirrors loadAgentNPCRows but for one id.
 	row := app.DB.QueryRow(ctx,
 		`SELECT n.id, n.display_name, n.llm_memory_agent,
-		        va.llm_memory_api_key,
-		        va.role,
+		        n.llm_memory_api_key,
+		        n.role,
 		        n.inside_structure_id, n.current_x, n.current_y,
 		        n.home_structure_id, n.work_structure_id,
 		        n.last_agent_tick_at,
 		        n.schedule_start_minute, n.schedule_end_minute,
 		        COALESCE(wo.display_name, wa.name) AS work_label,
 		        COALESCE(ho.display_name, ha.name) AS home_label,
-		        va.coins, va.hunger, va.thirst, va.tiredness
-		 FROM npc n
-		 JOIN village_agent va ON va.llm_memory_agent = n.llm_memory_agent
+		        n.coins, n.hunger, n.thirst, n.tiredness
+		 FROM actor n
 		 LEFT JOIN village_object wo ON wo.id = n.work_structure_id
 		 LEFT JOIN asset wa ON wa.id = wo.asset_id
 		 LEFT JOIN village_object ho ON ho.id = n.home_structure_id
@@ -583,7 +581,7 @@ func (app *App) triggerCoLocatedTicks(ctx context.Context, structureID, excludeN
 		// Comparing n.id (UUID) to the empty text "" fails PG's implicit
 		// cast — the query errors and no NPCs get event-ticked. Guard with
 		// a length check so empty just skips the exclusion.
-		`SELECT n.id FROM npc n
+		`SELECT n.id FROM actor n
 		 WHERE n.inside_structure_id = $1
 		   AND n.llm_memory_agent IS NOT NULL
 		   AND ($2 = '' OR n.id::text != $2)`,
@@ -832,7 +830,7 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 	var residences []string
 	residenceRows, _ := app.DB.Query(ctx,
 		`SELECT n.display_name
-		 FROM npc n
+		 FROM actor n
 		 JOIN village_object o ON o.id = n.home_structure_id
 		 WHERE n.id != $1
 		   AND n.home_structure_id IS NOT NULL
@@ -1030,7 +1028,7 @@ func (app *App) lastActionFeedback(ctx context.Context, npcID string) string {
 	err := app.DB.QueryRow(ctx,
 		`SELECT action_type, result, COALESCE(error, '')
 		 FROM agent_action_log
-		 WHERE npc_id::text = $1
+		 WHERE actor_id::text = $1
 		   AND occurred_at > NOW() - INTERVAL '1 hour'
 		 ORDER BY occurred_at DESC LIMIT 1`,
 		npcID,
@@ -1056,41 +1054,29 @@ func (app *App) lastActionFeedback(ctx context.Context, npcID string) string {
 // assigned roles — they're identified by character, not occupation).
 func (app *App) coLocatedHuddleMembers(ctx context.Context, npcID string) []string {
 	rows, err := app.DB.Query(ctx,
-		// NPCs in the same huddle (excluding self). Only agentized NPCs
-		// (llm_memory_agent IS NOT NULL) appear — non-agent villagers are
-		// physically present but conversationally invisible. Otherwise
-		// agents would address them by name and get nothing back, breaking
-		// immersion.
-		`SELECT n.display_name AS name, va.role, 'npc' AS kind,
+		// Co-located actors in the same huddle (excluding self). Returns
+		// both kinds: LLM-driven NPCs (llm_memory_agent IS NOT NULL) and
+		// human-driven PCs (login_username IS NOT NULL). Decorative NPCs
+		// (both NULL) are skipped — physically present but conversationally
+		// invisible, otherwise agents would address them and get nothing
+		// back, breaking immersion. The 'kind' value lets the caller
+		// distinguish NPC vs PC for role-display and tone.
+		`SELECT a.display_name AS name,
+		        a.role,
+		        CASE WHEN a.login_username IS NOT NULL THEN 'pc' ELSE 'npc' END AS kind,
 		        EXISTS(
-		            SELECT 1 FROM npc_acquaintance a
-		             WHERE a.npc_id::text = $1
-		               AND a.other_name = n.display_name
+		            SELECT 1 FROM npc_acquaintance ac
+		             WHERE ac.actor_id::text = $1
+		               AND ac.other_name = a.display_name
 		        ) AS acquainted
-		   FROM npc n
-		   LEFT JOIN village_agent va ON va.llm_memory_agent = n.llm_memory_agent
-		  WHERE n.current_huddle_id IS NOT NULL
-		    AND n.current_huddle_id = (
-		        SELECT current_huddle_id FROM npc WHERE id::text = $1
+		   FROM actor a
+		  WHERE a.current_huddle_id IS NOT NULL
+		    AND a.current_huddle_id = (
+		        SELECT current_huddle_id FROM actor WHERE id::text = $1
 		    )
-		    AND n.id::text != $1
-		    AND n.llm_memory_agent IS NOT NULL
-		 UNION ALL
-		 -- PCs in the same huddle. Display by character_name (in-world
-		 -- identity), gated against npc_acquaintance.other_name = the
-		 -- character_name (set when the PC joined the huddle).
-		 SELECT pc.character_name AS name, NULL::varchar AS role, 'pc' AS kind,
-		        EXISTS(
-		            SELECT 1 FROM npc_acquaintance a
-		             WHERE a.npc_id::text = $1
-		               AND a.other_name = pc.character_name
-		        ) AS acquainted
-		   FROM pc_position pc
-		  WHERE pc.current_huddle_id IS NOT NULL
-		    AND pc.current_huddle_id = (
-		        SELECT current_huddle_id FROM npc WHERE id::text = $1
-		    )
-		  ORDER BY name`,
+		    AND a.id::text != $1
+		    AND (a.llm_memory_agent IS NOT NULL OR a.login_username IS NOT NULL)
+		  ORDER BY a.display_name`,
 		npcID)
 	if err != nil {
 		log.Printf("here-block: query: %v", err)
@@ -1431,7 +1417,7 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 	// commit already happened (or already failed); the audit row is a
 	// best-effort record.
 	_, err := app.DB.Exec(ctx,
-		`INSERT INTO agent_action_log (npc_id, speaker_name, source, action_type, payload, result, error)
+		`INSERT INTO agent_action_log (actor_id, speaker_name, source, action_type, payload, result, error)
 		 VALUES ($1, $2, 'agent', $3, $4, $5, NULLIF($6, ''))`,
 		r.ID, r.DisplayName, tc.Name, payload, result, errStr,
 	)
@@ -1487,7 +1473,7 @@ func (app *App) executeAgentMoveTo(ctx context.Context, r *agentNPCRow, dest str
 	// pathfinder's expected duration.
 	overrideUntil := time.Now().Add(30 * time.Minute)
 	if _, err := app.DB.Exec(ctx,
-		`UPDATE npc SET agent_override_until = $2, last_shift_tick_at = $2 WHERE id = $1`,
+		`UPDATE actor SET agent_override_until = $2, last_shift_tick_at = $2 WHERE id = $1`,
 		r.ID, overrideUntil,
 	); err != nil {
 		// Walk is already underway — log but don't unwind.
@@ -1521,7 +1507,7 @@ func (app *App) resolveMoveDestination(ctx context.Context, r *agentNPCRow, dest
 			`SELECT n.home_structure_id::text, o.id::text, o.x, o.y,
 			        o.loiter_offset_x, o.loiter_offset_y,
 			        a.door_offset_x, a.door_offset_y, a.footprint_bottom
-			 FROM npc n
+			 FROM actor n
 			 JOIN village_object o ON o.id = n.home_structure_id
 			 JOIN asset a ON a.id = o.asset_id
 			 WHERE n.display_name ILIKE $1
@@ -1727,7 +1713,7 @@ func (app *App) executeAgentChore(ctx context.Context, r *agentNPCRow, category 
 
 	overrideUntil := time.Now().Add(30 * time.Minute)
 	if _, err := app.DB.Exec(ctx,
-		`UPDATE npc SET agent_override_until = $2, last_shift_tick_at = $2 WHERE id = $1`,
+		`UPDATE actor SET agent_override_until = $2, last_shift_tick_at = $2 WHERE id = $1`,
 		r.ID, overrideUntil,
 	); err != nil {
 		log.Printf("agent-tick: stamp override %s: %v", r.DisplayName, err)

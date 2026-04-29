@@ -5,6 +5,13 @@ import (
 	"net/http"
 )
 
+// village_agent legacy endpoints — surfaced to the admin dashboard.
+//
+// Post-ZBBS-084 these read/write the unified `actor` table. The endpoint
+// names and JSON shape are kept compatible with what the admin dashboard
+// already consumes; some columns dropped by the migration are reported as
+// derived values (e.g., location_type is computed from inside_structure_id).
+
 type villageAgent struct {
 	ID               string   `json:"id"`
 	Name             string   `json:"name"`
@@ -18,13 +25,16 @@ type villageAgent struct {
 	LocationY        *float64 `json:"location_y"`
 }
 
-// handleListVillageAgents returns all village agents with their locations.
+// handleListVillageAgents returns all LLM-driven actors with their locations.
+// Decorative NPCs (no llm_memory_agent) and PCs are excluded — this endpoint
+// historically scoped to "agentized" villagers only.
 func (app *App) handleListVillageAgents(w http.ResponseWriter, r *http.Request) {
 	rows, err := app.DB.Query(r.Context(),
-		`SELECT id, name, llm_memory_agent, role, coins, is_virtual,
-		        location_type, location_object_id, location_x, location_y
-		 FROM village_agent
-		 ORDER BY name`,
+		`SELECT id, display_name, llm_memory_agent, role, coins,
+		        inside_structure_id, current_x, current_y
+		 FROM actor
+		 WHERE llm_memory_agent IS NOT NULL
+		 ORDER BY display_name`,
 	)
 	if err != nil {
 		jsonError(w, "Internal server error", http.StatusInternalServerError)
@@ -35,9 +45,25 @@ func (app *App) handleListVillageAgents(w http.ResponseWriter, r *http.Request) 
 	agents := []villageAgent{}
 	for rows.Next() {
 		var a villageAgent
-		if err := rows.Scan(&a.ID, &a.Name, &a.LLMMemoryAgent, &a.Role, &a.Coins, &a.IsVirtual,
-			&a.LocationType, &a.LocationObjectID, &a.LocationX, &a.LocationY); err != nil {
+		var insideID *string
+		var x, y *float64
+		if err := rows.Scan(&a.ID, &a.Name, &a.LLMMemoryAgent, &a.Role, &a.Coins,
+			&insideID, &x, &y); err != nil {
 			continue
+		}
+		// All agentized actors are virtual by definition (LLM-driven).
+		a.IsVirtual = true
+		// Derive location_type from inside_structure_id presence.
+		switch {
+		case insideID != nil:
+			a.LocationType = "inside"
+			a.LocationObjectID = insideID
+		case x != nil && y != nil:
+			a.LocationType = "outdoor"
+			a.LocationX = x
+			a.LocationY = y
+		default:
+			a.LocationType = "off-map"
 		}
 		agents = append(agents, a)
 	}
@@ -45,10 +71,17 @@ func (app *App) handleListVillageAgents(w http.ResponseWriter, r *http.Request) 
 	jsonResponse(w, http.StatusOK, agents)
 }
 
-// handleMoveAgent updates an agent's location.
+// handleMoveAgent updates an agent's location. Writes through to the
+// canonical actor.inside_structure_id / current_x/y / inside columns.
+//
 // Accepts: { "type": "inside", "object_id": "..." }
 //       or { "type": "outdoor", "x": 123.0, "y": 456.0 }
 //       or { "type": "off-map" }
+//
+// "off-map" is preserved for compatibility with the admin dashboard but
+// post-refactor it just clears inside_structure_id and zeroes the position
+// — actor rows always need x/y, so off-map renders as (0, 0). If the admin
+// UI never used off-map in practice this is a no-op concern.
 func (app *App) handleMoveAgent(w http.ResponseWriter, r *http.Request) {
 	agentID := r.PathValue("id")
 	if agentID == "" {
@@ -73,7 +106,6 @@ func (app *App) handleMoveAgent(w http.ResponseWriter, r *http.Request) {
 			jsonError(w, "object_id required for inside location", http.StatusBadRequest)
 			return
 		}
-		// Verify the object exists
 		var exists bool
 		err := app.DB.QueryRow(r.Context(),
 			`SELECT EXISTS(SELECT 1 FROM village_object WHERE id = $1)`,
@@ -84,9 +116,7 @@ func (app *App) handleMoveAgent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_, err = app.DB.Exec(r.Context(),
-			`UPDATE village_agent
-			 SET location_type = 'inside', location_object_id = $1, location_x = NULL, location_y = NULL
-			 WHERE id = $2`,
+			`UPDATE actor SET inside = true, inside_structure_id = $1 WHERE id = $2`,
 			*req.ObjectID, agentID,
 		)
 		if err != nil {
@@ -100,8 +130,8 @@ func (app *App) handleMoveAgent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_, err := app.DB.Exec(r.Context(),
-			`UPDATE village_agent
-			 SET location_type = 'outdoor', location_object_id = NULL, location_x = $1, location_y = $2
+			`UPDATE actor SET inside = false, inside_structure_id = NULL,
+			                  current_x = $1, current_y = $2
 			 WHERE id = $3`,
 			*req.X, *req.Y, agentID,
 		)
@@ -112,8 +142,8 @@ func (app *App) handleMoveAgent(w http.ResponseWriter, r *http.Request) {
 
 	case "off-map":
 		_, err := app.DB.Exec(r.Context(),
-			`UPDATE village_agent
-			 SET location_type = 'off-map', location_object_id = NULL, location_x = NULL, location_y = NULL
+			`UPDATE actor SET inside = false, inside_structure_id = NULL,
+			                  current_x = 0, current_y = 0
 			 WHERE id = $1`,
 			agentID,
 		)

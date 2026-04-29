@@ -601,8 +601,9 @@ func (app *App) relocateVisitorsAfterLoiterChange(
 	// moving NPC stomps the in-flight walk; we'd rather let it land first
 	// and (if relevant) re-relocate on a subsequent admin move.
 	rows, err := app.DB.Query(ctx,
-		`SELECT id, current_x, current_y FROM npc
-		 WHERE (current_x - $1) * (current_x - $1) + (current_y - $2) * (current_y - $2) < $3
+		`SELECT id, current_x, current_y FROM actor
+		 WHERE login_username IS NULL
+		   AND (current_x - $1) * (current_x - $1) + (current_y - $2) * (current_y - $2) < $3
 		   AND (home_structure_id IS NULL OR home_structure_id::text != $4)
 		   AND (work_structure_id IS NULL OR work_structure_id::text != $4)`,
 		oldPx, oldPy, nearRadiusSq, objectID)
@@ -635,7 +636,7 @@ func (app *App) relocateVisitorsAfterLoiterChange(
 		}
 		overrideUntil := time.Now().Add(30 * time.Minute)
 		if _, err := app.DB.Exec(ctx,
-			`UPDATE npc SET agent_override_until = $2, last_shift_tick_at = $2 WHERE id = $1`,
+			`UPDATE actor SET agent_override_until = $2, last_shift_tick_at = $2 WHERE id = $1`,
 			c.ID, overrideUntil,
 		); err != nil {
 			log.Printf("relocateVisitors: stamp override %s: %v", c.ID, err)

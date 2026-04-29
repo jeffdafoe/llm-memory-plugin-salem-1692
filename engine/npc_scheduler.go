@@ -171,7 +171,7 @@ func (app *App) loadWorkerRows(ctx context.Context) ([]workerRow, error) {
 		        COALESCE(ws.y + wa.door_offset_y * 32.0, ws.y),
 		        n.social_tag, n.social_start_minute, n.social_end_minute,
 		        n.agent_override_until
-		 FROM npc n
+		 FROM actor n
 		 JOIN village_object hs ON hs.id = n.home_structure_id
 		 JOIN asset ha         ON ha.id = hs.asset_id
 		 JOIN village_object ws ON ws.id = n.work_structure_id
@@ -325,7 +325,7 @@ func (app *App) evaluateWorkerSchedule(ctx context.Context, w *workerRow, now ti
 		nowMin := effectiveAt.Hour()*60 + effectiveAt.Minute()
 		if minuteInSocialWindow(nowMin, int(w.SocialStartMinute.Int64), int(w.SocialEndMinute.Int64)) {
 			if _, err := app.DB.Exec(ctx,
-				`UPDATE npc SET last_shift_tick_at = $2 WHERE id = $1`,
+				`UPDATE actor SET last_shift_tick_at = $2 WHERE id = $1`,
 				w.ID, boundaryAt,
 			); err != nil {
 				log.Printf("scheduler: stamp (social-suppressed) %s: %v", w.ID, err)
@@ -358,7 +358,7 @@ func (app *App) evaluateWorkerSchedule(ctx context.Context, w *workerRow, now ti
 	}
 
 	if _, err := app.DB.Exec(ctx,
-		`UPDATE npc SET last_shift_tick_at = $2 WHERE id = $1`,
+		`UPDATE actor SET last_shift_tick_at = $2 WHERE id = $1`,
 		w.ID, boundaryAt,
 	); err != nil {
 		log.Printf("scheduler: stamp %s: %v", w.ID, err)
@@ -389,7 +389,7 @@ func (app *App) loadCustomScheduledRotationNPCs(ctx context.Context) ([]rotation
 		`SELECT id, behavior, schedule_interval_hours, active_start_hour,
 		        active_end_hour, lateness_window_minutes, last_shift_tick_at,
 		        agent_override_until
-		 FROM npc
+		 FROM actor
 		 WHERE behavior IN ($1, $2)
 		   AND schedule_interval_hours IS NOT NULL`,
 		behaviorWasherwoman, behaviorTownCrier,
@@ -501,7 +501,7 @@ func (app *App) evaluateRotationSchedule(ctx context.Context, r *rotationRow, no
 	}
 
 	if _, err := app.DB.Exec(ctx,
-		`UPDATE npc SET last_shift_tick_at = $2 WHERE id = $1`,
+		`UPDATE actor SET last_shift_tick_at = $2 WHERE id = $1`,
 		r.ID, boundaryAt,
 	); err != nil {
 		log.Printf("scheduler: stamp %s: %v", r.ID, err)
