@@ -37,7 +37,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"math/rand"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -98,6 +100,13 @@ type agentNPCRow struct {
 	HomeLabel           sql.NullString
 	ScheduleStartMinute sql.NullInt32
 	ScheduleEndMinute   sql.NullInt32
+	// Needs and currency (ZBBS-082). Loaded each dispatch so the perception
+	// reflects post-tick state. Stale within one tick if pay fires mid-tick,
+	// but the tick is one shot per hour so that's acceptable.
+	Coins     int
+	Hunger    int
+	Thirst    int
+	Tiredness int
 }
 
 // dispatchAgentTicks is the per-server-tick entry. Loaded NPCs are processed
@@ -206,7 +215,8 @@ func (app *App) loadAgentNPCRows(ctx context.Context) ([]agentNPCRow, error) {
 		        n.last_agent_tick_at,
 		        n.schedule_start_minute, n.schedule_end_minute,
 		        COALESCE(wo.display_name, wa.name) AS work_label,
-		        COALESCE(ho.display_name, ha.name) AS home_label
+		        COALESCE(ho.display_name, ha.name) AS home_label,
+		        va.coins, va.hunger, va.thirst, va.tiredness
 		 FROM npc n
 		 JOIN village_agent va ON va.llm_memory_agent = n.llm_memory_agent
 		 LEFT JOIN village_object wo ON wo.id = n.work_structure_id
@@ -229,7 +239,8 @@ func (app *App) loadAgentNPCRows(ctx context.Context) ([]agentNPCRow, error) {
 			&r.HomeStructureID, &r.WorkStructureID,
 			&r.LastAgentTickAt,
 			&r.ScheduleStartMinute, &r.ScheduleEndMinute,
-			&r.WorkLabel, &r.HomeLabel); err != nil {
+			&r.WorkLabel, &r.HomeLabel,
+		&r.Coins, &r.Hunger, &r.Thirst, &r.Tiredness); err != nil {
 			log.Printf("agent-tick: scan: %v", err)
 			continue
 		}
@@ -312,19 +323,22 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 		}
 
 		// Pick the first tool_call to act on. Terminal commits (move_to,
-		// chore, done) win over speak/act; speak/act win over an
-		// unrecognized observation. This preserves the prior precedence
-		// and avoids emitting two physical actions in one tick. speak
-		// and act are both non-terminal — the harness lets the model
-		// follow up with movement or another speech turn within the
-		// per-tick budget.
-		var terminalCall, speakCall, actCall, observation *agentToolCall
+		// chore, done) win over pay/speak/act. Pay runs before speak so a
+		// "pay-and-thank-you" sequence unfolds as pay first, speak next
+		// iteration. Pay/speak/act all execute inline and let the loop
+		// continue — none ends the turn. The harness lets the model follow
+		// up with movement or another speech turn within the per-tick budget.
+		var terminalCall, payCall, speakCall, actCall, observation *agentToolCall
 		for i := range reply.ToolCalls {
 			tc := &reply.ToolCalls[i]
 			switch tc.Name {
 			case "move_to", "chore", "done":
 				if terminalCall == nil {
 					terminalCall = tc
+				}
+			case "pay":
+				if payCall == nil {
+					payCall = tc
 				}
 			case "speak":
 				if speakCall == nil {
@@ -346,6 +360,25 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			break
 		}
 
+		if payCall != nil {
+			// Pay executes inline like speak — state change happens (coins
+			// move, hunger/thirst drop if matched), but the loop continues
+			// so the model can follow through with thanks or a move. The
+			// continuation message reflects the actual result so the model
+			// knows whether the transaction landed: a "rejected" pay (bad
+			// recipient, insufficient coins, self-payment) gets surfaced
+			// verbatim so the model can correct itself rather than thanking
+			// someone for ale they didn't actually receive.
+			result, errStr := app.executeAgentCommit(ctx, r, payCall, sceneID)
+			if result == "ok" {
+				currentMessage = "[OK] You paid. Continue your turn — you may speak, move, or call done."
+			} else {
+				currentMessage = fmt.Sprintf("[Pay %s] %s. Continue your turn — you may correct it, speak, move, or call done.", result, errStr)
+			}
+			currentToolCallID = payCall.ID
+			continue
+		}
+
 		if speakCall != nil {
 			// Execute the speak inline (audit + WS broadcast + co-located
 			// event-ticks) but DON'T terminate the loop. The model gets to
@@ -354,7 +387,7 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			// the table — without it, models tend to default to "done"
 			// after speaking ("I responded, my turn's over"). Non-directive
 			// nudge: doesn't name a specific action, just affirms agency.
-			app.executeAgentCommit(ctx, r, speakCall, sceneID)
+			_, _ = app.executeAgentCommit(ctx, r, speakCall, sceneID)
 			currentMessage = "[OK] You spoke. Continue your turn — you may move or run a chore now, or call done if you're staying put."
 			currentToolCallID = speakCall.ID
 			continue
@@ -365,7 +398,7 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			// physical action with a follow-up speech ("served stew" then
 			// "here you are, mind the heat"). Same [OK] nudge so the
 			// model knows the turn isn't over.
-			app.executeAgentCommit(ctx, r, actCall, sceneID)
+			_, _ = app.executeAgentCommit(ctx, r, actCall, sceneID)
 			currentMessage = "[OK] You did that. Continue your turn — you may speak, move, or call done."
 			currentToolCallID = actCall.ID
 			continue
@@ -400,7 +433,7 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 		}
 	}
 
-	app.executeAgentCommit(ctx, r, commitCall, sceneID)
+	_, _ = app.executeAgentCommit(ctx, r, commitCall, sceneID)
 	app.stampAgentTick(ctx, r, hourStart)
 }
 
@@ -476,7 +509,8 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, 
 		        n.last_agent_tick_at,
 		        n.schedule_start_minute, n.schedule_end_minute,
 		        COALESCE(wo.display_name, wa.name) AS work_label,
-		        COALESCE(ho.display_name, ha.name) AS home_label
+		        COALESCE(ho.display_name, ha.name) AS home_label,
+		        va.coins, va.hunger, va.thirst, va.tiredness
 		 FROM npc n
 		 JOIN village_agent va ON va.llm_memory_agent = n.llm_memory_agent
 		 LEFT JOIN village_object wo ON wo.id = n.work_structure_id
@@ -492,7 +526,8 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, 
 		&r.HomeStructureID, &r.WorkStructureID,
 		&r.LastAgentTickAt,
 		&r.ScheduleStartMinute, &r.ScheduleEndMinute,
-		&r.WorkLabel, &r.HomeLabel); err != nil {
+		&r.WorkLabel, &r.HomeLabel,
+		&r.Coins, &r.Hunger, &r.Thirst, &r.Tiredness); err != nil {
 		if err != sql.ErrNoRows {
 			log.Printf("event-tick %s (%s): load row: %v", npcID, reason, err)
 		}
@@ -645,6 +680,28 @@ func agentToolSpec() []agentToolDef {
 			},
 		},
 		{
+			Name:        "pay",
+			Description: "Hand coins to another villager. Use after agreeing on a price in conversation. The 'for' field is a free-text note about what the payment is for ('a pint of ale', 'the bread', 'the news from Boston'); the engine uses it to decide whether the payment also reduces your hunger or thirst.",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"recipient": map[string]interface{}{
+						"type":        "string",
+						"description": "The villager you're paying, by name (e.g. 'john-ellis').",
+					},
+					"amount": map[string]interface{}{
+						"type":        "integer",
+						"description": "Number of coins to hand over. Must be positive and no more than you currently hold.",
+					},
+					"for": map[string]interface{}{
+						"type":        "string",
+						"description": "What the payment is for (free text). Mention 'ale' / 'beer' / 'cider' for a drink, or 'meal' / 'stew' / 'bread' for food, so the engine can reduce the right need.",
+					},
+				},
+				"required": []string{"recipient", "amount"},
+			},
+		},
+		{
 			Name:        "recall",
 			Description: "Try to remember something — search your past notes, dreams, and impressions for anything relevant. Use this when you want to recall what you know about a person, place, or event. Phrase the query in your own words.",
 			Parameters: map[string]interface{}{
@@ -663,6 +720,12 @@ func agentToolSpec() []agentToolDef {
 
 // isCommitTool reports whether the named tool, when emitted, ends the
 // harness loop. Observation tools (recall) don't.
+//
+// Note: this helper has a misleading doc — `speak` is in here for historical
+// reasons but is actually inline (loop continues after it executes). The
+// helper has no callers today; touching the inconsistency is out of scope.
+// `pay` is intentionally NOT included here even though it's an executable
+// commit-style tool, to avoid compounding the existing mismatch.
 func isCommitTool(name string) bool {
 	switch name {
 	case "move_to", "chore", "speak", "done":
@@ -840,6 +903,17 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 	sections = append(sections, fmt.Sprintf(
 		"You are at %s. The time is %s.",
 		locationName, hourStart.Format("Monday 15:04"),
+	))
+
+	// 3a. Body and purse (ZBBS-082). Each need is 0-24 with higher = more
+	// in need (0 = freshly satisfied, 24 = on the edge of collapse). The
+	// orientation hint is included in-line because without it the model
+	// can't tell whether 18 is "near starving" or "freshly fed." Coins
+	// follow as a separate sentence so the model doesn't conflate need
+	// state with currency state.
+	sections = append(sections, fmt.Sprintf(
+		"Your body (each 0-24, higher = more in need): hunger %d, thirst %d, tiredness %d. Coins in your purse: %d.",
+		r.Hunger, r.Thirst, r.Tiredness, r.Coins,
 	))
 
 	// 4. Destinations. Categorical first, then occupant-named residences.
@@ -1170,6 +1244,11 @@ func (app *App) resolveRecall(ctx context.Context, r *agentNPCRow, query string)
 // execution still write a row with result='failed' so the audit trail
 // captures every decision attempt.
 //
+// Returns (result, errStr) so inline-handled tools (pay, speak) can
+// surface the outcome to the model in the next-iteration continuation
+// message — without that signal a "rejected" pay would silently look
+// like a successful one to the LLM.
+//
 // Speak commits stash the speaker's current inside_structure_id into
 // the audit payload as `structure_id` so the recent-block perception
 // query (M6.4.6) can find which speeches happened at a given location
@@ -1177,11 +1256,16 @@ func (app *App) resolveRecall(ctx context.Context, r *agentNPCRow, query string)
 // `payload->>'structure_id'` from agent_action_log is enough.
 //
 // sceneID (MEM-121) is the cascade UUID of the tick this commit
-// originated from. Forwarded to triggerCoLocatedTicks on the speak
-// case so reactor ticks land in the same scene; ignored for non-speak
-// commits because move/chore/done don't fan out (move triggers an
-// arrival LATER, after the walk completes, which is its own new scene).
-func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agentToolCall, sceneID string) {
+// originated from. Forwarded to triggerCoLocatedTicks on speak/act
+// so reactor ticks land in the same scene; ignored for non-cascading
+// commits (move/chore/done/pay don't fan out — move triggers an arrival
+// LATER, after the walk completes, which is its own new scene).
+//
+// Returns (result, errStr) so the dispatcher can surface the outcome
+// of pay attempts back into the model's continuation message. Other
+// commit types ("ok"/"") are ignored by callers but kept consistent
+// for the audit row.
+func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agentToolCall, sceneID string) (string, string) {
 	// Augment the speak payload with the structure_id so the recent
 	// block can query "what was said here recently." Other tools don't
 	// need this — only speak surfaces in others' perceptions.
@@ -1291,6 +1375,39 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 	case "done":
 		// No state change. Audit row preserves the decision.
 
+	case "pay":
+		recipient, _ := tc.Input["recipient"].(string)
+		// Amount tolerates float, int, and string because providers vary on
+		// numeric coercion of model output. Reject fractional floats — coins
+		// are whole-number; silently truncating 1.9 to 1 would underpay.
+		var amount int
+		var amountErr string
+		switch v := tc.Input["amount"].(type) {
+		case float64:
+			if v != math.Trunc(v) {
+				amountErr = "amount must be a whole number of coins"
+			} else {
+				amount = int(v)
+			}
+		case int:
+			amount = v
+		case string:
+			n, err := strconv.Atoi(strings.TrimSpace(v))
+			if err != nil {
+				amountErr = fmt.Sprintf("amount %q is not a number", v)
+			} else {
+				amount = n
+			}
+		}
+		if amountErr != "" {
+			result, errStr = "rejected", amountErr
+			break
+		}
+		forText, _ := tc.Input["for"].(string)
+		pr := app.executePay(ctx, r, recipient, amount, forText)
+		result = pr.Result
+		errStr = pr.Err
+
 	default:
 		result, errStr = "rejected", fmt.Sprintf("unknown commit tool: %s", tc.Name)
 	}
@@ -1306,6 +1423,7 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 	if err != nil {
 		log.Printf("agent-tick: audit insert %s/%s: %v", r.DisplayName, tc.Name, err)
 	}
+	return result, errStr
 }
 
 // executeAgentMoveTo finds the destination structure and dispatches a walk.
