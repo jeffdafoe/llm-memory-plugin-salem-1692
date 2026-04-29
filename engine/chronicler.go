@@ -76,9 +76,17 @@ type chroniclerFireReason struct {
 }
 
 // chroniclerToolSpec returns the tool definitions offered to the
-// chronicler at every fire. Day-one set: set_environment, record_event,
-// recall, done. No dispatch_tick — NPCs are reactive-only, the
-// chronicler doesn't puppet them.
+// chronicler at every fire.
+//
+// attend_to (ZBBS-083) is the directorial action — the overseer rouses a
+// villager whose body is in distress so they have a chance to act on it.
+// The roused NPC ticks through the normal agent path and decides for
+// themselves what to do (eat, drink, rest, leave). attend_to does NOT
+// puppet — it only opens the door for action.
+//
+// Per-fire calls to attend_to are capped by chronicler_dispatch_ceiling
+// in the dispatcher. The model is told the limit is finite but not the
+// exact number, to discourage greedy use-until-rejected patterns.
 func chroniclerToolSpec() []agentToolDef {
 	return []agentToolDef{
 		{
@@ -130,6 +138,20 @@ func chroniclerToolSpec() []agentToolDef {
 					},
 				},
 				"required": []string{"query"},
+			},
+		},
+		{
+			Name:        "attend_to",
+			Description: "Direct your attention to a named villager so they may rouse and tend to themselves. Use when you see a soul whose body is in distress — hungry, parched, or weary — and a small voice within them might move them to act. The villager you attend to will think and may take an action; you do not move their hands. Use sparingly: there is a finite measure to how many you may attend in one waking.",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"villager": map[string]interface{}{
+						"type":        "string",
+						"description": "The villager you attend, by name (the same name that appears in your perception of who is at each place).",
+					},
+				},
+				"required": []string{"villager"},
 			},
 		},
 		{
@@ -298,6 +320,14 @@ func (app *App) fireChronicler(ctx context.Context, reason chroniclerFireReason)
 	// so the admin UI can collapse them into a single expandable row.
 	sceneID := newUUIDv7()
 
+	// Per-fire attend_to counter (ZBBS-083). Reset each fire — the
+	// configured ceiling is per-fire, not per-day. Read once at the top
+	// so an admin tweaking the setting mid-fire doesn't change the cap
+	// underneath us. loadNonNegativeIntSetting clamps a negative value to
+	// the default rather than rejecting every call.
+	attendCeiling := app.loadNonNegativeIntSetting(ctx, "chronicler_dispatch_ceiling", 12)
+	attendCount := 0
+
 	for iter := 0; iter < chroniclerTickBudget; iter++ {
 		reply, err := app.npcChatClient.sendChat(ctx, chroniclerAgent, currentMessage, currentToolCallID, sceneID, tools)
 		if err != nil {
@@ -397,6 +427,48 @@ func (app *App) fireChronicler(ctx context.Context, reason chroniclerFireReason)
 			currentMessage = app.resolveChroniclerRecall(ctx, query)
 			currentToolCallID = tc.ID
 
+		case "attend_to":
+			villager, _ := tc.Input["villager"].(string)
+			villager = strings.TrimSpace(villager)
+			if villager == "" {
+				currentMessage = "[The villager you tried to attend was unnamed. Try again or say done.]"
+				currentToolCallID = tc.ID
+				break
+			}
+			if attendCount >= attendCeiling {
+				currentMessage = "[You have attended to as many villagers as one waking allows. Move on, or say done.]"
+				currentToolCallID = tc.ID
+				break
+			}
+			npcID, displayName, ok := app.resolveVillagerForAttention(ctx, villager)
+			if !ok {
+				currentMessage = fmt.Sprintf("[There is no villager by the name %q. Try again with the name as it appears in your roster, or say done.]", villager)
+				currentToolCallID = tc.ID
+				break
+			}
+			// Trigger the NPC's tick. Force=false so the existing cost-
+			// guard in triggerImmediateTick (agentMinTickGap) still
+			// applies — the overseer can rouse the same NPC repeatedly
+			// across phases, but not within a single 5-minute window.
+			// Background goroutine so a slow agent tick doesn't block the
+			// overseer's harness loop. App-level semaphore caps aggregate
+			// concurrency across overlapping fires; if the slot is full
+			// we still let the call through (vs dropping) — the goroutine
+			// just blocks waiting for a slot, then runs. Acceptable for
+			// directorial dispatches; if backpressure becomes an issue we
+			// can switch to skip-if-full like ChroniclerSem does.
+			// Thread the chronicler's sceneID so the dispatched NPC tick
+			// lands in the same scene as the overseer's fire — keeps the
+			// admin UI's scene grouping coherent across the cascade.
+			go func(id, name, scene string) {
+				app.OverseerAttendSem <- struct{}{}
+				defer func() { <-app.OverseerAttendSem }()
+				app.triggerImmediateTick(context.Background(), id, "overseer-attend-to", false, scene)
+			}(npcID, displayName, sceneID)
+			attendCount++
+			currentMessage = fmt.Sprintf("[You attend to %s. They will rouse and decide what to do.]", displayName)
+			currentToolCallID = tc.ID
+
 		case "done":
 			terminal = true
 
@@ -462,6 +534,15 @@ func (app *App) buildChroniclerPerception(ctx context.Context, reason chronicler
 		sections = append(sections, rosterText)
 	}
 
+	// 3a. Villagers in distress (ZBBS-083). Lists NPCs whose body has
+	// crossed the red threshold for one or more needs. Mild-tier discomfort
+	// stays private to the NPC — only red-and-above surfaces here so the
+	// overseer's attention list is signal, not noise. Empty section omitted
+	// when no one is suffering.
+	if distress := app.buildChroniclerDistressList(ctx); distress != "" {
+		sections = append(sections, distress)
+	}
+
 	// 4. Your recent atmospheric statements.
 	if recent := app.recentEnvironmentTexts(ctx, chroniclerEnvHistoryCount); len(recent) > 0 {
 		var b strings.Builder
@@ -490,7 +571,13 @@ func (app *App) buildChroniclerPerception(ctx context.Context, reason chronicler
 	// attention timestamp, not the phase one, so cascade fires between
 	// phases see only the activity since the previous fire instead of
 	// repeatedly re-digesting back to the last phase boundary).
-	if digest := app.buildActivityDigest(ctx, app.loadChroniclerLastAttentionAt(ctx)); digest != "" {
+	//
+	// Pass reason so the digest can suppress its "the village has been
+	// quiet" fallback on cascade fires — the opening line already named
+	// the stirring (e.g. "Something stirs at Blacksmith: arrival") and
+	// asserting "quiet" six lines later contradicted it, biasing the
+	// model toward a set_environment atmosphere response on every cascade.
+	if digest := app.buildActivityDigest(ctx, app.loadChroniclerLastAttentionAt(ctx), reason); digest != "" {
 		sections = append(sections, digest)
 	}
 
@@ -500,7 +587,7 @@ func (app *App) buildChroniclerPerception(ctx context.Context, reason chronicler
 	// the model occasionally narrates as plain text (the implicit
 	// set_environment fallback catches this, but explicit naming
 	// reduces the failure rate).
-	sections = append(sections, "Attend to the village. Use set_environment to write the current atmosphere if it has shifted. Use record_event to record any happening that should persist in village memory (default scope is village; pass scope_type='local' with scope_target=<structure_id> to restrict to one place, or scope_type='private' with scope_target=<npc_id> to restrict to one person). You may use recall to remember anything the village has experienced. Use done when your office is finished.")
+	sections = append(sections, "Attend to the village. Use set_environment to write the current atmosphere if it has shifted. Use record_event to record any happening that should persist in village memory (default scope is village; pass scope_type='local' with scope_target=<structure_id> to restrict to one place, or scope_type='private' with scope_target=<npc_id> to restrict to one person). Use attend_to to rouse a villager whose body is in distress so they may tend to themselves. You may use recall to remember anything the village has experienced. Use done when your office is finished.")
 
 	return strings.Join(sections, "\n\n")
 }
@@ -611,9 +698,14 @@ func (app *App) buildChroniclerNPCRoster(ctx context.Context) string {
 // rows since `since`. Aggregates per-NPC action counts. Empty string
 // when no activity (fresh deploy or quiet window).
 //
+// reason is the fire reason for this perception. On cascade fires the
+// "the village has been quiet" fallback is suppressed and we return ""
+// instead — the opening line already named the cascade trigger
+// (arrival, etc.) and asserting "quiet" here contradicted that.
+//
 // Format: "Since the last fire: John walked 2 times, spoke 4 times.
 // Prudence completed 1 chore. ..."
-func (app *App) buildActivityDigest(ctx context.Context, since time.Time) string {
+func (app *App) buildActivityDigest(ctx context.Context, since time.Time, reason chroniclerFireReason) string {
 	if since.IsZero() {
 		// No prior fire — skip digest. Fresh deploy or first fire after restart.
 		return ""
@@ -663,6 +755,9 @@ func (app *App) buildActivityDigest(ctx context.Context, since time.Time) string
 		return ""
 	}
 	if len(per) == 0 {
+		if reason.Type == "cascade" {
+			return ""
+		}
 		return "Since your last attention, the village has been quiet."
 	}
 
@@ -704,6 +799,9 @@ func (app *App) buildActivityDigest(ctx context.Context, since time.Time) string
 		fmt.Fprintf(&b, "- %s %s.\n", name, strings.Join(parts, ", "))
 	}
 	if !wrote {
+		if reason.Type == "cascade" {
+			return ""
+		}
 		return "Since your last attention, the village has been quiet."
 	}
 	return strings.TrimRight(b.String(), "\n")
@@ -1116,5 +1214,111 @@ func (app *App) lookupStructureName(ctx context.Context, structureID string) str
 		return ""
 	}
 	return name.String
+}
+
+// buildChroniclerDistressList renders the "Villagers needing attention"
+// block for the overseer's perception. Lists any NPC whose hunger, thirst,
+// or tiredness is at or above the configured red threshold for that need
+// (mild-tier discomfort isn't surfaced — too noisy at the director level).
+// Format: "- <Name> (at <Place>): <need labels>". Empty string when no
+// one is in distress, in which case the section is omitted entirely from
+// the perception.
+//
+// Locations come from the same coalesced display_name → asset.name path
+// the rest of the chronicler perception uses, so the place names match
+// the roster block.
+func (app *App) buildChroniclerDistressList(ctx context.Context) string {
+	hungerT := app.loadNeedThreshold(ctx, "hunger_red_threshold", defaultHungerRedThreshold)
+	thirstT := app.loadNeedThreshold(ctx, "thirst_red_threshold", defaultThirstRedThreshold)
+	tiredT := app.loadNeedThreshold(ctx, "tiredness_red_threshold", defaultTirednessRedThreshold)
+
+	rows, err := app.DB.Query(ctx, `
+		SELECT n.display_name,
+		       COALESCE(o.display_name, a.name) AS place,
+		       va.hunger, va.thirst, va.tiredness
+		FROM npc n
+		JOIN village_agent va ON va.llm_memory_agent = n.llm_memory_agent
+		LEFT JOIN village_object o ON o.id = n.inside_structure_id
+		LEFT JOIN asset a ON a.id = o.asset_id
+		WHERE va.hunger    >= $1
+		   OR va.thirst    >= $2
+		   OR va.tiredness >= $3
+		ORDER BY n.display_name
+	`, hungerT, thirstT, tiredT)
+	if err != nil {
+		log.Printf("chronicler: distress query: %v", err)
+		return ""
+	}
+	defer rows.Close()
+
+	var lines []string
+	for rows.Next() {
+		var name string
+		var place sql.NullString
+		var hunger, thirst, tiredness int
+		if err := rows.Scan(&name, &place, &hunger, &thirst, &tiredness); err != nil {
+			log.Printf("chronicler: distress scan: %v", err)
+			continue
+		}
+
+		// Filter to red-tier and above only; mild-tier doesn't surface here.
+		var labels []string
+		if needLabelTier(hunger, hungerT) >= 2 {
+			labels = append(labels, needLabel("hunger", hunger, hungerT))
+		}
+		if needLabelTier(thirst, thirstT) >= 2 {
+			labels = append(labels, needLabel("thirst", thirst, thirstT))
+		}
+		if needLabelTier(tiredness, tiredT) >= 2 {
+			labels = append(labels, needLabel("tiredness", tiredness, tiredT))
+		}
+		if len(labels) == 0 {
+			// Row qualified by the threshold OR but all needs landed mild
+			// (shouldn't happen given the WHERE clause matches the same
+			// thresholds, but defensive). Skip.
+			continue
+		}
+
+		placeStr := "the open village"
+		if place.Valid && place.String != "" {
+			placeStr = place.String
+		}
+		lines = append(lines, fmt.Sprintf("- %s (at %s): %s", name, placeStr, strings.Join(labels, ", ")))
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("chronicler: distress rows: %v", err)
+		return ""
+	}
+
+	if len(lines) == 0 {
+		return ""
+	}
+	return "Villagers in distress:\n" + strings.Join(lines, "\n")
+}
+
+// resolveVillagerForAttention maps a villager name (display_name or slug)
+// to the npc.id needed by triggerImmediateTick. Display name is primary
+// (matches what appears in the roster the overseer sees) with a slug
+// fallback so the overseer can address NPCs either way. Case-insensitive,
+// trimmed. Returns the display_name as well so the dispatcher can render
+// the "[You attend to X.]" tool result with the canonical form.
+func (app *App) resolveVillagerForAttention(ctx context.Context, villager string) (string, string, bool) {
+	var npcID, displayName string
+	err := app.DB.QueryRow(ctx, `
+		SELECT n.id, n.display_name
+		FROM npc n
+		JOIN village_agent va ON va.llm_memory_agent = n.llm_memory_agent
+		WHERE LOWER(n.display_name) = LOWER($1)
+		   OR LOWER(va.name)        = LOWER($1)
+		ORDER BY (LOWER(n.display_name) = LOWER($1)) DESC NULLS LAST
+		LIMIT 1
+	`, villager).Scan(&npcID, &displayName)
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			log.Printf("chronicler: resolve villager %q: %v", villager, err)
+		}
+		return "", "", false
+	}
+	return npcID, displayName, true
 }
 

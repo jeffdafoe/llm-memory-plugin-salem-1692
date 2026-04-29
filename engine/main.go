@@ -60,6 +60,16 @@ type App struct {
 	// is enough for the realistic event rate; bump if drops are
 	// observed in practice.
 	ChroniclerSem chan struct{}
+
+	// OverseerAttendSem caps the number of concurrent attend_to-spawned
+	// agent ticks in flight (ZBBS-083). Each chronicler fire can dispatch
+	// up to chronicler_dispatch_ceiling NPCs (default 12); without an
+	// app-level cap, two overlapping fires could spawn ~24 concurrent
+	// agent ticks against the upstream LLM provider. Per-NPC cost guards
+	// in triggerImmediateTick prevent same-NPC storms but don't bound
+	// aggregate concurrency. Capacity 4 is conservative for the current
+	// 4-NPC village; raise as population grows.
+	OverseerAttendSem chan struct{}
 }
 
 func main() {
@@ -93,6 +103,9 @@ func main() {
 		// Capacity 2 — concurrent cascade chronicler fires. PC speech +
 		// NPC arrival can briefly overlap; more than that gets skipped.
 		ChroniclerSem: make(chan struct{}, 2),
+		// Capacity 4 — concurrent attend_to-spawned agent ticks. Bounds
+		// burst when the overseer dispatches multiple villagers at once.
+		OverseerAttendSem: make(chan struct{}, 4),
 	}
 	// Prime the display-name map so reactive ticks before the first
 	// server-tick refresh have data. Cheap; bounded by NPC count.

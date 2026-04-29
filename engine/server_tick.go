@@ -71,4 +71,8 @@ func (app *App) runServerTickOnce(ctx context.Context) {
 	app.dispatchAgentTicks(ctx)
 	app.dispatchScheduledBehaviors(ctx)
 	app.dispatchSocialSchedules(ctx)
+	// Attribute tick advances NPC needs (hunger/thirst/tiredness) when the
+	// wall-clock hour has rolled. No-op on most ticks (cheap setting read +
+	// integer compare); single batch UPDATE on the boundary.
+	app.dispatchAttributeTick(ctx)
 }
