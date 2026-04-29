@@ -312,10 +312,13 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 		}
 
 		// Pick the first tool_call to act on. Terminal commits (move_to,
-		// chore, done) win over speak; speak wins over an unrecognized
-		// observation. This preserves the prior precedence and avoids
-		// emitting two physical actions in one tick.
-		var terminalCall, speakCall, observation *agentToolCall
+		// chore, done) win over speak/act; speak/act win over an
+		// unrecognized observation. This preserves the prior precedence
+		// and avoids emitting two physical actions in one tick. speak
+		// and act are both non-terminal — the harness lets the model
+		// follow up with movement or another speech turn within the
+		// per-tick budget.
+		var terminalCall, speakCall, actCall, observation *agentToolCall
 		for i := range reply.ToolCalls {
 			tc := &reply.ToolCalls[i]
 			switch tc.Name {
@@ -326,6 +329,10 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			case "speak":
 				if speakCall == nil {
 					speakCall = tc
+				}
+			case "act":
+				if actCall == nil {
+					actCall = tc
 				}
 			default:
 				if observation == nil {
@@ -350,6 +357,17 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			app.executeAgentCommit(ctx, r, speakCall, sceneID)
 			currentMessage = "[OK] You spoke. Continue your turn — you may move or run a chore now, or call done if you're staying put."
 			currentToolCallID = speakCall.ID
+			continue
+		}
+
+		if actCall != nil {
+			// act is non-terminal like speak — the model often pairs a
+			// physical action with a follow-up speech ("served stew" then
+			// "here you are, mind the heat"). Same [OK] nudge so the
+			// model knows the turn isn't over.
+			app.executeAgentCommit(ctx, r, actCall, sceneID)
+			currentMessage = "[OK] You did that. Continue your turn — you may speak, move, or call done."
+			currentToolCallID = actCall.ID
 			continue
 		}
 
@@ -598,6 +616,20 @@ func agentToolSpec() []agentToolDef {
 			},
 		},
 		{
+			Name:        "act",
+			Description: "Commit a brief physical action with your hands or body — serving food, pouring a drink, leaning on the bar, wiping a counter, gesturing. Use this for what you DO, not what you SAY (use speak for speech). The action becomes part of the scene's recent history that other people in the room perceive on their next turn, so use it when an action is worth others noticing.",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"verb_phrase": map[string]interface{}{
+						"type":        "string",
+						"description": "What you do, in past tense and third person, as a single phrase. Examples: 'served stew to Jefferey', 'poured ale for Ezekiel', 'wiped the counter', 'leaned on the bar'.",
+					},
+				},
+				"required": []string{"verb_phrase"},
+			},
+		},
+		{
 			Name:        "done",
 			Description: "Take no action this hour — rest or continue what you're already doing.",
 			Parameters: map[string]interface{}{
@@ -826,16 +858,15 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 		sections = append(sections, "Here:\n"+strings.Join(hereLines, "\n"))
 	}
 
-	// 6. Recent block (M6.4.6) — what other NPCs said at this NPC's
-	// current location in the last 30 minutes. Sourced from
-	// agent_action_log where action_type='speak' and the payload's
-	// structure_id matches this NPC's inside_structure_id. Excludes the
-	// NPC's own speeches (those are already in their chat history with
-	// the engine). Capped at 5 most-recent lines, oldest first so the
-	// LLM reads them in chronological order. Skipped when the NPC is
-	// outside (no structure context to filter by).
+	// 6. Recent block (M6.4.6) — what people in the room have said and
+	// done at this NPC's current location in the last 30 minutes.
+	// Sourced from agent_action_log rows with action_type IN
+	// ('speak', 'act') whose payload's structure_id matches this NPC's
+	// inside_structure_id. Capped at 5 most-recent lines, oldest first
+	// so the LLM reads them in chronological order. Skipped when the
+	// NPC is outside (no structure context to filter by).
 	if r.InsideStructureID.Valid {
-		recentLines := app.recentSpeechAtStructure(ctx, r.InsideStructureID.String, r.DisplayName, 30*time.Minute, 5)
+		recentLines := app.recentActivityAtStructure(ctx, r.InsideStructureID.String, r.DisplayName, 30*time.Minute, 5)
 		if len(recentLines) > 0 {
 			sections = append(sections, "Recent:\n"+strings.Join(recentLines, "\n"))
 		}
@@ -997,24 +1028,30 @@ func (app *App) coLocatedHuddleMembers(ctx context.Context, npcID string) []stri
 	return lines
 }
 
-// recentSpeechAtStructure pulls recent speak audit rows whose payload
-// records the same structure_id as the perceiving NPC's current
-// location. Returns "Speaker said: \"text\"" lines in chronological
-// order (oldest → newest). The perceiver's own utterances appear as
-// "You said: ..." so the NPC sees their own commitments without the
-// disorientation of being referred to in third person in their own
-// perception.
+// recentActivityAtStructure pulls recent speak and act audit rows whose
+// payload records the same structure_id as the perceiving NPC's current
+// location. Returns lines in chronological order (oldest → newest):
+//
+//   - speak: `Speaker said: "text"` (or `You said: "text"` for the perceiver)
+//   - act:   `Speaker verb_phrase` (or `You verb_phrase` for the perceiver)
+//
+// The perceiver's own utterances/acts appear in second person so they
+// see their own commitments without the disorientation of being referred
+// to in third person in their own perception.
 //
 // Window is wall-clock minutes; in Salem's no-time-acceleration model
 // that maps directly to game-minutes. Capped at the requested count.
-func (app *App) recentSpeechAtStructure(ctx context.Context, structureID, perceiverName string, window time.Duration, limit int) []string {
+func (app *App) recentActivityAtStructure(ctx context.Context, structureID, perceiverName string, window time.Duration, limit int) []string {
 	rows, err := app.DB.Query(ctx,
 		// Reads speaker_name directly so PC speech (npc_id NULL) lands
 		// in the same query — no JOIN to npc. Includes the perceiver's
-		// own utterances; the formatter rewrites them to second person.
-		`SELECT al.speaker_name, al.payload->>'text' AS text
+		// own utterances/acts; the formatter rewrites them to second
+		// person. action_type IN ('speak', 'act') unifies both physical
+		// and verbal contributions to the scene's recent history.
+		`SELECT al.speaker_name, al.action_type,
+		        COALESCE(al.payload->>'text', al.payload->>'verb_phrase') AS detail
 		 FROM agent_action_log al
-		 WHERE al.action_type = 'speak'
+		 WHERE al.action_type IN ('speak', 'act')
 		   AND al.result = 'ok'
 		   AND al.payload->>'structure_id' = $1
 		   AND al.occurred_at > NOW() - $2::interval
@@ -1022,25 +1059,39 @@ func (app *App) recentSpeechAtStructure(ctx context.Context, structureID, percei
 		 LIMIT $3`,
 		structureID, fmt.Sprintf("%d seconds", int(window.Seconds())), limit)
 	if err != nil {
-		log.Printf("recent-speech: query: %v", err)
+		log.Printf("recent-activity: query: %v", err)
 		return nil
 	}
 	defer rows.Close()
 	// Pull rows in DESC order, then reverse to chronological for output.
 	var collected []string
 	for rows.Next() {
-		var name, text string
-		if err := rows.Scan(&name, &text); err != nil {
+		var name, actionType, detail string
+		if err := rows.Scan(&name, &actionType, &detail); err != nil {
 			continue
 		}
-		if text == "" {
+		if detail == "" {
 			continue
 		}
-		if name == perceiverName {
-			collected = append(collected, fmt.Sprintf("  You said: \"%s\"", text))
-		} else {
-			collected = append(collected, fmt.Sprintf("  %s said: \"%s\"", name, text))
+		isSelf := name == perceiverName
+		var line string
+		switch actionType {
+		case "speak":
+			if isSelf {
+				line = fmt.Sprintf("  You said: \"%s\"", detail)
+			} else {
+				line = fmt.Sprintf("  %s said: \"%s\"", name, detail)
+			}
+		case "act":
+			if isSelf {
+				line = fmt.Sprintf("  You %s", detail)
+			} else {
+				line = fmt.Sprintf("  %s %s", name, detail)
+			}
+		default:
+			continue
 		}
+		collected = append(collected, line)
 	}
 	// Reverse in place so oldest comes first.
 	for i, j := 0, len(collected)-1; i < j; i, j = i+1, j-1 {
@@ -1127,7 +1178,7 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 	// Augment the speak payload with the structure_id so the recent
 	// block can query "what was said here recently." Other tools don't
 	// need this — only speak surfaces in others' perceptions.
-	if tc.Name == "speak" && r.InsideStructureID.Valid {
+	if (tc.Name == "speak" || tc.Name == "act") && r.InsideStructureID.Valid {
 		if tc.Input == nil {
 			tc.Input = map[string]interface{}{}
 		}
@@ -1198,6 +1249,36 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		// sceneID, force `done` past N rounds).
 		if r.InsideStructureID.Valid {
 			app.triggerCoLocatedTicks(ctx, r.InsideStructureID.String, r.ID, "heard-speech", true, sceneID)
+		}
+
+	case "act":
+		verb, _ := tc.Input["verb_phrase"].(string)
+		if verb == "" {
+			result, errStr = "rejected", "empty verb_phrase"
+			break
+		}
+		// act creates a fact in the room — visible to other co-located
+		// NPCs on their next perception via recentActivityAtStructure.
+		// No engine-state change beyond the audit row; the world doesn't
+		// model inventories or seating, but the action is recorded as
+		// having happened so future perceptions don't have to reconstruct
+		// it from speech alone.
+		log.Printf("npc_act: %s — %s", r.DisplayName, verb)
+		app.Hub.Broadcast(WorldEvent{
+			Type: "npc_acted",
+			Data: map[string]interface{}{
+				"npc_id":      r.ID,
+				"name":        r.DisplayName,
+				"verb_phrase": verb,
+				"at":          time.Now().UTC().Format(time.RFC3339),
+			},
+		})
+		// Same cascade trigger as speak — co-located NPCs may want to
+		// react to the action ("oh, you served the merchant first").
+		// force=true for the same reason the speak path forces: the
+		// addressee/witness shouldn't be cost-gated out of reacting.
+		if r.InsideStructureID.Valid {
+			app.triggerCoLocatedTicks(ctx, r.InsideStructureID.String, r.ID, "saw-action", true, sceneID)
 		}
 
 	case "done":
