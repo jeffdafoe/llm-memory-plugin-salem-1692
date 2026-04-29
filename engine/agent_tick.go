@@ -454,10 +454,17 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, 
 		log.Printf("event-tick %s (%s): load config: %v", npcID, reason, err)
 		return
 	}
+	// NOTE: event ticks are NOT gated by agentTickActive(Start|End)Hour.
+	// Those constants gate the BASELINE dispatcher (autonomous hourly
+	// ticks) so NPCs don't burn budget acting on their own at 4am while
+	// the village sleeps. Event ticks are triggered by something
+	// happening — a PC speaking, an NPC arriving, an NPC's speech being
+	// heard — so by definition the world is active. Gating them by the
+	// clock produced silent missed reactions: a PC speaking at 21:00 EDT
+	// at the tavern got no NPC response because Hour()==21==EndHour
+	// silently returned. The tavernkeeper at 9pm should not go silent
+	// just because the autonomous-tick window closed.
 	now := time.Now().In(cfg.Location)
-	if now.Hour() < agentTickActiveStartHour || now.Hour() >= agentTickActiveEndHour {
-		return
-	}
 
 	// Load the single NPC row. Mirrors loadAgentNPCRows but for one id.
 	row := app.DB.QueryRow(ctx,
