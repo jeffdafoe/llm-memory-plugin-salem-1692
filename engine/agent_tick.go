@@ -1178,11 +1178,26 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 				"at":     time.Now().UTC().Format(time.RFC3339),
 			},
 		})
-		// Event-tick co-located agents so they can react in-band. Cost
-		// guard in triggerImmediateTick prevents tick storms when both
-		// parties are agents and a back-and-forth develops.
+		// Event-tick co-located agents so they can react in-band. Force
+		// the cost guard off here — when an NPC addresses another NPC
+		// by name (or makes a speech the room is reacting to), the
+		// addressee should be able to respond inside the same scene
+		// even if they ticked seconds ago. The 5-minute agentMinTickGap
+		// was too coarse: a tavernkeeper saying "Ezekiel, would you
+		// like ale?" was getting 5 minutes of silence back because
+		// Ezekiel's tick from the prior PC-speak cascade had stamped
+		// LastAgentTickAt 3 seconds earlier.
+		//
+		// Residual risk: NPC A speaks → B's tick fires → B speaks →
+		// A's tick fires → repeat. Each tick is bounded by
+		// agentTickBudget (6 iterations) and the model's `done`
+		// termination, so individual ticks can't run away — but the
+		// inter-tick ping-pong is unbounded. If this becomes a cost
+		// problem in practice, the next layer of protection is a
+		// per-scene round counter (track depth via scene_huddle or
+		// sceneID, force `done` past N rounds).
 		if r.InsideStructureID.Valid {
-			app.triggerCoLocatedTicks(ctx, r.InsideStructureID.String, r.ID, "heard-speech", false, sceneID)
+			app.triggerCoLocatedTicks(ctx, r.InsideStructureID.String, r.ID, "heard-speech", true, sceneID)
 		}
 
 	case "done":
