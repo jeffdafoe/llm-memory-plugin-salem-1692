@@ -180,7 +180,9 @@ const (
 
 // loadIntSetting reads a setting key as an int, falling back to def when
 // missing, NULL, or unparseable. Different defaults per key, hence not
-// folded into loadSetting itself.
+// folded into loadSetting itself. Does NOT validate range — callers that
+// need a bounded value should use loadNeedThreshold or
+// loadNonNegativeIntSetting instead.
 func (app *App) loadIntSetting(ctx context.Context, key string, def int) int {
 	v := app.loadSetting(ctx, key, "")
 	if v == "" {
@@ -189,6 +191,33 @@ func (app *App) loadIntSetting(ctx context.Context, key string, def int) int {
 	n, err := strconv.Atoi(v)
 	if err != nil {
 		log.Printf("attributes: bad int setting %s=%q (using default %d): %v", key, v, def, err)
+		return def
+	}
+	return n
+}
+
+// loadNeedThreshold reads a need-threshold setting and clamps it into the
+// valid band [8, attributeMax]. A threshold below 8 would make every NPC
+// red regardless of state (collides with the silent floor in needLabel);
+// a threshold above attributeMax would mean the red label never fires
+// (peak still would, but mild→red ordering would invert). Out-of-range
+// values fall back to the supplied default.
+func (app *App) loadNeedThreshold(ctx context.Context, key string, def int) int {
+	n := app.loadIntSetting(ctx, key, def)
+	if n < 8 || n > attributeMax {
+		log.Printf("attributes: out-of-range need threshold %s=%d (using default %d)", key, n, def)
+		return def
+	}
+	return n
+}
+
+// loadNonNegativeIntSetting clamps to >= 0. Used for the dispatch ceiling,
+// where a negative value would make the >= comparison true immediately and
+// reject every attend_to call.
+func (app *App) loadNonNegativeIntSetting(ctx context.Context, key string, def int) int {
+	n := app.loadIntSetting(ctx, key, def)
+	if n < 0 {
+		log.Printf("attributes: negative int setting %s=%d (using default %d)", key, n, def)
 		return def
 	}
 	return n

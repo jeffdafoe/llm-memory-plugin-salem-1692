@@ -24,7 +24,7 @@ INSERT INTO setting (key, value, description) VALUES
     ('hunger_red_threshold',       '18', 'Hunger value (0-24) at which an NPC is surfaced to the overseer as in distress, and at which the NPC perceives themselves as "hungry" rather than "peckish".'),
     ('thirst_red_threshold',       '12', 'Thirst value (0-24) at which an NPC is surfaced to the overseer as in distress, and at which the NPC perceives themselves as "parched" rather than "thirsty". Lower than hunger because real bodies notice thirst sooner.'),
     ('tiredness_red_threshold',    '20', 'Tiredness value (0-24) at which an NPC is surfaced to the overseer as in distress, and at which the NPC perceives themselves as "weary" rather than "tired". Higher than the others because people carry on tired longer than hungry.'),
-    ('chronicler_dispatch_ceiling', '12', 'Maximum number of attend_to(villager) calls the overseer may make in a single fire. Caps cost; further calls within the same fire are rejected with a "[Limit reached]" tool result.')
+    ('chronicler_dispatch_ceiling', '12', 'Maximum number of attend_to(villager) calls the overseer may make in a single fire (per fire, NOT per day — three phase fires + cascade fires each get their own counter). Caps cost; further calls within the same fire are rejected with a "[Limit reached]" tool result.')
 ON CONFLICT (key) DO NOTHING;
 
 COMMIT;

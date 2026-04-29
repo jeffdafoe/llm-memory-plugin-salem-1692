@@ -323,8 +323,9 @@ func (app *App) fireChronicler(ctx context.Context, reason chroniclerFireReason)
 	// Per-fire attend_to counter (ZBBS-083). Reset each fire — the
 	// configured ceiling is per-fire, not per-day. Read once at the top
 	// so an admin tweaking the setting mid-fire doesn't change the cap
-	// underneath us.
-	attendCeiling := app.loadIntSetting(ctx, "chronicler_dispatch_ceiling", 12)
+	// underneath us. loadNonNegativeIntSetting clamps a negative value to
+	// the default rather than rejecting every call.
+	attendCeiling := app.loadNonNegativeIntSetting(ctx, "chronicler_dispatch_ceiling", 12)
 	attendCount := 0
 
 	for iter := 0; iter < chroniclerTickBudget; iter++ {
@@ -450,8 +451,17 @@ func (app *App) fireChronicler(ctx context.Context, reason chroniclerFireReason)
 			// applies — the overseer can rouse the same NPC repeatedly
 			// across phases, but not within a single 5-minute window.
 			// Background goroutine so a slow agent tick doesn't block the
-			// overseer's harness loop.
-			go app.triggerImmediateTick(context.Background(), npcID, "overseer-attend-to", false)
+			// overseer's harness loop. App-level semaphore caps aggregate
+			// concurrency across overlapping fires; if the slot is full
+			// we still let the call through (vs dropping) — the goroutine
+			// just blocks waiting for a slot, then runs. Acceptable for
+			// directorial dispatches; if backpressure becomes an issue we
+			// can switch to skip-if-full like ChroniclerSem does.
+			go func(id, name string) {
+				app.OverseerAttendSem <- struct{}{}
+				defer func() { <-app.OverseerAttendSem }()
+				app.triggerImmediateTick(context.Background(), id, "overseer-attend-to", false)
+			}(npcID, displayName)
 			attendCount++
 			currentMessage = fmt.Sprintf("[You attend to %s. They will rouse and decide what to do.]", displayName)
 			currentToolCallID = tc.ID
@@ -1215,9 +1225,9 @@ func (app *App) lookupStructureName(ctx context.Context, structureID string) str
 // the rest of the chronicler perception uses, so the place names match
 // the roster block.
 func (app *App) buildChroniclerDistressList(ctx context.Context) string {
-	hungerT := app.loadIntSetting(ctx, "hunger_red_threshold", defaultHungerRedThreshold)
-	thirstT := app.loadIntSetting(ctx, "thirst_red_threshold", defaultThirstRedThreshold)
-	tiredT := app.loadIntSetting(ctx, "tiredness_red_threshold", defaultTirednessRedThreshold)
+	hungerT := app.loadNeedThreshold(ctx, "hunger_red_threshold", defaultHungerRedThreshold)
+	thirstT := app.loadNeedThreshold(ctx, "thirst_red_threshold", defaultThirstRedThreshold)
+	tiredT := app.loadNeedThreshold(ctx, "tiredness_red_threshold", defaultTirednessRedThreshold)
 
 	rows, err := app.DB.Query(ctx, `
 		SELECT n.display_name,
@@ -1271,6 +1281,10 @@ func (app *App) buildChroniclerDistressList(ctx context.Context) string {
 			placeStr = place.String
 		}
 		lines = append(lines, fmt.Sprintf("- %s (at %s): %s", name, placeStr, strings.Join(labels, ", ")))
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("chronicler: distress rows: %v", err)
+		return ""
 	}
 
 	if len(lines) == 0 {

@@ -910,15 +910,19 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 	// when the value is below the awareness floor. Coins remain numeric —
 	// money is a thing you count, not a feeling. The whole sentence is
 	// omitted when no need is currently surfaced, keeping the perception
-	// quiet for a freshly-rested NPC.
+	// quiet for a freshly-rested NPC. Thresholds read once per perception
+	// build to avoid three setting round-trips per agent tick.
+	hungerT := app.loadNeedThreshold(ctx, "hunger_red_threshold", defaultHungerRedThreshold)
+	thirstT := app.loadNeedThreshold(ctx, "thirst_red_threshold", defaultThirstRedThreshold)
+	tiredT := app.loadNeedThreshold(ctx, "tiredness_red_threshold", defaultTirednessRedThreshold)
 	bodyParts := []string{}
-	if l := needLabel("hunger", r.Hunger, app.loadIntSetting(ctx, "hunger_red_threshold", defaultHungerRedThreshold)); l != "" {
+	if l := needLabel("hunger", r.Hunger, hungerT); l != "" {
 		bodyParts = append(bodyParts, l)
 	}
-	if l := needLabel("thirst", r.Thirst, app.loadIntSetting(ctx, "thirst_red_threshold", defaultThirstRedThreshold)); l != "" {
+	if l := needLabel("thirst", r.Thirst, thirstT); l != "" {
 		bodyParts = append(bodyParts, l)
 	}
-	if l := needLabel("tiredness", r.Tiredness, app.loadIntSetting(ctx, "tiredness_red_threshold", defaultTirednessRedThreshold)); l != "" {
+	if l := needLabel("tiredness", r.Tiredness, tiredT); l != "" {
 		bodyParts = append(bodyParts, l)
 	}
 	var bodyLine string
