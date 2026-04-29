@@ -125,7 +125,7 @@ func (app *App) dispatchAttributeTick(ctx context.Context) {
 	}
 
 	tag, err := tx.Exec(ctx, `
-		UPDATE village_agent SET
+		UPDATE actor SET
 			hunger    = LEAST($1::int, hunger    + $2::int),
 			thirst    = LEAST($1::int, thirst    + $2::int),
 			tiredness = LEAST($1::int, tiredness + $2::int)

@@ -71,7 +71,7 @@ func (app *App) joinOrCreateHuddle(ctx context.Context, npcID, structureID strin
 	// Set the NPC's current_huddle_id. Skips the UPDATE if already
 	// matching to avoid a redundant write on idempotent calls.
 	if _, err := app.DB.Exec(ctx,
-		`UPDATE npc SET current_huddle_id = $2
+		`UPDATE actor SET current_huddle_id = $2
 		 WHERE id = $1 AND (current_huddle_id IS DISTINCT FROM $2)`,
 		npcID, huddleID,
 	); err != nil {
@@ -82,9 +82,9 @@ func (app *App) joinOrCreateHuddle(ctx context.Context, npcID, structureID strin
 	// Both directions written so the symmetry holds. ON CONFLICT
 	// DO NOTHING preserves the original first_interacted_at timestamp.
 	if _, err := app.DB.Exec(ctx,
-		`INSERT INTO npc_acquaintance (npc_id, other_name)
+		`INSERT INTO npc_acquaintance (actor_id, other_name)
 		 SELECT $1, n.display_name
-		   FROM npc n
+		   FROM actor n
 		  WHERE n.current_huddle_id::text = $2
 		    AND n.id != $1
 		 ON CONFLICT DO NOTHING`,
@@ -93,9 +93,9 @@ func (app *App) joinOrCreateHuddle(ctx context.Context, npcID, structureID strin
 		log.Printf("scene-huddle: record acquaintance %s: %v", npcID, err)
 	}
 	if _, err := app.DB.Exec(ctx,
-		`INSERT INTO npc_acquaintance (npc_id, other_name)
+		`INSERT INTO npc_acquaintance (actor_id, other_name)
 		 SELECT n.id, me.display_name
-		   FROM npc n, npc me
+		   FROM actor n, actor me
 		  WHERE n.current_huddle_id::text = $1
 		    AND me.id = $2
 		    AND n.id != $2
@@ -120,7 +120,7 @@ func (app *App) leaveHuddle(ctx context.Context, npcID string) {
 	// check the participant count after.
 	var huddleID sql.NullString
 	if err := app.DB.QueryRow(ctx,
-		`SELECT current_huddle_id::text FROM npc WHERE id = $1`,
+		`SELECT current_huddle_id::text FROM actor WHERE id = $1`,
 		npcID,
 	).Scan(&huddleID); err != nil {
 		log.Printf("scene-huddle: read current_huddle_id for %s: %v", npcID, err)
@@ -131,7 +131,7 @@ func (app *App) leaveHuddle(ctx context.Context, npcID string) {
 	}
 
 	if _, err := app.DB.Exec(ctx,
-		`UPDATE npc SET current_huddle_id = NULL WHERE id = $1`,
+		`UPDATE actor SET current_huddle_id = NULL WHERE id = $1`,
 		npcID,
 	); err != nil {
 		log.Printf("scene-huddle: clear current_huddle_id for %s: %v", npcID, err)
@@ -143,9 +143,7 @@ func (app *App) leaveHuddle(ctx context.Context, npcID string) {
 	// a scene huddle.
 	var remaining int
 	if err := app.DB.QueryRow(ctx,
-		`SELECT
-		     (SELECT COUNT(*) FROM npc WHERE current_huddle_id::text = $1) +
-		     (SELECT COUNT(*) FROM pc_position WHERE current_huddle_id::text = $1)`,
+		`SELECT COUNT(*) FROM actor WHERE current_huddle_id::text = $1`,
 		huddleID.String,
 	).Scan(&remaining); err != nil {
 		log.Printf("scene-huddle: count remaining for %s: %v", huddleID.String, err)
@@ -167,7 +165,7 @@ func (app *App) leaveHuddle(ctx context.Context, npcID string) {
 // joinOrCreateHuddleForPC mirrors joinOrCreateHuddle but for PC actors.
 // PCs are tracked in pc_position rather than npc, so the membership
 // update goes there instead. NPCs become acquainted with the PC's
-// character_name (the in-world identity, not the actor_name system
+// character_name (the in-world identity, not the login_username system
 // identity) — that's the name they greet by in their perception.
 //
 // PCs don't have their own npc_acquaintance row (they aren't NPCs);
@@ -196,8 +194,8 @@ func (app *App) joinOrCreateHuddleForPC(ctx context.Context, actorName, structur
 	}
 
 	if _, err := app.DB.Exec(ctx,
-		`UPDATE pc_position SET current_huddle_id = $2
-		 WHERE actor_name = $1 AND (current_huddle_id IS DISTINCT FROM $2)`,
+		`UPDATE actor SET current_huddle_id = $2
+		 WHERE login_username = $1 AND (current_huddle_id IS DISTINCT FROM $2)`,
 		actorName, huddleID,
 	); err != nil {
 		return huddleID, err
@@ -207,11 +205,13 @@ func (app *App) joinOrCreateHuddleForPC(ctx context.Context, actorName, structur
 	// the in-world identity. The acquaintance is one-way; PC's own
 	// awareness is UI-side.
 	if _, err := app.DB.Exec(ctx,
-		`INSERT INTO npc_acquaintance (npc_id, other_name)
-		 SELECT n.id, pc.character_name
-		   FROM npc n, pc_position pc
+		`INSERT INTO npc_acquaintance (actor_id, other_name)
+		 SELECT n.id, pc.display_name
+		   FROM actor n, actor pc
 		  WHERE n.current_huddle_id::text = $1
-		    AND pc.actor_name = $2
+		    AND pc.login_username = $2
+		    AND n.llm_memory_agent IS NOT NULL
+		    AND n.id != pc.id
 		 ON CONFLICT DO NOTHING`,
 		huddleID, actorName,
 	); err != nil {
@@ -226,7 +226,7 @@ func (app *App) joinOrCreateHuddleForPC(ctx context.Context, actorName, structur
 func (app *App) leaveHuddleForPC(ctx context.Context, actorName string) {
 	var huddleID sql.NullString
 	if err := app.DB.QueryRow(ctx,
-		`SELECT current_huddle_id::text FROM pc_position WHERE actor_name = $1`,
+		`SELECT current_huddle_id::text FROM actor WHERE login_username = $1`,
 		actorName,
 	).Scan(&huddleID); err != nil {
 		log.Printf("scene-huddle: read PC current_huddle_id for %s: %v", actorName, err)
@@ -237,7 +237,7 @@ func (app *App) leaveHuddleForPC(ctx context.Context, actorName string) {
 	}
 
 	if _, err := app.DB.Exec(ctx,
-		`UPDATE pc_position SET current_huddle_id = NULL WHERE actor_name = $1`,
+		`UPDATE actor SET current_huddle_id = NULL WHERE login_username = $1`,
 		actorName,
 	); err != nil {
 		log.Printf("scene-huddle: clear PC current_huddle_id for %s: %v", actorName, err)
@@ -246,9 +246,7 @@ func (app *App) leaveHuddleForPC(ctx context.Context, actorName string) {
 
 	var remaining int
 	if err := app.DB.QueryRow(ctx,
-		`SELECT
-		     (SELECT COUNT(*) FROM npc WHERE current_huddle_id::text = $1) +
-		     (SELECT COUNT(*) FROM pc_position WHERE current_huddle_id::text = $1)`,
+		`SELECT COUNT(*) FROM actor WHERE current_huddle_id::text = $1`,
 		huddleID.String,
 	).Scan(&remaining); err != nil {
 		log.Printf("scene-huddle: count remaining for %s: %v", huddleID.String, err)

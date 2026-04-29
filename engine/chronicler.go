@@ -626,7 +626,7 @@ func (app *App) buildChroniclerNPCRoster(ctx context.Context) string {
 	rows, err := app.DB.Query(ctx, `
 		SELECT n.id, n.display_name, n.inside_structure_id,
 		       COALESCE(o.display_name, a.name, '') AS struct_label
-		FROM npc n
+		FROM actor n
 		LEFT JOIN village_object o ON o.id = n.inside_structure_id
 		LEFT JOIN asset a ON a.id = o.asset_id
 		WHERE n.llm_memory_agent IS NOT NULL
@@ -713,7 +713,7 @@ func (app *App) buildActivityDigest(ctx context.Context, since time.Time, reason
 	rows, err := app.DB.Query(ctx, `
 		SELECT n.display_name, l.action_type, COUNT(*) AS cnt
 		FROM agent_action_log l
-		JOIN npc n ON n.id = l.npc_id
+		JOIN actor n ON n.id = l.actor_id
 		WHERE l.occurred_at > $1 AND l.result = 'ok'
 		GROUP BY n.display_name, l.action_type
 		ORDER BY n.display_name, l.action_type`, since)
@@ -1012,7 +1012,7 @@ func formatRecallHits(hits []searchMemoryHit, displayName func(ns string) string
 // (cascade origins) fire at any hour and need the map.
 func (app *App) refreshNPCDisplayNames(ctx context.Context) {
 	rows, err := app.DB.Query(ctx,
-		`SELECT llm_memory_agent, display_name FROM npc
+		`SELECT llm_memory_agent, display_name FROM actor
 		 WHERE llm_memory_agent IS NOT NULL`)
 	if err != nil {
 		log.Printf("refresh display names: %v", err)
@@ -1064,7 +1064,7 @@ func (app *App) namespaceDisplayName(namespace string) string {
 	// so the recall result is at least labeled with something.
 	var dbName sql.NullString
 	err := app.DB.QueryRow(context.Background(),
-		`SELECT display_name FROM npc WHERE llm_memory_agent = $1 LIMIT 1`,
+		`SELECT display_name FROM actor WHERE llm_memory_agent = $1 LIMIT 1`,
 		namespace).Scan(&dbName)
 	if err != nil || !dbName.Valid {
 		return ""
@@ -1235,14 +1235,14 @@ func (app *App) buildChroniclerDistressList(ctx context.Context) string {
 	rows, err := app.DB.Query(ctx, `
 		SELECT n.display_name,
 		       COALESCE(o.display_name, a.name) AS place,
-		       va.hunger, va.thirst, va.tiredness
-		FROM npc n
-		JOIN village_agent va ON va.llm_memory_agent = n.llm_memory_agent
+		       n.hunger, n.thirst, n.tiredness
+		FROM actor n
 		LEFT JOIN village_object o ON o.id = n.inside_structure_id
 		LEFT JOIN asset a ON a.id = o.asset_id
-		WHERE va.hunger    >= $1
-		   OR va.thirst    >= $2
-		   OR va.tiredness >= $3
+		WHERE n.llm_memory_agent IS NOT NULL
+		  AND (n.hunger    >= $1
+		   OR  n.thirst    >= $2
+		   OR  n.tiredness >= $3)
 		ORDER BY n.display_name
 	`, hungerT, thirstT, tiredT)
 	if err != nil {
@@ -1304,13 +1304,15 @@ func (app *App) buildChroniclerDistressList(ctx context.Context) string {
 // the "[You attend to X.]" tool result with the canonical form.
 func (app *App) resolveVillagerForAttention(ctx context.Context, villager string) (string, string, bool) {
 	var npcID, displayName string
+	// After ZBBS-084 the actor table holds display_name directly, no
+	// JOIN needed. We only attend to LLM-driven NPCs (the overseer's
+	// directorial dispatch is meant to rouse agents, not PCs or
+	// decorative villagers).
 	err := app.DB.QueryRow(ctx, `
-		SELECT n.id, n.display_name
-		FROM npc n
-		JOIN village_agent va ON va.llm_memory_agent = n.llm_memory_agent
-		WHERE LOWER(n.display_name) = LOWER($1)
-		   OR LOWER(va.name)        = LOWER($1)
-		ORDER BY (LOWER(n.display_name) = LOWER($1)) DESC NULLS LAST
+		SELECT id, display_name
+		FROM actor
+		WHERE llm_memory_agent IS NOT NULL
+		  AND LOWER(display_name) = LOWER($1)
 		LIMIT 1
 	`, villager).Scan(&npcID, &displayName)
 	if err != nil {

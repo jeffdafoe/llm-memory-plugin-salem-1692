@@ -209,14 +209,14 @@ func (app *App) startNPCWalk(ctx context.Context, npcID string, targetX, targetY
 		// stale pre-first-walk position — the "villagers at random spots"
 		// symptom.
 		if _, err := app.DB.Exec(ctx,
-			`UPDATE npc SET current_x = $2, current_y = $3 WHERE id = $1`,
+			`UPDATE actor SET current_x = $2, current_y = $3 WHERE id = $1`,
 			npcID, startX, startY,
 		); err != nil {
 			log.Printf("persist interrupted pos for %s: %v", npcID, err)
 		}
 	} else {
 		if err := app.DB.QueryRow(ctx,
-			`SELECT current_x, current_y FROM npc WHERE id = $1`, npcID,
+			`SELECT current_x, current_y FROM actor WHERE id = $1`, npcID,
 		).Scan(&startX, &startY); err != nil {
 			return nil, fmt.Errorf("npc not found")
 		}
@@ -325,7 +325,7 @@ func (app *App) applyArrival(npcID string) {
 	end := walk.path[len(walk.path)-1]
 	ctx := context.Background()
 	if _, err := app.DB.Exec(ctx,
-		`UPDATE npc SET current_x = $2, current_y = $3, facing = $4 WHERE id = $1`,
+		`UPDATE actor SET current_x = $2, current_y = $3, facing = $4 WHERE id = $1`,
 		npcID, end.X, end.Y, walk.finalFacing,
 	); err != nil {
 		log.Printf("npc arrival: UPDATE failed for %s: %v", npcID, err)
@@ -353,7 +353,7 @@ func (app *App) applyArrival(npcID string) {
 	var arriverIsAgent bool
 	var insideID sql.NullString
 	if err := app.DB.QueryRow(ctx,
-		`SELECT inside_structure_id, llm_memory_agent IS NOT NULL FROM npc WHERE id = $1`,
+		`SELECT inside_structure_id, llm_memory_agent IS NOT NULL FROM actor WHERE id = $1`,
 		npcID,
 	).Scan(&insideID, &arriverIsAgent); err == nil && arriverIsAgent && insideID.Valid {
 		// Cascade origin (MEM-121): a fresh scene UUID for the
