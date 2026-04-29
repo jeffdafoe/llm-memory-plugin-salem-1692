@@ -169,3 +169,84 @@ func (app *App) loadAttributeMagnitude(ctx context.Context, key string) int {
 	return n
 }
 
+// Default thresholds used when the corresponding setting row is missing.
+// Match the values seeded by ZBBS-083 so absent-config behavior matches
+// freshly-migrated behavior.
+const (
+	defaultHungerRedThreshold    = 18
+	defaultThirstRedThreshold    = 12
+	defaultTirednessRedThreshold = 20
+)
+
+// loadIntSetting reads a setting key as an int, falling back to def when
+// missing, NULL, or unparseable. Different defaults per key, hence not
+// folded into loadSetting itself.
+func (app *App) loadIntSetting(ctx context.Context, key string, def int) int {
+	v := app.loadSetting(ctx, key, "")
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		log.Printf("attributes: bad int setting %s=%q (using default %d): %v", key, v, def, err)
+		return def
+	}
+	return n
+}
+
+// needLabel returns the period-appropriate descriptor for a need value
+// against its red threshold. Three intensity bands plus a silent band:
+//
+//   0 to 7                — "" (NPC isn't aware of the need; not surfaced)
+//   8 to threshold-1      — mild ("peckish", "thirsty", "tired")
+//   threshold to 23       — red  ("hungry",  "parched", "weary")
+//   24                    — peak ("starving", "desperate", "exhausted")
+//
+// Empty string means "don't surface this need." Both NPC self-perception
+// and overseer perception use this — the overseer's distress block filters
+// to needs whose label is non-empty AND not the mild tier (i.e. red+ only),
+// so mild-tier discomforts stay private to the NPC.
+//
+// Vocabulary lives in code rather than config because the bands need
+// poetically-ordered words and that's a literary choice, not an operator
+// dial. The thresholds themselves are configurable.
+func needLabel(need string, value, threshold int) string {
+	if value < 8 {
+		return ""
+	}
+	var mild, red, peak string
+	switch need {
+	case "hunger":
+		mild, red, peak = "peckish", "hungry", "starving"
+	case "thirst":
+		mild, red, peak = "thirsty", "parched", "desperate"
+	case "tiredness":
+		mild, red, peak = "tired", "weary", "exhausted"
+	default:
+		return ""
+	}
+	if value >= attributeMax {
+		return peak
+	}
+	if value >= threshold {
+		return red
+	}
+	return mild
+}
+
+// needLabelTier returns 0/1/2/3 for silent / mild / red / peak. Used by
+// callers that want to filter (e.g. overseer perception drops mild-tier
+// needs) without re-checking the label against vocabulary.
+func needLabelTier(value, threshold int) int {
+	if value < 8 {
+		return 0
+	}
+	if value >= attributeMax {
+		return 3
+	}
+	if value >= threshold {
+		return 2
+	}
+	return 1
+}
+

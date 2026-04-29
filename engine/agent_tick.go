@@ -905,16 +905,27 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 		locationName, hourStart.Format("Monday 15:04"),
 	))
 
-	// 3a. Body and purse (ZBBS-082). Each need is 0-24 with higher = more
-	// in need (0 = freshly satisfied, 24 = on the edge of collapse). The
-	// orientation hint is included in-line because without it the model
-	// can't tell whether 18 is "near starving" or "freshly fed." Coins
-	// follow as a separate sentence so the model doesn't conflate need
-	// state with currency state.
-	sections = append(sections, fmt.Sprintf(
-		"Your body (each 0-24, higher = more in need): hunger %d, thirst %d, tiredness %d. Coins in your purse: %d.",
-		r.Hunger, r.Thirst, r.Tiredness, r.Coins,
-	))
+	// 3a. Body and purse (ZBBS-082 / ZBBS-083). Each need maps to a
+	// period-appropriate descriptor (peckish/hungry/starving etc.); silent
+	// when the value is below the awareness floor. Coins remain numeric —
+	// money is a thing you count, not a feeling. The whole sentence is
+	// omitted when no need is currently surfaced, keeping the perception
+	// quiet for a freshly-rested NPC.
+	bodyParts := []string{}
+	if l := needLabel("hunger", r.Hunger, app.loadIntSetting(ctx, "hunger_red_threshold", defaultHungerRedThreshold)); l != "" {
+		bodyParts = append(bodyParts, l)
+	}
+	if l := needLabel("thirst", r.Thirst, app.loadIntSetting(ctx, "thirst_red_threshold", defaultThirstRedThreshold)); l != "" {
+		bodyParts = append(bodyParts, l)
+	}
+	if l := needLabel("tiredness", r.Tiredness, app.loadIntSetting(ctx, "tiredness_red_threshold", defaultTirednessRedThreshold)); l != "" {
+		bodyParts = append(bodyParts, l)
+	}
+	var bodyLine string
+	if len(bodyParts) > 0 {
+		bodyLine = fmt.Sprintf("You feel: %s. ", strings.Join(bodyParts, ", "))
+	}
+	sections = append(sections, fmt.Sprintf("%sCoins in your purse: %d.", bodyLine, r.Coins))
 
 	// 4. Destinations. Categorical first, then occupant-named residences.
 	var destLines []string
