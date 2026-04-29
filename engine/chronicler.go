@@ -457,11 +457,14 @@ func (app *App) fireChronicler(ctx context.Context, reason chroniclerFireReason)
 			// just blocks waiting for a slot, then runs. Acceptable for
 			// directorial dispatches; if backpressure becomes an issue we
 			// can switch to skip-if-full like ChroniclerSem does.
-			go func(id, name string) {
+			// Thread the chronicler's sceneID so the dispatched NPC tick
+			// lands in the same scene as the overseer's fire — keeps the
+			// admin UI's scene grouping coherent across the cascade.
+			go func(id, name, scene string) {
 				app.OverseerAttendSem <- struct{}{}
 				defer func() { <-app.OverseerAttendSem }()
-				app.triggerImmediateTick(context.Background(), id, "overseer-attend-to", false)
-			}(npcID, displayName)
+				app.triggerImmediateTick(context.Background(), id, "overseer-attend-to", false, scene)
+			}(npcID, displayName, sceneID)
 			attendCount++
 			currentMessage = fmt.Sprintf("[You attend to %s. They will rouse and decide what to do.]", displayName)
 			currentToolCallID = tc.ID
