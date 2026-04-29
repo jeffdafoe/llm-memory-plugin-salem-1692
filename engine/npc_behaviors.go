@@ -184,7 +184,7 @@ func (app *App) findNPCWithBehavior(ctx context.Context, slug string) (*behavior
 	err := app.DB.QueryRow(ctx,
 		`SELECT n.id, n.current_x, n.current_y, `+homeCoordsSQL+`, n.home_structure_id,
 		        n.schedule_interval_hours, n.active_start_hour, n.active_end_hour
-		 FROM npc n
+		 FROM actor n
 		 LEFT JOIN village_object s ON s.id = n.home_structure_id
 		 LEFT JOIN asset a ON a.id = s.asset_id
 		 WHERE n.behavior = $1
@@ -214,7 +214,7 @@ func (app *App) loadBehaviorNPCByID(ctx context.Context, npcID string) (*behavio
 	err := app.DB.QueryRow(ctx,
 		`SELECT n.id, COALESCE(n.behavior, ''), n.current_x, n.current_y, `+homeCoordsSQL+`, n.home_structure_id,
 		        n.schedule_interval_hours, n.active_start_hour, n.active_end_hour
-		 FROM npc n
+		 FROM actor n
 		 LEFT JOIN village_object s ON s.id = n.home_structure_id
 		 LEFT JOIN asset a ON a.id = s.asset_id
 		 WHERE n.id = $1`, npcID,
@@ -356,7 +356,7 @@ func (app *App) setNPCInside(ctx context.Context, npcID string, inside bool, str
 		InsideStructureID   *string
 	}
 	err := app.DB.QueryRow(ctx,
-		`SELECT inside, inside_structure_id FROM npc WHERE id = $1`, npcID,
+		`SELECT inside, inside_structure_id FROM actor WHERE id = $1`, npcID,
 	).Scan(&prev.Inside, &prev.InsideStructureID)
 	if err != nil {
 		log.Printf("setNPCInside read(%s): %v", npcID, err)
@@ -366,7 +366,7 @@ func (app *App) setNPCInside(ctx context.Context, npcID string, inside bool, str
 		return
 	}
 	if _, err := app.DB.Exec(ctx,
-		`UPDATE npc SET inside = $2, inside_structure_id = $3 WHERE id = $1`,
+		`UPDATE actor SET inside = $2, inside_structure_id = $3 WHERE id = $1`,
 		npcID, inside, newInsideID,
 	); err != nil {
 		log.Printf("setNPCInside write(%s): %v", npcID, err)
@@ -464,7 +464,7 @@ func (app *App) refreshStructureOccupancyState(ctx context.Context, structureID 
 
 	var occupants int
 	if err := app.DB.QueryRow(ctx,
-		`SELECT COUNT(*) FROM npc WHERE inside_structure_id = $1`, structureID,
+		`SELECT COUNT(*) FROM actor WHERE inside_structure_id = $1`, structureID,
 	).Scan(&occupants); err != nil {
 		return
 	}
@@ -812,7 +812,7 @@ func (app *App) handleGoToStructure(w http.ResponseWriter, r *http.Request, kind
 		`SELECT n.current_x, n.current_y, n.`+structureCol+`,
 		        COALESCE(s.x + a.door_offset_x * 32.0, s.x, 0),
 		        COALESCE(s.y + a.door_offset_y * 32.0, s.y, 0)
-		 FROM npc n
+		 FROM actor n
 		 LEFT JOIN village_object s ON s.id = n.`+structureCol+`
 		 LEFT JOIN asset a ON a.id = s.asset_id
 		 WHERE n.id = $1`, npcID,

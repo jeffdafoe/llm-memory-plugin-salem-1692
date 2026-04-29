@@ -79,7 +79,7 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, recipientNam
 	// pay TO the same recipient serializes its credit.
 	var buyerCoins int
 	err = tx.QueryRow(ctx,
-		`SELECT coins FROM village_agent WHERE id = $1 FOR UPDATE`,
+		`SELECT coins FROM actor WHERE id = $1 FOR UPDATE`,
 		buyer.ID,
 	).Scan(&buyerCoins)
 	if err != nil {
@@ -90,28 +90,18 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, recipientNam
 		return payResult{Result: "rejected", Err: fmt.Sprintf("insufficient coins (have %d, need %d)", buyerCoins, amount)}
 	}
 
-	// Recipient lookup-and-lock. Try the period-appropriate display name
-	// first (npc.display_name = "Ezekiel Crane"), then fall back to the
-	// llm-memory slug (village_agent.name = "ezekiel-crane"). Display-name
-	// match is what the LLM will naturally produce after dialogue ("I'll
-	// pay John Ellis"); the slug fallback covers cases where the model
-	// already speaks in slugs. Both matches are case-insensitive and
-	// trimmed.
-	//
-	// Future: when PCs become payable parties, add a third UNION arm
-	// against pc_position.character_name. Out of scope today since coins
-	// only live on village_agent and PCs aren't reliably represented
-	// there yet.
+	// Recipient lookup-and-lock. After ZBBS-084 the unified actor table
+	// holds every villager, so a single case-insensitive display_name match
+	// covers all kinds: agent NPCs ("Ezekiel Crane"), decorative NPCs
+	// ("Grace Edwards"), and PCs ("Jefferey"). All of them have wallets
+	// (actor.coins defaults to 20), so any villager is a valid recipient.
 	var recipientID string
-	err = tx.QueryRow(ctx, `
-		SELECT va.id FROM village_agent va
-		LEFT JOIN npc n ON n.llm_memory_agent = va.llm_memory_agent
-		WHERE LOWER(n.display_name) = LOWER($1)
-		   OR LOWER(va.name) = LOWER($1)
-		ORDER BY (LOWER(n.display_name) = LOWER($1)) DESC NULLS LAST
-		LIMIT 1
-		FOR UPDATE OF va
-	`, recipientName).Scan(&recipientID)
+	err = tx.QueryRow(ctx,
+		`SELECT id FROM actor
+		 WHERE LOWER(display_name) = LOWER($1)
+		 LIMIT 1
+		 FOR UPDATE`,
+		recipientName).Scan(&recipientID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return payResult{Result: "rejected", Err: fmt.Sprintf("no villager named %q", recipientName)}
@@ -129,10 +119,10 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, recipientNam
 	// Deduct + credit. Two separate UPDATEs is fine — the SELECT FOR UPDATE
 	// above ensures both rows are held by this txn so concurrent pays
 	// involving either party serialize correctly.
-	if _, err := tx.Exec(ctx, `UPDATE village_agent SET coins = coins - $1 WHERE id = $2`, amount, buyer.ID); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE actor SET coins = coins - $1 WHERE id = $2`, amount, buyer.ID); err != nil {
 		return payResult{Result: "failed", Err: fmt.Sprintf("debit buyer: %v", err)}
 	}
-	if _, err := tx.Exec(ctx, `UPDATE village_agent SET coins = coins + $1 WHERE id = $2`, amount, recipientID); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE actor SET coins = coins + $1 WHERE id = $2`, amount, recipientID); err != nil {
 		return payResult{Result: "failed", Err: fmt.Sprintf("credit recipient: %v", err)}
 	}
 
@@ -151,7 +141,7 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, recipientNam
 	}
 	if hungerDrop > 0 || thirstDrop > 0 {
 		if _, err := tx.Exec(ctx, `
-			UPDATE village_agent SET
+			UPDATE actor SET
 				hunger = GREATEST(0, hunger - $1::int),
 				thirst = GREATEST(0, thirst - $2::int)
 			WHERE id = $3

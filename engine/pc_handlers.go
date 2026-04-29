@@ -8,7 +8,7 @@ package main
 // from the authenticated session.
 //
 // Two identities per PC:
-//   - actor_name: the llm-memory username, stable system identity.
+//   - login_username: the llm-memory username, stable system identity.
 //     Used for session lookup, chat_send sender attribution.
 //   - character_name: the in-world identity NPCs perceive. Period-
 //     appropriate, set by the player on first login. NPCs greet by
@@ -25,7 +25,7 @@ package main
 //   - POST /api/village/pc/create  → first-time creation. Body:
 //                                     {character_name}. Auto-assigns
 //                                     home to the nearest tavern.
-//                                     Idempotent on the actor_name
+//                                     Idempotent on the login_username
 //                                     (re-running updates the name).
 //   - POST /api/village/pc/say     → 1:1 whisper to one NPC. Proxies
 //                                     to /v1/chat/send with the user's
@@ -50,7 +50,7 @@ import (
 )
 
 type pcMeResponse struct {
-	ActorName         string             `json:"actor_name"`
+	ActorName         string             `json:"login_username"`
 	Exists            bool               `json:"exists"`
 	CharacterName     string             `json:"character_name,omitempty"`
 	X                 float64            `json:"x"`
@@ -85,18 +85,18 @@ func (app *App) handlePCMe(w http.ResponseWriter, r *http.Request) {
 	var x, y float64
 	var charName, insideID, huddleID, structureName, homeID, homeName sql.NullString
 	err := app.DB.QueryRow(r.Context(),
-		`SELECT pc.character_name, pc.x, pc.y,
+		`SELECT pc.display_name, pc.current_x, pc.current_y,
 		        pc.inside_structure_id::text,
 		        pc.current_huddle_id::text,
 		        COALESCE(o.display_name, a.name) AS structure_name,
 		        pc.home_structure_id::text,
 		        COALESCE(ho.display_name, ha.name) AS home_name
-		   FROM pc_position pc
+		   FROM actor pc
 		   LEFT JOIN village_object o ON o.id = pc.inside_structure_id
 		   LEFT JOIN asset a ON a.id = o.asset_id
 		   LEFT JOIN village_object ho ON ho.id = pc.home_structure_id
 		   LEFT JOIN asset ha ON ha.id = ho.asset_id
-		  WHERE pc.actor_name = $1`,
+		  WHERE pc.login_username = $1`,
 		user.Username,
 	).Scan(&charName, &x, &y, &insideID, &huddleID, &structureName, &homeID, &homeName)
 	if err == sql.ErrNoRows {
@@ -133,17 +133,16 @@ func (app *App) handlePCMe(w http.ResponseWriter, r *http.Request) {
 	if huddleID.Valid {
 		s := huddleID.String
 		resp.CurrentHuddleID = &s
+		// Co-located actors in the same huddle. Single-table query after
+		// ZBBS-084 — kind is implicit in which login column is populated.
+		// PC excludes self via login_username.
 		rows, err := app.DB.Query(r.Context(),
-			`SELECT 'npc' AS kind, n.display_name, va.role, n.llm_memory_agent
-			   FROM npc n
-			   LEFT JOIN village_agent va ON va.llm_memory_agent = n.llm_memory_agent
-			  WHERE n.current_huddle_id::text = $1
-			 UNION ALL
-			 SELECT 'pc' AS kind, pc.character_name, NULL::varchar, NULL::varchar
-			   FROM pc_position pc
-			  WHERE pc.current_huddle_id::text = $1
-			    AND pc.actor_name != $2
-			  ORDER BY 2`,
+			`SELECT CASE WHEN login_username IS NOT NULL THEN 'pc' ELSE 'npc' END AS kind,
+			        display_name, role, llm_memory_agent
+			   FROM actor
+			  WHERE current_huddle_id::text = $1
+			    AND (login_username IS NULL OR login_username != $2)
+			  ORDER BY display_name`,
 			huddleID.String, user.Username)
 		if err == nil {
 			defer rows.Close()
@@ -226,14 +225,16 @@ func (app *App) handlePCCreate(w http.ResponseWriter, r *http.Request) {
 		startY = homeY.Float64
 	}
 
-	// Upsert. ON CONFLICT lets re-runs update character_name without
-	// disturbing position.
+	// Upsert. ON CONFLICT lets re-runs update display_name without
+	// disturbing position. Post-ZBBS-084: display_name is the unified
+	// in-world identity column (was character_name on pc_position),
+	// current_x/current_y are the position columns (were x/y).
 	if _, err := app.DB.Exec(r.Context(),
-		`INSERT INTO pc_position (actor_name, character_name, x, y, home_structure_id)
+		`INSERT INTO actor (login_username, display_name, current_x, current_y, home_structure_id)
 		 VALUES ($1, $2, $3, $4, NULLIF($5, '')::uuid)
-		 ON CONFLICT (actor_name) DO UPDATE
-		   SET character_name = EXCLUDED.character_name,
-		       home_structure_id = COALESCE(EXCLUDED.home_structure_id, pc_position.home_structure_id)`,
+		 ON CONFLICT (login_username) DO UPDATE
+		   SET display_name = EXCLUDED.display_name,
+		       home_structure_id = COALESCE(EXCLUDED.home_structure_id, actor.home_structure_id)`,
 		user.Username, req.CharacterName, startX, startY,
 		homeStringValue(homeID),
 	); err != nil {
@@ -285,7 +286,7 @@ func (app *App) handlePCSay(w http.ResponseWriter, r *http.Request) {
 	// agent on the memory-api side to receive the chat.
 	var hasAgent bool
 	if err := app.DB.QueryRow(r.Context(),
-		`SELECT EXISTS(SELECT 1 FROM npc WHERE llm_memory_agent = $1)`,
+		`SELECT EXISTS(SELECT 1 FROM actor WHERE llm_memory_agent = $1)`,
 		req.Target,
 	).Scan(&hasAgent); err != nil {
 		log.Printf("pc/say target check: %v", err)
@@ -306,7 +307,7 @@ func (app *App) handlePCSay(w http.ResponseWriter, r *http.Request) {
 	// Look up PC's character_name + structure for the audit-log overhear.
 	var charName, structureID sql.NullString
 	if err := app.DB.QueryRow(r.Context(),
-		`SELECT character_name, inside_structure_id::text FROM pc_position WHERE actor_name = $1`,
+		`SELECT display_name, inside_structure_id::text FROM actor WHERE login_username = $1`,
 		user.Username,
 	).Scan(&charName, &structureID); err != nil {
 		log.Printf("pc/say lookup pc_position: %v", err)
@@ -323,7 +324,7 @@ func (app *App) handlePCSay(w http.ResponseWriter, r *http.Request) {
 			"target_name":  req.Target,
 		})
 		if _, err := app.DB.Exec(r.Context(),
-			`INSERT INTO agent_action_log (npc_id, speaker_name, source, action_type, payload, result)
+			`INSERT INTO agent_action_log (actor_id, speaker_name, source, action_type, payload, result)
 			 VALUES (NULL, $1, 'player', 'speak', $2, 'ok')`,
 			charName.String, audit,
 		); err != nil {
@@ -400,9 +401,9 @@ func (app *App) handlePCSpeak(w http.ResponseWriter, r *http.Request) {
 
 	var charName, structureID sql.NullString
 	err := app.DB.QueryRow(r.Context(),
-		`SELECT pc.character_name, pc.inside_structure_id::text
-		   FROM pc_position pc
-		  WHERE pc.actor_name = $1 AND pc.current_huddle_id IS NOT NULL`,
+		`SELECT pc.display_name, pc.inside_structure_id::text
+		   FROM actor pc
+		  WHERE pc.login_username = $1 AND pc.current_huddle_id IS NOT NULL`,
 		user.Username,
 	).Scan(&charName, &structureID)
 	if err != nil || !structureID.Valid || !charName.Valid {
@@ -416,7 +417,7 @@ func (app *App) handlePCSpeak(w http.ResponseWriter, r *http.Request) {
 	})
 
 	if _, err := app.DB.Exec(r.Context(),
-		`INSERT INTO agent_action_log (npc_id, speaker_name, source, action_type, payload, result)
+		`INSERT INTO agent_action_log (actor_id, speaker_name, source, action_type, payload, result)
 		 VALUES (NULL, $1, 'player', 'speak', $2, 'ok')`,
 		charName.String, payload,
 	); err != nil {

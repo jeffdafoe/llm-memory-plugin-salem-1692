@@ -60,7 +60,7 @@ func (app *App) loadSocialRows(ctx context.Context) ([]socialRow, error) {
 		        COALESCE(hs.x + ha.door_offset_x * 32.0, hs.x),
 		        COALESCE(hs.y + ha.door_offset_y * 32.0, hs.y),
 		        n.agent_override_until
-		 FROM npc n
+		 FROM actor n
 		 JOIN village_object hs ON hs.id = n.home_structure_id
 		 JOIN asset ha         ON ha.id = hs.asset_id
 		 WHERE n.social_tag IS NOT NULL
@@ -182,7 +182,7 @@ func (app *App) evaluateSocialSchedule(ctx context.Context, s *socialRow, now ti
 	// exists, etc.).
 	stampBoundary := func() {
 		if _, err := app.DB.Exec(ctx,
-			`UPDATE npc SET social_last_boundary_at = $2 WHERE id = $1`,
+			`UPDATE actor SET social_last_boundary_at = $2 WHERE id = $1`,
 			s.ID, boundaryAt,
 		); err != nil {
 			log.Printf("social-scheduler: stamp %s: %v", s.ID, err)
