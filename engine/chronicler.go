@@ -490,7 +490,13 @@ func (app *App) buildChroniclerPerception(ctx context.Context, reason chronicler
 	// attention timestamp, not the phase one, so cascade fires between
 	// phases see only the activity since the previous fire instead of
 	// repeatedly re-digesting back to the last phase boundary).
-	if digest := app.buildActivityDigest(ctx, app.loadChroniclerLastAttentionAt(ctx)); digest != "" {
+	//
+	// Pass reason so the digest can suppress its "the village has been
+	// quiet" fallback on cascade fires — the opening line already named
+	// the stirring (e.g. "Something stirs at Blacksmith: arrival") and
+	// asserting "quiet" six lines later contradicted it, biasing the
+	// model toward a set_environment atmosphere response on every cascade.
+	if digest := app.buildActivityDigest(ctx, app.loadChroniclerLastAttentionAt(ctx), reason); digest != "" {
 		sections = append(sections, digest)
 	}
 
@@ -611,9 +617,14 @@ func (app *App) buildChroniclerNPCRoster(ctx context.Context) string {
 // rows since `since`. Aggregates per-NPC action counts. Empty string
 // when no activity (fresh deploy or quiet window).
 //
+// reason is the fire reason for this perception. On cascade fires the
+// "the village has been quiet" fallback is suppressed and we return ""
+// instead — the opening line already named the cascade trigger
+// (arrival, etc.) and asserting "quiet" here contradicted that.
+//
 // Format: "Since the last fire: John walked 2 times, spoke 4 times.
 // Prudence completed 1 chore. ..."
-func (app *App) buildActivityDigest(ctx context.Context, since time.Time) string {
+func (app *App) buildActivityDigest(ctx context.Context, since time.Time, reason chroniclerFireReason) string {
 	if since.IsZero() {
 		// No prior fire — skip digest. Fresh deploy or first fire after restart.
 		return ""
@@ -663,6 +674,9 @@ func (app *App) buildActivityDigest(ctx context.Context, since time.Time) string
 		return ""
 	}
 	if len(per) == 0 {
+		if reason.Type == "cascade" {
+			return ""
+		}
 		return "Since your last attention, the village has been quiet."
 	}
 
@@ -704,6 +718,9 @@ func (app *App) buildActivityDigest(ctx context.Context, since time.Time) string
 		fmt.Fprintf(&b, "- %s %s.\n", name, strings.Join(parts, ", "))
 	}
 	if !wrote {
+		if reason.Type == "cascade" {
+			return ""
+		}
 		return "Since your last attention, the village has been quiet."
 	}
 	return strings.TrimRight(b.String(), "\n")
