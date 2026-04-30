@@ -71,22 +71,26 @@ type pcHuddleMember struct {
 	TargetAgent *string `json:"target_agent,omitempty"` // llm_memory_agent for NPCs (chat_send recipient)
 }
 
-// pcRecentSpeech is one historical speak event at the player's current
-// inside_structure_id, surfaced so the talk panel can backload room
-// context when opened. The room metaphor: walk in, you hear the
-// last 12 things said here in the past 24 hours.
+// pcRecentSpeech is one historical conversational/narrative event at the
+// player's current inside_structure_id, surfaced so the talk panel can
+// backload room context when opened. The room metaphor: walk in, you
+// hear what's been happening here lately.
 //
-// Kind mirrors the WS npc_spoke event's kind ("npc" | "player") so the
-// client can render player-vs-NPC color treatment consistently between
-// backload and live stream.
+// Kind discriminates how the client renders the entry:
+//   - "speech_npc" / "speech_player" — quoted dialogue, color-coded
+//   - "act"                         — italic narration ("X poured ale.")
+//   - "departure"                   — italic narration ("X left for home.")
+//
+// Text is pre-rendered server-side so the client doesn't have to know
+// the verb-phrase grammar or destination wording.
 type pcRecentSpeech struct {
 	SpeakerName string    `json:"speaker_name"`
 	Text        string    `json:"text"`
-	Kind        string    `json:"kind"`        // "npc" | "player"
-	OccurredAt  time.Time `json:"occurred_at"` // wall-clock
+	Kind        string    `json:"kind"`
+	OccurredAt  time.Time `json:"occurred_at"`
 }
 
-const pcRecentSpeechLimit = 12
+const pcRecentSpeechLimit = 20
 const pcRecentSpeechCutoff = 24 * time.Hour
 
 func (app *App) handlePCMe(w http.ResponseWriter, r *http.Request) {
@@ -198,21 +202,21 @@ func (app *App) handlePCMe(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, resp)
 }
 
-// loadRecentSpeechAtStructure pulls the last N speak events whose payload
-// references this structure_id. Reads from agent_action_log.payload's
-// embedded structure_id (the speak commit stashes inside_structure_id
-// there at write time — see agent_tick.go's executeAgentCommit).
+// loadRecentSpeechAtStructure pulls the last N narration-worthy events at
+// a structure: speech (dialogue), acts (verb-phrase narration), and
+// move_to commits (departures). Filtered by payload->>'structure_id' which
+// the speak/act/move_to commits stash at write time (see agent_tick.go's
+// executeAgentCommit) so a single SQL filter scopes the whole room log.
 //
-// Filters to action_type='speak' and result='ok' so rejected/empty speech
-// attempts don't pollute the room's memory. source='player' rows render
-// as kind='player' for the talk panel's color treatment; everything else
-// is kind='npc' (agent ticks, magistrate-driven speech if it ever lands).
+// Result='ok' filters out rejected/empty attempts so the panel doesn't
+// surface failed actions to the player. Text is pre-rendered into a
+// readable line per row so the client renders strings, not grammar.
 func (app *App) loadRecentSpeechAtStructure(ctx context.Context, structureID string) []pcRecentSpeech {
 	cutoff := time.Now().Add(-pcRecentSpeechCutoff)
 	rows, err := app.DB.Query(ctx, `
-		SELECT speaker_name, payload->>'text' AS text, source, occurred_at
+		SELECT speaker_name, action_type, source, payload, occurred_at
 		FROM agent_action_log
-		WHERE action_type = 'speak'
+		WHERE action_type IN ('speak', 'act', 'move_to')
 		  AND result = 'ok'
 		  AND payload->>'structure_id' = $1
 		  AND occurred_at > $2
@@ -220,7 +224,7 @@ func (app *App) loadRecentSpeechAtStructure(ctx context.Context, structureID str
 		LIMIT $3
 	`, structureID, cutoff, pcRecentSpeechLimit)
 	if err != nil {
-		log.Printf("recent speech: %v", err)
+		log.Printf("recent events: %v", err)
 		return nil
 	}
 	defer rows.Close()
@@ -228,17 +232,47 @@ func (app *App) loadRecentSpeechAtStructure(ctx context.Context, structureID str
 	// Collect newest-first, then reverse for natural reading order.
 	var recent []pcRecentSpeech
 	for rows.Next() {
-		var r pcRecentSpeech
-		var source string
-		if err := rows.Scan(&r.SpeakerName, &r.Text, &source, &r.OccurredAt); err != nil {
+		var speakerName, actionType, source string
+		var payloadJSON []byte
+		var occurredAt time.Time
+		if err := rows.Scan(&speakerName, &actionType, &source, &payloadJSON, &occurredAt); err != nil {
 			continue
 		}
-		if source == "player" {
-			r.Kind = "player"
-		} else {
-			r.Kind = "npc"
+		var payload map[string]interface{}
+		_ = json.Unmarshal(payloadJSON, &payload)
+
+		entry := pcRecentSpeech{SpeakerName: speakerName, OccurredAt: occurredAt}
+
+		switch actionType {
+		case "speak":
+			text, _ := payload["text"].(string)
+			if text == "" {
+				continue
+			}
+			entry.Text = text
+			if source == "player" {
+				entry.Kind = "speech_player"
+			} else {
+				entry.Kind = "speech_npc"
+			}
+		case "act":
+			verb, _ := payload["verb_phrase"].(string)
+			if verb == "" {
+				continue
+			}
+			entry.Text = fmt.Sprintf("%s %s.", speakerName, verb)
+			entry.Kind = "act"
+		case "move_to":
+			dest, _ := payload["destination"].(string)
+			if dest == "" {
+				continue
+			}
+			entry.Text = fmt.Sprintf("%s left for %s.", speakerName, dest)
+			entry.Kind = "departure"
+		default:
+			continue
 		}
-		recent = append(recent, r)
+		recent = append(recent, entry)
 	}
 	for i, j := 0, len(recent)-1; i < j; i, j = i+1, j-1 {
 		recent[i], recent[j] = recent[j], recent[i]

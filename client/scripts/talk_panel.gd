@@ -300,8 +300,12 @@ func _connect_signals() -> void:
 
 func _connect_world_signal() -> void:
     var world := get_node_or_null("/root/Main/World")
-    if world != null and world.has_signal("npc_spoke"):
+    if world == null:
+        return
+    if world.has_signal("npc_spoke"):
         world.npc_spoke.connect(_on_npc_spoke)
+    if world.has_signal("room_event"):
+        world.room_event.connect(_on_room_event)
 
 
 # talk_sheet is the actual visible chat panel (the bottom-right rounded
@@ -607,35 +611,72 @@ func _on_speak_completed(result: int, response_code: int, _headers: PackedString
 
 
 func _on_npc_spoke(speaker_name: String, text: String, kind: String = "") -> void:
-    _append_log_line(speaker_name, text, kind)
+    # WS speech kinds are "npc" | "player"; normalize to the panel's
+    # speech_npc / speech_player kinds so render logic is uniform with
+    # the backload entries.
+    var panel_kind := "speech_player" if kind == "player" else "speech_npc"
+    _append_log_line(speaker_name, text, panel_kind)
+
+
+# Generic room-event handler. Engine emits these for narration-worthy
+# things that aren't speech (acts, departures, eventually arrivals/pays).
+# Each event scopes itself to a structure_id; we ignore events outside
+# the room the player is currently in.
+func _on_room_event(data: Dictionary) -> void:
+    var event_structure := str(data.get("structure_id", ""))
+    if event_structure != loaded_structure_id:
+        return
+    var actor_name := str(data.get("actor_name", ""))
+    var text := str(data.get("text", ""))
+    var kind := str(data.get("kind", "act"))
+    if actor_name.is_empty() or text.is_empty():
+        return
+    _append_log_line(actor_name, text, kind)
 
 
 func _append_log_line(speaker: String, text: String, kind: String = "", is_backload: bool = false) -> void:
     var was_at_bottom := _is_log_near_bottom()
 
-    var entry := VBoxContainer.new()
-    entry.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    entry.add_theme_constant_override("separation", 2)
+    # Narration kinds (act, departure, eventually arrival/pay) render as a
+    # single dimmer line — text is pre-rendered server-side and embeds the
+    # actor's name, so no separate name label. Speech kinds render as
+    # name + quoted text, color-coded for player vs NPC.
+    var is_narration := kind == "act" or kind == "departure" or kind == "arrival"
 
-    var name_label := Label.new()
-    name_label.text = speaker
-    name_label.clip_text = true
-    name_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-
-    var text_label := Label.new()
-    text_label.text = "“%s”" % text
-    text_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-    text_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-
-    if kind == "player":
-        name_label.add_theme_color_override("font_color", Color(0.95, 0.78, 0.45, 1.0))
-        text_label.add_theme_color_override("font_color", Color(0.95, 0.86, 0.68, 1.0))
+    var entry: Node
+    if is_narration:
+        var narr := Label.new()
+        narr.text = text
+        narr.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+        narr.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+        narr.add_theme_color_override("font_color", Color(0.58, 0.51, 0.39, 1.0))
+        entry = narr
     else:
-        name_label.add_theme_color_override("font_color", Color(0.70, 0.58, 0.39, 1.0))
-        text_label.add_theme_color_override("font_color", Color(0.82, 0.76, 0.64, 1.0))
+        var vbox := VBoxContainer.new()
+        vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+        vbox.add_theme_constant_override("separation", 2)
 
-    entry.add_child(name_label)
-    entry.add_child(text_label)
+        var name_label := Label.new()
+        name_label.text = speaker
+        name_label.clip_text = true
+        name_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+
+        var text_label := Label.new()
+        text_label.text = "“%s”" % text
+        text_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+        text_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+
+        if kind == "speech_player" or kind == "player":
+            name_label.add_theme_color_override("font_color", Color(0.95, 0.78, 0.45, 1.0))
+            text_label.add_theme_color_override("font_color", Color(0.95, 0.86, 0.68, 1.0))
+        else:
+            name_label.add_theme_color_override("font_color", Color(0.70, 0.58, 0.39, 1.0))
+            text_label.add_theme_color_override("font_color", Color(0.82, 0.76, 0.64, 1.0))
+
+        vbox.add_child(name_label)
+        vbox.add_child(text_label)
+        entry = vbox
+
     log_vbox.add_child(entry)
 
     while log_vbox.get_child_count() > MAX_LOG_LINES:

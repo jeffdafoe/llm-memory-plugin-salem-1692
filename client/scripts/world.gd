@@ -1710,6 +1710,26 @@ func apply_npc_spoke(data: Dictionary) -> void:
         return
     npc_spoke.emit(name, text, kind)
 
+## WS event — generic narration-worthy thing happened in a room.
+## Covers act/departure/(future arrival, pay, ...). Subscribers filter
+## by structure_id; the data dict carries actor_name, kind, pre-rendered
+## text, and the structure_id where it happened. Emitted by event_client
+## when a `room_event` event lands.
+##
+## Speech is intentionally still on its own npc_spoke channel — different
+## visual treatment (quoted dialogue vs italic narration) and different
+## subscribers, so folding it under room_event would require migrating
+## existing consumers (editor's loiter-marker repaint hook, etc.). Worth
+## doing as a follow-up; out of scope for the room-events landing.
+signal room_event(data: Dictionary)
+
+func apply_room_event(data: Dictionary) -> void:
+    var actor_name: String = str(data.get("actor_name", ""))
+    var text: String = str(data.get("text", ""))
+    if actor_name == "" or text == "":
+        return
+    room_event.emit(data)
+
 func apply_object_tags_updated(data: Dictionary) -> void:
     var object_id: String = str(data.get("object_id", ""))
     if object_id == "" or not placed_objects.has(object_id):
