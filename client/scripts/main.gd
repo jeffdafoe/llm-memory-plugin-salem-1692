@@ -196,9 +196,11 @@ func _build_ui() -> void:
     editor_panel.set_script(EditorPanelScript)
     editor.add_child(editor_panel)
     editor_panel.visible = false
-    # Camera queries this rect at hit-test time so the UI/map boundary tracks
-    # the panel's actual width (the selection panel is wider than the default).
-    camera.editor_panel_ref = editor_panel
+    # Camera queries each registered panel's rect at hit-test time. The
+    # editor sidebar is wider when an NPC is selected (extra controls), so
+    # registering the live Control beats hardcoding a width — and any
+    # future panel just calls camera.register_ui_panel(self) the same way.
+    camera.register_ui_panel(editor_panel)
     editor.editor_panel_ref = editor_panel
 
     # Asset inspect popup — on the config layer (above editor)
@@ -240,9 +242,16 @@ func _build_ui() -> void:
     talk_panel_layer.set_script(TalkPanelScript)
     add_child(talk_panel_layer)
 
-    # Camera asks the talk panel "is the cursor over your open sheet?"
-    # before treating wheel events as zoom — see camera.gd._is_over_ui.
-    camera.talk_panel_ref = talk_panel_layer
+    # Register the talk panel's sheet (the actual rounded-rect chat
+    # surface, not the full-screen anchor) so wheel-scroll over the
+    # open chat scrolls the log instead of zooming the map. Sheet
+    # visibility is parent-driven (sheet_anchor.visible toggles); the
+    # camera's is_visible_in_tree() check handles the open/closed state
+    # automatically without re-registering.
+    if talk_panel_layer.has_method("get_input_eating_control"):
+        var sheet: Control = talk_panel_layer.get_input_eating_control()
+        if sheet != null:
+            camera.register_ui_panel(sheet)
 
     # Wire panel signals to editor
     editor_panel.asset_selected.connect(_on_panel_asset_selected)
