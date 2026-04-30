@@ -331,6 +331,18 @@ func (app *App) applyArrival(npcID string) {
 		log.Printf("npc arrival: UPDATE failed for %s: %v", npcID, err)
 		return
 	}
+
+	// Apply any object-refresh side-effect for the arrival point. PC and
+	// NPC share this path; the spatial lookup in
+	// applyObjectRefreshAtArrival picks the nearest refresh-tagged object
+	// within tolerance and decrements the configured attribute(s) on the
+	// actor. Errors are logged but don't block the arrival flow — the
+	// position update has already committed and the client needs the
+	// npc_arrived event regardless.
+	if _, err := app.applyObjectRefreshAtArrival(ctx, npcID, end.X, end.Y); err != nil {
+		log.Printf("object_refresh: %s at (%.1f,%.1f): %v", npcID, end.X, end.Y, err)
+	}
+
 	app.Hub.Broadcast(WorldEvent{
 		Type: "npc_arrived",
 		Data: map[string]any{
