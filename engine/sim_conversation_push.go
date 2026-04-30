@@ -140,18 +140,6 @@ func nextDay(dayStr string) (string, error) {
 	return t.AddDate(0, 0, 1).Format("2006-01-02"), nil
 }
 
-// upsertSetting inserts or updates a setting row. The existing
-// loadSetting / UPDATE pattern in attributes.go assumes the row already
-// exists; for a new key we want INSERT...ON CONFLICT so no migration
-// is required for first-time use.
-func (app *App) upsertSetting(ctx context.Context, key, value string) error {
-	_, err := app.DB.Exec(ctx,
-		`INSERT INTO setting (key, value) VALUES ($1, $2)
-		 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
-		key, value)
-	return err
-}
-
 // pushSimDay walks every agentized actor and pushes one (agent, day)
 // payload to the api. Errors on individual agents are logged and
 // skipped — one bad actor doesn't block the rest. Returns an error
