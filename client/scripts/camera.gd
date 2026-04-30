@@ -42,6 +42,13 @@ var editor_ref: CanvasLayer = null
 # is selected (extra controls, scrollbar), so a constant lies. Set by main.gd.
 var editor_panel_ref: Control = null
 
+# Reference to the talk panel — used by _is_over_ui so wheel scroll over
+# the open Talk sheet scrolls the chat log instead of zooming the camera.
+# Camera runs its input handler in _input (early stage) to win over editor
+# ScrollContainers; that pre-empts the talk panel's log_scroll unless we
+# explicitly defer to it when pos is over its visible sheet. Set by main.gd.
+var talk_panel_ref: CanvasLayer = null
+
 # When true, a modal overlay is open — don't zoom on scroll
 var modal_open: bool = false
 
@@ -58,6 +65,11 @@ const TOP_BAR_HEIGHT: float = 40.0
 ## Prefers the live panel rect when available so the boundary tracks any
 ## width changes (e.g. NPC selection makes the panel wider than the default).
 func _is_over_ui(pos: Vector2) -> bool:
+    # Talk panel takes precedence regardless of editor_active — the player
+    # opens it from any mode and expects scroll-over-chat to scroll the log.
+    if talk_panel_ref != null and talk_panel_ref.has_method("is_over_open_sheet"):
+        if talk_panel_ref.is_over_open_sheet(pos):
+            return true
     if not editor_active:
         return pos.y < TOP_BAR_HEIGHT
     if pos.y < TOP_BAR_HEIGHT:
