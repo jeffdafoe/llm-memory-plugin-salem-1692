@@ -104,6 +104,12 @@ var _terrain_painting: bool = false
 var _terrain_save_timer: float = 0.0
 const TERRAIN_SAVE_DELAY: float = 2.0
 
+# Confirmation dialog reused for object / NPC deletes. Wired in _ready().
+# Action to run on confirm is staged in _pending_delete; "" means no pending
+# action so a stray confirmed signal can't trigger anything.
+var _delete_dialog: ConfirmationDialog = null
+var _pending_delete: String = ""
+
 # Drag-to-move state
 var _dragging: bool = false
 var _drag_start_world: Vector2 = Vector2.ZERO
@@ -146,6 +152,16 @@ func _ready() -> void:
     ghost_sprite.visible = false
     ghost_sprite.z_index = 1000
     world.add_child(ghost_sprite)
+
+    # Single confirmation dialog reused for both object and NPC deletes.
+    # Title and body text are set per-call; on confirmed we dispatch on
+    # _pending_delete. Adding to self (CanvasLayer) is fine in Godot 4 —
+    # Window-derived dialogs render at viewport scale regardless of parent.
+    _delete_dialog = ConfirmationDialog.new()
+    _delete_dialog.dialog_hide_on_ok = true
+    add_child(_delete_dialog)
+    _delete_dialog.confirmed.connect(_on_delete_confirmed)
+    _delete_dialog.canceled.connect(func(): _pending_delete = "")
 
 ## Returns true if the screen position is over the editor UI panel area.
 func _is_over_ui(pos: Vector2) -> bool:
@@ -308,6 +324,13 @@ func _input(event: InputEvent) -> void:
     # Keyboard shortcuts
     if event is InputEventKey and event.pressed:
         if event.keycode == KEY_DELETE:
+            # Don't fire the global Delete shortcut when a Control has
+            # keyboard focus — typing Delete in a LineEdit (e.g. the
+             # name input in the edit sidebar) would otherwise nuke
+            # the selected building. _input runs before GUI handling,
+            # so the focused control hasn't had its chance yet; let it.
+            if get_viewport().gui_get_focus_owner() != null:
+                return
             if selected_npc != null:
                 _delete_selected_npc()
                 get_viewport().set_input_as_handled()
@@ -1588,7 +1611,21 @@ func _cancel_loiter_drag() -> void:
     refresh_loiter_marker()
     _loiter_dragging = false
 
+## Delete entry point: shows the confirmation dialog. On confirm,
+## _on_delete_confirmed dispatches to _do_delete_selected.
 func _delete_selected() -> void:
+    if selected_object == null:
+        return
+    var label: String = selected_object.get_meta("display_name", "")
+    if label == "":
+        label = "this object"
+    _delete_dialog.title = "Delete object"
+    _delete_dialog.dialog_text = "Delete \"" + label + "\"? This cannot be undone."
+    _pending_delete = "object"
+    _delete_dialog.popup_centered()
+
+## Actual object deletion — runs only after confirmation.
+func _do_delete_selected() -> void:
     if selected_object == null:
         return
     _remove_selection_border()
@@ -1608,10 +1645,26 @@ func delete_selection() -> void:
     else:
         _delete_selected()
 
+## NPC delete entry point: shows the confirmation dialog. On confirm,
+## _on_delete_confirmed dispatches to _do_delete_selected_npc.
+func _delete_selected_npc() -> void:
+    if selected_npc == null:
+        return
+    var npc_id: String = selected_npc.get_meta("npc_id", "")
+    if npc_id == "":
+        return
+    var label: String = selected_npc.get_meta("display_name", "")
+    if label == "":
+        label = "this NPC"
+    _delete_dialog.title = "Delete NPC"
+    _delete_dialog.dialog_text = "Delete \"" + label + "\"? This cannot be undone."
+    _pending_delete = "npc"
+    _delete_dialog.popup_centered()
+
 ## DELETE /api/village/npcs/{id}. The npc_deleted WS event handles the
 ## actual removal from placed_npcs + node cleanup on every client including
 ## this one, so we just fire the request and clear our local selection.
-func _delete_selected_npc() -> void:
+func _do_delete_selected_npc() -> void:
     if selected_npc == null:
         return
     var npc_id: String = selected_npc.get_meta("npc_id", "")
@@ -1631,6 +1684,17 @@ func _delete_selected_npc() -> void:
     http.request(Auth.api_base + "/api/village/npcs/" + npc_id,
         headers, HTTPClient.METHOD_DELETE)
     _deselect_npc()
+
+## Dispatch the staged delete after the confirmation dialog is OK'd.
+## _pending_delete is cleared whether we dispatch or fall through, so a
+## stray signal can't fire a second delete.
+func _on_delete_confirmed() -> void:
+    var pending: String = _pending_delete
+    _pending_delete = ""
+    if pending == "object":
+        _do_delete_selected()
+    elif pending == "npc":
+        _do_delete_selected_npc()
 
 # --- Drag-to-move ---
 
