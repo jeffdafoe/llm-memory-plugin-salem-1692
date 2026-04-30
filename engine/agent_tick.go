@@ -536,6 +536,11 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, 
 	// this so multiple co-located NPCs can respond to the same player
 	// broadcast. Storm risk is bounded by human typing speed.
 	if !force && r.LastAgentTickAt.Valid && time.Since(r.LastAgentTickAt.Time) < agentMinTickGap {
+		// Surface the silent skip — without this log, "why didn't NPC X
+		// react to Y" investigations have to reconstruct the cost-gap
+		// from agent_action_log timestamps. Cheap insurance.
+		log.Printf("event-tick %s (%s): skipped — cost guard, last tick %s ago",
+			r.DisplayName, reason, time.Since(r.LastAgentTickAt.Time).Round(time.Second))
 		return
 	}
 
