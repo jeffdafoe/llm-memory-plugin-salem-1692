@@ -304,6 +304,17 @@ func _connect_world_signal() -> void:
         world.npc_spoke.connect(_on_npc_spoke)
 
 
+# Public — used by camera.gd to skip wheel/zoom and pan events that the
+# user clearly meant for the talk panel. The camera runs its input
+# handler in _input (early stage) to win out over editor ScrollContainers,
+# which means it pre-empts our log_scroll's wheel handling unless we ask
+# it to step aside while pos is over our sheet.
+func is_over_open_sheet(pos: Vector2) -> bool:
+    if not is_open or not sheet_anchor.visible:
+        return false
+    return talk_sheet.get_global_rect().has_point(pos)
+
+
 func open() -> void:
     if not pc_exists or huddle_members.is_empty():
         return

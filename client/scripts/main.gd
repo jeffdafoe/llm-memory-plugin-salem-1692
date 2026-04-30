@@ -240,6 +240,10 @@ func _build_ui() -> void:
     talk_panel_layer.set_script(TalkPanelScript)
     add_child(talk_panel_layer)
 
+    # Camera asks the talk panel "is the cursor over your open sheet?"
+    # before treating wheel events as zoom — see camera.gd._is_over_ui.
+    camera.talk_panel_ref = talk_panel_layer
+
     # Wire panel signals to editor
     editor_panel.asset_selected.connect(_on_panel_asset_selected)
     editor_panel.asset_inspect_requested.connect(_on_asset_inspect_requested)
