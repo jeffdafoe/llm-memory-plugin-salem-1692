@@ -55,6 +55,11 @@ var structure_name := ""
 var home_name := ""
 var huddle_members: Array = []
 
+# Tracks which structure's recent_speech we've already loaded so we don't
+# duplicate the backload across the 10s polling cycle. When the player walks
+# into a new structure, this changes and we clear+reload the log.
+var loaded_structure_id := ""
+
 var is_open := false
 var user_closed := false
 var has_ever_seen_huddle := false
@@ -388,11 +393,48 @@ func _apply_pc_state(data: Dictionary) -> void:
     else:
         huddle_members = []
 
+    _maybe_apply_recent_speech(data)
     _update_context_labels()
     _update_nearby_chips()
     _update_launcher_text()
     _update_visibility_from_state()
     _maybe_auto_attention_for_first_encounter()
+
+
+# When the player's inside_structure_id changes (or first arrives), clear
+# the log and replay the room's recent speech as a backload. The room
+# metaphor: walking into a tavern, you hear what's been said here lately.
+# Skipped on subsequent polls of the same structure to avoid duplicates
+# layering on top of live npc_spoke events.
+func _maybe_apply_recent_speech(data: Dictionary) -> void:
+    var current_structure := str(data.get("inside_structure_id", ""))
+    if current_structure == loaded_structure_id:
+        return
+
+    loaded_structure_id = current_structure
+
+    # Wipe whatever's there from the previous room — fresh ears for a new
+    # space. Live npc_spoke events that were happening in the old place
+    # aren't relevant once the PC has moved.
+    for child in log_vbox.get_children():
+        child.queue_free()
+
+    if current_structure.is_empty():
+        return
+
+    var recent = data.get("recent_speech", [])
+    if typeof(recent) != TYPE_ARRAY:
+        return
+
+    for entry in recent:
+        if typeof(entry) != TYPE_DICTIONARY:
+            continue
+        var speaker := str(entry.get("speaker_name", ""))
+        var text := str(entry.get("text", ""))
+        var kind := str(entry.get("kind", "npc"))
+        if speaker.is_empty() or text.is_empty():
+            continue
+        _append_log_line(speaker, text, kind, true)
 
 
 func _set_no_pc_state() -> void:
@@ -401,6 +443,7 @@ func _set_no_pc_state() -> void:
     is_open = false
     sheet_anchor.visible = false
     talk_launcher.visible = false
+    loaded_structure_id = ""
     _update_context_labels()
     _clear_nearby_chips()
 
@@ -556,7 +599,7 @@ func _on_npc_spoke(speaker_name: String, text: String, kind: String = "") -> voi
     _append_log_line(speaker_name, text, kind)
 
 
-func _append_log_line(speaker: String, text: String, kind: String = "") -> void:
+func _append_log_line(speaker: String, text: String, kind: String = "", is_backload: bool = false) -> void:
     var was_at_bottom := _is_log_near_bottom()
 
     var entry := VBoxContainer.new()
@@ -590,7 +633,9 @@ func _append_log_line(speaker: String, text: String, kind: String = "") -> void:
     if is_open:
         if was_at_bottom:
             _scroll_log_to_bottom_deferred()
-    else:
+    elif not is_backload:
+        # Backload entries are historical, not new — don't pulse the
+        # launcher's "N new" badge as if they just happened.
         unread_count += 1
         _update_launcher_text()
 

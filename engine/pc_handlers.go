@@ -50,7 +50,7 @@ import (
 )
 
 type pcMeResponse struct {
-	ActorName         string             `json:"login_username"`
+	LoginUsername     string             `json:"login_username"`
 	Exists            bool               `json:"exists"`
 	CharacterName     string             `json:"character_name,omitempty"`
 	X                 float64            `json:"x"`
@@ -61,6 +61,7 @@ type pcMeResponse struct {
 	HomeName          string             `json:"home_name,omitempty"`
 	CurrentHuddleID   *string            `json:"current_huddle_id,omitempty"`
 	HuddleMembers     []pcHuddleMember   `json:"huddle_members"`
+	RecentSpeech      []pcRecentSpeech   `json:"recent_speech,omitempty"`
 }
 
 type pcHuddleMember struct {
@@ -70,6 +71,24 @@ type pcHuddleMember struct {
 	TargetAgent *string `json:"target_agent,omitempty"` // llm_memory_agent for NPCs (chat_send recipient)
 }
 
+// pcRecentSpeech is one historical speak event at the player's current
+// inside_structure_id, surfaced so the talk panel can backload room
+// context when opened. The room metaphor: walk in, you hear the
+// last 12 things said here in the past 24 hours.
+//
+// Kind mirrors the WS npc_spoke event's kind ("npc" | "player") so the
+// client can render player-vs-NPC color treatment consistently between
+// backload and live stream.
+type pcRecentSpeech struct {
+	SpeakerName string    `json:"speaker_name"`
+	Text        string    `json:"text"`
+	Kind        string    `json:"kind"`        // "npc" | "player"
+	OccurredAt  time.Time `json:"occurred_at"` // wall-clock
+}
+
+const pcRecentSpeechLimit = 12
+const pcRecentSpeechCutoff = 24 * time.Hour
+
 func (app *App) handlePCMe(w http.ResponseWriter, r *http.Request) {
 	user := getUserFromContext(r.Context())
 	if user == nil {
@@ -78,7 +97,7 @@ func (app *App) handlePCMe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := pcMeResponse{
-		ActorName:     user.Username,
+		LoginUsername: user.Username,
 		HuddleMembers: []pcHuddleMember{},
 	}
 
@@ -166,7 +185,65 @@ func (app *App) handlePCMe(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Recent speech at the player's current location — backloads the
+	// talk panel so a freshly-opened panel shows what the room has been
+	// saying lately. Returned oldest→newest so the client can append in
+	// natural reading order. Limited to pcRecentSpeechLimit rows in the
+	// last pcRecentSpeechCutoff (24h) so a quiet room doesn't dredge up
+	// week-old chatter and an active one only surfaces the recent thread.
+	if insideID.Valid {
+		resp.RecentSpeech = app.loadRecentSpeechAtStructure(r.Context(), insideID.String)
+	}
+
 	jsonResponse(w, http.StatusOK, resp)
+}
+
+// loadRecentSpeechAtStructure pulls the last N speak events whose payload
+// references this structure_id. Reads from agent_action_log.payload's
+// embedded structure_id (the speak commit stashes inside_structure_id
+// there at write time — see agent_tick.go's executeAgentCommit).
+//
+// Filters to action_type='speak' and result='ok' so rejected/empty speech
+// attempts don't pollute the room's memory. source='player' rows render
+// as kind='player' for the talk panel's color treatment; everything else
+// is kind='npc' (agent ticks, magistrate-driven speech if it ever lands).
+func (app *App) loadRecentSpeechAtStructure(ctx context.Context, structureID string) []pcRecentSpeech {
+	cutoff := time.Now().Add(-pcRecentSpeechCutoff)
+	rows, err := app.DB.Query(ctx, `
+		SELECT speaker_name, payload->>'text' AS text, source, occurred_at
+		FROM agent_action_log
+		WHERE action_type = 'speak'
+		  AND result = 'ok'
+		  AND payload->>'structure_id' = $1
+		  AND occurred_at > $2
+		ORDER BY occurred_at DESC
+		LIMIT $3
+	`, structureID, cutoff, pcRecentSpeechLimit)
+	if err != nil {
+		log.Printf("recent speech: %v", err)
+		return nil
+	}
+	defer rows.Close()
+
+	// Collect newest-first, then reverse for natural reading order.
+	var recent []pcRecentSpeech
+	for rows.Next() {
+		var r pcRecentSpeech
+		var source string
+		if err := rows.Scan(&r.SpeakerName, &r.Text, &source, &r.OccurredAt); err != nil {
+			continue
+		}
+		if source == "player" {
+			r.Kind = "player"
+		} else {
+			r.Kind = "npc"
+		}
+		recent = append(recent, r)
+	}
+	for i, j := 0, len(recent)-1; i < j; i, j = i+1, j-1 {
+		recent[i], recent[j] = recent[j], recent[i]
+	}
+	return recent
 }
 
 // handlePCCreate — first-time PC creation. Sets character_name and
@@ -304,13 +381,17 @@ func (app *App) handlePCSay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Look up PC's character_name + structure for the audit-log overhear.
-	var charName, structureID sql.NullString
+	// Look up PC's actor.id + display_name + structure for the audit-log
+	// overhear. After ZBBS-084 the PC has its own actor row, so the audit
+	// trail can record actor_id properly (was NULL pre-refactor when PCs
+	// lived in pc_position and weren't rows in npc).
+	var actorID, charName, structureID sql.NullString
 	if err := app.DB.QueryRow(r.Context(),
-		`SELECT display_name, inside_structure_id::text FROM actor WHERE login_username = $1`,
+		`SELECT id::text, display_name, inside_structure_id::text
+		   FROM actor WHERE login_username = $1`,
 		user.Username,
-	).Scan(&charName, &structureID); err != nil {
-		log.Printf("pc/say lookup pc_position: %v", err)
+	).Scan(&actorID, &charName, &structureID); err != nil {
+		log.Printf("pc/say lookup actor: %v", err)
 	}
 
 	// Audit-log entry for the room to overhear. Includes target_name in
@@ -325,8 +406,8 @@ func (app *App) handlePCSay(w http.ResponseWriter, r *http.Request) {
 		})
 		if _, err := app.DB.Exec(r.Context(),
 			`INSERT INTO agent_action_log (actor_id, speaker_name, source, action_type, payload, result)
-			 VALUES (NULL, $1, 'player', 'speak', $2, 'ok')`,
-			charName.String, audit,
+			 VALUES ($1, $2, 'player', 'speak', $3, 'ok')`,
+			actorID, charName.String, audit,
 		); err != nil {
 			log.Printf("pc/say audit insert: %v", err)
 		}
@@ -399,13 +480,13 @@ func (app *App) handlePCSpeak(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var charName, structureID sql.NullString
+	var actorID, charName, structureID sql.NullString
 	err := app.DB.QueryRow(r.Context(),
-		`SELECT pc.display_name, pc.inside_structure_id::text
+		`SELECT pc.id::text, pc.display_name, pc.inside_structure_id::text
 		   FROM actor pc
 		  WHERE pc.login_username = $1 AND pc.current_huddle_id IS NOT NULL`,
 		user.Username,
-	).Scan(&charName, &structureID)
+	).Scan(&actorID, &charName, &structureID)
 	if err != nil || !structureID.Valid || !charName.Valid {
 		jsonError(w, "Not in a huddle — nobody to hear you", http.StatusBadRequest)
 		return
@@ -418,8 +499,8 @@ func (app *App) handlePCSpeak(w http.ResponseWriter, r *http.Request) {
 
 	if _, err := app.DB.Exec(r.Context(),
 		`INSERT INTO agent_action_log (actor_id, speaker_name, source, action_type, payload, result)
-		 VALUES (NULL, $1, 'player', 'speak', $2, 'ok')`,
-		charName.String, payload,
+		 VALUES ($1, $2, 'player', 'speak', $3, 'ok')`,
+		actorID, charName.String, payload,
 	); err != nil {
 		log.Printf("pc/speak audit insert: %v", err)
 		jsonError(w, "Failed to log speech", http.StatusInternalServerError)
