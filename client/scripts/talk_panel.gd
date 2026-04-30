@@ -236,7 +236,11 @@ func _build_header(parent: Control) -> void:
 
 func _build_nearby(parent: Control) -> void:
     nearby_scroll = ScrollContainer.new()
-    nearby_scroll.custom_minimum_size = Vector2(0, 30)
+    # Just enough for one row of small chips. Was 30 — left 12px of dead
+    # space under the chips because the HFlowContainer top-aligned its
+    # single row inside the larger ScrollContainer.
+    nearby_scroll.custom_minimum_size = Vector2(0, 22)
+    nearby_scroll.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
     nearby_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
     nearby_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
     parent.add_child(nearby_scroll)
@@ -650,32 +654,33 @@ func _append_log_line(speaker: String, text: String, kind: String = "", is_backl
         narr.add_theme_font_size_override("font_size", 13)
         entry = narr
     else:
-        var vbox := VBoxContainer.new()
-        vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-        vbox.add_theme_constant_override("separation", 2)
+        # Inline speaker + quote on one line with per-span colors. Plain
+        # Label can't carry two colors and HBoxContainer+autowrap is
+        # awkward, so RichTextLabel with bbcode is the clean fit.
+        # fit_content makes the label size to its content height so the
+        # log_vbox layout still flows; scroll_active=false keeps the
+        # outer log_scroll as the only scroll surface.
+        var rich := RichTextLabel.new()
+        rich.bbcode_enabled = true
+        rich.fit_content = true
+        rich.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+        rich.scroll_active = false
+        rich.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+        rich.add_theme_font_size_override("normal_font_size", 13)
 
-        var name_label := Label.new()
-        name_label.text = speaker
-        name_label.clip_text = true
-        name_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-        name_label.add_theme_font_size_override("font_size", 13)
-
-        var text_label := Label.new()
-        text_label.text = "“%s”" % text
-        text_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-        text_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-        text_label.add_theme_font_size_override("font_size", 13)
-
+        var name_color: String = "#b39463"
+        var text_color: String = "#d1c2a3"
         if kind == "speech_player" or kind == "player":
-            name_label.add_theme_color_override("font_color", Color(0.95, 0.78, 0.45, 1.0))
-            text_label.add_theme_color_override("font_color", Color(0.95, 0.86, 0.68, 1.0))
-        else:
-            name_label.add_theme_color_override("font_color", Color(0.70, 0.58, 0.39, 1.0))
-            text_label.add_theme_color_override("font_color", Color(0.82, 0.76, 0.64, 1.0))
+            name_color = "#f2c773"
+            text_color = "#f2dbad"
 
-        vbox.add_child(name_label)
-        vbox.add_child(text_label)
-        entry = vbox
+        rich.text = "[color=%s]%s[/color] [color=%s]“%s”[/color]" % [
+            name_color,
+            _bbcode_escape(speaker),
+            text_color,
+            _bbcode_escape(text),
+        ]
+        entry = rich
 
     log_vbox.add_child(entry)
 
@@ -690,6 +695,13 @@ func _append_log_line(speaker: String, text: String, kind: String = "", is_backl
         # launcher's "N new" badge as if they just happened.
         unread_count += 1
         _update_launcher_text()
+
+
+## Escape any opening square brackets in a user-supplied string so they
+## don't get interpreted as BBCode start tags. RichTextLabel renders
+## [lb] as a literal '[', and a stray ']' on its own is harmless.
+func _bbcode_escape(s: String) -> String:
+    return s.replace("[", "[lb]")
 
 
 func _is_log_near_bottom() -> bool:
