@@ -700,13 +700,13 @@ func agentToolSpec() []agentToolDef {
 		},
 		{
 			Name:        "pay",
-			Description: "Hand coins to another villager. Use after agreeing on a price in conversation. The 'for' field is a free-text note about what the payment is for ('a pint of ale', 'the bread', 'the news from Boston'); the engine uses it to decide whether the payment also reduces your hunger or thirst.",
+			Description: "Hand coins to another villager. Use after agreeing on a price in conversation. For purchases at an establishment (tavern, shop, smithy, etc.), pay the proprietor or staff working there — not another patron who happens to be present. The 'for' field is a free-text note about what the payment is for ('a pint of ale', 'the bread', 'the news from Boston'); the engine uses it to decide whether the payment also reduces your hunger or thirst.",
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"recipient": map[string]interface{}{
 						"type":        "string",
-						"description": "The villager you're paying, by name (e.g. 'john-ellis').",
+						"description": "The villager you're paying, by display name. For a purchase at a tavern, shop, or other establishment, this is the proprietor/staff who works there (e.g. the tavernkeeper if you're buying ale or a meal at the tavern), not any other villager who is present.",
 					},
 					"amount": map[string]interface{}{
 						"type":        "integer",
