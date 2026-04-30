@@ -205,27 +205,26 @@ func _build_sheet() -> void:
 
 func _build_header(parent: Control) -> void:
     var header := HBoxContainer.new()
-    header.custom_minimum_size = Vector2(0, 48)
+    header.custom_minimum_size = Vector2(0, 32)
     header.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     parent.add_child(header)
 
-    var context_box := VBoxContainer.new()
-    context_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    header.add_child(context_box)
-
+    # Lodging now shares the top line with the context label, so
+    # context_box collapses to a single Label. subcontext_label is kept
+    # hidden+empty so existing _update_context_labels logic still works
+    # without rewiring; collapsing the VBoxContainer wrapper.
     context_label = Label.new()
     context_label.clip_text = true
     context_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-    context_box.add_child(context_label)
+    context_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    header.add_child(context_label)
 
     subcontext_label = Label.new()
-    subcontext_label.clip_text = true
-    subcontext_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-    context_box.add_child(subcontext_label)
+    subcontext_label.visible = false
 
     close_button = Button.new()
     close_button.text = "×"
-    close_button.custom_minimum_size = Vector2(46, 44)
+    close_button.custom_minimum_size = Vector2(36, 32)
     close_button.focus_mode = Control.FOCUS_ALL
     close_button.mouse_filter = Control.MOUSE_FILTER_STOP
     header.add_child(close_button)
@@ -261,24 +260,25 @@ func _build_log(parent: Control) -> void:
 
 func _build_input(parent: Control) -> void:
     var row := HBoxContainer.new()
-    row.custom_minimum_size = Vector2(0, 72)
+    row.custom_minimum_size = Vector2(0, 48)
     row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    row.add_theme_constant_override("separation", 10)
+    row.add_theme_constant_override("separation", 8)
     parent.add_child(row)
 
     speech_input = TextEdit.new()
     speech_input.placeholder_text = "Speak to those gathered here…"
     speech_input.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
-    speech_input.custom_minimum_size = Vector2(0, 66)
+    speech_input.custom_minimum_size = Vector2(0, 44)
     speech_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     speech_input.size_flags_vertical = Control.SIZE_EXPAND_FILL
     speech_input.focus_mode = Control.FOCUS_ALL
     speech_input.mouse_filter = Control.MOUSE_FILTER_STOP
+    speech_input.add_theme_font_size_override("font_size", 13)
     row.add_child(speech_input)
 
     speak_button = Button.new()
     speak_button.text = "Speak"
-    speak_button.custom_minimum_size = Vector2(104, 66)
+    speak_button.custom_minimum_size = Vector2(88, 44)
     speak_button.focus_mode = Control.FOCUS_ALL
     speak_button.mouse_filter = Control.MOUSE_FILTER_STOP
     row.add_child(speak_button)
@@ -492,12 +492,11 @@ func _update_context_labels() -> void:
     if not structure_name.is_empty():
         where = structure_name
 
-    context_label.text = "%s at %s" % [who, where]
-
-    if home_name.is_empty():
-        subcontext_label.text = ""
-    else:
-        subcontext_label.text = "lodging: %s" % home_name
+    var line := "%s at %s" % [who, where]
+    if not home_name.is_empty():
+        line += " · lodging: %s" % home_name
+    context_label.text = line
+    subcontext_label.text = ""
 
 
 func _update_nearby_chips() -> void:
@@ -537,16 +536,17 @@ func _make_chip(text: String) -> Control:
     style.corner_radius_top_right = 999
     style.corner_radius_bottom_left = 999
     style.corner_radius_bottom_right = 999
-    style.content_margin_left = 10
-    style.content_margin_right = 10
-    style.content_margin_top = 4
-    style.content_margin_bottom = 4
+    style.content_margin_left = 8
+    style.content_margin_right = 8
+    style.content_margin_top = 2
+    style.content_margin_bottom = 2
     panel.add_theme_stylebox_override("panel", style)
 
     var label := Label.new()
     label.text = text
     label.mouse_filter = Control.MOUSE_FILTER_IGNORE
     label.add_theme_color_override("font_color", Color(0.78, 0.68, 0.50, 1.0))
+    label.add_theme_font_size_override("font_size", 12)
     panel.add_child(label)
 
     return panel
@@ -650,6 +650,7 @@ func _append_log_line(speaker: String, text: String, kind: String = "", is_backl
         narr.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
         narr.size_flags_horizontal = Control.SIZE_EXPAND_FILL
         narr.add_theme_color_override("font_color", Color(0.58, 0.51, 0.39, 1.0))
+        narr.add_theme_font_size_override("font_size", 13)
         entry = narr
     else:
         var vbox := VBoxContainer.new()
@@ -660,11 +661,13 @@ func _append_log_line(speaker: String, text: String, kind: String = "", is_backl
         name_label.text = speaker
         name_label.clip_text = true
         name_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+        name_label.add_theme_font_size_override("font_size", 13)
 
         var text_label := Label.new()
         text_label.text = "“%s”" % text
         text_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
         text_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+        text_label.add_theme_font_size_override("font_size", 13)
 
         if kind == "speech_player" or kind == "player":
             name_label.add_theme_color_override("font_color", Color(0.95, 0.78, 0.45, 1.0))
