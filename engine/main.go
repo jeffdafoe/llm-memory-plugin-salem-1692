@@ -70,6 +70,81 @@ type App struct {
 	// aggregate concurrency. Capacity 4 is conservative for the current
 	// 4-NPC village; raise as population grows.
 	OverseerAttendSem chan struct{}
+
+	// SceneTickedActors deduplicates reactor-tick fan-out within a single
+	// scene. The cascade machinery (PC speak → reactor ticks → reactor's
+	// own speak/act → next reactor ticks → ...) propagates a sceneID from
+	// the cascade origin through every downstream tick. Without dedup, an
+	// actor in a long conversation can be reactor-ticked multiple times
+	// concurrently — once for each speech they overhear within the scene.
+	// Each parallel tick calls the LLM independently, producing
+	// duplicated/redundant output (e.g., John Ellis pouring ale twice
+	// when ale was only ordered once).
+	//
+	// Key: sceneID + "|" + actorID. Value: time of the first tick in
+	// that scene for that actor. Once stamped, subsequent triggers with
+	// the same key drop with a log line. force=true cascades still skip
+	// the cost guard but respect this dedup. Stale entries (>30 min) are
+	// evicted by a periodic cleanup goroutine.
+	SceneTickedActors   map[string]time.Time
+	SceneTickedActorsMu sync.Mutex
+}
+
+// sceneTickKey is the dedup key used by SceneTickedActors.
+func sceneTickKey(sceneID, actorID string) string {
+	return sceneID + "|" + actorID
+}
+
+// sceneTickStaleness is how long a (scene, actor) entry remains in
+// SceneTickedActors before being treated as stale. A real cascade
+// completes in seconds — entries this old indicate the cascade
+// finished long ago and a same-sceneID re-trigger (vanishingly rare
+// since sceneIDs are UUIDs) should be allowed to proceed.
+const sceneTickStaleness = 30 * time.Minute
+
+// claimSceneTick reserves the (sceneID, actorID) tick slot. Returns
+// true if this caller wins the claim and should run the tick; returns
+// false if someone else already claimed it within the staleness window
+// (the caller should drop with a "duplicate cascade" log).
+//
+// The check-and-set is done under a single mutex acquisition so two
+// concurrent triggers can't both observe "not claimed" and both
+// proceed. Lock contention is microseconds — ticks themselves are
+// seconds long but don't hold this lock.
+func (app *App) claimSceneTick(sceneID, actorID string) bool {
+	key := sceneTickKey(sceneID, actorID)
+	now := time.Now()
+	app.SceneTickedActorsMu.Lock()
+	defer app.SceneTickedActorsMu.Unlock()
+	if last, exists := app.SceneTickedActors[key]; exists && now.Sub(last) < sceneTickStaleness {
+		return false
+	}
+	app.SceneTickedActors[key] = now
+	return true
+}
+
+// runSceneTickCleanup evicts stale entries from SceneTickedActors so
+// the map doesn't grow unbounded. Runs every 5 minutes; entries older
+// than sceneTickStaleness are dropped. Cheap — bounded by the number
+// of unique (scene, actor) pairs in the recent past.
+func (app *App) runSceneTickCleanup(ctx context.Context) {
+	t := time.NewTicker(5 * time.Minute)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			cutoff := time.Now().Add(-sceneTickStaleness)
+			app.SceneTickedActorsMu.Lock()
+			for k, v := range app.SceneTickedActors {
+				if v.Before(cutoff) {
+					delete(app.SceneTickedActors, k)
+				}
+			}
+			app.SceneTickedActorsMu.Unlock()
+		}
+	}
 }
 
 func main() {
@@ -106,10 +181,18 @@ func main() {
 		// Capacity 4 — concurrent attend_to-spawned agent ticks. Bounds
 		// burst when the overseer dispatches multiple villagers at once.
 		OverseerAttendSem: make(chan struct{}, 4),
+		// Per-(sceneID, actorID) dedup map. See SceneTickedActors comment
+		// on the App struct for the why.
+		SceneTickedActors: make(map[string]time.Time),
 	}
 	// Prime the display-name map so reactive ticks before the first
 	// server-tick refresh have data. Cheap; bounded by NPC count.
 	app.refreshNPCDisplayNames(context.Background())
+
+	// Periodic cleanup of stale scene-tick entries. Without this the map
+	// grows unbounded as the world runs. 5-minute interval, 30-minute
+	// staleness threshold — well past any realistic cascade duration.
+	go app.runSceneTickCleanup(context.Background())
 
 	// Build router. Routes are registered via two helpers: authed() wraps
 	// the handler in requireLLMMemory; public() leaves it unwrapped. Default
