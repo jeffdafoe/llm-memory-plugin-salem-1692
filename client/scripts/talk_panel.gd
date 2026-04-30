@@ -187,14 +187,14 @@ func _build_sheet() -> void:
     var pad := MarginContainer.new()
     pad.add_theme_constant_override("margin_left", 14)
     pad.add_theme_constant_override("margin_right", 14)
-    pad.add_theme_constant_override("margin_top", 12)
+    pad.add_theme_constant_override("margin_top", 8)
     pad.add_theme_constant_override("margin_bottom", 12)
     talk_sheet.add_child(pad)
 
     var vbox := VBoxContainer.new()
     vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     vbox.size_flags_vertical = Control.SIZE_EXPAND_FILL
-    vbox.add_theme_constant_override("separation", 10)
+    vbox.add_theme_constant_override("separation", 6)
     pad.add_child(vbox)
 
     _build_header(vbox)
@@ -204,35 +204,39 @@ func _build_sheet() -> void:
 
 
 func _build_header(parent: Control) -> void:
+    # Compact one-line header: just the room name, dim and small, with the
+    # close button on the right. Player name dropped (the user knows who
+    # they are), lodging dropped (low value). Sits tight against the top
+    # border so the chips effectively become the visual top of the panel.
     var header := HBoxContainer.new()
-    header.custom_minimum_size = Vector2(0, 32)
+    header.custom_minimum_size = Vector2(0, 20)
     header.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     parent.add_child(header)
 
-    # Lodging now shares the top line with the context label, so
-    # context_box collapses to a single Label. subcontext_label is kept
-    # hidden+empty so existing _update_context_labels logic still works
-    # without rewiring; collapsing the VBoxContainer wrapper.
     context_label = Label.new()
     context_label.clip_text = true
     context_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
     context_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    context_label.add_theme_font_size_override("font_size", 11)
     header.add_child(context_label)
 
+    # Kept around so existing _update_context_labels code that touches .text
+    # continues to compile, but never added to the layout.
     subcontext_label = Label.new()
     subcontext_label.visible = false
 
     close_button = Button.new()
     close_button.text = "×"
-    close_button.custom_minimum_size = Vector2(36, 32)
+    close_button.custom_minimum_size = Vector2(28, 20)
     close_button.focus_mode = Control.FOCUS_ALL
     close_button.mouse_filter = Control.MOUSE_FILTER_STOP
+    close_button.add_theme_font_size_override("font_size", 14)
     header.add_child(close_button)
 
 
 func _build_nearby(parent: Control) -> void:
     nearby_scroll = ScrollContainer.new()
-    nearby_scroll.custom_minimum_size = Vector2(0, 42)
+    nearby_scroll.custom_minimum_size = Vector2(0, 30)
     nearby_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
     nearby_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
     parent.add_child(nearby_scroll)
@@ -480,22 +484,15 @@ func _update_visibility_from_state() -> void:
 
 func _update_context_labels() -> void:
     if not pc_exists:
-        context_label.text = "No character"
+        context_label.text = ""
         subcontext_label.text = ""
         return
-
-    var who := "You"
-    if not character_name.is_empty():
-        who = character_name
 
     var where := "the village"
     if not structure_name.is_empty():
         where = structure_name
 
-    var line := "%s at %s" % [who, where]
-    if not home_name.is_empty():
-        line += " · lodging: %s" % home_name
-    context_label.text = line
+    context_label.text = where
     subcontext_label.text = ""
 
 
@@ -536,17 +533,17 @@ func _make_chip(text: String) -> Control:
     style.corner_radius_top_right = 999
     style.corner_radius_bottom_left = 999
     style.corner_radius_bottom_right = 999
-    style.content_margin_left = 8
-    style.content_margin_right = 8
-    style.content_margin_top = 2
-    style.content_margin_bottom = 2
+    style.content_margin_left = 7
+    style.content_margin_right = 7
+    style.content_margin_top = 1
+    style.content_margin_bottom = 1
     panel.add_theme_stylebox_override("panel", style)
 
     var label := Label.new()
     label.text = text
     label.mouse_filter = Control.MOUSE_FILTER_IGNORE
     label.add_theme_color_override("font_color", Color(0.78, 0.68, 0.50, 1.0))
-    label.add_theme_font_size_override("font_size", 12)
+    label.add_theme_font_size_override("font_size", 11)
     panel.add_child(label)
 
     return panel
