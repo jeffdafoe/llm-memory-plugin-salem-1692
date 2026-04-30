@@ -1611,21 +1611,10 @@ func _cancel_loiter_drag() -> void:
     refresh_loiter_marker()
     _loiter_dragging = false
 
-## Delete entry point: shows the confirmation dialog. On confirm,
-## _on_delete_confirmed dispatches to _do_delete_selected.
+## Object deletion — confirmation lives at world.remove_object(), so every
+## caller (KEY_DELETE here, the panel Delete button, anything else) gets
+## gated automatically without per-call dialog wiring.
 func _delete_selected() -> void:
-    if selected_object == null:
-        return
-    var label: String = selected_object.get_meta("display_name", "")
-    if label == "":
-        label = "this object"
-    _delete_dialog.title = "Delete object"
-    _delete_dialog.dialog_text = "Delete \"" + label + "\"? This cannot be undone."
-    _pending_delete = "object"
-    _delete_dialog.popup_centered()
-
-## Actual object deletion — runs only after confirmation.
-func _do_delete_selected() -> void:
     if selected_object == null:
         return
     _remove_selection_border()
@@ -1685,15 +1674,13 @@ func _do_delete_selected_npc() -> void:
         headers, HTTPClient.METHOD_DELETE)
     _deselect_npc()
 
-## Dispatch the staged delete after the confirmation dialog is OK'd.
+## Dispatch the staged NPC delete after the confirmation dialog is OK'd.
 ## _pending_delete is cleared whether we dispatch or fall through, so a
 ## stray signal can't fire a second delete.
 func _on_delete_confirmed() -> void:
     var pending: String = _pending_delete
     _pending_delete = ""
-    if pending == "object":
-        _do_delete_selected()
-    elif pending == "npc":
+    if pending == "npc":
         _do_delete_selected_npc()
 
 # --- Drag-to-move ---
