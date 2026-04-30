@@ -75,4 +75,10 @@ func (app *App) runServerTickOnce(ctx context.Context) {
 	// wall-clock hour has rolled. No-op on most ticks (cheap setting read +
 	// integer compare); single batch UPDATE on the boundary.
 	app.dispatchAttributeTick(ctx)
+	// Sim conversation push — pushes the previous UTC day's
+	// agent_action_log digest to llm-memory-api so the api builds a
+	// distilled conversations/YYYY-MM-DD-sim-day note for the dream
+	// pipeline. No-op on most ticks (cheap setting read + date compare);
+	// fires only on the first tick after a UTC day rollover.
+	app.dispatchSimConversationPush(ctx)
 }
