@@ -1356,13 +1356,33 @@ func _on_object_saved(result: int, response_code: int, headers: PackedStringArra
         if event_client != null:
             event_client.mark_local_object(obj_id)
 
-## Remove an object from the world and the server.
+## Remove an object from the world and the server. Single chokepoint for
+## every delete path (keyboard shortcut, sidebar Delete button, anything
+## else) — the confirmation dialog lives here so every caller is gated
+## without per-call dialog wiring. The actual destructive work runs only
+## after the user confirms.
 func remove_object(node: Node2D) -> void:
     var obj_id = node.get_meta("object_id", null)
-    if obj_id != null:
+    if obj_id == null:
+        node.queue_free()
+        return
+    var label: String = node.get_meta("display_name", "")
+    if label == "":
+        label = "this object"
+    var dialog := ConfirmationDialog.new()
+    dialog.title = "Delete object"
+    dialog.dialog_text = "Delete \"" + label + "\"? This cannot be undone."
+    dialog.dialog_hide_on_ok = true
+    add_child(dialog)
+    dialog.confirmed.connect(func():
         placed_objects.erase(obj_id)
         _delete_object(obj_id)
-    node.queue_free()
+        if is_instance_valid(node):
+            node.queue_free()
+        dialog.queue_free()
+    )
+    dialog.canceled.connect(func(): dialog.queue_free())
+    dialog.popup_centered()
 
 ## Move an object to a new position and persist it to the server.
 func move_object(node: Node2D, new_pos: Vector2) -> void:
