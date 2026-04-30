@@ -481,6 +481,22 @@ func (app *App) stampAgentTick(ctx context.Context, r *agentNPCRow, hourStart ti
 // every chat row and provider call this NPC produces while reacting
 // shares the same scene.
 func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, force bool, sceneID string) {
+	// Scene-level dedup. If this actor already ticked in this scene
+	// (cascade), drop. Without this, an actor in a long conversation
+	// gets reactor-ticked once per overheard speech in the scene and
+	// each tick runs concurrently, producing redundant LLM output —
+	// e.g., a tavernkeeper pouring ale twice when ordered once.
+	// sceneID propagates from the cascade origin through every reactor
+	// in the chain (MEM-121), so all ticks within one cascade share
+	// it; an actor's first tick stamps the (scene, actor) key, and
+	// subsequent triggers in the same scene drop here.
+	//
+	// Empty sceneID skips the gate — used only for paths that haven't
+	// adopted scene_id yet (defensive; current callers all provide one).
+	if sceneID != "" && !app.claimSceneTick(sceneID, npcID) {
+		log.Printf("event-tick %s (%s): skipped — already ticked in scene %s", npcID, reason, sceneID)
+		return
+	}
 	cfg, err := app.loadWorldConfig(ctx)
 	if err != nil {
 		log.Printf("event-tick %s (%s): load config: %v", npcID, reason, err)
