@@ -266,27 +266,50 @@ func _build_log(parent: Control) -> void:
 
 func _build_input(parent: Control) -> void:
     var row := HBoxContainer.new()
-    row.custom_minimum_size = Vector2(0, 48)
+    row.custom_minimum_size = Vector2(0, 28)
     row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    row.add_theme_constant_override("separation", 8)
+    row.add_theme_constant_override("separation", 6)
     parent.add_child(row)
 
     speech_input = TextEdit.new()
     speech_input.placeholder_text = "Speak to those gathered here…"
     speech_input.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
-    speech_input.custom_minimum_size = Vector2(0, 44)
+    speech_input.custom_minimum_size = Vector2(0, 28)
     speech_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    speech_input.size_flags_vertical = Control.SIZE_EXPAND_FILL
+    speech_input.size_flags_vertical = Control.SIZE_SHRINK_CENTER
     speech_input.focus_mode = Control.FOCUS_ALL
     speech_input.mouse_filter = Control.MOUSE_FILTER_STOP
-    speech_input.add_theme_font_size_override("font_size", 13)
+    speech_input.add_theme_font_size_override("font_size", 12)
+    # The TextEdit default stylebox draws a thick bordered box that reads
+    # heavy next to the rest of the small UI. Override with a flat fill
+    # that matches the panel's tone, plus a 1px subtle border on focus.
+    var input_normal := StyleBoxFlat.new()
+    input_normal.bg_color = Color(0.18, 0.13, 0.08, 0.95)
+    input_normal.border_color = Color(0.42, 0.32, 0.19, 0.55)
+    input_normal.border_width_left = 1
+    input_normal.border_width_right = 1
+    input_normal.border_width_top = 1
+    input_normal.border_width_bottom = 1
+    input_normal.corner_radius_top_left = 4
+    input_normal.corner_radius_top_right = 4
+    input_normal.corner_radius_bottom_left = 4
+    input_normal.corner_radius_bottom_right = 4
+    input_normal.content_margin_left = 8
+    input_normal.content_margin_right = 8
+    input_normal.content_margin_top = 4
+    input_normal.content_margin_bottom = 4
+    speech_input.add_theme_stylebox_override("normal", input_normal)
+    var input_focus := input_normal.duplicate()
+    input_focus.border_color = Color(0.78, 0.62, 0.34, 0.9)
+    speech_input.add_theme_stylebox_override("focus", input_focus)
     row.add_child(speech_input)
 
     speak_button = Button.new()
     speak_button.text = "Speak"
-    speak_button.custom_minimum_size = Vector2(88, 44)
+    speak_button.custom_minimum_size = Vector2(60, 28)
     speak_button.focus_mode = Control.FOCUS_ALL
     speak_button.mouse_filter = Control.MOUSE_FILTER_STOP
+    speak_button.add_theme_font_size_override("font_size", 12)
     row.add_child(speak_button)
 
 
@@ -715,6 +738,13 @@ func _scroll_log_to_bottom_deferred() -> void:
 
 
 func _scroll_log_to_bottom() -> void:
+    # Three frames: one for visibility-change to take effect, one for the
+    # PanelContainer layout to settle, one for RichTextLabel fit_content
+    # to expand log entries to their rendered heights. With only one
+    # await, max_value lags reality on first open() and the scroll lands
+    # short of the actual bottom.
+    await get_tree().process_frame
+    await get_tree().process_frame
     await get_tree().process_frame
     var bar := log_scroll.get_v_scroll_bar()
     if bar != null:
