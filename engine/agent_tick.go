@@ -1272,10 +1272,14 @@ func (app *App) resolveRecall(ctx context.Context, r *agentNPCRow, query string)
 // commit types ("ok"/"") are ignored by callers but kept consistent
 // for the audit row.
 func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agentToolCall, sceneID string) (string, string) {
-	// Augment the speak payload with the structure_id so the recent
-	// block can query "what was said here recently." Other tools don't
-	// need this — only speak surfaces in others' perceptions.
-	if (tc.Name == "speak" || tc.Name == "act") && r.InsideStructureID.Valid {
+	// Augment several payload kinds with structure_id so recent-block
+	// queries (perception lookback, talk-panel backload) can answer
+	// "what happened here lately" with a single payload->>'structure_id'
+	// filter. speak/act stamp because they're conversational and surface
+	// in other actors' perceptions; move_to stamps the FROM structure
+	// (where the actor was when they decided to leave) so departures
+	// appear in the room they left, not the room they're walking to.
+	if (tc.Name == "speak" || tc.Name == "act" || tc.Name == "move_to") && r.InsideStructureID.Valid {
 		if tc.Input == nil {
 			tc.Input = map[string]interface{}{}
 		}
@@ -1294,6 +1298,24 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		}
 		if err := app.executeAgentMoveTo(ctx, r, dest); err != nil {
 			result, errStr = "failed", err.Error()
+		}
+		// Departure narration for the room. Stamps from_structure_id (the
+		// room being LEFT) so subscribers filtering by structure can show
+		// "Ezekiel left for home" in the place he just walked away from.
+		// kind="departure" lets clients render this as italic narration
+		// alongside speech and acts.
+		if result == "ok" && r.InsideStructureID.Valid {
+			app.Hub.Broadcast(WorldEvent{
+				Type: "room_event",
+				Data: map[string]interface{}{
+					"actor_id":     r.ID,
+					"actor_name":   r.DisplayName,
+					"kind":         "departure",
+					"text":         fmt.Sprintf("%s left for %s.", r.DisplayName, dest),
+					"structure_id": r.InsideStructureID.String,
+					"at":           time.Now().UTC().Format(time.RFC3339),
+				},
+			})
 		}
 
 	case "chore":
@@ -1370,6 +1392,23 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 				"at":          time.Now().UTC().Format(time.RFC3339),
 			},
 		})
+		// Parallel narration broadcast for the talk panel. kind="act" lets
+		// the client render "John Ellis poured ale for everyone" as italic
+		// narration between dialogue lines. structure_id scopes the event
+		// to the room it happened in.
+		if r.InsideStructureID.Valid {
+			app.Hub.Broadcast(WorldEvent{
+				Type: "room_event",
+				Data: map[string]interface{}{
+					"actor_id":     r.ID,
+					"actor_name":   r.DisplayName,
+					"kind":         "act",
+					"text":         fmt.Sprintf("%s %s.", r.DisplayName, verb),
+					"structure_id": r.InsideStructureID.String,
+					"at":           time.Now().UTC().Format(time.RFC3339),
+				},
+			})
+		}
 		// Same cascade trigger as speak — co-located NPCs may want to
 		// react to the action ("oh, you served the merchant first").
 		// force=true for the same reason the speak path forces: the
