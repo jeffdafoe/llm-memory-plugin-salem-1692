@@ -38,6 +38,7 @@ var talk_sheet: PanelContainer
 var context_label: Label
 var subcontext_label: Label
 var close_button: Button
+var title_pill: PanelContainer
 var nearby_scroll: ScrollContainer
 var nearby_flow: HFlowContainer
 var log_scroll: ScrollContainer
@@ -201,29 +202,23 @@ func _build_sheet() -> void:
     _build_nearby(vbox)
     _build_log(vbox)
     _build_input(vbox)
+    _build_title_pill()
 
 
 func _build_header(parent: Control) -> void:
-    # Compact one-line header: just the room name, dim and small, with the
-    # close button on the right. Player name dropped (the user knows who
-    # they are), lodging dropped (low value). Sits tight against the top
-    # border so the chips effectively become the visual top of the panel.
+    # Header now hosts only the close button — the room name lives on the
+    # panel's top border via the title pill (see _build_title_pill).
+    # context_label and subcontext_label are kept as off-layout siblings
+    # so existing _update_context_labels logic still compiles.
     var header := HBoxContainer.new()
     header.custom_minimum_size = Vector2(0, 20)
     header.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     parent.add_child(header)
 
-    context_label = Label.new()
-    context_label.clip_text = true
-    context_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-    context_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    context_label.add_theme_font_size_override("font_size", 11)
-    header.add_child(context_label)
-
-    # Kept around so existing _update_context_labels code that touches .text
-    # continues to compile, but never added to the layout.
-    subcontext_label = Label.new()
-    subcontext_label.visible = false
+    var spacer := Control.new()
+    spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    header.add_child(spacer)
 
     close_button = Button.new()
     close_button.text = "×"
@@ -232,6 +227,62 @@ func _build_header(parent: Control) -> void:
     close_button.mouse_filter = Control.MOUSE_FILTER_STOP
     close_button.add_theme_font_size_override("font_size", 14)
     header.add_child(close_button)
+
+    subcontext_label = Label.new()
+    subcontext_label.visible = false
+
+
+# Title pill — a small PanelContainer with top_level=true (so it floats
+# free of the surrounding layout) parented to talk_sheet. Its background
+# matches the sheet's bg color, so when its vertical center sits on the
+# panel's top border, the border line is hidden under it and the pill
+# reads as a tab cut into the border (fieldset-legend pattern).
+#
+# Position is recomputed any time talk_sheet's rect or visibility could
+# have changed: open(), responsive layout switch, viewport resize, the
+# panel's own resized event.
+func _build_title_pill() -> void:
+    title_pill = PanelContainer.new()
+    title_pill.top_level = true
+    title_pill.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    title_pill.visible = false
+    talk_sheet.add_child(title_pill)
+
+    var pill_style := StyleBoxFlat.new()
+    pill_style.bg_color = Color(0.115, 0.085, 0.055, 1.0)
+    pill_style.content_margin_left = 9
+    pill_style.content_margin_right = 9
+    pill_style.content_margin_top = 1
+    pill_style.content_margin_bottom = 1
+    title_pill.add_theme_stylebox_override("panel", pill_style)
+
+    context_label = Label.new()
+    context_label.clip_text = true
+    context_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+    context_label.add_theme_font_size_override("font_size", 11)
+    context_label.add_theme_color_override("font_color", Color(0.85, 0.72, 0.50, 1.0))
+    title_pill.add_child(context_label)
+
+    talk_sheet.resized.connect(_position_title_pill)
+    talk_sheet.item_rect_changed.connect(_position_title_pill)
+
+
+func _position_title_pill() -> void:
+    if title_pill == null or talk_sheet == null:
+        return
+    # Hidden when the sheet is hidden or the room name is empty (no PC,
+    # or transitional state). Tied to talk_sheet visibility because the
+    # pill is top_level and won't follow its parent's visibility.
+    var visible_now := talk_sheet.is_visible_in_tree() and not context_label.text.is_empty()
+    title_pill.visible = visible_now
+    if not visible_now:
+        return
+    var sheet_rect: Rect2 = talk_sheet.get_global_rect()
+    var pill_size: Vector2 = title_pill.get_combined_minimum_size()
+    title_pill.global_position = Vector2(
+        sheet_rect.position.x + 18,
+        sheet_rect.position.y - pill_size.y * 0.5
+    )
 
 
 func _build_nearby(parent: Control) -> void:
@@ -341,6 +392,7 @@ func open() -> void:
     _update_launcher_text()
     _focus_input_after_open()
     _scroll_log_to_bottom_deferred()
+    call_deferred("_position_title_pill")
 
 
 func close() -> void:
@@ -476,6 +528,8 @@ func _update_visibility_from_state() -> void:
         is_open = false
         sheet_anchor.visible = false
         talk_launcher.visible = false
+        if title_pill != null:
+            title_pill.visible = false
         return
 
     if is_open:
@@ -484,12 +538,15 @@ func _update_visibility_from_state() -> void:
     else:
         sheet_anchor.visible = false
         talk_launcher.visible = true
+        if title_pill != null:
+            title_pill.visible = false
 
 
 func _update_context_labels() -> void:
     if not pc_exists:
         context_label.text = ""
         subcontext_label.text = ""
+        _position_title_pill()
         return
 
     var where := "the village"
@@ -498,6 +555,7 @@ func _update_context_labels() -> void:
 
     context_label.text = where
     subcontext_label.text = ""
+    _position_title_pill()
 
 
 func _update_nearby_chips() -> void:
@@ -792,6 +850,7 @@ func _refocus_if_open() -> void:
 
 func _on_viewport_size_changed() -> void:
     _update_responsive_layout()
+    call_deferred("_position_title_pill")
 
 
 func _update_responsive_layout() -> void:
