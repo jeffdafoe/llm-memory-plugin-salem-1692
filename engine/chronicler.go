@@ -58,7 +58,9 @@ const (
 // invocation. Used to render the perception's opening line and to
 // stamp the phase column on world_environment writes.
 type chroniclerFireReason struct {
-	// Type is "phase" (scheduled boundary) or "cascade" (event-driven).
+	// Type is "phase" (scheduled boundary), "cascade" (event-driven), or
+	// "shift_boundary" (agent-NPC shift start/end queued by the worker
+	// scheduler — see dispatch_queue.go).
 	Type string
 
 	// Phase is set when Type == "phase". One of "dawn" | "midday" | "dusk".
@@ -142,7 +144,7 @@ func chroniclerToolSpec() []agentToolDef {
 		},
 		{
 			Name:        "attend_to",
-			Description: "Direct your attention to a named villager so they may rouse and tend to themselves. Use when you see a soul whose body is in distress — hungry, parched, or weary — and a small voice within them might move them to act. The villager you attend to will think and may take an action; you do not move their hands. Use sparingly: there is a finite measure to how many you may attend in one waking.",
+			Description: "Direct your attention to a named villager so they may rouse and tend to themselves. Use when you see a soul whose body is in distress — hungry, parched, or weary — and a small voice within them might move them to act. Also use when a villager's shift has begun and they are not yet at their workplace, or when their shift has ended and they are still at their workplace. The villager you attend to will think and may take an action; you do not move their hands. Use sparingly: there is a finite measure to how many you may attend in one waking.",
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -355,7 +357,16 @@ func (app *App) runCascadeFire(reason, structureID string) {
 // phase state, used by the activity digest as the "since when" cutoff
 // so cascade fires don't repeatedly digest the same activity window.
 func (app *App) fireChronicler(ctx context.Context, reason chroniclerFireReason) error {
-	perception := app.buildChroniclerPerception(ctx, reason)
+	// Drain the dispatch queue here, before perception build, so the
+	// destructive action is tied to an actual chronicler invocation
+	// rather than perception formatting. Any fire (phase, cascade,
+	// shift_boundary) picks up pending events; the perception render is
+	// a pure formatting step. Drained events are lost if the LLM call
+	// later fails — acceptable trade-off; alternative is a claim/commit
+	// model and the queue's content is best-effort context, not durable
+	// state.
+	shiftBatches := app.ChroniclerDispatchQueue.drain()
+	perception := app.buildChroniclerPerception(ctx, reason, shiftBatches)
 	tools := chroniclerToolSpec()
 
 	currentMessage := perception
@@ -566,7 +577,7 @@ func validEventScope(s string) bool {
 //  5. Recent visible events (last N village-scope within window)
 //  6. Activity digest since last fire (deterministic Go-rendered)
 //  7. Decision prompt
-func (app *App) buildChroniclerPerception(ctx context.Context, reason chroniclerFireReason) string {
+func (app *App) buildChroniclerPerception(ctx context.Context, reason chroniclerFireReason, shiftBatches []*chroniclerDispatchBatch) string {
 	var sections []string
 
 	// 1. Why you wake.
@@ -589,6 +600,17 @@ func (app *App) buildChroniclerPerception(ctx context.Context, reason chronicler
 	// when no one is suffering.
 	if distress := app.buildChroniclerDistressList(ctx); distress != "" {
 		sections = append(sections, distress)
+	}
+
+	// 3b. Shift boundary events for agent NPCs (chronicler-dispatch
+	// redesign). Renders one section per event_type from the batches
+	// the caller drained. Drain happens in fireChronicler, not here —
+	// keeps perception build read-only and makes the destructive action
+	// tied to an actual chronicler invocation. A phase or cascade fire
+	// that happens to overlap a shift boundary picks up the events for
+	// free because every fireChronicler call drains the queue.
+	for _, section := range renderShiftBoundarySections(shiftBatches) {
+		sections = append(sections, section)
 	}
 
 	// 4. Your recent atmospheric statements.
@@ -635,7 +657,7 @@ func (app *App) buildChroniclerPerception(ctx context.Context, reason chronicler
 	// the model occasionally narrates as plain text (the implicit
 	// set_environment fallback catches this, but explicit naming
 	// reduces the failure rate).
-	sections = append(sections, "Attend to the village. Use set_environment to write the current atmosphere if it has shifted. Use record_event to record any happening that should persist in village memory (default scope is village; pass scope_type='local' with scope_target=<structure_id> to restrict to one place, or scope_type='private' with scope_target=<npc_id> to restrict to one person). Use attend_to to rouse a villager whose body is in distress so they may tend to themselves. You may use recall to remember anything the village has experienced. Use done when your office is finished.")
+	sections = append(sections, "Attend to the village. Use set_environment to write the current atmosphere if it has shifted. Use record_event to record any happening that should persist in village memory (default scope is village; pass scope_type='local' with scope_target=<structure_id> to restrict to one place, or scope_type='private' with scope_target=<npc_id> to restrict to one person). Use attend_to to rouse a villager whose body is in distress, whose shift has begun and who is not at their workplace, or whose shift has ended and who is still at their workplace. You may use recall to remember anything the village has experienced. Use done when your office is finished.")
 
 	return strings.Join(sections, "\n\n")
 }
@@ -656,6 +678,8 @@ func (app *App) chroniclerOpeningLine(ctx context.Context, reason chroniclerFire
 			return fmt.Sprintf("Something stirs at %s: %s.", structName, reason.CascadeReason)
 		}
 		return fmt.Sprintf("Something stirs in the village: %s.", reason.CascadeReason)
+	case "shift_boundary":
+		return "A villager's working hours have shifted. The hour has come for you to attend the village."
 	}
 	return "You wake to attend the village."
 }
@@ -1360,6 +1384,100 @@ func (app *App) buildChroniclerDistressList(ctx context.Context) string {
 		return ""
 	}
 	return "Villagers in distress:\n" + strings.Join(lines, "\n")
+}
+
+// renderShiftBoundarySections renders perception sections from the
+// caller-supplied batches — one per event_type. Pure function; the
+// caller (fireChronicler) is responsible for draining the queue. Empty
+// when batches is empty.
+//
+// Format (per event_type, only event types with non-empty agent lists
+// produce a section):
+//
+//	Beginning their shift now:
+//	- Ezekiel Crane (Blacksmith, 07:00-19:00) -- currently at the Inn
+//	- Josiah Thorne (General Store, 07:00-19:00) -- currently at the Thorne Residence
+//
+// The chronicler reads these sections and decides whether to attend each
+// listed villager (broader attend_to authorization in the tool spec
+// covers both shift-begin and shift-end as legitimate reasons).
+func renderShiftBoundarySections(batches []*chroniclerDispatchBatch) []string {
+	if len(batches) == 0 {
+		return nil
+	}
+	// Group by event type so two batches of the same type (different
+	// boundary minutes within the same fire window — rare but possible
+	// near phase boundaries) collapse into one section. Preserves the
+	// chronicler's mental model of "what's happening now" rather than
+	// surfacing the queue's internal sharding.
+	byType := map[chroniclerDispatchEventType][]chroniclerDispatchAgent{}
+	for _, b := range batches {
+		byType[b.EventType] = append(byType[b.EventType], b.Agents...)
+	}
+
+	headings := map[chroniclerDispatchEventType]string{
+		dispatchShiftStart: "Beginning their shift now:",
+		dispatchShiftEnd:   "Ending their shift now:",
+	}
+	// Stable section order: shift_start before shift_end. Two passes over
+	// the known event types keep the perception deterministic across
+	// fires regardless of map iteration order.
+	var sections []string
+	for _, et := range []chroniclerDispatchEventType{dispatchShiftStart, dispatchShiftEnd} {
+		agents := byType[et]
+		if len(agents) == 0 {
+			continue
+		}
+		var b strings.Builder
+		b.WriteString(headings[et])
+		for _, a := range agents {
+			b.WriteString("\n- ")
+			b.WriteString(a.DisplayName)
+			b.WriteString(" (")
+			b.WriteString(a.WorkPlace)
+			b.WriteString(", ")
+			b.WriteString(a.ShiftStart)
+			b.WriteString("-")
+			b.WriteString(a.ShiftEnd)
+			b.WriteString(") -- currently at ")
+			b.WriteString(a.CurrentPlace)
+		}
+		sections = append(sections, b.String())
+	}
+	return sections
+}
+
+// dispatchChroniclerShiftBoundaries fires the chronicler when the
+// dispatch queue has pending shift events AND no other fire (phase or
+// cascade) has already drained them this tick. Called from the server
+// tick loop after dispatchScheduledBehaviors so the worker scheduler
+// has had a chance to enqueue.
+//
+// Cheap when nothing is pending (single mutex-guarded len check). When
+// pending, fires the chronicler with reason.Type == "shift_boundary";
+// the perception build drains the queue inside the fire, so this caller
+// doesn't need to pass the batches through.
+//
+// Honors AgentTicksPaused — if the admin halted agent activity, the
+// chronicler stays quiet on shift boundaries too. The queued events
+// remain in memory until the next fire (or process restart) drains
+// them; that is intentional, matching how phase fires behave under
+// pause.
+func (app *App) dispatchChroniclerShiftBoundaries(ctx context.Context) {
+	if app.ChroniclerDispatchQueue.pending() == 0 {
+		return
+	}
+	cfg, err := app.loadWorldConfig(ctx)
+	if err != nil {
+		log.Printf("chronicler-shift: load config: %v", err)
+		return
+	}
+	if cfg.AgentTicksPaused {
+		return
+	}
+	if err := app.fireChronicler(ctx, chroniclerFireReason{Type: "shift_boundary"}); err != nil {
+		log.Printf("chronicler-shift: fire failed: %v", err)
+	}
 }
 
 // resolveVillagerForAttention maps a villager name (display_name or slug)

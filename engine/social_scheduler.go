@@ -2,6 +2,20 @@ package main
 
 // Per-NPC social hour evaluation (ZBBS-068).
 //
+// As of the chronicler-dispatch redesign (2026-05-01): agent-driven NPCs
+// (those with llm_memory_agent IS NOT NULL) decide socializing themselves
+// via needs/economics and chronicler dispatch — they do not use this
+// scheduler. The exclusion is enforced at the query level (loadSocialRows
+// adds AND llm_memory_agent IS NULL), so an operator re-populating
+// social_tag on an agent NPC won't accidentally enable a social walk
+// that would compete with the agent's own decisions. The
+// agent_override_until step-aside in evaluateSocialSchedule below is
+// therefore unreachable for agent NPCs and remains only as a belt-and-
+// suspenders guard if the query filter is ever relaxed.
+//
+// Decorative NPCs (NULL llm_memory_agent) continue to use this scheduler
+// unchanged.
+//
 // Orthogonal to the main `behavior` column: any NPC whose social_* columns
 // are fully set participates regardless of their job. Two boundaries per day:
 //
@@ -64,7 +78,8 @@ func (app *App) loadSocialRows(ctx context.Context) ([]socialRow, error) {
 		 JOIN village_object hs ON hs.id = n.home_structure_id
 		 JOIN asset ha         ON ha.id = hs.asset_id
 		 WHERE n.social_tag IS NOT NULL
-		   AND n.home_structure_id IS NOT NULL`,
+		   AND n.home_structure_id IS NOT NULL
+		   AND n.llm_memory_agent IS NULL`,
 	)
 	if err != nil {
 		return nil, err

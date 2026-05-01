@@ -67,6 +67,13 @@ func (app *App) runServerTickOnce(ctx context.Context) {
 	app.dispatchChroniclerPhase(ctx)
 	app.dispatchScheduledBehaviors(ctx)
 	app.dispatchSocialSchedules(ctx)
+	// Chronicler shift-boundary dispatcher (chronicler-dispatch redesign).
+	// Runs after dispatchScheduledBehaviors so any agent-NPC shift events
+	// the worker scheduler enqueued this tick are visible. Cheap when the
+	// queue is empty (single mutex-guarded len check); fires the chronicler
+	// only when there's pending work AND the dispatch wasn't already
+	// drained by an earlier phase or cascade fire on the same tick.
+	app.dispatchChroniclerShiftBoundaries(ctx)
 	// Attribute tick advances NPC needs (hunger/thirst/tiredness) when the
 	// wall-clock hour has rolled. No-op on most ticks (cheap setting read +
 	// integer compare); single batch UPDATE on the boundary.
