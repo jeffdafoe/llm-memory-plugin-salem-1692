@@ -362,20 +362,37 @@ func (app *App) applyArrival(npcID string) {
 	// (scheduler-driven) NPC arrivals don't trigger ticks — only
 	// agent-on-agent. Cost guard inside triggerImmediateTick prevents
 	// tick storms.
+	//
+	// Also: any NPC arrival inside a structure (agent or scheduler-
+	// driven) gets a village_event row so the Village tab renders
+	// "Ezekiel arrived at the Blacksmith." regardless of whether the
+	// arrival cascaded into other ticks.
 	var arriverIsAgent bool
+	var displayName string
 	var insideID sql.NullString
 	if err := app.DB.QueryRow(ctx,
-		`SELECT inside_structure_id, llm_memory_agent IS NOT NULL FROM actor WHERE id = $1`,
+		`SELECT display_name, inside_structure_id, llm_memory_agent IS NOT NULL FROM actor WHERE id = $1`,
 		npcID,
-	).Scan(&insideID, &arriverIsAgent); err == nil && arriverIsAgent && insideID.Valid {
-		// Cascade origin (MEM-121): a fresh scene UUID for the
-		// arrival. Walks finish seconds-to-minutes of game time after
-		// the move_to that started them, so by the time we get here
-		// it's a new scene, not a continuation of whatever scene
-		// triggered the original move_to.
-		app.triggerCoLocatedTicks(ctx, insideID.String, npcID, "arrival", false, newUUIDv7(), npcID)
-		// Cascade origin — fire the chronicler alongside the reactor
-		// ticks. Once per arrival, not per in-cascade NPC reaction.
-		app.cascadeOriginFireChronicler("arrival", insideID.String)
+	).Scan(&displayName, &insideID, &arriverIsAgent); err == nil && insideID.Valid {
+		structName := app.lookupStructureName(ctx, insideID.String)
+		if structName == "" {
+			structName = "a building"
+		}
+		text := fmt.Sprintf("%s arrived at %s.", displayName, structName)
+		x, y := end.X, end.Y
+		app.recordVillageEvent(ctx, villageEventArrival, text, npcID, insideID.String, &x, &y)
+
+		if arriverIsAgent {
+			// Cascade origin (MEM-121): a fresh scene UUID for the
+			// arrival. Walks finish seconds-to-minutes of game time
+			// after the move_to that started them, so by the time
+			// we get here it's a new scene, not a continuation of
+			// whatever scene triggered the original move_to.
+			app.triggerCoLocatedTicks(ctx, insideID.String, npcID, "arrival", false, newUUIDv7(), npcID)
+			// Cascade origin — fire the chronicler alongside the
+			// reactor ticks. Once per arrival, not per in-cascade
+			// NPC reaction.
+			app.cascadeOriginFireChronicler("arrival", insideID.String)
+		}
 	}
 }

@@ -1212,19 +1212,23 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		// room being LEFT) so subscribers filtering by structure can show
 		// "Ezekiel left for home" in the place he just walked away from.
 		// kind="departure" lets clients render this as italic narration
-		// alongside speech and acts.
+		// alongside speech and acts. Also lands a village_event so the
+		// Village tab gets the same line — same text, broader scope.
 		if result == "ok" && r.InsideStructureID.Valid {
+			text := fmt.Sprintf("%s left for %s.", r.DisplayName, dest)
 			app.Hub.Broadcast(WorldEvent{
 				Type: "room_event",
 				Data: map[string]interface{}{
 					"actor_id":     r.ID,
 					"actor_name":   r.DisplayName,
 					"kind":         "departure",
-					"text":         fmt.Sprintf("%s left for %s.", r.DisplayName, dest),
+					"text":         text,
 					"structure_id": r.InsideStructureID.String,
 					"at":           time.Now().UTC().Format(time.RFC3339),
 				},
 			})
+			x, y := r.CurrentX, r.CurrentY
+			app.recordVillageEvent(ctx, villageEventDeparture, text, r.ID, r.InsideStructureID.String, &x, &y)
 		}
 
 	case "chore":
