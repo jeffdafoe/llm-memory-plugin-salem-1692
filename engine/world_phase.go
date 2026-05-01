@@ -60,11 +60,13 @@ type worldConfig struct {
 	Location         *time.Location
 	ZoomMinAdmin     float64
 	ZoomMinRegular   float64
-	// AgentTicksPaused, when true, suppresses the LLM agent-tick dispatcher
-	// (dispatchAgentTicks). Worker schedulers, social hours, lamplighter,
-	// and rotation continue running — only the agent loop is halted. Used
-	// to stop agent activity mid-session when a bad loop or misbehaving
-	// model is being investigated, without taking the whole engine down.
+	// AgentTicksPaused, when true, suppresses all LLM agent activity:
+	// reactive NPC ticks (triggerImmediateTick) AND chronicler fires
+	// (phase + cascade). Worker schedulers, social hours, lamplighter,
+	// and rotation continue running — only the LLM-driven loops are
+	// halted. Used to stop agent activity mid-session when a bad loop
+	// or misbehaving model is being investigated, without taking the
+	// whole engine down.
 	AgentTicksPaused bool
 }
 

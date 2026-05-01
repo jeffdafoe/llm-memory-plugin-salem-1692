@@ -54,21 +54,17 @@ func (app *App) runServerTickOnce(ctx context.Context) {
 	app.checkAndRotate(ctx)
 	// Refresh the agent slug → display_name map every server tick so
 	// the recall result formatter has fresh data even when other
-	// dispatchers short-circuit (paused, asleep, baseline disabled).
-	// Reactive ticks fire at any hour and need the map; cheap query.
+	// dispatchers short-circuit. Reactive ticks fire at any hour and
+	// need the map; cheap query.
 	app.refreshNPCDisplayNames(ctx)
-	// Chronicler runs next so any atmosphere or events it writes at the
-	// phase boundary land in world_environment / world_events before NPCs
-	// (or anything else this tick) build perceptions. Cheap when no
-	// boundary just crossed — single setting read + comparison.
+	// Chronicler runs first so any atmosphere or events it writes at the
+	// phase boundary land in world_environment / world_events before
+	// reactive NPC ticks build perceptions. Cheap when no boundary just
+	// crossed — single setting read + comparison. NPC ticks themselves
+	// are reactive-only and fire from cascade origins (PC speech, NPC
+	// arrival, heard-speech, chronicler dispatch) — there is no
+	// per-server-tick autonomous pass.
 	app.dispatchChroniclerPhase(ctx)
-	// Agent dispatch runs next among the per-NPC handlers. When an agent
-	// commits to a move, executeAgentMoveTo sets agent_override_until before
-	// returning, so the worker / rotation / social schedulers below see the
-	// override at load time and short-circuit (M6.1 short-circuits added in
-	// ZBBS-072). Order matters: if scheduled behaviors ran first, they could
-	// dispatch a worker walk that the agent then countermanded.
-	app.dispatchAgentTicks(ctx)
 	app.dispatchScheduledBehaviors(ctx)
 	app.dispatchSocialSchedules(ctx)
 	// Attribute tick advances NPC needs (hunger/thirst/tiredness) when the

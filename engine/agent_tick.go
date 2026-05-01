@@ -1,10 +1,11 @@
 package main
 
-// LLM-driven NPC agent tick dispatcher (Salem M6.3).
+// LLM-driven NPC agent tick harness (Salem M6.3).
 //
-// Runs every server tick (60s wall-clock). For each NPC with a linked
-// llm_memory_agent that hasn't been ticked this in-world hour and is in
-// the active 6am-9pm window, runs the harness loop:
+// NPC ticking is reactive-only — there is no autonomous baseline pass.
+// Cascade origins (PC speech, NPC arrival, heard-speech reactions,
+// chronicler dispatch) call triggerImmediateTick, which loads the one
+// affected NPC and runs the harness loop:
 //
 //   1. Build a minimal perception (location, time, scheduler default,
 //      list of named destinations).
@@ -18,22 +19,19 @@ package main
 //   5. Hard-cap iterations at agentTickBudget. Beyond that, force a "done"
 //      so the LLM can't burn budget thinking forever.
 //
-// Idempotency: last_agent_tick_at is stamped once per game-hour boundary
-// the dispatcher acts on. A server crash mid-tick leaves the stamp empty
-// for that hour and the next eligible tick re-fires. Same model the worker
-// scheduler uses.
+// Cost guard: triggerImmediateTick rejects re-entry within agentMinTickGap
+// (5 min) UNLESS force=true. PC-speak and heard-speech force=true; arrival
+// cascades and chronicler-dispatched scene openings respect the gap.
 //
 // Failure mode: if /agent/tick returns an error (rate-limit, cost-budget,
-// HTTP failure, malformed response), the dispatcher logs and returns
-// without stamping. The next server tick re-attempts. The NPC's existing
-// scheduler keeps running underneath unless agent_override_until is set,
-// so a hard outage on llm-memory-api degrades gracefully to scheduler-only.
+// HTTP failure, malformed response), the harness logs and returns without
+// stamping. The next event tick re-attempts. The NPC's existing scheduler
+// keeps running underneath unless agent_override_until is set, so a hard
+// outage on llm-memory-api degrades gracefully to scheduler-only.
 
 import (
 	"context"
-	"crypto/sha1"
 	"database/sql"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -46,9 +44,7 @@ import (
 )
 
 const (
-	agentTickBudget          = 6
-	agentTickActiveStartHour = 6
-	agentTickActiveEndHour   = 21 // exclusive — last active hour is 20:00-21:00
+	agentTickBudget = 6
 	// Top-K notes returned per recall. The API groups by (namespace,
 	// source_file) so each row is one note.
 	recallResultLimit = 5
@@ -56,27 +52,11 @@ const (
 	// The tool schema is just `string`, so a runaway model could otherwise
 	// dump kilobytes of text into the embedding pipeline.
 	recallQueryMaxChars = 500
-	// Per-NPC tick offset window. The dispatcher staggers each NPC's
-	// baseline tick within the game-hour using a deterministic hash of
-	// their UUID — Ezekiel might fire at hour+7min, John at hour+23min,
-	// etc. Spreads load on the LLM provider and avoids the artificial
-	// "everyone decides at the same instant" feel.
-	agentTickOffsetWindow = 3300 // seconds within an hour (55 min, leaves 5 min slack at end)
-	// Minimum gap between any two ticks for the same NPC, regardless of
-	// trigger source (baseline or event). Cost guard against tick storms
-	// when several NPCs co-locate and react to each other.
+	// Minimum gap between any two ticks for the same NPC. Cost guard against
+	// tick storms when several NPCs co-locate and react to each other's
+	// speech. Bypassed by force=true (PC-speak and heard-speech cascades).
 	agentMinTickGap = 5 * time.Minute
 )
-
-// npcTickOffsetSeconds returns the per-NPC tick offset within the
-// game-hour, deterministic from the NPC's UUID. SHA1 hash → first 4
-// bytes as uint32 → mod agentTickOffsetWindow. Stable across restarts
-// and migrations — no schema column needed.
-func npcTickOffsetSeconds(npcID string) int {
-	sum := sha1.Sum([]byte(npcID))
-	val := binary.BigEndian.Uint32(sum[:4])
-	return int(val % uint32(agentTickOffsetWindow))
-}
 
 // agentNPCRow bundles everything the harness loop needs for one NPC.
 //
@@ -110,145 +90,6 @@ type agentNPCRow struct {
 	Tiredness int
 }
 
-// dispatchAgentTicks is the per-server-tick entry. Loaded NPCs are processed
-// sequentially within this server tick — the harness loop blocks on HTTP, so
-// running all NPCs in parallel within one tick risks bursting the upstream
-// LLM provider. Sequential keeps things bounded and easier to reason about.
-//
-// Future co-location grouping (M6.5) will run NPCs at the same location in
-// sequential rounds so they can react to each other's speech.
-func (app *App) dispatchAgentTicks(ctx context.Context) {
-	cfg, err := app.loadWorldConfig(ctx)
-	if err != nil {
-		log.Printf("agent-tick: load config: %v", err)
-		return
-	}
-	// Admin kill switch — when world_agent_ticks_paused is set, suppress
-	// all agent-tick dispatch. Other schedulers (worker, social, lamplighter,
-	// rotation) continue running so the village still moves and we can
-	// observe deterministic behavior in isolation.
-	if cfg.AgentTicksPaused {
-		return
-	}
-	// Use world timezone — Salem's "game time" is the configured world
-	// timezone (America/New_York by default), not the server's UTC clock.
-	// Same pattern the worker scheduler uses.
-	now := time.Now().In(cfg.Location)
-	if now.Hour() < agentTickActiveStartHour || now.Hour() >= agentTickActiveEndHour {
-		// Outside active hours — skip entirely. Avoids burning budget while
-		// the village sleeps. Game-hour boundaries during the night will be
-		// resumed at the first eligible morning tick.
-		return
-	}
-
-	// Dawn/dusk in minutes-of-day for the schedule-note inheritance in
-	// buildAgentPerception. Same parse the worker scheduler does — a worker
-	// NPC with NULL schedule columns inherits this pair as their effective
-	// shift, so the perception should surface those values for the LLM.
-	dawnMin, duskMin := 6*60, 18*60
-	if dh, dm, err := parseHM(cfg.DawnTime); err == nil {
-		dawnMin = dh*60 + dm
-	}
-	if dh, dm, err := parseHM(cfg.DuskTime); err == nil {
-		duskMin = dh*60 + dm
-	}
-
-	rows, err := app.loadAgentNPCRows(ctx)
-	if err != nil {
-		log.Printf("agent-tick: load rows: %v", err)
-		return
-	}
-
-	// Day-one chronicler design: NPCs go reactive-only (no autonomous
-	// hourly baseline ticks). Reactive event-ticks (PC speech, NPC
-	// arrival, NPC speech inside a cascade) continue to fire through
-	// existing handlers. The npc_baseline_ticks_enabled setting is the
-	// kill switch / safety valve — if reactive-only feels too sparse,
-	// flip it on to restore the prior cadence.
-	baselineEnabled := app.loadSetting(ctx, "npc_baseline_ticks_enabled", "false") == "true"
-	if !baselineEnabled {
-		return
-	}
-
-	hourStart := time.Date(now.Year(), now.Month(), now.Day(), now.Hour(), 0, 0, 0, now.Location())
-	secondsIntoHour := int(now.Sub(hourStart).Seconds())
-	for i := range rows {
-		r := &rows[i]
-		// Skip NPCs already ticked this hour. Stamp uses hourStart so we don't
-		// double-fire when the dispatcher runs multiple times per hour.
-		if r.LastAgentTickAt.Valid && !r.LastAgentTickAt.Time.Before(hourStart) {
-			continue
-		}
-		// Staggered cadence: each NPC has a deterministic offset within the
-		// hour. They tick when wall-clock time crosses (hourStart + offset),
-		// not at the boundary itself. Spreads load and avoids
-		// everyone-decides-at-noon synchronization. The first server tick
-		// of any hour where wall-clock has already passed offset will catch
-		// up — no cumulative drift.
-		if secondsIntoHour < npcTickOffsetSeconds(r.ID) {
-			continue
-		}
-		// Baseline hourly ticks are their own one-NPC scenes — they
-		// aren't part of a speech/arrival cascade. If the NPC speaks
-		// during the tick, the speak commit will fan out via
-		// triggerCoLocatedTicks with the SAME sceneID and the scene
-		// naturally grows; if not, the scene is just this NPC's
-		// perception + tool calls + terminal commit.
-		app.runAgentTick(ctx, r, hourStart, dawnMin, duskMin, newUUIDv7())
-	}
-}
-
-// loadAgentNPCRows pulls every NPC with a linked virtual agent + a configured
-// API key. NPCs without a VA aren't agentized and run on the existing
-// scheduler only.
-//
-// LEFT JOINs to village_object/asset for work and home resolve the NPC's
-// thematic labels in one round trip. COALESCE(o.display_name, a.name)
-// matches the destination-list and move_to resolver so the model sees one
-// consistent name for each place across the perception.
-func (app *App) loadAgentNPCRows(ctx context.Context) ([]agentNPCRow, error) {
-	rows, err := app.DB.Query(ctx,
-		`SELECT n.id, n.display_name, n.llm_memory_agent,
-		        n.llm_memory_api_key,
-		        n.role,
-		        n.inside_structure_id, n.current_x, n.current_y,
-		        n.home_structure_id, n.work_structure_id,
-		        n.last_agent_tick_at,
-		        n.schedule_start_minute, n.schedule_end_minute,
-		        COALESCE(wo.display_name, wa.name) AS work_label,
-		        COALESCE(ho.display_name, ha.name) AS home_label,
-		        n.coins, n.hunger, n.thirst, n.tiredness
-		 FROM actor n
-		 LEFT JOIN village_object wo ON wo.id = n.work_structure_id
-		 LEFT JOIN asset wa ON wa.id = wo.asset_id
-		 LEFT JOIN village_object ho ON ho.id = n.home_structure_id
-		 LEFT JOIN asset ha ON ha.id = ho.asset_id
-		 WHERE n.llm_memory_agent IS NOT NULL`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var out []agentNPCRow
-	for rows.Next() {
-		var r agentNPCRow
-		if err := rows.Scan(&r.ID, &r.DisplayName, &r.LLMMemoryAgent,
-			&r.APIKey,
-			&r.Role,
-			&r.InsideStructureID, &r.CurrentX, &r.CurrentY,
-			&r.HomeStructureID, &r.WorkStructureID,
-			&r.LastAgentTickAt,
-			&r.ScheduleStartMinute, &r.ScheduleEndMinute,
-			&r.WorkLabel, &r.HomeLabel,
-		&r.Coins, &r.Hunger, &r.Thirst, &r.Tiredness); err != nil {
-			log.Printf("agent-tick: scan: %v", err)
-			continue
-		}
-		out = append(out, r)
-	}
-	return out, nil
-}
-
 // runAgentTick is the harness loop for one NPC. Stamps last_agent_tick_at
 // twice: once at the start (to close the cost-guard race window — see
 // below) and once at the end (refresh, so a partial failure doesn't burn
@@ -278,18 +119,19 @@ func (app *App) loadAgentNPCRows(ctx context.Context) ([]agentNPCRow, error) {
 // past [0] is dropped and the model gets another iteration.
 //
 // sceneID (MEM-121) is the cascade UUID this tick belongs to. Minted at
-// the cascade origin (PC speak / NPC arrival / baseline tick) and
+// the cascade origin (PC speak / NPC arrival / chronicler dispatch) and
 // inherited unchanged by every reactive tick the cascade fires off. It
 // rides on every sendChat the harness emits and is passed forward into
 // executeAgentCommit, which forwards into triggerCoLocatedTicks for the
 // speak case so nested speech reactions stay in the same scene.
 func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time.Time, dawnMin, duskMin int, sceneID string) {
-	app.stampAgentTick(ctx, r, hourStart)
-	// Defensive — every sim tick should have a sceneID. The three
-	// minting points (baseline dispatcher, PC-speak handler, arrival
-	// hook) all pass newUUIDv7(). An empty value here means a future
-	// call site forgot to mint or newUUIDv7 returned empty; the API
-	// would silently accept the row with NULL scene_id and we'd lose
+	app.stampAgentTick(ctx, r)
+	// Defensive — every sim tick should have a sceneID. Cascade origins
+	// (PC-speak handler, arrival hook, heard-speech, chronicler dispatch)
+	// all pass newUUIDv7() or an inherited cascade ID. An empty value
+	// here means a future call site forgot to mint or newUUIDv7 returned
+	// empty; the API would silently accept the row with NULL scene_id
+	// and we'd lose
 	// grouping with no obvious signal. Log so the bug is visible
 	// without auto-minting (which would split a cascade into a fresh
 	// scene mid-flight and hide the upstream issue).
@@ -434,21 +276,13 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 	}
 
 	_, _ = app.executeAgentCommit(ctx, r, commitCall, sceneID)
-	app.stampAgentTick(ctx, r, hourStart)
+	app.stampAgentTick(ctx, r)
 }
 
-// stampAgentTick records that we've ticked this NPC. Stamps to
-// time.Now() (NOT hourStart) so the agentMinTickGap cost guard
-// reads an accurate elapsed time. The baseline-gate check
-// (`!last.Before(hourStart)` in dispatchAgentTicks) still works:
-// any time.Now() within the current hour is >= hourStart.
-//
-// Earlier versions stamped to hourStart, which made the cost guard
-// useless — `time.Since(hourStart)` was always near the full hour,
-// so event-tick triggers cascaded freely. Tick storms ensued when
-// two co-located agents reacted to each other's speech.
-func (app *App) stampAgentTick(ctx context.Context, r *agentNPCRow, hourStart time.Time) {
-	_ = hourStart // kept for signature stability; baseline gate uses Before()
+// stampAgentTick records that we've ticked this NPC. Stamps to time.Now()
+// so the agentMinTickGap cost guard reads an accurate elapsed time when
+// triggerImmediateTick checks last_agent_tick_at on subsequent events.
+func (app *App) stampAgentTick(ctx context.Context, r *agentNPCRow) {
 	if _, err := app.DB.Exec(ctx,
 		`UPDATE actor SET last_agent_tick_at = $2 WHERE id = $1`,
 		r.ID, time.Now(),
@@ -457,22 +291,20 @@ func (app *App) stampAgentTick(ctx context.Context, r *agentNPCRow, hourStart ti
 	}
 }
 
-// triggerImmediateTick fires an out-of-band agent tick for one NPC in
-// response to an event (someone speaks at their location, they arrive
-// somewhere with another agent present, etc.). Bypasses the per-NPC
-// hour-offset gate.
+// triggerImmediateTick fires an agent tick for one NPC in response to a
+// cascade origin (PC speech at their location, NPC arrival, heard-speech
+// reaction, chronicler dispatch). This is the only path NPCs tick on —
+// there is no autonomous baseline pass.
 //
 // Cost guard: when force=false, respects agentMinTickGap so an NPC
 // can't be tick-stormed by a chain of NPC-to-NPC reactions. When
-// force=true (PC-initiated triggers), the guard is bypassed — PCs
-// type at human pace so the storm risk is bounded by a real person's
-// speed, and we WANT every NPC in the room to potentially react to
-// the player's words.
+// force=true (PC-initiated triggers and heard-speech cascades), the
+// guard is bypassed — PCs type at human pace so the storm risk is
+// bounded by a real person's speed, and we WANT every NPC in the room
+// to potentially react to the player's words.
 //
-// Reuses the same dawn/dusk inheritance as the dispatcher by re-loading
-// world config on the spot — event ticks are rare relative to baseline
-// ticks, so the extra query is fine. Active-hours guard still applies:
-// no event ticks while the village sleeps.
+// Loads world config on the spot for dawn/dusk inheritance — event ticks
+// are rare enough that the extra query is fine.
 //
 // Safe to call from goroutines (the engine's async paths). Failures are
 // logged and don't propagate — event ticks are best-effort.
@@ -506,19 +338,9 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, 
 		log.Printf("event-tick %s (%s): load config: %v", npcID, reason, err)
 		return
 	}
-	// NOTE: event ticks are NOT gated by agentTickActive(Start|End)Hour.
-	// Those constants gate the BASELINE dispatcher (autonomous hourly
-	// ticks) so NPCs don't burn budget acting on their own at 4am while
-	// the village sleeps. Event ticks are triggered by something
-	// happening — a PC speaking, an NPC arriving, an NPC's speech being
-	// heard — so by definition the world is active. Gating them by the
-	// clock produced silent missed reactions: a PC speaking at 21:00 EDT
-	// at the tavern got no NPC response because Hour()==21==EndHour
-	// silently returned. The tavernkeeper at 9pm should not go silent
-	// just because the autonomous-tick window closed.
 	now := time.Now().In(cfg.Location)
 
-	// Load the single NPC row. Mirrors loadAgentNPCRows but for one id.
+	// Load the single NPC row.
 	row := app.DB.QueryRow(ctx,
 		`SELECT n.id, n.display_name, n.llm_memory_agent,
 		        n.llm_memory_api_key,
@@ -564,8 +386,7 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, 
 		return
 	}
 
-	// Dawn/dusk for the schedule-note inheritance — same parse path the
-	// dispatcher uses.
+	// Dawn/dusk for the schedule-note inheritance the perception surfaces.
 	dawnMin, duskMin := 6*60, 18*60
 	if dh, dm, err := parseHM(cfg.DawnTime); err == nil {
 		dawnMin = dh*60 + dm
@@ -574,10 +395,9 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, 
 		duskMin = dh*60 + dm
 	}
 
-	// Event-tick stamp uses time.Now (not hourStart) so the cost guard
-	// reads the actual moment of the event, and the baseline gate
-	// (last_agent_tick_at < hourStart) STILL passes for the next hour
-	// boundary — event ticks don't cancel the next hour's baseline.
+	// hourStart is the current-hour wall-clock boundary the perception
+	// uses to format "you would currently be on shift" / time-of-day
+	// signals for the model. Computed once per tick from cfg.Location.
 	hourStart := time.Date(now.Year(), now.Month(), now.Day(), now.Hour(), 0, 0, 0, now.Location())
 	log.Printf("event-tick %s: %s", r.DisplayName, reason)
 	app.runAgentTick(ctx, &r, hourStart, dawnMin, duskMin, sceneID)
