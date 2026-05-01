@@ -28,8 +28,45 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"log"
 )
+
+// emitEnterHuddleAudit writes a row into agent_action_log with
+// action_type='enter_huddle' and the new huddle_id stamped. ZBBS-094:
+// the sim-conversation distiller's loadDayEvents discovers an actor's
+// huddle membership for the day from huddle_id stamps on their own
+// audit rows. Without this presence marker, an actor who joins a huddle
+// and sits silently (no speak/act/chore that hour) leaves no row in
+// the huddle, and the cross-actor pull misses other speakers' lines
+// while they were present.
+//
+// speaker_name is sourced via subquery on the actor row so this works
+// for both NPCs (display_name) and PCs (display_name set in setup).
+// Best-effort — failure here is logged but doesn't unwind the join.
+// The narrative side (api distiller) maps action_type='enter_huddle'
+// to null so this row drives membership only and doesn't produce a
+// transcript line.
+func (app *App) emitEnterHuddleAudit(ctx context.Context, actorID, huddleID, structureID string) {
+	payload, err := json.Marshal(map[string]interface{}{
+		"structure_id": structureID,
+	})
+	if err != nil {
+		log.Printf("scene-huddle: marshal enter_huddle payload for %s: %v", actorID, err)
+		return
+	}
+	if _, err := app.DB.Exec(ctx,
+		`INSERT INTO agent_action_log
+		    (actor_id, speaker_name, source, action_type, payload, result, error, huddle_id)
+		 SELECT $1, COALESCE(display_name, ''), 'engine', 'enter_huddle',
+		        $2::jsonb, 'ok', NULL, $3::uuid
+		   FROM actor
+		  WHERE id = $1`,
+		actorID, payload, huddleID,
+	); err != nil {
+		log.Printf("scene-huddle: emit enter_huddle audit for %s: %v", actorID, err)
+	}
+}
 
 // joinOrCreateHuddle places the NPC into the active huddle for the
 // given structure, creating one if none exists. Updates npc.current
@@ -104,6 +141,8 @@ func (app *App) joinOrCreateHuddle(ctx context.Context, npcID, structureID strin
 	); err != nil {
 		log.Printf("scene-huddle: record reverse acquaintance for %s: %v", npcID, err)
 	}
+
+	app.emitEnterHuddleAudit(ctx, npcID, huddleID, structureID)
 
 	return huddleID, nil
 }
@@ -216,6 +255,18 @@ func (app *App) joinOrCreateHuddleForPC(ctx context.Context, actorName, structur
 		huddleID, actorName,
 	); err != nil {
 		log.Printf("scene-huddle: record PC->NPC acquaintance: %v", err)
+	}
+
+	// ZBBS-094 presence audit row — see emitEnterHuddleAudit comment.
+	// Resolve login_username → actor.id for the helper. Best-effort.
+	var actorID string
+	if err := app.DB.QueryRow(ctx,
+		`SELECT id::text FROM actor WHERE login_username = $1`,
+		actorName,
+	).Scan(&actorID); err == nil {
+		app.emitEnterHuddleAudit(ctx, actorID, huddleID, structureID)
+	} else if err != sql.ErrNoRows {
+		log.Printf("scene-huddle: resolve PC actor_id for %s: %v", actorName, err)
 	}
 
 	return huddleID, nil

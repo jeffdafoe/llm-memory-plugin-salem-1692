@@ -284,8 +284,9 @@ func (app *App) applyObjectRefreshAtArrival(ctx context.Context, actorID string,
 	}
 
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO agent_action_log (actor_id, speaker_name, source, action_type, payload, result, error)
-		 VALUES ($1, $2, 'engine', 'object_refresh', $3, 'ok', NULL)`,
+		`INSERT INTO agent_action_log (actor_id, speaker_name, source, action_type, payload, result, error, huddle_id)
+		 VALUES ($1, $2, 'engine', 'object_refresh', $3, 'ok', NULL,
+		         (SELECT current_huddle_id FROM actor WHERE id = $1))`,
 		actorID, displayName, payloadJSON,
 	); err != nil {
 		return hits, fmt.Errorf("audit insert: %w", err)
