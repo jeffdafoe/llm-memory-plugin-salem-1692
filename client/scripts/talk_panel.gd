@@ -402,9 +402,8 @@ func _load_village_log_backload() -> void:
         return
     if http_village_log == null:
         return
-    var url: String = Auth.api_base + "/api/village/log/recent"
-    var headers: PackedStringArray = ["Content-Type: application/json"]
-    headers.append(Auth.get_auth_header())
+    var url: String = _api_url("/api/village/log/recent")
+    var headers: PackedStringArray = _auth_headers()
     var body := JSON.stringify({"limit": 50})
     village_log_loading = true
     var err := http_village_log.request(url, headers, HTTPClient.METHOD_POST, body)
