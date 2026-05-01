@@ -41,8 +41,8 @@ import (
 
 // consumptionDelta describes how much each need should change. Negative
 // values reduce, positive values increase. Zero leaves the need alone.
-// The UPDATE clamps the result into [0, attributeMax]. Callers that want
-// "fully zero this need" pass -attributeMax (the clamp handles overflow).
+// The UPDATE clamps the result into [0, needMax]. Callers that want
+// "fully zero this need" pass -needMax (the clamp handles overflow).
 type consumptionDelta struct {
 	Hunger    int
 	Thirst    int
@@ -63,7 +63,7 @@ type needCross struct {
 // crossings that fired. Returned by applyConsumption so callers (in
 // particular handleResetNPCNeeds) can render the actual persisted
 // values instead of assuming what the clamp produced — guards against
-// drift if attributeMax or DB constraints change.
+// drift if needMax or DB constraints change.
 type consumptionResult struct {
 	Hunger    int
 	Thirst    int
@@ -80,7 +80,7 @@ type consumptionResult struct {
 // callers (a chore tool finishing at the same time as an admin reset)
 // serialize on the same row rather than racing.
 //
-// On success: the actor's needs are clamped into [0, attributeMax] and a
+// On success: the actor's needs are clamped into [0, needMax] and a
 // needs_resolved event is enqueued on app.ChroniclerDispatchQueue if any
 // red-threshold crossings occurred AND the actor is an agent NPC. The
 // chronicler dispatch is meaningless for decorative NPCs (no llm_memory_
@@ -104,7 +104,7 @@ func (app *App) applyConsumption(ctx context.Context, tx pgx.Tx, actorID string,
 	}
 
 	// 2. Compute clamped new values in code so we can detect crossings
-	// without a second read. Clamp into [0, attributeMax] in both
+	// without a second read. Clamp into [0, needMax] in both
 	// directions — positive deltas (a future "make them hungrier" admin
 	// tool) get the same protection.
 	newH := clampNeed(oldH + delta.Hunger)
@@ -180,7 +180,7 @@ func (app *App) applyConsumption(ctx context.Context, tx pgx.Tx, actorID string,
 	return result, nil
 }
 
-// clampNeed bounds a need value into the [0, attributeMax] band that the
+// clampNeed bounds a need value into the [0, needMax] band that the
 // SQL CHECK and the LEAST/GREATEST clamps elsewhere already enforce.
 // Centralized here so the consumption path matches the attribute-tick
 // path's invariants by construction.
@@ -188,8 +188,8 @@ func clampNeed(v int) int {
 	if v < 0 {
 		return 0
 	}
-	if v > attributeMax {
-		return attributeMax
+	if v > needMax {
+		return needMax
 	}
 	return v
 }

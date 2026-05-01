@@ -188,6 +188,10 @@ type workerRow struct {
 // loadWorkerRows selects every worker NPC with both home and work
 // structures assigned. NPCs missing either are silently excluded — they
 // can't walk a shift until an admin fills them in.
+//
+// As of ZBBS-097 the worker filter reads actor_attribute (the worker
+// attribute_definition was added in the same migration). The legacy
+// actor.behavior = 'worker' column is no longer consulted here.
 func (app *App) loadWorkerRows(ctx context.Context) ([]workerRow, error) {
 	rows, err := app.DB.Query(ctx,
 		`SELECT n.id, n.schedule_start_minute, n.schedule_end_minute,
@@ -205,11 +209,12 @@ func (app *App) loadWorkerRows(ctx context.Context) ([]workerRow, error) {
 		        COALESCE(hs.display_name, ha.name, ''),
 		        COALESCE(ws.display_name, wa.name, '')
 		 FROM actor n
+		 JOIN actor_attribute aa ON aa.actor_id = n.id
 		 JOIN village_object hs ON hs.id = n.home_structure_id
 		 JOIN asset ha         ON ha.id = hs.asset_id
 		 JOIN village_object ws ON ws.id = n.work_structure_id
 		 JOIN asset wa         ON wa.id = ws.asset_id
-		 WHERE n.behavior = $1`,
+		 WHERE aa.slug = $1`,
 		behaviorWorker,
 	)
 	if err != nil {
@@ -473,13 +478,18 @@ type rotationRow struct {
 // schedule_all_or_none guarantees these are only set in the complete
 // all-three shape.
 func (app *App) loadCustomScheduledRotationNPCs(ctx context.Context) ([]rotationRow, error) {
+	// ZBBS-096: rotation NPCs are now identified by attribute slug via
+	// actor_attribute, not by the legacy actor.behavior column. The
+	// schedule fields themselves stay on actor — they're per-actor
+	// overrides, not role-shape data.
 	rows, err := app.DB.Query(ctx,
-		`SELECT id, behavior, schedule_interval_hours, active_start_hour,
-		        active_end_hour, lateness_window_minutes, last_shift_tick_at,
-		        agent_override_until
-		 FROM actor
-		 WHERE behavior IN ($1, $2)
-		   AND schedule_interval_hours IS NOT NULL`,
+		`SELECT n.id, aa.slug, n.schedule_interval_hours, n.active_start_hour,
+		        n.active_end_hour, n.lateness_window_minutes, n.last_shift_tick_at,
+		        n.agent_override_until
+		 FROM actor n
+		 JOIN actor_attribute aa ON aa.actor_id = n.id
+		 WHERE aa.slug IN ($1, $2)
+		   AND n.schedule_interval_hours IS NOT NULL`,
 		behaviorWasherwoman, behaviorTownCrier,
 	)
 	if err != nil {
