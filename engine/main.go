@@ -97,6 +97,13 @@ type App struct {
 	// entries (>30 min) are evicted by a periodic cleanup goroutine.
 	SceneTickedActors   map[string]sceneTickEntry
 	SceneTickedActorsMu sync.Mutex
+
+	// ChroniclerDispatchQueue buffers agent-NPC shift boundary events
+	// between the worker scheduler (enqueue site) and the chronicler
+	// (drain site). Drained at perception build time so any chronicler
+	// fire — phase, cascade, or the dedicated shift-boundary dispatcher
+	// — picks up pending events. See dispatch_queue.go for semantics.
+	ChroniclerDispatchQueue *chroniclerDispatchQueue
 }
 
 // sceneTickEntry is the per-(scene, actor) dedup record.
@@ -233,6 +240,10 @@ func main() {
 		// Per-(sceneID, actorID) dedup map. See SceneTickedActors comment
 		// on the App struct for the why.
 		SceneTickedActors: make(map[string]sceneTickEntry),
+		// Queue for agent-NPC shift boundary events (chronicler-dispatch
+		// redesign). Empty at startup; populated by the worker scheduler
+		// and drained by chronicler fires.
+		ChroniclerDispatchQueue: newChroniclerDispatchQueue(),
 	}
 	// Prime the display-name map so reactive ticks before the first
 	// server-tick refresh have data. Cheap; bounded by NPC count.

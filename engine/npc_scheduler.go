@@ -2,6 +2,19 @@ package main
 
 // Per-NPC scheduled behavior evaluation.
 //
+// As of the chronicler-dispatch redesign (2026-05-01): when the worker
+// branch matches an agent-driven NPC (llm_memory_agent IS NOT NULL), this
+// scheduler does NOT walk them. Instead, evaluateWorkerSchedule enqueues
+// a shift_start / shift_end event on app.ChroniclerDispatchQueue; the
+// chronicler picks it up on its next fire and decides whether to attend
+// the NPC, who then decides for themselves whether to walk to/from work.
+// The boundary is still stamped (last_shift_tick_at) on the agent branch
+// so we don't re-enqueue every tick.
+//
+// Decorative NPCs (NULL llm_memory_agent) continue to use the legacy walk
+// path unchanged. Both branches share the same boundary detection +
+// stamping logic above the agent-vs-decorative split.
+//
 // Runs every server tick (via runServerTickOnce) and walks every NPC whose
 // behavior opts into per-NPC scheduling:
 //
@@ -39,6 +52,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/binary"
+	"fmt"
 	"hash/fnv"
 	"log"
 	"time"
@@ -153,6 +167,22 @@ type workerRow struct {
 	// Agent override (ZBBS-072, M6.1). Valid && in the future = an LLM
 	// agent owns the NPC for this window; the scheduler steps aside.
 	AgentOverrideUntil sql.NullTime
+
+	// LlmMemoryAgent identifies an LLM-driven NPC. When non-NULL,
+	// evaluateWorkerSchedule routes shift boundaries to the chronicler
+	// dispatch queue instead of walking the NPC. The override-aside
+	// above is no longer load-bearing for these NPCs (no walks happen),
+	// but stays as defense in case of operator config changes. Decorative
+	// NPCs (NULL) keep the legacy walk path.
+	LlmMemoryAgent sql.NullString
+
+	// DisplayName / WorkPlaceName / HomePlaceName are surfaced to the
+	// chronicler perception when an agent NPC's shift boundary is
+	// enqueued. Pre-resolved here in the scheduler load so the perception
+	// render is a pure formatting step at fire time.
+	DisplayName    string
+	HomePlaceName  string
+	WorkPlaceName  string
 }
 
 // loadWorkerRows selects every worker NPC with both home and work
@@ -170,7 +200,10 @@ func (app *App) loadWorkerRows(ctx context.Context) ([]workerRow, error) {
 		        COALESCE(ws.x + wa.door_offset_x * 32.0, ws.x),
 		        COALESCE(ws.y + wa.door_offset_y * 32.0, ws.y),
 		        n.social_tag, n.social_start_minute, n.social_end_minute,
-		        n.agent_override_until
+		        n.agent_override_until,
+		        n.llm_memory_agent, n.display_name,
+		        COALESCE(hs.display_name, ha.name, ''),
+		        COALESCE(ws.display_name, wa.name, '')
 		 FROM actor n
 		 JOIN village_object hs ON hs.id = n.home_structure_id
 		 JOIN asset ha         ON ha.id = hs.asset_id
@@ -193,7 +226,9 @@ func (app *App) loadWorkerRows(ctx context.Context) ([]workerRow, error) {
 			&w.HomeStructureID, &w.HomeDoorX, &w.HomeDoorY,
 			&w.WorkStructureID, &w.WorkDoorX, &w.WorkDoorY,
 			&w.SocialTag, &w.SocialStartMinute, &w.SocialEndMinute,
-			&w.AgentOverrideUntil); err != nil {
+			&w.AgentOverrideUntil,
+			&w.LlmMemoryAgent, &w.DisplayName,
+			&w.HomePlaceName, &w.WorkPlaceName); err != nil {
 			log.Printf("scheduler: scan worker row: %v", err)
 			continue
 		}
@@ -334,6 +369,46 @@ func (app *App) evaluateWorkerSchedule(ctx context.Context, w *workerRow, now ti
 		}
 	}
 
+	// Agent-NPC branch (chronicler-dispatch redesign): instead of walking
+	// the NPC bodily, enqueue a shift_start / shift_end event for the
+	// chronicler. The chronicler's next perception surfaces the boundary
+	// and the chronicler decides whether to attend the NPC, who then
+	// decides for themselves whether to walk to/from work. Decorative
+	// NPCs (NULL llm_memory_agent) fall through to the legacy walk path
+	// below. Stamp the boundary either way so we don't re-evaluate every
+	// tick — the dispatch is a one-shot per boundary.
+	if w.LlmMemoryAgent.Valid {
+		eventType := dispatchShiftStart
+		if kind == workerLeave {
+			eventType = dispatchShiftEnd
+		}
+		// Resolve current_place for the perception. Inside a structure -> its
+		// label; outdoors -> "the open village" matches the NPC tick wording.
+		currentPlace := "the open village"
+		if w.InsideStructureID.Valid {
+			currentPlace = app.lookupStructureName(ctx, w.InsideStructureID.String)
+			if currentPlace == "" {
+				currentPlace = "the open village"
+			}
+		}
+		startMinResolved, endMinResolved := resolveWorkerWindow(w, dawnMin, duskMin)
+		app.ChroniclerDispatchQueue.enqueue(eventType, boundaryAt, chroniclerDispatchAgent{
+			ID:           w.ID,
+			DisplayName:  w.DisplayName,
+			CurrentPlace: currentPlace,
+			WorkPlace:    w.WorkPlaceName,
+			ShiftStart:   formatMinuteOfDay(startMinResolved),
+			ShiftEnd:     formatMinuteOfDay(endMinResolved),
+		})
+		if _, err := app.DB.Exec(ctx,
+			`UPDATE actor SET last_shift_tick_at = $2 WHERE id = $1`,
+			w.ID, boundaryAt,
+		); err != nil {
+			log.Printf("scheduler: stamp (agent-dispatch) %s: %v", w.ID, err)
+		}
+		return
+	}
+
 	var targetStructureID string
 	var destX, destY float64
 	label := "worker-arrive"
@@ -363,6 +438,19 @@ func (app *App) evaluateWorkerSchedule(ctx context.Context, w *workerRow, now ti
 	); err != nil {
 		log.Printf("scheduler: stamp %s: %v", w.ID, err)
 	}
+}
+
+// formatMinuteOfDay renders a minute-of-day integer as "HH:MM" for the
+// chronicler perception. Used so the chronicler sees the same shift
+// window text the NPCs see in their own perception.
+//
+// Defensive normalization: clamps to [0, 1440) so a misconfigured
+// schedule (1440, negative, beyond one day) renders as a valid clock
+// time rather than "24:00" or "-1:-30" — perception is LLM input and
+// invalid times confuse shift interpretation.
+func formatMinuteOfDay(m int) string {
+	m = ((m % 1440) + 1440) % 1440
+	return fmt.Sprintf("%02d:%02d", m/60, m%60)
 }
 
 // rotationRow is a washerwoman or town_crier with a fully-configured
