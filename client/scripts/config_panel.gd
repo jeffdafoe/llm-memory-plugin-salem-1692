@@ -365,7 +365,7 @@ func fetch_state() -> void:
     http.accept_gzip = false
     add_child(http)
     http.request_completed.connect(_on_state_response.bind(http))
-    var headers = ["Authorization: " + Auth.get_auth_header()]
+    var headers := Auth.auth_headers(false)
     http.request(Auth.api_base + "/api/village/world", headers)
 
 func _on_state_response(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest) -> void:
@@ -445,10 +445,7 @@ func _send_zoom_save() -> void:
             _set_status("Zoom save failed (" + str(c) + ")", true)
         Auth.check_response(c)
     )
-    var headers = [
-        "Content-Type: application/json",
-        "Authorization: " + Auth.get_auth_header(),
-    ]
+    var headers := Auth.auth_headers()
     http.request(Auth.api_base + "/api/village/world/zoom-settings",
         headers, HTTPClient.METHOD_POST, payload)
 
@@ -524,10 +521,7 @@ func _send_force(phase: String) -> void:
     http.accept_gzip = false
     add_child(http)
     http.request_completed.connect(_on_force_response.bind(http, phase))
-    var headers = [
-        "Authorization: " + Auth.get_auth_header(),
-        "Content-Type: application/json",
-    ]
+    var headers := Auth.auth_headers()
     var payload = JSON.stringify({"phase": phase})
     http.request(Auth.api_base + "/api/village/world/force-phase", headers, HTTPClient.METHOD_POST, payload)
     _set_status("Forcing " + phase + "...", false)
@@ -562,10 +556,7 @@ func _send_force_rotate() -> void:
     http.accept_gzip = false
     add_child(http)
     http.request_completed.connect(_on_force_rotate_response.bind(http))
-    var headers = [
-        "Authorization: " + Auth.get_auth_header(),
-        "Content-Type: application/json",
-    ]
+    var headers := Auth.auth_headers()
     http.request(Auth.api_base + "/api/village/world/force-rotate", headers, HTTPClient.METHOD_POST, "{}")
     _set_status("Forcing rotation...", false)
 
@@ -618,9 +609,6 @@ func _on_agent_ticks_toggled(pressed: bool) -> void:
                 _agent_ticks_paused_check.set_pressed_no_signal(_agent_ticks_paused)
         Auth.check_response(c)
     )
-    var headers = [
-        "Content-Type: application/json",
-        "Authorization: " + Auth.get_auth_header(),
-    ]
+    var headers := Auth.auth_headers()
     http.request(Auth.api_base + "/api/village/world/agent-ticks",
         headers, HTTPClient.METHOD_POST, payload)

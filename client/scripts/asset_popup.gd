@@ -540,10 +540,7 @@ func _post_tag(tag: String) -> void:
     http.accept_gzip = false
     add_child(http)
     http.request_completed.connect(_on_tag_mutate_complete.bind(http))
-    var headers: PackedStringArray = ["Content-Type: application/json"]
-    var auth_header: String = Auth.get_auth_header()
-    if auth_header != "":
-        headers.append("Authorization: " + auth_header)
+    var headers: PackedStringArray = Auth.auth_headers()
     var url: String = Auth.api_base + "/api/assets/" + _tag_editor_asset_id + "/states/" + _tag_editor_selected_state + "/tags"
     var body: String = JSON.stringify({"tag": tag})
     var err = http.request(url, headers, HTTPClient.METHOD_POST, body)
@@ -556,10 +553,7 @@ func _delete_tag(tag: String) -> void:
     http.accept_gzip = false
     add_child(http)
     http.request_completed.connect(_on_tag_mutate_complete.bind(http))
-    var headers: PackedStringArray = []
-    var auth_header: String = Auth.get_auth_header()
-    if auth_header != "":
-        headers.append("Authorization: " + auth_header)
+    var headers: PackedStringArray = Auth.auth_headers(false)
     var url: String = Auth.api_base + "/api/assets/" + _tag_editor_asset_id + "/states/" + _tag_editor_selected_state + "/tags/" + tag
     var err = http.request(url, headers, HTTPClient.METHOD_DELETE)
     if err != OK:

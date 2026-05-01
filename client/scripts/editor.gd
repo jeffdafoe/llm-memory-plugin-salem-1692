@@ -644,10 +644,7 @@ func _place_npc_at_mouse(screen_pos: Vector2) -> void:
         http.queue_free()
         Auth.check_response(c)
     )
-    var headers := ["Content-Type: application/json"]
-    var auth_header: String = Auth.get_auth_header()
-    if auth_header != "":
-        headers.append("Authorization: " + auth_header)
+    var headers := Auth.auth_headers()
     http.request(Auth.api_base + "/api/village/npcs", headers,
         HTTPClient.METHOD_POST, payload)
     set_mode(Mode.SELECT)
@@ -866,10 +863,7 @@ func _walk_selected_npc(screen_pos: Vector2) -> void:
         Auth.check_response(c)
     )
     var payload = JSON.stringify({"x": target.x, "y": target.y})
-    var headers := ["Content-Type: application/json"]
-    var auth_header: String = Auth.get_auth_header()
-    if auth_header != "":
-        headers.append("Authorization: " + auth_header)
+    var headers := Auth.auth_headers()
     http.request(Auth.api_base + "/api/village/npcs/" + npc_id + "/walk-to",
         headers, HTTPClient.METHOD_POST, payload)
 
@@ -1042,10 +1036,7 @@ func _commit_footprint_resize() -> void:
     var http = HTTPRequest.new()
     http.accept_gzip = false
     add_child(http)
-    var headers := ["Content-Type: application/json"]
-    var auth_header: String = Auth.get_auth_header()
-    if auth_header != "":
-        headers.append("Authorization: " + auth_header)
+    var headers := Auth.auth_headers()
     http.request_completed.connect(func(_r, c, _h, _b):
         http.queue_free()
         Auth.check_response(c)
@@ -1241,10 +1232,7 @@ func _commit_door_drag() -> void:
         http.queue_free()
         Auth.check_response(c)
     )
-    var headers := ["Content-Type: application/json"]
-    var auth_header: String = Auth.get_auth_header()
-    if auth_header != "":
-        headers.append("Authorization: " + auth_header)
+    var headers := Auth.auth_headers()
     http.request(Auth.api_base + "/api/assets/" + asset_id + "/door",
         headers, HTTPClient.METHOD_PATCH, payload)
 
@@ -1386,10 +1374,7 @@ func _commit_stand_drag() -> void:
         http.queue_free()
         Auth.check_response(c)
     )
-    var headers := ["Content-Type: application/json"]
-    var auth_header: String = Auth.get_auth_header()
-    if auth_header != "":
-        headers.append("Authorization: " + auth_header)
+    var headers := Auth.auth_headers()
     http.request(Auth.api_base + "/api/assets/" + asset_id + "/stand",
         headers, HTTPClient.METHOD_PATCH, payload)
 
@@ -1666,10 +1651,7 @@ func _do_delete_selected_npc() -> void:
         http.queue_free()
         Auth.check_response(c)
     )
-    var headers: PackedStringArray = []
-    var auth_header: String = Auth.get_auth_header()
-    if auth_header != "":
-        headers.append("Authorization: " + auth_header)
+    var headers: PackedStringArray = Auth.auth_headers(false)
     http.request(Auth.api_base + "/api/village/npcs/" + npc_id,
         headers, HTTPClient.METHOD_DELETE)
     _deselect_npc()

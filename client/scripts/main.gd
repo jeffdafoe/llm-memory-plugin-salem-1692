@@ -472,10 +472,7 @@ func _on_npc_run_cycle_requested() -> void:
         http.queue_free()
         Auth.check_response(c)
     )
-    var headers := ["Content-Type: application/json"]
-    var auth_header: String = Auth.get_auth_header()
-    if auth_header != "":
-        headers.append("Authorization: " + auth_header)
+    var headers := Auth.auth_headers()
     http.request(Auth.api_base + "/api/village/npcs/" + npc_id + "/run-cycle",
         headers, HTTPClient.METHOD_POST, "{}")
     # Once a cycle is kicked off, the admin is typically done with this
@@ -502,10 +499,7 @@ func _patch_asset_flag(asset_id: String, path_suffix: String, field: String, val
         http.queue_free()
         Auth.check_response(c)
     )
-    var headers := ["Content-Type: application/json"]
-    var auth_header: String = Auth.get_auth_header()
-    if auth_header != "":
-        headers.append("Authorization: " + auth_header)
+    var headers := Auth.auth_headers()
     http.request(Auth.api_base + "/api/assets/" + asset_id + "/" + path_suffix,
         headers, HTTPClient.METHOD_PATCH, payload)
 
@@ -544,10 +538,7 @@ func _on_npc_sprite_picker_selected(npc_id: String, sprite_id: String) -> void:
         http.queue_free()
         Auth.check_response(c)
     )
-    var headers := ["Content-Type: application/json"]
-    var auth_header: String = Auth.get_auth_header()
-    if auth_header != "":
-        headers.append("Authorization: " + auth_header)
+    var headers := Auth.auth_headers()
     var payload: String = JSON.stringify({"sprite_id": sprite_id})
     http.request(Auth.api_base + "/api/village/npcs/" + npc_id + "/sprite",
         headers, HTTPClient.METHOD_PATCH, payload)
@@ -574,10 +565,7 @@ func _post_npc_action(action: String) -> void:
         http.queue_free()
         Auth.check_response(c)
     )
-    var headers := ["Content-Type: application/json"]
-    var auth_header: String = Auth.get_auth_header()
-    if auth_header != "":
-        headers.append("Authorization: " + auth_header)
+    var headers := Auth.auth_headers()
     http.request(Auth.api_base + "/api/village/npcs/" + npc_id + "/" + action,
         headers, HTTPClient.METHOD_POST, "{}")
 

@@ -143,10 +143,7 @@ func _load_npcs() -> void:
     http.accept_gzip = false
     add_child(http)
     http.request_completed.connect(_on_npcs_loaded.bind(http))
-    var headers: PackedStringArray = []
-    var auth_header: String = Auth.get_auth_header()
-    if auth_header != "":
-        headers.append("Authorization: " + auth_header)
+    var headers: PackedStringArray = Auth.auth_headers(false)
     http.request(api_base + "/api/village/npcs", headers)
 
 func _on_npcs_loaded(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest) -> void:
@@ -717,7 +714,7 @@ func save_terrain() -> void:
 
     # No token → no point in sending. The cache will be flushed after re-auth.
     # This stops the silent retry storm that masked the original wendy-paint bug.
-    if Auth.get_auth_header() == "":
+    if not Auth.is_authenticated():
         return
 
     var http_req = HTTPRequest.new()
@@ -730,10 +727,7 @@ func save_terrain() -> void:
         "data": b64
     })
 
-    var headers_arr = [
-        "Content-Type: application/json",
-        "Authorization: " + Auth.get_auth_header(),
-    ]
+    var headers_arr = Auth.auth_headers()
     http_req.request_completed.connect(func(r, c, h, b):
         http_req.queue_free()
         if c == 204:
@@ -826,10 +820,7 @@ func _load_world_phase() -> void:
     http.accept_gzip = false
     add_child(http)
     http.request_completed.connect(_on_world_phase_loaded.bind(http))
-    var headers: PackedStringArray = []
-    var auth_header: String = Auth.get_auth_header()
-    if auth_header != "":
-        headers.append("Authorization: " + auth_header)
+    var headers: PackedStringArray = Auth.auth_headers(false)
     http.request(api_base + "/api/village/world", headers)
 
 func _on_world_phase_loaded(result: int, response_code: int, headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest) -> void:
@@ -951,10 +942,7 @@ func _load_terrain() -> void:
     add_child(http_req)
 
     http_req.request_completed.connect(_on_terrain_loaded.bind(http_req))
-    var headers: PackedStringArray = []
-    var auth_header: String = Auth.get_auth_header()
-    if auth_header != "":
-        headers.append("Authorization: " + auth_header)
+    var headers: PackedStringArray = Auth.auth_headers(false)
     http_req.request(api_base + "/api/village/terrain", headers)
 
 func _on_terrain_loaded(result: int, response_code: int, headers: PackedStringArray, body: PackedByteArray, http_req: HTTPRequest) -> void:
@@ -1025,10 +1013,7 @@ func _load_village() -> void:
     add_child(http)
 
     http.request_completed.connect(_on_village_loaded.bind(http))
-    var headers: PackedStringArray = []
-    var auth_header: String = Auth.get_auth_header()
-    if auth_header != "":
-        headers.append("Authorization: " + auth_header)
+    var headers: PackedStringArray = Auth.auth_headers(false)
     var error = http.request(api_base + "/api/village/objects", headers)
     if error != OK:
         push_error("Failed to request village objects: " + str(error))
@@ -1272,10 +1257,7 @@ func _save_attachment(asset_id: String, pos: Vector2, parent_id: String, node: N
     })
 
     http.request_completed.connect(_on_object_saved.bind(http, node))
-    var headers_arr = ["Content-Type: application/json"]
-    var auth_header: String = Auth.get_auth_header()
-    if auth_header != "":
-        headers_arr.append("Authorization: " + auth_header)
+    var headers_arr = Auth.auth_headers()
     http.request(api_base + "/api/village/objects", headers_arr, HTTPClient.METHOD_POST, payload)
 
 ## Add a new object to the world (from the editor).
@@ -1324,10 +1306,7 @@ func _save_object(asset_id: String, state: String, pos: Vector2, node: Node2D) -
     })
 
     http.request_completed.connect(_on_object_saved.bind(http, node))
-    var headers_arr = ["Content-Type: application/json"]
-    var auth_header: String = Auth.get_auth_header()
-    if auth_header != "":
-        headers_arr.append("Authorization: " + auth_header)
+    var headers_arr = Auth.auth_headers()
     http.request(api_base + "/api/village/objects", headers_arr, HTTPClient.METHOD_POST, payload)
 
 func _on_object_saved(result: int, response_code: int, headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest, node: Node2D) -> void:
@@ -1401,10 +1380,7 @@ func _update_object_position(obj_id, pos: Vector2) -> void:
         "y": pos.y
     })
 
-    var headers_arr = ["Content-Type: application/json"]
-    var auth_header: String = Auth.get_auth_header()
-    if auth_header != "":
-        headers_arr.append("Authorization: " + auth_header)
+    var headers_arr = Auth.auth_headers()
     http.request_completed.connect(func(r, c, h, b):
         http.queue_free()
         Auth.check_response(c)
@@ -1415,10 +1391,7 @@ func _delete_object(obj_id) -> void:
     var http = HTTPRequest.new()
     http.accept_gzip = false
     add_child(http)
-    var headers: PackedStringArray = []
-    var auth_header: String = Auth.get_auth_header()
-    if auth_header != "":
-        headers.append("Authorization: " + auth_header)
+    var headers: PackedStringArray = Auth.auth_headers(false)
     http.request_completed.connect(func(r, c, h, b):
         http.queue_free()
         Auth.check_response(c)
@@ -1432,10 +1405,7 @@ func _load_agents() -> void:
     add_child(http)
 
     http.request_completed.connect(_on_agents_loaded.bind(http))
-    var headers: PackedStringArray = []
-    var auth_header: String = Auth.get_auth_header()
-    if auth_header != "":
-        headers.append("Authorization: " + auth_header)
+    var headers: PackedStringArray = Auth.auth_headers(false)
     http.request(api_base + "/api/village/agents", headers)
 
 func _on_agents_loaded(result: int, response_code: int, headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest) -> void:
@@ -1482,10 +1452,7 @@ func _update_object_owner(obj_id, owner: String) -> void:
         owner_value = owner
     var payload = JSON.stringify({"owner": owner_value})
 
-    var headers_arr = ["Content-Type: application/json"]
-    var auth_header: String = Auth.get_auth_header()
-    if auth_header != "":
-        headers_arr.append("Authorization: " + auth_header)
+    var headers_arr = Auth.auth_headers()
     http.request_completed.connect(func(r, c, h, b):
         http.queue_free()
         Auth.check_response(c)
@@ -1510,10 +1477,7 @@ func _update_object_display_name(obj_id, display_name: String) -> void:
         name_value = display_name
     var payload = JSON.stringify({"display_name": name_value})
 
-    var headers_arr = ["Content-Type: application/json"]
-    var auth_header: String = Auth.get_auth_header()
-    if auth_header != "":
-        headers_arr.append("Authorization: " + auth_header)
+    var headers_arr = Auth.auth_headers()
     http.request_completed.connect(func(r, c, h, b):
         http.queue_free()
         Auth.check_response(c)
@@ -1645,10 +1609,7 @@ func add_object_tag(object_id: String, tag: String) -> void:
         if code >= 300:
             push_error("Add object tag failed: " + str(code))
     )
-    var headers: PackedStringArray = ["Content-Type: application/json"]
-    var auth_header: String = Auth.get_auth_header()
-    if auth_header != "":
-        headers.append("Authorization: " + auth_header)
+    var headers: PackedStringArray = Auth.auth_headers()
     var url: String = Auth.api_base + "/api/village/objects/" + object_id + "/tags"
     var body: String = JSON.stringify({"tag": tag})
     http.request(url, headers, HTTPClient.METHOD_POST, body)
@@ -1663,10 +1624,7 @@ func remove_object_tag(object_id: String, tag: String) -> void:
         if code >= 300:
             push_error("Remove object tag failed: " + str(code))
     )
-    var headers: PackedStringArray = []
-    var auth_header: String = Auth.get_auth_header()
-    if auth_header != "":
-        headers.append("Authorization: " + auth_header)
+    var headers: PackedStringArray = Auth.auth_headers(false)
     var url: String = Auth.api_base + "/api/village/objects/" + object_id + "/tags/" + tag
     http.request(url, headers, HTTPClient.METHOD_DELETE)
 
@@ -1682,10 +1640,7 @@ func set_object_loiter_offset(object_id: String, ox, oy) -> void:
         if code >= 300:
             push_error("Set loiter offset failed: " + str(code))
     )
-    var headers: PackedStringArray = ["Content-Type: application/json"]
-    var auth_header: String = Auth.get_auth_header()
-    if auth_header != "":
-        headers.append("Authorization: " + auth_header)
+    var headers: PackedStringArray = Auth.auth_headers()
     var url: String = Auth.api_base + "/api/village/objects/" + object_id + "/loiter-offset"
     var body_dict: Dictionary = {
         "loiter_offset_x": ox,
@@ -1828,10 +1783,7 @@ func _patch_npc(npc_id, suffix: String, payload_dict: Dictionary) -> void:
     http.accept_gzip = false
     add_child(http)
 
-    var headers_arr = ["Content-Type: application/json"]
-    var auth_header: String = Auth.get_auth_header()
-    if auth_header != "":
-        headers_arr.append("Authorization: " + auth_header)
+    var headers_arr = Auth.auth_headers()
     http.request_completed.connect(func(r, c, h, b):
         http.queue_free()
         Auth.check_response(c)

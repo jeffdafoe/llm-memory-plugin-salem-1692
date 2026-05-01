@@ -166,10 +166,7 @@ func _load_npc_behaviors() -> void:
     add_child(http)
 
     http.request_completed.connect(_on_npc_behaviors_loaded.bind(http))
-    var headers: PackedStringArray = []
-    var auth_header: String = Auth.get_auth_header()
-    if auth_header != "":
-        headers.append("Authorization: " + auth_header)
+    var headers: PackedStringArray = Auth.auth_headers(false)
     var err = http.request(api_base + "/api/village/npc-behaviors", headers)
     if err != OK:
         push_error("Failed to request npc behaviors: " + str(err))
@@ -198,10 +195,7 @@ func _load_state_tags() -> void:
     http.accept_gzip = false
     add_child(http)
     http.request_completed.connect(_on_state_tags_loaded.bind(http))
-    var headers: PackedStringArray = []
-    var auth_header: String = Auth.get_auth_header()
-    if auth_header != "":
-        headers.append("Authorization: " + auth_header)
+    var headers: PackedStringArray = Auth.auth_headers(false)
     var err = http.request(api_base + "/api/assets/state-tags", headers)
     if err != OK:
         push_error("Failed to request state tags: " + str(err))
@@ -226,10 +220,7 @@ func _load_object_tags() -> void:
     http.accept_gzip = false
     add_child(http)
     http.request_completed.connect(_on_object_tags_loaded.bind(http))
-    var headers: PackedStringArray = []
-    var auth_header: String = Auth.get_auth_header()
-    if auth_header != "":
-        headers.append("Authorization: " + auth_header)
+    var headers: PackedStringArray = Auth.auth_headers(false)
     var err = http.request(api_base + "/api/village/object-tags", headers)
     if err != OK:
         push_error("Failed to request object tags: " + str(err))
