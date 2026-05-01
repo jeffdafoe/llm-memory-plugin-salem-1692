@@ -139,7 +139,7 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 		log.Printf("agent-tick %s: missing sceneID — every sim tick should carry one", r.DisplayName)
 	}
 	perception, locationName := app.buildAgentPerception(ctx, r, hourStart, dawnMin, duskMin)
-	tools := agentToolSpec()
+	tools := app.buildAgentTools(ctx, r.ID)
 
 	currentMessage := perception
 	currentToolCallID := ""
@@ -165,12 +165,12 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 		}
 
 		// Pick the first tool_call to act on. Terminal commits (move_to,
-		// chore, done) win over pay/consume/speak/act. Pay/consume run
-		// before speak so a "pay-and-thank-you" or "consume-and-sigh"
-		// sequence unfolds in the natural order: transaction first,
-		// speech next iteration. All inline tools execute and let the
-		// loop continue — none ends the turn.
-		var terminalCall, payCall, consumeCall, speakCall, actCall, observation *agentToolCall
+		// chore, done) win over pay/consume/serve/speak/act. Pay/consume
+		// /serve run before speak so a "serve-and-here-you-are" or
+		// "pay-and-thank-you" sequence unfolds in the natural order:
+		// transaction first, speech next iteration. All inline tools
+		// execute and let the loop continue — none ends the turn.
+		var terminalCall, payCall, consumeCall, serveCall, speakCall, actCall, observation *agentToolCall
 		for i := range reply.ToolCalls {
 			tc := &reply.ToolCalls[i]
 			switch tc.Name {
@@ -185,6 +185,10 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			case "consume":
 				if consumeCall == nil {
 					consumeCall = tc
+				}
+			case "serve":
+				if serveCall == nil {
+					serveCall = tc
 				}
 			case "speak":
 				if speakCall == nil {
@@ -222,6 +226,22 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 				currentMessage = fmt.Sprintf("[Pay %s] %s. Continue your turn — you may correct it, speak, move, or call done.", result, errStr)
 			}
 			currentToolCallID = payCall.ID
+			continue
+		}
+
+		if serveCall != nil {
+			// Serve: tavernkeeper hands food/drink to co-located people.
+			// Decrements own stock, drops recipients' needs (consume_now)
+			// or credits their inventories (take-home). No coin transfer.
+			// Inline like pay so a "serve-then-mention-the-price" speak
+			// chain reads naturally.
+			result, errStr := app.executeAgentCommit(ctx, r, serveCall, sceneID)
+			if result == "ok" {
+				currentMessage = "[OK] You served. Continue your turn — you may speak, move, or call done."
+			} else {
+				currentMessage = fmt.Sprintf("[Serve %s] %s. Continue your turn — you may correct it, speak, move, or call done.", result, errStr)
+			}
+			currentToolCallID = serveCall.ID
 			continue
 		}
 
@@ -826,6 +846,15 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 		}
 	}
 	sections = append(sections, strings.Join(identityLines, "\n"))
+
+	// 1b. Role instructions (ZBBS-098). For each attribute the actor
+	// holds whose attribute_definition.instructions is non-empty, append
+	// the configured prompt copy. Empty when the actor has no
+	// attributes or none carry instructions; in that case nothing is
+	// added so legacy NPCs see no extra section.
+	if roleText, _ := app.loadInstructionsForActor(ctx, r.ID); roleText != "" {
+		sections = append(sections, roleText)
+	}
 
 	// 2. Schedule note. Mirror npc_scheduler.go's resolveWorkerWindow:
 	// per-NPC start/end win when both are set; both-NULL falls back to the
@@ -1461,6 +1490,43 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		cr := app.executeConsume(ctx, r, item, qty)
 		result = cr.Result
 		errStr = cr.Err
+
+	case "serve":
+		item, _ := tc.Input["item"].(string)
+		qty := coerceIntInput(tc.Input["qty"])
+		if qty == 0 {
+			qty = coerceIntInput(tc.Input["quantity"])
+		}
+		if qty == 0 {
+			qty = 1
+		}
+		// Default consume_now=true — the tavern flow (immediate eat/drink)
+		// is the common case. Take-home requires the model to pass
+		// consume_now=false explicitly.
+		consumeNow := true
+		if v, ok := tc.Input["consume_now"].(bool); ok {
+			consumeNow = v
+		}
+		// recipients arrives as []interface{} from JSON; coerce to []string.
+		var recipientNames []string
+		if raw, ok := tc.Input["recipients"].([]interface{}); ok {
+			for _, v := range raw {
+				if s, ok := v.(string); ok {
+					recipientNames = append(recipientNames, s)
+				}
+			}
+		} else if s, ok := tc.Input["recipients"].(string); ok {
+			// Some providers single-stringify a one-element list. Tolerate.
+			recipientNames = []string{s}
+		}
+		sr := app.executeServe(ctx, r, serveRequest{
+			RecipientNames: recipientNames,
+			Item:           item,
+			Qty:            qty,
+			ConsumeNow:     consumeNow,
+		})
+		result = sr.Result
+		errStr = sr.Err
 
 	default:
 		result, errStr = "rejected", fmt.Sprintf("unknown commit tool: %s", tc.Name)
