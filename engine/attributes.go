@@ -10,19 +10,22 @@ package main
 //
 // Cadence: a single hourly batch UPDATE rather than per-NPC stamps. The
 // per-minute server tick handler (dispatchAttributeTick, registered in
-// runServerTickOnce) reads last_attribute_tick_hour, compares to the current
-// wall-clock hour, and runs the batch only when the hour has rolled over.
-// Idempotent against missed ticks and server restarts: if the server is
-// down across an hour boundary we still only fire once when it comes back
-// (the next hour boundary), and we don't backfill the missed hours — needs
-// just don't accrue while the engine is down. That's fine; this isn't a
-// fairness model.
+// runServerTickOnce) reads last_attribute_tick_at (RFC3339 timestamp),
+// computes how many full hours have elapsed since, and runs the batch
+// when at least one hour has rolled.
 //
-// First-run behavior: when last_attribute_tick_hour is NULL (fresh
-// migration), the handler stamps the current hour without incrementing.
-// Avoids a deploy-time pulse where every villager gets +1 hunger the
-// instant the migration runs. The next hour boundary fires the first
-// real tick like any other.
+// Catch-up: under multi-restart days, hours that crossed during downtime
+// were silently lost in the old hour-of-day storage. The timestamp
+// storage lets us increment by `amount * hoursElapsed` in a single
+// UPDATE — capped at maxAttributeCatchupHours to keep a long outage
+// from shock-spiking everyone to peak need on the first tick after
+// recovery.
+//
+// First-run behavior: when last_attribute_tick_at is NULL (fresh
+// migration or first deploy after ZBBS-088), the handler stamps the
+// current hour boundary without incrementing. Avoids a deploy-time
+// pulse where every villager gets +1 hunger the instant the migration
+// runs. The next hour boundary fires the first real tick.
 //
 // Magnitude is governed by the attribute_tick_amount setting (default 1).
 // All needs share the same per-tick magnitude — distinguishing between
@@ -41,6 +44,15 @@ const (
 	// in ZBBS-082 and the LEAST clamp in the UPDATE. Kept as a constant
 	// so the prompt-side narration can reference the same number.
 	attributeMax = 24
+
+	// Cap on catch-up increments after a long downtime. Prevents a
+	// 30-hour outage from spiking every NPC to peak hunger/thirst/
+	// tiredness in a single dispatch — past the cap, those hours
+	// simply don't accrue, same as the old design's behavior for any
+	// gap. Twelve hours is half a day: enough headroom for a normal
+	// deploy-heavy session (multiple restarts spanning a few hours)
+	// without making a real outage produce a worst-case stampede.
+	maxAttributeCatchupHours = 12
 )
 
 // dispatchAttributeTick is registered in runServerTickOnce. Cheap when the
@@ -54,7 +66,9 @@ const (
 // to multiple instances against the same DB. Cost is one extra round-
 // trip per tick; cheap enough to be worth the future-proofing.
 func (app *App) dispatchAttributeTick(ctx context.Context) {
-	currentHour := time.Now().Hour()
+	now := time.Now().UTC()
+	hourBoundary := now.Truncate(time.Hour)
+	hourBoundaryStr := hourBoundary.Format(time.RFC3339)
 
 	tx, err := app.DB.Begin(ctx)
 	if err != nil {
@@ -65,81 +79,101 @@ func (app *App) dispatchAttributeTick(ctx context.Context) {
 
 	// Lock the setting row up front. If another instance crossed the same
 	// boundary first, by the time we acquire the lock we'll see their
-	// stamp and skip. The COALESCE handles a NULL value (fresh migration).
-	var lastHourStr string
+	// stamp and skip. COALESCE handles a NULL value (fresh migration or
+	// first deploy after ZBBS-088).
+	var lastAtStr string
 	err = tx.QueryRow(ctx,
-		`SELECT COALESCE(value, '') FROM setting WHERE key = 'last_attribute_tick_hour' FOR UPDATE`,
-	).Scan(&lastHourStr)
+		`SELECT COALESCE(value, '') FROM setting WHERE key = 'last_attribute_tick_at' FOR UPDATE`,
+	).Scan(&lastAtStr)
 	if err != nil {
 		log.Printf("attribute_tick: lock setting row: %v", err)
 		return
 	}
 
-	if lastHourStr == "" {
-		// First run after migration. Stamp the current hour without
-		// incrementing so the next hour boundary fires the first real
-		// tick. This avoids a deploy-time pulse where every villager gets
+	if lastAtStr == "" {
+		// First run after migration. Stamp the current hour boundary
+		// without incrementing so the next hour rolls the first real
+		// tick. Avoids a deploy-time pulse where every villager gets
 		// +1 hunger the instant the migration runs.
 		if _, err := tx.Exec(ctx,
-			`UPDATE setting SET value = $1 WHERE key = 'last_attribute_tick_hour'`,
-			strconv.Itoa(currentHour),
+			`UPDATE setting SET value = $1 WHERE key = 'last_attribute_tick_at'`,
+			hourBoundaryStr,
 		); err != nil {
-			log.Printf("attribute_tick: stamp first-run hour: %v", err)
+			log.Printf("attribute_tick: stamp first-run timestamp: %v", err)
 			return
 		}
 		_ = tx.Commit(ctx)
 		return
 	}
 
-	lastHour, err := strconv.Atoi(lastHourStr)
+	lastAt, err := time.Parse(time.RFC3339, lastAtStr)
 	if err != nil {
-		log.Printf("attribute_tick: bad last_attribute_tick_hour %q (resetting to current): %v", lastHourStr, err)
+		// Corrupted value. Reset to the current hour boundary and skip
+		// the tick. Next hour roll will fire normally; the lost interval
+		// is the price of avoiding a flood of retries every minute.
+		log.Printf("attribute_tick: bad last_attribute_tick_at %q (resetting): %v", lastAtStr, err)
 		_, _ = tx.Exec(ctx,
-			`UPDATE setting SET value = $1 WHERE key = 'last_attribute_tick_hour'`,
-			strconv.Itoa(currentHour),
+			`UPDATE setting SET value = $1 WHERE key = 'last_attribute_tick_at'`,
+			hourBoundaryStr,
 		)
 		_ = tx.Commit(ctx)
 		return
 	}
 
-	if currentHour == lastHour {
+	// Normalize to UTC + hour boundary before computing elapsed. We
+	// always WRITE truncated values, but the setting row is operator-
+	// editable and parses any RFC3339 (including non-UTC offsets and
+	// sub-hour timestamps). Truncating defensively here means a hand-
+	// edited 12:30 doesn't masquerade as zero hours elapsed at 13:00.
+	lastAt = lastAt.UTC().Truncate(time.Hour)
+
+	hoursElapsed := int(hourBoundary.Sub(lastAt) / time.Hour)
+	if hoursElapsed <= 0 {
 		return
 	}
 
-	// Hour has rolled. Read the per-tick magnitude and apply. The magnitude
-	// setting is read non-locking — it's operator-tuned and racing with an
-	// admin edit just means the new magnitude lands on the next tick.
+	cappedHours := hoursElapsed
+	if cappedHours > maxAttributeCatchupHours {
+		log.Printf("attribute_tick: %d hours since last tick exceeds cap (%d) — applying capped catch-up only",
+			hoursElapsed, maxAttributeCatchupHours)
+		cappedHours = maxAttributeCatchupHours
+	}
+
+	// Read the per-tick magnitude. Non-locking — operator edit racing
+	// with this read just means the new magnitude lands next tick.
 	amountStr := app.loadSetting(ctx, "attribute_tick_amount", "1")
 	amount, err := strconv.Atoi(amountStr)
 	if err != nil || amount <= 0 {
 		log.Printf("attribute_tick: bad attribute_tick_amount %q (skipping tick): %v", amountStr, err)
-		// Still stamp the hour so we don't keep retrying the bad value
-		// every minute until midnight. Operator can fix the setting and
-		// the next hour boundary will pick up the corrected magnitude.
+		// Stamp the hour so we don't keep retrying every minute. Operator
+		// fixes the setting and the next hour boundary picks up the new
+		// magnitude.
 		_, _ = tx.Exec(ctx,
-			`UPDATE setting SET value = $1 WHERE key = 'last_attribute_tick_hour'`,
-			strconv.Itoa(currentHour),
+			`UPDATE setting SET value = $1 WHERE key = 'last_attribute_tick_at'`,
+			hourBoundaryStr,
 		)
 		_ = tx.Commit(ctx)
 		return
 	}
+
+	totalIncrement := amount * cappedHours
 
 	tag, err := tx.Exec(ctx, `
 		UPDATE actor SET
 			hunger    = LEAST($1::int, hunger    + $2::int),
 			thirst    = LEAST($1::int, thirst    + $2::int),
 			tiredness = LEAST($1::int, tiredness + $2::int)
-	`, attributeMax, amount)
+	`, attributeMax, totalIncrement)
 	if err != nil {
 		log.Printf("attribute_tick: UPDATE failed (rolling back, will retry next minute): %v", err)
 		return
 	}
 
 	if _, err := tx.Exec(ctx,
-		`UPDATE setting SET value = $1 WHERE key = 'last_attribute_tick_hour'`,
-		strconv.Itoa(currentHour),
+		`UPDATE setting SET value = $1 WHERE key = 'last_attribute_tick_at'`,
+		hourBoundaryStr,
 	); err != nil {
-		log.Printf("attribute_tick: stamp last hour failed (rolling back, will retry next minute): %v", err)
+		log.Printf("attribute_tick: stamp timestamp failed (rolling back, will retry next minute): %v", err)
 		return
 	}
 
@@ -148,7 +182,8 @@ func (app *App) dispatchAttributeTick(ctx context.Context) {
 		return
 	}
 
-	log.Printf("attribute_tick: hour %d -> %d, +%d to %d villagers", lastHour, currentHour, amount, tag.RowsAffected())
+	log.Printf("attribute_tick: %d hour(s) elapsed, applying %d capped hour(s) (last %s -> now %s), +%d to %d villagers",
+		hoursElapsed, cappedHours, lastAt.Format(time.RFC3339), hourBoundaryStr, totalIncrement, tag.RowsAffected())
 }
 
 // loadAttributeMagnitude returns the configured drop magnitude for a given
