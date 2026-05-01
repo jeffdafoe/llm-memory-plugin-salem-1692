@@ -287,6 +287,7 @@ func _build_ui() -> void:
     editor_panel.npc_home_assign_requested.connect(_on_npc_home_assign_requested)
     editor_panel.npc_work_assign_requested.connect(_on_npc_work_assign_requested)
     editor_panel.npc_run_cycle_requested.connect(_on_npc_run_cycle_requested)
+    editor_panel.npc_reset_needs_requested.connect(_on_npc_reset_needs_requested)
     editor_panel.npc_go_home_requested.connect(_on_npc_go_home_requested)
     editor_panel.npc_go_to_work_requested.connect(_on_npc_go_to_work_requested)
     editor_panel.npc_select_requested.connect(_on_npc_select_requested)
@@ -479,6 +480,28 @@ func _on_npc_run_cycle_requested() -> void:
     # again without right-clicking first.
     editor._deselect_npc()
 
+## Admin pressed "Top up needs" on the selected NPC. Zeroes hunger,
+## thirst, tiredness via the engine's reset-needs route. The server
+## broadcasts npc_needs_changed which world.apply_npc_needs_changed
+## picks up, refreshing the panel readout — no need to refresh here.
+## Selection is preserved so the admin can verify the values dropped.
+func _on_npc_reset_needs_requested() -> void:
+    if editor.selected_npc == null:
+        return
+    var npc_id: String = editor.selected_npc.get_meta("npc_id", "")
+    if npc_id == "":
+        return
+    var http := HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    http.request_completed.connect(func(_r, c, _h, _b):
+        http.queue_free()
+        Auth.check_response(c)
+    )
+    var headers := Auth.auth_headers()
+    http.request(Auth.api_base + "/api/village/npcs/" + npc_id + "/reset-needs",
+        headers, HTTPClient.METHOD_POST, "{}")
+
 ## Admin toggled the "Can be entered" checkbox on the selected asset.
 ## Fires a PATCH; asset_enterable_updated broadcast echoes to all clients.
 func _on_asset_enterable_toggled(asset_id: String, enterable: bool) -> void:
@@ -607,6 +630,9 @@ func _on_npc_metadata_changed(npc_id: String) -> void:
         info["social_tag"] = container.get_meta("social_tag")
         info["social_start_minute"] = container.get_meta("social_start_minute")
         info["social_end_minute"] = container.get_meta("social_end_minute")
+    info["hunger"] = int(container.get_meta("hunger", 0))
+    info["thirst"] = int(container.get_meta("thirst", 0))
+    info["tiredness"] = int(container.get_meta("tiredness", 0))
     editor_panel.show_npc_selection(info)
 
 ## Rebuild the Villagers list when it's actually visible. Wired to

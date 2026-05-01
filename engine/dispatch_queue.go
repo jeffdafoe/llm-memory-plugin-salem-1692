@@ -37,20 +37,32 @@ import (
 type chroniclerDispatchEventType string
 
 const (
-	dispatchShiftStart chroniclerDispatchEventType = "shift_start"
-	dispatchShiftEnd   chroniclerDispatchEventType = "shift_end"
+	dispatchShiftStart    chroniclerDispatchEventType = "shift_start"
+	dispatchShiftEnd      chroniclerDispatchEventType = "shift_end"
+	dispatchNeedsResolved chroniclerDispatchEventType = "needs_resolved"
 )
 
 // chroniclerDispatchAgent is one agent-NPC entry within a batch. All
 // fields are pre-resolved at enqueue time so the perception render is a
 // pure formatting step (no DB roundtrips per agent at fire time).
+//
+// Shift events use ShiftStart / ShiftEnd / WorkPlace. Needs-resolved events
+// reuse the shift-window fields (so the chronicler sees the same "should
+// be at work right now" framing) and add ResolvedNeeds + Source. WorkPlace
+// is empty for agents without a job assigned, in which case the
+// shift-related fields are skipped at render time.
 type chroniclerDispatchAgent struct {
 	ID           string
 	DisplayName  string
 	CurrentPlace string // "the Inn" / "the open village" / etc.
-	WorkPlace    string // "the Blacksmith"
-	ShiftStart   string // "07:00"
-	ShiftEnd     string // "19:00"
+	WorkPlace    string // "the Blacksmith" — empty when no job
+	ShiftStart   string // "07:00" — empty when no job
+	ShiftEnd     string // "19:00" — empty when no job
+
+	// Needs-resolved fields. Populated only for dispatchNeedsResolved
+	// events; ignored on shift events.
+	ResolvedNeeds []string // e.g. []string{"thirst"} or []string{"hunger", "thirst"}
+	Source        string   // "well" / "meal_or_drink" / "admin" / etc.
 }
 
 // chroniclerDispatchBatch is one (event_type, boundary_minute) group with

@@ -127,9 +127,10 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, recipientNam
 	}
 
 	// Consumption side-effect — drop hunger/thirst on the buyer based on
-	// `for` keyword match. Both, one, or neither may match; the UPDATE
-	// only fires for matching needs. GREATEST clamps at 0 so an over-
-	// configured drop magnitude can't push the value negative.
+	// `for` keyword match. Routes through applyConsumption so a meal that
+	// pulls the buyer below the red threshold also enqueues a chronicler
+	// needs_resolved event (unifying this path with admin resets and the
+	// future well mechanic).
 	hungerDrop := 0
 	thirstDrop := 0
 	forLower := strings.ToLower(forText)
@@ -140,14 +141,15 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, recipientNam
 		thirstDrop = app.loadAttributeMagnitude(ctx, "drink_drop")
 	}
 	if hungerDrop > 0 || thirstDrop > 0 {
-		if _, err := tx.Exec(ctx, `
-			UPDATE actor SET
-				hunger = GREATEST(0, hunger - $1::int),
-				thirst = GREATEST(0, thirst - $2::int)
-			WHERE id = $3
-		`, hungerDrop, thirstDrop, buyer.ID); err != nil {
+		if _, err := app.applyConsumption(ctx, tx, buyer.ID, consumptionDelta{
+			Hunger: -hungerDrop,
+			Thirst: -thirstDrop,
+		}, "meal_or_drink"); err != nil {
 			return payResult{Result: "failed", Err: fmt.Sprintf("apply consumption: %v", err)}
 		}
+		// Result is intentionally discarded — pay.go doesn't surface
+		// post-consumption need values to the buyer (they'll see the
+		// drop in their next chronicler perception or roster pull).
 	}
 
 	if err := tx.Commit(ctx); err != nil {
