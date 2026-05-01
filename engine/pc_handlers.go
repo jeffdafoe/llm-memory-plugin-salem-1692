@@ -559,7 +559,7 @@ func (app *App) handlePCSpeak(w http.ResponseWriter, r *http.Request) {
 	// those ticks, will inherit the same UUID. Walks initiated during
 	// reactions don't carry it forward — when the NPC arrives somewhere
 	// later, that arrival is its own new scene.
-	app.triggerCoLocatedTicks(context.Background(), structureID.String, "", fmt.Sprintf("pc-spoke (%s)", charName.String), true, newUUIDv7())
+	app.triggerCoLocatedTicks(context.Background(), structureID.String, "", fmt.Sprintf("pc-spoke (%s)", charName.String), true, newUUIDv7(), actorID.String)
 
 	// Cascade origin — fire the chronicler alongside the co-located
 	// reactor ticks. Fire-and-forget; chronicler runs in a goroutine
