@@ -5,7 +5,10 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -21,6 +24,31 @@ func jsonResponse(w http.ResponseWriter, status int, data interface{}) {
 // jsonError writes a JSON error response.
 func jsonError(w http.ResponseWriter, message string, status int) {
 	jsonResponse(w, status, map[string]string{"error": message})
+}
+
+// coerceIntInput tolerates the float64/int/string mix that LLM tool
+// providers serve up for numeric arguments. Returns 0 on any failure
+// (caller decides whether 0 is meaningful or should be rejected).
+// Fractional floats truncate to their integer part — callers that need
+// strict whole-number handling (the pay amount, where 1.9 silently
+// becoming 1 is a money bug) should keep their existing manual switch.
+func coerceIntInput(v interface{}) int {
+	switch x := v.(type) {
+	case float64:
+		if math.IsNaN(x) || math.IsInf(x, 0) {
+			return 0
+		}
+		return int(math.Trunc(x))
+	case int:
+		return x
+	case string:
+		n, err := strconv.Atoi(strings.TrimSpace(x))
+		if err != nil {
+			return 0
+		}
+		return n
+	}
+	return 0
 }
 
 // newUUIDv7 generates a UUID v7 (time-ordered) as a string.

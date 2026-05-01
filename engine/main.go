@@ -312,6 +312,12 @@ func main() {
 	authed("GET /api/village/objects/{id}/refresh", app.handleGetObjectRefresh)
 	authed("PUT /api/village/objects/{id}/refresh", app.handlePutObjectRefresh)
 
+	// Inventory + items (ZBBS-091). Lookup table for the item picker;
+	// per-actor inventory for editing.
+	authed("GET /api/items", app.handleListItems)
+	authed("GET /api/village/npcs/{id}/inventory", app.handleGetActorInventory)
+	authed("PUT /api/village/npcs/{id}/inventory", app.handlePutActorInventory)
+
 	// Player character endpoints (M6.7)
 	authed("POST /api/village/pc/me", app.handlePCMe)
 	authed("POST /api/village/pc/create", app.handlePCCreate)

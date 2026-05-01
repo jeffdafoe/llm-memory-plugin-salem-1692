@@ -152,6 +152,22 @@ var _refresh_attributes_loaded: bool = false
 # encodes them as null.
 var _refresh_rows_state: Array = []
 
+# INVENTORY section (ZBBS-091) — per-NPC item rows in the NPC selection
+# panel. Mirrors the Refreshes pattern: lookup-table list cached for
+# the editor session, per-selection row state, whole-set save.
+var _inventory_section: VBoxContainer = null
+var _inventory_rows_box: VBoxContainer = null
+var _inventory_add_button: Button = null
+var _inventory_save_button: Button = null
+var _inventory_status: Label = null
+var _inventory_current_id: String = ""
+# {name, display_label, category, price, satisfies_attribute, ...} from
+# /api/items. Loaded once and cached.
+var _items_catalog: Array = []
+var _items_loaded: bool = false
+# Per-row state. Each entry: {item_kind: String, quantity: int}.
+var _inventory_rows_state: Array = []
+
 # NPC-specific fields (behavior, linked llm_memory_agent). Mutually exclusive
 # with _asset_fields_section.
 var _npc_fields_section: VBoxContainer = null
@@ -900,6 +916,42 @@ func _ready() -> void:
     _npc_reset_needs_button.add_theme_stylebox_override("normal", behavior_style)
     _npc_reset_needs_button.pressed.connect(func(): npc_reset_needs_requested.emit())
     _npc_fields_section.add_child(_npc_reset_needs_button)
+
+    # INVENTORY section (ZBBS-091). Per-actor item rows with quantity
+    # spinners. Empty by default; admin adds rows from the item picker.
+    # Save sends the whole set in one PUT (whole-set replace, mirrors
+    # the Refreshes panel pattern).
+    _inventory_section = VBoxContainer.new()
+    _inventory_section.add_theme_constant_override("separation", 4)
+    _npc_fields_section.add_child(_inventory_section)
+
+    var inventory_header := Label.new()
+    inventory_header.text = "INVENTORY"
+    inventory_header.add_theme_color_override("font_color", COLOR_LABEL)
+    inventory_header.add_theme_font_size_override("font_size", 11)
+    _inventory_section.add_child(inventory_header)
+
+    _inventory_rows_box = VBoxContainer.new()
+    _inventory_rows_box.add_theme_constant_override("separation", 4)
+    _inventory_section.add_child(_inventory_rows_box)
+
+    var inv_btn_row := HBoxContainer.new()
+    inv_btn_row.add_theme_constant_override("separation", 6)
+    _inventory_section.add_child(inv_btn_row)
+
+    _inventory_add_button = _make_refreshes_button("+ Add item")
+    _inventory_add_button.pressed.connect(_on_inventory_add_pressed)
+    inv_btn_row.add_child(_inventory_add_button)
+
+    _inventory_save_button = _make_refreshes_button("Save")
+    _inventory_save_button.pressed.connect(_on_inventory_save_pressed)
+    inv_btn_row.add_child(_inventory_save_button)
+
+    _inventory_status = Label.new()
+    _inventory_status.text = ""
+    _inventory_status.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+    _inventory_status.add_theme_font_size_override("font_size", 11)
+    _inventory_section.add_child(_inventory_status)
 
     # Schedule section — shift offset for workers; cadence window for
     # washerwoman / town_crier. Fields always visible; admin picks what
@@ -2357,11 +2409,13 @@ func show_selection(info: Dictionary) -> void:
         _owner_label.visible = false
         _attachments_section.visible = false
         _clear_refreshes_panel()
+        _clear_inventory_panel()
         _show_browse_surfaces()  # Restore the active tab's view on deselect
         return
     _selection_info_scroll.visible = true
     _asset_fields_section.visible = true
     _npc_fields_section.visible = false
+    _clear_inventory_panel()
     _delete_button.disabled = false
     _hide_browse_surfaces()  # Selection inspector takes over the content region
     var asset = Catalog.assets.get(asset_id, {})
@@ -2442,6 +2496,7 @@ func show_npc_selection(info: Dictionary) -> void:
         _selection_info_scroll.visible = false
         _npc_fields_section.visible = false
         _clear_refreshes_panel()
+        _clear_inventory_panel()
         sync_villager_selection("")
         _show_browse_surfaces()
         return
@@ -2449,6 +2504,7 @@ func show_npc_selection(info: Dictionary) -> void:
     _asset_fields_section.visible = false
     _clear_refreshes_panel()
     _npc_fields_section.visible = true
+    _show_inventory_for_actor(npc_id)
     _delete_button.disabled = false
     sync_villager_selection(npc_id)
     _hide_browse_surfaces()
@@ -3289,4 +3345,225 @@ func _set_refreshes_status(text: String, is_error: bool) -> void:
         return
     _refreshes_status.text = text
     _refreshes_status.add_theme_color_override("font_color",
+        Color(0.85, 0.45, 0.40, 0.9) if is_error else COLOR_TEXT_DIM)
+
+
+# =====================================================================
+# INVENTORY (ZBBS-091)
+# =====================================================================
+#
+# Per-NPC item rows in the NPC selection panel. The section UI is built
+# in _build_panel under _npc_fields_section; state lives in
+# _inventory_rows_state and the lookup catalog in _items_catalog.
+
+func _show_inventory_for_actor(actor_id: String) -> void:
+    _inventory_current_id = actor_id
+    _inventory_rows_state.clear()
+    _set_inventory_status("", false)
+    _render_inventory_rows()
+    if actor_id == "":
+        return
+    if not _items_loaded:
+        _fetch_items_catalog(actor_id)
+    else:
+        _fetch_inventory_for_actor(actor_id)
+
+func _clear_inventory_panel() -> void:
+    _inventory_current_id = ""
+    _inventory_rows_state.clear()
+    _set_inventory_status("", false)
+    _render_inventory_rows()
+
+func _fetch_items_catalog(then_load_actor_id: String) -> void:
+    var http := HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    http.request_completed.connect(_on_items_catalog_response.bind(http, then_load_actor_id))
+    var headers := Auth.auth_headers(false)
+    http.request(Auth.api_base + "/api/items", headers)
+
+func _on_items_catalog_response(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest, then_load_actor_id: String) -> void:
+    http.queue_free()
+    if not Auth.check_response(response_code):
+        return
+    if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
+        _set_inventory_status("Failed to load items (" + str(response_code) + ")", true)
+        return
+    var json = JSON.parse_string(body.get_string_from_utf8())
+    if not (json is Array):
+        _set_inventory_status("Malformed items response", true)
+        return
+    _items_catalog = json
+    _items_loaded = true
+    if then_load_actor_id != "" and then_load_actor_id == _inventory_current_id:
+        _fetch_inventory_for_actor(then_load_actor_id)
+
+func _fetch_inventory_for_actor(actor_id: String) -> void:
+    var http := HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    http.request_completed.connect(_on_inventory_response.bind(http, actor_id))
+    var headers := Auth.auth_headers(false)
+    http.request(Auth.api_base + "/api/village/npcs/" + actor_id + "/inventory", headers)
+
+func _on_inventory_response(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest, fetched_id: String) -> void:
+    http.queue_free()
+    if fetched_id != _inventory_current_id:
+        return
+    if not Auth.check_response(response_code):
+        return
+    if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
+        _set_inventory_status("Failed to load inventory (" + str(response_code) + ")", true)
+        return
+    var json = JSON.parse_string(body.get_string_from_utf8())
+    if not (json is Array):
+        _set_inventory_status("Malformed inventory response", true)
+        return
+    _inventory_rows_state.clear()
+    for entry in json:
+        if not (entry is Dictionary):
+            continue
+        _inventory_rows_state.append({
+            "item_kind": str(entry.get("item_kind", "")),
+            "quantity":  int(entry.get("quantity", 1)),
+        })
+    _render_inventory_rows()
+
+func _render_inventory_rows() -> void:
+    if _inventory_rows_box == null:
+        return
+    for child in _inventory_rows_box.get_children():
+        child.queue_free()
+    for idx in range(_inventory_rows_state.size()):
+        var row_panel := _make_inventory_row_ui(idx)
+        _inventory_rows_box.add_child(row_panel)
+
+func _make_inventory_row_ui(idx: int) -> Control:
+    var row: Dictionary = _inventory_rows_state[idx]
+
+    var hbox := HBoxContainer.new()
+    hbox.add_theme_constant_override("separation", 6)
+
+    var item_dropdown := OptionButton.new()
+    item_dropdown.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    item_dropdown.add_theme_color_override("font_color", COLOR_TEXT)
+    item_dropdown.add_theme_font_override("font", _font)
+    item_dropdown.add_theme_font_size_override("font_size", 12)
+    var selected := -1
+    for ii in range(_items_catalog.size()):
+        var it: Dictionary = _items_catalog[ii]
+        item_dropdown.add_item(str(it.get("display_label", it.get("name", ""))), ii)
+        item_dropdown.set_item_metadata(ii, str(it.get("name", "")))
+        if str(it.get("name", "")) == str(row.get("item_kind", "")):
+            selected = ii
+    if selected >= 0:
+        item_dropdown.selected = selected
+    elif _items_catalog.size() > 0:
+        item_dropdown.selected = 0
+        _inventory_rows_state[idx]["item_kind"] = str(_items_catalog[0].get("name", ""))
+    item_dropdown.item_selected.connect(_on_inventory_item_changed.bind(idx, item_dropdown))
+    hbox.add_child(item_dropdown)
+
+    var qty_spin := SpinBox.new()
+    qty_spin.min_value = 1
+    qty_spin.max_value = 32000
+    qty_spin.step = 1
+    qty_spin.value = int(row.get("quantity", 1))
+    qty_spin.custom_minimum_size = Vector2(80, 0)
+    qty_spin.value_changed.connect(_on_inventory_qty_changed.bind(idx))
+    hbox.add_child(qty_spin)
+
+    var remove_btn := _make_refreshes_button("✕")
+    remove_btn.tooltip_text = "Remove this item row"
+    remove_btn.pressed.connect(_on_inventory_remove_pressed.bind(idx))
+    hbox.add_child(remove_btn)
+
+    return hbox
+
+func _on_inventory_item_changed(_dropdown_idx: int, idx: int, dropdown: OptionButton) -> void:
+    if idx < 0 or idx >= _inventory_rows_state.size():
+        return
+    var meta = dropdown.get_item_metadata(dropdown.selected)
+    _inventory_rows_state[idx]["item_kind"] = str(meta) if meta != null else ""
+
+func _on_inventory_qty_changed(value: float, idx: int) -> void:
+    if idx < 0 or idx >= _inventory_rows_state.size():
+        return
+    _inventory_rows_state[idx]["quantity"] = int(value)
+
+func _on_inventory_add_pressed() -> void:
+    if _inventory_current_id == "":
+        return
+    var default_item := ""
+    if _items_catalog.size() > 0:
+        default_item = str(_items_catalog[0].get("name", ""))
+    _inventory_rows_state.append({
+        "item_kind": default_item,
+        "quantity":  1,
+    })
+    _render_inventory_rows()
+
+func _on_inventory_remove_pressed(idx: int) -> void:
+    if idx < 0 or idx >= _inventory_rows_state.size():
+        return
+    _inventory_rows_state.remove_at(idx)
+    _render_inventory_rows()
+
+func _on_inventory_save_pressed() -> void:
+    if _inventory_current_id == "":
+        return
+    var seen := {}
+    var rows := []
+    for state in _inventory_rows_state:
+        var item := str(state.get("item_kind", ""))
+        if item == "":
+            _set_inventory_status("A row is missing its item", true)
+            return
+        if seen.has(item):
+            _set_inventory_status("Duplicate item: " + item, true)
+            return
+        seen[item] = true
+        var qty := int(state.get("quantity", 1))
+        if qty <= 0:
+            _set_inventory_status("Quantity must be positive (" + item + ")", true)
+            return
+        rows.append({"item_kind": item, "quantity": qty})
+
+    var payload := JSON.stringify({"rows": rows})
+    var http := HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    http.request_completed.connect(_on_inventory_save_response.bind(http, _inventory_current_id))
+    var headers := Auth.auth_headers()
+    http.request(Auth.api_base + "/api/village/npcs/" + _inventory_current_id + "/inventory",
+        headers, HTTPClient.METHOD_PUT, payload)
+    _set_inventory_status("Saving...", false)
+
+func _on_inventory_save_response(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest, _saved_id: String) -> void:
+    http.queue_free()
+    if not Auth.check_response(response_code):
+        return
+    if result != HTTPRequest.RESULT_SUCCESS:
+        _set_inventory_status("Network error", true)
+        return
+    if response_code == 204:
+        _set_inventory_status("Saved", false)
+        return
+    if response_code == 403:
+        _set_inventory_status("Admin access required", true)
+        return
+    var detail := ""
+    var json = JSON.parse_string(body.get_string_from_utf8())
+    if json is Dictionary:
+        detail = str(json.get("error", ""))
+    var label := "Save failed (" + str(response_code) + ")"
+    if detail != "":
+        label += ": " + detail
+    _set_inventory_status(label, true)
+
+func _set_inventory_status(text: String, is_error: bool) -> void:
+    if _inventory_status == null:
+        return
+    _inventory_status.text = text
+    _inventory_status.add_theme_color_override("font_color",
         Color(0.85, 0.45, 0.40, 0.9) if is_error else COLOR_TEXT_DIM)
