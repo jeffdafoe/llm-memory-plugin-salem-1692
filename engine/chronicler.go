@@ -463,7 +463,10 @@ func (app *App) fireChronicler(ctx context.Context, reason chroniclerFireReason)
 			go func(id, name, scene string) {
 				app.OverseerAttendSem <- struct{}{}
 				defer func() { <-app.OverseerAttendSem }()
-				app.triggerImmediateTick(context.Background(), id, "overseer-attend-to", false, scene)
+				// triggerActorID = "" — chronicler dispatch has no salient
+				// speaker, so this won't lock the attended NPC against
+				// subsequent heard-speech reactions in the same scene.
+				app.triggerImmediateTick(context.Background(), id, "overseer-attend-to", false, scene, "")
 			}(npcID, displayName, sceneID)
 			attendCount++
 			currentMessage = fmt.Sprintf("[You attend to %s. They will rouse and decide what to do.]", displayName)

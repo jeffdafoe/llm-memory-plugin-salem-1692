@@ -480,22 +480,25 @@ func (app *App) stampAgentTick(ctx context.Context, r *agentNPCRow, hourStart ti
 // Inherited from the cascade origin and forwarded into runAgentTick so
 // every chat row and provider call this NPC produces while reacting
 // shares the same scene.
-func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, force bool, sceneID string) {
-	// Scene-level dedup. If this actor already ticked in this scene
-	// (cascade), drop. Without this, an actor in a long conversation
-	// gets reactor-ticked once per overheard speech in the scene and
-	// each tick runs concurrently, producing redundant LLM output —
-	// e.g., a tavernkeeper pouring ale twice when ordered once.
-	// sceneID propagates from the cascade origin through every reactor
-	// in the chain (MEM-121), so all ticks within one cascade share
-	// it; an actor's first tick stamps the (scene, actor) key, and
-	// subsequent triggers in the same scene drop here.
+//
+// triggerActorID is the actor_id of who caused this tick (the speaker
+// for heard-speech, the actor for saw-action, the arriver for
+// arrival, the PC's actor_id for pc-spoke, "" for chronicler dispatch
+// or any trigger without a salient speaker). Used by claimSceneTick
+// to decide whether this is "the same conversational partner I just
+// reacted to" (drop) or "someone new" (allow).
+func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, force bool, sceneID, triggerActorID string) {
+	// Scene-level dedup. See SceneTickedActors / claimSceneTick comments
+	// for the policy: same triggering actor in the same scene drops, and
+	// a hard cap on reactions per (scene, actor) backstops cost.
 	//
 	// Empty sceneID skips the gate — used only for paths that haven't
 	// adopted scene_id yet (defensive; current callers all provide one).
-	if sceneID != "" && !app.claimSceneTick(sceneID, npcID) {
-		log.Printf("event-tick %s (%s): skipped — already ticked in scene %s", npcID, reason, sceneID)
-		return
+	if sceneID != "" {
+		if allowed, reason2 := app.claimSceneTick(sceneID, npcID, triggerActorID); !allowed {
+			log.Printf("event-tick %s (%s): skipped — %s in scene %s", npcID, reason, reason2, sceneID)
+			return
+		}
 	}
 	cfg, err := app.loadWorldConfig(ctx)
 	if err != nil {
@@ -593,7 +596,7 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, 
 // triggerImmediateTick with context.Background(), intentionally
 // detached from the parent ctx; sceneID has to ride along as an
 // argument because it can't propagate via context.WithValue.
-func (app *App) triggerCoLocatedTicks(ctx context.Context, structureID, excludeNpcID, reason string, force bool, sceneID string) {
+func (app *App) triggerCoLocatedTicks(ctx context.Context, structureID, excludeNpcID, reason string, force bool, sceneID, triggerActorID string) {
 	if structureID == "" {
 		return
 	}
@@ -620,7 +623,7 @@ func (app *App) triggerCoLocatedTicks(ctx context.Context, structureID, excludeN
 		}
 	}
 	for _, id := range ids {
-		go app.triggerImmediateTick(context.Background(), id, reason, force, sceneID)
+		go app.triggerImmediateTick(context.Background(), id, reason, force, sceneID, triggerActorID)
 	}
 }
 
@@ -1383,7 +1386,7 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		// per-scene round counter (track depth via scene_huddle or
 		// sceneID, force `done` past N rounds).
 		if r.InsideStructureID.Valid {
-			app.triggerCoLocatedTicks(ctx, r.InsideStructureID.String, r.ID, "heard-speech", true, sceneID)
+			app.triggerCoLocatedTicks(ctx, r.InsideStructureID.String, r.ID, "heard-speech", true, sceneID, r.ID)
 		}
 
 	case "act":
@@ -1430,7 +1433,7 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		// force=true for the same reason the speak path forces: the
 		// addressee/witness shouldn't be cost-gated out of reacting.
 		if r.InsideStructureID.Valid {
-			app.triggerCoLocatedTicks(ctx, r.InsideStructureID.String, r.ID, "saw-action", true, sceneID)
+			app.triggerCoLocatedTicks(ctx, r.InsideStructureID.String, r.ID, "saw-action", true, sceneID, r.ID)
 		}
 
 	case "done":

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -74,20 +75,35 @@ type App struct {
 	// SceneTickedActors deduplicates reactor-tick fan-out within a single
 	// scene. The cascade machinery (PC speak → reactor ticks → reactor's
 	// own speak/act → next reactor ticks → ...) propagates a sceneID from
-	// the cascade origin through every downstream tick. Without dedup, an
-	// actor in a long conversation can be reactor-ticked multiple times
-	// concurrently — once for each speech they overhear within the scene.
-	// Each parallel tick calls the LLM independently, producing
-	// duplicated/redundant output (e.g., John Ellis pouring ale twice
-	// when ale was only ordered once).
+	// the cascade origin through every downstream tick.
 	//
-	// Key: sceneID + "|" + actorID. Value: time of the first tick in
-	// that scene for that actor. Once stamped, subsequent triggers with
-	// the same key drop with a log line. force=true cascades still skip
-	// the cost guard but respect this dedup. Stale entries (>30 min) are
-	// evicted by a periodic cleanup goroutine.
-	SceneTickedActors   map[string]time.Time
+	// Two policies layer on top of this map:
+	//   (a) Same-trigger-actor dedup: an actor doesn't tick twice in a
+	//       scene in response to the same triggering actor. Different
+	//       triggering actor (different speaker, different arriver)
+	//       passes through. This models natural conversation — you
+	//       respond to John once, but Ezekiel saying something new is
+	//       its own thing to react to.
+	//   (b) Hard per-(scene, actor) reaction cap as a backstop on cost.
+	//       maxReactionsPerSceneActor below.
+	//
+	// Empty triggerActorID (e.g. chronicler-attendance, which has no
+	// salient speaker) doesn't match any other empty against (a), so a
+	// chronicler-dispatched scene-opening tick doesn't lock the actor
+	// out of subsequent heard-speech reactions. (b) still applies.
+	//
+	// Key: sceneID + "|" + actorID. Value: a sceneTickEntry tracking the
+	// last tick's salient actor and the count of ticks so far. Stale
+	// entries (>30 min) are evicted by a periodic cleanup goroutine.
+	SceneTickedActors   map[string]sceneTickEntry
 	SceneTickedActorsMu sync.Mutex
+}
+
+// sceneTickEntry is the per-(scene, actor) dedup record.
+type sceneTickEntry struct {
+	lastAt           time.Time
+	lastTriggerActor string // actor_id of who caused the prior tick; "" for no-speaker triggers (chronicler dispatch)
+	count            int
 }
 
 // sceneTickKey is the dedup key used by SceneTickedActors.
@@ -102,25 +118,58 @@ func sceneTickKey(sceneID, actorID string) string {
 // since sceneIDs are UUIDs) should be allowed to proceed.
 const sceneTickStaleness = 30 * time.Minute
 
-// claimSceneTick reserves the (sceneID, actorID) tick slot. Returns
-// true if this caller wins the claim and should run the tick; returns
-// false if someone else already claimed it within the staleness window
-// (the caller should drop with a "duplicate cascade" log).
+// maxReactionsPerSceneActor is the hard backstop on how many times a
+// single actor can react inside a single scene. Generous enough that
+// a healthy back-and-forth (responses to multiple speakers, follow-up
+// reactions) doesn't bump it; tight enough that a runaway cascade or
+// a chatty PC can't burn unbounded budget.
+const maxReactionsPerSceneActor = 4
+
+// claimSceneTick reserves the next (sceneID, actorID) tick slot using
+// the policy described in the SceneTickedActors comment.
 //
-// The check-and-set is done under a single mutex acquisition so two
-// concurrent triggers can't both observe "not claimed" and both
-// proceed. Lock contention is microseconds — ticks themselves are
-// seconds long but don't hold this lock.
-func (app *App) claimSceneTick(sceneID, actorID string) bool {
+// triggerActorID is the actor_id of who caused this tick (the speaker
+// for heard-speech, the actor for saw-action, the arriver for
+// arrival, the PC's actor_id for pc-spoke, "" for chronicler dispatch
+// or any trigger without a salient speaker).
+//
+// Returns (allowed, reason). reason is empty on allow and a short
+// label on skip ("same trigger actor" or "reaction cap reached") so
+// the caller can log specifically what happened.
+//
+// Single mutex acquisition gates check-and-update so concurrent
+// triggers from a fan-out don't both observe "ok" and both proceed.
+func (app *App) claimSceneTick(sceneID, actorID, triggerActorID string) (bool, string) {
 	key := sceneTickKey(sceneID, actorID)
 	now := time.Now()
 	app.SceneTickedActorsMu.Lock()
 	defer app.SceneTickedActorsMu.Unlock()
-	if last, exists := app.SceneTickedActors[key]; exists && now.Sub(last) < sceneTickStaleness {
-		return false
+	entry, exists := app.SceneTickedActors[key]
+	if exists && now.Sub(entry.lastAt) < sceneTickStaleness {
+		// (b) backstop first — once the cap is hit no further reactions
+		// fire regardless of who triggered them.
+		if entry.count >= maxReactionsPerSceneActor {
+			return false, fmt.Sprintf("reaction cap reached (%d)", entry.count)
+		}
+		// (a) same-trigger-actor dedup. Empty triggerActorID never matches
+		// (chronicler-style triggers don't lock the actor against later
+		// heard-speech reactions, and two empty triggers in a row are
+		// vanishingly rare in practice).
+		if triggerActorID != "" && triggerActorID == entry.lastTriggerActor {
+			return false, "same trigger actor"
+		}
+		entry.lastAt = now
+		entry.lastTriggerActor = triggerActorID
+		entry.count++
+		app.SceneTickedActors[key] = entry
+		return true, ""
 	}
-	app.SceneTickedActors[key] = now
-	return true
+	app.SceneTickedActors[key] = sceneTickEntry{
+		lastAt:           now,
+		lastTriggerActor: triggerActorID,
+		count:            1,
+	}
+	return true, ""
 }
 
 // runSceneTickCleanup evicts stale entries from SceneTickedActors so
@@ -138,7 +187,7 @@ func (app *App) runSceneTickCleanup(ctx context.Context) {
 			cutoff := time.Now().Add(-sceneTickStaleness)
 			app.SceneTickedActorsMu.Lock()
 			for k, v := range app.SceneTickedActors {
-				if v.Before(cutoff) {
+				if v.lastAt.Before(cutoff) {
 					delete(app.SceneTickedActors, k)
 				}
 			}
@@ -183,7 +232,7 @@ func main() {
 		OverseerAttendSem: make(chan struct{}, 4),
 		// Per-(sceneID, actorID) dedup map. See SceneTickedActors comment
 		// on the App struct for the why.
-		SceneTickedActors: make(map[string]time.Time),
+		SceneTickedActors: make(map[string]sceneTickEntry),
 	}
 	// Prime the display-name map so reactive ticks before the first
 	// server-tick refresh have data. Cheap; bounded by NPC count.

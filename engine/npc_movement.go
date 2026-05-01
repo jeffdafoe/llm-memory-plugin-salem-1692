@@ -373,7 +373,7 @@ func (app *App) applyArrival(npcID string) {
 		// the move_to that started them, so by the time we get here
 		// it's a new scene, not a continuation of whatever scene
 		// triggered the original move_to.
-		app.triggerCoLocatedTicks(ctx, insideID.String, npcID, "arrival", false, newUUIDv7())
+		app.triggerCoLocatedTicks(ctx, insideID.String, npcID, "arrival", false, newUUIDv7(), npcID)
 		// Cascade origin — fire the chronicler alongside the reactor
 		// ticks. Once per arrival, not per in-cascade NPC reaction.
 		app.cascadeOriginFireChronicler("arrival", insideID.String)
