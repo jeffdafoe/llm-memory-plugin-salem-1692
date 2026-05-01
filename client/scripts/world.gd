@@ -597,6 +597,13 @@ func _render_npc(npc: Dictionary) -> void:
         container.set_meta("social_tag", str(_social_tag))
         container.set_meta("social_start_minute", int(_social_start))
         container.set_meta("social_end_minute", int(_social_end))
+    # Needs (ZBBS-082) — current hunger/thirst/tiredness in [0, 24].
+    # Always set, default to 0 so the editor panel can read them without
+    # null-checks. Updates arrive via apply_npc_needs_changed (admin
+    # reset) or on the next /api/village/npcs refresh.
+    container.set_meta("hunger", int(npc.get("hunger", 0)))
+    container.set_meta("thirst", int(npc.get("thirst", 0)))
+    container.set_meta("tiredness", int(npc.get("tiredness", 0)))
     var inside: bool = bool(npc.get("inside", false))
     var inside_structure_id_val = npc.get("inside_structure_id", null)
     var inside_structure_id: String = str(inside_structure_id_val) if inside_structure_id_val != null else ""
@@ -1726,6 +1733,25 @@ func apply_object_tags_updated(data: Dictionary) -> void:
     var node: Node2D = placed_objects[object_id]
     node.set_meta("tags", tags)
     object_tags_updated.emit(object_id, tags)
+
+## WS event — admin reset-needs (or the future well mechanic) changed
+## an NPC's hunger/thirst/tiredness. Patch the container metas and emit
+## npc_metadata_changed so the editor panel refreshes its readout if
+## this NPC is the current selection.
+func apply_npc_needs_changed(data: Dictionary) -> void:
+    var npc_id: String = data.get("id", "")
+    if npc_id == "":
+        return
+    var container: Node2D = placed_npcs.get(npc_id, null)
+    if container == null:
+        return
+    if data.has("hunger"):
+        container.set_meta("hunger", int(data.get("hunger", 0)))
+    if data.has("thirst"):
+        container.set_meta("thirst", int(data.get("thirst", 0)))
+    if data.has("tiredness"):
+        container.set_meta("tiredness", int(data.get("tiredness", 0)))
+    npc_metadata_changed.emit(npc_id)
 
 ## WS event — another admin edited the social-hour schedule. Update our
 ## container meta and tell the panel to refresh if it's the selected NPC.

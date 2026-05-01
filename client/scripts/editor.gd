@@ -801,6 +801,9 @@ func _select_npc(container: Node2D) -> void:
         info["social_tag"] = container.get_meta("social_tag")
         info["social_start_minute"] = container.get_meta("social_start_minute")
         info["social_end_minute"] = container.get_meta("social_end_minute")
+    info["hunger"] = int(container.get_meta("hunger", 0))
+    info["thirst"] = int(container.get_meta("thirst", 0))
+    info["tiredness"] = int(container.get_meta("tiredness", 0))
     npc_selected.emit(info)
 
 func _deselect_npc() -> void:

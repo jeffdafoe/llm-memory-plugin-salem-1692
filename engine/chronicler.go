@@ -609,7 +609,7 @@ func (app *App) buildChroniclerPerception(ctx context.Context, reason chronicler
 	// tied to an actual chronicler invocation. A phase or cascade fire
 	// that happens to overlap a shift boundary picks up the events for
 	// free because every fireChronicler call drains the queue.
-	for _, section := range renderShiftBoundarySections(shiftBatches) {
+	for _, section := range renderDispatchSections(shiftBatches) {
 		sections = append(sections, section)
 	}
 
@@ -1386,22 +1386,31 @@ func (app *App) buildChroniclerDistressList(ctx context.Context) string {
 	return "Villagers in distress:\n" + strings.Join(lines, "\n")
 }
 
-// renderShiftBoundarySections renders perception sections from the
-// caller-supplied batches — one per event_type. Pure function; the
+// renderDispatchSections renders perception sections from the caller-
+// supplied batches — one section per event_type. Pure function; the
 // caller (fireChronicler) is responsible for draining the queue. Empty
 // when batches is empty.
 //
-// Format (per event_type, only event types with non-empty agent lists
-// produce a section):
+// Sections in stable order: shift_start, shift_end, needs_resolved.
+// Each section uses its own line format (shift events lead with the
+// work assignment + window; needs_resolved events lead with the
+// satisfied need + source).
+//
+// Examples:
 //
 //	Beginning their shift now:
 //	- Ezekiel Crane (Blacksmith, 07:00-19:00) -- currently at the Inn
-//	- Josiah Thorne (General Store, 07:00-19:00) -- currently at the Thorne Residence
 //
-// The chronicler reads these sections and decides whether to attend each
-// listed villager (broader attend_to authorization in the tool spec
-// covers both shift-begin and shift-end as legitimate reasons).
-func renderShiftBoundarySections(batches []*chroniclerDispatchBatch) []string {
+//	Needs newly satisfied:
+//	- Prudence Ward -- no longer parched [from the well] -- currently at the Well (work: Apothecary, 07:30-18:30)
+//
+// The chronicler reads these sections and decides whether to attend
+// each listed villager. The attend_to tool's broader authorization
+// covers shift-begin, shift-end, and needs-resolved as legitimate
+// reasons (NPCs who abandoned posts due to high needs and now don't
+// have those needs are exactly the case the chronicler should nudge
+// back to work).
+func renderDispatchSections(batches []*chroniclerDispatchBatch) []string {
 	if len(batches) == 0 {
 		return nil
 	}
@@ -1415,36 +1424,150 @@ func renderShiftBoundarySections(batches []*chroniclerDispatchBatch) []string {
 		byType[b.EventType] = append(byType[b.EventType], b.Agents...)
 	}
 
-	headings := map[chroniclerDispatchEventType]string{
-		dispatchShiftStart: "Beginning their shift now:",
-		dispatchShiftEnd:   "Ending their shift now:",
-	}
-	// Stable section order: shift_start before shift_end. Two passes over
-	// the known event types keep the perception deterministic across
-	// fires regardless of map iteration order.
+	// Stable section order across fires regardless of map iteration order.
 	var sections []string
-	for _, et := range []chroniclerDispatchEventType{dispatchShiftStart, dispatchShiftEnd} {
+	for _, et := range []chroniclerDispatchEventType{
+		dispatchShiftStart,
+		dispatchShiftEnd,
+		dispatchNeedsResolved,
+	} {
 		agents := byType[et]
 		if len(agents) == 0 {
 			continue
 		}
-		var b strings.Builder
-		b.WriteString(headings[et])
-		for _, a := range agents {
-			b.WriteString("\n- ")
-			b.WriteString(a.DisplayName)
-			b.WriteString(" (")
-			b.WriteString(a.WorkPlace)
-			b.WriteString(", ")
-			b.WriteString(a.ShiftStart)
-			b.WriteString("-")
-			b.WriteString(a.ShiftEnd)
-			b.WriteString(") -- currently at ")
-			b.WriteString(a.CurrentPlace)
+		switch et {
+		case dispatchShiftStart, dispatchShiftEnd:
+			sections = append(sections, renderShiftSection(et, agents))
+		case dispatchNeedsResolved:
+			sections = append(sections, renderNeedsResolvedSection(agents))
 		}
-		sections = append(sections, b.String())
 	}
 	return sections
+}
+
+// renderShiftSection renders a single shift_start or shift_end section.
+// Format: "<heading>\n- <name> (<work>, HH:MM-HH:MM) -- currently at <place>".
+func renderShiftSection(et chroniclerDispatchEventType, agents []chroniclerDispatchAgent) string {
+	heading := "Beginning their shift now:"
+	if et == dispatchShiftEnd {
+		heading = "Ending their shift now:"
+	}
+	var b strings.Builder
+	b.WriteString(heading)
+	for _, a := range agents {
+		b.WriteString("\n- ")
+		b.WriteString(a.DisplayName)
+		b.WriteString(" (")
+		b.WriteString(a.WorkPlace)
+		b.WriteString(", ")
+		b.WriteString(a.ShiftStart)
+		b.WriteString("-")
+		b.WriteString(a.ShiftEnd)
+		b.WriteString(") -- currently at ")
+		b.WriteString(a.CurrentPlace)
+	}
+	return b.String()
+}
+
+// renderNeedsResolvedSection renders the "Needs newly satisfied" section
+// for villagers whose needs crossed below the red threshold this tick.
+// Tone: factual + recovery-leading, so the chronicler reads them as
+// candidates for attend_to (especially when their current place is not
+// their work place).
+//
+// Lines fold each agent's resolved need(s) and source into one phrase.
+// One need: "no longer parched". Two needs: "no longer hungry or
+// parched". Source becomes a parenthetical hint for non-admin sources;
+// admin resets are unattributed (the chronicler doesn't need to know
+// the operator intervened, just that the need is gone).
+//
+// Work annotation: when the agent has a work assignment, append a
+// "(work: <place>, HH:MM-HH:MM)" suffix so the chronicler can spot
+// "currently at the Well, but works at the Apothecary 07:30-18:30"
+// at a glance — the exact case that should trigger attend_to.
+func renderNeedsResolvedSection(agents []chroniclerDispatchAgent) string {
+	var b strings.Builder
+	b.WriteString("Needs newly satisfied:")
+	for _, a := range agents {
+		b.WriteString("\n- ")
+		b.WriteString(a.DisplayName)
+		b.WriteString(" -- no longer ")
+		b.WriteString(joinResolvedNeedLabels(a.ResolvedNeeds))
+		if hint := sourceHint(a.Source); hint != "" {
+			b.WriteString(" ")
+			b.WriteString(hint)
+		}
+		b.WriteString(" -- currently at ")
+		b.WriteString(a.CurrentPlace)
+		if a.WorkPlace != "" {
+			b.WriteString(" (work: ")
+			b.WriteString(a.WorkPlace)
+			if a.ShiftStart != "" && a.ShiftEnd != "" {
+				b.WriteString(", ")
+				b.WriteString(a.ShiftStart)
+				b.WriteString("-")
+				b.WriteString(a.ShiftEnd)
+			}
+			b.WriteString(")")
+		}
+	}
+	return b.String()
+}
+
+// joinResolvedNeedLabels turns a list of resolved-need keys ("hunger",
+// "thirst", "tiredness") into a recovery-tense phrase using the same
+// vocabulary as needLabel's red-tier so the chronicler reads
+// "no longer parched" rather than the bland "no longer thirsty" (which
+// is the mild-tier word). Recovery is from the red tier — that's what
+// the threshold crossing represents.
+func joinResolvedNeedLabels(needs []string) string {
+	if len(needs) == 0 {
+		return "in distress"
+	}
+	labels := make([]string, 0, len(needs))
+	for _, n := range needs {
+		switch n {
+		case "hunger":
+			labels = append(labels, "hungry")
+		case "thirst":
+			labels = append(labels, "parched")
+		case "tiredness":
+			labels = append(labels, "weary")
+		default:
+			labels = append(labels, n)
+		}
+	}
+	switch len(labels) {
+	case 1:
+		return labels[0]
+	case 2:
+		return labels[0] + " or " + labels[1]
+	default:
+		// Three needs all crossing in one call is rare (only the admin
+		// reset path produces it today). Render as Oxford-comma list.
+		return strings.Join(labels[:len(labels)-1], ", ") + ", or " + labels[len(labels)-1]
+	}
+}
+
+// sourceHint renders the consumption source as a chronicler-friendly
+// parenthetical. Admin resets are unattributed — the operator's hand
+// isn't part of the in-world narrative. Other sources surface so the
+// chronicler can shade its attention call ("she has slaked her thirst
+// at the well" reads differently from "she has finished her meal").
+//
+// Whitelisted: a future caller passing free-form (or worse, model-
+// influenced) source text shouldn't end up rendering arbitrary content
+// into the chronicler's perception. Unknown sources collapse to the
+// silent case rather than echoing the input.
+func sourceHint(source string) string {
+	switch source {
+	case "well":
+		return "[from the well]"
+	case "meal_or_drink":
+		return "[from a meal or drink]"
+	default:
+		return ""
+	}
 }
 
 // dispatchChroniclerShiftBoundaries fires the chronicler when the

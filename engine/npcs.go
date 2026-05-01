@@ -104,7 +104,14 @@ type NPC struct {
 	SocialTag         *string    `json:"social_tag"`
 	SocialStartMinute *int       `json:"social_start_minute"`
 	SocialEndMinute   *int       `json:"social_end_minute"`
-	Sprite            *NPCSprite `json:"sprite,omitempty"`
+	// Needs (ZBBS-082) — current values in [0, attributeMax]. The editor
+	// surfaces these as a read-out plus a "top up" admin action; the
+	// engine uses them via the chronicler distress section and
+	// applyConsumption.
+	Hunger    int        `json:"hunger"`
+	Thirst    int        `json:"thirst"`
+	Tiredness int        `json:"tiredness"`
+	Sprite    *NPCSprite `json:"sprite,omitempty"`
 }
 
 // loadNPCSprites returns the sprite catalog as a map keyed by sprite id,
@@ -210,7 +217,8 @@ func (app *App) handleListNPCs(w http.ResponseWriter, r *http.Request) {
 		        schedule_interval_hours,
 		        active_start_hour, active_end_hour,
 		        lateness_window_minutes,
-		        social_tag, social_start_minute, social_end_minute
+		        social_tag, social_start_minute, social_end_minute,
+		        hunger, thirst, tiredness
 		 FROM actor
 		 WHERE login_username IS NULL
 		 ORDER BY display_name`,
@@ -231,7 +239,8 @@ func (app *App) handleListNPCs(w http.ResponseWriter, r *http.Request) {
 			&n.ScheduleIntervalHours,
 			&n.ActiveStartHour, &n.ActiveEndHour,
 			&n.LatenessWindowMinutes,
-			&n.SocialTag, &n.SocialStartMinute, &n.SocialEndMinute); err != nil {
+			&n.SocialTag, &n.SocialStartMinute, &n.SocialEndMinute,
+			&n.Hunger, &n.Thirst, &n.Tiredness); err != nil {
 			continue
 		}
 		if s, ok := sprites[n.SpriteID]; ok {
@@ -998,4 +1007,90 @@ func (app *App) handleDeleteNPC(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusNoContent)
 	app.Hub.Broadcast(WorldEvent{Type: "npc_deleted", Data: map[string]string{"id": id}})
+}
+
+// handleResetNPCNeeds zeroes the selected NPC's hunger, thirst, and
+// tiredness. Admin only. Routes through applyConsumption so the
+// chronicler dispatch is fed needs_resolved events for any need that
+// crossed the red threshold during this call — letting the chronicler
+// nudge an agent NPC who had abandoned a post back to work the same
+// way the future well mechanic will.
+//
+// PC guard: this endpoint targets NPC rows only (login_username IS
+// NULL), matching the rest of the /api/village/npcs/* routes.
+// Resetting a PC's needs would bypass the player-driven path and
+// confuse the client.
+//
+// Response: 200 with the post-update {hunger, thirst, tiredness} values
+// read back from the row so the editor panel reflects what's actually
+// persisted (not an assumed zero). Broadcasts an npc_needs_changed WS
+// event so other open editor sessions reflect the reset live.
+func (app *App) handleResetNPCNeeds(w http.ResponseWriter, r *http.Request) {
+	user := getUserFromContext(r.Context())
+	if user == nil || !user.hasRole("ROLE_SALEM_ADMIN") {
+		jsonError(w, "Admin role required", http.StatusForbidden)
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		jsonError(w, "Missing NPC ID", http.StatusBadRequest)
+		return
+	}
+
+	ctx := r.Context()
+	tx, err := app.DB.Begin(ctx)
+	if err != nil {
+		jsonError(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback(ctx)
+
+	// PC guard. Done as a separate preflight (rather than baked into
+	// applyConsumption) because applyConsumption is a domain helper
+	// usable from contexts where the caller already knows the row is
+	// an NPC (pay.go's buyer was already validated). Run inside the
+	// same txn so an admin who somehow manages to flip the row in
+	// between can't slip through.
+	var isNPC bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM actor WHERE id = $1 AND login_username IS NULL)`,
+		id,
+	).Scan(&isNPC); err != nil {
+		jsonError(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	if !isNPC {
+		jsonError(w, "NPC not found", http.StatusNotFound)
+		return
+	}
+
+	// -attributeMax saturates the clamp regardless of the current
+	// value, so this is the "fully top up" delta. Source "admin"
+	// suppresses the chronicler perception's source hint.
+	result, err := app.applyConsumption(ctx, tx, id, consumptionDelta{
+		Hunger:    -attributeMax,
+		Thirst:    -attributeMax,
+		Tiredness: -attributeMax,
+	}, "admin")
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			jsonError(w, "NPC not found", http.StatusNotFound)
+			return
+		}
+		jsonError(w, "Failed to reset needs", http.StatusInternalServerError)
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		jsonError(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+
+	resp := map[string]interface{}{
+		"id":        id,
+		"hunger":    result.Hunger,
+		"thirst":    result.Thirst,
+		"tiredness": result.Tiredness,
+	}
+	jsonResponse(w, http.StatusOK, resp)
+	app.Hub.Broadcast(WorldEvent{Type: "npc_needs_changed", Data: resp})
 }

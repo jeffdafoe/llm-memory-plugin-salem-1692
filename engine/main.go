@@ -339,6 +339,7 @@ func main() {
 	authed("POST /api/village/npcs/{id}/run-cycle", app.handleRunNPCCycle)
 	authed("POST /api/village/npcs/{id}/go-home", app.handleGoHome)
 	authed("POST /api/village/npcs/{id}/go-to-work", app.handleGoToWork)
+	authed("POST /api/village/npcs/{id}/reset-needs", app.handleResetNPCNeeds)
 	authed("GET /api/village/npc-sprites", app.handleListNPCSprites)
 	authed("GET /api/village/npc-behaviors", app.handleListNPCBehaviors)
 

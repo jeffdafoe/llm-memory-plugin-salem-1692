@@ -30,6 +30,7 @@ signal npc_social_changed(tag: String, start_min: int, end_min: int)
 signal npc_home_assign_requested
 signal npc_work_assign_requested
 signal npc_run_cycle_requested
+signal npc_reset_needs_requested
 signal npc_go_home_requested
 signal npc_go_to_work_requested
 signal npc_sprite_change_requested(npc_id: String, current_sprite_id: String)
@@ -142,6 +143,15 @@ var _npc_work_clear_button: Button = null
 var _npc_run_cycle_button: Button = null
 var _npc_go_home_button: Button = null
 var _npc_go_to_work_button: Button = null
+# Needs readout (ZBBS-082) — three labels showing current value / max
+# (hunger, thirst, tiredness) and a "Top up" button. The button calls
+# reset-needs which the engine routes through applyConsumption so the
+# chronicler gets a needs_resolved nudge if any need crossed below the
+# red threshold.
+var _npc_hunger_label: Label = null
+var _npc_thirst_label: Label = null
+var _npc_tiredness_label: Label = null
+var _npc_reset_needs_button: Button = null
 # Schedule section — absolute work-window pair (HH:MM start / HH:MM end)
 # + lateness + cadence triple. The start/end pair is nullable: when both
 # server values are NULL the worker inherits the global dawn/dusk window,
@@ -785,6 +795,45 @@ func _ready() -> void:
     _npc_run_cycle_button.add_theme_stylebox_override("normal", behavior_style)
     _npc_run_cycle_button.pressed.connect(func(): npc_run_cycle_requested.emit())
     _npc_fields_section.add_child(_npc_run_cycle_button)
+
+    # Needs readout (ZBBS-082) — current hunger/thirst/tiredness in
+    # [0, 24] with a single "Top up" button that zeroes all three. The
+    # engine routes the reset through applyConsumption so the chronicler
+    # gets a needs_resolved event for any need that crossed below the
+    # red threshold (and can attend_to the NPC if they were away from
+    # work). Same path the future well mechanic will use.
+    var npc_needs_header = Label.new()
+    npc_needs_header.text = "NEEDS"
+    npc_needs_header.add_theme_color_override("font_color", COLOR_LABEL)
+    npc_needs_header.add_theme_font_size_override("font_size", 11)
+    _npc_fields_section.add_child(npc_needs_header)
+
+    _npc_hunger_label = Label.new()
+    _npc_hunger_label.add_theme_font_override("font", _font)
+    _npc_hunger_label.add_theme_font_size_override("font_size", 12)
+    _npc_hunger_label.add_theme_color_override("font_color", COLOR_TEXT)
+    _npc_fields_section.add_child(_npc_hunger_label)
+
+    _npc_thirst_label = Label.new()
+    _npc_thirst_label.add_theme_font_override("font", _font)
+    _npc_thirst_label.add_theme_font_size_override("font_size", 12)
+    _npc_thirst_label.add_theme_color_override("font_color", COLOR_TEXT)
+    _npc_fields_section.add_child(_npc_thirst_label)
+
+    _npc_tiredness_label = Label.new()
+    _npc_tiredness_label.add_theme_font_override("font", _font)
+    _npc_tiredness_label.add_theme_font_size_override("font_size", 12)
+    _npc_tiredness_label.add_theme_color_override("font_color", COLOR_TEXT)
+    _npc_fields_section.add_child(_npc_tiredness_label)
+
+    _npc_reset_needs_button = Button.new()
+    _npc_reset_needs_button.text = "Top up needs"
+    _npc_reset_needs_button.add_theme_font_override("font", _font)
+    _npc_reset_needs_button.add_theme_font_size_override("font_size", 13)
+    _npc_reset_needs_button.add_theme_color_override("font_color", COLOR_TEXT)
+    _npc_reset_needs_button.add_theme_stylebox_override("normal", behavior_style)
+    _npc_reset_needs_button.pressed.connect(func(): npc_reset_needs_requested.emit())
+    _npc_fields_section.add_child(_npc_reset_needs_button)
 
     # Schedule section — shift offset for workers; cadence window for
     # washerwoman / town_crier. Fields always visible; admin picks what
@@ -2484,7 +2533,40 @@ func show_npc_selection(info: Dictionary) -> void:
         _npc_social_end_minute_spin.value = social_end_min % 60
     _on_social_toggled(has_social)
 
+    # Needs readout — current values from the actor row, refreshed on
+    # selection and via npc_metadata_changed when the WS broadcasts a
+    # reset. _format_need_label colors the value red when it crosses
+    # the engine's default red threshold for that need. Operator-tuned
+    # thresholds (hunger_red_threshold, etc.) are NOT consulted here —
+    # the panel can drift from the chronicler's actual distress filter
+    # if those settings are edited. Visual hint only; the source of
+    # truth for "in distress" stays server-side.
+    var hunger_val: int = int(info.get("hunger", 0))
+    var thirst_val: int = int(info.get("thirst", 0))
+    var tiredness_val: int = int(info.get("tiredness", 0))
+    if _npc_hunger_label != null:
+        _format_need_label(_npc_hunger_label, "Hunger", hunger_val, 18)
+    if _npc_thirst_label != null:
+        _format_need_label(_npc_thirst_label, "Thirst", thirst_val, 12)
+    if _npc_tiredness_label != null:
+        _format_need_label(_npc_tiredness_label, "Tiredness", tiredness_val, 20)
+    if _npc_reset_needs_button != null:
+        # Disable when already topped off so the admin doesn't churn the
+        # chronicler with no-op resets.
+        _npc_reset_needs_button.disabled = (hunger_val == 0 and thirst_val == 0 and tiredness_val == 0)
+
     _ignoring_npc_inputs = false
+
+## Render a single need's label as "Name: value / 24" with a red font
+## color when value is at or above the red threshold. Mirrors the
+## chronicler's visual cue for "in distress" without making a server
+## roundtrip per selection.
+func _format_need_label(label: Label, name: String, value: int, red_threshold: int) -> void:
+    label.text = "  %s: %d / 24" % [name, value]
+    if value >= red_threshold:
+        label.add_theme_color_override("font_color", Color(0.95, 0.45, 0.45))
+    else:
+        label.add_theme_color_override("font_color", COLOR_TEXT)
 
 ## Called when editor exits place mode (right-click cancel, escape, etc.)
 func clear_catalog_selection() -> void:
