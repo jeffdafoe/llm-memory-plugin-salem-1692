@@ -200,6 +200,15 @@ func (app *App) handleCreateVillageObject(w http.ResponseWriter, r *http.Request
 }
 
 // handleDeleteVillageObject removes an object from the map.
+//
+// Eviction: any actor flagged as inside this structure must have
+// inside / inside_structure_id / current_huddle_id cleared in the same
+// transaction as the DELETE. The actor.inside_structure_id FK is
+// ON DELETE SET NULL, but that alone leaves the inside boolean stale
+// (see the Grace Edwards orphan: inside=true with NULL structure ref
+// after one of two co-located homes was deleted, 2026-04). Doing the
+// eviction explicitly here keeps the invariant intact regardless of
+// which delete path runs.
 func (app *App) handleDeleteVillageObject(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if id == "" {
@@ -207,7 +216,46 @@ func (app *App) handleDeleteVillageObject(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	result, err := app.DB.Exec(r.Context(),
+	tx, err := app.DB.Begin(r.Context())
+	if err != nil {
+		jsonError(w, "Failed to delete object", http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback(r.Context()) // safe after commit (no-op)
+
+	// Evict in a single UPDATE ... RETURNING so the broadcast list
+	// matches exactly the rows we actually changed — no race window
+	// between a separate SELECT and the UPDATE.
+	rows, err := tx.Query(r.Context(),
+		`UPDATE actor
+		    SET inside = false,
+		        inside_structure_id = NULL,
+		        current_huddle_id = NULL
+		  WHERE inside_structure_id = $1
+		  RETURNING id`, id,
+	)
+	if err != nil {
+		jsonError(w, "Failed to delete object", http.StatusInternalServerError)
+		return
+	}
+	var evicted []string
+	for rows.Next() {
+		var aid string
+		if err := rows.Scan(&aid); err != nil {
+			rows.Close()
+			jsonError(w, "Failed to delete object", http.StatusInternalServerError)
+			return
+		}
+		evicted = append(evicted, aid)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		jsonError(w, "Failed to delete object", http.StatusInternalServerError)
+		return
+	}
+	rows.Close()
+
+	result, err := tx.Exec(r.Context(),
 		`DELETE FROM village_object WHERE id = $1`, id,
 	)
 	if err != nil {
@@ -219,8 +267,23 @@ func (app *App) handleDeleteVillageObject(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	if err := tx.Commit(r.Context()); err != nil {
+		jsonError(w, "Failed to delete object", http.StatusInternalServerError)
+		return
+	}
+
 	w.WriteHeader(http.StatusNoContent)
 	app.Hub.Broadcast(WorldEvent{Type: "object_deleted", Data: map[string]string{"id": id}})
+	for _, aid := range evicted {
+		app.Hub.Broadcast(WorldEvent{
+			Type: "npc_inside_changed",
+			Data: map[string]any{
+				"id":                  aid,
+				"inside":              false,
+				"inside_structure_id": nil,
+			},
+		})
+	}
 }
 
 // handleSetVillageObjectOwner assigns or changes the owner of an object.
