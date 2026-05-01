@@ -3,25 +3,22 @@ extends PanelContainer
 ## chronicler atmosphere prose right-to-left in marquee fashion.
 ##
 ## Subscribes to world.world_environment_added for live chronicler
-## fires; backloads the most recent rows on init via
+## fires; backloads the single latest row on init via
 ## POST /api/village/environment/recent. Click → opens the talk panel
 ## to the Village tab (mechanical events live there; the ticker is
 ## chronicler-curated atmosphere only — they don't repeat content).
 ##
-## Scrolling model: a single Label child whose position.x animates
-## right-to-left at SCROLL_SPEED px/sec. New texts that arrive while
-## one is scrolling get queued; queue drains in FIFO. When idle,
-## position is reset and label cleared.
+## Always-latest model: at most one line is in flight, at most one
+## queued. A new chronicler fire arriving mid-scroll replaces whatever
+## was queued, so when the current scroll finishes the marquee jumps
+## straight to the latest atmosphere — never a backlog of stale prose
+## from earlier in the day.
 
 signal clicked
 
 const SCROLL_SPEED: float = 40.0
 const TICKER_HEIGHT: float = 24.0
 const SIDE_PADDING: float = 12.0
-# Drop the oldest queued entry past this depth — protects against a
-# busy chronicler day from filling memory with prose the player will
-# never see scroll past.
-const MAX_QUEUE_DEPTH: int = 12
 
 var _label: Label = null
 var _clip: Control = null
@@ -95,7 +92,10 @@ func _load_recent() -> void:
         return
     var url: String = Auth.api_base + "/api/village/environment/recent"
     var headers: PackedStringArray = Auth.auth_headers()
-    var body := JSON.stringify({"limit": 5})
+    # Just the latest atmosphere line — older prose feels stale once
+    # the world clock has moved on (morning prose at evening was the
+    # specific complaint that motivated this).
+    var body := JSON.stringify({"limit": 1})
     var err := _http.request(url, headers, HTTPClient.METHOD_POST, body)
     if err != OK:
         return
@@ -139,17 +139,19 @@ func push_row(row: Dictionary) -> void:
 
 
 # Add a raw text line to the marquee. If idle, starts immediately;
-# otherwise enqueues. Drops the oldest queued entry once the queue hits
-# MAX_QUEUE_DEPTH so a runaway chronicler can't pin memory.
+# otherwise replaces the queued slot so the next scroll jumps to the
+# latest line — anything that was queued in between gets skipped. We
+# don't cut the current scroll short because the player is actively
+# reading it; we just make sure they never have to wait through a
+# backlog to see what just happened.
 func push(text: String) -> void:
     if text == "":
         return
     if _current_text == "":
         _start_text(text)
         return
+    _queue.clear()
     _queue.append(text)
-    while _queue.size() > MAX_QUEUE_DEPTH:
-        _queue.pop_front()
 
 
 func _start_text(text: String) -> void:
