@@ -20,8 +20,9 @@ package main
 //      so the LLM can't burn budget thinking forever.
 //
 // Cost guard: triggerImmediateTick rejects re-entry within agentMinTickGap
-// (5 min) UNLESS force=true. PC-speak and heard-speech force=true; arrival
-// cascades and chronicler-dispatched scene openings respect the gap.
+// (5 min) UNLESS force=true. PC-speak, heard-speech cascades, and
+// chronicler attend_to dispatches force=true (direct-address paths).
+// Arrival cascades respect the gap.
 //
 // Failure mode: if /agent/tick returns an error (rate-limit, cost-budget,
 // HTTP failure, malformed response), the harness logs and returns without
