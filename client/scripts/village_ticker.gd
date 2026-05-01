@@ -91,9 +91,14 @@ func attach_world(world: Node) -> void:
 func _load_recent() -> void:
     if _http == null:
         return
-    var url: String = Auth.api_base + "/api/village/environment/recent"
+    var auth := get_node_or_null("/root/Auth")
+    if auth == null:
+        return
+    var url: String = str(auth.api_base).rstrip("/") + "/api/village/environment/recent"
     var headers: PackedStringArray = ["Content-Type: application/json"]
-    headers.append(Auth.get_auth_header())
+    var auth_value := str(auth.get_auth_header())
+    if not auth_value.is_empty():
+        headers.append("Authorization: " + auth_value)
     var body := JSON.stringify({"limit": 5})
     var err := _http.request(url, headers, HTTPClient.METHOD_POST, body)
     if err != OK:
