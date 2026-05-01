@@ -45,8 +45,8 @@ type agentToolCall struct {
 // message is the engine's reply to a previous observation tool call;
 // omitted on the first iteration (the initial perception). SceneID is the
 // MEM-121 scene UUID — minted at a cascade origin (PC speak / NPC arrival
-// / baseline tick) and inherited by every reactive tick in that cascade,
-// so the admin chat list can group same-scene rows together.
+// / chronicler dispatch) and inherited by every reactive tick in that
+// cascade, so the admin chat list can group same-scene rows together.
 type chatSendRequest struct {
 	ToAgents     []string       `json:"to_agents"`
 	Message      string         `json:"message"`

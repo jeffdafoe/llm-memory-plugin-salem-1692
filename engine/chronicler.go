@@ -167,7 +167,7 @@ func chroniclerToolSpec() []agentToolDef {
 
 // dispatchChroniclerPhase is the per-server-tick entry that handles
 // scheduled chronicler fires at dawn / midday / dusk. Called from
-// runServerTickOnce alongside dispatchAgentTicks.
+// runServerTickOnce.
 //
 // Phase boundaries are computed from the existing world_dawn_time and
 // world_dusk_time settings. Midday is the midpoint between dawn and
@@ -1010,9 +1010,9 @@ func formatRecallHits(hits []searchMemoryHit, displayName func(ns string) string
 // so newly added NPCs (or renamed slugs) propagate to recall result
 // formatting without an engine restart. Cheap — bounded by NPC count.
 //
-// Lives outside dispatchAgentTicks because that function short-circuits
-// during paused/asleep/baseline-disabled paths, but reactive ticks
-// (cascade origins) fire at any hour and need the map.
+// Refreshed unconditionally (not gated by AgentTicksPaused) so the
+// recall-result display-name cache stays current while LLM activity is
+// paused, and is ready when reactive ticks resume.
 func (app *App) refreshNPCDisplayNames(ctx context.Context) {
 	rows, err := app.DB.Query(ctx,
 		`SELECT llm_memory_agent, display_name FROM actor
