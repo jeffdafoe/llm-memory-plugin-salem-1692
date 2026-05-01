@@ -209,19 +209,26 @@ func (app *App) handleListNPCs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ZBBS-097: behavior is sourced from actor_attribute (alphabetically
+	// first slug per actor), not the legacy actor.behavior column. The
+	// scalar subquery returns NULL when the actor has no attributes,
+	// matching the prior nullable shape so the JSON response and Scan
+	// targets stay unchanged.
 	npcRows, err := app.DB.Query(ctx,
-		`SELECT id, display_name, sprite_id, home_x, home_y,
-		        current_x, current_y, facing, behavior, llm_memory_agent,
-		        home_structure_id, work_structure_id, inside, inside_structure_id,
-		        schedule_start_minute, schedule_end_minute,
-		        schedule_interval_hours,
-		        active_start_hour, active_end_hour,
-		        lateness_window_minutes,
-		        social_tag, social_start_minute, social_end_minute,
-		        hunger, thirst, tiredness
-		 FROM actor
-		 WHERE login_username IS NULL
-		 ORDER BY display_name`,
+		`SELECT n.id, n.display_name, n.sprite_id, n.home_x, n.home_y,
+		        n.current_x, n.current_y, n.facing,
+		        (SELECT slug FROM actor_attribute WHERE actor_id = n.id ORDER BY slug LIMIT 1),
+		        n.llm_memory_agent,
+		        n.home_structure_id, n.work_structure_id, n.inside, n.inside_structure_id,
+		        n.schedule_start_minute, n.schedule_end_minute,
+		        n.schedule_interval_hours,
+		        n.active_start_hour, n.active_end_hour,
+		        n.lateness_window_minutes,
+		        n.social_tag, n.social_start_minute, n.social_end_minute,
+		        n.hunger, n.thirst, n.tiredness
+		 FROM actor n
+		 WHERE n.login_username IS NULL
+		 ORDER BY n.display_name`,
 	)
 	if err != nil {
 		jsonError(w, "Internal server error", http.StatusInternalServerError)
@@ -357,12 +364,19 @@ type NPCBehavior struct {
 	DisplayName string `json:"display_name"`
 }
 
-// handleListNPCBehaviors returns all behaviors that can be assigned to an NPC.
-// Public to any authenticated salem user — the catalog is not sensitive and
-// non-admins who can see NPC details may want to know what behaviors exist.
+// handleListNPCBehaviors returns every actor-scoped attribute that can be
+// assigned to an NPC. Public to any authenticated salem user — the catalog
+// is not sensitive and non-admins who can see NPC details may want to know
+// what roles exist.
+//
+// As of ZBBS-096 the source is attribute_definition (filtered to scope
+// 'actor' or 'both') rather than the legacy npc_behavior lookup. The
+// response shape is unchanged so the admin UI continues working.
 func (app *App) handleListNPCBehaviors(w http.ResponseWriter, r *http.Request) {
 	rows, err := app.DB.Query(r.Context(),
-		`SELECT slug, display_name FROM npc_behavior ORDER BY display_name`,
+		`SELECT slug, display_name FROM attribute_definition
+		 WHERE scope IN ('actor', 'both')
+		 ORDER BY display_name`,
 	)
 	if err != nil {
 		jsonError(w, "Internal server error", http.StatusInternalServerError)
@@ -503,15 +517,22 @@ func (app *App) handleSetNPCSprite(w http.ResponseWriter, r *http.Request) {
 	app.Hub.Broadcast(WorldEvent{Type: "npc_sprite_changed", Data: data})
 }
 
-// handleSetNPCBehavior assigns or clears the behavior of an NPC. Admin only.
-// A null/empty behavior clears the field. The FK on npc.behavior enforces
-// validity against npc_behavior.slug, but we pre-check to return a clean 400
-// rather than a generic 500 on invalid input.
+// handleSetNPCBehavior assigns or clears the role attribute of an NPC.
+// Admin only. A null/empty value clears every actor_attribute row for
+// the NPC; otherwise the request slug is validated against
+// attribute_definition (scope 'actor' or 'both') and replaces any
+// existing actor_attribute rows so the NPC ends up with exactly the
+// one attribute requested. Multi-attribute support is a future
+// concern — this endpoint preserves the old single-role UX.
 //
-// Live-route note: changing behavior mid-route does not interrupt an ongoing
-// walk. The current walk-to AfterFunc still fires and applyArrival runs the
-// normal lamplighter chain if the behavior was lamplighter at walk START.
-// The next phase transition will look up the current behavior fresh and pick
+// As of ZBBS-096 this writes actor_attribute (the engine's source of
+// truth for dispatch). The legacy actor.behavior column is left
+// untouched here; it stays alive only for the worker scheduler and
+// retires in a follow-up.
+//
+// Live-route note: changing the attribute mid-route does not interrupt
+// an ongoing walk. The current walk-to AfterFunc still fires; the next
+// phase transition will look up the current attribute fresh and pick
 // whoever is currently tagged.
 func (app *App) handleSetNPCBehavior(w http.ResponseWriter, r *http.Request) {
 	user := getUserFromContext(r.Context())
@@ -542,31 +563,65 @@ func (app *App) handleSetNPCBehavior(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Validate the attribute definition exists and is actor-scoped.
 	if req.Behavior != nil {
-		var exists bool
-		if err := app.DB.QueryRow(r.Context(),
-			`SELECT EXISTS(SELECT 1 FROM npc_behavior WHERE slug = $1)`,
+		var scope string
+		err := app.DB.QueryRow(r.Context(),
+			`SELECT scope FROM attribute_definition WHERE slug = $1`,
 			*req.Behavior,
-		).Scan(&exists); err != nil {
-			jsonError(w, "Internal server error", http.StatusInternalServerError)
+		).Scan(&scope)
+		if err != nil {
+			jsonError(w, "Unknown behavior", http.StatusBadRequest)
 			return
 		}
-		if !exists {
-			jsonError(w, "Unknown behavior", http.StatusBadRequest)
+		if scope != "actor" && scope != "both" {
+			jsonError(w, "Attribute is not assignable to actors", http.StatusBadRequest)
 			return
 		}
 	}
 
-	result, err := app.DB.Exec(r.Context(),
-		`UPDATE actor SET behavior = $1 WHERE id = $2`,
-		req.Behavior, id,
-	)
+	// Confirm the NPC exists before mutating actor_attribute. Avoids
+	// silently succeeding on an unknown id (DELETE on no rows is a
+	// no-op, INSERT would fail on FK but only after the DELETE).
+	var exists bool
+	if err := app.DB.QueryRow(r.Context(),
+		`SELECT EXISTS(SELECT 1 FROM actor WHERE id = $1)`, id,
+	).Scan(&exists); err != nil {
+		jsonError(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	if !exists {
+		jsonError(w, "NPC not found", http.StatusNotFound)
+		return
+	}
+
+	// Replace whatever attributes the actor has with the requested one
+	// (or clear all if Behavior is nil). Wrapped in a transaction so a
+	// concurrent reader doesn't see the brief no-attribute window.
+	tx, err := app.DB.Begin(r.Context())
 	if err != nil {
+		jsonError(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback(r.Context())
+
+	if _, err := tx.Exec(r.Context(),
+		`DELETE FROM actor_attribute WHERE actor_id = $1`, id,
+	); err != nil {
 		jsonError(w, "Failed to update behavior", http.StatusInternalServerError)
 		return
 	}
-	if result.RowsAffected() == 0 {
-		jsonError(w, "NPC not found", http.StatusNotFound)
+	if req.Behavior != nil {
+		if _, err := tx.Exec(r.Context(),
+			`INSERT INTO actor_attribute (actor_id, slug) VALUES ($1, $2)`,
+			id, *req.Behavior,
+		); err != nil {
+			jsonError(w, "Failed to update behavior", http.StatusInternalServerError)
+			return
+		}
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		jsonError(w, "Internal server error", http.StatusInternalServerError)
 		return
 	}
 
