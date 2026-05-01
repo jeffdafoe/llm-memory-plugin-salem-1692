@@ -77,7 +77,7 @@ func (app *App) runServerTickOnce(ctx context.Context) {
 	// Attribute tick advances NPC needs (hunger/thirst/tiredness) when the
 	// wall-clock hour has rolled. No-op on most ticks (cheap setting read +
 	// integer compare); single batch UPDATE on the boundary.
-	app.dispatchAttributeTick(ctx)
+	app.dispatchNeedsTick(ctx)
 	// Object-refresh regen (ZBBS-090) — replenishes available_quantity for
 	// rows configured with refresh_period_hours, in continuous or periodic
 	// mode. Cheap when no row is behind (single SELECT, zero UPDATEs).

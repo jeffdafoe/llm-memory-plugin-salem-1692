@@ -180,13 +180,19 @@ const homeCoordsSQL = `
     COALESCE(s.x + a.door_offset_x * 32.0, s.x, n.home_x),
     COALESCE(s.y + a.door_offset_y * 32.0, s.y, n.home_y)`
 
-// findNPCWithBehavior returns the NPC tagged with the given behavior slug,
+// findNPCWithBehavior returns the NPC carrying the given attribute slug,
 // resolving home coords through homeCoordsSQL. If the NPC is mid-walk, its
 // interpolated current position replaces the last-persisted current_x/y.
 //
 // HasCustomSchedule is set when the NPC owns its own scheduling (the per-
 // NPC scheduler will dispatch them); callers that want to avoid double-
 // firing from the legacy rotation path check this before starting a route.
+//
+// As of ZBBS-096 the lookup is by attribute slug via actor_attribute, not
+// by the legacy actor.behavior column. Multiple actors holding the same
+// attribute would be returned at most one (LIMIT 1, ordered by id) —
+// callers that want to fan out to every holder should use
+// findActorIDsWithAttribute and load each NPC explicitly.
 func (app *App) findNPCWithBehavior(ctx context.Context, slug string) (*behaviorNPC, bool) {
 	n := behaviorNPC{Behavior: slug}
 	var homeStructureID *string
@@ -195,9 +201,11 @@ func (app *App) findNPCWithBehavior(ctx context.Context, slug string) (*behavior
 		`SELECT n.id, n.current_x, n.current_y, `+homeCoordsSQL+`, n.home_structure_id,
 		        n.schedule_interval_hours, n.active_start_hour, n.active_end_hour
 		 FROM actor n
+		 JOIN actor_attribute aa ON aa.actor_id = n.id
 		 LEFT JOIN village_object s ON s.id = n.home_structure_id
 		 LEFT JOIN asset a ON a.id = s.asset_id
-		 WHERE n.behavior = $1
+		 WHERE aa.slug = $1
+		 ORDER BY n.id
 		 LIMIT 1`, slug,
 	).Scan(&n.ID, &n.CurX, &n.CurY, &n.HomeX, &n.HomeY, &homeStructureID,
 		&interval, &startH, &endH)
@@ -213,33 +221,40 @@ func (app *App) findNPCWithBehavior(ctx context.Context, slug string) (*behavior
 	return &n, true
 }
 
-// loadBehaviorNPCByID loads a specific NPC (not by behavior slug) for the
-// run-cycle trigger, which targets one NPC directly rather than whichever
-// villager happens to carry that behavior.
+// loadBehaviorNPCByID loads a specific NPC for the run-cycle trigger and
+// the per-NPC scheduler, both of which target one actor directly rather
+// than whichever villager happens to carry a given attribute.
+//
+// Behavior is populated from the actor's first attribute slug (alphabetical
+// order). Empty when the actor has no attributes — the run-cycle handler
+// rejects that case before calling dispatchBehaviorForNPC.
 func (app *App) loadBehaviorNPCByID(ctx context.Context, npcID string) (*behaviorNPC, bool) {
 	var n behaviorNPC
-	var behavior *string
 	var homeStructureID *string
 	var interval, startH, endH *int
 	err := app.DB.QueryRow(ctx,
-		`SELECT n.id, COALESCE(n.behavior, ''), n.current_x, n.current_y, `+homeCoordsSQL+`, n.home_structure_id,
+		`SELECT n.id, n.current_x, n.current_y, `+homeCoordsSQL+`, n.home_structure_id,
 		        n.schedule_interval_hours, n.active_start_hour, n.active_end_hour
 		 FROM actor n
 		 LEFT JOIN village_object s ON s.id = n.home_structure_id
 		 LEFT JOIN asset a ON a.id = s.asset_id
 		 WHERE n.id = $1`, npcID,
-	).Scan(&n.ID, &behavior, &n.CurX, &n.CurY, &n.HomeX, &n.HomeY, &homeStructureID,
+	).Scan(&n.ID, &n.CurX, &n.CurY, &n.HomeX, &n.HomeY, &homeStructureID,
 		&interval, &startH, &endH)
 	if err != nil {
 		return nil, false
-	}
-	if behavior != nil {
-		n.Behavior = *behavior
 	}
 	if homeStructureID != nil {
 		n.HomeStructureID = *homeStructureID
 	}
 	n.HasCustomSchedule = interval != nil && startH != nil && endH != nil
+
+	// Best-effort lookup of the actor's primary slug for logging /
+	// response shaping. A real load failure on this read is silently
+	// treated as "no slug" — the caller already handles empty.
+	if slug, _ := app.firstAttributeSlugForActor(ctx, npcID); slug != "" {
+		n.Behavior = slug
+	}
 
 	app.interpolateCurrentPos(&n)
 	return &n, true
@@ -752,38 +767,35 @@ func (app *App) handleRunNPCCycle(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// dispatchBehaviorForNPC routes to the appropriate per-NPC start*Route
-// variant based on the NPC's behavior slug. Returns the number of stops
-// queued (0 is legitimate — nothing to do right now).
+// dispatchBehaviorForNPC runs every behavior spec the NPC's attributes
+// declare, in deterministic order (attribute slug ASC, spec array order
+// within). Returns the sum of stops queued across all specs; an unknown
+// spec.Type logs and is skipped without aborting the dispatch.
+//
+// Note that the route-walking infrastructure cancels any in-flight route
+// when a new one starts, so an NPC carrying multiple route-producing
+// specs effectively runs only the last one. v1 data has at most one
+// route-producing attribute per actor; multi-route NPCs are a future
+// concern (priority/dedupe in this dispatcher).
 func (app *App) dispatchBehaviorForNPC(ctx context.Context, npc *behaviorNPC) (int, error) {
-	switch npc.Behavior {
-	case behaviorLamplighter:
-		// Manual trigger: pick whichever target tag actually has work to
-		// do. Fixed phase-based targets fail at equilibrium (all lamps
-		// match the current phase, no candidates, silent no-op). So try
-		// the "preview next cycle" target first (opposite of current
-		// phase); if that's already done, fall back to the current-phase
-		// target. Effectively each click alternates: light them up →
-		// turn them off → light them up.
-		phase, err := app.currentWorldPhase(ctx)
-		if err != nil {
-			return 0, err
-		}
-		first, second := "night-active", "day-active"
-		if phase == "night" {
-			first, second = "day-active", "night-active"
-		}
-		n, err := app.startLamplighterRouteForNPC(ctx, npc, first)
-		if err != nil || n > 0 {
-			return n, err
-		}
-		return app.startLamplighterRouteForNPC(ctx, npc, second)
-	case behaviorWasherwoman:
-		return app.startRotationRouteForNPC(ctx, npc, tagLaundry, "washerwoman")
-	case behaviorTownCrier:
-		return app.startRotationRouteForNPC(ctx, npc, tagNoticeBoard, "town_crier")
+	specs, err := app.loadBehaviorSpecsForActor(ctx, npc.ID)
+	if err != nil {
+		return 0, err
 	}
-	return 0, nil
+	totalStops := 0
+	for _, spec := range specs {
+		handler, ok := behaviorHandlers[spec.Type]
+		if !ok {
+			log.Printf("dispatchBehaviorForNPC: unknown behavior type %q for actor %s — skipping", spec.Type, npc.ID)
+			continue
+		}
+		stops, err := handler(ctx, app, npc, spec.Params)
+		if err != nil {
+			return totalStops, err
+		}
+		totalStops += stops
+	}
+	return totalStops, nil
 }
 
 // currentWorldPhase reads the singleton world_phase row for the run-cycle
