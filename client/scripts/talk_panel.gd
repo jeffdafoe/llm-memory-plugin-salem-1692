@@ -14,7 +14,7 @@ extends CanvasLayer
 ## owns layer ordering itself.
 ##
 ## Runtime dependencies:
-##   - /root/Auth (api_base + get_auth_header())
+##   - /root/Auth (api_base + auth_headers())
 ##   - /root/Main/World.npc_spoke(name, text, kind) signal
 ##   - POST /api/village/pc/me  → state
 ##   - POST /api/village/pc/speak {text}  → broadcast
@@ -1177,13 +1177,4 @@ func _api_url(path: String) -> String:
 
 
 func _auth_headers() -> PackedStringArray:
-    var headers := PackedStringArray()
-    headers.append("Content-Type: application/json")
-
-    var auth := get_node_or_null("/root/Auth")
-    if auth != null:
-        var value := str(auth.get_auth_header())
-        if not value.is_empty():
-            headers.append("Authorization: " + value)
-
-    return headers
+    return Auth.auth_headers()

@@ -15,7 +15,7 @@ extends PanelContainer
 
 signal clicked
 
-const SCROLL_SPEED: float = 80.0
+const SCROLL_SPEED: float = 40.0
 const TICKER_HEIGHT: float = 24.0
 const SIDE_PADDING: float = 12.0
 # Drop the oldest queued entry past this depth — protects against a
@@ -91,14 +91,10 @@ func attach_world(world: Node) -> void:
 func _load_recent() -> void:
     if _http == null:
         return
-    var auth := get_node_or_null("/root/Auth")
-    if auth == null:
+    if not Auth.is_authenticated():
         return
-    var url: String = str(auth.api_base).rstrip("/") + "/api/village/environment/recent"
-    var headers: PackedStringArray = ["Content-Type: application/json"]
-    var auth_value := str(auth.get_auth_header())
-    if not auth_value.is_empty():
-        headers.append("Authorization: " + auth_value)
+    var url: String = Auth.api_base + "/api/village/environment/recent"
+    var headers: PackedStringArray = Auth.auth_headers()
     var body := JSON.stringify({"limit": 5})
     var err := _http.request(url, headers, HTTPClient.METHOD_POST, body)
     if err != OK:

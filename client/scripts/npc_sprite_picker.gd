@@ -138,10 +138,7 @@ func _load_sprites() -> void:
     http.accept_gzip = false
     add_child(http)
     http.request_completed.connect(_on_sprites_loaded.bind(http))
-    var headers: PackedStringArray = []
-    var auth_header: String = Auth.get_auth_header()
-    if auth_header != "":
-        headers.append("Authorization: " + auth_header)
+    var headers: PackedStringArray = Auth.auth_headers(false)
     http.request(Auth.api_base + "/api/village/npc-sprites", headers)
 
 func _on_sprites_loaded(result: int, code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest) -> void:

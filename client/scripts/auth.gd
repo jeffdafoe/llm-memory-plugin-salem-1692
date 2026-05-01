@@ -114,11 +114,31 @@ func logout() -> void:
     can_edit = false
     _clear_token()
 
-## Get the Authorization header value for API requests.
-func get_auth_header() -> String:
-    if session_token == "":
-        return ""
-    return "Bearer " + session_token
+## Returns true when a session token is present. Use this for "are we
+## authenticated?" checks instead of comparing get_auth_token() to "".
+func is_authenticated() -> bool:
+    return session_token != ""
+
+## Returns the bare session token (no "Bearer " prefix). Most callers
+## should use auth_headers() instead — bare-token access is for the
+## rare case (e.g. embedding into a WebSocket URL query param) where
+## the value can't ride in an HTTP header.
+func get_auth_token() -> String:
+    return session_token
+
+## Returns the headers array most API calls need: a Content-Type for
+## JSON bodies (toggleable for GETs that don't post anything) and a
+## Bearer Authorization line. Single source of truth — call sites that
+## hand-rolled "Authorization: " + get_auth_header() were misusing the
+## old API in ways the type system couldn't catch (the old function
+## returned the value, not the header line).
+func auth_headers(include_content_type: bool = true) -> PackedStringArray:
+    var headers := PackedStringArray()
+    if include_content_type:
+        headers.append("Content-Type: application/json")
+    if session_token != "":
+        headers.append("Authorization: Bearer " + session_token)
+    return headers
 
 ## Called by HTTP callbacks when the server returns 401. Clears the dead
 ## token and emits session_expired so the UI can re-show the login screen.
