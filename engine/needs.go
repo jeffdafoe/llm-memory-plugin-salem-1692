@@ -1,6 +1,12 @@
 package main
 
-// NPC attribute ticking — hunger, thirst, tiredness.
+// NPC needs ticking — hunger, thirst, tiredness.
+//
+// Renamed from "attribute" to "needs" in ZBBS-095 to free the
+// "attribute" namespace for the chip/role system introduced in
+// ZBBS-096. Mechanically nothing changed; the old setting keys
+// (attribute_tick_amount / last_attribute_tick_at) were renamed
+// in lockstep.
 //
 // Each villager carries three needs (village_agent.hunger / thirst /
 // tiredness, SMALLINT 0–24, higher = more in need). They grow with simulated
@@ -9,25 +15,25 @@ package main
 // later.
 //
 // Cadence: a single hourly batch UPDATE rather than per-NPC stamps. The
-// per-minute server tick handler (dispatchAttributeTick, registered in
-// runServerTickOnce) reads last_attribute_tick_at (RFC3339 timestamp),
+// per-minute server tick handler (dispatchNeedsTick, registered in
+// runServerTickOnce) reads last_needs_tick_at (RFC3339 timestamp),
 // computes how many full hours have elapsed since, and runs the batch
 // when at least one hour has rolled.
 //
 // Catch-up: under multi-restart days, hours that crossed during downtime
 // were silently lost in the old hour-of-day storage. The timestamp
 // storage lets us increment by `amount * hoursElapsed` in a single
-// UPDATE — capped at maxAttributeCatchupHours to keep a long outage
+// UPDATE — capped at maxNeedsCatchupHours to keep a long outage
 // from shock-spiking everyone to peak need on the first tick after
 // recovery.
 //
-// First-run behavior: when last_attribute_tick_at is NULL (fresh
+// First-run behavior: when last_needs_tick_at is NULL (fresh
 // migration or first deploy after ZBBS-088), the handler stamps the
 // current hour boundary without incrementing. Avoids a deploy-time
 // pulse where every villager gets +1 hunger the instant the migration
 // runs. The next hour boundary fires the first real tick.
 //
-// Magnitude is governed by the attribute_tick_amount setting (default 1).
+// Magnitude is governed by the needs_tick_amount setting (default 1).
 // All needs share the same per-tick magnitude — distinguishing between
 // (e.g.) faster hunger and slower thirst is a future tuning question;
 // today they all march at the same rate.
@@ -43,7 +49,7 @@ const (
 	// Hard ceiling on every need. Matches the SMALLINT scale documented
 	// in ZBBS-082 and the LEAST clamp in the UPDATE. Kept as a constant
 	// so the prompt-side narration can reference the same number.
-	attributeMax = 24
+	needMax = 24
 
 	// Cap on catch-up increments after a long downtime. Prevents a
 	// 30-hour outage from spiking every NPC to peak hunger/thirst/
@@ -52,10 +58,10 @@ const (
 	// gap. Twelve hours is half a day: enough headroom for a normal
 	// deploy-heavy session (multiple restarts spanning a few hours)
 	// without making a real outage produce a worst-case stampede.
-	maxAttributeCatchupHours = 12
+	maxNeedsCatchupHours = 12
 )
 
-// dispatchAttributeTick is registered in runServerTickOnce. Cheap when the
+// dispatchNeedsTick is registered in runServerTickOnce. Cheap when the
 // hour hasn't rolled over (one setting read + integer compare); does a
 // single UPDATE across all villagers when it has.
 //
@@ -65,14 +71,14 @@ const (
 // today, but the row lock makes this safe if the engine is ever scaled
 // to multiple instances against the same DB. Cost is one extra round-
 // trip per tick; cheap enough to be worth the future-proofing.
-func (app *App) dispatchAttributeTick(ctx context.Context) {
+func (app *App) dispatchNeedsTick(ctx context.Context) {
 	now := time.Now().UTC()
 	hourBoundary := now.Truncate(time.Hour)
 	hourBoundaryStr := hourBoundary.Format(time.RFC3339)
 
 	tx, err := app.DB.Begin(ctx)
 	if err != nil {
-		log.Printf("attribute_tick: begin tx: %v", err)
+		log.Printf("needs_tick: begin tx: %v", err)
 		return
 	}
 	defer tx.Rollback(ctx) // safe after commit (no-op)
@@ -83,10 +89,10 @@ func (app *App) dispatchAttributeTick(ctx context.Context) {
 	// first deploy after ZBBS-088).
 	var lastAtStr string
 	err = tx.QueryRow(ctx,
-		`SELECT COALESCE(value, '') FROM setting WHERE key = 'last_attribute_tick_at' FOR UPDATE`,
+		`SELECT COALESCE(value, '') FROM setting WHERE key = 'last_needs_tick_at' FOR UPDATE`,
 	).Scan(&lastAtStr)
 	if err != nil {
-		log.Printf("attribute_tick: lock setting row: %v", err)
+		log.Printf("needs_tick: lock setting row: %v", err)
 		return
 	}
 
@@ -96,10 +102,10 @@ func (app *App) dispatchAttributeTick(ctx context.Context) {
 		// tick. Avoids a deploy-time pulse where every villager gets
 		// +1 hunger the instant the migration runs.
 		if _, err := tx.Exec(ctx,
-			`UPDATE setting SET value = $1 WHERE key = 'last_attribute_tick_at'`,
+			`UPDATE setting SET value = $1 WHERE key = 'last_needs_tick_at'`,
 			hourBoundaryStr,
 		); err != nil {
-			log.Printf("attribute_tick: stamp first-run timestamp: %v", err)
+			log.Printf("needs_tick: stamp first-run timestamp: %v", err)
 			return
 		}
 		_ = tx.Commit(ctx)
@@ -111,9 +117,9 @@ func (app *App) dispatchAttributeTick(ctx context.Context) {
 		// Corrupted value. Reset to the current hour boundary and skip
 		// the tick. Next hour roll will fire normally; the lost interval
 		// is the price of avoiding a flood of retries every minute.
-		log.Printf("attribute_tick: bad last_attribute_tick_at %q (resetting): %v", lastAtStr, err)
+		log.Printf("needs_tick: bad last_needs_tick_at %q (resetting): %v", lastAtStr, err)
 		_, _ = tx.Exec(ctx,
-			`UPDATE setting SET value = $1 WHERE key = 'last_attribute_tick_at'`,
+			`UPDATE setting SET value = $1 WHERE key = 'last_needs_tick_at'`,
 			hourBoundaryStr,
 		)
 		_ = tx.Commit(ctx)
@@ -133,23 +139,23 @@ func (app *App) dispatchAttributeTick(ctx context.Context) {
 	}
 
 	cappedHours := hoursElapsed
-	if cappedHours > maxAttributeCatchupHours {
-		log.Printf("attribute_tick: %d hours since last tick exceeds cap (%d) — applying capped catch-up only",
-			hoursElapsed, maxAttributeCatchupHours)
-		cappedHours = maxAttributeCatchupHours
+	if cappedHours > maxNeedsCatchupHours {
+		log.Printf("needs_tick: %d hours since last tick exceeds cap (%d) — applying capped catch-up only",
+			hoursElapsed, maxNeedsCatchupHours)
+		cappedHours = maxNeedsCatchupHours
 	}
 
 	// Read the per-tick magnitude. Non-locking — operator edit racing
 	// with this read just means the new magnitude lands next tick.
-	amountStr := app.loadSetting(ctx, "attribute_tick_amount", "1")
+	amountStr := app.loadSetting(ctx, "needs_tick_amount", "1")
 	amount, err := strconv.Atoi(amountStr)
 	if err != nil || amount <= 0 {
-		log.Printf("attribute_tick: bad attribute_tick_amount %q (skipping tick): %v", amountStr, err)
+		log.Printf("needs_tick: bad needs_tick_amount %q (skipping tick): %v", amountStr, err)
 		// Stamp the hour so we don't keep retrying every minute. Operator
 		// fixes the setting and the next hour boundary picks up the new
 		// magnitude.
 		_, _ = tx.Exec(ctx,
-			`UPDATE setting SET value = $1 WHERE key = 'last_attribute_tick_at'`,
+			`UPDATE setting SET value = $1 WHERE key = 'last_needs_tick_at'`,
 			hourBoundaryStr,
 		)
 		_ = tx.Commit(ctx)
@@ -163,43 +169,43 @@ func (app *App) dispatchAttributeTick(ctx context.Context) {
 			hunger    = LEAST($1::int, hunger    + $2::int),
 			thirst    = LEAST($1::int, thirst    + $2::int),
 			tiredness = LEAST($1::int, tiredness + $2::int)
-	`, attributeMax, totalIncrement)
+	`, needMax, totalIncrement)
 	if err != nil {
-		log.Printf("attribute_tick: UPDATE failed (rolling back, will retry next minute): %v", err)
+		log.Printf("needs_tick: UPDATE failed (rolling back, will retry next minute): %v", err)
 		return
 	}
 
 	if _, err := tx.Exec(ctx,
-		`UPDATE setting SET value = $1 WHERE key = 'last_attribute_tick_at'`,
+		`UPDATE setting SET value = $1 WHERE key = 'last_needs_tick_at'`,
 		hourBoundaryStr,
 	); err != nil {
-		log.Printf("attribute_tick: stamp timestamp failed (rolling back, will retry next minute): %v", err)
+		log.Printf("needs_tick: stamp timestamp failed (rolling back, will retry next minute): %v", err)
 		return
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		log.Printf("attribute_tick: commit failed: %v", err)
+		log.Printf("needs_tick: commit failed: %v", err)
 		return
 	}
 
-	log.Printf("attribute_tick: %d hour(s) elapsed, applying %d capped hour(s) (last %s -> now %s), +%d to %d villagers",
+	log.Printf("needs_tick: %d hour(s) elapsed, applying %d capped hour(s) (last %s -> now %s), +%d to %d villagers",
 		hoursElapsed, cappedHours, lastAt.Format(time.RFC3339), hourBoundaryStr, totalIncrement, tag.RowsAffected())
 }
 
-// loadAttributeMagnitude returns the configured drop magnitude for a given
+// loadNeedMagnitude returns the configured drop magnitude for a given
 // consumption kind (food / drink). Used by executePay when a transaction
-// resolves to a specific need to reduce. Falls back to attributeMax (full
+// resolves to a specific need to reduce. Falls back to needMax (full
 // reset) on any read error so a misconfigured setting doesn't strand a
 // hungry NPC unfed.
-func (app *App) loadAttributeMagnitude(ctx context.Context, key string) int {
+func (app *App) loadNeedMagnitude(ctx context.Context, key string) int {
 	v := app.loadSetting(ctx, key, "")
 	if v == "" {
-		return attributeMax
+		return needMax
 	}
 	n, err := strconv.Atoi(v)
 	if err != nil || n < 0 {
-		log.Printf("attributes: bad %s magnitude %q (using max): %v", key, v, err)
-		return attributeMax
+		log.Printf("needs: bad %s magnitude %q (using max): %v", key, v, err)
+		return needMax
 	}
 	return n
 }
@@ -225,22 +231,22 @@ func (app *App) loadIntSetting(ctx context.Context, key string, def int) int {
 	}
 	n, err := strconv.Atoi(v)
 	if err != nil {
-		log.Printf("attributes: bad int setting %s=%q (using default %d): %v", key, v, def, err)
+		log.Printf("needs: bad int setting %s=%q (using default %d): %v", key, v, def, err)
 		return def
 	}
 	return n
 }
 
 // loadNeedThreshold reads a need-threshold setting and clamps it into the
-// valid band [8, attributeMax]. A threshold below 8 would make every NPC
+// valid band [8, needMax]. A threshold below 8 would make every NPC
 // red regardless of state (collides with the silent floor in needLabel);
-// a threshold above attributeMax would mean the red label never fires
+// a threshold above needMax would mean the red label never fires
 // (peak still would, but mild→red ordering would invert). Out-of-range
 // values fall back to the supplied default.
 func (app *App) loadNeedThreshold(ctx context.Context, key string, def int) int {
 	n := app.loadIntSetting(ctx, key, def)
-	if n < 8 || n > attributeMax {
-		log.Printf("attributes: out-of-range need threshold %s=%d (using default %d)", key, n, def)
+	if n < 8 || n > needMax {
+		log.Printf("needs: out-of-range need threshold %s=%d (using default %d)", key, n, def)
 		return def
 	}
 	return n
@@ -252,7 +258,7 @@ func (app *App) loadNeedThreshold(ctx context.Context, key string, def int) int 
 func (app *App) loadNonNegativeIntSetting(ctx context.Context, key string, def int) int {
 	n := app.loadIntSetting(ctx, key, def)
 	if n < 0 {
-		log.Printf("attributes: negative int setting %s=%d (using default %d)", key, n, def)
+		log.Printf("needs: negative int setting %s=%d (using default %d)", key, n, def)
 		return def
 	}
 	return n
@@ -289,7 +295,7 @@ func needLabel(need string, value, threshold int) string {
 	default:
 		return ""
 	}
-	if value >= attributeMax {
+	if value >= needMax {
 		return peak
 	}
 	if value >= threshold {
@@ -305,7 +311,7 @@ func needLabelTier(value, threshold int) int {
 	if value < 8 {
 		return 0
 	}
-	if value >= attributeMax {
+	if value >= needMax {
 		return 3
 	}
 	if value >= threshold {

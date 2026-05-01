@@ -104,7 +104,7 @@ type NPC struct {
 	SocialTag         *string    `json:"social_tag"`
 	SocialStartMinute *int       `json:"social_start_minute"`
 	SocialEndMinute   *int       `json:"social_end_minute"`
-	// Needs (ZBBS-082) — current values in [0, attributeMax]. The editor
+	// Needs (ZBBS-082) — current values in [0, needMax]. The editor
 	// surfaces these as a read-out plus a "top up" admin action; the
 	// engine uses them via the chronicler distress section and
 	// applyConsumption.
@@ -1064,13 +1064,13 @@ func (app *App) handleResetNPCNeeds(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// -attributeMax saturates the clamp regardless of the current
+	// -needMax saturates the clamp regardless of the current
 	// value, so this is the "fully top up" delta. Source "admin"
 	// suppresses the chronicler perception's source hint.
 	result, err := app.applyConsumption(ctx, tx, id, consumptionDelta{
-		Hunger:    -attributeMax,
-		Thirst:    -attributeMax,
-		Tiredness: -attributeMax,
+		Hunger:    -needMax,
+		Thirst:    -needMax,
+		Tiredness: -needMax,
 	}, "admin")
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
