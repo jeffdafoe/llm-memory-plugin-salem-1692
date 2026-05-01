@@ -10,6 +10,7 @@ const NPCSpritePickerScript = preload("res://scripts/npc_sprite_picker.gd")
 const ObjectTooltipScript = preload("res://scripts/object_tooltip.gd")
 const EventClientScript = preload("res://scripts/event_client.gd")
 const TalkPanelScript = preload("res://scripts/talk_panel.gd")
+const VillageTickerScript = preload("res://scripts/village_ticker.gd")
 
 @onready var world: Node2D = $World
 @onready var camera: Camera2D = $Camera
@@ -24,6 +25,7 @@ var npc_sprite_picker: Control = null
 var object_tooltip: CanvasLayer = null
 var event_client: Node = null
 var talk_panel_layer: CanvasLayer = null
+var village_ticker: PanelContainer = null
 
 # Login screen (added as a CanvasLayer so it renders on top of everything)
 var login_screen: Control = null
@@ -253,6 +255,19 @@ func _build_ui() -> void:
         if sheet != null:
             camera.register_ui_panel(sheet)
 
+    # Village ticker — thin marquee band below the top bar, scrolling
+    # chronicler atmosphere prose. Lives on the editor CanvasLayer
+    # alongside top_bar so it inherits the same z-order. Click → opens
+    # the talk panel to its Village tab. attach_world() must run after
+    # event_client.world is set so the ticker can hook the
+    # world_environment_added signal that event_client emits via world.
+    village_ticker = PanelContainer.new()
+    village_ticker.set_script(VillageTickerScript)
+    editor.add_child(village_ticker)
+    village_ticker.attach_world(world)
+    village_ticker.clicked.connect(_on_village_ticker_clicked)
+    camera.register_ui_panel(village_ticker)
+
     # Wire panel signals to editor
     editor_panel.asset_selected.connect(_on_panel_asset_selected)
     editor_panel.asset_inspect_requested.connect(_on_asset_inspect_requested)
@@ -300,6 +315,13 @@ func _on_config_pressed() -> void:
     if config_panel != null:
         config_panel.visible = not config_panel.visible
         camera.modal_open = config_panel.visible
+
+# Click on the village ticker → open the talk panel to its Village tab.
+# Bypasses the room-huddle gate the talk_launcher uses since the Village
+# tab is universally available.
+func _on_village_ticker_clicked() -> void:
+    if talk_panel_layer != null and talk_panel_layer.has_method("force_open_to_village_tab"):
+        talk_panel_layer.force_open_to_village_tab()
 
 func _on_edit_toggled(active: bool) -> void:
     editor_panel.visible = active

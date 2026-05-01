@@ -115,6 +115,72 @@ func (app *App) recordVillageEvent(ctx context.Context, eventType, text, actorID
 	})
 }
 
+// handleVillageEnvironmentRecent returns the most recent N world_environment
+// rows (chronicler atmosphere prose) for the top-bar marquee ticker's
+// initial state. Default 10, max 50. Newest-first ordering since the
+// ticker enqueues from oldest displayed → newest, so it surfaces the
+// freshest prose first as the user starts reading.
+func (app *App) handleVillageEnvironmentRecent(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Limit int `json:"limit"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	limit := req.Limit
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 50 {
+		limit = 50
+	}
+
+	// Filter to chronicler atmosphere prose specifically — defense
+	// against a future writer adding non-public rows to world_environment.
+	// All rows today are chronicler-authored (DEFAULT 'salem-chronicler'),
+	// so this is a no-op narrowing.
+	rows, err := app.DB.Query(r.Context(),
+		`SELECT id, text, phase, set_at
+		   FROM world_environment
+		  WHERE set_by = 'salem-chronicler'
+		  ORDER BY set_at DESC, id DESC
+		  LIMIT $1`, limit,
+	)
+	if err != nil {
+		jsonError(w, "Failed to load environment", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	type envRow struct {
+		ID    int64  `json:"id"`
+		Text  string `json:"text"`
+		Phase string `json:"phase"`
+		SetAt string `json:"set_at"`
+	}
+	out := make([]envRow, 0, limit)
+	for rows.Next() {
+		var (
+			row   envRow
+			phase *string
+			setAt time.Time
+		)
+		if err := rows.Scan(&row.ID, &row.Text, &phase, &setAt); err != nil {
+			jsonError(w, "Failed to scan environment", http.StatusInternalServerError)
+			return
+		}
+		if phase != nil {
+			row.Phase = *phase
+		}
+		row.SetAt = setAt.Format(time.RFC3339Nano)
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		jsonError(w, "Failed to read environment", http.StatusInternalServerError)
+		return
+	}
+
+	jsonResponse(w, http.StatusOK, map[string]any{"rows": out})
+}
+
 // handleVillageLogRecent returns the most recent N village_event rows
 // for backload when a client opens the Village tab. Default 50, max 200.
 // Returned in chronological (oldest-first) order so the client can append
