@@ -140,16 +140,22 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, recipientNam
 	if matchesAny(forLower, drinkKeywords) {
 		thirstDrop = app.loadAttributeMagnitude(ctx, "drink_drop")
 	}
+	// consumeResult carries the post-update need values for the
+	// post-commit npc_needs_changed broadcast — without it the editor
+	// panel's needs readout would stay stale until the next selection
+	// or full roster refresh.
+	var consumeResult consumptionResult
+	didConsume := false
 	if hungerDrop > 0 || thirstDrop > 0 {
-		if _, err := app.applyConsumption(ctx, tx, buyer.ID, consumptionDelta{
+		res, err := app.applyConsumption(ctx, tx, buyer.ID, consumptionDelta{
 			Hunger: -hungerDrop,
 			Thirst: -thirstDrop,
-		}, "meal_or_drink"); err != nil {
+		}, "meal_or_drink")
+		if err != nil {
 			return payResult{Result: "failed", Err: fmt.Sprintf("apply consumption: %v", err)}
 		}
-		// Result is intentionally discarded — pay.go doesn't surface
-		// post-consumption need values to the buyer (they'll see the
-		// drop in their next chronicler perception or roster pull).
+		consumeResult = res
+		didConsume = true
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -174,6 +180,24 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, recipientNam
 			"at":               time.Now().UTC().Format(time.RFC3339),
 		},
 	})
+
+	// Mirror the post-update need values to the editor panel via the same
+	// channel admin reset uses. Listeners patch their local NPC metas off
+	// this event; without it, the panel's NEEDS readout would stay stale
+	// until a fresh selection or full roster refresh. Only fired when a
+	// consumption actually ran — paying for a non-food/drink reason
+	// shouldn't churn the WS.
+	if didConsume {
+		app.Hub.Broadcast(WorldEvent{
+			Type: "npc_needs_changed",
+			Data: map[string]interface{}{
+				"id":        buyer.ID,
+				"hunger":    consumeResult.Hunger,
+				"thirst":    consumeResult.Thirst,
+				"tiredness": consumeResult.Tiredness,
+			},
+		})
+	}
 
 	return payResult{
 		Result:          "ok",

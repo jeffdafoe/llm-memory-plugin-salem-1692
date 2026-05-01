@@ -271,6 +271,21 @@ func (app *App) applyObjectRefreshAtArrival(ctx context.Context, actorID string,
 		},
 	})
 
+	// Mirror the post-update need values to the editor panel via the same
+	// channel admin reset uses. Listeners patch their local NPC metas off
+	// this event; without it, the panel's NEEDS readout would stay stale
+	// after a well drink or other refresh-tagged-object arrival until a
+	// fresh selection or full roster refresh.
+	app.Hub.Broadcast(WorldEvent{
+		Type: "npc_needs_changed",
+		Data: map[string]any{
+			"id":        actorID,
+			"hunger":    result.Hunger,
+			"thirst":    result.Thirst,
+			"tiredness": result.Tiredness,
+		},
+	})
+
 	return hits, nil
 }
 
