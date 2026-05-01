@@ -18,11 +18,11 @@ import (
 )
 
 // itemKindRow mirrors a row of item_kind for the picker / catalog.
+// No price column post-ZBBS-092 — prices are negotiated in dialogue.
 type itemKindRow struct {
 	Name               string  `json:"name"`
 	DisplayLabel       string  `json:"display_label"`
 	Category           string  `json:"category"`
-	Price              int     `json:"price"`
 	SatisfiesAttribute *string `json:"satisfies_attribute"`
 	SatisfiesAmount    *int    `json:"satisfies_amount"`
 	SortOrder          int     `json:"sort_order"`
@@ -30,7 +30,7 @@ type itemKindRow struct {
 
 func (app *App) handleListItems(w http.ResponseWriter, r *http.Request) {
 	rows, err := app.DB.Query(r.Context(),
-		`SELECT name, display_label, category, price,
+		`SELECT name, display_label, category,
 		        satisfies_attribute, satisfies_amount, sort_order
 		   FROM item_kind
 		  ORDER BY sort_order, name`,
@@ -44,7 +44,7 @@ func (app *App) handleListItems(w http.ResponseWriter, r *http.Request) {
 	out := []itemKindRow{}
 	for rows.Next() {
 		var rec itemKindRow
-		if err := rows.Scan(&rec.Name, &rec.DisplayLabel, &rec.Category, &rec.Price,
+		if err := rows.Scan(&rec.Name, &rec.DisplayLabel, &rec.Category,
 			&rec.SatisfiesAttribute, &rec.SatisfiesAmount, &rec.SortOrder); err != nil {
 			jsonError(w, "Failed to scan item", http.StatusInternalServerError)
 			return
