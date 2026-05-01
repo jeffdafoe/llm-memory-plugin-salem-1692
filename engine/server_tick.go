@@ -78,6 +78,10 @@ func (app *App) runServerTickOnce(ctx context.Context) {
 	// wall-clock hour has rolled. No-op on most ticks (cheap setting read +
 	// integer compare); single batch UPDATE on the boundary.
 	app.dispatchAttributeTick(ctx)
+	// Object-refresh regen (ZBBS-090) — replenishes available_quantity for
+	// rows configured with refresh_period_hours, in continuous or periodic
+	// mode. Cheap when no row is behind (single SELECT, zero UPDATEs).
+	app.dispatchObjectRefreshRegen(ctx)
 	// Sim conversation push — pushes the previous UTC day's
 	// agent_action_log digest to llm-memory-api so the api builds a
 	// distilled conversations/YYYY-MM-DD-sim-day note for the dream

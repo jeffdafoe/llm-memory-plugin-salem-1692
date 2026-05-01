@@ -122,13 +122,21 @@ func (app *App) applyObjectRefreshAtArrival(ctx context.Context, actorID string,
 		return nil, fmt.Errorf("lock actor: %w", err)
 	}
 
-	// Pull all refresh rows for the matched object. A multi-attribute
-	// object (shaded oak with both tiredness and hunger) returns multiple
-	// rows; we aggregate them into a single consumptionDelta so the
-	// downstream applyConsumption call gets one UPDATE for the whole
-	// arrival rather than one per attribute.
+	// Pull all refresh rows for the matched object. FOR UPDATE locks the
+	// rows so concurrent arrivals can't double-spend a finite supply (two
+	// NPCs arriving in the same tick at a well with available_quantity=1
+	// must not both successfully drink). available_quantity NULL means
+	// infinite — no decrement, no skip.
+	//
+	// A multi-attribute object (shaded oak with both tiredness from shade
+	// and hunger from acorns) returns multiple rows; each carries its own
+	// supply pool. Per-row supply gating is independent: an oak whose
+	// acorn supply is empty can still offer shade.
 	rows, err := tx.Query(ctx,
-		`SELECT attribute, amount FROM object_refresh WHERE object_id = $1`,
+		`SELECT attribute, amount, available_quantity
+		   FROM object_refresh
+		  WHERE object_id = $1
+		  FOR UPDATE`,
 		objectID,
 	)
 	if err != nil {
@@ -137,11 +145,12 @@ func (app *App) applyObjectRefreshAtArrival(ctx context.Context, actorID string,
 	type rowSpec struct {
 		attr   string
 		amount int
+		avail  *int // nil = infinite
 	}
 	var specs []rowSpec
 	for rows.Next() {
 		var rs rowSpec
-		if err := rows.Scan(&rs.attr, &rs.amount); err != nil {
+		if err := rows.Scan(&rs.attr, &rs.amount, &rs.avail); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("scan refresh row: %w", err)
 		}
@@ -157,17 +166,26 @@ func (app *App) applyObjectRefreshAtArrival(ctx context.Context, actorID string,
 		return nil, nil
 	}
 
-	// Aggregate per-attribute deltas. The CHECK constraint on
-	// object_refresh.attribute already restricts to {hunger, thirst,
-	// tiredness} AND the (object_id, attribute) PRIMARY KEY makes
-	// duplicate attribute rows impossible — so each spec contributes
-	// to a distinct delta. Unknown values from a drift in the
-	// constraint land in the default branch with a log warning rather
-	// than silently disappearing (defense in depth — the inline-UPDATE
-	// version logged here too).
+	// Aggregate per-attribute deltas. (object_id, attribute) is the PK so
+	// each attribute appears at most once. The FK to refresh_attribute
+	// (ZBBS-090) restricts to known names; unknown values from a future
+	// attribute that engine code doesn't yet handle land in the default
+	// branch with a log warning — defense in depth.
+	//
+	// Supply gating: an empty finite supply (available_quantity = 0) skips
+	// the row entirely — no delta contribution, no decrement. NULL supply
+	// means infinite (the well-never-dries default). Non-zero finite
+	// supply contributes the delta and queues a decrement.
 	delta := consumptionDelta{}
-	hasNonZero := false
+	appliedSpecs := make([]rowSpec, 0, len(specs))
 	for _, rs := range specs {
+		if rs.avail != nil && *rs.avail <= 0 {
+			// Dry well, empty bush — object exists with this attribute
+			// configured but the supply is exhausted. Silent skip; the
+			// regen tick will refill it eventually if a refresh schedule
+			// is configured.
+			continue
+		}
 		switch rs.attr {
 		case "hunger":
 			delta.Hunger += rs.amount
@@ -180,15 +198,34 @@ func (app *App) applyObjectRefreshAtArrival(ctx context.Context, actorID string,
 			continue
 		}
 		if rs.amount != 0 {
-			hasNonZero = true
+			appliedSpecs = append(appliedSpecs, rs)
 		}
 	}
-	if !hasNonZero {
-		// All-unknown specs (every row hit the default branch) or every
-		// row had amount=0 (the CHECK forbids it but defense in depth).
-		// Skip the consumption call entirely so we don't lock the actor
-		// row + read threshold settings for a guaranteed no-op.
+	if len(appliedSpecs) == 0 {
+		// Every row was either depleted, an unknown attribute, or zero
+		// amount. Skip the consumption call so we don't lock the actor row
+		// for a guaranteed no-op, and don't insert an audit row for
+		// nothing-happened.
 		return nil, nil
+	}
+
+	// Decrement the finite supplies for rows that actually contributed.
+	// One unit per arrival per row — a well at 10 supports 10 thirst
+	// quenchings; a bush at 5 berries gives 5 hunger refreshes; a shaded
+	// oak's shade and acorns deplete independently. NULL-supply rows
+	// (infinite) skip the UPDATE.
+	for _, rs := range appliedSpecs {
+		if rs.avail == nil {
+			continue
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE object_refresh
+			    SET available_quantity = available_quantity - 1
+			  WHERE object_id = $1 AND attribute = $2`,
+			objectID, rs.attr,
+		); err != nil {
+			return nil, fmt.Errorf("decrement supply for %s: %w", rs.attr, err)
+		}
 	}
 
 	// applyConsumption clamps, runs the UPDATE, and enqueues a chronicler
@@ -206,10 +243,11 @@ func (app *App) applyObjectRefreshAtArrival(ctx context.Context, actorID string,
 
 	// Build the hits list for the audit-log payload + Hub broadcast.
 	// NewValue mirrors result, indexed by attribute name; preserves the
-	// original spec order so consumers see the rows in DB-order, not
-	// map-iteration order.
-	hits := make([]refreshHit, 0, len(specs))
-	for _, rs := range specs {
+	// original DB-order so consumers see rows consistently. Skipped rows
+	// (empty supply, unknown attribute) don't surface as hits — silent
+	// dry-well behavior, no audit noise.
+	hits := make([]refreshHit, 0, len(appliedSpecs))
+	for _, rs := range appliedSpecs {
 		var newVal int
 		switch rs.attr {
 		case "hunger":
