@@ -30,7 +30,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -122,7 +124,9 @@ func (app *App) applyObjectRefreshAtArrival(ctx context.Context, actorID string,
 
 	// Pull all refresh rows for the matched object. A multi-attribute
 	// object (shaded oak with both tiredness and hunger) returns multiple
-	// rows; we apply each one.
+	// rows; we aggregate them into a single consumptionDelta so the
+	// downstream applyConsumption call gets one UPDATE for the whole
+	// arrival rather than one per attribute.
 	rows, err := tx.Query(ctx,
 		`SELECT attribute, amount FROM object_refresh WHERE object_id = $1`,
 		objectID,
@@ -153,29 +157,69 @@ func (app *App) applyObjectRefreshAtArrival(ctx context.Context, actorID string,
 		return nil, nil
 	}
 
-	// Apply each drop. Column whitelist lives in the CHECK constraint on
-	// object_refresh.attribute; we still gate here so a drift in the DB
-	// constraint can't turn into a SQL injection vector.
-	hits := make([]refreshHit, 0, len(specs))
+	// Aggregate per-attribute deltas. The CHECK constraint on
+	// object_refresh.attribute already restricts to {hunger, thirst,
+	// tiredness} AND the (object_id, attribute) PRIMARY KEY makes
+	// duplicate attribute rows impossible — so each spec contributes
+	// to a distinct delta. Unknown values from a drift in the
+	// constraint land in the default branch with a log warning rather
+	// than silently disappearing (defense in depth — the inline-UPDATE
+	// version logged here too).
+	delta := consumptionDelta{}
+	hasNonZero := false
 	for _, rs := range specs {
-		col, ok := needAttributeColumn(rs.attr)
-		if !ok {
+		switch rs.attr {
+		case "hunger":
+			delta.Hunger += rs.amount
+		case "thirst":
+			delta.Thirst += rs.amount
+		case "tiredness":
+			delta.Tiredness += rs.amount
+		default:
 			log.Printf("object_refresh: %s has unknown attribute %q (skipped)", objectID, rs.attr)
 			continue
 		}
-		// amount is negative (CHECK constraint on object_refresh.amount).
-		// GREATEST(0, x + amount) clamps at 0 so an over-configured drop
-		// can't push the value below zero. No upper clamp needed —
-		// adding a negative number can only decrease the value.
+		if rs.amount != 0 {
+			hasNonZero = true
+		}
+	}
+	if !hasNonZero {
+		// All-unknown specs (every row hit the default branch) or every
+		// row had amount=0 (the CHECK forbids it but defense in depth).
+		// Skip the consumption call entirely so we don't lock the actor
+		// row + read threshold settings for a guaranteed no-op.
+		return nil, nil
+	}
+
+	// applyConsumption clamps, runs the UPDATE, and enqueues a chronicler
+	// needs_resolved event when an agent NPC's need crosses below the
+	// red threshold during this drop. That last bit is the whole reason
+	// for routing through this helper rather than the inline UPDATE the
+	// pre-ZBBS-needs-resolved code used: a thirsty NPC who walked off
+	// the job to drink at the well now gets nudged back to work the
+	// same tick instead of staying parked at the well.
+	source := refreshSource(objectName)
+	result, err := app.applyConsumption(ctx, tx, actorID, delta, source)
+	if err != nil {
+		return nil, fmt.Errorf("apply consumption: %w", err)
+	}
+
+	// Build the hits list for the audit-log payload + Hub broadcast.
+	// NewValue mirrors result, indexed by attribute name; preserves the
+	// original spec order so consumers see the rows in DB-order, not
+	// map-iteration order.
+	hits := make([]refreshHit, 0, len(specs))
+	for _, rs := range specs {
 		var newVal int
-		if err := tx.QueryRow(ctx,
-			fmt.Sprintf(`UPDATE actor
-			             SET %s = GREATEST(0, %s + $1::int)
-			             WHERE id = $2
-			             RETURNING %s`, col, col, col),
-			rs.amount, actorID,
-		).Scan(&newVal); err != nil {
-			return nil, fmt.Errorf("apply %s: %w", rs.attr, err)
+		switch rs.attr {
+		case "hunger":
+			newVal = result.Hunger
+		case "thirst":
+			newVal = result.Thirst
+		case "tiredness":
+			newVal = result.Tiredness
+		default:
+			continue
 		}
 		hits = append(hits, refreshHit{
 			Attribute: rs.attr,
@@ -230,18 +274,35 @@ func (app *App) applyObjectRefreshAtArrival(ctx context.Context, actorID string,
 	return hits, nil
 }
 
-// needAttributeColumn maps a refresh-row attribute name to the actor
-// table column name. Whitelist enforced here as a defensive layer atop
-// the CHECK constraint on object_refresh.attribute. Returns (col, true)
-// for known attributes, ("", false) otherwise.
-func needAttributeColumn(attr string) (string, bool) {
-	switch attr {
-	case "hunger":
-		return "hunger", true
-	case "thirst":
-		return "thirst", true
-	case "tiredness":
-		return "tiredness", true
+// refreshSource maps an object's display name (or asset name fallback)
+// to the source token that applyConsumption surfaces to the chronicler
+// perception via sourceHint. Match is case-insensitive whole-word on
+// the human-readable name — robust to operator renames ("Well" /
+// "Well (Roofed)" / "The Old Well" all map to "well") without hard-
+// coding object UUIDs and without false-positives on names that merely
+// contain the substring (e.g. "Farewell Gate", "Well-Fed Shrine").
+//
+// Tokenization: split on whitespace, trim leading/trailing non-letter
+// runes (parens, commas) per token, then exact-match. Hyphenated and
+// apostrophized tokens stay intact, so "Well-Fed" doesn't classify as
+// a well; "Well's End" similarly stays unmatched (admins can rename
+// to a non-possessive form if they want it recognized).
+//
+// Unknown objects collapse to the empty string. sourceHint is also
+// whitelisted (only "well" and "meal_or_drink" surface today), so a
+// new refresh-tagged object that isn't yet recognized here renders
+// silently in the chronicler's perception rather than echoing arbitrary
+// object names. Add a case here when a new source needs a phrase. A
+// long-term cleaner home would be a `source` column on object_refresh,
+// but the v1 well case doesn't justify a schema migration yet.
+func refreshSource(objectName string) string {
+	for _, token := range strings.Fields(strings.ToLower(objectName)) {
+		token = strings.TrimFunc(token, func(r rune) bool {
+			return !unicode.IsLetter(r)
+		})
+		if token == "well" {
+			return "well"
+		}
 	}
-	return "", false
+	return ""
 }
