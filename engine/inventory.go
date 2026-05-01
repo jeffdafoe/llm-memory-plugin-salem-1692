@@ -78,16 +78,24 @@ type consumeResult struct {
 }
 
 // executeBuy moves `qty` of `itemKind` from the seller to the buyer,
-// transferring `qty * item_kind.price` coins in the opposite direction.
-// Atomic — either everything lands or nothing does.
+// transferring `amount` coins (the negotiated total) the opposite
+// direction. Atomic — either everything lands or nothing does.
+//
+// `amount` is the total agreed price typed by the buyer after dialogue
+// negotiation, same convention as pay()'s amount. There is no static
+// item price (ZBBS-092 dropped item_kind.price); supply-constrained
+// pricing emerges from conversation.
 //
 // Failure modes mirror pay.go: missing recipient, insufficient supply,
-// insufficient coins, self-trade, unknown item — all return "rejected".
-// Lock-and-failures return "failed". Buyer's coins are never partially
-// deducted.
-func (app *App) executeBuy(ctx context.Context, buyer *agentNPCRow, sellerName, itemKind string, qty int) buyResult {
+// insufficient coins, self-trade, unknown item, non-positive amount —
+// all return "rejected". Lock-and-failures return "failed". Buyer's
+// coins are never partially deducted.
+func (app *App) executeBuy(ctx context.Context, buyer *agentNPCRow, sellerName, itemKind string, qty, amount int) buyResult {
 	if qty <= 0 {
 		return buyResult{Result: "rejected", Err: "qty must be positive"}
+	}
+	if amount < 0 {
+		return buyResult{Result: "rejected", Err: "amount cannot be negative"}
 	}
 	sellerName = strings.TrimSpace(sellerName)
 	if sellerName == "" {
@@ -104,21 +112,19 @@ func (app *App) executeBuy(ctx context.Context, buyer *agentNPCRow, sellerName, 
 	}
 	defer tx.Rollback(ctx)
 
-	// Resolve item + price first. Lock not needed — item_kind is
-	// effectively immutable at runtime; price changes are a deliberate
-	// admin operation, not contentious.
-	var price int
-	err = tx.QueryRow(ctx,
-		`SELECT price FROM item_kind WHERE name = $1`,
+	// Validate item exists. Doesn't gate on availability — that's
+	// checked when we look at the seller's inventory below.
+	var itemExists bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM item_kind WHERE name = $1)`,
 		itemKind,
-	).Scan(&price)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return buyResult{Result: "rejected", Err: fmt.Sprintf("no such item %q", itemKind)}
-		}
+	).Scan(&itemExists); err != nil {
 		return buyResult{Result: "failed", Err: fmt.Sprintf("look up item: %v", err)}
 	}
-	totalCost := qty * price
+	if !itemExists {
+		return buyResult{Result: "rejected", Err: fmt.Sprintf("no such item %q", itemKind)}
+	}
+	totalCost := amount
 
 	// Lock buyer's coin row.
 	var buyerCoins int

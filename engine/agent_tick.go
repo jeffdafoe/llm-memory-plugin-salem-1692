@@ -653,7 +653,7 @@ func agentToolSpec() []agentToolDef {
 		},
 		{
 			Name:        "buy",
-			Description: "Buy goods from another villager and take them home (no consumption). Use this when you want to acquire something to use or eat later — flour from the merchant, bread to bring to a friend, materials for work. The goods move into your inventory and the seller's coins move into yours-minus. To consume what you bought immediately (drink an ale at the bar), use pay() instead — it handles the buy-and-drink flow in one verb. The seller must have stock; the engine will reject a buy for goods they don't carry.",
+			Description: "Buy goods from another villager at a price you've negotiated in conversation. The goods move into your inventory; the agreed coin total moves to the seller. Agree on the price in speak() first — the seller will quote, you accept or counter, then commit the agreed total here as `amount`. There's no fixed price list: a meal might be 3 coins on a normal day and 5 when supplies are low. The seller must have stock; the engine rejects buys for goods they don't carry. To consume what you bought immediately at a tavern bar, use pay() instead — it handles drink-at-the-counter in one verb.",
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -663,19 +663,23 @@ func agentToolSpec() []agentToolDef {
 					},
 					"item": map[string]interface{}{
 						"type":        "string",
-						"description": "Item kind, lowercase (ale, bread, stew, flour, wheat, milk, cheese, meat, berries, water, iron). Matches the item names you see in your inventory line.",
+						"description": "Item kind, lowercase. Generic categories `meal` (any food — supper, stew, bread, pie; flavor it however the seller describes it in speech) and `drink` (any beverage — ale, water, milk, cider). Specific materials when they apply: `wheat`, `flour`, `iron`. The item names match what you see in your own inventory line.",
 					},
 					"qty": map[string]interface{}{
 						"type":        "integer",
 						"description": "How many to buy. Defaults to 1 if omitted.",
 					},
+					"amount": map[string]interface{}{
+						"type":        "integer",
+						"description": "Total coins you've agreed to pay for the qty. The negotiated total, not per-unit. Required.",
+					},
 				},
-				"required": []string{"seller", "item"},
+				"required": []string{"seller", "item", "amount"},
 			},
 		},
 		{
 			Name:        "consume",
-			Description: "Eat or drink an item from your own inventory. Reduces the linked need (food → hunger, drink → thirst). Use this when you actually want to satisfy a need from goods you already own — the bread you bought from the merchant, water from your flask. Materials (wheat, flour, iron) can't be consumed; you'd need to make something with them first.",
+			Description: "Eat or drink an item from your own inventory. Reduces the linked need (meal → hunger, drink → thirst). Use this when you actually want to satisfy a need from goods you already own — the meal you bought from the merchant, the flask of drink at your belt. Materials (wheat, flour, iron) can't be consumed; you'd need to make something with them first.",
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -1474,12 +1478,18 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 			qty = coerceIntInput(tc.Input["quantity"])
 		}
 		if qty == 0 {
-			// Default to 1 — most "buy a bread" calls are single-unit and
-			// requiring qty would just push prompt complexity onto every
-			// purchase. Explicit qty still works.
 			qty = 1
 		}
-		br := app.executeBuy(ctx, r, seller, item, qty)
+		amount := coerceIntInput(tc.Input["amount"])
+		// `amount` is required — there is no static price column post-
+		// ZBBS-092. A missing amount means the LLM forgot the negotiated
+		// total; reject so the model gets a clean error and can retry
+		// with the agreed number.
+		if amount <= 0 && tc.Input["amount"] == nil {
+			result, errStr = "rejected", "missing amount (negotiated price total)"
+			break
+		}
+		br := app.executeBuy(ctx, r, seller, item, qty, amount)
 		result = br.Result
 		errStr = br.Err
 
