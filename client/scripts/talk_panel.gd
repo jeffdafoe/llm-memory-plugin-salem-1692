@@ -45,9 +45,38 @@ var log_vbox: VBoxContainer
 var speech_input: TextEdit
 var speak_button: Button
 
+# ZBBS-087 — Village tab. The panel hosts two tabs: Room (existing room-
+# scoped chat) and Village (mechanical village-wide events).
+const TAB_ROOM := 0
+const TAB_VILLAGE := 1
+var tab_bar: HBoxContainer = null
+var tab_room_button: Button = null
+var tab_village_button: Button = null
+var tab_village_unread_dot: Panel = null
+var current_tab: int = TAB_ROOM
+var village_scroll: ScrollContainer = null
+var village_vbox: VBoxContainer = null
+# village_log_loading is true between request fire and successful parse;
+# village_log_loaded only flips after a 200 response was decoded. Failed
+# requests leave both false so the next tab activation retries.
+var village_log_loading: bool = false
+var village_log_loaded: bool = false
+# Live events that arrive while the backload is in flight get parked
+# here and applied after the backload completes — the
+# (occurred_at, id) overlap window between SELECT snapshot and WS
+# broadcast is handled by the village_seen_ids dedupe.
+var village_pending_live: Array = []
+# Set of village_event ids already rendered, used to dedupe across the
+# backload/WS race. int → true. Bounded implicitly by MAX_LOG_LINES
+# trimming + occasional clear if it ever grows unboundedly (it won't
+# under realistic load, but worth keeping in mind).
+var village_seen_ids: Dictionary = {}
+var village_unread: int = 0
+
 var refresh_timer: Timer
 var http_me: HTTPRequest
 var http_speak: HTTPRequest
+var http_village_log: HTTPRequest
 
 var pc_exists := false
 var character_name := ""
@@ -103,6 +132,9 @@ func _build_tree() -> void:
 
     http_speak = HTTPRequest.new()
     add_child(http_speak)
+
+    http_village_log = HTTPRequest.new()
+    add_child(http_village_log)
 
     refresh_timer = Timer.new()
     refresh_timer.wait_time = REFRESH_INTERVAL
@@ -198,9 +230,12 @@ func _build_sheet() -> void:
     pad.add_child(vbox)
 
     _build_header(vbox)
+    _build_tab_bar(vbox)
     _build_nearby(vbox)
     _build_log(vbox)
+    _build_village_log(vbox)
     _build_input(vbox)
+    _set_active_tab(TAB_ROOM)
 
 
 func _build_header(parent: Control) -> void:
@@ -264,6 +299,247 @@ func _build_log(parent: Control) -> void:
     log_scroll.add_child(log_vbox)
 
 
+# ZBBS-087 — Tab strip below the header. Two tabs: Room (existing
+# room-scoped chat with nearby chips + speech input) and Village (read-
+# only feed of arrivals/departures/phase events). Switching tabs swaps
+# which content the body shows.
+func _build_tab_bar(parent: Control) -> void:
+    tab_bar = HBoxContainer.new()
+    tab_bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    tab_bar.custom_minimum_size = Vector2(0, 22)
+    tab_bar.add_theme_constant_override("separation", 4)
+    parent.add_child(tab_bar)
+
+    tab_room_button = _make_tab_button("Room")
+    tab_bar.add_child(tab_room_button)
+
+    # Village tab carries an unread dot anchored to the upper-right of
+    # the button — same affordance as the existing nearby-huddle pulse.
+    var village_wrap := Control.new()
+    village_wrap.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+    tab_bar.add_child(village_wrap)
+    tab_village_button = _make_tab_button("Village")
+    village_wrap.add_child(tab_village_button)
+    village_wrap.custom_minimum_size = tab_village_button.custom_minimum_size
+
+    tab_village_unread_dot = Panel.new()
+    tab_village_unread_dot.custom_minimum_size = Vector2(7, 7)
+    tab_village_unread_dot.size = Vector2(7, 7)
+    tab_village_unread_dot.position = Vector2(tab_village_button.custom_minimum_size.x - 9, 3)
+    tab_village_unread_dot.visible = false
+    var dot_style := StyleBoxFlat.new()
+    dot_style.bg_color = Color(0.85, 0.45, 0.18, 1.0)
+    dot_style.corner_radius_top_left = 4
+    dot_style.corner_radius_top_right = 4
+    dot_style.corner_radius_bottom_left = 4
+    dot_style.corner_radius_bottom_right = 4
+    tab_village_unread_dot.add_theme_stylebox_override("panel", dot_style)
+    tab_village_unread_dot.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    village_wrap.add_child(tab_village_unread_dot)
+
+
+func _make_tab_button(label: String) -> Button:
+    var b := Button.new()
+    b.text = label
+    b.toggle_mode = true
+    b.focus_mode = Control.FOCUS_NONE
+    b.mouse_filter = Control.MOUSE_FILTER_STOP
+    b.custom_minimum_size = Vector2(72, 22)
+    b.add_theme_font_size_override("font_size", 11)
+    return b
+
+
+# ZBBS-087 — Village tab content. Built once, shown/hidden by tab swap.
+# Read-only: no speech input, no nearby chips. Backloaded lazily on
+# first switch via POST /api/village/log/recent; live updates land via
+# the world.village_event_added signal.
+func _build_village_log(parent: Control) -> void:
+    village_scroll = ScrollContainer.new()
+    village_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    village_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+    village_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+    village_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+    village_scroll.visible = false
+    parent.add_child(village_scroll)
+
+    village_vbox = VBoxContainer.new()
+    village_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    village_vbox.add_theme_constant_override("separation", 6)
+    village_scroll.add_child(village_vbox)
+
+
+# Visibility toggle between the two tabs. Room tab shows nearby chips +
+# room log + speech input; Village tab shows the village log (read-only).
+# Lazy-loads the village backload on first activation.
+func _set_active_tab(idx: int) -> void:
+    current_tab = idx
+    var room_active := idx == TAB_ROOM
+    if tab_room_button != null:
+        tab_room_button.button_pressed = room_active
+    if tab_village_button != null:
+        tab_village_button.button_pressed = not room_active
+    if nearby_scroll != null:
+        nearby_scroll.visible = room_active
+    if log_scroll != null:
+        log_scroll.visible = room_active
+    if speech_input != null:
+        speech_input.get_parent().visible = room_active
+    if village_scroll != null:
+        village_scroll.visible = not room_active
+    if not room_active:
+        # Switching INTO Village clears the unread badge and triggers
+        # backload on first view.
+        village_unread = 0
+        if tab_village_unread_dot != null:
+            tab_village_unread_dot.visible = false
+        if not village_log_loaded:
+            _load_village_log_backload()
+        _scroll_village_log_to_bottom_deferred()
+
+
+func _load_village_log_backload() -> void:
+    if village_log_loaded or village_log_loading:
+        return
+    if http_village_log == null:
+        return
+    var url: String = Auth.api_base + "/api/village/log/recent"
+    var headers: PackedStringArray = ["Content-Type: application/json"]
+    headers.append(Auth.get_auth_header())
+    var body := JSON.stringify({"limit": 50})
+    village_log_loading = true
+    var err := http_village_log.request(url, headers, HTTPClient.METHOD_POST, body)
+    if err != OK:
+        # request() rejected synchronously — clear the loading flag so
+        # the next tab activation retries. WS events accumulated in
+        # village_pending_live during this brief window flush below as
+        # a courtesy rather than getting stuck.
+        village_log_loading = false
+        _flush_pending_live()
+
+
+func _on_village_log_completed(_result: int, code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
+    village_log_loading = false
+    if code != 200:
+        # Backload failed — leave village_log_loaded false so the next
+        # tab activation retries. Drop pending live rows; without the
+        # backload anchor we don't know what's missing in front of them.
+        village_pending_live.clear()
+        return
+    var json = JSON.parse_string(body.get_string_from_utf8())
+    if typeof(json) != TYPE_DICTIONARY:
+        return
+    var events = json.get("events", [])
+    if typeof(events) != TYPE_ARRAY:
+        return
+    for entry in events:
+        if typeof(entry) == TYPE_DICTIONARY:
+            _append_village_event(entry, true)
+    village_log_loaded = true
+    _flush_pending_live()
+    _scroll_village_log_to_bottom_deferred()
+
+
+# Apply WS events that arrived during the backload. Dedupe by id so
+# rows that were already in the backload result aren't re-rendered.
+func _flush_pending_live() -> void:
+    for entry in village_pending_live:
+        if typeof(entry) == TYPE_DICTIONARY:
+            _append_village_event(entry, false)
+    village_pending_live.clear()
+
+
+# Live update from world.village_event_added signal. When the Village
+# tab is the active tab, append the row immediately and scroll to bottom;
+# otherwise increment the unread badge so the user knows to look. Events
+# arriving during an in-flight backload are buffered and flushed after
+# the backload completes (with id-based dedupe handling the race).
+func _on_village_event_added(data: Dictionary) -> void:
+    if village_log_loading and not village_log_loaded:
+        village_pending_live.append(data)
+        return
+    var appended := _append_village_event(data, false)
+    if not appended:
+        return
+    if current_tab == TAB_VILLAGE and is_open:
+        _scroll_village_log_to_bottom_deferred()
+    else:
+        village_unread += 1
+        if tab_village_unread_dot != null:
+            tab_village_unread_dot.visible = true
+
+
+# Append one village_event row to the village log. Returns true if a
+# label was actually added so callers can avoid mis-counting unread.
+# Styles by event_type: phase events render as centered atmospheric
+# accent, arrivals and departures as plain dim text.
+func _append_village_event(row: Dictionary, _is_backload: bool) -> bool:
+    if village_vbox == null:
+        return false
+    var text: String = str(row.get("text", ""))
+    if text == "":
+        return false
+    var id_val := int(row.get("id", 0))
+    if id_val > 0:
+        if village_seen_ids.has(id_val):
+            return false
+        village_seen_ids[id_val] = true
+    var event_type: String = str(row.get("event_type", ""))
+
+    var label := Label.new()
+    label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+    label.text = text
+    label.add_theme_font_size_override("font_size", 12)
+    if event_type.begins_with("phase_"):
+        label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+        label.add_theme_color_override("font_color", Color(0.85, 0.72, 0.42, 1.0))
+    else:
+        label.add_theme_color_override("font_color", Color(0.78, 0.72, 0.58, 1.0))
+    village_vbox.add_child(label)
+
+    while village_vbox.get_child_count() > MAX_LOG_LINES:
+        village_vbox.get_child(0).queue_free()
+    return true
+
+
+func _scroll_village_log_to_bottom_deferred() -> void:
+    if village_scroll == null:
+        return
+    # Two frames: one for the new label to lay out, one for the scroll
+    # container to recompute its content size. Same pattern the room
+    # log uses for its scroll-to-bottom on backload.
+    call_deferred("_scroll_village_log_to_bottom")
+    await get_tree().process_frame
+    await get_tree().process_frame
+    _scroll_village_log_to_bottom()
+
+
+func _scroll_village_log_to_bottom() -> void:
+    if village_scroll == null:
+        return
+    var bar := village_scroll.get_v_scroll_bar()
+    if bar != null:
+        village_scroll.scroll_vertical = int(bar.max_value)
+
+
+# Public entry point used by the top-bar marquee ticker. Opens the
+# panel (bypassing the room-huddle gate that the launcher button uses)
+# and switches to the Village tab. Idempotent — safe to call when the
+# panel is already open on either tab.
+func force_open_to_village_tab() -> void:
+    if not pc_exists:
+        return
+    if sheet_anchor == null or talk_launcher == null:
+        # Guard against the rare case where the ticker is clicked
+        # before the panel has finished its initial build/refresh.
+        return
+    is_open = true
+    user_closed = false
+    sheet_anchor.visible = true
+    talk_launcher.visible = false
+    _set_active_tab(TAB_VILLAGE)
+
+
 func _build_input(parent: Control) -> void:
     var row := HBoxContainer.new()
     row.custom_minimum_size = Vector2(0, 28)
@@ -321,6 +597,12 @@ func _connect_signals() -> void:
     refresh_timer.timeout.connect(_refresh_state)
     http_me.request_completed.connect(_on_me_completed)
     http_speak.request_completed.connect(_on_speak_completed)
+    http_village_log.request_completed.connect(_on_village_log_completed)
+
+    if tab_room_button != null:
+        tab_room_button.pressed.connect(_set_active_tab.bind(TAB_ROOM))
+    if tab_village_button != null:
+        tab_village_button.pressed.connect(_set_active_tab.bind(TAB_VILLAGE))
 
     speech_input.focus_entered.connect(_on_input_focus_entered)
     speech_input.focus_exited.connect(_on_input_focus_exited)
@@ -335,6 +617,8 @@ func _connect_world_signal() -> void:
         world.npc_spoke.connect(_on_npc_spoke)
     if world.has_signal("room_event"):
         world.room_event.connect(_on_room_event)
+    if world.has_signal("village_event_added"):
+        world.village_event_added.connect(_on_village_event_added)
 
 
 # talk_sheet is the actual visible chat panel (the bottom-right rounded

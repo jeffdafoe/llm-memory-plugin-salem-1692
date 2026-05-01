@@ -1750,6 +1750,18 @@ func apply_room_event(data: Dictionary) -> void:
         return
     room_event.emit(data)
 
+## ZBBS-087 — village-wide log feed (talk_panel Village tab subscribes).
+signal village_event_added(data: Dictionary)
+
+func apply_village_event_added(data: Dictionary) -> void:
+    village_event_added.emit(data)
+
+## ZBBS-087 — chronicler atmosphere prose for the top-bar marquee ticker.
+signal world_environment_added(data: Dictionary)
+
+func apply_world_environment_added(data: Dictionary) -> void:
+    world_environment_added.emit(data)
+
 func apply_object_tags_updated(data: Dictionary) -> void:
     var object_id: String = str(data.get("object_id", ""))
     if object_id == "" or not placed_objects.has(object_id):
