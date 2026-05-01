@@ -229,7 +229,7 @@ func (app *App) evaluateSocialSchedule(ctx context.Context, s *socialRow, now ti
 		}
 		npc := &behaviorNPC{ID: s.ID, CurX: s.CurrentX, CurY: s.CurrentY}
 		app.interpolateCurrentPos(npc)
-		if err := app.startReturnWalk(ctx, npc, dx, dy, id, "social-enter"); err != nil {
+		if err := app.startReturnWalk(ctx, npc, dx, dy, id, "social-enter", true); err != nil {
 			log.Printf("social-scheduler: social-enter %s dispatch: %v", s.ID, err)
 			return
 		}
@@ -260,7 +260,7 @@ func (app *App) evaluateSocialSchedule(ctx context.Context, s *socialRow, now ti
 		}
 		npc := &behaviorNPC{ID: s.ID, CurX: s.CurrentX, CurY: s.CurrentY}
 		app.interpolateCurrentPos(npc)
-		if err := app.startReturnWalk(ctx, npc, s.HomeDoorX, s.HomeDoorY, s.HomeStructureID, "social-leave"); err != nil {
+		if err := app.startReturnWalk(ctx, npc, s.HomeDoorX, s.HomeDoorY, s.HomeStructureID, "social-leave", true); err != nil {
 			log.Printf("social-scheduler: social-leave %s dispatch: %v", s.ID, err)
 			return
 		}

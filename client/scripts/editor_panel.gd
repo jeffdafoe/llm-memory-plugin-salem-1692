@@ -469,9 +469,7 @@ func _ready() -> void:
     _add_marker_legend_row(Color(1.0, 0.65, 0.20, 0.9), false,
         "Stand — interior render position")
     _add_marker_legend_row(Color(0.30, 0.85, 0.45, 0.9), true,
-        "Loiter — where visitors stand outside")
-    _add_marker_legend_row(Color(1.0, 0.85, 0.25, 0.9), true,
-        "Gather — village rally point (gathering-point tag)")
+        "Loiter — center of the visitor slot ring (NPCs stand around it, not on it)")
 
     # Attachments section — shown when selected object has slots
     _attachments_section = VBoxContainer.new()

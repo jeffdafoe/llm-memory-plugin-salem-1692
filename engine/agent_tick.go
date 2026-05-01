@@ -36,7 +36,6 @@ import (
 	"fmt"
 	"log"
 	"math"
-	"math/rand"
 	"regexp"
 	"strconv"
 	"strings"
@@ -1427,9 +1426,14 @@ func (app *App) executeAgentMoveTo(ctx context.Context, r *agentNPCRow, dest str
 		return err
 	}
 
+	// Owners (this NPC's home or work) walked to door_offset and should
+	// flip inside on arrival — same flow scheduled worker arrivals use.
+	// Visitors walked to the loiter point and stay outside.
+	enterOnArrival := isAgentMoveOwner(r, structureID)
+
 	npc := &behaviorNPC{ID: r.ID, CurX: r.CurrentX, CurY: r.CurrentY}
 	app.interpolateCurrentPos(npc)
-	if err := app.startReturnWalk(ctx, npc, walkX, walkY, structureID, "agent-move"); err != nil {
+	if err := app.startReturnWalk(ctx, npc, walkX, walkY, structureID, "agent-move", enterOnArrival); err != nil {
 		return fmt.Errorf("startReturnWalk: %w", err)
 	}
 
@@ -1485,7 +1489,7 @@ func (app *App) resolveMoveDestination(ctx context.Context, r *agentNPCRow, dest
 		var doorX, doorY sql.NullInt32
 		var footprintBottom int
 		if err := row.Scan(&hsID, &oID, &ox, &oy, &loiterX, &loiterY, &doorX, &doorY, &footprintBottom); err == nil {
-			wx, wy := pickWalkTarget(r, hsID, ox, oy, loiterX, loiterY, doorX, doorY, footprintBottom)
+			wx, wy := app.pickWalkTarget(ctx, r, hsID, ox, oy, loiterX, loiterY, doorX, doorY, footprintBottom)
 			return oID, wx, wy, nil
 		} else if err != sql.ErrNoRows {
 			return "", 0, 0, err
@@ -1516,36 +1520,25 @@ func (app *App) resolveMoveDestination(ctx context.Context, r *agentNPCRow, dest
 		}
 		return "", 0, 0, err
 	}
-	wx, wy := pickWalkTarget(r, oID, ox, oy, loiterX, loiterY, doorX, doorY, footprintBottom)
+	wx, wy := app.pickWalkTarget(ctx, r, oID, ox, oy, loiterX, loiterY, doorX, doorY, footprintBottom)
 	return oID, wx, wy, nil
 }
 
 // pickWalkTarget chooses the walk-to coordinates for an agent-initiated
 // move. Owners (NPC's own home or work) walk to door_offset so the
 // existing arrive/inside/stand_offset rendering chain stays intact.
-// Visitors land at the placement's effective loiter spot (the same one
-// the editor's green marker renders at) — see effectiveLoiterTile in
-// village_objects.go for the resolution formula.
+// Visitors are distributed across the 8 king's-move slots around the
+// loiter pin via pickVisitorSlot — the pin tile itself is the gathering
+// CENTER, never a stand spot.
 //
 // All offsets are tile-unit ints; multiplied by tileSize=32.0 to get the
 // pixel coordinate the walk dispatcher expects.
-//
-// Visitor jitter (ZBBS-075): when several NPCs walk to the same loiter
-// point in close succession (e.g. four villagers heading to the well),
-// landing all of them on the same pixel is visually confusing — they
-// stack and look like one sprite. A small ±half-tile random offset
-// spreads them out naturally. Owners (door path) get no jitter — their
-// arrive/inside flow assumes the door tile exactly.
-func pickWalkTarget(r *agentNPCRow, structureID string, ox, oy float64,
+func (app *App) pickWalkTarget(ctx context.Context, r *agentNPCRow, structureID string, ox, oy float64,
 	loiterX, loiterY, doorX, doorY sql.NullInt32, footprintBottom int) (float64, float64) {
 	const tileSize = 32.0
-	isOwner := (r.HomeStructureID.Valid && r.HomeStructureID.String == structureID) ||
-		(r.WorkStructureID.Valid && r.WorkStructureID.String == structureID)
-
-	if !isOwner {
+	if !isAgentMoveOwner(r, structureID) {
 		lx, ly := effectiveLoiterTile(loiterX, loiterY, doorX, doorY, footprintBottom)
-		jx, jy := loiterJitter()
-		return ox + float64(lx)*tileSize + jx, oy + float64(ly)*tileSize + jy
+		return app.pickVisitorSlot(ctx, r.ID, ox, oy, lx, ly)
 	}
 	if doorX.Valid && doorY.Valid {
 		return ox + float64(doorX.Int32)*tileSize, oy + float64(doorY.Int32)*tileSize
@@ -1553,13 +1546,12 @@ func pickWalkTarget(r *agentNPCRow, structureID string, ox, oy float64,
 	return ox, oy
 }
 
-// loiterJitter returns a small random offset in pixels for visitor walk
-// targets so multiple NPCs heading to the same loiter point spread out
-// naturally instead of stacking on one pixel. Range is roughly half a
-// tile in each direction.
-func loiterJitter() (float64, float64) {
-	const jitterRange = 14.0 // pixels; half-tile-ish
-	return (rand.Float64()*2 - 1) * jitterRange, (rand.Float64()*2 - 1) * jitterRange
+// isAgentMoveOwner reports whether the destination structure is this
+// NPC's home or work. Owner moves walk to door_offset and flip inside
+// on arrival; visitor moves walk to the loiter point and stay outside.
+func isAgentMoveOwner(r *agentNPCRow, structureID string) bool {
+	return (r.HomeStructureID.Valid && r.HomeStructureID.String == structureID) ||
+		(r.WorkStructureID.Valid && r.WorkStructureID.String == structureID)
 }
 
 // resolveSelfReference handles destinations that point at this NPC's own
@@ -1613,7 +1605,7 @@ func (app *App) resolveSelfReference(ctx context.Context, r *agentNPCRow, dest s
 	if err := row.Scan(&oID, &ox, &oy, &loiterX, &loiterY, &doorX, &doorY, &footprintBottom); err != nil {
 		return "", 0, 0, true, err
 	}
-	wx, wy := pickWalkTarget(r, oID, ox, oy, loiterX, loiterY, doorX, doorY, footprintBottom)
+	wx, wy := app.pickWalkTarget(ctx, r, oID, ox, oy, loiterX, loiterY, doorX, doorY, footprintBottom)
 	return oID, wx, wy, true, nil
 }
 
@@ -1668,11 +1660,16 @@ func (app *App) executeAgentChore(ctx context.Context, r *agentNPCRow, category 
 		}
 		return err
 	}
-	wx, wy := pickWalkTarget(r, oID, ox, oy, loiterX, loiterY, doorX, doorY, footprintBottom)
+	wx, wy := app.pickWalkTarget(ctx, r, oID, ox, oy, loiterX, loiterY, doorX, doorY, footprintBottom)
+
+	// Chore destinations resolve to a tagged placement (well, outhouse,
+	// shop). Even on the rare chance it's the NPC's own home/work,
+	// chores are visitor-style — stand at the loiter point, don't enter.
+	enterOnArrival := false
 
 	npc := &behaviorNPC{ID: r.ID, CurX: r.CurrentX, CurY: r.CurrentY}
 	app.interpolateCurrentPos(npc)
-	if err := app.startReturnWalk(ctx, npc, wx, wy, oID, "agent-chore"); err != nil {
+	if err := app.startReturnWalk(ctx, npc, wx, wy, oID, "agent-chore", enterOnArrival); err != nil {
 		return fmt.Errorf("startReturnWalk: %w", err)
 	}
 

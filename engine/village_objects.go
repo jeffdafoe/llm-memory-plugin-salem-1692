@@ -4,7 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"hash/fnv"
 	"log"
+	"math"
+	"math/rand"
 	"net/http"
 	"time"
 )
@@ -86,6 +89,137 @@ func effectiveLoiterTile(loiterX, loiterY, doorX, doorY sql.NullInt32, footprint
 		return int(doorX.Int32), int(doorY.Int32) + 1
 	}
 	return 0, footprintBottom + 2
+}
+
+// visitorSlotOffsets is the king's-move neighborhood of a loiter pin
+// tile — the 8 tiles where visiting NPCs can stand. The pin tile itself
+// is intentionally NOT a slot: the pin marks the gathering CENTER, not
+// where any single NPC stands. Order is canonical so any reordering
+// happens via the per-NPC hash shuffle, not here.
+var visitorSlotOffsets = [8][2]int{
+	{-1, -1}, {0, -1}, {1, -1},
+	{-1, 0}, {1, 0},
+	{-1, 1}, {0, 1}, {1, 1},
+}
+
+// pickVisitorSlot picks a tile center near a loiter pin for one visiting
+// NPC. The 8 surrounding tiles are walked in an order shuffled per-NPC
+// (deterministic from npcID), and the first slot that's free is taken.
+//
+// Free = not covered by any is_obstacle placement footprint, and not
+// currently occupied by another outside actor. When all 8 slots are
+// blocked, falls back to the loiter tile center itself; the admin should
+// move the pin further from obstructions in that case.
+//
+// Returns world-pixel coordinates of the chosen tile's CENTER. Tile-aligned
+// targets sidestep the arrival snap that defeated the old jitter approach.
+func (app *App) pickVisitorSlot(ctx context.Context, npcID string, anchorX, anchorY float64, loiterTileX, loiterTileY int) (float64, float64) {
+	const tileSize = 32.0
+
+	anchorTileX := int(math.Floor(anchorX / tileSize))
+	anchorTileY := int(math.Floor(anchorY / tileSize))
+	centerTileX := anchorTileX + loiterTileX
+	centerTileY := anchorTileY + loiterTileY
+
+	// Hash the NPC id to seed a shuffle of the 8 slot indices. fnv32a is
+	// fast and good enough — this is purely for spreading visitors across
+	// slots, not security.
+	h := fnv.New32a()
+	h.Write([]byte(npcID))
+	rng := rand.New(rand.NewSource(int64(h.Sum32())))
+	indices := []int{0, 1, 2, 3, 4, 5, 6, 7}
+	rng.Shuffle(len(indices), func(i, j int) {
+		indices[i], indices[j] = indices[j], indices[i]
+	})
+
+	blocked := app.loadBlockedSlotTiles(ctx, npcID, centerTileX, centerTileY)
+
+	for _, idx := range indices {
+		tx := centerTileX + visitorSlotOffsets[idx][0]
+		ty := centerTileY + visitorSlotOffsets[idx][1]
+		if !blocked[tileKey(tx, ty)] {
+			return tileCenterPx(tx), tileCenterPx(ty)
+		}
+	}
+
+	// All 8 blocked. Falling back to the loiter tile itself isn't ideal
+	// (visitors stack on the pin), but it gets the NPC somewhere reachable.
+	log.Printf("pickVisitorSlot: all 8 slots blocked at tile (%d,%d) for npc %s; using loiter tile", centerTileX, centerTileY, npcID)
+	return tileCenterPx(centerTileX), tileCenterPx(centerTileY)
+}
+
+func tileCenterPx(tile int) float64 {
+	return float64(tile)*32.0 + 16.0
+}
+
+// tileKey packs (x, y) tile coords into a single int64 for map lookup.
+// Both x and y can be negative; we cast y through uint32 to keep the
+// low 32 bits intact.
+func tileKey(x, y int) int64 {
+	return int64(x)<<32 | int64(uint32(int32(y)))
+}
+
+// loadBlockedSlotTiles returns the set of tile keys (covering at least
+// the 3x3 ring centered at cx,cy) that are blocked. A tile is blocked if
+// (a) it falls inside some is_obstacle placement's footprint, OR (b) it
+// currently holds another outside actor. One SQL round-trip per source
+// keeps this cheap even though pickVisitorSlot is on the per-tick path.
+func (app *App) loadBlockedSlotTiles(ctx context.Context, npcID string, cx, cy int) map[int64]bool {
+	blocked := make(map[int64]bool)
+
+	// Obstacle footprints. A placement's footprint covers tiles in a
+	// rectangle (anchorTile - left .. anchorTile + right, anchorTile - top
+	// .. anchorTile + bottom). We pull every obstacle whose anchor tile
+	// could possibly cover any tile in our 3x3 ring, then expand each
+	// footprint into the blocked set.
+	rows, err := app.DB.Query(ctx,
+		`SELECT FLOOR(o.x / 32.0)::int, FLOOR(o.y / 32.0)::int,
+		        a.footprint_left, a.footprint_right, a.footprint_top, a.footprint_bottom
+		 FROM village_object o JOIN asset a ON a.id = o.asset_id
+		 WHERE a.is_obstacle = true
+		   AND ABS(FLOOR(o.x / 32.0)::int - $1) <= a.footprint_left + a.footprint_right + 1
+		   AND ABS(FLOOR(o.y / 32.0)::int - $2) <= a.footprint_top + a.footprint_bottom + 1`,
+		cx, cy)
+	if err == nil {
+		for rows.Next() {
+			var px, py, fl, fr, ft, fb int
+			if err := rows.Scan(&px, &py, &fl, &fr, &ft, &fb); err != nil {
+				continue
+			}
+			for dy := -ft; dy <= fb; dy++ {
+				for dx := -fl; dx <= fr; dx++ {
+					blocked[tileKey(px+dx, py+dy)] = true
+				}
+			}
+		}
+		rows.Close()
+	} else {
+		log.Printf("loadBlockedSlotTiles obstacles: %v", err)
+	}
+
+	// Other outside actors near the ring. inside=true actors don't count
+	// (they're not on the world map for collision purposes).
+	rows2, err := app.DB.Query(ctx,
+		`SELECT FLOOR(current_x / 32.0)::int, FLOOR(current_y / 32.0)::int
+		 FROM actor
+		 WHERE id::text != $1
+		   AND inside = false
+		   AND ABS(FLOOR(current_x / 32.0)::int - $2) <= 1
+		   AND ABS(FLOOR(current_y / 32.0)::int - $3) <= 1`,
+		npcID, cx, cy)
+	if err == nil {
+		for rows2.Next() {
+			var tx, ty int
+			if err := rows2.Scan(&tx, &ty); err == nil {
+				blocked[tileKey(tx, ty)] = true
+			}
+		}
+		rows2.Close()
+	} else {
+		log.Printf("loadBlockedSlotTiles actors: %v", err)
+	}
+
+	return blocked
 }
 
 // handleListVillageObjects returns all placed objects.
@@ -626,18 +760,20 @@ func (app *App) handleBulkCreateVillageObjects(w http.ResponseWriter, r *http.Re
 }
 
 // relocateVisitorsAfterLoiterChange walks any NPC currently standing
-// near the OLD loiter position to the NEW one when an admin moves a
-// placement's loiter pin. Owners (this placement is their home or work)
-// are skipped — their position belongs to the scheduler/inside-structure
-// flow, not the loiter pin.
+// near the OLD loiter position to a fresh slot around the NEW one when
+// an admin moves a placement's loiter pin. Owners (this placement is
+// their home or work) are skipped — their position belongs to the
+// scheduler/inside-structure flow, not the loiter pin.
 //
-// "Near" is defined as within 1.5 tiles of the OLD position — covers the
-// loiterJitter spread (~half tile) plus the typical walk-arrival fuzz.
+// "Near OLD" is defined as within 2 tiles of the old loiter pin's tile
+// center — the slot ring sits ~1 tile out (cardinal) to ~1.41 out
+// (diagonal), and 2 tiles gives margin for arrival fuzz.
 //
-// Each relocate is dispatched as an independent walk via startReturnWalk,
-// stamping agent_override_until so the scheduler doesn't yank the NPC
-// back mid-walk. NEW position is jittered per-NPC so a cluster of
-// visitors at the moved spot stays spread out.
+// Each relocate is dispatched via startReturnWalk with enterOnArrival=false
+// (visitors stay outside) and stamps agent_override_until so the scheduler
+// doesn't yank the NPC back mid-walk. The new target is picked per-NPC
+// via pickVisitorSlot, so a cluster of visitors at the moved spot
+// distributes across the new slot ring.
 func (app *App) relocateVisitorsAfterLoiterChange(
 	ctx context.Context, objectID string, anchorX, anchorY float64,
 	oldLoiterX, oldLoiterY sql.NullInt32,
@@ -646,18 +782,17 @@ func (app *App) relocateVisitorsAfterLoiterChange(
 	footprintBottom int,
 ) {
 	const tileSize = 32.0
-	const nearRadius = 1.5 * tileSize
+	const nearRadius = 2.0 * tileSize
 	const nearRadiusSq = nearRadius * nearRadius
 
-	// OLD pixel position — effective loiter using the pre-update raw values.
-	oldLx, oldLy := effectiveLoiterTile(oldLoiterX, oldLoiterY, doorX, doorY, footprintBottom)
-	oldPx := anchorX + float64(oldLx)*tileSize
-	oldPy := anchorY + float64(oldLy)*tileSize
+	anchorTileX := int(math.Floor(anchorX / tileSize))
+	anchorTileY := int(math.Floor(anchorY / tileSize))
 
-	// NEW pixel position — effective loiter using the post-update raw values.
+	oldLx, oldLy := effectiveLoiterTile(oldLoiterX, oldLoiterY, doorX, doorY, footprintBottom)
+	oldCenterPx := tileCenterPx(anchorTileX + oldLx)
+	oldCenterPy := tileCenterPx(anchorTileY + oldLy)
+
 	newLx, newLy := effectiveLoiterTile(newLoiterX, newLoiterY, doorX, doorY, footprintBottom)
-	newPx := anchorX + float64(newLx)*tileSize
-	newPy := anchorY + float64(newLy)*tileSize
 
 	// Find candidates: NPCs inside the near-radius of OLD that don't own
 	// this placement. Exclude NPCs already walking — startReturnWalk on a
@@ -669,7 +804,7 @@ func (app *App) relocateVisitorsAfterLoiterChange(
 		   AND (current_x - $1) * (current_x - $1) + (current_y - $2) * (current_y - $2) < $3
 		   AND (home_structure_id IS NULL OR home_structure_id::text != $4)
 		   AND (work_structure_id IS NULL OR work_structure_id::text != $4)`,
-		oldPx, oldPy, nearRadiusSq, objectID)
+		oldCenterPx, oldCenterPy, nearRadiusSq, objectID)
 	if err != nil {
 		log.Printf("relocateVisitors: query: %v", err)
 		return
@@ -677,7 +812,7 @@ func (app *App) relocateVisitorsAfterLoiterChange(
 	defer rows.Close()
 
 	type candidate struct {
-		ID  string
+		ID         string
 		CurX, CurY float64
 	}
 	var candidates []candidate
@@ -689,11 +824,10 @@ func (app *App) relocateVisitorsAfterLoiterChange(
 	}
 
 	for _, c := range candidates {
-		jx, jy := loiterJitter()
-		targetX, targetY := newPx+jx, newPy+jy
+		targetX, targetY := app.pickVisitorSlot(ctx, c.ID, anchorX, anchorY, newLx, newLy)
 		npc := &behaviorNPC{ID: c.ID, CurX: c.CurX, CurY: c.CurY}
 		app.interpolateCurrentPos(npc)
-		if err := app.startReturnWalk(ctx, npc, targetX, targetY, objectID, "loiter-relocate"); err != nil {
+		if err := app.startReturnWalk(ctx, npc, targetX, targetY, objectID, "loiter-relocate", false); err != nil {
 			log.Printf("relocateVisitors: startReturnWalk %s: %v", c.ID, err)
 			continue
 		}
