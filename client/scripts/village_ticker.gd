@@ -22,6 +22,11 @@ const SIDE_PADDING: float = 12.0
 # busy chronicler day from filling memory with prose the player will
 # never see scroll past.
 const MAX_QUEUE_DEPTH: int = 12
+# When the queue is empty, replay the current text up to MAX_REPEATS
+# times for ambient effect before going silent. Fresh content (new
+# WS event, queued backload entries) preempts replay and resets the
+# counter.
+const MAX_REPEATS: int = 12
 
 var _label: Label = null
 var _clip: Control = null
@@ -30,6 +35,9 @@ var _current_text: String = ""
 var _label_width: float = 0.0
 var _label_x: float = 0.0
 var _http: HTTPRequest = null
+# How many times the current text has played end-to-end. Resets when a
+# new text is started (either from the queue or from a fresh push).
+var _repeat_count: int = 0
 # Dedupe by world_environment.id so a row that's in both the backload
 # response and a near-simultaneous WS broadcast only scrolls once.
 var _seen_ids: Dictionary = {}
@@ -154,6 +162,7 @@ func push(text: String) -> void:
 
 func _start_text(text: String) -> void:
     _current_text = text
+    _repeat_count = 1
     # Reset size and re-snap to the label's intrinsic size before
     # measuring — without this, custom_minimum_size from a previous
     # text or stale layout state can leave _label_width wrong on the
@@ -177,12 +186,25 @@ func _process(delta: float) -> void:
 
 
 func _advance() -> void:
-    if _queue.is_empty():
-        _current_text = ""
-        _label.text = ""
-        _label_x = 0
+    # Fresh content always wins over replay — pop the queue if anything
+    # is waiting and start it (resetting the repeat counter inside
+    # _start_text).
+    if not _queue.is_empty():
+        _start_text(_queue.pop_front())
         return
-    _start_text(_queue.pop_front())
+    # Queue empty — replay the current text for ambience up to
+    # MAX_REPEATS. Re-measures via _start_text so a font/theme change
+    # mid-session can't leave a stale label_width.
+    if _current_text != "" and _repeat_count < MAX_REPEATS:
+        var prev_count := _repeat_count
+        _start_text(_current_text)
+        _repeat_count = prev_count + 1
+        return
+    # Past the replay cap — go silent until something new arrives.
+    _current_text = ""
+    _label.text = ""
+    _label_x = 0
+    _repeat_count = 0
 
 
 # Click anywhere on the ticker → emit clicked. main.gd routes this to
