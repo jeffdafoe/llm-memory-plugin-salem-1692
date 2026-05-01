@@ -751,7 +751,7 @@ func agentToolSpec() []agentToolDef {
 		},
 		{
 			Name:        "act",
-			Description: "Commit a brief physical action with your hands or body — serving food, pouring a drink, leaning on the bar, wiping a counter, gesturing. Use this for what you DO, not what you SAY (use speak for speech). The action becomes part of the scene's recent history that other people in the room perceive on their next turn, so use it when an action is worth others noticing.",
+			Description: "Commit a brief physical action with your hands or body — serving food, pouring a drink, leaning on the bar, wiping a counter, gesturing. Use this for what you DO, not what you SAY (use speak for speech). The action becomes part of the scene's recent history that other people in the room perceive on their next turn, so use it when an action is worth others noticing. Slow tasks (cooking, roasting, baking, brewing, smithing, building) take in-world minutes to hours: commit a single act announcing the start (e.g. 'started roasting meat for Jefferey') and STOP THERE for this turn — do NOT also commit a 'served/presented/here's your meal' follow-up act or speech in the same response. The completion happens naturally later, as its own act in a future tick.",
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
