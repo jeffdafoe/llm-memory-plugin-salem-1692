@@ -165,13 +165,12 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 		}
 
 		// Pick the first tool_call to act on. Terminal commits (move_to,
-		// chore, done) win over pay/buy/consume/speak/act. Pay/buy/consume
-		// run before speak so a "buy-and-thank-you" or "consume-and-sigh"
-		// sequence unfolds in the natural order: transaction first, speech
-		// next iteration. All inline tools execute and let the loop continue
-		// — none ends the turn. The harness lets the model follow up with
-		// movement or another speech turn within the per-tick budget.
-		var terminalCall, payCall, buyCall, consumeCall, speakCall, actCall, observation *agentToolCall
+		// chore, done) win over pay/consume/speak/act. Pay/consume run
+		// before speak so a "pay-and-thank-you" or "consume-and-sigh"
+		// sequence unfolds in the natural order: transaction first,
+		// speech next iteration. All inline tools execute and let the
+		// loop continue — none ends the turn.
+		var terminalCall, payCall, consumeCall, speakCall, actCall, observation *agentToolCall
 		for i := range reply.ToolCalls {
 			tc := &reply.ToolCalls[i]
 			switch tc.Name {
@@ -182,10 +181,6 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			case "pay":
 				if payCall == nil {
 					payCall = tc
-				}
-			case "buy":
-				if buyCall == nil {
-					buyCall = tc
 				}
 			case "consume":
 				if consumeCall == nil {
@@ -227,21 +222,6 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 				currentMessage = fmt.Sprintf("[Pay %s] %s. Continue your turn — you may correct it, speak, move, or call done.", result, errStr)
 			}
 			currentToolCallID = payCall.ID
-			continue
-		}
-
-		if buyCall != nil {
-			// Buy: takes the goods home (no consumption). Same inline
-			// continuation as pay — the model can follow with thanks /
-			// movement / a consume() if they actually want to use what
-			// they bought right away.
-			result, errStr := app.executeAgentCommit(ctx, r, buyCall, sceneID)
-			if result == "ok" {
-				currentMessage = "[OK] You bought it. Continue your turn — you may speak, move, consume what you bought, or call done."
-			} else {
-				currentMessage = fmt.Sprintf("[Buy %s] %s. Continue your turn — you may correct it, speak, move, or call done.", result, errStr)
-			}
-			currentToolCallID = buyCall.ID
 			continue
 		}
 
@@ -631,55 +611,41 @@ func agentToolSpec() []agentToolDef {
 		},
 		{
 			Name:        "pay",
-			Description: "Hand coins to another villager. Use after agreeing on a price in conversation. For purchases at an establishment (tavern, shop, smithy, etc.), pay the proprietor or staff working there — not another patron who happens to be present. The 'for' field is a free-text note about what the payment is for ('a pint of ale', 'the bread', 'the news from Boston'); the engine uses it to decide whether the payment also reduces your hunger or thirst.",
+			Description: "Hand coins to another villager. The single verb for every commercial transaction: tavern dining, market purchases, tips, services. Use after agreeing on a price in conversation. For purchases at an establishment (tavern, shop, smithy), pay the proprietor or staff working there — not another patron who happens to be present.\n\nThree shapes:\n  - pay(recipient, amount) — generic coin transfer for a tip, service, news, or anything not item-shaped. No goods change hands.\n  - pay(recipient, amount, item, qty?, consume_now=true) — the tavern verb. The seller's stock decrements and your linked need (hunger/thirst) drops. Default if you specify an item.\n  - pay(recipient, amount, item, qty?, consume_now=false) — take-home. The seller's stock moves into your inventory for later use. Only works for portable items; non-portable like stew (hot bowl, not packable) must be consumed at-source.\n\nNo fixed price list — agree on the amount in speak() first, then commit the agreed total here.",
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"recipient": map[string]interface{}{
 						"type":        "string",
-						"description": "The villager you're paying, by display name. For a purchase at a tavern, shop, or other establishment, this is the proprietor/staff who works there (e.g. the tavernkeeper if you're buying ale or a meal at the tavern), not any other villager who is present.",
+						"description": "The villager you're paying, by display name. For a purchase at a tavern, shop, or other establishment, this is the proprietor/staff who works there (e.g. the tavernkeeper if you're buying at the tavern), not any other villager who is present.",
 					},
 					"amount": map[string]interface{}{
 						"type":        "integer",
-						"description": "Number of coins to hand over. Must be positive and no more than you currently hold.",
+						"description": "Number of coins to hand over. Must be non-negative and no more than you currently hold. The negotiated total, not per-unit when qty > 1.",
 					},
 					"for": map[string]interface{}{
 						"type":        "string",
-						"description": "What the payment is for (free text). Mention 'ale' / 'beer' / 'cider' for a drink, or 'meal' / 'stew' / 'bread' for food, so the engine can reduce the right need.",
+						"description": "Optional flavor text describing what the payment is for ('a pint of ale', 'the news from Boston', 'your help with the cart'). Audit-only, no mechanical effect.",
+					},
+					"item": map[string]interface{}{
+						"type":        "string",
+						"description": "Optional item kind being purchased: ale, water, milk, stew, bread, cheese, berries, meat, wheat, flour, iron. Match the names in inventory readouts. Omit for non-item payments (tips, services).",
+					},
+					"qty": map[string]interface{}{
+						"type":        "integer",
+						"description": "How many of the item. Defaults to 1.",
+					},
+					"consume_now": map[string]interface{}{
+						"type":        "boolean",
+						"description": "True (default) consumes the item at the seller's place — drink the ale at the bar, eat the stew at the tavern, your need drops immediately. False takes the item home into your own inventory; only works for portable items (bread, cheese, berries, ale, milk, meat, materials). Stew and water are non-portable.",
 					},
 				},
 				"required": []string{"recipient", "amount"},
 			},
 		},
 		{
-			Name:        "buy",
-			Description: "Buy goods from another villager at a price you've negotiated in conversation. The goods move into your inventory; the agreed coin total moves to the seller. Agree on the price in speak() first — the seller will quote, you accept or counter, then commit the agreed total here as `amount`. There's no fixed price list: a meal might be 3 coins on a normal day and 5 when supplies are low. The seller must have stock; the engine rejects buys for goods they don't carry. To consume what you bought immediately at a tavern bar, use pay() instead — it handles drink-at-the-counter in one verb.",
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"seller": map[string]interface{}{
-						"type":        "string",
-						"description": "The villager you're buying from, by display name.",
-					},
-					"item": map[string]interface{}{
-						"type":        "string",
-						"description": "Item kind, lowercase. Generic categories `meal` (any food — supper, stew, bread, pie; flavor it however the seller describes it in speech) and `drink` (any beverage — ale, water, milk, cider). Specific materials when they apply: `wheat`, `flour`, `iron`. The item names match what you see in your own inventory line.",
-					},
-					"qty": map[string]interface{}{
-						"type":        "integer",
-						"description": "How many to buy. Defaults to 1 if omitted.",
-					},
-					"amount": map[string]interface{}{
-						"type":        "integer",
-						"description": "Total coins you've agreed to pay for the qty. The negotiated total, not per-unit. Required.",
-					},
-				},
-				"required": []string{"seller", "item", "amount"},
-			},
-		},
-		{
 			Name:        "consume",
-			Description: "Eat or drink an item from your own inventory. Reduces the linked need (meal → hunger, drink → thirst). Use this when you actually want to satisfy a need from goods you already own — the meal you bought from the merchant, the flask of drink at your belt. Materials (wheat, flour, iron) can't be consumed; you'd need to make something with them first.",
+			Description: "Eat or drink an item from your own inventory. Reduces the linked need (food → hunger, drink → thirst). Use this when you actually want to satisfy a need from goods you already own — the bread you bought from the merchant, the ale in your flask. Materials (wheat, flour, iron) can't be consumed; you'd need to make something with them first.",
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -1460,38 +1426,28 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 			break
 		}
 		forText, _ := tc.Input["for"].(string)
-		pr := app.executePay(ctx, r, recipient, amount, forText)
-		result = pr.Result
-		errStr = pr.Err
-
-	case "buy":
-		seller, _ := tc.Input["seller"].(string)
-		// Fall back to "from" if the model used an alternate key — many
-		// providers route arguments differently and a slightly different
-		// key shouldn't reject the call.
-		if seller == "" {
-			seller, _ = tc.Input["from"].(string)
-		}
 		item, _ := tc.Input["item"].(string)
 		qty := coerceIntInput(tc.Input["qty"])
 		if qty == 0 {
 			qty = coerceIntInput(tc.Input["quantity"])
 		}
-		if qty == 0 {
-			qty = 1
+		// Default consume_now=true — the tavern flow is the common case
+		// and the LLM saying "pay 2 for ale" historically means drink it.
+		// Take-home requires the buyer to explicitly set consume_now:false.
+		consumeNow := true
+		if v, ok := tc.Input["consume_now"].(bool); ok {
+			consumeNow = v
 		}
-		amount := coerceIntInput(tc.Input["amount"])
-		// `amount` is required — there is no static price column post-
-		// ZBBS-092. A missing amount means the LLM forgot the negotiated
-		// total; reject so the model gets a clean error and can retry
-		// with the agreed number.
-		if amount <= 0 && tc.Input["amount"] == nil {
-			result, errStr = "rejected", "missing amount (negotiated price total)"
-			break
-		}
-		br := app.executeBuy(ctx, r, seller, item, qty, amount)
-		result = br.Result
-		errStr = br.Err
+		pr := app.executePay(ctx, r, payRequest{
+			RecipientName: recipient,
+			Amount:        amount,
+			ForText:       forText,
+			Item:          item,
+			Qty:           qty,
+			ConsumeNow:    consumeNow,
+		})
+		result = pr.Result
+		errStr = pr.Err
 
 	case "consume":
 		item, _ := tc.Input["item"].(string)
