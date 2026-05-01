@@ -188,6 +188,10 @@ type workerRow struct {
 // loadWorkerRows selects every worker NPC with both home and work
 // structures assigned. NPCs missing either are silently excluded — they
 // can't walk a shift until an admin fills them in.
+//
+// As of ZBBS-097 the worker filter reads actor_attribute (the worker
+// attribute_definition was added in the same migration). The legacy
+// actor.behavior = 'worker' column is no longer consulted here.
 func (app *App) loadWorkerRows(ctx context.Context) ([]workerRow, error) {
 	rows, err := app.DB.Query(ctx,
 		`SELECT n.id, n.schedule_start_minute, n.schedule_end_minute,
@@ -205,11 +209,12 @@ func (app *App) loadWorkerRows(ctx context.Context) ([]workerRow, error) {
 		        COALESCE(hs.display_name, ha.name, ''),
 		        COALESCE(ws.display_name, wa.name, '')
 		 FROM actor n
+		 JOIN actor_attribute aa ON aa.actor_id = n.id
 		 JOIN village_object hs ON hs.id = n.home_structure_id
 		 JOIN asset ha         ON ha.id = hs.asset_id
 		 JOIN village_object ws ON ws.id = n.work_structure_id
 		 JOIN asset wa         ON wa.id = ws.asset_id
-		 WHERE n.behavior = $1`,
+		 WHERE aa.slug = $1`,
 		behaviorWorker,
 	)
 	if err != nil {
