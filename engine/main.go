@@ -305,6 +305,13 @@ func main() {
 	authed("PATCH /api/village/objects/{id}/position", app.handleMoveVillageObject)
 	authed("PATCH /api/village/objects/{id}/loiter-offset", app.handleSetVillageObjectLoiterOffset)
 
+	// Object refresh — finite-supply attribute restoration on arrival
+	// (ZBBS-090). Lookup table for the attribute picker; per-object set
+	// for editing the configured rows.
+	authed("GET /api/refresh-attributes", app.handleListRefreshAttributes)
+	authed("GET /api/village/objects/{id}/refresh", app.handleGetObjectRefresh)
+	authed("PUT /api/village/objects/{id}/refresh", app.handlePutObjectRefresh)
+
 	// Player character endpoints (M6.7)
 	authed("POST /api/village/pc/me", app.handlePCMe)
 	authed("POST /api/village/pc/create", app.handlePCCreate)
