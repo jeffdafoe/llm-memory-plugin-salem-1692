@@ -54,12 +54,12 @@ const COLOR_ITEM_BORDER = Color(0.42, 0.42, 0.25, 1.0)
 
 const PANEL_WIDTH: float = 240.0
 const TOP_BAR_HEIGHT: float = 40.0
-# Mirror of village_ticker.gd::TICKER_HEIGHT plus its 1px bottom border —
-# the marquee band sits between the top bar and the editor panel, so the
-# panel needs to start below it. Kept as a local constant rather than
-# imported because no other script in this project imports cross-file
-# constants.
-const TICKER_HEIGHT: float = 25.0
+# Offset from the top bar to where this panel's top edge sits, sized so
+# the panel butts up flush against the ticker's bottom border with no
+# visible gap. Empirically 23 — close to TICKER_HEIGHT (24) in
+# village_ticker.gd minus a one-pixel overlap that masks a sub-pixel
+# rounding artifact in the marquee band's bottom edge.
+const TICKER_HEIGHT: float = 23.0
 const CELL_SIZE: int = 52  # Grid cell size — sprites render proportionally within
 
 var _font: Font = null
