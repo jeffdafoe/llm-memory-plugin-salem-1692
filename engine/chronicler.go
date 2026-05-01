@@ -502,27 +502,48 @@ func (app *App) fireChronicler(ctx context.Context, reason chroniclerFireReason)
 				currentToolCallID = tc.ID
 				break
 			}
-			// Trigger the NPC's tick. Force=false so the existing cost-
-			// guard in triggerImmediateTick (agentMinTickGap) still
-			// applies — the overseer can rouse the same NPC repeatedly
-			// across phases, but not within a single 5-minute window.
-			// Background goroutine so a slow agent tick doesn't block the
-			// overseer's harness loop. App-level semaphore caps aggregate
-			// concurrency across overlapping fires; if the slot is full
-			// we still let the call through (vs dropping) — the goroutine
-			// just blocks waiting for a slot, then runs. Acceptable for
-			// directorial dispatches; if backpressure becomes an issue we
-			// can switch to skip-if-full like ChroniclerSem does.
-			// Thread the chronicler's sceneID so the dispatched NPC tick
-			// lands in the same scene as the overseer's fire — keeps the
-			// admin UI's scene grouping coherent across the cascade.
+			// Trigger the NPC's tick. Force=true so the agentMinTickGap
+			// cost guard in triggerImmediateTick is bypassed — chronicler
+			// attend_to is a directorial action, not a sim-layer cascade.
+			// The cost guard exists to dampen NPC-to-NPC tick storms
+			// (co-located NPCs reacting to each other's speech); a
+			// chronicler dispatch is a deliberate top-down pick that
+			// should always go through. Without the bypass, an NPC who
+			// happened to tick within the last 5 minutes silently
+			// disappears from the chronicler's view of the world: it
+			// gets back "[You attend to X. They will rouse...]" but
+			// no actual prompt fires for X.
+			//
+			// Cost is bounded chronicler-side, not at the cost guard:
+			// attendCeiling caps attend_to calls per fire,
+			// OverseerAttendSem bounds concurrent attends across
+			// overlapping fires, and chronicler fires themselves are
+			// gated to specific events (phase / cascade / shift_boundary
+			// / needs_resolved) — not arbitrary. Same-NPC re-ticks
+			// across two close fires are still possible but they're
+			// substantively different perceptions (different events),
+			// not the storm the guard targets.
+			//
+			// Background goroutine so a slow agent tick doesn't block
+			// the overseer's harness loop. App-level semaphore caps
+			// aggregate concurrency across overlapping fires; if the
+			// slot is full we still let the call through (vs dropping)
+			// — the goroutine just blocks waiting for a slot, then
+			// runs. Acceptable for directorial dispatches; if
+			// backpressure becomes an issue we can switch to skip-if-
+			// full like ChroniclerSem does.
+			//
+			// Thread the chronicler's sceneID so the dispatched NPC
+			// tick lands in the same scene as the overseer's fire —
+			// keeps the admin UI's scene grouping coherent across the
+			// cascade.
 			go func(id, name, scene string) {
 				app.OverseerAttendSem <- struct{}{}
 				defer func() { <-app.OverseerAttendSem }()
 				// triggerActorID = "" — chronicler dispatch has no salient
 				// speaker, so this won't lock the attended NPC against
 				// subsequent heard-speech reactions in the same scene.
-				app.triggerImmediateTick(context.Background(), id, "overseer-attend-to", false, scene, "")
+				app.triggerImmediateTick(context.Background(), id, "overseer-attend-to", true, scene, "")
 			}(npcID, displayName, sceneID)
 			attendCount++
 			currentMessage = fmt.Sprintf("[You attend to %s. They will rouse and decide what to do.]", displayName)
