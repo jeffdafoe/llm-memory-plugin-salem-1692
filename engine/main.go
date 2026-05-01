@@ -303,6 +303,9 @@ func main() {
 	authed("POST /api/village/objects/{id}/tags", app.handleAddObjectTag)
 	authed("DELETE /api/village/objects/{id}/tags/{tag}", app.handleRemoveObjectTag)
 
+	// Village log (ZBBS-087) — backload for the Village tab
+	authed("POST /api/village/log/recent", app.handleVillageLogRecent)
+
 	// Terrain grid
 	authed("GET /api/village/terrain", app.handleGetTerrain)
 	authed("PUT /api/village/terrain", app.handleSaveTerrain)
