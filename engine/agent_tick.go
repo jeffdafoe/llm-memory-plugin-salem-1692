@@ -165,12 +165,13 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 		}
 
 		// Pick the first tool_call to act on. Terminal commits (move_to,
-		// chore, done) win over pay/speak/act. Pay runs before speak so a
-		// "pay-and-thank-you" sequence unfolds as pay first, speak next
-		// iteration. Pay/speak/act all execute inline and let the loop
-		// continue — none ends the turn. The harness lets the model follow
-		// up with movement or another speech turn within the per-tick budget.
-		var terminalCall, payCall, speakCall, actCall, observation *agentToolCall
+		// chore, done) win over pay/buy/consume/speak/act. Pay/buy/consume
+		// run before speak so a "buy-and-thank-you" or "consume-and-sigh"
+		// sequence unfolds in the natural order: transaction first, speech
+		// next iteration. All inline tools execute and let the loop continue
+		// — none ends the turn. The harness lets the model follow up with
+		// movement or another speech turn within the per-tick budget.
+		var terminalCall, payCall, buyCall, consumeCall, speakCall, actCall, observation *agentToolCall
 		for i := range reply.ToolCalls {
 			tc := &reply.ToolCalls[i]
 			switch tc.Name {
@@ -181,6 +182,14 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			case "pay":
 				if payCall == nil {
 					payCall = tc
+				}
+			case "buy":
+				if buyCall == nil {
+					buyCall = tc
+				}
+			case "consume":
+				if consumeCall == nil {
+					consumeCall = tc
 				}
 			case "speak":
 				if speakCall == nil {
@@ -218,6 +227,35 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 				currentMessage = fmt.Sprintf("[Pay %s] %s. Continue your turn — you may correct it, speak, move, or call done.", result, errStr)
 			}
 			currentToolCallID = payCall.ID
+			continue
+		}
+
+		if buyCall != nil {
+			// Buy: takes the goods home (no consumption). Same inline
+			// continuation as pay — the model can follow with thanks /
+			// movement / a consume() if they actually want to use what
+			// they bought right away.
+			result, errStr := app.executeAgentCommit(ctx, r, buyCall, sceneID)
+			if result == "ok" {
+				currentMessage = "[OK] You bought it. Continue your turn — you may speak, move, consume what you bought, or call done."
+			} else {
+				currentMessage = fmt.Sprintf("[Buy %s] %s. Continue your turn — you may correct it, speak, move, or call done.", result, errStr)
+			}
+			currentToolCallID = buyCall.ID
+			continue
+		}
+
+		if consumeCall != nil {
+			// Consume: eats from your own inventory. Drops the linked need
+			// per the item's configured satisfaction. Inline so a "drink
+			// then thank the host" sequence reads naturally.
+			result, errStr := app.executeAgentCommit(ctx, r, consumeCall, sceneID)
+			if result == "ok" {
+				currentMessage = "[OK] You consumed it. Continue your turn — you may speak, move, or call done."
+			} else {
+				currentMessage = fmt.Sprintf("[Consume %s] %s. Continue your turn — you may correct it, speak, move, or call done.", result, errStr)
+			}
+			currentToolCallID = consumeCall.ID
 			continue
 		}
 
@@ -614,6 +652,46 @@ func agentToolSpec() []agentToolDef {
 			},
 		},
 		{
+			Name:        "buy",
+			Description: "Buy goods from another villager and take them home (no consumption). Use this when you want to acquire something to use or eat later — flour from the merchant, bread to bring to a friend, materials for work. The goods move into your inventory and the seller's coins move into yours-minus. To consume what you bought immediately (drink an ale at the bar), use pay() instead — it handles the buy-and-drink flow in one verb. The seller must have stock; the engine will reject a buy for goods they don't carry.",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"seller": map[string]interface{}{
+						"type":        "string",
+						"description": "The villager you're buying from, by display name.",
+					},
+					"item": map[string]interface{}{
+						"type":        "string",
+						"description": "Item kind, lowercase (ale, bread, stew, flour, wheat, milk, cheese, meat, berries, water, iron). Matches the item names you see in your inventory line.",
+					},
+					"qty": map[string]interface{}{
+						"type":        "integer",
+						"description": "How many to buy. Defaults to 1 if omitted.",
+					},
+				},
+				"required": []string{"seller", "item"},
+			},
+		},
+		{
+			Name:        "consume",
+			Description: "Eat or drink an item from your own inventory. Reduces the linked need (food → hunger, drink → thirst). Use this when you actually want to satisfy a need from goods you already own — the bread you bought from the merchant, water from your flask. Materials (wheat, flour, iron) can't be consumed; you'd need to make something with them first.",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"item": map[string]interface{}{
+						"type":        "string",
+						"description": "Item kind, lowercase. Must be a consumable food or drink in your inventory.",
+					},
+					"qty": map[string]interface{}{
+						"type":        "integer",
+						"description": "How many to consume. Defaults to 1 if omitted.",
+					},
+				},
+				"required": []string{"item"},
+			},
+		},
+		{
 			Name:        "recall",
 			Description: "Try to remember something — search your past notes, dreams, and impressions for anything relevant. Use this when you want to recall what you know about a person, place, or event. Phrase the query in your own words.",
 			Parameters: map[string]interface{}{
@@ -842,6 +920,14 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 		bodyLine = fmt.Sprintf("You feel: %s. ", strings.Join(bodyParts, ", "))
 	}
 	sections = append(sections, fmt.Sprintf("%sCoins in your purse: %d.", bodyLine, r.Coins))
+
+	// Inventory (ZBBS-091) — items the NPC is carrying. Empty inventory
+	// produces no line at all, so a freshly-deployed villager doesn't
+	// see "Inventory: nothing" noise. Other actors' inventories are not
+	// shown — privacy/realism.
+	if inv := app.inventoryLine(ctx, r.ID); inv != "" {
+		sections = append(sections, "Your inventory: "+inv+".")
+	}
 
 	// 4. Destinations. Categorical first, then occupant-named residences.
 	var destLines []string
@@ -1373,6 +1459,42 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		pr := app.executePay(ctx, r, recipient, amount, forText)
 		result = pr.Result
 		errStr = pr.Err
+
+	case "buy":
+		seller, _ := tc.Input["seller"].(string)
+		// Fall back to "from" if the model used an alternate key — many
+		// providers route arguments differently and a slightly different
+		// key shouldn't reject the call.
+		if seller == "" {
+			seller, _ = tc.Input["from"].(string)
+		}
+		item, _ := tc.Input["item"].(string)
+		qty := coerceIntInput(tc.Input["qty"])
+		if qty == 0 {
+			qty = coerceIntInput(tc.Input["quantity"])
+		}
+		if qty == 0 {
+			// Default to 1 — most "buy a bread" calls are single-unit and
+			// requiring qty would just push prompt complexity onto every
+			// purchase. Explicit qty still works.
+			qty = 1
+		}
+		br := app.executeBuy(ctx, r, seller, item, qty)
+		result = br.Result
+		errStr = br.Err
+
+	case "consume":
+		item, _ := tc.Input["item"].(string)
+		qty := coerceIntInput(tc.Input["qty"])
+		if qty == 0 {
+			qty = coerceIntInput(tc.Input["quantity"])
+		}
+		if qty == 0 {
+			qty = 1
+		}
+		cr := app.executeConsume(ctx, r, item, qty)
+		result = cr.Result
+		errStr = cr.Err
 
 	default:
 		result, errStr = "rejected", fmt.Sprintf("unknown commit tool: %s", tc.Name)
