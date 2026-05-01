@@ -1473,18 +1473,12 @@ func _current_loiter_offset_tiles(node: Node2D) -> Vector2:
         return Vector2(int(lx), int(ly))
     return Vector2(0, 0)
 
-## Green outlined circle for loiter — distinct from blue square (door)
-## and orange square (stand). Filled lighter when loiter_offset is unset
-## (placeholder), filled solid when set (an actual configured spot).
-## Gathering-point placements get a gold tint instead of green so they
-## stand out as village-level rally spots (the well, market, etc.).
-##
-## Color legend: green = loiter spot for normal placements, gold = a
-## village-level gathering point (well, market, etc.). Lighter fill when
-## the loiter offset hasn't been set yet (placeholder position), solid
-## when the admin has actually placed the pin. Tooltip-style caption
-## moved to the editor side-panel info area to avoid Label2D rendering
-## complications in world space.
+## Green outlined circle for the loiter pin (gathering CENTER — visitors
+## stand around it, never on it). Eight faint tile-square outlines around
+## the pin show where visitors will land. Filled lighter when the loiter
+## offset hasn't been explicitly set (placeholder), solid when configured.
+## Slot outlines move with the pin during drag so the admin can preview
+## where visitors will distribute before releasing.
 func _draw_loiter_marker_contents(node: Node2D) -> void:
     if _loiter_marker == null:
         return
@@ -1492,23 +1486,37 @@ func _draw_loiter_marker_contents(node: Node2D) -> void:
     var lx_meta = node.get_meta("loiter_offset_x", null)
     var ly_meta = node.get_meta("loiter_offset_y", null)
     var is_set: bool = lx_meta != null and ly_meta != null
-    var tags: Array = node.get_meta("tags", [])
-    var is_gather: bool = tags.has("gathering-point")
 
     var fill_alpha: float = 0.40
     if is_set:
         fill_alpha = 0.85
-    var fill_color: Color
-    var outline_color: Color
-    if is_gather:
-        fill_color = Color(1.0, 0.85, 0.25, fill_alpha)
-        outline_color = Color(0.75, 0.55, 0.10, 1.0)
-    else:
-        fill_color = Color(0.30, 0.85, 0.45, fill_alpha)
-        outline_color = Color(0.10, 0.55, 0.25, 1.0)
+    var fill_color: Color = Color(0.30, 0.85, 0.45, fill_alpha)
+    var outline_color: Color = Color(0.10, 0.55, 0.25, 1.0)
 
-    # Build a 24-vertex polygon to approximate the circle. Polygon2D fill
-    # under Line2D outline matches the door/stand square pattern.
+    # Draw the 8 slot tile outlines first (under the pin circle). These are
+    # the king's-move neighbors of the pin tile — where the engine's
+    # pickVisitorSlot lands visiting NPCs.
+    var slot_offsets: Array = [
+        Vector2(-1, -1), Vector2(0, -1), Vector2(1, -1),
+        Vector2(-1, 0),                  Vector2(1, 0),
+        Vector2(-1, 1),  Vector2(0, 1),  Vector2(1, 1),
+    ]
+    var slot_outline_color := Color(0.10, 0.55, 0.25, 0.45)
+    var half_tile := TILE_SIZE / 2.0 - 1.0
+    for off in slot_offsets:
+        var slot := Line2D.new()
+        slot.width = 1.5
+        slot.default_color = slot_outline_color
+        slot.closed = true
+        slot.position = Vector2(off.x * TILE_SIZE, off.y * TILE_SIZE)
+        slot.add_point(Vector2(-half_tile, -half_tile))
+        slot.add_point(Vector2(half_tile, -half_tile))
+        slot.add_point(Vector2(half_tile, half_tile))
+        slot.add_point(Vector2(-half_tile, half_tile))
+        _loiter_marker.add_child(slot)
+
+    # Build a 24-vertex polygon to approximate the pin circle. Polygon2D
+    # fill under Line2D outline matches the door/stand square pattern.
     var poly := PackedVector2Array()
     var segments: int = 24
     for i in range(segments):

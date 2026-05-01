@@ -562,28 +562,22 @@ var allowedStateTags = map[string]bool{
 // destination categories AND the chore tool resolves against:
 //
 //   - tavern, smithy, shop, meeting-house, well, outhouse — public roles
-//   - gathering-point — flag-tag marking a placement as a default
-//     destination for "be social" idle drift; coexists with a category
-//     tag (the village well, e.g., is both 'well' and 'gathering-point').
 //
 // All categorical tags are equally usable as social_tag values for the
 // social scheduler — the system is uniform.
 var allowedObjectTags = map[string]bool{
-	"tavern":           true,
-	"smithy":           true,
-	"shop":             true,
-	"meeting-house":    true,
-	"well":             true,
-	"outhouse":         true,
-	"inn":              true,
-	"gathering-point":  true,
+	"tavern":        true,
+	"smithy":        true,
+	"shop":          true,
+	"meeting-house": true,
+	"well":          true,
+	"outhouse":      true,
+	"inn":           true,
 }
 
 // categoryObjectTags is the subset of allowedObjectTags that mark a
 // placement as a thematic destination for the agent perception's "Other
-// places nearby" list and as a target for the chore tool. Excludes
-// gathering-point (which is a flag, not a category) and any future tag
-// that's purely behavioral.
+// places nearby" list and as a target for the chore tool.
 var categoryObjectTags = map[string]bool{
 	"tavern":        true,
 	"smithy":        true,

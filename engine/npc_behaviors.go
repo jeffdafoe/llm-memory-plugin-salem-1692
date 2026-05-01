@@ -58,6 +58,12 @@ type npcRoute struct {
 	// go-to-work). On arrival it becomes the NPC's inside_structure_id
 	// so occupancy-driven state flipping knows where they landed.
 	TargetStructureID string
+	// EnterOnArrival controls whether arrival at the final destination
+	// flips inside=true. True for go-home/go-work and other "go inside"
+	// flows; false for visitor moves (agent move_to a non-owned target,
+	// chore destinations, loiter relocates) where the NPC stands at the
+	// loiter point and stays outside.
+	EnterOnArrival bool
 }
 
 // NPCBehaviors tracks active behavior state machines keyed by NPC id.
@@ -120,11 +126,15 @@ func (app *App) advanceBehavior(npcID string) {
 		}
 		return
 	}
-	// Phase == "returning" — we just arrived home. Mark the villager
-	// inside (clients hide the sprite for non-see-through structures;
-	// market-stall-type assets flip to their "occupied" state via the
-	// refresh inside setNPCInside) and clear the route state.
-	app.setNPCInside(context.Background(), npcID, true, route.TargetStructureID)
+	// Phase == "returning" — we just arrived at the final destination.
+	// For owner go-home/go-work and similar "enter on arrival" flows,
+	// flip inside=true so clients hide the sprite and occupancy-driven
+	// state flipping kicks in. Visitor moves (agent move_to a non-owned
+	// target, chore, loiter relocate) leave EnterOnArrival false and
+	// the NPC remains outside at the loiter point.
+	if route.EnterOnArrival {
+		app.setNPCInside(context.Background(), npcID, true, route.TargetStructureID)
+	}
 	app.clearBehavior(npcID)
 }
 
@@ -345,6 +355,19 @@ func (app *App) startNPCRoute(ctx context.Context, npc *behaviorNPC, stops []rou
 func (app *App) setNPCInside(ctx context.Context, npcID string, inside bool, structureID string) {
 	var newInsideID *string
 	if inside && structureID != "" {
+		// Defensive guard: never mark an NPC inside a non-enterable
+		// structure. Wells, fountains, market stalls without enterable=true
+		// are loiter targets — visitors stand outside, not inside. A
+		// caller passing the wrong flag would otherwise leave NPCs flagged
+		// inside a structure that has no "inside" concept.
+		var enterable bool
+		if err := app.DB.QueryRow(ctx,
+			`SELECT a.enterable FROM village_object o
+			 JOIN asset a ON a.id = o.asset_id WHERE o.id = $1`,
+			structureID).Scan(&enterable); err == nil && !enterable {
+			log.Printf("setNPCInside: refusing to mark %s inside non-enterable structure %s", npcID, structureID)
+			return
+		}
 		s := structureID
 		newInsideID = &s
 	}
@@ -829,7 +852,7 @@ func (app *App) handleGoToStructure(w http.ResponseWriter, r *http.Request, kind
 	npc := &behaviorNPC{ID: npcID, CurX: curX, CurY: curY, HomeX: destX, HomeY: destY}
 	app.interpolateCurrentPos(npc)
 
-	if err := app.startReturnWalk(r.Context(), npc, destX, destY, *structureID, "go-"+kind); err != nil {
+	if err := app.startReturnWalk(r.Context(), npc, destX, destY, *structureID, "go-"+kind, true); err != nil {
 		log.Printf("go-%s %s: %v", kind, npcID, err)
 		jsonError(w, "Failed to start walk", http.StatusInternalServerError)
 		return
@@ -842,10 +865,14 @@ func (app *App) handleGoToStructure(w http.ResponseWriter, r *http.Request, kind
 }
 
 // startReturnWalk cancels any in-flight behavior, installs a zero-stop
-// Phase="returning" route so the arrival hook flips inside=true, and kicks
-// off the walk to the destination. The NPC is visible during the walk
-// (inside=false) and hidden on arrival.
-func (app *App) startReturnWalk(ctx context.Context, npc *behaviorNPC, destX, destY float64, targetStructureID, label string) error {
+// Phase="returning" route, and kicks off the walk to the destination.
+// The NPC is visible during the walk (inside=false). Arrival behavior
+// depends on enterOnArrival:
+//   - true: setNPCInside(true, targetStructureID) flips the NPC inside
+//     the structure (used by go-home/go-work, social-enter, social-leave).
+//   - false: NPC stays outside at the destination (used by agent visitor
+//     moves to non-owned targets, chore destinations, loiter relocates).
+func (app *App) startReturnWalk(ctx context.Context, npc *behaviorNPC, destX, destY float64, targetStructureID, label string, enterOnArrival bool) error {
 	app.setNPCInside(ctx, npc.ID, false, "")
 	route := &npcRoute{
 		NPCID:             npc.ID,
@@ -855,6 +882,7 @@ func (app *App) startReturnWalk(ctx context.Context, npc *behaviorNPC, destX, de
 		HomeY:             destY,
 		Phase:             "returning",
 		TargetStructureID: targetStructureID,
+		EnterOnArrival:    enterOnArrival,
 	}
 	app.NPCBehaviors.mu.Lock()
 	app.NPCBehaviors.active[npc.ID] = route

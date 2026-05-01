@@ -161,9 +161,8 @@ func _on_object_tags_loaded() -> void:
 func _on_object_tags_updated_from_world(object_id: String, tags: Array) -> void:
     if editor_panel != null:
         editor_panel.apply_object_tags_external(object_id, tags)
-    # Loiter marker is tinted gold when the gathering-point tag is set,
-    # green otherwise — repaint when tags change for the selected object
-    # so the visual matches the new tag set.
+    # Loiter marker styling no longer depends on tags, but repaint anyway
+    # so any future tag-driven decoration stays in sync.
     if editor != null and editor.selected_object != null:
         if editor.selected_object.get_meta("object_id", "") == object_id:
             if editor.has_method("refresh_loiter_marker"):

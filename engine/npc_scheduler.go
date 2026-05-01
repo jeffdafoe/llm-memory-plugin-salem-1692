@@ -426,7 +426,7 @@ func (app *App) evaluateWorkerSchedule(ctx context.Context, w *workerRow, now ti
 	if !alreadyThere {
 		npc := &behaviorNPC{ID: w.ID, CurX: w.CurrentX, CurY: w.CurrentY}
 		app.interpolateCurrentPos(npc)
-		if err := app.startReturnWalk(ctx, npc, destX, destY, targetStructureID, label); err != nil {
+		if err := app.startReturnWalk(ctx, npc, destX, destY, targetStructureID, label, true); err != nil {
 			log.Printf("scheduler: %s %s dispatch: %v", label, w.ID, err)
 			return
 		}
