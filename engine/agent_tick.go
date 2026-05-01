@@ -39,6 +39,7 @@ import (
 	"log"
 	"math"
 	"math/rand"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -580,6 +581,75 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, 
 	hourStart := time.Date(now.Year(), now.Month(), now.Day(), now.Hour(), 0, 0, 0, now.Location())
 	log.Printf("event-tick %s: %s", r.DisplayName, reason)
 	app.runAgentTick(ctx, &r, hourStart, dawnMin, duskMin, sceneID)
+}
+
+// checkStaleAddressees scans freshly-spoken text for first-name
+// references to other actors and emits a narration room_event for any
+// who are no longer co-located with the speaker. Catches the
+// parallel-tick perception race where actor B leaves between when
+// actor A's tick snapshotted perception (B present) and when the LLM
+// finally produced speech that addresses B by name. Without this,
+// the chat log just shows the speaker addressing a phantom.
+//
+// Heuristic: split each candidate's display_name on whitespace and
+// match the first token as a whole word (case-insensitive). Names
+// like "Josiah Thorne" or "John Ellis" match on "Josiah" / "John";
+// single-token names ("Wendy", "Jefferey") match as themselves. The
+// false-positive risk is low because Salem names are picked
+// distinctly and not common English words; if that ever changes,
+// this should switch to "must be followed/preceded by punctuation"
+// or pre-built regex from the actor table.
+//
+// Runs in a goroutine off the speak commit (fire-and-forget). Errors
+// are logged and dropped — the absence of the narration is a minor
+// UX glitch, not a sim correctness issue.
+func (app *App) checkStaleAddressees(speakerID, speakerName, text, structureID string) {
+	ctx := context.Background()
+	rows, err := app.DB.Query(ctx,
+		`SELECT id, display_name, inside_structure_id FROM actor WHERE id::text != $1`,
+		speakerID)
+	if err != nil {
+		log.Printf("stale-addressee query failed: %v", err)
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, name string
+		var inside sql.NullString
+		if err := rows.Scan(&id, &name, &inside); err != nil {
+			continue
+		}
+		first := strings.SplitN(strings.TrimSpace(name), " ", 2)[0]
+		if first == "" {
+			continue
+		}
+		// regexp.QuoteMeta covers names with regex-special chars (e.g.
+		// O'Brien). (?i) is case-insensitive; \b is word boundary.
+		re, err := regexp.Compile(`(?i)\b` + regexp.QuoteMeta(first) + `\b`)
+		if err != nil {
+			continue
+		}
+		if !re.MatchString(text) {
+			continue
+		}
+		// Mentioned by first name. Still co-located with the speaker?
+		if inside.Valid && inside.String == structureID {
+			continue
+		}
+		// Absent addressee — emit narration so observers see it.
+		log.Printf("stale-addressee: %s addressed %s, who has left structure %s", speakerName, name, structureID)
+		app.Hub.Broadcast(WorldEvent{
+			Type: "room_event",
+			Data: map[string]interface{}{
+				"actor_id":     id,
+				"actor_name":   name,
+				"kind":         "act",
+				"text":         fmt.Sprintf("[%s had already left.]", name),
+				"structure_id": structureID,
+				"at":           time.Now().UTC().Format(time.RFC3339),
+			},
+		})
+	}
 }
 
 // triggerCoLocatedTicks fires immediate ticks for every other agentized
@@ -1367,6 +1437,14 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 				"at":     time.Now().UTC().Format(time.RFC3339),
 			},
 		})
+		// Stale-addressee narration: parallel ticks mean an NPC's
+		// perception was snapshotted seconds before the LLM produced its
+		// speech. If someone they address has already left in the
+		// meantime, surface a small narration line so observers
+		// understand. See checkStaleAddressees for the policy.
+		if r.InsideStructureID.Valid {
+			go app.checkStaleAddressees(r.ID, r.DisplayName, text, r.InsideStructureID.String)
+		}
 		// Event-tick co-located agents so they can react in-band. Force
 		// the cost guard off here — when an NPC addresses another NPC
 		// by name (or makes a speech the room is reacting to), the
