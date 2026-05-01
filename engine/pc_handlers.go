@@ -439,8 +439,9 @@ func (app *App) handlePCSay(w http.ResponseWriter, r *http.Request) {
 			"target_name":  req.Target,
 		})
 		if _, err := app.DB.Exec(r.Context(),
-			`INSERT INTO agent_action_log (actor_id, speaker_name, source, action_type, payload, result)
-			 VALUES ($1, $2, 'player', 'speak', $3, 'ok')`,
+			`INSERT INTO agent_action_log (actor_id, speaker_name, source, action_type, payload, result, huddle_id)
+			 VALUES ($1, $2, 'player', 'speak', $3, 'ok',
+			         (SELECT current_huddle_id FROM actor WHERE id = $1))`,
 			actorID, charName.String, audit,
 		); err != nil {
 			log.Printf("pc/say audit insert: %v", err)
@@ -532,8 +533,9 @@ func (app *App) handlePCSpeak(w http.ResponseWriter, r *http.Request) {
 	})
 
 	if _, err := app.DB.Exec(r.Context(),
-		`INSERT INTO agent_action_log (actor_id, speaker_name, source, action_type, payload, result)
-		 VALUES ($1, $2, 'player', 'speak', $3, 'ok')`,
+		`INSERT INTO agent_action_log (actor_id, speaker_name, source, action_type, payload, result, huddle_id)
+		 VALUES ($1, $2, 'player', 'speak', $3, 'ok',
+		         (SELECT current_huddle_id FROM actor WHERE id = $1))`,
 		actorID, charName.String, payload,
 	); err != nil {
 		log.Printf("pc/speak audit insert: %v", err)

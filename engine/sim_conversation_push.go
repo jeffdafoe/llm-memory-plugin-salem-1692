@@ -53,10 +53,16 @@ var simPushHTTPClient = &http.Client{Timeout: 30 * time.Second}
 
 // pushEvent is one row in the api payload — mirrors agent_action_log
 // shape minus internal IDs. The api narrates each by kind.
+//
+// Speaker is the agent_action_log.speaker_name (NPC display name or PC
+// character name). Always populated. The api uses it for the line label
+// so cross-actor speak/act rows (Ezekiel speaking in John's tavern day)
+// render under the correct speaker rather than the day's target agent.
 type pushEvent struct {
 	At      time.Time              `json:"at"`
 	Kind    string                 `json:"kind"`
 	Payload map[string]interface{} `json:"payload"`
+	Speaker string                 `json:"speaker,omitempty"`
 }
 
 type simPushBody struct {
@@ -205,17 +211,124 @@ func (app *App) pushSimDay(ctx context.Context, day string) error {
 }
 
 // loadDayEvents pulls agent_action_log rows for one actor in the day
-// window and converts them to the api event shape. Empty result is
-// fine — the api treats no-events as "skip writing the note".
+// window — both the actor's own rows AND co-located other-actor speak/act
+// rows in the same scene_huddle (ZBBS-094). The cross-actor pull is what
+// makes the distilled note useful as dream input: a tavernkeeper's day
+// reduces to a monologue without the customers' contributions, since the
+// model needs the full back-and-forth to reflect on the scene.
+//
+// Cross-actor inclusion is bounded by per-huddle presence intervals
+// rather than "any huddle they touched today". Without bounds, an actor
+// who entered a tavern at 23:00 would have their note flooded with
+// every speak/act in that huddle since 00:00 — pre-arrival speech they
+// were nowhere near.
+//
+// Three CTEs build the actor's presence intervals:
+//
+//   - actor_seed: the actor's most recent audit row from BEFORE the
+//     day window (LIMIT 1, DESC). Provides the carryover huddle state
+//     at midnight when the actor sits silently in a huddle that spans
+//     the day boundary. Without this seed, a tavernkeeper who entered
+//     the Tavern at 22:00 yesterday and doesn't act until 09:00 today
+//     has no in-window stamped row to anchor an interval, and
+//     cross-actor speech in the Tavern from 00:00–09:00 would be
+//     wrongly excluded.
+//
+//   - actor_rows: union of (a virtual seed row at $2/day-start carrying
+//     the seed huddle) plus the actor's in-window rows, with LEAD over
+//     the combined set. The seed row's id is 0; real ids are positive
+//     BIGSERIAL, so the seed sorts first deterministically when
+//     occurred_at ties at exactly midnight. LEAD looks at EVERY row
+//     including outdoor (NULL huddle) rows so a transition-to-
+//     elsewhere correctly bounds the previous huddle's interval.
+//
+//   - my_intervals: filter to rows with huddle_id IS NOT NULL, use
+//     occurred_at as start_at and LEAD'd next_at as end_at (or
+//     end-of-day if this was the actor's last row).
+//
+// The cross-actor predicate uses EXISTS over my_intervals to check
+// whether the other-actor row's occurred_at falls inside any such
+// interval for the same huddle.
+//
+// NULL-huddle invariant: every INSERT into agent_action_log stamps
+// huddle_id from the actor's current_huddle_id, and current_huddle_id
+// is maintained synchronously by joinOrCreateHuddle / leaveHuddle
+// (engine/scene_huddles.go) which fire from setNPCInside whenever the
+// actor's inside_structure_id flips. Every structure entry creates/
+// joins a huddle (engine/scene_huddles.go:12 — solo occupants get one
+// too). So huddle_id IS NULL on an audit row means and only means
+// "actor was outdoors at insert time." The interval logic relies on
+// this: outdoor rows correctly act as boundaries that end any
+// preceding huddle interval.
+//
+// Known limitation: a move_to row stamps the FROM huddle (because
+// current_huddle_id isn't cleared until the async leave fires after
+// walk completion) and contributes [move_at, next_row_at) as a
+// presence interval. The actor was actually walking away during that
+// span, so cross-actor speech at the FROM huddle during the walk gets
+// included in the actor's note even though they'd left. Minor — the
+// walk is short, and contextually the actor JUST left the scene so
+// the tail-end speech is still adjacent to their day. A second
+// limitation: silent walk-OUT-to-outdoors followed by no in-window
+// rows preserves the seed/last-known huddle past the silent leave.
+// Both would be tightened by a leaveHuddle audit row, deferred.
+//
+// Empty result is fine — the api treats no-events as "skip writing the
+// note".
 func (app *App) loadDayEvents(ctx context.Context, actorID string, dayStart, dayEnd time.Time) ([]pushEvent, error) {
 	rows, err := app.DB.Query(ctx,
-		`SELECT occurred_at, action_type, payload
-		 FROM agent_action_log
-		 WHERE actor_id = $1
-		   AND occurred_at >= $2
-		   AND occurred_at < $3
-		   AND result = 'ok'
-		 ORDER BY occurred_at ASC`,
+		`WITH actor_seed AS (
+		     SELECT huddle_id
+		       FROM agent_action_log
+		      WHERE actor_id = $1
+		        AND occurred_at < $2
+		        AND result = 'ok'
+		      ORDER BY occurred_at DESC, id DESC
+		      LIMIT 1
+		 ),
+		 actor_raw AS (
+		     SELECT huddle_id, $2::timestamptz AS occurred_at, 0::bigint AS id
+		       FROM actor_seed
+		     UNION ALL
+		     SELECT huddle_id, occurred_at, id
+		       FROM agent_action_log
+		      WHERE actor_id = $1
+		        AND occurred_at >= $2
+		        AND occurred_at < $3
+		        AND result = 'ok'
+		 ),
+		 actor_rows AS (
+		     SELECT huddle_id,
+		            occurred_at,
+		            LEAD(occurred_at) OVER (ORDER BY occurred_at, id) AS next_at
+		       FROM actor_raw
+		 ),
+		 my_intervals AS (
+		     SELECT huddle_id,
+		            occurred_at AS start_at,
+		            COALESCE(next_at, $3::timestamptz) AS end_at
+		       FROM actor_rows
+		      WHERE huddle_id IS NOT NULL
+		 )
+		 SELECT al.occurred_at, al.action_type, al.payload, al.speaker_name
+		   FROM agent_action_log al
+		  WHERE al.occurred_at >= $2
+		    AND al.occurred_at < $3
+		    AND al.result = 'ok'
+		    AND (
+		        al.actor_id = $1
+		        OR (
+		            al.action_type IN ('speak', 'act')
+		            AND al.huddle_id IS NOT NULL
+		            AND EXISTS (
+		                SELECT 1 FROM my_intervals mi
+		                 WHERE mi.huddle_id = al.huddle_id
+		                   AND al.occurred_at >= mi.start_at
+		                   AND al.occurred_at <  mi.end_at
+		            )
+		        )
+		    )
+		  ORDER BY al.occurred_at ASC, al.id ASC`,
 		actorID, dayStart, dayEnd)
 	if err != nil {
 		return nil, fmt.Errorf("query: %w", err)
@@ -227,7 +340,8 @@ func (app *App) loadDayEvents(ctx context.Context, actorID string, dayStart, day
 		var occurredAt time.Time
 		var actionType string
 		var payloadRaw []byte
-		if err := rows.Scan(&occurredAt, &actionType, &payloadRaw); err != nil {
+		var speakerName string
+		if err := rows.Scan(&occurredAt, &actionType, &payloadRaw, &speakerName); err != nil {
 			return nil, fmt.Errorf("scan: %w", err)
 		}
 		var payload map[string]interface{}
@@ -246,6 +360,7 @@ func (app *App) loadDayEvents(ctx context.Context, actorID string, dayStart, day
 			At:      occurredAt,
 			Kind:    actionType,
 			Payload: payload,
+			Speaker: speakerName,
 		})
 	}
 	if err := rows.Err(); err != nil {

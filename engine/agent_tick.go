@@ -1513,9 +1513,17 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 	// Write audit row. Errors here are logged but don't propagate — the
 	// commit already happened (or already failed); the audit row is a
 	// best-effort record.
+	//
+	// huddle_id (ZBBS-094) is sourced via subquery on the actor row so
+	// the latest scene_huddle membership rides along on the audit. For a
+	// move_to commit, current_huddle_id is still the FROM huddle at
+	// insert time — the walk completion's setNPCInside is async, and the
+	// leave/join happens after this insert returns. That matches the
+	// move_to's semantic location ("decided to leave from this huddle").
 	_, err := app.DB.Exec(ctx,
-		`INSERT INTO agent_action_log (actor_id, speaker_name, source, action_type, payload, result, error)
-		 VALUES ($1, $2, 'agent', $3, $4, $5, NULLIF($6, ''))`,
+		`INSERT INTO agent_action_log (actor_id, speaker_name, source, action_type, payload, result, error, huddle_id)
+		 VALUES ($1, $2, 'agent', $3, $4, $5, NULLIF($6, ''),
+		         (SELECT current_huddle_id FROM actor WHERE id = $1))`,
 		r.ID, r.DisplayName, tc.Name, payload, result, errStr,
 	)
 	if err != nil {
