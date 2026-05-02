@@ -75,6 +75,7 @@ var _font: Font = null
 # encoding wobble around private-use-area characters.
 var _icon_font: Font = null
 const ICON_CODEPOINT_HEART: int = 0xE0F2
+const ICON_CODEPOINT_X: int = 0xE1B2
 var _select_button: Button = null
 var _delete_button: Button = null
 var _terrain_button: Button = null
@@ -3211,7 +3212,13 @@ func _make_refresh_row_ui(idx: int) -> Control:
     attr_dropdown.item_selected.connect(_on_refresh_attribute_changed.bind(idx, attr_dropdown))
     hdr_row.add_child(attr_dropdown)
 
-    var remove_btn := _make_refreshes_button("✕")
+    # Close X comes from Lucide — IMFellEnglish doesn't ship the U+2715
+    # multiplication-X this used to use. Override the font on the
+    # already-built button rather than threading an icon-font path
+    # through _make_refreshes_button (which is shared with text buttons
+    # like "+ Add refresh" and "Save").
+    var remove_btn := _make_refreshes_button(String.chr(ICON_CODEPOINT_X))
+    remove_btn.add_theme_font_override("font", _icon_font)
     remove_btn.tooltip_text = "Remove this refresh row"
     remove_btn.pressed.connect(_on_refresh_remove_pressed.bind(idx))
     hdr_row.add_child(remove_btn)
