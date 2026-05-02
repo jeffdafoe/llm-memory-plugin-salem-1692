@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 )
@@ -158,4 +160,44 @@ func (app *App) handleMoveAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleTriggerAgentTick fires an immediate tick on a single agentized
+// NPC. Admin / debug — useful when an NPC is stranded, when testing a
+// new tool the model should attempt, or when nudging behavior without
+// the side effects of a fake speak event. force=true to bypass the
+// 5-min cost guard; the operator clicked it on purpose. New scene UUID
+// so the tick stands alone in any later transcript grouping.
+func (app *App) handleTriggerAgentTick(w http.ResponseWriter, r *http.Request) {
+	agentID := r.PathValue("id")
+	if agentID == "" {
+		jsonError(w, "Missing agent ID", http.StatusBadRequest)
+		return
+	}
+
+	// Validate the actor exists and is agentized — triggering a non-
+	// agentized actor (decorative NPC, PC) is a no-op that confuses
+	// callers. Reject up front with a clear error.
+	var displayName sql.NullString
+	var isAgent bool
+	err := app.DB.QueryRow(r.Context(),
+		`SELECT display_name, llm_memory_agent IS NOT NULL
+		   FROM actor WHERE id = $1`,
+		agentID,
+	).Scan(&displayName, &isAgent)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			jsonError(w, "Agent not found", http.StatusNotFound)
+			return
+		}
+		jsonError(w, "Failed to look up agent", http.StatusInternalServerError)
+		return
+	}
+	if !isAgent {
+		jsonError(w, "Actor is not LLM-driven", http.StatusBadRequest)
+		return
+	}
+
+	go app.triggerImmediateTick(context.Background(), agentID, "admin-trigger", true, newUUIDv7(), agentID)
+	w.WriteHeader(http.StatusAccepted)
 }
