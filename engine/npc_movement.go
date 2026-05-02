@@ -374,12 +374,16 @@ func (app *App) applyArrival(npcID string) {
 	// "Ezekiel arrived at the Blacksmith." regardless of whether the
 	// arrival cascaded into other ticks.
 	var arriverIsAgent bool
+	var arriverIsPC bool
 	var displayName string
 	var insideID sql.NullString
 	if err := app.DB.QueryRow(ctx,
-		`SELECT display_name, inside_structure_id, llm_memory_agent IS NOT NULL FROM actor WHERE id = $1`,
+		`SELECT display_name, inside_structure_id,
+		        llm_memory_agent IS NOT NULL,
+		        login_username IS NOT NULL
+		   FROM actor WHERE id = $1`,
 		npcID,
-	).Scan(&displayName, &insideID, &arriverIsAgent); err == nil && insideID.Valid {
+	).Scan(&displayName, &insideID, &arriverIsAgent, &arriverIsPC); err == nil && insideID.Valid {
 		structName := app.lookupStructureName(ctx, insideID.String)
 		if structName == "" {
 			structName = "a building"
@@ -405,13 +409,21 @@ func (app *App) applyArrival(npcID string) {
 			},
 		})
 
-		if arriverIsAgent {
+		if arriverIsAgent || arriverIsPC {
 			// Cascade origin (MEM-121): a fresh scene UUID for the
 			// arrival. Walks finish seconds-to-minutes of game time
 			// after the move_to that started them, so by the time
 			// we get here it's a new scene, not a continuation of
 			// whatever scene triggered the original move_to.
-			app.triggerCoLocatedTicks(ctx, insideID.String, npcID, "arrival", false, newUUIDv7(), npcID)
+			//
+			// PC arrivals force=true (PC actions are rare and
+			// significant — never cost-gate a player presence).
+			// Agent arrivals respect the cost guard (force=false).
+			// Decorative NPC arrivals don't fire ticks at all —
+			// their schedule-driven movement is background, not a
+			// signal worth reacting to.
+			force := arriverIsPC
+			app.triggerCoLocatedTicks(ctx, insideID.String, npcID, "arrival", force, newUUIDv7(), npcID)
 			// Cascade origin — fire the chronicler alongside the
 			// reactor ticks. Once per arrival, not per in-cascade
 			// NPC reaction.
