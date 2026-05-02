@@ -1505,15 +1505,21 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		// Engine log is the visible-to-humans record until the Godot client
 		// gets an npc_spoke handler (see tasks/pending/salem-speech-bubble-ui).
 		log.Printf("npc_spoke: %s says %q", r.DisplayName, text)
-		app.Hub.Broadcast(WorldEvent{
-			Type: "npc_spoke",
-			Data: map[string]interface{}{
-				"npc_id": r.ID,
-				"name":   r.DisplayName,
-				"text":   text,
-				"at":     time.Now().UTC().Format(time.RFC3339),
-			},
-		})
+		spokeData := map[string]interface{}{
+			"npc_id": r.ID,
+			"name":   r.DisplayName,
+			"text":   text,
+			"at":     time.Now().UTC().Format(time.RFC3339),
+		}
+		// Carry structure_id so the talk panel can scope its room log
+		// to the current room. World-view speech bubbles ignore this
+		// field and render every npc_spoke (PCs see speech bubbles over
+		// NPCs across structures); the panel uses it as a filter so a
+		// player at the apothecary doesn't see tavern dialogue mixed in.
+		if r.InsideStructureID.Valid {
+			spokeData["structure_id"] = r.InsideStructureID.String
+		}
+		app.Hub.Broadcast(WorldEvent{Type: "npc_spoke", Data: spokeData})
 		// Stale-addressee narration: parallel ticks mean an NPC's
 		// perception was snapshotted seconds before the LLM produced its
 		// speech. If someone they address has already left in the
@@ -1641,15 +1647,16 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		// audit row carries action_type='take_break' (not 'speak') — searches
 		// for break events should find them under their own type.
 		log.Printf("npc_spoke: %s says %q (take_break)", r.DisplayName, excuse)
-		app.Hub.Broadcast(WorldEvent{
-			Type: "npc_spoke",
-			Data: map[string]interface{}{
-				"npc_id": r.ID,
-				"name":   r.DisplayName,
-				"text":   excuse,
-				"at":     time.Now().UTC().Format(time.RFC3339),
-			},
-		})
+		spokeData := map[string]interface{}{
+			"npc_id": r.ID,
+			"name":   r.DisplayName,
+			"text":   excuse,
+			"at":     time.Now().UTC().Format(time.RFC3339),
+		}
+		if r.InsideStructureID.Valid {
+			spokeData["structure_id"] = r.InsideStructureID.String
+		}
+		app.Hub.Broadcast(WorldEvent{Type: "npc_spoke", Data: spokeData})
 		if r.InsideStructureID.Valid {
 			app.Hub.Broadcast(WorldEvent{
 				Type: "room_event",

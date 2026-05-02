@@ -1015,12 +1015,22 @@ func _on_speak_completed(result: int, response_code: int, _headers: PackedString
         ])
 
 
-func _on_npc_spoke(_npc_id: String, speaker_name: String, text: String, kind: String = "", at: String = "") -> void:
+func _on_npc_spoke(_npc_id: String, speaker_name: String, text: String, kind: String = "", at: String = "", structure_id: String = "") -> void:
     # WS speech kinds are "npc" | "player"; normalize to the panel's
     # speech_npc / speech_player kinds so render logic is uniform with
     # the backload entries. npc_id is unused here — speech bubbles
     # consume it instead. `at` is an ISO timestamp from the broadcast;
     # _format_timestamp converts to a short clock-time prefix.
+    #
+    # Structure filter mirrors _on_room_event: speech that happened in
+    # a different room than the player's current conversational scope
+    # gets dropped. Empty structure_id is from outdoor speech with no
+    # structure context — show it only when the player is also outside
+    # (loaded_structure_id empty). Older server builds without the
+    # field still flow through (treated as outdoor) until everyone's
+    # on the structure-stamped version.
+    if structure_id != loaded_structure_id:
+        return
     var panel_kind := "speech_player" if kind == "player" else "speech_npc"
     _append_log_line(speaker_name, text, panel_kind, false, at)
 
