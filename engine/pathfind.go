@@ -171,6 +171,43 @@ func (app *App) loadWalkGrid(ctx context.Context) (*walkGrid, error) {
 				g.cost[ty*mapW+tx] = stamp
 			}
 		}
+
+		// Visual-overhang surcharge. Mana Seed sprites have decorative
+		// roof / wall art that extends ~1 tile beyond the collision
+		// footprint, so paths threading the 1-tile ring around an
+		// obstacle visually clip the wall art. Surcharge those tiles
+		// (currently walkable) so the planner prefers wider routes
+		// around buildings. Cost 8 is meaningfully higher than dirt
+		// (1) and grass (3) but doesn't dominate distance — a single
+		// surcharge tile on an otherwise direct path costs about as
+		// much as a 2-tile grass detour, so paths still take the
+		// reasonable approach lane when no wider alternative exists.
+		// Skipped for passages: bridges have no overhang.
+		if !isPassage {
+			const overhangSurcharge uint8 = 8
+			for ty := ay - fTop - 1; ty <= ay+fBottom+1; ty++ {
+				if ty < 0 || ty >= mapH {
+					continue
+				}
+				for tx := ax - fLeft - 1; tx <= ax+fRight+1; tx++ {
+					if tx < 0 || tx >= mapW {
+						continue
+					}
+					// Skip footprint interior — already stamped 0.
+					if tx >= ax-fLeft && tx <= ax+fRight && ty >= ay-fTop && ty <= ay+fBottom {
+						continue
+					}
+					existing := g.cost[ty*mapW+tx]
+					// Don't overwrite impassable tiles (water, another
+					// building's footprint) or already-surcharged tiles.
+					if existing == 0 || existing >= overhangSurcharge {
+						continue
+					}
+					g.cost[ty*mapW+tx] = overhangSurcharge
+				}
+			}
+		}
+
 		if doorX != nil && doorY != nil {
 			doorTiles = append(doorTiles, doorTile{
 				x:      ax + *doorX,
