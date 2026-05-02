@@ -2204,19 +2204,10 @@ func _make_villager_row(npc_id: String, display_name: String, container: Node2D)
     row.set_meta("style_hover", hover_style)
     row.set_meta("style_selected", selected_style)
 
-    # Outer HBox: text column on the left, heal icon on the right. The
-    # text column expands; the icon shrinks to its content and sits at
-    # the row's right edge.
-    var outer_hb := HBoxContainer.new()
-    outer_hb.add_theme_constant_override("separation", 6)
-    outer_hb.mouse_filter = Control.MOUSE_FILTER_IGNORE
-    row.add_child(outer_hb)
-
     var vb := VBoxContainer.new()
     vb.add_theme_constant_override("separation", 0)
-    vb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     vb.mouse_filter = Control.MOUSE_FILTER_IGNORE
-    outer_hb.add_child(vb)
+    row.add_child(vb)
 
     # Top line: name plus an inline (behavior) suffix at the smaller
     # secondary font/color. Two Labels in an HBox so the two segments
@@ -2280,46 +2271,32 @@ func _make_villager_row(npc_id: String, display_name: String, container: Node2D)
     needs_tiredness_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
     needs_row.add_child(needs_tiredness_label)
 
-    # "Make them feel better" icon — a small "+" button anchored to the
-    # row's right edge. Clicking POSTs reset-needs for this row's NPC,
-    # which routes through applyConsumption → needs_resolved chronicler
-    # dispatch, so the NPC ticks if a need crossed the distress threshold.
-    # Button mouse_filter=STOP keeps the click off the row's gui_input.
-    var heal_button := Button.new()
-    heal_button.text = "+"
-    heal_button.tooltip_text = "Reset needs (and tick if distressed)"
-    heal_button.add_theme_font_override("font", _font)
-    heal_button.add_theme_font_size_override("font_size", 14)
-    heal_button.add_theme_color_override("font_color", Color(0.65, 0.85, 0.55, 1.0))
-    heal_button.add_theme_color_override("font_hover_color", Color(0.80, 0.95, 0.65, 1.0))
-    heal_button.custom_minimum_size = Vector2(22, 22)
-    heal_button.size_flags_horizontal = Control.SIZE_SHRINK_END
-    heal_button.size_flags_vertical = Control.SIZE_SHRINK_CENTER
-    heal_button.focus_mode = Control.FOCUS_NONE
-    var heal_style := StyleBoxFlat.new()
-    heal_style.bg_color = Color(0.10, 0.15, 0.08, 0.7)
-    heal_style.border_color = Color(0.35, 0.50, 0.25, 0.55)
-    heal_style.border_width_left = 1
-    heal_style.border_width_top = 1
-    heal_style.border_width_right = 1
-    heal_style.border_width_bottom = 1
-    heal_style.corner_radius_top_left = 3
-    heal_style.corner_radius_top_right = 3
-    heal_style.corner_radius_bottom_left = 3
-    heal_style.corner_radius_bottom_right = 3
-    heal_style.content_margin_left = 4
-    heal_style.content_margin_right = 4
-    heal_style.content_margin_top = 0
-    heal_style.content_margin_bottom = 0
-    heal_button.add_theme_stylebox_override("normal", heal_style)
-    var heal_hover_style: StyleBoxFlat = heal_style.duplicate()
-    heal_hover_style.bg_color = Color(0.15, 0.22, 0.10, 0.85)
-    heal_button.add_theme_stylebox_override("hover", heal_hover_style)
-    var heal_pressed_style: StyleBoxFlat = heal_style.duplicate()
-    heal_pressed_style.bg_color = Color(0.20, 0.30, 0.15, 0.95)
-    heal_button.add_theme_stylebox_override("pressed", heal_pressed_style)
-    heal_button.pressed.connect(func(): npc_heal_requested.emit(npc_id))
-    outer_hb.add_child(heal_button)
+    # "Make them feel better" heart inline at the end of the needs row.
+    # Plain Label (no button chrome) so it reads at the same size and
+    # weight as the need labels next to it. Click → reset-needs for
+    # this row's NPC, which routes through applyConsumption →
+    # needs_resolved chronicler dispatch so the NPC ticks if any need
+    # crossed below the red threshold. mouse_filter=STOP keeps the
+    # click off the row's gui_input (no select-and-pan side effect).
+    var heal_icon := Label.new()
+    heal_icon.text = "♥"
+    heal_icon.tooltip_text = "Reset needs (and tick if distressed)"
+    heal_icon.add_theme_font_override("font", _font)
+    heal_icon.add_theme_font_size_override("font_size", 12)
+    heal_icon.add_theme_color_override("font_color", Color(0.75, 0.40, 0.40, 0.85))
+    heal_icon.mouse_filter = Control.MOUSE_FILTER_STOP
+    heal_icon.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+    heal_icon.gui_input.connect(func(ev):
+        if ev is InputEventMouseButton and ev.pressed and ev.button_index == MOUSE_BUTTON_LEFT:
+            npc_heal_requested.emit(npc_id)
+    )
+    heal_icon.mouse_entered.connect(func():
+        heal_icon.add_theme_color_override("font_color", Color(0.95, 0.55, 0.55, 1.0))
+    )
+    heal_icon.mouse_exited.connect(func():
+        heal_icon.add_theme_color_override("font_color", Color(0.75, 0.40, 0.40, 0.85))
+    )
+    needs_row.add_child(heal_icon)
 
     row.set_meta("name_label", name_label)
     row.set_meta("behavior_inline_label", behavior_inline_label)
