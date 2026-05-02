@@ -1057,11 +1057,14 @@ func _append_log_line(speaker: String, text: String, kind: String = "", is_backl
     # client-only narrations like knock outcomes have no real time).
     var time_prefix := _format_timestamp(at)
 
-    # Narration kinds (act, departure, eventually arrival/pay) render as a
-    # single dimmer line — text is pre-rendered server-side and embeds the
-    # actor's name, so no separate name label. Speech kinds render as
-    # name + quoted text, color-coded for player vs NPC.
-    var is_narration := kind == "act" or kind == "departure" or kind == "arrival"
+    # Narration kinds render as a single dimmer line — text is pre-
+    # rendered server-side and embeds the actor's name, so no separate
+    # name label. Speech kinds render as name + quoted text, color-coded
+    # for player vs NPC. Anything that isn't a known speech kind falls
+    # through to narration so future server-side kinds (give, take, etc.)
+    # don't need a client patch to render.
+    var is_speech := kind == "speech_npc" or kind == "speech_player" or kind == "npc" or kind == "player"
+    var is_narration := not is_speech
 
     var entry: Node
     if is_narration:
