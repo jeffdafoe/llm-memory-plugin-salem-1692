@@ -73,6 +73,16 @@ type pcMeResponse struct {
 	X                 float64            `json:"x"`
 	Y                 float64            `json:"y"`
 	InsideStructureID *string            `json:"inside_structure_id,omitempty"`
+	// AudienceStructureID is the structure scoping the PC's current
+	// conversation. When inside a structure (sat at the bar), this
+	// matches inside_structure_id. When loitering at a booth or doorway
+	// (huddle joined via the knock handler but not formally inside),
+	// this is the huddle's structure_id while inside_structure_id stays
+	// null. The talk panel uses this for backload + change detection so
+	// outdoor-at-booth conversations get the same room view as indoor
+	// ones; other consumers (visibility, positioning) keep using
+	// inside_structure_id, which is the literal "am I inside?".
+	AudienceStructureID *string            `json:"audience_structure_id,omitempty"`
 	StructureName     string             `json:"structure_name,omitempty"`
 	HomeStructureID   *string            `json:"home_structure_id,omitempty"`
 	HomeName          string             `json:"home_name,omitempty"`
@@ -194,6 +204,26 @@ func (app *App) handlePCMe(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Audience structure: prefer inside_structure_id (formal "I'm in
+	// this room"), fall back to the huddle's structure_id (loitering at
+	// the booth, knocking at the door — huddle joined but not formally
+	// inside). When neither is set the PC is in the open village with
+	// nobody to converse with; both fields stay nil.
+	if insideID.Valid {
+		s := insideID.String
+		resp.AudienceStructureID = &s
+	} else if huddleID.Valid {
+		var huddleStructureID sql.NullString
+		_ = app.DB.QueryRow(r.Context(),
+			`SELECT structure_id::text FROM scene_huddle WHERE id = $1`,
+			huddleID.String,
+		).Scan(&huddleStructureID)
+		if huddleStructureID.Valid {
+			s := huddleStructureID.String
+			resp.AudienceStructureID = &s
+		}
+	}
+
 	if huddleID.Valid {
 		s := huddleID.String
 		resp.CurrentHuddleID = &s
@@ -230,14 +260,16 @@ func (app *App) handlePCMe(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Recent speech at the player's current location — backloads the
-	// talk panel so a freshly-opened panel shows what the room has been
-	// saying lately. Returned oldest→newest so the client can append in
-	// natural reading order. Limited to pcRecentSpeechLimit rows in the
-	// last pcRecentSpeechCutoff (24h) so a quiet room doesn't dredge up
+	// Recent speech at the player's current conversational scope —
+	// backloads the talk panel so a freshly-opened panel shows what the
+	// room has been saying lately. Sources from audience_structure_id so
+	// loitering-at-the-booth gets the same backload as sitting-at-the-
+	// bar. Returned oldest→newest so the client can append in natural
+	// reading order. Limited to pcRecentSpeechLimit rows in the last
+	// pcRecentSpeechCutoff (24h) so a quiet room doesn't dredge up
 	// week-old chatter and an active one only surfaces the recent thread.
-	if insideID.Valid {
-		resp.RecentSpeech = app.loadRecentSpeechAtStructure(r.Context(), insideID.String)
+	if resp.AudienceStructureID != nil {
+		resp.RecentSpeech = app.loadRecentSpeechAtStructure(r.Context(), *resp.AudienceStructureID)
 	}
 
 	jsonResponse(w, http.StatusOK, resp)
@@ -1098,11 +1130,19 @@ func (app *App) handlePCSpeak(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Source the audience scope from the huddle, not the PC's inside_
+	// structure_id. A PC loitering at a booth (knock-handler ZBBS-101
+	// joins them to the structure's huddle without flipping inside=true)
+	// is in the conversation but not formally inside; restricting on
+	// inside_structure_id would silently drop their speech. The huddle's
+	// structure_id gives the right audience and the right scope for
+	// backload/perception filtering.
 	var actorID, charName, structureID sql.NullString
 	err := app.DB.QueryRow(r.Context(),
-		`SELECT pc.id::text, pc.display_name, pc.inside_structure_id::text
+		`SELECT pc.id::text, pc.display_name, sh.structure_id::text
 		   FROM actor pc
-		  WHERE pc.login_username = $1 AND pc.current_huddle_id IS NOT NULL`,
+		   JOIN scene_huddle sh ON sh.id = pc.current_huddle_id
+		  WHERE pc.login_username = $1`,
 		user.Username,
 	).Scan(&actorID, &charName, &structureID)
 	if err != nil || !structureID.Valid || !charName.Valid {

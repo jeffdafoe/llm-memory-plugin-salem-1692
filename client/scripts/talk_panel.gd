@@ -95,7 +95,11 @@ var huddle_members: Array = []
 
 # Tracks which structure's recent_speech we've already loaded so we don't
 # duplicate the backload across the 10s polling cycle. When the player walks
-# into a new structure, this changes and we clear+reload the log.
+# into a new structure (or up to a new booth), this changes and we
+# clear+reload the log. Sourced from /pc/me's audience_structure_id, which
+# falls back to the huddle's structure when the PC is loitering outdoors at
+# a booth — that way a doorstep conversation shows the same room view a
+# bar-stool conversation does.
 var loaded_structure_id := ""
 
 var is_open := false
@@ -822,7 +826,14 @@ func _apply_pc_state(data: Dictionary) -> void:
 # Skipped on subsequent polls of the same structure to avoid duplicates
 # layering on top of live npc_spoke events.
 func _maybe_apply_recent_speech(data: Dictionary) -> void:
-    var current_structure := str(data.get("inside_structure_id", ""))
+    # Use audience_structure_id (the conversational scope) so a PC
+    # loitering at a booth — huddle joined, but not formally inside —
+    # gets the same backload as a PC sitting at the bar. Falls back to
+    # inside_structure_id for older server builds that don't return the
+    # new field.
+    var current_structure := str(data.get("audience_structure_id", ""))
+    if current_structure.is_empty():
+        current_structure = str(data.get("inside_structure_id", ""))
     if current_structure == loaded_structure_id:
         return
 
