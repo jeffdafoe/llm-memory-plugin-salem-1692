@@ -200,24 +200,28 @@ func (app *App) loadWalkGrid(ctx context.Context) (*walkGrid, error) {
 		if d.x < d.fpMinX || d.x > d.fpMaxX || d.y < d.fpMinY || d.y > d.fpMaxY {
 			continue
 		}
-		// Pick the footprint edge closest to the door and carve toward it.
+		// Pick the footprint edge to carve toward. Mana Seed buildings all
+		// face south (doors visually on the south side of the sprite), so
+		// the PC/NPC should always approach from the south whenever the
+		// south corridor is viable — otherwise the path threads through
+		// tiles on the building's east or west flank, which read visually
+		// as "entering through the side wall." Falls back to nearer of
+		// east/west when the door is already at the south edge (no south
+		// corridor needed but pathfinder still needs an approach lane in
+		// some other direction). North is last resort and only applies if
+		// the door somehow sits above its own footprint extent.
 		distW := d.x - d.fpMinX
 		distE := d.fpMaxX - d.x
 		distN := d.y - d.fpMinY
 		distS := d.fpMaxY - d.y
-		minDist := distW
-		dir := "w"
-		if distE < minDist {
-			minDist = distE
-			dir = "e"
-		}
-		if distN < minDist {
-			minDist = distN
-			dir = "n"
-		}
-		if distS < minDist {
-			minDist = distS
+		_ = distN
+		var dir string
+		if distS > 0 {
 			dir = "s"
+		} else if distE <= distW {
+			dir = "e"
+		} else {
+			dir = "w"
 		}
 		switch dir {
 		case "w":
