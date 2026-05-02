@@ -1031,6 +1031,69 @@ func world_to_tile(world_pos: Vector2) -> Vector2i:
         int(floor(world_pos.y / 32.0))
     )
 
+## Hit-test a screen position against rendered structures.
+## Returns {id, asset_id} for the nearest structure whose sprite bounding
+## box contains the click, or empty Dictionary if no hit.
+##
+## Used by play-mode click-to-walk so a click on a building routes the
+## PC to that building's door (server-side resolution) instead of the
+## raw click coords. Mirrors the bounding-box logic in editor.gd /
+## object_tooltip.gd's _find_object_at, plus a reverse lookup in
+## placed_objects to recover the object id.
+func find_object_at(screen_pos: Vector2) -> Dictionary:
+    var viewport: Viewport = get_viewport()
+    var canvas_transform: Transform2D = viewport.get_canvas_transform()
+    var world_pos: Vector2 = canvas_transform.affine_inverse() * screen_pos
+
+    var best_id: String = ""
+    var best_asset_id: String = ""
+    var best_dist: float = INF
+
+    for obj_id in placed_objects:
+        var node: Node2D = placed_objects[obj_id]
+        if node == null or node.get_child_count() == 0:
+            continue
+        var sprite_node: Node2D = null
+        for child in node.get_children():
+            if child is Sprite2D or child is AnimatedSprite2D:
+                sprite_node = child
+                break
+        if sprite_node == null:
+            continue
+
+        var region_size: Vector2 = _sprite_size_for_hit(sprite_node)
+        if region_size == Vector2.ZERO:
+            continue
+        var world_size: Vector2 = region_size * sprite_node.scale
+        var rect_origin: Vector2 = node.position + sprite_node.position
+        var rect = Rect2(rect_origin, world_size)
+        if not rect.has_point(world_pos):
+            continue
+        var dist: float = node.position.distance_to(world_pos)
+        if dist < best_dist:
+            best_dist = dist
+            best_id = obj_id
+            best_asset_id = str(node.get_meta("asset_id", ""))
+
+    if best_id == "":
+        return {}
+    return {"id": best_id, "asset_id": best_asset_id}
+
+## Texture size from either Sprite2D or AnimatedSprite2D — same logic
+## the editor / tooltip helpers use for click hit-testing.
+func _sprite_size_for_hit(sprite_node: Node2D) -> Vector2:
+    if sprite_node is Sprite2D:
+        var tex = sprite_node.texture
+        if tex != null:
+            return tex.get_size()
+    if sprite_node is AnimatedSprite2D:
+        var frames: SpriteFrames = sprite_node.sprite_frames
+        if frames != null and frames.get_frame_count("default") > 0:
+            var tex = frames.get_frame_texture("default", 0)
+            if tex != null:
+                return tex.get_size()
+    return Vector2.ZERO
+
 ## Sync the terrain renderer with current map_data.
 ## The renderer draws tiles each frame with 1px overlap.
 func _sync_renderer() -> void:

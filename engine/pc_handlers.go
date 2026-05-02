@@ -251,14 +251,21 @@ func (app *App) handlePCMe(w http.ResponseWriter, r *http.Request) {
 // readable line per row so the client renders strings, not grammar.
 func (app *App) loadRecentSpeechAtStructure(ctx context.Context, structureID string) []pcRecentSpeech {
 	cutoff := time.Now().Add(-pcRecentSpeechCutoff)
+	// LEFT JOIN actor so move_to rows can rebuild the same departure
+	// narration the live broadcast emits — narrateMoveDeparture needs
+	// the speaker's home / work structure IDs to render "retired for
+	// the evening" when home == work, otherwise "left for home". For
+	// non-move_to rows the joined columns are unused.
 	rows, err := app.DB.Query(ctx, `
-		SELECT speaker_name, action_type, source, payload, occurred_at
-		FROM agent_action_log
-		WHERE action_type IN ('speak', 'act', 'move_to')
-		  AND result = 'ok'
-		  AND payload->>'structure_id' = $1
-		  AND occurred_at > $2
-		ORDER BY occurred_at DESC
+		SELECT al.speaker_name, al.action_type, al.source, al.payload, al.occurred_at,
+		       ac.home_structure_id, ac.work_structure_id
+		FROM agent_action_log al
+		LEFT JOIN actor ac ON ac.id = al.actor_id
+		WHERE al.action_type IN ('speak', 'act', 'move_to')
+		  AND al.result = 'ok'
+		  AND al.payload->>'structure_id' = $1
+		  AND al.occurred_at > $2
+		ORDER BY al.occurred_at DESC
 		LIMIT $3
 	`, structureID, cutoff, pcRecentSpeechLimit)
 	if err != nil {
@@ -273,7 +280,9 @@ func (app *App) loadRecentSpeechAtStructure(ctx context.Context, structureID str
 		var speakerName, actionType, source string
 		var payloadJSON []byte
 		var occurredAt time.Time
-		if err := rows.Scan(&speakerName, &actionType, &source, &payloadJSON, &occurredAt); err != nil {
+		var homeStructureID, workStructureID sql.NullString
+		if err := rows.Scan(&speakerName, &actionType, &source, &payloadJSON, &occurredAt,
+			&homeStructureID, &workStructureID); err != nil {
 			continue
 		}
 		var payload map[string]interface{}
@@ -305,7 +314,7 @@ func (app *App) loadRecentSpeechAtStructure(ctx context.Context, structureID str
 			if dest == "" {
 				continue
 			}
-			entry.Text = fmt.Sprintf("%s left for %s.", speakerName, dest)
+			entry.Text = app.narrateMoveDeparture(ctx, speakerName, homeStructureID, workStructureID, dest)
 			entry.Kind = "departure"
 		default:
 			continue
@@ -493,19 +502,23 @@ func (app *App) handlePCSprite(w http.ResponseWriter, r *http.Request) {
 }
 
 // handlePCMove — click-to-walk endpoint for the village viewer. Body:
-// {target_x, target_y, speed?}. Resolves the session to the PC's
-// actor.id, then defers to startNPCWalk which is generic over the
-// unified actor table (post-ZBBS-084). The npc_walking + npc_arrived
-// broadcasts that startNPCWalk emits already key on actor id, so the
-// client's existing NPC walk renderer animates the PC without further
-// wiring.
+// {target_x, target_y, speed?, target_structure_id?}. Resolves the
+// session to the PC's actor.id, then walks. Two modes:
 //
-// applyArrival on PC arrival will run the same fire-on-arrival side
-// effects NPCs hit — most (behavior advance, scheduler hooks) are
-// no-ops for PCs because they have no actor_attribute behaviors and no
-// schedule. object_refresh is the load-bearing one: walking up to the
-// well will quench thirst the same way it does for NPCs (once that
-// pipeline is wired).
+//   - Raw coords: {target_x, target_y}. Walk to that tile, no inside
+//     flip on arrival. Used when the click lands on open ground.
+//
+//   - Structure: {target_structure_id}. Walk to the structure's door
+//     (enterable) or loiter slot (non-enterable). On arrival,
+//     setNPCInside fires for enterable targets so the PC joins the
+//     scene_huddle and the talk panel can open. Used when the client
+//     hit-detects a structure under the click. target_x/y are
+//     ignored when target_structure_id is set.
+//
+// Structure mode routes through startReturnWalk so the existing
+// arrival-hook (advanceBehavior) handles the inside flip — same path
+// NPC scheduler arrivals take. Raw mode stays on startNPCWalk since
+// no post-arrival inside flip is needed.
 func (app *App) handlePCMove(w http.ResponseWriter, r *http.Request) {
 	user := getUserFromContext(r.Context())
 	if user == nil {
@@ -514,9 +527,10 @@ func (app *App) handlePCMove(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		TargetX float64 `json:"target_x"`
-		TargetY float64 `json:"target_y"`
-		Speed   float64 `json:"speed,omitempty"`
+		TargetX           float64 `json:"target_x"`
+		TargetY           float64 `json:"target_y"`
+		Speed             float64 `json:"speed,omitempty"`
+		TargetStructureID string  `json:"target_structure_id,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, "Invalid request body", http.StatusBadRequest)
@@ -524,10 +538,11 @@ func (app *App) handlePCMove(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var actorID string
+	var curX, curY float64
 	if err := app.DB.QueryRow(r.Context(),
-		`SELECT id::text FROM actor WHERE login_username = $1`,
+		`SELECT id::text, current_x, current_y FROM actor WHERE login_username = $1`,
 		user.Username,
-	).Scan(&actorID); err != nil {
+	).Scan(&actorID, &curX, &curY); err != nil {
 		if err == sql.ErrNoRows {
 			jsonError(w, "PC not found — call /pc/create first", http.StatusNotFound)
 			return
@@ -542,13 +557,67 @@ func (app *App) handlePCMove(w http.ResponseWriter, r *http.Request) {
 		speed = defaultNPCSpeed
 	}
 
+	// Structure mode: resolve the click to a door tile (enterable) or a
+	// loiter slot (non-enterable). pickWalkTarget is the NPC-side helper
+	// but it carries owner-detection logic specific to agent NPCs; for
+	// PCs the rule is simpler — enterable means enter, otherwise stand
+	// at the loiter ring. Inline the simpler branch here.
+	if req.TargetStructureID != "" {
+		var ox, oy float64
+		var loiterX, loiterY sql.NullInt32
+		var doorX, doorY sql.NullInt32
+		var footprintBottom int
+		var enterable bool
+		err := app.DB.QueryRow(r.Context(),
+			`SELECT o.x, o.y,
+			        o.loiter_offset_x, o.loiter_offset_y,
+			        a.door_offset_x, a.door_offset_y, a.footprint_bottom,
+			        a.enterable
+			   FROM village_object o
+			   JOIN asset a ON a.id = o.asset_id
+			  WHERE o.id::text = $1`,
+			req.TargetStructureID,
+		).Scan(&ox, &oy, &loiterX, &loiterY, &doorX, &doorY, &footprintBottom, &enterable)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				jsonError(w, "Structure not found", http.StatusNotFound)
+				return
+			}
+			log.Printf("pc/move structure lookup: %v", err)
+			jsonError(w, "Internal error", http.StatusInternalServerError)
+			return
+		}
+
+		const tileSize = 32.0
+		var walkX, walkY float64
+		enterOnArrival := enterable && doorX.Valid && doorY.Valid
+		if enterOnArrival {
+			walkX = ox + float64(doorX.Int32)*tileSize
+			walkY = oy + float64(doorY.Int32)*tileSize
+		} else {
+			lx, ly := effectiveLoiterTile(loiterX, loiterY, doorX, doorY, footprintBottom)
+			walkX, walkY = app.pickVisitorSlot(r.Context(), actorID, ox, oy, lx, ly)
+		}
+
+		npc := &behaviorNPC{ID: actorID, CurX: curX, CurY: curY}
+		if err := app.startReturnWalk(r.Context(), npc, walkX, walkY, req.TargetStructureID, "pc-move", enterOnArrival); err != nil {
+			if err.Error() == "no path" {
+				jsonError(w, "No path to target", http.StatusBadRequest)
+				return
+			}
+			log.Printf("pc/move structure walk: %v", err)
+			jsonError(w, "Internal error", http.StatusInternalServerError)
+			return
+		}
+		jsonResponse(w, http.StatusOK, map[string]any{"ok": true, "structure": true})
+		return
+	}
+
+	// Raw-coord mode (clicking on open ground): walk to the tile, no
+	// arrival inside-flip. startNPCWalk surfaces typed-string errors
+	// that the HTTP layer translates to user-readable codes.
 	result, err := app.startNPCWalk(r.Context(), actorID, req.TargetX, req.TargetY, speed)
 	if err != nil {
-		// startNPCWalk surfaces a couple of typed-string errors that the
-		// HTTP layer translates to user-readable codes. Anything else is
-		// a 500. "npc not found" can't happen on this path (we just
-		// looked the actor up) but the defensive branch keeps the
-		// translation table identical to handleWalkTo's.
 		if err.Error() == "npc not found" {
 			jsonError(w, "PC actor missing", http.StatusInternalServerError)
 			return

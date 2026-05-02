@@ -746,15 +746,23 @@ func _input(event: InputEvent) -> void:
             if event.position.distance_to(_pc_walk_press_screen) > _PC_CLICK_DRAG_THRESHOLD:
                 _pc_walk_pending = false
 
-## Convert the screen-space click into world coordinates and POST the
-## walk request. World coordinates come from world.get_global_mouse_position
-## so camera pan / zoom are baked in — the click point on screen lands
-## on the same world tile regardless of view state. Lazy-create the
-## HTTPRequest so we don't allocate one until the player actually clicks.
-func _post_pc_move_to_screen(_screen_pos: Vector2) -> void:
+## Convert the screen-space click into a walk request. Two payloads:
+##
+##   - Click landed on a structure → send {target_structure_id}. Server
+##     resolves the door tile (enterable) or loiter slot (non-enterable)
+##     and flips inside_structure_id on arrival, which is what hooks
+##     the talk panel's huddle gate. Without this branch the PC slides
+##     up to the side of a building and never registers as inside.
+##
+##   - Click landed on open ground → send {target_x, target_y}. Walk to
+##     the tile, no inside flip. Same as before structure routing.
+##
+## World coordinates come from world.get_global_mouse_position so camera
+## pan / zoom are baked in. Lazy-create the HTTPRequest so we don't
+## allocate one until the player actually clicks.
+func _post_pc_move_to_screen(screen_pos: Vector2) -> void:
     if world == null:
         return
-    var world_pos: Vector2 = world.get_global_mouse_position()
     if _pc_http_move == null:
         _pc_http_move = HTTPRequest.new()
         _pc_http_move.accept_gzip = false
@@ -763,10 +771,16 @@ func _post_pc_move_to_screen(_screen_pos: Vector2) -> void:
             Auth.check_response(c)
         )
     var headers := Auth.auth_headers()
-    var payload: String = JSON.stringify({
-        "target_x": world_pos.x,
-        "target_y": world_pos.y,
-    })
+    var hit: Dictionary = world.find_object_at(screen_pos)
+    var payload: String
+    if hit.has("id") and str(hit.get("id", "")) != "":
+        payload = JSON.stringify({"target_structure_id": str(hit["id"])})
+    else:
+        var world_pos: Vector2 = world.get_global_mouse_position()
+        payload = JSON.stringify({
+            "target_x": world_pos.x,
+            "target_y": world_pos.y,
+        })
     var err := _pc_http_move.request(Auth.api_base + "/api/village/pc/move",
         headers, HTTPClient.METHOD_POST, payload)
     if err != OK:
