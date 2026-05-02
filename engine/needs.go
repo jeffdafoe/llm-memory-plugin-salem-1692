@@ -40,8 +40,10 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -320,3 +322,104 @@ func needLabelTier(value, threshold int) int {
 	return 1
 }
 
+// snapshotNeeds reads the actor's current hunger/thirst/tiredness as a
+// pre-action snapshot. Returns zeros on error — the caller's readback
+// path treats "no change" as silent, so a failed read produces an empty
+// readback rather than a misleading one.
+func (app *App) snapshotNeeds(ctx context.Context, actorID string) (int, int, int) {
+	var h, t, ti int
+	if err := app.DB.QueryRow(ctx,
+		`SELECT hunger, thirst, tiredness FROM actor WHERE id = $1`,
+		actorID,
+	).Scan(&h, &t, &ti); err != nil {
+		return 0, 0, 0
+	}
+	return h, t, ti
+}
+
+// buildPostConsumeReadback summarizes what changed in the actor's needs
+// after a consume / pay-with-consumption, so the agent can decide
+// whether to chain another tool call (drink water after eating bread,
+// rest after refilling thirst) without waiting for the next perception
+// build. Added 2026-05-02 — saw John Ellis eat bread and immediately
+// `done` despite still being parched and exhausted.
+//
+// before* are pre-action snapshots (caller's responsibility to capture
+// before executeAgentCommit). This function reads current state from the
+// DB and produces the readback string. Returns "" if nothing changed —
+// caller should omit the readback in that case.
+//
+// Output forms (followed by a trailing space for inline embedding):
+//   "All needs settled now. "                       — every need below the awareness floor
+//   "You no longer feel hungry. Still feel parched, exhausted. "  — at least one resolution + persistence
+//   "You no longer feel hungry. "                   — pure resolution (everything else silent or mild-only)
+//   "Still feel parched, exhausted. "               — only persistence (small reduction, no threshold cross)
+//   "Needs eased slightly. "                        — change happened but only mild-tier residual
+func (app *App) buildPostConsumeReadback(ctx context.Context, actorID string, beforeH, beforeT, beforeTi int) string {
+	var h, t, ti int
+	if err := app.DB.QueryRow(ctx,
+		`SELECT hunger, thirst, tiredness FROM actor WHERE id = $1`,
+		actorID,
+	).Scan(&h, &t, &ti); err != nil {
+		return ""
+	}
+	if h == beforeH && t == beforeT && ti == beforeTi {
+		return ""
+	}
+
+	hungerT := app.loadNeedThreshold(ctx, "hunger_red_threshold", defaultHungerRedThreshold)
+	thirstT := app.loadNeedThreshold(ctx, "thirst_red_threshold", defaultThirstRedThreshold)
+	tiredT := app.loadNeedThreshold(ctx, "tiredness_red_threshold", defaultTirednessRedThreshold)
+
+	// Resolutions: was at red+ tier before, now below. Use the
+	// before-value to label so "no longer feel hungry" reads correctly
+	// (before=20 → red label "hungry", after=10 → mild "peckish" or
+	// silent). What's resolved is the red-tier need, not the current
+	// state.
+	var resolved []string
+	if beforeH >= hungerT && h < hungerT {
+		resolved = append(resolved, needLabel("hunger", beforeH, hungerT))
+	}
+	if beforeT >= thirstT && t < thirstT {
+		resolved = append(resolved, needLabel("thirst", beforeT, thirstT))
+	}
+	if beforeTi >= tiredT && ti < tiredT {
+		resolved = append(resolved, needLabel("tiredness", beforeTi, tiredT))
+	}
+
+	// Still pressing: red+ tier needs after the action. Mild-tier needs
+	// are intentionally omitted — the perception already noted them and
+	// repeating them post-consume would clutter the reply.
+	var stillPressing []string
+	if needLabelTier(h, hungerT) >= 2 {
+		stillPressing = append(stillPressing, needLabel("hunger", h, hungerT))
+	}
+	if needLabelTier(t, thirstT) >= 2 {
+		stillPressing = append(stillPressing, needLabel("thirst", t, thirstT))
+	}
+	if needLabelTier(ti, tiredT) >= 2 {
+		stillPressing = append(stillPressing, needLabel("tiredness", ti, tiredT))
+	}
+
+	allSilent := needLabel("hunger", h, hungerT) == "" &&
+		needLabel("thirst", t, thirstT) == "" &&
+		needLabel("tiredness", ti, tiredT) == ""
+	if allSilent {
+		return "All needs settled now. "
+	}
+
+	var parts []string
+	if len(resolved) > 0 {
+		parts = append(parts, fmt.Sprintf("You no longer feel %s.", strings.Join(resolved, ", ")))
+	}
+	if len(stillPressing) > 0 {
+		parts = append(parts, fmt.Sprintf("Still feel %s.", strings.Join(stillPressing, ", ")))
+	}
+	if len(parts) == 0 {
+		// Numeric change happened but no threshold crossed and no red+
+		// residual. Still worth acknowledging — keeps the agent aware
+		// the action had effect.
+		return "Needs eased slightly. "
+	}
+	return strings.Join(parts, " ") + " "
+}
