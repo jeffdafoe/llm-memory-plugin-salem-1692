@@ -674,10 +674,11 @@ func (app *App) handlePCMove(w http.ResponseWriter, r *http.Request) {
 			).Scan(&insideAssociated); err != nil {
 				log.Printf("pc/move knock huddle precheck: %v", err)
 			} else if insideAssociated > 0 {
-				if _, err := app.joinOrCreateHuddleForPC(r.Context(), user.Username, req.TargetStructureID); err != nil {
+				if huddleID, err := app.joinOrCreateHuddleForPC(r.Context(), user.Username, req.TargetStructureID); err != nil {
 					log.Printf("pc/move knock huddle join: %v", err)
 				} else {
 					knockHuddleJoined = true
+					app.fireKnockPerception(r.Context(), actorID, huddleID, req.TargetStructureID)
 				}
 			}
 			if !knockHuddleJoined {
@@ -713,6 +714,54 @@ func (app *App) handlePCMove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, http.StatusOK, result)
+}
+
+// fireKnockPerception writes an act-style perception row to
+// agent_action_log and triggers immediate ticks on every agentized NPC
+// inside the structure (typically the lone vendor). The row is shaped
+// as an `act` so the perception loader at agent_tick.go:1219 renders
+// it as "Mary approaches Ezekiel's Stall and waits at the door" in
+// the vendor's next perception block — they get a concrete cue to
+// react to without the PC having to type first.
+//
+// force=true on the immediate tick: PC-initiated, bypass the agent
+// cost guard. sceneID is fresh per knock — the cascade is the knock
+// itself; subsequent PC speech in the same conversation gets its own
+// scene from handlePCSay's existing path.
+func (app *App) fireKnockPerception(ctx context.Context, pcActorID, huddleID, structureID string) {
+	var pcName, structureName, assetName string
+	if err := app.DB.QueryRow(ctx,
+		`SELECT a.display_name, COALESCE(o.display_name, ''), ast.name
+		   FROM actor a, village_object o JOIN asset ast ON ast.id = o.asset_id
+		  WHERE a.id::text = $1 AND o.id::text = $2`,
+		pcActorID, structureID,
+	).Scan(&pcName, &structureName, &assetName); err != nil {
+		log.Printf("knock-perception lookup: %v", err)
+		return
+	}
+	name := structureName
+	if name == "" {
+		name = assetName
+	}
+
+	payload, err := json.Marshal(map[string]interface{}{
+		"text":         fmt.Sprintf("approaches %s and waits at the door", name),
+		"structure_id": structureID,
+	})
+	if err != nil {
+		log.Printf("knock-perception marshal: %v", err)
+		return
+	}
+	if _, err := app.DB.Exec(ctx,
+		`INSERT INTO agent_action_log (actor_id, speaker_name, source, action_type, payload, result, huddle_id)
+		 VALUES ($1, $2, 'player', 'act', $3, 'ok', $4::uuid)`,
+		pcActorID, pcName, payload, huddleID,
+	); err != nil {
+		log.Printf("knock-perception audit insert: %v", err)
+	}
+
+	sceneID := newUUIDv7()
+	app.triggerCoLocatedTicks(ctx, structureID, "", "pc-knocked", true, sceneID, pcActorID)
 }
 
 // composeKnockNarration returns talk-panel text for a PC knock that
