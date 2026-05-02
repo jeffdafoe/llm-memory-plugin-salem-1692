@@ -430,4 +430,20 @@ func (app *App) applyArrival(npcID string) {
 			app.cascadeOriginFireChronicler("arrival", insideID.String)
 		}
 	}
+
+	// Self-tick on agent-driven arrivals — even when the arriver is alone
+	// (well, outhouse, market stall outdoors). Without this, an NPC who
+	// walks somewhere via chore/move_to and ends up alone has no way to
+	// decide "I'm here, now what" until something else cascades. Their
+	// agent_override_until pin keeps the scheduler off them, so they
+	// stand frozen at the destination for 30 minutes. Force=true to
+	// bypass the 5-min cost guard — the move_to/chore that brought them
+	// here was within that window.
+	//
+	// Decorative NPCs (no llm_memory_agent) don't tick; their walks are
+	// scheduler-driven and they don't need to reflect on arrival.
+	// PCs don't tick either — no LLM tool surface.
+	if arriverIsAgent && !arriverIsPC {
+		go app.triggerImmediateTick(context.Background(), npcID, "arrived", true, newUUIDv7(), npcID)
+	}
 }
