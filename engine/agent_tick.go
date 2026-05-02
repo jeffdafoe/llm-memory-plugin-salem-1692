@@ -174,7 +174,7 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 		for i := range reply.ToolCalls {
 			tc := &reply.ToolCalls[i]
 			switch tc.Name {
-			case "move_to", "chore", "done":
+			case "move_to", "chore", "done", "take_break":
 				if terminalCall == nil {
 					terminalCall = tc
 				}
@@ -667,6 +667,23 @@ func agentToolSpec() []agentToolDef {
 			},
 		},
 		{
+			Name:        "take_break",
+			Description: "Close your post and head home — use when you can't or won't serve customers right now (feeling unwell, family matter, gone to fetch supplies, taking lunch). Don't also call speak in the same turn — the engine speaks a brief excuse for you using the reason you provide. Walks you home; your stall/post becomes unattended. Customers who arrive while you're away see that you've stepped out and won't expect service.",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"until_hour": map[string]interface{}{
+						"type":        "integer",
+						"description": "Hour of day (0-23) you intend to be back. Defaults to four hours from now if omitted. If the hour is in the past today, the engine treats it as tomorrow.",
+					},
+					"reason": map[string]interface{}{
+						"type":        "string",
+						"description": "Short period-appropriate phrase the engine uses to compose your spoken excuse. Examples: 'feeling unwell', 'gone to fetch supplies', 'family matter at home'. Omit if you don't want to give a reason.",
+					},
+				},
+			},
+		},
+		{
 			Name:        "pay",
 			Description: "Hand coins to another villager. The single verb for every commercial transaction: tavern dining, market purchases, tips, services. Use after agreeing on a price in conversation. For purchases at an establishment (tavern, shop, smithy), pay the proprietor or staff working there — not another patron who happens to be present.\n\nThree shapes:\n  - pay(recipient, amount) — generic coin transfer for a tip, service, news, or anything not item-shaped. No goods change hands.\n  - pay(recipient, amount, item, qty?, consume_now=true) — the tavern verb. The seller's stock decrements and your linked need (hunger/thirst) drops. Default if you specify an item.\n  - pay(recipient, amount, item, qty?, consume_now=false) — take-home. The seller's stock moves into your inventory for later use. Only works for portable items; non-portable like stew (hot bowl, not packable) must be consumed at-source.\n\nNo fixed price list — agree on the amount in speak() first, then commit the agreed total here.",
 			Parameters: map[string]interface{}{
@@ -1067,7 +1084,10 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 	// 6. Decision prompt.
 	sections = append(sections, "Decide what to do this hour, then commit with move_to (walk to a named place), "+
 		"chore (run a quick errand by category), speak (say something), or done (rest). "+
-		"You can also use recall first if you want to remember anything specific.")
+		"You can also use recall first if you want to remember anything specific. "+
+		"If a customer arrives and you can't or won't serve them right now, use take_break "+
+		"instead of refusing them in conversation — that closes your post and walks you home, "+
+		"so they understand to come back later instead of standing there to be refused again.")
 
 	return strings.Join(sections, "\n\n"), locationName
 }
@@ -1482,6 +1502,102 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 
 	case "done":
 		// No state change. Audit row preserves the decision.
+
+	case "take_break":
+		// take_break is the structured "I'm closing my post — come back later"
+		// commit. The engine speaks a brief excuse on the NPC's behalf
+		// (composed from the reason field), stamps agent_override_until so the
+		// scheduler steps aside through the break, and walks the NPC home.
+		// The model should NOT also call speak in the same turn — the tool
+		// description says so, but treat a redundant speak as harmless if it
+		// happens (the speak path runs first per the categorize order, then
+		// take_break adds its own).
+		reason, _ := tc.Input["reason"].(string)
+		untilHour := coerceIntInput(tc.Input["until_hour"])
+
+		// Compose break_until. Default: NOW + 4h. If until_hour given,
+		// resolve to that hour today; if today's instance is already past,
+		// roll to tomorrow. Cap at 24h ahead so a stray "until_hour=99" or
+		// past-of-tomorrow doesn't put the override absurdly in the future.
+		now := time.Now()
+		var breakUntil time.Time
+		if untilHour > 0 && untilHour < 24 {
+			y, mo, d := now.Date()
+			candidate := time.Date(y, mo, d, untilHour, 0, 0, 0, now.Location())
+			if !candidate.After(now) {
+				candidate = candidate.Add(24 * time.Hour)
+			}
+			breakUntil = candidate
+		} else {
+			breakUntil = now.Add(4 * time.Hour)
+		}
+		if breakUntil.After(now.Add(24 * time.Hour)) {
+			breakUntil = now.Add(24 * time.Hour)
+		}
+
+		// Compose the spoken excuse. Reason is a short fragment ("feeling
+		// unwell"); the template wraps it. Empty reason → generic line.
+		var excuse string
+		if strings.TrimSpace(reason) != "" {
+			excuse = fmt.Sprintf("I must close for now — %s. Please come back later.", strings.TrimSpace(reason))
+		} else {
+			excuse = "I must close for now — please come back later."
+		}
+
+		// Surface the spoken excuse the same way executeAgentCommit's "speak"
+		// branch does: log line + npc_spoke broadcast + room_event narration
+		// + co-located cascade. Don't reuse the speak case directly so the
+		// audit row carries action_type='take_break' (not 'speak') — searches
+		// for break events should find them under their own type.
+		log.Printf("npc_spoke: %s says %q (take_break)", r.DisplayName, excuse)
+		app.Hub.Broadcast(WorldEvent{
+			Type: "npc_spoke",
+			Data: map[string]interface{}{
+				"npc_id": r.ID,
+				"name":   r.DisplayName,
+				"text":   excuse,
+				"at":     time.Now().UTC().Format(time.RFC3339),
+			},
+		})
+		if r.InsideStructureID.Valid {
+			app.Hub.Broadcast(WorldEvent{
+				Type: "room_event",
+				Data: map[string]interface{}{
+					"actor_id":     r.ID,
+					"actor_name":   r.DisplayName,
+					"kind":         "speak",
+					"text":         excuse,
+					"structure_id": r.InsideStructureID.String,
+					"at":           time.Now().UTC().Format(time.RFC3339),
+				},
+			})
+		}
+
+		// Stash excuse + breakUntil into the payload so the audit row carries
+		// the full context. structure_id was already injected above for the
+		// FROM-room (where the NPC was when they decided to close).
+		tc.Input["excuse"] = excuse
+		tc.Input["break_until"] = breakUntil.Format(time.RFC3339)
+		payload, _ = json.Marshal(tc.Input)
+
+		// Walk the NPC home. If they have no home assigned (rare but
+		// possible), skip the walk and just stamp the override — they sit
+		// where they are, but the post is conceptually closed.
+		if err := app.executeAgentMoveTo(ctx, r, "home"); err != nil {
+			log.Printf("take_break %s: walk-home failed: %v (stamping override anyway)", r.DisplayName, err)
+		}
+
+		// Stamp agent_override_until = breakUntil. executeAgentMoveTo set it
+		// to NOW+30min for the walk; the break is longer, so overwrite.
+		// last_shift_tick_at is forward-stamped to break_until so the worker
+		// scheduler doesn't re-fire shift_start during the break window.
+		if _, err := app.DB.Exec(ctx,
+			`UPDATE actor SET agent_override_until = $2, last_shift_tick_at = $2 WHERE id = $1`,
+			r.ID, breakUntil,
+		); err != nil {
+			log.Printf("take_break: stamp override %s: %v", r.DisplayName, err)
+			result, errStr = "failed", err.Error()
+		}
 
 	case "pay":
 		recipient, _ := tc.Input["recipient"].(string)

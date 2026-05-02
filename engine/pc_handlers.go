@@ -808,6 +808,34 @@ func (app *App) composeKnockNarration(ctx context.Context, structureID string) s
 	if name == "" {
 		name = assetName
 	}
+
+	// Break-aware variant: if a would-be associated NPC (this structure is
+	// their home or work) is currently on break (agent_override_until in
+	// the future), surface that. The narration carries an approximate return
+	// time so the PC understands they should come back later, not just that
+	// the post is empty. Multiple associated NPCs is rare (a stall has one
+	// vendor), but if more than one, pick the one with the latest break end
+	// — we want the message to be honest about how long the place is closed.
+	var vendorName sql.NullString
+	var breakUntil sql.NullTime
+	if err := app.DB.QueryRow(ctx,
+		`SELECT a.display_name, a.agent_override_until
+		   FROM actor a
+		  WHERE (a.home_structure_id::text = $1 OR a.work_structure_id::text = $1)
+		    AND a.agent_override_until IS NOT NULL
+		    AND a.agent_override_until > NOW()
+		  ORDER BY a.agent_override_until DESC
+		  LIMIT 1`,
+		structureID,
+	).Scan(&vendorName, &breakUntil); err == nil && breakUntil.Valid {
+		who := strings.TrimSpace(vendorName.String)
+		if who == "" {
+			who = "the keeper"
+		}
+		return fmt.Sprintf("%s has stepped away — expected back around %s.",
+			who, breakUntil.Time.Local().Format("3:04 PM"))
+	}
+
 	return fmt.Sprintf("%s stands unattended. No one is here.", name)
 }
 
