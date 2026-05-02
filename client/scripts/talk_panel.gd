@@ -847,9 +847,10 @@ func _maybe_apply_recent_speech(data: Dictionary) -> void:
         var speaker := str(entry.get("speaker_name", ""))
         var text := str(entry.get("text", ""))
         var kind := str(entry.get("kind", "npc"))
+        var at := str(entry.get("occurred_at", ""))
         if speaker.is_empty() or text.is_empty():
             continue
-        _append_log_line(speaker, text, kind, true)
+        _append_log_line(speaker, text, kind, true, at)
 
 
 func _set_no_pc_state() -> void:
@@ -1003,13 +1004,14 @@ func _on_speak_completed(result: int, response_code: int, _headers: PackedString
         ])
 
 
-func _on_npc_spoke(_npc_id: String, speaker_name: String, text: String, kind: String = "") -> void:
+func _on_npc_spoke(_npc_id: String, speaker_name: String, text: String, kind: String = "", at: String = "") -> void:
     # WS speech kinds are "npc" | "player"; normalize to the panel's
     # speech_npc / speech_player kinds so render logic is uniform with
     # the backload entries. npc_id is unused here — speech bubbles
-    # consume it instead.
+    # consume it instead. `at` is an ISO timestamp from the broadcast;
+    # _format_timestamp converts to a short clock-time prefix.
     var panel_kind := "speech_player" if kind == "player" else "speech_npc"
-    _append_log_line(speaker_name, text, panel_kind)
+    _append_log_line(speaker_name, text, panel_kind, false, at)
 
 
 # Generic room-event handler. Engine emits these for narration-worthy
@@ -1023,9 +1025,10 @@ func _on_room_event(data: Dictionary) -> void:
     var actor_name := str(data.get("actor_name", ""))
     var text := str(data.get("text", ""))
     var kind := str(data.get("kind", "act"))
+    var at := str(data.get("at", ""))
     if actor_name.is_empty() or text.is_empty():
         return
-    _append_log_line(actor_name, text, kind)
+    _append_log_line(actor_name, text, kind, false, at)
 
 
 ## Public entry for client-only narrations (e.g. ZBBS-101 knock outcomes).
@@ -1045,8 +1048,14 @@ func append_local_narration(text: String) -> void:
         _update_launcher_text()
 
 
-func _append_log_line(speaker: String, text: String, kind: String = "", is_backload: bool = false) -> void:
+func _append_log_line(speaker: String, text: String, kind: String = "", is_backload: bool = false, at: String = "") -> void:
     var was_at_bottom := _is_log_near_bottom()
+
+    # Timestamp prefix — short clock format like "[3:47p]". Dimmed gray so
+    # it sits visually behind the speech content. Empty when no `at` was
+    # provided (defensive — every server broadcast carries one, but
+    # client-only narrations like knock outcomes have no real time).
+    var time_prefix := _format_timestamp(at)
 
     # Narration kinds (act, departure, eventually arrival/pay) render as a
     # single dimmer line — text is pre-rendered server-side and embeds the
@@ -1056,13 +1065,20 @@ func _append_log_line(speaker: String, text: String, kind: String = "", is_backl
 
     var entry: Node
     if is_narration:
-        var narr := Label.new()
-        narr.text = text
-        narr.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-        narr.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-        narr.add_theme_color_override("font_color", Color(0.58, 0.51, 0.39, 1.0))
-        narr.add_theme_font_size_override("font_size", 13)
-        entry = narr
+        # Narration uses RichTextLabel so the time prefix can carry its
+        # own color span (slightly dimmer than the narration text itself).
+        var rich := RichTextLabel.new()
+        rich.bbcode_enabled = true
+        rich.fit_content = true
+        rich.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+        rich.scroll_active = false
+        rich.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+        rich.add_theme_font_size_override("normal_font_size", 13)
+        var prefix := ""
+        if time_prefix != "":
+            prefix = "[color=#7a6f59]%s[/color] " % time_prefix
+        rich.text = "%s[color=#a09377]%s[/color]" % [prefix, _bbcode_escape(text)]
+        entry = rich
     else:
         # Inline speaker + quote on one line with per-span colors. Plain
         # Label can't carry two colors and HBoxContainer+autowrap is
@@ -1084,7 +1100,11 @@ func _append_log_line(speaker: String, text: String, kind: String = "", is_backl
             name_color = "#f2c773"
             text_color = "#f2dbad"
 
-        rich.text = "[color=%s]%s[/color] [color=%s]“%s”[/color]" % [
+        var prefix := ""
+        if time_prefix != "":
+            prefix = "[color=#7a6f59]%s[/color] " % time_prefix
+        rich.text = "%s[color=%s]%s[/color] [color=%s]“%s”[/color]" % [
+            prefix,
             name_color,
             _bbcode_escape(speaker),
             text_color,
@@ -1112,6 +1132,35 @@ func _append_log_line(speaker: String, text: String, kind: String = "", is_backl
 ## [lb] as a literal '[', and a stray ']' on its own is harmless.
 func _bbcode_escape(s: String) -> String:
     return s.replace("[", "[lb]")
+
+
+## Format an ISO timestamp ("2026-05-02T20:08:16Z") as a short clock-time
+## prefix in local time ("[3:08p]" / "[11:42a]"). Returns empty string
+## for empty / unparseable input so callers can suppress the prefix
+## entirely.
+##
+## get_unix_time_from_datetime_string treats unsuffixed ISO as UTC and
+## get_datetime_dict_from_unix_time returns UTC fields, so we offset by
+## the system timezone to render local clock time.
+func _format_timestamp(at: String) -> String:
+    if at.is_empty():
+        return ""
+    var unix := Time.get_unix_time_from_datetime_string(at)
+    if unix <= 0:
+        return ""
+    var tz: Dictionary = Time.get_time_zone_from_system()
+    var bias_minutes: int = tz.get("bias", 0)
+    var local_unix: int = int(unix) + bias_minutes * 60
+    var local := Time.get_datetime_dict_from_unix_time(local_unix)
+    var hour: int = local.get("hour", 0)
+    var minute: int = local.get("minute", 0)
+    var meridiem := "a" if hour < 12 else "p"
+    var display_hour := hour
+    if display_hour == 0:
+        display_hour = 12
+    elif display_hour > 12:
+        display_hour -= 12
+    return "[%d:%02d%s]" % [display_hour, minute, meridiem]
 
 
 func _is_log_near_bottom() -> bool:

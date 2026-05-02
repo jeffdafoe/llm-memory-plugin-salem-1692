@@ -1777,22 +1777,26 @@ func apply_object_loiter_offset_changed(data: Dictionary) -> void:
 ## so the selection panel re-renders its tag chips if this object is open.
 signal object_tags_updated(object_id: String, tags: Array)
 
-## WS event — an NPC (or PC) spoke. Carries id/name/text/kind so the
+## WS event — an NPC (or PC) spoke. Carries id/name/text/kind/at so the
 ## talk panel and the speech bubble manager can both subscribe. id is the
 ## actor.id (NPC or PC) so the bubble manager can attach a bubble Node as
-## a child of the right container in placed_npcs / placed_pcs. Emitted by
-## event_client when an `npc_spoke` event lands.
-signal npc_spoke(npc_id: String, name: String, text: String, kind: String)
+## a child of the right container in placed_npcs / placed_pcs. `at` is the
+## ISO timestamp from the server broadcast — the talk panel's room log
+## prefixes each line with a clock time so the player can scan the
+## conversation chronologically. Emitted by event_client when an
+## `npc_spoke` event lands.
+signal npc_spoke(npc_id: String, name: String, text: String, kind: String, at: String)
 
 func apply_npc_spoke(data: Dictionary) -> void:
     var npc_id: String = str(data.get("npc_id", ""))
     var name: String = str(data.get("name", ""))
     var text: String = str(data.get("text", ""))
     var kind: String = str(data.get("kind", "npc"))
+    var at: String = str(data.get("at", ""))
     if name == "" or text == "":
         return
     _spawn_speech_bubble(npc_id, text)
-    npc_spoke.emit(npc_id, name, text, kind)
+    npc_spoke.emit(npc_id, name, text, kind, at)
 
 
 ## Spawn a SpeechBubble child on the speaker's container (NPC or PC).
