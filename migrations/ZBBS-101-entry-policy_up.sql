@@ -45,6 +45,4 @@ UPDATE village_object vo SET entry_policy = 'owner'
 
 ALTER TABLE asset DROP COLUMN enterable;
 
-INSERT INTO migrations_applied (migration_name) VALUES ('ZBBS-101-entry-policy');
-
 COMMIT;
