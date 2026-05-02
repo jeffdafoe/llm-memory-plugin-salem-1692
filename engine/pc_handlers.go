@@ -678,6 +678,22 @@ func (app *App) handlePCMove(w http.ResponseWriter, r *http.Request) {
 					log.Printf("pc/move knock huddle join: %v", err)
 				} else {
 					knockHuddleJoined = true
+					// Sync any inside-the-structure actors into this huddle.
+					// Covers two cases: (1) the historical pgx.ErrNoRows bug
+					// prevented joinOrCreateHuddle from creating huddles for
+					// NPCs who entered before the fix — they sit inside with
+					// current_huddle_id=NULL and need adoption now;
+					// (2) defense in depth so the talk-panel huddle_members
+					// query is never empty when a vendor is physically there.
+					if _, err := app.DB.Exec(r.Context(),
+						`UPDATE actor SET current_huddle_id = $1::uuid
+						  WHERE inside = true
+						    AND inside_structure_id::text = $2
+						    AND (current_huddle_id IS NULL OR current_huddle_id::text != $1)`,
+						huddleID, req.TargetStructureID,
+					); err != nil {
+						log.Printf("pc/move knock huddle sync inside actors: %v", err)
+					}
 					app.fireKnockPerception(r.Context(), actorID, huddleID, req.TargetStructureID)
 				}
 			}

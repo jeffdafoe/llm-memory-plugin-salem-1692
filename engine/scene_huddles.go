@@ -29,7 +29,10 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"log"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // emitEnterHuddleAudit writes a row into agent_action_log with
@@ -90,7 +93,7 @@ func (app *App) joinOrCreateHuddle(ctx context.Context, npcID, structureID strin
 		 ORDER BY created_at DESC LIMIT 1`,
 		structureID,
 	).Scan(&huddleID)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		// No active huddle — create one. UUID generated server-side; we
 		// scan it back to use as the NPC's current_huddle_id.
 		err = app.DB.QueryRow(ctx,
@@ -219,7 +222,7 @@ func (app *App) joinOrCreateHuddleForPC(ctx context.Context, actorName, structur
 		 ORDER BY created_at DESC LIMIT 1`,
 		structureID,
 	).Scan(&huddleID)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, pgx.ErrNoRows) {
 		err = app.DB.QueryRow(ctx,
 			`INSERT INTO scene_huddle (structure_id) VALUES ($1) RETURNING id::text`,
 			structureID,
@@ -265,7 +268,7 @@ func (app *App) joinOrCreateHuddleForPC(ctx context.Context, actorName, structur
 		actorName,
 	).Scan(&actorID); err == nil {
 		app.emitEnterHuddleAudit(ctx, actorID, huddleID, structureID)
-	} else if err != sql.ErrNoRows {
+	} else if !errors.Is(err, pgx.ErrNoRows) {
 		log.Printf("scene-huddle: resolve PC actor_id for %s: %v", actorName, err)
 	}
 
