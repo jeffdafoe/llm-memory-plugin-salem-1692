@@ -73,6 +73,12 @@ var pc_inventory: Array = []
 ## Negative coins signals "no PC" (top bar should hide the chip).
 signal purse_changed(coins: int, inventory_lines: PackedStringArray)
 
+## Emitted when the pay modal opens/closes. main.gd forwards to
+## camera.modal_open so world clicks (PC walk, pan, zoom) don't fire
+## while the modal is up — without this, a click on the Confirm
+## button bleeds into the world handler and walks the PC underneath.
+signal modal_open_changed(open: bool)
+
 # ZBBS-087 — Village tab. The panel hosts two tabs: Room (existing room-
 # scoped chat) and Village (mechanical village-wide events).
 const TAB_ROOM := 0
@@ -1220,11 +1226,13 @@ func _on_pay_pressed() -> void:
     pay_qty_spin.value = 1
     pay_take_home_check.button_pressed = false
     pay_modal.visible = true
+    modal_open_changed.emit(true)
 
 
 func _close_pay_modal() -> void:
     if pay_modal != null:
         pay_modal.visible = false
+    modal_open_changed.emit(false)
 
 
 func _on_pay_confirm() -> void:
