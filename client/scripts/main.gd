@@ -286,6 +286,12 @@ func _build_ui() -> void:
     # them. Decoupled so neither side knows the other's node path.
     if talk_panel_layer.has_signal("purse_changed") and top_bar != null:
         talk_panel_layer.purse_changed.connect(_on_pc_purse_changed)
+    # Pay modal blocks world input — same camera.modal_open mechanism
+    # the config panel uses. Without this, a click on the Confirm
+    # button propagates into the world's PC-walk handler and the
+    # character starts walking under the open modal.
+    if talk_panel_layer.has_signal("modal_open_changed") and camera != null:
+        talk_panel_layer.modal_open_changed.connect(func(open: bool): camera.modal_open = open)
 
     # Register the talk panel's sheet (the actual rounded-rect chat
     # surface, not the full-screen anchor) so wheel-scroll over the
