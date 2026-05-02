@@ -112,6 +112,12 @@ type NPC struct {
 	Thirst    int        `json:"thirst"`
 	Tiredness int        `json:"tiredness"`
 	Sprite    *NPCSprite `json:"sprite,omitempty"`
+	// LoginUsername is set on PC rows (post-ZBBS-084 the actor table holds
+	// both NPCs and PCs). Null on every NPC including decoratives. The
+	// client uses presence-of-login_username as the "is player character"
+	// discriminator — PCs render the same way NPCs do but skip e.g. the
+	// editor's NPC inspector and the worker scheduler attributes.
+	LoginUsername *string `json:"login_username,omitempty"`
 }
 
 // loadNPCSprites returns the sprite catalog as a map keyed by sprite id,
@@ -214,6 +220,12 @@ func (app *App) handleListNPCs(w http.ResponseWriter, r *http.Request) {
 	// scalar subquery returns NULL when the actor has no attributes,
 	// matching the prior nullable shape so the JSON response and Scan
 	// targets stay unchanged.
+	//
+	// M6.7 (PC rendering): no login_username filter — PC rows are
+	// included so the client renders them on the map alongside NPCs. PCs
+	// without a sprite (login_username set, sprite_id NULL) are filtered
+	// out below, in the per-row loop, so the picker bootstrap on first
+	// login gets to set the sprite before anyone tries to render the PC.
 	npcRows, err := app.DB.Query(ctx,
 		`SELECT n.id, n.display_name, n.sprite_id, n.home_x, n.home_y,
 		        n.current_x, n.current_y, n.facing,
@@ -225,9 +237,10 @@ func (app *App) handleListNPCs(w http.ResponseWriter, r *http.Request) {
 		        n.active_start_hour, n.active_end_hour,
 		        n.lateness_window_minutes,
 		        n.social_tag, n.social_start_minute, n.social_end_minute,
-		        n.hunger, n.thirst, n.tiredness
+		        n.hunger, n.thirst, n.tiredness,
+		        n.login_username
 		 FROM actor n
-		 WHERE n.login_username IS NULL
+		 WHERE n.sprite_id IS NOT NULL
 		 ORDER BY n.display_name`,
 	)
 	if err != nil {
@@ -247,7 +260,8 @@ func (app *App) handleListNPCs(w http.ResponseWriter, r *http.Request) {
 			&n.ActiveStartHour, &n.ActiveEndHour,
 			&n.LatenessWindowMinutes,
 			&n.SocialTag, &n.SocialStartMinute, &n.SocialEndMinute,
-			&n.Hunger, &n.Thirst, &n.Tiredness); err != nil {
+			&n.Hunger, &n.Thirst, &n.Tiredness,
+			&n.LoginUsername); err != nil {
 			continue
 		}
 		if s, ok := sprites[n.SpriteID]; ok {

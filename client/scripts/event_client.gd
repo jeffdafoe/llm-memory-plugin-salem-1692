@@ -154,6 +154,14 @@ func _handle_message(data: String) -> void:
         "npc_sprite_changed":
             if world != null:
                 world.apply_npc_sprite_change(event_data)
+        "pc_appeared":
+            # PC entered the world (first sprite-set or sprite swap). One
+            # event for both — world.apply_pc_appeared decides whether
+            # to render fresh or swap sprite based on whether the actor
+            # is already in placed_npcs. The PC's actor row lives in the
+            # same dictionary NPCs use; the renderer is identical.
+            if world != null:
+                world.apply_pc_appeared(event_data)
         "npc_behavior_changed":
             if world != null:
                 world.apply_npc_behavior_change(event_data)

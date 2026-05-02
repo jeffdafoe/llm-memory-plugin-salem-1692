@@ -18,15 +18,32 @@ package main
 //
 //   - POST /api/village/pc/me      → state read for the talk panel:
 //                                     character_name, position, huddle
-//                                     members. Returns exists=false
-//                                     when the PC has never been
-//                                     created (talk panel shows the
-//                                     create-character modal).
+//                                     members, sprite. Returns
+//                                     exists=false when the PC has
+//                                     never been created (client
+//                                     bootstrap pops the sprite picker
+//                                     to drive a /pc/create call).
 //   - POST /api/village/pc/create  → first-time creation. Body:
-//                                     {character_name}. Auto-assigns
-//                                     home to the nearest tavern.
-//                                     Idempotent on the login_username
-//                                     (re-running updates the name).
+//                                     {character_name, sprite_id?}.
+//                                     Auto-assigns home to the nearest
+//                                     tavern. Idempotent on the
+//                                     login_username (re-running
+//                                     updates the name and, when
+//                                     sprite_id is provided, the
+//                                     sprite).
+//   - POST /api/village/pc/sprite  → swap the PC's render sprite. Body:
+//                                     {sprite_id}. Distinct from /create
+//                                     so the picker can drive a sprite
+//                                     change without re-asserting the
+//                                     character_name.
+//   - POST /api/village/pc/move    → click-to-walk. Body:
+//                                     {target_x, target_y, speed?}.
+//                                     Resolves session→actor.id and
+//                                     defers to startNPCWalk; the
+//                                     existing npc_walking /
+//                                     npc_arrived broadcasts cover the
+//                                     PC because they key on actor id,
+//                                     not driver kind.
 //   - POST /api/village/pc/say     → 1:1 whisper to one NPC. Proxies
 //                                     to /v1/chat/send with the user's
 //                                     auth header.
@@ -62,6 +79,13 @@ type pcMeResponse struct {
 	CurrentHuddleID   *string            `json:"current_huddle_id,omitempty"`
 	HuddleMembers     []pcHuddleMember   `json:"huddle_members"`
 	RecentSpeech      []pcRecentSpeech   `json:"recent_speech,omitempty"`
+	// SpriteID is null until the player picks one. Client bootstrap uses
+	// the null state as the trigger to open the sprite picker on first
+	// login. Sprite is the inlined catalog row (sheet, frame dims,
+	// animations, pack) so a freshly-arrived client can render the PC
+	// without a follow-up catalog fetch — same shape as NPC.Sprite.
+	SpriteID *string    `json:"sprite_id,omitempty"`
+	Sprite   *NPCSprite `json:"sprite,omitempty"`
 }
 
 type pcHuddleMember struct {
@@ -106,14 +130,15 @@ func (app *App) handlePCMe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var x, y float64
-	var charName, insideID, huddleID, structureName, homeID, homeName sql.NullString
+	var charName, insideID, huddleID, structureName, homeID, homeName, spriteID sql.NullString
 	err := app.DB.QueryRow(r.Context(),
 		`SELECT pc.display_name, pc.current_x, pc.current_y,
 		        pc.inside_structure_id::text,
 		        pc.current_huddle_id::text,
 		        COALESCE(o.display_name, a.name) AS structure_name,
 		        pc.home_structure_id::text,
-		        COALESCE(ho.display_name, ha.name) AS home_name
+		        COALESCE(ho.display_name, ha.name) AS home_name,
+		        pc.sprite_id::text
 		   FROM actor pc
 		   LEFT JOIN village_object o ON o.id = pc.inside_structure_id
 		   LEFT JOIN asset a ON a.id = o.asset_id
@@ -121,7 +146,7 @@ func (app *App) handlePCMe(w http.ResponseWriter, r *http.Request) {
 		   LEFT JOIN asset ha ON ha.id = ho.asset_id
 		  WHERE pc.login_username = $1`,
 		user.Username,
-	).Scan(&charName, &x, &y, &insideID, &huddleID, &structureName, &homeID, &homeName)
+	).Scan(&charName, &x, &y, &insideID, &huddleID, &structureName, &homeID, &homeName, &spriteID)
 	if err == sql.ErrNoRows {
 		resp.Exists = false
 		jsonResponse(w, http.StatusOK, resp)
@@ -151,6 +176,19 @@ func (app *App) handlePCMe(w http.ResponseWriter, r *http.Request) {
 	}
 	if homeName.Valid {
 		resp.HomeName = homeName.String
+	}
+	if spriteID.Valid {
+		s := spriteID.String
+		resp.SpriteID = &s
+		// Inline the catalog row so the client can render the PC without
+		// a follow-up GET /api/village/npc-sprites — same shape NPCs use.
+		// loadNPCSprites is the same lookup the NPC list endpoint uses;
+		// the cached map is small, so the per-request fetch is cheap.
+		if sprites, err := app.loadNPCSprites(r.Context()); err == nil {
+			if sp, ok := sprites[s]; ok {
+				resp.Sprite = sp
+			}
+		}
 	}
 
 	if huddleID.Valid {
@@ -293,7 +331,8 @@ func (app *App) handlePCCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		CharacterName string `json:"character_name"`
+		CharacterName string  `json:"character_name"`
+		SpriteID      *string `json:"sprite_id,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		jsonError(w, "Invalid request body", http.StatusBadRequest)
@@ -307,6 +346,23 @@ func (app *App) handlePCCreate(w http.ResponseWriter, r *http.Request) {
 	if len(req.CharacterName) > 100 {
 		jsonError(w, "character_name too long", http.StatusBadRequest)
 		return
+	}
+	// sprite_id is optional at creation. When provided, validate it exists
+	// in the catalog so the FK update doesn't surface as a generic 500.
+	// Empty string is treated the same as omitted — clients sometimes send
+	// "" for a not-yet-picked field.
+	var spriteID string
+	if req.SpriteID != nil {
+		spriteID = strings.TrimSpace(*req.SpriteID)
+	}
+	if spriteID != "" {
+		var spriteCount int
+		if err := app.DB.QueryRow(r.Context(),
+			`SELECT COUNT(*) FROM npc_sprite WHERE id = $1`, spriteID,
+		).Scan(&spriteCount); err != nil || spriteCount == 0 {
+			jsonError(w, "Unknown sprite_id", http.StatusBadRequest)
+			return
+		}
 	}
 
 	// Travelers lodge at the Inn. The Inn tag identifies multi-tenant
@@ -340,22 +396,223 @@ func (app *App) handlePCCreate(w http.ResponseWriter, r *http.Request) {
 	// disturbing position. Post-ZBBS-084: display_name is the unified
 	// in-world identity column (was character_name on pc_position),
 	// current_x/current_y are the position columns (were x/y).
-	if _, err := app.DB.Exec(r.Context(),
-		`INSERT INTO actor (login_username, display_name, current_x, current_y, home_structure_id)
-		 VALUES ($1, $2, $3, $4, NULLIF($5, '')::uuid)
+	//
+	// sprite_id COALESCE: when the request supplied a sprite, the new
+	// value wins; when it didn't, the existing value (if any) survives
+	// the upsert. NULLIF($6, '')::uuid converts the empty fast-path to
+	// SQL NULL so the COALESCE picks up the existing column.
+	var actorID, prevSpriteID sql.NullString
+	if err := app.DB.QueryRow(r.Context(),
+		`INSERT INTO actor (login_username, display_name, current_x, current_y, home_structure_id, sprite_id)
+		 VALUES ($1, $2, $3, $4, NULLIF($5, '')::uuid, NULLIF($6, '')::uuid)
 		 ON CONFLICT (login_username) DO UPDATE
 		   SET display_name = EXCLUDED.display_name,
-		       home_structure_id = COALESCE(EXCLUDED.home_structure_id, actor.home_structure_id)`,
+		       home_structure_id = COALESCE(EXCLUDED.home_structure_id, actor.home_structure_id),
+		       sprite_id = COALESCE(EXCLUDED.sprite_id, actor.sprite_id)
+		 RETURNING id::text, sprite_id::text`,
 		user.Username, req.CharacterName, startX, startY,
-		homeStringValue(homeID),
-	); err != nil {
+		homeStringValue(homeID), spriteID,
+	).Scan(&actorID, &prevSpriteID); err != nil {
 		log.Printf("pc/create insert: %v", err)
 		jsonError(w, "Failed to create PC", http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("pc/create %s -> '%s' (home tavern %v)", user.Username, req.CharacterName, homeID.String)
+	// Broadcast pc_appeared when the create landed a sprite (either fresh
+	// or re-set). Other connected clients render the PC from this single
+	// event. Skipped when sprite_id is still null — nothing to render.
+	if prevSpriteID.Valid {
+		app.broadcastPCAppeared(r.Context(), actorID.String, prevSpriteID.String, req.CharacterName)
+	}
+
+	log.Printf("pc/create %s -> '%s' (home tavern %v, sprite %v)", user.Username, req.CharacterName, homeID.String, prevSpriteID.String)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// handlePCSprite — set or change the PC's render sprite. Same shape as
+// the admin-only handleSetNPCSprite, but scoped to the authenticated
+// player's own row (no admin role required, no path id — the session
+// identifies which actor to update).
+//
+// Body: {sprite_id}. Validates the sprite exists, updates actor, and
+// broadcasts pc_sprite_changed so every connected client re-renders the
+// PC without a follow-up fetch.
+func (app *App) handlePCSprite(w http.ResponseWriter, r *http.Request) {
+	user := getUserFromContext(r.Context())
+	if user == nil {
+		jsonError(w, "Not authenticated", http.StatusUnauthorized)
+		return
+	}
+
+	var req struct {
+		SpriteID string `json:"sprite_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	req.SpriteID = strings.TrimSpace(req.SpriteID)
+	if req.SpriteID == "" {
+		jsonError(w, "sprite_id is required", http.StatusBadRequest)
+		return
+	}
+
+	// Catalog FK pre-check so a typo returns 400 not 500.
+	var spriteCount int
+	if err := app.DB.QueryRow(r.Context(),
+		`SELECT COUNT(*) FROM npc_sprite WHERE id = $1`, req.SpriteID,
+	).Scan(&spriteCount); err != nil || spriteCount == 0 {
+		jsonError(w, "Unknown sprite_id", http.StatusBadRequest)
+		return
+	}
+
+	// Update + return id + display_name in one round-trip so the broadcast
+	// payload is complete without a second query. Errors on missing PC row
+	// (player called /sprite before /create) — the bootstrap should always
+	// /create first, so this surfaces a client-side bug rather than
+	// silently no-op'ing.
+	var actorID, charName sql.NullString
+	if err := app.DB.QueryRow(r.Context(),
+		`UPDATE actor SET sprite_id = $1
+		 WHERE login_username = $2
+		 RETURNING id::text, display_name`,
+		req.SpriteID, user.Username,
+	).Scan(&actorID, &charName); err != nil {
+		if err == sql.ErrNoRows {
+			jsonError(w, "PC not found — call /pc/create first", http.StatusNotFound)
+			return
+		}
+		log.Printf("pc/sprite update: %v", err)
+		jsonError(w, "Failed to update sprite", http.StatusInternalServerError)
+		return
+	}
+
+	app.broadcastPCAppeared(r.Context(), actorID.String, req.SpriteID, charName.String)
+	log.Printf("pc/sprite %s -> %s", user.Username, req.SpriteID)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handlePCMove — click-to-walk endpoint for the village viewer. Body:
+// {target_x, target_y, speed?}. Resolves the session to the PC's
+// actor.id, then defers to startNPCWalk which is generic over the
+// unified actor table (post-ZBBS-084). The npc_walking + npc_arrived
+// broadcasts that startNPCWalk emits already key on actor id, so the
+// client's existing NPC walk renderer animates the PC without further
+// wiring.
+//
+// applyArrival on PC arrival will run the same fire-on-arrival side
+// effects NPCs hit — most (behavior advance, scheduler hooks) are
+// no-ops for PCs because they have no actor_attribute behaviors and no
+// schedule. object_refresh is the load-bearing one: walking up to the
+// well will quench thirst the same way it does for NPCs (once that
+// pipeline is wired).
+func (app *App) handlePCMove(w http.ResponseWriter, r *http.Request) {
+	user := getUserFromContext(r.Context())
+	if user == nil {
+		jsonError(w, "Not authenticated", http.StatusUnauthorized)
+		return
+	}
+
+	var req struct {
+		TargetX float64 `json:"target_x"`
+		TargetY float64 `json:"target_y"`
+		Speed   float64 `json:"speed,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	var actorID string
+	if err := app.DB.QueryRow(r.Context(),
+		`SELECT id::text FROM actor WHERE login_username = $1`,
+		user.Username,
+	).Scan(&actorID); err != nil {
+		if err == sql.ErrNoRows {
+			jsonError(w, "PC not found — call /pc/create first", http.StatusNotFound)
+			return
+		}
+		log.Printf("pc/move actor lookup: %v", err)
+		jsonError(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+
+	speed := req.Speed
+	if speed <= 0 {
+		speed = defaultNPCSpeed
+	}
+
+	result, err := app.startNPCWalk(r.Context(), actorID, req.TargetX, req.TargetY, speed)
+	if err != nil {
+		// startNPCWalk surfaces a couple of typed-string errors that the
+		// HTTP layer translates to user-readable codes. Anything else is
+		// a 500. "npc not found" can't happen on this path (we just
+		// looked the actor up) but the defensive branch keeps the
+		// translation table identical to handleWalkTo's.
+		if err.Error() == "npc not found" {
+			jsonError(w, "PC actor missing", http.StatusInternalServerError)
+			return
+		}
+		if err.Error() == "no path" {
+			jsonError(w, "No path to target", http.StatusBadRequest)
+			return
+		}
+		log.Printf("pc/move walk: %v", err)
+		jsonError(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, http.StatusOK, result)
+}
+
+// broadcastPCAppeared emits pc_appeared with the full sprite catalog row
+// and current world position inlined, so a fresh client can render the
+// PC's AnimatedSprite2D without a follow-up REST fetch. Same event fires
+// for first-time appearance and subsequent sprite swaps — the client's
+// pc_appeared handler treats "already rendered" as a sprite swap and
+// "not yet rendered" as a fresh add.
+//
+// Best-effort: a missing catalog row or position lookup logs and ships
+// the partial payload; the next /pc/me poll or WS reconnect resync will
+// fill any gaps.
+func (app *App) broadcastPCAppeared(ctx context.Context, actorID, spriteID, characterName string) {
+	// display_name (rather than character_name) so the broadcast lines up
+	// with the npc_created shape that world.gd's add_npc_from_broadcast
+	// already consumes — letting one client-side render path handle both.
+	data := map[string]interface{}{
+		"id":           actorID,
+		"sprite_id":    spriteID,
+		"display_name": characterName,
+	}
+	if sprites, err := app.loadNPCSprites(ctx); err == nil {
+		if sp, ok := sprites[spriteID]; ok {
+			data["sprite"] = sp
+		}
+	} else {
+		log.Printf("broadcastPCAppeared: sprite catalog load failed: %v", err)
+	}
+	// Position + presence so a fresh client renders at the right tile
+	// with the right facing on the first frame. inside_structure_id
+	// drives the inside-hide logic in world.gd's NPC renderer.
+	var x, y float64
+	var facing string
+	var inside bool
+	var insideID sql.NullString
+	if err := app.DB.QueryRow(ctx,
+		`SELECT current_x, current_y, facing, inside, inside_structure_id::text
+		   FROM actor WHERE id = $1`,
+		actorID,
+	).Scan(&x, &y, &facing, &inside, &insideID); err == nil {
+		data["current_x"] = x
+		data["current_y"] = y
+		data["facing"] = facing
+		data["inside"] = inside
+		if insideID.Valid {
+			data["inside_structure_id"] = insideID.String
+		}
+	} else {
+		log.Printf("broadcastPCAppeared: position lookup failed: %v", err)
+	}
+	app.Hub.Broadcast(WorldEvent{Type: "pc_appeared", Data: data})
 }
 
 func homeStringValue(s sql.NullString) string {
