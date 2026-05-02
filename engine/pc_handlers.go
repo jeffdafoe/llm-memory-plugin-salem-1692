@@ -634,6 +634,8 @@ func (app *App) handlePCMove(w http.ResponseWriter, r *http.Request) {
 		var walkX, walkY float64
 		canEnter := (entryPolicy == "anyone" || (entryPolicy == "owner" && isAssociated)) && doorX.Valid && doorY.Valid
 		knocked := entryPolicy == "owner" && !isAssociated
+		log.Printf("knock-trace pc=%s structure=%s entry_policy=%s isAssociated=%v canEnter=%v knocked=%v",
+			actorID, req.TargetStructureID, entryPolicy, isAssociated, canEnter, knocked)
 		if canEnter {
 			walkX = ox + float64(doorX.Int32)*tileSize
 			walkY = oy + float64(doorY.Int32)*tileSize
@@ -674,10 +676,12 @@ func (app *App) handlePCMove(w http.ResponseWriter, r *http.Request) {
 			).Scan(&insideAssociated); err != nil {
 				log.Printf("pc/move knock huddle precheck: %v", err)
 			} else if insideAssociated > 0 {
+				log.Printf("knock-trace precheck pc=%s structure=%s insideAssociated=%d (proceed to join)", actorID, req.TargetStructureID, insideAssociated)
 				if huddleID, err := app.joinOrCreateHuddleForPC(r.Context(), user.Username, req.TargetStructureID); err != nil {
 					log.Printf("pc/move knock huddle join: %v", err)
 				} else {
 					knockHuddleJoined = true
+					log.Printf("knock-trace huddle-joined pc=%s structure=%s huddle=%s", actorID, req.TargetStructureID, huddleID)
 					// Sync any inside-the-structure actors into this huddle.
 					// Covers two cases: (1) the historical pgx.ErrNoRows bug
 					// prevented joinOrCreateHuddle from creating huddles for
@@ -698,6 +702,7 @@ func (app *App) handlePCMove(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			if !knockHuddleJoined {
+				log.Printf("knock-trace no-huddle pc=%s structure=%s (insideAssociated=0 or join failed) — narration only", actorID, req.TargetStructureID)
 				knockNarration = app.composeKnockNarration(r.Context(), req.TargetStructureID)
 			}
 		}
@@ -777,6 +782,8 @@ func (app *App) fireKnockPerception(ctx context.Context, pcActorID, huddleID, st
 	}
 
 	sceneID := newUUIDv7()
+	log.Printf("knock-trace fireKnockPerception pc=%s structure=%s huddle=%s scene=%s — triggering co-located ticks",
+		pcActorID, structureID, huddleID, sceneID)
 	app.triggerCoLocatedTicks(ctx, structureID, "", "pc-knocked", true, sceneID, pcActorID)
 }
 
