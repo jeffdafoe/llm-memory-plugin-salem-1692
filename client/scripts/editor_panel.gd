@@ -67,6 +67,14 @@ const TICKER_HEIGHT: float = 23.0
 const CELL_SIZE: int = 52  # Grid cell size — sprites render proportionally within
 
 var _font: Font = null
+# Lucide icon font — loaded alongside the body font so any control that
+# wants an icon glyph (heart, X, gear, …) can swap fonts on a single
+# Label without falling back to IMFellEnglish's missing-glyph tofu.
+# Codepoints come from lucide-static/font/codepoints.json. Stored as
+# ints + materialized via String.chr at use to dodge any source-file
+# encoding wobble around private-use-area characters.
+var _icon_font: Font = null
+const ICON_CODEPOINT_HEART: int = 0xE0F2
 var _select_button: Button = null
 var _delete_button: Button = null
 var _terrain_button: Button = null
@@ -276,6 +284,7 @@ const TERRAIN_TYPES = [
 
 func _ready() -> void:
     _font = load("res://assets/fonts/IMFellEnglish-Regular.ttf")
+    _icon_font = load("res://assets/fonts/lucide.ttf")
 
     # Style the panel
     var panel_style = StyleBoxFlat.new()
@@ -2279,10 +2288,10 @@ func _make_villager_row(npc_id: String, display_name: String, container: Node2D)
     # crossed below the red threshold. mouse_filter=STOP keeps the
     # click off the row's gui_input (no select-and-pan side effect).
     var heal_icon := Label.new()
-    heal_icon.text = "♥"
+    heal_icon.text = String.chr(ICON_CODEPOINT_HEART)
     heal_icon.tooltip_text = "Reset needs (and tick if distressed)"
-    heal_icon.add_theme_font_override("font", _font)
-    heal_icon.add_theme_font_size_override("font_size", 12)
+    heal_icon.add_theme_font_override("font", _icon_font)
+    heal_icon.add_theme_font_size_override("font_size", 13)
     heal_icon.add_theme_color_override("font_color", Color(0.75, 0.40, 0.40, 0.85))
     heal_icon.mouse_filter = Control.MOUSE_FILTER_STOP
     heal_icon.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
