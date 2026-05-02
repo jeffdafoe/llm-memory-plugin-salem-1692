@@ -2195,23 +2195,32 @@ func _make_villager_row(npc_id: String, display_name: String, container: Node2D)
     vb.mouse_filter = Control.MOUSE_FILTER_IGNORE
     row.add_child(vb)
 
+    # Top line: name plus an inline (behavior) suffix at the smaller
+    # secondary font/color. Two Labels in an HBox so the two segments
+    # can carry different sizes and colors. The behavior segment hides
+    # when the NPC has no behavior — no parens, no empty space.
+    var name_row := HBoxContainer.new()
+    name_row.add_theme_constant_override("separation", 4)
+    name_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    vb.add_child(name_row)
+
     var name_label := Label.new()
     name_label.text = display_name
     name_label.add_theme_font_override("font", _font)
     name_label.add_theme_font_size_override("font_size", 13)
     name_label.add_theme_color_override("font_color", COLOR_TEXT)
     name_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-    vb.add_child(name_label)
+    name_row.add_child(name_label)
 
-    var behavior_label := Label.new()
-    behavior_label.add_theme_font_override("font", _font)
+    var behavior_inline_label := Label.new()
+    behavior_inline_label.add_theme_font_override("font", _font)
     # Sub-line size is 12, not 11 — IMFellEnglish has irregular widths
     # and renders raggedly at very small sizes (visible gaps inside
     # words). 12 still reads as secondary against the 13 primary line.
-    behavior_label.add_theme_font_size_override("font_size", 12)
-    behavior_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
-    behavior_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-    vb.add_child(behavior_label)
+    behavior_inline_label.add_theme_font_size_override("font_size", 12)
+    behavior_inline_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+    behavior_inline_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    name_row.add_child(behavior_inline_label)
 
     var location_label := Label.new()
     location_label.add_theme_font_override("font", _font)
@@ -2220,9 +2229,40 @@ func _make_villager_row(npc_id: String, display_name: String, container: Node2D)
     location_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
     vb.add_child(location_label)
 
+    # Needs line: three Labels in an HBox so each can color red
+    # independently when its value crosses the engine's red threshold.
+    # Format is "Hunger N" / "Thirst N" / "Tiredness N" — full words
+    # at the request of the operator; if it ever overflows the panel
+    # width we'll switch to abbreviations.
+    var needs_row := HBoxContainer.new()
+    needs_row.add_theme_constant_override("separation", 8)
+    needs_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    vb.add_child(needs_row)
+
+    var needs_hunger_label := Label.new()
+    needs_hunger_label.add_theme_font_override("font", _font)
+    needs_hunger_label.add_theme_font_size_override("font_size", 12)
+    needs_hunger_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    needs_row.add_child(needs_hunger_label)
+
+    var needs_thirst_label := Label.new()
+    needs_thirst_label.add_theme_font_override("font", _font)
+    needs_thirst_label.add_theme_font_size_override("font_size", 12)
+    needs_thirst_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    needs_row.add_child(needs_thirst_label)
+
+    var needs_tiredness_label := Label.new()
+    needs_tiredness_label.add_theme_font_override("font", _font)
+    needs_tiredness_label.add_theme_font_size_override("font_size", 12)
+    needs_tiredness_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+    needs_row.add_child(needs_tiredness_label)
+
     row.set_meta("name_label", name_label)
-    row.set_meta("behavior_label", behavior_label)
+    row.set_meta("behavior_inline_label", behavior_inline_label)
     row.set_meta("location_label", location_label)
+    row.set_meta("needs_hunger_label", needs_hunger_label)
+    row.set_meta("needs_thirst_label", needs_thirst_label)
+    row.set_meta("needs_tiredness_label", needs_tiredness_label)
 
     _update_villager_row_text(row, container)
 
@@ -2231,16 +2271,41 @@ func _make_villager_row(npc_id: String, display_name: String, container: Node2D)
     row.gui_input.connect(func(ev): _on_villager_row_gui_input(ev, npc_id))
     return row
 
-## Format the behavior + location text on a villager row.
+## Format the behavior suffix, location, and needs readout on a villager row.
 func _update_villager_row_text(row: PanelContainer, container: Node2D) -> void:
     var behavior: String = str(container.get_meta("behavior", ""))
-    var behavior_text: String = behavior if behavior != "" else "no behavior"
-    var behavior_label: Label = row.get_meta("behavior_label")
-    if behavior_label != null:
-        behavior_label.text = behavior_text
+    var behavior_inline_label: Label = row.get_meta("behavior_inline_label")
+    if behavior_inline_label != null:
+        if behavior != "":
+            behavior_inline_label.text = "(" + behavior + ")"
+            behavior_inline_label.visible = true
+        else:
+            behavior_inline_label.text = ""
+            behavior_inline_label.visible = false
     var location_label: Label = row.get_meta("location_label")
     if location_label != null:
         location_label.text = _format_npc_location(container)
+    # Needs readout — same red thresholds the NPC selection panel uses
+    # (see _format_need_label). Each label colors independently so
+    # only the actually-distressed needs draw the eye.
+    var hunger_val: int = int(container.get_meta("hunger", 0))
+    var thirst_val: int = int(container.get_meta("thirst", 0))
+    var tiredness_val: int = int(container.get_meta("tiredness", 0))
+    _set_villager_need_label(row.get_meta("needs_hunger_label"), "Hunger", hunger_val, 18)
+    _set_villager_need_label(row.get_meta("needs_thirst_label"), "Thirst", thirst_val, 12)
+    _set_villager_need_label(row.get_meta("needs_tiredness_label"), "Tiredness", tiredness_val, 20)
+
+## Render one need on the villager-list row. Same red-threshold cue as
+## the selection panel — the value crossing red recolors the whole "Name N"
+## segment so distress reads at a glance during a list scan.
+func _set_villager_need_label(label: Label, name: String, value: int, red_threshold: int) -> void:
+    if label == null:
+        return
+    label.text = "%s %d" % [name, value]
+    if value >= red_threshold:
+        label.add_theme_color_override("font_color", Color(0.95, 0.45, 0.45))
+    else:
+        label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
 
 ## Build a human-readable location string. Inside a structure → its name.
 ## Outside → nearest placed_object by world distance, no distance cap
