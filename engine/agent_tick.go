@@ -1692,18 +1692,19 @@ func (app *App) resolveMoveDestination(ctx context.Context, r *agentNPCRow, dest
 }
 
 // pickWalkTarget chooses the walk-to coordinates for an agent-initiated
-// move. Owners (NPC's own home or work) walk to door_offset so the
-// existing arrive/inside/stand_offset rendering chain stays intact.
-// Visitors are distributed across the 8 king's-move slots around the
-// loiter pin via pickVisitorSlot — the pin tile itself is the gathering
-// CENTER, never a stand spot.
+// move. NPCs entering on arrival (owner moves AND post-ZBBS-099 visitor
+// moves to enterable structures) walk to door_offset so the inside
+// flip happens at the actual doorway. Visitor moves to non-enterable
+// destinations are distributed across the 8 king's-move slots around
+// the loiter pin via pickVisitorSlot — the pin tile itself is the
+// gathering CENTER, never a stand spot.
 //
 // All offsets are tile-unit ints; multiplied by tileSize=32.0 to get the
 // pixel coordinate the walk dispatcher expects.
 func (app *App) pickWalkTarget(ctx context.Context, r *agentNPCRow, structureID string, ox, oy float64,
 	loiterX, loiterY, doorX, doorY sql.NullInt32, footprintBottom int) (float64, float64) {
 	const tileSize = 32.0
-	if !isAgentMoveOwner(r, structureID) {
+	if !app.agentMoveShouldEnter(ctx, r, structureID) {
 		lx, ly := effectiveLoiterTile(loiterX, loiterY, doorX, doorY, footprintBottom)
 		return app.pickVisitorSlot(ctx, r.ID, ox, oy, lx, ly)
 	}
