@@ -979,6 +979,16 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 		locationName, hourStart.Format("Monday 15:04"),
 	))
 
+	// 3.1 Gatherable affordance — when the NPC is loitering at a source
+	// that produces an item (well → water; future orchards, fishing
+	// spots), surface it as an explicit prompt line. Without this hint
+	// the model can stand at the well and not connect "I'm here" to
+	// "call gather()" — chore=well becomes a no-op loop instead of
+	// part of a fetch-and-return chain.
+	if affordance := app.gatherableHereForActor(ctx, r.CurrentX, r.CurrentY); affordance != "" {
+		sections = append(sections, affordance)
+	}
+
 	// 3a. Body and purse (ZBBS-082 / ZBBS-083). Each need maps to a
 	// period-appropriate descriptor (peckish/hungry/starving etc.); silent
 	// when the value is below the awareness floor. Coins remain numeric —
