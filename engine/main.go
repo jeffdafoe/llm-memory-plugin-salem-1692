@@ -335,7 +335,6 @@ func main() {
 	authed("GET /api/me", app.handleVillageMe)
 	authed("PATCH /api/assets/{id}/footprint", app.handlePatchAssetFootprint)
 	authed("PATCH /api/assets/{id}/door", app.handlePatchAssetDoor)
-	authed("PATCH /api/assets/{id}/enterable", app.handlePatchAssetEnterable)
 	authed("PATCH /api/assets/{id}/visible-when-inside", app.handlePatchAssetVisibleWhenInside)
 	authed("PATCH /api/assets/{id}/stand", app.handlePatchAssetStand)
 	authed("GET /api/assets/state-tags", app.handleListStateTags)
@@ -356,6 +355,7 @@ func main() {
 	authed("PATCH /api/village/objects/{id}/state", app.handleSetVillageObjectState)
 	authed("PATCH /api/village/objects/{id}/position", app.handleMoveVillageObject)
 	authed("PATCH /api/village/objects/{id}/loiter-offset", app.handleSetVillageObjectLoiterOffset)
+	authed("PATCH /api/village/objects/{id}/entry-policy", app.handleSetVillageObjectEntryPolicy)
 
 	// Object refresh — finite-supply attribute restoration on arrival
 	// (ZBBS-090). Lookup table for the attribute picker; per-object set

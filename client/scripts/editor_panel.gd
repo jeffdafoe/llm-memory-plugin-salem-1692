@@ -39,7 +39,7 @@ signal npc_go_home_requested
 signal npc_go_to_work_requested
 signal npc_sprite_change_requested(npc_id: String, current_sprite_id: String)
 signal npc_select_requested(npc_id: String)
-signal asset_enterable_toggled(asset_id: String, enterable: bool)
+signal entry_policy_changed(object_id: String, policy: String)
 signal asset_visible_when_inside_toggled(asset_id: String, visible: bool)
 
 # Theme colors (matching top bar / login screen)
@@ -124,12 +124,18 @@ var _attachments_section: VBoxContainer = null
 # built-in CheckBox widget renders empty / vanishes under this project's
 # theme, and the dropdown matches the visual language of the surrounding
 # owner / behavior pickers.
-var _enterable_dropdown: OptionButton = null
+var _entry_policy_dropdown: OptionButton = null
 var _visible_when_inside_dropdown: OptionButton = null
 # The asset_id the two above dropdowns currently reflect, so we know what
 # to PATCH on change. Set in show_selection.
-var _enterable_asset_id: String = ""
-var _ignoring_enterable_toggle: bool = false
+var _entry_policy_object_id: String = ""
+# visible_when_inside is per-asset (it's a rendering property of the
+# glyph), so the visible-when-inside dropdown still PATCHes by asset id.
+# entry_policy is per-village_object (gameplay), so its dropdown PATCHes
+# by object id. The two ids are tracked separately so the wrong endpoint
+# can't be hit by accident.
+var _visible_when_inside_asset_id: String = ""
+var _ignoring_policy_dropdowns: bool = false
 # People section — lists NPCs whose home/work structure is the currently
 # selected asset. See _populate_people_section.
 var _people_section: VBoxContainer = null
@@ -603,46 +609,55 @@ func _ready() -> void:
     _attachments_grid.add_theme_constant_override("v_separation", 4)
     attach_scroll.add_child(_attachments_grid)
 
-    # Enterable per-asset flag — Yes/No dropdown in the same visual style
-    # as the owner / behavior pickers. Header label lives above.
-    var enterable_header = Label.new()
-    enterable_header.text = "CAN BE ENTERED"
-    enterable_header.add_theme_color_override("font_color", COLOR_LABEL)
-    enterable_header.add_theme_font_size_override("font_size", 11)
-    _asset_fields_section.add_child(enterable_header)
+    # Per-instance entry_policy (ZBBS-101). Three states: 'none' (no entry,
+    # used for decoratives), 'owner' (only NPCs whose home or work is this
+    # structure), 'anyone' (public access). Same visual style as the
+    # owner / behavior pickers.
+    var entry_policy_header = Label.new()
+    entry_policy_header.text = "ENTRY POLICY"
+    entry_policy_header.add_theme_color_override("font_color", COLOR_LABEL)
+    entry_policy_header.add_theme_font_size_override("font_size", 11)
+    _asset_fields_section.add_child(entry_policy_header)
 
     # Match the owner dropdown's stylebox exactly — warmer brown bg,
     # rounded corners, slightly larger padding — so the two pickers read
     # as part of the same family.
-    var enterable_style = StyleBoxFlat.new()
-    enterable_style.bg_color = COLOR_BTN_BG
-    enterable_style.border_width_left = 1
-    enterable_style.border_width_top = 1
-    enterable_style.border_width_right = 1
-    enterable_style.border_width_bottom = 1
-    enterable_style.border_color = COLOR_BTN_BORDER
-    enterable_style.corner_radius_left_top = 3
-    enterable_style.corner_radius_right_top = 3
-    enterable_style.corner_radius_left_bottom = 3
-    enterable_style.corner_radius_right_bottom = 3
-    enterable_style.content_margin_left = 6.0
-    enterable_style.content_margin_right = 6.0
-    enterable_style.content_margin_top = 4.0
-    enterable_style.content_margin_bottom = 4.0
+    var entry_policy_style = StyleBoxFlat.new()
+    entry_policy_style.bg_color = COLOR_BTN_BG
+    entry_policy_style.border_width_left = 1
+    entry_policy_style.border_width_top = 1
+    entry_policy_style.border_width_right = 1
+    entry_policy_style.border_width_bottom = 1
+    entry_policy_style.border_color = COLOR_BTN_BORDER
+    entry_policy_style.corner_radius_left_top = 3
+    entry_policy_style.corner_radius_right_top = 3
+    entry_policy_style.corner_radius_left_bottom = 3
+    entry_policy_style.corner_radius_right_bottom = 3
+    entry_policy_style.content_margin_left = 6.0
+    entry_policy_style.content_margin_right = 6.0
+    entry_policy_style.content_margin_top = 4.0
+    entry_policy_style.content_margin_bottom = 4.0
 
-    _enterable_dropdown = OptionButton.new()
-    _enterable_dropdown.add_theme_font_override("font", _font)
-    _enterable_dropdown.add_theme_font_size_override("font_size", 13)
-    _enterable_dropdown.add_theme_color_override("font_color", COLOR_TEXT)
-    _enterable_dropdown.add_theme_stylebox_override("normal", enterable_style)
-    _enterable_dropdown.add_item("No", 0)
-    _enterable_dropdown.add_item("Yes", 1)
-    _enterable_dropdown.item_selected.connect(_on_enterable_selected)
-    _asset_fields_section.add_child(_enterable_dropdown)
+    _entry_policy_dropdown = OptionButton.new()
+    _entry_policy_dropdown.add_theme_font_override("font", _font)
+    _entry_policy_dropdown.add_theme_font_size_override("font_size", 13)
+    _entry_policy_dropdown.add_theme_color_override("font_color", COLOR_TEXT)
+    _entry_policy_dropdown.add_theme_stylebox_override("normal", entry_policy_style)
+    # item_id matches the slot order so we can index by selected; the
+    # actual policy string is set as item metadata for type safety.
+    _entry_policy_dropdown.add_item("Cannot be entered", 0)
+    _entry_policy_dropdown.set_item_metadata(0, "none")
+    _entry_policy_dropdown.add_item("Owner only", 1)
+    _entry_policy_dropdown.set_item_metadata(1, "owner")
+    _entry_policy_dropdown.add_item("Anyone", 2)
+    _entry_policy_dropdown.set_item_metadata(2, "anyone")
+    _entry_policy_dropdown.item_selected.connect(_on_entry_policy_selected)
+    _asset_fields_section.add_child(_entry_policy_dropdown)
 
     # Visible-when-inside — see-through buildings (market stall) keep the
-    # villager sprite visible at the door tile. Same style as the
-    # enterable picker.
+    # villager sprite visible at the door tile. Per-asset since rendering
+    # is a property of the glyph; entry_policy is the per-instance
+    # gameplay knob that lives next to it.
     var visible_header = Label.new()
     visible_header.text = "VISIBLE WHEN INSIDE"
     visible_header.add_theme_color_override("font_color", COLOR_LABEL)
@@ -653,7 +668,7 @@ func _ready() -> void:
     _visible_when_inside_dropdown.add_theme_font_override("font", _font)
     _visible_when_inside_dropdown.add_theme_font_size_override("font_size", 13)
     _visible_when_inside_dropdown.add_theme_color_override("font_color", COLOR_TEXT)
-    _visible_when_inside_dropdown.add_theme_stylebox_override("normal", enterable_style)
+    _visible_when_inside_dropdown.add_theme_stylebox_override("normal", entry_policy_style)
     _visible_when_inside_dropdown.add_item("No", 0)
     _visible_when_inside_dropdown.add_item("Yes", 1)
     _visible_when_inside_dropdown.item_selected.connect(_on_visible_when_inside_selected)
@@ -2045,15 +2060,19 @@ func _is_npc_at_structure_door(npc_container: Node2D, structure_id: String) -> b
         door_world += Vector2(float(dox) * 32.0, float(doy) * 32.0)
     return npc_container.position.distance_to(door_world) < 48.0
 
-func _on_enterable_selected(index: int) -> void:
-    if _ignoring_enterable_toggle or _enterable_asset_id == "":
+func _on_entry_policy_selected(index: int) -> void:
+    if _ignoring_policy_dropdowns or _entry_policy_object_id == "":
         return
-    asset_enterable_toggled.emit(_enterable_asset_id, index == 1)
+    var policy: String = str(_entry_policy_dropdown.get_item_metadata(index))
+    entry_policy_changed.emit(_entry_policy_object_id, policy)
 
 func _on_visible_when_inside_selected(index: int) -> void:
-    if _ignoring_enterable_toggle or _enterable_asset_id == "":
+    # _visible_when_inside_asset_id holds the asset id for the (still
+    # per-asset) visible-when-inside PATCH; show_selection assigns it
+    # alongside _entry_policy_object_id when a placement is selected.
+    if _ignoring_policy_dropdowns or _visible_when_inside_asset_id == "":
         return
-    asset_visible_when_inside_toggled.emit(_enterable_asset_id, index == 1)
+    asset_visible_when_inside_toggled.emit(_visible_when_inside_asset_id, index == 1)
 
 ## Build the Catalog/Villagers tab button. Base style is COLOR_BTN_BG,
 ## active state swaps in the brighter ACTIVE background used by the
@@ -2452,7 +2471,7 @@ func _populate_people_section(object_id: String, asset_id: String) -> void:
         _people_section.visible = false
         return
     var asset = Catalog.assets.get(asset_id, {})
-    if not bool(asset.get("enterable", false)):
+    if str(asset.get("category", "")) != "structure":
         _people_section.visible = false
         return
 
@@ -2541,13 +2560,25 @@ func show_selection(info: Dictionary) -> void:
     # Show attachments if this asset has slots
     _build_attachments(asset_id)
 
-    # Sync both asset-level dropdowns (enterable + visible-when-inside).
-    _ignoring_enterable_toggle = true
-    _enterable_asset_id = asset_id
-    _enterable_dropdown.selected = 1 if bool(asset.get("enterable", false)) else 0
+    # Sync the entry-policy dropdown (per-instance) and the
+    # visible-when-inside dropdown (per-asset, retained on the same panel
+    # because the two settings are conceptually adjacent).
+    _ignoring_policy_dropdowns = true
+    _entry_policy_object_id = info.get("object_id", "")
+    var policy: String = str(info.get("entry_policy", "none"))
+    var policy_index: int = 0
+    match policy:
+        "none":
+            policy_index = 0
+        "owner":
+            policy_index = 1
+        "anyone":
+            policy_index = 2
+    _entry_policy_dropdown.selected = policy_index
+    _visible_when_inside_asset_id = asset_id
     if _visible_when_inside_dropdown != null:
         _visible_when_inside_dropdown.selected = 1 if bool(asset.get("visible_when_inside", false)) else 0
-    _ignoring_enterable_toggle = false
+    _ignoring_policy_dropdowns = false
 
     # People list — structures only. Shown when someone's home or work is
     # this specific object_id.

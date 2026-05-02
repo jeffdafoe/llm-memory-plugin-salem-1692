@@ -509,11 +509,14 @@ func (app *App) handlePCSprite(w http.ResponseWriter, r *http.Request) {
 //     flip on arrival. Used when the click lands on open ground.
 //
 //   - Structure: {target_structure_id}. Walk to the structure's door
-//     (enterable) or loiter slot (non-enterable). On arrival,
-//     setNPCInside fires for enterable targets so the PC joins the
-//     scene_huddle and the talk panel can open. Used when the client
-//     hit-detects a structure under the click. target_x/y are
-//     ignored when target_structure_id is set.
+//     (entry allowed) or loiter slot (knocked or no-entry). On arrival,
+//     setNPCInside fires only when the policy permits this PC to enter
+//     so the PC joins the scene_huddle and the talk panel can open.
+//     Owner-only structures the PC isn't associated with resolve as a
+//     knock — the response carries knock_narration the client renders
+//     in the talk panel. Used when the client hit-detects a structure
+//     under the click. target_x/y are ignored when target_structure_id
+//     is set.
 //
 // Structure mode routes through startReturnWalk so the existing
 // arrival-hook (advanceBehavior) handles the inside flip — same path
@@ -557,27 +560,32 @@ func (app *App) handlePCMove(w http.ResponseWriter, r *http.Request) {
 		speed = defaultNPCSpeed
 	}
 
-	// Structure mode: resolve the click to a door tile (enterable) or a
-	// loiter slot (non-enterable). pickWalkTarget is the NPC-side helper
-	// but it carries owner-detection logic specific to agent NPCs; for
-	// PCs the rule is simpler — enterable means enter, otherwise stand
-	// at the loiter ring. Inline the simpler branch here.
+	// Structure mode: resolve the click to a door tile (enter) or a
+	// loiter slot (stand outside / knock). Resolution by entry_policy
+	// (ZBBS-101):
+	//   - 'none'   → loiter slot, no inside flip.
+	//   - 'anyone' → door tile, inside flip on arrival.
+	//   - 'owner'  → if the PC's actor has this structure as home or
+	//                work, treat as 'anyone' (door + enter). Otherwise
+	//                walk to the loiter slot; the response carries
+	//                knocked=true so the client can render the knock
+	//                affordance.
 	if req.TargetStructureID != "" {
 		var ox, oy float64
 		var loiterX, loiterY sql.NullInt32
 		var doorX, doorY sql.NullInt32
 		var footprintBottom int
-		var enterable bool
+		var entryPolicy string
 		err := app.DB.QueryRow(r.Context(),
 			`SELECT o.x, o.y,
 			        o.loiter_offset_x, o.loiter_offset_y,
 			        a.door_offset_x, a.door_offset_y, a.footprint_bottom,
-			        a.enterable
+			        o.entry_policy
 			   FROM village_object o
 			   JOIN asset a ON a.id = o.asset_id
 			  WHERE o.id::text = $1`,
 			req.TargetStructureID,
-		).Scan(&ox, &oy, &loiterX, &loiterY, &doorX, &doorY, &footprintBottom, &enterable)
+		).Scan(&ox, &oy, &loiterX, &loiterY, &doorX, &doorY, &footprintBottom, &entryPolicy)
 		if err != nil {
 			if err == sql.ErrNoRows {
 				jsonError(w, "Structure not found", http.StatusNotFound)
@@ -588,10 +596,31 @@ func (app *App) handlePCMove(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// Owner check for 'owner' policy. The same actor.id linkage
+		// (home_structure_id / work_structure_id) is used for NPCs in
+		// agentMoveShouldEnter — keep the rule single-sourced in
+		// concept even though the queries are duplicated for context.
+		isAssociated := false
+		if entryPolicy == "owner" {
+			var n int
+			if err := app.DB.QueryRow(r.Context(),
+				`SELECT COUNT(*) FROM actor
+				  WHERE id::text = $1
+				    AND (home_structure_id::text = $2 OR work_structure_id::text = $2)`,
+				actorID, req.TargetStructureID,
+			).Scan(&n); err != nil {
+				log.Printf("pc/move owner check: %v", err)
+				jsonError(w, "Internal error", http.StatusInternalServerError)
+				return
+			}
+			isAssociated = n > 0
+		}
+
 		const tileSize = 32.0
 		var walkX, walkY float64
-		enterOnArrival := enterable && doorX.Valid && doorY.Valid
-		if enterOnArrival {
+		canEnter := (entryPolicy == "anyone" || (entryPolicy == "owner" && isAssociated)) && doorX.Valid && doorY.Valid
+		knocked := entryPolicy == "owner" && !isAssociated
+		if canEnter {
 			walkX = ox + float64(doorX.Int32)*tileSize
 			walkY = oy + float64(doorY.Int32)*tileSize
 		} else {
@@ -600,7 +629,7 @@ func (app *App) handlePCMove(w http.ResponseWriter, r *http.Request) {
 		}
 
 		npc := &behaviorNPC{ID: actorID, CurX: curX, CurY: curY}
-		if err := app.startReturnWalk(r.Context(), npc, walkX, walkY, req.TargetStructureID, "pc-move", enterOnArrival); err != nil {
+		if err := app.startReturnWalk(r.Context(), npc, walkX, walkY, req.TargetStructureID, "pc-move", canEnter); err != nil {
 			if err.Error() == "no path" {
 				jsonError(w, "No path to target", http.StatusBadRequest)
 				return
@@ -609,7 +638,28 @@ func (app *App) handlePCMove(w http.ResponseWriter, r *http.Request) {
 			jsonError(w, "Internal error", http.StatusInternalServerError)
 			return
 		}
-		jsonResponse(w, http.StatusOK, map[string]any{"ok": true, "structure": true})
+
+		// Knock (ZBBS-101): PC clicked an owner-only structure they don't
+		// belong to. Compute the narration text now — "the stall is
+		// unattended" if no associated actor is currently inside, "no
+		// answer at the door" otherwise. Ship it back in the response
+		// so the client can render it in the talk panel as soon as the
+		// click resolves; the walk plays out visually in parallel.
+		//
+		// NPC perception (so the associated NPC inside actually
+		// experiences the knock) is a deferred followup — see the
+		// salem-entry-policy-and-knock task note's stretch section.
+		var knockNarration string
+		if knocked {
+			knockNarration = app.composeKnockNarration(r.Context(), req.TargetStructureID)
+		}
+
+		jsonResponse(w, http.StatusOK, map[string]any{
+			"ok":               true,
+			"structure":        true,
+			"knocked":          knocked,
+			"knock_narration":  knockNarration,
+		})
 		return
 	}
 
@@ -631,6 +681,48 @@ func (app *App) handlePCMove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, http.StatusOK, result)
+}
+
+// composeKnockNarration returns the talk-panel text shown to a PC who
+// clicked an owner-only structure they don't belong to (ZBBS-101). The
+// narration distinguishes "no one is here at all" from "someone is
+// inside but doesn't respond" so the player can decide whether to wait,
+// look elsewhere, or knock again.
+//
+// The current cut does not actually deliver a perception event to a
+// listening NPC — that's the followup that closes the Prudence-at-the-
+// stall loop end-to-end. Until then, even a structure with someone
+// inside renders the muted "no answer" path so the narration matches
+// observed behavior.
+func (app *App) composeKnockNarration(ctx context.Context, structureID string) string {
+	var displayName, assetName string
+	if err := app.DB.QueryRow(ctx,
+		`SELECT COALESCE(o.display_name, ''), a.name
+		   FROM village_object o JOIN asset a ON a.id = o.asset_id
+		  WHERE o.id::text = $1`,
+		structureID,
+	).Scan(&displayName, &assetName); err != nil {
+		return "You knock. There is no answer."
+	}
+	name := displayName
+	if name == "" {
+		name = assetName
+	}
+
+	var insideAssociated int
+	if err := app.DB.QueryRow(ctx,
+		`SELECT COUNT(*) FROM actor
+		  WHERE inside = true
+		    AND inside_structure_id::text = $1
+		    AND (home_structure_id::text = $1 OR work_structure_id::text = $1)`,
+		structureID,
+	).Scan(&insideAssociated); err != nil {
+		return fmt.Sprintf("You knock at %s. There is no answer.", name)
+	}
+	if insideAssociated == 0 {
+		return fmt.Sprintf("%s stands unattended. No one is here.", name)
+	}
+	return fmt.Sprintf("You knock at %s, but no one answers.", name)
 }
 
 // broadcastPCAppeared emits pc_appeared with the full sprite catalog row

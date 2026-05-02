@@ -370,17 +370,19 @@ func (app *App) startNPCRoute(ctx context.Context, npc *behaviorNPC, stops []rou
 func (app *App) setNPCInside(ctx context.Context, npcID string, inside bool, structureID string) {
 	var newInsideID *string
 	if inside && structureID != "" {
-		// Defensive guard: never mark an NPC inside a non-enterable
-		// structure. Wells, fountains, market stalls without enterable=true
-		// are loiter targets — visitors stand outside, not inside. A
-		// caller passing the wrong flag would otherwise leave NPCs flagged
-		// inside a structure that has no "inside" concept.
-		var enterable bool
+		// Defensive guard: never mark an actor inside an entry_policy='none'
+		// structure (ZBBS-101). Wells, fountains, decoratives are loiter
+		// targets — visitors stand outside, not inside. A caller passing
+		// the wrong flag would otherwise leave actors flagged inside a
+		// structure that has no "inside" concept. Owner-policy structures
+		// pass through here too; the caller is responsible for verifying
+		// ownership before invoking setNPCInside (agentMoveShouldEnter
+		// and the PC click handler do).
+		var policy string
 		if err := app.DB.QueryRow(ctx,
-			`SELECT a.enterable FROM village_object o
-			 JOIN asset a ON a.id = o.asset_id WHERE o.id = $1`,
-			structureID).Scan(&enterable); err == nil && !enterable {
-			log.Printf("setNPCInside: refusing to mark %s inside non-enterable structure %s", npcID, structureID)
+			`SELECT entry_policy FROM village_object WHERE id = $1`,
+			structureID).Scan(&policy); err == nil && policy == "none" {
+			log.Printf("setNPCInside: refusing to mark %s inside entry_policy=none structure %s", npcID, structureID)
 			return
 		}
 		s := structureID
