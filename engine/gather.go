@@ -78,12 +78,23 @@ func (app *App) executeGather(ctx context.Context, actor *agentNPCRow, qty int) 
 	// (a) carries a gatherable tag and (b) has an object_refresh row.
 	// Bounding-box pre-filter on x/y matches the pattern in
 	// applyObjectRefreshAtArrival so the planner can prune at scale.
-	const tolerancePx = 64.0
+	// Box is generous (192px) to cover the case where the actor is at
+	// the source's loiter offset, which can put the anchor several tiles
+	// away on each axis. The squared-distance check below uses the
+	// loiter point and a tight gatherToleranceSq for actual eligibility.
+	const tolerancePx = 192.0
 	tagList := make([]string, 0, len(gatherTagToItem))
 	for tag := range gatherTagToItem {
 		tagList = append(tagList, tag)
 	}
 
+	// Distance is computed to the loiter point (anchor + loiter_offset *
+	// 32) when set, falling back to the anchor when not. Wells, market
+	// stalls, and similar entry_policy='none' sources park visitors at
+	// the loiter offset; checking against the anchor would put a
+	// correctly-arrived NPC outside the tolerance window. Tile size is
+	// 32px (matches the rest of the engine's positioning math).
+	const tileSize = 32.0
 	var (
 		objectID   string
 		objectName string
@@ -94,7 +105,10 @@ func (app *App) executeGather(ctx context.Context, actor *agentNPCRow, qty int) 
 		`SELECT o.id::text,
 		        COALESCE(o.display_name, a.name),
 		        vot.tag,
-		        (o.x - $1) * (o.x - $1) + (o.y - $2) * (o.y - $2) AS dist_sq
+		        (o.x + COALESCE(o.loiter_offset_x, 0) * $5 - $1) *
+		        (o.x + COALESCE(o.loiter_offset_x, 0) * $5 - $1) +
+		        (o.y + COALESCE(o.loiter_offset_y, 0) * $5 - $2) *
+		        (o.y + COALESCE(o.loiter_offset_y, 0) * $5 - $2) AS dist_sq
 		 FROM village_object o
 		 JOIN asset a ON a.id = o.asset_id
 		 JOIN village_object_tag vot ON vot.object_id = o.id
@@ -104,7 +118,7 @@ func (app *App) executeGather(ctx context.Context, actor *agentNPCRow, qty int) 
 		   AND EXISTS (SELECT 1 FROM object_refresh r WHERE r.object_id = o.id)
 		 ORDER BY dist_sq
 		 LIMIT 1`,
-		actor.CurrentX, actor.CurrentY, tolerancePx, tagList,
+		actor.CurrentX, actor.CurrentY, tolerancePx, tagList, tileSize,
 	).Scan(&objectID, &objectName, &objectTag, &distSq)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
