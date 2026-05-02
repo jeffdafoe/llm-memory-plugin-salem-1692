@@ -542,10 +542,13 @@ func (app *App) handlePCMove(w http.ResponseWriter, r *http.Request) {
 
 	var actorID string
 	var curX, curY float64
+	var pcInside bool
+	var pcCurrentHuddle sql.NullString
 	if err := app.DB.QueryRow(r.Context(),
-		`SELECT id::text, current_x, current_y FROM actor WHERE login_username = $1`,
+		`SELECT id::text, current_x, current_y, inside, current_huddle_id::text
+		   FROM actor WHERE login_username = $1`,
 		user.Username,
-	).Scan(&actorID, &curX, &curY); err != nil {
+	).Scan(&actorID, &curX, &curY, &pcInside, &pcCurrentHuddle); err != nil {
 		if err == sql.ErrNoRows {
 			jsonError(w, "PC not found — call /pc/create first", http.StatusNotFound)
 			return
@@ -553,6 +556,17 @@ func (app *App) handlePCMove(w http.ResponseWriter, r *http.Request) {
 		log.Printf("pc/move actor lookup: %v", err)
 		jsonError(w, "Internal error", http.StatusInternalServerError)
 		return
+	}
+
+	// Service-huddle cleanup (ZBBS-101). A PC who isn't physically inside
+	// any structure but holds a current_huddle_id is in a "service huddle"
+	// joined via knock — clear it on every new walk so the conversation
+	// dissolves when the PC chooses to walk away. PC moves that arrive
+	// inside a structure (entry_policy='anyone' or owner-self) re-form
+	// the huddle through the existing setNPCInside path on arrival, so
+	// this cleanup doesn't tear down a normal indoor huddle.
+	if !pcInside && pcCurrentHuddle.Valid {
+		app.leaveHuddleForPC(r.Context(), user.Username)
 	}
 
 	speed := req.Speed
@@ -640,25 +654,43 @@ func (app *App) handlePCMove(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Knock (ZBBS-101): PC clicked an owner-only structure they don't
-		// belong to. Compute the narration text now — "the stall is
-		// unattended" if no associated actor is currently inside, "no
-		// answer at the door" otherwise. Ship it back in the response
-		// so the client can render it in the talk panel as soon as the
-		// click resolves; the walk plays out visually in parallel.
-		//
-		// NPC perception (so the associated NPC inside actually
-		// experiences the knock) is a deferred followup — see the
-		// salem-entry-policy-and-knock task note's stretch section.
+		// belong to. Compose narration now and, when an associated NPC is
+		// currently inside, join the PC into the structure's scene_huddle
+		// so the talk panel becomes visible with the vendor as an
+		// addressee. The PC stays physically outside (inside=false) — the
+		// huddle is the conversational scope, not a presence flip. PC's
+		// next /pc/move dissolves it via the service-huddle cleanup at
+		// the top of this handler.
 		var knockNarration string
+		var knockHuddleJoined bool
 		if knocked {
-			knockNarration = app.composeKnockNarration(r.Context(), req.TargetStructureID)
+			var insideAssociated int
+			if err := app.DB.QueryRow(r.Context(),
+				`SELECT COUNT(*) FROM actor
+				  WHERE inside = true
+				    AND inside_structure_id::text = $1
+				    AND (home_structure_id::text = $1 OR work_structure_id::text = $1)`,
+				req.TargetStructureID,
+			).Scan(&insideAssociated); err != nil {
+				log.Printf("pc/move knock huddle precheck: %v", err)
+			} else if insideAssociated > 0 {
+				if _, err := app.joinOrCreateHuddleForPC(r.Context(), user.Username, req.TargetStructureID); err != nil {
+					log.Printf("pc/move knock huddle join: %v", err)
+				} else {
+					knockHuddleJoined = true
+				}
+			}
+			if !knockHuddleJoined {
+				knockNarration = app.composeKnockNarration(r.Context(), req.TargetStructureID)
+			}
 		}
 
 		jsonResponse(w, http.StatusOK, map[string]any{
-			"ok":               true,
-			"structure":        true,
-			"knocked":          knocked,
-			"knock_narration":  knockNarration,
+			"ok":              true,
+			"structure":       true,
+			"knocked":         knocked,
+			"knock_narration": knockNarration,
+			"huddle_joined":   knockHuddleJoined,
 		})
 		return
 	}
@@ -683,17 +715,13 @@ func (app *App) handlePCMove(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, result)
 }
 
-// composeKnockNarration returns the talk-panel text shown to a PC who
-// clicked an owner-only structure they don't belong to (ZBBS-101). The
-// narration distinguishes "no one is here at all" from "someone is
-// inside but doesn't respond" so the player can decide whether to wait,
-// look elsewhere, or knock again.
-//
-// The current cut does not actually deliver a perception event to a
-// listening NPC — that's the followup that closes the Prudence-at-the-
-// stall loop end-to-end. Until then, even a structure with someone
-// inside renders the muted "no answer" path so the narration matches
-// observed behavior.
+// composeKnockNarration returns talk-panel text for a PC knock that
+// produced no live conversation — i.e. nobody associated with the
+// structure is currently inside. When someone IS inside, the click
+// handler joins the PC into a service huddle instead and the talk
+// panel surfaces the vendor as an addressee, so this narration is
+// suppressed (returns ""). Only the unattended path needs explanatory
+// text.
 func (app *App) composeKnockNarration(ctx context.Context, structureID string) string {
 	var displayName, assetName string
 	if err := app.DB.QueryRow(ctx,
@@ -702,27 +730,13 @@ func (app *App) composeKnockNarration(ctx context.Context, structureID string) s
 		  WHERE o.id::text = $1`,
 		structureID,
 	).Scan(&displayName, &assetName); err != nil {
-		return "You knock. There is no answer."
+		return ""
 	}
 	name := displayName
 	if name == "" {
 		name = assetName
 	}
-
-	var insideAssociated int
-	if err := app.DB.QueryRow(ctx,
-		`SELECT COUNT(*) FROM actor
-		  WHERE inside = true
-		    AND inside_structure_id::text = $1
-		    AND (home_structure_id::text = $1 OR work_structure_id::text = $1)`,
-		structureID,
-	).Scan(&insideAssociated); err != nil {
-		return fmt.Sprintf("You knock at %s. There is no answer.", name)
-	}
-	if insideAssociated == 0 {
-		return fmt.Sprintf("%s stands unattended. No one is here.", name)
-	}
-	return fmt.Sprintf("You knock at %s, but no one answers.", name)
+	return fmt.Sprintf("%s stands unattended. No one is here.", name)
 }
 
 // broadcastPCAppeared emits pc_appeared with the full sprite catalog row
