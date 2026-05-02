@@ -1587,12 +1587,17 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 			log.Printf("take_break %s: walk-home failed: %v (stamping override anyway)", r.DisplayName, err)
 		}
 
-		// Stamp agent_override_until = breakUntil. executeAgentMoveTo set it
-		// to NOW+30min for the walk; the break is longer, so overwrite.
-		// last_shift_tick_at is forward-stamped to break_until so the worker
-		// scheduler doesn't re-fire shift_start during the break window.
+		// Stamp agent_override_until + break_until + last_shift_tick_at.
+		// agent_override_until keeps the scheduler stepping aside during the
+		// break (executeAgentMoveTo only sets it to NOW+30min for the walk
+		// itself; the break is longer). break_until (ZBBS-102) is the
+		// explicit "I'm closed for business" stamp the knock narration
+		// reads — distinct from override so a routine move_to doesn't
+		// misrepresent the vendor as on break. last_shift_tick_at is
+		// forward-stamped so worker scheduler doesn't re-fire shift_start
+		// during the break window.
 		if _, err := app.DB.Exec(ctx,
-			`UPDATE actor SET agent_override_until = $2, last_shift_tick_at = $2 WHERE id = $1`,
+			`UPDATE actor SET agent_override_until = $2, break_until = $2, last_shift_tick_at = $2 WHERE id = $1`,
 			r.ID, breakUntil,
 		); err != nil {
 			log.Printf("take_break: stamp override %s: %v", r.DisplayName, err)

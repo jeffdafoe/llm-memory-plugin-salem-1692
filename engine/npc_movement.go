@@ -186,6 +186,12 @@ func (app *App) startNPCWalk(ctx context.Context, npcID string, targetX, targetY
 		speed = defaultNPCSpeed
 	}
 
+	// Walk-trace (debug). Logs every walk-start with actor id and target
+	// so we can see who the engine is moving and from where in the call
+	// stack. Cheap (one log line per walk), removable later. Added while
+	// chasing "PC walks autonomously" reports.
+	log.Printf("walk-start: actor=%s target=(%.0f,%.0f) speed=%.0f", npcID, targetX, targetY, speed)
+
 	// NOTE: inside=false used to flip HERE, before pathfinding. That left
 	// an NPC outside their structure (and any occupancy-tagged state flipped
 	// to "unoccupied") when pathfinding later returned "no path" — 400 to

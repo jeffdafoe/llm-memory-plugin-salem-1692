@@ -810,21 +810,19 @@ func (app *App) composeKnockNarration(ctx context.Context, structureID string) s
 	}
 
 	// Break-aware variant: if a would-be associated NPC (this structure is
-	// their home or work) is currently on break (agent_override_until in
-	// the future), surface that. The narration carries an approximate return
-	// time so the PC understands they should come back later, not just that
-	// the post is empty. Multiple associated NPCs is rare (a stall has one
-	// vendor), but if more than one, pick the one with the latest break end
-	// — we want the message to be honest about how long the place is closed.
+	// their home or work) is currently on a take_break (break_until in the
+	// future), surface that. ZBBS-102 split break_until from
+	// agent_override_until so a routine move_to (which bumps override)
+	// doesn't misrepresent the vendor as on break.
 	var vendorName sql.NullString
 	var breakUntil sql.NullTime
 	if err := app.DB.QueryRow(ctx,
-		`SELECT a.display_name, a.agent_override_until
+		`SELECT a.display_name, a.break_until
 		   FROM actor a
 		  WHERE (a.home_structure_id::text = $1 OR a.work_structure_id::text = $1)
-		    AND a.agent_override_until IS NOT NULL
-		    AND a.agent_override_until > NOW()
-		  ORDER BY a.agent_override_until DESC
+		    AND a.break_until IS NOT NULL
+		    AND a.break_until > NOW()
+		  ORDER BY a.break_until DESC
 		  LIMIT 1`,
 		structureID,
 	).Scan(&vendorName, &breakUntil); err == nil && breakUntil.Valid {
