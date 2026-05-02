@@ -195,6 +195,55 @@ func (app *App) executeGather(ctx context.Context, actor *agentNPCRow, qty int) 
 	}
 }
 
+// gatherableHereForActor returns a perception line announcing the
+// gatherable source the actor is currently loitering at, or "" when
+// they aren't standing at one. Used by buildAgentPerception to surface
+// the affordance — without this hint the model often stands at a
+// source and doesn't connect "I'm here" to "I should call gather()".
+//
+// Source matching mirrors executeGather: bounding-box prefilter on the
+// actor's position, then squared distance against the loiter point
+// (anchor + loiter_offset * tile) compared to gatherToleranceSq.
+func (app *App) gatherableHereForActor(ctx context.Context, actorX, actorY float64) string {
+	const tolerancePx = 192.0
+	const tileSize = 32.0
+	tagList := make([]string, 0, len(gatherTagToItem))
+	for tag := range gatherTagToItem {
+		tagList = append(tagList, tag)
+	}
+	var (
+		objectName string
+		objectTag  string
+		distSq     float64
+	)
+	err := app.DB.QueryRow(ctx,
+		`SELECT COALESCE(o.display_name, a.name),
+		        vot.tag,
+		        (o.x + COALESCE(o.loiter_offset_x, 0) * $5 - $1) *
+		        (o.x + COALESCE(o.loiter_offset_x, 0) * $5 - $1) +
+		        (o.y + COALESCE(o.loiter_offset_y, 0) * $5 - $2) *
+		        (o.y + COALESCE(o.loiter_offset_y, 0) * $5 - $2) AS dist_sq
+		 FROM village_object o
+		 JOIN asset a ON a.id = o.asset_id
+		 JOIN village_object_tag vot ON vot.object_id = o.id
+		 WHERE o.x BETWEEN $1 - $3 AND $1 + $3
+		   AND o.y BETWEEN $2 - $3 AND $2 + $3
+		   AND vot.tag = ANY($4)
+		   AND EXISTS (SELECT 1 FROM object_refresh r WHERE r.object_id = o.id)
+		 ORDER BY dist_sq
+		 LIMIT 1`,
+		actorX, actorY, tolerancePx, tagList, tileSize,
+	).Scan(&objectName, &objectTag, &distSq)
+	if err != nil || distSq > gatherToleranceSq {
+		return ""
+	}
+	produces, ok := gatherTagToItem[objectTag]
+	if !ok {
+		return ""
+	}
+	return fmt.Sprintf("You are loitering at the %s — call gather to fill your inventory with %s here.", objectName, produces)
+}
+
 // gatherToolSourceLine renders a one-line summary of where each
 // gatherable tag's product comes from, used in the tool description so
 // the model knows what to expect. Sorted for stability so test/snapshot
