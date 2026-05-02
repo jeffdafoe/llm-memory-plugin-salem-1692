@@ -543,12 +543,17 @@ func (app *App) handlePCMove(w http.ResponseWriter, r *http.Request) {
 	var actorID string
 	var curX, curY float64
 	var pcInside bool
+	var pcInsideID sql.NullString
 	var pcCurrentHuddle sql.NullString
+	var pcDisplayName string
 	if err := app.DB.QueryRow(r.Context(),
-		`SELECT id::text, current_x, current_y, inside, current_huddle_id::text
+		`SELECT id::text, current_x, current_y, inside,
+		        inside_structure_id::text,
+		        current_huddle_id::text,
+		        display_name
 		   FROM actor WHERE login_username = $1`,
 		user.Username,
-	).Scan(&actorID, &curX, &curY, &pcInside, &pcCurrentHuddle); err != nil {
+	).Scan(&actorID, &curX, &curY, &pcInside, &pcInsideID, &pcCurrentHuddle, &pcDisplayName); err != nil {
 		if err == sql.ErrNoRows {
 			jsonError(w, "PC not found — call /pc/create first", http.StatusNotFound)
 			return
@@ -556,6 +561,31 @@ func (app *App) handlePCMove(w http.ResponseWriter, r *http.Request) {
 		log.Printf("pc/move actor lookup: %v", err)
 		jsonError(w, "Internal error", http.StatusInternalServerError)
 		return
+	}
+
+	// Departure narration. If the PC is currently inside a structure and
+	// is about to walk somewhere else, broadcast a room_event of kind
+	// "departure" to the room they're leaving. Symmetric with the agent
+	// move_to commit's departure broadcast in executeAgentCommit. Without
+	// this, a PC walking out of the tavern leaves no trace in the room
+	// log other agents (and other PCs in the same room) can see.
+	if pcInside && pcInsideID.Valid {
+		structName := app.lookupStructureName(r.Context(), pcInsideID.String)
+		if structName == "" {
+			structName = "the building"
+		}
+		text := fmt.Sprintf("%s left the %s.", pcDisplayName, structName)
+		app.Hub.Broadcast(WorldEvent{
+			Type: "room_event",
+			Data: map[string]interface{}{
+				"actor_id":     actorID,
+				"actor_name":   pcDisplayName,
+				"kind":         "departure",
+				"text":         text,
+				"structure_id": pcInsideID.String,
+				"at":           time.Now().UTC().Format(time.RFC3339),
+			},
+		})
 	}
 
 	// Service-huddle cleanup (ZBBS-101). A PC who isn't physically inside
