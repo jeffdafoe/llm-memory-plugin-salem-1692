@@ -61,6 +61,15 @@ var village_vbox: VBoxContainer = null
 # requests leave both false so the next tab activation retries.
 var village_log_loading: bool = false
 var village_log_loaded: bool = false
+# When true, the scroll container re-pins to bottom every time the
+# vbox re-sorts (new label added, autowrap relayout, etc.). This is
+# what keeps the "newest at bottom, scrolled to bottom" invariant
+# stable — a single deferred call after append races autowrap layout
+# and ends up parked partway up. Cleared when the user scrolls up
+# manually so they can read history without being yanked back; re-set
+# when they scroll back to within a small threshold of the bottom.
+var village_stick_bottom: bool = true
+const VILLAGE_STICK_BOTTOM_THRESHOLD: int = 24
 # Live events that arrive while the backload is in flight get parked
 # here and applied after the backload completes — the
 # (occurred_at, id) overlap window between SELECT snapshot and WS
@@ -367,6 +376,17 @@ func _build_village_log(parent: Control) -> void:
     village_vbox.add_theme_constant_override("separation", 6)
     village_scroll.add_child(village_vbox)
 
+    # Re-pin to bottom whenever the vbox re-sorts (new label, autowrap
+    # relayout). The deferred scroll on append still fires for the
+    # initial paint, but this signal closes the race when the final
+    # max_value lands a frame or two later.
+    village_vbox.sort_children.connect(_on_village_vbox_sorted)
+    # Clear village_stick_bottom when the user scrolls up; re-arm when
+    # they scroll back near the bottom. The v_scroll_bar emits "changed"
+    # on programmatic scrolls too, so we filter on input_event from the
+    # scroll container itself rather than the bar.
+    village_scroll.gui_input.connect(_on_village_scroll_gui_input)
+
 
 # Visibility toggle between the two tabs. Room tab shows nearby chips +
 # room log + speech input; Village tab shows the village log (read-only).
@@ -504,9 +524,11 @@ func _append_village_event(row: Dictionary, _is_backload: bool) -> bool:
 func _scroll_village_log_to_bottom_deferred() -> void:
     if village_scroll == null:
         return
-    # Two frames: one for the new label to lay out, one for the scroll
-    # container to recompute its content size. Same pattern the room
-    # log uses for its scroll-to-bottom on backload.
+    # Re-arm the stick-bottom invariant — any caller asking to scroll
+    # to bottom is implicitly asking to follow new content too. The
+    # sort_children handler will land the actual scroll once the
+    # vbox finishes laying out.
+    village_stick_bottom = true
     call_deferred("_scroll_village_log_to_bottom")
     await get_tree().process_frame
     await get_tree().process_frame
@@ -519,6 +541,34 @@ func _scroll_village_log_to_bottom() -> void:
     var bar := village_scroll.get_v_scroll_bar()
     if bar != null:
         village_scroll.scroll_vertical = int(bar.max_value)
+
+
+# Inner vbox finished sorting — labels have laid out, max_value is
+# current. If we're following the bottom, re-pin. Cheap; no-op when
+# the user has scrolled up to read history.
+func _on_village_vbox_sorted() -> void:
+    if not village_stick_bottom or village_scroll == null:
+        return
+    var bar := village_scroll.get_v_scroll_bar()
+    if bar != null:
+        village_scroll.scroll_vertical = int(bar.max_value)
+
+
+# User-driven scroll input on the village log. Wheel + drag both come
+# through here. Decide whether to follow the bottom based on where the
+# user has parked the scrollbar.
+func _on_village_scroll_gui_input(event: InputEvent) -> void:
+    if not (event is InputEventMouseButton or event is InputEventPanGesture or event is InputEventScreenDrag):
+        return
+    if village_scroll == null:
+        return
+    var bar := village_scroll.get_v_scroll_bar()
+    if bar == null:
+        return
+    # Defer the read so the scroll has actually moved before we sample.
+    await get_tree().process_frame
+    var distance_from_bottom: int = int(bar.max_value) - village_scroll.scroll_vertical
+    village_stick_bottom = distance_from_bottom <= VILLAGE_STICK_BOTTOM_THRESHOLD
 
 
 # Public entry point used by the top-bar marquee ticker. Opens the

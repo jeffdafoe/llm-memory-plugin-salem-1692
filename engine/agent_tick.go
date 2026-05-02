@@ -1352,8 +1352,10 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		// kind="departure" lets clients render this as italic narration
 		// alongside speech and acts. Also lands a village_event so the
 		// Village tab gets the same line — same text, broader scope.
+		// narrateMoveDeparture normalizes self-references ("my home" →
+		// "home") and renders "retired for the X" when home == work.
 		if result == "ok" && r.InsideStructureID.Valid {
-			text := fmt.Sprintf("%s left for %s.", r.DisplayName, dest)
+			text := app.narrateMoveDeparture(ctx, r.DisplayName, r.HomeStructureID, r.WorkStructureID, dest)
 			app.Hub.Broadcast(WorldEvent{
 				Type: "room_event",
 				Data: map[string]interface{}{
