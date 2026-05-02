@@ -44,6 +44,34 @@ var log_scroll: ScrollContainer
 var log_vbox: VBoxContainer
 var speech_input: TextEdit
 var speak_button: Button
+## Pay flow — small button next to Speak opens a modal (built lazily)
+## with recipient dropdown, amount, optional item / qty / take-home.
+## Submit fires POST /api/village/pc/pay and re-polls /pc/me on success
+## so the top bar's coin chip refreshes immediately.
+var pay_button: Button = null
+var pay_modal: Control = null
+var pay_recipient_option: OptionButton = null
+var pay_amount_spin: SpinBox = null
+var pay_item_input: LineEdit = null
+var pay_qty_spin: SpinBox = null
+var pay_take_home_check: CheckBox = null
+var pay_status_label: Label = null
+var pay_confirm_button: Button = null
+var pay_cancel_button: Button = null
+var http_pay: HTTPRequest = null
+## Cached huddle member list at the moment the modal opened — used so
+## the dropdown index maps back to the chosen recipient name without
+## re-reading huddle_members during the click.
+var pay_modal_recipients: Array = []
+## Last /pc/me snapshot of coins + inventory. Reused by the modal to
+## show the player what they can afford.
+var pc_coins: int = 0
+var pc_inventory: Array = []
+
+## Emitted whenever the polled /pc/me reports a fresh coin / inventory
+## state. main.gd subscribes and forwards to the top-bar's set_purse.
+## Negative coins signals "no PC" (top bar should hide the chip).
+signal purse_changed(coins: int, inventory_lines: PackedStringArray)
 
 # ZBBS-087 — Village tab. The panel hosts two tabs: Room (existing room-
 # scoped chat) and Village (mechanical village-wide events).
@@ -148,6 +176,9 @@ func _build_tree() -> void:
 
     http_village_log = HTTPRequest.new()
     add_child(http_village_log)
+
+    http_pay = HTTPRequest.new()
+    add_child(http_pay)
 
     refresh_timer = Timer.new()
     refresh_timer.wait_time = REFRESH_INTERVAL
@@ -644,6 +675,15 @@ func _build_input(parent: Control) -> void:
     speech_input.add_theme_stylebox_override("focus", input_focus)
     row.add_child(speech_input)
 
+    pay_button = Button.new()
+    pay_button.text = "Pay"
+    pay_button.custom_minimum_size = Vector2(48, 28)
+    pay_button.focus_mode = Control.FOCUS_ALL
+    pay_button.mouse_filter = Control.MOUSE_FILTER_STOP
+    pay_button.add_theme_font_size_override("font_size", 12)
+    pay_button.tooltip_text = "Pay a villager — opens a confirmation form for amount and optional item."
+    row.add_child(pay_button)
+
     speak_button = Button.new()
     speak_button.text = "Speak"
     speak_button.custom_minimum_size = Vector2(60, 28)
@@ -657,11 +697,15 @@ func _connect_signals() -> void:
     talk_launcher.pressed.connect(open)
     close_button.pressed.connect(close)
     speak_button.pressed.connect(_on_speak_pressed)
+    if pay_button != null:
+        pay_button.pressed.connect(_on_pay_pressed)
 
     refresh_timer.timeout.connect(_refresh_state)
     http_me.request_completed.connect(_on_me_completed)
     http_speak.request_completed.connect(_on_speak_completed)
     http_village_log.request_completed.connect(_on_village_log_completed)
+    if http_pay != null:
+        http_pay.request_completed.connect(_on_pay_completed)
 
     if tab_room_button != null:
         tab_room_button.pressed.connect(_set_active_tab.bind(TAB_ROOM))
@@ -779,6 +823,13 @@ func _apply_pc_state(data: Dictionary) -> void:
     structure_name = str(data.get("structure_name", ""))
     home_name = str(data.get("home_name", ""))
 
+    # Coins + inventory — surfaced in the top-bar coin chip and used
+    # by the pay modal to validate amount against current balance.
+    pc_coins = int(data.get("coins", 0))
+    var inv_data = data.get("inventory", [])
+    pc_inventory = inv_data if typeof(inv_data) == TYPE_ARRAY else []
+    _push_purse_to_top_bar()
+
     var prev_huddle_size: int = huddle_members.size()
     var members = data.get("huddle_members", [])
     if typeof(members) == TYPE_ARRAY:
@@ -867,12 +918,15 @@ func _maybe_apply_recent_speech(data: Dictionary) -> void:
 func _set_no_pc_state() -> void:
     pc_exists = false
     huddle_members = []
+    pc_coins = 0
+    pc_inventory = []
     is_open = false
     sheet_anchor.visible = false
     talk_launcher.visible = false
     loaded_structure_id = ""
     _update_context_labels()
     _clear_nearby_chips()
+    _push_purse_to_top_bar()
 
 
 func _update_visibility_from_state() -> void:
@@ -1003,6 +1057,244 @@ func _post_speak(text: String) -> void:
     if err != OK:
         speak_button.disabled = false
         push_warning("TalkPanel speak request failed: %s" % err)
+
+
+## Emit purse_changed so main.gd can update the top bar's coin chip
+## and inventory tooltip. Negative coins signals "no PC" — top bar
+## hides the chip on that.
+func _push_purse_to_top_bar() -> void:
+    var lines: PackedStringArray = PackedStringArray()
+    if not pc_exists:
+        purse_changed.emit(-1, lines)
+        return
+    for entry in pc_inventory:
+        if typeof(entry) != TYPE_DICTIONARY:
+            continue
+        var label := str(entry.get("display_label", entry.get("item_kind", "")))
+        var qty := int(entry.get("quantity", 0))
+        if label != "" and qty > 0:
+            lines.append("%s × %d" % [label, qty])
+    purse_changed.emit(pc_coins, lines)
+
+
+## Build the pay modal lazily on first use. Lives as a CanvasLayer
+## sibling so it overlays the talk sheet and the world view; semi-
+## transparent backdrop swallows clicks outside the form so a misclick
+## doesn't dismiss it accidentally (Cancel button is the only way out).
+func _ensure_pay_modal_built() -> void:
+    if pay_modal != null:
+        return
+
+    var layer := CanvasLayer.new()
+    layer.layer = 30  # above the talk sheet's layer
+    layer.visible = false
+    add_child(layer)
+    pay_modal = layer
+
+    var backdrop := ColorRect.new()
+    backdrop.color = Color(0, 0, 0, 0.6)
+    backdrop.set_anchors_preset(Control.PRESET_FULL_RECT)
+    backdrop.mouse_filter = Control.MOUSE_FILTER_STOP
+    layer.add_child(backdrop)
+
+    var center := CenterContainer.new()
+    center.set_anchors_preset(Control.PRESET_FULL_RECT)
+    layer.add_child(center)
+
+    var panel := PanelContainer.new()
+    panel.custom_minimum_size = Vector2(360, 0)
+    var panel_style := StyleBoxFlat.new()
+    panel_style.bg_color = Color(0.13, 0.10, 0.07, 0.98)
+    panel_style.border_color = Color(0.55, 0.42, 0.25, 1.0)
+    panel_style.border_width_left = 1
+    panel_style.border_width_right = 1
+    panel_style.border_width_top = 1
+    panel_style.border_width_bottom = 1
+    panel_style.corner_radius_top_left = 6
+    panel_style.corner_radius_top_right = 6
+    panel_style.corner_radius_bottom_left = 6
+    panel_style.corner_radius_bottom_right = 6
+    panel_style.content_margin_left = 16
+    panel_style.content_margin_right = 16
+    panel_style.content_margin_top = 14
+    panel_style.content_margin_bottom = 14
+    panel.add_theme_stylebox_override("panel", panel_style)
+    center.add_child(panel)
+
+    var vbox := VBoxContainer.new()
+    vbox.add_theme_constant_override("separation", 8)
+    panel.add_child(vbox)
+
+    var title := Label.new()
+    title.text = "Settle a payment"
+    title.add_theme_color_override("font_color", Color(0.92, 0.78, 0.42))
+    title.add_theme_font_size_override("font_size", 16)
+    vbox.add_child(title)
+
+    pay_recipient_option = OptionButton.new()
+    vbox.add_child(_label_with("Recipient:", pay_recipient_option))
+
+    pay_amount_spin = SpinBox.new()
+    pay_amount_spin.min_value = 0
+    pay_amount_spin.max_value = 999
+    pay_amount_spin.step = 1
+    pay_amount_spin.value = 1
+    vbox.add_child(_label_with("Amount (coins):", pay_amount_spin))
+
+    pay_item_input = LineEdit.new()
+    pay_item_input.placeholder_text = "(optional — e.g. ale, tonic, hook)"
+    vbox.add_child(_label_with("Item:", pay_item_input))
+
+    pay_qty_spin = SpinBox.new()
+    pay_qty_spin.min_value = 1
+    pay_qty_spin.max_value = 99
+    pay_qty_spin.step = 1
+    pay_qty_spin.value = 1
+    vbox.add_child(_label_with("Quantity:", pay_qty_spin))
+
+    pay_take_home_check = CheckBox.new()
+    pay_take_home_check.text = "Take it home (don't consume now)"
+    vbox.add_child(pay_take_home_check)
+
+    pay_status_label = Label.new()
+    pay_status_label.text = ""
+    pay_status_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+    pay_status_label.custom_minimum_size = Vector2(320, 0)
+    pay_status_label.add_theme_color_override("font_color", Color(0.92, 0.50, 0.42))
+    pay_status_label.add_theme_font_size_override("font_size", 12)
+    vbox.add_child(pay_status_label)
+
+    var button_row := HBoxContainer.new()
+    button_row.alignment = BoxContainer.ALIGNMENT_END
+    button_row.add_theme_constant_override("separation", 8)
+    vbox.add_child(button_row)
+
+    pay_cancel_button = Button.new()
+    pay_cancel_button.text = "Cancel"
+    pay_cancel_button.pressed.connect(_close_pay_modal)
+    button_row.add_child(pay_cancel_button)
+
+    pay_confirm_button = Button.new()
+    pay_confirm_button.text = "Confirm"
+    pay_confirm_button.pressed.connect(_on_pay_confirm)
+    button_row.add_child(pay_confirm_button)
+
+
+## Helper: a horizontal row with a small label + the input control.
+## Keeps the pay modal layout uniform without hand-tuning each spacing.
+func _label_with(text: String, control: Control) -> Control:
+    var row := HBoxContainer.new()
+    row.add_theme_constant_override("separation", 8)
+    var lbl := Label.new()
+    lbl.text = text
+    lbl.add_theme_color_override("font_color", Color(0.78, 0.68, 0.50))
+    lbl.add_theme_font_size_override("font_size", 13)
+    lbl.custom_minimum_size = Vector2(120, 0)
+    row.add_child(lbl)
+    control.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    row.add_child(control)
+    return row
+
+
+func _on_pay_pressed() -> void:
+    _ensure_pay_modal_built()
+    # Repopulate the recipient list each open — huddle membership
+    # changes (NPCs come and go) so the cached list at modal-build time
+    # would go stale fast.
+    pay_modal_recipients.clear()
+    pay_recipient_option.clear()
+    for member in huddle_members:
+        if typeof(member) != TYPE_DICTIONARY:
+            continue
+        var name := str(member.get("name", ""))
+        if name.is_empty() or name == character_name:
+            continue
+        pay_modal_recipients.append(name)
+        pay_recipient_option.add_item(name)
+    if pay_modal_recipients.is_empty():
+        pay_status_label.text = "Nobody here to pay."
+    else:
+        pay_status_label.text = ""
+    pay_amount_spin.value = 1
+    pay_item_input.text = ""
+    pay_qty_spin.value = 1
+    pay_take_home_check.button_pressed = false
+    pay_modal.visible = true
+
+
+func _close_pay_modal() -> void:
+    if pay_modal != null:
+        pay_modal.visible = false
+
+
+func _on_pay_confirm() -> void:
+    if pay_modal_recipients.is_empty():
+        return
+    var idx: int = pay_recipient_option.selected
+    if idx < 0 or idx >= pay_modal_recipients.size():
+        return
+    var recipient: String = pay_modal_recipients[idx]
+    var amount := int(pay_amount_spin.value)
+    var item := pay_item_input.text.strip_edges().to_lower()
+    var qty := int(pay_qty_spin.value)
+    var consume_now := not pay_take_home_check.button_pressed
+
+    if amount < 0:
+        pay_status_label.text = "Amount cannot be negative."
+        return
+    if amount > pc_coins:
+        pay_status_label.text = "You only have %d coins." % pc_coins
+        return
+
+    var body := {
+        "recipient": recipient,
+        "amount": amount,
+        "consume_now": consume_now,
+    }
+    if item != "":
+        body["item"] = item
+        body["qty"] = qty
+    pay_status_label.text = "Sending…"
+    pay_confirm_button.disabled = true
+
+    var headers: PackedStringArray = Auth.auth_headers(true)
+    var json := JSON.stringify(body)
+    var err := http_pay.request(
+        Auth.api_base + "/api/village/pc/pay",
+        headers,
+        HTTPClient.METHOD_POST,
+        json,
+    )
+    if err != OK:
+        pay_status_label.text = "Request failed (%s)." % err
+        pay_confirm_button.disabled = false
+
+
+func _on_pay_completed(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
+    pay_confirm_button.disabled = false
+    if result != HTTPRequest.RESULT_SUCCESS:
+        pay_status_label.text = "Network error."
+        return
+    var raw := body.get_string_from_utf8()
+    var parsed = JSON.parse_string(raw)
+    if response_code < 200 or response_code >= 300:
+        var msg := "Server error %d." % response_code
+        if typeof(parsed) == TYPE_DICTIONARY:
+            msg = str(parsed.get("error", msg))
+        pay_status_label.text = msg
+        return
+    if typeof(parsed) != TYPE_DICTIONARY:
+        pay_status_label.text = "Bad response."
+        return
+    var status := str(parsed.get("result", ""))
+    if status != "ok":
+        pay_status_label.text = str(parsed.get("error", "Rejected."))
+        return
+    # Success — close the modal and re-poll /pc/me so the coin chip
+    # and inventory snapshot refresh immediately. The room_event
+    # broadcast will surface the line in the room log on its own.
+    _close_pay_modal()
+    _refresh_state()
 
 
 func _on_speak_completed(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:

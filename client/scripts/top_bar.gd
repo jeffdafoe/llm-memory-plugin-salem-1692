@@ -14,6 +14,10 @@ var username_label: Label = null
 ## mouse is hovering over so admins can place things at specific
 ## coordinates and interpret list-view "at X,Y" fallbacks.
 var cursor_tile_label: Label = null
+## Coin chip — displays the player's purse with a tooltip listing
+## inventory. Hidden until /pc/me reports an existing PC; talk panel
+## calls set_purse() each time it polls.
+var coins_label: Label = null
 var _editor_active: bool = false
 
 # Theme colors (matching login screen)
@@ -83,6 +87,20 @@ func _ready() -> void:
     cursor_tile_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
     right_box.add_child(cursor_tile_label)
 
+    # Coins chip — period-flavored "P 25" (silver pence). Hidden until
+    # the talk panel reports the player has a PC with coins. Tooltip
+    # spelled out via mouse hover handler since Label.tooltip_text only
+    # renders on a delay; for now the label-only readout is enough.
+    coins_label = Label.new()
+    coins_label.text = ""
+    coins_label.visible = false
+    coins_label.add_theme_color_override("font_color", Color(0.92, 0.78, 0.42, 1.0))
+    coins_label.add_theme_font_override("font", _font)
+    coins_label.add_theme_font_size_override("font_size", 16)
+    coins_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+    coins_label.mouse_filter = Control.MOUSE_FILTER_PASS
+    right_box.add_child(coins_label)
+
     # Username label
     username_label = Label.new()
     username_label.text = ""
@@ -149,6 +167,23 @@ func _make_button(label: String) -> Button:
 
 func set_username(name: String) -> void:
     username_label.text = name
+
+## Update the coins chip + inventory tooltip. Hidden when the player has
+## no PC yet (called with -1) or with an empty inventory + zero coins.
+## inventory_lines is a list of "Item x N" strings already formatted by
+## the caller — top bar doesn't know item display labels.
+func set_purse(coins: int, inventory_lines: Array) -> void:
+    if coins_label == null:
+        return
+    if coins < 0:
+        coins_label.visible = false
+        return
+    coins_label.text = "%d c" % coins
+    coins_label.visible = true
+    if inventory_lines.is_empty():
+        coins_label.tooltip_text = "Your purse: %d coins.\nNothing in your pack." % coins
+    else:
+        coins_label.tooltip_text = "Your purse: %d coins.\n\nIn your pack:\n  %s" % [coins, "\n  ".join(inventory_lines)]
 
 ## Update the cursor tile readout. Called from main.gd when the editor
 ## emits a cursor_tile_changed signal.

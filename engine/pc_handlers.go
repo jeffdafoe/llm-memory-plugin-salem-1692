@@ -89,6 +89,11 @@ type pcMeResponse struct {
 	CurrentHuddleID   *string            `json:"current_huddle_id,omitempty"`
 	HuddleMembers     []pcHuddleMember   `json:"huddle_members"`
 	RecentSpeech      []pcRecentSpeech   `json:"recent_speech,omitempty"`
+	// Purse and inventory — surfaced to the client so the top-bar coin
+	// chip and the pay modal can render the player's resources without
+	// a separate fetch.
+	Coins         int                `json:"coins"`
+	Inventory     []pcInventoryEntry `json:"inventory"`
 	// SpriteID is null until the player picks one. Client bootstrap uses
 	// the null state as the trigger to open the sprite picker on first
 	// login. Sprite is the inlined catalog row (sheet, frame dims,
@@ -96,6 +101,19 @@ type pcMeResponse struct {
 	// without a follow-up catalog fetch — same shape as NPC.Sprite.
 	SpriteID *string    `json:"sprite_id,omitempty"`
 	Sprite   *NPCSprite `json:"sprite,omitempty"`
+}
+
+// pcInventoryEntry is one stack of items the PC carries. display_label
+// is the human-readable name from item_kind so the UI can render
+// "Bread" instead of "bread". capabilities is included so the pay-modal
+// client can decide whether take-home is allowed for this item kind
+// without a second lookup.
+type pcInventoryEntry struct {
+	ItemKind     string   `json:"item_kind"`
+	DisplayLabel string   `json:"display_label"`
+	Quantity     int      `json:"quantity"`
+	Category     string   `json:"category,omitempty"`
+	Capabilities []string `json:"capabilities,omitempty"`
 }
 
 type pcHuddleMember struct {
@@ -143,15 +161,18 @@ func (app *App) handlePCMe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var x, y float64
+	var coins int
+	var pcActorID string
 	var charName, insideID, huddleID, structureName, homeID, homeName, spriteID sql.NullString
 	err := app.DB.QueryRow(r.Context(),
-		`SELECT pc.display_name, pc.current_x, pc.current_y,
+		`SELECT pc.id::text, pc.display_name, pc.current_x, pc.current_y,
 		        pc.inside_structure_id::text,
 		        pc.current_huddle_id::text,
 		        COALESCE(o.display_name, a.name) AS structure_name,
 		        pc.home_structure_id::text,
 		        COALESCE(ho.display_name, ha.name) AS home_name,
-		        pc.sprite_id::text
+		        pc.sprite_id::text,
+		        pc.coins
 		   FROM actor pc
 		   LEFT JOIN village_object o ON o.id = pc.inside_structure_id
 		   LEFT JOIN asset a ON a.id = o.asset_id
@@ -159,7 +180,7 @@ func (app *App) handlePCMe(w http.ResponseWriter, r *http.Request) {
 		   LEFT JOIN asset ha ON ha.id = ho.asset_id
 		  WHERE pc.login_username = $1`,
 		user.Username,
-	).Scan(&charName, &x, &y, &insideID, &huddleID, &structureName, &homeID, &homeName, &spriteID)
+	).Scan(&pcActorID, &charName, &x, &y, &insideID, &huddleID, &structureName, &homeID, &homeName, &spriteID, &coins)
 	if err == sql.ErrNoRows {
 		resp.Exists = false
 		jsonResponse(w, http.StatusOK, resp)
@@ -258,6 +279,18 @@ func (app *App) handlePCMe(w http.ResponseWriter, r *http.Request) {
 				resp.HuddleMembers = append(resp.HuddleMembers, m)
 			}
 		}
+	}
+
+	// Purse and inventory. Coins came back on the same row as
+	// position/structure to save a round-trip. Inventory is a separate
+	// query — loadPCInventoryEntries joins actor_inventory with
+	// item_kind so the client gets display labels and capabilities
+	// without a follow-up fetch. Empty inventory still returns an empty
+	// array (not nil) so JSON serializes as `[]`, not `null`.
+	resp.Coins = coins
+	resp.Inventory = app.loadPCInventoryEntries(r.Context(), pcActorID)
+	if resp.Inventory == nil {
+		resp.Inventory = []pcInventoryEntry{}
 	}
 
 	// Recent speech at the player's current conversational scope —
@@ -379,6 +412,38 @@ func (app *App) loadRecentSpeechAtStructure(ctx context.Context, structureID str
 		recent[i], recent[j] = recent[j], recent[i]
 	}
 	return recent
+}
+
+// loadPCInventoryEntries pulls the PC's inventory joined with
+// item_kind metadata so the client gets display label, category, and
+// capabilities for each stack in one fetch. Used by /pc/me to populate
+// the inventory readout the pay modal and tooltip rely on. Empty
+// inventory returns nil; the caller normalizes to an empty slice for
+// JSON's sake.
+func (app *App) loadPCInventoryEntries(ctx context.Context, actorID string) []pcInventoryEntry {
+	rows, err := app.DB.Query(ctx, `
+		SELECT ai.item_kind, ai.quantity,
+		       ik.display_label, COALESCE(ik.category, ''),
+		       COALESCE(ik.capabilities, ARRAY[]::varchar[])
+		  FROM actor_inventory ai
+		  JOIN item_kind ik ON ik.name = ai.item_kind
+		 WHERE ai.actor_id = $1
+		 ORDER BY ik.sort_order, ai.item_kind
+	`, actorID)
+	if err != nil {
+		log.Printf("loadPCInventoryEntries: %v", err)
+		return nil
+	}
+	defer rows.Close()
+	var out []pcInventoryEntry
+	for rows.Next() {
+		var entry pcInventoryEntry
+		if err := rows.Scan(&entry.ItemKind, &entry.Quantity, &entry.DisplayLabel, &entry.Category, &entry.Capabilities); err != nil {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
 }
 
 // handlePCCreate — first-time PC creation. Sets character_name and
@@ -1196,4 +1261,137 @@ func (app *App) handlePCSpeak(w http.ResponseWriter, r *http.Request) {
 	app.cascadeOriginFireChronicler(fmt.Sprintf("pc-spoke (%s)", charName.String), structureID.String)
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// pcPayRequest mirrors the fields the NPC pay tool accepts so the
+// client → server contract is symmetric. Recipient is the merchant or
+// NPC being paid; amount is the negotiated total in coins (not
+// per-unit). Optional item/qty/consume_now/for behave exactly as in
+// the NPC tool.
+type pcPayRequest struct {
+	Recipient  string `json:"recipient"`
+	Amount     int    `json:"amount"`
+	ForText    string `json:"for,omitempty"`
+	Item       string `json:"item,omitempty"`
+	Qty        int    `json:"qty,omitempty"`
+	ConsumeNow *bool  `json:"consume_now,omitempty"`
+}
+
+type pcPayResponse struct {
+	Result        string `json:"result"`
+	Error         string `json:"error,omitempty"`
+	BuyerNewCoins int    `json:"buyer_new_coins"`
+	ItemTransferred bool `json:"item_transferred,omitempty"`
+	ItemConsumed    bool `json:"item_consumed,omitempty"`
+}
+
+// handlePCPay routes a player's pay request through the same
+// executePay path NPCs use. The PC's actor row carries the coins
+// column; on success the buyer's coins decrement, the recipient's
+// increment, and any optional item/consumption side-effect lands the
+// same way it would for an NPC buyer. Audit row written here (mirrors
+// the NPC dispatch in executeAgentCommit), and the standard npc_paid
+// + room_event broadcasts fan out so the room view shows the
+// transaction.
+func (app *App) handlePCPay(w http.ResponseWriter, r *http.Request) {
+	user := getUserFromContext(r.Context())
+	if user == nil {
+		jsonError(w, "Not authenticated", http.StatusUnauthorized)
+		return
+	}
+
+	var req pcPayRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	// Look up the PC's actor row. We need id, display_name, coins, and
+	// the position/needs fields executePay reads on its agentNPCRow
+	// argument (it reuses the same struct for buyers regardless of
+	// PC/NPC). Pull everything in one shot.
+	var actor agentNPCRow
+	err := app.DB.QueryRow(r.Context(),
+		`SELECT id::text, display_name, coins, hunger, thirst, tiredness,
+		        current_x, current_y, inside_structure_id
+		   FROM actor WHERE login_username = $1`,
+		user.Username,
+	).Scan(&actor.ID, &actor.DisplayName, &actor.Coins,
+		&actor.Hunger, &actor.Thirst, &actor.Tiredness,
+		&actor.CurrentX, &actor.CurrentY, &actor.InsideStructureID,
+	)
+	if err == sql.ErrNoRows {
+		jsonError(w, "No character", http.StatusBadRequest)
+		return
+	}
+	if err != nil {
+		log.Printf("pc/pay actor lookup: %v", err)
+		jsonError(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+
+	consumeNow := true
+	if req.ConsumeNow != nil {
+		consumeNow = *req.ConsumeNow
+	}
+
+	pr := app.executePay(r.Context(), &actor, payRequest{
+		RecipientName: req.Recipient,
+		Amount:        req.Amount,
+		ForText:       req.ForText,
+		Item:          req.Item,
+		Qty:           req.Qty,
+		ConsumeNow:    consumeNow,
+	})
+
+	// Mirror executeAgentCommit's audit + room_event broadcast for the
+	// pay path so PC pays surface in the talk panel and recent-events
+	// readbacks the same way NPC pays do. Failed pays still get an
+	// audit row so the trail is complete; rejection messages are
+	// returned to the client for UI feedback.
+	payload := map[string]interface{}{
+		"recipient":   req.Recipient,
+		"amount":      req.Amount,
+		"for":         req.ForText,
+		"item":        req.Item,
+		"qty":         req.Qty,
+		"consume_now": consumeNow,
+	}
+	if actor.InsideStructureID.Valid {
+		payload["structure_id"] = actor.InsideStructureID.String
+	}
+	payloadJSON, _ := json.Marshal(payload)
+	if _, err := app.DB.Exec(r.Context(),
+		`INSERT INTO agent_action_log (actor_id, speaker_name, source, action_type, payload, result, error, huddle_id)
+		 VALUES ($1, $2, 'player', 'pay', $3, $4, NULLIF($5, ''),
+		         (SELECT current_huddle_id FROM actor WHERE id = $1))`,
+		actor.ID, actor.DisplayName, payloadJSON, pr.Result, pr.Err,
+	); err != nil {
+		log.Printf("pc/pay audit insert: %v", err)
+	}
+
+	if pr.Result == "ok" && actor.InsideStructureID.Valid {
+		text := narratePay(actor.DisplayName, payload)
+		if text != "" {
+			app.Hub.Broadcast(WorldEvent{
+				Type: "room_event",
+				Data: map[string]interface{}{
+					"actor_id":     actor.ID,
+					"actor_name":   actor.DisplayName,
+					"kind":         "pay",
+					"text":         text,
+					"structure_id": actor.InsideStructureID.String,
+					"at":           time.Now().UTC().Format(time.RFC3339),
+				},
+			})
+		}
+	}
+
+	jsonResponse(w, http.StatusOK, pcPayResponse{
+		Result:          pr.Result,
+		Error:           pr.Err,
+		BuyerNewCoins:   pr.BuyerNewCoins,
+		ItemTransferred: pr.ItemTransferred,
+		ItemConsumed:    pr.ItemConsumed,
+	})
 }
