@@ -344,6 +344,7 @@ func main() {
 	// Agents
 	authed("GET /api/village/agents", app.handleListVillageAgents)
 	authed("POST /api/village/agents/{id}/move", app.handleMoveAgent)
+	authed("POST /api/village/agents/{id}/trigger-tick", app.handleTriggerAgentTick)
 
 	// Placed objects
 	authed("GET /api/village/objects", app.handleListVillageObjects)
