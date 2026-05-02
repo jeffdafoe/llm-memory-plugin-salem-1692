@@ -98,6 +98,21 @@ type App struct {
 	SceneTickedActors   map[string]sceneTickEntry
 	SceneTickedActorsMu sync.Mutex
 
+	// AgentTickInFlight prevents a second tick from firing on an NPC
+	// while their current tick is still running. Two cascades aimed at
+	// the same actor (e.g. a PC-speak cascade running John's LLM loop
+	// while a chronicler overseer-attend-to fires a fresh tick on him)
+	// previously produced duplicate LLM output — both calls completed,
+	// both wrote action_log rows, both ran tool side effects. This map
+	// gates the second one out via tryClaimAgentTick.
+	//
+	// Set is keyed by actor_id. Values are intentionally `bool` so the
+	// presence of the key is the gate; lookups don't read the value.
+	// Released by releaseAgentTick at the end of runAgentTick (defer)
+	// so a panic in the LLM loop doesn't strand the gate.
+	AgentTickInFlight   map[string]bool
+	AgentTickInFlightMu sync.Mutex
+
 	// ChroniclerDispatchQueue buffers agent-NPC shift boundary events
 	// between the worker scheduler (enqueue site) and the chronicler
 	// (drain site). Drained at perception build time so any chronicler
@@ -179,6 +194,40 @@ func (app *App) claimSceneTick(sceneID, actorID, triggerActorID string) (bool, s
 	return true, ""
 }
 
+// tryClaimAgentTick reserves the in-flight gate for actorID. Returns
+// true when the caller may proceed with a tick, false when another
+// goroutine is already running one for this actor and the caller
+// should drop. Always paired with releaseAgentTick on the success
+// path (typically via defer in runAgentTick).
+//
+// Why: two cascades aimed at the same NPC (PC-speak + chronicler
+// attend-to in close succession, or two separate cascades within the
+// dedup-bypass window) previously produced concurrent LLM calls,
+// duplicate action_log rows, and double tool side effects (e.g. two
+// serve calls back-to-back, decrementing inventory twice for one
+// observed event). The scene-level dedup at claimSceneTick gates
+// per-(sceneID, actorID) and so doesn't catch cross-scene collisions.
+// This gate is per-actorID across all scenes.
+func (app *App) tryClaimAgentTick(actorID string) bool {
+	app.AgentTickInFlightMu.Lock()
+	defer app.AgentTickInFlightMu.Unlock()
+	if app.AgentTickInFlight[actorID] {
+		return false
+	}
+	app.AgentTickInFlight[actorID] = true
+	return true
+}
+
+// releaseAgentTick clears the in-flight gate for actorID. Idempotent
+// against accidental double-release (delete on a missing key is a
+// no-op). Always called from the goroutine that successfully claimed
+// the gate, typically via defer at the top of runAgentTick.
+func (app *App) releaseAgentTick(actorID string) {
+	app.AgentTickInFlightMu.Lock()
+	defer app.AgentTickInFlightMu.Unlock()
+	delete(app.AgentTickInFlight, actorID)
+}
+
 // runSceneTickCleanup evicts stale entries from SceneTickedActors so
 // the map doesn't grow unbounded. Runs every 5 minutes; entries older
 // than sceneTickStaleness are dropped. Cheap — bounded by the number
@@ -240,6 +289,9 @@ func main() {
 		// Per-(sceneID, actorID) dedup map. See SceneTickedActors comment
 		// on the App struct for the why.
 		SceneTickedActors: make(map[string]sceneTickEntry),
+		// Per-actor in-flight tick gate. See AgentTickInFlight comment
+		// on the App struct for the why.
+		AgentTickInFlight: make(map[string]bool),
 		// Queue for agent-NPC shift boundary events (chronicler-dispatch
 		// redesign). Empty at startup; populated by the worker scheduler
 		// and drained by chronicler fires.

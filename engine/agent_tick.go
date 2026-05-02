@@ -359,6 +359,23 @@ func (app *App) stampAgentTick(ctx context.Context, r *agentNPCRow) {
 // to decide whether this is "the same conversational partner I just
 // reacted to" (drop) or "someone new" (allow).
 func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, force bool, sceneID, triggerActorID string) {
+	// In-flight gate (ZBBS-100). Drops cleanly when this actor is
+	// already running an LLM tick from a prior cascade — the previous
+	// tick will commit whatever it commits and we don't want a parallel
+	// goroutine producing duplicate output. Caught the live case of a
+	// PC-speak cascade and an overseer-attend-to firing on the same
+	// actor seconds apart, both bypassing cost guard via force=true,
+	// both producing identical "served stew" act rows because the
+	// model saw the same room twice.
+	//
+	// Checked BEFORE scene-dedup so a dropped tick doesn't consume a
+	// reaction-cap slot in the SceneTickedActors map.
+	if !app.tryClaimAgentTick(npcID) {
+		log.Printf("event-tick %s (%s): skipped — prior tick still in flight", npcID, reason)
+		return
+	}
+	defer app.releaseAgentTick(npcID)
+
 	// Scene-level dedup. See SceneTickedActors / claimSceneTick comments
 	// for the policy: same triggering actor in the same scene drops, and
 	// a hard cap on reactions per (scene, actor) backstops cost.
