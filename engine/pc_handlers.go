@@ -981,10 +981,11 @@ func (app *App) handlePCSay(w http.ResponseWriter, r *http.Request) {
 		app.Hub.Broadcast(WorldEvent{
 			Type: "npc_spoke",
 			Data: map[string]interface{}{
-				"name": charName.String,
-				"text": req.Text,
-				"at":   time.Now().UTC().Format(time.RFC3339),
-				"kind": "pc",
+				"npc_id": actorID,
+				"name":   charName.String,
+				"text":   req.Text,
+				"at":     time.Now().UTC().Format(time.RFC3339),
+				"kind":   "pc",
 			},
 		})
 	}
@@ -1078,10 +1079,11 @@ func (app *App) handlePCSpeak(w http.ResponseWriter, r *http.Request) {
 	app.Hub.Broadcast(WorldEvent{
 		Type: "npc_spoke",
 		Data: map[string]interface{}{
-			"name": charName.String,
-			"text": req.Text,
-			"at":   time.Now().UTC().Format(time.RFC3339),
-			"kind": "pc",
+			"npc_id": actorID,
+			"name":   charName.String,
+			"text":   req.Text,
+			"at":     time.Now().UTC().Format(time.RFC3339),
+			"kind":   "pc",
 		},
 	})
 

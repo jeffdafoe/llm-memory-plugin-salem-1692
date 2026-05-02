@@ -589,6 +589,17 @@ func force_open_to_village_tab() -> void:
     _set_active_tab(TAB_VILLAGE)
 
 
+## Auto-open hook for knock-success (main.gd's pc/move response handler).
+## _refresh_state runs an HTTPRequest, so huddle_members isn't populated
+## yet at the moment we want to open. Defer to the next _on_me_completed
+## by setting a one-shot flag — _apply_pc_state honors it after wiring
+## state from the response.
+var _open_after_next_refresh := false
+
+func force_open_after_refresh() -> void:
+    _open_after_next_refresh = true
+
+
 func _build_input(parent: Control) -> void:
     var row := HBoxContainer.new()
     row.custom_minimum_size = Vector2(0, 28)
@@ -776,6 +787,14 @@ func _apply_pc_state(data: Dictionary) -> void:
     _update_launcher_text()
     _update_visibility_from_state()
     _maybe_auto_attention_for_first_encounter()
+
+    # Knock-success auto-open: main.gd flagged us to open the sheet on
+    # the next /pc/me response. Honor only when there's actually someone
+    # to talk to (huddle non-empty); otherwise the open() guard would
+    # no-op and we'd still want to try again on the next refresh.
+    if _open_after_next_refresh and not huddle_members.is_empty():
+        _open_after_next_refresh = false
+        open()
 
 
 # When the player's inside_structure_id changes (or first arrives), clear
@@ -965,10 +984,11 @@ func _on_speak_completed(result: int, response_code: int, _headers: PackedString
         ])
 
 
-func _on_npc_spoke(speaker_name: String, text: String, kind: String = "") -> void:
+func _on_npc_spoke(_npc_id: String, speaker_name: String, text: String, kind: String = "") -> void:
     # WS speech kinds are "npc" | "player"; normalize to the panel's
     # speech_npc / speech_player kinds so render logic is uniform with
-    # the backload entries.
+    # the backload entries. npc_id is unused here — speech bubbles
+    # consume it instead.
     var panel_kind := "speech_player" if kind == "player" else "speech_npc"
     _append_log_line(speaker_name, text, panel_kind)
 

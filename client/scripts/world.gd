@@ -15,6 +15,9 @@ signal npc_list_changed
 const MapGenerator = preload("res://scripts/map_generator.gd")
 const WangLookup = preload("res://scripts/wang_lookup.gd")
 const TerrainRendererScript = preload("res://scripts/terrain_renderer.gd")
+const SpeechBubbleScript = preload("res://scripts/speech_bubble.gd")
+
+const SPEECH_BUBBLE_NODE_NAME := "SpeechBubble"
 
 var terrain_renderer: Node2D = null
 @onready var objects_node: Node2D = $Objects
@@ -1774,18 +1777,43 @@ func apply_object_loiter_offset_changed(data: Dictionary) -> void:
 ## so the selection panel re-renders its tag chips if this object is open.
 signal object_tags_updated(object_id: String, tags: Array)
 
-## WS event — an NPC (or PC) spoke. Carries name/text/kind so the
-## talk panel and (eventually) speech bubble can render. Emitted
-## by event_client when an `npc_spoke` event lands.
-signal npc_spoke(name: String, text: String, kind: String)
+## WS event — an NPC (or PC) spoke. Carries id/name/text/kind so the
+## talk panel and the speech bubble manager can both subscribe. id is the
+## actor.id (NPC or PC) so the bubble manager can attach a bubble Node as
+## a child of the right container in placed_npcs / placed_pcs. Emitted by
+## event_client when an `npc_spoke` event lands.
+signal npc_spoke(npc_id: String, name: String, text: String, kind: String)
 
 func apply_npc_spoke(data: Dictionary) -> void:
+    var npc_id: String = str(data.get("npc_id", ""))
     var name: String = str(data.get("name", ""))
     var text: String = str(data.get("text", ""))
     var kind: String = str(data.get("kind", "npc"))
     if name == "" or text == "":
         return
-    npc_spoke.emit(name, text, kind)
+    _spawn_speech_bubble(npc_id, text)
+    npc_spoke.emit(npc_id, name, text, kind)
+
+
+## Spawn a SpeechBubble child on the speaker's container (NPC or PC).
+## Replaces an existing bubble on the same speaker — same NPC speaking
+## twice in quick succession should show the latest line, not stack.
+## No-op when the speaker isn't currently rendered (off-village PC,
+## NPC not yet bootstrapped) — the speech still surfaces in the talk
+## panel's room log via the npc_spoke signal.
+func _spawn_speech_bubble(npc_id: String, text: String) -> void:
+    if npc_id == "" or text == "":
+        return
+    var container: Node2D = placed_npcs.get(npc_id, null)
+    if container == null:
+        return
+    var existing: Node = container.get_node_or_null(SPEECH_BUBBLE_NODE_NAME)
+    if existing != null:
+        existing.queue_free()
+    var bubble: Node2D = SpeechBubbleScript.new()
+    bubble.name = SPEECH_BUBBLE_NODE_NAME
+    container.add_child(bubble)
+    bubble.setup(text)
 
 ## WS event — generic narration-worthy thing happened in a room.
 ## Covers act/departure/(future arrival, pay, ...). Subscribers filter
