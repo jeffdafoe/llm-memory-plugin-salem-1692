@@ -621,7 +621,7 @@ func agentToolSpec() []agentToolDef {
 		},
 		{
 			Name:        "chore",
-			Description: "Run a quick errand by category. Engine picks the nearest matching place and walks you to it.",
+			Description: "Run a quick errand by category. Engine picks the nearest matching place and walks you to it. The chore itself is just travel — what you do once you arrive is up to your next decision. Examples: chore(well) walks you to the nearest well; once there you can drink (your thirst drops on arrival automatically) and/or call gather to fill a pail of water to take home. chore(tavern) walks you to a tavern but doesn't order anything — speak to a tavernkeeper or pay them to actually consume.",
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -733,6 +733,19 @@ func agentToolSpec() []agentToolDef {
 					},
 				},
 				"required": []string{"item"},
+			},
+		},
+		{
+			Name:        "gather",
+			Description: "Take a portable item from a source you're loitering at — fill a pail of water at the well, pluck berries at an orchard. You must already be at the source (use chore first to walk there). Sources today: " + gatherToolSourceLine() + ". The product goes into your inventory; you can carry it home, serve it to customers, or consume it later. Bounded sources (orchards) deplete and refresh over time; unbounded sources (wells) never run dry.",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"qty": map[string]interface{}{
+						"type":        "integer",
+						"description": "How many units to take. Defaults to 1.",
+					},
+				},
 			},
 		},
 		{
@@ -1796,6 +1809,37 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 						"at":           time.Now().UTC().Format(time.RFC3339),
 					},
 				})
+			}
+		}
+
+	case "gather":
+		qty := coerceIntInput(tc.Input["qty"])
+		if qty == 0 {
+			qty = coerceIntInput(tc.Input["quantity"])
+		}
+		gr := app.executeGather(ctx, r, qty)
+		result = gr.Result
+		errStr = gr.Err
+		// Room narration: wells, orchards etc. are typically outdoors
+		// (entry_policy='none' loiter targets), so structure_id won't
+		// be set — the line still goes out as a public observable for
+		// any client that subscribes to broader event channels. If the
+		// gatherer is inside a structure (rare for current sources),
+		// the broadcast scopes to that room.
+		if result == "ok" {
+			text := narrateGather(r.DisplayName, gr.Item, gr.Qty, gr.SourceName)
+			if text != "" {
+				data := map[string]interface{}{
+					"actor_id":   r.ID,
+					"actor_name": r.DisplayName,
+					"kind":       "gather",
+					"text":       text,
+					"at":         time.Now().UTC().Format(time.RFC3339),
+				}
+				if r.InsideStructureID.Valid {
+					data["structure_id"] = r.InsideStructureID.String
+				}
+				app.Hub.Broadcast(WorldEvent{Type: "room_event", Data: data})
 			}
 		}
 

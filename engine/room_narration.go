@@ -147,6 +147,37 @@ func narrateConsume(actorName string, payload map[string]interface{}, itemAttrib
 	return fmt.Sprintf("%s %s %s.", actorName, verb, itemPhrase)
 }
 
+// narrateGather builds the room line for a successful gather commit.
+//
+// Examples:
+//   "John Ellis fills a pail of water at the Well."
+//   "John Ellis takes 2 berries at the Orchard."
+func narrateGather(actorName, item string, qty int, sourceName string) string {
+	if item == "" {
+		return ""
+	}
+	if sourceName == "" {
+		sourceName = "the source"
+	}
+	switch item {
+	case "water":
+		// Pail is the right verb-image for water from a well; sticking
+		// to one phrasing keeps observers oriented.
+		if qty <= 1 {
+			return fmt.Sprintf("%s fills a pail of water at the %s.", actorName, sourceName)
+		}
+		return fmt.Sprintf("%s fills %d pails of water at the %s.", actorName, qty, sourceName)
+	default:
+		// Generic "takes" form for future gatherables (berries, fish,
+		// etc.) until each gets a tailored verb.
+		itemPhrase := item
+		if qty > 1 {
+			itemPhrase = fmt.Sprintf("%d %s", qty, pluralize(item, qty))
+		}
+		return fmt.Sprintf("%s takes %s at the %s.", actorName, itemPhrase, sourceName)
+	}
+}
+
 // narrateSummon builds the room line for a successful summon commit.
 //
 //   summonerName     — the actor doing the summoning
