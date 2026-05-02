@@ -288,6 +288,7 @@ func _build_ui() -> void:
     editor_panel.npc_work_assign_requested.connect(_on_npc_work_assign_requested)
     editor_panel.npc_run_cycle_requested.connect(_on_npc_run_cycle_requested)
     editor_panel.npc_reset_needs_requested.connect(_on_npc_reset_needs_requested)
+    editor_panel.npc_heal_requested.connect(_on_npc_heal_requested)
     editor_panel.npc_go_home_requested.connect(_on_npc_go_home_requested)
     editor_panel.npc_go_to_work_requested.connect(_on_npc_go_to_work_requested)
     editor_panel.npc_select_requested.connect(_on_npc_select_requested)
@@ -491,6 +492,17 @@ func _on_npc_reset_needs_requested() -> void:
     var npc_id: String = editor.selected_npc.get_meta("npc_id", "")
     if npc_id == "":
         return
+    _post_reset_needs(npc_id)
+
+## Per-row heal click from the villager browser. Same endpoint as the
+## selection panel's "Top up needs" button — kept separate so the row
+## click can carry its own npc_id without touching selection state.
+func _on_npc_heal_requested(npc_id: String) -> void:
+    if npc_id == "":
+        return
+    _post_reset_needs(npc_id)
+
+func _post_reset_needs(npc_id: String) -> void:
     var http := HTTPRequest.new()
     http.accept_gzip = false
     add_child(http)
