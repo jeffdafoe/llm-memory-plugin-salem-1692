@@ -388,6 +388,23 @@ func (app *App) applyArrival(npcID string) {
 		x, y := end.X, end.Y
 		app.recordVillageEvent(ctx, villageEventArrival, text, npcID, insideID.String, &x, &y)
 
+		// Parallel room_event so the talk panel's room log shows the
+		// arrival narration alongside speech and acts. Symmetric with
+		// the departure room_event the agent move_to commit emits in
+		// executeAgentCommit. Without this, a PC inside the tavern
+		// watches villagers walk in with no on-screen acknowledgement.
+		app.Hub.Broadcast(WorldEvent{
+			Type: "room_event",
+			Data: map[string]interface{}{
+				"actor_id":     npcID,
+				"actor_name":   displayName,
+				"kind":         "arrival",
+				"text":         text,
+				"structure_id": insideID.String,
+				"at":           time.Now().UTC().Format(time.RFC3339),
+			},
+		})
+
 		if arriverIsAgent {
 			// Cascade origin (MEM-121): a fresh scene UUID for the
 			// arrival. Walks finish seconds-to-minutes of game time
