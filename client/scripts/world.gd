@@ -513,6 +513,34 @@ func add_npc_from_broadcast(data: Dictionary) -> void:
     else:
         _download_npc_sheet(sheet_path)
 
+## Handle a pc_appeared broadcast (M6.7). Same payload shape as
+## npc_created — the engine's broadcastPCAppeared inlines the sprite,
+## position, facing, and inside flag so the client can render in one
+## hop. Branches:
+##
+##   - PC already in placed_npcs (sprite swap or re-broadcast): defer
+##     to apply_npc_sprite_change. Position is server-canonical via
+##     /api/village/npcs and pc_walk_started events; we don't move
+##     them here.
+##   - PC not yet rendered (first appearance, or this client connected
+##     after the PC entered the world): defer to add_npc_from_broadcast,
+##     which builds the AnimatedSprite2D from the same payload that
+##     drives NPC rendering.
+##
+## Single dispatch point so future PC events (needs, sprite swaps, etc.)
+## that share the broadcast shape can route through here without a new
+## handler.
+func apply_pc_appeared(data: Dictionary) -> void:
+    if not (data is Dictionary):
+        return
+    var pc_id: String = data.get("id", "")
+    if pc_id == "":
+        return
+    if placed_npcs.has(pc_id):
+        apply_npc_sprite_change(data)
+        return
+    add_npc_from_broadcast(data)
+
 func _on_npc_sheet_downloaded(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest, sheet_path: String) -> void:
     http.queue_free()
     if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:

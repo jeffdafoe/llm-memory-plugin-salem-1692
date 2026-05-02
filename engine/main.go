@@ -373,6 +373,8 @@ func main() {
 	// Player character endpoints (M6.7)
 	authed("POST /api/village/pc/me", app.handlePCMe)
 	authed("POST /api/village/pc/create", app.handlePCCreate)
+	authed("POST /api/village/pc/sprite", app.handlePCSprite)
+	authed("POST /api/village/pc/move", app.handlePCMove)
 	authed("POST /api/village/pc/say", app.handlePCSay)
 	authed("POST /api/village/pc/speak", app.handlePCSpeak)
 	authed("GET /api/village/object-tags", app.handleListObjectTags)

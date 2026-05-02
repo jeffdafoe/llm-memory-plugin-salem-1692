@@ -1,13 +1,25 @@
 extends Control
-## Modal NPC sprite picker — opens over the editor when an admin wants to
-## change which sprite an existing villager renders as. Fetches the same
-## /api/village/npc-sprites catalog the placement palette uses, lays out
-## thumbnails in a scrollable grid, and emits sprite_selected with the
-## chosen sprite_id. The caller (main.gd) PATCHes the NPC and the WS
-## broadcast handles the visual swap on every connected client.
+## Modal sprite picker — two modes:
+##   - NPC mode (admin): swap an existing villager's sprite from the
+##     editor. Caller PATCHes /api/village/npcs/{id}/sprite, WS broadcast
+##     handles the visual swap.
+##   - PC mode (player): pick the player's own sprite at first login or
+##     change it later. Caller POSTs /api/village/pc/create (first time)
+##     or /api/village/pc/sprite (subsequent), WS broadcast handles the
+##     visual swap.
+##
+## Both modes share the catalog grid + selection UI; the difference is
+## which signal fires and which title/hint copy renders. show_for_npc()
+## fires sprite_selected(npc_id, sprite_id); show_for_pc() fires
+## pc_sprite_selected(sprite_id).
 
 signal sprite_selected(npc_id: String, sprite_id: String)
+signal pc_sprite_selected(sprite_id: String)
 signal closed
+
+# Mode constants — tracked so _on_item_clicked emits the right signal.
+const MODE_NPC := 0
+const MODE_PC := 1
 
 const COLOR_BG = Color(0.05, 0.03, 0.02, 0.7)
 const COLOR_PANEL_BG = Color(0.12, 0.09, 0.07, 0.98)
@@ -35,6 +47,8 @@ var _npc_id: String = ""
 var _current_sprite_id: String = ""
 var _sprites_loaded: bool = false
 var _sprites: Array = []
+# Which signal to fire on click — set by show_for_npc / show_for_pc.
+var _mode: int = MODE_NPC
 
 func _ready() -> void:
     _font = load("res://assets/fonts/IMFellEnglish-Regular.ttf")
@@ -120,8 +134,31 @@ func _input(event: InputEvent) -> void:
 ## currently selected sprite in the grid so the admin can see what's
 ## already in use. Lazily fetches the catalog on first open.
 func show_for_npc(npc_id: String, current_sprite_id: String) -> void:
+    _mode = MODE_NPC
     _npc_id = npc_id
     _current_sprite_id = current_sprite_id
+    _title.text = "Change Villager Sprite"
+    _hint.text = "Click a sprite to swap. Esc or click outside to cancel."
+    visible = true
+    if _sprites_loaded:
+        _rebuild_grid()
+    else:
+        _load_sprites()
+
+## Open the picker for the logged-in player. current_sprite_id may be
+## empty on first login (no sprite picked yet). The hint copy nudges the
+## player toward picking one — there's no "cancel" UX in PC mode at the
+## bootstrap (the player can't enter the world without a sprite), but
+## Esc still closes for change-sprite reuse later.
+func show_for_pc(current_sprite_id: String) -> void:
+    _mode = MODE_PC
+    _npc_id = ""
+    _current_sprite_id = current_sprite_id
+    _title.text = "Choose Your Character"
+    if current_sprite_id == "":
+        _hint.text = "Pick a sprite to enter the village."
+    else:
+        _hint.text = "Click a sprite to change. Esc or click outside to cancel."
     visible = true
     if _sprites_loaded:
         _rebuild_grid()
@@ -229,11 +266,19 @@ func _add_item(sprite: Dictionary, sheet: Texture2D) -> void:
     _grid.add_child(item)
 
 func _on_item_clicked(sprite_id: String) -> void:
-    if sprite_id == "" or _npc_id == "":
+    if sprite_id == "":
         return
-    # Re-clicking the current sprite is a no-op close — admin signaled "no change."
+    # NPC mode requires the npc_id to route the PATCH; PC mode uses the
+    # session, no id needed.
+    if _mode == MODE_NPC and _npc_id == "":
+        return
+    # Re-clicking the current sprite is a no-op close — caller signaled
+    # "no change." Same for both modes.
     if sprite_id == _current_sprite_id:
         _close()
         return
-    sprite_selected.emit(_npc_id, sprite_id)
+    if _mode == MODE_PC:
+        pc_sprite_selected.emit(sprite_id)
+    else:
+        sprite_selected.emit(_npc_id, sprite_id)
     _close()

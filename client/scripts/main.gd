@@ -31,6 +31,27 @@ var village_ticker: PanelContainer = null
 var login_screen: Control = null
 var login_layer: CanvasLayer = null
 
+# PC bootstrap — once we've decided whether the player needs to pick a
+# sprite at this login, we don't want to redo the check on every signal
+# fire from Auth (auth_ready + logged_in both run on a single verify).
+# _pc_bootstrap_done flips after the first /pc/me lands.
+var _pc_bootstrap_done: bool = false
+var _pc_exists: bool = false
+var _pc_http_me: HTTPRequest = null
+var _pc_http_save: HTTPRequest = null
+
+# Click-to-walk state. Camera owns left-click pan in play mode, so the
+# walk handler can't simply consume the press — it would steal the pan
+# gesture. Instead: arm a "walk pending" flag on press, clear it on
+# motion past a small threshold (the user was panning), and fire the
+# walk on release if the flag's still set (the user clicked without
+# dragging). Threshold matches editor.gd's existing _drag_threshold so
+# the click feel is uniform.
+const _PC_CLICK_DRAG_THRESHOLD: float = 10.0
+var _pc_walk_pending: bool = false
+var _pc_walk_press_screen: Vector2 = Vector2.ZERO
+var _pc_http_move: HTTPRequest = null
+
 func _ready() -> void:
     # Always generate terrain — it's visible behind the login screen
     world.build_terrain()
@@ -106,6 +127,14 @@ func _on_authenticated() -> void:
     # re-pull the saved terrain — covers the case where the boot-time
     # _load_terrain ran before the user authenticated.
     _flush_unsaved_terrain_or_reload()
+
+    # PC bootstrap (M6.7): check whether the player has a sprite assigned.
+    # If not, pop the sprite picker so they enter the world with a chosen
+    # character. Guarded so the duplicate _on_authenticated fires (auth_ready
+    # + logged_in both signal on a single verify) don't double-trigger.
+    if not _pc_bootstrap_done:
+        _pc_bootstrap_done = true
+        _bootstrap_pc()
 
     # Load objects now that we're authenticated. Guard against the duplicate
     # connect — _on_authenticated runs twice on a single verify (auth_ready
@@ -217,12 +246,15 @@ func _build_ui() -> void:
 
     # NPC sprite picker — modal overlay above the editor. Same layer as the
     # asset popup; ownership of camera/editor input flags handled symmetrically.
+    # Doubles as the PC sprite picker via show_for_pc — see pc_sprite_selected
+    # signal wired below.
     npc_sprite_picker = Control.new()
     npc_sprite_picker.set_script(NPCSpritePickerScript)
     npc_sprite_picker.world = world
     config_layer.add_child(npc_sprite_picker)
     npc_sprite_picker.visible = false
     npc_sprite_picker.sprite_selected.connect(_on_npc_sprite_picker_selected)
+    npc_sprite_picker.pc_sprite_selected.connect(_on_pc_sprite_picker_selected)
     npc_sprite_picker.closed.connect(func():
         camera.modal_open = false
         editor.popup_open = false
@@ -576,6 +608,169 @@ func _on_npc_sprite_picker_selected(npc_id: String, sprite_id: String) -> void:
     var payload: String = JSON.stringify({"sprite_id": sprite_id})
     http.request(Auth.api_base + "/api/village/npcs/" + npc_id + "/sprite",
         headers, HTTPClient.METHOD_PATCH, payload)
+
+## PC bootstrap (M6.7): kick off /pc/me. The response either tells us
+## the PC has a sprite (nothing to do) or that they need to pick one
+## (open the picker in PC mode). _pc_http_me lives on this node so the
+## response handler closes over the right reference.
+func _bootstrap_pc() -> void:
+    if _pc_http_me == null:
+        _pc_http_me = HTTPRequest.new()
+        _pc_http_me.accept_gzip = false
+        add_child(_pc_http_me)
+        _pc_http_me.request_completed.connect(_on_pc_me_completed)
+    var headers := Auth.auth_headers()
+    var err := _pc_http_me.request(Auth.api_base + "/api/village/pc/me",
+        headers, HTTPClient.METHOD_POST, "")
+    if err != OK:
+        push_warning("PC bootstrap /pc/me request failed: %s" % err)
+
+## /pc/me response. Branch on whether the PC exists at all and whether
+## a sprite has been chosen. Either gap → open the picker. The
+## picker's pc_sprite_selected signal drives the right save call
+## (create vs sprite-only) based on _pc_exists.
+func _on_pc_me_completed(result: int, code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
+    if not Auth.check_response(code):
+        return
+    if result != HTTPRequest.RESULT_SUCCESS or code < 200 or code >= 300:
+        push_warning("PC bootstrap /pc/me failed: code=%s" % code)
+        return
+    var data = JSON.parse_string(body.get_string_from_utf8())
+    if typeof(data) != TYPE_DICTIONARY:
+        return
+    _pc_exists = bool(data.get("exists", false))
+    var current_sprite_id := str(data.get("sprite_id", ""))
+    if current_sprite_id != "":
+        # PC already has a sprite — nothing to bootstrap. They'll see
+        # themselves on the map (A2) and can change the sprite later via
+        # a future settings affordance.
+        return
+    if npc_sprite_picker == null:
+        # Picker hasn't been instantiated yet (UI build raced ahead of
+        # bootstrap). Defer until the picker exists. In practice
+        # _build_ui runs synchronously before _bootstrap_pc, so this is
+        # a defensive guard rather than an expected branch.
+        return
+    npc_sprite_picker.show_for_pc(current_sprite_id)
+    camera.modal_open = true
+    editor.popup_open = true
+
+## PC mode picker emitted a selection. Branch on _pc_exists:
+##   - false: POST /pc/create with character_name + sprite_id (one-shot
+##            creation; default character_name to the auth username
+##            until a name-input UI lands).
+##   - true:  POST /pc/sprite with just sprite_id.
+## Either way, the WS broadcast (pc_sprite_changed) drives the visual
+## update on every connected client once A2 wires rendering. After the
+## save completes, re-fetch /pc/me so any local PC state we cache is
+## current.
+func _on_pc_sprite_picker_selected(sprite_id: String) -> void:
+    if sprite_id == "":
+        return
+    if _pc_http_save == null:
+        _pc_http_save = HTTPRequest.new()
+        _pc_http_save.accept_gzip = false
+        add_child(_pc_http_save)
+        _pc_http_save.request_completed.connect(_on_pc_save_completed)
+    var headers := Auth.auth_headers()
+    var url: String
+    var payload: String
+    if _pc_exists:
+        url = Auth.api_base + "/api/village/pc/sprite"
+        payload = JSON.stringify({"sprite_id": sprite_id})
+    else:
+        url = Auth.api_base + "/api/village/pc/create"
+        payload = JSON.stringify({
+            "character_name": Auth.username,
+            "sprite_id": sprite_id,
+        })
+    var err := _pc_http_save.request(url, headers, HTTPClient.METHOD_POST, payload)
+    if err != OK:
+        push_warning("PC sprite save request failed: %s" % err)
+
+func _on_pc_save_completed(result: int, code: int, _headers: PackedStringArray, _body: PackedByteArray) -> void:
+    if not Auth.check_response(code):
+        return
+    if result != HTTPRequest.RESULT_SUCCESS or code < 200 or code >= 300:
+        push_warning("PC sprite save failed: code=%s" % code)
+        return
+    # _pc_exists flips true post-create so a subsequent picker open
+    # (e.g., user re-opens to change sprite) routes through /pc/sprite
+    # instead of re-creating.
+    _pc_exists = true
+    # Re-fetch /pc/me so any cached state (A2 rendering will need it)
+    # picks up the new sprite. Cheap; one round-trip.
+    _bootstrap_pc_refetch()
+
+## Re-fire /pc/me after a save, without re-running the bootstrap-done
+## guard. _bootstrap_pc itself is idempotent (lazy-creates _pc_http_me),
+## so this is just a clean alias call.
+func _bootstrap_pc_refetch() -> void:
+    if _pc_http_me == null:
+        _bootstrap_pc()
+        return
+    var headers := Auth.auth_headers()
+    var err := _pc_http_me.request(Auth.api_base + "/api/village/pc/me",
+        headers, HTTPClient.METHOD_POST, "")
+    if err != OK:
+        push_warning("PC bootstrap /pc/me refetch failed: %s" % err)
+
+## Click-to-walk in play mode. Edit mode and modal-open states are
+## owned by editor.gd / config_panel / sprite_picker respectively, so
+## this handler steps aside in those cases. The walk-pending state
+## machine handles the camera-pan vs walk-click ambiguity; see the
+## _PC_CLICK_DRAG_THRESHOLD comment block above.
+func _input(event: InputEvent) -> void:
+    if not _pc_exists:
+        return
+    if editor != null and editor.active:
+        return
+    if camera != null and camera.modal_open:
+        return
+    if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+        if event.pressed:
+            # Skip clicks over UI (sidebar, top bar, talk panel sheet).
+            # Camera's _is_over_ui maintains the panel registry; we
+            # piggyback on it rather than duplicating the rect math.
+            if camera != null and camera._is_over_ui(event.position):
+                return
+            _pc_walk_pending = true
+            _pc_walk_press_screen = event.position
+        else:
+            # Release. If the press wasn't cancelled by a drag, fire walk.
+            if _pc_walk_pending:
+                _pc_walk_pending = false
+                _post_pc_move_to_screen(event.position)
+    elif event is InputEventMouseMotion:
+        if _pc_walk_pending:
+            if event.position.distance_to(_pc_walk_press_screen) > _PC_CLICK_DRAG_THRESHOLD:
+                _pc_walk_pending = false
+
+## Convert the screen-space click into world coordinates and POST the
+## walk request. World coordinates come from world.get_global_mouse_position
+## so camera pan / zoom are baked in — the click point on screen lands
+## on the same world tile regardless of view state. Lazy-create the
+## HTTPRequest so we don't allocate one until the player actually clicks.
+func _post_pc_move_to_screen(_screen_pos: Vector2) -> void:
+    if world == null:
+        return
+    var world_pos: Vector2 = world.get_global_mouse_position()
+    if _pc_http_move == null:
+        _pc_http_move = HTTPRequest.new()
+        _pc_http_move.accept_gzip = false
+        add_child(_pc_http_move)
+        _pc_http_move.request_completed.connect(func(_r, c, _h, _b):
+            Auth.check_response(c)
+        )
+    var headers := Auth.auth_headers()
+    var payload: String = JSON.stringify({
+        "target_x": world_pos.x,
+        "target_y": world_pos.y,
+    })
+    var err := _pc_http_move.request(Auth.api_base + "/api/village/pc/move",
+        headers, HTTPClient.METHOD_POST, payload)
+    if err != OK:
+        push_warning("PC move request failed: %s" % err)
 
 func _on_npc_go_home_requested() -> void:
     _post_npc_action("go-home")
