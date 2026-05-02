@@ -34,7 +34,7 @@ import (
 var roleToolRegistry = map[string]agentToolDef{
 	"serve": {
 		Name: "serve",
-		Description: "Hand food or drink from your stock to one or more people present. The tavernkeeper's verb. Decrements your inventory by qty per recipient and (with consume_now=true, the default) drops each recipient's matching need on the spot — the customers eat or drink at the bar. No coin transfer; payment, if any, happens separately via pay. Only works for items in your inventory and recipients in the same room as you. Use this whenever you give your stock to customers — never narrate serving via act, since act doesn't decrement stock.",
+		Description: "Hand goods from your stock to one or more people present. The vendor's verb — used by tavernkeepers serving food and drink, herbalists handing tonics, blacksmiths delivering iron tools, merchants supplying staples. Decrements your inventory by qty per recipient and, with consume_now=true (the default for food and drink), drops each recipient's matching need on the spot — they eat or drink right here. With consume_now=false the goods go into the recipients' own inventories to take away. No coin transfer; payment, if any, happens separately via pay. Only works for items in your inventory and recipients in the same room as you. Use this whenever you give your stock to customers — never narrate serving via act, since act doesn't decrement stock.",
 		Parameters: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -45,15 +45,15 @@ var roleToolRegistry = map[string]agentToolDef{
 				},
 				"item": map[string]interface{}{
 					"type":        "string",
-					"description": "Item kind from your stock: stew, ale, bread, cheese, milk, water, etc. Must match a row in your inventory readout.",
+					"description": "Item kind from your stock. Must match a row in your inventory readout (ale, stew, bread, cheese, milk, water, berries, meat, iron, etc.).",
 				},
 				"qty": map[string]interface{}{
 					"type":        "integer",
-					"description": "Quantity per recipient. Defaults to 1 (one bowl, one mug, one piece each).",
+					"description": "Quantity per recipient. Defaults to 1.",
 				},
 				"consume_now": map[string]interface{}{
 					"type":        "boolean",
-					"description": "True (default) — recipients eat/drink at your place, their need drops immediately. False — items go into recipients' inventories for later. Non-portable items (stew, water) reject consume_now=false.",
+					"description": "True (default for food and drink at your place) — recipients eat/drink immediately, need drops. False — items go into recipients' inventories to carry away. Non-portable items (stew) reject consume_now=false.",
 				},
 			},
 			"required": []string{"recipients", "item"},
