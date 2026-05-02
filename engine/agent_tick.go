@@ -585,6 +585,8 @@ func (app *App) triggerCoLocatedTicks(ctx context.Context, structureID, excludeN
 			ids = append(ids, id)
 		}
 	}
+	log.Printf("knock-trace co-located reason=%s structure=%s exclude=%q found=%d ids=%v force=%v scene=%s",
+		reason, structureID, excludeNpcID, len(ids), ids, force, sceneID)
 	for _, id := range ids {
 		go app.triggerImmediateTick(context.Background(), id, reason, force, sceneID, triggerActorID)
 	}
