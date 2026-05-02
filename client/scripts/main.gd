@@ -280,6 +280,13 @@ func _build_ui() -> void:
     talk_panel_layer.set_script(TalkPanelScript)
     add_child(talk_panel_layer)
 
+    # Forward the talk panel's purse_changed signal to the top bar's
+    # coin chip. Talk panel polls /pc/me and emits this whenever the
+    # snapshot includes fresh coin / inventory state; top bar renders
+    # them. Decoupled so neither side knows the other's node path.
+    if talk_panel_layer.has_signal("purse_changed") and top_bar != null:
+        talk_panel_layer.purse_changed.connect(_on_pc_purse_changed)
+
     # Register the talk panel's sheet (the actual rounded-rect chat
     # surface, not the full-screen anchor) so wheel-scroll over the
     # open chat scrolls the log instead of zooming the map. Sheet
@@ -360,6 +367,18 @@ func _on_config_pressed() -> void:
 func _on_village_ticker_clicked() -> void:
     if talk_panel_layer != null and talk_panel_layer.has_method("force_open_to_village_tab"):
         talk_panel_layer.force_open_to_village_tab()
+
+
+## Forward purse updates from the talk panel to the top bar's coin
+## chip. Negative coins from the panel signals "no PC" — top bar
+## hides the chip on that.
+func _on_pc_purse_changed(coins: int, inventory_lines: PackedStringArray) -> void:
+    if top_bar == null or not top_bar.has_method("set_purse"):
+        return
+    var arr: Array = []
+    for line in inventory_lines:
+        arr.append(line)
+    top_bar.set_purse(coins, arr)
 
 func _on_edit_toggled(active: bool) -> void:
     editor_panel.visible = active

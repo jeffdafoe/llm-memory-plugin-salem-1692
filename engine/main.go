@@ -378,6 +378,7 @@ func main() {
 	authed("POST /api/village/pc/move", app.handlePCMove)
 	authed("POST /api/village/pc/say", app.handlePCSay)
 	authed("POST /api/village/pc/speak", app.handlePCSpeak)
+	authed("POST /api/village/pc/pay", app.handlePCPay)
 	authed("GET /api/village/object-tags", app.handleListObjectTags)
 	authed("POST /api/village/objects/{id}/tags", app.handleAddObjectTag)
 	authed("DELETE /api/village/objects/{id}/tags/{tag}", app.handleRemoveObjectTag)
