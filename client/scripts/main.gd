@@ -795,15 +795,22 @@ func _post_pc_move_to_screen(screen_pos: Vector2) -> void:
             if c < 200 or c >= 300:
                 return
             # Knock outcome (ZBBS-101): the server resolved the structure
-            # click as a knock (PC isn't the owner, policy is 'owner').
-            # Surface the narration in the talk panel so the player sees
-            # "the stall is unattended" / "no answer at the door" without
-            # having to deduce it from a silent walk.
+            # click as a knock and either (a) joined the PC into a service
+            # huddle with the vendor inside, or (b) reported the structure
+            # as unattended. Case (a) needs an immediate /pc/me poll so the
+            # talk panel pops open right away with the vendor as an
+            # addressee — without it the player waits up to 10s for the
+            # next refresh tick. Case (b) renders narration in the panel
+            # log so the player understands why the click went nowhere.
             var parsed = JSON.parse_string(b.get_string_from_utf8())
             if parsed is Dictionary and bool(parsed.get("knocked", false)):
-                var narration: String = str(parsed.get("knock_narration", ""))
-                if narration != "" and talk_panel_layer != null and talk_panel_layer.has_method("append_local_narration"):
-                    talk_panel_layer.append_local_narration(narration)
+                if bool(parsed.get("huddle_joined", false)):
+                    if talk_panel_layer != null and talk_panel_layer.has_method("_refresh_state"):
+                        talk_panel_layer._refresh_state()
+                else:
+                    var narration: String = str(parsed.get("knock_narration", ""))
+                    if narration != "" and talk_panel_layer != null and talk_panel_layer.has_method("append_local_narration"):
+                        talk_panel_layer.append_local_narration(narration)
         )
     var headers := Auth.auth_headers()
     var hit: Dictionary = world.find_object_at(screen_pos)
