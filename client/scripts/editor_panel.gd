@@ -2128,8 +2128,9 @@ func _on_villagers_filter_changed(_text: String) -> void:
 
 ## Rebuild the Villagers list from world.placed_npcs. Cheap enough to
 ## run on tab activation, WS list-changed events, and filter keystrokes.
-## Alphabetical by display_name; unnamed NPCs sort to the bottom under
-## "(unnamed)".
+## LLM-attached villagers sort first (they're the ones we actually care
+## about during a debugging pass); within each group, alphabetical by
+## display_name with unnamed NPCs at the bottom under "(unnamed)".
 func rebuild_villagers_list() -> void:
     if _villagers_list == null or world == null:
         return
@@ -2144,13 +2145,22 @@ func rebuild_villagers_list() -> void:
             continue
         var display_name: String = str(container.get_meta("display_name", ""))
         var sort_name: String = display_name if display_name != "" else "(unnamed)"
+        var has_llm: bool = str(container.get_meta("llm_memory_agent", "")) != ""
         npc_entries.append({
             "id": str(npc_id),
             "sort_name": sort_name,
             "display_name": sort_name,
             "container": container,
+            "has_llm": has_llm,
         })
-    npc_entries.sort_custom(func(a, b): return a["sort_name"].to_lower() < b["sort_name"].to_lower())
+    # Two-key sort: LLM-attached first (true > false), then alphabetical
+    # within each group. The compare returns true when a should come
+    # before b.
+    npc_entries.sort_custom(func(a, b):
+        if a["has_llm"] != b["has_llm"]:
+            return a["has_llm"]
+        return a["sort_name"].to_lower() < b["sort_name"].to_lower()
+    )
 
     var filter_text: String = ""
     if _villagers_filter_input != null:
