@@ -736,6 +736,24 @@ func agentToolSpec() []agentToolDef {
 			},
 		},
 		{
+			Name:        "summon",
+			Description: "Send a messenger to fetch another villager — a child running with a message, an apprentice sent across the lane, hollering over the fence. The named villager will perceive the summons on their next moment and decide whether to come. Use when you want company, need help, or have business with someone who isn't here. They may or may not actually come; refusal or delay is part of village life. Do NOT summon someone who is already in the room with you.",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"target": map[string]interface{}{
+						"type":        "string",
+						"description": "Display name of the villager to fetch.",
+					},
+					"reason": map[string]interface{}{
+						"type":        "string",
+						"description": "Optional short message the messenger carries (e.g. 'come share an ale', 'we need your counsel'). Audit-only flavor; the target sees this in their perception.",
+					},
+				},
+				"required": []string{"target"},
+			},
+		},
+		{
 			Name:        "recall",
 			Description: "Try to remember something — search your past notes, dreams, and impressions for anything relevant. Use this when you want to recall what you know about a person, place, or event. Phrase the query in your own words.",
 			Parameters: map[string]interface{}{
@@ -1035,6 +1053,14 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 		if len(recentLines) > 0 {
 			sections = append(sections, "Recent:\n"+strings.Join(recentLines, "\n"))
 		}
+	}
+
+	// Pending summons targeting this NPC. Visible regardless of where
+	// the perceiver is — a messenger reaches you whether you're at home,
+	// at work, or in the open village. Falls off as soon as the NPC
+	// commits a move/take_break/speak (see summonsTargetingPerceiver).
+	if summonsLines := app.summonsTargetingPerceiver(ctx, r.ID, r.DisplayName); len(summonsLines) > 0 {
+		sections = append(sections, "Summons for you:\n"+strings.Join(summonsLines, "\n"))
 	}
 
 	// Atmosphere — the chronicler's most recent set_environment text.
@@ -1349,7 +1375,8 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 	// (where the actor was when they decided to leave) so departures
 	// appear in the room they left, not the room they're walking to.
 	if (tc.Name == "speak" || tc.Name == "act" || tc.Name == "move_to" ||
-		tc.Name == "serve" || tc.Name == "pay" || tc.Name == "consume") && r.InsideStructureID.Valid {
+		tc.Name == "serve" || tc.Name == "pay" || tc.Name == "consume" ||
+		tc.Name == "summon") && r.InsideStructureID.Valid {
 		if tc.Input == nil {
 			tc.Input = map[string]interface{}{}
 		}
@@ -1770,6 +1797,46 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 					},
 				})
 			}
+		}
+
+	case "summon":
+		target, _ := tc.Input["target"].(string)
+		reason, _ := tc.Input["reason"].(string)
+		sm := app.executeSummon(ctx, r, summonRequest{
+			TargetName: target,
+			Reason:     reason,
+		})
+		result = sm.Result
+		errStr = sm.Err
+		// On success, fire an immediate tick on the target so they
+		// react now rather than after the 1m scheduler interval. Also
+		// emit a room_event so observers see the messenger leave.
+		// Skipped on rejection — no point waking the target if the
+		// summons was rejected for cooldown / co-location / etc.
+		if result == "ok" {
+			if r.InsideStructureID.Valid {
+				text := narrateSummon(r.DisplayName, tc.Input)
+				if text != "" {
+					app.Hub.Broadcast(WorldEvent{
+						Type: "room_event",
+						Data: map[string]interface{}{
+							"actor_id":     r.ID,
+							"actor_name":   r.DisplayName,
+							"kind":         "summon",
+							"text":         text,
+							"structure_id": r.InsideStructureID.String,
+							"at":           time.Now().UTC().Format(time.RFC3339),
+						},
+					})
+				}
+			}
+			// Wake the target. force=true bypasses the cost guard so the
+			// fetch isn't dropped if they ticked recently. New scene id
+			// — the summons is its own conversational origin, not a
+			// continuation of the summoner's current cascade.
+			go app.triggerImmediateTick(context.Background(), sm.TargetID,
+				fmt.Sprintf("summoned-by-%s", r.DisplayName),
+				true, newUUIDv7(), r.ID)
 		}
 
 	default:

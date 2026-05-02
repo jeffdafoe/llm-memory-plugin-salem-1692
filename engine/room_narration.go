@@ -147,6 +147,28 @@ func narrateConsume(actorName string, payload map[string]interface{}, itemAttrib
 	return fmt.Sprintf("%s %s %s.", actorName, verb, itemPhrase)
 }
 
+// narrateSummon builds the room line for a successful summon commit.
+//
+//   summonerName     — the actor doing the summoning
+//   payload          — {target, reason?}
+//
+// Examples:
+//   "John Ellis sends a messenger for Ezekiel Crane."
+//   "John Ellis sends a messenger for Ezekiel Crane: 'come share an ale'."
+func narrateSummon(summonerName string, payload map[string]interface{}) string {
+	target, _ := payload["target"].(string)
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return ""
+	}
+	reason, _ := payload["reason"].(string)
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return fmt.Sprintf("%s sends a messenger for %s.", summonerName, target)
+	}
+	return fmt.Sprintf("%s sends a messenger for %s: %q.", summonerName, target, reason)
+}
+
 // itemAttributeFor returns the satisfies_attribute for an item_kind, or
 // empty string if the item isn't a known consumable. Used by the
 // consume narration to pick "eats" vs "drinks".
