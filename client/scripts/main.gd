@@ -270,8 +270,13 @@ func _build_ui() -> void:
     # Talk panel (M6.7) — bottom drawer summoned by a "Talk" launcher pill.
     # The script extends CanvasLayer and owns its own layer ordering, mouse
     # filtering, and visibility — main.gd only needs to instantiate it.
+    # layer = 3 puts the panel above the editor UI (default 1) and below
+    # the config screen (5) and login (10). Without an explicit layer
+    # the panel rendered behind the editor's top bar / sidebar in some
+    # play-mode layouts, hiding the launcher pill from the player.
     talk_panel_layer = CanvasLayer.new()
     talk_panel_layer.name = "TalkPanelLayer"
+    talk_panel_layer.layer = 3
     talk_panel_layer.set_script(TalkPanelScript)
     add_child(talk_panel_layer)
 
@@ -807,6 +812,14 @@ func _post_pc_move_to_screen(screen_pos: Vector2) -> void:
                 if bool(parsed.get("huddle_joined", false)):
                     if talk_panel_layer != null and talk_panel_layer.has_method("_refresh_state"):
                         talk_panel_layer._refresh_state()
+                    # Auto-open the panel: a successful knock means the
+                    # player wants to talk to the vendor, and the launcher
+                    # pill alone is too easy to miss in the heat of play.
+                    # _refresh_state is async (HTTPRequest); defer the
+                    # open() so huddle_members has had time to populate
+                    # via the /pc/me response.
+                    if talk_panel_layer != null and talk_panel_layer.has_method("force_open_after_refresh"):
+                        talk_panel_layer.force_open_after_refresh()
                 else:
                     var narration: String = str(parsed.get("knock_narration", ""))
                     if narration != "" and talk_panel_layer != null and talk_panel_layer.has_method("append_local_narration"):
