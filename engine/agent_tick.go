@@ -237,7 +237,7 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			result, errStr := app.executeAgentCommit(ctx, r, payCall, sceneID)
 			if result == "ok" {
 				readback := app.buildPostConsumeReadback(ctx, r.ID, beforeH, beforeT, beforeTi)
-				currentMessage = "[OK] You paid. " + readback + "Continue your turn — you may speak, move, or call done."
+				currentMessage = "[OK] You paid. " + readback + "If a customer or merchant addressed you mid-transaction, speak to them now (a thanks, a follow-up, an answer). Then you may move or call done."
 			} else {
 				currentMessage = fmt.Sprintf("[Pay %s] %s. Continue your turn — you may correct it, speak, move, or call done.", result, errStr)
 			}
@@ -246,14 +246,20 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 		}
 
 		if serveCall != nil {
-			// Serve: tavernkeeper hands food/drink to co-located people.
-			// Decrements own stock, drops recipients' needs (consume_now)
-			// or credits their inventories (take-home). No coin transfer.
+			// Serve: vendor (tavernkeeper, herbalist, blacksmith,
+			// merchant) hands stock to co-located people. Decrements
+			// own stock, drops recipients' needs (consume_now) or
+			// credits their inventories (take-home). No coin transfer.
 			// Inline like pay so a "serve-then-mention-the-price" speak
 			// chain reads naturally.
+			//
+			// Continuation explicitly nudges speak — without this the
+			// model often picks done after serving even when a customer
+			// just asked a question. Silent service to a hanging
+			// question reads as cold and unwelcoming.
 			result, errStr := app.executeAgentCommit(ctx, r, serveCall, sceneID)
 			if result == "ok" {
-				currentMessage = "[OK] You served. Continue your turn — you may speak, move, or call done."
+				currentMessage = "[OK] You served. If a customer asked you something or is mid-conversation with you, speak to them now — answer the question, name the price, share a word. Then you may move or call done."
 			} else {
 				currentMessage = fmt.Sprintf("[Serve %s] %s. Continue your turn — you may correct it, speak, move, or call done.", result, errStr)
 			}
@@ -277,7 +283,7 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			result, errStr := app.executeAgentCommit(ctx, r, consumeCall, sceneID)
 			if result == "ok" {
 				readback := app.buildPostConsumeReadback(ctx, r.ID, beforeH, beforeT, beforeTi)
-				currentMessage = "[OK] You consumed it. " + readback + "Continue your turn — you may speak, move, or call done."
+				currentMessage = "[OK] You consumed it. " + readback + "If anyone is mid-conversation with you, speak to them now. Then you may move or call done."
 			} else {
 				currentMessage = fmt.Sprintf("[Consume %s] %s. Continue your turn — you may correct it, speak, move, or call done.", result, errStr)
 			}
@@ -305,7 +311,7 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			// "here you are, mind the heat"). Same [OK] nudge so the
 			// model knows the turn isn't over.
 			_, _ = app.executeAgentCommit(ctx, r, actCall, sceneID)
-			currentMessage = "[OK] You did that. Continue your turn — you may speak, move, or call done."
+			currentMessage = "[OK] You did that. If anyone is mid-conversation with you, speak to them now. Then you may move or call done."
 			currentToolCallID = actCall.ID
 			continue
 		}
@@ -318,7 +324,7 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			// instead of silently disappearing.
 			result, errStr := app.executeAgentCommit(ctx, r, gatherCall, sceneID)
 			if result == "ok" {
-				currentMessage = "[OK] You filled your inventory. Continue your turn — you may speak, move, or call done."
+				currentMessage = "[OK] You filled your inventory. If anyone is mid-conversation with you, speak to them now. Then you may move or call done."
 			} else {
 				currentMessage = fmt.Sprintf("[Gather %s] %s. Continue your turn — you may correct it, speak, move, or call done.", result, errStr)
 			}
@@ -334,7 +340,7 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			// target) so it doesn't loop "send messenger, send messenger".
 			result, errStr := app.executeAgentCommit(ctx, r, summonCall, sceneID)
 			if result == "ok" {
-				currentMessage = "[OK] The messenger is on their way. Continue your turn — you may speak, move, or call done."
+				currentMessage = "[OK] The messenger is on their way. If anyone is mid-conversation with you, speak to them now (a 'I've sent for them' would be natural). Then you may move or call done."
 			} else {
 				currentMessage = fmt.Sprintf("[Summon %s] %s. Continue your turn — you may correct it, speak, move, or call done.", result, errStr)
 			}
