@@ -49,7 +49,7 @@ var speak_button: Button
 ## Submit fires POST /api/village/pc/pay and re-polls /pc/me on success
 ## so the top bar's coin chip refreshes immediately.
 var pay_button: Button = null
-var pay_modal: Control = null
+var pay_modal: CanvasLayer = null
 var pay_recipient_option: OptionButton = null
 var pay_amount_spin: SpinBox = null
 var pay_item_input: LineEdit = null
@@ -1257,10 +1257,10 @@ func _on_pay_confirm() -> void:
     pay_status_label.text = "Sending…"
     pay_confirm_button.disabled = true
 
-    var headers: PackedStringArray = Auth.auth_headers(true)
+    var headers: PackedStringArray = _auth_headers()
     var json := JSON.stringify(body)
     var err := http_pay.request(
-        Auth.api_base + "/api/village/pc/pay",
+        _api_url("/api/village/pc/pay"),
         headers,
         HTTPClient.METHOD_POST,
         json,
