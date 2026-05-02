@@ -384,6 +384,14 @@ func (app *App) fireChronicler(ctx context.Context, reason chroniclerFireReason)
 	attendCeiling := app.loadNonNegativeIntSetting(ctx, "chronicler_dispatch_ceiling", 12)
 	attendCount := 0
 
+	// Per-fire seen-villager set (2026-05-02). Models occasionally fire
+	// attend_to twice for the same villager in a single cascade — saw a
+	// "Prudence Ward" repeat 6 seconds apart at 11:01:08, burning a tool
+	// slot toward the rate limit for no narrative effect. The dispatch
+	// would also re-tick the same NPC. Refusing the duplicate at the
+	// chronicler boundary saves the call and tells the model to move on.
+	attendedThisFire := map[string]bool{}
+
 	for iter := 0; iter < chroniclerTickBudget; iter++ {
 		reply, err := app.npcChatClient.sendChat(ctx, chroniclerAgent, currentMessage, currentToolCallID, sceneID, tools)
 		if err != nil {
@@ -426,6 +434,14 @@ func (app *App) fireChronicler(ctx context.Context, reason chroniclerFireReason)
 			text = strings.TrimSpace(text)
 			if text == "" {
 				currentMessage = "[The atmosphere you tried to write was empty. Try again or say done.]"
+			} else if app.recentEnvironmentMatches(ctx, text, 60*time.Second) {
+				// Dedupe (2026-05-02): chronicler occasionally emits
+				// identical atmosphere text twice in the same cascade —
+				// saw a verbatim "Dawn lies pale over the spring village"
+				// repeat 3 seconds apart at 11:01:05/11:01:08. Skip the
+				// write but acknowledge so the harness moves on instead of
+				// burning another iteration trying to re-emit.
+				currentMessage = "[Atmosphere unchanged — the prose you wrote matches what is already set. Move on or say done.]"
 			} else if err := app.recordEnvironment(ctx, text, reason.Phase); err != nil {
 				log.Printf("chronicler set_environment: %v", err)
 				currentMessage = "[Atmosphere could not be recorded. Try again or say done.]"
@@ -502,6 +518,15 @@ func (app *App) fireChronicler(ctx context.Context, reason chroniclerFireReason)
 				currentToolCallID = tc.ID
 				break
 			}
+			if attendedThisFire[npcID] {
+				// Already attended this villager this fire (2026-05-02).
+				// Re-attending re-ticks the NPC and burns a chronicler
+				// call slot for no new effect — the prior dispatch is
+				// already in flight or has run.
+				currentMessage = fmt.Sprintf("[You have already attended %s in this waking. Move on, or say done.]", displayName)
+				currentToolCallID = tc.ID
+				break
+			}
 			// Trigger the NPC's tick. Force=true so the agentMinTickGap
 			// cost guard in triggerImmediateTick is bypassed — chronicler
 			// attend_to is a directorial action, not a sim-layer cascade.
@@ -546,6 +571,7 @@ func (app *App) fireChronicler(ctx context.Context, reason chroniclerFireReason)
 				app.triggerImmediateTick(context.Background(), id, "overseer-attend-to", true, scene, "")
 			}(npcID, displayName, sceneID)
 			attendCount++
+			attendedThisFire[npcID] = true
 			currentMessage = fmt.Sprintf("[You attend to %s. They will rouse and decide what to do.]", displayName)
 			currentToolCallID = tc.ID
 
@@ -905,6 +931,27 @@ func plural(n int) string {
 		return ""
 	}
 	return "s"
+}
+
+// recentEnvironmentMatches returns true if the most recent
+// world_environment row's text matches `text` exactly and was set within
+// `maxAge`. Used by the chronicler set_environment handler to skip a
+// no-op rewrite when the model emits the same prose twice in a cascade.
+// Errors (no rows, query failure) return false so the write proceeds —
+// dedupe is best-effort, not a correctness requirement.
+func (app *App) recentEnvironmentMatches(ctx context.Context, text string, maxAge time.Duration) bool {
+	var existingText string
+	var setAt time.Time
+	err := app.DB.QueryRow(ctx,
+		`SELECT text, set_at FROM world_environment ORDER BY set_at DESC LIMIT 1`,
+	).Scan(&existingText, &setAt)
+	if err != nil {
+		return false
+	}
+	if existingText != text {
+		return false
+	}
+	return time.Since(setAt) <= maxAge
 }
 
 // recordEnvironment appends a row to world_environment. Phase is "" for

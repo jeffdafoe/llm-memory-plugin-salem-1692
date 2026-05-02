@@ -219,9 +219,17 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			// recipient, insufficient coins, self-payment) gets surfaced
 			// verbatim so the model can correct itself rather than thanking
 			// someone for ale they didn't actually receive.
+			//
+			// Snapshot needs before so the post-action readback can describe
+			// what changed (pay can include immediate consumption per
+			// ZBBS-091, in which case the buyer's needs drop alongside).
+			// Read from DB rather than r.Hunger/etc. — those are tick-start
+			// values and would be stale after a prior consume/pay this turn.
+			beforeH, beforeT, beforeTi := app.snapshotNeeds(ctx, r.ID)
 			result, errStr := app.executeAgentCommit(ctx, r, payCall, sceneID)
 			if result == "ok" {
-				currentMessage = "[OK] You paid. Continue your turn — you may speak, move, or call done."
+				readback := app.buildPostConsumeReadback(ctx, r.ID, beforeH, beforeT, beforeTi)
+				currentMessage = "[OK] You paid. " + readback + "Continue your turn — you may speak, move, or call done."
 			} else {
 				currentMessage = fmt.Sprintf("[Pay %s] %s. Continue your turn — you may correct it, speak, move, or call done.", result, errStr)
 			}
@@ -249,9 +257,19 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			// Consume: eats from your own inventory. Drops the linked need
 			// per the item's configured satisfaction. Inline so a "drink
 			// then thank the host" sequence reads naturally.
+			//
+			// Snapshot needs before so the post-action readback can tell
+			// the model what changed and what's still pressing — without
+			// it the model tends to call done after one consume even if
+			// other needs are still at red tier (saw John Ellis eat bread
+			// then done while still parched and exhausted on 2026-05-02).
+			// Read from DB so a second consume in the same tick gets fresh
+			// pre-action values instead of tick-start (stale) ones.
+			beforeH, beforeT, beforeTi := app.snapshotNeeds(ctx, r.ID)
 			result, errStr := app.executeAgentCommit(ctx, r, consumeCall, sceneID)
 			if result == "ok" {
-				currentMessage = "[OK] You consumed it. Continue your turn — you may speak, move, or call done."
+				readback := app.buildPostConsumeReadback(ctx, r.ID, beforeH, beforeT, beforeTi)
+				currentMessage = "[OK] You consumed it. " + readback + "Continue your turn — you may speak, move, or call done."
 			} else {
 				currentMessage = fmt.Sprintf("[Consume %s] %s. Continue your turn — you may correct it, speak, move, or call done.", result, errStr)
 			}
@@ -922,17 +940,35 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 	thirstT := app.loadNeedThreshold(ctx, "thirst_red_threshold", defaultThirstRedThreshold)
 	tiredT := app.loadNeedThreshold(ctx, "tiredness_red_threshold", defaultTirednessRedThreshold)
 	bodyParts := []string{}
+	pressing := []string{}
 	if l := needLabel("hunger", r.Hunger, hungerT); l != "" {
 		bodyParts = append(bodyParts, l)
+		if needLabelTier(r.Hunger, hungerT) >= 2 {
+			pressing = append(pressing, "hunger")
+		}
 	}
 	if l := needLabel("thirst", r.Thirst, thirstT); l != "" {
 		bodyParts = append(bodyParts, l)
+		if needLabelTier(r.Thirst, thirstT) >= 2 {
+			pressing = append(pressing, "thirst")
+		}
 	}
 	if l := needLabel("tiredness", r.Tiredness, tiredT); l != "" {
 		bodyParts = append(bodyParts, l)
+		if needLabelTier(r.Tiredness, tiredT) >= 2 {
+			pressing = append(pressing, "tiredness")
+		}
 	}
+	// 2026-05-02: red+ tier needs get an explicit imperative prefix.
+	// The "You feel: hungry, parched, tired." line alone wasn't reliably
+	// driving NPCs to consume; saw Ezekiel at 18/18/18 (all past
+	// distress) call done without consuming despite "You feel" being
+	// surfaced. Pulling pressing needs into a dedicated lead-in is a
+	// stronger signal that the model should prioritize them on this turn.
 	var bodyLine string
-	if len(bodyParts) > 0 {
+	if len(pressing) > 0 {
+		bodyLine = fmt.Sprintf("Address now: %s. You feel: %s. ", strings.Join(pressing, ", "), strings.Join(bodyParts, ", "))
+	} else if len(bodyParts) > 0 {
 		bodyLine = fmt.Sprintf("You feel: %s. ", strings.Join(bodyParts, ", "))
 	}
 	sections = append(sections, fmt.Sprintf("%sCoins in your purse: %d.", bodyLine, r.Coins))
