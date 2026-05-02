@@ -1589,10 +1589,14 @@ func (app *App) executeAgentMoveTo(ctx context.Context, r *agentNPCRow, dest str
 		return err
 	}
 
-	// Owners (this NPC's home or work) walked to door_offset and should
-	// flip inside on arrival — same flow scheduled worker arrivals use.
-	// Visitors walked to the loiter point and stay outside.
-	enterOnArrival := isAgentMoveOwner(r, structureID)
+	// Owners (this NPC's home or work) walk to door_offset and flip
+	// inside on arrival — same flow scheduled worker arrivals use.
+	// Visitors to enterable structures (tavern, smithy, meeting house)
+	// also enter on arrival since walking to a building means going in
+	// (ZBBS-099). Non-enterable destinations (wells, market stalls,
+	// outhouses) keep the loiter-and-stand-outside behavior because
+	// asset.enterable=false.
+	enterOnArrival := app.agentMoveShouldEnter(ctx, r, structureID)
 
 	npc := &behaviorNPC{ID: r.ID, CurX: r.CurrentX, CurY: r.CurrentY}
 	app.interpolateCurrentPos(npc)
@@ -1717,6 +1721,37 @@ func isAgentMoveOwner(r *agentNPCRow, structureID string) bool {
 		(r.WorkStructureID.Valid && r.WorkStructureID.String == structureID)
 }
 
+// agentMoveShouldEnter returns true when an agent's move/chore arrival
+// at structureID should flip them inside the building. Two cases:
+//
+//   - The structure is the NPC's own home or work (owner case — same
+//     flow scheduled worker arrivals use).
+//   - The structure's asset is enterable (ZBBS-099): walking to a
+//     tavern, smithy, or meeting house means going in. Non-enterable
+//     destinations (wells, market stalls, outhouses) keep the
+//     loiter-and-stand-outside behavior because asset.enterable=false.
+//
+// Errors fall back to false (don't enter) so a transient DB blip
+// produces the more conservative behavior — the NPC stands outside
+// rather than mistakenly entering a structure it shouldn't.
+func (app *App) agentMoveShouldEnter(ctx context.Context, r *agentNPCRow, structureID string) bool {
+	if isAgentMoveOwner(r, structureID) {
+		return true
+	}
+	var enterable bool
+	err := app.DB.QueryRow(ctx,
+		`SELECT a.enterable
+		 FROM village_object o
+		 JOIN asset a ON a.id = o.asset_id
+		 WHERE o.id = $1`,
+		structureID,
+	).Scan(&enterable)
+	if err != nil {
+		return false
+	}
+	return enterable
+}
+
 // resolveSelfReference handles destinations that point at this NPC's own
 // home or workplace. Returns (id, walkX, walkY, true, nil) when matched,
 // (_, _, _, false, nil) when not a self-reference, or an error if a
@@ -1826,9 +1861,12 @@ func (app *App) executeAgentChore(ctx context.Context, r *agentNPCRow, category 
 	wx, wy := app.pickWalkTarget(ctx, r, oID, ox, oy, loiterX, loiterY, doorX, doorY, footprintBottom)
 
 	// Chore destinations resolve to a tagged placement (well, outhouse,
-	// shop). Even on the rare chance it's the NPC's own home/work,
-	// chores are visitor-style — stand at the loiter point, don't enter.
-	enterOnArrival := false
+	// shop, tavern). Enter on arrival when the destination is enterable
+	// (tavern, shop, meeting house, smithy) or it's the NPC's own home /
+	// work — same rule move_to uses post-ZBBS-099. Non-enterable
+	// destinations (wells, outhouses, market stalls) keep the
+	// loiter-and-stand-outside behavior via asset.enterable=false.
+	enterOnArrival := app.agentMoveShouldEnter(ctx, r, oID)
 
 	npc := &behaviorNPC{ID: r.ID, CurX: r.CurrentX, CurY: r.CurrentY}
 	app.interpolateCurrentPos(npc)
