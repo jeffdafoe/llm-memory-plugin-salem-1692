@@ -226,8 +226,16 @@ func (app *App) handleListNPCs(w http.ResponseWriter, r *http.Request) {
 	// without a sprite (login_username set, sprite_id NULL) are filtered
 	// out below, in the per-row loop, so the picker bootstrap on first
 	// login gets to set the sprite before anyone tries to render the PC.
+	// COALESCE on home_x/home_y: PC rows (login_username set) leave
+	// these NULL because their "home" is home_structure_id, not the
+	// legacy scalar coords. Scanning NULL into a non-nullable float64
+	// errors, and pgx.Rows enters a permanent error state on the
+	// failing row — every NPC sorted alphabetically after the PC gets
+	// silently dropped from the response. COALESCE to 0 keeps the
+	// scan happy; the field is unused for PCs anyway.
 	npcRows, err := app.DB.Query(ctx,
-		`SELECT n.id, n.display_name, n.sprite_id, n.home_x, n.home_y,
+		`SELECT n.id, n.display_name, n.sprite_id,
+		        COALESCE(n.home_x, 0), COALESCE(n.home_y, 0),
 		        n.current_x, n.current_y, n.facing,
 		        (SELECT slug FROM actor_attribute WHERE actor_id = n.id ORDER BY slug LIMIT 1),
 		        n.llm_memory_agent,
