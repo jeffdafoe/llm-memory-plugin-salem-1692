@@ -1646,11 +1646,11 @@ func (app *App) executeAgentMoveTo(ctx context.Context, r *agentNPCRow, dest str
 
 	// Owners (this NPC's home or work) walk to door_offset and flip
 	// inside on arrival — same flow scheduled worker arrivals use.
-	// Visitors to enterable structures (tavern, smithy, meeting house)
-	// also enter on arrival since walking to a building means going in
-	// (ZBBS-099). Non-enterable destinations (wells, market stalls,
-	// outhouses) keep the loiter-and-stand-outside behavior because
-	// asset.enterable=false.
+	// Visitors to public-entry structures (tavern, smithy, meeting house)
+	// also enter on arrival (ZBBS-099, ZBBS-101). Owner-only structures
+	// the visitor isn't associated with, and 'none' policies (wells,
+	// market stalls, outhouses), keep the loiter-and-stand-outside
+	// behavior.
 	enterOnArrival := app.agentMoveShouldEnter(ctx, r, structureID)
 
 	npc := &behaviorNPC{ID: r.ID, CurX: r.CurrentX, CurY: r.CurrentY}
@@ -1747,12 +1747,13 @@ func (app *App) resolveMoveDestination(ctx context.Context, r *agentNPCRow, dest
 }
 
 // pickWalkTarget chooses the walk-to coordinates for an agent-initiated
-// move. NPCs entering on arrival (owner moves AND post-ZBBS-099 visitor
-// moves to enterable structures) walk to door_offset so the inside
-// flip happens at the actual doorway. Visitor moves to non-enterable
-// destinations are distributed across the 8 king's-move slots around
-// the loiter pin via pickVisitorSlot — the pin tile itself is the
-// gathering CENTER, never a stand spot.
+// move. NPCs entering on arrival (owner moves, post-ZBBS-099 visitor
+// moves to anyone-policy structures, and ZBBS-101 owner moves to
+// owner-policy structures) walk to door_offset so the inside flip
+// happens at the actual doorway. Visitor moves to none-policy /
+// owner-policy-they-don't-belong-to destinations are distributed across
+// the 8 king's-move slots around the loiter pin via pickVisitorSlot —
+// the pin tile itself is the gathering CENTER, never a stand spot.
 //
 // All offsets are tile-unit ints; multiplied by tileSize=32.0 to get the
 // pixel coordinate the walk dispatcher expects.
@@ -1778,34 +1779,36 @@ func isAgentMoveOwner(r *agentNPCRow, structureID string) bool {
 }
 
 // agentMoveShouldEnter returns true when an agent's move/chore arrival
-// at structureID should flip them inside the building. Two cases:
+// at structureID should flip them inside the building. Resolution is by
+// village_object.entry_policy (ZBBS-101):
 //
-//   - The structure is the NPC's own home or work (owner case — same
-//     flow scheduled worker arrivals use).
-//   - The structure's asset is enterable (ZBBS-099): walking to a
-//     tavern, smithy, or meeting house means going in. Non-enterable
-//     destinations (wells, market stalls, outhouses) keep the
-//     loiter-and-stand-outside behavior because asset.enterable=false.
+//   - 'none'   → never enter (decorative, fences, statues).
+//   - 'owner'  → enter only if this NPC is the owner (home or work
+//                points at this structure). A visiting NPC stands at
+//                the loiter slot, same as a PC who clicks an
+//                owner-only structure they don't belong to.
+//   - 'anyone' → enter on arrival (taverns, public buildings).
 //
 // Errors fall back to false (don't enter) so a transient DB blip
 // produces the more conservative behavior — the NPC stands outside
 // rather than mistakenly entering a structure it shouldn't.
 func (app *App) agentMoveShouldEnter(ctx context.Context, r *agentNPCRow, structureID string) bool {
-	if isAgentMoveOwner(r, structureID) {
-		return true
-	}
-	var enterable bool
+	var policy string
 	err := app.DB.QueryRow(ctx,
-		`SELECT a.enterable
-		 FROM village_object o
-		 JOIN asset a ON a.id = o.asset_id
-		 WHERE o.id = $1`,
+		`SELECT entry_policy FROM village_object WHERE id = $1`,
 		structureID,
-	).Scan(&enterable)
+	).Scan(&policy)
 	if err != nil {
 		return false
 	}
-	return enterable
+	switch policy {
+	case "anyone":
+		return true
+	case "owner":
+		return isAgentMoveOwner(r, structureID)
+	default:
+		return false
+	}
 }
 
 // resolveSelfReference handles destinations that point at this NPC's own
@@ -1917,11 +1920,12 @@ func (app *App) executeAgentChore(ctx context.Context, r *agentNPCRow, category 
 	wx, wy := app.pickWalkTarget(ctx, r, oID, ox, oy, loiterX, loiterY, doorX, doorY, footprintBottom)
 
 	// Chore destinations resolve to a tagged placement (well, outhouse,
-	// shop, tavern). Enter on arrival when the destination is enterable
-	// (tavern, shop, meeting house, smithy) or it's the NPC's own home /
-	// work — same rule move_to uses post-ZBBS-099. Non-enterable
-	// destinations (wells, outhouses, market stalls) keep the
-	// loiter-and-stand-outside behavior via asset.enterable=false.
+	// shop, tavern). agentMoveShouldEnter resolves entry from the
+	// per-instance entry_policy + ownership (ZBBS-101): public-policy
+	// destinations enter on arrival, owner-policy destinations only
+	// enter when this NPC is the owner, and 'none'-policy destinations
+	// (wells, outhouses, market stalls) keep the loiter-outside
+	// behavior.
 	enterOnArrival := app.agentMoveShouldEnter(ctx, r, oID)
 
 	npc := &behaviorNPC{ID: r.ID, CurX: r.CurrentX, CurY: r.CurrentY}

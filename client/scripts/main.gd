@@ -325,7 +325,7 @@ func _build_ui() -> void:
     editor_panel.npc_go_to_work_requested.connect(_on_npc_go_to_work_requested)
     editor_panel.npc_select_requested.connect(_on_npc_select_requested)
     editor_panel.npc_sprite_change_requested.connect(_on_npc_sprite_change_requested)
-    editor_panel.asset_enterable_toggled.connect(_on_asset_enterable_toggled)
+    editor_panel.entry_policy_changed.connect(_on_entry_policy_changed)
     editor_panel.asset_visible_when_inside_toggled.connect(_on_asset_visible_when_inside_toggled)
     editor_panel.world = world
 
@@ -546,10 +546,33 @@ func _post_reset_needs(npc_id: String) -> void:
     http.request(Auth.api_base + "/api/village/npcs/" + npc_id + "/reset-needs",
         headers, HTTPClient.METHOD_POST, "{}")
 
-## Admin toggled the "Can be entered" checkbox on the selected asset.
-## Fires a PATCH; asset_enterable_updated broadcast echoes to all clients.
-func _on_asset_enterable_toggled(asset_id: String, enterable: bool) -> void:
-    _patch_asset_flag(asset_id, "enterable", "enterable", enterable)
+## Admin chose a new entry policy for the selected placement (ZBBS-101).
+## PATCH /api/village/objects/{id}/entry-policy → server validates and
+## broadcasts object_entry_policy_changed back to every connected client.
+## A 400 (e.g. trying to set 'owner' on a structure with no associated
+## actor) is surfaced as an alert and the dropdown reverts on the next
+## show_selection.
+func _on_entry_policy_changed(object_id: String, policy: String) -> void:
+    var payload = JSON.stringify({"entry_policy": policy})
+    var http := HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    http.request_completed.connect(func(_r, c, _h, body):
+        http.queue_free()
+        if c >= 200 and c < 300:
+            return
+        Auth.check_response(c)
+        # Server refused — likely the no-associated-actor guard. Surface
+        # the message so the admin understands why nothing changed.
+        var msg: String = "Entry policy change failed."
+        var parsed = JSON.parse_string(body.get_string_from_utf8())
+        if parsed is Dictionary and parsed.has("error"):
+            msg = str(parsed.get("error"))
+        OS.alert(msg, "Entry policy")
+    )
+    var headers := Auth.auth_headers()
+    http.request(Auth.api_base + "/api/village/objects/" + object_id + "/entry-policy",
+        headers, HTTPClient.METHOD_PATCH, payload)
 
 ## Admin toggled the "Visible when inside" dropdown — controls whether
 ## an NPC's sprite hides on inside=true or stays rendered at the door.
@@ -749,7 +772,7 @@ func _input(event: InputEvent) -> void:
 ## Convert the screen-space click into a walk request. Two payloads:
 ##
 ##   - Click landed on a structure → send {target_structure_id}. Server
-##     resolves the door tile (enterable) or loiter slot (non-enterable)
+##     resolves the door tile (entry allowed) or loiter slot (knock or none)
 ##     and flips inside_structure_id on arrival, which is what hooks
 ##     the talk panel's huddle gate. Without this branch the PC slides
 ##     up to the side of a building and never registers as inside.
@@ -767,8 +790,20 @@ func _post_pc_move_to_screen(screen_pos: Vector2) -> void:
         _pc_http_move = HTTPRequest.new()
         _pc_http_move.accept_gzip = false
         add_child(_pc_http_move)
-        _pc_http_move.request_completed.connect(func(_r, c, _h, _b):
+        _pc_http_move.request_completed.connect(func(_r, c, _h, b):
             Auth.check_response(c)
+            if c < 200 or c >= 300:
+                return
+            # Knock outcome (ZBBS-101): the server resolved the structure
+            # click as a knock (PC isn't the owner, policy is 'owner').
+            # Surface the narration in the talk panel so the player sees
+            # "the stall is unattended" / "no answer at the door" without
+            # having to deduce it from a silent walk.
+            var parsed = JSON.parse_string(b.get_string_from_utf8())
+            if parsed is Dictionary and bool(parsed.get("knocked", false)):
+                var narration: String = str(parsed.get("knock_narration", ""))
+                if narration != "" and talk_panel_layer != null and talk_panel_layer.has_method("append_local_narration"):
+                    talk_panel_layer.append_local_narration(narration)
         )
     var headers := Auth.auth_headers()
     var hit: Dictionary = world.find_object_at(screen_pos)

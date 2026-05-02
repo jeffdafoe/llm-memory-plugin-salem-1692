@@ -44,6 +44,12 @@ type villageObject struct {
 	Owner        *string  `json:"owner"`
 	DisplayName  *string  `json:"display_name"`
 	AttachedTo   *string  `json:"attached_to"`
+	// EntryPolicy (ZBBS-101) — who can enter this placed structure.
+	// 'none' = no entry, 'owner' = only actors with this structure as
+	// home_structure_id or work_structure_id, 'anyone' = public access.
+	// Per-instance: the same house asset can be a private home at one
+	// placement and a public tavern at another.
+	EntryPolicy string `json:"entry_policy"`
 	// Per-instance tags (ZBBS-069) — role tags applied to THIS placed
 	// object. Always a (possibly empty) array, never null, so client code
 	// can iterate without a nil check.
@@ -229,6 +235,7 @@ func (app *App) handleListVillageObjects(w http.ResponseWriter, r *http.Request)
 	rows, err := app.DB.Query(r.Context(),
 		`SELECT o.id, o.asset_id, o.current_state, o.x, o.y,
 		        o.placed_by, o.owner, o.display_name, o.attached_to,
+		        o.entry_policy,
 		        COALESCE(t.tags, ARRAY[]::varchar[]),
 		        o.loiter_offset_x, o.loiter_offset_y,
 		        a.door_offset_x, a.door_offset_y, a.footprint_bottom
@@ -255,6 +262,7 @@ func (app *App) handleListVillageObjects(w http.ResponseWriter, r *http.Request)
 		var rawLoiterX, rawLoiterY sql.NullInt32
 		if err := rows.Scan(&obj.ID, &obj.AssetID, &obj.CurrentState,
 			&obj.X, &obj.Y, &obj.PlacedBy, &obj.Owner, &obj.DisplayName, &obj.AttachedTo,
+			&obj.EntryPolicy,
 			&obj.Tags,
 			&rawLoiterX, &rawLoiterY,
 			&doorX, &doorY, &footprintBottom); err != nil {
@@ -292,14 +300,23 @@ func (app *App) handleCreateVillageObject(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// Look up the asset's default state
+	// Look up default state and door coords. Door presence is what gates
+	// the default entry policy: assets with a configured doorway default
+	// to 'anyone' (the placement is enterable on creation), assets without
+	// to 'none' (decorative — the editor can override per instance).
 	var defaultState string
+	var doorX, doorY sql.NullInt32
 	err := app.DB.QueryRow(r.Context(),
-		`SELECT default_state FROM asset WHERE id = $1`, req.AssetID,
-	).Scan(&defaultState)
+		`SELECT default_state, door_offset_x, door_offset_y FROM asset WHERE id = $1`, req.AssetID,
+	).Scan(&defaultState, &doorX, &doorY)
 	if err != nil {
 		jsonError(w, "Unknown asset_id", http.StatusBadRequest)
 		return
+	}
+
+	entryPolicy := "none"
+	if doorX.Valid && doorY.Valid {
+		entryPolicy = "anyone"
 	}
 
 	// Get the authenticated user who's placing the object
@@ -311,9 +328,9 @@ func (app *App) handleCreateVillageObject(w http.ResponseWriter, r *http.Request
 
 	id := newUUIDv7()
 	_, err = app.DB.Exec(r.Context(),
-		`INSERT INTO village_object (id, asset_id, current_state, x, y, placed_by, attached_to)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		id, req.AssetID, defaultState, req.X, req.Y, placedBy, req.AttachedTo,
+		`INSERT INTO village_object (id, asset_id, current_state, x, y, placed_by, attached_to, entry_policy)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		id, req.AssetID, defaultState, req.X, req.Y, placedBy, req.AttachedTo, entryPolicy,
 	)
 	if err != nil {
 		jsonError(w, "Failed to create object", http.StatusInternalServerError)
@@ -328,6 +345,7 @@ func (app *App) handleCreateVillageObject(w http.ResponseWriter, r *http.Request
 		Y:            req.Y,
 		PlacedBy:     placedBy,
 		AttachedTo:   req.AttachedTo,
+		EntryPolicy:  entryPolicy,
 	}
 	jsonResponse(w, http.StatusCreated, obj)
 	app.Hub.Broadcast(WorldEvent{Type: "object_created", Data: obj})
@@ -451,6 +469,73 @@ func (app *App) handleSetVillageObjectOwner(w http.ResponseWriter, r *http.Reque
 
 	w.WriteHeader(http.StatusNoContent)
 	app.Hub.Broadcast(WorldEvent{Type: "object_owner_changed", Data: map[string]interface{}{"id": id, "owner": req.Owner}})
+}
+
+// handleSetVillageObjectEntryPolicy changes who can enter a placed
+// structure (ZBBS-101). Three values, validated against the same CHECK
+// constraint the schema enforces. Editor-side validation refuses the
+// 'owner' policy when no actor has this structure as their home or work
+// — the structure would otherwise be silently inaccessible — and the
+// server enforces the same rule so a stale editor can't slip past.
+//
+// Broadcasts object_entry_policy_changed so other connected editors
+// re-render any policy badges they're showing.
+func (app *App) handleSetVillageObjectEntryPolicy(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		jsonError(w, "Missing object ID", http.StatusBadRequest)
+		return
+	}
+
+	var req struct {
+		EntryPolicy string `json:"entry_policy"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.EntryPolicy != "none" && req.EntryPolicy != "owner" && req.EntryPolicy != "anyone" {
+		jsonError(w, "entry_policy must be 'none', 'owner', or 'anyone'", http.StatusBadRequest)
+		return
+	}
+
+	// Setting 'owner' on a structure with no associated actor would lock
+	// the structure with no key-holder. Refuse rather than silently produce
+	// an unenterable building.
+	if req.EntryPolicy == "owner" {
+		var associatedCount int
+		if err := app.DB.QueryRow(r.Context(),
+			`SELECT COUNT(*) FROM actor
+			  WHERE home_structure_id::text = $1 OR work_structure_id::text = $1`,
+			id,
+		).Scan(&associatedCount); err != nil {
+			jsonError(w, "Failed to validate entry policy", http.StatusInternalServerError)
+			return
+		}
+		if associatedCount == 0 {
+			jsonError(w, "Cannot set entry_policy='owner' on a structure with no associated actor — assign an NPC's home or work to this structure first", http.StatusBadRequest)
+			return
+		}
+	}
+
+	result, err := app.DB.Exec(r.Context(),
+		`UPDATE village_object SET entry_policy = $1 WHERE id = $2`,
+		req.EntryPolicy, id,
+	)
+	if err != nil {
+		jsonError(w, "Failed to update entry policy", http.StatusInternalServerError)
+		return
+	}
+	if result.RowsAffected() == 0 {
+		jsonError(w, "Object not found", http.StatusNotFound)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+	app.Hub.Broadcast(WorldEvent{
+		Type: "object_entry_policy_changed",
+		Data: map[string]any{"id": id, "entry_policy": req.EntryPolicy},
+	})
 }
 
 // handleSetVillageObjectDisplayName assigns or changes the display name of an object.
@@ -698,10 +783,17 @@ func (app *App) handleBulkCreateVillageObjects(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	// Pre-fetch default states for all referenced assets
-	defaultStates := map[string]string{}
+	// Pre-fetch default states + door presence for all referenced assets.
+	// Door presence drives the seeded entry_policy: with a door, the
+	// placement is enterable on creation ('anyone'); without, decorative
+	// ('none'). Editor can override per instance afterwards.
+	type assetMeta struct {
+		state    string
+		hasDoor  bool
+	}
+	assetsMeta := map[string]assetMeta{}
 	stateRows, err := app.DB.Query(r.Context(),
-		`SELECT id, default_state FROM asset`,
+		`SELECT id, default_state, door_offset_x IS NOT NULL AND door_offset_y IS NOT NULL FROM asset`,
 	)
 	if err != nil {
 		jsonError(w, "Internal server error", http.StatusInternalServerError)
@@ -710,10 +802,11 @@ func (app *App) handleBulkCreateVillageObjects(w http.ResponseWriter, r *http.Re
 	defer stateRows.Close()
 	for stateRows.Next() {
 		var id, state string
-		if err := stateRows.Scan(&id, &state); err != nil {
+		var hasDoor bool
+		if err := stateRows.Scan(&id, &state, &hasDoor); err != nil {
 			continue
 		}
-		defaultStates[id] = state
+		assetsMeta[id] = assetMeta{state: state, hasDoor: hasDoor}
 	}
 
 	tx, err := app.DB.Begin(r.Context())
@@ -728,15 +821,19 @@ func (app *App) handleBulkCreateVillageObjects(w http.ResponseWriter, r *http.Re
 		if obj.AssetID == "" {
 			continue
 		}
-		state, ok := defaultStates[obj.AssetID]
+		meta, ok := assetsMeta[obj.AssetID]
 		if !ok {
 			continue // skip unknown assets
 		}
+		entryPolicy := "none"
+		if meta.hasDoor {
+			entryPolicy = "anyone"
+		}
 		id := newUUIDv7()
 		_, err := tx.Exec(r.Context(),
-			`INSERT INTO village_object (id, asset_id, current_state, x, y)
-			 VALUES ($1, $2, $3, $4, $5)`,
-			id, obj.AssetID, state, obj.X, obj.Y,
+			`INSERT INTO village_object (id, asset_id, current_state, x, y, entry_policy)
+			 VALUES ($1, $2, $3, $4, $5, $6)`,
+			id, obj.AssetID, meta.state, obj.X, obj.Y, entryPolicy,
 		)
 		if err != nil {
 			jsonError(w, "Failed to create objects", http.StatusInternalServerError)
@@ -745,9 +842,10 @@ func (app *App) handleBulkCreateVillageObjects(w http.ResponseWriter, r *http.Re
 		created = append(created, villageObject{
 			ID:           id,
 			AssetID:      obj.AssetID,
-			CurrentState: state,
+			CurrentState: meta.state,
 			X:            obj.X,
 			Y:            obj.Y,
+			EntryPolicy:  entryPolicy,
 		})
 	}
 

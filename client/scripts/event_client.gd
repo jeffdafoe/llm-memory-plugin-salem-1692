@@ -219,8 +219,8 @@ func _handle_message(data: String) -> void:
                 world.apply_world_environment_added(event_data)
         "asset_door_updated":
             _on_asset_door_updated(event_data)
-        "asset_enterable_updated":
-            _on_asset_enterable_updated(event_data)
+        "object_entry_policy_changed":
+            _on_object_entry_policy_changed(event_data)
         "asset_visible_when_inside_updated":
             _on_asset_visible_when_inside_updated(event_data)
         "asset_stand_updated":
@@ -266,24 +266,24 @@ func _on_asset_door_updated(data: Dictionary) -> void:
             if editor.has_method("refresh_door_marker"):
                 editor.refresh_door_marker()
 
-## Apply a server-broadcast enterable toggle. Updates the catalog so the
-## door marker and structure picker react on the next selection; if the
-## toggled asset is currently selected, refresh the door marker right away
-## (appear or disappear depending on the new value).
-func _on_asset_enterable_updated(data: Dictionary) -> void:
-    var asset_id: String = data.get("asset_id", "")
-    if asset_id == "" or not Catalog.assets.has(asset_id):
+## Apply a server-broadcast entry_policy change (ZBBS-101). Updates the
+## meta on the placed object node and refreshes the editor panel if the
+## affected placement is currently selected, so a concurrent admin's
+## change reflects in this admin's dropdown without a page reload.
+func _on_object_entry_policy_changed(data: Dictionary) -> void:
+    var object_id: String = str(data.get("id", ""))
+    var policy: String = str(data.get("entry_policy", ""))
+    if object_id == "" or policy == "":
         return
-    var asset = Catalog.assets[asset_id]
-    asset["enterable"] = bool(data.get("enterable", false))
-    Catalog.assets[asset_id] = asset
+    var world = get_node_or_null("/root/Main/World")
+    if world == null or not world.placed_objects.has(object_id):
+        return
+    var node: Node2D = world.placed_objects[object_id]
+    node.set_meta("entry_policy", policy)
     var editor = get_node_or_null("/root/Main/Editor")
-    if editor != null and editor.selected_object != null:
-        if editor.selected_object.get_meta("asset_id", "") == asset_id:
-            # _add_door_marker() tears down and rebuilds — use it for both
-            # appear and disappear paths so we don't need a separate branch.
-            if editor.has_method("_add_door_marker"):
-                editor._add_door_marker(editor.selected_object)
+    if editor != null and editor.selected_object == node:
+        # Re-emit the selection so the panel re-syncs the dropdown.
+        editor._select_object(node)
 
 ## Apply a server-broadcast visible_when_inside toggle. Updates the
 ## catalog so future inside flips render correctly, and nudges any
@@ -298,7 +298,7 @@ func _on_asset_visible_when_inside_updated(data: Dictionary) -> void:
     Catalog.assets[asset_id] = asset
     # Stand marker visibility depends on this flag — refresh if the
     # currently-selected placement uses this asset. Mirrors the
-    # enterable handler's door-marker refresh.
+    # entry_policy handler's panel refresh.
     var editor = get_node_or_null("/root/Main/Editor")
     if editor != null and editor.selected_object != null:
         if editor.selected_object.get_meta("asset_id", "") == asset_id:

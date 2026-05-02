@@ -77,7 +77,7 @@ var _npc_walk_start_screen: Vector2 = Vector2.ZERO
 var _door_marker: Node2D = null
 var _door_marker_asset_id: String = ""
 # Stand marker — orange counterpart to the blue door marker. Only shown
-# when the asset is enterable AND visible_when_inside (market-stall style
+# when the asset has a door tile AND visible_when_inside=true (market-stall style
 # structures where the NPC renders inside the footprint). Falls back to
 # the door position when stand_offset is unset.
 var _stand_marker: Node2D = null
@@ -516,7 +516,12 @@ func _try_assign_structure(screen_pos: Vector2, is_home: bool) -> void:
         return
     var asset_id: String = hit.get_meta("asset_id", "")
     var asset: Dictionary = Catalog.assets.get(asset_id, {})
-    if not bool(asset.get("enterable", false)):
+    # Home/work assignment requires the asset to have a door tile —
+    # without one there's no walkable entry point for the scheduler
+    # (post-ZBBS-101 the per-instance entry_policy gates runtime entry,
+    # but eligibility as a home/work target is an asset-level question:
+    # is this physically a building?).
+    if asset.get("door_offset_x", null) == null or asset.get("door_offset_y", null) == null:
         return
     var structure_id: String = hit.get_meta("object_id", "")
     if structure_id == "":
@@ -726,6 +731,7 @@ func _select_object(node: Node2D) -> void:
         "owner": node.get_meta("owner", ""),
         "display_name": node.get_meta("display_name", ""),
         "tags": node.get_meta("tags", []),
+        "entry_policy": node.get_meta("entry_policy", "none"),
     })
 
 func _deselect() -> void:
@@ -1075,13 +1081,17 @@ func _remove_selection_border() -> void:
 # while the structure is selected. Dragging it snaps to the tile grid and
 # PATCHes /api/assets/{id}/door on release.
 
-## Draw the door marker as a child of the selected structure, or do nothing
-## if the asset isn't a structure.
+## Draw the door marker as a child of the selected structure. Skipped
+## when the asset isn't categorised as a structure — fences, decoratives
+## and ground props don't need a door tile. Post-ZBBS-101 the marker is
+## decoupled from any "is this enterable" flag; admins drag it onto the
+## actual doorway and the entry_policy dropdown decides who walks
+## through.
 func _add_door_marker(node: Node2D) -> void:
     _remove_door_marker()
     var asset_id: String = node.get_meta("asset_id", "")
     var asset = Catalog.assets.get(asset_id, {})
-    if not bool(asset.get("enterable", false)):
+    if str(asset.get("category", "")) != "structure":
         return
 
     _door_marker_asset_id = asset_id
@@ -1142,10 +1152,10 @@ func _draw_door_marker_contents(_asset: Dictionary) -> void:
     if _door_marker == null:
         return
     var half: float = TILE_SIZE / 2.0 - 2.0
-    # Always blue when shown — when enterable=false the marker isn't
-    # drawn at all, so a separate "unset" styling is unnecessary. The
-    # placeholder position is just a starting point for the admin to
-    # drag onto the actual door tile.
+    # Always blue when shown — non-structure assets skip the marker
+    # entirely (see _add_door_marker), so a separate "unset" styling is
+    # unnecessary. The placeholder position is just a starting point for
+    # the admin to drag onto the actual door tile.
     var fill := Polygon2D.new()
     fill.color = Color(0.25, 0.55, 1.0, 0.9)
     fill.polygon = PackedVector2Array([
@@ -1248,10 +1258,10 @@ func _add_stand_marker(node: Node2D) -> void:
     _remove_stand_marker()
     var asset_id: String = node.get_meta("asset_id", "")
     var asset = Catalog.assets.get(asset_id, {})
-    # Only meaningful for see-through structures. Enterable gate keeps it
-    # aligned with the door marker's visibility rules — no stand without
-    # a way in.
-    if not bool(asset.get("enterable", false)):
+    # Only meaningful for see-through structures. Same category gate the
+    # door marker uses (post-ZBBS-101) — the stand offset only makes
+    # sense when the door marker is also drawn.
+    if str(asset.get("category", "")) != "structure":
         return
     if not bool(asset.get("visible_when_inside", false)):
         return
@@ -1413,11 +1423,11 @@ func _cancel_door_drag() -> void:
 # --- Loiter marker (ZBBS-075) ---
 #
 # Per-instance green marker for "where visitors stand outside this
-# placement." Always shown when a placement is selected (no enterable /
-# tag gating — admins can ignore the marker on placements that don't
-# warrant a loiter spot). State lives on the village_object row, not the
-# asset, so two placements of the same Mana Seed sprite can have
-# different loiter spots.
+# placement." Always shown when a placement is selected (no asset-level
+# gating — admins can ignore the marker on placements that don't warrant
+# a loiter spot). State lives on the village_object row, not the asset,
+# so two placements of the same Mana Seed sprite can have different
+# loiter spots.
 #
 # Default position when unset: falls back to the asset's door_offset (one
 # south of anchor when the asset has no door_offset either). The intent

@@ -989,6 +989,23 @@ func _on_room_event(data: Dictionary) -> void:
     _append_log_line(actor_name, text, kind)
 
 
+## Public entry for client-only narrations (e.g. ZBBS-101 knock outcomes).
+## Renders as a dimmer narration line in the main log without round-
+## tripping through the server's room_event broadcast — there's no
+## audience for a knock besides the player who issued it. The panel's
+## open() requires a huddle, which the player typically does NOT have
+## at the moment of a knock; bumps the unread counter and surfaces a
+## brief banner so the player notices the response even when the sheet
+## is closed.
+func append_local_narration(text: String) -> void:
+    if text.is_empty():
+        return
+    _append_log_line("", text, "act")
+    if not is_open:
+        unread_count += 1
+        _update_launcher_text()
+
+
 func _append_log_line(speaker: String, text: String, kind: String = "", is_backload: bool = false) -> void:
     var was_at_bottom := _is_log_near_bottom()
 

@@ -1221,6 +1221,10 @@ func _place_object(data: Dictionary) -> void:
     # empty); accept either an Array or omit-as-null and normalize.
     var tags_raw = data.get("tags", [])
     container.set_meta("tags", tags_raw if tags_raw is Array else [])
+    # Per-instance entry policy (ZBBS-101). 'none' / 'owner' / 'anyone'.
+    # Drives the editor's structure detail dropdown and the PC click
+    # handler's enter-vs-knock decision (server-side, this duplicates).
+    container.set_meta("entry_policy", str(data.get("entry_policy", "none")))
     # Per-instance loiter offset (ZBBS-075). Tile-unit ints, both nullable.
     # Stored as variants so the editor can distinguish "not set" (null)
     # from "set to (0, 0)" (legitimate origin offset). The fill state of
@@ -1887,7 +1891,12 @@ func get_structure_objects() -> Array:
         if asset_id == "":
             continue
         var asset: Dictionary = Catalog.assets.get(asset_id, {})
-        if not bool(asset.get("enterable", false)):
+        # Eligibility for home/work dropdown: physically a building.
+        # Per-instance entry_policy gates runtime entry but doesn't
+        # exclude a structure from being SOMEONE'S home or work — in
+        # fact, having an associated NPC is what unlocks the 'owner'
+        # policy (server validates).
+        if str(asset.get("category", "")) != "structure":
             continue
         var display_name: String = node.get_meta("display_name", "")
         var label: String = display_name if display_name != "" else asset.get("name", asset_id)
