@@ -170,7 +170,7 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 		// "pay-and-thank-you" sequence unfolds in the natural order:
 		// transaction first, speech next iteration. All inline tools
 		// execute and let the loop continue — none ends the turn.
-		var terminalCall, payCall, consumeCall, serveCall, speakCall, actCall, observation *agentToolCall
+		var terminalCall, payCall, consumeCall, serveCall, gatherCall, summonCall, speakCall, actCall, observation *agentToolCall
 		for i := range reply.ToolCalls {
 			tc := &reply.ToolCalls[i]
 			switch tc.Name {
@@ -189,6 +189,14 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			case "serve":
 				if serveCall == nil {
 					serveCall = tc
+				}
+			case "gather":
+				if gatherCall == nil {
+					gatherCall = tc
+				}
+			case "summon":
+				if summonCall == nil {
+					summonCall = tc
 				}
 			case "speak":
 				if speakCall == nil {
@@ -299,6 +307,38 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			_, _ = app.executeAgentCommit(ctx, r, actCall, sceneID)
 			currentMessage = "[OK] You did that. Continue your turn — you may speak, move, or call done."
 			currentToolCallID = actCall.ID
+			continue
+		}
+
+		if gatherCall != nil {
+			// gather is non-terminal — the typical chain is gather then
+			// move_to back home, or gather then act/speak about it.
+			// Surfaces the rejection text verbatim so a "not at a source"
+			// or "depleted" outcome feeds the model's next decision
+			// instead of silently disappearing.
+			result, errStr := app.executeAgentCommit(ctx, r, gatherCall, sceneID)
+			if result == "ok" {
+				currentMessage = "[OK] You filled your inventory. Continue your turn — you may speak, move, or call done."
+			} else {
+				currentMessage = fmt.Sprintf("[Gather %s] %s. Continue your turn — you may correct it, speak, move, or call done.", result, errStr)
+			}
+			currentToolCallID = gatherCall.ID
+			continue
+		}
+
+		if summonCall != nil {
+			// summon is non-terminal — sender typically follows the call
+			// with a speak ("I've sent for them") or a move. Like pay,
+			// the rejection text matters: the model should know if the
+			// summons was rejected (cooldown / co-located / unknown
+			// target) so it doesn't loop "send messenger, send messenger".
+			result, errStr := app.executeAgentCommit(ctx, r, summonCall, sceneID)
+			if result == "ok" {
+				currentMessage = "[OK] The messenger is on their way. Continue your turn — you may speak, move, or call done."
+			} else {
+				currentMessage = fmt.Sprintf("[Summon %s] %s. Continue your turn — you may correct it, speak, move, or call done.", result, errStr)
+			}
+			currentToolCallID = summonCall.ID
 			continue
 		}
 
