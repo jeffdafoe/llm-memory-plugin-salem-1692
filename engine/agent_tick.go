@@ -1348,7 +1348,8 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 	// in other actors' perceptions; move_to stamps the FROM structure
 	// (where the actor was when they decided to leave) so departures
 	// appear in the room they left, not the room they're walking to.
-	if (tc.Name == "speak" || tc.Name == "act" || tc.Name == "move_to") && r.InsideStructureID.Valid {
+	if (tc.Name == "speak" || tc.Name == "act" || tc.Name == "move_to" ||
+		tc.Name == "serve" || tc.Name == "pay" || tc.Name == "consume") && r.InsideStructureID.Valid {
 		if tc.Input == nil {
 			tc.Input = map[string]interface{}{}
 		}
@@ -1655,6 +1656,27 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		})
 		result = pr.Result
 		errStr = pr.Err
+		// Parallel narration broadcast for the talk panel. Mirrors the
+		// act/departure pattern — pay events are observable by anyone in
+		// the room, and silently moving coins/items would leave the
+		// player wondering what just happened. Skipped for non-ok or
+		// when there's no room scope (open village).
+		if result == "ok" && r.InsideStructureID.Valid {
+			text := narratePay(r.DisplayName, tc.Input)
+			if text != "" {
+				app.Hub.Broadcast(WorldEvent{
+					Type: "room_event",
+					Data: map[string]interface{}{
+						"actor_id":     r.ID,
+						"actor_name":   r.DisplayName,
+						"kind":         "pay",
+						"text":         text,
+						"structure_id": r.InsideStructureID.String,
+						"at":           time.Now().UTC().Format(time.RFC3339),
+					},
+				})
+			}
+		}
 
 	case "consume":
 		item, _ := tc.Input["item"].(string)
@@ -1668,6 +1690,27 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		cr := app.executeConsume(ctx, r, item, qty)
 		result = cr.Result
 		errStr = cr.Err
+		// Room narration: an NPC eating/drinking alone in the tavern is
+		// part of the scene. Verb selection (eats/drinks/rests) comes
+		// from the item's satisfies_attribute so "Jefferey drinks ale"
+		// reads naturally rather than the generic "consumes".
+		if result == "ok" && r.InsideStructureID.Valid {
+			attr := app.itemAttributeFor(ctx, item)
+			text := narrateConsume(r.DisplayName, tc.Input, attr)
+			if text != "" {
+				app.Hub.Broadcast(WorldEvent{
+					Type: "room_event",
+					Data: map[string]interface{}{
+						"actor_id":     r.ID,
+						"actor_name":   r.DisplayName,
+						"kind":         "consume",
+						"text":         text,
+						"structure_id": r.InsideStructureID.String,
+						"at":           time.Now().UTC().Format(time.RFC3339),
+					},
+				})
+			}
+		}
 
 	case "serve":
 		item, _ := tc.Input["item"].(string)
@@ -1705,6 +1748,29 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		})
 		result = sr.Result
 		errStr = sr.Err
+		// Room narration: serve is the canonical "tavernkeeper hands
+		// food/drink to a customer" verb. Without this broadcast a PC
+		// who's served sees nothing in the talk panel — the model's
+		// speak is optional, the serve mechanics are not. The kind is
+		// "serve" so a future client could style it differently if
+		// desired; the existing client treats any non-speech kind as
+		// narration.
+		if result == "ok" && r.InsideStructureID.Valid {
+			text := narrateServe(r.DisplayName, tc.Input)
+			if text != "" {
+				app.Hub.Broadcast(WorldEvent{
+					Type: "room_event",
+					Data: map[string]interface{}{
+						"actor_id":     r.ID,
+						"actor_name":   r.DisplayName,
+						"kind":         "serve",
+						"text":         text,
+						"structure_id": r.InsideStructureID.String,
+						"at":           time.Now().UTC().Format(time.RFC3339),
+					},
+				})
+			}
+		}
 
 	default:
 		result, errStr = "rejected", fmt.Sprintf("unknown commit tool: %s", tc.Name)

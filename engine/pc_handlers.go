@@ -104,9 +104,12 @@ type pcHuddleMember struct {
 //   - "speech_npc" / "speech_player" — quoted dialogue, color-coded
 //   - "act"                         — italic narration ("X poured ale.")
 //   - "departure"                   — italic narration ("X left for home.")
+//   - "serve"                       — italic narration ("X serves Y stew.")
+//   - "pay"                         — italic narration ("Y pays X 9 coins.")
+//   - "consume"                     — italic narration ("X drinks ale.")
 //
 // Text is pre-rendered server-side so the client doesn't have to know
-// the verb-phrase grammar or destination wording.
+// the verb-phrase grammar, destination wording, or item categories.
 type pcRecentSpeech struct {
 	SpeakerName string    `json:"speaker_name"`
 	Text        string    `json:"text"`
@@ -261,7 +264,7 @@ func (app *App) loadRecentSpeechAtStructure(ctx context.Context, structureID str
 		       ac.home_structure_id, ac.work_structure_id
 		FROM agent_action_log al
 		LEFT JOIN actor ac ON ac.id = al.actor_id
-		WHERE al.action_type IN ('speak', 'act', 'move_to')
+		WHERE al.action_type IN ('speak', 'act', 'move_to', 'serve', 'pay', 'consume')
 		  AND al.result = 'ok'
 		  AND al.payload->>'structure_id' = $1
 		  AND al.occurred_at > $2
@@ -316,6 +319,25 @@ func (app *App) loadRecentSpeechAtStructure(ctx context.Context, structureID str
 			}
 			entry.Text = app.narrateMoveDeparture(ctx, speakerName, homeStructureID, workStructureID, dest)
 			entry.Kind = "departure"
+		case "serve":
+			entry.Text = narrateServe(speakerName, payload)
+			if entry.Text == "" {
+				continue
+			}
+			entry.Kind = "serve"
+		case "pay":
+			entry.Text = narratePay(speakerName, payload)
+			if entry.Text == "" {
+				continue
+			}
+			entry.Kind = "pay"
+		case "consume":
+			itemName, _ := payload["item"].(string)
+			entry.Text = narrateConsume(speakerName, payload, app.itemAttributeFor(ctx, itemName))
+			if entry.Text == "" {
+				continue
+			}
+			entry.Kind = "consume"
 		default:
 			continue
 		}
