@@ -775,6 +775,7 @@ func _apply_pc_state(data: Dictionary) -> void:
     structure_name = str(data.get("structure_name", ""))
     home_name = str(data.get("home_name", ""))
 
+    var prev_huddle_size: int = huddle_members.size()
     var members = data.get("huddle_members", [])
     if typeof(members) == TYPE_ARRAY:
         huddle_members = members
@@ -788,12 +789,30 @@ func _apply_pc_state(data: Dictionary) -> void:
     _update_visibility_from_state()
     _maybe_auto_attention_for_first_encounter()
 
-    # Knock-success auto-open: main.gd flagged us to open the sheet on
-    # the next /pc/me response. Honor only when there's actually someone
-    # to talk to (huddle non-empty); otherwise the open() guard would
-    # no-op and we'd still want to try again on the next refresh.
+    # Auto-open on huddle gain. Two paths land here:
+    # 1. Knock-success: main.gd sets _open_after_next_refresh and we honor
+    #    once huddle_members has populated.
+    # 2. Natural entry into a structure with someone there (tavern, smithy):
+    #    huddle_members goes from empty -> non-empty on the periodic
+    #    refresh after npc_arrived inside-flips the PC. Without auto-open
+    #    here, the PC enters the tavern, sprite hides, and the player has
+    #    to find the launcher pill — easy to miss.
+    # user_closed (set when player explicitly hits Close) suppresses both
+    # paths so an explicit close isn't immediately reversed.
+    # Reset user_closed when the player leaves a huddle (huddle goes
+    # empty) — that's the natural session boundary. Without this, a
+    # close from an earlier conversation would suppress auto-open
+    # forever afterward, even at a fresh location.
+    if prev_huddle_size > 0 and huddle_members.is_empty():
+        user_closed = false
+
+    var should_auto_open := false
     if _open_after_next_refresh and not huddle_members.is_empty():
         _open_after_next_refresh = false
+        should_auto_open = true
+    elif prev_huddle_size == 0 and not huddle_members.is_empty() and not user_closed:
+        should_auto_open = true
+    if should_auto_open:
         open()
 
 
