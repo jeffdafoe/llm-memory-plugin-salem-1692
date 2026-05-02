@@ -1832,6 +1832,11 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 			consumeNow = v
 		}
 		// recipients arrives as []interface{} from JSON; coerce to []string.
+		// Tolerate two provider quirks: (a) single-element lists arriving
+		// as a bare string, (b) the entire array re-serialized as a JSON
+		// string (e.g. `"[\"Wendy\",\"Jefferey\"]"`). Without (b) the
+		// model's "two recipients" call lands as one impossibly-named
+		// recipient and gets rejected; saw this on real serves.
 		var recipientNames []string
 		if raw, ok := tc.Input["recipients"].([]interface{}); ok {
 			for _, v := range raw {
@@ -1840,8 +1845,17 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 				}
 			}
 		} else if s, ok := tc.Input["recipients"].(string); ok {
-			// Some providers single-stringify a one-element list. Tolerate.
-			recipientNames = []string{s}
+			trimmed := strings.TrimSpace(s)
+			if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+				var parsed []string
+				if err := json.Unmarshal([]byte(trimmed), &parsed); err == nil {
+					recipientNames = parsed
+				} else {
+					recipientNames = []string{s}
+				}
+			} else {
+				recipientNames = []string{s}
+			}
 		}
 		sr := app.executeServe(ctx, r, serveRequest{
 			RecipientNames: recipientNames,
