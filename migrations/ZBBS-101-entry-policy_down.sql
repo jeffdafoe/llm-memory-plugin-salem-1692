@@ -16,6 +16,4 @@ UPDATE asset SET enterable = true
 
 ALTER TABLE village_object DROP COLUMN entry_policy;
 
-DELETE FROM migrations_applied WHERE migration_name = 'ZBBS-101-entry-policy';
-
 COMMIT;
