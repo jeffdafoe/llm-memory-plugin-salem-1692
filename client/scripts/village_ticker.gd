@@ -8,25 +8,31 @@ extends PanelContainer
 ## to the Village tab (mechanical events live there; the ticker is
 ## chronicler-curated atmosphere only — they don't repeat content).
 ##
-## Always-latest model: at most one line is in flight, at most one
-## queued. A new chronicler fire arriving mid-scroll replaces whatever
-## was queued, so when the current scroll finishes the marquee jumps
-## straight to the latest atmosphere — never a backlog of stale prose
-## from earlier in the day.
+## Always-latest model: at most one active line. A new chronicler fire
+## replaces it (politely — the current scroll, if any, finishes first
+## so the player isn't yanked mid-read). After each scroll the line
+## re-scrolls on a schedule: a 5-scroll burst at 3-minute intervals,
+## then a 15-minute heartbeat. A new line resets the burst counter.
 
 signal clicked
 
 const SCROLL_SPEED: float = 40.0
 const TICKER_HEIGHT: float = 24.0
 const SIDE_PADDING: float = 12.0
+const BURST_COUNT: int = 5
+const BURST_INTERVAL_SEC: float = 180.0
+const HEARTBEAT_INTERVAL_SEC: float = 900.0
 
 var _label: Label = null
 var _clip: Control = null
-var _queue: Array[String] = []
-var _current_text: String = ""
+var _active_line: String = ""
+var _pending_line: String = ""
+var _scrolling: bool = false
+var _burst_done: int = 0
 var _label_width: float = 0.0
 var _label_x: float = 0.0
 var _http: HTTPRequest = null
+var _repeat_timer: Timer = null
 # Dedupe by world_environment.id so a row that's in both the backload
 # response and a near-simultaneous WS broadcast only scrolls once.
 var _seen_ids: Dictionary = {}
@@ -72,6 +78,11 @@ func _ready() -> void:
     _http = HTTPRequest.new()
     add_child(_http)
     _http.request_completed.connect(_on_environment_recent_completed)
+
+    _repeat_timer = Timer.new()
+    _repeat_timer.one_shot = true
+    _repeat_timer.timeout.connect(_on_repeat_timeout)
+    add_child(_repeat_timer)
 
 
 # Wired by main.gd after the world is ready. Subscribes to the live
@@ -138,30 +149,35 @@ func push_row(row: Dictionary) -> void:
     push(text)
 
 
-# Add a raw text line to the marquee. If idle, starts immediately;
-# otherwise replaces the queued slot so the next scroll jumps to the
-# latest line — anything that was queued in between gets skipped. We
-# don't cut the current scroll short because the player is actively
-# reading it; we just make sure they never have to wait through a
-# backlog to see what just happened.
+# Add a raw text line to the marquee. Same line as the active one is a
+# no-op (the schedule continues uninterrupted). A different line takes
+# over: if a scroll is in flight we let it finish and switch on the
+# next pass (player is mid-read), otherwise we cancel any pending
+# heartbeat and start the new line immediately. New line resets the
+# burst counter so the player gets the 5-scroll attention burst.
 func push(text: String) -> void:
     if text == "":
         return
-    if _current_text == "":
-        _start_text(text)
+    if text == _active_line:
         return
-    _queue.clear()
-    _queue.append(text)
+    if _scrolling:
+        _pending_line = text
+        return
+    _active_line = text
+    _pending_line = ""
+    _burst_done = 0
+    _repeat_timer.stop()
+    _start_scroll()
 
 
-func _start_text(text: String) -> void:
-    _current_text = text
+func _start_scroll() -> void:
+    _scrolling = true
     # Reset size and re-snap to the label's intrinsic size before
     # measuring — without this, custom_minimum_size from a previous
     # text or stale layout state can leave _label_width wrong on the
     # first frame.
     _label.custom_minimum_size = Vector2.ZERO
-    _label.text = text
+    _label.text = _active_line
     _label.reset_size()
     _label.size = _label.get_minimum_size()
     _label_width = _label.size.x
@@ -170,21 +186,42 @@ func _start_text(text: String) -> void:
 
 
 func _process(delta: float) -> void:
-    if _current_text == "":
+    if not _scrolling:
         return
     _label_x -= SCROLL_SPEED * delta
     _label.position.x = _label_x
     if _label_x + _label_width + SIDE_PADDING < 0:
-        _advance()
+        _on_scroll_finished()
 
 
-func _advance() -> void:
-    if _queue.is_empty():
-        _current_text = ""
-        _label.text = ""
-        _label_x = 0
+func _on_scroll_finished() -> void:
+    _scrolling = false
+    # A line came in mid-scroll; switch to it now and reset the burst.
+    if _pending_line != "":
+        _active_line = _pending_line
+        _pending_line = ""
+        _burst_done = 0
+        _repeat_timer.stop()
+        _start_scroll()
         return
-    _start_text(_queue.pop_front())
+    if _active_line == "":
+        _label.text = ""
+        return
+    # Schedule the next re-scroll. First BURST_COUNT scrolls fire at
+    # the 3-minute interval; everything after is the slow heartbeat.
+    _burst_done += 1
+    var delay: float
+    if _burst_done < BURST_COUNT:
+        delay = BURST_INTERVAL_SEC
+    else:
+        delay = HEARTBEAT_INTERVAL_SEC
+    _repeat_timer.start(delay)
+
+
+func _on_repeat_timeout() -> void:
+    if _active_line == "":
+        return
+    _start_scroll()
 
 
 # Click anywhere on the ticker → emit clicked. main.gd routes this to
