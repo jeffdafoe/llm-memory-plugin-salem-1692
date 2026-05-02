@@ -1785,7 +1785,7 @@ signal object_tags_updated(object_id: String, tags: Array)
 ## prefixes each line with a clock time so the player can scan the
 ## conversation chronologically. Emitted by event_client when an
 ## `npc_spoke` event lands.
-signal npc_spoke(npc_id: String, name: String, text: String, kind: String, at: String)
+signal npc_spoke(npc_id: String, name: String, text: String, kind: String, at: String, structure_id: String)
 
 func apply_npc_spoke(data: Dictionary) -> void:
     var npc_id: String = str(data.get("npc_id", ""))
@@ -1793,10 +1793,16 @@ func apply_npc_spoke(data: Dictionary) -> void:
     var text: String = str(data.get("text", ""))
     var kind: String = str(data.get("kind", "npc"))
     var at: String = str(data.get("at", ""))
+    # structure_id scopes which room the speech happened in. Empty for
+    # outdoor speech (no structure) — talk panel filters on it so a PC
+    # at the apothecary doesn't see tavern dialogue, but the speech
+    # bubble in the world view ignores the field and renders every line
+    # over the speaker regardless of where the listener is.
+    var structure_id: String = str(data.get("structure_id", ""))
     if name == "" or text == "":
         return
     _spawn_speech_bubble(npc_id, text)
-    npc_spoke.emit(npc_id, name, text, kind, at)
+    npc_spoke.emit(npc_id, name, text, kind, at, structure_id)
 
 
 ## Spawn a SpeechBubble child on the speaker's container (NPC or PC).
