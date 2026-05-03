@@ -213,6 +213,52 @@ func (app *App) resolveLoiteringStructure(ctx context.Context, actorX, actorY fl
 	return id, name
 }
 
+// shopStockLine returns a perception line listing what the present
+// workers of structureID have on hand, formatted with quantities so the
+// LLM can decide whether to top up before leaving. Returns "" when no
+// worker is present (the unattended path handles that case) or when the
+// present workers have no inventory.
+//
+// Aggregates across multiple present workers — a Tavern with two
+// servers each holding bread x2 reads as "bread x4." Realistic for the
+// small-village scale; can split per-worker later if individual
+// proprietorship matters.
+//
+// The perceiver is excluded so an NPC at their own workplace doesn't
+// see their own stock listed back at them — they already see "Your
+// inventory: …" elsewhere in perception.
+func (app *App) shopStockLine(ctx context.Context, structureID, perceiverID string) string {
+	rows, err := app.DB.Query(ctx,
+		`SELECT k.name, SUM(ai.quantity)::int AS total
+		 FROM actor a
+		 JOIN actor_inventory ai ON ai.actor_id = a.id
+		 JOIN item_kind k ON k.name = ai.item_kind
+		 WHERE a.work_structure_id::text = $1
+		   AND a.inside_structure_id::text = $1
+		   AND a.id::text != $2
+		 GROUP BY k.name, k.sort_order
+		 HAVING SUM(ai.quantity) > 0
+		 ORDER BY k.sort_order, k.name`,
+		structureID, perceiverID)
+	if err != nil {
+		return ""
+	}
+	defer rows.Close()
+	var parts []string
+	for rows.Next() {
+		var name string
+		var qty int
+		if err := rows.Scan(&name, &qty); err != nil {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s x%d", name, qty))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "Items offered here: " + strings.Join(parts, ", ") + "."
+}
+
 // unattendedWorkersLine returns a perception line naming the assigned
 // workers of structureID who are not currently inside it. Returns "" when
 // (a) the structure has no assigned workers, or (b) at least one worker is

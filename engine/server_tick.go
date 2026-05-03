@@ -88,4 +88,13 @@ func (app *App) runServerTickOnce(ctx context.Context) {
 	// pipeline. No-op on most ticks (cheap setting read + date compare);
 	// fires only on the first tick after a UTC day rollover.
 	app.dispatchSimConversationPush(ctx)
+	// Self-tick scheduler drain (ZBBS-110) — fires NPC harnesses whose
+	// scheduled fire time has arrived. Single SQL UPDATE...RETURNING
+	// claims the rows atomically so a slow trigger doesn't get re-fired
+	// on the next server tick. Bounded LIMIT inside the query. Last in
+	// the handler list so it observes any state changes the prior
+	// handlers committed this tick (a shift boundary the worker
+	// scheduler enqueued, for instance, would already be visible to a
+	// self-tick that fires immediately after).
+	app.dispatchSelfTicks(ctx)
 }
