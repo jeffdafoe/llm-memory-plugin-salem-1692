@@ -821,9 +821,15 @@ func _build_resize_grip() -> void:
     resize_grip.visible = not is_mobile
     root.add_child(resize_grip)
     resize_grip.gui_input.connect(_on_resize_grip_input)
-    talk_sheet.resized.connect(_position_resize_grip)
+    # item_rect_changed (not resized) so position-only changes also retrigger
+    # — the panel is bottom-right anchored, so a viewport resize moves it
+    # without changing its size and the grip needs to follow.
+    talk_sheet.item_rect_changed.connect(_position_resize_grip)
     sheet_anchor.visibility_changed.connect(_position_resize_grip)
-    _position_resize_grip()
+    # Defer the initial read — Godot lays out children after the build
+    # frame, and reading talk_sheet.global_position synchronously here
+    # returns (0, 0) before the first layout pass.
+    call_deferred("_position_resize_grip")
 
 
 # Re-anchor the grip to the top-left corner of talk_sheet. Called on
@@ -1995,7 +2001,11 @@ func _update_responsive_layout() -> void:
 
     if resize_grip != null:
         resize_grip.visible = sheet_anchor.visible and not is_mobile
-        _position_resize_grip()
+        # Defer so the position read happens after the layout pass that
+        # this responsive update has just queued — viewport resize, mobile/
+        # desktop flip, and persisted-size apply all change talk_sheet's
+        # rect, but the new global_position isn't visible until next frame.
+        call_deferred("_position_resize_grip")
 
 
 func _apply_theme() -> void:
