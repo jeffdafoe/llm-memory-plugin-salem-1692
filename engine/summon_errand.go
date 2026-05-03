@@ -1030,6 +1030,14 @@ func (app *App) onChatAtTargetElapsed(ctx context.Context, errandID, summonerID,
 		); err != nil {
 			log.Printf("errand: clear summoner override: %v", err)
 		}
+		// Fire an immediate tick on the summoner. Without this, the
+		// summoner is left standing at the lamp post until some
+		// external cascade (PC speak, shift end, etc.) reaches them
+		// — they're free to act but the engine never asks them to
+		// reconsider where they are. Symmetric with the refusal
+		// branch, which already triggers the summoner so they can
+		// react to bad news.
+		go app.triggerImmediateTick(context.Background(), summonerID, "summon-delivered", true, "", "")
 
 		if _, err := app.DB.Exec(ctx, `
 			UPDATE summon_errand
