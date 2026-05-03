@@ -2850,9 +2850,11 @@ func show_npc_selection(info: Dictionary) -> void:
     _refresh_home_button_label()
     _refresh_work_button_label()
 
-    # Run Cycle is only meaningful when a behavior is assigned.
+    # Run Cycle is only meaningful when at least one attribute is assigned —
+    # the per-NPC behavior dispatcher walks attribute_definition.behaviors
+    # for each slug, so an attribute-less NPC has nothing to dispatch.
     if _npc_run_cycle_button != null:
-        _npc_run_cycle_button.disabled = current_behavior == ""
+        _npc_run_cycle_button.disabled = _npc_attributes_current_list.size() == 0
     # Go Home / Go to Work disabled when (a) no such structure linked, or
     # (b) the villager is already standing at that structure's door tile.
     # Position-based check rather than the inside flag, because inside can
