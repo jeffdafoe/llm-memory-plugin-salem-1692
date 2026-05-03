@@ -192,16 +192,16 @@ func _on_object_tags_loaded() -> void:
 func _on_object_tags_updated_from_world(object_id: String, tags: Array) -> void:
     if editor_panel != null:
         editor_panel.apply_object_tags_external(object_id, tags)
-
-func _on_npc_attributes_changed_from_world(npc_id: String, attributes: Array) -> void:
-    if editor_panel != null:
-        editor_panel.apply_npc_attributes_external(npc_id, attributes)
     # Loiter marker styling no longer depends on tags, but repaint anyway
     # so any future tag-driven decoration stays in sync.
     if editor != null and editor.selected_object != null:
         if editor.selected_object.get_meta("object_id", "") == object_id:
             if editor.has_method("refresh_loiter_marker"):
                 editor.refresh_loiter_marker()
+
+func _on_npc_attributes_changed_from_world(npc_id: String, attributes: Array) -> void:
+    if editor_panel != null:
+        editor_panel.apply_npc_attributes_external(npc_id, attributes)
 
 func _build_ui() -> void:
     # Top bar — lives on the editor CanvasLayer
