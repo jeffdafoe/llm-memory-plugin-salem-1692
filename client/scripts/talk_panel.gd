@@ -15,9 +15,9 @@ extends CanvasLayer
 ##
 ## Runtime dependencies:
 ##   - /root/Auth (api_base + auth_headers())
-##   - /root/Main/World.npc_spoke(name, text, kind) signal
-##   - POST /api/village/pc/me  → state
-##   - POST /api/village/pc/speak {text}  → broadcast
+##   - /root/Main/World.npc_spoke(npc_id, name, text, kind, at, structure_id, mentions, speaker_x, speaker_y) signal
+##   - POST /api/village/pc/me  → state (includes self x/y, used to filter outdoor speech by distance)
+##   - POST /api/village/pc/speak {text}  → broadcast (indoor: huddle scope; outdoor: proximity broadcast with speaker_x/speaker_y)
 
 const REFRESH_INTERVAL := 10.0
 # Default panel size on first open / when no persisted size exists.
@@ -164,6 +164,12 @@ var character_name := ""
 var structure_name := ""
 var home_name := ""
 var huddle_members: Array = []
+# Self position from the latest /pc/me snapshot — used to filter outdoor
+# npc_spoke broadcasts by Chebyshev distance (drop speech from PCs more
+# than OUTDOOR_SPEECH_RANGE tiles away when we're both outside).
+var pc_x: float = 0.0
+var pc_y: float = 0.0
+const OUTDOOR_SPEECH_RANGE: int = 6
 
 # Tracks which structure's recent_speech we've already loaded so we don't
 # duplicate the backload across the 10s polling cycle. When the player walks
@@ -1055,6 +1061,8 @@ func _apply_pc_state(data: Dictionary) -> void:
     character_name = str(data.get("character_name", ""))
     structure_name = str(data.get("structure_name", ""))
     home_name = str(data.get("home_name", ""))
+    pc_x = float(data.get("x", 0.0))
+    pc_y = float(data.get("y", 0.0))
 
     # Coins + inventory — surfaced in the top-bar coin chip and used
     # by the pay modal to validate amount against current balance.
@@ -1605,7 +1613,7 @@ func _on_speak_completed(result: int, response_code: int, _headers: PackedString
         ])
 
 
-func _on_npc_spoke(_npc_id: String, speaker_name: String, text: String, kind: String = "", at: String = "", structure_id: String = "", mentions: Array = []) -> void:
+func _on_npc_spoke(_npc_id: String, speaker_name: String, text: String, kind: String = "", at: String = "", structure_id: String = "", mentions: Array = [], speaker_x: float = 0.0, speaker_y: float = 0.0) -> void:
     # WS speech kinds are "npc" | "player"; normalize to the panel's
     # speech_npc / speech_player kinds so render logic is uniform with
     # the backload entries. npc_id is unused here — speech bubbles
@@ -1614,13 +1622,18 @@ func _on_npc_spoke(_npc_id: String, speaker_name: String, text: String, kind: St
     #
     # Structure filter mirrors _on_room_event: speech that happened in
     # a different room than the player's current conversational scope
-    # gets dropped. Empty structure_id is from outdoor speech with no
-    # structure context — show it only when the player is also outside
-    # (loaded_structure_id empty). Older server builds without the
-    # field still flow through (treated as outdoor) until everyone's
-    # on the structure-stamped version.
+    # gets dropped. Empty structure_id is outdoor speech — accept only
+    # when we're also outside (loaded_structure_id empty) AND the speaker
+    # is within OUTDOOR_SPEECH_RANGE tiles of us (Chebyshev). The range
+    # filter is what makes "two PCs walking the road can talk" feel like
+    # proximity rather than a global outdoor megaphone.
     if structure_id != loaded_structure_id:
         return
+    if structure_id.is_empty():
+        var dx: float = abs(speaker_x - pc_x)
+        var dy: float = abs(speaker_y - pc_y)
+        if max(dx, dy) > OUTDOOR_SPEECH_RANGE:
+            return
     var panel_kind := "speech_player" if kind == "player" else "speech_npc"
     _append_log_line(speaker_name, text, panel_kind, false, at)
     # Phase C of sales-and-gifts: accumulate this speaker's mentions for
