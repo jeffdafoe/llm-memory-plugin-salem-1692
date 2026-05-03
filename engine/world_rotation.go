@@ -91,9 +91,54 @@ func (app *App) applyRotation(ctx context.Context) (int, error) {
 		crierStops = n
 	}
 
-	log.Printf("world_rotation: %d bulk flips, %d washerwoman stops, %d town_crier stops",
-		len(flips), washerStops, crierStops)
+	rested := app.resetSleptTiredness(ctx)
+
+	log.Printf("world_rotation: %d bulk flips, %d washerwoman stops, %d town_crier stops, %d actors rested",
+		len(flips), washerStops, crierStops, rested)
 	return len(flips) + washerStops + crierStops, nil
+}
+
+// resetSleptTiredness wipes tiredness at the rotation boundary on actors
+// who either (a) took shelter inside any structure, or (b) are decorative
+// NPCs (no VA, no PC login). Decorative NPCs don't have a real sleep
+// behavior wired and aren't going to walk themselves home, so we reset
+// them unconditionally rather than leaving them visibly slumped at red
+// tier forever.
+//
+// HACK: this is a placeholder for the proper sleep mechanic — see
+// shared/tasks/pending/salem-npc-sleep-mechanic. The intended design has
+// per-structure lodging tags (home, inn, barn — yes; smithy, market — no)
+// and continuous tiredness decay while an actor is inside a lodging
+// during night phase, integrated with applyConsumption so distress
+// crossings narrate consistently. Until that lands, every actor who took
+// shelter at midnight wakes fully rested and every actor caught
+// outdoors stays tired (with the decorative-NPC carve-out above so they
+// don't get stuck at red tier). Edge cases the proper fix will need to
+// handle (night-watchmen, prisoners) don't exist in v1.
+//
+// HACK part 2: the decorative-NPC unconditional reset is also a hack —
+// proper handling is for decorative NPCs to either run a minimal "go
+// home / be sheltered" deterministic walker, or to be excluded from the
+// tiredness ticker in the first place. The pending task note covers
+// both.
+//
+// Returns the number of actors whose tiredness was reset (rows where
+// tiredness was already 0 are not counted because the UPDATE filter
+// excludes them).
+func (app *App) resetSleptTiredness(ctx context.Context) int {
+	res, err := app.DB.Exec(ctx,
+		`UPDATE actor
+		    SET tiredness = 0
+		  WHERE tiredness > 0
+		    AND (
+		        inside_structure_id IS NOT NULL
+		        OR (login_username IS NULL AND llm_memory_agent IS NULL)
+		    )`)
+	if err != nil {
+		log.Printf("world_rotation: reset tiredness: %v", err)
+		return 0
+	}
+	return int(res.RowsAffected())
 }
 
 func containsString(xs []string, s string) bool {
