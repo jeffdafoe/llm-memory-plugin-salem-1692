@@ -1277,9 +1277,10 @@ type pcPayRequest struct {
 	Recipient  string `json:"recipient"`
 	Amount     int    `json:"amount"`
 	ForText    string `json:"for,omitempty"`
-	Item       string `json:"item,omitempty"`
-	Qty        int    `json:"qty,omitempty"`
-	ConsumeNow *bool  `json:"consume_now,omitempty"`
+	Item       string   `json:"item,omitempty"`
+	Qty        int      `json:"qty,omitempty"`
+	ConsumeNow *bool    `json:"consume_now,omitempty"`
+	Consumers  []string `json:"consumers,omitempty"` // Phase C: at-source group orders
 }
 
 type pcPayResponse struct {
@@ -1347,6 +1348,7 @@ func (app *App) handlePCPay(w http.ResponseWriter, r *http.Request) {
 		Item:          req.Item,
 		Qty:           req.Qty,
 		ConsumeNow:    consumeNow,
+		ConsumerNames: req.Consumers,
 	})
 
 	// Mirror executeAgentCommit's audit + room_event broadcast for the
@@ -1361,6 +1363,9 @@ func (app *App) handlePCPay(w http.ResponseWriter, r *http.Request) {
 		"item":        req.Item,
 		"qty":         req.Qty,
 		"consume_now": consumeNow,
+	}
+	if len(req.Consumers) > 0 {
+		payload["consumers"] = req.Consumers
 	}
 	if actor.InsideStructureID.Valid {
 		payload["structure_id"] = actor.InsideStructureID.String

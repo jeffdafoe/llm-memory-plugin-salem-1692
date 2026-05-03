@@ -1798,7 +1798,12 @@ signal object_tags_updated(object_id: String, tags: Array)
 ## prefixes each line with a clock time so the player can scan the
 ## conversation chronologically. Emitted by event_client when an
 ## `npc_spoke` event lands.
-signal npc_spoke(npc_id: String, name: String, text: String, kind: String, at: String, structure_id: String)
+## mentions (Phase C of sales-and-gifts) is the optional list of item_kind
+## names the speaker referenced in their text. Vendors populate this so
+## the customer's pay-modal item dropdown can be built from real stock
+## the vendor mentioned. Empty array when the speak didn't reference
+## goods (or the speaker isn't a vendor).
+signal npc_spoke(npc_id: String, name: String, text: String, kind: String, at: String, structure_id: String, mentions: Array)
 
 func apply_npc_spoke(data: Dictionary) -> void:
     var npc_id: String = str(data.get("npc_id", ""))
@@ -1812,10 +1817,16 @@ func apply_npc_spoke(data: Dictionary) -> void:
     # bubble in the world view ignores the field and renders every line
     # over the speaker regardless of where the listener is.
     var structure_id: String = str(data.get("structure_id", ""))
+    var mentions: Array = []
+    var raw_mentions = data.get("mentions", null)
+    if typeof(raw_mentions) == TYPE_ARRAY:
+        for m in raw_mentions:
+            if typeof(m) == TYPE_STRING:
+                mentions.append(m)
     if name == "" or text == "":
         return
     _spawn_speech_bubble(npc_id, text)
-    npc_spoke.emit(npc_id, name, text, kind, at, structure_id)
+    npc_spoke.emit(npc_id, name, text, kind, at, structure_id, mentions)
 
 
 ## Spawn a SpeechBubble child on the speaker's container (NPC or PC).

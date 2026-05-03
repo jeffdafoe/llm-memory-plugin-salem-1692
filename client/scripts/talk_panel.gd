@@ -69,13 +69,20 @@ var pay_button: Button = null
 var pay_modal: CanvasLayer = null
 var pay_recipient_option: OptionButton = null
 var pay_amount_spin: SpinBox = null
-var pay_item_input: LineEdit = null
+var pay_item_option: OptionButton = null
 var pay_qty_spin: SpinBox = null
 var pay_take_home_check: CheckBox = null
 var pay_status_label: Label = null
 var pay_confirm_button: Button = null
 var pay_cancel_button: Button = null
 var http_pay: HTTPRequest = null
+
+# Phase C of sales-and-gifts: per-vendor accumulator of item_kinds
+# they've mentioned in this huddle session. Sourced from npc_spoke's
+# mentions field. Lives across the talk panel's open state but resets
+# when the huddle changes — fresh conversation, fresh dropdown.
+# Shape: { speaker_name: PackedStringArray of unique lowercase item_kinds }
+var vendor_mentions: Dictionary = {}
 ## Cached huddle member list at the moment the modal opened — used so
 ## the dropdown index maps back to the chosen recipient name without
 ## re-reading huddle_members during the click.
@@ -1105,9 +1112,12 @@ func _maybe_apply_recent_speech(data: Dictionary) -> void:
 
     # Wipe whatever's there from the previous room — fresh ears for a new
     # space. Live npc_spoke events that were happening in the old place
-    # aren't relevant once the PC has moved.
+    # aren't relevant once the PC has moved. Phase C: also reset the
+    # vendor mentions accumulator since "what the vendor said they had"
+    # is a per-conversation, per-huddle fact.
     for child in log_vbox.get_children():
         child.queue_free()
+    vendor_mentions.clear()
 
     if current_structure.is_empty():
         return
@@ -1367,9 +1377,13 @@ func _ensure_pay_modal_built() -> void:
     pay_amount_spin.value = 1
     vbox.add_child(_label_with("Amount (coins):", pay_amount_spin))
 
-    pay_item_input = LineEdit.new()
-    pay_item_input.placeholder_text = "(optional — e.g. ale, tonic, hook)"
-    vbox.add_child(_label_with("Item:", pay_item_input))
+    # Phase C: item is a dropdown sourced from the recipient vendor's
+    # accumulated speak.mentions for this huddle session. "(none)" is
+    # always present so the customer can do a coins-only pay (tipping,
+    # generic transfer). When the recipient changes, the dropdown is
+    # repopulated.
+    pay_item_option = OptionButton.new()
+    vbox.add_child(_label_with("Item:", pay_item_option))
 
     pay_qty_spin = SpinBox.new()
     pay_qty_spin.min_value = 1
@@ -1437,16 +1451,52 @@ func _on_pay_pressed() -> void:
             continue
         pay_modal_recipients.append(name)
         pay_recipient_option.add_item(name)
+    # Wire the recipient dropdown so the item dropdown re-populates when
+    # the customer flips between vendors (each one has its own mentions
+    # accumulator). Connect once per modal lifetime — the OptionButton
+    # is built lazily and reused across opens.
+    if not pay_recipient_option.item_selected.is_connected(_on_pay_recipient_changed):
+        pay_recipient_option.item_selected.connect(_on_pay_recipient_changed)
     if pay_modal_recipients.is_empty():
         pay_status_label.text = "Nobody here to pay."
     else:
         pay_status_label.text = ""
     pay_amount_spin.value = 1
-    pay_item_input.text = ""
     pay_qty_spin.value = 1
     pay_take_home_check.button_pressed = false
+    _refresh_pay_item_dropdown()
     pay_modal.visible = true
     modal_open_changed.emit(true)
+
+
+## Repopulate the item dropdown from the currently-selected recipient's
+## accumulated speak.mentions. Always has "(none)" as the first entry
+## for coins-only pays (tipping). If the recipient hasn't mentioned
+## anything in this huddle yet, the dropdown only has "(none)".
+func _refresh_pay_item_dropdown() -> void:
+    if pay_item_option == null:
+        return
+    pay_item_option.clear()
+    pay_item_option.add_item("(none — coins only)")
+    pay_item_option.set_item_metadata(0, "")  # empty item_kind
+    var recipient: String = ""
+    if pay_recipient_option != null and pay_recipient_option.selected >= 0 and pay_recipient_option.selected < pay_modal_recipients.size():
+        recipient = pay_modal_recipients[pay_recipient_option.selected]
+    if recipient.is_empty():
+        return
+    var mentions = vendor_mentions.get(recipient, null)
+    if typeof(mentions) != TYPE_ARRAY and typeof(mentions) != TYPE_PACKED_STRING_ARRAY:
+        return
+    for kind in mentions:
+        var s := str(kind)
+        if s.is_empty():
+            continue
+        pay_item_option.add_item(s)
+        pay_item_option.set_item_metadata(pay_item_option.item_count - 1, s)
+
+
+func _on_pay_recipient_changed(_idx: int) -> void:
+    _refresh_pay_item_dropdown()
 
 
 func _close_pay_modal() -> void:
@@ -1463,7 +1513,14 @@ func _on_pay_confirm() -> void:
         return
     var recipient: String = pay_modal_recipients[idx]
     var amount := int(pay_amount_spin.value)
-    var item := pay_item_input.text.strip_edges().to_lower()
+    # Phase C: item is read from the OptionButton's metadata (lowercase
+    # item_kind, or "" for "(none — coins only)"). No more free-text
+    # input — only the vendor's mentions are selectable.
+    var item := ""
+    if pay_item_option.selected >= 0:
+        var meta = pay_item_option.get_item_metadata(pay_item_option.selected)
+        if typeof(meta) == TYPE_STRING:
+            item = str(meta)
     var qty := int(pay_qty_spin.value)
     var consume_now := not pay_take_home_check.button_pressed
 
@@ -1535,7 +1592,7 @@ func _on_speak_completed(result: int, response_code: int, _headers: PackedString
         ])
 
 
-func _on_npc_spoke(_npc_id: String, speaker_name: String, text: String, kind: String = "", at: String = "", structure_id: String = "") -> void:
+func _on_npc_spoke(_npc_id: String, speaker_name: String, text: String, kind: String = "", at: String = "", structure_id: String = "", mentions: Array = []) -> void:
     # WS speech kinds are "npc" | "player"; normalize to the panel's
     # speech_npc / speech_player kinds so render logic is uniform with
     # the backload entries. npc_id is unused here — speech bubbles
@@ -1553,6 +1610,32 @@ func _on_npc_spoke(_npc_id: String, speaker_name: String, text: String, kind: St
         return
     var panel_kind := "speech_player" if kind == "player" else "speech_npc"
     _append_log_line(speaker_name, text, panel_kind, false, at)
+    # Phase C of sales-and-gifts: accumulate this speaker's mentions for
+    # the customer's pay-modal item dropdown. Per-speaker, deduped,
+    # lowercase. Resets when the player leaves the huddle (see
+    # _maybe_apply_recent_speech). Refresh the live dropdown if it's
+    # currently showing this same speaker.
+    if not speaker_name.is_empty() and not mentions.is_empty():
+        var existing = vendor_mentions.get(speaker_name, [])
+        var seen := {}
+        for s in existing:
+            seen[str(s)] = true
+        var updated: Array = []
+        for s in existing:
+            updated.append(str(s))
+        for m in mentions:
+            var k := str(m).strip_edges().to_lower()
+            if k.is_empty() or seen.has(k):
+                continue
+            seen[k] = true
+            updated.append(k)
+        vendor_mentions[speaker_name] = updated
+        # Live-refresh the pay item dropdown when it's currently open
+        # and pointing at this speaker.
+        if pay_modal != null and pay_modal.visible and pay_recipient_option != null:
+            var sel: int = pay_recipient_option.selected
+            if sel >= 0 and sel < pay_modal_recipients.size() and pay_modal_recipients[sel] == speaker_name:
+                _refresh_pay_item_dropdown()
 
 
 # Generic room-event handler. Engine emits these for narration-worthy
