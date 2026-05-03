@@ -34,6 +34,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -42,6 +43,15 @@ import (
 	"strings"
 	"time"
 )
+
+// errMoveAlreadyAtDest is returned by executeAgentMoveTo when the resolved
+// destination structure equals the NPC's current inside_structure_id —
+// "go to where you already are" is a no-op walk that would otherwise
+// produce a phantom "X left for Y" narration. The dispatcher in
+// executeAgentCommit maps this sentinel to a rejected result so the LLM
+// gets feedback ("already at destination") in its next continuation
+// instead of seeing a successful move.
+var errMoveAlreadyAtDest = errors.New("already at destination")
 
 const (
 	agentTickBudget = 6
@@ -1612,7 +1622,11 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 			break
 		}
 		if err := app.executeAgentMoveTo(ctx, r, dest); err != nil {
-			result, errStr = "failed", err.Error()
+			if errors.Is(err, errMoveAlreadyAtDest) {
+				result, errStr = "rejected", err.Error()
+			} else {
+				result, errStr = "failed", err.Error()
+			}
 		}
 		// Departure narration for the room. Stamps from_structure_id (the
 		// room being LEFT) so subscribers filtering by structure can show
@@ -2234,6 +2248,14 @@ func (app *App) executeAgentMoveTo(ctx context.Context, r *agentNPCRow, dest str
 	structureID, walkX, walkY, err := app.resolveMoveDestination(ctx, r, dest)
 	if err != nil {
 		return err
+	}
+
+	// Refuse no-op walks (dest resolves to where the NPC already is). Without
+	// this the LLM can ask a tavernkeeper whose home == work to "go to the
+	// Tavern" and the engine dispatches a 0-step or door-bounce walk plus a
+	// phantom "X left for Tavern" narration. See errMoveAlreadyAtDest doc.
+	if r.InsideStructureID.Valid && structureID == r.InsideStructureID.String {
+		return errMoveAlreadyAtDest
 	}
 
 	// Owners (this NPC's home or work) walk to door_offset and flip
