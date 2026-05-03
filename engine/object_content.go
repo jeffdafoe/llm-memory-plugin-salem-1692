@@ -24,6 +24,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -189,28 +190,59 @@ func (app *App) onObjectStateAdvanced(ctx context.Context, objectID, newState st
 // expectedState is the state the board was in at dispatch. saveObjectContent
 // rejects the write if current_state has changed since — defends against
 // a stale LLM reply landing on a board the crier has since flipped.
+//
+// ZBBS-117: the chronicler may also return concerns (named-entity facts)
+// alongside the prose. Concerns are persisted after a successful save
+// and tagged with the new content_generation so they share the prose's
+// lifetime. A concern targeting an unknown name is logged and dropped —
+// the prose still posts.
 func (app *App) generateAndSaveBoardContent(objectID, expectedState, location string, capacity int, prior string) {
 	ctx, cancel := context.WithTimeout(context.Background(), noticeContentCallTimeout)
 	defer cancel()
 
-	body, err := app.callChroniclerForBoard(ctx, location, capacity, prior)
+	reply, err := app.callChroniclerForBoard(ctx, location, capacity, prior)
 	if err != nil {
 		log.Printf("object_content: chronicler call for %s: %v", objectID, err)
 		return
 	}
-	body = clampNoticeContent(body, capacity, noticeMaxLineLen)
+	body := clampNoticeContent(reply.Notice, capacity, noticeMaxLineLen)
 	if body == "" {
 		log.Printf("object_content: chronicler returned empty body for %s — leaving prior content in place", objectID)
 		return
 	}
-	if err := app.saveObjectContent(ctx, objectID, expectedState, body); err != nil {
+	newGen, err := app.saveObjectContent(ctx, objectID, expectedState, body)
+	if err != nil {
 		// Stale-state rejections are expected when the crier flips the
 		// same board twice before the LLM responds — log at info, not
 		// error, so it doesn't read as a failure.
 		log.Printf("object_content: save %s: %v", objectID, err)
 		return
 	}
-	log.Printf("object_content: posted %d-line notice for %s (%s)", capacity, objectID, location)
+
+	// Persist concerns. Each is best-effort — a single bad target name
+	// shouldn't suppress the others. Tagged with newGen so the perception
+	// join finds them this generation and stops finding them on the next
+	// rotation.
+	for _, c := range reply.Concerns {
+		kind, id, resolveErr := app.resolveTargetByName(ctx, c.Target)
+		if resolveErr != nil {
+			log.Printf("object_content: concern target %q for %s unresolved: %v", c.Target, objectID, resolveErr)
+			continue
+		}
+		text := strings.TrimSpace(c.Text)
+		if text == "" {
+			continue
+		}
+		if err := app.recordConcern(ctx,
+			concernSourceVillageObjectContent, objectID, newGen,
+			kind, id, text,
+		); err != nil {
+			log.Printf("object_content: record concern %q→%s for %s: %v", c.Target, kind, objectID, err)
+			continue
+		}
+	}
+
+	log.Printf("object_content: posted %d-line notice for %s (%s) gen=%d, %d concerns", capacity, objectID, location, newGen, len(reply.Concerns))
 }
 
 // clampNoticeContent normalizes the chronicler's reply to the contract
@@ -244,23 +276,63 @@ func clampNoticeContent(body string, maxLines, maxLineLen int) string {
 	return strings.Join(out, "\n")
 }
 
+// chroniclerBoardReply is the parsed output of one noticeboard authoring
+// call. Notice is the prose to post; Concerns is the list of named-entity
+// facts the chronicler attached (ZBBS-117). The reply is parsed from a
+// JSON envelope; on parse failure the whole reply text is treated as
+// raw notice prose with zero concerns (graceful degradation).
+type chroniclerBoardReply struct {
+	Notice   string                  `json:"notice"`
+	Concerns []chroniclerBoardConcern `json:"concerns"`
+}
+
+type chroniclerBoardConcern struct {
+	Target string `json:"target"` // structure or actor display_name
+	Text   string `json:"text"`
+}
+
 // callChroniclerForBoard issues a single wait=true chat to the chronicler
-// agent with no tools offered. The chronicler returns plain prose which
-// becomes the notice text verbatim. Distinct from fireChronicler — that
-// one runs the directorial harness (set_environment / record_event /
-// recall / attend_to / done); this one is a focused content gen.
+// agent and parses a structured JSON reply containing the notice prose
+// and any concerns the chronicler attached. Distinct from fireChronicler
+// — that one runs the directorial harness (set_environment / record_event
+// / recall / attend_to / done); this one is a focused content gen with a
+// JSON-shaped reply contract.
 //
 // The chronicler agent already has the village context loaded (recent
 // events, atmosphere, NPC list) so the prompt only carries what's
-// specific to this board: location, capacity, and the prior text being
-// replaced.
+// specific to this board: location, capacity, the prior text being
+// replaced, and the available targets the chronicler may attach concerns
+// to.
+//
+// JSON shape contract:
+//
+//	{
+//	  "notice": "Line 1\nLine 2",
+//	  "concerns": [
+//	    {"target": "Tavern", "text": "A plain woolen shawl was left here."}
+//	  ]
+//	}
+//
+// Concerns is optional; missing/empty array means no facts to attach.
+// On JSON parse failure the entire reply is treated as raw notice prose
+// — better to post a notice without concerns than to drop the rotation
+// because the model wrapped its reply in markdown fences.
 //
 // sceneID: fresh per call so admin chat-grouping renders these as their
 // own one-row scenes rather than folding into whatever scene happens to
 // be in flight.
-func (app *App) callChroniclerForBoard(ctx context.Context, location string, capacity int, prior string) (string, error) {
+func (app *App) callChroniclerForBoard(ctx context.Context, location string, capacity int, prior string) (chroniclerBoardReply, error) {
 	if app.npcChatClient == nil {
-		return "", errors.New("npc chat client is not configured")
+		return chroniclerBoardReply{}, errors.New("npc chat client is not configured")
+	}
+
+	targets, err := app.loadAvailableConcernTargets(ctx)
+	if err != nil {
+		// Don't fail the whole call — the chronicler can still write prose
+		// without target enrichment, just won't be able to attach valid
+		// concerns. Worth surfacing as a log line so we notice if this
+		// breaks regularly.
+		log.Printf("object_content: load concern targets for %s: %v", location, err)
 	}
 
 	var prompt strings.Builder
@@ -275,54 +347,164 @@ func (app *App) callChroniclerForBoard(ctx context.Context, location string, cap
 		prompt.WriteString(prior)
 		prompt.WriteString("\n")
 	}
-	prompt.WriteString("\nReply with the notice text only — no preamble, no quotation marks, no headings. ")
-	prompt.WriteString("One notice per line. Period-correct prose for Salem in 1692. ")
-	prompt.WriteString("Draw from village events you remember when the moment calls for it; otherwise write atmosphere appropriate to a small Puritan village (announcements, sermons, lost-and-found, market notices, ordinances).")
+
+	if len(targets) > 0 {
+		prompt.WriteString("\nAvailable targets you may attach concerns to (use the exact name):\n")
+		for _, t := range targets {
+			prompt.WriteString("  - ")
+			prompt.WriteString(t)
+			prompt.WriteString("\n")
+		}
+	}
+
+	prompt.WriteString("\nReply with a single JSON object and nothing else — no preamble, no markdown fences:\n")
+	prompt.WriteString("{\n")
+	prompt.WriteString("  \"notice\": \"the prose, one notice per line, period-correct Salem 1692\",\n")
+	prompt.WriteString("  \"concerns\": [\n")
+	prompt.WriteString("    {\"target\": \"<name from the list above>\", \"text\": \"<one-sentence fact attached to that target>\"}\n")
+	prompt.WriteString("  ]\n")
+	prompt.WriteString("}\n")
+	prompt.WriteString("\nFor each notice that names a specific structure or actor, attach a matching concern so the affected party retains the fact (e.g., a notice 'A shawl was lost at the Tavern' should attach a concern targeting Tavern: 'A plain woolen shawl was left here.'). Notices without a clear named target produce no concern. Omit the concerns array entirely when the notices are pure atmosphere with no named target.")
 
 	sceneID := newUUIDv7()
 	reply, err := app.npcChatClient.sendChat(ctx, chroniclerAgent, prompt.String(), "", sceneID, nil)
 	if err != nil {
-		return "", err
+		return chroniclerBoardReply{}, err
 	}
 	if reply == nil {
-		return "", errors.New("chronicler returned no reply")
+		return chroniclerBoardReply{}, errors.New("chronicler returned no reply")
 	}
-	return reply.Text, nil
+
+	parsed := parseChroniclerBoardReply(reply.Text)
+	return parsed, nil
 }
 
-// saveObjectContent writes content_text + content_posted_at and broadcasts
-// the change. The UPDATE is conditional on (a) the placement's
-// current_state still matching the state at dispatch and (b) the
-// noticeboard_content instance tag still being attached — either changing
-// in flight means a stale chronicler reply for a now-different board,
-// and silently dropping the write is the right move. RowsAffected==0 is
-// reported as an error so generateAndSaveBoardContent can log it; not a
-// failure mode, just a race outcome.
+// parseChroniclerBoardReply extracts the notice prose and concerns from
+// the chronicler's response. Tolerates markdown code fences (the LLM
+// occasionally wraps its JSON in ```json … ``` despite the instruction).
+// Falls back to treating the whole reply as raw notice prose with no
+// concerns when the JSON parse fails.
+func parseChroniclerBoardReply(raw string) chroniclerBoardReply {
+	stripped := stripJSONFences(raw)
+	var out chroniclerBoardReply
+	if err := json.Unmarshal([]byte(stripped), &out); err != nil {
+		// Graceful degradation — the prose still goes up, no concerns.
+		return chroniclerBoardReply{Notice: raw}
+	}
+	if strings.TrimSpace(out.Notice) == "" {
+		// Parsed JSON but empty notice — fall back to raw so the board
+		// at least gets the chronicler's text in some form.
+		return chroniclerBoardReply{Notice: raw}
+	}
+	return out
+}
+
+// stripJSONFences removes common markdown code-fence wrappings so a reply
+// like "```json\n{...}\n```" parses cleanly. Idempotent on already-clean
+// input.
+func stripJSONFences(s string) string {
+	s = strings.TrimSpace(s)
+	if strings.HasPrefix(s, "```") {
+		// Drop opening fence line.
+		if idx := strings.Index(s, "\n"); idx > -1 {
+			s = s[idx+1:]
+		} else {
+			s = strings.TrimPrefix(s, "```")
+		}
+	}
+	if strings.HasSuffix(s, "```") {
+		s = strings.TrimSuffix(s, "```")
+	}
+	return strings.TrimSpace(s)
+}
+
+// loadAvailableConcernTargets builds the human-readable name list shown
+// to the chronicler in the noticeboard prompt. Includes every village
+// structure with a non-empty display_name and every named actor with a
+// home or work assignment in the village (excluding the unnamed/decorative
+// actor rows). Returned as plain strings — IDs are resolved at write time
+// via resolveTargetByName.
+func (app *App) loadAvailableConcernTargets(ctx context.Context) ([]string, error) {
+	var names []string
+
+	// Structures with display names.
+	structRows, err := app.DB.Query(ctx,
+		`SELECT display_name FROM village_object
+		  WHERE display_name IS NOT NULL AND display_name <> ''
+		  ORDER BY display_name`)
+	if err != nil {
+		return nil, err
+	}
+	for structRows.Next() {
+		var n string
+		if scanErr := structRows.Scan(&n); scanErr == nil {
+			names = append(names, n)
+		}
+	}
+	structRows.Close()
+
+	// Named actors (anyone with home or work in the village). Decorative
+	// actors with neither set are excluded — they're rarely referenced
+	// by name in notices.
+	actorRows, err := app.DB.Query(ctx,
+		`SELECT display_name FROM actor
+		  WHERE display_name IS NOT NULL AND display_name <> ''
+		    AND (home_structure_id IS NOT NULL OR work_structure_id IS NOT NULL)
+		  ORDER BY display_name`)
+	if err != nil {
+		return names, err
+	}
+	for actorRows.Next() {
+		var n string
+		if scanErr := actorRows.Scan(&n); scanErr == nil {
+			names = append(names, n)
+		}
+	}
+	actorRows.Close()
+	return names, nil
+}
+
+// saveObjectContent writes content_text + content_posted_at, bumps
+// content_generation, and broadcasts the change. The UPDATE is conditional
+// on (a) the placement's current_state still matching the state at
+// dispatch and (b) the noticeboard_content instance tag still being
+// attached — either changing in flight means a stale chronicler reply for
+// a now-different board, and silently dropping the write is the right
+// move. RowsAffected==0 is reported as an error so
+// generateAndSaveBoardContent can log it; not a failure mode, just a
+// race outcome.
+//
+// Returns the new content_generation so the caller can persist concerns
+// (ZBBS-117) tagged with the same generation the prose was written under.
+// Concerns from prior generations age out of perception automatically
+// once this UPDATE bumps the generation.
 //
 // Timestamps come from NOW() inside the UPDATE rather than time.Now() in
 // Go, so the broadcast value matches the stored value exactly even if
 // the app server clock and the DB clock differ.
-func (app *App) saveObjectContent(ctx context.Context, objectID, expectedState, body string) error {
+func (app *App) saveObjectContent(ctx context.Context, objectID, expectedState, body string) (int, error) {
 	var postedAt time.Time
+	var newGeneration int
 	err := app.DB.QueryRow(ctx,
 		`UPDATE village_object o
 		    SET content_text = $3,
-		        content_posted_at = NOW()
+		        content_posted_at = NOW(),
+		        content_generation = o.content_generation + 1
 		  WHERE o.id = $1::uuid
 		    AND o.current_state = $2
 		    AND EXISTS (
 		        SELECT 1 FROM village_object_tag t
 		        WHERE t.object_id = o.id AND t.tag = $4
 		    )
-		  RETURNING content_posted_at`,
+		  RETURNING content_posted_at, content_generation`,
 		objectID, expectedState, body, tagNoticeBoardInstance,
-	).Scan(&postedAt)
+	).Scan(&postedAt, &newGeneration)
 	if err != nil {
 		// pgx returns ErrNoRows when the UPDATE matches zero rows.
 		if errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("stale state — board %s no longer in %q or no longer tagged", objectID, expectedState)
+			return 0, fmt.Errorf("stale state — board %s no longer in %q or no longer tagged", objectID, expectedState)
 		}
-		return err
+		return 0, err
 	}
 	app.Hub.Broadcast(WorldEvent{
 		Type: "object_content_changed",
@@ -332,7 +514,7 @@ func (app *App) saveObjectContent(ctx context.Context, objectID, expectedState, 
 			"content_posted_at": postedAt.UTC().Format(time.RFC3339),
 		},
 	})
-	return nil
+	return newGeneration, nil
 }
 
 // clearObjectContent NULLs the content fields and broadcasts the change.
@@ -347,7 +529,8 @@ func (app *App) clearObjectContent(ctx context.Context, objectID string) {
 	res, err := app.DB.Exec(ctx,
 		`UPDATE village_object
 		    SET content_text = NULL,
-		        content_posted_at = NULL
+		        content_posted_at = NULL,
+		        content_generation = content_generation + 1
 		  WHERE id = $1::uuid
 		    AND (content_text IS NOT NULL OR content_posted_at IS NOT NULL)`,
 		objectID)
@@ -357,6 +540,13 @@ func (app *App) clearObjectContent(ctx context.Context, objectID string) {
 	}
 	if res.RowsAffected() == 0 {
 		return
+	}
+	// Cleared without replacement — drop concerns from the prior posting
+	// rather than letting them linger until lazy janitor sweep. The
+	// generation bump above already makes them invisible to perception;
+	// this is just hygiene.
+	if err := app.clearConcernsForSource(ctx, concernSourceVillageObjectContent, objectID); err != nil {
+		log.Printf("object_content: clear concerns for %s: %v", objectID, err)
 	}
 	app.Hub.Broadcast(WorldEvent{
 		Type: "object_content_changed",

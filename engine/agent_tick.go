@@ -1133,6 +1133,29 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 		}
 	}
 
+	// 3.0b Retained concerns (ZBBS-117). Chronicler-authored notice prose
+	// can attach structured facts to named actors and structures; this
+	// section surfaces those facts to the affected NPC even when they
+	// haven't been near the noticeboard. Workers-only on the structure
+	// cascade — the tavernkeeper retains a "lost shawl" concern on his
+	// tavern; a patron sitting at a table does not. Capped at 3 newest
+	// per category inside loadConcernsForActor.
+	{
+		var homeID, workID string
+		if r.HomeStructureID.Valid {
+			homeID = r.HomeStructureID.String
+		}
+		if r.WorkStructureID.Valid {
+			workID = r.WorkStructureID.String
+		}
+		concerns, cerr := app.loadConcernsForActor(ctx, r.ID, homeID, workID)
+		if cerr != nil {
+			log.Printf("perception: load concerns for %s: %v", r.ID, cerr)
+		} else if rendered := renderConcerns(concerns); rendered != "" {
+			sections = append(sections, strings.TrimRight(rendered, "\n"))
+		}
+	}
+
 	// 3.0c. Visible needs of co-located others. When the perceiver is
 	// inside a structure, surface red-tier-or-higher needs of other
 	// NPCs in the same room — "Ezekiel Crane looks hungry." — so a
