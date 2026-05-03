@@ -254,11 +254,18 @@ func (app *App) startNPCWalk(ctx context.Context, npcID string, targetX, targetY
 		worldPath = append(worldPath, tileToWorld(t.X, t.Y))
 	}
 	if len(worldPath) == 0 {
-		// Start and goal tile are the same — walk is a no-op. Fire arrival
-		// immediately so behavior hooks advance to the next step. Don't
-		// flip inside here: if the NPC was inside their structure, walking
-		// to their own tile shouldn't pop them out.
-		go app.applyArrival(npcID)
+		// Start and goal tile are the same — walk is a no-op. Run the
+		// per-arrival side-effects directly (object refresh, npc_arrived
+		// broadcast, behavior + errand advancement) so client handlers like
+		// the noticeboard walk-then-read panel re-fire on a re-click and
+		// "click well when already adjacent" still quenches thirst. We skip
+		// the position UPDATE (nothing changed) and the entrance-only
+		// downstream work (village/room arrival events, co-located cascades,
+		// self-tick) — those are about a fresh entrance, not a re-click on
+		// a place we're already at. Don't flip inside here: if the NPC was
+		// inside their structure, walking to their own tile shouldn't pop
+		// them out.
+		go app.applyArrivalSideEffects(context.Background(), npcID, startX, startY, "")
 		return &startNPCWalkResult{AlreadyThere: true, FinalFacing: ""}, nil
 	}
 
@@ -308,24 +315,18 @@ func (app *App) startNPCWalk(ctx context.Context, npcID string, targetX, targetY
 }
 
 // applyArrival runs when an active walk's timer fires. Persists the NPC's
-// final position + facing, broadcasts npc_arrived, clears in-memory state,
-// and invokes any active behavior's advance hook so scheduled routines
-// (lamplighter, washerwoman, ...) step to the next action.
+// final position + facing, then runs the shared per-arrival side-effects
+// and the entrance-only downstream work (village/room arrival events,
+// co-located cascades, self-tick).
 //
-// Idempotent on missing walk state — a timer that fires after manual
-// cancellation is a no-op.
+// Idempotent on missing walk state — same-tile no-op walks bypass this
+// function and call applyArrivalSideEffects directly from startNPCWalk;
+// a stray invocation here with no registered walk is a no-op.
 func (app *App) applyArrival(npcID string) {
 	app.NPCMovement.mu.Lock()
 	walk := app.NPCMovement.active[npcID]
 	if walk == nil {
 		app.NPCMovement.mu.Unlock()
-		// Still give behavior a chance to advance — a no-op walk (same tile
-		// source and destination) fires arrival without ever registering a
-		// walk in NPCMovement.active.
-		app.advanceBehavior(npcID)
-		// And the errand hook — a same-tile dispatch (summoner already
-		// at the nearest summon_point) skips the registered walk too.
-		app.advanceErrandFromArrival(context.Background(), npcID)
 		return
 	}
 	delete(app.NPCMovement.active, npcID)
@@ -341,34 +342,10 @@ func (app *App) applyArrival(npcID string) {
 		return
 	}
 
-	// Apply any object-refresh side-effect for the arrival point. PC and
-	// NPC share this path; the spatial lookup in
-	// applyObjectRefreshAtArrival picks the nearest refresh-tagged object
-	// within tolerance and decrements the configured attribute(s) on the
-	// actor. Errors are logged but don't block the arrival flow — the
-	// position update has already committed and the client needs the
-	// npc_arrived event regardless.
-	if _, err := app.applyObjectRefreshAtArrival(ctx, npcID, end.X, end.Y); err != nil {
-		log.Printf("object_refresh: %s at (%.1f,%.1f): %v", npcID, end.X, end.Y, err)
-	}
-
-	app.Hub.Broadcast(WorldEvent{
-		Type: "npc_arrived",
-		Data: map[string]any{
-			"id":     npcID,
-			"x":      end.X,
-			"y":      end.Y,
-			"facing": walk.finalFacing,
-		},
-	})
-
-	app.advanceBehavior(npcID)
-
-	// Drive any in-flight summon errand transitions that this arrival
-	// resolves (summoner reaching summon_point, messenger reaching
-	// summon_point / target / summoner-for-refusal / origin). Cheap
-	// no-op when this actor isn't part of an active errand.
-	app.advanceErrandFromArrival(ctx, npcID)
+	// Object refresh + npc_arrived broadcast + behavior/errand
+	// advancement. Shared with same-tile no-op walks called from
+	// startNPCWalk so both paths produce the same client/event ordering.
+	app.applyArrivalSideEffects(ctx, npcID, end.X, end.Y, walk.finalFacing)
 
 	// Event-tick co-located agents on agent-driven arrivals (M6.5
 	// pre-staging via ZBBS-075). When an agentized NPC enters a
@@ -473,4 +450,30 @@ func (app *App) applyArrival(npcID string) {
 			go app.triggerImmediateTick(context.Background(), npcID, "arrived", true, newUUIDv7(), npcID)
 		}
 	}
+}
+
+// applyArrivalSideEffects runs the per-arrival side-effects shared between
+// real walk completions (via applyArrival) and same-tile no-op walks called
+// directly from startNPCWalk: object refresh at the arrival point, the
+// npc_arrived broadcast, and behavior + errand advancement.
+//
+// Real-walk callers UPDATE the actor's row first; no-op walks skip the
+// UPDATE since position is unchanged. Entrance-only work (village/room
+// arrival events, co-located cascades, self-tick) stays in applyArrival —
+// a re-click on a place you're already at is not a fresh entrance.
+func (app *App) applyArrivalSideEffects(ctx context.Context, npcID string, x, y float64, facing string) {
+	if _, err := app.applyObjectRefreshAtArrival(ctx, npcID, x, y); err != nil {
+		log.Printf("object_refresh: %s at (%.1f,%.1f): %v", npcID, x, y, err)
+	}
+	app.Hub.Broadcast(WorldEvent{
+		Type: "npc_arrived",
+		Data: map[string]any{
+			"id":     npcID,
+			"x":      x,
+			"y":      y,
+			"facing": facing,
+		},
+	})
+	app.advanceBehavior(npcID)
+	app.advanceErrandFromArrival(ctx, npcID)
 }

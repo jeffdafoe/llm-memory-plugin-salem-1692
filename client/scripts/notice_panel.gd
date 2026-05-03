@@ -56,6 +56,7 @@ signal closed()
 func _ready() -> void:
     layer = 4
     _build_ui()
+    _apply_theme()
     visible = false
     set_process_unhandled_input(true)
 
@@ -98,9 +99,18 @@ func _build_ui() -> void:
     sheet.mouse_filter = Control.MOUSE_FILTER_STOP
     center.add_child(sheet)
 
+    # Inset the contents from the brown border. Margins match talk_panel's
+    # `pad` MarginContainer so the two modals look consistent.
+    var pad := MarginContainer.new()
+    pad.add_theme_constant_override("margin_left", 14)
+    pad.add_theme_constant_override("margin_right", 14)
+    pad.add_theme_constant_override("margin_top", 8)
+    pad.add_theme_constant_override("margin_bottom", 12)
+    sheet.add_child(pad)
+
     var vb := VBoxContainer.new()
     vb.add_theme_constant_override("separation", 8)
-    sheet.add_child(vb)
+    pad.add_child(vb)
 
     # Header row: title left, close button right.
     var header := HBoxContainer.new()
@@ -114,15 +124,14 @@ func _build_ui() -> void:
     header.add_child(title_label)
 
     close_button = Button.new()
-    close_button.text = "X"
-    close_button.custom_minimum_size = Vector2(32, 32)
+    close_button.text = "×"
+    close_button.custom_minimum_size = Vector2(28, 20)
     close_button.pressed.connect(close)
     header.add_child(close_button)
 
     posted_label = Label.new()
     posted_label.text = ""
     posted_label.add_theme_font_size_override("font_size", 11)
-    posted_label.modulate = Color(0.65, 0.65, 0.65)
     vb.add_child(posted_label)
 
     # Body scroller — caps at PANEL_MAX_HEIGHT_FRAC of viewport.
@@ -255,3 +264,28 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _on_world_content_changed(object_id: String, content_text, content_posted_at) -> void:
     update_for_object(object_id, content_text, content_posted_at)
+
+
+# Brown period theme — matches talk_panel._apply_theme() so the two
+# modals look consistent. Dark wood-stained background, warm border,
+# soft shadow; gold-ish title, muted brown timestamp, parchment body.
+func _apply_theme() -> void:
+    var sheet_style := StyleBoxFlat.new()
+    sheet_style.bg_color = Color(0.115, 0.085, 0.055, 0.94)
+    sheet_style.border_color = Color(0.55, 0.42, 0.24, 0.95)
+    sheet_style.border_width_left = 1
+    sheet_style.border_width_right = 1
+    sheet_style.border_width_top = 1
+    sheet_style.border_width_bottom = 1
+    sheet_style.corner_radius_top_left = 10
+    sheet_style.corner_radius_top_right = 10
+    sheet_style.corner_radius_bottom_left = 10
+    sheet_style.corner_radius_bottom_right = 10
+    sheet_style.shadow_color = Color(0, 0, 0, 0.45)
+    sheet_style.shadow_size = 18
+    sheet_style.shadow_offset = Vector2(0, 6)
+    sheet.add_theme_stylebox_override("panel", sheet_style)
+
+    title_label.add_theme_color_override("font_color", Color(0.95, 0.82, 0.58, 1.0))
+    posted_label.add_theme_color_override("font_color", Color(0.68, 0.58, 0.43, 1.0))
+    body_label.add_theme_color_override("default_color", Color(0.92, 0.84, 0.70, 1.0))
