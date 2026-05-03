@@ -1,46 +1,28 @@
 package main
 
-// Summon tool — an NPC asks the engine to fetch another villager. The
-// world-side framing is a child or apprentice sent with a message, or
-// hollering over the fence. Mechanically:
+// Summon tool — an NPC asks the engine to fetch another villager.
 //
-//   1. Validate the target exists, isn't the summoner, and isn't already
-//      co-located in the same huddle (no point summoning the person
-//      sitting next to you).
-//   2. Per-pair cooldown — same summoner re-summoning the same target
-//      within summonCooldown is rejected, so a model that decides to
-//      "send another messenger" every tick doesn't loop. The stamp lives
-//      in the audit log itself; we look back rather than carry a
-//      side-table.
-//   3. Clear the target's agent_override_until and break_until and null
-//      their last_agent_tick_at so they're free to react now rather
-//      than after their current scheduled commitment.
-//   4. Fire triggerImmediateTick on the target with a "summoned" reason.
-//      That goroutine builds the target's perception, which sees the
-//      pending summons via summonsTargeting() and hands the model a
-//      decision: walk over, send a verbal refusal once they're there, or
-//      ignore.
+// Post-ZBBS-107 the implementation is a multi-leg messenger errand
+// (see summon_errand.go for the state machine). executeSummon is a
+// thin shim that delegates to dispatchSummonErrand. summonsTargetingPerceiver
+// stays here because it's read at perception-build time by agent_tick.go,
+// and the row it reads (action_type='summon' in agent_action_log) is
+// now written at delivery rather than at dispatch.
 //
-// The audit row + room_event broadcast happen back in executeAgentCommit
-// (the universal write path) so the narration mirrors every other commit.
+// summonsTargetingPerceiver is the perception-side reader unchanged
+// from v1: it filters action_type='summon' rows for the target NPC's
+// display name. The audit row is now written when the messenger
+// arrives at the target (state messenger_at_target → messenger_returning,
+// VA branch) rather than at dispatch — the perception fragment lands
+// in the target's next tick after delivery.
 
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 )
-
-// summonCooldown bounds the per-(summoner, target) re-summon rate. The
-// LLM sometimes "tries again" when its first call didn't produce an
-// arrival within the same tick — without this guard it'll fire summon
-// every iteration of its own harness loop. Three minutes is enough
-// breathing room that an honest follow-up after a failed walk is fine.
-const summonCooldown = 3 * time.Minute
 
 type summonResult struct {
 	Result string // "ok" | "rejected" | "failed"
@@ -55,92 +37,19 @@ type summonRequest struct {
 	Reason     string
 }
 
-// executeSummon validates the request, applies cooldown, wakes the
-// target. The audit row is written by the dispatcher; we only return
-// the resolution outcome.
+// executeSummon dispatches a summon errand (ZBBS-105/107). The
+// previous implementation was a teleport: validated, woke the target,
+// fired triggerImmediateTick. The new path inserts a summon_errand row
+// and walks the summoner to the nearest summon_point — the messenger
+// flow plays out from there via the arrival hook and errand ticker
+// (see summon_errand.go for the full lifecycle).
+//
+// The audit row is NOT written here. It's written when the messenger
+// actually delivers (state messenger_at_target → messenger_returning,
+// VA branch). summonsTargetingPerceiver continues to read from
+// agent_action_log unchanged.
 func (app *App) executeSummon(ctx context.Context, summoner *agentNPCRow, req summonRequest) summonResult {
-	targetName := strings.TrimSpace(req.TargetName)
-	if targetName == "" {
-		return summonResult{Result: "rejected", Err: "missing target"}
-	}
-
-	// Look up the target by display name.
-	var targetID, targetDisplayName string
-	var targetHuddle, targetUsername *string
-	err := app.DB.QueryRow(ctx,
-		`SELECT id, display_name, current_huddle_id::text, login_username
-		   FROM actor
-		  WHERE LOWER(display_name) = LOWER($1)
-		  LIMIT 1`,
-		targetName,
-	).Scan(&targetID, &targetDisplayName, &targetHuddle, &targetUsername)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return summonResult{Result: "rejected", Err: fmt.Sprintf("no villager named %q", targetName)}
-		}
-		return summonResult{Result: "failed", Err: fmt.Sprintf("look up target: %v", err)}
-	}
-
-	if targetID == summoner.ID {
-		return summonResult{Result: "rejected", Err: "cannot summon yourself"}
-	}
-
-	// PCs can't be summoned by the engine — they have no LLM tool surface
-	// to perceive the request. The model can speak to a PC if they're
-	// nearby, but summoning a player is meaningless.
-	if targetUsername != nil && *targetUsername != "" {
-		return summonResult{Result: "rejected", Err: fmt.Sprintf("%s is a person, not a villager you can send for", targetDisplayName)}
-	}
-
-	// Co-located check. If the target is in the summoner's current
-	// huddle, they're already here — speak to them instead. The summoner
-	// row doesn't carry current_huddle_id (agentNPCRow keeps the load
-	// minimal), so look it up directly.
-	var summonerHuddle *string
-	_ = app.DB.QueryRow(ctx,
-		`SELECT current_huddle_id::text FROM actor WHERE id = $1`,
-		summoner.ID,
-	).Scan(&summonerHuddle)
-	if summonerHuddle != nil && targetHuddle != nil && *summonerHuddle == *targetHuddle {
-		return summonResult{Result: "rejected", Err: fmt.Sprintf("%s is already here with you", targetDisplayName)}
-	}
-
-	// Cooldown: same summoner re-summoning the same target within
-	// summonCooldown is rejected. Reads the audit log directly.
-	var recentAt *time.Time
-	if err := app.DB.QueryRow(ctx,
-		`SELECT MAX(occurred_at) FROM agent_action_log
-		  WHERE actor_id = $1 AND action_type = 'summon'
-		    AND result = 'ok'
-		    AND payload->>'target' = $2
-		    AND occurred_at > NOW() - $3::interval`,
-		summoner.ID, targetDisplayName,
-		fmt.Sprintf("%d seconds", int(summonCooldown.Seconds())),
-	).Scan(&recentAt); err == nil && recentAt != nil {
-		return summonResult{Result: "rejected", Err: fmt.Sprintf("a messenger is still on their way to %s", targetDisplayName)}
-	}
-
-	// Wake the target. Clearing override/break lets them respond now
-	// instead of after their current scheduled commitment; nulling the
-	// tick stamp removes the cost-guard floor for the upcoming
-	// triggerImmediateTick. agent_override_until is cleared even if the
-	// target is mid-walk — they can re-decide what to do on perception.
-	if _, err := app.DB.Exec(ctx,
-		`UPDATE actor
-		    SET agent_override_until = NULL,
-		        break_until = NULL,
-		        last_agent_tick_at = NULL
-		  WHERE id = $1`,
-		targetID,
-	); err != nil {
-		return summonResult{Result: "failed", Err: fmt.Sprintf("wake target: %v", err)}
-	}
-
-	return summonResult{
-		Result:            "ok",
-		TargetID:          targetID,
-		TargetDisplayName: targetDisplayName,
-	}
+	return app.dispatchSummonErrand(ctx, summoner, req)
 }
 
 // summonsTargetingPerceiver returns recent summons addressed to this

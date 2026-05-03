@@ -323,6 +323,9 @@ func (app *App) applyArrival(npcID string) {
 		// source and destination) fires arrival without ever registering a
 		// walk in NPCMovement.active.
 		app.advanceBehavior(npcID)
+		// And the errand hook — a same-tile dispatch (summoner already
+		// at the nearest summon_point) skips the registered walk too.
+		app.advanceErrandFromArrival(context.Background(), npcID)
 		return
 	}
 	delete(app.NPCMovement.active, npcID)
@@ -360,6 +363,12 @@ func (app *App) applyArrival(npcID string) {
 	})
 
 	app.advanceBehavior(npcID)
+
+	// Drive any in-flight summon errand transitions that this arrival
+	// resolves (summoner reaching summon_point, messenger reaching
+	// summon_point / target / summoner-for-refusal / origin). Cheap
+	// no-op when this actor isn't part of an active errand.
+	app.advanceErrandFromArrival(ctx, npcID)
 
 	// Event-tick co-located agents on agent-driven arrivals (M6.5
 	// pre-staging via ZBBS-075). When an agentized NPC enters a
