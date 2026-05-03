@@ -33,6 +33,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -315,8 +316,10 @@ func (app *App) advanceErrandFromArrival(ctx context.Context, npcID string) {
 }
 
 // onSummonerAtPoint advances dispatched → summoner_at_point. Fires
-// the ring narration, snapshots the messenger's current position, and
-// dispatches the messenger toward the summon_point.
+// the ring narration, snapshots the messenger's pre-dispatch state
+// (current position + inside_structure_id, so we can re-enter on
+// return), stamps override, and dispatches the messenger toward the
+// summon_point.
 func (app *App) onSummonerAtPoint(ctx context.Context, errandID, summonerID, messengerID, summonPointID string) {
 	// Pull summoner display name and summon-point coords for narration
 	// and walk targeting respectively.
@@ -334,11 +337,17 @@ func (app *App) onSummonerAtPoint(ctx context.Context, errandID, summonerID, mes
 
 	app.broadcastSummonRing(ctx, summonerID, summonerName, pointX, pointY)
 
-	// Snapshot messenger's current position and stamp override.
+	// Snapshot messenger's pre-walk state. inside_structure_id is
+	// captured BEFORE we clear inside/inside_structure_id below — it's
+	// what we'll re-enter on the return walk arrival. NULL means the
+	// messenger was in the open village; return walk just lands at
+	// origin coords with no inside-flip.
 	var messengerX, messengerY float64
+	var messengerOriginStructure sql.NullString
 	if err := app.DB.QueryRow(ctx,
-		`SELECT current_x, current_y FROM actor WHERE id = $1`, messengerID,
-	).Scan(&messengerX, &messengerY); err != nil {
+		`SELECT current_x, current_y, inside_structure_id::text
+		   FROM actor WHERE id = $1`, messengerID,
+	).Scan(&messengerX, &messengerY, &messengerOriginStructure); err != nil {
 		app.failErrand(ctx, errandID, fmt.Sprintf("load messenger pos: %v", err))
 		return
 	}
@@ -355,13 +364,18 @@ func (app *App) onSummonerAtPoint(ctx context.Context, errandID, summonerID, mes
 		log.Printf("errand: stamp messenger override: %v", err)
 	}
 
+	var originStructureArg interface{}
+	if messengerOriginStructure.Valid && messengerOriginStructure.String != "" {
+		originStructureArg = messengerOriginStructure.String
+	}
 	if _, err := app.DB.Exec(ctx, `
 		UPDATE summon_errand
 		   SET state = 'summoner_at_point',
 		       messenger_origin_x = $2, messenger_origin_y = $3,
+		       messenger_origin_structure_id = $4,
 		       updated_at = now()
 		 WHERE id = $1
-	`, errandID, messengerX, messengerY); err != nil {
+	`, errandID, messengerX, messengerY, originStructureArg); err != nil {
 		log.Printf("errand: state→summoner_at_point: %v", err)
 		return
 	}
@@ -500,7 +514,8 @@ func (app *App) onMessengerAtTarget(ctx context.Context, errandID string) {
 // onMessengerDeliveredRefusal advances messenger_to_summoner →
 // messenger_returning. Speaks the refusal line at the summoner's tile
 // (the messenger arrived at the summoner's current position) and
-// starts the messenger's walk back to its origin.
+// starts the messenger's walk back to its origin (door tile when
+// origin had a structure, raw coords otherwise).
 func (app *App) onMessengerDeliveredRefusal(ctx context.Context, errandID, messengerID, targetName string, originX, originY float64) {
 	// Pull messenger display name for the speech broadcast.
 	var messengerName string
@@ -523,15 +538,27 @@ func (app *App) onMessengerDeliveredRefusal(ctx context.Context, errandID, messe
 		return
 	}
 
-	if _, err := app.startNPCWalk(ctx, messengerID, originX, originY, defaultNPCSpeed); err != nil {
+	_ = originX
+	_ = originY
+	retX, retY := app.resolveMessengerReturnWalk(ctx, errandID)
+	if _, err := app.startNPCWalk(ctx, messengerID, retX, retY, defaultNPCSpeed); err != nil {
 		app.failErrand(ctx, errandID, fmt.Sprintf("walk messenger home (after refusal): %v", err))
 	}
 }
 
 // onMessengerReturned advances messenger_returning → done. Clears the
 // messenger's override (the summoner's was already cleared at the
-// va-target tick or the unavail-speech step).
+// va-target tick or the unavail-speech step). If the messenger had an
+// origin structure when the errand started (captured at
+// summoner_at_point), flip them inside that structure so their
+// editor row reads correctly and Go-Home is disabled.
 func (app *App) onMessengerReturned(ctx context.Context, errandID, messengerID, summonerID string) {
+	var originStructure sql.NullString
+	_ = app.DB.QueryRow(ctx,
+		`SELECT messenger_origin_structure_id::text FROM summon_errand WHERE id = $1`,
+		errandID,
+	).Scan(&originStructure)
+
 	if _, err := app.DB.Exec(ctx, `
 		UPDATE summon_errand
 		   SET state = 'done', updated_at = now()
@@ -545,6 +572,10 @@ func (app *App) onMessengerReturned(ctx context.Context, errandID, messengerID, 
 		[]string{messengerID, summonerID},
 	); err != nil {
 		log.Printf("errand: clear overrides: %v", err)
+	}
+
+	if originStructure.Valid && originStructure.String != "" {
+		app.setNPCInside(ctx, messengerID, true, originStructure.String)
 	}
 }
 
@@ -625,8 +656,14 @@ func (app *App) tickErrands(ctx context.Context) {
 // Snapshots target's current position fresh (the row's value was
 // dispatch-time but the task design says "no pursuit, freeze at the
 // moment the messenger starts walking" — that moment is now).
+//
+// When the target is inside a structure, the walk-to-target leg
+// resolves to one of the 8 loiter-ring slots around the structure
+// rather than the target's exact tile. Without this, the pathfinder
+// sometimes routed the messenger straight through the stall sprite
+// and the messenger stood ON the structure rather than inside the
+// yellow loiter ring.
 func (app *App) onChatAtSummonElapsed(ctx context.Context, errandID, messengerID, targetName, targetKind string) {
-	var targetX, targetY float64
 	if targetKind == "unknown" {
 		// No actor matches; messenger walks back to summoner's current
 		// position with the refusal speech. Fast-path: skip the
@@ -655,12 +692,12 @@ func (app *App) onChatAtSummonElapsed(ctx context.Context, errandID, messengerID
 		return
 	}
 
-	// Known target — snapshot their current position.
-	if err := app.DB.QueryRow(ctx,
-		`SELECT current_x, current_y FROM actor WHERE LOWER(display_name) = LOWER($1) LIMIT 1`,
-		targetName,
-	).Scan(&targetX, &targetY); err != nil {
-		// Target deleted between dispatch and now — fall to refusal.
+	// Known target — resolve walk coords. The helper returns the
+	// loiter-ring slot when the target is inside a structure, or the
+	// target's tile when they're in the open village. Failure (target
+	// deleted, lookup error) falls through to the refusal branch.
+	walkX, walkY, ok := app.resolveMessengerTargetWalk(ctx, messengerID, targetName)
+	if !ok {
 		var summonerX, summonerY float64
 		if err := app.DB.QueryRow(ctx, `
 			SELECT a.current_x, a.current_y
@@ -690,13 +727,102 @@ func (app *App) onChatAtSummonElapsed(ctx context.Context, errandID, messengerID
 		       target_dispatch_x = $2, target_dispatch_y = $3,
 		       updated_at = now()
 		 WHERE id = $1
-	`, errandID, targetX, targetY); err != nil {
+	`, errandID, walkX, walkY); err != nil {
 		log.Printf("errand: state→messenger_to_target: %v", err)
 		return
 	}
-	if _, err := app.startNPCWalk(ctx, messengerID, targetX, targetY, defaultNPCSpeed); err != nil {
+	if _, err := app.startNPCWalk(ctx, messengerID, walkX, walkY, defaultNPCSpeed); err != nil {
 		app.failErrand(ctx, errandID, fmt.Sprintf("walk messenger to target: %v", err))
 	}
+}
+
+// resolveMessengerReturnWalk picks the coords the messenger should
+// walk to on a return leg. When messenger_origin_structure_id is set,
+// returns the structure's door tile (the engine flips inside=true on
+// arrival via onMessengerReturned). When no origin structure, returns
+// the raw origin coords.
+//
+// Falls back to the raw origin coords on any lookup error — losing the
+// door-tile snap is preferable to failing the errand.
+func (app *App) resolveMessengerReturnWalk(ctx context.Context, errandID string) (float64, float64) {
+	var originX, originY float64
+	var originStructure sql.NullString
+	if err := app.DB.QueryRow(ctx, `
+		SELECT messenger_origin_x, messenger_origin_y,
+		       messenger_origin_structure_id::text
+		  FROM summon_errand WHERE id = $1
+	`, errandID).Scan(&originX, &originY, &originStructure); err != nil {
+		return originX, originY
+	}
+	if !originStructure.Valid || originStructure.String == "" {
+		return originX, originY
+	}
+
+	const tileSize = 32.0
+	var ox, oy float64
+	var doorX, doorY sql.NullInt32
+	if err := app.DB.QueryRow(ctx, `
+		SELECT o.x, o.y, a.door_offset_x, a.door_offset_y
+		  FROM village_object o
+		  JOIN asset a ON a.id = o.asset_id
+		 WHERE o.id = $1
+	`, originStructure.String).Scan(&ox, &oy, &doorX, &doorY); err != nil {
+		return originX, originY
+	}
+	if doorX.Valid && doorY.Valid {
+		return ox + float64(doorX.Int32)*tileSize, oy + float64(doorY.Int32)*tileSize
+	}
+	return ox, oy
+}
+
+// resolveMessengerTargetWalk returns the coords the messenger should
+// walk to in order to deliver to target. When the target is inside a
+// structure, a loiter-ring slot is picked via pickVisitorSlot — same
+// approach a chore visitor uses, so the messenger respects the yellow
+// loiter ring instead of cutting across the structure footprint. When
+// the target is in the open village, walks to the target's tile.
+//
+// Returns (x, y, true) on success. Returns (_, _, false) when the
+// target actor doesn't exist — caller falls through to the refusal
+// branch.
+func (app *App) resolveMessengerTargetWalk(ctx context.Context, messengerID, targetName string) (float64, float64, bool) {
+	const tileSize = 32.0
+
+	var targetID, insideStructure sql.NullString
+	var targetX, targetY float64
+	if err := app.DB.QueryRow(ctx, `
+		SELECT id::text, current_x, current_y, inside_structure_id::text
+		  FROM actor
+		 WHERE LOWER(display_name) = LOWER($1)
+		 LIMIT 1
+	`, targetName).Scan(&targetID, &targetX, &targetY, &insideStructure); err != nil {
+		return 0, 0, false
+	}
+
+	if !insideStructure.Valid || insideStructure.String == "" {
+		return targetX, targetY, true
+	}
+
+	// Target is inside a structure — pick the loiter ring slot.
+	var ox, oy float64
+	var loiterX, loiterY, doorX, doorY sql.NullInt32
+	var footprintBottom int
+	if err := app.DB.QueryRow(ctx, `
+		SELECT o.x, o.y,
+		       o.loiter_offset_x, o.loiter_offset_y,
+		       a.door_offset_x, a.door_offset_y, a.footprint_bottom
+		  FROM village_object o
+		  JOIN asset a ON a.id = o.asset_id
+		 WHERE o.id = $1
+	`, insideStructure.String).Scan(&ox, &oy, &loiterX, &loiterY, &doorX, &doorY, &footprintBottom); err != nil {
+		// Structure metadata missing — fall back to the target tile.
+		return targetX, targetY, true
+	}
+
+	loiterTileX, loiterTileY := effectiveLoiterTile(loiterX, loiterY, doorX, doorY, footprintBottom)
+	wx, wy := app.pickVisitorSlot(ctx, messengerID, ox, oy, loiterTileX, loiterTileY)
+	_ = tileSize
+	return wx, wy, true
 }
 
 // onChatAtTargetElapsed handles delivery. For VA targets we write the
@@ -779,7 +905,15 @@ func (app *App) onChatAtTargetElapsed(ctx context.Context, errandID, summonerID,
 			log.Printf("errand: state→messenger_returning (va delivered): %v", err)
 			return
 		}
-		if _, err := app.startNPCWalk(ctx, messengerID, originX, originY, defaultNPCSpeed); err != nil {
+		// Resolve the actual return tile — door tile when origin had
+		// a structure, raw coords otherwise. Pre-state-change because
+		// we want the helper to read the row we just wrote (not yet
+		// done; the column it cares about is messenger_origin_structure_id
+		// which doesn't change on this transition).
+		_ = originX
+		_ = originY
+		retX, retY := app.resolveMessengerReturnWalk(ctx, errandID)
+		if _, err := app.startNPCWalk(ctx, messengerID, retX, retY, defaultNPCSpeed); err != nil {
 			app.failErrand(ctx, errandID, fmt.Sprintf("walk messenger home (va): %v", err))
 		}
 
