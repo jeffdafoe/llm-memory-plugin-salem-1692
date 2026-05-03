@@ -1354,13 +1354,19 @@ func _on_npc_spoke(_npc_id: String, speaker_name: String, text: String, kind: St
 # the room the player is currently in.
 func _on_room_event(data: Dictionary) -> void:
     var event_structure := str(data.get("structure_id", ""))
-    if event_structure != loaded_structure_id:
-        return
     var actor_name := str(data.get("actor_name", ""))
     var text := str(data.get("text", ""))
     var kind := str(data.get("kind", "act"))
     var at := str(data.get("at", ""))
+    # TEMP DEBUG: trace every room_event delivery and the filter outcome.
+    # Investigating arrival-not-rendering bug — see if the structure_id
+    # comparison or the empty-fields guard is dropping the row.
+    print("[TALK] room_event kind=", kind, " event_structure=", event_structure, " loaded=", loaded_structure_id, " actor=", actor_name, " text=", text)
+    if event_structure != loaded_structure_id:
+        print("[TALK]   -> dropped: structure mismatch")
+        return
     if actor_name.is_empty() or text.is_empty():
+        print("[TALK]   -> dropped: empty actor/text")
         return
     _append_log_line(actor_name, text, kind, false, at)
 
