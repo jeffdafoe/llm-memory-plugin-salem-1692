@@ -8,6 +8,12 @@ extends Node
 ## while the socket was closed are gone, so we rebuild state from REST.
 signal reconnected
 
+## Forwarded npc_arrived signal — main.gd subscribes to know when the
+## player's PC has finished walking (so the notice-board click flow can
+## auto-open the panel on arrival). Carries the actor id, world position,
+## and facing as the WS payload arrived.
+signal npc_arrived(npc_id: String, x: float, y: float, facing: String)
+
 var _socket: WebSocketPeer = null
 var _connected: bool = false
 var _url: String = ""
@@ -196,6 +202,9 @@ func _handle_message(data: String) -> void:
         "village_object_tags_updated":
             if world != null:
                 world.apply_object_tags_updated(event_data)
+        "object_content_changed":
+            if world != null:
+                world.apply_object_content_changed(event_data)
         "object_loiter_offset_changed":
             if world != null:
                 world.apply_object_loiter_offset_changed(event_data)
@@ -564,7 +573,9 @@ func _on_npc_walking(data: Dictionary) -> void:
     world.play_npc_animation(container, facing, "walk")
 
 ## Server says the NPC arrived at its destination. Snap position + facing,
-## clear walking meta, switch to idle animation.
+## clear walking meta, switch to idle animation. Also re-emits as
+## `npc_arrived` so listeners (main.gd's notice-board flow) can react
+## to PC arrivals without re-reading the world container themselves.
 func _on_npc_arrived(data: Dictionary) -> void:
     if world == null:
         return
@@ -580,3 +591,4 @@ func _on_npc_arrived(data: Dictionary) -> void:
     container.set_meta("facing", facing)
     container.remove_meta("walking")
     world.play_npc_animation(container, facing, "idle")
+    npc_arrived.emit(npc_id, final_x, final_y, facing)

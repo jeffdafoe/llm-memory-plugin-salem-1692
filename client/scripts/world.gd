@@ -1224,6 +1224,13 @@ func _place_object(data: Dictionary) -> void:
     # empty); accept either an Array or omit-as-null and normalize.
     var tags_raw = data.get("tags", [])
     container.set_meta("tags", tags_raw if tags_raw is Array else [])
+    # Generated content + posted timestamp (ZBBS-112). Today only
+    # noticeboards write here; null on every other placement. Stored
+    # as Variants so the panel can distinguish "no content posted"
+    # (null) from "" (empty string after a clear). object_content_changed
+    # WS broadcasts update both fields in place.
+    container.set_meta("content_text", data.get("content_text", null))
+    container.set_meta("content_posted_at", data.get("content_posted_at", null))
     # Per-instance entry policy (ZBBS-101). 'none' / 'owner' / 'anyone'.
     # Drives the editor's structure detail dropdown and the PC click
     # handler's enter-vs-knock decision (server-side, this duplicates).
@@ -1888,6 +1895,23 @@ signal world_environment_added(data: Dictionary)
 
 func apply_world_environment_added(data: Dictionary) -> void:
     world_environment_added.emit(data)
+
+## ZBBS-112 — generated content was posted (or cleared) on a placement.
+## Carries object_id, content_text (string or null), content_posted_at
+## (RFC3339 string or null). The notice panel subscribes to keep an
+## open panel live as the crier rotates the board mid-read.
+signal object_content_changed(object_id: String, content_text, content_posted_at)
+
+func apply_object_content_changed(data: Dictionary) -> void:
+    var object_id: String = str(data.get("id", ""))
+    if object_id == "" or not placed_objects.has(object_id):
+        return
+    var content_text = data.get("content_text", null)
+    var content_posted_at = data.get("content_posted_at", null)
+    var node: Node2D = placed_objects[object_id]
+    node.set_meta("content_text", content_text)
+    node.set_meta("content_posted_at", content_posted_at)
+    object_content_changed.emit(object_id, content_text, content_posted_at)
 
 func apply_object_tags_updated(data: Dictionary) -> void:
     var object_id: String = str(data.get("object_id", ""))

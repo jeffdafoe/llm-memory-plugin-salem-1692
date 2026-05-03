@@ -69,6 +69,10 @@ import (
 type pcMeResponse struct {
 	LoginUsername     string             `json:"login_username"`
 	Exists            bool               `json:"exists"`
+	// ActorID is the PC's actor.id. Surfaced so the client can recognize
+	// its own PC in WS broadcasts like npc_arrived (which carries actor
+	// id, not login). Empty when the PC hasn't been created yet.
+	ActorID           string             `json:"actor_id,omitempty"`
 	CharacterName     string             `json:"character_name,omitempty"`
 	X                 float64            `json:"x"`
 	Y                 float64            `json:"y"`
@@ -193,6 +197,7 @@ func (app *App) handlePCMe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp.Exists = true
+	resp.ActorID = pcActorID
 	if charName.Valid {
 		resp.CharacterName = charName.String
 	}
