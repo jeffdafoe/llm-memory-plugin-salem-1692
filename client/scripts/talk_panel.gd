@@ -35,6 +35,23 @@ var talk_launcher: Button
 var sheet_anchor: MarginContainer
 var talk_sheet: PanelContainer
 
+# Top-left resize grip (desktop only). 14×14 Control with the
+# diagonal-arrow cursor; drag mutates talk_sheet.custom_minimum_size
+# clamped to (DESKTOP_MIN_WIDTH × DESKTOP_MIN_HEIGHT) floor and the
+# viewport ceiling. Top-level positioned so it tracks the sheet's
+# top-left corner regardless of layout reflows.
+var resize_grip: Control = null
+var _resize_dragging: bool = false
+var _resize_start_mouse: Vector2 = Vector2.ZERO
+var _resize_start_size: Vector2 = Vector2.ZERO
+const RESIZE_GRIP_SIZE: float = 14.0
+# Persisted user-chosen panel size (desktop only). Loaded from
+# user://talk_panel_size.json on _build_sheet, saved on each drag-end.
+# Vector2.ZERO means "no override; use defaults from
+# _update_responsive_layout".
+var _persisted_panel_size: Vector2 = Vector2.ZERO
+const TALK_PANEL_SIZE_PATH := "user://talk_panel_size.json"
+
 var context_label: Label
 var subcontext_label: Label
 var close_button: Button
@@ -104,6 +121,14 @@ var village_log_loaded: bool = false
 # when they scroll back to within a small threshold of the bottom.
 var village_stick_bottom: bool = true
 const VILLAGE_STICK_BOTTOM_THRESHOLD: int = 24
+
+# Same stick-bottom invariant for the room log. Cleared when the user
+# scrolls up to read history; re-armed when they scroll back down or
+# when an explicit follow-the-bottom path runs (e.g. open(), or a new
+# speech entry while was_at_bottom). Matches the village_stick_bottom
+# pattern so the two logs behave identically.
+var log_stick_bottom: bool = true
+const LOG_STICK_BOTTOM_THRESHOLD: int = 24
 # Live events that arrive while the backload is in flight get parked
 # here and applied after the backload completes — the
 # (occurred_at, id) overlap window between SELECT snapshot and WS
@@ -280,33 +305,44 @@ func _build_sheet() -> void:
     pad.add_child(vbox)
 
     _build_header(vbox)
-    _build_tab_bar(vbox)
     _build_nearby(vbox)
     _build_log(vbox)
     _build_village_log(vbox)
     _build_input(vbox)
     _set_active_tab(TAB_ROOM)
+    _build_resize_grip()
+    _restore_persisted_panel_size()
 
 
 func _build_header(parent: Control) -> void:
-    # Compact one-line header: just the room name, dim and small, with the
-    # close button on the right.
+    # Single-row header: room/place label on the left, Room/Village tab
+    # toggle in the middle, close button on the right. Replaces the
+    # earlier two-row arrangement (header line + standalone tab bar
+    # underneath) so the chips row sits directly under the header and
+    # leaves more vertical space for the log + 2-line input.
     var header := HBoxContainer.new()
-    header.custom_minimum_size = Vector2(0, 20)
+    header.custom_minimum_size = Vector2(0, 22)
     header.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    header.add_theme_constant_override("separation", 8)
     parent.add_child(header)
 
     context_label = Label.new()
     context_label.clip_text = true
     context_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+    # Expand-fill so a long room name has room to render and ellipsizes
+    # gracefully when squeezed by the inline tabs/close-button. With
+    # SIZE_SHRINK_BEGIN the label collapses to its minimum (which is
+    # near zero with clip_text) and the room name disappears.
     context_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     context_label.add_theme_font_size_override("font_size", 11)
     header.add_child(context_label)
 
-    # Kept around so existing _update_context_labels code that touches .text
-    # continues to compile, but never added to the layout.
+    # Kept around so existing _update_context_labels code that touches
+    # .text continues to compile, but never added to the layout.
     subcontext_label = Label.new()
     subcontext_label.visible = false
+
+    _build_tab_bar(header)
 
     close_button = Button.new()
     close_button.text = "×"
@@ -348,34 +384,65 @@ func _build_log(parent: Control) -> void:
     log_vbox.add_theme_constant_override("separation", 8)
     log_scroll.add_child(log_vbox)
 
+    # Mirrors the village log's sort_children pin (see
+    # _on_village_vbox_sorted): when the layout reflows — a new entry
+    # appended, autowrap relayout, or the input row growing as the
+    # player types into the 2-line speech input below — re-pin to the
+    # bottom if we were already there. Without this, typing a wrapping
+    # message visibly clips the most recent log entries from view
+    # because log_scroll.scroll_vertical is an absolute pixel value
+    # against the now-shorter visible area.
+    log_vbox.sort_children.connect(_on_log_vbox_sorted)
+    # User-driven scroll arms / disarms the stick-bottom flag, mirroring
+    # the village pattern. Wheel and drag over the ScrollContainer come
+    # through log_scroll.gui_input; thumb drags on the scrollbar itself
+    # come through bar.gui_input — without the second hookup, dragging
+    # the thumb upward would leave log_stick_bottom armed and the next
+    # entry append would yank the user back to the bottom.
+    log_scroll.gui_input.connect(_on_log_scroll_gui_input)
+    var log_bar := log_scroll.get_v_scroll_bar()
+    if log_bar != null:
+        log_bar.gui_input.connect(_on_log_scroll_gui_input)
 
-# ZBBS-087 — Tab strip below the header. Two tabs: Room (existing
+
+# ZBBS-087 — Room/Village tab toggle. Two tabs: Room (existing
 # room-scoped chat with nearby chips + speech input) and Village (read-
 # only feed of arrivals/departures/phase events). Switching tabs swaps
-# which content the body shows.
+# which content the body shows. Hosted inline in the header HBox
+# alongside the room name + close button (one row instead of two).
 func _build_tab_bar(parent: Control) -> void:
-    tab_bar = HBoxContainer.new()
-    tab_bar.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    tab_bar.custom_minimum_size = Vector2(0, 22)
-    tab_bar.add_theme_constant_override("separation", 4)
-    parent.add_child(tab_bar)
+    # tab_bar still tracked as a field for any outside callers, but
+    # collapses to "the slice of the header where the buttons live"
+    # rather than its own row.
+    tab_bar = parent as HBoxContainer
 
     tab_room_button = _make_tab_button("Room")
-    tab_bar.add_child(tab_room_button)
+    parent.add_child(tab_room_button)
 
     # Village tab carries an unread dot anchored to the upper-right of
     # the button — same affordance as the existing nearby-huddle pulse.
     var village_wrap := Control.new()
     village_wrap.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
-    tab_bar.add_child(village_wrap)
+    parent.add_child(village_wrap)
     tab_village_button = _make_tab_button("Village")
     village_wrap.add_child(tab_village_button)
-    village_wrap.custom_minimum_size = tab_village_button.custom_minimum_size
+    # Wrapper must reserve enough horizontal space for the button's
+    # full theme-calculated minimum, not just the explicit
+    # custom_minimum_size — in the inline header layout the wrapper
+    # is squeezed against neighbors and any underestimate clips the
+    # button's right edge. get_combined_minimum_size folds in the
+    # theme's content margins.
+    var village_min := tab_village_button.get_combined_minimum_size()
+    if village_min.x < tab_village_button.custom_minimum_size.x:
+        village_min.x = tab_village_button.custom_minimum_size.x
+    if village_min.y < tab_village_button.custom_minimum_size.y:
+        village_min.y = tab_village_button.custom_minimum_size.y
+    village_wrap.custom_minimum_size = village_min
 
     tab_village_unread_dot = Panel.new()
     tab_village_unread_dot.custom_minimum_size = Vector2(7, 7)
     tab_village_unread_dot.size = Vector2(7, 7)
-    tab_village_unread_dot.position = Vector2(tab_village_button.custom_minimum_size.x - 9, 3)
+    tab_village_unread_dot.position = Vector2(village_min.x - 9, 3)
     tab_village_unread_dot.visible = false
     var dot_style := StyleBoxFlat.new()
     dot_style.bg_color = Color(0.85, 0.45, 0.18, 1.0)
@@ -423,10 +490,16 @@ func _build_village_log(parent: Control) -> void:
     # max_value lands a frame or two later.
     village_vbox.sort_children.connect(_on_village_vbox_sorted)
     # Clear village_stick_bottom when the user scrolls up; re-arm when
-    # they scroll back near the bottom. The v_scroll_bar emits "changed"
-    # on programmatic scrolls too, so we filter on input_event from the
-    # scroll container itself rather than the bar.
+    # they scroll back near the bottom. Wheel and drag over the
+    # ScrollContainer come through village_scroll.gui_input; thumb
+    # drags on the scrollbar itself come through bar.gui_input —
+    # without the second hookup, dragging the thumb upward would leave
+    # village_stick_bottom armed and the next event append would
+    # yank the user back to the bottom.
     village_scroll.gui_input.connect(_on_village_scroll_gui_input)
+    var village_bar := village_scroll.get_v_scroll_bar()
+    if village_bar != null:
+        village_bar.gui_input.connect(_on_village_scroll_gui_input)
 
 
 # Visibility toggle between the two tabs. Room tab shows nearby chips +
@@ -595,19 +668,27 @@ func _on_village_vbox_sorted() -> void:
         village_scroll.scroll_vertical = int(bar.max_value)
 
 
-# User-driven scroll input on the village log. Wheel + drag both come
-# through here. Decide whether to follow the bottom based on where the
-# user has parked the scrollbar.
+# User-driven scroll input on the village log. Connected to both
+# village_scroll.gui_input (wheel + drag over the ScrollContainer)
+# AND village_scroll.get_v_scroll_bar().gui_input (thumb drags on
+# the scrollbar itself, which would otherwise bypass the parent's
+# gui_input). Decides whether to follow the bottom based on where
+# the user has parked the scrollbar.
 func _on_village_scroll_gui_input(event: InputEvent) -> void:
     if not (event is InputEventMouseButton or event is InputEventPanGesture or event is InputEventScreenDrag):
         return
-    if village_scroll == null:
+    if not is_instance_valid(village_scroll):
         return
     var bar := village_scroll.get_v_scroll_bar()
-    if bar == null:
+    if not is_instance_valid(bar):
         return
     # Defer the read so the scroll has actually moved before we sample.
     await get_tree().process_frame
+    if not is_instance_valid(village_scroll):
+        return
+    bar = village_scroll.get_v_scroll_bar()
+    if not is_instance_valid(bar):
+        return
     var distance_from_bottom: int = int(bar.max_value) - village_scroll.scroll_vertical
     village_stick_bottom = distance_from_bottom <= VILLAGE_STICK_BOTTOM_THRESHOLD
 
@@ -643,7 +724,11 @@ func force_open_after_refresh() -> void:
 
 func _build_input(parent: Control) -> void:
     var row := HBoxContainer.new()
-    row.custom_minimum_size = Vector2(0, 28)
+    # Two-line input: ~52px fits 2 visual lines at font_size=12 plus the
+    # 4px top/bottom content margins on the input stylebox. The TextEdit
+    # itself handles internal scroll past 2 lines, so a long message
+    # doesn't blow up the panel.
+    row.custom_minimum_size = Vector2(0, 52)
     row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     row.add_theme_constant_override("separation", 6)
     parent.add_child(row)
@@ -651,9 +736,9 @@ func _build_input(parent: Control) -> void:
     speech_input = TextEdit.new()
     speech_input.placeholder_text = "Speak to those gathered here…"
     speech_input.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
-    speech_input.custom_minimum_size = Vector2(0, 28)
+    speech_input.custom_minimum_size = Vector2(0, 52)
     speech_input.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    speech_input.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+    speech_input.size_flags_vertical = Control.SIZE_FILL
     speech_input.focus_mode = Control.FOCUS_ALL
     speech_input.mouse_filter = Control.MOUSE_FILTER_STOP
     speech_input.add_theme_font_size_override("font_size", 12)
@@ -684,6 +769,7 @@ func _build_input(parent: Control) -> void:
     pay_button = Button.new()
     pay_button.text = "Pay"
     pay_button.custom_minimum_size = Vector2(48, 28)
+    pay_button.size_flags_vertical = Control.SIZE_FILL
     pay_button.focus_mode = Control.FOCUS_ALL
     pay_button.mouse_filter = Control.MOUSE_FILTER_STOP
     pay_button.add_theme_font_size_override("font_size", 12)
@@ -693,10 +779,131 @@ func _build_input(parent: Control) -> void:
     speak_button = Button.new()
     speak_button.text = "Speak"
     speak_button.custom_minimum_size = Vector2(60, 28)
+    speak_button.size_flags_vertical = Control.SIZE_FILL
     speak_button.focus_mode = Control.FOCUS_ALL
     speak_button.mouse_filter = Control.MOUSE_FILTER_STOP
     speak_button.add_theme_font_size_override("font_size", 12)
     row.add_child(speak_button)
+
+
+# Top-left corner resize grip. Parented under `root` (a plain Control,
+# not a Container) so PanelContainer / MarginContainer layout passes
+# never see it as a layout participant. `top_level = true` puts the
+# grip in viewport coords; talk_sheet.resized + sheet_anchor.visibility
+# keep it anchored to the sheet's top-left corner regardless of
+# layout reflows. Mobile mode hides it (the sheet is already viewport-
+# sized; user-resize doesn't apply).
+func _build_resize_grip() -> void:
+    if talk_sheet == null or root == null:
+        return
+    resize_grip = ColorRect.new()
+    resize_grip.name = "ResizeGrip"
+    resize_grip.color = Color(0.55, 0.42, 0.24, 0.55)
+    resize_grip.size = Vector2(RESIZE_GRIP_SIZE, RESIZE_GRIP_SIZE)
+    resize_grip.custom_minimum_size = Vector2(RESIZE_GRIP_SIZE, RESIZE_GRIP_SIZE)
+    resize_grip.mouse_filter = Control.MOUSE_FILTER_STOP
+    resize_grip.mouse_default_cursor_shape = Control.CURSOR_FDIAGSIZE
+    resize_grip.tooltip_text = "Drag to resize the talk panel"
+    resize_grip.top_level = true
+    resize_grip.visible = not is_mobile
+    root.add_child(resize_grip)
+    resize_grip.gui_input.connect(_on_resize_grip_input)
+    talk_sheet.resized.connect(_position_resize_grip)
+    sheet_anchor.visibility_changed.connect(_position_resize_grip)
+    _position_resize_grip()
+
+
+# Re-anchor the grip to the top-left corner of talk_sheet. Called on
+# sheet resize, panel open/close, and after a user-driven drag.
+# global_position rather than position because the grip is top_level
+# and lives in viewport coords; using `position` here resolves
+# against the parent's transform and would land in the wrong place
+# under non-trivial canvas transforms.
+func _position_resize_grip() -> void:
+    if resize_grip == null or talk_sheet == null:
+        return
+    resize_grip.global_position = talk_sheet.global_position
+    resize_grip.visible = sheet_anchor.visible and not is_mobile
+
+
+# Drag start hook. The 14×14 grip only stays under the cursor while
+# the user holds steady; once they start moving fast the pointer can
+# leave the grip's rect mid-drag and gui_input stops delivering motion
+# / release. Press captures start state; motion + release are handled
+# globally in _input below so the drag survives the pointer leaving
+# the grip.
+func _on_resize_grip_input(event: InputEvent) -> void:
+    if talk_sheet == null:
+        return
+    if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
+        _resize_dragging = true
+        _resize_start_mouse = event.global_position
+        # Capture custom_minimum_size (the field we mutate) rather than
+        # actual rendered size — keeps the math consistent if a Container
+        # constraint had inflated the rendered size beyond the minimum.
+        _resize_start_size = talk_sheet.custom_minimum_size
+
+
+# Global drag motion + release. Active only while _resize_dragging is
+# true; otherwise this is a no-op for every input event in the scene.
+# Catches the case where the cursor leaves the grip mid-drag — without
+# this, _resize_dragging would stay armed and the next motion over the
+# grip would resume from stale start state.
+func _input(event: InputEvent) -> void:
+    if not _resize_dragging:
+        return
+    if event is InputEventMouseMotion:
+        var delta := event.global_position - _resize_start_mouse
+        # Top-left grip: drag up-left (negative delta) grows the panel.
+        var new_w: float = _resize_start_size.x - delta.x
+        var new_h: float = _resize_start_size.y - delta.y
+        var vp := get_viewport().get_visible_rect().size
+        # Min: never below the desktop floor. Max: leave 24px margin
+        # from the viewport edge so the grip stays clickable.
+        new_w = clamp(new_w, DESKTOP_MIN_WIDTH, max(DESKTOP_MIN_WIDTH, vp.x - 24.0))
+        new_h = clamp(new_h, DESKTOP_MIN_HEIGHT, max(DESKTOP_MIN_HEIGHT, vp.y - 24.0))
+        talk_sheet.custom_minimum_size = Vector2(new_w, new_h)
+        _position_resize_grip()
+        get_viewport().set_input_as_handled()
+    elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and not event.pressed:
+        _resize_dragging = false
+        _persisted_panel_size = talk_sheet.custom_minimum_size
+        _save_persisted_panel_size()
+        get_viewport().set_input_as_handled()
+
+
+# Load any persisted size from user://talk_panel_size.json. Only sets
+# `_persisted_panel_size` — `_update_responsive_layout` is the single
+# place that decides whether to apply it (desktop only, re-clamped
+# against the current viewport). Missing/corrupt file is a silent
+# no-op; the panel falls back to DESKTOP_MIN_WIDTH × DESKTOP_MIN_HEIGHT
+# via the responsive-layout default branch.
+func _restore_persisted_panel_size() -> void:
+    if talk_sheet == null:
+        return
+    if not FileAccess.file_exists(TALK_PANEL_SIZE_PATH):
+        return
+    var f := FileAccess.open(TALK_PANEL_SIZE_PATH, FileAccess.READ)
+    if f == null:
+        return
+    var data = JSON.parse_string(f.get_as_text())
+    if not (data is Dictionary):
+        return
+    var w := float(data.get("width", 0.0))
+    var h := float(data.get("height", 0.0))
+    if w < DESKTOP_MIN_WIDTH or h < DESKTOP_MIN_HEIGHT:
+        return
+    _persisted_panel_size = Vector2(w, h)
+
+
+func _save_persisted_panel_size() -> void:
+    var f := FileAccess.open(TALK_PANEL_SIZE_PATH, FileAccess.WRITE)
+    if f == null:
+        return
+    f.store_string(JSON.stringify({
+        "width": _persisted_panel_size.x,
+        "height": _persisted_panel_size.y,
+    }))
 
 
 func _connect_signals() -> void:
@@ -1515,6 +1722,10 @@ func _is_log_near_bottom() -> bool:
 
 
 func _scroll_log_to_bottom_deferred() -> void:
+    # Re-arm the follow-bottom invariant. Same shape as
+    # _scroll_village_log_to_bottom_deferred — any caller asking to
+    # scroll to bottom is implicitly asking to follow new content too.
+    log_stick_bottom = true
     call_deferred("_scroll_log_to_bottom")
 
 
@@ -1530,6 +1741,44 @@ func _scroll_log_to_bottom() -> void:
     var bar := log_scroll.get_v_scroll_bar()
     if bar != null:
         bar.value = bar.max_value
+
+
+# Inner vbox finished sorting — entries have laid out, max_value is
+# current. Re-pin to the bottom when log_stick_bottom is armed, no-op
+# otherwise. Cheap; runs on every layout reflow including the input
+# row growing as the player types into the 2-line speech_input.
+func _on_log_vbox_sorted() -> void:
+    if not log_stick_bottom or log_scroll == null:
+        return
+    var bar := log_scroll.get_v_scroll_bar()
+    if bar != null:
+        log_scroll.scroll_vertical = int(bar.max_value)
+
+
+# User-driven scroll input on the room log. Connected to both
+# log_scroll.gui_input (wheel + drag over the ScrollContainer) AND
+# log_scroll.get_v_scroll_bar().gui_input (thumb drags on the
+# scrollbar itself, which would otherwise bypass the parent's
+# gui_input). Decides whether to follow the bottom based on where
+# the user has parked the scrollbar. Matches
+# _on_village_scroll_gui_input.
+func _on_log_scroll_gui_input(event: InputEvent) -> void:
+    if not (event is InputEventMouseButton or event is InputEventPanGesture or event is InputEventScreenDrag):
+        return
+    if not is_instance_valid(log_scroll):
+        return
+    var bar := log_scroll.get_v_scroll_bar()
+    if not is_instance_valid(bar):
+        return
+    # Defer the read so the scroll has actually moved before we sample.
+    await get_tree().process_frame
+    if not is_instance_valid(log_scroll):
+        return
+    bar = log_scroll.get_v_scroll_bar()
+    if not is_instance_valid(bar):
+        return
+    var distance_from_bottom: int = int(bar.max_value) - log_scroll.scroll_vertical
+    log_stick_bottom = distance_from_bottom <= LOG_STICK_BOTTOM_THRESHOLD
 
 
 func _update_launcher_text() -> void:
@@ -1638,9 +1887,25 @@ func _update_responsive_layout() -> void:
         sheet_anchor.add_theme_constant_override("margin_bottom", 22)
 
         talk_sheet.size_flags_horizontal = Control.SIZE_SHRINK_END
-        talk_sheet.custom_minimum_size = Vector2(DESKTOP_MIN_WIDTH, DESKTOP_MIN_HEIGHT)
+        # Use the persisted user-chosen size when set, otherwise the
+        # baseline desktop floor. _persisted_panel_size is loaded from
+        # user://talk_panel_size.json on _build_sheet and refreshed on
+        # each drag-end. Re-clamp against the current viewport in case
+        # the window was resized between sessions.
+        var sheet_size: Vector2
+        if _persisted_panel_size.x >= DESKTOP_MIN_WIDTH and _persisted_panel_size.y >= DESKTOP_MIN_HEIGHT:
+            sheet_size = _persisted_panel_size
+        else:
+            sheet_size = Vector2(DESKTOP_MIN_WIDTH, DESKTOP_MIN_HEIGHT)
+        sheet_size.x = clamp(sheet_size.x, DESKTOP_MIN_WIDTH, max(DESKTOP_MIN_WIDTH, size.x - 24.0))
+        sheet_size.y = clamp(sheet_size.y, DESKTOP_MIN_HEIGHT, max(DESKTOP_MIN_HEIGHT, size.y - 24.0))
+        talk_sheet.custom_minimum_size = sheet_size
 
         talk_launcher.custom_minimum_size = Vector2(150, 48)
+
+    if resize_grip != null:
+        resize_grip.visible = sheet_anchor.visible and not is_mobile
+        _position_resize_grip()
 
 
 func _apply_theme() -> void:
