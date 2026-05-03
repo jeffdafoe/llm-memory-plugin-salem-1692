@@ -20,8 +20,14 @@ extends CanvasLayer
 ##   - POST /api/village/pc/speak {text}  → broadcast
 
 const REFRESH_INTERVAL := 10.0
+# Default panel size on first open / when no persisted size exists.
 const DESKTOP_MIN_WIDTH := 580.0
 const DESKTOP_MIN_HEIGHT := 400.0
+# Lower floor the user can drag the panel down to via the resize grip.
+# Smaller than the default opening size so the user can actually shrink
+# the panel — clamping resize to DESKTOP_MIN_* would prevent that.
+const DESKTOP_RESIZE_MIN_WIDTH := 360.0
+const DESKTOP_RESIZE_MIN_HEIGHT := 240.0
 const MOBILE_BREAKPOINT := 720.0
 const MOBILE_SHEET_VH := 0.60
 const MOBILE_SHEET_FOCUSED_VH := 0.82
@@ -37,9 +43,9 @@ var talk_sheet: PanelContainer
 
 # Top-left resize grip (desktop only). 14×14 Control with the
 # diagonal-arrow cursor; drag mutates talk_sheet.custom_minimum_size
-# clamped to (DESKTOP_MIN_WIDTH × DESKTOP_MIN_HEIGHT) floor and the
-# viewport ceiling. Top-level positioned so it tracks the sheet's
-# top-left corner regardless of layout reflows.
+# clamped to (DESKTOP_RESIZE_MIN_WIDTH × DESKTOP_RESIZE_MIN_HEIGHT)
+# floor and the viewport ceiling. Top-level positioned so it tracks
+# the sheet's top-left corner regardless of layout reflows.
 var resize_grip: Control = null
 var _resize_dragging: bool = false
 var _resize_start_mouse: Vector2 = Vector2.ZERO
@@ -868,8 +874,8 @@ func _input(event: InputEvent) -> void:
         var vp := get_viewport().get_visible_rect().size
         # Min: never below the desktop floor. Max: leave 24px margin
         # from the viewport edge so the grip stays clickable.
-        new_w = clamp(new_w, DESKTOP_MIN_WIDTH, max(DESKTOP_MIN_WIDTH, vp.x - 24.0))
-        new_h = clamp(new_h, DESKTOP_MIN_HEIGHT, max(DESKTOP_MIN_HEIGHT, vp.y - 24.0))
+        new_w = clamp(new_w, DESKTOP_RESIZE_MIN_WIDTH, max(DESKTOP_RESIZE_MIN_WIDTH, vp.x - 24.0))
+        new_h = clamp(new_h, DESKTOP_RESIZE_MIN_HEIGHT, max(DESKTOP_RESIZE_MIN_HEIGHT, vp.y - 24.0))
         talk_sheet.custom_minimum_size = Vector2(new_w, new_h)
         _position_resize_grip()
         get_viewport().set_input_as_handled()
@@ -899,7 +905,7 @@ func _restore_persisted_panel_size() -> void:
         return
     var w := float(data.get("width", 0.0))
     var h := float(data.get("height", 0.0))
-    if w < DESKTOP_MIN_WIDTH or h < DESKTOP_MIN_HEIGHT:
+    if w < DESKTOP_RESIZE_MIN_WIDTH or h < DESKTOP_RESIZE_MIN_HEIGHT:
         return
     _persisted_panel_size = Vector2(w, h)
 
@@ -1977,12 +1983,12 @@ func _update_responsive_layout() -> void:
         # each drag-end. Re-clamp against the current viewport in case
         # the window was resized between sessions.
         var sheet_size: Vector2
-        if _persisted_panel_size.x >= DESKTOP_MIN_WIDTH and _persisted_panel_size.y >= DESKTOP_MIN_HEIGHT:
+        if _persisted_panel_size.x >= DESKTOP_RESIZE_MIN_WIDTH and _persisted_panel_size.y >= DESKTOP_RESIZE_MIN_HEIGHT:
             sheet_size = _persisted_panel_size
         else:
             sheet_size = Vector2(DESKTOP_MIN_WIDTH, DESKTOP_MIN_HEIGHT)
-        sheet_size.x = clamp(sheet_size.x, DESKTOP_MIN_WIDTH, max(DESKTOP_MIN_WIDTH, size.x - 24.0))
-        sheet_size.y = clamp(sheet_size.y, DESKTOP_MIN_HEIGHT, max(DESKTOP_MIN_HEIGHT, size.y - 24.0))
+        sheet_size.x = clamp(sheet_size.x, DESKTOP_RESIZE_MIN_WIDTH, max(DESKTOP_RESIZE_MIN_WIDTH, size.x - 24.0))
+        sheet_size.y = clamp(sheet_size.y, DESKTOP_RESIZE_MIN_HEIGHT, max(DESKTOP_RESIZE_MIN_HEIGHT, size.y - 24.0))
         talk_sheet.custom_minimum_size = sheet_size
 
         talk_launcher.custom_minimum_size = Vector2(150, 48)
