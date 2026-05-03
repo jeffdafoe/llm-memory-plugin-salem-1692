@@ -1103,6 +1103,14 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 		} else if line := app.shopStockLine(ctx, loiteringAtID, r.ID); line != "" {
 			sections = append(sections, line)
 		}
+		// Posted notice text on a tagged noticeboard. Independent of the
+		// staffed/unstaffed signal above — a board can stand at a tended
+		// shop AND carry its own posted content; both lines render. Empty
+		// string when the loiter target isn't a noticeboard or has no
+		// content posted on it.
+		if line := app.noticeBoardLineForLoiterer(ctx, loiteringAtID); line != "" {
+			sections = append(sections, line)
+		}
 	}
 
 	// 3.0c. Visible needs of co-located others. When the perceiver is
