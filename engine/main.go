@@ -438,6 +438,12 @@ func main() {
 	tickerCtx, cancelTicker := context.WithCancel(context.Background())
 	go app.runServerTick(tickerCtx)
 
+	// Errand ticker — advances timer-driven transitions on summon_errand
+	// rows (chat_at_summon / chat_at_target elapsing). Walk-driven
+	// transitions are hooked in applyArrival; this ticker handles only
+	// the time-elapsed half. Independent goroutine, 5s cadence.
+	app.startErrandTicker()
+
 	go func() {
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
