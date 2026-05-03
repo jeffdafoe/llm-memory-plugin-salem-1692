@@ -1132,6 +1132,15 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 		sections = append(sections, "Summons for you:\n"+strings.Join(summonsLines, "\n"))
 	}
 
+	// Refusal feedback for the summoner. When the messenger reports
+	// back that the target couldn't be found, a summon_failed audit
+	// row is written for this actor; surface it so the model can
+	// react (apologize to a waiting customer, try a different
+	// villager, give up). Same fade-after-response rule.
+	if failedSummons := app.summonFailedForPerceiver(ctx, r.ID); len(failedSummons) > 0 {
+		sections = append(sections, "Your messenger returned with news:\n"+strings.Join(failedSummons, "\n"))
+	}
+
 	// Atmosphere — the chronicler's most recent set_environment text.
 	// Empty when the chronicler hasn't fired yet (fresh deploy) or
 	// when world_environment is otherwise empty. The chronicler writes
