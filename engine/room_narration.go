@@ -13,6 +13,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -270,8 +271,16 @@ func payloadInt(payload map[string]interface{}, key string) int {
 }
 
 // payloadStringSlice extracts a []string from a payload field that
-// could be []interface{} (canonical JSON) or a single string (some
-// providers single-element-stringify). Returns empty when missing.
+// could arrive in any of three shapes:
+//
+//   1. []interface{} — canonical JSON array.
+//   2. string with [..] wrapping — provider re-serialized the array
+//      as a JSON string (saw this with Llama 3.3). Without unwrapping,
+//      narration renders the literal "[\"Jefferey\",\"Wendy\"]" and
+//      the agent_action_log's payload->>'recipients' joins are off.
+//   3. plain string — single recipient stringified.
+//
+// Returns empty when missing or unparseable.
 func payloadStringSlice(payload map[string]interface{}, key string) []string {
 	switch v := payload[key].(type) {
 	case []interface{}:
@@ -283,9 +292,23 @@ func payloadStringSlice(payload map[string]interface{}, key string) []string {
 		}
 		return out
 	case string:
-		if strings.TrimSpace(v) != "" {
-			return []string{v}
+		trimmed := strings.TrimSpace(v)
+		if trimmed == "" {
+			return nil
 		}
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			var parsed []string
+			if err := json.Unmarshal([]byte(trimmed), &parsed); err == nil {
+				out := make([]string, 0, len(parsed))
+				for _, s := range parsed {
+					if strings.TrimSpace(s) != "" {
+						out = append(out, s)
+					}
+				}
+				return out
+			}
+		}
+		return []string{trimmed}
 	}
 	return nil
 }
