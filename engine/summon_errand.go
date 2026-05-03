@@ -372,10 +372,46 @@ func (app *App) onSummonerAtPoint(ctx context.Context, errandID, summonerID, mes
 	}
 }
 
-// onMessengerAtPoint advances summoner_at_point → messenger_at_point
-// and starts the at-point chat timer. The next transition is timer-driven
-// (via tickErrands).
+// onMessengerAtPoint advances summoner_at_point → messenger_at_point.
+// The summoner says their canned commission, the messenger replies a
+// beat later, and the chat timer plays out the rest of the pause
+// before tickErrands fires the walk-to-target transition.
+//
+// Speech sequence:
+//   t+0    summoner: "Fetch <target> for me. <reason>"
+//   t+~1.5s messenger: "At once."
+// chat_at_summon_until = t + randomChatDuration() (4–10s); the walk
+// won't start until that elapses.
 func (app *App) onMessengerAtPoint(ctx context.Context, errandID string) {
+	var summonerID, summonerName, messengerID, messengerName, targetName, reason string
+	if err := app.DB.QueryRow(ctx, `
+		SELECT e.summoner_id::text, sa.display_name,
+		       e.messenger_id::text, ma.display_name,
+		       e.target_name, e.reason
+		  FROM summon_errand e
+		  JOIN actor sa ON sa.id = e.summoner_id
+		  JOIN actor ma ON ma.id = e.messenger_id
+		 WHERE e.id = $1
+	`, errandID).Scan(&summonerID, &summonerName, &messengerID, &messengerName,
+		&targetName, &reason); err != nil {
+		log.Printf("errand: load at-point row: %v", err)
+		// Fall through to set the timer anyway — losing the speech
+		// bubble is a UX miss, not a state-machine failure.
+	} else {
+		commission := fmt.Sprintf("Fetch %s for me.", targetName)
+		if reason != "" {
+			commission = fmt.Sprintf("Fetch %s for me. %s.", targetName, capitalize(reason))
+		}
+		app.broadcastNPCSpeech(summonerID, summonerName, commission)
+		// Beat between commission and reply so the bubbles read in
+		// order rather than overlap. Goroutine so we don't block
+		// applyArrival.
+		go func() {
+			time.Sleep(1500 * time.Millisecond)
+			app.broadcastNPCSpeech(messengerID, messengerName, "At once.")
+		}()
+	}
+
 	until := time.Now().Add(randomChatDuration())
 	if _, err := app.DB.Exec(ctx, `
 		UPDATE summon_errand
@@ -430,6 +466,25 @@ func (app *App) onMessengerAtTarget(ctx context.Context, errandID string) {
 		return
 	}
 
+	// Messenger speaks the canned delivery line at the target before
+	// the chat timer plays out. The target's reply comes from their
+	// own LLM tick (fired in onChatAtTargetElapsed for VA targets);
+	// non-VA targets just hear the line and don't react.
+	var summonerName, messengerName, reason string
+	if err := app.DB.QueryRow(ctx, `
+		SELECT sa.display_name, ma.display_name, e.reason
+		  FROM summon_errand e
+		  JOIN actor sa ON sa.id = e.summoner_id
+		  JOIN actor ma ON ma.id = e.messenger_id
+		 WHERE e.id = $1
+	`, errandID).Scan(&summonerName, &messengerName, &reason); err == nil {
+		delivery := fmt.Sprintf("%s, %s summons you.", targetName, summonerName)
+		if reason != "" {
+			delivery = fmt.Sprintf("%s, %s summons you. %s.", targetName, summonerName, capitalize(reason))
+		}
+		app.broadcastNPCSpeech(messengerID, messengerName, delivery)
+	}
+
 	until := time.Now().Add(randomChatDuration())
 	if _, err := app.DB.Exec(ctx, `
 		UPDATE summon_errand
@@ -455,7 +510,7 @@ func (app *App) onMessengerDeliveredRefusal(ctx context.Context, errandID, messe
 		log.Printf("errand: load messenger name: %v", err)
 		messengerName = "the messenger"
 	}
-	app.broadcastMessengerSpeech(messengerID, messengerName,
+	app.broadcastNPCSpeech(messengerID, messengerName,
 		fmt.Sprintf("Goodman %s is not to be found.", targetName))
 
 	if _, err := app.DB.Exec(ctx, `
@@ -797,17 +852,32 @@ func (app *App) broadcastSummonRing(ctx context.Context, summonerID, summonerNam
 	app.recordVillageEvent(ctx, "summon_ring", text, summonerID, "", &x, &y)
 }
 
-// broadcastMessengerSpeech emits an npc_spoke event for the messenger.
-// Used for the canned refusal delivered at the summoner's tile when
-// the target is unavailable. No agent_action_log row — the messenger
-// isn't a VA and this isn't an LLM-driven utterance.
-func (app *App) broadcastMessengerSpeech(messengerID, messengerName, text string) {
+// broadcastNPCSpeech emits an npc_spoke event with the canonical shape
+// (npc_id, name, text, at). Used for every canned line in the errand
+// flow — summoner's commission to the messenger, messenger's reply,
+// messenger's delivery to the target, messenger's refusal report. No
+// agent_action_log row: these are mechanical / non-VA utterances.
+func (app *App) broadcastNPCSpeech(actorID, actorName, text string) {
 	app.Hub.Broadcast(WorldEvent{Type: "npc_spoke", Data: map[string]interface{}{
-		"npc_id": messengerID,
-		"name":   messengerName,
+		"npc_id": actorID,
+		"name":   actorName,
 		"text":   text,
 		"at":     time.Now().UTC().Format(time.RFC3339),
 	}})
+}
+
+// capitalize uppercases the first rune of s. Used to turn LLM-supplied
+// reason strings ("come share an ale") into sentence-cased fragments
+// inside the canned commission and delivery lines. No-op on empty.
+func capitalize(s string) string {
+	if s == "" {
+		return s
+	}
+	r := []rune(s)
+	if r[0] >= 'a' && r[0] <= 'z' {
+		r[0] -= 'a' - 'A'
+	}
+	return string(r)
 }
 
 // randomChatDuration returns a random pause between
