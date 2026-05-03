@@ -165,6 +165,9 @@ func _handle_message(data: String) -> void:
         "npc_behavior_changed":
             if world != null:
                 world.apply_npc_behavior_change(event_data)
+        "npc_attributes_changed":
+            if world != null:
+                world.apply_npc_attributes_changed(event_data)
         "npc_agent_changed":
             if world != null:
                 world.apply_npc_agent_change(event_data)

@@ -12,7 +12,6 @@ signal display_name_changed(display_name: String, object_id: String)
 signal attachment_requested(overlay_asset_id: String)
 signal npc_sprite_selected(sprite: Dictionary, sheet: Texture2D, npc_name: String)
 signal npc_name_changed(display_name: String)
-signal npc_behavior_changed(behavior: String)
 signal npc_agent_changed(agent: String)
 signal npc_home_structure_changed(structure_id: String)
 signal npc_work_structure_changed(structure_id: String)
@@ -191,7 +190,16 @@ var _inventory_rows_state: Array = []
 # with _asset_fields_section.
 var _npc_fields_section: VBoxContainer = null
 var _npc_name_edit: LineEdit = null
-var _npc_behavior_dropdown: OptionButton = null
+# Attributes section — replaces the single-behavior dropdown (ZBBS-105).
+# Multi-select chip list backed by actor_attribute. Add dropdown lists
+# allowlist slugs not already on the NPC. Chips render with an X to
+# remove. Add/remove call the new POST/DELETE attribute endpoints
+# directly via world.gd; the WS event npc_attributes_changed refreshes
+# the chips after the round-trip lands.
+var _npc_attributes_chips_box: HBoxContainer = null
+var _npc_attributes_add_dropdown: OptionButton = null
+var _npc_attributes_current_id: String = ""
+var _npc_attributes_current_list: Array = []
 var _npc_agent_dropdown: OptionButton = null
 # SPRITE row — read-only label of current sprite name + Change… button that
 # opens the modal picker. NPC's current sprite_id is stashed for the picker.
@@ -775,16 +783,9 @@ func _ready() -> void:
     _npc_sprite_change_button.pressed.connect(_on_npc_sprite_change_pressed)
     sprite_row.add_child(_npc_sprite_change_button)
 
-    var npc_behavior_header = Label.new()
-    npc_behavior_header.text = "BEHAVIOR"
-    npc_behavior_header.add_theme_color_override("font_color", COLOR_LABEL)
-    npc_behavior_header.add_theme_font_size_override("font_size", 11)
-    _npc_fields_section.add_child(npc_behavior_header)
-
-    _npc_behavior_dropdown = OptionButton.new()
-    _npc_behavior_dropdown.add_theme_font_override("font", _font)
-    _npc_behavior_dropdown.add_theme_font_size_override("font_size", 13)
-    _npc_behavior_dropdown.add_theme_color_override("font_color", COLOR_TEXT)
+    # Shared stylebox for the agent dropdown + the attribute add-row's
+    # dropdown and button below. Declared once here, reused everywhere
+    # this NPC fields section needs the standard dark-on-tan picker look.
     var behavior_style = StyleBoxFlat.new()
     behavior_style.bg_color = Color(0.08, 0.07, 0.05, 1.0)
     behavior_style.border_width_left = 1
@@ -796,9 +797,37 @@ func _ready() -> void:
     behavior_style.content_margin_right = 6.0
     behavior_style.content_margin_top = 4.0
     behavior_style.content_margin_bottom = 4.0
-    _npc_behavior_dropdown.add_theme_stylebox_override("normal", behavior_style)
-    _npc_behavior_dropdown.item_selected.connect(_on_npc_behavior_selected)
-    _npc_fields_section.add_child(_npc_behavior_dropdown)
+
+    var npc_attributes_header = Label.new()
+    npc_attributes_header.text = "ATTRIBUTES"
+    npc_attributes_header.add_theme_color_override("font_color", COLOR_LABEL)
+    npc_attributes_header.add_theme_font_size_override("font_size", 11)
+    _npc_fields_section.add_child(npc_attributes_header)
+
+    _npc_attributes_chips_box = HBoxContainer.new()
+    _npc_attributes_chips_box.add_theme_constant_override("separation", 4)
+    _npc_fields_section.add_child(_npc_attributes_chips_box)
+
+    var attr_add_row = HBoxContainer.new()
+    attr_add_row.add_theme_constant_override("separation", 6)
+    _npc_fields_section.add_child(attr_add_row)
+
+    _npc_attributes_add_dropdown = OptionButton.new()
+    _npc_attributes_add_dropdown.add_theme_font_override("font", _font)
+    _npc_attributes_add_dropdown.add_theme_font_size_override("font_size", 12)
+    _npc_attributes_add_dropdown.add_theme_color_override("font_color", COLOR_TEXT)
+    _npc_attributes_add_dropdown.add_theme_stylebox_override("normal", behavior_style)
+    _npc_attributes_add_dropdown.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    attr_add_row.add_child(_npc_attributes_add_dropdown)
+
+    var attr_add_btn = Button.new()
+    attr_add_btn.text = "Add"
+    attr_add_btn.add_theme_font_override("font", _font)
+    attr_add_btn.add_theme_font_size_override("font_size", 12)
+    attr_add_btn.add_theme_color_override("font_color", COLOR_TEXT)
+    attr_add_btn.add_theme_stylebox_override("normal", behavior_style)
+    attr_add_btn.pressed.connect(_on_npc_attribute_add_pressed)
+    attr_add_row.add_child(attr_add_btn)
 
     var npc_agent_header = Label.new()
     npc_agent_header.text = "AGENT"
@@ -1954,11 +1983,118 @@ func _build_hm_row(label_text: String, change_handler: Callable, tooltip: String
     row.add_child(mm)
     return {"row": row, "hour_spin": hh, "minute_spin": mm}
 
-func _on_npc_behavior_selected(index: int) -> void:
-    if _ignoring_npc_inputs:
+## Refresh the chip list + add-dropdown for the currently-selected NPC's
+## attributes. Mirrors _refresh_obj_tags_ui — empty list shows a "(none)"
+## placeholder; the add dropdown lists allowlist slugs not already on
+## the NPC, sorted by display name from Catalog.npc_behaviors.
+func _refresh_npc_attributes_ui() -> void:
+    if _npc_attributes_chips_box == null:
         return
-    var slug: String = _npc_behavior_dropdown.get_item_metadata(index)
-    npc_behavior_changed.emit(slug)
+    for child in _npc_attributes_chips_box.get_children():
+        child.queue_free()
+    if _npc_attributes_current_list.size() == 0:
+        var empty = Label.new()
+        empty.text = "(none)"
+        empty.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+        empty.add_theme_font_size_override("font_size", 11)
+        _npc_attributes_chips_box.add_child(empty)
+    else:
+        for slug in _npc_attributes_current_list:
+            var display: String = _attribute_display_name(str(slug))
+            _npc_attributes_chips_box.add_child(_build_npc_attribute_chip(str(slug), display))
+
+    if _npc_attributes_add_dropdown == null:
+        return
+    _npc_attributes_add_dropdown.clear()
+    var current_set: Dictionary = {}
+    for s in _npc_attributes_current_list:
+        current_set[str(s)] = true
+    var idx: int = 0
+    for entry in Catalog.npc_behaviors:
+        var slug: String = str(entry.get("slug", ""))
+        if slug == "" or current_set.has(slug):
+            continue
+        _npc_attributes_add_dropdown.add_item(str(entry.get("display_name", slug)), idx)
+        _npc_attributes_add_dropdown.set_item_metadata(idx, slug)
+        idx += 1
+
+## Look up the display name for an attribute slug from Catalog.npc_behaviors.
+## Falls back to the slug itself if the attribute isn't in the loaded list
+## (race during first login, or the catalog hasn't refreshed yet).
+func _attribute_display_name(slug: String) -> String:
+    for entry in Catalog.npc_behaviors:
+        if str(entry.get("slug", "")) == slug:
+            return str(entry.get("display_name", slug))
+    return slug
+
+## Build a removable chip for a single attribute. Same pill shape as
+## _build_tag_chip (object tags); the X is an ASCII button rather than a
+## unicode glyph because IMFellEnglish lacks U+2715.
+func _build_npc_attribute_chip(slug: String, display: String) -> Control:
+    var pill = PanelContainer.new()
+    var pill_style = StyleBoxFlat.new()
+    pill_style.bg_color = Color(0.23, 0.17, 0.08, 1.0)
+    pill_style.border_width_left = 1
+    pill_style.border_width_top = 1
+    pill_style.border_width_right = 1
+    pill_style.border_width_bottom = 1
+    pill_style.border_color = COLOR_BTN_BORDER
+    pill_style.corner_radius_left_top = 8
+    pill_style.corner_radius_right_top = 8
+    pill_style.corner_radius_left_bottom = 8
+    pill_style.corner_radius_right_bottom = 8
+    pill_style.content_margin_left = 8.0
+    pill_style.content_margin_right = 4.0
+    pill_style.content_margin_top = 2.0
+    pill_style.content_margin_bottom = 2.0
+    pill.add_theme_stylebox_override("panel", pill_style)
+
+    var row = HBoxContainer.new()
+    row.add_theme_constant_override("separation", 6)
+    pill.add_child(row)
+
+    var label = Label.new()
+    label.text = display
+    label.add_theme_color_override("font_color", COLOR_TEXT)
+    label.add_theme_font_size_override("font_size", 11)
+    row.add_child(label)
+
+    var x_btn = Button.new()
+    x_btn.text = "x"
+    x_btn.flat = true
+    x_btn.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+    x_btn.add_theme_color_override("font_hover_color", Color(1, 0.6, 0.5))
+    x_btn.add_theme_font_size_override("font_size", 11)
+    x_btn.custom_minimum_size = Vector2(14, 14)
+    x_btn.focus_mode = Control.FOCUS_NONE
+    x_btn.pressed.connect(_on_npc_attribute_chip_pressed.bind(slug))
+    row.add_child(x_btn)
+
+    return pill
+
+func _on_npc_attribute_add_pressed() -> void:
+    if _npc_attributes_add_dropdown == null or _npc_attributes_add_dropdown.selected < 0:
+        return
+    if _npc_attributes_current_id == "":
+        return
+    var slug: String = _npc_attributes_add_dropdown.get_item_metadata(_npc_attributes_add_dropdown.selected)
+    if slug == "" or world == null:
+        return
+    world.add_npc_attribute(_npc_attributes_current_id, slug)
+
+func _on_npc_attribute_chip_pressed(slug: String) -> void:
+    if _npc_attributes_current_id == "" or world == null:
+        return
+    world.remove_npc_attribute(_npc_attributes_current_id, slug)
+
+## Called by main.gd when the WS npc_attributes_changed event lands (via
+## world.npc_attributes_changed). Refresh the chips if this is the
+## currently-selected NPC.
+func apply_npc_attributes_external(npc_id: String, attributes: Array) -> void:
+    if _npc_attributes_current_id != npc_id:
+        return
+    _npc_attributes_current_list = attributes
+    _refresh_npc_attributes_ui()
 
 func _on_npc_agent_selected(index: int) -> void:
     if _ignoring_npc_inputs:
@@ -2678,21 +2814,15 @@ func show_npc_selection(info: Dictionary) -> void:
     _npc_sprite_label.text = sprite_name
     _npc_sprite_label.tooltip_text = sprite_name
 
-    # Populate behavior dropdown from Catalog.npc_behaviors. Index 0 is always
-    # "(none)" mapped to empty string — represents a null behavior server-side.
-    _npc_behavior_dropdown.clear()
-    _npc_behavior_dropdown.add_item("(none)", 0)
-    _npc_behavior_dropdown.set_item_metadata(0, "")
-    var selected_behavior_index: int = 0
-    var current_behavior: String = info.get("behavior", "")
-    var bi: int = 1
-    for b in Catalog.npc_behaviors:
-        _npc_behavior_dropdown.add_item(b.get("display_name", b.get("slug", "")), bi)
-        _npc_behavior_dropdown.set_item_metadata(bi, b.get("slug", ""))
-        if b.get("slug", "") == current_behavior:
-            selected_behavior_index = bi
-        bi += 1
-    _npc_behavior_dropdown.selected = selected_behavior_index
+    # Populate the attribute chip list from info["attributes"] (post-ZBBS-105
+    # multi-attribute shape). The legacy behavior field is kept on the wire
+    # for compatibility but ignored here; the chip list is the source of
+    # truth in the UI. _refresh_npc_attributes_ui rebuilds chips and the
+    # add-dropdown together.
+    _npc_attributes_current_id = npc_id
+    var attrs_raw = info.get("attributes", [])
+    _npc_attributes_current_list = attrs_raw if attrs_raw is Array else []
+    _refresh_npc_attributes_ui()
 
     # Agent dropdown reuses the same village_agent list that powers the owner
     # dropdown on assets. Index 0 is "(none)" → unlink.

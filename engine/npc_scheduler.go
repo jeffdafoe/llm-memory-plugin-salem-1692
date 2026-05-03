@@ -85,7 +85,15 @@ func deterministicLatenessMinutes(npcID string, boundary time.Time, windowMinute
 	return int(h.Sum64() % uint64(windowMinutes))
 }
 
-const behaviorWorker = "worker"
+// workerBehaviorMarker is the attribute_definition.behaviors entry that
+// flags an attribute as worker-shift-bearing. Each role attribute that
+// implies a home/work shift (tavernkeeper, blacksmith, herbalist,
+// merchant as of ZBBS-106) carries this marker. loadWorkerRows joins
+// attribute_definition.behaviors @> this filter to find every actor
+// who should walk a shift; a no-op handler is registered in
+// attribute_dispatch.go so the per-NPC behavior dispatcher stays quiet
+// (the actual scheduling is driven by this scheduler tick).
+const workerBehaviorMarker = `[{"type":"worker"}]`
 
 // dispatchScheduledBehaviors is the per-tick entry. Errors on a single NPC
 // log and continue so one bad row doesn't freeze the scheduler for the rest.
@@ -189,12 +197,15 @@ type workerRow struct {
 // structures assigned. NPCs missing either are silently excluded — they
 // can't walk a shift until an admin fills them in.
 //
-// As of ZBBS-097 the worker filter reads actor_attribute (the worker
-// attribute_definition was added in the same migration). The legacy
-// actor.behavior = 'worker' column is no longer consulted here.
+// As of ZBBS-106 the worker filter joins attribute_definition.behaviors
+// — any role attribute carrying [{"type":"worker"}] participates. This
+// removes the older standalone `worker` actor_attribute (which had to be
+// stamped on every shift-bearing NPC by hand) and aligns worker dispatch
+// with how rotation_route / lamp_route describe themselves. DISTINCT
+// guards against an actor holding two worker-implying attributes.
 func (app *App) loadWorkerRows(ctx context.Context) ([]workerRow, error) {
 	rows, err := app.DB.Query(ctx,
-		`SELECT n.id, n.schedule_start_minute, n.schedule_end_minute,
+		`SELECT DISTINCT n.id, n.schedule_start_minute, n.schedule_end_minute,
 		        n.lateness_window_minutes, n.last_shift_tick_at,
 		        n.inside_structure_id, n.current_x, n.current_y,
 		        n.home_structure_id,
@@ -210,12 +221,13 @@ func (app *App) loadWorkerRows(ctx context.Context) ([]workerRow, error) {
 		        COALESCE(ws.display_name, wa.name, '')
 		 FROM actor n
 		 JOIN actor_attribute aa ON aa.actor_id = n.id
+		 JOIN attribute_definition ad ON ad.slug = aa.slug
 		 JOIN village_object hs ON hs.id = n.home_structure_id
 		 JOIN asset ha         ON ha.id = hs.asset_id
 		 JOIN village_object ws ON ws.id = n.work_structure_id
 		 JOIN asset wa         ON wa.id = ws.asset_id
-		 WHERE aa.slug = $1`,
-		behaviorWorker,
+		 WHERE ad.behaviors @> $1::jsonb`,
+		workerBehaviorMarker,
 	)
 	if err != nil {
 		return nil, err
