@@ -2477,17 +2477,29 @@ func _make_villager_row(npc_id: String, display_name: String, container: Node2D)
     row.gui_input.connect(func(ev): _on_villager_row_gui_input(ev, npc_id))
     return row
 
-## Format the behavior suffix, location, and needs readout on a villager row.
+## Format the role suffix, location, and needs readout on a villager
+## row. Role suffix joins every attribute slug the NPC carries —
+## "(town_crier, worker)" rather than just the first — so the list
+## reflects the full chip set the inspector shows on click. Slugs are
+## str()-coerced and empties dropped before the join so a JSON-decoded
+## Variant array with nulls or non-strings doesn't crash the
+## formatter.
 func _update_villager_row_text(row: PanelContainer, container: Node2D) -> void:
-    var behavior: String = str(container.get_meta("behavior", ""))
-    var behavior_inline_label: Label = row.get_meta("behavior_inline_label")
-    if behavior_inline_label != null:
-        if behavior != "":
-            behavior_inline_label.text = "(" + behavior + ")"
-            behavior_inline_label.visible = true
+    var attrs_raw = container.get_meta("attributes", [])
+    var attrs: Array = attrs_raw if attrs_raw is Array else []
+    var attr_labels: Array[String] = []
+    for attr in attrs:
+        var slug := str(attr).strip_edges()
+        if slug != "":
+            attr_labels.append(slug)
+    var role_label: Label = row.get_meta("behavior_inline_label")
+    if role_label != null:
+        if attr_labels.size() > 0:
+            role_label.text = "(" + ", ".join(attr_labels) + ")"
+            role_label.visible = true
         else:
-            behavior_inline_label.text = ""
-            behavior_inline_label.visible = false
+            role_label.text = ""
+            role_label.visible = false
     var location_label: Label = row.get_meta("location_label")
     if location_label != null:
         location_label.text = _format_npc_location(container)
