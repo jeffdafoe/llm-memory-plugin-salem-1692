@@ -449,10 +449,28 @@ func (app *App) applyArrival(npcID string) {
 	// bypass the 5-min cost guard — the move_to/chore that brought them
 	// here was within that window.
 	//
+	// EXCEPTION (ZBBS-107): respect agent_override_until even on the
+	// arriver-self-tick path. The summon errand walks the summoner to
+	// a summon_point and pins their override for the duration of the
+	// errand; without this skip, the arriver would tick on summon_point
+	// arrival and immediately walk back home, bypassing the wait for
+	// the messenger. force=true bypasses the cost guard but should not
+	// bypass an explicit "engine owns this NPC right now" pin.
+	//
 	// Decorative NPCs (no llm_memory_agent) don't tick; their walks are
 	// scheduler-driven and they don't need to reflect on arrival.
 	// PCs don't tick either — no LLM tool surface.
 	if arriverIsAgent && !arriverIsPC {
-		go app.triggerImmediateTick(context.Background(), npcID, "arrived", true, newUUIDv7(), npcID)
+		var overrideUntil sql.NullTime
+		_ = app.DB.QueryRow(ctx,
+			`SELECT agent_override_until FROM actor WHERE id = $1`,
+			npcID,
+		).Scan(&overrideUntil)
+		if overrideUntil.Valid && overrideUntil.Time.After(time.Now()) {
+			log.Printf("event-tick %s: skipped on arrival — agent_override_until pinned until %s",
+				displayName, overrideUntil.Time.Format(time.RFC3339))
+		} else {
+			go app.triggerImmediateTick(context.Background(), npcID, "arrived", true, newUUIDv7(), npcID)
+		}
 	}
 }

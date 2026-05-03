@@ -1921,6 +1921,15 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		}
 
 	case "summon":
+		// Post-ZBBS-107 the summon flow is a multi-leg messenger errand
+		// (see summon_errand.go). dispatchSummonErrand inserts the row,
+		// stamps the summoner's override, and starts their walk to the
+		// summon_point. The ring narration (village_event) and target
+		// tick fire later — at summoner-arrival and at messenger
+		// delivery respectively, NOT here. The legacy v1 post-commit
+		// block that broadcast a room_event and immediately ticked the
+		// target was the source of the "John didn't wait for the
+		// messenger" behavior — it teleported the summons.
 		target, _ := tc.Input["target"].(string)
 		reason, _ := tc.Input["reason"].(string)
 		sm := app.executeSummon(ctx, r, summonRequest{
@@ -1929,36 +1938,6 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		})
 		result = sm.Result
 		errStr = sm.Err
-		// On success, fire an immediate tick on the target so they
-		// react now rather than after the 1m scheduler interval. Also
-		// emit a room_event so observers see the messenger leave.
-		// Skipped on rejection — no point waking the target if the
-		// summons was rejected for cooldown / co-location / etc.
-		if result == "ok" {
-			if r.InsideStructureID.Valid {
-				text := narrateSummon(r.DisplayName, tc.Input)
-				if text != "" {
-					app.Hub.Broadcast(WorldEvent{
-						Type: "room_event",
-						Data: map[string]interface{}{
-							"actor_id":     r.ID,
-							"actor_name":   r.DisplayName,
-							"kind":         "summon",
-							"text":         text,
-							"structure_id": r.InsideStructureID.String,
-							"at":           time.Now().UTC().Format(time.RFC3339),
-						},
-					})
-				}
-			}
-			// Wake the target. force=true bypasses the cost guard so the
-			// fetch isn't dropped if they ticked recently. New scene id
-			// — the summons is its own conversational origin, not a
-			// continuation of the summoner's current cascade.
-			go app.triggerImmediateTick(context.Background(), sm.TargetID,
-				fmt.Sprintf("summoned-by-%s", r.DisplayName),
-				true, newUUIDv7(), r.ID)
-		}
 
 	default:
 		result, errStr = "rejected", fmt.Sprintf("unknown commit tool: %s", tc.Name)
@@ -1974,6 +1953,20 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 	// insert time — the walk completion's setNPCInside is async, and the
 	// leave/join happens after this insert returns. That matches the
 	// move_to's semantic location ("decided to leave from this huddle").
+	//
+	// EXCEPTION: 'summon' commits (ZBBS-107) don't write an audit row
+	// here. The summon flow is now a multi-leg messenger errand and the
+	// audit row needs to reflect DELIVERY, not dispatch — otherwise
+	// summonsTargetingPerceiver picks it up on the target's next tick
+	// while the messenger is still walking, recreating the v1 teleport
+	// behavior. summon_errand.go writes the row when the messenger
+	// arrives at the target (state messenger_at_target → returning,
+	// VA branch). Rejected/failed summons skip the audit entirely; the
+	// per-summoner active-errand check in dispatchSummonErrand replaces
+	// the audit-log lookback the v1 cooldown used.
+	if tc.Name == "summon" {
+		return result, errStr
+	}
 	_, err := app.DB.Exec(ctx,
 		`INSERT INTO agent_action_log (actor_id, speaker_name, source, action_type, payload, result, error, huddle_id)
 		 VALUES ($1, $2, 'agent', $3, $4, $5, NULLIF($6, ''),
