@@ -379,6 +379,15 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 
 	_, _ = app.executeAgentCommit(ctx, r, commitCall, sceneID)
 	app.stampAgentTick(ctx, r)
+
+	// Return-to-work follow-up (ZBBS-110). After the commit settled, if
+	// the nudge predicate still applies, schedule a self-tick 30-60s out
+	// so the LLM gets another turn after the conversation has had a beat
+	// to land. Re-queries inside_structure_id and current coords because
+	// a move_to commit will have updated them; the perception's snapshot
+	// is now stale. If conditions are no longer true (NPC moved to work,
+	// fell into a pressing need), no schedule is written.
+	app.maybeScheduleReturnToWork(ctx, r.ID)
 }
 
 // stampAgentTick records that we've ticked this NPC. Stamps to time.Now()
@@ -503,6 +512,17 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, 
 		log.Printf("event-tick %s (%s): skipped — cost guard, last tick %s ago",
 			r.DisplayName, reason, time.Since(r.LastAgentTickAt.Time).Round(time.Second))
 		return
+	}
+
+	// Cancel any pending self-tick (ZBBS-110). A cascade origin (PC speak,
+	// other-NPC arrival, chronicler attend, summon delivery, scheduled
+	// shift boundary) is fresher signal than a self-tick we queued earlier
+	// — the harness end below will re-evaluate and reschedule if the
+	// nudge predicate still applies. Skipped for self-tick fires
+	// themselves: dispatchSelfTicks already cleared the slot in the
+	// SQL UPDATE that selected this NPC.
+	if !strings.HasPrefix(reason, "self:") {
+		app.cancelSelfTick(ctx, npcID)
 	}
 
 	// Dawn/dusk for the schedule-note inheritance the perception surfaces.
@@ -1037,16 +1057,26 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 		locationName, hourStart.Format("Monday 15:04"),
 	))
 
-	// 3.0a Unattended-structure signal. When the NPC is loitering at a
-	// structure (visitor move, no huddle), surface whether the assigned
-	// workers are absent. Without this, an NPC arrives at a closed-feeling
-	// shop with no signal that "Josiah isn't here" — they just see the
-	// generic location and re-decide blindly. The line names the missing
-	// proprietors so the LLM can plausibly ask others or pick a substitute
-	// destination on purpose. Silent when ≥1 worker is present, when the
-	// structure has no workers, or when the perceiver is the only worker.
+	// 3.0a Unattended-structure / shop-stock signal. When the NPC is
+	// loitering at a structure (visitor move, no huddle), one of two
+	// signals fires depending on whether the proprietor is present:
+	//
+	//   Unattended: name the missing workers so the LLM can plausibly
+	//   ask others or pick a substitute destination on purpose. Without
+	//   this an NPC arrives at a closed-feeling shop with no signal
+	//   that "Josiah isn't here" and re-decides blindly.
+	//
+	//   Stocked: list the present workers' inventory with quantities so
+	//   the LLM can decide whether to top up before leaving — pairs
+	//   with "Your inventory: ..." below for a quick "have vs. offered"
+	//   comparison.
+	//
+	// Mutually exclusive — a tended shop never shows the unattended
+	// line, and an empty shop never shows stock the LLM can't buy.
 	if loiteringAtID != "" {
 		if line := app.unattendedWorkersLine(ctx, loiteringAtID, r.ID); line != "" {
+			sections = append(sections, line)
+		} else if line := app.shopStockLine(ctx, loiteringAtID, r.ID); line != "" {
 			sections = append(sections, line)
 		}
 	}
@@ -1111,6 +1141,23 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 	// shown — privacy/realism.
 	if inv := app.inventoryLine(ctx, r.ID); inv != "" {
 		sections = append(sections, "Your inventory: "+inv+".")
+	}
+
+	// 3b. Return-to-work nudge (ZBBS-110). Fires when the NPC is on shift
+	// but away from their work building, and no need is pressing enough
+	// to justify the detour. Suppressed by any tier ≥ 2 need (Address now
+	// already commands attention) and by being inside or loitering at
+	// work. Placed after the inventory line so "what you have" reads
+	// adjacent to "what you should do" — the LLM connects "I'm carrying
+	// bread" with "your shift continues" naturally without the nudge text
+	// having to reference inventory itself. The matching
+	// scheduleReturnToWorkFollowup at end-of-harness uses the same
+	// predicate so the perception line and the follow-up self-tick are
+	// always in lock-step.
+	nowMinuteOfDay := hourStart.Hour()*60 + hourStart.Minute()
+	if shouldNudgeReturnToWork(r, r.InsideStructureID, loiteringAtID,
+		nowMinuteOfDay, dawnMin, duskMin, hungerT, thirstT, tiredT) {
+		sections = append(sections, returnToWorkPerceptionLine(workLabel))
 	}
 
 	// 4. Destinations. Categorical first, then occupant-named residences.
