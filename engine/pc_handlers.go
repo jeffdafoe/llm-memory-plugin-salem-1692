@@ -284,6 +284,40 @@ func (app *App) handlePCMe(w http.ResponseWriter, r *http.Request) {
 				resp.HuddleMembers = append(resp.HuddleMembers, m)
 			}
 		}
+	} else if !insideID.Valid {
+		// Outdoor proximity roster. When the PC is outside with no huddle,
+		// the talk panel still needs a nearby list to populate the
+		// launcher chip strip and unlock its open gate (the launcher
+		// stays hidden when huddle_members is empty). Chebyshev radius 6
+		// matches the client's outdoor distance filter on incoming
+		// npc_spoke broadcasts so the chip strip and the speech audience
+		// agree on "near."
+		//
+		// No last_seen_at filter yet — a logged-out PC near you will
+		// phantom into the strip until presence-staleness lands as its
+		// own feature. v1 deliberately accepts that.
+		rows, err := app.DB.Query(r.Context(),
+			`SELECT display_name
+			   FROM actor
+			  WHERE login_username IS NOT NULL
+			    AND login_username <> $1
+			    AND inside_structure_id IS NULL
+			    AND GREATEST(ABS(current_x - $2), ABS(current_y - $3)) <= 6
+			  ORDER BY display_name`,
+			user.Username, x, y)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var name string
+				if err := rows.Scan(&name); err != nil {
+					continue
+				}
+				resp.HuddleMembers = append(resp.HuddleMembers, pcHuddleMember{
+					Kind: "pc",
+					Name: name,
+				})
+			}
+		}
 	}
 
 	// Purse and inventory. Coins came back on the same row as
@@ -1137,7 +1171,7 @@ func (app *App) handlePCSay(w http.ResponseWriter, r *http.Request) {
 				"name":         charName.String,
 				"text":         req.Text,
 				"at":           time.Now().UTC().Format(time.RFC3339),
-				"kind":         "pc",
+				"kind":         "player",
 				"structure_id": structureID.String,
 			},
 		})
@@ -1178,10 +1212,14 @@ func (app *App) handlePCSay(w http.ResponseWriter, r *http.Request) {
 	log.Printf("pc/say %s -> %s: %.60q (status %d)", user.Username, req.Target, req.Text, resp.StatusCode)
 }
 
-// handlePCSpeak — broadcast to everyone in the PC's current huddle.
+// handlePCSpeak — broadcast to everyone in the PC's current huddle, or
+// to nearby outdoor PCs when the speaker has no huddle and is outside.
 // Records as agent_action_log row with source='player', action_type='speak',
-// speaker_name=character_name. Triggers event-tick on co-located
-// agentized NPCs (subject to 5-min cost guard).
+// speaker_name=character_name. Indoor speech triggers event-tick on
+// co-located agentized NPCs (subject to 5-min cost guard) and a
+// chronicler scene; outdoor speech is PC-private in v1 — no NPC
+// reactions, no chronicler fire — so two players walking the road
+// can talk without lighting up LLM costs.
 func (app *App) handlePCSpeak(w http.ResponseWriter, r *http.Request) {
 	user := getUserFromContext(r.Context())
 	if user == nil {
@@ -1201,31 +1239,57 @@ func (app *App) handlePCSpeak(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Source the audience scope from the huddle, not the PC's inside_
-	// structure_id. A PC loitering at a booth (knock-handler ZBBS-101
-	// joins them to the structure's huddle without flipping inside=true)
-	// is in the conversation but not formally inside; restricting on
-	// inside_structure_id would silently drop their speech. The huddle's
-	// structure_id gives the right audience and the right scope for
-	// backload/perception filtering.
-	var actorID, charName, structureID sql.NullString
+	// Single actor read carrying both the conversational scope (the
+	// huddle's structure) and the "am I inside?" signal. Indoor speech
+	// routes through the huddle (booth/loiter joins use this — see
+	// ZBBS-101 — and the huddle scope, not inside_structure_id, is what
+	// the talk panel filters on). Outdoor speech (no huddle and no
+	// inside_structure_id) routes through a position-stamped proximity
+	// broadcast: other PCs filter by Chebyshev distance from their own
+	// tile, so the audience is "anyone within ~6 tiles" without needing
+	// a formal outdoor huddle.
+	var actorID, charName, huddleStructureID, insideStructureID sql.NullString
+	var currentX, currentY float64
 	err := app.DB.QueryRow(r.Context(),
-		`SELECT pc.id::text, pc.display_name, sh.structure_id::text
+		`SELECT pc.id::text, pc.display_name,
+		        sh.structure_id::text,
+		        pc.inside_structure_id::text,
+		        pc.current_x, pc.current_y
 		   FROM actor pc
-		   JOIN scene_huddle sh ON sh.id = pc.current_huddle_id
+		   LEFT JOIN scene_huddle sh ON sh.id = pc.current_huddle_id
 		  WHERE pc.login_username = $1`,
 		user.Username,
-	).Scan(&actorID, &charName, &structureID)
-	if err != nil || !structureID.Valid || !charName.Valid {
+	).Scan(&actorID, &charName, &huddleStructureID, &insideStructureID, &currentX, &currentY)
+	if err != nil || !actorID.Valid || !charName.Valid {
+		jsonError(w, "No character", http.StatusBadRequest)
+		return
+	}
+
+	indoor := huddleStructureID.Valid
+	outdoor := !huddleStructureID.Valid && !insideStructureID.Valid
+	if !indoor && !outdoor {
+		// Inside a structure but no huddle: the booth/loiter join path
+		// should have placed them in one. Treat as a real error rather
+		// than silently downgrading to "outdoor proximity speech."
 		jsonError(w, "Not in a huddle — nobody to hear you", http.StatusBadRequest)
 		return
 	}
 
+	structureID := ""
+	if indoor {
+		structureID = huddleStructureID.String
+	}
+
 	payload, _ := json.Marshal(map[string]interface{}{
 		"text":         req.Text,
-		"structure_id": structureID.String,
+		"structure_id": structureID,
+		"x":            currentX,
+		"y":            currentY,
 	})
 
+	// Outdoor row gets huddle_id=NULL via the subquery (current_huddle_id
+	// is NULL for the actor); indoor row gets the active huddle. One
+	// statement covers both paths.
 	if _, err := app.DB.Exec(r.Context(),
 		`INSERT INTO agent_action_log (actor_id, speaker_name, source, action_type, payload, result, huddle_id)
 		 VALUES ($1, $2, 'player', 'speak', $3, 'ok',
@@ -1237,6 +1301,10 @@ func (app *App) handlePCSpeak(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// kind="player" matches the audit row's source='player' and the
+	// talk panel's render-as-player branch. speaker_x/speaker_y let
+	// outdoor recipients filter by tile distance; indoor recipients
+	// ignore them (structure_id already scopes the audience).
 	app.Hub.Broadcast(WorldEvent{
 		Type: "npc_spoke",
 		Data: map[string]interface{}{
@@ -1244,26 +1312,30 @@ func (app *App) handlePCSpeak(w http.ResponseWriter, r *http.Request) {
 			"name":         charName.String,
 			"text":         req.Text,
 			"at":           time.Now().UTC().Format(time.RFC3339),
-			"kind":         "pc",
-			"structure_id": structureID.String,
+			"kind":         "player",
+			"structure_id": structureID,
+			"speaker_x":    currentX,
+			"speaker_y":    currentY,
 		},
 	})
 
-	// PC-initiated → force=true so cost guard doesn't suppress
-	// reactions. Storm risk is bounded by human typing speed.
-	//
-	// Cascade origin (MEM-121): mint a fresh scene UUID. Every NPC's
-	// reaction tick to this PC speech, every nested speak fan-out from
-	// those ticks, will inherit the same UUID. Walks initiated during
-	// reactions don't carry it forward — when the NPC arrives somewhere
-	// later, that arrival is its own new scene.
-	app.triggerCoLocatedTicks(context.Background(), structureID.String, "", fmt.Sprintf("pc-spoke (%s)", charName.String), true, newUUIDv7(), actorID.String)
+	if indoor {
+		// PC-initiated → force=true so cost guard doesn't suppress
+		// reactions. Storm risk is bounded by human typing speed.
+		//
+		// Cascade origin (MEM-121): mint a fresh scene UUID. Every NPC's
+		// reaction tick to this PC speech, every nested speak fan-out from
+		// those ticks, will inherit the same UUID. Walks initiated during
+		// reactions don't carry it forward — when the NPC arrives somewhere
+		// later, that arrival is its own new scene.
+		app.triggerCoLocatedTicks(context.Background(), structureID, "", fmt.Sprintf("pc-spoke (%s)", charName.String), true, newUUIDv7(), actorID.String)
 
-	// Cascade origin — fire the chronicler alongside the co-located
-	// reactor ticks. Fire-and-forget; chronicler runs in a goroutine
-	// so it doesn't block the WebSocket response. Only fires once per
-	// scene-start (here), not for in-cascade NPC reactions.
-	app.cascadeOriginFireChronicler(fmt.Sprintf("pc-spoke (%s)", charName.String), structureID.String)
+		// Cascade origin — fire the chronicler alongside the co-located
+		// reactor ticks. Fire-and-forget; chronicler runs in a goroutine
+		// so it doesn't block the WebSocket response. Only fires once per
+		// scene-start (here), not for in-cascade NPC reactions.
+		app.cascadeOriginFireChronicler(fmt.Sprintf("pc-spoke (%s)", charName.String), structureID)
+	}
 
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -1803,7 +1803,12 @@ signal object_tags_updated(object_id: String, tags: Array)
 ## the customer's pay-modal item dropdown can be built from real stock
 ## the vendor mentioned. Empty array when the speak didn't reference
 ## goods (or the speaker isn't a vendor).
-signal npc_spoke(npc_id: String, name: String, text: String, kind: String, at: String, structure_id: String, mentions: Array)
+## speaker_x / speaker_y are the speaker's tile at the moment of speaking.
+## Outdoor speech uses them as a Chebyshev-distance filter on the talk
+## panel side (two PCs walking the road can talk if they're within ~6
+## tiles of each other). Indoor speech ignores them — structure_id is
+## already enough to scope the audience.
+signal npc_spoke(npc_id: String, name: String, text: String, kind: String, at: String, structure_id: String, mentions: Array, speaker_x: float, speaker_y: float)
 
 func apply_npc_spoke(data: Dictionary) -> void:
     var npc_id: String = str(data.get("npc_id", ""))
@@ -1823,10 +1828,12 @@ func apply_npc_spoke(data: Dictionary) -> void:
         for m in raw_mentions:
             if typeof(m) == TYPE_STRING:
                 mentions.append(m)
+    var speaker_x: float = float(data.get("speaker_x", 0.0))
+    var speaker_y: float = float(data.get("speaker_y", 0.0))
     if name == "" or text == "":
         return
     _spawn_speech_bubble(npc_id, text)
-    npc_spoke.emit(npc_id, name, text, kind, at, structure_id, mentions)
+    npc_spoke.emit(npc_id, name, text, kind, at, structure_id, mentions, speaker_x, speaker_y)
 
 
 ## Spawn a SpeechBubble child on the speaker's container (NPC or PC).
