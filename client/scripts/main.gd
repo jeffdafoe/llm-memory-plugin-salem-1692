@@ -397,6 +397,16 @@ func _on_edit_toggled(active: bool) -> void:
     camera.editor_active = active
     if top_bar != null:
         top_bar.set_cursor_tile_visible(active)
+    if active:
+        # Auto-minimize the talk panel when entering edit mode. Without
+        # this, leaving the chat sheet open over the editor's map
+        # leaks clicks through and walks the selected NPC to wherever
+        # the user clicked (the chat sheet still claims the area but
+        # the editor receives the click). State is preserved — the
+        # launcher chip stays around so the user can tap it to expand
+        # again after leaving edit. No-op when the panel isn't open.
+        if talk_panel_layer != null and talk_panel_layer.has_method("minimize"):
+            talk_panel_layer.minimize()
     if not active:
         # Clear both kinds of selection — object AND NPC — so
         # re-entering edit mode lands on the default browse view

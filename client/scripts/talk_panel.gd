@@ -935,6 +935,19 @@ func _set_no_pc_state() -> void:
     _push_purse_to_top_bar()
 
 
+## Public: collapse the talk panel to its launcher chip without
+## otherwise touching state (PC, huddle, log). Called by main.gd when
+## the user enters edit mode so the editor's map clicks don't have to
+## negotiate with an open chat sheet, and so the user's chat context
+## (selected partner, scrollback, drafted speech) survives the edit
+## excursion. No-op when the panel isn't currently open. Re-opening
+## is left to the user — they tap the launcher chip when ready.
+func minimize() -> void:
+    if is_open:
+        is_open = false
+        _update_visibility_from_state()
+
+
 func _update_visibility_from_state() -> void:
     if not pc_exists or huddle_members.is_empty():
         is_open = false
