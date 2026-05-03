@@ -55,6 +55,12 @@ const (
 	errandChatMinSeconds   = 4
 	errandChatMaxSeconds   = 10
 	errandOverrideDuration = 10 * time.Minute
+	// errandSummonerWalkDelay holds the summoner's outbound walk so
+	// the "I've sent for X" speak — produced by the LLM continuation
+	// after the summon commit — has time to land its bubble before
+	// the actor visibly walks away. Tuned to cover one harness round-
+	// trip; longer would feel like dead air.
+	errandSummonerWalkDelay = 2500 * time.Millisecond
 	// errandTargetTolerance is the open-village fallback tolerance
 	// for the delivery check (when target_dispatch_structure_id is
 	// NULL — target was in open village at dispatch). Tight 64 px
@@ -189,15 +195,28 @@ func (app *App) dispatchSummonErrand(ctx context.Context, summoner *agentNPCRow,
 	// loiter ring (so they don't end up standing on the lamp post /
 	// bell sprite). Falls back to the placement's center coords if
 	// the loiter resolution fails.
+	//
+	// The walk is deferred by errandSummonerWalkDelay so the LLM's
+	// post-commit continuation has time to land its "I've sent for
+	// Ezekiel" speak BEFORE the summoner visibly leaves. Without
+	// this, the harness sequence is:
+	//   t+0    summon commits, walk starts
+	//   t+~1.5 LLM returns continuation with speak, bubble fires
+	// — by which time the summoner is mid-walk. With the delay, the
+	// speak lands first, then the walk begins.
 	walkX, walkY := pointX, pointY
 	if sx, sy, err := app.resolveSummonPointWalk(ctx, pointID, summoner.ID); err == nil {
 		walkX, walkY = sx, sy
 	}
-	if _, err := app.startNPCWalk(ctx, summoner.ID, walkX, walkY, defaultNPCSpeed); err != nil {
-		log.Printf("summon-dispatch: walk summoner to point: %v", err)
-		app.failErrand(ctx, errandID, fmt.Sprintf("summoner walk: %v", err))
-		return summonResult{Result: "failed", Err: "could not walk to summon point"}
-	}
+	summonerID := summoner.ID
+	go func() {
+		time.Sleep(errandSummonerWalkDelay)
+		bgCtx := context.Background()
+		if _, err := app.startNPCWalk(bgCtx, summonerID, walkX, walkY, defaultNPCSpeed); err != nil {
+			log.Printf("summon-dispatch: walk summoner to point: %v", err)
+			app.failErrand(bgCtx, errandID, fmt.Sprintf("summoner walk: %v", err))
+		}
+	}()
 
 	return summonResult{
 		Result:            "ok",
@@ -568,20 +587,65 @@ func (app *App) onMessengerAtTarget(ctx context.Context, errandID string) {
 
 // onMessengerDeliveredRefusal advances messenger_to_summoner →
 // messenger_returning. Speaks the refusal line at the summoner's tile
-// (the messenger arrived at the summoner's current position) and
-// starts the messenger's walk back to its origin (door tile when
-// origin had a structure, raw coords otherwise).
+// (the messenger arrived at the summoner's current position), writes
+// a summon_failed audit row for the summoner so their next perception
+// can surface the bad news, clears the summoner's override and fires
+// their tick so they react in-band, then starts the messenger's walk
+// back to its origin.
 func (app *App) onMessengerDeliveredRefusal(ctx context.Context, errandID, messengerID, targetName string, originX, originY float64) {
-	// Pull messenger display name for the speech broadcast.
-	var messengerName string
-	if err := app.DB.QueryRow(ctx,
-		`SELECT display_name FROM actor WHERE id = $1`, messengerID,
-	).Scan(&messengerName); err != nil {
-		log.Printf("errand: load messenger name: %v", err)
+	// Pull errand context: messenger name + reason + summoner identity
+	// + summoner display name. Used for the speech broadcast, the
+	// audit row payload, and the summoner perception fragment.
+	var messengerName, summonerID, summonerName, reason string
+	if err := app.DB.QueryRow(ctx, `
+		SELECT m.display_name, e.summoner_id::text, s.display_name, e.reason
+		  FROM summon_errand e
+		  JOIN actor m ON m.id = e.messenger_id
+		  JOIN actor s ON s.id = e.summoner_id
+		 WHERE e.id = $1
+	`, errandID).Scan(&messengerName, &summonerID, &summonerName, &reason); err != nil {
+		log.Printf("errand: load refusal-row context: %v", err)
 		messengerName = "the messenger"
 	}
+
 	app.broadcastNPCSpeech(messengerID, messengerName,
 		fmt.Sprintf("Goodman %s is not to be found.", targetName))
+
+	// Audit row for the summoner — perception will pick it up via
+	// summonFailedForPerceiver. source='engine' since this isn't the
+	// summoner's own LLM commit; it's the engine reporting back the
+	// errand outcome on the summoner's behalf.
+	if summonerID != "" {
+		payload := map[string]interface{}{"target": targetName}
+		if reason != "" {
+			payload["reason"] = reason
+		}
+		payloadJSON, jerr := json.Marshal(payload)
+		if jerr != nil {
+			payloadJSON = []byte("{}")
+		}
+		if _, err := app.DB.Exec(ctx,
+			`INSERT INTO agent_action_log (actor_id, speaker_name, source, action_type, payload, result, error, huddle_id)
+			 VALUES ($1, $2, 'engine', 'summon_failed', $3, 'ok', NULL,
+			         (SELECT current_huddle_id FROM actor WHERE id = $1))`,
+			summonerID, summonerName, payloadJSON,
+		); err != nil {
+			log.Printf("errand: record summon_failed audit: %v", err)
+		}
+
+		// Free the summoner now — the messenger is still walking back
+		// to origin but the summoner's wait is over from a perception
+		// standpoint. Clear last_shift_tick_at too so the worker
+		// scheduler picks the summoner up at the next tick instead
+		// of waiting out the forward-stamped window.
+		if _, err := app.DB.Exec(ctx,
+			`UPDATE actor SET agent_override_until = NULL, last_shift_tick_at = NULL WHERE id = $1`,
+			summonerID,
+		); err != nil {
+			log.Printf("errand: clear summoner override (refusal): %v", err)
+		}
+		go app.triggerImmediateTick(context.Background(), summonerID, "summon-failed", true, "", "")
+	}
 
 	if _, err := app.DB.Exec(ctx, `
 		UPDATE summon_errand
@@ -957,8 +1021,11 @@ func (app *App) onChatAtTargetElapsed(ctx context.Context, errandID, summonerID,
 
 		// Messenger heads home; summoner override clears now (the
 		// LLM-side summon arc is complete from the engine's POV).
+		// last_shift_tick_at also cleared so the worker scheduler
+		// resumes its normal cadence instead of waiting out the
+		// forward-stamped window from dispatch.
 		if _, err := app.DB.Exec(ctx,
-			`UPDATE actor SET agent_override_until = NULL WHERE id = $1`,
+			`UPDATE actor SET agent_override_until = NULL, last_shift_tick_at = NULL WHERE id = $1`,
 			summonerID,
 		); err != nil {
 			log.Printf("errand: clear summoner override: %v", err)
