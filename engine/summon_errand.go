@@ -55,16 +55,12 @@ const (
 	errandChatMinSeconds   = 4
 	errandChatMaxSeconds   = 10
 	errandOverrideDuration = 10 * time.Minute
-	// errandTargetTolerance is how close the target has to be to the
-	// messenger's arrival tile (target_dispatch_x/y) for the delivery
-	// to count. target_dispatch_x/y is the WALK target (loiter slot
-	// when target was inside a structure, target's tile when in the
-	// open village) — NOT the target's actual position. So the
-	// tolerance has to cover the structure footprint plus a margin.
-	// 256 = 8 tiles, comfortably larger than any building in the
-	// catalog, so a target who's still in the same stall as at
-	// dispatch passes the check.
-	errandTargetTolerance = 256.0
+	// errandTargetTolerance is the open-village fallback tolerance
+	// for the delivery check (when target_dispatch_structure_id is
+	// NULL — target was in open village at dispatch). Tight 64 px
+	// covers tile-snap movement; targets inside structures use the
+	// structure-id match instead, which doesn't need the slack.
+	errandTargetTolerance = 64.0
 )
 
 // dispatchSummonErrand is the v2 entry point for the summon tool.
@@ -485,35 +481,51 @@ func (app *App) onMessengerAtPoint(ctx context.Context, errandID string) {
 // and starts the delivery timer. Like the at-point chat, the next
 // transition is timer-driven (via tickErrands).
 //
-// First runs the tolerance check: if the target has moved more than
-// errandTargetTolerance away from the dispatch coords (or is gone),
-// the messenger immediately branches to refusal — there's no one
-// here to deliver to, no point waiting through the chat timer.
+// Runs the "is the target still here" check first. Two flavors:
+//
+//   - target_dispatch_structure_id is set (target was inside a stall
+//     or building at dispatch): pass when target's current
+//     inside_structure_id matches. Doesn't matter how the target's
+//     pixel position has shifted within the structure — the
+//     messenger is here, the target is in the same building, deliver.
+//   - target_dispatch_structure_id is NULL (target was in the open
+//     village): pass when target's current pos is within
+//     errandTargetTolerance of the dispatch coords. Tight 64 px
+//     tolerance because target_dispatch_x/y is the target's tile,
+//     not a loiter slot.
+//
+// Either check failing → refusal branch.
 func (app *App) onMessengerAtTarget(ctx context.Context, errandID string) {
 	var dispX, dispY float64
 	var targetName, targetKind string
 	var summonerID, messengerID string
+	var dispatchStructureID sql.NullString
 	if err := app.DB.QueryRow(ctx, `
 		SELECT target_dispatch_x, target_dispatch_y, target_name, target_kind,
-		       summoner_id::text, messenger_id::text
+		       summoner_id::text, messenger_id::text,
+		       target_dispatch_structure_id::text
 		  FROM summon_errand WHERE id = $1
-	`, errandID).Scan(&dispX, &dispY, &targetName, &targetKind, &summonerID, &messengerID); err != nil {
+	`, errandID).Scan(&dispX, &dispY, &targetName, &targetKind, &summonerID, &messengerID, &dispatchStructureID); err != nil {
 		log.Printf("errand: load at-target row: %v", err)
 		return
 	}
 
-	// Look up the target's current position. Missing actor = gone.
-	var curX, curY float64
 	stillThere := false
 	if targetKind != "unknown" {
+		var curX, curY float64
+		var curStructure sql.NullString
 		if err := app.DB.QueryRow(ctx,
-			`SELECT current_x, current_y FROM actor
+			`SELECT current_x, current_y, inside_structure_id::text FROM actor
 			  WHERE LOWER(display_name) = LOWER($1) LIMIT 1`,
 			targetName,
-		).Scan(&curX, &curY); err == nil {
-			dx, dy := curX-dispX, curY-dispY
-			if (dx*dx)+(dy*dy) <= errandTargetTolerance*errandTargetTolerance {
-				stillThere = true
+		).Scan(&curX, &curY, &curStructure); err == nil {
+			if dispatchStructureID.Valid && dispatchStructureID.String != "" {
+				stillThere = curStructure.Valid && curStructure.String == dispatchStructureID.String
+			} else {
+				dx, dy := curX-dispX, curY-dispY
+				if (dx*dx)+(dy*dy) <= errandTargetTolerance*errandTargetTolerance {
+					stillThere = true
+				}
 			}
 		}
 	}
@@ -737,9 +749,12 @@ func (app *App) onChatAtSummonElapsed(ctx context.Context, errandID, messengerID
 
 	// Known target — resolve walk coords. The helper returns the
 	// loiter-ring slot when the target is inside a structure, or the
-	// target's tile when they're in the open village. Failure (target
-	// deleted, lookup error) falls through to the refusal branch.
-	walkX, walkY, ok := app.resolveMessengerTargetWalk(ctx, messengerID, targetName)
+	// target's tile when they're in the open village. The structure
+	// id (when set) is stored on the errand row so the delivery-time
+	// tolerance check can verify "still in the same building" rather
+	// than rely on a distance threshold. Failure (target deleted,
+	// lookup error) falls through to the refusal branch.
+	walkX, walkY, dispatchStructureID, ok := app.resolveMessengerTargetWalk(ctx, messengerID, targetName)
 	if !ok {
 		var summonerX, summonerY float64
 		if err := app.DB.QueryRow(ctx, `
@@ -764,13 +779,18 @@ func (app *App) onChatAtSummonElapsed(ctx context.Context, errandID, messengerID
 		return
 	}
 
+	var dispatchStructureArg interface{}
+	if dispatchStructureID != "" {
+		dispatchStructureArg = dispatchStructureID
+	}
 	if _, err := app.DB.Exec(ctx, `
 		UPDATE summon_errand
 		   SET state = 'messenger_to_target',
 		       target_dispatch_x = $2, target_dispatch_y = $3,
+		       target_dispatch_structure_id = $4,
 		       updated_at = now()
 		 WHERE id = $1
-	`, errandID, walkX, walkY); err != nil {
+	`, errandID, walkX, walkY, dispatchStructureArg); err != nil {
 		log.Printf("errand: state→messenger_to_target: %v", err)
 		return
 	}
@@ -819,18 +839,22 @@ func (app *App) resolveMessengerReturnWalk(ctx context.Context, errandID string)
 }
 
 // resolveMessengerTargetWalk returns the coords the messenger should
-// walk to in order to deliver to target. When the target is inside a
-// structure, a loiter-ring slot is picked via pickVisitorSlot — same
-// approach a chore visitor uses, so the messenger respects the yellow
-// loiter ring instead of cutting across the structure footprint. When
-// the target is in the open village, walks to the target's tile.
+// walk to in order to deliver to target, plus the structure id when
+// the target is inside one. When the target is inside a structure, a
+// loiter-ring slot is picked via pickVisitorSlot — same approach a
+// chore visitor uses, so the messenger respects the yellow loiter ring
+// instead of cutting across the structure footprint. When the target
+// is in the open village, walks to the target's tile.
 //
-// Returns (x, y, true) on success. Returns (_, _, false) when the
-// target actor doesn't exist — caller falls through to the refusal
-// branch.
-func (app *App) resolveMessengerTargetWalk(ctx context.Context, messengerID, targetName string) (float64, float64, bool) {
-	const tileSize = 32.0
-
+// The returned structure id is stored on the errand row and used at
+// delivery time to verify the target is still in the same building
+// (rather than within an arbitrary distance tolerance — see the
+// tolerance check in onMessengerAtTarget).
+//
+// Returns (x, y, structureID, true) on success. Returns
+// (_, _, _, false) when the target actor doesn't exist — caller falls
+// through to the refusal branch.
+func (app *App) resolveMessengerTargetWalk(ctx context.Context, messengerID, targetName string) (float64, float64, string, bool) {
 	var targetID, insideStructure sql.NullString
 	var targetX, targetY float64
 	if err := app.DB.QueryRow(ctx, `
@@ -839,11 +863,11 @@ func (app *App) resolveMessengerTargetWalk(ctx context.Context, messengerID, tar
 		 WHERE LOWER(display_name) = LOWER($1)
 		 LIMIT 1
 	`, targetName).Scan(&targetID, &targetX, &targetY, &insideStructure); err != nil {
-		return 0, 0, false
+		return 0, 0, "", false
 	}
 
 	if !insideStructure.Valid || insideStructure.String == "" {
-		return targetX, targetY, true
+		return targetX, targetY, "", true
 	}
 
 	// Target is inside a structure — pick the loiter ring slot.
@@ -858,14 +882,14 @@ func (app *App) resolveMessengerTargetWalk(ctx context.Context, messengerID, tar
 		  JOIN asset a ON a.id = o.asset_id
 		 WHERE o.id = $1
 	`, insideStructure.String).Scan(&ox, &oy, &loiterX, &loiterY, &doorX, &doorY, &footprintBottom); err != nil {
-		// Structure metadata missing — fall back to the target tile.
-		return targetX, targetY, true
+		// Structure metadata missing — fall back to the target tile,
+		// drop the structure id (use distance tolerance at delivery).
+		return targetX, targetY, "", true
 	}
 
 	loiterTileX, loiterTileY := effectiveLoiterTile(loiterX, loiterY, doorX, doorY, footprintBottom)
 	wx, wy := app.pickVisitorSlot(ctx, messengerID, ox, oy, loiterTileX, loiterTileY)
-	_ = tileSize
-	return wx, wy, true
+	return wx, wy, insideStructure.String, true
 }
 
 // onChatAtTargetElapsed handles delivery. For VA targets we write the
