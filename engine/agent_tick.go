@@ -1184,8 +1184,20 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 	// produces no line at all, so a freshly-deployed villager doesn't
 	// see "Inventory: nothing" noise. Other actors' inventories are not
 	// shown — privacy/realism.
+	//
+	// ZBBS-114: vendors (actors with the 'serve' role tool) get the
+	// inventory line reframed as "Items you can sell" — same data,
+	// stricter framing. The vendor role prompts (blacksmith, herbalist,
+	// merchant, tavernkeeper) reference this exact label in their
+	// grounding rule against off-list offers, so the LLM sees data and
+	// constraint together. Non-vendors retain "Your inventory" — for
+	// them the line is personal carry, not a sales catalog.
 	if inv := app.inventoryLine(ctx, r.ID); inv != "" {
-		sections = append(sections, "Your inventory: "+inv+".")
+		label := "Your inventory"
+		if app.actorIsVendor(ctx, r.ID) {
+			label = "Items you can sell"
+		}
+		sections = append(sections, label+": "+inv+".")
 	}
 
 	// 3b. Return-to-work nudge (ZBBS-110). Fires when the NPC is on shift
