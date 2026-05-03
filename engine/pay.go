@@ -54,13 +54,23 @@ type payResult struct {
 
 // payRequest groups the pay arguments so executePay's signature stays
 // readable as new optional parameters land.
+//
+// ConsumerNames (Phase C of sales-and-gifts): optional list of display
+// names for at-source group orders (consume_now=true). When non-empty,
+// the seller's stock is decremented by Qty*len(consumers), each named
+// consumer's matching need is dropped, and the buyer pays the full
+// negotiated Amount. Default empty → the buyer is the implicit single
+// consumer (legacy at-source behavior). Take-home (consume_now=false)
+// ignores ConsumerNames — the items go to the buyer's inventory and
+// can be redistributed via give() in a future phase.
 type payRequest struct {
 	RecipientName string
 	Amount        int
-	ForText       string // optional flavor text for audit
-	Item          string // optional item kind name
-	Qty           int    // defaults to 1 when Item is set
-	ConsumeNow    bool   // tavern (true) vs take-home (false)
+	ForText       string   // optional flavor text for audit
+	Item          string   // optional item kind name
+	Qty           int      // per consumer; defaults to 1 when Item is set
+	ConsumeNow    bool     // tavern (true) vs take-home (false)
+	ConsumerNames []string // at-source group order; empty → buyer
 }
 
 // executePay carries out the transfer and any goods/consumption side-
@@ -79,6 +89,17 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payReque
 	qty := req.Qty
 	if itemKind != "" && qty <= 0 {
 		qty = 1
+	}
+
+	// Phase C: ConsumerNames is at-source only. Reject early if the
+	// model paired it with take-home — the semantics ("buy take-home for
+	// these other people") aren't supported and would silently fall
+	// through to a buyer-credit if we let it pass.
+	if len(req.ConsumerNames) > 0 && (!req.ConsumeNow || itemKind == "") {
+		return payResult{
+			Result: "rejected",
+			Err:    "consumers is only valid for at-source group orders (consume_now=true with an item). For take-home, omit consumers — the goods go to your inventory.",
+		}
 	}
 
 	tx, err := app.DB.Begin(ctx)
@@ -169,11 +190,20 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payReque
 			}
 			return payResult{Result: "failed", Err: fmt.Sprintf("lock seller inventory: %v", err)}
 		}
-		if sellerQty < qty {
-			return payResult{Result: "rejected", Err: fmt.Sprintf("%s has only %d %s (asked for %d)", recipientName, sellerQty, itemKind, qty)}
+		// Phase C: at-source group orders multiply the unit qty by the
+		// number of consumers (default 1 = buyer-only). Take-home stays
+		// at qty; the buyer's inventory is credited the requested
+		// amount regardless of who else might eat it later.
+		consumerCount := 1
+		if req.ConsumeNow && len(req.ConsumerNames) > 0 {
+			consumerCount = len(req.ConsumerNames)
+		}
+		totalQty := qty * consumerCount
+		if sellerQty < totalQty {
+			return payResult{Result: "rejected", Err: fmt.Sprintf("%s has only %d %s (asked for %d)", recipientName, sellerQty, itemKind, totalQty)}
 		}
 
-		newSellerQty := sellerQty - qty
+		newSellerQty := sellerQty - totalQty
 		if newSellerQty == 0 {
 			if _, err := tx.Exec(ctx,
 				`DELETE FROM actor_inventory WHERE actor_id = $1 AND item_kind = $2`,
@@ -204,18 +234,31 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payReque
 	}
 
 	// Item flow: take-home → credit buyer's inventory. At-source →
-	// apply satisfaction.
+	// apply satisfaction. For at-source group orders (Phase C), each
+	// named consumer eats/drinks qty units; the buyer's coins cover
+	// all of it. Default consumers = [buyer] preserves the legacy
+	// single-consumer flow.
 	var (
-		itemTransferred bool
-		itemConsumed    bool
-		consumeResult   consumptionResult
+		itemTransferred  bool
+		itemConsumed     bool
+		consumeResult    consumptionResult // post-consume buyer state (legacy field)
+		consumerUpdates  []payConsumerUpdate
 	)
 	if itemKind != "" {
 		if req.ConsumeNow {
+			// Resolve the consumer set. Default = buyer. With explicit
+			// consumers, look each up by display name and verify they
+			// share the buyer's huddle (you can't drink an ale for
+			// someone in another room).
+			consumers, rejectErr := app.resolveAtSourceConsumers(ctx, tx, buyer, req.ConsumerNames)
+			if rejectErr != "" {
+				return payResult{Result: "rejected", Err: rejectErr}
+			}
+
 			// At-source consumption. Apply satisfies_amount * qty to
-			// the right need column via applyConsumption. Mirrors the
-			// switch in inventory.go::executeConsume; both routes land
-			// in the same chronicler nudge path.
+			// the right need column on EACH consumer. Mirrors the
+			// switch in inventory.go::executeConsume; same chronicler
+			// nudge path.
 			delta := consumptionDelta{}
 			totalAmount := int(itemSatisfiesAmt.Int32) * qty
 			switch itemSatisfiesAttr.String {
@@ -227,11 +270,22 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payReque
 				delta.Tiredness = -totalAmount
 			}
 			if delta.Hunger != 0 || delta.Thirst != 0 || delta.Tiredness != 0 {
-				res, err := app.applyConsumption(ctx, tx, buyer.ID, delta, "pay-consume")
-				if err != nil {
-					return payResult{Result: "failed", Err: fmt.Sprintf("apply consumption: %v", err)}
+				for _, c := range consumers {
+					res, err := app.applyConsumption(ctx, tx, c.ID, delta, "pay-consume")
+					if err != nil {
+						return payResult{Result: "failed", Err: fmt.Sprintf("apply consumption for %s: %v", c.DisplayName, err)}
+					}
+					consumerUpdates = append(consumerUpdates, payConsumerUpdate{
+						ActorID:     c.ID,
+						DisplayName: c.DisplayName,
+						Hunger:      res.Hunger,
+						Thirst:      res.Thirst,
+						Tiredness:   res.Tiredness,
+					})
+					if c.ID == buyer.ID {
+						consumeResult = res
+					}
 				}
-				consumeResult = res
 				itemConsumed = true
 			}
 		} else {
@@ -294,15 +348,20 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payReque
 	}
 
 	if itemConsumed {
-		app.Hub.Broadcast(WorldEvent{
-			Type: "npc_needs_changed",
-			Data: map[string]interface{}{
-				"id":        buyer.ID,
-				"hunger":    consumeResult.Hunger,
-				"thirst":    consumeResult.Thirst,
-				"tiredness": consumeResult.Tiredness,
-			},
-		})
+		// One npc_needs_changed broadcast per consumer (Phase C: group
+		// orders feed multiple people in one pay; each one's needs UI
+		// updates).
+		for _, u := range consumerUpdates {
+			app.Hub.Broadcast(WorldEvent{
+				Type: "npc_needs_changed",
+				Data: map[string]interface{}{
+					"id":        u.ActorID,
+					"hunger":    u.Hunger,
+					"thirst":    u.Thirst,
+					"tiredness": u.Tiredness,
+				},
+			})
+		}
 	}
 
 	result := payResult{
@@ -322,6 +381,99 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payReque
 		result.TirednessReduce = positiveDelta(buyer.Tiredness, consumeResult.Tiredness)
 	}
 	return result
+}
+
+// payConsumer is one resolved consumer for an at-source pay order
+// (Phase C). For the legacy single-consumer flow this is just the
+// buyer; for group orders it's each named friend at the table.
+type payConsumer struct {
+	ID          string
+	DisplayName string
+}
+
+// payConsumerUpdate carries the post-consume need state for one
+// consumer, used to broadcast npc_needs_changed per-consumer after
+// commit.
+type payConsumerUpdate struct {
+	ActorID     string
+	DisplayName string
+	Hunger      int
+	Thirst      int
+	Tiredness   int
+}
+
+// resolveAtSourceConsumers builds the consumer list for an at-source
+// pay. Empty input → [buyer] (legacy single-consumer behavior). Named
+// consumers must each (a) exist in the actor table, (b) share the
+// buyer's current_huddle_id (you can't drink someone's ale from
+// across the village). Returns ("", "") on success and ("", "err")
+// on a rejection that should propagate as the payResult error.
+//
+// Locks each consumer row FOR UPDATE so a concurrent move-out doesn't
+// slip a consumer out mid-transaction. Buyer is locked separately by
+// the calling executePay above.
+func (app *App) resolveAtSourceConsumers(ctx context.Context, tx pgx.Tx, buyer *agentNPCRow, names []string) ([]payConsumer, string) {
+	if len(names) == 0 {
+		return []payConsumer{{ID: buyer.ID, DisplayName: buyer.DisplayName}}, ""
+	}
+
+	// Buyer's huddle. Required for every named consumer to match.
+	var buyerHuddle sql.NullString
+	if err := tx.QueryRow(ctx,
+		`SELECT current_huddle_id FROM actor WHERE id = $1`,
+		buyer.ID,
+	).Scan(&buyerHuddle); err != nil {
+		return nil, fmt.Sprintf("lock buyer huddle: %v", err)
+	}
+	if !buyerHuddle.Valid {
+		return nil, "consumers requires you to be in a room with them; you're not in a scene huddle right now"
+	}
+
+	// Normalize: trim, drop empties, dedupe (case-insensitive). The
+	// buyer's name is allowed to appear (they're paying for themselves
+	// + others) and is collapsed against the buyer's actor row.
+	seen := make(map[string]bool, len(names))
+	var clean []string
+	for _, n := range names {
+		t := strings.TrimSpace(n)
+		if t == "" {
+			continue
+		}
+		k := strings.ToLower(t)
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		clean = append(clean, t)
+	}
+	if len(clean) == 0 {
+		return []payConsumer{{ID: buyer.ID, DisplayName: buyer.DisplayName}}, ""
+	}
+
+	resolved := make([]payConsumer, 0, len(clean))
+	for _, name := range clean {
+		var cid, cdn string
+		var chuddle sql.NullString
+		err := tx.QueryRow(ctx,
+			`SELECT id, display_name, current_huddle_id
+			   FROM actor
+			  WHERE LOWER(display_name) = LOWER($1)
+			  LIMIT 1
+			  FOR UPDATE`,
+			name,
+		).Scan(&cid, &cdn, &chuddle)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, fmt.Sprintf("no villager named %q", name)
+			}
+			return nil, fmt.Sprintf("lock consumer %q: %v", name, err)
+		}
+		if !chuddle.Valid || chuddle.String != buyerHuddle.String {
+			return nil, fmt.Sprintf("%s is not in the room with you", cdn)
+		}
+		resolved = append(resolved, payConsumer{ID: cid, DisplayName: cdn})
+	}
+	return resolved, ""
 }
 
 // hasCapability reports whether the given capability tag is in the

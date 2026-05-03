@@ -19,6 +19,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -26,6 +27,93 @@ import (
 
 	"github.com/jackc/pgx/v5"
 )
+
+// normalizeMentions converts the raw mentions value from a speak tool
+// call into a deduped, lowercased, trimmed []string. Tolerates the
+// common LLM variants — []interface{} of strings, a bare string, or
+// a JSON-encoded array string ("[\"cheese\",\"ale\"]"). Non-string
+// elements are dropped silently. Empty input → nil. Phase C of
+// sales-and-gifts.
+func normalizeMentions(raw interface{}) []string {
+	if raw == nil {
+		return nil
+	}
+	var collected []string
+	switch v := raw.(type) {
+	case []interface{}:
+		for _, x := range v {
+			if s, ok := x.(string); ok {
+				collected = append(collected, s)
+			}
+		}
+	case []string:
+		collected = append(collected, v...)
+	case string:
+		t := strings.TrimSpace(v)
+		if strings.HasPrefix(t, "[") && strings.HasSuffix(t, "]") {
+			// JSON-array-as-string variant — same defensive parse the
+			// serve dispatcher does for recipients.
+			var parsed []string
+			if err := json.Unmarshal([]byte(t), &parsed); err == nil {
+				collected = parsed
+			} else {
+				collected = []string{t}
+			}
+		} else if t != "" {
+			collected = []string{t}
+		}
+	}
+	if len(collected) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(collected))
+	out := make([]string, 0, len(collected))
+	for _, s := range collected {
+		k := strings.TrimSpace(strings.ToLower(s))
+		if k == "" || seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, k)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// validateMentionsAgainstInventory returns the subset of mentions that
+// are NOT present in the speaker's actor_inventory (or don't exist in
+// item_kind at all — both fail the same predicate). Empty result means
+// every mention is valid. Used by the speak tool to reject speech
+// referencing goods the speaker doesn't have, so the customer's
+// pay-dropdown population is grounded in real stock.
+func (app *App) validateMentionsAgainstInventory(ctx context.Context, actorID string, mentions []string) ([]string, error) {
+	if len(mentions) == 0 {
+		return nil, nil
+	}
+	rows, err := app.DB.Query(ctx, `
+		SELECT m.name
+		  FROM unnest($1::text[]) AS m(name)
+		 WHERE NOT EXISTS (
+		     SELECT 1 FROM actor_inventory ai
+		      WHERE ai.actor_id = $2 AND ai.item_kind = m.name
+		 )
+	`, mentions, actorID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var bogus []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		bogus = append(bogus, name)
+	}
+	return bogus, rows.Err()
+}
 
 // inventoryLine builds the "ale x3, bread x1" comma-separated string
 // surfaced in agent perception. Returns "" when the actor carries

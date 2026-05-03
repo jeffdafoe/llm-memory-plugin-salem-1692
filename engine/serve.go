@@ -70,11 +70,19 @@ type serveNeedUpdate struct {
 
 // serveRequest groups the serve arguments. recipientNames are the
 // display-name strings the model used; resolution happens inside.
+//
+// Gift (Phase C of sales-and-gifts): serve is now restricted to free
+// transfers. The buyer-initiated pay() is the canonical sale verb;
+// serve is for gifts only (samples, comps, charity, on-the-house
+// pours). Default false → executeServe rejects up front. The model
+// must opt in with gift=true to confirm intent and acknowledge no
+// payment is expected.
 type serveRequest struct {
 	RecipientNames []string
 	Item           string
 	Qty            int  // per recipient; defaults to 1
 	ConsumeNow     bool // tavern (true) vs take-home (false)
+	Gift           bool // Phase C: must be true; sales go through pay()
 }
 
 // executeServe carries out the serve. server is the actor calling the
@@ -82,6 +90,17 @@ type serveRequest struct {
 // the server's current_huddle_id. On any failure mid-transaction, the
 // whole thing rolls back and stock stays where it was.
 func (app *App) executeServe(ctx context.Context, server *agentNPCRow, req serveRequest) serveResult {
+	// Phase C of sales-and-gifts: serve is gift-only. Sales go through
+	// the buyer's pay() — atomic goods-and-coins, no window where stock
+	// is delivered without payment. Reject before any other validation
+	// so the model gets a clear nudge to use pay() the next round.
+	if !req.Gift {
+		return serveResult{
+			Result: "rejected",
+			Err:    "Sales must be initiated by the buyer via pay. Use serve only with gift=true for free goods (samples, comps, charity).",
+		}
+	}
+
 	itemKind := strings.TrimSpace(strings.ToLower(req.Item))
 	if itemKind == "" {
 		return serveResult{Result: "rejected", Err: "missing item"}

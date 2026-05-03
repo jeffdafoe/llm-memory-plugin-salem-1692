@@ -718,11 +718,16 @@ func agentToolSpec() []agentToolDef {
 		},
 		{
 			Name:        "speak",
-			Description: "Say something out loud to people at your current location.",
+			Description: "Say something out loud to people at your current location. Optional mentions field tags item_kinds your speech references (so customers' pay dropdowns can populate); see the parameter description.",
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"text": map[string]interface{}{"type": "string"},
+					"mentions": map[string]interface{}{
+						"type":  "array",
+						"items": map[string]interface{}{"type": "string"},
+						"description": "OPTIONAL. Item kinds your speech is referencing — e.g. ['cheese'] when you tell a customer 'I have cheese for 5 coins', or ['ale','bread'] when listing what's available. PC clients use this to populate the customer's pay dropdown so they can buy from you. Each entry MUST exist in your inventory ('Items you can sell' line) — the speak will be REJECTED if you mention items you don't have. Use lowercase item kind names (e.g. 'cheese', not 'Cheese' or 'a wedge of cheese'). Omit when your speech doesn't reference goods.",
+					},
 				},
 				"required": []string{"text"},
 			},
@@ -768,7 +773,7 @@ func agentToolSpec() []agentToolDef {
 		},
 		{
 			Name:        "pay",
-			Description: "Hand coins to another villager. The single verb for every commercial transaction: tavern dining, market purchases, tips, services. Use after agreeing on a price in conversation. For purchases at an establishment (tavern, shop, smithy), pay the proprietor or staff working there — not another patron who happens to be present.\n\nThree shapes:\n  - pay(recipient, amount) — generic coin transfer for a tip, service, news, or anything not item-shaped. No goods change hands.\n  - pay(recipient, amount, item, qty?, consume_now=true) — the tavern verb. The seller's stock decrements and your linked need (hunger/thirst) drops. Default if you specify an item.\n  - pay(recipient, amount, item, qty?, consume_now=false) — take-home. The seller's stock moves into your inventory for later use. Only works for portable items; non-portable like stew (hot bowl, not packable) must be consumed at-source.\n\nNo fixed price list — agree on the amount in speak() first, then commit the agreed total here.",
+			Description: "Hand coins to another villager. The single verb for every commercial transaction — including SALES from vendors. Sales are buyer-initiated and atomic: stock decrements, goods or consumption land, coins move, all in one transaction. Vendors do NOT push goods at you via serve; you call pay to buy from them. Use after agreeing on a price in conversation. For purchases at an establishment (tavern, shop, smithy), pay the proprietor or staff working there — not another patron who happens to be present.\n\nFour shapes:\n  - pay(recipient, amount) — generic coin transfer for a tip, service, news, or anything not item-shaped. No goods change hands.\n  - pay(recipient, amount, item, qty?, consume_now=true) — at-source consumption (the tavern verb). The seller's stock decrements and your linked need (hunger/thirst) drops. Default when you specify an item.\n  - pay(recipient, amount, item, qty?, consume_now=false) — take-home. The seller's stock moves into your inventory for later use. Only works for portable items; non-portable like stew (hot bowl, not packable) must be consumed at-source.\n  - pay(recipient, amount, item, qty?, consume_now=true, consumers=[names]) — at-source GROUP order: buy a round for everyone in your huddle. Stock decrements by qty * len(consumers); each named consumer's need drops; you pay the full amount. Use when ordering for a group at a tavern.\n\nNo fixed price list — agree on the amount in speak() first, then commit the agreed total here.",
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -786,15 +791,20 @@ func agentToolSpec() []agentToolDef {
 					},
 					"item": map[string]interface{}{
 						"type":        "string",
-						"description": "Optional item kind being purchased: ale, water, milk, stew, bread, cheese, berries, meat, wheat, flour, iron. Match the names in inventory readouts. Omit for non-item payments (tips, services).",
+						"description": "Optional item kind being purchased. Match the names in the vendor's recent speech (their speak.mentions field) or in their 'Items you can sell' inventory readout. Omit for non-item payments (tips, services).",
 					},
 					"qty": map[string]interface{}{
 						"type":        "integer",
-						"description": "How many of the item. Defaults to 1.",
+						"description": "How many of the item, PER CONSUMER (not total when consumers > 1). Defaults to 1.",
 					},
 					"consume_now": map[string]interface{}{
 						"type":        "boolean",
-						"description": "True (default) consumes the item at the seller's place — drink the ale at the bar, eat the stew at the tavern, your need drops immediately. False takes the item home into your own inventory; only works for portable items (bread, cheese, berries, ale, milk, meat, materials). Stew and water are non-portable.",
+						"description": "True (default) consumes the item at the seller's place — drink the ale at the bar, eat the stew at the tavern, the consumer's need drops immediately. False takes the item home into your own inventory; only works for portable items.",
+					},
+					"consumers": map[string]interface{}{
+						"type":  "array",
+						"items": map[string]interface{}{"type": "string"},
+						"description": "OPTIONAL. At-source group orders only (consume_now=true with an item). Display names of the people who will eat/drink — typically you and your tablemates. You can include yourself or omit yourself. Each named consumer must be in your huddle. Stock decrements by qty * len(consumers); each consumer's need drops. Omit for solo orders (you become the implicit consumer).",
 					},
 				},
 				"required": []string{"recipient", "amount"},
@@ -1645,6 +1655,31 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 			result, errStr = "rejected", "empty text"
 			break
 		}
+		// Mentions (Phase C of sales-and-gifts): structured tag for which
+		// item_kinds this speech references. The PC talk panel uses these
+		// to populate the buy/pay dropdown so a customer can select an
+		// item the vendor just mentioned. Validated strictly against the
+		// speaker's actor_inventory — bogus mentions reject the whole
+		// speak and the LLM retries cleanly. Normalized to lowercase
+		// trimmed strings; empty / non-strings are dropped silently
+		// before validation.
+		mentions := normalizeMentions(tc.Input["mentions"])
+		if len(mentions) > 0 {
+			bogus, err := app.validateMentionsAgainstInventory(ctx, r.ID, mentions)
+			if err != nil {
+				result, errStr = "failed", fmt.Sprintf("validate mentions: %v", err)
+				break
+			}
+			if len(bogus) > 0 {
+				result = "rejected"
+				errStr = fmt.Sprintf("You don't have these items in your inventory: %s. Only mention items in your 'Items you can sell' list — speak references the same catalog the customer's pay dropdown is built from, so naming goods you don't have would offer the customer something you can't sell.", strings.Join(bogus, ", "))
+				break
+			}
+			// Re-stash the normalized mentions so audit + WS broadcast
+			// carry the cleaned form, not the model's raw input.
+			tc.Input["mentions"] = mentions
+			payload, _ = json.Marshal(tc.Input)
+		}
 		// Speech is instant — no override needed. The Hub broadcast lets
 		// any listening clients render the speech bubble in real time.
 		// Engine log is the visible-to-humans record until the Godot client
@@ -1655,6 +1690,9 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 			"name":   r.DisplayName,
 			"text":   text,
 			"at":     time.Now().UTC().Format(time.RFC3339),
+		}
+		if len(mentions) > 0 {
+			spokeData["mentions"] = mentions
 		}
 		// Carry structure_id so the talk panel can scope its room log
 		// to the current room. World-view speech bubbles ignore this
@@ -1888,6 +1926,29 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		if v, ok := tc.Input["consume_now"].(bool); ok {
 			consumeNow = v
 		}
+		// Phase C: optional consumers list for at-source group orders.
+		// Same defensive parsing as serve recipients (handles []interface{},
+		// bare string, and JSON-array-as-string variants from providers).
+		var consumerNames []string
+		if raw, ok := tc.Input["consumers"].([]interface{}); ok {
+			for _, v := range raw {
+				if s, ok := v.(string); ok {
+					consumerNames = append(consumerNames, s)
+				}
+			}
+		} else if s, ok := tc.Input["consumers"].(string); ok {
+			trimmed := strings.TrimSpace(s)
+			if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+				var parsed []string
+				if err := json.Unmarshal([]byte(trimmed), &parsed); err == nil {
+					consumerNames = parsed
+				} else {
+					consumerNames = []string{s}
+				}
+			} else if trimmed != "" {
+				consumerNames = []string{trimmed}
+			}
+		}
 		pr := app.executePay(ctx, r, payRequest{
 			RecipientName: recipient,
 			Amount:        amount,
@@ -1895,6 +1956,7 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 			Item:          item,
 			Qty:           qty,
 			ConsumeNow:    consumeNow,
+			ConsumerNames: consumerNames,
 		})
 		result = pr.Result
 		errStr = pr.Err
@@ -1970,6 +2032,14 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		if v, ok := tc.Input["consume_now"].(bool); ok {
 			consumeNow = v
 		}
+		// Gift defaults to false (Phase C of sales-and-gifts). Without
+		// gift=true the serve rejects and the model is nudged toward
+		// the buyer-initiated pay() path. Only true gifts (free goods,
+		// samples, comps, charity) opt in.
+		gift := false
+		if v, ok := tc.Input["gift"].(bool); ok {
+			gift = v
+		}
 		// recipients arrives as []interface{} from JSON; coerce to []string.
 		// Tolerate two provider quirks: (a) single-element lists arriving
 		// as a bare string, (b) the entire array re-serialized as a JSON
@@ -2005,6 +2075,7 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 			Item:           item,
 			Qty:            qty,
 			ConsumeNow:     consumeNow,
+			Gift:           gift,
 		})
 		result = sr.Result
 		errStr = sr.Err

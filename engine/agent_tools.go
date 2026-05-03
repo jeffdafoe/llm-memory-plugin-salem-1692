@@ -34,18 +34,18 @@ import (
 var roleToolRegistry = map[string]agentToolDef{
 	"serve": {
 		Name: "serve",
-		Description: "Hand goods from your stock to one or more people present. The vendor's verb — used by tavernkeepers serving food and drink, herbalists handing tonics, blacksmiths delivering iron tools, merchants supplying staples. Decrements your inventory by qty per recipient and, with consume_now=true (the default for food and drink), drops each recipient's matching need on the spot — they eat or drink right here. With consume_now=false the goods go into the recipients' own inventories to take away. No coin transfer; payment, if any, happens separately via pay. Only works for items in your inventory and recipients in the same room as you. Use this whenever you give your stock to customers — never narrate serving via act, since act doesn't decrement stock.",
+		Description: "Give goods from your stock to one or more people present, FREELY and with no expectation of payment. Use this for samples, complimentary drinks, charity, on-the-house pours, gifts to friends or guests in distress. Decrements your inventory by qty per recipient. With consume_now=true (the default for food and drink) the recipients eat or drink the gift on the spot, dropping their matching need. With consume_now=false the goods go into the recipients' own inventories to take away. SALES ARE INITIATED BY THE BUYER via pay() — never use serve to fulfill a sale. The customer's pay() is atomic: stock decrements, goods or consumption land, coins move, all in one transaction. To opt into the gift semantics and confirm no payment is expected, you MUST set gift=true; without it the call rejects.",
 		Parameters: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
 				"recipients": map[string]interface{}{
 					"type":        "array",
 					"items":       map[string]interface{}{"type": "string"},
-					"description": "Display names of the people you're serving. Must be present in the same room as you. One or more.",
+					"description": "Display names of the people you're gifting to. Must be present in the same room as you. One or more.",
 				},
 				"item": map[string]interface{}{
 					"type":        "string",
-					"description": "Item kind from your stock. Must match a row in your inventory readout (ale, stew, bread, cheese, milk, water, berries, meat, iron, etc.).",
+					"description": "Item kind from your stock. Must match a row in your 'Items you can sell' / inventory readout.",
 				},
 				"qty": map[string]interface{}{
 					"type":        "integer",
@@ -53,10 +53,14 @@ var roleToolRegistry = map[string]agentToolDef{
 				},
 				"consume_now": map[string]interface{}{
 					"type":        "boolean",
-					"description": "True (default for food and drink at your place) — recipients eat/drink immediately, need drops. False — items go into recipients' inventories to carry away. Non-portable items (stew) reject consume_now=false.",
+					"description": "True (default for food and drink at your place) — recipients eat/drink the gift immediately, need drops. False — items go into recipients' inventories to carry away. Non-portable items (stew) reject consume_now=false.",
+				},
+				"gift": map[string]interface{}{
+					"type":        "boolean",
+					"description": "MUST be true. Confirms this is a free gift with no payment expected. Sales go through the buyer's pay() instead. Default false rejects.",
 				},
 			},
-			"required": []string{"recipients", "item"},
+			"required": []string{"recipients", "item", "gift"},
 		},
 	},
 }
