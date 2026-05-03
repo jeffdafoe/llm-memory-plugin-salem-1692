@@ -59,6 +59,15 @@ var _status_label: Label = null
 var _refresh_timer: Timer = null
 var _refetch_timer: Timer = null
 
+# Items section (ZBBS-114) — read-only catalog of every item_kind row
+# the village knows about. Lives at the bottom of the config panel so
+# admins can confirm that "the village knows about hammers" without
+# opening the database. Fetched once on visibility (item_kind doesn't
+# change live), populated into a 4-column grid: name | category |
+# satisfies | capabilities.
+var _items_grid: GridContainer = null
+var _items_status: Label = null
+
 func _ready() -> void:
     _font = load("res://assets/fonts/IMFellEnglish-Regular.ttf")
 
@@ -266,6 +275,23 @@ func _build_layout() -> void:
     _status_label = _make_label("", COLOR_TEXT_DIM, 12)
     _content.add_child(_status_label)
 
+    _add_separator()
+
+    # Items the village knows about (ZBBS-114) — read-only catalog of
+    # item_kind. Useful as a sanity check ("does Ezekiel actually have
+    # a hammer in the schema?") without dropping into psql.
+    var items_header = _make_label("Items the village knows about", COLOR_LABEL, 14)
+    _content.add_child(items_header)
+
+    _items_status = _make_label("Loading…", COLOR_TEXT_DIM, 12)
+    _content.add_child(_items_status)
+
+    _items_grid = GridContainer.new()
+    _items_grid.columns = 4
+    _items_grid.add_theme_constant_override("h_separation", 18)
+    _items_grid.add_theme_constant_override("v_separation", 4)
+    _content.add_child(_items_grid)
+
 func _make_number_edit() -> LineEdit:
     var edit = LineEdit.new()
     edit.custom_minimum_size = Vector2(80, 0)
@@ -352,6 +378,7 @@ func _close() -> void:
 func _on_visibility_changed() -> void:
     if visible:
         fetch_state()
+        _fetch_items()
         _refresh_timer.start()
         _refetch_timer.start()
     else:
@@ -612,3 +639,75 @@ func _on_agent_ticks_toggled(pressed: bool) -> void:
     var headers := Auth.auth_headers()
     http.request(Auth.api_base + "/api/village/world/agent-ticks",
         headers, HTTPClient.METHOD_POST, payload)
+
+## GET /api/items — fetch the read-only catalog of every item_kind in
+## the village and render it as a 4-column grid. Called once on each
+## visibility transition; item_kind doesn't change between admin sessions
+## (only across migrations) so polling buys nothing.
+func _fetch_items() -> void:
+    var http = HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    http.request_completed.connect(_on_items_response.bind(http))
+    var headers := Auth.auth_headers(false)
+    http.request(Auth.api_base + "/api/items", headers)
+
+func _on_items_response(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest) -> void:
+    http.queue_free()
+    if not Auth.check_response(response_code):
+        return
+    if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
+        if _items_status != null:
+            _items_status.text = "Failed to load items (" + str(response_code) + ")"
+        return
+    var json = JSON.parse_string(body.get_string_from_utf8())
+    if typeof(json) != TYPE_ARRAY:
+        if _items_status != null:
+            _items_status.text = "Malformed items response"
+        return
+    _render_items(json)
+
+## Populate the items grid. Header row first (always), then one row per
+## item_kind. Clears any prior contents so re-fetches don't duplicate.
+func _render_items(rows: Array) -> void:
+    if _items_grid == null:
+        return
+    for child in _items_grid.get_children():
+        child.queue_free()
+
+    # Header row.
+    _items_grid.add_child(_make_items_cell("Name", COLOR_LABEL, true))
+    _items_grid.add_child(_make_items_cell("Category", COLOR_LABEL, true))
+    _items_grid.add_child(_make_items_cell("Satisfies", COLOR_LABEL, true))
+    _items_grid.add_child(_make_items_cell("Capabilities", COLOR_LABEL, true))
+
+    for entry in rows:
+        if typeof(entry) != TYPE_DICTIONARY:
+            continue
+        var label: String = entry.get("display_label", entry.get("name", "?"))
+        var category: String = entry.get("category", "")
+        var satisfies: String = "—"
+        var attr = entry.get("satisfies_attribute", null)
+        var amt = entry.get("satisfies_amount", null)
+        if attr != null and amt != null:
+            satisfies = str(attr) + " " + str(amt)
+        var caps_arr = entry.get("capabilities", [])
+        var caps_text: String = "—"
+        if typeof(caps_arr) == TYPE_ARRAY and caps_arr.size() > 0:
+            caps_text = ", ".join(caps_arr)
+
+        _items_grid.add_child(_make_items_cell(label, COLOR_VALUE, false))
+        _items_grid.add_child(_make_items_cell(category, COLOR_TEXT, false))
+        _items_grid.add_child(_make_items_cell(satisfies, COLOR_TEXT_DIM, false))
+        _items_grid.add_child(_make_items_cell(caps_text, COLOR_TEXT_DIM, false))
+
+    if _items_status != null:
+        _items_status.text = str(rows.size()) + " items in the village catalog"
+
+func _make_items_cell(text: String, color: Color, bold: bool) -> Label:
+    var lbl = Label.new()
+    lbl.text = text
+    lbl.add_theme_color_override("font_color", color)
+    lbl.add_theme_font_override("font", _font)
+    lbl.add_theme_font_size_override("font_size", 13 if bold else 12)
+    return lbl
