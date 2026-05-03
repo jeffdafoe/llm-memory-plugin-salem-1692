@@ -127,6 +127,26 @@ func (app *App) loadToolSlugsForActor(ctx context.Context, actorID string) ([]st
 	return slugs, nil
 }
 
+// actorIsVendor returns true when the actor holds any role attribute
+// that declares the 'serve' tool — today that's blacksmith, herbalist,
+// merchant, and tavernkeeper. Used by the perception builder (ZBBS-114)
+// to relabel the inventory line as "Items you can sell" for vendors,
+// reinforcing the role-prompt grounding rule against off-list offers.
+// Errors during slug load are treated as not-a-vendor — the relabel
+// is purely informational; falling back to "Your inventory" is safe.
+func (app *App) actorIsVendor(ctx context.Context, actorID string) bool {
+	slugs, err := app.loadToolSlugsForActor(ctx, actorID)
+	if err != nil {
+		return false
+	}
+	for _, s := range slugs {
+		if s == "serve" {
+			return true
+		}
+	}
+	return false
+}
+
 // loadInstructionsForActor returns a single perception-section string
 // composed from every attribute_definition.instructions row the actor
 // holds. Empty string when the actor has no attributes carrying
