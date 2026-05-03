@@ -55,11 +55,16 @@ const (
 	errandChatMinSeconds   = 4
 	errandChatMaxSeconds   = 10
 	errandOverrideDuration = 10 * time.Minute
-	// errandTargetTolerance is how close the messenger has to be to
-	// target_dispatch_x/y for a delivery to count as on-target. Beyond
-	// this, the target has effectively moved and we branch to
-	// unavailable. Generous because pathfinding rounds to tile centers.
-	errandTargetTolerance = 64.0
+	// errandTargetTolerance is how close the target has to be to the
+	// messenger's arrival tile (target_dispatch_x/y) for the delivery
+	// to count. target_dispatch_x/y is the WALK target (loiter slot
+	// when target was inside a structure, target's tile when in the
+	// open village) — NOT the target's actual position. So the
+	// tolerance has to cover the structure footprint plus a margin.
+	// 256 = 8 tiles, comfortably larger than any building in the
+	// catalog, so a target who's still in the same stall as at
+	// dispatch passes the check.
+	errandTargetTolerance = 256.0
 )
 
 // dispatchSummonErrand is the v2 entry point for the summon tool.
@@ -184,9 +189,15 @@ func (app *App) dispatchSummonErrand(ctx context.Context, summoner *agentNPCRow,
 		log.Printf("summon-dispatch: stamp summoner override: %v", err)
 	}
 
-	// Kick off the summoner walk. Failure here flips state to failed
-	// so the ticker can clean up.
-	if _, err := app.startNPCWalk(ctx, summoner.ID, pointX, pointY, defaultNPCSpeed); err != nil {
+	// Kick off the summoner walk to a slot in the summon_point's
+	// loiter ring (so they don't end up standing on the lamp post /
+	// bell sprite). Falls back to the placement's center coords if
+	// the loiter resolution fails.
+	walkX, walkY := pointX, pointY
+	if sx, sy, err := app.resolveSummonPointWalk(ctx, pointID, summoner.ID); err == nil {
+		walkX, walkY = sx, sy
+	}
+	if _, err := app.startNPCWalk(ctx, summoner.ID, walkX, walkY, defaultNPCSpeed); err != nil {
 		log.Printf("summon-dispatch: walk summoner to point: %v", err)
 		app.failErrand(ctx, errandID, fmt.Sprintf("summoner walk: %v", err))
 		return summonResult{Result: "failed", Err: "could not walk to summon point"}
@@ -214,6 +225,32 @@ func (app *App) findNearestSummonPoint(ctx context.Context, fromX, fromY float64
 		 LIMIT 1
 	`, fromX, fromY).Scan(&id, &x, &y)
 	return id, x, y, err
+}
+
+// resolveSummonPointWalk picks one of the 8 visitor slots around a
+// summon_point's loiter ring for the given walker. Without this both
+// summoner and messenger pathfind to the placement's tile center,
+// which puts them on top of (or clipping) the lamp post / bell
+// sprite. Falls back to the placement's center coords on lookup
+// error so the errand still progresses.
+func (app *App) resolveSummonPointWalk(ctx context.Context, summonPointID, walkerID string) (float64, float64, error) {
+	var ox, oy float64
+	var loiterX, loiterY, doorX, doorY sql.NullInt32
+	var footprintBottom int
+	err := app.DB.QueryRow(ctx, `
+		SELECT o.x, o.y,
+		       o.loiter_offset_x, o.loiter_offset_y,
+		       a.door_offset_x, a.door_offset_y, a.footprint_bottom
+		  FROM village_object o
+		  JOIN asset a ON a.id = o.asset_id
+		 WHERE o.id = $1
+	`, summonPointID).Scan(&ox, &oy, &loiterX, &loiterY, &doorX, &doorY, &footprintBottom)
+	if err != nil {
+		return 0, 0, err
+	}
+	loiterTileX, loiterTileY := effectiveLoiterTile(loiterX, loiterY, doorX, doorY, footprintBottom)
+	wx, wy := app.pickVisitorSlot(ctx, walkerID, ox, oy, loiterTileX, loiterTileY)
+	return wx, wy, nil
 }
 
 // findNearestMessenger returns the closest non-VA actor carrying the
@@ -380,8 +417,14 @@ func (app *App) onSummonerAtPoint(ctx context.Context, errandID, summonerID, mes
 		return
 	}
 
-	// Walk messenger to summon_point. Failure terminates the errand.
-	if _, err := app.startNPCWalk(ctx, messengerID, pointX, pointY, defaultNPCSpeed); err != nil {
+	// Walk messenger to a different visitor slot around the summon_point.
+	// pickVisitorSlot uses the actor's id as the seed, so summoner and
+	// messenger end up on different tiles in the same loiter ring.
+	mWalkX, mWalkY := pointX, pointY
+	if sx, sy, err := app.resolveSummonPointWalk(ctx, summonPointID, messengerID); err == nil {
+		mWalkX, mWalkY = sx, sy
+	}
+	if _, err := app.startNPCWalk(ctx, messengerID, mWalkX, mWalkY, defaultNPCSpeed); err != nil {
 		app.failErrand(ctx, errandID, fmt.Sprintf("walk messenger to point: %v", err))
 	}
 }
