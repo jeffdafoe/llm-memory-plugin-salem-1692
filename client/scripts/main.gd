@@ -407,9 +407,10 @@ func _build_ui() -> void:
     editor.npc_deselected.connect(_on_editor_npc_deselected)
     world.npc_metadata_changed.connect(_on_npc_metadata_changed)
     # Villagers browser refreshes on both list changes (create/delete)
-    # and per-NPC metadata changes (rename / behavior / inside-flip).
+    # and per-NPC metadata changes (rename / attributes / inside-flip).
     world.npc_list_changed.connect(_on_villagers_list_should_refresh)
     world.npc_metadata_changed.connect(func(_id): _on_villagers_list_should_refresh())
+    world.npc_attributes_changed.connect(func(_id, _attrs): _on_villagers_list_should_refresh())
     editor.mode_changed.connect(_on_editor_mode_changed)
     # Cursor tile readout — editor emits on mouse motion over the map,
     # top bar renders the coords. Hidden whenever edit mode turns off.
@@ -1072,7 +1073,7 @@ func _on_npc_metadata_changed(npc_id: String) -> void:
         "sprite_id": container.get_meta("sprite_id", ""),
         "sprite_name": container.get_meta("sprite_name", ""),
         "display_name": container.get_meta("display_name", ""),
-        "behavior": container.get_meta("behavior", ""),
+        "attributes": container.get_meta("attributes", []),
         "llm_memory_agent": container.get_meta("llm_memory_agent", ""),
         "home_structure_id": container.get_meta("home_structure_id", ""),
         "work_structure_id": container.get_meta("work_structure_id", ""),

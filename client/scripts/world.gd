@@ -328,22 +328,6 @@ func _build_npc_sprite_frames(sprite_data: Dictionary, sheet: Texture2D) -> Spri
             sprite_frames.add_frame(anim_name, atlas)
     return sprite_frames
 
-## Apply a server-broadcast behavior change. data.behavior may be null for
-## behavior cleared — the JSON null decodes to Godot null.
-func apply_npc_behavior_change(data: Dictionary) -> void:
-    var npc_id: String = data.get("id", "")
-    if npc_id == "":
-        return
-    var container: Node2D = placed_npcs.get(npc_id, null)
-    if container == null:
-        return
-    var behavior = data.get("behavior", null)
-    if behavior == null:
-        container.remove_meta("behavior")
-    else:
-        container.set_meta("behavior", str(behavior))
-    npc_metadata_changed.emit(npc_id)
-
 ## Apply a server-broadcast agent link change. data.llm_memory_agent may be
 ## null for unlinked.
 func apply_npc_agent_change(data: Dictionary) -> void:
@@ -596,7 +580,11 @@ func _render_npc(npc: Dictionary) -> void:
     container.set_meta("sprite_name", sprite_data.get("name", ""))
     container.set_meta("display_name", npc.get("display_name", ""))
     container.set_meta("facing", facing)
-    container.set_meta("behavior", npc.get("behavior", ""))
+    # Attribute slugs (ZBBS-096) — sourced from the API response, kept
+    # current via apply_npc_attributes_changed. The villager list reads
+    # this to render role labels next to each name.
+    var attrs_raw = npc.get("attributes", [])
+    container.set_meta("attributes", attrs_raw if attrs_raw is Array else [])
     container.set_meta("llm_memory_agent", npc.get("llm_memory_agent", ""))
     container.set_meta("home_structure_id", npc.get("home_structure_id", ""))
     container.set_meta("work_structure_id", npc.get("work_structure_id", ""))
@@ -1605,20 +1593,6 @@ func set_npc_display_name(container: Node2D, display_name: String) -> void:
         return
     container.set_meta("display_name", display_name)
     _patch_npc(npc_id, "display-name", {"display_name": display_name})
-
-## Set the behavior of an NPC (or clear it if behavior == ""). Persists to
-## the server. Empty string is normalized to null in the payload.
-func set_npc_behavior(container: Node2D, behavior: String) -> void:
-    var npc_id = container.get_meta("npc_id", null)
-    if npc_id == null:
-        return
-    var value = null
-    if behavior != "":
-        value = behavior
-        container.set_meta("behavior", behavior)
-    else:
-        container.remove_meta("behavior")
-    _patch_npc(npc_id, "behavior", {"behavior": value})
 
 ## Link or unlink the llm_memory_agent for an NPC. Empty string unlinks.
 func set_npc_agent(container: Node2D, agent: String) -> void:

@@ -62,12 +62,10 @@ type NPC struct {
 	CurrentX        float64    `json:"current_x"`
 	CurrentY        float64    `json:"current_y"`
 	Facing          string     `json:"facing"`
-	// Behavior is the alphabetically-first attribute slug, kept for
-	// backward compatibility with clients written against the legacy
-	// single-role UX. New clients should read Attributes instead.
-	Behavior        *string    `json:"behavior"`
 	// Attributes lists every actor_attribute slug for this NPC, sorted
-	// alphabetically. Empty array when the NPC has no attributes.
+	// alphabetically. Empty array when the NPC has no attributes. Replaces
+	// the legacy single-slot Behavior field that was retired with
+	// actor.behavior in ZBBS-113.
 	Attributes      []string   `json:"attributes"`
 	LLMMemoryAgent  *string    `json:"llm_memory_agent"`
 	HomeStructureID *string    `json:"home_structure_id"`
@@ -221,11 +219,9 @@ func (app *App) handleListNPCs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ZBBS-097: behavior is sourced from actor_attribute (alphabetically
-	// first slug per actor), not the legacy actor.behavior column. The
-	// scalar subquery returns NULL when the actor has no attributes,
-	// matching the prior nullable shape so the JSON response and Scan
-	// targets stay unchanged.
+	// Roles are sourced from actor_attribute (the attribute system,
+	// ZBBS-096). The legacy single-slot actor.behavior column was
+	// retired in ZBBS-113.
 	//
 	// M6.7 (PC rendering): no login_username filter — PC rows are
 	// included so the client renders them on the map alongside NPCs. PCs
@@ -243,7 +239,6 @@ func (app *App) handleListNPCs(w http.ResponseWriter, r *http.Request) {
 		`SELECT n.id, n.display_name, n.sprite_id,
 		        COALESCE(n.home_x, 0), COALESCE(n.home_y, 0),
 		        n.current_x, n.current_y, n.facing,
-		        (SELECT slug FROM actor_attribute WHERE actor_id = n.id ORDER BY slug LIMIT 1),
 		        COALESCE(
 		            (SELECT array_agg(slug ORDER BY slug) FROM actor_attribute WHERE actor_id = n.id),
 		            ARRAY[]::TEXT[]
@@ -271,7 +266,7 @@ func (app *App) handleListNPCs(w http.ResponseWriter, r *http.Request) {
 	for npcRows.Next() {
 		var n NPC
 		if err := npcRows.Scan(&n.ID, &n.DisplayName, &n.SpriteID,
-			&n.HomeX, &n.HomeY, &n.CurrentX, &n.CurrentY, &n.Facing, &n.Behavior, &n.Attributes, &n.LLMMemoryAgent,
+			&n.HomeX, &n.HomeY, &n.CurrentX, &n.CurrentY, &n.Facing, &n.Attributes, &n.LLMMemoryAgent,
 			&n.HomeStructureID, &n.WorkStructureID, &n.Inside, &n.InsideStructureID,
 			&n.ScheduleStartMinute, &n.ScheduleEndMinute,
 			&n.ScheduleIntervalHours,
@@ -389,8 +384,12 @@ func (app *App) handleCreateNPC(w http.ResponseWriter, r *http.Request) {
 	app.Hub.Broadcast(WorldEvent{Type: "npc_created", Data: npc})
 }
 
-// NPCBehavior is a row from npc_behavior — the allowed values for npc.behavior.
-// The editor panel fetches this list to populate the behavior dropdown.
+// NPCBehavior is a slug + label pair the editor's attribute-add
+// dropdown renders. Sourced from attribute_definition (scope 'actor'
+// or 'both'); the legacy npc_behavior allowlist table was retired
+// in ZBBS-113. The type and endpoint name keep the historical
+// "behavior" label for URL/wire-format stability — the data is the
+// attribute catalog.
 type NPCBehavior struct {
 	Slug        string `json:"slug"`
 	DisplayName string `json:"display_name"`
@@ -399,11 +398,8 @@ type NPCBehavior struct {
 // handleListNPCBehaviors returns every actor-scoped attribute that can be
 // assigned to an NPC. Public to any authenticated salem user — the catalog
 // is not sensitive and non-admins who can see NPC details may want to know
-// what roles exist.
-//
-// As of ZBBS-096 the source is attribute_definition (filtered to scope
-// 'actor' or 'both') rather than the legacy npc_behavior lookup. The
-// response shape is unchanged so the admin UI continues working.
+// what roles exist. The editor's chip-list "add attribute" dropdown
+// populates from this endpoint.
 func (app *App) handleListNPCBehaviors(w http.ResponseWriter, r *http.Request) {
 	rows, err := app.DB.Query(r.Context(),
 		`SELECT slug, display_name FROM attribute_definition
@@ -549,121 +545,6 @@ func (app *App) handleSetNPCSprite(w http.ResponseWriter, r *http.Request) {
 	app.Hub.Broadcast(WorldEvent{Type: "npc_sprite_changed", Data: data})
 }
 
-// handleSetNPCBehavior assigns or clears the role attribute of an NPC.
-// Admin only. A null/empty value clears every actor_attribute row for
-// the NPC; otherwise the request slug is validated against
-// attribute_definition (scope 'actor' or 'both') and replaces any
-// existing actor_attribute rows so the NPC ends up with exactly the
-// one attribute requested. Multi-attribute support is a future
-// concern — this endpoint preserves the old single-role UX.
-//
-// As of ZBBS-096 this writes actor_attribute (the engine's source of
-// truth for dispatch). The legacy actor.behavior column is left
-// untouched here; it stays alive only for the worker scheduler and
-// retires in a follow-up.
-//
-// Live-route note: changing the attribute mid-route does not interrupt
-// an ongoing walk. The current walk-to AfterFunc still fires; the next
-// phase transition will look up the current attribute fresh and pick
-// whoever is currently tagged.
-func (app *App) handleSetNPCBehavior(w http.ResponseWriter, r *http.Request) {
-	user := getUserFromContext(r.Context())
-	if user == nil || !user.hasRole("ROLE_SALEM_ADMIN") {
-		jsonError(w, "Admin role required", http.StatusForbidden)
-		return
-	}
-	id := r.PathValue("id")
-	if id == "" {
-		jsonError(w, "Missing NPC ID", http.StatusBadRequest)
-		return
-	}
-
-	var req struct {
-		Behavior *string `json:"behavior"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonError(w, "Invalid request body", http.StatusBadRequest)
-		return
-	}
-	// Normalize empty string to null so the client can send either.
-	if req.Behavior != nil {
-		trimmed := strings.TrimSpace(*req.Behavior)
-		if trimmed == "" {
-			req.Behavior = nil
-		} else {
-			req.Behavior = &trimmed
-		}
-	}
-
-	// Validate the attribute definition exists and is actor-scoped.
-	if req.Behavior != nil {
-		var scope string
-		err := app.DB.QueryRow(r.Context(),
-			`SELECT scope FROM attribute_definition WHERE slug = $1`,
-			*req.Behavior,
-		).Scan(&scope)
-		if err != nil {
-			jsonError(w, "Unknown behavior", http.StatusBadRequest)
-			return
-		}
-		if scope != "actor" && scope != "both" {
-			jsonError(w, "Attribute is not assignable to actors", http.StatusBadRequest)
-			return
-		}
-	}
-
-	// Confirm the NPC exists before mutating actor_attribute. Avoids
-	// silently succeeding on an unknown id (DELETE on no rows is a
-	// no-op, INSERT would fail on FK but only after the DELETE).
-	var exists bool
-	if err := app.DB.QueryRow(r.Context(),
-		`SELECT EXISTS(SELECT 1 FROM actor WHERE id = $1)`, id,
-	).Scan(&exists); err != nil {
-		jsonError(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-	if !exists {
-		jsonError(w, "NPC not found", http.StatusNotFound)
-		return
-	}
-
-	// Replace whatever attributes the actor has with the requested one
-	// (or clear all if Behavior is nil). Wrapped in a transaction so a
-	// concurrent reader doesn't see the brief no-attribute window.
-	tx, err := app.DB.Begin(r.Context())
-	if err != nil {
-		jsonError(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-	defer tx.Rollback(r.Context())
-
-	if _, err := tx.Exec(r.Context(),
-		`DELETE FROM actor_attribute WHERE actor_id = $1`, id,
-	); err != nil {
-		jsonError(w, "Failed to update behavior", http.StatusInternalServerError)
-		return
-	}
-	if req.Behavior != nil {
-		if _, err := tx.Exec(r.Context(),
-			`INSERT INTO actor_attribute (actor_id, slug) VALUES ($1, $2)`,
-			id, *req.Behavior,
-		); err != nil {
-			jsonError(w, "Failed to update behavior", http.StatusInternalServerError)
-			return
-		}
-	}
-	if err := tx.Commit(r.Context()); err != nil {
-		jsonError(w, "Internal server error", http.StatusInternalServerError)
-		return
-	}
-
-	w.WriteHeader(http.StatusNoContent)
-	app.Hub.Broadcast(WorldEvent{Type: "npc_behavior_changed", Data: map[string]interface{}{
-		"id":       id,
-		"behavior": req.Behavior,
-	}})
-}
-
 // handleAddNPCAttribute attaches a single attribute_definition slug to an
 // NPC's actor_attribute set. Admin only. Idempotent — re-adding the same
 // slug returns 204 with no error. Validates that the slug exists and is
@@ -671,11 +552,10 @@ func (app *App) handleSetNPCBehavior(w http.ResponseWriter, r *http.Request) {
 // the full post-update slug list so connected clients can update chip
 // state without a full NPC list refetch.
 //
-// This endpoint is the multi-attribute replacement for handleSetNPCBehavior.
-// The legacy /behavior endpoint stays alive (it still wipes and replaces)
-// for any client that hasn't switched yet, but the editor uses these
-// add/remove endpoints so admins can stack roles without losing attributes
-// like worker on every edit.
+// This is the multi-attribute endpoint set the editor uses (paired
+// with handleRemoveNPCAttribute). The legacy single-slot /behavior
+// endpoint was retired in ZBBS-113 alongside the actor.behavior
+// column and the npc_behavior allowlist table.
 func (app *App) handleAddNPCAttribute(w http.ResponseWriter, r *http.Request) {
 	user := getUserFromContext(r.Context())
 	if user == nil || !user.hasRole("ROLE_SALEM_ADMIN") {

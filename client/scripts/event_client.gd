@@ -168,9 +168,6 @@ func _handle_message(data: String) -> void:
             # same dictionary NPCs use; the renderer is identical.
             if world != null:
                 world.apply_pc_appeared(event_data)
-        "npc_behavior_changed":
-            if world != null:
-                world.apply_npc_behavior_change(event_data)
         "npc_attributes_changed":
             if world != null:
                 world.apply_npc_attributes_changed(event_data)

@@ -399,7 +399,6 @@ func main() {
 	authed("POST /api/village/npcs/{id}/walk-to", app.handleWalkTo)
 	authed("PATCH /api/village/npcs/{id}/display-name", app.handleSetNPCDisplayName)
 	authed("PATCH /api/village/npcs/{id}/sprite", app.handleSetNPCSprite)
-	authed("PATCH /api/village/npcs/{id}/behavior", app.handleSetNPCBehavior)
 	authed("POST /api/village/npcs/{id}/attributes", app.handleAddNPCAttribute)
 	authed("DELETE /api/village/npcs/{id}/attributes/{slug}", app.handleRemoveNPCAttribute)
 	authed("PATCH /api/village/npcs/{id}/agent", app.handleSetNPCAgent)
