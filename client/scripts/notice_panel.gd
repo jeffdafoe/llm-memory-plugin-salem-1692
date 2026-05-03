@@ -233,12 +233,13 @@ func _format_posted_at(iso: String) -> String:
 func _resize_sheet_for_viewport() -> void:
     if sheet == null:
         return
-    var vp_size := get_viewport().get_visible_rect().size
-    var max_h := vp_size.y * PANEL_MAX_HEIGHT_FRAC
-    if max_h < PANEL_MIN_HEIGHT:
-        max_h = PANEL_MIN_HEIGHT
     sheet.custom_minimum_size = Vector2(PANEL_WIDTH, PANEL_MIN_HEIGHT)
-    body_scroll.custom_minimum_size = Vector2(PANEL_WIDTH - 24, max_h - 90)
+    # Width hint only — height grows to fit body_label.fit_content. A
+    # short notice should look like a small placard, not a viewport-tall
+    # empty box. The server-side 4-line content-capacity cap on
+    # noticeboards keeps the natural max sane; if a future surface needs
+    # truly long content, reintroduce a height cap here.
+    body_scroll.custom_minimum_size = Vector2(PANEL_WIDTH - 24, 0)
 
 
 func _on_backdrop_input(event: InputEvent) -> void:
