@@ -182,6 +182,8 @@ func _on_catalog_ready() -> void:
     if world != null and editor_panel != null:
         if not world.object_tags_updated.is_connected(_on_object_tags_updated_from_world):
             world.object_tags_updated.connect(_on_object_tags_updated_from_world)
+        if not world.npc_attributes_changed.is_connected(_on_npc_attributes_changed_from_world):
+            world.npc_attributes_changed.connect(_on_npc_attributes_changed_from_world)
 
 func _on_object_tags_loaded() -> void:
     if editor_panel != null:
@@ -190,6 +192,10 @@ func _on_object_tags_loaded() -> void:
 func _on_object_tags_updated_from_world(object_id: String, tags: Array) -> void:
     if editor_panel != null:
         editor_panel.apply_object_tags_external(object_id, tags)
+
+func _on_npc_attributes_changed_from_world(npc_id: String, attributes: Array) -> void:
+    if editor_panel != null:
+        editor_panel.apply_npc_attributes_external(npc_id, attributes)
     # Loiter marker styling no longer depends on tags, but repaint anyway
     # so any future tag-driven decoration stays in sync.
     if editor != null and editor.selected_object != null:
@@ -328,7 +334,6 @@ func _build_ui() -> void:
     editor_panel.attachment_requested.connect(_on_attachment_requested)
     editor_panel.npc_sprite_selected.connect(_on_panel_npc_sprite_selected)
     editor_panel.npc_name_changed.connect(_on_npc_name_changed)
-    editor_panel.npc_behavior_changed.connect(_on_npc_behavior_changed)
     editor_panel.npc_agent_changed.connect(_on_npc_agent_changed)
     editor_panel.npc_home_structure_changed.connect(_on_npc_home_structure_changed)
     editor_panel.npc_work_structure_changed.connect(_on_npc_work_structure_changed)
@@ -481,10 +486,6 @@ func _on_display_name_changed(display_name: String, object_id: String) -> void:
 func _on_npc_name_changed(display_name: String) -> void:
     if editor.selected_npc != null:
         world.set_npc_display_name(editor.selected_npc, display_name)
-
-func _on_npc_behavior_changed(behavior: String) -> void:
-    if editor.selected_npc != null:
-        world.set_npc_behavior(editor.selected_npc, behavior)
 
 func _on_npc_agent_changed(agent: String) -> void:
     if editor.selected_npc != null:

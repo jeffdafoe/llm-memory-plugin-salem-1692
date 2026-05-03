@@ -517,6 +517,10 @@ var allowedObjectTags = map[string]bool{
 	"well":          true,
 	"outhouse":      true,
 	"inn":           true,
+	// summon_point marks a placement (loiter point, future bell, etc.)
+	// where a summoner walks to ring for a messenger. Not a chore
+	// destination, so deliberately omitted from categoryObjectTags.
+	"summon_point": true,
 }
 
 // categoryObjectTags is the subset of allowedObjectTags that mark a

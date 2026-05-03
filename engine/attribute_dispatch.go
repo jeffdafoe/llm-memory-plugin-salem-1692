@@ -43,6 +43,13 @@ type behaviorHandler func(ctx context.Context, app *App, npc *behaviorNPC, param
 var behaviorHandlers = map[string]behaviorHandler{
 	"lamp_route":     handleLampRoute,
 	"rotation_route": handleRotationRoute,
+	// "worker" is a discoverable marker for the worker scheduler
+	// (loadWorkerRows in npc_scheduler.go). The actual home/work walks
+	// are driven by the scheduler tick, not by the per-NPC behavior
+	// dispatcher — so this handler is a no-op. Registered here so the
+	// dispatcher doesn't log "unknown behavior type" when it iterates
+	// the behaviors of a tavernkeeper/blacksmith/herbalist/merchant.
+	"worker": handleWorkerNoop,
 }
 
 // findActorIDsWithAttribute returns every actor.id holding the given
@@ -159,4 +166,13 @@ func handleRotationRoute(ctx context.Context, app *App, npc *behaviorNPC, params
 		label = domainTag
 	}
 	return app.startRotationRouteForNPC(ctx, npc, domainTag, label)
+}
+
+// handleWorkerNoop is the per-NPC dispatcher entry for the worker
+// behavior marker. The worker scheduler tick (loadWorkerRows + the
+// home/work walk loop) is the actual driver — this handler exists only
+// so dispatchBehaviorForNPC doesn't log unknown-type warnings when it
+// iterates a tavernkeeper's or blacksmith's behaviors JSONB.
+func handleWorkerNoop(ctx context.Context, app *App, npc *behaviorNPC, params map[string]interface{}) (int, error) {
+	return 0, nil
 }

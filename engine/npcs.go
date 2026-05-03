@@ -62,7 +62,13 @@ type NPC struct {
 	CurrentX        float64    `json:"current_x"`
 	CurrentY        float64    `json:"current_y"`
 	Facing          string     `json:"facing"`
+	// Behavior is the alphabetically-first attribute slug, kept for
+	// backward compatibility with clients written against the legacy
+	// single-role UX. New clients should read Attributes instead.
 	Behavior        *string    `json:"behavior"`
+	// Attributes lists every actor_attribute slug for this NPC, sorted
+	// alphabetically. Empty array when the NPC has no attributes.
+	Attributes      []string   `json:"attributes"`
 	LLMMemoryAgent  *string    `json:"llm_memory_agent"`
 	HomeStructureID *string    `json:"home_structure_id"`
 	WorkStructureID *string    `json:"work_structure_id"`
@@ -238,6 +244,10 @@ func (app *App) handleListNPCs(w http.ResponseWriter, r *http.Request) {
 		        COALESCE(n.home_x, 0), COALESCE(n.home_y, 0),
 		        n.current_x, n.current_y, n.facing,
 		        (SELECT slug FROM actor_attribute WHERE actor_id = n.id ORDER BY slug LIMIT 1),
+		        COALESCE(
+		            (SELECT array_agg(slug ORDER BY slug) FROM actor_attribute WHERE actor_id = n.id),
+		            ARRAY[]::TEXT[]
+		        ),
 		        n.llm_memory_agent,
 		        n.home_structure_id, n.work_structure_id, n.inside, n.inside_structure_id,
 		        n.schedule_start_minute, n.schedule_end_minute,
@@ -261,7 +271,7 @@ func (app *App) handleListNPCs(w http.ResponseWriter, r *http.Request) {
 	for npcRows.Next() {
 		var n NPC
 		if err := npcRows.Scan(&n.ID, &n.DisplayName, &n.SpriteID,
-			&n.HomeX, &n.HomeY, &n.CurrentX, &n.CurrentY, &n.Facing, &n.Behavior, &n.LLMMemoryAgent,
+			&n.HomeX, &n.HomeY, &n.CurrentX, &n.CurrentY, &n.Facing, &n.Behavior, &n.Attributes, &n.LLMMemoryAgent,
 			&n.HomeStructureID, &n.WorkStructureID, &n.Inside, &n.InsideStructureID,
 			&n.ScheduleStartMinute, &n.ScheduleEndMinute,
 			&n.ScheduleIntervalHours,
@@ -651,6 +661,139 @@ func (app *App) handleSetNPCBehavior(w http.ResponseWriter, r *http.Request) {
 	app.Hub.Broadcast(WorldEvent{Type: "npc_behavior_changed", Data: map[string]interface{}{
 		"id":       id,
 		"behavior": req.Behavior,
+	}})
+}
+
+// handleAddNPCAttribute attaches a single attribute_definition slug to an
+// NPC's actor_attribute set. Admin only. Idempotent — re-adding the same
+// slug returns 204 with no error. Validates that the slug exists and is
+// actor-scoped before inserting. Broadcasts npc_attributes_changed with
+// the full post-update slug list so connected clients can update chip
+// state without a full NPC list refetch.
+//
+// This endpoint is the multi-attribute replacement for handleSetNPCBehavior.
+// The legacy /behavior endpoint stays alive (it still wipes and replaces)
+// for any client that hasn't switched yet, but the editor uses these
+// add/remove endpoints so admins can stack roles without losing attributes
+// like worker on every edit.
+func (app *App) handleAddNPCAttribute(w http.ResponseWriter, r *http.Request) {
+	user := getUserFromContext(r.Context())
+	if user == nil || !user.hasRole("ROLE_SALEM_ADMIN") {
+		jsonError(w, "Admin role required", http.StatusForbidden)
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		jsonError(w, "Missing NPC ID", http.StatusBadRequest)
+		return
+	}
+
+	var req struct {
+		Slug string `json:"slug"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	req.Slug = strings.TrimSpace(req.Slug)
+	if req.Slug == "" {
+		jsonError(w, "Missing slug", http.StatusBadRequest)
+		return
+	}
+
+	// Validate the attribute exists and is actor-scoped.
+	var scope string
+	err := app.DB.QueryRow(r.Context(),
+		`SELECT scope FROM attribute_definition WHERE slug = $1`, req.Slug,
+	).Scan(&scope)
+	if err != nil {
+		jsonError(w, "Unknown attribute", http.StatusBadRequest)
+		return
+	}
+	if scope != "actor" && scope != "both" {
+		jsonError(w, "Attribute is not assignable to actors", http.StatusBadRequest)
+		return
+	}
+
+	// Confirm the NPC exists. Same defensive check as /behavior.
+	var exists bool
+	if err := app.DB.QueryRow(r.Context(),
+		`SELECT EXISTS(SELECT 1 FROM actor WHERE id = $1)`, id,
+	).Scan(&exists); err != nil {
+		jsonError(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	if !exists {
+		jsonError(w, "NPC not found", http.StatusNotFound)
+		return
+	}
+
+	if _, err := app.DB.Exec(r.Context(),
+		`INSERT INTO actor_attribute (actor_id, slug) VALUES ($1, $2)
+		 ON CONFLICT (actor_id, slug) DO NOTHING`,
+		id, req.Slug,
+	); err != nil {
+		jsonError(w, "Failed to add attribute", http.StatusInternalServerError)
+		return
+	}
+
+	app.broadcastNPCAttributes(r.Context(), id)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleRemoveNPCAttribute detaches a single attribute slug from an NPC.
+// Admin only. Idempotent — removing a slug the NPC didn't have returns
+// 204 (no error). Broadcasts npc_attributes_changed afterward.
+func (app *App) handleRemoveNPCAttribute(w http.ResponseWriter, r *http.Request) {
+	user := getUserFromContext(r.Context())
+	if user == nil || !user.hasRole("ROLE_SALEM_ADMIN") {
+		jsonError(w, "Admin role required", http.StatusForbidden)
+		return
+	}
+	id := r.PathValue("id")
+	slug := strings.TrimSpace(r.PathValue("slug"))
+	if id == "" || slug == "" {
+		jsonError(w, "Missing NPC ID or slug", http.StatusBadRequest)
+		return
+	}
+
+	if _, err := app.DB.Exec(r.Context(),
+		`DELETE FROM actor_attribute WHERE actor_id = $1 AND slug = $2`,
+		id, slug,
+	); err != nil {
+		jsonError(w, "Failed to remove attribute", http.StatusInternalServerError)
+		return
+	}
+
+	app.broadcastNPCAttributes(r.Context(), id)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// broadcastNPCAttributes loads the current attribute slug set for an NPC
+// and emits npc_attributes_changed. Best-effort: a load failure logs but
+// doesn't fail the calling handler since the DB write already succeeded.
+func (app *App) broadcastNPCAttributes(ctx context.Context, actorID string) {
+	rows, err := app.DB.Query(ctx,
+		`SELECT slug FROM actor_attribute WHERE actor_id = $1 ORDER BY slug`,
+		actorID,
+	)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+
+	slugs := []string{}
+	for rows.Next() {
+		var s string
+		if err := rows.Scan(&s); err != nil {
+			continue
+		}
+		slugs = append(slugs, s)
+	}
+
+	app.Hub.Broadcast(WorldEvent{Type: "npc_attributes_changed", Data: map[string]interface{}{
+		"id":         actorID,
+		"attributes": slugs,
 	}})
 }
 

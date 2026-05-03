@@ -1719,6 +1719,38 @@ func add_object_tag(object_id: String, tag: String) -> void:
     var body: String = JSON.stringify({"tag": tag})
     http.request(url, headers, HTTPClient.METHOD_POST, body)
 
+## POST /api/village/npcs/{id}/attributes — add an attribute slug to the
+## NPC's actor_attribute set. The WS event npc_attributes_changed comes
+## back with the authoritative list and refreshes the editor panel chips
+## if this NPC is the current selection. Idempotent server-side.
+func add_npc_attribute(npc_id: String, slug: String) -> void:
+    var http = HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    http.request_completed.connect(func(_r, code, _h, _b):
+        http.queue_free()
+        if code >= 300:
+            push_error("Add npc attribute failed: " + str(code))
+    )
+    var headers: PackedStringArray = Auth.auth_headers()
+    var url: String = Auth.api_base + "/api/village/npcs/" + npc_id + "/attributes"
+    var body: String = JSON.stringify({"slug": slug})
+    http.request(url, headers, HTTPClient.METHOD_POST, body)
+
+## DELETE /api/village/npcs/{id}/attributes/{slug}.
+func remove_npc_attribute(npc_id: String, slug: String) -> void:
+    var http = HTTPRequest.new()
+    http.accept_gzip = false
+    add_child(http)
+    http.request_completed.connect(func(_r, code, _h, _b):
+        http.queue_free()
+        if code >= 300:
+            push_error("Remove npc attribute failed: " + str(code))
+    )
+    var headers: PackedStringArray = Auth.auth_headers(false)
+    var url: String = Auth.api_base + "/api/village/npcs/" + npc_id + "/attributes/" + slug
+    http.request(url, headers, HTTPClient.METHOD_DELETE)
+
 ## DELETE /api/village/objects/{id}/tags/{tag}.
 func remove_object_tag(object_id: String, tag: String) -> void:
     var http = HTTPRequest.new()
@@ -1866,6 +1898,22 @@ func apply_object_tags_updated(data: Dictionary) -> void:
     var node: Node2D = placed_objects[object_id]
     node.set_meta("tags", tags)
     object_tags_updated.emit(object_id, tags)
+
+## WS event — actor_attribute set changed (us or another admin). Patch
+## the NPC container's "attributes" meta and emit so the editor panel
+## refreshes its chips if this NPC is the current selection.
+signal npc_attributes_changed(npc_id: String, attributes: Array)
+
+func apply_npc_attributes_changed(data: Dictionary) -> void:
+    var npc_id: String = str(data.get("id", ""))
+    if npc_id == "":
+        return
+    var attrs_raw = data.get("attributes", [])
+    var attrs: Array = attrs_raw if attrs_raw is Array else []
+    if placed_npcs.has(npc_id):
+        var node: Node2D = placed_npcs[npc_id]
+        node.set_meta("attributes", attrs)
+    npc_attributes_changed.emit(npc_id, attrs)
 
 ## WS event — admin reset-needs (or the future well mechanic) changed
 ## an NPC's hunger/thirst/tiredness. Patch the container metas and emit
