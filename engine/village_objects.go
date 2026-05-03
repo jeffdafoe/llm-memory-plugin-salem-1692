@@ -233,9 +233,9 @@ func (app *App) shopStockLine(ctx context.Context, structureID, perceiverID stri
 		 FROM actor a
 		 JOIN actor_inventory ai ON ai.actor_id = a.id
 		 JOIN item_kind k ON k.name = ai.item_kind
-		 WHERE a.work_structure_id::text = $1
-		   AND a.inside_structure_id::text = $1
-		   AND a.id::text != $2
+		 WHERE a.work_structure_id = $1::uuid
+		   AND a.inside_structure_id = $1::uuid
+		   AND a.id != $2::uuid
 		 GROUP BY k.name, k.sort_order
 		 HAVING SUM(ai.quantity) > 0
 		 ORDER BY k.sort_order, k.name`,
@@ -278,10 +278,10 @@ func (app *App) shopStockLine(ctx context.Context, structureID, perceiverID stri
 func (app *App) unattendedWorkersLine(ctx context.Context, structureID, perceiverID string) string {
 	rows, err := app.DB.Query(ctx,
 		`SELECT display_name,
-		        (inside_structure_id IS NOT NULL AND inside_structure_id::text = $1) AS is_present
+		        (inside_structure_id IS NOT NULL AND inside_structure_id = $1::uuid) AS is_present
 		 FROM actor
-		 WHERE work_structure_id::text = $1
-		   AND id::text != $2
+		 WHERE work_structure_id = $1::uuid
+		   AND id != $2::uuid
 		 ORDER BY display_name`,
 		structureID, perceiverID)
 	if err != nil {

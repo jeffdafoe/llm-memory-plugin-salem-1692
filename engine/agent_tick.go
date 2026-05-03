@@ -88,6 +88,13 @@ type agentNPCRow struct {
 	Hunger    int
 	Thirst    int
 	Tiredness int
+
+	// LastServeResult captures the most recent successful serve
+	// dispatched via executeAgentCommit during this tick. The harness
+	// loop reads it to surface satiation notes ("Ezekiel is stuffed.")
+	// in the server's tool result. Cleared at the top of each serve
+	// dispatch and consumed once read — never carried across ticks.
+	LastServeResult *serveResult
 }
 
 // runAgentTick is the harness loop for one NPC. Stamps last_agent_tick_at
@@ -259,7 +266,17 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			// question reads as cold and unwelcoming.
 			result, errStr := app.executeAgentCommit(ctx, r, serveCall, sceneID)
 			if result == "ok" {
-				currentMessage = "[OK] You served. If a customer asked you something or is mid-conversation with you, speak to them now — answer the question, name the price, share a word. Then you may move or call done."
+				msg := "[OK] You served."
+				// Satiation notes for any recipient whose relevant
+				// need landed at 0. Real bartender-style awareness:
+				// "Ezekiel is stuffed" tells John he's done his job
+				// for that patron and another round would be wasted.
+				if notes := satiationNotes(r.LastServeResult); len(notes) > 0 {
+					msg += " " + strings.Join(notes, " ")
+				}
+				r.LastServeResult = nil
+				msg += " If a customer asked you something or is mid-conversation with you, speak to them now — answer the question, name the price, share a word. Then you may move or call done."
+				currentMessage = msg
 			} else {
 				currentMessage = fmt.Sprintf("[Serve %s] %s. Continue your turn — you may correct it, speak, move, or call done.", result, errStr)
 			}
@@ -1051,6 +1068,13 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 		))
 	}
 
+	// Need thresholds loaded early — used by both the visible-needs
+	// section below (for co-located others) and the body section further
+	// down (for the perceiver themselves). Three setting reads, cheap.
+	hungerT := app.loadNeedThreshold(ctx, "hunger_red_threshold", defaultHungerRedThreshold)
+	thirstT := app.loadNeedThreshold(ctx, "thirst_red_threshold", defaultThirstRedThreshold)
+	tiredT := app.loadNeedThreshold(ctx, "tiredness_red_threshold", defaultTirednessRedThreshold)
+
 	// 3. Right-now.
 	sections = append(sections, fmt.Sprintf(
 		"You are at %s. The time is %s.",
@@ -1081,6 +1105,22 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 		}
 	}
 
+	// 3.0c. Visible needs of co-located others. When the perceiver is
+	// inside a structure, surface red-tier-or-higher needs of other
+	// NPCs in the same room — "Ezekiel Crane looks hungry." — so a
+	// tavernkeeper, healer, or any character reading the room can act
+	// on what's plainly visible. Silent for actors at mild tier or
+	// below (their needs aren't outwardly obvious yet) and silent for
+	// the perceiver themselves (their own state is already in 3a).
+	// Threshold and same-structure scope are intentionally hardcoded
+	// for now; they'll move into per-attribute config when the
+	// attribute_definition table absorbs hunger/thirst/tiredness.
+	if r.InsideStructureID.Valid {
+		for _, line := range app.visibleNeedsLines(ctx, r.ID, r.InsideStructureID.String, hungerT, thirstT, tiredT) {
+			sections = append(sections, line)
+		}
+	}
+
 	// 3.1 Gatherable affordance — when the NPC is loitering at a source
 	// that produces an item (well → water; future orchards, fishing
 	// spots), surface it as an explicit prompt line. Without this hint
@@ -1096,11 +1136,8 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 	// when the value is below the awareness floor. Coins remain numeric —
 	// money is a thing you count, not a feeling. The whole sentence is
 	// omitted when no need is currently surfaced, keeping the perception
-	// quiet for a freshly-rested NPC. Thresholds read once per perception
-	// build to avoid three setting round-trips per agent tick.
-	hungerT := app.loadNeedThreshold(ctx, "hunger_red_threshold", defaultHungerRedThreshold)
-	thirstT := app.loadNeedThreshold(ctx, "thirst_red_threshold", defaultThirstRedThreshold)
-	tiredT := app.loadNeedThreshold(ctx, "tiredness_red_threshold", defaultTirednessRedThreshold)
+	// quiet for a freshly-rested NPC. Thresholds loaded earlier (above
+	// section 3) so the visible-needs section can reuse them.
 	bodyParts := []string{}
 	pressing := []string{}
 	if l := needLabel("hunger", r.Hunger, hungerT); l != "" {
@@ -1939,6 +1976,10 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 				recipientNames = []string{s}
 			}
 		}
+		// Clear up front so a prior successful serve in this tick can't
+		// leak into a later serve's tool-result message via the stash —
+		// matches the comment on agentNPCRow.LastServeResult.
+		r.LastServeResult = nil
 		sr := app.executeServe(ctx, r, serveRequest{
 			RecipientNames: recipientNames,
 			Item:           item,
@@ -1947,6 +1988,14 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		})
 		result = sr.Result
 		errStr = sr.Err
+		// Stash for the harness so the [OK] You served message can
+		// suffix satiation notes ("Ezekiel is stuffed.") for any
+		// recipient whose relevant need landed at 0. Consumed once
+		// read.
+		if result == "ok" {
+			srCopy := sr
+			r.LastServeResult = &srCopy
+		}
 		// Room narration: serve is the canonical "tavernkeeper hands
 		// food/drink to a customer" verb. Without this broadcast a PC
 		// who's served sees nothing in the talk panel — the model's

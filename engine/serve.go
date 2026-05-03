@@ -52,13 +52,20 @@ type serveResult struct {
 	// item_kind that moved (server's stock decremented). Empty on
 	// rejected / failed.
 	Item string
+	// satisfies_attribute of Item, when applicable ("hunger", "thirst",
+	// "tiredness"). Empty for raw materials or take-home serves.
+	// Plumbed back so the harness can decide whether a recipient hit
+	// satiation (post-consume value == 0 for this attribute) without
+	// re-querying item_kind.
+	ItemAttribute string
 }
 
 type serveNeedUpdate struct {
-	ActorID   string
-	Hunger    int
-	Thirst    int
-	Tiredness int
+	ActorID     string
+	DisplayName string
+	Hunger      int
+	Thirst      int
+	Tiredness   int
 }
 
 // serveRequest groups the serve arguments. recipientNames are the
@@ -251,10 +258,11 @@ func (app *App) executeServe(ctx context.Context, server *agentNPCRow, req serve
 					return serveResult{Result: "failed", Err: fmt.Sprintf("apply consumption for %s: %v", rcp.DisplayName, err)}
 				}
 				needUpdates = append(needUpdates, serveNeedUpdate{
-					ActorID:   rcp.ID,
-					Hunger:    res.Hunger,
-					Thirst:    res.Thirst,
-					Tiredness: res.Tiredness,
+					ActorID:     rcp.ID,
+					DisplayName: rcp.DisplayName,
+					Hunger:      res.Hunger,
+					Thirst:      res.Thirst,
+					Tiredness:   res.Tiredness,
 				})
 				summaries = append(summaries, fmt.Sprintf("%s ate/drank %d %s", rcp.DisplayName, qty, itemKind))
 			} else {
@@ -330,10 +338,66 @@ func (app *App) executeServe(ctx context.Context, server *agentNPCRow, req serve
 	return serveResult{
 		Result:               "ok",
 		Item:                 itemKind,
+		ItemAttribute:        nullableString(itemSatisfiesAttr),
 		Summaries:            summaries,
 		NeedUpdates:          needUpdates,
 		TakeHomeRecipientIDs: takeHomeIDs,
 	}
+}
+
+// nullableString unwraps sql.NullString. Returns "" when not valid.
+// Local convenience — avoids `if v.Valid { ... } else { "" }` clutter
+// at call sites.
+func nullableString(s sql.NullString) string {
+	if s.Valid {
+		return s.String
+	}
+	return ""
+}
+
+// satiationSentence renders the natural-language note shown to the
+// server when a recipient's relevant need landed at 0 after a serve.
+// Maps the attribute to a register-appropriate phrasing.
+func satiationSentence(name, attr string) string {
+	switch attr {
+	case "hunger":
+		return fmt.Sprintf("%s is stuffed.", name)
+	case "thirst":
+		return fmt.Sprintf("%s's thirst is slaked.", name)
+	case "tiredness":
+		return fmt.Sprintf("%s feels well-rested.", name)
+	}
+	return ""
+}
+
+// satiationNotes builds satiation sentences from a serveResult,
+// inspecting each recipient's post-consume value of the served item's
+// attribute. Take-home serves (no NeedUpdates) and serves of raw
+// materials (no ItemAttribute) produce no notes.
+func satiationNotes(sr *serveResult) []string {
+	if sr == nil || sr.ItemAttribute == "" {
+		return nil
+	}
+	var notes []string
+	for _, u := range sr.NeedUpdates {
+		var v int
+		switch sr.ItemAttribute {
+		case "hunger":
+			v = u.Hunger
+		case "thirst":
+			v = u.Thirst
+		case "tiredness":
+			v = u.Tiredness
+		default:
+			continue
+		}
+		if v == 0 {
+			if note := satiationSentence(u.DisplayName, sr.ItemAttribute); note != "" {
+				notes = append(notes, note)
+			}
+		}
+	}
+	return notes
 }
 
 // serveRecipient is the resolved actor row used during a serve. ID is
