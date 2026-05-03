@@ -860,7 +860,8 @@ func _input(event: InputEvent) -> void:
     if not _resize_dragging:
         return
     if event is InputEventMouseMotion:
-        var delta := event.global_position - _resize_start_mouse
+        var motion := event as InputEventMouseMotion
+        var delta: Vector2 = motion.global_position - _resize_start_mouse
         # Top-left grip: drag up-left (negative delta) grows the panel.
         var new_w: float = _resize_start_size.x - delta.x
         var new_h: float = _resize_start_size.y - delta.y
