@@ -19,6 +19,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -1240,6 +1241,33 @@ func (app *App) loadSetting(ctx context.Context, key, fallback string) string {
 		return fallback
 	}
 	return v.String
+}
+
+// loadIntRange reads a setting whose value is a JSON 2-element int
+// array (e.g. "[30,60]") and returns (min, max). Falls back to the
+// provided defaults on missing row, parse error, wrong length, or any
+// other shape mismatch — never panics, never returns partials.
+//
+// Storage is JSON so the (eventual) settings UI can extend the shape
+// later without a migration churn (range with a step, range with
+// labels, etc.). The same UI is expected to surface the friendlier
+// "30,60" form for input and translate to JSON on save; the engine
+// only ever reads the JSON form.
+func (app *App) loadIntRange(ctx context.Context, key string, defaultMin, defaultMax int) (int, int) {
+	v := app.loadSetting(ctx, key, "")
+	if v == "" {
+		return defaultMin, defaultMax
+	}
+	var arr []int
+	if err := json.Unmarshal([]byte(v), &arr); err != nil {
+		log.Printf("loadIntRange %s: parse %q: %v", key, v, err)
+		return defaultMin, defaultMax
+	}
+	if len(arr) != 2 {
+		log.Printf("loadIntRange %s: expected 2 elements, got %d", key, len(arr))
+		return defaultMin, defaultMax
+	}
+	return arr[0], arr[1]
 }
 
 // loadChroniclerLastPhaseFiredAt returns the timestamp of the most

@@ -186,22 +186,46 @@ func returnToWorkPerceptionLine(workLabel string) string {
 	return "Your shift at " + workLabel + " continues. You should excuse yourself and return."
 }
 
-// returnToWorkSelfTickJitter is the wall-clock window between scheduling
-// and firing. 30s floor gives the conversation a beat to land before the
-// NPC re-decides; 60s ceiling keeps the rhythm from dragging. Centralized
-// here so we can tune it from one place if pacing feels off in the
-// wild.
+// Defaults for the return_to_work_delay_seconds setting (ZBBS-111).
+// 30s floor gives the conversation a beat to land before the NPC
+// re-decides; 60s ceiling keeps the rhythm from dragging. Operators
+// override at runtime by writing a JSON int array to the setting key
+// (e.g. '[45,90]'). The (eventual) settings UI will surface a
+// "min,max" input that translates to the JSON shape on save.
 const (
-	returnToWorkMinDelay = 30 * time.Second
-	returnToWorkMaxDelay = 60 * time.Second
+	defaultReturnToWorkMinDelaySeconds = 30
+	defaultReturnToWorkMaxDelaySeconds = 60
 )
+
+// returnToWorkMaxReasonableSeconds caps the configured maximum so a
+// fat-fingered setting can't push the next tick past a reasonable
+// human conversation beat. 1 hour is conservatively wide — a real
+// "give me a beat" delay should be tens of seconds. Anything beyond
+// this triggers the defaults-fallback path with a log line.
+const returnToWorkMaxReasonableSeconds = 3600
 
 // scheduleReturnToWorkFollowup schedules a self-tick at now + jittered
 // delay so the LLM gets another turn after the conversation has had a
 // beat to breathe. Caller already verified the nudge condition is still
-// true post-commit.
+// true post-commit. Range comes from the return_to_work_delay_seconds
+// setting; defaults applied when the setting row is missing, malformed,
+// negative, max < min, or beyond the reasonable upper bound — anything
+// that would produce an immediate-tick storm or a multi-hour silence.
 func (app *App) scheduleReturnToWorkFollowup(ctx context.Context, npcID string) {
-	delay := returnToWorkMinDelay + time.Duration(rand.Int63n(int64(returnToWorkMaxDelay-returnToWorkMinDelay)))
+	minSec, maxSec := app.loadIntRange(ctx, "return_to_work_delay_seconds",
+		defaultReturnToWorkMinDelaySeconds, defaultReturnToWorkMaxDelaySeconds)
+	if minSec < 0 || maxSec < 0 || maxSec < minSec || maxSec > returnToWorkMaxReasonableSeconds {
+		log.Printf("scheduleReturnToWorkFollowup: invalid range [%d,%d] (negatives, max<min, or >%ds), using defaults",
+			minSec, maxSec, returnToWorkMaxReasonableSeconds)
+		minSec = defaultReturnToWorkMinDelaySeconds
+		maxSec = defaultReturnToWorkMaxDelaySeconds
+	}
+	minDelay := time.Duration(minSec) * time.Second
+	maxDelay := time.Duration(maxSec) * time.Second
+	delay := minDelay
+	if maxDelay > minDelay {
+		delay += time.Duration(rand.Int63n(int64(maxDelay - minDelay)))
+	}
 	app.scheduleSelfTick(ctx, npcID, time.Now().Add(delay), "return_to_work")
 }
 

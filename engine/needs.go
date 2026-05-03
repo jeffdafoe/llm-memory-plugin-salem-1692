@@ -322,6 +322,81 @@ func needLabelTier(value, threshold int) int {
 	return 1
 }
 
+// visibleNeedsLines returns one perception line per co-located NPC
+// whose hunger/thirst/tiredness is at red tier or above. Each line
+// names the actor and joins their visible needs in a single sentence.
+//
+// "Co-located" = same `inside_structure_id` as the perceiver. Visitors
+// loitering at the structure's door (visitor mode, inside_structure_id
+// NULL) are intentionally not surfaced — they're outside the room.
+//
+// PCs (login_username set, llm_memory_agent NULL) are filtered out;
+// their needs aren't a sim concept today. Decoratives are filtered for
+// the same reason.
+//
+// Threshold is hardcoded at tier ≥ 2 to match the perceiver's own
+// "Address now" cutoff. Mild-tier needs stay private. When
+// hunger/thirst/tiredness move into attribute_definition rows, both the
+// threshold and the visibility scope will become per-attribute config.
+//
+// Format examples:
+//   "Ezekiel Crane looks hungry."
+//   "Ezekiel Crane looks hungry and weary."
+//   "Ezekiel Crane looks starving, parched, and exhausted."
+func (app *App) visibleNeedsLines(ctx context.Context, perceiverID, structureID string, hungerT, thirstT, tiredT int) []string {
+	rows, err := app.DB.Query(ctx,
+		`SELECT display_name, hunger, thirst, tiredness
+		 FROM actor
+		 WHERE inside_structure_id = $1::uuid
+		   AND id != $2::uuid
+		   AND llm_memory_agent IS NOT NULL
+		 ORDER BY display_name`,
+		structureID, perceiverID)
+	if err != nil {
+		log.Printf("visibleNeedsLines: query structure %s: %v", structureID, err)
+		return nil
+	}
+	defer rows.Close()
+
+	var lines []string
+	for rows.Next() {
+		var name string
+		var h, t, ti int
+		if err := rows.Scan(&name, &h, &t, &ti); err != nil {
+			log.Printf("visibleNeedsLines: scan: %v", err)
+			return nil
+		}
+		var visible []string
+		if needLabelTier(h, hungerT) >= 2 {
+			visible = append(visible, needLabel("hunger", h, hungerT))
+		}
+		if needLabelTier(t, thirstT) >= 2 {
+			visible = append(visible, needLabel("thirst", t, thirstT))
+		}
+		if needLabelTier(ti, tiredT) >= 2 {
+			visible = append(visible, needLabel("tiredness", ti, tiredT))
+		}
+		if len(visible) == 0 {
+			continue
+		}
+		var joined string
+		switch len(visible) {
+		case 1:
+			joined = visible[0]
+		case 2:
+			joined = visible[0] + " and " + visible[1]
+		default:
+			joined = strings.Join(visible[:len(visible)-1], ", ") + ", and " + visible[len(visible)-1]
+		}
+		lines = append(lines, fmt.Sprintf("%s looks %s.", name, joined))
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("visibleNeedsLines: iterate structure %s: %v", structureID, err)
+		return nil
+	}
+	return lines
+}
+
 // snapshotNeeds reads the actor's current hunger/thirst/tiredness as a
 // pre-action snapshot. Returns zeros on error — the caller's readback
 // path treats "no change" as silent, so a failed read produces an empty
