@@ -10,6 +10,7 @@ const NPCSpritePickerScript = preload("res://scripts/npc_sprite_picker.gd")
 const ObjectTooltipScript = preload("res://scripts/object_tooltip.gd")
 const EventClientScript = preload("res://scripts/event_client.gd")
 const TalkPanelScript = preload("res://scripts/talk_panel.gd")
+const NoticePanelScript = preload("res://scripts/notice_panel.gd")
 const VillageTickerScript = preload("res://scripts/village_ticker.gd")
 
 @onready var world: Node2D = $World
@@ -25,6 +26,7 @@ var npc_sprite_picker: Control = null
 var object_tooltip: CanvasLayer = null
 var event_client: Node = null
 var talk_panel_layer: CanvasLayer = null
+var notice_panel_layer: CanvasLayer = null
 var village_ticker: PanelContainer = null
 
 # Login screen (added as a CanvasLayer so it renders on top of everything)
@@ -37,8 +39,36 @@ var login_layer: CanvasLayer = null
 # _pc_bootstrap_done flips after the first /pc/me lands.
 var _pc_bootstrap_done: bool = false
 var _pc_exists: bool = false
+# PC's actor.id from /pc/me — used to recognize the player's own PC in
+# WS broadcasts like npc_arrived. Empty until the first /pc/me response.
+var _pc_actor_id: String = ""
 var _pc_http_me: HTTPRequest = null
 var _pc_http_save: HTTPRequest = null
+
+# Walk-then-read state (ZBBS-112). Click on a noticeboard sets this to
+# the placement id; on PC arrival we open the notice panel if the id
+# matches. Cleared when the player clicks elsewhere or dismisses the
+# panel — a subsequent walk-to-noticeboard arrival isn't auto-opened
+# unless they specifically clicked it again.
+var _pending_notice_object_id: String = ""
+
+# Discriminator for the in-flight /pc/move so the shared completion
+# handler can decide which side-effects to roll back on a non-2xx.
+# Today only "noticeboard" needs explicit cleanup (clear the pending
+# flag); knock-narration / huddle-join paths self-recover on the
+# next /pc/me poll. Empty when no /pc/move is in flight or the most
+# recent one was a non-noticeboard click.
+var _pc_move_purpose: String = ""
+
+# Modal blocker set. Multiple panels (notice, talk pay-modal, config,
+# asset popup, sprite picker) all set camera.modal_open while they're
+# up. A raw bool toggle would race — closing one would release the
+# world-input lock while another is still open. Track open modals by
+# name and OR them together: camera.modal_open is true iff any blocker
+# is registered. Every modal owner calls _set_modal_blocker(name, true)
+# on open and (name, false) on close — this is the universal mechanism;
+# direct `camera.modal_open = bool` assignments are not used anywhere.
+var _modal_blockers: Dictionary = {}
 
 # Click-to-walk state. Camera owns left-click pan in play mode, so the
 # walk handler can't simply consume the press — it would steal the pan
@@ -118,9 +148,15 @@ func _on_authenticated() -> void:
         event_client.set_script(EventClientScript)
         add_child(event_client)
         event_client.reconnected.connect(_on_ws_reconnected)
+        event_client.npc_arrived.connect(_on_event_npc_arrived)
     event_client.world = world
     world.event_client = event_client
     event_client.connect_to_server()
+
+    # Notice panel hooks into world.object_content_changed for live
+    # refresh — wire here, after world is reachable. Idempotent.
+    if notice_panel_layer != null and notice_panel_layer.has_method("attach_world"):
+        notice_panel_layer.attach_world(world)
 
     # Recover terrain edits that didn't make it to the server (e.g. paints
     # done after a silent session expiry). If there's nothing buffered,
@@ -225,7 +261,7 @@ func _build_ui() -> void:
     config_panel.set_script(ConfigPanelScript)
     config_layer.add_child(config_panel)
     config_panel.visible = false
-    config_panel.closed.connect(func(): camera.modal_open = false)
+    config_panel.closed.connect(func(): _set_modal_blocker("config", false))
 
     # Editor side panel — also on the editor CanvasLayer, hidden by default
     editor_panel = PanelContainer.new()
@@ -246,7 +282,7 @@ func _build_ui() -> void:
     asset_popup.visible = false
     asset_popup.place_requested.connect(_on_popup_place_requested)
     asset_popup.closed.connect(func():
-        camera.modal_open = false
+        _set_modal_blocker("asset_popup", false)
         editor.popup_open = false
     )
 
@@ -262,7 +298,7 @@ func _build_ui() -> void:
     npc_sprite_picker.sprite_selected.connect(_on_npc_sprite_picker_selected)
     npc_sprite_picker.pc_sprite_selected.connect(_on_pc_sprite_picker_selected)
     npc_sprite_picker.closed.connect(func():
-        camera.modal_open = false
+        _set_modal_blocker("sprite_picker", false)
         editor.popup_open = false
     )
 
@@ -292,12 +328,11 @@ func _build_ui() -> void:
     # them. Decoupled so neither side knows the other's node path.
     if talk_panel_layer.has_signal("purse_changed") and top_bar != null:
         talk_panel_layer.purse_changed.connect(_on_pc_purse_changed)
-    # Pay modal blocks world input — same camera.modal_open mechanism
-    # the config panel uses. Without this, a click on the Confirm
-    # button propagates into the world's PC-walk handler and the
-    # character starts walking under the open modal.
+    # Pay modal blocks world input. Without this, a click on the
+    # Confirm button propagates into the world's PC-walk handler and
+    # the character starts walking under the open modal.
     if talk_panel_layer.has_signal("modal_open_changed") and camera != null:
-        talk_panel_layer.modal_open_changed.connect(func(open: bool): camera.modal_open = open)
+        talk_panel_layer.modal_open_changed.connect(func(open: bool): _set_modal_blocker("talk_pay", open))
 
     # Register the talk panel's sheet (the actual rounded-rect chat
     # surface, not the full-screen anchor) so wheel-scroll over the
@@ -309,6 +344,19 @@ func _build_ui() -> void:
         var sheet: Control = talk_panel_layer.get_input_eating_control()
         if sheet != null:
             camera.register_ui_panel(sheet)
+
+    # Notice panel (ZBBS-112) — modal for reading noticeboard content
+    # after the PC walks up to one. Layer = 4: above editor (1) and
+    # talk panel (3), below config (5) and login (10). attach_world
+    # is deferred until the World node is reachable in
+    # _on_authenticated, since main.gd builds UI before the world is
+    # populated.
+    notice_panel_layer = CanvasLayer.new()
+    notice_panel_layer.name = "NoticePanelLayer"
+    notice_panel_layer.set_script(NoticePanelScript)
+    add_child(notice_panel_layer)
+    notice_panel_layer.opened.connect(func(): _set_modal_blocker("notice", true))
+    notice_panel_layer.closed.connect(func(): _set_modal_blocker("notice", false))
 
     # Village ticker — thin marquee band below the top bar, scrolling
     # chronicler atmosphere prose. Lives on the editor CanvasLayer
@@ -370,7 +418,7 @@ func _build_ui() -> void:
 func _on_config_pressed() -> void:
     if config_panel != null:
         config_panel.visible = not config_panel.visible
-        camera.modal_open = config_panel.visible
+        _set_modal_blocker("config", config_panel.visible)
 
 # Click on the village ticker → open the talk panel to its Village tab.
 # Bypasses the room-huddle gate the talk_launcher uses since the Village
@@ -444,11 +492,11 @@ func _show_login_screen(message: String) -> void:
 func _on_asset_inspect_requested(asset_id: String) -> void:
     if asset_popup != null:
         asset_popup.show_asset(asset_id)
-        camera.modal_open = true
+        _set_modal_blocker("asset_popup", true)
         editor.popup_open = true
 
 func _on_popup_place_requested(asset_id: String) -> void:
-    camera.modal_open = false
+    _set_modal_blocker("asset_popup", false)
     editor.popup_open = false
     editor.select_asset_for_placement(asset_id)
 
@@ -652,7 +700,7 @@ func _on_npc_sprite_change_requested(npc_id: String, current_sprite_id: String) 
     if npc_sprite_picker == null:
         return
     npc_sprite_picker.show_for_npc(npc_id, current_sprite_id)
-    camera.modal_open = true
+    _set_modal_blocker("sprite_picker", true)
     editor.popup_open = true
 
 ## Picker emitted a selection. PATCH the NPC's sprite_id and let the WS
@@ -703,6 +751,10 @@ func _on_pc_me_completed(result: int, code: int, _headers: PackedStringArray, bo
     if typeof(data) != TYPE_DICTIONARY:
         return
     _pc_exists = bool(data.get("exists", false))
+    # Cache actor_id so npc_arrived broadcasts can be matched to "this is
+    # the player's PC arriving." Engine populates it once the PC actor row
+    # exists; empty before /pc/create completes.
+    _pc_actor_id = str(data.get("actor_id", ""))
     var current_sprite_id := str(data.get("sprite_id", ""))
     if current_sprite_id != "":
         # PC already has a sprite — nothing to bootstrap. They'll see
@@ -716,7 +768,7 @@ func _on_pc_me_completed(result: int, code: int, _headers: PackedStringArray, bo
         # a defensive guard rather than an expected branch.
         return
     npc_sprite_picker.show_for_pc(current_sprite_id)
-    camera.modal_open = true
+    _set_modal_blocker("sprite_picker", true)
     editor.popup_open = true
 
 ## PC mode picker emitted a selection. Branch on _pc_exists:
@@ -834,7 +886,16 @@ func _post_pc_move_to_screen(screen_pos: Vector2) -> void:
         _pc_http_move.request_completed.connect(func(_r, c, _h, b):
             Auth.check_response(c)
             if c < 200 or c >= 300:
+                # Server rejected the move. Roll back any side-effects
+                # the in-flight click set up — today the only one is the
+                # ZBBS-112 pending-notice flag. Without this, a 4xx/5xx
+                # leaves the flag armed and the next unrelated PC arrival
+                # opens the panel for a stale board.
+                if _pc_move_purpose == "noticeboard":
+                    _pending_notice_object_id = ""
+                _pc_move_purpose = ""
                 return
+            _pc_move_purpose = ""
             # Knock outcome (ZBBS-101): the server resolved the structure
             # click as a knock and either (a) joined the PC into a service
             # huddle with the vendor inside, or (b) reported the structure
@@ -864,8 +925,26 @@ func _post_pc_move_to_screen(screen_pos: Vector2) -> void:
     var headers := Auth.auth_headers()
     var hit: Dictionary = world.find_object_at(screen_pos)
     var payload: String
-    if hit.has("id") and str(hit.get("id", "")) != "":
-        payload = JSON.stringify({"target_structure_id": str(hit["id"])})
+    var hit_id: String = str(hit.get("id", "")) if hit.has("id") else ""
+
+    # Walk-then-read state machine (ZBBS-112). Any new walk closes a
+    # currently-open notice panel — clicking elsewhere mid-read IS the
+    # dismiss. A click on a placement tagged `noticeboard_content` with
+    # content posted arms a pending-read flag; the npc_arrived handler
+    # opens the panel when the PC lands at the loiter slot. The pending
+    # flag is repopulated even when re-clicking the same board so a
+    # walk-back-to-the-same-board still re-opens the panel.
+    if notice_panel_layer != null and notice_panel_layer.has_method("close"):
+        notice_panel_layer.close()
+    if hit_id != "" and _is_readable_noticeboard(hit_id):
+        _pending_notice_object_id = hit_id
+        _pc_move_purpose = "noticeboard"
+    else:
+        _pending_notice_object_id = ""
+        _pc_move_purpose = ""
+
+    if hit_id != "":
+        payload = JSON.stringify({"target_structure_id": hit_id})
     else:
         var world_pos: Vector2 = world.get_global_mouse_position()
         payload = JSON.stringify({
@@ -875,7 +954,77 @@ func _post_pc_move_to_screen(screen_pos: Vector2) -> void:
     var err := _pc_http_move.request(Auth.api_base + "/api/village/pc/move",
         headers, HTTPClient.METHOD_POST, payload)
     if err != OK:
+        # Local request failure — never reached the server. Clear the
+        # pending notice flag and the purpose discriminator so a later
+        # unrelated arrival or completion can't act on this aborted walk.
+        _pending_notice_object_id = ""
+        _pc_move_purpose = ""
         push_warning("PC move request failed: %s" % err)
+
+## Modal blocker helper — flips camera.modal_open based on the OR of
+## currently-open modals. Every modal (config, asset popup, sprite
+## picker, talk panel pay modal, notice panel) calls this on open and
+## close so concurrent modals (e.g. talk pay modal + notice panel)
+## don't release the world-input lock for each other. World input
+## stays locked while any blocker is registered.
+func _set_modal_blocker(blocker_name: String, enabled: bool) -> void:
+    if camera == null:
+        return
+    if enabled:
+        _modal_blockers[blocker_name] = true
+    else:
+        _modal_blockers.erase(blocker_name)
+    camera.modal_open = not _modal_blockers.is_empty()
+
+## Returns true when `object_id` is a placed object the PC can read —
+## carries the `noticeboard_content` instance tag AND has content posted
+## right now. A tagged board with null content (cycled to empty by the
+## crier) walks-up cleanly but doesn't auto-open the panel — there's
+## nothing to read yet.
+func _is_readable_noticeboard(object_id: String) -> bool:
+    if world == null or not world.placed_objects.has(object_id):
+        return false
+    var node: Node2D = world.placed_objects[object_id]
+    if node == null:
+        return false
+    var tags: Array = node.get_meta("tags", [])
+    if not (tags is Array) or not tags.has("noticeboard_content"):
+        return false
+    var content = node.get_meta("content_text", null)
+    return content != null and str(content) != ""
+
+## event_client emits npc_arrived after every walk completion (NPC or
+## PC). When it's the player's own PC arriving AND a notice read is
+## pending for an object whose content is still readable, open the
+## panel. Stale content (board cleared between dispatch and arrival)
+## closes the pending state silently — no panel pops on a bare board.
+func _on_event_npc_arrived(npc_id: String, _x: float, _y: float, _facing: String) -> void:
+    if _pending_notice_object_id == "":
+        return
+    if _pc_actor_id == "" or npc_id != _pc_actor_id:
+        return
+    var target_id: String = _pending_notice_object_id
+    _pending_notice_object_id = ""
+    # Defensive: the 2xx response handler already clears _pc_move_purpose
+    # on success, but clearing here too means the discriminator is reset
+    # at the actual end of the walk lifecycle. Belt-and-suspenders against
+    # a future refactor that drops the 2xx-side clear.
+    _pc_move_purpose = ""
+    if world == null or not world.placed_objects.has(target_id):
+        return
+    var node: Node2D = world.placed_objects[target_id]
+    if node == null:
+        return
+    var tags: Array = node.get_meta("tags", [])
+    if not (tags is Array) or not tags.has("noticeboard_content"):
+        return
+    var content = node.get_meta("content_text", null)
+    if content == null or str(content) == "":
+        return
+    var display_name: String = str(node.get_meta("display_name", ""))
+    var posted_at = node.get_meta("content_posted_at", null)
+    if notice_panel_layer != null and notice_panel_layer.has_method("show_for_object"):
+        notice_panel_layer.show_for_object(target_id, display_name, content, posted_at)
 
 func _on_npc_go_home_requested() -> void:
     _post_npc_action("go-home")
