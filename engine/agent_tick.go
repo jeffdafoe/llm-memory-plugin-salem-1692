@@ -872,6 +872,15 @@ func isCommitTool(name string) bool {
 // observation tool that wants it without a re-query.
 func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourStart time.Time, dawnMin, duskMin int) (string, string) {
 	locationName := "the open village"
+	// loiteringAtID is the structure the NPC is parked at via a visitor
+	// move (move_to a non-owned target, chore destination, loiter
+	// relocate). Visitor moves keep inside_structure_id NULL by design;
+	// the perception used to call the NPC's location "the open village"
+	// even when standing on a shop's loiter slot. resolveLoiteringStructure
+	// reverses pickVisitorSlot so we can name the building the player
+	// sees on screen, and below we use it to surface unattended-shop
+	// signals when the proprietor isn't present.
+	loiteringAtID := ""
 	if r.InsideStructureID.Valid {
 		var name sql.NullString
 		_ = app.DB.QueryRow(ctx,
@@ -882,6 +891,9 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 		if name.Valid && name.String != "" {
 			locationName = name.String
 		}
+	} else if id, name := app.resolveLoiteringStructure(ctx, r.CurrentX, r.CurrentY); id != "" {
+		locationName = name
+		loiteringAtID = id
 	}
 
 	homeLabel := ""
@@ -1024,6 +1036,20 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 		"You are at %s. The time is %s.",
 		locationName, hourStart.Format("Monday 15:04"),
 	))
+
+	// 3.0a Unattended-structure signal. When the NPC is loitering at a
+	// structure (visitor move, no huddle), surface whether the assigned
+	// workers are absent. Without this, an NPC arrives at a closed-feeling
+	// shop with no signal that "Josiah isn't here" — they just see the
+	// generic location and re-decide blindly. The line names the missing
+	// proprietors so the LLM can plausibly ask others or pick a substitute
+	// destination on purpose. Silent when ≥1 worker is present, when the
+	// structure has no workers, or when the perceiver is the only worker.
+	if loiteringAtID != "" {
+		if line := app.unattendedWorkersLine(ctx, loiteringAtID, r.ID); line != "" {
+			sections = append(sections, line)
+		}
+	}
 
 	// 3.1 Gatherable affordance — when the NPC is loitering at a source
 	// that produces an item (well → water; future orchards, fishing

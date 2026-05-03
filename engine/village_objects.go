@@ -4,11 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"hash/fnv"
 	"log"
 	"math"
 	"math/rand"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -156,6 +158,123 @@ func (app *App) pickVisitorSlot(ctx context.Context, npcID string, anchorX, anch
 
 func tileCenterPx(tile int) float64 {
 	return float64(tile)*32.0 + 16.0
+}
+
+// resolveLoiteringStructure returns (structureID, displayName) for the
+// structure whose effective loiter pin sits within Chebyshev distance 1
+// of the actor's tile — i.e. the actor is standing on the pin tile or
+// any of its 8 king's-move slots. This is the inverse of pickVisitorSlot:
+// given the slot the actor occupies, identify which loiter pin owns it.
+//
+// Returns ("", "") when no named structure matches. Used by perception
+// build to give the LLM an accurate "You are at <X>" line for visitor
+// moves, where inside_structure_id stays NULL but the NPC is visibly
+// parked at a building.
+//
+// Filters by display_name IS NOT NULL so decorative placements (ground
+// tiles, scatter assets) don't reverse-resolve as structures. The pin
+// formula matches effectiveLoiterTile exactly — keep them in sync.
+func (app *App) resolveLoiteringStructure(ctx context.Context, actorX, actorY float64) (string, string) {
+	const tileSize = 32.0
+	actorTileX := int(math.Floor(actorX / tileSize))
+	actorTileY := int(math.Floor(actorY / tileSize))
+
+	row := app.DB.QueryRow(ctx,
+		`SELECT id, display_name
+		 FROM (
+		     SELECT o.id::text AS id,
+		            COALESCE(o.display_name, a.name) AS display_name,
+		            GREATEST(
+		                ABS(FLOOR(o.x / 32.0)::int +
+		                    CASE
+		                        WHEN o.loiter_offset_x IS NOT NULL AND o.loiter_offset_y IS NOT NULL THEN o.loiter_offset_x
+		                        WHEN a.door_offset_x IS NOT NULL AND a.door_offset_y IS NOT NULL THEN a.door_offset_x
+		                        ELSE 0
+		                    END - $1),
+		                ABS(FLOOR(o.y / 32.0)::int +
+		                    CASE
+		                        WHEN o.loiter_offset_x IS NOT NULL AND o.loiter_offset_y IS NOT NULL THEN o.loiter_offset_y
+		                        WHEN a.door_offset_x IS NOT NULL AND a.door_offset_y IS NOT NULL THEN a.door_offset_y + 1
+		                        ELSE a.footprint_bottom + 2
+		                    END - $2)
+		            ) AS chebyshev_dist
+		     FROM village_object o
+		     JOIN asset a ON a.id = o.asset_id
+		     WHERE o.display_name IS NOT NULL
+		 ) candidates
+		 WHERE chebyshev_dist <= 1
+		 ORDER BY chebyshev_dist ASC
+		 LIMIT 1`,
+		actorTileX, actorTileY)
+	var id, name string
+	if err := row.Scan(&id, &name); err != nil {
+		return "", ""
+	}
+	return id, name
+}
+
+// unattendedWorkersLine returns a perception line naming the assigned
+// workers of structureID who are not currently inside it. Returns "" when
+// (a) the structure has no assigned workers, or (b) at least one worker is
+// present (inside_structure_id matches), or (c) only the perceiver
+// themselves is assigned (an NPC reading their own absence is silly).
+//
+// "Present" is measured by inside_structure_id only — workers always
+// EnterOnArrival=true when going to work, so a worker on shift will have
+// inside_structure_id = work_structure_id. Workers loitering outside their
+// own work would be unusual and read as "not tending" anyway.
+//
+// Wording (proprietor is generic for owner/operator and works for shops,
+// smithies, apothecaries, etc.):
+//   - 1 absent: "Josiah Thorne, the proprietor, is not present."
+//   - 2 absent: "Josiah Thorne and Mary Smith, the proprietors, are not present."
+//   - 3+ absent: "A, B, and C, the proprietors, are not present."
+func (app *App) unattendedWorkersLine(ctx context.Context, structureID, perceiverID string) string {
+	rows, err := app.DB.Query(ctx,
+		`SELECT display_name,
+		        (inside_structure_id IS NOT NULL AND inside_structure_id::text = $1) AS is_present
+		 FROM actor
+		 WHERE work_structure_id::text = $1
+		   AND id::text != $2
+		 ORDER BY display_name`,
+		structureID, perceiverID)
+	if err != nil {
+		return ""
+	}
+	defer rows.Close()
+
+	var absent []string
+	for rows.Next() {
+		var name string
+		var present bool
+		if err := rows.Scan(&name, &present); err != nil {
+			continue
+		}
+		if present {
+			return ""
+		}
+		absent = append(absent, name)
+	}
+	if len(absent) == 0 {
+		return ""
+	}
+
+	verb := "is not present."
+	role := "the proprietor"
+	if len(absent) > 1 {
+		verb = "are not present."
+		role = "the proprietors"
+	}
+	var nameList string
+	switch len(absent) {
+	case 1:
+		nameList = absent[0]
+	case 2:
+		nameList = absent[0] + " and " + absent[1]
+	default:
+		nameList = strings.Join(absent[:len(absent)-1], ", ") + ", and " + absent[len(absent)-1]
+	}
+	return fmt.Sprintf("%s, %s, %s", nameList, role, verb)
 }
 
 // tileKey packs (x, y) tile coords into a single int64 for map lookup.
