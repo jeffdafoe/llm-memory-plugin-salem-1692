@@ -793,7 +793,7 @@ func agentToolSpec() []agentToolDef {
 					},
 					"amount": map[string]interface{}{
 						"type":        "integer",
-						"description": "Number of coins to hand over. Must be non-negative and no more than you currently hold. The negotiated total, not per-unit when qty > 1.",
+						"description": "Number of coins to hand over. WHOLE NUMBER ONLY — fractional coins are not supported and will reject. Must be non-negative and no more than you currently hold. The negotiated total, not per-unit when qty > 1.",
 					},
 					"for": map[string]interface{}{
 						"type":        "string",
