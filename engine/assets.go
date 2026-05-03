@@ -521,6 +521,16 @@ var allowedObjectTags = map[string]bool{
 	// where a summoner walks to ring for a messenger. Not a chore
 	// destination, so deliberately omitted from categoryObjectTags.
 	"summon_point": true,
+	// noticeboard_content (ZBBS-112) opts a placement into state-driven
+	// content generation. The crier's rotation flip checks for this tag
+	// and, when present, asks the chronicler to write notice text sized
+	// to the new state's content-capacity-N tag. Underscore form follows
+	// the existing convention (cf. summon_point) and disambiguates from
+	// the asset-state-level "notice-board" tag (ZBBS-025) used to mark
+	// rotation-domain states. Omitted from categoryObjectTags because a
+	// noticeboard isn't a chore destination — NPCs end up at one only
+	// via incidental loiter, not via "go to the noticeboard."
+	"noticeboard_content": true,
 }
 
 // categoryObjectTags is the subset of allowedObjectTags that mark a

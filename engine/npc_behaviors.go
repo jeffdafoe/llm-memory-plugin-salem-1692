@@ -104,6 +104,11 @@ func (app *App) advanceBehavior(npcID string) {
 				Type: "object_state_changed",
 				Data: map[string]string{"id": stop.ObjectID, "state": stop.NewState},
 			})
+			// State-driven content surfaces (noticeboards today). Decides
+			// in-line whether the new state has a content-capacity tag and
+			// the placement is opted in; the chronicler call itself runs
+			// on its own goroutine so the route doesn't wait on it.
+			app.onObjectStateAdvanced(ctx, stop.ObjectID, stop.NewState)
 		}
 		route.StopIdx++
 	}

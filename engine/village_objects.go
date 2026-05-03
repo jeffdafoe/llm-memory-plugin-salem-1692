@@ -46,6 +46,13 @@ type villageObject struct {
 	Owner        *string  `json:"owner"`
 	DisplayName  *string  `json:"display_name"`
 	AttachedTo   *string  `json:"attached_to"`
+	// ContentText (ZBBS-112) — generated content posted on this instance,
+	// for surfaces whose asset state declares a content-capacity tag.
+	// Today only noticeboards write here; null on every other placement.
+	// PC click handlers read this directly; the editor renders a small
+	// preview when set.
+	ContentText     *string `json:"content_text"`
+	ContentPostedAt *string `json:"content_posted_at"`
 	// EntryPolicy (ZBBS-101) — who can enter this placed structure.
 	// 'none' = no entry, 'owner' = only actors with this structure as
 	// home_structure_id or work_structure_id, 'anyone' = public access.
@@ -403,6 +410,7 @@ func (app *App) handleListVillageObjects(w http.ResponseWriter, r *http.Request)
 		        o.entry_policy,
 		        COALESCE(t.tags, ARRAY[]::varchar[]),
 		        o.loiter_offset_x, o.loiter_offset_y,
+		        o.content_text, o.content_posted_at,
 		        a.door_offset_x, a.door_offset_y, a.footprint_bottom
 		 FROM village_object o
 		 JOIN asset a ON a.id = o.asset_id
@@ -425,13 +433,24 @@ func (app *App) handleListVillageObjects(w http.ResponseWriter, r *http.Request)
 		var doorX, doorY sql.NullInt32
 		var footprintBottom int
 		var rawLoiterX, rawLoiterY sql.NullInt32
+		var rawContentText sql.NullString
+		var rawContentPostedAt sql.NullTime
 		if err := rows.Scan(&obj.ID, &obj.AssetID, &obj.CurrentState,
 			&obj.X, &obj.Y, &obj.PlacedBy, &obj.Owner, &obj.DisplayName, &obj.AttachedTo,
 			&obj.EntryPolicy,
 			&obj.Tags,
 			&rawLoiterX, &rawLoiterY,
+			&rawContentText, &rawContentPostedAt,
 			&doorX, &doorY, &footprintBottom); err != nil {
 			continue
+		}
+		if rawContentText.Valid {
+			s := rawContentText.String
+			obj.ContentText = &s
+		}
+		if rawContentPostedAt.Valid {
+			s := rawContentPostedAt.Time.UTC().Format(time.RFC3339)
+			obj.ContentPostedAt = &s
 		}
 		if rawLoiterX.Valid {
 			v := int(rawLoiterX.Int32)
