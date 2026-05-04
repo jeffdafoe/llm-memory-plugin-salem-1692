@@ -773,6 +773,8 @@ func (app *App) chroniclerOpeningLine(ctx context.Context, reason chroniclerFire
 		return fmt.Sprintf("Something stirs in the village: %s.", reason.CascadeReason)
 	case "shift_boundary":
 		return "A villager's working hours have shifted. The hour has come for you to attend the village."
+	case "buffered_flush":
+		return "The village has stirred in the past minutes. The hour has come for you to attend."
 	}
 	return "You wake to attend the village."
 }
@@ -1568,6 +1570,7 @@ func renderDispatchSections(batches []*chroniclerDispatchBatch) []string {
 	// Stable section order across fires regardless of map iteration order.
 	var sections []string
 	for _, et := range []chroniclerDispatchEventType{
+		dispatchArrival,
 		dispatchShiftStart,
 		dispatchShiftEnd,
 		dispatchNeedsResolved,
@@ -1577,6 +1580,8 @@ func renderDispatchSections(batches []*chroniclerDispatchBatch) []string {
 			continue
 		}
 		switch et {
+		case dispatchArrival:
+			sections = append(sections, renderArrivalSection(agents))
 		case dispatchShiftStart, dispatchShiftEnd:
 			sections = append(sections, renderShiftSection(et, agents))
 		case dispatchNeedsResolved:
@@ -1584,6 +1589,26 @@ func renderDispatchSections(batches []*chroniclerDispatchBatch) []string {
 		}
 	}
 	return sections
+}
+
+// renderArrivalSection renders the buffered-arrival section (ZBBS-119).
+// One line per (npc, structure) pair from arrival events drained out
+// of the queue. Format: "<heading>\n- <name> arrived at <structure>".
+//
+// Bare arrival prose for Phase 1 — perception grouping that merges
+// arrival + shift_boundary into "X arrived at Y as their shift began"
+// is layer 2 dedup, deferred to Phase 2. The chronicler can read the
+// shift-start and arrival sections together and draw its own conclusion.
+func renderArrivalSection(agents []chroniclerDispatchAgent) string {
+	var b strings.Builder
+	b.WriteString("Recent arrivals:")
+	for _, a := range agents {
+		b.WriteString("\n- ")
+		b.WriteString(a.DisplayName)
+		b.WriteString(" arrived at ")
+		b.WriteString(a.ArrivalStructureName)
+	}
+	return b.String()
 }
 
 // renderShiftSection renders a single shift_start or shift_end section.
