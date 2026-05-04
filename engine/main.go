@@ -142,6 +142,21 @@ type App struct {
 	// notify it; gated on the chronicler_buffered_dispatch flag at
 	// the call sites. See chronicler_buffered_dispatcher.go.
 	ChroniclerBufferedDispatcher *chroniclerBufferedDispatcher
+
+	// LastChroniclerAttendAt tracks when each NPC was last dispatched
+	// by chronicler attend_to (ZBBS-119). Cross-fire cooldown — the
+	// per-fire attendedThisFire map only catches duplicates within a
+	// single chronicler turn; serialized back-to-back fires can still
+	// re-attend the same NPC. The attend_to tool handler consults this
+	// map and refuses routine attempts within
+	// chroniclerAttendCooldown of the prior dispatch, returning a
+	// visible "<name> was already dispatched Ns ago" tool result so
+	// the chronicler reads the rejection instead of silently
+	// no-op-ing. PC-speech and admin-flavored cascade fires are
+	// exempt — those represent fresh significant events and override
+	// the cooldown.
+	LastChroniclerAttendAt   map[string]time.Time
+	LastChroniclerAttendAtMu sync.Mutex
 }
 
 // sceneTickEntry is the per-(scene, actor) dedup record.
@@ -328,6 +343,8 @@ func main() {
 	// arrival/shift_boundary/needs_resolved enqueue sites notify it
 	// (gated on the chronicler_buffered_dispatch feature flag).
 	app.ChroniclerBufferedDispatcher = newChroniclerBufferedDispatcher(app)
+	// Cross-fire attend cooldown map (ZBBS-119).
+	app.LastChroniclerAttendAt = make(map[string]time.Time)
 	// Prime the display-name map so reactive ticks before the first
 	// server-tick refresh have data. Cheap; bounded by NPC count.
 	app.refreshNPCDisplayNames(context.Background())

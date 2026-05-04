@@ -53,6 +53,16 @@ const (
 	// still be surfaced via recall but don't appear automatically.
 	recentEventsCount  = 20
 	recentEventsWindow = 7 * 24 * time.Hour
+
+	// Cross-fire attend cooldown (ZBBS-119). Routine chronicler
+	// attend_to calls — those whose fire reason is buffered_flush,
+	// phase, or shift_boundary — refuse a re-attend within this
+	// window of the prior dispatch. PC-speech and admin-attend-now
+	// cascade fires are exempt: a player's presence or an operator's
+	// override is a fresh significant event, not redundant signal.
+	// The chronicler sees the rejection as a tool result so it can
+	// reason about it instead of getting a silent in-flight-gate drop.
+	chroniclerAttendCooldown = 45 * time.Second
 )
 
 // chroniclerFireReason captures why the chronicler is being fired this
@@ -573,6 +583,23 @@ func (app *App) fireChronicler(ctx context.Context, reason chroniclerFireReason)
 				currentToolCallID = tc.ID
 				break
 			}
+			// Cross-fire attend cooldown (ZBBS-119). The
+			// attendedThisFire check above only catches duplicates
+			// within one chronicler turn; serialized back-to-back
+			// fires can still re-attend the same NPC. Skip routine
+			// re-attends within chroniclerAttendCooldown of the prior
+			// dispatch, with a visible tool result so the model reads
+			// the rejection. PC-speech and admin-attend-now fires are
+			// exempt — those represent fresh significant events and
+			// should always go through.
+			if !chroniclerAttendExempt(reason) {
+				if since, recent := app.recentChroniclerAttend(npcID); recent {
+					currentMessage = fmt.Sprintf("[%s was already dispatched %s ago in another waking; attend_to skipped. Move on, or say done.]",
+						displayName, since.Round(time.Second))
+					currentToolCallID = tc.ID
+					break
+				}
+			}
 			// Trigger the NPC's tick. Force=true so the agentMinTickGap
 			// cost guard in triggerImmediateTick is bypassed — chronicler
 			// attend_to is a directorial action, not a sim-layer cascade.
@@ -618,6 +645,11 @@ func (app *App) fireChronicler(ctx context.Context, reason chroniclerFireReason)
 			}(npcID, displayName, sceneID)
 			attendCount++
 			attendedThisFire[npcID] = true
+			// Stamp the cross-fire cooldown clock (ZBBS-119). Includes
+			// exempt fires (PC speech, admin) — the stamp is what the
+			// next fire's routine attends measure their cooldown
+			// against, regardless of which fire stamped it.
+			app.recordChroniclerAttend(npcID)
 			currentMessage = fmt.Sprintf("[You attend to %s. They will rouse and decide what to do.]", displayName)
 			currentToolCallID = tc.ID
 
@@ -1795,5 +1827,51 @@ func (app *App) resolveVillagerForAttention(ctx context.Context, villager string
 		return "", "", false
 	}
 	return npcID, displayName, true
+}
+
+// chroniclerAttendExempt reports whether a fire's reason exempts its
+// attend_to calls from the cross-fire cooldown (ZBBS-119). Exempt:
+// cascade fires whose reason names a PC speech, PC arrival, or admin
+// override — those represent fresh significant events that should
+// always go through. Routine fires (buffered_flush, phase,
+// shift_boundary) apply the cooldown.
+//
+// Reason-string prefix check is fragile but matches today's wire
+// format ("pc-spoke (<name>)" etc.). If the format changes, add a
+// dedicated category field on chroniclerFireReason and switch the
+// check; the current shape keeps the change small.
+func chroniclerAttendExempt(reason chroniclerFireReason) bool {
+	if reason.Type != "cascade" {
+		return false
+	}
+	r := reason.CascadeReason
+	return strings.HasPrefix(r, "pc-") ||
+		r == "admin-attend-now" ||
+		r == "admin"
+}
+
+// recentChroniclerAttend reports whether the named NPC was attended
+// within chroniclerAttendCooldown of now. Returns the elapsed time
+// since the prior attend (for the rejection message) and true when
+// recent. The mutex is held only for the lookup.
+func (app *App) recentChroniclerAttend(npcID string) (time.Duration, bool) {
+	app.LastChroniclerAttendAtMu.Lock()
+	defer app.LastChroniclerAttendAtMu.Unlock()
+	last, ok := app.LastChroniclerAttendAt[npcID]
+	if !ok {
+		return 0, false
+	}
+	since := time.Since(last)
+	return since, since < chroniclerAttendCooldown
+}
+
+// recordChroniclerAttend stamps the cross-fire cooldown clock for
+// npcID. Called after every successful attend_to dispatch (including
+// exempt ones, so the next routine fire measures cooldown against the
+// most recent dispatch regardless of who made it).
+func (app *App) recordChroniclerAttend(npcID string) {
+	app.LastChroniclerAttendAtMu.Lock()
+	defer app.LastChroniclerAttendAtMu.Unlock()
+	app.LastChroniclerAttendAt[npcID] = time.Now()
 }
 
