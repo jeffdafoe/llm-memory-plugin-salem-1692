@@ -61,6 +61,20 @@ const (
 	// deploy-heavy session (multiple restarts spanning a few hours)
 	// without making a real outage produce a worst-case stampede.
 	maxNeedsCatchupHours = 12
+
+	// Hysteresis margin between the onset-cross threshold and the
+	// resolved-cross threshold (ZBBS-119 Phase 2.A). Onset fires at
+	// `value >= threshold`; resolved fires at `value < threshold -
+	// margin`. The gap prevents flapping if a future config reduces
+	// consumption magnitude below the margin (today's default zeros the
+	// need, so this is defensive). Hardcoded rather than configured
+	// because the small constant covers all foreseeable cases — promote
+	// to a setting if a real tuning need emerges. Two is the smallest
+	// margin that absorbs a partial-consumption config without making
+	// resolution feel sluggish; four would push thirst's resolve floor
+	// to the awareness floor (8) given the default thirst threshold of
+	// 12.
+	needsHysteresisMargin = 2
 )
 
 // dispatchNeedsTick is registered in runServerTickOnce. Cheap when the
@@ -166,6 +180,57 @@ func (app *App) dispatchNeedsTick(ctx context.Context) {
 
 	totalIncrement := amount * cappedHours
 
+	// Pre-tick read for onset-crossing detection (ZBBS-119 Phase 2.A).
+	// SELECT FOR UPDATE on agent NPCs locks those rows for the rest of
+	// the tx so a concurrent consumption.go applyConsumption can't
+	// commit a need decrement between this read and the UPDATE — without
+	// the lock our cached pre-values could be stale relative to what the
+	// UPDATE actually acts on, producing spurious or missed crossings.
+	// Decoratives and PCs aren't candidates for chronicler attend_to so
+	// we don't lock or track them.
+	type onsetPre struct {
+		actorID                  string
+		oldHunger, oldThirst, oldTiredness int
+	}
+	var pres []onsetPre
+	// ORDER BY id gives a stable lock order — protects against deadlock
+	// if a future code path also takes FOR UPDATE locks across multiple
+	// actor rows.
+	preRows, preErr := tx.Query(ctx,
+		`SELECT id, hunger, thirst, tiredness
+		   FROM actor
+		  WHERE llm_memory_agent IS NOT NULL
+		    AND login_username IS NULL
+		  ORDER BY id
+		    FOR UPDATE`,
+	)
+	if preErr != nil {
+		// Continue without onset detection — the UPDATE itself is the
+		// primary work; a missed onset surfaces in the chronicler's
+		// next perception via the standing distress block.
+		log.Printf("needs_tick: read pre-values for onset detection (continuing without): %v", preErr)
+	} else {
+		// Defer Close so any early return from this branch doesn't leave
+		// rows open on the tx connection — leaving rows open can wedge
+		// later queries on the same connection.
+		func() {
+			defer preRows.Close()
+			for preRows.Next() {
+				var p onsetPre
+				if err := preRows.Scan(&p.actorID, &p.oldHunger, &p.oldThirst, &p.oldTiredness); err != nil {
+					log.Printf("needs_tick: scan pre-value row (skipping onset detection this tick): %v", err)
+					pres = nil
+					return
+				}
+				pres = append(pres, p)
+			}
+			if err := preRows.Err(); err != nil {
+				log.Printf("needs_tick: iterate pre-values (skipping onset detection this tick): %v", err)
+				pres = nil
+			}
+		}()
+	}
+
 	tag, err := tx.Exec(ctx, `
 		UPDATE actor SET
 			hunger    = LEAST($1::int, hunger    + $2::int),
@@ -185,13 +250,60 @@ func (app *App) dispatchNeedsTick(ctx context.Context) {
 		return
 	}
 
+	// Resolve onset crossings + load dispatch agent info while still in
+	// the tx so all reads share one snapshot. Enqueue happens after
+	// commit so the chronicler doesn't see events for actors whose
+	// updates rolled back.
+	hungerT := app.loadNeedThreshold(ctx, "hunger_red_threshold", defaultHungerRedThreshold)
+	thirstT := app.loadNeedThreshold(ctx, "thirst_red_threshold", defaultThirstRedThreshold)
+	tiredT := app.loadNeedThreshold(ctx, "tiredness_red_threshold", defaultTirednessRedThreshold)
+	var onsets []chroniclerDispatchAgent
+	for _, p := range pres {
+		newH := clampNeed(p.oldHunger + totalIncrement)
+		newT := clampNeed(p.oldThirst + totalIncrement)
+		newTi := clampNeed(p.oldTiredness + totalIncrement)
+		var crossed []string
+		if p.oldHunger < hungerT && newH >= hungerT {
+			crossed = append(crossed, "hunger")
+		}
+		if p.oldThirst < thirstT && newT >= thirstT {
+			crossed = append(crossed, "thirst")
+		}
+		if p.oldTiredness < tiredT && newTi >= tiredT {
+			crossed = append(crossed, "tiredness")
+		}
+		if len(crossed) == 0 {
+			continue
+		}
+		agent, ok, err := app.loadDispatchAgentForActor(ctx, tx, p.actorID)
+		if err != nil {
+			log.Printf("needs_tick: load dispatch agent for onset %s: %v", p.actorID, err)
+			continue
+		}
+		if !ok {
+			// Actor row vanished or became non-agent between SELECT and
+			// here — skip silently, no chronicler attention warranted.
+			continue
+		}
+		agent.OnsetNeeds = crossed
+		onsets = append(onsets, agent)
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		log.Printf("needs_tick: commit failed: %v", err)
 		return
 	}
 
-	log.Printf("needs_tick: %d hour(s) elapsed, applying %d capped hour(s) (last %s -> now %s), +%d to %d villagers",
-		hoursElapsed, cappedHours, lastAt.Format(time.RFC3339), hourBoundaryStr, totalIncrement, tag.RowsAffected())
+	// Enqueue at the hour boundary so the dispatch queue's
+	// (event_type, minute) coalescing folds same-tick onsets into one
+	// batch. No notify on the buffered dispatcher — onset events ride
+	// the next chronicler fire, matching needs_resolved's behavior.
+	for _, a := range onsets {
+		app.ChroniclerDispatchQueue.enqueue(dispatchNeedsOnset, hourBoundary, a)
+	}
+
+	log.Printf("needs_tick: %d hour(s) elapsed, applying %d capped hour(s) (last %s -> now %s), +%d to %d villagers (onsets: %d)",
+		hoursElapsed, cappedHours, lastAt.Format(time.RFC3339), hourBoundaryStr, totalIncrement, tag.RowsAffected(), len(onsets))
 }
 
 // loadNeedMagnitude returns the configured drop magnitude for a given
@@ -252,6 +364,24 @@ func (app *App) loadNeedThreshold(ctx context.Context, key string, def int) int 
 		return def
 	}
 	return n
+}
+
+// needResolveThreshold returns the value below which a need is considered
+// resolved (down-crossing target), given the configured red threshold.
+// Implements the hysteresis gap by subtracting needsHysteresisMargin —
+// then floors at 1 so the resolve cross stays reachable even if the red
+// threshold is configured at or below the margin (settings rows can drift
+// past the loadNeedThreshold clamp via direct DB edits, and the clamp
+// itself could widen in a future change). Without the floor, a tiny
+// threshold like 2 paired with margin=2 would target `newH < 0` — a
+// condition the SQL clamp at 0 makes unreachable, silently disabling
+// needs_resolved for that need.
+func needResolveThreshold(redThreshold int) int {
+	floor := redThreshold - needsHysteresisMargin
+	if floor < 1 {
+		return 1
+	}
+	return floor
 }
 
 // loadNonNegativeIntSetting clamps to >= 0. Used for the dispatch ceiling,

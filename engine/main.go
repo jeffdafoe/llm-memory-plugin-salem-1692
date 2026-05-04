@@ -150,8 +150,8 @@ type App struct {
 	// ChroniclerBufferedDispatcher schedules buffered chronicler fires
 	// (ZBBS-119). Sits in front of cascadeOriginFireChronicler for
 	// routine events (arrivals, shift boundaries, atmosphere,
-	// needs_resolved) so they coalesce into one fire per window
-	// instead of one cascade per event. Idle until enqueue sites
+	// needs_resolved, needs_onset) so they coalesce into one fire per
+	// window instead of one cascade per event. Idle until enqueue sites
 	// notify it; gated on the chronicler_buffered_dispatch flag at
 	// the call sites. See chronicler_buffered_dispatcher.go.
 	ChroniclerBufferedDispatcher *chroniclerBufferedDispatcher
@@ -353,7 +353,7 @@ func main() {
 	}
 	// Buffered chronicler dispatcher (ZBBS-119). Constructed after the
 	// rest of App so it can carry the back-reference. Idle until
-	// arrival/shift_boundary/needs_resolved enqueue sites notify it
+	// arrival/shift_boundary/needs_resolved/needs_onset enqueue sites notify it
 	// (gated on the chronicler_buffered_dispatch feature flag).
 	app.ChroniclerBufferedDispatcher = newChroniclerBufferedDispatcher(app)
 	// Cross-fire attend cooldown map (ZBBS-119).

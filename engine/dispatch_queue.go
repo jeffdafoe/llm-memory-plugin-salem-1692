@@ -40,6 +40,16 @@ const (
 	dispatchShiftStart    chroniclerDispatchEventType = "shift_start"
 	dispatchShiftEnd      chroniclerDispatchEventType = "shift_end"
 	dispatchNeedsResolved chroniclerDispatchEventType = "needs_resolved"
+	// dispatchNeedsOnset (ZBBS-119 Phase 2.A) fires when the hourly needs
+	// tick pushes an agent NPC's hunger/thirst/tiredness from below the
+	// red threshold to at-or-above it. Mirror image of needs_resolved:
+	// the chronicler sees "X became hungry" the tick after they crossed,
+	// and can decide whether to attend (nudge them toward food/water)
+	// before the need climbs further. Pre-Phase-2 the engine had no
+	// signal at all for this direction — onsets only surfaced via the
+	// general distress block, which fires every chronicler turn whether
+	// the need is fresh or hours old.
+	dispatchNeedsOnset chroniclerDispatchEventType = "needs_onset"
 	// dispatchArrival (ZBBS-119) batches NPC arrivals at structures so the
 	// buffered chronicler dispatcher can render "Since your last pass: X
 	// arrived at Y" lines instead of firing one cascade per arrival. Today
@@ -73,6 +83,12 @@ type chroniclerDispatchAgent struct {
 	// events; ignored on shift events.
 	ResolvedNeeds []string // e.g. []string{"thirst"} or []string{"hunger", "thirst"}
 	Source        string   // "well" / "meal_or_drink" / "admin" / etc.
+
+	// Needs-onset fields. Populated only for dispatchNeedsOnset events.
+	// OnsetNeeds is the list of need names that crossed UP into the red
+	// tier on this tick. No Source field — the onset is the natural
+	// drift of the hourly needs tick, not a discrete in-world action.
+	OnsetNeeds []string
 
 	// Arrival fields. Populated only for dispatchArrival events; ignored
 	// on shift / needs_resolved events. ArrivalStructureID is the
