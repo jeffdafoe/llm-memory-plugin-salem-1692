@@ -8,6 +8,7 @@ const ConfigPanelScript = preload("res://scripts/config_panel.gd")
 const AssetPopupScript = preload("res://scripts/asset_popup.gd")
 const NPCSpritePickerScript = preload("res://scripts/npc_sprite_picker.gd")
 const ObjectTooltipScript = preload("res://scripts/object_tooltip.gd")
+const ActorTooltipScript = preload("res://scripts/actor_tooltip.gd")
 const EventClientScript = preload("res://scripts/event_client.gd")
 const TalkPanelScript = preload("res://scripts/talk_panel.gd")
 const NoticePanelScript = preload("res://scripts/notice_panel.gd")
@@ -24,6 +25,7 @@ var config_panel: Control = null
 var asset_popup: Control = null
 var npc_sprite_picker: Control = null
 var object_tooltip: CanvasLayer = null
+var actor_tooltip: CanvasLayer = null
 var event_client: Node = null
 var talk_panel_layer: CanvasLayer = null
 var notice_panel_layer: CanvasLayer = null
@@ -308,6 +310,15 @@ func _build_ui() -> void:
     object_tooltip.world = world
     object_tooltip.editor = editor
     add_child(object_tooltip)
+
+    # Actor tooltip — click an NPC or PC to see who they are. Click-driven
+    # so it works on touch as well as desktop.
+    actor_tooltip = CanvasLayer.new()
+    actor_tooltip.set_script(ActorTooltipScript)
+    actor_tooltip.world = world
+    actor_tooltip.editor = editor
+    actor_tooltip.camera = camera
+    add_child(actor_tooltip)
 
     # Talk panel (M6.7) — bottom drawer summoned by a "Talk" launcher pill.
     # The script extends CanvasLayer and owns its own layer ordering, mouse
@@ -850,6 +861,11 @@ func _input(event: InputEvent) -> void:
             # Camera's _is_over_ui maintains the panel registry; we
             # piggyback on it rather than duplicating the rect math.
             if camera != null and camera._is_over_ui(event.position):
+                return
+            # Skip clicks that landed on an actor sprite — those are
+            # "who is this" identification clicks handled by
+            # actor_tooltip.gd, not walk targets.
+            if actor_tooltip != null and actor_tooltip.is_press_over_actor(event.position):
                 return
             _pc_walk_pending = true
             _pc_walk_press_screen = event.position
