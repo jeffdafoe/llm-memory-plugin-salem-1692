@@ -410,12 +410,13 @@ func (app *App) evaluateWorkerSchedule(ctx context.Context, w *workerRow, now ti
 		}
 		startMinResolved, endMinResolved := resolveWorkerWindow(w, dawnMin, duskMin)
 		app.ChroniclerDispatchQueue.enqueue(eventType, boundaryAt, chroniclerDispatchAgent{
-			ID:           w.ID,
-			DisplayName:  w.DisplayName,
-			CurrentPlace: currentPlace,
-			WorkPlace:    w.WorkPlaceName,
-			ShiftStart:   formatMinuteOfDay(startMinResolved),
-			ShiftEnd:     formatMinuteOfDay(endMinResolved),
+			ID:              w.ID,
+			DisplayName:     w.DisplayName,
+			CurrentPlace:    currentPlace,
+			WorkPlace:       w.WorkPlaceName,
+			WorkStructureID: w.WorkStructureID,
+			ShiftStart:      formatMinuteOfDay(startMinResolved),
+			ShiftEnd:        formatMinuteOfDay(endMinResolved),
 		})
 		if _, err := app.DB.Exec(ctx,
 			`UPDATE actor SET last_shift_tick_at = $2 WHERE id = $1`,

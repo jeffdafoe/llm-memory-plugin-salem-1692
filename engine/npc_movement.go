@@ -424,8 +424,14 @@ func (app *App) applyArrival(npcID string) {
 			} else {
 				// Legacy / PC path — fire the chronicler alongside the
 				// reactor ticks. Once per arrival, not per in-cascade
-				// NPC reaction.
-				app.cascadeOriginFireChronicler("arrival", insideID.String)
+				// NPC reaction. PC arrivals are high-priority (player
+				// presence is a fresh significant event); NPC arrivals
+				// in legacy mode are routine.
+				priority := chroniclerFirePriorityRoutine
+				if arriverIsPC {
+					priority = chroniclerFirePriorityHigh
+				}
+				app.cascadeOriginFireChronicler("arrival", insideID.String, priority)
 			}
 		}
 	}
