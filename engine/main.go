@@ -119,6 +119,15 @@ type App struct {
 	// fire — phase, cascade, or the dedicated shift-boundary dispatcher
 	// — picks up pending events. See dispatch_queue.go for semantics.
 	ChroniclerDispatchQueue *chroniclerDispatchQueue
+
+	// ChroniclerBufferedDispatcher schedules buffered chronicler fires
+	// (ZBBS-119). Sits in front of cascadeOriginFireChronicler for
+	// routine events (arrivals, shift boundaries, atmosphere,
+	// needs_resolved) so they coalesce into one fire per window
+	// instead of one cascade per event. Idle until enqueue sites
+	// notify it; gated on the chronicler_buffered_dispatch flag at
+	// the call sites. See chronicler_buffered_dispatcher.go.
+	ChroniclerBufferedDispatcher *chroniclerBufferedDispatcher
 }
 
 // sceneTickEntry is the per-(scene, actor) dedup record.
@@ -297,6 +306,11 @@ func main() {
 		// and drained by chronicler fires.
 		ChroniclerDispatchQueue: newChroniclerDispatchQueue(),
 	}
+	// Buffered chronicler dispatcher (ZBBS-119). Constructed after the
+	// rest of App so it can carry the back-reference. Idle until
+	// arrival/shift_boundary/needs_resolved enqueue sites notify it
+	// (gated on the chronicler_buffered_dispatch feature flag).
+	app.ChroniclerBufferedDispatcher = newChroniclerBufferedDispatcher(app)
 	// Prime the display-name map so reactive ticks before the first
 	// server-tick refresh have data. Cheap; bounded by NPC count.
 	app.refreshNPCDisplayNames(context.Background())
