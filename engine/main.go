@@ -134,6 +134,19 @@ type App struct {
 	// — picks up pending events. See dispatch_queue.go for semantics.
 	ChroniclerDispatchQueue *chroniclerDispatchQueue
 
+	// ChroniclerPendingFire holds a high-priority cascade fire that
+	// arrived while ChroniclerFireSem was occupied. Drained right after
+	// the active fire releases the sem so PC speech / PC arrival /
+	// admin attend-now reactions are never silently dropped by the
+	// in-flight gate (the bug design_review #5 flagged: PC reaction
+	// dropped when chronicler fire is active). Single slot, last-one-
+	// wins — bursts of high-pri fires arriving in the same busy window
+	// coalesce to one follow-up fire (ChroniclerDispatchQueue is
+	// drained on every fire so the underlying NPC events are still
+	// captured; only the cascade-origin metadata gets coalesced).
+	ChroniclerPendingFireMu sync.Mutex
+	ChroniclerPendingFire   *pendingChroniclerFire
+
 	// ChroniclerBufferedDispatcher schedules buffered chronicler fires
 	// (ZBBS-119). Sits in front of cascadeOriginFireChronicler for
 	// routine events (arrivals, shift boundaries, atmosphere,

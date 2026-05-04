@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 
@@ -86,6 +87,42 @@ type chroniclerFireReason struct {
 	// StructureID is set when Type == "cascade". The location where the
 	// cascade originated, used to ground the chronicler's perception.
 	StructureID string
+
+	// Priority is the routing tier consulted by fireChroniclerSerialized
+	// when the in-flight slot is full and by chroniclerAttendExempt for
+	// cooldown bypass. High-priority fires (PC speech, PC arrival, admin
+	// attend-now) get queued as pending instead of dropped on full and
+	// bypass the cross-fire attend cooldown. Routine fires (phase, shift
+	// boundary, NPC arrival cascade-origin, buffered_flush) drop on full
+	// and apply cooldown — their underlying events live on
+	// ChroniclerDispatchQueue and the next fire will pick them up.
+	//
+	// Replaces the prior reason-string prefix check (chroniclerAttendExempt
+	// previously parsed CascadeReason for "pc-" / "admin-attend-now");
+	// classification is now explicit at the call site.
+	Priority chroniclerFirePriority
+}
+
+// chroniclerFirePriority is the routing tier on chroniclerFireReason.
+// Reserved third tier (e.g. PriorityImmediate that preempts an active
+// fire) intentionally not added until a concrete use case appears —
+// salem is laid back; no emergency events exist today. The dispatcher's
+// serialization invariant (one fire per world at a time) holds
+// regardless of how many priority tiers are added later.
+type chroniclerFirePriority int
+
+const (
+	chroniclerFirePriorityRoutine chroniclerFirePriority = iota
+	chroniclerFirePriorityHigh
+)
+
+// pendingChroniclerFire holds a high-priority cascade fire that
+// arrived while ChroniclerFireSem was occupied. Stored on
+// app.ChroniclerPendingFire and drained by releaseChroniclerFireSem
+// right after the active fire releases the sem.
+type pendingChroniclerFire struct {
+	Reason     chroniclerFireReason
+	EnqueuedAt time.Time
 }
 
 // chroniclerToolSpec returns the tool definitions offered to the
@@ -235,7 +272,7 @@ func (app *App) dispatchChroniclerPhase(ctx context.Context) {
 	}
 
 	log.Printf("chronicler-phase: firing %s phase (boundary at %s)", currentPhase, boundaryAt.Format(time.RFC3339))
-	if err := app.fireChronicler(ctx, chroniclerFireReason{Type: "phase", Phase: currentPhase}); err != nil {
+	if err := app.fireChronicler(ctx, chroniclerFireReason{Type: "phase", Phase: currentPhase, Priority: chroniclerFirePriorityRoutine}); err != nil {
 		log.Printf("chronicler-phase: fire failed, not advancing phase state: %v", err)
 		return
 	}
@@ -302,69 +339,142 @@ func villageEventTextForPhase(phase string) string {
 //
 //   - flag ON  → ChroniclerFireSem (size 1). Single in-flight slot
 //     across cascade fires AND the buffered dispatcher's flush. No
-//     two chronicler fires run in parallel. Drop-on-full means the
-//     events stay on ChroniclerDispatchQueue for the next fire to
-//     pick up; the buffered timer ensures another fire happens.
+//     two chronicler fires run in parallel. High-priority fires that
+//     hit a full sem are queued as pending and run after the active
+//     fire releases (so PC speech / PC arrival / admin attend-now
+//     reactions are never dropped); routine fires drop on full and
+//     rely on ChroniclerDispatchQueue + the buffered timer to retry.
 //   - flag OFF → ChroniclerSem (size 2, legacy). Two concurrent
 //     cascades allowed. This is the diagnosed parallel-cascade race;
 //     buffering is the fix, this branch stays only as the rollback.
 //
-// Cascade fires that arrive while the slot is full are skipped
-// (logged) rather than queued — better to drop a fire than to back
-// up an arbitrary queue with stale work.
-func (app *App) cascadeOriginFireChronicler(reason, structureID string) {
+// Caller declares the fire's priority so the queue-or-drop choice is
+// explicit at the source — no reason-string parsing.
+func (app *App) cascadeOriginFireChronicler(reasonStr, structureID string, priority chroniclerFirePriority) {
+	reason := chroniclerFireReason{
+		Type:          "cascade",
+		CascadeReason: reasonStr,
+		StructureID:   structureID,
+		Priority:      priority,
+	}
 	if app.chroniclerBufferedDispatchEnabled(context.Background()) {
-		app.fireChroniclerSerialized(reason, structureID)
+		app.fireChroniclerSerialized(reason)
 		return
 	}
 	if app.ChroniclerSem == nil {
 		// Defensive — should always be initialized at startup. If not,
 		// fall through to the unbounded path so we don't silently drop
 		// fires on a misconfigured engine.
-		go app.runCascadeFire(reason, structureID)
+		go app.runCascadeFire(reason)
 		return
 	}
 	select {
 	case app.ChroniclerSem <- struct{}{}:
 		go func() {
 			defer func() { <-app.ChroniclerSem }()
-			app.runCascadeFire(reason, structureID)
+			app.runCascadeFire(reason)
 		}()
 	default:
-		log.Printf("chronicler-cascade: slot full, skipping fire (reason=%q)", reason)
+		log.Printf("chronicler-cascade: slot full, skipping fire (reason=%q)", reasonStr)
 	}
 }
 
 // fireChroniclerSerialized is the size-1 sem path used when
 // chronicler_buffered_dispatch is on. Same shape as the legacy sem
-// branch above but routes through ChroniclerFireSem so cascade fires
-// and buffered-dispatcher timer flushes share one in-flight slot.
+// branch in cascadeOriginFireChronicler but routes through
+// ChroniclerFireSem so cascade fires and buffered-dispatcher timer
+// flushes share one in-flight slot.
 //
-// Drop-on-full is the failure mode. The dropped fire's reason is
-// logged and the events stay on ChroniclerDispatchQueue. The buffered
-// dispatcher's timer is the safety net — it'll re-arm on the next
-// notify and fire when the slot frees up.
-func (app *App) fireChroniclerSerialized(reason, structureID string) {
+// Drop-on-full behavior depends on Priority:
+//   - High: queued in ChroniclerPendingFire so the fire runs right after
+//     the active one releases. Last-one-wins coalesces bursts; the
+//     underlying NPC-event queue is drained by every fire so events
+//     from coalesced reasons aren't lost, only their cascade-origin
+//     metadata.
+//   - Routine: dropped (logged). Events stay on ChroniclerDispatchQueue
+//     for the buffered timer's next fire to pick up.
+func (app *App) fireChroniclerSerialized(reason chroniclerFireReason) {
 	if app.ChroniclerFireSem == nil {
 		// Defensive — same as the legacy fall-through.
-		go app.runCascadeFire(reason, structureID)
+		go app.runCascadeFire(reason)
 		return
 	}
 	select {
 	case app.ChroniclerFireSem <- struct{}{}:
 		go func() {
-			defer func() { <-app.ChroniclerFireSem }()
-			app.runCascadeFire(reason, structureID)
+			defer app.releaseChroniclerFireSem()
+			app.runCascadeFire(reason)
 		}()
 	default:
-		log.Printf("chronicler-buffered: fire slot full, skipping (reason=%q) — events stay queued for next fire", reason)
+		if reason.Priority == chroniclerFirePriorityHigh {
+			app.queuePendingChroniclerFire(reason)
+			log.Printf("chronicler-buffered: fire slot full, queued high-pri (reason=%q) for after current fire", reason.CascadeReason)
+		} else {
+			log.Printf("chronicler-buffered: fire slot full, skipping (reason=%q) — events stay queued for next fire", reason.CascadeReason)
+		}
 	}
+}
+
+// queuePendingChroniclerFire stores a high-priority cascade fire to
+// run after the currently in-flight chronicler fire releases the sem.
+// Last-one-wins on the single slot: a burst of high-priority fires
+// arriving in the same busy window collapses to one follow-up. The
+// ChroniclerDispatchQueue is drained on every fire so the underlying
+// NPC events from coalesced reasons are still captured in the
+// follow-up fire's perception — only the cascade-origin metadata
+// (which structure to anchor at) gets coalesced.
+func (app *App) queuePendingChroniclerFire(reason chroniclerFireReason) {
+	app.ChroniclerPendingFireMu.Lock()
+	defer app.ChroniclerPendingFireMu.Unlock()
+	app.ChroniclerPendingFire = &pendingChroniclerFire{
+		Reason:     reason,
+		EnqueuedAt: time.Now(),
+	}
+}
+
+// releaseChroniclerFireSem completes a chronicler fire and either
+// chains into a pending high-priority fire or releases the in-flight
+// slot. Sem-inheritance: when a pending fire exists, the sem token is
+// NOT released; instead the pending fire's runCascadeFire runs in a
+// new goroutine with the held slot, and chains back through this
+// function on completion via deferred release.
+//
+// This eliminates the race the reviewer flagged where releasing the
+// sem before claiming pending opens a gap for an external acquire to
+// slip in. A new fire arriving in that gap would acquire the sem and
+// later clobber a pending entry that the original release was about
+// to launch. With sem-inheritance, external callers see the slot as
+// held until the chain exhausts; they queue as pending and run in
+// order via the chain.
+//
+// The defer release inside the spawned goroutine ensures the slot is
+// freed (or chained again) even if runCascadeFire panics.
+//
+// Recursion is bounded by the rate of high-priority events arriving
+// during the chain: each follow-up fire takes a chronicler API call
+// (seconds), so this is a chain of distinct fires, not a tight loop.
+// Goroutine spawn per chain link (no stack growth).
+func (app *App) releaseChroniclerFireSem() {
+	app.ChroniclerPendingFireMu.Lock()
+	pending := app.ChroniclerPendingFire
+	app.ChroniclerPendingFire = nil
+	app.ChroniclerPendingFireMu.Unlock()
+
+	if pending != nil {
+		go func(reason chroniclerFireReason) {
+			defer app.releaseChroniclerFireSem()
+			app.runCascadeFire(reason)
+		}(pending.Reason)
+		return
+	}
+
+	<-app.ChroniclerFireSem
 }
 
 // runCascadeFire is the body of a cascade-origin chronicler fire.
 // Extracted so cascadeOriginFireChronicler can wrap it with the
 // concurrency-cap semaphore.
-func (app *App) runCascadeFire(reason, structureID string) {
+func (app *App) runCascadeFire(reason chroniclerFireReason) {
 	ctx := context.Background()
 	cfg, err := app.loadWorldConfig(ctx)
 	if err != nil {
@@ -374,11 +484,7 @@ func (app *App) runCascadeFire(reason, structureID string) {
 	if cfg.AgentTicksPaused {
 		return
 	}
-	if err := app.fireChronicler(ctx, chroniclerFireReason{
-		Type:          "cascade",
-		CascadeReason: reason,
-		StructureID:   structureID,
-	}); err != nil {
+	if err := app.fireChronicler(ctx, reason); err != nil {
 		log.Printf("chronicler-cascade: fire failed: %v", err)
 	}
 }
@@ -734,7 +840,7 @@ func (app *App) buildChroniclerPerception(ctx context.Context, reason chronicler
 	// tied to an actual chronicler invocation. A phase or cascade fire
 	// that happens to overlap a shift boundary picks up the events for
 	// free because every fireChronicler call drains the queue.
-	for _, section := range renderDispatchSections(shiftBatches) {
+	for _, section := range app.renderDispatchSections(ctx, shiftBatches) {
 		sections = append(sections, section)
 	}
 
@@ -1481,6 +1587,58 @@ func (app *App) lookupStructureName(ctx context.Context, structureID string) str
 	return name.String
 }
 
+// actorCurrent is the at-flush-time location reading for one actor:
+// where they are NOW, distinct from where the buffered arrival event
+// said they had been. StructureID is "" when the actor is currently
+// outdoors (inside_structure_id NULL).
+type actorCurrent struct {
+	StructureID   string
+	StructureName string
+}
+
+// lookupCurrentStructures resolves where each actor is RIGHT NOW for the
+// arrival current-state validation in renderArrivalSection. One batched
+// query keyed on actor.id so a buffered flush with N arrivals costs one
+// roundtrip, not N. Outdoor actors (inside_structure_id NULL) get an
+// entry with empty StructureID/StructureName.
+//
+// On query failure, returns nil — renderArrivalSection treats the whole
+// arrival batch as "current unknown" and falls back to bare per-arrival
+// lines (Phase 1 behavior). Don't lose the section over one bad lookup.
+func (app *App) lookupCurrentStructures(ctx context.Context, actorIDs []string) map[string]actorCurrent {
+	if len(actorIDs) == 0 {
+		return nil
+	}
+	rows, err := app.DB.Query(ctx,
+		`SELECT n.id::text,
+		        COALESCE(n.inside_structure_id::text, ''),
+		        COALESCE(o.display_name, a.name, '')
+		 FROM actor n
+		 LEFT JOIN village_object o ON o.id = n.inside_structure_id
+		 LEFT JOIN asset a ON a.id = o.asset_id
+		 WHERE n.id::text = ANY($1)`,
+		actorIDs)
+	if err != nil {
+		log.Printf("lookupCurrentStructures: query: %v", err)
+		return nil
+	}
+	defer rows.Close()
+	out := map[string]actorCurrent{}
+	for rows.Next() {
+		var id, structID, structName string
+		if err := rows.Scan(&id, &structID, &structName); err != nil {
+			log.Printf("lookupCurrentStructures: scan: %v", err)
+			return nil
+		}
+		out[id] = actorCurrent{StructureID: structID, StructureName: structName}
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("lookupCurrentStructures: rows: %v", err)
+		return nil
+	}
+	return out
+}
+
 // buildChroniclerDistressList renders the "Villagers needing attention"
 // block for the overseer's perception. Lists any NPC whose hunger, thirst,
 // or tiredness is at or above the configured red threshold for that need
@@ -1585,7 +1743,7 @@ func (app *App) buildChroniclerDistressList(ctx context.Context) string {
 // reasons (NPCs who abandoned posts due to high needs and now don't
 // have those needs are exactly the case the chronicler should nudge
 // back to work).
-func renderDispatchSections(batches []*chroniclerDispatchBatch) []string {
+func (app *App) renderDispatchSections(ctx context.Context, batches []*chroniclerDispatchBatch) []string {
 	if len(batches) == 0 {
 		return nil
 	}
@@ -1597,6 +1755,43 @@ func renderDispatchSections(batches []*chroniclerDispatchBatch) []string {
 	byType := map[chroniclerDispatchEventType][]chroniclerDispatchAgent{}
 	for _, b := range batches {
 		byType[b.EventType] = append(byType[b.EventType], b.Agents...)
+	}
+
+	// Layer-2 merge: collect the (actor, workplace) set from shift_start
+	// agents. Arrivals at a matching workplace pick up an "as their shift
+	// began" suffix; the matching shift_start agent is omitted from the
+	// shift section. Without this, Prudence's workplace arrival surfaces
+	// in BOTH "Recent arrivals" and "Beginning their shift now" with
+	// overlapping content — two lines about one event.
+	shiftStarted := map[shiftMergeKey]struct{}{}
+	for _, a := range byType[dispatchShiftStart] {
+		if a.WorkStructureID == "" {
+			continue
+		}
+		shiftStarted[shiftMergeKey{ActorID: a.ID, StructureID: a.WorkStructureID}] = struct{}{}
+	}
+
+	// Arrival current-state validation: at flush time, look up where each
+	// arriving actor is RIGHT NOW. The buffered queue holds the structure
+	// they were ENTERING when the event fired — they may have moved on by
+	// the time the chronicler reads this. groupArrivalsByActor consolidates
+	// per-actor arrival sequences and decides phrasing (single arrival,
+	// multi-stop trail, current-matches-final, moved-on) so the chronicler
+	// reads the actor's whole journey as one line instead of disconnected
+	// "X arrived at Y" entries that imply they're still there.
+	//
+	// consumedShiftStarts is populated only when the shift suffix would
+	// actually fire (current matches final + shift_started covers it),
+	// so an actor who arrived at workplace then wandered off keeps their
+	// shift_start line visible in the shift section instead of silently
+	// vanishing.
+	var arrivalGroupOrder []string
+	var arrivalGroups map[string]*actorArrivalGroup
+	consumedShiftStarts := map[shiftMergeKey]struct{}{}
+	if arrivals := byType[dispatchArrival]; len(arrivals) > 0 {
+		actorIDs := uniqueArrivalActorIDs(arrivals)
+		currentByActor := app.lookupCurrentStructures(ctx, actorIDs)
+		arrivalGroupOrder, arrivalGroups, consumedShiftStarts = groupArrivalsByActor(arrivals, currentByActor, shiftStarted)
 	}
 
 	// Stable section order across fires regardless of map iteration order.
@@ -1613,9 +1808,13 @@ func renderDispatchSections(batches []*chroniclerDispatchBatch) []string {
 		}
 		switch et {
 		case dispatchArrival:
-			sections = append(sections, renderArrivalSection(agents))
-		case dispatchShiftStart, dispatchShiftEnd:
-			sections = append(sections, renderShiftSection(et, agents))
+			sections = append(sections, renderArrivalSection(arrivalGroupOrder, arrivalGroups, shiftStarted))
+		case dispatchShiftStart:
+			if s := renderShiftSection(et, agents, consumedShiftStarts); s != "" {
+				sections = append(sections, s)
+			}
+		case dispatchShiftEnd:
+			sections = append(sections, renderShiftSection(et, agents, nil))
 		case dispatchNeedsResolved:
 			sections = append(sections, renderNeedsResolvedSection(agents))
 		}
@@ -1623,36 +1822,226 @@ func renderDispatchSections(batches []*chroniclerDispatchBatch) []string {
 	return sections
 }
 
-// renderArrivalSection renders the buffered-arrival section (ZBBS-119).
-// One line per (npc, structure) pair from arrival events drained out
-// of the queue. Format: "<heading>\n- <name> arrived at <structure>".
+// uniqueArrivalActorIDs collects each actor ID once in first-appearance
+// order from a slice of arrival events. Used to scope the
+// lookupCurrentStructures query to only the actors that have arrivals
+// in this batch.
+func uniqueArrivalActorIDs(arrivals []chroniclerDispatchAgent) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(arrivals))
+	for _, a := range arrivals {
+		if seen[a.ID] {
+			continue
+		}
+		seen[a.ID] = true
+		out = append(out, a.ID)
+	}
+	return out
+}
+
+// actorArrivalGroup consolidates one actor's arrival events for the
+// per-actor render in renderArrivalSection. Arrivals are sorted by
+// OccurredAt asc — Final is the latest, Intermediates is everything
+// before. CurrentKnown distinguishes "DB lookup succeeded for this
+// actor" from "lookup failed / actor row gone" so the renderer can
+// fall back to bare per-arrival lines instead of inventing a location.
+// ShiftBegan is true iff the actor's current location matches the
+// final arrival AND a shift_start covers the same (actor, workplace),
+// which is exactly when "as their shift began" should fire.
+type actorArrivalGroup struct {
+	ActorID              string
+	DisplayName          string
+	Arrivals             []chroniclerDispatchAgent // sorted by OccurredAt asc
+	CurrentKnown         bool
+	CurrentStructureID   string
+	CurrentStructureName string
+	ShiftBegan           bool
+}
+
+// groupArrivalsByActor folds a slice of arrival events into per-actor
+// groups, preserving first-appearance order in actorOrder for stable
+// rendering. For each actor with a current_inside_structure_id reading,
+// computes ShiftBegan (current matches final AND shift_started covers
+// it). Adds the corresponding (actor, workplace) key to consumedShiftStarts
+// so renderShiftSection knows to skip that shift_start row.
 //
-// Bare arrival prose for Phase 1 — perception grouping that merges
-// arrival + shift_boundary into "X arrived at Y as their shift began"
-// is layer 2 dedup, deferred to Phase 2. The chronicler can read the
-// shift-start and arrival sections together and draw its own conclusion.
-func renderArrivalSection(agents []chroniclerDispatchAgent) string {
+// Actors absent from currentByActor (lookup query failed, or DB row
+// gone between enqueue and flush) get CurrentKnown=false; the renderer
+// treats them as "current unknown" and emits bare per-arrival lines
+// like Phase 1.
+func groupArrivalsByActor(
+	arrivals []chroniclerDispatchAgent,
+	currentByActor map[string]actorCurrent,
+	shiftStarted map[shiftMergeKey]struct{},
+) (actorOrder []string, groupsByActor map[string]*actorArrivalGroup, consumedShiftStarts map[shiftMergeKey]struct{}) {
+	groupsByActor = map[string]*actorArrivalGroup{}
+	consumedShiftStarts = map[shiftMergeKey]struct{}{}
+	for _, a := range arrivals {
+		g, ok := groupsByActor[a.ID]
+		if !ok {
+			g = &actorArrivalGroup{ActorID: a.ID, DisplayName: a.DisplayName}
+			groupsByActor[a.ID] = g
+			actorOrder = append(actorOrder, a.ID)
+		}
+		g.Arrivals = append(g.Arrivals, a)
+	}
+	for _, g := range groupsByActor {
+		sort.SliceStable(g.Arrivals, func(i, j int) bool {
+			return g.Arrivals[i].OccurredAt.Before(g.Arrivals[j].OccurredAt)
+		})
+		cur, ok := currentByActor[g.ActorID]
+		if !ok {
+			// Current unknown for this actor — DB query failed or row
+			// missing. Fall back to Part A merge: consume shift_start
+			// for any arrival that matches a shifted workplace, so the
+			// shift section doesn't duplicate the arrival section's
+			// "as their shift began" line. Slightly stale (the suffix
+			// fires even if the actor has since wandered off the
+			// workplace), but DB failures are rare and avoiding the
+			// duplicate is the higher-value behavior to preserve.
+			for _, a := range g.Arrivals {
+				k := shiftMergeKey{ActorID: g.ActorID, StructureID: a.ArrivalStructureID}
+				if _, ok := shiftStarted[k]; ok {
+					consumedShiftStarts[k] = struct{}{}
+				}
+			}
+			continue
+		}
+		g.CurrentKnown = true
+		g.CurrentStructureID = cur.StructureID
+		g.CurrentStructureName = cur.StructureName
+		final := g.Arrivals[len(g.Arrivals)-1]
+		if cur.StructureID != "" && cur.StructureID == final.ArrivalStructureID {
+			k := shiftMergeKey{ActorID: g.ActorID, StructureID: final.ArrivalStructureID}
+			if _, ok := shiftStarted[k]; ok {
+				g.ShiftBegan = true
+				consumedShiftStarts[k] = struct{}{}
+			}
+		}
+	}
+	return
+}
+
+// shiftMergeKey identifies an (actor, workplace) pair for layer-2
+// perception grouping: a shift_start at workplace X coincident with an
+// arrival at workplace X collapses into one merged line in the arrival
+// section. Joined on village_object.id (not display name) so a
+// display_name flip between the scheduler's per-tick load and the
+// arrival's lookupStructureName call can't break the merge.
+type shiftMergeKey struct {
+	ActorID     string
+	StructureID string
+}
+
+// renderArrivalSection renders the buffered-arrival section (ZBBS-119).
+// One line per actor (not per arrival event) so a multi-stop journey
+// reads as one sentence instead of disconnected lines.
+//
+// Per-actor phrasing depends on the actor's current location vs the
+// arrival sequence:
+//   - 1 arrival, current matches: "X arrived at Y" (+ shift suffix if applicable)
+//   - 1 arrival, current is some other place: "X briefly appeared at Y, then went to Z"
+//   - 1 arrival, current is outdoors: "X briefly appeared at Y"
+//   - multi, final matches current: "X passed through A and B, then arrived at Y"
+//   - multi, final doesn't match: "X passed through A, B, and Y, then went to Z" (or just the trail if outdoors)
+//
+// Fallback: when the actor's CurrentKnown is false (DB lookup failed
+// or actor row gone between enqueue and flush), each arrival renders
+// as a bare "X arrived at Y" line (Phase 1 behavior). The shift suffix
+// still fires per-arrival when shiftStarted matches so we don't
+// regress Part A's merge in the fallback path.
+func renderArrivalSection(actorOrder []string, groups map[string]*actorArrivalGroup, shiftStarted map[shiftMergeKey]struct{}) string {
+	if len(actorOrder) == 0 {
+		return ""
+	}
 	var b strings.Builder
 	b.WriteString("Recent arrivals:")
-	for _, a := range agents {
+	joinNames := func(arr []chroniclerDispatchAgent) {
+		for i, p := range arr {
+			if i > 0 {
+				if i == len(arr)-1 {
+					b.WriteString(" and ")
+				} else {
+					b.WriteString(", ")
+				}
+			}
+			b.WriteString(p.ArrivalStructureName)
+		}
+	}
+	for _, actorID := range actorOrder {
+		g := groups[actorID]
+		if !g.CurrentKnown {
+			// DB lookup didn't return this actor; fall back to bare per-
+			// arrival lines so we don't invent a current location.
+			for _, a := range g.Arrivals {
+				b.WriteString("\n- ")
+				b.WriteString(a.DisplayName)
+				b.WriteString(" arrived at ")
+				b.WriteString(a.ArrivalStructureName)
+				if _, ok := shiftStarted[shiftMergeKey{ActorID: actorID, StructureID: a.ArrivalStructureID}]; ok {
+					b.WriteString(" as their shift began")
+				}
+			}
+			continue
+		}
+		final := g.Arrivals[len(g.Arrivals)-1]
+		intermediates := g.Arrivals[:len(g.Arrivals)-1]
+		currentMatchesFinal := g.CurrentStructureID != "" && g.CurrentStructureID == final.ArrivalStructureID
 		b.WriteString("\n- ")
-		b.WriteString(a.DisplayName)
-		b.WriteString(" arrived at ")
-		b.WriteString(a.ArrivalStructureName)
+		b.WriteString(g.DisplayName)
+		switch {
+		case len(g.Arrivals) == 1 && currentMatchesFinal:
+			b.WriteString(" arrived at ")
+			b.WriteString(final.ArrivalStructureName)
+		case len(g.Arrivals) == 1 && !currentMatchesFinal:
+			b.WriteString(" briefly appeared at ")
+			b.WriteString(final.ArrivalStructureName)
+			if g.CurrentStructureName != "" {
+				b.WriteString(", then went to ")
+				b.WriteString(g.CurrentStructureName)
+			}
+		case len(g.Arrivals) > 1 && currentMatchesFinal:
+			b.WriteString(" passed through ")
+			joinNames(intermediates)
+			b.WriteString(", then arrived at ")
+			b.WriteString(final.ArrivalStructureName)
+		case len(g.Arrivals) > 1 && !currentMatchesFinal:
+			b.WriteString(" passed through ")
+			joinNames(g.Arrivals)
+			if g.CurrentStructureName != "" {
+				b.WriteString(", then went to ")
+				b.WriteString(g.CurrentStructureName)
+			}
+		}
+		if g.ShiftBegan {
+			b.WriteString(" as their shift began")
+		}
 	}
 	return b.String()
 }
 
 // renderShiftSection renders a single shift_start or shift_end section.
 // Format: "<heading>\n- <name> (<work>, HH:MM-HH:MM) -- currently at <place>".
-func renderShiftSection(et chroniclerDispatchEventType, agents []chroniclerDispatchAgent) string {
+//
+// Agents whose (actor, workplace) appears in mergedIntoArrival are skipped
+// — their entry has been folded into the arrival section's "as their
+// shift began" suffix. Returns "" if every agent was filtered, so the
+// caller can omit the section entirely.
+func renderShiftSection(et chroniclerDispatchEventType, agents []chroniclerDispatchAgent, mergedIntoArrival map[shiftMergeKey]struct{}) string {
 	heading := "Beginning their shift now:"
 	if et == dispatchShiftEnd {
 		heading = "Ending their shift now:"
 	}
 	var b strings.Builder
-	b.WriteString(heading)
+	wrote := false
 	for _, a := range agents {
+		if _, ok := mergedIntoArrival[shiftMergeKey{ActorID: a.ID, StructureID: a.WorkStructureID}]; ok {
+			continue
+		}
+		if !wrote {
+			b.WriteString(heading)
+			wrote = true
+		}
 		b.WriteString("\n- ")
 		b.WriteString(a.DisplayName)
 		b.WriteString(" (")
@@ -1663,6 +2052,9 @@ func renderShiftSection(et chroniclerDispatchEventType, agents []chroniclerDispa
 		b.WriteString(a.ShiftEnd)
 		b.WriteString(") -- currently at ")
 		b.WriteString(a.CurrentPlace)
+	}
+	if !wrote {
+		return ""
 	}
 	return b.String()
 }
@@ -1796,7 +2188,7 @@ func (app *App) dispatchChroniclerShiftBoundaries(ctx context.Context) {
 	if cfg.AgentTicksPaused {
 		return
 	}
-	if err := app.fireChronicler(ctx, chroniclerFireReason{Type: "shift_boundary"}); err != nil {
+	if err := app.fireChronicler(ctx, chroniclerFireReason{Type: "shift_boundary", Priority: chroniclerFirePriorityRoutine}); err != nil {
 		log.Printf("chronicler-shift: fire failed: %v", err)
 	}
 }
@@ -1836,18 +2228,12 @@ func (app *App) resolveVillagerForAttention(ctx context.Context, villager string
 // always go through. Routine fires (buffered_flush, phase,
 // shift_boundary) apply the cooldown.
 //
-// Reason-string prefix check is fragile but matches today's wire
-// format ("pc-spoke (<name>)" etc.). If the format changes, add a
-// dedicated category field on chroniclerFireReason and switch the
-// check; the current shape keeps the change small.
+// Classification reads chroniclerFireReason.Priority — set explicitly
+// at the cascade-origin call site. Replaces the prior wire-format
+// prefix check ("pc-" / "admin-attend-now") which was flagged fragile
+// in the original implementation.
 func chroniclerAttendExempt(reason chroniclerFireReason) bool {
-	if reason.Type != "cascade" {
-		return false
-	}
-	r := reason.CascadeReason
-	return strings.HasPrefix(r, "pc-") ||
-		r == "admin-attend-now" ||
-		r == "admin"
+	return reason.Type == "cascade" && reason.Priority == chroniclerFirePriorityHigh
 }
 
 // recentChroniclerAttend reports whether the named NPC was attended

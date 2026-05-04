@@ -1334,7 +1334,7 @@ func (app *App) handlePCSpeak(w http.ResponseWriter, r *http.Request) {
 		// reactor ticks. Fire-and-forget; chronicler runs in a goroutine
 		// so it doesn't block the WebSocket response. Only fires once per
 		// scene-start (here), not for in-cascade NPC reactions.
-		app.cascadeOriginFireChronicler(fmt.Sprintf("pc-spoke (%s)", charName.String), structureID)
+		app.cascadeOriginFireChronicler(fmt.Sprintf("pc-spoke (%s)", charName.String), structureID, chroniclerFirePriorityHigh)
 	}
 
 	w.WriteHeader(http.StatusNoContent)

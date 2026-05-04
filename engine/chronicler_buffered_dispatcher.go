@@ -137,8 +137,9 @@ func (d *chroniclerBufferedDispatcher) fire() {
 	}
 	// Reuse cascadeOriginFireChronicler — same sem, same drain
 	// semantics. Empty structureID; the buffered flush is village-wide,
-	// not place-anchored.
-	d.app.cascadeOriginFireChronicler("buffered_flush", "")
+	// not place-anchored. Routine priority — drop on full and rely on
+	// the next notify+timer to retry rather than queueing as pending.
+	d.app.cascadeOriginFireChronicler("buffered_flush", "", chroniclerFirePriorityRoutine)
 }
 
 // loadWindowSeconds reads the buffer-window setting and clamps to
