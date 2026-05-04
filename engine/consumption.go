@@ -119,6 +119,16 @@ func (app *App) applyConsumption(ctx context.Context, tx pgx.Tx, actorID string,
 		); err != nil {
 			return consumptionResult{}, fmt.Errorf("applyConsumption: update needs: %w", err)
 		}
+		// Dual-write to actor_need rows (ZBBS-121). Runs in the same tx
+		// so column + row commits are atomic. Removed when the read
+		// sites convert and the legacy columns drop.
+		if err := app.writeNeedRows(ctx, tx, actorID, map[string]int{
+			"hunger":    newH,
+			"thirst":    newT,
+			"tiredness": newTi,
+		}); err != nil {
+			return consumptionResult{}, fmt.Errorf("applyConsumption: dual-write rows: %w", err)
+		}
 	}
 
 	result := consumptionResult{Hunger: newH, Thirst: newT, Tiredness: newTi}
