@@ -1,0 +1,250 @@
+package main
+
+// Needs registry + repository (ZBBS-121).
+//
+// Single-source-of-truth abstractions for the graduated need values
+// (hunger, thirst, tiredness, future kinds). Replaces the spread of
+// inlined SQL across consumption.go, needs.go, room_narration.go,
+// chronicler.go, etc. that each redeclared the column triplet and
+// the threshold-loading triplet.
+//
+// Migration story (ZBBS-121 refactor commits):
+//   commit 1 (this one): schema + registry + read methods + dual-write
+//                        hooks at the two existing column-write sites.
+//                        Reads still come from the legacy columns; rows
+//                        exist as a parallel write target so that by
+//                        the time read sites convert, the rows are
+//                        current and trustworthy.
+//   commit 2..N        : convert read sites to use the repo (reading
+//                        from rows). Convert remaining write sites.
+//   commit N+1         : repo's write helpers stop touching the legacy
+//                        columns.
+//   commit N+2         : drop the legacy columns from actor.
+//
+// The Need registry is the place where the next graduated quantity
+// (mood / loneliness / fatigue-of-a-different-kind) gets added — one
+// entry here + one row per actor in actor_need + one threshold setting.
+// All loop-driven code (crossing detection, perception render, hourly
+// tick) picks it up automatically.
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/jackc/pgx/v5"
+)
+
+// Need describes one graduated quantity an actor carries. Every Need
+// in the registry has a row in actor_need per actor (post-backfill).
+//
+// DBColumn is the legacy actor.<column> name during the dual-write
+// transition window. Removed when the columns drop.
+type Need struct {
+	Key                 string // "hunger" — actor_need.key, registry lookup
+	DBColumn            string // "hunger" — legacy actor column (removed at end of refactor)
+	Mild                string // "peckish" — vocabulary band 1
+	Red                 string // "hungry"  — vocabulary band 2
+	Peak                string // "starving" — vocabulary band 3
+	DefaultThreshold    int    // 18 — fallback when the setting row is missing
+	ThresholdSettingKey string // "hunger_red_threshold" — setting row key
+}
+
+// Needs is the canonical registry. Iteration order is stable across
+// processes — code that depends on stable ordering (e.g. lock order
+// for SELECT FOR UPDATE) can rely on this slice's order.
+var Needs = []Need{
+	{
+		Key:                 "hunger",
+		DBColumn:            "hunger",
+		Mild:                "peckish",
+		Red:                 "hungry",
+		Peak:                "starving",
+		DefaultThreshold:    defaultHungerRedThreshold,
+		ThresholdSettingKey: "hunger_red_threshold",
+	},
+	{
+		Key:                 "thirst",
+		DBColumn:            "thirst",
+		Mild:                "thirsty",
+		Red:                 "parched",
+		Peak:                "desperate",
+		DefaultThreshold:    defaultThirstRedThreshold,
+		ThresholdSettingKey: "thirst_red_threshold",
+	},
+	{
+		Key:                 "tiredness",
+		DBColumn:            "tiredness",
+		Mild:                "tired",
+		Red:                 "weary",
+		Peak:                "exhausted",
+		DefaultThreshold:    defaultTirednessRedThreshold,
+		ThresholdSettingKey: "tiredness_red_threshold",
+	},
+}
+
+// FindNeed returns the Need with the given key. Used by code paths
+// that have a string need key in hand (e.g. crossing detection during
+// the conversion window, where the legacy code uses string keys).
+func FindNeed(key string) (Need, bool) {
+	for _, n := range Needs {
+		if n.Key == key {
+			return n, true
+		}
+	}
+	return Need{}, false
+}
+
+// NeedTier classifies a need's value into intensity bands. Mirrors
+// needLabelTier — once the conversion is complete, needLabelTier will
+// return NeedTier directly instead of int.
+type NeedTier int
+
+const (
+	// NeedSilent — value < 8. NPC isn't aware of the need; perception
+	// suppresses it.
+	NeedSilent NeedTier = 0
+	// NeedMild — value in [8, threshold). Awareness without distress;
+	// the standing distress block filters these out.
+	NeedMild NeedTier = 1
+	// NeedRed — value in [threshold, needMax). Distress; the standing
+	// distress block surfaces these and the chronicler may attend.
+	NeedRed NeedTier = 2
+	// NeedPeak — value == needMax. Critical distress.
+	NeedPeak NeedTier = 3
+)
+
+// Tier classifies a value against this need's threshold. Caller
+// supplies the threshold (loaded via app.loadNeedThreshold) so the
+// computation stays a pure function on Need + values.
+func (n Need) Tier(value, threshold int) NeedTier {
+	if value < 8 {
+		return NeedSilent
+	}
+	if value >= needMax {
+		return NeedPeak
+	}
+	if value >= threshold {
+		return NeedRed
+	}
+	return NeedMild
+}
+
+// Label returns the vocabulary word for the given tier. Empty for
+// NeedSilent — perception code uses that as the "don't surface" signal.
+func (n Need) Label(tier NeedTier) string {
+	switch tier {
+	case NeedMild:
+		return n.Mild
+	case NeedRed:
+		return n.Red
+	case NeedPeak:
+		return n.Peak
+	}
+	return ""
+}
+
+// NeedSet is the values for one actor across the registry. Map keyed
+// by Need.Key. Unknown keys read as 0 (Get is the safe accessor).
+type NeedSet map[string]int
+
+// Get returns the value for the given need key, or 0 if absent.
+// Defaulting to 0 means an actor with a missing row is treated as
+// silent rather than panicking — defensive against partial backfills
+// or future needs added to the registry but not yet in actor_need.
+func (s NeedSet) Get(key string) int {
+	return s[key]
+}
+
+// needsSnapshot reads all need values for one actor. Non-locking — for
+// the post-action readback path, distance perception, and other
+// callers that don't need the lock-out semantics of FOR UPDATE.
+//
+// Returns an empty NeedSet (not nil) when the actor exists but has no
+// rows in actor_need (shouldn't happen post-backfill but stays safe).
+func (app *App) needsSnapshot(ctx context.Context, actorID string) (NeedSet, error) {
+	rows, err := app.DB.Query(ctx,
+		`SELECT key, value FROM actor_need WHERE actor_id = $1`,
+		actorID)
+	if err != nil {
+		return nil, fmt.Errorf("needsSnapshot: query: %w", err)
+	}
+	defer rows.Close()
+	set := NeedSet{}
+	for rows.Next() {
+		var key string
+		var value int
+		if err := rows.Scan(&key, &value); err != nil {
+			return nil, fmt.Errorf("needsSnapshot: scan: %w", err)
+		}
+		set[key] = value
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("needsSnapshot: iterate: %w", err)
+	}
+	return set, nil
+}
+
+// writeNeedRows mirrors a per-actor need-value map onto actor_need
+// rows. Used by the dual-write hooks during the transition — every
+// site that UPDATEs the legacy columns also calls this so the rows
+// stay current. UPSERT pattern via INSERT ... ON CONFLICT to handle
+// both the post-backfill "row exists, update it" case and the
+// future "actor created since backfill" case in one statement.
+//
+// Validates keys against the registry up front so a callsite typo
+// surfaces as a clear error rather than as a CHECK constraint
+// violation from Postgres.
+//
+// Caller is responsible for the transaction. One Exec per (actor,
+// need) entry; small N, acceptable cost. If this becomes hot enough
+// to matter, batch into one INSERT with UNNEST.
+func (app *App) writeNeedRows(ctx context.Context, tx pgx.Tx, actorID string, values map[string]int) error {
+	for key, value := range values {
+		if _, ok := FindNeed(key); !ok {
+			return fmt.Errorf("writeNeedRows: unknown need key %q (not in registry)", key)
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO actor_need (actor_id, key, value)
+			VALUES ($1, $2, $3)
+			ON CONFLICT (actor_id, key) DO UPDATE SET value = EXCLUDED.value
+		`, actorID, key, value); err != nil {
+			return fmt.Errorf("writeNeedRows: upsert (%s, %s): %w", actorID, key, err)
+		}
+	}
+	return nil
+}
+
+// syncAllNeedRowsFromColumns mirrors the current actor.<column> values
+// for every actor onto actor_need rows. Used by the dispatchNeedsTick
+// dual-write hook AFTER the legacy batch UPDATE has run, so the rows
+// pick up the post-tick values for every actor — including actors
+// created since the ZBBS-121 backfill (which have legacy columns from
+// NOT NULL DEFAULT 0 but no actor_need rows yet, so a plain UPDATE on
+// actor_need would silently skip them).
+//
+// One Exec per Need (three today). INSERT ... ON CONFLICT handles
+// both row-exists (UPDATE) and row-missing (INSERT) in one statement.
+// Reads the column value directly so clamp semantics match the legacy
+// UPDATE by construction — no risk of subtle drift between the two
+// write paths.
+//
+// Removed when read sites are converted and the legacy columns drop;
+// at that point the row UPDATE becomes the only write and a plain
+// `UPDATE actor_need SET value = LEAST(needMax, value + amount)` is
+// sufficient (no need to derive from columns that no longer exist).
+//
+// The DBColumn name is interpolated into the SQL because pgx doesn't
+// support column-name parameterization. The Need registry is the only
+// source of column names; no user input reaches this path.
+func (app *App) syncAllNeedRowsFromColumns(ctx context.Context, tx pgx.Tx) error {
+	for _, n := range Needs {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO actor_need (actor_id, key, value)
+			SELECT id, $1, `+n.DBColumn+` FROM actor
+			ON CONFLICT (actor_id, key) DO UPDATE SET value = EXCLUDED.value
+		`, n.Key); err != nil {
+			return fmt.Errorf("syncAllNeedRowsFromColumns(%s): %w", n.Key, err)
+		}
+	}
+	return nil
+}

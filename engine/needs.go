@@ -242,6 +242,19 @@ func (app *App) dispatchNeedsTick(ctx context.Context) {
 		return
 	}
 
+	// Dual-write to actor_need rows (ZBBS-121). Sync FROM the
+	// post-UPDATE column values so the rows match by construction
+	// (avoids subtle clamp/filter drift between the two paths) and so
+	// actors created since the backfill — who have legacy columns but
+	// no actor_need rows yet — get their rows populated here. Runs in
+	// the same tx as the column UPDATE so column + row commit or roll
+	// back together. Removed when the read sites convert and the
+	// legacy columns drop.
+	if err := app.syncAllNeedRowsFromColumns(ctx, tx); err != nil {
+		log.Printf("needs_tick: dual-write rows failed (rolling back, will retry next minute): %v", err)
+		return
+	}
+
 	if _, err := tx.Exec(ctx,
 		`UPDATE setting SET value = $1 WHERE key = 'last_needs_tick_at'`,
 		hourBoundaryStr,
