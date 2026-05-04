@@ -969,7 +969,7 @@ func (app *App) fireKnockPerception(ctx context.Context, pcActorID, huddleID, st
 		log.Printf("knock-perception audit insert: %v", err)
 	}
 
-	sceneID := newUUIDv7()
+	sceneID := app.newScene(ctx, structureID)
 	log.Printf("knock-trace fireKnockPerception pc=%s structure=%s huddle=%s scene=%s — triggering co-located ticks",
 		pcActorID, structureID, huddleID, sceneID)
 	app.triggerCoLocatedTicks(ctx, structureID, "", "pc-knocked", true, sceneID, pcActorID)
@@ -1328,7 +1328,7 @@ func (app *App) handlePCSpeak(w http.ResponseWriter, r *http.Request) {
 		// those ticks, will inherit the same UUID. Walks initiated during
 		// reactions don't carry it forward — when the NPC arrives somewhere
 		// later, that arrival is its own new scene.
-		app.triggerCoLocatedTicks(context.Background(), structureID, "", fmt.Sprintf("pc-spoke (%s)", charName.String), true, newUUIDv7(), actorID.String)
+		app.triggerCoLocatedTicks(context.Background(), structureID, "", fmt.Sprintf("pc-spoke (%s)", charName.String), true, app.newScene(context.Background(), structureID), actorID.String)
 
 		// Cascade origin — fire the chronicler alongside the co-located
 		// reactor ticks. Fire-and-forget; chronicler runs in a goroutine
