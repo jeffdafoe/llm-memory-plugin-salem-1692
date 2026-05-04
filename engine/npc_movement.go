@@ -410,10 +410,23 @@ func (app *App) applyArrival(npcID string) {
 			// signal worth reacting to.
 			force := arriverIsPC
 			app.triggerCoLocatedTicks(ctx, insideID.String, npcID, "arrival", force, app.newScene(ctx, insideID.String), npcID)
-			// Cascade origin — fire the chronicler alongside the
-			// reactor ticks. Once per arrival, not per in-cascade
-			// NPC reaction.
-			app.cascadeOriginFireChronicler("arrival", insideID.String)
+			// Chronicler dispatch (ZBBS-119). NPC arrivals route
+			// through the buffered dispatcher when the feature flag
+			// is on so concurrent arrivals coalesce into one fire
+			// instead of racing parallel cascades. PC arrivals stay
+			// on the immediate path for now — the high-priority
+			// early-flush lane lands in a follow-up commit. Flag
+			// off (default) keeps the legacy behavior intact for
+			// every arrival.
+			if arriverIsAgent && !arriverIsPC && app.chroniclerBufferedDispatchEnabled(ctx) {
+				app.ChroniclerDispatchQueue.enqueueArrival(npcID, displayName, insideID.String, structName, time.Now().UTC())
+				app.ChroniclerBufferedDispatcher.notify()
+			} else {
+				// Legacy / PC path — fire the chronicler alongside the
+				// reactor ticks. Once per arrival, not per in-cascade
+				// NPC reaction.
+				app.cascadeOriginFireChronicler("arrival", insideID.String)
+			}
 		}
 	}
 
