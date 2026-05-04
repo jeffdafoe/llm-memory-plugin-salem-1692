@@ -40,6 +40,12 @@ const (
 	dispatchShiftStart    chroniclerDispatchEventType = "shift_start"
 	dispatchShiftEnd      chroniclerDispatchEventType = "shift_end"
 	dispatchNeedsResolved chroniclerDispatchEventType = "needs_resolved"
+	// dispatchArrival (ZBBS-119) batches NPC arrivals at structures so the
+	// buffered chronicler dispatcher can render "Since your last pass: X
+	// arrived at Y" lines instead of firing one cascade per arrival. Today
+	// only the buffered path enqueues these; the legacy immediate-cascade
+	// path stays untouched until the feature flag flips.
+	dispatchArrival chroniclerDispatchEventType = "arrival"
 )
 
 // chroniclerDispatchAgent is one agent-NPC entry within a batch. All
@@ -48,9 +54,11 @@ const (
 //
 // Shift events use ShiftStart / ShiftEnd / WorkPlace. Needs-resolved events
 // reuse the shift-window fields (so the chronicler sees the same "should
-// be at work right now" framing) and add ResolvedNeeds + Source. WorkPlace
-// is empty for agents without a job assigned, in which case the
-// shift-related fields are skipped at render time.
+// be at work right now" framing) and add ResolvedNeeds + Source. Arrival
+// events (ZBBS-119) populate ArrivalStructureID + ArrivalStructureName +
+// OccurredAt and leave the shift fields empty. WorkPlace is empty for
+// agents without a job assigned, in which case the shift-related fields
+// are skipped at render time.
 type chroniclerDispatchAgent struct {
 	ID           string
 	DisplayName  string
@@ -63,6 +71,17 @@ type chroniclerDispatchAgent struct {
 	// events; ignored on shift events.
 	ResolvedNeeds []string // e.g. []string{"thirst"} or []string{"hunger", "thirst"}
 	Source        string   // "well" / "meal_or_drink" / "admin" / etc.
+
+	// Arrival fields. Populated only for dispatchArrival events; ignored
+	// on shift / needs_resolved events. ArrivalStructureID is the
+	// destination's village_object.id so dedup and downstream lookups can
+	// key on identity (not display name). ArrivalStructureName is
+	// pre-resolved for perception render. OccurredAt is the wall-clock
+	// time of the arrival itself, distinct from the batch's BoundaryAt
+	// (which is when the batch was bucketed by enqueue).
+	ArrivalStructureID   string
+	ArrivalStructureName string
+	OccurredAt           time.Time
 }
 
 // chroniclerDispatchBatch is one (event_type, boundary_minute) group with
@@ -142,6 +161,57 @@ func (q *chroniclerDispatchQueue) drain() []*chroniclerDispatchBatch {
 	}
 	q.batches = make(map[chroniclerBatchKey]*chroniclerDispatchBatch)
 	return out
+}
+
+// enqueueArrival is the dispatchArrival-specific helper. Same batching
+// semantics as enqueue, but with within-batch dedup on
+// (npcID, structureID): an actor walking back-and-forth across a tile
+// boundary in the same window collapses to one entry rather than
+// emitting duplicate "X arrived at Y" lines. The latest OccurredAt
+// wins for the kept entry so perception render reflects the most
+// recent arrival timestamp.
+//
+// Two-level dedup (per design): this is layer 1 (exact). Layer 2
+// (perception grouping that merges related events for the same actor
+// across kinds — e.g. arrival + shift_boundary → one line) happens at
+// perception build time; the queue stores raw events.
+//
+// Nil-safe: returns silently when q is nil.
+func (q *chroniclerDispatchQueue) enqueueArrival(npcID, npcName, structureID, structureName string, occurredAt time.Time) {
+	if q == nil {
+		return
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	key := chroniclerBatchKey{
+		EventType: dispatchArrival,
+		UnixMin:   occurredAt.Unix() / 60,
+	}
+	b, ok := q.batches[key]
+	if !ok {
+		b = &chroniclerDispatchBatch{
+			EventType:  dispatchArrival,
+			BoundaryAt: occurredAt,
+		}
+		q.batches[key] = b
+	}
+	for i := range b.Agents {
+		if b.Agents[i].ID == npcID && b.Agents[i].ArrivalStructureID == structureID {
+			// Latest occurrence wins; perception renders the most recent
+			// arrival timestamp for the (npc, structure) pair.
+			if occurredAt.After(b.Agents[i].OccurredAt) {
+				b.Agents[i].OccurredAt = occurredAt
+			}
+			return
+		}
+	}
+	b.Agents = append(b.Agents, chroniclerDispatchAgent{
+		ID:                   npcID,
+		DisplayName:          npcName,
+		ArrivalStructureID:   structureID,
+		ArrivalStructureName: structureName,
+		OccurredAt:           occurredAt,
+	})
 }
 
 // pending reports the number of queued batches without draining. Used by
