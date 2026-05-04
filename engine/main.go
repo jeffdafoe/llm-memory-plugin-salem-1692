@@ -53,6 +53,20 @@ type App struct {
 	NPCDisplayNames   map[string]string
 	NPCDisplayNamesMu sync.RWMutex
 
+	// ChroniclerFireSem is the size-1 serialization slot used when
+	// chronicler_buffered_dispatch is on (ZBBS-119). All chronicler
+	// fires (buffered timer flush + cascade fires from PC speech /
+	// admin / arrivals during legacy windows) acquire through here so
+	// no two fires run in parallel — eliminates the cross-cascade
+	// race where one cascade's attend_to dispatch was silently dropped
+	// by the in-flight gate while another cascade ran the same NPC.
+	// Drop-on-full is acceptable: events stay on
+	// ChroniclerDispatchQueue and the next fire picks them up.
+	//
+	// Distinct from ChroniclerSem (legacy path) so flipping the
+	// feature flag mid-session doesn't require resizing a live sem.
+	ChroniclerFireSem chan struct{}
+
 	// ChroniclerSem caps the number of concurrent cascade-origin
 	// chronicler fires in flight. Cascade origins (PC speech, NPC
 	// arrival) can bunch — this prevents a slow / hung chat API from
@@ -292,6 +306,9 @@ func main() {
 		// Capacity 2 — concurrent cascade chronicler fires. PC speech +
 		// NPC arrival can briefly overlap; more than that gets skipped.
 		ChroniclerSem: make(chan struct{}, 2),
+		// Capacity 1 — the buffered dispatcher's serialization slot.
+		// Used only when chronicler_buffered_dispatch is on (ZBBS-119).
+		ChroniclerFireSem: make(chan struct{}, 1),
 		// Capacity 4 — concurrent attend_to-spawned agent ticks. Bounds
 		// burst when the overseer dispatches multiple villagers at once.
 		OverseerAttendSem: make(chan struct{}, 4),
