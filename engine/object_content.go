@@ -342,14 +342,30 @@ func (app *App) callChroniclerForBoard(ctx context.Context, location string, cap
 		noun = "notices"
 	}
 	fmt.Fprintf(&prompt, "The board has space for %d short %s.\n", capacity, noun)
+
+	prompt.WriteString(`
+A noticeboard in Salem 1692 carries things villagers actually post — items pinned up with a reason. Examples of what belongs:
+
+  - Civic announcements: a town meeting, a militia muster, sermon hours, the next court day.
+  - Lost & found: a misplaced shawl, a strayed cow, a recovered ring.
+  - Wares and services: apothecary stock arrived, the smith shoeing horses Tuesday, ale freshly brewed at the Tavern, the inn taking lodgers.
+  - Warnings: wolves heard near the wood pile, strangers seen about at dusk, a rotted plank on the bridge.
+  - News: a visiting minister expected, banns for a wedding, a death in the parish, a ship arrived at port.
+  - Petitions and grievances: a fence in disrepair, a swine taken up at the well, a debt unpaid.
+
+Do NOT write surveillance about who is presently at what location, what they are doing right now, or what they feel or want in this moment. The board is not a status feed — by the time anyone reads it, that moment has passed. Write things a townsperson would post with intent: to inform, warn, advertise, announce, summon, or petition.
+
+Voice: as a 1692 villager would post it. Formal for civic announcements, plain for offerings and warnings. One notice per line. No numbering, bullets, or headings.
+`)
+
 	if prior != "" {
-		prompt.WriteString("\nThe previous text on the board, now coming down, read:\n")
+		prompt.WriteString("\nFor your reference, the board carried the following before — these notices have served their purpose and are being replaced. Do NOT repeat them; find different things to post:\n")
 		prompt.WriteString(prior)
 		prompt.WriteString("\n")
 	}
 
 	if len(targets) > 0 {
-		prompt.WriteString("\nAvailable targets you may attach concerns to (use the exact name):\n")
+		prompt.WriteString("\nIf a notice does carry a durable named-party fact (see concerns rule below), use a name from this list verbatim:\n")
 		for _, t := range targets {
 			prompt.WriteString("  - ")
 			prompt.WriteString(t)
@@ -361,10 +377,10 @@ func (app *App) callChroniclerForBoard(ctx context.Context, location string, cap
 	prompt.WriteString("{\n")
 	prompt.WriteString("  \"notice\": \"the prose, one notice per line, period-correct Salem 1692\",\n")
 	prompt.WriteString("  \"concerns\": [\n")
-	prompt.WriteString("    {\"target\": \"<name from the list above>\", \"text\": \"<one-sentence fact attached to that target>\"}\n")
+	prompt.WriteString("    {\"target\": \"<name from the list above>\", \"text\": \"<one-sentence durable fact>\"}\n")
 	prompt.WriteString("  ]\n")
 	prompt.WriteString("}\n")
-	prompt.WriteString("\nFor each notice that names a specific structure or actor, attach a matching concern so the affected party retains the fact (e.g., a notice 'A shawl was lost at the Tavern' should attach a concern targeting Tavern: 'A plain woolen shawl was left here.'). Notices without a clear named target produce no concern. Omit the concerns array entirely when the notices are pure atmosphere with no named target.")
+	prompt.WriteString("\nA concern is a *durable fact* a named party might later discover or act on — a lost item left at the Tavern, posted service hours at the smithy, a visitor expected at the Mansion, a debt owed to a named villager. Most notices produce zero or one concern, not many. Do NOT attach concerns for transient state such as \"X is at Y\", \"X is at work today\", \"X is hungry\", or \"X is here.\" If no notice carries a durable named-party fact, omit the concerns array entirely.")
 
 	// Noticeboard content generation is village-wide chronicler authoring,
 	// not a place-anchored cascade — pass empty structure so the scenes
