@@ -93,10 +93,15 @@
       debug:
         msg: "Migrations: {{ migration_files.files | length }} total, {{ applied_list | length }} applied, {{ pending_migrations | length }} pending"
 
+    # ON_ERROR_STOP=1 makes psql exit non-zero on the first SQL error.
+    # Without it, psql swallows errors inside BEGIN/COMMIT blocks and
+    # exits 0 anyway, so the && chain still records the migration as
+    # applied even when its SQL rolled back. ZBBS-119 hit this when its
+    # description strings overflowed setting.description varchar(255).
     - name: Run pending SQL migrations
       shell: |
-        sudo -u postgres psql -d {{ database_name }} -f "{{ item.path }}" && \
-        sudo -u postgres psql -d {{ database_name }} -c "INSERT INTO migrations_applied (migration_name) VALUES ('{{ item.path | basename | replace('_up.sql', '') }}');"
+        sudo -u postgres psql -d {{ database_name }} -v ON_ERROR_STOP=1 -f "{{ item.path }}" && \
+        sudo -u postgres psql -d {{ database_name }} -v ON_ERROR_STOP=1 -c "INSERT INTO migrations_applied (migration_name) VALUES ('{{ item.path | basename | replace('_up.sql', '') }}');"
       loop: "{{ pending_migrations }}"
       loop_control:
         label: "{{ item.path | basename }}"
