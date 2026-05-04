@@ -287,11 +287,26 @@ func villageEventTextForPhase(phase string) string {
 // each other's speech inside an in-flight scene). Only at scene-starts.
 // Bounds chronicler cost — once per scene, not per utterance.
 //
-// Concurrency-capped via app.ChroniclerSem so a slow / hung chat API
-// can't pile up unbounded goroutines. Cascade fires that arrive while
-// the slot is full are skipped (logged) rather than queued — better to
-// drop a fire than to back up an arbitrary queue with stale work.
+// Two concurrency policies, picked at call time by the
+// chronicler_buffered_dispatch feature flag (ZBBS-119):
+//
+//   - flag ON  → ChroniclerFireSem (size 1). Single in-flight slot
+//     across cascade fires AND the buffered dispatcher's flush. No
+//     two chronicler fires run in parallel. Drop-on-full means the
+//     events stay on ChroniclerDispatchQueue for the next fire to
+//     pick up; the buffered timer ensures another fire happens.
+//   - flag OFF → ChroniclerSem (size 2, legacy). Two concurrent
+//     cascades allowed. This is the diagnosed parallel-cascade race;
+//     buffering is the fix, this branch stays only as the rollback.
+//
+// Cascade fires that arrive while the slot is full are skipped
+// (logged) rather than queued — better to drop a fire than to back
+// up an arbitrary queue with stale work.
 func (app *App) cascadeOriginFireChronicler(reason, structureID string) {
+	if app.chroniclerBufferedDispatchEnabled(context.Background()) {
+		app.fireChroniclerSerialized(reason, structureID)
+		return
+	}
 	if app.ChroniclerSem == nil {
 		// Defensive — should always be initialized at startup. If not,
 		// fall through to the unbounded path so we don't silently drop
@@ -307,6 +322,32 @@ func (app *App) cascadeOriginFireChronicler(reason, structureID string) {
 		}()
 	default:
 		log.Printf("chronicler-cascade: slot full, skipping fire (reason=%q)", reason)
+	}
+}
+
+// fireChroniclerSerialized is the size-1 sem path used when
+// chronicler_buffered_dispatch is on. Same shape as the legacy sem
+// branch above but routes through ChroniclerFireSem so cascade fires
+// and buffered-dispatcher timer flushes share one in-flight slot.
+//
+// Drop-on-full is the failure mode. The dropped fire's reason is
+// logged and the events stay on ChroniclerDispatchQueue. The buffered
+// dispatcher's timer is the safety net — it'll re-arm on the next
+// notify and fire when the slot frees up.
+func (app *App) fireChroniclerSerialized(reason, structureID string) {
+	if app.ChroniclerFireSem == nil {
+		// Defensive — same as the legacy fall-through.
+		go app.runCascadeFire(reason, structureID)
+		return
+	}
+	select {
+	case app.ChroniclerFireSem <- struct{}{}:
+		go func() {
+			defer func() { <-app.ChroniclerFireSem }()
+			app.runCascadeFire(reason, structureID)
+		}()
+	default:
+		log.Printf("chronicler-buffered: fire slot full, skipping (reason=%q) — events stay queued for next fire", reason)
 	}
 }
 
