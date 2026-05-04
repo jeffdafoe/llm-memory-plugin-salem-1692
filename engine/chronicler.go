@@ -37,12 +37,24 @@ const (
 	// cross-namespace recall against any of them.
 	chroniclerAgent = "salem-chronicler"
 
-	// Harness budget — the chronicler typically does set_environment +
-	// (optional) record_event + done. 4 iterations is plenty; rarely
-	// needs more than 3. Lower than agentTickBudget=6 for NPCs because
-	// chroniclers don't have to react to follow-up nudges the way NPCs
-	// do (no "you spoke, continue your turn" pattern).
-	chroniclerTickBudget = 4
+	// Harness budget — max iterations per chronicler fire. Each
+	// iteration is one model API call processing one tool call
+	// (set_environment, record_event, recall, attend_to, done).
+	// Default 8; pre-buffering this was 4 in-code, plenty when each
+	// fire saw one event. Post-buffering (ZBBS-119) the dispatcher
+	// consolidates 5+ events into one fire so the chronicler needs
+	// more iterations to process them all — at 4 iterations the
+	// effective attend ceiling was ~3 NPCs per fire (one slot for
+	// done). Loaded per fire via chronicler_tick_budget setting,
+	// clamped to [chroniclerTickBudgetMin, chroniclerTickBudgetMax].
+	chroniclerTickBudgetDefault = 8
+	chroniclerTickBudgetMin     = 1
+	chroniclerTickBudgetMax     = 32
+
+	// settingKeyChroniclerTickBudget is the setting row read on each
+	// fire so an admin tweak takes effect on the next fire without an
+	// engine restart.
+	settingKeyChroniclerTickBudget = "chronicler_tick_budget"
 
 	// Recent atmospheric statements surfaced in the chronicler's own
 	// perception. Lets it evolve atmosphere coherently rather than
@@ -554,7 +566,18 @@ func (app *App) fireChronicler(ctx context.Context, reason chroniclerFireReason)
 	// chronicler boundary saves the call and tells the model to move on.
 	attendedThisFire := map[string]bool{}
 
-	for iter := 0; iter < chroniclerTickBudget; iter++ {
+	// Per-fire tick budget — read from settings each fire so an admin
+	// tweak takes effect immediately. Out-of-bounds values fall back
+	// to the default rather than letting a misconfigured row break
+	// every fire.
+	tickBudget := app.loadNonNegativeIntSetting(ctx, settingKeyChroniclerTickBudget, chroniclerTickBudgetDefault)
+	if tickBudget < chroniclerTickBudgetMin || tickBudget > chroniclerTickBudgetMax {
+		log.Printf("chronicler: tick budget %d out of bounds [%d, %d], using default %d",
+			tickBudget, chroniclerTickBudgetMin, chroniclerTickBudgetMax, chroniclerTickBudgetDefault)
+		tickBudget = chroniclerTickBudgetDefault
+	}
+
+	for iter := 0; iter < tickBudget; iter++ {
 		reply, err := app.npcChatClient.sendChat(ctx, chroniclerAgent, currentMessage, currentToolCallID, sceneID, tools)
 		if err != nil {
 			log.Printf("chronicler iter=%d: %v", iter, err)
