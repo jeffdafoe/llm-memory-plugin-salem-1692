@@ -409,7 +409,7 @@ func (app *App) applyArrival(npcID string) {
 			// their schedule-driven movement is background, not a
 			// signal worth reacting to.
 			force := arriverIsPC
-			app.triggerCoLocatedTicks(ctx, insideID.String, npcID, "arrival", force, newUUIDv7(), npcID)
+			app.triggerCoLocatedTicks(ctx, insideID.String, npcID, "arrival", force, app.newScene(ctx, insideID.String), npcID)
 			// Cascade origin — fire the chronicler alongside the
 			// reactor ticks. Once per arrival, not per in-cascade
 			// NPC reaction.
@@ -447,7 +447,7 @@ func (app *App) applyArrival(npcID string) {
 			log.Printf("event-tick %s: skipped on arrival — agent_override_until pinned until %s",
 				displayName, overrideUntil.Time.Format(time.RFC3339))
 		} else {
-			go app.triggerImmediateTick(context.Background(), npcID, "arrived", true, newUUIDv7(), npcID)
+			go app.triggerImmediateTick(context.Background(), npcID, "arrived", true, app.newScene(ctx, insideID.String), npcID)
 		}
 	}
 }

@@ -198,6 +198,6 @@ func (app *App) handleTriggerAgentTick(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	go app.triggerImmediateTick(context.Background(), agentID, "admin-trigger", true, newUUIDv7(), agentID)
+	go app.triggerImmediateTick(context.Background(), agentID, "admin-trigger", true, app.newScene(context.Background(), ""), agentID)
 	w.WriteHeader(http.StatusAccepted)
 }

@@ -366,7 +366,10 @@ func (app *App) callChroniclerForBoard(ctx context.Context, location string, cap
 	prompt.WriteString("}\n")
 	prompt.WriteString("\nFor each notice that names a specific structure or actor, attach a matching concern so the affected party retains the fact (e.g., a notice 'A shawl was lost at the Tavern' should attach a concern targeting Tavern: 'A plain woolen shawl was left here.'). Notices without a clear named target produce no concern. Omit the concerns array entirely when the notices are pure atmosphere with no named target.")
 
-	sceneID := newUUIDv7()
+	// Noticeboard content generation is village-wide chronicler authoring,
+	// not a place-anchored cascade — pass empty structure so the scenes
+	// row records NULL and the admin UI omits the location chip.
+	sceneID := app.newScene(ctx, "")
 	reply, err := app.npcChatClient.sendChat(ctx, chroniclerAgent, prompt.String(), "", sceneID, nil)
 	if err != nil {
 		return chroniclerBoardReply{}, err

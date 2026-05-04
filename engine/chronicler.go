@@ -375,7 +375,11 @@ func (app *App) fireChronicler(ctx context.Context, reason chroniclerFireReason)
 	chatSucceeded := false
 	// Group this fire's harness iterations under one scene_id (MEM-121)
 	// so the admin UI can collapse them into a single expandable row.
-	sceneID := newUUIDv7()
+	// reason.StructureID carries the cascade origin for "cascade" fires
+	// and is empty for "phase" / "shift_boundary" fires — both are
+	// village-wide, so newScene records NULL structure_id and the admin
+	// UI shows no location chip.
+	sceneID := app.newScene(ctx, reason.StructureID)
 
 	// Per-fire attend_to counter (ZBBS-083). Reset each fire — the
 	// configured ceiling is per-fire, not per-day. Read once at the top
