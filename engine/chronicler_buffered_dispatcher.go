@@ -2,9 +2,9 @@ package main
 
 // Buffered chronicler dispatcher (ZBBS-119). Sits in front of the
 // chronicler-fire path and coalesces routine village events
-// (arrivals, shift boundaries, atmosphere shifts, needs_resolved)
-// into a single consolidated chronicler call per window, instead of
-// firing a separate cascade scene for each event.
+// (arrivals, shift boundaries, atmosphere shifts, needs_resolved,
+// needs_onset) into a single consolidated chronicler call per
+// window, instead of firing a separate cascade scene for each event.
 //
 // Why: today every cascade-origin event spawns its own chronicler
 // fire. Concurrent cascades stomp each other's `attend_to` dispatches

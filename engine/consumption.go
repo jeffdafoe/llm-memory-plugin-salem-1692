@@ -126,17 +126,29 @@ func (app *App) applyConsumption(ctx context.Context, tx pgx.Tx, actorID string,
 	// 4. Detect threshold crossings. Same red-threshold settings the
 	// chronicler distress section uses, so an NPC newly absent from
 	// that section is exactly an NPC who fired a needs_resolved event.
+	//
+	// Hysteresis (ZBBS-119 Phase 2.A): resolved fires only when the new
+	// value is strictly below `threshold - needsHysteresisMargin`, not
+	// merely below `threshold`. Prevents flapping if a future config
+	// reduces consumption magnitude below the margin (today's default
+	// resets the need to 0, so this is defensive). The onset-side
+	// detector in needs.go uses the bare `>= threshold` test — distress
+	// triggers as soon as the need crosses up, but resolution waits
+	// until the actor is comfortably below.
 	hungerT := app.loadNeedThreshold(ctx, "hunger_red_threshold", defaultHungerRedThreshold)
 	thirstT := app.loadNeedThreshold(ctx, "thirst_red_threshold", defaultThirstRedThreshold)
 	tiredT := app.loadNeedThreshold(ctx, "tiredness_red_threshold", defaultTirednessRedThreshold)
 
-	if oldH >= hungerT && newH < hungerT {
+	hungerResolveT := needResolveThreshold(hungerT)
+	thirstResolveT := needResolveThreshold(thirstT)
+	tiredResolveT := needResolveThreshold(tiredT)
+	if oldH >= hungerT && newH < hungerResolveT {
 		result.Crosses = append(result.Crosses, needCross{Need: "hunger", OldValue: oldH, NewValue: newH})
 	}
-	if oldT >= thirstT && newT < thirstT {
+	if oldT >= thirstT && newT < thirstResolveT {
 		result.Crosses = append(result.Crosses, needCross{Need: "thirst", OldValue: oldT, NewValue: newT})
 	}
-	if oldTi >= tiredT && newTi < tiredT {
+	if oldTi >= tiredT && newTi < tiredResolveT {
 		result.Crosses = append(result.Crosses, needCross{Need: "tiredness", OldValue: oldTi, NewValue: newTi})
 	}
 	if len(result.Crosses) == 0 {

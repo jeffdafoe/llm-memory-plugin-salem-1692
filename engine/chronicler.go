@@ -1747,25 +1747,28 @@ func (app *App) buildChroniclerDistressList(ctx context.Context) string {
 // caller (fireChronicler) is responsible for draining the queue. Empty
 // when batches is empty.
 //
-// Sections in stable order: shift_start, shift_end, needs_resolved.
-// Each section uses its own line format (shift events lead with the
-// work assignment + window; needs_resolved events lead with the
-// satisfied need + source).
+// Sections in stable order: arrival, shift_start, shift_end,
+// needs_onset, needs_resolved. Each section uses its own line format
+// (shift events lead with the work assignment + window; needs events
+// lead with the relevant needs and the actor's current place).
 //
 // Examples:
 //
 //	Beginning their shift now:
 //	- Ezekiel Crane (Blacksmith, 07:00-19:00) -- currently at the Inn
 //
+//	Needs newly arising:
+//	- Josiah Brand -- now weary -- currently at the Mill (work: Mill, 07:00-19:00)
+//
 //	Needs newly satisfied:
 //	- Prudence Ward -- no longer parched [from the well] -- currently at the Well (work: Apothecary, 07:30-18:30)
 //
 // The chronicler reads these sections and decides whether to attend
 // each listed villager. The attend_to tool's broader authorization
-// covers shift-begin, shift-end, and needs-resolved as legitimate
-// reasons (NPCs who abandoned posts due to high needs and now don't
-// have those needs are exactly the case the chronicler should nudge
-// back to work).
+// covers shift-begin, shift-end, needs-onset, and needs-resolved as
+// legitimate reasons (NPCs newly distressed at their workplace, or
+// who abandoned posts due to high needs and now don't have those
+// needs, are both the case the chronicler should nudge).
 func (app *App) renderDispatchSections(ctx context.Context, batches []*chroniclerDispatchBatch) []string {
 	if len(batches) == 0 {
 		return nil
@@ -1818,11 +1821,15 @@ func (app *App) renderDispatchSections(ctx context.Context, batches []*chronicle
 	}
 
 	// Stable section order across fires regardless of map iteration order.
+	// Onset before resolved so the chronicler reads new distress before
+	// recoveries — fresh problems usually warrant attention sooner than
+	// resolutions (which are nudge-back-to-work signals, not crises).
 	var sections []string
 	for _, et := range []chroniclerDispatchEventType{
 		dispatchArrival,
 		dispatchShiftStart,
 		dispatchShiftEnd,
+		dispatchNeedsOnset,
 		dispatchNeedsResolved,
 	} {
 		agents := byType[et]
@@ -1838,6 +1845,8 @@ func (app *App) renderDispatchSections(ctx context.Context, batches []*chronicle
 			}
 		case dispatchShiftEnd:
 			sections = append(sections, renderShiftSection(et, agents, nil))
+		case dispatchNeedsOnset:
+			sections = append(sections, renderNeedsOnsetSection(agents))
 		case dispatchNeedsResolved:
 			sections = append(sections, renderNeedsResolvedSection(agents))
 		}
@@ -2078,6 +2087,47 @@ func renderShiftSection(et chroniclerDispatchEventType, agents []chroniclerDispa
 	}
 	if !wrote {
 		return ""
+	}
+	return b.String()
+}
+
+// renderNeedsOnsetSection renders the "Needs newly arising" section for
+// villagers whose hunger/thirst/tiredness crossed UP into the red
+// threshold on the most recent needs tick. Inverse of
+// renderNeedsResolvedSection — the chronicler reads these as fresh
+// distress events that may warrant attend_to before the need climbs
+// to peak. No source field; the onset is the natural drift of the
+// hourly tick, not a discrete in-world action.
+//
+// Lines mirror the resolved section's structure (place + work
+// annotation) so the chronicler can spot "newly weary at the Mill,
+// works there" — distress at the workplace is an attend candidate,
+// distress off-shift may not need intervention.
+func renderNeedsOnsetSection(agents []chroniclerDispatchAgent) string {
+	var b strings.Builder
+	b.WriteString("Needs newly arising:")
+	for _, a := range agents {
+		b.WriteString("\n- ")
+		b.WriteString(a.DisplayName)
+		b.WriteString(" -- now ")
+		// joinResolvedNeedLabels joins need keys into the red-tier
+		// vocabulary (hungry / parched / weary). The "Resolved" prefix
+		// in its name is historical — the join itself is direction-
+		// agnostic, and the same vocabulary applies to fresh distress.
+		b.WriteString(joinResolvedNeedLabels(a.OnsetNeeds))
+		b.WriteString(" -- currently at ")
+		b.WriteString(a.CurrentPlace)
+		if a.WorkPlace != "" {
+			b.WriteString(" (work: ")
+			b.WriteString(a.WorkPlace)
+			if a.ShiftStart != "" && a.ShiftEnd != "" {
+				b.WriteString(", ")
+				b.WriteString(a.ShiftStart)
+				b.WriteString("-")
+				b.WriteString(a.ShiftEnd)
+			}
+			b.WriteString(")")
+		}
 	}
 	return b.String()
 }
