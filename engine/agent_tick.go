@@ -468,34 +468,24 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, 
 	// both producing identical "served stew" act rows because the
 	// model saw the same room twice.
 	//
-	// Checked BEFORE scene-dedup so a dropped tick doesn't consume a
-	// reaction-cap slot in the SceneTickedActors map.
+	// In-flight gate AND cost guard both run BEFORE scene-dedup so a
+	// dropped tick never consumes a reaction-cap slot in the
+	// SceneTickedActors map. Without that ordering an arrival cascade
+	// (force=false) could be cost-skipped after claiming John's
+	// (sceneID, actor) slot with lastTriggerActor=Josiah, then the
+	// very next force=true speak cascade (same scene, same speaker)
+	// would be turned away by claimSceneTick's "same trigger actor"
+	// rule and John would never react to a speech aimed at the room
+	// he was sitting in.
 	if !app.tryClaimAgentTick(npcID) {
 		log.Printf("event-tick %s (%s): skipped — prior tick still in flight", npcID, reason)
 		return
 	}
 	defer app.releaseAgentTick(npcID)
 
-	// Scene-level dedup. See SceneTickedActors / claimSceneTick comments
-	// for the policy: same triggering actor in the same scene drops, and
-	// a hard cap on reactions per (scene, actor) backstops cost.
-	//
-	// Empty sceneID skips the gate — used only for paths that haven't
-	// adopted scene_id yet (defensive; current callers all provide one).
-	if sceneID != "" {
-		if allowed, reason2 := app.claimSceneTick(sceneID, npcID, triggerActorID); !allowed {
-			log.Printf("event-tick %s (%s): skipped — %s in scene %s", npcID, reason, reason2, sceneID)
-			return
-		}
-	}
-	cfg, err := app.loadWorldConfig(ctx)
-	if err != nil {
-		log.Printf("event-tick %s (%s): load config: %v", npcID, reason, err)
-		return
-	}
-	now := time.Now().In(cfg.Location)
-
-	// Load the single NPC row.
+	// Load the single NPC row. Pulled forward (was after scene-dedup) so
+	// the cost guard below can run before claimSceneTick — see comment
+	// above on why the order matters.
 	row := app.DB.QueryRow(ctx,
 		`SELECT n.id, n.display_name, n.llm_memory_agent,
 		        n.llm_memory_api_key,
@@ -540,6 +530,25 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, 
 			r.DisplayName, reason, time.Since(r.LastAgentTickAt.Time).Round(time.Second))
 		return
 	}
+
+	// Scene-level dedup. See SceneTickedActors / claimSceneTick comments
+	// for the policy: same triggering actor in the same scene drops, and
+	// a hard cap on reactions per (scene, actor) backstops cost.
+	//
+	// Empty sceneID skips the gate — used only for paths that haven't
+	// adopted scene_id yet (defensive; current callers all provide one).
+	if sceneID != "" {
+		if allowed, reason2 := app.claimSceneTick(sceneID, npcID, triggerActorID); !allowed {
+			log.Printf("event-tick %s (%s): skipped — %s in scene %s", npcID, reason, reason2, sceneID)
+			return
+		}
+	}
+	cfg, err := app.loadWorldConfig(ctx)
+	if err != nil {
+		log.Printf("event-tick %s (%s): load config: %v", npcID, reason, err)
+		return
+	}
+	now := time.Now().In(cfg.Location)
 
 	// Cancel any pending self-tick (ZBBS-110). A cascade origin (PC speak,
 	// other-NPC arrival, chronicler attend, summon delivery, scheduled
