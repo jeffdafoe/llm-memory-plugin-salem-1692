@@ -752,7 +752,7 @@ func agentToolSpec() []agentToolDef {
 		},
 		{
 			Name:        "speak",
-			Description: "Say something out loud to people at your current location. Optional mentions field tags item_kinds your speech references (so customers' pay dropdowns can populate); see the parameter description.",
+			Description: "Say something out loud to people at your current location. Optional mentions field tags item_kinds your speech references (so customers' pay dropdowns can populate); see the parameter description. Optional price field locks in a per-unit asking price for ALL items in mentions — customers who pay less than that will be REJECTED at the engine, so use it whenever you state a price out loud.",
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -761,6 +761,10 @@ func agentToolSpec() []agentToolDef {
 						"type":  "array",
 						"items": map[string]interface{}{"type": "string"},
 						"description": "OPTIONAL. Item kinds your speech is referencing — e.g. ['cheese'] when you tell a customer 'I have cheese for 5 coins', or ['ale','bread'] when listing what's available. PC clients use this to populate the customer's pay dropdown so they can buy from you. Each entry MUST exist in your inventory ('Items you can sell' line) — the speak will be REJECTED if you mention items you don't have. Use lowercase item kind names (e.g. 'cheese', not 'Cheese' or 'a wedge of cheese'). Omit when your speech doesn't reference goods.",
+					},
+					"price": map[string]interface{}{
+						"type":        "integer",
+						"description": "OPTIONAL. The per-unit asking price (in whole coins) you are quoting for the item(s) you mention. ONLY set this when you say a price out loud and want it enforced — e.g. text 'Stew for 3 coins.' with mentions=['stew'] and price=3. The engine records this quote in the current scene; subsequent pay() calls from anyone in the room must offer at least price * qty for this item or they will be REJECTED. Applies the SAME price to every item in mentions, so only set it when one price covers everything you mention. Omit when your speech is conversational or doesn't fix a price (greetings, listings without prices, follow-ups). Whole numbers only; must be non-negative.",
 					},
 				},
 				"required": []string{"text"},
@@ -1752,6 +1756,25 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 			// carry the cleaned form, not the model's raw input.
 			tc.Input["mentions"] = mentions
 			payload, _ = json.Marshal(tc.Input)
+		}
+		// Price-quoting (ZBBS-124). When the model emits price alongside
+		// mentions, upsert one scene_quote row per mentioned item keyed
+		// to the speaker's current huddle. The pay handler reads these
+		// rows to enforce that buyer offers honor the seller's stated
+		// price — protecting the supply-pressure-becomes-price-pressure
+		// design from silent underpayment loopholes.
+		//
+		// Validation: price must be a non-negative integer; require at
+		// least one mention. Any other shape (price without mentions,
+		// non-integer, negative) is silently ignored — the speak still
+		// goes through, just without recording a quote. Don't reject the
+		// speak: the prose value of the speech is real even if the
+		// structured price tag is malformed.
+		if price, ok := normalizeQuotePrice(tc.Input["price"]); ok && price >= 0 && len(mentions) > 0 {
+			if err := app.upsertSceneQuotes(ctx, r.ID, mentions, price); err != nil {
+				log.Printf("scene_quote upsert for %s (mentions=%v price=%d): %v", r.DisplayName, mentions, price, err)
+				// Non-fatal — speak still commits.
+			}
 		}
 		// Speech is instant — no override needed. The Hub broadcast lets
 		// any listening clients render the speech bubble in real time.

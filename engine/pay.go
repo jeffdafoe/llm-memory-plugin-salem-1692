@@ -32,6 +32,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -201,6 +202,39 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payReque
 		totalQty := qty * consumerCount
 		if sellerQty < totalQty {
 			return payResult{Result: "rejected", Err: fmt.Sprintf("%s has only %d %s (asked for %d)", recipientName, sellerQty, itemKind, totalQty)}
+		}
+
+		// Quote enforcement (ZBBS-124). When the seller has stated a
+		// per-unit price for this item in the buyer's current huddle
+		// via speak's optional `price` field, reject offers that fall
+		// short of that quote. No quote on file = silent accept (today's
+		// behavior); the LLM-tick pass in a later phase covers the
+		// no-quote case. Read outside the FOR UPDATE locks since
+		// scene_quote rows are written by speak commits, not by pay —
+		// no contention with this transaction.
+		var buyerHuddle sql.NullString
+		if err := tx.QueryRow(ctx,
+			`SELECT current_huddle_id FROM actor WHERE id = $1`,
+			buyer.ID,
+		).Scan(&buyerHuddle); err != nil {
+			return payResult{Result: "failed", Err: fmt.Sprintf("lookup buyer huddle: %v", err)}
+		}
+		if buyerHuddle.Valid {
+			quoted, ok, err := app.lookupSceneQuote(ctx, buyerHuddle.String, recipientID, itemKind)
+			if err != nil {
+				// Treat a quote lookup failure as "no quote" rather
+				// than failing the pay outright — the structural
+				// guard is opportunistic, not authoritative.
+				log.Printf("scene_quote lookup (huddle=%s recipient=%s item=%s): %v", buyerHuddle.String, recipientID, itemKind, err)
+			} else if ok {
+				required := quoted * totalQty
+				if req.Amount < required {
+					return payResult{
+						Result: "rejected",
+						Err:    fmt.Sprintf("%s quoted %d coin(s) per %s; for %d unit(s) the price is %d, but you offered %d. Speak to renegotiate, or pay the asked amount.", recipientName, quoted, itemKind, totalQty, required, req.Amount),
+					}
+				}
+			}
 		}
 
 		newSellerQty := sellerQty - totalQty
