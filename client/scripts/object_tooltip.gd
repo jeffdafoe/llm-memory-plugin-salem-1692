@@ -230,6 +230,11 @@ func _find_object_at(screen_pos: Vector2) -> Node2D:
     return best_node
 
 ## Get texture size from either Sprite2D or AnimatedSprite2D.
+## NPCs use directional animations (south_idle, north_walk, etc.) and
+## never have one literally named "default" — so the prior implementation
+## silently returned ZERO for every NPC sprite, fencing them out of the
+## hover tooltip. Fall back to the first animation when "default" is
+## missing so any animated sprite produces a usable hit-rect.
 func _get_sprite_size(sprite_node: Node2D) -> Vector2:
     if sprite_node is Sprite2D:
         var tex = sprite_node.texture
@@ -237,8 +242,16 @@ func _get_sprite_size(sprite_node: Node2D) -> Vector2:
             return tex.get_size()
     if sprite_node is AnimatedSprite2D:
         var frames: SpriteFrames = sprite_node.sprite_frames
-        if frames != null and frames.get_frame_count("default") > 0:
-            var tex = frames.get_frame_texture("default", 0)
+        if frames == null:
+            return Vector2.ZERO
+        var anim_name: String = "default"
+        if frames.get_frame_count(anim_name) == 0:
+            var anims: PackedStringArray = frames.get_animation_names()
+            if anims.is_empty():
+                return Vector2.ZERO
+            anim_name = anims[0]
+        if frames.get_frame_count(anim_name) > 0:
+            var tex = frames.get_frame_texture(anim_name, 0)
             if tex != null:
                 return tex.get_size()
     return Vector2.ZERO
