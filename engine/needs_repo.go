@@ -238,6 +238,14 @@ func (app *App) needsSnapshot(ctx context.Context, actorID string) (NeedSet, err
 // Caller is responsible for the transaction. One Exec per (actor,
 // need) entry; small N, acceptable cost. If this becomes hot enough
 // to matter, batch into one INSERT with UNNEST.
+//
+// Lock contract: callers writing to actor_need MUST hold the actor
+// row lock first (e.g. via SELECT ... FOR UPDATE on actor) — the
+// read paths in applyConsumption / dispatchNeedsTick lock the actor
+// row to serialize concurrent need updates, and bypassing that lock
+// here would let an unrelated writer race against an in-flight read.
+// All current callers (applyConsumption, the tick's
+// syncAllNeedRowsFromColumns) satisfy this; new callers must too.
 func (app *App) writeNeedRows(ctx context.Context, tx pgx.Tx, actorID string, values map[string]int) error {
 	for key, value := range values {
 		if _, ok := FindNeed(key); !ok {

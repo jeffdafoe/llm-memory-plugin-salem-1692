@@ -1385,17 +1385,18 @@ func (app *App) handlePCPay(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Look up the PC's actor row. We need id, display_name, coins, and
-	// the position/needs fields executePay reads on its agentNPCRow
-	// argument (it reuses the same struct for buyers regardless of
-	// PC/NPC). Pull everything in one shot.
+	// the position fields executePay reads on its agentNPCRow argument
+	// (it reuses the same struct for buyers regardless of PC/NPC).
+	// Need values come from actor_need (ZBBS-121 commit 4) via a
+	// follow-up snapshot call, since the columns are scheduled to drop
+	// in commit 6.
 	var actor agentNPCRow
 	err := app.DB.QueryRow(r.Context(),
-		`SELECT id::text, display_name, coins, hunger, thirst, tiredness,
+		`SELECT id::text, display_name, coins,
 		        current_x, current_y, inside_structure_id
 		   FROM actor WHERE login_username = $1`,
 		user.Username,
 	).Scan(&actor.ID, &actor.DisplayName, &actor.Coins,
-		&actor.Hunger, &actor.Thirst, &actor.Tiredness,
 		&actor.CurrentX, &actor.CurrentY, &actor.InsideStructureID,
 	)
 	if err == sql.ErrNoRows {
@@ -1407,6 +1408,21 @@ func (app *App) handlePCPay(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "Internal error", http.StatusInternalServerError)
 		return
 	}
+	// Non-transactional read — these values inform the buyer struct
+	// for executePay's display logic (HungerReduction etc.) but the
+	// authoritative crossing detection happens inside applyConsumption
+	// under its own actor row lock. A stale read here can only
+	// produce a slightly off "hunger reduced by N" display value,
+	// not a state-corrupting decision.
+	needs, err := app.needsSnapshot(r.Context(), actor.ID)
+	if err != nil {
+		log.Printf("pc/pay needs lookup for %s: %v", actor.ID, err)
+		jsonError(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+	actor.Hunger = needs.Get("hunger")
+	actor.Thirst = needs.Get("thirst")
+	actor.Tiredness = needs.Get("tiredness")
 
 	consumeNow := true
 	if req.ConsumeNow != nil {

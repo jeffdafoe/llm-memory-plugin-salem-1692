@@ -93,14 +93,60 @@ type consumptionResult struct {
 // reduction (e.g. dropping hunger from 8 to 5, well below the default
 // red threshold of 18) is still a real effect on the actor's row.
 func (app *App) applyConsumption(ctx context.Context, tx pgx.Tx, actorID string, delta consumptionDelta, source string) (consumptionResult, error) {
-	// 1. Lock + read current values.
-	var oldH, oldT, oldTi int
-	err := tx.QueryRow(ctx,
-		`SELECT hunger, thirst, tiredness FROM actor WHERE id = $1 FOR UPDATE`,
+	// 1. Lock the actor row + read current need values via JOIN to
+	//    actor_need (ZBBS-121 commit 4). FOR UPDATE OF a locks just
+	//    the actor row — same lock target as the pre-conversion code,
+	//    so concurrent applyConsumption / dispatchNeedsTick still
+	//    serialize correctly. LEFT JOIN means an actor with no
+	//    actor_need rows still produces one row (with NULL key/value),
+	//    while a non-existent actor produces zero rows — checked via
+	//    foundActor below to preserve the pre-conversion ErrNoRows
+	//    semantics.
+	preNeeds := NeedSet{}
+	preRows, err := tx.Query(ctx,
+		`SELECT n.key, n.value
+		   FROM actor a
+		   LEFT JOIN actor_need n ON n.actor_id = a.id
+		  WHERE a.id = $1
+		  FOR UPDATE OF a`,
 		actorID,
-	).Scan(&oldH, &oldT, &oldTi)
+	)
 	if err != nil {
-		return consumptionResult{}, fmt.Errorf("applyConsumption: read needs: %w", err)
+		return consumptionResult{}, fmt.Errorf("applyConsumption: lock and read needs: %w", err)
+	}
+	defer preRows.Close()
+	foundActor := false
+	for preRows.Next() {
+		foundActor = true
+		var key sql.NullString
+		var value sql.NullInt64
+		if err := preRows.Scan(&key, &value); err != nil {
+			return consumptionResult{}, fmt.Errorf("applyConsumption: scan need row: %w", err)
+		}
+		if key.Valid && value.Valid {
+			preNeeds[key.String] = int(value.Int64)
+		}
+	}
+	if err := preRows.Err(); err != nil {
+		return consumptionResult{}, fmt.Errorf("applyConsumption: iterate needs: %w", err)
+	}
+	if !foundActor {
+		return consumptionResult{}, fmt.Errorf("applyConsumption: actor %s not found", actorID)
+	}
+	// Hard-fail on missing need rows rather than silently defaulting
+	// to 0. Defaulting could over-decrement against a real value if a
+	// row was somehow deleted post-backfill (writeNeedRows is UPSERT
+	// so it should always restore them, but this is a write-path
+	// safety net). Once the legacy columns drop in commit 6, this is
+	// the only signal an operator gets that backfill broke.
+	oldH, okH := preNeeds.GetOK("hunger")
+	oldT, okT := preNeeds.GetOK("thirst")
+	oldTi, okTi := preNeeds.GetOK("tiredness")
+	if !okH || !okT || !okTi {
+		return consumptionResult{}, fmt.Errorf(
+			"applyConsumption: missing actor_need rows for actor %s: hunger=%t thirst=%t tiredness=%t",
+			actorID, okH, okT, okTi,
+		)
 	}
 
 	// 2. Compute clamped new values in code so we can detect crossings
