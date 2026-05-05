@@ -161,9 +161,17 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 	currentMessage := perception
 	currentToolCallID := ""
 
+	// Hoist the structure-name lookup outside the iteration loop —
+	// avoids N redundant queries per cascade and keeps every chat row
+	// in the cascade stamped with the same scene_structure even if a
+	// rename lands mid-tick (the comms page assumes one structure per
+	// scene_id and would break if rows in the same scene reported
+	// different names).
+	sceneStructure := app.lookupSceneStructureName(ctx, sceneID)
+
 	var commitCall *agentToolCall
 	for iter := 0; iter < agentTickBudget; iter++ {
-		reply, err := app.npcChatClient.sendChat(ctx, r.LLMMemoryAgent, currentMessage, currentToolCallID, sceneID, app.lookupSceneStructureName(ctx, sceneID), tools)
+		reply, err := app.npcChatClient.sendChat(ctx, r.LLMMemoryAgent, currentMessage, currentToolCallID, sceneID, sceneStructure, tools)
 		if err != nil {
 			log.Printf("agent-tick %s iter=%d: %v", r.DisplayName, iter, err)
 			return
