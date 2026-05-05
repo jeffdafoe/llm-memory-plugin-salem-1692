@@ -85,10 +85,16 @@ type chroniclerDispatchAgent struct {
 	Source        string   // "well" / "meal_or_drink" / "admin" / etc.
 
 	// Needs-onset fields. Populated only for dispatchNeedsOnset events.
-	// OnsetNeeds is the list of need names that crossed UP into the red
-	// tier on this tick. No Source field — the onset is the natural
-	// drift of the hourly needs tick, not a discrete in-world action.
-	OnsetNeeds []string
+	// OnsetNeeds is the list of need names whose tier increased into
+	// red-or-peak this tick. OnsetSeverities is the new tier for each
+	// need in OnsetNeeds (parallel slice — same length, same order).
+	// NeedRed for a fresh red-tier crossing, NeedPeak for a peak
+	// crossing (whether from red or skip-past from mild). The render
+	// uses the severity to pick the vocabulary band ("hungry" vs
+	// "starving"). No Source field — the onset is the natural drift
+	// of the hourly needs tick, not a discrete in-world action.
+	OnsetNeeds      []string
+	OnsetSeverities []NeedTier
 
 	// Arrival fields. Populated only for dispatchArrival events; ignored
 	// on shift / needs_resolved events. ArrivalStructureID is the
