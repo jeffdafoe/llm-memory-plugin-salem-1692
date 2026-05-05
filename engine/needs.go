@@ -189,11 +189,20 @@ func (app *App) dispatchNeedsTick(ctx context.Context) {
 	// outer SELECT then reads need values via LEFT JOIN — locks
 	// already held, so this is a pure read. Matches consumption.go's
 	// `FOR UPDATE` lock target (the actor row), serializing the tick
-	// against concurrent applyConsumption. Decoratives and PCs aren't
-	// candidates for chronicler attend_to so they're filtered out and
-	// not locked. LEFT JOIN keeps actors with missing actor_need rows
-	// in the result set; the per-need GetOK loop below logs missing
-	// rows and skips onset detection for that need.
+	// against concurrent applyConsumption.
+	//
+	// Lock scope (ZBBS-123): every actor whose body the UPDATE below
+	// touches must be locked first per the actor_need write contract
+	// (writeNeedRows doc) — so the CTE locks both agent NPCs and PCs.
+	// Onset detection still only fires for agent NPCs (chronicler has
+	// no way to dispatch attention to a PC); the outer SELECT filters
+	// to llm_memory_agent IS NOT NULL so PCs are locked but not
+	// scanned for crossings. Decoratives stay excluded entirely — no
+	// body model, no need to lock or accrue.
+	//
+	// LEFT JOIN keeps actors with missing actor_need rows in the
+	// result set; the per-need GetOK loop below logs missing rows and
+	// skips onset detection for that need.
 	type onsetPre struct {
 		actorID string
 		needs   NeedSet
@@ -201,16 +210,17 @@ func (app *App) dispatchNeedsTick(ctx context.Context) {
 	var pres []onsetPre
 	preRows, preErr := tx.Query(ctx,
 		`WITH locked_actors AS (
-		     SELECT id
+		     SELECT id, llm_memory_agent
 		       FROM actor
-		      WHERE llm_memory_agent IS NOT NULL
-		        AND login_username IS NULL
+		      WHERE login_username IS NOT NULL
+		         OR llm_memory_agent IS NOT NULL
 		      ORDER BY id
 		      FOR UPDATE
 		 )
 		 SELECT la.id, n.key, n.value
 		   FROM locked_actors la
 		   LEFT JOIN actor_need n ON n.actor_id = la.id
+		  WHERE la.llm_memory_agent IS NOT NULL
 		  ORDER BY la.id, n.key`,
 	)
 	if preErr != nil {
@@ -263,21 +273,25 @@ func (app *App) dispatchNeedsTick(ctx context.Context) {
 	// (ZBBS-121 commit 5: rows are now the sole write target). Same
 	// LEAST clamp as the pre-conversion column UPDATE.
 	//
-	// Eligibility filter: agent NPCs only (login_username IS NULL AND
-	// llm_memory_agent IS NOT NULL). Pre-conversion the column UPDATE
-	// had no WHERE clause and ticked every actor, but PCs aren't sim
-	// agents (player drives consumption) and decoratives have no
+	// Eligibility filter: every actor with a body that ages — agent
+	// NPCs and PCs. Decoratives stay excluded because they have no
 	// need-pressure mechanic (no chronicler attention, no LLM-driven
-	// reaction to distress). Restricting at the source of truth
-	// matches the eligibility filter the pre-tick scan and chronicler
-	// dispatch use elsewhere.
+	// reaction, no player driving consumption). PCs were originally
+	// excluded here (ZBBS-121 commit 5) on the rationale that the
+	// player drives their own consumption; ZBBS-123 brings them in
+	// so their HUD readout is meaningful — walking burns tiredness
+	// (already wired in agent_tick.go / pc_handlers.go) and time
+	// burns hunger / thirst the same way it does for NPCs.
+	//
+	// Onset detection (further down) keeps the agent-only filter, so
+	// chronicler dispatch still only fires for NPCs — PC distress
+	// surfaces in the HUD, not via the overseer.
 	tag, err := tx.Exec(ctx, `
 		UPDATE actor_need an
 		   SET value = LEAST($1::int, an.value + $2::int)
 		  FROM actor a
 		 WHERE a.id = an.actor_id
-		   AND a.login_username IS NULL
-		   AND a.llm_memory_agent IS NOT NULL
+		   AND (a.login_username IS NOT NULL OR a.llm_memory_agent IS NOT NULL)
 	`, needMax, totalIncrement)
 	if err != nil {
 		log.Printf("needs_tick: UPDATE failed (rolling back, will retry next minute): %v", err)
