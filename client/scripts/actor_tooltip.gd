@@ -258,14 +258,21 @@ func _find_actor_at(screen_pos: Vector2) -> Node2D:
     var best_node: Node2D = null
     var best_dist: float = INF
 
-    # Diagnostic: track the 3 containers closest to the cursor so we can
-    # print their rect math if no hit is found — those are the ones we'd
-    # most expect to match.
-    var ranked: Array = []  # array of {dist, node, sprite_node, size, rect}
+    var ranked: Array = []
+    var c_invisible: int = 0
+    var c_no_sprite: int = 0
+    var c_size_zero: int = 0
+    var c_valid: int = 0
+    var first_invalid_dn: String = ""
+    var first_invalid_reason: String = ""
 
     for actor_id in world.placed_npcs:
         var container: Node2D = world.placed_npcs[actor_id]
         if container == null or not container.visible:
+            c_invisible += 1
+            if first_invalid_reason == "":
+                first_invalid_dn = str(container.get_meta("display_name", "?")) if container != null else "(null)"
+                first_invalid_reason = "invisible"
             continue
         var sprite_node: Node2D = null
         for child in container.get_children():
@@ -273,11 +280,20 @@ func _find_actor_at(screen_pos: Vector2) -> Node2D:
                 sprite_node = child
                 break
         if sprite_node == null:
+            c_no_sprite += 1
+            if first_invalid_reason == "":
+                first_invalid_dn = str(container.get_meta("display_name", "?"))
+                first_invalid_reason = "no_sprite"
             continue
 
         var size: Vector2 = _get_sprite_size(sprite_node)
         if size == Vector2.ZERO:
+            c_size_zero += 1
+            if first_invalid_reason == "":
+                first_invalid_dn = str(container.get_meta("display_name", "?"))
+                first_invalid_reason = "size_zero(sprite=" + str(sprite_node) + ")"
             continue
+        c_valid += 1
         var world_size: Vector2 = size * sprite_node.scale
         var origin: Vector2 = container.position + sprite_node.position
         var rect = Rect2(origin, world_size)
@@ -288,17 +304,15 @@ func _find_actor_at(screen_pos: Vector2) -> Node2D:
                 best_dist = dist
                 best_node = container
 
-    # Throttled dump of the 3 nearest containers when the throttle counter
-    # fires AND no hit was found. Tells us whether the rects near the
-    # cursor are mis-sized, mis-positioned, or just legitimately not under
-    # the cursor.
-    if best_node == null and (_debug_log_counter % 30 == 0) and ranked.size() > 0:
-        ranked.sort_custom(func(a, b): return a.dist < b.dist)
-        var dump_count: int = min(3, ranked.size())
-        for i in range(dump_count):
-            var entry = ranked[i]
-            var dn: String = str(entry.node.get_meta("display_name", "?"))
-            print("[actor_tooltip]  near[", i, "] ", dn, " container.pos=", entry.node.position, " sprite.pos=", entry.sprite.position, " size=", entry.size, " rect=", entry.rect, " dist=", entry.dist, " has_point=", entry.rect.has_point(world_pos))
+    if best_node == null and (_debug_log_counter % 30 == 0):
+        print("[actor_tooltip]  filter: invisible=", c_invisible, " no_sprite=", c_no_sprite, " size_zero=", c_size_zero, " valid=", c_valid, " first_invalid=", first_invalid_dn, " reason=", first_invalid_reason)
+        if ranked.size() > 0:
+            ranked.sort_custom(func(a, b): return a.dist < b.dist)
+            var dump_count: int = min(3, ranked.size())
+            for i in range(dump_count):
+                var entry = ranked[i]
+                var dn: String = str(entry.node.get_meta("display_name", "?"))
+                print("[actor_tooltip]  near[", i, "] ", dn, " container.pos=", entry.node.position, " sprite.pos=", entry.sprite.position, " size=", entry.size, " rect=", entry.rect, " dist=", entry.dist, " has_point=", entry.rect.has_point(world_pos))
 
     return best_node
 
