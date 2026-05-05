@@ -2320,6 +2320,12 @@ func (app *App) executeAgentMoveTo(ctx context.Context, r *agentNPCRow, dest str
 		return fmt.Errorf("startReturnWalk: %w", err)
 	}
 
+	// Movement fatigue (ZBBS-123). Accrues tiredness on depart so the new
+	// value is visible in the next perception build. Uses the interpolated
+	// start so a mid-walk redirect costs the remaining-leg distance, not
+	// the whole journey from where the previous walk began.
+	app.applyMovementFatigue(ctx, r.ID, npc.CurX, npc.CurY, walkX, walkY)
+
 	// Conservative 30-minute override — covers any walk within the village
 	// at typical walking speed. A future refinement can compute from the
 	// pathfinder's expected duration.
@@ -2594,6 +2600,9 @@ func (app *App) executeAgentChore(ctx context.Context, r *agentNPCRow, category 
 	if err := app.startReturnWalk(ctx, npc, wx, wy, oID, "agent-chore", enterOnArrival); err != nil {
 		return fmt.Errorf("startReturnWalk: %w", err)
 	}
+
+	// Movement fatigue (ZBBS-123). See executeAgentMoveTo for shape.
+	app.applyMovementFatigue(ctx, r.ID, npc.CurX, npc.CurY, wx, wy)
 
 	overrideUntil := time.Now().Add(30 * time.Minute)
 	if _, err := app.DB.Exec(ctx,
