@@ -30,6 +30,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
+	"math"
+	"strconv"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -284,4 +288,61 @@ func (app *App) seedNeedRowsIfMissing(ctx context.Context, tx pgx.Tx, actorID st
 		}
 	}
 	return nil
+}
+
+// applyMovementFatigue accrues tiredness on actor_need based on the
+// Euclidean tile distance walked. Hooked from the agent move commits
+// (executeAgentMoveTo, executeAgentChore) at depart-time, so the new
+// value is visible the next time the actor's perception builds.
+//
+// Per-tile cost is config-driven via the setting
+// movement_fatigue_per_tile_x100 (integer 1/100ths, default 12).
+// Setting to 0 disables fatigue. Short walks floor to zero — popping
+// next door is free, by design.
+//
+// Lock contract (per writeNeedRows doc): writers to actor_need MUST
+// hold the actor row lock first. We take it via SELECT FOR UPDATE
+// inside our own short tx; callers don't need to wrap us. Errors are
+// logged and swallowed — fatigue is a side effect of an already-
+// committed walk, so failing to accrue shouldn't unwind the move.
+func (app *App) applyMovementFatigue(ctx context.Context, actorID string, fromX, fromY, toX, toY float64) {
+	raw := app.loadSetting(ctx, "movement_fatigue_per_tile_x100", "12")
+	perTileX100, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || perTileX100 <= 0 {
+		return
+	}
+	dx := toX - fromX
+	dy := toY - fromY
+	tiles := math.Sqrt(dx*dx + dy*dy)
+	bump := int(tiles * float64(perTileX100) / 100.0)
+	if bump <= 0 {
+		return
+	}
+
+	tx, err := app.DB.Begin(ctx)
+	if err != nil {
+		log.Printf("applyMovementFatigue %s: begin tx: %v", actorID, err)
+		return
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx,
+		`SELECT 1 FROM actor WHERE id = $1::uuid FOR UPDATE`, actorID,
+	); err != nil {
+		log.Printf("applyMovementFatigue %s: lock actor: %v", actorID, err)
+		return
+	}
+
+	if _, err := tx.Exec(ctx,
+		`UPDATE actor_need SET value = LEAST(24, value + $2)
+		 WHERE actor_id = $1::uuid AND key = 'tiredness'`,
+		actorID, bump,
+	); err != nil {
+		log.Printf("applyMovementFatigue %s +%d: %v", actorID, bump, err)
+		return
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		log.Printf("applyMovementFatigue %s: commit: %v", actorID, err)
+	}
 }
