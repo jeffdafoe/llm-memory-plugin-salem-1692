@@ -42,6 +42,7 @@ var _shown_node: Node2D = null
 func _ready() -> void:
     layer = 3  # Same layer as object_tooltip — above world, below editor panels.
     _font = load("res://assets/fonts/IMFellEnglish-Regular.ttf")
+    print("[actor_tooltip] _ready, world=", world, " editor=", editor, " camera=", camera)
 
     _panel = PanelContainer.new()
     _panel.visible = false
@@ -100,23 +101,40 @@ func _input(event: InputEvent) -> void:
     if event is InputEventMouseMotion:
         _update_hover(event.position)
 
+var _debug_log_counter: int = 0
 func _update_hover(screen_pos: Vector2) -> void:
+    # Throttled diagnostic — log one in every 30 mouse-motion events so
+    # the console isn't flooded but we can confirm hover is reaching us.
+    _debug_log_counter += 1
+    var should_log: bool = (_debug_log_counter % 30 == 0)
+
     if world == null:
+        if should_log:
+            print("[actor_tooltip] hover: world=null (not wired yet)")
         return
 
-    # Same gates main.gd's PC walk handler uses, kept in lockstep so the
-    # two never disagree about whether a position is "in play."
     if editor != null and editor.active:
+        if should_log:
+            print("[actor_tooltip] hover: skipped (editor.active=true)")
         _hide_panel()
         return
     if camera != null and camera.modal_open:
+        if should_log:
+            print("[actor_tooltip] hover: skipped (camera.modal_open=true)")
         _hide_panel()
         return
     if camera != null and camera._is_over_ui(screen_pos):
+        if should_log:
+            print("[actor_tooltip] hover: skipped (camera._is_over_ui)")
         _hide_panel()
         return
 
     var hit: Node2D = _find_actor_at(screen_pos)
+    if should_log:
+        print("[actor_tooltip] hover: pos=", screen_pos,
+            " placed_npcs.size=", world.placed_npcs.size(),
+            " hit=", hit,
+            " hit.display_name=", (str(hit.get_meta("display_name", "?")) if hit != null else "(none)"))
     if hit == null:
         _hide_panel()
         return
@@ -124,7 +142,6 @@ func _update_hover(screen_pos: Vector2) -> void:
     if hit != _shown_node:
         _show_panel_for(hit, screen_pos)
     else:
-        # Same actor, just track the cursor for repositioning.
         call_deferred("_position_panel_near", screen_pos)
 
 ## Returns true if a position lands on an actor sprite. Kept for the
