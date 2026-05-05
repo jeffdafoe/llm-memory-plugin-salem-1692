@@ -24,10 +24,14 @@ package main
 // with an analytical layer ("of those, these would settle the
 // pressing need; alternatives are at these nearby vendors").
 //
-// Felt-language framing: no raw integers, no price quotes (the item
-// catalog dropped price in ZBBS-092 and didn't restore it; vendors
-// negotiate in conversation). Item display labels are downcased to
-// read naturally inside prose ("berries" not "Berries").
+// Felt-language framing: no raw integers, no exact prices. Severity
+// of the need surfaces as a tier-aware lead phrase ("Hunger is
+// gnawing — a hearty meal would clear it"). Each item carries its
+// own felt-magnitude qualifier ("berries (a small bite)", "stew (a
+// hearty meal)") so the model can weigh "settle from own stock vs
+// walk to a heartier meal nearby." Non-portable items get an
+// "eaten there" hint so the model knows stew at the tavern can't
+// be carried home — must consume on the spot.
 //
 // Scope: hunger and thirst only — these have entries in the item
 // catalog with satisfies_attribute set. Tiredness has no consumable
@@ -40,6 +44,15 @@ import (
 	"strings"
 )
 
+// satiationItem is one entry in either own-stock or a vendor's stock,
+// carrying enough info for the prose builder to render its felt
+// magnitude phrase and any portability caveat.
+type satiationItem struct {
+	Label    string // lowercased display_label, e.g. "berries"
+	Amount   int    // item_kind.satisfies_amount, drives felt phrase
+	Portable bool   // 'portable' in item_kind.capabilities array
+}
+
 // satiationVendor is one nearby place + the items its on-station
 // vendor has that would settle the pressing need. StructureName is
 // COALESCE(display_name, asset.name) — same labeling the destinations
@@ -47,23 +60,32 @@ import (
 type satiationVendor struct {
 	StructureName string
 	VendorName    string
-	Items         []string
+	Items         []satiationItem
 }
 
-// buildSatiationLines composes one prose line per pressing consumable
+// buildSatiationLines composes one prose block per pressing consumable
 // need. Empty when no consumable need is pressing or no satisfiers
-// exist anywhere visible. Each line is self-contained — own stock,
-// then nearby vendors — so the perception assembler can drop them
-// into the section list without further conditioning.
+// exist anywhere visible. Each block is multi-line — lead phrase,
+// own-stock line, nearby-satisfiers line — joined with newlines so
+// the perception assembler can drop them into the section list as a
+// single section.
 //
 // Order: hunger first, then thirst. Mirrors the order pressing needs
 // appear in the body line for consistency.
-func (app *App) buildSatiationLines(ctx context.Context, perceiverID string, perceiverX, perceiverY float64, currentStructureID string, pressingNeeds []string) []string {
-	if len(pressingNeeds) == 0 {
+//
+// The pressingTiers map carries the tier (NeedRed or NeedPeak) per
+// pressing need so the lead phrase can scale severity — "gnawing"
+// vs "starving" — without the model reading a raw integer.
+func (app *App) buildSatiationLines(ctx context.Context, perceiverID string, perceiverX, perceiverY float64, currentStructureID string, pressingTiers map[string]NeedTier) []string {
+	if len(pressingTiers) == 0 {
 		return nil
 	}
-	var lines []string
-	for _, need := range orderedConsumableNeeds(pressingNeeds) {
+	var blocks []string
+	for _, need := range []string{"hunger", "thirst"} {
+		tier, ok := pressingTiers[need]
+		if !ok {
+			continue
+		}
 		own := app.satiationOwnInventory(ctx, perceiverID, need)
 		nearby := app.satiationNearbyVendors(ctx, perceiverID, need, perceiverX, perceiverY, currentStructureID)
 		if len(own) == 0 && len(nearby) == 0 {
@@ -75,70 +97,158 @@ func (app *App) buildSatiationLines(ctx context.Context, perceiverID string, per
 			verb = "drink"
 		}
 
-		var parts []string
+		var lines []string
+		if lead := needLeadPhrase(need, tier); lead != "" {
+			lines = append(lines, lead)
+		}
 		if len(own) > 0 {
-			parts = append(parts, "You have "+joinWithAnd(own)+" in your own stock — consume to "+verb+" and settle "+need+".")
+			lines = append(lines, "You have "+renderItemList(own, need, false)+
+				" in your own stock — consume to "+verb+".")
 		}
 		if len(nearby) > 0 {
-			var clauses []string
+			var bullets []string
 			for _, v := range nearby {
-				clauses = append(clauses, "at "+v.StructureName+", "+v.VendorName+" has "+joinWithAnd(v.Items))
+				bullets = append(bullets,
+					"— At "+v.StructureName+", "+v.VendorName+" has "+renderItemList(v.Items, need, true)+".")
 			}
-			parts = append(parts, "Nearby: "+strings.Join(clauses, "; ")+".")
+			lines = append(lines, "Nearby satisfiers:")
+			lines = append(lines, bullets...)
 		}
-		lines = append(lines, strings.Join(parts, " "))
+		blocks = append(blocks, strings.Join(lines, "\n"))
 	}
-	return lines
+	return blocks
 }
 
-// orderedConsumableNeeds filters pressingNeeds down to those with a
-// satisfier in the item catalog (hunger, thirst) and returns them in
-// a stable order (hunger then thirst). Tiredness is silently dropped
-// — surfacing it here would be noise; the body line already names it
-// and "Address now" still flags it for the model.
-func orderedConsumableNeeds(pressing []string) []string {
-	have := map[string]bool{}
-	for _, n := range pressing {
-		have[n] = true
-	}
-	var out []string
-	for _, n := range []string{"hunger", "thirst"} {
-		if have[n] {
-			out = append(out, n)
+// renderItemList formats a list of satiationItems with per-item felt
+// qualifiers, using Oxford-comma joining. With showPortability=true
+// (vendor lists), non-portable items pick up an "eaten there" /
+// "drunk there" suffix inside their parens so the model knows they
+// can't be carried home from a purchase — only consumed on site.
+// With showPortability=false (own-stock lists) the hint is suppressed
+// because consume() works from inventory regardless of capabilities;
+// portability is a purchase-flow concern, not a consumption one.
+//
+//	"berries (a small bite)"
+//	"berries (a small bite) and meat (a hearty meal)"
+//	"stew (a hearty meal — eaten there), bread (a meal), and ale (a drink)"
+func renderItemList(items []satiationItem, need string, showPortability bool) string {
+	rendered := make([]string, len(items))
+	for i, it := range items {
+		phrase := itemFeltAmount(it.Amount, need)
+		if showPortability && !it.Portable {
+			suffix := "eaten there"
+			if need == "thirst" {
+				suffix = "drunk there"
+			}
+			phrase = phrase + " — " + suffix
 		}
+		rendered[i] = it.Label + " (" + phrase + ")"
 	}
-	return out
+	switch len(rendered) {
+	case 0:
+		return ""
+	case 1:
+		return rendered[0]
+	case 2:
+		return rendered[0] + " and " + rendered[1]
+	default:
+		return strings.Join(rendered[:len(rendered)-1], ", ") + ", and " + rendered[len(rendered)-1]
+	}
 }
 
-// satiationOwnInventory returns the display labels (lowercased) of
-// items in the perceiver's inventory whose satisfies_attribute matches
-// the given need, ordered by satisfies_amount descending so the
-// strongest satisfier reads first ("stew and bread" rather than
-// "bread and stew"). Errors log and surface as empty so a transient
-// DB hiccup doesn't break the perception build.
-func (app *App) satiationOwnInventory(ctx context.Context, actorID, need string) []string {
+// itemFeltAmount returns the felt-language phrase for an item's
+// satisfies_amount magnitude. Hunger and thirst use different scales
+// — "a hearty meal" reads naturally for stew (food) but not ale,
+// where "a deep drink" fits. Calibrated against the seed item
+// catalog (ZBBS-091 / ZBBS-093):
+//
+//	hunger: berries 4, cheese 6, bread 8, meat 10, stew 12
+//	thirst: water 4, milk 6, ale 8
+//
+// Bands sized so each item lands in a distinct phrase.
+func itemFeltAmount(amount int, need string) string {
+	if need == "thirst" {
+		switch {
+		case amount <= 4:
+			return "a sip"
+		case amount <= 7:
+			return "a drink"
+		default:
+			return "a deep drink"
+		}
+	}
+	switch {
+	case amount <= 4:
+		return "a small bite"
+	case amount <= 7:
+		return "a meal"
+	case amount <= 11:
+		return "a hearty meal"
+	default:
+		return "a feast"
+	}
+}
+
+// needLeadPhrase composes the tier-aware lead-in for the satiation
+// block. Empty for tiers below NeedRed — the satiation block doesn't
+// fire there, so this only ever returns a phrase for red or peak.
+//
+// The "would clear it" / "you need..." framing tells the model what
+// scale of resolution to aim for — at red, a hearty meal closes it;
+// at peak, anything will help but a full meal is still better.
+func needLeadPhrase(need string, tier NeedTier) string {
+	if need == "thirst" {
+		switch tier {
+		case NeedRed:
+			return "Thirst is pressing — a real drink would clear it."
+		case NeedPeak:
+			return "You're parched — you need to drink, anything will help."
+		}
+		return ""
+	}
+	switch tier {
+	case NeedRed:
+		return "Hunger is gnawing — a hearty meal would clear it."
+	case NeedPeak:
+		return "You're starving — you need food, anything will help."
+	}
+	return ""
+}
+
+// satiationOwnInventory returns items in the perceiver's inventory
+// whose satisfies_attribute matches the given need, ordered by
+// satisfies_amount descending so the strongest satisfier reads first.
+// Errors log and surface as empty so a transient DB hiccup doesn't
+// break the perception build.
+func (app *App) satiationOwnInventory(ctx context.Context, actorID, need string) []satiationItem {
 	rows, err := app.DB.Query(ctx, `
-        SELECT ik.display_label
-          FROM actor_inventory inv
-          JOIN item_kind ik ON ik.name = inv.item_kind
-         WHERE inv.actor_id = $1::uuid
-           AND inv.quantity > 0
-           AND ik.satisfies_attribute = $2
-         ORDER BY ik.satisfies_amount DESC, ik.display_label
-    `, actorID, need)
+		SELECT ik.display_label, ik.satisfies_amount, ('portable' = ANY(ik.capabilities)) AS portable
+		  FROM actor_inventory inv
+		  JOIN item_kind ik ON ik.name = inv.item_kind
+		 WHERE inv.actor_id = $1::uuid
+		   AND inv.quantity > 0
+		   AND ik.satisfies_attribute = $2
+		 ORDER BY ik.satisfies_amount DESC, ik.display_label
+	`, actorID, need)
 	if err != nil {
 		log.Printf("satiationOwnInventory %s/%s: %v", actorID, need, err)
 		return nil
 	}
 	defer rows.Close()
-	var out []string
+	var out []satiationItem
 	for rows.Next() {
 		var label string
-		if err := rows.Scan(&label); err != nil {
+		var amount int
+		var portable bool
+		if err := rows.Scan(&label, &amount, &portable); err != nil {
 			log.Printf("satiationOwnInventory scan: %v", err)
 			continue
 		}
-		out = append(out, strings.ToLower(label))
+		out = append(out, satiationItem{
+			Label:    strings.ToLower(label),
+			Amount:   amount,
+			Portable: portable,
+		})
 	}
 	return out
 }
@@ -160,78 +270,89 @@ func (app *App) satiationOwnInventory(ctx context.Context, actorID, need string)
 // places nearby") still surfaces every nearby place for general
 // context; the satiation block is the curated subset relevant to
 // the pressing need.
+//
+// Items returned per vendor carry their own satisfies_amount and
+// portability so renderItemList can attach per-item felt phrases
+// and the "eaten there" hint for non-portables.
 func (app *App) satiationNearbyVendors(ctx context.Context, perceiverID, need string, x, y float64, currentStructureID string) []satiationVendor {
 	rows, err := app.DB.Query(ctx, `
-        WITH vendors_with_serve AS (
-            SELECT DISTINCT aa.actor_id
-              FROM actor_attribute aa
-              JOIN attribute_definition ad ON ad.slug = aa.slug
-             WHERE ad.tools ? 'serve'
-        ),
-        candidates AS (
-            SELECT s.id AS structure_id,
-                   COALESCE(s.display_name, ass.name) AS structure_name,
-                   a.id::text AS vendor_id,
-                   a.display_name AS vendor_name,
-                   ik.display_label,
-                   ik.satisfies_amount,
-                   s.x AS sx, s.y AS sy
-              FROM village_object s
-              JOIN asset ass ON ass.id = s.asset_id
-              JOIN actor a ON a.inside_structure_id = s.id
-              JOIN vendors_with_serve v ON v.actor_id = a.id
-              JOIN actor_inventory inv ON inv.actor_id = a.id AND inv.quantity > 0
-              JOIN item_kind ik ON ik.name = inv.item_kind
-             WHERE ik.satisfies_attribute = $1
-               AND a.id != $2::uuid
-               AND ($3 = '' OR s.id::text != $3)
-        )
-        SELECT structure_id::text, structure_name, vendor_name,
-               array_agg(display_label ORDER BY satisfies_amount DESC, display_label) AS items,
-               sx, sy
-          FROM candidates
-         GROUP BY structure_id, structure_name, vendor_id, vendor_name, sx, sy
-         ORDER BY (sx - $4) * (sx - $4) + (sy - $5) * (sy - $5)
-         LIMIT 4
-    `, need, perceiverID, currentStructureID, x, y)
+		WITH vendors_with_serve AS (
+			SELECT DISTINCT aa.actor_id
+			  FROM actor_attribute aa
+			  JOIN attribute_definition ad ON ad.slug = aa.slug
+			 WHERE ad.tools ? 'serve'
+		),
+		ranked AS (
+			SELECT s.id AS structure_id,
+			       COALESCE(s.display_name, ass.name) AS structure_name,
+			       a.id::text AS vendor_id,
+			       a.display_name AS vendor_name,
+			       s.x AS sx, s.y AS sy,
+			       (s.x - $4) * (s.x - $4) + (s.y - $5) * (s.y - $5) AS dist_sq
+			  FROM village_object s
+			  JOIN asset ass ON ass.id = s.asset_id
+			  JOIN actor a ON a.inside_structure_id = s.id
+			  JOIN vendors_with_serve v ON v.actor_id = a.id
+			 WHERE a.id != $2::uuid
+			   AND ($3 = '' OR s.id::text != $3)
+			   AND EXISTS (
+			       SELECT 1
+			         FROM actor_inventory inv
+			         JOIN item_kind ik ON ik.name = inv.item_kind
+			        WHERE inv.actor_id = a.id
+			          AND inv.quantity > 0
+			          AND ik.satisfies_attribute = $1
+			   )
+			 ORDER BY dist_sq
+			 LIMIT 4
+		)
+		SELECT r.structure_id::text, r.structure_name, r.vendor_name,
+		       ik.display_label, ik.satisfies_amount,
+		       ('portable' = ANY(ik.capabilities)) AS portable,
+		       r.dist_sq
+		  FROM ranked r
+		  JOIN actor_inventory inv ON inv.actor_id::text = r.vendor_id
+		  JOIN item_kind ik ON ik.name = inv.item_kind
+		 WHERE inv.quantity > 0
+		   AND ik.satisfies_attribute = $1
+		 ORDER BY r.dist_sq, ik.satisfies_amount DESC, ik.display_label
+	`, need, perceiverID, currentStructureID, x, y)
 	if err != nil {
 		log.Printf("satiationNearbyVendors %s: %v", need, err)
 		return nil
 	}
 	defer rows.Close()
-	var out []satiationVendor
+	type vendorKey struct {
+		structureID string
+		vendorName  string
+	}
+	bucket := map[vendorKey]*satiationVendor{}
+	var order []vendorKey
 	for rows.Next() {
-		var sid, sname, vname string
-		var items []string
-		var sx, sy float64
-		if err := rows.Scan(&sid, &sname, &vname, &items, &sx, &sy); err != nil {
+		var sid, sname, vname, label string
+		var amount int
+		var portable bool
+		var distSq float64
+		if err := rows.Scan(&sid, &sname, &vname, &label, &amount, &portable, &distSq); err != nil {
 			log.Printf("satiationNearbyVendors scan: %v", err)
 			continue
 		}
-		for i, it := range items {
-			items[i] = strings.ToLower(it)
+		key := vendorKey{structureID: sid, vendorName: vname}
+		v, ok := bucket[key]
+		if !ok {
+			v = &satiationVendor{StructureName: sname, VendorName: vname}
+			bucket[key] = v
+			order = append(order, key)
 		}
-		out = append(out, satiationVendor{
-			StructureName: sname,
-			VendorName:    vname,
-			Items:         items,
+		v.Items = append(v.Items, satiationItem{
+			Label:    strings.ToLower(label),
+			Amount:   amount,
+			Portable: portable,
 		})
 	}
-	return out
-}
-
-// joinWithAnd renders a list of strings as natural English: "" / "a" /
-// "a and b" / "a, b, and c" (Oxford comma). Used by the satiation
-// readout for both own-stock and per-vendor item lists.
-func joinWithAnd(items []string) string {
-	switch len(items) {
-	case 0:
-		return ""
-	case 1:
-		return items[0]
-	case 2:
-		return items[0] + " and " + items[1]
-	default:
-		return strings.Join(items[:len(items)-1], ", ") + ", and " + items[len(items)-1]
+	out := make([]satiationVendor, 0, len(order))
+	for _, k := range order {
+		out = append(out, *bucket[k])
 	}
+	return out
 }

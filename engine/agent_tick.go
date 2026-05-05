@@ -1215,22 +1215,26 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 	// section 3) so the visible-needs section can reuse them.
 	bodyParts := []string{}
 	pressing := []string{}
+	pressingTiers := map[string]NeedTier{}
 	if l := needLabel("hunger", r.Hunger, hungerT); l != "" {
 		bodyParts = append(bodyParts, l)
-		if needLabelTier(r.Hunger, hungerT) >= 2 {
+		if t := needLabelTier(r.Hunger, hungerT); t >= 2 {
 			pressing = append(pressing, "hunger")
+			pressingTiers["hunger"] = NeedTier(t)
 		}
 	}
 	if l := needLabel("thirst", r.Thirst, thirstT); l != "" {
 		bodyParts = append(bodyParts, l)
-		if needLabelTier(r.Thirst, thirstT) >= 2 {
+		if t := needLabelTier(r.Thirst, thirstT); t >= 2 {
 			pressing = append(pressing, "thirst")
+			pressingTiers["thirst"] = NeedTier(t)
 		}
 	}
 	if l := needLabel("tiredness", r.Tiredness, tiredT); l != "" {
 		bodyParts = append(bodyParts, l)
-		if needLabelTier(r.Tiredness, tiredT) >= 2 {
+		if t := needLabelTier(r.Tiredness, tiredT); t >= 2 {
 			pressing = append(pressing, "tiredness")
+			pressingTiers["tiredness"] = NeedTier(t)
 		}
 	}
 	// 2026-05-02: red+ tier needs get an explicit imperative prefix.
@@ -1275,8 +1279,8 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 	if r.InsideStructureID.Valid {
 		currentStructureID = r.InsideStructureID.String
 	}
-	if satLines := app.buildSatiationLines(ctx, r.ID, r.CurrentX, r.CurrentY, currentStructureID, pressing); len(satLines) > 0 {
-		sections = append(sections, strings.Join(satLines, "\n"))
+	if satBlocks := app.buildSatiationLines(ctx, r.ID, r.CurrentX, r.CurrentY, currentStructureID, pressingTiers); len(satBlocks) > 0 {
+		sections = append(sections, strings.Join(satBlocks, "\n\n"))
 	}
 
 	// 3b. Return-to-work nudge (ZBBS-110). Fires when the NPC is on shift
