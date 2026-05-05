@@ -18,6 +18,12 @@ var cursor_tile_label: Label = null
 ## inventory. Hidden until /pc/me reports an existing PC; talk panel
 ## calls set_purse() each time it polls.
 var coins_label: Label = null
+## Needs chip — displays the PC's hunger / thirst / tiredness as a
+## compact "H 8 · T 12 · W 4" readout, color-tinted by the worst tier
+## across the three. Hidden until /pc/me reports an existing PC.
+## Tooltip spells out the full names. Updated alongside the coin chip
+## via the talk panel's needs_changed signal (ZBBS-123).
+var needs_label: Label = null
 var _editor_active: bool = false
 
 # Theme colors (matching login screen)
@@ -86,6 +92,21 @@ func _ready() -> void:
     cursor_tile_label.add_theme_font_size_override("font_size", 14)
     cursor_tile_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
     right_box.add_child(cursor_tile_label)
+
+    # Body-needs chip (ZBBS-123). Reads "H 8 · T 12 · W 4" and tints
+    # by the worst tier across the three needs (default → dim, mild
+    # → amber, red → orange, peak → bright red). Sits before the coin
+    # chip so personal stats (body, then purse) read together left-
+    # to-right. Hidden until set_needs() is called with non-empty data.
+    needs_label = Label.new()
+    needs_label.text = ""
+    needs_label.visible = false
+    needs_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+    needs_label.add_theme_font_override("font", _font)
+    needs_label.add_theme_font_size_override("font_size", 16)
+    needs_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+    needs_label.mouse_filter = Control.MOUSE_FILTER_PASS
+    right_box.add_child(needs_label)
 
     # Coins chip — period-flavored "P 25" (silver pence). Hidden until
     # the talk panel reports the player has a PC with coins. Tooltip
@@ -184,6 +205,42 @@ func set_purse(coins: int, inventory_lines: Array) -> void:
         coins_label.tooltip_text = "Your purse: %d coins.\nNothing in your pack." % coins
     else:
         coins_label.tooltip_text = "Your purse: %d coins.\n\nIn your pack:\n  %s" % [coins, "\n  ".join(inventory_lines)]
+
+## Update the body-needs chip (ZBBS-123). needs is a Dictionary keyed
+## by 'hunger' / 'thirst' / 'tiredness' with int values 0..24. Empty
+## dictionary hides the chip — used when the PC doesn't exist yet or
+## the talk panel reset to no-PC state.
+##
+## Tier thresholds are hardcoded to engine defaults (mild ≥ 8, red
+## ≥ 18, peak = 24). Per-need thresholds are runtime-configurable on
+## the server but the client doesn't pull them; if an admin tunes them
+## the HUD coloring may drift slightly from the in-prompt felt
+## language. Acceptable for v1 — a future refresh can wire thresholds
+## into the /pc/me payload alongside the values.
+func set_needs(needs: Dictionary) -> void:
+    if needs_label == null:
+        return
+    if needs.is_empty():
+        needs_label.visible = false
+        return
+    var h := int(needs.get("hunger", 0))
+    var t := int(needs.get("thirst", 0))
+    var w := int(needs.get("tiredness", 0))
+    needs_label.text = "H %d · T %d · W %d" % [h, t, w]
+    needs_label.tooltip_text = "Hunger: %d / 24\nThirst: %d / 24\nTiredness: %d / 24" % [h, t, w]
+    var worst: int = max(h, max(t, w))
+    var tint: Color
+    if worst >= 24:
+        tint = Color(0.95, 0.35, 0.30, 1.0)  # peak — bright red
+    elif worst >= 18:
+        tint = Color(0.90, 0.55, 0.25, 1.0)  # red — orange
+    elif worst >= 8:
+        tint = Color(0.88, 0.74, 0.35, 1.0)  # mild — amber
+    else:
+        tint = COLOR_TEXT_DIM
+    needs_label.add_theme_color_override("font_color", tint)
+    needs_label.visible = true
+
 
 ## Update the cursor tile readout. Called from main.gd when the editor
 ## emits a cursor_tile_changed signal.

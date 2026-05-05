@@ -339,6 +339,9 @@ func _build_ui() -> void:
     # them. Decoupled so neither side knows the other's node path.
     if talk_panel_layer.has_signal("purse_changed") and top_bar != null:
         talk_panel_layer.purse_changed.connect(_on_pc_purse_changed)
+    # Same wiring for needs_changed → top bar HUD readout (ZBBS-123).
+    if talk_panel_layer.has_signal("needs_changed") and top_bar != null:
+        talk_panel_layer.needs_changed.connect(_on_pc_needs_changed)
     # Pay modal blocks world input. Without this, a click on the
     # Confirm button propagates into the world's PC-walk handler and
     # the character starts walking under the open modal.
@@ -450,6 +453,15 @@ func _on_pc_purse_changed(coins: int, inventory_lines: PackedStringArray) -> voi
     for line in inventory_lines:
         arr.append(line)
     top_bar.set_purse(coins, arr)
+
+
+## Forward body-need updates from the talk panel to the top bar's HUD
+## readout (ZBBS-123). Empty dictionary signals "no PC" — top bar
+## hides the readout.
+func _on_pc_needs_changed(needs: Dictionary) -> void:
+    if top_bar == null or not top_bar.has_method("set_needs"):
+        return
+    top_bar.set_needs(needs)
 
 func _on_edit_toggled(active: bool) -> void:
     editor_panel.visible = active
