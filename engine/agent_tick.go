@@ -494,6 +494,10 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, 
 	// Load the single NPC row. Pulled forward (was after scene-dedup) so
 	// the cost guard below can run before claimSceneTick — see comment
 	// above on why the order matters.
+	// Need values come from actor_need rows now that ZBBS-121 dropped the
+	// legacy actor.{hunger,thirst,tiredness} columns. Scalar subqueries
+	// with COALESCE so an actor missing one of the three rows reads as 0
+	// rather than aborting the whole tick.
 	row := app.DB.QueryRow(ctx,
 		`SELECT n.id, n.display_name, n.llm_memory_agent,
 		        n.llm_memory_api_key,
@@ -504,7 +508,10 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, 
 		        n.schedule_start_minute, n.schedule_end_minute,
 		        COALESCE(wo.display_name, wa.name) AS work_label,
 		        COALESCE(ho.display_name, ha.name) AS home_label,
-		        n.coins, n.hunger, n.thirst, n.tiredness
+		        n.coins,
+		        COALESCE((SELECT value FROM actor_need WHERE actor_id = n.id AND key = 'hunger'), 0)::smallint,
+		        COALESCE((SELECT value FROM actor_need WHERE actor_id = n.id AND key = 'thirst'), 0)::smallint,
+		        COALESCE((SELECT value FROM actor_need WHERE actor_id = n.id AND key = 'tiredness'), 0)::smallint
 		 FROM actor n
 		 LEFT JOIN village_object wo ON wo.id = n.work_structure_id
 		 LEFT JOIN asset wa ON wa.id = wo.asset_id
