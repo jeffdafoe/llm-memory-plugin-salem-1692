@@ -19,11 +19,17 @@ var cursor_tile_label: Label = null
 ## calls set_purse() each time it polls.
 var coins_label: Label = null
 ## Needs chip — displays the PC's hunger / thirst / tiredness as a
-## compact "H 8 · T 12 · W 4" readout, color-tinted by the worst tier
-## across the three. Hidden until /pc/me reports an existing PC.
-## Tooltip spells out the full names. Updated alongside the coin chip
-## via the talk panel's needs_changed signal (ZBBS-123).
-var needs_label: Label = null
+## spelled-out "Hunger 8  Thirst 12  Weariness 4" readout where each
+## word's leading letter is rendered larger than the rest. Each segment
+## is tier-tinted by its own value (so a fine W stays dim even when H
+## peaks). Hidden until /pc/me reports an existing PC. Updated alongside
+## the coin chip via the talk panel's needs_changed signal (ZBBS-123).
+##
+## Implemented as a horizontal container whose children are rebuilt on
+## every set_needs() call. Avoids RichTextLabel because its fit_content
+## sizing inside an HBoxContainer interacts poorly with the surrounding
+## layout when the chip starts hidden then becomes visible later.
+var needs_label: HBoxContainer = null
 var _editor_active: bool = false
 
 # Theme colors (matching login screen)
@@ -93,18 +99,19 @@ func _ready() -> void:
     cursor_tile_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
     right_box.add_child(cursor_tile_label)
 
-    # Body-needs chip (ZBBS-123). Reads "H 8 · T 12 · W 4" and tints
-    # by the worst tier across the three needs (default → dim, mild
-    # → amber, red → orange, peak → bright red). Sits before the coin
-    # chip so personal stats (body, then purse) read together left-
-    # to-right. Hidden until set_needs() is called with non-empty data.
-    needs_label = Label.new()
-    needs_label.text = ""
+    # Body-needs chip (ZBBS-123). Spells out "Hunger 24  Thirst 24
+    # Weariness 0" with the leading letter at font_size 18 and the rest
+    # of each word + value at font_size 10. Each need is tier-tinted by
+    # its own value (default → dim, mild → amber, red → orange, peak →
+    # bright red), so a fine W stays dim even when H peaks. Sits before
+    # the coin chip so personal stats (body, then purse) read together
+    # left-to-right. Built as nested HBoxContainers so each segment can
+    # combine two Label children of different sizes; the chip's children
+    # are rebuilt by set_needs() on each update. Hidden until set_needs
+    # is called with non-empty data.
+    needs_label = HBoxContainer.new()
+    needs_label.add_theme_constant_override("separation", 12)
     needs_label.visible = false
-    needs_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
-    needs_label.add_theme_font_override("font", _font)
-    needs_label.add_theme_font_size_override("font_size", 16)
-    needs_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
     needs_label.mouse_filter = Control.MOUSE_FILTER_PASS
     right_box.add_child(needs_label)
 
@@ -226,20 +233,50 @@ func set_needs(needs: Dictionary) -> void:
     var h := int(needs.get("hunger", 0))
     var t := int(needs.get("thirst", 0))
     var w := int(needs.get("tiredness", 0))
-    needs_label.text = "H %d · T %d · W %d" % [h, t, w]
+    for child in needs_label.get_children():
+        child.queue_free()
+    needs_label.add_child(_build_need_segment("H", "unger", h))
+    needs_label.add_child(_build_need_segment("T", "hirst", t))
+    needs_label.add_child(_build_need_segment("W", "eariness", w))
     needs_label.tooltip_text = "Hunger: %d / 24\nThirst: %d / 24\nTiredness: %d / 24" % [h, t, w]
-    var worst: int = max(h, max(t, w))
-    var tint: Color
-    if worst >= 24:
-        tint = Color(0.95, 0.35, 0.30, 1.0)  # peak — bright red
-    elif worst >= 18:
-        tint = Color(0.90, 0.55, 0.25, 1.0)  # red — orange
-    elif worst >= 8:
-        tint = Color(0.88, 0.74, 0.35, 1.0)  # mild — amber
-    else:
-        tint = COLOR_TEXT_DIM
-    needs_label.add_theme_color_override("font_color", tint)
     needs_label.visible = true
+
+## Build one need's segment: "Hunger 24" rendered as a big-cap "H" +
+## small-rest "unger 24", both colored by this need's tier. Returned as
+## an HBoxContainer with separation 0 (no gap between the cap and the
+## tail) so the two labels read as a single word.
+func _build_need_segment(initial: String, rest: String, value: int) -> HBoxContainer:
+    var color := _tier_color(value)
+    var segment := HBoxContainer.new()
+    segment.add_theme_constant_override("separation", 0)
+    segment.add_child(_make_need_label(initial, 18, color))
+    segment.add_child(_make_need_label("%s %d" % [rest, value], 10, color))
+    return segment
+
+## Construct a single Label inside a need segment with the given size
+## and color. Aligned to the bottom of the parent HBox so the small
+## "unger 24" and the big "H" share a baseline.
+func _make_need_label(text: String, size: int, color: Color) -> Label:
+    var label := Label.new()
+    label.text = text
+    label.add_theme_color_override("font_color", color)
+    label.add_theme_font_override("font", _font)
+    label.add_theme_font_size_override("font_size", size)
+    label.vertical_alignment = VERTICAL_ALIGNMENT_BOTTOM
+    label.size_flags_vertical = Control.SIZE_SHRINK_END
+    return label
+
+## Tier color for a single need value. Mirrors the engine's mild/red/peak
+## thresholds (8 / 18 / 24). Falls back to the dim chrome text color
+## when the need is below the mild threshold so the segment recedes.
+func _tier_color(value: int) -> Color:
+    if value >= 24:
+        return Color(0.95, 0.35, 0.30, 1.0)
+    if value >= 18:
+        return Color(0.90, 0.55, 0.25, 1.0)
+    if value >= 8:
+        return Color(0.88, 0.74, 0.35, 1.0)
+    return COLOR_TEXT_DIM
 
 
 ## Update the cursor tile readout. Called from main.gd when the editor
