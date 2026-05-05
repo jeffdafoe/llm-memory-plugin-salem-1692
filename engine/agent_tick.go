@@ -1267,6 +1267,18 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 		sections = append(sections, label+": "+inv+".")
 	}
 
+	// 3a. Satiation block (ZBBS-123). When a consumable need is
+	// pressing (hunger, thirst), surface own-stock + nearby-vendor
+	// satisfiers so the LLM has the bridge between "Address now"
+	// and the resolution it should pick. See engine/satiation.go.
+	currentStructureID := ""
+	if r.InsideStructureID.Valid {
+		currentStructureID = r.InsideStructureID.String
+	}
+	if satLines := app.buildSatiationLines(ctx, r.ID, r.CurrentX, r.CurrentY, currentStructureID, pressing); len(satLines) > 0 {
+		sections = append(sections, strings.Join(satLines, "\n"))
+	}
+
 	// 3b. Return-to-work nudge (ZBBS-110). Fires when the NPC is on shift
 	// but away from their work building, and no need is pressing enough
 	// to justify the detour. Suppressed by any tier ≥ 2 need (Address now
