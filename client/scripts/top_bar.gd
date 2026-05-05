@@ -241,29 +241,31 @@ func set_needs(needs: Dictionary) -> void:
     needs_label.tooltip_text = "Hunger: %d / 24\nThirst: %d / 24\nTiredness: %d / 24" % [h, t, w]
     needs_label.visible = true
 
-## Build one need's segment: "Hunger 24" rendered as a big-cap "H" +
-## small-rest "unger 24", both colored by this need's tier. Returned as
-## an HBoxContainer with separation 0 (no gap between the cap and the
-## tail) so the two labels read as a single word.
+## Build one need's segment: "Hunger 24" rendered as three Labels —
+## cap "H" (16 pt) + small-rest "unger " (10 pt) + value "24" (16 pt).
+## Cap and value use the same size as the surrounding chips (coins,
+## username) so the chip reads as part of the bar's general chrome,
+## with the lowercase remainder shrunk to suggest a stylized
+## abbreviation. All three labels share the segment's tier color.
 func _build_need_segment(initial: String, rest: String, value: int) -> HBoxContainer:
     var color := _tier_color(value)
     var segment := HBoxContainer.new()
     segment.add_theme_constant_override("separation", 0)
-    segment.add_child(_make_need_label(initial, 18, color))
-    segment.add_child(_make_need_label("%s %d" % [rest, value], 10, color))
+    segment.add_child(_make_need_label(initial, 16, color))
+    segment.add_child(_make_need_label("%s " % rest, 10, color))
+    segment.add_child(_make_need_label("%d" % value, 16, color))
     return segment
 
 ## Construct a single Label inside a need segment with the given size
-## and color. Aligned to the bottom of the parent HBox so the small
-## "unger 24" and the big "H" share a baseline.
+## and color. Vertically centered so labels of different sizes line up
+## around the middle of the bar — matches the coin chip's alignment.
 func _make_need_label(text: String, size: int, color: Color) -> Label:
     var label := Label.new()
     label.text = text
     label.add_theme_color_override("font_color", color)
     label.add_theme_font_override("font", _font)
     label.add_theme_font_size_override("font_size", size)
-    label.vertical_alignment = VERTICAL_ALIGNMENT_BOTTOM
-    label.size_flags_vertical = Control.SIZE_SHRINK_END
+    label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
     return label
 
 ## Tier color for a single need value. Mirrors the engine's mild/red/peak
