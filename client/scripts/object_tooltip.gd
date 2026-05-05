@@ -250,16 +250,15 @@ func _get_sprite_size(sprite_node: Node2D) -> Vector2:
         var frames: SpriteFrames = sprite_node.sprite_frames
         if frames == null:
             return Vector2.ZERO
-        var anim_name: String = "default"
-        if frames.get_frame_count(anim_name) == 0:
-            var anims: PackedStringArray = frames.get_animation_names()
-            if anims.is_empty():
-                return Vector2.ZERO
-            anim_name = anims[0]
-        if frames.get_frame_count(anim_name) > 0:
-            var tex = frames.get_frame_texture(anim_name, 0)
-            if tex != null:
-                return tex.get_size()
+        # SpriteFrames.new() auto-creates an empty "default" animation.
+        # Iterate and use the first animation that actually has frames so
+        # NPC sprites (whose populated animations are "<direction>_<kind>")
+        # produce a usable size instead of ZERO.
+        for anim_name in frames.get_animation_names():
+            if frames.get_frame_count(anim_name) > 0:
+                var tex = frames.get_frame_texture(anim_name, 0)
+                if tex != null:
+                    return tex.get_size()
     return Vector2.ZERO
 
 func _screen_to_world(screen_pos: Vector2) -> Vector2:

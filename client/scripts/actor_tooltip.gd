@@ -42,7 +42,6 @@ var _shown_node: Node2D = null
 func _ready() -> void:
     layer = 3  # Same layer as object_tooltip — above world, below editor panels.
     _font = load("res://assets/fonts/IMFellEnglish-Regular.ttf")
-    print("[actor_tooltip] _ready, world=", world, " editor=", editor, " camera=", camera)
 
     _panel = PanelContainer.new()
     _panel.visible = false
@@ -101,40 +100,21 @@ func _input(event: InputEvent) -> void:
     if event is InputEventMouseMotion:
         _update_hover(event.position)
 
-var _debug_log_counter: int = 0
 func _update_hover(screen_pos: Vector2) -> void:
-    # Throttled diagnostic — log one in every 30 mouse-motion events so
-    # the console isn't flooded but we can confirm hover is reaching us.
-    _debug_log_counter += 1
-    var should_log: bool = (_debug_log_counter % 30 == 0)
-
     if world == null:
-        if should_log:
-            print("[actor_tooltip] hover: world=null (not wired yet)")
         return
 
     if editor != null and editor.active:
-        if should_log:
-            print("[actor_tooltip] hover: skipped (editor.active=true)")
         _hide_panel()
         return
     if camera != null and camera.modal_open:
-        if should_log:
-            print("[actor_tooltip] hover: skipped (camera.modal_open=true)")
         _hide_panel()
         return
     if camera != null and camera._is_over_ui(screen_pos):
-        if should_log:
-            print("[actor_tooltip] hover: skipped (camera._is_over_ui)")
         _hide_panel()
         return
 
     var hit: Node2D = _find_actor_at(screen_pos)
-    if should_log:
-        print("[actor_tooltip] hover: pos=", screen_pos,
-            " placed_npcs.size=", world.placed_npcs.size(),
-            " hit=", hit,
-            " hit.display_name=", (str(hit.get_meta("display_name", "?")) if hit != null else "(none)"))
     if hit == null:
         _hide_panel()
         return
@@ -258,21 +238,9 @@ func _find_actor_at(screen_pos: Vector2) -> Node2D:
     var best_node: Node2D = null
     var best_dist: float = INF
 
-    var ranked: Array = []
-    var c_invisible: int = 0
-    var c_no_sprite: int = 0
-    var c_size_zero: int = 0
-    var c_valid: int = 0
-    var first_invalid_dn: String = ""
-    var first_invalid_reason: String = ""
-
     for actor_id in world.placed_npcs:
         var container: Node2D = world.placed_npcs[actor_id]
         if container == null or not container.visible:
-            c_invisible += 1
-            if first_invalid_reason == "":
-                first_invalid_dn = str(container.get_meta("display_name", "?")) if container != null else "(null)"
-                first_invalid_reason = "invisible"
             continue
         var sprite_node: Node2D = null
         for child in container.get_children():
@@ -280,39 +248,19 @@ func _find_actor_at(screen_pos: Vector2) -> Node2D:
                 sprite_node = child
                 break
         if sprite_node == null:
-            c_no_sprite += 1
-            if first_invalid_reason == "":
-                first_invalid_dn = str(container.get_meta("display_name", "?"))
-                first_invalid_reason = "no_sprite"
             continue
 
         var size: Vector2 = _get_sprite_size(sprite_node)
         if size == Vector2.ZERO:
-            c_size_zero += 1
-            if first_invalid_reason == "":
-                first_invalid_dn = str(container.get_meta("display_name", "?"))
-                first_invalid_reason = "size_zero(sprite=" + str(sprite_node) + ")"
             continue
-        c_valid += 1
         var world_size: Vector2 = size * sprite_node.scale
         var origin: Vector2 = container.position + sprite_node.position
         var rect = Rect2(origin, world_size)
-        var dist: float = container.position.distance_to(world_pos)
-        ranked.append({"dist": dist, "node": container, "sprite": sprite_node, "size": size, "rect": rect})
         if rect.has_point(world_pos):
+            var dist: float = container.position.distance_to(world_pos)
             if dist < best_dist:
                 best_dist = dist
                 best_node = container
-
-    if best_node == null and (_debug_log_counter % 30 == 0):
-        print("[actor_tooltip]  filter: invisible=", c_invisible, " no_sprite=", c_no_sprite, " size_zero=", c_size_zero, " valid=", c_valid, " first_invalid=", first_invalid_dn, " reason=", first_invalid_reason)
-        if ranked.size() > 0:
-            ranked.sort_custom(func(a, b): return a.dist < b.dist)
-            var dump_count: int = min(3, ranked.size())
-            for i in range(dump_count):
-                var entry = ranked[i]
-                var dn: String = str(entry.node.get_meta("display_name", "?"))
-                print("[actor_tooltip]  near[", i, "] ", dn, " container.pos=", entry.node.position, " sprite.pos=", entry.sprite.position, " size=", entry.size, " rect=", entry.rect, " dist=", entry.dist, " has_point=", entry.rect.has_point(world_pos))
 
     return best_node
 
@@ -325,14 +273,17 @@ func _get_sprite_size(sprite_node: Node2D) -> Vector2:
         var frames: SpriteFrames = sprite_node.sprite_frames
         if frames == null:
             return Vector2.ZERO
-        var anim_names: PackedStringArray = frames.get_animation_names()
-        if anim_names.is_empty():
-            return Vector2.ZERO
-        var first_anim: String = anim_names[0]
-        if frames.get_frame_count(first_anim) > 0:
-            var tex = frames.get_frame_texture(first_anim, 0)
-            if tex != null:
-                return tex.get_size()
+        # SpriteFrames.new() auto-creates an empty "default" animation in
+        # Godot 4. NPC sprites never populate "default" — they only add
+        # frames to "<direction>_<kind>" animations like "south_idle".
+        # Picking alphabetically-first gives us "default" (0 frames) and
+        # the lookup degenerates to ZERO. Iterate and use the first
+        # animation that actually has frames.
+        for anim_name in frames.get_animation_names():
+            if frames.get_frame_count(anim_name) > 0:
+                var tex = frames.get_frame_texture(anim_name, 0)
+                if tex != null:
+                    return tex.get_size()
     return Vector2.ZERO
 
 func _screen_to_world(screen_pos: Vector2) -> Vector2:
