@@ -386,7 +386,7 @@ Voice: as a 1692 villager would post it. Formal for civic announcements, plain f
 	// not a place-anchored cascade — pass empty structure so the scenes
 	// row records NULL and the admin UI omits the location chip.
 	sceneID := app.newScene(ctx, "")
-	reply, err := app.npcChatClient.sendChat(ctx, chroniclerAgent, prompt.String(), "", sceneID, nil)
+	reply, err := app.npcChatClient.sendChat(ctx, chroniclerAgent, prompt.String(), "", sceneID, app.lookupSceneStructureName(ctx, sceneID), nil)
 	if err != nil {
 		return chroniclerBoardReply{}, err
 	}
