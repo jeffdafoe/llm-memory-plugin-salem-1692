@@ -84,6 +84,12 @@ const (
 // reference this constant, so a future widening (a fourth actor kind
 // with a body) edits one place. Decoratives (no login, no agent)
 // stay excluded because they have no need-pressure mechanic.
+//
+// Concatenated into the SQL string at build time. Safe here because
+// the value is a compile-time constant — no SQL injection surface.
+// DO NOT extend this pattern to fragments derived from request
+// payloads, settings, or any other runtime input; route those
+// through bound parameters ($1, $2, ...) instead.
 const needTickEligibilityPred = `(login_username IS NOT NULL OR llm_memory_agent IS NOT NULL)`
 
 // dispatchNeedsTick is registered in runServerTickOnce. Cheap when the
