@@ -64,7 +64,13 @@ func (app *App) verifyLLMMemoryToken(token string) VerifyResult {
 	verifyURL := strings.TrimRight(app.LLMMemoryURL, "/") + "/v1/auth/verify"
 	body := fmt.Sprintf(`{"token":"%s"}`, token)
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	// 15s — memory-api's /v1/auth/verify queues calls under parallel
+	// load and the tail can blow past 6s during a page-load fan-out
+	// (6+ authed endpoints firing together). Page-load was 503ing on
+	// /api/village/npcs and friends until this was bumped from 5s.
+	// Underlying api-side latency is tracked in the auth-verify-latency
+	// task note; this ceiling is the band-aid until that lands.
+	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Post(verifyURL, "application/json", strings.NewReader(body))
 	if err != nil {
 		return VerifyResult{Valid: false, Reason: "service"}
