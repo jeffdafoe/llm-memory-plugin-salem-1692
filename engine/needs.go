@@ -259,27 +259,28 @@ func (app *App) dispatchNeedsTick(ctx context.Context) {
 		}()
 	}
 
+	// Apply the hourly increment directly to actor_need rows
+	// (ZBBS-121 commit 5: rows are now the sole write target). Same
+	// LEAST clamp as the pre-conversion column UPDATE.
+	//
+	// Eligibility filter: agent NPCs only (login_username IS NULL AND
+	// llm_memory_agent IS NOT NULL). Pre-conversion the column UPDATE
+	// had no WHERE clause and ticked every actor, but PCs aren't sim
+	// agents (player drives consumption) and decoratives have no
+	// need-pressure mechanic (no chronicler attention, no LLM-driven
+	// reaction to distress). Restricting at the source of truth
+	// matches the eligibility filter the pre-tick scan and chronicler
+	// dispatch use elsewhere.
 	tag, err := tx.Exec(ctx, `
-		UPDATE actor SET
-			hunger    = LEAST($1::int, hunger    + $2::int),
-			thirst    = LEAST($1::int, thirst    + $2::int),
-			tiredness = LEAST($1::int, tiredness + $2::int)
+		UPDATE actor_need an
+		   SET value = LEAST($1::int, an.value + $2::int)
+		  FROM actor a
+		 WHERE a.id = an.actor_id
+		   AND a.login_username IS NULL
+		   AND a.llm_memory_agent IS NOT NULL
 	`, needMax, totalIncrement)
 	if err != nil {
 		log.Printf("needs_tick: UPDATE failed (rolling back, will retry next minute): %v", err)
-		return
-	}
-
-	// Dual-write to actor_need rows (ZBBS-121). Sync FROM the
-	// post-UPDATE column values so the rows match by construction
-	// (avoids subtle clamp/filter drift between the two paths) and so
-	// actors created since the backfill — who have legacy columns but
-	// no actor_need rows yet — get their rows populated here. Runs in
-	// the same tx as the column UPDATE so column + row commit or roll
-	// back together. Removed when the read sites convert and the
-	// legacy columns drop.
-	if err := app.syncAllNeedRowsFromColumns(ctx, tx); err != nil {
-		log.Printf("needs_tick: dual-write rows failed (rolling back, will retry next minute): %v", err)
 		return
 	}
 
