@@ -251,26 +251,21 @@ func _structure_name(structure_id: String) -> String:
 ## Hit-test placed_npcs (which holds both NPCs and PCs — see
 ## apply_pc_appeared in world.gd). Returns the closest container whose
 ## sprite bounding box contains the click, or null.
-var _debug_dump_done: bool = false
 func _find_actor_at(screen_pos: Vector2) -> Node2D:
     if world == null:
         return null
     var world_pos: Vector2 = _screen_to_world(screen_pos)
     var best_node: Node2D = null
     var best_dist: float = INF
-    var dump: bool = false
-    if not _debug_dump_done:
-        dump = true
-        _debug_dump_done = true
-        print("[actor_tooltip] DUMP screen=", screen_pos, " world=", world_pos)
 
-    var i: int = 0
+    # Diagnostic: track the 3 containers closest to the cursor so we can
+    # print their rect math if no hit is found — those are the ones we'd
+    # most expect to match.
+    var ranked: Array = []  # array of {dist, node, sprite_node, size, rect}
+
     for actor_id in world.placed_npcs:
         var container: Node2D = world.placed_npcs[actor_id]
         if container == null or not container.visible:
-            if dump and i < 3:
-                print("[actor_tooltip]  [", i, "] skipped: container=", container, " visible=", (container.visible if container != null else "n/a"))
-                i += 1
             continue
         var sprite_node: Node2D = null
         for child in container.get_children():
@@ -278,29 +273,32 @@ func _find_actor_at(screen_pos: Vector2) -> Node2D:
                 sprite_node = child
                 break
         if sprite_node == null:
-            if dump and i < 3:
-                print("[actor_tooltip]  [", i, "] no sprite_node child found")
-                i += 1
             continue
 
         var size: Vector2 = _get_sprite_size(sprite_node)
         if size == Vector2.ZERO:
-            if dump and i < 3:
-                print("[actor_tooltip]  [", i, "] sprite size=ZERO; sprite=", sprite_node, " frames=", (sprite_node.sprite_frames if sprite_node is AnimatedSprite2D else "n/a"))
-                i += 1
             continue
         var world_size: Vector2 = size * sprite_node.scale
         var origin: Vector2 = container.position + sprite_node.position
         var rect = Rect2(origin, world_size)
-        if dump and i < 3:
-            var dn: String = str(container.get_meta("display_name", "?"))
-            print("[actor_tooltip]  [", i, "] ", dn, " container.pos=", container.position, " sprite.pos=", sprite_node.position, " size=", size, " scale=", sprite_node.scale, " rect=", rect, " has_point(world)=", rect.has_point(world_pos))
-            i += 1
+        var dist: float = container.position.distance_to(world_pos)
+        ranked.append({"dist": dist, "node": container, "sprite": sprite_node, "size": size, "rect": rect})
         if rect.has_point(world_pos):
-            var dist: float = container.position.distance_to(world_pos)
             if dist < best_dist:
                 best_dist = dist
                 best_node = container
+
+    # Throttled dump of the 3 nearest containers when the throttle counter
+    # fires AND no hit was found. Tells us whether the rects near the
+    # cursor are mis-sized, mis-positioned, or just legitimately not under
+    # the cursor.
+    if best_node == null and (_debug_log_counter % 30 == 0) and ranked.size() > 0:
+        ranked.sort_custom(func(a, b): return a.dist < b.dist)
+        var dump_count: int = min(3, ranked.size())
+        for i in range(dump_count):
+            var entry = ranked[i]
+            var dn: String = str(entry.node.get_meta("display_name", "?"))
+            print("[actor_tooltip]  near[", i, "] ", dn, " container.pos=", entry.node.position, " sprite.pos=", entry.sprite.position, " size=", entry.size, " rect=", entry.rect, " dist=", entry.dist, " has_point=", entry.rect.has_point(world_pos))
 
     return best_node
 
