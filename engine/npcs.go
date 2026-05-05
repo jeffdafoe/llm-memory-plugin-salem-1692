@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 
@@ -347,13 +348,31 @@ func (app *App) handleCreateNPC(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := newUUIDv7()
-	_, err := app.DB.Exec(r.Context(),
+	tx, err := app.DB.Begin(r.Context())
+	if err != nil {
+		jsonError(w, "Failed to create NPC", http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback(r.Context())
+	if _, err := tx.Exec(r.Context(),
 		`INSERT INTO actor (id, display_name, sprite_id, home_x, home_y,
 		                    current_x, current_y, facing)
 		 VALUES ($1, $2, $3, $4, $5, $4, $5, 'south')`,
 		id, req.Name, req.SpriteID, req.X, req.Y,
-	)
-	if err != nil {
+	); err != nil {
+		jsonError(w, "Failed to create NPC", http.StatusInternalServerError)
+		return
+	}
+	// Seed actor_need rows in the same tx so the actor either exists
+	// with the full need-row set or doesn't exist at all (ZBBS-121
+	// commit 5). applyConsumption / dispatchNeedsTick assume rows are
+	// present for every Need in the registry.
+	if err := app.seedNeedRowsIfMissing(r.Context(), tx, id); err != nil {
+		log.Printf("create NPC: seed actor_need rows for %s: %v", id, err)
+		jsonError(w, "Failed to create NPC", http.StatusInternalServerError)
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
 		jsonError(w, "Failed to create NPC", http.StatusInternalServerError)
 		return
 	}

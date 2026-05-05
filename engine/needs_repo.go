@@ -262,36 +262,25 @@ func (app *App) writeNeedRows(ctx context.Context, tx pgx.Tx, actorID string, va
 	return nil
 }
 
-// syncAllNeedRowsFromColumns mirrors the current actor.<column> values
-// for every actor onto actor_need rows. Used by the dispatchNeedsTick
-// dual-write hook AFTER the legacy batch UPDATE has run, so the rows
-// pick up the post-tick values for every actor — including actors
-// created since the ZBBS-121 backfill (which have legacy columns from
-// NOT NULL DEFAULT 0 but no actor_need rows yet, so a plain UPDATE on
-// actor_need would silently skip them).
+// seedNeedRowsIfMissing inserts an actor_need row for every Need in
+// the registry, defaulting the value to 0. ON CONFLICT DO NOTHING
+// makes it idempotent — existing rows are left untouched, only
+// missing ones are created. Called from actor-creation paths
+// (npcs.go's NPC create, pc_handlers.go's PC create/upsert) so a
+// fresh actor immediately has the full set of rows that the read
+// paths in applyConsumption / dispatchNeedsTick assume.
 //
-// One Exec per Need (three today). INSERT ... ON CONFLICT handles
-// both row-exists (UPDATE) and row-missing (INSERT) in one statement.
-// Reads the column value directly so clamp semantics match the legacy
-// UPDATE by construction — no risk of subtle drift between the two
-// write paths.
-//
-// Removed when read sites are converted and the legacy columns drop;
-// at that point the row UPDATE becomes the only write and a plain
-// `UPDATE actor_need SET value = LEAST(needMax, value + amount)` is
-// sufficient (no need to derive from columns that no longer exist).
-//
-// The DBColumn name is interpolated into the SQL because pgx doesn't
-// support column-name parameterization. The Need registry is the only
-// source of column names; no user input reaches this path.
-func (app *App) syncAllNeedRowsFromColumns(ctx context.Context, tx pgx.Tx) error {
+// Caller is responsible for the transaction. Should run in the same
+// tx as the actor INSERT so the actor either exists with its full
+// need row set or doesn't exist at all — never a half-state.
+func (app *App) seedNeedRowsIfMissing(ctx context.Context, tx pgx.Tx, actorID string) error {
 	for _, n := range Needs {
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO actor_need (actor_id, key, value)
-			SELECT id, $1, `+n.DBColumn+` FROM actor
-			ON CONFLICT (actor_id, key) DO UPDATE SET value = EXCLUDED.value
-		`, n.Key); err != nil {
-			return fmt.Errorf("syncAllNeedRowsFromColumns(%s): %w", n.Key, err)
+			VALUES ($1, $2, 0)
+			ON CONFLICT (actor_id, key) DO NOTHING
+		`, actorID, n.Key); err != nil {
+			return fmt.Errorf("seedNeedRowsIfMissing(actor=%s, key=%s): %w", actorID, n.Key, err)
 		}
 	}
 	return nil

@@ -157,23 +157,17 @@ func (app *App) applyConsumption(ctx context.Context, tx pgx.Tx, actorID string,
 	newT := clampNeed(oldT + delta.Thirst)
 	newTi := clampNeed(oldTi + delta.Tiredness)
 
-	// 3. Single UPDATE if anything actually changed.
+	// 3. Write to actor_need rows if anything actually changed
+	//    (ZBBS-121 commit 5: dual-write era ends; rows are now the
+	//    sole write target). Skipping no-op writes preserves the same
+	//    short-circuit the legacy column UPDATE used.
 	if newH != oldH || newT != oldT || newTi != oldTi {
-		if _, err := tx.Exec(ctx,
-			`UPDATE actor SET hunger = $1, thirst = $2, tiredness = $3 WHERE id = $4`,
-			newH, newT, newTi, actorID,
-		); err != nil {
-			return consumptionResult{}, fmt.Errorf("applyConsumption: update needs: %w", err)
-		}
-		// Dual-write to actor_need rows (ZBBS-121). Runs in the same tx
-		// so column + row commits are atomic. Removed when the read
-		// sites convert and the legacy columns drop.
 		if err := app.writeNeedRows(ctx, tx, actorID, map[string]int{
 			"hunger":    newH,
 			"thirst":    newT,
 			"tiredness": newTi,
 		}); err != nil {
-			return consumptionResult{}, fmt.Errorf("applyConsumption: dual-write rows: %w", err)
+			return consumptionResult{}, fmt.Errorf("applyConsumption: write rows: %w", err)
 		}
 	}
 

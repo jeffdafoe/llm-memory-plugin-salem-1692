@@ -568,8 +568,15 @@ func (app *App) handlePCCreate(w http.ResponseWriter, r *http.Request) {
 	// value wins; when it didn't, the existing value (if any) survives
 	// the upsert. NULLIF($6, '')::uuid converts the empty fast-path to
 	// SQL NULL so the COALESCE picks up the existing column.
+	tx, err := app.DB.Begin(r.Context())
+	if err != nil {
+		log.Printf("pc/create begin tx: %v", err)
+		jsonError(w, "Failed to create PC", http.StatusInternalServerError)
+		return
+	}
+	defer tx.Rollback(r.Context())
 	var actorID, prevSpriteID sql.NullString
-	if err := app.DB.QueryRow(r.Context(),
+	if err := tx.QueryRow(r.Context(),
 		`INSERT INTO actor (login_username, display_name, current_x, current_y, home_structure_id, sprite_id)
 		 VALUES ($1, $2, $3, $4, NULLIF($5, '')::uuid, NULLIF($6, '')::uuid)
 		 ON CONFLICT (login_username) DO UPDATE
@@ -581,6 +588,20 @@ func (app *App) handlePCCreate(w http.ResponseWriter, r *http.Request) {
 		homeStringValue(homeID), spriteID,
 	).Scan(&actorID, &prevSpriteID); err != nil {
 		log.Printf("pc/create insert: %v", err)
+		jsonError(w, "Failed to create PC", http.StatusInternalServerError)
+		return
+	}
+	// Seed actor_need rows in the same tx (ZBBS-121 commit 5). The
+	// upsert-shape INSERT above means this also covers re-logins where
+	// the actor already exists; ON CONFLICT DO NOTHING in the helper
+	// makes that case a no-op for already-seeded rows.
+	if err := app.seedNeedRowsIfMissing(r.Context(), tx, actorID.String); err != nil {
+		log.Printf("pc/create seed actor_need rows for %s: %v", actorID.String, err)
+		jsonError(w, "Failed to create PC", http.StatusInternalServerError)
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		log.Printf("pc/create commit: %v", err)
 		jsonError(w, "Failed to create PC", http.StatusInternalServerError)
 		return
 	}
