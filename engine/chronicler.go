@@ -1678,66 +1678,92 @@ func (app *App) lookupCurrentStructures(ctx context.Context, actorIDs []string) 
 // the rest of the chronicler perception uses, so the place names match
 // the roster block.
 func (app *App) buildChroniclerDistressList(ctx context.Context) string {
-	hungerT := app.loadNeedThreshold(ctx, "hunger_red_threshold", defaultHungerRedThreshold)
-	thirstT := app.loadNeedThreshold(ctx, "thirst_red_threshold", defaultThirstRedThreshold)
-	tiredT := app.loadNeedThreshold(ctx, "tiredness_red_threshold", defaultTirednessRedThreshold)
+	thresholds := app.loadNeedThresholds(ctx)
 
+	// Reads from actor_need (ZBBS-121 commit 3). The previous version
+	// filtered red-tier+ actors at the DB level via a hardcoded
+	// (hunger >= $1 OR thirst >= $2 OR tiredness >= $3) WHERE clause;
+	// this version pulls all agent NPCs with their needs via a JOIN
+	// to actor_need and filters in code through the Need registry. At
+	// salem-village scale (tens of NPCs, three needs each) the extra
+	// rows transferred are negligible and the registry-driven filter
+	// stays correct as future needs are added.
+	// LEFT JOIN to actor_need so an actor with missing rows still
+	// surfaces; per-need GetOK in the band-classification loop logs
+	// and skips missing rows so partial backfills are observable
+	// instead of silently treated as silent.
 	rows, err := app.DB.Query(ctx, `
-		SELECT n.display_name,
-		       COALESCE(o.display_name, a.name) AS place,
-		       n.hunger, n.thirst, n.tiredness
-		FROM actor n
-		LEFT JOIN village_object o ON o.id = n.inside_structure_id
-		LEFT JOIN asset a ON a.id = o.asset_id
-		WHERE n.llm_memory_agent IS NOT NULL
-		  AND (n.hunger    >= $1
-		   OR  n.thirst    >= $2
-		   OR  n.tiredness >= $3)
-		ORDER BY n.display_name
-	`, hungerT, thirstT, tiredT)
+		SELECT actr.id::text, actr.display_name,
+		       COALESCE(o.display_name, ass.name) AS place,
+		       n.key, n.value
+		FROM actor actr
+		LEFT JOIN village_object o ON o.id = actr.inside_structure_id
+		LEFT JOIN asset ass ON ass.id = o.asset_id
+		LEFT JOIN actor_need n ON n.actor_id = actr.id
+		WHERE actr.llm_memory_agent IS NOT NULL
+		ORDER BY actr.display_name, n.key
+	`)
 	if err != nil {
 		log.Printf("chronicler: distress query: %v", err)
 		return ""
 	}
 	defer rows.Close()
 
-	var lines []string
+	type actorAcc struct {
+		name  string
+		place string
+		needs NeedSet
+	}
+	byID := map[string]*actorAcc{}
+	var order []string // first-appearance order matches ORDER BY display_name
 	for rows.Next() {
-		var name string
+		var id, name string
 		var place sql.NullString
-		var hunger, thirst, tiredness int
-		if err := rows.Scan(&name, &place, &hunger, &thirst, &tiredness); err != nil {
+		var key sql.NullString
+		var value sql.NullInt64
+		if err := rows.Scan(&id, &name, &place, &key, &value); err != nil {
 			log.Printf("chronicler: distress scan: %v", err)
 			continue
 		}
-
-		// Filter to red-tier and above only; mild-tier doesn't surface here.
-		var labels []string
-		if needLabelTier(hunger, hungerT) >= 2 {
-			labels = append(labels, needLabel("hunger", hunger, hungerT))
+		a, ok := byID[id]
+		if !ok {
+			placeStr := "the open village"
+			if place.Valid && place.String != "" {
+				placeStr = place.String
+			}
+			a = &actorAcc{name: name, place: placeStr, needs: NeedSet{}}
+			byID[id] = a
+			order = append(order, id)
 		}
-		if needLabelTier(thirst, thirstT) >= 2 {
-			labels = append(labels, needLabel("thirst", thirst, thirstT))
+		if key.Valid && value.Valid {
+			a.needs[key.String] = int(value.Int64)
 		}
-		if needLabelTier(tiredness, tiredT) >= 2 {
-			labels = append(labels, needLabel("tiredness", tiredness, tiredT))
-		}
-		if len(labels) == 0 {
-			// Row qualified by the threshold OR but all needs landed mild
-			// (shouldn't happen given the WHERE clause matches the same
-			// thresholds, but defensive). Skip.
-			continue
-		}
-
-		placeStr := "the open village"
-		if place.Valid && place.String != "" {
-			placeStr = place.String
-		}
-		lines = append(lines, fmt.Sprintf("- %s (at %s): %s", name, placeStr, strings.Join(labels, ", ")))
 	}
 	if err := rows.Err(); err != nil {
 		log.Printf("chronicler: distress rows: %v", err)
 		return ""
+	}
+
+	var lines []string
+	for _, id := range order {
+		a := byID[id]
+		// Filter to red-tier and above; mild-tier doesn't surface here.
+		var labels []string
+		for _, nd := range Needs {
+			value, ok := a.needs.GetOK(nd.Key)
+			if !ok {
+				log.Printf("chronicler: distress missing actor_need row actor=%s key=%s (treating as silent)", id, nd.Key)
+				continue
+			}
+			tier := nd.Tier(value, thresholds.Get(nd.Key))
+			if tier >= NeedRed {
+				labels = append(labels, nd.Label(tier))
+			}
+		}
+		if len(labels) == 0 {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("- %s (at %s): %s", a.name, a.place, strings.Join(labels, ", ")))
 	}
 
 	if len(lines) == 0 {
