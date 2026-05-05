@@ -245,8 +245,7 @@ func (app *App) maybeScheduleReturnToWork(ctx context.Context, npcID string) {
 		        inside_structure_id, current_x, current_y,
 		        work_structure_id,
 		        schedule_start_minute, schedule_end_minute,
-		        COALESCE(wo.display_name, wa.name) AS work_label,
-		        hunger, thirst, tiredness
+		        COALESCE(wo.display_name, wa.name) AS work_label
 		 FROM actor n
 		 LEFT JOIN village_object wo ON wo.id = n.work_structure_id
 		 LEFT JOIN asset wa ON wa.id = wo.asset_id
@@ -257,10 +256,24 @@ func (app *App) maybeScheduleReturnToWork(ctx context.Context, npcID string) {
 		&r.WorkStructureID,
 		&r.ScheduleStartMinute, &r.ScheduleEndMinute,
 		&r.WorkLabel,
-		&r.Hunger, &r.Thirst, &r.Tiredness,
 	); err != nil {
 		return
 	}
+	// Need values come from actor_need rows (ZBBS-121 commit 4). Best-
+	// effort like the rest of the function: a failed read leaves
+	// Hunger/Thirst/Tiredness at zero, which the downstream
+	// shouldNudgeReturnToWork predicate treats as "no pressing need"
+	// — same effect as if the actor was actually silent on all needs.
+	// Log on failure so silent skips are observable rather than
+	// invisible.
+	needs, err := app.needsSnapshot(ctx, npcID)
+	if err != nil {
+		log.Printf("maybeScheduleReturnToWork needs lookup for %s: %v", npcID, err)
+		return
+	}
+	r.Hunger = needs.Get("hunger")
+	r.Thirst = needs.Get("thirst")
+	r.Tiredness = needs.Get("tiredness")
 
 	cfg, err := app.loadWorldConfig(ctx)
 	if err != nil {
