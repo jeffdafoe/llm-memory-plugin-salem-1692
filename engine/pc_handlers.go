@@ -886,7 +886,16 @@ func (app *App) handlePCMove(w http.ResponseWriter, r *http.Request) {
 		// just like NPCs. curX/curY here is the pre-walk position read at
 		// the top of the handler — no interpolation needed since PC walks
 		// are user-initiated and don't preempt an in-flight walk.
-		app.applyMovementFatigue(r.Context(), actorID, curX, curY, walkX, walkY)
+		//
+		// Detached context with a 2s timeout: the walk has already been
+		// committed via startReturnWalk, so a client disconnect right
+		// after the response is composed shouldn't cancel the fatigue
+		// accrual mid-flight. 2s is generous — the actual write is a
+		// single tx with one SELECT + one UPDATE — but bounded so we
+		// never leak the tx if the DB is wedged.
+		fatCtx, fatCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer fatCancel()
+		app.applyMovementFatigue(fatCtx, actorID, curX, curY, walkX, walkY)
 
 		// Knock (ZBBS-101): PC clicked an owner-only structure they don't
 		// belong to. Compose narration now and, when an associated NPC is
@@ -969,8 +978,12 @@ func (app *App) handlePCMove(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Movement fatigue (ZBBS-123). Raw-coord walks accrue fatigue same
-	// as structure-mode walks above.
-	app.applyMovementFatigue(r.Context(), actorID, curX, curY, req.TargetX, req.TargetY)
+	// as structure-mode walks above. Same detached-context rationale
+	// — the walk committed in startNPCWalk above, fatigue shouldn't
+	// unwind on a late client disconnect.
+	fatCtx, fatCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer fatCancel()
+	app.applyMovementFatigue(fatCtx, actorID, curX, curY, req.TargetX, req.TargetY)
 
 	jsonResponse(w, http.StatusOK, result)
 }

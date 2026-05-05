@@ -84,7 +84,7 @@ type satiationVendor struct {
 // The pressingTiers map carries the tier (NeedRed or NeedPeak) per
 // pressing need so the lead phrase can scale severity — "gnawing"
 // vs "starving" — without the model reading a raw integer.
-func (app *App) buildSatiationLines(ctx context.Context, perceiverID string, perceiverX, perceiverY float64, currentStructureID string, pressingTiers map[string]NeedTier) []string {
+func (app *App) buildSatiationLines(ctx context.Context, perceiverID string, perceiverX, perceiverY float64, pressingTiers map[string]NeedTier) []string {
 	if len(pressingTiers) == 0 {
 		return nil
 	}
@@ -95,7 +95,7 @@ func (app *App) buildSatiationLines(ctx context.Context, perceiverID string, per
 			continue
 		}
 		own := app.satiationOwnInventory(ctx, perceiverID, need)
-		nearby := app.satiationNearbyVendors(ctx, perceiverID, need, perceiverX, perceiverY, currentStructureID)
+		nearby := app.satiationNearbyVendors(ctx, perceiverID, need, perceiverX, perceiverY)
 		if len(own) == 0 && len(nearby) == 0 {
 			continue
 		}
@@ -253,7 +253,8 @@ func needLeadPhrase(need string, tier NeedTier) string {
 // break the perception build.
 func (app *App) satiationOwnInventory(ctx context.Context, actorID, need string) []satiationItem {
 	rows, err := app.DB.Query(ctx, `
-		SELECT ik.display_label, ik.satisfies_amount, ('portable' = ANY(ik.capabilities)) AS portable
+		SELECT ik.display_label, ik.satisfies_amount,
+		       COALESCE('portable' = ANY(ik.capabilities), false) AS portable
 		  FROM actor_inventory inv
 		  JOIN item_kind ik ON ik.name = inv.item_kind
 		 WHERE inv.actor_id = $1::uuid
@@ -284,17 +285,23 @@ func (app *App) satiationOwnInventory(ctx context.Context, actorID, need string)
 	return out
 }
 
-// satiationNearbyVendors returns up to four nearest structures (by
-// Euclidean distance from the perceiver's current position) that have
-// a vendor currently inside whose inventory contains satisfiers for
-// the pressing need. "Vendor" is anyone whose held attributes declare
-// the 'serve' tool — same definition actorIsVendor uses for the
-// inventory-line relabel.
+// satiationNearbyVendors returns up to four nearest vendor entries
+// (one bullet per vendor; if multiple vendors share a structure each
+// gets its own bullet) by Euclidean distance from the perceiver's
+// current position. A "vendor" here is an NPC whose held attributes
+// declare the 'serve' tool — same definition actorIsVendor uses for
+// the inventory-line relabel. PCs are filtered out: even if a player
+// were to acquire a serve attribute, the satiation block shouldn't
+// advertise PC inventory as buyable vendor stock until a real
+// PC-to-NPC purchase flow exists.
 //
 // Excludes the perceiver themselves (so a vendor at their own shop
-// doesn't see "at PW Apothecary, Prudence Ward has water" in their
-// own perception — they're already aware of their own stock via the
-// own-inventory line above).
+// doesn't see their own stock listed under "Nearby satisfiers" —
+// their own-inventory line above already covered it). Vendors at
+// the perceiver's *current* structure are NOT excluded, so a hungry
+// villager sitting in the Tavern still reads that John Ellis has
+// stew there; proximityPhrase renders the distance honestly as
+// "close at hand".
 //
 // Cap of 4: enough to give the model real choice without ballooning
 // the section into a market index. The destinations line ("Other
@@ -305,7 +312,7 @@ func (app *App) satiationOwnInventory(ctx context.Context, actorID, need string)
 // Items returned per vendor carry their own satisfies_amount and
 // portability so renderItemList can attach per-item felt phrases
 // and the "eaten there" hint for non-portables.
-func (app *App) satiationNearbyVendors(ctx context.Context, perceiverID, need string, x, y float64, currentStructureID string) []satiationVendor {
+func (app *App) satiationNearbyVendors(ctx context.Context, perceiverID, need string, x, y float64) []satiationVendor {
 	rows, err := app.DB.Query(ctx, `
 		WITH vendors_with_serve AS (
 			SELECT DISTINCT aa.actor_id
@@ -319,13 +326,13 @@ func (app *App) satiationNearbyVendors(ctx context.Context, perceiverID, need st
 			       a.id::text AS vendor_id,
 			       a.display_name AS vendor_name,
 			       s.x AS sx, s.y AS sy,
-			       (s.x - $4) * (s.x - $4) + (s.y - $5) * (s.y - $5) AS dist_sq
+			       (s.x - $3) * (s.x - $3) + (s.y - $4) * (s.y - $4) AS dist_sq
 			  FROM village_object s
 			  JOIN asset ass ON ass.id = s.asset_id
 			  JOIN actor a ON a.inside_structure_id = s.id
 			  JOIN vendors_with_serve v ON v.actor_id = a.id
 			 WHERE a.id != $2::uuid
-			   AND ($3 = '' OR s.id::text != $3)
+			   AND a.login_username IS NULL
 			   AND EXISTS (
 			       SELECT 1
 			         FROM actor_inventory inv
@@ -339,7 +346,7 @@ func (app *App) satiationNearbyVendors(ctx context.Context, perceiverID, need st
 		)
 		SELECT r.structure_id::text, r.structure_name, r.vendor_name,
 		       ik.display_label, ik.satisfies_amount,
-		       ('portable' = ANY(ik.capabilities)) AS portable,
+		       COALESCE('portable' = ANY(ik.capabilities), false) AS portable,
 		       r.dist_sq
 		  FROM ranked r
 		  JOIN actor_inventory inv ON inv.actor_id::text = r.vendor_id
@@ -347,7 +354,7 @@ func (app *App) satiationNearbyVendors(ctx context.Context, perceiverID, need st
 		 WHERE inv.quantity > 0
 		   AND ik.satisfies_attribute = $1
 		 ORDER BY r.dist_sq, ik.satisfies_amount DESC, ik.display_label
-	`, need, perceiverID, currentStructureID, x, y)
+	`, need, perceiverID, x, y)
 	if err != nil {
 		log.Printf("satiationNearbyVendors %s: %v", need, err)
 		return nil

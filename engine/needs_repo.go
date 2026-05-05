@@ -331,19 +331,38 @@ func (app *App) applyMovementFatigue(ctx context.Context, actorID string, fromX,
 	}
 	defer tx.Rollback(ctx)
 
-	if _, err := tx.Exec(ctx,
+	// Lock the actor row before writing actor_need (write contract per
+	// writeNeedRows doc). QueryRow.Scan rather than Exec so a missing
+	// actor surfaces as ErrNoRows — Exec on a SELECT returns success
+	// regardless of row count, which would silently turn the lock
+	// (and the subsequent UPDATE) into a no-op for bad inputs.
+	var one int
+	if err := tx.QueryRow(ctx,
 		`SELECT 1 FROM actor WHERE id = $1::uuid FOR UPDATE`, actorID,
-	); err != nil {
-		log.Printf("applyMovementFatigue %s: lock actor: %v", actorID, err)
+	).Scan(&one); err != nil {
+		if err == pgx.ErrNoRows {
+			log.Printf("applyMovementFatigue %s: actor not found", actorID)
+		} else {
+			log.Printf("applyMovementFatigue %s: lock actor: %v", actorID, err)
+		}
 		return
 	}
 
-	if _, err := tx.Exec(ctx,
+	tag, err := tx.Exec(ctx,
 		`UPDATE actor_need SET value = LEAST(24, value + $2)
 		 WHERE actor_id = $1::uuid AND key = 'tiredness'`,
 		actorID, bump,
-	); err != nil {
+	)
+	if err != nil {
 		log.Printf("applyMovementFatigue %s +%d: %v", actorID, bump, err)
+		return
+	}
+	// Zero rows affected means the actor exists (lock succeeded above)
+	// but has no tiredness row in actor_need — should be impossible
+	// post-backfill, but worth surfacing if it ever happens so we can
+	// diagnose a missing seed path.
+	if tag.RowsAffected() == 0 {
+		log.Printf("applyMovementFatigue %s: no tiredness row in actor_need", actorID)
 		return
 	}
 
