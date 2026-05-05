@@ -577,8 +577,12 @@ func (app *App) fireChronicler(ctx context.Context, reason chroniclerFireReason)
 		tickBudget = chroniclerTickBudgetDefault
 	}
 
+	// Hoist the structure-name lookup outside the iteration loop —
+	// see the matching comment in agent_tick.go for the rationale.
+	sceneStructure := app.lookupSceneStructureName(ctx, sceneID)
+
 	for iter := 0; iter < tickBudget; iter++ {
-		reply, err := app.npcChatClient.sendChat(ctx, chroniclerAgent, currentMessage, currentToolCallID, sceneID, app.lookupSceneStructureName(ctx, sceneID), tools)
+		reply, err := app.npcChatClient.sendChat(ctx, chroniclerAgent, currentMessage, currentToolCallID, sceneID, sceneStructure, tools)
 		if err != nil {
 			log.Printf("chronicler iter=%d: %v", iter, err)
 			if !chatSucceeded {
