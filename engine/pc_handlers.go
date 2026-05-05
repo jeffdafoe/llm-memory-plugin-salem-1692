@@ -864,6 +864,12 @@ func (app *App) handlePCMove(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		// Movement fatigue (ZBBS-123). PCs accrue tiredness on walk-commit
+		// just like NPCs. curX/curY here is the pre-walk position read at
+		// the top of the handler — no interpolation needed since PC walks
+		// are user-initiated and don't preempt an in-flight walk.
+		app.applyMovementFatigue(r.Context(), actorID, curX, curY, walkX, walkY)
+
 		// Knock (ZBBS-101): PC clicked an owner-only structure they don't
 		// belong to. Compose narration now and, when an associated NPC is
 		// currently inside, join the PC into the structure's scene_huddle
@@ -943,6 +949,11 @@ func (app *App) handlePCMove(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "Internal error", http.StatusInternalServerError)
 		return
 	}
+
+	// Movement fatigue (ZBBS-123). Raw-coord walks accrue fatigue same
+	// as structure-mode walks above.
+	app.applyMovementFatigue(r.Context(), actorID, curX, curY, req.TargetX, req.TargetY)
+
 	jsonResponse(w, http.StatusOK, result)
 }
 
