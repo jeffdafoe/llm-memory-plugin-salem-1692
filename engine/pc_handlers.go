@@ -98,6 +98,12 @@ type pcMeResponse struct {
 	// a separate fetch.
 	Coins         int                `json:"coins"`
 	Inventory     []pcInventoryEntry `json:"inventory"`
+	// Needs is the PC's current actor_need snapshot (ZBBS-123) — keys
+	// 'hunger', 'thirst', 'tiredness'; values 0..24. Surfaced so the
+	// HUD top-bar can render the player's body state alongside their
+	// purse. Empty map (not nil) when the PC has no actor_need rows
+	// yet — defensive against a PC created before the seed path.
+	Needs NeedSet `json:"needs"`
 	// SpriteID is null until the player picks one. Client bootstrap uses
 	// the null state as the trigger to open the sprite picker on first
 	// login. Sprite is the inlined catalog row (sheet, frame dims,
@@ -202,6 +208,18 @@ func (app *App) handlePCMe(w http.ResponseWriter, r *http.Request) {
 		resp.CharacterName = charName.String
 	}
 	resp.X, resp.Y = x, y
+
+	// Body needs for the HUD readout (ZBBS-123). needsSnapshot reads
+	// every actor_need row for this actor and returns them keyed by
+	// need.Key. On error we surface an empty set rather than failing
+	// the whole /pc/me — the rest of the response is still useful and
+	// the next poll retries.
+	if ns, err := app.needsSnapshot(r.Context(), pcActorID); err == nil {
+		resp.Needs = ns
+	} else {
+		log.Printf("pc/me needs snapshot %s: %v", pcActorID, err)
+		resp.Needs = NeedSet{}
+	}
 	if insideID.Valid {
 		s := insideID.String
 		resp.InsideStructureID = &s

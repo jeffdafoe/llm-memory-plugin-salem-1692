@@ -97,11 +97,19 @@ var pay_modal_recipients: Array = []
 ## show the player what they can afford.
 var pc_coins: int = 0
 var pc_inventory: Array = []
+## Last /pc/me snapshot of needs (hunger / thirst / tiredness, each 0..24).
+## Forwarded to the top-bar's HUD readout. Empty when no PC.
+var pc_needs: Dictionary = {}
 
 ## Emitted whenever the polled /pc/me reports a fresh coin / inventory
 ## state. main.gd subscribes and forwards to the top-bar's set_purse.
 ## Negative coins signals "no PC" (top bar should hide the chip).
 signal purse_changed(coins: int, inventory_lines: PackedStringArray)
+
+## Emitted whenever /pc/me reports fresh body-need values. main.gd
+## forwards to top_bar.set_needs. Empty dictionary signals "no PC"
+## (top bar should hide the readout).
+signal needs_changed(needs: Dictionary)
 
 ## Emitted when the pay modal opens/closes. main.gd forwards to
 ## camera.modal_open so world clicks (PC walk, pan, zoom) don't fire
@@ -1071,6 +1079,11 @@ func _apply_pc_state(data: Dictionary) -> void:
     pc_inventory = inv_data if typeof(inv_data) == TYPE_ARRAY else []
     _push_purse_to_top_bar()
 
+    # Body needs — surfaced in the top-bar HUD readout (ZBBS-123).
+    var needs_data = data.get("needs", {})
+    pc_needs = needs_data if typeof(needs_data) == TYPE_DICTIONARY else {}
+    _push_needs_to_top_bar()
+
     var prev_huddle_size: int = huddle_members.size()
     var members = data.get("huddle_members", [])
     if typeof(members) == TYPE_ARRAY:
@@ -1164,6 +1177,7 @@ func _set_no_pc_state() -> void:
     huddle_members = []
     pc_coins = 0
     pc_inventory = []
+    pc_needs = {}
     is_open = false
     sheet_anchor.visible = false
     talk_launcher.visible = false
@@ -1171,6 +1185,7 @@ func _set_no_pc_state() -> void:
     _update_context_labels()
     _clear_nearby_chips()
     _push_purse_to_top_bar()
+    _push_needs_to_top_bar()
 
 
 ## Public: collapse the talk panel to its launcher chip without
@@ -1332,6 +1347,15 @@ func _push_purse_to_top_bar() -> void:
         if label != "" and qty > 0:
             lines.append("%s × %d" % [label, qty])
     purse_changed.emit(pc_coins, lines)
+
+
+## Emit needs_changed so main.gd can update the top bar's HUD readout.
+## Empty dictionary signals "no PC" — top bar hides the readout.
+func _push_needs_to_top_bar() -> void:
+    if not pc_exists:
+        needs_changed.emit({})
+        return
+    needs_changed.emit(pc_needs)
 
 
 ## Build the pay modal lazily on first use. Lives as a CanvasLayer
