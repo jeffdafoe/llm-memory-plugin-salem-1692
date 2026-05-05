@@ -19,11 +19,12 @@ var cursor_tile_label: Label = null
 ## calls set_purse() each time it polls.
 var coins_label: Label = null
 ## Needs chip — displays the PC's hunger / thirst / tiredness as a
-## compact "H 8 · T 12 · W 4" readout, color-tinted by the worst tier
-## across the three. Hidden until /pc/me reports an existing PC.
-## Tooltip spells out the full names. Updated alongside the coin chip
-## via the talk panel's needs_changed signal (ZBBS-123).
-var needs_label: Label = null
+## spelled-out "Hunger 8  Thirst 12  Weariness 4" readout where each
+## word's leading letter is rendered larger than the rest. Each segment
+## is tier-tinted by its own value (so a fine W stays dim even when H
+## peaks). Hidden until /pc/me reports an existing PC. Updated alongside
+## the coin chip via the talk panel's needs_changed signal (ZBBS-123).
+var needs_label: RichTextLabel = null
 var _editor_active: bool = false
 
 # Theme colors (matching login screen)
@@ -93,18 +94,22 @@ func _ready() -> void:
     cursor_tile_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
     right_box.add_child(cursor_tile_label)
 
-    # Body-needs chip (ZBBS-123). Reads "H 8 · T 12 · W 4" and tints
-    # by the worst tier across the three needs (default → dim, mild
-    # → amber, red → orange, peak → bright red). Sits before the coin
-    # chip so personal stats (body, then purse) read together left-
-    # to-right. Hidden until set_needs() is called with non-empty data.
-    needs_label = Label.new()
-    needs_label.text = ""
+    # Body-needs chip (ZBBS-123). Spells out "Hunger 24  Thirst 24
+    # Weariness 0" with the leading letter at font_size 18 and the rest
+    # of each word at font_size 10, so the chip reads as words but stays
+    # compact. Each segment is tier-tinted by its own value (default →
+    # dim, mild → amber, red → orange, peak → bright red), so a fine W
+    # stays dim even when H peaks. Sits before the coin chip so personal
+    # stats (body, then purse) read together left-to-right. RichTextLabel
+    # rather than Label because Label can't mix font sizes inline. Hidden
+    # until set_needs() is called with non-empty data.
+    needs_label = RichTextLabel.new()
+    needs_label.bbcode_enabled = true
+    needs_label.fit_content = true
+    needs_label.scroll_active = false
     needs_label.visible = false
-    needs_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
-    needs_label.add_theme_font_override("font", _font)
-    needs_label.add_theme_font_size_override("font_size", 16)
-    needs_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+    needs_label.add_theme_font_override("normal_font", _font)
+    needs_label.add_theme_font_size_override("normal_font_size", 16)
     needs_label.mouse_filter = Control.MOUSE_FILTER_PASS
     right_box.add_child(needs_label)
 
@@ -165,10 +170,10 @@ func _make_button(label: String) -> Button:
     normal_style.border_width_right = 1
     normal_style.border_width_bottom = 1
     normal_style.border_color = Color(0.35, 0.28, 0.18, 1.0)
-    normal_style.corner_radius_left_top = 3
-    normal_style.corner_radius_right_top = 3
-    normal_style.corner_radius_left_bottom = 3
-    normal_style.corner_radius_right_bottom = 3
+    normal_style.corner_radius_top_left = 3
+    normal_style.corner_radius_top_right = 3
+    normal_style.corner_radius_bottom_left = 3
+    normal_style.corner_radius_bottom_right = 3
     normal_style.content_margin_left = 12.0
     normal_style.content_margin_right = 12.0
     normal_style.content_margin_top = 4.0
@@ -226,20 +231,33 @@ func set_needs(needs: Dictionary) -> void:
     var h := int(needs.get("hunger", 0))
     var t := int(needs.get("thirst", 0))
     var w := int(needs.get("tiredness", 0))
-    needs_label.text = "H %d · T %d · W %d" % [h, t, w]
+    var parts: Array[String] = [
+        _format_need_segment("H", "unger", h),
+        _format_need_segment("T", "hirst", t),
+        _format_need_segment("W", "eariness", w),
+    ]
+    needs_label.text = "   ".join(parts)
     needs_label.tooltip_text = "Hunger: %d / 24\nThirst: %d / 24\nTiredness: %d / 24" % [h, t, w]
-    var worst: int = max(h, max(t, w))
-    var tint: Color
-    if worst >= 24:
-        tint = Color(0.95, 0.35, 0.30, 1.0)  # peak — bright red
-    elif worst >= 18:
-        tint = Color(0.90, 0.55, 0.25, 1.0)  # red — orange
-    elif worst >= 8:
-        tint = Color(0.88, 0.74, 0.35, 1.0)  # mild — amber
-    else:
-        tint = COLOR_TEXT_DIM
-    needs_label.add_theme_color_override("font_color", tint)
     needs_label.visible = true
+
+## Build the BBCode for one need: leading capital at font_size 18, the
+## remainder of the word + value at font_size 10, both colored by the
+## tier of this specific need's value.
+func _format_need_segment(initial: String, rest: String, value: int) -> String:
+    var hex := _tier_color(value).to_html(false)
+    return "[color=#%s][font_size=18]%s[/font_size][font_size=10]%s %d[/font_size][/color]" % [hex, initial, rest, value]
+
+## Tier color for a single need value. Mirrors the engine's mild/red/peak
+## thresholds (8 / 18 / 24). Falls back to the dim chrome text color
+## when the need is below the mild threshold so the segment recedes.
+func _tier_color(value: int) -> Color:
+    if value >= 24:
+        return Color(0.95, 0.35, 0.30, 1.0)
+    if value >= 18:
+        return Color(0.90, 0.55, 0.25, 1.0)
+    if value >= 8:
+        return Color(0.88, 0.74, 0.35, 1.0)
+    return COLOR_TEXT_DIM
 
 
 ## Update the cursor tile readout. Called from main.gd when the editor
@@ -278,10 +296,10 @@ func _update_edit_button_style() -> void:
         active_style.border_width_right = 1
         active_style.border_width_bottom = 1
         active_style.border_color = COLOR_BTN_ACTIVE_BORDER
-        active_style.corner_radius_left_top = 3
-        active_style.corner_radius_right_top = 3
-        active_style.corner_radius_left_bottom = 3
-        active_style.corner_radius_right_bottom = 3
+        active_style.corner_radius_top_left = 3
+        active_style.corner_radius_top_right = 3
+        active_style.corner_radius_bottom_left = 3
+        active_style.corner_radius_bottom_right = 3
         active_style.content_margin_left = 12.0
         active_style.content_margin_right = 12.0
         active_style.content_margin_top = 4.0
@@ -297,10 +315,10 @@ func _update_edit_button_style() -> void:
         normal_style.border_width_right = 1
         normal_style.border_width_bottom = 1
         normal_style.border_color = Color(0.35, 0.28, 0.18, 1.0)
-        normal_style.corner_radius_left_top = 3
-        normal_style.corner_radius_right_top = 3
-        normal_style.corner_radius_left_bottom = 3
-        normal_style.corner_radius_right_bottom = 3
+        normal_style.corner_radius_top_left = 3
+        normal_style.corner_radius_top_right = 3
+        normal_style.corner_radius_bottom_left = 3
+        normal_style.corner_radius_bottom_right = 3
         normal_style.content_margin_left = 12.0
         normal_style.content_margin_right = 12.0
         normal_style.content_margin_top = 4.0
