@@ -1275,11 +1275,7 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 	// pressing (hunger, thirst), surface own-stock + nearby-vendor
 	// satisfiers so the LLM has the bridge between "Address now"
 	// and the resolution it should pick. See engine/satiation.go.
-	currentStructureID := ""
-	if r.InsideStructureID.Valid {
-		currentStructureID = r.InsideStructureID.String
-	}
-	if satBlocks := app.buildSatiationLines(ctx, r.ID, r.CurrentX, r.CurrentY, currentStructureID, pressingTiers); len(satBlocks) > 0 {
+	if satBlocks := app.buildSatiationLines(ctx, r.ID, r.CurrentX, r.CurrentY, pressingTiers); len(satBlocks) > 0 {
 		sections = append(sections, strings.Join(satBlocks, "\n\n"))
 	}
 

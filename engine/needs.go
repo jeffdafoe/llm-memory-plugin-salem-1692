@@ -78,6 +78,14 @@ const (
 	needsHysteresisMargin = 2
 )
 
+// needTickEligibilityPred is the shared SQL predicate that picks the
+// actors whose bodies age over time — agent NPCs and PCs. Both the
+// pre-tick lock CTE and the UPDATE's lock CTE in dispatchNeedsTick
+// reference this constant, so a future widening (a fourth actor kind
+// with a body) edits one place. Decoratives (no login, no agent)
+// stay excluded because they have no need-pressure mechanic.
+const needTickEligibilityPred = `(login_username IS NOT NULL OR llm_memory_agent IS NOT NULL)`
+
 // dispatchNeedsTick is registered in runServerTickOnce. Cheap when the
 // hour hasn't rolled over (one setting read + integer compare); does a
 // single UPDATE across all villagers when it has.
@@ -208,12 +216,17 @@ func (app *App) dispatchNeedsTick(ctx context.Context) {
 		needs   NeedSet
 	}
 	var pres []onsetPre
+	// Eligibility predicate is shared verbatim between the pre-tick
+	// lock CTE and the UPDATE's lock CTE — see needTickEligibilityPred
+	// in needs_repo-style helpers below. Both queries must select the
+	// same actor set so the lock acquired here serializes the writes
+	// done there. The shared constant means a future widening (adding
+	// a fourth actor kind) edits one string instead of two.
 	preRows, preErr := tx.Query(ctx,
 		`WITH locked_actors AS (
 		     SELECT id, llm_memory_agent
 		       FROM actor
-		      WHERE login_username IS NOT NULL
-		         OR llm_memory_agent IS NOT NULL
+		      WHERE `+needTickEligibilityPred+`
 		      ORDER BY id
 		      FOR UPDATE
 		 )
@@ -286,12 +299,26 @@ func (app *App) dispatchNeedsTick(ctx context.Context) {
 	// Onset detection (further down) keeps the agent-only filter, so
 	// chronicler dispatch still only fires for NPCs — PC distress
 	// surfaces in the HUD, not via the overseer.
+	//
+	// Drive the UPDATE from a locked_actors CTE that uses the same
+	// eligibility predicate as the pre-tick read above. Both CTEs lock
+	// the same rows in the same tx — the first acquires, the second
+	// is a no-op re-acquire — but using the CTE here means the
+	// UPDATE's "which actors does this touch" is structurally tied to
+	// the lock set, not to a free-floating WHERE that could drift if
+	// the predicate is edited in only one place.
 	tag, err := tx.Exec(ctx, `
+		WITH locked_actors AS (
+		    SELECT id
+		      FROM actor
+		     WHERE `+needTickEligibilityPred+`
+		     ORDER BY id
+		     FOR UPDATE
+		)
 		UPDATE actor_need an
 		   SET value = LEAST($1::int, an.value + $2::int)
-		  FROM actor a
-		 WHERE a.id = an.actor_id
-		   AND (a.login_username IS NOT NULL OR a.llm_memory_agent IS NOT NULL)
+		  FROM locked_actors la
+		 WHERE la.id = an.actor_id
 	`, needMax, totalIncrement)
 	if err != nil {
 		log.Printf("needs_tick: UPDATE failed (rolling back, will retry next minute): %v", err)
