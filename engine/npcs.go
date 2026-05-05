@@ -236,6 +236,14 @@ func (app *App) handleListNPCs(w http.ResponseWriter, r *http.Request) {
 	// failing row — every NPC sorted alphabetically after the PC gets
 	// silently dropped from the response. COALESCE to 0 keeps the
 	// scan happy; the field is unused for PCs anyway.
+	// Need values come from actor_need rows now that ZBBS-121 dropped the
+	// legacy actor.{hunger,thirst,tiredness} columns. Three scalar
+	// subqueries — each is a single primary-key lookup on (actor_id, key).
+	// COALESCE to 0 covers the (rare) case where an actor exists without
+	// the corresponding actor_need row, e.g., an actor created before the
+	// dual-write seed migration ran. The list endpoint is informational
+	// (admin / client display only); a missing row should render as zero
+	// rather than abort the whole list.
 	npcRows, err := app.DB.Query(ctx,
 		`SELECT n.id, n.display_name, n.sprite_id,
 		        COALESCE(n.home_x, 0), COALESCE(n.home_y, 0),
@@ -251,7 +259,9 @@ func (app *App) handleListNPCs(w http.ResponseWriter, r *http.Request) {
 		        n.active_start_hour, n.active_end_hour,
 		        n.lateness_window_minutes,
 		        n.social_tag, n.social_start_minute, n.social_end_minute,
-		        n.hunger, n.thirst, n.tiredness,
+		        COALESCE((SELECT value FROM actor_need WHERE actor_id = n.id AND key = 'hunger'), 0)::smallint,
+		        COALESCE((SELECT value FROM actor_need WHERE actor_id = n.id AND key = 'thirst'), 0)::smallint,
+		        COALESCE((SELECT value FROM actor_need WHERE actor_id = n.id AND key = 'tiredness'), 0)::smallint,
 		        n.login_username
 		 FROM actor n
 		 WHERE n.sprite_id IS NOT NULL
