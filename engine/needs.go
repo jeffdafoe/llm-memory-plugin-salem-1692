@@ -302,6 +302,7 @@ func (app *App) dispatchNeedsTick(ctx context.Context) {
 	var onsets []chroniclerDispatchAgent
 	for _, p := range pres {
 		var crossed []string
+		var severities []NeedTier
 		for _, nd := range Needs {
 			old, ok := p.needs.GetOK(nd.Key)
 			if !ok {
@@ -310,8 +311,19 @@ func (app *App) dispatchNeedsTick(ctx context.Context) {
 			}
 			postVal := clampNeed(old + totalIncrement)
 			threshold := thresholds.Get(nd.Key)
-			if old < threshold && postVal >= threshold {
+			oldTier := nd.Tier(old, threshold)
+			newTier := nd.Tier(postVal, threshold)
+			// Phase 2.B (ZBBS-121 commit 7): generalize from
+			// "crossed red threshold" to "tier increased into red or
+			// peak". Catches both fresh red-tier onsets (mild→red,
+			// matches Phase 2.A) and peak-tier onsets the original
+			// detector missed (red→peak: oldH was already >= threshold
+			// so the < threshold guard skipped it; or mild→peak via a
+			// large catch-up increment, where newH lands at needMax in
+			// one step).
+			if newTier > oldTier && newTier >= NeedRed {
 				crossed = append(crossed, nd.Key)
+				severities = append(severities, newTier)
 			}
 		}
 		if len(crossed) == 0 {
@@ -328,6 +340,7 @@ func (app *App) dispatchNeedsTick(ctx context.Context) {
 			continue
 		}
 		agent.OnsetNeeds = crossed
+		agent.OnsetSeverities = severities
 		onsets = append(onsets, agent)
 	}
 

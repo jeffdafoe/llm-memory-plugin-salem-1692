@@ -2122,17 +2122,23 @@ func renderShiftSection(et chroniclerDispatchEventType, agents []chroniclerDispa
 }
 
 // renderNeedsOnsetSection renders the "Needs newly arising" section for
-// villagers whose hunger/thirst/tiredness crossed UP into the red
-// threshold on the most recent needs tick. Inverse of
+// villagers whose hunger/thirst/tiredness tier increased into red or
+// peak on the most recent needs tick. Inverse of
 // renderNeedsResolvedSection — the chronicler reads these as fresh
 // distress events that may warrant attend_to before the need climbs
-// to peak. No source field; the onset is the natural drift of the
+// further. No source field; the onset is the natural drift of the
 // hourly tick, not a discrete in-world action.
 //
+// Severity-aware vocabulary (Phase 2.B / ZBBS-121 commit 7): each
+// need in OnsetNeeds carries its new tier in the parallel
+// OnsetSeverities slice. The render uses Need.Label(tier) to pick
+// the band-appropriate word — "hungry" for a fresh red-tier crossing,
+// "starving" for a peak-tier crossing.
+//
 // Lines mirror the resolved section's structure (place + work
-// annotation) so the chronicler can spot "newly weary at the Mill,
-// works there" — distress at the workplace is an attend candidate,
-// distress off-shift may not need intervention.
+// annotation) so the chronicler can spot "newly exhausted at the
+// Mill, works there" — distress at the workplace is an attend
+// candidate, distress off-shift may not need intervention.
 func renderNeedsOnsetSection(agents []chroniclerDispatchAgent) string {
 	var b strings.Builder
 	b.WriteString("Needs newly arising:")
@@ -2140,11 +2146,7 @@ func renderNeedsOnsetSection(agents []chroniclerDispatchAgent) string {
 		b.WriteString("\n- ")
 		b.WriteString(a.DisplayName)
 		b.WriteString(" -- now ")
-		// joinResolvedNeedLabels joins need keys into the red-tier
-		// vocabulary (hungry / parched / weary). The "Resolved" prefix
-		// in its name is historical — the join itself is direction-
-		// agnostic, and the same vocabulary applies to fresh distress.
-		b.WriteString(joinResolvedNeedLabels(a.OnsetNeeds))
+		b.WriteString(joinOnsetLabels(a.OnsetNeeds, a.OnsetSeverities))
 		b.WriteString(" -- currently at ")
 		b.WriteString(a.CurrentPlace)
 		if a.WorkPlace != "" {
@@ -2160,6 +2162,42 @@ func renderNeedsOnsetSection(agents []chroniclerDispatchAgent) string {
 		}
 	}
 	return b.String()
+}
+
+// joinOnsetLabels turns parallel (need-key, tier) slices into a
+// comma-or-and-joined recovery-tense phrase using the registry's
+// Label for each need + tier pair. Severity-aware: red-tier crossings
+// produce "hungry"/"parched"/"weary"; peak-tier crossings produce
+// "starving"/"desperate"/"exhausted". Falls back to "in distress"
+// when the slices are empty (defensive — shouldn't happen, callers
+// only invoke when at least one crossing fired).
+func joinOnsetLabels(keys []string, tiers []NeedTier) string {
+	if len(keys) == 0 {
+		return "in distress"
+	}
+	labels := make([]string, 0, len(keys))
+	for i, key := range keys {
+		var tier NeedTier
+		if i < len(tiers) {
+			tier = tiers[i]
+		} else {
+			tier = NeedRed // defensive — caller should keep slices in sync
+		}
+		nd, ok := FindNeed(key)
+		if !ok {
+			labels = append(labels, key)
+			continue
+		}
+		labels = append(labels, nd.Label(tier))
+	}
+	switch len(labels) {
+	case 1:
+		return labels[0]
+	case 2:
+		return labels[0] + " and " + labels[1]
+	default:
+		return strings.Join(labels[:len(labels)-1], ", ") + ", and " + labels[len(labels)-1]
+	}
 }
 
 // renderNeedsResolvedSection renders the "Needs newly satisfied" section
