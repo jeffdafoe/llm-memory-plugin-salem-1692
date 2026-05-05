@@ -122,17 +122,25 @@ func (app *App) applyRotation(ctx context.Context) (int, error) {
 // tiredness ticker in the first place. The pending task note covers
 // both.
 //
-// Returns the number of actors whose tiredness was reset (rows where
-// tiredness was already 0 are not counted because the UPDATE filter
-// excludes them).
+// ZBBS-121 dropped the legacy actor.tiredness column in favor of
+// actor_need rows; this UPDATE writes that row instead. The previous
+// version targeted actor.tiredness and silently failed every midnight
+// after the column drop with "ERROR: column \"tiredness\" does not
+// exist", which is why tired villagers stayed tired across rotations.
+//
+// Returns the number of (actor, tiredness) rows reset (rows already at
+// 0 are not counted because the UPDATE filter excludes them).
 func (app *App) resetSleptTiredness(ctx context.Context) int {
 	res, err := app.DB.Exec(ctx,
-		`UPDATE actor
-		    SET tiredness = 0
-		  WHERE tiredness > 0
+		`UPDATE actor_need an
+		    SET value = 0
+		   FROM actor a
+		  WHERE a.id = an.actor_id
+		    AND an.key = 'tiredness'
+		    AND an.value > 0
 		    AND (
-		        inside_structure_id IS NOT NULL
-		        OR (login_username IS NULL AND llm_memory_agent IS NULL)
+		        a.inside_structure_id IS NOT NULL
+		        OR (a.login_username IS NULL AND a.llm_memory_agent IS NULL)
 		    )`)
 	if err != nil {
 		log.Printf("world_rotation: reset tiredness: %v", err)
