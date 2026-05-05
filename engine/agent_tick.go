@@ -1184,7 +1184,7 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 	// for now; they'll move into per-attribute config when the
 	// attribute_definition table absorbs hunger/thirst/tiredness.
 	if r.InsideStructureID.Valid {
-		for _, line := range app.visibleNeedsLines(ctx, r.ID, r.InsideStructureID.String, hungerT, thirstT, tiredT) {
+		for _, line := range app.visibleNeedsLines(ctx, r.ID, r.InsideStructureID.String) {
 			sections = append(sections, line)
 		}
 	}

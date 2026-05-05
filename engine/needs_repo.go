@@ -155,6 +155,46 @@ func (s NeedSet) Get(key string) int {
 	return s[key]
 }
 
+// GetOK returns the value and a presence flag — distinguishes a real
+// 0 value from a missing row. Read paths that classify into tiers
+// should use this and log a warning on absent rows so partial
+// backfills or post-backfill new actors without rows surface as
+// observable errors instead of silently being treated as silent.
+func (s NeedSet) GetOK(key string) (int, bool) {
+	v, ok := s[key]
+	return v, ok
+}
+
+// needThresholds is a key→threshold lookup. Loaded once per perception
+// build / chronicler turn via loadNeedThresholds so callsites don't
+// repeat three loadNeedThreshold calls.
+type needThresholds map[string]int
+
+// Get returns the threshold for the given need key. Falls back to the
+// registry default if the key isn't in the map (shouldn't happen if
+// the map was built via loadNeedThresholds, but stays safe).
+func (t needThresholds) Get(key string) int {
+	if v, ok := t[key]; ok {
+		return v
+	}
+	if n, ok := FindNeed(key); ok {
+		return n.DefaultThreshold
+	}
+	return 0
+}
+
+// loadNeedThresholds reads the configured red threshold for every Need
+// in the registry. One settings read per Need; the result is meant to
+// be cached for the duration of one perception build / chronicler turn
+// rather than re-loaded inside band-classification loops.
+func (app *App) loadNeedThresholds(ctx context.Context) needThresholds {
+	out := needThresholds{}
+	for _, n := range Needs {
+		out[n.Key] = app.loadNeedThreshold(ctx, n.ThresholdSettingKey, n.DefaultThreshold)
+	}
+	return out
+}
+
 // needsSnapshot reads all need values for one actor. Non-locking — for
 // the post-action readback path, distance perception, and other
 // callers that don't need the lock-out semantics of FOR UPDATE.

@@ -40,6 +40,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log"
 	"strconv"
@@ -180,29 +181,37 @@ func (app *App) dispatchNeedsTick(ctx context.Context) {
 
 	totalIncrement := amount * cappedHours
 
-	// Pre-tick read for onset-crossing detection (ZBBS-119 Phase 2.A).
-	// SELECT FOR UPDATE on agent NPCs locks those rows for the rest of
-	// the tx so a concurrent consumption.go applyConsumption can't
-	// commit a need decrement between this read and the UPDATE — without
-	// the lock our cached pre-values could be stale relative to what the
-	// UPDATE actually acts on, producing spurious or missed crossings.
-	// Decoratives and PCs aren't candidates for chronicler attend_to so
-	// we don't lock or track them.
+	// Pre-tick read for onset-crossing detection (ZBBS-119 Phase 2.A,
+	// converted to actor_need rows in ZBBS-121 commit 3). The locking
+	// CTE acquires actor row locks first in a separate sub-statement
+	// so the lock-acquisition order is the SELECT's ORDER BY id,
+	// independent of how Postgres orders the outer JOIN result. The
+	// outer SELECT then reads need values via LEFT JOIN — locks
+	// already held, so this is a pure read. Matches consumption.go's
+	// `FOR UPDATE` lock target (the actor row), serializing the tick
+	// against concurrent applyConsumption. Decoratives and PCs aren't
+	// candidates for chronicler attend_to so they're filtered out and
+	// not locked. LEFT JOIN keeps actors with missing actor_need rows
+	// in the result set; the per-need GetOK loop below logs missing
+	// rows and skips onset detection for that need.
 	type onsetPre struct {
-		actorID                  string
-		oldHunger, oldThirst, oldTiredness int
+		actorID string
+		needs   NeedSet
 	}
 	var pres []onsetPre
-	// ORDER BY id gives a stable lock order — protects against deadlock
-	// if a future code path also takes FOR UPDATE locks across multiple
-	// actor rows.
 	preRows, preErr := tx.Query(ctx,
-		`SELECT id, hunger, thirst, tiredness
-		   FROM actor
-		  WHERE llm_memory_agent IS NOT NULL
-		    AND login_username IS NULL
-		  ORDER BY id
-		    FOR UPDATE`,
+		`WITH locked_actors AS (
+		     SELECT id
+		       FROM actor
+		      WHERE llm_memory_agent IS NOT NULL
+		        AND login_username IS NULL
+		      ORDER BY id
+		      FOR UPDATE
+		 )
+		 SELECT la.id, n.key, n.value
+		   FROM locked_actors la
+		   LEFT JOIN actor_need n ON n.actor_id = la.id
+		  ORDER BY la.id, n.key`,
 	)
 	if preErr != nil {
 		// Continue without onset detection — the UPDATE itself is the
@@ -215,18 +224,37 @@ func (app *App) dispatchNeedsTick(ctx context.Context) {
 		// later queries on the same connection.
 		func() {
 			defer preRows.Close()
+			byID := map[string]NeedSet{}
+			var order []string
 			for preRows.Next() {
-				var p onsetPre
-				if err := preRows.Scan(&p.actorID, &p.oldHunger, &p.oldThirst, &p.oldTiredness); err != nil {
+				var id string
+				var key sql.NullString
+				var value sql.NullInt64
+				if err := preRows.Scan(&id, &key, &value); err != nil {
 					log.Printf("needs_tick: scan pre-value row (skipping onset detection this tick): %v", err)
 					pres = nil
 					return
 				}
-				pres = append(pres, p)
+				s, ok := byID[id]
+				if !ok {
+					s = NeedSet{}
+					byID[id] = s
+					order = append(order, id)
+				}
+				// LEFT JOIN can produce NULL key/value when the actor has no
+				// actor_need rows. Skip the assignment; per-need GetOK in the
+				// crossing loop below logs and skips for missing rows.
+				if key.Valid && value.Valid {
+					s[key.String] = int(value.Int64)
+				}
 			}
 			if err := preRows.Err(); err != nil {
 				log.Printf("needs_tick: iterate pre-values (skipping onset detection this tick): %v", err)
 				pres = nil
+				return
+			}
+			for _, id := range order {
+				pres = append(pres, onsetPre{actorID: id, needs: byID[id]})
 			}
 		}()
 	}
@@ -266,24 +294,24 @@ func (app *App) dispatchNeedsTick(ctx context.Context) {
 	// Resolve onset crossings + load dispatch agent info while still in
 	// the tx so all reads share one snapshot. Enqueue happens after
 	// commit so the chronicler doesn't see events for actors whose
-	// updates rolled back.
-	hungerT := app.loadNeedThreshold(ctx, "hunger_red_threshold", defaultHungerRedThreshold)
-	thirstT := app.loadNeedThreshold(ctx, "thirst_red_threshold", defaultThirstRedThreshold)
-	tiredT := app.loadNeedThreshold(ctx, "tiredness_red_threshold", defaultTirednessRedThreshold)
+	// updates rolled back. Crossing detection iterates the Need
+	// registry — adding a fourth need (mood, loneliness) only requires
+	// extending the registry, not editing this loop.
+	thresholds := app.loadNeedThresholds(ctx)
 	var onsets []chroniclerDispatchAgent
 	for _, p := range pres {
-		newH := clampNeed(p.oldHunger + totalIncrement)
-		newT := clampNeed(p.oldThirst + totalIncrement)
-		newTi := clampNeed(p.oldTiredness + totalIncrement)
 		var crossed []string
-		if p.oldHunger < hungerT && newH >= hungerT {
-			crossed = append(crossed, "hunger")
-		}
-		if p.oldThirst < thirstT && newT >= thirstT {
-			crossed = append(crossed, "thirst")
-		}
-		if p.oldTiredness < tiredT && newTi >= tiredT {
-			crossed = append(crossed, "tiredness")
+		for _, nd := range Needs {
+			old, ok := p.needs.GetOK(nd.Key)
+			if !ok {
+				log.Printf("needs_tick: missing actor_need row actor=%s key=%s (skipping onset detection for this need)", p.actorID, nd.Key)
+				continue
+			}
+			postVal := clampNeed(old + totalIncrement)
+			threshold := thresholds.Get(nd.Key)
+			if old < threshold && postVal >= threshold {
+				crossed = append(crossed, nd.Key)
+			}
 		}
 		if len(crossed) == 0 {
 			continue
@@ -486,14 +514,26 @@ func needLabelTier(value, threshold int) int {
 //   "Ezekiel Crane looks hungry."
 //   "Ezekiel Crane looks hungry and weary."
 //   "Ezekiel Crane looks starving, parched, and exhausted."
-func (app *App) visibleNeedsLines(ctx context.Context, perceiverID, structureID string, hungerT, thirstT, tiredT int) []string {
+func (app *App) visibleNeedsLines(ctx context.Context, perceiverID, structureID string) []string {
+	// Reads from actor_need (ZBBS-121 commit 3). One row per (actor,
+	// need) — three rows per agent NPC in the structure today.
+	// Grouped in code by actor_id so the registry-loop band
+	// classification can run per-actor. Loads thresholds via the
+	// registry rather than accepting them as args — keeps the function
+	// future-proof when a fourth need is added (callers don't need to
+	// know to pass a fourth threshold). LEFT JOIN so an actor missing
+	// any actor_need rows still appears (with empty NeedSet); the
+	// per-need GetOK check inside the loop logs and skips missing
+	// rows instead of silently treating them as value=0.
+	thresholds := app.loadNeedThresholds(ctx)
 	rows, err := app.DB.Query(ctx,
-		`SELECT display_name, hunger, thirst, tiredness
-		 FROM actor
-		 WHERE inside_structure_id = $1::uuid
-		   AND id != $2::uuid
-		   AND llm_memory_agent IS NOT NULL
-		 ORDER BY display_name`,
+		`SELECT a.id::text, a.display_name, n.key, n.value
+		 FROM actor a
+		 LEFT JOIN actor_need n ON n.actor_id = a.id
+		 WHERE a.inside_structure_id = $1::uuid
+		   AND a.id != $2::uuid
+		   AND a.llm_memory_agent IS NOT NULL
+		 ORDER BY a.display_name, n.key`,
 		structureID, perceiverID)
 	if err != nil {
 		log.Printf("visibleNeedsLines: query structure %s: %v", structureID, err)
@@ -501,23 +541,53 @@ func (app *App) visibleNeedsLines(ctx context.Context, perceiverID, structureID 
 	}
 	defer rows.Close()
 
-	var lines []string
+	type actorAcc struct {
+		name  string
+		needs NeedSet
+	}
+	byID := map[string]*actorAcc{}
+	var order []string // first-appearance order, matches ORDER BY display_name from the query
 	for rows.Next() {
-		var name string
-		var h, t, ti int
-		if err := rows.Scan(&name, &h, &t, &ti); err != nil {
+		var id, name string
+		var key sql.NullString
+		var value sql.NullInt64
+		if err := rows.Scan(&id, &name, &key, &value); err != nil {
 			log.Printf("visibleNeedsLines: scan: %v", err)
 			return nil
 		}
+		a, ok := byID[id]
+		if !ok {
+			a = &actorAcc{name: name, needs: NeedSet{}}
+			byID[id] = a
+			order = append(order, id)
+		}
+		// LEFT JOIN can produce a row with NULL key/value when the
+		// actor has no actor_need rows at all. Skip the assignment for
+		// that case; the per-need GetOK loop below will log it as
+		// missing.
+		if key.Valid && value.Valid {
+			a.needs[key.String] = int(value.Int64)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("visibleNeedsLines: iterate structure %s: %v", structureID, err)
+		return nil
+	}
+
+	var lines []string
+	for _, id := range order {
+		a := byID[id]
 		var visible []string
-		if needLabelTier(h, hungerT) >= 2 {
-			visible = append(visible, needLabel("hunger", h, hungerT))
-		}
-		if needLabelTier(t, thirstT) >= 2 {
-			visible = append(visible, needLabel("thirst", t, thirstT))
-		}
-		if needLabelTier(ti, tiredT) >= 2 {
-			visible = append(visible, needLabel("tiredness", ti, tiredT))
+		for _, n := range Needs {
+			value, ok := a.needs.GetOK(n.Key)
+			if !ok {
+				log.Printf("visibleNeedsLines: missing actor_need row actor=%s key=%s (treating as silent)", id, n.Key)
+				continue
+			}
+			tier := n.Tier(value, thresholds.Get(n.Key))
+			if tier >= NeedRed {
+				visible = append(visible, n.Label(tier))
+			}
 		}
 		if len(visible) == 0 {
 			continue
@@ -531,11 +601,7 @@ func (app *App) visibleNeedsLines(ctx context.Context, perceiverID, structureID 
 		default:
 			joined = strings.Join(visible[:len(visible)-1], ", ") + ", and " + visible[len(visible)-1]
 		}
-		lines = append(lines, fmt.Sprintf("%s looks %s.", name, joined))
-	}
-	if err := rows.Err(); err != nil {
-		log.Printf("visibleNeedsLines: iterate structure %s: %v", structureID, err)
-		return nil
+		lines = append(lines, fmt.Sprintf("%s looks %s.", a.name, joined))
 	}
 	return lines
 }
