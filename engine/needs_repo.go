@@ -311,9 +311,14 @@ func (app *App) applyMovementFatigue(ctx context.Context, actorID string, fromX,
 	if err != nil || perTileX100 <= 0 {
 		return
 	}
+	// World coords are pixels with tileSize=32 (see agent_tick.go's
+	// pickWalkTarget and gather.go). Euclidean distance is computed in
+	// pixels, then divided by tileSize to land in tile units the
+	// per-tile config knob is calibrated against.
+	const tileSize = 32.0
 	dx := toX - fromX
 	dy := toY - fromY
-	tiles := math.Sqrt(dx*dx + dy*dy)
+	tiles := math.Sqrt(dx*dx+dy*dy) / tileSize
 	bump := int(tiles * float64(perTileX100) / 100.0)
 	if bump <= 0 {
 		return
