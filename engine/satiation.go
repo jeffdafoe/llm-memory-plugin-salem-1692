@@ -41,6 +41,7 @@ package main
 import (
 	"context"
 	"log"
+	"math"
 	"strings"
 )
 
@@ -57,9 +58,16 @@ type satiationItem struct {
 // vendor has that would settle the pressing need. StructureName is
 // COALESCE(display_name, asset.name) — same labeling the destinations
 // section uses, so prose references resolve via move_to consistently.
+//
+// DistanceTiles is Euclidean from the perceiver's current position to
+// the structure's anchor, in tile units (pixels / 32). Drives the
+// felt proximity phrase ("close at hand" / "a fair walk away") so
+// the model can weigh own-stock vs travel-and-buy against the
+// movement fatigue cost (ZBBS-123) every walk now charges.
 type satiationVendor struct {
 	StructureName string
 	VendorName    string
+	DistanceTiles float64
 	Items         []satiationItem
 }
 
@@ -109,7 +117,8 @@ func (app *App) buildSatiationLines(ctx context.Context, perceiverID string, per
 			var bullets []string
 			for _, v := range nearby {
 				bullets = append(bullets,
-					"— At "+v.StructureName+", "+v.VendorName+" has "+renderItemList(v.Items, need, true)+".")
+					"— At "+v.StructureName+" ("+proximityPhrase(v.DistanceTiles)+"), "+
+						v.VendorName+" has "+renderItemList(v.Items, need, true)+".")
 			}
 			lines = append(lines, "Nearby satisfiers:")
 			lines = append(lines, bullets...)
@@ -153,6 +162,28 @@ func renderItemList(items []satiationItem, need string, showPortability bool) st
 		return rendered[0] + " and " + rendered[1]
 	default:
 		return strings.Join(rendered[:len(rendered)-1], ", ") + ", and " + rendered[len(rendered)-1]
+	}
+}
+
+// proximityPhrase maps Euclidean tile distance to a felt-language
+// phrase. Bands sized so an in-village hop reads as "close at hand"
+// (negligible fatigue under the default per-tile cost), an adjacent
+// district is "a short walk", and the map's edge feels real.
+//
+// Calibrated against the default movement_fatigue_per_tile_x100=12:
+// a 6-tile hop costs 0 (floors), a 20-tile walk costs ~2, a 60-tile
+// trek costs ~7 — enough that the "long walk" framing is honest by
+// the time the model reads it.
+func proximityPhrase(tiles float64) string {
+	switch {
+	case tiles <= 6:
+		return "close at hand"
+	case tiles <= 20:
+		return "a short walk"
+	case tiles <= 50:
+		return "a fair walk"
+	default:
+		return "a long walk"
 	}
 }
 
@@ -340,7 +371,15 @@ func (app *App) satiationNearbyVendors(ctx context.Context, perceiverID, need st
 		key := vendorKey{structureID: sid, vendorName: vname}
 		v, ok := bucket[key]
 		if !ok {
-			v = &satiationVendor{StructureName: sname, VendorName: vname}
+			// dist_sq is in pixel² (world coords are pixels with
+			// tileSize=32); convert to tiles for the felt phrase.
+			const tileSize = 32.0
+			tiles := math.Sqrt(distSq) / tileSize
+			v = &satiationVendor{
+				StructureName: sname,
+				VendorName:    vname,
+				DistanceTiles: tiles,
+			}
 			bucket[key] = v
 			order = append(order, key)
 		}
