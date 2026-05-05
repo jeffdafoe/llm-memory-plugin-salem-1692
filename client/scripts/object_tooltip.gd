@@ -203,8 +203,14 @@ func _find_object_at(screen_pos: Vector2) -> Node2D:
     var best_node: Node2D = null
     var best_dist: float = INF
 
+    # Skip actor containers — they live under World/Objects too (NPCs and
+    # PCs share the same parent), but actor_tooltip.gd handles their
+    # hover separately with the richer name + role + workplace panel.
+    # Without this skip, hovering over an NPC fires both tooltips.
     for child in world.get_node("Objects").get_children():
         if child.get_child_count() == 0:
+            continue
+        if child.has_meta("npc_id"):
             continue
         var sprite_node: Node2D = null
         for grandchild in child.get_children():

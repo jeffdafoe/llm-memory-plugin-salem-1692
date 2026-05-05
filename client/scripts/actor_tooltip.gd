@@ -97,43 +97,40 @@ func _ready() -> void:
     add_child(_panel)
 
 func _input(event: InputEvent) -> void:
-    if not (event is InputEventMouseButton):
-        return
-    if not (event.button_index == MOUSE_BUTTON_LEFT and event.pressed):
+    if event is InputEventMouseMotion:
+        _update_hover(event.position)
+
+func _update_hover(screen_pos: Vector2) -> void:
+    if world == null:
         return
 
-    # Suppressed in editor and over modal UIs — same gates main.gd's PC
-    # walk handler uses, kept in lockstep so the two never disagree about
-    # whether a click is "in play."
+    # Same gates main.gd's PC walk handler uses, kept in lockstep so the
+    # two never disagree about whether a position is "in play."
     if editor != null and editor.active:
+        _hide_panel()
         return
     if camera != null and camera.modal_open:
+        _hide_panel()
         return
-    if camera != null and camera._is_over_ui(event.position):
-        # Click landed on a UI panel (talk panel, top bar, etc.) — let
-        # that UI handle it. Don't dismiss our panel here either; the
-        # user might be opening another panel and dismissing ours by
-        # clicking-out is handled by the non-actor branch below.
+    if camera != null and camera._is_over_ui(screen_pos):
+        _hide_panel()
         return
 
-    var hit: Node2D = _find_actor_at(event.position)
+    var hit: Node2D = _find_actor_at(screen_pos)
     if hit == null:
-        # Click on terrain or empty space dismisses the panel. The walk
-        # handler in main.gd will still fire for terrain — we're not
-        # consuming this event because we want the walk to proceed.
         _hide_panel()
         return
 
-    # Click hit an actor. Tap-to-toggle: same actor closes; different
-    # opens with new contents.
-    if hit == _shown_node and _panel.visible:
-        _hide_panel()
+    if hit != _shown_node:
+        _show_panel_for(hit, screen_pos)
     else:
-        _show_panel_for(hit, event.position)
+        # Same actor, just track the cursor for repositioning.
+        call_deferred("_position_panel_near", screen_pos)
 
-## Returns true if a press at the given screen position would land on
-## an actor sprite. Called from main.gd before the PC walk handler so
-## clicks meant for "who is this" don't double as walk targets.
+## Returns true if a position lands on an actor sprite. Kept for the
+## main.gd walk-handler integration even though the panel itself is now
+## hover-driven — a left-click on an NPC sprite still shouldn't fire a
+## walk to the tile underneath.
 func is_press_over_actor(screen_pos: Vector2) -> bool:
     return _find_actor_at(screen_pos) != null
 
