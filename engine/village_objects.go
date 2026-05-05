@@ -220,50 +220,63 @@ func (app *App) resolveLoiteringStructure(ctx context.Context, actorX, actorY fl
 	return id, name
 }
 
-// shopStockLine returns a perception line listing what the present
-// workers of structureID have on hand, formatted with quantities so the
-// LLM can decide whether to top up before leaving. Returns "" when no
-// worker is present (the unattended path handles that case) or when the
-// present workers have no inventory.
+// shopStockLine returns one or more perception lines listing what the
+// present workers of structureID have on hand, formatted as
+// "Available from <Name>: bread x99, cheese x50." per worker, so the
+// customer knows who to address in pay(recipient=...). Returns "" when
+// no worker is present (the unattended path handles that case) or
+// when the present workers have no inventory.
 //
-// Aggregates across multiple present workers — a Tavern with two
-// servers each holding bread x2 reads as "bread x4." Realistic for the
-// small-village scale; can split per-worker later if individual
-// proprietorship matters.
+// Stock is attributed per worker rather than aggregated, since the pay
+// tool routes by recipient name. A Tavern with two servers each holding
+// bread x2 reads as two lines, one per server. Without this attribution
+// NPCs guess generic names like "store owner" and the pay tool rejects
+// them.
 //
 // The perceiver is excluded so an NPC at their own workplace doesn't
 // see their own stock listed back at them — they already see "Your
 // inventory: …" elsewhere in perception.
 func (app *App) shopStockLine(ctx context.Context, structureID, perceiverID string) string {
 	rows, err := app.DB.Query(ctx,
-		`SELECT k.name, SUM(ai.quantity)::int AS total
+		`SELECT a.display_name, k.name, ai.quantity
 		 FROM actor a
 		 JOIN actor_inventory ai ON ai.actor_id = a.id
 		 JOIN item_kind k ON k.name = ai.item_kind
 		 WHERE a.work_structure_id = $1::uuid
 		   AND a.inside_structure_id = $1::uuid
 		   AND a.id != $2::uuid
-		 GROUP BY k.name, k.sort_order
-		 HAVING SUM(ai.quantity) > 0
-		 ORDER BY k.sort_order, k.name`,
+		   AND ai.quantity > 0
+		 ORDER BY a.display_name, k.sort_order, k.name`,
 		structureID, perceiverID)
 	if err != nil {
 		return ""
 	}
 	defer rows.Close()
-	var parts []string
+
+	// Preserve worker order (alphabetical via SQL ORDER BY) while
+	// collecting items per worker. Map gives O(1) append; slice gives
+	// stable iteration.
+	itemsByWorker := map[string][]string{}
+	var workerOrder []string
 	for rows.Next() {
-		var name string
+		var worker, item string
 		var qty int
-		if err := rows.Scan(&name, &qty); err != nil {
+		if err := rows.Scan(&worker, &item, &qty); err != nil {
 			continue
 		}
-		parts = append(parts, fmt.Sprintf("%s x%d", name, qty))
+		if _, seen := itemsByWorker[worker]; !seen {
+			workerOrder = append(workerOrder, worker)
+		}
+		itemsByWorker[worker] = append(itemsByWorker[worker], fmt.Sprintf("%s x%d", item, qty))
 	}
-	if len(parts) == 0 {
+	if len(workerOrder) == 0 {
 		return ""
 	}
-	return "Items offered here: " + strings.Join(parts, ", ") + "."
+	var lines []string
+	for _, worker := range workerOrder {
+		lines = append(lines, fmt.Sprintf("Available from %s: %s.", worker, strings.Join(itemsByWorker[worker], ", ")))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // unattendedWorkersLine returns a perception line naming the assigned
