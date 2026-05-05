@@ -53,7 +53,14 @@ type chatSendRequest struct {
 	ToolsOffered []agentToolDef `json:"tools_offered,omitempty"`
 	ToolCallID   string         `json:"tool_call_id,omitempty"`
 	SceneID      string         `json:"scene_id,omitempty"`
-	Wait         bool           `json:"wait"`
+	// SceneStructure (MEM-127) is the pre-resolved structure name for
+	// the cascade origin — populated by callers via
+	// app.lookupSceneStructureName(ctx, sceneID) so memory_api's comms
+	// page can render the location chip without JOINing to engine-side
+	// tables. Empty for companion mode, chronicler-only / admin-trigger
+	// scenes, and noticeboard cascades.
+	SceneStructure string `json:"scene_structure,omitempty"`
+	Wait           bool   `json:"wait"`
 }
 
 // chatSendReply is the inline VA reply returned when wait=true.
@@ -105,15 +112,19 @@ func newNPCChatClient(baseURL, engineKey string) *npcChatClient {
 // On iter N>0, message is the tool-result text and toolCallID matches the
 // prior assistant tool_call.id from the NPC's last reply. sceneID is the
 // MEM-121 cascade UUID — empty string means "no scene" (treated as NULL
-// server-side, equivalent to companion-mode).
-func (c *npcChatClient) sendChat(ctx context.Context, npcAgentName, message, toolCallID, sceneID string, tools []agentToolDef) (*chatSendReply, error) {
+// server-side, equivalent to companion-mode). sceneStructure is the
+// MEM-127 pre-resolved structure name for the cascade origin (caller
+// resolves via app.lookupSceneStructureName); empty for cascades with
+// no anchoring structure.
+func (c *npcChatClient) sendChat(ctx context.Context, npcAgentName, message, toolCallID, sceneID, sceneStructure string, tools []agentToolDef) (*chatSendReply, error) {
 	body, err := json.Marshal(chatSendRequest{
-		ToAgents:     []string{npcAgentName},
-		Message:      message,
-		ToolsOffered: tools,
-		ToolCallID:   toolCallID,
-		SceneID:      sceneID,
-		Wait:         true,
+		ToAgents:       []string{npcAgentName},
+		Message:        message,
+		ToolsOffered:   tools,
+		ToolCallID:     toolCallID,
+		SceneID:        sceneID,
+		SceneStructure: sceneStructure,
+		Wait:           true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal chat request: %w", err)

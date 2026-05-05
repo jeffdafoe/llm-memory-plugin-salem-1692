@@ -163,7 +163,7 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 
 	var commitCall *agentToolCall
 	for iter := 0; iter < agentTickBudget; iter++ {
-		reply, err := app.npcChatClient.sendChat(ctx, r.LLMMemoryAgent, currentMessage, currentToolCallID, sceneID, tools)
+		reply, err := app.npcChatClient.sendChat(ctx, r.LLMMemoryAgent, currentMessage, currentToolCallID, sceneID, app.lookupSceneStructureName(ctx, sceneID), tools)
 		if err != nil {
 			log.Printf("agent-tick %s iter=%d: %v", r.DisplayName, iter, err)
 			return
