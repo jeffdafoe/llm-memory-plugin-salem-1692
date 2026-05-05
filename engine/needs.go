@@ -544,15 +544,18 @@ func (app *App) visibleNeedsLines(ctx context.Context, perceiverID, structureID 
 // pre-action snapshot. Returns zeros on error — the caller's readback
 // path treats "no change" as silent, so a failed read produces an empty
 // readback rather than a misleading one.
+//
+// Reads from actor_need rows via the repo (ZBBS-121 commit 2). The
+// dual-write hooks established in commit 1 keep rows in sync with the
+// legacy actor columns until those columns drop in a later commit.
+// Wrapper preserves the (h, t, ti) return shape so existing call sites
+// in agent_tick.go don't need to change.
 func (app *App) snapshotNeeds(ctx context.Context, actorID string) (int, int, int) {
-	var h, t, ti int
-	if err := app.DB.QueryRow(ctx,
-		`SELECT hunger, thirst, tiredness FROM actor WHERE id = $1`,
-		actorID,
-	).Scan(&h, &t, &ti); err != nil {
+	set, err := app.needsSnapshot(ctx, actorID)
+	if err != nil {
 		return 0, 0, 0
 	}
-	return h, t, ti
+	return set.Get("hunger"), set.Get("thirst"), set.Get("tiredness")
 }
 
 // buildPostConsumeReadback summarizes what changed in the actor's needs
@@ -574,13 +577,17 @@ func (app *App) snapshotNeeds(ctx context.Context, actorID string) (int, int, in
 //   "Still feel parched, exhausted. "               — only persistence (small reduction, no threshold cross)
 //   "Needs eased slightly. "                        — change happened but only mild-tier residual
 func (app *App) buildPostConsumeReadback(ctx context.Context, actorID string, beforeH, beforeT, beforeTi int) string {
-	var h, t, ti int
-	if err := app.DB.QueryRow(ctx,
-		`SELECT hunger, thirst, tiredness FROM actor WHERE id = $1`,
-		actorID,
-	).Scan(&h, &t, &ti); err != nil {
+	// Read from actor_need rows via the repo (ZBBS-121 commit 2). The
+	// applyConsumption call that triggered this readback wrote both
+	// columns and rows in its tx, so post-commit reads of either
+	// surface return the same values.
+	set, err := app.needsSnapshot(ctx, actorID)
+	if err != nil {
 		return ""
 	}
+	h := set.Get("hunger")
+	t := set.Get("thirst")
+	ti := set.Get("tiredness")
 	if h == beforeH && t == beforeT && ti == beforeTi {
 		return ""
 	}
