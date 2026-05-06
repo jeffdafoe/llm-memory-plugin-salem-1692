@@ -602,13 +602,19 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, 
 // the chat log just shows the speaker addressing a phantom.
 //
 // Heuristic: split each candidate's display_name on whitespace and
-// match the first token as a whole word (case-insensitive). Names
-// like "Josiah Thorne" or "John Ellis" match on "Josiah" / "John";
-// single-token names ("Wendy", "Jefferey") match as themselves. The
-// false-positive risk is low because Salem names are picked
-// distinctly and not common English words; if that ever changes,
-// this should switch to "must be followed/preceded by punctuation"
-// or pre-built regex from the actor table.
+// match the first token as a case-sensitive whole word against the
+// speech. Names like "Josiah Thorne" or "John Ellis" match on
+// "Josiah" / "John"; single-token names ("Wendy", "Jefferey") match
+// as themselves. Case-sensitive because the (?i) form turned every
+// "I hope for peace" into a false-positive hit on background NPC
+// "Hope James" — common verbs and nouns shouldn't be names just
+// because they share spelling.
+//
+// Scope is restricted to addressable actors — those with a PC login
+// or an active llm_memory_agent. Background placeholder NPCs (the
+// James family, named scenery) can't respond meaningfully and
+// shouldn't generate "had already left" lines when their first names
+// happen to match common words. Drops false positives wholesale.
 //
 // Runs in a goroutine off the speak commit (fire-and-forget). Errors
 // are logged and dropped — the absence of the narration is a minor
@@ -616,7 +622,10 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, 
 func (app *App) checkStaleAddressees(speakerID, speakerName, text, structureID string) {
 	ctx := context.Background()
 	rows, err := app.DB.Query(ctx,
-		`SELECT id, display_name, inside_structure_id FROM actor WHERE id::text != $1`,
+		`SELECT id, display_name, inside_structure_id
+		   FROM actor
+		  WHERE id::text != $1
+		    AND (login_username IS NOT NULL OR llm_memory_agent IS NOT NULL)`,
 		speakerID)
 	if err != nil {
 		log.Printf("stale-addressee query failed: %v", err)
@@ -634,8 +643,9 @@ func (app *App) checkStaleAddressees(speakerID, speakerName, text, structureID s
 			continue
 		}
 		// regexp.QuoteMeta covers names with regex-special chars (e.g.
-		// O'Brien). (?i) is case-insensitive; \b is word boundary.
-		re, err := regexp.Compile(`(?i)\b` + regexp.QuoteMeta(first) + `\b`)
+		// O'Brien). \b is word boundary. Case-sensitive on purpose —
+		// see function-level comment.
+		re, err := regexp.Compile(`\b` + regexp.QuoteMeta(first) + `\b`)
 		if err != nil {
 			continue
 		}
