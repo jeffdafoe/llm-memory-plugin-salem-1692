@@ -1546,6 +1546,47 @@ func (app *App) handlePCPay(w http.ResponseWriter, r *http.Request) {
 				},
 			})
 		}
+		// Private felt-language consume narration (ZBBS-129). When the
+		// pay landed an at-source consume (consume_now=true with an
+		// item that has satisfactions), surface the actor's felt
+		// experience in their own brown box — "You eat the stew —
+		// gnawing eases; comfortably fed." Mirrors the well-refresh
+		// narration shape (private=true, actor_id-matched in the talk
+		// panel). Skipped for take-home pays (consume_now=false) and
+		// for non-item pays since there's no consume to narrate.
+		if consumeNow && pr.ItemConsumed && req.Item != "" {
+			satisfactions, sErr := loadItemSatisfactions(r.Context(), app.DB, strings.ToLower(strings.TrimSpace(req.Item)))
+			if sErr == nil && len(satisfactions) > 0 {
+				preNeeds := map[string]int{
+					"hunger":    actor.Hunger,
+					"thirst":    actor.Thirst,
+					"tiredness": actor.Tiredness,
+				}
+				postNeeds := map[string]int{
+					"hunger":    actor.Hunger - pr.HungerReduction,
+					"thirst":    actor.Thirst - pr.ThirstReduction,
+					"tiredness": actor.Tiredness - pr.TirednessReduce,
+				}
+				qty := req.Qty
+				if qty <= 0 {
+					qty = 1
+				}
+				if selfText := narrateConsumeSelf(req.Item, qty, satisfactions, preNeeds, postNeeds); selfText != "" {
+					app.Hub.Broadcast(WorldEvent{
+						Type: "room_event",
+						Data: map[string]interface{}{
+							"actor_id":     actor.ID,
+							"actor_name":   actor.DisplayName,
+							"kind":         "consume",
+							"text":         selfText,
+							"structure_id": actor.InsideStructureID.String,
+							"private":      true,
+							"at":           time.Now().UTC().Format(time.RFC3339),
+						},
+					})
+				}
+			}
+		}
 		// Post-pay reactor tick (ZBBS-126). Give the recipient a chance
 		// to acknowledge the transaction — "thanks, friend" / "enjoy the
 		// stew" / "come again." Without this hook the room goes silent

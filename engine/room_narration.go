@@ -198,12 +198,14 @@ func narrateRefreshAtSourceSelf(sourceName string, hits []refreshHit, pre map[st
 	case "tiredness":
 		verb = "rest under"
 	}
-	clauses := make([]string, 0, len(hits))
+	clauses := make([]string, 0, len(hits)*2)
 	for _, h := range hits {
 		oldValue := pre[h.Attribute]
-		clause := feltSatisfactionClause(h.Attribute, oldValue, h.NewValue)
-		if clause != "" {
-			clauses = append(clauses, clause)
+		if effect := feltSatisfactionClause(h.Attribute, oldValue, h.NewValue); effect != "" {
+			clauses = append(clauses, effect)
+		}
+		if state := feltSatisfactionStateClause(h.Attribute, h.NewValue); state != "" {
+			clauses = append(clauses, state)
 		}
 	}
 	base := fmt.Sprintf("You %s the %s.", verb, sourceName)
@@ -211,6 +213,131 @@ func narrateRefreshAtSourceSelf(sourceName string, hits []refreshHit, pre map[st
 		return base
 	}
 	return fmt.Sprintf("%s — %s.", strings.TrimSuffix(base, "."), strings.Join(clauses, "; "))
+}
+
+// narrateConsumeSelf builds a private second-person line for a PC who
+// just consumed an item via pay(consume_now=true) or future direct
+// consume. Combines the eat/drink/rest verb with felt-effect and
+// post-state clauses, mirroring the refresh narration shape so the
+// brown-box log reads consistently across satisfaction sources.
+//
+//   item            — item kind name ("bread", "ale", etc.)
+//   qty             — units consumed (defaults handled by caller)
+//   satisfactions   — item_satisfies rows for the item (so multi-
+//                     effect items like ale narrate both attributes)
+//   pre             — pre-consume need values keyed by attribute
+//   post            — post-consume need values keyed by attribute
+//
+// Examples:
+//   "You eat the stew — gnawing eases; comfortably fed."
+//   "You drink the ale — slight thirst gone; well-fed too."
+//   "You eat the bread — but the hunger persists; still hungry."
+//
+// Returns "" when satisfactions is empty (defensive — caller should
+// guard, this would only fire on a non-consumable item which the pay
+// path rejects upstream).
+func narrateConsumeSelf(item string, qty int, satisfactions []itemSatisfaction, pre, post map[string]int) string {
+	if len(satisfactions) == 0 {
+		return ""
+	}
+	item = strings.TrimSpace(strings.ToLower(item))
+	if item == "" {
+		return ""
+	}
+	if qty <= 0 {
+		qty = 1
+	}
+	primary := primarySatisfactionAttribute(satisfactions)
+	verb := "consume"
+	switch primary {
+	case "thirst":
+		verb = "drink"
+	case "hunger":
+		verb = "eat"
+	case "tiredness":
+		verb = "use"
+	}
+	// "the bread" / "the 2 ales" reads more natural for a self-line
+	// than a bare item count. pluralize handles English -s / -es.
+	itemPhrase := "the " + item
+	if qty > 1 {
+		itemPhrase = fmt.Sprintf("the %d %s", qty, pluralize(item, qty))
+	}
+	clauses := make([]string, 0, len(satisfactions)*2)
+	for _, s := range satisfactions {
+		oldValue := pre[s.Attribute]
+		newValue := post[s.Attribute]
+		if effect := feltSatisfactionClause(s.Attribute, oldValue, newValue); effect != "" {
+			clauses = append(clauses, effect)
+		}
+		if state := feltSatisfactionStateClause(s.Attribute, newValue); state != "" {
+			clauses = append(clauses, state)
+		}
+	}
+	base := fmt.Sprintf("You %s %s.", verb, itemPhrase)
+	if len(clauses) == 0 {
+		return base
+	}
+	return fmt.Sprintf("%s — %s.", strings.TrimSuffix(base, "."), strings.Join(clauses, "; "))
+}
+
+// feltSatisfactionStateClause returns a short post-action state
+// fragment describing where a need sits AFTER the satisfaction
+// landed. Pairs with feltSatisfactionClause's pre-action effect
+// fragment so a sentence reads "{effect}; {state}" — e.g. "the
+// parching ebbs; comfortably hydrated." Returns "" when the post
+// value is in the calm-default zone with no satisfaction event
+// preceding (the caller wouldn't be narrating that anyway).
+//
+// Tiering mirrors the engine's mild/red/peak thresholds:
+//   - newValue == 0     → fully sated
+//   - newValue 1-7      → comfortably <verbed>
+//   - newValue 8-17     → lightly <noun>y
+//   - newValue 18-23    → still <noun>y
+//   - newValue >= 24    → still gravely <noun>
+func feltSatisfactionStateClause(attribute string, newValue int) string {
+	switch attribute {
+	case "thirst":
+		switch {
+		case newValue == 0:
+			return "fully refreshed"
+		case newValue < 8:
+			return "comfortably hydrated"
+		case newValue < 18:
+			return "lightly thirsty"
+		case newValue < 24:
+			return "still parched"
+		default:
+			return "still desperately thirsty"
+		}
+	case "hunger":
+		switch {
+		case newValue == 0:
+			return "fully sated"
+		case newValue < 8:
+			return "comfortably fed"
+		case newValue < 18:
+			return "lightly hungry"
+		case newValue < 24:
+			return "still hungry"
+		default:
+			return "still starving"
+		}
+	case "tiredness":
+		switch {
+		case newValue == 0:
+			return "fully rested"
+		case newValue < 8:
+			return "well rested"
+		case newValue < 18:
+			return "lightly weary"
+		case newValue < 24:
+			return "still weary"
+		default:
+			return "still exhausted"
+		}
+	}
+	return ""
 }
 
 // feltSatisfactionClause returns a short felt-language fragment
