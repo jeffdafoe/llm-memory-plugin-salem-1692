@@ -418,6 +418,14 @@ func (app *App) evaluateWorkerSchedule(ctx context.Context, w *workerRow, now ti
 			ShiftStart:      formatMinuteOfDay(startMinResolved),
 			ShiftEnd:        formatMinuteOfDay(endMinResolved),
 		})
+		// Arm the buffered dispatcher's timer so a shift boundary
+		// drains within the buffer window even when no coincident
+		// arrival triggers a notify. The legacy dispatchChronicler-
+		// ShiftBoundaries fallback no-ops when buffered dispatch is
+		// on, so without this notify a shift transition with no NPC
+		// movement would sit in the queue until the next arrival or
+		// phase fire.
+		app.ChroniclerBufferedDispatcher.notify()
 		if _, err := app.DB.Exec(ctx,
 			`UPDATE actor SET last_shift_tick_at = $2 WHERE id = $1`,
 			w.ID, boundaryAt,

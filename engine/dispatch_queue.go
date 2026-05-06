@@ -238,6 +238,30 @@ func (q *chroniclerDispatchQueue) enqueueArrival(npcID, npcName, structureID, st
 	})
 }
 
+// hasShiftEventsPending reports whether any pending batch is a shift
+// boundary event (shift_start or shift_end). Used by the legacy-mode
+// shift dispatcher to decide whether the queue actually warrants a
+// "shift_boundary" reason vs a queue that holds only arrivals or
+// needs events. Without this, the dispatcher fires shift_boundary on
+// every tick the queue is non-empty, producing prompts that lead with
+// "A villager's working hours have shifted" even when the queue holds
+// only an arrival or a needs onset.
+//
+// Nil-safe: returns false when q is nil.
+func (q *chroniclerDispatchQueue) hasShiftEventsPending() bool {
+	if q == nil {
+		return false
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for k := range q.batches {
+		if k.EventType == dispatchShiftStart || k.EventType == dispatchShiftEnd {
+			return true
+		}
+	}
+	return false
+}
+
 // pending reports the number of queued batches without draining. Used by
 // the dedicated shift dispatcher to decide whether to fire the chronicler
 // (a separate dispatch isn't worth it if a phase or cascade fire just
