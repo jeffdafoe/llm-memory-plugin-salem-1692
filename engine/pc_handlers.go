@@ -1546,6 +1546,23 @@ func (app *App) handlePCPay(w http.ResponseWriter, r *http.Request) {
 				},
 			})
 		}
+		// Post-pay reactor tick (ZBBS-126). Give the recipient a chance
+		// to acknowledge the transaction — "thanks, friend" / "enjoy the
+		// stew" / "come again." Without this hook the room goes silent
+		// after a PC pay even though a vendor would naturally respond.
+		// Mints a fresh scene UUID like the PC-speak path; force=true
+		// because the customer just handed over coins, this isn't a
+		// background reaction we should cost-guard. Goroutine because
+		// the LLM call shouldn't block the PC's pay HTTP response.
+		if pr.RecipientIsAgent && pr.RecipientID != "" {
+			structureID := actor.InsideStructureID.String
+			recipientID := pr.RecipientID
+			pcActorID := actor.ID
+			go func() {
+				bg := context.Background()
+				app.triggerImmediateTick(bg, recipientID, "pc-paid-you", true, app.newScene(bg, structureID), pcActorID)
+			}()
+		}
 	}
 
 	jsonResponse(w, http.StatusOK, pcPayResponse{
