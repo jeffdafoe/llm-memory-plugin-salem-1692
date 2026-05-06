@@ -66,6 +66,12 @@ const (
 	// tick storms when several NPCs co-locate and react to each other's
 	// speech. Bypassed by force=true (PC-speak and heard-speech cascades).
 	agentMinTickGap = 5 * time.Minute
+	// Settling period an NPC must observe between their last engagement
+	// (speak / serve / pay) and a take_break commit. Without it, reactive
+	// ticks fired by a PC's polite refusal tend to land on take_break —
+	// the model reads "no thanks, I'm good" as a cue to close shop. This
+	// forces a quiet stretch before retreat is allowed.
+	takeBreakEngagementCooldown = 10 * time.Minute
 )
 
 // agentNPCRow bundles everything the harness loop needs for one NPC.
@@ -1991,6 +1997,36 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		// description says so, but treat a redundant speak as harmless if it
 		// happens (the speak path runs first per the categorize order, then
 		// take_break adds its own).
+		//
+		// Engagement cooldown (takeBreakEngagementCooldown): if this NPC's
+		// most recent ok-result speak/serve/pay landed inside the cooldown,
+		// reject the take_break and feed a corrective error back to the
+		// model. The trigger is the heard-speech reactive cascade: a PC's
+		// "no thanks, I'm good" fires a forced tick and the model reads
+		// the polite refusal as a cue to close shop, even though it just
+		// served the customer a minute ago. The settling period forces
+		// the model to pick a different verb (or stay silent) until the
+		// scene quiets down. agent_action_log already has the right index
+		// (idx_agent_action_log_npc on actor_id, occurred_at DESC) so this
+		// is a sub-millisecond lookup.
+		var lastEngagement sql.NullTime
+		if err := app.DB.QueryRow(ctx, `
+			SELECT MAX(occurred_at)
+			  FROM agent_action_log
+			 WHERE actor_id = $1
+			   AND result = 'ok'
+			   AND action_type IN ('speak', 'serve', 'pay')
+		`, r.ID).Scan(&lastEngagement); err != nil {
+			log.Printf("take_break engagement-cooldown query for %s: %v (allowing)", r.DisplayName, err)
+		} else if lastEngagement.Valid {
+			elapsed := time.Since(lastEngagement.Time)
+			if elapsed < takeBreakEngagementCooldown {
+				result = "rejected"
+				errStr = fmt.Sprintf("You engaged with the room (speak / serve / pay) %s ago. Wait at least %s of quiet since your last engagement before closing your post — pick a different action this turn.", elapsed.Round(time.Second), takeBreakEngagementCooldown)
+				break
+			}
+		}
+
 		reason, _ := tc.Input["reason"].(string)
 		untilHour := coerceIntInput(tc.Input["until_hour"])
 
