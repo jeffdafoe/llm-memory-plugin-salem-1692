@@ -179,8 +179,11 @@ var _inventory_add_button: Button = null
 var _inventory_save_button: Button = null
 var _inventory_status: Label = null
 var _inventory_current_id: String = ""
-# {name, display_label, category, price, satisfies_attribute, ...} from
-# /api/items. Loaded once and cached.
+# {name, display_label, category, satisfies: [{attribute, amount}, ...],
+#  capabilities: [...], sort_order} from /api/items. Loaded once and
+# cached. ZBBS-125 changed satisfies_* from a single pair of fields to
+# an array; if you find an old reference to satisfies_attribute, it's
+# stale.
 var _items_catalog: Array = []
 var _items_loaded: bool = false
 # Per-row state. Each entry: {item_kind: String, quantity: int}.

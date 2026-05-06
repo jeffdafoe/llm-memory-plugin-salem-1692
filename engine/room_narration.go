@@ -201,19 +201,19 @@ func narrateSummon(summonerName string, payload map[string]interface{}) string {
 	return fmt.Sprintf("%s sends a messenger for %s: %q.", summonerName, target, reason)
 }
 
-// itemAttributeFor returns the satisfies_attribute for an item_kind, or
-// empty string if the item isn't a known consumable. Used by the
-// consume narration to pick "eats" vs "drinks".
+// itemAttributeFor returns the primary satisfaction attribute for an
+// item_kind — the one with the largest amount in item_satisfies. Used
+// by the consume narration to pick "eats" vs "drinks". Multi-effect
+// items like ale (thirst 4 + hunger 2) anchor on the bigger one
+// (thirst → "drinks ale"). Returns empty string when the item has no
+// satisfactions (materials, unknowns) so callers can fall back to a
+// generic verb.
 func (app *App) itemAttributeFor(ctx context.Context, item string) string {
-	var attr string
-	err := app.DB.QueryRow(ctx,
-		`SELECT COALESCE(satisfies_attribute, '') FROM item_kind WHERE name = $1`,
-		strings.ToLower(strings.TrimSpace(item)),
-	).Scan(&attr)
+	satisfactions, err := loadItemSatisfactions(ctx, app.DB, strings.ToLower(strings.TrimSpace(item)))
 	if err != nil {
 		return ""
 	}
-	return attr
+	return primarySatisfactionAttribute(satisfactions)
 }
 
 // joinNames renders a list of names as "A", "A and B", or "A, B, and C"
