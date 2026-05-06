@@ -2072,6 +2072,7 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 			Qty:           qty,
 			ConsumeNow:    consumeNow,
 			ConsumerNames: consumerNames,
+			SceneID:       sceneID,
 		})
 		result = pr.Result
 		errStr = pr.Err
