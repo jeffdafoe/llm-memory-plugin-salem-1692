@@ -2076,6 +2076,20 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 					},
 				})
 			}
+			// Post-pay reactor tick (ZBBS-126). Give the recipient a
+			// chance to speak a thanks/farewell after the transaction
+			// lands. Inherits this cascade's sceneID (the same UUID
+			// every reactor in this scene shares) so the recipient's
+			// acknowledgment groups with the rest of the conversation.
+			// Goroutine + force=true match the PC-pay path's reasoning.
+			if pr.RecipientIsAgent && pr.RecipientID != "" {
+				recipientID := pr.RecipientID
+				buyerID := r.ID
+				localScene := sceneID
+				go func() {
+					app.triggerImmediateTick(context.Background(), recipientID, "npc-paid-you", true, localScene, buyerID)
+				}()
+			}
 		}
 
 	case "consume":

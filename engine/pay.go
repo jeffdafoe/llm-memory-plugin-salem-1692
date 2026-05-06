@@ -46,11 +46,18 @@ type payResult struct {
 	Err           string // human-readable, empty when Result == "ok"
 	BuyerNewCoins int    // post-transfer coin balance for log/broadcast
 	// Item-flow fields. All zero/empty when no item was involved.
-	ItemTransferred  bool   // true when item moved into buyer's inventory
-	ItemConsumed     bool   // true when consume_now applied satisfaction
-	HungerReduction  int    // amount applied (0 if not relevant)
-	ThirstReduction  int    // amount applied (0 if not relevant)
-	TirednessReduce  int    // amount applied (0 if not relevant)
+	ItemTransferred bool // true when item moved into buyer's inventory
+	ItemConsumed    bool // true when consume_now applied satisfaction
+	HungerReduction int  // amount applied (0 if not relevant)
+	ThirstReduction int  // amount applied (0 if not relevant)
+	TirednessReduce int  // amount applied (0 if not relevant)
+	// Recipient bookkeeping (ZBBS-126 post-pay reactor). Populated only
+	// when Result == "ok"; lets callers trigger a follow-up agent tick
+	// on the recipient so they can speak a thanks/farewell after the
+	// transaction lands. RecipientIsAgent is false for PC recipients and
+	// for NPCs without llm_memory_agent set; callers gate the tick on it.
+	RecipientID      string
+	RecipientIsAgent bool
 }
 
 // payRequest groups the pay arguments so executePay's signature stays
@@ -123,14 +130,20 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payReque
 	}
 
 	// Recipient lookup-and-lock. After ZBBS-084 the unified actor table
-	// holds every villager.
-	var recipientID string
+	// holds every villager. Also pull llm_memory_agent so we can flag
+	// the recipient as agent-driven for the post-pay reactor tick (the
+	// caller fires triggerImmediateTick only when the recipient has
+	// an LLM identity to reply through).
+	var (
+		recipientID         string
+		recipientAgentName  sql.NullString
+	)
 	err = tx.QueryRow(ctx,
-		`SELECT id FROM actor
+		`SELECT id, llm_memory_agent FROM actor
 		 WHERE LOWER(display_name) = LOWER($1)
 		 LIMIT 1
 		 FOR UPDATE`,
-		recipientName).Scan(&recipientID)
+		recipientName).Scan(&recipientID, &recipientAgentName)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return payResult{Result: "rejected", Err: fmt.Sprintf("no villager named %q", recipientName)}
@@ -394,10 +407,12 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payReque
 	}
 
 	result := payResult{
-		Result:          "ok",
-		BuyerNewCoins:   buyerCoins - req.Amount,
-		ItemTransferred: itemTransferred,
-		ItemConsumed:    itemConsumed,
+		Result:           "ok",
+		BuyerNewCoins:    buyerCoins - req.Amount,
+		ItemTransferred:  itemTransferred,
+		ItemConsumed:     itemConsumed,
+		RecipientID:      recipientID,
+		RecipientIsAgent: recipientAgentName.Valid && strings.TrimSpace(recipientAgentName.String) != "",
 	}
 	if itemConsumed {
 		// Reductions are old - new for the buyer. agentNPCRow's pre-tx
