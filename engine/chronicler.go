@@ -363,8 +363,21 @@ func villageEventTextForPhase(phase string) string {
 // Caller declares the fire's priority so the queue-or-drop choice is
 // explicit at the source — no reason-string parsing.
 func (app *App) cascadeOriginFireChronicler(reasonStr, structureID string, priority chroniclerFirePriority) {
+	// "buffered_flush" is the buffered dispatcher's timer-driven flush.
+	// It shares the cascade fire path (same sem, same drain) but is
+	// not an in-world cascade (no structureID, no specific event in the
+	// village just stirred). Set Type explicitly so the perception
+	// builder's opening line picks the dedicated buffered_flush
+	// wording ("The village has stirred in the past minutes...")
+	// instead of the cascade fallback ("Something stirs in the
+	// village: buffered_flush") which leaked the literal reason
+	// string into the prompt.
+	reasonType := "cascade"
+	if reasonStr == "buffered_flush" {
+		reasonType = "buffered_flush"
+	}
 	reason := chroniclerFireReason{
-		Type:          "cascade",
+		Type:          reasonType,
 		CascadeReason: reasonStr,
 		StructureID:   structureID,
 		Priority:      priority,
@@ -1087,7 +1100,11 @@ func (app *App) buildActivityDigest(ctx context.Context, since time.Time, reason
 		return ""
 	}
 	if len(per) == 0 {
-		if reason.Type == "cascade" {
+		// Cascade and buffered_flush fires both have a stirring
+		// already named in the opening line — asserting "the village
+		// has been quiet" six lines later contradicts that and biases
+		// the model toward set_environment on every fire.
+		if reason.Type == "cascade" || reason.Type == "buffered_flush" {
 			return ""
 		}
 		return "Since your last attention, the village has been quiet."
@@ -1131,7 +1148,7 @@ func (app *App) buildActivityDigest(ctx context.Context, since time.Time, reason
 		fmt.Fprintf(&b, "- %s %s.\n", name, strings.Join(parts, ", "))
 	}
 	if !wrote {
-		if reason.Type == "cascade" {
+		if reason.Type == "cascade" || reason.Type == "buffered_flush" {
 			return ""
 		}
 		return "Since your last attention, the village has been quiet."
@@ -2307,10 +2324,21 @@ func sourceHint(source string) string {
 // tick loop after dispatchScheduledBehaviors so the worker scheduler
 // has had a chance to enqueue.
 //
-// Cheap when nothing is pending (single mutex-guarded len check). When
-// pending, fires the chronicler with reason.Type == "shift_boundary";
-// the perception build drains the queue inside the fire, so this caller
-// doesn't need to pass the batches through.
+// Cheap when nothing is pending. The function only fires when shift
+// events (shift_start / shift_end) are actually queued — arrivals
+// and needs onsets/resolves alone are NOT a shift boundary; their
+// proper fire path is the buffered dispatcher (when enabled) or a
+// future dedicated dispatcher. Without this gate the function would
+// fire shift_boundary on every tick the queue is non-empty, producing
+// chronicler prompts that lead with "A villager's working hours have
+// shifted" when the only thing that happened was an NPC walking into
+// a building.
+//
+// When the buffered dispatcher is enabled, this function is fully
+// suppressed: the buffered dispatcher's timer-driven flush owns
+// queue drains and fires with reason "buffered_flush". Running both
+// paths produced a fire-per-server-tick storm of shift_boundary
+// fires while the buffered timer was still arming.
 //
 // Honors AgentTicksPaused — if the admin halted agent activity, the
 // chronicler stays quiet on shift boundaries too. The queued events
@@ -2318,7 +2346,14 @@ func sourceHint(source string) string {
 // them; that is intentional, matching how phase fires behave under
 // pause.
 func (app *App) dispatchChroniclerShiftBoundaries(ctx context.Context) {
-	if app.ChroniclerDispatchQueue.pending() == 0 {
+	if app.chroniclerBufferedDispatchEnabled(ctx) {
+		// Buffered dispatcher owns queue drains. Shift events that
+		// land without an arrival to trigger notify() ride the next
+		// arrival's flush, or get picked up when the buffered timer
+		// arms via any subsequent enqueue.
+		return
+	}
+	if !app.ChroniclerDispatchQueue.hasShiftEventsPending() {
 		return
 	}
 	cfg, err := app.loadWorldConfig(ctx)

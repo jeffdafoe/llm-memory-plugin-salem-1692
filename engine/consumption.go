@@ -238,6 +238,12 @@ func (app *App) applyConsumption(ctx context.Context, tx pgx.Tx, actorID string,
 	// still gives us free coalescing when several NPCs drink from the
 	// same well in the same tick.
 	app.ChroniclerDispatchQueue.enqueue(dispatchNeedsResolved, time.Now().UTC(), agent)
+	// Arm the buffered dispatcher so the resolution surfaces in the
+	// next chronicler perception even when the consumption isn't
+	// followed by an arrival. Pre-buffered-dispatch this rode
+	// dispatchChroniclerShiftBoundaries' per-tick fire; that fallback
+	// is suppressed when buffered dispatch is on.
+	app.ChroniclerBufferedDispatcher.notify()
 
 	return result, nil
 }
