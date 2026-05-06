@@ -247,20 +247,24 @@ func needLeadPhrase(need string, tier NeedTier) string {
 }
 
 // satiationOwnInventory returns items in the perceiver's inventory
-// whose satisfies_attribute matches the given need, ordered by
-// satisfies_amount descending so the strongest satisfier reads first.
-// Errors log and surface as empty so a transient DB hiccup doesn't
-// break the perception build.
+// that satisfy the given need (via item_satisfies), ordered by the
+// per-need amount descending so the strongest satisfier reads first.
+// With multi-effect items (ZBBS-125), an item like ale is returned
+// for both 'thirst' and 'hunger' queries, but with the per-attribute
+// amount each time — ale shows as a 4-thirst satisfier under 'thirst'
+// and a 2-hunger one under 'hunger'. Errors log and surface as empty
+// so a transient DB hiccup doesn't break the perception build.
 func (app *App) satiationOwnInventory(ctx context.Context, actorID, need string) []satiationItem {
 	rows, err := app.DB.Query(ctx, `
-		SELECT ik.display_label, ik.satisfies_amount,
+		SELECT ik.display_label, isf.amount,
 		       COALESCE('portable' = ANY(ik.capabilities), false) AS portable
 		  FROM actor_inventory inv
 		  JOIN item_kind ik ON ik.name = inv.item_kind
+		  JOIN item_satisfies isf ON isf.item_kind = ik.name
 		 WHERE inv.actor_id = $1::uuid
 		   AND inv.quantity > 0
-		   AND ik.satisfies_attribute = $2
-		 ORDER BY ik.satisfies_amount DESC, ik.display_label
+		   AND isf.attribute = $2
+		 ORDER BY isf.amount DESC, ik.display_label
 	`, actorID, need)
 	if err != nil {
 		log.Printf("satiationOwnInventory %s/%s: %v", actorID, need, err)
@@ -336,24 +340,25 @@ func (app *App) satiationNearbyVendors(ctx context.Context, perceiverID, need st
 			   AND EXISTS (
 			       SELECT 1
 			         FROM actor_inventory inv
-			         JOIN item_kind ik ON ik.name = inv.item_kind
+			         JOIN item_satisfies isf ON isf.item_kind = inv.item_kind
 			        WHERE inv.actor_id = a.id
 			          AND inv.quantity > 0
-			          AND ik.satisfies_attribute = $1
+			          AND isf.attribute = $1
 			   )
 			 ORDER BY dist_sq
 			 LIMIT 4
 		)
 		SELECT r.structure_id::text, r.structure_name, r.vendor_name,
-		       ik.display_label, ik.satisfies_amount,
+		       ik.display_label, isf.amount,
 		       COALESCE('portable' = ANY(ik.capabilities), false) AS portable,
 		       r.dist_sq
 		  FROM ranked r
 		  JOIN actor_inventory inv ON inv.actor_id::text = r.vendor_id
 		  JOIN item_kind ik ON ik.name = inv.item_kind
+		  JOIN item_satisfies isf ON isf.item_kind = ik.name
 		 WHERE inv.quantity > 0
-		   AND ik.satisfies_attribute = $1
-		 ORDER BY r.dist_sq, ik.satisfies_amount DESC, ik.display_label
+		   AND isf.attribute = $1
+		 ORDER BY r.dist_sq, isf.amount DESC, ik.display_label
 	`, need, perceiverID, x, y)
 	if err != nil {
 		log.Printf("satiationNearbyVendors %s: %v", need, err)

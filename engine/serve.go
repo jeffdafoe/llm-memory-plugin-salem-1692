@@ -154,23 +154,25 @@ func (app *App) executeServe(ctx context.Context, server *agentNPCRow, req serve
 		return serveResult{Result: "rejected", Err: "no one to serve — you must be inside a structure with the recipients"}
 	}
 
-	// Validate the item and pull capabilities + satisfies pair so
-	// we can apply consumption in the consume_now path.
-	var (
-		itemSatisfiesAttr sql.NullString
-		itemSatisfiesAmt  sql.NullInt32
-		itemCapabilities  []string
-	)
+	// Validate the item and pull capabilities. ZBBS-125 moved
+	// satisfaction effects from item_kind columns into the
+	// item_satisfies relation; load them via the helper so a
+	// multi-effect item (ale → thirst+hunger) drops both needs on
+	// the consume_now path.
+	var itemCapabilities []string
 	err = tx.QueryRow(ctx,
-		`SELECT satisfies_attribute, satisfies_amount, capabilities
-		   FROM item_kind WHERE name = $1`,
+		`SELECT capabilities FROM item_kind WHERE name = $1`,
 		itemKind,
-	).Scan(&itemSatisfiesAttr, &itemSatisfiesAmt, &itemCapabilities)
+	).Scan(&itemCapabilities)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return serveResult{Result: "rejected", Err: fmt.Sprintf("no such item %q", itemKind)}
 		}
 		return serveResult{Result: "failed", Err: fmt.Sprintf("look up item: %v", err)}
+	}
+	itemSatisfactions, err := loadItemSatisfactions(ctx, tx, itemKind)
+	if err != nil {
+		return serveResult{Result: "failed", Err: fmt.Sprintf("load satisfactions: %v", err)}
 	}
 
 	// Take-home requires portable. Stew, water are non-portable;
@@ -259,18 +261,9 @@ func (app *App) executeServe(ctx context.Context, server *agentNPCRow, req serve
 
 	for _, rcp := range recipients {
 		if req.ConsumeNow {
-			delta := consumptionDelta{}
-			if itemSatisfiesAttr.Valid && itemSatisfiesAmt.Valid {
-				totalAmount := int(itemSatisfiesAmt.Int32) * qty
-				switch itemSatisfiesAttr.String {
-				case "hunger":
-					delta.Hunger = -totalAmount
-				case "thirst":
-					delta.Thirst = -totalAmount
-				case "tiredness":
-					delta.Tiredness = -totalAmount
-				}
-			}
+			// Apply every (attribute, amount) from item_satisfies so
+			// multi-effect items drop multiple needs in one serve.
+			delta := applySatisfactionsToDelta(consumptionDelta{}, itemSatisfactions, qty)
 			if delta.Hunger != 0 || delta.Thirst != 0 || delta.Tiredness != 0 {
 				res, err := app.applyConsumption(ctx, tx, rcp.ID, delta, "serve-consume")
 				if err != nil {
@@ -357,21 +350,11 @@ func (app *App) executeServe(ctx context.Context, server *agentNPCRow, req serve
 	return serveResult{
 		Result:               "ok",
 		Item:                 itemKind,
-		ItemAttribute:        nullableString(itemSatisfiesAttr),
+		ItemAttribute:        primarySatisfactionAttribute(itemSatisfactions),
 		Summaries:            summaries,
 		NeedUpdates:          needUpdates,
 		TakeHomeRecipientIDs: takeHomeIDs,
 	}
-}
-
-// nullableString unwraps sql.NullString. Returns "" when not valid.
-// Local convenience — avoids `if v.Valid { ... } else { "" }` clutter
-// at call sites.
-func nullableString(s sql.NullString) string {
-	if s.Valid {
-		return s.String
-	}
-	return ""
 }
 
 // satiationSentence renders the natural-language note shown to the

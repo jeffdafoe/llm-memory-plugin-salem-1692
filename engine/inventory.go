@@ -18,7 +18,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -177,20 +176,26 @@ func (app *App) executeConsume(ctx context.Context, buyer *agentNPCRow, itemKind
 	}
 	defer tx.Rollback(ctx)
 
-	// Look up satisfaction first so we fail fast on materials.
-	var satisfiesAttr sql.NullString
-	var satisfiesAmt sql.NullInt32
+	// Validate the item exists (item_kind row required) so we fail
+	// fast on typos before locking inventory. The actual satisfactions
+	// are loaded from item_satisfies (ZBBS-125) — a row in item_kind
+	// with no item_satisfies rows is a material (wheat/iron) which
+	// rejects "isn't a consumable" the same as before.
+	var itemExists bool
 	if err := tx.QueryRow(ctx,
-		`SELECT satisfies_attribute, satisfies_amount
-		   FROM item_kind WHERE name = $1`,
+		`SELECT TRUE FROM item_kind WHERE name = $1`,
 		itemKind,
-	).Scan(&satisfiesAttr, &satisfiesAmt); err != nil {
+	).Scan(&itemExists); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return consumeResult{Result: "rejected", Err: fmt.Sprintf("no such item %q", itemKind)}
 		}
 		return consumeResult{Result: "failed", Err: fmt.Sprintf("look up item: %v", err)}
 	}
-	if !satisfiesAttr.Valid {
+	satisfactions, err := loadItemSatisfactions(ctx, tx, itemKind)
+	if err != nil {
+		return consumeResult{Result: "failed", Err: fmt.Sprintf("load satisfactions: %v", err)}
+	}
+	if len(satisfactions) == 0 {
 		return consumeResult{Result: "rejected", Err: fmt.Sprintf("%s isn't a consumable", itemKind)}
 	}
 
@@ -229,25 +234,12 @@ func (app *App) executeConsume(ctx context.Context, buyer *agentNPCRow, itemKind
 		}
 	}
 
-	// Map attribute → consumptionDelta field. Switch mirrors the one
-	// in object_refresh.go so adding a new attribute hits the same
-	// runbook (shared/notes/codebase/salem/refresh-attributes).
-	delta := consumptionDelta{}
-	totalAmount := int(satisfiesAmt.Int32) * qty
-	switch satisfiesAttr.String {
-	case "hunger":
-		delta.Hunger = -totalAmount
-	case "thirst":
-		delta.Thirst = -totalAmount
-	case "tiredness":
-		delta.Tiredness = -totalAmount
-	default:
-		// Unknown attribute landed in item_kind without engine support
-		// — defense in depth (the runbook should be followed but isn't
-		// always). Inventory still decrements; satisfaction is logged
-		// and skipped rather than silently corrupting state.
-		// fall through to commit without applying
-	}
+	// Build the consumption delta from every (attribute, amount) row
+	// in item_satisfies (ZBBS-125). Multi-effect items like ale
+	// (thirst -4, hunger -2 per unit) drop both needs in one consume.
+	// Unknown attributes are silently skipped — defense in depth, see
+	// applySatisfactionsToDelta's switch.
+	delta := applySatisfactionsToDelta(consumptionDelta{}, satisfactions, qty)
 
 	var needsAfter consumptionResult
 	if delta.Hunger != 0 || delta.Thirst != 0 || delta.Tiredness != 0 {

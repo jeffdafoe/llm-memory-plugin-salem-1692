@@ -687,10 +687,18 @@ func _render_items(rows: Array) -> void:
         var label: String = entry.get("display_label", entry.get("name", "?"))
         var category: String = entry.get("category", "")
         var satisfies: String = "—"
-        var attr = entry.get("satisfies_attribute", null)
-        var amt = entry.get("satisfies_amount", null)
-        if attr != null and amt != null:
-            satisfies = str(attr) + " " + str(amt)
+        var sat_arr = entry.get("satisfies", [])
+        if typeof(sat_arr) == TYPE_ARRAY and sat_arr.size() > 0:
+            var parts: Array[String] = []
+            for sat in sat_arr:
+                if typeof(sat) != TYPE_DICTIONARY:
+                    continue
+                var sa = sat.get("attribute", "")
+                var sm = sat.get("amount", 0)
+                if sa != "":
+                    parts.append(str(sa) + " " + str(sm))
+            if parts.size() > 0:
+                satisfies = ", ".join(parts)
         var caps_arr = entry.get("capabilities", [])
         var caps_text: String = "—"
         if typeof(caps_arr) == TYPE_ARRAY and caps_arr.size() > 0:

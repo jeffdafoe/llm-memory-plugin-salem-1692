@@ -17,26 +17,33 @@ import (
 	"net/http"
 )
 
+// itemSatisfiesEntry is the wire shape for one (attribute, amount)
+// effect on an item — mirrors the item_satisfies table (ZBBS-125).
+// An item with no entries (a material) reports an empty array.
+type itemSatisfiesEntry struct {
+	Attribute string `json:"attribute"`
+	Amount    int    `json:"amount"`
+}
+
 // itemKindRow mirrors a row of item_kind for the picker / catalog.
 // No price column post-ZBBS-092 — prices are negotiated in dialogue.
 // Capabilities surfaced (ZBBS-114) for the config panel's read-only
 // items view: shows which items are portable, etc., without a second
-// round-trip.
+// round-trip. Satisfies array (ZBBS-125) replaces the legacy single
+// satisfies_attribute / satisfies_amount columns; multi-effect items
+// list every effect.
 type itemKindRow struct {
-	Name               string   `json:"name"`
-	DisplayLabel       string   `json:"display_label"`
-	Category           string   `json:"category"`
-	SatisfiesAttribute *string  `json:"satisfies_attribute"`
-	SatisfiesAmount    *int     `json:"satisfies_amount"`
-	SortOrder          int      `json:"sort_order"`
-	Capabilities       []string `json:"capabilities"`
+	Name         string               `json:"name"`
+	DisplayLabel string               `json:"display_label"`
+	Category     string               `json:"category"`
+	Satisfies    []itemSatisfiesEntry `json:"satisfies"`
+	SortOrder    int                  `json:"sort_order"`
+	Capabilities []string             `json:"capabilities"`
 }
 
 func (app *App) handleListItems(w http.ResponseWriter, r *http.Request) {
 	rows, err := app.DB.Query(r.Context(),
-		`SELECT name, display_label, category,
-		        satisfies_attribute, satisfies_amount, sort_order,
-		        capabilities
+		`SELECT name, display_label, category, sort_order, capabilities
 		   FROM item_kind
 		  ORDER BY sort_order, name`,
 	)
@@ -50,19 +57,59 @@ func (app *App) handleListItems(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var rec itemKindRow
 		if err := rows.Scan(&rec.Name, &rec.DisplayLabel, &rec.Category,
-			&rec.SatisfiesAttribute, &rec.SatisfiesAmount, &rec.SortOrder,
-			&rec.Capabilities); err != nil {
+			&rec.SortOrder, &rec.Capabilities); err != nil {
 			jsonError(w, "Failed to scan item", http.StatusInternalServerError)
 			return
 		}
 		if rec.Capabilities == nil {
 			rec.Capabilities = []string{}
 		}
+		rec.Satisfies = []itemSatisfiesEntry{}
 		out = append(out, rec)
 	}
 	if err := rows.Err(); err != nil {
 		jsonError(w, "Failed to iterate items", http.StatusInternalServerError)
 		return
+	}
+
+	// Second pass: load all item_satisfies rows in one query and
+	// attach to the matching catalog entry. Avoids N+1 by indexing
+	// the slice by name. Empty result = nothing to attach (every
+	// item already has Satisfies = []), so the call still serializes
+	// cleanly as `"satisfies": []`.
+	if len(out) > 0 {
+		index := make(map[string]int, len(out))
+		for i, rec := range out {
+			index[rec.Name] = i
+		}
+		sRows, err := app.DB.Query(r.Context(),
+			`SELECT item_kind, attribute, amount
+			   FROM item_satisfies
+			  ORDER BY item_kind, amount DESC, attribute`,
+		)
+		if err != nil {
+			jsonError(w, "Failed to load item satisfies", http.StatusInternalServerError)
+			return
+		}
+		defer sRows.Close()
+		for sRows.Next() {
+			var name, attr string
+			var amount int
+			if err := sRows.Scan(&name, &attr, &amount); err != nil {
+				jsonError(w, "Failed to scan item satisfies", http.StatusInternalServerError)
+				return
+			}
+			if i, ok := index[name]; ok {
+				out[i].Satisfies = append(out[i].Satisfies, itemSatisfiesEntry{
+					Attribute: attr,
+					Amount:    amount,
+				})
+			}
+		}
+		if err := sRows.Err(); err != nil {
+			jsonError(w, "Failed to iterate item satisfies", http.StatusInternalServerError)
+			return
+		}
 	}
 
 	jsonResponse(w, http.StatusOK, out)
