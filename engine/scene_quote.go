@@ -15,15 +15,21 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 )
 
 // normalizeQuotePrice coerces tc.Input["price"] into a non-negative int.
-// Models tend to return integers as float64 through JSON; accept both
-// shapes plus json.Number-via-string. Anything else (negative, non-
-// numeric, NaN, missing) returns ok=false so the caller skips quoting
-// without rejecting the speak.
+// JSON shapes vary across models — some emit integers as float64, some
+// stringify ("1" not 1) even when the tool schema says "type": integer.
+// Salem's pay/qty/amount handlers all tolerate the same string-vs-number
+// drift (see agent_tick.go's pay dispatch); price needs to match, or it
+// silently rejects every real-world LLM emission and scene_quote stays
+// empty. Returns ok=false on negative, fractional, NaN, non-numeric, or
+// missing values so the caller skips quoting without rejecting the
+// speak.
 func normalizeQuotePrice(raw interface{}) (int, bool) {
 	switch v := raw.(type) {
 	case nil:
@@ -45,6 +51,12 @@ func normalizeQuotePrice(raw interface{}) (int, bool) {
 			return 0, false
 		}
 		return int(v), true
+	case string:
+		n, err := strconv.Atoi(strings.TrimSpace(v))
+		if err != nil || n < 0 {
+			return 0, false
+		}
+		return n, true
 	default:
 		return 0, false
 	}
