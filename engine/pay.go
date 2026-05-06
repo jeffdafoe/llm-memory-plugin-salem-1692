@@ -141,24 +141,28 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payReque
 		return payResult{Result: "rejected", Err: "cannot pay yourself"}
 	}
 
-	// Validate item if provided. Pull capabilities + satisfies pair so
-	// we can decide whether the at-source vs take-home flow is allowed.
+	// Validate item if provided. Pull capabilities from item_kind, and
+	// the multi-attribute satisfactions from item_satisfies (ZBBS-125).
+	// Materials (wheat, flour, iron) have an item_kind row but no
+	// item_satisfies rows — same "not a consumable" rejection as before.
 	var (
-		itemSatisfiesAttr sql.NullString
-		itemSatisfiesAmt  sql.NullInt32
+		itemSatisfactions []itemSatisfaction
 		itemCapabilities  []string
 	)
 	if itemKind != "" {
 		err := tx.QueryRow(ctx,
-			`SELECT satisfies_attribute, satisfies_amount, capabilities
-			   FROM item_kind WHERE name = $1`,
+			`SELECT capabilities FROM item_kind WHERE name = $1`,
 			itemKind,
-		).Scan(&itemSatisfiesAttr, &itemSatisfiesAmt, &itemCapabilities)
+		).Scan(&itemCapabilities)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return payResult{Result: "rejected", Err: fmt.Sprintf("no such item %q", itemKind)}
 			}
 			return payResult{Result: "failed", Err: fmt.Sprintf("look up item: %v", err)}
+		}
+		itemSatisfactions, err = loadItemSatisfactions(ctx, tx, itemKind)
+		if err != nil {
+			return payResult{Result: "failed", Err: fmt.Sprintf("load satisfactions: %v", err)}
 		}
 
 		// Take-home flow needs the item to be portable. Non-portables
@@ -170,10 +174,10 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payReque
 		}
 
 		// At-source flow needs the item to be a consumable. Materials
-		// (wheat, flour, iron) have NULL satisfies_attribute; you can't
+		// have an item_kind row but no item_satisfies rows; you can't
 		// "consume" raw flour at the merchant's stand. The buyer needs
 		// to take it home (consume_now=false) and use it later.
-		if req.ConsumeNow && !itemSatisfiesAttr.Valid {
+		if req.ConsumeNow && len(itemSatisfactions) == 0 {
 			return payResult{Result: "rejected", Err: fmt.Sprintf("%s isn't consumable; set consume_now=false to take it home", itemKind)}
 		}
 
@@ -289,20 +293,11 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payReque
 				return payResult{Result: "rejected", Err: rejectErr}
 			}
 
-			// At-source consumption. Apply satisfies_amount * qty to
-			// the right need column on EACH consumer. Mirrors the
-			// switch in inventory.go::executeConsume; same chronicler
-			// nudge path.
-			delta := consumptionDelta{}
-			totalAmount := int(itemSatisfiesAmt.Int32) * qty
-			switch itemSatisfiesAttr.String {
-			case "hunger":
-				delta.Hunger = -totalAmount
-			case "thirst":
-				delta.Thirst = -totalAmount
-			case "tiredness":
-				delta.Tiredness = -totalAmount
-			}
+			// At-source consumption. Apply every (attribute, amount)
+			// from item_satisfies (ZBBS-125) — multi-effect items like
+			// ale drop both thirst and hunger on the same purchase.
+			// Mirrors the helper used in inventory.go::executeConsume.
+			delta := applySatisfactionsToDelta(consumptionDelta{}, itemSatisfactions, qty)
 			if delta.Hunger != 0 || delta.Thirst != 0 || delta.Tiredness != 0 {
 				for _, c := range consumers {
 					res, err := app.applyConsumption(ctx, tx, c.ID, delta, "pay-consume")
