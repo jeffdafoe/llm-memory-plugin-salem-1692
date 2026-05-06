@@ -1202,18 +1202,28 @@ func minimize() -> void:
 
 
 func _update_visibility_from_state() -> void:
-    if not pc_exists or huddle_members.is_empty():
+    # No PC → nothing to show, ever. Force everything down.
+    if not pc_exists:
         is_open = false
         sheet_anchor.visible = false
         talk_launcher.visible = false
         return
 
+    # PC exists. Preserve the panel's open state across huddle
+    # transitions so a refresh narration that lands the moment the
+    # player walks out of a structure (tavern → well, etc.) still
+    # surfaces in the brown box. The auto-close on empty huddle was
+    # snapping the panel shut between the walk-out and the arrival,
+    # eating any private narration that fired in the gap.
     if is_open:
         sheet_anchor.visible = true
         talk_launcher.visible = false
     else:
         sheet_anchor.visible = false
-        talk_launcher.visible = true
+        # Launcher chip is only useful when there's a huddle to enter
+        # — if the player is alone in the open village, hide the chip
+        # rather than offer a no-op tap target.
+        talk_launcher.visible = not huddle_members.is_empty()
 
 
 func _update_context_labels() -> void:
