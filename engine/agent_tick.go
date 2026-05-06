@@ -71,7 +71,7 @@ const (
 	// ticks fired by a PC's polite refusal tend to land on take_break —
 	// the model reads "no thanks, I'm good" as a cue to close shop. This
 	// forces a quiet stretch before retreat is allowed.
-	takeBreakEngagementCooldown = 10 * time.Minute
+	takeBreakEngagementCooldown = 5 * time.Minute
 )
 
 // agentNPCRow bundles everything the harness loop needs for one NPC.
