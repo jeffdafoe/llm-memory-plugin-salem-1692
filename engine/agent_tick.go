@@ -609,7 +609,7 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, 
 
 // checkStaleAddressees scans freshly-spoken text for first-name
 // references to other actors and emits a narration room_event for any
-// who are no longer co-located with the speaker. Catches the
+// who are no longer in the speaker's huddle. Catches the
 // parallel-tick perception race where actor B leaves between when
 // actor A's tick snapshotted perception (B present) and when the LLM
 // finally produced speech that addresses B by name. Without this,
@@ -624,6 +624,14 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, 
 // "Hope James" — common verbs and nouns shouldn't be names just
 // because they share spelling.
 //
+// Co-location is defined by shared current_huddle_id (the engine's
+// conversational unit), not shared inside_structure_id. A PC who
+// knocks at a door joins the inside NPC's huddle but stays outside
+// the structure — using inside_structure_id misclassified the
+// door-knocker as "absent" and produced bogus narration on every
+// vocative welcome. structureID is still passed in for broadcast
+// scoping (the talk-panel filter).
+//
 // Scope is restricted to addressable actors — those with a PC login
 // or an active llm_memory_agent. Background placeholder NPCs (the
 // James family, named scenery) can't respond meaningfully and
@@ -635,8 +643,18 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, 
 // UX glitch, not a sim correctness issue.
 func (app *App) checkStaleAddressees(speakerID, speakerName, text, structureID string) {
 	ctx := context.Background()
+	var speakerHuddle sql.NullString
+	if err := app.DB.QueryRow(ctx,
+		`SELECT current_huddle_id::text FROM actor WHERE id::text = $1`,
+		speakerID).Scan(&speakerHuddle); err != nil {
+		log.Printf("stale-addressee speaker-huddle lookup failed: %v", err)
+		return
+	}
+	if !speakerHuddle.Valid || speakerHuddle.String == "" {
+		return
+	}
 	rows, err := app.DB.Query(ctx,
-		`SELECT id, display_name, inside_structure_id
+		`SELECT id, display_name, current_huddle_id::text
 		   FROM actor
 		  WHERE id::text != $1
 		    AND (login_username IS NOT NULL OR llm_memory_agent IS NOT NULL)`,
@@ -648,8 +666,8 @@ func (app *App) checkStaleAddressees(speakerID, speakerName, text, structureID s
 	defer rows.Close()
 	for rows.Next() {
 		var id, name string
-		var inside sql.NullString
-		if err := rows.Scan(&id, &name, &inside); err != nil {
+		var huddle sql.NullString
+		if err := rows.Scan(&id, &name, &huddle); err != nil {
 			continue
 		}
 		first := strings.SplitN(strings.TrimSpace(name), " ", 2)[0]
@@ -666,12 +684,12 @@ func (app *App) checkStaleAddressees(speakerID, speakerName, text, structureID s
 		if !re.MatchString(text) {
 			continue
 		}
-		// Mentioned by first name. Still co-located with the speaker?
-		if inside.Valid && inside.String == structureID {
+		// Mentioned by first name. Still in the speaker's huddle?
+		if huddle.Valid && huddle.String == speakerHuddle.String {
 			continue
 		}
 		// Absent addressee — emit narration so observers see it.
-		log.Printf("stale-addressee: %s addressed %s, who has left structure %s", speakerName, name, structureID)
+		log.Printf("stale-addressee: %s addressed %s, who has left the conversation (structure %s)", speakerName, name, structureID)
 		app.Hub.Broadcast(WorldEvent{
 			Type: "room_event",
 			Data: map[string]interface{}{
@@ -687,23 +705,41 @@ func (app *App) checkStaleAddressees(speakerID, speakerName, text, structureID s
 }
 
 // findVocativeStaleAddressees returns the display names of addressable
-// actors who are NOT co-located with the speaker but are addressed in
-// the speech text in vocative position — first name immediately
-// followed by a comma ("Ezekiel, you look hungry"). This is the strict
+// actors who are NOT in the speaker's huddle but are addressed in the
+// speech text in vocative position — first name immediately followed
+// by a comma ("Ezekiel, you look hungry"). This is the strict
 // pre-commit predicate used by the speak tool to reject the whole
-// speak when the addressee has already left the room. The looser
-// post-commit narration in checkStaleAddressees handles non-vocative
-// references ("I told Ezekiel to be careful") with a soft narration
-// instead — those don't justify rejecting the speak outright because
-// the reference may be to a memory rather than a present person.
+// speak when the addressee has already left the conversation.
 //
-// Same scope as checkStaleAddressees: only addressable actors (PC
-// login or active llm_memory_agent). Background placeholder NPCs
-// can't respond and shouldn't gate other NPCs' speech if their first
-// names happen to land in vocative position.
-func (app *App) findVocativeStaleAddressees(ctx context.Context, speakerID, text, structureID string) ([]string, error) {
+// Co-location is defined by shared current_huddle_id, not shared
+// inside_structure_id. The huddle is the engine's conversational
+// unit: a PC who knocks at a door joins the inside NPC's huddle but
+// stays outside the structure (their inside_structure_id stays
+// null). Using inside_structure_id as the predicate turned every
+// vocative welcome ("Wendy, please come in") into a false rejection
+// because the door-knocker isn't technically inside. Huddle
+// membership is the right signal.
+//
+// If the speaker has no current_huddle_id, returns nil (no
+// rejection) — there's no conversational unit to validate against,
+// so don't second-guess the model.
+//
+// Scope: only addressable actors (PC login or active
+// llm_memory_agent). Background placeholder NPCs can't respond and
+// shouldn't gate other NPCs' speech if their first names land in
+// vocative position.
+func (app *App) findVocativeStaleAddressees(ctx context.Context, speakerID, text string) ([]string, error) {
+	var speakerHuddle sql.NullString
+	if err := app.DB.QueryRow(ctx,
+		`SELECT current_huddle_id::text FROM actor WHERE id::text = $1`,
+		speakerID).Scan(&speakerHuddle); err != nil {
+		return nil, err
+	}
+	if !speakerHuddle.Valid || speakerHuddle.String == "" {
+		return nil, nil
+	}
 	rows, err := app.DB.Query(ctx,
-		`SELECT display_name, inside_structure_id
+		`SELECT display_name, current_huddle_id::text
 		   FROM actor
 		  WHERE id::text != $1
 		    AND (login_username IS NOT NULL OR llm_memory_agent IS NOT NULL)`,
@@ -715,8 +751,8 @@ func (app *App) findVocativeStaleAddressees(ctx context.Context, speakerID, text
 	var absent []string
 	for rows.Next() {
 		var name string
-		var inside sql.NullString
-		if err := rows.Scan(&name, &inside); err != nil {
+		var huddle sql.NullString
+		if err := rows.Scan(&name, &huddle); err != nil {
 			continue
 		}
 		first := strings.SplitN(strings.TrimSpace(name), " ", 2)[0]
@@ -733,7 +769,7 @@ func (app *App) findVocativeStaleAddressees(ctx context.Context, speakerID, text
 		if !re.MatchString(text) {
 			continue
 		}
-		if inside.Valid && inside.String == structureID {
+		if huddle.Valid && huddle.String == speakerHuddle.String {
 			continue
 		}
 		absent = append(absent, name)
@@ -1822,24 +1858,23 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		}
 		// Vocative stale-addressee guard: parallel ticks mean the
 		// speaker's perception was snapshotted seconds before the LLM
-		// produced its speech, so an addressee may have left the room
-		// in the meantime. If the speech directly addresses an absent
-		// actor in vocative position ("Ezekiel, you look hungry"),
-		// reject the whole speak so the LLM retries from a fresh
-		// perception. Non-vocative references ("I told Ezekiel to be
-		// careful") are not rejected here — the post-broadcast
-		// narration in checkStaleAddressees handles them with a soft
-		// "[Ezekiel had already left.]" line, which is the right
-		// signal for memory references rather than direct address.
-		if r.InsideStructureID.Valid {
-			absent, err := app.findVocativeStaleAddressees(ctx, r.ID, text, r.InsideStructureID.String)
-			if err != nil {
-				log.Printf("vocative stale-addressee check failed for %s: %v", r.DisplayName, err)
-			} else if len(absent) > 0 {
-				result = "rejected"
-				errStr = fmt.Sprintf("%s is no longer in this room — don't address them by name. Re-check who is present before speaking.", strings.Join(absent, " and "))
-				break
-			}
+		// produced its speech, so an addressee may have left the
+		// conversation in the meantime. If the speech directly
+		// addresses someone outside the speaker's huddle in vocative
+		// position ("Ezekiel, you look hungry"), reject so the LLM
+		// retries from a fresh perception. Non-vocative references
+		// ("I told Ezekiel to be careful") are not rejected here —
+		// checkStaleAddressees handles them with a soft narration
+		// instead. Co-location is defined by shared current_huddle_id
+		// (the conversational unit), not shared inside_structure_id —
+		// see findVocativeStaleAddressees for why.
+		absent, err := app.findVocativeStaleAddressees(ctx, r.ID, text)
+		if err != nil {
+			log.Printf("vocative stale-addressee check failed for %s: %v", r.DisplayName, err)
+		} else if len(absent) > 0 {
+			result = "rejected"
+			errStr = fmt.Sprintf("%s is no longer in your conversation — don't address them by name. Re-check who is present before speaking.", strings.Join(absent, " and "))
+			break
 		}
 		// Mentions (Phase C of sales-and-gifts): structured tag for which
 		// item_kinds this speech references. The PC talk panel uses these
