@@ -1698,11 +1698,28 @@ func _on_room_event(data: Dictionary) -> void:
     var text := str(data.get("text", ""))
     var kind := str(data.get("kind", "act"))
     var at := str(data.get("at", ""))
+    var private_event := bool(data.get("private", false))
     # TEMP DEBUG: trace every room_event delivery and the filter outcome.
     # Investigating arrival-not-rendering bug — see if the structure_id
     # comparison or the empty-fields guard is dropping the row.
-    print("[TALK] room_event kind=", kind, " event_structure=", event_structure, " loaded=", loaded_structure_id, " actor=", actor_name, " text=", text)
-    if event_structure != loaded_structure_id:
+    print("[TALK] room_event kind=", kind, " event_structure=", event_structure, " loaded=", loaded_structure_id, " actor=", actor_name, " private=", private_event, " text=", text)
+    # Private events are felt-language narrations meant only for the
+    # acting player — refresh effects ("the parching ebbs"), future
+    # consume reactions, etc. Render only when this client's PC is
+    # the actor; drop for any other audience even if the room scope
+    # would otherwise match. Match on actor_name vs character_name
+    # since the panel doesn't track its own actor_id (the engine only
+    # uses display_name in event payloads). ZBBS-128.
+    if private_event:
+        if actor_name.is_empty() or character_name.is_empty() or actor_name != character_name:
+            print("[TALK]   -> dropped: private event for different actor")
+            return
+        # Private events bypass the room scope filter — your felt
+        # experience follows you regardless of which structure you're
+        # currently parked at, since by the time the broadcast lands
+        # the structure_id reflects where you WERE, which may not
+        # match the panel's loaded scope after a quick walk.
+    elif event_structure != loaded_structure_id:
         print("[TALK]   -> dropped: structure mismatch")
         return
     if actor_name.is_empty() or text.is_empty():
