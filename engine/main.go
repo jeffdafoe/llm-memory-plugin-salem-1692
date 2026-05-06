@@ -367,6 +367,12 @@ func main() {
 	// staleness threshold — well past any realistic cascade duration.
 	go app.runSceneTickCleanup(context.Background())
 
+	// Pay-ledger aging sweep (ZBBS-128 step 4). Flips `pending` rows
+	// older than payLedgerPendingTimeout to `withdrawn` so engine
+	// crashes mid-deliberation and CommitUnknown leaves don't
+	// accumulate. 1-minute cadence, 10-minute cutoff.
+	go app.runPayLedgerSweep(context.Background())
+
 	// Build router. Routes are registered via two helpers: authed() wraps
 	// the handler in requireLLMMemory; public() leaves it unwrapped. Default
 	// is authed — anything public must explicitly opt out, so forgetting to
