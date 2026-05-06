@@ -259,7 +259,7 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			// Read from DB rather than r.Hunger/etc. — those are tick-start
 			// values and would be stale after a prior consume/pay this turn.
 			beforeH, beforeT, beforeTi := app.snapshotNeeds(ctx, r.ID)
-			result, errStr := app.executeAgentCommit(ctx, r, payCall, sceneID)
+			result, errStr, _ := app.executeAgentCommit(ctx, r, payCall, sceneID)
 			if result == "ok" {
 				readback := app.buildPostConsumeReadback(ctx, r.ID, beforeH, beforeT, beforeTi)
 				currentMessage = "[OK] You paid. " + readback + "If a customer or merchant addressed you mid-transaction, speak to them now (a thanks, a follow-up, an answer). Then you may move or call done."
@@ -282,7 +282,7 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			// model often picks done after serving even when a customer
 			// just asked a question. Silent service to a hanging
 			// question reads as cold and unwelcoming.
-			result, errStr := app.executeAgentCommit(ctx, r, serveCall, sceneID)
+			result, errStr, _ := app.executeAgentCommit(ctx, r, serveCall, sceneID)
 			if result == "ok" {
 				msg := "[OK] You served."
 				// Satiation notes for any recipient whose relevant
@@ -315,7 +315,7 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			// Read from DB so a second consume in the same tick gets fresh
 			// pre-action values instead of tick-start (stale) ones.
 			beforeH, beforeT, beforeTi := app.snapshotNeeds(ctx, r.ID)
-			result, errStr := app.executeAgentCommit(ctx, r, consumeCall, sceneID)
+			result, errStr, _ := app.executeAgentCommit(ctx, r, consumeCall, sceneID)
 			if result == "ok" {
 				readback := app.buildPostConsumeReadback(ctx, r.ID, beforeH, beforeT, beforeTi)
 				currentMessage = "[OK] You consumed it. " + readback + "If anyone is mid-conversation with you, speak to them now. Then you may move or call done."
@@ -334,7 +334,7 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			// the table — without it, models tend to default to "done"
 			// after speaking ("I responded, my turn's over"). Non-directive
 			// nudge: doesn't name a specific action, just affirms agency.
-			_, _ = app.executeAgentCommit(ctx, r, speakCall, sceneID)
+			_, _, _ = app.executeAgentCommit(ctx, r, speakCall, sceneID)
 			currentMessage = "[OK] You spoke. Continue your turn — you may move or run a chore now, or call done if you're staying put."
 			currentToolCallID = speakCall.ID
 			continue
@@ -345,7 +345,7 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			// physical action with a follow-up speech ("served stew" then
 			// "here you are, mind the heat"). Same [OK] nudge so the
 			// model knows the turn isn't over.
-			_, _ = app.executeAgentCommit(ctx, r, actCall, sceneID)
+			_, _, _ = app.executeAgentCommit(ctx, r, actCall, sceneID)
 			currentMessage = "[OK] You did that. If anyone is mid-conversation with you, speak to them now. Then you may move or call done."
 			currentToolCallID = actCall.ID
 			continue
@@ -357,9 +357,13 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			// Surfaces the rejection text verbatim so a "not at a source"
 			// or "depleted" outcome feeds the model's next decision
 			// instead of silently disappearing.
-			result, errStr := app.executeAgentCommit(ctx, r, gatherCall, sceneID)
+			result, errStr, extra := app.executeAgentCommit(ctx, r, gatherCall, sceneID)
 			if result == "ok" {
-				currentMessage = "[OK] You filled your inventory. If anyone is mid-conversation with you, speak to them now. Then you may move or call done."
+				if extra != "" {
+					currentMessage = "[OK] You gathered " + extra + ". If anyone is mid-conversation with you, speak to them now. Then you may move or call done."
+				} else {
+					currentMessage = "[OK] You filled your inventory. If anyone is mid-conversation with you, speak to them now. Then you may move or call done."
+				}
 			} else {
 				currentMessage = fmt.Sprintf("[Gather %s] %s. Continue your turn — you may correct it, speak, move, or call done.", result, errStr)
 			}
@@ -373,7 +377,7 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			// the rejection text matters: the model should know if the
 			// summons was rejected (cooldown / co-located / unknown
 			// target) so it doesn't loop "send messenger, send messenger".
-			result, errStr := app.executeAgentCommit(ctx, r, summonCall, sceneID)
+			result, errStr, _ := app.executeAgentCommit(ctx, r, summonCall, sceneID)
 			if result == "ok" {
 				currentMessage = "[OK] The messenger is on their way. If anyone is mid-conversation with you, speak to them now (a 'I've sent for them' would be natural). Then you may move or call done."
 			} else {
@@ -412,7 +416,7 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 		}
 	}
 
-	_, _ = app.executeAgentCommit(ctx, r, commitCall, sceneID)
+	_, _, _ = app.executeAgentCommit(ctx, r, commitCall, sceneID)
 	app.stampAgentTick(ctx, r)
 
 	// Return-to-work follow-up (ZBBS-110). After the commit settled, if
@@ -1663,11 +1667,16 @@ func (app *App) resolveRecall(ctx context.Context, r *agentNPCRow, query string)
 // commits (move/chore/done/pay don't fan out — move triggers an arrival
 // LATER, after the walk completes, which is its own new scene).
 //
-// Returns (result, errStr) so the dispatcher can surface the outcome
-// of pay attempts back into the model's continuation message. Other
-// commit types ("ok"/"") are ignored by callers but kept consistent
-// for the audit row.
-func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agentToolCall, sceneID string) (string, string) {
+// Returns (result, errStr, extra) so the dispatcher can surface the
+// outcome of pay attempts back into the model's continuation message.
+// `extra` carries tool-specific human-readable detail the caller can
+// splice into the [OK] message: gather populates it with "<qty>
+// <item> from the <source>" so the admin chat log shows what was
+// gathered (the gather tool's input is `{}` by design — the engine
+// resolves the product from the loiter slot, so without this the
+// chip and the OK both read as content-free). Most tools leave it
+// empty.
+func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agentToolCall, sceneID string) (result string, errStr string, extra string) {
 	// Augment several payload kinds with structure_id so recent-block
 	// queries (perception lookback, talk-panel backload) can answer
 	// "what happened here lately" with a single payload->>'structure_id'
@@ -1684,8 +1693,8 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		tc.Input["structure_id"] = r.InsideStructureID.String
 	}
 	payload, _ := json.Marshal(tc.Input)
-	result := "ok"
-	errStr := ""
+	result = "ok"
+	errStr = ""
 
 	switch tc.Name {
 	case "move_to":
@@ -2239,6 +2248,24 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		gr := app.executeGather(ctx, r, qty)
 		result = gr.Result
 		errStr = gr.Err
+		// Surface the resolved item / qty / source on success so the
+		// caller's [OK] message can read "You gathered 1 herb from
+		// the Apothecary Garden" instead of the content-free "You
+		// filled your inventory" — the gather tool's input is `{}`
+		// by design (engine resolves the product from the loiter
+		// slot), so without this the admin chat log can't tell what
+		// was gathered without joining against agent_action_log.
+		if result == "ok" {
+			itemPhrase := gr.Item
+			if gr.Qty > 1 {
+				itemPhrase = fmt.Sprintf("%d %s", gr.Qty, pluralize(gr.Item, gr.Qty))
+			}
+			source := gr.SourceName
+			if source == "" {
+				source = "the source"
+			}
+			extra = fmt.Sprintf("%s from the %s", itemPhrase, source)
+		}
 		// Room narration: wells, orchards etc. are typically outdoors
 		// (entry_policy='none' loiter targets), so structure_id won't
 		// be set — the line still goes out as a public observable for
@@ -2307,7 +2334,7 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 	// per-summoner active-errand check in dispatchSummonErrand replaces
 	// the audit-log lookback the v1 cooldown used.
 	if tc.Name == "summon" {
-		return result, errStr
+		return
 	}
 	_, err := app.DB.Exec(ctx,
 		`INSERT INTO agent_action_log (actor_id, speaker_name, source, action_type, payload, result, error, huddle_id)
@@ -2318,7 +2345,7 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 	if err != nil {
 		log.Printf("agent-tick: audit insert %s/%s: %v", r.DisplayName, tc.Name, err)
 	}
-	return result, errStr
+	return
 }
 
 // executeAgentMoveTo finds the destination structure and dispatches a walk.
