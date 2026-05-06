@@ -2023,11 +2023,11 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 			excuse = "I must close for now — please come back later."
 		}
 
-		// Surface the spoken excuse the same way executeAgentCommit's "speak"
-		// branch does: log line + npc_spoke broadcast + room_event narration
-		// + co-located cascade. Don't reuse the speak case directly so the
-		// audit row carries action_type='take_break' (not 'speak') — searches
-		// for break events should find them under their own type.
+		// Surface the spoken excuse the same way the "speak" branch does:
+		// a single npc_spoke broadcast that the talk panel renders with
+		// the speaker's name. Don't reuse the speak case directly so the
+		// audit row carries action_type='take_break' (not 'speak') —
+		// searches for break events should find them under their own type.
 		log.Printf("npc_spoke: %s says %q (take_break)", r.DisplayName, excuse)
 		spokeData := map[string]interface{}{
 			"npc_id": r.ID,
@@ -2039,19 +2039,6 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 			spokeData["structure_id"] = r.InsideStructureID.String
 		}
 		app.Hub.Broadcast(WorldEvent{Type: "npc_spoke", Data: spokeData})
-		if r.InsideStructureID.Valid {
-			app.Hub.Broadcast(WorldEvent{
-				Type: "room_event",
-				Data: map[string]interface{}{
-					"actor_id":     r.ID,
-					"actor_name":   r.DisplayName,
-					"kind":         "speak",
-					"text":         excuse,
-					"structure_id": r.InsideStructureID.String,
-					"at":           time.Now().UTC().Format(time.RFC3339),
-				},
-			})
-		}
 
 		// Stash excuse + breakUntil into the payload so the audit row carries
 		// the full context. structure_id was already injected above for the
