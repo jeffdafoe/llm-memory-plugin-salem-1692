@@ -51,6 +51,47 @@ func coerceIntInput(v interface{}) int {
 	return 0
 }
 
+// coerceInt64Input is the int64 sibling of coerceIntInput, intended
+// for ID-typed tool inputs (e.g. pay_ledger row ids on in_response_to)
+// where the platform-dependent `int` from coerceIntInput is the wrong
+// shape and float64 precision past 2^53 would silently truncate.
+// Rejects out-of-safe-integer-range floats so a bogus huge value
+// becomes 0 (treated as "no parent" downstream) rather than a wrapped
+// fake row id. Returns 0 on any unparseable / non-integer input.
+func coerceInt64Input(v interface{}) int64 {
+	switch x := v.(type) {
+	case float64:
+		if math.IsNaN(x) || math.IsInf(x, 0) {
+			return 0
+		}
+		// Reject non-integral floats. ID fields shouldn't truncate
+		// `1.9` into `1` — that turns a malformed input into a
+		// syntactically-valid row id which downstream lookups would
+		// "successfully" resolve. Returning 0 here lets the caller's
+		// "no parent" branch fire instead.
+		if x != math.Trunc(x) {
+			return 0
+		}
+		// 2^53 is the largest integer float64 represents exactly.
+		// Past this, conversion-via-float64 loses precision.
+		if x > 9007199254740992 || x < -9007199254740992 {
+			return 0
+		}
+		return int64(x)
+	case int:
+		return int64(x)
+	case int64:
+		return x
+	case string:
+		n, err := strconv.ParseInt(strings.TrimSpace(x), 10, 64)
+		if err != nil {
+			return 0
+		}
+		return n
+	}
+	return 0
+}
+
 // newUUIDv7 generates a UUID v7 (time-ordered) as a string.
 // UUID v7 uses a 48-bit Unix timestamp in milliseconds plus random bits.
 func newUUIDv7() string {

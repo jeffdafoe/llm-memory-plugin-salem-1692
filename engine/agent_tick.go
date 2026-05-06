@@ -259,10 +259,14 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			// Read from DB rather than r.Hunger/etc. — those are tick-start
 			// values and would be stale after a prior consume/pay this turn.
 			beforeH, beforeT, beforeTi := app.snapshotNeeds(ctx, r.ID)
-			result, errStr, _ := app.executeAgentCommit(ctx, r, payCall, sceneID)
+			result, errStr, extra := app.executeAgentCommit(ctx, r, payCall, sceneID)
 			if result == "ok" {
 				readback := app.buildPostConsumeReadback(ctx, r.ID, beforeH, beforeT, beforeTi)
 				currentMessage = "[OK] You paid. " + readback + "If a customer or merchant addressed you mid-transaction, speak to them now (a thanks, a follow-up, an answer). Then you may move or call done."
+			} else if result == "countered" && extra != "" {
+				// Recipient haggled back. Echo the ledger_id so a retry
+				// can extend the chain via in_response_to.
+				currentMessage = fmt.Sprintf("[Pay countered, ledger_id=%s] %s. To pay the new amount and continue this haggling thread, call pay() again with in_response_to=%s. You may also speak, move, or call done instead.", extra, errStr, extra)
 			} else {
 				currentMessage = fmt.Sprintf("[Pay %s] %s. Continue your turn — you may correct it, speak, move, or call done.", result, errStr)
 			}
@@ -857,6 +861,10 @@ func agentToolSpec() []agentToolDef {
 						"type":  "array",
 						"items": map[string]interface{}{"type": "string"},
 						"description": "OPTIONAL. At-source group orders only (consume_now=true with an item). Display names of the people who will eat/drink — typically you and your tablemates. You can include yourself or omit yourself. Each named consumer must be in your huddle. Stock decrements by qty * len(consumers); each consumer's need drops. Omit for solo orders (you become the implicit consumer).",
+					},
+					"in_response_to": map[string]interface{}{
+						"type":        "integer",
+						"description": "OPTIONAL. When the seller previously countered an offer from you in this exchange (you saw a 'countered' tool result with a ledger id), pass that id here to declare this pay as your response to that counter. The new pay links to the prior one in the haggling chain. Omit for the first pay in any negotiation.",
 					},
 				},
 				"required": []string{"recipient", "amount"},
@@ -2064,6 +2072,7 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 				consumerNames = []string{trimmed}
 			}
 		}
+		inResponseTo := coerceInt64Input(tc.Input["in_response_to"])
 		pr := app.executePay(ctx, r, payRequest{
 			RecipientName: recipient,
 			Amount:        amount,
@@ -2073,9 +2082,17 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 			ConsumeNow:    consumeNow,
 			ConsumerNames: consumerNames,
 			SceneID:       sceneID,
+			InResponseTo:  inResponseTo,
 		})
 		result = pr.Result
 		errStr = pr.Err
+		// Surface the ledger row id when the recipient countered, so the
+		// buyer NPC's next tool-result message can echo it back into a
+		// pay() retry via in_response_to. Empty for every other outcome
+		// (root pays don't need it; declined/accepted are terminal).
+		if pr.Result == "countered" && pr.LedgerID > 0 {
+			extra = strconv.FormatInt(pr.LedgerID, 10)
+		}
 		// Parallel narration broadcast for the talk panel. Mirrors the
 		// act/departure pattern — pay events are observable by anyone in
 		// the room, and silently moving coins/items would leave the
