@@ -26,6 +26,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -103,13 +104,51 @@ func (app *App) applyObjectRefreshAtArrival(ctx context.Context, actorID string,
 	// Lock the actor row so a concurrent attribute-tick (the hourly
 	// hunger/thirst/tiredness increment) can't race the GREATEST clamp
 	// and leave needs in an inconsistent state. Pull display_name in the
-	// same round-trip for the audit row + Hub broadcast.
-	var displayName string
+	// same round-trip for the audit row + Hub broadcast. Also pull
+	// inside_structure_id so the private narration room_event can
+	// target the right room scope, and login_username so the engine
+	// knows whether this actor is a PC (only PCs get the private
+	// felt-language broadcast — NPCs perceive the refresh through their
+	// next perception build).
+	var (
+		displayName       string
+		insideStructureID sql.NullString
+		loginUsername     sql.NullString
+	)
 	if err := tx.QueryRow(ctx,
-		`SELECT display_name FROM actor WHERE id = $1 FOR UPDATE`,
+		`SELECT display_name, inside_structure_id, login_username FROM actor WHERE id = $1 FOR UPDATE`,
 		actorID,
-	).Scan(&displayName); err != nil {
+	).Scan(&displayName, &insideStructureID, &loginUsername); err != nil {
 		return nil, fmt.Errorf("lock actor: %w", err)
+	}
+
+	// Snapshot pre-refresh need values for narration. applyConsumption
+	// returns the post-clamp values, but the felt-language clauses need
+	// the pre-value to know how severe the need was — clamping makes
+	// pre = post - amount unreliable when an actor at thirst=10 takes a
+	// well's amount=-24 hit (post is 0, not -14). Read from actor_need
+	// inside the same tx so we see the same row applyConsumption is
+	// about to update.
+	preNeeds := map[string]int{}
+	preRows, err := tx.Query(ctx,
+		`SELECT key, value FROM actor_need WHERE actor_id = $1`,
+		actorID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("snapshot pre-needs: %w", err)
+	}
+	for preRows.Next() {
+		var k string
+		var v int
+		if err := preRows.Scan(&k, &v); err != nil {
+			preRows.Close()
+			return nil, fmt.Errorf("scan pre-need: %w", err)
+		}
+		preNeeds[k] = v
+	}
+	preRows.Close()
+	if err := preRows.Err(); err != nil {
+		return nil, fmt.Errorf("iter pre-needs: %w", err)
 	}
 
 	// Pull all refresh rows for the matched object. FOR UPDATE locks the
@@ -314,6 +353,36 @@ func (app *App) applyObjectRefreshAtArrival(ctx context.Context, actorID string,
 			"tiredness": result.Tiredness,
 		},
 	})
+
+	// Private felt-language narration (ZBBS-128). PCs see "You drink
+	// at the Well — the parching ebbs." in their own talk panel; NPCs
+	// don't broadcast at all (no UI; their perception build covers
+	// the same ground via the audit log + needs snapshot they read on
+	// the next tick). The room shouldn't see this — the felt
+	// experience is the actor's, not a public event — so the broadcast
+	// carries `private: true` + actor_id and the talk panel filters to
+	// only render private events when the matching actor_id is its
+	// own PC.
+	if loginUsername.Valid {
+		if text := narrateRefreshAtSourceSelf(objectName, hits, preNeeds); text != "" {
+			structureScope := ""
+			if insideStructureID.Valid {
+				structureScope = insideStructureID.String
+			}
+			app.Hub.Broadcast(WorldEvent{
+				Type: "room_event",
+				Data: map[string]interface{}{
+					"actor_id":     actorID,
+					"actor_name":   displayName,
+					"kind":         "refresh",
+					"text":         text,
+					"structure_id": structureScope,
+					"private":      true,
+					"at":           time.Now().UTC().Format(time.RFC3339),
+				},
+			})
+		}
+	}
 
 	return hits, nil
 }
