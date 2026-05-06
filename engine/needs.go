@@ -398,10 +398,16 @@ func (app *App) dispatchNeedsTick(ctx context.Context) {
 
 	// Enqueue at the hour boundary so the dispatch queue's
 	// (event_type, minute) coalescing folds same-tick onsets into one
-	// batch. No notify on the buffered dispatcher — onset events ride
-	// the next chronicler fire, matching needs_resolved's behavior.
+	// batch. Notify the buffered dispatcher so onsets surface in the
+	// next perception even when no arrival follows; without this,
+	// onsets would sit in the queue indefinitely (the legacy
+	// dispatchChroniclerShiftBoundaries fallback is suppressed when
+	// buffered dispatch is on).
 	for _, a := range onsets {
 		app.ChroniclerDispatchQueue.enqueue(dispatchNeedsOnset, hourBoundary, a)
+	}
+	if len(onsets) > 0 {
+		app.ChroniclerBufferedDispatcher.notify()
 	}
 
 	log.Printf("needs_tick: %d hour(s) elapsed, applying %d capped hour(s) (last %s -> now %s), +%d to %d villagers (onsets: %d)",
