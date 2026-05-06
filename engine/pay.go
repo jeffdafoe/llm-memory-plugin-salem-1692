@@ -221,14 +221,22 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payReque
 			return payResult{Result: "rejected", Err: fmt.Sprintf("%s has only %d %s (asked for %d)", recipientName, sellerQty, itemKind, totalQty)}
 		}
 
-		// Quote enforcement (ZBBS-124). When the seller has stated a
-		// per-unit price for this item in the buyer's current huddle
-		// via speak's optional `price` field, reject offers that fall
-		// short of that quote. No quote on file = silent accept (today's
-		// behavior); the LLM-tick pass in a later phase covers the
-		// no-quote case. Read outside the FOR UPDATE locks since
-		// scene_quote rows are written by speak commits, not by pay —
-		// no contention with this transaction.
+		// Quote-or-deliberate gate. Three branches off the scene_quote
+		// lookup, all on item pays only (pure coin transfers skip):
+		//
+		//   - Quote on file, offer ≥ quote → fast path, fall through and
+		//     commit. The "happy path" — buyer is paying the asked price.
+		//   - Quote on file, offer < quote → deliberation (held tx). The
+		//     recipient's LLM picks accept_pay / decline_pay / counter_pay.
+		//   - No quote on file → deliberation as well. Walk-up purchases
+		//     without prior price discussion still get the recipient a
+		//     voice in whether to sell. Per design, no-quote = always
+		//     invoke. See tasks/pending/salem-pay-haggling-llm-tick.
+		//
+		// Lookup outside the FOR UPDATE locks since scene_quote rows are
+		// written by speak commits, not by pay — no contention with this
+		// transaction. PC recipients (recipientAgentName.Valid == false)
+		// always accept; deliberation only fires for LLM-driven NPCs.
 		var buyerHuddle sql.NullString
 		if err := tx.QueryRow(ctx,
 			`SELECT current_huddle_id FROM actor WHERE id = $1`,
@@ -236,21 +244,85 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payReque
 		).Scan(&buyerHuddle); err != nil {
 			return payResult{Result: "failed", Err: fmt.Sprintf("lookup buyer huddle: %v", err)}
 		}
+		needsDeliberation := false
+		hasQuote := false
+		quotedPrice := 0
 		if buyerHuddle.Valid {
 			quoted, ok, err := app.lookupSceneQuote(ctx, buyerHuddle.String, recipientID, itemKind)
 			if err != nil {
-				// Treat a quote lookup failure as "no quote" rather
-				// than failing the pay outright — the structural
-				// guard is opportunistic, not authoritative.
+				// Treat a quote lookup failure as "no quote" rather than
+				// failing the pay — the structural guard is opportunistic.
+				// Fall into the no-quote branch (deliberation).
 				log.Printf("scene_quote lookup (huddle=%s recipient=%s item=%s): %v", buyerHuddle.String, recipientID, itemKind, err)
+				needsDeliberation = true
 			} else if ok {
+				hasQuote = true
+				quotedPrice = quoted
 				required := quoted * totalQty
 				if req.Amount < required {
-					return payResult{
-						Result: "rejected",
-						Err:    fmt.Sprintf("%s quoted %d coin(s) per %s; for %d unit(s) the price is %d, but you offered %d. Speak to renegotiate, or pay the asked amount.", recipientName, quoted, itemKind, totalQty, required, req.Amount),
-					}
+					needsDeliberation = true
 				}
+				// else: meets quote, fast path, no deliberation.
+			} else {
+				// No quote on file — deliberation gate.
+				needsDeliberation = true
+			}
+		}
+		// Skip deliberation when the recipient isn't an LLM agent (PC
+		// recipient or non-agent NPC). PCs accept everything per the
+		// out-of-scope decision in the design; non-agent NPCs have no
+		// LLM identity to ask. Both fall through to the existing
+		// fast-path commit. The needsDeliberation flag stays unset for
+		// non-agent recipients so the gate below is a no-op.
+		if needsDeliberation && recipientAgentName.Valid {
+			decision := app.runPayDeliberation(
+				ctx,
+				recipientAgentName.String,
+				recipientName,
+				buyer.DisplayName,
+				itemKind,
+				totalQty,
+				req.Amount,
+				quotedPrice,
+				hasQuote,
+			)
+			switch decision.Outcome {
+			case payDeliberationDecline, payDeliberationCounter:
+				// Recipient refused or counter-offered. Roll back via
+				// the deferred tx.Rollback above, broadcast the
+				// recipient's spoken response so the room observes it,
+				// and surface the spoken text as the buyer's rejection
+				// reason. The buyer can retry with a fresh pay() at
+				// the counter price (or walk away on a decline).
+				spoken := decision.Reason
+				if decision.Outcome == payDeliberationCounter {
+					spoken = decision.Message
+				}
+				app.broadcastDeliberationSpeak(ctx, recipientID, recipientName, spoken)
+				log.Printf("pay-deliberation: %s %sed %s's offer of %d for %d %s (quoted=%v %d): %q",
+					recipientName, decision.Outcome, buyer.DisplayName, req.Amount, totalQty, itemKind, hasQuote, quotedPrice, spoken)
+				return payResult{
+					Result: "rejected",
+					Err:    fmt.Sprintf("%s: %s", recipientName, spoken),
+				}
+			case payDeliberationAccept, payDeliberationTimeoutAccept:
+				// Fall through — commit the pay as offered. timeout-
+				// accept is logged distinctly so an operator can tell
+				// "LLM said yes" from "LLM didn't answer in time."
+				if decision.Outcome == payDeliberationTimeoutAccept {
+					log.Printf("pay-deliberation: %s deliberation defaulted to accept (timeout/error) for %s's offer of %d for %d %s",
+						recipientName, buyer.DisplayName, req.Amount, totalQty, itemKind)
+				}
+			}
+		} else if needsDeliberation && hasQuote && req.Amount < quotedPrice*totalQty {
+			// Recipient isn't an LLM agent but the quote check still
+			// applies — preserves ZBBS-124's pre-deliberation behavior
+			// for PC recipients and non-agent NPCs (rare in current
+			// village; future-proof for decorative-NPC sellers).
+			required := quotedPrice * totalQty
+			return payResult{
+				Result: "rejected",
+				Err:    fmt.Sprintf("%s quoted %d coin(s) per %s; for %d unit(s) the price is %d, but you offered %d. Speak to renegotiate, or pay the asked amount.", recipientName, quotedPrice, itemKind, totalQty, required, req.Amount),
 			}
 		}
 
