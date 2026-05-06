@@ -21,6 +21,12 @@ import (
 // pay surface (pure coin transfers have no item_kind/qty, untracked-
 // quote pays have no quoted_unit_amount, PC pay has no scene_id at
 // the moment of the pay since the cascade UUID is minted afterward).
+//
+// ParentID + Depth (ZBBS-128 step 3) carry the counter-chain link.
+// ParentID.Valid is true only when this pay is the buyer's response to
+// a prior `countered` row — the optional `in_response_to` argument the
+// pay tool surface accepts. Depth on the new row is parent.depth + 1;
+// on a root pay attempt with no ParentID, Depth is 0.
 type payLedgerInsert struct {
 	BuyerID          string
 	SellerID         string
@@ -31,6 +37,8 @@ type payLedgerInsert struct {
 	OfferedAmount    int
 	QuotedUnitAmount sql.NullInt32
 	ConsumeNow       bool
+	ParentID         sql.NullInt64
+	Depth            int
 }
 
 // insertPayLedgerPending writes a pending row via a single auto-commit
@@ -45,12 +53,12 @@ func (app *App) insertPayLedgerPending(ctx context.Context, p payLedgerInsert) (
 		`INSERT INTO pay_ledger (
 		    huddle_id, scene_id, buyer_id, seller_id,
 		    item_kind, qty, offered_amount, quoted_unit_amount,
-		    consume_now, state
-		 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending')
+		    consume_now, parent_id, depth, state
+		 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending')
 		 RETURNING id`,
 		p.HuddleID, p.SceneID, p.BuyerID, p.SellerID,
 		p.ItemKind, p.Qty, p.OfferedAmount, p.QuotedUnitAmount,
-		p.ConsumeNow,
+		p.ConsumeNow, p.ParentID, p.Depth,
 	).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("insert pay_ledger: %w", err)
@@ -59,9 +67,17 @@ func (app *App) insertPayLedgerPending(ctx context.Context, p payLedgerInsert) (
 }
 
 // updatePayLedger flips a pending row to a terminal state and stamps
-// resolved_at. Called AFTER the transfer tx commits or rolls back.
-// State must be one of accepted | declined | countered | withdrawn |
-// failed (the schema CHECK enforces this; we don't double-validate).
+// resolved_at. Called AFTER the transfer tx commits or rolls back, or
+// directly from the deliberation path when the recipient declines or
+// counters without ever opening Tx B. State must be one of accepted |
+// declined | countered | withdrawn | failed (the schema CHECK enforces
+// this; we don't double-validate).
+//
+// counterAmount is populated only when state == 'countered' (the
+// recipient's proposed new total in coins). For every other terminal
+// state it should be a zero-Valid sql.NullInt32 so the column stays
+// NULL — counter_amount on a non-countered row would be misleading
+// audit data.
 //
 // The UPDATE is gated on `state = 'pending'` — a single statement,
 // auto-commit. The pending guard plus a RowsAffected==1 check
@@ -72,7 +88,7 @@ func (app *App) insertPayLedgerPending(ctx context.Context, p payLedgerInsert) (
 // inconsistency (row stuck pending, eventually flipped to withdrawn
 // by the aging sweep) is preferable to telling the caller a
 // successful transfer failed.
-func (app *App) updatePayLedger(ctx context.Context, ledgerID int64, state, message string) error {
+func (app *App) updatePayLedger(ctx context.Context, ledgerID int64, state, message string, counterAmount sql.NullInt32) error {
 	var msg sql.NullString
 	if message != "" {
 		msg = sql.NullString{String: message, Valid: true}
@@ -81,10 +97,11 @@ func (app *App) updatePayLedger(ctx context.Context, ledgerID int64, state, mess
 		`UPDATE pay_ledger
 		    SET state = $2,
 		        message = $3,
+		        counter_amount = $4,
 		        resolved_at = NOW()
 		  WHERE id = $1
 		    AND state = 'pending'`,
-		ledgerID, state, msg,
+		ledgerID, state, msg, counterAmount,
 	)
 	if err != nil {
 		return err

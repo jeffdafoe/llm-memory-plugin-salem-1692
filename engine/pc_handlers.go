@@ -1416,6 +1416,10 @@ type pcPayRequest struct {
 	Qty        int      `json:"qty,omitempty"`
 	ConsumeNow *bool    `json:"consume_now,omitempty"`
 	Consumers  []string `json:"consumers,omitempty"` // Phase C: at-source group orders
+	// InResponseTo (ZBBS-128 step 3) — when paying after a vendor
+	// counters, the client passes the parent ledger row id here so the
+	// new pay extends the haggling chain (parent_id + depth+1). Optional.
+	InResponseTo int64 `json:"in_response_to,omitempty"`
 }
 
 type pcPayResponse struct {
@@ -1424,6 +1428,16 @@ type pcPayResponse struct {
 	BuyerNewCoins int    `json:"buyer_new_coins"`
 	ItemTransferred bool `json:"item_transferred,omitempty"`
 	ItemConsumed    bool `json:"item_consumed,omitempty"`
+	// LedgerID + CounterAmount + Message (ZBBS-128 step 3) surface the
+	// pay_ledger row id and the recipient's counter for the haggling
+	// UI. Populated for result=countered so a Godot client can offer
+	// "pay 5 instead?" without re-prompting from scratch; LedgerID is
+	// also populated for declined/accepted as audit context. Zero /
+	// empty for paths that didn't reach the ledger insert (early arg
+	// rejections before pre-Tx-A).
+	LedgerID      int64  `json:"ledger_id,omitempty"`
+	CounterAmount int    `json:"counter_amount,omitempty"`
+	Message       string `json:"message,omitempty"`
 }
 
 // handlePCPay routes a player's pay request through the same
@@ -1500,6 +1514,7 @@ func (app *App) handlePCPay(w http.ResponseWriter, r *http.Request) {
 		Qty:           req.Qty,
 		ConsumeNow:    consumeNow,
 		ConsumerNames: req.Consumers,
+		InResponseTo:  req.InResponseTo,
 	})
 
 	// Mirror executeAgentCommit's audit + room_event broadcast for the
@@ -1612,5 +1627,8 @@ func (app *App) handlePCPay(w http.ResponseWriter, r *http.Request) {
 		BuyerNewCoins:   pr.BuyerNewCoins,
 		ItemTransferred: pr.ItemTransferred,
 		ItemConsumed:    pr.ItemConsumed,
+		LedgerID:        pr.LedgerID,
+		CounterAmount:   pr.CounterAmount,
+		Message:         pr.Message,
 	})
 }

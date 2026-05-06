@@ -64,6 +64,17 @@ type payResult struct {
 	// name, can't pay yourself, etc.) where the schema's NOT NULL
 	// seller_id can't be satisfied; populated for everything else.
 	LedgerID int64
+	// Message (ZBBS-128 step 3) carries the recipient's spoken reply
+	// when the deliberation tick produces a decline reason or counter
+	// message. Populated only when Result is "declined" or "countered";
+	// empty for the mechanical paths (Result "ok"/"rejected"/"failed").
+	Message string
+	// CounterAmount (ZBBS-128 step 3) carries the recipient's proposed
+	// new total when Result is "countered". Stored on the ledger row's
+	// counter_amount column and read back by callers (e.g. the buyer's
+	// next pay tool call) when extending the haggling chain. Zero for
+	// every other Result kind.
+	CounterAmount int
 	// CommitUnknown (ZBBS-128) signals that Tx B's tx.Commit returned
 	// an error — Postgres may have committed the transfer before the
 	// network/connection failed, so the app can't authoritatively
@@ -98,6 +109,15 @@ type payRequest struct {
 	// without a scene in scope (PC pay; the recipient's reactor tick
 	// mints its own scene_id).
 	SceneID string
+	// InResponseTo (ZBBS-128 step 3) declares this pay as the buyer's
+	// response to a prior `countered` ledger row, extending the
+	// haggling chain. The new pending row links to the parent via
+	// parent_id and increments depth. Validated in pre-Tx-A: the
+	// referenced row must exist, be in state `countered`, share the
+	// same buyer/seller pair, and be recent (within 1 hour of NOW).
+	// Validation failures reject the pay before any ledger insert.
+	// Zero (the default) means "root pay attempt; no parent."
+	InResponseTo int64
 }
 
 // executePay carries out the transfer and any goods/consumption side-
@@ -105,24 +125,32 @@ type payRequest struct {
 // if any leg fails, the transaction rolls back and the buyer keeps
 // their coins.
 //
-// ZBBS-128 (step 2) splits the work into three phases:
+// ZBBS-128 splits the work into four phases (step 2 introduced phases
+// 1-3, step 3 added the deliberation gate at phase 2.5):
 //
-//  1. Pre-Tx-A identity resolution (recipient lookup, buyer huddle,
-//     scene_quote snapshot). Failures here are arg-validation-class
-//     rejections and don't produce a pay_ledger row — the schema's
-//     NOT NULL seller_id can't be satisfied without a resolved
-//     recipient anyway.
+//  1. Pre-Tx-A identity resolution (recipient lookup, in_response_to
+//     parent validation, buyer huddle, scene_quote snapshot). Failures
+//     here are arg-validation-class rejections and don't produce a
+//     pay_ledger row — the schema's NOT NULL seller_id can't be
+//     satisfied without a resolved recipient anyway.
 //  2. Tx A inserts a pending pay_ledger row capturing every attempt
 //     with identifiable participants. From this point every return
-//     path flows through the post-Tx-B update so the row gets a
-//     terminal state and resolved_at stamp.
-//  3. Tx B (executePayTransfer below) holds the existing validation
-//     + transfer logic, parameterized on the pre-Tx-A lookups so the
-//     recipient and quote aren't re-fetched. Its returned payResult's
-//     Result field maps to the terminal ledger state: ok→accepted,
-//     rejected→declined, failed→failed. Steps 3 and 4 will introduce
-//     countered (deliberation) and withdrawn (aging sweep) terminals
-//     through their own paths.
+//     path flows through either the deliberation handler or the
+//     post-Tx-B update so the row gets a terminal state and
+//     resolved_at stamp.
+//  2.5. Deliberation gate (step 3) — for item purchases where the
+//     offer doesn't match a quote (mismatch or no quote on file), fire
+//     a synchronous LLM tick on an agent recipient. On decline /
+//     counter, the ledger row flips terminal here and we skip Tx B
+//     entirely. On accept (or lenient timeout-accept), fall through.
+//     PC recipients, non-agent NPCs, pure coin transfers, and
+//     quote-match pays all skip this gate.
+//  3. Tx B (executePayTransfer below) holds the validation + transfer
+//     logic, parameterized on the pre-Tx-A lookups so the recipient
+//     and quote aren't re-fetched. Its returned payResult.Result maps
+//     to the terminal ledger state: ok→accepted, rejected→declined,
+//     failed→failed. Step 4 will introduce withdrawn (aging sweep)
+//     through its own path.
 func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payRequest) payResult {
 	if req.Amount < 0 {
 		return payResult{Result: "rejected", Err: "amount cannot be negative"}
@@ -186,6 +214,64 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payReque
 	}
 	if recipientID == buyer.ID {
 		return payResult{Result: "rejected", Err: "cannot pay yourself"}
+	}
+
+	// Pre-Tx-A: in_response_to validation (ZBBS-128 step 3). When the
+	// buyer declares this pay as a response to a prior countered row,
+	// look up the parent and verify it's a legitimate continuation:
+	//   - row exists
+	//   - state is `countered` (not pending/accepted/declined/etc.)
+	//   - same buyer/seller pair (no chain hijacking)
+	//   - depth below the cap (defensive — chains naturally bound, but
+	//     bad historical / manually-edited data shouldn't extend forever)
+	//   - fresh (within 1 hour) so a buyer can't dig up an old chain.
+	//     Freshness is computed against DB time (NOW() in SQL) to avoid
+	//     app/DB clock-drift inconsistencies and to reject future-stamped
+	//     rows that would otherwise pass with negative time.Since.
+	// On success, capture parent_id and depth = parent.depth + 1 for
+	// the pending row insert below. Failures reject before any ledger
+	// write — the buyer's offered amount is preserved (they can pay
+	// again as a root attempt if they want).
+	var parentID sql.NullInt64
+	var newRowDepth int
+	var parentCounterAmount sql.NullInt32
+	if req.InResponseTo > 0 {
+		var (
+			parentState    string
+			parentBuyerID  string
+			parentSellerID string
+			parentRowDepth int
+			parentFresh    bool
+		)
+		err := app.DB.QueryRow(ctx,
+			`SELECT state, buyer_id::text, seller_id::text, depth, counter_amount,
+			        (created_at BETWEEN NOW() - INTERVAL '1 hour' AND NOW()) AS fresh
+			   FROM pay_ledger WHERE id = $1`,
+			req.InResponseTo,
+		).Scan(&parentState, &parentBuyerID, &parentSellerID, &parentRowDepth, &parentCounterAmount, &parentFresh)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return payResult{Result: "rejected", Err: fmt.Sprintf("in_response_to %d: no such pay_ledger row", req.InResponseTo)}
+			}
+			return payResult{Result: "failed", Err: fmt.Sprintf("lookup parent ledger: %v", err)}
+		}
+		if parentState != "countered" {
+			return payResult{Result: "rejected", Err: fmt.Sprintf("in_response_to %d: parent state is %q, not 'countered'", req.InResponseTo, parentState)}
+		}
+		if parentBuyerID != buyer.ID {
+			return payResult{Result: "rejected", Err: fmt.Sprintf("in_response_to %d: parent's buyer doesn't match", req.InResponseTo)}
+		}
+		if parentSellerID != recipientID {
+			return payResult{Result: "rejected", Err: fmt.Sprintf("in_response_to %d: parent's seller doesn't match", req.InResponseTo)}
+		}
+		if parentRowDepth >= payDeliberationMaxDepth {
+			return payResult{Result: "rejected", Err: fmt.Sprintf("in_response_to %d: counter chain is already at max depth (%d)", req.InResponseTo, payDeliberationMaxDepth)}
+		}
+		if !parentFresh {
+			return payResult{Result: "rejected", Err: fmt.Sprintf("in_response_to %d: parent is too old to extend (chain expires after 1 hour)", req.InResponseTo)}
+		}
+		parentID = sql.NullInt64{Int64: req.InResponseTo, Valid: true}
+		newRowDepth = parentRowDepth + 1
 	}
 
 	// Pre-Tx-A: buyer's current huddle, used both as the ledger row's
@@ -262,11 +348,188 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payReque
 		OfferedAmount:    req.Amount,
 		QuotedUnitAmount: quotedUnit,
 		ConsumeNow:       req.ConsumeNow,
+		ParentID:         parentID,
+		Depth:            newRowDepth,
 	})
 	if err != nil {
 		log.Printf("pay_ledger insert (buyer=%s recipient=%s amount=%d): %v",
 			buyer.ID, recipientID, req.Amount, err)
 		return payResult{Result: "failed", Err: fmt.Sprintf("insert pay_ledger: %v", err)}
+	}
+
+	// Pre-Tx-B deliberation gate (ZBBS-128 step 3). For item purchases
+	// where the offer doesn't match a quote (mismatch or no quote on
+	// file at all), fire a synchronous LLM tick on the recipient with
+	// accept_pay/decline_pay/counter_pay. No DB locks held during the
+	// call — the pending ledger row is the only persistent state.
+	//
+	// Skipped entirely for:
+	//   - pure coin transfers (itemKind == ""): tips/gifts stay snappy
+	//   - PC recipients / non-agent NPCs (no LLM agent to ask): silent
+	//     accept matches today's behavior
+	//   - quote-match offers (offer ≥ quoted * totalQty): fast path,
+	//     Tx B handles the transfer directly
+	//
+	// On accept (or timeout-accept), fall through to Tx B. On decline
+	// or counter, skip Tx B entirely — the recipient has spoken via
+	// broadcastDeliberationSpeak, and the ledger row flips to declined
+	// or countered with the reply text in `message` (and counter_amount
+	// for the countered case).
+	consumerCount := 1
+	if req.ConsumeNow && len(req.ConsumerNames) > 0 {
+		consumerCount = len(req.ConsumerNames)
+	}
+	totalQty := qty * consumerCount
+	// Determine if deliberation is needed:
+	//   - Pure coin transfer (no item): never deliberate.
+	//   - Counter-response (parent_id set, parent had counter_amount):
+	//     the relevant comparison is the parent's counter total, not
+	//     the original quote. Buyer paying ≥ counter is acceptance —
+	//     fast path through Tx B. Below the counter is a counter-counter,
+	//     deliberate with the parent counter as context.
+	//   - Root pay with no quote on file for an item: defer to LLM.
+	//   - Root pay below original quote: defer to LLM.
+	//   - Root pay at/above quote: fast path.
+	deliberate := false
+	if itemKind != "" {
+		if parentCounterAmount.Valid {
+			if req.Amount < int(parentCounterAmount.Int32) {
+				deliberate = true
+			}
+		} else if !quotedUnit.Valid {
+			deliberate = true
+		} else if req.Amount < int(quotedUnit.Int32)*totalQty {
+			deliberate = true
+		}
+	}
+	recipientIsAgent := recipientAgentName.Valid && recipientAgentName.String != ""
+	if deliberate && recipientIsAgent {
+		quoted := 0
+		if quotedUnit.Valid {
+			quoted = int(quotedUnit.Int32)
+		}
+		// Counter chain depth: root pays land at depth 0, each response
+		// to a counter increments. payDeliberationMaxDepth caps the
+		// recipient's escalation: at depth 0/1/2 they may emit
+		// counter_pay (creating a depth-1/2/3 child); at depth 3 they
+		// must accept or decline (counter_pay is excluded from the tool
+		// set). Max ledger depth is therefore 3, total chain length 4
+		// (root + 3 counter rounds).
+		includeCounter := newRowDepth < payDeliberationMaxDepth
+		priorCounter := 0
+		if parentCounterAmount.Valid {
+			priorCounter = int(parentCounterAmount.Int32)
+		}
+		decision := app.runPayDeliberation(
+			ctx,
+			recipientAgentName.String,
+			recipientName,
+			buyer.DisplayName,
+			itemKind,
+			totalQty,
+			req.Amount,
+			quoted,
+			quotedUnit.Valid,
+			priorCounter,
+			includeCounter,
+		)
+		switch decision.Outcome {
+		case payDeliberationAccept, payDeliberationTimeoutAccept:
+			// Fall through to Tx B normally.
+		case payDeliberationDecline:
+			app.broadcastDeliberationSpeak(ctx, recipientID, recipientName, decision.Reason)
+			if uerr := app.updatePayLedger(ctx, ledgerID, "declined", decision.Reason, sql.NullInt32{}); uerr != nil {
+				// Update failure means the row stays `pending` despite
+				// the recipient having spoken. Returning "declined"
+				// would mislead the caller into a terminal state that
+				// isn't reflected on disk; report failure instead so
+				// the audit row carries the right shape and the aging
+				// sweep eventually flips the orphan to `withdrawn`.
+				log.Printf("pay_ledger update (id=%d state=declined): %v — reporting failure to caller", ledgerID, uerr)
+				return payResult{
+					Result:           "failed",
+					Err:              fmt.Sprintf("record decline outcome: %v", uerr),
+					LedgerID:         ledgerID,
+					BuyerNewCoins:    buyer.Coins,
+					RecipientID:      recipientID,
+					RecipientIsAgent: recipientIsAgent,
+				}
+			}
+			// No transfer happened, so the buyer's coin balance is
+			// unchanged. Snapshot it onto the result so the PC pay
+			// response (and any audit consumer) sees the right number
+			// instead of a default-zero that looks like a wipeout.
+			return payResult{
+				Result:           "declined",
+				Err:              decision.Reason,
+				Message:          decision.Reason,
+				LedgerID:         ledgerID,
+				BuyerNewCoins:    buyer.Coins,
+				RecipientID:      recipientID,
+				RecipientIsAgent: recipientIsAgent,
+			}
+		case payDeliberationCounter:
+			// Sanity-cap the counter amount before squeezing into the
+			// schema's int32 column. Tool-driven inputs already pass
+			// through coerceIntInput's positivity check, but a value
+			// at/above MaxInt32 would wrap silently here. Degrade to a
+			// generic decline rather than ship a bogus counter price.
+			if decision.NewAmount <= 0 || decision.NewAmount > math.MaxInt32 {
+				log.Printf("pay-deliberation: %s emitted out-of-range counter amount %d — degrading to decline",
+					recipientName, decision.NewAmount)
+				fallback := "I'd rather not sell at that price."
+				app.broadcastDeliberationSpeak(ctx, recipientID, recipientName, fallback)
+				if uerr := app.updatePayLedger(ctx, ledgerID, "declined", fallback, sql.NullInt32{}); uerr != nil {
+					log.Printf("pay_ledger update (id=%d state=declined): %v — reporting failure to caller", ledgerID, uerr)
+					return payResult{
+						Result:           "failed",
+						Err:              fmt.Sprintf("record decline outcome: %v", uerr),
+						LedgerID:         ledgerID,
+						BuyerNewCoins:    buyer.Coins,
+						RecipientID:      recipientID,
+						RecipientIsAgent: recipientIsAgent,
+					}
+				}
+				return payResult{
+					Result:           "declined",
+					Err:              fallback,
+					Message:          fallback,
+					LedgerID:         ledgerID,
+					BuyerNewCoins:    buyer.Coins,
+					RecipientID:      recipientID,
+					RecipientIsAgent: recipientIsAgent,
+				}
+			}
+			app.broadcastDeliberationSpeak(ctx, recipientID, recipientName, decision.Message)
+			counterAmt := sql.NullInt32{Int32: int32(decision.NewAmount), Valid: true}
+			if uerr := app.updatePayLedger(ctx, ledgerID, "countered", decision.Message, counterAmt); uerr != nil {
+				// Same rationale as the decline path — don't lie to the
+				// caller about a terminal state when the row is still
+				// pending. A countered-but-pending row would be worse
+				// than a declined-but-pending one because the buyer
+				// might retry with in_response_to=ledgerID and immediately
+				// get rejected for "parent state is pending."
+				log.Printf("pay_ledger update (id=%d state=countered): %v — reporting failure to caller", ledgerID, uerr)
+				return payResult{
+					Result:           "failed",
+					Err:              fmt.Sprintf("record counter outcome: %v", uerr),
+					LedgerID:         ledgerID,
+					BuyerNewCoins:    buyer.Coins,
+					RecipientID:      recipientID,
+					RecipientIsAgent: recipientIsAgent,
+				}
+			}
+			return payResult{
+				Result:           "countered",
+				Err:              decision.Message,
+				Message:          decision.Message,
+				CounterAmount:    decision.NewAmount,
+				LedgerID:         ledgerID,
+				BuyerNewCoins:    buyer.Coins,
+				RecipientID:      recipientID,
+				RecipientIsAgent: recipientIsAgent,
+			}
+		}
 	}
 
 	// Tx B: existing validation + transfer.
@@ -306,7 +569,7 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payReque
 		default:
 			terminalState = "failed"
 		}
-		if uerr := app.updatePayLedger(ctx, ledgerID, terminalState, result.Err); uerr != nil {
+		if uerr := app.updatePayLedger(ctx, ledgerID, terminalState, result.Err, sql.NullInt32{}); uerr != nil {
 			// Bookkeeping inconsistency: aging sweep will eventually
 			// flip the row to withdrawn even if the transfer
 			// succeeded. Better to report the actual transfer
@@ -435,25 +698,15 @@ func (app *App) executePayTransfer(ctx context.Context, buyer *agentNPCRow, req 
 			return payResult{Result: "rejected", Err: fmt.Sprintf("%s has only %d %s (asked for %d)", recipientName, sellerQty, itemKind, totalQty)}
 		}
 
-		// Quote enforcement (ZBBS-124). When the seller has stated a
-		// per-unit price for this item in the buyer's current huddle
-		// via speak's optional `price` field, reject offers that fall
-		// short of that quote. No quote on file = silent accept (today's
-		// behavior); the LLM-tick pass in a later phase covers the
-		// no-quote case. Quote was snapshotted in executePay's pre-Tx-A
-		// stage — pctx.QuotedUnit carries the value (Valid=false when
-		// no quote was on file or the lookup failed; same opportunistic
-		// semantics as before).
-		if pctx.QuotedUnit.Valid {
-			required := int(pctx.QuotedUnit.Int32) * totalQty
-			if req.Amount < required {
-				return payResult{
-					Result: "rejected",
-					Err:    fmt.Sprintf("%s quoted %d coin(s) per %s; for %d unit(s) the price is %d, but you offered %d. Speak to renegotiate, or pay the asked amount.", recipientName, pctx.QuotedUnit.Int32, itemKind, totalQty, required, req.Amount),
-				}
-			}
-		}
-
+		// Quote enforcement (ZBBS-124, refactored ZBBS-128 step 3).
+		// Underpayment / no-quote-on-file rejection is now handled
+		// pre-Tx-B via the deliberation gate in executePay. By the time
+		// Tx B runs we know either (a) the offer matched the quote and
+		// no LLM tick was needed, or (b) deliberation accepted (real or
+		// timeout-accept), in which case the recipient has agreed to
+		// the offered amount regardless of the original quote. Either
+		// way, no quote check belongs here. pctx.QuotedUnit is still
+		// snapshotted on the ledger row for audit, just not enforced.
 		newSellerQty := sellerQty - totalQty
 		if newSellerQty == 0 {
 			if _, err := tx.Exec(ctx,
