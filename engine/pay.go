@@ -33,6 +33,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"strings"
 	"time"
 
@@ -58,6 +59,19 @@ type payResult struct {
 	// for NPCs without llm_memory_agent set; callers gate the tick on it.
 	RecipientID      string
 	RecipientIsAgent bool
+	// LedgerID (ZBBS-128) is the pay_ledger row id assigned to this
+	// attempt. Zero on early arg-validation rejections (no recipient
+	// name, can't pay yourself, etc.) where the schema's NOT NULL
+	// seller_id can't be satisfied; populated for everything else.
+	LedgerID int64
+	// CommitUnknown (ZBBS-128) signals that Tx B's tx.Commit returned
+	// an error — Postgres may have committed the transfer before the
+	// network/connection failed, so the app can't authoritatively
+	// say whether coins moved. The caller leaves the pay_ledger row
+	// in 'pending' rather than stamping an authoritative-looking lie;
+	// the aging sweep eventually flips it to 'withdrawn' and an
+	// operator can reconcile from logs.
+	CommitUnknown bool
 }
 
 // payRequest groups the pay arguments so executePay's signature stays
@@ -79,15 +93,46 @@ type payRequest struct {
 	Qty           int      // per consumer; defaults to 1 when Item is set
 	ConsumeNow    bool     // tavern (true) vs take-home (false)
 	ConsumerNames []string // at-source group order; empty → buyer
+	// SceneID (ZBBS-128) is the cascade UUID this pay belongs to,
+	// threaded through to pay_ledger.scene_id. Empty for callers
+	// without a scene in scope (PC pay; the recipient's reactor tick
+	// mints its own scene_id).
+	SceneID string
 }
 
 // executePay carries out the transfer and any goods/consumption side-
 // effects. Returns a payResult describing what happened. Never partial:
 // if any leg fails, the transaction rolls back and the buyer keeps
 // their coins.
+//
+// ZBBS-128 (step 2) splits the work into three phases:
+//
+//  1. Pre-Tx-A identity resolution (recipient lookup, buyer huddle,
+//     scene_quote snapshot). Failures here are arg-validation-class
+//     rejections and don't produce a pay_ledger row — the schema's
+//     NOT NULL seller_id can't be satisfied without a resolved
+//     recipient anyway.
+//  2. Tx A inserts a pending pay_ledger row capturing every attempt
+//     with identifiable participants. From this point every return
+//     path flows through the post-Tx-B update so the row gets a
+//     terminal state and resolved_at stamp.
+//  3. Tx B (executePayTransfer below) holds the existing validation
+//     + transfer logic, parameterized on the pre-Tx-A lookups so the
+//     recipient and quote aren't re-fetched. Its returned payResult's
+//     Result field maps to the terminal ledger state: ok→accepted,
+//     rejected→declined, failed→failed. Steps 3 and 4 will introduce
+//     countered (deliberation) and withdrawn (aging sweep) terminals
+//     through their own paths.
 func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payRequest) payResult {
 	if req.Amount < 0 {
 		return payResult{Result: "rejected", Err: "amount cannot be negative"}
+	}
+	// pay_ledger.offered_amount is `integer` (int32). Reject before
+	// the ledger insert so an oversized amount surfaces as a clean
+	// rejection, not a mystery DB constraint error. ZBBS-124's int
+	// arithmetic also doesn't expect amounts that large.
+	if req.Amount > math.MaxInt32 {
+		return payResult{Result: "rejected", Err: "amount too large"}
 	}
 	recipientName := strings.TrimSpace(req.RecipientName)
 	if recipientName == "" {
@@ -97,6 +142,12 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payReque
 	qty := req.Qty
 	if itemKind != "" && qty <= 0 {
 		qty = 1
+	}
+	// pay_ledger.qty is `integer` (int32). Same rationale as the
+	// amount guard above — reject huge qty values before the ledger
+	// insert so we don't silently wrap and log wrong quantities.
+	if qty > math.MaxInt32 {
+		return payResult{Result: "rejected", Err: "quantity too large"}
 	}
 
 	// Phase C: ConsumerNames is at-source only. Reject early if the
@@ -109,6 +160,188 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payReque
 			Err:    "consumers is only valid for at-source group orders (consume_now=true with an item). For take-home, omit consumers — the goods go to your inventory.",
 		}
 	}
+
+	// Pre-Tx-A: recipient lookup. After ZBBS-084 the unified actor
+	// table holds every villager. Also pull llm_memory_agent so the
+	// caller's post-pay reactor tick (ZBBS-126) knows whether the
+	// recipient is agent-driven. No FOR UPDATE here — the tx that
+	// actually moves coins (executePayTransfer below) doesn't read
+	// any recipient field for validation, so we don't need to hold a
+	// lock between the lookup and the credit UPDATE.
+	var (
+		recipientID        string
+		recipientAgentName sql.NullString
+	)
+	err := app.DB.QueryRow(ctx,
+		`SELECT id, llm_memory_agent FROM actor
+		 WHERE LOWER(display_name) = LOWER($1)
+		 LIMIT 1`,
+		recipientName,
+	).Scan(&recipientID, &recipientAgentName)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return payResult{Result: "rejected", Err: fmt.Sprintf("no villager named %q", recipientName)}
+		}
+		return payResult{Result: "failed", Err: fmt.Sprintf("look up recipient: %v", err)}
+	}
+	if recipientID == buyer.ID {
+		return payResult{Result: "rejected", Err: "cannot pay yourself"}
+	}
+
+	// Pre-Tx-A: buyer's current huddle, used both as the ledger row's
+	// huddle_id and as the scope for the scene_quote lookup below.
+	//
+	// Behavior change vs ZBBS-124: the OLD code read this inside the
+	// transfer tx while the buyer was FOR UPDATE-locked, transitively
+	// serializing concurrent huddle-change txs against pay txs.
+	// Reading pre-Tx-A (no lock) opens a microsecond window where
+	// the buyer could change huddles between the snapshot and the
+	// transfer. In practice this is theoretical — pay() runs in
+	// milliseconds and huddle changes are PC-driven — and the
+	// snapshot semantics are reasonable history (the ledger captures
+	// where the buyer was when they tried to pay). If a concurrent
+	// huddle change ever produces a surprising quote-mismatch,
+	// revisit by re-reading huddle inside Tx B and updating the
+	// ledger's quoted_unit_amount in the post-Tx-B handler.
+	var buyerHuddle sql.NullString
+	if err := app.DB.QueryRow(ctx,
+		`SELECT current_huddle_id FROM actor WHERE id = $1`,
+		buyer.ID,
+	).Scan(&buyerHuddle); err != nil {
+		return payResult{Result: "failed", Err: fmt.Sprintf("lookup buyer huddle: %v", err)}
+	}
+
+	// Pre-Tx-A: scene_quote snapshot. Same opportunistic semantics as
+	// before — a lookup error logs and proceeds as if no quote were on
+	// file. Snapshotted onto the ledger row's quoted_unit_amount and
+	// reused inside Tx B for quote enforcement so we don't re-query.
+	var quotedUnit sql.NullInt32
+	if buyerHuddle.Valid && itemKind != "" {
+		q, ok, qErr := app.lookupSceneQuote(ctx, buyerHuddle.String, recipientID, itemKind)
+		if qErr != nil {
+			log.Printf("scene_quote lookup (huddle=%s recipient=%s item=%s): %v",
+				buyerHuddle.String, recipientID, itemKind, qErr)
+		} else if ok {
+			// pay_ledger.quoted_unit_amount is `integer` (int32). The
+			// scene_quote source column is also `integer` so values
+			// above MaxInt32 shouldn't be storable, but guard the
+			// cast defensively — silently wrapping would produce a
+			// negative `required` in quote enforcement below.
+			if q > math.MaxInt32 {
+				log.Printf("scene_quote value too large (huddle=%s recipient=%s item=%s quoted=%d) — proceeding without quote snapshot",
+					buyerHuddle.String, recipientID, itemKind, q)
+			} else {
+				quotedUnit = sql.NullInt32{Int32: int32(q), Valid: true}
+			}
+		}
+	}
+
+	// Tx A: pending ledger row. Nullable columns get NULL for the
+	// pure-coin-transfer surface (no item_kind/qty), the no-scene
+	// surface (req.SceneID empty for PC pay), and the no-quote
+	// surface (quotedUnit.Valid == false).
+	var sceneIDArg sql.NullString
+	if req.SceneID != "" {
+		sceneIDArg = sql.NullString{String: req.SceneID, Valid: true}
+	}
+	var itemKindArg sql.NullString
+	if itemKind != "" {
+		itemKindArg = sql.NullString{String: itemKind, Valid: true}
+	}
+	var qtyArg sql.NullInt32
+	if itemKind != "" {
+		qtyArg = sql.NullInt32{Int32: int32(qty), Valid: true}
+	}
+	ledgerID, err := app.insertPayLedgerPending(ctx, payLedgerInsert{
+		BuyerID:          buyer.ID,
+		SellerID:         recipientID,
+		HuddleID:         buyerHuddle,
+		SceneID:          sceneIDArg,
+		ItemKind:         itemKindArg,
+		Qty:              qtyArg,
+		OfferedAmount:    req.Amount,
+		QuotedUnitAmount: quotedUnit,
+		ConsumeNow:       req.ConsumeNow,
+	})
+	if err != nil {
+		log.Printf("pay_ledger insert (buyer=%s recipient=%s amount=%d): %v",
+			buyer.ID, recipientID, req.Amount, err)
+		return payResult{Result: "failed", Err: fmt.Sprintf("insert pay_ledger: %v", err)}
+	}
+
+	// Tx B: existing validation + transfer.
+	result := app.executePayTransfer(ctx, buyer, req, payTxContext{
+		RecipientName:      recipientName,
+		RecipientID:        recipientID,
+		RecipientAgentName: recipientAgentName,
+		ItemKind:           itemKind,
+		Qty:                qty,
+		QuotedUnit:         quotedUnit,
+	})
+
+	// Post-Tx-B: terminal state. ok→accepted, rejected→declined,
+	// failed→failed. Defensive default for any future result kind
+	// flips the row out of pending so the aging sweep doesn't pick
+	// it up.
+	//
+	// CommitUnknown short-circuits the update entirely: when Tx B's
+	// tx.Commit returns an error, Postgres may have committed the
+	// transfer before the connection failed, so the app can't
+	// authoritatively label the row 'accepted' or 'failed'. We log
+	// loudly and leave the row 'pending'; the aging sweep eventually
+	// flips it to 'withdrawn' (also wrong-ish but matches "we don't
+	// know"), and an operator can reconcile from logs.
+	if result.CommitUnknown {
+		log.Printf("pay_ledger commit outcome unknown (id=%d buyer=%s recipient=%s amount=%d): %s — row left pending for ops review",
+			ledgerID, buyer.ID, recipientID, req.Amount, result.Err)
+	} else {
+		var terminalState string
+		switch result.Result {
+		case "ok":
+			terminalState = "accepted"
+		case "rejected":
+			terminalState = "declined"
+		case "failed":
+			terminalState = "failed"
+		default:
+			terminalState = "failed"
+		}
+		if uerr := app.updatePayLedger(ctx, ledgerID, terminalState, result.Err); uerr != nil {
+			// Bookkeeping inconsistency: aging sweep will eventually
+			// flip the row to withdrawn even if the transfer
+			// succeeded. Better to report the actual transfer
+			// outcome than to fail the pay because of a journaling
+			// miss.
+			log.Printf("pay_ledger update (id=%d state=%s): %v", ledgerID, terminalState, uerr)
+		}
+	}
+
+	result.LedgerID = ledgerID
+	return result
+}
+
+// payTxContext carries the values executePayTransfer needs from the
+// pre-Tx-A resolution stage. Keeping them in a struct makes the
+// helper's dependencies obvious vs. recomputing from req.
+type payTxContext struct {
+	RecipientName      string         // trimmed display name (for error messages)
+	RecipientID        string         // resolved actor.id
+	RecipientAgentName sql.NullString // for RecipientIsAgent flag
+	ItemKind           string         // trimmed/lowered req.Item
+	Qty                int            // resolved qty (defaults to 1 when itemKind != "" and req.Qty <= 0)
+	QuotedUnit         sql.NullInt32  // scene_quote snapshot, NULL when no quote
+}
+
+// executePayTransfer runs the validation + transfer transaction.
+// Inputs come from executePay's pre-Tx-A resolution so the recipient
+// and quote aren't re-fetched. Returns a payResult; the caller maps
+// Result to a pay_ledger terminal state.
+func (app *App) executePayTransfer(ctx context.Context, buyer *agentNPCRow, req payRequest, pctx payTxContext) payResult {
+	recipientName := pctx.RecipientName
+	recipientID := pctx.RecipientID
+	recipientAgentName := pctx.RecipientAgentName
+	itemKind := pctx.ItemKind
+	qty := pctx.Qty
 
 	tx, err := app.DB.Begin(ctx)
 	if err != nil {
@@ -129,30 +362,11 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payReque
 		return payResult{Result: "rejected", Err: fmt.Sprintf("insufficient coins (have %d, need %d)", buyerCoins, req.Amount)}
 	}
 
-	// Recipient lookup-and-lock. After ZBBS-084 the unified actor table
-	// holds every villager. Also pull llm_memory_agent so we can flag
-	// the recipient as agent-driven for the post-pay reactor tick (the
-	// caller fires triggerImmediateTick only when the recipient has
-	// an LLM identity to reply through).
-	var (
-		recipientID         string
-		recipientAgentName  sql.NullString
-	)
-	err = tx.QueryRow(ctx,
-		`SELECT id, llm_memory_agent FROM actor
-		 WHERE LOWER(display_name) = LOWER($1)
-		 LIMIT 1
-		 FOR UPDATE`,
-		recipientName).Scan(&recipientID, &recipientAgentName)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return payResult{Result: "rejected", Err: fmt.Sprintf("no villager named %q", recipientName)}
-		}
-		return payResult{Result: "failed", Err: fmt.Sprintf("lock recipient: %v", err)}
-	}
-	if recipientID == buyer.ID {
-		return payResult{Result: "rejected", Err: "cannot pay yourself"}
-	}
+	// Recipient was resolved pre-Tx-A; no re-lookup or explicit lock.
+	// The credit UPDATE below acquires its own row-level lock when it
+	// executes, and we don't read any recipient field for validation
+	// in this tx, so the pre-ZBBS-128 explicit FOR UPDATE on the
+	// recipient row was redundant.
 
 	// Validate item if provided. Pull capabilities from item_kind, and
 	// the multi-attribute satisfactions from item_satisfies (ZBBS-125).
@@ -226,30 +440,16 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payReque
 		// via speak's optional `price` field, reject offers that fall
 		// short of that quote. No quote on file = silent accept (today's
 		// behavior); the LLM-tick pass in a later phase covers the
-		// no-quote case. Read outside the FOR UPDATE locks since
-		// scene_quote rows are written by speak commits, not by pay —
-		// no contention with this transaction.
-		var buyerHuddle sql.NullString
-		if err := tx.QueryRow(ctx,
-			`SELECT current_huddle_id FROM actor WHERE id = $1`,
-			buyer.ID,
-		).Scan(&buyerHuddle); err != nil {
-			return payResult{Result: "failed", Err: fmt.Sprintf("lookup buyer huddle: %v", err)}
-		}
-		if buyerHuddle.Valid {
-			quoted, ok, err := app.lookupSceneQuote(ctx, buyerHuddle.String, recipientID, itemKind)
-			if err != nil {
-				// Treat a quote lookup failure as "no quote" rather
-				// than failing the pay outright — the structural
-				// guard is opportunistic, not authoritative.
-				log.Printf("scene_quote lookup (huddle=%s recipient=%s item=%s): %v", buyerHuddle.String, recipientID, itemKind, err)
-			} else if ok {
-				required := quoted * totalQty
-				if req.Amount < required {
-					return payResult{
-						Result: "rejected",
-						Err:    fmt.Sprintf("%s quoted %d coin(s) per %s; for %d unit(s) the price is %d, but you offered %d. Speak to renegotiate, or pay the asked amount.", recipientName, quoted, itemKind, totalQty, required, req.Amount),
-					}
+		// no-quote case. Quote was snapshotted in executePay's pre-Tx-A
+		// stage — pctx.QuotedUnit carries the value (Valid=false when
+		// no quote was on file or the lookup failed; same opportunistic
+		// semantics as before).
+		if pctx.QuotedUnit.Valid {
+			required := int(pctx.QuotedUnit.Int32) * totalQty
+			if req.Amount < required {
+				return payResult{
+					Result: "rejected",
+					Err:    fmt.Sprintf("%s quoted %d coin(s) per %s; for %d unit(s) the price is %d, but you offered %d. Speak to renegotiate, or pay the asked amount.", recipientName, pctx.QuotedUnit.Int32, itemKind, totalQty, required, req.Amount),
 				}
 			}
 		}
@@ -290,10 +490,10 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payReque
 	// all of it. Default consumers = [buyer] preserves the legacy
 	// single-consumer flow.
 	var (
-		itemTransferred  bool
-		itemConsumed     bool
-		consumeResult    consumptionResult // post-consume buyer state (legacy field)
-		consumerUpdates  []payConsumerUpdate
+		itemTransferred bool
+		itemConsumed    bool
+		consumeResult   consumptionResult // post-consume buyer state (legacy field)
+		consumerUpdates []payConsumerUpdate
 	)
 	if itemKind != "" {
 		if req.ConsumeNow {
@@ -346,7 +546,15 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payReque
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return payResult{Result: "failed", Err: fmt.Sprintf("commit tx: %v", err)}
+		// CommitUnknown: Postgres may have committed before the
+		// network/connection failed. The caller leaves the pay_ledger
+		// row pending rather than stamping an authoritative-looking
+		// terminal state.
+		return payResult{
+			Result:        "failed",
+			Err:           fmt.Sprintf("commit tx: %v", err),
+			CommitUnknown: true,
+		}
 	}
 
 	// Hub broadcast. Single npc_paid event covers both coin and item
