@@ -27,22 +27,12 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"strings"
 	"time"
 	"unicode"
-
-	"github.com/jackc/pgx/v5"
 )
-
-// Squared tolerance (in pixel units) for matching arrival point to a
-// refresh-tagged object. Visitor walks land at (anchor + loiter*32 +
-// jitter); jitter is ±half-tile (~16 px). Two tiles squared = 64*64 =
-// 4096 gives comfortable slack without false positives at typical
-// inter-object spacing.
-const objectRefreshToleranceSq = 4096.0
 
 // refreshHit captures one applied attribute drop for the action-log
 // payload and Hub broadcast. amount is the configured signed delta;
@@ -53,15 +43,28 @@ type refreshHit struct {
 	NewValue  int    `json:"new_value"`
 }
 
-// applyObjectRefreshAtArrival inspects the arrival point for a nearby
-// refresh-tagged object and applies its configured attribute drops to
-// the actor. Returns the list of attribute hits (empty when no object
-// matched) plus an error. Errors are logged by the caller; arrival
-// completion proceeds either way — refresh is a side-effect, not the
-// primary purpose of the arrival.
+// applyObjectRefreshAtArrival looks up which structure owns the
+// arrival tile (via the loiter-pin reverse lookup the perception
+// builder also uses) and applies that structure's configured
+// attribute drops to the actor. Returns the list of attribute hits
+// (empty when no refresh-tagged structure owns this tile) plus an
+// error. Errors are logged by the caller; arrival completion
+// proceeds either way — refresh is a side-effect, not the primary
+// purpose of the arrival.
 //
-// All attribute updates and the audit row are committed atomically so
-// either everything lands or nothing does.
+// All attribute updates and the audit row are committed atomically
+// so either everything lands or nothing does.
+//
+// Lookup model (ZBBS-127): the actor's tile is reverse-resolved via
+// resolveLoiteringStructure, which finds the structure whose loiter
+// pin (or door+1 fallback) covers the tile or any of its 8 king's-
+// move slots. Replaces an earlier fixed-radius-from-object-center
+// query whose 64-pixel tolerance silently dropped refresh applications
+// when the visitor-slot picker scooted the actor to the far edge of
+// the loiter cluster (e.g. PC clicking a well, landing 65 px from
+// center, getting no refresh). Loiter-based lookup mirrors the model
+// players already see in the perception text — "You are at the Well"
+// is the same condition as "you get the well's refresh."
 func (app *App) applyObjectRefreshAtArrival(ctx context.Context, actorID string, arrivalX, arrivalY float64) ([]refreshHit, error) {
 	tx, err := app.DB.Begin(ctx)
 	if err != nil {
@@ -69,45 +72,32 @@ func (app *App) applyObjectRefreshAtArrival(ctx context.Context, actorID string,
 	}
 	defer tx.Rollback(ctx)
 
-	// Nearest refresh-tagged object — single round-trip for selection.
-	// EXISTS over the join table excludes objects with no refresh rows
-	// (well that's been dried up, decorative tree). ORDER BY squared
-	// distance + LIMIT 1 picks the closest; the tolerance check below
-	// drops the row if the closest is still too far (e.g., NPC arrived
-	// somewhere with no refresh object nearby).
-	var (
-		objectID   string
-		objectName string
-		distSq     float64
-	)
-	// Bounding box pre-filter on x/y trims the candidate set to objects
-	// roughly within the tolerance window before the squared-distance
-	// sort. At small object counts it's no different from a full scan;
-	// at scale it lets the planner prune via village_object's (x, y)
-	// access patterns. Window is the tolerance radius (64 px) — same
-	// units as o.x/o.y/arrivalX/arrivalY.
-	const tolerancePx = 64.0
-	err = tx.QueryRow(ctx,
-		`SELECT o.id::text,
-		        COALESCE(o.display_name, a.name),
-		        (o.x - $1) * (o.x - $1) + (o.y - $2) * (o.y - $2) AS dist_sq
-		 FROM village_object o
-		 JOIN asset a ON a.id = o.asset_id
-		 WHERE o.x BETWEEN $1 - $3 AND $1 + $3
-		   AND o.y BETWEEN $2 - $3 AND $2 + $3
-		   AND EXISTS (SELECT 1 FROM object_refresh r WHERE r.object_id = o.id)
-		 ORDER BY dist_sq
-		 LIMIT 1`,
-		arrivalX, arrivalY, tolerancePx,
-	).Scan(&objectID, &objectName, &distSq)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil // no refresh object near the arrival point
-		}
-		return nil, fmt.Errorf("locate nearest refresh object: %w", err)
+	// Reverse-resolve the arrival tile to a named structure. Returns
+	// ("", "") when the actor isn't standing at any structure's loiter
+	// zone — i.e. mid-village or at an unnamed placement. Skip refresh
+	// in that case rather than fall back to a coord query: the loiter
+	// model is the source of truth for "at" semantics, and a fallback
+	// would re-introduce the tolerance bug for any structure whose
+	// pin happens to be within 64 px of the arrival.
+	objectID, objectName := app.resolveLoiteringStructure(ctx, arrivalX, arrivalY)
+	if objectID == "" {
+		return nil, nil
 	}
-	if distSq > objectRefreshToleranceSq {
-		return nil, nil // arrival not at a refresh object
+
+	// Confirm the resolved structure has refresh rows. resolveLoiteringStructure
+	// only filters on display_name (so it picks up named buildings, not
+	// decorative tiles) — an arrival at the Tavern's loiter pin shouldn't
+	// fire a refresh because the Tavern doesn't have object_refresh rows.
+	// The early return keeps the audit log clean for non-refresh structures.
+	var hasRefresh bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM object_refresh WHERE object_id = $1)`,
+		objectID,
+	).Scan(&hasRefresh); err != nil {
+		return nil, fmt.Errorf("check object_refresh existence: %w", err)
+	}
+	if !hasRefresh {
+		return nil, nil
 	}
 
 	// Lock the actor row so a concurrent attribute-tick (the hourly
