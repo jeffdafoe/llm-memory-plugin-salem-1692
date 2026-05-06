@@ -148,6 +148,124 @@ func narrateConsume(actorName string, payload map[string]interface{}, itemAttrib
 	return fmt.Sprintf("%s %s %s.", actorName, verb, itemPhrase)
 }
 
+// narrateRefreshAtSourceSelf builds a private second-person line for
+// the actor who just received a refresh-tagged object's effect —
+// "You drink at the Well — the parching ebbs." Intended for the
+// actor's own talk panel, not the room (the room shouldn't see your
+// private felt experience). Composes a verb appropriate to the
+// primary attribute (the largest-magnitude one in hits) with a felt
+// clause that scales by the pre-value of the affected need.
+//
+//   sourceName   — display name of the refresh source ("Well",
+//                  "Maple Tree", etc.)
+//   hits         — applied attribute drops (attribute, amount, new
+//                  value) from applyObjectRefreshAtArrival
+//   pre          — map of pre-refresh need values keyed by attribute
+//                  name ("hunger" / "thirst" / "tiredness")
+//
+// Examples:
+//
+//   "You drink at the Well — the parching ebbs."
+//   "You drink at the Well — the slight thirst is gone."
+//   "You rest under the Maple Tree — fatigue lifts."
+//
+// Returns "" when hits is empty (defensive — caller should guard).
+func narrateRefreshAtSourceSelf(sourceName string, hits []refreshHit, pre map[string]int) string {
+	if len(hits) == 0 {
+		return ""
+	}
+	if sourceName == "" {
+		sourceName = "the source"
+	}
+	// Pick the strongest hit as the primary effect for the verb. Most
+	// real sources hit one attribute; oaks-with-acorns and similar
+	// multi-attribute placements anchor on whichever produced the
+	// bigger drop.
+	primary := hits[0]
+	for _, h := range hits[1:] {
+		// amount is negative — bigger magnitude means smaller (more
+		// negative) value.
+		if h.Amount < primary.Amount {
+			primary = h
+		}
+	}
+	verb := "use"
+	switch primary.Attribute {
+	case "thirst":
+		verb = "drink at"
+	case "hunger":
+		verb = "eat at"
+	case "tiredness":
+		verb = "rest under"
+	}
+	clauses := make([]string, 0, len(hits))
+	for _, h := range hits {
+		oldValue := pre[h.Attribute]
+		clause := feltSatisfactionClause(h.Attribute, oldValue, h.NewValue)
+		if clause != "" {
+			clauses = append(clauses, clause)
+		}
+	}
+	base := fmt.Sprintf("You %s the %s.", verb, sourceName)
+	if len(clauses) == 0 {
+		return base
+	}
+	return fmt.Sprintf("%s — %s.", strings.TrimSuffix(base, "."), strings.Join(clauses, "; "))
+}
+
+// feltSatisfactionClause returns a short felt-language fragment
+// describing the experience of a need dropping from oldValue to
+// newValue. Returns "" when the drop is too small to comment on
+// (already-calm starting state, no actual movement) so callers can
+// build clean sentences with or without the clause.
+//
+// Tiering mirrors the engine's mild/red/peak thresholds (8, 18, 24)
+// — same boundaries the satiation block already uses, so the felt
+// language reads consistently with the perception text the LLMs see.
+//
+//   - oldValue >= 24 (peak)              → "barely a dent" if still ≥18, "the parching/gnawing ebbs" if dropped under 18
+//   - oldValue >= 18 (red)               → "but the X persists" if still ≥18, "the X eases" if dropped under 18
+//   - oldValue >= 8  (mild)              → "the slight X is gone" if dropped under 8, "" otherwise
+//   - oldValue <  8  (calm)              → "" (no need to narrate the un-needed)
+//
+// Returned clauses are without leading capitalization so they fit
+// after a verb phrase, and without trailing punctuation so the caller
+// composes the sentence terminator.
+func feltSatisfactionClause(attribute string, oldValue, newValue int) string {
+	noun := ""
+	verbWeak := ""
+	verbStrong := ""
+	switch attribute {
+	case "thirst":
+		noun = "thirst"
+		verbWeak = "the thirst eases"
+		verbStrong = "the parching ebbs"
+	case "hunger":
+		noun = "hunger"
+		verbWeak = "the hunger fades"
+		verbStrong = "the gnawing ebbs"
+	case "tiredness":
+		noun = "weariness"
+		verbWeak = "the weariness eases"
+		verbStrong = "fatigue lifts"
+	default:
+		return ""
+	}
+	switch {
+	case oldValue >= 24 && newValue < 18:
+		return verbStrong
+	case oldValue >= 24:
+		return fmt.Sprintf("barely a dent in the %s", noun)
+	case oldValue >= 18 && newValue < 18:
+		return verbWeak
+	case oldValue >= 18:
+		return fmt.Sprintf("but the %s persists", noun)
+	case oldValue >= 8 && newValue < 8:
+		return fmt.Sprintf("the slight %s is gone", noun)
+	}
+	return ""
+}
+
 // narrateGather builds the room line for a successful gather commit.
 //
 // Examples:
