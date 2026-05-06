@@ -79,11 +79,17 @@ type payDeliberationDecision struct {
 }
 
 // payDeliberationTimeoutSeconds is the hard cap on the recipient's
-// LLM round-trip. Past this, fall back to lenient accept. Tuned
-// against typical sendChat latency: chat/send + a small tool-use
-// LLM call comes back in ~1-2 s on the chosen models, so 5 s gives
-// 2-3x headroom before the buyer's UI feels stuck.
-const payDeliberationTimeoutSeconds = 5
+// LLM round-trip. Past this, fall back to lenient accept. Empirical
+// tune (2026-05-06 test in production): the meta-llama/llama-3.3-70b
+// chat call clocked at ~4 s for an NPC with ~14k input tokens and
+// a tool-call response, plus ~1 s of HTTP / memory-api routing
+// overhead, putting a real call near the original 5 s budget. The
+// initial budget caused a real decline_pay tool call to be dropped
+// on the floor (call_id 3719) — the engine cut its own context
+// before memory-api could route the response back. 10 s gives the
+// LLM room to think a beat (in-character: "the seller pauses to
+// consider...") without dropping legitimate decisions.
+const payDeliberationTimeoutSeconds = 10
 
 // payDeliberationMaxDepth is the maximum counter-chain depth the
 // recipient is allowed to extend by emitting another counter_pay. A
