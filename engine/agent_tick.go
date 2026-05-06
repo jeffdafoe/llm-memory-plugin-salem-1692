@@ -680,6 +680,61 @@ func (app *App) checkStaleAddressees(speakerID, speakerName, text, structureID s
 	}
 }
 
+// findVocativeStaleAddressees returns the display names of addressable
+// actors who are NOT co-located with the speaker but are addressed in
+// the speech text in vocative position — first name immediately
+// followed by a comma ("Ezekiel, you look hungry"). This is the strict
+// pre-commit predicate used by the speak tool to reject the whole
+// speak when the addressee has already left the room. The looser
+// post-commit narration in checkStaleAddressees handles non-vocative
+// references ("I told Ezekiel to be careful") with a soft narration
+// instead — those don't justify rejecting the speak outright because
+// the reference may be to a memory rather than a present person.
+//
+// Same scope as checkStaleAddressees: only addressable actors (PC
+// login or active llm_memory_agent). Background placeholder NPCs
+// can't respond and shouldn't gate other NPCs' speech if their first
+// names happen to land in vocative position.
+func (app *App) findVocativeStaleAddressees(ctx context.Context, speakerID, text, structureID string) ([]string, error) {
+	rows, err := app.DB.Query(ctx,
+		`SELECT display_name, inside_structure_id
+		   FROM actor
+		  WHERE id::text != $1
+		    AND (login_username IS NOT NULL OR llm_memory_agent IS NOT NULL)`,
+		speakerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var absent []string
+	for rows.Next() {
+		var name string
+		var inside sql.NullString
+		if err := rows.Scan(&name, &inside); err != nil {
+			continue
+		}
+		first := strings.SplitN(strings.TrimSpace(name), " ", 2)[0]
+		if first == "" {
+			continue
+		}
+		// Vocative pattern: first name immediately followed by a comma.
+		// Case-sensitive — same rationale as checkStaleAddressees:
+		// case-insensitive matching turned common verbs into name hits.
+		re, err := regexp.Compile(`\b` + regexp.QuoteMeta(first) + `,`)
+		if err != nil {
+			continue
+		}
+		if !re.MatchString(text) {
+			continue
+		}
+		if inside.Valid && inside.String == structureID {
+			continue
+		}
+		absent = append(absent, name)
+	}
+	return absent, rows.Err()
+}
+
 // triggerCoLocatedTicks fires immediate ticks for every other agentized
 // NPC at the given structureID (excluding excludeNpcID, the source of
 // the event). Used by the speak commit, arrival hook, and PC speech.
@@ -1758,6 +1813,27 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		if text == "" {
 			result, errStr = "rejected", "empty text"
 			break
+		}
+		// Vocative stale-addressee guard: parallel ticks mean the
+		// speaker's perception was snapshotted seconds before the LLM
+		// produced its speech, so an addressee may have left the room
+		// in the meantime. If the speech directly addresses an absent
+		// actor in vocative position ("Ezekiel, you look hungry"),
+		// reject the whole speak so the LLM retries from a fresh
+		// perception. Non-vocative references ("I told Ezekiel to be
+		// careful") are not rejected here — the post-broadcast
+		// narration in checkStaleAddressees handles them with a soft
+		// "[Ezekiel had already left.]" line, which is the right
+		// signal for memory references rather than direct address.
+		if r.InsideStructureID.Valid {
+			absent, err := app.findVocativeStaleAddressees(ctx, r.ID, text, r.InsideStructureID.String)
+			if err != nil {
+				log.Printf("vocative stale-addressee check failed for %s: %v", r.DisplayName, err)
+			} else if len(absent) > 0 {
+				result = "rejected"
+				errStr = fmt.Sprintf("%s is no longer in this room — don't address them by name. Re-check who is present before speaking.", strings.Join(absent, " and "))
+				break
+			}
 		}
 		// Mentions (Phase C of sales-and-gifts): structured tag for which
 		// item_kinds this speech references. The PC talk panel uses these
