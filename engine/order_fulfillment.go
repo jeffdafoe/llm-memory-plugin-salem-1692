@@ -158,6 +158,21 @@ func (app *App) executeDeliverOrder(ctx context.Context, sellerID string, ledger
 		qty = int(qtyNS.Int32)
 	}
 
+	// Load the item's capabilities. The 'service' tag (ZBBS-131) gates
+	// the service-shaped delivery path: no inventory transfer, no
+	// applyConsumption, just the fulfillment_status flip. nights_stay
+	// (and future labor / courier services) flow through here and
+	// materialize their effect via downstream queries (lodger status,
+	// labor-completion checks, etc.) reading the ledger row.
+	var capabilities []string
+	if err := tx.QueryRow(ctx,
+		`SELECT capabilities FROM item_kind WHERE name = $1`,
+		itemKind,
+	).Scan(&capabilities); err != nil {
+		return deliverOrderResult{Result: "failed", Err: fmt.Sprintf("load capabilities: %v", err), LedgerID: ledgerID}
+	}
+	isService := hasCapability(capabilities, "service")
+
 	// Resolve the consumer set. ConsumerActorIDs being non-empty means
 	// phase C (the buyer named friends at pay time). Empty/NULL means
 	// the legacy single-consumer flow — the buyer is the implicit
@@ -198,7 +213,15 @@ func (app *App) executeDeliverOrder(ctx context.Context, sellerID string, ledger
 	}
 	var consumerUpdates []postUpdate
 
-	if consumeNow {
+	switch {
+	case isService:
+		// Service items (nights_stay et al) bypass both delivery
+		// branches. The ledger row IS the artifact — downstream queries
+		// (e.g. isLodger) read its state + dates to materialize status.
+		// Fulfillment_status flip below stamps delivered_on so the keeper's
+		// "I checked them in" moment lands on a real timestamp.
+
+	case consumeNow:
 		satisfactions, sErr := loadItemSatisfactions(ctx, tx, itemKind)
 		if sErr != nil {
 			return deliverOrderResult{Result: "failed", Err: fmt.Sprintf("load satisfactions: %v", sErr), LedgerID: ledgerID}
@@ -239,7 +262,7 @@ func (app *App) executeDeliverOrder(ctx context.Context, sellerID string, ledger
 				})
 			}
 		}
-	} else {
+	default:
 		// Take-home — credit buyer's inventory.
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO actor_inventory (actor_id, item_kind, quantity)
