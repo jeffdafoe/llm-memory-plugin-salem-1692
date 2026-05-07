@@ -110,6 +110,69 @@ func narratePay(buyerName string, payload map[string]interface{}) string {
 	return fmt.Sprintf("%s pays %s %d %s for %s.", buyerName, recipient, amount, coinWord, itemPhrase)
 }
 
+// narratePayForPerceiver builds a pay line for the recent-activity
+// perception block, with second-person substitution when the perceiver
+// is the buyer or recipient. Mirrors narratePay's gift / gesture / cost
+// branches — the only difference is the pronoun flip and the matching
+// verb conjugation when the buyer is the perceiver ("you pay" not
+// "you pays"). Returns "" when the payload lacks a recipient.
+func narratePayForPerceiver(buyerName string, payload map[string]interface{}, perceiverName string) string {
+	recipient, _ := payload["recipient"].(string)
+	recipient = strings.TrimSpace(recipient)
+	if recipient == "" {
+		return ""
+	}
+	amount := payloadInt(payload, "amount")
+	item, _ := payload["item"].(string)
+	item = strings.TrimSpace(strings.ToLower(item))
+	qty := payloadInt(payload, "qty")
+	if qty <= 0 {
+		qty = 1
+	}
+
+	selfBuyer := buyerName == perceiverName
+	selfRecipient := recipient == perceiverName
+
+	buyerWord := buyerName
+	if selfBuyer {
+		buyerWord = "You"
+	}
+	recipientWord := recipient
+	if selfRecipient {
+		recipientWord = "you"
+	}
+
+	// Verbs conjugate to first-person when the buyer is the perceiver.
+	paysVerb, givesVerb, thanksVerb := "pays", "gives", "thanks"
+	if selfBuyer {
+		paysVerb, givesVerb, thanksVerb = "pay", "give", "thank"
+	}
+
+	if amount == 0 && item == "" {
+		return fmt.Sprintf("%s %s %s.", buyerWord, thanksVerb, recipientWord)
+	}
+	if amount == 0 && item != "" {
+		itemPhrase := item
+		if qty > 1 {
+			itemPhrase = fmt.Sprintf("%d %s", qty, pluralize(item, qty))
+		}
+		return fmt.Sprintf("%s %s %s %s.", buyerWord, givesVerb, recipientWord, itemPhrase)
+	}
+
+	coinWord := "coins"
+	if amount == 1 {
+		coinWord = "coin"
+	}
+	if item == "" {
+		return fmt.Sprintf("%s %s %s %d %s.", buyerWord, paysVerb, recipientWord, amount, coinWord)
+	}
+	itemPhrase := item
+	if qty > 1 {
+		itemPhrase = fmt.Sprintf("%d %s", qty, pluralize(item, qty))
+	}
+	return fmt.Sprintf("%s %s %s %d %s for %s.", buyerWord, paysVerb, recipientWord, amount, coinWord, itemPhrase)
+}
+
 // narrateConsume builds the room line for a successful consume commit.
 //
 //   actorName        — the actor eating/drinking

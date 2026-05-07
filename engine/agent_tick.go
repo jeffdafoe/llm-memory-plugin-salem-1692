@@ -1739,12 +1739,15 @@ func (app *App) recentActivityAtStructure(ctx context.Context, structureID, perc
 		// Reads speaker_name directly so PC speech (npc_id NULL) lands
 		// in the same query — no JOIN to npc. Includes the perceiver's
 		// own utterances/acts; the formatter rewrites them to second
-		// person. action_type IN ('speak', 'act') unifies both physical
-		// and verbal contributions to the scene's recent history.
-		`SELECT al.speaker_name, al.action_type,
-		        COALESCE(al.payload->>'text', al.payload->>'verb_phrase') AS detail
+		// person. action_type IN ('speak', 'act', 'pay') unifies verbal,
+		// physical, and transactional contributions to the scene's
+		// recent history. pay rows surface the just-completed transaction
+		// to the recipient as "X paid you N coins for Y" so a reactor-
+		// triggered tick has the payment context the trigger reason
+		// itself doesn't carry into the prompt.
+		`SELECT al.speaker_name, al.action_type, al.payload
 		 FROM agent_action_log al
-		 WHERE al.action_type IN ('speak', 'act')
+		 WHERE al.action_type IN ('speak', 'act', 'pay')
 		   AND al.result = 'ok'
 		   AND al.payload->>'structure_id' = $1
 		   AND al.occurred_at > NOW() - $2::interval
@@ -1759,28 +1762,42 @@ func (app *App) recentActivityAtStructure(ctx context.Context, structureID, perc
 	// Pull rows in DESC order, then reverse to chronological for output.
 	var collected []string
 	for rows.Next() {
-		var name, actionType, detail string
-		if err := rows.Scan(&name, &actionType, &detail); err != nil {
+		var name, actionType string
+		var payloadJSON []byte
+		if err := rows.Scan(&name, &actionType, &payloadJSON); err != nil {
 			continue
 		}
-		if detail == "" {
-			continue
-		}
+		var payload map[string]interface{}
+		_ = json.Unmarshal(payloadJSON, &payload)
 		isSelf := name == perceiverName
 		var line string
 		switch actionType {
 		case "speak":
+			detail, _ := payload["text"].(string)
+			if detail == "" {
+				continue
+			}
 			if isSelf {
 				line = fmt.Sprintf("  You said: \"%s\"", detail)
 			} else {
 				line = fmt.Sprintf("  %s said: \"%s\"", name, detail)
 			}
 		case "act":
+			detail, _ := payload["verb_phrase"].(string)
+			if detail == "" {
+				continue
+			}
 			if isSelf {
 				line = fmt.Sprintf("  You %s", detail)
 			} else {
 				line = fmt.Sprintf("  %s %s", name, detail)
 			}
+		case "pay":
+			text := narratePayForPerceiver(name, payload, perceiverName)
+			if text == "" {
+				continue
+			}
+			line = "  " + text
 		default:
 			continue
 		}
