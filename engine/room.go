@@ -50,6 +50,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // commonRoomForStructure returns the id of the 'common' room
@@ -113,12 +114,18 @@ func (app *App) canEnterRoom(ctx context.Context, actorID string, roomID int64) 
 	case "common":
 		return true, nil
 	case "private":
+		// ZBBS-163: gate on active=true. The expireRoomAccess sweep
+		// flips active=false on expired rows; this query stays in
+		// lockstep with the unique index so a private room that
+		// expired but hasn't been flipped yet reads as still-valid
+		// for up to one sweep cadence (~1 min). Acceptable real-world
+		// hotel slack.
 		var found bool
 		if err := app.DB.QueryRow(ctx,
 			`SELECT EXISTS (
 				SELECT 1 FROM room_access
 				 WHERE room_id = $1 AND actor_id = $2::uuid
-				   AND (expires_at IS NULL OR expires_at > NOW())
+				   AND active = true
 			)`,
 			roomID, actorID,
 		).Scan(&found); err != nil {
@@ -197,6 +204,13 @@ func (app *App) assignBedroomForLodger(
 	// transiently or via legacy bad data. Falling through to branch (2)
 	// gets the buyer a clean vacant room instead of cementing the
 	// double-occupancy.
+	// ZBBS-163: pick + NOT EXISTS guards key off active=true to match
+	// the partial unique index (ux_room_access_one_private_active).
+	// expires_at remains the data of record but isn't consulted at
+	// runtime here — the expireRoomAccess sweep keeps active in sync.
+	// Picking a room based on a stale (active=true but expired) row
+	// would force a unique-index conflict on insert; using active
+	// directly avoids the divergence.
 	var roomID int64
 	err := tx.QueryRow(ctx,
 		`(
@@ -206,12 +220,12 @@ func (app *App) assignBedroomForLodger(
 		    WHERE ss.structure_id = $1::uuid
 		      AND ss.kind = 'private'
 		      AND sa.actor_id = $2::uuid
-		      AND (sa.expires_at IS NULL OR sa.expires_at > NOW())
+		      AND sa.active = true
 		      AND NOT EXISTS (
 		        SELECT 1 FROM room_access other
 		         WHERE other.room_id = ss.id
 		           AND other.actor_id <> $2::uuid
-		           AND (other.expires_at IS NULL OR other.expires_at > NOW())
+		           AND other.active = true
 		      )
 		    ORDER BY ss.name ASC
 		    LIMIT 1
@@ -225,7 +239,7 @@ func (app *App) assignBedroomForLodger(
 		      AND NOT EXISTS (
 		        SELECT 1 FROM room_access sa
 		         WHERE sa.room_id = ss.id
-		           AND (sa.expires_at IS NULL OR sa.expires_at > NOW())
+		           AND sa.active = true
 		      )
 		    ORDER BY ss.name ASC
 		    FOR UPDATE SKIP LOCKED
@@ -241,18 +255,50 @@ func (app *App) assignBedroomForLodger(
 		return 0, fmt.Errorf("assignBedroomForLodger pick: %w", err)
 	}
 
+	// Defensive: refuse to grant active access with an already-passed
+	// expires_at. Current callers compute expiresAt from
+	// computeLodgerUntil(readyBy + qty days), which lands in the
+	// future for any normal booking; but if a caller ever supplies a
+	// past timestamp the row would be active=true with no time left,
+	// and runtime gates (active-only) would treat it as valid until
+	// the next expireRoomAccess sweep. CHECK constraints can't use
+	// NOW(), so this is the practical guard.
+	if !expiresAt.IsZero() && !expiresAt.After(time.Now()) {
+		return 0, fmt.Errorf("assignBedroomForLodger: expiresAt %s is not in the future", expiresAt.Format(time.RFC3339))
+	}
+
 	// Insert access row. ON CONFLICT updates expiresAt + ledger so
 	// re-checking-in (same lodger paying for another night before
-	// the previous expires_at) extends rather than stacks.
+	// the previous expires_at) extends rather than stacks. ZBBS-163:
+	// also re-flips active=true on UPSERT so a re-book after expiry
+	// reactivates the same row instead of leaving it stale; kind is
+	// re-stamped from EXCLUDED.kind so a legacy row with stale/wrong
+	// kind gets corrected to match the room — keeps the row aligned
+	// with ux_room_access_one_private_active.
+	//
+	// Branch-1 race guard: if a concurrent transaction granted a
+	// different actor active access to the same room between our
+	// pick and this insert, the unique index rejects with 23505.
+	// Treat as "no room available right now" (return 0) — caller in
+	// executeDeliverOrder surfaces that as a delivery rejection,
+	// matching the existing behavior when no room was available at
+	// pick time. Lossy under contention (the racing actor wins; we
+	// retry on next deliver_order), acceptable at Salem's scale.
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO room_access (room_id, actor_id, granted_via_ledger_id, expires_at)
-		 VALUES ($1, $2::uuid, $3, $4)
+		`INSERT INTO room_access (room_id, actor_id, granted_via_ledger_id, expires_at, kind, active)
+		 VALUES ($1, $2::uuid, $3, $4, 'private', true)
 		 ON CONFLICT (room_id, actor_id)
 		 DO UPDATE SET granted_via_ledger_id = EXCLUDED.granted_via_ledger_id,
 		               expires_at = EXCLUDED.expires_at,
-		               granted_at = NOW()`,
+		               granted_at = NOW(),
+		               kind = EXCLUDED.kind,
+		               active = true`,
 		roomID, buyerID, ledgerID, expiresAt,
 	); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "ux_room_access_one_private_active" {
+			return 0, nil
+		}
 		return 0, fmt.Errorf("assignBedroomForLodger insert access: %w", err)
 	}
 
@@ -326,4 +372,43 @@ func (app *App) loadLodgingCheckOutHour(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("lodging_check_out_hour out of range [0,23]: %d", n)
 	}
 	return n, nil
+}
+
+// expireRoomAccess flips active=false on room_access rows whose
+// expires_at has passed. Maintains the partial unique index
+// (ux_room_access_one_private_active) — the index is the DB-level
+// "one active occupant per private room" invariant, and it can only
+// observe the active flag (NOW() isn't IMMUTABLE so it can't appear
+// in an index predicate). The sweep is what bridges expires_at to
+// active.
+//
+// Idempotent and cheap: filtered to rows where active is still true
+// AND expires_at has passed, single batch UPDATE. Runs every server-
+// tick interval (default 60s) from runSleepSweep, before
+// wakeExpiredSleepers and autoBedIdleLodgers — so by the time those
+// downstream sweeps run, rooms freed this minute are already
+// available to new lodgers via assignBedroomForLodger's NOT EXISTS.
+//
+// Effect window: in the gap between expires_at passing and this
+// sweep firing, downstream queries (canEnterRoom, autoBedIdleLodgers,
+// pc_sleep gate, assignBedroomForLodger pick) read active=true and
+// treat the row as still-valid. Up to one tick interval. Acceptable
+// real-world hotel slack — a lodger doesn't get kicked out at
+// 11:00:00 sharp; sometime in the next minute is fine.
+//
+// Wake timing is unaffected: wakeExpiredSleepers reads expires_at
+// directly, so a sleeping PC's housekeeping wake fires on its own
+// schedule independent of this sweep.
+func (app *App) expireRoomAccess(ctx context.Context) error {
+	_, err := app.DB.Exec(ctx,
+		`UPDATE room_access
+		    SET active = false
+		  WHERE active = true
+		    AND expires_at IS NOT NULL
+		    AND expires_at <= NOW()`,
+	)
+	if err != nil {
+		return fmt.Errorf("expireRoomAccess: %w", err)
+	}
+	return nil
 }
