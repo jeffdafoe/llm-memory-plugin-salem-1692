@@ -304,6 +304,16 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 				} else {
 					currentMessage = "[OK] You delivered the order. Speak to the buyer now if you haven't already. Then you may move or call done."
 				}
+			} else if strings.Contains(errStr, "no such ledger row") {
+				// Hallucinated ledger id — the model is acting on an
+				// order that doesn't exist. Saw 2026-05-07 John Ellis
+				// follow a deliver_order(37) rejection (no such row)
+				// with the speak "Since you've paid, I'll get your
+				// order ready" — the customer's verbal "yes" to a
+				// price quote isn't a payment, pay() was never called.
+				// Tighten the continuation so the next-iteration speak
+				// can't pretend the transaction completed.
+				currentMessage = fmt.Sprintf("[Deliver rejected] %s. No such order exists — no payment has been received and nothing has been delivered. Do not speak as if the transaction completed. The customer must call pay before there's anything to deliver — restate the price and wait, or call done.", errStr)
 			} else {
 				currentMessage = fmt.Sprintf("[Deliver %s] %s. Continue your turn — you may correct it, speak, move, or call done.", result, errStr)
 			}
