@@ -496,6 +496,19 @@ func (app *App) applyArrivalSideEffects(ctx context.Context, npcID string, x, y 
 	app.advanceBehavior(npcID)
 	app.advanceErrandFromArrival(ctx, npcID)
 
+	// ZBBS-155: PC-only gatherable pickup on walk arrival. Lookup the
+	// actor's display name + login_username gate in one query so this
+	// stays a no-op for NPCs (no extra round-trip when the path doesn't
+	// fire). The pickup itself runs only when login_username is set.
+	var gatherActorName string
+	var gatherIsPC bool
+	if err := app.DB.QueryRow(ctx,
+		`SELECT display_name, login_username IS NOT NULL FROM actor WHERE id = $1`,
+		npcID,
+	).Scan(&gatherActorName, &gatherIsPC); err == nil && gatherIsPC {
+		app.pickupNearbyGatherables(ctx, npcID, gatherActorName, x, y)
+	}
+
 	// Clear agent_override_until on arrival. The override was set by
 	// chore / move_to / relocateVisitors as a fixed 30-minute window
 	// "long enough to cover any walk." Actual walks finish in 1-3
