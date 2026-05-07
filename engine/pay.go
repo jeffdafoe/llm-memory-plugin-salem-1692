@@ -685,61 +685,72 @@ func (app *App) executePayTransfer(ctx context.Context, buyer *agentNPCRow, req 
 		// have an item_kind row but no item_satisfies rows; you can't
 		// "consume" raw flour at the merchant's stand. The buyer needs
 		// to take it home (consume_now=false) and use it later.
-		if req.ConsumeNow && len(itemSatisfactions) == 0 {
+		//
+		// Exception: items with the `service` capability (e.g. nights_stay)
+		// pass through with no satisfactions — they materialize status
+		// from the ledger row at query time rather than dropping a need
+		// at purchase. ZBBS-131 introduced the tag.
+		if req.ConsumeNow && len(itemSatisfactions) == 0 && !hasCapability(itemCapabilities, "service") {
 			return payResult{Result: "rejected", Err: fmt.Sprintf("%s isn't consumable; set consume_now=false to take it home", itemKind)}
 		}
 
-		// Lock the seller's inventory row. NoRows = seller doesn't
-		// stock this item; cleaner error than the FK noise.
-		var sellerQty int
-		if err := tx.QueryRow(ctx,
-			`SELECT quantity FROM actor_inventory
-			  WHERE actor_id = $1 AND item_kind = $2
-			  FOR UPDATE`,
-			recipientID, itemKind,
-		).Scan(&sellerQty); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return payResult{Result: "rejected", Err: fmt.Sprintf("%s has no %s to sell", recipientName, itemKind)}
-			}
-			return payResult{Result: "failed", Err: fmt.Sprintf("lock seller inventory: %v", err)}
-		}
-		// Phase C: at-source group orders multiply the unit qty by the
-		// number of consumers (default 1 = buyer-only). Take-home stays
-		// at qty; the buyer's inventory is credited the requested
-		// amount regardless of who else might eat it later.
-		consumerCount := 1
-		if req.ConsumeNow && len(req.ConsumerNames) > 0 {
-			consumerCount = len(req.ConsumerNames)
-		}
-		totalQty := qty * consumerCount
-		if sellerQty < totalQty {
-			return payResult{Result: "rejected", Err: fmt.Sprintf("%s has only %d %s (asked for %d)", recipientName, sellerQty, itemKind, totalQty)}
-		}
-
-		// Quote enforcement (ZBBS-124, refactored ZBBS-128 step 3).
-		// Underpayment / no-quote-on-file rejection is now handled
-		// pre-Tx-B via the deliberation gate in executePay. By the time
-		// Tx B runs we know either (a) the offer matched the quote and
-		// no LLM tick was needed, or (b) deliberation accepted (real or
-		// timeout-accept), in which case the recipient has agreed to
-		// the offered amount regardless of the original quote. Either
-		// way, no quote check belongs here. pctx.QuotedUnit is still
-		// snapshotted on the ledger row for audit, just not enforced.
-		newSellerQty := sellerQty - totalQty
-		if newSellerQty == 0 {
-			if _, err := tx.Exec(ctx,
-				`DELETE FROM actor_inventory WHERE actor_id = $1 AND item_kind = $2`,
+		// Service items (ZBBS-131) bypass the stock check + decrement.
+		// nights_stay et al don't carry actor_inventory rows; their
+		// "stock" is the structure / time / keeper's willingness, not a
+		// quantity column. The ledger row IS the artifact of the sale.
+		if !hasCapability(itemCapabilities, "service") {
+			// Lock the seller's inventory row. NoRows = seller doesn't
+			// stock this item; cleaner error than the FK noise.
+			var sellerQty int
+			if err := tx.QueryRow(ctx,
+				`SELECT quantity FROM actor_inventory
+				  WHERE actor_id = $1 AND item_kind = $2
+				  FOR UPDATE`,
 				recipientID, itemKind,
-			); err != nil {
-				return payResult{Result: "failed", Err: fmt.Sprintf("delete seller stock: %v", err)}
+			).Scan(&sellerQty); err != nil {
+				if errors.Is(err, pgx.ErrNoRows) {
+					return payResult{Result: "rejected", Err: fmt.Sprintf("%s has no %s to sell", recipientName, itemKind)}
+				}
+				return payResult{Result: "failed", Err: fmt.Sprintf("lock seller inventory: %v", err)}
 			}
-		} else {
-			if _, err := tx.Exec(ctx,
-				`UPDATE actor_inventory SET quantity = $1
-				  WHERE actor_id = $2 AND item_kind = $3`,
-				newSellerQty, recipientID, itemKind,
-			); err != nil {
-				return payResult{Result: "failed", Err: fmt.Sprintf("decrement seller stock: %v", err)}
+			// Phase C: at-source group orders multiply the unit qty by the
+			// number of consumers (default 1 = buyer-only). Take-home stays
+			// at qty; the buyer's inventory is credited the requested
+			// amount regardless of who else might eat it later.
+			consumerCount := 1
+			if req.ConsumeNow && len(req.ConsumerNames) > 0 {
+				consumerCount = len(req.ConsumerNames)
+			}
+			totalQty := qty * consumerCount
+			if sellerQty < totalQty {
+				return payResult{Result: "rejected", Err: fmt.Sprintf("%s has only %d %s (asked for %d)", recipientName, sellerQty, itemKind, totalQty)}
+			}
+
+			// Quote enforcement (ZBBS-124, refactored ZBBS-128 step 3).
+			// Underpayment / no-quote-on-file rejection is now handled
+			// pre-Tx-B via the deliberation gate in executePay. By the time
+			// Tx B runs we know either (a) the offer matched the quote and
+			// no LLM tick was needed, or (b) deliberation accepted (real or
+			// timeout-accept), in which case the recipient has agreed to
+			// the offered amount regardless of the original quote. Either
+			// way, no quote check belongs here. pctx.QuotedUnit is still
+			// snapshotted on the ledger row for audit, just not enforced.
+			newSellerQty := sellerQty - totalQty
+			if newSellerQty == 0 {
+				if _, err := tx.Exec(ctx,
+					`DELETE FROM actor_inventory WHERE actor_id = $1 AND item_kind = $2`,
+					recipientID, itemKind,
+				); err != nil {
+					return payResult{Result: "failed", Err: fmt.Sprintf("delete seller stock: %v", err)}
+				}
+			} else {
+				if _, err := tx.Exec(ctx,
+					`UPDATE actor_inventory SET quantity = $1
+					  WHERE actor_id = $2 AND item_kind = $3`,
+					newSellerQty, recipientID, itemKind,
+				); err != nil {
+					return payResult{Result: "failed", Err: fmt.Sprintf("decrement seller stock: %v", err)}
+				}
 			}
 		}
 	}
@@ -799,7 +810,8 @@ func (app *App) executePayTransfer(ctx context.Context, buyer *agentNPCRow, req 
 	// Seller's inventory broadcast — their stock decremented above. Buyer
 	// inventory broadcasts and per-consumer npc_needs_changed move to
 	// executeDeliverOrder where the actual transfer / consumption fires.
-	if itemKind != "" {
+	// Service items (ZBBS-131) skip this — their "stock" wasn't touched.
+	if itemKind != "" && !hasCapability(itemCapabilities, "service") {
 		app.Hub.Broadcast(WorldEvent{
 			Type: "actor_inventory_changed",
 			Data: map[string]any{
