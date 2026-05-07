@@ -633,109 +633,17 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, 
 	app.runAgentTick(ctx, &r, hourStart, dawnMin, duskMin, sceneID)
 }
 
-// checkStaleAddressees scans freshly-spoken text for first-name
-// references to other actors and emits a narration room_event for any
-// who are no longer in the speaker's huddle. Catches the
-// parallel-tick perception race where actor B leaves between when
-// actor A's tick snapshotted perception (B present) and when the LLM
-// finally produced speech that addresses B by name. Without this,
-// the chat log just shows the speaker addressing a phantom.
-//
-// Heuristic: split each candidate's display_name on whitespace and
-// match the first token as a case-sensitive whole word against the
-// speech. Names like "Josiah Thorne" or "John Ellis" match on
-// "Josiah" / "John"; single-token names ("Wendy", "Jefferey") match
-// as themselves. Case-sensitive because the (?i) form turned every
-// "I hope for peace" into a false-positive hit on background NPC
-// "Hope James" — common verbs and nouns shouldn't be names just
-// because they share spelling.
-//
-// Co-location is defined by shared current_huddle_id (the engine's
-// conversational unit), not shared inside_structure_id. A PC who
-// knocks at a door joins the inside NPC's huddle but stays outside
-// the structure — using inside_structure_id misclassified the
-// door-knocker as "absent" and produced bogus narration on every
-// vocative welcome. structureID is still passed in for broadcast
-// scoping (the talk-panel filter).
-//
-// Scope is restricted to addressable actors — those with a PC login
-// or an active llm_memory_agent. Background placeholder NPCs (the
-// James family, named scenery) can't respond meaningfully and
-// shouldn't generate "had already left" lines when their first names
-// happen to match common words. Drops false positives wholesale.
-//
-// Runs in a goroutine off the speak commit (fire-and-forget). Errors
-// are logged and dropped — the absence of the narration is a minor
-// UX glitch, not a sim correctness issue.
-func (app *App) checkStaleAddressees(speakerID, speakerName, text, structureID string) {
-	ctx := context.Background()
-	var speakerHuddle sql.NullString
-	if err := app.DB.QueryRow(ctx,
-		`SELECT current_huddle_id::text FROM actor WHERE id::text = $1`,
-		speakerID).Scan(&speakerHuddle); err != nil {
-		log.Printf("stale-addressee speaker-huddle lookup failed: %v", err)
-		return
-	}
-	if !speakerHuddle.Valid || speakerHuddle.String == "" {
-		return
-	}
-	rows, err := app.DB.Query(ctx,
-		`SELECT id, display_name, current_huddle_id::text
-		   FROM actor
-		  WHERE id::text != $1
-		    AND (login_username IS NOT NULL OR llm_memory_agent IS NOT NULL)`,
-		speakerID)
-	if err != nil {
-		log.Printf("stale-addressee query failed: %v", err)
-		return
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var id, name string
-		var huddle sql.NullString
-		if err := rows.Scan(&id, &name, &huddle); err != nil {
-			continue
-		}
-		first := strings.SplitN(strings.TrimSpace(name), " ", 2)[0]
-		if first == "" {
-			continue
-		}
-		// regexp.QuoteMeta covers names with regex-special chars (e.g.
-		// O'Brien). \b is word boundary. Case-sensitive on purpose —
-		// see function-level comment.
-		re, err := regexp.Compile(`\b` + regexp.QuoteMeta(first) + `\b`)
-		if err != nil {
-			continue
-		}
-		if !re.MatchString(text) {
-			continue
-		}
-		// Mentioned by first name. Still in the speaker's huddle?
-		if huddle.Valid && huddle.String == speakerHuddle.String {
-			continue
-		}
-		// Absent addressee — emit narration so observers see it.
-		log.Printf("stale-addressee: %s addressed %s, who has left the conversation (structure %s)", speakerName, name, structureID)
-		app.Hub.Broadcast(WorldEvent{
-			Type: "room_event",
-			Data: map[string]interface{}{
-				"actor_id":     id,
-				"actor_name":   name,
-				"kind":         "act",
-				"text":         fmt.Sprintf("[%s had already left.]", name),
-				"structure_id": structureID,
-				"at":           time.Now().UTC().Format(time.RFC3339),
-			},
-		})
-	}
-}
-
 // findVocativeStaleAddressees returns the display names of addressable
 // actors who are NOT in the speaker's huddle but are addressed in the
 // speech text in vocative position — first name immediately followed
-// by a comma ("Ezekiel, you look hungry"). This is the strict
-// pre-commit predicate used by the speak tool to reject the whole
-// speak when the addressee has already left the conversation.
+// by a comma ("Ezekiel, you look hungry"). The speak tool rejects the
+// whole speak when the addressee has already left the conversation.
+//
+// Vocative-only on purpose: third-person mentions ("I've sent for
+// Prudence Ward") name distant actors without addressing them, and a
+// previous post-broadcast "had already left" narration on those
+// produced misleading false positives — implying the named actor
+// had been there. Only direct address gates here.
 //
 // Co-location is defined by shared current_huddle_id, not shared
 // inside_structure_id. The huddle is the engine's conversational
@@ -1918,11 +1826,10 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		// addresses someone outside the speaker's huddle in vocative
 		// position ("Ezekiel, you look hungry"), reject so the LLM
 		// retries from a fresh perception. Non-vocative references
-		// ("I told Ezekiel to be careful") are not rejected here —
-		// checkStaleAddressees handles them with a soft narration
-		// instead. Co-location is defined by shared current_huddle_id
-		// (the conversational unit), not shared inside_structure_id —
-		// see findVocativeStaleAddressees for why.
+		// ("I told Ezekiel to be careful", "I've sent for Prudence")
+		// are not rejected here. Co-location is defined by shared
+		// current_huddle_id (the conversational unit), not shared
+		// inside_structure_id — see findVocativeStaleAddressees.
 		absent, err := app.findVocativeStaleAddressees(ctx, r.ID, text)
 		if err != nil {
 			log.Printf("vocative stale-addressee check failed for %s: %v", r.DisplayName, err)
@@ -1998,14 +1905,6 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 			spokeData["structure_id"] = r.InsideStructureID.String
 		}
 		app.Hub.Broadcast(WorldEvent{Type: "npc_spoke", Data: spokeData})
-		// Stale-addressee narration: parallel ticks mean an NPC's
-		// perception was snapshotted seconds before the LLM produced its
-		// speech. If someone they address has already left in the
-		// meantime, surface a small narration line so observers
-		// understand. See checkStaleAddressees for the policy.
-		if r.InsideStructureID.Valid {
-			go app.checkStaleAddressees(r.ID, r.DisplayName, text, r.InsideStructureID.String)
-		}
 		// Event-tick co-located agents so they can react in-band. Force
 		// the cost guard off here — when an NPC addresses another NPC
 		// by name (or makes a speech the room is reacting to), the
