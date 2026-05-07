@@ -27,6 +27,14 @@ package main
 // lodger_until anchors to ready_by regardless of actual check-in time
 // (real-hotel logic — late check-in still checks out at 11am).
 //
+// Timezone (ZBBS-151): lodging_check_out_hour is wall-clock in the
+// world timezone (setting `world_timezone`, default America/New_York),
+// matching dawn/dusk/world_rotation_time semantics. The SQL applies
+// `AT TIME ZONE world_timezone` so the naive timestamp is interpreted
+// as village wall-clock. The Go-side mirror in subspace.go's
+// computeLodgerUntil uses cfg.Location and produces the same UTC
+// instant for stamping subspace_access.expires_at.
+//
 // Conditional `ready` exemption (locked 2026-05-06 with Jeff,
 // per home's review `6513a207`):
 //
@@ -82,13 +90,18 @@ func (app *App) isLodger(ctx context.Context, actorID, structureID string) (bool
 			       )
 			   AND pl.ready_by <= CURRENT_DATE
 			   AND NOW() < (
-			        (pl.ready_by + COALESCE(pl.qty, 1) * INTERVAL '1 day')::timestamp
-			        + (
-			            COALESCE(
-			              (SELECT value::int FROM setting WHERE key = 'lodging_check_out_hour'),
-			              11
-			            ) * INTERVAL '1 hour'
-			          )
+			        (
+			          (pl.ready_by + COALESCE(pl.qty, 1) * INTERVAL '1 day')::timestamp
+			          + (
+			              COALESCE(
+			                (SELECT value::int FROM setting WHERE key = 'lodging_check_out_hour'),
+			                11
+			              ) * INTERVAL '1 hour'
+			            )
+			        ) AT TIME ZONE COALESCE(
+			            (SELECT value FROM setting WHERE key = 'world_timezone'),
+			            'America/New_York'
+			        )
 			       )
 		)`,
 		actorID, structureID,
