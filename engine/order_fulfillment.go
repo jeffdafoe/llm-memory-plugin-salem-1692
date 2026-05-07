@@ -213,6 +213,65 @@ func (app *App) executeDeliverOrder(ctx context.Context, sellerID string, ledger
 	}
 	var consumerUpdates []postUpdate
 
+	// ZBBS-142: co-location gate for consume_now=true.
+	//
+	// At-source consumption requires physical proximity — the buyer is
+	// supposed to actually receive the food/drink/etc. at the seller's
+	// hand. Without this gate, deliver_order can fire while the buyer
+	// has wandered to a different building (or outside) and the goods
+	// teleport across the village. Observed 2026-05-07 14:16 UTC: John
+	// Ellis at Tavern delivered six orders to Ezekiel-at-the-Well.
+	//
+	// Predicate: buyer and seller share inside_structure_id OR share
+	// current_huddle_id. Same-huddle catches outdoor co-location at a
+	// loiter ring (ZBBS-113/115); same-structure catches indoor without
+	// a huddle (PCs walking in a stall, etc.). Either is sufficient.
+	//
+	// Hand-delivery: if the seller walks to the buyer's location, the
+	// resulting structure-entry / loiter-ring co-location forms a huddle
+	// (or matches the buyer's inside_structure_id) and deliver_order
+	// then succeeds. The vendor isn't trapped at their own counter.
+	//
+	// Take-home (consume_now=false) and service items (nights_stay)
+	// bypass the gate: take-home credits inventory remotely by design;
+	// service items are placement-anchored via the ledger row itself.
+	if consumeNow && !isService {
+		var (
+			sellerInside    sql.NullString
+			sellerHuddle    sql.NullString
+			buyerInside     sql.NullString
+			buyerHuddle     sql.NullString
+			buyerStructName sql.NullString
+		)
+		err = tx.QueryRow(ctx, `
+			SELECT s.inside_structure_id::text,
+			       s.current_huddle_id::text,
+			       b.inside_structure_id::text,
+			       b.current_huddle_id::text,
+			       (SELECT vo.display_name FROM village_object vo WHERE vo.id = b.inside_structure_id)
+			  FROM actor s, actor b
+			 WHERE s.id = $1::uuid AND b.id = $2::uuid
+		`, sellerID, buyerID).Scan(&sellerInside, &sellerHuddle, &buyerInside, &buyerHuddle, &buyerStructName)
+		if err != nil {
+			return deliverOrderResult{Result: "failed", Err: fmt.Sprintf("co-location check: %v", err), LedgerID: ledgerID}
+		}
+		sameStructure := sellerInside.Valid && buyerInside.Valid &&
+			sellerInside.String != "" && sellerInside.String == buyerInside.String
+		sameHuddle := sellerHuddle.Valid && buyerHuddle.Valid &&
+			sellerHuddle.String != "" && sellerHuddle.String == buyerHuddle.String
+		if !sameStructure && !sameHuddle {
+			whereBuyer := "elsewhere"
+			if buyerStructName.Valid && buyerStructName.String != "" {
+				whereBuyer = "at the " + buyerStructName.String
+			}
+			return deliverOrderResult{
+				Result:   "rejected",
+				Err:      fmt.Sprintf("%s isn't here to receive — they're %s. Walk to them to deliver.", buyerDisplayName, whereBuyer),
+				LedgerID: ledgerID,
+			}
+		}
+	}
+
 	switch {
 	case isService:
 		// Service items (nights_stay et al) bypass both delivery
@@ -466,13 +525,28 @@ func formatOrderBookForLLM(entries []orderBookEntry) string {
 // they're not actionable yet.) Caps at 10 rows; oldest first by
 // created_at so the LLM clears the backlog FIFO. Includes a paid-ago
 // duration so the LLM has urgency cues without arithmetic.
+//
+// ZBBS-142: each row also carries the buyer's current physical
+// location (inside_structure_id name) and a co-located flag matching
+// the executeDeliverOrder gate (shared inside_structure_id OR shared
+// current_huddle_id). The perception-formatter uses this to surface
+// "(at the Well)" annotations when the buyer has wandered, so the
+// seller knows hand-delivery is required before calling deliver_order.
 func (app *App) readyOrdersForSeller(ctx context.Context, sellerID string) ([]readyOrderEntry, error) {
 	rows, err := app.DB.Query(ctx,
 		`SELECT pl.id, pl.item_kind, pl.qty, pl.offered_amount, pl.consume_now,
-		        a.display_name, pl.created_at
+		        a.display_name, pl.created_at,
+		        (
+		            (a.inside_structure_id IS NOT NULL
+		             AND a.inside_structure_id = (SELECT inside_structure_id FROM actor WHERE id = $1::uuid))
+		            OR
+		            (a.current_huddle_id IS NOT NULL
+		             AND a.current_huddle_id = (SELECT current_huddle_id FROM actor WHERE id = $1::uuid))
+		        ) AS co_located,
+		        (SELECT vo.display_name FROM village_object vo WHERE vo.id = a.inside_structure_id) AS buyer_structure_name
 		   FROM pay_ledger pl
 		   JOIN actor a ON a.id = pl.buyer_id
-		  WHERE pl.seller_id = $1
+		  WHERE pl.seller_id = $1::uuid
 		    AND pl.state = 'accepted'
 		    AND pl.fulfillment_status = 'ready'
 		  ORDER BY pl.created_at ASC
@@ -486,11 +560,12 @@ func (app *App) readyOrdersForSeller(ctx context.Context, sellerID string) ([]re
 	var out []readyOrderEntry
 	for rows.Next() {
 		var (
-			e        readyOrderEntry
-			itemKind sql.NullString
-			qty      sql.NullInt32
+			e             readyOrderEntry
+			itemKind      sql.NullString
+			qty           sql.NullInt32
+			structureName sql.NullString
 		)
-		if err := rows.Scan(&e.LedgerID, &itemKind, &qty, &e.OfferedAmount, &e.ConsumeNow, &e.BuyerName, &e.CreatedAt); err != nil {
+		if err := rows.Scan(&e.LedgerID, &itemKind, &qty, &e.OfferedAmount, &e.ConsumeNow, &e.BuyerName, &e.CreatedAt, &e.BuyerCoLocated, &structureName); err != nil {
 			return nil, fmt.Errorf("scan ready order row: %w", err)
 		}
 		if itemKind.Valid {
@@ -498,6 +573,9 @@ func (app *App) readyOrdersForSeller(ctx context.Context, sellerID string) ([]re
 		}
 		if qty.Valid {
 			e.Qty = int(qty.Int32)
+		}
+		if structureName.Valid {
+			e.BuyerStructure = structureName.String
 		}
 		out = append(out, e)
 	}
@@ -511,14 +589,23 @@ func (app *App) readyOrdersForSeller(ctx context.Context, sellerID string) ([]re
 // for delivery. Distinct from orderBookEntry so the perception path
 // can carry coin/age info without forcing every check_order_book
 // caller to scan extra columns.
+//
+// BuyerCoLocated mirrors the executeDeliverOrder gate (shared
+// inside_structure_id OR current_huddle_id). When false, the
+// perception-formatter surfaces the buyer's current location so the
+// seller knows to walk to them before delivering.
+// BuyerStructure is the buyer's inside_structure_id name (display);
+// empty when the buyer is outdoors.
 type readyOrderEntry struct {
-	LedgerID      int64
-	BuyerName     string
-	ItemKind      string
-	Qty           int
-	OfferedAmount int
-	ConsumeNow    bool
-	CreatedAt     time.Time
+	LedgerID       int64
+	BuyerName      string
+	ItemKind       string
+	Qty            int
+	OfferedAmount  int
+	ConsumeNow     bool
+	CreatedAt      time.Time
+	BuyerCoLocated bool
+	BuyerStructure string
 }
 
 // formatReadyOrdersForPerception renders the seller's pending
@@ -550,8 +637,21 @@ func formatReadyOrdersForPerception(entries []readyOrderEntry, now time.Time) st
 		if e.OfferedAmount > 0 {
 			coinPart = fmt.Sprintf(", %d coin(s)", e.OfferedAmount)
 		}
-		fmt.Fprintf(&b, "- %s: %s%s — paid %s ago — call deliver_order(%d)\n",
-			e.BuyerName, qtyItem, coinPart, formatAgeShort(now.Sub(e.CreatedAt)), e.LedgerID)
+		// ZBBS-142: surface buyer location when they've wandered off.
+		// Co-located buyer (same structure or huddle as seller) gets
+		// no annotation; absent buyer gets a "(at the Well)" or
+		// "(elsewhere)" cue so the seller knows hand-delivery is
+		// needed before calling deliver_order.
+		locationPart := ""
+		if !e.BuyerCoLocated {
+			if e.BuyerStructure != "" {
+				locationPart = fmt.Sprintf(" — at the %s", e.BuyerStructure)
+			} else {
+				locationPart = " — elsewhere in the village"
+			}
+		}
+		fmt.Fprintf(&b, "- %s: %s%s — paid %s ago%s — call deliver_order(%d)\n",
+			e.BuyerName, qtyItem, coinPart, formatAgeShort(now.Sub(e.CreatedAt)), locationPart, e.LedgerID)
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
