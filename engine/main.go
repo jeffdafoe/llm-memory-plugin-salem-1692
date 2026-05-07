@@ -462,7 +462,7 @@ func main() {
 	authed("POST /api/village/pc/pay", app.handlePCPay)
 	authed("POST /api/village/pc/sleep", app.handlePCSleep)
 	authed("POST /api/village/pc/wake", app.handlePCWake)
-	authed("POST /api/village/pc/move-subspace", app.handlePCMoveSubspace)
+	authed("POST /api/village/pc/move-room", app.handlePCMoveRoom)
 	authed("POST /api/village/pc/deliver-note", app.handlePCDeliverNote)
 	authed("POST /api/village/pc/accept-errand", app.handlePCAcceptErrand)
 	authed("POST /api/village/pc/complete-errand", app.handlePCCompleteErrand)

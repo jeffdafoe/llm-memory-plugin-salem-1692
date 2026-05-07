@@ -5,7 +5,7 @@ package main
 // Three responsibilities:
 //
 //   1. touchPCInput — every action-shaped PC handler entry (move,
-//      say, speak, pay, move-subspace). Stamps last_pc_input_at AND
+//      say, speak, pay, move-room). Stamps last_pc_input_at AND
 //      input-wakes any sleeping PC (ZBBS-150). /pc/sleep and /pc/wake
 //      handlers manage state directly without touchPCInput so manual
 //      bed/wake transitions get their authoritative reason on the
@@ -15,8 +15,8 @@ package main
 //      tick:
 //        a) Wakes sleepers when ANY of: sleeping_until reached
 //           (safety cap), tiredness <= 0 (rested), or
-//           subspace_access expired (housekeeping at checkout).
-//        b) Auto-beds idle lodger PCs whose subspace is 'private' and
+//           room_access expired (housekeeping at checkout).
+//        b) Auto-beds idle lodger PCs whose room is 'private' and
 //           tiredness >= pc_idle_sleep_min_tiredness. The bedroom-
 //           only gate (ZBBS-149) keeps the sweep from sleep-darting
 //           a PC sitting in the bar; the tiredness gate keeps a
@@ -57,7 +57,7 @@ const sleepSweepInterval = time.Minute
 // currently sleeping, clears sleeping_until + broadcasts a
 // pc_sleep_ended event with reason "input" (ZBBS-150 input-wake).
 // Called from every PC HTTP action handler (move, say, speak, pay,
-// move-subspace). NOT called from /pc/sleep or /pc/wake — those
+// move-room). NOT called from /pc/sleep or /pc/wake — those
 // manage sleep state directly so the broadcast carries the
 // authoritative reason ("manual" wake, fresh "started" sleep).
 //
@@ -153,9 +153,9 @@ func (app *App) runSleepSweep(ctx context.Context) {
 //     while sleeping_until is set; once it hits 0 the PC is fully
 //     rested and the sweep wakes them naturally.
 //
-//   - subspace_access expired for the PC's current bedroom:
+//   - room_access expired for the PC's current bedroom:
 //     housekeeping knock at checkout. Lodger_until rolls into
-//     subspace_access.expires_at via assignBedroomForLodger; when it
+//     room_access.expires_at via assignBedroomForLodger; when it
 //     passes, the PC is no longer welcome in that room and gets
 //     woken so they can leave. Note: the PC's lodger status (via
 //     isLodger) materializes from the same ledger row, so this fires
@@ -168,7 +168,7 @@ func (app *App) runSleepSweep(ctx context.Context) {
 func (app *App) wakeExpiredSleepers(ctx context.Context) error {
 	// PC-only via login_username IS NOT NULL gate. The pc_sleep_ended
 	// broadcast is PC-shaped and the new wake conditions (tiredness,
-	// subspace_access) are PC-specific; without the gate, an NPC with
+	// room_access) are PC-specific; without the gate, an NPC with
 	// sleeping_until set (from a future feature or admin edit) would
 	// erroneously emit a PC sleep event.
 	rows, err := app.DB.Query(ctx,
@@ -185,11 +185,11 @@ func (app *App) wakeExpiredSleepers(ctx context.Context) error {
 		           AND an.value <= 0
 		      )
 		      OR (
-		        a.inside_subspace_id IS NOT NULL
+		        a.inside_room_id IS NOT NULL
 		        AND EXISTS (
-		          SELECT 1 FROM subspace_access sa
+		          SELECT 1 FROM room_access sa
 		           WHERE sa.actor_id = a.id
-		             AND sa.subspace_id = a.inside_subspace_id
+		             AND sa.room_id = a.inside_room_id
 		             AND sa.expires_at IS NOT NULL
 		             AND sa.expires_at <= NOW()
 		        )
@@ -227,24 +227,24 @@ func (app *App) wakeExpiredSleepers(ctx context.Context) error {
 }
 
 // autoBedIdleLodgers finds connected PCs idle in their bedroom
-// subspace and beds them via executePCSleep. ZBBS-150 tightens the
+// room and beds them via executePCSleep. ZBBS-150 tightens the
 // pre-ZBBS-149 always-fires-anywhere behavior with two new gates:
 //
-//   - subspace_kind = 'private': PC must be in their bedroom, not
-//     the bar (common subspace). Without this, a 5-min AFK at the
+//   - room_kind = 'private': PC must be in their bedroom, not
+//     the bar (common room). Without this, a 5-min AFK at the
 //     bar pinned the PC for ~22h — the bug Jeff hit on 2026-05-07.
 //
 //   - tiredness >= pc_idle_sleep_min_tiredness (default 10): a PC
 //     who just walked into their bedroom while fresh isn't auto-
 //     knocked-out. Sleep is for the tired.
 //
-// A private subspace alone is not sufficient; the EXISTS clause also
-// requires an unexpired subspace_access row so admin overrides or
-// stale placement (PC still in subspace_id after lodger_until passed)
+// A private room alone is not sufficient; the EXISTS clause also
+// requires an unexpired room_access row so admin overrides or
+// stale placement (PC still in room_id after lodger_until passed)
 // don't auto-bed someone who lost their room rights. This is the
 // authoritative runtime materialization of "is a lodger here" —
 // the explicit isLodger ledger check is no longer needed because
-// subspace_access is the SAME ledger row's effects, just queried
+// room_access is the SAME ledger row's effects, just queried
 // directly.
 func (app *App) autoBedIdleLodgers(ctx context.Context) error {
 	idleMinutes := app.loadIdleSleepMinutes(ctx)
@@ -254,31 +254,31 @@ func (app *App) autoBedIdleLodgers(ctx context.Context) error {
 	}
 	minTiredness := app.loadIdleSleepMinTiredness(ctx)
 
-	// Explicit subspace_access check. Earlier draft asserted "private
-	// subspace implies access" by construction, but that holds only
+	// Explicit room_access check. Earlier draft asserted "private
+	// room implies access" by construction, but that holds only
 	// when assignBedroomForLodger is the sole path that places a PC
-	// in a private subspace AND the access row hasn't expired since.
+	// in a private room AND the access row hasn't expired since.
 	// Code review pointed out that admin overrides, expired access
-	// (lodger_until passed but PC still in inside_subspace_id), or
+	// (lodger_until passed but PC still in inside_room_id), or
 	// stale state can violate the implication. Enforcing the access
 	// row here makes the gate trustworthy.
 	rows, err := app.DB.Query(ctx,
 		`SELECT a.id::text
 		   FROM actor a
-		   JOIN structure_subspace ss ON ss.id = a.inside_subspace_id
+		   JOIN structure_room ss ON ss.id = a.inside_room_id
 		   JOIN actor_need an ON an.actor_id = a.id AND an.key = 'tiredness'
 		  WHERE a.login_username IS NOT NULL
 		    AND a.inside_structure_id IS NOT NULL
-		    AND a.inside_subspace_id IS NOT NULL
+		    AND a.inside_room_id IS NOT NULL
 		    AND a.sleeping_until IS NULL
 		    AND a.last_pc_input_at IS NOT NULL
 		    AND a.last_pc_input_at < NOW() - ($1::int * INTERVAL '1 minute')
 		    AND ss.kind = 'private'
 		    AND an.value >= $2::int
 		    AND EXISTS (
-		      SELECT 1 FROM subspace_access sa
+		      SELECT 1 FROM room_access sa
 		       WHERE sa.actor_id = a.id
-		         AND sa.subspace_id = a.inside_subspace_id
+		         AND sa.room_id = a.inside_room_id
 		         AND (sa.expires_at IS NULL OR sa.expires_at > NOW())
 		    )`,
 		idleMinutes, minTiredness,

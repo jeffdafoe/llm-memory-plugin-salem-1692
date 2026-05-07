@@ -185,7 +185,7 @@ func (app *App) dispatchSummonErrand(ctx context.Context, summoner *agentNPCRow,
 		        last_shift_tick_at = $2,
 		        inside = false,
 		        inside_structure_id = NULL,
-		        inside_subspace_id = NULL
+		        inside_room_id = NULL
 		  WHERE id = $1`,
 		summoner.ID, overrideUntil,
 	); err != nil {
@@ -411,7 +411,7 @@ func (app *App) onSummonerAtPoint(ctx context.Context, errandID, summonerID, mes
 		        last_shift_tick_at = $2,
 		        inside = false,
 		        inside_structure_id = NULL,
-		        inside_subspace_id = NULL
+		        inside_room_id = NULL
 		  WHERE id = $1`,
 		messengerID, overrideUntil,
 	); err != nil {
