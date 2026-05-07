@@ -711,12 +711,66 @@ func (app *App) findVocativeStaleAddressees(ctx context.Context, speakerID, text
 	return absent, rows.Err()
 }
 
+// actorStructureScope returns the effective conversational structure
+// scope for an actor at a given position. Used by the speak broadcast
+// and the event-tick cascade to decide which structure_id this actor's
+// utterance belongs to.
+//
+// Indoor actors return their inside_structure_id directly. Outdoor
+// actors fall back to the nearest village_object whose loiter pin is
+// within Chebyshev 64 px of their position — the well's pin for an
+// actor standing at the well, the lamp post's pin for someone
+// loitering there. Returns "" when the actor is outdoors and not at
+// any structure's loiter ring (open road, courtyard).
+//
+// 64 px tolerance covers slot snap and minor drift; same value as
+// the loiter-huddle formation predicate in handlePCMove. Single
+// indexed-ish lookup against village_object — small table.
+func (app *App) actorStructureScope(ctx context.Context, insideStructureID sql.NullString, x, y float64) string {
+	if insideStructureID.Valid && insideStructureID.String != "" {
+		return insideStructureID.String
+	}
+	var scope sql.NullString
+	err := app.DB.QueryRow(ctx,
+		`SELECT o.id::text FROM village_object o
+		  WHERE o.loiter_offset_x IS NOT NULL
+		    AND o.loiter_offset_y IS NOT NULL
+		    AND GREATEST(
+		          ABS(o.x + o.loiter_offset_x * 32 - $1),
+		          ABS(o.y + o.loiter_offset_y * 32 - $2)
+		        ) <= 64
+		  ORDER BY GREATEST(
+		          ABS(o.x + o.loiter_offset_x * 32 - $1),
+		          ABS(o.y + o.loiter_offset_y * 32 - $2)
+		        ) ASC
+		  LIMIT 1`,
+		x, y).Scan(&scope)
+	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			log.Printf("actorStructureScope at (%.1f, %.1f): %v", x, y, err)
+		}
+		return ""
+	}
+	if scope.Valid {
+		return scope.String
+	}
+	return ""
+}
+
 // triggerCoLocatedTicks fires immediate ticks for every other agentized
 // NPC at the given structureID (excluding excludeNpcID, the source of
 // the event). Used by the speak commit, arrival hook, and PC speech.
 // Each affected NPC's tick is gated by the cost guard in
 // triggerImmediateTick UNLESS force=true (PC-initiated — see that
 // function's comment for rationale).
+//
+// "Co-located" includes both NPCs inside the structure (the indoor
+// case, the original behavior) and outdoor NPCs standing at the
+// structure's loiter ring (within Chebyshev 64 px of the loiter pin).
+// The latter covers loiter-huddle scenarios — e.g., Prudence drinking
+// at the well reacts to a PC speaking in the well's huddle even
+// though her inside_structure_id is NULL. Same 64 px tolerance as
+// actorStructureScope and the loiter-huddle formation predicate.
 //
 // sceneID (MEM-121) is the cascade UUID this fan-out belongs to. The
 // caller — a cascade origin (PC speak / NPC arrival) or a propagating
@@ -735,9 +789,21 @@ func (app *App) triggerCoLocatedTicks(ctx context.Context, structureID, excludeN
 		// cast — the query errors and no NPCs get event-ticked. Guard with
 		// a length check so empty just skips the exclusion.
 		`SELECT n.id FROM actor n
-		 WHERE n.inside_structure_id = $1
-		   AND n.llm_memory_agent IS NOT NULL
-		   AND ($2 = '' OR n.id::text != $2)`,
+		 LEFT JOIN village_object o ON o.id::text = $1
+		 WHERE n.llm_memory_agent IS NOT NULL
+		   AND ($2 = '' OR n.id::text != $2)
+		   AND (
+		     n.inside_structure_id::text = $1
+		     OR (
+		       n.inside_structure_id IS NULL
+		       AND o.loiter_offset_x IS NOT NULL
+		       AND o.loiter_offset_y IS NOT NULL
+		       AND GREATEST(
+		             ABS(n.current_x - (o.x + o.loiter_offset_x * 32)),
+		             ABS(n.current_y - (o.y + o.loiter_offset_y * 32))
+		           ) <= 64
+		     )
+		   )`,
 		structureID, excludeNpcID)
 	if err != nil {
 		log.Printf("event-tick co-located query (%s): %v", reason, err)
@@ -1901,8 +1967,16 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		// field and render every npc_spoke (PCs see speech bubbles over
 		// NPCs across structures); the panel uses it as a filter so a
 		// player at the apothecary doesn't see tavern dialogue mixed in.
-		if r.InsideStructureID.Valid {
-			spokeData["structure_id"] = r.InsideStructureID.String
+		//
+		// Effective scope: inside_structure_id when indoors; otherwise
+		// the nearest structure whose loiter pin is within 64 px (well,
+		// lamp post, market square). Outdoor speakers at a loiter ring
+		// take that structure's scope so their speech lands in the
+		// same talk-panel scope as PCs in the loiter-huddle (#113).
+		// See actorStructureScope.
+		structureScope := app.actorStructureScope(ctx, r.InsideStructureID, r.CurrentX, r.CurrentY)
+		if structureScope != "" {
+			spokeData["structure_id"] = structureScope
 		}
 		app.Hub.Broadcast(WorldEvent{Type: "npc_spoke", Data: spokeData})
 		// Event-tick co-located agents so they can react in-band. Force
@@ -1923,8 +1997,8 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		// problem in practice, the next layer of protection is a
 		// per-scene round counter (track depth via scene_huddle or
 		// sceneID, force `done` past N rounds).
-		if r.InsideStructureID.Valid {
-			app.triggerCoLocatedTicks(ctx, r.InsideStructureID.String, r.ID, "heard-speech", true, sceneID, r.ID)
+		if structureScope != "" {
+			app.triggerCoLocatedTicks(ctx, structureScope, r.ID, "heard-speech", true, sceneID, r.ID)
 		}
 
 	case "act":
