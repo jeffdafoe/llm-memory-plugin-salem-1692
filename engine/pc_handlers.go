@@ -1702,43 +1702,67 @@ func (app *App) handlePCPay(w http.ResponseWriter, r *http.Request) {
 		log.Printf("pc/pay audit insert: %v", err)
 	}
 
-	if pr.Result == "ok" && actor.InsideStructureID.Valid {
-		text := narratePay(actor.DisplayName, payload)
-		if text != "" {
-			app.Hub.Broadcast(WorldEvent{
-				Type: "room_event",
-				Data: map[string]interface{}{
-					"actor_id":     actor.ID,
-					"actor_name":   actor.DisplayName,
-					"kind":         "pay",
-					"text":         text,
-					"structure_id": actor.InsideStructureID.String,
-					"at":           time.Now().UTC().Format(time.RFC3339),
-				},
-			})
+	if pr.Result == "ok" {
+		// Effective structure scope for the room_event broadcast and
+		// the post-pay reactor tick. Indoor PC → inside_structure_id.
+		// Outdoor PC in a knock-huddle (e.g. paid for nights_stay
+		// while standing at the closed tavern's loiter slot, ZBBS-117
+		// knock-on-closed-door) → huddle's structure_id. Without the
+		// huddle fallback, the reactor tick is skipped — the keeper
+		// never sees the pay, never calls deliver_order, the lodger
+		// never gets checked in.
+		effectiveStructureID := ""
+		if actor.InsideStructureID.Valid {
+			effectiveStructureID = actor.InsideStructureID.String
+		} else {
+			var huddleStructure sql.NullString
+			if err := app.DB.QueryRow(r.Context(),
+				`SELECT sh.structure_id::text
+				   FROM scene_huddle sh
+				   JOIN actor a ON a.current_huddle_id = sh.id
+				  WHERE a.id::text = $1 AND sh.concluded_at IS NULL`,
+				actor.ID).Scan(&huddleStructure); err == nil && huddleStructure.Valid {
+				effectiveStructureID = huddleStructure.String
+			}
 		}
-		// ZBBS-129 step 2: the felt-language consume narration that used
-		// to fire here (private "you eat the stew" line) moved to
-		// executeDeliverOrder, since consumption now happens at deliver
-		// time, not pay-accept. The Godot client's brown-box renders the
-		// same room_event kind="consume" private payload from the new
-		// callsite.
-		// Post-pay reactor tick (ZBBS-126). Give the recipient a chance
-		// to acknowledge the transaction — "thanks, friend" / "enjoy the
-		// stew" / "come again." Without this hook the room goes silent
-		// after a PC pay even though a vendor would naturally respond.
-		// Mints a fresh scene UUID like the PC-speak path; force=true
-		// because the customer just handed over coins, this isn't a
-		// background reaction we should cost-guard. Goroutine because
-		// the LLM call shouldn't block the PC's pay HTTP response.
-		if pr.RecipientIsAgent && pr.RecipientID != "" {
-			structureID := actor.InsideStructureID.String
-			recipientID := pr.RecipientID
-			pcActorID := actor.ID
-			go func() {
-				bg := context.Background()
-				app.triggerImmediateTick(bg, recipientID, "pc-paid-you", true, app.newScene(bg, structureID), pcActorID)
-			}()
+		if effectiveStructureID != "" {
+			text := narratePay(actor.DisplayName, payload)
+			if text != "" {
+				app.Hub.Broadcast(WorldEvent{
+					Type: "room_event",
+					Data: map[string]interface{}{
+						"actor_id":     actor.ID,
+						"actor_name":   actor.DisplayName,
+						"kind":         "pay",
+						"text":         text,
+						"structure_id": effectiveStructureID,
+						"at":           time.Now().UTC().Format(time.RFC3339),
+					},
+				})
+			}
+			// ZBBS-129 step 2: the felt-language consume narration that used
+			// to fire here (private "you eat the stew" line) moved to
+			// executeDeliverOrder, since consumption now happens at deliver
+			// time, not pay-accept. The Godot client's brown-box renders the
+			// same room_event kind="consume" private payload from the new
+			// callsite.
+			// Post-pay reactor tick (ZBBS-126). Give the recipient a chance
+			// to acknowledge the transaction — "thanks, friend" / "enjoy the
+			// stew" / "come again." Without this hook the room goes silent
+			// after a PC pay even though a vendor would naturally respond.
+			// Mints a fresh scene UUID like the PC-speak path; force=true
+			// because the customer just handed over coins, this isn't a
+			// background reaction we should cost-guard. Goroutine because
+			// the LLM call shouldn't block the PC's pay HTTP response.
+			if pr.RecipientIsAgent && pr.RecipientID != "" {
+				structureID := effectiveStructureID
+				recipientID := pr.RecipientID
+				pcActorID := actor.ID
+				go func() {
+					bg := context.Background()
+					app.triggerImmediateTick(bg, recipientID, "pc-paid-you", true, app.newScene(bg, structureID), pcActorID)
+				}()
+			}
 		}
 	}
 
