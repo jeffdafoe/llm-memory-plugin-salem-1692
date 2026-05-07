@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 )
@@ -86,6 +87,12 @@ func (app *App) summonsTargetingPerceiver(ctx context.Context, perceiverID, perc
 		 LIMIT 3
 	`, perceiverID, perceiverDisplayName)
 	if err != nil {
+		// Logged because a swallowed error here looks identical, in
+		// chat history, to "no pending summons." When a target NPC
+		// returns done after a fresh summon, the diagnostic question
+		// is "did the perception not include it, or did the model
+		// see it and ignore it?" Without this log we can't tell.
+		log.Printf("summons-perception query for %s (%s): %v", perceiverID, perceiverDisplayName, err)
 		return nil
 	}
 	defer rows.Close()
@@ -163,6 +170,7 @@ func (app *App) summonFailedForPerceiver(ctx context.Context, perceiverID string
 		 LIMIT 3
 	`, perceiverID)
 	if err != nil {
+		log.Printf("summon-failed perception query for %s: %v", perceiverID, err)
 		return nil
 	}
 	defer rows.Close()
