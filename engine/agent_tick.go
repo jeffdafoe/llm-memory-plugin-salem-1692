@@ -800,11 +800,18 @@ func (app *App) triggerCoLocatedTicks(ctx context.Context, structureID, excludeN
 	//     non-actor-rooted event. Default to the structure's 'common'
 	//     subspace so cascade triggers don't reach lodgers in their
 	//     bedrooms.
-	//   - Actor trigger ($3 != ''): use that actor's inside_subspace_id
-	//     directly. Equality (=) rather than IS NOT DISTINCT FROM, so a
-	//     trigger actor with NULL subspace (broken state, shouldn't
-	//     happen post-migration) reaches nobody — fail closed instead
-	//     of silently bucketing into common.
+	//   - Actor trigger ($3 != '') AND that actor is inside this
+	//     structure with a subspace set: use the trigger's subspace
+	//     directly (lodger-in-bedroom triggers stay in the bedroom).
+	//   - Actor trigger ($3 != '') AND that actor is NOT inside this
+	//     structure (e.g. PC knocking at an entry_policy=owner door —
+	//     they're added to the structure huddle but not physically
+	//     inside): fall back to the 'common' subspace. The knock is
+	//     anonymous from the inside's perspective; it should reach the
+	//     public area but not bedrooms.
+	//   - Actor trigger but NULL subspace (corruption — shouldn't
+	//     happen post-migration): also falls back to common via the
+	//     same COALESCE, fail-open instead of silently dropping.
 	rows, err := app.DB.Query(ctx,
 		`SELECT n.id FROM actor n
 		 LEFT JOIN village_object o ON o.id::text = $1
@@ -819,10 +826,13 @@ func (app *App) triggerCoLocatedTicks(ctx context.Context, structureID, excludeN
 		            WHERE structure_id::text = $1 AND kind = 'common'
 		            LIMIT 1
 		         )
-		         ELSE (
-		           SELECT inside_subspace_id FROM actor
-		            WHERE id::text = $3
-		              AND inside_structure_id::text = $1
+		         ELSE COALESCE(
+		           (SELECT inside_subspace_id FROM actor
+		             WHERE id::text = $3
+		               AND inside_structure_id::text = $1),
+		           (SELECT id FROM structure_subspace
+		             WHERE structure_id::text = $1 AND kind = 'common'
+		             LIMIT 1)
 		         )
 		       END
 		     )
