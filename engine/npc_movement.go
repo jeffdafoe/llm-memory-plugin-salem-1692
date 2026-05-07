@@ -495,4 +495,38 @@ func (app *App) applyArrivalSideEffects(ctx context.Context, npcID string, x, y 
 	})
 	app.advanceBehavior(npcID)
 	app.advanceErrandFromArrival(ctx, npcID)
+
+	// Clear agent_override_until on arrival. The override was set by
+	// chore / move_to / relocateVisitors as a fixed 30-minute window
+	// "long enough to cover any walk." Actual walks finish in 1-3
+	// minutes, leaving the NPC stuck on a stale override for ~25+
+	// minutes after arrival — observed in play with Prudence drinking
+	// at the well at 01:25, finishing 50 seconds later, and standing
+	// silent on the loiter slot until the override expired at 01:55.
+	// Tying the override to the walk-it-covers frees the scheduler
+	// to tick the NPC again as soon as the walk is actually done.
+	//
+	// Preserved when:
+	//   - On break (break_until > NOW): take_break legitimately holds
+	//     the override past arrival home for the full break duration.
+	//   - Active summon errand involving this actor: the summoner
+	//     waits at the summon point until the messenger returns;
+	//     the messenger waits at the target during chat-at-target.
+	//     The errand state machine in summon_errand.go clears its
+	//     own override on terminal transitions, so this skip just
+	//     defers to those.
+	if _, err := app.DB.Exec(ctx,
+		`UPDATE actor
+		    SET agent_override_until = NULL
+		  WHERE id = $1::uuid
+		    AND (break_until IS NULL OR break_until <= NOW())
+		    AND NOT EXISTS (
+		      SELECT 1 FROM summon_errand
+		       WHERE state NOT IN ('done', 'failed')
+		         AND (summoner_id = $1::uuid OR messenger_id = $1::uuid)
+		    )`,
+		npcID,
+	); err != nil {
+		log.Printf("arrival: clear override %s: %v", npcID, err)
+	}
 }
