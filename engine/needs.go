@@ -43,7 +43,6 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
-	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -314,41 +313,30 @@ func (app *App) dispatchNeedsTick(ctx context.Context) {
 	// UPDATE's "which actors does this touch" is structurally tied to
 	// the lock set, not to a free-floating WHERE that could drift if
 	// the predicate is edited in only one place.
-	// ZBBS-133: tiredness recovery branch. While an actor's break_until
-	// is in the future, their tiredness drops by tiredness_recovery_per_
-	// minute (settings, default 0.1/min). Hourly tick granularity means
-	// sub-hour breaks miss out on recovery — the rate is computed for
-	// the full elapsed period and applied as a single decrement. Hunger
-	// and thirst still accrue normally regardless of break state
-	// (vendors get hungry on break too).
-	recoveryPerMinStr := app.loadSetting(ctx, "take_break.tiredness_recovery_per_minute", "0.1")
-	recoveryPerMin, perr := strconv.ParseFloat(recoveryPerMinStr, 64)
-	if perr != nil || recoveryPerMin < 0 {
-		log.Printf("needs_tick: bad take_break.tiredness_recovery_per_minute %q (using 0.1)", recoveryPerMinStr)
-		recoveryPerMin = 0.1
-	}
-	totalRecovery := int(math.Round(recoveryPerMin * 60 * float64(cappedHours)))
-
+	// ZBBS-141: tiredness recovery during break is no longer applied
+	// here. The previous in-needs_tick branch flat-credited a full
+	// hour's worth of recovery to anyone whose break_until was in the
+	// future at tick time, which dropped sub-hour breaks (no boundary
+	// crossed → zero recovery) and over-credited boundary-crossing
+	// breaks (full hour regardless of actual elapsed minutes). Recovery
+	// now streams continuously through the break via the per-minute
+	// runTirednessRecoverySweep goroutine, tracked by the
+	// last_tiredness_recovery_at cursor on actor. needs_tick still
+	// accrues hunger / thirst / tiredness from time alone — vendors get
+	// hungry on break too.
 	tag, err := tx.Exec(ctx, `
 		WITH locked_actors AS (
-		    SELECT id, break_until
+		    SELECT id
 		      FROM actor
 		     WHERE `+needTickEligibilityPred+`
 		     ORDER BY id
 		     FOR UPDATE
 		)
 		UPDATE actor_need an
-		   SET value = CASE
-		       WHEN an.key = 'tiredness'
-		            AND la.break_until IS NOT NULL
-		            AND la.break_until > NOW() THEN
-		           GREATEST(0, an.value - $3::int)
-		       ELSE
-		           LEAST($1::int, an.value + $2::int)
-		       END
+		   SET value = LEAST($1::int, an.value + $2::int)
 		  FROM locked_actors la
 		 WHERE la.id = an.actor_id
-	`, needMax, totalIncrement, totalRecovery)
+	`, needMax, totalIncrement)
 	if err != nil {
 		log.Printf("needs_tick: UPDATE failed (rolling back, will retry next minute): %v", err)
 		return

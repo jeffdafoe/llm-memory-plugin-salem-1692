@@ -378,6 +378,15 @@ func main() {
 	// from the pc_idle_sleep_minutes setting.
 	go app.runSleepSweep(context.Background())
 
+	// Tiredness recovery sweep (ZBBS-141). Replaces the in-needs_tick
+	// recovery branch: a cursor on actor.last_tiredness_recovery_at
+	// streams tiredness drops continuously through a take_break, so
+	// 15-30 min breaks recover proportionally instead of getting zero
+	// (sub-hour) or a flat hour (boundary-crossing) under the old
+	// hourly-tick scheme. 1-minute cadence; rate from
+	// take_break.tiredness_recovery_per_minute setting (default 0.1).
+	go app.runTirednessRecoverySweep(context.Background())
+
 	// Build router. Routes are registered via two helpers: authed() wraps
 	// the handler in requireLLMMemory; public() leaves it unwrapped. Default
 	// is authed — anything public must explicitly opt out, so forgetting to

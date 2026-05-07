@@ -1444,6 +1444,20 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 	}
 	sections = append(sections, fmt.Sprintf("%sCoins in your purse: %d.", bodyLine, r.Coins))
 
+	// Tired-vendor cue (ZBBS-131 follow-up). When tiredness has crossed
+	// the red threshold AND the NPC has a work assignment (so take_break
+	// is a meaningful action), nudge them toward closing shop. Without
+	// this hint, a tired vendor sees "Address now: tiredness" in the
+	// body line above but reaches for consume() (no current item
+	// satisfies tiredness) or move_to home (no-op for home==work
+	// vendors). Gated solely on tiredness + workLabel; the take_break
+	// engagement cooldown is enforced by the dispatcher, so the cue
+	// stays simple and lets the engine reject + correct if the vendor
+	// is mid-engagement.
+	if r.Tiredness >= tiredT && workLabel != "" {
+		sections = append(sections, "A short break would help — call take_break to close your shop and recover tiredness.")
+	}
+
 	// Inventory (ZBBS-091) — items the NPC is carrying. Empty inventory
 	// produces no line at all, so a freshly-deployed villager doesn't
 	// see "Inventory: nothing" noise. Other actors' inventories are not
@@ -2229,16 +2243,35 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		// break_until in canEnter / isStructureClosed checks). For
 		// interior-occupied structures, an eviction sequence kicks off
 		// asynchronously to ask any non-exempt customers to leave.
-		// Stamp agent_override_until + break_until + last_shift_tick_at.
-		// agent_override_until keeps the scheduler stepping aside during
-		// the break. break_until (ZBBS-102) is the explicit "I'm closed
-		// for business" stamp the knock narration reads — distinct from
-		// override so a routine move_to doesn't misrepresent the vendor
-		// as on break. last_shift_tick_at is forward-stamped so the
-		// worker scheduler doesn't re-fire shift_start during the break
-		// window.
+		// Stamp agent_override_until + break_until + last_shift_tick_at +
+		// last_tiredness_recovery_at. agent_override_until keeps the
+		// scheduler stepping aside during the break. break_until (ZBBS-102)
+		// is the explicit "I'm closed for business" stamp the knock
+		// narration reads — distinct from override so a routine move_to
+		// doesn't misrepresent the vendor as on break. last_shift_tick_at
+		// is forward-stamped so the worker scheduler doesn't re-fire
+		// shift_start during the break window. last_tiredness_recovery_at
+		// (ZBBS-141) is the cursor read by runTirednessRecoverySweep —
+		// stamping it to NOW() means the sweep starts crediting recovery
+		// from the exact moment the break begins.
+		// last_tiredness_recovery_at is preserved when re-committing
+		// take_break during an active break — the existing cursor reflects
+		// recovery already accrued but not yet swept; resetting it would
+		// drop that minutes-of-recovery window. Otherwise stamped to NOW()
+		// to start a fresh recovery window for this break.
 		if _, err := app.DB.Exec(ctx,
-			`UPDATE actor SET agent_override_until = $2, break_until = $2, last_shift_tick_at = $2 WHERE id = $1`,
+			`UPDATE actor
+			    SET agent_override_until = $2,
+			        break_until = $2,
+			        last_shift_tick_at = $2,
+			        last_tiredness_recovery_at = CASE
+			            WHEN break_until IS NOT NULL
+			             AND break_until > NOW()
+			             AND last_tiredness_recovery_at IS NOT NULL
+			            THEN last_tiredness_recovery_at
+			            ELSE NOW()
+			        END
+			  WHERE id = $1`,
 			r.ID, breakUntil,
 		); err != nil {
 			log.Printf("take_break: stamp override %s: %v", r.DisplayName, err)

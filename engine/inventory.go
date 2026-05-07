@@ -122,7 +122,7 @@ func (app *App) validateMentionsAgainstInventory(ctx context.Context, actorID st
 // before materials).
 func (app *App) inventoryLine(ctx context.Context, actorID string) string {
 	rows, err := app.DB.Query(ctx,
-		`SELECT k.name, ai.quantity
+		`SELECT k.name, ai.quantity, COALESCE(k.capabilities, '{}'::text[])
 		   FROM actor_inventory ai
 		   JOIN item_kind k ON k.name = ai.item_kind
 		  WHERE ai.actor_id = $1
@@ -136,12 +136,25 @@ func (app *App) inventoryLine(ctx context.Context, actorID string) string {
 	defer rows.Close()
 	var parts []string
 	for rows.Next() {
-		var name string
-		var qty int
-		if err := rows.Scan(&name, &qty); err != nil {
+		var (
+			name         string
+			qty          int
+			capabilities []string
+		)
+		if err := rows.Scan(&name, &qty, &capabilities); err != nil {
+			log.Printf("inventory: scan row for %s: %v", actorID, err)
 			continue
 		}
-		parts = append(parts, fmt.Sprintf("%s x%d", name, qty))
+		// Service-capability items (e.g. nights_stay) carry a sentinel qty
+		// in actor_inventory so the JOIN finds them, but the "xN" suffix
+		// reads as a count when the row really represents a capacity-
+		// based offering. Render service rows without the qty so the LLM
+		// sees "nights_stay" instead of "nights_stay x1".
+		if hasCapability(capabilities, "service") {
+			parts = append(parts, name)
+		} else {
+			parts = append(parts, fmt.Sprintf("%s x%d", name, qty))
+		}
 	}
 	return strings.Join(parts, ", ")
 }
