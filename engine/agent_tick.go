@@ -104,6 +104,11 @@ type agentNPCRow struct {
 	Hunger    int
 	Thirst    int
 	Tiredness int
+	// BreakUntil (ZBBS-148) — gates the take_break perception cue so a
+	// vendor already mid-break stops being attended into a re-fire loop
+	// when their tiredness still reads above the threshold. Loaded with
+	// the row in runAgentTick. Valid + future means the cue suppresses.
+	BreakUntil sql.NullTime
 
 	// LastServeResult captures the most recent successful serve
 	// dispatched via executeAgentCommit during this tick. The harness
@@ -551,7 +556,8 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, 
 		        n.coins,
 		        COALESCE((SELECT value FROM actor_need WHERE actor_id = n.id AND key = 'hunger'), 0)::smallint,
 		        COALESCE((SELECT value FROM actor_need WHERE actor_id = n.id AND key = 'thirst'), 0)::smallint,
-		        COALESCE((SELECT value FROM actor_need WHERE actor_id = n.id AND key = 'tiredness'), 0)::smallint
+		        COALESCE((SELECT value FROM actor_need WHERE actor_id = n.id AND key = 'tiredness'), 0)::smallint,
+		        n.break_until
 		 FROM actor n
 		 LEFT JOIN village_object wo ON wo.id = n.work_structure_id
 		 LEFT JOIN asset wa ON wa.id = wo.asset_id
@@ -567,7 +573,8 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, 
 		&r.LastAgentTickAt,
 		&r.ScheduleStartMinute, &r.ScheduleEndMinute,
 		&r.WorkLabel, &r.HomeLabel,
-		&r.Coins, &r.Hunger, &r.Thirst, &r.Tiredness); err != nil {
+		&r.Coins, &r.Hunger, &r.Thirst, &r.Tiredness,
+		&r.BreakUntil); err != nil {
 		if err != sql.ErrNoRows {
 			log.Printf("event-tick %s (%s): load row: %v", npcID, reason, err)
 		}
@@ -1454,7 +1461,14 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 	// engagement cooldown is enforced by the dispatcher, so the cue
 	// stays simple and lets the engine reject + correct if the vendor
 	// is mid-engagement.
-	if r.Tiredness >= tiredT && workLabel != "" {
+	// ZBBS-148: suppress the cue when the vendor is already on break.
+	// Otherwise the chronicler keeps attending tired-on-break vendors,
+	// the cue says "call take_break", and the LLM picks take_break again
+	// — extending the break and restarting the loop. Observed
+	// 2026-05-07 18:56-19:02 UTC: John Ellis re-take_broke 3× in 6 min
+	// while already on break, each time extending break_until forward.
+	onBreak := r.BreakUntil.Valid && r.BreakUntil.Time.After(time.Now())
+	if r.Tiredness >= tiredT && workLabel != "" && !onBreak {
 		sections = append(sections, "A short break would help — call take_break to close your shop and recover tiredness.")
 	}
 
