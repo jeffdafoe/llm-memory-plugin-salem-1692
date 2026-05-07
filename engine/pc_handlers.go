@@ -861,6 +861,19 @@ func (app *App) handlePCMove(w http.ResponseWriter, r *http.Request) {
 		const tileSize = 32.0
 		var walkX, walkY float64
 		canEnter := (entryPolicy == "anyone" || (entryPolicy == "owner" && isAssociated)) && doorX.Valid && doorY.Valid
+		// ZBBS-133: closed-door gate. If a vendor at this structure is on
+		// break, and the PC isn't exempt (home/work match or active
+		// lodger), the door is locked — drop them at the loiter slot
+		// like the knock case so the client can render the closed sign
+		// instead of pulling them through the door.
+		if canEnter {
+			allowed, err := app.canEnter(r.Context(), actorID, req.TargetStructureID)
+			if err != nil {
+				log.Printf("pc/move closed-door check: %v (allowing entry)", err)
+			} else if !allowed {
+				canEnter = false
+			}
+		}
 		knocked := entryPolicy == "owner" && !isAssociated
 		log.Printf("knock-trace pc=%s structure=%s entry_policy=%s isAssociated=%v canEnter=%v knocked=%v",
 			actorID, req.TargetStructureID, entryPolicy, isAssociated, canEnter, knocked)

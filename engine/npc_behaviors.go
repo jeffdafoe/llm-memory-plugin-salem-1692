@@ -390,6 +390,19 @@ func (app *App) setNPCInside(ctx context.Context, npcID string, inside bool, str
 			log.Printf("setNPCInside: refusing to mark %s inside entry_policy=none structure %s", npcID, structureID)
 			return
 		}
+		// ZBBS-133: closed-door gate. If the structure is closed (a vendor
+		// working there is on break) AND this actor isn't exempt
+		// (home/work match, active lodger), refuse the entry. Without
+		// this gate, NPCs whose route ends inside a "closed" structure
+		// would silently flip inside=true and undermine the take_break
+		// closed-shop semantic.
+		ok, err := app.canEnter(ctx, npcID, structureID)
+		if err != nil {
+			log.Printf("setNPCInside canEnter %s/%s: %v (allowing entry)", npcID, structureID, err)
+		} else if !ok {
+			log.Printf("setNPCInside: refusing to mark %s inside closed structure %s (no exemption)", npcID, structureID)
+			return
+		}
 		s := structureID
 		newInsideID = &s
 	}

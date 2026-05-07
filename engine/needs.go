@@ -43,6 +43,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -313,19 +314,41 @@ func (app *App) dispatchNeedsTick(ctx context.Context) {
 	// UPDATE's "which actors does this touch" is structurally tied to
 	// the lock set, not to a free-floating WHERE that could drift if
 	// the predicate is edited in only one place.
+	// ZBBS-133: tiredness recovery branch. While an actor's break_until
+	// is in the future, their tiredness drops by tiredness_recovery_per_
+	// minute (settings, default 0.1/min). Hourly tick granularity means
+	// sub-hour breaks miss out on recovery — the rate is computed for
+	// the full elapsed period and applied as a single decrement. Hunger
+	// and thirst still accrue normally regardless of break state
+	// (vendors get hungry on break too).
+	recoveryPerMinStr := app.loadSetting(ctx, "take_break.tiredness_recovery_per_minute", "0.1")
+	recoveryPerMin, perr := strconv.ParseFloat(recoveryPerMinStr, 64)
+	if perr != nil || recoveryPerMin < 0 {
+		log.Printf("needs_tick: bad take_break.tiredness_recovery_per_minute %q (using 0.1)", recoveryPerMinStr)
+		recoveryPerMin = 0.1
+	}
+	totalRecovery := int(math.Round(recoveryPerMin * 60 * float64(cappedHours)))
+
 	tag, err := tx.Exec(ctx, `
 		WITH locked_actors AS (
-		    SELECT id
+		    SELECT id, break_until
 		      FROM actor
 		     WHERE `+needTickEligibilityPred+`
 		     ORDER BY id
 		     FOR UPDATE
 		)
 		UPDATE actor_need an
-		   SET value = LEAST($1::int, an.value + $2::int)
+		   SET value = CASE
+		       WHEN an.key = 'tiredness'
+		            AND la.break_until IS NOT NULL
+		            AND la.break_until > NOW() THEN
+		           GREATEST(0, an.value - $3::int)
+		       ELSE
+		           LEAST($1::int, an.value + $2::int)
+		       END
 		  FROM locked_actors la
 		 WHERE la.id = an.actor_id
-	`, needMax, totalIncrement)
+	`, needMax, totalIncrement, totalRecovery)
 	if err != nil {
 		log.Printf("needs_tick: UPDATE failed (rolling back, will retry next minute): %v", err)
 		return
