@@ -2215,6 +2215,22 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		// speak as harmless if it happens (the speak path runs first per the
 		// categorize order, then take_break adds its own).
 		//
+		// Already-on-break reject (ZBBS-154): if break_until is in the
+		// future the NPC is mid-break. Accepting another take_break would
+		// silently extend break_until and kick off a redundant eviction
+		// goroutine — the John Ellis 18:56-19:02 re-fire chain from
+		// ZBBS-148's commit message. ZBBS-148 closed the cue path (the
+		// perception nudge no longer prompts take_break while on break);
+		// this reject closes the engine-side gate for any residual prompt
+		// path or attend_to nudge that still produces take_break.
+		// r.BreakUntil is already loaded by ZBBS-148's row-select change —
+		// no new query.
+		if r.BreakUntil.Valid && r.BreakUntil.Time.After(time.Now()) {
+			result = "rejected"
+			errStr = fmt.Sprintf("You're already on break until %s. No need to call take_break again — pick a different action this turn.", r.BreakUntil.Time.Format("15:04"))
+			break
+		}
+
 		// Engagement cooldown (takeBreakEngagementCooldown): if this NPC's
 		// most recent ok-result speak/serve/pay landed inside the cooldown,
 		// reject the take_break and feed a corrective error back to the
