@@ -281,21 +281,20 @@ func (app *App) assignBedroomForLodger(
 // for callers (assignBedroomForLodger via executeDeliverOrder) that
 // need the timestamp to stamp on subspace_access.expires_at.
 //
-// Formula: (ready_by + qty days) at lodging_check_out_hour.
-//
-// Note: the SQL version casts to naive timestamp and lets Postgres
-// session TZ resolve the conversion. This Go version applies the hour
-// in UTC for now. ZBBS-151 will reconcile the TZ inconsistency
-// (likely shifting both to a world-TZ-aware computation); until then,
-// the access row's expires_at and isLodger's predicate land at the
-// same instant when session TZ = UTC, which is the deployment
-// configuration.
-func computeLodgerUntil(readyBy time.Time, qty int, checkOutHour int) time.Time {
+// Formula: (ready_by + qty days) at lodging_check_out_hour, interpreted
+// as wall-clock in the world timezone (ZBBS-151). The returned
+// time.Time carries loc so when pgx binds it as a timestamptz the
+// stored UTC instant matches isLodger's `AT TIME ZONE` SQL expression
+// using the same world_timezone setting.
+func computeLodgerUntil(readyBy time.Time, qty int, checkOutHour int, loc *time.Location) time.Time {
 	if qty < 1 {
 		qty = 1
 	}
+	if loc == nil {
+		loc = time.UTC
+	}
 	d := readyBy.AddDate(0, 0, qty)
-	return time.Date(d.Year(), d.Month(), d.Day(), checkOutHour, 0, 0, 0, time.UTC)
+	return time.Date(d.Year(), d.Month(), d.Day(), checkOutHour, 0, 0, 0, loc)
 }
 
 // loadLodgingCheckOutHour reads the lodging_check_out_hour setting,

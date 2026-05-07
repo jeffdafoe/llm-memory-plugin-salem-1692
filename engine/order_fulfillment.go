@@ -307,7 +307,11 @@ func (app *App) executeDeliverOrder(ctx context.Context, sellerID string, ledger
 			if err != nil {
 				return deliverOrderResult{Result: "failed", Err: fmt.Sprintf("load checkout hour: %v", err), LedgerID: ledgerID}
 			}
-			expiresAt := computeLodgerUntil(readyBy, qty, checkOutHour)
+			cfg, err := app.loadWorldConfig(ctx)
+			if err != nil {
+				return deliverOrderResult{Result: "failed", Err: fmt.Sprintf("load world config: %v", err), LedgerID: ledgerID}
+			}
+			expiresAt := computeLodgerUntil(readyBy, qty, checkOutHour, cfg.Location)
 			bedroomID, err := app.assignBedroomForLodger(ctx, tx, sellerWorkStructure.String, buyerID, ledgerID, expiresAt)
 			if err != nil {
 				return deliverOrderResult{Result: "failed", Err: fmt.Sprintf("assign bedroom: %v", err), LedgerID: ledgerID}
