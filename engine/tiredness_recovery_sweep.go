@@ -1,7 +1,8 @@
 package main
 
 // Tiredness recovery sweep — ZBBS-141 follow-up to the ZBBS-133
-// take_break redesign.
+// take_break redesign, extended in ZBBS-150 to also cover sleeping
+// PCs.
 //
 // The original recovery path lived inside needs_tick, which fires
 // hourly: a 30-min break that opened and closed between two ticks
@@ -10,20 +11,26 @@ package main
 // realistically take 15-30 min breaks (per Jeff's expectation), so
 // coarse-grained recovery defeats the mechanic.
 //
-// This sweep fires every minute. For each actor whose break_until is
-// still ahead of last_tiredness_recovery_at (the cursor stamped by
-// the take_break dispatcher), it computes elapsed minutes between the
-// cursor and min(NOW, break_until), converts to integer recovery
-// units via the take_break.tiredness_recovery_per_minute setting
-// (default 0.1), decrements actor_need.tiredness by that many points
-// (floored), then advances the cursor by exactly units / rate
-// minutes. Leftover fractional minutes carry forward to the next
-// sweep, so accuracy holds across many sub-hour breaks.
+// This sweep fires every minute. For each actor whose break_until OR
+// sleeping_until is still ahead of last_tiredness_recovery_at (the
+// cursor stamped at recovery-window-start by either the take_break
+// dispatcher or executePCSleep), it computes elapsed minutes between
+// the cursor and min(NOW, GREATEST(break_until, sleeping_until)),
+// converts to integer recovery units via the
+// take_break.tiredness_recovery_per_minute setting (default 0.1),
+// decrements actor_need.tiredness by that many points (floored),
+// then advances the cursor by exactly units / rate minutes. Leftover
+// fractional minutes carry forward to the next sweep.
+//
+// Single rate setting for both modes — same physiological recovery
+// per wall-clock minute whether the vendor is on break or the PC is
+// sleeping. The setting key still reads "take_break." for backward
+// compatibility; conceptually it's "tiredness recovery while resting."
 //
 // Cost: one indexed query per minute returning 0–N rows (typically
-// 0–3 — usually nobody is on break). Per-actor UPDATEs only fire when
-// >= 1 unit has accrued (every ~10 min at the default 0.1/min rate).
-// No-op when no actors match.
+// 0–3 — usually nobody is recovering). Per-actor UPDATEs only fire
+// when >= 1 unit has accrued (every ~10 min at the default 0.1/min
+// rate). No-op when no actors match.
 
 import (
 	"context"
@@ -79,17 +86,27 @@ func (app *App) sweepTirednessRecoveryOnce(ctx context.Context) error {
 	}
 	defer tx.Rollback(ctx)
 
-	// Find actors with an open recovery window: there's still uncredited
-	// break time between the cursor and min(NOW, break_until). Skip
-	// actors whose cursor is NULL — they predate ZBBS-141 and the next
-	// take_break commit will populate it.
+	// Find actors with an open recovery window. Two windows possible:
+	//   - vendor on take_break: break_until > last_tiredness_recovery_at
+	//   - PC sleeping: sleeping_until > last_tiredness_recovery_at
+	//
+	// GREATEST(break_until, sleeping_until) yields the later endpoint;
+	// Postgres GREATEST silently ignores NULLs, so an actor with one
+	// of the two set works without separate branches. The cursor and
+	// recovery_to are clamped at NOW() so we don't credit unfired
+	// future minutes.
+	//
+	// Actors whose cursor is NULL are skipped — they predate ZBBS-141
+	// and the next take_break commit / executePCSleep call will
+	// populate it.
 	rows, err := tx.Query(ctx, `
 		SELECT id::text, last_tiredness_recovery_at,
-		       LEAST(NOW(), break_until) AS recovery_to
+		       LEAST(NOW(), GREATEST(break_until, sleeping_until)) AS recovery_to
 		  FROM actor
-		 WHERE break_until IS NOT NULL
+		 WHERE (break_until IS NOT NULL OR sleeping_until IS NOT NULL)
 		   AND last_tiredness_recovery_at IS NOT NULL
-		   AND last_tiredness_recovery_at < LEAST(NOW(), break_until)
+		   AND last_tiredness_recovery_at <
+		       LEAST(NOW(), GREATEST(break_until, sleeping_until))
 		 ORDER BY id
 		 FOR UPDATE
 	`)
