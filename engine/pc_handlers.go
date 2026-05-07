@@ -62,6 +62,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -1301,11 +1302,14 @@ func (app *App) handlePCSay(w http.ResponseWriter, r *http.Request) {
 //   - Indoor speech triggers event-tick on co-located agentized NPCs
 //     (force=true, bypassing the cost guard) and a chronicler scene.
 //   - Outdoor speech triggers agentized NPCs within 6 tiles (192 px
-//     Chebyshev) of the speaker, force=true. No chronicler — open-
-//     village chat stays cheap; the chronicler's natural unit is the
-//     indoor scene. PC-to-PC outdoor speech beyond the proximity
-//     radius reaches no NPC, so two players walking the road can
-//     still talk without lighting up LLM costs.
+//     Chebyshev) of the speaker WHOSE FIRST NAME APPEARS IN THE
+//     SPEECH. "Hi Prudence" at the well wakes Prudence; ambient
+//     "good evening" with no name wakes nobody. Outdoor speech is
+//     direct-address by definition, and the name filter prevents the
+//     loiter-point echo where multiple NPCs around a shared resource
+//     all reply to a single "hello." No chronicler — open-village
+//     chat stays cheap; the chronicler's natural unit is the indoor
+//     scene.
 func (app *App) handlePCSpeak(w http.ResponseWriter, r *http.Request) {
 	user := getUserFromContext(r.Context())
 	if user == nil {
@@ -1424,24 +1428,28 @@ func (app *App) handlePCSpeak(w http.ResponseWriter, r *http.Request) {
 		app.cascadeOriginFireChronicler(fmt.Sprintf("pc-spoke (%s)", charName.String), structureID, chroniclerFirePriorityHigh)
 	} else {
 		// Outdoor speech: trigger agentized NPCs within 6-tile Chebyshev
-		// (192 px) of the speaker so a PC at the well can address an NPC
-		// drinking next to them. Same proximity radius the client uses
-		// for PC-to-PC outdoor filtering, kept in sync so what a PC sees
-		// matches what an NPC reacts to. Only outdoor NPCs are triggered
-		// — an NPC inside a building shouldn't hear a PC at the well.
+		// (192 px) of the speaker WHOSE FIRST NAME APPEARS IN THE SPEECH.
+		// "Hi Prudence" at the well wakes Prudence; "good evening" at the
+		// well, with no name, wakes nobody. Cuts the loiter-point echo
+		// where 3 NPCs around a shared resource all reply to a single
+		// "hello" — outdoor speech is direct-address by definition.
+		//
+		// Match logic mirrors findVocativeStaleAddressees: case-sensitive
+		// whole-word match on the actor's first display-name token. Same
+		// rationale (case-insensitive matched verbs like "hope" against
+		// "Hope James").
 		//
 		// force=true matches the indoor branch: a co-located NPC who
 		// just ticked shouldn't be cost-gated out of replying when a
-		// player addresses them directly. Storm risk is bounded by the
-		// proximity radius (typically 0-2 NPCs near any tile in this
-		// village).
+		// player addresses them by name. Storm risk bounded by the
+		// proximity radius and the name match.
 		//
 		// Chronicler fire stays OFF for outdoor speech — keeps casual
 		// passing-through chat cheap. Indoor scenes are the chronicler's
 		// natural unit; the open village isn't.
 		const outdoorProximityPx = 192.0
 		rows, err := app.DB.Query(context.Background(),
-			`SELECT id::text FROM actor
+			`SELECT id::text, display_name FROM actor
 			  WHERE llm_memory_agent IS NOT NULL
 			    AND inside_structure_id IS NULL
 			    AND id::text != $1
@@ -1450,15 +1458,37 @@ func (app *App) handlePCSpeak(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			log.Printf("pc/speak outdoor proximity query: %v", err)
 		} else {
-			defer rows.Close()
-			sceneID := app.newScene(context.Background(), "")
-			reason := fmt.Sprintf("pc-spoke-outdoor (%s)", charName.String)
+			type candidate struct {
+				ID, Name string
+			}
+			var candidates []candidate
 			for rows.Next() {
-				var npcID string
-				if err := rows.Scan(&npcID); err != nil {
+				var c candidate
+				if err := rows.Scan(&c.ID, &c.Name); err != nil {
 					continue
 				}
-				go app.triggerImmediateTick(context.Background(), npcID, reason, true, sceneID, actorID.String)
+				candidates = append(candidates, c)
+			}
+			rows.Close()
+
+			var sceneID string
+			reason := fmt.Sprintf("pc-spoke-outdoor (%s)", charName.String)
+			for _, c := range candidates {
+				first := strings.SplitN(strings.TrimSpace(c.Name), " ", 2)[0]
+				if first == "" {
+					continue
+				}
+				re, err := regexp.Compile(`\b` + regexp.QuoteMeta(first) + `\b`)
+				if err != nil {
+					continue
+				}
+				if !re.MatchString(req.Text) {
+					continue
+				}
+				if sceneID == "" {
+					sceneID = app.newScene(context.Background(), "")
+				}
+				go app.triggerImmediateTick(context.Background(), c.ID, reason, true, sceneID, actorID.String)
 			}
 		}
 	}
