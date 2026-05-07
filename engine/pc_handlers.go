@@ -964,6 +964,64 @@ func (app *App) handlePCMove(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
+		// Outdoor loiter-point huddle formation. When the PC walks to a
+		// structure's loiter slot (canEnter=false) and there are
+		// agentized NPCs already at that ring, form/join the structure's
+		// huddle so the talk panel opens with the NPCs as addressees.
+		// Same machinery as the knock huddle above, just triggered by
+		// loiter co-location instead of inside-the-structure NPCs.
+		// Covers entry_policy='none' structures (well, lamp post,
+		// market square) where there's no inside flip but real
+		// conversations should still be possible — Jeff arrived next to
+		// Prudence at the well and had no UI surface to talk to her
+		// before this fix.
+		//
+		// Skipped when the knock branch already formed a huddle (an
+		// owner-policy door knock with the keeper inside doesn't also
+		// need a loiter huddle).
+		if !canEnter && !knockHuddleJoined && loiterX.Valid && loiterY.Valid {
+			lx, ly := effectiveLoiterTile(loiterX, loiterY, doorX, doorY, footprintBottom)
+			loiterCenterX := ox + float64(lx)*tileSize
+			loiterCenterY := oy + float64(ly)*tileSize
+			// Loiter ring slots are within 32 px Chebyshev of the loiter
+			// center; 64 px tolerance covers slot snap and minor drift.
+			var atLoiterCount int
+			if err := app.DB.QueryRow(r.Context(),
+				`SELECT COUNT(*) FROM actor
+				  WHERE llm_memory_agent IS NOT NULL
+				    AND inside_structure_id IS NULL
+				    AND GREATEST(ABS(current_x - $1), ABS(current_y - $2)) <= 64`,
+				loiterCenterX, loiterCenterY,
+			).Scan(&atLoiterCount); err != nil {
+				log.Printf("pc/move loiter huddle precheck: %v", err)
+			} else if atLoiterCount > 0 {
+				if huddleID, err := app.joinOrCreateHuddleForPC(r.Context(), user.Username, req.TargetStructureID); err != nil {
+					log.Printf("pc/move loiter huddle join: %v", err)
+				} else {
+					knockHuddleJoined = true
+					log.Printf("loiter-huddle pc=%s structure=%s huddle=%s nearby_npcs=%d", actorID, req.TargetStructureID, huddleID, atLoiterCount)
+					// Sync NPCs at the loiter ring into this huddle so
+					// the talk-panel members query lands them as
+					// addressees. Same predicate as the precheck — only
+					// outdoor agentized NPCs within 64 px Chebyshev.
+					if _, err := app.DB.Exec(r.Context(),
+						`UPDATE actor SET current_huddle_id = $1::uuid
+						  WHERE llm_memory_agent IS NOT NULL
+						    AND inside_structure_id IS NULL
+						    AND GREATEST(ABS(current_x - $2), ABS(current_y - $3)) <= 64
+						    AND (current_huddle_id IS NULL OR current_huddle_id::text != $1)`,
+						huddleID, loiterCenterX, loiterCenterY,
+					); err != nil {
+						log.Printf("pc/move loiter huddle sync nearby actors: %v", err)
+					}
+					// Same arrival fanout as the door knock: the NPC
+					// gets a "X approaches the well and waits at the
+					// loiter slot" perception line and a forced tick.
+					app.fireKnockPerception(r.Context(), actorID, huddleID, req.TargetStructureID)
+				}
+			}
+		}
+
 		jsonResponse(w, http.StatusOK, map[string]any{
 			"ok":              true,
 			"structure":       true,
