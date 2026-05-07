@@ -464,6 +464,8 @@ func main() {
 	authed("POST /api/village/pc/wake", app.handlePCWake)
 	authed("POST /api/village/pc/move-subspace", app.handlePCMoveSubspace)
 	authed("POST /api/village/pc/deliver-note", app.handlePCDeliverNote)
+	authed("POST /api/village/pc/accept-errand", app.handlePCAcceptErrand)
+	authed("POST /api/village/pc/complete-errand", app.handlePCCompleteErrand)
 	authed("GET /api/village/object-tags", app.handleListObjectTags)
 	authed("POST /api/village/objects/{id}/tags", app.handleAddObjectTag)
 	authed("DELETE /api/village/objects/{id}/tags/{tag}", app.handleRemoveObjectTag)
