@@ -373,6 +373,11 @@ func main() {
 	// accumulate. 1-minute cadence, 10-minute cutoff.
 	go app.runPayLedgerSweep(context.Background())
 
+	// PC sleep sweep (ZBBS-132). Wakes expired sleepers + auto-beds
+	// idle lodger PCs. 1-minute cadence; threshold for "idle" comes
+	// from the pc_idle_sleep_minutes setting.
+	go app.runSleepSweep(context.Background())
+
 	// Build router. Routes are registered via two helpers: authed() wraps
 	// the handler in requireLLMMemory; public() leaves it unwrapped. Default
 	// is authed — anything public must explicitly opt out, so forgetting to
@@ -446,6 +451,8 @@ func main() {
 	authed("POST /api/village/pc/say", app.handlePCSay)
 	authed("POST /api/village/pc/speak", app.handlePCSpeak)
 	authed("POST /api/village/pc/pay", app.handlePCPay)
+	authed("POST /api/village/pc/sleep", app.handlePCSleep)
+	authed("POST /api/village/pc/wake", app.handlePCWake)
 	authed("GET /api/village/object-tags", app.handleListObjectTags)
 	authed("POST /api/village/objects/{id}/tags", app.handleAddObjectTag)
 	authed("DELETE /api/village/objects/{id}/tags/{tag}", app.handleRemoveObjectTag)
