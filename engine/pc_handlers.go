@@ -1866,6 +1866,13 @@ func (app *App) handlePCSleep(w http.ResponseWriter, r *http.Request) {
 	// that changes, this gate will need to widen accordingly.
 	var canSleep bool
 	if err := app.DB.QueryRow(r.Context(),
+		// ZBBS-163 round-2: assert a.inside_structure_id matches the
+		// joined room's structure_id as defensive depth — actor's
+		// inside_room_id should always belong to a room in
+		// inside_structure_id, but admin manipulation or partial
+		// updates could leave them out of sync; this constraint
+		// fails closed in that state. active=true keeps in lockstep
+		// with ux_room_access_one_private_active.
 		`SELECT EXISTS (
 		    SELECT 1
 		      FROM actor a
@@ -1874,8 +1881,9 @@ func (app *App) handlePCSleep(w http.ResponseWriter, r *http.Request) {
 		        ON sa.room_id = a.inside_room_id
 		       AND sa.actor_id = a.id
 		     WHERE a.id = $1::uuid
+		       AND a.inside_structure_id = ss.structure_id
 		       AND ss.kind = 'private'
-		       AND (sa.expires_at IS NULL OR sa.expires_at > NOW())
+		       AND sa.active = true
 		 )`,
 		actorID,
 	).Scan(&canSleep); err != nil {

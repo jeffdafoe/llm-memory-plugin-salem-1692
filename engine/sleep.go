@@ -130,6 +130,16 @@ func (app *App) runSleepSweep(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			// expireRoomAccess (ZBBS-163) runs first so rooms freed
+			// this minute are available to new lodgers before the
+			// downstream queries observe state. wakeExpiredSleepers
+			// reads expires_at directly so its timing is unaffected
+			// by ordering, but auto-bed and assignBedroom-via-
+			// deliver_order benefit from the active flag being
+			// current.
+			if err := app.expireRoomAccess(ctx); err != nil {
+				log.Printf("sleep sweep expire room access: %v", err)
+			}
 			if err := app.wakeExpiredSleepers(ctx); err != nil {
 				log.Printf("sleep sweep wake: %v", err)
 			}
@@ -261,7 +271,8 @@ func (app *App) autoBedIdleLodgers(ctx context.Context) error {
 	// Code review pointed out that admin overrides, expired access
 	// (lodger_until passed but PC still in inside_room_id), or
 	// stale state can violate the implication. Enforcing the access
-	// row here makes the gate trustworthy.
+	// row here makes the gate trustworthy. ZBBS-163: active=true
+	// instead of expires_at — kept in sync by expireRoomAccess.
 	rows, err := app.DB.Query(ctx,
 		`SELECT a.id::text
 		   FROM actor a
@@ -279,7 +290,7 @@ func (app *App) autoBedIdleLodgers(ctx context.Context) error {
 		      SELECT 1 FROM room_access sa
 		       WHERE sa.actor_id = a.id
 		         AND sa.room_id = a.inside_room_id
-		         AND (sa.expires_at IS NULL OR sa.expires_at > NOW())
+		         AND sa.active = true
 		    )`,
 		idleMinutes, minTiredness,
 	)
