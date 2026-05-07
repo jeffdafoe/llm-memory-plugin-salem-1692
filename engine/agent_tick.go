@@ -915,7 +915,7 @@ func agentToolSpec() []agentToolDef {
 				"properties": map[string]interface{}{
 					"until_hour": map[string]interface{}{
 						"type":        "integer",
-						"description": "Hour of day (0-23) you intend to be back, ONLY for breaks ending at a specific clock time later today (e.g., \"I'll reopen at 5 PM\"). For ordinary fatigue/rest breaks, OMIT this field — the engine defaults to four hours from now, which is right for almost all cases. Note: if the hour you pass is already past today, the engine rolls forward a full day, which closes your shop for many hours longer than a routine break warrants.",
+						"description": "Hour of day (0-23) you intend to be back today. Defaults to four hours from now if omitted. Past hours are rejected — pick a later hour or omit the field.",
 					},
 					"reason": map[string]interface{}{
 						"type":        "string",
@@ -2173,16 +2173,22 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		untilHour := coerceIntInput(tc.Input["until_hour"])
 
 		// Compose break_until. Default: NOW + 4h. If until_hour given,
-		// resolve to that hour today; if today's instance is already past,
-		// roll to tomorrow. Cap at 24h ahead so a stray "until_hour=99" or
-		// past-of-tomorrow doesn't put the override absurdly in the future.
+		// resolve to that hour today and reject if it's already past —
+		// take_break is a "back later today" verb, not an overnight
+		// closure. Overnight is the sleep mechanic. Rejecting forces the
+		// model to either pick a later hour or omit the field; the engine
+		// returns the current hour in the error so the model has the
+		// time anchor it needs to retry. Cap remains as a defensive
+		// invariant; with the reject path it's strictly redundant.
 		now := time.Now()
 		var breakUntil time.Time
 		if untilHour > 0 && untilHour < 24 {
 			y, mo, d := now.Date()
 			candidate := time.Date(y, mo, d, untilHour, 0, 0, 0, now.Location())
 			if !candidate.After(now) {
-				candidate = candidate.Add(24 * time.Hour)
+				result = "rejected"
+				errStr = fmt.Sprintf("until_hour=%d is already past today (current hour is %d). Pick a later hour or omit until_hour to get a 4-hour break.", untilHour, now.Hour())
+				break
 			}
 			breakUntil = candidate
 		} else {
