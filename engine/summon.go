@@ -18,6 +18,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -87,11 +88,6 @@ func (app *App) summonsTargetingPerceiver(ctx context.Context, perceiverID, perc
 		 LIMIT 3
 	`, perceiverID, perceiverDisplayName)
 	if err != nil {
-		// Logged because a swallowed error here looks identical, in
-		// chat history, to "no pending summons." When a target NPC
-		// returns done after a fresh summon, the diagnostic question
-		// is "did the perception not include it, or did the model
-		// see it and ignore it?" Without this log we can't tell.
 		log.Printf("summons-perception query for %s (%s): %v", perceiverID, perceiverDisplayName, err)
 		return nil
 	}
@@ -103,6 +99,7 @@ func (app *App) summonsTargetingPerceiver(ctx context.Context, perceiverID, perc
 		var payload []byte
 		var at time.Time
 		if err := rows.Scan(&summoner, &payload, &at, &location); err != nil {
+			log.Printf("summons-perception scan for %s (%s): %v", perceiverID, perceiverDisplayName, err)
 			continue
 		}
 		reason := decodeSummonReason(payload)
@@ -120,6 +117,43 @@ func (app *App) summonsTargetingPerceiver(ctx context.Context, perceiverID, perc
 		}
 		lines = append(lines, line)
 	}
+	if err := rows.Err(); err != nil {
+		log.Printf("summons-perception iter for %s (%s): %v", perceiverID, perceiverDisplayName, err)
+	}
+
+	// Diagnostic: when the main query returned 0 rows, run a parallel
+	// loose-filter probe to distinguish "no summon row exists" from
+	// "row exists but the main query missed it." If the probe finds
+	// a row that the main query did not, the visibility / filter logic
+	// is wrong. Logged unconditionally on the empty path so we capture
+	// every miss; cheap (single PK-indexed lookup), runs only when the
+	// caller is about to render no summons section.
+	//
+	// Lifetime: keep until the recurring "Prudence didn't come" issue
+	// has been root-caused. Remove once we have a deterministic fix.
+	if len(lines) == 0 {
+		var probeCount int
+		var probeOccurredAt sql.NullTime
+		var probeResult sql.NullString
+		var probeTarget sql.NullString
+		if err := app.DB.QueryRow(ctx, `
+			SELECT COUNT(*),
+			       MAX(occurred_at),
+			       MAX(result),
+			       MAX(payload->>'target')
+			  FROM agent_action_log
+			 WHERE action_type = 'summon'
+			   AND payload->>'target' = $1
+			   AND occurred_at > NOW() - INTERVAL '15 minutes'
+		`, perceiverDisplayName).Scan(&probeCount, &probeOccurredAt, &probeResult, &probeTarget); err != nil {
+			log.Printf("summons-perception probe for %s (%s): %v", perceiverID, perceiverDisplayName, err)
+		} else {
+			log.Printf("summons-perception empty for %s (%s): probe found %d row(s) target=%q result=%q latest=%v",
+				perceiverID, perceiverDisplayName,
+				probeCount, probeTarget.String, probeResult.String, probeOccurredAt.Time)
+		}
+	}
+
 	// Reverse so oldest summons reads first — same chronological feel as
 	// the recent-activity block.
 	for i, j := 0, len(lines)-1; i < j; i, j = i+1, j-1 {
