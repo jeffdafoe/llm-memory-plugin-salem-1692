@@ -759,6 +759,7 @@ func (app *App) handlePCMove(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "Internal error", http.StatusInternalServerError)
 		return
 	}
+	app.touchPCInput(r.Context(), actorID)
 
 	// Departure narration. If the PC is currently inside a structure and
 	// is about to walk somewhere else, broadcast a room_event of kind
@@ -1208,6 +1209,9 @@ func (app *App) handlePCSay(w http.ResponseWriter, r *http.Request) {
 	).Scan(&actorID, &charName, &structureID); err != nil {
 		log.Printf("pc/say lookup actor: %v", err)
 	}
+	if actorID.Valid {
+		app.touchPCInput(r.Context(), actorID.String)
+	}
 
 	// Audit-log entry for the room to overhear. Includes target_name in
 	// payload so future perception passes can render "Jefferey said to
@@ -1327,6 +1331,7 @@ func (app *App) handlePCSpeak(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "No character", http.StatusBadRequest)
 		return
 	}
+	app.touchPCInput(r.Context(), actorID.String)
 
 	indoor := huddleStructureID.Valid
 	outdoor := !huddleStructureID.Valid && !insideStructureID.Valid
@@ -1489,6 +1494,7 @@ func (app *App) handlePCPay(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "Internal error", http.StatusInternalServerError)
 		return
 	}
+	app.touchPCInput(r.Context(), actor.ID)
 	// ZBBS-129 step 2: needs snapshot is no longer required here. It
 	// previously informed executePay's HungerReduction display field,
 	// which moved to executeDeliverOrder along with the consumption
@@ -1588,4 +1594,125 @@ func (app *App) handlePCPay(w http.ResponseWriter, r *http.Request) {
 		CounterAmount: pr.CounterAmount,
 		Message:       pr.Message,
 	})
+}
+
+// pcSleepResponse carries the outcome of /pc/sleep. wake_at is the
+// computed next-dawn timestamp for clients that want to render a
+// countdown ("Sleeping at the Tavern, wake at 06:00"). Empty/zero on
+// rejection or when the PC was already sleeping.
+type pcSleepResponse struct {
+	Result string `json:"result"`
+	Error  string `json:"error,omitempty"`
+	WakeAt string `json:"wake_at,omitempty"`
+}
+
+// handlePCSleep beds the authenticated PC. Validates that they have
+// active lodger status at their current inside_structure_id, then sets
+// sleeping_until = next dawn and broadcasts pc_sleep_started. Returns
+// the wake timestamp for client rendering.
+//
+// Rejection cases:
+//   - PC is not inside any structure (no place to sleep).
+//   - PC has no active lodger status at this structure (not paid up
+//     OR keeper hasn't checked them in OR home_structure_id doesn't
+//     match — wouldBeEvictionExempt covers all three).
+//   - PC is already sleeping (no-op rather than failure; result=ok
+//     but no wake_at to indicate "no fresh transition").
+func (app *App) handlePCSleep(w http.ResponseWriter, r *http.Request) {
+	user := getUserFromContext(r.Context())
+	if user == nil {
+		jsonError(w, "Not authenticated", http.StatusUnauthorized)
+		return
+	}
+
+	var actorID string
+	var insideStructureID sql.NullString
+	if err := app.DB.QueryRow(r.Context(),
+		`SELECT id::text, inside_structure_id::text
+		   FROM actor WHERE login_username = $1`,
+		user.Username,
+	).Scan(&actorID, &insideStructureID); err != nil {
+		if err == sql.ErrNoRows {
+			jsonError(w, "No character", http.StatusBadRequest)
+			return
+		}
+		log.Printf("pc/sleep actor lookup: %v", err)
+		jsonError(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+	app.touchPCInput(r.Context(), actorID)
+
+	if !insideStructureID.Valid {
+		jsonResponse(w, http.StatusOK, pcSleepResponse{
+			Result: "rejected",
+			Error:  "you must be inside a structure to sleep",
+		})
+		return
+	}
+
+	// wouldBeEvictionExempt covers the three sleep-eligible paths:
+	// home_structure_id match, work_structure_id match (a tavernkeeper
+	// can sleep at their own tavern), or active lodger status here.
+	exempt, err := app.wouldBeEvictionExempt(r.Context(), actorID, insideStructureID.String)
+	if err != nil {
+		log.Printf("pc/sleep exemption check: %v", err)
+		jsonError(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+	if !exempt {
+		jsonResponse(w, http.StatusOK, pcSleepResponse{
+			Result: "rejected",
+			Error:  "you have no place to sleep here — pay for a night's stay first",
+		})
+		return
+	}
+
+	res, err := app.executePCSleep(r.Context(), actorID)
+	if err != nil {
+		log.Printf("pc/sleep execute: %v", err)
+		jsonError(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+	resp := pcSleepResponse{Result: "ok"}
+	if !res.WakeAt.IsZero() {
+		resp.WakeAt = res.WakeAt.Format(time.RFC3339)
+	}
+	jsonResponse(w, http.StatusOK, resp)
+}
+
+// handlePCWake clears the authenticated PC's sleeping_until and
+// broadcasts pc_sleep_ended (reason "manual"). Idempotent — returns
+// result=ok whether or not the PC was actually sleeping.
+//
+// No early-wake tiredness penalty in v1: the natural penalty is that
+// world rotation hasn't fired yet, so resetSleptTiredness hasn't reset
+// their tiredness yet. They wake with whatever they had at sleep time.
+func (app *App) handlePCWake(w http.ResponseWriter, r *http.Request) {
+	user := getUserFromContext(r.Context())
+	if user == nil {
+		jsonError(w, "Not authenticated", http.StatusUnauthorized)
+		return
+	}
+
+	var actorID string
+	if err := app.DB.QueryRow(r.Context(),
+		`SELECT id::text FROM actor WHERE login_username = $1`,
+		user.Username,
+	).Scan(&actorID); err != nil {
+		if err == sql.ErrNoRows {
+			jsonError(w, "No character", http.StatusBadRequest)
+			return
+		}
+		log.Printf("pc/wake actor lookup: %v", err)
+		jsonError(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+	app.touchPCInput(r.Context(), actorID)
+
+	if err := app.executePCWake(r.Context(), actorID); err != nil {
+		log.Printf("pc/wake execute: %v", err)
+		jsonError(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+	jsonResponse(w, http.StatusOK, map[string]interface{}{"result": "ok"})
 }
