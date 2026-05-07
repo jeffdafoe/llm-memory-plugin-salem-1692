@@ -909,7 +909,7 @@ func agentToolSpec() []agentToolDef {
 		},
 		{
 			Name:        "take_break",
-			Description: "Close your post and head home — use when you can't or won't serve customers right now (feeling unwell, family matter, gone to fetch supplies, taking lunch). Don't also call speak in the same turn — the engine speaks a brief excuse for you using the reason you provide. Walks you home; your stall/post becomes unattended. Customers who arrive while you're away see that you've stepped out and won't expect service.",
+			Description: "Close your post — use when you can't or won't serve customers right now (feeling unwell, family matter, taking lunch, needing rest). Don't also call speak in the same turn — the engine speaks a brief excuse for you using the reason you provide. You stay where you are; your shop becomes closed for the duration. Any customers inside will be asked (politely, then firmly) to leave. Customers who try to enter see that you've stepped out and won't expect service. You recover tiredness while closed.",
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -1251,10 +1251,18 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 		if onShift {
 			shiftWord = "on shift"
 		}
-		sections = append(sections, fmt.Sprintf(
+		shiftLine := fmt.Sprintf(
 			"Your usual hours at your work are %s–%s. The time is now %s — you would currently be %s.",
 			formatHHMM(startMin), formatHHMM(endMin), hourStart.Format("15:04"), shiftWord,
-		))
+		)
+		// For home==work vendors (e.g. tavernkeeper, blacksmith), the off-
+		// shift cue used to prompt move_to(home) — which the engine rejects
+		// as already-there. Surface the right tool (take_break) and remove
+		// the implicit relocation cue.
+		if !onShift && homeIsWork {
+			shiftLine += " Since your home and work are the same place, you don't need to relocate — call take_break if you want to close your shop until you're ready to work again."
+		}
+		sections = append(sections, shiftLine)
 	}
 
 	// Need thresholds loaded early — used by both the visible-needs
@@ -2071,12 +2079,12 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 	case "take_break":
 		// take_break is the structured "I'm closing my post — come back later"
 		// commit. The engine speaks a brief excuse on the NPC's behalf
-		// (composed from the reason field), stamps agent_override_until so the
-		// scheduler steps aside through the break, and walks the NPC home.
-		// The model should NOT also call speak in the same turn — the tool
-		// description says so, but treat a redundant speak as harmless if it
-		// happens (the speak path runs first per the categorize order, then
-		// take_break adds its own).
+		// (composed from the reason field), stamps agent_override_until +
+		// break_until, and triggers the close-shop-with-vendor-inside flow
+		// detailed below (ZBBS-133). The model should NOT also call speak in
+		// the same turn — the tool description says so, but treat a redundant
+		// speak as harmless if it happens (the speak path runs first per the
+		// categorize order, then take_break adds its own).
 		//
 		// Engagement cooldown (takeBreakEngagementCooldown): if this NPC's
 		// most recent ok-result speak/serve/pay landed inside the cooldown,
