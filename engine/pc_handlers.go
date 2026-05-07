@@ -867,15 +867,25 @@ func (app *App) handlePCMove(w http.ResponseWriter, r *http.Request) {
 		// lodger), the door is locked — drop them at the loiter slot
 		// like the knock case so the client can render the closed sign
 		// instead of pulling them through the door.
+		closedDoorLocked := false
 		if canEnter {
 			allowed, err := app.canEnter(r.Context(), actorID, req.TargetStructureID)
 			if err != nil {
 				log.Printf("pc/move closed-door check: %v (allowing entry)", err)
 			} else if !allowed {
 				canEnter = false
+				closedDoorLocked = true
 			}
 		}
-		knocked := entryPolicy == "owner" && !isAssociated
+		// "knocked" means the PC is approaching a door they can't walk
+		// through. Two cases land here: (1) entry_policy='owner' and
+		// the PC isn't associated, the original ZBBS-101 case; (2) the
+		// closed-door lock dropped canEnter, the ZBBS-133 case. Both
+		// should form a knock-huddle so the keeper inside hears the
+		// PC at the door — without that the lodger-booking flow has
+		// no way to start when the keeper is on break (you can't
+		// become a lodger while locked out).
+		knocked := (entryPolicy == "owner" && !isAssociated) || closedDoorLocked
 		log.Printf("knock-trace pc=%s structure=%s entry_policy=%s isAssociated=%v canEnter=%v knocked=%v",
 			actorID, req.TargetStructureID, entryPolicy, isAssociated, canEnter, knocked)
 		if canEnter {
