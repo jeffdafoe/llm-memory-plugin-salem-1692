@@ -1901,8 +1901,31 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		// field and render every npc_spoke (PCs see speech bubbles over
 		// NPCs across structures); the panel uses it as a filter so a
 		// player at the apothecary doesn't see tavern dialogue mixed in.
+		//
+		// Effective scope: inside_structure_id when indoors, otherwise
+		// the speaker's current huddle's structure_id. Outdoor loiter-
+		// huddle speakers (Prudence at the well after a loiter-huddle
+		// formed) have NULL inside_structure_id but ARE conversationally
+		// scoped to the well's structure via the huddle. Without the
+		// huddle fallback, the talk panel drops outdoor NPC speech
+		// because the broadcast carries no structure_id.
+		structureScope := ""
 		if r.InsideStructureID.Valid {
-			spokeData["structure_id"] = r.InsideStructureID.String
+			structureScope = r.InsideStructureID.String
+		} else {
+			var huddleStructure sql.NullString
+			if err := app.DB.QueryRow(ctx,
+				`SELECT sh.structure_id::text
+				   FROM scene_huddle sh
+				   JOIN actor a ON a.current_huddle_id = sh.id
+				  WHERE a.id::text = $1 AND sh.concluded_at IS NULL`,
+				r.ID,
+			).Scan(&huddleStructure); err == nil && huddleStructure.Valid {
+				structureScope = huddleStructure.String
+			}
+		}
+		if structureScope != "" {
+			spokeData["structure_id"] = structureScope
 		}
 		app.Hub.Broadcast(WorldEvent{Type: "npc_spoke", Data: spokeData})
 		// Event-tick co-located agents so they can react in-band. Force
