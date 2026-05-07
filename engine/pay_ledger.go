@@ -8,6 +8,16 @@ package main
 // rolls back. Counter chains (state=countered, parent_id, depth) are
 // emitted by step 3's deliberation path; aging-sweep withdrawals come
 // from step 4.
+//
+// ZBBS-129 step 2 added the fulfillment-status orthogonal lifecycle
+// (pending → ready → delivered). Ready_by + fulfillment_status are
+// populated at insert; transitions to 'delivered' happen via
+// executeDeliverOrder in engine/order_fulfillment.go.
+// For now every insert sets ready_by = CURRENT_DATE and
+// fulfillment_status = 'ready' — current item_kind rows all carry
+// hours_per_unit = NULL/0 (immediate). When craft items with
+// hours_per_unit > 0 arrive, this will branch on the item's lead time:
+// pending for crafts, ready for immediate goods.
 
 import (
 	"context"
@@ -39,6 +49,14 @@ type payLedgerInsert struct {
 	ConsumeNow       bool
 	ParentID         sql.NullInt64
 	Depth            int
+	// ConsumerActorIDs (ZBBS-130) carries the resolved actor IDs for a
+	// phase-C at-source group order. Empty for the legacy single-
+	// consumer flow (the buyer is the implicit consumer); non-empty
+	// when the buyer named friends in the consumers list. Pre-resolved
+	// at pay-accept (display name → actor.id, with co-location check
+	// against the buyer's huddle) so deliver_order doesn't have to
+	// re-resolve names that may have drifted.
+	ConsumerActorIDs []string
 }
 
 // insertPayLedgerPending writes a pending row via a single auto-commit
@@ -48,17 +66,27 @@ type payLedgerInsert struct {
 // transfer outcome, the aging sweep (step 4) eventually flips the
 // orphaned row to withdrawn.
 func (app *App) insertPayLedgerPending(ctx context.Context, p payLedgerInsert) (int64, error) {
+	// pgx maps a Go []string into a Postgres uuid[] when the column type
+	// is uuid[] — values are validated as UUIDs by the driver. Pass nil
+	// for the single-consumer flow so the column stays NULL rather than
+	// landing an empty array.
+	var consumerIDs interface{}
+	if len(p.ConsumerActorIDs) > 0 {
+		consumerIDs = p.ConsumerActorIDs
+	}
 	var id int64
 	err := app.DB.QueryRow(ctx,
 		`INSERT INTO pay_ledger (
 		    huddle_id, scene_id, buyer_id, seller_id,
 		    item_kind, qty, offered_amount, quoted_unit_amount,
-		    consume_now, parent_id, depth, state
-		 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending')
+		    consume_now, parent_id, depth, state,
+		    ready_by, fulfillment_status, consumer_actor_ids
+		 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending',
+		           CURRENT_DATE, 'ready', $12)
 		 RETURNING id`,
 		p.HuddleID, p.SceneID, p.BuyerID, p.SellerID,
 		p.ItemKind, p.Qty, p.OfferedAmount, p.QuotedUnitAmount,
-		p.ConsumeNow, p.ParentID, p.Depth,
+		p.ConsumeNow, p.ParentID, p.Depth, consumerIDs,
 	).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("insert pay_ledger: %w", err)

@@ -42,16 +42,15 @@ import (
 
 // payResult captures the outcome of an attempted pay so the dispatcher can
 // build the audit-row (result, errStr) pair without duplicating switch logic.
+//
+// ZBBS-129 step 2 removed ItemTransferred / ItemConsumed / HungerReduction /
+// ThirstReduction / TirednessReduce — pay-accept no longer transfers items
+// or applies consumption (those moved to executeDeliverOrder). Item delivery
+// fires its own broadcasts at deliver_order time.
 type payResult struct {
 	Result        string // "ok" | "rejected" | "failed"
 	Err           string // human-readable, empty when Result == "ok"
 	BuyerNewCoins int    // post-transfer coin balance for log/broadcast
-	// Item-flow fields. All zero/empty when no item was involved.
-	ItemTransferred bool // true when item moved into buyer's inventory
-	ItemConsumed    bool // true when consume_now applied satisfaction
-	HungerReduction int  // amount applied (0 if not relevant)
-	ThirstReduction int  // amount applied (0 if not relevant)
-	TirednessReduce int  // amount applied (0 if not relevant)
 	// Recipient bookkeeping (ZBBS-126 post-pay reactor). Populated only
 	// when Result == "ok"; lets callers trigger a follow-up agent tick
 	// on the recipient so they can speak a thanks/farewell after the
@@ -297,6 +296,24 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payReque
 		return payResult{Result: "failed", Err: fmt.Sprintf("lookup buyer huddle: %v", err)}
 	}
 
+	// Pre-Tx-A: phase-C consumer resolution (ZBBS-130). For at-source
+	// group orders the buyer names other consumers ("Jefferey buys 4
+	// ales for himself + 3 friends"). Resolve names → actor IDs at
+	// pay-accept and stash them on the ledger row so executeDeliverOrder
+	// can apply consumption to the right people without re-resolving
+	// names that may have drifted. Co-location is validated here
+	// (consumers must share the buyer's huddle at pay-time); not
+	// re-checked at deliver time. Returns nil for the legacy single-
+	// consumer flow (the buyer is the implicit consumer at delivery).
+	var consumerActorIDs []string
+	if itemKind != "" && req.ConsumeNow && len(req.ConsumerNames) > 0 {
+		ids, rejectErr := app.resolveConsumerIDsForPay(ctx, buyer, buyerHuddle, req.ConsumerNames)
+		if rejectErr != "" {
+			return payResult{Result: "rejected", Err: rejectErr}
+		}
+		consumerActorIDs = ids
+	}
+
 	// Pre-Tx-A: scene_quote snapshot. Same opportunistic semantics as
 	// before — a lookup error logs and proceeds as if no quote were on
 	// file. Snapshotted onto the ledger row's quoted_unit_amount and
@@ -350,6 +367,7 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payReque
 		ConsumeNow:       req.ConsumeNow,
 		ParentID:         parentID,
 		Depth:            newRowDepth,
+		ConsumerActorIDs: consumerActorIDs,
 	})
 	if err != nil {
 		log.Printf("pay_ledger insert (buyer=%s recipient=%s amount=%d): %v",
@@ -737,66 +755,14 @@ func (app *App) executePayTransfer(ctx context.Context, buyer *agentNPCRow, req 
 		}
 	}
 
-	// Item flow: take-home → credit buyer's inventory. At-source →
-	// apply satisfaction. For at-source group orders (Phase C), each
-	// named consumer eats/drinks qty units; the buyer's coins cover
-	// all of it. Default consumers = [buyer] preserves the legacy
-	// single-consumer flow.
-	var (
-		itemTransferred bool
-		itemConsumed    bool
-		consumeResult   consumptionResult // post-consume buyer state (legacy field)
-		consumerUpdates []payConsumerUpdate
-	)
-	if itemKind != "" {
-		if req.ConsumeNow {
-			// Resolve the consumer set. Default = buyer. With explicit
-			// consumers, look each up by display name and verify they
-			// share the buyer's huddle (you can't drink an ale for
-			// someone in another room).
-			consumers, rejectErr := app.resolveAtSourceConsumers(ctx, tx, buyer, req.ConsumerNames)
-			if rejectErr != "" {
-				return payResult{Result: "rejected", Err: rejectErr}
-			}
-
-			// At-source consumption. Apply every (attribute, amount)
-			// from item_satisfies (ZBBS-125) — multi-effect items like
-			// ale drop both thirst and hunger on the same purchase.
-			// Mirrors the helper used in inventory.go::executeConsume.
-			delta := applySatisfactionsToDelta(consumptionDelta{}, itemSatisfactions, qty)
-			if delta.Hunger != 0 || delta.Thirst != 0 || delta.Tiredness != 0 {
-				for _, c := range consumers {
-					res, err := app.applyConsumption(ctx, tx, c.ID, delta, "pay-consume")
-					if err != nil {
-						return payResult{Result: "failed", Err: fmt.Sprintf("apply consumption for %s: %v", c.DisplayName, err)}
-					}
-					consumerUpdates = append(consumerUpdates, payConsumerUpdate{
-						ActorID:     c.ID,
-						DisplayName: c.DisplayName,
-						Hunger:      res.Hunger,
-						Thirst:      res.Thirst,
-						Tiredness:   res.Tiredness,
-					})
-					if c.ID == buyer.ID {
-						consumeResult = res
-					}
-				}
-				itemConsumed = true
-			}
-		} else {
-			// Take-home — credit buyer's inventory.
-			if _, err := tx.Exec(ctx,
-				`INSERT INTO actor_inventory (actor_id, item_kind, quantity)
-				 VALUES ($1, $2, $3)
-				 ON CONFLICT (actor_id, item_kind)
-				 DO UPDATE SET quantity = actor_inventory.quantity + EXCLUDED.quantity`,
-				buyer.ID, itemKind, qty,
-			); err != nil {
-				return payResult{Result: "failed", Err: fmt.Sprintf("credit buyer stock: %v", err)}
-			}
-			itemTransferred = true
-		}
-	}
+	// ZBBS-129 step 2: item-to-inventory and at-source consumption no
+	// longer fire here. Goods stay on a `state=accepted,
+	// fulfillment_status=ready` ledger row until the seller calls
+	// deliver_order(ledger_id), at which point executeDeliverOrder
+	// either credits the buyer's inventory (take-home) or applies
+	// applyConsumption to each consumer (at-source). Seller stock has
+	// already been decremented above to reserve the units the buyer
+	// claimed at pay-accept.
 
 	if err := tx.Commit(ctx); err != nil {
 		// CommitUnknown: Postgres may have committed before the
@@ -830,7 +796,9 @@ func (app *App) executePayTransfer(ctx context.Context, buyer *agentNPCRow, req 
 		},
 	})
 
-	// Inventory broadcasts so the editor mirrors fresh state.
+	// Seller's inventory broadcast — their stock decremented above. Buyer
+	// inventory broadcasts and per-consumer npc_needs_changed move to
+	// executeDeliverOrder where the actual transfer / consumption fires.
 	if itemKind != "" {
 		app.Hub.Broadcast(WorldEvent{
 			Type: "actor_inventory_changed",
@@ -839,104 +807,37 @@ func (app *App) executePayTransfer(ctx context.Context, buyer *agentNPCRow, req 
 				"item_kind": itemKind,
 			},
 		})
-		if itemTransferred {
-			app.Hub.Broadcast(WorldEvent{
-				Type: "actor_inventory_changed",
-				Data: map[string]any{
-					"actor_id":  buyer.ID,
-					"item_kind": itemKind,
-				},
-			})
-		}
 	}
 
-	if itemConsumed {
-		// One npc_needs_changed broadcast per consumer (Phase C: group
-		// orders feed multiple people in one pay; each one's needs UI
-		// updates).
-		for _, u := range consumerUpdates {
-			app.Hub.Broadcast(WorldEvent{
-				Type: "npc_needs_changed",
-				Data: map[string]interface{}{
-					"id":        u.ActorID,
-					"hunger":    u.Hunger,
-					"thirst":    u.Thirst,
-					"tiredness": u.Tiredness,
-				},
-			})
-		}
-	}
-
-	result := payResult{
+	return payResult{
 		Result:           "ok",
 		BuyerNewCoins:    buyerCoins - req.Amount,
-		ItemTransferred:  itemTransferred,
-		ItemConsumed:     itemConsumed,
 		RecipientID:      recipientID,
 		RecipientIsAgent: recipientAgentName.Valid && strings.TrimSpace(recipientAgentName.String) != "",
 	}
-	if itemConsumed {
-		// Reductions are old - new for the buyer. agentNPCRow's pre-tx
-		// values minus the post-applyConsumption values give the
-		// effective drop, clamped at zero (defensive — applyConsumption
-		// shouldn't ever return a higher value than it started, but be
-		// safe).
-		result.HungerReduction = positiveDelta(buyer.Hunger, consumeResult.Hunger)
-		result.ThirstReduction = positiveDelta(buyer.Thirst, consumeResult.Thirst)
-		result.TirednessReduce = positiveDelta(buyer.Tiredness, consumeResult.Tiredness)
-	}
-	return result
 }
 
-// payConsumer is one resolved consumer for an at-source pay order
-// (Phase C). For the legacy single-consumer flow this is just the
-// buyer; for group orders it's each named friend at the table.
-type payConsumer struct {
-	ID          string
-	DisplayName string
-}
-
-// payConsumerUpdate carries the post-consume need state for one
-// consumer, used to broadcast npc_needs_changed per-consumer after
-// commit.
-type payConsumerUpdate struct {
-	ActorID     string
-	DisplayName string
-	Hunger      int
-	Thirst      int
-	Tiredness   int
-}
-
-// resolveAtSourceConsumers builds the consumer list for an at-source
-// pay. Empty input → [buyer] (legacy single-consumer behavior). Named
-// consumers must each (a) exist in the actor table, (b) share the
-// buyer's current_huddle_id (you can't drink someone's ale from
-// across the village). Returns ("", "") on success and ("", "err")
-// on a rejection that should propagate as the payResult error.
+// resolveConsumerIDsForPay (ZBBS-130) is the pre-Tx-A consumer name →
+// actor.id resolver. Each named consumer must (a) exist in the actor
+// table and (b) share the buyer's current_huddle_id at pay-accept time
+// (you can't fund an ale for someone in another room). Returns the
+// list of resolved IDs in input order (deduped case-insensitively, with
+// any reference to the buyer's own name collapsed to buyer.ID).
 //
-// Locks each consumer row FOR UPDATE so a concurrent move-out doesn't
-// slip a consumer out mid-transaction. Buyer is locked separately by
-// the calling executePay above.
-func (app *App) resolveAtSourceConsumers(ctx context.Context, tx pgx.Tx, buyer *agentNPCRow, names []string) ([]payConsumer, string) {
-	if len(names) == 0 {
-		return []payConsumer{{ID: buyer.ID, DisplayName: buyer.DisplayName}}, ""
-	}
-
-	// Buyer's huddle. Required for every named consumer to match.
-	var buyerHuddle sql.NullString
-	if err := tx.QueryRow(ctx,
-		`SELECT current_huddle_id FROM actor WHERE id = $1`,
-		buyer.ID,
-	).Scan(&buyerHuddle); err != nil {
-		return nil, fmt.Sprintf("lock buyer huddle: %v", err)
-	}
+// No locks: pay-accept is a snapshot-style validation. Consumption
+// fires later in executeDeliverOrder, which re-locks each consumer row
+// for the actual applyConsumption call. A consumer who walks out of
+// the room between pay-accept and delivery doesn't get blocked here.
+//
+// The empty-string second return is the success path; a non-empty
+// string is a rejection message the caller should surface as a
+// payResult.
+func (app *App) resolveConsumerIDsForPay(ctx context.Context, buyer *agentNPCRow, buyerHuddle sql.NullString, names []string) ([]string, string) {
 	if !buyerHuddle.Valid {
 		return nil, "consumers requires you to be in a room with them; you're not in a scene huddle right now"
 	}
 
-	// Normalize: trim, drop empties, dedupe (case-insensitive). The
-	// buyer's name is allowed to appear (they're paying for themselves
-	// + others) and is collapsed against the buyer's actor row.
+	// Normalize: trim, drop empties, dedupe (case-insensitive).
 	seen := make(map[string]bool, len(names))
 	var clean []string
 	for _, n := range names {
@@ -952,31 +853,30 @@ func (app *App) resolveAtSourceConsumers(ctx context.Context, tx pgx.Tx, buyer *
 		clean = append(clean, t)
 	}
 	if len(clean) == 0 {
-		return []payConsumer{{ID: buyer.ID, DisplayName: buyer.DisplayName}}, ""
+		return nil, ""
 	}
 
-	resolved := make([]payConsumer, 0, len(clean))
+	resolved := make([]string, 0, len(clean))
 	for _, name := range clean {
-		var cid, cdn string
+		var cid string
 		var chuddle sql.NullString
-		err := tx.QueryRow(ctx,
-			`SELECT id, display_name, current_huddle_id
+		err := app.DB.QueryRow(ctx,
+			`SELECT id, current_huddle_id
 			   FROM actor
 			  WHERE LOWER(display_name) = LOWER($1)
-			  LIMIT 1
-			  FOR UPDATE`,
+			  LIMIT 1`,
 			name,
-		).Scan(&cid, &cdn, &chuddle)
+		).Scan(&cid, &chuddle)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return nil, fmt.Sprintf("no villager named %q", name)
 			}
-			return nil, fmt.Sprintf("lock consumer %q: %v", name, err)
+			return nil, fmt.Sprintf("look up consumer %q: %v", name, err)
 		}
 		if !chuddle.Valid || chuddle.String != buyerHuddle.String {
-			return nil, fmt.Sprintf("%s is not in the room with you", cdn)
+			return nil, fmt.Sprintf("%s is not in the room with you", name)
 		}
-		resolved = append(resolved, payConsumer{ID: cid, DisplayName: cdn})
+		resolved = append(resolved, cid)
 	}
 	return resolved, ""
 }
@@ -990,13 +890,4 @@ func hasCapability(capabilities []string, want string) bool {
 		}
 	}
 	return false
-}
-
-// positiveDelta returns max(0, oldV - newV). Used to surface the
-// effective need-drop in payResult.
-func positiveDelta(oldV, newV int) int {
-	if newV >= oldV {
-		return 0
-	}
-	return oldV - newV
 }
