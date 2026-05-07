@@ -121,36 +121,60 @@ func (app *App) summonsTargetingPerceiver(ctx context.Context, perceiverID, perc
 		log.Printf("summons-perception iter for %s (%s): %v", perceiverID, perceiverDisplayName, err)
 	}
 
-	// Diagnostic: when the main query returned 0 rows, run a parallel
-	// loose-filter probe to distinguish "no summon row exists" from
-	// "row exists but the main query missed it." If the probe finds
-	// a row that the main query did not, the visibility / filter logic
-	// is wrong. Logged unconditionally on the empty path so we capture
-	// every miss; cheap (single PK-indexed lookup), runs only when the
-	// caller is about to render no summons section.
+	// Diagnostic: when the main query returned 0 rows AND this perceiver
+	// is currently expected to be the target of a summon, run a parallel
+	// loose-filter probe to distinguish "no summon row exists" from "row
+	// exists but the main query missed it." If the probe finds a row that
+	// the main query did not, the visibility / filter logic is wrong.
 	//
-	// Lifetime: keep until the recurring "Prudence didn't come" issue
-	// has been root-caused. Remove once we have a deterministic fix.
+	// ZBBS-140: gated on `summon_errand` existence so the diagnostic only
+	// fires for perceivers actually owed a summon. Earlier, every NPC
+	// tick whose main query returned 0 logged a probe — i.e. every tick
+	// for an NPC nobody had recently summoned. ~9 lines/hour of pure
+	// noise. Now the gate matches the intent: surface only the cases
+	// where a summon_errand SHOULD have produced an audit row visible
+	// to this perceiver but didn't.
+	//
+	// "Recently relevant" = errand still active (state NOT IN done/failed)
+	// OR resolved within the last 5 minutes (covers the audit-row-just-
+	// committed-but-not-yet-visible window the original bug captured).
+	//
+	// Lifetime: keep until the recurring "Prudence didn't come" issue has
+	// been root-caused, then remove the diagnostic block entirely.
 	if len(lines) == 0 {
-		var probeCount int
-		var probeOccurredAt sql.NullTime
-		var probeResult sql.NullString
-		var probeTarget sql.NullString
+		var expectsSummon bool
 		if err := app.DB.QueryRow(ctx, `
-			SELECT COUNT(*),
-			       MAX(occurred_at),
-			       MAX(result),
-			       MAX(payload->>'target')
-			  FROM agent_action_log
-			 WHERE action_type = 'summon'
-			   AND payload->>'target' = $1
-			   AND occurred_at > NOW() - INTERVAL '15 minutes'
-		`, perceiverDisplayName).Scan(&probeCount, &probeOccurredAt, &probeResult, &probeTarget); err != nil {
-			log.Printf("summons-perception probe for %s (%s): %v", perceiverID, perceiverDisplayName, err)
-		} else {
-			log.Printf("summons-perception empty for %s (%s): probe found %d row(s) target=%q result=%q latest=%v",
-				perceiverID, perceiverDisplayName,
-				probeCount, probeTarget.String, probeResult.String, probeOccurredAt.Time)
+			SELECT EXISTS (
+			    SELECT 1 FROM summon_errand
+			     WHERE LOWER(target_name) = LOWER($1)
+			       AND (
+			           state NOT IN ('done', 'failed')
+			           OR updated_at > NOW() - INTERVAL '5 minutes'
+			       )
+			)
+		`, perceiverDisplayName).Scan(&expectsSummon); err != nil {
+			log.Printf("summons-perception expectation check for %s (%s): %v", perceiverID, perceiverDisplayName, err)
+		} else if expectsSummon {
+			var probeCount int
+			var probeOccurredAt sql.NullTime
+			var probeResult sql.NullString
+			var probeTarget sql.NullString
+			if err := app.DB.QueryRow(ctx, `
+				SELECT COUNT(*),
+				       MAX(occurred_at),
+				       MAX(result),
+				       MAX(payload->>'target')
+				  FROM agent_action_log
+				 WHERE action_type = 'summon'
+				   AND payload->>'target' = $1
+				   AND occurred_at > NOW() - INTERVAL '15 minutes'
+			`, perceiverDisplayName).Scan(&probeCount, &probeOccurredAt, &probeResult, &probeTarget); err != nil {
+				log.Printf("summons-perception probe for %s (%s): %v", perceiverID, perceiverDisplayName, err)
+			} else {
+				log.Printf("summons-perception empty for %s (%s): probe found %d row(s) target=%q result=%q latest=%v",
+					perceiverID, perceiverDisplayName,
+					probeCount, probeTarget.String, probeResult.String, probeOccurredAt.Time)
+			}
 		}
 	}
 
