@@ -339,6 +339,29 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payReque
 		}
 	}
 
+	// ZBBS-138: item_kind existence pre-check. The pay_ledger row's
+	// FK to item_kind fires inside insertPayLedgerPending below if
+	// the buyer named a non-existent item — surfacing the raw
+	// "violates foreign key constraint pay_ledger_item_kind_fkey"
+	// SQLSTATE 23503 to the LLM as a tool result is ugly and obscures
+	// the actual problem (model hallucinated an item). The Tx-B item
+	// validation at line ~660 already produces the clean
+	// `no such item "%s"` rejection but only runs after the ledger
+	// insert, so it never gets reached on FK miss. Pre-check here so
+	// the rejection path is the same regardless of which gate trips.
+	if itemKind != "" {
+		var exists bool
+		if err := app.DB.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM item_kind WHERE name = $1)`,
+			itemKind,
+		).Scan(&exists); err != nil {
+			return payResult{Result: "failed", Err: fmt.Sprintf("look up item: %v", err)}
+		}
+		if !exists {
+			return payResult{Result: "rejected", Err: fmt.Sprintf("no such item %q", itemKind)}
+		}
+	}
+
 	// Tx A: pending ledger row. Nullable columns get NULL for the
 	// pure-coin-transfer surface (no item_kind/qty), the no-scene
 	// surface (req.SceneID empty for PC pay), and the no-quote
