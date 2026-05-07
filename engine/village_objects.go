@@ -579,6 +579,7 @@ func (app *App) handleDeleteVillageObject(w http.ResponseWriter, r *http.Request
 		`UPDATE actor
 		    SET inside = false,
 		        inside_structure_id = NULL,
+		        inside_subspace_id = NULL,
 		        current_huddle_id = NULL
 		  WHERE inside_structure_id = $1
 		  RETURNING id`, id,

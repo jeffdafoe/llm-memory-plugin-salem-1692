@@ -423,8 +423,24 @@ func (app *App) setNPCInside(ctx context.Context, npcID string, inside bool, str
 	if prev.Inside == inside && stringPtrEq(prev.InsideStructureID, newInsideID) {
 		return
 	}
+	// inside_subspace_id (ZBBS-149) — keep paired with inside_structure_id.
+	// On entry we drop the actor in the structure's 'common' subspace; on
+	// exit we clear. /pc/move-subspace handles the subsequent common→private
+	// transition once a lodger has access. The CASE/subselect runs server-
+	// side so this stays one round-trip even with the lookup.
 	if _, err := app.DB.Exec(ctx,
-		`UPDATE actor SET inside = $2, inside_structure_id = $3 WHERE id = $1`,
+		`UPDATE actor
+		    SET inside = $2,
+		        inside_structure_id = $3,
+		        inside_subspace_id = CASE
+		          WHEN $3::uuid IS NOT NULL THEN (
+		            SELECT id FROM structure_subspace
+		             WHERE structure_id = $3::uuid AND kind = 'common'
+		             LIMIT 1
+		          )
+		          ELSE NULL
+		        END
+		  WHERE id = $1`,
 		npcID, inside, newInsideID,
 	); err != nil {
 		log.Printf("setNPCInside write(%s): %v", npcID, err)

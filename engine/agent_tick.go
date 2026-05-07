@@ -790,17 +790,42 @@ func (app *App) triggerCoLocatedTicks(ctx context.Context, structureID, excludeN
 	if structureID == "" {
 		return
 	}
+	// ZBBS-149: when triggering co-located ticks for an event inside a
+	// structure, filter to actors in the SAME subspace as the trigger
+	// source. Loiter-ring co-location at a structure with no
+	// inside_structure_id is unaffected — outdoors has no subspace.
+	//
+	// Subspace resolution by case:
+	//   - Anonymous trigger ($3 = ''): chronicler dispatch or other
+	//     non-actor-rooted event. Default to the structure's 'common'
+	//     subspace so cascade triggers don't reach lodgers in their
+	//     bedrooms.
+	//   - Actor trigger ($3 != ''): use that actor's inside_subspace_id
+	//     directly. Equality (=) rather than IS NOT DISTINCT FROM, so a
+	//     trigger actor with NULL subspace (broken state, shouldn't
+	//     happen post-migration) reaches nobody — fail closed instead
+	//     of silently bucketing into common.
 	rows, err := app.DB.Query(ctx,
-		// excludeNpcID is empty when the speaker isn't an NPC (PC speak).
-		// Comparing n.id (UUID) to the empty text "" fails PG's implicit
-		// cast — the query errors and no NPCs get event-ticked. Guard with
-		// a length check so empty just skips the exclusion.
 		`SELECT n.id FROM actor n
 		 LEFT JOIN village_object o ON o.id::text = $1
 		 WHERE n.llm_memory_agent IS NOT NULL
 		   AND ($2 = '' OR n.id::text != $2)
 		   AND (
-		     n.inside_structure_id::text = $1
+		     (
+		       n.inside_structure_id::text = $1
+		       AND n.inside_subspace_id = CASE
+		         WHEN $3 = '' THEN (
+		           SELECT id FROM structure_subspace
+		            WHERE structure_id::text = $1 AND kind = 'common'
+		            LIMIT 1
+		         )
+		         ELSE (
+		           SELECT inside_subspace_id FROM actor
+		            WHERE id::text = $3
+		              AND inside_structure_id::text = $1
+		         )
+		       END
+		     )
 		     OR (
 		       n.inside_structure_id IS NULL
 		       AND o.loiter_offset_x IS NOT NULL
@@ -811,7 +836,7 @@ func (app *App) triggerCoLocatedTicks(ctx context.Context, structureID, excludeN
 		           ) <= 64
 		     )
 		   )`,
-		structureID, excludeNpcID)
+		structureID, excludeNpcID, triggerActorID)
 	if err != nil {
 		log.Printf("event-tick co-located query (%s): %v", reason, err)
 		return
