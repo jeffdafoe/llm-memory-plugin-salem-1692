@@ -53,6 +53,12 @@ type npcRoute struct {
 	HomeX             float64
 	HomeY             float64
 	Phase             string // "active" or "returning"
+	// Label is the route's caller-supplied tag ("town_crier",
+	// "washerwoman", "lamplighter", "go-home", etc.). Set in
+	// startNPCRoute and read by advanceBehavior to dispatch
+	// behavior-specific arrival side-effects (ZBBS-156: town crier
+	// announcement reading at notice-board stops).
+	Label             string
 	// TargetStructureID is the id of the structure the NPC is returning
 	// INTO (home for behavior cycles, home/work for manual go-home /
 	// go-to-work). On arrival it becomes the NPC's inside_structure_id
@@ -109,6 +115,15 @@ func (app *App) advanceBehavior(npcID string) {
 			// the placement is opted in; the chronicler call itself runs
 			// on its own goroutine so the route doesn't wait on it.
 			app.onObjectStateAdvanced(ctx, stop.ObjectID, stop.NewState)
+			// ZBBS-156: town crier voices an announcement at each stop
+			// arrival. Picks the oldest unexpired row with posted_count
+			// < max_posts, increments, broadcasts as npc_spoke. No-op
+			// when the table is empty or all rows are retired. Dispatched
+			// off the route advance so a slow announcement read doesn't
+			// block the next walk start.
+			if route.Label == behaviorTownCrier {
+				go app.cryNextAnnouncement(context.Background(), npcID)
+			}
 		}
 		route.StopIdx++
 	}
@@ -352,6 +367,7 @@ func (app *App) startNPCRoute(ctx context.Context, npc *behaviorNPC, stops []rou
 		HomeY:             npc.HomeY,
 		Phase:             "active",
 		TargetStructureID: npc.HomeStructureID,
+		Label:             label,
 	}
 	app.NPCBehaviors.mu.Lock()
 	app.NPCBehaviors.active[npc.ID] = route
