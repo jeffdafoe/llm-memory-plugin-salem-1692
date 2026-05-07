@@ -1052,12 +1052,9 @@ func find_object_at(screen_pos: Vector2) -> Dictionary:
         if sprite_node == null:
             continue
 
-        var region_size: Vector2 = _sprite_size_for_hit(sprite_node)
-        if region_size == Vector2.ZERO:
+        var rect: Rect2 = compute_object_hit_rect(node, sprite_node)
+        if rect.size == Vector2.ZERO:
             continue
-        var world_size: Vector2 = region_size * sprite_node.scale
-        var rect_origin: Vector2 = node.position + sprite_node.position
-        var rect = Rect2(rect_origin, world_size)
         if not rect.has_point(world_pos):
             continue
         var dist: float = node.position.distance_to(world_pos)
@@ -1084,6 +1081,41 @@ func _sprite_size_for_hit(sprite_node: Node2D) -> Vector2:
             if tex != null:
                 return tex.get_size()
     return Vector2.ZERO
+
+## Compute the world-space hit-test rectangle for a placed object.
+##
+## Earlier hit-test code at editor.gd, object_tooltip.gd, and this
+## file's find_object_at all used `container.position + sprite_node.position`
+## as the rect origin. That works in theory — _create_sprite_node sets
+## sprite.position to the negated anchor offset so the sum equals the
+## texture's top-left in world coords — but it was empirically broken
+## for tall sprites (trees), forcing users to click a tiny strip near
+## the trunk base to select. Symptoms: a 384×384 tree rendered correctly
+## on screen but only a ~20px sliver at the trunk base would actually
+## hit-test. Inferred cause: sprite_node.position was reading as (0,0)
+## somewhere in the chain, putting the rect down-right of the anchor
+## instead of around the visible texture.
+##
+## This helper sidesteps the issue by deriving the rect from the asset's
+## authoritative anchor metadata: rect_origin = container.position
+## minus (anchor_x*world_size, anchor_y*world_size). Same RESULT as the
+## old code if sprite_node.position was correctly set, but doesn't
+## depend on it.
+##
+## Returns Rect2() (empty) when the sprite size can't be determined.
+func compute_object_hit_rect(container: Node2D, sprite_node: Node2D) -> Rect2:
+    var size: Vector2 = _sprite_size_for_hit(sprite_node)
+    if size == Vector2.ZERO:
+        return Rect2()
+    var world_size: Vector2 = size * sprite_node.scale
+
+    var asset_id: String = container.get_meta("asset_id", "")
+    var asset = Catalog.assets.get(asset_id, {})
+    var anchor_x: float = asset.get("anchorX", asset.get("anchor_x", 0.5))
+    var anchor_y: float = asset.get("anchorY", asset.get("anchor_y", 0.85))
+
+    var anchor_offset = Vector2(anchor_x * world_size.x, anchor_y * world_size.y)
+    return Rect2(container.position - anchor_offset, world_size)
 
 ## Sync the terrain renderer with current map_data.
 ## The renderer draws tiles each frame with 1px overlap.

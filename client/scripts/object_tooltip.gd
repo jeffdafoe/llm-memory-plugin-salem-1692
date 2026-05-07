@@ -220,12 +220,9 @@ func _find_object_at(screen_pos: Vector2) -> Node2D:
         if sprite_node == null:
             continue
 
-        var region_size: Vector2 = _get_sprite_size(sprite_node)
-        if region_size == Vector2.ZERO:
+        var rect: Rect2 = world.compute_object_hit_rect(child, sprite_node)
+        if rect.size == Vector2.ZERO:
             continue
-        var world_size: Vector2 = region_size * sprite_node.scale
-        var rect_origin: Vector2 = child.position + sprite_node.position
-        var rect = Rect2(rect_origin, world_size)
 
         if rect.has_point(world_pos):
             var dist: float = child.position.distance_to(world_pos)
