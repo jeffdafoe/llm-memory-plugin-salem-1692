@@ -2021,7 +2021,7 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		// goes through, just without recording a quote. Don't reject the
 		// speak: the prose value of the speech is real even if the
 		// structured price tag is malformed.
-		if price, ok := normalizeQuotePrice(tc.Input["price"]); ok && price >= 0 && len(mentions) > 0 {
+		if price, ok := normalizeQuotePrice(tc.Input["price"]); ok && price > 0 && len(mentions) > 0 {
 			if err := app.upsertSceneQuotes(ctx, r.ID, mentions, price); err != nil {
 				log.Printf("scene_quote upsert for %s (mentions=%v price=%d): %v", r.DisplayName, mentions, price, err)
 				// Non-fatal — speak still commits.
