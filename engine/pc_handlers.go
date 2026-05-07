@@ -105,6 +105,12 @@ type pcMeResponse struct {
 	// purse. Empty map (not nil) when the PC has no actor_need rows
 	// yet — defensive against a PC created before the seed path.
 	Needs NeedSet `json:"needs"`
+	// NeedThresholds is the engine's per-need red-line, sourced from
+	// the *_red_threshold settings. Surfaced so the HUD colors with the
+	// same boundaries the engine uses for in-prompt felt language —
+	// without this, an admin retuning a threshold drifts the HUD
+	// silently. Client falls back to its own defaults when omitted.
+	NeedThresholds NeedSet `json:"need_thresholds,omitempty"`
 	// SpriteID is null until the player picks one. Client bootstrap uses
 	// the null state as the trigger to open the sprite picker on first
 	// login. Sprite is the inlined catalog row (sheet, frame dims,
@@ -221,6 +227,11 @@ func (app *App) handlePCMe(w http.ResponseWriter, r *http.Request) {
 		log.Printf("pc/me needs snapshot %s: %v", pcActorID, err)
 		resp.Needs = NeedSet{}
 	}
+	// Threshold reads use the registry-driven helper so a future
+	// fourth need (e.g. social) flows into the HUD without touching
+	// this handler. Cheap setting lookups; failures inside the helper
+	// fall back to per-need defaults.
+	resp.NeedThresholds = NeedSet(app.loadNeedThresholds(r.Context()))
 	if insideID.Valid {
 		s := insideID.String
 		resp.InsideStructureID = &s
