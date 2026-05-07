@@ -915,7 +915,7 @@ func agentToolSpec() []agentToolDef {
 				"properties": map[string]interface{}{
 					"until_hour": map[string]interface{}{
 						"type":        "integer",
-						"description": "Hour of day (0-23) you intend to be back. Defaults to four hours from now if omitted. If the hour is in the past today, the engine treats it as tomorrow.",
+						"description": "Hour of day (0-23) you intend to be back, ONLY for breaks ending at a specific clock time later today (e.g., \"I'll reopen at 5 PM\"). For ordinary fatigue/rest breaks, OMIT this field — the engine defaults to four hours from now, which is right for almost all cases. Note: if the hour you pass is already past today, the engine rolls forward a full day, which closes your shop for many hours longer than a routine break warrants.",
 					},
 					"reason": map[string]interface{}{
 						"type":        "string",
