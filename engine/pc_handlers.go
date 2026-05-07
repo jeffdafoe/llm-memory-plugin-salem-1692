@@ -1295,11 +1295,17 @@ func (app *App) handlePCSay(w http.ResponseWriter, r *http.Request) {
 // handlePCSpeak — broadcast to everyone in the PC's current huddle, or
 // to nearby outdoor PCs when the speaker has no huddle and is outside.
 // Records as agent_action_log row with source='player', action_type='speak',
-// speaker_name=character_name. Indoor speech triggers event-tick on
-// co-located agentized NPCs (subject to 5-min cost guard) and a
-// chronicler scene; outdoor speech is PC-private in v1 — no NPC
-// reactions, no chronicler fire — so two players walking the road
-// can talk without lighting up LLM costs.
+// speaker_name=character_name.
+//
+// Reaction cascades:
+//   - Indoor speech triggers event-tick on co-located agentized NPCs
+//     (force=true, bypassing the cost guard) and a chronicler scene.
+//   - Outdoor speech triggers agentized NPCs within 6 tiles (192 px
+//     Chebyshev) of the speaker, force=true. No chronicler — open-
+//     village chat stays cheap; the chronicler's natural unit is the
+//     indoor scene. PC-to-PC outdoor speech beyond the proximity
+//     radius reaches no NPC, so two players walking the road can
+//     still talk without lighting up LLM costs.
 func (app *App) handlePCSpeak(w http.ResponseWriter, r *http.Request) {
 	user := getUserFromContext(r.Context())
 	if user == nil {
@@ -1416,6 +1422,45 @@ func (app *App) handlePCSpeak(w http.ResponseWriter, r *http.Request) {
 		// so it doesn't block the WebSocket response. Only fires once per
 		// scene-start (here), not for in-cascade NPC reactions.
 		app.cascadeOriginFireChronicler(fmt.Sprintf("pc-spoke (%s)", charName.String), structureID, chroniclerFirePriorityHigh)
+	} else {
+		// Outdoor speech: trigger agentized NPCs within 6-tile Chebyshev
+		// (192 px) of the speaker so a PC at the well can address an NPC
+		// drinking next to them. Same proximity radius the client uses
+		// for PC-to-PC outdoor filtering, kept in sync so what a PC sees
+		// matches what an NPC reacts to. Only outdoor NPCs are triggered
+		// — an NPC inside a building shouldn't hear a PC at the well.
+		//
+		// force=true matches the indoor branch: a co-located NPC who
+		// just ticked shouldn't be cost-gated out of replying when a
+		// player addresses them directly. Storm risk is bounded by the
+		// proximity radius (typically 0-2 NPCs near any tile in this
+		// village).
+		//
+		// Chronicler fire stays OFF for outdoor speech — keeps casual
+		// passing-through chat cheap. Indoor scenes are the chronicler's
+		// natural unit; the open village isn't.
+		const outdoorProximityPx = 192.0
+		rows, err := app.DB.Query(context.Background(),
+			`SELECT id::text FROM actor
+			  WHERE llm_memory_agent IS NOT NULL
+			    AND inside_structure_id IS NULL
+			    AND id::text != $1
+			    AND GREATEST(ABS(current_x - $2), ABS(current_y - $3)) <= $4`,
+			actorID.String, currentX, currentY, outdoorProximityPx)
+		if err != nil {
+			log.Printf("pc/speak outdoor proximity query: %v", err)
+		} else {
+			defer rows.Close()
+			sceneID := app.newScene(context.Background(), "")
+			reason := fmt.Sprintf("pc-spoke-outdoor (%s)", charName.String)
+			for rows.Next() {
+				var npcID string
+				if err := rows.Scan(&npcID); err != nil {
+					continue
+				}
+				go app.triggerImmediateTick(context.Background(), npcID, reason, true, sceneID, actorID.String)
+			}
+		}
 	}
 
 	w.WriteHeader(http.StatusNoContent)
