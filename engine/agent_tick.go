@@ -201,7 +201,7 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 		// "pay-and-thank-you" sequence unfolds in the natural order:
 		// transaction first, speech next iteration. All inline tools
 		// execute and let the loop continue — none ends the turn.
-		var terminalCall, payCall, consumeCall, serveCall, gatherCall, summonCall, speakCall, actCall, observation *agentToolCall
+		var terminalCall, payCall, deliverCall, consumeCall, serveCall, gatherCall, summonCall, speakCall, actCall, observation *agentToolCall
 		for i := range reply.ToolCalls {
 			tc := &reply.ToolCalls[i]
 			switch tc.Name {
@@ -212,6 +212,10 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			case "pay":
 				if payCall == nil {
 					payCall = tc
+				}
+			case "deliver_order":
+				if deliverCall == nil {
+					deliverCall = tc
 				}
 			case "consume":
 				if consumeCall == nil {
@@ -277,6 +281,28 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 				currentMessage = fmt.Sprintf("[Pay %s] %s. Continue your turn — you may correct it, speak, move, or call done.", result, errStr)
 			}
 			currentToolCallID = payCall.ID
+			continue
+		}
+
+		if deliverCall != nil {
+			// deliver_order: seller-side fulfillment of an accepted ledger
+			// row. State change (fulfillment_status ready→delivered, plus
+			// inventory transfer or applyConsumption depending on the
+			// row's consume_now). Inline like pay so a
+			// "deliver-then-here-you-are" chain reads naturally — the
+			// continuation message nudges a brief speak so the keeper
+			// names the handover.
+			result, errStr, extra := app.executeAgentCommit(ctx, r, deliverCall, sceneID)
+			if result == "ok" {
+				if extra != "" {
+					currentMessage = "[OK] You delivered " + extra + ". Speak to the buyer now if you haven't already (a brief 'here you are' or similar). Then you may move or call done."
+				} else {
+					currentMessage = "[OK] You delivered the order. Speak to the buyer now if you haven't already. Then you may move or call done."
+				}
+			} else {
+				currentMessage = fmt.Sprintf("[Deliver %s] %s. Continue your turn — you may correct it, speak, move, or call done.", result, errStr)
+			}
+			currentToolCallID = deliverCall.ID
 			continue
 		}
 
@@ -1030,6 +1056,28 @@ func agentToolSpec() []agentToolDef {
 				"required": []string{"query"},
 			},
 		},
+		{
+			Name:        "check_order_book",
+			Description: "Look at orders that customers have paid for and that you still owe — what's been bought from you that hasn't yet been handed over. Returns a list with ledger ids the deliver_order tool uses. Read-only; calling this doesn't deliver anything. Use when you want to see what's pending before deciding who to serve next.",
+			Parameters: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+		},
+		{
+			Name:        "deliver_order",
+			Description: "Hand over goods (or serve consumption) for a paid-but-not-yet-delivered order from your order book. The customer paid you earlier; this is the moment you slide the bowl across, hand them their bread, or pour their ale. For at-source consumption (consume_now=true items like stew, ale at the bar) this is when the customer's hunger or thirst actually drops — coins moved at pay time, but they aren't fed until you deliver. For take-home items, this is when the goods enter their inventory. Use the ledger_id from your check_order_book result. You can call this on its own or follow it with a brief speak (\"here you are\", \"that'll keep you warm\").",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"ledger_id": map[string]interface{}{
+						"type":        "integer",
+						"description": "The pay_ledger row id for the order you're delivering. Get this from check_order_book — each entry is prefixed with its ledger_id. Whole numbers only.",
+					},
+				},
+				"required": []string{"ledger_id"},
+			},
+		},
 	}
 }
 
@@ -1721,6 +1769,13 @@ func (app *App) resolveObservationTool(ctx context.Context, r *agentNPCRow, tc *
 	case "recall":
 		query, _ := tc.Input["query"].(string)
 		return app.resolveRecall(ctx, r, query)
+	case "check_order_book":
+		entries, err := app.checkOrderBookForSeller(ctx, r.ID)
+		if err != nil {
+			log.Printf("agent-tick %s check_order_book: %v", r.DisplayName, err)
+			return "You tried to check the order book but couldn't bring it to mind."
+		}
+		return formatOrderBookForLLM(entries)
 	}
 	return fmt.Sprintf("[Unknown observation tool: %s]", tc.Name)
 }
@@ -2459,6 +2514,21 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		})
 		result = sm.Result
 		errStr = sm.Err
+
+	case "deliver_order":
+		// ZBBS-129 step 2: finalize an accepted, ready ledger row by
+		// flipping fulfillment_status to 'delivered' and applying the
+		// physical handover (inventory credit for take-home, applyConsumption
+		// for at-source). Validation rejects (missing/wrong row, wrong
+		// seller, wrong state) surface as result="rejected" so the LLM
+		// can correct and continue. Engine errors surface as "failed".
+		ledgerID := coerceInt64Input(tc.Input["ledger_id"])
+		dr := app.executeDeliverOrder(ctx, r.ID, ledgerID)
+		result = dr.Result
+		errStr = dr.Err
+		if result == "ok" {
+			extra = fmt.Sprintf("%d %s to %s", dr.Qty, dr.ItemKind, dr.BuyerName)
+		}
 
 	default:
 		result, errStr = "rejected", fmt.Sprintf("unknown commit tool: %s", tc.Name)

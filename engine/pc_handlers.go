@@ -1426,8 +1426,6 @@ type pcPayResponse struct {
 	Result        string `json:"result"`
 	Error         string `json:"error,omitempty"`
 	BuyerNewCoins int    `json:"buyer_new_coins"`
-	ItemTransferred bool `json:"item_transferred,omitempty"`
-	ItemConsumed    bool `json:"item_consumed,omitempty"`
 	// LedgerID + CounterAmount + Message (ZBBS-128 step 3) surface the
 	// pay_ledger row id and the recipient's counter for the haggling
 	// UI. Populated for result=countered so a Godot client can offer
@@ -1435,6 +1433,12 @@ type pcPayResponse struct {
 	// also populated for declined/accepted as audit context. Zero /
 	// empty for paths that didn't reach the ledger insert (early arg
 	// rejections before pre-Tx-A).
+	//
+	// ZBBS-129 step 2 dropped item_transferred / item_consumed —
+	// pay-accept no longer transfers items or applies consumption.
+	// Inventory and consumption events now fire at deliver_order time
+	// via the npc_delivered / actor_inventory_changed / npc_needs_changed
+	// broadcasts the Godot client already listens for.
 	LedgerID      int64  `json:"ledger_id,omitempty"`
 	CounterAmount int    `json:"counter_amount,omitempty"`
 	Message       string `json:"message,omitempty"`
@@ -1485,21 +1489,11 @@ func (app *App) handlePCPay(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "Internal error", http.StatusInternalServerError)
 		return
 	}
-	// Non-transactional read — these values inform the buyer struct
-	// for executePay's display logic (HungerReduction etc.) but the
-	// authoritative crossing detection happens inside applyConsumption
-	// under its own actor row lock. A stale read here can only
-	// produce a slightly off "hunger reduced by N" display value,
-	// not a state-corrupting decision.
-	needs, err := app.needsSnapshot(r.Context(), actor.ID)
-	if err != nil {
-		log.Printf("pc/pay needs lookup for %s: %v", actor.ID, err)
-		jsonError(w, "Internal error", http.StatusInternalServerError)
-		return
-	}
-	actor.Hunger = needs.Get("hunger")
-	actor.Thirst = needs.Get("thirst")
-	actor.Tiredness = needs.Get("tiredness")
+	// ZBBS-129 step 2: needs snapshot is no longer required here. It
+	// previously informed executePay's HungerReduction display field,
+	// which moved to executeDeliverOrder along with the consumption
+	// itself. applyConsumption locks and reads under its own tx when
+	// delivery actually fires.
 
 	consumeNow := true
 	if req.ConsumeNow != nil {
@@ -1561,47 +1555,12 @@ func (app *App) handlePCPay(w http.ResponseWriter, r *http.Request) {
 				},
 			})
 		}
-		// Private felt-language consume narration (ZBBS-129). When the
-		// pay landed an at-source consume (consume_now=true with an
-		// item that has satisfactions), surface the actor's felt
-		// experience in their own brown box — "You eat the stew —
-		// gnawing eases; comfortably fed." Mirrors the well-refresh
-		// narration shape (private=true, actor_id-matched in the talk
-		// panel). Skipped for take-home pays (consume_now=false) and
-		// for non-item pays since there's no consume to narrate.
-		if consumeNow && pr.ItemConsumed && req.Item != "" {
-			satisfactions, sErr := loadItemSatisfactions(r.Context(), app.DB, strings.ToLower(strings.TrimSpace(req.Item)))
-			if sErr == nil && len(satisfactions) > 0 {
-				preNeeds := map[string]int{
-					"hunger":    actor.Hunger,
-					"thirst":    actor.Thirst,
-					"tiredness": actor.Tiredness,
-				}
-				postNeeds := map[string]int{
-					"hunger":    actor.Hunger - pr.HungerReduction,
-					"thirst":    actor.Thirst - pr.ThirstReduction,
-					"tiredness": actor.Tiredness - pr.TirednessReduce,
-				}
-				qty := req.Qty
-				if qty <= 0 {
-					qty = 1
-				}
-				if selfText := narrateConsumeSelf(req.Item, qty, satisfactions, preNeeds, postNeeds); selfText != "" {
-					app.Hub.Broadcast(WorldEvent{
-						Type: "room_event",
-						Data: map[string]interface{}{
-							"actor_id":     actor.ID,
-							"actor_name":   actor.DisplayName,
-							"kind":         "consume",
-							"text":         selfText,
-							"structure_id": actor.InsideStructureID.String,
-							"private":      true,
-							"at":           time.Now().UTC().Format(time.RFC3339),
-						},
-					})
-				}
-			}
-		}
+		// ZBBS-129 step 2: the felt-language consume narration that used
+		// to fire here (private "you eat the stew" line) moved to
+		// executeDeliverOrder, since consumption now happens at deliver
+		// time, not pay-accept. The Godot client's brown-box renders the
+		// same room_event kind="consume" private payload from the new
+		// callsite.
 		// Post-pay reactor tick (ZBBS-126). Give the recipient a chance
 		// to acknowledge the transaction — "thanks, friend" / "enjoy the
 		// stew" / "come again." Without this hook the room goes silent
@@ -1622,13 +1581,11 @@ func (app *App) handlePCPay(w http.ResponseWriter, r *http.Request) {
 	}
 
 	jsonResponse(w, http.StatusOK, pcPayResponse{
-		Result:          pr.Result,
-		Error:           pr.Err,
-		BuyerNewCoins:   pr.BuyerNewCoins,
-		ItemTransferred: pr.ItemTransferred,
-		ItemConsumed:    pr.ItemConsumed,
-		LedgerID:        pr.LedgerID,
-		CounterAmount:   pr.CounterAmount,
-		Message:         pr.Message,
+		Result:        pr.Result,
+		Error:         pr.Err,
+		BuyerNewCoins: pr.BuyerNewCoins,
+		LedgerID:      pr.LedgerID,
+		CounterAmount: pr.CounterAmount,
+		Message:       pr.Message,
 	})
 }
