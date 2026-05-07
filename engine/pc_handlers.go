@@ -58,6 +58,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -65,6 +66,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 type pcMeResponse struct {
@@ -1906,4 +1909,174 @@ func (app *App) handlePCWake(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonResponse(w, http.StatusOK, map[string]interface{}{"result": "ok"})
+}
+
+// handlePCMoveSubspace transitions the authenticated PC between
+// subspaces within their current structure. Accepts a 'kind' in the
+// body — 'common' to saunter back down to the bar, 'private' to enter
+// the bedroom you're a lodger in. ZBBS-149.
+//
+// Resolution: pick the first subspace_kind=$kind subspace in the PC's
+// current structure that they have access to (canEnterSubspace).
+// Common always passes; private requires an unexpired access row from
+// deliver_order(nights_stay). Staff requires work_structure_id match.
+//
+// Rejection cases:
+//   - PC is not inside any structure (no subspace to move within).
+//   - No subspace of the requested kind in this structure.
+//   - PC has no access to any subspace of that kind here (e.g. asked
+//     for 'private' without lodger status).
+//
+// On success: sets inside_subspace_id, broadcasts pc_subspace_changed.
+// touchPCInput fires (this is real player intent, should clear AFK
+// auto-bed timers — relevant once ZBBS-150 lands).
+func (app *App) handlePCMoveSubspace(w http.ResponseWriter, r *http.Request) {
+	user := getUserFromContext(r.Context())
+	if user == nil {
+		jsonError(w, "Not authenticated", http.StatusUnauthorized)
+		return
+	}
+
+	var req struct {
+		Kind string `json:"kind"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		jsonError(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+	if req.Kind != "common" && req.Kind != "private" && req.Kind != "staff" {
+		jsonError(w, "kind must be 'common', 'private', or 'staff'", http.StatusBadRequest)
+		return
+	}
+
+	var actorID string
+	var insideStructureID sql.NullString
+	if err := app.DB.QueryRow(r.Context(),
+		`SELECT id::text, inside_structure_id::text
+		   FROM actor WHERE login_username = $1`,
+		user.Username,
+	).Scan(&actorID, &insideStructureID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			jsonError(w, "No character", http.StatusBadRequest)
+			return
+		}
+		log.Printf("pc/move-subspace actor lookup: %v", err)
+		jsonError(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+
+	if !insideStructureID.Valid {
+		jsonResponse(w, http.StatusOK, map[string]interface{}{
+			"result": "rejected",
+			"error":  "you must be inside a structure to move between subspaces",
+		})
+		return
+	}
+
+	// Enumerate candidate subspaces in this structure of the requested
+	// kind, then pick the first one canEnterSubspace allows. Done in
+	// two queries (list + per-row gate) rather than one fancy join so
+	// the gate logic stays consistent with /pc/move-subspace's other
+	// callers and future kinds (e.g. a 'guest' kind with personal
+	// invite lists) drop in cleanly.
+	rows, err := app.DB.Query(r.Context(),
+		`SELECT id, name FROM structure_subspace
+		  WHERE structure_id = $1::uuid AND kind = $2
+		  ORDER BY name ASC`,
+		insideStructureID.String, req.Kind,
+	)
+	if err != nil {
+		log.Printf("pc/move-subspace candidate query: %v", err)
+		jsonError(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+	type cand struct {
+		ID   int64
+		Name string
+	}
+	var candidates []cand
+	for rows.Next() {
+		var c cand
+		if err := rows.Scan(&c.ID, &c.Name); err != nil {
+			rows.Close()
+			log.Printf("pc/move-subspace candidate scan: %v", err)
+			jsonError(w, "Internal error", http.StatusInternalServerError)
+			return
+		}
+		candidates = append(candidates, c)
+	}
+	rows.Close()
+	if len(candidates) == 0 {
+		jsonResponse(w, http.StatusOK, map[string]interface{}{
+			"result": "rejected",
+			"error":  "no " + req.Kind + " subspace exists here",
+		})
+		return
+	}
+
+	var pickedID int64
+	var pickedName string
+	for _, c := range candidates {
+		ok, err := app.canEnterSubspace(r.Context(), actorID, c.ID)
+		if err != nil {
+			log.Printf("pc/move-subspace canEnter %d: %v", c.ID, err)
+			continue
+		}
+		if ok {
+			pickedID = c.ID
+			pickedName = c.Name
+			break
+		}
+	}
+	if pickedID == 0 {
+		jsonResponse(w, http.StatusOK, map[string]interface{}{
+			"result": "rejected",
+			"error":  "you don't have access to any " + req.Kind + " subspace here",
+		})
+		return
+	}
+
+	// Conditional UPDATE — guard on inside_structure_id so a concurrent
+	// move/teleport/admin action between the candidate read and this
+	// write doesn't land the PC in a subspace of a structure they've
+	// already left. RowsAffected==0 means the PC moved between the
+	// two queries; surface that as a soft rejection so the client can
+	// re-evaluate rather than a 500.
+	tag, err := app.DB.Exec(r.Context(),
+		`UPDATE actor
+		    SET inside_subspace_id = $1
+		  WHERE id = $2::uuid
+		    AND inside_structure_id = $3::uuid`,
+		pickedID, actorID, insideStructureID.String,
+	)
+	if err != nil {
+		log.Printf("pc/move-subspace update: %v", err)
+		jsonError(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+	if tag.RowsAffected() != 1 {
+		jsonResponse(w, http.StatusOK, map[string]interface{}{
+			"result": "rejected",
+			"error":  "you moved before changing subspace — try again",
+		})
+		return
+	}
+	app.touchPCInput(r.Context(), actorID)
+
+	app.Hub.Broadcast(WorldEvent{
+		Type: "pc_subspace_changed",
+		Data: map[string]interface{}{
+			"actor_id":      actorID,
+			"subspace_id":   pickedID,
+			"subspace_kind": req.Kind,
+			"subspace_name": pickedName,
+			"at":            time.Now().UTC().Format(time.RFC3339),
+		},
+	})
+
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"result":        "ok",
+		"subspace_id":   pickedID,
+		"subspace_name": pickedName,
+	})
 }

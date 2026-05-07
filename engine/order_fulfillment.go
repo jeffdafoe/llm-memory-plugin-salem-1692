@@ -104,22 +104,29 @@ func (app *App) executeDeliverOrder(ctx context.Context, sellerID string, ledger
 	// + seller display names are pulled via subselect to avoid extra
 	// trips for the broadcast/narration text.
 	var (
-		ledgerState        string
-		fulfillmentStatus  string
-		ledgerSellerID     string
-		buyerID            string
-		buyerDisplayName   string
-		itemKindNS         sql.NullString
-		qtyNS              sql.NullInt32
-		consumeNow         bool
-		consumerActorIDs   []string
+		ledgerState         string
+		fulfillmentStatus   string
+		ledgerSellerID      string
+		buyerID             string
+		buyerDisplayName    string
+		itemKindNS          sql.NullString
+		qtyNS               sql.NullInt32
+		consumeNow          bool
+		consumerActorIDs    []string
+		readyBy             time.Time
+		sellerWorkStructure sql.NullString
 	)
+	// ZBBS-149: also pull pl.ready_by + seller.work_structure_id so the
+	// nights_stay branch can compute lodger_until and assign a bedroom
+	// subspace inside the same transaction.
 	err = tx.QueryRow(ctx,
 		`SELECT pl.state, pl.fulfillment_status, pl.seller_id::text,
 		        pl.buyer_id::text,
 		        (SELECT display_name FROM actor WHERE id = pl.buyer_id),
 		        pl.item_kind, pl.qty, pl.consume_now,
-		        COALESCE(pl.consumer_actor_ids, ARRAY[]::uuid[])::text[]
+		        COALESCE(pl.consumer_actor_ids, ARRAY[]::uuid[])::text[],
+		        pl.ready_by,
+		        (SELECT work_structure_id::text FROM actor WHERE id = pl.seller_id)
 		   FROM pay_ledger pl
 		  WHERE pl.id = $1
 		  FOR UPDATE`,
@@ -129,6 +136,7 @@ func (app *App) executeDeliverOrder(ctx context.Context, sellerID string, ledger
 		&buyerID, &buyerDisplayName,
 		&itemKindNS, &qtyNS, &consumeNow,
 		&consumerActorIDs,
+		&readyBy, &sellerWorkStructure,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -279,6 +287,39 @@ func (app *App) executeDeliverOrder(ctx context.Context, sellerID string, ledger
 		// (e.g. isLodger) read its state + dates to materialize status.
 		// Fulfillment_status flip below stamps delivered_on so the keeper's
 		// "I checked them in" moment lands on a real timestamp.
+		//
+		// ZBBS-149: nights_stay specifically also assigns the buyer to a
+		// private bedroom subspace + creates a subspace_access row. The
+		// keeper's deliver_order is the moment of "checked into your
+		// room" — the lodger physically transitions from the common bar
+		// area to their private bedroom. Other service items (future
+		// labor, courier) keep the buyer wherever they are; their
+		// effects materialize via the ledger row alone.
+		if itemKind == "nights_stay" {
+			if !sellerWorkStructure.Valid || sellerWorkStructure.String == "" {
+				return deliverOrderResult{
+					Result:   "rejected",
+					Err:      fmt.Sprintf("seller has no work structure to lodge from for ledger %d", ledgerID),
+					LedgerID: ledgerID,
+				}
+			}
+			checkOutHour, err := app.loadLodgingCheckOutHour(ctx)
+			if err != nil {
+				return deliverOrderResult{Result: "failed", Err: fmt.Sprintf("load checkout hour: %v", err), LedgerID: ledgerID}
+			}
+			expiresAt := computeLodgerUntil(readyBy, qty, checkOutHour)
+			bedroomID, err := app.assignBedroomForLodger(ctx, tx, sellerWorkStructure.String, buyerID, ledgerID, expiresAt)
+			if err != nil {
+				return deliverOrderResult{Result: "failed", Err: fmt.Sprintf("assign bedroom: %v", err), LedgerID: ledgerID}
+			}
+			if bedroomID == 0 {
+				return deliverOrderResult{
+					Result:   "rejected",
+					Err:      "All rooms taken — no bedroom available right now.",
+					LedgerID: ledgerID,
+				}
+			}
+		}
 
 	case consumeNow:
 		satisfactions, sErr := loadItemSatisfactions(ctx, tx, itemKind)
