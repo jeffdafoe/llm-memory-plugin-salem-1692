@@ -144,3 +144,55 @@ func (app *App) wouldBeEvictionExempt(ctx context.Context, actorID, structureID 
 	}
 	return app.isLodger(ctx, actorID, structureID)
 }
+
+// isStructureClosed reports whether structureID is currently closed
+// because a vendor working there is on break. The query checks for any
+// actor with work_structure_id=structureID AND break_until > NOW().
+// Mirrors the door-knock narration query at pc_handlers.go.
+//
+// "Closed" in this sense is a derived state — no flag stored on the
+// structure itself. When the vendor's break_until passes, the next
+// canEnter call sees the row as no-longer-on-break and reports the
+// structure as open. resetSleptTiredness and the world rotation don't
+// affect this query.
+func (app *App) isStructureClosed(ctx context.Context, structureID string) (bool, error) {
+	if structureID == "" {
+		return false, nil
+	}
+	var closed bool
+	err := app.DB.QueryRow(ctx,
+		`SELECT EXISTS (
+			SELECT 1 FROM actor
+			 WHERE work_structure_id = $1::uuid
+			   AND break_until IS NOT NULL
+			   AND break_until > NOW()
+		)`,
+		structureID,
+	).Scan(&closed)
+	if err != nil {
+		return false, fmt.Errorf("isStructureClosed query: %w", err)
+	}
+	return closed, nil
+}
+
+// canEnter is the single gate for an actor walking into a structure.
+// Returns true when:
+//
+//   1. The structure is open (no vendor on break here), OR
+//   2. The actor is exempt (home/work match, or active lodger).
+//
+// Errors propagate so callers can fail open or closed at their
+// discretion. Movement handlers (setNPCInside for NPC arrival,
+// handlePCMove for PC click-to-walk) consult this BEFORE flipping
+// inside_structure_id so the closed-door semantic actually keeps
+// people out.
+func (app *App) canEnter(ctx context.Context, actorID, structureID string) (bool, error) {
+	closed, err := app.isStructureClosed(ctx, structureID)
+	if err != nil {
+		return false, err
+	}
+	if !closed {
+		return true, nil
+	}
+	return app.wouldBeEvictionExempt(ctx, actorID, structureID)
+}

@@ -2072,28 +2072,46 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		tc.Input["break_until"] = breakUntil.Format(time.RFC3339)
 		payload, _ = json.Marshal(tc.Input)
 
-		// Walk the NPC home. If they have no home assigned (rare but
-		// possible), skip the walk and just stamp the override — they sit
-		// where they are, but the post is conceptually closed.
-		if err := app.executeAgentMoveTo(ctx, r, "home"); err != nil {
-			log.Printf("take_break %s: walk-home failed: %v (stamping override anyway)", r.DisplayName, err)
-		}
-
+		// ZBBS-133: redesigned take_break is "close-shop-with-vendor-
+		// inside" — the vendor stays put. The previous executeAgentMoveTo
+		// to "home" is gone; the structure becomes closed (derived from
+		// break_until in canEnter / isStructureClosed checks). For
+		// interior-occupied structures, an eviction sequence kicks off
+		// asynchronously to ask any non-exempt customers to leave.
 		// Stamp agent_override_until + break_until + last_shift_tick_at.
-		// agent_override_until keeps the scheduler stepping aside during the
-		// break (executeAgentMoveTo only sets it to NOW+30min for the walk
-		// itself; the break is longer). break_until (ZBBS-102) is the
-		// explicit "I'm closed for business" stamp the knock narration
-		// reads — distinct from override so a routine move_to doesn't
-		// misrepresent the vendor as on break. last_shift_tick_at is
-		// forward-stamped so worker scheduler doesn't re-fire shift_start
-		// during the break window.
+		// agent_override_until keeps the scheduler stepping aside during
+		// the break. break_until (ZBBS-102) is the explicit "I'm closed
+		// for business" stamp the knock narration reads — distinct from
+		// override so a routine move_to doesn't misrepresent the vendor
+		// as on break. last_shift_tick_at is forward-stamped so the
+		// worker scheduler doesn't re-fire shift_start during the break
+		// window.
 		if _, err := app.DB.Exec(ctx,
 			`UPDATE actor SET agent_override_until = $2, break_until = $2, last_shift_tick_at = $2 WHERE id = $1`,
 			r.ID, breakUntil,
 		); err != nil {
 			log.Printf("take_break: stamp override %s: %v", r.DisplayName, err)
 			result, errStr = "failed", err.Error()
+		}
+
+		// Eviction sequence (ZBBS-133): for interior structures with an
+		// 'allowed' entry policy, run the three-phase ask/assert/eject
+		// sequence in a goroutine. Skip for 'none' (market stalls — the
+		// closed state is the entire signal; nobody's inside) and for
+		// vendors without a work_structure_id assigned. setNPCInside's
+		// closed-door gate already prevents new entries during the break,
+		// so any actors NOT inside at take_break time can't sneak in.
+		if result == "ok" && r.WorkStructureID.Valid {
+			var entryPolicy string
+			if err := app.DB.QueryRow(ctx,
+				`SELECT entry_policy FROM village_object WHERE id = $1`,
+				r.WorkStructureID.String,
+			).Scan(&entryPolicy); err != nil {
+				log.Printf("take_break: lookup entry_policy %s: %v", r.WorkStructureID.String, err)
+			} else if entryPolicy != "none" {
+				agent := r.LLMMemoryAgent
+				app.startEvictionSequence(ctx, r.ID, r.DisplayName, agent, r.WorkStructureID.String, reason)
+			}
 		}
 
 	case "pay":
