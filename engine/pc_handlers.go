@@ -1834,7 +1834,20 @@ func (app *App) handlePCSleep(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "Internal error", http.StatusInternalServerError)
 		return
 	}
-	app.touchPCInput(r.Context(), actorID)
+	// ZBBS-150: stamp last_pc_input_at directly. touchPCInput would
+	// also clear sleeping_until + broadcast pc_sleep_ended (input)
+	// which would race executePCSleep below for an already-sleeping
+	// PC who re-calls /sleep. The /sleep handler manages sleep state
+	// authoritatively via executePCSleep. login_username gate matches
+	// touchPCInput's PC-only contract — a future/admin caller passing
+	// an NPC id can't accidentally stamp this column.
+	if _, err := app.DB.Exec(r.Context(),
+		`UPDATE actor SET last_pc_input_at = NOW()
+		  WHERE id = $1::uuid AND login_username IS NOT NULL`,
+		actorID,
+	); err != nil {
+		log.Printf("pc/sleep stamp input: %v", err)
+	}
 
 	if !insideStructureID.Valid {
 		jsonResponse(w, http.StatusOK, pcSleepResponse{
@@ -1844,19 +1857,36 @@ func (app *App) handlePCSleep(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// wouldBeEvictionExempt covers the three sleep-eligible paths:
-	// home_structure_id match, work_structure_id match (a tavernkeeper
-	// can sleep at their own tavern), or active lodger status here.
-	exempt, err := app.wouldBeEvictionExempt(r.Context(), actorID, insideStructureID.String)
-	if err != nil {
-		log.Printf("pc/sleep exemption check: %v", err)
+	// ZBBS-150: PC must be in a private subspace WITH valid access to
+	// sleep. Tightens the pre-ZBBS-150 wouldBeEvictionExempt gate so
+	// /pc/sleep can't fire from the bar (common subspace) — matches
+	// the autoBedIdleLodgers gate. wouldBeEvictionExempt's
+	// home_structure_id / work_structure_id branches don't apply to
+	// current PCs (no PC has a home or work structure assigned); if
+	// that changes, this gate will need to widen accordingly.
+	var canSleep bool
+	if err := app.DB.QueryRow(r.Context(),
+		`SELECT EXISTS (
+		    SELECT 1
+		      FROM actor a
+		      JOIN structure_subspace ss ON ss.id = a.inside_subspace_id
+		      JOIN subspace_access sa
+		        ON sa.subspace_id = a.inside_subspace_id
+		       AND sa.actor_id = a.id
+		     WHERE a.id = $1::uuid
+		       AND ss.kind = 'private'
+		       AND (sa.expires_at IS NULL OR sa.expires_at > NOW())
+		 )`,
+		actorID,
+	).Scan(&canSleep); err != nil {
+		log.Printf("pc/sleep gate check: %v", err)
 		jsonError(w, "Internal error", http.StatusInternalServerError)
 		return
 	}
-	if !exempt {
+	if !canSleep {
 		jsonResponse(w, http.StatusOK, pcSleepResponse{
 			Result: "rejected",
-			Error:  "you have no place to sleep here — pay for a night's stay first",
+			Error:  "you need to be in a paid bedroom to sleep — speak to the keeper for a night's stay",
 		})
 		return
 	}
@@ -1901,7 +1931,18 @@ func (app *App) handlePCWake(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "Internal error", http.StatusInternalServerError)
 		return
 	}
-	app.touchPCInput(r.Context(), actorID)
+	// ZBBS-150: stamp directly. touchPCInput would broadcast
+	// pc_sleep_ended (input) which would preempt executePCWake's
+	// authoritative reason "manual" broadcast. /wake is a deliberate
+	// player action, not an incidental input-wake. login_username
+	// gate matches touchPCInput's PC-only contract.
+	if _, err := app.DB.Exec(r.Context(),
+		`UPDATE actor SET last_pc_input_at = NOW()
+		  WHERE id = $1::uuid AND login_username IS NOT NULL`,
+		actorID,
+	); err != nil {
+		log.Printf("pc/wake stamp input: %v", err)
+	}
 
 	if err := app.executePCWake(r.Context(), actorID); err != nil {
 		log.Printf("pc/wake execute: %v", err)

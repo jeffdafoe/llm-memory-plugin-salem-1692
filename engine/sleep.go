@@ -1,20 +1,27 @@
 package main
 
-// PC sleep mechanic — stage B of the lodging design.
+// PC sleep mechanic — ZBBS-132 + ZBBS-150 redesign.
 //
 // Three responsibilities:
 //
-//   1. touchPCInput — write actor.last_pc_input_at on every PC HTTP
-//      handler entry. The auto-bed scan reads this to decide whether
-//      a connected PC has been idle long enough to bed.
+//   1. touchPCInput — every action-shaped PC handler entry (move,
+//      say, speak, pay, move-subspace). Stamps last_pc_input_at AND
+//      input-wakes any sleeping PC (ZBBS-150). /pc/sleep and /pc/wake
+//      handlers manage state directly without touchPCInput so manual
+//      bed/wake transitions get their authoritative reason on the
+//      broadcast.
 //
 //   2. runSleepSweep — long-lived goroutine started from main. Each
 //      tick:
-//        a) Wakes anyone whose sleeping_until has arrived (broadcast
-//           pc_sleep_ended).
-//        b) Scans for idle lodger PCs (has lodger status at their
-//           current structure, idle past the threshold, not already
-//           sleeping). Auto-beds them.
+//        a) Wakes sleepers when ANY of: sleeping_until reached
+//           (safety cap), tiredness <= 0 (rested), or
+//           subspace_access expired (housekeeping at checkout).
+//        b) Auto-beds idle lodger PCs whose subspace is 'private' and
+//           tiredness >= pc_idle_sleep_min_tiredness. The bedroom-
+//           only gate (ZBBS-149) keeps the sweep from sleep-darting
+//           a PC sitting in the bar; the tiredness gate keeps a
+//           freshly-rested PC who briefly steps into their room from
+//           getting knocked out.
 //
 //   3. executePCSleep / executePCWake — the manual-control entrypoints
 //      called from the /pc/sleep and /pc/wake HTTP handlers, and
@@ -22,40 +29,93 @@ package main
 //      corresponding world event so connected clients can fade in / out
 //      of sleep state.
 //
-// Wake target: next dawn (computed from world_dawn_time setting). If a
-// PC is already past today's dawn time when they bed, they sleep
-// through to tomorrow's dawn. Tiredness reset already happens at
-// world rotation (resetSleptTiredness in world_rotation.go) for
-// any actor inside a structure — sleep doesn't have to do that itself.
+// Wake target (ZBBS-150): NOW + pc_sleep_max_duration_hours (default
+// 12) is a SAFETY CAP on sleeping_until. The actual wake usually
+// fires earlier via the recovery- or checkout-driven branches in
+// wakeExpiredSleepers. Recovery rate reuses
+// take_break.tiredness_recovery_per_minute (0.1/min default) so a
+// max-tiredness PC wakes at ~4h wall-clock; the cap guards against
+// stuck rows if the recovery sweep is wedged.
 //
-// Early-wake penalty: none in v1. PC who wakes before world rotation
-// keeps whatever tiredness they had at sleep time (the rotation reset
-// hasn't fired yet). That's the natural penalty without bespoke logic.
+// resetSleptTiredness in world_rotation.go is preserved as the NPC
+// backstop — vendors get the dawn snap-to-zero. PCs use the
+// continuous recovery model.
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"log"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 const sleepSweepInterval = time.Minute
 
-// touchPCInput stamps actor.last_pc_input_at = NOW for the given PC.
-// Called from every PC HTTP handler entry. Errors logged but not
-// propagated — failing to record an input timestamp is a soft failure
-// (worst case: PC gets auto-bedded earlier than expected; can /wake).
+// touchPCInput stamps actor.last_pc_input_at = NOW and, if the PC is
+// currently sleeping, clears sleeping_until + broadcasts a
+// pc_sleep_ended event with reason "input" (ZBBS-150 input-wake).
+// Called from every PC HTTP action handler (move, say, speak, pay,
+// move-subspace). NOT called from /pc/sleep or /pc/wake — those
+// manage sleep state directly so the broadcast carries the
+// authoritative reason ("manual" wake, fresh "started" sleep).
+//
+// PC-only: gated on login_username IS NOT NULL inside the SQL so a
+// stray non-PC actor ID (admin slip, future caller bug) doesn't
+// silently wake an NPC and broadcast a pc_* event for it. The
+// broadcast also requires the row was actually sleeping at the
+// moment of update (CTE pattern below) so a benign double-call
+// doesn't produce a stale "input" wake event.
+//
+// Errors logged but not propagated — failing to record an input
+// timestamp is a soft failure (worst case: PC gets auto-bedded
+// earlier than expected; can /wake).
 func (app *App) touchPCInput(ctx context.Context, actorID string) {
 	if actorID == "" {
 		return
 	}
-	if _, err := app.DB.Exec(ctx,
-		`UPDATE actor SET last_pc_input_at = NOW() WHERE id = $1::uuid`,
+	// Single-statement CTE: capture the pre-UPDATE sleeping_until state,
+	// run the UPDATE, return whether the actor WAS sleeping. Atomic
+	// per-row; the broadcast only fires when the UPDATE actually flipped
+	// a sleeping PC awake. Returns no rows for non-PC actors (gated by
+	// login_username IS NOT NULL in the WITH clause).
+	var wasSleeping bool
+	err := app.DB.QueryRow(ctx,
+		`WITH before AS (
+		    SELECT id, sleeping_until IS NOT NULL AS was_sleeping
+		      FROM actor
+		     WHERE id = $1::uuid
+		       AND login_username IS NOT NULL
+		 ),
+		 upd AS (
+		    UPDATE actor a
+		       SET last_pc_input_at = NOW(),
+		           sleeping_until = NULL
+		      FROM before b
+		     WHERE a.id = b.id
+		    RETURNING b.was_sleeping
+		 )
+		 SELECT was_sleeping FROM upd`,
 		actorID,
-	); err != nil {
+	).Scan(&wasSleeping)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Not a PC (or no such actor). Soft no-op.
+			return
+		}
 		log.Printf("touchPCInput(%s): %v", actorID, err)
+		return
+	}
+	if wasSleeping {
+		app.Hub.Broadcast(WorldEvent{
+			Type: "pc_sleep_ended",
+			Data: map[string]interface{}{
+				"actor_id": actorID,
+				"reason":   "input",
+				"at":       time.Now().UTC().Format(time.RFC3339),
+			},
+		})
 	}
 }
 
@@ -81,15 +141,60 @@ func (app *App) runSleepSweep(ctx context.Context) {
 }
 
 // wakeExpiredSleepers clears sleeping_until on any actor whose wake
-// time has arrived, and broadcasts pc_sleep_ended for each. Atomic
-// per-row (the UPDATE...RETURNING captures the snapshot of woken
-// actors) so a concurrent manual /wake doesn't double-broadcast.
+// condition has fired, and broadcasts pc_sleep_ended for each. Three
+// wake conditions, ORed (ZBBS-150):
+//
+//   - sleeping_until <= NOW(): safety cap reached. Pre-ZBBS-150 this
+//     was the only branch (with sleeping_until pinned to nextDawnAt).
+//     Now it's a backstop — the cap is NOW + pc_sleep_max_duration_hours.
+//
+//   - tiredness <= 0: rested wake. Continuous recovery in
+//     tiredness_recovery_sweep.go decrements actor_need.tiredness
+//     while sleeping_until is set; once it hits 0 the PC is fully
+//     rested and the sweep wakes them naturally.
+//
+//   - subspace_access expired for the PC's current bedroom:
+//     housekeeping knock at checkout. Lodger_until rolls into
+//     subspace_access.expires_at via assignBedroomForLodger; when it
+//     passes, the PC is no longer welcome in that room and gets
+//     woken so they can leave. Note: the PC's lodger status (via
+//     isLodger) materializes from the same ledger row, so this fires
+//     in lockstep with the lodger losing room rights.
+//
+// Atomic per-row via the UPDATE...RETURNING. Broadcast reason
+// "auto" — distinct from manual /wake (reason "manual") and input-
+// wake (reason "input"); future refinement could split this into
+// rested/checkout/cap if clients want differentiated UX.
 func (app *App) wakeExpiredSleepers(ctx context.Context) error {
+	// PC-only via login_username IS NOT NULL gate. The pc_sleep_ended
+	// broadcast is PC-shaped and the new wake conditions (tiredness,
+	// subspace_access) are PC-specific; without the gate, an NPC with
+	// sleeping_until set (from a future feature or admin edit) would
+	// erroneously emit a PC sleep event.
 	rows, err := app.DB.Query(ctx,
-		`UPDATE actor
+		`UPDATE actor a
 		    SET sleeping_until = NULL
-		  WHERE sleeping_until IS NOT NULL
-		    AND sleeping_until <= NOW()
+		  WHERE a.login_username IS NOT NULL
+		    AND a.sleeping_until IS NOT NULL
+		    AND (
+		      a.sleeping_until <= NOW()
+		      OR EXISTS (
+		        SELECT 1 FROM actor_need an
+		         WHERE an.actor_id = a.id
+		           AND an.key = 'tiredness'
+		           AND an.value <= 0
+		      )
+		      OR (
+		        a.inside_subspace_id IS NOT NULL
+		        AND EXISTS (
+		          SELECT 1 FROM subspace_access sa
+		           WHERE sa.actor_id = a.id
+		             AND sa.subspace_id = a.inside_subspace_id
+		             AND sa.expires_at IS NOT NULL
+		             AND sa.expires_at <= NOW()
+		        )
+		      )
+		    )
 		 RETURNING id::text`,
 	)
 	if err != nil {
@@ -113,7 +218,7 @@ func (app *App) wakeExpiredSleepers(ctx context.Context) error {
 			Type: "pc_sleep_ended",
 			Data: map[string]interface{}{
 				"actor_id": id,
-				"reason":   "dawn",
+				"reason":   "auto",
 				"at":       now,
 			},
 		})
@@ -121,86 +226,109 @@ func (app *App) wakeExpiredSleepers(ctx context.Context) error {
 	return nil
 }
 
-// autoBedIdleLodgers finds connected PCs with active lodger status at
-// their current structure who've been idle past the threshold, and
-// beds them via executePCSleep. Each candidate is checked individually
-// against isLodger so the auto-bed only fires when the lodging
-// contract is genuinely active.
+// autoBedIdleLodgers finds connected PCs idle in their bedroom
+// subspace and beds them via executePCSleep. ZBBS-150 tightens the
+// pre-ZBBS-149 always-fires-anywhere behavior with two new gates:
+//
+//   - subspace_kind = 'private': PC must be in their bedroom, not
+//     the bar (common subspace). Without this, a 5-min AFK at the
+//     bar pinned the PC for ~22h — the bug Jeff hit on 2026-05-07.
+//
+//   - tiredness >= pc_idle_sleep_min_tiredness (default 10): a PC
+//     who just walked into their bedroom while fresh isn't auto-
+//     knocked-out. Sleep is for the tired.
+//
+// A private subspace alone is not sufficient; the EXISTS clause also
+// requires an unexpired subspace_access row so admin overrides or
+// stale placement (PC still in subspace_id after lodger_until passed)
+// don't auto-bed someone who lost their room rights. This is the
+// authoritative runtime materialization of "is a lodger here" —
+// the explicit isLodger ledger check is no longer needed because
+// subspace_access is the SAME ledger row's effects, just queried
+// directly.
 func (app *App) autoBedIdleLodgers(ctx context.Context) error {
-	idleMinutes, err := app.loadIdleSleepMinutes(ctx)
-	if err != nil {
-		return err
-	}
+	idleMinutes := app.loadIdleSleepMinutes(ctx)
 	if idleMinutes <= 0 {
 		// Configured to disable auto-bed; manual /sleep only.
 		return nil
 	}
+	minTiredness := app.loadIdleSleepMinTiredness(ctx)
 
+	// Explicit subspace_access check. Earlier draft asserted "private
+	// subspace implies access" by construction, but that holds only
+	// when assignBedroomForLodger is the sole path that places a PC
+	// in a private subspace AND the access row hasn't expired since.
+	// Code review pointed out that admin overrides, expired access
+	// (lodger_until passed but PC still in inside_subspace_id), or
+	// stale state can violate the implication. Enforcing the access
+	// row here makes the gate trustworthy.
 	rows, err := app.DB.Query(ctx,
-		`SELECT a.id::text, a.inside_structure_id::text
+		`SELECT a.id::text
 		   FROM actor a
+		   JOIN structure_subspace ss ON ss.id = a.inside_subspace_id
+		   JOIN actor_need an ON an.actor_id = a.id AND an.key = 'tiredness'
 		  WHERE a.login_username IS NOT NULL
 		    AND a.inside_structure_id IS NOT NULL
+		    AND a.inside_subspace_id IS NOT NULL
 		    AND a.sleeping_until IS NULL
 		    AND a.last_pc_input_at IS NOT NULL
-		    AND a.last_pc_input_at < NOW() - ($1::int * INTERVAL '1 minute')`,
-		idleMinutes,
+		    AND a.last_pc_input_at < NOW() - ($1::int * INTERVAL '1 minute')
+		    AND ss.kind = 'private'
+		    AND an.value >= $2::int
+		    AND EXISTS (
+		      SELECT 1 FROM subspace_access sa
+		       WHERE sa.actor_id = a.id
+		         AND sa.subspace_id = a.inside_subspace_id
+		         AND (sa.expires_at IS NULL OR sa.expires_at > NOW())
+		    )`,
+		idleMinutes, minTiredness,
 	)
 	if err != nil {
 		return fmt.Errorf("auto-bed candidates query: %w", err)
 	}
-	type candidate struct{ ID, StructureID string }
-	var candidates []candidate
+	var candidateIDs []string
 	for rows.Next() {
-		var c candidate
-		if err := rows.Scan(&c.ID, &c.StructureID); err != nil {
+		var id string
+		if err := rows.Scan(&id); err != nil {
 			rows.Close()
 			return fmt.Errorf("auto-bed scan: %w", err)
 		}
-		candidates = append(candidates, c)
+		candidateIDs = append(candidateIDs, id)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("auto-bed iter: %w", err)
 	}
 
-	for _, c := range candidates {
-		ok, err := app.isLodger(ctx, c.ID, c.StructureID)
-		if err != nil {
-			log.Printf("auto-bed isLodger(%s, %s): %v", c.ID, c.StructureID, err)
-			continue
-		}
-		if !ok {
-			continue
-		}
-		if _, sleepErr := app.executePCSleep(ctx, c.ID); sleepErr != nil {
-			log.Printf("auto-bed executePCSleep(%s): %v", c.ID, sleepErr)
+	for _, id := range candidateIDs {
+		if _, sleepErr := app.executePCSleep(ctx, id); sleepErr != nil {
+			log.Printf("auto-bed executePCSleep(%s): %v", id, sleepErr)
 		}
 	}
 	return nil
 }
 
-// loadIdleSleepMinutes reads the pc_idle_sleep_minutes setting. Returns
-// 5 when the row is missing (default), and a parse error if the value
-// is malformed.
-func (app *App) loadIdleSleepMinutes(ctx context.Context) (int, error) {
-	var raw sql.NullString
-	if err := app.DB.QueryRow(ctx,
-		`SELECT value FROM setting WHERE key = 'pc_idle_sleep_minutes'`,
-	).Scan(&raw); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return 5, nil
-		}
-		return 0, fmt.Errorf("load pc_idle_sleep_minutes: %w", err)
-	}
-	if !raw.Valid {
-		return 5, nil
-	}
-	var n int
-	if _, err := fmt.Sscanf(raw.String, "%d", &n); err != nil {
-		return 0, fmt.Errorf("parse pc_idle_sleep_minutes %q: %w", raw.String, err)
-	}
-	return n, nil
+// loadIdleSleepMinutes reads the pc_idle_sleep_minutes setting via
+// the shared loadIntSetting helper (defined in needs.go). Default 5.
+// Logs + falls back to the default on parse error.
+func (app *App) loadIdleSleepMinutes(ctx context.Context) int {
+	return app.loadIntSetting(ctx, "pc_idle_sleep_minutes", 5)
+}
+
+// loadIdleSleepMinTiredness reads the pc_idle_sleep_min_tiredness
+// setting (ZBBS-150). Default 10. Auto-bed will not fire on a PC
+// whose tiredness is below this value, even if every other gate
+// passes.
+func (app *App) loadIdleSleepMinTiredness(ctx context.Context) int {
+	return app.loadIntSetting(ctx, "pc_idle_sleep_min_tiredness", 10)
+}
+
+// loadPCSleepMaxDurationHours reads the pc_sleep_max_duration_hours
+// setting (ZBBS-150). Default 12. executePCSleep uses this to set
+// sleeping_until = NOW + N hours as a safety cap; recovery and
+// checkout typically wake before this.
+func (app *App) loadPCSleepMaxDurationHours(ctx context.Context) int {
+	return app.loadIntSetting(ctx, "pc_sleep_max_duration_hours", 12)
 }
 
 // pcSleepResult carries the outcome of an executePCSleep call, returned
@@ -210,26 +338,38 @@ type pcSleepResult struct {
 	WakeAt time.Time // UTC; zero when result wasn't a fresh transition
 }
 
-// executePCSleep beds the PC. Sets sleeping_until = next dawn, broadcasts
-// pc_sleep_started. Idempotent — returns silently when the PC is already
-// sleeping (UPDATE ... WHERE sleeping_until IS NULL guards against the
-// race). Manual handlers should pre-validate lodger status before
-// calling; the auto-bed path validates inline (see autoBedIdleLodgers).
+// executePCSleep beds the PC. Sets sleeping_until = NOW +
+// pc_sleep_max_duration_hours (safety cap; ZBBS-150 dropped the
+// dawn-anchor) and stamps last_tiredness_recovery_at = NOW so the
+// recovery sweep starts crediting from the bed-down moment.
+// Broadcasts pc_sleep_started. Idempotent — returns silently when
+// the PC is already sleeping (UPDATE ... WHERE sleeping_until IS NULL
+// guards against the race). Manual handlers should pre-validate
+// lodger status before calling; the auto-bed path validates inline
+// (see autoBedIdleLodgers).
+//
+// Wake target is normally hit via the rested or checkout branches in
+// wakeExpiredSleepers, not the safety cap. A max-tiredness PC reaches
+// 0 in ~4 wall-clock hours at the default 0.1/min rate; the 12h cap
+// is a backstop, not the expected wake.
 func (app *App) executePCSleep(ctx context.Context, actorID string) (pcSleepResult, error) {
-	cfg, err := app.loadWorldConfig(ctx)
-	if err != nil {
-		return pcSleepResult{}, fmt.Errorf("load world config: %w", err)
+	// Defensive clamp: a misconfigured setting (zero, negative, absurd)
+	// mustn't produce an immediately-expired sleep_until or a
+	// multi-day pin. loadIntSetting falls back on parse errors but
+	// doesn't validate range.
+	maxHours := app.loadPCSleepMaxDurationHours(ctx)
+	if maxHours <= 0 || maxHours > 24 {
+		maxHours = 12
 	}
-	dawnH, dawnM, err := parseHM(cfg.DawnTime)
-	if err != nil {
-		return pcSleepResult{}, fmt.Errorf("parse dawn time: %w", err)
-	}
-	now := time.Now().In(cfg.Location)
-	wakeAt := nextDawnAt(now, dawnH, dawnM).UTC()
+	wakeAt := time.Now().UTC().Add(time.Duration(maxHours) * time.Hour)
 
 	tag, err := app.DB.Exec(ctx,
-		`UPDATE actor SET sleeping_until = $1
-		  WHERE id = $2::uuid AND sleeping_until IS NULL`,
+		`UPDATE actor SET
+		    sleeping_until = $1,
+		    last_tiredness_recovery_at = NOW()
+		  WHERE id = $2::uuid
+		    AND login_username IS NOT NULL
+		    AND sleeping_until IS NULL`,
 		wakeAt, actorID,
 	)
 	if err != nil {
@@ -253,10 +393,14 @@ func (app *App) executePCSleep(ctx context.Context, actorID string) (pcSleepResu
 
 // executePCWake clears sleeping_until and broadcasts pc_sleep_ended
 // (reason "manual"). Idempotent — silent no-op when PC isn't asleep.
+// PC-only via login_username gate so an NPC id can't trigger a
+// pc_sleep_ended broadcast.
 func (app *App) executePCWake(ctx context.Context, actorID string) error {
 	tag, err := app.DB.Exec(ctx,
 		`UPDATE actor SET sleeping_until = NULL
-		  WHERE id = $1::uuid AND sleeping_until IS NOT NULL`,
+		  WHERE id = $1::uuid
+		    AND login_username IS NOT NULL
+		    AND sleeping_until IS NOT NULL`,
 		actorID,
 	)
 	if err != nil {
@@ -276,16 +420,8 @@ func (app *App) executePCWake(ctx context.Context, actorID string) error {
 	return nil
 }
 
-// nextDawnAt computes the next-occurring dawn moment from `now`. If
-// today's dawn is still in the future, returns today's dawn; otherwise
-// returns tomorrow's. Uses now.Location() so configured world timezone
-// is respected.
-func nextDawnAt(now time.Time, dawnH, dawnM int) time.Time {
-	loc := now.Location()
-	y, mo, d := now.Date()
-	todayDawn := time.Date(y, mo, d, dawnH, dawnM, 0, 0, loc)
-	if todayDawn.After(now) {
-		return todayDawn
-	}
-	return todayDawn.Add(24 * time.Hour)
-}
+// nextDawnAt was the pre-ZBBS-150 wake-target calculator. Removed
+// when the recovery-based wake replaced the dawn anchor; sleep
+// duration tracks tiredness recovery + checkout, not the world clock.
+// resetSleptTiredness in world_rotation.go still fires at dawn for
+// inside-structure NPCs, unchanged.
