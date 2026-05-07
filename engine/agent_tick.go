@@ -1416,6 +1416,23 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 		sections = append(sections, label+": "+inv+".")
 	}
 
+	// ZBBS-136: customers awaiting delivery. Surfaces pay_ledger rows
+	// at state=accepted, fulfillment_status=ready so the LLM sees
+	// pending handovers directly in the perception, before the
+	// satiation block competes for attention. ZBBS-129 step 2 split
+	// pay-accept from delivery; without this nudge the seller would
+	// only learn about the order via the check_order_book tool, which
+	// they rarely call when their own needs are pressing. Limited to
+	// the seller side — buyers don't deliver. Empty list suppresses
+	// the section entirely.
+	if entries, err := app.readyOrdersForSeller(ctx, r.ID); err == nil {
+		if line := formatReadyOrdersForPerception(entries, time.Now()); line != "" {
+			sections = append(sections, line)
+		}
+	} else {
+		log.Printf("perception readyOrdersForSeller %s: %v", r.DisplayName, err)
+	}
+
 	// 3a. Satiation block (ZBBS-123). When a consumable need is
 	// pressing (hunger, thirst), surface own-stock + nearby-vendor
 	// satisfiers so the LLM has the bridge between "Address now"

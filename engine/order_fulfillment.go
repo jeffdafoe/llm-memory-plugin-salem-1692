@@ -457,3 +457,117 @@ func formatOrderBookForLLM(entries []orderBookEntry) string {
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
+
+// readyOrdersForSeller is the perception-side companion to
+// checkOrderBookForSeller. Filters strictly to fulfillment_status='ready'
+// because only ready rows are actionable via deliver_order. (When craft
+// items with hours_per_unit > 0 land, pending rows will be visible via
+// the check_order_book tool but suppressed from the perception line —
+// they're not actionable yet.) Caps at 10 rows; oldest first by
+// created_at so the LLM clears the backlog FIFO. Includes a paid-ago
+// duration so the LLM has urgency cues without arithmetic.
+func (app *App) readyOrdersForSeller(ctx context.Context, sellerID string) ([]readyOrderEntry, error) {
+	rows, err := app.DB.Query(ctx,
+		`SELECT pl.id, pl.item_kind, pl.qty, pl.offered_amount, pl.consume_now,
+		        a.display_name, pl.created_at
+		   FROM pay_ledger pl
+		   JOIN actor a ON a.id = pl.buyer_id
+		  WHERE pl.seller_id = $1
+		    AND pl.state = 'accepted'
+		    AND pl.fulfillment_status = 'ready'
+		  ORDER BY pl.created_at ASC
+		  LIMIT 10`,
+		sellerID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query ready orders: %w", err)
+	}
+	defer rows.Close()
+	var out []readyOrderEntry
+	for rows.Next() {
+		var (
+			e        readyOrderEntry
+			itemKind sql.NullString
+			qty      sql.NullInt32
+		)
+		if err := rows.Scan(&e.LedgerID, &itemKind, &qty, &e.OfferedAmount, &e.ConsumeNow, &e.BuyerName, &e.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan ready order row: %w", err)
+		}
+		if itemKind.Valid {
+			e.ItemKind = itemKind.String
+		}
+		if qty.Valid {
+			e.Qty = int(qty.Int32)
+		}
+		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate ready orders: %w", err)
+	}
+	return out, nil
+}
+
+// readyOrderEntry is the perception-shaped row: one customer waiting
+// for delivery. Distinct from orderBookEntry so the perception path
+// can carry coin/age info without forcing every check_order_book
+// caller to scan extra columns.
+type readyOrderEntry struct {
+	LedgerID      int64
+	BuyerName     string
+	ItemKind      string
+	Qty           int
+	OfferedAmount int
+	ConsumeNow    bool
+	CreatedAt     time.Time
+}
+
+// formatReadyOrdersForPerception renders the seller's pending
+// deliveries as a perception block. Empty input returns "" so the
+// caller can suppress the section entirely. Each line spells out the
+// buyer, qty/item, coin total, paid-ago duration, and the
+// deliver_order(ledger_id) call to fire — everything the LLM needs to
+// pick up the order without a separate check_order_book round-trip.
+func formatReadyOrdersForPerception(entries []readyOrderEntry, now time.Time) string {
+	if len(entries) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Customers awaiting delivery — call deliver_order to hand over:\n")
+	for _, e := range entries {
+		// qty/item piece. Service items (lodging) carry no item_kind
+		// in the perception render — they're placement-anchored and
+		// the keeper sees the lodger via separate paths.
+		var qtyItem string
+		switch {
+		case e.ItemKind == "" && e.Qty == 0:
+			qtyItem = "(unspecified service)"
+		case e.Qty <= 1:
+			qtyItem = e.ItemKind
+		default:
+			qtyItem = fmt.Sprintf("%d %s", e.Qty, e.ItemKind)
+		}
+		coinPart := ""
+		if e.OfferedAmount > 0 {
+			coinPart = fmt.Sprintf(", %d coin(s)", e.OfferedAmount)
+		}
+		fmt.Fprintf(&b, "- %s: %s%s — paid %s ago — call deliver_order(%d)\n",
+			e.BuyerName, qtyItem, coinPart, formatAgeShort(now.Sub(e.CreatedAt)), e.LedgerID)
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// formatAgeShort renders a duration as a compact human-readable
+// string suitable for "paid Xs ago" / "paid Xm ago" / "paid Xh ago"
+// lines. Negative or zero durations render as "just now".
+func formatAgeShort(d time.Duration) string {
+	if d <= 0 {
+		return "just now"
+	}
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	}
+	return fmt.Sprintf("%dh", int(d.Hours()))
+}
