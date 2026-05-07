@@ -1606,6 +1606,15 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 		sections = append(sections, "Around the village:\n"+strings.Join(gossipLines, "\n"))
 	}
 
+	// ZBBS-158: sealed-note deliveries. Notes a courier has just
+	// handed over land here so the recipient may react in their next
+	// speak. 1-hour window keeps the section transient — a delivered
+	// note becomes background context after; if the recipient hasn't
+	// addressed it by then, they probably don't intend to.
+	if noteLines := app.visibleDeliveredNotes(ctx, r.ID, time.Hour, 5); len(noteLines) > 0 {
+		sections = append(sections, "Notes delivered to you:\n"+strings.Join(noteLines, "\n"))
+	}
+
 	// Pending summons targeting this NPC. Visible regardless of where
 	// the perceiver is — a messenger reaches you whether you're at home,
 	// at work, or in the open village. Falls off as soon as the NPC
