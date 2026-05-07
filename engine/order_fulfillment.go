@@ -118,7 +118,7 @@ func (app *App) executeDeliverOrder(ctx context.Context, sellerID string, ledger
 	)
 	// ZBBS-149: also pull pl.ready_by + seller.work_structure_id so the
 	// nights_stay branch can compute lodger_until and assign a bedroom
-	// subspace inside the same transaction.
+	// room inside the same transaction.
 	err = tx.QueryRow(ctx,
 		`SELECT pl.state, pl.fulfillment_status, pl.seller_id::text,
 		        pl.buyer_id::text,
@@ -289,7 +289,7 @@ func (app *App) executeDeliverOrder(ctx context.Context, sellerID string, ledger
 		// "I checked them in" moment lands on a real timestamp.
 		//
 		// ZBBS-149: nights_stay specifically also assigns the buyer to a
-		// private bedroom subspace + creates a subspace_access row. The
+		// private bedroom room + creates a room_access row. The
 		// keeper's deliver_order is the moment of "checked into your
 		// room" — the lodger physically transitions from the common bar
 		// area to their private bedroom. Other service items (future

@@ -117,15 +117,15 @@ func (app *App) handleMoveAgent(w http.ResponseWriter, r *http.Request) {
 			jsonError(w, "Object not found", http.StatusNotFound)
 			return
 		}
-		// ZBBS-149: subspace pairs with inside_structure_id. Drop the
-		// admin-placed actor into the 'common' subspace of the target
+		// ZBBS-149: room pairs with inside_structure_id. Drop the
+		// admin-placed actor into the 'common' room of the target
 		// structure; common is always seeded so the subselect resolves.
 		_, err = app.DB.Exec(r.Context(),
 			`UPDATE actor
 			    SET inside = true,
 			        inside_structure_id = $1,
-			        inside_subspace_id = (
-			          SELECT id FROM structure_subspace
+			        inside_room_id = (
+			          SELECT id FROM structure_room
 			           WHERE structure_id = $1::uuid AND kind = 'common'
 			           LIMIT 1
 			        )
@@ -144,7 +144,7 @@ func (app *App) handleMoveAgent(w http.ResponseWriter, r *http.Request) {
 		}
 		_, err := app.DB.Exec(r.Context(),
 			`UPDATE actor SET inside = false, inside_structure_id = NULL,
-			                  inside_subspace_id = NULL,
+			                  inside_room_id = NULL,
 			                  current_x = $1, current_y = $2
 			 WHERE id = $3`,
 			*req.X, *req.Y, agentID,
@@ -157,7 +157,7 @@ func (app *App) handleMoveAgent(w http.ResponseWriter, r *http.Request) {
 	case "off-map":
 		_, err := app.DB.Exec(r.Context(),
 			`UPDATE actor SET inside = false, inside_structure_id = NULL,
-			                  inside_subspace_id = NULL,
+			                  inside_room_id = NULL,
 			                  current_x = 0, current_y = 0
 			 WHERE id = $1`,
 			agentID,

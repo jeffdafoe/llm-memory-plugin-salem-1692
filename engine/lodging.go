@@ -31,9 +31,9 @@ package main
 // world timezone (setting `world_timezone`, default America/New_York),
 // matching dawn/dusk/world_rotation_time semantics. The SQL applies
 // `AT TIME ZONE world_timezone` so the naive timestamp is interpreted
-// as village wall-clock. The Go-side mirror in subspace.go's
+// as village wall-clock. The Go-side mirror in room.go's
 // computeLodgerUntil uses cfg.Location and produces the same UTC
-// instant for stamping subspace_access.expires_at.
+// instant for stamping room_access.expires_at.
 //
 // Conditional `ready` exemption (locked 2026-05-06 with Jeff,
 // per home's review `6513a207`):

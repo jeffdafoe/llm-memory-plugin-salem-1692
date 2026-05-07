@@ -604,14 +604,14 @@ func (app *App) visibleNeedsLines(ctx context.Context, perceiverID, structureID 
 	// per-need GetOK check inside the loop logs and skips missing
 	// rows instead of silently treating them as value=0.
 	thresholds := app.loadNeedThresholds(ctx)
-	// ZBBS-149: filter to actors in the SAME subspace as the perceiver.
+	// ZBBS-149: filter to actors in the SAME room as the perceiver.
 	// Without this, a sleeping lodger in a private bedroom appears in the
 	// keeper's "visible needs" perception and the keeper greets/serves
 	// them through the wall.
 	//
 	// Fail closed: require both the perceiver AND the other actor to
-	// have a non-NULL inside_subspace_id. The migration backfills, and
-	// every legitimate transition path stamps subspace_id alongside
+	// have a non-NULL inside_room_id. The migration backfills, and
+	// every legitimate transition path stamps room_id alongside
 	// inside_structure_id, so a NULL here is a code bug — better to
 	// surface it as "perceives nobody" than to form a NULL=NULL ghost
 	// bucket where two broken actors mutually see each other.
@@ -622,10 +622,10 @@ func (app *App) visibleNeedsLines(ctx context.Context, perceiverID, structureID 
 		 WHERE a.inside_structure_id = $1::uuid
 		   AND a.id != $2::uuid
 		   AND a.llm_memory_agent IS NOT NULL
-		   AND a.inside_subspace_id IS NOT NULL
-		   AND a.inside_subspace_id =
-		       (SELECT inside_subspace_id FROM actor
-		         WHERE id = $2::uuid AND inside_subspace_id IS NOT NULL)
+		   AND a.inside_room_id IS NOT NULL
+		   AND a.inside_room_id =
+		       (SELECT inside_room_id FROM actor
+		         WHERE id = $2::uuid AND inside_room_id IS NOT NULL)
 		 ORDER BY a.display_name, n.key`,
 		structureID, perceiverID)
 	if err != nil {

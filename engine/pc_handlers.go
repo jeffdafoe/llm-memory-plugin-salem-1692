@@ -1857,9 +1857,9 @@ func (app *App) handlePCSleep(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// ZBBS-150: PC must be in a private subspace WITH valid access to
+	// ZBBS-150: PC must be in a private room WITH valid access to
 	// sleep. Tightens the pre-ZBBS-150 wouldBeEvictionExempt gate so
-	// /pc/sleep can't fire from the bar (common subspace) — matches
+	// /pc/sleep can't fire from the bar (common room) — matches
 	// the autoBedIdleLodgers gate. wouldBeEvictionExempt's
 	// home_structure_id / work_structure_id branches don't apply to
 	// current PCs (no PC has a home or work structure assigned); if
@@ -1869,9 +1869,9 @@ func (app *App) handlePCSleep(w http.ResponseWriter, r *http.Request) {
 		`SELECT EXISTS (
 		    SELECT 1
 		      FROM actor a
-		      JOIN structure_subspace ss ON ss.id = a.inside_subspace_id
-		      JOIN subspace_access sa
-		        ON sa.subspace_id = a.inside_subspace_id
+		      JOIN structure_room ss ON ss.id = a.inside_room_id
+		      JOIN room_access sa
+		        ON sa.room_id = a.inside_room_id
 		       AND sa.actor_id = a.id
 		     WHERE a.id = $1::uuid
 		       AND ss.kind = 'private'
@@ -1952,26 +1952,26 @@ func (app *App) handlePCWake(w http.ResponseWriter, r *http.Request) {
 	jsonResponse(w, http.StatusOK, map[string]interface{}{"result": "ok"})
 }
 
-// handlePCMoveSubspace transitions the authenticated PC between
-// subspaces within their current structure. Accepts a 'kind' in the
+// handlePCMoveRoom transitions the authenticated PC between
+// rooms within their current structure. Accepts a 'kind' in the
 // body — 'common' to saunter back down to the bar, 'private' to enter
 // the bedroom you're a lodger in. ZBBS-149.
 //
-// Resolution: pick the first subspace_kind=$kind subspace in the PC's
-// current structure that they have access to (canEnterSubspace).
+// Resolution: pick the first room_kind=$kind room in the PC's
+// current structure that they have access to (canEnterRoom).
 // Common always passes; private requires an unexpired access row from
 // deliver_order(nights_stay). Staff requires work_structure_id match.
 //
 // Rejection cases:
-//   - PC is not inside any structure (no subspace to move within).
-//   - No subspace of the requested kind in this structure.
-//   - PC has no access to any subspace of that kind here (e.g. asked
+//   - PC is not inside any structure (no room to move within).
+//   - No room of the requested kind in this structure.
+//   - PC has no access to any room of that kind here (e.g. asked
 //     for 'private' without lodger status).
 //
-// On success: sets inside_subspace_id, broadcasts pc_subspace_changed.
+// On success: sets inside_room_id, broadcasts pc_room_changed.
 // touchPCInput fires (this is real player intent, should clear AFK
 // auto-bed timers — relevant once ZBBS-150 lands).
-func (app *App) handlePCMoveSubspace(w http.ResponseWriter, r *http.Request) {
+func (app *App) handlePCMoveRoom(w http.ResponseWriter, r *http.Request) {
 	user := getUserFromContext(r.Context())
 	if user == nil {
 		jsonError(w, "Not authenticated", http.StatusUnauthorized)
@@ -2001,7 +2001,7 @@ func (app *App) handlePCMoveSubspace(w http.ResponseWriter, r *http.Request) {
 			jsonError(w, "No character", http.StatusBadRequest)
 			return
 		}
-		log.Printf("pc/move-subspace actor lookup: %v", err)
+		log.Printf("pc/move-room actor lookup: %v", err)
 		jsonError(w, "Internal error", http.StatusInternalServerError)
 		return
 	}
@@ -2009,25 +2009,25 @@ func (app *App) handlePCMoveSubspace(w http.ResponseWriter, r *http.Request) {
 	if !insideStructureID.Valid {
 		jsonResponse(w, http.StatusOK, map[string]interface{}{
 			"result": "rejected",
-			"error":  "you must be inside a structure to move between subspaces",
+			"error":  "you must be inside a structure to move between rooms",
 		})
 		return
 	}
 
-	// Enumerate candidate subspaces in this structure of the requested
-	// kind, then pick the first one canEnterSubspace allows. Done in
+	// Enumerate candidate rooms in this structure of the requested
+	// kind, then pick the first one canEnterRoom allows. Done in
 	// two queries (list + per-row gate) rather than one fancy join so
-	// the gate logic stays consistent with /pc/move-subspace's other
+	// the gate logic stays consistent with /pc/move-room's other
 	// callers and future kinds (e.g. a 'guest' kind with personal
 	// invite lists) drop in cleanly.
 	rows, err := app.DB.Query(r.Context(),
-		`SELECT id, name FROM structure_subspace
+		`SELECT id, name FROM structure_room
 		  WHERE structure_id = $1::uuid AND kind = $2
 		  ORDER BY name ASC`,
 		insideStructureID.String, req.Kind,
 	)
 	if err != nil {
-		log.Printf("pc/move-subspace candidate query: %v", err)
+		log.Printf("pc/move-room candidate query: %v", err)
 		jsonError(w, "Internal error", http.StatusInternalServerError)
 		return
 	}
@@ -2040,7 +2040,7 @@ func (app *App) handlePCMoveSubspace(w http.ResponseWriter, r *http.Request) {
 		var c cand
 		if err := rows.Scan(&c.ID, &c.Name); err != nil {
 			rows.Close()
-			log.Printf("pc/move-subspace candidate scan: %v", err)
+			log.Printf("pc/move-room candidate scan: %v", err)
 			jsonError(w, "Internal error", http.StatusInternalServerError)
 			return
 		}
@@ -2050,7 +2050,7 @@ func (app *App) handlePCMoveSubspace(w http.ResponseWriter, r *http.Request) {
 	if len(candidates) == 0 {
 		jsonResponse(w, http.StatusOK, map[string]interface{}{
 			"result": "rejected",
-			"error":  "no " + req.Kind + " subspace exists here",
+			"error":  "no " + req.Kind + " room exists here",
 		})
 		return
 	}
@@ -2058,9 +2058,9 @@ func (app *App) handlePCMoveSubspace(w http.ResponseWriter, r *http.Request) {
 	var pickedID int64
 	var pickedName string
 	for _, c := range candidates {
-		ok, err := app.canEnterSubspace(r.Context(), actorID, c.ID)
+		ok, err := app.canEnterRoom(r.Context(), actorID, c.ID)
 		if err != nil {
-			log.Printf("pc/move-subspace canEnter %d: %v", c.ID, err)
+			log.Printf("pc/move-room canEnter %d: %v", c.ID, err)
 			continue
 		}
 		if ok {
@@ -2072,52 +2072,52 @@ func (app *App) handlePCMoveSubspace(w http.ResponseWriter, r *http.Request) {
 	if pickedID == 0 {
 		jsonResponse(w, http.StatusOK, map[string]interface{}{
 			"result": "rejected",
-			"error":  "you don't have access to any " + req.Kind + " subspace here",
+			"error":  "you don't have access to any " + req.Kind + " room here",
 		})
 		return
 	}
 
 	// Conditional UPDATE — guard on inside_structure_id so a concurrent
 	// move/teleport/admin action between the candidate read and this
-	// write doesn't land the PC in a subspace of a structure they've
+	// write doesn't land the PC in a room of a structure they've
 	// already left. RowsAffected==0 means the PC moved between the
 	// two queries; surface that as a soft rejection so the client can
 	// re-evaluate rather than a 500.
 	tag, err := app.DB.Exec(r.Context(),
 		`UPDATE actor
-		    SET inside_subspace_id = $1
+		    SET inside_room_id = $1
 		  WHERE id = $2::uuid
 		    AND inside_structure_id = $3::uuid`,
 		pickedID, actorID, insideStructureID.String,
 	)
 	if err != nil {
-		log.Printf("pc/move-subspace update: %v", err)
+		log.Printf("pc/move-room update: %v", err)
 		jsonError(w, "Internal error", http.StatusInternalServerError)
 		return
 	}
 	if tag.RowsAffected() != 1 {
 		jsonResponse(w, http.StatusOK, map[string]interface{}{
 			"result": "rejected",
-			"error":  "you moved before changing subspace — try again",
+			"error":  "you moved before changing room — try again",
 		})
 		return
 	}
 	app.touchPCInput(r.Context(), actorID)
 
 	app.Hub.Broadcast(WorldEvent{
-		Type: "pc_subspace_changed",
+		Type: "pc_room_changed",
 		Data: map[string]interface{}{
 			"actor_id":      actorID,
-			"subspace_id":   pickedID,
-			"subspace_kind": req.Kind,
-			"subspace_name": pickedName,
+			"room_id":   pickedID,
+			"room_kind": req.Kind,
+			"room_name": pickedName,
 			"at":            time.Now().UTC().Format(time.RFC3339),
 		},
 	})
 
 	jsonResponse(w, http.StatusOK, map[string]interface{}{
 		"result":        "ok",
-		"subspace_id":   pickedID,
-		"subspace_name": pickedName,
+		"room_id":   pickedID,
+		"room_name": pickedName,
 	})
 }

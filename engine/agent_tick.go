@@ -791,25 +791,25 @@ func (app *App) triggerCoLocatedTicks(ctx context.Context, structureID, excludeN
 		return
 	}
 	// ZBBS-149: when triggering co-located ticks for an event inside a
-	// structure, filter to actors in the SAME subspace as the trigger
+	// structure, filter to actors in the SAME room as the trigger
 	// source. Loiter-ring co-location at a structure with no
-	// inside_structure_id is unaffected — outdoors has no subspace.
+	// inside_structure_id is unaffected — outdoors has no room.
 	//
-	// Subspace resolution by case:
+	// Room resolution by case:
 	//   - Anonymous trigger ($3 = ''): chronicler dispatch or other
 	//     non-actor-rooted event. Default to the structure's 'common'
-	//     subspace so cascade triggers don't reach lodgers in their
+	//     room so cascade triggers don't reach lodgers in their
 	//     bedrooms.
 	//   - Actor trigger ($3 != '') AND that actor is inside this
-	//     structure with a subspace set: use the trigger's subspace
+	//     structure with a room set: use the trigger's room
 	//     directly (lodger-in-bedroom triggers stay in the bedroom).
 	//   - Actor trigger ($3 != '') AND that actor is NOT inside this
 	//     structure (e.g. PC knocking at an entry_policy=owner door —
 	//     they're added to the structure huddle but not physically
-	//     inside): fall back to the 'common' subspace. The knock is
+	//     inside): fall back to the 'common' room. The knock is
 	//     anonymous from the inside's perspective; it should reach the
 	//     public area but not bedrooms.
-	//   - Actor trigger but NULL subspace (corruption — shouldn't
+	//   - Actor trigger but NULL room (corruption — shouldn't
 	//     happen post-migration): also falls back to common via the
 	//     same COALESCE, fail-open instead of silently dropping.
 	rows, err := app.DB.Query(ctx,
@@ -820,17 +820,17 @@ func (app *App) triggerCoLocatedTicks(ctx context.Context, structureID, excludeN
 		   AND (
 		     (
 		       n.inside_structure_id::text = $1
-		       AND n.inside_subspace_id = CASE
+		       AND n.inside_room_id = CASE
 		         WHEN $3 = '' THEN (
-		           SELECT id FROM structure_subspace
+		           SELECT id FROM structure_room
 		            WHERE structure_id::text = $1 AND kind = 'common'
 		            LIMIT 1
 		         )
 		         ELSE COALESCE(
-		           (SELECT inside_subspace_id FROM actor
+		           (SELECT inside_room_id FROM actor
 		             WHERE id::text = $3
 		               AND inside_structure_id::text = $1),
-		           (SELECT id FROM structure_subspace
+		           (SELECT id FROM structure_room
 		             WHERE structure_id::text = $1 AND kind = 'common'
 		             LIMIT 1)
 		         )
