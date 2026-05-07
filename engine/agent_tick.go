@@ -1263,6 +1263,32 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 			shiftLine += " Since your home and work are the same place, you don't need to relocate — call take_break if you want to close your shop until you're ready to work again."
 		}
 		sections = append(sections, shiftLine)
+
+		// ZBBS-129 step 4: working-late cue. In the final hour of shift,
+		// if there are still ready orders the vendor hasn't delivered,
+		// nudge them to clear the queue before going off duty (or
+		// explicitly stay past shift end). Per home's design review the
+		// cue is gated to the final hour to avoid pre-emptive overtime
+		// — earlier in the shift the LLM should rely on the standing
+		// "Customers awaiting delivery" perception block (ZBBS-136)
+		// without a temporal urgency overlay.
+		if onShift {
+			minsUntilShiftEnd := (endMin - nowMin + 1440) % 1440
+			if minsUntilShiftEnd > 0 && minsUntilShiftEnd <= 60 {
+				if entries, err := app.readyOrdersForSeller(ctx, r.ID); err != nil {
+					log.Printf("perception working-late check %s: %v", r.DisplayName, err)
+				} else if len(entries) > 0 {
+					plural := "s"
+					if len(entries) == 1 {
+						plural = ""
+					}
+					sections = append(sections, fmt.Sprintf(
+						"Your shift ends in %d min. You still have %d order%s ready to deliver — finalize before going off duty, or stay past shift end if you want to clear the queue.",
+						minsUntilShiftEnd, len(entries), plural,
+					))
+				}
+			}
+		}
 	}
 
 	// Need thresholds loaded early — used by both the visible-needs
@@ -1331,6 +1357,20 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 		} else if rendered := renderConcerns(concerns); rendered != "" {
 			sections = append(sections, strings.TrimRight(rendered, "\n"))
 		}
+	}
+
+	// 3.0b.1 Buyer-side overdue orders (ZBBS-129 step 4). Surfaces any
+	// pay_ledger row the perceiver paid for whose ready_by has passed
+	// without the seller calling deliver_order. Location-independent
+	// per the locked design — fires anywhere in the village so a
+	// wandering buyer can't forget about stuck orders. Empty list
+	// suppresses the section. Companion to the seller-side
+	// "Customers awaiting delivery" block (ZBBS-136) so both sides of
+	// a stuck transaction have visibility.
+	if entries, err := app.overdueOrdersForBuyer(ctx, r.ID); err != nil {
+		log.Printf("perception overdueOrdersForBuyer %s: %v", r.DisplayName, err)
+	} else if line := formatOverdueOrdersForPerception(entries, time.Now()); line != "" {
+		sections = append(sections, line)
 	}
 
 	// 3.0c. Visible needs of co-located others. When the perceiver is

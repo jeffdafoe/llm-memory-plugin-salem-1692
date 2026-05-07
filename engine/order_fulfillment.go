@@ -571,3 +571,115 @@ func formatAgeShort(d time.Duration) string {
 	}
 	return fmt.Sprintf("%dh", int(d.Hours()))
 }
+
+// overdueOrderEntry is the buyer-perception-shaped row: one purchase
+// the perceiver paid for that the seller hasn't delivered past its
+// ready_by date. Mirrors readyOrderEntry in shape so the formatter
+// follows the same rendering pattern.
+type overdueOrderEntry struct {
+	LedgerID      int64
+	SellerName    string
+	ItemKind      string
+	Qty           int
+	OfferedAmount int
+	ReadyBy       time.Time
+}
+
+// overdueOrdersForBuyer returns the buyer's pay_ledger rows still
+// awaiting fulfillment past their ready_by date. ZBBS-129 step 4
+// buyer-side cue — companion to the seller-side "Customers awaiting
+// delivery" block (ZBBS-136). The "overdue" predicate is strict:
+// CURRENT_DATE > ready_by AND fulfillment_status != 'delivered'.
+// Same-day undelivered rows are not overdue — they may still be in
+// flight via the post-pay reactor tick. Sorted by ready_by ASC then
+// created_at ASC (oldest stuck first); capped at 10 — a buyer with
+// more than that has bigger problems and the rest will surface on
+// the next idle perception build.
+func (app *App) overdueOrdersForBuyer(ctx context.Context, buyerID string) ([]overdueOrderEntry, error) {
+	rows, err := app.DB.Query(ctx,
+		`SELECT pl.id, pl.item_kind, pl.qty, pl.offered_amount,
+		        seller.display_name, pl.ready_by
+		   FROM pay_ledger pl
+		   JOIN actor seller ON seller.id = pl.seller_id
+		  WHERE pl.buyer_id = $1
+		    AND pl.state = 'accepted'
+		    AND pl.fulfillment_status != 'delivered'
+		    AND pl.ready_by < CURRENT_DATE
+		  ORDER BY pl.ready_by ASC, pl.created_at ASC
+		  LIMIT 10`,
+		buyerID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query overdue orders: %w", err)
+	}
+	defer rows.Close()
+	var out []overdueOrderEntry
+	for rows.Next() {
+		var (
+			e        overdueOrderEntry
+			itemKind sql.NullString
+			qty      sql.NullInt32
+		)
+		if err := rows.Scan(&e.LedgerID, &itemKind, &qty, &e.OfferedAmount, &e.SellerName, &e.ReadyBy); err != nil {
+			return nil, fmt.Errorf("scan overdue order row: %w", err)
+		}
+		if itemKind.Valid {
+			e.ItemKind = itemKind.String
+		}
+		if qty.Valid {
+			e.Qty = int(qty.Int32)
+		}
+		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate overdue orders: %w", err)
+	}
+	return out, nil
+}
+
+// formatOverdueOrdersForPerception renders the buyer's stuck orders
+// as a single perception block. Empty input returns "" so the caller
+// can suppress the section entirely. Days-overdue is computed from
+// CURRENT_DATE - ready_by (always >= 1 row since the query filters
+// to ready_by < CURRENT_DATE). The cue is informative, not
+// prescriptive — the LLM picks whether to chase, complain, or let
+// the order go based on personality and other context.
+func formatOverdueOrdersForPerception(entries []overdueOrderEntry, now time.Time) string {
+	if len(entries) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Overdue orders you've placed (the seller hasn't delivered yet):\n")
+	// Match the query's CURRENT_DATE semantics by working in UTC. ready_by
+	// is a DATE column (no timezone) and pgx scans it as midnight UTC;
+	// keeping `today` in UTC too makes "days ago" line up with the row's
+	// inclusion in the result set rather than drifting an hour at the
+	// midnight boundary in a non-UTC observer locale.
+	nowUTC := now.UTC()
+	today := time.Date(nowUTC.Year(), nowUTC.Month(), nowUTC.Day(), 0, 0, 0, 0, time.UTC)
+	for _, e := range entries {
+		var qtyItem string
+		switch {
+		case e.ItemKind == "" && e.Qty == 0:
+			qtyItem = "(unspecified service)"
+		case e.Qty <= 1:
+			qtyItem = e.ItemKind
+		default:
+			qtyItem = fmt.Sprintf("%d %s", e.Qty, e.ItemKind)
+		}
+		coinPart := ""
+		if e.OfferedAmount > 0 {
+			coinPart = fmt.Sprintf(", %d coin(s)", e.OfferedAmount)
+		}
+		readyDay := time.Date(e.ReadyBy.Year(), e.ReadyBy.Month(), e.ReadyBy.Day(), 0, 0, 0, 0, time.UTC)
+		days := int(today.Sub(readyDay).Hours() / 24)
+		var ago string
+		if days <= 1 {
+			ago = "due yesterday"
+		} else {
+			ago = fmt.Sprintf("due %d days ago", days)
+		}
+		fmt.Fprintf(&b, "- %s: %s%s — %s\n", e.SellerName, qtyItem, coinPart, ago)
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
