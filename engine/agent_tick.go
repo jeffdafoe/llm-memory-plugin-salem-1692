@@ -1596,6 +1596,16 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 		}
 	}
 
+	// ZBBS-157: village gossip. Recent shared observations the
+	// chronicler (or future auto-authoring path) has recorded.
+	// Filtered to exclude gossip where the perceiver IS the subject —
+	// nobody overhears gossip about themselves. Cap at 3 lines so the
+	// section stays terse; newest-first ordering matches "around-the-
+	// village" spoken-cue feel.
+	if gossipLines := app.visibleGossipLines(ctx, r.ID, 3); len(gossipLines) > 0 {
+		sections = append(sections, "Around the village:\n"+strings.Join(gossipLines, "\n"))
+	}
+
 	// Pending summons targeting this NPC. Visible regardless of where
 	// the perceiver is — a messenger reaches you whether you're at home,
 	// at work, or in the open village. Falls off as soon as the NPC
