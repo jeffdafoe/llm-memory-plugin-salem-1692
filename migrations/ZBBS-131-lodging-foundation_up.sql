@@ -27,11 +27,16 @@ BEGIN;
 
 -- nights_stay item_kind. capabilities=['service'] gates the pay/deliver
 -- handling that bypasses portability and consumability checks. No
--- satisfies_attribute / satisfies_amount — sleeping doesn't drop any
--- need at the moment-of-purchase. Tiredness reset happens in the sleep
--- mechanic (stage B of the lodging design, separate commit).
-INSERT INTO item_kind (name, display_label, category, satisfies_attribute, satisfies_amount, sort_order, capabilities, hours_per_unit) VALUES
-    ('nights_stay', 'Night''s Stay', 'service', NULL, NULL, 500, ARRAY['service'], NULL);
+-- item_satisfies row — sleeping doesn't drop any need at the
+-- moment-of-purchase. Tiredness reset happens in the sleep mechanic
+-- (stage B of the lodging design, separate commit).
+--
+-- ZBBS-125 retired the inline satisfies_attribute / satisfies_amount
+-- columns on item_kind in favor of the item_satisfies join table; the
+-- original draft of this migration carried those columns over and
+-- broke deploy.
+INSERT INTO item_kind (name, display_label, category, sort_order, capabilities, hours_per_unit) VALUES
+    ('nights_stay', 'Night''s Stay', 'service', 500, ARRAY['service'], NULL);
 
 -- Lodging hours. Engine resolves these at lodger-status-query time:
 --   lodger_until = (ready_by + qty) at lodging_check_out_hour
