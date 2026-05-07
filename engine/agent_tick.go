@@ -2139,10 +2139,22 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		}
 
 		// Compose the spoken excuse. Reason is a short fragment ("feeling
-		// unwell"); the template wraps it. Empty reason → generic line.
+		// unwell"); the template wraps it. Empty or sub-threshold reason
+		// → generic line.
+		//
+		// ZBBS-139: enforce a minimum reason length. Observed 2026-05-07
+		// John Ellis emitting `reason="I"` which composed to `"I must
+		// close for now — I. Please come back later."` — clearly a
+		// truncated / garbled LLM output the engine accepted verbatim.
+		// 8 chars is short enough to allow "too busy" / "tired now" but
+		// long enough to reject single-letter / one-syllable noise.
+		// Trim is applied after the length check so a reason like
+		// "  I  " (5 chars before trim, 1 after) also falls back.
+		const takeBreakReasonMinChars = 8
+		trimmedReason := strings.TrimSpace(reason)
 		var excuse string
-		if strings.TrimSpace(reason) != "" {
-			excuse = fmt.Sprintf("I must close for now — %s. Please come back later.", strings.TrimSpace(reason))
+		if len(trimmedReason) >= takeBreakReasonMinChars {
+			excuse = fmt.Sprintf("I must close for now — %s. Please come back later.", trimmedReason)
 		} else {
 			excuse = "I must close for now — please come back later."
 		}
