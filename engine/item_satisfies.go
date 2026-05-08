@@ -17,9 +17,20 @@ import (
 
 // itemSatisfaction describes one effect an item has on a need —
 // "consume this item, this attribute drops by this amount per unit."
+//
+// Dwell fields (ZBBS-172) are optional and ride alongside the
+// immediate Amount: when all three are non-zero, consuming this item
+// at a structure pins a per-tick recovery to that structure's loiter
+// pin. The actor receives DwellAmount / DwellPeriodMinutes for
+// DwellTotalTicks ticks while remaining at the structure. Walking
+// away ends the meal early — the dwell tick deletes the credit row
+// when the actor's loiter resolution no longer matches.
 type itemSatisfaction struct {
-	Attribute string
-	Amount    int
+	Attribute          string
+	Amount             int
+	DwellAmount        int // 0 = no dwell; positive = magnitude per tick (engine negates on apply)
+	DwellPeriodMinutes int // 0 = no dwell
+	DwellTotalTicks    int // 0 = no dwell; countdown stamped onto actor_dwell_credit
 }
 
 // pgQuerier abstracts pgxpool.Pool / pgx.Tx so the lookup helpers can
@@ -40,7 +51,10 @@ type pgQuerier interface {
 // use a separate item_kind lookup. Errors only on actual DB failures.
 func loadItemSatisfactions(ctx context.Context, q pgQuerier, itemKind string) ([]itemSatisfaction, error) {
 	rows, err := q.Query(ctx, `
-		SELECT attribute, amount
+		SELECT attribute, amount,
+		       COALESCE(dwell_amount, 0),
+		       COALESCE(dwell_period_minutes, 0),
+		       COALESCE(dwell_total_ticks, 0)
 		  FROM item_satisfies
 		 WHERE item_kind = $1
 		 ORDER BY amount DESC, attribute ASC
@@ -52,7 +66,8 @@ func loadItemSatisfactions(ctx context.Context, q pgQuerier, itemKind string) ([
 	var out []itemSatisfaction
 	for rows.Next() {
 		var s itemSatisfaction
-		if err := rows.Scan(&s.Attribute, &s.Amount); err != nil {
+		if err := rows.Scan(&s.Attribute, &s.Amount,
+			&s.DwellAmount, &s.DwellPeriodMinutes, &s.DwellTotalTicks); err != nil {
 			return nil, fmt.Errorf("scan item_satisfies for %q: %w", itemKind, err)
 		}
 		out = append(out, s)

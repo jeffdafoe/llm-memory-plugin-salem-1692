@@ -375,6 +375,19 @@ func (app *App) executeDeliverOrder(ctx context.Context, sellerID string, ledger
 				if err != nil {
 					return deliverOrderResult{Result: "failed", Err: fmt.Sprintf("apply consumption for actor %s: %v", aid, err), LedgerID: ledgerID}
 				}
+				// Item dwell (ZBBS-172). At-source consumption is gated to
+				// the seller's structure by the co-location check below, so
+				// the consumer is at sellerWorkStructure when this fires.
+				// Pin dwell credits to that structure so the per-minute tick
+				// applies dwell_amount only while the consumer remains
+				// inside the meal's host (walking out abandons the meal).
+				dwellStructureID := ""
+				if sellerWorkStructure.Valid {
+					dwellStructureID = sellerWorkStructure.String
+				}
+				if err := app.upsertItemDwellCredits(ctx, tx, aid, satisfactions, dwellStructureID); err != nil {
+					return deliverOrderResult{Result: "failed", Err: fmt.Sprintf("upsert item dwell credits for actor %s: %v", aid, err), LedgerID: ledgerID}
+				}
 				consumerUpdates = append(consumerUpdates, postUpdate{
 					ActorID:   aid,
 					Hunger:    res.Hunger,

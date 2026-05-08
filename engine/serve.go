@@ -269,6 +269,20 @@ func (app *App) executeServe(ctx context.Context, server *agentNPCRow, req serve
 				if err != nil {
 					return serveResult{Result: "failed", Err: fmt.Sprintf("apply consumption for %s: %v", rcp.DisplayName, err)}
 				}
+				// Item dwell (ZBBS-172). Serve is gift-only and gated to
+				// the same huddle as the server, so the recipient is at
+				// the server's loiter resolution. Pin dwell to that
+				// structure so the recipient's per-tick payoff applies
+				// only while they remain at the meal's host. Position
+				// resolved via the LOCKED server row so a parallel
+				// move can't pin dwell to a stale structure.
+				dwellStructureID, err := app.resolveLoiterStructureLocked(ctx, tx, server.ID)
+				if err != nil {
+					return serveResult{Result: "failed", Err: fmt.Sprintf("resolve server dwell structure: %v", err)}
+				}
+				if err := app.upsertItemDwellCredits(ctx, tx, rcp.ID, itemSatisfactions, dwellStructureID); err != nil {
+					return serveResult{Result: "failed", Err: fmt.Sprintf("upsert item dwell credits for %s: %v", rcp.DisplayName, err)}
+				}
 				needUpdates = append(needUpdates, serveNeedUpdate{
 					ActorID:     rcp.ID,
 					DisplayName: rcp.DisplayName,

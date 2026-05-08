@@ -162,7 +162,7 @@ func (app *App) applyObjectRefreshAtArrival(ctx context.Context, actorID string,
 	// supply pool. Per-row supply gating is independent: an oak whose
 	// acorn supply is empty can still offer shade.
 	rows, err := tx.Query(ctx,
-		`SELECT attribute, amount, available_quantity
+		`SELECT attribute, amount, available_quantity, dwell_amount, dwell_period_minutes
 		   FROM object_refresh
 		  WHERE object_id = $1
 		  FOR UPDATE`,
@@ -171,15 +171,21 @@ func (app *App) applyObjectRefreshAtArrival(ctx context.Context, actorID string,
 	if err != nil {
 		return nil, fmt.Errorf("load refresh rows: %w", err)
 	}
+	// dwellAmount / dwellPeriod are paired by the schema's CHECK
+	// constraint — both null (legacy one-shot) or both set (per-tick
+	// credit while present). Tracked here per-row so the credit
+	// upsert below can fire only on rows that opted in.
 	type rowSpec struct {
-		attr   string
-		amount int
-		avail  *int // nil = infinite
+		attr        string
+		amount      int
+		avail       *int // nil = infinite
+		dwellAmount *int
+		dwellPeriod *int
 	}
 	var specs []rowSpec
 	for rows.Next() {
 		var rs rowSpec
-		if err := rows.Scan(&rs.attr, &rs.amount, &rs.avail); err != nil {
+		if err := rows.Scan(&rs.attr, &rs.amount, &rs.avail, &rs.dwellAmount, &rs.dwellPeriod); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("scan refresh row: %w", err)
 		}
@@ -268,6 +274,34 @@ func (app *App) applyObjectRefreshAtArrival(ctx context.Context, actorID string,
 	result, err := app.applyConsumption(ctx, tx, actorID, delta, source)
 	if err != nil {
 		return nil, fmt.Errorf("apply consumption: %w", err)
+	}
+
+	// Dwell credit upsert (ZBBS-172). Rows with dwell_amount set
+	// reward continued presence: the per-minute dwell tick reads
+	// actor_dwell_credit, applies dwell_amount via applyConsumption,
+	// and advances last_credited_at by exactly dwell_period_minutes.
+	// Stamp/refresh the anchor here so the first dwell credit fires
+	// dwell_period_minutes after this arrival rather than from a stale
+	// timestamp. ON CONFLICT updates last_credited_at on re-arrival —
+	// an actor who leaves and returns starts a fresh dwell window
+	// rather than instantly collecting time accumulated while away.
+	for _, rs := range appliedSpecs {
+		if rs.dwellAmount == nil {
+			continue
+		}
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO actor_dwell_credit
+			    (actor_id, object_id, attribute, source, last_credited_at, remaining_ticks,
+			     dwell_delta, dwell_period_minutes)
+			 VALUES ($1, $2, $3, 'object', NOW(), NULL, $4, $5)
+			 ON CONFLICT (actor_id, object_id, attribute, source)
+			 DO UPDATE SET last_credited_at     = EXCLUDED.last_credited_at,
+			               dwell_delta          = EXCLUDED.dwell_delta,
+			               dwell_period_minutes = EXCLUDED.dwell_period_minutes`,
+			actorID, objectID, rs.attr, *rs.dwellAmount, *rs.dwellPeriod,
+		); err != nil {
+			return nil, fmt.Errorf("upsert dwell credit for %s: %w", rs.attr, err)
+		}
 	}
 
 	// Build the hits list for the audit-log payload + Hub broadcast.

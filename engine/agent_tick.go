@@ -1318,6 +1318,11 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 	// world's dawn/dusk (the same shift the worker scheduler applies at
 	// runtime). Skipped only when the NPC has no work assignment at all
 	// (workLabel empty) — there's no "shift" to talk about.
+	// Lifted to function scope (ZBBS-172): the recovery-options block
+	// further down also gates on shift state. Default false matches
+	// no-work actors, who shouldn't be filtered by shift constraints
+	// since they don't have a shift to violate.
+	var onShift bool
 	if workLabel != "" {
 		var startMin, endMin int
 		if r.ScheduleStartMinute.Valid && r.ScheduleEndMinute.Valid {
@@ -1328,7 +1333,6 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 			endMin = duskMin
 		}
 		nowMin := hourStart.Hour()*60 + hourStart.Minute()
-		var onShift bool
 		if startMin <= endMin {
 			onShift = nowMin >= startMin && nowMin < endMin
 		} else {
@@ -1579,11 +1583,8 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 	// rejected, by which point the vendor had behaved as fully open
 	// for 8 minutes.
 	//
-	// The block runs ahead of any specific cue so the LLM reads its
-	// own state before it reads any nudges. The line names the wall-
-	// clock end time, the recovery model (so the tradeoff is visible),
-	// and the explicit choice — keep resting and decline gracefully,
-	// or call end_break to reopen now.
+	// Runs ahead of the recovery-options cue so the LLM reads its own
+	// state before any nudge.
 	if onBreak {
 		minsRemaining := int(time.Until(r.BreakUntil.Time).Round(time.Minute).Minutes())
 		var remainingPhrase string
@@ -1605,6 +1606,22 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 			r.BreakUntil.Time.Format("15:04"),
 			remainingPhrase,
 		))
+	}
+
+	// Recovery-options block (ZBBS-172). When tiredness is at or past
+	// the red threshold, surface the actor's real spatial choices —
+	// nearby free rest spots (rest-trees), the actor's own home (if
+	// owned and either off-shift or critical), nearby inns offering
+	// nights_stay (same shift gating). Annotated with qualitative
+	// distance, recovery quality, and recalled price (NPCs only "know"
+	// inn prices they've personally paid). The shift gate forces the
+	// LLM to weigh "abandoning shift" against "stagger through" only
+	// at critical (90% of needMax). Below critical and on-shift, the
+	// block lists only outdoor rest spots — leaving the post for a
+	// nap isn't on the menu yet.
+	criticalT := app.loadTirednessCriticalThreshold(ctx)
+	if recovery := app.buildRecoveryOptionsSection(ctx, r, tiredT, criticalT, onShift, workLabel != ""); recovery != "" {
+		sections = append(sections, recovery)
 	}
 
 	// Inventory (ZBBS-091) — items the NPC is carrying. Empty inventory
