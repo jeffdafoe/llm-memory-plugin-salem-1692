@@ -1185,6 +1185,7 @@ func _maybe_apply_recent_speech(data: Dictionary) -> void:
     if typeof(recent) != TYPE_ARRAY:
         return
 
+    var backload_count := 0
     for entry in recent:
         if typeof(entry) != TYPE_DICTIONARY:
             continue
@@ -1195,6 +1196,19 @@ func _maybe_apply_recent_speech(data: Dictionary) -> void:
         if speaker.is_empty() or text.is_empty():
             continue
         _append_log_line(speaker, text, kind, true, at)
+        backload_count += 1
+
+    # Visual gap between the historical backload and any live entries
+    # that arrive next. Without this, the newest backloaded line and
+    # the next live line read as adjacent — a fresh conversation
+    # rather than "history + new". Two spacers give a clear
+    # "everything above is from before" rhythm. Skipped when there
+    # was no backload (no history to separate from).
+    if backload_count > 0:
+        for i in range(2):
+            var spacer := Control.new()
+            spacer.custom_minimum_size = Vector2(0, 13)
+            log_vbox.add_child(spacer)
 
 
 func _set_no_pc_state() -> void:
