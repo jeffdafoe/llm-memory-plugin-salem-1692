@@ -109,6 +109,11 @@ type agentNPCRow struct {
 	// when their tiredness still reads above the threshold. Loaded with
 	// the row in runAgentTick. Valid + future means the cue suppresses.
 	BreakUntil sql.NullTime
+	// SleepingUntil (ZBBS-175) — when valid + future, the NPC is asleep
+	// and runAgentTick short-circuits before the perception/LLM call.
+	// Knock-wake from the entry-policy/knock task will clear this in a
+	// later commit; for v1, sleeping NPCs simply ignore reactive ticks.
+	SleepingUntil sql.NullTime
 
 	// LastServeResult captures the most recent successful serve
 	// dispatched via executeAgentCommit during this tick. The harness
@@ -595,7 +600,8 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, 
 		        COALESCE((SELECT value FROM actor_need WHERE actor_id = n.id AND key = 'hunger'), 0)::smallint,
 		        COALESCE((SELECT value FROM actor_need WHERE actor_id = n.id AND key = 'thirst'), 0)::smallint,
 		        COALESCE((SELECT value FROM actor_need WHERE actor_id = n.id AND key = 'tiredness'), 0)::smallint,
-		        n.break_until
+		        n.break_until,
+		        n.sleeping_until
 		 FROM actor n
 		 LEFT JOIN village_object wo ON wo.id = n.work_structure_id
 		 LEFT JOIN asset wa ON wa.id = wo.asset_id
@@ -612,7 +618,7 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, 
 		&r.ScheduleStartMinute, &r.ScheduleEndMinute,
 		&r.WorkLabel, &r.HomeLabel,
 		&r.Coins, &r.Hunger, &r.Thirst, &r.Tiredness,
-		&r.BreakUntil); err != nil {
+		&r.BreakUntil, &r.SleepingUntil); err != nil {
 		if err != sql.ErrNoRows {
 			log.Printf("event-tick %s (%s): load row: %v", npcID, reason, err)
 		}
@@ -628,6 +634,21 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, 
 		// from agent_action_log timestamps. Cheap insurance.
 		log.Printf("event-tick %s (%s): skipped — cost guard, last tick %s ago",
 			r.DisplayName, reason, time.Since(r.LastAgentTickAt.Time).Round(time.Second))
+		return
+	}
+
+	// Sleep gate (ZBBS-175). Sleeping NPCs ignore reactive ticks. Both
+	// PC-triggered and NPC-triggered ticks are gated here — a player
+	// speaking nearby shouldn't wake an NPC asleep at home, and a
+	// chronicler dispatch shouldn't burn an LLM call on someone who
+	// can't usefully respond. Knock-wake (entry-policy/knock task)
+	// will clear sleeping_until before the tick fires, so by the time
+	// runAgentTick runs the actor is awake and falls through this gate.
+	// Surfaces the skip in logs so "why didn't NPC X react" traces stay
+	// debuggable.
+	if r.SleepingUntil.Valid && r.SleepingUntil.Time.After(time.Now()) {
+		log.Printf("event-tick %s (%s): skipped — asleep until %s",
+			r.DisplayName, reason, r.SleepingUntil.Time.Format(time.RFC3339))
 		return
 	}
 
