@@ -274,12 +274,12 @@ func (app *App) loadHomeRestSpot(ctx context.Context, r *agentNPCRow, onShift bo
 	}
 }
 
-// loadInnRestSpots returns nearby lodging/tavern structures that have
-// at least one keeper who has previously sold nights_stay. Two
-// filters stack: (a) the structure carries a 'lodging' or 'tavern'
-// tag in village_object_tag — rules out non-lodging structures whose
+// loadInnRestSpots returns nearby lodging-tagged structures that
+// have at least one keeper who has previously sold nights_stay. Two
+// filters stack: (a) the structure carries a 'lodging' tag in
+// village_object_tag — rules out non-lodging structures whose
 // work-actor happens to have a stray nights_stay row from some edge
-// case;
+// case (Tavern carries 'lodging' alongside 'tavern' as of ZBBS-180);
 // (b) at least one accepted nights_stay row exists from an actor
 // whose work_structure_id matches — rules out decorative tavern-
 // tagged placements that nobody actually runs as lodging. DISTINCT
@@ -306,7 +306,7 @@ func (app *App) loadInnRestSpots(ctx context.Context, r *agentNPCRow, limit int,
 		         FROM village_object vo
 		         JOIN asset             asset ON asset.id = vo.asset_id
 		         JOIN village_object_tag vot ON vot.object_id = vo.id
-		                                    AND vot.tag IN ('lodging', 'tavern')
+		                                    AND vot.tag = 'lodging'
 		         JOIN actor              a   ON a.work_structure_id = vo.id
 		         JOIN pay_ledger         pl  ON pl.seller_id = a.id
 		                                    AND pl.item_kind = 'nights_stay'

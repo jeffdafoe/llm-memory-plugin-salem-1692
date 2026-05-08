@@ -592,19 +592,22 @@ func (app *App) handlePCCreate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Travelers lodge at the Inn. The Inn tag identifies multi-tenant
-	// lodging (distinct from a tavern, which is a workplace whose
-	// keeper happens to live above the bar). Falls back to tavern if
-	// no lodging is placed — historically taverns and inns were often
-	// the same establishment ('ordinary'), so a tavern-only village
-	// still makes sense.
+	// Spawn home is any lodging-tagged structure. Prefer pure inns
+	// (lodging without tavern) over tavern combos — historically the
+	// "ordinary" was both, but a dedicated inn is the more
+	// quintessential traveler's home. The IS_TAVERN ordering picks
+	// pure inn first and falls back to tavern only when no pure inn
+	// exists. Within a tier, oldest placement wins.
 	var homeID sql.NullString
 	var homeX, homeY sql.NullFloat64
 	if err := app.DB.QueryRow(r.Context(),
 		`SELECT o.id::text, o.x, o.y
 		   FROM village_object o
-		   JOIN village_object_tag vot ON vot.object_id = o.id
-		  WHERE vot.tag IN ('lodging', 'tavern')
-		  ORDER BY (CASE WHEN vot.tag = 'lodging' THEN 0 ELSE 1 END), o.created_at ASC
+		   JOIN village_object_tag vot ON vot.object_id = o.id AND vot.tag = 'lodging'
+		  ORDER BY EXISTS (
+		             SELECT 1 FROM village_object_tag t2
+		              WHERE t2.object_id = o.id AND t2.tag = 'tavern'
+		           ) ASC, o.created_at ASC
 		  LIMIT 1`,
 	).Scan(&homeID, &homeX, &homeY); err != nil && err != sql.ErrNoRows {
 		log.Printf("pc/create lodging lookup: %v", err)
