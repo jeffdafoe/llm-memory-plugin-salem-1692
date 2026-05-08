@@ -1329,15 +1329,29 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 			if minsUntilShiftEnd > 0 && minsUntilShiftEnd <= 60 {
 				if entries, err := app.readyOrdersForSeller(ctx, r.ID); err != nil {
 					log.Printf("perception working-late check %s: %v", r.DisplayName, err)
-				} else if len(entries) > 0 {
-					plural := "s"
-					if len(entries) == 1 {
-						plural = ""
+				} else {
+					// Future bookings (ready_by > today) aren't actionable
+					// today — exclude from the working-late count so a
+					// week-ahead reservation doesn't trigger a stay-late
+					// nudge for an order that physically can't be delivered.
+					today := time.Date(hourStart.Year(), hourStart.Month(), hourStart.Day(), 0, 0, 0, 0, time.UTC)
+					actionable := 0
+					for _, e := range entries {
+						readyByDate := time.Date(e.ReadyBy.Year(), e.ReadyBy.Month(), e.ReadyBy.Day(), 0, 0, 0, 0, time.UTC)
+						if !readyByDate.After(today) {
+							actionable++
+						}
 					}
-					sections = append(sections, fmt.Sprintf(
-						"Your shift ends in %d min. You still have %d order%s ready to deliver — finalize before going off duty, or stay past shift end if you want to clear the queue.",
-						minsUntilShiftEnd, len(entries), plural,
-					))
+					if actionable > 0 {
+						plural := "s"
+						if actionable == 1 {
+							plural = ""
+						}
+						sections = append(sections, fmt.Sprintf(
+							"Your shift ends in %d min. You still have %d order%s ready to deliver — finalize before going off duty, or stay past shift end if you want to clear the queue.",
+							minsUntilShiftEnd, actionable, plural,
+						))
+					}
 				}
 			}
 		}

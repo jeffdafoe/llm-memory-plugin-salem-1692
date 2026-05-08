@@ -107,7 +107,7 @@ func (app *App) loadWorldConfig(ctx context.Context) (*worldConfig, error) {
 	rows, err := app.DB.Query(ctx,
 		`SELECT key, value FROM setting
 		 WHERE key IN ('world_dawn_time', 'world_dusk_time', 'world_rotation_time',
-		               'world_timezone', 'world_zoom_min_admin', 'world_zoom_min_regular',
+		               'world_zoom_min_admin', 'world_zoom_min_regular',
 		               'world_agent_ticks_paused')`,
 	)
 	if err != nil {
@@ -130,8 +130,6 @@ func (app *App) loadWorldConfig(ctx context.Context) (*worldConfig, error) {
 			cfg.DuskTime = *value
 		case "world_rotation_time":
 			cfg.RotationTime = *value
-		case "world_timezone":
-			cfg.Timezone = *value
 		case "world_zoom_min_admin":
 			if f, err := strconv.ParseFloat(*value, 64); err == nil {
 				cfg.ZoomMinAdmin = f
