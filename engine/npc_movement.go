@@ -41,6 +41,18 @@ type npcWalk struct {
 	startedAt   time.Time
 	finalFacing string
 	timer       *time.Timer
+	// targetStructureID is the structure the walk is destined for, when
+	// the caller knew one. Walks to a structure land on its loiter
+	// point (or door); the actor may or may not enter on arrival
+	// depending on entry_policy + association — but the structure is
+	// the truth of "where you walked to" regardless of entry. Empty
+	// for coordinate-only walks (admin /api/move, ad-hoc relocations).
+	// Set via markWalkTargetStructure right after startNPCWalk by the
+	// callers who know the target (startReturnWalk, the handlePCMove
+	// structure click). Read in applyArrival so arrival-side hooks
+	// (e.g. closed-business narration) get the structure even when
+	// inside_structure_id never flipped.
+	targetStructureID string
 }
 
 // NPCMovement is the mutex-guarded map of active walks. One per App.
@@ -265,7 +277,7 @@ func (app *App) startNPCWalk(ctx context.Context, npcID string, targetX, targetY
 		// a place we're already at. Don't flip inside here: if the NPC was
 		// inside their structure, walking to their own tile shouldn't pop
 		// them out.
-		go app.applyArrivalSideEffects(context.Background(), npcID, startX, startY, "")
+		go app.applyArrivalSideEffects(context.Background(), npcID, startX, startY, "", "")
 		return &startNPCWalkResult{AlreadyThere: true, FinalFacing: ""}, nil
 	}
 
@@ -345,7 +357,7 @@ func (app *App) applyArrival(npcID string) {
 	// Object refresh + npc_arrived broadcast + behavior/errand
 	// advancement. Shared with same-tile no-op walks called from
 	// startNPCWalk so both paths produce the same client/event ordering.
-	app.applyArrivalSideEffects(ctx, npcID, end.X, end.Y, walk.finalFacing)
+	app.applyArrivalSideEffects(ctx, npcID, end.X, end.Y, walk.finalFacing, walk.targetStructureID)
 
 	// Event-tick co-located agents on agent-driven arrivals (M6.5
 	// pre-staging via ZBBS-075). When an agentized NPC enters a
@@ -470,6 +482,29 @@ func (app *App) applyArrival(npcID string) {
 	}
 }
 
+// markWalkTargetStructure records the structure id that the in-flight
+// walk for npcID is destined for. Called by walk-starting paths that
+// know they're targeting a specific structure (startReturnWalk,
+// handlePCMove's structure click). Safe no-op when no walk is active
+// for the actor — startNPCWalk may have rejected the walk request, in
+// which case the setter has nothing to mark.
+//
+// Stored on the npcWalk so applyArrival can read it on completion and
+// pass it to arrival-side hooks. The structure stays the truth across
+// entry / no-entry outcomes — owner-policy walks land at the loiter
+// point without flipping inside_structure_id, and we still want
+// arrival hooks to know which structure was walked to.
+func (app *App) markWalkTargetStructure(npcID, structureID string) {
+	if npcID == "" || structureID == "" {
+		return
+	}
+	app.NPCMovement.mu.Lock()
+	defer app.NPCMovement.mu.Unlock()
+	if walk, ok := app.NPCMovement.active[npcID]; ok && walk != nil {
+		walk.targetStructureID = structureID
+	}
+}
+
 // applyArrivalSideEffects runs the per-arrival side-effects shared between
 // real walk completions (via applyArrival) and same-tile no-op walks called
 // directly from startNPCWalk: object refresh at the arrival point, the
@@ -479,7 +514,13 @@ func (app *App) applyArrival(npcID string) {
 // UPDATE since position is unchanged. Entrance-only work (village/room
 // arrival events, co-located cascades, self-tick) stays in applyArrival —
 // a re-click on a place you're already at is not a fresh entrance.
-func (app *App) applyArrivalSideEffects(ctx context.Context, npcID string, x, y float64, facing string) {
+//
+// targetStructureID is the structure the walk was destined for (set by
+// callers via markWalkTargetStructure). Empty for coordinate-only walks.
+// Used by arrival-side hooks that need to know "you walked to X" even
+// when inside_structure_id never flipped (owner-policy structures
+// where the actor isn't allowed in still walked TO that structure).
+func (app *App) applyArrivalSideEffects(ctx context.Context, npcID string, x, y float64, facing string, targetStructureID string) {
 	if _, err := app.applyObjectRefreshAtArrival(ctx, npcID, x, y); err != nil {
 		log.Printf("object_refresh: %s at (%.1f,%.1f): %v", npcID, x, y, err)
 	}
@@ -548,6 +589,12 @@ func (app *App) applyArrivalSideEffects(ctx context.Context, npcID string, x, y 
 	app.maybeNPCAutoSleep(ctx, npcID)
 
 	// ZBBS-179: brown-panel narration for PCs arriving at a closed
-	// business. No-op for NPCs (gated inside the helper).
-	app.maybeNarrateClosedBusinessArrival(ctx, npcID)
+	// business. No-op for NPCs (gated inside the helper). Pass the
+	// walk's targetStructureID rather than reading inside_structure_id
+	// — owner-policy walks land at the loiter point without entering,
+	// and inside_structure_id stays NULL there. The structure they
+	// walked TO is the truth, regardless of entry.
+	if targetStructureID != "" {
+		app.maybeNarrateClosedBusinessArrival(ctx, npcID, targetStructureID)
+	}
 }

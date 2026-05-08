@@ -1807,7 +1807,16 @@ func _on_room_event(data: Dictionary) -> void:
         if event_room != loaded_room_id:
             print("[TALK]   -> dropped: room mismatch (event=", event_room, " loaded=", loaded_room_id, ")")
             return
-    if actor_name.is_empty() or text.is_empty():
+    # Empty-actor drop applies only to public events. Private events
+    # have already passed the actor_id-or-name match above and are
+    # second-person narrations like "You settle into your bed and
+    # drift off." (sleep), "You feel rested." (consume floor-hit), and
+    # "You arrive at General Store. It is closed." (closed-business
+    # arrival, ZBBS-179) — the engine convention for those is
+    # actor_name="" with actor_id=<pc>. Dropping them here was a
+    # latent bug that swallowed all such narrations after the
+    # ZBBS-128 empty-check landed; lifted in ZBBS-181.
+    if text.is_empty() or (not private_event and actor_name.is_empty()):
         print("[TALK]   -> dropped: empty actor/text")
         return
     _append_log_line(actor_name, text, kind, false, at)
