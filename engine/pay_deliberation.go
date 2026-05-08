@@ -196,6 +196,7 @@ func payDeliberationTools(includeCounter bool) []agentToolDef {
 func (app *App) runPayDeliberation(
 	ctx context.Context,
 	recipientAgent, recipientName, buyerName, item string,
+	recipientID, buyerID string,
 	qty, offered, quoted int,
 	hasQuote bool,
 	priorCounter int,
@@ -240,10 +241,46 @@ func (app *App) runPayDeliberation(
 	} else {
 		fmt.Fprintf(&prompt, " You have not quoted a price for %s in this conversation.", item)
 	}
-	if includeCounter {
-		prompt.WriteString(" Decide now: call accept_pay to take the offer as stated, decline_pay with a spoken reason to refuse, or counter_pay with a new amount and a spoken message to propose your own price. The buyer is waiting on your reply — choose exactly one.")
+
+	// Pricing history blocks (ZBBS-171). Three additions:
+	//   1. Coin context — the seller's own balance, so they can weigh
+	//      "do I need this sale" vs "I can afford to hold the line."
+	//      Counterparty coins deliberately omitted — the vendor doesn't
+	//      see into the buyer's purse, only their reputation/role.
+	//   2. Sale history — overall and from-this-buyer ranges for the
+	//      offered item over 7d / 30d.
+	//   3. Reciprocity — recent purchases the seller made FROM this
+	//      buyer (cross-role). Anchors goodwill / regular-customer
+	//      framing the LLM otherwise has no access to.
+	// All three soft-fail to omission on query error — the existing
+	// quote/counter prompt is enough to make a decision.
+	now := time.Now()
+	if coins, err := app.fetchActorCoins(ctx, recipientID); err == nil {
+		fmt.Fprintf(&prompt, "\n\nCoin context:\n  You have: %d coins.", coins)
 	} else {
-		prompt.WriteString(" Decide now: call accept_pay to take the offer as stated, or decline_pay with a spoken reason to refuse. (You've already countered earlier in this exchange — accept or decline now, no further counter.) The buyer is waiting on your reply — choose exactly one.")
+		log.Printf("pay-deliberation: coin lookup for %s: %v — skipping coin block", recipientName, err)
+	}
+	if sales, err := app.fetchSellerSales(ctx, recipientID, item); err == nil {
+		if block := renderSaleHistoryBlock(sales, item, buyerName, now); block != "" {
+			fmt.Fprintf(&prompt, "\n\n%s", block)
+		}
+	} else {
+		log.Printf("pay-deliberation: sale history for %s/%s: %v — skipping history block", recipientName, item, err)
+	}
+	if purchases, err := app.fetchPerceiverPurchases(ctx, recipientID, buyerID, 3); err == nil && len(purchases) > 0 {
+		ranges, _ := app.fetchPerceiverItemRanges(ctx, recipientID)
+		if block := renderReciprocityBlock(purchases, ranges, buyerName, now); block != "" {
+			fmt.Fprintf(&prompt, "\n\n%s", block)
+		}
+	} else if err != nil {
+		log.Printf("pay-deliberation: reciprocity lookup for %s from %s: %v — skipping reciprocity block", recipientName, buyerName, err)
+	}
+
+	prompt.WriteString("\n\n")
+	if includeCounter {
+		prompt.WriteString("Decide now: call accept_pay to take the offer as stated, decline_pay with a spoken reason to refuse, or counter_pay with a new amount and a spoken message to propose your own price. The buyer is waiting on your reply — choose exactly one.")
+	} else {
+		prompt.WriteString("Decide now: call accept_pay to take the offer as stated, or decline_pay with a spoken reason to refuse. (You've already countered earlier in this exchange — accept or decline now, no further counter.) The buyer is waiting on your reply — choose exactly one.")
 	}
 
 	timeoutCtx, cancel := context.WithTimeout(ctx, payDeliberationTimeoutSeconds*time.Second)
