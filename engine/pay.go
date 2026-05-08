@@ -747,6 +747,36 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payReque
 	}
 
 	result.LedgerID = ledgerID
+
+	// ZBBS-182: auto-fire delivery for at-source pay (consume_now=true).
+	// ZBBS-129 split delivery off into a separate seller-driven step
+	// (deliver_order tool) to give vendors agency over the hand-off
+	// narration. In practice the seller's post-pay reactor tick
+	// (ZBBS-126) often doesn't fire OR doesn't choose deliver_order,
+	// leaving the goods stuck at fulfillment_status='ready' and the
+	// buyer's needs un-applied — observed 2026-05-08 with Josiah's
+	// coca tea: pay accepted, ledger ready, tiredness never dropped.
+	//
+	// At-source consume_now=true is a deliberated agreement with the
+	// buyer physically present; engine completion of the delivery is
+	// safe and matches the player's expectation ("I paid for tea, I
+	// drank tea, my tiredness should drop"). Take-home (consume_now=
+	// false) and service items (nights_stay) keep the explicit
+	// deliver_order flow — those need seller-side bookkeeping
+	// (inventory transfer, lodger check-in) that benefits from the
+	// seller's deliberate confirmation.
+	//
+	// Errors logged but not propagated — the pay is committed; a
+	// failed delivery just leaves the ledger row 'ready' for retry by
+	// the seller's reactor tick if it ever fires.
+	if result.Result == "ok" && req.ConsumeNow && recipientID != "" && ledgerID > 0 {
+		dr := app.executeDeliverOrder(context.Background(), recipientID, ledgerID)
+		if dr.Result != "ok" {
+			log.Printf("auto-deliver post-pay (ledger=%d seller=%s): %s — %s",
+				ledgerID, recipientID, dr.Result, dr.Err)
+		}
+	}
+
 	return result
 }
 
