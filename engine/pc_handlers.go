@@ -269,24 +269,16 @@ func (app *App) handlePCMe(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Audience structure: prefer inside_structure_id (formal "I'm in
-	// this room"), fall back to the huddle's structure_id (loitering at
-	// the booth, knocking at the door — huddle joined but not formally
-	// inside). When neither is set the PC is in the open village with
-	// nobody to converse with; both fields stay nil.
-	if insideID.Valid {
-		s := insideID.String
-		resp.AudienceStructureID = &s
-	} else if huddleID.Valid {
-		var huddleStructureID sql.NullString
-		_ = app.DB.QueryRow(r.Context(),
-			`SELECT structure_id::text FROM scene_huddle WHERE id = $1`,
-			huddleID.String,
-		).Scan(&huddleStructureID)
-		if huddleStructureID.Valid {
-			s := huddleStructureID.String
-			resp.AudienceStructureID = &s
-		}
+	// Audience structure: position-based via actorStructureScope.
+	// Indoor returns inside_structure_id; outdoor returns the nearest
+	// structure whose loiter pin is within 64px (same tolerance as
+	// huddle formation). Empty when in transit / open road. Position-
+	// based rather than huddle-based so a pre-bound destination huddle
+	// (knock click) doesn't flip the talk panel scope before the PC has
+	// actually walked there — scope stays at the previous location
+	// until the PC arrives at the new structure's loiter ring.
+	if scope := app.actorStructureScope(r.Context(), insideID, x, y); scope != "" {
+		resp.AudienceStructureID = &scope
 	}
 
 	// Audience room: only set when the PC is inside a non-common subspace
