@@ -39,6 +39,8 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"log"
 	"time"
 )
@@ -136,6 +138,13 @@ func (app *App) dispatchObjectRefreshDwell(ctx context.Context) {
 // dwell_period_minutes and decrements remaining_ticks for item
 // credits. Item credits whose remaining_ticks would hit zero are
 // deleted instead of updated.
+//
+// Completion narration (ZBBS-172, follow-up): for PCs, emits a
+// private room_event after commit when (a) the dwelt-on need hits 0
+// for the first time on this credit, or (b) an item credit's last
+// tick fires (remaining_ticks reaches 0). NPCs don't get the room
+// event — their next perception build picks up the change via the
+// audit log + needs snapshot.
 func (app *App) applyDwellCredit(
 	ctx context.Context,
 	actorID, objectID, attribute, source string,
@@ -171,11 +180,50 @@ func (app *App) applyDwellCredit(
 		return tx.Commit(ctx)
 	}
 
-	if _, err := app.applyConsumption(ctx, tx, actorID, delta, "dwell-"+source); err != nil {
+	// Pre-credit snapshot for completion narration. We need the prior
+	// value of the dwelt-on need to detect a transition to zero (this
+	// tick clamps a positive value to the floor). Also pull the
+	// actor's PC marker + display name + scope for the room_event.
+	// Cheap: one row, indexed by PK.
+	var (
+		preNeed       int
+		loginUsername sql.NullString
+		displayName   string
+		insideStructureID sql.NullString
+	)
+	if err := tx.QueryRow(ctx,
+		`SELECT COALESCE((SELECT value FROM actor_need WHERE actor_id = a.id AND key = $2), 0),
+		        a.login_username, a.display_name, a.inside_structure_id::text
+		   FROM actor a
+		  WHERE a.id = $1`,
+		actorID, attribute,
+	).Scan(&preNeed, &loginUsername, &displayName, &insideStructureID); err != nil {
+		return fmt.Errorf("snapshot pre-need for narration: %w", err)
+	}
+
+	res, err := app.applyConsumption(ctx, tx, actorID, delta, "dwell-"+source)
+	if err != nil {
 		return err
 	}
 
-	if source == "item" && remainingTicks != nil && *remainingTicks <= 1 {
+	// Read the post-credit value of the dwelt-on need from the
+	// applyConsumption result. Used both for the floor-hit narration
+	// and to suppress the item-exhausted narration in the case where
+	// the meal is over but the need was already at 0 going in
+	// (eating-while-full pathological case — no narration warranted).
+	var postNeed int
+	switch attribute {
+	case "hunger":
+		postNeed = res.Hunger
+	case "thirst":
+		postNeed = res.Thirst
+	case "tiredness":
+		postNeed = res.Tiredness
+	}
+
+	itemExhausted := source == "item" && remainingTicks != nil && *remainingTicks <= 1
+
+	if itemExhausted {
 		// Last tick of the meal — delete the credit so the dwell
 		// loop forgets about this row. The actor still gets the
 		// final tick's recovery (already applied above).
@@ -186,23 +234,87 @@ func (app *App) applyDwellCredit(
 		); err != nil {
 			return err
 		}
-		return tx.Commit(ctx)
+	} else {
+		// Advance the anchor and (for items) decrement the countdown.
+		// Anchor advance uses exact dwell_period_minutes so a delayed
+		// tick doesn't shift the dwell phase forward.
+		if _, err := tx.Exec(ctx,
+			`UPDATE actor_dwell_credit
+			    SET last_credited_at = last_credited_at + ($5 || ' minutes')::interval,
+			        remaining_ticks  = CASE WHEN source = 'item' THEN remaining_ticks - 1
+			                                ELSE remaining_ticks
+			                           END
+			  WHERE actor_id = $1 AND object_id = $2 AND attribute = $3 AND source = $4`,
+			actorID, objectID, attribute, source, dwellPeriodMinutes,
+		); err != nil {
+			return err
+		}
 	}
 
-	// Advance the anchor and (for items) decrement the countdown.
-	// Anchor advance uses exact dwell_period_minutes so a delayed
-	// tick doesn't shift the dwell phase forward.
-	if _, err := tx.Exec(ctx,
-		`UPDATE actor_dwell_credit
-		    SET last_credited_at = last_credited_at + ($5 || ' minutes')::interval,
-		        remaining_ticks  = CASE WHEN source = 'item' THEN remaining_ticks - 1
-		                                ELSE remaining_ticks
-		                           END
-		  WHERE actor_id = $1 AND object_id = $2 AND attribute = $3 AND source = $4`,
-		actorID, objectID, attribute, source, dwellPeriodMinutes,
-	); err != nil {
+	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
 
-	return tx.Commit(ctx)
+	// Post-commit narration. Floor-hit and item-exhausted are the two
+	// completion events; both render a single room_event for PCs.
+	// NPCs (no login_username) don't get the broadcast — their next
+	// perception build sees the audit row + npc_needs_changed.
+	if loginUsername.Valid && loginUsername.String != "" {
+		floorHit := preNeed > 0 && postNeed == 0
+		if itemExhausted || floorHit {
+			text := dwellCompletionNarration(attribute, source, itemExhausted, floorHit)
+			if text != "" {
+				scope := ""
+				if insideStructureID.Valid {
+					scope = insideStructureID.String
+				}
+				app.Hub.Broadcast(WorldEvent{
+					Type: "room_event",
+					Data: map[string]interface{}{
+						"actor_id":     actorID,
+						"actor_name":   displayName,
+						"kind":         "dwell_complete",
+						"text":         text,
+						"structure_id": scope,
+						"private":      true,
+						"at":           time.Now().UTC().Format(time.RFC3339),
+					},
+				})
+			}
+		}
+	}
+
+	return nil
+}
+
+// dwellCompletionNarration composes the felt-language line for a
+// dwell completion. Item-exhausted takes precedence over floor-hit
+// (more specific event); both can be true if the last bite of stew
+// also crosses the hunger floor, but the meal-finished phrasing
+// already implies satiation. Returns "" for unknown attribute or
+// unhandled combinations.
+func dwellCompletionNarration(attribute, source string, itemExhausted, floorHit bool) string {
+	if itemExhausted {
+		switch attribute {
+		case "hunger":
+			return "You finish the last bite, satisfied."
+		case "thirst":
+			return "You drain the last drop."
+		case "tiredness":
+			return "You ease back, the last of it gone."
+		default:
+			return "You finish what you had."
+		}
+	}
+	if floorHit {
+		switch attribute {
+		case "hunger":
+			return "You feel full."
+		case "thirst":
+			return "Your thirst is quenched."
+		case "tiredness":
+			return "You feel rested."
+		}
+	}
+	return ""
 }
