@@ -206,7 +206,7 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 		// "pay-and-thank-you" sequence unfolds in the natural order:
 		// transaction first, speech next iteration. All inline tools
 		// execute and let the loop continue — none ends the turn.
-		var terminalCall, payCall, deliverCall, consumeCall, serveCall, gatherCall, summonCall, speakCall, actCall, observation *agentToolCall
+		var terminalCall, payCall, deliverCall, consumeCall, serveCall, gatherCall, summonCall, speakCall, actCall, endBreakCall, observation *agentToolCall
 		for i := range reply.ToolCalls {
 			tc := &reply.ToolCalls[i]
 			switch tc.Name {
@@ -246,6 +246,10 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 				if actCall == nil {
 					actCall = tc
 				}
+			case "end_break":
+				if endBreakCall == nil {
+					endBreakCall = tc
+				}
 			default:
 				if observation == nil {
 					observation = tc
@@ -256,6 +260,30 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 		if terminalCall != nil {
 			commitCall = terminalCall
 			break
+		}
+
+		// end_break runs before pay/serve/etc. so a vendor who decides
+		// to reopen mid-turn (customer arrived during break, ended
+		// break to serve them) sees the rest of their turn execute
+		// against the now-open shop. Without this ordering, a same-
+		// turn end_break + pay-from-customer could still hit the
+		// closed-shop gate via stale row-state if the read happened
+		// before the end_break write committed.
+		if endBreakCall != nil {
+			result, errStr, _ := app.executeAgentCommit(ctx, r, endBreakCall, sceneID)
+			if result == "ok" {
+				currentMessage = "[OK] You're back at your post — break ended. Greet any customer present, or start serving them. Then you may move or call done."
+			} else {
+				currentMessage = fmt.Sprintf("[End_break %s] %s. Continue your turn — you may speak, move, or call done.", result, errStr)
+			}
+			currentToolCallID = endBreakCall.ID
+			// Refresh r.BreakUntil so any subsequent perception build /
+			// tool dispatch in the same loop iteration sees the cleared
+			// break. The reactor tick after this fires its own row
+			// reload, but inline pay/serve in the SAME tool-call set
+			// reads off r.* — keep that consistent.
+			r.BreakUntil = sql.NullTime{}
+			continue
 		}
 
 		if payCall != nil {
@@ -977,6 +1005,14 @@ func agentToolSpec() []agentToolDef {
 			},
 		},
 		{
+			Name:        "end_break",
+			Description: "End your current break early to reopen your post. Use when a customer arrives and you'd rather serve them than keep resting, or when you feel rested enough to return to work before the break ends. Forfeits any tiredness recovery you'd have earned for the rest of the break — recovery accrues per minute while the break holds. Reject if you're not currently on a break.",
+			Parameters: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+		},
+		{
 			Name:        "pay",
 			Description: "Hand coins to another villager. The single verb for every commercial transaction — including SALES from vendors. Sales are buyer-initiated and atomic: stock decrements, goods or consumption land, coins move, all in one transaction. Vendors do NOT push goods at you via serve; you call pay to buy from them. Use after agreeing on a price in conversation. For purchases at an establishment (tavern, shop, smithy), pay the proprietor or staff working there — not another patron who happens to be present.\n\nFour shapes:\n  - pay(recipient, amount) — generic coin transfer for a tip, service, news, or anything not item-shaped. No goods change hands.\n  - pay(recipient, amount, item, qty?, consume_now=true) — at-source consumption (the tavern verb). The seller's stock decrements and your linked need (hunger/thirst) drops. Default when you specify an item.\n  - pay(recipient, amount, item, qty?, consume_now=false) — take-home. The seller's stock moves into your inventory for later use. Only works for portable items; non-portable like stew (hot bowl, not packable) must be consumed at-source.\n  - pay(recipient, amount, item, qty?, consume_now=true, consumers=[names]) — at-source GROUP order: buy a round for everyone in your huddle. Stock decrements by qty * len(consumers); each named consumer's need drops; you pay the full amount. Use when ordering for a group at a tavern.\n\nNo fixed price list — agree on the amount in speak() first, then commit the agreed total here.",
 			Parameters: map[string]interface{}{
@@ -1529,6 +1565,46 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 	onBreak := r.BreakUntil.Valid && r.BreakUntil.Time.After(time.Now())
 	if r.Tiredness >= tiredT && workLabel != "" && !onBreak {
 		sections = append(sections, "A short break would help — call take_break to close your shop and recover tiredness.")
+	}
+
+	// On-break self-state (ZBBS-174). Without this surfacing, a vendor
+	// who got dispatched mid-break (chronicler reactive tick from a
+	// PC arrival, scheduler tick, etc.) had no way to know they were
+	// on break — the perception read like normal working state. Saw
+	// 2026-05-08 16:21-16:29 UTC: Ezekiel Crane, on a 4-hour break
+	// since 13:02, was ticked at 16:21, moved to the Blacksmith,
+	// engaged with a customer for 4 turns, quoted prices — none of
+	// which the engine attributed to the active break_until row.
+	// The customer's pay attempts at 16:29 were the first thing that
+	// rejected, by which point the vendor had behaved as fully open
+	// for 8 minutes.
+	//
+	// The block runs ahead of any specific cue so the LLM reads its
+	// own state before it reads any nudges. The line names the wall-
+	// clock end time, the recovery model (so the tradeoff is visible),
+	// and the explicit choice — keep resting and decline gracefully,
+	// or call end_break to reopen now.
+	if onBreak {
+		minsRemaining := int(time.Until(r.BreakUntil.Time).Round(time.Minute).Minutes())
+		var remainingPhrase string
+		if minsRemaining <= 1 {
+			remainingPhrase = "less than a minute remaining"
+		} else if minsRemaining < 60 {
+			remainingPhrase = fmt.Sprintf("about %d minutes remaining", minsRemaining)
+		} else {
+			hours := minsRemaining / 60
+			rem := minsRemaining % 60
+			if rem == 0 {
+				remainingPhrase = fmt.Sprintf("about %d hours remaining", hours)
+			} else {
+				remainingPhrase = fmt.Sprintf("about %dh %dm remaining", hours, rem)
+			}
+		}
+		sections = append(sections, fmt.Sprintf(
+			"You are on a break — closed for business until %s (%s). Tiredness recovers steadily while the break holds; the recovery you would earn for the rest of the break is forfeit if you reopen early. If a customer arrives and you'd rather serve them than keep resting, call end_break and then greet them. Otherwise, decline new orders gracefully — name the time you'll be back.",
+			r.BreakUntil.Time.Format("15:04"),
+			remainingPhrase,
+		))
 	}
 
 	// Inventory (ZBBS-091) — items the NPC is carrying. Empty inventory
@@ -2509,6 +2585,44 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 				app.startEvictionSequence(ctx, r.ID, r.DisplayName, agent, r.WorkStructureID.String, reason)
 			}
 		}
+
+	case "end_break":
+		// End the current break early. The vendor reopens for business
+		// from this tick forward. Forfeits remaining tiredness recovery
+		// — the sweep credits up to last_tiredness_recovery_at, and
+		// clearing break_until means the next sweep run skips this
+		// actor. We DON'T retroactively credit recovery up to NOW; if
+		// we did, an LLM cycle of take_break → end_break → take_break
+		// → end_break could harvest near-instant recovery between
+		// turns. The forfeit-on-end is the cost that makes the choice
+		// real.
+		if !r.BreakUntil.Valid || !r.BreakUntil.Time.After(time.Now()) {
+			result = "rejected"
+			errStr = "You're not currently on a break — no need to call end_break."
+			break
+		}
+		// Clear break_until + agent_override_until so the scheduler
+		// resumes normal dispatch and the canEnter / closed-shop gates
+		// stop firing. last_tiredness_recovery_at stays where it is —
+		// any sweep ticks already credited keep their effect, but no
+		// future credits accrue for this break.
+		if _, err := app.DB.Exec(ctx,
+			`UPDATE actor
+			    SET break_until          = NULL,
+			        agent_override_until = NULL
+			  WHERE id = $1`,
+			r.ID,
+		); err != nil {
+			log.Printf("end_break: clear break for %s: %v", r.DisplayName, err)
+			result, errStr = "failed", err.Error()
+			break
+		}
+		// Mirror the local row so subsequent inline tool dispatches
+		// in this same turn see the cleared state. The caller in the
+		// tool-call categorize loop also clears r.BreakUntil after
+		// this returns ok, but stamp it here too for any other
+		// readers that see r.* between now and the next reload.
+		r.BreakUntil = sql.NullTime{}
 
 	case "pay":
 		recipient, _ := tc.Input["recipient"].(string)
