@@ -2604,6 +2604,16 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 			result, errStr = "failed", err.Error()
 		}
 
+		// ZBBS-176: flip the shop's visual current_state to unoccupied
+		// now that the vendor is on break. The occupancy COUNT excludes
+		// actors with break_until > NOW(), so the freshly-stamped vendor
+		// stops counting and the structure flips. Without this hook, the
+		// shop would stay rendered as "open" until something else moved
+		// in/out — confusing customers about whether they can transact.
+		if result == "ok" && r.InsideStructureID.Valid {
+			app.refreshStructureOccupancyState(ctx, r.InsideStructureID.String)
+		}
+
 		// Eviction sequence (ZBBS-133): for interior structures with an
 		// 'allowed' entry policy, run the three-phase ask/assert/eject
 		// sequence in a goroutine. Skip for 'none' (market stalls — the
@@ -2661,6 +2671,13 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		// this returns ok, but stamp it here too for any other
 		// readers that see r.* between now and the next reload.
 		r.BreakUntil = sql.NullTime{}
+
+		// ZBBS-176: flip the shop's visual current_state back to
+		// occupied now that the vendor is on duty again. Counterpart
+		// to the take_break refresh above.
+		if r.InsideStructureID.Valid {
+			app.refreshStructureOccupancyState(ctx, r.InsideStructureID.String)
+		}
 
 	case "pay":
 		recipient, _ := tc.Input["recipient"].(string)
