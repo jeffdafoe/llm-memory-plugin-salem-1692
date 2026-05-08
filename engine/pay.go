@@ -567,6 +567,27 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payReque
 					RecipientIsAgent: recipientIsAgent,
 				}
 			}
+			// Non-increasing counter guard. A counter only makes sense when
+			// the seller wants MORE than the buyer offered; counter ==
+			// offered is a no-op (wasted LLM round-trip) and counter <
+			// offered is the seller volunteering a discount that wasn't
+			// asked for. Both observed in production:
+			//   - 2026-05-08 #21 water: offered=1, counter=1 (LLM said
+			//     "I can let you have the water for 1 coin" — same price)
+			//   - 2026-05-08 #45 milk: offered=2, counter=1 (Josiah the
+			//     merchant said "I can do 1 coin for the milk" — leaving
+			//     a coin on the table the buyer was happy to pay)
+			// In both cases the LLM's intent matches "yes, deal" rather
+			// than "no, different price." Treat as accept at the buyer's
+			// originally-offered amount — the seller pockets what was
+			// offered, no spoken counter, no "I'll do less" undermining
+			// of merchant character. Tx B handles the transfer; the
+			// post-Tx-B updater stamps state=accepted on the ledger row.
+			if decision.NewAmount <= req.Amount {
+				log.Printf("pay-deliberation: %s emitted non-increasing counter (offered=%d, counter=%d) — treating as accept at offered amount",
+					recipientName, req.Amount, decision.NewAmount)
+				break
+			}
 			app.broadcastDeliberationSpeak(ctx, recipientID, recipientName, decision.Message)
 			counterAmt := sql.NullInt32{Int32: int32(decision.NewAmount), Valid: true}
 			if uerr := app.updatePayLedger(ctx, ledgerID, "countered", decision.Message, counterAmt); uerr != nil {
