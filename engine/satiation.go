@@ -33,10 +33,12 @@ package main
 // "eaten there" hint so the model knows stew at the tavern can't
 // be carried home — must consume on the spot.
 //
-// Scope: hunger and thirst only — these have entries in the item
-// catalog with satisfies_attribute set. Tiredness has no consumable
-// satisfier yet (sleep handling comes later) so it's silently
-// skipped here even when pressing.
+// Scope: hunger, thirst, and tiredness. Tiredness joined the loop in
+// ZBBS-178 once coca tea (ZBBS-177) became the first consumable
+// tiredness satisfier. The same machinery (own-stock + nearby
+// vendors with matching item_satisfies rows) generalizes cleanly —
+// only the lead phrase, felt-amount tiers, and verb needed
+// per-need branches.
 
 import (
 	"context"
@@ -89,7 +91,7 @@ func (app *App) buildSatiationLines(ctx context.Context, perceiverID string, per
 		return nil
 	}
 	var blocks []string
-	for _, need := range []string{"hunger", "thirst"} {
+	for _, need := range []string{"hunger", "thirst", "tiredness"} {
 		tier, ok := pressingTiers[need]
 		if !ok {
 			continue
@@ -100,8 +102,13 @@ func (app *App) buildSatiationLines(ctx context.Context, perceiverID string, per
 			continue
 		}
 
+		// Verb fits the dominant modality of the satisfier set. Hunger
+		// is "eat", thirst is "drink"; tiredness is "drink" while coca
+		// tea is the only satisfier — if a future tiredness item ships
+		// in food category (energy bars, etc.), revisit and pick the
+		// verb from the items rather than the need.
 		verb := "eat"
-		if need == "thirst" {
+		if need == "thirst" || need == "tiredness" {
 			verb = "drink"
 		}
 
@@ -191,10 +198,11 @@ func proximityPhrase(tiles float64) string {
 // satisfies_amount magnitude. Hunger and thirst use different scales
 // — "a hearty meal" reads naturally for stew (food) but not ale,
 // where "a deep drink" fits. Calibrated against the seed item
-// catalog (ZBBS-091 / ZBBS-093):
+// catalog (ZBBS-091 / ZBBS-093 / ZBBS-177):
 //
-//	hunger: berries 4, cheese 6, bread 8, meat 10, stew 12
-//	thirst: water 4, milk 6, ale 8
+//	hunger:    berries 4, cheese 6, bread 8, meat 10, stew 12
+//	thirst:    water 4, milk 6, ale 8
+//	tiredness: coca tea 12
 //
 // Bands sized so each item lands in a distinct phrase.
 func itemFeltAmount(amount int, need string) string {
@@ -206,6 +214,24 @@ func itemFeltAmount(amount int, need string) string {
 			return "a drink"
 		default:
 			return "a deep drink"
+		}
+	}
+	if need == "tiredness" {
+		// Stimulant brews — small ones ease, strong ones cut through
+		// real exhaustion. Coca tea (12) lands in "a thorough waking";
+		// future weaker brews (e.g. -4 herbal tea) would read as "a
+		// small revival." Bands deliberately match the hunger tier
+		// counts so the model sees comparable felt-magnitude vocab
+		// across needs.
+		switch {
+		case amount <= 4:
+			return "a small revival"
+		case amount <= 7:
+			return "a fair revival"
+		case amount <= 11:
+			return "a strong revival"
+		default:
+			return "a thorough waking"
 		}
 	}
 	switch {
@@ -234,6 +260,15 @@ func needLeadPhrase(need string, tier NeedTier) string {
 			return "Thirst is pressing — a real drink would clear it."
 		case NeedPeak:
 			return "You're parched — you need to drink, anything will help."
+		}
+		return ""
+	}
+	if need == "tiredness" {
+		switch tier {
+		case NeedRed:
+			return "Weariness is heavy — a strong brew would lift it."
+		case NeedPeak:
+			return "You're worn through — anything to revive would help."
 		}
 		return ""
 	}
