@@ -33,6 +33,17 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// addRoomScopeToData adds the actor's private-room id to the broadcast
+// data map when applicable. Convenience wrapper over actorPrivateRoomScope
+// for the many room_event / npc_spoke broadcast sites that follow the
+// "build map → set structure_id → broadcast" pattern. No-op when the
+// actor is in a common room or outdoors.
+func (app *App) addRoomScopeToData(ctx context.Context, data map[string]interface{}, actorID string) {
+	if rs := app.actorPrivateRoomScope(ctx, actorID); rs != "" {
+		data["room_id"] = rs
+	}
+}
+
 // actorPrivateRoomScope returns the actor's inside_room_id IF the actor
 // is in a non-common indoor room (private/staff) AND that room belongs
 // to the actor's current inside_structure_id. Returns "" in every other

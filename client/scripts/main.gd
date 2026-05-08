@@ -348,6 +348,16 @@ func _build_ui() -> void:
     if talk_panel_layer.has_signal("modal_open_changed") and camera != null:
         talk_panel_layer.modal_open_changed.connect(func(open: bool): _set_modal_blocker("talk_pay", open))
 
+    # Audience scope → world.gd. Talk panel polls /pc/me and tracks the
+    # PC's (structure, room) audibility scope; world.gd needs the same
+    # scope to gate speech-bubble rendering so private-bedroom speech
+    # doesn't leak as a bubble to PCs outside the bedroom. Without this,
+    # the talk panel filter shipped earlier still leaves the visual
+    # leak open via _spawn_speech_bubble.
+    var world_node = get_node_or_null("/root/Main/World")
+    if world_node != null and world_node.has_method("set_audience_scope") and talk_panel_layer.has_signal("audience_scope_changed"):
+        talk_panel_layer.audience_scope_changed.connect(world_node.set_audience_scope)
+
     # Register the talk panel's sheet (the actual rounded-rect chat
     # surface, not the full-screen anchor) so wheel-scroll over the
     # open chat scrolls the log instead of zooming the map. Sheet

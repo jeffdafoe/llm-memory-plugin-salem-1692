@@ -110,6 +110,41 @@ func narratePay(buyerName string, payload map[string]interface{}) string {
 	return fmt.Sprintf("%s pays %s %d %s for %s.", buyerName, recipient, amount, coinWord, itemPhrase)
 }
 
+// narratePayOffer builds the room-event line for a pay offer that
+// triggers deliberation (counter / decline path). Mirrors narratePay's
+// shape but with "offers" instead of "pays" since the transfer hasn't
+// happened — the recipient may counter or decline. Surfacing this in
+// the talk panel just before the seller's response speech closes a
+// pre-existing UX gap: an NPC↔NPC haggle where the buyer's `pay()`
+// triggers a counter speech read as "merchant blurted a price out of
+// nowhere" because only the response made it into the chat feed.
+//
+// Empty input (no recipient, no amount, no item) → empty string,
+// caller suppresses. Item-less coin offers narrate as "X offers Y N
+// coins" without the "for ..." clause.
+func narratePayOffer(buyerName, recipient string, amount int, item string, qty int) string {
+	recipient = strings.TrimSpace(recipient)
+	if recipient == "" || amount <= 0 {
+		return ""
+	}
+	coinWord := "coins"
+	if amount == 1 {
+		coinWord = "coin"
+	}
+	item = strings.TrimSpace(strings.ToLower(item))
+	if item == "" {
+		return fmt.Sprintf("%s offers %s %d %s.", buyerName, recipient, amount, coinWord)
+	}
+	if qty <= 0 {
+		qty = 1
+	}
+	itemPhrase := item
+	if qty > 1 {
+		itemPhrase = fmt.Sprintf("%d %s", qty, pluralize(item, qty))
+	}
+	return fmt.Sprintf("%s offers %s %d %s for %s.", buyerName, recipient, amount, coinWord, itemPhrase)
+}
+
 // narratePayForPerceiver builds a pay line for the recent-activity
 // perception block, with second-person substitution when the perceiver
 // is the buyer or recipient. Mirrors narratePay's gift / gesture / cost

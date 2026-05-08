@@ -1842,6 +1842,18 @@ signal object_tags_updated(object_id: String, tags: Array)
 ## already enough to scope the audience.
 signal npc_spoke(npc_id: String, name: String, text: String, kind: String, at: String, structure_id: String, mentions: Array, speaker_x: float, speaker_y: float, room_id: String, addressee_id: String, addressee_name: String)
 
+# PC's current audibility scope — mirrors talk_panel's loaded_structure_id
+# / loaded_room_id, kept here so apply_npc_spoke can suppress speech
+# bubbles that originate in a different room within the same structure.
+# Empty strings mean public scope (common room or outdoor). Updated by
+# main.gd from talk_panel's audience_scope_changed signal.
+var _audience_structure_id := ""
+var _audience_room_id := ""
+
+func set_audience_scope(structure_id: String, room_id: String) -> void:
+    _audience_structure_id = structure_id
+    _audience_room_id = room_id
+
 func apply_npc_spoke(data: Dictionary) -> void:
     var npc_id: String = str(data.get("npc_id", ""))
     var name: String = str(data.get("name", ""))
@@ -1875,7 +1887,24 @@ func apply_npc_spoke(data: Dictionary) -> void:
     var addressee_name: String = str(data.get("addressee_name", ""))
     if name == "" or text == "":
         return
-    _spawn_speech_bubble(npc_id, text)
+    # Bubble suppression for out-of-scope speech. Mirrors the talk-panel
+    # predicate so the world view doesn't show bubbles the panel filters.
+    # Two checks:
+    #   1. Outdoor speech (event structure_id empty): only spawn when the
+    #      PC is also outdoors (audience_structure_id empty) — without
+    #      this an outdoor speaker would bubble to a PC inside a building.
+    #   2. Indoor speech: structure_id must match AND room_id must match.
+    #      Common-room (room_id="") only spawns to common/outdoor PCs;
+    #      private-room (room_id="bed1") only spawns to same-room PCs.
+    # Pre-fix the check was room-only, so a public outdoor event would
+    # bubble to a common-room PC across structures.
+    var bubble_in_scope := false
+    if structure_id == "":
+        bubble_in_scope = (_audience_structure_id == "" and _audience_room_id == "" and room_id == "")
+    else:
+        bubble_in_scope = (structure_id == _audience_structure_id and room_id == _audience_room_id)
+    if bubble_in_scope:
+        _spawn_speech_bubble(npc_id, text)
     npc_spoke.emit(npc_id, name, text, kind, at, structure_id, mentions, speaker_x, speaker_y, room_id, addressee_id, addressee_name)
 
 

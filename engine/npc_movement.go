@@ -383,17 +383,16 @@ func (app *App) applyArrival(npcID string) {
 		// the departure room_event the agent move_to commit emits in
 		// executeAgentCommit. Without this, a PC inside the tavern
 		// watches villagers walk in with no on-screen acknowledgement.
-		app.Hub.Broadcast(WorldEvent{
-			Type: "room_event",
-			Data: map[string]interface{}{
-				"actor_id":     npcID,
-				"actor_name":   displayName,
-				"kind":         "arrival",
-				"text":         text,
-				"structure_id": insideID.String,
-				"at":           time.Now().UTC().Format(time.RFC3339),
-			},
-		})
+		data := map[string]interface{}{
+			"actor_id":     npcID,
+			"actor_name":   displayName,
+			"kind":         "arrival",
+			"text":         text,
+			"structure_id": insideID.String,
+			"at":           time.Now().UTC().Format(time.RFC3339),
+		}
+		app.addRoomScopeToData(ctx, data, npcID)
+		app.Hub.Broadcast(WorldEvent{Type: "room_event", Data: data})
 
 		if arriverIsAgent || arriverIsPC {
 			// Cascade origin (MEM-121): a fresh scene UUID for the
