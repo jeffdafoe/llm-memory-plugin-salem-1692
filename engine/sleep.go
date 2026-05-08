@@ -236,26 +236,31 @@ func (app *App) wakeExpiredSleepers(ctx context.Context) error {
 	return nil
 }
 
-// autoBedIdleLodgers finds connected PCs idle in their bedroom
-// room and beds them via executePCSleep. ZBBS-150 tightens the
-// pre-ZBBS-149 always-fires-anywhere behavior with two new gates:
+// autoBedIdleLodgers finds connected PCs idle anywhere in a structure
+// where they hold an active private room_access, walks them up to
+// their bedroom (server-side), and beds them via executePCSleep.
 //
-//   - room_kind = 'private': PC must be in their bedroom, not
-//     the bar (common room). Without this, a 5-min AFK at the
-//     bar pinned the PC for ~22h — the bug Jeff hit on 2026-05-07.
+// Pre-ZBBS-168 the gate required the PC to ALREADY be in the private
+// room. That was a half-mechanic: if a lodger walked back down to the
+// bar to chat with the keeper and idled there, nothing happened — they
+// had a room they couldn't use without a client UI for /pc/move-room
+// (which doesn't exist yet). The widened gate makes lodging a fully
+// passive mechanic: pay → exist → eventually fall asleep upstairs.
 //
-//   - tiredness >= pc_idle_sleep_min_tiredness (default 10): a PC
-//     who just walked into their bedroom while fresh isn't auto-
-//     knocked-out. Sleep is for the tired.
+// Gates:
+//   - PC has an active room_access row for a private room IN their
+//     current inside_structure_id (no cross-structure auto-bedding;
+//     a PC at the blacksmith doesn't get teleported home).
+//   - tiredness >= pc_idle_sleep_min_tiredness (default 10): a PC who
+//     just sat down in the tavern while fresh isn't knocked out.
+//   - last_pc_input_at older than pc_idle_sleep_minutes (default 15).
+//   - sleeping_until is NULL (not already sleeping).
 //
-// A private room alone is not sufficient; the EXISTS clause also
-// requires an unexpired room_access row so admin overrides or
-// stale placement (PC still in room_id after lodger_until passed)
-// don't auto-bed someone who lost their room rights. This is the
-// authoritative runtime materialization of "is a lodger here" —
-// the explicit isLodger ledger check is no longer needed because
-// room_access is the SAME ledger row's effects, just queried
-// directly.
+// For each candidate, executePCMoveRoom("private") fires first. It's
+// idempotent — if the PC is already in their bedroom, the UPDATE
+// re-applies the same room_id and pc_room_changed re-broadcasts
+// (cheap; the client diffs and ignores no-ops). If the helper rejects
+// (race took the PC out of the structure), the sleep call is skipped.
 func (app *App) autoBedIdleLodgers(ctx context.Context) error {
 	idleMinutes := app.loadIdleSleepMinutes(ctx)
 	if idleMinutes <= 0 {
@@ -264,33 +269,23 @@ func (app *App) autoBedIdleLodgers(ctx context.Context) error {
 	}
 	minTiredness := app.loadIdleSleepMinTiredness(ctx)
 
-	// Explicit room_access check. Earlier draft asserted "private
-	// room implies access" by construction, but that holds only
-	// when assignBedroomForLodger is the sole path that places a PC
-	// in a private room AND the access row hasn't expired since.
-	// Code review pointed out that admin overrides, expired access
-	// (lodger_until passed but PC still in inside_room_id), or
-	// stale state can violate the implication. Enforcing the access
-	// row here makes the gate trustworthy. ZBBS-163: active=true
-	// instead of expires_at — kept in sync by expireRoomAccess.
 	rows, err := app.DB.Query(ctx,
 		`SELECT a.id::text
 		   FROM actor a
-		   JOIN structure_room ss ON ss.id = a.inside_room_id
 		   JOIN actor_need an ON an.actor_id = a.id AND an.key = 'tiredness'
 		  WHERE a.login_username IS NOT NULL
 		    AND a.inside_structure_id IS NOT NULL
-		    AND a.inside_room_id IS NOT NULL
 		    AND a.sleeping_until IS NULL
 		    AND a.last_pc_input_at IS NOT NULL
 		    AND a.last_pc_input_at < NOW() - ($1::int * INTERVAL '1 minute')
-		    AND ss.kind = 'private'
 		    AND an.value >= $2::int
 		    AND EXISTS (
 		      SELECT 1 FROM room_access sa
+		      JOIN structure_room sr ON sr.id = sa.room_id
 		       WHERE sa.actor_id = a.id
-		         AND sa.room_id = a.inside_room_id
 		         AND sa.active = true
+		         AND sr.kind = 'private'
+		         AND sr.structure_id = a.inside_structure_id
 		    )`,
 		idleMinutes, minTiredness,
 	)
@@ -312,6 +307,18 @@ func (app *App) autoBedIdleLodgers(ctx context.Context) error {
 	}
 
 	for _, id := range candidateIDs {
+		moveResult, err := app.executePCMoveRoom(ctx, id, "private")
+		if err != nil {
+			log.Printf("auto-bed move(%s): %v", id, err)
+			continue
+		}
+		if moveResult.Result != "ok" {
+			// Race: PC left the structure between candidate query and
+			// the move. Skip the sleep call — they'll be re-evaluated
+			// next sweep if they're still eligible.
+			log.Printf("auto-bed move(%s) rejected: %s", id, moveResult.Err)
+			continue
+		}
 		if _, sleepErr := app.executePCSleep(ctx, id); sleepErr != nil {
 			log.Printf("auto-bed executePCSleep(%s): %v", id, sleepErr)
 		}
@@ -320,10 +327,14 @@ func (app *App) autoBedIdleLodgers(ctx context.Context) error {
 }
 
 // loadIdleSleepMinutes reads the pc_idle_sleep_minutes setting via
-// the shared loadIntSetting helper (defined in needs.go). Default 5.
-// Logs + falls back to the default on parse error.
+// the shared loadIntSetting helper (defined in needs.go). Default 15
+// (ZBBS-168 — was 5 in ZBBS-132 when auto-bed required the PC to
+// already be in their bedroom; with the widened gate, idle anywhere
+// in the lodger's structure now triggers, so a longer threshold
+// matches "I forgot I was AFK" pacing better than "I went to the
+// bathroom"). Logs + falls back to the default on parse error.
 func (app *App) loadIdleSleepMinutes(ctx context.Context) int {
-	return app.loadIntSetting(ctx, "pc_idle_sleep_minutes", 5)
+	return app.loadIntSetting(ctx, "pc_idle_sleep_minutes", 15)
 }
 
 // loadIdleSleepMinTiredness reads the pc_idle_sleep_min_tiredness

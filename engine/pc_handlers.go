@@ -1993,18 +1993,12 @@ func (app *App) handlePCMoveRoom(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "Invalid request body", http.StatusBadRequest)
 		return
 	}
-	if req.Kind != "common" && req.Kind != "private" && req.Kind != "staff" {
-		jsonError(w, "kind must be 'common', 'private', or 'staff'", http.StatusBadRequest)
-		return
-	}
 
 	var actorID string
-	var insideStructureID sql.NullString
 	if err := app.DB.QueryRow(r.Context(),
-		`SELECT id::text, inside_structure_id::text
-		   FROM actor WHERE login_username = $1`,
+		`SELECT id::text FROM actor WHERE login_username = $1`,
 		user.Username,
-	).Scan(&actorID, &insideStructureID); err != nil {
+	).Scan(&actorID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			jsonError(w, "No character", http.StatusBadRequest)
 			return
@@ -2014,30 +2008,85 @@ func (app *App) handlePCMoveRoom(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !insideStructureID.Valid {
+	result, err := app.executePCMoveRoom(r.Context(), actorID, req.Kind)
+	if err != nil {
+		log.Printf("pc/move-room: %v", err)
+		jsonError(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+	if result.Result == "ok" {
+		app.touchPCInput(r.Context(), actorID)
 		jsonResponse(w, http.StatusOK, map[string]interface{}{
-			"result": "rejected",
-			"error":  "you must be inside a structure to move between rooms",
+			"result":    "ok",
+			"room_id":   result.RoomID,
+			"room_name": result.RoomName,
 		})
 		return
+	}
+	jsonResponse(w, http.StatusOK, map[string]interface{}{
+		"result": result.Result,
+		"error":  result.Err,
+	})
+}
+
+// moveRoomResult is the structured outcome of executePCMoveRoom.
+// "ok" means inside_room_id updated and pc_room_changed broadcast.
+// "rejected" means the request was well-formed but couldn't proceed
+// (no such kind, no access, PC moved mid-flight) — Err carries a
+// human-readable reason. A non-nil error is reserved for unexpected
+// DB failures the caller should surface as 500 / log loudly.
+type moveRoomResult struct {
+	Result   string
+	Err      string
+	RoomID   int64
+	RoomName string
+	RoomKind string
+}
+
+// executePCMoveRoom is the engine-internal transition between rooms
+// within a PC's current structure. Mirrors the body of /pc/move-room
+// without HTTP / auth / touchPCInput — touchPCInput is intentionally
+// deferred to the HTTP handler so server-side callers (autoBedIdleLodgers
+// in particular) don't reset the idle clock they're acting on.
+//
+// kind: "common" / "private" / "staff" — picks the first matching
+// room in the PC's inside_structure_id where canEnterRoom passes.
+// Idempotent when the PC is already in a room of the requested kind:
+// the UPDATE re-applies inside_room_id with the same value, RowsAffected
+// stays 1 (the PK match still triggers), pc_room_changed re-broadcasts.
+// Callers that want to skip the no-op should compare the PC's current
+// inside_room_id to the picked room first.
+func (app *App) executePCMoveRoom(ctx context.Context, actorID string, kind string) (moveRoomResult, error) {
+	if kind != "common" && kind != "private" && kind != "staff" {
+		return moveRoomResult{Result: "rejected", Err: "kind must be 'common', 'private', or 'staff'"}, nil
+	}
+	var insideStructureID sql.NullString
+	if err := app.DB.QueryRow(ctx,
+		`SELECT inside_structure_id::text FROM actor WHERE id = $1::uuid`,
+		actorID,
+	).Scan(&insideStructureID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return moveRoomResult{Result: "rejected", Err: "no such actor"}, nil
+		}
+		return moveRoomResult{}, fmt.Errorf("actor lookup: %w", err)
+	}
+	if !insideStructureID.Valid {
+		return moveRoomResult{Result: "rejected", Err: "you must be inside a structure to move between rooms"}, nil
 	}
 
 	// Enumerate candidate rooms in this structure of the requested
 	// kind, then pick the first one canEnterRoom allows. Done in
 	// two queries (list + per-row gate) rather than one fancy join so
-	// the gate logic stays consistent with /pc/move-room's other
-	// callers and future kinds (e.g. a 'guest' kind with personal
-	// invite lists) drop in cleanly.
-	rows, err := app.DB.Query(r.Context(),
+	// the gate logic stays consistent with future kinds (e.g. a 'guest'
+	// kind with personal invite lists) drop in cleanly.
+	rows, err := app.DB.Query(ctx,
 		`SELECT id, name FROM structure_room
 		  WHERE structure_id = $1::uuid AND kind = $2
 		  ORDER BY name ASC`,
-		insideStructureID.String, req.Kind,
+		insideStructureID.String, kind,
 	)
 	if err != nil {
-		log.Printf("pc/move-room candidate query: %v", err)
-		jsonError(w, "Internal error", http.StatusInternalServerError)
-		return
+		return moveRoomResult{}, fmt.Errorf("candidate query: %w", err)
 	}
 	type cand struct {
 		ID   int64
@@ -2048,27 +2097,21 @@ func (app *App) handlePCMoveRoom(w http.ResponseWriter, r *http.Request) {
 		var c cand
 		if err := rows.Scan(&c.ID, &c.Name); err != nil {
 			rows.Close()
-			log.Printf("pc/move-room candidate scan: %v", err)
-			jsonError(w, "Internal error", http.StatusInternalServerError)
-			return
+			return moveRoomResult{}, fmt.Errorf("candidate scan: %w", err)
 		}
 		candidates = append(candidates, c)
 	}
 	rows.Close()
 	if len(candidates) == 0 {
-		jsonResponse(w, http.StatusOK, map[string]interface{}{
-			"result": "rejected",
-			"error":  "no " + req.Kind + " room exists here",
-		})
-		return
+		return moveRoomResult{Result: "rejected", Err: "no " + kind + " room exists here"}, nil
 	}
 
 	var pickedID int64
 	var pickedName string
 	for _, c := range candidates {
-		ok, err := app.canEnterRoom(r.Context(), actorID, c.ID)
+		ok, err := app.canEnterRoom(ctx, actorID, c.ID)
 		if err != nil {
-			log.Printf("pc/move-room canEnter %d: %v", c.ID, err)
+			log.Printf("executePCMoveRoom canEnter %d: %v", c.ID, err)
 			continue
 		}
 		if ok {
@@ -2078,20 +2121,16 @@ func (app *App) handlePCMoveRoom(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if pickedID == 0 {
-		jsonResponse(w, http.StatusOK, map[string]interface{}{
-			"result": "rejected",
-			"error":  "you don't have access to any " + req.Kind + " room here",
-		})
-		return
+		return moveRoomResult{Result: "rejected", Err: "you don't have access to any " + kind + " room here"}, nil
 	}
 
 	// Conditional UPDATE — guard on inside_structure_id so a concurrent
 	// move/teleport/admin action between the candidate read and this
 	// write doesn't land the PC in a room of a structure they've
 	// already left. RowsAffected==0 means the PC moved between the
-	// two queries; surface that as a soft rejection so the client can
-	// re-evaluate rather than a 500.
-	tag, err := app.DB.Exec(r.Context(),
+	// two queries; surface that as a soft rejection so the caller can
+	// re-evaluate rather than retry blindly.
+	tag, err := app.DB.Exec(ctx,
 		`UPDATE actor
 		    SET inside_room_id = $1
 		  WHERE id = $2::uuid
@@ -2099,33 +2138,22 @@ func (app *App) handlePCMoveRoom(w http.ResponseWriter, r *http.Request) {
 		pickedID, actorID, insideStructureID.String,
 	)
 	if err != nil {
-		log.Printf("pc/move-room update: %v", err)
-		jsonError(w, "Internal error", http.StatusInternalServerError)
-		return
+		return moveRoomResult{}, fmt.Errorf("update: %w", err)
 	}
 	if tag.RowsAffected() != 1 {
-		jsonResponse(w, http.StatusOK, map[string]interface{}{
-			"result": "rejected",
-			"error":  "you moved before changing room — try again",
-		})
-		return
+		return moveRoomResult{Result: "rejected", Err: "you moved before changing room — try again"}, nil
 	}
-	app.touchPCInput(r.Context(), actorID)
 
 	app.Hub.Broadcast(WorldEvent{
 		Type: "pc_room_changed",
 		Data: map[string]interface{}{
-			"actor_id":      actorID,
+			"actor_id":  actorID,
 			"room_id":   pickedID,
-			"room_kind": req.Kind,
+			"room_kind": kind,
 			"room_name": pickedName,
-			"at":            time.Now().UTC().Format(time.RFC3339),
+			"at":        time.Now().UTC().Format(time.RFC3339),
 		},
 	})
 
-	jsonResponse(w, http.StatusOK, map[string]interface{}{
-		"result":        "ok",
-		"room_id":   pickedID,
-		"room_name": pickedName,
-	})
+	return moveRoomResult{Result: "ok", RoomID: pickedID, RoomName: pickedName, RoomKind: kind}, nil
 }
