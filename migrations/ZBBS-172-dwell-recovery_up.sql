@@ -175,7 +175,9 @@ INSERT INTO setting (key, value, description, is_public)
              false)
 ON CONFLICT (key) DO NOTHING;
 
-INSERT INTO migrations_applied (migration_name)
-     VALUES ('ZBBS-172-dwell-recovery');
+-- The deploy playbook stamps migrations_applied for us after running
+-- this file (see infrastructure/playbooks/deploy.yml). Including the
+-- INSERT here causes a duplicate-key violation when the playbook
+-- re-stamps the row.
 
 COMMIT;
