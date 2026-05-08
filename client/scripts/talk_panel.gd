@@ -15,7 +15,7 @@ extends CanvasLayer
 ##
 ## Runtime dependencies:
 ##   - /root/Auth (api_base + auth_headers())
-##   - /root/Main/World.npc_spoke(npc_id, name, text, kind, at, structure_id, mentions, speaker_x, speaker_y) signal
+##   - /root/Main/World.npc_spoke(npc_id, name, text, kind, at, structure_id, mentions, speaker_x, speaker_y, room_id, addressee_id, addressee_name) signal
 ##   - POST /api/village/pc/me  → state (includes self x/y, used to filter outdoor speech by distance)
 ##   - POST /api/village/pc/speak {text}  → broadcast (indoor: huddle scope; outdoor: proximity broadcast with speaker_x/speaker_y)
 
@@ -169,6 +169,11 @@ var http_village_log: HTTPRequest
 
 var pc_exists := false
 var character_name := ""
+# PC's actor_id from /pc/me — used to compare against deliberation
+# broadcasts' addressee_id so the panel knows when speech is directed
+# at the player vs another NPC. Compared as id, not display_name, since
+# display names can collide and casing/normalization may differ.
+var pc_actor_id := ""
 var structure_name := ""
 var home_name := ""
 var huddle_members: Array = []
@@ -187,6 +192,15 @@ const OUTDOOR_SPEECH_RANGE: int = 6
 # a booth — that way a doorstep conversation shows the same room view a
 # bar-stool conversation does.
 var loaded_structure_id := ""
+
+# Subspace-aware scope. Empty when the PC is in a common room or outdoors;
+# set to the PC's inside_room_id when the PC is in a private/staff room.
+# Pairs with loaded_structure_id: a private-room PC only hears speech with
+# matching room_id, a common/outdoor PC only hears speech with empty
+# room_id. Without this, a PC in Tavern→bedroom_1 would still hear the
+# tavern common room (structure_id matches; no further scope filter).
+# Sourced from /pc/me's audience_room_id.
+var loaded_room_id := ""
 
 var is_open := false
 var user_closed := false
@@ -1067,6 +1081,7 @@ func _apply_pc_state(data: Dictionary) -> void:
         return
 
     character_name = str(data.get("character_name", ""))
+    pc_actor_id = str(data.get("actor_id", ""))
     structure_name = str(data.get("structure_name", ""))
     home_name = str(data.get("home_name", ""))
     pc_x = float(data.get("x", 0.0))
@@ -1139,10 +1154,12 @@ func _maybe_apply_recent_speech(data: Dictionary) -> void:
     var current_structure := str(data.get("audience_structure_id", ""))
     if current_structure.is_empty():
         current_structure = str(data.get("inside_structure_id", ""))
-    if current_structure == loaded_structure_id:
+    var current_room := str(data.get("audience_room_id", ""))
+    if current_structure == loaded_structure_id and current_room == loaded_room_id:
         return
 
     loaded_structure_id = current_structure
+    loaded_room_id = current_room
 
     # Wipe whatever's there from the previous room — fresh ears for a new
     # space. Live npc_spoke events that were happening in the old place
@@ -1174,6 +1191,7 @@ func _maybe_apply_recent_speech(data: Dictionary) -> void:
 
 func _set_no_pc_state() -> void:
     pc_exists = false
+    pc_actor_id = ""
     huddle_members = []
     pc_coins = 0
     pc_inventory = []
@@ -1182,6 +1200,7 @@ func _set_no_pc_state() -> void:
     sheet_anchor.visible = false
     talk_launcher.visible = false
     loaded_structure_id = ""
+    loaded_room_id = ""
     _update_context_labels()
     _clear_nearby_chips()
     _push_purse_to_top_bar()
@@ -1647,7 +1666,7 @@ func _on_speak_completed(result: int, response_code: int, _headers: PackedString
         ])
 
 
-func _on_npc_spoke(_npc_id: String, speaker_name: String, text: String, kind: String = "", at: String = "", structure_id: String = "", mentions: Array = [], speaker_x: float = 0.0, speaker_y: float = 0.0) -> void:
+func _on_npc_spoke(_npc_id: String, speaker_name: String, text: String, kind: String = "", at: String = "", structure_id: String = "", mentions: Array = [], speaker_x: float = 0.0, speaker_y: float = 0.0, room_id: String = "", addressee_id: String = "", addressee_name: String = "") -> void:
     # WS speech kinds are "npc" | "player"; normalize to the panel's
     # speech_npc / speech_player kinds so render logic is uniform with
     # the backload entries. npc_id is unused here — speech bubbles
@@ -1663,13 +1682,41 @@ func _on_npc_spoke(_npc_id: String, speaker_name: String, text: String, kind: St
     # proximity rather than a global outdoor megaphone.
     if structure_id != loaded_structure_id:
         return
+    # Subspace filter (post-ZBBS-149): event room_id must match the PC's
+    # loaded_room_id. Both empty = public scope (common room or outdoor).
+    # Either set = private/staff scope; only same-room listeners receive.
+    # A PC in Tavern→bedroom_1 has loaded_room_id="bed1"; tavern-common
+    # speech has room_id="" → mismatch → drop. Without this, common-room
+    # speech leaked into private bedrooms (observed 2026-05-08).
+    if room_id != loaded_room_id:
+        return
     if structure_id.is_empty():
         var dx: float = abs(speaker_x - pc_x)
         var dy: float = abs(speaker_y - pc_y)
         if max(dx, dy) > OUTDOOR_SPEECH_RANGE:
             return
     var panel_kind := "speech_player" if kind == "player" else "speech_npc"
-    _append_log_line(speaker_name, text, panel_kind, false, at)
+    var rendered_speaker := speaker_name
+    # Addressee disambiguation for deliberation speech (counter / decline).
+    # When the engine knows who the speaker is responding to, it stamps
+    # addressee_id/name onto the broadcast. The panel renders "John (to
+    # Ezekiel)" so an NPC-NPC haggle overheard from across the room
+    # doesn't read as if the merchant is talking to the player. Suppress
+    # the parenthetical when the listener IS the addressee (their own
+    # offer being countered) — "John (to me): ..." reads awkwardly.
+    # Match on actor_id, not display name — names can collide between
+    # actors and casing/normalization may differ between addressee_name
+    # and character_name. Fall back to display-name comparison only when
+    # the panel doesn't have its own actor_id yet (early bootstrap, /pc/me
+    # not yet returned).
+    var is_self_addressed: bool
+    if not pc_actor_id.is_empty():
+        is_self_addressed = (addressee_id == pc_actor_id)
+    else:
+        is_self_addressed = (addressee_name == character_name)
+    if not addressee_name.is_empty() and not is_self_addressed:
+        rendered_speaker = "%s (to %s)" % [speaker_name, addressee_name]
+    _append_log_line(rendered_speaker, text, panel_kind, false, at)
     # Phase C of sales-and-gifts: accumulate this speaker's mentions for
     # the customer's pay-modal item dropdown. Per-speaker, deduped,
     # lowercase. Resets when the player leaves the huddle (see

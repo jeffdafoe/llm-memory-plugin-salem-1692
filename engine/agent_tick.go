@@ -2208,6 +2208,14 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		if structureScope != "" {
 			spokeData["structure_id"] = structureScope
 		}
+		// ZBBS-149 follow-up: subspace-aware scope. When the speaker is
+		// in a private/staff room, surface its room_id so the talk panel
+		// filters to same-room listeners only — without this, a PC in
+		// Tavern→bedroom_1 hears Tavern→common-room dialogue. Empty for
+		// common-room and outdoor speakers (public scope).
+		if roomScope := app.actorPrivateRoomScope(ctx, r.ID); roomScope != "" {
+			spokeData["room_id"] = roomScope
+		}
 		app.Hub.Broadcast(WorldEvent{Type: "npc_spoke", Data: spokeData})
 		// Event-tick co-located agents so they can react in-band. Force
 		// the cost guard off here — when an NPC addresses another NPC
@@ -2400,6 +2408,9 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		}
 		if r.InsideStructureID.Valid {
 			spokeData["structure_id"] = r.InsideStructureID.String
+		}
+		if roomScope := app.actorPrivateRoomScope(ctx, r.ID); roomScope != "" {
+			spokeData["room_id"] = roomScope
 		}
 		app.Hub.Broadcast(WorldEvent{Type: "npc_spoke", Data: spokeData})
 

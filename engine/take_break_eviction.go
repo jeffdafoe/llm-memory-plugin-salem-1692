@@ -115,7 +115,11 @@ func (app *App) runEvictionSequence(ctx context.Context, vendorID, vendorName, v
 	if vendorAgent != "" {
 		askText := app.runEvictionAssertiveAsk(ctx, vendorAgent, vendorName, reason, occupants)
 		if askText != "" {
-			app.broadcastDeliberationSpeak(ctx, vendorID, vendorName, askText)
+			// Eviction asks are room-directed (multiple addressees), not 1:1.
+			// Pass empty addressee fields so the talk panel falls back to
+			// the unaddressed render — "Vendor: <ask>" without a "(to X):"
+			// parenthetical that would be misleading.
+			app.broadcastDeliberationSpeak(ctx, vendorID, vendorName, "", "", askText)
 			app.forceTickOccupants(ctx, occupants, structureID, vendorID, "vendor-assertive-ask")
 		}
 	}

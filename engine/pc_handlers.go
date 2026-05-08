@@ -91,6 +91,12 @@ type pcMeResponse struct {
 	// ones; other consumers (visibility, positioning) keep using
 	// inside_structure_id, which is the literal "am I inside?".
 	AudienceStructureID *string            `json:"audience_structure_id,omitempty"`
+	// AudienceRoomID is the PC's current private/staff room when in one,
+	// "" otherwise. Pairs with AudienceStructureID to scope the talk panel
+	// to a single subspace — without this, a PC in Tavern→bedroom_1 still
+	// hears Tavern→common-room speech (structure_id matches, no further
+	// filter). Empty for common-room or outdoor PCs (public scope).
+	AudienceRoomID    *string            `json:"audience_room_id,omitempty"`
 	StructureName     string             `json:"structure_name,omitempty"`
 	HomeStructureID   *string            `json:"home_structure_id,omitempty"`
 	HomeName          string             `json:"home_name,omitempty"`
@@ -281,6 +287,15 @@ func (app *App) handlePCMe(w http.ResponseWriter, r *http.Request) {
 			s := huddleStructureID.String
 			resp.AudienceStructureID = &s
 		}
+	}
+
+	// Audience room: only set when the PC is inside a non-common subspace
+	// (private or staff room). Common-room and outdoor PCs leave it nil
+	// so they hear public scope (events with no room_id). The talk panel
+	// filter requires equality — bedroom listener only receives bedroom
+	// events; common listener only receives common-or-outdoor events.
+	if room := app.actorPrivateRoomScope(r.Context(), pcActorID); room != "" {
+		resp.AudienceRoomID = &room
 	}
 
 	if huddleID.Valid {
@@ -1327,17 +1342,18 @@ func (app *App) handlePCSay(w http.ResponseWriter, r *http.Request) {
 		); err != nil {
 			log.Printf("pc/say audit insert: %v", err)
 		}
-		app.Hub.Broadcast(WorldEvent{
-			Type: "npc_spoke",
-			Data: map[string]interface{}{
-				"npc_id":       actorID,
-				"name":         charName.String,
-				"text":         req.Text,
-				"at":           time.Now().UTC().Format(time.RFC3339),
-				"kind":         "player",
-				"structure_id": structureID.String,
-			},
-		})
+		spokeData := map[string]interface{}{
+			"npc_id":       actorID,
+			"name":         charName.String,
+			"text":         req.Text,
+			"at":           time.Now().UTC().Format(time.RFC3339),
+			"kind":         "player",
+			"structure_id": structureID.String,
+		}
+		if roomScope := app.actorPrivateRoomScope(r.Context(), actorID.String); roomScope != "" {
+			spokeData["room_id"] = roomScope
+		}
+		app.Hub.Broadcast(WorldEvent{Type: "npc_spoke", Data: spokeData})
 	}
 
 	// from_agent is required for user-session auth (not auto-derived
@@ -1478,19 +1494,20 @@ func (app *App) handlePCSpeak(w http.ResponseWriter, r *http.Request) {
 	// talk panel's render-as-player branch. speaker_x/speaker_y let
 	// outdoor recipients filter by tile distance; indoor recipients
 	// ignore them (structure_id already scopes the audience).
-	app.Hub.Broadcast(WorldEvent{
-		Type: "npc_spoke",
-		Data: map[string]interface{}{
-			"npc_id":       actorID,
-			"name":         charName.String,
-			"text":         req.Text,
-			"at":           time.Now().UTC().Format(time.RFC3339),
-			"kind":         "player",
-			"structure_id": structureID,
-			"speaker_x":    currentX,
-			"speaker_y":    currentY,
-		},
-	})
+	spokeData := map[string]interface{}{
+		"npc_id":       actorID,
+		"name":         charName.String,
+		"text":         req.Text,
+		"at":           time.Now().UTC().Format(time.RFC3339),
+		"kind":         "player",
+		"structure_id": structureID,
+		"speaker_x":    currentX,
+		"speaker_y":    currentY,
+	}
+	if roomScope := app.actorPrivateRoomScope(r.Context(), actorID.String); roomScope != "" {
+		spokeData["room_id"] = roomScope
+	}
+	app.Hub.Broadcast(WorldEvent{Type: "npc_spoke", Data: spokeData})
 
 	if indoor {
 		// PC-initiated → force=true so cost guard doesn't suppress

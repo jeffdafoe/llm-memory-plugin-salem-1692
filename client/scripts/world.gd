@@ -1840,7 +1840,7 @@ signal object_tags_updated(object_id: String, tags: Array)
 ## panel side (two PCs walking the road can talk if they're within ~6
 ## tiles of each other). Indoor speech ignores them — structure_id is
 ## already enough to scope the audience.
-signal npc_spoke(npc_id: String, name: String, text: String, kind: String, at: String, structure_id: String, mentions: Array, speaker_x: float, speaker_y: float)
+signal npc_spoke(npc_id: String, name: String, text: String, kind: String, at: String, structure_id: String, mentions: Array, speaker_x: float, speaker_y: float, room_id: String, addressee_id: String, addressee_name: String)
 
 func apply_npc_spoke(data: Dictionary) -> void:
     var npc_id: String = str(data.get("npc_id", ""))
@@ -1848,12 +1848,16 @@ func apply_npc_spoke(data: Dictionary) -> void:
     var text: String = str(data.get("text", ""))
     var kind: String = str(data.get("kind", "npc"))
     var at: String = str(data.get("at", ""))
-    # structure_id scopes which room the speech happened in. Empty for
-    # outdoor speech (no structure) — talk panel filters on it so a PC
-    # at the apothecary doesn't see tavern dialogue, but the speech
-    # bubble in the world view ignores the field and renders every line
-    # over the speaker regardless of where the listener is.
+    # structure_id scopes which structure the speech happened in. Empty
+    # for outdoor speech. Talk panel filters on it so a PC at the
+    # apothecary doesn't see tavern dialogue.
     var structure_id: String = str(data.get("structure_id", ""))
+    # room_id refines structure_id with subspace scope (ZBBS-149). Empty
+    # for common-room or outdoor speakers (public scope); set to the
+    # speaker's inside_room_id when in a private/staff room. Talk panel
+    # filters on equality with the PC's loaded_room_id — without this,
+    # tavern-common speech leaks into private bedrooms.
+    var room_id: String = str(data.get("room_id", ""))
     var mentions: Array = []
     var raw_mentions = data.get("mentions", null)
     if typeof(raw_mentions) == TYPE_ARRAY:
@@ -1862,10 +1866,17 @@ func apply_npc_spoke(data: Dictionary) -> void:
                 mentions.append(m)
     var speaker_x: float = float(data.get("speaker_x", 0.0))
     var speaker_y: float = float(data.get("speaker_y", 0.0))
+    # Addressee fields populated by deliberation broadcasts (counter /
+    # decline) so the panel can render "John (to Ezekiel): ..." for
+    # NPC-NPC haggles overheard from across the room. Empty for regular
+    # speak / take_break / eviction-ask which target the room rather than
+    # one specific listener.
+    var addressee_id: String = str(data.get("addressee_id", ""))
+    var addressee_name: String = str(data.get("addressee_name", ""))
     if name == "" or text == "":
         return
     _spawn_speech_bubble(npc_id, text)
-    npc_spoke.emit(npc_id, name, text, kind, at, structure_id, mentions, speaker_x, speaker_y)
+    npc_spoke.emit(npc_id, name, text, kind, at, structure_id, mentions, speaker_x, speaker_y, room_id, addressee_id, addressee_name)
 
 
 ## Spawn a SpeechBubble child on the speaker's container (NPC or PC).

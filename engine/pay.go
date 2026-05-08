@@ -506,7 +506,7 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payReque
 		case payDeliberationAccept, payDeliberationTimeoutAccept:
 			// Fall through to Tx B normally.
 		case payDeliberationDecline:
-			app.broadcastDeliberationSpeak(ctx, recipientID, recipientName, decision.Reason)
+			app.broadcastDeliberationSpeak(ctx, recipientID, recipientName, buyer.ID, buyer.DisplayName, decision.Reason)
 			if uerr := app.updatePayLedger(ctx, ledgerID, "declined", decision.Reason, sql.NullInt32{}); uerr != nil {
 				// Update failure means the row stays `pending` despite
 				// the recipient having spoken. Returning "declined"
@@ -547,7 +547,7 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payReque
 				log.Printf("pay-deliberation: %s emitted out-of-range counter amount %d — degrading to decline",
 					recipientName, decision.NewAmount)
 				fallback := "I'd rather not sell at that price."
-				app.broadcastDeliberationSpeak(ctx, recipientID, recipientName, fallback)
+				app.broadcastDeliberationSpeak(ctx, recipientID, recipientName, buyer.ID, buyer.DisplayName, fallback)
 				if uerr := app.updatePayLedger(ctx, ledgerID, "declined", fallback, sql.NullInt32{}); uerr != nil {
 					log.Printf("pay_ledger update (id=%d state=declined): %v — reporting failure to caller", ledgerID, uerr)
 					return payResult{
@@ -590,7 +590,7 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payReque
 					recipientName, req.Amount, decision.NewAmount)
 				break
 			}
-			app.broadcastDeliberationSpeak(ctx, recipientID, recipientName, decision.Message)
+			app.broadcastDeliberationSpeak(ctx, recipientID, recipientName, buyer.ID, buyer.DisplayName, decision.Message)
 			counterAmt := sql.NullInt32{Int32: int32(decision.NewAmount), Valid: true}
 			if uerr := app.updatePayLedger(ctx, ledgerID, "countered", decision.Message, counterAmt); uerr != nil {
 				// Same rationale as the decline path — don't lie to the
