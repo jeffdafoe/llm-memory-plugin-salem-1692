@@ -159,21 +159,21 @@ func (app *App) wouldBeEvictionExempt(ctx context.Context, actorID, structureID 
 	return app.isLodger(ctx, actorID, structureID)
 }
 
-// isStructureClosed reports whether structureID is currently closed
-// because a vendor working there is on break. The query checks for any
-// actor with work_structure_id=structureID AND break_until > NOW().
-// Mirrors the door-knock narration query at pc_handlers.go.
+// isProprietorResting reports whether a worker assigned to structureID
+// is currently on break (break_until > NOW()). Narrow predicate — does
+// NOT consider sleeping_until or whether the worker is physically
+// present. Used by canEnter to lock the door during break per ZBBS-133.
 //
-// "Closed" in this sense is a derived state — no flag stored on the
-// structure itself. When the vendor's break_until passes, the next
-// canEnter call sees the row as no-longer-on-break and reports the
-// structure as open. resetSleptTiredness and the world rotation don't
-// affect this query.
-func (app *App) isStructureClosed(ctx context.Context, structureID string) (bool, error) {
+// Renamed from isStructureClosed in ZBBS-179 because the broad name
+// misled readers into thinking it captured all flavors of "closed";
+// it doesn't. For the canonical "closed for business" predicate
+// (operational worker present, considering inside/break/sleep), see
+// isBusinessClosed.
+func (app *App) isProprietorResting(ctx context.Context, structureID string) (bool, error) {
 	if structureID == "" {
 		return false, nil
 	}
-	var closed bool
+	var resting bool
 	err := app.DB.QueryRow(ctx,
 		`SELECT EXISTS (
 			SELECT 1 FROM actor
@@ -182,9 +182,53 @@ func (app *App) isStructureClosed(ctx context.Context, structureID string) (bool
 			   AND break_until > NOW()
 		)`,
 		structureID,
+	).Scan(&resting)
+	if err != nil {
+		return false, fmt.Errorf("isProprietorResting query: %w", err)
+	}
+	return resting, nil
+}
+
+// isBusinessClosed reports whether structureID is currently closed
+// for business — the canonical predicate. True when:
+//
+//   - structureID carries the 'business' tag (otherwise this concept
+//     doesn't apply; non-business structures return false), AND
+//   - no worker assigned to this structure is actively manning it,
+//     where "actively manning" means inside_structure_id matches AND
+//     break_until is not in the future AND sleeping_until is not in
+//     the future.
+//
+// Single source of truth for "is this place currently operating for
+// customers." Use this instead of inlining checks against break_until
+// / sleeping_until / inside-counts — those can drift, this can't.
+//
+// canEnter (door-lock for break) and refreshStructureOccupancyState
+// (visual current_state) keep their own narrower checks today —
+// canEnter intentionally only locks during break, and the occupancy
+// refresh is its own COUNT-based path. Future refactor could unify
+// them; this helper is the place to start when that happens.
+func (app *App) isBusinessClosed(ctx context.Context, structureID string) (bool, error) {
+	if structureID == "" {
+		return false, nil
+	}
+	var closed bool
+	err := app.DB.QueryRow(ctx,
+		`SELECT EXISTS (
+		    SELECT 1 FROM village_object_tag t
+		     WHERE t.object_id = $1::uuid AND t.tag = 'business'
+		)
+		AND NOT EXISTS (
+		    SELECT 1 FROM actor a
+		     WHERE a.work_structure_id   = $1::uuid
+		       AND a.inside_structure_id = $1::uuid
+		       AND (a.break_until    IS NULL OR a.break_until    <= NOW())
+		       AND (a.sleeping_until IS NULL OR a.sleeping_until <= NOW())
+		)`,
+		structureID,
 	).Scan(&closed)
 	if err != nil {
-		return false, fmt.Errorf("isStructureClosed query: %w", err)
+		return false, fmt.Errorf("isBusinessClosed query: %w", err)
 	}
 	return closed, nil
 }
@@ -308,7 +352,7 @@ func formatActiveLodgersForPerception(entries []activeLodgerEntry, loc *time.Loc
 // inside_structure_id so the closed-door semantic actually keeps
 // people out.
 func (app *App) canEnter(ctx context.Context, actorID, structureID string) (bool, error) {
-	closed, err := app.isStructureClosed(ctx, structureID)
+	closed, err := app.isProprietorResting(ctx, structureID)
 	if err != nil {
 		return false, err
 	}
