@@ -191,20 +191,22 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payReque
 	// Pre-Tx-A: recipient lookup. After ZBBS-084 the unified actor
 	// table holds every villager. Also pull llm_memory_agent so the
 	// caller's post-pay reactor tick (ZBBS-126) knows whether the
-	// recipient is agent-driven. No FOR UPDATE here — the tx that
-	// actually moves coins (executePayTransfer below) doesn't read
-	// any recipient field for validation, so we don't need to hold a
-	// lock between the lookup and the credit UPDATE.
+	// recipient is agent-driven, and break_until for the closed-shop
+	// gate below. No FOR UPDATE here — the tx that actually moves
+	// coins (executePayTransfer below) doesn't read any recipient
+	// field for validation, so we don't need to hold a lock between
+	// the lookup and the credit UPDATE.
 	var (
 		recipientID        string
 		recipientAgentName sql.NullString
+		recipientBreakUntil sql.NullTime
 	)
 	err := app.DB.QueryRow(ctx,
-		`SELECT id, llm_memory_agent FROM actor
+		`SELECT id, llm_memory_agent, break_until FROM actor
 		 WHERE LOWER(display_name) = LOWER($1)
 		 LIMIT 1`,
 		recipientName,
-	).Scan(&recipientID, &recipientAgentName)
+	).Scan(&recipientID, &recipientAgentName, &recipientBreakUntil)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return payResult{Result: "rejected", Err: fmt.Sprintf("no villager named %q", recipientName)}
@@ -213,6 +215,30 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payReque
 	}
 	if recipientID == buyer.ID {
 		return payResult{Result: "rejected", Err: "cannot pay yourself"}
+	}
+
+	// Closed-shop gate. A vendor on take_break shouldn't be
+	// accepting new item orders that will then sit at
+	// fulfillment_status='ready' until the break ends — buyers
+	// pile up paid-but-undelivered rows against a closed shop, and
+	// observed 2026-05-08 04:01-06:04 UTC: John Ellis took
+	// "closing for the night" at 03:03, then accepted 5 stew/water/
+	// bread orders from Ezekiel that all wedged at ready until the
+	// 07:01 deliver_order rejected on co-location.
+	//
+	// Bypasses:
+	//   - Pure coin transfers (itemKind == ""): tips, gifts, news
+	//     payments, condolences. No shop-hours semantic.
+	//   - nights_stay (service capability): advance bookings cross
+	//     "closing for the night" by design. executeDeliverOrder's
+	//     check-in-hour gate handles fulfillment timing separately.
+	if itemKind != "" && itemKind != "nights_stay" &&
+		recipientBreakUntil.Valid && recipientBreakUntil.Time.After(time.Now()) {
+		whenBack := formatBreakUntilLocal(ctx, app, recipientBreakUntil.Time)
+		return payResult{
+			Result: "rejected",
+			Err:    fmt.Sprintf("%s is closed (back at %s) — come back later.", recipientName, whenBack),
+		}
 	}
 
 	// Pre-Tx-A: in_response_to validation (ZBBS-128 step 3). When the
@@ -925,4 +951,16 @@ func hasCapability(capabilities []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// formatBreakUntilLocal renders a break_until timestamp in the world's
+// wall-clock for inclusion in a closed-shop rejection message. Falls
+// back to a UTC formatting on world-config load failure so the buyer
+// still gets a meaningful "back at HH:MM" cue rather than a raw RFC3339.
+func formatBreakUntilLocal(ctx context.Context, app *App, breakUntil time.Time) string {
+	cfg, err := app.loadWorldConfig(ctx)
+	if err == nil && cfg != nil && cfg.Location != nil {
+		return breakUntil.In(cfg.Location).Format("3:04 PM")
+	}
+	return breakUntil.UTC().Format("15:04 UTC")
 }
