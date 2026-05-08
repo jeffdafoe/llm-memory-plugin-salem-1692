@@ -967,6 +967,11 @@ func (app *App) startReturnWalk(ctx context.Context, npc *behaviorNPC, destX, de
 		app.clearBehavior(npc.ID)
 		return err
 	}
+	// Record the target structure on the npcWalk so applyArrival sees
+	// where this walk was destined even when entry was refused (owner-
+	// policy structures the actor isn't associated with). Used by the
+	// closed-business arrival narration.
+	app.markWalkTargetStructure(npc.ID, targetStructureID)
 	log.Printf("%s: %s walking to %.0f,%.0f", label, npc.ID, destX, destY)
 	return nil
 }
