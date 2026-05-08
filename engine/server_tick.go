@@ -82,6 +82,11 @@ func (app *App) runServerTickOnce(ctx context.Context) {
 	// rows configured with refresh_period_hours, in continuous or periodic
 	// mode. Cheap when no row is behind (single SELECT, zero UPDATEs).
 	app.dispatchObjectRefreshRegen(ctx)
+	// Dwell tick (ZBBS-172) — applies per-tick recovery to actors still
+	// present at a credited object/structure. Drives the rest-tree, well-
+	// linger, and meal-at-tavern mechanics from a single handler. Cheap
+	// when no credits are ripe (single SELECT, zero UPDATEs).
+	app.dispatchObjectRefreshDwell(ctx)
 	// Sim conversation push — pushes the previous UTC day's
 	// agent_action_log digest to llm-memory-api so the api builds a
 	// distilled conversations/YYYY-MM-DD-sim-day note for the dream

@@ -262,6 +262,15 @@ func (app *App) executeConsume(ctx context.Context, buyer *agentNPCRow, itemKind
 		}
 	}
 
+	// Item dwell (ZBBS-172). Stamp dwell credits for satisfactions
+	// that carry a dwell triple. The buyer must be standing at a
+	// named structure for dwell to take effect — eating on the road
+	// gets only the immediate hit, no per-tick payoff.
+	dwellStructureID, _ := app.resolveLoiteringStructure(ctx, buyer.CurrentX, buyer.CurrentY)
+	if err := app.upsertItemDwellCredits(ctx, tx, buyer.ID, satisfactions, dwellStructureID); err != nil {
+		return consumeResult{Result: "failed", Err: fmt.Sprintf("upsert dwell credits: %v", err)}
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return consumeResult{Result: "failed", Err: fmt.Sprintf("commit: %v", err)}
 	}

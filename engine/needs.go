@@ -450,7 +450,32 @@ const (
 	defaultHungerRedThreshold    = 18
 	defaultThirstRedThreshold    = 12
 	defaultTirednessRedThreshold = 20
+
+	// defaultTirednessCriticalThresholdPct (ZBBS-172) is the percent-of-
+	// needMax tier at which the recovery-options perception block lifts
+	// the on-shift gate that hides home/inn/tavern from tired NPCs.
+	// Stored as percent so the absolute tracks needMax if it ever
+	// changes. With needMax=24 this resolves to ceil(24*0.90) = 22 —
+	// two ticks of grace past the red threshold (20) before max
+	// collapse (24). At critical, abandoning shift to sleep becomes
+	// a real option the LLM can weigh.
+	defaultTirednessCriticalThresholdPct = 90
 )
+
+// loadTirednessCriticalThreshold reads tiredness_critical_threshold_pct,
+// clamps it into [50, 100], and returns the absolute threshold —
+// ceil(needMax * pct / 100). Out-of-range values fall back to the
+// default. Always returns a value strictly greater than the configured
+// red threshold; callers that need a guarantee can re-clamp.
+func (app *App) loadTirednessCriticalThreshold(ctx context.Context) int {
+	pct := app.loadIntSetting(ctx, "tiredness_critical_threshold_pct", defaultTirednessCriticalThresholdPct)
+	if pct < 50 || pct > 100 {
+		log.Printf("needs: out-of-range tiredness_critical_threshold_pct=%d (using default %d)", pct, defaultTirednessCriticalThresholdPct)
+		pct = defaultTirednessCriticalThresholdPct
+	}
+	// Ceiling division: (needMax*pct + 99) / 100.
+	return (needMax*pct + 99) / 100
+}
 
 // loadIntSetting reads a setting key as an int, falling back to def when
 // missing, NULL, or unparseable. Different defaults per key, hence not
