@@ -578,6 +578,7 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payReque
 			quotedUnit.Valid,
 			priorCounter,
 			includeCounter,
+			req.SceneID,
 		)
 		switch decision.Outcome {
 		case payDeliberationAccept, payDeliberationTimeoutAccept:

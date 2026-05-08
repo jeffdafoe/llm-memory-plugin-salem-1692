@@ -2764,38 +2764,66 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		if pr.Result == "countered" && pr.LedgerID > 0 {
 			extra = strconv.FormatInt(pr.LedgerID, 10)
 		}
-		// Parallel narration broadcast for the talk panel. Mirrors the
-		// act/departure pattern — pay events are observable by anyone in
-		// the room, and silently moving coins/items would leave the
-		// player wondering what just happened. Skipped for non-ok or
-		// when there's no room scope (open village).
-		if result == "ok" && r.InsideStructureID.Valid {
-			text := narratePay(r.DisplayName, tc.Input)
-			if text != "" {
-				data := map[string]interface{}{
-					"actor_id":     r.ID,
-					"actor_name":   r.DisplayName,
-					"kind":         "pay",
-					"text":         text,
-					"structure_id": r.InsideStructureID.String,
-					"at":           time.Now().UTC().Format(time.RFC3339),
+		// Parallel narration broadcast for the talk panel + post-pay
+		// reactor tick. Mirrors the act/departure pattern — pay events
+		// are observable by anyone in the room. Skipped for non-ok or
+		// when there's no room scope at all.
+		//
+		// ZBBS-182: outdoor knock-pay coverage. Effective structure id
+		// is inside_structure_id when set, else the huddle's
+		// structure_id when the buyer is in a scene-huddle (knock-pay
+		// at the loiter slot of an entry_policy=owner structure they
+		// can't enter — the haggling happens through the door, the
+		// reactor tick should still fire). Mirrors the PC-pay path's
+		// effectiveStructureID logic in pc_handlers.go. Pre-fix this
+		// gate skipped the reactor tick entirely for any NPC pay
+		// initiated from outside, observed 2026-05-08 with Josiah's
+		// coca-tea purchase from Prudence's apothecary doorstep.
+		if result == "ok" {
+			effectiveStructureID := ""
+			if r.InsideStructureID.Valid {
+				effectiveStructureID = r.InsideStructureID.String
+			} else {
+				var huddleStructure sql.NullString
+				if err := app.DB.QueryRow(ctx,
+					`SELECT sh.structure_id::text
+					   FROM scene_huddle sh
+					   JOIN actor a ON a.current_huddle_id = sh.id
+					  WHERE a.id::text = $1 AND sh.concluded_at IS NULL`,
+					r.ID).Scan(&huddleStructure); err == nil && huddleStructure.Valid {
+					effectiveStructureID = huddleStructure.String
 				}
-				app.addRoomScopeToData(ctx, data, r.ID)
-				app.Hub.Broadcast(WorldEvent{Type: "room_event", Data: data})
 			}
-			// Post-pay reactor tick (ZBBS-126). Give the recipient a
-			// chance to speak a thanks/farewell after the transaction
-			// lands. Inherits this cascade's sceneID (the same UUID
-			// every reactor in this scene shares) so the recipient's
-			// acknowledgment groups with the rest of the conversation.
-			// Goroutine + force=true match the PC-pay path's reasoning.
-			if pr.RecipientIsAgent && pr.RecipientID != "" {
-				recipientID := pr.RecipientID
-				buyerID := r.ID
-				localScene := sceneID
-				go func() {
-					app.triggerImmediateTick(context.Background(), recipientID, "npc-paid-you", true, localScene, buyerID)
-				}()
+			if effectiveStructureID != "" {
+				text := narratePay(r.DisplayName, tc.Input)
+				if text != "" {
+					data := map[string]interface{}{
+						"actor_id":     r.ID,
+						"actor_name":   r.DisplayName,
+						"kind":         "pay",
+						"text":         text,
+						"structure_id": effectiveStructureID,
+						"at":           time.Now().UTC().Format(time.RFC3339),
+					}
+					app.addRoomScopeToData(ctx, data, r.ID)
+					app.Hub.Broadcast(WorldEvent{Type: "room_event", Data: data})
+				}
+				// Post-pay reactor tick (ZBBS-126). Give the recipient a
+				// chance to speak a thanks/farewell after the transaction
+				// lands AND choose deliver_order so at-source goods
+				// actually transfer. Inherits this cascade's sceneID (the
+				// same UUID every reactor in this scene shares) so the
+				// recipient's acknowledgment groups with the rest of the
+				// conversation. Goroutine + force=true match the PC-pay
+				// path's reasoning.
+				if pr.RecipientIsAgent && pr.RecipientID != "" {
+					recipientID := pr.RecipientID
+					buyerID := r.ID
+					localScene := sceneID
+					go func() {
+						app.triggerImmediateTick(context.Background(), recipientID, "npc-paid-you", true, localScene, buyerID)
+					}()
+				}
 			}
 		}
 
