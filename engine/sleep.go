@@ -52,6 +52,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"log"
@@ -536,6 +537,7 @@ func (app *App) maybeNPCAutoSleep(ctx context.Context, actorID string) {
 		hasSchedule      bool
 		scheduleStartMin int
 		scheduleEndMin   int
+		homeStructureID  sql.NullString
 	)
 	err := app.DB.QueryRow(ctx,
 		`SELECT a.llm_memory_agent IS NOT NULL,
@@ -546,12 +548,14 @@ func (app *App) maybeNPCAutoSleep(ctx context.Context, actorID string) {
 		        COALESCE((SELECT value FROM actor_need WHERE actor_id = a.id AND key = 'tiredness'), 0)::int,
 		        a.schedule_start_minute IS NOT NULL AND a.schedule_end_minute IS NOT NULL,
 		        COALESCE(a.schedule_start_minute, 0)::int,
-		        COALESCE(a.schedule_end_minute,   0)::int
+		        COALESCE(a.schedule_end_minute,   0)::int,
+		        a.home_structure_id::text
 		   FROM actor a
 		  WHERE a.id = $1::uuid`,
 		actorID,
 	).Scan(&isNPC, &atHome, &alreadySleeping, &tiredness,
-		&hasSchedule, &scheduleStartMin, &scheduleEndMin)
+		&hasSchedule, &scheduleStartMin, &scheduleEndMin,
+		&homeStructureID)
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			log.Printf("maybeNPCAutoSleep(%s): load row: %v", actorID, err)
@@ -587,6 +591,17 @@ func (app *App) maybeNPCAutoSleep(ctx context.Context, actorID string) {
 
 	if _, err := app.executeNPCSleep(ctx, actorID); err != nil {
 		log.Printf("maybeNPCAutoSleep(%s): executeNPCSleep: %v", actorID, err)
+		return
+	}
+
+	// ZBBS-176: refresh occupancy on the structure we just bedded down
+	// in. The COUNT excludes sleeping_until > NOW() actors, so any
+	// home-is-work case (e.g., a future tavernkeeper who lodges above
+	// the bar) flips to unoccupied at sleep onset. Most homes don't
+	// have occupied/unoccupied state machines, so this is a no-op
+	// there — safe to call unconditionally.
+	if homeStructureID.Valid {
+		app.refreshStructureOccupancyState(ctx, homeStructureID.String)
 	}
 }
 
@@ -663,33 +678,44 @@ func (app *App) wakeExpiredNPCSleepers(ctx context.Context) error {
 		           AND an.value <= 0
 		      )
 		    )
-		 RETURNING id::text`,
+		 RETURNING id::text, inside_structure_id::text`,
 	)
 	if err != nil {
 		return fmt.Errorf("wake expired NPC query: %w", err)
 	}
 	defer rows.Close()
-	var ids []string
+	type woken struct {
+		id          string
+		structureID sql.NullString
+	}
+	var wakes []woken
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var w woken
+		if err := rows.Scan(&w.id, &w.structureID); err != nil {
 			return fmt.Errorf("wake expired NPC scan: %w", err)
 		}
-		ids = append(ids, id)
+		wakes = append(wakes, w)
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("wake expired NPC iter: %w", err)
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	for _, id := range ids {
+	for _, w := range wakes {
 		app.Hub.Broadcast(WorldEvent{
 			Type: "npc_sleep_ended",
 			Data: map[string]interface{}{
-				"actor_id": id,
+				"actor_id": w.id,
 				"reason":   "auto",
 				"at":       now,
 			},
 		})
+		// ZBBS-176: refresh occupancy on the structure the NPC woke up
+		// in. Mirrors the auto-sleep refresh — the COUNT now sees the
+		// actor as not-sleeping and flips the structure's visual state
+		// back if it had been driven by sleep alone.
+		if w.structureID.Valid {
+			app.refreshStructureOccupancyState(ctx, w.structureID.String)
+		}
 	}
 	return nil
 }
