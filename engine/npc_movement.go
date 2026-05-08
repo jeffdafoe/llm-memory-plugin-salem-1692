@@ -597,4 +597,16 @@ func (app *App) applyArrivalSideEffects(ctx context.Context, npcID string, x, y 
 	if targetStructureID != "" {
 		app.maybeNarrateClosedBusinessArrival(ctx, npcID, targetStructureID)
 	}
+
+	// ZBBS-183: keeper arriving at their own workplace pulls in any PC
+	// waiting at the loiter slot. Inverse of the PC-side loiter-huddle:
+	// when the PC came first and the keeper wasn't there yet, the
+	// PC stayed outside in no huddle while the structure huddle was
+	// born around the lone keeper on arrival — perception saw nobody
+	// to greet. The helper gates on work_structure_id match so visitor
+	// entries (lodger to tavern, drop-in to a different shop) don't
+	// accidentally adopt PCs.
+	if targetStructureID != "" {
+		app.maybeAdoptWaitingPCsAtArrival(ctx, npcID, targetStructureID)
+	}
 }
