@@ -516,7 +516,7 @@ var allowedObjectTags = map[string]bool{
 	"meeting-house": true,
 	"well":          true,
 	"outhouse":      true,
-	"inn":           true,
+	"lodging":       true,
 	// summon_point marks a placement (loiter point, future bell, etc.)
 	// where a summoner walks to ring for a messenger. Not a chore
 	// destination, so deliberately omitted from categoryObjectTags.
@@ -543,7 +543,7 @@ var categoryObjectTags = map[string]bool{
 	"meeting-house": true,
 	"well":          true,
 	"outhouse":      true,
-	"inn":           true,
+	"lodging":       true,
 }
 
 // handleListStateTags returns the tag allowlist so the admin UI can

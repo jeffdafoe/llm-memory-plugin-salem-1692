@@ -594,17 +594,17 @@ func (app *App) handlePCCreate(w http.ResponseWriter, r *http.Request) {
 	// Travelers lodge at the Inn. The Inn tag identifies multi-tenant
 	// lodging (distinct from a tavern, which is a workplace whose
 	// keeper happens to live above the bar). Falls back to tavern if
-	// no inn is placed — historically taverns and inns were often the
-	// same establishment ('ordinary'), so a tavern-only village still
-	// makes sense.
+	// no lodging is placed — historically taverns and inns were often
+	// the same establishment ('ordinary'), so a tavern-only village
+	// still makes sense.
 	var homeID sql.NullString
 	var homeX, homeY sql.NullFloat64
 	if err := app.DB.QueryRow(r.Context(),
 		`SELECT o.id::text, o.x, o.y
 		   FROM village_object o
 		   JOIN village_object_tag vot ON vot.object_id = o.id
-		  WHERE vot.tag IN ('inn', 'tavern')
-		  ORDER BY (CASE WHEN vot.tag = 'inn' THEN 0 ELSE 1 END), o.created_at ASC
+		  WHERE vot.tag IN ('lodging', 'tavern')
+		  ORDER BY (CASE WHEN vot.tag = 'lodging' THEN 0 ELSE 1 END), o.created_at ASC
 		  LIMIT 1`,
 	).Scan(&homeID, &homeX, &homeY); err != nil && err != sql.ErrNoRows {
 		log.Printf("pc/create lodging lookup: %v", err)

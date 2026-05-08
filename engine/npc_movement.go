@@ -541,4 +541,9 @@ func (app *App) applyArrivalSideEffects(ctx context.Context, npcID string, x, y 
 	); err != nil {
 		log.Printf("arrival: clear override %s: %v", npcID, err)
 	}
+
+	// ZBBS-175: NPC auto-sleep on arrival home. Cheap no-op for non-NPCs
+	// or NPCs not at their home_structure_id; eligible NPCs get bedded
+	// here so arrival home triggers sleep without a periodic sweep.
+	app.maybeNPCAutoSleep(ctx, npcID)
 }

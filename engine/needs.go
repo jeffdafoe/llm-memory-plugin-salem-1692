@@ -9,10 +9,13 @@ package main
 // in lockstep.
 //
 // Each villager carries three needs (village_agent.hunger / thirst /
-// tiredness, SMALLINT 0–24, higher = more in need). They grow with simulated
-// time and drop when an NPC consumes (eating drops hunger, drinking drops
-// thirst). Tiredness has no consumption mechanic yet — sleep handling comes
-// later.
+// tiredness, SMALLINT 0–24, higher = more in need). They grow with
+// simulated time and drop when an NPC consumes (eating drops hunger,
+// drinking drops thirst). Tiredness drops via three paths: take_break
+// (recovery sweep at break_until > NOW), sleep (recovery sweep at
+// sleeping_until > NOW — NPC auto-sleep on arrival home in
+// maybeNPCAutoSleep, PC auto-bed via autoBedIdleLodgers), and dwell
+// recovery at trees / wells / meals (dispatchObjectRefreshDwell).
 //
 // Cadence: a single hourly batch UPDATE rather than per-NPC stamps. The
 // per-minute server tick handler (dispatchNeedsTick, registered in
