@@ -50,6 +50,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
+	"time"
 )
 
 // isLodger reports whether actorID currently holds lodger status at
@@ -186,6 +188,116 @@ func (app *App) isStructureClosed(ctx context.Context, structureID string) (bool
 		return false, fmt.Errorf("isStructureClosed query: %w", err)
 	}
 	return closed, nil
+}
+
+// activeLodgerEntry is the perception-shaped row: one buyer who is
+// currently a checked-in lodger at this keeper's structure. Pre-check-in
+// (fulfillment_status='ready') rows surface via readyOrdersForSeller in
+// order_fulfillment.go; this companion covers the post-check-in window
+// so the keeper can answer "how many nights have you paid for?" type
+// questions without confabulating.
+type activeLodgerEntry struct {
+	BuyerName   string
+	Qty         int
+	ReadyBy     time.Time
+	LodgerUntil time.Time
+}
+
+// activeLodgersForKeeper returns lodgers currently checked in to a
+// structure where sellerID works. A lodger appears here when their
+// pay_ledger row is state=accepted, fulfillment_status=delivered,
+// item_kind=nights_stay, ready_by has arrived, and lodger_until hasn't
+// passed.
+//
+// Sort order is lodger_until ASC so soonest-checkout reads first
+// (matches "what's about to free up" mental model). Capped at 10 —
+// Salem's Tavern has 4 bedrooms, generous headroom for future villages
+// with multiple inns.
+//
+// Lodger_until expression mirrors isLodger; kept inline rather than
+// extracted to avoid a SQL helper that's only used twice.
+func (app *App) activeLodgersForKeeper(ctx context.Context, sellerID string) ([]activeLodgerEntry, error) {
+	if sellerID == "" {
+		return nil, nil
+	}
+	rows, err := app.DB.Query(ctx,
+		`WITH active AS (
+		    SELECT pl.buyer_id,
+		           COALESCE(pl.qty, 1) AS qty,
+		           pl.ready_by,
+		           (
+		               (
+		                   (pl.ready_by + COALESCE(pl.qty, 1) * INTERVAL '1 day')::timestamp
+		                   + (
+		                       COALESCE(
+		                           (SELECT value::int FROM setting WHERE key = 'lodging_check_out_hour'),
+		                           11
+		                       ) * INTERVAL '1 hour'
+		                     )
+		               ) AT TIME ZONE COALESCE(
+		                   (SELECT value FROM setting WHERE key = 'world_timezone'),
+		                   'America/New_York'
+		               )
+		           ) AS lodger_until
+		      FROM pay_ledger pl
+		     WHERE pl.seller_id = $1::uuid
+		       AND pl.item_kind = 'nights_stay'
+		       AND pl.state = 'accepted'
+		       AND pl.fulfillment_status = 'delivered'
+		       AND pl.ready_by <= CURRENT_DATE
+		)
+		SELECT a.display_name, active.qty, active.ready_by, active.lodger_until
+		  FROM active
+		  JOIN actor a ON a.id = active.buyer_id
+		 WHERE NOW() < active.lodger_until
+		 ORDER BY active.lodger_until ASC
+		 LIMIT 10`,
+		sellerID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query active lodgers: %w", err)
+	}
+	defer rows.Close()
+	var out []activeLodgerEntry
+	for rows.Next() {
+		var e activeLodgerEntry
+		if err := rows.Scan(&e.BuyerName, &e.Qty, &e.ReadyBy, &e.LodgerUntil); err != nil {
+			return nil, fmt.Errorf("scan active lodger row: %w", err)
+		}
+		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate active lodgers: %w", err)
+	}
+	return out, nil
+}
+
+// formatActiveLodgersForPerception renders the keeper's active lodgers
+// as a perception block. Empty input returns "" so the caller can
+// suppress the section entirely.
+//
+// loc is the world timezone (cfg.Location) so the checkout timestamp
+// reads as wall-clock village time, matching dawn/dusk semantics the
+// LLM already sees elsewhere in the perception. Format:
+// "- Jefferey: 3-night stay — checks out Sat May 9 at 11:00".
+func formatActiveLodgersForPerception(entries []activeLodgerEntry, loc *time.Location) string {
+	if len(entries) == 0 {
+		return ""
+	}
+	if loc == nil {
+		loc = time.UTC
+	}
+	var b strings.Builder
+	b.WriteString("Lodgers in your rooms:\n")
+	for _, e := range entries {
+		nightsPart := fmt.Sprintf("%d-night stay", e.Qty)
+		if e.Qty <= 1 {
+			nightsPart = "1-night stay"
+		}
+		checkout := e.LodgerUntil.In(loc).Format("Mon Jan 2 at 15:04")
+		fmt.Fprintf(&b, "- %s: %s — checks out %s\n", e.BuyerName, nightsPart, checkout)
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // canEnter is the single gate for an actor walking into a structure.

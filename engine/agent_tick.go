@@ -1554,6 +1554,21 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 		log.Printf("perception readyOrdersForSeller %s: %v", r.DisplayName, err)
 	}
 
+	// ZBBS-165: active lodgers checked in. Surfaces pay_ledger rows at
+	// state=accepted, fulfillment_status=delivered, item_kind=nights_stay
+	// so the keeper can answer "how many nights have I paid for?" type
+	// questions without confabulating. Pre-check-in pending stays
+	// surface via readyOrdersForSeller above; this covers the
+	// post-check-in window until lodger_until passes. hourStart carries
+	// cfg.Location so checkout timestamps render in world wall-clock.
+	if entries, err := app.activeLodgersForKeeper(ctx, r.ID); err == nil {
+		if line := formatActiveLodgersForPerception(entries, hourStart.Location()); line != "" {
+			sections = append(sections, line)
+		}
+	} else {
+		log.Printf("perception activeLodgersForKeeper %s: %v", r.DisplayName, err)
+	}
+
 	// 3a. Satiation block (ZBBS-123). When a consumable need is
 	// pressing (hunger, thirst), surface own-stock + nearby-vendor
 	// satisfiers so the LLM has the bridge between "Address now"
