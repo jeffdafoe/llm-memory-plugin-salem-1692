@@ -20,12 +20,15 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math"
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 const defaultNPCSpeed = 48.0 // world pixels per second
@@ -444,6 +447,75 @@ func (app *App) applyArrival(npcID string) {
 				}
 				app.cascadeOriginFireChronicler("arrival", insideID.String, priority)
 			}
+		}
+	}
+
+	// Loiter-arrival: NPC walked TO a structure but didn't enter
+	// (entry_policy=owner with non-owner arriver, or entry_policy=none
+	// for outdoor loiter targets like wells / market stalls). Without
+	// this branch the keeper inside an entry_policy=owner stall never
+	// sees a non-owner NPC arrive at the counter, and deliver_order /
+	// pay co-location gates (sameStructure || sameHuddle) reject any
+	// vendor-to-vendor transaction at the buyer's stall — the seller
+	// has neither the buyer's inside_structure_id nor any
+	// current_huddle_id even though they're physically at the door.
+	// Observed 2026-05-08 with Prudence Ward delivering coca_tea to
+	// Josiah at the General Store: she landed at the loiter slot with
+	// current_huddle_id=NULL, deliver_order rejected, no recovery.
+	//
+	// Mirrors the inside-arrival block above scoped to walk.target
+	// StructureID. Decorative NPCs (no llm_memory_agent) and PCs are
+	// excluded — decoratives don't interact with vendors, and PCs use
+	// fireKnockPerception via pc_handlers.go.
+	if !insideID.Valid && walk.targetStructureID != "" && arriverIsAgent && !arriverIsPC {
+		structureID := walk.targetStructureID
+		var loiterHuddleID string
+		err := app.DB.QueryRow(ctx,
+			`SELECT id::text FROM scene_huddle
+			  WHERE structure_id = $1 AND concluded_at IS NULL
+			  ORDER BY created_at DESC LIMIT 1`,
+			structureID,
+		).Scan(&loiterHuddleID)
+		if err == nil {
+			// Join the active huddle if not already in one. The
+			// IS NULL gate prevents yanking an NPC out of an
+			// existing conversation at an adjacent loiter pin.
+			var currentHuddle sql.NullString
+			if err := app.DB.QueryRow(ctx,
+				`SELECT current_huddle_id::text FROM actor WHERE id = $1`,
+				npcID,
+			).Scan(&currentHuddle); err == nil && !currentHuddle.Valid {
+				if _, err := app.joinOrCreateHuddle(ctx, npcID, structureID); err != nil {
+					log.Printf("loiter-arrival: join %s into %s: %v", npcID, structureID, err)
+				}
+			}
+
+			// Room_event narration so PCs and NPCs inside see the
+			// arrival in the talk panel — symmetric with the
+			// inside-arrival room_event above.
+			structName := app.lookupStructureName(ctx, structureID)
+			if structName == "" {
+				structName = "a building"
+			}
+			text := fmt.Sprintf("%s arrived at %s.", displayName, structName)
+			data := map[string]interface{}{
+				"actor_id":     npcID,
+				"actor_name":   displayName,
+				"kind":         "arrival",
+				"text":         text,
+				"structure_id": structureID,
+				"at":           time.Now().UTC().Format(time.RFC3339),
+			}
+			app.addRoomScopeToData(ctx, data, npcID)
+			app.Hub.Broadcast(WorldEvent{Type: "room_event", Data: data})
+
+			// Trigger co-located ticks on the structure so the
+			// keeper inside reacts. Force=false: routine NPC
+			// arrivals respect the cost guard, same as inside
+			// arrivals above.
+			app.triggerCoLocatedTicks(ctx, structureID, npcID, "loiter-arrival", false, app.newScene(ctx, structureID), npcID)
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			log.Printf("loiter-arrival: huddle lookup %s: %v", structureID, err)
 		}
 	}
 
