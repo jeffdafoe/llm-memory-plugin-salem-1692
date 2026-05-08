@@ -27,7 +27,7 @@ const BORDER_COLOR := Color(0.22, 0.16, 0.10, 1.0)
 const TEXT_COLOR := Color(0.10, 0.08, 0.05, 1.0)
 
 # Lifetime is computed by setup() based on text length unless caller overrides.
-const MIN_LIFETIME := 3.0
+const MIN_LIFETIME := 5.0
 const MAX_LIFETIME := 10.0
 const LIFETIME_PER_CHAR := 1.0 / 18.0  # ~18 chars per second reading rate
 const LIFETIME_PICKUP := 1.5            # extra buffer so bubbles don't vanish before noticed
