@@ -555,11 +555,11 @@ func (app *App) refreshStructureOccupancyState(ctx context.Context, structureID 
 	// ZBBS-176: a vendor on take_break (break_until > NOW()) or asleep
 	// (sleeping_until > NOW()) is physically inside the structure but
 	// not "manning" it — the shop should appear closed/unoccupied. The
-	// canEnter / isProprietorResting predicates already gate door entry
-	// based on break_until, but the visual current_state was driven
+	// canEnter / isBusinessClosed predicate already gates door entry on
+	// these windowed states, but the visual current_state was driven
 	// solely by physical presence and would render as "open" with the
 	// vendor still inside on a break. Filter both windowed states out
-	// here so the visual flips in lockstep with the predicates.
+	// here so the visual flips in lockstep with the predicate.
 	var occupants int
 	if err := app.DB.QueryRow(ctx,
 		`SELECT COUNT(*) FROM actor
