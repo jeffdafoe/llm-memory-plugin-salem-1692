@@ -337,6 +337,13 @@ func (app *App) satiationNearbyVendors(ctx context.Context, perceiverID, need st
 			  JOIN vendors_with_serve v ON v.actor_id = a.id
 			 WHERE a.id != $2::uuid
 			   AND a.login_username IS NULL
+			   -- Closed-shop suppression: a vendor on take_break shouldn't
+			   -- surface in the buyer's "where to find a hearty meal" cue.
+			   -- Pairs with executePay's break gate so the LLM doesn't
+			   -- walk to a closed shop or pile up paid-but-undelivered
+			   -- orders. Vendors with NULL break_until or break_until in
+			   -- the past stay visible.
+			   AND (a.break_until IS NULL OR a.break_until <= NOW())
 			   AND EXISTS (
 			       SELECT 1
 			         FROM actor_inventory inv
