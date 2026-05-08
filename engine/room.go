@@ -45,6 +45,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 	"time"
@@ -454,6 +455,96 @@ func (app *App) expireRoomAccess(ctx context.Context) error {
 	)
 	if err != nil {
 		return fmt.Errorf("expireRoomAccess: %w", err)
+	}
+	return nil
+}
+
+// evictExpiredOccupants moves PCs whose private room access lapsed back
+// to a common room of the same structure. Pairs with expireRoomAccess:
+// flipping active=false in the room_access row only revokes the future
+// gate — it doesn't physically relocate someone already inside.
+//
+// Pre-2026-05-08 a checked-out lodger was stuck: still in inside_room_id
+// pointing at a bedroom with active=false access, no auto-bed (gated on
+// active=true), no recovery unless they walked out manually. wake-on-
+// expiry handled the sleeping case (housekeeping knock) but the awake
+// case had no path. This sweep closes the gap by teleporting the PC to
+// the structure's common room — non-common rooms are virtual subspaces,
+// not walkable, so a state flip is the right primitive.
+//
+// Restricted to PCs and private rooms:
+//   - login_username IS NOT NULL — NPC owners and staff hold permanent
+//     access via different mechanisms (work_structure_id for staff, no
+//     room_access expiry for owned bedrooms); evicting them would
+//     surprise behavior. Lodging is a PC use case today.
+//   - sr.kind = 'private' — staff-room access is checked against
+//     work_structure_id, not room_access; nothing to expire.
+//
+// Each evictee gets a private brown-box narration ("Your stay has
+// ended...") so the player sees what happened. A wake (if they were
+// sleeping) fires earlier in the sweep via wakeExpiredSleepers, so by
+// the time this runs the PC is already awake.
+func (app *App) evictExpiredOccupants(ctx context.Context) error {
+	rows, err := app.DB.Query(ctx, `
+		SELECT a.id::text, COALESCE(a.display_name, '')
+		  FROM actor a
+		  JOIN structure_room sr ON sr.id = a.inside_room_id
+		 WHERE a.inside_room_id IS NOT NULL
+		   AND a.login_username IS NOT NULL
+		   AND sr.kind = 'private'
+		   AND NOT EXISTS (
+		     SELECT 1 FROM room_access ra
+		      WHERE ra.actor_id = a.id
+		        AND ra.room_id = a.inside_room_id
+		        AND ra.active = true
+		   )
+	`)
+	if err != nil {
+		return fmt.Errorf("evictExpiredOccupants query: %w", err)
+	}
+	type evictee struct {
+		ID   string
+		Name string
+	}
+	var toEvict []evictee
+	for rows.Next() {
+		var e evictee
+		if err := rows.Scan(&e.ID, &e.Name); err != nil {
+			rows.Close()
+			return fmt.Errorf("evictExpiredOccupants scan: %w", err)
+		}
+		toEvict = append(toEvict, e)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("evictExpiredOccupants iter: %w", err)
+	}
+
+	for _, e := range toEvict {
+		moveResult, err := app.executePCMoveRoom(ctx, e.ID, "common")
+		if err != nil {
+			log.Printf("evict move(%s): %v", e.ID, err)
+			continue
+		}
+		if moveResult.Result != "ok" {
+			// Race: PC left the structure / common room missing / etc.
+			// Surface in logs, skip narration. They'll be re-evaluated
+			// next sweep if still eligible, but the typical "common room
+			// missing" case is permanent — not worth a recurring log.
+			log.Printf("evict move(%s) rejected: %s", e.ID, moveResult.Err)
+			continue
+		}
+		app.Hub.Broadcast(WorldEvent{
+			Type: "room_event",
+			Data: map[string]interface{}{
+				"actor_id":   e.ID,
+				"actor_name": e.Name,
+				"kind":       "checkout",
+				"text":       "Your stay has ended — you head down to the common area.",
+				"private":    true,
+				"at":         time.Now().UTC().Format(time.RFC3339),
+			},
+		})
 	}
 	return nil
 }
