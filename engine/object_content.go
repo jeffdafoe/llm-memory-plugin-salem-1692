@@ -388,7 +388,7 @@ Voice: as a 1692 villager would post it. Formal for civic announcements, plain f
 	// scene_structure stamp is also empty by definition (the scene was
 	// minted with no structureID), so skip the lookup.
 	sceneID := app.newScene(ctx, "")
-	reply, err := app.npcChatClient.sendChat(ctx, chroniclerAgent, prompt.String(), "", sceneID, "", nil)
+	reply, err := app.npcChatClient.sendChat(ctx, chroniclerAgent, prompt.String(), nil, sceneID, "", nil)
 	if err != nil {
 		return chroniclerBoardReply{}, err
 	}

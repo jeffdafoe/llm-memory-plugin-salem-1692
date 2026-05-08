@@ -566,8 +566,12 @@ func (app *App) fireChronicler(ctx context.Context, reason chroniclerFireReason)
 	perception := app.buildChroniclerPerception(ctx, reason, shiftBatches)
 	tools := chroniclerToolSpec()
 
-	currentMessage := perception
-	currentToolCallID := ""
+	// nextMessage carries the iter-0 perception; from iter 1 onward the
+	// model is responding to tool results, so message="" and nextResults
+	// is the bridge instead. Mutually exclusive — sendChat picks the
+	// non-empty one.
+	nextMessage := perception
+	var nextResults []toolResult
 	chatSucceeded := false
 	// Group this fire's harness iterations under one scene_id (MEM-121)
 	// so the admin UI can collapse them into a single expandable row.
@@ -609,7 +613,7 @@ func (app *App) fireChronicler(ctx context.Context, reason chroniclerFireReason)
 	sceneStructure := app.lookupSceneStructureName(ctx, sceneID)
 
 	for iter := 0; iter < tickBudget; iter++ {
-		reply, err := app.npcChatClient.sendChat(ctx, chroniclerAgent, currentMessage, currentToolCallID, sceneID, sceneStructure, tools)
+		reply, err := app.npcChatClient.sendChat(ctx, chroniclerAgent, nextMessage, nextResults, sceneID, sceneStructure, tools)
 		if err != nil {
 			log.Printf("chronicler iter=%d: %v", iter, err)
 			if !chatSucceeded {
@@ -622,6 +626,12 @@ func (app *App) fireChronicler(ctx context.Context, reason chroniclerFireReason)
 			break
 		}
 		chatSucceeded = true
+
+		// Reset the iteration carries — they'll be repopulated below if
+		// we're going to make another sendChat call. Iter-0's perception
+		// has been delivered; from here on the bridge is tool results.
+		nextMessage = ""
+		nextResults = nil
 
 		if len(reply.ToolCalls) == 0 {
 			// Chronicler returned plain text — treat as implicit
@@ -638,208 +648,232 @@ func (app *App) fireChronicler(ctx context.Context, reason chroniclerFireReason)
 			break
 		}
 
-		// Pick the first tool call. The harness loop iterates so
-		// multiple tool calls across iterations are supported (write
-		// atmosphere, then record an event, then done — three turns).
-		tc := &reply.ToolCalls[0]
+		// Process ALL tool calls the model emitted in this reply.
+		// Pre-fix this used to pick reply.ToolCalls[0] only, forcing the
+		// model to re-emit dropped calls across multiple round-trips and
+		// leaving orphan tool_call_ids in the persisted history. Now we
+		// run them in order, accumulate one toolResult per call, and
+		// hand the whole batch back on the next sendChat.
 		terminal := false
+		pendingResults := make([]toolResult, 0, len(reply.ToolCalls))
 
-		switch tc.Name {
-		case "set_environment":
-			text, _ := tc.Input["text"].(string)
-			text = strings.TrimSpace(text)
-			if text == "" {
-				currentMessage = "[The atmosphere you tried to write was empty. Try again or say done.]"
-			} else if app.recentEnvironmentMatches(ctx, text, 60*time.Second) {
-				// Dedupe (2026-05-02): chronicler occasionally emits
-				// identical atmosphere text twice in the same cascade —
-				// saw a verbatim "Dawn lies pale over the spring village"
-				// repeat 3 seconds apart at 11:01:05/11:01:08. Skip the
-				// write but acknowledge so the harness moves on instead of
-				// burning another iteration trying to re-emit.
-				currentMessage = "[Atmosphere unchanged — the prose you wrote matches what is already set. Move on or say done.]"
-			} else if err := app.recordEnvironment(ctx, text, reason.Phase); err != nil {
-				log.Printf("chronicler set_environment: %v", err)
-				currentMessage = "[Atmosphere could not be recorded. Try again or say done.]"
-			} else {
-				currentMessage = "[Atmosphere noted.]"
-			}
-			currentToolCallID = tc.ID
+		for i := range reply.ToolCalls {
+			tc := &reply.ToolCalls[i]
+			var resultContent string
 
-		case "record_event":
-			text, _ := tc.Input["text"].(string)
-			text = strings.TrimSpace(text)
-			scopeType, _ := tc.Input["scope_type"].(string)
-			scopeType = strings.TrimSpace(scopeType)
-			scopeTarget, _ := tc.Input["scope_target"].(string)
-			scopeTarget = strings.TrimSpace(scopeTarget)
-			if scopeType == "" {
-				scopeType = "village"
-			}
-			if !validEventScope(scopeType) {
-				currentMessage = fmt.Sprintf("[Unknown scope %q. Use 'village', 'local', or 'private'.]", scopeType)
-				currentToolCallID = tc.ID
-				break
-			}
-			if text == "" {
-				currentMessage = "[The event you tried to record was empty. Try again or say done.]"
-				currentToolCallID = tc.ID
-				break
-			}
-			// Default scope_target for cascade-origin local events: use
-			// the structure where the cascade started. The model has
-			// trouble inventing structure UUIDs, so this is the safe
-			// out for "an event happened HERE."
-			if scopeType == "local" && scopeTarget == "" && reason.Type == "cascade" && reason.StructureID != "" {
-				scopeTarget = reason.StructureID
-			}
-			// Reject local/private without a target — the row would be
-			// invisible to every NPC if we wrote it (visibility queries
-			// require a target match). Better to nudge the model than
-			// silently waste a write.
-			if (scopeType == "local" || scopeType == "private") && scopeTarget == "" {
-				currentMessage = fmt.Sprintf("[Scope %q requires a scope_target (structure id for local, npc id for private). Try again or say done.]", scopeType)
-				currentToolCallID = tc.ID
-				break
-			}
-			if err := app.recordEvent(ctx, text, scopeType, scopeTarget); err != nil {
-				log.Printf("chronicler record_event: %v", err)
-				currentMessage = "[Event could not be recorded. Try again or say done.]"
-			} else {
-				currentMessage = "[Event recorded.]"
-			}
-			currentToolCallID = tc.ID
+			switch tc.Name {
+			case "set_environment":
+				text, _ := tc.Input["text"].(string)
+				text = strings.TrimSpace(text)
+				if text == "" {
+					resultContent = "[The atmosphere you tried to write was empty. Try again or say done.]"
+				} else if app.recentEnvironmentMatches(ctx, text, 60*time.Second) {
+					// Dedupe (2026-05-02): chronicler occasionally emits
+					// identical atmosphere text twice in the same cascade —
+					// saw a verbatim "Dawn lies pale over the spring village"
+					// repeat 3 seconds apart at 11:01:05/11:01:08. Skip the
+					// write but acknowledge so the harness moves on instead of
+					// burning another iteration trying to re-emit.
+					resultContent = "[Atmosphere unchanged — the prose you wrote matches what is already set. Move on or say done.]"
+				} else if err := app.recordEnvironment(ctx, text, reason.Phase); err != nil {
+					log.Printf("chronicler set_environment: %v", err)
+					resultContent = "[Atmosphere could not be recorded. Try again or say done.]"
+				} else {
+					resultContent = "[Atmosphere noted.]"
+				}
 
-		case "record_announcement":
-			text, _ := tc.Input["text"].(string)
-			text = strings.TrimSpace(text)
-			if text == "" {
-				currentMessage = "[The announcement you tried to record was empty. Try again or say done.]"
-				currentToolCallID = tc.ID
-				break
-			}
-			if err := app.recordTownCrierAnnouncement(ctx, text); err != nil {
-				log.Printf("chronicler record_announcement: %v", err)
-				currentMessage = "[Announcement could not be recorded. Try again or say done.]"
-			} else {
-				currentMessage = "[Announcement recorded — the crier will voice it on his rotation.]"
-			}
-			currentToolCallID = tc.ID
-
-		case "recall":
-			query, _ := tc.Input["query"].(string)
-			currentMessage = app.resolveChroniclerRecall(ctx, query)
-			currentToolCallID = tc.ID
-
-		case "attend_to":
-			villager, _ := tc.Input["villager"].(string)
-			villager = strings.TrimSpace(villager)
-			if villager == "" {
-				currentMessage = "[The villager you tried to attend was unnamed. Try again or say done.]"
-				currentToolCallID = tc.ID
-				break
-			}
-			if attendCount >= attendCeiling {
-				currentMessage = "[You have attended to as many villagers as one waking allows. Move on, or say done.]"
-				currentToolCallID = tc.ID
-				break
-			}
-			npcID, displayName, ok := app.resolveVillagerForAttention(ctx, villager)
-			if !ok {
-				currentMessage = fmt.Sprintf("[There is no villager by the name %q. Try again with the name as it appears in your roster, or say done.]", villager)
-				currentToolCallID = tc.ID
-				break
-			}
-			if attendedThisFire[npcID] {
-				// Already attended this villager this fire (2026-05-02).
-				// Re-attending re-ticks the NPC and burns a chronicler
-				// call slot for no new effect — the prior dispatch is
-				// already in flight or has run.
-				currentMessage = fmt.Sprintf("[You have already attended %s in this waking. Move on, or say done.]", displayName)
-				currentToolCallID = tc.ID
-				break
-			}
-			// Cross-fire attend cooldown (ZBBS-119). The
-			// attendedThisFire check above only catches duplicates
-			// within one chronicler turn; serialized back-to-back
-			// fires can still re-attend the same NPC. Skip routine
-			// re-attends within chroniclerAttendCooldown of the prior
-			// dispatch, with a visible tool result so the model reads
-			// the rejection. PC-speech and admin-attend-now fires are
-			// exempt — those represent fresh significant events and
-			// should always go through.
-			if !chroniclerAttendExempt(reason) {
-				if since, recent := app.recentChroniclerAttend(npcID); recent {
-					currentMessage = fmt.Sprintf("[%s was already dispatched %s ago in another waking; attend_to skipped. Move on, or say done.]",
-						displayName, since.Round(time.Second))
-					currentToolCallID = tc.ID
+			case "record_event":
+				text, _ := tc.Input["text"].(string)
+				text = strings.TrimSpace(text)
+				scopeType, _ := tc.Input["scope_type"].(string)
+				scopeType = strings.TrimSpace(scopeType)
+				scopeTarget, _ := tc.Input["scope_target"].(string)
+				scopeTarget = strings.TrimSpace(scopeTarget)
+				if scopeType == "" {
+					scopeType = "village"
+				}
+				if !validEventScope(scopeType) {
+					resultContent = fmt.Sprintf("[Unknown scope %q. Use 'village', 'local', or 'private'.]", scopeType)
 					break
 				}
+				if text == "" {
+					resultContent = "[The event you tried to record was empty. Try again or say done.]"
+					break
+				}
+				// Default scope_target for cascade-origin local events: use
+				// the structure where the cascade started. The model has
+				// trouble inventing structure UUIDs, so this is the safe
+				// out for "an event happened HERE."
+				if scopeType == "local" && scopeTarget == "" && reason.Type == "cascade" && reason.StructureID != "" {
+					scopeTarget = reason.StructureID
+				}
+				// Reject local/private without a target — the row would be
+				// invisible to every NPC if we wrote it (visibility queries
+				// require a target match). Better to nudge the model than
+				// silently waste a write.
+				if (scopeType == "local" || scopeType == "private") && scopeTarget == "" {
+					resultContent = fmt.Sprintf("[Scope %q requires a scope_target (structure id for local, npc id for private). Try again or say done.]", scopeType)
+					break
+				}
+				if err := app.recordEvent(ctx, text, scopeType, scopeTarget); err != nil {
+					log.Printf("chronicler record_event: %v", err)
+					resultContent = "[Event could not be recorded. Try again or say done.]"
+				} else {
+					resultContent = "[Event recorded.]"
+				}
+
+			case "record_announcement":
+				text, _ := tc.Input["text"].(string)
+				text = strings.TrimSpace(text)
+				if text == "" {
+					resultContent = "[The announcement you tried to record was empty. Try again or say done.]"
+					break
+				}
+				if err := app.recordTownCrierAnnouncement(ctx, text); err != nil {
+					log.Printf("chronicler record_announcement: %v", err)
+					resultContent = "[Announcement could not be recorded. Try again or say done.]"
+				} else {
+					resultContent = "[Announcement recorded — the crier will voice it on his rotation.]"
+				}
+
+			case "recall":
+				query, _ := tc.Input["query"].(string)
+				resultContent = app.resolveChroniclerRecall(ctx, query)
+
+			case "attend_to":
+				villager, _ := tc.Input["villager"].(string)
+				villager = strings.TrimSpace(villager)
+				if villager == "" {
+					resultContent = "[The villager you tried to attend was unnamed. Try again or say done.]"
+					break
+				}
+				if attendCount >= attendCeiling {
+					resultContent = "[You have attended to as many villagers as one waking allows. Move on, or say done.]"
+					break
+				}
+				npcID, displayName, ok := app.resolveVillagerForAttention(ctx, villager)
+				if !ok {
+					resultContent = fmt.Sprintf("[There is no villager by the name %q. Try again with the name as it appears in your roster, or say done.]", villager)
+					break
+				}
+				if attendedThisFire[npcID] {
+					// Already attended this villager this fire (2026-05-02).
+					// Re-attending re-ticks the NPC and burns a chronicler
+					// call slot for no new effect — the prior dispatch is
+					// already in flight or has run.
+					resultContent = fmt.Sprintf("[You have already attended %s in this waking. Move on, or say done.]", displayName)
+					break
+				}
+				// Cross-fire attend cooldown (ZBBS-119). The
+				// attendedThisFire check above only catches duplicates
+				// within one chronicler turn; serialized back-to-back
+				// fires can still re-attend the same NPC. Skip routine
+				// re-attends within chroniclerAttendCooldown of the prior
+				// dispatch, with a visible tool result so the model reads
+				// the rejection. PC-speech and admin-attend-now fires are
+				// exempt — those represent fresh significant events and
+				// should always go through.
+				if !chroniclerAttendExempt(reason) {
+					if since, recent := app.recentChroniclerAttend(npcID); recent {
+						resultContent = fmt.Sprintf("[%s was already dispatched %s ago in another waking; attend_to skipped. Move on, or say done.]",
+							displayName, since.Round(time.Second))
+						break
+					}
+				}
+				// Trigger the NPC's tick. Force=true so the agentMinTickGap
+				// cost guard in triggerImmediateTick is bypassed — chronicler
+				// attend_to is a directorial action, not a sim-layer cascade.
+				// The cost guard exists to dampen NPC-to-NPC tick storms
+				// (co-located NPCs reacting to each other's speech); a
+				// chronicler dispatch is a deliberate top-down pick that
+				// should always go through. Without the bypass, an NPC who
+				// happened to tick within the last 5 minutes silently
+				// disappears from the chronicler's view of the world: it
+				// gets back "[You attend to X. They will rouse...]" but
+				// no actual prompt fires for X.
+				//
+				// Cost is bounded chronicler-side, not at the cost guard:
+				// attendCeiling caps attend_to calls per fire,
+				// OverseerAttendSem bounds concurrent attends across
+				// overlapping fires, and chronicler fires themselves are
+				// gated to specific events (phase / cascade / shift_boundary
+				// / needs_resolved) — not arbitrary. Same-NPC re-ticks
+				// across two close fires are still possible but they're
+				// substantively different perceptions (different events),
+				// not the storm the guard targets.
+				//
+				// Background goroutine so a slow agent tick doesn't block
+				// the overseer's harness loop. App-level semaphore caps
+				// aggregate concurrency across overlapping fires; if the
+				// slot is full we still let the call through (vs dropping)
+				// — the goroutine just blocks waiting for a slot, then
+				// runs. Acceptable for directorial dispatches; if
+				// backpressure becomes an issue we can switch to skip-if-
+				// full like ChroniclerSem does.
+				//
+				// Thread the chronicler's sceneID so the dispatched NPC
+				// tick lands in the same scene as the overseer's fire —
+				// keeps the admin UI's scene grouping coherent across the
+				// cascade.
+				go func(id, name, scene string) {
+					app.OverseerAttendSem <- struct{}{}
+					defer func() { <-app.OverseerAttendSem }()
+					// triggerActorID = "" — chronicler dispatch has no salient
+					// speaker, so this won't lock the attended NPC against
+					// subsequent heard-speech reactions in the same scene.
+					app.triggerImmediateTick(context.Background(), id, "overseer-attend-to", true, scene, "")
+				}(npcID, displayName, sceneID)
+				attendCount++
+				attendedThisFire[npcID] = true
+				// Stamp the cross-fire cooldown clock (ZBBS-119). Includes
+				// exempt fires (PC speech, admin) — the stamp is what the
+				// next fire's routine attends measure their cooldown
+				// against, regardless of which fire stamped it.
+				app.recordChroniclerAttend(npcID)
+				resultContent = fmt.Sprintf("[You attend to %s. They will rouse and decide what to do.]", displayName)
+
+			case "done":
+				terminal = true
+				// Acknowledge the call so it isn't orphan in history.
+				// persistToolResults below writes this row without
+				// firing another LLM turn.
+				resultContent = "[OK]"
+
+			default:
+				log.Printf("chronicler: unknown tool %q, terminating", tc.Name)
+				terminal = true
+				resultContent = fmt.Sprintf("[Unknown tool %q.]", tc.Name)
 			}
-			// Trigger the NPC's tick. Force=true so the agentMinTickGap
-			// cost guard in triggerImmediateTick is bypassed — chronicler
-			// attend_to is a directorial action, not a sim-layer cascade.
-			// The cost guard exists to dampen NPC-to-NPC tick storms
-			// (co-located NPCs reacting to each other's speech); a
-			// chronicler dispatch is a deliberate top-down pick that
-			// should always go through. Without the bypass, an NPC who
-			// happened to tick within the last 5 minutes silently
-			// disappears from the chronicler's view of the world: it
-			// gets back "[You attend to X. They will rouse...]" but
-			// no actual prompt fires for X.
-			//
-			// Cost is bounded chronicler-side, not at the cost guard:
-			// attendCeiling caps attend_to calls per fire,
-			// OverseerAttendSem bounds concurrent attends across
-			// overlapping fires, and chronicler fires themselves are
-			// gated to specific events (phase / cascade / shift_boundary
-			// / needs_resolved) — not arbitrary. Same-NPC re-ticks
-			// across two close fires are still possible but they're
-			// substantively different perceptions (different events),
-			// not the storm the guard targets.
-			//
-			// Background goroutine so a slow agent tick doesn't block
-			// the overseer's harness loop. App-level semaphore caps
-			// aggregate concurrency across overlapping fires; if the
-			// slot is full we still let the call through (vs dropping)
-			// — the goroutine just blocks waiting for a slot, then
-			// runs. Acceptable for directorial dispatches; if
-			// backpressure becomes an issue we can switch to skip-if-
-			// full like ChroniclerSem does.
-			//
-			// Thread the chronicler's sceneID so the dispatched NPC
-			// tick lands in the same scene as the overseer's fire —
-			// keeps the admin UI's scene grouping coherent across the
-			// cascade.
-			go func(id, name, scene string) {
-				app.OverseerAttendSem <- struct{}{}
-				defer func() { <-app.OverseerAttendSem }()
-				// triggerActorID = "" — chronicler dispatch has no salient
-				// speaker, so this won't lock the attended NPC against
-				// subsequent heard-speech reactions in the same scene.
-				app.triggerImmediateTick(context.Background(), id, "overseer-attend-to", true, scene, "")
-			}(npcID, displayName, sceneID)
-			attendCount++
-			attendedThisFire[npcID] = true
-			// Stamp the cross-fire cooldown clock (ZBBS-119). Includes
-			// exempt fires (PC speech, admin) — the stamp is what the
-			// next fire's routine attends measure their cooldown
-			// against, regardless of which fire stamped it.
-			app.recordChroniclerAttend(npcID)
-			currentMessage = fmt.Sprintf("[You attend to %s. They will rouse and decide what to do.]", displayName)
-			currentToolCallID = tc.ID
 
-		case "done":
-			terminal = true
+			pendingResults = append(pendingResults, toolResult{ID: tc.ID, Content: resultContent})
 
-		default:
-			log.Printf("chronicler: unknown tool %q, terminating", tc.Name)
-			terminal = true
+			// Stop processing subsequent tool calls in this reply once
+			// a terminal tool fires. Otherwise a reply like
+			// [done, record_event] would still execute record_event
+			// after done, which doesn't match the semantic of "done".
+			// The terminal tool's own result is preserved (just
+			// appended above); later un-processed tool calls remain
+			// orphan but get dropped by openai.js orphan-filtering on
+			// the next history reconstruction.
+			if terminal {
+				break
+			}
 		}
 
 		if terminal {
+			// Persist the tool results without firing another model
+			// turn. Closes out the assistant's tool_calls in conversation
+			// history (no orphan tool_call_ids) at the cost of one
+			// quick API write rather than a full LLM round-trip.
+			if err := app.npcChatClient.persistToolResults(ctx, chroniclerAgent, pendingResults, sceneID, sceneStructure); err != nil {
+				log.Printf("chronicler: persistToolResults: %v", err)
+			}
 			break
 		}
+
+		// Non-terminal: hand the accumulated results forward to the
+		// next iteration's sendChat call.
+		nextResults = pendingResults
 	}
 
 	if !chatSucceeded {

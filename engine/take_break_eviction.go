@@ -269,7 +269,7 @@ func (app *App) runEvictionAssertiveAsk(ctx context.Context, vendorAgent, vendor
 		timeoutCtx,
 		vendorAgent,
 		prompt.String(),
-		"", "", "",
+		nil, "", "",
 		nil, // no tools — we want the reply text directly.
 	)
 	if err != nil {

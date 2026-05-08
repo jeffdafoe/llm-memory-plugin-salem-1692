@@ -174,6 +174,14 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 	perception, locationName := app.buildAgentPerception(ctx, r, hourStart, dawnMin, duskMin)
 	tools := app.buildAgentTools(ctx, r.ID)
 
+	// currentMessage / currentToolCallID still drive the per-branch
+	// continuation logic below; we just translate them into the new
+	// {message, []toolResult} wire shape on the way into sendChat. iter 0
+	// sends `currentMessage` as the perception; thereafter currentToolCallID
+	// is set and we wrap into a 1-element tool-result array. Llama-3.3
+	// (the NPC model) effectively never emits parallel tool calls, so a
+	// 1-element array is the typical case — but the wire shape is
+	// uniform with the chronicler path.
 	currentMessage := perception
 	currentToolCallID := ""
 
@@ -187,7 +195,14 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 
 	var commitCall *agentToolCall
 	for iter := 0; iter < agentTickBudget; iter++ {
-		reply, err := app.npcChatClient.sendChat(ctx, r.LLMMemoryAgent, currentMessage, currentToolCallID, sceneID, sceneStructure, tools)
+		var msgArg string
+		var resultsArg []toolResult
+		if currentToolCallID == "" {
+			msgArg = currentMessage
+		} else {
+			resultsArg = []toolResult{{ID: currentToolCallID, Content: currentMessage}}
+		}
+		reply, err := app.npcChatClient.sendChat(ctx, r.LLMMemoryAgent, msgArg, resultsArg, sceneID, sceneStructure, tools)
 		if err != nil {
 			log.Printf("agent-tick %s iter=%d: %v", r.DisplayName, iter, err)
 			return
@@ -483,8 +498,8 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			break
 		}
 
-		toolResult := app.resolveObservationTool(ctx, r, observation, locationName)
-		currentMessage = toolResult
+		obsContent := app.resolveObservationTool(ctx, r, observation, locationName)
+		currentMessage = obsContent
 		currentToolCallID = observation.ID
 	}
 
@@ -500,7 +515,37 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 		}
 	}
 
-	_, _, _ = app.executeAgentCommit(ctx, r, commitCall, sceneID)
+	commitResult, commitErrStr, _ := app.executeAgentCommit(ctx, r, commitCall, sceneID)
+
+	// Close out the terminal tool_call in conversation history. Without
+	// this, the model's terminal tool_call (move_to / chore / done /
+	// take_break) sits orphan in history — no matching tool result row
+	// — and openai.js drops it on the next history reconstruction.
+	// Synthetic commits (text fallback, unknown-tool fallback,
+	// budget-exhausted) don't have a real assistant tool_call to close,
+	// so skip those.
+	//
+	// Persist AFTER executeAgentCommit so the result content reflects
+	// what actually happened: "[OK]" only when the engine accepted the
+	// commit, an explicit failure annotation otherwise. The model never
+	// sees this row in the same fire (the tick ends here), but a
+	// follow-up tick that reads conversation history sees an honest
+	// account instead of a pre-claimed success.
+	if commitCall != nil && !strings.HasPrefix(commitCall.ID, "synthetic-") {
+		var content string
+		if commitResult == "ok" {
+			content = "[OK]"
+		} else {
+			content = fmt.Sprintf("[%s] %s", commitResult, commitErrStr)
+		}
+		if err := app.npcChatClient.persistToolResults(ctx,
+			r.LLMMemoryAgent,
+			[]toolResult{{ID: commitCall.ID, Content: content}},
+			sceneID, sceneStructure,
+		); err != nil {
+			log.Printf("agent-tick %s: persistToolResults: %v", r.DisplayName, err)
+		}
+	}
 	app.stampAgentTick(ctx, r)
 
 	// Return-to-work follow-up (ZBBS-110). After the commit settled, if
