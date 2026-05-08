@@ -1820,6 +1820,26 @@ func _on_room_event(data: Dictionary) -> void:
         print("[TALK]   -> dropped: empty actor/text")
         return
     _append_log_line(actor_name, text, kind, false, at)
+    # Private events bump the unread counter on the launcher pill when
+    # the panel is closed, mirroring append_local_narration. Without
+    # this, second-person narrations land in the log but the player
+    # never sees them — the panel only auto-opens via a huddle, which
+    # most narration paths (sleep, consume, closed-business arrival)
+    # don't have.
+    if private_event and not is_open:
+        unread_count += 1
+        _update_launcher_text()
+    # Closed-business arrival (ZBBS-179) also pops a transient
+    # SpeechBubble at the structure so the player sees the message
+    # at the location, not just in the brown panel. Other private
+    # narration kinds (sleep, consume) stay panel-only — they're
+    # about the PC's body, not a place. Filter via kind + structure_id.
+    if private_event and kind == "closed_business_arrival":
+        var event_structure_id := str(data.get("structure_id", ""))
+        if event_structure_id != "":
+            var world_node := get_node_or_null("/root/Main/World")
+            if world_node != null and world_node.has_method("spawn_structure_bubble"):
+                world_node.spawn_structure_bubble(event_structure_id, text)
 
 
 ## Public entry for client-only narrations (e.g. ZBBS-101 knock outcomes).
