@@ -25,3 +25,34 @@
     owner: "{{ app_user }}"
     group: "{{ app_user }}"
     mode: "0755"
+
+# --- Unattended upgrades: OFF ---
+#
+# A 2026-03-15 unattended PG point-version upgrade (17.8 → 17.9)
+# staged a new binary that wasn't picked up until the next cold
+# start (~28 days later), and unrelated config-dir breakage stayed
+# latent until then. We've moved to manual upgrades on this VPS so
+# kernel + service updates land at a planned time with the operator
+# present.
+#
+# Disable both the periodic config and the systemd timers so a
+# re-enable requires touching both layers (defense in depth).
+
+- name: Disable APT periodic update + unattended-upgrade
+  copy:
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      APT::Periodic::Update-Package-Lists "0";
+      APT::Periodic::Unattended-Upgrade "0";
+
+- name: Disable apt-daily and apt-daily-upgrade timers
+  systemd:
+    name: "{{ item }}"
+    enabled: no
+    state: stopped
+  loop:
+    - apt-daily.timer
+    - apt-daily-upgrade.timer
