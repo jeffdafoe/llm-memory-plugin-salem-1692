@@ -600,12 +600,13 @@ func (app *App) readyOrdersForSeller(ctx context.Context, sellerID string) ([]re
 	rows, err := app.DB.Query(ctx,
 		`SELECT pl.id, pl.item_kind, pl.qty, pl.offered_amount, pl.consume_now,
 		        a.display_name, pl.created_at, pl.ready_by,
-		        (
+		        COALESCE(
 		            (a.inside_structure_id IS NOT NULL
 		             AND a.inside_structure_id = (SELECT inside_structure_id FROM actor WHERE id = $1::uuid))
 		            OR
 		            (a.current_huddle_id IS NOT NULL
-		             AND a.current_huddle_id = (SELECT current_huddle_id FROM actor WHERE id = $1::uuid))
+		             AND a.current_huddle_id = (SELECT current_huddle_id FROM actor WHERE id = $1::uuid)),
+		            FALSE
 		        ) AS co_located,
 		        (SELECT vo.display_name FROM village_object vo WHERE vo.id = a.inside_structure_id) AS buyer_structure_name
 		   FROM pay_ledger pl
