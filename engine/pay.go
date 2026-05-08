@@ -493,6 +493,8 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payReque
 			recipientName,
 			buyer.DisplayName,
 			itemKind,
+			recipientID,
+			buyer.ID,
 			totalQty,
 			req.Amount,
 			quoted,
