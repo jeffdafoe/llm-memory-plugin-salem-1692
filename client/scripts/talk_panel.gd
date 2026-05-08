@@ -1820,6 +1820,14 @@ func _on_room_event(data: Dictionary) -> void:
         print("[TALK]   -> dropped: empty actor/text")
         return
     _append_log_line(actor_name, text, kind, false, at)
+    # Private events bump the unread counter on the launcher pill when
+    # the panel is closed, mirroring append_local_narration. Without
+    # this, second-person narrations land in the log but the player
+    # never sees them — the panel only auto-opens via a huddle, which
+    # most narration paths (sleep, arrival, consume) don't have.
+    if private_event and not is_open:
+        unread_count += 1
+        _update_launcher_text()
 
 
 ## Public entry for client-only narrations (e.g. ZBBS-101 knock outcomes).
