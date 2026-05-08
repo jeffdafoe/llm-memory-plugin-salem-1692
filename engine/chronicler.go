@@ -189,6 +189,20 @@ func chroniclerToolSpec() []agentToolDef {
 			},
 		},
 		{
+			Name:        "record_announcement",
+			Description: "Author a piece of village news for the Town Crier to read aloud on his rotation. Use for community-relevant happenings: a new lodger at the Tavern, a vendor closed for the day, strangers in the village, a notable visitor. Period-correct prose, brief — the crier reads it verbatim. The crier voices each announcement up to three times before retiring it.",
+			Parameters: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"text": map[string]interface{}{
+						"type":        "string",
+						"description": "The announcement text. One sentence, biblical cadence — the crier voices it as-is.",
+					},
+				},
+				"required": []string{"text"},
+			},
+		},
+		{
 			Name:        "recall",
 			Description: "Search Salem's collective memory — your own past observations, what each NPC has been thinking, dreams, impressions. Use this when you want to remember anything the village has experienced.",
 			Parameters: map[string]interface{}{
@@ -696,6 +710,22 @@ func (app *App) fireChronicler(ctx context.Context, reason chroniclerFireReason)
 			}
 			currentToolCallID = tc.ID
 
+		case "record_announcement":
+			text, _ := tc.Input["text"].(string)
+			text = strings.TrimSpace(text)
+			if text == "" {
+				currentMessage = "[The announcement you tried to record was empty. Try again or say done.]"
+				currentToolCallID = tc.ID
+				break
+			}
+			if err := app.recordTownCrierAnnouncement(ctx, text); err != nil {
+				log.Printf("chronicler record_announcement: %v", err)
+				currentMessage = "[Announcement could not be recorded. Try again or say done.]"
+			} else {
+				currentMessage = "[Announcement recorded — the crier will voice it on his rotation.]"
+			}
+			currentToolCallID = tc.ID
+
 		case "recall":
 			query, _ := tc.Input["query"].(string)
 			currentMessage = app.resolveChroniclerRecall(ctx, query)
@@ -928,7 +958,7 @@ func (app *App) buildChroniclerPerception(ctx context.Context, reason chronicler
 	// the model occasionally narrates as plain text (the implicit
 	// set_environment fallback catches this, but explicit naming
 	// reduces the failure rate).
-	sections = append(sections, "Attend to the village. Use set_environment to write the current atmosphere if it has shifted. Use record_event to record any happening that should persist in village memory (default scope is village; pass scope_type='local' with scope_target=<structure_id> to restrict to one place, or scope_type='private' with scope_target=<npc_id> to restrict to one person). Use attend_to to rouse a villager whose body is in distress, whose shift has begun and who is not at their workplace, or whose shift has ended and who is still at their workplace. You may use recall to remember anything the village has experienced. Use done when your office is finished.")
+	sections = append(sections, "Attend to the village. Use set_environment to write the current atmosphere if it has shifted. Use record_event to record any happening that should persist in village memory (default scope is village; pass scope_type='local' with scope_target=<structure_id> to restrict to one place, or scope_type='private' with scope_target=<npc_id> to restrict to one person). Use record_announcement to author village news for the Town Crier to voice on his rotation — a new lodger, a vendor closed for the day, strangers in the village. Use attend_to to rouse a villager whose body is in distress, whose shift has begun and who is not at their workplace, or whose shift has ended and who is still at their workplace. You may use recall to remember anything the village has experienced. Use done when your office is finished.")
 
 	return strings.Join(sections, "\n\n")
 }
