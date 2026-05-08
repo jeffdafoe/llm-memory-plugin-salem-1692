@@ -1942,11 +1942,48 @@ func _spawn_speech_bubble(npc_id: String, text: String) -> void:
 signal room_event(data: Dictionary)
 
 func apply_room_event(data: Dictionary) -> void:
-    var actor_name: String = str(data.get("actor_name", ""))
     var text: String = str(data.get("text", ""))
-    if actor_name == "" or text == "":
+    if text == "":
+        return
+    # Empty actor_name is the engine convention for private second-person
+    # narrations (sleep, consume, closed-business arrival) — actor_id is
+    # set, actor_name is blank because there's no speaker, just a felt
+    # line. Pre-ZBBS-181 this dropped them before the talk_panel could
+    # render. The downstream subscribers filter on actor_id / private
+    # themselves; let the event through.
+    var private_event: bool = bool(data.get("private", false))
+    var actor_name: String = str(data.get("actor_name", ""))
+    if actor_name == "" and not private_event:
         return
     room_event.emit(data)
+
+
+## Public — spawn a SpeechBubble at the given structure's container so
+## the player sees a transient floating line at the location, not just
+## in the brown panel. Called from talk_panel.gd when a private
+## closed-business arrival narration lands matching the local PC.
+##
+## Reuses SpeechBubble (originally for actors): the bubble is a Node2D
+## that draws above its parent's origin. A structure's container in
+## placed_objects shares the world coordinate, so attaching there
+## anchors the bubble at the structure's anchor point.
+##
+## Skipped silently when the structure isn't currently rendered (off-
+## map, not yet bootstrapped). Replaces any existing bubble on the
+## same structure so a re-arrival shows the latest line.
+func spawn_structure_bubble(structure_id: String, text: String) -> void:
+    if structure_id == "" or text == "":
+        return
+    var container: Node2D = placed_objects.get(structure_id, null)
+    if container == null:
+        return
+    var existing: Node = container.get_node_or_null(SPEECH_BUBBLE_NODE_NAME)
+    if existing != null:
+        existing.queue_free()
+    var bubble: Node2D = SpeechBubbleScript.new()
+    bubble.name = SPEECH_BUBBLE_NODE_NAME
+    container.add_child(bubble)
+    bubble.setup(text)
 
 ## ZBBS-087 — village-wide log feed (talk_panel Village tab subscribes).
 signal village_event_added(data: Dictionary)
