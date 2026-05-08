@@ -531,6 +531,15 @@ var allowedObjectTags = map[string]bool{
 	// noticeboard isn't a chore destination — NPCs end up at one only
 	// via incidental loiter, not via "go to the noticeboard."
 	"noticeboard_content": true,
+	// business (ZBBS-179) marks a placement as a place where someone
+	// goes to transact — the canonical "is this a shop / tavern /
+	// service place" signal. Used by isBusinessClosed and the
+	// closed-business arrival narration. Orthogonal to the
+	// category tags (tavern / smithy / shop) — those describe
+	// what kind of business; this one says "yes, it's a business."
+	// Omitted from categoryObjectTags because it's a boolean
+	// classifier, not a chore destination.
+	"business": true,
 }
 
 // categoryObjectTags is the subset of allowedObjectTags that mark a

@@ -546,4 +546,8 @@ func (app *App) applyArrivalSideEffects(ctx context.Context, npcID string, x, y 
 	// or NPCs not at their home_structure_id; eligible NPCs get bedded
 	// here so arrival home triggers sleep without a periodic sweep.
 	app.maybeNPCAutoSleep(ctx, npcID)
+
+	// ZBBS-179: brown-panel narration for PCs arriving at a closed
+	// business. No-op for NPCs (gated inside the helper).
+	app.maybeNarrateClosedBusinessArrival(ctx, npcID)
 }

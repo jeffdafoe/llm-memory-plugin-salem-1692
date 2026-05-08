@@ -2566,7 +2566,7 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		// ZBBS-133: redesigned take_break is "close-shop-with-vendor-
 		// inside" — the vendor stays put. The previous executeAgentMoveTo
 		// to "home" is gone; the structure becomes closed (derived from
-		// break_until in canEnter / isStructureClosed checks). For
+		// break_until in canEnter / isProprietorResting checks). For
 		// interior-occupied structures, an eviction sequence kicks off
 		// asynchronously to ask any non-exempt customers to leave.
 		// Stamp agent_override_until + break_until + last_shift_tick_at +
