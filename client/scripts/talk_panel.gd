@@ -1771,13 +1771,22 @@ func _on_room_event(data: Dictionary) -> void:
     print("[TALK] room_event kind=", kind, " event_structure=", event_structure, " loaded=", loaded_structure_id, " actor=", actor_name, " private=", private_event, " text=", text)
     # Private events are felt-language narrations meant only for the
     # acting player — refresh effects ("the parching ebbs"), future
-    # consume reactions, etc. Render only when this client's PC is
-    # the actor; drop for any other audience even if the room scope
-    # would otherwise match. Match on actor_name vs character_name
-    # since the panel doesn't track its own actor_id (the engine only
-    # uses display_name in event payloads). ZBBS-128.
+    # consume reactions, etc. Render only when this client's PC is the
+    # actor; drop for any other audience even if the room scope would
+    # otherwise match. Prefer matching on actor_id (since /pc/me added
+    # it 2026-05-08 alongside Phase 1.5) — name matching breaks when
+    # the engine sends actor_name="" with an actor_id (the convention
+    # used by sleep.go and order_fulfillment.go's consume narration).
+    # Fall back to name match for events that don't carry actor_id, and
+    # during early bootstrap before /pc/me has populated pc_actor_id.
     if private_event:
-        if actor_name.is_empty() or character_name.is_empty() or actor_name != character_name:
+        var event_actor_id := str(data.get("actor_id", ""))
+        var matches := false
+        if not pc_actor_id.is_empty() and not event_actor_id.is_empty():
+            matches = (event_actor_id == pc_actor_id)
+        elif not actor_name.is_empty() and not character_name.is_empty():
+            matches = (actor_name == character_name)
+        if not matches:
             print("[TALK]   -> dropped: private event for different actor")
             return
         # Private events bypass the room scope filter — your felt
