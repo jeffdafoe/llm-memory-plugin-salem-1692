@@ -27,13 +27,15 @@ package main
 // lodger_until anchors to ready_by regardless of actual check-in time
 // (real-hotel logic — late check-in still checks out at 11am).
 //
-// Timezone (ZBBS-151): lodging_check_out_hour is wall-clock in the
-// world timezone (setting `world_timezone`, default America/New_York),
-// matching dawn/dusk/world_rotation_time semantics. The SQL applies
-// `AT TIME ZONE world_timezone` so the naive timestamp is interpreted
-// as village wall-clock. The Go-side mirror in room.go's
-// computeLodgerUntil uses cfg.Location and produces the same UTC
-// instant for stamping room_access.expires_at.
+// Timezone: lodging_check_out_hour is wall-clock in the world timezone
+// (hardcoded America/New_York — single-world game, no need to plumb a
+// setting). The SQL applies `AT TIME ZONE 'America/New_York'` so the
+// naive timestamp is interpreted as village wall-clock. The Go-side
+// mirror in room.go's computeLodgerUntil uses cfg.Location (also
+// initialized to America/New_York in world_phase.go) and produces the
+// same UTC instant for stamping room_access.expires_at. If the world
+// ever needs to relocate, change `defaultTimezone` in world_phase.go
+// AND the literal in these SQL queries — grep `America/New_York`.
 //
 // Conditional `ready` exemption (locked 2026-05-06 with Jeff,
 // per home's review `6513a207`):
@@ -100,10 +102,7 @@ func (app *App) isLodger(ctx context.Context, actorID, structureID string) (bool
 			                11
 			              ) * INTERVAL '1 hour'
 			            )
-			        ) AT TIME ZONE COALESCE(
-			            (SELECT value FROM setting WHERE key = 'world_timezone'),
-			            'America/New_York'
-			        )
+			        ) AT TIME ZONE 'America/New_York'
 			       )
 		)`,
 		actorID, structureID,
@@ -234,10 +233,7 @@ func (app *App) activeLodgersForKeeper(ctx context.Context, sellerID string) ([]
 		                           11
 		                       ) * INTERVAL '1 hour'
 		                     )
-		               ) AT TIME ZONE COALESCE(
-		                   (SELECT value FROM setting WHERE key = 'world_timezone'),
-		                   'America/New_York'
-		               )
+		               ) AT TIME ZONE 'America/New_York'
 		           ) AS lodger_until
 		      FROM pay_ledger pl
 		     WHERE pl.seller_id = $1::uuid

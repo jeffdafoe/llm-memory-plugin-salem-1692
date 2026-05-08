@@ -599,7 +599,7 @@ func formatOrderBookForLLM(entries []orderBookEntry) string {
 func (app *App) readyOrdersForSeller(ctx context.Context, sellerID string) ([]readyOrderEntry, error) {
 	rows, err := app.DB.Query(ctx,
 		`SELECT pl.id, pl.item_kind, pl.qty, pl.offered_amount, pl.consume_now,
-		        a.display_name, pl.created_at,
+		        a.display_name, pl.created_at, pl.ready_by,
 		        (
 		            (a.inside_structure_id IS NOT NULL
 		             AND a.inside_structure_id = (SELECT inside_structure_id FROM actor WHERE id = $1::uuid))
@@ -629,7 +629,7 @@ func (app *App) readyOrdersForSeller(ctx context.Context, sellerID string) ([]re
 			qty           sql.NullInt32
 			structureName sql.NullString
 		)
-		if err := rows.Scan(&e.LedgerID, &itemKind, &qty, &e.OfferedAmount, &e.ConsumeNow, &e.BuyerName, &e.CreatedAt, &e.BuyerCoLocated, &structureName); err != nil {
+		if err := rows.Scan(&e.LedgerID, &itemKind, &qty, &e.OfferedAmount, &e.ConsumeNow, &e.BuyerName, &e.CreatedAt, &e.ReadyBy, &e.BuyerCoLocated, &structureName); err != nil {
 			return nil, fmt.Errorf("scan ready order row: %w", err)
 		}
 		if itemKind.Valid {
@@ -668,56 +668,124 @@ type readyOrderEntry struct {
 	OfferedAmount  int
 	ConsumeNow     bool
 	CreatedAt      time.Time
+	ReadyBy        time.Time
 	BuyerCoLocated bool
 	BuyerStructure string
 }
 
 // formatReadyOrdersForPerception renders the seller's pending
 // deliveries as a perception block. Empty input returns "" so the
-// caller can suppress the section entirely. Each line spells out the
-// buyer, qty/item, coin total, paid-ago duration, and the
-// deliver_order(ledger_id) call to fire — everything the LLM needs to
-// pick up the order without a separate check_order_book round-trip.
+// caller can suppress the section entirely.
+//
+// Splits entries by ready_by vs today: rows with ready_by <= today
+// render as "Customers awaiting delivery" with the deliver_order
+// nudge; rows with ready_by > today render as "Future bookings" with
+// date-anchored framing and an explicit "don't deliver yet" hint so
+// the keeper doesn't try to deliver_order prematurely (the executeDeliverOrder
+// nights_stay check-in gate would reject it, but better to never make
+// the call). Both sub-blocks share the same buyer-location annotation
+// shape — the buyer being elsewhere matters for both delivery and
+// future arrival framing.
 func formatReadyOrdersForPerception(entries []readyOrderEntry, now time.Time) string {
+	if len(entries) == 0 {
+		return ""
+	}
+	// Use the now-instant's date as "today" for the comparison.
+	// pl.ready_by is a PG date, returned as midnight UTC; comparing
+	// year+yearDay sidesteps timezone drift between UTC midnight and
+	// world-TZ midnight (date-arithmetic only — both sides are dates).
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	var pending, future []readyOrderEntry
+	for _, e := range entries {
+		readyByDate := time.Date(e.ReadyBy.Year(), e.ReadyBy.Month(), e.ReadyBy.Day(), 0, 0, 0, 0, time.UTC)
+		if readyByDate.After(today) {
+			future = append(future, e)
+		} else {
+			pending = append(pending, e)
+		}
+	}
+
+	var sections []string
+	if line := renderPendingDeliveries(pending, now); line != "" {
+		sections = append(sections, line)
+	}
+	if line := renderFutureBookings(future, now); line != "" {
+		sections = append(sections, line)
+	}
+	return strings.Join(sections, "\n\n")
+}
+
+// renderPendingDeliveries renders ready_by-today-or-earlier rows. These
+// are actionable now (or after lodging_check_in_hour for nights_stay,
+// which the executeDeliverOrder gate enforces — keeper sees the row
+// and can comment on timing in dialogue).
+func renderPendingDeliveries(entries []readyOrderEntry, now time.Time) string {
 	if len(entries) == 0 {
 		return ""
 	}
 	var b strings.Builder
 	b.WriteString("Customers awaiting delivery — call deliver_order to hand over:\n")
 	for _, e := range entries {
-		// qty/item piece. Service items (lodging) carry no item_kind
-		// in the perception render — they're placement-anchored and
-		// the keeper sees the lodger via separate paths.
-		var qtyItem string
-		switch {
-		case e.ItemKind == "" && e.Qty == 0:
-			qtyItem = "(unspecified service)"
-		case e.Qty <= 1:
-			qtyItem = e.ItemKind
-		default:
-			qtyItem = fmt.Sprintf("%d %s", e.Qty, e.ItemKind)
-		}
-		coinPart := ""
-		if e.OfferedAmount > 0 {
-			coinPart = fmt.Sprintf(", %d coin(s)", e.OfferedAmount)
-		}
-		// ZBBS-142: surface buyer location when they've wandered off.
-		// Co-located buyer (same structure or huddle as seller) gets
-		// no annotation; absent buyer gets a "(at the Well)" or
-		// "(elsewhere)" cue so the seller knows hand-delivery is
-		// needed before calling deliver_order.
-		locationPart := ""
-		if !e.BuyerCoLocated {
-			if e.BuyerStructure != "" {
-				locationPart = fmt.Sprintf(" — at the %s", e.BuyerStructure)
-			} else {
-				locationPart = " — elsewhere in the village"
-			}
-		}
 		fmt.Fprintf(&b, "- %s: %s%s — paid %s ago%s — call deliver_order(%d)\n",
-			e.BuyerName, qtyItem, coinPart, formatAgeShort(now.Sub(e.CreatedAt)), locationPart, e.LedgerID)
+			e.BuyerName, formatOrderQtyItem(e), formatCoinPart(e.OfferedAmount),
+			formatAgeShort(now.Sub(e.CreatedAt)), formatBuyerLocation(e), e.LedgerID)
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// renderFutureBookings renders ready_by-in-the-future rows. Framed as
+// reservations rather than deliveries so the keeper can answer "have
+// I booked for next week?" naturally and won't waste a tool call on
+// premature deliver_order. Date is the buyer-specified arrival day.
+func renderFutureBookings(entries []readyOrderEntry, now time.Time) string {
+	if len(entries) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Future bookings — don't deliver yet, ready_by hasn't arrived:\n")
+	for _, e := range entries {
+		dateStr := e.ReadyBy.Format("Mon Jan 2")
+		fmt.Fprintf(&b, "- %s: %s%s — booked for %s (ledger %d)\n",
+			e.BuyerName, formatOrderQtyItem(e), formatCoinPart(e.OfferedAmount), dateStr, e.LedgerID)
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// formatOrderQtyItem renders the qty/item piece of a perception line
+// for a pay_ledger order entry. Distinct from gatherable.go's
+// formatQtyItem because it accepts the entry struct and guards for the
+// "no item_kind" legacy path (some early service rows shipped without
+// it; defense-in-depth).
+func formatOrderQtyItem(e readyOrderEntry) string {
+	switch {
+	case e.ItemKind == "" && e.Qty == 0:
+		return "(unspecified service)"
+	case e.Qty <= 1:
+		return e.ItemKind
+	default:
+		return fmt.Sprintf("%d %s", e.Qty, e.ItemKind)
+	}
+}
+
+func formatCoinPart(amount int) string {
+	if amount <= 0 {
+		return ""
+	}
+	return fmt.Sprintf(", %d coin(s)", amount)
+}
+
+// formatBuyerLocation surfaces the buyer's whereabouts when they've
+// wandered off (ZBBS-142). Co-located buyer renders empty; absent
+// buyer gets "— at the Well" or "— elsewhere in the village" so the
+// seller knows hand-delivery is needed before deliver_order.
+func formatBuyerLocation(e readyOrderEntry) string {
+	if e.BuyerCoLocated {
+		return ""
+	}
+	if e.BuyerStructure != "" {
+		return fmt.Sprintf(" — at the %s", e.BuyerStructure)
+	}
+	return " — elsewhere in the village"
 }
 
 // formatAgeShort renders a duration as a compact human-readable
