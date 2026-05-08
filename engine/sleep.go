@@ -410,6 +410,23 @@ func (app *App) executePCSleep(ctx context.Context, actorID string) (pcSleepResu
 			"at":       time.Now().UTC().Format(time.RFC3339),
 		},
 	})
+
+	// ZBBS-169 narration: private second-person line in the PC's
+	// brown box so the bed-down moment has a beat instead of just a
+	// silent state flip. Same pattern as narrateConsumeSelf
+	// (per-actor room_event with private=true, client filters by
+	// PC's actor_id).
+	app.Hub.Broadcast(WorldEvent{
+		Type: "room_event",
+		Data: map[string]interface{}{
+			"actor_id":   actorID,
+			"actor_name": "",
+			"kind":       "sleep",
+			"text":       "You settle into your bed and drift off.",
+			"private":    true,
+			"at":         time.Now().UTC().Format(time.RFC3339),
+		},
+	})
 	return pcSleepResult{WakeAt: wakeAt}, nil
 }
 
