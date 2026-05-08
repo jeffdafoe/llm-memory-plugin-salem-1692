@@ -201,6 +201,7 @@ func (app *App) runPayDeliberation(
 	hasQuote bool,
 	priorCounter int,
 	includeCounter bool,
+	sceneID string,
 ) payDeliberationDecision {
 	if recipientAgent == "" {
 		// PC recipient or non-agent NPC — no LLM to ask. Lenient default.
@@ -286,13 +287,27 @@ func (app *App) runPayDeliberation(
 	timeoutCtx, cancel := context.WithTimeout(ctx, payDeliberationTimeoutSeconds*time.Second)
 	defer cancel()
 
+	// Tag the deliberation chat with the originating cascade's sceneID
+	// so the seller's prompt/response rows aren't orphaned (ZBBS-182).
+	// Pre-fix the deliberation passed sceneID="" to keep the cascade
+	// scene "clean," but the result was deliberation chat unmoored from
+	// the cascade — admin chat queries by scene_id missed the
+	// deliberation entirely, and any future scene-based dedup over the
+	// seller's tick history wouldn't see them. The deliberation IS part
+	// of the cascade (it's the seller's reaction to the buyer's pay
+	// attempt) — tag it accordingly. Empty sceneID still passes through
+	// unchanged for callers without a scene in scope.
+	sceneStructure := ""
+	if sceneID != "" {
+		sceneStructure = app.lookupSceneStructureName(ctx, sceneID)
+	}
 	reply, err := app.npcChatClient.sendChat(
 		timeoutCtx,
 		recipientAgent,
 		prompt.String(),
-		"",                   // toolCallID — fresh perception, not a follow-up
-		"",                   // sceneID — deliberation rides outside the cascade scene
-		"",                   // sceneStructure — same
+		"", // toolCallID — fresh perception, not a follow-up
+		sceneID,
+		sceneStructure,
 		payDeliberationTools(includeCounter),
 	)
 	if err != nil {
