@@ -1596,14 +1596,26 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 	// query error since the existing perception is sufficient by itself.
 	now := time.Now()
 	if items, err := app.fetchTopBuyerItems(ctx, r.ID, 5); err == nil {
-		if block := renderRecentPurchasesPerception(items, now); block != "" {
+		// Phase 2b: when the perceiver is in a huddle with a peer they've
+		// purchased from before, surface that peer as the counterparty so
+		// the renderer adds a "From <peer>: <range>" sub-line per item.
+		// Direction-aware: this lookup uses buyer-side history, so the
+		// returned peer is one who has sold to the perceiver (typically
+		// the vendor in a customer↔vendor huddle).
+		cp := app.pickPerceptionCounterparty(ctx, r.ID, items)
+		if block := renderRecentPurchasesPerception(items, now, cp); block != "" {
 			sections = append(sections, block)
 		}
 	} else {
 		log.Printf("perception fetchTopBuyerItems %s: %v", r.DisplayName, err)
 	}
 	if items, err := app.fetchTopSellerItems(ctx, r.ID, 5); err == nil {
-		if block := renderRecentSalesPerception(items, now); block != "" {
+		// Mirror selection on the seller side — peer scores high here if
+		// they've bought from the perceiver. In a vendor↔customer huddle
+		// the customer surfaces here; in a vendor↔vendor huddle (rare)
+		// whichever peer has more cross-sales wins.
+		cp := app.pickPerceptionCounterparty(ctx, r.ID, items)
+		if block := renderRecentSalesPerception(items, now, cp); block != "" {
 			sections = append(sections, block)
 		}
 	} else {

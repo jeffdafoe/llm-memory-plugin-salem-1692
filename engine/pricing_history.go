@@ -41,6 +41,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"math"
 	"sort"
 	"strings"
@@ -574,32 +575,39 @@ func truncateTopByCount(perItem map[string][]historyEntry, limit int) map[string
 //
 //   Your recent purchase history (per unit, last 30d):
 //     water: 1-3 coins (8 buys). Recent: 2 from John Ellis @ Tavern.
+//       From John Ellis: 2 coins (5 buys).
 //     stew: 2-5 coins (4 buys). Recent: 5 from John Ellis @ Tavern.
 //     bread: 2 coins (1 buy from John Ellis @ Tavern).
 //
 // Single-buy items collapse to one line with the counterparty inline.
 // min == max collapses the range to a single price but still shows a
-// Recent: line for counterparty/structure context.
-func renderRecentPurchasesPerception(perItem map[string][]historyEntry, now time.Time) string {
-	return renderRecentTransactionPerception(perItem, now, "purchase", "buy", "buys", "from")
+// Recent: line for counterparty/structure context. The indented "From
+// <peer>:" sub-line (Phase 2b) appears for items where the perceiver
+// has accepted-purchase history with the specified counterparty AND
+// that counterparty's count is < the overall count (no point repeating
+// the parent line). Pass "" for counterparty to suppress the sub-line
+// across the whole block.
+func renderRecentPurchasesPerception(perItem map[string][]historyEntry, now time.Time, counterparty string) string {
+	return renderRecentTransactionPerception(perItem, now, "purchase", "buy", "buys", "from", counterparty)
 }
 
 // renderRecentSalesPerception is the seller-side mirror of
 // renderRecentPurchasesPerception. Same shape, sale vocabulary.
-func renderRecentSalesPerception(perItem map[string][]historyEntry, now time.Time) string {
-	return renderRecentTransactionPerception(perItem, now, "sale", "sale", "sales", "to")
+func renderRecentSalesPerception(perItem map[string][]historyEntry, now time.Time, counterparty string) string {
+	return renderRecentTransactionPerception(perItem, now, "sale", "sale", "sales", "to", counterparty)
 }
 
 // renderRecentTransactionPerception is the shared body used by the buyer
 // and seller perception renderers. headingNoun goes into the header
 // ("purchase" / "sale"), singular/plural noun the parenthetical count
 // ("buy"/"buys", "sale"/"sales"), and prep the "from"/"to" preposition
-// for the counterparty.
+// for the counterparty. counterparty (if non-empty) drives the per-item
+// drill-down sub-line — see renderRecentPurchasesPerception's comment.
 //
 // Items render in count-DESC order, ties broken by item_kind alpha
 // (deterministic — recency would re-shuffle the block on every tick and
 // the LLM treats list order as somewhat meaningful).
-func renderRecentTransactionPerception(perItem map[string][]historyEntry, now time.Time, headingNoun, singular, plural, prep string) string {
+func renderRecentTransactionPerception(perItem map[string][]historyEntry, now time.Time, headingNoun, singular, plural, prep, counterparty string) string {
 	if len(perItem) == 0 {
 		return ""
 	}
@@ -640,6 +648,30 @@ func renderRecentTransactionPerception(perItem map[string][]historyEntry, now ti
 				recentEntry.UnitPrice, prep,
 				recentEntry.Counterparty, formatStructure(recentEntry.Structure))
 		}
+		// Phase 2b drill-down: per-counterparty range when the perceiver
+		// is currently engaged with a peer they've transacted on this item
+		// with. Only renders when:
+		//   - counterparty was supplied (caller has a relevant peer)
+		//   - peer has at least one entry for this item in the 30d window
+		//   - peer's count is strictly less than the overall count (no
+		//     point repeating the parent line when this is the only peer)
+		if counterparty != "" {
+			cp := summarizeFiltered(entries, now, 30*24*time.Hour, counterparty)
+			if cp.Count > 0 && cp.Count < stats.Count {
+				countWord := plural
+				if cp.Count == 1 {
+					countWord = singular
+				}
+				var rng string
+				if cp.MinUnit == cp.MaxUnit {
+					rng = fmt.Sprintf("%d coins", cp.MinUnit)
+				} else {
+					rng = fmt.Sprintf("%d-%d coins", cp.MinUnit, cp.MaxUnit)
+				}
+				line += fmt.Sprintf("\n    %s %s: %s (%d %s).",
+					capitalizePrep(prep), counterparty, rng, cp.Count, countWord)
+			}
+		}
 		lines = append(lines, itemLine{kind: kind, count: stats.Count, line: line})
 	}
 	if len(lines) == 0 {
@@ -657,6 +689,100 @@ func renderRecentTransactionPerception(perItem map[string][]historyEntry, now ti
 		b.WriteString(l.line + "\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// capitalizePrep title-cases a single-word preposition for the start of
+// a sentence-like sub-line. "from" → "From", "to" → "To". The block
+// puts the drill-down on its own line, so a leading capital reads
+// naturally even though it's syntactically a continuation.
+func capitalizePrep(prep string) string {
+	if prep == "" {
+		return ""
+	}
+	r := []rune(prep)
+	if r[0] >= 'a' && r[0] <= 'z' {
+		r[0] -= 'a' - 'A'
+	}
+	return string(r)
+}
+
+// pickPerceptionCounterparty selects the perceiver's most-relevant
+// huddle peer by transaction overlap with the supplied history map.
+// Used to pick the counterparty for the buyer/seller perception block's
+// drill-down sub-line: the peer with the most matching entries wins,
+// alpha tie-breaker on equal counts.
+//
+// Returns "" when the perceiver has no current huddle, no non-self
+// agent/PC peers, or no peer overlaps the supplied history. The
+// renderer suppresses the sub-line on empty.
+//
+// Direction-aware via perItem: pass the buyer-side history and the
+// returned peer scores high if they've sold to the perceiver; pass the
+// seller-side history and the peer scores high if they've bought. So
+// in a vendor↔customer huddle the buyer block surfaces the vendor and
+// the seller block surfaces "" (the customer doesn't typically sell
+// back), which is the right behavior.
+func (app *App) pickPerceptionCounterparty(ctx context.Context, actorID string, perItem map[string][]historyEntry) string {
+	if len(perItem) == 0 || actorID == "" {
+		return ""
+	}
+	rows, err := app.DB.Query(ctx, `
+		SELECT a.display_name
+		  FROM actor a
+		 WHERE a.current_huddle_id IS NOT NULL
+		   AND a.current_huddle_id = (
+		       SELECT current_huddle_id FROM actor WHERE id::text = $1
+		   )
+		   AND a.id::text != $1
+		   AND (a.llm_memory_agent IS NOT NULL OR a.login_username IS NOT NULL)
+	`, actorID)
+	if err != nil {
+		log.Printf("pickPerceptionCounterparty %s: %v", actorID, err)
+		return ""
+	}
+	defer rows.Close()
+	var peers []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			continue
+		}
+		if name == "" {
+			continue
+		}
+		peers = append(peers, name)
+	}
+	if len(peers) == 0 {
+		return ""
+	}
+	type score struct {
+		name  string
+		count int
+	}
+	scores := make([]score, 0, len(peers))
+	for _, p := range peers {
+		c := 0
+		for _, entries := range perItem {
+			for _, e := range entries {
+				if strings.EqualFold(e.Counterparty, p) {
+					c++
+				}
+			}
+		}
+		if c > 0 {
+			scores = append(scores, score{name: p, count: c})
+		}
+	}
+	if len(scores) == 0 {
+		return ""
+	}
+	sort.Slice(scores, func(i, j int) bool {
+		if scores[i].count != scores[j].count {
+			return scores[i].count > scores[j].count
+		}
+		return scores[i].name < scores[j].name
+	})
+	return scores[0].name
 }
 
 // relativeAge renders a duration as "today" / "yesterday" / "N days ago".
