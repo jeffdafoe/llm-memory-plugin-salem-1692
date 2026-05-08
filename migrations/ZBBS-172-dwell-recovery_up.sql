@@ -139,11 +139,18 @@ UPDATE object_refresh
 -- gulp (still meaningful for someone passing through), and the dwell
 -- rate (-1 every 2 minutes) means fully quenching from 24 takes
 -- ~32 minutes of standing at the well. Real cost in time.
+--
+-- Scoped to the village well (UUID below) rather than all thirst
+-- refresh rows. Sweeping by attribute='thirst' would silently rewrite
+-- any operator-added thirst source with different rate intent.
+-- If new wells are added later they can opt into the same rates via a
+-- targeted migration or admin tool.
 UPDATE object_refresh
    SET amount               = -8,
        dwell_amount         = -1,
        dwell_period_minutes = 2
- WHERE attribute = 'thirst';
+ WHERE object_id = '019d79ef-d9df-73d7-967a-dc202ceaf624'
+   AND attribute = 'thirst';
 
 -- Stew: shift from one-shot 12-hunger to a 16-minute meal. Total
 -- recovery is preserved (4 immediate + 8 ticks × 1 = 12), but the

@@ -465,8 +465,16 @@ const (
 // loadTirednessCriticalThreshold reads tiredness_critical_threshold_pct,
 // clamps it into [50, 100], and returns the absolute threshold —
 // ceil(needMax * pct / 100). Out-of-range values fall back to the
-// default. Always returns a value strictly greater than the configured
-// red threshold; callers that need a guarantee can re-clamp.
+// default.
+//
+// The result is then floored at red+1 so that critical is always
+// strictly greater than the red threshold. Without that floor, an
+// operator who set the percent low (e.g. 50 → 12 with current red=20)
+// would lift the on-shift recovery-options gates the moment any actor
+// crossed red, collapsing the two-tier model into one. The floor
+// preserves the design intent (red triggers the recovery block;
+// critical lifts the shift gate) without surfacing a separate
+// "critical_min_offset" config knob.
 func (app *App) loadTirednessCriticalThreshold(ctx context.Context) int {
 	pct := app.loadIntSetting(ctx, "tiredness_critical_threshold_pct", defaultTirednessCriticalThresholdPct)
 	if pct < 50 || pct > 100 {
@@ -474,7 +482,15 @@ func (app *App) loadTirednessCriticalThreshold(ctx context.Context) int {
 		pct = defaultTirednessCriticalThresholdPct
 	}
 	// Ceiling division: (needMax*pct + 99) / 100.
-	return (needMax*pct + 99) / 100
+	crit := (needMax*pct + 99) / 100
+	red := app.loadNeedThreshold(ctx, "tiredness_red_threshold", defaultTirednessRedThreshold)
+	if crit <= red {
+		crit = red + 1
+	}
+	if crit > needMax {
+		crit = needMax
+	}
+	return crit
 }
 
 // loadIntSetting reads a setting key as an int, falling back to def when

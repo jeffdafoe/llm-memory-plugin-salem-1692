@@ -26,7 +26,8 @@ UPDATE object_refresh SET amount = -4
    AND attribute = 'tiredness';
 
 UPDATE object_refresh SET amount = -24
- WHERE attribute = 'thirst';
+ WHERE object_id = '019d79ef-d9df-73d7-967a-dc202ceaf624'
+   AND attribute = 'thirst';
 
 UPDATE item_satisfies SET amount = 12
  WHERE item_kind = 'stew'

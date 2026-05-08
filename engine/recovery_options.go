@@ -274,35 +274,49 @@ func (app *App) loadHomeRestSpot(ctx context.Context, r *agentNPCRow, onShift bo
 	}
 }
 
-// loadInnRestSpots returns nearby tavern/inn structures that have at
-// least one tavernkeeper who has previously sold nights_stay. The
-// "has sold" filter avoids surfacing decorative tavern-tagged
-// placements that nobody actually runs as lodging. Sorted by distance.
+// loadInnRestSpots returns nearby inn/tavern structures that have at
+// least one keeper who has previously sold nights_stay. Two filters
+// stack: (a) the structure carries an 'inn' or 'tavern' tag in
+// village_object_tag — rules out non-lodging structures whose work-
+// actor happens to have a stray nights_stay row from some edge case;
+// (b) at least one accepted nights_stay row exists from an actor
+// whose work_structure_id matches — rules out decorative tavern-
+// tagged placements that nobody actually runs as lodging. DISTINCT
+// ON dedupes structures with multiple keepers so each inn surfaces
+// once. Sorted by distance, capped at limit.
 //
 // Cost is per-buyer-per-seller via lastPaidPrice — the actor only
 // "knows" the price if they've personally bought a night before. New
-// arrivals see "you don't know what they charge."
+// arrivals see "you don't know what they charge." When multiple
+// keepers work the same inn, lastPaidPrice is queried for the most-
+// recent seller the buyer has interacted with at this structure
+// (DISTINCT ON ordering favors the actor's prior counterparty when
+// available).
 func (app *App) loadInnRestSpots(ctx context.Context, r *agentNPCRow, limit int, onShift bool, isCritical bool) []restSpot {
 	rows, err := app.DB.Query(ctx,
-		`WITH lodging_sellers AS (
-		     SELECT DISTINCT a.work_structure_id, a.id AS seller_id
-		       FROM actor a
-		       JOIN pay_ledger pl
-		         ON pl.seller_id = a.id
-		      WHERE a.work_structure_id IS NOT NULL
-		        AND pl.item_kind = 'nights_stay'
-		        AND pl.state     = 'accepted'
-		 )
-		 SELECT vo.id::text,
-		        COALESCE(vo.display_name, asset.name),
-		        vo.x, vo.y,
-		        ls.seller_id::text
-		   FROM village_object vo
-		   JOIN asset asset       ON asset.id = vo.asset_id
-		   JOIN lodging_sellers ls ON ls.work_structure_id = vo.id
-		  ORDER BY (vo.x - $1) * (vo.x - $1) + (vo.y - $2) * (vo.y - $2)
+		`SELECT structure_id, name, x, y, seller_id
+		   FROM (
+		       SELECT DISTINCT ON (vo.id)
+		              vo.id::text                                  AS structure_id,
+		              COALESCE(vo.display_name, asset.name)        AS name,
+		              vo.x                                         AS x,
+		              vo.y                                         AS y,
+		              a.id::text                                   AS seller_id
+		         FROM village_object vo
+		         JOIN asset             asset ON asset.id = vo.asset_id
+		         JOIN village_object_tag vot ON vot.object_id = vo.id
+		                                    AND vot.tag IN ('inn', 'tavern')
+		         JOIN actor              a   ON a.work_structure_id = vo.id
+		         JOIN pay_ledger         pl  ON pl.seller_id = a.id
+		                                    AND pl.item_kind = 'nights_stay'
+		                                    AND pl.state     = 'accepted'
+		        ORDER BY vo.id,
+		                 (CASE WHEN pl.buyer_id = $4 THEN 0 ELSE 1 END),
+		                 pl.created_at DESC
+		   ) inns
+		  ORDER BY (x - $1) * (x - $1) + (y - $2) * (y - $2)
 		  LIMIT $3`,
-		r.CurrentX, r.CurrentY, limit,
+		r.CurrentX, r.CurrentY, limit, r.ID,
 	)
 	if err != nil {
 		return nil

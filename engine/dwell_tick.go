@@ -9,24 +9,38 @@ package main
 //
 //   1. SELECT credit rows whose last_credited_at is at least
 //      dwell_period_minutes in the past. Anything newer hasn't earned
-//      its next tick yet.
+//      its next tick yet. This is a non-locking pre-flight scan to
+//      identify candidates; the apply tx re-checks ripeness against
+//      the locked row.
 //
-//   2. For each candidate, resolve the actor's current loiter
-//      structure. If it doesn't match the credit's object_id, the
-//      actor walked away — delete the row (interrupted meal, vacated
-//      tree). No attempt to "credit on departure"; the per-tick
-//      anchor model means an in-progress tick is forfeit when you
-//      leave.
+//   2. For each candidate, open a tx and:
+//        a. SELECT ... FOR UPDATE the credit row, requiring it still
+//           matches the candidate's last_credited_at AND is still
+//           ripe. Skip if the row was refreshed by a concurrent
+//           arrival/consume (stale candidate) or claimed by an
+//           overlapping tick.
+//        b. SELECT ... FOR UPDATE the actor row to read the current
+//           position. Locking the actor row serializes against
+//           movement commits.
+//        c. Resolve loiter structure from the locked coordinates. If
+//           it doesn't match the credit's object_id, the actor walked
+//           off — DELETE the credit and commit.
+//        d. Otherwise apply dwell_delta via applyConsumption (which
+//           handles threshold crossings and the chronicler dispatch),
+//           then advance last_credited_at by exactly
+//           dwell_period_minutes (NOT to NOW), so residual sub-period
+//           time carries forward and a slow tick doesn't shift the
+//           dwell phase. Decrement remaining_ticks for item credits;
+//           when it hits zero, delete the row (meal complete).
 //
-//   3. Apply dwell_delta via applyConsumption — same path arrival
-//      uses, so threshold-crossing chronicler dispatch and the audit
-//      trail come along for free.
+//   3. Post-commit: emit completion narration for PCs (private
+//      room_event) when the meal exhausts or the dwelt-on need crosses
+//      the floor.
 //
-//   4. Advance last_credited_at by exactly dwell_period_minutes (NOT
-//      to NOW), so residual sub-period time carries forward and a
-//      slow tick doesn't shift the dwell phase. Decrement
-//      remaining_ticks for item credits; when it hits zero, delete
-//      the row (meal complete).
+// Locking the credit row before applyConsumption (rather than after)
+// means an overlapping tick that selected the same candidate finds
+// either the freshly-advanced row or zero rows — either way the
+// double-credit is impossible.
 //
 // One credit per row per tick. An actor parked under a tree for
 // 32 minutes with dwell_period_minutes=15 gets two credits (at min 15
@@ -40,19 +54,15 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 func (app *App) dispatchObjectRefreshDwell(ctx context.Context) {
-	now := time.Now().UTC()
-
-	// Pre-flight: load ripe candidates outside any tx so the per-row
-	// applyConsumption can take its own short tx. The candidate set
-	// is small (only credits whose anchor is past the period) and
-	// staleness within one tick is fine — the dwell fires next pass
-	// if it slips.
 	rows, err := app.DB.Query(ctx, `
 		SELECT actor_id::text, object_id::text, attribute, source,
 		       last_credited_at, remaining_ticks,
@@ -71,15 +81,15 @@ func (app *App) dispatchObjectRefreshDwell(ctx context.Context) {
 		attribute      string
 		source         string
 		lastCreditedAt time.Time
-		remainingTicks *int
 		dwellDelta     int
 		dwellPeriod    int
 	}
 	var candidates []candidate
 	for rows.Next() {
 		var c candidate
+		var rt sql.NullInt32 // unused at the dispatch layer; the apply tx re-reads
 		if err := rows.Scan(&c.actorID, &c.objectID, &c.attribute, &c.source,
-			&c.lastCreditedAt, &c.remainingTicks, &c.dwellDelta, &c.dwellPeriod); err != nil {
+			&c.lastCreditedAt, &rt, &c.dwellDelta, &c.dwellPeriod); err != nil {
 			rows.Close()
 			log.Printf("dwell_tick: scan candidate: %v", err)
 			return
@@ -96,66 +106,59 @@ func (app *App) dispatchObjectRefreshDwell(ctx context.Context) {
 	}
 
 	for _, c := range candidates {
-		// Position check: load actor's current x/y, resolve loiter
-		// structure, compare to the credited object_id. Mismatch =
-		// actor walked off; delete the credit and move on.
-		var actorX, actorY float64
-		if err := app.DB.QueryRow(ctx,
-			`SELECT current_x, current_y FROM actor WHERE id = $1`,
-			c.actorID,
-		).Scan(&actorX, &actorY); err != nil {
-			log.Printf("dwell_tick: load actor %s: %v", c.actorID, err)
-			continue
-		}
-		currentObjectID, _ := app.resolveLoiteringStructure(ctx, actorX, actorY)
-		if currentObjectID != c.objectID {
-			if _, err := app.DB.Exec(ctx,
-				`DELETE FROM actor_dwell_credit
-				  WHERE actor_id = $1 AND object_id = $2 AND attribute = $3 AND source = $4`,
-				c.actorID, c.objectID, c.attribute, c.source,
-			); err != nil {
-				log.Printf("dwell_tick: delete departed credit %s/%s/%s/%s: %v",
-					c.actorID, c.objectID, c.attribute, c.source, err)
-			}
-			continue
-		}
-
-		// Per-row tx so applyConsumption gets its own commit boundary
-		// and one failure doesn't roll back the rest of the tick.
-		if err := app.applyDwellCredit(ctx, c.actorID, c.objectID, c.attribute, c.source, c.dwellDelta, c.dwellPeriod, c.remainingTicks); err != nil {
+		if err := app.applyDwellCredit(ctx, c.actorID, c.objectID, c.attribute, c.source,
+			c.dwellDelta, c.dwellPeriod, c.lastCreditedAt); err != nil {
 			log.Printf("dwell_tick: apply credit %s/%s/%s/%s: %v",
 				c.actorID, c.objectID, c.attribute, c.source, err)
 		}
 	}
-
-	_ = now
 }
 
 // applyDwellCredit runs one credit's apply + bookkeeping in a single
-// short tx. Builds the consumptionDelta from dwellDelta + attribute,
-// runs applyConsumption (which handles threshold crossings and the
-// chronicler dispatch), then advances the credit's anchor by exactly
-// dwell_period_minutes and decrements remaining_ticks for item
-// credits. Item credits whose remaining_ticks would hit zero are
-// deleted instead of updated.
+// short tx. Locks the credit row first (with the candidate anchor as
+// a guard against stale processing), then locks the actor row to
+// snapshot position and PC marker, then applies the dwell delta and
+// advances/deletes the credit. Post-commit, emits PC narration on
+// completion conditions.
 //
-// Completion narration (ZBBS-172, follow-up): for PCs, emits a
-// private room_event after commit when (a) the dwelt-on need hits 0
-// for the first time on this credit, or (b) an item credit's last
-// tick fires (remaining_ticks reaches 0). NPCs don't get the room
-// event — their next perception build picks up the change via the
-// audit log + needs snapshot.
+// Returns nil for the "credit was claimed by someone else / refreshed
+// in flight" case — those aren't errors, just races that happen to
+// resolve cleanly.
 func (app *App) applyDwellCredit(
 	ctx context.Context,
 	actorID, objectID, attribute, source string,
 	dwellDelta, dwellPeriodMinutes int,
-	remainingTicks *int,
+	candidateLastCreditedAt time.Time,
 ) error {
 	tx, err := app.DB.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
+
+	// Lock the credit row, requiring (a) the anchor still matches the
+	// candidate scan (rules out a fresh upsert from a re-arrival) and
+	// (b) the row is still ripe (rules out an overlapping tick that
+	// already advanced the anchor).
+	var currentRemainingTicks sql.NullInt32
+	if err := tx.QueryRow(ctx,
+		`SELECT remaining_ticks
+		   FROM actor_dwell_credit
+		  WHERE actor_id  = $1
+		    AND object_id = $2
+		    AND attribute = $3
+		    AND source    = $4
+		    AND last_credited_at = $5
+		    AND last_credited_at + (dwell_period_minutes || ' minutes')::interval <= NOW()
+		  FOR UPDATE`,
+		actorID, objectID, attribute, source, candidateLastCreditedAt,
+	).Scan(&currentRemainingTicks); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Stale candidate or claimed by overlap — silent skip.
+			return tx.Commit(ctx)
+		}
+		return fmt.Errorf("lock credit: %w", err)
+	}
 
 	delta := consumptionDelta{}
 	switch attribute {
@@ -180,25 +183,43 @@ func (app *App) applyDwellCredit(
 		return tx.Commit(ctx)
 	}
 
-	// Pre-credit snapshot for completion narration. We need the prior
-	// value of the dwelt-on need to detect a transition to zero (this
-	// tick clamps a positive value to the floor). Also pull the
-	// actor's PC marker + display name + scope for the room_event.
-	// Cheap: one row, indexed by PK.
+	// Lock the actor row and read position + PC marker. The lock
+	// serializes against movement commits, so the position we read
+	// here is what's authoritative for this dwell tick.
 	var (
-		preNeed       int
-		loginUsername sql.NullString
-		displayName   string
+		actorX, actorY    float64
+		loginUsername     sql.NullString
+		displayName       string
 		insideStructureID sql.NullString
+		preNeed           int
 	)
 	if err := tx.QueryRow(ctx,
-		`SELECT COALESCE((SELECT value FROM actor_need WHERE actor_id = a.id AND key = $2), 0),
-		        a.login_username, a.display_name, a.inside_structure_id::text
+		`SELECT a.current_x, a.current_y, a.login_username, a.display_name,
+		        a.inside_structure_id::text,
+		        COALESCE((SELECT value FROM actor_need
+		                   WHERE actor_id = a.id AND key = $2), 0)
 		   FROM actor a
-		  WHERE a.id = $1`,
+		  WHERE a.id = $1
+		  FOR UPDATE`,
 		actorID, attribute,
-	).Scan(&preNeed, &loginUsername, &displayName, &insideStructureID); err != nil {
-		return fmt.Errorf("snapshot pre-need for narration: %w", err)
+	).Scan(&actorX, &actorY, &loginUsername, &displayName, &insideStructureID, &preNeed); err != nil {
+		return fmt.Errorf("lock actor: %w", err)
+	}
+
+	// Position check now sees authoritative coordinates from the
+	// locked row. resolveLoiteringStructure reads village_object data
+	// via app.DB (committed state); that's fine because village_object
+	// rows are operator-edited, not actor-driven.
+	currentObjectID, _ := app.resolveLoiteringStructure(ctx, actorX, actorY)
+	if currentObjectID != objectID {
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM actor_dwell_credit
+			  WHERE actor_id = $1 AND object_id = $2 AND attribute = $3 AND source = $4`,
+			actorID, objectID, attribute, source,
+		); err != nil {
+			return fmt.Errorf("delete departed credit: %w", err)
+		}
+		return tx.Commit(ctx)
 	}
 
 	res, err := app.applyConsumption(ctx, tx, actorID, delta, "dwell-"+source)
@@ -206,11 +227,6 @@ func (app *App) applyDwellCredit(
 		return err
 	}
 
-	// Read the post-credit value of the dwelt-on need from the
-	// applyConsumption result. Used both for the floor-hit narration
-	// and to suppress the item-exhausted narration in the case where
-	// the meal is over but the need was already at 0 going in
-	// (eating-while-full pathological case — no narration warranted).
 	var postNeed int
 	switch attribute {
 	case "hunger":
@@ -221,24 +237,23 @@ func (app *App) applyDwellCredit(
 		postNeed = res.Tiredness
 	}
 
-	itemExhausted := source == "item" && remainingTicks != nil && *remainingTicks <= 1
+	// Use the LOCKED remaining_ticks (currentRemainingTicks), not the
+	// candidate-scan value, so a concurrent decrement we missed
+	// doesn't cause us to underflow past zero.
+	itemExhausted := source == "item" && currentRemainingTicks.Valid && currentRemainingTicks.Int32 <= 1
 
 	if itemExhausted {
-		// Last tick of the meal — delete the credit so the dwell
-		// loop forgets about this row. The actor still gets the
-		// final tick's recovery (already applied above).
-		if _, err := tx.Exec(ctx,
+		if tag, err := tx.Exec(ctx,
 			`DELETE FROM actor_dwell_credit
 			  WHERE actor_id = $1 AND object_id = $2 AND attribute = $3 AND source = $4`,
 			actorID, objectID, attribute, source,
 		); err != nil {
 			return err
+		} else if tag.RowsAffected() != 1 {
+			return fmt.Errorf("expected 1 deleted credit, got %d", tag.RowsAffected())
 		}
 	} else {
-		// Advance the anchor and (for items) decrement the countdown.
-		// Anchor advance uses exact dwell_period_minutes so a delayed
-		// tick doesn't shift the dwell phase forward.
-		if _, err := tx.Exec(ctx,
+		if tag, err := tx.Exec(ctx,
 			`UPDATE actor_dwell_credit
 			    SET last_credited_at = last_credited_at + ($5 || ' minutes')::interval,
 			        remaining_ticks  = CASE WHEN source = 'item' THEN remaining_ticks - 1
@@ -248,6 +263,8 @@ func (app *App) applyDwellCredit(
 			actorID, objectID, attribute, source, dwellPeriodMinutes,
 		); err != nil {
 			return err
+		} else if tag.RowsAffected() != 1 {
+			return fmt.Errorf("expected 1 updated credit, got %d", tag.RowsAffected())
 		}
 	}
 

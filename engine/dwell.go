@@ -37,6 +37,30 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// resolveLoiterStructureLocked locks the actor row, reads its current
+// position, and resolves the loiter structure from those locked
+// coordinates. Used by consume / serve paths that need to pin item
+// dwell to the actor's CURRENT structure (not the perception-time
+// snapshot in agentNPCRow.CurrentX/Y, which can be stale if the
+// actor moved between perception build and the consume tx). Returns
+// "" when the actor isn't standing at any named structure.
+//
+// resolveLoiteringStructure itself reads village_object data from
+// app.DB (committed state); that's fine because village_object is
+// operator-edited, not actor-driven. The freshness that matters is
+// the actor's coordinates, which we get from the locked row.
+func (app *App) resolveLoiterStructureLocked(ctx context.Context, tx pgx.Tx, actorID string) (string, error) {
+	var x, y float64
+	if err := tx.QueryRow(ctx,
+		`SELECT current_x, current_y FROM actor WHERE id = $1 FOR UPDATE`,
+		actorID,
+	).Scan(&x, &y); err != nil {
+		return "", fmt.Errorf("lock actor for loiter resolve: %w", err)
+	}
+	id, _ := app.resolveLoiteringStructure(ctx, x, y)
+	return id, nil
+}
+
 // upsertItemDwellCredits stamps actor_dwell_credit rows for any
 // satisfaction with a complete dwell triple set, pinned to the given
 // structure. structureID == "" causes a silent skip — eating-while-
@@ -52,11 +76,13 @@ import (
 // dwell credits by paying twice in quick succession.
 //
 // Callers resolve the structure differently:
-//   - executeConsume (self-consume): resolveLoiteringStructure from
-//     the buyer's position.
+//   - executeConsume (self-consume): resolveLoiterStructureLocked
+//     from the buyer's locked actor row.
 //   - executeDeliverOrder (at-source pay+consume): the seller's
-//     structure, since at-source delivery huddles by definition co-
-//     locate consumer with seller.
+//     work_structure_id, since at-source delivery co-locates
+//     consumer with seller via the huddle co-location gate.
+//   - executeServe (gift): resolveLoiterStructureLocked from the
+//     server's locked actor row.
 func (app *App) upsertItemDwellCredits(
 	ctx context.Context,
 	tx pgx.Tx,
