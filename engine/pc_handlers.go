@@ -2060,11 +2060,16 @@ func (app *App) executePCMoveRoom(ctx context.Context, actorID string, kind stri
 	if kind != "common" && kind != "private" && kind != "staff" {
 		return moveRoomResult{Result: "rejected", Err: "kind must be 'common', 'private', or 'staff'"}, nil
 	}
-	var insideStructureID sql.NullString
+	var (
+		insideStructureID sql.NullString
+		insideRoomID      sql.NullInt64
+		actorName         string
+	)
 	if err := app.DB.QueryRow(ctx,
-		`SELECT inside_structure_id::text FROM actor WHERE id = $1::uuid`,
+		`SELECT inside_structure_id::text, inside_room_id, COALESCE(display_name, '')
+		   FROM actor WHERE id = $1::uuid`,
 		actorID,
-	).Scan(&insideStructureID); err != nil {
+	).Scan(&insideStructureID, &insideRoomID, &actorName); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return moveRoomResult{Result: "rejected", Err: "no such actor"}, nil
 		}
@@ -2154,6 +2159,27 @@ func (app *App) executePCMoveRoom(ctx context.Context, actorID string, kind stri
 			"at":        time.Now().UTC().Format(time.RFC3339),
 		},
 	})
+
+	// ZBBS-169 narration: when a PC transitions into their private
+	// room (manually or via auto-bed), emit a public room_event so
+	// anyone else still in the source area sees them retire. The
+	// source-room kind drives whether this fires — moving private→
+	// private (rare, multi-bedroom) or anything→common doesn't merit
+	// the line. Skipped when no display_name (defensive — every PC
+	// should have one).
+	if kind == "private" && actorName != "" && pickedID != insideRoomID.Int64 {
+		app.Hub.Broadcast(WorldEvent{
+			Type: "room_event",
+			Data: map[string]interface{}{
+				"actor_id":     actorID,
+				"actor_name":   actorName,
+				"kind":         "move_room",
+				"text":         fmt.Sprintf("%s heads to their room.", actorName),
+				"structure_id": insideStructureID.String,
+				"at":           time.Now().UTC().Format(time.RFC3339),
+			},
+		})
+	}
 
 	return moveRoomResult{Result: "ok", RoomID: pickedID, RoomName: pickedName, RoomKind: kind}, nil
 }
