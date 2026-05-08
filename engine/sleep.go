@@ -143,6 +143,14 @@ func (app *App) runSleepSweep(ctx context.Context) {
 			if err := app.wakeExpiredSleepers(ctx); err != nil {
 				log.Printf("sleep sweep wake: %v", err)
 			}
+			// Eviction runs AFTER wake so a sleeping checked-out lodger
+			// gets woken first (housekeeping knock) and then teleported
+			// to the common room. An awake checked-out lodger goes
+			// straight to the eviction step. Either way they don't end
+			// up squatting in a room they no longer have access to.
+			if err := app.evictExpiredOccupants(ctx); err != nil {
+				log.Printf("sleep sweep evict: %v", err)
+			}
 			if err := app.autoBedIdleLodgers(ctx); err != nil {
 				log.Printf("sleep sweep auto-bed: %v", err)
 			}
