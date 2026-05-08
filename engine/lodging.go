@@ -159,36 +159,6 @@ func (app *App) wouldBeEvictionExempt(ctx context.Context, actorID, structureID 
 	return app.isLodger(ctx, actorID, structureID)
 }
 
-// isProprietorResting reports whether a worker assigned to structureID
-// is currently on break (break_until > NOW()). Narrow predicate — does
-// NOT consider sleeping_until or whether the worker is physically
-// present. Used by canEnter to lock the door during break per ZBBS-133.
-//
-// Renamed from isStructureClosed in ZBBS-179 because the broad name
-// misled readers into thinking it captured all flavors of "closed";
-// it doesn't. For the canonical "closed for business" predicate
-// (operational worker present, considering inside/break/sleep), see
-// isBusinessClosed.
-func (app *App) isProprietorResting(ctx context.Context, structureID string) (bool, error) {
-	if structureID == "" {
-		return false, nil
-	}
-	var resting bool
-	err := app.DB.QueryRow(ctx,
-		`SELECT EXISTS (
-			SELECT 1 FROM actor
-			 WHERE work_structure_id = $1::uuid
-			   AND break_until IS NOT NULL
-			   AND break_until > NOW()
-		)`,
-		structureID,
-	).Scan(&resting)
-	if err != nil {
-		return false, fmt.Errorf("isProprietorResting query: %w", err)
-	}
-	return resting, nil
-}
-
 // isBusinessClosed reports whether structureID is currently closed
 // for business — the canonical predicate. True when:
 //
@@ -352,12 +322,12 @@ func formatActiveLodgersForPerception(entries []activeLodgerEntry, loc *time.Loc
 // inside_structure_id so the closed-door semantic actually keeps
 // people out.
 //
-// Pre-ZBBS-183 this used the narrower isProprietorResting (break_until
-// only). That diverged from the closed-business arrival narration's
-// isBusinessClosed predicate: the narration would say "It is closed"
-// while canEnter still let the PC walk in whenever the keeper was
-// merely absent rather than on a formal break. Unified on
-// isBusinessClosed so the door behavior matches the narration.
+// Pre-ZBBS-183 this used a narrower break_until-only predicate that
+// diverged from the closed-business arrival narration's isBusinessClosed
+// check: the narration would say "It is closed" while the door still
+// let the PC walk in whenever the keeper was merely absent or asleep
+// rather than on a formal break. Unified on isBusinessClosed so the
+// door matches the narration.
 func (app *App) canEnter(ctx context.Context, actorID, structureID string) (bool, error) {
 	closed, err := app.isBusinessClosed(ctx, structureID)
 	if err != nil {
