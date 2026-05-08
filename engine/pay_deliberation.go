@@ -305,7 +305,7 @@ func (app *App) runPayDeliberation(
 		timeoutCtx,
 		recipientAgent,
 		prompt.String(),
-		"", // toolCallID — fresh perception, not a follow-up
+		nil, // toolResults — fresh perception, not a follow-up
 		sceneID,
 		sceneStructure,
 		payDeliberationTools(includeCounter),

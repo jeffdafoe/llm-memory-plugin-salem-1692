@@ -41,18 +41,40 @@ type agentToolCall struct {
 	Input map[string]interface{} `json:"input"`
 }
 
-// chatSendRequest is the /v1/chat/send body. ToolCallID is set when this
-// message is the engine's reply to a previous observation tool call;
-// omitted on the first iteration (the initial perception). SceneID is the
-// MEM-121 scene UUID — minted at a cascade origin (PC speak / NPC arrival
-// / chronicler dispatch) and inherited by every reactive tick in that
-// cascade, so the admin chat list can group same-scene rows together.
+// toolResult is one engine-side answer to a tool call the model emitted
+// in its prior assistant reply. The engine sends a slice of these when
+// the model emitted parallel tool calls — one entry per call_id, each
+// becomes its own chat_message_texts row API-side so the next assistant
+// turn sees them all in history without forcing the model to re-emit
+// dropped calls across multiple round-trips.
+type toolResult struct {
+	ID      string `json:"id"`
+	Content string `json:"content"`
+}
+
+// chatSendRequest is the /v1/chat/send body. SceneID is the MEM-121 scene
+// UUID — minted at a cascade origin (PC speak / NPC arrival / chronicler
+// dispatch) and inherited by every reactive tick in that cascade, so the
+// admin chat list can group same-scene rows together.
+//
+// Two mutually-exclusive shapes for the user-side payload:
+//   - Message (set on iter 0, the initial perception): single
+//     plain-text body, no tool_call_id.
+//   - ToolCallResults (set on iter N>0): one entry per tool the model
+//     emitted in its prior assistant reply. Replaces the legacy
+//     singular ToolCallID + Message-as-result shape.
+//
+// PersistOnly tells the API to persist the tool result rows but skip
+// the follow-up VA dispatch — used after the model emits a terminal
+// tool (done() / unknown) so the assistant's tool_calls don't get
+// orphaned in conversation history.
 type chatSendRequest struct {
-	ToAgents     []string       `json:"to_agents"`
-	Message      string         `json:"message"`
-	ToolsOffered []agentToolDef `json:"tools_offered,omitempty"`
-	ToolCallID   string         `json:"tool_call_id,omitempty"`
-	SceneID      string         `json:"scene_id,omitempty"`
+	ToAgents          []string       `json:"to_agents"`
+	Message           string         `json:"message,omitempty"`
+	ToolsOffered      []agentToolDef `json:"tools_offered,omitempty"`
+	ToolCallResults   []toolResult   `json:"tool_call_results,omitempty"`
+	PersistOnly       bool           `json:"persist_only,omitempty"`
+	SceneID           string         `json:"scene_id,omitempty"`
 	// SceneStructure (MEM-127) is the pre-resolved structure name for
 	// the cascade origin — populated by callers via
 	// app.lookupSceneStructureName(ctx, sceneID) so memory_api's comms
@@ -108,23 +130,28 @@ func newNPCChatClient(baseURL, engineKey string) *npcChatClient {
 }
 
 // sendChat sends a wait=true chat to one NPC and returns the inline reply.
-// On iter 0 of a tick, message is the perception and toolCallID is empty.
-// On iter N>0, message is the tool-result text and toolCallID matches the
-// prior assistant tool_call.id from the NPC's last reply. sceneID is the
-// MEM-121 cascade UUID — empty string means "no scene" (treated as NULL
-// server-side, equivalent to companion-mode). sceneStructure is the
-// MEM-127 pre-resolved structure name for the cascade origin (caller
-// resolves via app.lookupSceneStructureName); empty for cascades with
-// no anchoring structure.
-func (c *npcChatClient) sendChat(ctx context.Context, npcAgentName, message, toolCallID, sceneID, sceneStructure string, tools []agentToolDef) (*chatSendReply, error) {
+//
+// Two modes, distinguished by which body field is set:
+//   - iter 0 (initial perception): pass message=perception, toolResults=nil.
+//   - iter N>0 (tool result follow-up): pass message="", toolResults=[]toolResult{...}.
+//     Each entry is one of the parallel tool calls the model emitted in
+//     its prior reply; sending them all in one request avoids the
+//     re-emission overhead of the legacy single-tool-call protocol.
+//
+// sceneID is the MEM-121 cascade UUID — empty string means "no scene"
+// (treated as NULL server-side, equivalent to companion-mode).
+// sceneStructure is the MEM-127 pre-resolved structure name for the
+// cascade origin (caller resolves via app.lookupSceneStructureName);
+// empty for cascades with no anchoring structure.
+func (c *npcChatClient) sendChat(ctx context.Context, npcAgentName, message string, toolResults []toolResult, sceneID, sceneStructure string, tools []agentToolDef) (*chatSendReply, error) {
 	body, err := json.Marshal(chatSendRequest{
-		ToAgents:       []string{npcAgentName},
-		Message:        message,
-		ToolsOffered:   tools,
-		ToolCallID:     toolCallID,
-		SceneID:        sceneID,
-		SceneStructure: sceneStructure,
-		Wait:           true,
+		ToAgents:        []string{npcAgentName},
+		Message:         message,
+		ToolsOffered:    tools,
+		ToolCallResults: toolResults,
+		SceneID:         sceneID,
+		SceneStructure:  sceneStructure,
+		Wait:            true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal chat request: %w", err)
@@ -171,6 +198,58 @@ func (c *npcChatClient) sendChat(ctx context.Context, npcAgentName, message, too
 		return nil, fmt.Errorf("chat response missing reply (body: %s)", string(respBytes))
 	}
 	return out.Reply, nil
+}
+
+// persistToolResults persists tool result rows for a terminal harness
+// iteration without firing a follow-up LLM call. Used when the model's
+// last reply included done() (or an unknown tool) — the engine still
+// needs to write tool result rows so the prior assistant tool_calls
+// don't sit in conversation history without matching results, but
+// there's no need (or budget) for another model turn.
+//
+// The API treats persist_only + tool_call_results as a pure persistence
+// op: insert N tool-result rows, broadcast, return. No VA dispatch.
+func (c *npcChatClient) persistToolResults(ctx context.Context, npcAgentName string, toolResults []toolResult, sceneID, sceneStructure string) error {
+	if len(toolResults) == 0 {
+		return nil
+	}
+	body, err := json.Marshal(chatSendRequest{
+		ToAgents:        []string{npcAgentName},
+		ToolCallResults: toolResults,
+		PersistOnly:     true,
+		SceneID:         sceneID,
+		SceneStructure:  sceneStructure,
+		Wait:            false,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal persist request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST",
+		strings.TrimRight(c.baseURL, "/")+"/v1/chat/send", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("build persist request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+c.engineKey)
+
+	resp, err := c.http.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("persist http: %w", err)
+	}
+	defer resp.Body.Close()
+	respBytes, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var errBody struct {
+			Error struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		_ = json.Unmarshal(respBytes, &errBody)
+		return &chatError{Status: resp.StatusCode, Code: errBody.Error.Code, Body: string(respBytes)}
+	}
+	return nil
 }
 
 // searchMemoryRequest is the /v1/memory/search body. The engine searches
