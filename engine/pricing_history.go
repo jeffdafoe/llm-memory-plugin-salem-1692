@@ -429,6 +429,236 @@ func renderReciprocityBlock(purchases []historyEntry, ranges map[string]historyS
 	return strings.TrimRight(b.String(), "\n")
 }
 
+// fetchTopBuyerItems returns the actor's top-N most-purchased item kinds
+// over the last 30 days, with all per-item entries bundled. Used by the
+// regular agent_tick perception (ZBBS-171 Phase 2) so buyers anchor on
+// what they've actually paid for things before picking offered_amount on
+// their next pay() call. Phase 1 covered the seller side at deliberation
+// time; this surfaces the data to buyers continuously so the first offer
+// lands in-range instead of triggering a counter-offer round-trip.
+//
+// Returns map keyed by item_kind. The renderer sorts before display.
+// Empty map means no purchase history in the window — caller suppresses.
+func (app *App) fetchTopBuyerItems(ctx context.Context, buyerID string, limit int) (map[string][]historyEntry, error) {
+	if limit <= 0 {
+		limit = 5
+	}
+	rows, err := app.DB.Query(ctx, `
+		SELECT pl.offered_amount, pl.qty, pl.item_kind, pl.created_at,
+		       s.display_name AS counterparty,
+		       COALESCE(vo.display_name, '') AS structure_name
+		  FROM pay_ledger pl
+		  JOIN actor s ON s.id = pl.seller_id
+		  LEFT JOIN scene_huddle sh ON sh.id = pl.huddle_id
+		  LEFT JOIN village_object vo ON vo.id = sh.structure_id
+		 WHERE pl.buyer_id = $1::uuid
+		   AND pl.state = 'accepted'
+		   AND pl.item_kind IS NOT NULL
+		   AND pl.created_at > NOW() - INTERVAL '30 days'
+		 ORDER BY pl.created_at DESC
+	`, buyerID)
+	if err != nil {
+		return nil, fmt.Errorf("fetch top buyer items: %w", err)
+	}
+	defer rows.Close()
+
+	perItem := map[string][]historyEntry{}
+	for rows.Next() {
+		var e historyEntry
+		var qty sql.NullInt32
+		if err := rows.Scan(&e.OfferedTotal, &qty, &e.ItemKind, &e.CreatedAt, &e.Counterparty, &e.Structure); err != nil {
+			return nil, fmt.Errorf("scan top buyer item: %w", err)
+		}
+		e.Qty = 1
+		if qty.Valid && qty.Int32 > 0 {
+			e.Qty = int(qty.Int32)
+		}
+		e.UnitPrice = e.OfferedTotal / e.Qty
+		perItem[e.ItemKind] = append(perItem[e.ItemKind], e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate top buyer items: %w", err)
+	}
+	return truncateTopByCount(perItem, limit), nil
+}
+
+// fetchTopSellerItems mirrors fetchTopBuyerItems on the seller side so
+// the regular agent_tick perception anchors quoting (speak.price outside
+// pay-deliberation) on the seller's recent sale ranges. Phase 1 already
+// shows this at deliberation time via fetchSellerSales; this block is
+// for the casual "merchant says a price in conversation" path.
+func (app *App) fetchTopSellerItems(ctx context.Context, sellerID string, limit int) (map[string][]historyEntry, error) {
+	if limit <= 0 {
+		limit = 5
+	}
+	rows, err := app.DB.Query(ctx, `
+		SELECT pl.offered_amount, pl.qty, pl.item_kind, pl.created_at,
+		       b.display_name AS counterparty,
+		       COALESCE(vo.display_name, '') AS structure_name
+		  FROM pay_ledger pl
+		  JOIN actor b ON b.id = pl.buyer_id
+		  LEFT JOIN scene_huddle sh ON sh.id = pl.huddle_id
+		  LEFT JOIN village_object vo ON vo.id = sh.structure_id
+		 WHERE pl.seller_id = $1::uuid
+		   AND pl.state = 'accepted'
+		   AND pl.item_kind IS NOT NULL
+		   AND pl.created_at > NOW() - INTERVAL '30 days'
+		 ORDER BY pl.created_at DESC
+	`, sellerID)
+	if err != nil {
+		return nil, fmt.Errorf("fetch top seller items: %w", err)
+	}
+	defer rows.Close()
+
+	perItem := map[string][]historyEntry{}
+	for rows.Next() {
+		var e historyEntry
+		var qty sql.NullInt32
+		if err := rows.Scan(&e.OfferedTotal, &qty, &e.ItemKind, &e.CreatedAt, &e.Counterparty, &e.Structure); err != nil {
+			return nil, fmt.Errorf("scan top seller item: %w", err)
+		}
+		e.Qty = 1
+		if qty.Valid && qty.Int32 > 0 {
+			e.Qty = int(qty.Int32)
+		}
+		e.UnitPrice = e.OfferedTotal / e.Qty
+		perItem[e.ItemKind] = append(perItem[e.ItemKind], e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate top seller items: %w", err)
+	}
+	return truncateTopByCount(perItem, limit), nil
+}
+
+// truncateTopByCount keeps the top-N items by entry count, ties broken
+// by most-recent transaction. Returns the input unchanged when already
+// at or below the cap. Deterministic ordering across re-renders is
+// handled at render time, not here — this only enforces the cap.
+func truncateTopByCount(perItem map[string][]historyEntry, limit int) map[string][]historyEntry {
+	if len(perItem) <= limit {
+		return perItem
+	}
+	type kindRank struct {
+		kind   string
+		count  int
+		recent time.Time
+	}
+	ranked := make([]kindRank, 0, len(perItem))
+	for k, entries := range perItem {
+		var mostRecent time.Time
+		for _, e := range entries {
+			if e.CreatedAt.After(mostRecent) {
+				mostRecent = e.CreatedAt
+			}
+		}
+		ranked = append(ranked, kindRank{kind: k, count: len(entries), recent: mostRecent})
+	}
+	sort.Slice(ranked, func(i, j int) bool {
+		if ranked[i].count != ranked[j].count {
+			return ranked[i].count > ranked[j].count
+		}
+		return ranked[i].recent.After(ranked[j].recent)
+	})
+	out := make(map[string][]historyEntry, limit)
+	for i := 0; i < limit; i++ {
+		out[ranked[i].kind] = perItem[ranked[i].kind]
+	}
+	return out
+}
+
+// renderRecentPurchasesPerception builds the buyer-side perception block.
+// Returns "" when the input is empty so callers can append unconditionally
+// without producing a header line above no data.
+//
+// Format:
+//
+//   Your recent purchase history (per unit, last 30d):
+//     water: 1-3 coins (8 buys). Recent: 2 from John Ellis @ Tavern.
+//     stew: 2-5 coins (4 buys). Recent: 5 from John Ellis @ Tavern.
+//     bread: 2 coins (1 buy from John Ellis @ Tavern).
+//
+// Single-buy items collapse to one line with the counterparty inline.
+// min == max collapses the range to a single price but still shows a
+// Recent: line for counterparty/structure context.
+func renderRecentPurchasesPerception(perItem map[string][]historyEntry, now time.Time) string {
+	return renderRecentTransactionPerception(perItem, now, "purchase", "buy", "buys", "from")
+}
+
+// renderRecentSalesPerception is the seller-side mirror of
+// renderRecentPurchasesPerception. Same shape, sale vocabulary.
+func renderRecentSalesPerception(perItem map[string][]historyEntry, now time.Time) string {
+	return renderRecentTransactionPerception(perItem, now, "sale", "sale", "sales", "to")
+}
+
+// renderRecentTransactionPerception is the shared body used by the buyer
+// and seller perception renderers. headingNoun goes into the header
+// ("purchase" / "sale"), singular/plural noun the parenthetical count
+// ("buy"/"buys", "sale"/"sales"), and prep the "from"/"to" preposition
+// for the counterparty.
+//
+// Items render in count-DESC order, ties broken by item_kind alpha
+// (deterministic — recency would re-shuffle the block on every tick and
+// the LLM treats list order as somewhat meaningful).
+func renderRecentTransactionPerception(perItem map[string][]historyEntry, now time.Time, headingNoun, singular, plural, prep string) string {
+	if len(perItem) == 0 {
+		return ""
+	}
+	type itemLine struct {
+		kind  string
+		count int
+		line  string
+	}
+	var lines []itemLine
+	for kind, entries := range perItem {
+		if len(entries) == 0 {
+			continue
+		}
+		stats := summarizeWindow(entries, now, 30*24*time.Hour)
+		if stats.Count == 0 {
+			continue
+		}
+		recentEntry := entries[0]
+		for _, e := range entries[1:] {
+			if e.CreatedAt.After(recentEntry.CreatedAt) {
+				recentEntry = e
+			}
+		}
+		var line string
+		switch {
+		case stats.Count == 1:
+			line = fmt.Sprintf("  %s: %d coins (1 %s %s %s%s).",
+				kind, stats.Low.UnitPrice, singular, prep,
+				recentEntry.Counterparty, formatStructure(recentEntry.Structure))
+		case stats.MinUnit == stats.MaxUnit:
+			line = fmt.Sprintf("  %s: %d coins (%d %s). Recent: %d %s %s%s.",
+				kind, stats.MinUnit, stats.Count, plural,
+				recentEntry.UnitPrice, prep,
+				recentEntry.Counterparty, formatStructure(recentEntry.Structure))
+		default:
+			line = fmt.Sprintf("  %s: %d-%d coins (%d %s). Recent: %d %s %s%s.",
+				kind, stats.MinUnit, stats.MaxUnit, stats.Count, plural,
+				recentEntry.UnitPrice, prep,
+				recentEntry.Counterparty, formatStructure(recentEntry.Structure))
+		}
+		lines = append(lines, itemLine{kind: kind, count: stats.Count, line: line})
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	sort.Slice(lines, func(i, j int) bool {
+		if lines[i].count != lines[j].count {
+			return lines[i].count > lines[j].count
+		}
+		return lines[i].kind < lines[j].kind
+	})
+	var b strings.Builder
+	fmt.Fprintf(&b, "Your recent %s history (per unit, last 30d):\n", headingNoun)
+	for _, l := range lines {
+		b.WriteString(l.line + "\n")
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
 // relativeAge renders a duration as "today" / "yesterday" / "N days ago".
 // Anchors on day boundaries the way an LLM would actually read the data
 // rather than precise seconds — "5 days ago" lands more useful than

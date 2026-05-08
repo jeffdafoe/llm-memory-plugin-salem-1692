@@ -1583,6 +1583,33 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 		log.Printf("perception activeLodgersForKeeper %s: %v", r.DisplayName, err)
 	}
 
+	// ZBBS-171 Phase 2: recent purchase + sale history blocks. Phase 1
+	// anchored sellers at pay-deliberation time on their own historical
+	// pricing. The buyer side stayed unanchored: Ezekiel was still picking
+	// offered_amount=1 for water on his next pay() call, the (now-anchored)
+	// seller would counter, and the deal landed at the right price after
+	// a wasted LLM round-trip. This pair of blocks surfaces the same data
+	// continuously in the regular agent_tick perception so buyers offer
+	// in-range on the first try and sellers quoting via speak.price (not
+	// just runPayDeliberation) see their own sale history too. Top 5
+	// items per side by 30d transaction count; both blocks fail-open on
+	// query error since the existing perception is sufficient by itself.
+	now := time.Now()
+	if items, err := app.fetchTopBuyerItems(ctx, r.ID, 5); err == nil {
+		if block := renderRecentPurchasesPerception(items, now); block != "" {
+			sections = append(sections, block)
+		}
+	} else {
+		log.Printf("perception fetchTopBuyerItems %s: %v", r.DisplayName, err)
+	}
+	if items, err := app.fetchTopSellerItems(ctx, r.ID, 5); err == nil {
+		if block := renderRecentSalesPerception(items, now); block != "" {
+			sections = append(sections, block)
+		}
+	} else {
+		log.Printf("perception fetchTopSellerItems %s: %v", r.DisplayName, err)
+	}
+
 	// 3a. Satiation block (ZBBS-123). When a consumable need is
 	// pressing (hunger, thirst), surface own-stock + nearby-vendor
 	// satisfiers so the LLM has the bridge between "Address now"
