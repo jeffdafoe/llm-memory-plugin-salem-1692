@@ -28,6 +28,21 @@
     update_cache: yes
   when: not postgresql_installed.stat.exists
 
+- name: Ensure PostgreSQL conf.d directory exists
+  # postgresql.conf includes `include_dir = 'conf.d'`. If the directory
+  # is missing on cold start, PG fails with "could not open configuration
+  # directory" + FATAL "configuration file ... contains errors". The
+  # parent dir was wiped 2026-04-10 (probably during unrelated cleanup)
+  # and the failure stayed latent until the 2026-05-08 reboot when PG
+  # had to re-read disk config. Idempotent: empty directory is the
+  # default Debian state.
+  file:
+    path: /etc/postgresql/{{ postgresql_version }}/main/conf.d
+    state: directory
+    owner: postgres
+    group: postgres
+    mode: '0755'
+
 - name: Ensure PostgreSQL is running
   service:
     name: postgresql
