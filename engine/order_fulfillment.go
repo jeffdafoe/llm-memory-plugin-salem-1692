@@ -303,13 +303,32 @@ func (app *App) executeDeliverOrder(ctx context.Context, sellerID string, ledger
 					LedgerID: ledgerID,
 				}
 			}
-			checkOutHour, err := app.loadLodgingCheckOutHour(ctx)
-			if err != nil {
-				return deliverOrderResult{Result: "failed", Err: fmt.Sprintf("load checkout hour: %v", err), LedgerID: ledgerID}
-			}
 			cfg, err := app.loadWorldConfig(ctx)
 			if err != nil {
 				return deliverOrderResult{Result: "failed", Err: fmt.Sprintf("load world config: %v", err), LedgerID: ledgerID}
+			}
+			// ZBBS-165: real-hotel check-in gate. Even after pay-accept, a
+			// nights_stay can't be checked in earlier than ready_by at
+			// lodging_check_in_hour (default 15). Same-day morning pay
+			// rejects until 15:00; future bookings reject for the entire
+			// pre-ready_by window. The model-facing rejection is phrased
+			// so the keeper relays it naturally to the buyer instead of
+			// silently failing.
+			checkInHour, err := app.loadLodgingCheckInHour(ctx)
+			if err != nil {
+				return deliverOrderResult{Result: "failed", Err: fmt.Sprintf("load checkin hour: %v", err), LedgerID: ledgerID}
+			}
+			earliestCheckIn := computeEarliestCheckIn(readyBy, checkInHour, cfg.Location)
+			if time.Now().Before(earliestCheckIn) {
+				return deliverOrderResult{
+					Result:   "rejected",
+					Err:      fmt.Sprintf("Room won't be ready until %s. They're welcome to wait in the common room.", earliestCheckIn.Format("Mon Jan 2 at 15:04")),
+					LedgerID: ledgerID,
+				}
+			}
+			checkOutHour, err := app.loadLodgingCheckOutHour(ctx)
+			if err != nil {
+				return deliverOrderResult{Result: "failed", Err: fmt.Sprintf("load checkout hour: %v", err), LedgerID: ledgerID}
 			}
 			expiresAt := computeLodgerUntil(readyBy, qty, checkOutHour, cfg.Location)
 			bedroomID, err := app.assignBedroomForLodger(ctx, tx, sellerWorkStructure.String, buyerID, ledgerID, expiresAt)

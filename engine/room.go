@@ -343,6 +343,51 @@ func computeLodgerUntil(readyBy time.Time, qty int, checkOutHour int, loc *time.
 	return time.Date(d.Year(), d.Month(), d.Day(), checkOutHour, 0, 0, 0, loc)
 }
 
+// computeEarliestCheckIn returns the earliest wall-clock instant a
+// nights_stay can be checked in: ready_by at lodging_check_in_hour,
+// interpreted in the world timezone. Real-hotel semantics — pay any
+// time, but the room isn't ready until check-in hour on the booked
+// date. Used by executeDeliverOrder's nights_stay branch to gate the
+// transition from "paid" to "checked in".
+//
+// readyBy is the buyer-specified check-in date (defaults to today on
+// same-day stays). For a future booking (ready_by=3 days from now),
+// the earliest check-in is that future date at check-in hour, so the
+// gate also blocks "I'll arrive early" attempts on advance bookings.
+func computeEarliestCheckIn(readyBy time.Time, checkInHour int, loc *time.Location) time.Time {
+	if loc == nil {
+		loc = time.UTC
+	}
+	return time.Date(readyBy.Year(), readyBy.Month(), readyBy.Day(), checkInHour, 0, 0, 0, loc)
+}
+
+// loadLodgingCheckInHour reads the lodging_check_in_hour setting,
+// defaulting to 15 (3pm) when unset. Same shape as
+// loadLodgingCheckOutHour — cheap single-row read, range-validated so a
+// typo'd setting can't silently roll into a wrong-day check-in.
+func (app *App) loadLodgingCheckInHour(ctx context.Context) (int, error) {
+	var raw sql.NullString
+	if err := app.DB.QueryRow(ctx,
+		`SELECT value FROM setting WHERE key = 'lodging_check_in_hour'`,
+	).Scan(&raw); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 15, nil
+		}
+		return 0, fmt.Errorf("load lodging_check_in_hour: %w", err)
+	}
+	if !raw.Valid {
+		return 15, nil
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(raw.String))
+	if err != nil {
+		return 0, fmt.Errorf("parse lodging_check_in_hour %q: %w", raw.String, err)
+	}
+	if n < 0 || n > 23 {
+		return 0, fmt.Errorf("lodging_check_in_hour out of range [0,23]: %d", n)
+	}
+	return n, nil
+}
+
 // loadLodgingCheckOutHour reads the lodging_check_out_hour setting,
 // defaulting to 11 when unset. Cheap single-row read; no caching since
 // the setting changes rarely and the read happens once per
