@@ -106,6 +106,12 @@ var pc_needs: Dictionary = {}
 ## Negative coins signals "no PC" (top bar should hide the chip).
 signal purse_changed(coins: int, inventory_lines: PackedStringArray)
 
+## Emitted whenever /pc/me reports a new audience scope (structure or
+## room change). World.gd listens to gate world-view speech bubbles by
+## the same room scope the talk panel uses for its log filter — without
+## this, bubbles for NPCs in private bedrooms still leak to PCs outside
+## the bedroom even though the talk panel correctly drops the line.
+signal audience_scope_changed(structure_id: String, room_id: String)
 ## Emitted whenever /pc/me reports fresh body-need values. main.gd
 ## forwards to top_bar.set_needs. Empty dictionary signals "no PC"
 ## (top bar should hide the readout).
@@ -1160,6 +1166,8 @@ func _maybe_apply_recent_speech(data: Dictionary) -> void:
 
     loaded_structure_id = current_structure
     loaded_room_id = current_room
+    # Notify world.gd so its speech-bubble spawn path uses the same scope.
+    audience_scope_changed.emit(current_structure, current_room)
 
     # Wipe whatever's there from the previous room — fresh ears for a new
     # space. Live npc_spoke events that were happening in the old place
@@ -1201,6 +1209,7 @@ func _set_no_pc_state() -> void:
     talk_launcher.visible = false
     loaded_structure_id = ""
     loaded_room_id = ""
+    audience_scope_changed.emit("", "")
     _update_context_labels()
     _clear_nearby_chips()
     _push_purse_to_top_bar()
@@ -1779,6 +1788,16 @@ func _on_room_event(data: Dictionary) -> void:
     elif event_structure != loaded_structure_id:
         print("[TALK]   -> dropped: structure mismatch")
         return
+    else:
+        # Subspace filter (Phase 1.5): event room_id must match the PC's
+        # loaded_room_id. Both empty = public scope (common room or
+        # outdoor); either set = private/staff scope, only same-room
+        # listeners receive. Skipped for private events (already passed
+        # through the actor-name guard above and bypass the room scope).
+        var event_room := str(data.get("room_id", ""))
+        if event_room != loaded_room_id:
+            print("[TALK]   -> dropped: room mismatch (event=", event_room, " loaded=", loaded_room_id, ")")
+            return
     if actor_name.is_empty() or text.is_empty():
         print("[TALK]   -> dropped: empty actor/text")
         return

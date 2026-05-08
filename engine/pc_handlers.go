@@ -389,22 +389,32 @@ func (app *App) handlePCMe(w http.ResponseWriter, r *http.Request) {
 	// pcRecentSpeechCutoff (24h) so a quiet room doesn't dredge up
 	// week-old chatter and an active one only surfaces the recent thread.
 	if resp.AudienceStructureID != nil {
-		resp.RecentSpeech = app.loadRecentSpeechAtStructure(r.Context(), *resp.AudienceStructureID)
+		audienceRoom := ""
+		if resp.AudienceRoomID != nil {
+			audienceRoom = *resp.AudienceRoomID
+		}
+		resp.RecentSpeech = app.loadRecentSpeechAtScope(r.Context(), *resp.AudienceStructureID, audienceRoom)
 	}
 
 	jsonResponse(w, http.StatusOK, resp)
 }
 
-// loadRecentSpeechAtStructure pulls the last N narration-worthy events at
-// a structure: speech (dialogue), acts (verb-phrase narration), and
-// move_to commits (departures). Filtered by payload->>'structure_id' which
-// the speak/act/move_to commits stash at write time (see agent_tick.go's
-// executeAgentCommit) so a single SQL filter scopes the whole room log.
+// loadRecentSpeechAtScope pulls the last N narration-worthy events at
+// a (structure, room) scope: speech (dialogue), acts (verb-phrase
+// narration), and move_to commits (departures). Filtered by both
+// `payload->>'structure_id'` AND `payload->>'room_id'` so a PC entering
+// a private bedroom doesn't backfill with tavern-common chatter.
+//
+// roomID semantics mirror the live audibility model: empty matches
+// rows with no room_id stamped (public scope — common rooms or older
+// data pre-Phase 1.5); a private room id matches only rows with the
+// same id stamped. COALESCE handles the legacy-data case so a common-
+// room PC still sees pre-Phase 1.5 history.
 //
 // Result='ok' filters out rejected/empty attempts so the panel doesn't
 // surface failed actions to the player. Text is pre-rendered into a
 // readable line per row so the client renders strings, not grammar.
-func (app *App) loadRecentSpeechAtStructure(ctx context.Context, structureID string) []pcRecentSpeech {
+func (app *App) loadRecentSpeechAtScope(ctx context.Context, structureID, roomID string) []pcRecentSpeech {
 	cutoff := time.Now().Add(-pcRecentSpeechCutoff)
 	// LEFT JOIN actor so move_to rows can rebuild the same departure
 	// narration the live broadcast emits — narrateMoveDeparture needs
@@ -419,10 +429,11 @@ func (app *App) loadRecentSpeechAtStructure(ctx context.Context, structureID str
 		WHERE al.action_type IN ('speak', 'act', 'move_to', 'serve', 'pay', 'consume')
 		  AND al.result = 'ok'
 		  AND al.payload->>'structure_id' = $1
-		  AND al.occurred_at > $2
+		  AND COALESCE(al.payload->>'room_id', '') = $2
+		  AND al.occurred_at > $3
 		ORDER BY al.occurred_at DESC
-		LIMIT $3
-	`, structureID, cutoff, pcRecentSpeechLimit)
+		LIMIT $4
+	`, structureID, roomID, cutoff, pcRecentSpeechLimit)
 	if err != nil {
 		log.Printf("recent events: %v", err)
 		return nil
@@ -803,17 +814,16 @@ func (app *App) handlePCMove(w http.ResponseWriter, r *http.Request) {
 			structName = "the building"
 		}
 		text := fmt.Sprintf("%s left the %s.", pcDisplayName, structName)
-		app.Hub.Broadcast(WorldEvent{
-			Type: "room_event",
-			Data: map[string]interface{}{
-				"actor_id":     actorID,
-				"actor_name":   pcDisplayName,
-				"kind":         "departure",
-				"text":         text,
-				"structure_id": pcInsideID.String,
-				"at":           time.Now().UTC().Format(time.RFC3339),
-			},
-		})
+		data := map[string]interface{}{
+			"actor_id":     actorID,
+			"actor_name":   pcDisplayName,
+			"kind":         "departure",
+			"text":         text,
+			"structure_id": pcInsideID.String,
+			"at":           time.Now().UTC().Format(time.RFC3339),
+		}
+		app.addRoomScopeToData(r.Context(), data, actorID)
+		app.Hub.Broadcast(WorldEvent{Type: "room_event", Data: data})
 	}
 
 	// Service-huddle cleanup (ZBBS-101). A PC who isn't physically inside
@@ -1329,11 +1339,19 @@ func (app *App) handlePCSay(w http.ResponseWriter, r *http.Request) {
 	// John Ellis: '...'" instead of an unaddressed line. Best-effort:
 	// failure here doesn't block the chat.
 	if charName.Valid && structureID.Valid {
-		audit, _ := json.Marshal(map[string]interface{}{
+		auditMap := map[string]interface{}{
 			"text":         req.Text,
 			"structure_id": structureID.String,
 			"target_name":  req.Target,
-		})
+		}
+		// Stamp room_id into the audit payload so the talk-panel backload
+		// query can scope to the same room the PC is currently in. Pairs
+		// with loadRecentSpeechAtScope's `payload->>'room_id'` filter.
+		roomScope := app.actorPrivateRoomScope(r.Context(), actorID.String)
+		if roomScope != "" {
+			auditMap["room_id"] = roomScope
+		}
+		audit, _ := json.Marshal(auditMap)
 		if _, err := app.DB.Exec(r.Context(),
 			`INSERT INTO agent_action_log (actor_id, speaker_name, source, action_type, payload, result, huddle_id)
 			 VALUES ($1, $2, 'player', 'speak', $3, 'ok',
@@ -1350,7 +1368,7 @@ func (app *App) handlePCSay(w http.ResponseWriter, r *http.Request) {
 			"kind":         "player",
 			"structure_id": structureID.String,
 		}
-		if roomScope := app.actorPrivateRoomScope(r.Context(), actorID.String); roomScope != "" {
+		if roomScope != "" {
 			spokeData["room_id"] = roomScope
 		}
 		app.Hub.Broadcast(WorldEvent{Type: "npc_spoke", Data: spokeData})
@@ -1469,12 +1487,18 @@ func (app *App) handlePCSpeak(w http.ResponseWriter, r *http.Request) {
 		structureID = huddleStructureID.String
 	}
 
-	payload, _ := json.Marshal(map[string]interface{}{
+	payloadMap := map[string]interface{}{
 		"text":         req.Text,
 		"structure_id": structureID,
 		"x":            currentX,
 		"y":            currentY,
-	})
+	}
+	// Stamp room_id into the audit payload so the talk-panel backload
+	// query scopes to the same room when the PC is in a private bedroom.
+	if roomScope := app.actorPrivateRoomScope(r.Context(), actorID.String); roomScope != "" {
+		payloadMap["room_id"] = roomScope
+	}
+	payload, _ := json.Marshal(payloadMap)
 
 	// Outdoor row gets huddle_id=NULL via the subquery (current_huddle_id
 	// is NULL for the actor); indoor row gets the active huddle. One
@@ -1759,17 +1783,16 @@ func (app *App) handlePCPay(w http.ResponseWriter, r *http.Request) {
 		if effectiveStructureID != "" {
 			text := narratePay(actor.DisplayName, payload)
 			if text != "" {
-				app.Hub.Broadcast(WorldEvent{
-					Type: "room_event",
-					Data: map[string]interface{}{
-						"actor_id":     actor.ID,
-						"actor_name":   actor.DisplayName,
-						"kind":         "pay",
-						"text":         text,
-						"structure_id": effectiveStructureID,
-						"at":           time.Now().UTC().Format(time.RFC3339),
-					},
-				})
+				data := map[string]interface{}{
+					"actor_id":     actor.ID,
+					"actor_name":   actor.DisplayName,
+					"kind":         "pay",
+					"text":         text,
+					"structure_id": effectiveStructureID,
+					"at":           time.Now().UTC().Format(time.RFC3339),
+				}
+				app.addRoomScopeToData(r.Context(), data, actor.ID)
+				app.Hub.Broadcast(WorldEvent{Type: "room_event", Data: data})
 			}
 			// ZBBS-129 step 2: the felt-language consume narration that used
 			// to fire here (private "you eat the stew" line) moved to

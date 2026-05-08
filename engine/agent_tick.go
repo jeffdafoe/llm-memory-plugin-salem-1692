@@ -2067,6 +2067,24 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 			tc.Input = map[string]interface{}{}
 		}
 		tc.Input["structure_id"] = r.InsideStructureID.String
+		// Stamp room_id alongside structure_id when the actor is in a
+		// private/staff subspace (ZBBS-149). Pairs with loadRecentSpeechAtScope
+		// in pc_handlers — the talk-panel backload query filters on
+		// payload->>'room_id' so a PC entering bedroom_1 sees only rows
+		// stamped with that room, not all tavern history.
+		//
+		// IMPORTANT: this lookup runs BEFORE the move_to switch case
+		// mutates the actor's inside_room_id, so for departures it
+		// captures the FROM-room — same intent as the structure_id
+		// stamp's "where the actor was when they decided to leave".
+		// If a future refactor moves state mutation ahead of this
+		// stamp (e.g. updates the row before executeAgentCommit
+		// returns), move_to departures will stamp the destination
+		// room (or empty), against the FROM structure. Re-evaluate
+		// when touching the commit ordering.
+		if rs := app.actorPrivateRoomScope(ctx, r.ID); rs != "" {
+			tc.Input["room_id"] = rs
+		}
 	}
 	payload, _ := json.Marshal(tc.Input)
 	result = "ok"
@@ -2096,17 +2114,16 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		// "home") and renders "retired for the X" when home == work.
 		if result == "ok" && r.InsideStructureID.Valid {
 			text := app.narrateMoveDeparture(ctx, r.DisplayName, r.HomeStructureID, r.WorkStructureID, dest)
-			app.Hub.Broadcast(WorldEvent{
-				Type: "room_event",
-				Data: map[string]interface{}{
-					"actor_id":     r.ID,
-					"actor_name":   r.DisplayName,
-					"kind":         "departure",
-					"text":         text,
-					"structure_id": r.InsideStructureID.String,
-					"at":           time.Now().UTC().Format(time.RFC3339),
-				},
-			})
+			data := map[string]interface{}{
+				"actor_id":     r.ID,
+				"actor_name":   r.DisplayName,
+				"kind":         "departure",
+				"text":         text,
+				"structure_id": r.InsideStructureID.String,
+				"at":           time.Now().UTC().Format(time.RFC3339),
+			}
+			app.addRoomScopeToData(ctx, data, r.ID)
+			app.Hub.Broadcast(WorldEvent{Type: "room_event", Data: data})
 			x, y := r.CurrentX, r.CurrentY
 			app.recordVillageEvent(ctx, villageEventDeparture, text, r.ID, r.InsideStructureID.String, &x, &y)
 		}
@@ -2278,17 +2295,16 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		// narration between dialogue lines. structure_id scopes the event
 		// to the room it happened in.
 		if r.InsideStructureID.Valid {
-			app.Hub.Broadcast(WorldEvent{
-				Type: "room_event",
-				Data: map[string]interface{}{
-					"actor_id":     r.ID,
-					"actor_name":   r.DisplayName,
-					"kind":         "act",
-					"text":         fmt.Sprintf("%s %s.", r.DisplayName, verb),
-					"structure_id": r.InsideStructureID.String,
-					"at":           time.Now().UTC().Format(time.RFC3339),
-				},
-			})
+			data := map[string]interface{}{
+				"actor_id":     r.ID,
+				"actor_name":   r.DisplayName,
+				"kind":         "act",
+				"text":         fmt.Sprintf("%s %s.", r.DisplayName, verb),
+				"structure_id": r.InsideStructureID.String,
+				"at":           time.Now().UTC().Format(time.RFC3339),
+			}
+			app.addRoomScopeToData(ctx, data, r.ID)
+			app.Hub.Broadcast(WorldEvent{Type: "room_event", Data: data})
 		}
 		// Same cascade trigger as speak — co-located NPCs may want to
 		// react to the action ("oh, you served the merchant first").
@@ -2587,17 +2603,16 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		if result == "ok" && r.InsideStructureID.Valid {
 			text := narratePay(r.DisplayName, tc.Input)
 			if text != "" {
-				app.Hub.Broadcast(WorldEvent{
-					Type: "room_event",
-					Data: map[string]interface{}{
-						"actor_id":     r.ID,
-						"actor_name":   r.DisplayName,
-						"kind":         "pay",
-						"text":         text,
-						"structure_id": r.InsideStructureID.String,
-						"at":           time.Now().UTC().Format(time.RFC3339),
-					},
-				})
+				data := map[string]interface{}{
+					"actor_id":     r.ID,
+					"actor_name":   r.DisplayName,
+					"kind":         "pay",
+					"text":         text,
+					"structure_id": r.InsideStructureID.String,
+					"at":           time.Now().UTC().Format(time.RFC3339),
+				}
+				app.addRoomScopeToData(ctx, data, r.ID)
+				app.Hub.Broadcast(WorldEvent{Type: "room_event", Data: data})
 			}
 			// Post-pay reactor tick (ZBBS-126). Give the recipient a
 			// chance to speak a thanks/farewell after the transaction
@@ -2635,17 +2650,16 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 			attr := app.itemAttributeFor(ctx, item)
 			text := narrateConsume(r.DisplayName, tc.Input, attr)
 			if text != "" {
-				app.Hub.Broadcast(WorldEvent{
-					Type: "room_event",
-					Data: map[string]interface{}{
-						"actor_id":     r.ID,
-						"actor_name":   r.DisplayName,
-						"kind":         "consume",
-						"text":         text,
-						"structure_id": r.InsideStructureID.String,
-						"at":           time.Now().UTC().Format(time.RFC3339),
-					},
-				})
+				data := map[string]interface{}{
+					"actor_id":     r.ID,
+					"actor_name":   r.DisplayName,
+					"kind":         "consume",
+					"text":         text,
+					"structure_id": r.InsideStructureID.String,
+					"at":           time.Now().UTC().Format(time.RFC3339),
+				}
+				app.addRoomScopeToData(ctx, data, r.ID)
+				app.Hub.Broadcast(WorldEvent{Type: "room_event", Data: data})
 			}
 		}
 
@@ -2730,17 +2744,16 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		if result == "ok" && r.InsideStructureID.Valid {
 			text := narrateServe(r.DisplayName, tc.Input)
 			if text != "" {
-				app.Hub.Broadcast(WorldEvent{
-					Type: "room_event",
-					Data: map[string]interface{}{
-						"actor_id":     r.ID,
-						"actor_name":   r.DisplayName,
-						"kind":         "serve",
-						"text":         text,
-						"structure_id": r.InsideStructureID.String,
-						"at":           time.Now().UTC().Format(time.RFC3339),
-					},
-				})
+				data := map[string]interface{}{
+					"actor_id":     r.ID,
+					"actor_name":   r.DisplayName,
+					"kind":         "serve",
+					"text":         text,
+					"structure_id": r.InsideStructureID.String,
+					"at":           time.Now().UTC().Format(time.RFC3339),
+				}
+				app.addRoomScopeToData(ctx, data, r.ID)
+				app.Hub.Broadcast(WorldEvent{Type: "room_event", Data: data})
 			}
 		}
 
@@ -2789,6 +2802,7 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 				if r.InsideStructureID.Valid {
 					data["structure_id"] = r.InsideStructureID.String
 				}
+				app.addRoomScopeToData(ctx, data, r.ID)
 				app.Hub.Broadcast(WorldEvent{Type: "room_event", Data: data})
 			}
 		}

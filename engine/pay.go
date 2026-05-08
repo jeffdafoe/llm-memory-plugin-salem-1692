@@ -471,6 +471,63 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payReque
 	}
 	recipientIsAgent := recipientAgentName.Valid && recipientAgentName.String != ""
 	if deliberate && recipientIsAgent {
+		// Surface the buyer's offer in the room log before the seller's
+		// deliberation response. Without this, NPC↔NPC counters read as
+		// the merchant volunteering a price out of nowhere — the buyer's
+		// pay() never reaches the chat feed today, only the speech
+		// response does.
+		//
+		// Scope rules:
+		//   - Buyer inside a structure: scope to buyer's structure + their
+		//     own room scope (they're a co-located actor in that room).
+		//   - Buyer outside (loiter pin / knock-on-door): scope to the
+		//     recipient's structure but DO NOT inherit the recipient's
+		//     room scope. The buyer isn't physically in that room — if
+		//     the recipient is in a private bedroom, stamping the bedroom
+		//     room_id would make bedroom occupants see "Ezekiel offers
+		//     John..." even though Ezekiel is at the front door.
+		//     Default to public-scope (no room_id) for the broadcast.
+		//   - Neither structure resolvable: skip the narration. The offer
+		//     still goes through, just without a chat-panel line.
+		offerStructure := ""
+		stampBuyerRoom := false
+		if buyer.InsideStructureID.Valid {
+			offerStructure = buyer.InsideStructureID.String
+			stampBuyerRoom = true
+		} else {
+			var recipStructure sql.NullString
+			err := app.DB.QueryRow(ctx,
+				`SELECT inside_structure_id::text FROM actor WHERE id = $1`,
+				recipientID,
+			).Scan(&recipStructure)
+			switch {
+			case err == nil && recipStructure.Valid:
+				offerStructure = recipStructure.String
+			case err != nil && !errors.Is(err, pgx.ErrNoRows):
+				// pgx.ErrNoRows means the recipient row vanished between
+				// the earlier lookup and now — silent skip, narration is
+				// best-effort. Real DB errors deserve a log line so a
+				// flaky DB doesn't silently strip narration site-wide.
+				log.Printf("pay-offer recipient structure lookup: %v", err)
+			}
+		}
+		if offerStructure != "" {
+			text := narratePayOffer(buyer.DisplayName, recipientName, req.Amount, itemKind, totalQty)
+			if text != "" {
+				data := map[string]interface{}{
+					"actor_id":     buyer.ID,
+					"actor_name":   buyer.DisplayName,
+					"kind":         "pay_offer",
+					"text":         text,
+					"structure_id": offerStructure,
+					"at":           time.Now().UTC().Format(time.RFC3339),
+				}
+				if stampBuyerRoom {
+					app.addRoomScopeToData(ctx, data, buyer.ID)
+				}
+				app.Hub.Broadcast(WorldEvent{Type: "room_event", Data: data})
+			}
+		}
 		quoted := 0
 		if quotedUnit.Valid {
 			quoted = int(quotedUnit.Int32)
