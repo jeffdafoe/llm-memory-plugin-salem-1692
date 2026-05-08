@@ -12,6 +12,7 @@ const ActorTooltipScript = preload("res://scripts/actor_tooltip.gd")
 const EventClientScript = preload("res://scripts/event_client.gd")
 const TalkPanelScript = preload("res://scripts/talk_panel.gd")
 const NoticePanelScript = preload("res://scripts/notice_panel.gd")
+const InventoryPanelScript = preload("res://scripts/inventory_panel.gd")
 const VillageTickerScript = preload("res://scripts/village_ticker.gd")
 
 @onready var world: Node2D = $World
@@ -29,6 +30,7 @@ var actor_tooltip: CanvasLayer = null
 var event_client: Node = null
 var talk_panel_layer: CanvasLayer = null
 var notice_panel_layer: CanvasLayer = null
+var inventory_panel_layer: CanvasLayer = null
 var village_ticker: PanelContainer = null
 
 # Login screen (added as a CanvasLayer so it renders on top of everything)
@@ -342,6 +344,11 @@ func _build_ui() -> void:
     # Same wiring for needs_changed → top bar HUD readout (ZBBS-123).
     if talk_panel_layer.has_signal("needs_changed") and top_bar != null:
         talk_panel_layer.needs_changed.connect(_on_pc_needs_changed)
+    # Character name → top bar's username slot. Talk panel emits the
+    # display_name from /pc/me; top bar shows it instead of the login,
+    # falling back to the login when no PC exists (empty payload).
+    if talk_panel_layer.has_signal("character_name_changed") and top_bar != null:
+        talk_panel_layer.character_name_changed.connect(_on_pc_character_name_changed)
     # Pay modal blocks world input. Without this, a click on the
     # Confirm button propagates into the world's PC-walk handler and
     # the character starts walking under the open modal.
@@ -381,6 +388,28 @@ func _build_ui() -> void:
     add_child(notice_panel_layer)
     notice_panel_layer.opened.connect(func(): _set_modal_blocker("notice", true))
     notice_panel_layer.closed.connect(func(): _set_modal_blocker("notice", false))
+
+    # Inventory popover — shows the player's pack when the top-bar
+    # icon is clicked. Layer = 4 so it floats above the talk panel
+    # (3) and below the modal config screen (5); a player can open
+    # their pack mid-conversation without dismissing the chat. Not a
+    # modal — outside-clicks close but don't dim the world.
+    inventory_panel_layer = CanvasLayer.new()
+    inventory_panel_layer.name = "InventoryPanelLayer"
+    inventory_panel_layer.layer = 4
+    var inventory_panel: Control = Control.new()
+    inventory_panel.set_script(InventoryPanelScript)
+    inventory_panel_layer.add_child(inventory_panel)
+    add_child(inventory_panel_layer)
+    if top_bar != null and top_bar.has_signal("inventory_toggle_requested"):
+        top_bar.inventory_toggle_requested.connect(func(rect: Rect2):
+            if inventory_panel.visible:
+                inventory_panel.close()
+            else:
+                inventory_panel.show_at(rect)
+        )
+    if talk_panel_layer.has_signal("inventory_changed"):
+        talk_panel_layer.inventory_changed.connect(inventory_panel.set_inventory)
 
     # Village ticker — thin marquee band below the top bar, scrolling
     # chronicler atmosphere prose. Lives on the editor CanvasLayer
@@ -472,6 +501,16 @@ func _on_pc_needs_changed(needs: Dictionary) -> void:
     if top_bar == null or not top_bar.has_method("set_needs"):
         return
     top_bar.set_needs(needs)
+
+
+## Forward the in-world character name from /pc/me to the top bar.
+## Empty string signals "no PC" — top bar reverts to the login
+## username. Login fallback is set once at _on_authenticated; the
+## override layer happens here on every /pc/me poll.
+func _on_pc_character_name_changed(name: String) -> void:
+    if top_bar == null or not top_bar.has_method("set_character_name"):
+        return
+    top_bar.set_character_name(name)
 
 func _on_edit_toggled(active: bool) -> void:
     editor_panel.visible = active

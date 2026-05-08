@@ -5,11 +5,26 @@ extends PanelContainer
 signal edit_toggled(active: bool)
 signal config_pressed
 signal logout_pressed
+## Inventory icon toggled — payload is the icon's global rect so the
+## inventory panel can anchor itself relative to it. main.gd forwards
+## to the inventory panel's show_at() / close().
+signal inventory_toggle_requested(icon_rect: Rect2)
 
 var edit_button: Button = null
 var config_button: Button = null
 var logout_button: Button = null
 var username_label: Label = null
+## Backing fields for the username label so login_username and
+## character_name can layer cleanly. set_username sets the login
+## fallback; set_character_name overrides while a PC exists. Clearing
+## the character name (PC stops existing, /pc/me returns exists=false)
+## reverts to the login.
+var _login_username: String = ""
+var _character_name: String = ""
+## Inventory icon — clickable Lucide glyph between coin chip and
+## username. Hidden until /pc/me reports an existing PC; toggles a
+## floating panel of the player's pack.
+var inventory_icon: Label = null
 ## Cursor tile readout — only visible in edit mode. Shows the tile the
 ## mouse is hovering over so admins can place things at specific
 ## coordinates and interpret list-view "at X,Y" fallbacks.
@@ -43,9 +58,17 @@ const COLOR_BTN_ACTIVE_BG = Color(0.29, 0.29, 0.19, 1.0)
 const COLOR_BTN_ACTIVE_BORDER = Color(0.54, 0.48, 0.31, 1.0)
 
 var _font: Font = null
+var _icon_font: Font = null
+
+# Lucide glyph for "package" — a tied bundle that reads as period-
+# neutral well enough for a 1692 setting (vs. shopping-bag/backpack
+# which feel modern). See `notes/codebase/salem/icon-fonts` for the
+# loading + materialization pattern.
+const ICON_CODEPOINT_PACKAGE: int = 0xE129
 
 func _ready() -> void:
     _font = load("res://assets/fonts/IMFellEnglish-Regular.ttf")
+    _icon_font = load("res://assets/fonts/lucide.ttf")
 
     # Style the panel container
     var panel_style = StyleBoxFlat.new()
@@ -129,6 +152,26 @@ func _ready() -> void:
     coins_label.mouse_filter = Control.MOUSE_FILTER_PASS
     right_box.add_child(coins_label)
 
+    # Inventory icon — Lucide "package" glyph, clickable Label rather
+    # than a Button so it sits flush in the bar (Buttons drag in their
+    # own border / padding / focus rect; Labels look like part of the
+    # text flow). Hidden until set_inventory() reports a non-empty
+    # state; visibility tracks the coin chip.
+    inventory_icon = Label.new()
+    inventory_icon.text = String.chr(ICON_CODEPOINT_PACKAGE)
+    inventory_icon.add_theme_font_override("font", _icon_font)
+    inventory_icon.add_theme_font_size_override("font_size", 18)
+    inventory_icon.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+    inventory_icon.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+    inventory_icon.visible = false
+    inventory_icon.tooltip_text = "Your pack"
+    inventory_icon.mouse_filter = Control.MOUSE_FILTER_STOP
+    inventory_icon.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+    inventory_icon.gui_input.connect(_on_inventory_icon_input)
+    inventory_icon.mouse_entered.connect(func(): inventory_icon.add_theme_color_override("font_color", COLOR_TEXT))
+    inventory_icon.mouse_exited.connect(func(): inventory_icon.add_theme_color_override("font_color", COLOR_TEXT_DIM))
+    right_box.add_child(inventory_icon)
+
     # Username label
     username_label = Label.new()
     username_label.text = ""
@@ -193,25 +236,63 @@ func _make_button(label: String) -> Button:
 
     return btn
 
+## Set the login username — the fallback label shown before /pc/me lands
+## or when the player has no PC yet. set_character_name overrides this
+## while a PC exists; clearing the character name (empty string) reverts
+## to whatever was stashed here.
 func set_username(name: String) -> void:
-    username_label.text = name
+    _login_username = name
+    _refresh_name_label()
 
-## Update the coins chip + inventory tooltip. Hidden when the player has
-## no PC yet (called with -1) or with an empty inventory + zero coins.
-## inventory_lines is a list of "Item x N" strings already formatted by
-## the caller — top bar doesn't know item display labels.
-func set_purse(coins: int, inventory_lines: Array) -> void:
+
+## Set the in-world character name for the active PC. Empty string
+## clears the override and reverts to the login username — used when
+## /pc/me reports the PC no longer exists (deletion, mid-session
+## logout-elsewhere). Called by main.gd whenever the talk panel emits
+## character_name_changed from a fresh /pc/me snapshot.
+func set_character_name(name: String) -> void:
+    _character_name = name
+    _refresh_name_label()
+
+
+func _refresh_name_label() -> void:
+    if username_label == null:
+        return
+    if _character_name != "":
+        username_label.text = _character_name
+        username_label.add_theme_color_override("font_color", COLOR_TEXT)
+    else:
+        username_label.text = _login_username
+        username_label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+
+## Update the coins chip. Hidden when the player has no PC yet (called
+## with -1). Inventory rendering moved to the dedicated panel post the
+## pack-icon ship; this method now only owns the coin chip itself, and
+## inventory_lines is preserved as a parameter for backward compat with
+## the existing main.gd wiring (ignored here).
+func set_purse(coins: int, _inventory_lines: Array) -> void:
     if coins_label == null:
         return
     if coins < 0:
         coins_label.visible = false
+        if inventory_icon != null:
+            inventory_icon.visible = false
         return
     coins_label.text = "%d c" % coins
+    coins_label.tooltip_text = "Your purse: %d coins." % coins
     coins_label.visible = true
-    if inventory_lines.is_empty():
-        coins_label.tooltip_text = "Your purse: %d coins.\nNothing in your pack." % coins
-    else:
-        coins_label.tooltip_text = "Your purse: %d coins.\n\nIn your pack:\n  %s" % [coins, "\n  ".join(inventory_lines)]
+    if inventory_icon != null:
+        inventory_icon.visible = true
+
+
+## gui_input handler on the inventory icon. Treat any left-click as a
+## toggle request and emit upward; main.gd routes to the inventory
+## panel's show_at() / close() based on its current visibility. The
+## global rect of the icon goes along so the panel can anchor itself.
+func _on_inventory_icon_input(event: InputEvent) -> void:
+    if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+        inventory_toggle_requested.emit(inventory_icon.get_global_rect())
+        get_viewport().set_input_as_handled()
 
 ## Update the body-needs chip (ZBBS-123). needs is a Dictionary keyed
 ## by 'hunger' / 'thirst' / 'tiredness' with int values 0..24. Empty
