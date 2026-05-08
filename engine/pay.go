@@ -197,16 +197,17 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payReque
 	// field for validation, so we don't need to hold a lock between
 	// the lookup and the credit UPDATE.
 	var (
-		recipientID        string
-		recipientAgentName sql.NullString
+		recipientID         string
+		recipientAgentName  sql.NullString
 		recipientBreakUntil sql.NullTime
+		recipientHuddle     sql.NullString
 	)
 	err := app.DB.QueryRow(ctx,
-		`SELECT id, llm_memory_agent, break_until FROM actor
+		`SELECT id, llm_memory_agent, break_until, current_huddle_id::text FROM actor
 		 WHERE LOWER(display_name) = LOWER($1)
 		 LIMIT 1`,
 		recipientName,
-	).Scan(&recipientID, &recipientAgentName, &recipientBreakUntil)
+	).Scan(&recipientID, &recipientAgentName, &recipientBreakUntil, &recipientHuddle)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return payResult{Result: "rejected", Err: fmt.Sprintf("no villager named %q", recipientName)}
@@ -215,6 +216,17 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payReque
 	}
 	if recipientID == buyer.ID {
 		return payResult{Result: "rejected", Err: "cannot pay yourself"}
+	}
+
+	// Buyer huddle (lifted from the later quote lookup): needed by the
+	// closed-shop gate's co-location bypass below as well as the
+	// existing scene_quote read further down.
+	var buyerHuddle sql.NullString
+	if err := app.DB.QueryRow(ctx,
+		`SELECT current_huddle_id::text FROM actor WHERE id = $1`,
+		buyer.ID,
+	).Scan(&buyerHuddle); err != nil {
+		return payResult{Result: "failed", Err: fmt.Sprintf("lookup buyer huddle: %v", err)}
 	}
 
 	// Closed-shop gate. A vendor on take_break shouldn't be
@@ -232,8 +244,21 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payReque
 	//   - nights_stay (service capability): advance bookings cross
 	//     "closing for the night" by design. executeDeliverOrder's
 	//     check-in-hour gate handles fulfillment timing separately.
+	//   - Buyer + seller in the same huddle (ZBBS-172 follow-up):
+	//     the buyer is physically present negotiating with the
+	//     vendor. The wedge case the gate prevents is LLM-driven
+	//     orders piling up against a remote-closed shop; a co-
+	//     located scene means the buyer is right there asking the
+	//     vendor to make a sale, which the vendor can decline at the
+	//     deliberation tier (or accept on a quote) without the
+	//     pay tool second-guessing the take_break framing. Without
+	//     this bypass, observed 2026-05-08 16:29 UTC: Jefferey paid
+	//     Ezekiel for an axe mid-conversation, rejected with "back
+	//     at 1:02 PM" despite Ezekiel being in the same huddle.
+	coLocated := buyerHuddle.Valid && recipientHuddle.Valid && buyerHuddle.String == recipientHuddle.String
 	if itemKind != "" && itemKind != "nights_stay" &&
-		recipientBreakUntil.Valid && recipientBreakUntil.Time.After(time.Now()) {
+		recipientBreakUntil.Valid && recipientBreakUntil.Time.After(time.Now()) &&
+		!coLocated {
 		whenBack := formatBreakUntilLocal(ctx, app, recipientBreakUntil.Time)
 		return payResult{
 			Result: "rejected",
@@ -314,13 +339,8 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payReque
 	// huddle change ever produces a surprising quote-mismatch,
 	// revisit by re-reading huddle inside Tx B and updating the
 	// ledger's quoted_unit_amount in the post-Tx-B handler.
-	var buyerHuddle sql.NullString
-	if err := app.DB.QueryRow(ctx,
-		`SELECT current_huddle_id FROM actor WHERE id = $1`,
-		buyer.ID,
-	).Scan(&buyerHuddle); err != nil {
-		return payResult{Result: "failed", Err: fmt.Sprintf("lookup buyer huddle: %v", err)}
-	}
+	// (buyerHuddle was looked up above for the closed-shop gate; same
+	// value is reused here for quote/consumer co-location reads.)
 
 	// Pre-Tx-A: phase-C consumer resolution (ZBBS-130). For at-source
 	// group orders the buyer names other consumers ("Jefferey buys 4
