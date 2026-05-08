@@ -370,14 +370,24 @@ func (app *App) runPayDeliberation(
 // tool call, and triggering more co-located ticks during a held pay
 // risks loops if a nearby NPC reacts to the speech with another pay.
 //
-// Carries structure_id when the recipient is inside a structure so
-// the talk panel's room-scoped log catches it. World-view speech
-// bubbles ignore that field and render every npc_spoke regardless.
+// Carries structure_id when the recipient is inside a structure, plus
+// room_id when the recipient is in a private/staff subspace, so the
+// talk panel can scope its room log correctly. Without room_id, a
+// counter spoken in Tavern→common would surface in Tavern→bedroom_1's
+// panel (observed 2026-05-08 — John countering Ezekiel showed up in
+// PC Jefferey's bedroom). World-view speech bubbles ignore both
+// fields and render every npc_spoke regardless.
 //
-// Errors looking up the recipient's structure are logged and the
-// event is broadcast without it — better to surface the speech
-// village-wide than to silently drop the bubble.
-func (app *App) broadcastDeliberationSpeak(ctx context.Context, recipientID, recipientName, spokenText string) {
+// addresseeID/addresseeName carry the buyer when known. The talk panel
+// renders these as "John (to Ezekiel): ..." for NPC-NPC haggles and
+// suppresses the parenthetical when the listener IS the addressee
+// (their own counter coming back at them). Pass empty strings for
+// addressee-less speech (e.g., eviction asks aimed at a room).
+//
+// Errors looking up structure/room are logged and the event is
+// broadcast without those fields — better to surface the speech
+// village-wide than silently drop the bubble.
+func (app *App) broadcastDeliberationSpeak(ctx context.Context, recipientID, recipientName, addresseeID, addresseeName, spokenText string) {
 	if spokenText == "" {
 		return
 	}
@@ -397,6 +407,13 @@ func (app *App) broadcastDeliberationSpeak(ctx context.Context, recipientID, rec
 	if insideStructure != "" {
 		data["structure_id"] = insideStructure
 	}
-	log.Printf("npc_spoke (deliberation): %s says %q", recipientName, spokenText)
+	if roomScope := app.actorPrivateRoomScope(ctx, recipientID); roomScope != "" {
+		data["room_id"] = roomScope
+	}
+	if addresseeID != "" {
+		data["addressee_id"] = addresseeID
+		data["addressee_name"] = addresseeName
+	}
+	log.Printf("npc_spoke (deliberation): %s says %q (to=%s)", recipientName, spokenText, addresseeName)
 	app.Hub.Broadcast(WorldEvent{Type: "npc_spoke", Data: data})
 }
