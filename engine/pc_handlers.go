@@ -1364,7 +1364,7 @@ func (app *App) handlePCSay(w http.ResponseWriter, r *http.Request) {
 			log.Printf("pc/say audit insert: %v", err)
 		}
 		spokeData := map[string]interface{}{
-			"npc_id":       actorID,
+			"npc_id":       actorID.String,
 			"name":         charName.String,
 			"text":         req.Text,
 			"at":           time.Now().UTC().Format(time.RFC3339),
@@ -1522,7 +1522,7 @@ func (app *App) handlePCSpeak(w http.ResponseWriter, r *http.Request) {
 	// outdoor recipients filter by tile distance; indoor recipients
 	// ignore them (structure_id already scopes the audience).
 	spokeData := map[string]interface{}{
-		"npc_id":       actorID,
+		"npc_id":       actorID.String,
 		"name":         charName.String,
 		"text":         req.Text,
 		"at":           time.Now().UTC().Format(time.RFC3339),
