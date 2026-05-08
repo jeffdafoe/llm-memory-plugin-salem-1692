@@ -318,3 +318,151 @@ func (app *App) leaveHuddleForPC(ctx context.Context, actorName string) {
 		log.Printf("scene-huddle: concluded %s (last participant — PC %s left)", huddleID.String, actorName)
 	}
 }
+
+// maybeAdoptWaitingPCsAtArrival pulls PCs waiting at a structure's loiter
+// slot into the structure's active huddle when the structure's keeper
+// arrives and goes inside. Inverse of the PC-side loiter-huddle path in
+// handlePCMove: there, the PC's arrival triggers huddle formation when
+// NPCs are already at the ring; here, the keeper's arrival picks up PCs
+// already waiting at the door.
+//
+// Without this, a PC who walked to a closed business (knock fired,
+// narration only) and stayed at the loiter slot is invisible to the
+// returning keeper's perception block — they're outside, not in any
+// huddle yet, so the keeper's arrival tick sees an empty scene and the
+// LLM returns done. Adopting the PC into the freshly-created structure
+// huddle (joined via setNPCInside → joinOrCreateHuddle moments earlier
+// in advanceBehavior) gives the keeper a concrete cue to react to.
+//
+// Conservative gate: only the keeper's arrival pulls PCs in. A lodger
+// returning to their tavern, or a customer dropping in to another
+// vendor's shop while a different PC happens to be at this keeper's
+// door — neither triggers adoption. The signal is
+// `actor.work_structure_id = structureID AND actor.inside = true AND
+// inside_structure_id = structureID`.
+//
+// Loiter math mirrors handlePCMove's predicate exactly so a PC standing
+// legitimately at the slot matches the proximity bound.
+//
+// PCs already in some other huddle (mid-conversation at an adjacent
+// loiter pin) are left alone via the current_huddle_id IS NULL filter.
+func (app *App) maybeAdoptWaitingPCsAtArrival(ctx context.Context, npcID, structureID string) {
+	if npcID == "" || structureID == "" {
+		return
+	}
+
+	// Confirm this NPC is the keeper AND went inside on this arrival.
+	// Visitor entries (lodger to tavern, drop-in customer) and refused-
+	// entry walks (canEnter=false) get filtered here in one round-trip.
+	var isKeeperInside bool
+	if err := app.DB.QueryRow(ctx,
+		`SELECT EXISTS (
+		    SELECT 1 FROM actor
+		     WHERE id::text                  = $1
+		       AND work_structure_id::text   = $2
+		       AND inside                    = true
+		       AND inside_structure_id::text = $2
+		 )`,
+		npcID, structureID,
+	).Scan(&isKeeperInside); err != nil {
+		log.Printf("greet-on-arrival keeper check %s/%s: %v", npcID, structureID, err)
+		return
+	}
+	if !isKeeperInside {
+		return
+	}
+
+	// Resolve the structure's loiter slot world-pixel center. Same query
+	// shape and effectiveLoiterTile derivation handlePCMove uses to land
+	// a knocked PC at the visitor slot — predicate has to match for an
+	// actually-standing-there PC to be picked up.
+	var ox, oy float64
+	var loiterX, loiterY sql.NullInt32
+	var doorX, doorY sql.NullInt32
+	var footprintBottom int
+	if err := app.DB.QueryRow(ctx,
+		`SELECT o.x, o.y,
+		        o.loiter_offset_x, o.loiter_offset_y,
+		        a.door_offset_x, a.door_offset_y, a.footprint_bottom
+		   FROM village_object o
+		   JOIN asset a ON a.id = o.asset_id
+		  WHERE o.id::text = $1`,
+		structureID,
+	).Scan(&ox, &oy, &loiterX, &loiterY, &doorX, &doorY, &footprintBottom); err != nil {
+		log.Printf("greet-on-arrival structure read %s: %v", structureID, err)
+		return
+	}
+	if !loiterX.Valid || !loiterY.Valid {
+		// No configured loiter — the structure has no defined waiting
+		// ring. Nothing to adopt against.
+		return
+	}
+	lx, ly := effectiveLoiterTile(loiterX, loiterY, doorX, doorY, footprintBottom)
+	loiterCenterX := ox + float64(lx)*tileSize
+	loiterCenterY := oy + float64(ly)*tileSize
+
+	// Locate the active structure huddle. setNPCInside should have
+	// created or joined it on the keeper's inside-flag flip just above
+	// us; bail with a log if missing.
+	var huddleID string
+	if err := app.DB.QueryRow(ctx,
+		`SELECT id::text FROM scene_huddle
+		  WHERE structure_id = $1 AND concluded_at IS NULL
+		  ORDER BY created_at DESC LIMIT 1`,
+		structureID,
+	).Scan(&huddleID); err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			log.Printf("greet-on-arrival huddle lookup %s: %v", structureID, err)
+		}
+		return
+	}
+
+	// PCs at the loiter slot, currently in no huddle, not already
+	// inside any structure. login_username is the join key for
+	// joinOrCreateHuddleForPC, and actor.id is the param shape
+	// fireKnockPerception expects.
+	rows, err := app.DB.Query(ctx,
+		`SELECT id::text, login_username FROM actor
+		  WHERE login_username    IS NOT NULL
+		    AND inside_structure_id IS NULL
+		    AND current_huddle_id   IS NULL
+		    AND GREATEST(ABS(current_x - $1), ABS(current_y - $2)) <= 64`,
+		loiterCenterX, loiterCenterY,
+	)
+	if err != nil {
+		log.Printf("greet-on-arrival pc query %s: %v", structureID, err)
+		return
+	}
+	defer rows.Close()
+
+	type pcMatch struct {
+		ActorID, Username string
+	}
+	var pcs []pcMatch
+	for rows.Next() {
+		var pc pcMatch
+		if err := rows.Scan(&pc.ActorID, &pc.Username); err != nil {
+			log.Printf("greet-on-arrival pc scan: %v", err)
+			continue
+		}
+		pcs = append(pcs, pc)
+	}
+	if len(pcs) == 0 {
+		return
+	}
+
+	// Adopt each PC: join the structure huddle (acquaintance row +
+	// presence audit fall out of joinOrCreateHuddleForPC) and fire
+	// the same knock-style perception cue the PC-initiated knock path
+	// uses, so the keeper's next tick perceives "Mary approaches the
+	// Tavern and waits at the door."
+	for _, pc := range pcs {
+		if _, err := app.joinOrCreateHuddleForPC(ctx, pc.Username, structureID); err != nil {
+			log.Printf("greet-on-arrival join %s into %s: %v", pc.Username, structureID, err)
+			continue
+		}
+		app.fireKnockPerception(ctx, pc.ActorID, huddleID, structureID)
+		log.Printf("greet-on-arrival pc=%s structure=%s huddle=%s — adopted into keeper-arrival huddle",
+			pc.ActorID, structureID, huddleID)
+	}
+}

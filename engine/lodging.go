@@ -203,11 +203,10 @@ func (app *App) isProprietorResting(ctx context.Context, structureID string) (bo
 // customers." Use this instead of inlining checks against break_until
 // / sleeping_until / inside-counts — those can drift, this can't.
 //
-// canEnter (door-lock for break) and refreshStructureOccupancyState
-// (visual current_state) keep their own narrower checks today —
-// canEnter intentionally only locks during break, and the occupancy
-// refresh is its own COUNT-based path. Future refactor could unify
-// them; this helper is the place to start when that happens.
+// canEnter (door-lock) calls into here so the door behavior matches
+// the closed-business arrival narration. refreshStructureOccupancyState
+// (visual current_state) still keeps its own COUNT-based path; future
+// refactor could unify it here as well.
 func (app *App) isBusinessClosed(ctx context.Context, structureID string) (bool, error) {
 	if structureID == "" {
 		return false, nil
@@ -343,7 +342,8 @@ func formatActiveLodgersForPerception(entries []activeLodgerEntry, loc *time.Loc
 // canEnter is the single gate for an actor walking into a structure.
 // Returns true when:
 //
-//   1. The structure is open (no vendor on break here), OR
+//   1. The structure is open (operational keeper inside, see
+//      isBusinessClosed), OR
 //   2. The actor is exempt (home/work match, or active lodger).
 //
 // Errors propagate so callers can fail open or closed at their
@@ -351,8 +351,15 @@ func formatActiveLodgersForPerception(entries []activeLodgerEntry, loc *time.Loc
 // handlePCMove for PC click-to-walk) consult this BEFORE flipping
 // inside_structure_id so the closed-door semantic actually keeps
 // people out.
+//
+// Pre-ZBBS-183 this used the narrower isProprietorResting (break_until
+// only). That diverged from the closed-business arrival narration's
+// isBusinessClosed predicate: the narration would say "It is closed"
+// while canEnter still let the PC walk in whenever the keeper was
+// merely absent rather than on a formal break. Unified on
+// isBusinessClosed so the door behavior matches the narration.
 func (app *App) canEnter(ctx context.Context, actorID, structureID string) (bool, error) {
-	closed, err := app.isProprietorResting(ctx, structureID)
+	closed, err := app.isBusinessClosed(ctx, structureID)
 	if err != nil {
 		return false, err
 	}
