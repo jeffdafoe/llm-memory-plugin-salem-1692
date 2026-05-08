@@ -108,12 +108,13 @@ func (app *App) maybeNarrateClosedBusinessArrival(ctx context.Context, actorID, 
 	app.Hub.Broadcast(WorldEvent{
 		Type: "room_event",
 		Data: map[string]interface{}{
-			"actor_id":   actorID,
-			"actor_name": "",
-			"kind":       "closed_business_arrival",
-			"text":       text,
-			"private":    true,
-			"at":         time.Now().UTC().Format(time.RFC3339),
+			"actor_id":     actorID,
+			"actor_name":   "",
+			"kind":         "closed_business_arrival",
+			"text":         text,
+			"private":      true,
+			"structure_id": structureID,
+			"at":           time.Now().UTC().Format(time.RFC3339),
 		},
 	})
 }
