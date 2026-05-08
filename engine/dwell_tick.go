@@ -318,7 +318,7 @@ func dwellCompletionNarration(attribute, source string, itemExhausted, floorHit 
 		case "thirst":
 			return "You drain the last drop."
 		case "tiredness":
-			return "You ease back, the last of it gone."
+			return "You feel a little less tired than before."
 		default:
 			return "You finish what you had."
 		}
