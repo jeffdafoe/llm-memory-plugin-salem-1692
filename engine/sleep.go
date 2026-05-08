@@ -37,9 +37,18 @@ package main
 // max-tiredness PC wakes at ~4h wall-clock; the cap guards against
 // stuck rows if the recovery sweep is wedged.
 //
-// resetSleptTiredness in world_rotation.go is preserved as the NPC
-// backstop — vendors get the dawn snap-to-zero. PCs use the
-// continuous recovery model.
+// NPC sleep (ZBBS-175): mirrors the PC mechanism. NPCs auto-sleep
+// when they arrive at their home_structure_id off-shift with
+// tiredness >= npc_auto_sleep_min_tiredness. Recovery flows through
+// the same tiredness_recovery_sweep that handles break_until /
+// sleeping_until generically (no PC gate). Wake fires via
+// wakeExpiredNPCSleepers — same conditions as PCs minus the
+// room_access checkout branch (NPCs don't book rooms in v1). The
+// inside-structure branch of resetSleptTiredness was dropped when
+// NPC sleep landed; the decorative-NPC unconditional reset stays
+// because decoratives have no behavior to walk themselves home.
+// Reactive ticks to sleeping NPCs are short-circuited at the top of
+// runAgentTick — knock-wake awaits the entry-policy/knock task.
 
 import (
 	"context"
@@ -142,6 +151,9 @@ func (app *App) runSleepSweep(ctx context.Context) {
 			}
 			if err := app.wakeExpiredSleepers(ctx); err != nil {
 				log.Printf("sleep sweep wake: %v", err)
+			}
+			if err := app.wakeExpiredNPCSleepers(ctx); err != nil {
+				log.Printf("sleep sweep wake NPC: %v", err)
 			}
 			// Eviction runs AFTER wake so a sleeping checked-out lodger
 			// gets woken first (housekeeping knock) and then teleported
@@ -470,5 +482,214 @@ func (app *App) executePCWake(ctx context.Context, actorID string) error {
 // nextDawnAt was the pre-ZBBS-150 wake-target calculator. Removed
 // when the recovery-based wake replaced the dawn anchor; sleep
 // duration tracks tiredness recovery + checkout, not the world clock.
-// resetSleptTiredness in world_rotation.go still fires at dawn for
-// inside-structure NPCs, unchanged.
+
+// =============================================================================
+// NPC sleep (ZBBS-175). Mirrors PC sleep above with the differences
+// documented in the file header.
+// =============================================================================
+
+// loadNPCSleepMaxDurationHours reads the npc_sleep_max_duration_hours
+// setting. Default 12. Mirrors pc_sleep_max_duration_hours but kept
+// as its own knob so PC and NPC sleep caps can diverge if needed.
+func (app *App) loadNPCSleepMaxDurationHours(ctx context.Context) int {
+	return app.loadIntSetting(ctx, "npc_sleep_max_duration_hours", 12)
+}
+
+// loadNPCAutoSleepMinTiredness reads the npc_auto_sleep_min_tiredness
+// setting. Default 10 (mirrors pc_idle_sleep_min_tiredness). NPCs
+// arriving home below this tiredness skip the auto-sleep trigger so
+// drop-by visits don't knock them out.
+func (app *App) loadNPCAutoSleepMinTiredness(ctx context.Context) int {
+	return app.loadIntSetting(ctx, "npc_auto_sleep_min_tiredness", 10)
+}
+
+// maybeNPCAutoSleep evaluates auto-sleep eligibility for an NPC after
+// a move commit and beds them when all gates pass. Called from
+// applyArrivalSideEffects so the NPC sleeps on arrival home rather
+// than via a periodic sweep — fires once per arrival, no cost while
+// they're walking around.
+//
+// Gates:
+//   - actor is an NPC (llm_memory_agent IS NOT NULL)
+//   - inside_structure_id IS NOT NULL AND equals home_structure_id
+//   - sleeping_until IS NULL (not already sleeping)
+//   - actor_need.tiredness >= npc_auto_sleep_min_tiredness (default 10)
+//   - off-shift: NPCs without a schedule are treated as always
+//     off-shift; scheduled NPCs are off-shift when current
+//     world-local minute-of-day is outside [start, end] (with wrap
+//     handling for midnight-crossing shifts like the tavernkeeper)
+//
+// Errors are logged and swallowed — auto-sleep is opportunistic;
+// failing to bed an NPC means they stay awake until the next arrival
+// or until take_break recovers them.
+func (app *App) maybeNPCAutoSleep(ctx context.Context, actorID string) {
+	if actorID == "" {
+		return
+	}
+	minTiredness := app.loadNPCAutoSleepMinTiredness(ctx)
+
+	var (
+		isNPC            bool
+		atHome           bool
+		alreadySleeping  bool
+		tiredness        int
+		hasSchedule      bool
+		scheduleStartMin int
+		scheduleEndMin   int
+	)
+	err := app.DB.QueryRow(ctx,
+		`SELECT a.llm_memory_agent IS NOT NULL,
+		        a.inside_structure_id IS NOT NULL
+		            AND a.home_structure_id IS NOT NULL
+		            AND a.inside_structure_id = a.home_structure_id,
+		        a.sleeping_until IS NOT NULL,
+		        COALESCE((SELECT value FROM actor_need WHERE actor_id = a.id AND key = 'tiredness'), 0)::int,
+		        a.schedule_start_minute IS NOT NULL AND a.schedule_end_minute IS NOT NULL,
+		        COALESCE(a.schedule_start_minute, 0)::int,
+		        COALESCE(a.schedule_end_minute,   0)::int
+		   FROM actor a
+		  WHERE a.id = $1::uuid`,
+		actorID,
+	).Scan(&isNPC, &atHome, &alreadySleeping, &tiredness,
+		&hasSchedule, &scheduleStartMin, &scheduleEndMin)
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			log.Printf("maybeNPCAutoSleep(%s): load row: %v", actorID, err)
+		}
+		return
+	}
+	if !isNPC || !atHome || alreadySleeping || tiredness < minTiredness {
+		return
+	}
+
+	// Off-shift check. Unscheduled NPCs (Ezekiel, Josiah at the time
+	// this shipped) get treated as always-off-shift so they sleep
+	// whenever they arrive home tired.
+	if hasSchedule {
+		cfg, err := app.loadWorldConfig(ctx)
+		if err != nil {
+			log.Printf("maybeNPCAutoSleep(%s): load config: %v", actorID, err)
+			return
+		}
+		now := time.Now().In(cfg.Location)
+		nowMin := now.Hour()*60 + now.Minute()
+		var onShift bool
+		if scheduleStartMin <= scheduleEndMin {
+			onShift = nowMin >= scheduleStartMin && nowMin < scheduleEndMin
+		} else {
+			// Wraps midnight (e.g. 16:00–03:00 next day).
+			onShift = nowMin >= scheduleStartMin || nowMin < scheduleEndMin
+		}
+		if onShift {
+			return
+		}
+	}
+
+	if _, err := app.executeNPCSleep(ctx, actorID); err != nil {
+		log.Printf("maybeNPCAutoSleep(%s): executeNPCSleep: %v", actorID, err)
+	}
+}
+
+// executeNPCSleep beds an NPC. NPC analog of executePCSleep — sets
+// sleeping_until = NOW + npc_sleep_max_duration_hours and stamps
+// last_tiredness_recovery_at = NOW so the recovery sweep starts
+// crediting from the bed-down moment. Idempotent: returns silently
+// when the NPC is already sleeping (the UPDATE WHERE clause guards).
+// Broadcasts npc_sleep_started on a fresh transition. NPC-only via
+// llm_memory_agent IS NOT NULL gate so a stray PC id can't trigger
+// npc_sleep_started.
+func (app *App) executeNPCSleep(ctx context.Context, actorID string) (time.Time, error) {
+	maxHours := app.loadNPCSleepMaxDurationHours(ctx)
+	if maxHours <= 0 || maxHours > 24 {
+		maxHours = 12
+	}
+	wakeAt := time.Now().UTC().Add(time.Duration(maxHours) * time.Hour)
+
+	tag, err := app.DB.Exec(ctx,
+		`UPDATE actor SET
+		    sleeping_until = $1,
+		    last_tiredness_recovery_at = NOW()
+		  WHERE id = $2::uuid
+		    AND llm_memory_agent IS NOT NULL
+		    AND sleeping_until IS NULL`,
+		wakeAt, actorID,
+	)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("update sleeping_until: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		// Already sleeping or not an NPC. Soft no-op.
+		return time.Time{}, nil
+	}
+
+	app.Hub.Broadcast(WorldEvent{
+		Type: "npc_sleep_started",
+		Data: map[string]interface{}{
+			"actor_id": actorID,
+			"wake_at":  wakeAt.Format(time.RFC3339),
+			"at":       time.Now().UTC().Format(time.RFC3339),
+		},
+	})
+	return wakeAt, nil
+}
+
+// wakeExpiredNPCSleepers clears sleeping_until on any NPC whose wake
+// condition has fired and broadcasts npc_sleep_ended for each. Two
+// wake conditions, ORed:
+//
+//   - sleeping_until <= NOW(): safety cap.
+//   - tiredness <= 0: rested (continuous recovery via
+//     tiredness_recovery_sweep brought them to 0).
+//
+// PC-side wakeExpiredSleepers also has a room_access checkout
+// branch; NPCs don't hold room_access today (they sleep at their
+// own home), so that branch is omitted here.
+//
+// Atomic per-row via UPDATE ... RETURNING. Broadcast reason "auto"
+// distinct from a future manual wake (e.g., knock-wake from the
+// entry-policy/knock task) which would carry "knock" or similar.
+func (app *App) wakeExpiredNPCSleepers(ctx context.Context) error {
+	rows, err := app.DB.Query(ctx,
+		`UPDATE actor a
+		    SET sleeping_until = NULL
+		  WHERE a.llm_memory_agent IS NOT NULL
+		    AND a.sleeping_until IS NOT NULL
+		    AND (
+		      a.sleeping_until <= NOW()
+		      OR EXISTS (
+		        SELECT 1 FROM actor_need an
+		         WHERE an.actor_id = a.id
+		           AND an.key = 'tiredness'
+		           AND an.value <= 0
+		      )
+		    )
+		 RETURNING id::text`,
+	)
+	if err != nil {
+		return fmt.Errorf("wake expired NPC query: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return fmt.Errorf("wake expired NPC scan: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("wake expired NPC iter: %w", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, id := range ids {
+		app.Hub.Broadcast(WorldEvent{
+			Type: "npc_sleep_ended",
+			Data: map[string]interface{}{
+				"actor_id": id,
+				"reason":   "auto",
+				"at":       now,
+			},
+		})
+	}
+	return nil
+}

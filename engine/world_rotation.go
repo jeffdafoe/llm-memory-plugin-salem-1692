@@ -98,35 +98,28 @@ func (app *App) applyRotation(ctx context.Context) (int, error) {
 	return len(flips) + washerStops + crierStops, nil
 }
 
-// resetSleptTiredness wipes tiredness at the rotation boundary on actors
-// who either (a) took shelter inside any structure, or (b) are decorative
-// NPCs (no VA, no PC login). Decorative NPCs don't have a real sleep
-// behavior wired and aren't going to walk themselves home, so we reset
-// them unconditionally rather than leaving them visibly slumped at red
-// tier forever.
+// resetSleptTiredness wipes tiredness at the rotation boundary on
+// decorative NPCs (no VA, no PC login). Decorative NPCs don't have a
+// real sleep behavior wired and aren't going to walk themselves home,
+// so we reset them unconditionally rather than leaving them visibly
+// slumped at red tier forever.
 //
-// HACK: this is a placeholder for the proper sleep mechanic — see
-// shared/tasks/pending/salem-npc-sleep-mechanic. The intended design has
-// per-structure lodging tags (home, inn, barn — yes; smithy, market — no)
-// and continuous tiredness decay while an actor is inside a lodging
-// during night phase, integrated with applyConsumption so distress
-// crossings narrate consistently. Until that lands, every actor who took
-// shelter at midnight wakes fully rested and every actor caught
-// outdoors stays tired (with the decorative-NPC carve-out above so they
-// don't get stuck at red tier). Edge cases the proper fix will need to
-// handle (night-watchmen, prisoners) don't exist in v1.
+// ZBBS-175: the inside-structure branch was dropped when NPC sleep
+// landed. Agent NPCs now recover by sleeping at their home_structure_id
+// (auto-triggered on arrival home off-shift via maybeNPCAutoSleep);
+// PCs recover via the PC sleep mechanism (executePCSleep + auto-bed).
+// The inside-structure shortcut for both was a HACK that
+// indiscriminately zeroed everyone's tiredness who happened to be
+// indoors at midnight; it short-circuited the proper recovery model
+// once we had one.
 //
-// HACK part 2: the decorative-NPC unconditional reset is also a hack —
-// proper handling is for decorative NPCs to either run a minimal "go
-// home / be sheltered" deterministic walker, or to be excluded from the
-// tiredness ticker in the first place. The pending task note covers
-// both.
-//
-// ZBBS-121 dropped the legacy actor.tiredness column in favor of
-// actor_need rows; this UPDATE writes that row instead. The previous
-// version targeted actor.tiredness and silently failed every midnight
-// after the column drop with "ERROR: column \"tiredness\" does not
-// exist", which is why tired villagers stayed tired across rotations.
+// The decorative-NPC unconditional reset stays — they have no
+// behavior path to take advantage of NPC sleep, and leaving them
+// piled up at peak tiredness is worse than the current "always wake
+// rested at dawn" stand-in. Proper fix for decorative NPCs is to
+// either give them a minimal "go home / be sheltered" deterministic
+// walker, or exclude them from the tiredness ticker in the first
+// place. Tracked in shared/tasks/pending/salem-npc-sleep-mechanic.
 //
 // Returns the number of (actor, tiredness) rows reset (rows already at
 // 0 are not counted because the UPDATE filter excludes them).
@@ -138,10 +131,8 @@ func (app *App) resetSleptTiredness(ctx context.Context) int {
 		  WHERE a.id = an.actor_id
 		    AND an.key = 'tiredness'
 		    AND an.value > 0
-		    AND (
-		        a.inside_structure_id IS NOT NULL
-		        OR (a.login_username IS NULL AND a.llm_memory_agent IS NULL)
-		    )`)
+		    AND a.login_username IS NULL
+		    AND a.llm_memory_agent IS NULL`)
 	if err != nil {
 		log.Printf("world_rotation: reset tiredness: %v", err)
 		return 0
