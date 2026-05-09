@@ -101,6 +101,17 @@ var pc_inventory: Array = []
 ## Forwarded to the top-bar's HUD readout. Empty when no PC.
 var pc_needs: Dictionary = {}
 
+## Emitted whenever the polled /pc/me reports a fresh character_name.
+## Empty string signals "no PC" — the top bar reverts the name label
+## to the login username on that. main.gd is the subscriber.
+signal character_name_changed(name: String)
+
+## Emitted with the structured pcInventoryEntry array on every /pc/me
+## poll where pc_exists. Empty array signals "no PC" or empty pack.
+## Powers the top-bar inventory panel (richer than the formatted-line
+## payload of purse_changed).
+signal inventory_changed(items: Array)
+
 ## Emitted whenever the polled /pc/me reports a fresh coin / inventory
 ## state. main.gd subscribes and forwards to the top-bar's set_purse.
 ## Negative coins signals "no PC" (top bar should hide the chip).
@@ -1383,14 +1394,20 @@ func _post_speak(text: String) -> void:
         push_warning("TalkPanel speak request failed: %s" % err)
 
 
-## Emit purse_changed so main.gd can update the top bar's coin chip
-## and inventory tooltip. Negative coins signals "no PC" — top bar
-## hides the chip on that.
+## Emit purse_changed (coins + formatted lines for the chip) and
+## inventory_changed (raw structured items for the pack panel) so main.gd
+## can update the top bar. Also emit character_name_changed so the
+## name label tracks the in-world identity. Negative coins signals
+## "no PC" — top bar hides the chip on that. Empty character_name
+## signals the same — top bar reverts to login.
 func _push_purse_to_top_bar() -> void:
     var lines: PackedStringArray = PackedStringArray()
     if not pc_exists:
         purse_changed.emit(-1, lines)
+        inventory_changed.emit([])
+        character_name_changed.emit("")
         return
+    var structured: Array = []
     for entry in pc_inventory:
         if typeof(entry) != TYPE_DICTIONARY:
             continue
@@ -1398,7 +1415,10 @@ func _push_purse_to_top_bar() -> void:
         var qty := int(entry.get("quantity", 0))
         if label != "" and qty > 0:
             lines.append("%s × %d" % [label, qty])
+            structured.append(entry)
     purse_changed.emit(pc_coins, lines)
+    inventory_changed.emit(structured)
+    character_name_changed.emit(character_name)
 
 
 ## Emit needs_changed so main.gd can update the top bar's HUD readout.
