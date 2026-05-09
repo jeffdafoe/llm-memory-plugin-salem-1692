@@ -253,18 +253,17 @@ func (app *App) applyDwellCredit(
 			return fmt.Errorf("expected 1 deleted credit, got %d", tag.RowsAffected())
 		}
 	} else {
-		// ZBBS-HOME-219: cast $5 to text explicitly. Without the cast,
-		// pgx binds dwellPeriodMinutes as int, and Postgres's `||`
-		// concatenation operator can't implicitly coerce that to text
-		// in this context — the encode plan errors with "unable to
-		// encode N into text format for text (OID 25)". Result was
-		// every dwell update failing silently in the goroutine,
-		// stranding actor_dwell_credit rows past their freshness
-		// window and breaking all dwell-based recovery (Shade Tree
-		// tiredness, Well thirst, etc).
+		// ZBBS-HOME-221: use make_interval(mins => $5) instead of the
+		// `($5::text || ' minutes')::interval` shape #219 attempted.
+		// The cast in SQL happens server-side AFTER pgx encodes the
+		// parameter; pgx infers the wire type from the `||` operator
+		// context as text and still fails to encode an int as text.
+		// make_interval takes an int parameter natively, so pgx
+		// encodes int-as-int and Postgres builds the interval. Same
+		// semantic, no encode dance.
 		if tag, err := tx.Exec(ctx,
 			`UPDATE actor_dwell_credit
-			    SET last_credited_at = last_credited_at + ($5::text || ' minutes')::interval,
+			    SET last_credited_at = last_credited_at + make_interval(mins => $5),
 			        remaining_ticks  = CASE WHEN source = 'item' THEN remaining_ticks - 1
 			                                ELSE remaining_ticks
 			                           END
