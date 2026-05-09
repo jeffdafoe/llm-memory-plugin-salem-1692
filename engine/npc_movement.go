@@ -291,8 +291,20 @@ func (app *App) startNPCWalk(ctx context.Context, npcID string, targetX, targetY
 		// a place we're already at. Don't flip inside here: if the NPC was
 		// inside their structure, walking to their own tile shouldn't pop
 		// them out.
-		go app.applyArrivalSideEffects(context.Background(), npcID, startX, startY, "", "")
-		return &startNPCWalkResult{AlreadyThere: true, FinalFacing: ""}, nil
+		//
+		// Read the actor's current facing from DB so the npc_arrived
+		// broadcast carries a real direction (south_idle / east_idle /
+		// etc) — empty facing on the wire makes the client compose
+		// "_idle" as the animation name, which doesn't exist, so the
+		// previous walk animation keeps cycling on a stationary actor
+		// (ZBBS-HOME-225).
+		var nopFacing string
+		_ = app.DB.QueryRow(ctx, `SELECT facing FROM actor WHERE id = $1`, npcID).Scan(&nopFacing)
+		if nopFacing == "" {
+			nopFacing = "south"
+		}
+		go app.applyArrivalSideEffects(context.Background(), npcID, startX, startY, nopFacing, "")
+		return &startNPCWalkResult{AlreadyThere: true, FinalFacing: nopFacing}, nil
 	}
 
 	// Path verified. NOW it's safe to flip inside=false so the client can
