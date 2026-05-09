@@ -33,7 +33,7 @@ const GOLDEN_COLOR := Color(1.00, 0.85, 0.70, 1.0)
 const DUSK_COLOR := Color(0.95, 0.55, 0.50, 1.0)
 const BLUE_HOUR_COLOR := Color(0.55, 0.50, 0.70, 1.0)
 const NIGHT_COLOR := Color(0.42, 0.46, 0.68, 1.0)
-const PHASE_TRANSITION_DURATION := 1200.0  # 20 minutes — chained tween through golden/dusk/blue-hour stops
+const PHASE_TRANSITION_DURATION := 3600.0  # 60 minutes — chained tween through golden/dusk/blue-hour stops, mid-latitude sunset pace
 
 var _phase_tween: Tween = null
 
