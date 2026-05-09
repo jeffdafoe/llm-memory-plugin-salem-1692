@@ -371,7 +371,7 @@ func (app *App) executeDeliverOrder(ctx context.Context, sellerID string, ledger
 					}
 					rows.Close()
 				}
-				res, err := app.applyConsumption(ctx, tx, aid, delta, "deliver-order")
+				res, err := app.applyConsumption(ctx, tx, aid, delta)
 				if err != nil {
 					return deliverOrderResult{Result: "failed", Err: fmt.Sprintf("apply consumption for actor %s: %v", aid, err), LedgerID: ledgerID}
 				}

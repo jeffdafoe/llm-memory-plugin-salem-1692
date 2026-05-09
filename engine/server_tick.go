@@ -57,23 +57,15 @@ func (app *App) runServerTickOnce(ctx context.Context) {
 	// dispatchers short-circuit. Reactive ticks fire at any hour and
 	// need the map; cheap query.
 	app.refreshNPCDisplayNames(ctx)
-	// Chronicler runs first so any atmosphere or events it writes at the
-	// phase boundary land in world_environment / world_events before
-	// reactive NPC ticks build perceptions. Cheap when no boundary just
-	// crossed — single setting read + comparison. NPC ticks themselves
-	// are reactive-only and fire from cascade origins (PC speech, NPC
-	// arrival, heard-speech, chronicler dispatch) — there is no
-	// per-server-tick autonomous pass.
+	// Chronicler runs first so any atmosphere it writes at the phase
+	// boundary lands in world_environment before reactive NPC ticks build
+	// perceptions. Cheap when no boundary just crossed — single setting
+	// read + comparison. Phase boundaries (dawn / midday / dusk) are the
+	// only chronicler firing path post-ZBBS-WORK-202; cascade origins,
+	// shift boundaries, and routine-arrival buffering all gone.
 	app.dispatchChroniclerPhase(ctx)
 	app.dispatchScheduledBehaviors(ctx)
 	app.dispatchSocialSchedules(ctx)
-	// Chronicler shift-boundary dispatcher (chronicler-dispatch redesign).
-	// Runs after dispatchScheduledBehaviors so any agent-NPC shift events
-	// the worker scheduler enqueued this tick are visible. Cheap when the
-	// queue is empty (single mutex-guarded len check); fires the chronicler
-	// only when there's pending work AND the dispatch wasn't already
-	// drained by an earlier phase or cascade fire on the same tick.
-	app.dispatchChroniclerShiftBoundaries(ctx)
 	// Attribute tick advances NPC needs (hunger/thirst/tiredness) when the
 	// wall-clock hour has rolled. No-op on most ticks (cheap setting read +
 	// integer compare); single batch UPDATE on the boundary.

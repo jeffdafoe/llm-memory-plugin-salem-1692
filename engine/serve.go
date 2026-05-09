@@ -265,7 +265,7 @@ func (app *App) executeServe(ctx context.Context, server *agentNPCRow, req serve
 			// multi-effect items drop multiple needs in one serve.
 			delta := applySatisfactionsToDelta(consumptionDelta{}, itemSatisfactions, qty)
 			if delta.Hunger != 0 || delta.Thirst != 0 || delta.Tiredness != 0 {
-				res, err := app.applyConsumption(ctx, tx, rcp.ID, delta, "serve-consume")
+				res, err := app.applyConsumption(ctx, tx, rcp.ID, delta)
 				if err != nil {
 					return serveResult{Result: "failed", Err: fmt.Sprintf("apply consumption for %s: %v", rcp.DisplayName, err)}
 				}

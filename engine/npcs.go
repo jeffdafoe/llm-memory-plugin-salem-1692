@@ -1194,13 +1194,12 @@ func (app *App) handleResetNPCNeeds(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// -needMax saturates the clamp regardless of the current
-	// value, so this is the "fully top up" delta. Source "admin"
-	// suppresses the chronicler perception's source hint.
+	// value, so this is the "fully top up" delta.
 	result, err := app.applyConsumption(ctx, tx, id, consumptionDelta{
 		Hunger:    -needMax,
 		Thirst:    -needMax,
 		Tiredness: -needMax,
-	}, "admin")
+	})
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			jsonError(w, "NPC not found", http.StatusNotFound)

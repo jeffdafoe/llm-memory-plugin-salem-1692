@@ -256,7 +256,7 @@ func (app *App) executeConsume(ctx context.Context, buyer *agentNPCRow, itemKind
 
 	var needsAfter consumptionResult
 	if delta.Hunger != 0 || delta.Thirst != 0 || delta.Tiredness != 0 {
-		needsAfter, err = app.applyConsumption(ctx, tx, buyer.ID, delta, "consume")
+		needsAfter, err = app.applyConsumption(ctx, tx, buyer.ID, delta)
 		if err != nil {
 			return consumeResult{Result: "failed", Err: fmt.Sprintf("apply consumption: %v", err)}
 		}

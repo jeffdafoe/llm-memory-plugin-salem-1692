@@ -53,29 +53,6 @@ type App struct {
 	NPCDisplayNames   map[string]string
 	NPCDisplayNamesMu sync.RWMutex
 
-	// ChroniclerFireSem is the size-1 serialization slot used when
-	// chronicler_buffered_dispatch is on (ZBBS-119). All chronicler
-	// fires (buffered timer flush + cascade fires from PC speech /
-	// admin / arrivals during legacy windows) acquire through here so
-	// no two fires run in parallel — eliminates the cross-cascade
-	// race where one cascade's attend_to dispatch was silently dropped
-	// by the in-flight gate while another cascade ran the same NPC.
-	// Drop-on-full is acceptable: events stay on
-	// ChroniclerDispatchQueue and the next fire picks them up.
-	//
-	// Distinct from ChroniclerSem (legacy path) so flipping the
-	// feature flag mid-session doesn't require resizing a live sem.
-	ChroniclerFireSem chan struct{}
-
-	// ChroniclerSem caps the number of concurrent cascade-origin
-	// chronicler fires in flight. Cascade origins (PC speech, NPC
-	// arrival) can bunch — this prevents a slow / hung chat API from
-	// piling up unbounded goroutines. Cascade fires arriving while the
-	// slot is full are skipped (logged) rather than queued. Capacity 2
-	// is enough for the realistic event rate; bump if drops are
-	// observed in practice.
-	ChroniclerSem chan struct{}
-
 	// SceneTickedActors deduplicates reactor-tick fan-out within a single
 	// scene. The cascade machinery (PC speak → reactor ticks → reactor's
 	// own speak/act → next reactor ticks → ...) propagates a sceneID from
@@ -116,35 +93,6 @@ type App struct {
 	// so a panic in the LLM loop doesn't strand the gate.
 	AgentTickInFlight   map[string]bool
 	AgentTickInFlightMu sync.Mutex
-
-	// ChroniclerDispatchQueue buffers agent-NPC shift boundary events
-	// between the worker scheduler (enqueue site) and the chronicler
-	// (drain site). Drained at perception build time so any chronicler
-	// fire — phase, cascade, or the dedicated shift-boundary dispatcher
-	// — picks up pending events. See dispatch_queue.go for semantics.
-	ChroniclerDispatchQueue *chroniclerDispatchQueue
-
-	// ChroniclerPendingFire holds a high-priority cascade fire that
-	// arrived while ChroniclerFireSem was occupied. Drained right after
-	// the active fire releases the sem so PC speech / PC arrival /
-	// admin attend-now reactions are never silently dropped by the
-	// in-flight gate (the bug design_review #5 flagged: PC reaction
-	// dropped when chronicler fire is active). Single slot, last-one-
-	// wins — bursts of high-pri fires arriving in the same busy window
-	// coalesce to one follow-up fire (ChroniclerDispatchQueue is
-	// drained on every fire so the underlying NPC events are still
-	// captured; only the cascade-origin metadata gets coalesced).
-	ChroniclerPendingFireMu sync.Mutex
-	ChroniclerPendingFire   *pendingChroniclerFire
-
-	// ChroniclerBufferedDispatcher schedules buffered chronicler fires
-	// (ZBBS-119). Sits in front of cascadeOriginFireChronicler for
-	// routine events (arrivals, shift boundaries, atmosphere,
-	// needs_resolved, needs_onset) so they coalesce into one fire per
-	// window instead of one cascade per event. Idle until enqueue sites
-	// notify it; gated on the chronicler_buffered_dispatch flag at
-	// the call sites. See chronicler_buffered_dispatcher.go.
-	ChroniclerBufferedDispatcher *chroniclerBufferedDispatcher
 
 }
 
@@ -307,28 +255,13 @@ func main() {
 		NPCMovement:   newNPCMovement(),
 		NPCBehaviors:  newNPCBehaviors(),
 		npcChatClient: newNPCChatClient(llmMemoryURL, engineKey),
-		// Capacity 2 — concurrent cascade chronicler fires. PC speech +
-		// NPC arrival can briefly overlap; more than that gets skipped.
-		ChroniclerSem: make(chan struct{}, 2),
-		// Capacity 1 — the buffered dispatcher's serialization slot.
-		// Used only when chronicler_buffered_dispatch is on (ZBBS-119).
-		ChroniclerFireSem: make(chan struct{}, 1),
 		// Per-(sceneID, actorID) dedup map. See SceneTickedActors comment
 		// on the App struct for the why.
 		SceneTickedActors: make(map[string]sceneTickEntry),
 		// Per-actor in-flight tick gate. See AgentTickInFlight comment
 		// on the App struct for the why.
 		AgentTickInFlight: make(map[string]bool),
-		// Queue for agent-NPC shift boundary events (chronicler-dispatch
-		// redesign). Empty at startup; populated by the worker scheduler
-		// and drained by chronicler fires.
-		ChroniclerDispatchQueue: newChroniclerDispatchQueue(),
 	}
-	// Buffered chronicler dispatcher (ZBBS-119). Constructed after the
-	// rest of App so it can carry the back-reference. Idle until
-	// arrival/shift_boundary/needs_resolved/needs_onset enqueue sites notify it
-	// (gated on the chronicler_buffered_dispatch feature flag).
-	app.ChroniclerBufferedDispatcher = newChroniclerBufferedDispatcher(app)
 	// Prime the display-name map so reactive ticks before the first
 	// server-tick refresh have data. Cheap; bounded by NPC count.
 	app.refreshNPCDisplayNames(context.Background())
