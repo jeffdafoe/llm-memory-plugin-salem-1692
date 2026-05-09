@@ -65,6 +65,17 @@ type deliverOrderResult struct {
 	Qty       int
 	// LedgerID echoes the input for log/audit context.
 	LedgerID int64
+	// DeferredBroadcasts are room_events the caller should drain AFTER
+	// the next speak commits in the same tick (or at tick end as a
+	// fallback). Holds the dwell hint and per-consumer felt-outcome
+	// lines — narrative beats that read as "what happens once you
+	// start eating" and should land AFTER the keeper's verbal handover
+	// ("here you are, Jefferey...") that the LLM emits in iter N+1.
+	// The engine handover line ("X hands Y the Z.") still broadcasts
+	// synchronously inside executeDeliverOrder so it anchors the
+	// sequence at deliver-time. Empty for service items, take-home
+	// flows, and consume_now items without satisfactions.
+	DeferredBroadcasts []WorldEvent
 }
 
 // executeDeliverOrder finalizes a fulfillment-ready ledger row. Called
@@ -107,6 +118,7 @@ func (app *App) executeDeliverOrder(ctx context.Context, sellerID string, ledger
 		ledgerState         string
 		fulfillmentStatus   string
 		ledgerSellerID      string
+		sellerDisplayName   string
 		buyerID             string
 		buyerDisplayName    string
 		itemKindNS          sql.NullString
@@ -118,9 +130,11 @@ func (app *App) executeDeliverOrder(ctx context.Context, sellerID string, ledger
 	)
 	// ZBBS-149: also pull pl.ready_by + seller.work_structure_id so the
 	// nights_stay branch can compute lodger_until and assign a bedroom
-	// room inside the same transaction.
+	// room inside the same transaction. seller display_name rides along
+	// for the engine-authored handover narration broadcast post-commit.
 	err = tx.QueryRow(ctx,
 		`SELECT pl.state, pl.fulfillment_status, pl.seller_id::text,
+		        (SELECT display_name FROM actor WHERE id = pl.seller_id),
 		        pl.buyer_id::text,
 		        (SELECT display_name FROM actor WHERE id = pl.buyer_id),
 		        pl.item_kind, pl.qty, pl.consume_now,
@@ -133,6 +147,7 @@ func (app *App) executeDeliverOrder(ctx context.Context, sellerID string, ledger
 		ledgerID,
 	).Scan(
 		&ledgerState, &fulfillmentStatus, &ledgerSellerID,
+		&sellerDisplayName,
 		&buyerID, &buyerDisplayName,
 		&itemKindNS, &qtyNS, &consumeNow,
 		&consumerActorIDs,
@@ -455,6 +470,63 @@ func (app *App) executeDeliverOrder(ctx context.Context, sellerID string, ledger
 		},
 	})
 
+	// Resolve the keeper's current room scope for room_event broadcasts
+	// — the public handover narration and the per-consumer private felt
+	// lines all anchor here. inside_structure_id is the seller's actual
+	// location at the moment of deliver_order; the co-location gate
+	// (consume_now branch above) ensures the buyer shares it. Take-home
+	// flows skip the co-location gate and may have a remote buyer; the
+	// public handover line still scopes to where the keeper is, since
+	// the keeper is the visible actor.
+	var sellerStructure sql.NullString
+	_ = app.DB.QueryRow(ctx,
+		`SELECT inside_structure_id::text FROM actor WHERE id = $1`,
+		sellerID,
+	).Scan(&sellerStructure)
+
+	// Public engine-authored handover line. Skipped for service items
+	// (nights_stay etc. — no physical handover; the ledger row IS the
+	// artifact, narrated by the keeper's downstream speak instead).
+	// Recipients are the consumers for at-source consume_now flows
+	// (group orders surface every name); take-home anchors on the
+	// buyer alone.
+	if !isService {
+		var recipientNames []string
+		if consumeNow && len(deliveryActorIDs) > 0 {
+			rows, qErr := app.DB.Query(ctx,
+				`SELECT display_name FROM actor WHERE id = ANY($1::uuid[])`,
+				deliveryActorIDs,
+			)
+			if qErr == nil {
+				for rows.Next() {
+					var name string
+					if err := rows.Scan(&name); err == nil && name != "" {
+						recipientNames = append(recipientNames, name)
+					}
+				}
+				rows.Close()
+			}
+		}
+		if len(recipientNames) == 0 {
+			recipientNames = []string{buyerDisplayName}
+		}
+		if handoverText := narrateDeliverHandover(sellerDisplayName, recipientNames, itemKind, qty, consumeNow); handoverText != "" {
+			data := map[string]interface{}{
+				"actor_id":   sellerID,
+				"actor_name": sellerDisplayName,
+				"kind":       "deliver",
+				"text":       handoverText,
+				"at":         now,
+			}
+			if sellerStructure.Valid && sellerStructure.String != "" {
+				data["structure_id"] = sellerStructure.String
+			}
+			app.addRoomScopeToData(ctx, data, sellerID)
+			app.Hub.Broadcast(WorldEvent{Type: "room_event", Data: data})
+		}
+	}
+
+	var deferred []WorldEvent
 	if !consumeNow {
 		app.Hub.Broadcast(WorldEvent{
 			Type: "actor_inventory_changed",
@@ -464,15 +536,23 @@ func (app *App) executeDeliverOrder(ctx context.Context, sellerID string, ledger
 			},
 		})
 	} else if len(consumerUpdates) > 0 {
-		// Surface per-consumer need state and the felt-language line
-		// (private room_event scoped by actor_id; the Godot client
-		// filters by its PC's actor id and shows it in the brown box).
+		// Per-consumer need state broadcasts synchronously so the HUD
+		// reflects the immediate consume drop without waiting on the
+		// LLM speak. The narration beats — dwell hint + felt-outcome —
+		// are queued into `deferred` instead and drained by the agent
+		// tick loop AFTER the keeper's "here you are" speak commits in
+		// iter N+1. The desired on-screen sequence:
+		//
+		//   1. Jefferey pays John Ellis 5 coins for stew.    (pay)
+		//   2. John Ellis hands Jefferey the stew.           (handover, sync above)
+		//   3. John Ellis: "Here you are, Jefferey."         (LLM speak, iter N+1)
+		//   4. This stew looks really good, ...              (deferred dwell hint)
+		//   5. You eat the stew — the gnawing ebbs; ...      (deferred felt outcome)
+		//
+		// Ordering inside the deferred slice still matters: the dwell
+		// hint is anticipatory ("going to take time to enjoy") and
+		// must precede the felt-outcome line ("you eat the stew — ...").
 		satisfactions, _ := loadItemSatisfactions(ctx, app.DB, itemKind)
-		var sellerStructure sql.NullString
-		_ = app.DB.QueryRow(ctx,
-			`SELECT inside_structure_id::text FROM actor WHERE id = $1`,
-			sellerID,
-		).Scan(&sellerStructure)
 		for _, u := range consumerUpdates {
 			app.Hub.Broadcast(WorldEvent{
 				Type: "npc_needs_changed",
@@ -484,24 +564,10 @@ func (app *App) executeDeliverOrder(ctx context.Context, sellerID string, ledger
 				},
 			})
 			if len(satisfactions) > 0 {
-				if selfText := narrateConsumeSelf(itemKind, qty, satisfactions, u.Pre, u.Post); selfText != "" {
-					data := map[string]interface{}{
-						"actor_id":   u.ActorID,
-						"actor_name": "",
-						"kind":       "consume",
-						"text":       selfText,
-						"private":    true,
-						"at":         now,
-					}
-					if sellerStructure.Valid && sellerStructure.String != "" {
-						data["structure_id"] = sellerStructure.String
-					}
-					app.Hub.Broadcast(WorldEvent{Type: "room_event", Data: data})
-				}
 				// ZBBS-HOME-220: dwell hint. If this item has any
 				// satisfaction with a complete dwell triple AND the
 				// item_kind has a consume_dwell_narration configured,
-				// surface that hint as a second private narration so
+				// queue that hint as the FIRST deferred narration so
 				// the PC knows there's more recovery to come if they
 				// stay. Skipped silently for non-PC consumers and
 				// items without narration (most things).
@@ -517,7 +583,23 @@ func (app *App) executeDeliverOrder(ctx context.Context, sellerID string, ledger
 					if sellerStructure.Valid {
 						structureForHint = sellerStructure.String
 					}
-					app.broadcastConsumeDwellHint(ctx, u.ActorID, itemKind, structureForHint)
+					if hintEvent := app.buildConsumeDwellHintEvent(ctx, u.ActorID, itemKind, structureForHint); hintEvent != nil {
+						deferred = append(deferred, *hintEvent)
+					}
+				}
+				if selfText := narrateConsumeSelf(itemKind, qty, satisfactions, u.Pre, u.Post); selfText != "" {
+					data := map[string]interface{}{
+						"actor_id":   u.ActorID,
+						"actor_name": "",
+						"kind":       "consume",
+						"text":       selfText,
+						"private":    true,
+						"at":         now,
+					}
+					if sellerStructure.Valid && sellerStructure.String != "" {
+						data["structure_id"] = sellerStructure.String
+					}
+					deferred = append(deferred, WorldEvent{Type: "room_event", Data: data})
 				}
 			}
 		}
@@ -527,11 +609,12 @@ func (app *App) executeDeliverOrder(ctx context.Context, sellerID string, ledger
 		ledgerID, sellerID, itemKind, qty, len(deliveryActorIDs))
 
 	return deliverOrderResult{
-		Result:    "ok",
-		BuyerName: buyerDisplayName,
-		ItemKind:  itemKind,
-		Qty:       qty,
-		LedgerID:  ledgerID,
+		Result:             "ok",
+		BuyerName:          buyerDisplayName,
+		ItemKind:           itemKind,
+		Qty:                qty,
+		LedgerID:           ledgerID,
+		DeferredBroadcasts: deferred,
 	}
 }
 

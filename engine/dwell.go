@@ -122,7 +122,7 @@ func (app *App) upsertItemDwellCredits(
 	return nil
 }
 
-// broadcastConsumeDwellHint surfaces a one-time period-flavored hint
+// buildConsumeDwellHintEvent builds the one-time period-flavored hint
 // at consume time when the consumed item has a dwell narration set
 // (item_kind.consume_dwell_narration) AND the consumer is a PC. The
 // hint tells the player there's a lasting effect to stay for —
@@ -130,9 +130,12 @@ func (app *App) upsertItemDwellCredits(
 // noticing a need column tick down post-hoc, which is too late if
 // they've already walked off.
 //
-// Fires post-commit by design — the caller must have committed the
-// dwell credit insert before invoking this so the broadcast doesn't
-// race against a transaction that might roll back. Silent skip when:
+// Returns *WorldEvent so the caller can defer the broadcast through
+// the agent tick's deferred-broadcast queue (consume narrations land
+// AFTER the keeper's "here you are" speak in iter N+1, not interleaved
+// with the deliver_order's synchronous handover narration).
+//
+// Silent skip (returns nil) when:
 //   - itemKind has no narration configured
 //   - actor has no login_username (NPCs don't see HUD narration)
 //   - actor has no satisfaction with a dwell triple (caller should
@@ -140,17 +143,17 @@ func (app *App) upsertItemDwellCredits(
 //     still get the hint here if we relied only on item_kind)
 //
 // ZBBS-HOME-220.
-func (app *App) broadcastConsumeDwellHint(ctx context.Context, actorID, itemKind, structureID string) {
+func (app *App) buildConsumeDwellHintEvent(ctx context.Context, actorID, itemKind, structureID string) *WorldEvent {
 	var narration sql.NullString
 	if err := app.DB.QueryRow(ctx,
 		`SELECT consume_dwell_narration FROM item_kind WHERE name = $1`,
 		itemKind,
 	).Scan(&narration); err != nil {
 		log.Printf("dwell-hint narration lookup for %s: %v", itemKind, err)
-		return
+		return nil
 	}
 	if !narration.Valid || narration.String == "" {
-		return
+		return nil
 	}
 	var loginUsername sql.NullString
 	if err := app.DB.QueryRow(ctx,
@@ -158,10 +161,10 @@ func (app *App) broadcastConsumeDwellHint(ctx context.Context, actorID, itemKind
 		actorID,
 	).Scan(&loginUsername); err != nil {
 		log.Printf("dwell-hint pc check for %s: %v", actorID, err)
-		return
+		return nil
 	}
 	if !loginUsername.Valid {
-		return
+		return nil
 	}
 
 	data := map[string]interface{}{
@@ -175,5 +178,5 @@ func (app *App) broadcastConsumeDwellHint(ctx context.Context, actorID, itemKind
 	if structureID != "" {
 		data["structure_id"] = structureID
 	}
-	app.Hub.Broadcast(WorldEvent{Type: "room_event", Data: data})
+	return &WorldEvent{Type: "room_event", Data: data}
 }

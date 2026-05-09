@@ -208,6 +208,50 @@ func narratePayForPerceiver(buyerName string, payload map[string]interface{}, pe
 	return fmt.Sprintf("%s %s %s %d %s for %s.", buyerWord, paysVerb, recipientWord, amount, coinWord, itemPhrase)
 }
 
+// narrateDeliverHandover builds the public room line for a successful
+// deliver_order commit. Engine-authored so the keeper's LLM-emitted
+// "here you are" speak is no longer load-bearing for sequence — the
+// deterministic line lands BEFORE the consume narrations, anchoring
+// the natural order: handover → "looks really good, going to take
+// time" (dwell hint) → "you eat — barely a dent" (felt outcome). Any
+// LLM speak that follows reads as flavor instead of carrying the
+// arrival of the meal.
+//
+//   sellerName    — the keeper / vendor doing the handover
+//   recipients    — display names of the actors receiving the item.
+//                   Single-buyer is [buyerName]; group orders pass
+//                   consumer names.
+//   item          — item kind name ("stew", "ale", etc.)
+//   qty           — units (typically 1)
+//   consumeNow    — true → "hands" (at-source); false → "gives ... to
+//                   take" (take-home).
+//
+// Examples:
+//   "John Ellis hands Jefferey the stew."
+//   "John Ellis hands Jefferey and Wendy the stew."
+//   "John Ellis gives Jefferey the bread to take."
+//
+// Returns "" when sellerName / item / recipients are empty (defensive
+// — caller should guard).
+func narrateDeliverHandover(sellerName string, recipients []string, item string, qty int, consumeNow bool) string {
+	sellerName = strings.TrimSpace(sellerName)
+	item = strings.TrimSpace(strings.ToLower(item))
+	if sellerName == "" || item == "" || len(recipients) == 0 {
+		return ""
+	}
+	if qty <= 0 {
+		qty = 1
+	}
+	itemPhrase := "the " + item
+	if qty > 1 {
+		itemPhrase = fmt.Sprintf("%d %s", qty, pluralize(item, qty))
+	}
+	if consumeNow {
+		return fmt.Sprintf("%s hands %s %s.", sellerName, joinNames(recipients), itemPhrase)
+	}
+	return fmt.Sprintf("%s gives %s %s to take.", sellerName, joinNames(recipients), itemPhrase)
+}
+
 // narrateConsume builds the room line for a successful consume commit.
 //
 //   actorName        — the actor eating/drinking
@@ -361,10 +405,32 @@ func narrateConsumeSelf(item string, qty int, satisfactions []itemSatisfaction, 
 	if qty > 1 {
 		itemPhrase = fmt.Sprintf("the %d %s", qty, pluralize(item, qty))
 	}
+	// Project post-dwell values per attribute when the item carries a
+	// dwell triple. Without this, peak-hunger stew lands "barely a dent"
+	// at consume time even though the dwell will fill another -8 of
+	// hunger over 16 minutes — the immediate-only line undersells the
+	// meal and clashes with the dwell hint that just promised it would
+	// take time to enjoy. Items without dwell keep immediate-only
+	// behavior (projection equals post). Clamps at 0 since attributes
+	// don't go negative.
+	hasDwell := false
+	projectedPost := make(map[string]int, len(post))
+	for k, v := range post {
+		projectedPost[k] = v
+	}
+	for _, s := range satisfactions {
+		if s.DwellAmount > 0 && s.DwellPeriodMinutes > 0 && s.DwellTotalTicks > 0 {
+			hasDwell = true
+			projectedPost[s.Attribute] -= s.DwellAmount * s.DwellTotalTicks
+			if projectedPost[s.Attribute] < 0 {
+				projectedPost[s.Attribute] = 0
+			}
+		}
+	}
 	clauses := make([]string, 0, len(satisfactions)*2)
 	for _, s := range satisfactions {
 		oldValue := pre[s.Attribute]
-		newValue := post[s.Attribute]
+		newValue := projectedPost[s.Attribute]
 		if effect := feltSatisfactionClause(s.Attribute, oldValue, newValue); effect != "" {
 			clauses = append(clauses, effect)
 		}
@@ -373,10 +439,19 @@ func narrateConsumeSelf(item string, qty int, satisfactions []itemSatisfaction, 
 		}
 	}
 	base := fmt.Sprintf("You %s %s.", verb, itemPhrase)
-	if len(clauses) == 0 {
-		return base
+	out := base
+	if len(clauses) > 0 {
+		out = fmt.Sprintf("%s — %s.", strings.TrimSuffix(base, "."), strings.Join(clauses, "; "))
 	}
-	return fmt.Sprintf("%s — %s.", strings.TrimSuffix(base, "."), strings.Join(clauses, "; "))
+	// Dwell-paired suffix tells the player the meal isn't over and they
+	// need to stay parked. Surfaces the staying-still requirement that
+	// the upstream dwell hint introduced ("going to take some time to
+	// enjoy") at the moment of the felt outcome, so the player hooks
+	// the projection ("lightly hungry") to the right behavior (stay).
+	if hasDwell {
+		out = out + " There's still more left — you'll be here for a bit."
+	}
+	return out
 }
 
 // feltSatisfactionStateClause returns a short post-action state

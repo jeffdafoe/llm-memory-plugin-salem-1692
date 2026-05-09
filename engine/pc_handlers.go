@@ -439,12 +439,23 @@ func (app *App) loadRecentSpeechAtScope(ctx context.Context, structureID, roomID
 	// the speaker's home / work structure IDs to render "retired for
 	// the evening" when home == work, otherwise "left for home". For
 	// non-move_to rows the joined columns are unused.
+	// LEFT JOIN pay_ledger so deliver_order rows can rebuild the engine-
+	// authored handover narration ("X hands Y the Z.") on backload.
+	// The audit payload only carries {ledger_id, structure_id, room_id};
+	// item / qty / consume_now / buyer come from the ledger row itself.
+	// Group orders surface as buyer-only here — multi-consumer recipient
+	// names are not joined back; live broadcast handles the precise case.
 	rows, err := app.DB.Query(ctx, `
 		SELECT al.speaker_name, al.action_type, al.source, al.payload, al.occurred_at,
-		       ac.home_structure_id, ac.work_structure_id
+		       ac.home_structure_id, ac.work_structure_id,
+		       pl.item_kind, pl.qty, pl.consume_now,
+		       ba.display_name
 		FROM agent_action_log al
 		LEFT JOIN actor ac ON ac.id = al.actor_id
-		WHERE al.action_type IN ('speak', 'act', 'move_to', 'serve', 'pay', 'consume')
+		LEFT JOIN pay_ledger pl ON al.action_type = 'deliver_order'
+		                       AND pl.id = NULLIF(al.payload->>'ledger_id', '')::bigint
+		LEFT JOIN actor ba ON ba.id = pl.buyer_id
+		WHERE al.action_type IN ('speak', 'act', 'move_to', 'serve', 'pay', 'consume', 'deliver_order')
 		  AND al.result = 'ok'
 		  AND al.payload->>'structure_id' = $1
 		  AND COALESCE(al.payload->>'room_id', '') = $2
@@ -465,8 +476,13 @@ func (app *App) loadRecentSpeechAtScope(ctx context.Context, structureID, roomID
 		var payloadJSON []byte
 		var occurredAt time.Time
 		var homeStructureID, workStructureID sql.NullString
+		var deliverItemKind sql.NullString
+		var deliverQty sql.NullInt32
+		var deliverConsumeNow sql.NullBool
+		var deliverBuyerName sql.NullString
 		if err := rows.Scan(&speakerName, &actionType, &source, &payloadJSON, &occurredAt,
-			&homeStructureID, &workStructureID); err != nil {
+			&homeStructureID, &workStructureID,
+			&deliverItemKind, &deliverQty, &deliverConsumeNow, &deliverBuyerName); err != nil {
 			continue
 		}
 		var payload map[string]interface{}
@@ -519,6 +535,23 @@ func (app *App) loadRecentSpeechAtScope(ctx context.Context, structureID, roomID
 				continue
 			}
 			entry.Kind = "consume"
+		case "deliver_order":
+			if !deliverItemKind.Valid || deliverItemKind.String == "" || !deliverBuyerName.Valid {
+				continue
+			}
+			qty := 1
+			if deliverQty.Valid && deliverQty.Int32 > 0 {
+				qty = int(deliverQty.Int32)
+			}
+			consumeNow := true
+			if deliverConsumeNow.Valid {
+				consumeNow = deliverConsumeNow.Bool
+			}
+			entry.Text = narrateDeliverHandover(speakerName, []string{deliverBuyerName.String}, deliverItemKind.String, qty, consumeNow)
+			if entry.Text == "" {
+				continue
+			}
+			entry.Kind = "deliver"
 		default:
 			continue
 		}
