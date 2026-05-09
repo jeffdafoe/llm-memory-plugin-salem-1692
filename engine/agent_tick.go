@@ -201,7 +201,17 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 	// different names).
 	sceneStructure := app.lookupSceneStructureName(ctx, sceneID)
 
+	// Track terminal-call execution state so the harness can dispatch the
+	// audit row and the close-out message after the loop without
+	// re-executing. Terminal calls used to be deferred to a single call
+	// after the loop (via commitCall + break); ZBBS-HOME-207 moves
+	// execution inside the loop so a rejected terminal can feed its
+	// corrective message back as the next iteration's continuation,
+	// allowing the model to pick a valid terminal within the same tick
+	// budget instead of ending the turn on a recoverable error.
 	var commitCall *agentToolCall
+	var commitResult, commitErrStr string
+	var commitExecuted bool
 	for iter := 0; iter < agentTickBudget; iter++ {
 		var msgArg string
 		var resultsArg []toolResult
@@ -286,7 +296,46 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 		}
 
 		if terminalCall != nil {
+			// Execute inside the loop so rejections can retry within the
+			// same tick (ZBBS-HOME-207). Pre-207, a rejected terminal call
+			// (e.g. take_break with until_hour already past, move_to to
+			// invalid coords) ended the turn entirely — the corrective
+			// error landed in conversation history but the model couldn't
+			// act on it until the next scheduled tick, often 30+ minutes
+			// later. By then perception had refreshed and the prior
+			// rejection no longer drove decisions.
+			//
+			// Behavior:
+			//   - "ok"       → commit accepted; capture result and break,
+			//                  audit-row writer at the end of the loop
+			//                  uses the captured pair.
+			//   - "rejected" → corrective message fed back as the next
+			//                  iteration's tool result; loop continues so
+			//                  the model can pick a different terminal
+			//                  with the rejection's correction in mind
+			//                  (e.g. "current hour is 13" → emit
+			//                  until_hour=15 instead of 12).
+			//   - "failed"   → engine error (DB issue, non-recoverable);
+			//                  capture and break. Failed isn't a model
+			//                  problem to correct — it's a system fault,
+			//                  so retrying with the same input would just
+			//                  re-fail.
+			//
+			// Rejected terminals are guaranteed not to have committed
+			// state changes — every reject path in executeAgentCommit's
+			// terminal branches breaks out before the state mutation
+			// (move_to validates coords before walking, take_break
+			// validates until_hour before stamping break_until, etc.).
+			result, errStr, _ := app.executeAgentCommit(ctx, r, terminalCall, sceneID, hourStart.Location())
+			if result == "rejected" {
+				currentMessage = fmt.Sprintf("[rejected] %s", errStr)
+				currentToolCallID = terminalCall.ID
+				continue
+			}
 			commitCall = terminalCall
+			commitResult = result
+			commitErrStr = errStr
+			commitExecuted = true
 			break
 		}
 
@@ -523,7 +572,15 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 		}
 	}
 
-	commitResult, commitErrStr, _ := app.executeAgentCommit(ctx, r, commitCall, sceneID, hourStart.Location())
+	// Synthetic commits (text fallback, budget-exhausted) and inline-
+	// dispatched terminal commits both land here. ZBBS-HOME-207: when
+	// the terminal was already executed inside the loop (commitExecuted
+	// = true), commitResult/commitErrStr are already populated — skip
+	// the re-execution to avoid double-side-effects (a successful
+	// move_to would walk twice, etc.).
+	if !commitExecuted {
+		commitResult, commitErrStr, _ = app.executeAgentCommit(ctx, r, commitCall, sceneID, hourStart.Location())
+	}
 
 	// Close out the terminal tool_call in conversation history. Without
 	// this, the model's terminal tool_call (move_to / chore / done /
