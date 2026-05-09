@@ -129,6 +129,17 @@ type agentNPCRow struct {
 	// from the DB — populated in-memory by triggerImmediateTick after
 	// the row is scanned.
 	TickReason string
+
+	// Visitor identity (ZBBS-WORK-201). NULL on persistent NPCs;
+	// populated for transient visitors so buildAgentPerception can
+	// prepend a "you are X, a peddler from Boston" preface when the
+	// generic salem-visitor agent template ticks. The slot-injection
+	// pattern keeps one shared agent template across all visitors;
+	// per-instance persona rides the perception, not the system
+	// prompt.
+	VisitorArchetype   sql.NullString
+	VisitorOrigin      sql.NullString
+	VisitorDisposition sql.NullString
 }
 
 // runAgentTick is the harness loop for one NPC. Stamps last_agent_tick_at
@@ -711,7 +722,8 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, 
 		        COALESCE((SELECT value FROM actor_need WHERE actor_id = n.id AND key = 'thirst'), 0)::smallint,
 		        COALESCE((SELECT value FROM actor_need WHERE actor_id = n.id AND key = 'tiredness'), 0)::smallint,
 		        n.break_until,
-		        n.sleeping_until
+		        n.sleeping_until,
+		        n.visitor_archetype, n.visitor_origin, n.visitor_disposition
 		 FROM actor n
 		 LEFT JOIN village_object wo ON wo.id = n.work_structure_id
 		 LEFT JOIN asset wa ON wa.id = wo.asset_id
@@ -728,7 +740,8 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, 
 		&r.ScheduleStartMinute, &r.ScheduleEndMinute,
 		&r.WorkLabel, &r.HomeLabel,
 		&r.Coins, &r.Hunger, &r.Thirst, &r.Tiredness,
-		&r.BreakUntil, &r.SleepingUntil); err != nil {
+		&r.BreakUntil, &r.SleepingUntil,
+		&r.VisitorArchetype, &r.VisitorOrigin, &r.VisitorDisposition); err != nil {
 		if err != sql.ErrNoRows {
 			log.Printf("event-tick %s (%s): load row: %v", npcID, reason, err)
 		}
@@ -1317,6 +1330,24 @@ func isCommitTool(name string) bool {
 // through to resolveObservationTool for any future location-aware
 // observation tool that wants it without a re-query.
 func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourStart time.Time, dawnMin, duskMin int) (string, string) {
+	// Visitor self-identity preface (ZBBS-WORK-201). When the
+	// perceiver IS a transient visitor (visitor_archetype set), prepend
+	// their persona slots so the generic salem-visitor agent template
+	// knows who it's voicing this tick. Slot-injection through the
+	// perception keeps one shared agent template across all visitors —
+	// the system prompt stays generic, the per-instance persona rides
+	// here. Persistent NPCs skip this block entirely (NULL archetype).
+	visitorPreface := ""
+	if r.VisitorArchetype.Valid {
+		visitorPreface = fmt.Sprintf("You are %s, a %s.", r.DisplayName, r.VisitorArchetype.String)
+		if r.VisitorOrigin.Valid && r.VisitorOrigin.String != "" {
+			visitorPreface += fmt.Sprintf(" You are from %s.", r.VisitorOrigin.String)
+		}
+		if r.VisitorDisposition.Valid && r.VisitorDisposition.String != "" {
+			visitorPreface += fmt.Sprintf(" Your bearing today is %s.", r.VisitorDisposition.String)
+		}
+	}
+
 	locationName := "the open village"
 	// loiteringAtID is the structure the NPC is parked at via a visitor
 	// move (move_to a non-owned target, chore destination, loiter
@@ -1421,6 +1452,16 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 	}
 
 	var sections []string
+
+	// 0. Visitor self-identity preface (ZBBS-WORK-201). Empty for
+	// persistent NPCs. When set, this leads the perception so the
+	// LLM grounds its voice in the visitor's archetype/origin/
+	// disposition before the standard identity-recap block (which
+	// is no-op for visitors anyway since they have no role / home /
+	// work).
+	if visitorPreface != "" {
+		sections = append(sections, visitorPreface)
+	}
 
 	// 1. Identity recap. Collapse home/work when same placement.
 	identityLines := []string{fmt.Sprintf("You are %s the %s.", r.DisplayName, r.Role)}
@@ -1541,6 +1582,28 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 		"You are at %s. The time is %s.",
 		locationName, hourStart.Format("Monday 15:04"),
 	))
+
+	// 3.0pre. Visitors here (ZBBS-WORK-201). When transient visitors
+	// are within sight of the perceiver, surface their archetype +
+	// origin + disposition so the LLM has concrete material to lead
+	// with — "a peddler from Boston" beats the "a stranger" fallback
+	// in the Here block from coLocatedHuddleMembers. Empty on the
+	// steady-state tick when no visitors are around; cheap proximity
+	// query against a partial-indexed column. Surfaces above the
+	// loiter-shop / concerns / needs blocks because a visitor's
+	// presence is itself a notable signal — the LLM should weigh it
+	// before settling into routine perception.
+	if visitors := app.coLocatedVisitors(ctx, r.ID, r.CurrentX, r.CurrentY); len(visitors) > 0 {
+		visitorLines := []string{"Visitors here:"}
+		for _, v := range visitors {
+			line := fmt.Sprintf("  %s — a %s, said to be from %s.", v.DisplayName, v.Archetype, v.Origin)
+			if v.Disposition != "" {
+				line += fmt.Sprintf(" Their bearing seems %s.", v.Disposition)
+			}
+			visitorLines = append(visitorLines, line)
+		}
+		sections = append(sections, strings.Join(visitorLines, "\n"))
+	}
 
 	// 3.0a Unattended-structure / shop-stock signal. When the NPC is
 	// loitering at a structure (visitor move, no huddle), one of two

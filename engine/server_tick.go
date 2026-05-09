@@ -85,6 +85,22 @@ func (app *App) runServerTickOnce(ctx context.Context) {
 	// pipeline. No-op on most ticks (cheap setting read + date compare);
 	// fires only on the first tick after a UTC day rollover.
 	app.dispatchSimConversationPush(ctx)
+	// Visitor archetype (ZBBS-WORK-201) — transient VAs that arrive,
+	// hang around, deliver content, depart. Three handlers in fixed
+	// order:
+	//   despawn — start expired visitors walking back to spawn-edge
+	//   cleanup — hard-delete visitors past the grace window
+	//   spawn   — probabilistically spawn a new visitor
+	// All three are no-ops by default (spawn chance = 0; spawn coords
+	// and sprite name unconfigured) — the feature is off until an
+	// admin sets the gating dials. Steady-state cost when off is a
+	// handful of cheap settings reads. Run before dispatchIdleSweep
+	// so a fresh visitor's last_agent_tick_at (NULL on insert) doesn't
+	// get caught in the same-tick sweep once Phase 2+ wires the
+	// llm_memory_agent slot.
+	app.dispatchVisitorDespawn(ctx)
+	app.dispatchVisitorCleanup(ctx)
+	app.dispatchVisitorSpawn(ctx)
 	// Idle-sweep (ZBBS-HOME-201) — deterministic floor for agentized
 	// NPC ticks. Finds VAs idle past the threshold and schedules a
 	// self-tick within a randomized response window so the engine
