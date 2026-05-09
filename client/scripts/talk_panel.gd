@@ -127,6 +127,13 @@ signal audience_scope_changed(structure_id: String, room_id: String)
 ## forwards to top_bar.set_needs. Empty dictionary signals "no PC"
 ## (top bar should hide the readout).
 signal needs_changed(needs: Dictionary)
+## Emitted whenever /pc/me reports a fresh dwelling_attributes list —
+## the attributes the PC is currently recovering via dwell. ZBBS-HOME-218.
+## Top bar's HUD uses this to engage a continuous pulse on the matching
+## need segment without waiting for a value-change to be detected
+## client-side, so the visual signal is present immediately on a fresh
+## page load.
+signal dwelling_attributes_changed(attrs: PackedStringArray)
 
 ## Emitted when the pay modal opens/closes. main.gd forwards to
 ## camera.modal_open so world clicks (PC walk, pan, zoom) don't fire
@@ -1115,6 +1122,15 @@ func _apply_pc_state(data: Dictionary) -> void:
     var needs_data = data.get("needs", {})
     pc_needs = needs_data if typeof(needs_data) == TYPE_DICTIONARY else {}
     _push_needs_to_top_bar()
+
+    # Dwelling attributes (ZBBS-HOME-218). Forwarded as-is to top_bar's
+    # HUD so the recovery pulse engages from server state.
+    var dwelling_raw = data.get("dwelling_attributes", [])
+    var dwelling: PackedStringArray = PackedStringArray()
+    if dwelling_raw is Array:
+        for entry in dwelling_raw:
+            dwelling.append(str(entry))
+    dwelling_attributes_changed.emit(dwelling)
 
     var prev_huddle_size: int = huddle_members.size()
     var members = data.get("huddle_members", [])
