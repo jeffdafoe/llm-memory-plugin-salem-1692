@@ -509,6 +509,13 @@ func (app *App) loadNPCSleepMaxDurationHours(ctx context.Context) int {
 // Gates:
 //   - actor is an NPC (llm_memory_agent IS NOT NULL)
 //   - inside_structure_id IS NOT NULL AND equals home_structure_id
+//     OR inside_structure_id is a structure where the actor holds
+//     active lodger status (ZBBS-WORK-204). Lodger boarders have
+//     home_structure_id NULL but rest at their lodging structure;
+//     the lodger-status branch keeps Ezekiel-the-blacksmith asleep
+//     at the inn after he becomes a boarder rather than standing
+//     awake all night because home is no longer a column-level
+//     truth for him.
 //   - sleeping_until IS NULL (not already sleeping)
 //   - off-shift: NPCs without a schedule are treated as always
 //     off-shift; scheduled NPCs are off-shift when current
@@ -529,13 +536,14 @@ func (app *App) maybeNPCAutoSleep(ctx context.Context, actorID string) {
 	}
 
 	var (
-		isNPC            bool
-		atHome           bool
-		alreadySleeping  bool
-		hasSchedule      bool
-		scheduleStartMin int
-		scheduleEndMin   int
-		homeStructureID  sql.NullString
+		isNPC             bool
+		atHome            bool
+		alreadySleeping   bool
+		hasSchedule       bool
+		scheduleStartMin  int
+		scheduleEndMin    int
+		homeStructureID   sql.NullString
+		insideStructureID sql.NullString
 	)
 	err := app.DB.QueryRow(ctx,
 		`SELECT a.llm_memory_agent IS NOT NULL,
@@ -546,21 +554,41 @@ func (app *App) maybeNPCAutoSleep(ctx context.Context, actorID string) {
 		        a.schedule_start_minute IS NOT NULL AND a.schedule_end_minute IS NOT NULL,
 		        COALESCE(a.schedule_start_minute, 0)::int,
 		        COALESCE(a.schedule_end_minute,   0)::int,
-		        a.home_structure_id::text
+		        a.home_structure_id::text,
+		        a.inside_structure_id::text
 		   FROM actor a
 		  WHERE a.id = $1::uuid`,
 		actorID,
 	).Scan(&isNPC, &atHome, &alreadySleeping,
 		&hasSchedule, &scheduleStartMin, &scheduleEndMin,
-		&homeStructureID)
+		&homeStructureID, &insideStructureID)
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			log.Printf("maybeNPCAutoSleep(%s): load row: %v", actorID, err)
 		}
 		return
 	}
-	if !isNPC || !atHome || alreadySleeping {
+	if !isNPC || alreadySleeping {
 		return
+	}
+	// Resting-place predicate: home OR lodger at inside_structure_id.
+	// home is the cheap check (column equality); lodger is the
+	// pay_ledger materialization (nights_stay row + lodger_until in
+	// the future). Skip the lodger query when the home branch already
+	// passes — most NPC arrivals home should not pay the extra round
+	// trip.
+	if !atHome {
+		if !insideStructureID.Valid {
+			return
+		}
+		isBoarderHere, err := app.isLodger(ctx, actorID, insideStructureID.String)
+		if err != nil {
+			log.Printf("maybeNPCAutoSleep(%s): isLodger: %v", actorID, err)
+			return
+		}
+		if !isBoarderHere {
+			return
+		}
 	}
 
 	// Off-shift check. Unscheduled NPCs (Ezekiel, Josiah at the time
@@ -599,7 +627,15 @@ func (app *App) maybeNPCAutoSleep(ctx context.Context, actorID string) {
 	// the bar) flips to unoccupied at sleep onset. Most homes don't
 	// have occupied/unoccupied state machines, so this is a no-op
 	// there — safe to call unconditionally.
-	if homeStructureID.Valid {
+	//
+	// ZBBS-WORK-204: lodger boarders sleep at inside_structure_id
+	// (their lodging structure), not home_structure_id (which is
+	// NULL for them). Prefer inside when set so the refresh hits
+	// the structure they actually bedded down in regardless of
+	// which gate let them sleep.
+	if insideStructureID.Valid {
+		app.refreshStructureOccupancyState(ctx, insideStructureID.String)
+	} else if homeStructureID.Valid {
 		app.refreshStructureOccupancyState(ctx, homeStructureID.String)
 	}
 }

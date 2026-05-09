@@ -149,6 +149,13 @@ type agentNPCRow struct {
 	VisitorArchetype   sql.NullString
 	VisitorOrigin      sql.NullString
 	VisitorDisposition sql.NullString
+	// Per-vendor narrative flavor (ZBBS-WORK-204). Populated for
+	// salem-vendor-backed keepers (innkeeper Hannah, future
+	// shopkeepers); NULL on every other actor. Engine appends the
+	// trimmed string as a trailing paragraph on the keeper rooms-
+	// available block so each vendor's tone diverges without per-
+	// keeper VA prompt work. See actor.vendor_flavor column.
+	VendorFlavor sql.NullString
 }
 
 // runAgentTick is the harness loop for one NPC. Stamps last_agent_tick_at
@@ -773,7 +780,8 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, 
 		        COALESCE((SELECT value FROM actor_need WHERE actor_id = n.id AND key = 'tiredness'), 0)::smallint,
 		        n.break_until,
 		        n.sleeping_until,
-		        n.visitor_archetype, n.visitor_origin, n.visitor_disposition
+		        n.visitor_archetype, n.visitor_origin, n.visitor_disposition,
+		        n.vendor_flavor
 		 FROM actor n
 		 LEFT JOIN village_object wo ON wo.id = n.work_structure_id
 		 LEFT JOIN asset wa ON wa.id = wo.asset_id
@@ -791,7 +799,8 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, 
 		&r.WorkLabel, &r.HomeLabel,
 		&r.Coins, &r.Hunger, &r.Thirst, &r.Tiredness,
 		&r.BreakUntil, &r.SleepingUntil,
-		&r.VisitorArchetype, &r.VisitorOrigin, &r.VisitorDisposition); err != nil {
+		&r.VisitorArchetype, &r.VisitorOrigin, &r.VisitorDisposition,
+		&r.VendorFlavor); err != nil {
 		if err != sql.ErrNoRows {
 			log.Printf("event-tick %s (%s): load row: %v", npcID, reason, err)
 		}
@@ -1918,6 +1927,44 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 		}
 	} else {
 		log.Printf("perception activeLodgersForKeeper %s: %v", r.DisplayName, err)
+	}
+
+	// ZBBS-WORK-204: keeper rooms-available + (for salem-vendor
+	// keepers) standing rate + per-vendor flavor. Fires for any
+	// keeper whose work structure has private rooms (the inn-shape
+	// predicate). Empty when the keeper has no private rooms placed
+	// — cheap COUNT subquery, two scans of structure_room.
+	if r.WorkStructureID.Valid {
+		if avail, total, err := app.roomsAvailableAtStructure(ctx, r.WorkStructureID.String); err != nil {
+			log.Printf("perception roomsAvailableAtStructure %s: %v", r.DisplayName, err)
+		} else if total > 0 {
+			weeklyRate := app.loadIntSetting(ctx, "lodging_default_weekly_rate", 28)
+			label := ""
+			if r.WorkLabel.Valid {
+				label = r.WorkLabel.String
+			}
+			flavor := ""
+			if r.VendorFlavor.Valid {
+				flavor = r.VendorFlavor.String
+			}
+			if block := formatKeeperVendorPerception(avail, total, weeklyRate, label, flavor, r.LLMMemoryAgent); block != "" {
+				sections = append(sections, block)
+			}
+		}
+	}
+
+	// ZBBS-WORK-204: lodger-side cue. When this actor is themselves a
+	// boarder somewhere, surface their paid-through window with
+	// escalating urgency near expiry. Always-on for lodgers; silent
+	// for everyone else (Hannah the keeper, decorative villagers,
+	// most NPCs). Drives the LLM-side cadence — "your room expires
+	// today, see the keeper before sundown" pushes Ezekiel toward
+	// the renewal walk before the engine-auto rebook fires the
+	// backstop at 6h pre-expiry.
+	if status, ok := app.loadLodgerSelfStatus(ctx, r.ID); ok {
+		if line := formatLodgerSelfPerception(status, hourStart, hourStart.Location()); line != "" {
+			sections = append(sections, line)
+		}
 	}
 
 	// ZBBS-171 Phase 2: recent purchase + sale history blocks. Phase 1

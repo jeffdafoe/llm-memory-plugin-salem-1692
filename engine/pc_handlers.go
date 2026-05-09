@@ -596,10 +596,21 @@ func (app *App) loadPCInventoryEntries(ctx context.Context, actorID string) []pc
 }
 
 // handlePCCreate — first-time PC creation. Sets character_name and
-// auto-assigns home_structure_id to the nearest tavern. Idempotent on
-// re-call: updates character_name to the new value (lets a player
-// rename mid-game if they want — UX decision deferred). Initial
-// position is the home tavern's anchor (or village center fallback).
+// seeds the PC as a 1-day boarder at the village's lodging structure.
+// Idempotent on re-call: updates character_name to the new value
+// (lets a player rename mid-game if they want — UX decision deferred).
+// Initial position is the lodging structure's anchor (or village
+// center fallback).
+//
+// ZBBS-WORK-204: home_structure_id is no longer set at creation. PC
+// boarding is a pay_ledger relationship, not a column-level "you live
+// here." A starter `nights_stay` ledger row keyed to the picked
+// lodging keeper anchors the PC's lodger status from minute one — so
+// canEnter, the lodger perception cue, and auto-bed all work
+// immediately, and the PC's first interaction with the keeper is the
+// extension negotiation rather than initial check-in. Re-running
+// /pc/create on an existing PC is a no-op for the starter row (no
+// duplicate insert) so a sprite change or rename doesn't double-book.
 func (app *App) handlePCCreate(w http.ResponseWriter, r *http.Request) {
 	user := getUserFromContext(r.Context())
 	if user == nil {
@@ -642,15 +653,20 @@ func (app *App) handlePCCreate(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Travelers lodge at the Inn. The Inn tag identifies multi-tenant
-	// Spawn home is any lodging-tagged structure. Prefer pure inns
-	// (lodging without tavern) over tavern combos — historically the
-	// "ordinary" was both, but a dedicated inn is the more
+	// Travelers lodge at the village's lodging structure. Prefer pure
+	// inns (lodging without tavern) over tavern combos — historically
+	// the "ordinary" was both, but a dedicated inn is the more
 	// quintessential traveler's home. The IS_TAVERN ordering picks
 	// pure inn first and falls back to tavern only when no pure inn
 	// exists. Within a tier, oldest placement wins.
-	var homeID sql.NullString
-	var homeX, homeY sql.NullFloat64
+	//
+	// ZBBS-WORK-204: this picked structure no longer becomes
+	// home_structure_id; instead the PC is seeded as a boarder via a
+	// pay_ledger nights_stay row tied to the structure's keeper. The
+	// anchor coords still drive the spawn position so a fresh PC
+	// arrives where they're about to lodge.
+	var lodgingID sql.NullString
+	var lodgingX, lodgingY sql.NullFloat64
 	if err := app.DB.QueryRow(r.Context(),
 		`SELECT o.id::text, o.x, o.y
 		   FROM village_object o
@@ -660,16 +676,16 @@ func (app *App) handlePCCreate(w http.ResponseWriter, r *http.Request) {
 		              WHERE t2.object_id = o.id AND t2.tag = 'tavern'
 		           ) ASC, o.created_at ASC
 		  LIMIT 1`,
-	).Scan(&homeID, &homeX, &homeY); err != nil && err != sql.ErrNoRows {
+	).Scan(&lodgingID, &lodgingX, &lodgingY); err != nil && err != sql.ErrNoRows {
 		log.Printf("pc/create lodging lookup: %v", err)
 	}
 
-	// Default starting position: the home tavern's anchor, or (0,0)
-	// when no tavern is placed yet (test environments).
+	// Default starting position: the lodging anchor, or (0,0) when
+	// no tavern/inn is placed yet (test environments).
 	var startX, startY float64
-	if homeX.Valid {
-		startX = homeX.Float64
-		startY = homeY.Float64
+	if lodgingX.Valid {
+		startX = lodgingX.Float64
+		startY = lodgingY.Float64
 	}
 
 	// Upsert. ON CONFLICT lets re-runs update display_name without
@@ -679,8 +695,14 @@ func (app *App) handlePCCreate(w http.ResponseWriter, r *http.Request) {
 	//
 	// sprite_id COALESCE: when the request supplied a sprite, the new
 	// value wins; when it didn't, the existing value (if any) survives
-	// the upsert. NULLIF($6, '')::uuid converts the empty fast-path to
+	// the upsert. NULLIF($5, '')::uuid converts the empty fast-path to
 	// SQL NULL so the COALESCE picks up the existing column.
+	//
+	// home_structure_id is intentionally NOT set here (ZBBS-WORK-204).
+	// The starter nights_stay ledger row below is what gives the PC
+	// boarder status and canEnter access to the lodging structure;
+	// home stays NULL so the boarder/owner distinction reads honestly
+	// on the actor row.
 	tx, err := app.DB.Begin(r.Context())
 	if err != nil {
 		log.Printf("pc/create begin tx: %v", err)
@@ -690,15 +712,14 @@ func (app *App) handlePCCreate(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context())
 	var actorID, prevSpriteID sql.NullString
 	if err := tx.QueryRow(r.Context(),
-		`INSERT INTO actor (login_username, display_name, current_x, current_y, home_structure_id, sprite_id)
-		 VALUES ($1, $2, $3, $4, NULLIF($5, '')::uuid, NULLIF($6, '')::uuid)
+		`INSERT INTO actor (login_username, display_name, current_x, current_y, sprite_id)
+		 VALUES ($1, $2, $3, $4, NULLIF($5, '')::uuid)
 		 ON CONFLICT (login_username) DO UPDATE
 		   SET display_name = EXCLUDED.display_name,
-		       home_structure_id = COALESCE(EXCLUDED.home_structure_id, actor.home_structure_id),
 		       sprite_id = COALESCE(EXCLUDED.sprite_id, actor.sprite_id)
 		 RETURNING id::text, sprite_id::text`,
 		user.Username, req.CharacterName, startX, startY,
-		homeStringValue(homeID), spriteID,
+		spriteID,
 	).Scan(&actorID, &prevSpriteID); err != nil {
 		log.Printf("pc/create insert: %v", err)
 		jsonError(w, "Failed to create PC", http.StatusInternalServerError)
@@ -713,6 +734,48 @@ func (app *App) handlePCCreate(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "Failed to create PC", http.StatusInternalServerError)
 		return
 	}
+	// Seed a 1-day starter nights_stay row at the picked lodging
+	// structure's keeper (ZBBS-WORK-204). Best-effort: if no lodging
+	// is placed (test env) or no keeper sells nights_stay yet
+	// (operator hasn't seeded the inn keeper), the PC is created
+	// without lodger status. They can still walk into the village,
+	// they just don't have a room until they pay one of the keepers
+	// directly. The NOT EXISTS guard makes the seed idempotent on
+	// /pc/create re-calls — no duplicate starter row when the PC
+	// already has an active nights_stay ledger somewhere.
+	if lodgingID.Valid && lodgingID.String != "" {
+		if _, err := tx.Exec(r.Context(),
+			`INSERT INTO pay_ledger (
+			    buyer_id, seller_id, item_kind, qty, offered_amount,
+			    quoted_unit_amount, consume_now, state, message,
+			    ready_by, fulfillment_status, delivered_on, resolved_at
+			 )
+			 SELECT $1::uuid, keeper.id, 'nights_stay', 1, 0,
+			        0, false, 'accepted', 'pc-create starter',
+			        CURRENT_DATE, 'delivered', NOW(), NOW()
+			   FROM actor keeper
+			  WHERE keeper.work_structure_id = $2::uuid
+			    AND keeper.llm_memory_agent IS NOT NULL
+			    AND EXISTS (
+			        SELECT 1 FROM actor_inventory ki
+			         WHERE ki.actor_id = keeper.id
+			           AND ki.item_kind = 'nights_stay'
+			    )
+			    AND NOT EXISTS (
+			        SELECT 1 FROM pay_ledger pl
+			         WHERE pl.buyer_id = $1::uuid
+			           AND pl.item_kind = 'nights_stay'
+			           AND pl.state = 'accepted'
+			           AND pl.fulfillment_status = 'delivered'
+			    )
+			  ORDER BY keeper.created_at ASC
+			  LIMIT 1`,
+			actorID.String, lodgingID.String,
+		); err != nil {
+			log.Printf("pc/create seed nights_stay starter for %s: %v", actorID.String, err)
+			// Soft-fail: PC is still created, just without a starter row.
+		}
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		log.Printf("pc/create commit: %v", err)
 		jsonError(w, "Failed to create PC", http.StatusInternalServerError)
@@ -726,7 +789,7 @@ func (app *App) handlePCCreate(w http.ResponseWriter, r *http.Request) {
 		app.broadcastPCAppeared(r.Context(), actorID.String, prevSpriteID.String, req.CharacterName)
 	}
 
-	log.Printf("pc/create %s -> '%s' (home tavern %v, sprite %v)", user.Username, req.CharacterName, homeID.String, prevSpriteID.String)
+	log.Printf("pc/create %s -> '%s' (lodging %v, sprite %v)", user.Username, req.CharacterName, lodgingID.String, prevSpriteID.String)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1351,13 +1414,6 @@ func (app *App) broadcastPCAppeared(ctx context.Context, actorID, spriteID, char
 		log.Printf("broadcastPCAppeared: position lookup failed: %v", err)
 	}
 	app.Hub.Broadcast(WorldEvent{Type: "pc_appeared", Data: data})
-}
-
-func homeStringValue(s sql.NullString) string {
-	if s.Valid {
-		return s.String
-	}
-	return ""
 }
 
 // handlePCSay — addressed speech. Two writes happen:

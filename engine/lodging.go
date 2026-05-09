@@ -52,6 +52,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 )
@@ -337,4 +338,220 @@ func (app *App) canEnter(ctx context.Context, actorID, structureID string) (bool
 		return true, nil
 	}
 	return app.wouldBeEvictionExempt(ctx, actorID, structureID)
+}
+
+// lodgerSelfStatus is the lodger-side mirror of activeLodgerEntry: the
+// actor's own current lodger row (if any), shaped for the lodger
+// perception cue. Used by the lodger-side block in buildAgentPerception
+// so the boarder sees their own paid-through window with the same
+// authoritative shape the keeper sees on their side.
+type lodgerSelfStatus struct {
+	StructureID    string
+	StructureLabel string
+	KeeperName     string
+	LodgerUntil    time.Time
+}
+
+// loadLodgerSelfStatus returns the actor's current lodger row, picking
+// the latest-expiring active row when multiple exist (e.g. an
+// engine-auto rebook landed while the prior week's row is still
+// counted as active). Returns ok=false when the actor has no active
+// lodger row anywhere — most NPCs (non-boarders) hit this path.
+//
+// The structure label is COALESCE(display_name, asset.name) — same
+// resolution as the perception's existing home/work labels, so a
+// boarder's "Your room at the Inn" reads consistently with their
+// identity-recap section.
+func (app *App) loadLodgerSelfStatus(ctx context.Context, actorID string) (lodgerSelfStatus, bool) {
+	var s lodgerSelfStatus
+	// Same active-window predicate as isLodger / activeLodgersForKeeper:
+	// ready_by <= CURRENT_DATE AND NOW() < lodger_until. Keeping the
+	// freshness check in SQL avoids a Go-side host-clock vs. DB
+	// timezone mismatch — all three sites compute lodger_until from
+	// the same setting and timezone literal, so consistency is the
+	// invariant we rely on.
+	err := app.DB.QueryRow(ctx,
+		`SELECT seller.work_structure_id::text,
+		        COALESCE(o.display_name, a.name),
+		        seller.display_name,
+		        (
+		            (
+		                (pl.ready_by + COALESCE(pl.qty, 1) * INTERVAL '1 day')::timestamp
+		                + (
+		                    COALESCE(
+		                        (SELECT value::int FROM setting WHERE key = 'lodging_check_out_hour'),
+		                        11
+		                    ) * INTERVAL '1 hour'
+		                  )
+		            ) AT TIME ZONE 'America/New_York'
+		        ) AS lodger_until
+		   FROM pay_ledger pl
+		   JOIN actor seller ON seller.id = pl.seller_id
+		   JOIN village_object o ON o.id = seller.work_structure_id
+		   JOIN asset a ON a.id = o.asset_id
+		  WHERE pl.buyer_id = $1::uuid
+		    AND pl.item_kind = 'nights_stay'
+		    AND pl.state = 'accepted'
+		    AND pl.fulfillment_status = 'delivered'
+		    AND pl.ready_by <= CURRENT_DATE
+		    AND NOW() < (
+		        (
+		            (pl.ready_by + COALESCE(pl.qty, 1) * INTERVAL '1 day')::timestamp
+		            + (
+		                COALESCE(
+		                    (SELECT value::int FROM setting WHERE key = 'lodging_check_out_hour'),
+		                    11
+		                ) * INTERVAL '1 hour'
+		              )
+		        ) AT TIME ZONE 'America/New_York'
+		    )
+		  ORDER BY lodger_until DESC
+		  LIMIT 1`,
+		actorID,
+	).Scan(&s.StructureID, &s.StructureLabel, &s.KeeperName, &s.LodgerUntil)
+	if err != nil {
+		if err != sql.ErrNoRows {
+			log.Printf("loadLodgerSelfStatus(%s): %v", actorID, err)
+		}
+		return lodgerSelfStatus{}, false
+	}
+	return s, true
+}
+
+// formatLodgerSelfPerception renders the boarder's own paid-through
+// status. Always-on while the actor is a lodger; escalates inside
+// the 48h pre-expiry window, urgent on the calendar day the lease
+// actually ends.
+//
+// "Today" framing is anchored to the calendar date in loc, not a
+// rolling 24h delta — a freshly-checked-in 1-night lodger whose
+// expiry lands tomorrow at 11:00 should read as "expires Sunday at
+// 11:00", not "expires today" simply because they're <24h away.
+//
+// loc is the world timezone (cfg.Location) so day-of-week framing
+// reads as wall-clock village time.
+func formatLodgerSelfPerception(s lodgerSelfStatus, now time.Time, loc *time.Location) string {
+	if loc == nil {
+		loc = time.UTC
+	}
+	// Defensive: an expired status row shouldn't surface as
+	// "expires today at 11:00" or fall into the 48h band (which
+	// matches any past timestamp). loadLodgerSelfStatus filters
+	// these in SQL, but keeping the formatter robust means callers
+	// who synthesize a lodgerSelfStatus directly (tests, future
+	// admin paths) get an empty section rather than a wrong cue.
+	if !s.LodgerUntil.After(now) {
+		return ""
+	}
+	until := s.LodgerUntil.In(loc)
+	nowLocal := now.In(loc)
+	sameDay := until.Year() == nowLocal.Year() &&
+		until.YearDay() == nowLocal.YearDay()
+	remaining := until.Sub(now)
+	switch {
+	case sameDay:
+		return fmt.Sprintf(
+			"Your room at %s expires today at %s — see %s before then to renew, or your boarding ends.",
+			s.StructureLabel, until.Format("15:04"), s.KeeperName,
+		)
+	case remaining <= 48*time.Hour:
+		return fmt.Sprintf(
+			"Your room at %s expires %s. Find %s soon to arrange another week.",
+			s.StructureLabel, until.Format("Monday at 15:04"), s.KeeperName,
+		)
+	default:
+		return fmt.Sprintf(
+			"Your room at %s is paid through %s.",
+			s.StructureLabel, until.Format("Monday"),
+		)
+	}
+}
+
+// roomsAvailableAtStructure returns (available, total) bedroom counts
+// at structureID, where "available" is private rooms with no active
+// room_access row (matches assignBedroomForLodger's vacancy gate).
+// Both zero when the structure has no private rooms placed —
+// caller suppresses the perception line in that case.
+//
+// Counts are point-in-time at query; the auto-bed sweep and the
+// expireRoomAccess sweep both run on the same minute cadence as the
+// keeper's perception build, so a boarder who just checked out frees
+// their room before the next keeper tick reads it.
+func (app *App) roomsAvailableAtStructure(ctx context.Context, structureID string) (available, total int, err error) {
+	if structureID == "" {
+		return 0, 0, nil
+	}
+	err = app.DB.QueryRow(ctx,
+		`SELECT
+		   (SELECT COUNT(*) FROM structure_room
+		     WHERE structure_id = $1::uuid AND kind = 'private')
+		     - (SELECT COUNT(*) FROM structure_room sr
+		         JOIN room_access sa ON sa.room_id = sr.id
+		        WHERE sr.structure_id = $1::uuid
+		          AND sr.kind = 'private'
+		          AND sa.active = true),
+		   (SELECT COUNT(*) FROM structure_room
+		     WHERE structure_id = $1::uuid AND kind = 'private')`,
+		structureID,
+	).Scan(&available, &total)
+	if err != nil {
+		return 0, 0, fmt.Errorf("roomsAvailableAtStructure: %w", err)
+	}
+	if available < 0 {
+		// Defensive: a stale active=true row outside the structure_room
+		// inner-join shape could underflow the subtraction. Clamp to 0.
+		available = 0
+	}
+	return available, total, nil
+}
+
+// formatKeeperVendorPerception renders the rooms-available block
+// (and, for salem-vendor-backed keepers, the standing rate +
+// vendor flavor paragraphs) that anchor the keeper's per-tick role
+// context. structureLabel matches the work-structure label already
+// shown in identity-recap so the lines read consistently.
+//
+// Salem-vendor keepers (Hannah Boggs and any future shopkeepers
+// using the shared VA) get the full block — their generic startup
+// prompt doesn't carry per-keeper pricing wisdom, so the engine
+// injects a rate anchor and a flavor paragraph each tick. Bespoke
+// role-overlay keepers (John Ellis the tavernkeeper, who has his
+// own pricing-flexibility instructions) only see the occupancy
+// line; their pricing logic stays in their attribute_definition.
+//
+// Empty when the actor has no private rooms (not a keeper of an
+// inn-shaped structure) — caller suppresses the section.
+func formatKeeperVendorPerception(available, total, weeklyRate int, structureLabel, vendorFlavor, llmMemoryAgent string) string {
+	if total <= 0 {
+		return ""
+	}
+	occupied := total - available
+	subject := "Your inn"
+	if structureLabel != "" {
+		subject = structureLabel
+	}
+	roomsLine := fmt.Sprintf(
+		"%s has %d bedroom%s; %d occupied tonight, %d available.",
+		subject, total, pluralS(total), occupied, available,
+	)
+	if llmMemoryAgent != "salem-vendor" {
+		return roomsLine
+	}
+	perNight := weeklyRate / 7
+	rateLine := fmt.Sprintf(
+		"Your standing rate is around %d coins per week (%d per night), haggle-able based on occupancy and the customer.",
+		weeklyRate, perNight,
+	)
+	out := roomsLine + "\n" + rateLine
+	if strings.TrimSpace(vendorFlavor) != "" {
+		out += "\n\n" + strings.TrimSpace(vendorFlavor)
+	}
+	return out
+}
+
+func pluralS(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }
