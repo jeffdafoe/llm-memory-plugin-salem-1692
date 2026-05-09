@@ -371,6 +371,11 @@ func _build_ui() -> void:
     # Same wiring for needs_changed → top bar HUD readout (ZBBS-123).
     if talk_panel_layer.has_signal("needs_changed") and top_bar != null:
         talk_panel_layer.needs_changed.connect(_on_pc_needs_changed)
+    # ZBBS-HOME-218: forward dwelling_attributes from the talk panel
+    # to the top bar so the HUD recovery pulse engages from server
+    # state on every poll, not just on detected client-side decreases.
+    if talk_panel_layer.has_signal("dwelling_attributes_changed") and top_bar != null:
+        talk_panel_layer.dwelling_attributes_changed.connect(_on_pc_dwelling_attributes_changed)
     # Character name → top bar's username slot. Talk panel emits the
     # display_name from /pc/me; top bar shows it instead of the login,
     # falling back to the login when no PC exists (empty payload).
@@ -528,6 +533,15 @@ func _on_pc_needs_changed(needs: Dictionary) -> void:
     if top_bar == null or not top_bar.has_method("set_needs"):
         return
     top_bar.set_needs(needs)
+
+## ZBBS-HOME-218: forward server-reported dwelling attributes to top
+## bar so the HUD recovery pulse engages immediately on /pc/me, even
+## without a client-detected value decrease. Empty array clears any
+## active pulse.
+func _on_pc_dwelling_attributes_changed(attrs: PackedStringArray) -> void:
+    if top_bar == null or not top_bar.has_method("set_dwelling_attributes"):
+        return
+    top_bar.set_dwelling_attributes(attrs)
 
 
 ## Forward the in-world character name from /pc/me to the top bar.
