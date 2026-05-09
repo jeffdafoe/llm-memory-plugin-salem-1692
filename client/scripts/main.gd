@@ -37,7 +37,6 @@ var village_ticker: PanelContainer = null
 var login_screen: Control = null
 var login_layer: CanvasLayer = null
 
-
 # PC bootstrap — once we've decided whether the player needs to pick a
 # sprite at this login, we don't want to redo the check on every signal
 # fire from Auth (auth_ready + logged_in both run on a single verify).
@@ -129,9 +128,27 @@ func _on_auth_ready() -> void:
     # If not authenticated, the login screen is already visible
 
 func _on_authenticated() -> void:
-    # Hide login screen
-    if login_screen != null:
-        login_screen.visible = false
+    # ZBBS-HOME-210: hide just the login form; the dark Background
+    # ColorRect inside LoginScreen stays visible as a curtain while
+    # the village fetches + renders. Fades in _on_world_ready once
+    # world.gd confirms objects + NPCs are placed. Without the
+    # curtain, the player watches flat terrain alone for ~1-2s
+    # while the catalog and village data load — the same gap the
+    # whole 208 / 209 effort failed to address.
+    if login_screen != null and login_screen.has_method("hide_form"):
+        login_screen.hide_form()
+
+    # Lock world input (clicks, scroll, walk, camera pan/zoom) while
+    # the village materializes. Camera, walk-click, and editor
+    # handlers bail on camera.modal_open. Released in
+    # _on_world_ready. Events arriving during the lock are dropped,
+    # not buffered — _input handlers early-return without
+    # accept_event() so a click fired during the load doesn't fire
+    # when the lock releases.
+    _set_modal_blocker("world_loading", true)
+
+    if world != null and not world.world_ready.is_connected(_on_world_ready):
+        world.world_ready.connect(_on_world_ready)
 
     # Connect for future login events (in case token was saved)
     if not Auth.logged_in.is_connected(_on_authenticated):
@@ -177,69 +194,35 @@ func _on_authenticated() -> void:
         _pc_bootstrap_done = true
         _bootstrap_pc()
 
-    # ZBBS-HOME-209: block all world input (clicks, scroll, walk,
-    # camera pan/zoom) while the village is materializing. Released
-    # in _on_world_ready once every queued object has rendered. We
-    # don't show a loader overlay — the procedural terrain stays
-    # visible and objects fade in via world.gd's bootstrap fade —
-    # but unattended clicks during the load window would pan the
-    # camera or fire walk-pending state at empty spots. Use the
-    # existing modal-blocker mechanism so this composes cleanly with
-    # any other modal that opens before world_ready (none expected
-    # in practice but the OR-of-blockers semantics handles it).
-    # Events that hit the input handlers are dropped, not buffered:
-    # camera._input early-returns on modal_open, main._input
-    # early-returns on the same flag, editor._input requires
-    # editor.active which isn't on yet. No queued click fires after
-    # release.
-    _set_modal_blocker("world_loading", true)
-    if not world.world_ready.is_connected(_on_world_ready):
-        world.world_ready.connect(_on_world_ready)
-
-    # Kick off object/NPC loads as soon as catalog metadata is parsed —
-    # ZBBS-HOME-208 unblocks /api/village/* from the all-or-nothing
-    # sheet-bundle gate. Per-object renders queue against their sheet
-    # path in world.gd's _pending_placements_by_sheet and pop in as
-    # sheets land.
-    #
-    # Editor catalog UI (build_catalog) still needs the full sheet
-    # cache for thumbnails — left on _on_catalog_ready_full which fires
-    # off catalog_loaded. Two handlers, two readiness levels.
-    if Catalog.assets.size() > 0:
-        # Metadata already parsed (e.g., catalog_loaded fired before
-        # auth completed). Run the metadata-only handler now.
-        _on_catalog_metadata_ready()
-    elif not Catalog.catalog_metadata_ready.is_connected(_on_catalog_metadata_ready):
-        Catalog.catalog_metadata_ready.connect(_on_catalog_metadata_ready)
+    # Load objects now that we're authenticated. Guard against the duplicate
+    # connect — _on_authenticated runs twice on a single verify (auth_ready
+    # + logged_in both fire from Auth._on_verify_response).
     if Catalog.loaded:
-        _on_catalog_ready_full()
-    elif not Catalog.catalog_loaded.is_connected(_on_catalog_ready_full):
-        Catalog.catalog_loaded.connect(_on_catalog_ready_full)
+        _on_catalog_ready()
+    elif not Catalog.catalog_loaded.is_connected(_on_catalog_ready):
+        Catalog.catalog_loaded.connect(_on_catalog_ready)
 
 ## WebSocket reopened after a disconnect (browser tab backgrounded overnight,
 ## network blip, etc). Any events that fired during the gap — most visibly
 ## world_phase_changed at dawn/dusk — are gone. Tear down the rendered world
 ## and refetch everything from REST to match server truth.
-##
-## ZBBS-HOME-208: gate is now metadata-only (Catalog.assets populated)
-## rather than full sheet bundle, matching the bootstrap path. Sheets
-## downloaded since the original load are still cached, so the per-sheet
-## queueing path is unlikely to be exercised here, but staying consistent
-## with bootstrap means the resync code can't drift on the next refactor.
-##
-## ZBBS-HOME-209: re-engage the world_loading modal blocker so clicks
-## during the resync window don't fire on a half-rendered world. Released
-## by _on_world_ready when the resync rebuilds finishes (world.gd's
-## reset_world_state cleared _world_ready_emitted so the signal re-fires).
 func _on_ws_reconnected() -> void:
     if editor != null:
         editor._deselect()
         editor._deselect_npc()
+    # ZBBS-HOME-210: re-engage the curtain so the resync rebuild is
+    # covered. world.gd's reset_world_state clears the world_ready
+    # latches; world_ready re-emits when objects + NPCs are placed
+    # again, and _on_world_ready fades + releases the lock.
+    if login_screen != null and login_screen.has_method("hide_form"):
+        login_screen.modulate = Color(1, 1, 1, 1)
+        login_screen.visible = true
+        login_screen.hide_form()
     _set_modal_blocker("world_loading", true)
     world.reset_world_state()
     world.reload_terrain()
     world._load_world_phase()
-    if Catalog.assets.size() > 0:
+    if Catalog.loaded:
         world.load_objects()
 
 func _flush_unsaved_terrain_or_reload() -> void:
@@ -249,26 +232,9 @@ func _flush_unsaved_terrain_or_reload() -> void:
     else:
         world.reload_terrain()
 
-## Catalog metadata parsed (asset/state/slot lookups available, sheet
-## downloads may still be in flight). Fire the village/agent/NPC fetches
-## now so they race the sheet bundle instead of waiting for it.
-## ZBBS-HOME-208.
-func _on_catalog_metadata_ready() -> void:
+func _on_catalog_ready() -> void:
     world.load_objects()
-    # Tag mutations broadcast back via this world signal — forward to the
-    # panel so the chips refresh in place. These hooks don't depend on
-    # textures so they belong on the metadata-ready half.
-    if world != null and editor_panel != null:
-        if not world.object_tags_updated.is_connected(_on_object_tags_updated_from_world):
-            world.object_tags_updated.connect(_on_object_tags_updated_from_world)
-        if not world.npc_attributes_changed.is_connected(_on_npc_attributes_changed_from_world):
-            world.npc_attributes_changed.connect(_on_npc_attributes_changed_from_world)
-
-## Catalog fully loaded (every spritesheet cached). Build the editor
-## catalog UI — its thumbnails draw from sheet textures, so this has to
-## wait for the full bundle. Object placement already happened on
-## metadata_ready. ZBBS-HOME-208.
-func _on_catalog_ready_full() -> void:
+    # Build catalog in editor panel now that assets are loaded
     if editor_panel != null:
         editor_panel.build_catalog()
         # Push the object-tag allowlist — drives both the social-hour tag
@@ -278,6 +244,13 @@ func _on_catalog_ready_full() -> void:
             editor_panel.set_social_tag_options(Catalog.object_tags)
         elif not Catalog.object_tags_loaded.is_connected(_on_object_tags_loaded):
             Catalog.object_tags_loaded.connect(_on_object_tags_loaded)
+    # Tag mutations broadcast back via this world signal — forward to the
+    # panel so the chips refresh in place.
+    if world != null and editor_panel != null:
+        if not world.object_tags_updated.is_connected(_on_object_tags_updated_from_world):
+            world.object_tags_updated.connect(_on_object_tags_updated_from_world)
+        if not world.npc_attributes_changed.is_connected(_on_npc_attributes_changed_from_world):
+            world.npc_attributes_changed.connect(_on_npc_attributes_changed_from_world)
 
 func _on_object_tags_loaded() -> void:
     if editor_panel != null:
@@ -612,7 +585,14 @@ func _show_login_screen(message: String) -> void:
     editor.active = false
     camera.editor_active = false
     if login_screen != null:
+        login_screen.modulate = Color(1, 1, 1, 1)
         login_screen.visible = true
+        # ZBBS-HOME-210: the form may have been hidden by an earlier
+        # _on_authenticated. Bring it back so the user can re-enter
+        # credentials. set_message paints the "Session expired"
+        # error label.
+        if login_screen.has_method("show_form"):
+            login_screen.show_form()
         if login_screen.has_method("set_message"):
             login_screen.set_message(message)
 
@@ -1269,17 +1249,24 @@ func _on_editor_mode_changed(mode) -> void:
     editor_panel.set_assigning_home(mode == editor.Mode.ASSIGN_HOME)
     editor_panel.set_assigning_work(mode == editor.Mode.ASSIGN_WORK)
 
-## World finished its bootstrap render: every village object has been
-## placed and faded in (per-sheet queue empty + village/npcs HTTP
-## fetches both landed). Release the input lock — clicks, scroll, and
-## walk handlers can now fire. ZBBS-HOME-209.
-##
-## Pre-209 this hid a loader overlay; the loader was dropped because
-## it added a jarring "Loading the village…" label without actually
-## fixing the underlying render gap (objects were still popping in
-## after the fade). The modal-blocker approach plus per-object fade-
-## in in world.gd produces the same "input-locked while loading"
-## guarantee with a much cleaner visual.
+## World finished its bootstrap render: village objects placed AND
+## NPCs all rendered. Fade the login_screen curtain (its dark
+## Background ColorRect has been covering the world since auth) and
+## release the input lock. ZBBS-HOME-210.
+const _WORLD_READY_FADE_DURATION: float = 0.4
 func _on_world_ready() -> void:
     _set_modal_blocker("world_loading", false)
+    if login_screen == null:
+        return
+    var t: Tween = create_tween()
+    t.tween_property(login_screen, "modulate", Color(1, 1, 1, 0), _WORLD_READY_FADE_DURATION)
+    t.tween_callback(func():
+        if login_screen != null:
+            login_screen.visible = false
+            # Reset modulate so a future _show_login_screen
+            # (session-expired path) doesn't surface the screen at
+            # alpha 0. _show_login_screen also sets modulate but
+            # belt-and-suspenders.
+            login_screen.modulate = Color(1, 1, 1, 1)
+    )
 

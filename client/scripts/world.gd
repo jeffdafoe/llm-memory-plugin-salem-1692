@@ -12,11 +12,13 @@ signal npc_metadata_changed(npc_id: String)
 ## The sidebar Villagers browser rebuilds its list on this signal.
 signal npc_list_changed
 
-## Emitted once the initial world load is "visually ready": village objects
-## and NPCs have both finished their /api/village/* fetches. Sheet downloads
-## may still be in flight — objects whose sheets haven't landed yet are in
-## _pending_placements_by_sheet and will pop in as they arrive. main.gd's
-## loader overlay fades out on this signal. ZBBS-HOME-208.
+## Emitted once after the bootstrap world is visually complete: village
+## objects placed AND every fetched NPC has had its sprite sheet land
+## and rendered. main.gd uses this to fade the login_screen curtain
+## (the dark backdrop kept up post-auth) so the world reveals all-at-
+## once instead of letting the player watch terrain alone while objects
+## fetch. Latched once per session (or once per WS-reconnect resync via
+## reset_world_state). ZBBS-HOME-210.
 signal world_ready
 
 const MapGenerator = preload("res://scripts/map_generator.gd")
@@ -67,26 +69,17 @@ var pad_y: int = 112
 # Placed objects keyed by server id
 var placed_objects: Dictionary = {}
 
-# Per-sheet placement queues — payloads waiting on a specific sheet to
-# finish downloading before _place_object can draw them. Keyed by sheet
-# path; value is Array[Dictionary] of placement payloads. Drained by
-# _on_catalog_sheet_loaded when Catalog.sheet_loaded fires for that
-# sheet. ZBBS-HOME-208 — without this queue, objects whose sheets land
-# after their placement payload arrives would silently fail to render
-# (Catalog.get_sprite_texture returns null and _place_object early-
-# returns with a push_warning). Pre-208 the catalog_loaded gate
-# prevented the race; the new metadata-ready unblock means we have to
-# tolerate sheets-not-yet-ready and replay.
-var _pending_placements_by_sheet: Dictionary = {}
-
-# World-load completion tracking for the world_ready signal. Both
-# village objects and NPCs fire their respective HTTP responses once;
-# we OR them together so the loader overlay knows when to fade.
-# Sheet downloads are NOT tracked here — they continue in the
-# background and pop objects in as they land. Reset by
-# reset_world_state for the WS-reconnect resync path.
+# Bootstrap world_ready latches (ZBBS-HOME-210). _village_loaded flips
+# true after _on_village_loaded finishes placing every object the API
+# returned. _npcs_render_complete flips true after _render_pending_npcs
+# drains the pending list following an _on_npcs_loaded response — i.e.
+# the API returned, every NPC's sheet downloaded, every NPC rendered.
+# _check_world_ready emits world_ready exactly once when both are true.
+# All three reset on reset_world_state for the WS-reconnect resync
+# path so the curtain re-engages and re-fades.
 var _village_loaded: bool = false
-var _npcs_loaded: bool = false
+var _npcs_response_received: bool = false
+var _npcs_render_complete: bool = false
 var _world_ready_emitted: bool = false
 
 # Agent lookup: llm_memory_agent name → display name
@@ -114,11 +107,6 @@ func _ready() -> void:
         api_base = JavaScriptBridge.eval("window.location.origin", true)
     else:
         api_base = "http://zbbs.local"
-
-    # Drain the per-sheet placement queue as catalog sheets land.
-    # Connection is idempotent — _ready runs once per world instance.
-    Catalog.sheet_loaded.connect(_on_catalog_sheet_loaded)
-    Catalog.sheet_failed.connect(_on_catalog_sheet_failed)
 
 ## Build terrain — create custom renderer, generate terrain data,
 ## then try loading saved data from API (overwrites if found).
@@ -172,53 +160,27 @@ func reset_world_state() -> void:
     placed_npcs.clear()
     _pending_npcs.clear()
     _objects_loaded = false
-    # ZBBS-HOME-208: clear the per-sheet placement queue and the
-    # world_ready latches so the resync path's load_objects can re-fire
-    # cleanly. Without these resets, a stale queue from before the WS
-    # disconnect would replay against the new placed_objects map (which
-    # has now been cleared) and create orphans, and world_ready would
-    # never re-emit so the loader overlay wouldn't fade after a resync.
-    _pending_placements_by_sheet.clear()
+    # ZBBS-HOME-210: clear the world_ready latches so the curtain
+    # re-engages on the resync rebuild and fades when objects are
+    # placed again. Without this, world_ready would never re-emit
+    # and the curtain would stay stuck up after a reconnect.
     _village_loaded = false
-    _npcs_loaded = false
+    _npcs_response_received = false
+    _npcs_render_complete = false
     _world_ready_emitted = false
 
-## Emit world_ready once the bootstrap world is fully visible: both the
-## village and NPC fetches have landed AND every pending sheet-bound
-## placement has rendered (per-sheet object queue empty, NPC pending
-## list empty). Latched via _world_ready_emitted so the signal fires
-## exactly once per session (or once per WS-reconnect resync via
-## reset_world_state). Called on every drain milestone: village fetch
-## return, npc fetch return, sheet load drain, npc sheet drain.
-##
-## ZBBS-HOME-209 — pre-209 this fired as soon as the HTTP fetches
-## landed even though queued objects were still waiting on sheets.
-## main.gd's loader faded too early and queued objects popped in
-## after, exposing the same gap the loader was meant to hide. Gating
-## on queue-empty closes the loop: ready means actually rendered.
+## Emit world_ready once village + npcs are both visually rendered.
+## Latched once per session (or once per reset_world_state for WS
+## reconnect). ZBBS-HOME-210.
 func _check_world_ready() -> void:
     if _world_ready_emitted:
         return
-    if not (_village_loaded and _npcs_loaded):
+    if not _village_loaded:
         return
-    if not _pending_placements_by_sheet.is_empty():
-        return
-    if not _pending_npcs.is_empty():
+    if not _npcs_render_complete:
         return
     _world_ready_emitted = true
     world_ready.emit()
-
-## Tween a freshly-placed bootstrap node from invisible to fully-opaque
-## over a short window so the village materializes smoothly instead of
-## hard-popping. Gated by the caller — only the initial bootstrap load
-## fades; later admin placements / WS broadcasts use the existing
-## hard-cut behavior so a single new placement is visible at full
-## opacity immediately. ZBBS-HOME-209.
-const _BOOTSTRAP_FADE_DURATION: float = 0.25
-func _fade_in_bootstrap_node(node: CanvasItem) -> void:
-    node.modulate = Color(1, 1, 1, 0)
-    var t: Tween = create_tween()
-    t.tween_property(node, "modulate", Color(1, 1, 1, 1), _BOOTSTRAP_FADE_DURATION)
 
 # NPC rendering — static for milestone 1a, no movement or animation.
 # Sprite sheets are cached per path so multiple NPCs sharing a sheet share
@@ -256,11 +218,9 @@ func _on_npcs_loaded(result: int, response_code: int, _headers: PackedStringArra
         if sheet != "" and not _npc_sheets.has(sheet) and not unique_sheets.has(sheet):
             unique_sheets[sheet] = true
     _pending_npcs = json
-    # ZBBS-HOME-208: NPC fetch is done. Per-sprite sheet downloads may
-    # still be in flight, but those don't gate the world_ready signal —
-    # NPCs render as their sheets land via _on_npc_sheet_downloaded.
-    _npcs_loaded = true
-    _check_world_ready()
+    # ZBBS-HOME-210: response landed. _check_world_ready can now flip
+    # _npcs_render_complete once _render_pending_npcs drains the list.
+    _npcs_response_received = true
     if unique_sheets.is_empty():
         _render_pending_npcs()
         return
@@ -646,10 +606,12 @@ func _render_pending_npcs() -> void:
             continue
         _render_npc(npc)
     _pending_npcs = still_pending
-    # ZBBS-HOME-209: NPC drain milestone. If this pass emptied the
-    # pending list and the rest of the bootstrap conditions are met,
-    # world_ready can fire now.
-    _check_world_ready()
+    # ZBBS-HOME-210: NPC drain milestone. Once the response has been
+    # received AND the pending list is empty, every NPC is rendered.
+    # Re-check world_ready so the curtain can fade.
+    if _npcs_response_received and _pending_npcs.is_empty():
+        _npcs_render_complete = true
+        _check_world_ready()
 
 ## Build an AnimatedSprite2D for an NPC with all directions × (idle, walk)
 ## animations loaded from the catalog. Starts in idle for the NPC's facing.
@@ -745,11 +707,6 @@ func _render_npc(npc: Dictionary) -> void:
 
     objects_node.add_child(container)
     placed_npcs[npc_id] = container
-    # ZBBS-HOME-209: bootstrap-window NPCs fade in alongside objects.
-    # Same gate as _place_object — admin-placed NPCs after world_ready
-    # appear hard at full opacity.
-    if not _world_ready_emitted:
-        _fade_in_bootstrap_node(container)
     npc_list_changed.emit()
 
 ## Facing direction from a movement vector. |dx| vs |dy| picks the dominant
@@ -1299,9 +1256,8 @@ func _on_village_loaded(result: int, response_code: int, headers: PackedStringAr
     # the panel rebuilds with proper landmark labels now that objects exist.
     npc_list_changed.emit()
 
-    # ZBBS-HOME-208: village fetch is done. Sheets may still be in flight
-    # for some objects (queued in _pending_placements_by_sheet) but the
-    # main payload has landed — flag for world_ready.
+    # ZBBS-HOME-210: village fetch + render done. Re-check world_ready
+    # so the curtain can fade once NPCs also finish.
     _village_loaded = true
     _check_world_ready()
 
@@ -1341,26 +1297,6 @@ func _place_object(data: Dictionary) -> void:
     var state_info = Catalog.get_state(asset_id, current_state)
     if state_info == null:
         push_warning("No state found for asset: " + asset_id)
-        return
-
-    # ZBBS-HOME-208: when catalog metadata has landed but the sheet for
-    # this asset hasn't, queue the payload and bail. Catalog.sheet_loaded
-    # drives _on_catalog_sheet_loaded which replays queued payloads when
-    # the sheet arrives. Sheet path comes from the state row we just
-    # resolved — same field _create_sprite_node would dereference.
-    var sheet_path: String = state_info.get("sheet", "")
-    if sheet_path != "" and not Catalog.sheet_cache.has(sheet_path):
-        _enqueue_pending_placement(sheet_path, data)
-        return
-
-    # Attachment payload but the parent isn't placed yet (its sheet must
-    # still be downloading, or the parent is itself queued). Queue on
-    # this asset's sheet so the next drain pass re-evaluates the parent.
-    # If on re-evaluation the parent is still missing, _place_object
-    # re-queues — the loop terminates when the parent eventually lands
-    # OR when its sheet fails (drain-on-failure clears both buckets).
-    if attached_to != null and attached_to != "" and not placed_objects.has(attached_to):
-        _enqueue_pending_placement(sheet_path, data)
         return
 
     var texture: AtlasTexture = Catalog.get_sprite_texture(state_info)
@@ -1439,89 +1375,6 @@ func _place_object(data: Dictionary) -> void:
         objects_node.add_child(container)
 
     placed_objects[obj_id] = container
-
-    # ZBBS-HOME-209: bootstrap-window placements fade in instead of
-    # hard-popping. Gated on _world_ready_emitted so admin-initiated
-    # placements after the world is up don't stealth-fade. Sheet
-    # arrivals drain the queue inside the bootstrap window, so an
-    # object whose sheet lands late still rides this path.
-    if not _world_ready_emitted:
-        _fade_in_bootstrap_node(container)
-
-    # ZBBS-HOME-208: a base placement may have unblocked attachments
-    # that were waiting for it. Walk every queue and replay any
-    # payload whose attached_to matches the just-placed obj_id.
-    # Most placements have zero attachment fan-out, so this is cheap
-    # in practice (the queue is drained as sheets land, not per
-    # placement, and total queue size is bounded by total pending
-    # objects).
-    _retry_pending_attachments_for_parent(str(obj_id))
-
-## Append a placement payload to the per-sheet pending queue. Lazy-
-## creates the bucket. ZBBS-HOME-208.
-func _enqueue_pending_placement(sheet_path: String, data: Dictionary) -> void:
-    if not _pending_placements_by_sheet.has(sheet_path):
-        _pending_placements_by_sheet[sheet_path] = []
-    _pending_placements_by_sheet[sheet_path].append(data)
-
-## Catalog signaled that `sheet_path` is now cached. Drain any payloads
-## queued against it. Each replay calls _place_object — placements that
-## are now unblocked render; placements that still depend on an unplaced
-## parent re-queue. ZBBS-HOME-208.
-##
-## Snapshot the bucket and clear it before iterating so a re-queue from
-## inside the loop (parent-still-missing path) lands in a fresh bucket
-## rather than getting drained in the same pass and looping forever.
-func _on_catalog_sheet_loaded(sheet_path: String) -> void:
-    if not _pending_placements_by_sheet.has(sheet_path):
-        return
-    var queued: Array = _pending_placements_by_sheet[sheet_path]
-    _pending_placements_by_sheet.erase(sheet_path)
-    for payload in queued:
-        _place_object(payload)
-    # ZBBS-HOME-209: drain milestone — if village + npcs are already
-    # in and this drain emptied the bucket (no payloads re-queued for
-    # missing parents), the world has now fully rendered. Re-check.
-    _check_world_ready()
-
-## Catalog signaled that `sheet_path` failed to download. Drop any
-## payloads queued against it — without the texture they can never
-## render, and dragging them along would block any attachments waiting
-## on those parents. Surface the loss as a warning.
-func _on_catalog_sheet_failed(sheet_path: String) -> void:
-    if not _pending_placements_by_sheet.has(sheet_path):
-        return
-    var queued: Array = _pending_placements_by_sheet[sheet_path]
-    _pending_placements_by_sheet.erase(sheet_path)
-    push_warning("Discarding %d queued placement(s) — sheet failed: %s" % [queued.size(), sheet_path])
-    # ZBBS-HOME-209: a discarded sheet doesn't unblock world_ready by
-    # itself, but it might be the last thing keeping the queue
-    # non-empty. Re-check so the loader doesn't stall on a broken
-    # download forever.
-    _check_world_ready()
-
-## Walk every pending bucket and replay payloads whose attached_to
-## matches the freshly-placed parent_obj_id. Removes replayed entries
-## in place. ZBBS-HOME-208.
-func _retry_pending_attachments_for_parent(parent_obj_id: String) -> void:
-    if parent_obj_id == "":
-        return
-    var to_replay: Array = []
-    for sheet_path in _pending_placements_by_sheet.keys():
-        var bucket: Array = _pending_placements_by_sheet[sheet_path]
-        var keep: Array = []
-        for payload in bucket:
-            var pid = payload.get("attached_to", null)
-            if pid != null and str(pid) == parent_obj_id:
-                to_replay.append(payload)
-            else:
-                keep.append(payload)
-        if keep.is_empty():
-            _pending_placements_by_sheet.erase(sheet_path)
-        else:
-            _pending_placements_by_sheet[sheet_path] = keep
-    for payload in to_replay:
-        _place_object(payload)
 
 ## Create the appropriate sprite node for an asset state.
 ## Returns AnimatedSprite2D for multi-frame states, Sprite2D for static ones.
