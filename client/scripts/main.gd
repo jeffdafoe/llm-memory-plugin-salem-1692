@@ -37,15 +37,6 @@ var village_ticker: PanelContainer = null
 var login_screen: Control = null
 var login_layer: CanvasLayer = null
 
-# Perf overlay (ZBBS-HOME-212) — F3 toggles. Layer 11 sits above the
-# login curtain (10) and editor UI (1). Hidden by default; only shown
-# when explicitly requested. Updates every _process; console-logs every
-# second so a remote tester's DevTools captures a time series across
-# the diagnostic window.
-var perf_overlay_layer: CanvasLayer = null
-var perf_overlay_label: Label = null
-var _perf_log_accum: float = 0.0
-
 # PC bootstrap — once we've decided whether the player needs to pick a
 # sprite at this login, we don't want to redo the check on every signal
 # fire from Auth (auth_ready + logged_in both run on a single verify).
@@ -98,12 +89,6 @@ var _pc_http_move: HTTPRequest = null
 func _ready() -> void:
     # Always generate terrain — it's visible behind the login screen
     world.build_terrain()
-
-    # ZBBS-HOME-212: build the perf overlay (hidden by default, F3 to
-    # toggle). Used for diagnosing scroll-perf complaints by remote
-    # players on slow hardware. Console-logs once per second too so
-    # DevTools captures a time series without needing a screenshot.
-    _build_perf_overlay()
 
     # Give camera a reference to the editor for left-click pan coordination
     camera.editor_ref = editor
@@ -959,16 +944,6 @@ func _bootstrap_pc_refetch() -> void:
 ## machine handles the camera-pan vs walk-click ambiguity; see the
 ## _PC_CLICK_DRAG_THRESHOLD comment block above.
 func _input(event: InputEvent) -> void:
-    # ZBBS-HOME-212: F3 toggles the perf overlay regardless of any
-    # other input gate (loading curtain, edit mode, modal). Diagnostic
-    # tool — a remote tester needs to be able to engage it from any
-    # state.
-    if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_F3:
-        if perf_overlay_layer != null:
-            perf_overlay_layer.visible = not perf_overlay_layer.visible
-            print("perf-overlay: ", "ON" if perf_overlay_layer.visible else "OFF")
-        return
-
     if not _pc_exists:
         return
     if editor != null and editor.active:
@@ -1294,65 +1269,4 @@ func _on_world_ready() -> void:
             # belt-and-suspenders.
             login_screen.modulate = Color(1, 1, 1, 1)
     )
-
-## Perf overlay (ZBBS-HOME-212). Diagnostic-only — toggled with F3.
-## Reads Performance singleton metrics that Godot exposes uniformly
-## across desktop and web targets. The metrics that matter for scroll
-## perf:
-##
-##   - TIME_FPS / TIME_PROCESS — frame rate and how long the main
-##     thread spends each frame. A pan that drops below ~30 FPS or
-##     pushes process time over ~16ms is the signal we're after.
-##   - RENDER_TOTAL_DRAW_CALLS_IN_FRAME — texture binds + state
-##     changes per frame. High count + low FPS points at atlas
-##     consolidation as the win. Atlas-packed sprites would land here.
-##   - RENDER_TOTAL_OBJECTS_IN_FRAME — number of CanvasItems Godot
-##     issued draws for. Every visible_when_inside actor + every
-##     placed_object container counts. High count + camera at low
-##     zoom pointing at a dense district = culling is the win.
-##   - RENDER_TOTAL_PRIMITIVES_IN_FRAME — triangles/quads. Useful
-##     cross-check that draw count maps to actual primitive volume.
-##
-## Console-log every second so DevTools captures a time series even
-## without a screenshot — a remote tester can pan around for 10s and
-## ship the console transcript.
-func _build_perf_overlay() -> void:
-    perf_overlay_layer = CanvasLayer.new()
-    perf_overlay_layer.name = "PerfOverlayLayer"
-    perf_overlay_layer.layer = 11
-    perf_overlay_label = Label.new()
-    perf_overlay_label.position = Vector2(12, 12)
-    perf_overlay_label.add_theme_color_override("font_color", Color(1.0, 0.95, 0.4))
-    perf_overlay_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.8))
-    perf_overlay_label.add_theme_constant_override("outline_size", 4)
-    perf_overlay_label.add_theme_font_size_override("font_size", 14)
-    perf_overlay_layer.add_child(perf_overlay_label)
-    add_child(perf_overlay_layer)
-    perf_overlay_layer.visible = false
-
-func _process(delta: float) -> void:
-    if perf_overlay_layer == null or not perf_overlay_layer.visible:
-        return
-    var fps: float = Performance.get_monitor(Performance.TIME_FPS)
-    var proc_ms: float = Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0
-    var phys_ms: float = Performance.get_monitor(Performance.TIME_PHYSICS_PROCESS) * 1000.0
-    var draws: int = int(Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME))
-    var objs: int = int(Performance.get_monitor(Performance.RENDER_TOTAL_OBJECTS_IN_FRAME))
-    var prims: int = int(Performance.get_monitor(Performance.RENDER_TOTAL_PRIMITIVES_IN_FRAME))
-    var placed_obj_count: int = world.placed_objects.size() if world != null else 0
-    var npc_count: int = world.placed_npcs.size() if world != null else 0
-    var zoom: float = camera.zoom.x if camera != null else 1.0
-    perf_overlay_label.text = (
-        "FPS: %d  process: %.2fms  physics: %.2fms\n"
-        + "draws: %d  rendered_objs: %d  prims: %d\n"
-        + "placed_objects: %d  npcs: %d  zoom: %.2f"
-    ) % [int(fps), proc_ms, phys_ms, draws, objs, prims, placed_obj_count, npc_count, zoom]
-
-    # Console log every ~1s so DevTools captures a time series.
-    _perf_log_accum += delta
-    if _perf_log_accum >= 1.0:
-        _perf_log_accum = 0.0
-        print("perf: fps=%d process=%.2fms physics=%.2fms draws=%d objs=%d prims=%d placed=%d npcs=%d zoom=%.2f" % [
-            int(fps), proc_ms, phys_ms, draws, objs, prims, placed_obj_count, npc_count, zoom
-        ])
 
