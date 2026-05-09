@@ -498,6 +498,27 @@ func (app *App) executeDeliverOrder(ctx context.Context, sellerID string, ledger
 					}
 					app.Hub.Broadcast(WorldEvent{Type: "room_event", Data: data})
 				}
+				// ZBBS-HOME-220: dwell hint. If this item has any
+				// satisfaction with a complete dwell triple AND the
+				// item_kind has a consume_dwell_narration configured,
+				// surface that hint as a second private narration so
+				// the PC knows there's more recovery to come if they
+				// stay. Skipped silently for non-PC consumers and
+				// items without narration (most things).
+				hasDwell := false
+				for _, s := range satisfactions {
+					if s.DwellAmount > 0 && s.DwellPeriodMinutes > 0 && s.DwellTotalTicks > 0 {
+						hasDwell = true
+						break
+					}
+				}
+				if hasDwell {
+					structureForHint := ""
+					if sellerStructure.Valid {
+						structureForHint = sellerStructure.String
+					}
+					app.broadcastConsumeDwellHint(ctx, u.ActorID, itemKind, structureForHint)
+				}
 			}
 		}
 	}
