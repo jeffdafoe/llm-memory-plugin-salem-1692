@@ -101,6 +101,12 @@ func (app *App) runServerTickOnce(ctx context.Context) {
 	app.dispatchVisitorDespawn(ctx)
 	app.dispatchVisitorCleanup(ctx)
 	app.dispatchVisitorSpawn(ctx)
+	// Lodger auto-rebook (ZBBS-WORK-204) — engine-side backstop for
+	// long-term boarding when the LLM-driven negotiation between
+	// lodger and keeper doesn't fire in time. No-op when no lodger
+	// is within the 6h-pre-expiry firing window — single SELECT,
+	// zero rows. See engine/lodging_rebook.go.
+	app.dispatchLodgerAutoRebook(ctx)
 	// Idle-sweep (ZBBS-HOME-201) — deterministic floor for agentized
 	// NPC ticks. Finds VAs idle past the threshold and schedules a
 	// self-tick within a randomized response window so the engine
