@@ -1,20 +1,23 @@
 package main
 
-// Salem Chronicler dispatcher and integration.
+// Salem Chronicler integration.
 //
-// The Chronicler is a virtual agent (salem-chronicler) that fires at
-// scheduled phase boundaries (dawn / midday / dusk per game day) and at
-// cascade origins (PC speech in a structure, NPC arrival after walk).
-// It writes atmosphere via set_environment and records sticky narrative
-// facts via record_event into shared world state. NPC perception
-// builders read those tables on each tick so what the chronicler curates
-// becomes the world the NPCs decide inside.
+// The Chronicler is a virtual agent (salem-chronicler) that fires only
+// at scheduled phase boundaries (dawn / midday / dusk per game day) as
+// of ZBBS-WORK-202. It writes atmosphere via set_environment into
+// world_environment; the marquee ticker on the Godot client and the
+// "Atmosphere:" line in NPC perception read from there.
 //
-// The chronicler does NOT direct or move NPCs. There is no dispatch_tick
-// tool. NPCs fire only on reactive events (existing handlers); the
-// chronicler's leverage is entirely indirect, through the perception.
+// The chronicler does NOT direct or move NPCs. NPC ticks fire from
+// cascade origins, the engine self-tick scheduler, and the engine
+// idle-sweep dispatcher (ZBBS-HOME-201). The pre-202 attend_to tool was
+// removed in ZBBS-HOME-202; the pre-202 record_event / record_announcement
+// tools and the buffered cascade-firing infrastructure were removed in
+// ZBBS-WORK-202.
 //
-// Canonical design: shared/notes/codebase/salem/overseer-design.
+// Canonical design: shared/notes/codebase/salem/overseer-design (history)
+// and shared/notes/codebase/salem/chronicler-buffered-dispatch (post-rip
+// shipped mechanism, kept under that slug for continuity).
 
 import (
 	"context"
@@ -23,7 +26,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"sort"
 	"strings"
 	"time"
 
@@ -31,21 +33,19 @@ import (
 )
 
 const (
-	// chroniclerAgent is the slug of the directorial virtual agent the
-	// engine fires at phase boundaries and cascade origins. Realms=['salem']
-	// matches the four NPCs and the engine itself, so realm-overlap permits
-	// cross-namespace recall against any of them.
+	// chroniclerAgent is the slug of the narrative-author virtual agent
+	// the engine fires at phase boundaries. Realms=['salem'] matches the
+	// four NPCs and the engine itself, so realm-overlap permits cross-
+	// namespace recall against any of them.
 	chroniclerAgent = "salem-chronicler"
 
 	// Harness budget — max iterations per chronicler fire. Each
 	// iteration is one model API call processing one tool call
-	// (set_environment, record_event, record_announcement, recall,
-	// done). Default 8; pre-buffering this was 4 in-code, plenty when
-	// each fire saw one event. Post-buffering (ZBBS-119) the dispatcher
-	// consolidates 5+ events into one fire so the chronicler needs
-	// more iterations to process them all. Loaded per fire via
+	// (set_environment, recall, done). Loaded per fire via
 	// chronicler_tick_budget setting, clamped to
-	// [chroniclerTickBudgetMin, chroniclerTickBudgetMax].
+	// [chroniclerTickBudgetMin, chroniclerTickBudgetMax]. With the post-
+	// 202 surface (one authoring tool plus recall plus done) typical
+	// fires consume 2-3 iterations and the ceiling is harmless headroom.
 	chroniclerTickBudgetDefault = 8
 	chroniclerTickBudgetMin     = 1
 	chroniclerTickBudgetMax     = 32
@@ -60,79 +60,34 @@ const (
 	// pivoting wildly each fire.
 	chroniclerEnvHistoryCount = 3
 
-	// Recent events surfaced in NPC and chronicler perceptions. Cap to
-	// avoid prompt bloat; events older than the lookback window can
-	// still be surfaced via recall but don't appear automatically.
-	recentEventsCount  = 20
-	recentEventsWindow = 7 * 24 * time.Hour
 )
 
 // chroniclerFireReason captures why the chronicler is being fired this
-// invocation. Used to render the perception's opening line and to
-// stamp the phase column on world_environment writes.
+// invocation. Post-ZBBS-WORK-202 the chronicler only fires at scheduled
+// phase boundaries (dawn / midday / dusk); cascade-origin and shift-
+// boundary firing paths were removed.
 type chroniclerFireReason struct {
-	// Type is "phase" (scheduled boundary), "cascade" (event-driven), or
-	// "shift_boundary" (agent-NPC shift start/end queued by the worker
-	// scheduler — see dispatch_queue.go).
+	// Type is "phase" — the only firing path post-rip. Retained as a
+	// field for prompt rendering and phase-column stamping.
 	Type string
 
-	// Phase is set when Type == "phase". One of "dawn" | "midday" | "dusk".
-	// Also stamped onto world_environment rows the chronicler writes
-	// during this fire.
+	// Phase is "dawn" | "midday" | "dusk". Stamped onto world_environment
+	// rows the chronicler writes during this fire.
 	Phase string
-
-	// CascadeReason is set when Type == "cascade". Free-text describing
-	// what triggered the fire — "pc-spoke (Jefferey)" / "arrival" / etc.
-	CascadeReason string
-
-	// StructureID is set when Type == "cascade". The location where the
-	// cascade originated, used to ground the chronicler's perception.
-	StructureID string
-
-	// Priority is the routing tier consulted by fireChroniclerSerialized
-	// when the in-flight slot is full. High-priority fires (PC speech,
-	// PC arrival, admin attend-now) get queued as pending instead of
-	// dropped on full. Routine fires (phase, shift boundary, NPC arrival
-	// cascade-origin, buffered_flush) drop on full — their underlying
-	// events live on ChroniclerDispatchQueue and the next fire will pick
-	// them up.
-	Priority chroniclerFirePriority
-}
-
-// chroniclerFirePriority is the routing tier on chroniclerFireReason.
-// Reserved third tier (e.g. PriorityImmediate that preempts an active
-// fire) intentionally not added until a concrete use case appears —
-// salem is laid back; no emergency events exist today. The dispatcher's
-// serialization invariant (one fire per world at a time) holds
-// regardless of how many priority tiers are added later.
-type chroniclerFirePriority int
-
-const (
-	chroniclerFirePriorityRoutine chroniclerFirePriority = iota
-	chroniclerFirePriorityHigh
-)
-
-// pendingChroniclerFire holds a high-priority cascade fire that
-// arrived while ChroniclerFireSem was occupied. Stored on
-// app.ChroniclerPendingFire and drained by releaseChroniclerFireSem
-// right after the active fire releases the sem.
-type pendingChroniclerFire struct {
-	Reason     chroniclerFireReason
-	EnqueuedAt time.Time
 }
 
 // chroniclerToolSpec returns the tool definitions offered to the
 // chronicler at every fire.
 //
-// The chronicler authors atmosphere (set_environment), narrative facts
-// (record_event), and town-crier announcements (record_announcement),
+// Post-ZBBS-WORK-202 the chronicler authors atmosphere (set_environment)
 // and can search collective memory (recall). It does not direct or
-// dispatch NPCs — NPC ticks fire from cascade origins and the
-// deterministic engine idle-sweep (ZBBS-HOME-201). The earlier
-// directorial attend_to tool was removed in ZBBS-HOME-202 once the
-// engine floor made it redundant; chronicler dispatch in practice
-// selected nearly every candidate every fire and billed LLM cost
-// without producing a durable schedule.
+// dispatch NPCs. The pre-202 record_event / record_announcement /
+// attend_to tools were removed: attend_to in ZBBS-HOME-202 (chronicler
+// dispatch in practice selected nearly every candidate every fire and
+// billed LLM cost without producing a durable schedule); record_event
+// and record_announcement in ZBBS-WORK-202 (mostly-redundant restatements
+// of agent_action_log content with zero observable NPC citation, and
+// a silent town crier was acceptable).
 func chroniclerToolSpec() []agentToolDef {
 	return []agentToolDef{
 		{
@@ -144,43 +99,6 @@ func chroniclerToolSpec() []agentToolDef {
 					"text": map[string]interface{}{
 						"type":        "string",
 						"description": "Atmospheric description. One or two sentences. No preaching, no editorializing.",
-					},
-				},
-				"required": []string{"text"},
-			},
-		},
-		{
-			Name:        "record_event",
-			Description: "Record a narrative fact that should persist in village memory — births, deaths, accusations, fires, illnesses, harvests. Append-only. Default scope is village (everyone perceives).",
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"text": map[string]interface{}{
-						"type":        "string",
-						"description": "Plain statement of fact. Period-correct prose.",
-					},
-					"scope_type": map[string]interface{}{
-						"type":        "string",
-						"enum":        []string{"village", "local", "private"},
-						"description": "Visibility. Defaults to 'village' (everyone). 'local' restricts to one structure (set scope_target to that structure id). 'private' restricts to one NPC (set scope_target to that NPC's id).",
-					},
-					"scope_target": map[string]interface{}{
-						"type":        "string",
-						"description": "Required for local (structure id) or private (npc id). Omit for village.",
-					},
-				},
-				"required": []string{"text"},
-			},
-		},
-		{
-			Name:        "record_announcement",
-			Description: "Author a piece of village news for the Town Crier to read aloud on his rotation. Use for community-relevant happenings: a new lodger at the Tavern, a vendor closed for the day, strangers in the village, a notable visitor. Period-correct prose, brief — the crier reads it verbatim. The crier voices each announcement up to three times before retiring it.",
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"text": map[string]interface{}{
-						"type":        "string",
-						"description": "The announcement text. One sentence, biblical cadence — the crier voices it as-is.",
 					},
 				},
 				"required": []string{"text"},
@@ -268,7 +186,7 @@ func (app *App) dispatchChroniclerPhase(ctx context.Context) {
 	}
 
 	log.Printf("chronicler-phase: firing %s phase (boundary at %s)", currentPhase, boundaryAt.Format(time.RFC3339))
-	if err := app.fireChronicler(ctx, chroniclerFireReason{Type: "phase", Phase: currentPhase, Priority: chroniclerFirePriorityRoutine}); err != nil {
+	if err := app.fireChronicler(ctx, chroniclerFireReason{Type: "phase", Phase: currentPhase}); err != nil {
 		log.Printf("chronicler-phase: fire failed, not advancing phase state: %v", err)
 		return
 	}
@@ -320,184 +238,6 @@ func villageEventTextForPhase(phase string) string {
 	return ""
 }
 
-// cascadeOriginFireChronicler is called from cascade-origin handlers
-// (PC speech in pc_handlers.go, NPC arrival in npc_movement.go) when a
-// new scene starts. The chronicler may set atmosphere, record an event,
-// recall, or just say done. Fire-and-forget — runs in a background
-// goroutine so it doesn't block the caller's cascade dispatch.
-//
-// NOT called for ticks WITHIN an existing cascade (NPCs reacting to
-// each other's speech inside an in-flight scene). Only at scene-starts.
-// Bounds chronicler cost — once per scene, not per utterance.
-//
-// Two concurrency policies, picked at call time by the
-// chronicler_buffered_dispatch feature flag (ZBBS-119):
-//
-//   - flag ON  → ChroniclerFireSem (size 1). Single in-flight slot
-//     across cascade fires AND the buffered dispatcher's flush. No
-//     two chronicler fires run in parallel. High-priority fires that
-//     hit a full sem are queued as pending and run after the active
-//     fire releases (so PC speech / PC arrival / admin attend-now
-//     reactions are never dropped); routine fires drop on full and
-//     rely on ChroniclerDispatchQueue + the buffered timer to retry.
-//   - flag OFF → ChroniclerSem (size 2, legacy). Two concurrent
-//     cascades allowed. This is the diagnosed parallel-cascade race;
-//     buffering is the fix, this branch stays only as the rollback.
-//
-// Caller declares the fire's priority so the queue-or-drop choice is
-// explicit at the source — no reason-string parsing.
-func (app *App) cascadeOriginFireChronicler(reasonStr, structureID string, priority chroniclerFirePriority) {
-	// "buffered_flush" is the buffered dispatcher's timer-driven flush.
-	// It shares the cascade fire path (same sem, same drain) but is
-	// not an in-world cascade (no structureID, no specific event in the
-	// village just stirred). Set Type explicitly so the perception
-	// builder's opening line picks the dedicated buffered_flush
-	// wording ("The village has stirred in the past minutes...")
-	// instead of the cascade fallback ("Something stirs in the
-	// village: buffered_flush") which leaked the literal reason
-	// string into the prompt.
-	reasonType := "cascade"
-	if reasonStr == "buffered_flush" {
-		reasonType = "buffered_flush"
-	}
-	reason := chroniclerFireReason{
-		Type:          reasonType,
-		CascadeReason: reasonStr,
-		StructureID:   structureID,
-		Priority:      priority,
-	}
-	if app.chroniclerBufferedDispatchEnabled(context.Background()) {
-		app.fireChroniclerSerialized(reason)
-		return
-	}
-	if app.ChroniclerSem == nil {
-		// Defensive — should always be initialized at startup. If not,
-		// fall through to the unbounded path so we don't silently drop
-		// fires on a misconfigured engine.
-		go app.runCascadeFire(reason)
-		return
-	}
-	select {
-	case app.ChroniclerSem <- struct{}{}:
-		go func() {
-			defer func() { <-app.ChroniclerSem }()
-			app.runCascadeFire(reason)
-		}()
-	default:
-		log.Printf("chronicler-cascade: slot full, skipping fire (reason=%q)", reasonStr)
-	}
-}
-
-// fireChroniclerSerialized is the size-1 sem path used when
-// chronicler_buffered_dispatch is on. Same shape as the legacy sem
-// branch in cascadeOriginFireChronicler but routes through
-// ChroniclerFireSem so cascade fires and buffered-dispatcher timer
-// flushes share one in-flight slot.
-//
-// Drop-on-full behavior depends on Priority:
-//   - High: queued in ChroniclerPendingFire so the fire runs right after
-//     the active one releases. Last-one-wins coalesces bursts; the
-//     underlying NPC-event queue is drained by every fire so events
-//     from coalesced reasons aren't lost, only their cascade-origin
-//     metadata.
-//   - Routine: dropped (logged). Events stay on ChroniclerDispatchQueue
-//     for the buffered timer's next fire to pick up.
-func (app *App) fireChroniclerSerialized(reason chroniclerFireReason) {
-	if app.ChroniclerFireSem == nil {
-		// Defensive — same as the legacy fall-through.
-		go app.runCascadeFire(reason)
-		return
-	}
-	select {
-	case app.ChroniclerFireSem <- struct{}{}:
-		go func() {
-			defer app.releaseChroniclerFireSem()
-			app.runCascadeFire(reason)
-		}()
-	default:
-		if reason.Priority == chroniclerFirePriorityHigh {
-			app.queuePendingChroniclerFire(reason)
-			log.Printf("chronicler-buffered: fire slot full, queued high-pri (reason=%q) for after current fire", reason.CascadeReason)
-		} else {
-			log.Printf("chronicler-buffered: fire slot full, skipping (reason=%q) — events stay queued for next fire", reason.CascadeReason)
-		}
-	}
-}
-
-// queuePendingChroniclerFire stores a high-priority cascade fire to
-// run after the currently in-flight chronicler fire releases the sem.
-// Last-one-wins on the single slot: a burst of high-priority fires
-// arriving in the same busy window collapses to one follow-up. The
-// ChroniclerDispatchQueue is drained on every fire so the underlying
-// NPC events from coalesced reasons are still captured in the
-// follow-up fire's perception — only the cascade-origin metadata
-// (which structure to anchor at) gets coalesced.
-func (app *App) queuePendingChroniclerFire(reason chroniclerFireReason) {
-	app.ChroniclerPendingFireMu.Lock()
-	defer app.ChroniclerPendingFireMu.Unlock()
-	app.ChroniclerPendingFire = &pendingChroniclerFire{
-		Reason:     reason,
-		EnqueuedAt: time.Now(),
-	}
-}
-
-// releaseChroniclerFireSem completes a chronicler fire and either
-// chains into a pending high-priority fire or releases the in-flight
-// slot. Sem-inheritance: when a pending fire exists, the sem token is
-// NOT released; instead the pending fire's runCascadeFire runs in a
-// new goroutine with the held slot, and chains back through this
-// function on completion via deferred release.
-//
-// This eliminates the race the reviewer flagged where releasing the
-// sem before claiming pending opens a gap for an external acquire to
-// slip in. A new fire arriving in that gap would acquire the sem and
-// later clobber a pending entry that the original release was about
-// to launch. With sem-inheritance, external callers see the slot as
-// held until the chain exhausts; they queue as pending and run in
-// order via the chain.
-//
-// The defer release inside the spawned goroutine ensures the slot is
-// freed (or chained again) even if runCascadeFire panics.
-//
-// Recursion is bounded by the rate of high-priority events arriving
-// during the chain: each follow-up fire takes a chronicler API call
-// (seconds), so this is a chain of distinct fires, not a tight loop.
-// Goroutine spawn per chain link (no stack growth).
-func (app *App) releaseChroniclerFireSem() {
-	app.ChroniclerPendingFireMu.Lock()
-	pending := app.ChroniclerPendingFire
-	app.ChroniclerPendingFire = nil
-	app.ChroniclerPendingFireMu.Unlock()
-
-	if pending != nil {
-		go func(reason chroniclerFireReason) {
-			defer app.releaseChroniclerFireSem()
-			app.runCascadeFire(reason)
-		}(pending.Reason)
-		return
-	}
-
-	<-app.ChroniclerFireSem
-}
-
-// runCascadeFire is the body of a cascade-origin chronicler fire.
-// Extracted so cascadeOriginFireChronicler can wrap it with the
-// concurrency-cap semaphore.
-func (app *App) runCascadeFire(reason chroniclerFireReason) {
-	ctx := context.Background()
-	cfg, err := app.loadWorldConfig(ctx)
-	if err != nil {
-		log.Printf("chronicler-cascade: load config: %v", err)
-		return
-	}
-	if cfg.AgentTicksPaused {
-		return
-	}
-	if err := app.fireChronicler(ctx, reason); err != nil {
-		log.Printf("chronicler-cascade: fire failed: %v", err)
-	}
-}
-
 // fireChronicler runs the chronicler's harness loop for one fire. Same
 // shape as runAgentTick for NPCs — build perception, send chat, resolve
 // tool calls, repeat until terminal or budget exhausted.
@@ -524,16 +264,7 @@ func (app *App) runCascadeFire(reason chroniclerFireReason) {
 // phase state, used by the activity digest as the "since when" cutoff
 // so cascade fires don't repeatedly digest the same activity window.
 func (app *App) fireChronicler(ctx context.Context, reason chroniclerFireReason) error {
-	// Drain the dispatch queue here, before perception build, so the
-	// destructive action is tied to an actual chronicler invocation
-	// rather than perception formatting. Any fire (phase, cascade,
-	// shift_boundary) picks up pending events; the perception render is
-	// a pure formatting step. Drained events are lost if the LLM call
-	// later fails — acceptable trade-off; alternative is a claim/commit
-	// model and the queue's content is best-effort context, not durable
-	// state.
-	shiftBatches := app.ChroniclerDispatchQueue.drain()
-	perception := app.buildChroniclerPerception(ctx, reason, shiftBatches)
+	perception := app.buildChroniclerPerception(ctx, reason)
 	tools := chroniclerToolSpec()
 
 	// nextMessage carries the iter-0 perception; from iter 1 onward the
@@ -545,11 +276,9 @@ func (app *App) fireChronicler(ctx context.Context, reason chroniclerFireReason)
 	chatSucceeded := false
 	// Group this fire's harness iterations under one scene_id (MEM-121)
 	// so the admin UI can collapse them into a single expandable row.
-	// reason.StructureID carries the cascade origin for "cascade" fires
-	// and is empty for "phase" / "shift_boundary" fires — both are
-	// village-wide, so newScene records NULL structure_id and the admin
-	// UI shows no location chip.
-	sceneID := app.newScene(ctx, reason.StructureID)
+	// Phase fires are village-wide, so the scene records NULL structure_id
+	// and the admin UI shows no location chip.
+	sceneID := app.newScene(ctx, "")
 
 	// Per-fire tick budget — read from settings each fire so an admin
 	// tweak takes effect immediately. Out-of-bounds values fall back
@@ -636,74 +365,9 @@ func (app *App) fireChronicler(ctx context.Context, reason chroniclerFireReason)
 					resultContent = "[Atmosphere noted.]"
 				}
 
-			case "record_event":
-				text, _ := tc.Input["text"].(string)
-				text = strings.TrimSpace(text)
-				scopeType, _ := tc.Input["scope_type"].(string)
-				scopeType = strings.TrimSpace(scopeType)
-				scopeTarget, _ := tc.Input["scope_target"].(string)
-				scopeTarget = strings.TrimSpace(scopeTarget)
-				if scopeType == "" {
-					scopeType = "village"
-				}
-				if !validEventScope(scopeType) {
-					resultContent = fmt.Sprintf("[Unknown scope %q. Use 'village', 'local', or 'private'.]", scopeType)
-					break
-				}
-				if text == "" {
-					resultContent = "[The event you tried to record was empty. Try again or say done.]"
-					break
-				}
-				// Default scope_target for cascade-origin local events: use
-				// the structure where the cascade started. The model has
-				// trouble inventing structure UUIDs, so this is the safe
-				// out for "an event happened HERE."
-				if scopeType == "local" && scopeTarget == "" && reason.Type == "cascade" && reason.StructureID != "" {
-					scopeTarget = reason.StructureID
-				}
-				// Reject local/private without a target — the row would be
-				// invisible to every NPC if we wrote it (visibility queries
-				// require a target match). Better to nudge the model than
-				// silently waste a write.
-				if (scopeType == "local" || scopeType == "private") && scopeTarget == "" {
-					resultContent = fmt.Sprintf("[Scope %q requires a scope_target (structure id for local, npc id for private). Try again or say done.]", scopeType)
-					break
-				}
-				if err := app.recordEvent(ctx, text, scopeType, scopeTarget); err != nil {
-					log.Printf("chronicler record_event: %v", err)
-					resultContent = "[Event could not be recorded. Try again or say done.]"
-				} else {
-					resultContent = "[Event recorded.]"
-				}
-
-			case "record_announcement":
-				text, _ := tc.Input["text"].(string)
-				text = strings.TrimSpace(text)
-				if text == "" {
-					resultContent = "[The announcement you tried to record was empty. Try again or say done.]"
-					break
-				}
-				if err := app.recordTownCrierAnnouncement(ctx, text); err != nil {
-					log.Printf("chronicler record_announcement: %v", err)
-					resultContent = "[Announcement could not be recorded. Try again or say done.]"
-				} else {
-					resultContent = "[Announcement recorded — the crier will voice it on his rotation.]"
-				}
-
 			case "recall":
 				query, _ := tc.Input["query"].(string)
 				resultContent = app.resolveChroniclerRecall(ctx, query)
-
-			case "attend_to":
-				// Tool was removed in ZBBS-HOME-202. The chronicler's
-				// startup_instructions still mention it until the prompt
-				// is updated, and an in-flight chronicler fire at deploy
-				// time may have the old tool list. Return a polite,
-				// non-terminal acknowledgement so the harness moves on.
-				// Drop in a follow-up commit once the prompt is updated
-				// and at least one full chronicler cadence has elapsed
-				// post-deploy.
-				resultContent = "[Tool removed — chronicler dispatch no longer fires ticks; NPCs are dispatched by the engine. Use record_event for narration, or say done.]"
 
 			case "done":
 				terminal = true
@@ -764,28 +428,16 @@ func (app *App) fireChronicler(ctx context.Context, reason chroniclerFireReason)
 	return nil
 }
 
-// validEventScope reports whether the given scope_type is one of the
-// recognized event_scope enum values. Defensive — the LLM could emit
-// arbitrary strings even with the enum constraint in the schema.
-func validEventScope(s string) bool {
-	switch s {
-	case "village", "local", "private":
-		return true
-	}
-	return false
-}
-
 // buildChroniclerPerception constructs the user-message text the
 // chronicler sees on iteration 0. Sections in order:
 //
-//  1. Why you wake (phase boundary or cascade origin description)
+//  1. Why you wake (phase boundary)
 //  2. Mood + season (config-driven knobs the admin flips)
 //  3. NPC roster grouped by current location
 //  4. Recent atmospheric statements (your own last N — evolve, don't whiplash)
-//  5. Recent visible events (last N village-scope within window)
-//  6. Activity digest since last fire (deterministic Go-rendered)
-//  7. Decision prompt
-func (app *App) buildChroniclerPerception(ctx context.Context, reason chroniclerFireReason, shiftBatches []*chroniclerDispatchBatch) string {
+//  5. Activity digest since last fire (deterministic Go-rendered)
+//  6. Decision prompt
+func (app *App) buildChroniclerPerception(ctx context.Context, reason chroniclerFireReason) string {
 	var sections []string
 
 	// 1. Why you wake.
@@ -810,17 +462,6 @@ func (app *App) buildChroniclerPerception(ctx context.Context, reason chronicler
 		sections = append(sections, distress)
 	}
 
-	// 3b. Shift boundary events for agent NPCs (chronicler-dispatch
-	// redesign). Renders one section per event_type from the batches
-	// the caller drained. Drain happens in fireChronicler, not here —
-	// keeps perception build read-only and makes the destructive action
-	// tied to an actual chronicler invocation. A phase or cascade fire
-	// that happens to overlap a shift boundary picks up the events for
-	// free because every fireChronicler call drains the queue.
-	for _, section := range app.renderDispatchSections(ctx, shiftBatches) {
-		sections = append(sections, section)
-	}
-
 	// 4. Your recent atmospheric statements.
 	if recent := app.recentEnvironmentTexts(ctx, chroniclerEnvHistoryCount); len(recent) > 0 {
 		var b strings.Builder
@@ -833,63 +474,24 @@ func (app *App) buildChroniclerPerception(ctx context.Context, reason chronicler
 		sections = append(sections, strings.TrimRight(b.String(), "\n"))
 	}
 
-	// 5. Recent village-visible events.
-	if events := app.recentVisibleEvents(ctx, "village", "", time.Now().Add(-recentEventsWindow), recentEventsCount); len(events) > 0 {
-		var b strings.Builder
-		b.WriteString("Recent entries in the chronicle:\n")
-		for _, e := range events {
-			b.WriteString("- ")
-			b.WriteString(e)
-			b.WriteString("\n")
-		}
-		sections = append(sections, strings.TrimRight(b.String(), "\n"))
-	}
-
-	// 6. Activity digest since last fire (phase OR cascade — uses the
-	// attention timestamp, not the phase one, so cascade fires between
-	// phases see only the activity since the previous fire instead of
-	// repeatedly re-digesting back to the last phase boundary).
-	//
-	// Pass reason so the digest can suppress its "the village has been
-	// quiet" fallback on cascade fires — the opening line already named
-	// the stirring (e.g. "Something stirs at Blacksmith: arrival") and
-	// asserting "quiet" six lines later contradicted it, biasing the
-	// model toward a set_environment atmosphere response on every cascade.
-	if digest := app.buildActivityDigest(ctx, app.loadChroniclerLastAttentionAt(ctx), reason); digest != "" {
+	// 5. Activity digest since last fire — what's happened in the
+	// village in the interval the chronicler hasn't been awake for.
+	if digest := app.buildActivityDigest(ctx, app.loadChroniclerLastAttentionAt(ctx)); digest != "" {
 		sections = append(sections, digest)
 	}
 
-	// 7. Decision prompt — names tools explicitly so the model knows
-	// to bridge "I write atmosphere" → set_environment() and
-	// "I record an event" → record_event(). Without naming the tools
-	// the model occasionally narrates as plain text (the implicit
-	// set_environment fallback catches this, but explicit naming
-	// reduces the failure rate).
-	sections = append(sections, "Attend to the village. Use set_environment to write the current atmosphere if it has shifted. Use record_event to record any happening that should persist in village memory (default scope is village; pass scope_type='local' with scope_target=<structure_id> to restrict to one place, or scope_type='private' with scope_target=<npc_id> to restrict to one person). Use record_announcement to author village news for the Town Crier to voice on his rotation — a new lodger, a vendor closed for the day, strangers in the village. You may use recall to remember anything the village has experienced. Use done when your office is finished.")
+	// 6. Decision prompt. Atmosphere-author only post-ZBBS-WORK-202.
+	sections = append(sections, "Attend to the village. Use set_environment to write the current atmosphere if it has shifted. You may use recall to remember anything the village has experienced. Use done when your office is finished.")
 
 	return strings.Join(sections, "\n\n")
 }
 
 // chroniclerOpeningLine renders the perception's opening "why are you
-// waking" line. Phase fires get a clean phase mention; cascade fires
-// describe the originating event in-character.
+// waking" line. Post-ZBBS-WORK-202 the chronicler only fires at phase
+// boundaries.
 func (app *App) chroniclerOpeningLine(ctx context.Context, reason chroniclerFireReason) string {
-	switch reason.Type {
-	case "phase":
+	if reason.Type == "phase" && reason.Phase != "" {
 		return fmt.Sprintf("It is %s. The hour has come for you to attend the village.", reason.Phase)
-	case "cascade":
-		structName := ""
-		if reason.StructureID != "" {
-			structName = app.lookupStructureName(ctx, reason.StructureID)
-		}
-		if structName != "" {
-			return fmt.Sprintf("Something stirs at %s: %s.", structName, reason.CascadeReason)
-		}
-		return fmt.Sprintf("Something stirs in the village: %s.", reason.CascadeReason)
-	case "shift_boundary":
-		return "A villager's working hours have shifted. The hour has come for you to attend the village."
-	case "buffered_flush":
-		return "The village has stirred in the past minutes. The hour has come for you to attend."
 	}
 	return "You wake to attend the village."
 }
@@ -978,16 +580,13 @@ func (app *App) buildChroniclerNPCRoster(ctx context.Context) string {
 
 // buildActivityDigest renders a deterministic summary of agent_action_log
 // rows since `since`. Aggregates per-NPC action counts. Empty string
-// when no activity (fresh deploy or quiet window).
-//
-// reason is the fire reason for this perception. On cascade fires the
-// "the village has been quiet" fallback is suppressed and we return ""
-// instead — the opening line already named the cascade trigger
-// (arrival, etc.) and asserting "quiet" here contradicted that.
+// when no prior fire timestamp is recorded (fresh deploy / first fire
+// after restart). Falls back to "the village has been quiet" when there
+// is a prior fire timestamp but no activity in the window.
 //
 // Format: "Since the last fire: John walked 2 times, spoke 4 times.
 // Prudence completed 1 chore. ..."
-func (app *App) buildActivityDigest(ctx context.Context, since time.Time, reason chroniclerFireReason) string {
+func (app *App) buildActivityDigest(ctx context.Context, since time.Time) string {
 	if since.IsZero() {
 		// No prior fire — skip digest. Fresh deploy or first fire after restart.
 		return ""
@@ -1037,13 +636,6 @@ func (app *App) buildActivityDigest(ctx context.Context, since time.Time, reason
 		return ""
 	}
 	if len(per) == 0 {
-		// Cascade and buffered_flush fires both have a stirring
-		// already named in the opening line — asserting "the village
-		// has been quiet" six lines later contradicts that and biases
-		// the model toward set_environment on every fire.
-		if reason.Type == "cascade" || reason.Type == "buffered_flush" {
-			return ""
-		}
 		return "Since your last attention, the village has been quiet."
 	}
 
@@ -1085,9 +677,6 @@ func (app *App) buildActivityDigest(ctx context.Context, since time.Time, reason
 		fmt.Fprintf(&b, "- %s %s.\n", name, strings.Join(parts, ", "))
 	}
 	if !wrote {
-		if reason.Type == "cascade" || reason.Type == "buffered_flush" {
-			return ""
-		}
 		return "Since your last attention, the village has been quiet."
 	}
 	return strings.TrimRight(b.String(), "\n")
@@ -1155,24 +744,6 @@ func (app *App) recordEnvironment(ctx context.Context, text, phase string) error
 	return nil
 }
 
-// recordEvent appends a row to world_events. Caller must have validated
-// scope_type via validEventScope. Empty scope_target is fine for
-// village scope; required by convention for local/private but the DB
-// allows NULL (engine code filters anyway).
-func (app *App) recordEvent(ctx context.Context, text, scopeType, scopeTarget string) error {
-	var targetArg interface{}
-	if scopeTarget == "" {
-		targetArg = nil
-	} else {
-		targetArg = scopeTarget
-	}
-	_, err := app.DB.Exec(ctx,
-		`INSERT INTO world_events (text, scope_type, scope_target, set_by, occurred_at)
-		 VALUES ($1, $2, $3, $4, NOW())`,
-		text, scopeType, targetArg, chroniclerAgent)
-	return err
-}
-
 // recentEnvironmentTexts returns the last n atmospheric statements,
 // most recent first. Used in the chronicler's own perception so it can
 // see what it just wrote. Tiebreaks on id DESC so identical set_at
@@ -1218,67 +789,6 @@ func (app *App) latestEnvironmentText(ctx context.Context) string {
 		return ""
 	}
 	return t.String
-}
-
-// recentVisibleEvents returns recent event texts for ONE scope. Caller
-// composes village + local + private separately. Per-scope semantics
-// keep the function small and let callers choose what they want without
-// redundant village queries (an NPC perception that wants all three
-// scopes would otherwise hit the same village rows three times).
-//
-// scope must be 'village', 'local', or 'private' (matches the
-// event_scope enum). target is the structure id for 'local' or NPC id
-// for 'private'; ignored for 'village'.
-//
-// Returns up to limit rows occurring after `since`, most recent first.
-func (app *App) recentVisibleEvents(ctx context.Context, scope, target string, since time.Time, limit int) []string {
-	// Build query + args per scope, then issue a single Query call so we
-	// don't need to declare the concrete row-type variable (app.DB is
-	// pgx; *sql.Rows would mismatch).
-	var query string
-	var args []any
-	switch scope {
-	case "village":
-		query = `SELECT text FROM world_events
-		         WHERE scope_type = 'village' AND occurred_at > $1
-		         ORDER BY occurred_at DESC, id DESC LIMIT $2`
-		args = []any{since, limit}
-	case "local":
-		if target == "" {
-			return nil
-		}
-		query = `SELECT text FROM world_events
-		         WHERE scope_type = 'local' AND scope_target = $1 AND occurred_at > $2
-		         ORDER BY occurred_at DESC, id DESC LIMIT $3`
-		args = []any{target, since, limit}
-	case "private":
-		if target == "" {
-			return nil
-		}
-		query = `SELECT text FROM world_events
-		         WHERE scope_type = 'private' AND scope_target = $1 AND occurred_at > $2
-		         ORDER BY occurred_at DESC, id DESC LIMIT $3`
-		args = []any{target, since, limit}
-	default:
-		return nil
-	}
-	rows, err := app.DB.Query(ctx, query, args...)
-	if err != nil {
-		log.Printf("recent events (%s): %v", scope, err)
-		return nil
-	}
-	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var t string
-		if err := rows.Scan(&t); err == nil {
-			out = append(out, t)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		log.Printf("recent events (%s) rows: %v", scope, err)
-	}
-	return out
 }
 
 // resolveChroniclerRecall is the recall-tool resolver for the chronicler.
@@ -1568,58 +1078,6 @@ func (app *App) lookupStructureName(ctx context.Context, structureID string) str
 	return name.String
 }
 
-// actorCurrent is the at-flush-time location reading for one actor:
-// where they are NOW, distinct from where the buffered arrival event
-// said they had been. StructureID is "" when the actor is currently
-// outdoors (inside_structure_id NULL).
-type actorCurrent struct {
-	StructureID   string
-	StructureName string
-}
-
-// lookupCurrentStructures resolves where each actor is RIGHT NOW for the
-// arrival current-state validation in renderArrivalSection. One batched
-// query keyed on actor.id so a buffered flush with N arrivals costs one
-// roundtrip, not N. Outdoor actors (inside_structure_id NULL) get an
-// entry with empty StructureID/StructureName.
-//
-// On query failure, returns nil — renderArrivalSection treats the whole
-// arrival batch as "current unknown" and falls back to bare per-arrival
-// lines (Phase 1 behavior). Don't lose the section over one bad lookup.
-func (app *App) lookupCurrentStructures(ctx context.Context, actorIDs []string) map[string]actorCurrent {
-	if len(actorIDs) == 0 {
-		return nil
-	}
-	rows, err := app.DB.Query(ctx,
-		`SELECT n.id::text,
-		        COALESCE(n.inside_structure_id::text, ''),
-		        COALESCE(o.display_name, a.name, '')
-		 FROM actor n
-		 LEFT JOIN village_object o ON o.id = n.inside_structure_id
-		 LEFT JOIN asset a ON a.id = o.asset_id
-		 WHERE n.id::text = ANY($1)`,
-		actorIDs)
-	if err != nil {
-		log.Printf("lookupCurrentStructures: query: %v", err)
-		return nil
-	}
-	defer rows.Close()
-	out := map[string]actorCurrent{}
-	for rows.Next() {
-		var id, structID, structName string
-		if err := rows.Scan(&id, &structID, &structName); err != nil {
-			log.Printf("lookupCurrentStructures: scan: %v", err)
-			return nil
-		}
-		out[id] = actorCurrent{StructureID: structID, StructureName: structName}
-	}
-	if err := rows.Err(); err != nil {
-		log.Printf("lookupCurrentStructures: rows: %v", err)
-		return nil
-	}
-	return out
-}
-
 // buildChroniclerDistressList renders the "Villagers needing attention"
 // block for the overseer's perception. Lists any NPC whose hunger, thirst,
 // or tiredness is at or above the configured red threshold for that need
@@ -1726,580 +1184,4 @@ func (app *App) buildChroniclerDistressList(ctx context.Context) string {
 	return "Villagers in distress:\n" + strings.Join(lines, "\n")
 }
 
-// renderDispatchSections renders perception sections from the caller-
-// supplied batches — one section per event_type. Pure function; the
-// caller (fireChronicler) is responsible for draining the queue. Empty
-// when batches is empty.
-//
-// Sections in stable order: arrival, shift_start, shift_end,
-// needs_onset, needs_resolved. Each section uses its own line format
-// (shift events lead with the work assignment + window; needs events
-// lead with the relevant needs and the actor's current place).
-//
-// Examples:
-//
-//	Beginning their shift now:
-//	- Ezekiel Crane (Blacksmith, 07:00-19:00) -- currently at the Inn
-//
-//	Needs newly arising:
-//	- Josiah Brand -- now weary -- currently at the Mill (work: Mill, 07:00-19:00)
-//
-//	Needs newly satisfied:
-//	- Prudence Ward -- no longer parched [from the well] -- currently at the Well (work: Apothecary, 07:30-18:30)
-//
-// The chronicler reads these sections and may author atmosphere or
-// record_event prose grounded in them. NPC ticks are no longer
-// dispatched by the chronicler (ZBBS-HOME-202) — these sections feed
-// narrative authoring only.
-func (app *App) renderDispatchSections(ctx context.Context, batches []*chroniclerDispatchBatch) []string {
-	if len(batches) == 0 {
-		return nil
-	}
-	// Group by event type so two batches of the same type (different
-	// boundary minutes within the same fire window — rare but possible
-	// near phase boundaries) collapse into one section. Preserves the
-	// chronicler's mental model of "what's happening now" rather than
-	// surfacing the queue's internal sharding.
-	byType := map[chroniclerDispatchEventType][]chroniclerDispatchAgent{}
-	for _, b := range batches {
-		byType[b.EventType] = append(byType[b.EventType], b.Agents...)
-	}
-
-	// Layer-2 merge: collect the (actor, workplace) set from shift_start
-	// agents. Arrivals at a matching workplace pick up an "as their shift
-	// began" suffix; the matching shift_start agent is omitted from the
-	// shift section. Without this, Prudence's workplace arrival surfaces
-	// in BOTH "Recent arrivals" and "Beginning their shift now" with
-	// overlapping content — two lines about one event.
-	shiftStarted := map[shiftMergeKey]struct{}{}
-	for _, a := range byType[dispatchShiftStart] {
-		if a.WorkStructureID == "" {
-			continue
-		}
-		shiftStarted[shiftMergeKey{ActorID: a.ID, StructureID: a.WorkStructureID}] = struct{}{}
-	}
-
-	// Arrival current-state validation: at flush time, look up where each
-	// arriving actor is RIGHT NOW. The buffered queue holds the structure
-	// they were ENTERING when the event fired — they may have moved on by
-	// the time the chronicler reads this. groupArrivalsByActor consolidates
-	// per-actor arrival sequences and decides phrasing (single arrival,
-	// multi-stop trail, current-matches-final, moved-on) so the chronicler
-	// reads the actor's whole journey as one line instead of disconnected
-	// "X arrived at Y" entries that imply they're still there.
-	//
-	// consumedShiftStarts is populated only when the shift suffix would
-	// actually fire (current matches final + shift_started covers it),
-	// so an actor who arrived at workplace then wandered off keeps their
-	// shift_start line visible in the shift section instead of silently
-	// vanishing.
-	var arrivalGroupOrder []string
-	var arrivalGroups map[string]*actorArrivalGroup
-	consumedShiftStarts := map[shiftMergeKey]struct{}{}
-	if arrivals := byType[dispatchArrival]; len(arrivals) > 0 {
-		actorIDs := uniqueArrivalActorIDs(arrivals)
-		currentByActor := app.lookupCurrentStructures(ctx, actorIDs)
-		arrivalGroupOrder, arrivalGroups, consumedShiftStarts = groupArrivalsByActor(arrivals, currentByActor, shiftStarted)
-	}
-
-	// Stable section order across fires regardless of map iteration order.
-	// Onset before resolved so the chronicler reads new distress before
-	// recoveries — fresh problems usually warrant attention sooner than
-	// resolutions (which are nudge-back-to-work signals, not crises).
-	var sections []string
-	for _, et := range []chroniclerDispatchEventType{
-		dispatchArrival,
-		dispatchShiftStart,
-		dispatchShiftEnd,
-		dispatchNeedsOnset,
-		dispatchNeedsResolved,
-	} {
-		agents := byType[et]
-		if len(agents) == 0 {
-			continue
-		}
-		switch et {
-		case dispatchArrival:
-			sections = append(sections, renderArrivalSection(arrivalGroupOrder, arrivalGroups, shiftStarted))
-		case dispatchShiftStart:
-			if s := renderShiftSection(et, agents, consumedShiftStarts); s != "" {
-				sections = append(sections, s)
-			}
-		case dispatchShiftEnd:
-			sections = append(sections, renderShiftSection(et, agents, nil))
-		case dispatchNeedsOnset:
-			sections = append(sections, renderNeedsOnsetSection(agents))
-		case dispatchNeedsResolved:
-			sections = append(sections, renderNeedsResolvedSection(agents))
-		}
-	}
-	return sections
-}
-
-// uniqueArrivalActorIDs collects each actor ID once in first-appearance
-// order from a slice of arrival events. Used to scope the
-// lookupCurrentStructures query to only the actors that have arrivals
-// in this batch.
-func uniqueArrivalActorIDs(arrivals []chroniclerDispatchAgent) []string {
-	seen := map[string]bool{}
-	out := make([]string, 0, len(arrivals))
-	for _, a := range arrivals {
-		if seen[a.ID] {
-			continue
-		}
-		seen[a.ID] = true
-		out = append(out, a.ID)
-	}
-	return out
-}
-
-// actorArrivalGroup consolidates one actor's arrival events for the
-// per-actor render in renderArrivalSection. Arrivals are sorted by
-// OccurredAt asc — Final is the latest, Intermediates is everything
-// before. CurrentKnown distinguishes "DB lookup succeeded for this
-// actor" from "lookup failed / actor row gone" so the renderer can
-// fall back to bare per-arrival lines instead of inventing a location.
-// ShiftBegan is true iff the actor's current location matches the
-// final arrival AND a shift_start covers the same (actor, workplace),
-// which is exactly when "as their shift began" should fire.
-type actorArrivalGroup struct {
-	ActorID              string
-	DisplayName          string
-	Arrivals             []chroniclerDispatchAgent // sorted by OccurredAt asc
-	CurrentKnown         bool
-	CurrentStructureID   string
-	CurrentStructureName string
-	ShiftBegan           bool
-}
-
-// groupArrivalsByActor folds a slice of arrival events into per-actor
-// groups, preserving first-appearance order in actorOrder for stable
-// rendering. For each actor with a current_inside_structure_id reading,
-// computes ShiftBegan (current matches final AND shift_started covers
-// it). Adds the corresponding (actor, workplace) key to consumedShiftStarts
-// so renderShiftSection knows to skip that shift_start row.
-//
-// Actors absent from currentByActor (lookup query failed, or DB row
-// gone between enqueue and flush) get CurrentKnown=false; the renderer
-// treats them as "current unknown" and emits bare per-arrival lines
-// like Phase 1.
-func groupArrivalsByActor(
-	arrivals []chroniclerDispatchAgent,
-	currentByActor map[string]actorCurrent,
-	shiftStarted map[shiftMergeKey]struct{},
-) (actorOrder []string, groupsByActor map[string]*actorArrivalGroup, consumedShiftStarts map[shiftMergeKey]struct{}) {
-	groupsByActor = map[string]*actorArrivalGroup{}
-	consumedShiftStarts = map[shiftMergeKey]struct{}{}
-	for _, a := range arrivals {
-		g, ok := groupsByActor[a.ID]
-		if !ok {
-			g = &actorArrivalGroup{ActorID: a.ID, DisplayName: a.DisplayName}
-			groupsByActor[a.ID] = g
-			actorOrder = append(actorOrder, a.ID)
-		}
-		g.Arrivals = append(g.Arrivals, a)
-	}
-	for _, g := range groupsByActor {
-		sort.SliceStable(g.Arrivals, func(i, j int) bool {
-			return g.Arrivals[i].OccurredAt.Before(g.Arrivals[j].OccurredAt)
-		})
-		cur, ok := currentByActor[g.ActorID]
-		if !ok {
-			// Current unknown for this actor — DB query failed or row
-			// missing. Fall back to Part A merge: consume shift_start
-			// for any arrival that matches a shifted workplace, so the
-			// shift section doesn't duplicate the arrival section's
-			// "as their shift began" line. Slightly stale (the suffix
-			// fires even if the actor has since wandered off the
-			// workplace), but DB failures are rare and avoiding the
-			// duplicate is the higher-value behavior to preserve.
-			for _, a := range g.Arrivals {
-				k := shiftMergeKey{ActorID: g.ActorID, StructureID: a.ArrivalStructureID}
-				if _, ok := shiftStarted[k]; ok {
-					consumedShiftStarts[k] = struct{}{}
-				}
-			}
-			continue
-		}
-		g.CurrentKnown = true
-		g.CurrentStructureID = cur.StructureID
-		g.CurrentStructureName = cur.StructureName
-		final := g.Arrivals[len(g.Arrivals)-1]
-		if cur.StructureID != "" && cur.StructureID == final.ArrivalStructureID {
-			k := shiftMergeKey{ActorID: g.ActorID, StructureID: final.ArrivalStructureID}
-			if _, ok := shiftStarted[k]; ok {
-				g.ShiftBegan = true
-				consumedShiftStarts[k] = struct{}{}
-			}
-		}
-	}
-	return
-}
-
-// shiftMergeKey identifies an (actor, workplace) pair for layer-2
-// perception grouping: a shift_start at workplace X coincident with an
-// arrival at workplace X collapses into one merged line in the arrival
-// section. Joined on village_object.id (not display name) so a
-// display_name flip between the scheduler's per-tick load and the
-// arrival's lookupStructureName call can't break the merge.
-type shiftMergeKey struct {
-	ActorID     string
-	StructureID string
-}
-
-// renderArrivalSection renders the buffered-arrival section (ZBBS-119).
-// One line per actor (not per arrival event) so a multi-stop journey
-// reads as one sentence instead of disconnected lines.
-//
-// Per-actor phrasing depends on the actor's current location vs the
-// arrival sequence:
-//   - 1 arrival, current matches: "X arrived at Y" (+ shift suffix if applicable)
-//   - 1 arrival, current is some other place: "X briefly appeared at Y, then went to Z"
-//   - 1 arrival, current is outdoors: "X briefly appeared at Y"
-//   - multi, final matches current: "X passed through A and B, then arrived at Y"
-//   - multi, final doesn't match: "X passed through A, B, and Y, then went to Z" (or just the trail if outdoors)
-//
-// Fallback: when the actor's CurrentKnown is false (DB lookup failed
-// or actor row gone between enqueue and flush), each arrival renders
-// as a bare "X arrived at Y" line (Phase 1 behavior). The shift suffix
-// still fires per-arrival when shiftStarted matches so we don't
-// regress Part A's merge in the fallback path.
-func renderArrivalSection(actorOrder []string, groups map[string]*actorArrivalGroup, shiftStarted map[shiftMergeKey]struct{}) string {
-	if len(actorOrder) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	b.WriteString("Recent arrivals:")
-	joinNames := func(arr []chroniclerDispatchAgent) {
-		for i, p := range arr {
-			if i > 0 {
-				if i == len(arr)-1 {
-					b.WriteString(" and ")
-				} else {
-					b.WriteString(", ")
-				}
-			}
-			b.WriteString(p.ArrivalStructureName)
-		}
-	}
-	for _, actorID := range actorOrder {
-		g := groups[actorID]
-		if !g.CurrentKnown {
-			// DB lookup didn't return this actor; fall back to bare per-
-			// arrival lines so we don't invent a current location.
-			for _, a := range g.Arrivals {
-				b.WriteString("\n- ")
-				b.WriteString(a.DisplayName)
-				b.WriteString(" arrived at ")
-				b.WriteString(a.ArrivalStructureName)
-				if _, ok := shiftStarted[shiftMergeKey{ActorID: actorID, StructureID: a.ArrivalStructureID}]; ok {
-					b.WriteString(" as their shift began")
-				}
-			}
-			continue
-		}
-		final := g.Arrivals[len(g.Arrivals)-1]
-		intermediates := g.Arrivals[:len(g.Arrivals)-1]
-		currentMatchesFinal := g.CurrentStructureID != "" && g.CurrentStructureID == final.ArrivalStructureID
-		b.WriteString("\n- ")
-		b.WriteString(g.DisplayName)
-		switch {
-		case len(g.Arrivals) == 1 && currentMatchesFinal:
-			b.WriteString(" arrived at ")
-			b.WriteString(final.ArrivalStructureName)
-		case len(g.Arrivals) == 1 && !currentMatchesFinal:
-			b.WriteString(" briefly appeared at ")
-			b.WriteString(final.ArrivalStructureName)
-			if g.CurrentStructureName != "" {
-				b.WriteString(", then went to ")
-				b.WriteString(g.CurrentStructureName)
-			}
-		case len(g.Arrivals) > 1 && currentMatchesFinal:
-			b.WriteString(" passed through ")
-			joinNames(intermediates)
-			b.WriteString(", then arrived at ")
-			b.WriteString(final.ArrivalStructureName)
-		case len(g.Arrivals) > 1 && !currentMatchesFinal:
-			b.WriteString(" passed through ")
-			joinNames(g.Arrivals)
-			if g.CurrentStructureName != "" {
-				b.WriteString(", then went to ")
-				b.WriteString(g.CurrentStructureName)
-			}
-		}
-		if g.ShiftBegan {
-			b.WriteString(" as their shift began")
-		}
-	}
-	return b.String()
-}
-
-// renderShiftSection renders a single shift_start or shift_end section.
-// Format: "<heading>\n- <name> (<work>, HH:MM-HH:MM) -- currently at <place>".
-//
-// Agents whose (actor, workplace) appears in mergedIntoArrival are skipped
-// — their entry has been folded into the arrival section's "as their
-// shift began" suffix. Returns "" if every agent was filtered, so the
-// caller can omit the section entirely.
-func renderShiftSection(et chroniclerDispatchEventType, agents []chroniclerDispatchAgent, mergedIntoArrival map[shiftMergeKey]struct{}) string {
-	heading := "Beginning their shift now:"
-	if et == dispatchShiftEnd {
-		heading = "Ending their shift now:"
-	}
-	var b strings.Builder
-	wrote := false
-	for _, a := range agents {
-		if _, ok := mergedIntoArrival[shiftMergeKey{ActorID: a.ID, StructureID: a.WorkStructureID}]; ok {
-			continue
-		}
-		if !wrote {
-			b.WriteString(heading)
-			wrote = true
-		}
-		b.WriteString("\n- ")
-		b.WriteString(a.DisplayName)
-		b.WriteString(" (")
-		b.WriteString(a.WorkPlace)
-		b.WriteString(", ")
-		b.WriteString(a.ShiftStart)
-		b.WriteString("-")
-		b.WriteString(a.ShiftEnd)
-		b.WriteString(") -- currently at ")
-		b.WriteString(a.CurrentPlace)
-	}
-	if !wrote {
-		return ""
-	}
-	return b.String()
-}
-
-// renderNeedsOnsetSection renders the "Needs newly arising" section for
-// villagers whose hunger/thirst/tiredness tier increased into red or
-// peak on the most recent needs tick. Inverse of
-// renderNeedsResolvedSection — the chronicler reads these as fresh
-// distress events that may warrant atmosphere or record_event prose.
-// No source field; the onset is the natural drift of the hourly tick,
-// not a discrete in-world action.
-//
-// Severity-aware vocabulary (Phase 2.B / ZBBS-121 commit 7): each
-// need in OnsetNeeds carries its new tier in the parallel
-// OnsetSeverities slice. The render uses Need.Label(tier) to pick
-// the band-appropriate word — "hungry" for a fresh red-tier crossing,
-// "starving" for a peak-tier crossing.
-//
-// Lines mirror the resolved section's structure (place + work
-// annotation) so the chronicler can spot "newly exhausted at the
-// Mill, works there" — useful narrative-authoring context.
-func renderNeedsOnsetSection(agents []chroniclerDispatchAgent) string {
-	var b strings.Builder
-	b.WriteString("Needs newly arising:")
-	for _, a := range agents {
-		b.WriteString("\n- ")
-		b.WriteString(a.DisplayName)
-		b.WriteString(" -- now ")
-		b.WriteString(joinOnsetLabels(a.OnsetNeeds, a.OnsetSeverities))
-		b.WriteString(" -- currently at ")
-		b.WriteString(a.CurrentPlace)
-		if a.WorkPlace != "" {
-			b.WriteString(" (work: ")
-			b.WriteString(a.WorkPlace)
-			if a.ShiftStart != "" && a.ShiftEnd != "" {
-				b.WriteString(", ")
-				b.WriteString(a.ShiftStart)
-				b.WriteString("-")
-				b.WriteString(a.ShiftEnd)
-			}
-			b.WriteString(")")
-		}
-	}
-	return b.String()
-}
-
-// joinOnsetLabels turns parallel (need-key, tier) slices into a
-// comma-or-and-joined recovery-tense phrase using the registry's
-// Label for each need + tier pair. Severity-aware: red-tier crossings
-// produce "hungry"/"parched"/"weary"; peak-tier crossings produce
-// "starving"/"desperate"/"exhausted". Falls back to "in distress"
-// when the slices are empty (defensive — shouldn't happen, callers
-// only invoke when at least one crossing fired).
-func joinOnsetLabels(keys []string, tiers []NeedTier) string {
-	if len(keys) == 0 {
-		return "in distress"
-	}
-	labels := make([]string, 0, len(keys))
-	for i, key := range keys {
-		var tier NeedTier
-		if i < len(tiers) {
-			tier = tiers[i]
-		} else {
-			tier = NeedRed // defensive — caller should keep slices in sync
-		}
-		nd, ok := FindNeed(key)
-		if !ok {
-			labels = append(labels, key)
-			continue
-		}
-		labels = append(labels, nd.Label(tier))
-	}
-	switch len(labels) {
-	case 1:
-		return labels[0]
-	case 2:
-		return labels[0] + " and " + labels[1]
-	default:
-		return strings.Join(labels[:len(labels)-1], ", ") + ", and " + labels[len(labels)-1]
-	}
-}
-
-// renderNeedsResolvedSection renders the "Needs newly satisfied" section
-// for villagers whose needs crossed below the red threshold this tick.
-// Tone: factual + recovery-leading, so the chronicler reads them as
-// authoring candidates (record_event for the recovery, set_environment
-// for resulting atmosphere).
-//
-// Lines fold each agent's resolved need(s) and source into one phrase.
-// One need: "no longer parched". Two needs: "no longer hungry or
-// parched". Source becomes a parenthetical hint for non-admin sources;
-// admin resets are unattributed (the chronicler doesn't need to know
-// the operator intervened, just that the need is gone).
-//
-// Work annotation: when the agent has a work assignment, append a
-// "(work: <place>, HH:MM-HH:MM)" suffix so the chronicler can spot
-// "currently at the Well, but works at the Apothecary 07:30-18:30"
-// at a glance — useful narrative authoring context.
-func renderNeedsResolvedSection(agents []chroniclerDispatchAgent) string {
-	var b strings.Builder
-	b.WriteString("Needs newly satisfied:")
-	for _, a := range agents {
-		b.WriteString("\n- ")
-		b.WriteString(a.DisplayName)
-		b.WriteString(" -- no longer ")
-		b.WriteString(joinResolvedNeedLabels(a.ResolvedNeeds))
-		if hint := sourceHint(a.Source); hint != "" {
-			b.WriteString(" ")
-			b.WriteString(hint)
-		}
-		b.WriteString(" -- currently at ")
-		b.WriteString(a.CurrentPlace)
-		if a.WorkPlace != "" {
-			b.WriteString(" (work: ")
-			b.WriteString(a.WorkPlace)
-			if a.ShiftStart != "" && a.ShiftEnd != "" {
-				b.WriteString(", ")
-				b.WriteString(a.ShiftStart)
-				b.WriteString("-")
-				b.WriteString(a.ShiftEnd)
-			}
-			b.WriteString(")")
-		}
-	}
-	return b.String()
-}
-
-// joinResolvedNeedLabels turns a list of resolved-need keys ("hunger",
-// "thirst", "tiredness") into a recovery-tense phrase using the same
-// vocabulary as needLabel's red-tier so the chronicler reads
-// "no longer parched" rather than the bland "no longer thirsty" (which
-// is the mild-tier word). Recovery is from the red tier — that's what
-// the threshold crossing represents.
-func joinResolvedNeedLabels(needs []string) string {
-	if len(needs) == 0 {
-		return "in distress"
-	}
-	labels := make([]string, 0, len(needs))
-	for _, n := range needs {
-		switch n {
-		case "hunger":
-			labels = append(labels, "hungry")
-		case "thirst":
-			labels = append(labels, "parched")
-		case "tiredness":
-			labels = append(labels, "weary")
-		default:
-			labels = append(labels, n)
-		}
-	}
-	switch len(labels) {
-	case 1:
-		return labels[0]
-	case 2:
-		return labels[0] + " or " + labels[1]
-	default:
-		// Three needs all crossing in one call is rare (only the admin
-		// reset path produces it today). Render as Oxford-comma list.
-		return strings.Join(labels[:len(labels)-1], ", ") + ", or " + labels[len(labels)-1]
-	}
-}
-
-// sourceHint renders the consumption source as a chronicler-friendly
-// parenthetical. Admin resets are unattributed — the operator's hand
-// isn't part of the in-world narrative. Other sources surface so the
-// chronicler can shade its attention call ("she has slaked her thirst
-// at the well" reads differently from "she has finished her meal").
-//
-// Whitelisted: a future caller passing free-form (or worse, model-
-// influenced) source text shouldn't end up rendering arbitrary content
-// into the chronicler's perception. Unknown sources collapse to the
-// silent case rather than echoing the input.
-func sourceHint(source string) string {
-	switch source {
-	case "well":
-		return "[from the well]"
-	case "meal_or_drink":
-		return "[from a meal or drink]"
-	default:
-		return ""
-	}
-}
-
-// dispatchChroniclerShiftBoundaries fires the chronicler when the
-// dispatch queue has pending shift events AND no other fire (phase or
-// cascade) has already drained them this tick. Called from the server
-// tick loop after dispatchScheduledBehaviors so the worker scheduler
-// has had a chance to enqueue.
-//
-// Cheap when nothing is pending. The function only fires when shift
-// events (shift_start / shift_end) are actually queued — arrivals
-// and needs onsets/resolves alone are NOT a shift boundary; their
-// proper fire path is the buffered dispatcher (when enabled) or a
-// future dedicated dispatcher. Without this gate the function would
-// fire shift_boundary on every tick the queue is non-empty, producing
-// chronicler prompts that lead with "A villager's working hours have
-// shifted" when the only thing that happened was an NPC walking into
-// a building.
-//
-// When the buffered dispatcher is enabled, this function is fully
-// suppressed: the buffered dispatcher's timer-driven flush owns
-// queue drains and fires with reason "buffered_flush". Running both
-// paths produced a fire-per-server-tick storm of shift_boundary
-// fires while the buffered timer was still arming.
-//
-// Honors AgentTicksPaused — if the admin halted agent activity, the
-// chronicler stays quiet on shift boundaries too. The queued events
-// remain in memory until the next fire (or process restart) drains
-// them; that is intentional, matching how phase fires behave under
-// pause.
-func (app *App) dispatchChroniclerShiftBoundaries(ctx context.Context) {
-	if app.chroniclerBufferedDispatchEnabled(ctx) {
-		// Buffered dispatcher owns queue drains. Shift events that
-		// land without an arrival to trigger notify() ride the next
-		// arrival's flush, or get picked up when the buffered timer
-		// arms via any subsequent enqueue.
-		return
-	}
-	if !app.ChroniclerDispatchQueue.hasShiftEventsPending() {
-		return
-	}
-	cfg, err := app.loadWorldConfig(ctx)
-	if err != nil {
-		log.Printf("chronicler-shift: load config: %v", err)
-		return
-	}
-	if cfg.AgentTicksPaused {
-		return
-	}
-	if err := app.fireChronicler(ctx, chroniclerFireReason{Type: "shift_boundary", Priority: chroniclerFirePriorityRoutine}); err != nil {
-		log.Printf("chronicler-shift: fire failed: %v", err)
-	}
-}
 

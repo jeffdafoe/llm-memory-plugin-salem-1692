@@ -12,9 +12,12 @@ package main
 // voice), but v1 keeps the pipeline simple and observable.
 //
 // Authoring path is intentionally agnostic — anyone with INSERT on
-// the table can post. ZBBS-156 shipped with seed-only authoring;
-// ZBBS-164 (record_announcement chronicler tool) wires the LLM
-// authoring path via recordTownCrierAnnouncement below.
+// the table can post. ZBBS-156 shipped with seed-only authoring; the
+// chronicler-driven record_announcement authoring path was removed in
+// ZBBS-WORK-202 along with the rest of the chronicler narrative tools
+// beyond set_environment. The crier reads through the seeded rows
+// (and any future admin-authored rows) and goes silent when none
+// remain unexpired with posted_count < max_posts.
 
 import (
 	"context"
@@ -114,25 +117,3 @@ func (app *App) cryNextAnnouncement(ctx context.Context, crierID string) {
 	}
 }
 
-// recordTownCrierAnnouncement inserts a fresh announcement row.
-// Defaults: posted_count=0, max_posts=3 (heard three times before
-// retiring), no expires_at (relies on max_posts to retire). Used by
-// the chronicler's record_announcement tool — keeping the helper
-// minimal so future writers (admin endpoint, seed scripts, other
-// agents) can call it without inheriting LLM-specific framing.
-//
-// Cheap single INSERT; CHECK constraint on the table rejects empty
-// or whitespace-only text, which surfaces as a pgx error here. Caller
-// is expected to TrimSpace + non-empty validate at the tool boundary
-// for friendlier model-facing error text — this function is the last
-// line of defense.
-func (app *App) recordTownCrierAnnouncement(ctx context.Context, text string) error {
-	_, err := app.DB.Exec(ctx,
-		`INSERT INTO town_crier_announcement (text) VALUES ($1)`,
-		text,
-	)
-	if err != nil {
-		return fmt.Errorf("recordTownCrierAnnouncement: %w", err)
-	}
-	return nil
-}

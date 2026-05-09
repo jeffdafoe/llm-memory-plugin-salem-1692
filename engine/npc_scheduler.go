@@ -2,14 +2,12 @@ package main
 
 // Per-NPC scheduled behavior evaluation.
 //
-// As of the chronicler-dispatch redesign (2026-05-01): when the worker
-// branch matches an agent-driven NPC (llm_memory_agent IS NOT NULL), this
-// scheduler does NOT walk them. Instead, evaluateWorkerSchedule enqueues
-// a shift_start / shift_end event on app.ChroniclerDispatchQueue; the
-// chronicler picks it up on its next fire and decides whether to attend
-// the NPC, who then decides for themselves whether to walk to/from work.
-// The boundary is still stamped (last_shift_tick_at) on the agent branch
-// so we don't re-enqueue every tick.
+// Post-ZBBS-WORK-202: when the worker branch matches an agent-driven
+// NPC (llm_memory_agent IS NOT NULL), this scheduler does NOT walk
+// them and does NOT dispatch the chronicler. The boundary is stamped
+// (last_shift_tick_at) so we don't re-evaluate every tick; the agent
+// NPC's next tick (cascade origin or engine idle-sweep) will surface
+// the return-to-work nudge via shouldNudgeReturnToWork.
 //
 // Decorative NPCs (NULL llm_memory_agent) continue to use the legacy walk
 // path unchanged. Both branches share the same boundary detection +
@@ -386,51 +384,21 @@ func (app *App) evaluateWorkerSchedule(ctx context.Context, w *workerRow, now ti
 		}
 	}
 
-	// Agent-NPC branch (chronicler-dispatch redesign): instead of walking
-	// the NPC bodily, enqueue a shift_start / shift_end event for the
-	// chronicler. The chronicler's next perception surfaces the boundary
-	// and the chronicler decides whether to attend the NPC, who then
-	// decides for themselves whether to walk to/from work. Decorative
-	// NPCs (NULL llm_memory_agent) fall through to the legacy walk path
-	// below. Stamp the boundary either way so we don't re-evaluate every
-	// tick — the dispatch is a one-shot per boundary.
+	// Agent-NPC branch (post-ZBBS-WORK-202): chronicler dispatch is gone.
+	// Agent NPCs no longer get walked bodily on shift boundaries, and
+	// no longer get an explicit nudge — they decide for themselves on
+	// their next tick whether to walk to/from work, with the engine's
+	// idle-sweep dispatcher (ZBBS-HOME-201) ensuring they actually tick
+	// within a bounded window. The return-to-work perception nudge
+	// (shouldNudgeReturnToWork in agent_tick.go) surfaces "your shift
+	// continues, return" when the NPC is on shift and away from work.
+	// Stamp the boundary so we don't re-evaluate every tick.
 	if w.LlmMemoryAgent.Valid {
-		eventType := dispatchShiftStart
-		if kind == workerLeave {
-			eventType = dispatchShiftEnd
-		}
-		// Resolve current_place for the perception. Inside a structure -> its
-		// label; outdoors -> "the open village" matches the NPC tick wording.
-		currentPlace := "the open village"
-		if w.InsideStructureID.Valid {
-			currentPlace = app.lookupStructureName(ctx, w.InsideStructureID.String)
-			if currentPlace == "" {
-				currentPlace = "the open village"
-			}
-		}
-		startMinResolved, endMinResolved := resolveWorkerWindow(w, dawnMin, duskMin)
-		app.ChroniclerDispatchQueue.enqueue(eventType, boundaryAt, chroniclerDispatchAgent{
-			ID:              w.ID,
-			DisplayName:     w.DisplayName,
-			CurrentPlace:    currentPlace,
-			WorkPlace:       w.WorkPlaceName,
-			WorkStructureID: w.WorkStructureID,
-			ShiftStart:      formatMinuteOfDay(startMinResolved),
-			ShiftEnd:        formatMinuteOfDay(endMinResolved),
-		})
-		// Arm the buffered dispatcher's timer so a shift boundary
-		// drains within the buffer window even when no coincident
-		// arrival triggers a notify. The legacy dispatchChronicler-
-		// ShiftBoundaries fallback no-ops when buffered dispatch is
-		// on, so without this notify a shift transition with no NPC
-		// movement would sit in the queue until the next arrival or
-		// phase fire.
-		app.ChroniclerBufferedDispatcher.notify()
 		if _, err := app.DB.Exec(ctx,
 			`UPDATE actor SET last_shift_tick_at = $2 WHERE id = $1`,
 			w.ID, boundaryAt,
 		); err != nil {
-			log.Printf("scheduler: stamp (agent-dispatch) %s: %v", w.ID, err)
+			log.Printf("scheduler: stamp (agent-shift-boundary) %s: %v", w.ID, err)
 		}
 		return
 	}

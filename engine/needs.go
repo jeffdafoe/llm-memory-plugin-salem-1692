@@ -205,99 +205,6 @@ func (app *App) dispatchNeedsTick(ctx context.Context) {
 
 	totalIncrement := amount * cappedHours
 
-	// Pre-tick read for onset-crossing detection (ZBBS-119 Phase 2.A,
-	// converted to actor_need rows in ZBBS-121 commit 3). The locking
-	// CTE acquires actor row locks first in a separate sub-statement
-	// so the lock-acquisition order is the SELECT's ORDER BY id,
-	// independent of how Postgres orders the outer JOIN result. The
-	// outer SELECT then reads need values via LEFT JOIN — locks
-	// already held, so this is a pure read. Matches consumption.go's
-	// `FOR UPDATE` lock target (the actor row), serializing the tick
-	// against concurrent applyConsumption.
-	//
-	// Lock scope (ZBBS-123): every actor whose body the UPDATE below
-	// touches must be locked first per the actor_need write contract
-	// (writeNeedRows doc) — so the CTE locks both agent NPCs and PCs.
-	// Onset detection still only fires for agent NPCs (chronicler has
-	// no way to dispatch attention to a PC); the outer SELECT filters
-	// to llm_memory_agent IS NOT NULL so PCs are locked but not
-	// scanned for crossings. Decoratives stay excluded entirely — no
-	// body model, no need to lock or accrue.
-	//
-	// LEFT JOIN keeps actors with missing actor_need rows in the
-	// result set; the per-need GetOK loop below logs missing rows and
-	// skips onset detection for that need.
-	type onsetPre struct {
-		actorID string
-		needs   NeedSet
-	}
-	var pres []onsetPre
-	// Eligibility predicate is shared verbatim between the pre-tick
-	// lock CTE and the UPDATE's lock CTE — see needTickEligibilityPred
-	// in needs_repo-style helpers below. Both queries must select the
-	// same actor set so the lock acquired here serializes the writes
-	// done there. The shared constant means a future widening (adding
-	// a fourth actor kind) edits one string instead of two.
-	preRows, preErr := tx.Query(ctx,
-		`WITH locked_actors AS (
-		     SELECT id, llm_memory_agent
-		       FROM actor
-		      WHERE `+needTickEligibilityPred+`
-		      ORDER BY id
-		      FOR UPDATE
-		 )
-		 SELECT la.id, n.key, n.value
-		   FROM locked_actors la
-		   LEFT JOIN actor_need n ON n.actor_id = la.id
-		  WHERE la.llm_memory_agent IS NOT NULL
-		  ORDER BY la.id, n.key`,
-	)
-	if preErr != nil {
-		// Continue without onset detection — the UPDATE itself is the
-		// primary work; a missed onset surfaces in the chronicler's
-		// next perception via the standing distress block.
-		log.Printf("needs_tick: read pre-values for onset detection (continuing without): %v", preErr)
-	} else {
-		// Defer Close so any early return from this branch doesn't leave
-		// rows open on the tx connection — leaving rows open can wedge
-		// later queries on the same connection.
-		func() {
-			defer preRows.Close()
-			byID := map[string]NeedSet{}
-			var order []string
-			for preRows.Next() {
-				var id string
-				var key sql.NullString
-				var value sql.NullInt64
-				if err := preRows.Scan(&id, &key, &value); err != nil {
-					log.Printf("needs_tick: scan pre-value row (skipping onset detection this tick): %v", err)
-					pres = nil
-					return
-				}
-				s, ok := byID[id]
-				if !ok {
-					s = NeedSet{}
-					byID[id] = s
-					order = append(order, id)
-				}
-				// LEFT JOIN can produce NULL key/value when the actor has no
-				// actor_need rows. Skip the assignment; per-need GetOK in the
-				// crossing loop below logs and skips for missing rows.
-				if key.Valid && value.Valid {
-					s[key.String] = int(value.Int64)
-				}
-			}
-			if err := preRows.Err(); err != nil {
-				log.Printf("needs_tick: iterate pre-values (skipping onset detection this tick): %v", err)
-				pres = nil
-				return
-			}
-			for _, id := range order {
-				pres = append(pres, onsetPre{actorID: id, needs: byID[id]})
-			}
-		}()
-	}
-
 	// Apply the hourly increment directly to actor_need rows
 	// (ZBBS-121 commit 5: rows are now the sole write target). Same
 	// LEAST clamp as the pre-conversion column UPDATE.
@@ -362,79 +269,13 @@ func (app *App) dispatchNeedsTick(ctx context.Context) {
 		return
 	}
 
-	// Resolve onset crossings + load dispatch agent info while still in
-	// the tx so all reads share one snapshot. Enqueue happens after
-	// commit so the chronicler doesn't see events for actors whose
-	// updates rolled back. Crossing detection iterates the Need
-	// registry — adding a fourth need (mood, loneliness) only requires
-	// extending the registry, not editing this loop.
-	thresholds := app.loadNeedThresholds(ctx)
-	var onsets []chroniclerDispatchAgent
-	for _, p := range pres {
-		var crossed []string
-		var severities []NeedTier
-		for _, nd := range Needs {
-			old, ok := p.needs.GetOK(nd.Key)
-			if !ok {
-				log.Printf("needs_tick: missing actor_need row actor=%s key=%s (skipping onset detection for this need)", p.actorID, nd.Key)
-				continue
-			}
-			postVal := clampNeed(old + totalIncrement)
-			threshold := thresholds.Get(nd.Key)
-			oldTier := nd.Tier(old, threshold)
-			newTier := nd.Tier(postVal, threshold)
-			// Phase 2.B (ZBBS-121 commit 7): generalize from
-			// "crossed red threshold" to "tier increased into red or
-			// peak". Catches both fresh red-tier onsets (mild→red,
-			// matches Phase 2.A) and peak-tier onsets the original
-			// detector missed (red→peak: oldH was already >= threshold
-			// so the < threshold guard skipped it; or mild→peak via a
-			// large catch-up increment, where newH lands at needMax in
-			// one step).
-			if newTier > oldTier && newTier >= NeedRed {
-				crossed = append(crossed, nd.Key)
-				severities = append(severities, newTier)
-			}
-		}
-		if len(crossed) == 0 {
-			continue
-		}
-		agent, ok, err := app.loadDispatchAgentForActor(ctx, tx, p.actorID)
-		if err != nil {
-			log.Printf("needs_tick: load dispatch agent for onset %s: %v", p.actorID, err)
-			continue
-		}
-		if !ok {
-			// Actor row vanished or became non-agent between SELECT and
-			// here — skip silently, no chronicler attention warranted.
-			continue
-		}
-		agent.OnsetNeeds = crossed
-		agent.OnsetSeverities = severities
-		onsets = append(onsets, agent)
-	}
-
 	if err := tx.Commit(ctx); err != nil {
 		log.Printf("needs_tick: commit failed: %v", err)
 		return
 	}
 
-	// Enqueue at the hour boundary so the dispatch queue's
-	// (event_type, minute) coalescing folds same-tick onsets into one
-	// batch. Notify the buffered dispatcher so onsets surface in the
-	// next perception even when no arrival follows; without this,
-	// onsets would sit in the queue indefinitely (the legacy
-	// dispatchChroniclerShiftBoundaries fallback is suppressed when
-	// buffered dispatch is on).
-	for _, a := range onsets {
-		app.ChroniclerDispatchQueue.enqueue(dispatchNeedsOnset, hourBoundary, a)
-	}
-	if len(onsets) > 0 {
-		app.ChroniclerBufferedDispatcher.notify()
-	}
-
-	log.Printf("needs_tick: %d hour(s) elapsed, applying %d capped hour(s) (last %s -> now %s), +%d to %d villagers (onsets: %d)",
-		hoursElapsed, cappedHours, lastAt.Format(time.RFC3339), hourBoundaryStr, totalIncrement, tag.RowsAffected(), len(onsets))
+	log.Printf("needs_tick: %d hour(s) elapsed, applying %d capped hour(s) (last %s -> now %s), +%d to %d villagers",
+		hoursElapsed, cappedHours, lastAt.Format(time.RFC3339), hourBoundaryStr, totalIncrement, tag.RowsAffected())
 }
 
 // loadNeedMagnitude returns the configured drop magnitude for a given

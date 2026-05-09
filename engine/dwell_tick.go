@@ -222,7 +222,7 @@ func (app *App) applyDwellCredit(
 		return tx.Commit(ctx)
 	}
 
-	res, err := app.applyConsumption(ctx, tx, actorID, delta, "dwell-"+source)
+	res, err := app.applyConsumption(ctx, tx, actorID, delta)
 	if err != nil {
 		return err
 	}

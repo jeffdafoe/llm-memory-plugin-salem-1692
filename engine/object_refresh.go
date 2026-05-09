@@ -30,9 +30,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"strings"
 	"time"
-	"unicode"
 )
 
 // refreshHit captures one applied attribute drop for the action-log
@@ -263,15 +261,10 @@ func (app *App) applyObjectRefreshAtArrival(ctx context.Context, actorID string,
 		}
 	}
 
-	// applyConsumption clamps, runs the UPDATE, and enqueues a chronicler
-	// needs_resolved event when an agent NPC's need crosses below the
-	// red threshold during this drop. That last bit is the whole reason
-	// for routing through this helper rather than the inline UPDATE the
-	// pre-ZBBS-needs-resolved code used: a thirsty NPC who walked off
-	// the job to drink at the well now gets nudged back to work the
-	// same tick instead of staying parked at the well.
-	source := refreshSource(objectName)
-	result, err := app.applyConsumption(ctx, tx, actorID, delta, source)
+	// applyConsumption clamps and runs the UPDATE in one place. (Pre-
+	// ZBBS-WORK-202 it also enqueued a chronicler needs_resolved event;
+	// the chronicler dispatch surface is now gone.)
+	result, err := app.applyConsumption(ctx, tx, actorID, delta)
 	if err != nil {
 		return nil, fmt.Errorf("apply consumption: %w", err)
 	}
@@ -421,35 +414,3 @@ func (app *App) applyObjectRefreshAtArrival(ctx context.Context, actorID string,
 	return hits, nil
 }
 
-// refreshSource maps an object's display name (or asset name fallback)
-// to the source token that applyConsumption surfaces to the chronicler
-// perception via sourceHint. Match is case-insensitive whole-word on
-// the human-readable name — robust to operator renames ("Well" /
-// "Well (Roofed)" / "The Old Well" all map to "well") without hard-
-// coding object UUIDs and without false-positives on names that merely
-// contain the substring (e.g. "Farewell Gate", "Well-Fed Shrine").
-//
-// Tokenization: split on whitespace, trim leading/trailing non-letter
-// runes (parens, commas) per token, then exact-match. Hyphenated and
-// apostrophized tokens stay intact, so "Well-Fed" doesn't classify as
-// a well; "Well's End" similarly stays unmatched (admins can rename
-// to a non-possessive form if they want it recognized).
-//
-// Unknown objects collapse to the empty string. sourceHint is also
-// whitelisted (only "well" and "meal_or_drink" surface today), so a
-// new refresh-tagged object that isn't yet recognized here renders
-// silently in the chronicler's perception rather than echoing arbitrary
-// object names. Add a case here when a new source needs a phrase. A
-// long-term cleaner home would be a `source` column on object_refresh,
-// but the v1 well case doesn't justify a schema migration yet.
-func refreshSource(objectName string) string {
-	for _, token := range strings.Fields(strings.ToLower(objectName)) {
-		token = strings.TrimFunc(token, func(r rune) bool {
-			return !unicode.IsLetter(r)
-		})
-		if token == "well" {
-			return "well"
-		}
-	}
-	return ""
-}

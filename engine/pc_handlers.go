@@ -1538,12 +1538,6 @@ func (app *App) handlePCSpeak(w http.ResponseWriter, r *http.Request) {
 		// reactions don't carry it forward — when the NPC arrives somewhere
 		// later, that arrival is its own new scene.
 		app.triggerCoLocatedTicks(context.Background(), structureID, "", fmt.Sprintf("pc-spoke (%s)", charName.String), true, app.newScene(context.Background(), structureID), actorID.String)
-
-		// Cascade origin — fire the chronicler alongside the co-located
-		// reactor ticks. Fire-and-forget; chronicler runs in a goroutine
-		// so it doesn't block the WebSocket response. Only fires once per
-		// scene-start (here), not for in-cascade NPC reactions.
-		app.cascadeOriginFireChronicler(fmt.Sprintf("pc-spoke (%s)", charName.String), structureID, chroniclerFirePriorityHigh)
 	} else {
 		// Outdoor speech: trigger agentized NPCs within 6-tile Chebyshev
 		// (192 px) of the speaker WHOSE FIRST NAME APPEARS IN THE SPEECH.

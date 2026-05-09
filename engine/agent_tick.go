@@ -1908,37 +1908,13 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 	// Atmosphere — the chronicler's most recent set_environment text.
 	// Empty when the chronicler hasn't fired yet (fresh deploy) or
 	// when world_environment is otherwise empty. The chronicler writes
-	// at phase boundaries and cascade origins; what's here is the
+	// at phase boundaries (dawn / midday / dusk); what's here is the
 	// village's current ambient texture.
 	if atm := app.latestEnvironmentText(ctx); atm != "" {
 		sections = append(sections, "Atmosphere: "+atm)
 	}
 
-	// Recent events visible to this NPC — village-scope events plus
-	// any local-scope events at the NPC's current structure plus any
-	// private-scope events targeted at this NPC. Last 7 game-days,
-	// capped per-scope at recentEventsCount entries (so up to 3x
-	// recentEventsCount total in the worst case, but typically much
-	// less since local and private events are sparse).
-	since := time.Now().Add(-recentEventsWindow)
-	var visibleEvents []string
-	visibleEvents = append(visibleEvents,
-		app.recentVisibleEvents(ctx, "village", "", since, recentEventsCount)...)
-	if r.InsideStructureID.Valid {
-		visibleEvents = append(visibleEvents,
-			app.recentVisibleEvents(ctx, "local", r.InsideStructureID.String, since, recentEventsCount)...)
-	}
-	visibleEvents = append(visibleEvents,
-		app.recentVisibleEvents(ctx, "private", r.ID, since, recentEventsCount)...)
-	if len(visibleEvents) > 0 {
-		var lines []string
-		for _, e := range visibleEvents {
-			lines = append(lines, "- "+e)
-		}
-		sections = append(sections, "What has happened recently:\n"+strings.Join(lines, "\n"))
-	}
-
-	// 7. Feedback from last action (M6.4.8) — when the NPC's most
+	// Feedback from last action (M6.4.8) — when the NPC's most
 	// recent commit failed (move_to to an unknown destination, chore
 	// with an unknown category, etc.), surface the error so the LLM
 	// has a chance to self-correct on the next tick. Without this,
@@ -1949,7 +1925,7 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 		sections = append(sections, "[Can't do that] "+feedback)
 	}
 
-	// 6. Decision prompt.
+	// Decision prompt.
 	sections = append(sections, "Decide what to do this hour, then commit with move_to (walk to a named place), "+
 		"chore (run a quick errand by category), speak (say something), or done (rest). "+
 		"You can also use recall first if you want to remember anything specific. "+
