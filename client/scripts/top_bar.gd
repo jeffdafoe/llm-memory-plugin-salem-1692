@@ -47,6 +47,34 @@ var coins_label: Label = null
 var needs_label: HBoxContainer = null
 var _editor_active: bool = false
 
+# Persistent-segment state for the needs HUD (ZBBS-HOME-215). Pre-215
+# set_needs rebuilt the chip's children every poll, killing in-flight
+# tweens and snapping numbers to their new value with no transition.
+# Now segments are built once in _build_needs_chip and updated in
+# place — value changes "gas-pump" tween from old to new, recoveries
+# (new < old) flash a warm brightening on the segment that fades back
+# over ~1.6s. Polling cadence is 10s (talk_panel REFRESH_INTERVAL),
+# well outside the longest animation, so consecutive polls don't
+# overlap their effects.
+const _NEED_KEYS: Array = ["hunger", "thirst", "tiredness"]
+const _NEED_DISPLAY: Dictionary = {
+    "hunger":    ["H", "unger "],
+    "thirst":    ["T", "hirst "],
+    "tiredness": ["W", "eariness "],
+}
+const RECOVERY_FLASH_COLOR := Color(1.35, 1.25, 1.05, 1.0)
+const RECOVERY_FLASH_DURATION: float = 1.6
+const VALUE_TWEEN_DURATION: float = 0.6
+# Per-need segment record: container + the three labels + the two
+# in-flight tweens + the currently-rendered integer value (used as
+# the start point for the next gas-pump tween, since the label text
+# is already showing it).
+var _need_segments: Dictionary = {}
+# Last value seen per need. -1 sentinel = "no value yet" — first set
+# snaps without animation so the chip shows the right number on the
+# first /pc/me response without a 0→24 roll-up.
+var _prior_needs: Dictionary = {"hunger": -1, "thirst": -1, "tiredness": -1}
+
 # Theme colors (matching login screen)
 const COLOR_BG = Color(0.12, 0.09, 0.07, 0.95)
 const COLOR_BORDER = Color(0.45, 0.35, 0.22, 1.0)
@@ -137,6 +165,12 @@ func _ready() -> void:
     needs_label.visible = false
     needs_label.mouse_filter = Control.MOUSE_FILTER_PASS
     right_box.add_child(needs_label)
+
+    # ZBBS-HOME-215: build the per-need segments once, here, so set_needs
+    # can update them in place (preserving in-flight tweens). The chip
+    # stays hidden until set_needs receives a non-empty dictionary, but
+    # the segment children sit ready under it.
+    _build_needs_segments()
 
     # Coins chip — period-flavored "P 25" (silver pence). Hidden until
     # the talk panel reports the player has a PC with coins. Tooltip
@@ -294,48 +328,133 @@ func _on_inventory_icon_input(event: InputEvent) -> void:
         inventory_toggle_requested.emit(inventory_icon.get_global_rect())
         get_viewport().set_input_as_handled()
 
-## Update the body-needs chip (ZBBS-123). needs is a Dictionary keyed
-## by 'hunger' / 'thirst' / 'tiredness' with int values 0..24. Empty
-## dictionary hides the chip — used when the PC doesn't exist yet or
-## the talk panel reset to no-PC state.
+## Update the body-needs chip (ZBBS-123, animated ZBBS-HOME-215).
+## `needs` is a Dictionary keyed by 'hunger' / 'thirst' / 'tiredness'
+## with int values 0..24. Empty dictionary hides the chip.
 ##
-## Tier thresholds are hardcoded to engine defaults (mild ≥ 8, red
-## ≥ 18, peak = 24). Per-need thresholds are runtime-configurable on
-## the server but the client doesn't pull them; if an admin tunes them
-## the HUD coloring may drift slightly from the in-prompt felt
-## language. Acceptable for v1 — a future refresh can wire thresholds
-## into the /pc/me payload alongside the values.
+## Animation behavior:
+##   - First non-empty call snaps each value into place (no tween),
+##     so the chip shows the right number on the first /pc/me response
+##     without a 0→24 roll-up.
+##   - Subsequent calls tween the displayed integer from the prior
+##     value to the new one over VALUE_TWEEN_DURATION ("gas-pump"
+##     style — the digits roll instead of snap).
+##   - When a need decreases (recovery, e.g. dwelling at a Shade Tree
+##     pulls tiredness down), the segment flashes a warm brightening
+##     and fades back over RECOVERY_FLASH_DURATION. Player gets a
+##     visible signal that resting is doing something.
+##
+## Tier thresholds are hardcoded to engine defaults (mild ≥ 8, red ≥
+## 18, peak = 24). If an admin tunes the server thresholds the HUD
+## coloring drifts slightly from the in-prompt felt language —
+## acceptable for v1; a future refresh can wire thresholds into
+## /pc/me alongside the values.
 func set_needs(needs: Dictionary) -> void:
     if needs_label == null:
         return
     if needs.is_empty():
         needs_label.visible = false
         return
+    needs_label.visible = true
     var h := int(needs.get("hunger", 0))
     var t := int(needs.get("thirst", 0))
     var w := int(needs.get("tiredness", 0))
-    for child in needs_label.get_children():
-        child.queue_free()
-    needs_label.add_child(_build_need_segment("H", "unger", h))
-    needs_label.add_child(_build_need_segment("T", "hirst", t))
-    needs_label.add_child(_build_need_segment("W", "eariness", w))
     needs_label.tooltip_text = "Hunger: %d / 24\nThirst: %d / 24\nTiredness: %d / 24" % [h, t, w]
-    needs_label.visible = true
+    _update_need_segment("hunger", h)
+    _update_need_segment("thirst", t)
+    _update_need_segment("tiredness", w)
 
-## Build one need's segment: "Hunger 24" rendered as three Labels —
-## cap "H" (16 pt) + small-rest "unger " (10 pt) + value "24" (16 pt).
-## Cap and value use the same size as the surrounding chips (coins,
-## username) so the chip reads as part of the bar's general chrome,
-## with the lowercase remainder shrunk to suggest a stylized
-## abbreviation. All three labels share the segment's tier color.
-func _build_need_segment(initial: String, rest: String, value: int) -> HBoxContainer:
-    var color := _tier_color(value)
-    var segment := HBoxContainer.new()
-    segment.add_theme_constant_override("separation", 0)
-    segment.add_child(_make_need_label(initial, 16, color))
-    segment.add_child(_make_need_label("%s " % rest, 10, color))
-    segment.add_child(_make_need_label("%d" % value, 16, color))
-    return segment
+## Build the persistent per-need segments under needs_label. Called
+## once from _ready. Each segment is a horizontal triplet —
+## cap (16pt) + lowercase rest (10pt) + value (16pt) — kept alive
+## across set_needs calls so tweens land on stable nodes.
+func _build_needs_segments() -> void:
+    for key in _NEED_KEYS:
+        var meta: Array = _NEED_DISPLAY[key]
+        var segment := HBoxContainer.new()
+        segment.add_theme_constant_override("separation", 0)
+        var cap_label := _make_need_label(meta[0], 16, COLOR_TEXT_DIM)
+        var rest_label := _make_need_label(meta[1], 10, COLOR_TEXT_DIM)
+        var value_label := _make_need_label("0", 16, COLOR_TEXT_DIM)
+        segment.add_child(cap_label)
+        segment.add_child(rest_label)
+        segment.add_child(value_label)
+        needs_label.add_child(segment)
+        _need_segments[key] = {
+            "container":      segment,
+            "cap_label":       cap_label,
+            "rest_label":      rest_label,
+            "value_label":     value_label,
+            "value_tween":     null,
+            "recovery_tween":  null,
+            "displayed_value": 0,
+        }
+
+## Apply a need value update to a single segment. Color always
+## refreshes (so a tier crossover paints immediately). The displayed
+## number tweens from the segment's currently-rendered value to the
+## new one — using `displayed_value` instead of `_prior_needs[key]`
+## so a poll arriving mid-tween picks up where the last animation
+## was, no jump. Recovery (new < old) triggers the warm flash on the
+## container's modulate.
+func _update_need_segment(key: String, new_val: int) -> void:
+    var seg = _need_segments.get(key)
+    if seg == null:
+        return
+    var color := _tier_color(new_val)
+    seg.cap_label.add_theme_color_override("font_color", color)
+    seg.rest_label.add_theme_color_override("font_color", color)
+    seg.value_label.add_theme_color_override("font_color", color)
+
+    var old_val: int = _prior_needs.get(key, -1)
+    _prior_needs[key] = new_val
+
+    # First-time set: snap. Avoids the visually-jarring 0→N rollup
+    # when the chip first appears.
+    if old_val < 0:
+        seg.value_label.text = "%d" % new_val
+        seg.displayed_value = new_val
+        return
+
+    if new_val == old_val:
+        return  # No change — no tween, no flash.
+
+    # Gas-pump: animate the displayed integer from where it currently
+    # reads (displayed_value, may be mid-tween) to the new value.
+    if seg.value_tween != null and seg.value_tween.is_valid():
+        seg.value_tween.kill()
+    var start_val: float = float(seg.displayed_value)
+    seg.value_tween = create_tween()
+    seg.value_tween.tween_method(
+        Callable(self, "_set_segment_displayed_value").bind(key),
+        start_val,
+        float(new_val),
+        VALUE_TWEEN_DURATION
+    )
+
+    # Recovery flash (new < old). Warm brightening that fades back
+    # over RECOVERY_FLASH_DURATION. Modulate cascades to the three
+    # child labels so cap, rest, and value all glow together.
+    if new_val < old_val:
+        if seg.recovery_tween != null and seg.recovery_tween.is_valid():
+            seg.recovery_tween.kill()
+        seg.container.modulate = RECOVERY_FLASH_COLOR
+        seg.recovery_tween = create_tween()
+        seg.recovery_tween.tween_property(
+            seg.container, "modulate", Color(1, 1, 1, 1), RECOVERY_FLASH_DURATION
+        )
+
+## Tween callback — drives the gas-pump value display. Rounds the
+## tweened float to the nearest int so the digit reads cleanly.
+## Bound to the per-segment key so a single function serves all three.
+func _set_segment_displayed_value(key: String, v: float) -> void:
+    var seg = _need_segments.get(key)
+    if seg == null:
+        return
+    var rounded: int = int(round(v))
+    if rounded != seg.displayed_value:
+        seg.value_label.text = "%d" % rounded
+        seg.displayed_value = rounded
 
 ## Construct a single Label inside a need segment with the given size
 ## and color. Vertically centered so labels of different sizes line up
