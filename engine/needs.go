@@ -243,6 +243,30 @@ func (app *App) dispatchNeedsTick(ctx context.Context) {
 	// hungry on break too. Sleeping actors (ZBBS-HOME-204) are excluded
 	// at the predicate level so a sleeping body's clock pauses; break
 	// stays awake-but-off-shift and keeps ticking.
+	//
+	// ZBBS-HOME-214: per-attribute carve-out for actors actively
+	// dwelling on a need-recovery slot. If an actor has an
+	// actor_dwell_credit row for `attribute = an.key` that was credited
+	// within the last hour (the needs-tick window), skip THIS need
+	// column for THAT actor. Closes the "rest under a tree but stat
+	// still climbs" wash where an outdoor tiredness slot recovered -1
+	// per minute while needs_tick added +1 per hour — net negative
+	// over time on slow recoverers because resting kept burning hours
+	// of accrual on top of the recovery delta. Mirrors the sleep fix
+	// (sleeping_until in the eligibility pred) but at attribute
+	// granularity instead of whole-actor: a thirsty actor at a Shade
+	// Tree should still accrue thirst.
+	//
+	// The freshness check (last_credited_at > NOW() - 1 hour) bounds
+	// false positives. A dwell credit row is deleted on the next dwell
+	// tick (every dwell_period_minutes ≈ 10 min) when the actor walks
+	// away, so a stale row can persist at most ~10 minutes before
+	// cleanup. Using the needs-tick window (1 hour) as the freshness
+	// cutoff means: if the actor was dwelling at any point during this
+	// tick's hour, skip the increment for that attribute. Binary skip
+	// — the actor either dwelt or didn't for purposes of this hour.
+	// Partial-hour accuracy isn't the goal; the per-minute dwell
+	// sweep handles real-time recovery.
 	tag, err := tx.Exec(ctx, `
 		WITH locked_actors AS (
 		    SELECT id
@@ -255,6 +279,12 @@ func (app *App) dispatchNeedsTick(ctx context.Context) {
 		   SET value = LEAST($1::int, an.value + $2::int)
 		  FROM locked_actors la
 		 WHERE la.id = an.actor_id
+		   AND NOT EXISTS (
+		       SELECT 1 FROM actor_dwell_credit adc
+		        WHERE adc.actor_id        = an.actor_id
+		          AND adc.attribute       = an.key
+		          AND adc.last_credited_at > NOW() - INTERVAL '1 hour'
+		   )
 	`, needMax, totalIncrement)
 	if err != nil {
 		log.Printf("needs_tick: UPDATE failed (rolling back, will retry next minute): %v", err)
