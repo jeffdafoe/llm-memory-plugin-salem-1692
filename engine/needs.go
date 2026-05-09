@@ -547,9 +547,9 @@ func needResolveThreshold(redThreshold int) int {
 	return floor
 }
 
-// loadNonNegativeIntSetting clamps to >= 0. Used for the dispatch ceiling,
-// where a negative value would make the >= comparison true immediately and
-// reject every attend_to call.
+// loadNonNegativeIntSetting clamps to >= 0. Useful where a negative
+// value would invert a count-comparison and break the predicate
+// (e.g. ceilings, budgets).
 func (app *App) loadNonNegativeIntSetting(ctx context.Context, key string, def int) int {
 	n := app.loadIntSetting(ctx, key, def)
 	if n < 0 {

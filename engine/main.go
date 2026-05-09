@@ -76,16 +76,6 @@ type App struct {
 	// observed in practice.
 	ChroniclerSem chan struct{}
 
-	// OverseerAttendSem caps the number of concurrent attend_to-spawned
-	// agent ticks in flight (ZBBS-083). Each chronicler fire can dispatch
-	// up to chronicler_dispatch_ceiling NPCs (default 12); without an
-	// app-level cap, two overlapping fires could spawn ~24 concurrent
-	// agent ticks against the upstream LLM provider. Per-NPC cost guards
-	// in triggerImmediateTick prevent same-NPC storms but don't bound
-	// aggregate concurrency. Capacity 4 is conservative for the current
-	// 4-NPC village; raise as population grows.
-	OverseerAttendSem chan struct{}
-
 	// SceneTickedActors deduplicates reactor-tick fan-out within a single
 	// scene. The cascade machinery (PC speak → reactor ticks → reactor's
 	// own speak/act → next reactor ticks → ...) propagates a sceneID from
@@ -156,20 +146,6 @@ type App struct {
 	// the call sites. See chronicler_buffered_dispatcher.go.
 	ChroniclerBufferedDispatcher *chroniclerBufferedDispatcher
 
-	// LastChroniclerAttendAt tracks when each NPC was last dispatched
-	// by chronicler attend_to (ZBBS-119). Cross-fire cooldown — the
-	// per-fire attendedThisFire map only catches duplicates within a
-	// single chronicler turn; serialized back-to-back fires can still
-	// re-attend the same NPC. The attend_to tool handler consults this
-	// map and refuses routine attempts within
-	// chroniclerAttendCooldown of the prior dispatch, returning a
-	// visible "<name> was already dispatched Ns ago" tool result so
-	// the chronicler reads the rejection instead of silently
-	// no-op-ing. PC-speech and admin-flavored cascade fires are
-	// exempt — those represent fresh significant events and override
-	// the cooldown.
-	LastChroniclerAttendAt   map[string]time.Time
-	LastChroniclerAttendAtMu sync.Mutex
 }
 
 // sceneTickEntry is the per-(scene, actor) dedup record.
@@ -337,9 +313,6 @@ func main() {
 		// Capacity 1 — the buffered dispatcher's serialization slot.
 		// Used only when chronicler_buffered_dispatch is on (ZBBS-119).
 		ChroniclerFireSem: make(chan struct{}, 1),
-		// Capacity 4 — concurrent attend_to-spawned agent ticks. Bounds
-		// burst when the overseer dispatches multiple villagers at once.
-		OverseerAttendSem: make(chan struct{}, 4),
 		// Per-(sceneID, actorID) dedup map. See SceneTickedActors comment
 		// on the App struct for the why.
 		SceneTickedActors: make(map[string]sceneTickEntry),
@@ -356,8 +329,6 @@ func main() {
 	// arrival/shift_boundary/needs_resolved/needs_onset enqueue sites notify it
 	// (gated on the chronicler_buffered_dispatch feature flag).
 	app.ChroniclerBufferedDispatcher = newChroniclerBufferedDispatcher(app)
-	// Cross-fire attend cooldown map (ZBBS-119).
-	app.LastChroniclerAttendAt = make(map[string]time.Time)
 	// Prime the display-name map so reactive ticks before the first
 	// server-tick refresh have data. Cheap; bounded by NPC count.
 	app.refreshNPCDisplayNames(context.Background())

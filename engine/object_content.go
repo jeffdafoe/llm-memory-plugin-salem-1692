@@ -294,9 +294,9 @@ type chroniclerBoardConcern struct {
 // callChroniclerForBoard issues a single wait=true chat to the chronicler
 // agent and parses a structured JSON reply containing the notice prose
 // and any concerns the chronicler attached. Distinct from fireChronicler
-// — that one runs the directorial harness (set_environment / record_event
-// / recall / attend_to / done); this one is a focused content gen with a
-// JSON-shaped reply contract.
+// — that one runs the chronicler harness (set_environment / record_event
+// / record_announcement / recall / done); this one is a focused content
+// gen with a JSON-shaped reply contract.
 //
 // The chronicler agent already has the village context loaded (recent
 // events, atmosphere, NPC list) so the prompt only carries what's
