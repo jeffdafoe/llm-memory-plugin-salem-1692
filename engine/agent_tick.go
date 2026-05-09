@@ -1682,27 +1682,6 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 	}
 	sections = append(sections, fmt.Sprintf("%sCoins in your purse: %d.", bodyLine, r.Coins))
 
-	// Tired-vendor cue (ZBBS-131 follow-up). When tiredness has crossed
-	// the red threshold AND the NPC has a work assignment (so take_break
-	// is a meaningful action), nudge them toward closing shop. Without
-	// this hint, a tired vendor sees "Address now: tiredness" in the
-	// body line above but reaches for consume() (no current item
-	// satisfies tiredness) or move_to home (no-op for home==work
-	// vendors). Gated solely on tiredness + workLabel; the take_break
-	// engagement cooldown is enforced by the dispatcher, so the cue
-	// stays simple and lets the engine reject + correct if the vendor
-	// is mid-engagement.
-	// ZBBS-148: suppress the cue when the vendor is already on break.
-	// Otherwise the chronicler keeps attending tired-on-break vendors,
-	// the cue says "call take_break", and the LLM picks take_break again
-	// — extending the break and restarting the loop. Observed
-	// 2026-05-07 18:56-19:02 UTC: John Ellis re-take_broke 3× in 6 min
-	// while already on break, each time extending break_until forward.
-	onBreak := r.BreakUntil.Valid && r.BreakUntil.Time.After(time.Now())
-	if r.Tiredness >= tiredT && workLabel != "" && !onBreak {
-		sections = append(sections, "A short break would help — call take_break to close your shop and recover tiredness.")
-	}
-
 	// On-break self-state (ZBBS-174). Without this surfacing, a vendor
 	// who got dispatched mid-break (chronicler reactive tick from a
 	// PC arrival, scheduler tick, etc.) had no way to know they were
@@ -1714,9 +1693,7 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 	// The customer's pay attempts at 16:29 were the first thing that
 	// rejected, by which point the vendor had behaved as fully open
 	// for 8 minutes.
-	//
-	// Runs ahead of the recovery-options cue so the LLM reads its own
-	// state before any nudge.
+	onBreak := r.BreakUntil.Valid && r.BreakUntil.Time.After(time.Now())
 	if onBreak {
 		minsRemaining := int(time.Until(r.BreakUntil.Time).Round(time.Minute).Minutes())
 		var remainingPhrase string
@@ -1740,19 +1717,41 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 		))
 	}
 
-	// Recovery-options block (ZBBS-172). When tiredness is at or past
-	// the red threshold, surface the actor's real spatial choices —
-	// nearby free rest spots (rest-trees), the actor's own home (if
-	// owned and either off-shift or critical), nearby inns offering
-	// nights_stay (same shift gating). Annotated with qualitative
-	// distance, recovery quality, and recalled price (NPCs only "know"
-	// inn prices they've personally paid). The shift gate forces the
-	// LLM to weigh "abandoning shift" against "stagger through" only
-	// at critical (90% of needMax). Below critical and on-shift, the
-	// block lists only outdoor rest spots — leaving the post for a
-	// nap isn't on the menu yet.
+	// Recovery-options block (ZBBS-172, expanded ZBBS-HOME-206). When
+	// tiredness is at or past the red threshold, surface the actor's
+	// real spatial choices — outdoor rest spots, nearby vendors with
+	// tiredness-satisfying consumables (coca tea), the actor's own
+	// home (if owned and either off-shift or critical), nearby inns
+	// offering nights_stay (same shift gating). Annotated with
+	// qualitative distance, recovery quality, numeric magnitude, and
+	// recalled price (NPCs only "know" prices they've personally paid).
+	// The shift gate forces the LLM to weigh "abandoning shift"
+	// against "stagger through" only at critical (90% of needMax).
+	// Below critical and on-shift, the block lists outdoor rest
+	// spots and consumable remedies — leaving the post for a nap
+	// isn't on the menu yet, but ducking next door for tea is.
 	criticalT := app.loadTirednessCriticalThreshold(ctx)
-	if recovery := app.buildRecoveryOptionsSection(ctx, r, tiredT, criticalT, onShift, workLabel != ""); recovery != "" {
+	recovery := app.buildRecoveryOptionsSection(ctx, r, tiredT, criticalT, onShift, workLabel != "")
+
+	// Tired-vendor cue (ZBBS-131 follow-up, refined ZBBS-HOME-206). Only
+	// rendered when no recovery options surfaced — outdoor rest spots,
+	// consumables, home, and inn all came up empty. In that case the
+	// model has no spatial alternative visible and needs the directive
+	// to know take_break is the path. When recovery options exist, the
+	// list's own "You feel weary enough to weigh a real rest" lead +
+	// explicit bullets is sufficient signal; doubling up with
+	// "call take_break" by name biases the model toward the verb
+	// even when consume(coca_tea) or move_to(rest_spot) would resolve
+	// the need faster.
+	//
+	// ZBBS-148 (preserved): suppressed when the vendor is already on
+	// break. Otherwise an attended tired-on-break vendor would re-
+	// take_break repeatedly, extending the break each time.
+	if recovery == "" && r.Tiredness >= tiredT && workLabel != "" && !onBreak {
+		sections = append(sections, "A short break would help — call take_break to close your shop and recover tiredness.")
+	}
+
+	if recovery != "" {
 		sections = append(sections, recovery)
 	}
 
