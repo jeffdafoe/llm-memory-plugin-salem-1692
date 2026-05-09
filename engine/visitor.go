@@ -214,12 +214,12 @@ func (app *App) dispatchVisitorSpawn(ctx context.Context) {
     // collisions with persistent NPCs are unlikely given the period
     // names but possible across simultaneous visitors with the same pull.
     displayName := fmt.Sprintf("%s the %s", profile.Name, profile.Archetype)
-    var existing sql.NullString
+    var dupName sql.NullString
     _ = app.DB.QueryRow(ctx,
         `SELECT display_name FROM actor WHERE display_name = $1 LIMIT 1`,
         displayName,
-    ).Scan(&existing)
-    if existing.Valid {
+    ).Scan(&dupName)
+    if dupName.Valid {
         // Suffix with the spawn timestamp to disambiguate. Compact and
         // stable for the visitor's lifetime.
         displayName = fmt.Sprintf("%s the %s (%d)", profile.Name, profile.Archetype, time.Now().Unix()%10000)
