@@ -29,8 +29,13 @@ var current_phase: String = "day"
 var _light_gradient_texture: Texture2D = null
 
 const DAY_COLOR := Color(1.0, 1.0, 1.0, 1.0)
+const GOLDEN_COLOR := Color(1.00, 0.85, 0.70, 1.0)
+const DUSK_COLOR := Color(0.95, 0.55, 0.50, 1.0)
+const BLUE_HOUR_COLOR := Color(0.55, 0.50, 0.70, 1.0)
 const NIGHT_COLOR := Color(0.42, 0.46, 0.68, 1.0)
-const PHASE_TRANSITION_DURATION := 1.5  # seconds — tween from day to night color
+const PHASE_TRANSITION_DURATION := 1200.0  # 20 minutes — chained tween through golden/dusk/blue-hour stops
+
+var _phase_tween: Tween = null
 
 # Layer baseline — terrain renders at z=0 (default), ground overlays sit at
 # asset.z_index = 1 (bridges, future road decals), everything else (objects,
@@ -824,19 +829,34 @@ func restore_unsaved_terrain(payload: Dictionary) -> void:
 func reload_terrain() -> void:
     _load_terrain()
 
-## Apply a world phase change. Tweens CanvasModulate toward the target color
-## so darken/brighten happens smoothly. Pass tween=false for the initial load
-## so the scene doesn't briefly flash the wrong color.
+## Apply a world phase change. Chains a tween through atmospheric stops
+## (golden hour → dusk → blue hour → night, or the reverse) so darken/brighten
+## reads like a real sunset/sunrise rather than a flat fade. Pass tween=false
+## for the initial load so the scene doesn't briefly flash the wrong color.
+##
+## A force-phase admin command mid-transition kills the in-flight tween so the
+## new direction starts cleanly from the current color rather than fighting the
+## previous chain.
 func set_phase(phase: String, tween: bool = true) -> void:
     current_phase = phase
     if canvas_modulate == null:
         return
-    var target_color: Color = NIGHT_COLOR if phase == "night" else DAY_COLOR
-    if tween:
-        var t = create_tween()
-        t.tween_property(canvas_modulate, "color", target_color, PHASE_TRANSITION_DURATION)
+    if _phase_tween != null and _phase_tween.is_valid():
+        _phase_tween.kill()
+        _phase_tween = null
+    var stops: Array[Color]
+    if phase == "night":
+        stops = [GOLDEN_COLOR, DUSK_COLOR, BLUE_HOUR_COLOR, NIGHT_COLOR]
     else:
-        canvas_modulate.color = target_color
+        stops = [BLUE_HOUR_COLOR, DUSK_COLOR, GOLDEN_COLOR, DAY_COLOR]
+    if not tween:
+        canvas_modulate.color = stops[stops.size() - 1]
+        return
+    var t := create_tween()
+    var segment := PHASE_TRANSITION_DURATION / float(stops.size())
+    for c in stops:
+        t.tween_property(canvas_modulate, "color", c, segment)
+    _phase_tween = t
 
 ## Fetch the server's current world phase and sync CanvasModulate to match.
 ## Called once at build_terrain so clients opening the page at night don't
