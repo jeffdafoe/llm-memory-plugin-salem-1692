@@ -93,6 +93,14 @@ func (app *App) runServerTickOnce(ctx context.Context) {
 	// pipeline. No-op on most ticks (cheap setting read + date compare);
 	// fires only on the first tick after a UTC day rollover.
 	app.dispatchSimConversationPush(ctx)
+	// Idle-sweep (ZBBS-HOME-201) — deterministic floor for agentized
+	// NPC ticks. Finds VAs idle past the threshold and schedules a
+	// self-tick within a randomized response window so the engine
+	// doesn't fire 30 NPCs on the same minute. Runs before
+	// dispatchSelfTicks so a same-tick fire can land if the random
+	// delay rolls 0 (rare, intentional). No-op when no candidates
+	// (single SELECT, zero UPDATEs).
+	app.dispatchIdleSweep(ctx)
 	// Self-tick scheduler drain (ZBBS-110) — fires NPC harnesses whose
 	// scheduled fire time has arrived. Single SQL UPDATE...RETURNING
 	// claims the rows atomically so a slow trigger doesn't get re-fired
