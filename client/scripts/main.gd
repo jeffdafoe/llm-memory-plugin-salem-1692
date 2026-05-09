@@ -128,9 +128,27 @@ func _on_auth_ready() -> void:
     # If not authenticated, the login screen is already visible
 
 func _on_authenticated() -> void:
-    # Hide login screen
-    if login_screen != null:
-        login_screen.visible = false
+    # ZBBS-HOME-210: hide just the login form; the dark Background
+    # ColorRect inside LoginScreen stays visible as a curtain while
+    # the village fetches + renders. Fades in _on_world_ready once
+    # world.gd confirms objects + NPCs are placed. Without the
+    # curtain, the player watches flat terrain alone for ~1-2s
+    # while the catalog and village data load — the same gap the
+    # whole 208 / 209 effort failed to address.
+    if login_screen != null and login_screen.has_method("hide_form"):
+        login_screen.hide_form()
+
+    # Lock world input (clicks, scroll, walk, camera pan/zoom) while
+    # the village materializes. Camera, walk-click, and editor
+    # handlers bail on camera.modal_open. Released in
+    # _on_world_ready. Events arriving during the lock are dropped,
+    # not buffered — _input handlers early-return without
+    # accept_event() so a click fired during the load doesn't fire
+    # when the lock releases.
+    _set_modal_blocker("world_loading", true)
+
+    if world != null and not world.world_ready.is_connected(_on_world_ready):
+        world.world_ready.connect(_on_world_ready)
 
     # Connect for future login events (in case token was saved)
     if not Auth.logged_in.is_connected(_on_authenticated):
@@ -192,6 +210,15 @@ func _on_ws_reconnected() -> void:
     if editor != null:
         editor._deselect()
         editor._deselect_npc()
+    # ZBBS-HOME-210: re-engage the curtain so the resync rebuild is
+    # covered. world.gd's reset_world_state clears the world_ready
+    # latches; world_ready re-emits when objects + NPCs are placed
+    # again, and _on_world_ready fades + releases the lock.
+    if login_screen != null and login_screen.has_method("hide_form"):
+        login_screen.modulate = Color(1, 1, 1, 1)
+        login_screen.visible = true
+        login_screen.hide_form()
+    _set_modal_blocker("world_loading", true)
     world.reset_world_state()
     world.reload_terrain()
     world._load_world_phase()
@@ -558,7 +585,14 @@ func _show_login_screen(message: String) -> void:
     editor.active = false
     camera.editor_active = false
     if login_screen != null:
+        login_screen.modulate = Color(1, 1, 1, 1)
         login_screen.visible = true
+        # ZBBS-HOME-210: the form may have been hidden by an earlier
+        # _on_authenticated. Bring it back so the user can re-enter
+        # credentials. set_message paints the "Session expired"
+        # error label.
+        if login_screen.has_method("show_form"):
+            login_screen.show_form()
         if login_screen.has_method("set_message"):
             login_screen.set_message(message)
 
@@ -1214,4 +1248,25 @@ func _on_editor_mode_changed(mode) -> void:
     # current structure name when they exit.
     editor_panel.set_assigning_home(mode == editor.Mode.ASSIGN_HOME)
     editor_panel.set_assigning_work(mode == editor.Mode.ASSIGN_WORK)
+
+## World finished its bootstrap render: village objects placed AND
+## NPCs all rendered. Fade the login_screen curtain (its dark
+## Background ColorRect has been covering the world since auth) and
+## release the input lock. ZBBS-HOME-210.
+const _WORLD_READY_FADE_DURATION: float = 0.4
+func _on_world_ready() -> void:
+    _set_modal_blocker("world_loading", false)
+    if login_screen == null:
+        return
+    var t: Tween = create_tween()
+    t.tween_property(login_screen, "modulate", Color(1, 1, 1, 0), _WORLD_READY_FADE_DURATION)
+    t.tween_callback(func():
+        if login_screen != null:
+            login_screen.visible = false
+            # Reset modulate so a future _show_login_screen
+            # (session-expired path) doesn't surface the screen at
+            # alpha 0. _show_login_screen also sets modulate but
+            # belt-and-suspenders.
+            login_screen.modulate = Color(1, 1, 1, 1)
+    )
 

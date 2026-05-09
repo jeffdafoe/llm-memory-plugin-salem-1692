@@ -12,6 +12,15 @@ signal npc_metadata_changed(npc_id: String)
 ## The sidebar Villagers browser rebuilds its list on this signal.
 signal npc_list_changed
 
+## Emitted once after the bootstrap world is visually complete: village
+## objects placed AND every fetched NPC has had its sprite sheet land
+## and rendered. main.gd uses this to fade the login_screen curtain
+## (the dark backdrop kept up post-auth) so the world reveals all-at-
+## once instead of letting the player watch terrain alone while objects
+## fetch. Latched once per session (or once per WS-reconnect resync via
+## reset_world_state). ZBBS-HOME-210.
+signal world_ready
+
 const MapGenerator = preload("res://scripts/map_generator.gd")
 const WangLookup = preload("res://scripts/wang_lookup.gd")
 const TerrainRendererScript = preload("res://scripts/terrain_renderer.gd")
@@ -59,6 +68,19 @@ var pad_y: int = 112
 
 # Placed objects keyed by server id
 var placed_objects: Dictionary = {}
+
+# Bootstrap world_ready latches (ZBBS-HOME-210). _village_loaded flips
+# true after _on_village_loaded finishes placing every object the API
+# returned. _npcs_render_complete flips true after _render_pending_npcs
+# drains the pending list following an _on_npcs_loaded response — i.e.
+# the API returned, every NPC's sheet downloaded, every NPC rendered.
+# _check_world_ready emits world_ready exactly once when both are true.
+# All three reset on reset_world_state for the WS-reconnect resync
+# path so the curtain re-engages and re-fades.
+var _village_loaded: bool = false
+var _npcs_response_received: bool = false
+var _npcs_render_complete: bool = false
+var _world_ready_emitted: bool = false
 
 # Agent lookup: llm_memory_agent name → display name
 var agent_names: Dictionary = {}
@@ -138,6 +160,27 @@ func reset_world_state() -> void:
     placed_npcs.clear()
     _pending_npcs.clear()
     _objects_loaded = false
+    # ZBBS-HOME-210: clear the world_ready latches so the curtain
+    # re-engages on the resync rebuild and fades when objects are
+    # placed again. Without this, world_ready would never re-emit
+    # and the curtain would stay stuck up after a reconnect.
+    _village_loaded = false
+    _npcs_response_received = false
+    _npcs_render_complete = false
+    _world_ready_emitted = false
+
+## Emit world_ready once village + npcs are both visually rendered.
+## Latched once per session (or once per reset_world_state for WS
+## reconnect). ZBBS-HOME-210.
+func _check_world_ready() -> void:
+    if _world_ready_emitted:
+        return
+    if not _village_loaded:
+        return
+    if not _npcs_render_complete:
+        return
+    _world_ready_emitted = true
+    world_ready.emit()
 
 # NPC rendering — static for milestone 1a, no movement or animation.
 # Sprite sheets are cached per path so multiple NPCs sharing a sheet share
@@ -175,6 +218,9 @@ func _on_npcs_loaded(result: int, response_code: int, _headers: PackedStringArra
         if sheet != "" and not _npc_sheets.has(sheet) and not unique_sheets.has(sheet):
             unique_sheets[sheet] = true
     _pending_npcs = json
+    # ZBBS-HOME-210: response landed. _check_world_ready can now flip
+    # _npcs_render_complete once _render_pending_npcs drains the list.
+    _npcs_response_received = true
     if unique_sheets.is_empty():
         _render_pending_npcs()
         return
@@ -560,6 +606,12 @@ func _render_pending_npcs() -> void:
             continue
         _render_npc(npc)
     _pending_npcs = still_pending
+    # ZBBS-HOME-210: NPC drain milestone. Once the response has been
+    # received AND the pending list is empty, every NPC is rendered.
+    # Re-check world_ready so the curtain can fade.
+    if _npcs_response_received and _pending_npcs.is_empty():
+        _npcs_render_complete = true
+        _check_world_ready()
 
 ## Build an AnimatedSprite2D for an NPC with all directions × (idle, walk)
 ## animations loaded from the catalog. Starts in idle for the NPC's facing.
@@ -1203,6 +1255,11 @@ func _on_village_loaded(result: int, response_code: int, headers: PackedStringAr
     # list rebuilt before objects loaded everyone shows "at X,Y". Re-emit so
     # the panel rebuilds with proper landmark labels now that objects exist.
     npc_list_changed.emit()
+
+    # ZBBS-HOME-210: village fetch + render done. Re-check world_ready
+    # so the curtain can fade once NPCs also finish.
+    _village_loaded = true
+    _check_world_ready()
 
 ## Re-run the stand-offset adjustment for every NPC whose inside flag is
 ## true and whose inside_structure_id now resolves. Safe to call multiple

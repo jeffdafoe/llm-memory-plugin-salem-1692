@@ -6,6 +6,8 @@ extends Control
 @onready var password_field: LineEdit = $Panel/VBox/PasswordField
 @onready var login_button: Button = $Panel/VBox/LoginButton
 @onready var error_label: Label = $Panel/VBox/ErrorLabel
+@onready var background: ColorRect = $Background
+@onready var panel: PanelContainer = $Panel
 
 func _ready() -> void:
     login_button.pressed.connect(_on_login_pressed)
@@ -20,6 +22,18 @@ func _ready() -> void:
 ## a mid-session 401). Empty string clears it.
 func set_message(message: String) -> void:
     error_label.text = message
+
+## Hide just the login form, keep the dark background visible. Used by
+## main.gd's curtain pattern (ZBBS-HOME-210) so the auth → world-rendered
+## window stays covered. Symmetric show_form re-displays it for the
+## session-expired path. Called instead of `visible = false` on the
+## whole control until the world is fully populated, at which point
+## main.gd fades the entire login_screen out.
+func hide_form() -> void:
+    panel.visible = false
+
+func show_form() -> void:
+    panel.visible = true
 
 func _on_login_pressed() -> void:
     var user: String = username_field.text.strip_edges()
@@ -44,8 +58,10 @@ func _on_auth_result() -> void:
     login_button.text = "Enter"
 
     if Auth.authenticated:
-        # Login succeeded — hide this screen
-        visible = false
+        # Login succeeded — hide just the form. main.gd keeps the
+        # dark Background visible until the world is fully rendered,
+        # then fades the whole control out (ZBBS-HOME-210).
+        hide_form()
     else:
         error_label.text = "Invalid username or password"
         password_field.text = ""
