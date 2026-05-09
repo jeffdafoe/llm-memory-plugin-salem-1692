@@ -271,15 +271,25 @@ func (app *App) dispatchVisitorSpawn(ctx context.Context) {
 // exit a different edge than they arrived on — narratively this reads
 // as "wandered off down the road," not "retraced their steps."
 //
-// A visitor whose return walk completes before the cleanup grace
-// window may be redispatched on the next tick to a new edge tile;
-// that's wasteful but bounded — cleanup hard-deletes the row a few
-// minutes past expires_at regardless of position.
+// inside_structure_id IS NOT NULL filters out visitors who have already
+// completed a despawn walk (startReturnWalk's setNPCInside(false, "")
+// at the head clears inside on dispatch and EnterOnArrival=false leaves
+// it NULL on arrival). Without this guard, a visitor parked at an edge
+// tile after her despawn walk completed would get re-dispatched on the
+// next server tick to a fresh random edge — Goody Thorne wandered the
+// map ZBBS-HOME-224. Cleanup still collects stranded visitors past the
+// grace window regardless of position.
+//
+// Walk target is 3 tiles past the picked edge tile (see exitOvershoot
+// below) so the actor visibly walks off-screen instead of stopping at
+// the visible boundary. startNPCWalk's off-grid path-extension picks up
+// the synthetic final segment.
 func (app *App) dispatchVisitorDespawn(ctx context.Context) {
     rows, err := app.DB.Query(ctx,
         `SELECT id::text FROM actor
          WHERE visitor_expires_at IS NOT NULL
-           AND visitor_expires_at <= NOW()`,
+           AND visitor_expires_at <= NOW()
+           AND inside_structure_id IS NOT NULL`,
     )
     if err != nil {
         log.Printf("visitor-despawn: query: %v", err)
@@ -322,14 +332,40 @@ func (app *App) dispatchVisitorDespawn(ctx context.Context) {
             log.Printf("visitor-despawn: no edge tile available for %s; will be cleaned up after grace", id)
             continue
         }
+        // Compute a beyond-edge target so the visitor walks past the
+        // visible boundary instead of stopping ON the edge tile. Pick
+        // the closest map edge from the picked tile's grid coords and
+        // overshoot by exitOvershootTiles. startNPCWalk's off-grid path
+        // extension appends this point as a synthetic final segment
+        // after pathfinding to the in-grid edge tile.
+        const exitOvershootTiles = 3
+        edgeTileX, edgeTileY := worldToTile(edgeX, edgeY)
+        distLeft := edgeTileX
+        distRight := mapW - 1 - edgeTileX
+        distTop := edgeTileY
+        distBottom := mapH - 1 - edgeTileY
+        exitDX, exitDY := -1, 0
+        minDist := distLeft
+        if distRight < minDist {
+            minDist = distRight
+            exitDX, exitDY = 1, 0
+        }
+        if distTop < minDist {
+            minDist = distTop
+            exitDX, exitDY = 0, -1
+        }
+        if distBottom < minDist {
+            exitDX, exitDY = 0, 1
+        }
+        beyondX := edgeX + float64(exitDX)*tileSize*exitOvershootTiles
+        beyondY := edgeY + float64(exitDY)*tileSize*exitOvershootTiles
         // startReturnWalk's setNPCInside(false, "") at the head of the
         // function gets the visitor out of the tavern (or whatever
-        // structure they entered on arrival) before the walk to the
-        // edge starts. EnterOnArrival=false leaves them outside at the
-        // edge tile when the walk completes — cleanup collects the
-        // row a few minutes later.
+        // structure they entered on arrival) before the walk starts.
+        // EnterOnArrival=false leaves them outside (off-grid) when the
+        // walk completes — cleanup collects the row a few minutes later.
         npc := &behaviorNPC{ID: id}
-        if err := app.startReturnWalk(ctx, npc, edgeX, edgeY, "", "visitor-despawn", false); err != nil {
+        if err := app.startReturnWalk(ctx, npc, beyondX, beyondY, "", "visitor-despawn", false); err != nil {
             // No path is the typical case for a visitor stranded
             // somewhere unreachable. Cleanup will hard-delete past
             // the grace window regardless.
