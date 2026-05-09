@@ -37,9 +37,13 @@ package main
 // max-tiredness PC wakes at ~4h wall-clock; the cap guards against
 // stuck rows if the recovery sweep is wedged.
 //
-// NPC sleep (ZBBS-175): mirrors the PC mechanism. NPCs auto-sleep
-// when they arrive at their home_structure_id off-shift with
-// tiredness >= npc_auto_sleep_min_tiredness. Recovery flows through
+// NPC sleep (ZBBS-175 + ZBBS-HOME-204): mirrors the PC mechanism.
+// NPCs auto-sleep when they arrive at their home_structure_id
+// off-shift, regardless of current tiredness — home is the resting
+// state by default (HOME-204 dropped the threshold gate so an NPC
+// who arrives home pre-rested still beds down for the night, instead
+// of standing in the house while the needs ticker quietly ticks
+// them back to tired). Recovery flows through
 // the same tiredness_recovery_sweep that handles break_until /
 // sleeping_until generically (no PC gate). Wake fires via
 // wakeExpiredNPCSleepers — same conditions as PCs minus the
@@ -496,14 +500,6 @@ func (app *App) loadNPCSleepMaxDurationHours(ctx context.Context) int {
 	return app.loadIntSetting(ctx, "npc_sleep_max_duration_hours", 12)
 }
 
-// loadNPCAutoSleepMinTiredness reads the npc_auto_sleep_min_tiredness
-// setting. Default 10 (mirrors pc_idle_sleep_min_tiredness). NPCs
-// arriving home below this tiredness skip the auto-sleep trigger so
-// drop-by visits don't knock them out.
-func (app *App) loadNPCAutoSleepMinTiredness(ctx context.Context) int {
-	return app.loadIntSetting(ctx, "npc_auto_sleep_min_tiredness", 10)
-}
-
 // maybeNPCAutoSleep evaluates auto-sleep eligibility for an NPC after
 // a move commit and beds them when all gates pass. Called from
 // applyArrivalSideEffects so the NPC sleeps on arrival home rather
@@ -514,11 +510,15 @@ func (app *App) loadNPCAutoSleepMinTiredness(ctx context.Context) int {
 //   - actor is an NPC (llm_memory_agent IS NOT NULL)
 //   - inside_structure_id IS NOT NULL AND equals home_structure_id
 //   - sleeping_until IS NULL (not already sleeping)
-//   - actor_need.tiredness >= npc_auto_sleep_min_tiredness (default 10)
 //   - off-shift: NPCs without a schedule are treated as always
 //     off-shift; scheduled NPCs are off-shift when current
 //     world-local minute-of-day is outside [start, end] (with wrap
-//     handling for midnight-crossing shifts like the tavernkeeper)
+//     handling for midnight-crossing shifts like the tavernkeeper).
+//     The on-shift branch is what protects a vendor briefly stepping
+//     home for lunch from getting sleep-darted; the threshold-on-
+//     tiredness gate that used to back this up was dropped in
+//     ZBBS-HOME-204 because off-shift + at home should bed the NPC
+//     unconditionally — the body rests at home by default.
 //
 // Errors are logged and swallowed — auto-sleep is opportunistic;
 // failing to bed an NPC means they stay awake until the next arrival
@@ -527,13 +527,11 @@ func (app *App) maybeNPCAutoSleep(ctx context.Context, actorID string) {
 	if actorID == "" {
 		return
 	}
-	minTiredness := app.loadNPCAutoSleepMinTiredness(ctx)
 
 	var (
 		isNPC            bool
 		atHome           bool
 		alreadySleeping  bool
-		tiredness        int
 		hasSchedule      bool
 		scheduleStartMin int
 		scheduleEndMin   int
@@ -545,7 +543,6 @@ func (app *App) maybeNPCAutoSleep(ctx context.Context, actorID string) {
 		            AND a.home_structure_id IS NOT NULL
 		            AND a.inside_structure_id = a.home_structure_id,
 		        a.sleeping_until IS NOT NULL,
-		        COALESCE((SELECT value FROM actor_need WHERE actor_id = a.id AND key = 'tiredness'), 0)::int,
 		        a.schedule_start_minute IS NOT NULL AND a.schedule_end_minute IS NOT NULL,
 		        COALESCE(a.schedule_start_minute, 0)::int,
 		        COALESCE(a.schedule_end_minute,   0)::int,
@@ -553,7 +550,7 @@ func (app *App) maybeNPCAutoSleep(ctx context.Context, actorID string) {
 		   FROM actor a
 		  WHERE a.id = $1::uuid`,
 		actorID,
-	).Scan(&isNPC, &atHome, &alreadySleeping, &tiredness,
+	).Scan(&isNPC, &atHome, &alreadySleeping,
 		&hasSchedule, &scheduleStartMin, &scheduleEndMin,
 		&homeStructureID)
 	if err != nil {
@@ -562,13 +559,15 @@ func (app *App) maybeNPCAutoSleep(ctx context.Context, actorID string) {
 		}
 		return
 	}
-	if !isNPC || !atHome || alreadySleeping || tiredness < minTiredness {
+	if !isNPC || !atHome || alreadySleeping {
 		return
 	}
 
 	// Off-shift check. Unscheduled NPCs (Ezekiel, Josiah at the time
-	// this shipped) get treated as always-off-shift so they sleep
-	// whenever they arrive home tired.
+	// ZBBS-175 shipped) get treated as always-off-shift so they sleep
+	// on every arrival home. Scheduled NPCs sleep only when off-shift
+	// — the on-shift return below is what stops a vendor's quick stop
+	// home for lunch from sleeping them.
 	if hasSchedule {
 		cfg, err := app.loadWorldConfig(ctx)
 		if err != nil {

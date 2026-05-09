@@ -88,12 +88,19 @@ const (
 // with a body) edits one place. Decoratives (no login, no agent)
 // stay excluded because they have no need-pressure mechanic.
 //
+// Sleeping actors are also excluded (ZBBS-HOME-204): once a sleep
+// state is set (via NPC auto-sleep or PC /pc/sleep), the body's clock
+// pauses — no hunger / thirst / tiredness accrual until they wake.
+// Vendors on break_until still tick (break ≠ sleep — a vendor on
+// break is awake, just off-shift, and should still get hungry).
+//
 // Concatenated into the SQL string at build time. Safe here because
 // the value is a compile-time constant — no SQL injection surface.
 // DO NOT extend this pattern to fragments derived from request
 // payloads, settings, or any other runtime input; route those
 // through bound parameters ($1, $2, ...) instead.
-const needTickEligibilityPred = `(login_username IS NOT NULL OR llm_memory_agent IS NOT NULL)`
+const needTickEligibilityPred = `(login_username IS NOT NULL OR llm_memory_agent IS NOT NULL)
+                                  AND (sleeping_until IS NULL OR sleeping_until <= NOW())`
 
 // dispatchNeedsTick is registered in runServerTickOnce. Cheap when the
 // hour hasn't rolled over (one setting read + integer compare); does a
@@ -326,7 +333,9 @@ func (app *App) dispatchNeedsTick(ctx context.Context) {
 	// runTirednessRecoverySweep goroutine, tracked by the
 	// last_tiredness_recovery_at cursor on actor. needs_tick still
 	// accrues hunger / thirst / tiredness from time alone — vendors get
-	// hungry on break too.
+	// hungry on break too. Sleeping actors (ZBBS-HOME-204) are excluded
+	// at the predicate level so a sleeping body's clock pauses; break
+	// stays awake-but-off-shift and keeps ticking.
 	tag, err := tx.Exec(ctx, `
 		WITH locked_actors AS (
 		    SELECT id
