@@ -298,7 +298,7 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 		// closed-shop gate via stale row-state if the read happened
 		// before the end_break write committed.
 		if endBreakCall != nil {
-			result, errStr, _ := app.executeAgentCommit(ctx, r, endBreakCall, sceneID)
+			result, errStr, _ := app.executeAgentCommit(ctx, r, endBreakCall, sceneID, hourStart.Location())
 			if result == "ok" {
 				currentMessage = "[OK] You're back at your post — break ended. Greet any customer present, or start serving them. Then you may move or call done."
 			} else {
@@ -330,7 +330,7 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			// Read from DB rather than r.Hunger/etc. — those are tick-start
 			// values and would be stale after a prior consume/pay this turn.
 			beforeH, beforeT, beforeTi := app.snapshotNeeds(ctx, r.ID)
-			result, errStr, extra := app.executeAgentCommit(ctx, r, payCall, sceneID)
+			result, errStr, extra := app.executeAgentCommit(ctx, r, payCall, sceneID, hourStart.Location())
 			if result == "ok" {
 				readback := app.buildPostConsumeReadback(ctx, r.ID, beforeH, beforeT, beforeTi)
 				currentMessage = "[OK] You paid. " + readback + "If a customer or merchant addressed you mid-transaction, speak to them now (a thanks, a follow-up, an answer). Then you may move or call done."
@@ -353,7 +353,7 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			// "deliver-then-here-you-are" chain reads naturally — the
 			// continuation message nudges a brief speak so the keeper
 			// names the handover.
-			result, errStr, extra := app.executeAgentCommit(ctx, r, deliverCall, sceneID)
+			result, errStr, extra := app.executeAgentCommit(ctx, r, deliverCall, sceneID, hourStart.Location())
 			if result == "ok" {
 				if extra != "" {
 					currentMessage = "[OK] You delivered " + extra + ". Speak to the buyer now if you haven't already (a brief 'here you are' or similar). Then you may move or call done."
@@ -389,7 +389,7 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			// model often picks done after serving even when a customer
 			// just asked a question. Silent service to a hanging
 			// question reads as cold and unwelcoming.
-			result, errStr, _ := app.executeAgentCommit(ctx, r, serveCall, sceneID)
+			result, errStr, _ := app.executeAgentCommit(ctx, r, serveCall, sceneID, hourStart.Location())
 			if result == "ok" {
 				msg := "[OK] You served."
 				// Satiation notes for any recipient whose relevant
@@ -422,7 +422,7 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			// Read from DB so a second consume in the same tick gets fresh
 			// pre-action values instead of tick-start (stale) ones.
 			beforeH, beforeT, beforeTi := app.snapshotNeeds(ctx, r.ID)
-			result, errStr, _ := app.executeAgentCommit(ctx, r, consumeCall, sceneID)
+			result, errStr, _ := app.executeAgentCommit(ctx, r, consumeCall, sceneID, hourStart.Location())
 			if result == "ok" {
 				readback := app.buildPostConsumeReadback(ctx, r.ID, beforeH, beforeT, beforeTi)
 				currentMessage = "[OK] You consumed it. " + readback + "If anyone is mid-conversation with you, speak to them now. Then you may move or call done."
@@ -441,7 +441,7 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			// the table — without it, models tend to default to "done"
 			// after speaking ("I responded, my turn's over"). Non-directive
 			// nudge: doesn't name a specific action, just affirms agency.
-			_, _, _ = app.executeAgentCommit(ctx, r, speakCall, sceneID)
+			_, _, _ = app.executeAgentCommit(ctx, r, speakCall, sceneID, hourStart.Location())
 			currentMessage = "[OK] You spoke. Continue your turn — you may move or run a chore now, or call done if you're staying put."
 			currentToolCallID = speakCall.ID
 			continue
@@ -452,7 +452,7 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			// physical action with a follow-up speech ("served stew" then
 			// "here you are, mind the heat"). Same [OK] nudge so the
 			// model knows the turn isn't over.
-			_, _, _ = app.executeAgentCommit(ctx, r, actCall, sceneID)
+			_, _, _ = app.executeAgentCommit(ctx, r, actCall, sceneID, hourStart.Location())
 			currentMessage = "[OK] You did that. If anyone is mid-conversation with you, speak to them now. Then you may move or call done."
 			currentToolCallID = actCall.ID
 			continue
@@ -464,7 +464,7 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			// Surfaces the rejection text verbatim so a "not at a source"
 			// or "depleted" outcome feeds the model's next decision
 			// instead of silently disappearing.
-			result, errStr, extra := app.executeAgentCommit(ctx, r, gatherCall, sceneID)
+			result, errStr, extra := app.executeAgentCommit(ctx, r, gatherCall, sceneID, hourStart.Location())
 			if result == "ok" {
 				if extra != "" {
 					currentMessage = "[OK] You gathered " + extra + ". If anyone is mid-conversation with you, speak to them now. Then you may move or call done."
@@ -484,7 +484,7 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			// the rejection text matters: the model should know if the
 			// summons was rejected (cooldown / co-located / unknown
 			// target) so it doesn't loop "send messenger, send messenger".
-			result, errStr, _ := app.executeAgentCommit(ctx, r, summonCall, sceneID)
+			result, errStr, _ := app.executeAgentCommit(ctx, r, summonCall, sceneID, hourStart.Location())
 			if result == "ok" {
 				currentMessage = "[OK] The messenger is on their way. If anyone is mid-conversation with you, speak to them now (a 'I've sent for them' would be natural). Then you may move or call done."
 			} else {
@@ -523,7 +523,7 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 		}
 	}
 
-	commitResult, commitErrStr, _ := app.executeAgentCommit(ctx, r, commitCall, sceneID)
+	commitResult, commitErrStr, _ := app.executeAgentCommit(ctx, r, commitCall, sceneID, hourStart.Location())
 
 	// Close out the terminal tool_call in conversation history. Without
 	// this, the model's terminal tool_call (move_to / chore / done /
@@ -2213,7 +2213,15 @@ func (app *App) resolveRecall(ctx context.Context, r *agentNPCRow, query string)
 // resolves the product from the loiter slot, so without this the
 // chip and the OK both read as content-free). Most tools leave it
 // empty.
-func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agentToolCall, sceneID string) (result string, errStr string, extra string) {
+// worldLoc is the world wall-clock timezone (cfg.Location, hardcoded
+// America/New_York per project policy). Used for any wall-clock
+// comparison the LLM sees — chiefly take_break's until_hour validation,
+// which compares an LLM-supplied wall-clock hour to "what hour is it
+// now" and must match the timezone the perception header advertised
+// ("The time is Saturday 09:00."). Without this, a binary running with
+// TZ=UTC compares the model's 09-frame answer against a UTC-frame
+// clock and rejects it as already-past.
+func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agentToolCall, sceneID string, worldLoc *time.Location) (result string, errStr string, extra string) {
 	// Augment several payload kinds with structure_id so recent-block
 	// queries (perception lookback, talk-panel backload) can answer
 	// "what happened here lately" with a single payload->>'structure_id'
@@ -2544,11 +2552,17 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		// returns the current hour in the error so the model has the
 		// time anchor it needs to retry. Cap remains as a defensive
 		// invariant; with the reject path it's strictly redundant.
-		now := time.Now()
+		//
+		// `now` is anchored to worldLoc so the wall-clock hour comparison
+		// matches the timezone the perception header advertised ("The
+		// time is Saturday 09:00."). Using time.Now() bare here would
+		// read the binary's local TZ — UTC on the VPS — and reject
+		// in-frame answers as already-past.
+		now := time.Now().In(worldLoc)
 		var breakUntil time.Time
 		if untilHour > 0 && untilHour < 24 {
 			y, mo, d := now.Date()
-			candidate := time.Date(y, mo, d, untilHour, 0, 0, 0, now.Location())
+			candidate := time.Date(y, mo, d, untilHour, 0, 0, 0, worldLoc)
 			if !candidate.After(now) {
 				result = "rejected"
 				errStr = fmt.Sprintf("until_hour=%d is already past today (current hour is %d). Pick a later hour or omit until_hour to get a 4-hour break.", untilHour, now.Hour())
