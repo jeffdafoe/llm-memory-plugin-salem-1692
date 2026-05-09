@@ -121,6 +121,14 @@ type agentNPCRow struct {
 	// in the server's tool result. Cleared at the top of each serve
 	// dispatch and consumed once read — never carried across ticks.
 	LastServeResult *serveResult
+
+	// TickReason is the cascade-origin reason string passed to
+	// triggerImmediateTick (e.g. "pc-spoke", "arrival", "self:idle-sweep").
+	// Stamped on the row at fire time and read by buildAgentPerception
+	// to surface origin-specific cues (currently: idle-sweep). Not loaded
+	// from the DB — populated in-memory by triggerImmediateTick after
+	// the row is scanned.
+	TickReason string
 }
 
 // runAgentTick is the harness loop for one NPC. Stamps last_agent_tick_at
@@ -741,6 +749,7 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, 
 	// signals for the model. Computed once per tick from cfg.Location.
 	hourStart := time.Date(now.Year(), now.Month(), now.Day(), now.Hour(), 0, 0, 0, now.Location())
 	log.Printf("event-tick %s: %s", r.DisplayName, reason)
+	r.TickReason = reason
 	app.runAgentTick(ctx, &r, hourStart, dawnMin, duskMin, sceneID)
 }
 
@@ -1787,6 +1796,23 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 	// and the resolution it should pick. See engine/satiation.go.
 	if satBlocks := app.buildSatiationLines(ctx, r.ID, r.CurrentX, r.CurrentY, pressingTiers); len(satBlocks) > 0 {
 		sections = append(sections, strings.Join(satBlocks, "\n\n"))
+	}
+
+	// 3a-bis. Idle-sweep nudge (ZBBS-HOME-201). When the cascade origin
+	// is the deterministic idle-sweep, surface the reason so the LLM has
+	// a concrete prompt to break out of any silent loop and reassess
+	// — without it, the standard perception is the same one the model
+	// already saw at last tick and the next response tends to mirror
+	// the prior. Other cascade origins (PC speech, NPC arrival) carry
+	// their own salient signal in the perception's Recent / Here blocks
+	// and don't need this hint.
+	if r.TickReason == "self:idle-sweep" && r.LastAgentTickAt.Valid {
+		idleMinutes := int(time.Since(r.LastAgentTickAt.Time).Minutes())
+		if idleMinutes > 0 {
+			sections = append(sections, fmt.Sprintf(
+				"You've been idle for about %d min. Reassess — if there's nothing to do, stay put.",
+				idleMinutes))
+		}
 	}
 
 	// 3b. Return-to-work nudge (ZBBS-110). Fires when the NPC is on shift
