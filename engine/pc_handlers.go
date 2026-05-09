@@ -120,6 +120,17 @@ type pcMeResponse struct {
 	// without this, an admin retuning a threshold drifts the HUD
 	// silently. Client falls back to its own defaults when omitted.
 	NeedThresholds NeedSet `json:"need_thresholds,omitempty"`
+	// DwellingAttributes lists the need attributes the PC is actively
+	// recovering RIGHT NOW via dwell — i.e. each attribute that has a
+	// non-stale actor_dwell_credit row for this actor. ZBBS-HOME-218.
+	// The HUD uses this to engage a continuous pulse on the relevant
+	// segment immediately on /pc/me — without it, the pulse depended
+	// on client-side decrease detection and wouldn't engage on a fresh
+	// page load even when the player was already at a recovery slot.
+	// "Non-stale" = last_credited_at within the dwell_period_minutes
+	// window; an actor who walked away has their row deleted on the
+	// next dwell tick, so the staleness is bounded.
+	DwellingAttributes []string `json:"dwelling_attributes,omitempty"`
 	// SpriteID is null until the player picks one. Client bootstrap uses
 	// the null state as the trigger to open the sprite picker on first
 	// login. Sprite is the inlined catalog row (sheet, frame dims,
@@ -241,6 +252,21 @@ func (app *App) handlePCMe(w http.ResponseWriter, r *http.Request) {
 	// this handler. Cheap setting lookups; failures inside the helper
 	// fall back to per-need defaults.
 	resp.NeedThresholds = NeedSet(app.loadNeedThresholds(r.Context()))
+
+	// ZBBS-HOME-218: dwelling attributes for the HUD pulse.
+	// Distinct attributes from active actor_dwell_credit rows for
+	// this actor. "Active" = last_credited_at within
+	// dwell_period_minutes (the tick interval) — outside that window,
+	// the actor has either walked away (next dwell tick deletes the
+	// row) or the row is genuinely stale; the pulse should fade. On
+	// query error we surface an empty array so a transient DB hiccup
+	// just turns the pulse off briefly rather than failing the whole
+	// /pc/me.
+	dwelling, dwErr := app.fetchDwellingAttributes(r.Context(), pcActorID)
+	if dwErr != nil {
+		log.Printf("pc/me dwelling attributes %s: %v", pcActorID, dwErr)
+	}
+	resp.DwellingAttributes = dwelling
 	if insideID.Valid {
 		s := insideID.String
 		resp.InsideStructureID = &s
@@ -1215,6 +1241,44 @@ func (app *App) composeKnockNarration(ctx context.Context, structureID string) s
 // Best-effort: a missing catalog row or position lookup logs and ships
 // the partial payload; the next /pc/me poll or WS reconnect resync will
 // fill any gaps.
+// fetchDwellingAttributes returns the distinct attributes the actor
+// is currently recovering via dwell — one entry per attribute with a
+// non-stale actor_dwell_credit row. Used by /pc/me to drive the HUD
+// pulse (ZBBS-HOME-218) so the player sees the recovery glow as soon
+// as their session reads state, even if no value-change has been
+// detected client-side.
+//
+// "Non-stale" = last_credited_at + dwell_period_minutes >= NOW().
+// The dwell sweep deletes rows when the actor walks away from the
+// loiter slot, so under normal operation a row is either fresh
+// (within its period) or gone. This freshness guard is belt-and-
+// suspenders against the brief window before the next sweep where
+// a departed actor's row might still exist.
+//
+// Empty slice (not nil) on success-with-no-rows so the JSON encodes
+// as `[]` and the client sees an unambiguous "not dwelling" signal.
+func (app *App) fetchDwellingAttributes(ctx context.Context, actorID string) ([]string, error) {
+	rows, err := app.DB.Query(ctx, `
+		SELECT DISTINCT attribute
+		  FROM actor_dwell_credit
+		 WHERE actor_id = $1::uuid
+		   AND last_credited_at + (dwell_period_minutes || ' minutes')::interval >= NOW()
+	`, actorID)
+	if err != nil {
+		return []string{}, err
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var attr string
+		if err := rows.Scan(&attr); err != nil {
+			return []string{}, err
+		}
+		out = append(out, attr)
+	}
+	return out, rows.Err()
+}
+
 func (app *App) broadcastPCAppeared(ctx context.Context, actorID, spriteID, characterName string) {
 	// display_name (rather than character_name) so the broadcast lines up
 	// with the npc_created shape that world.gd's add_npc_from_broadcast

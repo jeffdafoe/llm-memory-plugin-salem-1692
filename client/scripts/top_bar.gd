@@ -63,12 +63,6 @@ const _NEED_DISPLAY: Dictionary = {
     "tiredness": ["W", "eariness "],
 }
 const RECOVERY_FLASH_COLOR := Color(1.35, 1.25, 1.05, 1.0)
-const VALUE_TWEEN_DURATION: float = 0.55
-# Reel dimensions (ZBBS-HOME-217). Width fits "24" (the cap value)
-# with a bit of air; height matches the 16pt IMFell line so a fresh
-# label positioned ±height is exactly off-frame.
-const _VALUE_REEL_WIDTH: int = 28
-const _VALUE_REEL_HEIGHT: int = 22
 
 # ZBBS-HOME-216: pulse window. Each time a need decreases the segment
 # enters a "recovering" state for RECOVERING_WINDOW_MS milliseconds
@@ -390,14 +384,13 @@ func set_needs(needs: Dictionary) -> void:
 
 ## Build the persistent per-need segments under needs_label. Called
 ## once from _ready. Each segment is a horizontal triplet —
-## cap (16pt) + lowercase rest (10pt) + value-reel (16pt). The value
-## is wrapped in a clipped Control so a value change can stamp a new
-## label and slide both vertically (slot-reel / gas-pump effect)
-## without spilling into the surrounding bar.
+## cap (16pt) + lowercase rest (10pt) + value (16pt) — kept alive
+## across set_needs calls so the recovery pulse modulate is stable.
 ##
-## ZBBS-HOME-217: pre-217 the value tween rounded a float and snapped
-## the digit at the midpoint — invisible for the typical -1 dwell
-## tick. Now the digit physically rolls.
+## ZBBS-HOME-218: the slot-reel from #217 broke the segment layout
+## (the Control wrapper made values render as superscripts) and was
+## reverted. The value just snaps to its new text. The continuous
+## pulse window does the visual signaling.
 func _build_needs_segments() -> void:
     for key in _NEED_KEYS:
         var meta: Array = _NEED_DISPLAY[key]
@@ -405,49 +398,25 @@ func _build_needs_segments() -> void:
         segment.add_theme_constant_override("separation", 0)
         var cap_label := _make_need_label(meta[0], 16, COLOR_TEXT_DIM)
         var rest_label := _make_need_label(meta[1], 10, COLOR_TEXT_DIM)
-
-        # Value reel: a clipped Control sized to the digit's typical
-        # box. New labels spawn into this and slide in/out vertically
-        # so the digit visibly rolls. Width allows two digits + a
-        # little air; height matches a single line of the 16pt font.
-        var value_reel := Control.new()
-        value_reel.custom_minimum_size = Vector2(_VALUE_REEL_WIDTH, _VALUE_REEL_HEIGHT)
-        value_reel.clip_contents = true
-        value_reel.mouse_filter = Control.MOUSE_FILTER_IGNORE
-
         var value_label := _make_need_label("0", 16, COLOR_TEXT_DIM)
-        value_label.position = Vector2(0, 0)
-        value_label.size = Vector2(_VALUE_REEL_WIDTH, _VALUE_REEL_HEIGHT)
-        value_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-        value_reel.add_child(value_label)
-
         segment.add_child(cap_label)
         segment.add_child(rest_label)
-        segment.add_child(value_reel)
+        segment.add_child(value_label)
         needs_label.add_child(segment)
         _need_segments[key] = {
-            "container":      segment,
-            "cap_label":       cap_label,
-            "rest_label":      rest_label,
-            "value_reel":      value_reel,
-            "value_label":     value_label,
-            "value_tween":     null,
-            "displayed_value": 0,
+            "container":  segment,
+            "cap_label":  cap_label,
+            "rest_label": rest_label,
+            "value_label": value_label,
         }
 
 ## Apply a need value update to a single segment. Color always
-## refreshes (so a tier crossover paints immediately). On a value
-## change, a fresh Label is stamped into the value-reel positioned
-## off-frame (above for an up change / increase, below for a down
-## change / recovery), and BOTH labels tween vertically — old slides
-## out the opposite side, new slides into the visible row. Looks
-## like a gas pump's mechanical reel rolling.
-##
-## ZBBS-HOME-217: pre-217 used a tween_method that rounded a float
-## from old to new, which for the typical -1 dwell tick just snapped
-## the digit at the midpoint — visually a hard swap, not a roll.
-## The reel now physically translates the labels so even a single-
-## unit change is obviously animated.
+## refreshes (so a tier crossover paints immediately). The value
+## label snaps to the new text — the visual recovery signal is the
+## continuous pulse engaged from server-side dwelling state, not
+## from the value transition itself. ZBBS-HOME-218 reverted the
+## #217 slot-reel after the Control wrapper broke the segment's
+## layout (values rendered as superscripts).
 func _update_need_segment(key: String, new_val: int) -> void:
     var seg = _need_segments.get(key)
     if seg == null:
@@ -456,91 +425,8 @@ func _update_need_segment(key: String, new_val: int) -> void:
     seg.cap_label.add_theme_color_override("font_color", color)
     seg.rest_label.add_theme_color_override("font_color", color)
     seg.value_label.add_theme_color_override("font_color", color)
-
-    var old_val: int = _prior_needs.get(key, -1)
+    seg.value_label.text = "%d" % new_val
     _prior_needs[key] = new_val
-
-    # First-time set: snap. Avoids the visually-jarring 0→N rollup
-    # when the chip first appears.
-    if old_val < 0:
-        seg.value_label.text = "%d" % new_val
-        seg.value_label.position = Vector2(0, 0)
-        seg.displayed_value = new_val
-        return
-
-    if new_val == old_val:
-        return
-
-    # Mid-reel poll: kill any in-flight tween, snap-clean by
-    # repositioning the current value_label and freeing any orphan
-    # incoming labels we left in the reel. Without this, a back-to-
-    # back poll could leak Labels.
-    if seg.value_tween != null and seg.value_tween.is_valid():
-        seg.value_tween.kill()
-    _purge_reel_extras(seg)
-
-    # Stamp the incoming label. Position it off-frame on the side
-    # opposite to where the old label will exit:
-    #   - Recovery (new < old): old slides DOWN out, new slides
-    #     DOWN in from above. Direction = -1 means "y travels down";
-    #     incoming starts at -height.
-    #   - Degradation (new > old): old slides UP out, new slides
-    #     UP in from below. Direction = +1; incoming starts at
-    #     +height.
-    var direction: int = -1 if new_val < old_val else 1
-    var incoming := _make_need_label("%d" % new_val, 16, color)
-    incoming.size = Vector2(_VALUE_REEL_WIDTH, _VALUE_REEL_HEIGHT)
-    incoming.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-    incoming.position = Vector2(0, -direction * _VALUE_REEL_HEIGHT)
-    seg.value_reel.add_child(incoming)
-
-    var outgoing: Label = seg.value_label
-    var outgoing_dest: Vector2 = Vector2(0, direction * _VALUE_REEL_HEIGHT)
-
-    seg.value_tween = create_tween().set_parallel(true)
-    seg.value_tween.tween_property(outgoing, "position", outgoing_dest, VALUE_TWEEN_DURATION)
-    seg.value_tween.tween_property(incoming, "position", Vector2(0, 0), VALUE_TWEEN_DURATION)
-    # set_parallel applies to all subsequent calls — chain the
-    # post-tween cleanup serially. Adding chain() before tween_callback
-    # makes it run AFTER the parallel block finishes.
-    seg.value_tween.chain().tween_callback(_finalize_reel_swap.bind(key, outgoing, incoming, new_val))
-
-    # ZBBS-HOME-216: refresh the pulse window on recovery so the
-    # _process oscillator keeps glowing the segment. Window is
-    # 15 min from this decrease; covers the 10 min between dwell
-    # ticks plus slack.
-    if new_val < old_val:
-        _recovering_until[key] = Time.get_ticks_msec() + RECOVERING_WINDOW_MS
-
-## Tween-end callback: free the outgoing label and promote the
-## incoming label as the segment's new value_label. Idempotent
-## against a tween that was killed mid-flight (the kill path runs
-## _purge_reel_extras separately to drop the incoming).
-func _finalize_reel_swap(key: String, outgoing: Label, incoming: Label, new_val: int) -> void:
-    var seg = _need_segments.get(key)
-    if seg == null:
-        return
-    if outgoing != null and is_instance_valid(outgoing) and outgoing != incoming:
-        outgoing.queue_free()
-    if incoming != null and is_instance_valid(incoming):
-        incoming.position = Vector2(0, 0)
-        seg.value_label = incoming
-    seg.displayed_value = new_val
-
-## Drop any non-current Labels left in the value_reel from a killed
-## or interrupted tween. Run before stamping a new incoming so we
-## don't leak orphans. The current value_label (whatever the segment
-## record points at) is preserved and snapped back to position (0,0)
-## so the next stamp lines up.
-func _purge_reel_extras(seg: Dictionary) -> void:
-    var reel: Control = seg.value_reel
-    if reel == null:
-        return
-    for child in reel.get_children():
-        if child != seg.value_label:
-            child.queue_free()
-    if seg.value_label != null and is_instance_valid(seg.value_label):
-        seg.value_label.position = Vector2(0, 0)
 
 ## Construct a single Label inside a need segment with the given size
 ## and color. Vertically centered so labels of different sizes line up
@@ -553,6 +439,25 @@ func _make_need_label(text: String, size: int, color: Color) -> Label:
     label.add_theme_font_size_override("font_size", size)
     label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
     return label
+
+## ZBBS-HOME-218: engage the recovery pulse on every segment whose
+## attribute appears in `attrs`, refreshing the window from now.
+## Called every /pc/me poll (~10s) so an actively-dwelling player
+## sees the pulse continuously without depending on client-side
+## decrease detection — fixes the "had to move away and back" gap
+## where a fresh page load wouldn't engage the pulse even though
+## recovery was happening server-side.
+##
+## Empty / missing attrs leaves the segments to fade out via the
+## existing _process expiry path. The window is RECOVERING_WINDOW_MS
+## (15 min) — long enough that a single missed poll doesn't drop
+## the pulse but short enough that walking away clears it within
+## the player's attention span.
+func set_dwelling_attributes(attrs: PackedStringArray) -> void:
+    var now_ms: int = Time.get_ticks_msec()
+    for key in _NEED_KEYS:
+        if attrs.has(key):
+            _recovering_until[key] = now_ms + RECOVERING_WINDOW_MS
 
 ## Tier color for a single need value. Mirrors the engine's mild/red/peak
 ## thresholds (8 / 18 / 24). Falls back to the dim chrome text color
