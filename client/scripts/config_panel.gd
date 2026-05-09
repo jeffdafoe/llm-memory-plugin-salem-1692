@@ -63,8 +63,11 @@ var _refetch_timer: Timer = null
 # the village knows about. Lives at the bottom of the config panel so
 # admins can confirm that "the village knows about hammers" without
 # opening the database. Fetched once on visibility (item_kind doesn't
-# change live), populated into a 4-column grid: name | category |
-# satisfies | capabilities.
+# change live), populated into a 5-column grid: name | category |
+# satisfies | capabilities | in world. Satisfies cell expands to
+# include dwell info when an item delivers staged satiation; "in
+# world" aggregates actor_inventory so admins can see at a glance
+# how many of each item currently exist in the village.
 var _items_grid: GridContainer = null
 var _items_status: Label = null
 
@@ -287,7 +290,7 @@ func _build_layout() -> void:
     _content.add_child(_items_status)
 
     _items_grid = GridContainer.new()
-    _items_grid.columns = 4
+    _items_grid.columns = 5
     _items_grid.add_theme_constant_override("h_separation", 18)
     _items_grid.add_theme_constant_override("v_separation", 4)
     _content.add_child(_items_grid)
@@ -680,6 +683,7 @@ func _render_items(rows: Array) -> void:
     _items_grid.add_child(_make_items_cell("Category", COLOR_LABEL, true))
     _items_grid.add_child(_make_items_cell("Satisfies", COLOR_LABEL, true))
     _items_grid.add_child(_make_items_cell("Capabilities", COLOR_LABEL, true))
+    _items_grid.add_child(_make_items_cell("In World", COLOR_LABEL, true))
 
     for entry in rows:
         if typeof(entry) != TYPE_DICTIONARY:
@@ -695,8 +699,23 @@ func _render_items(rows: Array) -> void:
                     continue
                 var sa = sat.get("attribute", "")
                 var sm = sat.get("amount", 0)
-                if sa != "":
-                    parts.append(str(sa) + " " + str(sm))
+                if sa == "":
+                    continue
+                var part: String = str(sa) + " " + str(sm)
+                # Dwell extension: stew (and any future staged-satiation
+                # item) delivers Amount immediately, then DwellAmount
+                # per DwellPeriodMinutes for DwellTotalTicks ticks.
+                # Render the tail in admin-readable form: "(+8 over 16 min)"
+                # = dwell_amount × dwell_total_ticks total, dwell_period_minutes
+                # × dwell_total_ticks minutes.
+                var d_amt = sat.get("dwell_amount", null)
+                var d_period = sat.get("dwell_period_minutes", null)
+                var d_ticks = sat.get("dwell_total_ticks", null)
+                if d_amt != null and d_period != null and d_ticks != null:
+                    var total_dwell = int(d_amt) * int(d_ticks)
+                    var total_minutes = int(d_period) * int(d_ticks)
+                    part += " (+" + str(total_dwell) + " over " + str(total_minutes) + " min)"
+                parts.append(part)
             if parts.size() > 0:
                 satisfies = ", ".join(parts)
         var caps_arr = entry.get("capabilities", [])
@@ -704,10 +723,24 @@ func _render_items(rows: Array) -> void:
         if typeof(caps_arr) == TYPE_ARRAY and caps_arr.size() > 0:
             caps_text = ", ".join(caps_arr)
 
+        # Stock rollup. Zero-stock items still get a row; they read "0"
+        # rather than "0 (0 actors)" since the actor count is redundant
+        # noise when nothing is held.
+        var total_in_world = int(entry.get("total_in_world", 0))
+        var held_by_actors = int(entry.get("held_by_actors", 0))
+        var stock_text: String
+        if total_in_world == 0:
+            stock_text = "0"
+        elif held_by_actors == 1:
+            stock_text = str(total_in_world) + " (1 actor)"
+        else:
+            stock_text = str(total_in_world) + " (" + str(held_by_actors) + " actors)"
+
         _items_grid.add_child(_make_items_cell(label, COLOR_VALUE, false))
         _items_grid.add_child(_make_items_cell(category, COLOR_TEXT, false))
         _items_grid.add_child(_make_items_cell(satisfies, COLOR_TEXT_DIM, false))
         _items_grid.add_child(_make_items_cell(caps_text, COLOR_TEXT_DIM, false))
+        _items_grid.add_child(_make_items_cell(stock_text, COLOR_TEXT, false))
 
     if _items_status != null:
         _items_status.text = str(rows.size()) + " items in the village catalog"
