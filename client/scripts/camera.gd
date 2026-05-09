@@ -48,6 +48,26 @@ var editor_ref: CanvasLayer = null
 # doesn't keep blocking input.
 var ui_panels: Array[Control] = []
 
+# Subset of ui_panels that also affect the map clamp + auto-shift the
+# camera so their occluded area doesn't permanently hide map content.
+# A panel registered with participates_in_clamp=true:
+#   - Relaxes _clamp_position bounds by the panel's coverage so the
+#     camera can shift far enough that the far map edge isn't hidden.
+#   - On open/close (and on resize), the camera position auto-shifts
+#     so the visible (panel-excluded) center stays at the same world
+#     point the user was looking at — opening the editor sidebar
+#     "slides" the world out from under the panel rather than hiding
+#     the leftmost map content.
+# Edge-anchored panels only — full-screen overlays (modal blockers,
+# the talk panel's full-rect input shield) shouldn't participate, and
+# stay registered as ui_panels-only for input gating.
+var clamp_panels: Array[Control] = []
+# Last seen panel insets (left, right, top, bottom) in screen pixels.
+# Tracked so _process can detect a panel toggle / resize and shift the
+# camera by the delta on that frame only — steady-state has insets
+# matching _last_clamp_insets so no further shift fires.
+var _last_clamp_insets: Vector4 = Vector4.ZERO
+
 # When true, a modal overlay is open — don't zoom on scroll
 var modal_open: bool = false
 
@@ -65,11 +85,19 @@ const TOP_BAR_HEIGHT: float = 40.0
 ## are treated as UI input, not world input — _is_over_ui returns true,
 ## the camera steps aside, and the panel's own controls handle the event.
 ##
+## participates_in_clamp=true also enrolls the panel in clamp-relax +
+## auto-shift so opening it slides the world out from under the panel.
+## Use only for edge-anchored sidebars (the editor panel); leave false
+## for input-shield-only overlays (talk panel sheet, modal blockers).
+##
 ## Idempotent — registering the same panel twice is a no-op.
-func register_ui_panel(panel: Control) -> void:
-    if panel == null or panel in ui_panels:
+func register_ui_panel(panel: Control, participates_in_clamp: bool = false) -> void:
+    if panel == null:
         return
-    ui_panels.append(panel)
+    if not (panel in ui_panels):
+        ui_panels.append(panel)
+    if participates_in_clamp and not (panel in clamp_panels):
+        clamp_panels.append(panel)
 
 
 ## Unregister a UI panel. Safe to call even if the panel was never
@@ -77,6 +105,62 @@ func register_ui_panel(panel: Control) -> void:
 ## signal so a freed panel doesn't leave a dangling Control reference.
 func unregister_ui_panel(panel: Control) -> void:
     ui_panels.erase(panel)
+    clamp_panels.erase(panel)
+
+
+## Compute the screen-pixel insets contributed by visible clamp_panels —
+## one scalar per edge (left, right, top, bottom). A panel anchored to
+## an edge contributes its width (left/right) or height (top/bottom)
+## to that edge's inset. Multiple panels stacked on the same edge sum
+## to the maximum (panels overlap rather than tile, so max is right).
+##
+## Edge classification: a panel "is on" an edge when its global rect
+## touches that edge of the viewport (within 1 pixel of slop for sub-
+## pixel layout drift). Center-floating panels contribute zero insets.
+func _clamp_panel_insets() -> Vector4:
+    var insets := Vector4.ZERO
+    var viewport_size: Vector2 = get_viewport_rect().size
+    for panel in clamp_panels:
+        if not is_instance_valid(panel):
+            continue
+        if not panel.is_visible_in_tree():
+            continue
+        var r: Rect2 = panel.get_global_rect()
+        if r.position.x <= 1.0:
+            insets.x = maxf(insets.x, r.size.x)
+        if r.end.x >= viewport_size.x - 1.0:
+            insets.y = maxf(insets.y, r.size.x)
+        if r.position.y <= TOP_BAR_HEIGHT + 1.0:
+            insets.z = maxf(insets.z, r.size.y)
+        if r.end.y >= viewport_size.y - 1.0:
+            insets.w = maxf(insets.w, r.size.y)
+    return insets
+
+
+## Per-frame check for clamp-panel inset changes. When a panel toggles
+## or resizes, shift the camera position by half the delta so the
+## visible (panel-excluded) center stays pointed at the same world
+## point. Without the shift, opening the editor sidebar (240 px on
+## the left) leaves the previously-centered world content under the
+## panel — invisible. With the shift, the world appears to slide
+## right out from under the opening panel; closing slides it back.
+##
+## Math derivation (left panel of width L opening, zoom z):
+##   Visible center before: screen-x V/2 → world camera.x.
+##   Visible center after:  screen-x (L + V)/2 → world camera.x + L/(2z).
+##   To keep visible center at same world point: camera.x -= L/(2z).
+## Right panel pulls the visible center left, so camera shifts right.
+## Top/bottom panels do the analogous thing on Y.
+func _process(_delta: float) -> void:
+    var current := _clamp_panel_insets()
+    if current == _last_clamp_insets:
+        return
+    var dx_screen: float = (current.x - _last_clamp_insets.x) / 2.0 - (current.y - _last_clamp_insets.y) / 2.0
+    var dy_screen: float = (current.z - _last_clamp_insets.z) / 2.0 - (current.w - _last_clamp_insets.w) / 2.0
+    position.x -= dx_screen / zoom.x
+    position.y -= dy_screen / zoom.y
+    _last_clamp_insets = current
+    _clamp_position()
 
 
 ## Returns true if the screen position is over UI input the camera
@@ -192,18 +276,21 @@ func _zoom_at(mouse_pos: Vector2, step: float) -> void:
     zoom = Vector2(new_zoom, new_zoom)
     _clamp_position()
 
-## Keep the camera within map bounds so grey void is never visible.
-## The visible area depends on viewport size and zoom level.
+## Keep the camera within map bounds so grey void is never visible
+## inside the unobstructed viewport area. The visible area depends on
+## viewport size, zoom level, and clamp_panel insets — a left-anchored
+## panel of width L lets the camera shift L/zoom further left without
+## leaking grey void into view, since the leftmost L screen-pixels are
+## hidden behind the panel anyway.
 func _clamp_position() -> void:
     var viewport_size: Vector2 = get_viewport_rect().size
     var half_view: Vector2 = viewport_size / (2.0 * zoom)
+    var insets := _clamp_panel_insets()
 
-    # The camera center must stay far enough from the edges
-    # that the viewport doesn't extend past the map
-    var min_x: float = map_bounds.position.x + half_view.x
-    var min_y: float = map_bounds.position.y + half_view.y
-    var max_x: float = map_bounds.end.x - half_view.x
-    var max_y: float = map_bounds.end.y - half_view.y
+    var min_x: float = map_bounds.position.x + half_view.x - insets.x / zoom.x
+    var min_y: float = map_bounds.position.y + half_view.y - insets.z / zoom.y
+    var max_x: float = map_bounds.end.x - half_view.x + insets.y / zoom.x
+    var max_y: float = map_bounds.end.y - half_view.y + insets.w / zoom.y
 
     # If the map is smaller than the viewport at this zoom, center it
     if min_x > max_x:
@@ -240,10 +327,11 @@ func center_on(world_pos: Vector2) -> void:
 func _clamp_position_value(target: Vector2) -> Vector2:
     var viewport_size: Vector2 = get_viewport_rect().size
     var half_view: Vector2 = viewport_size / (2.0 * zoom)
-    var min_x: float = map_bounds.position.x + half_view.x
-    var min_y: float = map_bounds.position.y + half_view.y
-    var max_x: float = map_bounds.end.x - half_view.x
-    var max_y: float = map_bounds.end.y - half_view.y
+    var insets := _clamp_panel_insets()
+    var min_x: float = map_bounds.position.x + half_view.x - insets.x / zoom.x
+    var min_y: float = map_bounds.position.y + half_view.y - insets.z / zoom.y
+    var max_x: float = map_bounds.end.x - half_view.x + insets.y / zoom.x
+    var max_y: float = map_bounds.end.y - half_view.y + insets.w / zoom.y
     var out := Vector2.ZERO
     if min_x > max_x:
         out.x = map_bounds.position.x + map_bounds.size.x / 2.0
