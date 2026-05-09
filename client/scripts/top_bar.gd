@@ -63,17 +63,36 @@ const _NEED_DISPLAY: Dictionary = {
     "tiredness": ["W", "eariness "],
 }
 const RECOVERY_FLASH_COLOR := Color(1.35, 1.25, 1.05, 1.0)
-const RECOVERY_FLASH_DURATION: float = 1.6
 const VALUE_TWEEN_DURATION: float = 0.6
-# Per-need segment record: container + the three labels + the two
-# in-flight tweens + the currently-rendered integer value (used as
-# the start point for the next gas-pump tween, since the label text
-# is already showing it).
+
+# ZBBS-HOME-216: pulse window. Each time a need decreases the segment
+# enters a "recovering" state for RECOVERING_WINDOW_MS milliseconds
+# during which container.modulate oscillates between white and
+# RECOVERY_FLASH_COLOR via a sin wave driven from _process. A fresh
+# decrease (next dwell tick or consume) refreshes the window. After
+# the window expires with no new decrease, the pulse eases back to
+# white over RECOVERING_FADE_DURATION and stops.
+#
+# 15 min covers the gap between dwell ticks (10 min) plus a 5 min
+# grace period for jitter and slow networks. Anyone actively
+# dwelling sees a continuous pulse; anyone who walked away sees
+# their pulse fade out within ~15 min and the segment goes still.
+const RECOVERING_PULSE_PERIOD: float = 1.8        # full sin cycle, seconds
+const RECOVERING_WINDOW_MS: int = 15 * 60 * 1000  # 15 minutes
+const RECOVERING_FADE_DURATION: float = 1.0       # post-window settle, seconds
+
+# Per-need segment record: container + the three labels + the
+# in-flight value tween + the currently-rendered integer value (used
+# as the start point for the next gas-pump tween, since the label
+# text is already showing it).
 var _need_segments: Dictionary = {}
 # Last value seen per need. -1 sentinel = "no value yet" — first set
 # snaps without animation so the chip shows the right number on the
 # first /pc/me response without a 0→24 roll-up.
 var _prior_needs: Dictionary = {"hunger": -1, "thirst": -1, "tiredness": -1}
+# Per-need pulse-window expiry timestamp (Time.get_ticks_msec()
+# value, NOT a Unix timestamp). 0 = not currently in a pulse window.
+var _recovering_until: Dictionary = {"hunger": 0, "thirst": 0, "tiredness": 0}
 
 # Theme colors (matching login screen)
 const COLOR_BG = Color(0.12, 0.09, 0.07, 0.95)
@@ -386,7 +405,6 @@ func _build_needs_segments() -> void:
             "rest_label":      rest_label,
             "value_label":     value_label,
             "value_tween":     null,
-            "recovery_tween":  null,
             "displayed_value": 0,
         }
 
@@ -432,17 +450,14 @@ func _update_need_segment(key: String, new_val: int) -> void:
         VALUE_TWEEN_DURATION
     )
 
-    # Recovery flash (new < old). Warm brightening that fades back
-    # over RECOVERY_FLASH_DURATION. Modulate cascades to the three
-    # child labels so cap, rest, and value all glow together.
+    # ZBBS-HOME-216: continuous pulse on recovery. Each decrease
+    # refreshes the pulse window; _process drives the actual modulate
+    # oscillation. Pre-216 was a one-shot 1.6s flash on each
+    # decrease which the player couldn't see between 10-minute dwell
+    # ticks. Now the segment glows continuously while dwelling and
+    # fades after walking away.
     if new_val < old_val:
-        if seg.recovery_tween != null and seg.recovery_tween.is_valid():
-            seg.recovery_tween.kill()
-        seg.container.modulate = RECOVERY_FLASH_COLOR
-        seg.recovery_tween = create_tween()
-        seg.recovery_tween.tween_property(
-            seg.container, "modulate", Color(1, 1, 1, 1), RECOVERY_FLASH_DURATION
-        )
+        _recovering_until[key] = Time.get_ticks_msec() + RECOVERING_WINDOW_MS
 
 ## Tween callback — drives the gas-pump value display. Rounds the
 ## tweened float to the nearest int so the digit reads cleanly.
@@ -560,3 +575,35 @@ func _on_logout_pressed() -> void:
     _editor_active = false
     _update_edit_button_style()
     logout_pressed.emit()
+
+## ZBBS-HOME-216: drive the per-need recovery pulse. Each segment
+## that's within its RECOVERING_WINDOW_MS gets its container
+## modulate set to a sin-wave oscillation between Color(1,1,1,1)
+## and RECOVERY_FLASH_COLOR. Outside the window, the modulate
+## eases back to white over RECOVERING_FADE_DURATION and stays
+## there until the next decrease re-arms.
+##
+## Cheap: three segments × one sin call + a lerp per frame. Runs
+## even when the chip is hidden (early-out below) so a poll that
+## arrives during a fade settles cleanly instead of getting frozen
+## mid-pulse.
+func _process(delta: float) -> void:
+    if needs_label == null or not needs_label.visible:
+        return
+    var now_ms: int = Time.get_ticks_msec()
+    var seconds: float = float(now_ms) / 1000.0
+    for key in _NEED_KEYS:
+        var seg = _need_segments.get(key)
+        if seg == null:
+            continue
+        var until_ms: int = _recovering_until.get(key, 0)
+        if now_ms < until_ms:
+            # In window — sin wave 0..1, lerp white → flash color.
+            var t: float = sin(seconds * TAU / RECOVERING_PULSE_PERIOD) * 0.5 + 0.5
+            seg.container.modulate = Color(1, 1, 1, 1).lerp(RECOVERY_FLASH_COLOR, t)
+        elif seg.container.modulate != Color(1, 1, 1, 1):
+            # Window expired — settle modulate back to white.
+            var step: float = delta / RECOVERING_FADE_DURATION
+            seg.container.modulate = seg.container.modulate.lerp(
+                Color(1, 1, 1, 1), clamp(step, 0.0, 1.0)
+            )
