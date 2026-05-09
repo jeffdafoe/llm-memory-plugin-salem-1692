@@ -253,9 +253,18 @@ func (app *App) applyDwellCredit(
 			return fmt.Errorf("expected 1 deleted credit, got %d", tag.RowsAffected())
 		}
 	} else {
+		// ZBBS-HOME-219: cast $5 to text explicitly. Without the cast,
+		// pgx binds dwellPeriodMinutes as int, and Postgres's `||`
+		// concatenation operator can't implicitly coerce that to text
+		// in this context — the encode plan errors with "unable to
+		// encode N into text format for text (OID 25)". Result was
+		// every dwell update failing silently in the goroutine,
+		// stranding actor_dwell_credit rows past their freshness
+		// window and breaking all dwell-based recovery (Shade Tree
+		// tiredness, Well thirst, etc).
 		if tag, err := tx.Exec(ctx,
 			`UPDATE actor_dwell_credit
-			    SET last_credited_at = last_credited_at + ($5 || ' minutes')::interval,
+			    SET last_credited_at = last_credited_at + ($5::text || ' minutes')::interval,
 			        remaining_ticks  = CASE WHEN source = 'item' THEN remaining_ticks - 1
 			                                ELSE remaining_ticks
 			                           END
