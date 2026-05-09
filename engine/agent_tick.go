@@ -122,6 +122,15 @@ type agentNPCRow struct {
 	// dispatch and consumed once read — never carried across ticks.
 	LastServeResult *serveResult
 
+	// PendingDeferredBroadcasts holds room_events the harness should
+	// broadcast AFTER the next speak commits in this tick (or at tick
+	// end as a fallback). Stuffed by the deliver_order dispatch path
+	// — the dwell hint and felt-outcome consume narrations land here
+	// so they fire after the keeper's verbal "here you are" speak in
+	// iter N+1 instead of preempting it. Tick-scoped: zero-valued at
+	// each runAgentTick; never carried across ticks.
+	PendingDeferredBroadcasts []WorldEvent
+
 	// TickReason is the cascade-origin reason string passed to
 	// triggerImmediateTick (e.g. "pc-spoke", "arrival", "self:idle-sweep").
 	// Stamped on the row at fire time and read by buildAgentPerception
@@ -409,16 +418,23 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			// deliver_order: seller-side fulfillment of an accepted ledger
 			// row. State change (fulfillment_status ready→delivered, plus
 			// inventory transfer or applyConsumption depending on the
-			// row's consume_now). Inline like pay so a
-			// "deliver-then-here-you-are" chain reads naturally — the
-			// continuation message nudges a brief speak so the keeper
-			// names the handover.
+			// row's consume_now). Inline like pay.
+			//
+			// The handover itself is narrated deterministically by the
+			// engine ("X hands Y the Z." — see executeDeliverOrder's
+			// post-commit broadcast). The continuation message therefore
+			// no longer nudges a "here you are" speak — that line was
+			// load-bearing pre-handover-narration and read as redundant
+			// once the engine line landed first. Optional follow-up
+			// flavor ("enjoy", "mind the heat") is welcome but not
+			// required, so the nudge invites silence as an acceptable
+			// outcome alongside speak/move/done.
 			result, errStr, extra := app.executeAgentCommit(ctx, r, deliverCall, sceneID, hourStart.Location())
 			if result == "ok" {
 				if extra != "" {
-					currentMessage = "[OK] You delivered " + extra + ". Speak to the buyer now if you haven't already (a brief 'here you are' or similar). Then you may move or call done."
+					currentMessage = "[OK] You delivered " + extra + ". The handover is on the record. You may add a brief follow-up word ('enjoy', 'mind the heat', etc.), or stay silent. Then you may move or call done."
 				} else {
-					currentMessage = "[OK] You delivered the order. Speak to the buyer now if you haven't already. Then you may move or call done."
+					currentMessage = "[OK] You delivered the order. The handover is on the record. You may add a brief follow-up word, or stay silent. Then you may move or call done."
 				}
 			} else if strings.Contains(errStr, "no such ledger row") {
 				// Hallucinated ledger id — the model is acting on an
@@ -502,6 +518,12 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			// after speaking ("I responded, my turn's over"). Non-directive
 			// nudge: doesn't name a specific action, just affirms agency.
 			_, _, _ = app.executeAgentCommit(ctx, r, speakCall, sceneID, hourStart.Location())
+			// Drain deferred broadcasts queued by deliver_order (dwell
+			// hint + felt-outcome consume narrations). These were held
+			// back so the keeper's verbal "here you are" speak lands
+			// BEFORE the eat narrations. Now that the speak has fired,
+			// the consume beats can land in their natural slot.
+			app.drainDeferredBroadcasts(r)
 			currentMessage = "[OK] You spoke. Continue your turn — you may move or run a chore now, or call done if you're staying put."
 			currentToolCallID = speakCall.ID
 			continue
@@ -593,6 +615,14 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 		commitResult, commitErrStr, _ = app.executeAgentCommit(ctx, r, commitCall, sceneID, hourStart.Location())
 	}
 
+	// Tick-end fallback drain: if deliver_order queued consume
+	// narrations and no speak fired in this tick (LLM went straight to
+	// done / move_to / chore / take_break), broadcast them now so they
+	// don't get orphaned. They land slightly later than they would have
+	// in the ideal flow, but the player still sees the eat narration
+	// in the same panel session.
+	app.drainDeferredBroadcasts(r)
+
 	// Close out the terminal tool_call in conversation history. Without
 	// this, the model's terminal tool_call (move_to / chore / done /
 	// take_break) sits orphan in history — no matching tool result row
@@ -632,6 +662,26 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 	// is now stale. If conditions are no longer true (NPC moved to work,
 	// fell into a pressing need), no schedule is written.
 	app.maybeScheduleReturnToWork(ctx, r.ID)
+}
+
+// drainDeferredBroadcasts fires any room_events queued by deliver_order
+// (or future deferred-broadcast producers) and clears the slice. Called
+// from the harness loop after each speak commit and once more as a
+// fallback at tick end so the events land within the same player-
+// visible session even when the LLM chooses not to speak.
+//
+// Idempotent: repeat calls with an empty slice are no-ops. Tick-scoped
+// — the slice resets implicitly because agentNPCRow is loaded fresh
+// per runAgentTick.
+func (app *App) drainDeferredBroadcasts(r *agentNPCRow) {
+	if len(r.PendingDeferredBroadcasts) == 0 {
+		return
+	}
+	pending := r.PendingDeferredBroadcasts
+	r.PendingDeferredBroadcasts = nil
+	for _, ev := range pending {
+		app.Hub.Broadcast(ev)
+	}
 }
 
 // stampAgentTick records that we've ticked this NPC. Stamps to time.Now()
@@ -2350,7 +2400,7 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 	// appear in the room they left, not the room they're walking to.
 	if (tc.Name == "speak" || tc.Name == "act" || tc.Name == "move_to" ||
 		tc.Name == "serve" || tc.Name == "pay" || tc.Name == "consume" ||
-		tc.Name == "summon") && r.InsideStructureID.Valid {
+		tc.Name == "summon" || tc.Name == "deliver_order") && r.InsideStructureID.Valid {
 		if tc.Input == nil {
 			tc.Input = map[string]interface{}{}
 		}
@@ -3210,12 +3260,21 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		// for at-source). Validation rejects (missing/wrong row, wrong
 		// seller, wrong state) surface as result="rejected" so the LLM
 		// can correct and continue. Engine errors surface as "failed".
+		//
+		// dr.DeferredBroadcasts (consume narrations — dwell hint + felt
+		// outcome) gets stashed onto r so the harness loop can drain
+		// them after the keeper's next speak fires (or at tick end as
+		// a fallback). Engine handover broadcasts synchronously inside
+		// executeDeliverOrder.
 		ledgerID := coerceInt64Input(tc.Input["ledger_id"])
 		dr := app.executeDeliverOrder(ctx, r.ID, ledgerID)
 		result = dr.Result
 		errStr = dr.Err
 		if result == "ok" {
 			extra = fmt.Sprintf("%d %s to %s", dr.Qty, dr.ItemKind, dr.BuyerName)
+			if len(dr.DeferredBroadcasts) > 0 {
+				r.PendingDeferredBroadcasts = append(r.PendingDeferredBroadcasts, dr.DeferredBroadcasts...)
+			}
 		}
 
 	default:
