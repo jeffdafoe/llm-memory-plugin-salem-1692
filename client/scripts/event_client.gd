@@ -583,6 +583,18 @@ func _on_npc_arrived(data: Dictionary) -> void:
     var final_x: float = float(data.get("x", 0.0))
     var final_y: float = float(data.get("y", 0.0))
     var facing: String = data.get("facing", "south")
+    # Empty-facing fallback (ZBBS-HOME-225). Dictionary.get returns the
+    # value when the key is present, default only when missing — so a
+    # broadcast carrying `"facing": ""` ends up here as the empty string,
+    # not as "south". Composing `"_idle"` as the animation name silently
+    # fails the has_animation lookup in play_npc_animation, leaving the
+    # previous walk animation looping on a stationary actor. Falling back
+    # to the container's last known facing meta restores a real direction;
+    # "south" is the catch-all for a fresh actor with no meta yet.
+    if facing == "":
+        facing = String(container.get_meta("facing", "south"))
+        if facing == "":
+            facing = "south"
 
     container.position = Vector2(final_x, final_y)
     container.set_meta("facing", facing)
