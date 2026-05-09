@@ -39,14 +39,13 @@ const (
 
 	// Harness budget — max iterations per chronicler fire. Each
 	// iteration is one model API call processing one tool call
-	// (set_environment, record_event, recall, attend_to, done).
-	// Default 8; pre-buffering this was 4 in-code, plenty when each
-	// fire saw one event. Post-buffering (ZBBS-119) the dispatcher
+	// (set_environment, record_event, record_announcement, recall,
+	// done). Default 8; pre-buffering this was 4 in-code, plenty when
+	// each fire saw one event. Post-buffering (ZBBS-119) the dispatcher
 	// consolidates 5+ events into one fire so the chronicler needs
-	// more iterations to process them all — at 4 iterations the
-	// effective attend ceiling was ~3 NPCs per fire (one slot for
-	// done). Loaded per fire via chronicler_tick_budget setting,
-	// clamped to [chroniclerTickBudgetMin, chroniclerTickBudgetMax].
+	// more iterations to process them all. Loaded per fire via
+	// chronicler_tick_budget setting, clamped to
+	// [chroniclerTickBudgetMin, chroniclerTickBudgetMax].
 	chroniclerTickBudgetDefault = 8
 	chroniclerTickBudgetMin     = 1
 	chroniclerTickBudgetMax     = 32
@@ -66,16 +65,6 @@ const (
 	// still be surfaced via recall but don't appear automatically.
 	recentEventsCount  = 20
 	recentEventsWindow = 7 * 24 * time.Hour
-
-	// Cross-fire attend cooldown (ZBBS-119). Routine chronicler
-	// attend_to calls — those whose fire reason is buffered_flush,
-	// phase, or shift_boundary — refuse a re-attend within this
-	// window of the prior dispatch. PC-speech and admin-attend-now
-	// cascade fires are exempt: a player's presence or an operator's
-	// override is a fresh significant event, not redundant signal.
-	// The chronicler sees the rejection as a tool result so it can
-	// reason about it instead of getting a silent in-flight-gate drop.
-	chroniclerAttendCooldown = 45 * time.Second
 )
 
 // chroniclerFireReason captures why the chronicler is being fired this
@@ -101,17 +90,12 @@ type chroniclerFireReason struct {
 	StructureID string
 
 	// Priority is the routing tier consulted by fireChroniclerSerialized
-	// when the in-flight slot is full and by chroniclerAttendExempt for
-	// cooldown bypass. High-priority fires (PC speech, PC arrival, admin
-	// attend-now) get queued as pending instead of dropped on full and
-	// bypass the cross-fire attend cooldown. Routine fires (phase, shift
-	// boundary, NPC arrival cascade-origin, buffered_flush) drop on full
-	// and apply cooldown — their underlying events live on
-	// ChroniclerDispatchQueue and the next fire will pick them up.
-	//
-	// Replaces the prior reason-string prefix check (chroniclerAttendExempt
-	// previously parsed CascadeReason for "pc-" / "admin-attend-now");
-	// classification is now explicit at the call site.
+	// when the in-flight slot is full. High-priority fires (PC speech,
+	// PC arrival, admin attend-now) get queued as pending instead of
+	// dropped on full. Routine fires (phase, shift boundary, NPC arrival
+	// cascade-origin, buffered_flush) drop on full — their underlying
+	// events live on ChroniclerDispatchQueue and the next fire will pick
+	// them up.
 	Priority chroniclerFirePriority
 }
 
@@ -140,15 +124,15 @@ type pendingChroniclerFire struct {
 // chroniclerToolSpec returns the tool definitions offered to the
 // chronicler at every fire.
 //
-// attend_to (ZBBS-083) is the directorial action — the overseer rouses a
-// villager whose body is in distress so they have a chance to act on it.
-// The roused NPC ticks through the normal agent path and decides for
-// themselves what to do (eat, drink, rest, leave). attend_to does NOT
-// puppet — it only opens the door for action.
-//
-// Per-fire calls to attend_to are capped by chronicler_dispatch_ceiling
-// in the dispatcher. The model is told the limit is finite but not the
-// exact number, to discourage greedy use-until-rejected patterns.
+// The chronicler authors atmosphere (set_environment), narrative facts
+// (record_event), and town-crier announcements (record_announcement),
+// and can search collective memory (recall). It does not direct or
+// dispatch NPCs — NPC ticks fire from cascade origins and the
+// deterministic engine idle-sweep (ZBBS-HOME-201). The earlier
+// directorial attend_to tool was removed in ZBBS-HOME-202 once the
+// engine floor made it redundant; chronicler dispatch in practice
+// selected nearly every candidate every fire and billed LLM cost
+// without producing a durable schedule.
 func chroniclerToolSpec() []agentToolDef {
 	return []agentToolDef{
 		{
@@ -214,20 +198,6 @@ func chroniclerToolSpec() []agentToolDef {
 					},
 				},
 				"required": []string{"query"},
-			},
-		},
-		{
-			Name:        "attend_to",
-			Description: "Direct your attention to a named villager so they may rouse and tend to themselves. Use when you see a soul whose body is in distress — hungry, parched, or weary — and a small voice within them might move them to act. Also use when a villager's shift has begun and they are not yet at their workplace, or when their shift has ended and they are still at their workplace. The villager you attend to will think and may take an action; you do not move their hands. Use sparingly: there is a finite measure to how many you may attend in one waking.",
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"villager": map[string]interface{}{
-						"type":        "string",
-						"description": "The villager you attend, by name (the same name that appears in your perception of who is at each place).",
-					},
-				},
-				"required": []string{"villager"},
 			},
 		},
 		{
@@ -581,22 +551,6 @@ func (app *App) fireChronicler(ctx context.Context, reason chroniclerFireReason)
 	// UI shows no location chip.
 	sceneID := app.newScene(ctx, reason.StructureID)
 
-	// Per-fire attend_to counter (ZBBS-083). Reset each fire — the
-	// configured ceiling is per-fire, not per-day. Read once at the top
-	// so an admin tweaking the setting mid-fire doesn't change the cap
-	// underneath us. loadNonNegativeIntSetting clamps a negative value to
-	// the default rather than rejecting every call.
-	attendCeiling := app.loadNonNegativeIntSetting(ctx, "chronicler_dispatch_ceiling", 12)
-	attendCount := 0
-
-	// Per-fire seen-villager set (2026-05-02). Models occasionally fire
-	// attend_to twice for the same villager in a single cascade — saw a
-	// "Prudence Ward" repeat 6 seconds apart at 11:01:08, burning a tool
-	// slot toward the rate limit for no narrative effect. The dispatch
-	// would also re-tick the same NPC. Refusing the duplicate at the
-	// chronicler boundary saves the call and tells the model to move on.
-	attendedThisFire := map[string]bool{}
-
 	// Per-fire tick budget — read from settings each fire so an admin
 	// tweak takes effect immediately. Out-of-bounds values fall back
 	// to the default rather than letting a misconfigured row break
@@ -741,96 +695,15 @@ func (app *App) fireChronicler(ctx context.Context, reason chroniclerFireReason)
 				resultContent = app.resolveChroniclerRecall(ctx, query)
 
 			case "attend_to":
-				villager, _ := tc.Input["villager"].(string)
-				villager = strings.TrimSpace(villager)
-				if villager == "" {
-					resultContent = "[The villager you tried to attend was unnamed. Try again or say done.]"
-					break
-				}
-				if attendCount >= attendCeiling {
-					resultContent = "[You have attended to as many villagers as one waking allows. Move on, or say done.]"
-					break
-				}
-				npcID, displayName, ok := app.resolveVillagerForAttention(ctx, villager)
-				if !ok {
-					resultContent = fmt.Sprintf("[There is no villager by the name %q. Try again with the name as it appears in your roster, or say done.]", villager)
-					break
-				}
-				if attendedThisFire[npcID] {
-					// Already attended this villager this fire (2026-05-02).
-					// Re-attending re-ticks the NPC and burns a chronicler
-					// call slot for no new effect — the prior dispatch is
-					// already in flight or has run.
-					resultContent = fmt.Sprintf("[You have already attended %s in this waking. Move on, or say done.]", displayName)
-					break
-				}
-				// Cross-fire attend cooldown (ZBBS-119). The
-				// attendedThisFire check above only catches duplicates
-				// within one chronicler turn; serialized back-to-back
-				// fires can still re-attend the same NPC. Skip routine
-				// re-attends within chroniclerAttendCooldown of the prior
-				// dispatch, with a visible tool result so the model reads
-				// the rejection. PC-speech and admin-attend-now fires are
-				// exempt — those represent fresh significant events and
-				// should always go through.
-				if !chroniclerAttendExempt(reason) {
-					if since, recent := app.recentChroniclerAttend(npcID); recent {
-						resultContent = fmt.Sprintf("[%s was already dispatched %s ago in another waking; attend_to skipped. Move on, or say done.]",
-							displayName, since.Round(time.Second))
-						break
-					}
-				}
-				// Trigger the NPC's tick. Force=true so the agentMinTickGap
-				// cost guard in triggerImmediateTick is bypassed — chronicler
-				// attend_to is a directorial action, not a sim-layer cascade.
-				// The cost guard exists to dampen NPC-to-NPC tick storms
-				// (co-located NPCs reacting to each other's speech); a
-				// chronicler dispatch is a deliberate top-down pick that
-				// should always go through. Without the bypass, an NPC who
-				// happened to tick within the last 5 minutes silently
-				// disappears from the chronicler's view of the world: it
-				// gets back "[You attend to X. They will rouse...]" but
-				// no actual prompt fires for X.
-				//
-				// Cost is bounded chronicler-side, not at the cost guard:
-				// attendCeiling caps attend_to calls per fire,
-				// OverseerAttendSem bounds concurrent attends across
-				// overlapping fires, and chronicler fires themselves are
-				// gated to specific events (phase / cascade / shift_boundary
-				// / needs_resolved) — not arbitrary. Same-NPC re-ticks
-				// across two close fires are still possible but they're
-				// substantively different perceptions (different events),
-				// not the storm the guard targets.
-				//
-				// Background goroutine so a slow agent tick doesn't block
-				// the overseer's harness loop. App-level semaphore caps
-				// aggregate concurrency across overlapping fires; if the
-				// slot is full we still let the call through (vs dropping)
-				// — the goroutine just blocks waiting for a slot, then
-				// runs. Acceptable for directorial dispatches; if
-				// backpressure becomes an issue we can switch to skip-if-
-				// full like ChroniclerSem does.
-				//
-				// Thread the chronicler's sceneID so the dispatched NPC
-				// tick lands in the same scene as the overseer's fire —
-				// keeps the admin UI's scene grouping coherent across the
-				// cascade.
-				go func(id, name, scene string) {
-					app.OverseerAttendSem <- struct{}{}
-					defer func() { <-app.OverseerAttendSem }()
-					// triggerActorID = "" — chronicler dispatch has no salient
-					// speaker, so this won't lock the attended NPC against
-					// subsequent heard-speech reactions in the same scene.
-					app.triggerImmediateTick(context.Background(), id, "overseer-attend-to", true, scene, "")
-				}(npcID, displayName, sceneID)
-				attendCount++
-				attendedThisFire[npcID] = true
-				// Stamp the cross-fire cooldown clock (ZBBS-119). Includes
-				// exempt fires (PC speech, admin) — the stamp is what the
-				// next fire's routine attends measure their cooldown
-				// against, regardless of which fire stamped it.
-				app.recordChroniclerAttend(npcID)
-				resultContent = fmt.Sprintf("[You attend to %s. They will rouse and decide what to do.]", displayName)
+				// Tool was removed in ZBBS-HOME-202. The chronicler's
+				// startup_instructions still mention it until the prompt
+				// is updated, and an in-flight chronicler fire at deploy
+				// time may have the old tool list. Return a polite,
+				// non-terminal acknowledgement so the harness moves on.
+				// Drop in a follow-up commit once the prompt is updated
+				// and at least one full chronicler cadence has elapsed
+				// post-deploy.
+				resultContent = "[Tool removed — chronicler dispatch no longer fires ticks; NPCs are dispatched by the engine. Use record_event for narration, or say done.]"
 
 			case "done":
 				terminal = true
@@ -992,7 +865,7 @@ func (app *App) buildChroniclerPerception(ctx context.Context, reason chronicler
 	// the model occasionally narrates as plain text (the implicit
 	// set_environment fallback catches this, but explicit naming
 	// reduces the failure rate).
-	sections = append(sections, "Attend to the village. Use set_environment to write the current atmosphere if it has shifted. Use record_event to record any happening that should persist in village memory (default scope is village; pass scope_type='local' with scope_target=<structure_id> to restrict to one place, or scope_type='private' with scope_target=<npc_id> to restrict to one person). Use record_announcement to author village news for the Town Crier to voice on his rotation — a new lodger, a vendor closed for the day, strangers in the village. Use attend_to to rouse a villager whose body is in distress, whose shift has begun and who is not at their workplace, or whose shift has ended and who is still at their workplace. You may use recall to remember anything the village has experienced. Use done when your office is finished.")
+	sections = append(sections, "Attend to the village. Use set_environment to write the current atmosphere if it has shifted. Use record_event to record any happening that should persist in village memory (default scope is village; pass scope_type='local' with scope_target=<structure_id> to restrict to one place, or scope_type='private' with scope_target=<npc_id> to restrict to one person). Use record_announcement to author village news for the Town Crier to voice on his rotation — a new lodger, a vendor closed for the day, strangers in the village. You may use recall to remember anything the village has experienced. Use done when your office is finished.")
 
 	return strings.Join(sections, "\n\n")
 }
@@ -1874,12 +1747,10 @@ func (app *App) buildChroniclerDistressList(ctx context.Context) string {
 //	Needs newly satisfied:
 //	- Prudence Ward -- no longer parched [from the well] -- currently at the Well (work: Apothecary, 07:30-18:30)
 //
-// The chronicler reads these sections and decides whether to attend
-// each listed villager. The attend_to tool's broader authorization
-// covers shift-begin, shift-end, needs-onset, and needs-resolved as
-// legitimate reasons (NPCs newly distressed at their workplace, or
-// who abandoned posts due to high needs and now don't have those
-// needs, are both the case the chronicler should nudge).
+// The chronicler reads these sections and may author atmosphere or
+// record_event prose grounded in them. NPC ticks are no longer
+// dispatched by the chronicler (ZBBS-HOME-202) — these sections feed
+// narrative authoring only.
 func (app *App) renderDispatchSections(ctx context.Context, batches []*chroniclerDispatchBatch) []string {
 	if len(batches) == 0 {
 		return nil
@@ -2206,9 +2077,9 @@ func renderShiftSection(et chroniclerDispatchEventType, agents []chroniclerDispa
 // villagers whose hunger/thirst/tiredness tier increased into red or
 // peak on the most recent needs tick. Inverse of
 // renderNeedsResolvedSection — the chronicler reads these as fresh
-// distress events that may warrant attend_to before the need climbs
-// further. No source field; the onset is the natural drift of the
-// hourly tick, not a discrete in-world action.
+// distress events that may warrant atmosphere or record_event prose.
+// No source field; the onset is the natural drift of the hourly tick,
+// not a discrete in-world action.
 //
 // Severity-aware vocabulary (Phase 2.B / ZBBS-121 commit 7): each
 // need in OnsetNeeds carries its new tier in the parallel
@@ -2218,8 +2089,7 @@ func renderShiftSection(et chroniclerDispatchEventType, agents []chroniclerDispa
 //
 // Lines mirror the resolved section's structure (place + work
 // annotation) so the chronicler can spot "newly exhausted at the
-// Mill, works there" — distress at the workplace is an attend
-// candidate, distress off-shift may not need intervention.
+// Mill, works there" — useful narrative-authoring context.
 func renderNeedsOnsetSection(agents []chroniclerDispatchAgent) string {
 	var b strings.Builder
 	b.WriteString("Needs newly arising:")
@@ -2284,8 +2154,8 @@ func joinOnsetLabels(keys []string, tiers []NeedTier) string {
 // renderNeedsResolvedSection renders the "Needs newly satisfied" section
 // for villagers whose needs crossed below the red threshold this tick.
 // Tone: factual + recovery-leading, so the chronicler reads them as
-// candidates for attend_to (especially when their current place is not
-// their work place).
+// authoring candidates (record_event for the recovery, set_environment
+// for resulting atmosphere).
 //
 // Lines fold each agent's resolved need(s) and source into one phrase.
 // One need: "no longer parched". Two needs: "no longer hungry or
@@ -2296,7 +2166,7 @@ func joinOnsetLabels(keys []string, tiers []NeedTier) string {
 // Work annotation: when the agent has a work assignment, append a
 // "(work: <place>, HH:MM-HH:MM)" suffix so the chronicler can spot
 // "currently at the Well, but works at the Apothecary 07:30-18:30"
-// at a glance — the exact case that should trigger attend_to.
+// at a glance — useful narrative authoring context.
 func renderNeedsResolvedSection(agents []chroniclerDispatchAgent) string {
 	var b strings.Builder
 	b.WriteString("Needs newly satisfied:")
@@ -2431,73 +2301,5 @@ func (app *App) dispatchChroniclerShiftBoundaries(ctx context.Context) {
 	if err := app.fireChronicler(ctx, chroniclerFireReason{Type: "shift_boundary", Priority: chroniclerFirePriorityRoutine}); err != nil {
 		log.Printf("chronicler-shift: fire failed: %v", err)
 	}
-}
-
-// resolveVillagerForAttention maps a villager name (display_name or slug)
-// to the npc.id needed by triggerImmediateTick. Display name is primary
-// (matches what appears in the roster the overseer sees) with a slug
-// fallback so the overseer can address NPCs either way. Case-insensitive,
-// trimmed. Returns the display_name as well so the dispatcher can render
-// the "[You attend to X.]" tool result with the canonical form.
-func (app *App) resolveVillagerForAttention(ctx context.Context, villager string) (string, string, bool) {
-	var npcID, displayName string
-	// After ZBBS-084 the actor table holds display_name directly, no
-	// JOIN needed. We only attend to LLM-driven NPCs (the overseer's
-	// directorial dispatch is meant to rouse agents, not PCs or
-	// decorative villagers).
-	err := app.DB.QueryRow(ctx, `
-		SELECT id, display_name
-		FROM actor
-		WHERE llm_memory_agent IS NOT NULL
-		  AND LOWER(display_name) = LOWER($1)
-		LIMIT 1
-	`, villager).Scan(&npcID, &displayName)
-	if err != nil {
-		if !errors.Is(err, pgx.ErrNoRows) {
-			log.Printf("chronicler: resolve villager %q: %v", villager, err)
-		}
-		return "", "", false
-	}
-	return npcID, displayName, true
-}
-
-// chroniclerAttendExempt reports whether a fire's reason exempts its
-// attend_to calls from the cross-fire cooldown (ZBBS-119). Exempt:
-// cascade fires whose reason names a PC speech, PC arrival, or admin
-// override — those represent fresh significant events that should
-// always go through. Routine fires (buffered_flush, phase,
-// shift_boundary) apply the cooldown.
-//
-// Classification reads chroniclerFireReason.Priority — set explicitly
-// at the cascade-origin call site. Replaces the prior wire-format
-// prefix check ("pc-" / "admin-attend-now") which was flagged fragile
-// in the original implementation.
-func chroniclerAttendExempt(reason chroniclerFireReason) bool {
-	return reason.Type == "cascade" && reason.Priority == chroniclerFirePriorityHigh
-}
-
-// recentChroniclerAttend reports whether the named NPC was attended
-// within chroniclerAttendCooldown of now. Returns the elapsed time
-// since the prior attend (for the rejection message) and true when
-// recent. The mutex is held only for the lookup.
-func (app *App) recentChroniclerAttend(npcID string) (time.Duration, bool) {
-	app.LastChroniclerAttendAtMu.Lock()
-	defer app.LastChroniclerAttendAtMu.Unlock()
-	last, ok := app.LastChroniclerAttendAt[npcID]
-	if !ok {
-		return 0, false
-	}
-	since := time.Since(last)
-	return since, since < chroniclerAttendCooldown
-}
-
-// recordChroniclerAttend stamps the cross-fire cooldown clock for
-// npcID. Called after every successful attend_to dispatch (including
-// exempt ones, so the next routine fire measures cooldown against the
-// most recent dispatch regardless of who made it).
-func (app *App) recordChroniclerAttend(npcID string) {
-	app.LastChroniclerAttendAtMu.Lock()
-	defer app.LastChroniclerAttendAtMu.Unlock()
-	app.LastChroniclerAttendAt[npcID] = time.Now()
 }
 
