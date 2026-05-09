@@ -6,6 +6,8 @@ extends Control
 @onready var password_field: LineEdit = $Panel/VBox/PasswordField
 @onready var login_button: Button = $Panel/VBox/LoginButton
 @onready var error_label: Label = $Panel/VBox/ErrorLabel
+@onready var loading_label: Label = $Panel/VBox/LoadingLabel
+@onready var separator: HSeparator = $Panel/VBox/Separator
 @onready var background: ColorRect = $Background
 @onready var panel: PanelContainer = $Panel
 
@@ -23,17 +25,30 @@ func _ready() -> void:
 func set_message(message: String) -> void:
     error_label.text = message
 
-## Hide just the login form, keep the dark background visible. Used by
-## main.gd's curtain pattern (ZBBS-HOME-210) so the auth → world-rendered
-## window stays covered. Symmetric show_form re-displays it for the
-## session-expired path. Called instead of `visible = false` on the
-## whole control until the world is fully populated, at which point
-## main.gd fades the entire login_screen out.
+## Hide just the login form, keep the dark background AND the title-
+## panel visible with a "Loading…" subtitle in place of the form
+## fields. Used by main.gd's curtain pattern (ZBBS-HOME-210, refined
+## ZBBS-HOME-216) so the auth → world-rendered window shows a styled
+## period-appropriate splash instead of bare dim. Symmetric show_form
+## re-displays the form for the session-expired path. Called instead
+## of `visible = false` on the whole control until the world is fully
+## populated, at which point main.gd fades the entire login_screen
+## out via modulate tween.
 func hide_form() -> void:
-    panel.visible = false
+    username_field.visible = false
+    password_field.visible = false
+    login_button.visible = false
+    error_label.visible = false
+    separator.visible = false
+    loading_label.visible = true
 
 func show_form() -> void:
-    panel.visible = true
+    username_field.visible = true
+    password_field.visible = true
+    login_button.visible = true
+    error_label.visible = true
+    separator.visible = true
+    loading_label.visible = false
 
 func _on_login_pressed() -> void:
     var user: String = username_field.text.strip_edges()
