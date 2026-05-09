@@ -37,6 +37,14 @@ var village_ticker: PanelContainer = null
 var login_screen: Control = null
 var login_layer: CanvasLayer = null
 
+# Loader overlay (ZBBS-HOME-208) — covers the auth → village-loaded
+# gap so the player doesn't watch a flat terrain wait for objects to
+# pop. Layer 9 (below login at 10, above editor at 1). Built lazily on
+# first show so the bootstrap path doesn't pay the cost when the player
+# was already authenticated and the gap is sub-frame.
+var loader_layer: CanvasLayer = null
+var loader_root: Control = null
+const LOADER_FADE_OUT_DURATION: float = 0.35
 
 # PC bootstrap — once we've decided whether the player needs to pick a
 # sprite at this login, we don't want to redo the check on every signal
@@ -177,22 +185,12 @@ func _on_authenticated() -> void:
         _pc_bootstrap_done = true
         _bootstrap_pc()
 
-    # ZBBS-HOME-209: block all world input (clicks, scroll, walk,
-    # camera pan/zoom) while the village is materializing. Released
-    # in _on_world_ready once every queued object has rendered. We
-    # don't show a loader overlay — the procedural terrain stays
-    # visible and objects fade in via world.gd's bootstrap fade —
-    # but unattended clicks during the load window would pan the
-    # camera or fire walk-pending state at empty spots. Use the
-    # existing modal-blocker mechanism so this composes cleanly with
-    # any other modal that opens before world_ready (none expected
-    # in practice but the OR-of-blockers semantics handles it).
-    # Events that hit the input handlers are dropped, not buffered:
-    # camera._input early-returns on modal_open, main._input
-    # early-returns on the same flag, editor._input requires
-    # editor.active which isn't on yet. No queued click fires after
-    # release.
-    _set_modal_blocker("world_loading", true)
+    # Show the loader overlay until world.world_ready fires (terrain +
+    # village + npcs all in). ZBBS-HOME-208 — the procedural terrain
+    # already shows underneath; the overlay covers the auth → village
+    # gap so the player doesn't watch a flat terrain wait for objects
+    # to pop. Connection is idempotent.
+    _show_loader_overlay()
     if not world.world_ready.is_connected(_on_world_ready):
         world.world_ready.connect(_on_world_ready)
 
@@ -226,16 +224,10 @@ func _on_authenticated() -> void:
 ## downloaded since the original load are still cached, so the per-sheet
 ## queueing path is unlikely to be exercised here, but staying consistent
 ## with bootstrap means the resync code can't drift on the next refactor.
-##
-## ZBBS-HOME-209: re-engage the world_loading modal blocker so clicks
-## during the resync window don't fire on a half-rendered world. Released
-## by _on_world_ready when the resync rebuilds finishes (world.gd's
-## reset_world_state cleared _world_ready_emitted so the signal re-fires).
 func _on_ws_reconnected() -> void:
     if editor != null:
         editor._deselect()
         editor._deselect_npc()
-    _set_modal_blocker("world_loading", true)
     world.reset_world_state()
     world.reload_terrain()
     world._load_world_phase()
@@ -1269,17 +1261,66 @@ func _on_editor_mode_changed(mode) -> void:
     editor_panel.set_assigning_home(mode == editor.Mode.ASSIGN_HOME)
     editor_panel.set_assigning_work(mode == editor.Mode.ASSIGN_WORK)
 
-## World finished its bootstrap render: every village object has been
-## placed and faded in (per-sheet queue empty + village/npcs HTTP
-## fetches both landed). Release the input lock — clicks, scroll, and
-## walk handlers can now fire. ZBBS-HOME-209.
-##
-## Pre-209 this hid a loader overlay; the loader was dropped because
-## it added a jarring "Loading the village…" label without actually
-## fixing the underlying render gap (objects were still popping in
-## after the fade). The modal-blocker approach plus per-object fade-
-## in in world.gd produces the same "input-locked while loading"
-## guarantee with a much cleaner visual.
+## Build and present the loader overlay. ZBBS-HOME-208: covers the
+## post-auth → village-rendered gap so the player doesn't see flat
+## terrain with nothing on it. Idempotent — re-showing while already
+## visible re-runs the modulate tween from full opacity, which is what
+## a WS-reconnect resync wants.
+func _show_loader_overlay() -> void:
+    if loader_layer == null:
+        loader_layer = CanvasLayer.new()
+        loader_layer.name = "LoaderLayer"
+        # Below login (10), above editor (1) and other panels.
+        loader_layer.layer = 9
+        loader_root = Control.new()
+        loader_root.name = "LoaderRoot"
+        loader_root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+        # Block input while visible so a click on a not-yet-rendered
+        # object doesn't fire through to camera-pan or the PC-walk
+        # handler. Cleared by _hide_loader_overlay's queue_free.
+        loader_root.mouse_filter = Control.MOUSE_FILTER_STOP
+
+        var backdrop: ColorRect = ColorRect.new()
+        backdrop.color = Color(0.05, 0.05, 0.08, 0.6)
+        backdrop.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+        backdrop.mouse_filter = Control.MOUSE_FILTER_IGNORE
+        loader_root.add_child(backdrop)
+
+        var label: Label = Label.new()
+        label.text = "Loading the village…"
+        label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+        label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+        label.add_theme_color_override("font_color", Color(0.95, 0.92, 0.85))
+        label.add_theme_font_size_override("font_size", 24)
+        label.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+        label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+        loader_root.add_child(label)
+
+        loader_layer.add_child(loader_root)
+        add_child(loader_layer)
+    loader_root.modulate = Color(1, 1, 1, 1)
+    loader_root.visible = true
+
+## Fade and remove the loader overlay. Called from _on_world_ready
+## (terrain + village + npcs all in). Tween-then-queue_free pattern
+## keeps the fade smooth and prevents a stale node from intercepting
+## later input. ZBBS-HOME-208.
+func _hide_loader_overlay() -> void:
+    if loader_root == null:
+        return
+    var t: Tween = create_tween()
+    t.tween_property(loader_root, "modulate", Color(1, 1, 1, 0), LOADER_FADE_OUT_DURATION)
+    t.tween_callback(func():
+        if loader_layer != null and is_instance_valid(loader_layer):
+            loader_layer.queue_free()
+        loader_layer = null
+        loader_root = null
+    )
+
+## World finished its bootstrap fetches — fade the loader. Sheets that
+## haven't landed yet still pop their objects in after the loader is
+## gone, but the bulk of the village is on screen and the gap is
+## visually closed. ZBBS-HOME-208.
 func _on_world_ready() -> void:
-    _set_modal_blocker("world_loading", false)
+    _hide_loader_overlay()
 
