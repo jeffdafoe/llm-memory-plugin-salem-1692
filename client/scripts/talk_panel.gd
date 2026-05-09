@@ -1196,8 +1196,35 @@ func _maybe_apply_recent_speech(data: Dictionary) -> void:
     if typeof(recent) != TYPE_ARRAY:
         return
 
+    # Find the proprietor's arrival greeting — the LAST entry in the
+    # backload that's an NPC speech AND happens to be the most recent
+    # entry overall. Common case: player walks in, arrival cascade
+    # fires the proprietor's tick, the resulting `speak` row is the
+    # freshest thing in agent_action_log when the next /pc/me poll
+    # lands, so it backloads alongside the older history. The visual
+    # gap should go BEFORE it so the room reads as "older history →
+    # greeting → your live conversation" rather than burying the
+    # greeting in the wall of older acts.
+    #
+    # Edge case guarded against: a stale NPC speech from earlier in
+    # the day with subsequent acts AFTER it. That's history, not a
+    # greeting, so we don't anchor on it. We only anchor when the
+    # latest valid entry in the backload IS the speech_npc.
+    var greeting_index := -1
+    for idx in range(recent.size() - 1, -1, -1):
+        var pre = recent[idx]
+        if typeof(pre) != TYPE_DICTIONARY:
+            continue
+        if str(pre.get("speaker_name", "")).is_empty() or str(pre.get("text", "")).is_empty():
+            continue
+        if str(pre.get("kind", "")) == "speech_npc":
+            greeting_index = idx
+        break
+
     var backload_count := 0
-    for entry in recent:
+    var inserted_gap := false
+    for idx in range(recent.size()):
+        var entry = recent[idx]
         if typeof(entry) != TYPE_DICTIONARY:
             continue
         var speaker := str(entry.get("speaker_name", ""))
@@ -1206,17 +1233,21 @@ func _maybe_apply_recent_speech(data: Dictionary) -> void:
         var at := str(entry.get("occurred_at", ""))
         if speaker.is_empty() or text.is_empty():
             continue
+        if idx == greeting_index and backload_count > 0:
+            for s in range(2):
+                var spacer := Control.new()
+                spacer.custom_minimum_size = Vector2(0, 13)
+                log_vbox.add_child(spacer)
+            inserted_gap = true
         _append_log_line(speaker, text, kind, true, at)
         backload_count += 1
 
-    # Visual gap between the historical backload and any live entries
-    # that arrive next. Without this, the newest backloaded line and
-    # the next live line read as adjacent — a fresh conversation
-    # rather than "history + new". Two spacers give a clear
-    # "everything above is from before" rhythm. Skipped when there
-    # was no backload (no history to separate from).
-    if backload_count > 0:
-        for i in range(2):
+    # Fallback: no arrival greeting to anchor before, so the gap goes
+    # at the end of the backload. The first live event that arrives
+    # after walking in still gets visually separated from whatever
+    # historical acts were here.
+    if backload_count > 0 and not inserted_gap:
+        for s in range(2):
             var spacer := Control.new()
             spacer.custom_minimum_size = Vector2(0, 13)
             log_vbox.add_child(spacer)
