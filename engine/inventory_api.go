@@ -20,9 +20,18 @@ import (
 // itemSatisfiesEntry is the wire shape for one (attribute, amount)
 // effect on an item — mirrors the item_satisfies table (ZBBS-125).
 // An item with no entries (a material) reports an empty array.
+//
+// Dwell fields are populated for items that deliver satiation in two
+// stages: an immediate Amount on consumption, then DwellAmount per
+// DwellPeriodMinutes for DwellTotalTicks ticks. All three are NULL
+// in the DB for non-dwell items; we surface them as omitempty pointers
+// so the JSON stays clean for the common case.
 type itemSatisfiesEntry struct {
-	Attribute string `json:"attribute"`
-	Amount    int    `json:"amount"`
+	Attribute          string `json:"attribute"`
+	Amount             int    `json:"amount"`
+	DwellAmount        *int   `json:"dwell_amount,omitempty"`
+	DwellPeriodMinutes *int   `json:"dwell_period_minutes,omitempty"`
+	DwellTotalTicks    *int   `json:"dwell_total_ticks,omitempty"`
 }
 
 // itemKindRow mirrors a row of item_kind for the picker / catalog.
@@ -32,6 +41,11 @@ type itemSatisfiesEntry struct {
 // round-trip. Satisfies array (ZBBS-125) replaces the legacy single
 // satisfies_attribute / satisfies_amount columns; multi-effect items
 // list every effect.
+//
+// TotalInWorld + HeldByActors (ZBBS-HOME-203) are aggregated from
+// actor_inventory so the config panel can show how many of each item
+// currently exist in the village without a separate query. Items with
+// no inventory rows report 0 / 0 (LEFT JOIN, not INNER).
 type itemKindRow struct {
 	Name         string               `json:"name"`
 	DisplayLabel string               `json:"display_label"`
@@ -39,6 +53,8 @@ type itemKindRow struct {
 	Satisfies    []itemSatisfiesEntry `json:"satisfies"`
 	SortOrder    int                  `json:"sort_order"`
 	Capabilities []string             `json:"capabilities"`
+	TotalInWorld int                  `json:"total_in_world"`
+	HeldByActors int                  `json:"held_by_actors"`
 }
 
 func (app *App) handleListItems(w http.ResponseWriter, r *http.Request) {
@@ -83,7 +99,8 @@ func (app *App) handleListItems(w http.ResponseWriter, r *http.Request) {
 			index[rec.Name] = i
 		}
 		sRows, err := app.DB.Query(r.Context(),
-			`SELECT item_kind, attribute, amount
+			`SELECT item_kind, attribute, amount,
+			        dwell_amount, dwell_period_minutes, dwell_total_ticks
 			   FROM item_satisfies
 			  ORDER BY item_kind, amount DESC, attribute`,
 		)
@@ -95,19 +112,59 @@ func (app *App) handleListItems(w http.ResponseWriter, r *http.Request) {
 		for sRows.Next() {
 			var name, attr string
 			var amount int
-			if err := sRows.Scan(&name, &attr, &amount); err != nil {
+			var dwellAmount, dwellPeriod, dwellTicks *int
+			if err := sRows.Scan(&name, &attr, &amount,
+				&dwellAmount, &dwellPeriod, &dwellTicks); err != nil {
 				jsonError(w, "Failed to scan item satisfies", http.StatusInternalServerError)
 				return
 			}
 			if i, ok := index[name]; ok {
 				out[i].Satisfies = append(out[i].Satisfies, itemSatisfiesEntry{
-					Attribute: attr,
-					Amount:    amount,
+					Attribute:          attr,
+					Amount:             amount,
+					DwellAmount:        dwellAmount,
+					DwellPeriodMinutes: dwellPeriod,
+					DwellTotalTicks:    dwellTicks,
 				})
 			}
 		}
 		if err := sRows.Err(); err != nil {
 			jsonError(w, "Failed to iterate item satisfies", http.StatusInternalServerError)
+			return
+		}
+
+		// Third pass: aggregate actor_inventory by item_kind so the
+		// config panel can render "how many bread loaves exist in the
+		// village" without a separate round-trip. LEFT JOIN so items
+		// held by no one (e.g. iron, currently uncrafted) report as 0
+		// rather than disappearing from the rollup.
+		invRows, err := app.DB.Query(r.Context(),
+			`SELECT ik.name,
+			        COALESCE(SUM(ai.quantity), 0)::int AS total,
+			        COUNT(DISTINCT ai.actor_id)::int AS holders
+			   FROM item_kind ik
+			   LEFT JOIN actor_inventory ai ON ai.item_kind = ik.name
+			  GROUP BY ik.name`,
+		)
+		if err != nil {
+			jsonError(w, "Failed to load item stock", http.StatusInternalServerError)
+			return
+		}
+		defer invRows.Close()
+		for invRows.Next() {
+			var name string
+			var total, holders int
+			if err := invRows.Scan(&name, &total, &holders); err != nil {
+				jsonError(w, "Failed to scan item stock", http.StatusInternalServerError)
+				return
+			}
+			if i, ok := index[name]; ok {
+				out[i].TotalInWorld = total
+				out[i].HeldByActors = holders
+			}
+		}
+		if err := invRows.Err(); err != nil {
+			jsonError(w, "Failed to iterate item stock", http.StatusInternalServerError)
 			return
 		}
 	}
