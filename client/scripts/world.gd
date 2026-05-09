@@ -12,13 +12,6 @@ signal npc_metadata_changed(npc_id: String)
 ## The sidebar Villagers browser rebuilds its list on this signal.
 signal npc_list_changed
 
-## Emitted once the initial world load is "visually ready": village objects
-## and NPCs have both finished their /api/village/* fetches. Sheet downloads
-## may still be in flight — objects whose sheets haven't landed yet are in
-## _pending_placements_by_sheet and will pop in as they arrive. main.gd's
-## loader overlay fades out on this signal. ZBBS-HOME-208.
-signal world_ready
-
 const MapGenerator = preload("res://scripts/map_generator.gd")
 const WangLookup = preload("res://scripts/wang_lookup.gd")
 const TerrainRendererScript = preload("res://scripts/terrain_renderer.gd")
@@ -67,28 +60,6 @@ var pad_y: int = 112
 # Placed objects keyed by server id
 var placed_objects: Dictionary = {}
 
-# Per-sheet placement queues — payloads waiting on a specific sheet to
-# finish downloading before _place_object can draw them. Keyed by sheet
-# path; value is Array[Dictionary] of placement payloads. Drained by
-# _on_catalog_sheet_loaded when Catalog.sheet_loaded fires for that
-# sheet. ZBBS-HOME-208 — without this queue, objects whose sheets land
-# after their placement payload arrives would silently fail to render
-# (Catalog.get_sprite_texture returns null and _place_object early-
-# returns with a push_warning). Pre-208 the catalog_loaded gate
-# prevented the race; the new metadata-ready unblock means we have to
-# tolerate sheets-not-yet-ready and replay.
-var _pending_placements_by_sheet: Dictionary = {}
-
-# World-load completion tracking for the world_ready signal. Both
-# village objects and NPCs fire their respective HTTP responses once;
-# we OR them together so the loader overlay knows when to fade.
-# Sheet downloads are NOT tracked here — they continue in the
-# background and pop objects in as they land. Reset by
-# reset_world_state for the WS-reconnect resync path.
-var _village_loaded: bool = false
-var _npcs_loaded: bool = false
-var _world_ready_emitted: bool = false
-
 # Agent lookup: llm_memory_agent name → display name
 var agent_names: Dictionary = {}
 # Ordered list of agent keys for dropdowns
@@ -114,11 +85,6 @@ func _ready() -> void:
         api_base = JavaScriptBridge.eval("window.location.origin", true)
     else:
         api_base = "http://zbbs.local"
-
-    # Drain the per-sheet placement queue as catalog sheets land.
-    # Connection is idempotent — _ready runs once per world instance.
-    Catalog.sheet_loaded.connect(_on_catalog_sheet_loaded)
-    Catalog.sheet_failed.connect(_on_catalog_sheet_failed)
 
 ## Build terrain — create custom renderer, generate terrain data,
 ## then try loading saved data from API (overwrites if found).
@@ -172,29 +138,6 @@ func reset_world_state() -> void:
     placed_npcs.clear()
     _pending_npcs.clear()
     _objects_loaded = false
-    # ZBBS-HOME-208: clear the per-sheet placement queue and the
-    # world_ready latches so the resync path's load_objects can re-fire
-    # cleanly. Without these resets, a stale queue from before the WS
-    # disconnect would replay against the new placed_objects map (which
-    # has now been cleared) and create orphans, and world_ready would
-    # never re-emit so the loader overlay wouldn't fade after a resync.
-    _pending_placements_by_sheet.clear()
-    _village_loaded = false
-    _npcs_loaded = false
-    _world_ready_emitted = false
-
-## Emit world_ready once both the village and NPC fetches have landed.
-## Sheet downloads may still be in flight; those drive per-object pop-ins
-## as they arrive. Latched via _world_ready_emitted so the signal fires
-## exactly once per session (or once per WS-reconnect resync via
-## reset_world_state). ZBBS-HOME-208.
-func _check_world_ready() -> void:
-    if _world_ready_emitted:
-        return
-    if not (_village_loaded and _npcs_loaded):
-        return
-    _world_ready_emitted = true
-    world_ready.emit()
 
 # NPC rendering — static for milestone 1a, no movement or animation.
 # Sprite sheets are cached per path so multiple NPCs sharing a sheet share
@@ -232,11 +175,6 @@ func _on_npcs_loaded(result: int, response_code: int, _headers: PackedStringArra
         if sheet != "" and not _npc_sheets.has(sheet) and not unique_sheets.has(sheet):
             unique_sheets[sheet] = true
     _pending_npcs = json
-    # ZBBS-HOME-208: NPC fetch is done. Per-sprite sheet downloads may
-    # still be in flight, but those don't gate the world_ready signal —
-    # NPCs render as their sheets land via _on_npc_sheet_downloaded.
-    _npcs_loaded = true
-    _check_world_ready()
     if unique_sheets.is_empty():
         _render_pending_npcs()
         return
@@ -1266,12 +1204,6 @@ func _on_village_loaded(result: int, response_code: int, headers: PackedStringAr
     # the panel rebuilds with proper landmark labels now that objects exist.
     npc_list_changed.emit()
 
-    # ZBBS-HOME-208: village fetch is done. Sheets may still be in flight
-    # for some objects (queued in _pending_placements_by_sheet) but the
-    # main payload has landed — flag for world_ready.
-    _village_loaded = true
-    _check_world_ready()
-
 ## Re-run the stand-offset adjustment for every NPC whose inside flag is
 ## true and whose inside_structure_id now resolves. Safe to call multiple
 ## times — _apply_stand_offset_if_applicable is a no-op for NPCs whose
@@ -1308,26 +1240,6 @@ func _place_object(data: Dictionary) -> void:
     var state_info = Catalog.get_state(asset_id, current_state)
     if state_info == null:
         push_warning("No state found for asset: " + asset_id)
-        return
-
-    # ZBBS-HOME-208: when catalog metadata has landed but the sheet for
-    # this asset hasn't, queue the payload and bail. Catalog.sheet_loaded
-    # drives _on_catalog_sheet_loaded which replays queued payloads when
-    # the sheet arrives. Sheet path comes from the state row we just
-    # resolved — same field _create_sprite_node would dereference.
-    var sheet_path: String = state_info.get("sheet", "")
-    if sheet_path != "" and not Catalog.sheet_cache.has(sheet_path):
-        _enqueue_pending_placement(sheet_path, data)
-        return
-
-    # Attachment payload but the parent isn't placed yet (its sheet must
-    # still be downloading, or the parent is itself queued). Queue on
-    # this asset's sheet so the next drain pass re-evaluates the parent.
-    # If on re-evaluation the parent is still missing, _place_object
-    # re-queues — the loop terminates when the parent eventually lands
-    # OR when its sheet fails (drain-on-failure clears both buckets).
-    if attached_to != null and attached_to != "" and not placed_objects.has(attached_to):
-        _enqueue_pending_placement(sheet_path, data)
         return
 
     var texture: AtlasTexture = Catalog.get_sprite_texture(state_info)
@@ -1406,72 +1318,6 @@ func _place_object(data: Dictionary) -> void:
         objects_node.add_child(container)
 
     placed_objects[obj_id] = container
-
-    # ZBBS-HOME-208: a base placement may have unblocked attachments
-    # that were waiting for it. Walk every queue and replay any
-    # payload whose attached_to matches the just-placed obj_id.
-    # Most placements have zero attachment fan-out, so this is cheap
-    # in practice (the queue is drained as sheets land, not per
-    # placement, and total queue size is bounded by total pending
-    # objects).
-    _retry_pending_attachments_for_parent(str(obj_id))
-
-## Append a placement payload to the per-sheet pending queue. Lazy-
-## creates the bucket. ZBBS-HOME-208.
-func _enqueue_pending_placement(sheet_path: String, data: Dictionary) -> void:
-    if not _pending_placements_by_sheet.has(sheet_path):
-        _pending_placements_by_sheet[sheet_path] = []
-    _pending_placements_by_sheet[sheet_path].append(data)
-
-## Catalog signaled that `sheet_path` is now cached. Drain any payloads
-## queued against it. Each replay calls _place_object — placements that
-## are now unblocked render; placements that still depend on an unplaced
-## parent re-queue. ZBBS-HOME-208.
-##
-## Snapshot the bucket and clear it before iterating so a re-queue from
-## inside the loop (parent-still-missing path) lands in a fresh bucket
-## rather than getting drained in the same pass and looping forever.
-func _on_catalog_sheet_loaded(sheet_path: String) -> void:
-    if not _pending_placements_by_sheet.has(sheet_path):
-        return
-    var queued: Array = _pending_placements_by_sheet[sheet_path]
-    _pending_placements_by_sheet.erase(sheet_path)
-    for payload in queued:
-        _place_object(payload)
-
-## Catalog signaled that `sheet_path` failed to download. Drop any
-## payloads queued against it — without the texture they can never
-## render, and dragging them along would block any attachments waiting
-## on those parents. Surface the loss as a warning.
-func _on_catalog_sheet_failed(sheet_path: String) -> void:
-    if not _pending_placements_by_sheet.has(sheet_path):
-        return
-    var queued: Array = _pending_placements_by_sheet[sheet_path]
-    _pending_placements_by_sheet.erase(sheet_path)
-    push_warning("Discarding %d queued placement(s) — sheet failed: %s" % [queued.size(), sheet_path])
-
-## Walk every pending bucket and replay payloads whose attached_to
-## matches the freshly-placed parent_obj_id. Removes replayed entries
-## in place. ZBBS-HOME-208.
-func _retry_pending_attachments_for_parent(parent_obj_id: String) -> void:
-    if parent_obj_id == "":
-        return
-    var to_replay: Array = []
-    for sheet_path in _pending_placements_by_sheet.keys():
-        var bucket: Array = _pending_placements_by_sheet[sheet_path]
-        var keep: Array = []
-        for payload in bucket:
-            var pid = payload.get("attached_to", null)
-            if pid != null and str(pid) == parent_obj_id:
-                to_replay.append(payload)
-            else:
-                keep.append(payload)
-        if keep.is_empty():
-            _pending_placements_by_sheet.erase(sheet_path)
-        else:
-            _pending_placements_by_sheet[sheet_path] = keep
-    for payload in to_replay:
-        _place_object(payload)
 
 ## Create the appropriate sprite node for an asset state.
 ## Returns AnimatedSprite2D for multi-frame states, Sprite2D for static ones.

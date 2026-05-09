@@ -4,22 +4,6 @@ extends Node
 ## Other scripts access it via the global `Catalog` name.
 
 signal catalog_loaded
-# Fired right after /api/assets is parsed, before any spritesheet download
-# completes. Subscribers that only need the asset metadata (object placement,
-# id → asset lookups, slot info) can hook this to start work in parallel
-# with the sheet downloads instead of waiting for the all-or-nothing
-# catalog_loaded gate. Consumers that need actual textures (catalog UI
-# thumbnails) should still subscribe to catalog_loaded.
-signal catalog_metadata_ready
-# Per-sheet readiness so consumers can render an object as soon as its
-# specific sheet lands, without waiting for the whole bundle. Pairs with
-# the placement-queueing pattern in world.gd: _place_object queues by
-# sheet_path when the texture isn't cached yet, drains the queue on
-# this signal.
-signal sheet_loaded(sheet_path: String)
-# Sheet download failed — sister signal so queued placements waiting on
-# this sheet can be discarded with a warning instead of orphaning.
-signal sheet_failed(sheet_path: String)
 signal npc_behaviors_loaded
 signal state_tags_loaded
 signal object_tags_loaded
@@ -112,13 +96,6 @@ func _on_catalog_loaded(result: int, response_code: int, headers: PackedStringAr
 
     _parse_catalog(json)
 
-    # Metadata is fully parsed — fire the metadata-ready signal so consumers
-    # that don't need textures (object placement, slot lookups, asset id
-    # resolution) can start work while sheet downloads are still in flight.
-    # See ZBBS-HOME-208: this unblocks /api/village/objects + the per-object
-    # render path from the all-or-nothing catalog_loaded gate.
-    catalog_metadata_ready.emit()
-
     # Collect all unique sheet paths and download them
     var unique_sheets: Dictionary = {}
     for asset_id in assets:
@@ -158,7 +135,6 @@ func _on_sheet_downloaded(result: int, response_code: int, headers: PackedString
 
     if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
         push_error("Sheet download failed: " + sheet_path + " code=" + str(response_code))
-        sheet_failed.emit(sheet_path)
         _pending_sheets -= 1
         _check_all_sheets_loaded()
         return
@@ -168,17 +144,12 @@ func _on_sheet_downloaded(result: int, response_code: int, headers: PackedString
     var err = image.load_png_from_buffer(body)
     if err != OK:
         push_error("Failed to decode sheet PNG: " + sheet_path)
-        sheet_failed.emit(sheet_path)
         _pending_sheets -= 1
         _check_all_sheets_loaded()
         return
 
     var texture = ImageTexture.create_from_image(image)
     sheet_cache[sheet_path] = texture
-
-    # Per-sheet readiness — drains world.gd's _pending_placements_by_sheet
-    # bucket so any object queued waiting on this sheet renders now.
-    sheet_loaded.emit(sheet_path)
 
     _pending_sheets -= 1
     _check_all_sheets_loaded()
