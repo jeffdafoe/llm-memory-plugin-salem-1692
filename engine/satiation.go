@@ -33,12 +33,15 @@ package main
 // "eaten there" hint so the model knows stew at the tavern can't
 // be carried home — must consume on the spot.
 //
-// Scope: hunger, thirst, and tiredness. Tiredness joined the loop in
-// ZBBS-178 once coca tea (ZBBS-177) became the first consumable
-// tiredness satisfier. The same machinery (own-stock + nearby
-// vendors with matching item_satisfies rows) generalizes cleanly —
-// only the lead phrase, felt-amount tiers, and verb needed
-// per-need branches.
+// Scope: hunger and thirst. Tiredness was in this loop from ZBBS-178
+// (when coca tea became the first consumable tiredness satisfier) up
+// through ZBBS-HOME-205. ZBBS-HOME-206 pulled tiredness out — its
+// primary resolution path is spatial (walk to a rest spot, lie down
+// at home, drink a brew), so a unified spatial list in
+// recovery_options.go reads cleaner than two parallel sections the
+// model has to reconcile. needLeadPhrase / itemFeltAmount still
+// handle the tiredness case — kept around for any future caller —
+// but buildSatiationLines no longer iterates over it.
 
 import (
 	"context"
@@ -91,7 +94,7 @@ func (app *App) buildSatiationLines(ctx context.Context, perceiverID string, per
 		return nil
 	}
 	var blocks []string
-	for _, need := range []string{"hunger", "thirst", "tiredness"} {
+	for _, need := range []string{"hunger", "thirst"} {
 		tier, ok := pressingTiers[need]
 		if !ok {
 			continue
