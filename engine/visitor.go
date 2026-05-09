@@ -35,6 +35,7 @@ import (
     "fmt"
     "log"
     "math/rand"
+    "strings"
     "time"
 )
 
@@ -80,6 +81,13 @@ const (
     // (200 tiles) — enough slack for villages with a setback approach
     // road, tight enough that "from outside" still reads.
     visitorEdgeScanMaxDepth = 30
+
+    // Maximum profile re-rolls when scrubbing visitor surnames against
+    // seated actors. Five tries is enough headroom in practice — the
+    // pool has 15 names and Salem currently has ~5 surnamed villagers,
+    // so any single roll has ~33% odds of collision and 5 independent
+    // tries push the residual collision rate well under 1%.
+    surnameScrubMaxTries = 5
 
     // Perception-radius for the "Visitors here" cue. Within this
     // bounding box of the perceiver, a transient visitor is named
@@ -140,7 +148,23 @@ func (app *App) dispatchVisitorSpawn(ctx context.Context) {
         return
     }
 
-    profile := generateVisitorProfile()
+    // Generate the persona, scrubbing the surname against every seated
+    // actor (NPC + PC, excluding other visitors). If a roll collides,
+    // re-roll up to surnameScrubMaxTries times. After the cap, ship
+    // anyway with a log warning — a duplicate surname is a UX wrinkle,
+    // not a correctness failure.
+    existing := app.loadActorSurnames(ctx)
+    var profile visitorProfile
+    for tries := 0; tries < surnameScrubMaxTries; tries++ {
+        profile = generateVisitorProfile()
+        if !existing[extractSurname(profile.Name)] {
+            break
+        }
+    }
+    if existing[extractSurname(profile.Name)] {
+        log.Printf("visitor-spawn: surname for %q still collides with a seated actor after %d tries; shipping anyway",
+            profile.Name, surnameScrubMaxTries)
+    }
 
     // Sprite is keyed off archetype, not a global setting — different
     // archetypes get visually-distinct sprites. The init() check below
@@ -162,7 +186,7 @@ func (app *App) dispatchVisitorSpawn(ctx context.Context) {
     // Pick the destination first so we can validate the edge spawn
     // tile is path-connected to it. If no destination structure is
     // placed, abort the spawn rather than dropping a stranded visitor.
-    destX, destY, ok := app.pickVisitorDestination(ctx)
+    destStructureID, destX, destY, ok := app.pickVisitorDestination(ctx)
     if !ok {
         log.Printf("visitor-spawn: no destination structure placed; spawn skipped")
         return
@@ -228,8 +252,16 @@ func (app *App) dispatchVisitorSpawn(ctx context.Context) {
     log.Printf("visitor-spawn: %s (id=%s, archetype=%s, origin=%s, disposition=%s, stay=%dm, agent=%s, spawn=(%.0f,%.0f))",
         displayName, visitorID, profile.Archetype, profile.Origin, profile.Disposition, stayMinutes, visitorAgentName, spawnX, spawnY)
 
-    if _, err := app.startNPCWalk(ctx, visitorID, destX, destY, defaultNPCSpeed); err != nil {
-        log.Printf("visitor-spawn: startNPCWalk for %s: %v", displayName, err)
+    // Use startReturnWalk (npc_behaviors.go) instead of bare startNPCWalk
+    // so the walk is wrapped in an npcRoute with EnterOnArrival=true and
+    // markWalkTargetStructure is called for us. Without that wrapping,
+    // applyArrival has no targetStructureID to anchor the loiter-arrival
+    // huddle / cascade logic on, advanceBehavior never flips the visitor
+    // inside, and the visitor sits at the loiter slot indefinitely with
+    // a perception that gives the LLM no useful context to act on.
+    npc := &behaviorNPC{ID: visitorID, CurX: spawnX, CurY: spawnY}
+    if err := app.startReturnWalk(ctx, npc, destX, destY, destStructureID, "visitor-spawn", true); err != nil {
+        log.Printf("visitor-spawn: startReturnWalk for %s: %v", displayName, err)
     }
 }
 
@@ -276,7 +308,7 @@ func (app *App) dispatchVisitorDespawn(ctx context.Context) {
     // Connectivity anchor for the edge-tile picker. If no destination
     // structure is placed, visitors stay put — cleanup will collect
     // them after the grace window.
-    destX, destY, ok := app.pickVisitorDestination(ctx)
+    _, destX, destY, ok := app.pickVisitorDestination(ctx)
     if !ok {
         return
     }
@@ -290,11 +322,18 @@ func (app *App) dispatchVisitorDespawn(ctx context.Context) {
             log.Printf("visitor-despawn: no edge tile available for %s; will be cleaned up after grace", id)
             continue
         }
-        if _, err := app.startNPCWalk(ctx, id, edgeX, edgeY, defaultNPCSpeed); err != nil {
+        // startReturnWalk's setNPCInside(false, "") at the head of the
+        // function gets the visitor out of the tavern (or whatever
+        // structure they entered on arrival) before the walk to the
+        // edge starts. EnterOnArrival=false leaves them outside at the
+        // edge tile when the walk completes — cleanup collects the
+        // row a few minutes later.
+        npc := &behaviorNPC{ID: id}
+        if err := app.startReturnWalk(ctx, npc, edgeX, edgeY, "", "visitor-despawn", false); err != nil {
             // No path is the typical case for a visitor stranded
             // somewhere unreachable. Cleanup will hard-delete past
             // the grace window regardless.
-            log.Printf("visitor-despawn: startNPCWalk %s: %v", id, err)
+            log.Printf("visitor-despawn: startReturnWalk %s: %v", id, err)
         }
     }
 }
@@ -417,19 +456,24 @@ func (app *App) pickVisitorEdgeTile(ctx context.Context, anchorX, anchorY float6
 // gathering point for outsiders); falls back to any tagged structure;
 // returns ok=false if the village has no destinations placed.
 //
+// Returns the structure's id alongside its anchor coords so the caller
+// can pass it to startReturnWalk for arrival-time inside-flip and the
+// loiter-arrival huddle / cascade machinery in applyArrival.
+//
 // Tavern selection mirrors the pc/create lodging lookup pattern in
 // pc_handlers.go — JOIN to village_object_tag with tag='tavern',
 // oldest placement wins.
-func (app *App) pickVisitorDestination(ctx context.Context) (float64, float64, bool) {
+func (app *App) pickVisitorDestination(ctx context.Context) (string, float64, float64, bool) {
+    var id string
     var x, y float64
     err := app.DB.QueryRow(ctx,
-        `SELECT o.x, o.y FROM village_object o
+        `SELECT o.id::text, o.x, o.y FROM village_object o
          JOIN village_object_tag vot ON vot.object_id = o.id AND vot.tag = 'tavern'
          ORDER BY o.created_at ASC
          LIMIT 1`,
-    ).Scan(&x, &y)
+    ).Scan(&id, &x, &y)
     if err == nil {
-        return x, y, true
+        return id, x, y, true
     }
     if err != sql.ErrNoRows {
         log.Printf("visitor-dest: tavern lookup: %v", err)
@@ -439,14 +483,55 @@ func (app *App) pickVisitorDestination(ctx context.Context) (float64, float64, b
     // filters out un-tagged decorative props, which we don't want
     // visitors walking to).
     err = app.DB.QueryRow(ctx,
-        `SELECT o.x, o.y FROM village_object o
+        `SELECT o.id::text, o.x, o.y FROM village_object o
          JOIN village_object_tag vot ON vot.object_id = o.id
          ORDER BY random() LIMIT 1`,
-    ).Scan(&x, &y)
+    ).Scan(&id, &x, &y)
     if err == nil {
-        return x, y, true
+        return id, x, y, true
     }
-    return 0, 0, false
+    return "", 0, 0, false
+}
+
+// loadActorSurnames builds a set of last-token surnames from every
+// non-visitor actor's display_name. Used by dispatchVisitorSpawn to
+// keep new visitors from arriving with a surname that collides with
+// a seated villager (Crane, Thorne, Ward, etc.) or PC. Built fresh
+// each spawn so admin-added NPCs are picked up automatically with no
+// engine restart. Visitors themselves are excluded so two visitors
+// don't collide-check against each other when the second one rolls.
+func (app *App) loadActorSurnames(ctx context.Context) map[string]bool {
+    surnames := map[string]bool{}
+    rows, err := app.DB.Query(ctx,
+        `SELECT display_name FROM actor WHERE visitor_expires_at IS NULL`,
+    )
+    if err != nil {
+        log.Printf("visitor-spawn: loadActorSurnames: %v", err)
+        return surnames
+    }
+    defer rows.Close()
+    for rows.Next() {
+        var name string
+        if err := rows.Scan(&name); err == nil {
+            if surname := extractSurname(name); surname != "" {
+                surnames[surname] = true
+            }
+        }
+    }
+    return surnames
+}
+
+// extractSurname returns the lowercase last whitespace-delimited token
+// of a display_name. "Master Whitcombe" → "whitcombe", "Ezekiel Crane"
+// → "crane". Empty string for empty/whitespace-only names; for single-
+// token names the token itself (treats "Tobias" as both first name and
+// surname for collision purposes — defensive).
+func extractSurname(name string) string {
+    parts := strings.Fields(name)
+    if len(parts) == 0 {
+        return ""
+    }
+    return strings.ToLower(parts[len(parts)-1])
 }
 
 // coLocatedVisitor describes one visitor near a perceiver. The slots
@@ -527,12 +612,21 @@ func generateVisitorProfile() visitorProfile {
 // Period-flavored pools. New England colonial-era names; archetypes a
 // small village would actually receive; fictional/historical next-
 // village strings; short adjectives the model can use to color voice.
+//
+// Names are male-coded only because every available sprite family in
+// visitorArchetypeSprite is male-coded (Merchant, Old Man, Man) — a
+// female-coded name on a male sprite reads as a sprite-asset bug, not
+// a stylistic choice. Female visitor names will return when the sprite
+// library expands. Surnames are also chosen to not match any of Salem's
+// current seated villagers (Crane, Thorne, Ward, Ellis, Smith); the
+// dynamic surname scrub in dispatchVisitorSpawn handles any drift as
+// new villagers are added or this pool grows.
 var visitorNamePool = []string{
-    "Goody Hartwell", "Master Whitcombe", "Brother Ashford",
-    "Goody Pell", "Elias Drum", "Constance Whyte",
-    "Mercy Albright", "Roger Standish", "Goody Marlow",
-    "Tobias Hewes", "Sister Crane", "Master Babbage",
-    "Goodwife Thorne", "Jonas Penhallow", "Hester Vane",
+    "Master Whitcombe", "Brother Ashford", "Elias Drum",
+    "Roger Standish", "Tobias Hewes", "Master Babbage",
+    "Jonas Penhallow", "Jeremiah Soames", "Nathaniel Pratt",
+    "Caleb Wendell", "Obadiah Brewster", "Ephraim Pollard",
+    "Silas Withrow", "Asa Larkin", "Daniel Holcomb",
 }
 
 var visitorArchetypePool = []string{
