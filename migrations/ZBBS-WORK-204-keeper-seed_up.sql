@@ -41,8 +41,8 @@ ON CONFLICT (key) DO NOTHING;
 -- 3. Seed Hannah Boggs as the inn keeper.
 --
 -- Decorative-villager-style actor backed by salem-vendor for
--- transactional behavior. Old Woman A (v00) sprite — older Puritan-
--- coded for an innkeeper role.
+-- transactional behavior. Woman A (v00) sprite — younger Puritan-
+-- coded sheet for the innkeeper role.
 --
 -- The inn structure is identified as the village_object that's tagged
 -- 'lodging' but NOT 'tavern' — ZBBS-180 auto-tags taverns as
@@ -76,7 +76,7 @@ FROM (
     LIMIT 1
 ) inn,
 npc_sprite sp
-WHERE sp.name = 'Old Woman A (v00)';
+WHERE sp.name = 'Woman A (v00)';
 
 -- 4. Seed Hannah's actor_inventory with nights_stay x1.
 --
