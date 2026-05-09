@@ -63,6 +63,16 @@ const _NEED_DISPLAY: Dictionary = {
     "tiredness": ["W", "eariness "],
 }
 const RECOVERY_FLASH_COLOR := Color(1.35, 1.25, 1.05, 1.0)
+# ZBBS-HOME-227: bidirectional pulse amplitude per RGB channel. The
+# pulse oscillates ABOVE white toward warm-flash AND BELOW white
+# toward cool-dim, producing a more eye-catching breathe than the
+# half-only pulse used pre-227. Salem ships without instructions —
+# the recovery pulse is the player's only signal that a need is
+# being satisfied right now (a dwell tick is firing), so the swing
+# needs to be obvious. Roughly doubles the previous amplitude:
+# pre-227 max delta = (+0.35, +0.25, +0.05) one-sided; post-227
+# range is ±(0.70, 0.50, 0.10) symmetric around white.
+const RECOVERY_PULSE_DELTA := Color(0.70, 0.50, 0.10, 0.0)
 
 # ZBBS-HOME-216: pulse window. Each time a need decreases the segment
 # enters a "recovering" state for RECOVERING_WINDOW_MS milliseconds
@@ -574,9 +584,19 @@ func _process(delta: float) -> void:
             continue
         var until_ms: int = _recovering_until.get(key, 0)
         if now_ms < until_ms:
-            # In window — sin wave 0..1, lerp white → flash color.
-            var t: float = sin(seconds * TAU / RECOVERING_PULSE_PERIOD) * 0.5 + 0.5
-            seg.container.modulate = Color(1, 1, 1, 1).lerp(RECOVERY_FLASH_COLOR, t)
+            # In window — bidirectional sin wave -1..1. Positive half
+            # goes warm-bright (white + RECOVERY_PULSE_DELTA), negative
+            # half goes cool-dim (white - RECOVERY_PULSE_DELTA). White
+            # at the zero-crossings produces a clean breathe rather
+            # than a flicker. Doubled amplitude vs pre-227 — the pulse
+            # has to draw the eye for an unguided player.
+            var t: float = sin(seconds * TAU / RECOVERING_PULSE_PERIOD)
+            seg.container.modulate = Color(
+                1.0 + RECOVERY_PULSE_DELTA.r * t,
+                1.0 + RECOVERY_PULSE_DELTA.g * t,
+                1.0 + RECOVERY_PULSE_DELTA.b * t,
+                1.0
+            )
         elif seg.container.modulate != Color(1, 1, 1, 1):
             # Window expired — settle modulate back to white.
             var step: float = delta / RECOVERING_FADE_DURATION
