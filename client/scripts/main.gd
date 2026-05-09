@@ -303,7 +303,10 @@ func _build_ui() -> void:
     # editor sidebar is wider when an NPC is selected (extra controls), so
     # registering the live Control beats hardcoding a width — and any
     # future panel just calls camera.register_ui_panel(self) the same way.
-    camera.register_ui_panel(editor_panel)
+    # participates_in_clamp=true so opening the sidebar relaxes the map
+    # clamp + auto-shifts the camera; without it, the leftmost map column
+    # is permanently hidden behind the panel.
+    camera.register_ui_panel(editor_panel, true)
     editor.editor_panel_ref = editor_panel
 
     # Asset inspect popup — on the config layer (above editor)
