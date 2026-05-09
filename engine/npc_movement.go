@@ -261,12 +261,23 @@ func (app *App) startNPCWalk(ctx context.Context, npcID string, targetX, targetY
 		return nil, fmt.Errorf("no path")
 	}
 
-	worldPath := make([]pathPoint, 0, len(tilePath))
+	worldPath := make([]pathPoint, 0, len(tilePath)+1)
 	for i, t := range tilePath {
 		if i == 0 {
 			continue
 		}
 		worldPath = append(worldPath, tileToWorld(t.X, t.Y))
+	}
+	// Off-grid goal extension (ZBBS-HOME-224). Visitor despawn walks
+	// target a tile a few past the map edge so the actor visibly
+	// exits the village instead of stopping ON the visible boundary.
+	// Pathfinding stays in-grid (findPathToAdjacent above pathed to
+	// the closest in-grid tile); appending the off-grid target as a
+	// synthetic final pathPoint animates the actor past the edge
+	// before applyArrival fires off-grid. Caller-opt-in via passing
+	// off-grid (targetX, targetY); in-grid targets are unaffected.
+	if goalTile.X < 0 || goalTile.X >= mapW || goalTile.Y < 0 || goalTile.Y >= mapH {
+		worldPath = append(worldPath, pathPoint{X: targetX, Y: targetY})
 	}
 	if len(worldPath) == 0 {
 		// Start and goal tile are the same — walk is a no-op. Run the
