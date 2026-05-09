@@ -140,7 +140,13 @@ func load_objects() -> void:
     _objects_loaded = true
     _load_village()
     _load_agents()
-    _load_npcs()
+    # ZBBS-HOME-211: defer NPC fetch until the village fetch returns.
+    # /api/village/npcs has a smaller response than /api/village/objects,
+    # so when fired in parallel NPCs land first and render against an
+    # empty map — the player sees NPCs standing on bare terrain for a
+    # beat before structures land on top of them. Sequencing village
+    # then NPCs guarantees structures paint first. NPC fetch fires
+    # from _on_village_loaded after objects are placed.
 
 ## Tear down all placed objects and NPCs so load_objects can run cleanly again.
 ## Used by the WS reconnect resync path — any events that fired while the
@@ -1260,6 +1266,13 @@ func _on_village_loaded(result: int, response_code: int, headers: PackedStringAr
     # so the curtain can fade once NPCs also finish.
     _village_loaded = true
     _check_world_ready()
+
+    # ZBBS-HOME-211: village objects are on the map; now fire the NPC
+    # fetch. Sequencing this here (instead of from load_objects in
+    # parallel with /api/village/objects) prevents the "NPCs first,
+    # structures over them" race the player saw when the smaller
+    # NPC response landed before the larger village response.
+    _load_npcs()
 
 ## Re-run the stand-offset adjustment for every NPC whose inside flag is
 ## true and whose inside_structure_id now resolves. Safe to call multiple
