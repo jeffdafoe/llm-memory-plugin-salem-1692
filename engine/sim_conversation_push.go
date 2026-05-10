@@ -335,7 +335,11 @@ func (app *App) loadDayEvents(ctx context.Context, actorID string, dayStart, day
 	}
 	defer rows.Close()
 
-	var events []pushEvent
+	// Initialize as empty slice (not nil) so json.Marshal emits "[]" instead
+	// of "null" when the actor has no events for the day. The api endpoint
+	// rejects null with "events must be an array" before reaching the
+	// dream_mode/agent-known short-circuit.
+	events := []pushEvent{}
 	for rows.Next() {
 		var occurredAt time.Time
 		var actionType string
