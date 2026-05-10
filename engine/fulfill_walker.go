@@ -168,28 +168,29 @@ func (app *App) startDeliveryTrip(
 	// Re-validate the order under row lock — between dispatcher SELECT
 	// and trip insert, another tick could have flipped the row to
 	// delivered/canceled, or the seller/buyer/qty could have shifted.
-	// FOR UPDATE blocks any concurrent claim on the same order.
-	var stillPending bool
-	if err := tx.QueryRow(ctx, `
-		SELECT EXISTS (
-		  SELECT 1 FROM pay_ledger
-		   WHERE id = $1
-		     AND seller_id = $2::uuid
-		     AND buyer_id  = $3::uuid
-		     AND item_kind = $4
-		     AND qty       = $5
-		     AND state = 'accepted'
-		     AND fulfillment_status = 'pending'
-		   FOR UPDATE
-		)`,
+	// FOR UPDATE on the row itself blocks any concurrent claim on the
+	// same order until this tx commits or rolls back.
+	var lockedOrderID int64
+	err = tx.QueryRow(ctx, `
+		SELECT id
+		  FROM pay_ledger
+		 WHERE id = $1
+		   AND seller_id = $2::uuid
+		   AND buyer_id  = $3::uuid
+		   AND item_kind = $4
+		   AND qty       = $5
+		   AND state = 'accepted'
+		   AND fulfillment_status = 'pending'
+		 FOR UPDATE`,
 		orderID, sellerID, customerID, itemKind, qty,
-	).Scan(&stillPending); err != nil {
-		log.Printf("fulfill_walker: revalidate order %d: %v", orderID, err)
-		return
-	}
-	if !stillPending {
+	).Scan(&lockedOrderID)
+	if errors.Is(err, pgx.ErrNoRows) {
 		// Order is no longer dispatchable. Skip silently — next tick
 		// will re-evaluate fulfillable sellers.
+		return
+	}
+	if err != nil {
+		log.Printf("fulfill_walker: revalidate order %d: %v", orderID, err)
 		return
 	}
 
@@ -451,17 +452,24 @@ func (app *App) tryDeliverOrder(
 		return false, unitPrice
 	}
 
-	// Flip pay_ledger to delivered. Guarded on fulfillment_status =
-	// 'pending' so a row that flipped underneath us never gets
-	// double-delivered. RowsAffected==1 is the proof we won.
+	// Flip pay_ledger to delivered. We hold FOR UPDATE on the row,
+	// so a concurrent flip can't happen — but re-asserting the full
+	// predicate keeps the write self-guarding (the correctness of
+	// "delivered exactly this row" doesn't have to lean on the lock
+	// continuing to be held by some earlier statement).
 	flip, err := tx.Exec(ctx,
 		`UPDATE pay_ledger
 		    SET fulfillment_status = 'delivered',
 		        delivered_on = NOW(),
 		        offered_amount = $2
 		  WHERE id = $1
+		    AND seller_id = $3::uuid
+		    AND buyer_id  = $4::uuid
+		    AND item_kind = $5
+		    AND qty       = $6
+		    AND state = 'accepted'
 		    AND fulfillment_status = 'pending'`,
-		orderID, totalPrice,
+		orderID, totalPrice, sellerID, customerID, itemKind, qty,
 	)
 	if err != nil {
 		log.Printf("fulfill_walker: flip pay_ledger: %v", err)
