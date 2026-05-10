@@ -1539,6 +1539,14 @@ func _ensure_pay_modal_built() -> void:
     panel_style.content_margin_top = 14
     panel_style.content_margin_bottom = 14
     panel.add_theme_stylebox_override("panel", panel_style)
+    # ZBBS-HOME-238: apply a dark-wood theme to all form controls inside
+    # the modal so the OptionButton / SpinBox / CheckBox / Button defaults
+    # don't render as bright-white islands against the brown panel.
+    # Colors mirror the speech_input + panel palette above so the modal
+    # reads as one piece. Theme propagates to descendant Controls via
+    # Control.theme; OptionButton popup windows are separate so their
+    # popup gets the theme assigned individually below.
+    panel.theme = _build_pay_modal_theme()
     center.add_child(panel)
 
     var vbox := VBoxContainer.new()
@@ -1552,6 +1560,7 @@ func _ensure_pay_modal_built() -> void:
     vbox.add_child(title)
 
     pay_recipient_option = OptionButton.new()
+    pay_recipient_option.get_popup().theme = panel.theme
     vbox.add_child(_label_with("Recipient:", pay_recipient_option))
 
     pay_amount_spin = SpinBox.new()
@@ -1567,6 +1576,7 @@ func _ensure_pay_modal_built() -> void:
     # generic transfer). When the recipient changes, the dropdown is
     # repopulated.
     pay_item_option = OptionButton.new()
+    pay_item_option.get_popup().theme = panel.theme
     vbox.add_child(_label_with("Item:", pay_item_option))
 
     pay_qty_spin = SpinBox.new()
@@ -1602,6 +1612,112 @@ func _ensure_pay_modal_built() -> void:
     pay_confirm_button.text = "Confirm"
     pay_confirm_button.pressed.connect(_on_pay_confirm)
     button_row.add_child(pay_confirm_button)
+
+
+## Build the dark-wood Theme for the pay modal's form controls. Covers
+## OptionButton (and its popup), SpinBox, CheckBox, Button, and Label
+## with consistent colors keyed off the panel + speech_input palette.
+## Keeping it as a single Theme means every control inside the modal
+## inherits the same look without per-instance theme_overrides.
+func _build_pay_modal_theme() -> Theme:
+    var theme := Theme.new()
+    var bg := Color(0.18, 0.13, 0.08, 0.95)
+    var bg_hover := Color(0.24, 0.18, 0.11, 0.97)
+    var bg_pressed := Color(0.14, 0.10, 0.06, 0.98)
+    var bg_disabled := Color(0.16, 0.12, 0.08, 0.6)
+    var border := Color(0.42, 0.32, 0.19, 0.55)
+    var border_focus := Color(0.78, 0.62, 0.34, 0.9)
+    var text_color := Color(0.92, 0.84, 0.70)
+    var text_dim := Color(0.62, 0.54, 0.42)
+    var icon_color := Color(0.85, 0.72, 0.42)
+
+    var make_box := func(fill: Color, stroke: Color) -> StyleBoxFlat:
+        var sb := StyleBoxFlat.new()
+        sb.bg_color = fill
+        sb.border_color = stroke
+        sb.border_width_left = 1
+        sb.border_width_right = 1
+        sb.border_width_top = 1
+        sb.border_width_bottom = 1
+        sb.corner_radius_top_left = 4
+        sb.corner_radius_top_right = 4
+        sb.corner_radius_bottom_left = 4
+        sb.corner_radius_bottom_right = 4
+        sb.content_margin_left = 8
+        sb.content_margin_right = 8
+        sb.content_margin_top = 4
+        sb.content_margin_bottom = 4
+        return sb
+
+    var sb_normal: StyleBoxFlat = make_box.call(bg, border)
+    var sb_hover: StyleBoxFlat = make_box.call(bg_hover, border)
+    var sb_pressed: StyleBoxFlat = make_box.call(bg_pressed, border_focus)
+    var sb_disabled: StyleBoxFlat = make_box.call(bg_disabled, border)
+    var sb_focus: StyleBoxFlat = make_box.call(bg, border_focus)
+
+    # Button (Cancel / Confirm) and OptionButton (which shares Button's
+    # state styleboxes) and CheckBox (which falls back to Button colors
+    # for its label).
+    for cls in ["Button", "OptionButton"]:
+        theme.set_stylebox("normal", cls, sb_normal)
+        theme.set_stylebox("hover", cls, sb_hover)
+        theme.set_stylebox("pressed", cls, sb_pressed)
+        theme.set_stylebox("disabled", cls, sb_disabled)
+        theme.set_stylebox("focus", cls, sb_focus)
+        theme.set_color("font_color", cls, text_color)
+        theme.set_color("font_hover_color", cls, text_color)
+        theme.set_color("font_pressed_color", cls, text_color)
+        theme.set_color("font_disabled_color", cls, text_dim)
+        theme.set_color("font_focus_color", cls, text_color)
+        theme.set_color("icon_normal_color", cls, icon_color)
+
+    # CheckBox: button text color inherits via "Button" fallback in theme,
+    # but the check-icon tint needs to land on the CheckBox class
+    # explicitly so the indicator is legible against the dark fill.
+    theme.set_color("font_color", "CheckBox", text_color)
+    theme.set_color("font_hover_color", "CheckBox", text_color)
+    theme.set_color("font_pressed_color", "CheckBox", text_color)
+    theme.set_color("icon_normal_color", "CheckBox", icon_color)
+    theme.set_color("icon_hover_color", "CheckBox", icon_color)
+    theme.set_color("icon_pressed_color", "CheckBox", icon_color)
+
+    # SpinBox: in Godot 4 the inner LineEdit and the up/down arrows take
+    # their styles from LineEdit theme entries. The arrow icon tint comes
+    # from SpinBox itself.
+    theme.set_stylebox("normal", "LineEdit", sb_normal)
+    theme.set_stylebox("focus", "LineEdit", sb_focus)
+    theme.set_stylebox("read_only", "LineEdit", sb_disabled)
+    theme.set_color("font_color", "LineEdit", text_color)
+    theme.set_color("font_uneditable_color", "LineEdit", text_dim)
+    theme.set_color("font_placeholder_color", "LineEdit", text_dim)
+    theme.set_color("caret_color", "LineEdit", text_color)
+    theme.set_color("selection_color", "LineEdit", Color(0.55, 0.42, 0.25, 0.55))
+    theme.set_color("up_icon_modulate", "SpinBox", icon_color)
+    theme.set_color("down_icon_modulate", "SpinBox", icon_color)
+
+    # PopupMenu (the OptionButton dropdown). Uses its own panel + item
+    # styleboxes; assign the themed boxes so the open dropdown reads as
+    # one piece with the modal instead of a bright-white island.
+    var popup_panel: StyleBoxFlat = make_box.call(Color(0.13, 0.10, 0.07, 0.99), border_focus)
+    popup_panel.content_margin_left = 4
+    popup_panel.content_margin_right = 4
+    popup_panel.content_margin_top = 4
+    popup_panel.content_margin_bottom = 4
+    var popup_hover: StyleBoxFlat = make_box.call(bg_hover, border)
+    popup_hover.content_margin_top = 2
+    popup_hover.content_margin_bottom = 2
+    theme.set_stylebox("panel", "PopupMenu", popup_panel)
+    theme.set_stylebox("hover", "PopupMenu", popup_hover)
+    theme.set_color("font_color", "PopupMenu", text_color)
+    theme.set_color("font_hover_color", "PopupMenu", text_color)
+    theme.set_color("font_disabled_color", "PopupMenu", text_dim)
+    theme.set_color("font_separator_color", "PopupMenu", text_dim)
+
+    # Label: the field labels in _label_with already set their own font
+    # color, but plain Labels (e.g. the "Take it home" text body) fall
+    # through to the theme. Keep them readable.
+    theme.set_color("font_color", "Label", text_color)
+    return theme
 
 
 ## Helper: a horizontal row with a small label + the input control.
