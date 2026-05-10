@@ -71,4 +71,21 @@ WHERE a.display_name = 'Moses James'
 ON CONFLICT (actor_id, item_kind) DO UPDATE
     SET quantity = GREATEST(actor_inventory.quantity, EXCLUDED.quantity);
 
+-- 5. Lock all private residences to entry_policy='owner'. Today
+--    almost every residence is set to 'anyone', meaning ANY actor
+--    can walk in. That's how Elizabeth + Moses literally walked
+--    into Josiah's house when their LLM got hungry and picked
+--    Thorne Residence as a target.
+--
+--    entry_policy='owner' is enforced via home_structure_id /
+--    work_structure_id match (agent_tick.go::isAgentMoveOwner),
+--    so residents continue to enter their own homes.
+--    Non-residents stand at the loiter slot at the door instead.
+--
+--    Ward Residence is already set correctly (kept as-is).
+UPDATE village_object
+   SET entry_policy = 'owner'
+ WHERE display_name LIKE '%Residence%'
+   AND entry_policy = 'anyone';
+
 COMMIT;
