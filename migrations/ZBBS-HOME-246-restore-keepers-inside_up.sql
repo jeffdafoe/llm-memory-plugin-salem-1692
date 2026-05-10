@@ -9,11 +9,12 @@
 -- inbound arrivals. This migration backfills the current state for
 -- any keeper who's already stuck outside.
 --
--- Filter: actor with work_structure_id set, currently inside=false
--- and NULL inside_structure_id, AND physically within ~5 tiles of
--- their work_structure anchor + loiter offset. Conservative — only
--- restores when they're clearly meant to be there. Doesn't disturb
--- actors who legitimately walked elsewhere.
+-- Filter: actor with work_structure_id set, currently NULL
+-- inside_structure_id, AND physically within their work_structure
+-- asset's footprint (footprint_left/right/top/bottom in tiles ×
+-- 32px). Footprint-based avoids the bad case where the actor is at
+-- the visitor loiter slot OUTSIDE the building — flipping the flag
+-- there would render them inside while visually outside.
 
 BEGIN;
 
@@ -21,13 +22,11 @@ UPDATE actor a
    SET inside_structure_id = a.work_structure_id,
        inside = TRUE
   FROM village_object vo
+  JOIN asset s ON s.id = vo.asset_id
  WHERE a.work_structure_id IS NOT NULL
    AND a.inside_structure_id IS NULL
    AND vo.id = a.work_structure_id
-   AND ((a.current_x - (vo.x + COALESCE(vo.loiter_offset_x, 0) * 32))
-      * (a.current_x - (vo.x + COALESCE(vo.loiter_offset_x, 0) * 32))
-      + (a.current_y - (vo.y + COALESCE(vo.loiter_offset_y, 0) * 32))
-      * (a.current_y - (vo.y + COALESCE(vo.loiter_offset_y, 0) * 32))) < 25600;
--- 25600 = 160px = 5 tiles squared.
+   AND a.current_x BETWEEN vo.x - s.footprint_left * 32 AND vo.x + s.footprint_right * 32
+   AND a.current_y BETWEEN vo.y - s.footprint_top  * 32 AND vo.y + s.footprint_bottom * 32;
 
 COMMIT;
