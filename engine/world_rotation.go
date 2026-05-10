@@ -72,18 +72,18 @@ func (app *App) applyRotation(ctx context.Context) (int, error) {
 	}
 	app.scheduleFlips(flips)
 
-	// Dispatch per-object NPC routes for legacy-scheduled domains we
-	// excluded above. Custom-scheduled NPCs are left alone so their
-	// per-NPC scheduler is the sole trigger.
+	// Dispatch per-object NPC routes for washerwoman / town_crier.
+	// (ZBBS-HOME-251 removed the per-NPC scheduled rotation pattern;
+	// these behaviors fire exclusively from world_rotation_time now.)
 	var washerStops, crierStops int
-	if hasWasherwoman && !washerwoman.HasCustomSchedule {
+	if hasWasherwoman {
 		n, err := app.startRotationRouteForNPC(ctx, washerwoman, tagLaundry, "washerwoman")
 		if err != nil {
 			log.Printf("world_rotation: washerwoman route failed: %v", err)
 		}
 		washerStops = n
 	}
-	if hasCrier && !crier.HasCustomSchedule {
+	if hasCrier {
 		n, err := app.startRotationRouteForNPC(ctx, crier, tagNoticeBoard, "town_crier")
 		if err != nil {
 			log.Printf("world_rotation: town_crier route failed: %v", err)

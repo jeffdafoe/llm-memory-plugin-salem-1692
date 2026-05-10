@@ -497,17 +497,6 @@ func apply_npc_schedule_change(data: Dictionary) -> void:
     else:
         container.set_meta("schedule_start_minute", int(start_min))
         container.set_meta("schedule_end_minute", int(end_min))
-    var interval = data.get("schedule_interval_hours", null)
-    var start_h = data.get("active_start_hour", null)
-    var end_h = data.get("active_end_hour", null)
-    if interval == null or start_h == null or end_h == null:
-        container.remove_meta("schedule_interval_hours")
-        container.remove_meta("active_start_hour")
-        container.remove_meta("active_end_hour")
-    else:
-        container.set_meta("schedule_interval_hours", int(interval))
-        container.set_meta("active_start_hour", int(start_h))
-        container.set_meta("active_end_hour", int(end_h))
     npc_metadata_changed.emit(npc_id)
 
 func _apply_npc_structure_meta(data: Dictionary, field: String) -> void:
@@ -660,16 +649,6 @@ func _render_npc(npc: Dictionary) -> void:
     if _sched_start != null and _sched_end != null:
         container.set_meta("schedule_start_minute", int(_sched_start))
         container.set_meta("schedule_end_minute", int(_sched_end))
-    # interval/start/end are optional (all-or-none). Only set meta when the
-    # server actually sent values so the editor panel can distinguish
-    # "null cadence" from 0-valued cadence.
-    var _interval = npc.get("schedule_interval_hours", null)
-    var _start_h = npc.get("active_start_hour", null)
-    var _end_h = npc.get("active_end_hour", null)
-    if _interval != null and _start_h != null and _end_h != null:
-        container.set_meta("schedule_interval_hours", int(_interval))
-        container.set_meta("active_start_hour", int(_start_h))
-        container.set_meta("active_end_hour", int(_end_h))
     # Social-hour overlay (ZBBS-068, minute-precision since ZBBS-071) —
     # carry only when all three are set.
     var _social_tag = npc.get("social_tag", null)
@@ -1739,10 +1718,11 @@ func set_npc_work_structure(container: Node2D, structure_id: String) -> void:
 
 ## Update the NPC's schedule in one atomic PATCH. start_min/end_min are
 ## sent as null when -1 (worker inherits dawn/dusk); otherwise as
-## integers. interval/start/end are likewise null when -1 (cadence
-## disabled). The server's all-or-none CHECKs guarantee consistent state.
-## lateness is the per-NPC lateness_window_minutes (ZBBS-067).
-func set_npc_schedule(container: Node2D, start_min: int, end_min: int, interval: int, start_h: int, end_h: int, lateness: int) -> void:
+## integers. lateness is the per-NPC lateness_window_minutes (ZBBS-067).
+##
+## ZBBS-HOME-251 dropped the legacy interval/start_h/end_h trio. Calls
+## that still pass them at compile sites must be updated.
+func set_npc_schedule(container: Node2D, start_min: int, end_min: int, lateness: int) -> void:
     var npc_id = container.get_meta("npc_id", null)
     if npc_id == null:
         return
@@ -1755,14 +1735,6 @@ func set_npc_schedule(container: Node2D, start_min: int, end_min: int, interval:
     else:
         payload["schedule_start_minute"] = null
         payload["schedule_end_minute"] = null
-    if interval >= 0:
-        payload["schedule_interval_hours"] = interval
-        payload["active_start_hour"] = start_h
-        payload["active_end_hour"] = end_h
-    else:
-        payload["schedule_interval_hours"] = null
-        payload["active_start_hour"] = null
-        payload["active_end_hour"] = null
     container.set_meta("lateness_window_minutes", lateness)
     if start_min >= 0 and end_min >= 0:
         container.set_meta("schedule_start_minute", start_min)
@@ -1770,14 +1742,6 @@ func set_npc_schedule(container: Node2D, start_min: int, end_min: int, interval:
     else:
         container.remove_meta("schedule_start_minute")
         container.remove_meta("schedule_end_minute")
-    if interval >= 0:
-        container.set_meta("schedule_interval_hours", interval)
-        container.set_meta("active_start_hour", start_h)
-        container.set_meta("active_end_hour", end_h)
-    else:
-        container.remove_meta("schedule_interval_hours")
-        container.remove_meta("active_start_hour")
-        container.remove_meta("active_end_hour")
     _patch_npc(npc_id, "schedule", payload)
 
 ## Update the NPC's social-hour overlay (ZBBS-068, minute-precision since

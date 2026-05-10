@@ -15,8 +15,8 @@ package main
 //      restock policy. JSONB filter at the SQL layer; usually
 //      single-digit row count.
 //   3. For each such actor, in its own tx:
-//        a. Lock the actor row (work_structure_id, inside_structure_id,
-//           active_start_hour, active_end_hour). Skip if not gated in.
+//        a. Lock the actor row (work_structure_id, inside_structure_id).
+//           Skip if not at work.
 //        b. For each produce entry:
 //             - Look up the recipe (skip silently if missing).
 //             - Lock or insert the matching actor_produce_state row.
@@ -32,15 +32,11 @@ package main
 //        c. Commit.
 //
 // Gating: produce only fires while the actor is inside their
-// work_structure_id during their declared active hours. Both must
-// match. Actors with NULL active hours are treated as always-active
-// so freshly-configured roles aren't silently suppressed by missing
-// metadata.
-//
-// World time vs wall-clock: Salem's active_start_hour /
-// active_end_hour are stored as integer hours of the day. We compare
-// against the local wall-clock hour at tick time, matching the
-// existing scheduler (npc_scheduler.go) which does the same.
+// work_structure_id. (ZBBS-HOME-251 dropped the active-hours hour
+// gate — the npc_scheduler walks workers home at end-of-shift, so
+// "inside work structure" is now a sufficient proxy for "on shift."
+// Sleeping actors have inside_structure_id set but produce_tick
+// continues to skip them through the per-need ticker's sleep gate.)
 
 import (
 	"context"
@@ -113,15 +109,12 @@ func (app *App) runProduceTickForActor(
 	var (
 		insideStructureID *string
 		workStructureID   *string
-		activeStartHour   sql.NullInt32
-		activeEndHour     sql.NullInt32
 	)
 	err = tx.QueryRow(ctx,
-		`SELECT inside_structure_id::text, work_structure_id::text,
-		        active_start_hour, active_end_hour
+		`SELECT inside_structure_id::text, work_structure_id::text
 		   FROM actor WHERE id = $1::uuid FOR UPDATE`,
 		actorID,
-	).Scan(&insideStructureID, &workStructureID, &activeStartHour, &activeEndHour)
+	).Scan(&insideStructureID, &workStructureID)
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			log.Printf("produce_tick: lock actor %s: %v", actorID, err)
@@ -129,7 +122,7 @@ func (app *App) runProduceTickForActor(
 		return
 	}
 
-	if !produceTickGate(insideStructureID, workStructureID, activeStartHour, activeEndHour, now) {
+	if !produceTickGate(insideStructureID, workStructureID) {
 		return
 	}
 
@@ -152,31 +145,17 @@ func (app *App) runProduceTickForActor(
 }
 
 // produceTickGate is the gate test: actor must be inside their
-// work_structure during their active hour window.
-//
-// Active-hours window can wrap midnight (e.g. start=22, end=6).
-// NULL active_*_hour means always-active for that bound.
-func produceTickGate(insideStructureID, workStructureID *string,
-	activeStart, activeEnd sql.NullInt32, now time.Time,
-) bool {
+// work_structure. The npc_scheduler walks them home at end-of-shift,
+// so "inside their work_structure_id" is now the truth of "currently
+// on shift."
+func produceTickGate(insideStructureID, workStructureID *string) bool {
 	if workStructureID == nil || *workStructureID == "" {
 		return false
 	}
 	if insideStructureID == nil || *insideStructureID != *workStructureID {
 		return false
 	}
-	if !activeStart.Valid || !activeEnd.Valid {
-		// No window configured — always active.
-		return true
-	}
-	hour := int32(now.Hour())
-	start := activeStart.Int32
-	end := activeEnd.Int32
-	if start <= end {
-		return hour >= start && hour < end
-	}
-	// Wrapped window (e.g. 22 → 6).
-	return hour >= start || hour < end
+	return true
 }
 
 // applyProduceEntry is the per-entry logic: lock or insert the
