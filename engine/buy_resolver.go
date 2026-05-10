@@ -116,7 +116,7 @@ func (app *App) resolveBuyCandidate(
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return BuyResolverDecision{}, fmt.Errorf("load inventory: %w", err)
 	}
-	if entry.Target > 0 && currentQty >= entry.Target {
+	if cap := entry.Cap(); cap > 0 && currentQty >= cap {
 		return BuyResolverDecision{Reason: "above-target"}, nil
 	}
 
