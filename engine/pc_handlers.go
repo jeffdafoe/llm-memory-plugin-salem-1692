@@ -1201,6 +1201,18 @@ func (app *App) handlePCMove(w http.ResponseWriter, r *http.Request) {
 	// Raw-coord mode (clicking on open ground): walk to the tile, no
 	// arrival inside-flip. startNPCWalk surfaces typed-string errors
 	// that the HTTP layer translates to user-readable codes.
+	//
+	// Clear any prior route the PC might still have from a superseded
+	// structure-click. Without this, walk #2 (raw-coord click)'s
+	// arrival fires advanceBehavior, which reads the stale route from
+	// walk #1 (structure-click) and flips inside_structure_id to that
+	// structure even though the PC is standing somewhere else. Symptom
+	// observed: PC clicked Tavern, then re-clicked the Well 33s later;
+	// the well-arrival cascade ran a tavern enter_huddle and the
+	// tavernkeeper greeted the PC at the well. The route belongs to
+	// the walk it was installed for; cancelling that walk should
+	// dissolve the route too.
+	app.clearBehavior(actorID)
 	result, err := app.startNPCWalk(r.Context(), actorID, req.TargetX, req.TargetY, speed)
 	if err != nil {
 		if err.Error() == "npc not found" {

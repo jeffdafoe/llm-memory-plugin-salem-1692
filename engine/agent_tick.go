@@ -765,7 +765,7 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, 
 	// rather than aborting the whole tick.
 	row := app.DB.QueryRow(ctx,
 		`SELECT n.id, n.display_name, n.llm_memory_agent,
-		        n.role,
+		        COALESCE(n.role, ''),
 		        n.inside_structure_id, n.current_x, n.current_y,
 		        n.home_structure_id, n.work_structure_id,
 		        n.last_agent_tick_at,
@@ -1521,7 +1521,14 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 	}
 
 	// 1. Identity recap. Collapse home/work when same placement.
-	identityLines := []string{fmt.Sprintf("You are %s the %s.", r.DisplayName, r.Role)}
+	// r.Role is COALESCE'd from a nullable column; render the role-less
+	// form ("You are Hannah.") rather than "You are Hannah the ." when
+	// the seed didn't set one.
+	identitySelf := fmt.Sprintf("You are %s.", r.DisplayName)
+	if r.Role != "" {
+		identitySelf = fmt.Sprintf("You are %s the %s.", r.DisplayName, r.Role)
+	}
+	identityLines := []string{identitySelf}
 	if homeIsWork && homeLabel != "" {
 		identityLines = append(identityLines, fmt.Sprintf("Your home and work: %s.", homeLabel))
 	} else {
