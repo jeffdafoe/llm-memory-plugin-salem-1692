@@ -17,8 +17,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -209,6 +211,20 @@ func (c *npcChatClient) sendChat(ctx context.Context, npcAgentName, message stri
 //
 // The API treats persist_only + tool_call_results as a pure persistence
 // op: insert N tool-result rows, broadcast, return. No VA dispatch.
+//
+// Retry: a transient failure here leaves a dangling tool_use in conversation
+// history that breaks every subsequent call reading the same window
+// (Anthropic 400 "tool_use without tool_result"). Three attempts with
+// exponential backoff cover network drops and brief 5xx blips. Caller
+// (runAgentTick) still logs on final failure; with bug 2's scene scoping
+// for shared-VA actors a residual dangle is contained to the failed scene,
+// but persistent-VA NPCs (zbbs-*) load full agent-wide history and would
+// see persistent corruption — the retry is the primary defense for them.
+//
+// Idempotency note: the unique edge case is "5xx received after the
+// transaction committed" — retry would create a duplicate row with the
+// same tool_call_id. Probability is ~the same as 5xx-post-commit itself
+// (rare); accepted for now in lieu of a unique-index migration.
 func (c *npcChatClient) persistToolResults(ctx context.Context, npcAgentName string, toolResults []toolResult, sceneID, sceneStructure string) error {
 	if len(toolResults) == 0 {
 		return nil
@@ -225,6 +241,39 @@ func (c *npcChatClient) persistToolResults(ctx context.Context, npcAgentName str
 		return fmt.Errorf("marshal persist request: %w", err)
 	}
 
+	backoffs := []time.Duration{0, 200 * time.Millisecond, 600 * time.Millisecond}
+	var lastErr error
+	for attempt, delay := range backoffs {
+		if delay > 0 {
+			select {
+			case <-time.After(delay):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		err := c.doPersistToolResults(ctx, body)
+		if err == nil {
+			if attempt > 0 {
+				log.Printf("persistToolResults: succeeded on retry %d", attempt)
+			}
+			return nil
+		}
+		lastErr = err
+		// 4xx (except 429) won't change on retry — bail out. errors.As
+		// (rather than type assertion) so a future wrapper around
+		// doPersistToolResults' return doesn't accidentally widen the
+		// retry window to genuinely permanent failures.
+		var ce *chatError
+		if errors.As(err, &ce) && ce.Status >= 400 && ce.Status < 500 && ce.Status != 429 {
+			return err
+		}
+	}
+	return fmt.Errorf("persist failed after %d attempts: %w", len(backoffs), lastErr)
+}
+
+// doPersistToolResults issues a single POST attempt. Body is pre-marshalled
+// so retries don't re-serialize.
+func (c *npcChatClient) doPersistToolResults(ctx context.Context, body []byte) error {
 	httpReq, err := http.NewRequestWithContext(ctx, "POST",
 		strings.TrimRight(c.baseURL, "/")+"/v1/chat/send", bytes.NewReader(body))
 	if err != nil {
