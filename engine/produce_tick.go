@@ -53,7 +53,16 @@ import (
 )
 
 func (app *App) dispatchProduceTick(ctx context.Context) {
-	now := time.Now().UTC()
+	// Active hours on actor are stored in world-timezone hours
+	// (America/New_York), not UTC. Use loadWorldConfig + time.Now().In(loc)
+	// so produceTickGate compares apples to apples. Same pattern as
+	// npc_scheduler.go::dispatchScheduledBehaviors.
+	cfg, err := app.loadWorldConfig(ctx)
+	if err != nil {
+		log.Printf("produce_tick: load world config: %v", err)
+		return
+	}
+	now := time.Now().In(cfg.Location)
 
 	recipes, err := app.loadAllRecipes(ctx)
 	if err != nil {
