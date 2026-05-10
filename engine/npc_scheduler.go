@@ -473,7 +473,7 @@ func (app *App) loadRotationRows(ctx context.Context) ([]rotationRow, error) {
 		SELECT n.id::text,
 		       aa.slug,
 		       CASE
-		         WHEN ad.behaviors->0->'params'->>'interval_hours' ~ '^[0-9]+$'
+		         WHEN ad.behaviors->0->'params'->>'interval_hours' ~ '^[0-9]{1,3}$'
 		         THEN (ad.behaviors->0->'params'->>'interval_hours')::int
 		         ELSE 0
 		       END,
