@@ -80,6 +80,13 @@ func (app *App) runServerTickOnce(ctx context.Context) {
 	// Cheap when no actor is behind: single SELECT for recipes, single
 	// JSONB filter for actors-with-policies, then per-actor evaluation.
 	app.dispatchProduceTick(ctx)
+	// Buy walker (ZBBS-HOME-244) — dispatches restock trips for actors
+	// with `buy` restock entries. One trip per actor per tick. The
+	// arrival hook in applyArrivalSideEffects completes the trip
+	// (transfer + return walk + cleanup). Cheap when no actor needs
+	// to shop: single JSONB filter + skip-on-trip-in-progress check
+	// per candidate.
+	app.dispatchBuyWalker(ctx)
 	// Dwell tick (ZBBS-172) — applies per-tick recovery to actors still
 	// present at a credited object/structure. Drives the rest-tree, well-
 	// linger, and meal-at-tavern mechanics from a single handler. Cheap
