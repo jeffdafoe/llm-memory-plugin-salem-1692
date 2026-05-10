@@ -92,6 +92,10 @@ var _pc_exists: bool = false
 var _pc_actor_id: String = ""
 var _pc_http_me: HTTPRequest = null
 var _pc_http_save: HTTPRequest = null
+# Set after the camera tweens to the PC's spawn position the first time
+# /pc/me reports a placed PC. _ready hardcodes the camera at the village
+# crossroads as a pre-PC default; subsequent /pc/me polls don't re-center.
+var _pc_initial_camera_centered: bool = false
 
 # Walk-then-read state (ZBBS-112). Click on a noticeboard sets this to
 # the placement id; on PC arrival we open the notice panel if the id
@@ -951,6 +955,13 @@ func _on_pc_me_completed(result: int, code: int, _headers: PackedStringArray, bo
     # the player's PC arriving." Engine populates it once the PC actor row
     # exists; empty before /pc/create completes.
     _pc_actor_id = str(data.get("actor_id", ""))
+    # Slide camera to the PC's actual position on the first /pc/me that
+    # reports a placed PC. Login default is the village crossroads, so
+    # without this the player has to find their own PC on the map after
+    # logging in. center_on tweens 0.3s — feels intentional, not jarring.
+    if _pc_exists and not _pc_initial_camera_centered:
+        camera.center_on(Vector2(float(data.get("x", 0.0)), float(data.get("y", 0.0))))
+        _pc_initial_camera_centered = true
     var current_sprite_id := str(data.get("sprite_id", ""))
     if current_sprite_id != "":
         # PC already has a sprite — nothing to bootstrap. They'll see
