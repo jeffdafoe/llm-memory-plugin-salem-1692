@@ -319,17 +319,34 @@ func (app *App) handlePCMe(w http.ResponseWriter, r *http.Request) {
 	if huddleID.Valid {
 		s := huddleID.String
 		resp.CurrentHuddleID = &s
-		// Co-located actors in the same huddle. Single-table query after
-		// ZBBS-084 — kind is implicit in which login column is populated.
-		// PC excludes self via login_username.
+		// Co-located actors in the same huddle, scoped to the PC's
+		// subspace. After PC knock at an owner-policy or closed structure,
+		// the engine syncs every inside-the-structure actor into the same
+		// huddle (pc_handlers.go:1115) so the talk panel has somebody to
+		// address. The unified huddle then mixes indoor and outdoor
+		// members — John inside the Tavern and Caleb at the loiter ring
+		// share huddle 9858289d. Without the inside-match filter the talk
+		// panel would list Caleb "in the Tavern" alongside John, and the
+		// pay-modal recipient dropdown would default to him alphabetically
+		// (defeating WORK-210's auto-prefill from the actual vendor's
+		// scene_quote).
+		//
+		// COALESCE(...,'') normalizes NULL inside_structure_id to '' on
+		// both sides so an outdoor PC matches outdoor members and an
+		// indoor PC at structure X matches members inside X.
+		var pcInsideID string
+		if insideID.Valid {
+			pcInsideID = insideID.String
+		}
 		rows, err := app.DB.Query(r.Context(),
 			`SELECT CASE WHEN login_username IS NOT NULL THEN 'pc' ELSE 'npc' END AS kind,
 			        display_name, role, llm_memory_agent
 			   FROM actor
 			  WHERE current_huddle_id::text = $1
 			    AND (login_username IS NULL OR login_username != $2)
+			    AND COALESCE(inside_structure_id::text, '') = $3
 			  ORDER BY display_name`,
-			huddleID.String, user.Username)
+			huddleID.String, user.Username, pcInsideID)
 		if err == nil {
 			defer rows.Close()
 			for rows.Next() {
