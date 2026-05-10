@@ -148,13 +148,6 @@ type agentNPCRow struct {
 	VisitorArchetype   sql.NullString
 	VisitorOrigin      sql.NullString
 	VisitorDisposition sql.NullString
-	// Per-vendor narrative flavor (ZBBS-WORK-204). Populated for
-	// salem-vendor-backed keepers (innkeeper Hannah, future
-	// shopkeepers); NULL on every other actor. Engine appends the
-	// trimmed string as a trailing paragraph on the keeper rooms-
-	// available block so each vendor's tone diverges without per-
-	// keeper VA prompt work. See actor.vendor_flavor column.
-	VendorFlavor sql.NullString
 }
 
 // runAgentTick is the harness loop for one NPC. Stamps last_agent_tick_at
@@ -788,8 +781,7 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, 
 		        COALESCE((SELECT value FROM actor_need WHERE actor_id = n.id AND key = 'tiredness'), 0)::smallint,
 		        n.break_until,
 		        n.sleeping_until,
-		        n.visitor_archetype, n.visitor_origin, n.visitor_disposition,
-		        n.vendor_flavor
+		        n.visitor_archetype, n.visitor_origin, n.visitor_disposition
 		 FROM actor n
 		 LEFT JOIN village_object wo ON wo.id = n.work_structure_id
 		 LEFT JOIN asset wa ON wa.id = wo.asset_id
@@ -807,8 +799,7 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, 
 		&r.WorkLabel, &r.HomeLabel,
 		&r.Coins, &r.Hunger, &r.Thirst, &r.Tiredness,
 		&r.BreakUntil, &r.SleepingUntil,
-		&r.VisitorArchetype, &r.VisitorOrigin, &r.VisitorDisposition,
-		&r.VendorFlavor); err != nil {
+		&r.VisitorArchetype, &r.VisitorOrigin, &r.VisitorDisposition); err != nil {
 		if err != sql.ErrNoRows {
 			log.Printf("event-tick %s (%s): load row: %v", npcID, reason, err)
 		}
@@ -2006,16 +1997,11 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 		if avail, total, err := app.roomsAvailableAtStructure(ctx, r.WorkStructureID.String); err != nil {
 			log.Printf("perception roomsAvailableAtStructure %s: %v", r.DisplayName, err)
 		} else if total > 0 {
-			weeklyRate := app.loadIntSetting(ctx, "lodging_default_weekly_rate", 28)
 			label := ""
 			if r.WorkLabel.Valid {
 				label = r.WorkLabel.String
 			}
-			flavor := ""
-			if r.VendorFlavor.Valid {
-				flavor = r.VendorFlavor.String
-			}
-			if block := formatKeeperVendorPerception(avail, total, weeklyRate, label, flavor, r.LLMMemoryAgent); block != "" {
+			if block := formatKeeperRoomsAvailable(avail, total, label); block != "" {
 				sections = append(sections, block)
 			}
 		}

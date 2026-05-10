@@ -516,23 +516,22 @@ func (app *App) roomsAvailableAtStructure(ctx context.Context, structureID strin
 	return available, total, nil
 }
 
-// formatKeeperVendorPerception renders the rooms-available block
-// (and, for salem-vendor-backed keepers, the standing rate +
-// vendor flavor paragraphs) that anchor the keeper's per-tick role
-// context. structureLabel matches the work-structure label already
-// shown in identity-recap so the lines read consistently.
+// formatKeeperRoomsAvailable renders the rooms-available block — the
+// universal "X of N rooms" occupancy line for any keeper of an inn-
+// shaped structure. structureLabel matches the work-structure label
+// already shown in identity-recap so the lines read consistently.
 //
-// Salem-vendor keepers (Hannah Boggs and any future shopkeepers
-// using the shared VA) get the full block — their generic startup
-// prompt doesn't carry per-keeper pricing wisdom, so the engine
-// injects a rate anchor and a flavor paragraph each tick. Bespoke
-// role-overlay keepers (John Ellis the tavernkeeper, who has his
-// own pricing-flexibility instructions) only see the occupancy
-// line; their pricing logic stays in their attribute_definition.
+// Used to also inject vendor-economic guidance and per-actor flavor
+// for salem-vendor-backed keepers, but those moved out in WORK-217:
+// vendor-economic + standing-rate guidance now lives on the
+// `innkeeper` attribute_definition (per-tick role injection from
+// agent_tools.go::loadInstructionsForActor); per-actor character
+// lives on actor_narrative_state.seed_text. This helper is back to
+// just lodging mechanics.
 //
 // Empty when the actor has no private rooms (not a keeper of an
 // inn-shaped structure) — caller suppresses the section.
-func formatKeeperVendorPerception(available, total, weeklyRate int, structureLabel, vendorFlavor, llmMemoryAgent string) string {
+func formatKeeperRoomsAvailable(available, total int, structureLabel string) string {
 	if total <= 0 {
 		return ""
 	}
@@ -541,23 +540,10 @@ func formatKeeperVendorPerception(available, total, weeklyRate int, structureLab
 	if structureLabel != "" {
 		subject = structureLabel
 	}
-	roomsLine := fmt.Sprintf(
+	return fmt.Sprintf(
 		"%s has %d bedroom%s; %d occupied tonight, %d available.",
 		subject, total, pluralS(total), occupied, available,
 	)
-	if llmMemoryAgent != "salem-vendor" {
-		return roomsLine
-	}
-	perNight := weeklyRate / 7
-	rateLine := fmt.Sprintf(
-		"Your standing rate is around %d coins per week (%d per night), haggle-able based on occupancy and the customer.",
-		weeklyRate, perNight,
-	)
-	out := roomsLine + "\n" + rateLine
-	if strings.TrimSpace(vendorFlavor) != "" {
-		out += "\n\n" + strings.TrimSpace(vendorFlavor)
-	}
-	return out
 }
 
 func pluralS(n int) string {
