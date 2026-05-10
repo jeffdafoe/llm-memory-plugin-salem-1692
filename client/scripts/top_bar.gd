@@ -92,20 +92,25 @@ const RECOVERY_FLASH_COLOR := Color(1.35, 1.25, 1.05, 1.0)
 # range is ±(0.70, 0.50, 0.10) symmetric around white.
 const RECOVERY_PULSE_DELTA := Color(0.70, 0.50, 0.10, 0.0)
 
-# ZBBS-HOME-216: pulse window. Each time a need decreases the segment
-# enters a "recovering" state for RECOVERING_WINDOW_MS milliseconds
-# during which container.modulate oscillates between white and
-# RECOVERY_FLASH_COLOR via a sin wave driven from _process. A fresh
-# decrease (next dwell tick or consume) refreshes the window. After
+# ZBBS-HOME-216 / ZBBS-HOME-218 / ZBBS-HOME-240: pulse window. Each
+# /pc/me poll that reports an attribute as dwelling refreshes the
+# segment's window for RECOVERING_WINDOW_MS milliseconds, during
+# which container.modulate oscillates between white and
+# RECOVERY_FLASH_COLOR via a sin wave driven from _process. After
 # the window expires with no new decrease, the pulse eases back to
 # white over RECOVERING_FADE_DURATION and stops.
 #
-# 15 min covers the gap between dwell ticks (10 min) plus a 5 min
-# grace period for jitter and slow networks. Anyone actively
-# dwelling sees a continuous pulse; anyone who walked away sees
-# their pulse fade out within ~15 min and the segment goes still.
+# Anyone actively dwelling sees a continuous pulse — the next
+# /pc/me poll keeps refreshing the window every ~10s. Anyone who
+# walked away sees the pulse fade out shortly after the first
+# poll that stops reporting that attribute as dwelling.
+#
+# Window must outlast at least one missed poll so a transient
+# network blip doesn't drop the pulse mid-recovery (poll interval
+# is ~10s). 30s gives ~2 polls of headroom while still clearing
+# the strobe within ~30s of walking away.
 const RECOVERING_PULSE_PERIOD: float = 1.8        # full sin cycle, seconds
-const RECOVERING_WINDOW_MS: int = 15 * 60 * 1000  # 15 minutes
+const RECOVERING_WINDOW_MS: int = 30 * 1000       # 30s — outlives one missed poll
 const RECOVERING_FADE_DURATION: float = 1.0       # post-window settle, seconds
 
 # Per-need segment record: container + the three labels + the
@@ -504,9 +509,8 @@ func _make_need_label(text: String, size: int, color: Color) -> Label:
 ##
 ## Empty / missing attrs leaves the segments to fade out via the
 ## existing _process expiry path. The window is RECOVERING_WINDOW_MS
-## (15 min) — long enough that a single missed poll doesn't drop
-## the pulse but short enough that walking away clears it within
-## the player's attention span.
+## (30 s) — outlives one missed poll but clears the strobe within
+## ~30s of walking away.
 func set_dwelling_attributes(attrs: PackedStringArray) -> void:
     var now_ms: int = Time.get_ticks_msec()
     for key in _NEED_KEYS:
