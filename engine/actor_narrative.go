@@ -511,3 +511,107 @@ func (app *App) recordPayInteractions(ctx context.Context, buyerID, sellerID str
 		log.Printf("recordPayInteractions seller→buyer: %v", err)
 	}
 }
+
+// recordServeInteractions writes salient_facts for each (server,
+// recipient) pair after a successful serve. Multi-recipient serves
+// fan out one write per direction per recipient. Skips on
+// rejected/failed (the model didn't actually hand anything over).
+//
+// consume-now path uses sr.NeedUpdates (already has ActorID +
+// DisplayName per recipient). Take-home path uses sr.TakeHomeRecipientIDs
+// and resolves names via loadActorIdentities.
+func (app *App) recordServeInteractions(ctx context.Context, serverID string, sr serveResult) {
+	if serverID == "" || sr.Result != "ok" {
+		return
+	}
+	type recipient struct {
+		id   string
+		name string
+	}
+	var recips []recipient
+	if len(sr.NeedUpdates) > 0 {
+		for _, nu := range sr.NeedUpdates {
+			if nu.ActorID != "" {
+				recips = append(recips, recipient{id: nu.ActorID, name: nu.DisplayName})
+			}
+		}
+	} else if len(sr.TakeHomeRecipientIDs) > 0 {
+		ids := append([]string{serverID}, sr.TakeHomeRecipientIDs...)
+		idents := app.loadActorIdentities(ctx, ids...)
+		for _, id := range sr.TakeHomeRecipientIDs {
+			if ident, ok := idents[id]; ok {
+				recips = append(recips, recipient{id: id, name: ident.Name})
+			}
+		}
+	}
+	if len(recips) == 0 {
+		return
+	}
+	// One identity lookup for the server (and any unresolved recipients).
+	lookupIDs := []string{serverID}
+	for _, r := range recips {
+		lookupIDs = append(lookupIDs, r.id)
+	}
+	idents := app.loadActorIdentities(ctx, lookupIDs...)
+	server, ok := idents[serverID]
+	if !ok {
+		return
+	}
+	// serveResult doesn't carry per-recipient qty separately from the
+	// per-recipient need delta — the serve tool is "qty per recipient,"
+	// uniform across the list. For the salient-fact text the unit count
+	// matters less than the item itself, so render just the item kind.
+	// Add a Qty field on serveResult if Phase 3 consolidation needs it.
+	itemDesc := strings.TrimSpace(sr.Item)
+	if itemDesc == "" {
+		itemDesc = "something"
+	}
+	now := time.Now()
+	for _, recip := range recips {
+		recipIdent, ok := idents[recip.id]
+		recipAgent := ""
+		if ok {
+			recipAgent = recipIdent.Agent
+		}
+		serverText := fmt.Sprintf("I served %s — %s.", recip.name, itemDesc)
+		recipText := fmt.Sprintf("%s served me %s.", server.Name, itemDesc)
+		if err := app.recordInteraction(ctx, serverID, server.Agent, recip.id, "served", serverText, now); err != nil {
+			log.Printf("recordServeInteractions server→%s: %v", recip.name, err)
+		}
+		if err := app.recordInteraction(ctx, recip.id, recipAgent, serverID, "served_by", recipText, now); err != nil {
+			log.Printf("recordServeInteractions %s→server: %v", recip.name, err)
+		}
+	}
+}
+
+// recordDeliverOrderInteractions writes the seller↔buyer pair after a
+// successful deliver_order. Skips on rejected/failed. Single recipient
+// (the order's buyer) — multi-consumer orders still resolve to one
+// pay_ledger row with one buyer.
+func (app *App) recordDeliverOrderInteractions(ctx context.Context, sellerID string, dr deliverOrderResult) {
+	if sellerID == "" || dr.Result != "ok" || dr.BuyerID == "" {
+		return
+	}
+	idents := app.loadActorIdentities(ctx, sellerID, dr.BuyerID)
+	seller, ok := idents[sellerID]
+	if !ok {
+		return
+	}
+	buyer, ok := idents[dr.BuyerID]
+	if !ok {
+		return
+	}
+	itemPart := payItemDescriptor(dr.ItemKind, dr.Qty)
+	if itemPart == "" {
+		itemPart = "their order"
+	}
+	now := time.Now()
+	sellerText := fmt.Sprintf("I delivered %s to %s.", itemPart, buyer.Name)
+	buyerText := fmt.Sprintf("%s delivered %s to me.", seller.Name, itemPart)
+	if err := app.recordInteraction(ctx, sellerID, seller.Agent, dr.BuyerID, "delivered", sellerText, now); err != nil {
+		log.Printf("recordDeliverOrderInteractions seller→buyer: %v", err)
+	}
+	if err := app.recordInteraction(ctx, dr.BuyerID, buyer.Agent, sellerID, "received", buyerText, now); err != nil {
+		log.Printf("recordDeliverOrderInteractions buyer→seller: %v", err)
+	}
+}
