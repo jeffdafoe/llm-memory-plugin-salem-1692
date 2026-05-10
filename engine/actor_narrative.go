@@ -375,3 +375,139 @@ func (app *App) recordSpeechInteractions(ctx context.Context, speakerID, speaker
 		}
 	}
 }
+
+// loadActorIdentities looks up display_name + llm_memory_agent for a
+// pair of actor ids in one round-trip. Returns a map keyed by actor
+// id. Used by recordPayInteractions and other multi-actor hooks that
+// need both sides' name + agent without making the caller pass them
+// in. Missing rows are simply absent from the map; callers handle the
+// empty-slug case naturally via recordInteraction's gating.
+func (app *App) loadActorIdentities(ctx context.Context, ids ...string) map[string]struct {
+	Name  string
+	Agent string
+} {
+	out := map[string]struct {
+		Name  string
+		Agent string
+	}{}
+	if len(ids) == 0 {
+		return out
+	}
+	rows, err := app.DB.Query(ctx, `
+		SELECT id::text, display_name, COALESCE(llm_memory_agent, '')
+		  FROM actor
+		 WHERE id::text = ANY($1::text[])
+	`, ids)
+	if err != nil {
+		log.Printf("loadActorIdentities query: %v", err)
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, name, agent string
+		if err := rows.Scan(&id, &name, &agent); err != nil {
+			continue
+		}
+		out[id] = struct {
+			Name  string
+			Agent string
+		}{Name: name, Agent: agent}
+	}
+	return out
+}
+
+// payItemDescriptor renders the item portion of a pay narrative —
+// "<qty> <item>" when qty > 1, bare item otherwise, empty for
+// item-less coin-only pays. Used by both buyer and seller text
+// generators so they stay consistent.
+func payItemDescriptor(item string, qty int) string {
+	item = strings.TrimSpace(item)
+	if item == "" {
+		return ""
+	}
+	if qty > 1 {
+		return fmt.Sprintf("%d %s", qty, item)
+	}
+	return item
+}
+
+// recordPayInteractions writes the buyer↔seller relationship facts
+// after a pay attempt resolves. Skips on rejected/failed/withdrawn
+// outcomes (validation rejects and system errors aren't narrative
+// beats); records the three real outcomes:
+//
+//   - "ok"        — buyer paid, seller accepted
+//   - "declined"  — buyer offered, seller refused (with reason)
+//   - "countered" — seller proposed a different total
+//
+// Both rows are written; recordInteraction's shared-VA gate decides
+// which actually persist. The helper looks up display_name + agent
+// for both ids in a single query so callers don't have to thread
+// that state.
+func (app *App) recordPayInteractions(ctx context.Context, buyerID, sellerID string, req payRequest, result payResult) {
+	if buyerID == "" || sellerID == "" {
+		return
+	}
+	switch result.Result {
+	case "ok", "declined", "countered":
+	default:
+		return
+	}
+	ids := app.loadActorIdentities(ctx, buyerID, sellerID)
+	buyer, ok := ids[buyerID]
+	if !ok {
+		return
+	}
+	seller, ok := ids[sellerID]
+	if !ok {
+		return
+	}
+	itemPart := payItemDescriptor(req.Item, req.Qty)
+	now := time.Now()
+	var buyerKind, sellerKind, buyerText, sellerText string
+	switch result.Result {
+	case "ok":
+		buyerKind, sellerKind = "paid", "paid_by"
+		if itemPart != "" {
+			buyerText = fmt.Sprintf("I paid %s %d coins for %s.", seller.Name, req.Amount, itemPart)
+			sellerText = fmt.Sprintf("%s paid me %d coins for %s.", buyer.Name, req.Amount, itemPart)
+		} else {
+			buyerText = fmt.Sprintf("I paid %s %d coins.", seller.Name, req.Amount)
+			sellerText = fmt.Sprintf("%s paid me %d coins.", buyer.Name, req.Amount)
+		}
+	case "declined":
+		buyerKind, sellerKind = "pay_declined_by", "declined_pay"
+		decline := strings.TrimSpace(result.Message)
+		reasonSuffix := ""
+		if decline != "" {
+			reasonSuffix = fmt.Sprintf(" Their reason: %q", decline)
+		}
+		if itemPart != "" {
+			buyerText = fmt.Sprintf("I offered %s %d coins for %s; they declined.%s", seller.Name, req.Amount, itemPart, reasonSuffix)
+			sellerText = fmt.Sprintf("%s offered me %d coins for %s; I declined.%s", buyer.Name, req.Amount, itemPart, reasonSuffix)
+		} else {
+			buyerText = fmt.Sprintf("I offered %s %d coins; they declined.%s", seller.Name, req.Amount, reasonSuffix)
+			sellerText = fmt.Sprintf("%s offered me %d coins; I declined.%s", buyer.Name, req.Amount, reasonSuffix)
+		}
+	case "countered":
+		buyerKind, sellerKind = "countered_by", "countered"
+		msg := strings.TrimSpace(result.Message)
+		wordsSuffix := ""
+		if msg != "" {
+			wordsSuffix = fmt.Sprintf(" Their words: %q", msg)
+		}
+		if itemPart != "" {
+			buyerText = fmt.Sprintf("I offered %s %d coins for %s; they countered with %d.%s", seller.Name, req.Amount, itemPart, result.CounterAmount, wordsSuffix)
+			sellerText = fmt.Sprintf("%s offered me %d coins for %s; I countered with %d.%s", buyer.Name, req.Amount, itemPart, result.CounterAmount, wordsSuffix)
+		} else {
+			buyerText = fmt.Sprintf("I offered %s %d coins; they countered with %d.%s", seller.Name, req.Amount, result.CounterAmount, wordsSuffix)
+			sellerText = fmt.Sprintf("%s offered me %d coins; I countered with %d.%s", buyer.Name, req.Amount, result.CounterAmount, wordsSuffix)
+		}
+	}
+	if err := app.recordInteraction(ctx, buyerID, buyer.Agent, sellerID, buyerKind, buyerText, now); err != nil {
+		log.Printf("recordPayInteractions buyer→seller: %v", err)
+	}
+	if err := app.recordInteraction(ctx, sellerID, seller.Agent, buyerID, sellerKind, sellerText, now); err != nil {
+		log.Printf("recordPayInteractions seller→buyer: %v", err)
+	}
+}
