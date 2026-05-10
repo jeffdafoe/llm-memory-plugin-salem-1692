@@ -186,6 +186,53 @@ func returnToWorkPerceptionLine(workLabel string) string {
 	return "Your shift at " + workLabel + " continues. You should excuse yourself and return."
 }
 
+// shouldNudgeReturnHome (ZBBS-HOME-252) is the symmetric end-of-shift
+// counterpart to shouldNudgeReturnToWork. True iff:
+//   - NPC has both a work and a home assignment.
+//   - The current minute-of-day falls OUTSIDE the NPC's shift window
+//     (same window resolution as shouldNudgeReturnToWork).
+//   - NPC is still inside their work structure or loitering at it.
+//
+// No need-tier gate: an off-shift NPC at red tiredness should head home
+// (where their bed is), not stay at work waiting for the need to clear.
+func shouldNudgeReturnHome(
+	r *agentNPCRow,
+	insideID sql.NullString,
+	loiteringAtID string,
+	nowMinuteOfDay, dawnMin, duskMin int,
+) bool {
+	if !r.WorkStructureID.Valid || !r.HomeStructureID.Valid {
+		return false
+	}
+	startMin, endMin := dawnMin, duskMin
+	if r.ScheduleStartMinute.Valid && r.ScheduleEndMinute.Valid {
+		startMin = int(r.ScheduleStartMinute.Int32)
+		endMin = int(r.ScheduleEndMinute.Int32)
+	}
+	var onShift bool
+	if startMin <= endMin {
+		onShift = nowMinuteOfDay >= startMin && nowMinuteOfDay < endMin
+	} else {
+		onShift = nowMinuteOfDay >= startMin || nowMinuteOfDay < endMin
+	}
+	if onShift {
+		return false
+	}
+	workID := r.WorkStructureID.String
+	atWork := (insideID.Valid && insideID.String == workID) || loiteringAtID == workID
+	return atWork
+}
+
+// returnHomePerceptionLine renders the end-of-shift nudge. Mirror of
+// returnToWorkPerceptionLine; home label names the destination so the
+// LLM can use the same vocabulary the prompt already exposes.
+func returnHomePerceptionLine(homeLabel string) string {
+	if homeLabel == "" {
+		return "Your shift has ended. Time to close up and head home."
+	}
+	return "Your shift has ended. Time to close up and head home to " + homeLabel + "."
+}
+
 // Defaults for the return_to_work_delay_seconds setting (ZBBS-111).
 // 30s floor gives the conversation a beat to land before the NPC
 // re-decides; 60s ceiling keeps the rhythm from dragging. Operators
@@ -304,4 +351,84 @@ func (app *App) maybeScheduleReturnToWork(ctx context.Context, npcID string) {
 	}
 
 	app.scheduleReturnToWorkFollowup(ctx, r.ID)
+}
+
+// scheduleReturnHomeFollowup (ZBBS-HOME-252) schedules a self-tick at
+// now + jittered delay so an off-shift NPC stuck at work gets a turn
+// to consider walking home. Reuses the return_to_work_delay_seconds
+// setting so operators have one knob, not two; the human-conversation-
+// beat shape applies equally to "give them a moment before nudging
+// again." Caller already verified the predicate is still true.
+func (app *App) scheduleReturnHomeFollowup(ctx context.Context, npcID string) {
+	minSec, maxSec := app.loadIntRange(ctx, "return_to_work_delay_seconds",
+		defaultReturnToWorkMinDelaySeconds, defaultReturnToWorkMaxDelaySeconds)
+	if minSec < 0 || maxSec < 0 || maxSec < minSec || maxSec > returnToWorkMaxReasonableSeconds {
+		log.Printf("scheduleReturnHomeFollowup: invalid range [%d,%d] (negatives, max<min, or >%ds), using defaults",
+			minSec, maxSec, returnToWorkMaxReasonableSeconds)
+		minSec = defaultReturnToWorkMinDelaySeconds
+		maxSec = defaultReturnToWorkMaxDelaySeconds
+	}
+	minDelay := time.Duration(minSec) * time.Second
+	maxDelay := time.Duration(maxSec) * time.Second
+	delay := minDelay
+	if maxDelay > minDelay {
+		delay += time.Duration(rand.Int63n(int64(maxDelay - minDelay)))
+	}
+	app.scheduleSelfTick(ctx, npcID, time.Now().Add(delay), "return_home")
+}
+
+// maybeScheduleReturnHome is the post-harness companion to the
+// return-home perception nudge. Symmetric to maybeScheduleReturnToWork:
+// re-queries the NPC's current location, and if shouldNudgeReturnHome
+// is still true (e.g. the LLM didn't actually walk home this tick),
+// schedules a follow-up self-tick so the NPC keeps getting turns until
+// they leave. No-op once the NPC is no longer at work or has come on
+// shift again.
+func (app *App) maybeScheduleReturnHome(ctx context.Context, npcID string) {
+	var r agentNPCRow
+	if err := app.DB.QueryRow(ctx,
+		`SELECT id, COALESCE(role, ''),
+		        inside_structure_id, current_x, current_y,
+		        work_structure_id, home_structure_id,
+		        schedule_start_minute, schedule_end_minute,
+		        COALESCE(wo.display_name, wa.name) AS work_label,
+		        COALESCE(ho.display_name, ha.name) AS home_label
+		 FROM actor n
+		 LEFT JOIN village_object wo ON wo.id = n.work_structure_id
+		 LEFT JOIN asset wa ON wa.id = wo.asset_id
+		 LEFT JOIN village_object ho ON ho.id = n.home_structure_id
+		 LEFT JOIN asset ha ON ha.id = ho.asset_id
+		 WHERE n.id = $1 AND n.llm_memory_agent IS NOT NULL`,
+		npcID,
+	).Scan(&r.ID, &r.Role,
+		&r.InsideStructureID, &r.CurrentX, &r.CurrentY,
+		&r.WorkStructureID, &r.HomeStructureID,
+		&r.ScheduleStartMinute, &r.ScheduleEndMinute,
+		&r.WorkLabel, &r.HomeLabel,
+	); err != nil {
+		return
+	}
+
+	cfg, err := app.loadWorldConfig(ctx)
+	if err != nil {
+		return
+	}
+	dawnMin, duskMin := 6*60, 18*60
+	if dh, dm, err := parseHM(cfg.DawnTime); err == nil {
+		dawnMin = dh*60 + dm
+	}
+	if dh, dm, err := parseHM(cfg.DuskTime); err == nil {
+		duskMin = dh*60 + dm
+	}
+	now := time.Now().In(cfg.Location)
+	nowMinuteOfDay := now.Hour()*60 + now.Minute()
+
+	loiteringAtID, _ := app.resolveLoiteringStructure(ctx, r.CurrentX, r.CurrentY)
+
+	if !shouldNudgeReturnHome(&r, r.InsideStructureID, loiteringAtID,
+		nowMinuteOfDay, dawnMin, duskMin) {
+		return
+	}
+
+	app.scheduleReturnHomeFollowup(ctx, r.ID)
 }
