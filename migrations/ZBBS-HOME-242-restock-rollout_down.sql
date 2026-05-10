@@ -29,10 +29,11 @@ UPDATE actor_attribute SET params = '{}'::jsonb
 
 -- Demote Elizabeth + Moses. Restore llm_memory_agent / work / hours
 -- to NULL. Drop their actor_narrative_state and actor_attribute rows.
-UPDATE actor SET llm_memory_agent = NULL,
-                 work_structure_id = NULL,
-                 active_start_hour = NULL,
-                 active_end_hour   = NULL
+UPDATE actor SET llm_memory_agent       = NULL,
+                 work_structure_id       = NULL,
+                 active_start_hour       = NULL,
+                 active_end_hour         = NULL,
+                 schedule_interval_hours = NULL
  WHERE display_name IN ('Elizabeth Ellis', 'Moses James');
 
 DELETE FROM actor_narrative_state
