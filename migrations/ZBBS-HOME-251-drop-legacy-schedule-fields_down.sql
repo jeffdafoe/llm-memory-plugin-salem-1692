@@ -49,9 +49,12 @@ ALTER TABLE actor
     );
 
 -- Best-effort reverse conversion: restore hour fields for any actor
--- that now has a minute window but no legacy hour values. interval
--- can't be recovered (the up migration didn't preserve it) — defaults
--- to 24 here so the row satisfies the all-or-none CHECK; operators
+-- that now has a minute window but no legacy hour values. Integer
+-- division truncates minute-precision values: an actor whose
+-- schedule_start_minute = 510 (08:30) is restored as active_start_hour
+-- = 8 (08:00) — sub-hour precision is lost. interval can't be
+-- recovered (the up migration didn't preserve it) — defaults to 24
+-- here so the row satisfies the all-or-none CHECK; operators
 -- restoring rotation actors must re-seed interval explicitly.
 UPDATE actor
    SET active_start_hour       = schedule_start_minute / 60,

@@ -461,11 +461,22 @@ type rotationRow struct {
 // loadRotationRows returns every NPC carrying a rotation_route
 // attribute, with cadence + dispatch params drawn from the
 // attribute definition's behaviors JSONB.
+//
+// Assumes the rotation_route entry sits at behaviors[0]. Multi-entry
+// behaviors arrays aren't in use today; if they're added later, this
+// query needs jsonb_array_elements to find the rotation entry by type.
 func (app *App) loadRotationRows(ctx context.Context) ([]rotationRow, error) {
+	// CASE-guarded cast on interval_hours so a non-numeric value
+	// (e.g. `"5h"`, empty string) on a single attribute row doesn't
+	// blow up the whole rotation load with a cast error.
 	rows, err := app.DB.Query(ctx, `
 		SELECT n.id::text,
 		       aa.slug,
-		       COALESCE((ad.behaviors->0->'params'->>'interval_hours')::int, 0),
+		       CASE
+		         WHEN ad.behaviors->0->'params'->>'interval_hours' ~ '^[0-9]+$'
+		         THEN (ad.behaviors->0->'params'->>'interval_hours')::int
+		         ELSE 0
+		       END,
 		       COALESCE(ad.behaviors->0->'params'->>'label', ''),
 		       COALESCE(ad.behaviors->0->'params'->>'domain_tag', ''),
 		       n.schedule_start_minute, n.schedule_end_minute,
@@ -493,8 +504,12 @@ func (app *App) loadRotationRows(ctx context.Context) ([]rotationRow, error) {
 			continue
 		}
 		if r.IntervalHours <= 0 || r.Label == "" || r.DomainTag == "" {
-			// Behavior misconfigured (missing params). Skip silently
-			// — admin fixes the attribute definition, next tick picks up.
+			// Behavior misconfigured (missing or non-numeric params).
+			// Log loudly so an admin can spot and fix the attribute
+			// definition; otherwise the silent skip can disable a
+			// behavior forever.
+			log.Printf("scheduler: skip rotation NPC %s attribute %s: invalid params interval_hours=%d label=%q domain_tag=%q",
+				r.ID, r.Slug, r.IntervalHours, r.Label, r.DomainTag)
 			continue
 		}
 		out = append(out, r)
@@ -504,10 +519,11 @@ func (app *App) loadRotationRows(ctx context.Context) ([]rotationRow, error) {
 
 // mostRecentRotationFiring computes the most recent firing boundary at
 // or before now for a rotation NPC. Fires at startMin, then every
-// intervalH hours, until past endMin. When the window wraps midnight
-// (startMin > endMin), it spans two calendar days. Returns the zero
-// Time if no firing point falls at or before now within the last
-// 24h of windows.
+// intervalH hours, strictly before endMin. End is exclusive to match
+// worker shift semantics (schedule_end_minute is "inactive starting at
+// this minute"). When the window wraps midnight (startMin > endMin),
+// it spans two calendar days. Returns the zero Time if no firing point
+// falls at or before now within the last 24h of windows.
 func mostRecentRotationFiring(now time.Time, startMin, endMin, intervalH int) time.Time {
 	loc := now.Location()
 	y, mo, d := now.Date()
@@ -524,7 +540,7 @@ func mostRecentRotationFiring(now time.Time, startMin, endMin, intervalH int) ti
 		if endMin <= startMin {
 			end = end.Add(24 * time.Hour)
 		}
-		for t := start; !t.After(end); t = t.Add(time.Duration(intervalMin) * time.Minute) {
+		for t := start; t.Before(end); t = t.Add(time.Duration(intervalMin) * time.Minute) {
 			if !t.After(now) && t.After(latest) {
 				latest = t
 			}
@@ -539,17 +555,37 @@ func mostRecentRotationFiring(now time.Time, startMin, endMin, intervalH int) ti
 // scheduler doesn't keep retrying a no-op for the rest of the window.
 //
 // Active window: per-actor schedule_start_minute / schedule_end_minute
-// when both set; otherwise dawn/dusk from world config.
+// when both set; otherwise dawn/dusk from world config. A partial
+// window (only one of the pair set) is treated as misconfigured and
+// the NPC is skipped with a log — the legacy all-or-none CHECK is
+// gone, but the semantic invariant still holds.
+//
+// Stamping uses actor.last_shift_tick_at, which the worker scheduler
+// also uses. Today the worker and rotation_route attributes are
+// mutually exclusive on a given actor in practice; if they're ever
+// combined, the two schedulers will trample each other's stamps and
+// rotation needs its own column.
 func (app *App) evaluateRotationSchedule(ctx context.Context, r *rotationRow, now time.Time, dawnMin, duskMin int) {
 	if r.AgentOverrideUntil.Valid && now.Before(r.AgentOverrideUntil.Time) {
 		return
 	}
 
+	if r.ScheduleStartMinute.Valid != r.ScheduleEndMinute.Valid {
+		log.Printf("scheduler: skip rotation NPC %s: partial schedule window start_valid=%t end_valid=%t",
+			r.ID, r.ScheduleStartMinute.Valid, r.ScheduleEndMinute.Valid)
+		return
+	}
+
 	startMin := dawnMin
 	endMin := duskMin
-	if r.ScheduleStartMinute.Valid && r.ScheduleEndMinute.Valid {
+	if r.ScheduleStartMinute.Valid {
 		startMin = int(r.ScheduleStartMinute.Int64)
 		endMin = int(r.ScheduleEndMinute.Int64)
+	}
+	if startMin < 0 || startMin >= 1440 || endMin < 0 || endMin >= 1440 {
+		log.Printf("scheduler: skip rotation NPC %s: window out of range %d-%d",
+			r.ID, startMin, endMin)
+		return
 	}
 
 	boundaryAt := mostRecentRotationFiring(now, startMin, endMin, r.IntervalHours)
