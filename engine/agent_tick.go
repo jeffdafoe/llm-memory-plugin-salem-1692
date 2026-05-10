@@ -1582,6 +1582,21 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 		sections = append(sections, roleText)
 	}
 
+	// 1c. Narrative state (ZBBS-WORK-212, Phase 1A). Engine-side
+	// continuity for shared-VA-backed actors who don't get llm-memory's
+	// accumulating soul/learning path. Skipped for VA-attached actors
+	// (Ezekiel, John Ellis, etc.) whose own VA session already carries
+	// continuity. See engine/actor_narrative.go.
+	if isSharedVAAgent(r.LLMMemoryAgent) {
+		if seed, evolving, ok, err := app.loadNarrativeStateForActor(ctx, r.ID); err != nil {
+			log.Printf("perception loadNarrativeStateForActor %s: %v", r.DisplayName, err)
+		} else if ok {
+			if block := formatNarrativeStatePerception(seed, evolving); block != "" {
+				sections = append(sections, block)
+			}
+		}
+	}
+
 	// 2. Schedule note. Mirror npc_scheduler.go's resolveWorkerWindow:
 	// per-NPC start/end win when both are set; both-NULL falls back to the
 	// world's dawn/dusk (the same shift the worker scheduler applies at
