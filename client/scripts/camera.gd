@@ -114,9 +114,13 @@ func unregister_ui_panel(panel: Control) -> void:
 ## to that edge's inset. Multiple panels stacked on the same edge sum
 ## to the maximum (panels overlap rather than tile, so max is right).
 ##
-## Edge classification: a panel "is on" an edge when its global rect
-## touches that edge of the viewport (within 1 pixel of slop for sub-
-## pixel layout drift). Center-floating panels contribute zero insets.
+## Edge classification: a panel is treated as side-anchored (left/right)
+## when it's taller than wide, and top/bottom-anchored when it's wider
+## than tall. The dominant axis defines the anchor direction; the other
+## axis's edge touches are incidental and ignored. Without this split,
+## the editor sidebar (240 px wide × full play-area height) was being
+## classified as a bottom-edge panel because its rect reached viewport.y,
+## which caused _process to shift the camera vertically on toggle.
 func _clamp_panel_insets() -> Vector4:
     var insets := Vector4.ZERO
     var viewport_size: Vector2 = get_viewport_rect().size
@@ -126,39 +130,46 @@ func _clamp_panel_insets() -> Vector4:
         if not panel.is_visible_in_tree():
             continue
         var r: Rect2 = panel.get_global_rect()
-        if r.position.x <= 1.0:
-            insets.x = maxf(insets.x, r.size.x)
-        if r.end.x >= viewport_size.x - 1.0:
-            insets.y = maxf(insets.y, r.size.x)
-        if r.position.y <= TOP_BAR_HEIGHT + 1.0:
-            insets.z = maxf(insets.z, r.size.y)
-        if r.end.y >= viewport_size.y - 1.0:
-            insets.w = maxf(insets.w, r.size.y)
+        if r.size.y > r.size.x:
+            # Tall — side panel
+            if r.position.x <= 1.0:
+                insets.x = maxf(insets.x, r.size.x)
+            if r.end.x >= viewport_size.x - 1.0:
+                insets.y = maxf(insets.y, r.size.x)
+        else:
+            # Wide — top/bottom bar
+            if r.position.y <= TOP_BAR_HEIGHT + 1.0:
+                insets.z = maxf(insets.z, r.size.y)
+            if r.end.y >= viewport_size.y - 1.0:
+                insets.w = maxf(insets.w, r.size.y)
     return insets
 
 
-## Per-frame check for clamp-panel inset changes. When a panel toggles
-## or resizes, shift the camera position by half the delta so the
-## visible (panel-excluded) center stays pointed at the same world
-## point. Without the shift, opening the editor sidebar (240 px on
-## the left) leaves the previously-centered world content under the
-## panel — invisible. With the shift, the world appears to slide
-## right out from under the opening panel; closing slides it back.
+## Per-frame check for clamp-panel inset changes. On a left-panel open
+## (or grow), shift the camera left only when the map's leftmost column
+## is currently visible AND would now be hidden behind the panel — i.e.
+## the panel's screen coverage actually occludes the map's left edge.
+## In any other case (camera already past the map edge, panel covering
+## interior content), the camera stays put.
 ##
-## Math derivation (left panel of width L opening, zoom z):
-##   Visible center before: screen-x V/2 → world camera.x.
-##   Visible center after:  screen-x (L + V)/2 → world camera.x + L/(2z).
-##   To keep visible center at same world point: camera.x -= L/(2z).
-## Right panel pulls the visible center left, so camera shifts right.
-## Top/bottom panels do the analogous thing on Y.
+## Closing case is automatic: when insets shrink, _clamp_position
+## tightens the bounds and pulls a relaxed-zone camera back inside.
+##
+## Right/top/bottom panels: no clamp-panel registers on those edges
+## today, so no auto-shift logic for them. The framework's still
+## generic — _clamp_panel_insets and _clamp_position handle non-left
+## edges in their bound math; only the open-time auto-shift is
+## left-only. Add symmetric branches here when a future panel needs
+## them.
 func _process(_delta: float) -> void:
     var current := _clamp_panel_insets()
     if current == _last_clamp_insets:
         return
-    var dx_screen: float = (current.x - _last_clamp_insets.x) / 2.0 - (current.y - _last_clamp_insets.y) / 2.0
-    var dy_screen: float = (current.z - _last_clamp_insets.z) / 2.0 - (current.w - _last_clamp_insets.w) / 2.0
-    position.x -= dx_screen / zoom.x
-    position.y -= dy_screen / zoom.y
+    var viewport_size: Vector2 = get_viewport_rect().size
+    if current.x > _last_clamp_insets.x:
+        var screen_x_map_left: float = (map_bounds.position.x - position.x) * zoom.x + viewport_size.x / 2.0
+        if screen_x_map_left >= 0.0 and screen_x_map_left < current.x:
+            position.x -= (current.x - screen_x_map_left) / zoom.x
     _last_clamp_insets = current
     _clamp_position()
 
