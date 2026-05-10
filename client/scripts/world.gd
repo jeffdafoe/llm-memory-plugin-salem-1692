@@ -1930,7 +1930,7 @@ signal object_tags_updated(object_id: String, tags: Array)
 ## panel side (two PCs walking the road can talk if they're within ~6
 ## tiles of each other). Indoor speech ignores them — structure_id is
 ## already enough to scope the audience.
-signal npc_spoke(npc_id: String, name: String, text: String, kind: String, at: String, structure_id: String, mentions: Array, speaker_x: float, speaker_y: float, room_id: String, addressee_id: String, addressee_name: String)
+signal npc_spoke(npc_id: String, name: String, text: String, kind: String, at: String, structure_id: String, mentions: Array, speaker_x: float, speaker_y: float, room_id: String, addressee_id: String, addressee_name: String, mention_prices: Dictionary)
 
 # PC's current audibility scope — mirrors talk_panel's loaded_structure_id
 # / loaded_room_id, kept here so apply_npc_spoke can suppress speech
@@ -1966,6 +1966,16 @@ func apply_npc_spoke(data: Dictionary) -> void:
         for m in raw_mentions:
             if typeof(m) == TYPE_STRING:
                 mentions.append(m)
+    # Optional unit-price hints per mentioned item, sourced from
+    # scene_quote rows the speaker has on file in this huddle. The
+    # talk panel uses this to pre-fill the buyer's pay-modal amount
+    # when the vendor has quoted a price. Empty when the speaker
+    # hasn't quoted anything for the mentioned items.
+    var mention_prices: Dictionary = {}
+    var raw_prices = data.get("mention_prices", null)
+    if typeof(raw_prices) == TYPE_DICTIONARY:
+        for k in raw_prices.keys():
+            mention_prices[str(k)] = int(raw_prices[k])
     var speaker_x: float = float(data.get("speaker_x", 0.0))
     var speaker_y: float = float(data.get("speaker_y", 0.0))
     # Addressee fields populated by deliberation broadcasts (counter /
@@ -1995,7 +2005,7 @@ func apply_npc_spoke(data: Dictionary) -> void:
         bubble_in_scope = (structure_id == _audience_structure_id and room_id == _audience_room_id)
     if bubble_in_scope:
         _spawn_speech_bubble(npc_id, text)
-    npc_spoke.emit(npc_id, name, text, kind, at, structure_id, mentions, speaker_x, speaker_y, room_id, addressee_id, addressee_name)
+    npc_spoke.emit(npc_id, name, text, kind, at, structure_id, mentions, speaker_x, speaker_y, room_id, addressee_id, addressee_name, mention_prices)
 
 
 ## Spawn a SpeechBubble child on the speaker's container (NPC or PC).

@@ -2610,6 +2610,18 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		}
 		if len(mentions) > 0 {
 			spokeData["mentions"] = mentions
+			// Attach unit_prices for any mentioned items that have a
+			// scene_quote row in this huddle. The talk panel uses this
+			// to pre-fill the buyer's pay modal amount when the vendor
+			// has quoted a price — saves the player from typing a
+			// number they already heard in conversation. Lookup runs
+			// AFTER upsertSceneQuotes above so the current speak's
+			// price (if any) is included.
+			if priceMap, perr := app.lookupSceneQuotesForSpeaker(ctx, r.ID, mentions); perr != nil {
+				log.Printf("scene_quote price lookup for npc_spoke (speaker=%s mentions=%v): %v", r.DisplayName, mentions, perr)
+			} else if len(priceMap) > 0 {
+				spokeData["mention_prices"] = priceMap
+			}
 		}
 		// Carry structure_id so the talk panel can scope its room log
 		// to the current room. World-view speech bubbles ignore this
