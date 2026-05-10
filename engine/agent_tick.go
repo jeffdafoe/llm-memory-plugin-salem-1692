@@ -977,18 +977,50 @@ func (app *App) actorStructureScope(ctx context.Context, insideStructureID sql.N
 	if insideStructureID.Valid && insideStructureID.String != "" {
 		return insideStructureID.String
 	}
+	// Effective loiter pin per effectiveLoiterTile (village_objects.go):
+	// per-instance loiter_offset_x/y if set, else asset's door_offset_x/y
+	// (with door_y + 1 — the pin sits just south of the door tile),
+	// else (0, footprint_bottom + 2) — south of the structure footprint.
+	// Many structures (Tavern, lodging buildings) leave loiter_offset
+	// NULL and rely on the door-derived fallback the editor renders the
+	// green pin from; without mirroring that fallback here, PCs at the
+	// loiter ring of those structures get an empty audience scope and
+	// the talk panel drops every speech event with structure_id !=
+	// the loaded scope. Filter by display_name to skip decorative
+	// placements (tiles, ground props) — same gate resolveLoiteringStructure
+	// uses for the inverse lookup.
 	var scope sql.NullString
 	err := app.DB.QueryRow(ctx,
 		`SELECT o.id::text FROM village_object o
-		  WHERE o.loiter_offset_x IS NOT NULL
-		    AND o.loiter_offset_y IS NOT NULL
+		  JOIN asset a ON a.id = o.asset_id
+		  WHERE o.display_name IS NOT NULL
 		    AND GREATEST(
-		          ABS(o.x + o.loiter_offset_x * 32 - $1),
-		          ABS(o.y + o.loiter_offset_y * 32 - $2)
+		          ABS(o.x +
+		              CASE
+		                WHEN o.loiter_offset_x IS NOT NULL AND o.loiter_offset_y IS NOT NULL THEN o.loiter_offset_x * 32
+		                WHEN a.door_offset_x IS NOT NULL AND a.door_offset_y IS NOT NULL THEN a.door_offset_x * 32
+		                ELSE 0
+		              END - $1),
+		          ABS(o.y +
+		              CASE
+		                WHEN o.loiter_offset_x IS NOT NULL AND o.loiter_offset_y IS NOT NULL THEN o.loiter_offset_y * 32
+		                WHEN a.door_offset_x IS NOT NULL AND a.door_offset_y IS NOT NULL THEN (a.door_offset_y + 1) * 32
+		                ELSE (a.footprint_bottom + 2) * 32
+		              END - $2)
 		        ) <= 64
 		  ORDER BY GREATEST(
-		          ABS(o.x + o.loiter_offset_x * 32 - $1),
-		          ABS(o.y + o.loiter_offset_y * 32 - $2)
+		          ABS(o.x +
+		              CASE
+		                WHEN o.loiter_offset_x IS NOT NULL AND o.loiter_offset_y IS NOT NULL THEN o.loiter_offset_x * 32
+		                WHEN a.door_offset_x IS NOT NULL AND a.door_offset_y IS NOT NULL THEN a.door_offset_x * 32
+		                ELSE 0
+		              END - $1),
+		          ABS(o.y +
+		              CASE
+		                WHEN o.loiter_offset_x IS NOT NULL AND o.loiter_offset_y IS NOT NULL THEN o.loiter_offset_y * 32
+		                WHEN a.door_offset_x IS NOT NULL AND a.door_offset_y IS NOT NULL THEN (a.door_offset_y + 1) * 32
+		                ELSE (a.footprint_bottom + 2) * 32
+		              END - $2)
 		        ) ASC
 		  LIMIT 1`,
 		x, y).Scan(&scope)
