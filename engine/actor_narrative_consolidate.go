@@ -256,6 +256,16 @@ func buildConsolidationPrompt(actorName, otherName, priorSummary string, facts [
 // runConsolidationSweep is the periodic goroutine. Spawned once from
 // main.go alongside the other sweeps. Find candidates, process up to
 // the per-sweep cap, log and continue on per-pair failure.
+//
+// Two passes per sweep:
+//   1. Per-pair relationship consolidation (Phase 3) — picks up to
+//      consolidationsPerSweep candidates ordered by ceiling-overdue
+//      then oldest-consolidated.
+//   2. Per-actor narrative consolidation (Phase 4) — picks up to
+//      narrativeConsolidationsPerSweep candidates ordered by
+//      last_consolidated_at NULLS FIRST. Pairs always run first; if
+//      the per-pair pass burned the rate budget, per-actor still
+//      gets its own (smaller) budget so it isn't starved.
 func (app *App) runConsolidationSweep(ctx context.Context) {
 	t := time.NewTicker(consolidationSweepInterval)
 	defer t.Stop()
@@ -267,15 +277,290 @@ func (app *App) runConsolidationSweep(ctx context.Context) {
 			candidates, err := app.findConsolidationCandidates(ctx, consolidationsPerSweep)
 			if err != nil {
 				log.Printf("consolidation sweep: find candidates: %v", err)
+			} else {
+				for _, c := range candidates {
+					if err := app.consolidateRelationship(ctx, c); err != nil {
+						log.Printf("consolidate %s↔%s: %v", c.ActorName, c.OtherName, err)
+					}
+				}
+			}
+			actors, err := app.findNarrativeConsolidationCandidates(ctx, narrativeConsolidationsPerSweep)
+			if err != nil {
+				log.Printf("narrative consolidation sweep: find candidates: %v", err)
 				continue
 			}
-			for _, c := range candidates {
-				if err := app.consolidateRelationship(ctx, c); err != nil {
-					log.Printf("consolidate %s↔%s: %v", c.ActorName, c.OtherName, err)
-					// Swallow — next sweep retries the row (still
-					// qualifies under the same selection rules).
+			for _, a := range actors {
+				if err := app.consolidateActorNarrative(ctx, a); err != nil {
+					log.Printf("consolidate-narrative %s: %v", a.ActorName, err)
 				}
 			}
 		}
 	}
+}
+
+// narrativeConsolidationsPerSweep caps the per-actor narrative pass.
+// Daily floor only (no ceiling), so the load is at most one call per
+// shared-VA actor per day. Cap protects against an unexpected influx
+// of new shared-VA actors all due at once.
+const narrativeConsolidationsPerSweep = 2
+
+// narrativeConsolidationFloor is the minimum age past which an
+// actor's narrative gets re-consolidated. Daily cadence — slower than
+// per-pair (24h) intentionally. Per-actor reflection is broader and
+// shouldn't churn on every tick-cluster.
+const narrativeConsolidationFloor = 24 * time.Hour
+
+// narrativeRecentEventsWindow bounds how far back the consolidation
+// reads agent_action_log for the actor's "what happened to you
+// recently" prompt. 7 days lets a quiet day's reflection still
+// reference last-week's beats; longer would make the prompt too
+// noisy.
+const narrativeRecentEventsWindow = 7 * 24 * time.Hour
+
+// narrativeRecentEventsLimit caps the events the prompt includes.
+// Engine logs can be high-volume on busy days; the LLM doesn't need
+// every line to synthesize a coherent self-reflection.
+const narrativeRecentEventsLimit = 40
+
+// narrativeCandidate is the per-actor variant of candidatePair. Only
+// the actor side matters here — there's no peer.
+type narrativeCandidate struct {
+	ActorID     string
+	ActorName   string
+	ActorAgent  string
+	LastConsoAt *time.Time
+}
+
+// findNarrativeConsolidationCandidates scans actor_narrative_state for
+// shared-VA-backed actors whose evolving_summary is due for a refresh.
+// Selection: actor is shared-VA, last_consolidated_at NULL or older
+// than the daily floor. Order: NULLS FIRST then oldest-consolidated.
+//
+// LIMIT applied SQL-side. No ceiling-trigger because there's no
+// append-pressure on the per-actor side — events flow into
+// agent_action_log regardless of consolidation cadence.
+func (app *App) findNarrativeConsolidationCandidates(ctx context.Context, limit int) ([]narrativeCandidate, error) {
+	rows, err := app.DB.Query(ctx, `
+		SELECT s.actor_id::text,
+		       a.display_name,
+		       COALESCE(a.llm_memory_agent, ''),
+		       s.last_consolidated_at
+		  FROM actor_narrative_state s
+		  JOIN actor a ON a.id = s.actor_id
+		 WHERE COALESCE(a.llm_memory_agent, '') IN ('salem-vendor', 'salem-visitor')
+		   AND (
+		       s.last_consolidated_at IS NULL
+		    OR s.last_consolidated_at < NOW() - $1::interval
+		   )
+		 ORDER BY s.last_consolidated_at NULLS FIRST
+		 LIMIT $2
+	`, fmt.Sprintf("%d seconds", int(narrativeConsolidationFloor.Seconds())), limit)
+	if err != nil {
+		return nil, fmt.Errorf("query narrative candidates: %w", err)
+	}
+	defer rows.Close()
+	var out []narrativeCandidate
+	for rows.Next() {
+		var c narrativeCandidate
+		if err := rows.Scan(&c.ActorID, &c.ActorName, &c.ActorAgent, &c.LastConsoAt); err != nil {
+			return nil, fmt.Errorf("scan narrative candidate: %w", err)
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// narrativeEvent is one row pulled from agent_action_log for the
+// reflection prompt. Kept narrow — the LLM doesn't need full payload
+// JSON, just the action_type, an optional speaker hint, and the time.
+type narrativeEvent struct {
+	OccurredAt   time.Time
+	ActionType   string
+	Result       string
+	SpeakerName  string
+	PayloadText  string
+}
+
+// loadRecentEventsForNarrative pulls the actor's own log rows from
+// agent_action_log over the configured window, plus a small window
+// of peer rows from the same huddles where the actor was present.
+// Cross-actor inclusion is deliberately conservative — Phase 3
+// already captured peer interactions via per-pair consolidation;
+// Phase 4 supplements with the actor's own actions (their tool calls
+// and what they spoke) for the self-reflection cut.
+//
+// Returns rows oldest-first so the LLM reads the trail in
+// chronological order.
+func (app *App) loadRecentEventsForNarrative(ctx context.Context, actorID string) ([]narrativeEvent, error) {
+	rows, err := app.DB.Query(ctx, `
+		SELECT occurred_at,
+		       action_type,
+		       COALESCE(result, ''),
+		       COALESCE(speaker_name, ''),
+		       COALESCE(payload->>'text', payload->>'verb_phrase', '')
+		  FROM agent_action_log
+		 WHERE actor_id = $1
+		   AND occurred_at > NOW() - $2::interval
+		   AND COALESCE(result, '') IN ('ok', '')
+		 ORDER BY occurred_at ASC, id ASC
+		 LIMIT $3
+	`, actorID,
+		fmt.Sprintf("%d seconds", int(narrativeRecentEventsWindow.Seconds())),
+		narrativeRecentEventsLimit)
+	if err != nil {
+		return nil, fmt.Errorf("query agent_action_log: %w", err)
+	}
+	defer rows.Close()
+	var out []narrativeEvent
+	for rows.Next() {
+		var e narrativeEvent
+		if err := rows.Scan(&e.OccurredAt, &e.ActionType, &e.Result, &e.SpeakerName, &e.PayloadText); err != nil {
+			return nil, fmt.Errorf("scan agent_action_log: %w", err)
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// loadRelationshipSummariesForActor returns one summary line per peer
+// the actor has a non-empty summary_text for. Used as the "people in
+// your story" half of the per-actor reflection prompt. Skips rows
+// with empty summaries (no consolidated impression yet — Phase 3
+// hasn't covered them).
+func (app *App) loadRelationshipSummariesForActor(ctx context.Context, actorID string) (map[string]string, error) {
+	rows, err := app.DB.Query(ctx, `
+		SELECT o.display_name, r.summary_text
+		  FROM actor_relationship r
+		  JOIN actor o ON o.id = r.other_actor_id
+		 WHERE r.actor_id = $1
+		   AND TRIM(r.summary_text) <> ''
+		 ORDER BY o.display_name
+	`, actorID)
+	if err != nil {
+		return nil, fmt.Errorf("query relationship summaries: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var name, summary string
+		if err := rows.Scan(&name, &summary); err != nil {
+			return nil, fmt.Errorf("scan relationship summary: %w", err)
+		}
+		out[name] = summary
+	}
+	return out, rows.Err()
+}
+
+// buildNarrativeConsolidationPrompt composes the reflection user
+// message. Frames as a private end-of-day check-in rather than a
+// scene; provides the events trail + per-peer summaries; asks for a
+// brief paragraph synthesizing where the actor is in their own story.
+//
+// The prompt is intentionally not symmetric with buildConsolidationPrompt
+// — that one is about ONE peer; this one is about SELF given many
+// peers + a week's events. Different ask, different framing.
+func buildNarrativeConsolidationPrompt(actorName, priorSummary string, events []narrativeEvent, peerSummaries map[string]string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "You are %s. This is not a scene — you are reflecting privately on your own days, the people you've been seeing, and where you find yourself right now. There are no tools available for this turn; respond with prose only.\n\n", actorName)
+	if s := strings.TrimSpace(priorSummary); s != "" {
+		b.WriteString("Your prior reflection on yourself:\n")
+		b.WriteString(s)
+		b.WriteString("\n\n")
+	} else {
+		b.WriteString("You haven't reflected on yourself in this way before.\n\n")
+	}
+	if len(events) > 0 {
+		b.WriteString("Things you did or said in the past week, oldest first:\n")
+		for _, e := range events {
+			line := fmt.Sprintf("- [%s] %s", e.OccurredAt.Format("Jan 2"), e.ActionType)
+			if t := strings.TrimSpace(e.PayloadText); t != "" {
+				line += ": " + t
+			}
+			b.WriteString(line)
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+	if len(peerSummaries) > 0 {
+		b.WriteString("People you have an impression of:\n")
+		for name, summary := range peerSummaries {
+			b.WriteString("- ")
+			b.WriteString(name)
+			b.WriteString(": ")
+			b.WriteString(strings.TrimSpace(summary))
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString("Write a brief paragraph (under 250 words) on where you are in your own story right now — disposition, rhythm, what you've been noticing about the village or yourself. Synthesize, don't list. Past or present tense, whichever fits. Just the paragraph, no preamble or sign-off.")
+	return b.String()
+}
+
+// consolidateActorNarrative runs the daily reflection on one actor.
+// Reads recent events + peer summaries, builds the prompt, calls the
+// actor's VA in companion mode (no scene pollution), takes the prose
+// reply as the new evolving_summary, stamps last_consolidated_at.
+//
+// Does NOT prune anything — agent_action_log is shared infrastructure
+// (other consumers read it: dream pipeline, perception "Recent:" block,
+// pay history). The actor_relationship summaries are inputs, not
+// inputs-to-consume. Phase 4's only writes are to actor_narrative_state.
+func (app *App) consolidateActorNarrative(ctx context.Context, c narrativeCandidate) error {
+	var seed, prior string
+	err := app.DB.QueryRow(ctx, `
+		SELECT seed_text, evolving_summary
+		  FROM actor_narrative_state
+		 WHERE actor_id = $1
+	`, c.ActorID).Scan(&seed, &prior)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return fmt.Errorf("load actor_narrative_state: %w", err)
+	}
+
+	events, err := app.loadRecentEventsForNarrative(ctx, c.ActorID)
+	if err != nil {
+		return fmt.Errorf("load recent events: %w", err)
+	}
+	peers, err := app.loadRelationshipSummariesForActor(ctx, c.ActorID)
+	if err != nil {
+		return fmt.Errorf("load peer summaries: %w", err)
+	}
+	// If there's truly nothing to reflect on (no events AND no peer
+	// summaries AND no prior reflection), skip — write the marker
+	// anyway so the sweep doesn't keep retrying a row with no source
+	// material. The marker just means "checked, nothing to say."
+	if len(events) == 0 && len(peers) == 0 && strings.TrimSpace(prior) == "" {
+		_, _ = app.DB.Exec(ctx, `
+			UPDATE actor_narrative_state
+			   SET last_consolidated_at = NOW()
+			 WHERE actor_id = $1
+		`, c.ActorID)
+		return nil
+	}
+
+	prompt := buildNarrativeConsolidationPrompt(c.ActorName, prior, events, peers)
+	reply, err := app.npcChatClient.sendChat(ctx, c.ActorAgent, prompt, nil, "", "", nil)
+	if err != nil {
+		return fmt.Errorf("consolidate-narrative sendChat: %w", err)
+	}
+	newSummary := strings.TrimSpace(reply.Text)
+	if newSummary == "" {
+		return fmt.Errorf("consolidate-narrative: empty reply text (tool_calls=%d)", len(reply.ToolCalls))
+	}
+
+	_, err = app.DB.Exec(ctx, `
+		UPDATE actor_narrative_state
+		   SET evolving_summary    = $2,
+		       last_consolidated_at = NOW(),
+		       updated_at           = NOW()
+		 WHERE actor_id = $1
+	`, c.ActorID, newSummary)
+	if err != nil {
+		return fmt.Errorf("write narrative consolidation: %w", err)
+	}
+	log.Printf("consolidate-narrative ok: %s (events=%d, peers=%d, new_summary_len=%d)",
+		c.ActorName, len(events), len(peers), len(newSummary))
+	return nil
 }
