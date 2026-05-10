@@ -14,6 +14,7 @@ const TalkPanelScript = preload("res://scripts/talk_panel.gd")
 const NoticePanelScript = preload("res://scripts/notice_panel.gd")
 const InventoryPanelScript = preload("res://scripts/inventory_panel.gd")
 const VillageTickerScript = preload("res://scripts/village_ticker.gd")
+const SleepFadeScript = preload("res://scripts/sleep_fade.gd")
 
 @onready var world: Node2D = $World
 @onready var camera: Camera2D = $Camera
@@ -32,6 +33,49 @@ var talk_panel_layer: CanvasLayer = null
 var notice_panel_layer: CanvasLayer = null
 var inventory_panel_layer: CanvasLayer = null
 var village_ticker: PanelContainer = null
+## Sleep-fade overlay (ZBBS-WORK-204 Stage B). CanvasLayer with a
+## ColorRect that tweens to twilight while the local PC sleeps and
+## back to transparent on wake. See client/scripts/sleep_fade.gd.
+var sleep_fade: CanvasLayer = null
+## Dream-snippet rotator. While the local PC is sleeping, fires every
+## DREAM_SNIPPET_INTERVAL_SEC and pushes one of DREAM_SNIPPETS into
+## the village ticker so the top scroller carries flavor instead of
+## sitting silent through real-clock-hours of sleep. Stopped on wake.
+var _dream_snippet_timer: Timer = null
+## /pc/wake POST helper — instantiated lazily on first wake-button
+## press so the HTTPRequest node doesn't sit idle when sleep isn't
+## in use.
+var _pc_wake_http: HTTPRequest = null
+## Local-PC actor cache for the structure label shown in the sleep
+## marker. Set when the PC's inside_structure_id is known via the
+## world container's meta; falls back to "" when the structure isn't
+## resolvable. The label is purely for display — empty just renders
+## "Sleeping — wake HH:MM" without the location.
+var _pc_sleep_structure_label: String = ""
+
+## Period-flavor dream snippets pushed into the village ticker while
+## the local PC is sleeping. ZBBS-WORK-204 Stage B picks a static
+## list rather than wiring chronicler / dream-pipeline output —
+## simpler, ships entirely client-side, and the snippets read fine
+## as ambient scoreboard chrome through real-clock sleep hours. A
+## future ticket can swap this for engine-pushed lines if the static
+## rotation grows stale in observation.
+const DREAM_SNIPPETS: Array = [
+    "The candle gutters.",
+    "A beam settles in the dark.",
+    "Zzz...",
+    "You dream of horseshoes.",
+    "You dream of the harvest.",
+    "A floorboard creaks.",
+    "The tavern is quiet.",
+    "Distant footsteps. Then nothing.",
+    "Wind in the eaves.",
+    "You shift in the bed.",
+    "Embers tick in the hearth.",
+    "An owl, somewhere.",
+    "You dream of a shoreline you have never seen.",
+]
+const DREAM_SNIPPET_INTERVAL_SEC: float = 180.0
 
 # Login screen (added as a CanvasLayer so it renders on top of everything)
 var login_screen: Control = null
@@ -171,6 +215,8 @@ func _on_authenticated() -> void:
         add_child(event_client)
         event_client.reconnected.connect(_on_ws_reconnected)
         event_client.npc_arrived.connect(_on_event_npc_arrived)
+        event_client.pc_sleep_started.connect(_on_pc_sleep_started)
+        event_client.pc_sleep_ended.connect(_on_pc_sleep_ended)
     event_client.world = world
     world.event_client = event_client
     event_client.connect_to_server()
@@ -458,6 +504,32 @@ func _build_ui() -> void:
     village_ticker.attach_world(world)
     village_ticker.clicked.connect(_on_village_ticker_clicked)
     camera.register_ui_panel(village_ticker)
+
+    # Sleep-fade overlay (ZBBS-WORK-204 Stage B). Lives on its own
+    # CanvasLayer at layer=0 so it paints over the world (default
+    # Node2D layer 0, last-child-wins) but under the editor (layer
+    # 1) and higher UI layers — top bar wake button stays clickable.
+    sleep_fade = CanvasLayer.new()
+    sleep_fade.set_script(SleepFadeScript)
+    add_child(sleep_fade)
+
+    # Wake-up button on the top bar emits wake_pressed; route to the
+    # /pc/wake endpoint. The engine clears sleeping_until and
+    # broadcasts pc_sleep_ended which drives the fade-out + chip
+    # restoration on every connected client.
+    if top_bar.has_signal("wake_pressed"):
+        top_bar.wake_pressed.connect(_on_wake_pressed)
+
+    # Dream-snippet timer. Fires every DREAM_SNIPPET_INTERVAL_SEC
+    # (3 min) while the local PC is sleeping, pushing one of the
+    # static DREAM_SNIPPETS into the village ticker. Stopped on
+    # wake. autostart=false so it sits idle until pc_sleep_started.
+    _dream_snippet_timer = Timer.new()
+    _dream_snippet_timer.one_shot = false
+    _dream_snippet_timer.wait_time = DREAM_SNIPPET_INTERVAL_SEC
+    _dream_snippet_timer.autostart = false
+    _dream_snippet_timer.timeout.connect(_on_dream_snippet_tick)
+    add_child(_dream_snippet_timer)
 
     # Wire panel signals to editor
     editor_panel.asset_selected.connect(_on_panel_asset_selected)
@@ -1286,4 +1358,117 @@ func _on_world_ready() -> void:
             # belt-and-suspenders.
             login_screen.modulate = Color(1, 1, 1, 1)
     )
+
+
+## ZBBS-WORK-204 Stage B — local PC entered sleep. Engine broadcasts
+## globally; we filter by _pc_actor_id so a different player's PC
+## bedding down at the inn doesn't tint our screen. Fades the
+## twilight overlay in, marks the top bar, starts the dream-snippet
+## ticker rotation. Pre-/pc/me bootstrap (_pc_actor_id == "") drops
+## the event silently — we don't have the local PC yet.
+func _on_pc_sleep_started(actor_id: String, wake_at_iso: String) -> void:
+    if _pc_actor_id == "" or actor_id != _pc_actor_id:
+        return
+    _pc_sleep_structure_label = _resolve_local_pc_structure_label()
+    if sleep_fade != null and sleep_fade.has_method("fade_to_sleep"):
+        sleep_fade.fade_to_sleep()
+    if top_bar != null and top_bar.has_method("set_sleep_state"):
+        top_bar.set_sleep_state(true, _pc_sleep_structure_label, wake_at_iso)
+    # Push an immediate snippet so the ticker carries flavor from the
+    # bed-down moment instead of waiting up to DREAM_SNIPPET_INTERVAL_SEC
+    # for the first scheduled tick.
+    _push_dream_snippet()
+    if _dream_snippet_timer != null:
+        _dream_snippet_timer.start()
+
+
+## ZBBS-WORK-204 Stage B — local PC woke. Same actor-id filter as
+## sleep_started. Fades the overlay out, clears the top-bar marker,
+## stops the snippet ticker. Reason is currently unused but plumbed
+## through for future "you woke because X" surfaces.
+func _on_pc_sleep_ended(actor_id: String, _reason: String) -> void:
+    if _pc_actor_id == "" or actor_id != _pc_actor_id:
+        return
+    if sleep_fade != null and sleep_fade.has_method("fade_to_awake"):
+        sleep_fade.fade_to_awake()
+    if top_bar != null and top_bar.has_method("set_sleep_state"):
+        top_bar.set_sleep_state(false, "", "")
+    if _dream_snippet_timer != null:
+        _dream_snippet_timer.stop()
+    _pc_sleep_structure_label = ""
+
+
+## Top bar's Wake-up button → POST /api/village/pc/wake. Engine
+## clears sleeping_until and broadcasts pc_sleep_ended (reason
+## "manual"), which routes back through _on_pc_sleep_ended. The
+## HTTPRequest is instantiated lazily so it doesn't sit idle when
+## the player never sleeps in this session.
+func _on_wake_pressed() -> void:
+    if _pc_wake_http == null:
+        _pc_wake_http = HTTPRequest.new()
+        add_child(_pc_wake_http)
+        _pc_wake_http.request_completed.connect(_on_pc_wake_completed)
+    if not Auth.is_authenticated():
+        return
+    var url: String = Auth.api_base + "/api/village/pc/wake"
+    var headers: PackedStringArray = Auth.auth_headers()
+    var err := _pc_wake_http.request(url, headers, HTTPClient.METHOD_POST, "")
+    if err != OK:
+        push_warning("/pc/wake request failed: %s" % err)
+
+
+func _on_pc_wake_completed(_result: int, code: int, _headers: PackedStringArray, _body: PackedByteArray) -> void:
+    if not Auth.check_response(code):
+        return
+    # Engine broadcasts pc_sleep_ended on success; the UI updates via
+    # _on_pc_sleep_ended. Non-2xx is logged but not surfaced — the
+    # wake button just looks like it didn't work, which is true.
+    if code < 200 or code >= 300:
+        push_warning("/pc/wake non-2xx: code=%s" % code)
+
+
+## Push one randomly-picked dream snippet to the village ticker.
+## Called both by the snippet timer and immediately at sleep onset
+## (so the ticker carries flavor from minute one). No-op if the
+## ticker isn't ready yet.
+func _push_dream_snippet() -> void:
+    if village_ticker == null or not village_ticker.has_method("push"):
+        return
+    if DREAM_SNIPPETS.is_empty():
+        return
+    var idx := randi() % DREAM_SNIPPETS.size()
+    village_ticker.push(str(DREAM_SNIPPETS[idx]))
+
+
+func _on_dream_snippet_tick() -> void:
+    _push_dream_snippet()
+
+
+## Best-effort lookup of the structure the local PC is currently
+## inside. Returns the structure's display_name (or asset name
+## fallback) when resolvable; "" when the PC isn't inside a
+## structure at sleep time, the world hasn't loaded the placement
+## yet, or any meta is missing. Empty string degrades the marker
+## to a no-location framing — acceptable for the v1 cue.
+func _resolve_local_pc_structure_label() -> String:
+    if world == null or _pc_actor_id == "":
+        return ""
+    if not world.placed_npcs.has(_pc_actor_id):
+        return ""
+    var container: Node2D = world.placed_npcs[_pc_actor_id]
+    var inside_id: String = str(container.get_meta("inside_structure_id", ""))
+    if inside_id == "" or not world.placed_objects.has(inside_id):
+        return ""
+    var structure: Node2D = world.placed_objects[inside_id]
+    var label: String = str(structure.get_meta("display_name", ""))
+    if label != "":
+        return label
+    # Fallback to the asset's name when the placement has no display
+    # override — keeps "Sleeping at the Tavern" reading naturally
+    # rather than collapsing to no label.
+    var asset_id: String = str(structure.get_meta("asset_id", ""))
+    if asset_id != "" and Catalog.assets.has(asset_id):
+        var asset_dict: Dictionary = Catalog.assets[asset_id]
+        return str(asset_dict.get("name", ""))
+    return ""
 
