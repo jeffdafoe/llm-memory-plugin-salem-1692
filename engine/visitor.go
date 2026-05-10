@@ -252,15 +252,62 @@ func (app *App) dispatchVisitorSpawn(ctx context.Context) {
     log.Printf("visitor-spawn: %s (id=%s, archetype=%s, origin=%s, disposition=%s, stay=%dm, agent=%s, spawn=(%.0f,%.0f))",
         displayName, visitorID, profile.Archetype, profile.Origin, profile.Disposition, stayMinutes, visitorAgentName, spawnX, spawnY)
 
+    // Walk target picker. The earlier shape walked to (destX, destY) — the
+    // structure anchor — and let pathfinding's nearest-walkable-tile logic
+    // settle where the visitor actually stopped. That landed every visitor
+    // on the same tile (the closest walkable to the impassable building
+    // anchor), so two simultaneous visitors stacked on top of each other
+    // outside the tavern. Mirror the agent_move_to path's pickWalkTarget
+    // pattern instead: door tile when entering, picked loiter slot when
+    // not. Visitors have no home/work, so 'anyone' is the only entry-
+    // policy that grants entry; 'owner' and 'none' fall to the slot path.
+    var policy string
+    var loiterX, loiterY sql.NullInt32
+    var doorX, doorY sql.NullInt32
+    var footprintBottom int
+    if err := app.DB.QueryRow(ctx,
+        `SELECT o.entry_policy, o.loiter_offset_x, o.loiter_offset_y,
+                a.door_offset_x, a.door_offset_y, a.footprint_bottom
+         FROM village_object o JOIN asset a ON a.id = o.asset_id
+         WHERE o.id = $1`,
+        destStructureID,
+    ).Scan(&policy, &loiterX, &loiterY, &doorX, &doorY, &footprintBottom); err != nil {
+        log.Printf("visitor-spawn: dest metadata for %s: %v", destStructureID, err)
+        return
+    }
+
+    enterOnArrival := policy == "anyone"
+    var walkX, walkY float64
+    const tileSize = 32.0
+    if enterOnArrival && doorX.Valid && doorY.Valid {
+        walkX = destX + float64(doorX.Int32)*tileSize
+        walkY = destY + float64(doorY.Int32)*tileSize
+    } else if enterOnArrival {
+        // 'anyone' policy with no door_offset configured. Fall back to
+        // the anchor and let pathfinding settle. Stacks on the anchor
+        // for simultaneous arrivals — rare in practice (every shipped
+        // building asset has a door_offset), so not worth a slot fallback.
+        walkX, walkY = destX, destY
+    } else {
+        // 'owner' (visitors aren't the owner) or 'none' (loiter targets
+        // like wells / stalls). Pick a free slot in the loiter ring so
+        // simultaneous visitors land on different tiles.
+        lx, ly := effectiveLoiterTile(loiterX, loiterY, doorX, doorY, footprintBottom)
+        walkX, walkY = app.pickVisitorSlot(ctx, visitorID, destX, destY, lx, ly)
+    }
+
     // Use startReturnWalk (npc_behaviors.go) instead of bare startNPCWalk
-    // so the walk is wrapped in an npcRoute with EnterOnArrival=true and
-    // markWalkTargetStructure is called for us. Without that wrapping,
-    // applyArrival has no targetStructureID to anchor the loiter-arrival
-    // huddle / cascade logic on, advanceBehavior never flips the visitor
-    // inside, and the visitor sits at the loiter slot indefinitely with
-    // a perception that gives the LLM no useful context to act on.
+    // so the walk is wrapped in an npcRoute and markWalkTargetStructure is
+    // called for us. Without that wrapping, applyArrival has no
+    // targetStructureID to anchor the loiter-arrival huddle / cascade
+    // logic on, advanceBehavior never flips the visitor inside, and the
+    // visitor sits with a perception that gives the LLM no useful context
+    // to act on. EnterOnArrival = whether the destination accepts the
+    // visitor (computed above); when false, the visitor lands at a loiter
+    // slot and the loiter-arrival branch in applyArrival joins them to
+    // the structure's outdoor huddle.
     npc := &behaviorNPC{ID: visitorID, CurX: spawnX, CurY: spawnY}
-    if err := app.startReturnWalk(ctx, npc, destX, destY, destStructureID, "visitor-spawn", true); err != nil {
+    if err := app.startReturnWalk(ctx, npc, walkX, walkY, destStructureID, "visitor-spawn", enterOnArrival); err != nil {
         log.Printf("visitor-spawn: startReturnWalk for %s: %v", displayName, err)
     }
 }
