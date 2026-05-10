@@ -68,6 +68,18 @@ func newNPCMovement() *NPCMovement {
 	return &NPCMovement{active: map[string]*npcWalk{}}
 }
 
+// actorHasWalkInFlight reports whether an arrival timer is pending for
+// this actor — i.e. a walk has been dispatched but applyArrival has
+// not yet fired. Used by the speak commit gate in executeAgentCommit
+// to refuse a speak that was chained after a move_to in the same
+// tool batch (ZBBS-HOME-237).
+func (app *App) actorHasWalkInFlight(actorID string) bool {
+	app.NPCMovement.mu.Lock()
+	defer app.NPCMovement.mu.Unlock()
+	w, ok := app.NPCMovement.active[actorID]
+	return ok && w != nil
+}
+
 // currentPosition returns the NPC's interpolated world position based on how
 // much of its path it's walked since startedAt. Clamps to path end if time
 // has passed total walk duration.
@@ -685,5 +697,45 @@ func (app *App) applyArrivalSideEffects(ctx context.Context, npcID string, x, y 
 	// accidentally adopt PCs.
 	if targetStructureID != "" {
 		app.maybeAdoptWaitingPCsAtArrival(ctx, npcID, targetStructureID)
+	}
+
+	// ZBBS-HOME-237: visitor-arrival huddle adoption. NPCs walking to a
+	// structure they don't enter (owner-policy non-owner, none-policy,
+	// agent-visitor anyone-policy with EnterOnArrival=false) get joined
+	// into the destination's active scene_huddle when their arrival
+	// position is on the loiter ring. Without this, an NPC who walks
+	// across town to converse with a shopkeeper has no huddle scope on
+	// arrival: a follow-up speak() goes to the wrong scope and the
+	// keeper never perceives them. PC-side equivalent lives in
+	// handlePCMove (pc_handlers.go).
+	//
+	// Skipped for actors who entered the structure on arrival —
+	// setNPCInside already handled their huddle membership via
+	// joinOrCreateHuddle.
+	//
+	// On a successful join with other members already present, fan out
+	// a co-located tick for the existing members AND a self-tick for
+	// the new arrival, so the just-arrived visitor can decide what to
+	// say with fresh perception that includes the existing members
+	// rather than waiting for idle-sweep.
+	if targetStructureID != "" {
+		var insideID sql.NullString
+		var hasAgent bool
+		_ = app.DB.QueryRow(ctx,
+			`SELECT inside_structure_id::text, llm_memory_agent IS NOT NULL FROM actor WHERE id = $1`,
+			npcID,
+		).Scan(&insideID, &hasAgent)
+		// NPC-only: PC arrivals get their loiter-huddle handled in
+		// handlePCMove (pc_handlers.go:1165) using joinOrCreateHuddleForPC
+		// for PC-specific acquaintance shape. Skipping PCs here also
+		// avoids a double-join (handlePCMove already wrote
+		// current_huddle_id by the time the walk arrives).
+		if hasAgent && !insideID.Valid {
+			if huddleID, others := app.adoptVisitorLoiterHuddle(ctx, npcID, targetStructureID, x, y); huddleID != "" && others > 0 {
+				log.Printf("visitor-loiter-huddle: %s joined %s at %s (others=%d) — fanning out", npcID, huddleID, targetStructureID, others)
+				app.triggerCoLocatedTicks(ctx, targetStructureID, npcID, "visitor-arrival", false, "", npcID)
+				app.triggerImmediateTick(ctx, npcID, "arrival-into-populated-huddle", false, "", "")
+			}
+		}
 	}
 }
