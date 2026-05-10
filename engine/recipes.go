@@ -27,6 +27,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -36,11 +37,13 @@ import (
 
 // ItemRecipe is the in-memory shape of an item_recipe row.
 type ItemRecipe struct {
-	OutputItem   string
-	OutputQty    int
-	RateQty      int
-	RatePerHours int
-	Inputs       []RecipeInput
+	OutputItem     string
+	OutputQty      int
+	RateQty        int
+	RatePerHours   int
+	Inputs         []RecipeInput
+	WholesalePrice int // charged by a producer to a merchant buying upstream
+	RetailPrice    int // charged by a merchant to a customer downstream
 }
 
 // RecipeInput is one (item, qty) pair from item_recipe.inputs.
@@ -79,11 +82,20 @@ type RestockPolicy struct {
 func (app *App) loadItemRecipe(ctx context.Context, item string) (*ItemRecipe, error) {
 	r := &ItemRecipe{}
 	var inputsJSON []byte
+	var wholesale, retail sql.NullInt32
 	err := app.DB.QueryRow(ctx,
-		`SELECT output_item, output_qty, rate_qty, rate_per_hours, inputs
+		`SELECT output_item, output_qty, rate_qty, rate_per_hours, inputs,
+		        wholesale_price, retail_price
 		   FROM item_recipe WHERE output_item = $1`,
 		item,
-	).Scan(&r.OutputItem, &r.OutputQty, &r.RateQty, &r.RatePerHours, &inputsJSON)
+	).Scan(&r.OutputItem, &r.OutputQty, &r.RateQty, &r.RatePerHours, &inputsJSON,
+		&wholesale, &retail)
+	if wholesale.Valid {
+		r.WholesalePrice = int(wholesale.Int32)
+	}
+	if retail.Valid {
+		r.RetailPrice = int(retail.Int32)
+	}
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -103,7 +115,9 @@ func (app *App) loadItemRecipe(ctx context.Context, item string) (*ItemRecipe, e
 // produce_tick.go to avoid round-tripping per actor × per item.
 func (app *App) loadAllRecipes(ctx context.Context) (map[string]*ItemRecipe, error) {
 	rows, err := app.DB.Query(ctx,
-		`SELECT output_item, output_qty, rate_qty, rate_per_hours, inputs FROM item_recipe`,
+		`SELECT output_item, output_qty, rate_qty, rate_per_hours, inputs,
+		        wholesale_price, retail_price
+		   FROM item_recipe`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("load recipes: %w", err)
@@ -113,8 +127,16 @@ func (app *App) loadAllRecipes(ctx context.Context) (map[string]*ItemRecipe, err
 	for rows.Next() {
 		r := &ItemRecipe{}
 		var inputsJSON []byte
-		if err := rows.Scan(&r.OutputItem, &r.OutputQty, &r.RateQty, &r.RatePerHours, &inputsJSON); err != nil {
+		var wholesale, retail sql.NullInt32
+		if err := rows.Scan(&r.OutputItem, &r.OutputQty, &r.RateQty, &r.RatePerHours,
+			&inputsJSON, &wholesale, &retail); err != nil {
 			return nil, fmt.Errorf("scan recipe: %w", err)
+		}
+		if wholesale.Valid {
+			r.WholesalePrice = int(wholesale.Int32)
+		}
+		if retail.Valid {
+			r.RetailPrice = int(retail.Int32)
 		}
 		if err := json.Unmarshal(inputsJSON, &r.Inputs); err != nil {
 			return nil, fmt.Errorf("parse recipe %s inputs: %w", r.OutputItem, err)

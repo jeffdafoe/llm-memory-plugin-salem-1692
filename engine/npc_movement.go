@@ -619,6 +619,13 @@ func (app *App) applyArrivalSideEffects(ctx context.Context, npcID string, x, y 
 		log.Printf("arrival: handled by buy_walker for %s at structure=%s",
 			npcID, targetStructureID)
 	}
+	// Fulfill walker arrival (ZBBS-HOME-247) — same shape but for
+	// sellers delivering pending orders. An NPC won't be in both at
+	// once; the checks are mutually exclusive.
+	if app.handleFulfillWalkerArrival(ctx, npcID, targetStructureID) {
+		log.Printf("arrival: handled by fulfill_walker for %s at structure=%s",
+			npcID, targetStructureID)
+	}
 
 	if _, err := app.applyObjectRefreshAtArrival(ctx, npcID, x, y); err != nil {
 		log.Printf("object_refresh: %s at (%.1f,%.1f): %v", npcID, x, y, err)
