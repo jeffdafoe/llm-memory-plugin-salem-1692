@@ -96,6 +96,17 @@ var vendor_mentions: Dictionary = {}
 # Resets on huddle change alongside vendor_mentions.
 # Shape: { speaker_name: { item_kind: int unit_price } }
 var vendor_mention_prices: Dictionary = {}
+# ZBBS-HOME-238: separate cache for the LATEST speak's mentions (not
+# accumulated). The pay-modal pre-fill wants "is the vendor currently
+# narrowed to a single item?" — the accumulated vendor_mentions set
+# above stays stuck wide once the vendor's first speak listed several
+# options ("I have ale, water, bread, cheese"), even after a follow-up
+# narrows to one ("the cheese is 5 coins"). Updated only on speaks
+# with non-empty mentions so a chatter speak ("how's business?") doesn't
+# clobber the latest quote context. Resets on huddle change.
+# Shape: { speaker_name: PackedStringArray of lowercase item_kinds from
+# the most recent mention-bearing speak }
+var vendor_latest_mentions: Dictionary = {}
 ## Cached huddle member list at the moment the modal opened — used so
 ## the dropdown index maps back to the chosen recipient name without
 ## re-reading huddle_members during the click.
@@ -1212,6 +1223,7 @@ func _maybe_apply_recent_speech(data: Dictionary) -> void:
         child.queue_free()
     vendor_mentions.clear()
     vendor_mention_prices.clear()
+    vendor_latest_mentions.clear()
 
     if current_structure.is_empty():
         return
@@ -1527,6 +1539,14 @@ func _ensure_pay_modal_built() -> void:
     panel_style.content_margin_top = 14
     panel_style.content_margin_bottom = 14
     panel.add_theme_stylebox_override("panel", panel_style)
+    # ZBBS-HOME-238: apply a dark-wood theme to all form controls inside
+    # the modal so the OptionButton / SpinBox / CheckBox / Button defaults
+    # don't render as bright-white islands against the brown panel.
+    # Colors mirror the speech_input + panel palette above so the modal
+    # reads as one piece. Theme propagates to descendant Controls via
+    # Control.theme; OptionButton popup windows are separate so their
+    # popup gets the theme assigned individually below.
+    panel.theme = _build_pay_modal_theme()
     center.add_child(panel)
 
     var vbox := VBoxContainer.new()
@@ -1540,6 +1560,7 @@ func _ensure_pay_modal_built() -> void:
     vbox.add_child(title)
 
     pay_recipient_option = OptionButton.new()
+    pay_recipient_option.get_popup().theme = panel.theme
     vbox.add_child(_label_with("Recipient:", pay_recipient_option))
 
     pay_amount_spin = SpinBox.new()
@@ -1555,6 +1576,7 @@ func _ensure_pay_modal_built() -> void:
     # generic transfer). When the recipient changes, the dropdown is
     # repopulated.
     pay_item_option = OptionButton.new()
+    pay_item_option.get_popup().theme = panel.theme
     vbox.add_child(_label_with("Item:", pay_item_option))
 
     pay_qty_spin = SpinBox.new()
@@ -1590,6 +1612,112 @@ func _ensure_pay_modal_built() -> void:
     pay_confirm_button.text = "Confirm"
     pay_confirm_button.pressed.connect(_on_pay_confirm)
     button_row.add_child(pay_confirm_button)
+
+
+## Build the dark-wood Theme for the pay modal's form controls. Covers
+## OptionButton (and its popup), SpinBox, CheckBox, Button, and Label
+## with consistent colors keyed off the panel + speech_input palette.
+## Keeping it as a single Theme means every control inside the modal
+## inherits the same look without per-instance theme_overrides.
+func _build_pay_modal_theme() -> Theme:
+    var theme := Theme.new()
+    var bg := Color(0.18, 0.13, 0.08, 0.95)
+    var bg_hover := Color(0.24, 0.18, 0.11, 0.97)
+    var bg_pressed := Color(0.14, 0.10, 0.06, 0.98)
+    var bg_disabled := Color(0.16, 0.12, 0.08, 0.6)
+    var border := Color(0.42, 0.32, 0.19, 0.55)
+    var border_focus := Color(0.78, 0.62, 0.34, 0.9)
+    var text_color := Color(0.92, 0.84, 0.70)
+    var text_dim := Color(0.62, 0.54, 0.42)
+    var icon_color := Color(0.85, 0.72, 0.42)
+
+    var make_box := func(fill: Color, stroke: Color) -> StyleBoxFlat:
+        var sb := StyleBoxFlat.new()
+        sb.bg_color = fill
+        sb.border_color = stroke
+        sb.border_width_left = 1
+        sb.border_width_right = 1
+        sb.border_width_top = 1
+        sb.border_width_bottom = 1
+        sb.corner_radius_top_left = 4
+        sb.corner_radius_top_right = 4
+        sb.corner_radius_bottom_left = 4
+        sb.corner_radius_bottom_right = 4
+        sb.content_margin_left = 8
+        sb.content_margin_right = 8
+        sb.content_margin_top = 4
+        sb.content_margin_bottom = 4
+        return sb
+
+    var sb_normal: StyleBoxFlat = make_box.call(bg, border)
+    var sb_hover: StyleBoxFlat = make_box.call(bg_hover, border)
+    var sb_pressed: StyleBoxFlat = make_box.call(bg_pressed, border_focus)
+    var sb_disabled: StyleBoxFlat = make_box.call(bg_disabled, border)
+    var sb_focus: StyleBoxFlat = make_box.call(bg, border_focus)
+
+    # Button (Cancel / Confirm) and OptionButton (which shares Button's
+    # state styleboxes) and CheckBox (which falls back to Button colors
+    # for its label).
+    for cls in ["Button", "OptionButton"]:
+        theme.set_stylebox("normal", cls, sb_normal)
+        theme.set_stylebox("hover", cls, sb_hover)
+        theme.set_stylebox("pressed", cls, sb_pressed)
+        theme.set_stylebox("disabled", cls, sb_disabled)
+        theme.set_stylebox("focus", cls, sb_focus)
+        theme.set_color("font_color", cls, text_color)
+        theme.set_color("font_hover_color", cls, text_color)
+        theme.set_color("font_pressed_color", cls, text_color)
+        theme.set_color("font_disabled_color", cls, text_dim)
+        theme.set_color("font_focus_color", cls, text_color)
+        theme.set_color("icon_normal_color", cls, icon_color)
+
+    # CheckBox: button text color inherits via "Button" fallback in theme,
+    # but the check-icon tint needs to land on the CheckBox class
+    # explicitly so the indicator is legible against the dark fill.
+    theme.set_color("font_color", "CheckBox", text_color)
+    theme.set_color("font_hover_color", "CheckBox", text_color)
+    theme.set_color("font_pressed_color", "CheckBox", text_color)
+    theme.set_color("icon_normal_color", "CheckBox", icon_color)
+    theme.set_color("icon_hover_color", "CheckBox", icon_color)
+    theme.set_color("icon_pressed_color", "CheckBox", icon_color)
+
+    # SpinBox: in Godot 4 the inner LineEdit and the up/down arrows take
+    # their styles from LineEdit theme entries. The arrow icon tint comes
+    # from SpinBox itself.
+    theme.set_stylebox("normal", "LineEdit", sb_normal)
+    theme.set_stylebox("focus", "LineEdit", sb_focus)
+    theme.set_stylebox("read_only", "LineEdit", sb_disabled)
+    theme.set_color("font_color", "LineEdit", text_color)
+    theme.set_color("font_uneditable_color", "LineEdit", text_dim)
+    theme.set_color("font_placeholder_color", "LineEdit", text_dim)
+    theme.set_color("caret_color", "LineEdit", text_color)
+    theme.set_color("selection_color", "LineEdit", Color(0.55, 0.42, 0.25, 0.55))
+    theme.set_color("up_icon_modulate", "SpinBox", icon_color)
+    theme.set_color("down_icon_modulate", "SpinBox", icon_color)
+
+    # PopupMenu (the OptionButton dropdown). Uses its own panel + item
+    # styleboxes; assign the themed boxes so the open dropdown reads as
+    # one piece with the modal instead of a bright-white island.
+    var popup_panel: StyleBoxFlat = make_box.call(Color(0.13, 0.10, 0.07, 0.99), border_focus)
+    popup_panel.content_margin_left = 4
+    popup_panel.content_margin_right = 4
+    popup_panel.content_margin_top = 4
+    popup_panel.content_margin_bottom = 4
+    var popup_hover: StyleBoxFlat = make_box.call(bg_hover, border)
+    popup_hover.content_margin_top = 2
+    popup_hover.content_margin_bottom = 2
+    theme.set_stylebox("panel", "PopupMenu", popup_panel)
+    theme.set_stylebox("hover", "PopupMenu", popup_hover)
+    theme.set_color("font_color", "PopupMenu", text_color)
+    theme.set_color("font_hover_color", "PopupMenu", text_color)
+    theme.set_color("font_disabled_color", "PopupMenu", text_dim)
+    theme.set_color("font_separator_color", "PopupMenu", text_dim)
+
+    # Label: the field labels in _label_with already set their own font
+    # color, but plain Labels (e.g. the "Take it home" text body) fall
+    # through to the theme. Keep them readable.
+    theme.set_color("font_color", "Label", text_color)
+    return theme
 
 
 ## Helper: a horizontal row with a small label + the input control.
@@ -1693,7 +1821,12 @@ func _apply_pay_defaults_for_recipient(recipient: String) -> void:
         return
     if recipient.is_empty():
         return
-    var mentions = vendor_mentions.get(recipient, null)
+    # Pre-fill triggers when the vendor's MOST RECENT mention-bearing
+    # speak narrowed to a single item. The accumulated vendor_mentions
+    # union (used for the dropdown) stays wide once the vendor lists
+    # several options up-front, so reading from it would suppress
+    # pre-fill for every later "the X is N coins" follow-up.
+    var mentions = vendor_latest_mentions.get(recipient, null)
     if typeof(mentions) != TYPE_ARRAY and typeof(mentions) != TYPE_PACKED_STRING_ARRAY:
         return
     if mentions.size() != 1:
@@ -1701,11 +1834,17 @@ func _apply_pay_defaults_for_recipient(recipient: String) -> void:
     var kind := str(mentions[0]).strip_edges().to_lower()
     if kind.is_empty():
         return
-    # Index 0 in the dropdown is "(none — coins only)"; the single
-    # mentioned item is at index 1. Select it without firing the
-    # auto-link logic Jeff explicitly didn't want.
-    if pay_item_option.item_count >= 2:
-        pay_item_option.selected = 1
+    # Locate the matching dropdown entry by metadata (stored as the
+    # lowercase item_kind). Index 0 is always "(none — coins only)";
+    # the accumulated vendor_mentions union may put the latest single
+    # mention at any index >= 1, so a hard-coded selected = 1 would
+    # pick the wrong item once the vendor has listed several wares
+    # earlier in the conversation.
+    for i in range(pay_item_option.item_count):
+        var meta = pay_item_option.get_item_metadata(i)
+        if typeof(meta) == TYPE_STRING and str(meta) == kind:
+            pay_item_option.selected = i
+            break
     var prices = vendor_mention_prices.get(recipient, {})
     if typeof(prices) == TYPE_DICTIONARY and prices.has(kind):
         var unit_price := int(prices[kind])
@@ -1871,13 +2010,23 @@ func _on_npc_spoke(_npc_id: String, speaker_name: String, text: String, kind: St
         var updated: Array = []
         for s in existing:
             updated.append(str(s))
+        # Build a normalized list of THIS speak's mentions (lowercase,
+        # deduped within the speak). Drives both the accumulated
+        # vendor_mentions union and the per-speak vendor_latest_mentions
+        # snapshot the pay-modal pre-fill reads.
+        var this_speak: Array = []
+        var this_seen := {}
         for m in mentions:
             var k := str(m).strip_edges().to_lower()
-            if k.is_empty() or seen.has(k):
+            if k.is_empty() or this_seen.has(k):
                 continue
-            seen[k] = true
-            updated.append(k)
+            this_seen[k] = true
+            this_speak.append(k)
+            if not seen.has(k):
+                seen[k] = true
+                updated.append(k)
         vendor_mentions[speaker_name] = updated
+        vendor_latest_mentions[speaker_name] = this_speak
         # Merge mention_prices into per-speaker price cache. Newer
         # quotes override older — vendor's most recent price wins.
         if not mention_prices.is_empty():
