@@ -1,8 +1,9 @@
--- Down migration restores the legacy columns + constraint but cannot
--- recover per-actor values (we did not preserve them when migrating
--- to minute fields — the conversion is lossy on schedule_interval_hours).
--- Operators rolling back will need to re-seed schedule_interval_hours
--- if any rotation NPCs are restored.
+-- Down migration restores the legacy columns + constraints. The
+-- minute-fields → hour-fields conversion is best-effort:
+-- schedule_interval_hours was always dropped (rotation cadence
+-- lives on attribute_definition.behaviors post-251) and can't be
+-- recovered. Operators rolling back AND restoring rotation actors
+-- will need to re-seed schedule_interval_hours by hand.
 
 BEGIN;
 
@@ -46,5 +47,19 @@ ALTER TABLE actor
         schedule_interval_hours IS NULL
         OR (schedule_interval_hours >= 1 AND schedule_interval_hours <= 24)
     );
+
+-- Best-effort reverse conversion: restore hour fields for any actor
+-- that now has a minute window but no legacy hour values. interval
+-- can't be recovered (the up migration didn't preserve it) — defaults
+-- to 24 here so the row satisfies the all-or-none CHECK; operators
+-- restoring rotation actors must re-seed interval explicitly.
+UPDATE actor
+   SET active_start_hour       = schedule_start_minute / 60,
+       active_end_hour         = schedule_end_minute   / 60,
+       schedule_interval_hours = 24
+ WHERE schedule_start_minute IS NOT NULL
+   AND schedule_end_minute   IS NOT NULL
+   AND active_start_hour IS NULL
+   AND active_end_hour   IS NULL;
 
 COMMIT;

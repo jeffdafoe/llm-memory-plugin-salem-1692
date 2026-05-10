@@ -41,11 +41,16 @@
 
 BEGIN;
 
--- 1. Migrate the two hour-based actors. Convert hours-of-day to
---    minutes-of-day. We pick the schedule_interval_hours value as
---    informational — it's about to be dropped — and only need the
---    start/end conversion. Skip rows that already have minute
---    fields set (idempotent re-run safety).
+-- 1. Migrate any actor with legacy hour fields into the
+--    minute-precision worker window. In current production this
+--    catches Moses + Elizabeth, but the predicate is intentionally
+--    broad so other environments / seeds that still carry rotation
+--    NPCs (washerwoman / town_crier) also get their active windows
+--    promoted. (The rotation cadence itself is now read from
+--    attribute_definition.behaviors, so the conversion is lossless
+--    for window data and the schedule_interval_hours value would
+--    have been dropped anyway.) Skip rows that already have the
+--    minute fields set so re-runs are idempotent.
 UPDATE actor
    SET schedule_start_minute = active_start_hour * 60,
        schedule_end_minute   = active_end_hour   * 60
@@ -54,9 +59,13 @@ UPDATE actor
    AND active_start_hour IS NOT NULL
    AND active_end_hour   IS NOT NULL;
 
--- 2. Drop the all-or-none CHECK on the legacy trio. Must come
---    before dropping the columns themselves.
+-- 2. Drop the constraints that reference the legacy columns. Must
+--    come before dropping the columns themselves so DROP COLUMN
+--    doesn't depend on constraint cascade behavior.
 ALTER TABLE actor DROP CONSTRAINT IF EXISTS actor_schedule_all_or_none;
+ALTER TABLE actor DROP CONSTRAINT IF EXISTS actor_active_start_hour_check;
+ALTER TABLE actor DROP CONSTRAINT IF EXISTS actor_active_end_hour_check;
+ALTER TABLE actor DROP CONSTRAINT IF EXISTS actor_schedule_interval_hours_check;
 
 -- 3. Drop the three legacy columns.
 ALTER TABLE actor DROP COLUMN IF EXISTS schedule_interval_hours;

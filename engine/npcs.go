@@ -796,8 +796,15 @@ func (app *App) handleSetNPCSchedule(w http.ResponseWriter, r *http.Request) {
 		ScheduleEndMinute     *int `json:"schedule_end_minute"`
 		LatenessWindowMinutes *int `json:"lateness_window_minutes"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonError(w, "Invalid request body", http.StatusBadRequest)
+	// DisallowUnknownFields so a stale client sending the removed
+	// legacy keys (schedule_interval_hours / active_start_hour /
+	// active_end_hour) fails loudly with a 400 rather than silently
+	// dropping the values and 200-ing. Admin mutations get the
+	// stricter treatment intentionally.
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		jsonError(w, "Invalid schedule payload: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 

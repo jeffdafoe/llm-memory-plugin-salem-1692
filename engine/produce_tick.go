@@ -32,11 +32,13 @@ package main
 //        c. Commit.
 //
 // Gating: produce only fires while the actor is inside their
-// work_structure_id. (ZBBS-HOME-251 dropped the active-hours hour
-// gate — the npc_scheduler walks workers home at end-of-shift, so
-// "inside work structure" is now a sufficient proxy for "on shift."
-// Sleeping actors have inside_structure_id set but produce_tick
-// continues to skip them through the per-need ticker's sleep gate.)
+// work_structure_id AND not currently asleep. (ZBBS-HOME-251 dropped
+// the active-hours hour gate; "inside work structure" is a sufficient
+// on-shift proxy because the npc_scheduler walks workers home at
+// end-of-shift. The sleep gate covers the corner case where an actor
+// is inside their work structure but mid-sleep — e.g. a stranded
+// keeper waiting on a separate fix to walk-home behavior — so they
+// don't keep minting goods while unconscious.)
 
 import (
 	"context"
@@ -109,12 +111,14 @@ func (app *App) runProduceTickForActor(
 	var (
 		insideStructureID *string
 		workStructureID   *string
+		sleepingUntil     sql.NullTime
 	)
 	err = tx.QueryRow(ctx,
-		`SELECT inside_structure_id::text, work_structure_id::text
+		`SELECT inside_structure_id::text, work_structure_id::text,
+		        sleeping_until
 		   FROM actor WHERE id = $1::uuid FOR UPDATE`,
 		actorID,
-	).Scan(&insideStructureID, &workStructureID)
+	).Scan(&insideStructureID, &workStructureID, &sleepingUntil)
 	if err != nil {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			log.Printf("produce_tick: lock actor %s: %v", actorID, err)
@@ -122,7 +126,7 @@ func (app *App) runProduceTickForActor(
 		return
 	}
 
-	if !produceTickGate(insideStructureID, workStructureID) {
+	if !produceTickGate(insideStructureID, workStructureID, sleepingUntil, now) {
 		return
 	}
 
@@ -145,14 +149,22 @@ func (app *App) runProduceTickForActor(
 }
 
 // produceTickGate is the gate test: actor must be inside their
-// work_structure. The npc_scheduler walks them home at end-of-shift,
-// so "inside their work_structure_id" is now the truth of "currently
-// on shift."
-func produceTickGate(insideStructureID, workStructureID *string) bool {
+// work_structure AND not currently asleep. The npc_scheduler walks
+// workers home at end-of-shift, so "inside their work_structure_id"
+// is now the truth of "currently on shift" for the common case.
+// The sleeping_until check catches the corner case where an actor
+// is inside their work structure but mid-sleep so they don't keep
+// minting goods while unconscious.
+func produceTickGate(insideStructureID, workStructureID *string,
+	sleepingUntil sql.NullTime, now time.Time,
+) bool {
 	if workStructureID == nil || *workStructureID == "" {
 		return false
 	}
 	if insideStructureID == nil || *insideStructureID != *workStructureID {
+		return false
+	}
+	if sleepingUntil.Valid && now.Before(sleepingUntil.Time) {
 		return false
 	}
 	return true

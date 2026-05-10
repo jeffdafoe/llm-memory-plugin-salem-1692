@@ -497,6 +497,13 @@ func apply_npc_schedule_change(data: Dictionary) -> void:
     else:
         container.set_meta("schedule_start_minute", int(start_min))
         container.set_meta("schedule_end_minute", int(end_min))
+    # ZBBS-HOME-251 dropped the legacy cadence trio. Strip any stale
+    # meta values that pre-251 clients/sessions may have set so
+    # downstream readers don't see them after the server stops
+    # sending the fields.
+    container.remove_meta("schedule_interval_hours")
+    container.remove_meta("active_start_hour")
+    container.remove_meta("active_end_hour")
     npc_metadata_changed.emit(npc_id)
 
 func _apply_npc_structure_meta(data: Dictionary, field: String) -> void:
