@@ -653,6 +653,7 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 	// is now stale. If conditions are no longer true (NPC moved to work,
 	// fell into a pressing need), no schedule is written.
 	app.maybeScheduleReturnToWork(ctx, r.ID)
+	app.maybeScheduleReturnHome(ctx, r.ID)
 }
 
 // drainDeferredBroadcasts fires any room_events queued by deliver_order
@@ -2089,6 +2090,23 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 	if shouldNudgeReturnToWork(r, r.InsideStructureID, loiteringAtID,
 		nowMinuteOfDay, dawnMin, duskMin, hungerT, thirstT, tiredT) {
 		sections = append(sections, returnToWorkPerceptionLine(workLabel))
+	}
+
+	// 3c. Return-home nudge (ZBBS-HOME-252). Symmetric to the
+	// return-to-work nudge above: fires when the NPC is OFF shift but
+	// still at their work building. Walks them home for the night so
+	// the village doesn't leave keepers stranded at their stalls
+	// overnight when nothing else cascades into their tick. The
+	// matching scheduleReturnHomeFollowup at end-of-harness reuses
+	// the same predicate so the perception line and the follow-up
+	// self-tick stay in lock-step.
+	if shouldNudgeReturnHome(r, r.InsideStructureID, loiteringAtID,
+		nowMinuteOfDay, dawnMin, duskMin) {
+		nudgeHomeLabel := ""
+		if r.HomeLabel.Valid {
+			nudgeHomeLabel = r.HomeLabel.String
+		}
+		sections = append(sections, returnHomePerceptionLine(nudgeHomeLabel))
 	}
 
 	// 4. Destinations. Categorical first, then occupant-named residences.

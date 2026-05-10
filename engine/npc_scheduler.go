@@ -377,20 +377,39 @@ func (app *App) evaluateWorkerSchedule(ctx context.Context, w *workerRow, now ti
 	}
 
 	// Agent-NPC branch (post-ZBBS-WORK-202): chronicler dispatch is gone.
-	// Agent NPCs no longer get walked bodily on shift boundaries, and
-	// no longer get an explicit nudge — they decide for themselves on
-	// their next tick whether to walk to/from work, with the engine's
-	// idle-sweep dispatcher (ZBBS-HOME-201) ensuring they actually tick
-	// within a bounded window. The return-to-work perception nudge
-	// (shouldNudgeReturnToWork in agent_tick.go) surfaces "your shift
-	// continues, return" when the NPC is on shift and away from work.
-	// Stamp the boundary so we don't re-evaluate every tick.
+	// Agent NPCs no longer get walked bodily on shift boundaries; they
+	// decide for themselves on their next tick whether to walk to/from
+	// work. The return-to-work and return-home perception nudges
+	// (shouldNudgeReturnToWork and shouldNudgeReturnHome in
+	// self_tick.go) surface the relevant "your shift continues / has
+	// ended" line when the NPC is misaligned with their shift.
+	//
+	// ZBBS-HOME-252: we also schedule a self-tick at the boundary so
+	// the agent gets a turn within seconds of the transition rather
+	// than waiting for an idle-sweep or cascade. Without this, an
+	// agent alone at their workplace at end of shift can sit there
+	// for an hour before idle-sweep fires.
 	if w.LlmMemoryAgent.Valid {
 		if _, err := app.DB.Exec(ctx,
 			`UPDATE actor SET last_shift_tick_at = $2 WHERE id = $1`,
 			w.ID, boundaryAt,
 		); err != nil {
 			log.Printf("scheduler: stamp (agent-shift-boundary) %s: %v", w.ID, err)
+		}
+		// Self-tick at boundary only for shared-VA NPCs
+		// (salem-vendor / salem-visitor). Persistent per-NPC VAs
+		// (zbbs-*-keeper, zbbs-*-ward, etc.) tick reliably via
+		// their own cascade events and don't need the boundary
+		// nudge; firing it on them would be redundant load.
+		// Shared VAs are stateless and only fire on perception
+		// events, so without this they can sit at their workplace
+		// for an hour past shift end before idle-sweep catches up.
+		if isSharedVAAgent(w.LlmMemoryAgent.String) {
+			reason := "shift_boundary_arrive"
+			if kind == workerLeave {
+				reason = "shift_boundary_leave"
+			}
+			app.scheduleSelfTick(ctx, w.ID, now, reason)
 		}
 		return
 	}
