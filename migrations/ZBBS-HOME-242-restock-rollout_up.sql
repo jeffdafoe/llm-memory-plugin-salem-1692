@@ -84,7 +84,13 @@ UPDATE actor
    SET llm_memory_agent   = 'salem-vendor',
        work_structure_id  = '019e138d-724b-75d8-9374-9d931ebc93cd'::uuid,  -- Ellis Farm
        active_start_hour  = 6,
-       active_end_hour    = 19
+       active_end_hour    = 19,
+       -- Required by actor_schedule_all_or_none CHECK: when active_*_hour
+       -- are set, schedule_interval_hours must also be non-NULL. Producer
+       -- NPCs don't use a scheduled behavior_handler (the produce_tick
+       -- fires per-minute on its own gating), so the value is effectively
+       -- inert here — set to 24 to convey "daily, no extra mid-day firing".
+       schedule_interval_hours = 24
  WHERE display_name = 'Elizabeth Ellis';
 
 INSERT INTO actor_attribute (actor_id, slug, params)
@@ -107,7 +113,13 @@ UPDATE actor
    SET llm_memory_agent   = 'salem-vendor',
        work_structure_id  = '019e1390-0639-7bf6-8b66-08f95414079c'::uuid,  -- James Farm
        active_start_hour  = 6,
-       active_end_hour    = 19
+       active_end_hour    = 19,
+       -- Required by actor_schedule_all_or_none CHECK: when active_*_hour
+       -- are set, schedule_interval_hours must also be non-NULL. Producer
+       -- NPCs don't use a scheduled behavior_handler (the produce_tick
+       -- fires per-minute on its own gating), so the value is effectively
+       -- inert here — set to 24 to convey "daily, no extra mid-day firing".
+       schedule_interval_hours = 24
  WHERE display_name = 'Moses James';
 
 INSERT INTO actor_attribute (actor_id, slug, params)
