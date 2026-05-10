@@ -2701,6 +2701,12 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 			spokeData["room_id"] = roomScope
 		}
 		app.Hub.Broadcast(WorldEvent{Type: "npc_spoke", Data: spokeData})
+		// ZBBS-WORK-214 Phase 2: record this speech as a salient
+		// interaction on each (speaker, peer) actor_relationship row
+		// where at least one side is shared-VA-backed. recordSpeech-
+		// Interactions handles its own gating and logs errors —
+		// failures here shouldn't block the speech itself.
+		app.recordSpeechInteractions(ctx, r.ID, r.DisplayName, text, time.Now())
 		// Event-tick co-located agents so they can react in-band. Force
 		// the cost guard off here — when an NPC addresses another NPC
 		// by name (or makes a speech the room is reacting to), the

@@ -35,7 +35,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -237,4 +239,139 @@ func formatRelationshipsPerception(rows []relationshipRow) string {
 		return ""
 	}
 	return "What you remember of those here:\n\n" + strings.Join(subsections, "\n\n")
+}
+
+// salientTextMaxLen caps a single salient_facts text entry. Prevents
+// a verbose speak from blowing up the JSONB. The cap mirrors the
+// "Recent:" perception block's per-line length budget so a fact-line
+// reads at the same density as a real-time speech entry.
+const salientTextMaxLen = 220
+
+// truncateForSalient returns the text trimmed to salientTextMaxLen
+// runes, with an ellipsis when truncated. Ensures the cap is rune-
+// safe (no torn multi-byte sequences).
+func truncateForSalient(text string) string {
+	t := strings.TrimSpace(text)
+	if t == "" {
+		return ""
+	}
+	runes := []rune(t)
+	if len(runes) <= salientTextMaxLen {
+		return t
+	}
+	return string(runes[:salientTextMaxLen-1]) + "…"
+}
+
+// recordInteraction UPSERTs an actor_relationship row, appending the
+// {at, kind, text} entry to salient_facts and bumping
+// interaction_count + last_interaction_at. Skip-writes when actorID
+// is not shared-VA-backed (callers don't have to gate themselves —
+// this helper is the single chokepoint for write-side gating).
+//
+// kind values today (extend as new event hooks land):
+//   - "spoke"          — actor said something the other heard
+//   - "heard"          — other said something the actor heard
+//
+// salient_facts is appended unbounded for now; Phase 3 consolidation
+// will compress the trail. If growth becomes a concern before Phase 3
+// lands, add a cap here (read-trim-write or a SQL-side window).
+//
+// Errors are returned for caller logging — write failures here
+// shouldn't block the speech itself, so callers log + fall through.
+func (app *App) recordInteraction(ctx context.Context, actorID, actorAgent, otherActorID, kind, text string, at time.Time) error {
+	if !isSharedVAAgent(actorAgent) {
+		return nil
+	}
+	text = truncateForSalient(text)
+	if text == "" || actorID == "" || otherActorID == "" || actorID == otherActorID {
+		return nil
+	}
+	fact := map[string]interface{}{
+		"at":   at.UTC().Format(time.RFC3339),
+		"kind": kind,
+		"text": text,
+	}
+	factBytes, err := json.Marshal(fact)
+	if err != nil {
+		return fmt.Errorf("marshal salient fact: %w", err)
+	}
+	_, err = app.DB.Exec(ctx, `
+		INSERT INTO actor_relationship
+		    (actor_id, other_actor_id, salient_facts, interaction_count, last_interaction_at)
+		VALUES
+		    ($1, $2, jsonb_build_array($3::jsonb), 1, $4)
+		ON CONFLICT (actor_id, other_actor_id)
+		DO UPDATE SET
+		    salient_facts        = actor_relationship.salient_facts || EXCLUDED.salient_facts,
+		    interaction_count    = actor_relationship.interaction_count + 1,
+		    last_interaction_at  = EXCLUDED.last_interaction_at,
+		    updated_at           = NOW()
+	`, actorID, otherActorID, factBytes, at)
+	if err != nil {
+		return fmt.Errorf("upsert actor_relationship: %w", err)
+	}
+	return nil
+}
+
+// recordSpeechInteractions writes one pair of relationship updates
+// per (speaker, listener) in the speaker's huddle: the speaker sees
+// "spoke" toward each peer, each peer sees "heard" from the speaker.
+// Both sides are gated by recordInteraction's shared-VA check, so no
+// rows are created for VA-attached actors who get continuity from
+// llm-memory's own soul.
+//
+// Called from both NPC speak commit (agent_tick.go executeAgentCommit
+// case "speak") and PC speech (pc_handlers.go handlePCSpeak). Errors
+// are logged and swallowed — a relationship-write failure shouldn't
+// abort the speech the player or NPC just produced.
+func (app *App) recordSpeechInteractions(ctx context.Context, speakerID, speakerName, text string, at time.Time) {
+	if speakerID == "" || strings.TrimSpace(text) == "" {
+		return
+	}
+	rows, err := app.DB.Query(ctx, `
+		SELECT id::text, display_name, COALESCE(llm_memory_agent, '')
+		  FROM actor
+		 WHERE current_huddle_id IS NOT NULL
+		   AND current_huddle_id = (SELECT current_huddle_id FROM actor WHERE id = $1)
+		   AND id::text <> $1
+	`, speakerID)
+	if err != nil {
+		log.Printf("recordSpeechInteractions query peers (speaker=%s): %v", speakerID, err)
+		return
+	}
+	defer rows.Close()
+
+	type peer struct {
+		id    string
+		name  string
+		agent string
+	}
+	var peers []peer
+	for rows.Next() {
+		var p peer
+		if err := rows.Scan(&p.id, &p.name, &p.agent); err != nil {
+			log.Printf("recordSpeechInteractions scan peer (speaker=%s): %v", speakerID, err)
+			continue
+		}
+		peers = append(peers, p)
+	}
+	if err := rows.Err(); err != nil {
+		log.Printf("recordSpeechInteractions iterate peers (speaker=%s): %v", speakerID, err)
+		// Fall through with whatever peers we did collect.
+	}
+
+	speakerAgent := ""
+	_ = app.DB.QueryRow(ctx, `SELECT COALESCE(llm_memory_agent, '') FROM actor WHERE id = $1`, speakerID).Scan(&speakerAgent)
+
+	for _, p := range peers {
+		// Speaker's row toward peer: "I said: ..."
+		if err := app.recordInteraction(ctx, speakerID, speakerAgent, p.id, "spoke", text, at); err != nil {
+			log.Printf("recordSpeechInteractions write speaker→%s: %v", p.name, err)
+		}
+		// Peer's row toward speaker: "<speaker> said: ..."
+		listenerText := fmt.Sprintf("%s said: %s", speakerName, text)
+		if err := app.recordInteraction(ctx, p.id, p.agent, speakerID, "heard", listenerText, at); err != nil {
+			log.Printf("recordSpeechInteractions write %s→speaker: %v", p.name, err)
+		}
+	}
 }

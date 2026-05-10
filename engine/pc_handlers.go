@@ -1537,6 +1537,9 @@ func (app *App) handlePCSay(w http.ResponseWriter, r *http.Request) {
 		); err != nil {
 			log.Printf("pc/say audit insert: %v", err)
 		}
+		// ZBBS-WORK-214 Phase 2 — same as /pc/speak: record salient
+		// speech facts on shared-VA peers' relationship rows.
+		app.recordSpeechInteractions(r.Context(), actorID.String, charName.String, req.Text, time.Now())
 		spokeData := map[string]interface{}{
 			"npc_id":       actorID.String,
 			"name":         charName.String,
@@ -1690,6 +1693,14 @@ func (app *App) handlePCSpeak(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "Failed to log speech", http.StatusInternalServerError)
 		return
 	}
+
+	// ZBBS-WORK-214 Phase 2: record this speech as a salient interaction
+	// on each (PC, peer) actor_relationship row where the peer is
+	// shared-VA-backed. The PC themselves isn't shared-VA so their own
+	// row writes get gated out — only the peer's row toward the PC is
+	// written. Errors are logged inside the helper; nothing blocks
+	// here.
+	app.recordSpeechInteractions(r.Context(), actorID.String, charName.String, req.Text, time.Now())
 
 	// kind="player" matches the audit row's source='player' and the
 	// talk panel's render-as-player branch. speaker_x/speaker_y let
