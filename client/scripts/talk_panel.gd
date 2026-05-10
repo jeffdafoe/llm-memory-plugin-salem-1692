@@ -96,6 +96,17 @@ var vendor_mentions: Dictionary = {}
 # Resets on huddle change alongside vendor_mentions.
 # Shape: { speaker_name: { item_kind: int unit_price } }
 var vendor_mention_prices: Dictionary = {}
+# ZBBS-HOME-238: separate cache for the LATEST speak's mentions (not
+# accumulated). The pay-modal pre-fill wants "is the vendor currently
+# narrowed to a single item?" — the accumulated vendor_mentions set
+# above stays stuck wide once the vendor's first speak listed several
+# options ("I have ale, water, bread, cheese"), even after a follow-up
+# narrows to one ("the cheese is 5 coins"). Updated only on speaks
+# with non-empty mentions so a chatter speak ("how's business?") doesn't
+# clobber the latest quote context. Resets on huddle change.
+# Shape: { speaker_name: PackedStringArray of lowercase item_kinds from
+# the most recent mention-bearing speak }
+var vendor_latest_mentions: Dictionary = {}
 ## Cached huddle member list at the moment the modal opened — used so
 ## the dropdown index maps back to the chosen recipient name without
 ## re-reading huddle_members during the click.
@@ -1212,6 +1223,7 @@ func _maybe_apply_recent_speech(data: Dictionary) -> void:
         child.queue_free()
     vendor_mentions.clear()
     vendor_mention_prices.clear()
+    vendor_latest_mentions.clear()
 
     if current_structure.is_empty():
         return
@@ -1693,7 +1705,12 @@ func _apply_pay_defaults_for_recipient(recipient: String) -> void:
         return
     if recipient.is_empty():
         return
-    var mentions = vendor_mentions.get(recipient, null)
+    # Pre-fill triggers when the vendor's MOST RECENT mention-bearing
+    # speak narrowed to a single item. The accumulated vendor_mentions
+    # union (used for the dropdown) stays wide once the vendor lists
+    # several options up-front, so reading from it would suppress
+    # pre-fill for every later "the X is N coins" follow-up.
+    var mentions = vendor_latest_mentions.get(recipient, null)
     if typeof(mentions) != TYPE_ARRAY and typeof(mentions) != TYPE_PACKED_STRING_ARRAY:
         return
     if mentions.size() != 1:
@@ -1701,11 +1718,17 @@ func _apply_pay_defaults_for_recipient(recipient: String) -> void:
     var kind := str(mentions[0]).strip_edges().to_lower()
     if kind.is_empty():
         return
-    # Index 0 in the dropdown is "(none — coins only)"; the single
-    # mentioned item is at index 1. Select it without firing the
-    # auto-link logic Jeff explicitly didn't want.
-    if pay_item_option.item_count >= 2:
-        pay_item_option.selected = 1
+    # Locate the matching dropdown entry by metadata (stored as the
+    # lowercase item_kind). Index 0 is always "(none — coins only)";
+    # the accumulated vendor_mentions union may put the latest single
+    # mention at any index >= 1, so a hard-coded selected = 1 would
+    # pick the wrong item once the vendor has listed several wares
+    # earlier in the conversation.
+    for i in range(pay_item_option.item_count):
+        var meta = pay_item_option.get_item_metadata(i)
+        if typeof(meta) == TYPE_STRING and str(meta) == kind:
+            pay_item_option.selected = i
+            break
     var prices = vendor_mention_prices.get(recipient, {})
     if typeof(prices) == TYPE_DICTIONARY and prices.has(kind):
         var unit_price := int(prices[kind])
@@ -1871,13 +1894,23 @@ func _on_npc_spoke(_npc_id: String, speaker_name: String, text: String, kind: St
         var updated: Array = []
         for s in existing:
             updated.append(str(s))
+        # Build a normalized list of THIS speak's mentions (lowercase,
+        # deduped within the speak). Drives both the accumulated
+        # vendor_mentions union and the per-speak vendor_latest_mentions
+        # snapshot the pay-modal pre-fill reads.
+        var this_speak: Array = []
+        var this_seen := {}
         for m in mentions:
             var k := str(m).strip_edges().to_lower()
-            if k.is_empty() or seen.has(k):
+            if k.is_empty() or this_seen.has(k):
                 continue
-            seen[k] = true
-            updated.append(k)
+            this_seen[k] = true
+            this_speak.append(k)
+            if not seen.has(k):
+                seen[k] = true
+                updated.append(k)
         vendor_mentions[speaker_name] = updated
+        vendor_latest_mentions[speaker_name] = this_speak
         # Merge mention_prices into per-speaker price cache. Newer
         # quotes override older — vendor's most recent price wins.
         if not mention_prices.is_empty():

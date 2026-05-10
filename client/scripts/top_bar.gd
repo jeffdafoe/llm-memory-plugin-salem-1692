@@ -674,7 +674,7 @@ func _format_wake_time(iso: String) -> String:
     var unix_utc := Time.get_unix_time_from_datetime_string(iso)
     if unix_utc <= 0.0:
         return ""
-    var bias_minutes := Time.get_time_zone_from_system().get("bias", 0)
+    var bias_minutes: int = Time.get_time_zone_from_system().get("bias", 0)
     var local := Time.get_datetime_dict_from_unix_time(int(unix_utc) + bias_minutes * 60)
     return "%02d:%02d" % [int(local.get("hour", 0)), int(local.get("minute", 0))]
 
