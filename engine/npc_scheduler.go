@@ -396,11 +396,21 @@ func (app *App) evaluateWorkerSchedule(ctx context.Context, w *workerRow, now ti
 		); err != nil {
 			log.Printf("scheduler: stamp (agent-shift-boundary) %s: %v", w.ID, err)
 		}
-		reason := "shift_boundary_arrive"
-		if kind == workerLeave {
-			reason = "shift_boundary_leave"
+		// Self-tick at boundary only for shared-VA NPCs
+		// (salem-vendor / salem-visitor). Persistent per-NPC VAs
+		// (zbbs-*-keeper, zbbs-*-ward, etc.) tick reliably via
+		// their own cascade events and don't need the boundary
+		// nudge; firing it on them would be redundant load.
+		// Shared VAs are stateless and only fire on perception
+		// events, so without this they can sit at their workplace
+		// for an hour past shift end before idle-sweep catches up.
+		if isSharedVAAgent(w.LlmMemoryAgent.String) {
+			reason := "shift_boundary_arrive"
+			if kind == workerLeave {
+				reason = "shift_boundary_leave"
+			}
+			app.scheduleSelfTick(ctx, w.ID, now, reason)
 		}
-		app.scheduleSelfTick(ctx, w.ID, now, reason)
 		return
 	}
 
