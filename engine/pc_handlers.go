@@ -262,7 +262,11 @@ func (app *App) handlePCMe(w http.ResponseWriter, r *http.Request) {
 	// query error we surface an empty array so a transient DB hiccup
 	// just turns the pulse off briefly rather than failing the whole
 	// /pc/me.
-	dwelling, dwErr := app.fetchDwellingAttributes(r.Context(), pcActorID)
+	insideForDwell := ""
+	if insideID.Valid {
+		insideForDwell = insideID.String
+	}
+	dwelling, dwErr := app.fetchDwellingAttributes(r.Context(), pcActorID, x, y, insideForDwell)
 	if dwErr != nil {
 		log.Printf("pc/me dwelling attributes %s: %v", pcActorID, dwErr)
 	}
@@ -1368,27 +1372,51 @@ func (app *App) composeKnockNarration(ctx context.Context, structureID string) s
 // fill any gaps.
 // fetchDwellingAttributes returns the distinct attributes the actor
 // is currently recovering via dwell — one entry per attribute with a
-// non-stale actor_dwell_credit row. Used by /pc/me to drive the HUD
-// pulse (ZBBS-HOME-218) so the player sees the recovery glow as soon
-// as their session reads state, even if no value-change has been
+// non-stale actor_dwell_credit row whose object_id matches the
+// actor's current location. Used by /pc/me to drive the HUD pulse
+// (ZBBS-HOME-218) so the player sees the recovery glow as soon as
+// their session reads state, even if no value-change has been
 // detected client-side.
 //
 // "Non-stale" = last_credited_at + dwell_period_minutes >= NOW().
 // The dwell sweep deletes rows when the actor walks away from the
 // loiter slot, so under normal operation a row is either fresh
-// (within its period) or gone. This freshness guard is belt-and-
-// suspenders against the brief window before the next sweep where
-// a departed actor's row might still exist.
+// (within its period) or gone. The freshness guard is belt-and-
+// suspenders against the window before the next sweep.
+//
+// ZBBS-HOME-239: position filter — without it, the row stays "fresh"
+// for the full dwell_period_minutes after the actor walks off
+// (10 min for tree, 2 min for stew), so the HUD keeps strobing long
+// after recovery has actually stopped. The dwell tick already does
+// the position check + delete on the next overdue tick; this filter
+// just hides the stale row from /pc/me until then so the pulse
+// fades on the next poll (~10s) instead of waiting for the dwell
+// period to expire.
+//
+// object_id semantics:
+//   - source='object' (tree, well, etc.): object_id IS the loiter
+//     structure. Match against resolved current loiter pin.
+//   - source='item' (stew at the tavern, apple at fruit stand):
+//     object_id is the structure where the item was consumed
+//     (resolveLoiterStructureLocked or the seller's
+//     work_structure_id). Match against either the actor's
+//     inside_structure_id (indoor consume) or their resolved
+//     loiter pin (outdoor consume).
 //
 // Empty slice (not nil) on success-with-no-rows so the JSON encodes
 // as `[]` and the client sees an unambiguous "not dwelling" signal.
-func (app *App) fetchDwellingAttributes(ctx context.Context, actorID string) ([]string, error) {
+func (app *App) fetchDwellingAttributes(ctx context.Context, actorID string, x, y float64, insideStructureID string) ([]string, error) {
+	loiterID, _ := app.resolveLoiteringStructure(ctx, x, y)
+	if loiterID == "" && insideStructureID == "" {
+		return []string{}, nil
+	}
 	rows, err := app.DB.Query(ctx, `
 		SELECT DISTINCT attribute
 		  FROM actor_dwell_credit
 		 WHERE actor_id = $1::uuid
 		   AND last_credited_at + (dwell_period_minutes || ' minutes')::interval >= NOW()
-	`, actorID)
+		   AND (object_id::text = NULLIF($2, '') OR object_id::text = NULLIF($3, ''))
+	`, actorID, loiterID, insideStructureID)
 	if err != nil {
 		return []string{}, err
 	}
