@@ -74,6 +74,12 @@ func (app *App) runServerTickOnce(ctx context.Context) {
 	// rows configured with refresh_period_hours, in continuous or periodic
 	// mode. Cheap when no row is behind (single SELECT, zero UPDATEs).
 	app.dispatchObjectRefreshRegen(ctx)
+	// Produce tick (ZBBS-HOME-241) — grows actor inventories per their
+	// `produce` restock entries. Mirror of object_refresh_tick but the
+	// supply lives on actor_inventory and the rate comes from item_recipe.
+	// Cheap when no actor is behind: single SELECT for recipes, single
+	// JSONB filter for actors-with-policies, then per-actor evaluation.
+	app.dispatchProduceTick(ctx)
 	// Dwell tick (ZBBS-172) — applies per-tick recovery to actors still
 	// present at a credited object/structure. Drives the rest-tree, well-
 	// linger, and meal-at-tavern mechanics from a single handler. Cheap
