@@ -164,6 +164,35 @@ func (app *App) tickBuyForActor(ctx context.Context, actorID string, now time.Ti
 		return
 	}
 
+	// Look up the buyer's work_structure walk-target — that's where
+	// the return walk should land them, not their pre-trip arbitrary
+	// current_x/y. Without this, buyers returned to whichever exact
+	// pixel they were standing on when the trip started, which often
+	// left them outside their structure (inside_structure_id=NULL),
+	// breaking the produce_tick gate AND the next buy dispatch.
+	var (
+		workX, workY  float64
+		loiterX       *float64
+		loiterY       *float64
+	)
+	const tileSize = 32.0
+	if err := app.DB.QueryRow(ctx,
+		`SELECT vo.x, vo.y, vo.loiter_offset_x, vo.loiter_offset_y
+		   FROM village_object vo WHERE vo.id = $1::uuid`,
+		*workStructureIDStr,
+	).Scan(&workX, &workY, &loiterX, &loiterY); err != nil {
+		log.Printf("buy_walker: load buyer work_structure %s: %v", actorID, err)
+		return
+	}
+	homeReturnX := workX
+	homeReturnY := workY
+	if loiterX != nil {
+		homeReturnX += *loiterX * tileSize
+	}
+	if loiterY != nil {
+		homeReturnY += *loiterY * tileSize
+	}
+
 	policy, err := app.loadActorRestockPolicy(ctx, actorID)
 	if err != nil {
 		log.Printf("buy_walker: load policy %s: %v", actorID, err)
@@ -183,9 +212,11 @@ func (app *App) tickBuyForActor(ctx context.Context, actorID string, now time.Ti
 			continue
 		}
 
-		// Found one. Start the trip.
+		// Found one. Start the trip. Note: we capture the work_structure
+		// walk-target as the return-leg destination (not buyerX/Y),
+		// so the inbound walk lands them back inside their structure.
 		if err := app.startBuyTrip(ctx, actorID, entry.Item, decision.Candidate,
-			buyerX, buyerY, *workStructureIDStr); err != nil {
+			homeReturnX, homeReturnY, *workStructureIDStr); err != nil {
 			log.Printf("buy_walker: start trip %s for %s: %v", actorID, entry.Item, err)
 		}
 		return // one trip per actor per tick
@@ -492,6 +523,13 @@ func (app *App) tryDeterministicBuy(
 
 // cancelBuyTrip clears the trip state + the break stamps. Called on
 // inbound arrival (normal completion) and on abnormal terminations.
+//
+// Also restores inside_structure_id to work_structure_id when the
+// buyer is at (or very near) their work_structure. The return walk
+// targets the work_structure walk-target, but the existing arrival
+// pipeline doesn't always flip inside=true for non-owner moves to
+// stalls. Without this, the buyer returns to "outside" the stall
+// and produce_tick + the next buy dispatch both gate them out.
 func (app *App) cancelBuyTrip(ctx context.Context, buyerID, reason string) {
 	if _, err := app.DB.Exec(ctx,
 		`DELETE FROM actor_restock_in_progress WHERE actor_id = $1::uuid`,
@@ -505,6 +543,22 @@ func (app *App) cancelBuyTrip(ctx context.Context, buyerID, reason string) {
 		buyerID,
 	); err != nil {
 		log.Printf("buy_walker: clear break %s: %v", buyerID, err)
+	}
+	// Best-effort inside_structure_id restore. Compute distance from
+	// current position to work_structure anchor + loiter; if within
+	// 4 tiles (128px), set inside=true and inside_structure_id.
+	if _, err := app.DB.Exec(ctx, `
+		UPDATE actor a
+		   SET inside_structure_id = a.work_structure_id,
+		       inside = TRUE
+		  FROM village_object vo
+		 WHERE a.id = $1::uuid
+		   AND a.work_structure_id IS NOT NULL
+		   AND vo.id = a.work_structure_id
+		   AND ((a.current_x - (vo.x + COALESCE(vo.loiter_offset_x, 0) * 32))^2
+		      + (a.current_y - (vo.y + COALESCE(vo.loiter_offset_y, 0) * 32))^2) < 16384
+	`, buyerID); err != nil {
+		log.Printf("buy_walker: restore inside %s: %v", buyerID, err)
 	}
 	log.Printf("buy_walker: trip end actor=%s reason=%s", buyerID, reason)
 }

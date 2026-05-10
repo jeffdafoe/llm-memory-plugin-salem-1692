@@ -1517,7 +1517,14 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 		for residenceRows.Next() {
 			var name string
 			if err := residenceRows.Scan(&name); err == nil && name != "" {
-				residences = append(residences, fmt.Sprintf("%s's home", name))
+				// Mark explicitly as private so the LLM stops treating
+				// residences as viable destinations (especially as places
+				// to buy food from named merchants who happen to live
+				// there). The entry_policy='owner' enforcement physically
+				// prevents non-residents from entering, but without the
+				// label hint the LLM still picks these as targets and
+				// walks the actor to the door for nothing.
+				residences = append(residences, fmt.Sprintf("%s's home (private — do not visit unless you have a personal reason)", name))
 			}
 		}
 		residenceRows.Close()
