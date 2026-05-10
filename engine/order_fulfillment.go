@@ -60,6 +60,7 @@ import (
 type deliverOrderResult struct {
 	Result    string
 	Err       string
+	BuyerID   string
 	BuyerName string
 	ItemKind  string
 	Qty       int
@@ -610,6 +611,7 @@ func (app *App) executeDeliverOrder(ctx context.Context, sellerID string, ledger
 
 	return deliverOrderResult{
 		Result:             "ok",
+		BuyerID:            buyerID,
 		BuyerName:          buyerDisplayName,
 		ItemKind:           itemKind,
 		Qty:                qty,

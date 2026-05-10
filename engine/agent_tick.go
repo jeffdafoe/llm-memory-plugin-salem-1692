@@ -3314,6 +3314,9 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 			srCopy := sr
 			r.LastServeResult = &srCopy
 		}
+		// ZBBS-WORK-216 Phase 2C: record salient_facts for each
+		// (server, recipient) pair on whichever side is shared-VA-backed.
+		app.recordServeInteractions(ctx, r.ID, sr)
 		// Room narration: serve is the canonical "tavernkeeper hands
 		// food/drink to a customer" verb. Without this broadcast a PC
 		// who's served sees nothing in the talk panel — the model's
@@ -3429,6 +3432,9 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 				r.PendingDeferredBroadcasts = append(r.PendingDeferredBroadcasts, dr.DeferredBroadcasts...)
 			}
 		}
+		// ZBBS-WORK-216 Phase 2C: record salient_facts for the
+		// seller↔buyer pair on whichever side is shared-VA-backed.
+		app.recordDeliverOrderInteractions(ctx, r.ID, dr)
 
 	default:
 		result, errStr = "rejected", fmt.Sprintf("unknown commit tool: %s", tc.Name)
