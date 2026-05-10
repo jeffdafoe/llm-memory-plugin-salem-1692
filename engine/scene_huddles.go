@@ -466,3 +466,76 @@ func (app *App) maybeAdoptWaitingPCsAtArrival(ctx context.Context, npcID, struct
 			pc.ActorID, structureID, huddleID)
 	}
 }
+
+// adoptVisitorLoiterHuddle joins a just-arrived NPC into the destination
+// structure's active scene_huddle when the actor's arrival position is
+// within Chebyshev 64 px of the structure's effective loiter pin.
+// Mirrors the PC-side loiter-huddle adoption in handlePCMove for NPC
+// visitor arrivals where setNPCInside isn't called — owner-policy
+// non-owner targets, none-policy decoratives, and agent-visitor
+// anyone-policy walks with EnterOnArrival=false.
+//
+// Without this, an NPC who walks across town to converse with a
+// shopkeeper has no huddle scope on arrival: speak() broadcasts to
+// the wrong scope (or none) and the keeper never perceives them.
+//
+// Returns the joined huddle id (or "" when the actor isn't on the
+// ring or the join failed) and the count of OTHER actors already in
+// that huddle. The caller uses the count to decide whether to fire a
+// self-tick — empty huddles don't need an immediate decision.
+//
+// 64 px tolerance matches actorStructureScope and triggerCoLocatedTicks
+// — keep the three predicates in sync.
+func (app *App) adoptVisitorLoiterHuddle(ctx context.Context, npcID, structureID string, arrivalX, arrivalY float64) (string, int) {
+	if npcID == "" || structureID == "" {
+		return "", 0
+	}
+	var ox, oy float64
+	var loiterX, loiterY sql.NullInt32
+	var doorX, doorY sql.NullInt32
+	var footprintBottom int
+	if err := app.DB.QueryRow(ctx,
+		`SELECT o.x, o.y,
+		        o.loiter_offset_x, o.loiter_offset_y,
+		        a.door_offset_x, a.door_offset_y, a.footprint_bottom
+		   FROM village_object o
+		   JOIN asset a ON a.id = o.asset_id
+		  WHERE o.id::text = $1`,
+		structureID,
+	).Scan(&ox, &oy, &loiterX, &loiterY, &doorX, &doorY, &footprintBottom); err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			log.Printf("visitor-loiter-huddle structure read %s: %v", structureID, err)
+		}
+		return "", 0
+	}
+	lx, ly := effectiveLoiterTile(loiterX, loiterY, doorX, doorY, footprintBottom)
+	pinX := ox + float64(lx)*tileSize
+	pinY := oy + float64(ly)*tileSize
+	dx := arrivalX - pinX
+	if dx < 0 {
+		dx = -dx
+	}
+	dy := arrivalY - pinY
+	if dy < 0 {
+		dy = -dy
+	}
+	if max(dx, dy) > 64 {
+		return "", 0
+	}
+	huddleID, err := app.joinOrCreateHuddle(ctx, npcID, structureID)
+	if err != nil {
+		log.Printf("visitor-loiter-huddle join %s/%s: %v", npcID, structureID, err)
+		return "", 0
+	}
+	var others int
+	if err := app.DB.QueryRow(ctx,
+		`SELECT COUNT(*) FROM actor
+		  WHERE current_huddle_id::text = $1
+		    AND id::text != $2`,
+		huddleID, npcID,
+	).Scan(&others); err != nil {
+		log.Printf("visitor-loiter-huddle others count %s: %v", huddleID, err)
+		return huddleID, 0
+	}
+	return huddleID, others
+}
