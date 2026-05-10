@@ -948,6 +948,17 @@ func (app *App) handleGoToStructure(w http.ResponseWriter, r *http.Request, kind
 //   - false: NPC stays outside at the destination (used by agent visitor
 //     moves to non-owned targets, chore destinations, loiter relocates).
 func (app *App) startReturnWalk(ctx context.Context, npc *behaviorNPC, destX, destY float64, targetStructureID, label string, enterOnArrival bool) error {
+	// ZBBS-HOME-237: leave the FROM huddle on departure, independent of
+	// the inside-flag flip below. setNPCInside's leaveHuddle path is
+	// gated on inside_structure_id transitioning, so an actor already
+	// outside (carrying a stale huddle from a prior service or a no-op
+	// setNPCInside) would never have current_huddle_id cleared. That
+	// produced zombie members of long-concluded scenes — speak() then
+	// broadcasts to the wrong scope and the actor sticks frozen at a
+	// new location with nobody perceiving them. leaveHuddle is
+	// idempotent (no-ops when current_huddle_id is already NULL) so
+	// this is safe to call unconditionally.
+	app.leaveHuddle(ctx, npc.ID)
 	app.setNPCInside(ctx, npc.ID, false, "")
 	route := &npcRoute{
 		NPCID:             npc.ID,

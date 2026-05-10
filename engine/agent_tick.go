@@ -523,14 +523,24 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			// the table — without it, models tend to default to "done"
 			// after speaking ("I responded, my turn's over"). Non-directive
 			// nudge: doesn't name a specific action, just affirms agency.
-			_, _, _ = app.executeAgentCommit(ctx, r, speakCall, sceneID, hourStart.Location())
+			result, errStr, _ := app.executeAgentCommit(ctx, r, speakCall, sceneID, hourStart.Location())
 			// Drain deferred broadcasts queued by deliver_order (dwell
 			// hint + felt-outcome consume narrations). These were held
 			// back so the keeper's verbal "here you are" speak lands
 			// BEFORE the eat narrations. Now that the speak has fired,
 			// the consume beats can land in their natural slot.
 			app.drainDeferredBroadcasts(r)
-			currentMessage = "[OK] You spoke. Continue your turn — you may move or run a chore now, or call done if you're staying put."
+			if result == "ok" {
+				currentMessage = "[OK] You spoke. Continue your turn — you may move or run a chore now, or call done if you're staying put."
+			} else {
+				// Surface the rejection verbatim so the model can correct
+				// its plan within the same tick. Pre-ZBBS-HOME-237 the
+				// result was discarded and a misleading "[OK] You spoke"
+				// went back regardless — guards like the walk-in-flight
+				// gate and the vocative stale-addressee check fired but
+				// the LLM never learned that its words went nowhere.
+				currentMessage = fmt.Sprintf("[Speak %s] %s. Continue your turn — you may correct it, move, run a chore, or call done.", result, errStr)
+			}
 			currentToolCallID = speakCall.ID
 			continue
 		}
@@ -2585,6 +2595,20 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		text, _ := tc.Input["text"].(string)
 		if text == "" {
 			result, errStr = "rejected", "empty text"
+			break
+		}
+		// ZBBS-HOME-237: reject speak when this actor has a walk in
+		// flight from an earlier tool call in the same batch. The audit
+		// row stamps huddle_id from current_huddle_id at insert-time,
+		// and current_huddle_id only updates when the walk arrival fires
+		// — so a chained move_to → speak broadcasts at the FROM huddle
+		// (the place the actor JUST left), reaching no one at the
+		// destination. Forces the LLM into a clean sequence: speak
+		// first then move_to, OR move_to + done and emit speak from the
+		// arrived position on the next tick.
+		if app.actorHasWalkInFlight(r.ID) {
+			result = "rejected"
+			errStr = "you are walking — finish your move before speaking. Either say what you need to say BEFORE the move_to, or wait until you arrive."
 			break
 		}
 		// Vocative stale-addressee guard: parallel ticks mean the
