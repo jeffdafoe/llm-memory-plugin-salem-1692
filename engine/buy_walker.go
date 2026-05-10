@@ -568,16 +568,27 @@ func (app *App) tryDeterministicBuy(
 		return buyFailed, 0
 	}
 
-	// Now read buyer's CURRENT quantity under serialization. The
-	// buyer actor lock means no concurrent buy / ON CONFLICT credit
-	// can change this between read and write.
+	// Lock the buyer's inventory row itself (when it exists) so no
+	// concurrent UPDATE / ON CONFLICT DO UPDATE on the same row can
+	// land between this read and our credit below. ErrNoRows = 0
+	// quantity; the buyer actor lock taken above covers the
+	// no-row-yet case against competing buy paths that also take
+	// the actor lock. (Non-buy credit paths — deliveries, gifts,
+	// produce_tick on a different item — can still touch the row
+	// without taking the actor lock; closing that gap fully would
+	// require routing all actor_inventory mutations through a
+	// helper that takes a common serialization lock, which is out
+	// of scope here.)
 	var buyerCurrent int
-	if err := tx.QueryRow(ctx,
-		`SELECT COALESCE(quantity, 0) FROM actor_inventory
-		  WHERE actor_id = $1::uuid AND item_kind = $2`,
+	err = tx.QueryRow(ctx,
+		`SELECT quantity FROM actor_inventory
+		  WHERE actor_id = $1::uuid AND item_kind = $2 FOR UPDATE`,
 		buyerID, itemKind,
-	).Scan(&buyerCurrent); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		log.Printf("buy_walker: read buyer inv: %v", err)
+	).Scan(&buyerCurrent)
+	if errors.Is(err, pgx.ErrNoRows) {
+		buyerCurrent = 0
+	} else if err != nil {
+		log.Printf("buy_walker: lock buyer inv: %v", err)
 		return buyFailed, 0
 	}
 	remaining := cap - buyerCurrent
