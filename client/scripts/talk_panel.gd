@@ -89,6 +89,13 @@ var http_pay: HTTPRequest = null
 # when the huddle changes — fresh conversation, fresh dropdown.
 # Shape: { speaker_name: PackedStringArray of unique lowercase item_kinds }
 var vendor_mentions: Dictionary = {}
+# Companion to vendor_mentions: per-vendor map of item_kind → unit_price
+# from the speaker's scene_quote rows in this huddle. Sourced from
+# npc_spoke's mention_prices field. Used to pre-fill the pay-modal
+# amount when the vendor has quoted a price for the discussed item.
+# Resets on huddle change alongside vendor_mentions.
+# Shape: { speaker_name: { item_kind: int unit_price } }
+var vendor_mention_prices: Dictionary = {}
 ## Cached huddle member list at the moment the modal opened — used so
 ## the dropdown index maps back to the chosen recipient name without
 ## re-reading huddle_members during the click.
@@ -1204,6 +1211,7 @@ func _maybe_apply_recent_speech(data: Dictionary) -> void:
     for child in log_vbox.get_children():
         child.queue_free()
     vendor_mentions.clear()
+    vendor_mention_prices.clear()
 
     if current_structure.is_empty():
         return
@@ -1629,6 +1637,10 @@ func _on_pay_pressed() -> void:
     pay_qty_spin.value = 1
     pay_take_home_check.button_pressed = false
     _refresh_pay_item_dropdown()
+    var first_recipient: String = ""
+    if pay_recipient_option.selected >= 0 and pay_recipient_option.selected < pay_modal_recipients.size():
+        first_recipient = pay_modal_recipients[pay_recipient_option.selected]
+    _apply_pay_defaults_for_recipient(first_recipient)
     pay_modal.visible = true
     modal_open_changed.emit(true)
 
@@ -1661,6 +1673,45 @@ func _refresh_pay_item_dropdown() -> void:
 
 func _on_pay_recipient_changed(_idx: int) -> void:
     _refresh_pay_item_dropdown()
+    var recipient: String = ""
+    if pay_recipient_option != null and pay_recipient_option.selected >= 0 and pay_recipient_option.selected < pay_modal_recipients.size():
+        recipient = pay_modal_recipients[pay_recipient_option.selected]
+    _apply_pay_defaults_for_recipient(recipient)
+
+
+## When the recipient has mentioned exactly one item in this huddle,
+## auto-select it in the dropdown and pre-fill amount from any quoted
+## unit_price. Saves the player from re-entering values they already
+## heard in conversation. With multiple mentioned items (or none), the
+## modal stays at "(none — coins only)" with amount=1, qty=1 and the
+## player picks consciously.
+##
+## Called on modal open and on recipient change. Does nothing if the
+## modal hasn't been built yet.
+func _apply_pay_defaults_for_recipient(recipient: String) -> void:
+    if pay_item_option == null or pay_amount_spin == null or pay_qty_spin == null:
+        return
+    if recipient.is_empty():
+        return
+    var mentions = vendor_mentions.get(recipient, null)
+    if typeof(mentions) != TYPE_ARRAY and typeof(mentions) != TYPE_PACKED_STRING_ARRAY:
+        return
+    if mentions.size() != 1:
+        return
+    var kind := str(mentions[0]).strip_edges().to_lower()
+    if kind.is_empty():
+        return
+    # Index 0 in the dropdown is "(none — coins only)"; the single
+    # mentioned item is at index 1. Select it without firing the
+    # auto-link logic Jeff explicitly didn't want.
+    if pay_item_option.item_count >= 2:
+        pay_item_option.selected = 1
+    var prices = vendor_mention_prices.get(recipient, {})
+    if typeof(prices) == TYPE_DICTIONARY and prices.has(kind):
+        var unit_price := int(prices[kind])
+        if unit_price > 0:
+            pay_amount_spin.value = unit_price
+            pay_qty_spin.value = 1
 
 
 func _close_pay_modal() -> void:
@@ -1756,7 +1807,7 @@ func _on_speak_completed(result: int, response_code: int, _headers: PackedString
         ])
 
 
-func _on_npc_spoke(_npc_id: String, speaker_name: String, text: String, kind: String = "", at: String = "", structure_id: String = "", mentions: Array = [], speaker_x: float = 0.0, speaker_y: float = 0.0, room_id: String = "", addressee_id: String = "", addressee_name: String = "") -> void:
+func _on_npc_spoke(_npc_id: String, speaker_name: String, text: String, kind: String = "", at: String = "", structure_id: String = "", mentions: Array = [], speaker_x: float = 0.0, speaker_y: float = 0.0, room_id: String = "", addressee_id: String = "", addressee_name: String = "", mention_prices: Dictionary = {}) -> void:
     # WS speech kinds are "npc" | "player"; normalize to the panel's
     # speech_npc / speech_player kinds so render logic is uniform with
     # the backload entries. npc_id is unused here — speech bubbles
@@ -1827,12 +1878,24 @@ func _on_npc_spoke(_npc_id: String, speaker_name: String, text: String, kind: St
             seen[k] = true
             updated.append(k)
         vendor_mentions[speaker_name] = updated
+        # Merge mention_prices into per-speaker price cache. Newer
+        # quotes override older — vendor's most recent price wins.
+        if not mention_prices.is_empty():
+            var existing_prices = vendor_mention_prices.get(speaker_name, {})
+            if typeof(existing_prices) != TYPE_DICTIONARY:
+                existing_prices = {}
+            for k in mention_prices.keys():
+                var price = int(mention_prices[k])
+                if price > 0:
+                    existing_prices[str(k).strip_edges().to_lower()] = price
+            vendor_mention_prices[speaker_name] = existing_prices
         # Live-refresh the pay item dropdown when it's currently open
         # and pointing at this speaker.
         if pay_modal != null and pay_modal.visible and pay_recipient_option != null:
             var sel: int = pay_recipient_option.selected
             if sel >= 0 and sel < pay_modal_recipients.size() and pay_modal_recipients[sel] == speaker_name:
                 _refresh_pay_item_dropdown()
+                _apply_pay_defaults_for_recipient(speaker_name)
 
 
 # Generic room-event handler. Engine emits these for narration-worthy

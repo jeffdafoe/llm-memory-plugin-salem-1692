@@ -128,3 +128,38 @@ func (app *App) lookupSceneQuote(ctx context.Context, huddleID, recipientID, ite
 	}
 	return price, true, nil
 }
+
+// lookupSceneQuotesForSpeaker fetches the current unit_prices the speaker
+// has on file for any of the given items in their current huddle. Returns
+// a map of item_kind → unit_price, including only items that have a
+// quote row. Used to enrich the npc_spoke broadcast's mentions list with
+// price hints so the buyer's pay-modal can pre-fill amount.
+func (app *App) lookupSceneQuotesForSpeaker(ctx context.Context, speakerID string, items []string) (map[string]int, error) {
+	if len(items) == 0 {
+		return nil, nil
+	}
+	rows, err := app.DB.Query(ctx, `
+		SELECT q.item_kind, q.unit_price
+		  FROM scene_quote q
+		  JOIN actor a ON a.id = $1 AND a.current_huddle_id = q.huddle_id
+		 WHERE q.from_actor_id = $1
+		   AND q.item_kind = ANY($2::text[])
+	`, speakerID, items)
+	if err != nil {
+		return nil, fmt.Errorf("query scene_quote prices: %w", err)
+	}
+	defer rows.Close()
+	prices := map[string]int{}
+	for rows.Next() {
+		var kind string
+		var price int
+		if err := rows.Scan(&kind, &price); err != nil {
+			return nil, fmt.Errorf("scan scene_quote price: %w", err)
+		}
+		prices[kind] = price
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate scene_quote prices: %w", err)
+	}
+	return prices, nil
+}
