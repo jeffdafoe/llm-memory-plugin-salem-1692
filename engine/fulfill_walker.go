@@ -26,7 +26,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"log"
@@ -166,15 +165,54 @@ func (app *App) startDeliveryTrip(
 	}
 	defer tx.Rollback(ctx)
 
-	if _, err := tx.Exec(ctx,
+	// Re-validate the order under row lock — between dispatcher SELECT
+	// and trip insert, another tick could have flipped the row to
+	// delivered/canceled, or the seller/buyer/qty could have shifted.
+	// FOR UPDATE blocks any concurrent claim on the same order.
+	var stillPending bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (
+		  SELECT 1 FROM pay_ledger
+		   WHERE id = $1
+		     AND seller_id = $2::uuid
+		     AND buyer_id  = $3::uuid
+		     AND item_kind = $4
+		     AND qty       = $5
+		     AND state = 'accepted'
+		     AND fulfillment_status = 'pending'
+		   FOR UPDATE
+		)`,
+		orderID, sellerID, customerID, itemKind, qty,
+	).Scan(&stillPending); err != nil {
+		log.Printf("fulfill_walker: revalidate order %d: %v", orderID, err)
+		return
+	}
+	if !stillPending {
+		// Order is no longer dispatchable. Skip silently — next tick
+		// will re-evaluate fulfillable sellers.
+		return
+	}
+
+	// Insert delivery row. Both actor_id PK and the new
+	// pay_ledger_id unique index guard against a same-order /
+	// same-seller double-dispatch racing with us; ON CONFLICT
+	// DO NOTHING + RowsAffected lets us detect a lost race cleanly.
+	tag, err := tx.Exec(ctx,
 		`INSERT INTO actor_delivery_in_progress
 		   (actor_id, customer_id, item_kind, qty, pay_ledger_id,
 		    customer_structure_id, home_x, home_y, phase)
-		 VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6::uuid, $7, $8, 'outbound')`,
+		 VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6::uuid, $7, $8, 'outbound')
+		 ON CONFLICT DO NOTHING`,
 		sellerID, customerID, itemKind, qty, orderID,
 		*customerWorkStructureID, sellerX, sellerY,
-	); err != nil {
+	)
+	if err != nil {
 		log.Printf("fulfill_walker: insert delivery row: %v", err)
+		return
+	}
+	if tag.RowsAffected() == 0 {
+		// A concurrent tick already claimed this seller (or this
+		// order). Skip — the winner is handling it.
 		return
 	}
 
@@ -268,25 +306,22 @@ func (app *App) completeDeliveryLeg(
 	orderID int64,
 	homeX, homeY float64,
 ) {
-	delivered := app.tryDeliverOrder(ctx, sellerID, customerID, itemKind, qty, orderID)
+	delivered, unitPrice := app.tryDeliverOrder(ctx, sellerID, customerID, itemKind, qty, orderID)
 	if delivered {
 		// Customer-facing dialogue at the door.
 		var customerName string
 		_ = app.DB.QueryRow(ctx,
 			`SELECT display_name FROM actor WHERE id = $1::uuid`, customerID,
 		).Scan(&customerName)
-		var unitPrice int
-		_ = app.DB.QueryRow(ctx,
-			`SELECT quoted_unit_amount FROM pay_ledger WHERE id = $1`, orderID,
-		).Scan(&unitPrice)
 		if customerName != "" {
 			text := fmt.Sprintf("Here's your %s, %s. That'll be %d coin%s.",
 				itemKind, customerName, unitPrice*qty, pluralCoins(unitPrice*qty))
 			app.broadcastSellerSpoke(ctx, sellerID, text, []string{itemKind}, unitPrice)
 		}
 	} else {
-		// Couldn't deliver (out of stock by the time we arrived?).
-		// Order stays pending — fulfill_walker re-evaluates next tick.
+		// Couldn't deliver (out of stock, customer can't pay, or the
+		// order row drifted underneath us). Order stays pending —
+		// fulfill_walker re-evaluates next tick.
 		log.Printf("fulfill_walker: delivery failed seller=%s order=%d (will retry)",
 			sellerID, orderID)
 	}
@@ -304,32 +339,49 @@ func (app *App) completeDeliveryLeg(
 	}
 }
 
-// tryDeliverOrder transfers goods + coins for the order, flips
-// pay_ledger to delivered. Returns false if seller no longer has
-// stock (raced with someone else taking it).
+// tryDeliverOrder transfers goods + coins for the order and flips
+// pay_ledger to delivered. Returns (false, unitPrice) without
+// committing if any precondition fails: seller short on stock,
+// customer short on coins, or the order row no longer matches the
+// expected (seller, buyer, item, qty, state, fulfillment_status).
 func (app *App) tryDeliverOrder(
 	ctx context.Context,
 	sellerID, customerID, itemKind string,
 	qty int,
 	orderID int64,
-) bool {
-	// Read the locked-in unit price from pay_ledger.
-	var unitPrice int
-	if err := app.DB.QueryRow(ctx,
-		`SELECT quoted_unit_amount FROM pay_ledger WHERE id = $1`,
-		orderID,
-	).Scan(&unitPrice); err != nil {
-		log.Printf("fulfill_walker: load order price: %v", err)
-		return false
-	}
-	totalPrice := unitPrice * qty
-
+) (bool, int) {
 	tx, err := app.DB.Begin(ctx)
 	if err != nil {
 		log.Printf("fulfill_walker: begin transfer: %v", err)
-		return false
+		return false, 0
 	}
 	defer tx.Rollback(ctx)
+
+	// Lock the pay_ledger row and revalidate it still matches the
+	// trip we started. Anything off (canceled, already delivered,
+	// seller/buyer/item/qty drifted) → bail; do not transfer.
+	var unitPrice int
+	err = tx.QueryRow(ctx, `
+		SELECT quoted_unit_amount
+		  FROM pay_ledger
+		 WHERE id = $1
+		   AND seller_id = $2::uuid
+		   AND buyer_id  = $3::uuid
+		   AND item_kind = $4
+		   AND qty       = $5
+		   AND state = 'accepted'
+		   AND fulfillment_status = 'pending'
+		 FOR UPDATE`,
+		orderID, sellerID, customerID, itemKind, qty,
+	).Scan(&unitPrice)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, 0
+	}
+	if err != nil {
+		log.Printf("fulfill_walker: lock order %d: %v", orderID, err)
+		return false, 0
+	}
+	totalPrice := unitPrice * qty
 
 	// Lock seller stock.
 	var sellerQty int
@@ -339,11 +391,37 @@ func (app *App) tryDeliverOrder(
 		sellerID, itemKind,
 	).Scan(&sellerQty)
 	if errors.Is(err, pgx.ErrNoRows) || sellerQty < qty {
-		return false
+		return false, unitPrice
 	}
 	if err != nil {
 		log.Printf("fulfill_walker: lock seller inv: %v", err)
-		return false
+		return false, unitPrice
+	}
+
+	// Customer pays first — conditional on having the coins.
+	// Refuse delivery if they can't afford it, leaving the order
+	// pending. (Without this, an order placed before the customer
+	// went broke would still be delivered and overdraw their coins.)
+	debit, err := tx.Exec(ctx,
+		`UPDATE actor SET coins = coins - $2
+		  WHERE id = $1::uuid AND coins >= $2`,
+		customerID, totalPrice,
+	)
+	if err != nil {
+		log.Printf("fulfill_walker: deduct customer coins: %v", err)
+		return false, unitPrice
+	}
+	if debit.RowsAffected() != 1 {
+		// Customer can't afford the order. Leave it pending; next
+		// fulfill_walker tick will retry once they have funds.
+		return false, unitPrice
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE actor SET coins = coins + $2 WHERE id = $1::uuid`,
+		sellerID, totalPrice,
+	); err != nil {
+		log.Printf("fulfill_walker: credit seller coins: %v", err)
+		return false, unitPrice
 	}
 
 	if _, err := tx.Exec(ctx,
@@ -352,7 +430,7 @@ func (app *App) tryDeliverOrder(
 		sellerID, itemKind, qty,
 	); err != nil {
 		log.Printf("fulfill_walker: decrement seller: %v", err)
-		return false
+		return false, unitPrice
 	}
 	if _, err := tx.Exec(ctx,
 		`DELETE FROM actor_inventory
@@ -360,7 +438,7 @@ func (app *App) tryDeliverOrder(
 		sellerID, itemKind,
 	); err != nil {
 		log.Printf("fulfill_walker: cleanup zero: %v", err)
-		return false
+		return false, unitPrice
 	}
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO actor_inventory (actor_id, item_kind, quantity)
@@ -370,39 +448,32 @@ func (app *App) tryDeliverOrder(
 		customerID, itemKind, qty,
 	); err != nil {
 		log.Printf("fulfill_walker: credit customer: %v", err)
-		return false
+		return false, unitPrice
 	}
-	// Coins: customer pays seller. Best-effort (coins may go negative).
-	if _, err := tx.Exec(ctx,
-		`UPDATE actor SET coins = coins - $2 WHERE id = $1::uuid`,
-		customerID, totalPrice,
-	); err != nil {
-		log.Printf("fulfill_walker: deduct customer coins: %v", err)
-		return false
-	}
-	if _, err := tx.Exec(ctx,
-		`UPDATE actor SET coins = coins + $2 WHERE id = $1::uuid`,
-		sellerID, totalPrice,
-	); err != nil {
-		log.Printf("fulfill_walker: credit seller coins: %v", err)
-		return false
-	}
-	// Flip pay_ledger to delivered.
-	if _, err := tx.Exec(ctx,
+
+	// Flip pay_ledger to delivered. Guarded on fulfillment_status =
+	// 'pending' so a row that flipped underneath us never gets
+	// double-delivered. RowsAffected==1 is the proof we won.
+	flip, err := tx.Exec(ctx,
 		`UPDATE pay_ledger
 		    SET fulfillment_status = 'delivered',
 		        delivered_on = NOW(),
 		        offered_amount = $2
-		  WHERE id = $1`,
+		  WHERE id = $1
+		    AND fulfillment_status = 'pending'`,
 		orderID, totalPrice,
-	); err != nil {
+	)
+	if err != nil {
 		log.Printf("fulfill_walker: flip pay_ledger: %v", err)
-		return false
+		return false, unitPrice
+	}
+	if flip.RowsAffected() != 1 {
+		return false, unitPrice
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		log.Printf("fulfill_walker: commit transfer: %v", err)
-		return false
+		return false, unitPrice
 	}
 
 	app.Hub.Broadcast(WorldEvent{
@@ -415,7 +486,7 @@ func (app *App) tryDeliverOrder(
 	})
 	log.Printf("fulfill_walker: delivered seller=%s customer=%s item=%s qty=%d total=%d",
 		sellerID, customerID, itemKind, qty, totalPrice)
-	return true
+	return true, unitPrice
 }
 
 // cancelDeliveryTrip clears delivery state + break + restores inside
@@ -451,6 +522,3 @@ func (app *App) cancelDeliveryTrip(ctx context.Context, sellerID, reason string)
 	log.Printf("fulfill_walker: trip end seller=%s reason=%s", sellerID, reason)
 }
 
-// Silence unused-import warning if any of the database/sql usages
-// disappear during refactors. (Kept here so future edits don't break.)
-var _ = sql.NullString{}

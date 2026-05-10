@@ -96,6 +96,18 @@ func priceFor(item string) int {
 	return 1
 }
 
+// buyResult tells completeOutboundLeg why a buy attempt did not
+// transfer goods — so a "seller had no stock" outcome (worth taking
+// an order for) is not conflated with a transient DB / lock / funds
+// failure (which should not create a phantom order).
+type buyResult int
+
+const (
+	buyTransferred buyResult = iota
+	buyNoStock                // seller has zero inventory for the item — take an order
+	buyFailed                 // DB error, lock failure, etc — do not create an order
+)
+
 func (app *App) dispatchBuyWalker(ctx context.Context) {
 	now := time.Now().UTC()
 
@@ -170,6 +182,33 @@ func (app *App) tickBuyForActor(ctx context.Context, actorID string, now time.Ti
 	// to the exact pre-trip spot puts them at their stand_offset /
 	// behind the counter / wherever they were. The cancelBuyTrip
 	// inbound handler restores inside_structure_id via footprint check.
+	//
+	// Defensive: confirm the buyer's pre-trip pixel actually sits
+	// inside the work_structure's asset footprint. inside_structure_id
+	// could in theory be set without footprint validation (legacy
+	// rows, manual placement, etc.); if it is, the inbound restore
+	// would fail and the buyer would come back stuck outside the
+	// stall — same shape as the HOME-244 bug we just patched.
+	var preTripInsideFootprint bool
+	if err := app.DB.QueryRow(ctx, `
+		SELECT EXISTS (
+		  SELECT 1
+		    FROM village_object vo
+		    JOIN asset s ON s.id = vo.asset_id
+		   WHERE vo.id = $1::uuid
+		     AND $2::float8 BETWEEN vo.x - s.footprint_left  * 32 AND vo.x + s.footprint_right  * 32
+		     AND $3::float8 BETWEEN vo.y - s.footprint_top   * 32 AND vo.y + s.footprint_bottom * 32
+		)`,
+		*workStructureIDStr, buyerX, buyerY,
+	).Scan(&preTripInsideFootprint); err != nil {
+		log.Printf("buy_walker: footprint check %s: %v", actorID, err)
+		return
+	}
+	if !preTripInsideFootprint {
+		log.Printf("buy_walker: skip trip — buyer %s position (%.0f,%.0f) outside work_structure footprint %s",
+			actorID, buyerX, buyerY, *workStructureIDStr)
+		return
+	}
 	homeReturnX := buyerX
 	homeReturnY := buyerY
 
@@ -356,9 +395,13 @@ func (app *App) completeOutboundLeg(
 	buyerID, sellerID, itemKind string,
 	homeX, homeY float64,
 ) {
-	transferOK := app.tryDeterministicBuy(ctx, buyerID, sellerID, itemKind)
-	if !transferOK {
-		// Empty seller — record an order so the seller will deliver
+	switch app.tryDeterministicBuy(ctx, buyerID, sellerID, itemKind) {
+	case buyTransferred:
+		if err := app.stampBuySuccess(ctx, buyerID, sellerID, itemKind); err != nil {
+			log.Printf("buy_walker: stamp success %s/%s: %v", buyerID, itemKind, err)
+		}
+	case buyNoStock:
+		// Seller has nothing. Take an order so the seller will deliver
 		// once they restock. Also stamp failure on the buyer side so
 		// the cycle filter and backoff still apply.
 		if err := app.recordOrderTaking(ctx, buyerID, sellerID, itemKind); err != nil {
@@ -367,9 +410,14 @@ func (app *App) completeOutboundLeg(
 		if err := app.stampBuyFailure(ctx, buyerID, itemKind, "seller had no stock — order taken"); err != nil {
 			log.Printf("buy_walker: stamp failure %s/%s: %v", buyerID, itemKind, err)
 		}
-	} else {
-		if err := app.stampBuySuccess(ctx, buyerID, sellerID, itemKind); err != nil {
-			log.Printf("buy_walker: stamp success %s/%s: %v", buyerID, itemKind, err)
+	case buyFailed:
+		// Transient/operational error inside the transfer attempt.
+		// Already logged. Do NOT create an order — we don't know
+		// whether the seller was actually out of stock or this was a
+		// DB blip. Buyer walks home empty; backoff applies via the
+		// existing cycle filter on the next pass.
+		if err := app.stampBuyFailure(ctx, buyerID, itemKind, "transfer failed (transient)"); err != nil {
+			log.Printf("buy_walker: stamp failure %s/%s: %v", buyerID, itemKind, err)
 		}
 	}
 
@@ -391,18 +439,26 @@ func (app *App) completeOutboundLeg(
 // tryDeterministicBuy attempts a single-unit transfer at the
 // seller's tier price. The seller's role determines wholesale
 // vs retail (producer charges wholesale; merchant charges retail).
-// Locks both inventories + the seller's stock row. Returns true
-// if the transfer happened.
+// Locks both inventories + the seller's stock row.
+//
+// Returns:
+//   - buyTransferred when goods + coins moved and the pay_ledger row
+//     was written.
+//   - buyNoStock when the seller's inventory row is missing or zero
+//     for this item. Caller may take an order.
+//   - buyFailed for any DB error, lock failure, or insufficient
+//     funds. Caller must NOT take an order — we don't know whether
+//     the seller had stock.
 func (app *App) tryDeterministicBuy(
 	ctx context.Context,
 	buyerID, sellerID, itemKind string,
-) bool {
+) buyResult {
 	price := app.priceForSeller(ctx, sellerID, itemKind)
 
 	tx, err := app.DB.Begin(ctx)
 	if err != nil {
 		log.Printf("buy_walker: begin transfer: %v", err)
-		return false
+		return buyFailed
 	}
 	defer tx.Rollback(ctx)
 
@@ -414,11 +470,36 @@ func (app *App) tryDeterministicBuy(
 		sellerID, itemKind,
 	).Scan(&sellerQty)
 	if errors.Is(err, pgx.ErrNoRows) || sellerQty <= 0 {
-		return false
+		return buyNoStock
 	}
 	if err != nil {
 		log.Printf("buy_walker: lock seller inv: %v", err)
-		return false
+		return buyFailed
+	}
+
+	// Coins first — conditional on the buyer being able to afford it.
+	// If they can't pay, this is a buyFailed (not buyNoStock) — we don't
+	// want to record an order for someone who couldn't fund it.
+	debit, err := tx.Exec(ctx,
+		`UPDATE actor SET coins = coins - $2
+		  WHERE id = $1::uuid AND coins >= $2`,
+		buyerID, price,
+	)
+	if err != nil {
+		log.Printf("buy_walker: deduct buyer coins: %v", err)
+		return buyFailed
+	}
+	if debit.RowsAffected() != 1 {
+		log.Printf("buy_walker: buyer %s short of coins (need %d) for %s",
+			buyerID, price, itemKind)
+		return buyFailed
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE actor SET coins = coins + $2 WHERE id = $1::uuid`,
+		sellerID, price,
+	); err != nil {
+		log.Printf("buy_walker: credit seller coins: %v", err)
+		return buyFailed
 	}
 
 	// Decrement seller stock.
@@ -428,7 +509,7 @@ func (app *App) tryDeterministicBuy(
 		sellerID, itemKind,
 	); err != nil {
 		log.Printf("buy_walker: decrement seller inv: %v", err)
-		return false
+		return buyFailed
 	}
 	if _, err := tx.Exec(ctx,
 		`DELETE FROM actor_inventory
@@ -436,7 +517,7 @@ func (app *App) tryDeterministicBuy(
 		sellerID, itemKind,
 	); err != nil {
 		log.Printf("buy_walker: cleanup zero seller inv: %v", err)
-		return false
+		return buyFailed
 	}
 
 	// Credit buyer inventory.
@@ -448,24 +529,7 @@ func (app *App) tryDeterministicBuy(
 		buyerID, itemKind,
 	); err != nil {
 		log.Printf("buy_walker: credit buyer inv: %v", err)
-		return false
-	}
-
-	// Coin transfer (best-effort — buyer may not have funds; if
-	// short, transfer goes through anyway. Tighten later if needed).
-	if _, err := tx.Exec(ctx,
-		`UPDATE actor SET coins = coins - $2 WHERE id = $1::uuid`,
-		buyerID, price,
-	); err != nil {
-		log.Printf("buy_walker: deduct buyer coins: %v", err)
-		return false
-	}
-	if _, err := tx.Exec(ctx,
-		`UPDATE actor SET coins = coins + $2 WHERE id = $1::uuid`,
-		sellerID, price,
-	); err != nil {
-		log.Printf("buy_walker: credit seller coins: %v", err)
-		return false
+		return buyFailed
 	}
 
 	// Pay_ledger row records the transaction.
@@ -484,12 +548,12 @@ func (app *App) tryDeterministicBuy(
 		buyerID, sellerID, itemKind, price,
 	); err != nil {
 		log.Printf("buy_walker: insert pay_ledger: %v", err)
-		return false
+		return buyFailed
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		log.Printf("buy_walker: commit transfer: %v", err)
-		return false
+		return buyFailed
 	}
 
 	app.Hub.Broadcast(WorldEvent{
@@ -521,7 +585,7 @@ func (app *App) tryDeterministicBuy(
 
 	log.Printf("buy_walker: transfer ok actor=%s item=%s seller=%s price=%d",
 		buyerID, itemKind, sellerID, price)
-	return true
+	return buyTransferred
 }
 
 func pluralCoins(n int) string {
@@ -576,9 +640,12 @@ func (app *App) cancelBuyTrip(ctx context.Context, buyerID, reason string) {
 }
 
 // priceForSeller returns the price the seller charges for the item.
-// Producer (has `produce` for this item in their restock policy) →
-// wholesale. Merchant (has `buy` for this item — they're a reseller)
-// → retail. Falls back to wholesale if role can't be determined.
+// Rule: if the seller has a `buy` restock entry for this item they
+// are a reseller of it → retail price. Otherwise → wholesale.
+// (A producer with no `buy` entry falls into wholesale; an actor
+// with no restock config at all also defaults to wholesale, which
+// keeps engine-driven trades moving rather than stalling on missing
+// role data.) Falls back to 1 when the recipe has no prices.
 func (app *App) priceForSeller(ctx context.Context, sellerID, itemKind string) int {
 	recipe, err := app.loadItemRecipe(ctx, itemKind)
 	if err != nil || recipe == nil {
@@ -614,12 +681,19 @@ func (app *App) priceForSeller(ctx context.Context, sellerID, itemKind string) i
 //
 // Price is locked in NOW at the seller's tier — protects against
 // later price changes mid-fulfillment.
+//
+// The partial unique index idx_pay_ledger_pending_order_once limits
+// a (buyer, seller, item) to a single outstanding pending order:
+// repeat no-stock arrivals do not stack up duplicate orders, and
+// the seller's dialogue still narrates the empty-stall beat. Once
+// the existing order flips to 'delivered' the predicate no longer
+// matches and a fresh order can be recorded next time.
 func (app *App) recordOrderTaking(
 	ctx context.Context,
 	buyerID, sellerID, itemKind string,
 ) error {
 	price := app.priceForSeller(ctx, sellerID, itemKind)
-	if _, err := app.DB.Exec(ctx,
+	tag, err := app.DB.Exec(ctx,
 		`INSERT INTO pay_ledger (
 		    huddle_id, scene_id, buyer_id, seller_id,
 		    item_kind, qty, offered_amount, quoted_unit_amount,
@@ -630,15 +704,29 @@ func (app *App) recordOrderTaking(
 		    $3, 1, $4, $4,
 		    false, 'accepted', 'pending', CURRENT_DATE,
 		    NOW(), NOW()
-		 )`,
+		 )
+		 ON CONFLICT (buyer_id, seller_id, item_kind)
+		   WHERE state = 'accepted' AND fulfillment_status = 'pending'
+		   DO NOTHING`,
 		buyerID, sellerID, itemKind, price,
-	); err != nil {
+	)
+	if err != nil {
 		return fmt.Errorf("insert order pay_ledger: %w", err)
 	}
-	app.broadcastSellerSpoke(ctx, sellerID, fmt.Sprintf(
-		"I'm out of %s right now, but I'll have some for you when I can. I'll bring it 'round.",
-		itemKind,
-	), []string{itemKind}, 0)
+	inserted := tag.RowsAffected() == 1
+	if inserted {
+		app.broadcastSellerSpoke(ctx, sellerID, fmt.Sprintf(
+			"I'm out of %s right now, but I'll have some for you when I can. I'll bring it 'round.",
+			itemKind,
+		), []string{itemKind}, 0)
+	} else {
+		// A pending order from this (buyer, seller, item) already
+		// exists. Stay quiet — narrating again would be repetitive
+		// and might prompt the buyer's perception to act on a fresh
+		// promise that's actually just the same outstanding order.
+		log.Printf("buy_walker: order already pending buyer=%s seller=%s item=%s",
+			buyerID, sellerID, itemKind)
+	}
 	return nil
 }
 

@@ -63,6 +63,21 @@ CREATE TABLE actor_delivery_in_progress (
 CREATE INDEX idx_actor_delivery_in_progress_customer_structure
     ON actor_delivery_in_progress (customer_structure_id);
 
+-- One pending delivery row per pay_ledger order. Belt-and-suspenders
+-- against a same-order double-dispatch even though the dispatcher
+-- already filters by seller and actor_id is PK.
+CREATE UNIQUE INDEX idx_actor_delivery_in_progress_pay_ledger
+    ON actor_delivery_in_progress (pay_ledger_id);
+
+-- At most one outstanding pending order per (buyer, seller, item).
+-- A repeat no-stock arrival should not create a duplicate order;
+-- the existing pending row stays. Once it flips to delivered (or any
+-- other state) the partial predicate no longer matches and a new
+-- order can be recorded.
+CREATE UNIQUE INDEX idx_pay_ledger_pending_order_once
+    ON pay_ledger (buyer_id, seller_id, item_kind)
+    WHERE state = 'accepted' AND fulfillment_status = 'pending';
+
 -- 3. One-shot restore for keepers stuck outside post-HOME-244.
 --    Footprint-based filter: actor must be physically within their
 --    work_structure asset's footprint to be restored. Avoids the

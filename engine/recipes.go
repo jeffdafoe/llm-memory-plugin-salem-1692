@@ -90,17 +90,17 @@ func (app *App) loadItemRecipe(ctx context.Context, item string) (*ItemRecipe, e
 		item,
 	).Scan(&r.OutputItem, &r.OutputQty, &r.RateQty, &r.RatePerHours, &inputsJSON,
 		&wholesale, &retail)
-	if wholesale.Valid {
-		r.WholesalePrice = int(wholesale.Int32)
-	}
-	if retail.Valid {
-		r.RetailPrice = int(retail.Int32)
-	}
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("load recipe %s: %w", item, err)
+	}
+	if wholesale.Valid {
+		r.WholesalePrice = int(wholesale.Int32)
+	}
+	if retail.Valid {
+		r.RetailPrice = int(retail.Int32)
 	}
 	if err := json.Unmarshal(inputsJSON, &r.Inputs); err != nil {
 		return nil, fmt.Errorf("parse recipe %s inputs: %w", item, err)
