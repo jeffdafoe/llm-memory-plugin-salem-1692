@@ -85,7 +85,6 @@ type agentNPCRow struct {
 	ID                  string
 	DisplayName         string
 	LLMMemoryAgent      string
-	APIKey              string
 	Role                string
 	InsideStructureID   sql.NullString
 	CurrentX            float64
@@ -766,7 +765,6 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, 
 	// rather than aborting the whole tick.
 	row := app.DB.QueryRow(ctx,
 		`SELECT n.id, n.display_name, n.llm_memory_agent,
-		        n.llm_memory_api_key,
 		        n.role,
 		        n.inside_structure_id, n.current_x, n.current_y,
 		        n.home_structure_id, n.work_structure_id,
@@ -791,7 +789,7 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, 
 		npcID)
 	var r agentNPCRow
 	if err := row.Scan(&r.ID, &r.DisplayName, &r.LLMMemoryAgent,
-		&r.APIKey, &r.Role,
+		&r.Role,
 		&r.InsideStructureID, &r.CurrentX, &r.CurrentY,
 		&r.HomeStructureID, &r.WorkStructureID,
 		&r.LastAgentTickAt,
