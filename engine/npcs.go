@@ -88,14 +88,6 @@ type NPC struct {
 	// ZBBS-071 replaced the older schedule_offset_minutes scalar.
 	ScheduleStartMinute *int `json:"schedule_start_minute"`
 	ScheduleEndMinute   *int `json:"schedule_end_minute"`
-	// ScheduleIntervalHours + ActiveStartHour + ActiveEndHour are the
-	// per-NPC cadence knobs for interval behaviors (washerwoman,
-	// town_crier). All three must be set together or all three left null
-	// (enforced at the DB level). Null falls back to the legacy
-	// world_rotation_time trigger for those behaviors.
-	ScheduleIntervalHours *int `json:"schedule_interval_hours"`
-	ActiveStartHour       *int `json:"active_start_hour"`
-	ActiveEndHour         *int `json:"active_end_hour"`
 	// LatenessWindowMinutes fuzzes scheduled behavior firing times in
 	// an asymmetric window after the nominal boundary. The per-boundary
 	// offset is deterministic (hash of npc_id + boundary) so it's
@@ -255,8 +247,6 @@ func (app *App) handleListNPCs(w http.ResponseWriter, r *http.Request) {
 		        n.llm_memory_agent,
 		        n.home_structure_id, n.work_structure_id, n.inside, n.inside_structure_id,
 		        n.schedule_start_minute, n.schedule_end_minute,
-		        n.schedule_interval_hours,
-		        n.active_start_hour, n.active_end_hour,
 		        n.lateness_window_minutes,
 		        n.social_tag, n.social_start_minute, n.social_end_minute,
 		        COALESCE((SELECT value FROM actor_need WHERE actor_id = n.id AND key = 'hunger'), 0)::smallint,
@@ -280,8 +270,6 @@ func (app *App) handleListNPCs(w http.ResponseWriter, r *http.Request) {
 			&n.HomeX, &n.HomeY, &n.CurrentX, &n.CurrentY, &n.Facing, &n.Attributes, &n.LLMMemoryAgent,
 			&n.HomeStructureID, &n.WorkStructureID, &n.Inside, &n.InsideStructureID,
 			&n.ScheduleStartMinute, &n.ScheduleEndMinute,
-			&n.ScheduleIntervalHours,
-			&n.ActiveStartHour, &n.ActiveEndHour,
 			&n.LatenessWindowMinutes,
 			&n.SocialTag, &n.SocialStartMinute, &n.SocialEndMinute,
 			&n.Hunger, &n.Thirst, &n.Tiredness,
@@ -781,10 +769,12 @@ func (app *App) handleSetNPCAgent(w http.ResponseWriter, r *http.Request) {
 //	  (int 0–1439, minutes-of-day). Worker behavior reads this absolute
 //	  window; others ignore. Both null = inherit dawn/dusk at evaluation
 //	  time. Window wraps midnight when start > end (ZBBS-071).
-//	schedule_interval_hours, active_start_hour, active_end_hour — all
-//	  three or none. The DB CHECK constraint schedule_all_or_none
-//	  enforces this; the handler pre-validates to return a clean 400.
 //	lateness_window_minutes — optional. Omit to keep the current value.
+//
+// (ZBBS-HOME-251 dropped the legacy hour-based rotation triple
+// schedule_interval_hours / active_start_hour / active_end_hour.
+// Callers that still send those fields will see them silently ignored
+// because the JSON decoder discards unknown keys.)
 //
 // Clears last_shift_tick_at so the new schedule re-evaluates on the next
 // server tick rather than waiting up to 12h for the following boundary.
@@ -804,13 +794,17 @@ func (app *App) handleSetNPCSchedule(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ScheduleStartMinute   *int `json:"schedule_start_minute"`
 		ScheduleEndMinute     *int `json:"schedule_end_minute"`
-		ScheduleIntervalHours *int `json:"schedule_interval_hours"`
-		ActiveStartHour       *int `json:"active_start_hour"`
-		ActiveEndHour         *int `json:"active_end_hour"`
 		LatenessWindowMinutes *int `json:"lateness_window_minutes"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		jsonError(w, "Invalid request body", http.StatusBadRequest)
+	// DisallowUnknownFields so a stale client sending the removed
+	// legacy keys (schedule_interval_hours / active_start_hour /
+	// active_end_hour) fails loudly with a 400 rather than silently
+	// dropping the values and 200-ing. Admin mutations get the
+	// stricter treatment intentionally.
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		jsonError(w, "Invalid schedule payload: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -842,54 +836,20 @@ func (app *App) handleSetNPCSchedule(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// All-or-none for the cadence triple.
-	cadenceSet := 0
-	if req.ScheduleIntervalHours != nil {
-		cadenceSet++
-	}
-	if req.ActiveStartHour != nil {
-		cadenceSet++
-	}
-	if req.ActiveEndHour != nil {
-		cadenceSet++
-	}
-	if cadenceSet != 0 && cadenceSet != 3 {
-		jsonError(w, "schedule_interval_hours, active_start_hour, and active_end_hour must be set together", http.StatusBadRequest)
-		return
-	}
-	if req.ScheduleIntervalHours != nil && (*req.ScheduleIntervalHours < 1 || *req.ScheduleIntervalHours > 24) {
-		jsonError(w, "schedule_interval_hours must be between 1 and 24", http.StatusBadRequest)
-		return
-	}
-	if req.ActiveStartHour != nil && (*req.ActiveStartHour < 0 || *req.ActiveStartHour > 23) {
-		jsonError(w, "active_start_hour must be between 0 and 23", http.StatusBadRequest)
-		return
-	}
-	if req.ActiveEndHour != nil && (*req.ActiveEndHour < 0 || *req.ActiveEndHour > 23) {
-		jsonError(w, "active_end_hour must be between 0 and 23", http.StatusBadRequest)
-		return
-	}
-
 	// COALESCE on lateness_window_minutes lets a PATCH that omits the
-	// field keep the existing value — existing clients that only send
-	// the schedule-triple continue to work unchanged. RETURNING reads
-	// back the effective value so the broadcast carries ground truth
-	// for every field.
+	// field keep the existing value. RETURNING reads back the effective
+	// value so the broadcast carries ground truth for every field.
 	var effectiveLateness int
 	err := app.DB.QueryRow(r.Context(),
 		`UPDATE actor SET
 		    schedule_start_minute = $2,
 		    schedule_end_minute = $3,
-		    schedule_interval_hours = $4,
-		    active_start_hour = $5,
-		    active_end_hour = $6,
-		    lateness_window_minutes = COALESCE($7, lateness_window_minutes),
+		    lateness_window_minutes = COALESCE($4, lateness_window_minutes),
 		    last_shift_tick_at = NULL
 		 WHERE id = $1
 		 RETURNING lateness_window_minutes`,
 		id,
 		req.ScheduleStartMinute, req.ScheduleEndMinute,
-		req.ScheduleIntervalHours, req.ActiveStartHour, req.ActiveEndHour,
 		req.LatenessWindowMinutes,
 	).Scan(&effectiveLateness)
 	if err != nil {
@@ -906,9 +866,6 @@ func (app *App) handleSetNPCSchedule(w http.ResponseWriter, r *http.Request) {
 		"id":                      id,
 		"schedule_start_minute":   req.ScheduleStartMinute,
 		"schedule_end_minute":     req.ScheduleEndMinute,
-		"schedule_interval_hours": req.ScheduleIntervalHours,
-		"active_start_hour":       req.ActiveStartHour,
-		"active_end_hour":         req.ActiveEndHour,
 		"lateness_window_minutes": effectiveLateness,
 	}})
 }

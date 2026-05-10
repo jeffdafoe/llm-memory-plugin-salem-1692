@@ -21,7 +21,7 @@ signal npc_work_structure_changed(structure_id: String)
 #     mirrors the schedule_window_all_or_none DB CHECK.
 #   interval / start / end: rotation cadence triple. -1 means "no cadence".
 #   lateness: lateness_window_minutes (0–180). Always sent.
-signal npc_schedule_changed(start_min: int, end_min: int, interval: int, start: int, end: int, lateness: int)
+signal npc_schedule_changed(start_min: int, end_min: int, lateness: int)
 # Social-hour overlay (ZBBS-068, minute-precision since ZBBS-071). Empty tag
 # == "clear the schedule" (and start_min/end_min are ignored in that case).
 # Applied all-or-none server-side.
@@ -244,14 +244,8 @@ var _npc_end_hour_spin: SpinBox = null
 var _npc_end_minute_spin: SpinBox = null
 var _npc_schedule_window_is_null: bool = true
 var _npc_lateness_spin: SpinBox = null
-var _npc_cadence_check: CheckBox = null
-var _npc_interval_spin: SpinBox = null
-var _npc_start_spin: SpinBox = null
-var _npc_end_spin: SpinBox = null
 var _npc_schedule_save_button: Button = null
-var _npc_cadence_row: HBoxContainer = null
-var _npc_cadence_row2: HBoxContainer = null
-# Social-hour overlay UI (ZBBS-068). Like cadence, it's gated by a checkbox
+# Social-hour overlay UI (ZBBS-068). Like the work window, it's gated by a checkbox
 # so the panel can express "no social schedule" distinct from "scheduled at
 # minute 0." Tag dropdown is populated from GET /api/assets/state-tags.
 # HH:MM precision since ZBBS-071.
@@ -1070,64 +1064,6 @@ func _ready() -> void:
     _npc_lateness_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     lateness_row.add_child(_npc_lateness_spin)
 
-    _npc_cadence_check = CheckBox.new()
-    _npc_cadence_check.text = "Use cadence window"
-    _npc_cadence_check.add_theme_color_override("font_color", COLOR_TEXT)
-    _npc_cadence_check.add_theme_font_size_override("font_size", 11)
-    _npc_cadence_check.toggled.connect(_on_cadence_toggled)
-    _npc_cadence_check.toggled.connect(func(_v): _schedule_save_debounced())
-    _npc_schedule_section.add_child(_npc_cadence_check)
-
-    _npc_cadence_row = HBoxContainer.new()
-    _npc_cadence_row.add_theme_constant_override("separation", 6)
-    _npc_schedule_section.add_child(_npc_cadence_row)
-    var int_lbl = Label.new()
-    int_lbl.text = "Every (h)"
-    int_lbl.add_theme_color_override("font_color", COLOR_TEXT_DIM)
-    int_lbl.add_theme_font_size_override("font_size", 11)
-    _npc_cadence_row.add_child(int_lbl)
-    _npc_interval_spin = SpinBox.new()
-    _npc_interval_spin.min_value = 1
-    _npc_interval_spin.max_value = 24
-    _npc_interval_spin.step = 1
-    _npc_interval_spin.value = 3
-    _npc_interval_spin.update_on_text_changed = true
-    _npc_interval_spin.value_changed.connect(_on_schedule_field_changed)
-    _npc_interval_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    _npc_cadence_row.add_child(_npc_interval_spin)
-
-    _npc_cadence_row2 = HBoxContainer.new()
-    _npc_cadence_row2.add_theme_constant_override("separation", 6)
-    _npc_schedule_section.add_child(_npc_cadence_row2)
-    var start_lbl = Label.new()
-    start_lbl.text = "Start"
-    start_lbl.add_theme_color_override("font_color", COLOR_TEXT_DIM)
-    start_lbl.add_theme_font_size_override("font_size", 11)
-    _npc_cadence_row2.add_child(start_lbl)
-    _npc_start_spin = SpinBox.new()
-    _npc_start_spin.min_value = 0
-    _npc_start_spin.max_value = 23
-    _npc_start_spin.step = 1
-    _npc_start_spin.value = 9
-    _npc_start_spin.update_on_text_changed = true
-    _npc_start_spin.value_changed.connect(_on_schedule_field_changed)
-    _npc_start_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    _npc_cadence_row2.add_child(_npc_start_spin)
-    var end_lbl = Label.new()
-    end_lbl.text = "End"
-    end_lbl.add_theme_color_override("font_color", COLOR_TEXT_DIM)
-    end_lbl.add_theme_font_size_override("font_size", 11)
-    _npc_cadence_row2.add_child(end_lbl)
-    _npc_end_spin = SpinBox.new()
-    _npc_end_spin.min_value = 0
-    _npc_end_spin.max_value = 23
-    _npc_end_spin.step = 1
-    _npc_end_spin.value = 18
-    _npc_end_spin.update_on_text_changed = true
-    _npc_end_spin.value_changed.connect(_on_schedule_field_changed)
-    _npc_end_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    _npc_cadence_row2.add_child(_npc_end_spin)
-
     _npc_schedule_save_button = Button.new()
     _npc_schedule_save_button.text = "Save Schedule"
     _npc_schedule_save_button.add_theme_font_override("font", _font)
@@ -1714,13 +1650,6 @@ func _on_npc_name_focus_lost() -> void:
 ## disable only — the save handler also checks the checkbox state when
 ## building the payload, so unchecked always sends null regardless of
 ## the SpinBox values.
-func _on_cadence_toggled(enabled: bool) -> void:
-    if _npc_interval_spin != null:
-        _npc_interval_spin.editable = enabled
-    if _npc_start_spin != null:
-        _npc_start_spin.editable = enabled
-    if _npc_end_spin != null:
-        _npc_end_spin.editable = enabled
 
 ## Gates the social-hour fields the same way cadence does. Editable state
 ## follows the checkbox so a disabled schedule can't push stale values
@@ -1939,14 +1868,7 @@ func _emit_schedule_changed() -> void:
         start_min = int(_npc_start_hour_spin.value) * 60 + int(_npc_start_minute_spin.value)
         end_min = int(_npc_end_hour_spin.value) * 60 + int(_npc_end_minute_spin.value)
     var lateness: int = int(_npc_lateness_spin.value) if _npc_lateness_spin != null else 0
-    var interval: int = -1
-    var start_h: int = -1
-    var end_h: int = -1
-    if _npc_cadence_check.button_pressed:
-        interval = int(_npc_interval_spin.value)
-        start_h = int(_npc_start_spin.value)
-        end_h = int(_npc_end_spin.value)
-    npc_schedule_changed.emit(start_min, end_min, interval, start_h, end_h, lateness)
+    npc_schedule_changed.emit(start_min, end_min, lateness)
 
 ## Build a reusable Start/End HH:MM row. Returns a dict with the row
 ## container plus the two SpinBox children, so the caller can wire them
@@ -2916,22 +2838,7 @@ func show_npc_selection(info: Dictionary) -> void:
         _npc_end_minute_spin.value = end_min % 60
     if _npc_lateness_spin != null:
         _npc_lateness_spin.value = int(info.get("lateness_window_minutes", 0))
-    var interval_raw = info.get("schedule_interval_hours", null)
-    var start_raw = info.get("active_start_hour", null)
-    var end_raw = info.get("active_end_hour", null)
-    var has_cadence: bool = interval_raw != null and start_raw != null and end_raw != null
-    if _npc_cadence_check != null:
-        _npc_cadence_check.button_pressed = has_cadence
-    if has_cadence:
-        _npc_interval_spin.value = int(interval_raw)
-        _npc_start_spin.value = int(start_raw)
-        _npc_end_spin.value = int(end_raw)
-    # Mirror the enable/disable state the toggle would set, since setting
-    # button_pressed programmatically does fire `toggled` — but do it
-    # explicitly in case future Godot changes that.
-    _on_cadence_toggled(has_cadence)
-
-    # Social-hour fields — same all-or-none shape as cadence. Minute
+    # Social-hour fields — same all-or-none shape as the work-window pair. Minute
     # precision since ZBBS-071.
     var social_tag_raw = info.get("social_tag", null)
     var social_start_raw_min = info.get("social_start_minute", null)

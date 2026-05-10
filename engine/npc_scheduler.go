@@ -25,26 +25,18 @@ package main
 //     world's dawn/dusk shifts. Per-NPC; each worker carries their own
 //     pair. ZBBS-071 replaced the older schedule_offset_minutes scalar.
 //
-//   washerwoman / town_crier: when schedule_interval_hours + active_start_hour
-//     + active_end_hour are all set on the NPC, fires at active_start_hour,
-//     then every schedule_interval_hours, until past active_end_hour. When
-//     unset, the NPC falls back to firing at world_rotation_time (legacy
-//     path through checkAndRotate + applyRotation). Mixed behavior is
-//     impossible: applyRotation checks HasCustomSchedule() and skips the
-//     route start for NPCs that own their own schedule.
-//
 //   lamplighter: ignores all schedule fields. Dawn/dusk only.
 //
-// Idempotency: each NPC carries last_shift_tick_at stamping the most recent
-// boundary (arrive/leave for worker, firing boundary for rotation). A boundary
-// older than the stamp is skipped. Editing the schedule clears the stamp so
-// the next tick re-evaluates from scratch — avoids up-to-12h lag on config
-// changes.
+// (ZBBS-HOME-251 removed the per-NPC rotation pattern that previously
+// fired washerwoman / town_crier routes at hour-based intervals. The
+// washerwoman / town_crier behaviors still dispatch via the legacy
+// world_rotation_time path in world_rotation.go::applyRotation, but no
+// actor currently has those behaviors so it's dormant.)
 //
-// Missed night boundaries (for rotation NPCs whose window ends before midnight
-// and start after, leaving night gaps) are skipped AND stamped — no catch-up
-// at dawn. Missing a cycle is better than bursting stale rotations after a
-// quiet night.
+// Idempotency: each NPC carries last_shift_tick_at stamping the most recent
+// boundary (arrive/leave for worker). A boundary older than the stamp is
+// skipped. Editing the schedule clears the stamp so the next tick
+// re-evaluates from scratch — avoids up-to-12h lag on config changes.
 
 import (
 	"context"
@@ -124,12 +116,12 @@ func (app *App) dispatchScheduledBehaviors(ctx context.Context) {
 		app.evaluateWorkerSchedule(ctx, &workers[i], now, dawnMin, duskMin)
 	}
 
-	rotators, err := app.loadCustomScheduledRotationNPCs(ctx)
+	rotators, err := app.loadRotationRows(ctx)
 	if err != nil {
 		log.Printf("scheduler: load rotation NPCs: %v", err)
 	}
 	for i := range rotators {
-		app.evaluateRotationSchedule(ctx, &rotators[i], now)
+		app.evaluateRotationSchedule(ctx, &rotators[i], now, dawnMin, duskMin)
 	}
 }
 
@@ -447,40 +439,54 @@ func formatMinuteOfDay(m int) string {
 	return fmt.Sprintf("%02d:%02d", m/60, m%60)
 }
 
-// rotationRow is a washerwoman or town_crier with a fully-configured
-// per-NPC schedule. NPCs without a schedule (NULL in any of the three
-// fields) aren't returned and fall back to the legacy world_rotation_time
-// trigger via applyRotation.
+// rotationRow bundles per-NPC rotation state for evaluateRotationSchedule.
+// Cadence / label / domain_tag live on the attribute definition
+// (attribute_definition.behaviors JSONB, populated by ZBBS-HOME-251);
+// the per-actor row contributes only the window (schedule_*_minute,
+// NULL = inherit dawn/dusk) plus the standard scheduler bookkeeping
+// (last_shift_tick_at, lateness, override).
 type rotationRow struct {
-	ID                 string
-	Behavior           string
-	ScheduleInterval   int
-	ActiveStartHour    int
-	ActiveEndHour      int
-	LatenessWindow     int
-	LastShiftTickAt    sql.NullTime
-	AgentOverrideUntil sql.NullTime
+	ID                  string
+	Slug                string
+	IntervalHours       int
+	Label               string
+	DomainTag           string
+	ScheduleStartMinute sql.NullInt64
+	ScheduleEndMinute   sql.NullInt64
+	LatenessWindow      int
+	LastShiftTickAt     sql.NullTime
+	AgentOverrideUntil  sql.NullTime
 }
 
-// loadCustomScheduledRotationNPCs returns every washerwoman / town_crier
-// whose schedule fields are all non-null. The DB CHECK constraint
-// schedule_all_or_none guarantees these are only set in the complete
-// all-three shape.
-func (app *App) loadCustomScheduledRotationNPCs(ctx context.Context) ([]rotationRow, error) {
-	// ZBBS-096: rotation NPCs are now identified by attribute slug via
-	// actor_attribute, not by the legacy actor.behavior column. The
-	// schedule fields themselves stay on actor — they're per-actor
-	// overrides, not role-shape data.
-	rows, err := app.DB.Query(ctx,
-		`SELECT n.id, aa.slug, n.schedule_interval_hours, n.active_start_hour,
-		        n.active_end_hour, n.lateness_window_minutes, n.last_shift_tick_at,
-		        n.agent_override_until
-		 FROM actor n
-		 JOIN actor_attribute aa ON aa.actor_id = n.id
-		 WHERE aa.slug IN ($1, $2)
-		   AND n.schedule_interval_hours IS NOT NULL`,
-		behaviorWasherwoman, behaviorTownCrier,
-	)
+// loadRotationRows returns every NPC carrying a rotation_route
+// attribute, with cadence + dispatch params drawn from the
+// attribute definition's behaviors JSONB.
+//
+// Assumes the rotation_route entry sits at behaviors[0]. Multi-entry
+// behaviors arrays aren't in use today; if they're added later, this
+// query needs jsonb_array_elements to find the rotation entry by type.
+func (app *App) loadRotationRows(ctx context.Context) ([]rotationRow, error) {
+	// CASE-guarded cast on interval_hours so a non-numeric value
+	// (e.g. `"5h"`, empty string) on a single attribute row doesn't
+	// blow up the whole rotation load with a cast error.
+	rows, err := app.DB.Query(ctx, `
+		SELECT n.id::text,
+		       aa.slug,
+		       CASE
+		         WHEN ad.behaviors->0->'params'->>'interval_hours' ~ '^[0-9]{1,3}$'
+		         THEN (ad.behaviors->0->'params'->>'interval_hours')::int
+		         ELSE 0
+		       END,
+		       COALESCE(ad.behaviors->0->'params'->>'label', ''),
+		       COALESCE(ad.behaviors->0->'params'->>'domain_tag', ''),
+		       n.schedule_start_minute, n.schedule_end_minute,
+		       n.lateness_window_minutes, n.last_shift_tick_at,
+		       n.agent_override_until
+		  FROM actor n
+		  JOIN actor_attribute aa ON aa.actor_id = n.id
+		  JOIN attribute_definition ad ON ad.slug = aa.slug
+		 WHERE ad.behaviors->0->>'type' = 'rotation_route'
+	`)
 	if err != nil {
 		return nil, err
 	}
@@ -489,49 +495,52 @@ func (app *App) loadCustomScheduledRotationNPCs(ctx context.Context) ([]rotation
 	var out []rotationRow
 	for rows.Next() {
 		var r rotationRow
-		if err := rows.Scan(&r.ID, &r.Behavior, &r.ScheduleInterval,
-			&r.ActiveStartHour, &r.ActiveEndHour, &r.LatenessWindow,
-			&r.LastShiftTickAt, &r.AgentOverrideUntil); err != nil {
+		if err := rows.Scan(&r.ID, &r.Slug, &r.IntervalHours,
+			&r.Label, &r.DomainTag,
+			&r.ScheduleStartMinute, &r.ScheduleEndMinute,
+			&r.LatenessWindow, &r.LastShiftTickAt,
+			&r.AgentOverrideUntil); err != nil {
 			log.Printf("scheduler: scan rotation row: %v", err)
+			continue
+		}
+		if r.IntervalHours <= 0 || r.Label == "" || r.DomainTag == "" {
+			// Behavior misconfigured (missing or non-numeric params).
+			// Log loudly so an admin can spot and fix the attribute
+			// definition; otherwise the silent skip can disable a
+			// behavior forever.
+			log.Printf("scheduler: skip rotation NPC %s attribute %s: invalid params interval_hours=%d label=%q domain_tag=%q",
+				r.ID, r.Slug, r.IntervalHours, r.Label, r.DomainTag)
 			continue
 		}
 		out = append(out, r)
 	}
-	return out, nil
+	return out, rows.Err()
 }
 
-// mostRecentRotationFiring computes the most recent firing boundary at or
-// before now for a per-NPC rotation schedule. Fires at start_hour, then
-// every interval_hours, through (but not after) end_hour. When end wraps
-// past midnight (start > end), the effective window spans two calendar
-// days — yesterday's start through today's end, or today's start through
-// tomorrow's end. Returns zero time when no firing boundary sits within
-// the last 24h — the NPC is currently outside their active window AND the
-// last window ended more than a day ago (unusual configuration).
-func mostRecentRotationFiring(now time.Time, startH, endH, intervalH int) time.Time {
+// mostRecentRotationFiring computes the most recent firing boundary at
+// or before now for a rotation NPC. Fires at startMin, then every
+// intervalH hours, strictly before endMin. End is exclusive to match
+// worker shift semantics (schedule_end_minute is "inactive starting at
+// this minute"). When the window wraps midnight (startMin > endMin),
+// it spans two calendar days. Returns the zero Time if no firing point
+// falls at or before now within the last 24h of windows.
+func mostRecentRotationFiring(now time.Time, startMin, endMin, intervalH int) time.Time {
 	loc := now.Location()
 	y, mo, d := now.Date()
+	intervalMin := intervalH * 60
+	if intervalMin <= 0 {
+		return time.Time{}
+	}
 
-	// Build candidate windows for yesterday, today, and tomorrow. The
-	// tomorrow case covers start > end wrap where today's "start" is
-	// actually yesterday in wall-clock (e.g., tavernkeeper starts 18:00
-	// for a 18-06 window means yesterday's 18:00 is still the active
-	// window's start at 03:00 today).
 	var latest time.Time
 	for _, dayOffset := range []int{-1, 0, 1} {
 		base := time.Date(y, mo, d+dayOffset, 0, 0, 0, 0, loc)
-		start := base.Add(time.Duration(startH) * time.Hour)
-		// End is inclusive in user mental model (fires happen up to and
-		// including end_hour). time.Date normalizes end < start by
-		// pushing end into the next day.
-		end := base.Add(time.Duration(endH) * time.Hour)
-		if endH <= startH {
+		start := base.Add(time.Duration(startMin) * time.Minute)
+		end := base.Add(time.Duration(endMin) * time.Minute)
+		if endMin <= startMin {
 			end = end.Add(24 * time.Hour)
 		}
-		// Iterate firing points in this window. With interval=3 and a
-		// 9-18 window, fires are at 9, 12, 15, 18.
-		interval := time.Duration(intervalH) * time.Hour
-		for t := start; !t.After(end); t = t.Add(interval) {
+		for t := start; t.Before(end); t = t.Add(time.Duration(intervalMin) * time.Minute) {
 			if !t.After(now) && t.After(latest) {
 				latest = t
 			}
@@ -541,23 +550,51 @@ func mostRecentRotationFiring(now time.Time, startH, endH, intervalH int) time.T
 }
 
 // evaluateRotationSchedule fires the NPC's rotation route if the most
-// recent firing boundary within their window is unstamped. Stamps even
-// when no route candidates are available (empty laundry set etc.) so the
+// recent firing boundary within their active window is unstamped.
+// Stamps even on dispatch failure (empty domain set etc.) so the
 // scheduler doesn't keep retrying a no-op for the rest of the window.
-func (app *App) evaluateRotationSchedule(ctx context.Context, r *rotationRow, now time.Time) {
-	// Agent override: see evaluateWorkerSchedule for the model.
+//
+// Active window: per-actor schedule_start_minute / schedule_end_minute
+// when both set; otherwise dawn/dusk from world config. A partial
+// window (only one of the pair set) is treated as misconfigured and
+// the NPC is skipped with a log — the legacy all-or-none CHECK is
+// gone, but the semantic invariant still holds.
+//
+// Stamping uses actor.last_shift_tick_at, which the worker scheduler
+// also uses. Today the worker and rotation_route attributes are
+// mutually exclusive on a given actor in practice; if they're ever
+// combined, the two schedulers will trample each other's stamps and
+// rotation needs its own column.
+func (app *App) evaluateRotationSchedule(ctx context.Context, r *rotationRow, now time.Time, dawnMin, duskMin int) {
 	if r.AgentOverrideUntil.Valid && now.Before(r.AgentOverrideUntil.Time) {
 		return
 	}
-	boundaryAt := mostRecentRotationFiring(now, r.ActiveStartHour, r.ActiveEndHour, r.ScheduleInterval)
+
+	if r.ScheduleStartMinute.Valid != r.ScheduleEndMinute.Valid {
+		log.Printf("scheduler: skip rotation NPC %s: partial schedule window start_valid=%t end_valid=%t",
+			r.ID, r.ScheduleStartMinute.Valid, r.ScheduleEndMinute.Valid)
+		return
+	}
+
+	startMin := dawnMin
+	endMin := duskMin
+	if r.ScheduleStartMinute.Valid {
+		startMin = int(r.ScheduleStartMinute.Int64)
+		endMin = int(r.ScheduleEndMinute.Int64)
+	}
+	if startMin < 0 || startMin >= 1440 || endMin < 0 || endMin >= 1440 {
+		log.Printf("scheduler: skip rotation NPC %s: window out of range %d-%d",
+			r.ID, startMin, endMin)
+		return
+	}
+
+	boundaryAt := mostRecentRotationFiring(now, startMin, endMin, r.IntervalHours)
 	if boundaryAt.IsZero() {
 		return
 	}
 	if r.LastShiftTickAt.Valid && !r.LastShiftTickAt.Time.Before(boundaryAt) {
 		return
 	}
-	// Same lateness treatment as worker (ZBBS-067): hold until the
-	// nominal firing plus a deterministic per-boundary offset.
 	lateMinutes := deterministicLatenessMinutes(r.ID, boundaryAt, r.LatenessWindow)
 	effectiveAt := boundaryAt.Add(time.Duration(lateMinutes) * time.Minute)
 	if now.Before(effectiveAt) {
@@ -569,19 +606,8 @@ func (app *App) evaluateRotationSchedule(ctx context.Context, r *rotationRow, no
 		log.Printf("scheduler: rotation NPC %s vanished during tick", r.ID)
 		return
 	}
-
-	var domainTag, label string
-	switch r.Behavior {
-	case behaviorWasherwoman:
-		domainTag, label = tagLaundry, "washerwoman"
-	case behaviorTownCrier:
-		domainTag, label = tagNoticeBoard, "town_crier"
-	default:
-		// Guarded by the query filter, but keep the switch defensive.
-		return
-	}
-	if _, err := app.startRotationRouteForNPC(ctx, npc, domainTag, label); err != nil {
-		log.Printf("scheduler: %s route for %s: %v", label, r.ID, err)
+	if _, err := app.startRotationRouteForNPC(ctx, npc, r.DomainTag, r.Label); err != nil {
+		log.Printf("scheduler: %s route for %s: %v", r.Label, r.ID, err)
 		// Stamp anyway — retrying next tick with the same candidates
 		// would just re-fail. Admin fixes the root cause, the next
 		// firing picks up.
@@ -594,3 +620,4 @@ func (app *App) evaluateRotationSchedule(ctx context.Context, r *rotationRow, no
 		log.Printf("scheduler: stamp %s: %v", r.ID, err)
 	}
 }
+
