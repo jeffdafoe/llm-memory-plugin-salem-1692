@@ -237,28 +237,43 @@ func (app *App) loadWalkGrid(ctx context.Context) (*walkGrid, error) {
 		if d.x < d.fpMinX || d.x > d.fpMaxX || d.y < d.fpMinY || d.y > d.fpMaxY {
 			continue
 		}
-		// Pick the footprint edge to carve toward. Mana Seed buildings all
-		// face south (doors visually on the south side of the sprite), so
-		// the PC/NPC should always approach from the south whenever the
-		// south corridor is viable — otherwise the path threads through
-		// tiles on the building's east or west flank, which read visually
-		// as "entering through the side wall." Falls back to nearer of
-		// east/west when the door is already at the south edge (no south
-		// corridor needed but pathfinder still needs an approach lane in
-		// some other direction). North is last resort and only applies if
-		// the door somehow sits above its own footprint extent.
+		// Pick the footprint edge closest to the door and carve toward it.
+		// Tie-break: W > E > N > S (the order the conditionals run in).
+		//
+		// History: 12446e6 (2026-05-02) switched this to "always prefer
+		// south whenever distS > 0," motivated by the Mana Seed
+		// south-facing-door convention reading better than a side-wall
+		// approach. In practice that made every door-inside-footprint
+		// case carve a long south corridor through the full building
+		// interior — for Ezekiel's Blacksmith (door at offset (-1, -3)
+		// in a 5-tall stall) the south corridor is 3 tiles, so the
+		// walker visibly walks through the south wall, through the
+		// interior, then turns at the door tile. Reverted to the
+		// closest-edge tie-break here, which for the Blacksmith picks
+		// west (distW=1) and carves a 1-tile corridor — a minor wall
+		// clip on the side that nobody notices. Same trade-off the
+		// May 2 commit had originally rejected, but the side-wall clip
+		// is far less visually disruptive than the long south one.
+		// Real fix would walk the actor to a tile OUTSIDE the footprint
+		// and inside-flip there, but that pushes the stop point too far
+		// from the visual door for buildings whose door sprite isn't
+		// at the south face.
 		distW := d.x - d.fpMinX
 		distE := d.fpMaxX - d.x
 		distN := d.y - d.fpMinY
 		distS := d.fpMaxY - d.y
-		_ = distN
-		var dir string
-		if distS > 0 {
-			dir = "s"
-		} else if distE <= distW {
+		minDist := distW
+		dir := "w"
+		if distE < minDist {
+			minDist = distE
 			dir = "e"
-		} else {
-			dir = "w"
+		}
+		if distN < minDist {
+			minDist = distN
+			dir = "n"
+		}
+		if distS < minDist {
+			dir = "s"
 		}
 		switch dir {
 		case "w":
