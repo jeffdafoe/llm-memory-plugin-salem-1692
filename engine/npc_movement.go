@@ -162,6 +162,11 @@ func (app *App) handleWalkTo(w http.ResponseWriter, r *http.Request) {
 		speed = defaultNPCSpeed
 	}
 
+	// Mirror handlePCMove's raw-coord cleanup: clear any prior route
+	// before raw-coord walk so a stale route from a previous routed walk
+	// doesn't fire on this walk's arrival. See the comment there for the
+	// observed symptom shape.
+	app.clearBehavior(npcID)
 	result, err := app.startNPCWalk(r.Context(), npcID, req.X, req.Y, speed)
 	if err != nil {
 		if err.Error() == "npc not found" {

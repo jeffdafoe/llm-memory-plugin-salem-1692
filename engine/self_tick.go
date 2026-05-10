@@ -241,7 +241,7 @@ func (app *App) scheduleReturnToWorkFollowup(ctx context.Context, npcID string) 
 func (app *App) maybeScheduleReturnToWork(ctx context.Context, npcID string) {
 	var r agentNPCRow
 	if err := app.DB.QueryRow(ctx,
-		`SELECT id, role,
+		`SELECT id, COALESCE(role, ''),
 		        inside_structure_id, current_x, current_y,
 		        work_structure_id,
 		        schedule_start_minute, schedule_end_minute,
