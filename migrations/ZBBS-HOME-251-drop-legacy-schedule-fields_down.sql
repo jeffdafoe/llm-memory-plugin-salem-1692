@@ -6,6 +6,14 @@
 
 BEGIN;
 
+-- Strip interval_hours back out of the rotation behaviors. Operators
+-- rolling back are expected to also revert the engine, which falls
+-- back to the world_rotation_time path that doesn't read this field.
+UPDATE attribute_definition
+   SET behaviors = behaviors #- '{0,params,interval_hours}'
+ WHERE slug IN ('washerwoman', 'town_crier')
+   AND behaviors->0->>'type' = 'rotation_route';
+
 ALTER TABLE actor ADD COLUMN IF NOT EXISTS schedule_interval_hours INTEGER;
 ALTER TABLE actor ADD COLUMN IF NOT EXISTS active_start_hour INTEGER;
 ALTER TABLE actor ADD COLUMN IF NOT EXISTS active_end_hour INTEGER;

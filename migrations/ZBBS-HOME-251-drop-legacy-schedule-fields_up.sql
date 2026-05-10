@@ -26,13 +26,18 @@
 --      (start=360 / end=1140 = 6:00 AM – 7:00 PM).
 --   2. Drops the legacy columns + the schedule_all_or_none CHECK
 --      constraint.
+--   3. Adds interval_hours=5 to the washerwoman / town_crier
+--      attribute behaviors. Cadence now lives with the behavior
+--      definition (attribute_definition.behaviors JSONB), not on
+--      the actor row. Per-NPC overrides are gone by design.
 --
--- Companion engine + client changes remove all code that read the
--- legacy fields and the rotation-via-per-NPC-schedule scheduler
--- branch. The world_rotation_time-driven washerwoman / town_crier
--- dispatch (in world_rotation.go::applyRotation) keeps working —
--- it lives off attribute slugs, not the schedule fields — but no
--- actor currently has those behaviors so it's dormant in practice.
+-- Companion engine changes: the per-NPC rotation scheduler is rebuilt
+-- to read cadence from attribute_definition.behaviors and the active
+-- window from actor.schedule_start_minute / schedule_end_minute
+-- (falling back to dawn/dusk when both are NULL). The
+-- world_rotation_time-driven dispatch in world_rotation.go::applyRotation
+-- is removed for these behaviors so they only fire from the per-NPC
+-- scheduler (no double-firing).
 
 BEGIN;
 
@@ -57,5 +62,15 @@ ALTER TABLE actor DROP CONSTRAINT IF EXISTS actor_schedule_all_or_none;
 ALTER TABLE actor DROP COLUMN IF EXISTS schedule_interval_hours;
 ALTER TABLE actor DROP COLUMN IF EXISTS active_start_hour;
 ALTER TABLE actor DROP COLUMN IF EXISTS active_end_hour;
+
+-- 4. Bake the rotation cadence into the attribute definition. Both
+--    rotation-route attributes (washerwoman, town_crier) fire every
+--    5 hours within their active window. Hardcoded for now; a future
+--    refactor can promote interval_hours to a real column on
+--    attribute_definition if more tuning surface is needed.
+UPDATE attribute_definition
+   SET behaviors = jsonb_set(behaviors, '{0,params,interval_hours}', '5'::jsonb, true)
+ WHERE slug IN ('washerwoman', 'town_crier')
+   AND behaviors->0->>'type' = 'rotation_route';
 
 COMMIT;

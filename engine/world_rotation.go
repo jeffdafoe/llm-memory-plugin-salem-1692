@@ -34,26 +34,16 @@ const tagRotatable = "rotatable"
 // stamps world_phase.last_rotation_at, and hands the flips to scheduleFlips.
 // Returns the number of objects scheduled to rotate.
 //
-// If a washerwoman or town_crier NPC is on duty, their domain (laundry or
-// notice-board tagged states) is excluded from the bulk flip. Whether we
-// also fire their route here depends on schedule ownership:
-//
-//   - Legacy NPC (schedule fields NULL): fire the route from applyRotation,
-//     anchored to world_rotation_time like every other global cycle.
-//   - Custom-scheduled NPC: skip firing. The per-NPC scheduler
-//     (dispatchScheduledBehaviors) owns their cadence. Laundry still
-//     gets excluded from the bulk flip so the custom schedule's route is
-//     the sole mutator.
+// Laundry and notice-board state tags are excluded from the bulk flip:
+// washerwoman and town_crier NPCs own those domains and rotate them on
+// their own per-NPC schedule (cadence from attribute_definition.behaviors,
+// window from actor.schedule_*_minute or dawn/dusk default). Without
+// the exclusion world_rotation_time would flip them at midnight and
+// the first scheduled route fire of the next day would have nothing
+// left to rotate. Whether or not an actor currently carries those
+// attributes, the exclusion is harmless.
 func (app *App) applyRotation(ctx context.Context) (int, error) {
-	var exclude []string
-	washerwoman, hasWasherwoman := app.findNPCWithBehavior(ctx, behaviorWasherwoman)
-	if hasWasherwoman {
-		exclude = append(exclude, tagLaundry)
-	}
-	crier, hasCrier := app.findNPCWithBehavior(ctx, behaviorTownCrier)
-	if hasCrier {
-		exclude = append(exclude, tagNoticeBoard)
-	}
+	exclude := []string{tagLaundry, tagNoticeBoard}
 
 	flips, err := app.determineRotationFlipsScoped(ctx, rotationScope{ExcludeTags: exclude})
 	if err != nil {
@@ -72,30 +62,11 @@ func (app *App) applyRotation(ctx context.Context) (int, error) {
 	}
 	app.scheduleFlips(flips)
 
-	// Dispatch per-object NPC routes for washerwoman / town_crier.
-	// (ZBBS-HOME-251 removed the per-NPC scheduled rotation pattern;
-	// these behaviors fire exclusively from world_rotation_time now.)
-	var washerStops, crierStops int
-	if hasWasherwoman {
-		n, err := app.startRotationRouteForNPC(ctx, washerwoman, tagLaundry, "washerwoman")
-		if err != nil {
-			log.Printf("world_rotation: washerwoman route failed: %v", err)
-		}
-		washerStops = n
-	}
-	if hasCrier {
-		n, err := app.startRotationRouteForNPC(ctx, crier, tagNoticeBoard, "town_crier")
-		if err != nil {
-			log.Printf("world_rotation: town_crier route failed: %v", err)
-		}
-		crierStops = n
-	}
-
 	rested := app.resetSleptTiredness(ctx)
 
-	log.Printf("world_rotation: %d bulk flips, %d washerwoman stops, %d town_crier stops, %d actors rested",
-		len(flips), washerStops, crierStops, rested)
-	return len(flips) + washerStops + crierStops, nil
+	log.Printf("world_rotation: %d bulk flips, %d actors rested",
+		len(flips), rested)
+	return len(flips), nil
 }
 
 // resetSleptTiredness wipes tiredness at the rotation boundary on
