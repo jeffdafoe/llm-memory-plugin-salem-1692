@@ -201,16 +201,28 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 	perception, locationName := app.buildAgentPerception(ctx, r, hourStart, dawnMin, duskMin)
 	tools := app.buildAgentTools(ctx, r.ID)
 
-	// currentMessage / currentToolCallID still drive the per-branch
-	// continuation logic below; we just translate them into the new
-	// {message, []toolResult} wire shape on the way into sendChat. iter 0
-	// sends `currentMessage` as the perception; thereafter currentToolCallID
-	// is set and we wrap into a 1-element tool-result array. Llama-3.3
-	// (the NPC model) effectively never emits parallel tool calls, so a
-	// 1-element array is the typical case — but the wire shape is
-	// uniform with the chronicler path.
-	currentMessage := perception
-	currentToolCallID := ""
+	// pendingResults accumulates this iteration's tool_results. iter 0 sends
+	// `perception` as the user message and pendingResults is unused; iter N>0
+	// sends pendingResults as the tool_call_results array (one entry per tool
+	// the model emitted in the prior reply). On terminal commit, the loop
+	// breaks and post-loop persistToolResults writes pendingResults so the
+	// final iter's tool_results don't sit orphan in conversation history.
+	//
+	// Multi-element pendingResults handles parallel-tool-call replies: when
+	// Anthropic returns e.g. [pay, speak, done] in one assistant turn, all
+	// three get executed in priority order (non-terminals first, terminal
+	// last) and all three tool_results land via the next sendChat
+	// (or post-loop persist on terminal break). Pre-fix the harness picked
+	// one tool per iter and silently dropped the rest, leaving dangling
+	// tool_use ids that 400'd Anthropic on the next history reconstruction.
+	//
+	// pendingPersisted tracks whether pendingResults has already been sent
+	// to memory-api (via the next iter's sendChat resultsArg). The post-loop
+	// persist runs only when pendingResults is unsent — covers the terminal-
+	// break and budget-exhausted cases. Pre-fix the budget-exhausted path
+	// lost the final iter's tool_result; with this flag we close it out.
+	var pendingResults []toolResult
+	pendingPersisted := true
 
 	// Hoist the structure-name lookup outside the iteration loop —
 	// avoids N redundant queries per cascade and keeps every chat row
@@ -220,24 +232,24 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 	// different names).
 	sceneStructure := app.lookupSceneStructureName(ctx, sceneID)
 
-	// Track terminal-call execution state so the harness can dispatch the
-	// audit row and the close-out message after the loop without
-	// re-executing. Terminal calls used to be deferred to a single call
-	// after the loop (via commitCall + break); ZBBS-HOME-207 moves
-	// execution inside the loop so a rejected terminal can feed its
-	// corrective message back as the next iteration's continuation,
-	// allowing the model to pick a valid terminal within the same tick
-	// budget instead of ending the turn on a recoverable error.
+	// commitCall captures the terminal commit so the post-loop fallback
+	// can run executeAgentCommit on synthetic terminals (text fallback
+	// for empty replies, budget-exhausted, unknown-tool fallback) for
+	// their side effects. commitExecuted distinguishes "real terminal
+	// already executed inside the loop (ZBBS-HOME-207)" from "synthetic
+	// terminal still needs executeAgentCommit." Result strings from
+	// executeAgentCommit aren't read post-loop anymore — pendingResults
+	// carries the [OK]/[failed] copy directly into the persist call.
 	var commitCall *agentToolCall
-	var commitResult, commitErrStr string
 	var commitExecuted bool
 	for iter := 0; iter < agentTickBudget; iter++ {
 		var msgArg string
 		var resultsArg []toolResult
-		if currentToolCallID == "" {
-			msgArg = currentMessage
+		if iter == 0 {
+			msgArg = perception
 		} else {
-			resultsArg = []toolResult{{ID: currentToolCallID, Content: currentMessage}}
+			resultsArg = pendingResults
+			pendingPersisted = true
 		}
 		reply, err := app.npcChatClient.sendChat(ctx, r.LLMMemoryAgent, msgArg, resultsArg, sceneID, sceneStructure, tools)
 		if err != nil {
@@ -257,12 +269,9 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			break
 		}
 
-		// Pick the first tool_call to act on. Terminal commits (move_to,
-		// chore, done) win over pay/consume/serve/speak/act. Pay/consume
-		// /serve run before speak so a "serve-and-here-you-are" or
-		// "pay-and-thank-you" sequence unfolds in the natural order:
-		// transaction first, speech next iteration. All inline tools
-		// execute and let the loop continue — none ends the turn.
+		// Categorize tool_calls into priority buckets. First occurrence per
+		// bucket wins so a duplicate (e.g. two speaks) doesn't double-fire;
+		// the dropped duplicate's tool_use_id is closed out below.
 		var terminalCall, payCall, deliverCall, consumeCall, serveCall, gatherCall, summonCall, speakCall, actCall, endBreakCall, observation *agentToolCall
 		for i := range reply.ToolCalls {
 			tc := &reply.ToolCalls[i]
@@ -314,84 +323,34 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			}
 		}
 
-		if terminalCall != nil {
-			// Execute inside the loop so rejections can retry within the
-			// same tick (ZBBS-HOME-207). Pre-207, a rejected terminal call
-			// (e.g. take_break with until_hour already past, move_to to
-			// invalid coords) ended the turn entirely — the corrective
-			// error landed in conversation history but the model couldn't
-			// act on it until the next scheduled tick, often 30+ minutes
-			// later. By then perception had refreshed and the prior
-			// rejection no longer drove decisions.
-			//
-			// Behavior:
-			//   - "ok"       → commit accepted; capture result and break,
-			//                  audit-row writer at the end of the loop
-			//                  uses the captured pair.
-			//   - "rejected" → corrective message fed back as the next
-			//                  iteration's tool result; loop continues so
-			//                  the model can pick a different terminal
-			//                  with the rejection's correction in mind
-			//                  (e.g. "current hour is 13" → emit
-			//                  until_hour=15 instead of 12).
-			//   - "failed"   → engine error (DB issue, non-recoverable);
-			//                  capture and break. Failed isn't a model
-			//                  problem to correct — it's a system fault,
-			//                  so retrying with the same input would just
-			//                  re-fail.
-			//
-			// Rejected terminals are guaranteed not to have committed
-			// state changes — every reject path in executeAgentCommit's
-			// terminal branches breaks out before the state mutation
-			// (move_to validates coords before walking, take_break
-			// validates until_hour before stamping break_until, etc.).
-			result, errStr, _ := app.executeAgentCommit(ctx, r, terminalCall, sceneID, hourStart.Location())
-			if result == "rejected" {
-				currentMessage = fmt.Sprintf("[rejected] %s", errStr)
-				currentToolCallID = terminalCall.ID
-				continue
-			}
-			commitCall = terminalCall
-			commitResult = result
-			commitErrStr = errStr
-			commitExecuted = true
-			break
-		}
+		// Reset for this iter — each iter builds its own pendingResults.
+		// Mark unpersisted: only sendChat-as-resultsArg or the post-loop
+		// persist will close them out.
+		pendingResults = nil
+		pendingPersisted = false
 
-		// end_break runs before pay/serve/etc. so a vendor who decides
-		// to reopen mid-turn (customer arrived during break, ended
-		// break to serve them) sees the rest of their turn execute
-		// against the now-open shop. Without this ordering, a same-
-		// turn end_break + pay-from-customer could still hit the
-		// closed-shop gate via stale row-state if the read happened
-		// before the end_break write committed.
+		// Process non-terminals in priority order. Each branch executes the
+		// tool, formats a result message, and appends to pendingResults.
+		// Order matters: end_break first so a vendor reopening mid-turn
+		// (customer arrived during break) sees the rest of the parallel
+		// commits — pay, serve — execute against the now-open shop.
+		// Without this, a same-turn end_break + pay-from-customer would
+		// hit the closed-shop gate via stale row-state.
 		if endBreakCall != nil {
 			result, errStr, _ := app.executeAgentCommit(ctx, r, endBreakCall, sceneID, hourStart.Location())
+			var content string
 			if result == "ok" {
-				currentMessage = "[OK] You're back at your post — break ended. Greet any customer present, or start serving them. Then you may move or call done."
+				content = "[OK] You're back at your post — break ended. Greet any customer present, or start serving them. Then you may move or call done."
 			} else {
-				currentMessage = fmt.Sprintf("[End_break %s] %s. Continue your turn — you may speak, move, or call done.", result, errStr)
+				content = fmt.Sprintf("[End_break %s] %s. Continue your turn — you may speak, move, or call done.", result, errStr)
 			}
-			currentToolCallID = endBreakCall.ID
-			// Refresh r.BreakUntil so any subsequent perception build /
-			// tool dispatch in the same loop iteration sees the cleared
-			// break. The reactor tick after this fires its own row
-			// reload, but inline pay/serve in the SAME tool-call set
-			// reads off r.* — keep that consistent.
+			pendingResults = append(pendingResults, toolResult{ID: endBreakCall.ID, Content: content})
+			// Refresh r.BreakUntil so any subsequent inline pay/serve in
+			// the SAME tool-call set reads off r.* with the cleared break.
 			r.BreakUntil = sql.NullTime{}
-			continue
 		}
 
 		if payCall != nil {
-			// Pay executes inline like speak — state change happens (coins
-			// move, hunger/thirst drop if matched), but the loop continues
-			// so the model can follow through with thanks or a move. The
-			// continuation message reflects the actual result so the model
-			// knows whether the transaction landed: a "rejected" pay (bad
-			// recipient, insufficient coins, self-payment) gets surfaced
-			// verbatim so the model can correct itself rather than thanking
-			// someone for ale they didn't actually receive.
-			//
 			// Snapshot needs before so the post-action readback can describe
 			// what changed (pay can include immediate consumption per
 			// ZBBS-091, in which case the buyer's needs drop alongside).
@@ -399,18 +358,18 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			// values and would be stale after a prior consume/pay this turn.
 			beforeH, beforeT, beforeTi := app.snapshotNeeds(ctx, r.ID)
 			result, errStr, extra := app.executeAgentCommit(ctx, r, payCall, sceneID, hourStart.Location())
+			var content string
 			if result == "ok" {
 				readback := app.buildPostConsumeReadback(ctx, r.ID, beforeH, beforeT, beforeTi)
-				currentMessage = "[OK] You paid. " + readback + "If a customer or merchant addressed you mid-transaction, speak to them now (a thanks, a follow-up, an answer). Then you may move or call done."
+				content = "[OK] You paid. " + readback + "If a customer or merchant addressed you mid-transaction, speak to them now (a thanks, a follow-up, an answer). Then you may move or call done."
 			} else if result == "countered" && extra != "" {
 				// Recipient haggled back. Echo the ledger_id so a retry
 				// can extend the chain via in_response_to.
-				currentMessage = fmt.Sprintf("[Pay countered, ledger_id=%s] %s. To pay the new amount and continue this haggling thread, call pay() again with in_response_to=%s. You may also speak, move, or call done instead.", extra, errStr, extra)
+				content = fmt.Sprintf("[Pay countered, ledger_id=%s] %s. To pay the new amount and continue this haggling thread, call pay() again with in_response_to=%s. You may also speak, move, or call done instead.", extra, errStr, extra)
 			} else {
-				currentMessage = fmt.Sprintf("[Pay %s] %s. Continue your turn — you may correct it, speak, move, or call done.", result, errStr)
+				content = fmt.Sprintf("[Pay %s] %s. Continue your turn — you may correct it, speak, move, or call done.", result, errStr)
 			}
-			currentToolCallID = payCall.ID
-			continue
+			pendingResults = append(pendingResults, toolResult{ID: payCall.ID, Content: content})
 		}
 
 		if deliverCall != nil {
@@ -424,171 +383,201 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			// post-commit broadcast). The continuation message therefore
 			// no longer nudges a "here you are" speak — that line was
 			// load-bearing pre-handover-narration and read as redundant
-			// once the engine line landed first. Optional follow-up
-			// flavor ("enjoy", "mind the heat") is welcome but not
-			// required, so the nudge invites silence as an acceptable
-			// outcome alongside speak/move/done.
+			// once the engine line landed first.
 			result, errStr, extra := app.executeAgentCommit(ctx, r, deliverCall, sceneID, hourStart.Location())
+			var content string
 			if result == "ok" {
 				if extra != "" {
-					currentMessage = "[OK] You delivered " + extra + ". The handover is on the record. You may add a brief follow-up word ('enjoy', 'mind the heat', etc.), or stay silent. Then you may move or call done."
+					content = "[OK] You delivered " + extra + ". The handover is on the record. You may add a brief follow-up word ('enjoy', 'mind the heat', etc.), or stay silent. Then you may move or call done."
 				} else {
-					currentMessage = "[OK] You delivered the order. The handover is on the record. You may add a brief follow-up word, or stay silent. Then you may move or call done."
+					content = "[OK] You delivered the order. The handover is on the record. You may add a brief follow-up word, or stay silent. Then you may move or call done."
 				}
 			} else if strings.Contains(errStr, "no such ledger row") {
-				// Hallucinated ledger id — the model is acting on an
-				// order that doesn't exist. Saw 2026-05-07 John Ellis
-				// follow a deliver_order(37) rejection (no such row)
-				// with the speak "Since you've paid, I'll get your
-				// order ready" — the customer's verbal "yes" to a
-				// price quote isn't a payment, pay() was never called.
-				// Tighten the continuation so the next-iteration speak
-				// can't pretend the transaction completed.
-				currentMessage = fmt.Sprintf("[Deliver rejected] %s. No such order exists — no payment has been received and nothing has been delivered. Do not speak as if the transaction completed. The customer must call pay before there's anything to deliver — restate the price and wait, or call done.", errStr)
+				// Hallucinated ledger id — model acting on an order that
+				// doesn't exist. Tighten the continuation so the next-iter
+				// speak can't pretend the transaction completed.
+				content = fmt.Sprintf("[Deliver rejected] %s. No such order exists — no payment has been received and nothing has been delivered. Do not speak as if the transaction completed. The customer must call pay before there's anything to deliver — restate the price and wait, or call done.", errStr)
 			} else {
-				currentMessage = fmt.Sprintf("[Deliver %s] %s. Continue your turn — you may correct it, speak, move, or call done.", result, errStr)
+				content = fmt.Sprintf("[Deliver %s] %s. Continue your turn — you may correct it, speak, move, or call done.", result, errStr)
 			}
-			currentToolCallID = deliverCall.ID
-			continue
+			pendingResults = append(pendingResults, toolResult{ID: deliverCall.ID, Content: content})
 		}
 
 		if serveCall != nil {
-			// Serve: vendor (tavernkeeper, herbalist, blacksmith,
-			// merchant) hands stock to co-located people. Decrements
-			// own stock, drops recipients' needs (consume_now) or
-			// credits their inventories (take-home). No coin transfer.
-			// Inline like pay so a "serve-then-mention-the-price" speak
-			// chain reads naturally.
-			//
-			// Continuation explicitly nudges speak — without this the
-			// model often picks done after serving even when a customer
-			// just asked a question. Silent service to a hanging
-			// question reads as cold and unwelcoming.
+			// Serve: vendor hands stock to co-located people. Decrements
+			// own stock, drops recipients' needs (consume_now) or credits
+			// inventories (take-home). Inline so a "serve-then-mention-the-
+			// price" speak chain reads naturally.
 			result, errStr, _ := app.executeAgentCommit(ctx, r, serveCall, sceneID, hourStart.Location())
+			var content string
 			if result == "ok" {
 				msg := "[OK] You served."
-				// Satiation notes for any recipient whose relevant
-				// need landed at 0. Real bartender-style awareness:
-				// "Ezekiel is stuffed" tells John he's done his job
-				// for that patron and another round would be wasted.
+				// Satiation notes for any recipient whose relevant need
+				// landed at 0 — "Ezekiel is stuffed" tells the keeper
+				// they've done their job for that patron.
 				if notes := satiationNotes(r.LastServeResult); len(notes) > 0 {
 					msg += " " + strings.Join(notes, " ")
 				}
 				r.LastServeResult = nil
 				msg += " If a customer asked you something or is mid-conversation with you, speak to them now — answer the question, name the price, share a word. Then you may move or call done."
-				currentMessage = msg
+				content = msg
 			} else {
-				currentMessage = fmt.Sprintf("[Serve %s] %s. Continue your turn — you may correct it, speak, move, or call done.", result, errStr)
+				content = fmt.Sprintf("[Serve %s] %s. Continue your turn — you may correct it, speak, move, or call done.", result, errStr)
 			}
-			currentToolCallID = serveCall.ID
-			continue
+			pendingResults = append(pendingResults, toolResult{ID: serveCall.ID, Content: content})
 		}
 
 		if consumeCall != nil {
 			// Consume: eats from your own inventory. Drops the linked need
-			// per the item's configured satisfaction. Inline so a "drink
-			// then thank the host" sequence reads naturally.
-			//
-			// Snapshot needs before so the post-action readback can tell
-			// the model what changed and what's still pressing — without
-			// it the model tends to call done after one consume even if
-			// other needs are still at red tier (saw John Ellis eat bread
-			// then done while still parched and exhausted on 2026-05-02).
-			// Read from DB so a second consume in the same tick gets fresh
-			// pre-action values instead of tick-start (stale) ones.
+			// per the item's configured satisfaction. Snapshot needs before
+			// so the post-action readback can tell the model what changed
+			// and what's still pressing.
 			beforeH, beforeT, beforeTi := app.snapshotNeeds(ctx, r.ID)
 			result, errStr, _ := app.executeAgentCommit(ctx, r, consumeCall, sceneID, hourStart.Location())
+			var content string
 			if result == "ok" {
 				readback := app.buildPostConsumeReadback(ctx, r.ID, beforeH, beforeT, beforeTi)
-				currentMessage = "[OK] You consumed it. " + readback + "If anyone is mid-conversation with you, speak to them now. Then you may move or call done."
+				content = "[OK] You consumed it. " + readback + "If anyone is mid-conversation with you, speak to them now. Then you may move or call done."
 			} else {
-				currentMessage = fmt.Sprintf("[Consume %s] %s. Continue your turn — you may correct it, speak, move, or call done.", result, errStr)
+				content = fmt.Sprintf("[Consume %s] %s. Continue your turn — you may correct it, speak, move, or call done.", result, errStr)
 			}
-			currentToolCallID = consumeCall.ID
-			continue
+			pendingResults = append(pendingResults, toolResult{ID: consumeCall.ID, Content: content})
 		}
 
 		if speakCall != nil {
-			// Execute the speak inline (audit + WS broadcast + co-located
-			// event-ticks) but DON'T terminate the loop. The model gets to
-			// follow through with a move/chore/done on the next iteration.
-			// The tool_result reminds the model that action is still on
-			// the table — without it, models tend to default to "done"
-			// after speaking ("I responded, my turn's over"). Non-directive
-			// nudge: doesn't name a specific action, just affirms agency.
+			// Execute speak inline (audit + WS broadcast + co-located
+			// event-ticks). Drain deferred broadcasts queued by
+			// deliver_order (dwell hint + felt-outcome consume narrations)
+			// — held back so the keeper's verbal "here you are" lands
+			// BEFORE the eat narrations.
 			result, errStr, _ := app.executeAgentCommit(ctx, r, speakCall, sceneID, hourStart.Location())
-			// Drain deferred broadcasts queued by deliver_order (dwell
-			// hint + felt-outcome consume narrations). These were held
-			// back so the keeper's verbal "here you are" speak lands
-			// BEFORE the eat narrations. Now that the speak has fired,
-			// the consume beats can land in their natural slot.
 			app.drainDeferredBroadcasts(r)
+			var content string
 			if result == "ok" {
-				currentMessage = "[OK] You spoke. Continue your turn — you may move or run a chore now, or call done if you're staying put."
+				content = "[OK] You spoke. Continue your turn — you may move or run a chore now, or call done if you're staying put."
 			} else {
-				// Surface the rejection verbatim so the model can correct
-				// its plan within the same tick. Pre-ZBBS-HOME-237 the
-				// result was discarded and a misleading "[OK] You spoke"
-				// went back regardless — guards like the walk-in-flight
-				// gate and the vocative stale-addressee check fired but
-				// the LLM never learned that its words went nowhere.
-				currentMessage = fmt.Sprintf("[Speak %s] %s. Continue your turn — you may correct it, move, run a chore, or call done.", result, errStr)
+				// Surface the rejection verbatim — guards like the
+				// walk-in-flight gate and the vocative stale-addressee
+				// check need to land back to the model so it can correct.
+				content = fmt.Sprintf("[Speak %s] %s. Continue your turn — you may correct it, move, run a chore, or call done.", result, errStr)
 			}
-			currentToolCallID = speakCall.ID
-			continue
+			pendingResults = append(pendingResults, toolResult{ID: speakCall.ID, Content: content})
 		}
 
 		if actCall != nil {
-			// act is non-terminal like speak — the model often pairs a
-			// physical action with a follow-up speech ("served stew" then
-			// "here you are, mind the heat"). Same [OK] nudge so the
-			// model knows the turn isn't over.
 			_, _, _ = app.executeAgentCommit(ctx, r, actCall, sceneID, hourStart.Location())
-			currentMessage = "[OK] You did that. If anyone is mid-conversation with you, speak to them now. Then you may move or call done."
-			currentToolCallID = actCall.ID
-			continue
+			content := "[OK] You did that. If anyone is mid-conversation with you, speak to them now. Then you may move or call done."
+			pendingResults = append(pendingResults, toolResult{ID: actCall.ID, Content: content})
 		}
 
 		if gatherCall != nil {
-			// gather is non-terminal — the typical chain is gather then
-			// move_to back home, or gather then act/speak about it.
-			// Surfaces the rejection text verbatim so a "not at a source"
-			// or "depleted" outcome feeds the model's next decision
-			// instead of silently disappearing.
 			result, errStr, extra := app.executeAgentCommit(ctx, r, gatherCall, sceneID, hourStart.Location())
+			var content string
 			if result == "ok" {
 				if extra != "" {
-					currentMessage = "[OK] You gathered " + extra + ". If anyone is mid-conversation with you, speak to them now. Then you may move or call done."
+					content = "[OK] You gathered " + extra + ". If anyone is mid-conversation with you, speak to them now. Then you may move or call done."
 				} else {
-					currentMessage = "[OK] You filled your inventory. If anyone is mid-conversation with you, speak to them now. Then you may move or call done."
+					content = "[OK] You filled your inventory. If anyone is mid-conversation with you, speak to them now. Then you may move or call done."
 				}
 			} else {
-				currentMessage = fmt.Sprintf("[Gather %s] %s. Continue your turn — you may correct it, speak, move, or call done.", result, errStr)
+				content = fmt.Sprintf("[Gather %s] %s. Continue your turn — you may correct it, speak, move, or call done.", result, errStr)
 			}
-			currentToolCallID = gatherCall.ID
-			continue
+			pendingResults = append(pendingResults, toolResult{ID: gatherCall.ID, Content: content})
 		}
 
 		if summonCall != nil {
-			// summon is non-terminal — sender typically follows the call
-			// with a speak ("I've sent for them") or a move. Like pay,
-			// the rejection text matters: the model should know if the
-			// summons was rejected (cooldown / co-located / unknown
-			// target) so it doesn't loop "send messenger, send messenger".
 			result, errStr, _ := app.executeAgentCommit(ctx, r, summonCall, sceneID, hourStart.Location())
+			var content string
 			if result == "ok" {
-				currentMessage = "[OK] The messenger is on their way. If anyone is mid-conversation with you, speak to them now (a 'I've sent for them' would be natural). Then you may move or call done."
+				content = "[OK] The messenger is on their way. If anyone is mid-conversation with you, speak to them now (a 'I've sent for them' would be natural). Then you may move or call done."
 			} else {
-				currentMessage = fmt.Sprintf("[Summon %s] %s. Continue your turn — you may correct it, speak, move, or call done.", result, errStr)
+				content = fmt.Sprintf("[Summon %s] %s. Continue your turn — you may correct it, speak, move, or call done.", result, errStr)
 			}
-			currentToolCallID = summonCall.ID
-			continue
+			pendingResults = append(pendingResults, toolResult{ID: summonCall.ID, Content: content})
 		}
 
-		if observation == nil {
-			// All tool_calls unrecognized. Defensive — agentToolSpec is
-			// fixed — but treat as no-op done so the tick still terminates
-			// with an audit row.
+		if observation != nil {
+			obsContent := app.resolveObservationTool(ctx, r, observation, locationName)
+			pendingResults = append(pendingResults, toolResult{ID: observation.ID, Content: obsContent})
+		}
+
+		// Close out any tool_use ids the bucket categorizer dropped — the
+		// dispatcher takes one call per tool type per turn (one pay, one
+		// speak, etc.). When the model emits multiples of the same type
+		// (two pays to different recipients, two speaks to different
+		// addressees), only the first fires; the others' tool_use_ids
+		// need tool_result rows or they dangle. Walk reply.ToolCalls,
+		// find ids not yet in pendingResults (and not the terminal,
+		// handled separately below), append a close-out for each. The
+		// content string nudges the model to retry the dropped action
+		// next turn rather than assuming the whole batch ran.
+		for i := range reply.ToolCalls {
+			tc := &reply.ToolCalls[i]
+			already := false
+			for _, pr := range pendingResults {
+				if pr.ID == tc.ID {
+					already = true
+					break
+				}
+			}
+			if already {
+				continue
+			}
+			if terminalCall != nil && tc.ID == terminalCall.ID {
+				continue
+			}
+			pendingResults = append(pendingResults, toolResult{
+				ID:      tc.ID,
+				Content: "[skipped] Multiple calls of this tool type were emitted in one turn — only the first was executed. Retry any remaining action on the next turn.",
+			})
+		}
+
+		// Terminal LAST. Non-terminals have already executed and their
+		// tool_results sit in pendingResults; the terminal closes out the
+		// turn after the model's other intents have landed in the world.
+		// (Pre-fix: terminal won the priority ladder and ran first, which
+		// meant a parallel [done, speak] silently dropped the speak.)
+		if terminalCall != nil {
+			// Execute inside the loop so rejections can retry within the
+			// same tick (ZBBS-HOME-207).
+			//
+			//   - "ok"       → commit accepted; capture and break,
+			//                  post-loop persistToolResults writes the
+			//                  [OK] alongside any non-terminals from
+			//                  this iter.
+			//   - "rejected" → corrective message appended to pendingResults
+			//                  alongside this iter's other results; loop
+			//                  continues so the model can pick a different
+			//                  terminal (rejected terminals don't commit,
+			//                  so retry is safe — non-terminals already
+			//                  fired and stay).
+			//   - "failed"   → engine error, capture and break (system
+			//                  fault, retrying same input would re-fail).
+			result, errStr, _ := app.executeAgentCommit(ctx, r, terminalCall, sceneID, hourStart.Location())
+			if result == "rejected" {
+				pendingResults = append(pendingResults, toolResult{
+					ID:      terminalCall.ID,
+					Content: fmt.Sprintf("[rejected] %s", errStr),
+				})
+				continue
+			}
+			var content string
+			if result == "ok" {
+				content = "[OK]"
+			} else {
+				content = fmt.Sprintf("[%s] %s", result, errStr)
+			}
+			pendingResults = append(pendingResults, toolResult{ID: terminalCall.ID, Content: content})
+			commitCall = terminalCall
+			commitExecuted = true
+			break
+		}
+
+		// No terminal hit and no recognized tool fired — defensive
+		// synthetic-done so the tick still terminates with an audit row.
+		// (With default→observation in the categorizer this is unreachable,
+		// but keep the safety belt for future tool additions.)
+		if len(pendingResults) == 0 {
 			commitCall = &agentToolCall{
 				ID:    fmt.Sprintf("synthetic-unknown-%d", iter),
 				Name:  "done",
@@ -596,10 +585,6 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			}
 			break
 		}
-
-		obsContent := app.resolveObservationTool(ctx, r, observation, locationName)
-		currentMessage = obsContent
-		currentToolCallID = observation.ID
 	}
 
 	// Budget exhausted without a terminal commit — synthesize "done" so we
@@ -614,14 +599,14 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 		}
 	}
 
-	// Synthetic commits (text fallback, budget-exhausted) and inline-
-	// dispatched terminal commits both land here. ZBBS-HOME-207: when
-	// the terminal was already executed inside the loop (commitExecuted
-	// = true), commitResult/commitErrStr are already populated — skip
-	// the re-execution to avoid double-side-effects (a successful
+	// Synthetic commits (text fallback, budget-exhausted, unknown-tool)
+	// still need executeAgentCommit to fire their side effects (audit,
+	// WS broadcast, terminal state updates). When the terminal was
+	// already executed inside the loop (commitExecuted = true), skip
+	// the re-execution to avoid double side-effects (a successful
 	// move_to would walk twice, etc.).
 	if !commitExecuted {
-		commitResult, commitErrStr, _ = app.executeAgentCommit(ctx, r, commitCall, sceneID, hourStart.Location())
+		_, _, _ = app.executeAgentCommit(ctx, r, commitCall, sceneID, hourStart.Location())
 	}
 
 	// Tick-end fallback drain: if deliver_order queued consume
@@ -632,30 +617,27 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 	// in the same panel session.
 	app.drainDeferredBroadcasts(r)
 
-	// Close out the terminal tool_call in conversation history. Without
-	// this, the model's terminal tool_call (move_to / chore / done /
-	// take_break) sits orphan in history — no matching tool result row
-	// — and openai.js drops it on the next history reconstruction.
-	// Synthetic commits (text fallback, unknown-tool fallback,
-	// budget-exhausted) don't have a real assistant tool_call to close,
-	// so skip those.
+	// Close out any pending tool_results from the final iteration so the
+	// model's tool_use blocks all have matching tool_result rows in
+	// conversation history. Without this, openai.js / Anthropic 400 on
+	// the next history reconstruction.
 	//
-	// Persist AFTER executeAgentCommit so the result content reflects
-	// what actually happened: "[OK]" only when the engine accepted the
-	// commit, an explicit failure annotation otherwise. The model never
-	// sees this row in the same fire (the tick ends here), but a
-	// follow-up tick that reads conversation history sees an honest
-	// account instead of a pre-claimed success.
-	if commitCall != nil && !strings.HasPrefix(commitCall.ID, "synthetic-") {
-		var content string
-		if commitResult == "ok" {
-			content = "[OK]"
-		} else {
-			content = fmt.Sprintf("[%s] %s", commitResult, commitErrStr)
-		}
+	// Two paths land here with unsent results:
+	//   - Terminal break: pendingResults holds this iter's non-terminal
+	//     tool_results plus the terminal's own [OK]/[failed]. The
+	//     terminal commit's id is real, the parallel tool_use ids are
+	//     real — all need rows.
+	//   - Budget exhausted: pendingResults holds the LAST iter's
+	//     non-terminal results. Pre-fix these were silently dropped.
+	//
+	// pendingPersisted gates the call: when the loop continued past the
+	// iter that built pendingResults, the next iter's sendChat already
+	// sent them via resultsArg → memory-api persisted them server-side →
+	// flag flipped true. We only persist here if they're still unsent.
+	if !pendingPersisted && len(pendingResults) > 0 {
 		if err := app.npcChatClient.persistToolResults(ctx,
 			r.LLMMemoryAgent,
-			[]toolResult{{ID: commitCall.ID, Content: content}},
+			pendingResults,
 			sceneID, sceneStructure,
 		); err != nil {
 			log.Printf("agent-tick %s: persistToolResults: %v", r.DisplayName, err)
