@@ -39,14 +39,28 @@ UPDATE item_recipe
 --    from every restock entry that has a max field (either source).
 --    Buy entries that use the legacy `target` field are also
 --    honored — see engine RestockEntry.Cap() for the precedence rule.
+--
+--    Aggregated to one cap per (actor, item) via GROUP BY + MAX,
+--    because an actor with two attribute rows (e.g. tavernkeeper +
+--    cook) declaring different caps for the same item would
+--    otherwise yield a non-deterministic UPDATE source. We pick the
+--    most permissive cap on purpose — clamp is a safety floor on
+--    visible overstock, not a strict policy enforcement; deleting
+--    extra inventory because one attribute happens to declare a
+--    tighter cap would be data-destructive beyond intent.
+--
+--    The jsonb_typeof = 'array' guard skips actors with malformed
+--    restock params so the migration doesn't fail on bad data.
 WITH actor_caps AS (
     SELECT aa.actor_id,
            e->>'item' AS item_kind,
-           COALESCE((e->>'max')::int, (e->>'target')::int, 0) AS cap
-      FROM actor_attribute aa,
-           jsonb_array_elements(aa.params->'restock') AS e
+           MAX(COALESCE((e->>'max')::int, (e->>'target')::int, 0)) AS cap
+      FROM actor_attribute aa
+      CROSS JOIN LATERAL jsonb_array_elements(aa.params->'restock') AS e
      WHERE aa.params ? 'restock'
+       AND jsonb_typeof(aa.params->'restock') = 'array'
        AND (e ? 'max' OR e ? 'target')
+     GROUP BY aa.actor_id, e->>'item'
 )
 UPDATE actor_inventory ai
    SET quantity = ac.cap
