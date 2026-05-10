@@ -14,6 +14,16 @@ signal reconnected
 ## and facing as the WS payload arrived.
 signal npc_arrived(npc_id: String, x: float, y: float, facing: String)
 
+## Sleep lifecycle (ZBBS-WORK-204 Stage B). Engine broadcasts
+## pc_sleep_started when /pc/sleep or auto-bed transitions a PC into
+## sleeping state, and pc_sleep_ended when any wake condition fires
+## (input/manual/auto/checkout). Both events are unscoped — every
+## connected client sees every PC's transitions; main.gd filters by
+## the local PC's actor_id before applying the fade overlay,
+## status-bar marker, and dream-snippet rotation.
+signal pc_sleep_started(actor_id: String, wake_at_iso: String)
+signal pc_sleep_ended(actor_id: String, reason: String)
+
 var _socket: WebSocketPeer = null
 var _connected: bool = false
 var _url: String = ""
@@ -244,6 +254,16 @@ func _handle_message(data: String) -> void:
             Auth.notify_session_expired()
         "asset_footprint_updated":
             _on_asset_footprint_updated(event_data)
+        "pc_sleep_started":
+            pc_sleep_started.emit(
+                str(event_data.get("actor_id", "")),
+                str(event_data.get("wake_at", ""))
+            )
+        "pc_sleep_ended":
+            pc_sleep_ended.emit(
+                str(event_data.get("actor_id", "")),
+                str(event_data.get("reason", ""))
+            )
 
 ## Apply a server-broadcast footprint change to the local catalog and
 ## redraw the selection border if the affected asset is the one currently

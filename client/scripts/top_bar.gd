@@ -9,6 +9,11 @@ signal logout_pressed
 ## inventory panel can anchor itself relative to it. main.gd forwards
 ## to the inventory panel's show_at() / close().
 signal inventory_toggle_requested(icon_rect: Rect2)
+## Player clicked the Wake-up button while sleeping (ZBBS-WORK-204
+## Stage B). main.gd POSTs /api/village/pc/wake; the engine clears
+## sleeping_until and broadcasts pc_sleep_ended which drives the
+## fade-out + dream-snippet stop on every connected client.
+signal wake_pressed
 
 var edit_button: Button = null
 var config_button: Button = null
@@ -33,6 +38,19 @@ var cursor_tile_label: Label = null
 ## inventory. Hidden until /pc/me reports an existing PC; talk panel
 ## calls set_purse() each time it polls.
 var coins_label: Label = null
+## Sleep marker chip (ZBBS-WORK-204 Stage B). Shown only while the
+## local PC is sleeping. While visible, the purse / needs / inventory
+## chips are hidden — they read oddly mid-dream, and the sleep
+## state is the player's only relevant signal until they wake.
+## Format: "Sleeping — wake 07:00 [Wake up]". Hidden by default.
+var sleep_chip: HBoxContainer = null
+var sleep_label: Label = null
+var wake_button: Button = null
+## Mirrors the visibility we want for the per-PC chips. set_purse and
+## set_needs read these to skip showing during sleep — talk_panel
+## continues polling /pc/me normally, we just keep the chips hidden
+## until wake. Reset to false on pc_sleep_ended.
+var _sleeping: bool = false
 ## Needs chip — displays the PC's hunger / thirst / tiredness as a
 ## spelled-out "Hunger 8  Thirst 12  Weariness 4" readout where each
 ## word's leading letter is rendered larger than the rest. Each segment
@@ -256,6 +274,26 @@ func _ready() -> void:
     config_button.pressed.connect(_on_config_pressed)
     right_box.add_child(config_button)
 
+    # Sleep marker chip (ZBBS-WORK-204 Stage B). Sits between the
+    # username and the Edit button so the wake button reads as a
+    # primary action while the marker is up. Hidden by default;
+    # set_sleep_state(true, ...) shows it and hides the per-PC
+    # chips alongside.
+    sleep_chip = HBoxContainer.new()
+    sleep_chip.add_theme_constant_override("separation", 8)
+    sleep_chip.visible = false
+    sleep_label = Label.new()
+    sleep_label.text = ""
+    sleep_label.add_theme_color_override("font_color", Color(0.78, 0.82, 0.95, 1.0))
+    sleep_label.add_theme_font_override("font", _font)
+    sleep_label.add_theme_font_size_override("font_size", 16)
+    sleep_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+    sleep_chip.add_child(sleep_label)
+    wake_button = _make_button("Wake up")
+    wake_button.pressed.connect(_on_wake_pressed)
+    sleep_chip.add_child(wake_button)
+    right_box.add_child(sleep_chip)
+
     # Logout button
     logout_button = _make_button("Logout")
     logout_button.pressed.connect(_on_logout_pressed)
@@ -335,7 +373,10 @@ func _refresh_name_label() -> void:
 func set_purse(coins: int, _inventory_lines: Array) -> void:
     if coins_label == null:
         return
-    if coins < 0:
+    if coins < 0 or _sleeping:
+        # Sleeping: chips read oddly mid-dream; hide until wake.
+        # The cached value reapplies on the next set_purse poll
+        # after wake (talk_panel polls every 10s).
         coins_label.visible = false
         if inventory_icon != null:
             inventory_icon.visible = false
@@ -380,7 +421,10 @@ func _on_inventory_icon_input(event: InputEvent) -> void:
 func set_needs(needs: Dictionary) -> void:
     if needs_label == null:
         return
-    if needs.is_empty():
+    if needs.is_empty() or _sleeping:
+        # Sleeping: chip stays hidden until wake. Continuous tiredness
+        # recovery during sleep would otherwise show a flashy descending
+        # number on a screen the player isn't watching.
         needs_label.visible = false
         return
     needs_label.visible = true
@@ -561,6 +605,83 @@ func _on_logout_pressed() -> void:
     _editor_active = false
     _update_edit_button_style()
     logout_pressed.emit()
+
+## Show or hide the sleep marker (ZBBS-WORK-204 Stage B). When
+## sleeping=true, displays "Sleeping — wake HH:MM" + the Wake-up
+## button, and hides the per-PC chips (purse, needs, inventory)
+## that would otherwise read oddly mid-dream. When sleeping=false,
+## hides the marker; the next set_purse / set_needs / set_inventory
+## poll restores the chips.
+##
+## structure_label is optional period-flavor — when non-empty we
+## render "Sleeping at <label> — wake HH:MM". Most callers can pass
+## "" today; the structure name surfaces once /pc/me threads it
+## through the talk_panel signal chain.
+##
+## wake_at_iso is the ISO-8601 timestamp from the engine's
+## pc_sleep_started broadcast. Empty / unparseable falls back to
+## "Sleeping" with no time on the right — defensive against a
+## broadcast shape change.
+func set_sleep_state(sleeping: bool, structure_label: String, wake_at_iso: String) -> void:
+    if sleep_chip == null:
+        return
+    _sleeping = sleeping
+    if not sleeping:
+        sleep_chip.visible = false
+        sleep_label.text = ""
+        # Restore the per-PC chips immediately rather than waiting
+        # for the next set_purse / set_needs poll (~10s cadence).
+        # Each chip's prior text/color survived hidden, so showing
+        # it back exposes the value the player had before they slept.
+        # The next poll refreshes any drift.
+        if coins_label != null and coins_label.text != "":
+            coins_label.visible = true
+        if inventory_icon != null and coins_label != null and coins_label.text != "":
+            inventory_icon.visible = true
+        if needs_label != null and not _need_segments.is_empty():
+            needs_label.visible = true
+        return
+    var wake_str := _format_wake_time(wake_at_iso)
+    var subject := "Sleeping"
+    if structure_label != "":
+        subject = "Sleeping at %s" % structure_label
+    if wake_str != "":
+        sleep_label.text = "%s — wake %s" % [subject, wake_str]
+    else:
+        sleep_label.text = subject
+    sleep_chip.visible = true
+    # Hide the per-PC chips immediately rather than waiting for the
+    # next set_purse / set_needs poll (~10s cadence). The chips' state
+    # reads as stale-from-pre-sleep until the poll runs, which is a
+    # visible glitch.
+    if coins_label != null:
+        coins_label.visible = false
+    if inventory_icon != null:
+        inventory_icon.visible = false
+    if needs_label != null:
+        needs_label.visible = false
+
+
+## Parse a wake-at ISO-8601 timestamp into "HH:MM" wall-clock.
+## Engine broadcasts time.RFC3339 (always UTC, trailing 'Z'). We
+## convert UTC → local so the readout reads as the player's
+## morning rather than a UTC offset they have to mentally adjust.
+## Empty / malformed input returns "" so the caller falls back to a
+## no-time framing.
+func _format_wake_time(iso: String) -> String:
+    if iso == "":
+        return ""
+    var unix_utc := Time.get_unix_time_from_datetime_string(iso)
+    if unix_utc <= 0.0:
+        return ""
+    var bias_minutes := Time.get_time_zone_from_system().get("bias", 0)
+    var local := Time.get_datetime_dict_from_unix_time(int(unix_utc) + bias_minutes * 60)
+    return "%02d:%02d" % [int(local.get("hour", 0)), int(local.get("minute", 0))]
+
+
+func _on_wake_pressed() -> void:
+    wake_pressed.emit()
+
 
 ## ZBBS-HOME-216: drive the per-need recovery pulse. Each segment
 ## that's within its RECOVERING_WINDOW_MS gets its container
