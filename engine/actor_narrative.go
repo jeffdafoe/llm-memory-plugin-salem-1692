@@ -31,6 +31,8 @@ package main
 
 import (
 	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -107,4 +109,132 @@ func formatNarrativeStatePerception(seed, evolving string) string {
 		parts = append(parts, evolving)
 	}
 	return "Who you are:\n" + strings.Join(parts, "\n\n")
+}
+
+// relationshipRow holds one actor_relationship row joined with the
+// peer's display name. salient_facts is the raw JSONB bytes; the
+// renderer parses on demand.
+type relationshipRow struct {
+	OtherID           string
+	OtherDisplayName  string
+	SummaryText       string
+	SalientFacts      []byte
+	InteractionCount  int
+	LastInteractionAt sql.NullTime
+}
+
+// relationshipFactsRecentN is how many salient_facts entries get
+// rendered into the perception. Most-recent-first; older entries are
+// retained in the row for future consolidation passes but don't ride
+// the prompt every tick. Three is enough to give context without
+// flooding.
+const relationshipFactsRecentN = 3
+
+// loadRelationshipsForHuddle returns the perceiver's actor_relationship
+// rows for every co-huddle peer who has one. Empty when the perceiver
+// has no huddle, no peers, or no rows pointing at peers in the huddle.
+//
+// Joining peer display_name in the same query keeps perception build
+// to one round-trip per actor; without the join we'd query per peer.
+// The huddle filter (peer.current_huddle_id = perceiver's huddle)
+// applied SQL-side means peers who LEFT the huddle since the last
+// poll don't surface — we render only what's relevant right now.
+func (app *App) loadRelationshipsForHuddle(ctx context.Context, actorID string) ([]relationshipRow, error) {
+	rows, err := app.DB.Query(ctx, `
+		SELECT r.other_actor_id::text,
+		       peer.display_name,
+		       r.summary_text,
+		       r.salient_facts,
+		       r.interaction_count,
+		       r.last_interaction_at
+		  FROM actor_relationship r
+		  JOIN actor peer ON peer.id = r.other_actor_id
+		 WHERE r.actor_id = $1
+		   AND peer.current_huddle_id IS NOT NULL
+		   AND peer.current_huddle_id = (
+		       SELECT current_huddle_id FROM actor WHERE id = $1
+		   )
+		 ORDER BY peer.display_name
+	`, actorID)
+	if err != nil {
+		return nil, fmt.Errorf("query actor_relationship: %w", err)
+	}
+	defer rows.Close()
+	var out []relationshipRow
+	for rows.Next() {
+		var rr relationshipRow
+		if err := rows.Scan(
+			&rr.OtherID,
+			&rr.OtherDisplayName,
+			&rr.SummaryText,
+			&rr.SalientFacts,
+			&rr.InteractionCount,
+			&rr.LastInteractionAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan actor_relationship: %w", err)
+		}
+		out = append(out, rr)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate actor_relationship: %w", err)
+	}
+	return out, nil
+}
+
+// formatRelationshipsPerception renders one "What you remember of
+// those here:" section combining all peers' rows. Each peer gets a
+// subsection headed by their name, with the summary_text first and
+// the most-recent-N salient_facts as bulleted lines.
+//
+// Salient facts are stored chronologically (Phase 2 will append on
+// each event); rendering reverses to most-recent-first because that's
+// the slice the LLM most needs context for. Older facts age out of
+// the visible window but stay in the row for consolidation.
+//
+// Returns "" when no peer rows have any renderable content — the
+// caller can skip appending without checking. A peer row whose
+// summary is empty AND whose salient_facts are empty is skipped at
+// the subsection level.
+func formatRelationshipsPerception(rows []relationshipRow) string {
+	if len(rows) == 0 {
+		return ""
+	}
+	var subsections []string
+	for _, r := range rows {
+		var lines []string
+		if summary := strings.TrimSpace(r.SummaryText); summary != "" {
+			lines = append(lines, summary)
+		}
+		var facts []map[string]interface{}
+		if len(r.SalientFacts) > 0 {
+			if err := json.Unmarshal(r.SalientFacts, &facts); err != nil {
+				// Skip the salient facts on this row; summary still
+				// renders if present. A malformed JSONB shouldn't
+				// blank the rest of the perception.
+				facts = nil
+			}
+		}
+		if n := len(facts); n > 0 {
+			start := n - relationshipFactsRecentN
+			if start < 0 {
+				start = 0
+			}
+			// Most-recent-first walk from end to start.
+			for i := n - 1; i >= start; i-- {
+				if text, ok := facts[i]["text"].(string); ok {
+					if t := strings.TrimSpace(text); t != "" {
+						lines = append(lines, "- "+t)
+					}
+				}
+			}
+		}
+		if len(lines) == 0 {
+			continue
+		}
+		subsections = append(subsections, r.OtherDisplayName+":\n"+strings.Join(lines, "\n"))
+	}
+	if len(subsections) == 0 {
+		return ""
+	}
+	return "What you remember of those here:\n\n" + strings.Join(subsections, "\n\n")
 }

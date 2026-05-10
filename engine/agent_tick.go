@@ -1582,8 +1582,9 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 		sections = append(sections, roleText)
 	}
 
-	// 1c. Narrative state (ZBBS-WORK-212, Phase 1A). Engine-side
-	// continuity for shared-VA-backed actors who don't get llm-memory's
+	// 1c. Narrative state (ZBBS-WORK-212, Phase 1A) + per-pair
+	// relationships (ZBBS-WORK-213, Phase 1B). Engine-side continuity
+	// for shared-VA-backed actors who don't get llm-memory's
 	// accumulating soul/learning path. Skipped for VA-attached actors
 	// (Ezekiel, John Ellis, etc.) whose own VA session already carries
 	// continuity. See engine/actor_narrative.go.
@@ -1594,6 +1595,11 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 			if block := formatNarrativeStatePerception(seed, evolving); block != "" {
 				sections = append(sections, block)
 			}
+		}
+		if rels, err := app.loadRelationshipsForHuddle(ctx, r.ID); err != nil {
+			log.Printf("perception loadRelationshipsForHuddle %s: %v", r.DisplayName, err)
+		} else if block := formatRelationshipsPerception(rels); block != "" {
+			sections = append(sections, block)
 		}
 	}
 
