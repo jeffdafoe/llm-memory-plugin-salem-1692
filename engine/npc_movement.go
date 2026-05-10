@@ -610,6 +610,16 @@ func (app *App) markWalkTargetStructure(npcID, structureID string) {
 // when inside_structure_id never flipped (owner-policy structures
 // where the actor isn't allowed in still walked TO that structure).
 func (app *App) applyArrivalSideEffects(ctx context.Context, npcID string, x, y float64, facing string, targetStructureID string) {
+	// Buy walker arrival (ZBBS-HOME-244) — short-circuits if this
+	// arrival is part of an in-progress restock trip. Returns true
+	// if it handled the arrival; false otherwise. Other side-effects
+	// still run regardless (object_refresh, npc_arrived broadcast,
+	// etc) since they're benign for a restock arrival.
+	if app.handleBuyWalkerArrival(ctx, npcID, targetStructureID) {
+		log.Printf("arrival: handled by buy_walker for %s at structure=%s",
+			npcID, targetStructureID)
+	}
+
 	if _, err := app.applyObjectRefreshAtArrival(ctx, npcID, x, y); err != nil {
 		log.Printf("object_refresh: %s at (%.1f,%.1f): %v", npcID, x, y, err)
 	}
