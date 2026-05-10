@@ -233,6 +233,16 @@ func (app *App) activeLodgersForKeeper(ctx context.Context, sellerID string) ([]
 	if sellerID == "" {
 		return nil, nil
 	}
+	// Engine-granted starter rows (the ZBBS-WORK-204 migration's
+	// grandfather grants and handlePCCreate's day-one comp) are
+	// deliberately excluded from the keeper's perception. They keep
+	// their effect on isLodger / canEnter / loadLodgerSelfStatus so
+	// the PC still walks through doors and counts as a lodger for
+	// sleep + eviction; they just don't surface to the keeper as
+	// paying customers, since the keeper would otherwise volunteer
+	// "you're all set upstairs" to a guest who never booked. Once a
+	// PC pays the keeper for a real stay, that row carries a
+	// non-starter message and shows up here normally.
 	rows, err := app.DB.Query(ctx,
 		`WITH active AS (
 		    SELECT pl.buyer_id,
@@ -255,6 +265,7 @@ func (app *App) activeLodgersForKeeper(ctx context.Context, sellerID string) ([]
 		       AND pl.state = 'accepted'
 		       AND pl.fulfillment_status = 'delivered'
 		       AND pl.ready_by <= CURRENT_DATE
+		       AND COALESCE(pl.message, '') NOT IN ('ZBBS-WORK-204 starter', 'pc-create starter')
 		)
 		SELECT a.display_name, active.qty, active.ready_by, active.lodger_until
 		  FROM active
