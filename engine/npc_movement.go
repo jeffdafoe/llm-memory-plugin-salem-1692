@@ -610,14 +610,27 @@ func (app *App) markWalkTargetStructure(npcID, structureID string) {
 // when inside_structure_id never flipped (owner-policy structures
 // where the actor isn't allowed in still walked TO that structure).
 func (app *App) applyArrivalSideEffects(ctx context.Context, npcID string, x, y float64, facing string, targetStructureID string) {
-	// Buy walker arrival (ZBBS-HOME-244) — short-circuits if this
-	// arrival is part of an in-progress restock trip. Returns true
-	// if it handled the arrival; false otherwise. Other side-effects
-	// still run regardless (object_refresh, npc_arrived broadcast,
-	// etc) since they're benign for a restock arrival.
+	// Buy / fulfill walker arrivals (ZBBS-HOME-244 / -247) —
+	// short-circuit if this arrival is part of an in-progress trip.
+	// We return early after a walker handles arrival: the broader
+	// side-effects below (object_refresh consumption at the seller's
+	// well, closed-business narration at the customer's stall,
+	// auto-sleep on arriving at a non-home structure, etc.) are
+	// intended for "an NPC arrived somewhere of their own decision"
+	// — not for a delivery / restock detour where the walker is
+	// driving and the destination isn't meaningful to the actor's
+	// state. The walker re-dispatches a return walk that fires this
+	// function again on completion, at which point the side-effects
+	// run for that arrival. An NPC won't be in both walkers at once.
 	if app.handleBuyWalkerArrival(ctx, npcID, targetStructureID) {
 		log.Printf("arrival: handled by buy_walker for %s at structure=%s",
 			npcID, targetStructureID)
+		return
+	}
+	if app.handleFulfillWalkerArrival(ctx, npcID, targetStructureID) {
+		log.Printf("arrival: handled by fulfill_walker for %s at structure=%s",
+			npcID, targetStructureID)
+		return
 	}
 
 	if _, err := app.applyObjectRefreshAtArrival(ctx, npcID, x, y); err != nil {

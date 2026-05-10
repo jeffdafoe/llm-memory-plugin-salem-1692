@@ -87,6 +87,13 @@ func (app *App) runServerTickOnce(ctx context.Context) {
 	// to shop: single JSONB filter + skip-on-trip-in-progress check
 	// per candidate.
 	app.dispatchBuyWalker(ctx)
+	// Fulfill walker (ZBBS-HOME-247) — sellers walking pending orders
+	// to their customers. Mirror of buy_walker reversed: the seller
+	// leaves their stall with goods, walks to the customer's work_
+	// structure, completes the order at the door (deliver_order
+	// semantic), walks home. Fires only when a seller has stock
+	// AND a pending order — most ticks no-op.
+	app.dispatchFulfillWalker(ctx)
 	// Dwell tick (ZBBS-172) — applies per-tick recovery to actors still
 	// present at a credited object/structure. Drives the rest-tree, well-
 	// linger, and meal-at-tavern mechanics from a single handler. Cheap
