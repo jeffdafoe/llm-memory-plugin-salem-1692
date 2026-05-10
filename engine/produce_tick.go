@@ -258,7 +258,7 @@ func (app *App) applyProduceEntry(
 		return err
 	}
 
-	if entry.Max > 0 && currentQty >= entry.Max {
+	if entry.Cap() > 0 && currentQty >= entry.Cap() {
 		// Already at cap. Advance anchor to now to avoid back-credit
 		// when consumption later opens headroom.
 		_, err := tx.Exec(ctx,
@@ -282,8 +282,8 @@ func (app *App) applyProduceEntry(
 	}
 
 	headroom := int64(0)
-	if entry.Max > 0 {
-		headroom = int64(entry.Max - currentQty)
+	if entry.Cap() > 0 {
+		headroom = int64(entry.Cap() - currentQty)
 	} else {
 		// No cap configured — defensively bound to one execution per
 		// tick to avoid runaway accumulation if max is missing.

@@ -60,12 +60,25 @@ const (
 
 // RestockEntry is one item the role manages — either by producing
 // it themselves (`produce`) or by buying it from another actor
-// (`buy`). Max applies to produce; Target to buy.
+// (`buy`). Max is the unified personal carry cap (ZBBS-HOME-249);
+// Target is accepted as a legacy alias for buy entries written
+// before the unification.
 type RestockEntry struct {
 	Item   string `json:"item"`
 	Source string `json:"source"`
 	Max    int    `json:"max,omitempty"`
 	Target int    `json:"target,omitempty"`
+}
+
+// Cap returns the unified personal-carry cap for this entry: the
+// maximum quantity the actor should hold of this item. Prefers Max;
+// falls back to Target for legacy buy entries. Returns 0 when
+// neither is set — callers treat that as "no cap configured".
+func (e RestockEntry) Cap() int {
+	if e.Max > 0 {
+		return e.Max
+	}
+	return e.Target
 }
 
 // RestockPolicy wraps the restock array stored under
