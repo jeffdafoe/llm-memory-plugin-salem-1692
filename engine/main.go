@@ -291,6 +291,13 @@ func main() {
 	// take_break.tiredness_recovery_per_minute setting (default 0.1).
 	go app.runTirednessRecoverySweep(context.Background())
 
+	// Narrative consolidation sweep (ZBBS-WORK-218, Phase 3). Compresses
+	// the salient_facts trail on shared-VA-backed actors' relationship
+	// rows into a rewritten summary_text via the actor's own VA. 15min
+	// cadence × 5 consolidations per sweep = 20/hour hard cap. See
+	// engine/actor_narrative_consolidate.go.
+	go app.runConsolidationSweep(context.Background())
+
 	// Build router. Routes are registered via two helpers: authed() wraps
 	// the handler in requireLLMMemory; public() leaves it unwrapped. Default
 	// is authed — anything public must explicitly opt out, so forgetting to
