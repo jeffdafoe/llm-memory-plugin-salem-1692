@@ -522,11 +522,19 @@ func _on_object_state_changed(data: Dictionary) -> void:
     var anchor_x: float = asset.get("anchorX", asset.get("anchor_x", 0.5))
     var anchor_y: float = asset.get("anchorY", asset.get("anchor_y", 0.85))
 
-    # Remove old sprite child and replace with new one (handles Sprite2D <-> AnimatedSprite2D swap)
+    # Remove old sprite child(ren) and replace with new one (handles
+    # Sprite2D <-> AnimatedSprite2D swap). No `break` — Godot's queue_free
+    # defers to end-of-frame, so a state change arriving before the
+    # previous frame's queued sprite has actually been freed leaves
+    # multiple sprite children in place. Stopping at the first match
+    # would free the newest one and leak the older(s), accumulating
+    # over rapid state flips. Observed on Ezekiel's Blacksmith: 12+
+    # state flips today, including a cluster of 5 within 70 seconds at
+    # 11:00-11:01 UTC, produced a visible stale-sprite stack alongside
+    # the current one.
     for child in node.get_children():
         if child is Sprite2D or child is AnimatedSprite2D:
             child.queue_free()
-            break
 
     var new_sprite: Node2D = world._create_sprite_node(state_info, texture, anchor_x, anchor_y)
     node.add_child(new_sprite)
