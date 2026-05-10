@@ -1899,7 +1899,7 @@ func (app *App) handlePCPay(w http.ResponseWriter, r *http.Request) {
 		consumeNow = *req.ConsumeNow
 	}
 
-	pr := app.executePay(r.Context(), &actor, payRequest{
+	payReq := payRequest{
 		RecipientName: req.Recipient,
 		Amount:        req.Amount,
 		ForText:       req.ForText,
@@ -1908,7 +1908,12 @@ func (app *App) handlePCPay(w http.ResponseWriter, r *http.Request) {
 		ConsumeNow:    consumeNow,
 		ConsumerNames: req.Consumers,
 		InResponseTo:  req.InResponseTo,
-	})
+	}
+	pr := app.executePay(r.Context(), &actor, payReq)
+	// ZBBS-WORK-215 Phase 2B: pay event hook — same gate as NPC path.
+	// Buyer is the PC (no llm_memory_agent → buyer-side write skipped),
+	// seller's row is written when shared-VA-backed.
+	app.recordPayInteractions(r.Context(), actor.ID, pr.RecipientID, payReq, pr)
 
 	// Mirror executeAgentCommit's audit + room_event broadcast for the
 	// pay path so PC pays surface in the talk panel and recent-events

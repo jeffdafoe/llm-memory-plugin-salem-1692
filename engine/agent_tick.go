@@ -3097,7 +3097,7 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 			}
 		}
 		inResponseTo := coerceInt64Input(tc.Input["in_response_to"])
-		pr := app.executePay(ctx, r, payRequest{
+		payReq := payRequest{
 			RecipientName: recipient,
 			Amount:        amount,
 			ForText:       forText,
@@ -3107,9 +3107,15 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 			ConsumerNames: consumerNames,
 			SceneID:       sceneID,
 			InResponseTo:  inResponseTo,
-		})
+		}
+		pr := app.executePay(ctx, r, payReq)
 		result = pr.Result
 		errStr = pr.Err
+		// ZBBS-WORK-215 Phase 2B: pay event hook. Records the buyer↔
+		// seller relationship facts on whichever side is shared-VA-
+		// backed. Skips on rejected/failed; records ok/declined/
+		// countered.
+		app.recordPayInteractions(ctx, r.ID, pr.RecipientID, payReq, pr)
 		// Surface the ledger row id when the recipient countered, so the
 		// buyer NPC's next tool-result message can echo it back into a
 		// pay() retry via in_response_to. Empty for every other outcome
