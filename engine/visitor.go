@@ -232,8 +232,23 @@ func (app *App) dispatchVisitorSpawn(ctx context.Context) {
     // (dream_mode='none'), so memory and learnings don't accumulate
     // across visitors. Provisioning the VA is a one-time operator-
     // setup step on memory-api; engine-side has no admin calls.
+    // ZBBS-HOME-255: wrap the actor INSERT and the actor_need seed in
+    // one tx so a freshly spawned visitor never lives without their
+    // need rows. Pre-fix the visitor spawn path bypassed the standard
+    // npcs.go / pc_handlers.go seed call, leaving every shared-VA
+    // visitor with zero actor_need rows. The first time the recovery
+    // sweep tried to decrement tiredness on one of them, the missing
+    // row aborted the whole sweep transaction (see companion fix in
+    // tiredness_recovery_sweep.go).
+    tx, err := app.DB.Begin(ctx)
+    if err != nil {
+        log.Printf("visitor-spawn: begin tx: %v", err)
+        return
+    }
+    defer tx.Rollback(ctx)
+
     var visitorID string
-    err := app.DB.QueryRow(ctx,
+    if err := tx.QueryRow(ctx,
         `INSERT INTO actor (
             display_name, sprite_id, current_x, current_y, facing,
             visitor_expires_at, visitor_archetype, visitor_origin, visitor_disposition,
@@ -243,9 +258,18 @@ func (app *App) dispatchVisitorSpawn(ctx context.Context) {
         displayName, spriteID, spawnX, spawnY,
         expiresAt, profile.Archetype, profile.Origin, profile.Disposition,
         visitorAgentName,
-    ).Scan(&visitorID)
-    if err != nil {
+    ).Scan(&visitorID); err != nil {
         log.Printf("visitor-spawn: insert: %v", err)
+        return
+    }
+
+    if err := app.seedNeedRowsIfMissing(ctx, tx, visitorID); err != nil {
+        log.Printf("visitor-spawn: seed needs for %s: %v", visitorID, err)
+        return
+    }
+
+    if err := tx.Commit(ctx); err != nil {
+        log.Printf("visitor-spawn: commit: %v", err)
         return
     }
 
