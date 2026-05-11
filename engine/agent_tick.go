@@ -722,9 +722,10 @@ func (app *App) stampAgentTick(ctx context.Context, r *agentNPCRow) {
 // triggerActorID is the actor_id of who caused this tick (the speaker
 // for heard-speech, the actor for saw-action, the arriver for
 // arrival, the PC's actor_id for pc-spoke, "" for chronicler dispatch
-// or any trigger without a salient speaker). Used by claimSceneTick
-// to decide whether this is "the same conversational partner I just
-// reacted to" (drop) or "someone new" (allow).
+// or any trigger without a salient speaker). Informational — callers
+// pass it so the cascade origin is traceable in logs, but it no
+// longer affects dedup since ZBBS-WORK-226 removed the same-trigger-
+// actor rule from claimSceneTick.
 func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, force bool, sceneID, triggerActorID string) {
 	// In-flight gate (ZBBS-100). Drops cleanly when this actor is
 	// already running an LLM tick from a prior cascade — the previous
@@ -735,15 +736,12 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, 
 	// both producing identical "served stew" act rows because the
 	// model saw the same room twice.
 	//
-	// In-flight gate AND cost guard both run BEFORE scene-dedup so a
-	// dropped tick never consumes a reaction-cap slot in the
-	// SceneTickedActors map. Without that ordering an arrival cascade
-	// (force=false) could be cost-skipped after claiming John's
-	// (sceneID, actor) slot with lastTriggerActor=Josiah, then the
-	// very next force=true speak cascade (same scene, same speaker)
-	// would be turned away by claimSceneTick's "same trigger actor"
-	// rule and John would never react to a speech aimed at the room
-	// he was sitting in.
+	// In-flight gate AND cost guard both run BEFORE the reaction-cap
+	// check in claimSceneTick so a dropped tick never consumes a
+	// reaction-cap slot in the SceneTickedActors map. Without that
+	// ordering, an early-skip (in-flight collision, cost guard, or
+	// sleep gate) would burn one of the actor's four cap slots in the
+	// scene without producing any output.
 	if !app.tryClaimAgentTick(npcID) {
 		log.Printf("event-tick %s (%s): skipped — prior tick still in flight", npcID, reason)
 		return
@@ -825,13 +823,17 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, 
 	}
 
 	// Scene-level dedup. See SceneTickedActors / claimSceneTick comments
-	// for the policy: same triggering actor in the same scene drops, and
-	// a hard cap on reactions per (scene, actor) backstops cost.
+	// for the policy: a hard cap on reactions per (scene, actor)
+	// backstops cost. Pacing-based dedup (cascade pacing, ZBBS-HOME-263)
+	// handles back-to-back triggers from the same speaker on the
+	// schedule side now, so the rule that previously blocked same-
+	// trigger-actor reactions in claimSceneTick was dropped in
+	// ZBBS-WORK-226.
 	//
 	// Empty sceneID skips the gate — used only for paths that haven't
 	// adopted scene_id yet (defensive; current callers all provide one).
 	if sceneID != "" {
-		if allowed, reason2 := app.claimSceneTick(sceneID, npcID, triggerActorID); !allowed {
+		if allowed, reason2 := app.claimSceneTick(sceneID, npcID); !allowed {
 			log.Printf("event-tick %s (%s): skipped — %s in scene %s", npcID, reason, reason2, sceneID)
 			return
 		}
