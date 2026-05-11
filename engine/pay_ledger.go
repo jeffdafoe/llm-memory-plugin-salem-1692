@@ -13,11 +13,20 @@ package main
 // (pending → ready → delivered). Ready_by + fulfillment_status are
 // populated at insert; transitions to 'delivered' happen via
 // executeDeliverOrder in engine/order_fulfillment.go.
-// For now every insert sets ready_by = CURRENT_DATE and
+// Item-bearing inserts set ready_by = CURRENT_DATE and
 // fulfillment_status = 'ready' — current item_kind rows all carry
 // hours_per_unit = NULL/0 (immediate). When craft items with
 // hours_per_unit > 0 arrive, this will branch on the item's lead time:
 // pending for crafts, ready for immediate goods.
+//
+// ZBBS-HOME-260: coin-only pays (item_kind IS NULL — tips, gifts,
+// condolences, news payments) insert with fulfillment_status =
+// 'delivered'. Coins move atomically inside the same transfer tx, so
+// there is nothing left for executeDeliverOrder to ship. Without this
+// branch the row sits at 'ready' forever and surfaces in the seller's
+// "outstanding orders" perception (readyOrdersForSeller filters
+// fulfillment_status='ready'), prompting endless deliver_order(N)
+// rejections of "ledger row N carries no item to deliver."
 
 import (
 	"context"
@@ -74,6 +83,12 @@ func (app *App) insertPayLedgerPending(ctx context.Context, p payLedgerInsert) (
 	if len(p.ConsumerActorIDs) > 0 {
 		consumerIDs = p.ConsumerActorIDs
 	}
+	// ZBBS-HOME-260: coin-only transfers (no item_kind) finalize at
+	// 'delivered' — see file header.
+	fulfillmentStatus := "ready"
+	if !p.ItemKind.Valid {
+		fulfillmentStatus = "delivered"
+	}
 	var id int64
 	err := app.DB.QueryRow(ctx,
 		`INSERT INTO pay_ledger (
@@ -82,11 +97,11 @@ func (app *App) insertPayLedgerPending(ctx context.Context, p payLedgerInsert) (
 		    consume_now, parent_id, depth, state,
 		    ready_by, fulfillment_status, consumer_actor_ids
 		 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending',
-		           CURRENT_DATE, 'ready', $12)
+		           CURRENT_DATE, $12, $13)
 		 RETURNING id`,
 		p.HuddleID, p.SceneID, p.BuyerID, p.SellerID,
 		p.ItemKind, p.Qty, p.OfferedAmount, p.QuotedUnitAmount,
-		p.ConsumeNow, p.ParentID, p.Depth, consumerIDs,
+		p.ConsumeNow, p.ParentID, p.Depth, fulfillmentStatus, consumerIDs,
 	).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("insert pay_ledger: %w", err)
