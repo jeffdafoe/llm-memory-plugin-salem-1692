@@ -426,6 +426,24 @@ func (app *App) completeOutboundLeg(
 		// dispatched. Skip the transfer attempt; walk home.
 		log.Printf("buy_walker: no buy cap for actor=%s item=%s, skipping transfer",
 			buyerID, itemKind)
+	} else if atWork, err := app.sellerIsActivelyAtWork(ctx, sellerID); err != nil {
+		// Lookup failure — fail closed (don't transact). Buyer walks
+		// home without inventory; backoff applies via stampBuyFailure.
+		log.Printf("buy_walker: sellerIsActivelyAtWork %s: %v", sellerID, err)
+		if err := app.stampBuyFailure(ctx, buyerID, itemKind, "seller presence check failed"); err != nil {
+			log.Printf("buy_walker: stamp failure %s/%s: %v", buyerID, itemKind, err)
+		}
+	} else if !atWork {
+		// ZBBS-HOME-259: seller went home (or took a break, or fell
+		// asleep) between dispatch and arrival. Don't transact — the
+		// previous behavior had the buyer transfer goods out of the
+		// seller's persistent inventory while the engine spoke
+		// "Here's your X" as the absent seller. Walk home with
+		// backoff; next pass will pick a different seller or wait.
+		log.Printf("buy_walker: seller %s not actively at work on arrival — aborting", sellerID)
+		if err := app.stampBuyFailure(ctx, buyerID, itemKind, "seller not at their stall on arrival"); err != nil {
+			log.Printf("buy_walker: stamp failure %s/%s: %v", buyerID, itemKind, err)
+		}
 	} else {
 		result, qty := app.tryDeterministicBuy(ctx, buyerID, sellerID, itemKind, cap)
 		switch result {
@@ -769,9 +787,23 @@ func (app *App) cancelBuyTrip(ctx context.Context, buyerID, reason string) {
 	// physically within the asset's footprint, not just nearby. Avoids
 	// the bad case where a buyer at the visitor loiter slot OUTSIDE
 	// the building gets flipped to inside.
+	//
+	// ZBBS-HOME-259: also writes inside_room_id = common in the same
+	// UPDATE. Pre-fix this restore set inside + inside_structure_id
+	// but bypassed setNPCInside (which would have paired the room
+	// column). The result was the cascade-receiver corruption
+	// HOME-256 chased — buyer keepers had NULL inside_room_id while
+	// inside their own structure, silently missing PC-arrival
+	// cascades. Pair the room here so the row stays consistent for
+	// any cascade-receiver query relying on a non-NULL room.
 	if _, err := app.DB.Exec(ctx, `
 		UPDATE actor a
 		   SET inside_structure_id = a.work_structure_id,
+		       inside_room_id = (
+		         SELECT id FROM structure_room
+		          WHERE structure_id = a.work_structure_id AND kind = 'common'
+		          LIMIT 1
+		       ),
 		       inside = TRUE
 		  FROM village_object vo
 		  JOIN asset s ON s.id = vo.asset_id

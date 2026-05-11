@@ -190,6 +190,22 @@ func (app *App) discoverBuyCandidates(
 		if excluded[id] {
 			continue
 		}
+		// ZBBS-HOME-259: only consider sellers who are actively at
+		// their work_structure. Pre-fix the resolver picked any actor
+		// who'd ever sold the item, even when they were asleep at
+		// home with their stall closed — buy_walker would walk to
+		// the stall, transact against the seller's persistent
+		// inventory rows, and the engine would speak "Here's your X"
+		// as the absent seller. The "actively manning" predicate
+		// mirrors isBusinessClosed's worker check (lodging.go).
+		atWork, err := app.sellerIsActivelyAtWork(ctx, id)
+		if err != nil {
+			// Treat lookup errors as "not at work" — fail closed.
+			continue
+		}
+		if !atWork {
+			continue
+		}
 		cand, err := app.hydrateCandidate(ctx, id)
 		if err != nil {
 			// Skip candidates we can't locate; not fatal.
@@ -198,6 +214,36 @@ func (app *App) discoverBuyCandidates(
 		out = append(out, cand)
 	}
 	return out, nil
+}
+
+// sellerIsActivelyAtWork reports whether the seller is currently
+// manning their own work_structure: inside == work_structure, not on
+// break, not asleep. Mirrors the predicate inside isBusinessClosed
+// (lodging.go) but scoped to a specific seller so two different
+// sellers at the same address (a future workshop with multiple staff)
+// don't shadow each other.
+//
+// Returns false (with no error) when the seller has no
+// work_structure_id — non-vendors can't be picked anyway. Used by
+// discoverBuyCandidates to filter the resolver set and by
+// completeOutboundLeg as a race-safe gate before transacting.
+func (app *App) sellerIsActivelyAtWork(ctx context.Context, sellerID string) (bool, error) {
+	var ok bool
+	err := app.DB.QueryRow(ctx,
+		`SELECT EXISTS (
+		    SELECT 1 FROM actor a
+		     WHERE a.id = $1::uuid
+		       AND a.work_structure_id IS NOT NULL
+		       AND a.inside_structure_id = a.work_structure_id
+		       AND (a.break_until    IS NULL OR a.break_until    <= NOW())
+		       AND (a.sleeping_until IS NULL OR a.sleeping_until <= NOW())
+		)`,
+		sellerID,
+	).Scan(&ok)
+	if err != nil {
+		return false, fmt.Errorf("sellerIsActivelyAtWork query: %w", err)
+	}
+	return ok, nil
 }
 
 func (app *App) candidatesFromPayLedger(ctx context.Context, item string) ([]string, error) {
