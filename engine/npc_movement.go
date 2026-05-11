@@ -756,8 +756,15 @@ func (app *App) applyArrivalSideEffects(ctx context.Context, npcID string, x, y 
 		if hasAgent && !insideID.Valid {
 			if huddleID, others := app.adoptVisitorLoiterHuddle(ctx, npcID, targetStructureID, x, y); huddleID != "" && others > 0 {
 				log.Printf("visitor-loiter-huddle: %s joined %s at %s (others=%d) — fanning out", npcID, huddleID, targetStructureID, others)
-				app.triggerCoLocatedTicks(ctx, targetStructureID, npcID, "visitor-arrival", false, "", npcID)
-				app.triggerImmediateTick(ctx, npcID, "arrival-into-populated-huddle", false, "", "")
+				// One scene shared between the arrival self-tick and the
+				// existing members' reaction ticks so they group together
+				// in chat history. Without an arrivalScene minted here,
+				// both ticks would write rows with scene_id=NULL and the
+				// shared-VA read path (MEM-132) would orphan them on the
+				// next tick.
+				arrivalScene := app.newScene(ctx, targetStructureID)
+				app.triggerCoLocatedTicks(ctx, targetStructureID, npcID, "visitor-arrival", false, arrivalScene, npcID)
+				app.triggerImmediateTick(ctx, npcID, "arrival-into-populated-huddle", false, arrivalScene, "")
 			}
 		}
 	}
