@@ -106,30 +106,10 @@ func (app *App) loadBehaviorSpecsForActor(ctx context.Context, actorID string) (
 	return specs, nil
 }
 
-// firstAttributeSlugForActor returns the lexicographically-first attribute
-// slug carried by the actor (or "" when they have none). Used by handlers
-// and admin endpoints that need a slug-shaped label for logging or for
-// pre-attribute-system response payloads.
-func (app *App) firstAttributeSlugForActor(ctx context.Context, actorID string) (string, error) {
-	var slug string
-	err := app.DB.QueryRow(ctx,
-		`SELECT slug FROM actor_attribute WHERE actor_id = $1 ORDER BY slug LIMIT 1`,
-		actorID).Scan(&slug)
-	if err != nil {
-		// pgx returns pgx.ErrNoRows when there's no match; treating any
-		// error as "no slug" keeps the caller path simple. Real DB
-		// errors are rare enough at this read path that masking them
-		// here doesn't hide a meaningful failure.
-		return "", nil
-	}
-	return slug, nil
-}
-
 // handleLampRoute fires the lamplighter route for an NPC. Phase-aware:
 // at night, walks lamps to night-active; at day, walks them to day-active.
-// Mirrors the prior dispatchBehaviorForNPC logic: try the opposite-phase
-// target first to avoid silent no-ops when lamps already match the
-// current phase, fall back to the current-phase target.
+// Tries the opposite-phase target first to avoid silent no-ops when lamps
+// already match the current phase, falling back to the current-phase target.
 //
 // Params unused — phase is a global. Kept on the signature for handler
 // uniformity.
@@ -171,7 +151,7 @@ func handleRotationRoute(ctx context.Context, app *App, npc *behaviorNPC, params
 // handleWorkerNoop is the per-NPC dispatcher entry for the worker
 // behavior marker. The worker scheduler tick (loadWorkerRows + the
 // home/work walk loop) is the actual driver — this handler exists only
-// so dispatchBehaviorForNPC doesn't log unknown-type warnings when it
+// so dispatchBehaviorSpecs doesn't log unknown-type warnings when it
 // iterates a tavernkeeper's or blacksmith's behaviors JSONB.
 func handleWorkerNoop(ctx context.Context, app *App, npc *behaviorNPC, params map[string]interface{}) (int, error) {
 	return 0, nil

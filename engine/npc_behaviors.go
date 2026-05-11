@@ -171,7 +171,6 @@ func (app *App) clearBehavior(npcID string) {
 // scalar home_x / home_y otherwise.
 type behaviorNPC struct {
 	ID                string
-	Behavior          string
 	CurX              float64
 	CurY              float64
 	HomeX             float64
@@ -198,13 +197,11 @@ const homeCoordsSQL = `
 // resolving home coords through homeCoordsSQL. If the NPC is mid-walk, its
 // interpolated current position replaces the last-persisted current_x/y.
 //
-// As of ZBBS-096 the lookup is by attribute slug via actor_attribute, not
-// by the legacy actor.behavior column. Multiple actors holding the same
-// attribute would be returned at most one (LIMIT 1, ordered by id) —
-// callers that want to fan out to every holder should use
+// Multiple actors holding the same attribute return at most one (LIMIT 1,
+// ordered by id) — callers that want to fan out to every holder should use
 // findActorIDsWithAttribute and load each NPC explicitly.
 func (app *App) findNPCWithBehavior(ctx context.Context, slug string) (*behaviorNPC, bool) {
-	n := behaviorNPC{Behavior: slug}
+	var n behaviorNPC
 	var homeStructureID *string
 	err := app.DB.QueryRow(ctx,
 		`SELECT n.id, n.current_x, n.current_y, `+homeCoordsSQL+`, n.home_structure_id
@@ -230,10 +227,6 @@ func (app *App) findNPCWithBehavior(ctx context.Context, slug string) (*behavior
 // loadBehaviorNPCByID loads a specific NPC for the run-cycle trigger and
 // the per-NPC scheduler, both of which target one actor directly rather
 // than whichever villager happens to carry a given attribute.
-//
-// Behavior is populated from the actor's first attribute slug (alphabetical
-// order). Empty when the actor has no attributes — the run-cycle handler
-// rejects that case before calling dispatchBehaviorForNPC.
 func (app *App) loadBehaviorNPCByID(ctx context.Context, npcID string) (*behaviorNPC, bool) {
 	var n behaviorNPC
 	var homeStructureID *string
@@ -249,13 +242,6 @@ func (app *App) loadBehaviorNPCByID(ctx context.Context, npcID string) (*behavio
 	}
 	if homeStructureID != nil {
 		n.HomeStructureID = *homeStructureID
-	}
-
-	// Best-effort lookup of the actor's primary slug for logging /
-	// response shaping. A real load failure on this read is silently
-	// treated as "no slug" — the caller already handles empty.
-	if slug, _ := app.firstAttributeSlugForActor(ctx, npcID); slug != "" {
-		n.Behavior = slug
 	}
 
 	app.interpolateCurrentPos(&n)
@@ -809,45 +795,46 @@ func (app *App) handleRunNPCCycle(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, "NPC not found", http.StatusNotFound)
 		return
 	}
-	if npc.Behavior == "" {
+
+	specs, err := app.loadBehaviorSpecsForActor(r.Context(), npcID)
+	if err != nil {
+		log.Printf("run-cycle %s: load specs: %v", npcID, err)
+		jsonError(w, "Failed to run cycle", http.StatusInternalServerError)
+		return
+	}
+	if len(specs) == 0 {
 		jsonError(w, "NPC has no behavior assigned", http.StatusBadRequest)
 		return
 	}
 
-	stops, err := app.dispatchBehaviorForNPC(r.Context(), npc)
+	stops, err := app.dispatchBehaviorSpecs(r.Context(), npc, specs)
 	if err != nil {
-		log.Printf("run-cycle %s (%s): %v", npcID, npc.Behavior, err)
+		log.Printf("run-cycle %s: %v", npcID, err)
 		jsonError(w, "Failed to run cycle", http.StatusInternalServerError)
 		return
 	}
 
 	jsonResponse(w, http.StatusOK, map[string]any{
-		"npc_id":   npcID,
-		"behavior": npc.Behavior,
-		"stops":    stops,
+		"npc_id": npcID,
+		"stops":  stops,
 	})
 }
 
-// dispatchBehaviorForNPC runs every behavior spec the NPC's attributes
-// declare, in deterministic order (attribute slug ASC, spec array order
-// within). Returns the sum of stops queued across all specs; an unknown
-// spec.Type logs and is skipped without aborting the dispatch.
+// dispatchBehaviorSpecs runs each behavior spec against the NPC in order.
+// Returns the sum of stops queued across all specs; an unknown spec.Type
+// logs and is skipped without aborting the dispatch.
 //
 // Note that the route-walking infrastructure cancels any in-flight route
 // when a new one starts, so an NPC carrying multiple route-producing
 // specs effectively runs only the last one. v1 data has at most one
 // route-producing attribute per actor; multi-route NPCs are a future
 // concern (priority/dedupe in this dispatcher).
-func (app *App) dispatchBehaviorForNPC(ctx context.Context, npc *behaviorNPC) (int, error) {
-	specs, err := app.loadBehaviorSpecsForActor(ctx, npc.ID)
-	if err != nil {
-		return 0, err
-	}
+func (app *App) dispatchBehaviorSpecs(ctx context.Context, npc *behaviorNPC, specs []behaviorSpec) (int, error) {
 	totalStops := 0
 	for _, spec := range specs {
 		handler, ok := behaviorHandlers[spec.Type]
 		if !ok {
-			log.Printf("dispatchBehaviorForNPC: unknown behavior type %q for actor %s — skipping", spec.Type, npc.ID)
+			log.Printf("dispatchBehaviorSpecs: unknown behavior type %q for actor %s — skipping", spec.Type, npc.ID)
 			continue
 		}
 		stops, err := handler(ctx, app, npc, spec.Params)
