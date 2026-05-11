@@ -326,23 +326,32 @@ func (app *App) applyProduceEntry(
 			return nil
 		}
 
-		// Consume inputs.
+		// Consume inputs. ZBBS-HOME-258: DELETE-then-UPDATE order.
+		// actor_inventory has CHECK (quantity > 0). canExecute above
+		// caps executions at have/in.Qty, so consume <= have — but
+		// when consume == have, a single UPDATE quantity = quantity -
+		// consume would write 0 and trip the check before any cleanup
+		// DELETE runs (the whole tx aborts). The pre-fix pattern
+		// (UPDATE then DELETE WHERE quantity <= 0) had been failing
+		// every minute for John Ellis's stew, taking the entire produce
+		// tick down. The DELETE first removes the row when consume
+		// equals (or exceeds, defensively) current quantity; the
+		// UPDATE then runs only on rows where quantity is still > 0
+		// after subtraction.
 		for _, in := range recipe.Inputs {
 			consume := in.Qty * int(executions)
+			if _, err := tx.Exec(ctx,
+				`DELETE FROM actor_inventory
+				  WHERE actor_id = $1::uuid AND item_kind = $2 AND quantity <= $3`,
+				actorID, in.Item, consume,
+			); err != nil {
+				return err
+			}
 			if _, err := tx.Exec(ctx,
 				`UPDATE actor_inventory
 				    SET quantity = quantity - $3
 				  WHERE actor_id = $1::uuid AND item_kind = $2`,
 				actorID, in.Item, consume,
-			); err != nil {
-				return err
-			}
-			// Clean up zero rows so perception text stays tidy
-			// (matches the inventory module convention).
-			if _, err := tx.Exec(ctx,
-				`DELETE FROM actor_inventory
-				  WHERE actor_id = $1::uuid AND item_kind = $2 AND quantity <= 0`,
-				actorID, in.Item,
 			); err != nil {
 				return err
 			}

@@ -425,20 +425,24 @@ func (app *App) tryDeliverOrder(
 		return false, unitPrice
 	}
 
+	// ZBBS-HOME-258: DELETE-then-UPDATE so a sale of the seller's full
+	// remaining stock doesn't trip actor_inventory's CHECK (quantity > 0).
+	// Seller stock validation happens upstream in the buy walker; by the
+	// time we get here qty <= existing stock.
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM actor_inventory
+		  WHERE actor_id = $1::uuid AND item_kind = $2 AND quantity <= $3`,
+		sellerID, itemKind, qty,
+	); err != nil {
+		log.Printf("fulfill_walker: cleanup zero: %v", err)
+		return false, unitPrice
+	}
 	if _, err := tx.Exec(ctx,
 		`UPDATE actor_inventory SET quantity = quantity - $3
 		  WHERE actor_id = $1::uuid AND item_kind = $2`,
 		sellerID, itemKind, qty,
 	); err != nil {
 		log.Printf("fulfill_walker: decrement seller: %v", err)
-		return false, unitPrice
-	}
-	if _, err := tx.Exec(ctx,
-		`DELETE FROM actor_inventory
-		  WHERE actor_id = $1::uuid AND item_kind = $2 AND quantity <= 0`,
-		sellerID, itemKind,
-	); err != nil {
-		log.Printf("fulfill_walker: cleanup zero: %v", err)
 		return false, unitPrice
 	}
 	if _, err := tx.Exec(ctx,

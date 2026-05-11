@@ -210,23 +210,40 @@ func (app *App) handlePCCompleteErrand(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Inventory check + atomic decrement. Conditional UPDATE -1 with
-	// quantity >= fetchQty guard; RowsAffected == 0 means insufficient
-	// stock (or the buyer ate it on the way home).
-	tag, err := tx.Exec(r.Context(),
+	// Inventory check + atomic decrement. ZBBS-HOME-258: split the
+	// pre-fix `WHERE quantity >= $3` UPDATE into a DELETE for the
+	// exact-match case (delivering the player's last unit) and an
+	// UPDATE for the more-than-enough case. The pre-fix shape
+	// allowed a quantity-becomes-0 UPDATE which trips
+	// actor_inventory's CHECK (quantity > 0). DELETE-then-UPDATE
+	// with mutually-exclusive WHERE clauses keeps the validation:
+	// quantity < fetchQty → neither matches → rejected.
+	delTag, err := tx.Exec(r.Context(),
+		`DELETE FROM actor_inventory
+		  WHERE actor_id = $1::uuid
+		    AND item_kind = $2
+		    AND quantity = $3`,
+		actorID, fetchItem, fetchQty,
+	)
+	if err != nil {
+		log.Printf("pc/complete-errand inventory %d delete: %v", req.ErrandID, err)
+		jsonError(w, "Internal error", http.StatusInternalServerError)
+		return
+	}
+	updTag, err := tx.Exec(r.Context(),
 		`UPDATE actor_inventory
 		    SET quantity = quantity - $3
 		  WHERE actor_id = $1::uuid
 		    AND item_kind = $2
-		    AND quantity >= $3`,
+		    AND quantity > $3`,
 		actorID, fetchItem, fetchQty,
 	)
 	if err != nil {
-		log.Printf("pc/complete-errand inventory %d: %v", req.ErrandID, err)
+		log.Printf("pc/complete-errand inventory %d update: %v", req.ErrandID, err)
 		jsonError(w, "Internal error", http.StatusInternalServerError)
 		return
 	}
-	if tag.RowsAffected() == 0 {
+	if delTag.RowsAffected()+updTag.RowsAffected() == 0 {
 		jsonResponse(w, http.StatusOK, pcErrandResponse{
 			Result:   "rejected",
 			Error:    fmt.Sprintf("you don't have %d %s to deliver", fetchQty, fetchItem),
