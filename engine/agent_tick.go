@@ -652,8 +652,16 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 	// a move_to commit will have updated them; the perception's snapshot
 	// is now stale. If conditions are no longer true (NPC moved to work,
 	// fell into a pressing need), no schedule is written.
-	app.maybeScheduleReturnToWork(ctx, r.ID)
-	app.maybeScheduleReturnHome(ctx, r.ID)
+	// Cheap precheck using the already-loaded row before the
+	// post-harness queries. Both schedulers re-load actor + needs +
+	// world config, so avoid the round-trip for NPCs that can't
+	// possibly nudge (no work, no home).
+	if r.WorkStructureID.Valid {
+		app.maybeScheduleReturnToWork(ctx, r.ID)
+		if r.HomeStructureID.Valid {
+			app.maybeScheduleReturnHome(ctx, r.ID)
+		}
+	}
 }
 
 // drainDeferredBroadcasts fires any room_events queued by deliver_order
