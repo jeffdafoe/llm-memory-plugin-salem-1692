@@ -1054,41 +1054,79 @@ func (app *App) triggerCoLocatedTicks(ctx context.Context, structureID, excludeN
 	if structureID == "" {
 		return
 	}
-	// ZBBS-149: when triggering co-located ticks for an event inside a
-	// structure, filter to actors in the SAME room as the trigger
-	// source. Loiter-ring co-location at a structure with no
-	// inside_structure_id is unaffected — outdoors has no room.
-	//
-	// Room resolution by case:
-	//   - Anonymous trigger ($3 = ''): chronicler dispatch or other
-	//     non-actor-rooted event. Default to the structure's 'common'
-	//     room so cascade triggers don't reach lodgers in their
-	//     bedrooms.
-	//   - Actor trigger ($3 != '') AND that actor is inside this
-	//     structure with a room set: use the trigger's room
-	//     directly (lodger-in-bedroom triggers stay in the bedroom).
-	//   - Actor trigger ($3 != '') AND that actor is NOT inside this
-	//     structure (e.g. PC knocking at an entry_policy=owner door —
-	//     they're added to the structure huddle but not physically
-	//     inside): fall back to the 'common' room. The knock is
-	//     anonymous from the inside's perspective; it should reach the
-	//     public area but not bedrooms.
-	//   - Actor trigger but NULL room (corruption — shouldn't
-	//     happen post-migration): also falls back to common via the
-	//     same COALESCE, fail-open instead of silently dropping.
-	//
-	// ZBBS-HOME-256: receiver-side, COALESCE n.inside_room_id to the
-	// structure's 'common' room before comparing. Pre-fix an actor
-	// inside the structure with NULL inside_room_id (a real corruption
-	// state observed when seeded keepers' rows weren't backfilled by
-	// ZBBS-149) failed the equality (NULL = anything → NULL → falsy),
-	// got excluded from cascades, and silently missed every PC
-	// arrival. The receiver coerce is symmetric with the trigger-side
-	// COALESCE: both sides treat NULL room as "common" so a NULL-room
-	// keeper is reachable by common-room cascades and shielded from
-	// bedroom-targeted ones (the safer direction).
-	rows, err := app.DB.Query(ctx,
-		`SELECT n.id FROM actor n
+	ids := app.findCoLocatedReactors(ctx, structureID, excludeNpcID, triggerActorID)
+	log.Printf("knock-trace co-located reason=%s structure=%s exclude=%q found=%d ids=%v force=%v scene=%s",
+		reason, structureID, excludeNpcID, len(ids), ids, force, sceneID)
+	for _, id := range ids {
+		go app.triggerImmediateTick(context.Background(), id, reason, force, sceneID, triggerActorID)
+	}
+}
+
+// findCoLocatedReactors returns the agentized actors at structureID
+// that are eligible to react to an event sourced from triggerActorID
+// (excluding excludeNpcID, the source itself). Extracted from
+// triggerCoLocatedTicks (ZBBS-HOME-263) so scheduleCoLocatedReactorTicks
+// can reuse the same query — both paths need the same room-aware
+// co-location filter.
+//
+// ZBBS-149: when triggering co-located ticks for an event inside a
+// structure, filter to actors in the SAME room as the trigger
+// source. Loiter-ring co-location at a structure with no
+// inside_structure_id is unaffected — outdoors has no room.
+//
+// Room resolution by case:
+//   - Anonymous trigger ($3 = ''): chronicler dispatch or other
+//     non-actor-rooted event. Default to the structure's 'common'
+//     room so cascade triggers don't reach lodgers in their
+//     bedrooms.
+//   - Actor trigger ($3 != '') AND that actor is inside this
+//     structure with a room set: use the trigger's room
+//     directly (lodger-in-bedroom triggers stay in the bedroom).
+//   - Actor trigger ($3 != '') AND that actor is NOT inside this
+//     structure (e.g. PC knocking at an entry_policy=owner door —
+//     they're added to the structure huddle but not physically
+//     inside): fall back to the 'common' room. The knock is
+//     anonymous from the inside's perspective; it should reach the
+//     public area but not bedrooms.
+//   - Actor trigger but NULL room (corruption — shouldn't
+//     happen post-migration): also falls back to common via the
+//     same COALESCE, fail-open instead of silently dropping.
+//
+// ZBBS-HOME-256: receiver-side, COALESCE n.inside_room_id to the
+// structure's 'common' room before comparing. Pre-fix an actor
+// inside the structure with NULL inside_room_id (a real corruption
+// state observed when seeded keepers' rows weren't backfilled by
+// ZBBS-149) failed the equality (NULL = anything → NULL → falsy),
+// got excluded from cascades, and silently missed every PC
+// arrival. The receiver coerce is symmetric with the trigger-side
+// COALESCE: both sides treat NULL room as "common" so a NULL-room
+// keeper is reachable by common-room cascades and shielded from
+// bedroom-targeted ones (the safer direction).
+func (app *App) findCoLocatedReactors(ctx context.Context, structureID, excludeNpcID, triggerActorID string) []string {
+	if structureID == "" {
+		return nil
+	}
+	rows, err := app.DB.Query(ctx, coLocatedReactorsQuery,
+		structureID, excludeNpcID, triggerActorID)
+	if err != nil {
+		log.Printf("event-tick co-located query: %v", err)
+		return nil
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err == nil {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+// coLocatedReactorsQuery is the shared SQL for co-located-reactor
+// discovery. Comments above findCoLocatedReactors document the
+// room-resolution semantics.
+const coLocatedReactorsQuery = `SELECT n.id FROM actor n
 		 LEFT JOIN village_object o ON o.id::text = $1
 		 WHERE n.llm_memory_agent IS NOT NULL
 		   AND ($2 = '' OR n.id::text != $2)
@@ -1125,26 +1163,7 @@ func (app *App) triggerCoLocatedTicks(ctx context.Context, structureID, excludeN
 		             ABS(n.current_y - (o.y + o.loiter_offset_y * 32))
 		           ) <= 64
 		     )
-		   )`,
-		structureID, excludeNpcID, triggerActorID)
-	if err != nil {
-		log.Printf("event-tick co-located query (%s): %v", reason, err)
-		return
-	}
-	defer rows.Close()
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err == nil {
-			ids = append(ids, id)
-		}
-	}
-	log.Printf("knock-trace co-located reason=%s structure=%s exclude=%q found=%d ids=%v force=%v scene=%s",
-		reason, structureID, excludeNpcID, len(ids), ids, force, sceneID)
-	for _, id := range ids {
-		go app.triggerImmediateTick(context.Background(), id, reason, force, sceneID, triggerActorID)
-	}
-}
+		   )`
 
 // agentToolSpec returns the tool definitions the engine offers each tick.
 // Same neutral shape the providers/index.js opts.tools contract expects.
@@ -2788,7 +2807,11 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		// per-scene round counter (track depth via scene_huddle or
 		// sceneID, force `done` past N rounds).
 		if structureScope != "" {
-			app.triggerCoLocatedTicks(ctx, structureScope, r.ID, "heard-speech", true, sceneID, r.ID)
+			// ZBBS-HOME-263: schedule reactor ticks with 1-4s jitter
+			// instead of firing inline. Lets back-and-forth conversation
+			// have natural pauses; merges back-to-back triggers from the
+			// same speaker into one queued reaction.
+			app.scheduleCoLocatedReactorTicks(ctx, structureScope, r.ID, "heard-speech", true, sceneID, r.ID)
 		}
 
 	case "act":
@@ -2834,7 +2857,9 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		// force=true for the same reason the speak path forces: the
 		// addressee/witness shouldn't be cost-gated out of reacting.
 		if r.InsideStructureID.Valid {
-			app.triggerCoLocatedTicks(ctx, r.InsideStructureID.String, r.ID, "saw-action", true, sceneID, r.ID)
+			// ZBBS-HOME-263: same scheduled-pacing treatment as the
+			// heard-speech cascade — see comment there.
+			app.scheduleCoLocatedReactorTicks(ctx, r.InsideStructureID.String, r.ID, "saw-action", true, sceneID, r.ID)
 		}
 
 	case "done":
@@ -3238,12 +3263,12 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 				// conversation. Goroutine + force=true match the PC-pay
 				// path's reasoning.
 				if pr.RecipientIsAgent && pr.RecipientID != "" {
-					recipientID := pr.RecipientID
-					buyerID := r.ID
-					localScene := sceneID
-					go func() {
-						app.triggerImmediateTick(context.Background(), recipientID, "npc-paid-you", true, localScene, buyerID)
-					}()
+					// ZBBS-HOME-263: schedule the recipient's post-pay
+					// reactor tick with 1-4s jitter instead of firing
+					// inline. The goroutine is gone too — scheduling is
+					// the only handoff needed; the run loop dispatches
+					// when due_at lands.
+					app.scheduleReactorTick(pr.RecipientID, sceneID, "npc-paid-you", r.ID, true)
 				}
 			}
 		}
