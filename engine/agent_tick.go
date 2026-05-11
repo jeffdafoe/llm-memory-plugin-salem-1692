@@ -1076,6 +1076,17 @@ func (app *App) triggerCoLocatedTicks(ctx context.Context, structureID, excludeN
 	//   - Actor trigger but NULL room (corruption — shouldn't
 	//     happen post-migration): also falls back to common via the
 	//     same COALESCE, fail-open instead of silently dropping.
+	//
+	// ZBBS-HOME-256: receiver-side, COALESCE n.inside_room_id to the
+	// structure's 'common' room before comparing. Pre-fix an actor
+	// inside the structure with NULL inside_room_id (a real corruption
+	// state observed when seeded keepers' rows weren't backfilled by
+	// ZBBS-149) failed the equality (NULL = anything → NULL → falsy),
+	// got excluded from cascades, and silently missed every PC
+	// arrival. The receiver coerce is symmetric with the trigger-side
+	// COALESCE: both sides treat NULL room as "common" so a NULL-room
+	// keeper is reachable by common-room cascades and shielded from
+	// bedroom-targeted ones (the safer direction).
 	rows, err := app.DB.Query(ctx,
 		`SELECT n.id FROM actor n
 		 LEFT JOIN village_object o ON o.id::text = $1
@@ -1084,7 +1095,12 @@ func (app *App) triggerCoLocatedTicks(ctx context.Context, structureID, excludeN
 		   AND (
 		     (
 		       n.inside_structure_id::text = $1
-		       AND n.inside_room_id = CASE
+		       AND COALESCE(
+		             n.inside_room_id,
+		             (SELECT id FROM structure_room
+		               WHERE structure_id::text = $1 AND kind = 'common'
+		               LIMIT 1)
+		           ) = CASE
 		         WHEN $3 = '' THEN (
 		           SELECT id FROM structure_room
 		            WHERE structure_id::text = $1 AND kind = 'common'
