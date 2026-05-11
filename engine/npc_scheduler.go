@@ -387,18 +387,32 @@ func (app *App) evaluateWorkerSchedule(ctx context.Context, w *workerRow, now ti
 	//
 	//   * Shared VA (salem-vendor, salem-visitor) — the VA is a
 	//     switchboard plugged in for interactions, not a persistent
-	//     persona. Mechanical schedule transitions (walk to work at
-	//     start, walk home at end) don't need an LLM decision; the
-	//     engine walks them like a non-agent NPC. Falls through to
-	//     the mechanical walk path below. (ZBBS-HOME-253.)
-	if w.LlmMemoryAgent.Valid && !isSharedVAAgent(w.LlmMemoryAgent.String) {
-		if _, err := app.DB.Exec(ctx,
-			`UPDATE actor SET last_shift_tick_at = $2 WHERE id = $1`,
-			w.ID, boundaryAt,
-		); err != nil {
-			log.Printf("scheduler: stamp (agent-shift-boundary) %s: %v", w.ID, err)
+	//     persona. Mechanical schedule transitions don't need an LLM
+	//     decision when the NPC is alone — falls through to the
+	//     mechanical walk path. When the NPC is co-located with
+	//     someone (a customer at the stall, etc.) the transition is
+	//     a communication beat ("Excuse me, I'm closing up"); stamp
+	//     and step aside so a subsequent cascade tick can produce a
+	//     sensible utterance. (ZBBS-HOME-253 / HOME-254.)
+	if w.LlmMemoryAgent.Valid {
+		stepAside := true
+		if isSharedVAAgent(w.LlmMemoryAgent.String) {
+			alone, err := app.isAloneAtCurrentStructure(ctx, w.ID, w.InsideStructureID)
+			if err != nil {
+				log.Printf("scheduler: alone check %s: %v (treating as not-alone)", w.ID, err)
+			} else if alone {
+				stepAside = false
+			}
 		}
-		return
+		if stepAside {
+			if _, err := app.DB.Exec(ctx,
+				`UPDATE actor SET last_shift_tick_at = $2 WHERE id = $1`,
+				w.ID, boundaryAt,
+			); err != nil {
+				log.Printf("scheduler: stamp (agent-shift-boundary) %s: %v", w.ID, err)
+			}
+			return
+		}
 	}
 
 	var targetStructureID string
@@ -443,6 +457,35 @@ func (app *App) evaluateWorkerSchedule(ctx context.Context, w *workerRow, now ti
 func formatMinuteOfDay(m int) string {
 	m = ((m % 1440) + 1440) % 1440
 	return fmt.Sprintf("%02d:%02d", m/60, m%60)
+}
+
+// isAloneAtCurrentStructure reports whether any actor other than
+// npcID currently shares the given inside_structure_id. Used by the
+// worker scheduler to decide whether a shared-VA shift transition
+// can run mechanically (alone) or needs a stamp-and-step-aside so
+// the LLM can produce a communication beat (someone else is here).
+//
+// Geographic-only on purpose: current_huddle_id pointers can go
+// stale when an NPC walks out of a huddle without it being cleared,
+// and we don't want a stale pointer to suppress a perfectly fine
+// mechanical walk.
+//
+// Returns true (alone) when the NPC has no current structure —
+// outdoors transitions aren't this code path's concern.
+func (app *App) isAloneAtCurrentStructure(ctx context.Context, npcID string, insideID sql.NullString) (bool, error) {
+	if !insideID.Valid || insideID.String == "" {
+		return true, nil
+	}
+	var count int
+	if err := app.DB.QueryRow(ctx,
+		`SELECT COUNT(*) FROM actor
+		  WHERE inside_structure_id = $1
+		    AND id <> $2::uuid`,
+		insideID.String, npcID,
+	).Scan(&count); err != nil {
+		return false, err
+	}
+	return count == 0, nil
 }
 
 // rotationRow bundles per-NPC rotation state for evaluateRotationSchedule.
