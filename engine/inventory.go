@@ -81,6 +81,36 @@ func normalizeMentions(raw interface{}) []string {
 	return out
 }
 
+// actorHasAnyInventory returns true when the actor carries at least
+// one actor_inventory row with qty > 0. Used by the speak tool's
+// mention-validation gate (ZBBS-WORK-223): the validation only
+// makes sense for actors who have stock to sell. Visitors and
+// non-vendor PCs typically have no inventory rows at all — gating
+// the validation on this avoids rejecting buyer-side speech like
+// Jeremiah Soames saying "I'd like bread and ale" against his own
+// (empty) inventory.
+//
+// A vendor whose stock has bottomed out (zero rows) effectively
+// bypasses the strict check too — accepted trade-off, since the
+// role-prompt directive ("you can only sell items in your inventory
+// list") and the empty perception inventory line already discourage
+// hallucinating sales of non-existent stock.
+func (app *App) actorHasAnyInventory(ctx context.Context, actorID string) bool {
+	var has bool
+	err := app.DB.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM actor_inventory
+		                 WHERE actor_id = $1 AND quantity > 0)`,
+		actorID,
+	).Scan(&has)
+	if err != nil {
+		// On error, default to "yes" so the strict validation still
+		// runs — fail-safe toward the pre-WORK-223 behavior.
+		log.Printf("actorHasAnyInventory(%s): %v", actorID, err)
+		return true
+	}
+	return has
+}
+
 // validateMentionsAgainstInventory returns the subset of mentions that
 // are NOT present in the speaker's actor_inventory (or don't exist in
 // item_kind at all — both fail the same predicate). Empty result means
