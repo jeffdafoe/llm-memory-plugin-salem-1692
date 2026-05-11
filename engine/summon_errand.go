@@ -646,7 +646,7 @@ func (app *App) onMessengerDeliveredRefusal(ctx context.Context, errandID, messe
 		); err != nil {
 			log.Printf("errand: clear summoner override (refusal): %v", err)
 		}
-		go app.triggerImmediateTick(context.Background(), summonerID, "summon-failed", true, "", "")
+		go app.triggerImmediateTick(context.Background(), summonerID, "summon-failed", true, app.newScene(ctx, ""), "")
 	}
 
 	if _, err := app.DB.Exec(ctx, `
@@ -1019,7 +1019,7 @@ func (app *App) onChatAtTargetElapsed(ctx context.Context, errandID, summonerID,
 		); err != nil {
 			log.Printf("errand: wake va target: %v", err)
 		}
-		go app.triggerImmediateTick(context.Background(), targetID, "summoned", false, "", "")
+		go app.triggerImmediateTick(context.Background(), targetID, "summoned", false, app.newScene(ctx, ""), "")
 
 		// Messenger heads home; summoner override clears now (the
 		// LLM-side summon arc is complete from the engine's POV).
@@ -1039,7 +1039,7 @@ func (app *App) onChatAtTargetElapsed(ctx context.Context, errandID, summonerID,
 		// reconsider where they are. Symmetric with the refusal
 		// branch, which already triggers the summoner so they can
 		// react to bad news.
-		go app.triggerImmediateTick(context.Background(), summonerID, "summon-delivered", true, "", "")
+		go app.triggerImmediateTick(context.Background(), summonerID, "summon-delivered", true, app.newScene(ctx, ""), "")
 
 		if _, err := app.DB.Exec(ctx, `
 			UPDATE summon_errand
