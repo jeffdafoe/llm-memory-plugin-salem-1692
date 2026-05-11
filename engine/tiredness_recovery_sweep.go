@@ -163,13 +163,21 @@ func (app *App) sweepTirednessRecoveryOnce(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("decrement tiredness for %s: %w", c.ID, err)
 		}
-		// If the actor has no tiredness row in actor_need, the UPDATE
-		// silently affects 0 rows. Advancing the cursor anyway would
-		// permanently lose that recovery window AND hide the integrity
-		// gap. Surface it as an error so the sweep retries next minute
-		// and journalctl shows the missing row.
-		if tag.RowsAffected() != 1 {
-			return fmt.Errorf("decrement tiredness for %s: expected 1 row, affected %d", c.ID, tag.RowsAffected())
+		// ZBBS-HOME-255: an actor with break_until/sleeping_until set but
+		// no actor_need.tiredness row used to abort the entire sweep
+		// transaction (returning an error from one iteration rolled back
+		// every other actor's decrement). The companion seed migration +
+		// visitor.go fix close the gap that produced these missing rows
+		// in the first place; this skip-with-log is the belt-and-suspenders
+		// for any future seeding regression. Cursor stays where it is so
+		// recovery resumes from the same window once the row is restored.
+		// Anything > 1 still aborts — a stray duplicate is real corruption.
+		if tag.RowsAffected() == 0 {
+			log.Printf("tiredness recovery sweep: actor %s has no tiredness row in actor_need, skipping (sweep continues)", c.ID)
+			continue
+		}
+		if tag.RowsAffected() > 1 {
+			return fmt.Errorf("decrement tiredness for %s: unexpected affected %d", c.ID, tag.RowsAffected())
 		}
 		if _, err := tx.Exec(ctx,
 			`UPDATE actor SET last_tiredness_recovery_at = $1 WHERE id = $2::uuid`,
