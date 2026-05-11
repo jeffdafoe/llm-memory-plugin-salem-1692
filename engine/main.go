@@ -94,6 +94,12 @@ type App struct {
 	AgentTickInFlight   map[string]bool
 	AgentTickInFlightMu sync.Mutex
 
+	// ReactorScheduler queues cascade-triggered reactor ticks
+	// (heard-speech, saw-action, npc-paid-you, arrival-into-populated-
+	// huddle) with 1-4s jitter so back-and-forth conversation has
+	// natural pauses. PC-initiated, self-tick, and direct-API ticks
+	// continue to fire inline. See engine/reactor_scheduler.go.
+	ReactorScheduler *reactorScheduler
 }
 
 // sceneTickEntry is the per-(scene, actor) dedup record.
@@ -261,6 +267,10 @@ func main() {
 		// Per-actor in-flight tick gate. See AgentTickInFlight comment
 		// on the App struct for the why.
 		AgentTickInFlight: make(map[string]bool),
+		// Cascade-reactor pacing scheduler (ZBBS-HOME-263). See
+		// engine/reactor_scheduler.go for the design. Run goroutine
+		// is launched below alongside the other sweeps.
+		ReactorScheduler: newReactorScheduler(),
 	}
 	// Prime the display-name map so reactive ticks before the first
 	// server-tick refresh have data. Cheap; bounded by NPC count.
@@ -270,6 +280,13 @@ func main() {
 	// grows unbounded as the world runs. 5-minute interval, 30-minute
 	// staleness threshold — well past any realistic cascade duration.
 	go app.runSceneTickCleanup(context.Background())
+
+	// Cascade-reactor pacing run loop (ZBBS-HOME-263). Drains the
+	// in-memory min-heap of pending reactor ticks. Runs until ctx is
+	// canceled (engine shutdown). Restart-loss is by design — pending
+	// ticks in the heap when the engine cycles are dropped; the next
+	// external trigger re-engages with a fresh sceneID.
+	go app.runReactorScheduler(context.Background())
 
 	// Pay-ledger aging sweep (ZBBS-128 step 4). Flips `pending` rows
 	// older than payLedgerPendingTimeout to `withdrawn` so engine

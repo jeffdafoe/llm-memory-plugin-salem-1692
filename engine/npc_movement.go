@@ -763,8 +763,16 @@ func (app *App) applyArrivalSideEffects(ctx context.Context, npcID string, x, y 
 				// shared-VA read path (MEM-132) would orphan them on the
 				// next tick.
 				arrivalScene := app.newScene(ctx, targetStructureID)
-				app.triggerCoLocatedTicks(ctx, targetStructureID, npcID, "visitor-arrival", false, arrivalScene, npcID)
-				app.triggerImmediateTick(ctx, npcID, "arrival-into-populated-huddle", false, arrivalScene, "")
+				// ZBBS-HOME-263: arrival cascade goes through the
+				// reactor scheduler now. Both the existing-members
+				// fanout AND the arriving NPC's own tick get 1-4s
+				// jitter; the existing members will see the arriver's
+				// presence in their perception when their tick fires,
+				// the arriver sees the room state when theirs fires.
+				// force=false matches the prior behavior — arrival is
+				// not addressee-shaped, cost guard should still apply.
+				app.scheduleCoLocatedReactorTicks(ctx, targetStructureID, npcID, "visitor-arrival", false, arrivalScene, npcID)
+				app.scheduleReactorTick(npcID, arrivalScene, "arrival-into-populated-huddle", "", false)
 			}
 		}
 	}
