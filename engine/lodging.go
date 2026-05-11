@@ -441,7 +441,12 @@ func (app *App) loadLodgerSelfStatus(ctx context.Context, actorID string) (lodge
 //
 // loc is the world timezone (cfg.Location) so day-of-week framing
 // reads as wall-clock village time.
-func formatLodgerSelfPerception(s lodgerSelfStatus, now time.Time, loc *time.Location) string {
+//
+// nightlyRate is appended as a renewal tool-shape hint when > 0
+// (ZBBS-WORK-223). Without it the LLM tends to pay in natural
+// language ("for a night's room") instead of the structured
+// item="nights_stay" call the engine expects.
+func formatLodgerSelfPerception(s lodgerSelfStatus, now time.Time, loc *time.Location, nightlyRate int) string {
 	if loc == nil {
 		loc = time.UTC
 	}
@@ -459,23 +464,31 @@ func formatLodgerSelfPerception(s lodgerSelfStatus, now time.Time, loc *time.Loc
 	sameDay := until.Year() == nowLocal.Year() &&
 		until.YearDay() == nowLocal.YearDay()
 	remaining := until.Sub(now)
+	var line string
 	switch {
 	case sameDay:
-		return fmt.Sprintf(
+		line = fmt.Sprintf(
 			"Your room at %s expires today at %s — see %s before then to renew, or your boarding ends.",
 			s.StructureLabel, until.Format("15:04"), s.KeeperName,
 		)
 	case remaining <= 48*time.Hour:
-		return fmt.Sprintf(
-			"Your room at %s expires %s. Find %s soon to arrange another week.",
+		line = fmt.Sprintf(
+			"Your room at %s expires %s. Find %s soon to arrange another night.",
 			s.StructureLabel, until.Format("Monday at 15:04"), s.KeeperName,
 		)
 	default:
-		return fmt.Sprintf(
+		line = fmt.Sprintf(
 			"Your room at %s is paid through %s.",
 			s.StructureLabel, until.Format("Monday"),
 		)
 	}
+	if nightlyRate > 0 && s.KeeperName != "" {
+		line += fmt.Sprintf(
+			" To renew, call pay(item=\"nights_stay\", qty=1, amount=%d, recipient=\"%s\").",
+			nightlyRate, s.KeeperName,
+		)
+	}
+	return line
 }
 
 // roomsAvailableAtStructure returns (available, total) bedroom counts
@@ -516,22 +529,34 @@ func (app *App) roomsAvailableAtStructure(ctx context.Context, structureID strin
 	return available, total, nil
 }
 
-// formatKeeperRoomsAvailable renders the rooms-available block — the
-// universal "X of N rooms" occupancy line for any keeper of an inn-
-// shaped structure. structureLabel matches the work-structure label
-// already shown in identity-recap so the lines read consistently.
+// formatKeeperRoomsAvailable renders the keeper's lodging-perception
+// block — universal "X of N rooms" occupancy line plus, when there's
+// a room to sell, the structured `nights_stay` quotable that gives
+// the customer-side LLM the exact pay() shape to use for renting.
+//
+// structureLabel matches the work-structure label already shown in
+// identity-recap so the lines read consistently.
 //
 // Used to also inject vendor-economic guidance and per-actor flavor
 // for salem-vendor-backed keepers, but those moved out in WORK-217:
 // vendor-economic + standing-rate guidance now lives on the
 // `innkeeper` attribute_definition (per-tick role injection from
 // agent_tools.go::loadInstructionsForActor); per-actor character
-// lives on actor_narrative_state.seed_text. This helper is back to
-// just lodging mechanics.
+// lives on actor_narrative_state.seed_text.
+//
+// The nights_stay quotable (ZBBS-WORK-223) addresses an observed
+// pattern where customers tried to pay for a room with free-text
+// `for` instead of `item="nights_stay"`. The engine silently dropped
+// `for` (not in the pay schema) and processed as coin-only, leaving
+// poisoned coin-only rows in Hannah's pay_ledger that the seller
+// then tried to deliver_order and got "no item to deliver." Surfacing
+// the exact tool shape in the keeper's perception means anyone in
+// the keeper's huddle sees nights_stay as a typeable token before
+// they try to pay.
 //
 // Empty when the actor has no private rooms (not a keeper of an
 // inn-shaped structure) — caller suppresses the section.
-func formatKeeperRoomsAvailable(available, total int, structureLabel string) string {
+func formatKeeperRoomsAvailable(available, total, nightlyRate int, structureLabel, keeperName string) string {
 	if total <= 0 {
 		return ""
 	}
@@ -540,10 +565,17 @@ func formatKeeperRoomsAvailable(available, total int, structureLabel string) str
 	if structureLabel != "" {
 		subject = structureLabel
 	}
-	return fmt.Sprintf(
-		"%s has %d bedroom%s; %d occupied tonight, %d available.",
-		subject, total, pluralS(total), occupied, available,
-	)
+	lines := []string{
+		fmt.Sprintf("%s has %d bedroom%s; %d occupied tonight, %d available.",
+			subject, total, pluralS(total), occupied, available),
+	}
+	if available > 0 && nightlyRate > 0 && keeperName != "" {
+		lines = append(lines, fmt.Sprintf(
+			"You sell `nights_stay` x%d at %d coins/night. Customers rent a room by calling pay(item=\"nights_stay\", qty=1, amount=%d, recipient=\"%s\").",
+			available, nightlyRate, nightlyRate, keeperName,
+		))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func pluralS(n int) string {

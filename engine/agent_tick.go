@@ -2002,11 +2002,22 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 		log.Printf("perception activeLodgersForKeeper %s: %v", r.DisplayName, err)
 	}
 
+	// Per-night lodging rate, used by both the keeper-side and
+	// lodger-side perception blocks below for the WORK-223 tool-
+	// shape hints. Operator-set as a weekly rate; per-night is
+	// weeklyRate / 7 (operator convention is divisible by 7). Zero
+	// disables the hint surfaces in both blocks.
+	lodgingWeeklyRate := app.loadIntSetting(ctx, "lodging_default_weekly_rate", 28)
+	lodgingNightlyRate := lodgingWeeklyRate / 7
+
 	// ZBBS-WORK-204: keeper rooms-available + (for salem-vendor
 	// keepers) standing rate + per-vendor flavor. Fires for any
 	// keeper whose work structure has private rooms (the inn-shape
 	// predicate). Empty when the keeper has no private rooms placed
 	// — cheap COUNT subquery, two scans of structure_room.
+	// ZBBS-WORK-223: also surfaces a structured `nights_stay`
+	// quotable with the customer-side pay() tool shape when rooms
+	// are available.
 	if r.WorkStructureID.Valid {
 		if avail, total, err := app.roomsAvailableAtStructure(ctx, r.WorkStructureID.String); err != nil {
 			log.Printf("perception roomsAvailableAtStructure %s: %v", r.DisplayName, err)
@@ -2015,7 +2026,7 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 			if r.WorkLabel.Valid {
 				label = r.WorkLabel.String
 			}
-			if block := formatKeeperRoomsAvailable(avail, total, label); block != "" {
+			if block := formatKeeperRoomsAvailable(avail, total, lodgingNightlyRate, label, r.DisplayName); block != "" {
 				sections = append(sections, block)
 			}
 		}
@@ -2029,8 +2040,10 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 	// today, see the keeper before sundown" pushes Ezekiel toward
 	// the renewal walk before the engine-auto rebook fires the
 	// backstop at 6h pre-expiry.
+	// ZBBS-WORK-223: appends a renewal pay() tool-shape hint so the
+	// LLM emits item="nights_stay" instead of free-text `for`.
 	if status, ok := app.loadLodgerSelfStatus(ctx, r.ID); ok {
-		if line := formatLodgerSelfPerception(status, hourStart, hourStart.Location()); line != "" {
+		if line := formatLodgerSelfPerception(status, hourStart, hourStart.Location(), lodgingNightlyRate); line != "" {
 			sections = append(sections, line)
 		}
 	}
@@ -2650,22 +2663,30 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		// Mentions (Phase C of sales-and-gifts): structured tag for which
 		// item_kinds this speech references. The PC talk panel uses these
 		// to populate the buy/pay dropdown so a customer can select an
-		// item the vendor just mentioned. Validated strictly against the
-		// speaker's actor_inventory — bogus mentions reject the whole
-		// speak and the LLM retries cleanly. Normalized to lowercase
-		// trimmed strings; empty / non-strings are dropped silently
-		// before validation.
+		// item the vendor just mentioned. Normalized to lowercase trimmed
+		// strings; empty / non-strings are dropped silently.
+		//
+		// Validation (ZBBS-WORK-223): only gated on speakers who carry
+		// inventory — i.e., actors who could plausibly be selling. Pre-
+		// WORK-223 the validation ran on every speak, which rejected
+		// buyer-side mentions like Jeremiah Soames saying "I'd like bread
+		// and ale" (he's a visitor with no inventory; the validation
+		// returned ALL his mentions as bogus and the speak was dropped).
+		// Sellers still get strict validation — naming goods they don't
+		// stock would offer the customer something they can't sell.
 		mentions := normalizeMentions(tc.Input["mentions"])
 		if len(mentions) > 0 {
-			bogus, err := app.validateMentionsAgainstInventory(ctx, r.ID, mentions)
-			if err != nil {
-				result, errStr = "failed", fmt.Sprintf("validate mentions: %v", err)
-				break
-			}
-			if len(bogus) > 0 {
-				result = "rejected"
-				errStr = fmt.Sprintf("You don't have these items in your inventory: %s. Only mention items in your 'Items you can sell' list — speak references the same catalog the customer's pay dropdown is built from, so naming goods you don't have would offer the customer something you can't sell.", strings.Join(bogus, ", "))
-				break
+			if app.actorHasAnyInventory(ctx, r.ID) {
+				bogus, err := app.validateMentionsAgainstInventory(ctx, r.ID, mentions)
+				if err != nil {
+					result, errStr = "failed", fmt.Sprintf("validate mentions: %v", err)
+					break
+				}
+				if len(bogus) > 0 {
+					result = "rejected"
+					errStr = fmt.Sprintf("You don't have these items in your inventory: %s. Only mention items in your 'Items you can sell' list — speak references the same catalog the customer's pay dropdown is built from, so naming goods you don't have would offer the customer something you can't sell.", strings.Join(bogus, ", "))
+					break
+				}
 			}
 			// Re-stash the normalized mentions so audit + WS broadcast
 			// carry the cleaned form, not the model's raw input.
