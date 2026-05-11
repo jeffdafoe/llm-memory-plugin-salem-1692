@@ -53,29 +53,21 @@ type App struct {
 	NPCDisplayNames   map[string]string
 	NPCDisplayNamesMu sync.RWMutex
 
-	// SceneTickedActors deduplicates reactor-tick fan-out within a single
-	// scene. The cascade machinery (PC speak → reactor ticks → reactor's
-	// own speak/act → next reactor ticks → ...) propagates a sceneID from
-	// the cascade origin through every downstream tick.
+	// SceneTickedActors backstops cost on reactor-tick fan-out within a
+	// single scene. The cascade machinery (PC speak → reactor ticks →
+	// reactor's own speak/act → next reactor ticks → ...) propagates a
+	// sceneID from the cascade origin through every downstream tick.
 	//
-	// Two policies layer on top of this map:
-	//   (a) Same-trigger-actor dedup: an actor doesn't tick twice in a
-	//       scene in response to the same triggering actor. Different
-	//       triggering actor (different speaker, different arriver)
-	//       passes through. This models natural conversation — you
-	//       respond to John once, but Ezekiel saying something new is
-	//       its own thing to react to.
-	//   (b) Hard per-(scene, actor) reaction cap as a backstop on cost.
-	//       maxReactionsPerSceneActor below.
+	// Policy: hard per-(scene, actor) reaction cap of
+	// maxReactionsPerSceneActor below. Once an actor has ticked N times
+	// in a scene, further reactor ticks targeting them in that scene
+	// drop. Pacing-based dedup (ZBBS-HOME-263) handles same-speaker
+	// back-to-back triggers on the schedule side; the legacy same-
+	// trigger-actor rule was removed in ZBBS-WORK-226.
 	//
-	// Empty triggerActorID (e.g. chronicler-attendance, which has no
-	// salient speaker) doesn't match any other empty against (a), so a
-	// chronicler-dispatched scene-opening tick doesn't lock the actor
-	// out of subsequent heard-speech reactions. (b) still applies.
-	//
-	// Key: sceneID + "|" + actorID. Value: a sceneTickEntry tracking the
-	// last tick's salient actor and the count of ticks so far. Stale
-	// entries (>30 min) are evicted by a periodic cleanup goroutine.
+	// Key: sceneID + "|" + actorID. Value: a sceneTickEntry tracking
+	// last-tick time and reaction count. Stale entries (>30 min) are
+	// evicted by a periodic cleanup goroutine.
 	SceneTickedActors   map[string]sceneTickEntry
 	SceneTickedActorsMu sync.Mutex
 
@@ -104,9 +96,8 @@ type App struct {
 
 // sceneTickEntry is the per-(scene, actor) dedup record.
 type sceneTickEntry struct {
-	lastAt           time.Time
-	lastTriggerActor string // actor_id of who caused the prior tick; "" for no-speaker triggers (chronicler dispatch)
-	count            int
+	lastAt time.Time
+	count  int
 }
 
 // sceneTickKey is the dedup key used by SceneTickedActors.
@@ -131,46 +122,38 @@ const maxReactionsPerSceneActor = 4
 // claimSceneTick reserves the next (sceneID, actorID) tick slot using
 // the policy described in the SceneTickedActors comment.
 //
-// triggerActorID is the actor_id of who caused this tick (the speaker
-// for heard-speech, the actor for saw-action, the arriver for
-// arrival, the PC's actor_id for pc-spoke, "" for chronicler dispatch
-// or any trigger without a salient speaker).
-//
 // Returns (allowed, reason). reason is empty on allow and a short
-// label on skip ("same trigger actor" or "reaction cap reached") so
-// the caller can log specifically what happened.
+// label on skip ("reaction cap reached") so the caller can log
+// specifically what happened.
 //
 // Single mutex acquisition gates check-and-update so concurrent
 // triggers from a fan-out don't both observe "ok" and both proceed.
-func (app *App) claimSceneTick(sceneID, actorID, triggerActorID string) (bool, string) {
+//
+// ZBBS-WORK-226 dropped the same-trigger-actor rule that previously
+// blocked a second tick from the same speaker in the same scene. With
+// cascade pacing (ZBBS-HOME-263) merging back-to-back triggers on the
+// schedule side, the dedup is no longer needed for cost protection —
+// the reaction-cap backstop below is what bounds a chatty scene.
+// Pre-WORK-226 the rule also blocked legitimate back-and-forth
+// (Ezekiel-shaped missed responses to John).
+func (app *App) claimSceneTick(sceneID, actorID string) (bool, string) {
 	key := sceneTickKey(sceneID, actorID)
 	now := time.Now()
 	app.SceneTickedActorsMu.Lock()
 	defer app.SceneTickedActorsMu.Unlock()
 	entry, exists := app.SceneTickedActors[key]
 	if exists && now.Sub(entry.lastAt) < sceneTickStaleness {
-		// (b) backstop first — once the cap is hit no further reactions
-		// fire regardless of who triggered them.
 		if entry.count >= maxReactionsPerSceneActor {
 			return false, fmt.Sprintf("reaction cap reached (%d)", entry.count)
 		}
-		// (a) same-trigger-actor dedup. Empty triggerActorID never matches
-		// (chronicler-style triggers don't lock the actor against later
-		// heard-speech reactions, and two empty triggers in a row are
-		// vanishingly rare in practice).
-		if triggerActorID != "" && triggerActorID == entry.lastTriggerActor {
-			return false, "same trigger actor"
-		}
 		entry.lastAt = now
-		entry.lastTriggerActor = triggerActorID
 		entry.count++
 		app.SceneTickedActors[key] = entry
 		return true, ""
 	}
 	app.SceneTickedActors[key] = sceneTickEntry{
-		lastAt:           now,
-		lastTriggerActor: triggerActorID,
-		count:            1,
+		lastAt: now,
+		count:  1,
 	}
 	return true, ""
 }
