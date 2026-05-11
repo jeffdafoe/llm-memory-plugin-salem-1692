@@ -407,18 +407,34 @@ func (app *App) setNPCInside(ctx context.Context, npcID string, inside bool, str
 	// Read the previous value so we know which structure to re-evaluate
 	// when the NPC is MOVING between buildings (rare today but cheap to
 	// handle). Also used for the no-op early exit.
+	//
+	// ZBBS-HOME-256: also read inside_room_id so the early-return can
+	// detect the corruption case where (inside, inside_structure_id)
+	// already matches but inside_room_id is unexpectedly NULL. Pre-fix
+	// the function returned early in that case, leaving the NPC stuck
+	// without a room and invisible to the cascade query's room-equality
+	// predicate. Falling through to the UPDATE below heals the row by
+	// re-issuing the room assignment.
 	var prev struct {
 		Inside              bool
 		InsideStructureID   *string
+		InsideRoomID        *int64
 	}
 	err := app.DB.QueryRow(ctx,
-		`SELECT inside, inside_structure_id FROM actor WHERE id = $1`, npcID,
-	).Scan(&prev.Inside, &prev.InsideStructureID)
+		`SELECT inside, inside_structure_id, inside_room_id FROM actor WHERE id = $1`, npcID,
+	).Scan(&prev.Inside, &prev.InsideStructureID, &prev.InsideRoomID)
 	if err != nil {
 		log.Printf("setNPCInside read(%s): %v", npcID, err)
 		return
 	}
-	if prev.Inside == inside && stringPtrEq(prev.InsideStructureID, newInsideID) {
+	// Early-return when the desired (inside, structure) state already
+	// holds AND the room column matches what we'd write. Entering a
+	// structure expects a non-NULL room; exiting expects NULL. A
+	// mismatch means data corruption — proceed to the UPDATE so the
+	// CASE/subselect heals it.
+	roomMatchesExpected := (newInsideID == nil && prev.InsideRoomID == nil) ||
+		(newInsideID != nil && prev.InsideRoomID != nil)
+	if prev.Inside == inside && stringPtrEq(prev.InsideStructureID, newInsideID) && roomMatchesExpected {
 		return
 	}
 	// inside_room_id (ZBBS-149) — keep paired with inside_structure_id.
