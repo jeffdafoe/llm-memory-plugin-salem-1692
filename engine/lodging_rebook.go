@@ -269,6 +269,17 @@ func (app *App) rebookLodger(ctx context.Context, c rebookCandidate, weeklyRate 
 	// instance landed the same renewal row first, the conflict
 	// returns zero rows and we treat it as a clean idempotent skip.
 	//
+	// ZBBS-HOME-261: PG distinguishes constraints from indexes.
+	// `pay_ledger_lodging_active_once` is a partial UNIQUE INDEX
+	// (created via CREATE UNIQUE INDEX ... WHERE), not an ALTER
+	// TABLE constraint, so `ON CONFLICT ON CONSTRAINT <name>` raises
+	// SQLSTATE 42704 ("constraint does not exist") at parse time
+	// and the INSERT never runs — auto-rebook silently fails every
+	// minute. The column-list inference form below targets the
+	// partial index by columns + matching predicate; the values in
+	// the SELECT are all literal so the predicate is trivially
+	// satisfied.
+	//
 	// Belt-and-braces "no overlapping coverage" check — if a
 	// manually-inserted long-qty row exists with an earlier
 	// ready_by but coverage extending past nextReadyBy, the partial
@@ -306,7 +317,11 @@ func (app *App) rebookLodger(ctx context.Context, c rebookCandidate, weeklyRate 
 		             ) AT TIME ZONE 'America/New_York'
 		         ) > $7
 		  )
-		 ON CONFLICT ON CONSTRAINT pay_ledger_lodging_active_once DO NOTHING
+		 ON CONFLICT (buyer_id, seller_id, ready_by)
+		    WHERE item_kind = 'nights_stay'
+		      AND state = 'accepted'
+		      AND fulfillment_status = 'delivered'
+		 DO NOTHING
 		 RETURNING id`,
 		c.BuyerID, c.SellerID, renewalQty, weeklyRate, unitAmount,
 		nextReadyByDate, c.CurrentLodgerUntil,
