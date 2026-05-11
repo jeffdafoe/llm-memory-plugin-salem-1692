@@ -112,7 +112,12 @@ func (app *App) dispatchSelfTicks(ctx context.Context) {
 		if reason == "" {
 			reason = "self_tick"
 		}
-		app.triggerImmediateTick(ctx, f.id, "self:"+reason, true, "", "")
+		// Self-tick is a cascade origin — mint a fresh scene per fire
+		// so the resulting chat rows carry scene_id (MEM-132's read path
+		// filters shared-VA history by scene_id; rows written NULL are
+		// orphaned and the next tick reads blank, producing the meta-
+		// prose "I need a perception update" loop).
+		app.triggerImmediateTick(ctx, f.id, "self:"+reason, true, app.newScene(ctx, ""), "")
 	}
 }
 
