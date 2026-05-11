@@ -641,21 +641,24 @@ func (app *App) tryDeterministicBuy(
 		return buyFailed, 0
 	}
 
-	// Decrement seller stock by qty.
+	// Decrement seller stock by qty. ZBBS-HOME-258: DELETE-then-UPDATE
+	// so buying out the seller's full stock doesn't trip
+	// actor_inventory's CHECK (quantity > 0). Seller availability is
+	// validated upstream of this commit, so qty <= existing quantity.
+	if _, err := tx.Exec(ctx,
+		`DELETE FROM actor_inventory
+		  WHERE actor_id = $1::uuid AND item_kind = $2 AND quantity <= $3`,
+		sellerID, itemKind, qty,
+	); err != nil {
+		log.Printf("buy_walker: cleanup zero seller inv: %v", err)
+		return buyFailed, 0
+	}
 	if _, err := tx.Exec(ctx,
 		`UPDATE actor_inventory SET quantity = quantity - $3
 		  WHERE actor_id = $1::uuid AND item_kind = $2`,
 		sellerID, itemKind, qty,
 	); err != nil {
 		log.Printf("buy_walker: decrement seller inv: %v", err)
-		return buyFailed, 0
-	}
-	if _, err := tx.Exec(ctx,
-		`DELETE FROM actor_inventory
-		  WHERE actor_id = $1::uuid AND item_kind = $2 AND quantity <= 0`,
-		sellerID, itemKind,
-	); err != nil {
-		log.Printf("buy_walker: cleanup zero seller inv: %v", err)
 		return buyFailed, 0
 	}
 
