@@ -684,12 +684,29 @@ func (app *App) executeNPCSleep(ctx context.Context, actorID string) (time.Time,
 }
 
 // wakeExpiredNPCSleepers clears sleeping_until on any NPC whose wake
-// condition has fired and broadcasts npc_sleep_ended for each. Two
+// condition has fired and broadcasts npc_sleep_ended for each. Three
 // wake conditions, ORed:
 //
 //   - sleeping_until <= NOW(): safety cap.
 //   - tiredness <= 0: rested (continuous recovery via
 //     tiredness_recovery_sweep brought them to 0).
+//   - ZBBS-HOME-262: current local minute-of-day is in the NPC's
+//     shift window. executeNPCSleep sets sleeping_until = NOW + 12h
+//     regardless of how close the actor's shift start is. An NPC
+//     who beds down ~an hour before dawn (the common case for
+//     keepers and morning-shift villagers) will otherwise sleep
+//     through almost their entire shift because tiredness recovery
+//     at 0.04/min only reaches 0 from a ~30 starting value over
+//     ~12.5h — strictly slower than the 12h cap, so the safety cap
+//     and tiredness floor both miss the shift-start boundary.
+//     Observed in prod 2026-05-11: Elizabeth Ellis (6:00-19:00
+//     shift) bed down at 5:19am EDT and Josiah Thorne (9:00-17:00
+//     shift) bed down at 8:49am EDT; both were still asleep at
+//     9:15am with tiredness already recovered to 2 and 8 respectively
+//     but stuck because neither cap had fired yet. Wake-at-shift
+//     fixes both forward (future sleeps cap naturally at shift
+//     start via this OR clause) and backward (already-asleep NPCs
+//     get woken at the next sweep tick).
 //
 // PC-side wakeExpiredSleepers also has a room_access checkout
 // branch; NPCs don't hold room_access today (they sleep at their
@@ -698,7 +715,27 @@ func (app *App) executeNPCSleep(ctx context.Context, actorID string) (time.Time,
 // Atomic per-row via UPDATE ... RETURNING. Broadcast reason "auto"
 // distinct from a future manual wake (e.g., knock-wake from the
 // entry-policy/knock task) which would carry "knock" or similar.
+//
+// Shift-window math: schedule_start_minute / schedule_end_minute
+// are minute-of-day integers in the world timezone (America/New_York).
+// The CASE handles wrap-midnight shifts (e.g., tavernkeeper
+// 16:00-03:00 has start=960, end=180; an NPC sleeping at 22:00 with
+// local_min=1320 should be considered on-shift because 1320 >= 960
+// OR 1320 < 180 → first disjunct true). The world timezone is fixed
+// at the application level (defaultTimezone in world_phase.go); we
+// derive local minute-of-day in Go and pass it as a single int64 param
+// to keep business logic out of SQL.
 func (app *App) wakeExpiredNPCSleepers(ctx context.Context) error {
+	cfg, err := app.loadWorldConfig(ctx)
+	if err != nil {
+		return fmt.Errorf("wake NPC: load world config: %w", err)
+	}
+	loc := cfg.Location
+	if loc == nil {
+		loc = time.UTC
+	}
+	nowLocal := time.Now().In(loc)
+	nowMinute := nowLocal.Hour()*60 + nowLocal.Minute()
 	rows, err := app.DB.Query(ctx,
 		`UPDATE actor a
 		    SET sleeping_until = NULL
@@ -712,8 +749,21 @@ func (app *App) wakeExpiredNPCSleepers(ctx context.Context) error {
 		           AND an.key = 'tiredness'
 		           AND an.value <= 0
 		      )
+		      OR (
+		        a.schedule_start_minute IS NOT NULL
+		        AND a.schedule_end_minute IS NOT NULL
+		        AND CASE
+		            WHEN a.schedule_start_minute <= a.schedule_end_minute THEN
+		                $1::int >= a.schedule_start_minute
+		                AND $1::int < a.schedule_end_minute
+		            ELSE
+		                $1::int >= a.schedule_start_minute
+		                OR  $1::int < a.schedule_end_minute
+		        END
+		      )
 		    )
 		 RETURNING id::text, inside_structure_id::text`,
+		nowMinute,
 	)
 	if err != nil {
 		return fmt.Errorf("wake expired NPC query: %w", err)
