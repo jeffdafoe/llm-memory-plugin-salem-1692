@@ -1,15 +1,54 @@
 package main
 
-// Lodger auto-rebook sweep — engine-side backstop for long-term
+// Lodger auto-rebook sweep — engine-side backstop for ongoing
 // boarding when the LLM-driven negotiation between lodger and keeper
 // doesn't fire in time.
 //
 // Cadence: once per server tick (60s). Walks every active lodger
-// whose latest nights_stay row is within 6h of expiry, charges the
-// configured weekly rate against their coins, and inserts a fresh
+// whose latest nights_stay row is within 6h of expiry AND who is
+// physically inside the keeper's structure at firing time, charges
+// one night's rate against their coins, and inserts a fresh
 // state='accepted'/fulfillment_status='delivered' row carrying the
-// next week. The actor stays a lodger continuously — no eviction-
+// next night. The actor stays a lodger continuously — no eviction-
 // then-re-check-in flicker.
+//
+// Night-by-night renewal (ZBBS-WORK-221, replacing WORK-204's
+// week-at-a-time qty=7 renewal). Two reasons:
+//
+//   - The commitment the engine takes on behalf of the lodger
+//     stays minimal: one night ≈ 4 coins. A lodger who walks away
+//     after the first night is out at most that.
+//   - Combined with the location gate (below), it makes "auto-
+//     rebook is part of being present at the inn, not part of
+//     having paid for a row once" the operating invariant.
+//
+// The setting key stays lodging_default_weekly_rate=28 because
+// that's the operator-facing concept (and what keeper perception
+// advertises); the per-night charge is derived as weeklyRate / 7.
+// Operators should keep the rate divisible by 7 so the per-night
+// charge doesn't accumulate rounding error.
+//
+// Location gate: the sweep only renews a lodger whose
+// actor.inside_structure_id matches the keeper's work_structure_id
+// at firing time. Consequences:
+//
+//   - PCs who log in, leave the inn, and never come back stop
+//     getting auto-renewed at the moment they walk out. Their row
+//     expires naturally. No further charges.
+//   - PCs who log off at the inn stay covered — the engine rolls
+//     their lease forward one night at a time while they're away.
+//     Coming back to a still-occupied room is the natural outcome.
+//   - NPCs who got displaced / evicted / never made it home that
+//     night also skip — they stop being a paying lodger when they
+//     stop being a lodger in fact.
+//   - To resume renewals after a gap, a lodger has to manually buy
+//     another night (LLM-driven pay flow or PC modal) and be inside
+//     the inn at the next firing window.
+//
+// The firing window of ~5–11am local (lodger_until − 6h through
+// lodger_until + 30min, with check-out hour = 11am) is convenient
+// for the location gate: anyone actually lodging is asleep in their
+// room at that hour; anyone who isn't has by definition opted out.
 //
 // Why a backstop rather than relying on the LLM end-to-end:
 //
@@ -20,9 +59,6 @@ package main
 //     through is a UX failure, not a narrative beat — the keeper
 //     visibly running their business has tenants who pay rent on
 //     time, even when the model drifts.
-//   - PCs are explicitly out-of-loop. A player who logs off mid-week
-//     comes back to a still-occupied room rather than a "your stay
-//     expired while you were offline" surprise.
 //   - The rebook fires uniformly: VA-driven NPCs, decorative-villager
 //     NPCs, and PCs all flow through the same code path. The renewal
 //     ledger row is identical regardless of who's lodging — keeps
@@ -31,17 +67,20 @@ package main
 //
 // Failure modes:
 //
-//   - Lodger purse empty at the 6h window. Skip with a log line.
+//   - Lodger purse empty at the firing window. Skip with a log line.
 //     Their existing row expires naturally; isLodger drops to false
 //     once lodger_until passes. They become homeless on the next
 //     sleep cycle.
+//   - Lodger not at the keeper's structure at firing time. Silently
+//     not a candidate (filtered out in findRebookCandidates) — this
+//     is the routine "not lodging tonight" case, not an exception.
 //   - Keeper missing (admin deleted the actor since check-in).
 //     Skip with a log line; the orphaned ledger row times out
 //     naturally.
 //   - Race with an LLM-driven deliver_order landing the same minute.
-//     Idempotency: the WHERE NOT EXISTS guard rejects the rebook
-//     when any future-window row already covers the same buyer/
-//     seller pair, so the LLM-driven path always wins on tie.
+//     Idempotency: the partial-unique-index ON CONFLICT plus a
+//     "no overlapping coverage" NOT EXISTS check make the rebook a
+//     clean no-op when the LLM-driven path landed first.
 
 import (
 	"context"
@@ -88,6 +127,16 @@ func (app *App) dispatchLodgerAutoRebook(ctx context.Context) {
 		// existing rows expire naturally and no auto-renewals fire.
 		return
 	}
+	// Per-night charge derived from the operator-set weekly rate.
+	// Operators should keep weeklyRate divisible by 7 so this floors
+	// cleanly; a weeklyRate of 29 would charge 4/night = 28/week
+	// (loses 1 to integer truncation).
+	nightlyRate := weeklyRate / 7
+	if nightlyRate <= 0 {
+		// weeklyRate < 7: can't bill less than 1 coin per night with
+		// integer coins. Treat as feature-off rather than billing 0.
+		return
+	}
 
 	candidates, err := app.findRebookCandidates(ctx)
 	if err != nil {
@@ -95,7 +144,7 @@ func (app *App) dispatchLodgerAutoRebook(ctx context.Context) {
 		return
 	}
 	for _, c := range candidates {
-		if err := app.rebookLodger(ctx, c, weeklyRate); err != nil {
+		if err := app.rebookLodger(ctx, c, nightlyRate); err != nil {
 			log.Printf("auto-rebook %s -> %s: %v", c.BuyerID, c.SellerID, err)
 		}
 	}
@@ -117,7 +166,8 @@ type rebookCandidate struct {
 
 // findRebookCandidates returns the buyer's current keeper pair
 // when their globally-latest active nights_stay row is in the
-// (now - graceWindow, now + leadTime] firing window.
+// (now - graceWindow, now + leadTime] firing window AND the buyer
+// is physically inside the keeper's structure right now.
 //
 // Partitioning is per-buyer (not per buyer/seller pair) so an actor
 // who switched inns mid-stay doesn't get auto-rebooked at the OLD
@@ -132,6 +182,12 @@ type rebookCandidate struct {
 // expires before a 7-day weekly that started Jan 1). Computing
 // lodger_until in the inner CTE and ranking on that picks the
 // truly-latest expiring row.
+//
+// The inside_structure_id = work_structure_id predicate is the
+// location gate documented at the top of this file. NULL on either
+// side fails the equality (treated as false) — an actor not inside
+// any structure isn't at the inn, and a keeper without a work
+// structure can't be lodging anyone. Both are correct exclusions.
 func (app *App) findRebookCandidates(ctx context.Context) ([]rebookCandidate, error) {
 	rows, err := app.DB.Query(ctx,
 		`WITH rows AS (
@@ -176,7 +232,8 @@ func (app *App) findRebookCandidates(ctx context.Context) ([]rebookCandidate, er
 		  JOIN asset ON asset.id = o.asset_id
 		 WHERE latest.rn = 1
 		   AND latest.lodger_until >  NOW() - $1::interval
-		   AND latest.lodger_until <= NOW() + $2::interval`,
+		   AND latest.lodger_until <= NOW() + $2::interval
+		   AND buyer.inside_structure_id = seller.work_structure_id`,
 		fmt.Sprintf("%d seconds", int(autoRebookGraceWindow.Seconds())),
 		fmt.Sprintf("%d seconds", int(autoRebookLeadTime.Seconds())),
 	)
@@ -203,7 +260,7 @@ func (app *App) findRebookCandidates(ctx context.Context) ([]rebookCandidate, er
 //
 //   1. Lock the buyer's actor row (FOR UPDATE) to serialize against a
 //      concurrent LLM-driven pay() landing in Tx-B style.
-//   2. Re-check the buyer's coin balance against weeklyRate. Skip
+//   2. Re-check the buyer's coin balance against nightlyRate. Skip
 //      when broke; the existing row expires naturally and isLodger
 //      drops on the next sweep.
 //   3. INSERT the renewal pay_ledger row guarded by a NOT EXISTS
@@ -212,13 +269,13 @@ func (app *App) findRebookCandidates(ctx context.Context) ([]rebookCandidate, er
 //      we treat it as a clean no-op.
 //   4. Debit the buyer's coins.
 //   5. Broadcast a room-scoped narration so the keeper / co-located
-//      lodgers see "X paid for another week" naturally.
+//      lodgers see "X paid for another night" naturally.
 //
 // The renewal row's ready_by anchors at the current row's lodger_until
-// date so the new week's lodger_until lands at (current + 7 days) at
+// date so the new night's lodger_until lands at (current + 1 day) at
 // lodging_check_out_hour. Continuous coverage — no gap minute where
 // isLodger flickers to false.
-func (app *App) rebookLodger(ctx context.Context, c rebookCandidate, weeklyRate int) error {
+func (app *App) rebookLodger(ctx context.Context, c rebookCandidate, nightlyRate int) error {
 	tx, err := app.DB.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
@@ -235,14 +292,14 @@ func (app *App) rebookLodger(ctx context.Context, c rebookCandidate, weeklyRate 
 		}
 		return fmt.Errorf("lock buyer: %w", err)
 	}
-	if coins < weeklyRate {
+	if coins < nightlyRate {
 		log.Printf("auto-rebook: %s (%s) has %d coins; need %d — skipping renewal at %s",
-			c.BuyerName, c.BuyerID, coins, weeklyRate, c.SellerName)
+			c.BuyerName, c.BuyerID, coins, nightlyRate, c.SellerName)
 		return nil
 	}
 
 	// New row anchors at the current lodger_until's local-date so
-	// the next week starts when the prior one ends. Computing in Go
+	// the next night starts when the prior one ends. Computing in Go
 	// keeps the INSERT body parameter-typed and avoids re-deriving
 	// the timezone-aware lodger_until expression for the date pull.
 	cfg, err := app.loadWorldConfig(ctx)
@@ -257,8 +314,8 @@ func (app *App) rebookLodger(ctx context.Context, c rebookCandidate, weeklyRate 
 	nextReadyByDate := time.Date(nextReadyBy.Year(), nextReadyBy.Month(), nextReadyBy.Day(),
 		0, 0, 0, 0, loc)
 
-	const renewalQty = 7
-	unitAmount := weeklyRate / renewalQty
+	const renewalQty = 1
+	unitAmount := nightlyRate / renewalQty
 
 	// Race-safe idempotency: ON CONFLICT against the partial unique
 	// index `pay_ledger_lodging_active_once` (created in the
@@ -286,8 +343,9 @@ func (app *App) rebookLodger(ctx context.Context, c rebookCandidate, weeklyRate 
 	// unique index alone wouldn't catch it (different ready_by).
 	// The WHERE NOT EXISTS rejects the rebook when any active
 	// row's computed lodger_until is past nextReadyBy. $7 carries
-	// the nextReadyBy timestamp (start of next week, world-local
-	// midnight) so the comparison runs as a single timestamptz.
+	// the nextReadyBy timestamp (start of the new night's coverage,
+	// world-local midnight) so the comparison runs as a single
+	// timestamptz.
 	var newLedgerID int64
 	err = tx.QueryRow(ctx,
 		`INSERT INTO pay_ledger (
@@ -323,7 +381,7 @@ func (app *App) rebookLodger(ctx context.Context, c rebookCandidate, weeklyRate 
 		      AND fulfillment_status = 'delivered'
 		 DO NOTHING
 		 RETURNING id`,
-		c.BuyerID, c.SellerID, renewalQty, weeklyRate, unitAmount,
+		c.BuyerID, c.SellerID, renewalQty, nightlyRate, unitAmount,
 		nextReadyByDate, c.CurrentLodgerUntil,
 	).Scan(&newLedgerID)
 	if err != nil {
@@ -342,13 +400,13 @@ func (app *App) rebookLodger(ctx context.Context, c rebookCandidate, weeklyRate 
 	// pre-check makes this safe.
 	if _, err := tx.Exec(ctx,
 		`UPDATE actor SET coins = coins - $1 WHERE id = $2::uuid`,
-		weeklyRate, c.BuyerID,
+		nightlyRate, c.BuyerID,
 	); err != nil {
 		return fmt.Errorf("debit buyer: %w", err)
 	}
 	if _, err := tx.Exec(ctx,
 		`UPDATE actor SET coins = coins + $1 WHERE id = $2::uuid`,
-		weeklyRate, c.SellerID,
+		nightlyRate, c.SellerID,
 	); err != nil {
 		return fmt.Errorf("credit seller: %w", err)
 	}
@@ -367,14 +425,14 @@ func (app *App) rebookLodger(ctx context.Context, c rebookCandidate, weeklyRate 
 			"actor_id":     c.BuyerID,
 			"actor_name":   c.BuyerName,
 			"kind":         "lodging-rebook",
-			"text":         fmt.Sprintf("%s settled with %s for another week's lodging.", c.BuyerName, c.SellerName),
+			"text":         fmt.Sprintf("%s settled with %s for another night's lodging.", c.BuyerName, c.SellerName),
 			"structure_id": c.StructureID,
 			"at":           time.Now().UTC().Format(time.RFC3339),
 		},
 	})
 
 	log.Printf("auto-rebook: %s renewed at %s (%s) for %d coins (ledger %d)",
-		c.BuyerName, c.StructureLabel, c.SellerName, weeklyRate, newLedgerID)
+		c.BuyerName, c.StructureLabel, c.SellerName, nightlyRate, newLedgerID)
 
 	return nil
 }
