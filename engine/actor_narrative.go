@@ -328,12 +328,18 @@ func (app *App) recordSpeechInteractions(ctx context.Context, speakerID, speaker
 	if speakerID == "" || strings.TrimSpace(text) == "" {
 		return
 	}
+	// ZBBS-HOME-257: $1::uuid on both comparisons. Pre-fix Postgres
+	// inferred $1 as uuid from the inner subselect's `id = $1`, then
+	// the outer `id::text <> $1` failed parse with "operator does not
+	// exist: text <> uuid" — every speak hit this and the relationship
+	// row never persisted. Switching the outer comparison to
+	// `id <> $1::uuid` is faster too (no per-row id::text cast).
 	rows, err := app.DB.Query(ctx, `
 		SELECT id::text, display_name, COALESCE(llm_memory_agent, '')
 		  FROM actor
 		 WHERE current_huddle_id IS NOT NULL
-		   AND current_huddle_id = (SELECT current_huddle_id FROM actor WHERE id = $1)
-		   AND id::text <> $1
+		   AND current_huddle_id = (SELECT current_huddle_id FROM actor WHERE id = $1::uuid)
+		   AND id <> $1::uuid
 	`, speakerID)
 	if err != nil {
 		log.Printf("recordSpeechInteractions query peers (speaker=%s): %v", speakerID, err)
