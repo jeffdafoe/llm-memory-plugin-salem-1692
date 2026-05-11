@@ -376,40 +376,27 @@ func (app *App) evaluateWorkerSchedule(ctx context.Context, w *workerRow, now ti
 		}
 	}
 
-	// Agent-NPC branch (post-ZBBS-WORK-202): chronicler dispatch is gone.
-	// Agent NPCs no longer get walked bodily on shift boundaries; they
-	// decide for themselves on their next tick whether to walk to/from
-	// work. The return-to-work and return-home perception nudges
-	// (shouldNudgeReturnToWork and shouldNudgeReturnHome in
-	// self_tick.go) surface the relevant "your shift continues / has
-	// ended" line when the NPC is misaligned with their shift.
+	// Agent-NPC branch. The two VA flavors are handled differently:
 	//
-	// ZBBS-HOME-252: we also schedule a self-tick at the boundary so
-	// the agent gets a turn within seconds of the transition rather
-	// than waiting for an idle-sweep or cascade. Without this, an
-	// agent alone at their workplace at end of shift can sit there
-	// for an hour before idle-sweep fires.
-	if w.LlmMemoryAgent.Valid {
+	//   * Persistent per-NPC VA (zbbs-john-ellis, zbbs-josiah-thorne,
+	//     etc.) — the VA has continuity and agency. The scheduler
+	//     stamps the boundary and steps aside; the agent's next tick
+	//     (cascade or idle-sweep) surfaces the return-to-work /
+	//     return-home perception nudge and the LLM decides how to
+	//     proceed. Post-ZBBS-WORK-202 design.
+	//
+	//   * Shared VA (salem-vendor, salem-visitor) — the VA is a
+	//     switchboard plugged in for interactions, not a persistent
+	//     persona. Mechanical schedule transitions (walk to work at
+	//     start, walk home at end) don't need an LLM decision; the
+	//     engine walks them like a non-agent NPC. Falls through to
+	//     the mechanical walk path below. (ZBBS-HOME-253.)
+	if w.LlmMemoryAgent.Valid && !isSharedVAAgent(w.LlmMemoryAgent.String) {
 		if _, err := app.DB.Exec(ctx,
 			`UPDATE actor SET last_shift_tick_at = $2 WHERE id = $1`,
 			w.ID, boundaryAt,
 		); err != nil {
 			log.Printf("scheduler: stamp (agent-shift-boundary) %s: %v", w.ID, err)
-		}
-		// Self-tick at boundary only for shared-VA NPCs
-		// (salem-vendor / salem-visitor). Persistent per-NPC VAs
-		// (zbbs-*-keeper, zbbs-*-ward, etc.) tick reliably via
-		// their own cascade events and don't need the boundary
-		// nudge; firing it on them would be redundant load.
-		// Shared VAs are stateless and only fire on perception
-		// events, so without this they can sit at their workplace
-		// for an hour past shift end before idle-sweep catches up.
-		if isSharedVAAgent(w.LlmMemoryAgent.String) {
-			reason := "shift_boundary_arrive"
-			if kind == workerLeave {
-				reason = "shift_boundary_leave"
-			}
-			app.scheduleSelfTick(ctx, w.ID, now, reason)
 		}
 		return
 	}
