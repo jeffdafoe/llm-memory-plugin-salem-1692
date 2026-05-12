@@ -411,6 +411,90 @@ func (app *App) rebookLodger(ctx context.Context, c rebookCandidate, nightlyRate
 		return fmt.Errorf("credit seller: %w", err)
 	}
 
+	// Extend (or grant) the buyer's bedroom for the new lodger_until.
+	// Pre-fix this step was missing entirely, with two consequences:
+	//
+	//   1. A starter-seeded ledger (`message='ZBBS-WORK-204 starter'`,
+	//      inserted directly as 'delivered' without going through
+	//      executeDeliverOrder) never had a room_access row. The rebook
+	//      INSERTed a fresh `delivered` ledger and inherited the no-room
+	//      state — the buyer read as a lodger via isLodger (which queries
+	//      pay_ledger directly) but had no physical bedroom binding.
+	//      Observed 2026-05-12 with Jefferey at the Inn.
+	//
+	//   2. Even when the original deliver_order DID create a room_access
+	//      row, expires_at stayed pinned to the FIRST night's
+	//      lodger_until. After expireRoomAccess flipped active=false at
+	//      that timestamp, the lodger had a still-valid pay_ledger
+	//      covering night N+1 but no active room_access — auto-bed and
+	//      pc_sleep gates fail.
+	//
+	// Two-step approach to keep the common case cheap and avoid an
+	// unwanted teleport. The common rebook is "lodger already has an
+	// active bedroom assignment, just push expires_at forward." We do
+	// that as a single UPDATE on room_access — no actor.inside_room_id
+	// write, no room pick.
+	//
+	// Only when the lodger has NO active private room_access do we
+	// fall through to assignBedroomForLodger, which picks an available
+	// bedroom and places the actor in it. That branch handles starter-
+	// inheritance and edge cases where the room_access got swept stale.
+	// assignBedroomForLodger's actor-placement UPDATE is correct for
+	// the "never had a room, getting one now" semantic.
+	checkOutHour, err := app.loadLodgingCheckOutHour(ctx)
+	if err != nil {
+		return fmt.Errorf("load checkout hour: %w", err)
+	}
+	newLodgerUntil := computeLodgerUntil(nextReadyByDate, renewalQty, checkOutHour, loc)
+	extended, err := tx.Exec(ctx,
+		`UPDATE room_access
+		    SET expires_at = $1,
+		        granted_via_ledger_id = $2,
+		        granted_at = NOW()
+		  WHERE actor_id = $3::uuid
+		    AND kind = 'private'
+		    AND active = true
+		    AND room_id IN (
+		        SELECT id FROM structure_room
+		         WHERE structure_id = $4::uuid AND kind = 'private'
+		    )`,
+		newLodgerUntil, newLedgerID, c.BuyerID, c.StructureID,
+	)
+	if err != nil {
+		return fmt.Errorf("extend room_access: %w", err)
+	}
+	if extended.RowsAffected() == 0 {
+		// No active private room_access — starter-seeded path or a
+		// row that got swept inactive between candidate-pick and now.
+		// Fresh assignment, which also teleports the actor into the
+		// assigned bedroom. The teleport is correct for the
+		// "didn't have a room, now you do" semantic; in the firing
+		// window (~5am local) most lodgers are asleep so this is a
+		// no-op in practice.
+		bedroomID, err := app.assignBedroomForLodger(ctx, tx, c.StructureID, c.BuyerID, newLedgerID, newLodgerUntil)
+		if err != nil {
+			if errors.Is(err, ErrNoPrivateRooms) {
+				// Operator data error — structure tagged for lodging
+				// but no bedrooms placed. Skip the rebook so the
+				// existing ledger expires naturally; the prior pay_
+				// ledger and (missing) room_access both lapse and
+				// isLodger drops to false. Admin needs to add rooms
+				// or remove the lodging tag before re-rebooking can
+				// fire on this pair. Logged at high visibility so the
+				// canary picks it up.
+				log.Printf("auto-rebook: structure %s (%s) has zero private bedrooms — skipping renewal for %s @ %s; ledger %d not committed. Operator: add bedrooms or remove the lodging tag.",
+					c.StructureLabel, c.StructureID, c.BuyerName, c.SellerName, newLedgerID)
+				return nil
+			}
+			return fmt.Errorf("assign bedroom: %w", err)
+		}
+		if bedroomID == 0 {
+			log.Printf("auto-rebook: no bedroom currently available at %s (%s) for %s — skipping renewal; ledger %d not committed",
+				c.StructureLabel, c.StructureID, c.BuyerName, newLedgerID)
+			return nil
+		}
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit tx: %w", err)
 	}
