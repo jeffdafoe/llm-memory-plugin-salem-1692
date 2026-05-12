@@ -544,6 +544,29 @@ func (app *App) executeDeliverOrder(ctx context.Context, sellerID string, ledger
 			app.addRoomScopeToData(ctx, data, sellerID)
 			app.Hub.Broadcast(WorldEvent{Type: "room_event", Data: data})
 		}
+
+		// ZBBS-HOME-275: engine-authored verbal handover for businessowner
+		// sellers. Fires AFTER the room_event physical action line so the
+		// natural sequence reads:
+		//   1. "John Ellis hands Jefferey the stew." (room_event, above)
+		//   2. John Ellis: "Here you are, Jefferey — enjoy." (npc_spoke, this block)
+		//   3. (LLM may still speak in iter N+1 — accepted v1 redundancy)
+		// Non-businessowner sellers get no engine speak; the room_event
+		// line stands alone exactly as it did pre-PR. Skipped for service
+		// items in the same gate as the room_event.
+		if sellerStructure.Valid && sellerStructure.String != "" {
+			var sellerHuddleID sql.NullString
+			_ = app.DB.QueryRow(ctx,
+				`SELECT current_huddle_id::text FROM actor WHERE id = $1`,
+				sellerID,
+			).Scan(&sellerHuddleID)
+			if sellerHuddleID.Valid && sellerHuddleID.String != "" {
+				app.maybeFireHandoverIfBusinessowner(ctx,
+					sellerID, buyerID, buyerDisplayName,
+					itemKind, qty,
+					sellerHuddleID.String, sellerStructure.String)
+			}
+		}
 	}
 
 	var deferred []WorldEvent
