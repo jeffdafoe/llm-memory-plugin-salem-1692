@@ -229,6 +229,14 @@ func (app *App) handlePCMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ZBBS-HOME-274: stamp last_pc_seen_at so the pc-presence-cleanup
+	// sweep correctly distinguishes a connected-but-quiet PC (mid-dwell,
+	// listening to NPC dialogue, mid-conversation) from a closed-tab
+	// ghost. The talk panel polls /pc/me every 10s for the lifetime of
+	// the open client, so a fresh stamp means the session is alive
+	// regardless of whether the player has fired any explicit action.
+	app.touchPCSeen(r.Context(), pcActorID)
+
 	resp.Exists = true
 	resp.ActorID = pcActorID
 	if charName.Valid {
