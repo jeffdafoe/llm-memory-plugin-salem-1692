@@ -135,6 +135,15 @@ func (app *App) runServerTickOnce(ctx context.Context) {
 	// delay rolls 0 (rare, intentional). No-op when no candidates
 	// (single SELECT, zero UPDATEs).
 	app.dispatchIdleSweep(ctx)
+	// PC presence cleanup (ZBBS-HOME-267) — clears inside_structure_id
+	// and current_huddle_id for PCs whose last_pc_input_at is past the
+	// pc_presence_clear_minutes threshold (default 5m). Without this,
+	// a PC who disconnects (browser close, network drop, crash) stays
+	// ghost-present in their last scene, and co-located NPCs keep
+	// burning LLM ticks greeting them on every reactor tick. No-op when
+	// no PC is past the threshold AND carrying a presence footprint
+	// (single SELECT, zero rows). See engine/pc_presence_sweep.go.
+	app.dispatchPCPresenceCleanup(ctx)
 	// Self-tick scheduler drain (ZBBS-110) — fires NPC harnesses whose
 	// scheduled fire time has arrived. Single SQL UPDATE...RETURNING
 	// claims the rows atomically so a slow trigger doesn't get re-fired
