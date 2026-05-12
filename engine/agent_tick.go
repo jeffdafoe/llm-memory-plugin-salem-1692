@@ -186,6 +186,40 @@ type agentNPCRow struct {
 // speak case so nested speech reactions stay in the same scene.
 func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time.Time, dawnMin, duskMin int, sceneID string) {
 	app.stampAgentTick(ctx, r)
+
+	// ZBBS-WORK-235: noop-tick skip for salem-vendor (stateless shared VA
+	// backing decorative-villager keepers — see actor_narrative.go
+	// sharedVAAgents). When the actor has no co-located audience AND no
+	// need that the LLM could meaningfully act on, the tick produces
+	// nothing of continuity value: salem-vendor has dream_mode='none' and
+	// learning_enabled=false, so no memory carries forward. The LLM call
+	// is pure cost.
+	//
+	// Narrow to salem-vendor specifically (not all shared VAs) — the
+	// salem-visitor archetype's wandering ticks have narrative value by
+	// design (transient strangers exploring the village). Same hardcoded-
+	// slug discriminator approach the code_review accepted for MEM-132.
+	//
+	// Cascade origins (PC speak, NPC arrival, heard-speech) naturally pass
+	// the gate via the huddle-has-others check — someone is in the scene.
+	// Idle backstop / chronicler attend on an empty shop with no needs is
+	// what we're suppressing.
+	//
+	// Skip post-tick self-tick scheduling too: if conditions hold now,
+	// they'd schedule a nudge that fires into another skip. Idle backstop
+	// will re-fire in 30-45 min and re-check.
+	if r.LLMMemoryAgent == "salem-vendor" {
+		thresholds := app.loadNeedThresholds(ctx)
+		needsFelt := needLabelTier(r.Hunger, thresholds.Get("hunger")) >= 1 ||
+			needLabelTier(r.Thirst, thresholds.Get("thirst")) >= 1 ||
+			needLabelTier(r.Tiredness, thresholds.Get("tiredness")) >= 1
+		if !needsFelt && !app.huddleHasOtherActors(ctx, r.ID) {
+			log.Printf("agent-tick %s (%s): skipped — stateless vendor, no audience, no needs",
+				r.DisplayName, r.TickReason)
+			return
+		}
+	}
+
 	// Defensive — every sim tick should have a sceneID. Cascade origins
 	// (PC-speak handler, arrival hook, heard-speech, chronicler dispatch)
 	// all pass newUUIDv7() or an inherited cascade ID. An empty value
