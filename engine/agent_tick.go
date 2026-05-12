@@ -3075,20 +3075,29 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		// scene quiets down. agent_action_log already has the right index
 		// (idx_agent_action_log_npc on actor_id, occurred_at DESC) so this
 		// is a sub-millisecond lookup.
+		// ZBBS-HOME-279: only `serve` / `pay` count as engagement. Original
+		// (43e0f62) included `speak`, which made a solitary NPC's own
+		// break-announcement speech bump last_engagement to NOW, then
+		// reject the same tick's take_break — driving the
+		// speak→take_break→rejected→move_to oscillation Elizabeth
+		// exhibited 2026-05-12 13:37-13:42. The commit's stated trigger
+		// (PC's "no thanks I'm good" reactive cascade after the keeper
+		// served them) is about the NPC's last TRANSACTION, not their
+		// speech; filtering down to serve/pay matches the intent.
 		var lastEngagement sql.NullTime
 		if err := app.DB.QueryRow(ctx, `
 			SELECT MAX(occurred_at)
 			  FROM agent_action_log
 			 WHERE actor_id = $1
 			   AND result = 'ok'
-			   AND action_type IN ('speak', 'serve', 'pay')
+			   AND action_type IN ('serve', 'pay')
 		`, r.ID).Scan(&lastEngagement); err != nil {
 			log.Printf("take_break engagement-cooldown query for %s: %v (allowing)", r.DisplayName, err)
 		} else if lastEngagement.Valid {
 			elapsed := time.Since(lastEngagement.Time)
 			if elapsed < takeBreakEngagementCooldown {
 				result = "rejected"
-				errStr = fmt.Sprintf("You engaged with the room (speak / serve / pay) %s ago. Wait at least %s of quiet since your last engagement before closing your post — pick a different action this turn.", elapsed.Round(time.Second), takeBreakEngagementCooldown)
+				errStr = fmt.Sprintf("You transacted with a customer (serve / pay) %s ago. Wait at least %s of quiet since your last transaction before closing your post — pick a different action this turn.", elapsed.Round(time.Second), takeBreakEngagementCooldown)
 				break
 			}
 		}
