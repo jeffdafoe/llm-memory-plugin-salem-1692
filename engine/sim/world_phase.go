@@ -4,9 +4,17 @@ import (
 	"context"
 	"fmt"
 	"log"
+	mathrand "math/rand/v2"
 	"strconv"
 	"strings"
 	"time"
+)
+
+// Asset-state tags used by the phase-transition flip resolver.
+const (
+	TagDayActive         = "day-active"
+	TagNightActive       = "night-active"
+	TagLamplighterTarget = "lamplighter-target"
 )
 
 // World day/night cycle — in-memory port of legacy engine/world_phase.go.
@@ -120,21 +128,49 @@ func NextBoundary(now time.Time, dawnH, dawnM, duskH, duskM int) (phase Phase, a
 
 // PhaseTransitionResult is what ApplyPhaseTransition returns through the
 // command reply. Mainly so admin force-phase responses can echo affected
-// counts once the flip path is wired in.
+// counts.
 type PhaseTransitionResult struct {
 	From            Phase
 	To              Phase
 	At              time.Time
-	ObjectsAffected int // 0 in v1 — village_object flips ported later
+	Gen             uint64 // WorldEventGen at the time of transition
+	ObjectsAffected int    // count of pending flips scheduled
 }
 
-// ApplyPhaseTransition returns a Command that moves the world to newPhase
-// and stamps LastTransitionAt. Safe to call when the current phase already
-// matches — the result indicates no-op via From == To.
+// PendingFlip is one per-object state change scheduled by a phase
+// transition. Carries the WorldEventGen captured at schedule time so a
+// rapid force-day → force-night sequence cleanly invalidates the older
+// transition's pending flips.
+type PendingFlip struct {
+	ObjectID      VillageObjectID
+	NewState      string
+	SpreadSeconds int    // 0 = fire immediately
+	Gen           uint64 // WorldEventGen at the time of scheduling
+}
+
+// ApplyPhaseTransition returns a Command that moves the world to newPhase,
+// stamps LastTransitionAt, bumps WorldEventGen, and schedules per-object
+// state flips for every village_object whose asset has a state tagged with
+// the target phase's tag. Idempotent on already-applied flips (the
+// SetVillageObjectState command skips when current_state already matches).
 //
-// In v1 this does NOT bulk-flip village_object state (those tables aren't
-// in sim yet) and does NOT broadcast (Hub not ported). When village_object
-// + Hub land, this handler grows the flip-and-broadcast tail.
+// Flips fire asynchronously via time.AfterFunc with a uniform random delay
+// in [0, asset.TransitionSpreadSeconds) seconds — the visual stagger lamps
+// got on the legacy engine. Each fire is generation-checked against
+// WorldEventGen so a subsequent transition supersedes its predecessor's
+// pending flips cleanly.
+//
+// LAMPLIGHTER carve-out (legacy hasLamplighter branch): when an NPC with
+// the lamplighter behavior is on-duty, lamplighter-target objects are
+// excluded from the bulk flip and a route is started instead. NOT WIRED
+// here — npc_behaviors is phase 4. For now excludeTag stays empty and
+// all tagged objects flip in the bulk pass.
+//
+// HUB/WS broadcast (world_phase_changed and object_state_changed) is also
+// stubbed pending the Hub layer port.
+//
+// OCCUPANCY REFRESH for night-only structures (legacy
+// refreshNightOnlyOccupancyStates) is stubbed pending the occupancy port.
 func ApplyPhaseTransition(newPhase Phase) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
@@ -147,26 +183,125 @@ func ApplyPhaseTransition(newPhase Phase) Command {
 			w.Phase = newPhase
 			w.Environment.LastTransitionAt = now
 
-			// TODO(rewrite): when village_object + asset_state land in sim,
-			// determine + schedule per-object flips here (carrying a Gen
-			// counter for supersede-detection on rapid force-day↔force-night).
-			//
-			// TODO(rewrite): when Hub/WS layer is ported, broadcast
-			// world_phase_changed here so clients start the canvas tween at
-			// the boundary.
-			//
-			// TODO(rewrite): when occupancy is ported, call
-			// refreshNightOnlyOccupancyStates equivalent.
+			// Determine which objects need to flip BEFORE bumping the
+			// generation, so the snapshot we compute is consistent. The
+			// excludeTag stays empty for now — lamplighter carve-out lands
+			// with the npc_behaviors port.
+			flips := DetermineTransitionFlips(w, newPhase, "")
 
-			log.Printf("sim/world_phase: transitioned %s -> %s at %s",
-				from, newPhase, now.Format(time.RFC3339))
+			// Bump generation AFTER the mutation. Anything racing against
+			// us via WorldEventGen.Load() will see one of two consistent
+			// snapshots — either the pre-transition gen with pre-transition
+			// phase, or the post-transition gen with post-transition phase.
+			gen := w.WorldEventGen.Add(1)
+			for i := range flips {
+				flips[i].Gen = gen
+			}
+
+			// Schedule the timers. Launches goroutines but returns
+			// immediately — the world goroutine is free to handle the
+			// next command.
+			//
+			// TODO(rewrite): when Hub/WS layer ports, broadcast
+			// world_phase_changed here so clients start the canvas tween
+			// at the boundary.
+			//
+			// TODO(rewrite): when occupancy ports, refresh night-only
+			// structure states here so taverns/inns light up at dusk even
+			// if no one is currently entering.
+			ScheduleFlips(w, flips)
+
+			log.Printf("sim/world_phase: transitioned %s -> %s at %s (gen %d, %d flips scheduled)",
+				from, newPhase, now.Format(time.RFC3339), gen, len(flips))
 
 			return PhaseTransitionResult{
-				From: from,
-				To:   newPhase,
-				At:   now,
+				From:            from,
+				To:              newPhase,
+				At:              now,
+				Gen:             gen,
+				ObjectsAffected: len(flips),
 			}, nil
 		},
+	}
+}
+
+// DetermineTransitionFlips computes the per-object state changes needed
+// to move the world to newPhase. Walks every VillageObject, looks up its
+// Asset, picks the AssetState tagged with the target tag (day-active for
+// PhaseDay, night-active for PhaseNight); emits a PendingFlip when the
+// object's current_state differs from the target state.
+//
+// When excludeTag is non-empty, any AssetState that ALSO carries
+// excludeTag is dropped from the bulk flip — these are objects expected
+// to be handled by another mechanism (e.g. lamplighter route).
+//
+// Gen is left zero by this function; callers stamp it after bumping
+// WorldEventGen.
+//
+// Deterministic ordering: VillageObjects map iteration is randomized in
+// Go, so the returned slice is unordered. Callers that need a stable
+// order (rare — flip dispatch doesn't care) must sort.
+func DetermineTransitionFlips(w *World, newPhase Phase, excludeTag string) []PendingFlip {
+	var tag string
+	switch newPhase {
+	case PhaseDay:
+		tag = TagDayActive
+	case PhaseNight:
+		tag = TagNightActive
+	default:
+		return nil
+	}
+
+	var flips []PendingFlip
+	for id, obj := range w.VillageObjects {
+		asset, ok := w.Assets[obj.AssetID]
+		if !ok {
+			// Object references a missing asset — skip rather than error,
+			// matches legacy behavior (orphan rows survived schema churn).
+			continue
+		}
+		target := asset.StateForTag(tag)
+		if target == nil {
+			continue // this asset isn't phase-sensitive
+		}
+		if excludeTag != "" && target.HasTag(excludeTag) {
+			continue // claimed by another dispatch mechanism
+		}
+		if obj.CurrentState == target.State {
+			continue // already there
+		}
+		flips = append(flips, PendingFlip{
+			ObjectID:      id,
+			NewState:      target.State,
+			SpreadSeconds: asset.TransitionSpreadSeconds,
+		})
+	}
+	return flips
+}
+
+// ScheduleFlips launches a goroutine timer for each flip, then returns
+// immediately. Flips with SpreadSeconds > 0 fire at a uniform-random
+// offset in [0, SpreadSeconds) seconds; SpreadSeconds == 0 fires on a
+// fresh goroutine with zero delay (still async, no head-of-line block on
+// the world goroutine).
+//
+// Each fired flip submits a SetVillageObjectState command with the
+// captured Gen. If the world has moved on (WorldEventGen advanced past
+// Gen), the command returns Applied=false / Reason="superseded" — the
+// stale flip evaporates without overwriting fresh state.
+//
+// Fire-and-forget: ScheduleFlips returns no error, the timer goroutines
+// own the rest of the lifecycle.
+func ScheduleFlips(w *World, flips []PendingFlip) {
+	for _, f := range flips {
+		flip := f
+		var delay time.Duration
+		if flip.SpreadSeconds > 0 {
+			delay = time.Duration(mathrand.IntN(flip.SpreadSeconds)) * time.Second
+		}
+		time.AfterFunc(delay, func() {
+			w.Submit(SetVillageObjectState(flip.ObjectID, flip.NewState, flip.Gen).Fn)
+		})
 	}
 }
 

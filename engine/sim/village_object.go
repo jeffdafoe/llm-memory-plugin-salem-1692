@@ -98,3 +98,44 @@ func (o *VillageObject) EffectiveLoiterOffset(catalogX, catalogY int) (int, int)
 	}
 	return x, y
 }
+
+// SetStateResult is the outcome of a SetVillageObjectState command.
+// Applied=true means the state actually changed. Applied=false means the
+// command was a no-op — either superseded by a newer generation, or the
+// object was already at the target state, or the object isn't in the
+// world. The Reason field carries which.
+type SetStateResult struct {
+	Applied bool
+	Reason  string // "applied" | "superseded" | "already_at_target" | "not_found"
+}
+
+// SetVillageObjectState returns a Command that sets a village object's
+// current_state to newState. If guardGen is non-zero, the command also
+// checks World.WorldEventGen and aborts (Applied=false, Reason="superseded")
+// when the current generation has advanced past guardGen — this is how
+// scheduled flips from a previous phase transition stay clean when a newer
+// transition has already fired.
+//
+// guardGen=0 disables the check (admin overrides, occupancy refresh that
+// just-happened, etc.).
+//
+// TODO: when the Hub/WS layer ports, broadcast object_state_changed on
+// successful apply so clients update their sprites.
+func SetVillageObjectState(id VillageObjectID, newState string, guardGen uint64) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			if guardGen != 0 && guardGen != w.WorldEventGen.Load() {
+				return SetStateResult{Applied: false, Reason: "superseded"}, nil
+			}
+			obj, ok := w.VillageObjects[id]
+			if !ok {
+				return SetStateResult{Applied: false, Reason: "not_found"}, nil
+			}
+			if obj.CurrentState == newState {
+				return SetStateResult{Applied: false, Reason: "already_at_target"}, nil
+			}
+			obj.CurrentState = newState
+			return SetStateResult{Applied: true, Reason: "applied"}, nil
+		},
+	}
+}
