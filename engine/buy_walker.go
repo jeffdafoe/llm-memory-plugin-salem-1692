@@ -853,6 +853,55 @@ func (app *App) cancelBuyTrip(ctx context.Context, buyerID, reason string) {
 	`, buyerID); err != nil {
 		log.Printf("buy_walker: restore inside %s: %v", buyerID, err)
 	}
+
+	// ZBBS-HOME-277: also pair current_huddle_id with the restored
+	// inside_structure_id. Observed 2026-05-12: John Ellis finished a
+	// buy_walker round-trip to Josiah's General Store and ended up
+	// with inside_structure_id=Tavern (correctly restored above) but
+	// current_huddle_id pointing at General Store's huddle. The cross-
+	// structure mismatch then made John's perception render Josiah as
+	// "(elsewhere)" in his Here: roster — and the LLM addressed him
+	// anyway ("I've taken note of your late delivery, Josiah..."),
+	// pulling cross-structure speech that confused both rooms' chat
+	// history.
+	//
+	// Two-step heal: leaveHuddle (clear stale pointer + conclude the
+	// old huddle if we were its last participant), then
+	// joinOrCreateHuddle for the work_structure so post-restore
+	// perception sees a consistent huddle anchor. Gated on the
+	// inside-restore having succeeded — if the buyer wasn't actually
+	// within the work_structure footprint, inside_structure_id will be
+	// NULL here and there's nothing to repair.
+	//
+	// Best-effort. Failures log and continue.
+	var insideAfter sql.NullString
+	if err := app.DB.QueryRow(ctx,
+		`SELECT inside_structure_id::text FROM actor WHERE id = $1::uuid`,
+		buyerID,
+	).Scan(&insideAfter); err != nil {
+		log.Printf("buy_walker: read inside after restore for %s: %v", buyerID, err)
+	} else if insideAfter.Valid && insideAfter.String != "" {
+		var currentHuddle sql.NullString
+		var huddleStructure sql.NullString
+		if err := app.DB.QueryRow(ctx,
+			`SELECT a.current_huddle_id::text, sh.structure_id::text
+			   FROM actor a
+			   LEFT JOIN scene_huddle sh ON sh.id = a.current_huddle_id
+			  WHERE a.id = $1::uuid`,
+			buyerID,
+		).Scan(&currentHuddle, &huddleStructure); err == nil {
+			needsRejoin := !currentHuddle.Valid ||
+				!huddleStructure.Valid ||
+				huddleStructure.String != insideAfter.String
+			if needsRejoin {
+				app.leaveHuddle(ctx, buyerID)
+				if _, err := app.joinOrCreateHuddle(ctx, buyerID, insideAfter.String); err != nil {
+					log.Printf("buy_walker: re-join huddle for %s at %s: %v", buyerID, insideAfter.String, err)
+				}
+			}
+		}
+	}
+
 	log.Printf("buy_walker: trip end actor=%s reason=%s", buyerID, reason)
 }
 
