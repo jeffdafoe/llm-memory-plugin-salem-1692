@@ -1,6 +1,7 @@
 package main
 
-// Recovery options perception (ZBBS-172, expanded ZBBS-HOME-206).
+// Recovery options perception (ZBBS-172, expanded ZBBS-HOME-206,
+// homeless branch ZBBS-HOME-264).
 //
 // When a tired NPC's tick fires, this block surfaces the actor's real
 // tiredness-decision surface as one unified list — rest spots
@@ -8,6 +9,19 @@ package main
 // tiredness-satisfying items like coca tea). All annotated with
 // recovery magnitude (numeric effect), cost, distance/direction, and
 // time-of-day appropriateness.
+//
+// Two firing modes:
+//
+//   - Tired (any actor): block fires when tiredness ≥ red threshold,
+//     surfacing every relevant option (free spots, consumables, home,
+//     inns, own-stock).
+//   - Homeless (any tiredness): block fires every tick for actors with
+//     no home_structure_id. Without this anchor, the LLM improvises
+//     `move_to "home"` and hits the hard-error path in
+//     resolveSelfReference, leaving it with no constructive next-tick
+//     state. For non-tired homeless actors the block trims to shelter-
+//     only content (free spots + inns) — consumable brews and own-stock
+//     stay tiredness-gated since they're maintenance, not shelter.
 //
 // The block exists to force a real tradeoff. A tired actor weighs:
 //
@@ -88,7 +102,16 @@ func (app *App) buildRecoveryOptionsSection(
 	onShift bool,
 	shiftHasWork bool,
 ) string {
-	if r.Tiredness < tiredT {
+	// Homeless actors (no home_structure_id) see the rest-options
+	// surface every tick so they always have an anchor when their LLM
+	// thinks about resting. Without this, a persistent NPC with a role
+	// but no residence — Ezekiel-shape — would improvise `move_to "home"`
+	// and hit the hard-error path in resolveSelfReference, leaving the
+	// LLM with no constructive next-tick state. The homed-actor path
+	// stays gated on tiredness ≥ red threshold (unchanged) since they
+	// already know where to sleep.
+	hasHome := r.HomeStructureID.Valid && r.HomeStructureID.String != ""
+	if r.Tiredness < tiredT && hasHome {
 		return ""
 	}
 	isCritical := r.Tiredness >= criticalT
@@ -98,41 +121,58 @@ func (app *App) buildRecoveryOptionsSection(
 	free := app.loadFreeRestSpots(ctx, r, 5)
 
 	// Nearby vendors with tiredness-satisfying consumables (coca tea,
-	// future stimulant brews). Always shown — these aren't shift-gated
-	// because buying and drinking is a cheap interaction that doesn't
-	// require abandoning the post.
-	consumables := app.loadConsumableRemedies(ctx, r, 3)
+	// future stimulant brews). Gated on the tiredness threshold — a
+	// not-yet-tired homeless actor doesn't need stimulant brew prompts
+	// every tick; the block is about shelter, not maintenance.
+	var consumables []restSpot
+	if r.Tiredness >= tiredT {
+		consumables = app.loadConsumableRemedies(ctx, r, 3)
+	}
 
 	// Owned home: only when off-shift OR critical. On-shift workers
 	// who go home would be abandoning their post; the gate prevents
 	// the LLM from picking the easy option in normal hours.
 	var home *restSpot
-	if r.HomeStructureID.Valid && (!onShift || isCritical) {
+	if hasHome && (!onShift || isCritical) {
 		home = app.loadHomeRestSpot(ctx, r, onShift, isCritical)
 	}
 
 	// Inns (tavern-tagged structures with a tavernkeeper who has sold
-	// nights_stay). Only when off-shift OR critical, same reasoning
-	// as home.
+	// nights_stay). Normally gated on off-shift OR critical, same as
+	// home. Lift the shift gate for homeless actors: the inn IS their
+	// answer for "where do I sleep tonight," and the LLM needs to see
+	// it regardless of shift state. The "would mean leaving your shift
+	// early" annotation on each inn bullet handles the shift-conflict
+	// framing if the actor is on duty.
 	var inns []restSpot
-	if !onShift || isCritical {
+	if !hasHome || !onShift || isCritical {
 		inns = app.loadInnRestSpots(ctx, r, 3, onShift, isCritical)
 	}
 
 	// Own-stock tiredness consumables (e.g. the actor is carrying tea
-	// from a prior buy). Surfaced as an inventory-style line outside
-	// the bulleted spatial list because the resolution doesn't involve
-	// walking anywhere — they can consume() in place.
-	ownStockLine := app.loadOwnTirednessStockLine(ctx, r.ID)
+	// from a prior buy). Same threshold gate as `consumables` above —
+	// not relevant for a fresh, homeless actor surveying shelter.
+	var ownStockLine string
+	if r.Tiredness >= tiredT {
+		ownStockLine = app.loadOwnTirednessStockLine(ctx, r.ID)
+	}
 
 	if len(free) == 0 && len(consumables) == 0 && home == nil && len(inns) == 0 && ownStockLine == "" {
 		return ""
 	}
 
+	// Layer the homeless preface above the tiredness preface so a
+	// homeless-and-tired actor reads both signals. A homeless actor
+	// who isn't tired yet still gets the preface, framing the block
+	// as "here's what you'd do when you eventually need rest" rather
+	// than implying urgency.
 	var lines []string
+	if !hasHome {
+		lines = append(lines, "You have no home of your own — when you need rest, these are the places to consider.")
+	}
 	if isCritical {
 		lines = append(lines, "You may stumble if you don't rest soon.")
-	} else {
+	} else if r.Tiredness >= tiredT {
 		lines = append(lines, "You feel weary enough to weigh a real rest.")
 	}
 	lines = append(lines, fmt.Sprintf("You have %d coins.", r.Coins))
