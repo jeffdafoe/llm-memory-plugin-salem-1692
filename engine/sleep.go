@@ -60,6 +60,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math/rand"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -257,8 +258,100 @@ func (app *App) wakeExpiredSleepers(ctx context.Context) error {
 				"at":       now,
 			},
 		})
+		// ZBBS-HOME-266: morning descent. If the waker is still a lodger
+		// (active, non-expired room_access for their current room), walk
+		// them down to the structure's common room — they'd realistically
+		// stroll down for the morning rather than sit on their bed. PCs
+		// whose room_access expired (checkout wake) skip this branch and
+		// fall through to evictExpiredOccupants, which has its own
+		// teleport-to-common-with-eviction narration.
+		app.maybeWalkWokenLodgerToCommon(ctx, id)
 	}
 	return nil
+}
+
+// maybeWalkWokenLodgerToCommon is the morning-descent half of the
+// lodger day cycle (ZBBS-HOME-266). When wakeExpiredSleepers fires the
+// auto-wake for a PC, this function checks whether the PC just woke in
+// a private bedroom they STILL have valid room_access for (i.e. mid-
+// stay rested or safety-cap wake, not checkout eviction). If so, it
+// moves them to the structure's common room and broadcasts a private
+// room_event narration so the chat panel renders "you head downstairs"
+// flavor.
+//
+// Gates (all must hold to fire the move):
+//   - PC is inside a structure, in a structure_room of kind='private'.
+//   - PC has an active room_access row for that exact room.
+//   - The room_access row's expires_at is in the future (rules out
+//     checkout-wake; eviction handles those).
+//
+// If the PC is in a non-private room (e.g. /pc/sleep at home in a
+// non-lodging structure that only has a common room), do nothing —
+// they're already where they should be.
+//
+// PCs who manually entered their bedroom without sleeping aren't
+// affected; this function only runs from the wakeExpiredSleepers loop,
+// which only iterates PCs that just woke from sleep.
+func (app *App) maybeWalkWokenLodgerToCommon(ctx context.Context, actorID string) {
+	var insideStructure sql.NullString
+	var roomKind sql.NullString
+	var accessActive bool
+	var accessFuture bool
+	err := app.DB.QueryRow(ctx, `
+		SELECT a.inside_structure_id::text,
+		       sr.kind,
+		       COALESCE(ra.active, false) AS access_active,
+		       COALESCE(ra.expires_at > NOW(), false) AS access_future
+		  FROM actor a
+		  LEFT JOIN structure_room sr ON sr.id = a.inside_room_id
+		  LEFT JOIN room_access ra ON ra.actor_id = a.id AND ra.room_id = a.inside_room_id
+		 WHERE a.id::text = $1
+	`, actorID).Scan(&insideStructure, &roomKind, &accessActive, &accessFuture)
+	if err != nil {
+		log.Printf("maybeWalkWokenLodgerToCommon(%s): query: %v", actorID, err)
+		return
+	}
+	if !insideStructure.Valid || roomKind.String != "private" || !accessActive || !accessFuture {
+		return
+	}
+	moveResult, err := app.executePCMoveRoom(ctx, actorID, "common")
+	if err != nil {
+		log.Printf("maybeWalkWokenLodgerToCommon(%s): move: %v", actorID, err)
+		return
+	}
+	if moveResult.Result != "ok" {
+		log.Printf("maybeWalkWokenLodgerToCommon(%s): move rejected: %s", actorID, moveResult.Err)
+		return
+	}
+	text := pickMorningDescentNarration()
+	app.Hub.Broadcast(WorldEvent{
+		Type: "room_event",
+		Data: map[string]interface{}{
+			"actor_id":     actorID,
+			"actor_name":   "",
+			"kind":         "morning_descent",
+			"text":         text,
+			"private":      true,
+			"structure_id": insideStructure.String,
+			"at":           time.Now().UTC().Format(time.RFC3339),
+		},
+	})
+}
+
+// morningDescentNarrations holds the engine-authored prose pool for
+// the morning descent room_event. Random selection per fire; keep the
+// pool small but varied so a player who sees several wakes doesn't
+// read the same line twice in a row. Period-appropriate Salem voice.
+var morningDescentNarrations = []string{
+	"You rise from your bed, gather yourself, and make your way down to the common room.",
+	"Morning finds you rested. You dress and head downstairs to see who is about.",
+	"You wake to the day's first light, draw breath, and descend to the common floor.",
+	"Stretching the stiffness from your bones, you head downstairs to greet the morning.",
+	"You stir, splash water on your face, and make your way down to the common room.",
+}
+
+func pickMorningDescentNarration() string {
+	return morningDescentNarrations[rand.Intn(len(morningDescentNarrations))]
 }
 
 // autoBedIdleLodgers finds connected PCs idle anywhere in a structure
@@ -332,6 +425,18 @@ func (app *App) autoBedIdleLodgers(ctx context.Context) error {
 	}
 
 	for _, id := range candidateIDs {
+		// Capture pre-move structure_id so the narration room_event tags
+		// the right structure. The move itself is within-structure
+		// (common→private inside the same lodging), so the structure_id
+		// is invariant; reading before the move avoids a re-query after.
+		var preMoveStructure sql.NullString
+		if err := app.DB.QueryRow(ctx,
+			`SELECT inside_structure_id::text FROM actor WHERE id::text = $1`,
+			id,
+		).Scan(&preMoveStructure); err != nil {
+			log.Printf("auto-bed pre-move structure lookup(%s): %v", id, err)
+			continue
+		}
 		moveResult, err := app.executePCMoveRoom(ctx, id, "private")
 		if err != nil {
 			log.Printf("auto-bed move(%s): %v", id, err)
@@ -346,9 +451,44 @@ func (app *App) autoBedIdleLodgers(ctx context.Context) error {
 		}
 		if _, sleepErr := app.executePCSleep(ctx, id); sleepErr != nil {
 			log.Printf("auto-bed executePCSleep(%s): %v", id, sleepErr)
+			continue
+		}
+		// ZBBS-HOME-266: auto-retire narration. Mirror of the morning
+		// descent room_event, fires the climb-the-stairs flavor when
+		// the engine moves an idle tired lodger from the common room
+		// to their private bedroom and beds them down.
+		if preMoveStructure.Valid {
+			text := pickAutoRetireNarration()
+			app.Hub.Broadcast(WorldEvent{
+				Type: "room_event",
+				Data: map[string]interface{}{
+					"actor_id":     id,
+					"actor_name":   "",
+					"kind":         "auto_retire",
+					"text":         text,
+					"private":      true,
+					"structure_id": preMoveStructure.String,
+					"at":           time.Now().UTC().Format(time.RFC3339),
+				},
+			})
 		}
 	}
 	return nil
+}
+
+// autoRetireNarrations holds the engine-authored prose pool for the
+// evening retire room_event. Mirror of morningDescentNarrations on the
+// other side of the lodger day cycle.
+var autoRetireNarrations = []string{
+	"Weariness settles in. You climb the stairs to your room and turn in for the night.",
+	"You feel the day catching up to you. You make your way upstairs to bed.",
+	"Your eyes grow heavy. You retreat to your room and lie down for the night.",
+	"The pull of sleep grows strong. You head up to your room and settle into bed.",
+	"You've had enough of the day. You climb the stairs and turn in for the night.",
+}
+
+func pickAutoRetireNarration() string {
+	return autoRetireNarrations[rand.Intn(len(autoRetireNarrations))]
 }
 
 // loadIdleSleepMinutes reads the pc_idle_sleep_minutes setting via
