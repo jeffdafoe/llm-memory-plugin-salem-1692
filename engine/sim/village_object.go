@@ -59,9 +59,15 @@ type VillageObject struct {
 
 	// AvailableQuantity is the runtime stock counter for objects with
 	// produce/refresh policies (gatherables, vendor inventory, etc.).
-	// Mutated by object_refresh + produce_tick subsystems (ported later).
+	// Mutated by object_refresh + produce_tick subsystems.
 	// Zero is the safe default for objects without a stock concept.
 	AvailableQuantity int
+
+	// Refreshes — per-attribute need-decrement-on-arrival policies. Empty
+	// for objects without refresh effects (decorative trees, plain benches).
+	// Multi-attribute objects (a shaded oak refreshing both tiredness from
+	// shade and hunger from acorns) carry one entry per attribute.
+	Refreshes []*ObjectRefresh
 }
 
 // HasTag returns true if this instance carries tag.
