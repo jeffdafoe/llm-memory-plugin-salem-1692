@@ -392,6 +392,20 @@ func (app *App) handleBuyWalkerArrival(ctx context.Context, actorID string, arri
 			app.cancelBuyTrip(ctx, actorID, "outbound arrived at unexpected structure")
 			return true
 		}
+		// ZBBS-HOME-276: fire engine-authored greet from the seller
+		// when they're a businessowner at-post-off-break. The
+		// buy_walker bypasses applyArrivalSideEffects' joinOrCreateHuddle
+		// path (the buyer never lands in a huddle on a goods-fetch
+		// trip), so the standard HOME-273 greet hook on
+		// joinOrCreateHuddle never sees this arrival. This call
+		// brings the same hospitality cadence to buy_walker entries.
+		//
+		// Attribution: speak event lands in the seller's
+		// current_huddle_id (the keeper IS at-post and has a huddle
+		// for their structure). Buyer doesn't have a huddle; that's
+		// fine — the WS broadcast is structure-scoped, so the bubble
+		// reaches anyone in the room.
+		app.fireBuyWalkerGreet(ctx, actorID, sellerID, sellerStructureID)
 		app.completeOutboundLeg(ctx, actorID, sellerID, itemKind, homeX, homeY)
 		return true
 	case "inbound":
@@ -399,6 +413,30 @@ func (app *App) handleBuyWalkerArrival(ctx context.Context, actorID string, arri
 		return true
 	}
 	return false
+}
+
+// fireBuyWalkerGreet is the buy_walker-side hook for ZBBS-HOME-276.
+// Pulls the seller's current_huddle_id (if any) and delegates to
+// maybeFireGreetOnEntry, which runs the standard gate stack (entering
+// actor isn't a businessowner, seller is at-post-not-on-break-not-asleep,
+// cooldown row absent/expired). No-op when the seller doesn't have a
+// huddle (rare — the seller is inside their own structure on every
+// successful buy_walker outbound arrival, so joinOrCreateHuddle has
+// already minted one at their entry).
+//
+// Kept tiny so the buy_walker call site reads cleanly; the predicate
+// gates live in businessowner.go where the rest of the businessowner
+// logic is.
+func (app *App) fireBuyWalkerGreet(ctx context.Context, buyerID, sellerID, sellerStructureID string) {
+	var sellerHuddleID sql.NullString
+	_ = app.DB.QueryRow(ctx,
+		`SELECT current_huddle_id::text FROM actor WHERE id = $1`,
+		sellerID,
+	).Scan(&sellerHuddleID)
+	if !sellerHuddleID.Valid || sellerHuddleID.String == "" {
+		return
+	}
+	app.maybeFireGreetOnEntry(ctx, buyerID, sellerStructureID, sellerHuddleID.String)
 }
 
 // completeOutboundLeg attempts the transaction at the seller's stall.
