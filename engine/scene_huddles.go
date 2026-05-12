@@ -178,6 +178,13 @@ func (app *App) leaveHuddle(ctx context.Context, npcID string) {
 		return // not in a huddle — nothing to leave
 	}
 
+	// ZBBS-HOME-274: engine-authored farewell from any co-located
+	// keeper BEFORE the huddle membership clears, so the speak event
+	// is attributed to the room being left rather than the cleared
+	// state. No-op when no keeper qualifies or when the leaver IS a
+	// businessowner.
+	app.maybeFireFarewellOnExit(ctx, npcID, huddleID.String)
+
 	if _, err := app.DB.Exec(ctx,
 		`UPDATE actor SET current_huddle_id = NULL WHERE id = $1`,
 		npcID,
@@ -299,6 +306,19 @@ func (app *App) leaveHuddleForPC(ctx context.Context, actorName string) {
 	}
 	if !huddleID.Valid {
 		return
+	}
+
+	// ZBBS-HOME-274: same farewell hook as the NPC leaveHuddle. Resolve
+	// login_username → actor.id for the dispatcher. Best-effort; a
+	// failed lookup just skips the farewell, not the leave itself.
+	var leavingActorID string
+	if err := app.DB.QueryRow(ctx,
+		`SELECT id::text FROM actor WHERE login_username = $1`,
+		actorName,
+	).Scan(&leavingActorID); err == nil {
+		app.maybeFireFarewellOnExit(ctx, leavingActorID, huddleID.String)
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		log.Printf("scene-huddle: resolve PC actor_id for farewell %s: %v", actorName, err)
 	}
 
 	if _, err := app.DB.Exec(ctx,
