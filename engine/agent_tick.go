@@ -2730,6 +2730,22 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 			tc.Input["mentions"] = mentions
 			payload, _ = json.Marshal(tc.Input)
 		}
+		// ZBBS-HOME-270: state-claim gate. Scans the speech text for
+		// transactional-state assertions ("you are booked", "your room
+		// is ready", "welcome lodger", "you've paid me") and requires a
+		// backing pay_ledger row in the speaker's current huddle. Closes
+		// the conversational-hallucination class the inventory gates
+		// (WORK-227 / HOME-265) don't catch — speech that asserts STATE
+		// rather than INVENTORY. DB error fails open (logs and lets the
+		// speech through) matching the implicit-mention gate's
+		// resilience to transient DB failures.
+		if reject, err := app.validateSpeechStateClaims(ctx, r.ID, text); err != nil {
+			log.Printf("state-claim gate failed for %s: %v (allowing speech)", r.DisplayName, err)
+		} else if reject != "" {
+			result = "rejected"
+			errStr = reject
+			break
+		}
 		// Price-quoting (ZBBS-124). When the model emits price alongside
 		// mentions, upsert one scene_quote row per mentioned item keyed
 		// to the speaker's current huddle. The pay handler reads these
@@ -2886,6 +2902,21 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 				errStr = fmt.Sprintf("Your verb_phrase implies an item transfer (\"%s\" + %s). Item transfers must use the real mechanic: call serve to gift, or let the recipient call pay for a purchase — the act tool is for non-transfer narration only (e.g. \"sat by the fire\", \"polished a tankard\").", transferVerb, strings.Join(implicit, ", "))
 				break
 			}
+		}
+		// ZBBS-HOME-270: state-claim gate on the verb_phrase. Catches
+		// the act-side equivalent of conversational hallucination —
+		// e.g. `act {verb_phrase: "showed Jefferey to his room"}` or
+		// `act {verb_phrase: "welcomed Hannah as a lodger"}` where no
+		// nights_stay ledger row backs the claim. Same DB lookups as
+		// the speak gate, same fail-open on DB errors. Runs after the
+		// item-transfer gate above so the verb_phrase has already
+		// passed inventory + transfer-verb validation by this point.
+		if reject, err := app.validateSpeechStateClaims(ctx, r.ID, verb); err != nil {
+			log.Printf("state-claim gate (act) failed for %s: %v (allowing act)", r.DisplayName, err)
+		} else if reject != "" {
+			result = "rejected"
+			errStr = reject
+			break
 		}
 		// act creates a fact in the room — visible to other co-located
 		// NPCs on their next perception via recentActivityAtStructure.
