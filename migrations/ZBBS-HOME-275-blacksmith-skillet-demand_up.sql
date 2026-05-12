@@ -71,13 +71,19 @@ UPDATE actor_attribute
  WHERE actor_id = (SELECT id FROM actor WHERE display_name = 'Ezekiel Crane')
    AND slug = 'blacksmith';
 
--- 5. John's tavernkeeper restock policy: bump stew max to 30 (matches
--- the new batch size — without this, headroom < output_qty and
--- produce_tick fires zero executions), bump ingredient buy targets to
--- 30 so he sources enough per batch, and add skillet to the buy list.
+-- 5. John's tavernkeeper restock policy: bump stew max to 60. Why 60
+-- and not 30: produce_tick fires atomic batches, with
+-- executionsByCap = headroom / output_qty. With max=30 and output_qty
+-- =30, headroom < 30 whenever stew > 0, and the batch never fires
+-- unless inventory drains to exactly 0 first. Setting max=60 means
+-- headroom >= 30 whenever current stew <= 30 — so a batch can fire
+-- any time John is at half-or-below stock, and steady-state inventory
+-- oscillates between ~0 and 60. Same idea applies to bumping ingredient
+-- buy targets to 30 (he needs 30 of each per batch) and adding skillet
+-- to the buy list.
 UPDATE actor_attribute
    SET params = '{"restock": [
-       {"max": 30, "item": "stew", "source": "produce"},
+       {"max": 60, "item": "stew", "source": "produce"},
        {"max": 30, "item": "water", "source": "produce"},
        {"max": 20, "item": "ale", "source": "produce"},
        {"max": 15, "item": "bread", "source": "produce"},
@@ -92,32 +98,46 @@ UPDATE actor_attribute
 
 -- 6. Seed skillet inventories: John starts with 1 (his current
 -- working skillet), Ezekiel starts with 3 (initial stock to sell).
+-- GREATEST upsert so re-running the migration tops up a zero-quantity
+-- row rather than leaving it at 0.
 INSERT INTO actor_inventory (actor_id, item_kind, quantity)
 VALUES
     ((SELECT id FROM actor WHERE display_name = 'John Ellis'), 'skillet', 1),
     ((SELECT id FROM actor WHERE display_name = 'Ezekiel Crane'), 'skillet', 3)
-ON CONFLICT (actor_id, item_kind) DO NOTHING;
+ON CONFLICT (actor_id, item_kind) DO UPDATE
+    SET quantity = GREATEST(actor_inventory.quantity, EXCLUDED.quantity);
 
 -- 7. Smooth the deploy: top up John's stew ingredients to the new
--- batch size so the first batch fires the next produce tick instead
--- of waiting hours for buy_walker + upstream producers to rebuild
--- stock. The steady-state demand is unchanged; this is one-time
--- transition state.
+-- batch size so the first batch fires as soon as the time gate
+-- permits (see step 8). Also seed stew=30 directly so John has
+-- something to serve during the ~6-hour wait until the time gate
+-- first allows a batch. Without the stew seed John would run out
+-- (current inventory 0) and serve nothing for ~6 hours, then 30
+-- arrive at once. With the seed, he serves down from 30, the time
+-- gate eventually allows a batch when stew has drained below the
+-- max-30 headroom threshold. The steady-state demand is unchanged;
+-- this is one-time transition state.
 INSERT INTO actor_inventory (actor_id, item_kind, quantity)
 VALUES
     ((SELECT id FROM actor WHERE display_name = 'John Ellis'), 'meat', 30),
     ((SELECT id FROM actor WHERE display_name = 'John Ellis'), 'milk', 30),
     ((SELECT id FROM actor WHERE display_name = 'John Ellis'), 'carrots', 30),
-    ((SELECT id FROM actor WHERE display_name = 'John Ellis'), 'water', 30)
+    ((SELECT id FROM actor WHERE display_name = 'John Ellis'), 'water', 30),
+    ((SELECT id FROM actor WHERE display_name = 'John Ellis'), 'stew', 30)
 ON CONFLICT (actor_id, item_kind) DO UPDATE
     SET quantity = GREATEST(actor_inventory.quantity, EXCLUDED.quantity);
 
--- 8. Reset John's stew produce anchor to NOW so the post-migration
--- math starts fresh (otherwise stale last_produced_at could imply a
--- large units_owed at the moment the new 720s/unit rate kicks in).
-UPDATE actor_produce_state
-   SET last_produced_at = NOW()
- WHERE actor_id = (SELECT id FROM actor WHERE display_name = 'John Ellis')
-   AND item_kind = 'stew';
+-- 8. Reset John's stew produce anchor to NOW so the new 720s/unit
+-- rate starts accumulating from migration time. With output_qty=30,
+-- the time gate requires 30 unitsOwed (30 * 720s = 6 hours of
+-- accrual) before one batch can fire — the seed in step 7 bridges
+-- this gap so John always has stew to serve. Upsert handles the
+-- case where John has no actor_produce_state row yet (the row is
+-- normally created lazily on first produce_tick observation).
+INSERT INTO actor_produce_state (actor_id, item_kind, last_produced_at)
+VALUES
+    ((SELECT id FROM actor WHERE display_name = 'John Ellis'), 'stew', NOW())
+ON CONFLICT (actor_id, item_kind) DO UPDATE
+    SET last_produced_at = EXCLUDED.last_produced_at;
 
 COMMIT;

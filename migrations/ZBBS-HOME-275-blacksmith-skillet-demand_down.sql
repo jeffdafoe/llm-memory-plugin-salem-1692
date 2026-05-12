@@ -1,7 +1,16 @@
 -- ZBBS-HOME-275 down — revert the blacksmith skillet demand loop.
--- Restores the stew recipe to its pre-migration shape and removes the
--- skillet item_kind. Leaves seeded inventories in place; harmless dead
--- rows after the FK CASCADE on item_kind drop.
+-- Restores the stew recipe and restock policies to pre-migration
+-- shape, then removes the skillet item_kind. Most actor_inventory /
+-- pay_ledger / scene_quote / errand-offer rows referencing skillet
+-- are deleted because their FKs are ON UPDATE CASCADE only (no ON
+-- DELETE), which would otherwise block the item_kind drop. The
+-- transition-smoothing inventory bumps from step 7 of the up (John's
+-- meat/milk/carrots/water/stew topped to 30) are NOT reverted —
+-- they're harmless levels that match common steady-state values, and
+-- accurately reverting would risk wiping legitimate post-deploy
+-- gains. Best-effort revert; manual cleanup may be needed if the
+-- migration has been in prod long enough to accumulate complex
+-- references.
 
 BEGIN;
 
@@ -52,6 +61,10 @@ DELETE FROM npc_errand_offer WHERE fetch_item_kind = 'skillet';
 DELETE FROM actor_restock_in_progress WHERE item_kind = 'skillet';
 DELETE FROM actor_delivery_in_progress WHERE item_kind = 'skillet';
 DELETE FROM actor_inventory WHERE item_kind = 'skillet';
+-- gatherable_node FK has no ON DELETE either. Skillet should never
+-- appear here (it's a tool, not a foraged kind), but a stray
+-- admin/test row would block the item_kind drop. Defensive.
+DELETE FROM gatherable_node WHERE item_kind = 'skillet';
 
 -- Now drop the item_kind row itself.
 DELETE FROM item_kind WHERE name = 'skillet';
