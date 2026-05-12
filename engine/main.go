@@ -92,6 +92,16 @@ type App struct {
 	// natural pauses. PC-initiated, self-tick, and direct-API ticks
 	// continue to fire inline. See engine/reactor_scheduler.go.
 	ReactorScheduler *reactorScheduler
+
+	// ItemKindCache lazily caches the canonical item_kind catalog and
+	// a compiled word-boundary regex matching any of those names. Used
+	// by extractImplicitItemMentions to scan free-form prose (speak
+	// text, act verb_phrase) for item names that the LLM emitted
+	// without declaring in the structured mentions[] field. See
+	// ZBBS-WORK-227 in engine/inventory.go. Invalidated only on engine
+	// restart — item_kind rows are admin-managed and rarely change.
+	ItemKindCache *itemKindCache
+	ItemKindMu    sync.RWMutex
 }
 
 // sceneTickEntry is the per-(scene, actor) dedup record.

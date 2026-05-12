@@ -22,10 +22,20 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
 )
+
+// itemKindCache holds the canonical item_kind names plus a compiled
+// word-boundary regex matching any of them. Built lazily on first
+// extractImplicitItemMentions call; lives on App.ItemKindCache and is
+// invalidated only on engine restart.
+type itemKindCache struct {
+	names []string
+	regex *regexp.Regexp
+}
 
 // normalizeMentions converts the raw mentions value from a speak tool
 // call into a deduped, lowercased, trimmed []string. Tolerates the
@@ -142,6 +152,123 @@ func (app *App) validateMentionsAgainstInventory(ctx context.Context, actorID st
 		bogus = append(bogus, name)
 	}
 	return bogus, rows.Err()
+}
+
+// knownItemKinds lazily loads the canonical item_kind names and a
+// pre-compiled word-boundary regex that matches any of them in free-
+// form prose. Built once per engine lifetime. Returns nil with no
+// error when the catalog is empty.
+func (app *App) knownItemKinds(ctx context.Context) (*itemKindCache, error) {
+	app.ItemKindMu.RLock()
+	if app.ItemKindCache != nil {
+		c := app.ItemKindCache
+		app.ItemKindMu.RUnlock()
+		return c, nil
+	}
+	app.ItemKindMu.RUnlock()
+
+	app.ItemKindMu.Lock()
+	defer app.ItemKindMu.Unlock()
+	// Double-check under the write lock.
+	if app.ItemKindCache != nil {
+		return app.ItemKindCache, nil
+	}
+
+	rows, err := app.DB.Query(ctx, `SELECT name FROM item_kind`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
+		}
+		names = append(names, n)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(names) == 0 {
+		return nil, nil
+	}
+
+	parts := make([]string, 0, len(names))
+	for _, n := range names {
+		parts = append(parts, regexp.QuoteMeta(n))
+	}
+	// (?i) case-insensitive, \b word boundaries so "ale" doesn't match
+	// "sale" or "scale". Alternation across all kinds compiles once.
+	re, err := regexp.Compile(`(?i)\b(` + strings.Join(parts, "|") + `)\b`)
+	if err != nil {
+		return nil, err
+	}
+	app.ItemKindCache = &itemKindCache{names: names, regex: re}
+	return app.ItemKindCache, nil
+}
+
+// extractImplicitItemMentions returns item_kind names that appear in
+// free-form prose. Used by the speak / act handlers to back-fill the
+// mention validation gate when an LLM emits item-naming text without
+// declaring the items in the structured mentions[] field.
+//
+// ZBBS-WORK-227: pre-WORK-227 the LLM could bypass speak validation
+// by emitting mentions: null while keeping item-naming text. Same
+// shape on act.verb_phrase. This function plus the merge into the
+// existing validateMentionsAgainstInventory path closes both bypasses.
+//
+// Returns deduped, lowercased names. Empty result means no item
+// names found in the text (or catalog unavailable — fail-open since
+// the structured-field validation remains in place).
+func (app *App) extractImplicitItemMentions(ctx context.Context, text string) []string {
+	if text == "" {
+		return nil
+	}
+	cache, err := app.knownItemKinds(ctx)
+	if err != nil {
+		log.Printf("extractImplicitItemMentions: load item_kind catalog: %v", err)
+		return nil
+	}
+	if cache == nil || cache.regex == nil {
+		return nil
+	}
+	matches := cache.regex.FindAllString(text, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(matches))
+	out := make([]string, 0, len(matches))
+	for _, m := range matches {
+		lower := strings.ToLower(m)
+		if _, ok := seen[lower]; !ok {
+			seen[lower] = struct{}{}
+			out = append(out, lower)
+		}
+	}
+	return out
+}
+
+// mergeMentions combines declared mentions[] with implicit names
+// extracted from prose, deduped on lowercased value. Declared order
+// is preserved; implicit names are appended in scan order.
+func mergeMentions(declared, implicit []string) []string {
+	if len(implicit) == 0 {
+		return declared
+	}
+	seen := make(map[string]struct{}, len(declared)+len(implicit))
+	for _, m := range declared {
+		seen[strings.ToLower(m)] = struct{}{}
+	}
+	out := append([]string(nil), declared...)
+	for _, m := range implicit {
+		key := strings.ToLower(m)
+		if _, ok := seen[key]; !ok {
+			seen[key] = struct{}{}
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 // inventoryLine builds the "ale x3, bread x1" comma-separated string

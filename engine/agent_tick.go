@@ -2695,22 +2695,38 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		// returned ALL his mentions as bogus and the speak was dropped).
 		// Sellers still get strict validation — naming goods they don't
 		// stock would offer the customer something they can't sell.
+		//
+		// ZBBS-WORK-227: pre-WORK-227 the LLM could bypass validation by
+		// emitting mentions: null (or omitting the field) while keeping
+		// item-naming text. extractImplicitItemMentions scans the speak
+		// text for item_kind names and merges them with declared mentions
+		// before validation, so prose-only item references also get
+		// gated. Declared mentions are still what the audit row + WS
+		// broadcast carry — implicit names are validation-only.
 		mentions := normalizeMentions(tc.Input["mentions"])
-		if len(mentions) > 0 {
+		implicit := app.extractImplicitItemMentions(ctx, text)
+		toValidate := mergeMentions(mentions, implicit)
+		if len(toValidate) > 0 {
 			if app.actorHasAnyInventory(ctx, r.ID) {
-				bogus, err := app.validateMentionsAgainstInventory(ctx, r.ID, mentions)
+				bogus, err := app.validateMentionsAgainstInventory(ctx, r.ID, toValidate)
 				if err != nil {
 					result, errStr = "failed", fmt.Sprintf("validate mentions: %v", err)
 					break
 				}
 				if len(bogus) > 0 {
 					result = "rejected"
-					errStr = fmt.Sprintf("You don't have these items in your inventory: %s. Only mention items in your 'Items you can sell' list — speak references the same catalog the customer's pay dropdown is built from, so naming goods you don't have would offer the customer something you can't sell.", strings.Join(bogus, ", "))
+					errStr = fmt.Sprintf("You don't have these items in your inventory: %s. Don't mention items you can't actually offer — speech that names goods you don't stock would mislead listeners. (This check scans your speech text in addition to the structured mentions field, so omitting mentions doesn't bypass it.)", strings.Join(bogus, ", "))
 					break
 				}
 			}
-			// Re-stash the normalized mentions so audit + WS broadcast
-			// carry the cleaned form, not the model's raw input.
+		}
+		if len(mentions) > 0 {
+			// Re-stash the normalized declared mentions so audit + WS
+			// broadcast carry the cleaned form, not the model's raw input.
+			// Implicit names are NOT folded in here — the structured field
+			// represents the LLM's deliberate "these are sellable" signal
+			// the PC dropdown reads from; pass-by mentions in prose
+			// shouldn't auto-populate that.
 			tc.Input["mentions"] = mentions
 			payload, _ = json.Marshal(tc.Input)
 		}
@@ -2821,6 +2837,30 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		if verb == "" {
 			result, errStr = "rejected", "empty verb_phrase"
 			break
+		}
+		// ZBBS-WORK-227: act verb_phrase is free-form past-tense narration
+		// ("served bread and water to Ezekiel", "leaned on the bar") and
+		// was previously unvalidated. Surfaced when Hannah Boggs fabricated
+		// a serving action with zero bread/water in her inventory — the
+		// chat log rendered the lie verbatim. Scan the verb_phrase for
+		// item_kind names; if any name an item the actor doesn't have AND
+		// the actor carries any inventory (same buyer-vs-seller distinction
+		// the speak gate uses, so empty-handed visitors can still narrate
+		// "leaned on the bread cart" without being rejected), reject the
+		// act. Sellers/keepers must use the real serve/give path for item
+		// transfers, not narrate them.
+		implicit := app.extractImplicitItemMentions(ctx, verb)
+		if len(implicit) > 0 && app.actorHasAnyInventory(ctx, r.ID) {
+			bogus, err := app.validateMentionsAgainstInventory(ctx, r.ID, implicit)
+			if err != nil {
+				result, errStr = "failed", fmt.Sprintf("validate verb_phrase: %v", err)
+				break
+			}
+			if len(bogus) > 0 {
+				result = "rejected"
+				errStr = fmt.Sprintf("Your narration mentions items you don't have: %s. Use the serve/give path for real item transfers; act is for non-item physical narration.", strings.Join(bogus, ", "))
+				break
+			}
 		}
 		// act creates a fact in the room — visible to other co-located
 		// NPCs on their next perception via recentActivityAtStructure.
