@@ -349,12 +349,31 @@ func (app *App) executeDeliverOrder(ctx context.Context, sellerID string, ledger
 			expiresAt := computeLodgerUntil(readyBy, qty, checkOutHour, cfg.Location)
 			bedroomID, err := app.assignBedroomForLodger(ctx, tx, sellerWorkStructure.String, buyerID, ledgerID, expiresAt)
 			if err != nil {
+				// Distinguish operator-data error (structure tagged for
+				// lodging but has zero private bedrooms placed) from a
+				// real engine failure. The former is a recoverable
+				// rejection — the keeper LLM can relay it as a
+				// believable "we're not set up for boarding" line —
+				// but the engine also logs at high visibility so the
+				// admin notices the data gap. At Salem's current scale
+				// the no-rooms-occupied case is essentially impossible,
+				// so the prior "All rooms taken" message had been
+				// misdiagnosing this for every real production hit.
+				if errors.Is(err, ErrNoPrivateRooms) {
+					log.Printf("assign-bedroom: structure %s tagged for lodging has zero private bedrooms — ledger %d (seller=%s buyer=%s) rejected on this data gap",
+						sellerWorkStructure.String, ledgerID, sellerID, buyerID)
+					return deliverOrderResult{
+						Result:   "rejected",
+						Err:      "We've no bedrooms set up for boarding here. The keeper should add rooms before taking lodgers.",
+						LedgerID: ledgerID,
+					}
+				}
 				return deliverOrderResult{Result: "failed", Err: fmt.Sprintf("assign bedroom: %v", err), LedgerID: ledgerID}
 			}
 			if bedroomID == 0 {
 				return deliverOrderResult{
 					Result:   "rejected",
-					Err:      "All rooms taken — no bedroom available right now.",
+					Err:      "All bedrooms are currently occupied — try again shortly.",
 					LedgerID: ledgerID,
 				}
 			}

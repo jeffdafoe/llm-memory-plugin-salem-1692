@@ -167,8 +167,27 @@ func (app *App) canEnterRoom(ctx context.Context, actorID string, roomID int64) 
 // executeDeliverOrder). Updates actor.inside_room_id so the lodger
 // is immediately upstairs after the keeper's deliver_order.
 //
+// ErrNoPrivateRooms signals that the structure has zero `private` rows
+// in structure_room — distinct from "all private rooms currently
+// occupied". Returned by assignBedroomForLodger so callers can surface
+// the operator-data case differently from the runtime-contention case.
+var ErrNoPrivateRooms = errors.New("structure has no private bedrooms")
+
 // Returns 0 when no bedroom is available — caller should treat this
-// as a delivery rejection ("All rooms taken — sorry, traveler.").
+// as a delivery rejection ("All bedrooms currently occupied — try again
+// shortly.").
+//
+// Returns (0, ErrNoPrivateRooms) when the structure has zero `private`
+// rows in structure_room at all — distinct from "all bedrooms occupied".
+// This is an operator data error (structure tagged for lodging but
+// never had bedrooms placed in the editor) and the caller should
+// surface it as a distinct, admin-visible message instead of conflating
+// with the occupancy-contention case. Observed in prod 2026-05-11 when
+// the Inn carried the lodging tag with a single common room and zero
+// private bedrooms; the rebook + starter paths landed paid lodgers
+// without rooms, and the "All rooms taken" message obscured the data
+// gap because at Salem's current scale (~18 NPCs, ~2 PCs) all-rooms-
+// occupied is essentially impossible.
 func (app *App) assignBedroomForLodger(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -178,6 +197,25 @@ func (app *App) assignBedroomForLodger(
 ) (int64, error) {
 	if structureID == "" || buyerID == "" {
 		return 0, fmt.Errorf("assignBedroomForLodger: missing structureID or buyerID")
+	}
+
+	// Pre-check: distinguish "no private rooms exist" from "no private
+	// rooms available". The downstream pick query returns pgx.ErrNoRows
+	// in both cases; this EXISTS lets the caller separate the data
+	// error from the runtime-contention case. Cheap point lookup against
+	// the per-structure room set, capped at one row.
+	var anyExist bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS (
+		   SELECT 1 FROM structure_room
+		    WHERE structure_id = $1::uuid AND kind = 'private'
+		 )`,
+		structureID,
+	).Scan(&anyExist); err != nil {
+		return 0, fmt.Errorf("assignBedroomForLodger room-count check: %w", err)
+	}
+	if !anyExist {
+		return 0, ErrNoPrivateRooms
 	}
 
 	// Two-step pick (UNION ALL with LIMIT 1):
