@@ -94,11 +94,16 @@ type CascadeOrigin struct{}
 // Per design: zero locks, zero races by construction.
 type World struct {
 	// Primary state — source of truth.
-	Actors     map[ActorID]*Actor
-	Structures map[StructureID]*Structure
-	Huddles    map[HuddleID]*Huddle
-	Scenes     map[SceneID]*Scene
-	Orders     map[OrderID]*Order
+	Actors         map[ActorID]*Actor
+	Structures     map[StructureID]*Structure
+	Huddles        map[HuddleID]*Huddle
+	Scenes         map[SceneID]*Scene
+	Orders         map[OrderID]*Order
+	VillageObjects map[VillageObjectID]*VillageObject
+
+	// Asset catalog — reference state, loaded at startup. Looked up by
+	// VillageObject.AssetID for state resolution, footprint, anchor, etc.
+	Assets map[AssetID]*Asset
 
 	// Secondary indices — rebuildable from primary state at LoadWorld time
 	// and kept consistent by command handlers thereafter.
@@ -135,6 +140,8 @@ func NewWorld(repo Repository) *World {
 		Huddles:           make(map[HuddleID]*Huddle),
 		Scenes:            make(map[SceneID]*Scene),
 		Orders:            make(map[OrderID]*Order),
+		VillageObjects:    make(map[VillageObjectID]*VillageObject),
+		Assets:            make(map[AssetID]*Asset),
 		actorsByStructure: make(map[StructureID]map[ActorID]struct{}),
 		actorsByHuddle:    make(map[HuddleID]map[ActorID]struct{}),
 		Speech:            &SpeechHelper{},
@@ -176,6 +183,18 @@ func LoadWorld(ctx context.Context, repo Repository) (*World, error) {
 	w.Environment = env
 	w.Phase = phase
 	w.Settings = settings
+
+	assets, err := repo.Assets.LoadAll(ctx)
+	if err != nil {
+		return nil, err
+	}
+	w.Assets = assets
+
+	villageObjects, err := repo.VillageObjects.LoadAll(ctx)
+	if err != nil {
+		return nil, err
+	}
+	w.VillageObjects = villageObjects
 
 	w.rebuildIndices()
 	w.republish()
@@ -263,15 +282,16 @@ func (w *World) rebuildIndices() {
 // allocation pressure.
 func (w *World) republish() {
 	snap := &Snapshot{
-		AtTick:      w.TickCounter,
-		PublishedAt: time.Now(),
-		Actors:      make(map[ActorID]*ActorSnapshot, len(w.Actors)),
-		Huddles:     make(map[HuddleID]*Huddle, len(w.Huddles)),
-		Scenes:      make(map[SceneID]*Scene, len(w.Scenes)),
-		Structures:  make(map[StructureID]*Structure, len(w.Structures)),
-		Orders:      make(map[OrderID]*Order, len(w.Orders)),
-		Environment: w.Environment,
-		Phase:       w.Phase,
+		AtTick:         w.TickCounter,
+		PublishedAt:    time.Now(),
+		Actors:         make(map[ActorID]*ActorSnapshot, len(w.Actors)),
+		Huddles:        make(map[HuddleID]*Huddle, len(w.Huddles)),
+		Scenes:         make(map[SceneID]*Scene, len(w.Scenes)),
+		Structures:     make(map[StructureID]*Structure, len(w.Structures)),
+		Orders:         make(map[OrderID]*Order, len(w.Orders)),
+		VillageObjects: make(map[VillageObjectID]*VillageObject, len(w.VillageObjects)),
+		Environment:    w.Environment,
+		Phase:          w.Phase,
 	}
 	for id, a := range w.Actors {
 		snap.Actors[id] = snapshotActor(a, w.TickCounter)
@@ -287,6 +307,9 @@ func (w *World) republish() {
 	}
 	for id, o := range w.Orders {
 		snap.Orders[id] = o
+	}
+	for id, v := range w.VillageObjects {
+		snap.VillageObjects[id] = v
 	}
 	w.published.Store(snap)
 }

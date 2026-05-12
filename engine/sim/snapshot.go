@@ -14,11 +14,12 @@ type Snapshot struct {
 	AtTick      uint64
 	PublishedAt time.Time
 
-	Actors     map[ActorID]*ActorSnapshot
-	Huddles    map[HuddleID]*Huddle
-	Scenes     map[SceneID]*Scene
-	Structures map[StructureID]*Structure
-	Orders     map[OrderID]*Order
+	Actors         map[ActorID]*ActorSnapshot
+	Huddles        map[HuddleID]*Huddle
+	Scenes         map[SceneID]*Scene
+	Structures     map[StructureID]*Structure
+	Orders         map[OrderID]*Order
+	VillageObjects map[VillageObjectID]*VillageObject
 
 	Environment WorldEnvironment
 	Phase       Phase

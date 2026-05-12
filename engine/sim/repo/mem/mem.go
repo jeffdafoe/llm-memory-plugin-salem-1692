@@ -21,20 +21,26 @@ func NewRepository() (sim.Repository, *Handles) {
 	actors := NewActorsRepo()
 	huddles := NewHuddlesRepo()
 	env := NewEnvironmentRepo()
+	assets := NewAssetsRepo()
+	villageObjects := NewVillageObjectsRepo()
 	h := &Handles{
-		Actors:      actors,
-		Huddles:     huddles,
-		Environment: env,
+		Actors:         actors,
+		Huddles:        huddles,
+		Environment:    env,
+		Assets:         assets,
+		VillageObjects: villageObjects,
 	}
 	return sim.Repository{
-		Actors:      actors,
-		Huddles:     huddles,
-		Environment: env,
-		Structures:  notImplStructures{},
-		Scenes:      notImplScenes{},
-		Orders:      notImplOrders{},
-		PayLedger:   noopPayLedger{},
-		ActionLog:   noopActionLog{},
+		Actors:         actors,
+		Huddles:        huddles,
+		Environment:    env,
+		Assets:         assets,
+		VillageObjects: villageObjects,
+		Structures:     notImplStructures{},
+		Scenes:         notImplScenes{},
+		Orders:         notImplOrders{},
+		PayLedger:      noopPayLedger{},
+		ActionLog:      noopActionLog{},
 		Begin: func(_ context.Context) (sim.Tx, error) {
 			return noopTx{}, nil
 		},
@@ -46,9 +52,11 @@ func NewRepository() (sim.Repository, *Handles) {
 // the returned sim.Repository delegates to — mutations via either path
 // are visible to the other.
 type Handles struct {
-	Actors      *ActorsRepo
-	Huddles     *HuddlesRepo
-	Environment *EnvironmentRepo
+	Actors         *ActorsRepo
+	Huddles        *HuddlesRepo
+	Environment    *EnvironmentRepo
+	Assets         *AssetsRepo
+	VillageObjects *VillageObjectsRepo
 }
 
 // errNotImpl is returned by sub-repos that haven't been ported into the
