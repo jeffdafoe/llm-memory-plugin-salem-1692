@@ -133,9 +133,13 @@ func (app *App) dispatchSelfTicks(ctx context.Context) {
 //     same resolution npc_scheduler.evaluateWorkerSchedule uses).
 //   - NPC is neither inside their work structure nor loitering at it
 //     (loiteringAtID is the result of resolveLoiteringStructure).
-//   - No need is at red tier or above (≥2). A pressing need legitimately
-//     overrides the duty signal — Ezekiel doesn't return to the forge
-//     while starving.
+//   - No need is at mild tier or above (≥1). Any felt discomfort
+//     legitimately overrides the duty signal so the NPC has time to
+//     actually act on it — e.g. dwell at a Shade Tree long enough for
+//     the 10-min tiredness credit to fire. Pre-WORK-234 this gated on
+//     red+ only, which let the nudge yank an "amber"-tired NPC back to
+//     work within ~30-60s of arriving at a rest spot, defeating the
+//     dwell-recovery mechanic (ZBBS-172) for the whole amber tier.
 func shouldNudgeReturnToWork(
 	r *agentNPCRow,
 	insideID sql.NullString,
@@ -168,13 +172,13 @@ func shouldNudgeReturnToWork(
 	if loiteringAtID == workID {
 		return false
 	}
-	if needLabelTier(r.Hunger, hungerT) >= 2 {
+	if needLabelTier(r.Hunger, hungerT) >= 1 {
 		return false
 	}
-	if needLabelTier(r.Thirst, thirstT) >= 2 {
+	if needLabelTier(r.Thirst, thirstT) >= 1 {
 		return false
 	}
-	if needLabelTier(r.Tiredness, tiredT) >= 2 {
+	if needLabelTier(r.Tiredness, tiredT) >= 1 {
 		return false
 	}
 	return true
