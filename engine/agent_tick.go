@@ -955,16 +955,17 @@ func (app *App) triggerImmediateTick(ctx context.Context, npcID, reason string, 
 // vocative position.
 func (app *App) findVocativeStaleAddressees(ctx context.Context, speakerID, text string) ([]string, error) {
 	var speakerHuddle sql.NullString
+	var speakerInside sql.NullString
 	if err := app.DB.QueryRow(ctx,
-		`SELECT current_huddle_id::text FROM actor WHERE id::text = $1`,
-		speakerID).Scan(&speakerHuddle); err != nil {
+		`SELECT current_huddle_id::text, inside_structure_id::text FROM actor WHERE id::text = $1`,
+		speakerID).Scan(&speakerHuddle, &speakerInside); err != nil {
 		return nil, err
 	}
 	if !speakerHuddle.Valid || speakerHuddle.String == "" {
 		return nil, nil
 	}
 	rows, err := app.DB.Query(ctx,
-		`SELECT display_name, current_huddle_id::text
+		`SELECT display_name, current_huddle_id::text, inside_structure_id::text
 		   FROM actor
 		  WHERE id::text != $1
 		    AND (login_username IS NOT NULL OR llm_memory_agent IS NOT NULL)`,
@@ -977,7 +978,8 @@ func (app *App) findVocativeStaleAddressees(ctx context.Context, speakerID, text
 	for rows.Next() {
 		var name string
 		var huddle sql.NullString
-		if err := rows.Scan(&name, &huddle); err != nil {
+		var peerInside sql.NullString
+		if err := rows.Scan(&name, &huddle, &peerInside); err != nil {
 			continue
 		}
 		first := strings.SplitN(strings.TrimSpace(name), " ", 2)[0]
@@ -994,10 +996,26 @@ func (app *App) findVocativeStaleAddressees(ctx context.Context, speakerID, text
 		if !re.MatchString(text) {
 			continue
 		}
-		if huddle.Valid && huddle.String == speakerHuddle.String {
+		// Same-huddle check. Out-of-huddle peers are always absent (the
+		// original gate).
+		sameHuddle := huddle.Valid && huddle.String == speakerHuddle.String
+		if !sameHuddle {
+			absent = append(absent, name)
 			continue
 		}
-		absent = append(absent, name)
+		// ZBBS-HOME-280: same-huddle peers can still be in a different
+		// structure (the "(elsewhere)" subspace case from HOME-271).
+		// The cross-structure huddle membership shows up in the Here:
+		// roster as "Name (elsewhere)"; vocatively addressing them
+		// pulls speech across structures and reads as a hallucination.
+		// Mirrors subspaceAnnotation's "(elsewhere)" branch — when
+		// both speaker and peer have non-empty inside_structure_id but
+		// they differ, reject the vocative address.
+		if speakerInside.Valid && speakerInside.String != "" &&
+			peerInside.Valid && peerInside.String != "" &&
+			speakerInside.String != peerInside.String {
+			absent = append(absent, name)
+		}
 	}
 	return absent, rows.Err()
 }
