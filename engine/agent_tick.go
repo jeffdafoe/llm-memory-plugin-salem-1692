@@ -2305,7 +2305,46 @@ func (app *App) lastActionFeedback(ctx context.Context, npcID string) string {
 // fallback for unknown NPCs uses their role label ("the blacksmith");
 // for unknown PCs it's always "a traveler" (PCs don't have engine-
 // assigned roles — they're identified by character, not occupation).
+//
+// ZBBS-HOME-271: each line carries a subspace annotation so the LLM
+// can distinguish indoor co-presence from cross-subspace huddle
+// membership. Knock-time huddle merger (engine/pc_handlers.go) puts
+// outdoor knockers and indoor occupants into the same huddle, which
+// previously rendered as an undifferentiated "Here:" block. Observed
+// 2026-05-10: John Ellis on break inside the Tavern saw three names
+// at the door rendered identically to one inside, making the take_
+// break decision flavorless. Annotation suffixes:
+//
+//   - perceiver INSIDE, other INSIDE same structure: no annotation
+//     (default reading: shared subspace; matches pre-fix behavior).
+//   - perceiver INSIDE, other OUTSIDE: "(at the door)" — knocker,
+//     someone in the structure's loiter ring, or otherwise at the
+//     subspace boundary.
+//   - perceiver OUTSIDE, other INSIDE: "(inside)" — symmetric for
+//     when the perceiver is at the loiter ring and someone else is
+//     within walls.
+//   - both OUTSIDE: no annotation (shared outdoor scene).
+//   - perceiver INSIDE structure A, other INSIDE structure B: rare
+//     edge case in mixed-structure huddles. Render "(elsewhere)" so
+//     the LLM at least knows the other isn't here-here.
 func (app *App) coLocatedHuddleMembers(ctx context.Context, npcID string) []string {
+	// Perceiver's own inside_structure_id — needed for the annotation
+	// comparison against each huddle peer. Point lookup, single row.
+	// Falling back to "" on error keeps the function shipping a roster
+	// (without annotations) rather than dropping the entire Here: block,
+	// which would be worse than imperfect spatial framing.
+	var perceiverInside sql.NullString
+	if err := app.DB.QueryRow(ctx,
+		`SELECT inside_structure_id::text FROM actor WHERE id::text = $1`,
+		npcID,
+	).Scan(&perceiverInside); err != nil {
+		log.Printf("here-block: lookup perceiver inside_structure_id: %v", err)
+	}
+	pInside := ""
+	if perceiverInside.Valid {
+		pInside = perceiverInside.String
+	}
+
 	rows, err := app.DB.Query(ctx,
 		// Co-located actors in the same huddle (excluding self). Returns
 		// both kinds: LLM-driven NPCs (llm_memory_agent IS NOT NULL) and
@@ -2321,7 +2360,8 @@ func (app *App) coLocatedHuddleMembers(ctx context.Context, npcID string) []stri
 		            SELECT 1 FROM npc_acquaintance ac
 		             WHERE ac.actor_id::text = $1
 		               AND ac.other_name = a.display_name
-		        ) AS acquainted
+		        ) AS acquainted,
+		        COALESCE(a.inside_structure_id::text, '') AS other_inside
 		   FROM actor a
 		  WHERE a.current_huddle_id IS NOT NULL
 		    AND a.current_huddle_id = (
@@ -2338,29 +2378,54 @@ func (app *App) coLocatedHuddleMembers(ctx context.Context, npcID string) []stri
 	defer rows.Close()
 	var lines []string
 	for rows.Next() {
-		var name, kind string
+		var name, kind, otherInside string
 		var role sql.NullString
 		var acquainted bool
-		if err := rows.Scan(&name, &role, &kind, &acquainted); err != nil {
+		if err := rows.Scan(&name, &role, &kind, &acquainted, &otherInside); err != nil {
 			continue
 		}
+		var baseName string
 		if acquainted {
-			lines = append(lines, "  "+name)
-			continue
-		}
-		// Descriptor fallback for unknown others.
-		switch kind {
-		case "pc":
-			lines = append(lines, "  a traveler")
-		default:
-			if role.Valid && role.String != "" {
-				lines = append(lines, "  the "+role.String)
-			} else {
-				lines = append(lines, "  a stranger")
+			baseName = name
+		} else {
+			switch kind {
+			case "pc":
+				baseName = "a traveler"
+			default:
+				if role.Valid && role.String != "" {
+					baseName = "the " + role.String
+				} else {
+					baseName = "a stranger"
+				}
 			}
 		}
+		annotation := subspaceAnnotation(pInside, otherInside)
+		lines = append(lines, "  "+baseName+annotation)
 	}
 	return lines
+}
+
+// subspaceAnnotation renders a parenthetical suffix locating the
+// huddle peer relative to the perceiver. See coLocatedHuddleMembers
+// for the full case matrix; this is the small pure helper so the
+// rendering rule is in one place and unit-testable.
+func subspaceAnnotation(perceiverInside, otherInside string) string {
+	switch {
+	case perceiverInside == "" && otherInside == "":
+		return "" // both outdoors at the loiter ring / scene
+	case perceiverInside != "" && otherInside == "":
+		return " (at the door)" // I'm inside, they're outside the walls
+	case perceiverInside == "" && otherInside != "":
+		return " (inside)" // I'm outside, they're within walls
+	case perceiverInside == otherInside:
+		return "" // same indoor structure; shared subspace
+	default:
+		// Different indoor structures sharing a huddle is an edge case
+		// (knock-time merger across two structures shouldn't produce
+		// this in steady state). Surface it so the LLM at least knows
+		// the peer isn't co-present.
+		return " (elsewhere)"
+	}
 }
 
 // recentActivityAtStructure pulls recent speak and act audit rows whose
