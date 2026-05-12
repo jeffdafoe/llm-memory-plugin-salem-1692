@@ -147,6 +147,12 @@ func (app *App) joinOrCreateHuddle(ctx context.Context, npcID, structureID strin
 
 	app.emitEnterHuddleAudit(ctx, npcID, huddleID, structureID)
 
+	// ZBBS-HOME-273: engine-authored greet from co-located keepers when
+	// a non-businessowner NPC walks in. Cooldown + flavor pools live in
+	// businessowner.go; this call is a no-op when no keepers are at-post
+	// or when the entering actor IS a businessowner.
+	app.maybeFireGreetOnEntry(ctx, npcID, structureID, huddleID)
+
 	return huddleID, nil
 }
 
@@ -268,6 +274,11 @@ func (app *App) joinOrCreateHuddleForPC(ctx context.Context, actorName, structur
 		actorName,
 	).Scan(&actorID); err == nil {
 		app.emitEnterHuddleAudit(ctx, actorID, huddleID, structureID)
+		// ZBBS-HOME-273: engine-authored greet from co-located keepers
+		// when a PC walks in. PC is never a businessowner (gate 1 in
+		// the dispatcher will short-circuit non-keeper customers
+		// directly to the keeper-scan path).
+		app.maybeFireGreetOnEntry(ctx, actorID, structureID, huddleID)
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		log.Printf("scene-huddle: resolve PC actor_id for %s: %v", actorName, err)
 	}
