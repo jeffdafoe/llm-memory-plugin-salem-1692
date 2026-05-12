@@ -154,6 +154,34 @@ func (app *App) validateMentionsAgainstInventory(ctx context.Context, actorID st
 	return bogus, rows.Err()
 }
 
+// actTransferVerbsRegex matches transfer-implying past-tense verbs that
+// must not appear in an act verb_phrase alongside an item name. Item
+// transfers route through serve (gift), pay + deliver_order (purchase),
+// or give — never narrated via act, which is pure prose with no
+// mechanical effect. ZBBS-HOME-265 follow-up to ZBBS-WORK-227: the
+// original prose-mention gate caught items the speaker DIDN'T have, but
+// a vendor with stock in hand could still narrate "handed Ezekiel a
+// bowl of stew" via act without actually transferring the stew. The
+// chat panel rendered the fabrication as a fait accompli; the
+// recipient's `consume` then rejected with "you have no stew", because
+// nothing had really moved.
+//
+// Verb list is intentionally conservative — clear transfer verbs only.
+// Ambiguous candidates ("offered" can mean a verbal price offer;
+// "poured" / "brought" can be intransitive movement) are excluded to
+// avoid false rejections on flavor narration. False negatives get added
+// here as they surface in play.
+var actTransferVerbsRegex = regexp.MustCompile(
+	`(?i)\b(handed|gave|served|delivered|dished|ladled|doled)\b`,
+)
+
+// extractActTransferVerb returns the first transfer-implying verb found
+// in text (lowercased), or "" if none match. Used by the act handler to
+// reject verb_phrases that imply real item transfers.
+func extractActTransferVerb(text string) string {
+	return strings.ToLower(actTransferVerbsRegex.FindString(text))
+}
+
 // knownItemKinds lazily loads the canonical item_kind names and a
 // pre-compiled word-boundary regex that matches any of them in free-
 // form prose. Built once per engine lifetime. Returns nil with no
