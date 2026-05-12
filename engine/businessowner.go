@@ -99,6 +99,14 @@ var businessownerPhrases = map[string]map[string][]string{
 			"There you are, {customer}! Glad to have you in.",
 			"Welcome — the hearth's lit and the door's open. Come in.",
 		},
+		triggerFarewell: {
+			"Safe travels, {customer}! Come back anytime.",
+			"Until next time, {customer}. The hearth's always warm.",
+			"Take care out there, {customer} — we'll see you again soon.",
+			"Mind the cold, friend! Door's open whenever you're back.",
+			"Stay well, {customer}!",
+			"Off you go, then — safe to you, {customer}.",
+		},
 	},
 	"reserved": {
 		triggerGreet: {
@@ -107,6 +115,13 @@ var businessownerPhrases = map[string]map[string][]string{
 			"{customer}. What do you need?",
 			"Step in.",
 			"You're in. State your business when you're ready.",
+		},
+		triggerFarewell: {
+			"Until next time, {customer}.",
+			"Mind yourself.",
+			"Safe to you.",
+			"Go on, then.",
+			"{customer}. Mm.",
 		},
 	},
 }
@@ -129,7 +144,7 @@ func businessownerFlavors() []string {
 // those triggers land). Missing pool → panic → engine refuses to
 // start, so the mismatch can't reach a running deploy.
 func init() {
-	requiredTriggers := []string{triggerGreet}
+	requiredTriggers := []string{triggerGreet, triggerFarewell}
 	for flavor, pools := range businessownerPhrases {
 		for _, trig := range requiredTriggers {
 			pool, ok := pools[trig]
@@ -342,6 +357,124 @@ func (app *App) maybeFireGreetOnEntry(ctx context.Context, enteringID, structure
 			text:        text,
 		})
 		app.upsertBusinessownerCooldown(ctx, k.id, enteringID, triggerGreet)
+	}
+}
+
+// maybeFireFarewellOnExit is the exit-side counterpart to
+// maybeFireGreetOnEntry. Called from leaveHuddle / leaveHuddleForPC
+// BEFORE the leaving actor's current_huddle_id is cleared, so the
+// outgoing speak's huddle attribution lands on the room they're
+// leaving — not the empty/null state that follows.
+//
+// huddleID is the huddle the actor is about to leave; the leaver's
+// actor.id is leavingID. The dispatcher reads the structure_id from
+// scene_huddle (the leaver's inside_structure_id may have already
+// flipped to the new destination via setNPCInside above us).
+//
+// Same gate stack as greet:
+//   1. Leaver does NOT have businessowner attribute.
+//   2. At least one businessowner is co-located at the LEFT structure
+//      AND work_structure_id matches AND not asleep/on-break.
+//   3. (keeper, leaver, farewell) cooldown row has expired or is
+//      absent.
+//
+// Lateness note: by the time leaveHuddle is invoked, the leaver's
+// WS connection may have already advanced past the source structure
+// (PC moved to a different scope, NPC moved on). The farewell still
+// broadcasts to the structure scope so anyone else in the room sees
+// the bubble; the leaver may miss it client-side but the line lands
+// in agent_action_log either way.
+func (app *App) maybeFireFarewellOnExit(ctx context.Context, leavingID, huddleID string) {
+	if leavingID == "" || huddleID == "" {
+		return
+	}
+	if app.loadBusinessownerFlavor(ctx, leavingID) != "" {
+		return
+	}
+
+	// Resolve the structure the huddle anchors to. Without this we
+	// can't bound the keeper search.
+	var structureID string
+	if err := app.DB.QueryRow(ctx,
+		`SELECT structure_id::text FROM scene_huddle WHERE id::text = $1`,
+		huddleID,
+	).Scan(&structureID); err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			log.Printf("businessowner: farewell huddle lookup %s: %v", huddleID, err)
+		}
+		return
+	}
+	if structureID == "" {
+		return
+	}
+
+	var customerName string
+	if err := app.DB.QueryRow(ctx,
+		`SELECT display_name FROM actor WHERE id = $1`,
+		leavingID,
+	).Scan(&customerName); err != nil {
+		log.Printf("businessowner: lookup leaver name for %s: %v", leavingID, err)
+		return
+	}
+
+	rows, err := app.DB.Query(ctx,
+		`SELECT a.id::text, a.display_name, aa.params->>'flavor'
+		   FROM actor a
+		   JOIN actor_attribute aa
+		     ON aa.actor_id = a.id AND aa.slug = $1
+		  WHERE a.inside_structure_id::text = $2
+		    AND a.work_structure_id::text   = $2
+		    AND (a.sleeping_until IS NULL OR a.sleeping_until <= NOW())
+		    AND (a.break_until    IS NULL OR a.break_until    <= NOW())
+		    AND a.id <> $3`,
+		businessownerSlug, structureID, leavingID,
+	)
+	if err != nil {
+		log.Printf("businessowner: farewell scan keepers at %s: %v", structureID, err)
+		return
+	}
+	defer rows.Close()
+
+	type keeper struct{ id, name, flavor string }
+	var keepers []keeper
+	for rows.Next() {
+		var k keeper
+		if err := rows.Scan(&k.id, &k.name, &k.flavor); err != nil {
+			log.Printf("businessowner: farewell scan row at %s: %v", structureID, err)
+			continue
+		}
+		if k.flavor == "" {
+			continue
+		}
+		keepers = append(keepers, k)
+	}
+	if len(keepers) == 0 {
+		return
+	}
+
+	cooldownMin := app.loadNonNegativeIntSetting(ctx,
+		"businessowner_farewell_cooldown_minutes",
+		defaultBusinessownerFarewellCooldownMinutes)
+
+	for _, k := range keepers {
+		if app.businessownerCooldownActive(ctx, k.id, leavingID, triggerFarewell, cooldownMin) {
+			continue
+		}
+		text := renderBusinessownerPhrase(k.flavor, triggerFarewell, customerName)
+		if text == "" {
+			continue
+		}
+		app.fireBusinessownerSpeech(ctx, fireSpeechArgs{
+			speakerID:    k.id,
+			speakerName:  k.name,
+			listenerID:   leavingID,
+			listenerName: customerName,
+			huddleID:     huddleID,
+			structureID:  structureID,
+			trigger:      triggerFarewell,
+			text:         text,
+		})
+		app.upsertBusinessownerCooldown(ctx, k.id, leavingID, triggerFarewell)
 	}
 }
 
