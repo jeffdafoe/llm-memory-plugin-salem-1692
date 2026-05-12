@@ -2862,6 +2862,31 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 				break
 			}
 		}
+		// ZBBS-HOME-265: even when the actor HAS the item, an act
+		// verb_phrase that combines a transfer-implying verb with an
+		// item name describes a real mechanical event (goods moving
+		// from speaker to someone else). Those must go through serve
+		// (gift), give, or pay+deliver_order so the goods actually move
+		// — narrating the transfer via act would render in the chat
+		// panel as a fait accompli while the recipient's inventory
+		// stays empty. Observed 2026-05-12 when John Ellis emitted
+		// `act {verb_phrase: "handed Ezekiel Crane a bowl of stew"}`
+		// with three stew in stock; Ezekiel's follow-up `consume stew`
+		// then rejected "you have no stew" because nothing had
+		// actually transferred.
+		//
+		// The 227 gate above only catches the "narrating items you
+		// don't have" subset — this extension catches the "narrating
+		// a transfer you didn't perform" subset. Both checks run; this
+		// one fires only when the upstream check passed (i.e., actor
+		// HAS the items they mention) AND the verb implies transfer.
+		if len(implicit) > 0 {
+			if transferVerb := extractActTransferVerb(verb); transferVerb != "" {
+				result = "rejected"
+				errStr = fmt.Sprintf("Your verb_phrase implies an item transfer (\"%s\" + %s). Item transfers must use the real mechanic: call serve to gift, or let the recipient call pay for a purchase — the act tool is for non-transfer narration only (e.g. \"sat by the fire\", \"polished a tankard\").", transferVerb, strings.Join(implicit, ", "))
+				break
+			}
+		}
 		// act creates a fact in the room — visible to other co-located
 		// NPCs on their next perception via recentActivityAtStructure.
 		// No engine-state change beyond the audit row; the world doesn't
