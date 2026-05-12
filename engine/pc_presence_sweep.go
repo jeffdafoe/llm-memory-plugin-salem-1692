@@ -75,13 +75,20 @@ const defaultPCPresenceClearMinutes = 5
 // existing helpers so the npc_inside_changed broadcast, huddle
 // conclusion, and structure occupancy refresh all fire normally.
 //
-// PCs are identified by llm_memory_agent IS NULL — same convention used
-// elsewhere in the engine (PCs have a login_username, no agent slug).
-// last_pc_seen_at IS NOT NULL guards against actors whose client has
-// never polled /pc/me this lifetime (otherwise every freshly-seeded PC
-// would be a candidate, which is wrong shape). The ZBBS-HOME-274
-// migration backfills existing PCs to COALESCE(last_pc_input_at, NOW())
-// so the deploy preserves the prior sweep behavior on day one.
+// PCs are identified by login_username IS NOT NULL — same predicate
+// touchPCSeen / touchPCInput use on the write side, so the read and
+// write definitions of "this is a PC row" stay aligned. (The earlier
+// llm_memory_agent IS NULL gate was load-bearing only because the
+// last_pc_seen_at IS NOT NULL filter excluded NPCs in practice, but
+// matching the write-side predicate is the robust shape — a future
+// admin tool or data repair that backfills last_pc_seen_at on a
+// non-PC row can't accidentally make that row a sweep candidate.)
+// last_pc_seen_at IS NOT NULL still guards against PCs whose client
+// has never polled /pc/me this lifetime (otherwise every freshly-
+// seeded PC would be a candidate, which is wrong shape). The
+// ZBBS-HOME-274 migration backfills existing PCs to
+// COALESCE(last_pc_input_at, NOW()) so the deploy preserves the prior
+// sweep behavior on day one.
 func (app *App) dispatchPCPresenceCleanup(ctx context.Context) {
 	threshold := app.loadNonNegativeIntSetting(ctx, "pc_presence_clear_minutes", defaultPCPresenceClearMinutes)
 	if threshold == 0 {
@@ -96,7 +103,7 @@ func (app *App) dispatchPCPresenceCleanup(ctx context.Context) {
 		       COALESCE(current_huddle_id::text, ''),
 		       EXTRACT(EPOCH FROM (NOW() - last_pc_seen_at))::int
 		  FROM actor
-		 WHERE llm_memory_agent IS NULL
+		 WHERE login_username IS NOT NULL
 		   AND last_pc_seen_at IS NOT NULL
 		   AND last_pc_seen_at < $1
 		   AND (inside_structure_id IS NOT NULL OR current_huddle_id IS NOT NULL)`,
