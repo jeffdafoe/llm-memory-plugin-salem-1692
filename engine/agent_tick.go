@@ -645,6 +645,16 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 	}
 	app.stampAgentTick(ctx, r)
 
+	// Idle backstop (ZBBS-HOME-272). Plant this NPC's own next-tick
+	// floor at NOW + random(threshold, threshold + window). The periodic
+	// batch sweep previously grouped all idle NPCs into the same
+	// response window, producing the "village dead, then everyone moves
+	// within 15min" pattern Jeff observed. Per-NPC scheduling here lets
+	// each NPC's idle clock run independently. The work / home nudges
+	// below schedule sooner when applicable; scheduleSelfTick's
+	// wins-the-soonest rule lets those override this floor.
+	app.scheduleIdleBackstop(ctx, r.ID)
+
 	// Return-to-work follow-up (ZBBS-110). After the commit settled, if
 	// the nudge predicate still applies, schedule a self-tick 30-60s out
 	// so the LLM gets another turn after the conversation has had a beat
