@@ -99,6 +99,14 @@ var businessownerPhrases = map[string]map[string][]string{
 			"There you are, {customer}! Glad to have you in.",
 			"Welcome — the hearth's lit and the door's open. Come in.",
 		},
+		triggerHandover: {
+			"Here you are, {customer} — enjoy.",
+			"There you go, {customer}!",
+			"For you, friend. Enjoy it.",
+			"All yours, {customer}.",
+			"There — fresh and ready, {customer}.",
+			"With my compliments, {customer}.",
+		},
 		triggerFarewell: {
 			"Safe travels, {customer}! Come back anytime.",
 			"Until next time, {customer}. The hearth's always warm.",
@@ -115,6 +123,13 @@ var businessownerPhrases = map[string]map[string][]string{
 			"{customer}. What do you need?",
 			"Step in.",
 			"You're in. State your business when you're ready.",
+		},
+		triggerHandover: {
+			"Yours, {customer}.",
+			"There.",
+			"Done.",
+			"Take it.",
+			"For you, {customer}.",
 		},
 		triggerFarewell: {
 			"Until next time, {customer}.",
@@ -144,7 +159,7 @@ func businessownerFlavors() []string {
 // those triggers land). Missing pool → panic → engine refuses to
 // start, so the mismatch can't reach a running deploy.
 func init() {
-	requiredTriggers := []string{triggerGreet, triggerFarewell}
+	requiredTriggers := []string{triggerGreet, triggerHandover, triggerFarewell}
 	for flavor, pools := range businessownerPhrases {
 		for _, trig := range requiredTriggers {
 			pool, ok := pools[trig]
@@ -358,6 +373,71 @@ func (app *App) maybeFireGreetOnEntry(ctx context.Context, enteringID, structure
 		})
 		app.upsertBusinessownerCooldown(ctx, k.id, enteringID, triggerGreet)
 	}
+}
+
+// maybeFireHandoverIfBusinessowner is called from executeDeliverOrder
+// right after the existing room_event ("X hands Y the Z") broadcast.
+// When the seller has the businessowner attribute, the engine emits
+// an additional npc_spoke event from the seller's flavor pool — the
+// verbal handover line ("Here you are, {customer}!" etc.) that the
+// LLM would otherwise be expected to produce in iter N+1.
+//
+// Why both narrations: the existing narrateDeliverHandover physical
+// action line ("John Ellis hands Jefferey the stew.") is third-person
+// engine narration and reads as the visual moment of the goods
+// changing hands. This new line is first-person speech from the
+// keeper, anchoring the social beat. Pre-fix, the keeper's LLM tick
+// in iter N+1 produced this line at cost; engine-authored at this
+// point makes the standard hospitality cadence deterministic and free.
+//
+// No cooldown for handover (the task design — every transaction
+// deserves a verbal handover). The LLM may still emit a follow-up
+// speak in iter N+1; the suppression flag is stamped here so any
+// reactor-tick-driven follow-up by the same actor in the next 5s
+// is skipped, but the in-tick iter N+1 speak path is not currently
+// suppressed. Acceptable v1 quirk — if the LLM says "here you are"
+// after the engine already did, it reads as a personal flourish.
+//
+// Non-businessowner sellers get no engine speak — only the existing
+// narrateDeliverHandover line, exactly as before this PR.
+//
+// `qty` and `item` are accepted for future template tokens; today
+// only {customer} is interpolated. Plumbed for handover-pool growth
+// without touching call sites.
+func (app *App) maybeFireHandoverIfBusinessowner(ctx context.Context, sellerID, buyerID, buyerName, item string, qty int, huddleID, structureID string) {
+	if sellerID == "" || buyerID == "" || huddleID == "" || structureID == "" {
+		return
+	}
+	flavor := app.loadBusinessownerFlavor(ctx, sellerID)
+	if flavor == "" {
+		return
+	}
+	var sellerName string
+	if err := app.DB.QueryRow(ctx,
+		`SELECT display_name FROM actor WHERE id = $1`,
+		sellerID,
+	).Scan(&sellerName); err != nil {
+		log.Printf("businessowner: lookup seller name for %s: %v", sellerID, err)
+		return
+	}
+	text := renderBusinessownerPhrase(flavor, triggerHandover, buyerName)
+	if text == "" {
+		return
+	}
+	app.fireBusinessownerSpeech(ctx, fireSpeechArgs{
+		speakerID:    sellerID,
+		speakerName:  sellerName,
+		listenerID:   buyerID,
+		listenerName: buyerName,
+		huddleID:     huddleID,
+		structureID:  structureID,
+		trigger:      triggerHandover,
+		text:         text,
+	})
+	// No cooldown upsert — handover has no cooldown by design.
+	// item / qty unused today; reserved for future template tokens.
+	_ = item
+	_ = qty
 }
 
 // maybeFireFarewellOnExit is the exit-side counterpart to
