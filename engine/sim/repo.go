@@ -7,12 +7,14 @@ import "context"
 // logic (e.g. pay between actors) lives as in-memory mutations in command
 // handlers; persistence happens at checkpoint time via SaveSnapshot calls.
 type Repository struct {
-	Actors      ActorsRepo
-	Structures  StructuresRepo
-	Huddles     HuddlesRepo
-	Scenes      ScenesRepo
-	Orders      OrdersRepo
-	Environment EnvironmentRepo
+	Actors         ActorsRepo
+	Structures     StructuresRepo
+	Huddles        HuddlesRepo
+	Scenes         ScenesRepo
+	Orders         OrdersRepo
+	Environment    EnvironmentRepo
+	Assets         AssetsRepo
+	VillageObjects VillageObjectsRepo
 
 	// Event sinks — write-through per-event, NOT part of the checkpoint tx.
 	// Pay-ledger is an event log of attempts and outcomes; agent-action-log
@@ -58,6 +60,22 @@ type ScenesRepo interface {
 type OrdersRepo interface {
 	LoadAll(ctx context.Context) (map[OrderID]*Order, error)
 	SaveSnapshot(ctx context.Context, tx Tx, orders map[OrderID]*Order) error
+}
+
+// AssetsRepo loads the asset catalog (assets + states + slots + lights +
+// packs). Reference state — loaded at startup, hot-reloaded on SIGHUP.
+// NOT part of the checkpoint cycle (admin edits write directly to the
+// asset / asset_state tables through the editor port).
+type AssetsRepo interface {
+	LoadAll(ctx context.Context) (map[AssetID]*Asset, error)
+}
+
+// VillageObjectsRepo loads + checkpoints village_object + village_object_tag.
+// Hot state: current_state mutates at phase transitions, occupancy refresh,
+// admin set-state, etc. Tags can be added/removed at runtime.
+type VillageObjectsRepo interface {
+	LoadAll(ctx context.Context) (map[VillageObjectID]*VillageObject, error)
+	SaveSnapshot(ctx context.Context, tx Tx, objects map[VillageObjectID]*VillageObject) error
 }
 
 // EnvironmentRepo loads + checkpoints world-level state: environment
