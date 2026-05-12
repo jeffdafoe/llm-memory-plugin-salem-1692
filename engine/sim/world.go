@@ -122,6 +122,17 @@ type World struct {
 	cmds      chan Command
 	published atomic.Pointer[Snapshot]
 
+	// WorldEventGen is bumped after any world-level state change that could
+	// invalidate scheduled follow-ups (phase transitions, occupancy refresh,
+	// asset rotation). Long-running scheduled work (e.g. spread-out object
+	// flips fired via time.AfterFunc) captures the generation at schedule
+	// time and skips itself when the world has moved on.
+	//
+	// Atomic so the goroutine-launched scheduler can read it without
+	// going through the command channel. Writers (inside the world
+	// goroutine) use Add to make the bump observable.
+	WorldEventGen atomic.Uint64
+
 	repo Repository
 }
 
