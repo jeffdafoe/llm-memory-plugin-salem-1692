@@ -218,6 +218,31 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payReque
 		return payResult{Result: "rejected", Err: "cannot pay yourself"}
 	}
 
+	// ZBBS-WORK-231: fast-fail insufficient-coin check before the
+	// recipient's deliberation tick fires. The authoritative coin
+	// check inside executePayTransfer (FOR UPDATE lock at line 834)
+	// stays in place — this is purely a cost guard so we don't fire
+	// an LLM tick on the recipient just to have the transfer abort.
+	// Observed 2026-05-12 14:51 UTC: Ezekiel (2 coins) called
+	// pay(amount=5) for bread; John Ellis's tick fired,
+	// accept_pay'd, and the engine then rejected with
+	// "insufficient coins (have 2, need 5)". John's iteration was
+	// wasted.
+	//
+	// Reads buyer.Coins from the agentNPCRow snapshot loaded at
+	// tick start. Stale reads (the buyer earned coins on a
+	// concurrent path between row-load and now) are bounded by the
+	// FOR UPDATE check downstream — false-negatives here just route
+	// to the authoritative path. False-positives (sufficient at
+	// snapshot, insufficient now) cannot happen mid-tick because the
+	// buyer's only path to spending coins is through pay itself.
+	if req.Amount > 0 && buyer.Coins < req.Amount {
+		return payResult{
+			Result: "rejected",
+			Err:    fmt.Sprintf("insufficient coins (have %d, need %d) — agree on a lower amount in conversation before paying", buyer.Coins, req.Amount),
+		}
+	}
+
 	// Pre-Tx-A: lodging structural feasibility (ZBBS-HOME-269). A
 	// nights_stay sale only makes sense if the seller's work_structure
 	// has private bedrooms placed. executeDeliverOrder already rejects
