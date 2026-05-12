@@ -340,7 +340,19 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			result, errStr, _ := app.executeAgentCommit(ctx, r, endBreakCall, sceneID, hourStart.Location())
 			var content string
 			if result == "ok" {
-				content = "[OK] You're back at your post — break ended. Greet any customer present, or start serving them. Then you may move or call done."
+				// ZBBS-HOME-278: gate the "greet any customer present"
+				// invitation on someone actually being in the room.
+				// Pre-fix this line fired unconditionally, prompting
+				// the LLM to greet empty rooms ("Hello! Welcome to the
+				// tavern.") and triggering the speak-into-the-void
+				// pattern Jeff flagged. Co-located peer count is a
+				// point query on the same huddle — cheap, and matches
+				// the truth the perception's Here: block would carry.
+				if app.huddleHasOtherActors(ctx, r.ID) {
+					content = "[OK] You're back at your post — break ended. Greet any customer present, or start serving them. Then you may move or call done."
+				} else {
+					content = "[OK] Break ended — you're back at your post. No one is here right now. You may move, call take_break, or done."
+				}
 			} else {
 				content = fmt.Sprintf("[End_break %s] %s. Continue your turn — you may speak, move, or call done.", result, errStr)
 			}
@@ -692,6 +704,34 @@ func (app *App) drainDeferredBroadcasts(r *agentNPCRow) {
 	for _, ev := range pending {
 		app.Hub.Broadcast(ev)
 	}
+}
+
+// huddleHasOtherActors returns true when at least one other actor
+// (NPC or PC, agentized or decorative, doesn't matter) shares the
+// actor's current_huddle_id. Used by ZBBS-HOME-278 to gate the
+// post-end_break "greet any customer present" engine-result line so
+// the LLM doesn't get prompted to greet an empty room.
+//
+// Returns false when actorID has no huddle, has a NULL current_huddle_id,
+// or is the only member. Best-effort: a DB error returns false (don't
+// prompt the LLM to greet on uncertain state).
+func (app *App) huddleHasOtherActors(ctx context.Context, actorID string) bool {
+	var hasOthers bool
+	if err := app.DB.QueryRow(ctx,
+		`SELECT EXISTS (
+		    SELECT 1 FROM actor peer
+		     WHERE peer.current_huddle_id IS NOT NULL
+		       AND peer.current_huddle_id = (
+		           SELECT current_huddle_id FROM actor WHERE id = $1
+		       )
+		       AND peer.id != $1
+		)`,
+		actorID,
+	).Scan(&hasOthers); err != nil {
+		log.Printf("huddleHasOtherActors %s: %v", actorID, err)
+		return false
+	}
+	return hasOthers
 }
 
 // stampAgentTick records that we've ticked this NPC. Stamps to time.Now()
