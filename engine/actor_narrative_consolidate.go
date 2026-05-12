@@ -68,6 +68,17 @@ const consolidationCeiling = 20
 // re-consolidated regardless of facts count. Daily cadence.
 const consolidationFloor = 24 * time.Hour
 
+// consolidationFirstMinFacts (ZBBS-WORK-233) is the minimum
+// salient_facts count required to qualify a FIRST consolidation
+// (last_consolidated_at IS NULL). Pre-fix, any new pair with >= 1
+// fact qualified — producing fake-deep "coherent impressions"
+// distilled from a single "Good morrow" exchange (observed
+// 2026-05-12: Moses↔Elizabeth first-reflection both fired on one
+// shared line of dialog). Subsequent (>= 1 hour old) consolidations
+// still qualify on the daily-floor branch regardless of fact count;
+// this gate only affects the never-consolidated path.
+const consolidationFirstMinFacts = 5
+
 // candidatePair carries the minimum data the consolidation step needs
 // to decide whether to proceed and to build the prompt. The full
 // row is re-loaded inside consolidateRelationship to avoid TOCTOU on
@@ -112,14 +123,14 @@ func (app *App) findConsolidationCandidates(ctx context.Context, limit int) ([]c
 		   AND COALESCE(a.llm_memory_agent, '') IN ('salem-vendor', 'salem-visitor')
 		   AND (
 		       jsonb_array_length(r.salient_facts) >= $1
-		    OR r.last_consolidated_at IS NULL
+		    OR (r.last_consolidated_at IS NULL AND jsonb_array_length(r.salient_facts) >= $4)
 		    OR r.last_consolidated_at < NOW() - $2::interval
 		   )
 		 ORDER BY (jsonb_array_length(r.salient_facts) >= $1) DESC,
 		          r.last_consolidated_at NULLS FIRST,
 		          jsonb_array_length(r.salient_facts) DESC
 		 LIMIT $3
-	`, consolidationCeiling, fmt.Sprintf("%d seconds", int(consolidationFloor.Seconds())), limit)
+	`, consolidationCeiling, fmt.Sprintf("%d seconds", int(consolidationFloor.Seconds())), limit, consolidationFirstMinFacts)
 	if err != nil {
 		return nil, fmt.Errorf("query consolidation candidates: %w", err)
 	}
@@ -239,14 +250,30 @@ func buildConsolidationPrompt(actorName, otherName, priorSummary string, facts [
 	} else {
 		fmt.Fprintf(&b, "You haven't formed a reflection on %s before now.\n\n", otherName)
 	}
+	// ZBBS-WORK-233: dedupe identical fact text lines before emitting.
+	// Pre-fix, polluted history (e.g. Elizabeth↔Wendy's repeat-text
+	// presence-ghost trail) produced consolidation prompts with the
+	// same sentence listed N times — the LLM was asked to distill 3
+	// copies of one "Good evening, Wendy" line. Dedup keeps the first
+	// occurrence so chronology is preserved (the list is oldest-first)
+	// and silently drops subsequent identical lines. Independent of any
+	// upstream pollution cleanup — protects the prompt quality
+	// regardless of fact-trail provenance.
 	b.WriteString("Recent interactions, oldest first:\n")
+	seen := make(map[string]struct{}, len(facts))
 	for _, f := range facts {
 		text, _ := f["text"].(string)
-		if t := strings.TrimSpace(text); t != "" {
-			b.WriteString("- ")
-			b.WriteString(t)
-			b.WriteString("\n")
+		t := strings.TrimSpace(text)
+		if t == "" {
+			continue
 		}
+		if _, ok := seen[t]; ok {
+			continue
+		}
+		seen[t] = struct{}{}
+		b.WriteString("- ")
+		b.WriteString(t)
+		b.WriteString("\n")
 	}
 	fmt.Fprintf(&b, "\nWrite a brief paragraph (under 200 words) capturing your current sense of %s — a coherent impression, not a list of events. Past or present tense, whichever fits. Just the paragraph, no preamble or sign-off.",
 		otherName)
