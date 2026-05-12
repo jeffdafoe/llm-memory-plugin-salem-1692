@@ -20,17 +20,19 @@ import (
 func NewRepository() (sim.Repository, *Handles) {
 	actors := NewActorsRepo()
 	huddles := NewHuddlesRepo()
+	env := NewEnvironmentRepo()
 	h := &Handles{
-		Actors:  actors,
-		Huddles: huddles,
+		Actors:      actors,
+		Huddles:     huddles,
+		Environment: env,
 	}
 	return sim.Repository{
 		Actors:      actors,
 		Huddles:     huddles,
+		Environment: env,
 		Structures:  notImplStructures{},
 		Scenes:      notImplScenes{},
 		Orders:      notImplOrders{},
-		Environment: notImplEnvironment{},
 		PayLedger:   noopPayLedger{},
 		ActionLog:   noopActionLog{},
 		Begin: func(_ context.Context) (sim.Tx, error) {
@@ -44,8 +46,9 @@ func NewRepository() (sim.Repository, *Handles) {
 // the returned sim.Repository delegates to — mutations via either path
 // are visible to the other.
 type Handles struct {
-	Actors  *ActorsRepo
-	Huddles *HuddlesRepo
+	Actors      *ActorsRepo
+	Huddles     *HuddlesRepo
+	Environment *EnvironmentRepo
 }
 
 // errNotImpl is returned by sub-repos that haven't been ported into the
@@ -76,15 +79,6 @@ func (notImplOrders) LoadAll(_ context.Context) (map[sim.OrderID]*sim.Order, err
 	return nil, errNotImpl
 }
 func (notImplOrders) SaveSnapshot(_ context.Context, _ sim.Tx, _ map[sim.OrderID]*sim.Order) error {
-	return errNotImpl
-}
-
-type notImplEnvironment struct{}
-
-func (notImplEnvironment) Load(_ context.Context) (sim.WorldEnvironment, sim.Phase, error) {
-	return sim.WorldEnvironment{}, sim.Phase(""), errNotImpl
-}
-func (notImplEnvironment) SaveSnapshot(_ context.Context, _ sim.Tx, _ sim.WorldEnvironment, _ sim.Phase) error {
 	return errNotImpl
 }
 

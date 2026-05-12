@@ -60,9 +60,15 @@ type OrdersRepo interface {
 	SaveSnapshot(ctx context.Context, tx Tx, orders map[OrderID]*Order) error
 }
 
-// EnvironmentRepo loads + checkpoints world-level environment + phase.
+// EnvironmentRepo loads + checkpoints world-level state: environment
+// (transient — atmosphere prose, last-transition timestamps), phase
+// (day/night), and settings (admin-tunable dawn/dusk/zoom/etc.).
+//
+// Settings are loaded at startup and hot-reloaded via SIGHUP per the
+// data-partition design — they're reference state, NOT part of the
+// checkpoint write. SaveSnapshot only writes env + phase.
 type EnvironmentRepo interface {
-	Load(ctx context.Context) (WorldEnvironment, Phase, error)
+	Load(ctx context.Context) (WorldEnvironment, Phase, WorldSettings, error)
 	SaveSnapshot(ctx context.Context, tx Tx, env WorldEnvironment, phase Phase) error
 }
 
