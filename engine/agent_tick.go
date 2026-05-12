@@ -2252,10 +2252,25 @@ func (app *App) buildAgentPerception(ctx context.Context, r *agentNPCRow, hourSt
 	// huddle. Sourced from npc.current_huddle_id; matched against this
 	// NPC's acquaintances so unknown others render as descriptors
 	// ("the blacksmith") rather than full names ("Ezekiel Crane").
-	// Skipped when the NPC isn't in a huddle (alone or outdoors).
 	hereLines := app.coLocatedHuddleMembers(ctx, r.ID)
 	if len(hereLines) > 0 {
 		sections = append(sections, "Here:\n"+strings.Join(hereLines, "\n"))
+	} else {
+		// ZBBS-WORK-229: explicit alone-state signal. Pre-fix the Here
+		// section was dropped entirely when no peers were present, and
+		// the LLM — handed customer/shop framing in the role + persona
+		// sections but no signal the room was actually empty —
+		// defaulted to speak (hawking, greeting, declining absent
+		// customers, asking questions) into the void. HOME-272's idle
+		// backstop ticks each agentized NPC every ~30-45 min regardless
+		// of audience, so void-tick + void-speak compounded. Stating
+		// the alone-state directly lets the model pick done / move_to
+		// / chore / take_break — most prompts already nudge the right
+		// alternative (end-of-shift take_break, return-home, hunger
+		// satisfiers). Mirrors HOME-278's huddleHasOtherActors gate
+		// but applies to every perception, not just the post-end_break
+		// engine-output line.
+		sections = append(sections, "Here: no one is with you right now. Anything you say will not be heard by anyone.")
 	}
 
 	// 6. Recent block (M6.4.6) — what people in the room have said and
