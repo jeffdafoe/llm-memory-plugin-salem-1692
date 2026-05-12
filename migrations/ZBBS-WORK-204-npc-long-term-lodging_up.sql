@@ -59,6 +59,20 @@ UPDATE actor
 -- offered_amount=0 and quoted_unit_amount=0 because this is a
 -- bootstrapping seed, not a real transaction. The check constraint
 -- on pay_ledger requires offered_amount >= 0; 0 satisfies it.
+--
+-- ZBBS-WORK-228: seed lands as fulfillment_status='ready', not
+-- 'delivered'. Pre-fix the seed went straight to 'delivered' which
+-- skipped the executeDeliverOrder path that grants the boarder a
+-- room_access row — so seeded boarders were paid lodgers with no
+-- physical bedroom binding, and the bug only surfaced when an LLM
+-- keeper later narrated showing them to a room the engine had
+-- never placed. Landing as 'ready' surfaces the row to the keeper
+-- via readyOrdersForSeller; their next reactor tick fires
+-- deliver_order → executeDeliverOrder → assignBedroomForLodger,
+-- and the room_access row materializes through the normal path.
+-- On a fresh-deploy migration that's a short burst of keeper-LLM
+-- deliveries at startup, accepted as a one-time cost. delivered_on
+-- is NULL until the keeper actually delivers.
 INSERT INTO pay_ledger (
     buyer_id, seller_id, item_kind, qty, offered_amount,
     quoted_unit_amount, consume_now, state, message,
@@ -75,8 +89,8 @@ SELECT
     'accepted',
     'ZBBS-WORK-204 starter',
     CURRENT_DATE,
-    'delivered',
-    NOW(),
+    'ready',
+    NULL,
     NOW()
 FROM actor a
 JOIN LATERAL (
@@ -99,7 +113,7 @@ WHERE a.home_structure_id IS NOT NULL
          AND pl.seller_id = keeper.id
          AND pl.item_kind = 'nights_stay'
          AND pl.state = 'accepted'
-         AND pl.fulfillment_status = 'delivered'
+         AND pl.fulfillment_status IN ('delivered', 'ready')
   );
 
 -- 4. Clear home_structure_id for boarder-shaped actors. Keyed to

@@ -764,8 +764,21 @@ func (app *App) handlePCCreate(w http.ResponseWriter, r *http.Request) {
 	// directly. The NOT EXISTS guard makes the seed idempotent on
 	// /pc/create re-calls — no duplicate starter row when the PC
 	// already has an active nights_stay ledger somewhere.
+	//
+	// ZBBS-WORK-228: after the INSERT, call assignBedroomForLodger so
+	// the PC has a real room_access row from minute one. Pre-fix the
+	// seeder skipped assignBedroomForLodger entirely (the row went
+	// straight to fulfillment_status='delivered' without ever passing
+	// through executeDeliverOrder) — the PC was a paid lodger with no
+	// physical bedroom binding. Downstream isLodger / canEnter still
+	// passed (they query pay_ledger directly), but keeper LLMs could
+	// narrate "I'll show you to your room" without the engine ever
+	// having placed the PC anywhere. Doing the room-grant inline here
+	// keeps it in the same tx as the ledger row so the two are
+	// committed together.
 	if lodgingID.Valid && lodgingID.String != "" {
-		if _, err := tx.Exec(r.Context(),
+		var ledgerID int64
+		err := tx.QueryRow(r.Context(),
 			`INSERT INTO pay_ledger (
 			    buyer_id, seller_id, item_kind, qty, offered_amount,
 			    quoted_unit_amount, consume_now, state, message,
@@ -787,14 +800,51 @@ func (app *App) handlePCCreate(w http.ResponseWriter, r *http.Request) {
 			         WHERE pl.buyer_id = $1::uuid
 			           AND pl.item_kind = 'nights_stay'
 			           AND pl.state = 'accepted'
-			           AND pl.fulfillment_status = 'delivered'
+			           AND pl.fulfillment_status IN ('delivered', 'ready')
 			    )
 			  ORDER BY keeper.created_at ASC
-			  LIMIT 1`,
+			  LIMIT 1
+			 RETURNING id`,
 			actorID.String, lodgingID.String,
-		); err != nil {
+		).Scan(&ledgerID)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			// No keeper found (test env or pre-seeded inn). Soft-fail:
+			// PC is still created, just without a starter row or room.
+		case err != nil:
 			log.Printf("pc/create seed nights_stay starter for %s: %v", actorID.String, err)
-			// Soft-fail: PC is still created, just without a starter row.
+			// Soft-fail.
+		default:
+			// Grant a private bedroom in the same tx. assignBedroomForLodger
+			// picks a private room in the lodging structure, writes
+			// room_access, and stamps the PC as inside the bedroom. Match
+			// executeDeliverOrder's expiresAt formula (ready_by + qty days
+			// at lodging_check_out_hour, world wall-clock).
+			cfg, cfgErr := app.loadWorldConfig(r.Context())
+			if cfgErr != nil {
+				log.Printf("pc/create load world config for %s: %v", actorID.String, cfgErr)
+				// Soft-fail. Starter ledger is committed; room_access will
+				// be granted by the next auto-rebook (HOME-268's guard).
+				break
+			}
+			checkOutHour, hourErr := app.loadLodgingCheckOutHour(r.Context())
+			if hourErr != nil {
+				log.Printf("pc/create load checkout hour for %s: %v", actorID.String, hourErr)
+				break
+			}
+			expiresAt := computeLodgerUntil(time.Now().In(cfg.Location), 1, checkOutHour, cfg.Location)
+			if _, roomErr := app.assignBedroomForLodger(r.Context(), tx, lodgingID.String, actorID.String, ledgerID, expiresAt); roomErr != nil {
+				if errors.Is(roomErr, ErrNoPrivateRooms) {
+					// Structure tagged for lodging but no private rooms
+					// placed — operator data gap, not an engine bug.
+					// Surface at high visibility so admin notices, but
+					// don't fail the PC create.
+					log.Printf("pc/create assign bedroom for %s: structure %s has no private rooms placed", actorID.String, lodgingID.String)
+				} else {
+					log.Printf("pc/create assign bedroom for %s: %v", actorID.String, roomErr)
+				}
+				// Soft-fail.
+			}
 		}
 	}
 	if err := tx.Commit(r.Context()); err != nil {
