@@ -71,6 +71,65 @@ func (app *App) emitEnterHuddleAudit(ctx context.Context, actorID, huddleID, str
 	}
 }
 
+// consolidateHuddlesAtStructure (ZBBS-WORK-232) finds the oldest
+// active huddle at structureID, migrates members from every OTHER
+// active huddle there into it, and concludes those other huddles.
+// Returns the chosen huddle's UUID (text form), or "" with
+// pgx.ErrNoRows when no active huddle exists at all — the caller
+// then creates a fresh one.
+//
+// Why this exists: pre-WORK-232, parallel active huddles could
+// coexist at the same structure (race on simultaneous arrivals, or
+// the buy_walker cancelBuyTrip heal path's leave+rejoin). Symptom
+// (observed 2026-05-11 Tavern audit and 2026-05-12 Ezekiel scene):
+// the LLM at structure X couldn't see a peer also at structure X in
+// their Here roster, because they were in different huddle rows.
+// Pay routed correctly (recipient_name based, huddle-independent)
+// but speech and perception didn't bridge. Customers fell back to
+// speak-into-void or direct pay because the conversational scope
+// was silently fragmented.
+//
+// Self-healing: any subsequent join through this helper merges
+// parallel huddles. ASC order (was DESC in the pre-fix SELECT)
+// preserves the longest-lived huddle's identity — newer ones are
+// the accidents, oldest is canonical.
+//
+// Idempotent on a single-active-huddle structure: the migrate UPDATE
+// matches zero rows (no actors in non-oldest huddles), and the
+// conclude UPDATE matches zero rows. Best-effort error handling
+// (logs and continues) so a transient DB error on consolidation
+// doesn't block the join.
+func (app *App) consolidateHuddlesAtStructure(ctx context.Context, structureID string) (string, error) {
+	var huddleID string
+	err := app.DB.QueryRow(ctx,
+		`SELECT id::text FROM scene_huddle
+		 WHERE structure_id = $1 AND concluded_at IS NULL
+		 ORDER BY created_at ASC LIMIT 1`,
+		structureID,
+	).Scan(&huddleID)
+	if err != nil {
+		return "", err
+	}
+	if _, err := app.DB.Exec(ctx,
+		`UPDATE actor SET current_huddle_id = $1::uuid
+		 WHERE current_huddle_id IN (
+		     SELECT id FROM scene_huddle
+		     WHERE structure_id = $2 AND concluded_at IS NULL AND id::text != $1
+		 )`,
+		huddleID, structureID,
+	); err != nil {
+		log.Printf("scene-huddle: consolidate migrate members at %s: %v", structureID, err)
+	}
+	if _, err := app.DB.Exec(ctx,
+		`UPDATE scene_huddle SET concluded_at = NOW()
+		 WHERE structure_id = $1 AND concluded_at IS NULL AND id::text != $2`,
+		structureID, huddleID,
+	); err != nil {
+		log.Printf("scene-huddle: consolidate conclude others at %s: %v", structureID, err)
+	}
+	return huddleID, nil
+}
+
 // joinOrCreateHuddle places the NPC into the active huddle for the
 // given structure, creating one if none exists. Updates npc.current
 // huddle_id and returns the huddle UUID. Idempotent: if the NPC is
@@ -84,15 +143,9 @@ func (app *App) emitEnterHuddleAudit(ctx context.Context, actorID, huddleID, str
 // Called from setNPCInside whenever an NPC's inside_structure_id flips
 // to a non-null value.
 func (app *App) joinOrCreateHuddle(ctx context.Context, npcID, structureID string) (string, error) {
-	// Look for an active huddle at this structure. Partial index covers
-	// the WHERE concluded_at IS NULL predicate.
-	var huddleID string
-	err := app.DB.QueryRow(ctx,
-		`SELECT id::text FROM scene_huddle
-		 WHERE structure_id = $1 AND concluded_at IS NULL
-		 ORDER BY created_at DESC LIMIT 1`,
-		structureID,
-	).Scan(&huddleID)
+	// ZBBS-WORK-232: consolidate any parallel active huddles at this
+	// structure into one before joining. See consolidateHuddlesAtStructure.
+	huddleID, err := app.consolidateHuddlesAtStructure(ctx, structureID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// No active huddle — create one. UUID generated server-side; we
 		// scan it back to use as the NPC's current_huddle_id.
@@ -228,13 +281,9 @@ func (app *App) leaveHuddle(ctx context.Context, npcID string) {
 // instead handled UI-side — the village viewer's chat panel knows
 // who the PC has spoken to.
 func (app *App) joinOrCreateHuddleForPC(ctx context.Context, actorName, structureID string) (string, error) {
-	var huddleID string
-	err := app.DB.QueryRow(ctx,
-		`SELECT id::text FROM scene_huddle
-		 WHERE structure_id = $1 AND concluded_at IS NULL
-		 ORDER BY created_at DESC LIMIT 1`,
-		structureID,
-	).Scan(&huddleID)
+	// ZBBS-WORK-232: consolidate any parallel active huddles at this
+	// structure into one before joining. See consolidateHuddlesAtStructure.
+	huddleID, err := app.consolidateHuddlesAtStructure(ctx, structureID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = app.DB.QueryRow(ctx,
 			`INSERT INTO scene_huddle (structure_id) VALUES ($1) RETURNING id::text`,
