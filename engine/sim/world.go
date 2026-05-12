@@ -17,8 +17,8 @@ const (
 
 // WorldEnvironment carries world-level transient state: time-of-day,
 // weather, atmosphere prose (the chronicler-replacement single-string mood
-// line refreshed every ~4h), and the timestamps the phase ticker uses to
-// avoid re-firing a boundary it has already processed.
+// line refreshed every ~4h), and timestamps the various tickers use to
+// avoid re-firing a boundary they have already processed.
 type WorldEnvironment struct {
 	Now              time.Time
 	Weather          string
@@ -26,6 +26,7 @@ type WorldEnvironment struct {
 	LastRefreshed    time.Time
 	LastTransitionAt time.Time // last day↔night transition (UTC)
 	LastRotationAt   time.Time // last daily asset rotation (UTC)
+	LastNeedsTickAt  time.Time // last hourly needs increment (UTC, hour-truncated)
 }
 
 // WorldSettings carries world-level config — checkpoint cadence, phase
@@ -52,6 +53,16 @@ type WorldSettings struct {
 	// social hours, lamplighter, and rotation continue running. Used to halt
 	// agent activity mid-session when a bad loop is being investigated.
 	AgentTicksPaused bool
+
+	// Needs tunables. NeedsTickAmount is the per-hour increment magnitude
+	// applied to every eligible actor. NeedThresholds carries the per-need
+	// "red" boundary; TirednessCriticalThreshold is the absolute (not pct)
+	// threshold at which on-shift recovery gates lift.
+	// MovementFatiguePerTileX100 is fatigue per tile of movement, stored ×100.
+	NeedsTickAmount            int
+	NeedThresholds             NeedThresholds
+	TirednessCriticalThreshold int
+	MovementFatiguePerTileX100 int
 }
 
 // SpeechHelper is the generic-dialogue pool. Pull(type, fromActor, toActor)

@@ -20,20 +20,24 @@ type EnvironmentRepo struct {
 }
 
 // NewEnvironmentRepo returns an empty mem EnvironmentRepo. Without a Seed
-// call, Load returns zero values plus a fallback timezone — the world
+// call, Load returns zero values plus fallback settings — the world
 // boots in a degenerate but non-crashing state, matching how legacy
 // loadWorldConfig handles a fresh deploy.
 func NewEnvironmentRepo() *EnvironmentRepo {
 	loc, _ := time.LoadLocation(sim.DefaultTimezone)
 	return &EnvironmentRepo{
 		settings: sim.WorldSettings{
-			DawnTime:       sim.DefaultDawn,
-			DuskTime:       sim.DefaultDusk,
-			RotationTime:   sim.DefaultRotationTime,
-			Timezone:       sim.DefaultTimezone,
-			Location:       loc,
-			ZoomMinAdmin:   sim.DefaultZoomMinAdmin,
-			ZoomMinRegular: sim.DefaultZoomMinRegular,
+			DawnTime:                   sim.DefaultDawn,
+			DuskTime:                   sim.DefaultDusk,
+			RotationTime:               sim.DefaultRotationTime,
+			Timezone:                   sim.DefaultTimezone,
+			Location:                   loc,
+			ZoomMinAdmin:               sim.DefaultZoomMinAdmin,
+			ZoomMinRegular:             sim.DefaultZoomMinRegular,
+			NeedsTickAmount:            sim.DefaultNeedsTickAmount,
+			NeedThresholds:             sim.DefaultNeedThresholds(),
+			TirednessCriticalThreshold: (sim.NeedMax*sim.DefaultTirednessCriticalThresholdPct + 99) / 100,
+			MovementFatiguePerTileX100: sim.DefaultMovementFatiguePerTileX100,
 		},
 		phase: sim.PhaseDay,
 	}
