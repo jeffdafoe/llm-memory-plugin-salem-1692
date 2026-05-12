@@ -2854,7 +2854,19 @@ func (app *App) executeAgentCommit(ctx context.Context, r *agentNPCRow, tc *agen
 		mentions := normalizeMentions(tc.Input["mentions"])
 		implicit := app.extractImplicitItemMentions(ctx, text)
 		toValidate := mergeMentions(mentions, implicit)
-		if len(toValidate) > 0 {
+		// ZBBS-WORK-230: skip inventory-mention validation when the
+		// speech reads as a buyer-side request or a vendor decline
+		// rather than a possession claim. WORK-227's gate was catching
+		// legitimate dialog: a vendor (Ezekiel, blacksmith) asking
+		// another vendor (John, tavernkeeper) "do you have any bread?"
+		// got rejected because bread isn't in Ezekiel's inventory — but
+		// he's not claiming to offer it, he's asking. The validation
+		// exists to catch vendors hawking / serving goods they don't
+		// stock (Hannah "served bread and water" with no bread). The
+		// inverse direction (asking, declining, referring to absence)
+		// shouldn't trip the gate. See isAskShapeSpeech for the pattern
+		// list.
+		if len(toValidate) > 0 && !isAskShapeSpeech(text) {
 			if app.actorHasAnyInventory(ctx, r.ID) {
 				bogus, err := app.validateMentionsAgainstInventory(ctx, r.ID, toValidate)
 				if err != nil {

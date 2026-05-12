@@ -277,6 +277,43 @@ func (app *App) extractImplicitItemMentions(ctx context.Context, text string) []
 	return out
 }
 
+// askShapeRegex flags speech that reads as a buyer-side request or a
+// vendor decline ("I'm out of ..."), as opposed to a possession claim
+// or a hawking line. Used by the speak path (ZBBS-WORK-230) to skip
+// the inventory-mention validation that would otherwise reject
+// legitimate non-claim references to items the speaker doesn't hold.
+//
+// Patterns chosen to be conservative — false positives (letting a
+// claim past as "ask-shape") are bounded by the fact that the
+// validation is meant to catch a narrow vendor-hawking-without-stock
+// bug shape (WORK-227 Hannah "served bread and water" without bread
+// in inventory), not enforce general truthfulness in dialog.
+//
+// Documented patterns:
+//   - "?" anywhere — direct question
+//   - "do you ..." / "have you ..." — direct question
+//   - "may / can / could I ..." — request
+//   - "I want ..." / "I need ..." — buyer intent
+//   - "I'd / I would (want|need|like|love|take|have|buy|get|prefer)" — conditional buyer
+//   - "I'll (take|have|buy|get|need|like) ..." — acceptance
+//   - "I'm (looking|after|seeking) ..." — buyer search
+//   - "I'm out of ..." / "out of <noun>" / "ran out" / "no more <noun>" — vendor decline
+//   - "don't have / carry / stock / sell ..." — vendor decline
+//   - "I haven't (any|got)" — vendor decline (period idiom)
+var askShapeRegex = regexp.MustCompile(`(?i)(\?|\bdo you\b|\bhave you\b|\b(may|can|could)\s+i\b|\bi\s+(want|need)\b|\b(i'?d|i would)\s+(want|need|like|love|take|have|buy|get|prefer)\b|\bi'?ll\s+(take|have|buy|get|need|like)\b|\bi'?m\s+(looking|after|seeking)\b|\bi'?m\s+out\s+of\b|\bout\s+of\s+\w+\b|\bdon'?t\s+(have|carry|stock|sell)\b|\bran\s+out\b|\bno\s+more\s+\w+\b|\bi\s+haven'?t\s+(any|got)\b)`)
+
+// isAskShapeSpeech returns true when the speech text reads as a
+// buyer-side request or a vendor decline rather than a possession
+// claim. See askShapeRegex for the pattern list. Empty text returns
+// false — the validation path is skipped already on empty text by
+// the speak-tool emptiness gate.
+func isAskShapeSpeech(text string) bool {
+	if text == "" {
+		return false
+	}
+	return askShapeRegex.MatchString(text)
+}
+
 // mergeMentions combines declared mentions[] with implicit names
 // extracted from prose, deduped on lowercased value. Declared order
 // is preserved; implicit names are appended in scan order.
