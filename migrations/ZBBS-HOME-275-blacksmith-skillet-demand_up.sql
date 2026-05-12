@@ -1,0 +1,123 @@
+-- ZBBS-HOME-275 — give the blacksmith a real income stream by making
+-- John's stew production consume a skillet every 30 meals.
+--
+-- Problem (2026-05-12): Ezekiel Crane works at the Blacksmith but has
+-- zero sales lifetime — he holds 3 hammers, 2 axes, 8 horseshoes, 40
+-- nails, but no NPC has any need-driven reason to buy any of them.
+-- Meanwhile he spends 5-10 coins/day on food + lodging. He runs at
+-- coins=0 and resorts to begging ("I'll work for food").
+--
+-- Fix: introduce a `skillet` item_kind that John (the tavernkeeper)
+-- requires for stew production. The skillet wears 1 per 30 stews
+-- served, expressed without a new "wear" mechanism by restructuring
+-- the stew recipe as a 30-output batch with skillet as one of the
+-- inputs at qty=1. Other inputs (meat/milk/carrots/water) scale to
+-- qty=30 each, so the effective per-stew rate is unchanged for them.
+--
+-- Schema constraint: the recipe model has integer-only input qty and
+-- atomic batch executions (one batch = consume one of each input × qty,
+-- produce output_qty outputs). Fractional input consumption is
+-- expressed via batch amortization rather than per-input rates. This
+-- migration leans on that existing pattern.
+--
+-- The per-instance "John's skillet is 50% worn — order another"
+-- perception nuance is NOT in this migration. That requires
+-- instance-identified inventory which the current `(actor, item_kind,
+-- qty)` shape can't express. Deferred to the in-memory engine rewrite
+-- where per-instance state is natural — design captured in
+-- `shared/notes/design/in-memory-rewrite-durable-goods-wear`.
+
+BEGIN;
+
+-- 1. New item_kind: skillet. Tool category, portable.
+INSERT INTO item_kind (name, display_label, category, sort_order, capabilities)
+VALUES ('skillet', 'Skillet', 'tool', 305, ARRAY['portable'])
+ON CONFLICT (name) DO NOTHING;
+
+-- 2. Skillet recipe: terminator for v1 (no iron input yet — pretend the
+-- blacksmith pulls scrap from the forge bin). Produces slowly: 1 every
+-- 3 hours, capped at 5 in stock per actor's restock policy. Wholesale
+-- 5 coins, retail 10. At John's 4 batches/day × 1 skillet/batch = 4
+-- skillets/day demanded, Ezekiel produces 8/day so the pipeline stays
+-- topped up.
+INSERT INTO item_recipe (output_item, output_qty, rate_qty, rate_per_hours, inputs, wholesale_price, retail_price)
+VALUES ('skillet', 1, 1, 3, '[]'::jsonb, 5, 10)
+ON CONFLICT (output_item) DO NOTHING;
+
+-- 3. Restructure stew recipe. output_qty/rate_qty/rate_per_hours move
+-- from 1/5/1 to 30/30/6 so effective throughput is unchanged at 5
+-- stews/hour but every batch is 30 outputs that share 1 skillet. Other
+-- inputs scale to 30 each so per-stew consumption of meat/milk/carrots/
+-- water is unchanged on average.
+UPDATE item_recipe
+   SET output_qty = 30,
+       rate_qty = 30,
+       rate_per_hours = 6,
+       inputs = '[
+         {"qty": 30, "item": "meat"},
+         {"qty": 30, "item": "water"},
+         {"qty": 30, "item": "milk"},
+         {"qty": 30, "item": "carrots"},
+         {"qty": 1, "item": "skillet"}
+       ]'::jsonb,
+       updated_at = NOW()
+ WHERE output_item = 'stew';
+
+-- 4. Ezekiel's blacksmith attribute: add a produce restock entry for
+-- skillet. He keeps up to 5 in stock. Without this entry his blacksmith
+-- role params is `{}` and the produce_tick never sees him.
+UPDATE actor_attribute
+   SET params = '{"restock": [{"max": 5, "item": "skillet", "source": "produce"}]}'::jsonb
+ WHERE actor_id = (SELECT id FROM actor WHERE display_name = 'Ezekiel Crane')
+   AND slug = 'blacksmith';
+
+-- 5. John's tavernkeeper restock policy: bump stew max to 30 (matches
+-- the new batch size — without this, headroom < output_qty and
+-- produce_tick fires zero executions), bump ingredient buy targets to
+-- 30 so he sources enough per batch, and add skillet to the buy list.
+UPDATE actor_attribute
+   SET params = '{"restock": [
+       {"max": 30, "item": "stew", "source": "produce"},
+       {"max": 30, "item": "water", "source": "produce"},
+       {"max": 20, "item": "ale", "source": "produce"},
+       {"max": 15, "item": "bread", "source": "produce"},
+       {"item": "cheese", "source": "buy", "target": 8},
+       {"item": "meat", "source": "buy", "target": 30},
+       {"item": "milk", "source": "buy", "target": 30},
+       {"item": "carrots", "source": "buy", "target": 30},
+       {"item": "skillet", "source": "buy", "target": 2}
+   ]}'::jsonb
+ WHERE actor_id = (SELECT id FROM actor WHERE display_name = 'John Ellis')
+   AND slug = 'tavernkeeper';
+
+-- 6. Seed skillet inventories: John starts with 1 (his current
+-- working skillet), Ezekiel starts with 3 (initial stock to sell).
+INSERT INTO actor_inventory (actor_id, item_kind, quantity)
+VALUES
+    ((SELECT id FROM actor WHERE display_name = 'John Ellis'), 'skillet', 1),
+    ((SELECT id FROM actor WHERE display_name = 'Ezekiel Crane'), 'skillet', 3)
+ON CONFLICT (actor_id, item_kind) DO NOTHING;
+
+-- 7. Smooth the deploy: top up John's stew ingredients to the new
+-- batch size so the first batch fires the next produce tick instead
+-- of waiting hours for buy_walker + upstream producers to rebuild
+-- stock. The steady-state demand is unchanged; this is one-time
+-- transition state.
+INSERT INTO actor_inventory (actor_id, item_kind, quantity)
+VALUES
+    ((SELECT id FROM actor WHERE display_name = 'John Ellis'), 'meat', 30),
+    ((SELECT id FROM actor WHERE display_name = 'John Ellis'), 'milk', 30),
+    ((SELECT id FROM actor WHERE display_name = 'John Ellis'), 'carrots', 30),
+    ((SELECT id FROM actor WHERE display_name = 'John Ellis'), 'water', 30)
+ON CONFLICT (actor_id, item_kind) DO UPDATE
+    SET quantity = GREATEST(actor_inventory.quantity, EXCLUDED.quantity);
+
+-- 8. Reset John's stew produce anchor to NOW so the post-migration
+-- math starts fresh (otherwise stale last_produced_at could imply a
+-- large units_owed at the moment the new 720s/unit rate kicks in).
+UPDATE actor_produce_state
+   SET last_produced_at = NOW()
+ WHERE actor_id = (SELECT id FROM actor WHERE display_name = 'John Ellis')
+   AND item_kind = 'stew';
+
+COMMIT;
