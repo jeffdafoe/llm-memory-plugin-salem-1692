@@ -218,6 +218,48 @@ func (app *App) executePay(ctx context.Context, buyer *agentNPCRow, req payReque
 		return payResult{Result: "rejected", Err: "cannot pay yourself"}
 	}
 
+	// Pre-Tx-A: lodging structural feasibility (ZBBS-HOME-269). A
+	// nights_stay sale only makes sense if the seller's work_structure
+	// has private bedrooms placed. executeDeliverOrder already rejects
+	// the no-bedrooms case at deliver time, but pay-accept commits a
+	// coin transfer first — leaving the buyer paid into a row that
+	// keeps failing deliver_order on every reactor tick and the keeper
+	// LLM repeatedly trying to fulfill it. Rejecting at pay time keeps
+	// the bad sale from happening in the first place.
+	//
+	// Distinct from "all rooms occupied". This gate only surfaces the
+	// zero-private-rooms case (operator data gap — structure tagged
+	// for lodging but never had bedrooms placed). At Salem's current
+	// scale "all rooms full" is essentially impossible at pay time;
+	// even if it were, blocking the pay would mean a temporary
+	// occupancy state makes the keeper non-functional for new lodgers,
+	// which is too aggressive — let occupancy-contention surface at
+	// deliver time where the message is appropriate.
+	//
+	// Logged at high visibility so admin sees the data gap surface
+	// (matches the assign-bedroom canary added by ZBBS-HOME-268).
+	if itemKind == "nights_stay" {
+		var privateRooms int
+		err := app.DB.QueryRow(ctx,
+			`SELECT COUNT(*)
+			   FROM structure_room sr
+			   JOIN actor a ON a.work_structure_id = sr.structure_id
+			  WHERE a.id = $1::uuid AND sr.kind = 'private'`,
+			recipientID,
+		).Scan(&privateRooms)
+		if err != nil {
+			return payResult{Result: "failed", Err: fmt.Sprintf("pre-pay room check: %v", err)}
+		}
+		if privateRooms == 0 {
+			log.Printf("pay: nights_stay rejected pre-pay — recipient %s (%s) work_structure has zero private bedrooms",
+				recipientName, recipientID)
+			return payResult{
+				Result: "rejected",
+				Err:    fmt.Sprintf("%s isn't set up for boarding — no bedrooms in their establishment for nights_stay sales. Ask an operator to add rooms before booking here.", recipientName),
+			}
+		}
+	}
+
 	// Buyer huddle (lifted from the later quote lookup): needed by the
 	// closed-shop gate's co-location bypass below as well as the
 	// existing scene_quote read further down.
