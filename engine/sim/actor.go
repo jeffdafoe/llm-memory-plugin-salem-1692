@@ -64,15 +64,47 @@ type NeedKey string
 // ItemKind identifies a kind of item in inventory: "bread", "ale", etc.
 type ItemKind string
 
-// CreditKey identifies a dwell-credit channel keyed by item-effect category.
-type CreditKey string
+// DwellCreditSource discriminates the two flavors of dwell credit:
+// "object" (persistent while the actor is at a recovery-tagged village
+// object — a Shade Tree, a Well) and "item" (one-shot countdown unlocked
+// by consuming an item with a dwell effect — bread that keeps satiating
+// you for a few minutes after eating).
+type DwellCreditSource string
 
-// DwellCredit accumulates "I've been here X minutes" toward need recovery,
-// per item-effect category (ZBBS-172).
+const (
+	DwellSourceObject DwellCreditSource = "object"
+	DwellSourceItem   DwellCreditSource = "item"
+)
+
+// DwellCreditKey is the composite primary key for an actor's dwell-credit
+// row: object + attribute + source. Multiple rows on one (actor, object)
+// are allowed — a shaded oak credits both tiredness and hunger
+// independently, and "object" + "item" credits on the same attribute are
+// separate rows.
+type DwellCreditKey struct {
+	ObjectID  VillageObjectID
+	Attribute NeedKey
+	Source    DwellCreditSource
+}
+
+// DwellCredit accumulates "I've been here long enough" toward periodic
+// need recovery (ZBBS-172). The per-minute dwell tick reads these rows,
+// applies DwellDelta to the actor when a DwellPeriodMinutes window has
+// elapsed since LastCreditedAt, and advances the anchor.
 //
-// TODO: port concrete fields from engine/dwell.go when this subsystem is
-// reached in the cutover sequence.
-type DwellCredit struct{}
+// Source="object" credits persist as long as the actor stays at the
+// object; their RemainingTicks is nil (open-ended). Source="item"
+// credits have a finite RemainingTicks countdown that decrements per
+// applied period and removes the row at zero.
+type DwellCredit struct {
+	ObjectID           VillageObjectID
+	Attribute          NeedKey
+	Source             DwellCreditSource
+	LastCreditedAt     time.Time
+	RemainingTicks     *int // nil for source=object; >0 for source=item
+	DwellDelta         int  // negative — applied per period
+	DwellPeriodMinutes int
+}
 
 // Acquaintance is a per-actor view of someone they know by display name.
 //
@@ -159,7 +191,7 @@ type Actor struct {
 	StateEnteredAt   time.Time
 	RecentStateTrans *RingBuffer[StateTransition]
 
-	DwellCredits map[CreditKey]*DwellCredit
+	DwellCredits map[DwellCreditKey]*DwellCredit
 
 	// Free-form behavior specs (typed lazily per subsystem during port).
 	Attributes map[string][]byte
