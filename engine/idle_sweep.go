@@ -113,3 +113,34 @@ func (app *App) dispatchIdleSweep(ctx context.Context) {
 			scheduled, thresholdMin, windowMin)
 	}
 }
+
+// scheduleIdleBackstop (ZBBS-HOME-272) schedules a per-NPC self-tick at
+// NOW + random(threshold, threshold + window) so each NPC has its own
+// independently jittered backstop clock. Called from the end of
+// runAgentTick — every successful tick replants this NPC's own next
+// floor, so the "everyone fires within 15min, then quiet" batching
+// pattern from the periodic sweep doesn't happen.
+//
+// If a return-to-work / return-home nudge schedules sooner (30-60s
+// out), scheduleSelfTick's wins-the-soonest semantics let it win.
+// If a cascade origin (PC speak, NPC arrival) fires before this
+// backstop's time, triggerImmediateTick cancels the schedule via
+// cancelSelfTick and the next tick's hook replants the floor.
+//
+// dispatchIdleSweep stays registered as a cold-start backstop for
+// agentized NPCs that have never ticked (no last_agent_tick_at) and
+// therefore haven't run this hook yet. Once an NPC ticks once, the
+// per-NPC schedule takes over.
+//
+// Either knob set to 0 disables the backstop entirely (matches the
+// dispatchIdleSweep escape hatch — one operator switch turns both off).
+func (app *App) scheduleIdleBackstop(ctx context.Context, npcID string) {
+	thresholdMin := app.loadNonNegativeIntSetting(ctx, "idle_sweep_threshold_minutes", defaultIdleSweepThresholdMinutes)
+	windowMin := app.loadNonNegativeIntSetting(ctx, "idle_sweep_response_window_minutes", defaultIdleSweepResponseWindowMinutes)
+	if thresholdMin == 0 || windowMin == 0 {
+		return
+	}
+	delay := time.Duration(thresholdMin) * time.Minute
+	delay += time.Duration(rand.Intn(windowMin*60)) * time.Second
+	app.scheduleSelfTick(ctx, npcID, time.Now().Add(delay), "idle-backstop")
+}
