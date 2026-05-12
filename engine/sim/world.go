@@ -6,25 +6,52 @@ import (
 	"time"
 )
 
-// Phase is the current daypart in the world (dawn / morning / noon / dusk /
-// night / etc.). Placeholder typed string; concrete enum + transition rules
-// ported with world_phase subsystem.
+// Phase is the current daypart in the world. Salem operates on a simple
+// two-phase day/night cycle driven by configurable dawn/dusk boundaries.
 type Phase string
 
+const (
+	PhaseDay   Phase = "day"
+	PhaseNight Phase = "night"
+)
+
 // WorldEnvironment carries world-level transient state: time-of-day,
-// weather, and atmosphere prose (the chronicler-replacement single-string
-// mood line, refreshed every ~4h by the atmosphere goroutine).
+// weather, atmosphere prose (the chronicler-replacement single-string mood
+// line refreshed every ~4h), and the timestamps the phase ticker uses to
+// avoid re-firing a boundary it has already processed.
 type WorldEnvironment struct {
-	Now           time.Time
-	Weather       string
-	Atmosphere    string
-	LastRefreshed time.Time
+	Now              time.Time
+	Weather          string
+	Atmosphere       string
+	LastRefreshed    time.Time
+	LastTransitionAt time.Time // last day↔night transition (UTC)
+	LastRotationAt   time.Time // last daily asset rotation (UTC)
 }
 
-// WorldSettings carries world-level config (checkpoint cadence, world phase
-// thresholds, etc.). Fields expand per subsystem port.
+// WorldSettings carries world-level config — checkpoint cadence, phase
+// boundary times, admin-tunable thresholds. Fields expand per subsystem
+// port; nothing here is hot-path on the tick.
 type WorldSettings struct {
 	CheckpointInterval time.Duration
+
+	// Phase boundary times in HH:MM, interpreted in Timezone.
+	DawnTime     string
+	DuskTime     string
+	RotationTime string
+	Timezone     string
+	Location     *time.Location
+
+	// Client-side zoom floors — different for admins vs regular users.
+	// Pure UI config; the sim package carries the values so admin endpoints
+	// have one place to read/write.
+	ZoomMinAdmin   float64
+	ZoomMinRegular float64
+
+	// AgentTicksPaused, when true, suppresses LLM agent activity globally —
+	// reactive NPC ticks and chronicler fires both gated. Worker schedulers,
+	// social hours, lamplighter, and rotation continue running. Used to halt
+	// agent activity mid-session when a bad loop is being investigated.
+	AgentTicksPaused bool
 }
 
 // SpeechHelper is the generic-dialogue pool. Pull(type, fromActor, toActor)
@@ -112,9 +139,10 @@ func NewWorld(repo Repository) *World {
 // LoadWorld constructs a World and populates primary state from the
 // repository. Use this for production startup.
 //
-// Only the sub-repos implemented in v1 (Actors, Huddles) are loaded;
-// the rest land as subsystems get ported. Indices are rebuilt from
-// primary state, snapshot is published, ready to Run.
+// Sub-repos implemented at this stage (Actors, Huddles, Environment)
+// are loaded; remaining sub-repos land as subsystems get ported.
+// Indices are rebuilt from primary state, snapshot is published, ready
+// to Run.
 func LoadWorld(ctx context.Context, repo Repository) (*World, error) {
 	w := NewWorld(repo)
 
@@ -129,6 +157,14 @@ func LoadWorld(ctx context.Context, repo Repository) (*World, error) {
 		return nil, err
 	}
 	w.Huddles = huddles
+
+	env, phase, settings, err := repo.Environment.Load(ctx)
+	if err != nil {
+		return nil, err
+	}
+	w.Environment = env
+	w.Phase = phase
+	w.Settings = settings
 
 	w.rebuildIndices()
 	w.republish()
