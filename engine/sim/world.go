@@ -68,6 +68,37 @@ type WorldSettings struct {
 	NeedThresholds             NeedThresholds
 	TirednessCriticalThreshold int
 	MovementFatiguePerTileX100 int
+
+	// Reactor evaluator tunables (Phase 2 PR 2). Settings-driven gross
+	// gates — no per-call cost calculation; llm-memory-api's per-VA dollar
+	// budgets (MEM-052) own the hard $ ceiling.
+	//
+	// ReactorJitterMin/Max: stamped at warrant time as now+jitter. Provides
+	// conversational pacing (1-4s default — fires feel like turn-taking,
+	// not LLM-speed turbo).
+	//
+	// ReactorEvaluatorCadence: how often the evaluator runs. 250ms gives
+	// ±250ms timing precision around the jitter floor, which is fine for
+	// conversational scale.
+	//
+	// MaxWarrantAge: cleared on LoadWorld; not currently used at runtime
+	// (warrants are ephemeral). Kept for future use if persistence lands.
+	//
+	// MaxReactorTicksPerActorPerMinute: per-actor rate floor. Drops to 0
+	// (disabled) by default; turn on if a noisy environment produces sub-
+	// jitter ping-pong loops in practice. Capped actors get their
+	// WarrantDueAt pushed to the next allowed time rather than silently
+	// skipped each scan.
+	//
+	// MaxWarrantsPerActor: cap on the per-actor Warrants list size. When
+	// exceeded, oldest entries drop (freshest signals are most relevant).
+	// 0 = uncapped.
+	ReactorJitterMin                 time.Duration
+	ReactorJitterMax                 time.Duration
+	ReactorEvaluatorCadence          time.Duration
+	MaxWarrantAge                    time.Duration
+	MaxReactorTicksPerActorPerMinute int
+	MaxWarrantsPerActor              int
 }
 
 // SpeechHelper is the generic-dialogue pool. Pull(type, fromActor, toActor)
@@ -79,17 +110,14 @@ type WorldSettings struct {
 // speech during speech subsystem port.
 type SpeechHelper struct{}
 
-// ReactorScheduler is the in-memory min-heap pacing reactor ticks
-// (ZBBS-HOME-263).
-//
-// TODO: port from engine/reactor_scheduler.go.
-type ReactorScheduler struct{}
-
-// CascadeOrigin is a tagged event that opens a new cascade (PC speech,
-// idle backstop, chronicler refresh, etc.).
-//
-// TODO: port from cascade-origin handling during cascade subsystem port.
-type CascadeOrigin struct{}
+// reactorEvaluatorState carries the coalescing flag that gates the
+// AfterFunc self-rearm chain. Owned by the world (mutated only from the
+// world goroutine), exposed to the timer callback that drives the next
+// evaluation. No mutex needed — the flag is read/written exclusively from
+// inside Command.Fn.
+type reactorEvaluatorState struct {
+	scheduled bool
+}
 
 // World is the in-memory state of one realm's simulation. A single
 // goroutine (started by World.Run) owns all mutable fields below — every
@@ -129,9 +157,8 @@ type World struct {
 	Settings    WorldSettings
 	TickCounter uint64
 
-	Speech   *SpeechHelper
-	Reactor  *ReactorScheduler
-	Cascades chan CascadeOrigin
+	Speech      *SpeechHelper
+	reactorEval reactorEvaluatorState
 
 	cmds      chan Command
 	published atomic.Pointer[Snapshot]
@@ -191,8 +218,6 @@ func NewWorld(repo Repository) *World {
 		actorsByStructure: make(map[StructureID]map[ActorID]struct{}),
 		actorsByHuddle:    make(map[HuddleID]map[ActorID]struct{}),
 		Speech:            &SpeechHelper{},
-		Reactor:           &ReactorScheduler{},
-		Cascades:          make(chan CascadeOrigin, 64),
 		cmds:              make(chan Command, 256),
 		repo:              repo,
 	}
@@ -267,6 +292,15 @@ func LoadWorld(ctx context.Context, repo Repository) (*World, error) {
 	w.VillageObjects = villageObjects
 
 	w.rebuildIndices()
+	// Reactor state (warrants + in-flight + attempt-id + recent-tick ring)
+	// is ephemeral by design — payloads are interface-typed and weren't
+	// designed to cross the checkpoint serialization boundary. Cascade
+	// origins re-engage actors via fresh events post-restart; the warrant
+	// list from before the crash isn't meaningful anymore (the
+	// conversational moment passed).
+	for _, a := range w.Actors {
+		resetReactorStateOnLoad(a)
+	}
 	w.republish()
 	return w, nil
 }

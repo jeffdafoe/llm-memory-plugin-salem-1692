@@ -269,12 +269,20 @@ func JoinHuddle(actorID ActorID, structureID StructureID, sceneID SceneID, now t
 			}
 
 			// Tick-warrant the joiner and every prior member: peer change
-			// is actionable. Idempotent — already-warranted actors
-			// preserve their original WarrantedSince timestamp.
-			stampWarrant(actor, now)
+			// is actionable. The funnel preserves earliest WarrantedSince /
+			// WarrantDueAt on already-warranted actors and appends the
+			// new meta to their Warrants list (so PR 3's prompt builder
+			// sees what triggered them).
+			tryStampWarrant(w, actor, WarrantMeta{
+				TriggerActorID: actorID,
+				Reason:         BasicWarrantReason{K: WarrantKindHuddleJoined},
+			}, now)
 			for _, id := range otherMembers {
 				if other, ok := w.Actors[id]; ok {
-					stampWarrant(other, now)
+					tryStampWarrant(w, other, WarrantMeta{
+						TriggerActorID: actorID,
+						Reason:         BasicWarrantReason{K: WarrantKindHuddlePeerJoined},
+					}, now)
 				}
 			}
 
@@ -355,7 +363,9 @@ func ConcludeHuddle(huddleID HuddleID, now time.Time) Command {
 			for _, actorID := range members {
 				if actor, ok := w.Actors[actorID]; ok {
 					actor.CurrentHuddleID = ""
-					stampWarrant(actor, now)
+					tryStampWarrant(w, actor, WarrantMeta{
+						Reason: BasicWarrantReason{K: WarrantKindHuddleConcluded},
+					}, now)
 				}
 			}
 			huddle.Members = make(map[ActorID]struct{})
@@ -405,10 +415,13 @@ func leaveCurrentHuddle(w *World, actor *Actor, now time.Time) LeaveHuddleResult
 	delete(huddle.Members, actor.ID)
 	actor.CurrentHuddleID = ""
 	// The leaver's macro-state changed (they're no longer in this huddle);
-	// the warrant flag preserves oldest timestamp so a stamp here doesn't
-	// clobber an earlier one, but explicit LeaveHuddle from an unwarranted
-	// actor needs to register an actionable change for the scheduler.
-	stampWarrant(actor, now)
+	// the warrant funnel preserves earliest timestamp on already-warranted
+	// actors and appends meta to their Warrants list. An explicit
+	// LeaveHuddle from an unwarranted actor starts a fresh warrant cycle.
+	tryStampWarrant(w, actor, WarrantMeta{
+		TriggerActorID: actor.ID,
+		Reason:         BasicWarrantReason{K: WarrantKindHuddleLeft},
+	}, now)
 	if members, ok := w.actorsByHuddle[huddleID]; ok {
 		delete(members, actor.ID)
 		if len(members) == 0 {
@@ -422,7 +435,10 @@ func leaveCurrentHuddle(w *World, actor *Actor, now time.Time) LeaveHuddleResult
 	}
 	for _, id := range remaining {
 		if other, ok := w.Actors[id]; ok {
-			stampWarrant(other, now)
+			tryStampWarrant(w, other, WarrantMeta{
+				TriggerActorID: actor.ID,
+				Reason:         BasicWarrantReason{K: WarrantKindHuddlePeerLeft},
+			}, now)
 		}
 	}
 
@@ -487,25 +503,6 @@ func findActiveHuddleAt(w *World, structureID StructureID) (HuddleID, bool) {
 		}
 	}
 	return "", false
-}
-
-// stampWarrant marks an actor as having actionable state-change since
-// their last tick. Reactor scheduler (Phase 2 PR 2) reads WarrantedSince
-// to gate scheduled ticks: a tick fires when warranted OR when timer
-// floor reached. Tick handler clears the field on consumption (Phase 2
-// PR 3).
-//
-// Idempotent: an already-warranted actor preserves its original timestamp
-// so the scheduler can sort oldest-warrant-first when load-shedding.
-//
-// Unexported by design — warrant stamping is the privilege of mutation
-// commands; consumers (perception, scheduler) only read.
-func stampWarrant(a *Actor, now time.Time) {
-	if a.WarrantedSince != nil {
-		return
-	}
-	t := now
-	a.WarrantedSince = &t
 }
 
 // newHuddleID mints a random HuddleID. v1 uses 16 random bytes hex-

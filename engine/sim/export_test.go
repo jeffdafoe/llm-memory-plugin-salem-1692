@@ -20,4 +20,16 @@ var (
 	// FireScheduledFlip exposes the post-AfterFunc callback body so the
 	// shutdown test can run it synchronously after cancelling the world.
 	FireScheduledFlip = fireScheduledFlip
+
+	// Reactor-evaluator helpers — exposed for tests so the unit tests can
+	// exercise eligibility and rate-gate primitives without going through
+	// a full Command round trip.
+	TryStampWarrant         = tryStampWarrant
+	ActorReactorDue         = actorReactorDue
+	ActorCanReactNow        = actorCanReactNow
+	ClearWarrant            = clearWarrant
+	NewTickAttemptID        = newTickAttemptID
+	ResetReactorStateOnLoad = resetReactorStateOnLoad
+	FireScheduledEvaluation = fireScheduledEvaluation
+	ArmNextEvaluation       = armNextEvaluation
 )
