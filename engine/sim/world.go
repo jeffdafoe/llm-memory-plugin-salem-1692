@@ -105,6 +105,11 @@ type World struct {
 	// VillageObject.AssetID for state resolution, footprint, anchor, etc.
 	Assets map[AssetID]*Asset
 
+	// Recipe catalog — reference state. Keyed by OutputItem. Used by
+	// produce_tick (rate + inputs + output_qty) and pay-deliberation
+	// (wholesale/retail prices).
+	Recipes map[ItemKind]*ItemRecipe
+
 	// Secondary indices — rebuildable from primary state at LoadWorld time
 	// and kept consistent by command handlers thereafter.
 	actorsByStructure map[StructureID]map[ActorID]struct{}
@@ -153,6 +158,7 @@ func NewWorld(repo Repository) *World {
 		Orders:            make(map[OrderID]*Order),
 		VillageObjects:    make(map[VillageObjectID]*VillageObject),
 		Assets:            make(map[AssetID]*Asset),
+		Recipes:           make(map[ItemKind]*ItemRecipe),
 		actorsByStructure: make(map[StructureID]map[ActorID]struct{}),
 		actorsByHuddle:    make(map[HuddleID]map[ActorID]struct{}),
 		Speech:            &SpeechHelper{},
@@ -200,6 +206,12 @@ func LoadWorld(ctx context.Context, repo Repository) (*World, error) {
 		return nil, err
 	}
 	w.Assets = assets
+
+	recipes, err := repo.Recipes.LoadAll(ctx)
+	if err != nil {
+		return nil, err
+	}
+	w.Recipes = recipes
 
 	villageObjects, err := repo.VillageObjects.LoadAll(ctx)
 	if err != nil {

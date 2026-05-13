@@ -14,6 +14,7 @@ type Repository struct {
 	Orders         OrdersRepo
 	Environment    EnvironmentRepo
 	Assets         AssetsRepo
+	Recipes        RecipesRepo
 	VillageObjects VillageObjectsRepo
 
 	// Event sinks — write-through per-event, NOT part of the checkpoint tx.
@@ -68,6 +69,12 @@ type OrdersRepo interface {
 // asset / asset_state tables through the editor port).
 type AssetsRepo interface {
 	LoadAll(ctx context.Context) (map[AssetID]*Asset, error)
+}
+
+// RecipesRepo loads the item_recipe catalog. Reference state — same
+// lifecycle as AssetsRepo (load at startup, hot-reload on SIGHUP).
+type RecipesRepo interface {
+	LoadAll(ctx context.Context) (map[ItemKind]*ItemRecipe, error)
 }
 
 // VillageObjectsRepo loads + checkpoints village_object + village_object_tag.
