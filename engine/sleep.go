@@ -936,29 +936,31 @@ func (app *App) executeNPCSleep(ctx context.Context, actorID string) (time.Time,
 }
 
 // wakeExpiredNPCSleepers clears sleeping_until on any NPC whose wake
-// condition has fired and broadcasts npc_sleep_ended for each. Three
+// condition has fired and broadcasts npc_sleep_ended for each. Two
 // wake conditions, ORed:
 //
 //   - sleeping_until <= NOW(): safety cap.
-//   - tiredness <= 0: rested (continuous recovery via
-//     tiredness_recovery_sweep brought them to 0).
 //   - ZBBS-HOME-262: current local minute-of-day is in the NPC's
 //     shift window. executeNPCSleep sets sleeping_until = NOW + 12h
-//     regardless of how close the actor's shift start is. An NPC
-//     who beds down ~an hour before dawn (the common case for
-//     keepers and morning-shift villagers) will otherwise sleep
-//     through almost their entire shift because tiredness recovery
-//     at 0.04/min only reaches 0 from a ~30 starting value over
-//     ~12.5h — strictly slower than the 12h cap, so the safety cap
-//     and tiredness floor both miss the shift-start boundary.
-//     Observed in prod 2026-05-11: Elizabeth Ellis (6:00-19:00
-//     shift) bed down at 5:19am EDT and Josiah Thorne (9:00-17:00
-//     shift) bed down at 8:49am EDT; both were still asleep at
-//     9:15am with tiredness already recovered to 2 and 8 respectively
-//     but stuck because neither cap had fired yet. Wake-at-shift
-//     fixes both forward (future sleeps cap naturally at shift
-//     start via this OR clause) and backward (already-asleep NPCs
-//     get woken at the next sweep tick).
+//     regardless of how close the actor's shift start is, so the
+//     safety cap on its own can leave an NPC asleep into their
+//     shift; wake-at-shift surfaces them on time.
+//
+// ZBBS-HOME-282: the third condition (tiredness <= 0) was removed
+// here. NPCs are not players — they should sleep through the night
+// like real villagers, not pop awake at 3am the moment recovery
+// completes. Previously, an NPC who bedded promptly at shift-end
+// would hit tiredness=0 a few hours later (4-10h depending on the
+// starting need value and recovery rate) and wake into the middle
+// of the night with nothing to do; they'd drift around the village
+// (or at home) and accumulate tiredness back up to "tired" tier
+// before their next shift started, perpetuating the village-wide
+// constant-tired equilibrium. Without the tiredness wake, a bedded
+// NPC stays asleep through to shift start (or the 12h cap, which
+// catches anyone whose schedule rolled past the cap), and starts
+// their shift fully rested. PC-side wakeExpiredSleepers keeps its
+// tiredness=0 wake (players are autonomous; auto-wake on rest is
+// the player-expected behavior).
 //
 // PC-side wakeExpiredSleepers also has a room_access checkout
 // branch; NPCs don't hold room_access today (they sleep at their
@@ -995,12 +997,9 @@ func (app *App) wakeExpiredNPCSleepers(ctx context.Context) error {
 		    AND a.sleeping_until IS NOT NULL
 		    AND (
 		      a.sleeping_until <= NOW()
-		      OR EXISTS (
-		        SELECT 1 FROM actor_need an
-		         WHERE an.actor_id = a.id
-		           AND an.key = 'tiredness'
-		           AND an.value <= 0
-		      )
+		      -- ZBBS-HOME-282: tiredness=0 wake removed; NPCs sleep
+		      -- through the night and wake on shift start, not on
+		      -- mid-recovery completion.
 		      OR (
 		        a.schedule_start_minute IS NOT NULL
 		        AND a.schedule_end_minute IS NOT NULL
