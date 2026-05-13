@@ -304,3 +304,91 @@ func TestRoundTrip_HuddleClonesBreakAliasing(t *testing.T) {
 		t.Error("Huddle pointer aliased between LoadAll calls")
 	}
 }
+
+// TestRoundTrip_SceneClonesBreakAliasing covers Scene including the
+// nested ParticipantStateAtOrigin map of *ActorSnapshot. The participant-
+// snapshot capture is the seam Phase 2 PR 3 perception build will read for
+// diff-against-scene-start, so the round-trip clone has to deep-copy each
+// snapshot AND each snapshot's Needs map — otherwise a checkpoint+reload
+// would produce ghost-aliased state observable through subsequent
+// mutations.
+func TestRoundTrip_SceneClonesBreakAliasing(t *testing.T) {
+	ctx := context.Background()
+	_, h := mem.NewRepository()
+
+	now := time.Now().UTC()
+	seed := map[sim.SceneID]*sim.Scene{
+		"sc1": {
+			ID:                "sc1",
+			OriginAt:          now,
+			OriginKind:        "pc_speak",
+			OriginStructureID: "tavern",
+			Huddles: map[sim.HuddleID]struct{}{
+				"h1": {},
+			},
+			ParticipantStateAtOrigin: map[sim.ActorID]*sim.ActorSnapshot{
+				"alice": {
+					AtTick:            42,
+					State:             sim.StateConversing,
+					InsideStructureID: "tavern",
+					CurrentHuddleID:   "h1",
+					Needs:             map[sim.NeedKey]int{"hunger": 4, "thirst": 1},
+					Coins:             7,
+				},
+			},
+		},
+	}
+	h.Scenes.Seed(seed)
+
+	// Mutate seed AFTER Seed — must not leak into the repo. Tests both
+	// the Huddles set and the inner Needs map of the captured snapshot.
+	delete(seed["sc1"].Huddles, "h1")
+	seed["sc1"].ParticipantStateAtOrigin["alice"].Needs["hunger"] = 999
+
+	loaded1, err := h.Scenes.LoadAll(ctx)
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	if _, ok := loaded1["sc1"].Huddles["h1"]; !ok {
+		t.Fatal("Seed didn't clone Huddles set: post-Seed delete leaked")
+	}
+	if got := loaded1["sc1"].ParticipantStateAtOrigin["alice"].Needs["hunger"]; got != 4 {
+		t.Fatalf("Seed didn't deep-clone ActorSnapshot.Needs: got hunger=%d, want 4", got)
+	}
+
+	// Mutate the loaded scene, save, reload — values preserved.
+	loaded1["sc1"].Huddles["h2"] = struct{}{}
+	loaded1["sc1"].ParticipantStateAtOrigin["alice"].Needs["thirst"] = 5
+	loaded1["sc1"].ParticipantStateAtOrigin["bob"] = &sim.ActorSnapshot{
+		AtTick:          42,
+		State:           sim.StateIdle,
+		CurrentHuddleID: "h1",
+		Needs:           map[sim.NeedKey]int{"hunger": 0},
+		Coins:           3,
+	}
+
+	if err := h.Scenes.SaveSnapshot(ctx, nil, loaded1); err != nil {
+		t.Fatalf("SaveSnapshot: %v", err)
+	}
+
+	loaded2, err := h.Scenes.LoadAll(ctx)
+	if err != nil {
+		t.Fatalf("LoadAll #2: %v", err)
+	}
+	if _, ok := loaded2["sc1"].Huddles["h2"]; !ok {
+		t.Error("Huddles set lost h2 after save+reload")
+	}
+	if got := loaded2["sc1"].ParticipantStateAtOrigin["alice"].Needs["thirst"]; got != 5 {
+		t.Errorf("alice thirst after save+reload = %d, want 5", got)
+	}
+	if got := loaded2["sc1"].ParticipantStateAtOrigin["bob"].Coins; got != 3 {
+		t.Errorf("bob coins after save+reload = %d, want 3", got)
+	}
+
+	if loaded1["sc1"] == loaded2["sc1"] {
+		t.Error("Scene pointer aliased between LoadAll calls")
+	}
+	if loaded1["sc1"].ParticipantStateAtOrigin["alice"] == loaded2["sc1"].ParticipantStateAtOrigin["alice"] {
+		t.Error("ActorSnapshot pointer aliased between LoadAll calls")
+	}
+}

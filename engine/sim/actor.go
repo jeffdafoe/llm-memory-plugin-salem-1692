@@ -175,6 +175,21 @@ type Actor struct {
 	NextSelfTickAt     *time.Time
 	NextSelfTickReason string
 
+	// WarrantedSince marks the actor as having actionable state-change
+	// since their last tick. Stamped by mutation commands when the
+	// change is something the actor would want to re-think about (peer
+	// joined/left their huddle, need crossed threshold, speech directed
+	// at them, inventory delta). The reactor scheduler reads this to
+	// gate scheduled ticks: a tick fires only when warranted OR when
+	// the timer floor (idle backstop) reaches its threshold. Cleared by
+	// the tick handler on consumption.
+	//
+	// Non-nil = warranted; nil = no actionable change pending. The
+	// timestamp captures when the warrant was first stamped (for
+	// oldest-first scheduling); subsequent stamps while already
+	// warranted preserve the original timestamp.
+	WarrantedSince *time.Time
+
 	// Relationships (per-actor views, not a global graph).
 	Acquaintances map[string]Acquaintance
 	Relationships map[ActorID]*Relationship
@@ -270,6 +285,10 @@ func CloneActor(a *Actor) *Actor {
 		t := *a.NextSelfTickAt
 		cp.NextSelfTickAt = &t
 	}
+	if a.WarrantedSince != nil {
+		t := *a.WarrantedSince
+		cp.WarrantedSince = &t
+	}
 	if a.Acquaintances != nil {
 		cp.Acquaintances = make(map[string]Acquaintance, len(a.Acquaintances))
 		for k, v := range a.Acquaintances {
@@ -339,6 +358,8 @@ func CloneActor(a *Actor) *Actor {
 // state at the moment of the last tick. Consumed by:
 //   - Snapshot publishing (admin reads, perception diff against previous)
 //   - Checkpoint writes (serialized to actor_snapshot row)
+//   - Scene origin capture (Scene.ParticipantStateAtOrigin) for diff-against-
+//     scene-start in perception build
 type ActorSnapshot struct {
 	AtTick            uint64
 	State             ActorState // checkpointed; restart resumes in same state
@@ -349,4 +370,22 @@ type ActorSnapshot struct {
 	Needs             map[NeedKey]int
 	InventoryHash     uint64 // fast-compare; computed at snapshot time
 	Coins             int
+}
+
+// CloneActorSnapshot returns a deep copy of an ActorSnapshot. Needed by
+// any aggregate that captures snapshots and then crosses the published-
+// Snapshot or mem-repo serialization boundary (notably Scene's
+// ParticipantStateAtOrigin map).
+func CloneActorSnapshot(s *ActorSnapshot) *ActorSnapshot {
+	if s == nil {
+		return nil
+	}
+	cp := *s
+	if s.Needs != nil {
+		cp.Needs = make(map[NeedKey]int, len(s.Needs))
+		for k, v := range s.Needs {
+			cp.Needs[k] = v
+		}
+	}
+	return &cp
 }
