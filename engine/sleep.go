@@ -172,6 +172,13 @@ func (app *App) runSleepSweep(ctx context.Context) {
 			if err := app.autoBedIdleLodgers(ctx); err != nil {
 				log.Printf("sleep sweep auto-bed: %v", err)
 			}
+			// ZBBS-HOME-281: NPC backstop for home==work vendors who
+			// never trigger maybeNPCAutoSleep via the arrival path
+			// (they never leave their structure). Without this they
+			// accumulate tiredness from needs_tick indefinitely.
+			if err := app.autoBedAtHomeNPCs(ctx); err != nil {
+				log.Printf("sleep sweep auto-bed NPC: %v", err)
+			}
 		}
 	}
 }
@@ -778,6 +785,111 @@ func (app *App) maybeNPCAutoSleep(ctx context.Context, actorID string) {
 	} else if homeStructureID.Valid {
 		app.refreshStructureOccupancyState(ctx, homeStructureID.String)
 	}
+}
+
+// autoBedAtHomeNPCs is the periodic backstop for the NPC sleep
+// mechanism (ZBBS-HOME-281). maybeNPCAutoSleep fires only from
+// applyArrivalSideEffects (npc_movement.go:701) — i.e. when an NPC
+// physically arrives at a structure. Home==work vendors (John Ellis
+// the tavernkeeper, Hannah Boggs the innkeeper — anyone tagged
+// "Your home and work: X" in their prompt) never leave their
+// structure during a normal day, so they never have an arrival
+// event, so the arrival-triggered auto-sleep path never fires for
+// them. Without this sweep, their tiredness accumulates from
+// needs_tick (+1/hour, clamped at needMax=24, "exhausted" tier)
+// with no offsetting sleep recovery. Symptom in prod 2026-05-13:
+// village-wide exhaustion among home==work vendors.
+//
+// Home!=work NPCs (Josiah Thorne, Prudence Ward) are also caught
+// here as defense-in-depth; the arrival path handles them in the
+// normal case so this sweep usually finds them already asleep.
+//
+// Gates:
+//   - actor is NPC (llm_memory_agent IS NOT NULL)
+//   - inside_structure_id IS NOT NULL AND home_structure_id IS NOT NULL
+//     AND inside_structure_id = home_structure_id
+//   - sleeping_until IS NULL
+//   - agent_override_until IS NULL OR <= NOW() (excludes vendors on
+//     take_break, summon errands, and any reactor activity that
+//     legitimately holds the actor; break_until sets override for
+//     its duration so a vendor on break stays awake)
+//   - off-shift: unscheduled NPCs are always eligible; scheduled
+//     NPCs are eligible when local minute-of-day is OUTSIDE the
+//     shift window. The CASE handles wrap-midnight shifts (e.g.
+//     tavernkeeper 16:00–03:00).
+//
+// Errors logged but not propagated; the sweep continues.
+func (app *App) autoBedAtHomeNPCs(ctx context.Context) error {
+	cfg, err := app.loadWorldConfig(ctx)
+	if err != nil {
+		return fmt.Errorf("auto-bed NPC: load world config: %w", err)
+	}
+	loc := cfg.Location
+	if loc == nil {
+		loc = time.UTC
+	}
+	nowLocal := time.Now().In(loc)
+	nowMinute := nowLocal.Hour()*60 + nowLocal.Minute()
+
+	rows, err := app.DB.Query(ctx,
+		`SELECT a.id::text, a.inside_structure_id::text
+		   FROM actor a
+		  WHERE a.llm_memory_agent IS NOT NULL
+		    AND a.inside_structure_id IS NOT NULL
+		    AND a.home_structure_id IS NOT NULL
+		    AND a.inside_structure_id = a.home_structure_id
+		    AND a.sleeping_until IS NULL
+		    AND (a.agent_override_until IS NULL OR a.agent_override_until <= NOW())
+		    AND (
+		      a.schedule_start_minute IS NULL
+		      OR a.schedule_end_minute IS NULL
+		      -- Off-shift: complement of the in-shift predicate in
+		      -- wakeExpiredNPCSleepers. Same CASE shape so the two
+		      -- expressions stay aligned if a future change touches
+		      -- the wrap-midnight handling.
+		      OR CASE
+		          WHEN a.schedule_start_minute <= a.schedule_end_minute THEN
+		              NOT ($1::int >= a.schedule_start_minute
+		                   AND $1::int <  a.schedule_end_minute)
+		          ELSE
+		              NOT ($1::int >= a.schedule_start_minute
+		                   OR  $1::int <  a.schedule_end_minute)
+		      END
+		    )`,
+		nowMinute,
+	)
+	if err != nil {
+		return fmt.Errorf("auto-bed NPC candidates query: %w", err)
+	}
+	type candidate struct {
+		ID          string
+		StructureID string
+	}
+	var candidates []candidate
+	for rows.Next() {
+		var c candidate
+		if err := rows.Scan(&c.ID, &c.StructureID); err != nil {
+			rows.Close()
+			return fmt.Errorf("auto-bed NPC scan: %w", err)
+		}
+		candidates = append(candidates, c)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("auto-bed NPC iter: %w", err)
+	}
+
+	for _, c := range candidates {
+		if _, err := app.executeNPCSleep(ctx, c.ID); err != nil {
+			log.Printf("auto-bed NPC executeNPCSleep(%s): %v", c.ID, err)
+			continue
+		}
+		// Refresh structure occupancy. Mirror of maybeNPCAutoSleep's
+		// tail — keeps any home==work structure's occupied/unoccupied
+		// visual state in sync now that the keeper is asleep.
+		app.refreshStructureOccupancyState(ctx, c.StructureID)
+	}
+	return nil
 }
 
 // executeNPCSleep beds an NPC. NPC analog of executePCSleep — sets
