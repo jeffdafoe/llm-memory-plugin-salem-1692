@@ -15,6 +15,7 @@ type Repository struct {
 	Environment    EnvironmentRepo
 	Assets         AssetsRepo
 	Recipes        RecipesRepo
+	Terrain        TerrainRepo
 	VillageObjects VillageObjectsRepo
 
 	// Event sinks — write-through per-event, NOT part of the checkpoint tx.
@@ -75,6 +76,13 @@ type AssetsRepo interface {
 // lifecycle as AssetsRepo (load at startup, hot-reload on SIGHUP).
 type RecipesRepo interface {
 	LoadAll(ctx context.Context) (map[ItemKind]*ItemRecipe, error)
+}
+
+// TerrainRepo loads the village_terrain blob. Reference state — one
+// row in the table, hot-reload on SIGHUP if the operator edits the
+// terrain at runtime.
+type TerrainRepo interface {
+	Load(ctx context.Context) (*Terrain, error)
 }
 
 // VillageObjectsRepo loads + checkpoints village_object + village_object_tag.

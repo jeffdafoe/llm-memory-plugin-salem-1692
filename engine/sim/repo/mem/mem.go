@@ -23,6 +23,7 @@ func NewRepository() (sim.Repository, *Handles) {
 	env := NewEnvironmentRepo()
 	assets := NewAssetsRepo()
 	recipes := NewRecipesRepo()
+	terrain := NewTerrainRepo()
 	villageObjects := NewVillageObjectsRepo()
 	h := &Handles{
 		Actors:         actors,
@@ -30,6 +31,7 @@ func NewRepository() (sim.Repository, *Handles) {
 		Environment:    env,
 		Assets:         assets,
 		Recipes:        recipes,
+		Terrain:        terrain,
 		VillageObjects: villageObjects,
 	}
 	return sim.Repository{
@@ -38,6 +40,7 @@ func NewRepository() (sim.Repository, *Handles) {
 		Environment:    env,
 		Assets:         assets,
 		Recipes:        recipes,
+		Terrain:        terrain,
 		VillageObjects: villageObjects,
 		Structures:     notImplStructures{},
 		Scenes:         notImplScenes{},
@@ -60,6 +63,7 @@ type Handles struct {
 	Environment    *EnvironmentRepo
 	Assets         *AssetsRepo
 	Recipes        *RecipesRepo
+	Terrain        *TerrainRepo
 	VillageObjects *VillageObjectsRepo
 }
 
