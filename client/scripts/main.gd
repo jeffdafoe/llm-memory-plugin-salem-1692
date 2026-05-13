@@ -461,6 +461,18 @@ func _build_ui() -> void:
         if sheet != null:
             camera.register_ui_panel(sheet)
 
+    # Also register the launcher chip — main.gd._input runs before GUI,
+    # so the chip's MOUSE_FILTER_STOP alone doesn't keep clicks out of
+    # the click-to-walk handler. Without this, tapping the minimized
+    # chip to open the panel also issues a move_to underneath. Chip
+    # visibility is dynamic (only shown when panel is minimized and a
+    # huddle exists), so _is_over_ui's is_visible_in_tree() gate keeps
+    # it from over-blocking when the panel is expanded.
+    if talk_panel_layer.has_method("get_launcher_control"):
+        var launcher: Control = talk_panel_layer.get_launcher_control()
+        if launcher != null:
+            camera.register_ui_panel(launcher)
+
     # Notice panel (ZBBS-112) — modal for reading noticeboard content
     # after the PC walks up to one. Layer = 4: above editor (1) and
     # talk panel (3), below config (5) and login (10). attach_world
@@ -1380,6 +1392,14 @@ func _on_pc_sleep_started(actor_id: String, wake_at_iso: String) -> void:
         sleep_fade.fade_to_sleep()
     if top_bar != null and top_bar.has_method("set_sleep_state"):
         top_bar.set_sleep_state(true, _pc_sleep_structure_label, wake_at_iso)
+    # Collapse the talk panel to its launcher chip — no one's going to
+    # talk to a sleeping PC, and the panel covers world view the player
+    # might want clear during the sleep overlay. minimize() is
+    # idempotent, so calling it when the panel is already minimized is
+    # a no-op. Wake does NOT auto-expand — the player taps the chip
+    # when they want chat back.
+    if talk_panel_layer != null and talk_panel_layer.has_method("minimize"):
+        talk_panel_layer.minimize()
     # Push an immediate snippet so the ticker carries flavor from the
     # bed-down moment instead of waiting up to DREAM_SNIPPET_INTERVAL_SEC
     # for the first scheduled tick.
