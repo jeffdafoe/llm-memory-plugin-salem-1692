@@ -215,7 +215,7 @@ func findRefreshObjectNear(w *World, x, y float64) (VillageObjectID, *VillageObj
 	return bestID, bestObj
 }
 
-// RegenObjectRefresh applies one regen step to all refresh rows in the
+// regenObjectRefresh applies one regen step to all refresh rows in the
 // world. Continuous-mode rows accrue units since LastRefreshAt; periodic-
 // mode rows jump to MaxQuantity once enough time has elapsed. Returns the
 // count of rows whose AvailableQuantity changed.
@@ -223,7 +223,9 @@ func findRefreshObjectNear(w *World, x, y float64) (VillageObjectID, *VillageObj
 // Exposed as a free function (not a Command) so RunObjectRefreshRegen
 // can call it inside a single command — touching many rows at once is
 // fine within the world goroutine.
-func RegenObjectRefresh(w *World, now time.Time) int {
+//
+// Unexported by design (see buildWalkGrid).
+func regenObjectRefresh(w *World, now time.Time) int {
 	touched := 0
 	for _, obj := range w.VillageObjects {
 		for _, r := range obj.Refreshes {
@@ -307,12 +309,12 @@ func RunObjectRefreshRegen(ctx context.Context, w *World) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			_, err := w.Send(Command{
+			_, err := w.SendContext(ctx, Command{
 				Fn: func(world *World) (any, error) {
-					return RegenObjectRefresh(world, time.Now().UTC()), nil
+					return regenObjectRefresh(world, time.Now().UTC()), nil
 				},
 			})
-			if err != nil {
+			if err != nil && ctx.Err() == nil {
 				log.Printf("sim/object_refresh_regen: tick failed: %v", err)
 			}
 		}

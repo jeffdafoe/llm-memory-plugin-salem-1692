@@ -216,6 +216,125 @@ type Actor struct {
 	Attributes map[string][]byte
 }
 
+// CloneActor returns a deep copy of an Actor suitable for the mem-repo
+// serialization boundary. Mutated containers (Needs, Inventory,
+// DwellCredits, RoomAccess, ProduceState, Acquaintances) and pointer
+// fields commands rebind (BreakUntil, SleepingUntil, LastTickedAt,
+// NextSelfTickAt) are cloned. Attributes is deep-cloned including each
+// []byte payload. The two RingBuffers are cloned via RingBuffer.Clone.
+//
+// Aliased today (NOT cloned) because no current command mutates them:
+//   - VisitorState, Narrative, LastSnapshot — placeholder/empty structs
+//
+// TODO: clone Relationships values and RestockPolicy when a command
+// starts mutating them. Both are pointer-bearing domain state (the
+// Relationship struct is a placeholder today but will land with a
+// per-actor relationship view; RestockPolicy is read-only post-load but
+// future admin edits could mutate it via a command). Aliasing them now
+// is correct but fragile against future command authors.
+//
+// Used by mem.ActorsRepo.Seed / LoadAll / SaveSnapshot to enforce that a
+// round-trip through the repo breaks pointer identity, the way the pg
+// impl will at cutover.
+func CloneActor(a *Actor) *Actor {
+	if a == nil {
+		return nil
+	}
+	cp := *a
+
+	if a.Needs != nil {
+		cp.Needs = make(map[NeedKey]int, len(a.Needs))
+		for k, v := range a.Needs {
+			cp.Needs[k] = v
+		}
+	}
+	if a.Inventory != nil {
+		cp.Inventory = make(map[ItemKind]int, len(a.Inventory))
+		for k, v := range a.Inventory {
+			cp.Inventory[k] = v
+		}
+	}
+	if a.BreakUntil != nil {
+		t := *a.BreakUntil
+		cp.BreakUntil = &t
+	}
+	if a.SleepingUntil != nil {
+		t := *a.SleepingUntil
+		cp.SleepingUntil = &t
+	}
+	if a.LastTickedAt != nil {
+		t := *a.LastTickedAt
+		cp.LastTickedAt = &t
+	}
+	if a.NextSelfTickAt != nil {
+		t := *a.NextSelfTickAt
+		cp.NextSelfTickAt = &t
+	}
+	if a.Acquaintances != nil {
+		cp.Acquaintances = make(map[string]Acquaintance, len(a.Acquaintances))
+		for k, v := range a.Acquaintances {
+			cp.Acquaintances[k] = v
+		}
+	}
+	if a.Relationships != nil {
+		cp.Relationships = make(map[ActorID]*Relationship, len(a.Relationships))
+		for k, v := range a.Relationships {
+			cp.Relationships[k] = v // placeholder type; alias safe
+		}
+	}
+	if a.RecentActions != nil {
+		cp.RecentActions = a.RecentActions.Clone()
+	}
+	if a.RecentStateTrans != nil {
+		cp.RecentStateTrans = a.RecentStateTrans.Clone()
+	}
+	if a.DwellCredits != nil {
+		cp.DwellCredits = make(map[DwellCreditKey]*DwellCredit, len(a.DwellCredits))
+		for k, v := range a.DwellCredits {
+			if v == nil {
+				continue
+			}
+			vc := *v
+			if v.RemainingTicks != nil {
+				rt := *v.RemainingTicks
+				vc.RemainingTicks = &rt
+			}
+			cp.DwellCredits[k] = &vc
+		}
+	}
+	if a.ProduceState != nil {
+		cp.ProduceState = make(map[ItemKind]*ProduceState, len(a.ProduceState))
+		for k, v := range a.ProduceState {
+			if v == nil {
+				continue
+			}
+			vc := *v
+			cp.ProduceState[k] = &vc
+		}
+	}
+	if a.RoomAccess != nil {
+		cp.RoomAccess = make(map[RoomAccessKey]*RoomAccess, len(a.RoomAccess))
+		for k, v := range a.RoomAccess {
+			if v == nil {
+				continue
+			}
+			vc := *v
+			if v.ExpiresAt != nil {
+				t := *v.ExpiresAt
+				vc.ExpiresAt = &t
+			}
+			cp.RoomAccess[k] = &vc
+		}
+	}
+	if a.Attributes != nil {
+		cp.Attributes = make(map[string][]byte, len(a.Attributes))
+		for k, v := range a.Attributes {
+			cp.Attributes[k] = append([]byte(nil), v...)
+		}
+	}
+	return &cp
+}
+
 // ActorSnapshot is the slim immutable view of an actor's decision-relevant
 // state at the moment of the last tick. Consumed by:
 //   - Snapshot publishing (admin reads, perception diff against previous)

@@ -40,3 +40,15 @@ type Order struct {
 	OriginRealmID      string
 	DestinationRealmID string
 }
+
+// CloneOrder returns a copy suitable for publication via Snapshot or for
+// the mem-repo serialization boundary. All Order fields are value types
+// today; the helper exists so future pointer/slice fields (fulfillment
+// state machine) get cloned without callers having to remember.
+func CloneOrder(o *Order) *Order {
+	if o == nil {
+		return nil
+	}
+	cp := *o
+	return &cp
+}

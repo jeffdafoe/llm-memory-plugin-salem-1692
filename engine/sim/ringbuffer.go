@@ -43,6 +43,21 @@ func (r *RingBuffer[T]) Len() int {
 // Cap returns the buffer's capacity.
 func (r *RingBuffer[T]) Cap() int { return len(r.buf) }
 
+// Clone returns a deep copy of the buffer (internal slice and indices).
+// Used by repo/mem to deep-clone Actor entities across the serialization
+// boundary so a mutation on one side doesn't leak to the other.
+func (r *RingBuffer[T]) Clone() *RingBuffer[T] {
+	if r == nil {
+		return nil
+	}
+	cp := &RingBuffer[T]{
+		buf:  append([]T(nil), r.buf...),
+		head: r.head,
+		full: r.full,
+	}
+	return cp
+}
+
 // Snapshot returns a slice copy of the buffer's contents in chronological
 // order (oldest first, newest last). Safe to retain; not aliased to the
 // buffer's internal storage.

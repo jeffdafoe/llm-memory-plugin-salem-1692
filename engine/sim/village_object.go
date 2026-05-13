@@ -70,6 +70,64 @@ type VillageObject struct {
 	Refreshes []*ObjectRefresh
 }
 
+// CloneVillageObject returns a deep copy suitable for publication via
+// Snapshot or for the mem-repo serialization boundary. Tags slice and
+// Refreshes slice (plus each ObjectRefresh AND its scalar pointer
+// fields) are cloned so world-side mutations do not leak through the
+// copy AND so snapshot readers cannot mutate world state via the
+// pointer fields.
+//
+// Scalar pointer fields on ObjectRefresh (AvailableQuantity, MaxQuantity,
+// RefreshPeriodHours, LastRefreshAt, DwellDelta, DwellPeriodMinutes) are
+// individually deep-copied. Aliasing them would let a snapshot reader
+// write `*snap.VillageObjects[id].Refreshes[0].AvailableQuantity = N` and
+// mutate the int reachable from the live world — code_review caught this
+// in the first cleanup pass.
+func CloneVillageObject(v *VillageObject) *VillageObject {
+	if v == nil {
+		return nil
+	}
+	cp := *v
+	if v.Tags != nil {
+		cp.Tags = append([]string(nil), v.Tags...)
+	}
+	if v.Refreshes != nil {
+		cp.Refreshes = make([]*ObjectRefresh, len(v.Refreshes))
+		for i, r := range v.Refreshes {
+			if r == nil {
+				continue
+			}
+			rc := *r
+			if r.AvailableQuantity != nil {
+				x := *r.AvailableQuantity
+				rc.AvailableQuantity = &x
+			}
+			if r.MaxQuantity != nil {
+				x := *r.MaxQuantity
+				rc.MaxQuantity = &x
+			}
+			if r.RefreshPeriodHours != nil {
+				x := *r.RefreshPeriodHours
+				rc.RefreshPeriodHours = &x
+			}
+			if r.LastRefreshAt != nil {
+				t := *r.LastRefreshAt
+				rc.LastRefreshAt = &t
+			}
+			if r.DwellDelta != nil {
+				x := *r.DwellDelta
+				rc.DwellDelta = &x
+			}
+			if r.DwellPeriodMinutes != nil {
+				x := *r.DwellPeriodMinutes
+				rc.DwellPeriodMinutes = &x
+			}
+			cp.Refreshes[i] = &rc
+		}
+	}
+	return &cp
+}
+
 // HasTag returns true if this instance carries tag.
 func (o *VillageObject) HasTag(tag string) bool {
 	for _, t := range o.Tags {

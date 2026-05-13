@@ -79,7 +79,7 @@ func TerrainCost(b byte) uint8 {
 	}
 }
 
-// BuildWalkGrid constructs a WalkGrid from the current world state:
+// buildWalkGrid constructs a WalkGrid from the current world state:
 // terrain bytes + asset-stamped obstacles/passages + door corridor
 // carve-outs.
 //
@@ -88,7 +88,11 @@ func TerrainCost(b byte) uint8 {
 // through the world goroutine. Pure read; doesn't mutate state.
 //
 // Returns nil + error if terrain isn't loaded or is the wrong size.
-func BuildWalkGrid(w *World) (*WalkGrid, error) {
+//
+// Unexported by design: an exported `*World`-taking helper is too easy to
+// misuse from future HTTP handlers; the discipline that callers MUST be
+// inside a Command.Fn lives only in this doc-comment. Keep it internal.
+func buildWalkGrid(w *World) (*WalkGrid, error) {
 	if w.Terrain == nil {
 		return nil, fmt.Errorf("terrain not loaded")
 	}

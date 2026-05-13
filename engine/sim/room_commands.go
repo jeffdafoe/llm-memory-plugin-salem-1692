@@ -1,8 +1,10 @@
 package sim
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"time"
 )
@@ -228,7 +230,7 @@ func EvictExpiredOccupants() Command {
 				if ra, ok := actor.RoomAccess[key]; ok && ra.Active {
 					continue // still has access
 				}
-				common := CommonRoomForStructure(w, room.StructureID)
+				common := commonRoomForStructure(w, room.StructureID)
 				fromRoom := actor.InsideRoomID
 				actor.InsideRoomID = common
 				evicted = append(evicted, EvictedOccupant{
@@ -252,7 +254,10 @@ const RoomSweepInterval = time.Minute
 // RunRoomSweep owns the room-access sweep goroutine. Wakes every
 // RoomSweepInterval and submits ExpireRoomAccess + EvictExpiredOccupants
 // in order (expire flag first, then teleport).
-func RunRoomSweep(ctx interface{ Done() <-chan struct{} }, w *World) {
+//
+// Uses SendContext so shutdown unblocks both commands cleanly even if the
+// world goroutine has already exited.
+func RunRoomSweep(ctx context.Context, w *World) {
 	t := time.NewTicker(RoomSweepInterval)
 	defer t.Stop()
 	for {
@@ -260,8 +265,13 @@ func RunRoomSweep(ctx interface{ Done() <-chan struct{} }, w *World) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			_, _ = w.Send(ExpireRoomAccess(time.Now().UTC()))
-			_, _ = w.Send(EvictExpiredOccupants())
+			if _, err := w.SendContext(ctx, ExpireRoomAccess(time.Now().UTC())); err != nil && ctx.Err() == nil {
+				log.Printf("sim/room_sweep: expire failed: %v", err)
+				continue
+			}
+			if _, err := w.SendContext(ctx, EvictExpiredOccupants()); err != nil && ctx.Err() == nil {
+				log.Printf("sim/room_sweep: evict failed: %v", err)
+			}
 		}
 	}
 }

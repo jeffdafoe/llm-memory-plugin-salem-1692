@@ -136,6 +136,20 @@ type World struct {
 	cmds      chan Command
 	published atomic.Pointer[Snapshot]
 
+	// runCtx is the lifecycle context the world goroutine is running
+	// under. Set by Run on entry and INTENTIONALLY RETAINED after Run
+	// exits, so callbacks firing post-shutdown observe the cancelled
+	// ctx (rather than a fresh background ctx) and abort cleanly via
+	// ctx.Err() instead of parking on a dead cmds channel.
+	//
+	// Used by long-lived goroutines launched outside the ticker loop
+	// (notably time.AfterFunc-driven scheduled flips) via
+	// World.LifecycleContext.
+	//
+	// Atomic so non-world-goroutine readers (the flip timer callbacks)
+	// can pick it up without going through the command channel.
+	runCtx atomic.Pointer[context.Context]
+
 	// WorldEventGen is bumped after any world-level state change that could
 	// invalidate scheduled follow-ups (phase transitions, occupancy refresh,
 	// asset rotation). Long-running scheduled work (e.g. spread-out object
@@ -250,7 +264,15 @@ func LoadWorld(ctx context.Context, repo Repository) (*World, error) {
 //
 // Caller is responsible for starting this in a goroutine. After ctx
 // cancel, in-flight commands complete; queued commands are dropped.
+//
+// Stamps w.runCtx so callbacks scheduled inside commands (e.g. phase-
+// transition flip timers) can ride the same shutdown signal — see
+// World.LifecycleContext. Deliberately does NOT clear runCtx on exit:
+// if the timer fires after Run has returned, the stored ctx is already
+// cancelled, so the callback's SendContext sees ctx.Err() != nil and
+// returns immediately instead of parking forever on the cmds channel.
 func (w *World) Run(ctx context.Context) {
+	w.runCtx.Store(&ctx)
 	for {
 		select {
 		case <-ctx.Done():
@@ -269,18 +291,68 @@ func (w *World) Run(ctx context.Context) {
 	}
 }
 
+// SendContext enqueues a command and waits for the reply, honoring ctx
+// cancellation on both the send and receive halves. Returns ctx.Err() if
+// the context expires before the world goroutine accepts the command or
+// before the reply comes back.
+//
+// Use this from tickers / long-lived goroutines that need to unblock when
+// the world is shutting down — Send (no context) deadlocks if Run has
+// already exited.
+//
+// Caller MUST NOT call SendContext from inside a command Fn — that would
+// deadlock the single world goroutine. Use direct mutation instead.
+func (w *World) SendContext(ctx context.Context, cmd Command) (any, error) {
+	reply := make(chan CommandResult, 1)
+	cmd.Reply = reply
+	select {
+	case w.cmds <- cmd:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	select {
+	case r := <-reply:
+		return r.Value, r.Err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
 // Send enqueues a command and waits for the reply. Returns the command's
 // Value and Err.
 //
-// Caller MUST NOT call Send from inside a command Fn — that would deadlock
-// the single world goroutine. Use direct mutation (you already hold the
-// world goroutine) instead.
+// SAFETY CONTRACT: only call Send when the caller knows the world is
+// running. There is no context plumbed in — if the world goroutine has
+// already exited (or hasn't started), Send blocks on the cmds channel
+// forever. Tickers, long-lived background goroutines, and anything
+// launched via time.AfterFunc MUST use SendContext with a context that
+// gets cancelled on shutdown (see World.LifecycleContext for the
+// world's own ctx).
+//
+// Caller MUST NOT call Send from inside a command Fn — that would
+// deadlock the single world goroutine. Use direct mutation (you already
+// hold the world goroutine) instead.
 func (w *World) Send(cmd Command) (any, error) {
-	reply := make(chan CommandResult, 1)
-	cmd.Reply = reply
-	w.cmds <- cmd
-	r := <-reply
-	return r.Value, r.Err
+	return w.SendContext(context.Background(), cmd)
+}
+
+// LifecycleContext returns the context Run is currently using, or a
+// background context if Run has never been called. Goroutines launched
+// from inside a command (notably time.AfterFunc-driven scheduled flips)
+// call this to get a ctx that unblocks on world shutdown.
+//
+// After Run exits the cancelled ctx remains in place, so a callback
+// firing post-shutdown sees ctx.Err() != nil and aborts cleanly instead
+// of deadlocking on a send to a dead cmds channel.
+//
+// Pulled fresh each time — the schedule-to-fire window can be many
+// seconds, and an admin force-phase mid-window could in principle
+// re-enter Run with a new ctx in the future (not today; Run is run-once).
+func (w *World) LifecycleContext() context.Context {
+	if p := w.runCtx.Load(); p != nil {
+		return *p
+	}
+	return context.Background()
 }
 
 // Submit enqueues a fire-and-forget command. Returns immediately. Caller
@@ -320,6 +392,11 @@ func (w *World) rebuildIndices() {
 // republish builds and atomically swaps a fresh Snapshot. Called from the
 // world goroutine after every command.
 //
+// Per-aggregate snapshot helpers deep-copy each entity so the published
+// Snapshot is genuinely immutable from a reader's perspective — readers
+// can't reach into world state through a Snapshot pointer to race against
+// the world goroutine.
+//
 // v1 publishes a fresh map per command (cheap allocations). If snapshot
 // allocation becomes hot on profiling, the contained replacement is a
 // copy-on-write per-entity scheme — same external Snapshot type, lower
@@ -341,19 +418,19 @@ func (w *World) republish() {
 		snap.Actors[id] = snapshotActor(a, w.TickCounter)
 	}
 	for id, h := range w.Huddles {
-		snap.Huddles[id] = h
+		snap.Huddles[id] = CloneHuddle(h)
 	}
 	for id, s := range w.Scenes {
-		snap.Scenes[id] = s
+		snap.Scenes[id] = CloneScene(s)
 	}
 	for id, s := range w.Structures {
-		snap.Structures[id] = s
+		snap.Structures[id] = CloneStructure(s)
 	}
 	for id, o := range w.Orders {
-		snap.Orders[id] = o
+		snap.Orders[id] = CloneOrder(o)
 	}
 	for id, v := range w.VillageObjects {
-		snap.VillageObjects[id] = v
+		snap.VillageObjects[id] = CloneVillageObject(v)
 	}
 	w.published.Store(snap)
 }

@@ -92,7 +92,7 @@ func TestCanEnterRoomCommon(t *testing.T) {
 
 	got, _ := w.Send(sim.Command{
 		Fn: func(world *sim.World) (any, error) {
-			return sim.CanEnterRoom(world, world.Actors["alice"], 1), nil
+			return sim.CanEnterRoom(world, world.Actors["alice"], 1, time.Now().UTC()), nil
 		},
 	})
 	if !got.(bool) {
@@ -108,7 +108,7 @@ func TestCanEnterRoomPrivateWithoutAccess(t *testing.T) {
 
 	got, _ := w.Send(sim.Command{
 		Fn: func(world *sim.World) (any, error) {
-			return sim.CanEnterRoom(world, world.Actors["alice"], 2), nil
+			return sim.CanEnterRoom(world, world.Actors["alice"], 2, time.Now().UTC()), nil
 		},
 	})
 	if got.(bool) {
@@ -136,7 +136,7 @@ func TestCanEnterRoomPrivateWithActiveAccess(t *testing.T) {
 
 	got, _ := w.Send(sim.Command{
 		Fn: func(world *sim.World) (any, error) {
-			return sim.CanEnterRoom(world, world.Actors["alice"], 2), nil
+			return sim.CanEnterRoom(world, world.Actors["alice"], 2, time.Now().UTC()), nil
 		},
 	})
 	if !got.(bool) {
@@ -164,11 +164,63 @@ func TestCanEnterRoomPrivateInactiveAccess(t *testing.T) {
 
 	got, _ := w.Send(sim.Command{
 		Fn: func(world *sim.World) (any, error) {
-			return sim.CanEnterRoom(world, world.Actors["alice"], 2), nil
+			return sim.CanEnterRoom(world, world.Actors["alice"], 2, time.Now().UTC()), nil
 		},
 	})
 	if got.(bool) {
 		t.Error("CanEnterRoom(private, inactive access) = true, want false")
+	}
+}
+
+// TestCanEnterRoomPrivateExpiryGate covers the window where Active is
+// still true but ExpiresAt has passed (a request arriving between the
+// expiry instant and the next ExpireRoomAccess sweep). canEnterRoom must
+// fail closed in that window.
+func TestCanEnterRoomPrivateExpiryGate(t *testing.T) {
+	w, cancel := buildRoomTestWorld(t)
+	defer cancel()
+
+	now := time.Now().UTC()
+	expired := now.Add(-1 * time.Minute) // expiry passed a minute ago
+
+	_, _ = w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			world.Actors["alice"].RoomAccess = map[sim.RoomAccessKey]*sim.RoomAccess{
+				{RoomID: 2, Source: sim.AccessSourceLedger}: {
+					RoomID:    2,
+					Source:    sim.AccessSourceLedger,
+					ExpiresAt: &expired,
+					Active:    true, // sweep hasn't run yet
+				},
+			}
+			return nil, nil
+		},
+	})
+
+	got, _ := w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			return sim.CanEnterRoom(world, world.Actors["alice"], 2, now), nil
+		},
+	})
+	if got.(bool) {
+		t.Error("CanEnterRoom(private, expired-but-not-swept) = true, want false")
+	}
+
+	// Sanity: with an ExpiresAt in the future, same row passes.
+	future := now.Add(1 * time.Hour)
+	_, _ = w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			world.Actors["alice"].RoomAccess[sim.RoomAccessKey{RoomID: 2, Source: sim.AccessSourceLedger}].ExpiresAt = &future
+			return nil, nil
+		},
+	})
+	got, _ = w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			return sim.CanEnterRoom(world, world.Actors["alice"], 2, now), nil
+		},
+	})
+	if !got.(bool) {
+		t.Error("CanEnterRoom(private, future expiry) = false, want true")
 	}
 }
 
@@ -180,7 +232,7 @@ func TestCanEnterRoomStaff(t *testing.T) {
 	// Hannah works at inn → can enter staff room.
 	got, _ := w.Send(sim.Command{
 		Fn: func(world *sim.World) (any, error) {
-			return sim.CanEnterRoom(world, world.Actors["hannah"], 4), nil
+			return sim.CanEnterRoom(world, world.Actors["hannah"], 4, time.Now().UTC()), nil
 		},
 	})
 	if !got.(bool) {
@@ -190,7 +242,7 @@ func TestCanEnterRoomStaff(t *testing.T) {
 	// Alice doesn't work there → denied.
 	got, _ = w.Send(sim.Command{
 		Fn: func(world *sim.World) (any, error) {
-			return sim.CanEnterRoom(world, world.Actors["alice"], 4), nil
+			return sim.CanEnterRoom(world, world.Actors["alice"], 4, time.Now().UTC()), nil
 		},
 	})
 	if got.(bool) {

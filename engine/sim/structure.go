@@ -28,3 +28,28 @@ type Structure struct {
 	// can be marked as leaving the realm. Single-realm engine ignores it.
 	LeadsToRealm string
 }
+
+// CloneStructure returns a deep copy suitable for publication via Snapshot
+// or for the mem-repo serialization boundary. The Rooms slice and its
+// elements are cloned so callers can't reach into the live Structure via
+// the snapshot.
+func CloneStructure(s *Structure) *Structure {
+	if s == nil {
+		return nil
+	}
+	cp := *s
+	if s.Tags != nil {
+		cp.Tags = append([]string(nil), s.Tags...)
+	}
+	if s.Rooms != nil {
+		cp.Rooms = make([]*Room, len(s.Rooms))
+		for i, r := range s.Rooms {
+			if r == nil {
+				continue
+			}
+			rc := *r
+			cp.Rooms[i] = &rc
+		}
+	}
+	return &cp
+}

@@ -21,14 +21,14 @@ func NewVillageObjectsRepo() *VillageObjectsRepo {
 // before LoadWorld.
 func (r *VillageObjectsRepo) Seed(objects map[sim.VillageObjectID]*sim.VillageObject) {
 	for id, o := range objects {
-		r.objects[id] = o
+		r.objects[id] = sim.CloneVillageObject(o)
 	}
 }
 
 func (r *VillageObjectsRepo) LoadAll(_ context.Context) (map[sim.VillageObjectID]*sim.VillageObject, error) {
 	out := make(map[sim.VillageObjectID]*sim.VillageObject, len(r.objects))
 	for id, o := range r.objects {
-		out[id] = o
+		out[id] = sim.CloneVillageObject(o)
 	}
 	return out, nil
 }
@@ -36,7 +36,7 @@ func (r *VillageObjectsRepo) LoadAll(_ context.Context) (map[sim.VillageObjectID
 func (r *VillageObjectsRepo) SaveSnapshot(_ context.Context, _ sim.Tx, objects map[sim.VillageObjectID]*sim.VillageObject) error {
 	r.objects = make(map[sim.VillageObjectID]*sim.VillageObject, len(objects))
 	for id, o := range objects {
-		r.objects[id] = o
+		r.objects[id] = sim.CloneVillageObject(o)
 	}
 	return nil
 }
