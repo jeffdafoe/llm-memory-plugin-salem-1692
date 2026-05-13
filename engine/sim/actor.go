@@ -175,20 +175,37 @@ type Actor struct {
 	NextSelfTickAt     *time.Time
 	NextSelfTickReason string
 
-	// WarrantedSince marks the actor as having actionable state-change
-	// since their last tick. Stamped by mutation commands when the
-	// change is something the actor would want to re-think about (peer
-	// joined/left their huddle, need crossed threshold, speech directed
-	// at them, inventory delta). The reactor scheduler reads this to
-	// gate scheduled ticks: a tick fires only when warranted OR when
-	// the timer floor (idle backstop) reaches its threshold. Cleared by
-	// the tick handler on consumption.
+	// Reactor-evaluator state — Phase 2 PR 2. WarrantedSince + WarrantDueAt
+	// + Warrants together form the actor's tick-eligibility record:
 	//
-	// Non-nil = warranted; nil = no actionable change pending. The
-	// timestamp captures when the warrant was first stamped (for
-	// oldest-first scheduling); subsequent stamps while already
-	// warranted preserve the original timestamp.
+	//   - WarrantedSince: timestamp the warrant cycle began (earliest stamp
+	//     in this cycle). Nil = no pending signal.
+	//   - WarrantDueAt: now + jitter, stamped at warrant time. The evaluator
+	//     emits ReactorTickDue when now >= WarrantDueAt.
+	//   - Warrants: list of signals accumulated during this warrant cycle.
+	//     Cleared at evaluator emit time; new stamps during the in-flight
+	//     LLM call start a fresh cycle that fires after completion. See
+	//     reactor.go for the full design rationale.
+	//
+	// All three are ephemeral — wiped on LoadWorld so checkpoint reload
+	// doesn't wedge actors with stale interface-typed payloads.
 	WarrantedSince *time.Time
+	WarrantDueAt   *time.Time
+	Warrants       []WarrantMeta
+
+	// TickInFlight gates the evaluator from re-emitting an actor whose LLM
+	// call is pending. TickAttemptID is the generation that disambiguates
+	// stale completions — a late-arriving completion from a timed-out
+	// attempt must not clear a newer attempt's in-flight flag.
+	//
+	// Both wiped on LoadWorld.
+	TickInFlight  bool
+	TickAttemptID string
+
+	// RecentReactorTicks is the per-actor ring of recent reactor-tick
+	// emission timestamps. Drives the per-minute gross gate
+	// (MaxReactorTicksPerActorPerMinute). Lazily allocated on first emit.
+	RecentReactorTicks *RingBuffer[time.Time]
 
 	// Relationships (per-actor views, not a global graph).
 	Acquaintances map[string]Acquaintance
@@ -288,6 +305,22 @@ func CloneActor(a *Actor) *Actor {
 	if a.WarrantedSince != nil {
 		t := *a.WarrantedSince
 		cp.WarrantedSince = &t
+	}
+	if a.WarrantDueAt != nil {
+		t := *a.WarrantDueAt
+		cp.WarrantDueAt = &t
+	}
+	if a.Warrants != nil {
+		// WarrantMeta is a value type whose Reason field holds an interface
+		// over concrete value structs (BasicWarrantReason, SpeechWarrantReason).
+		// Slice copy is safe — appending to one side won't reflect in the
+		// other, and the concrete reason structs have no inner pointers
+		// today. If a future WarrantReason adds inner pointers, deep-clone
+		// it here.
+		cp.Warrants = append([]WarrantMeta(nil), a.Warrants...)
+	}
+	if a.RecentReactorTicks != nil {
+		cp.RecentReactorTicks = a.RecentReactorTicks.Clone()
 	}
 	if a.Acquaintances != nil {
 		cp.Acquaintances = make(map[string]Acquaintance, len(a.Acquaintances))

@@ -119,3 +119,32 @@ type ActorMet struct {
 }
 
 func (ActorMet) isSimEvent() {}
+
+// ReactorTickDue fires when the evaluator emits a warrant-driven tick
+// opportunity for an actor. Phase 2 PR 2 lands the event; PR 3's tick
+// handler subscribes — handler builds perception (off the world goroutine
+// via Published snapshot), calls the LLM, then sends CompleteReactorTick
+// back through the command channel.
+//
+// AttemptID is the generation that makes stale completions detectable —
+// the handler echoes AttemptID in CompleteReactorTick; the completion
+// command is a no-op when the actor's current AttemptID has moved on.
+//
+// Warrants is the snapshot of the actor's pending signals at emit time,
+// in stamp order. The list is consumed (cleared on the actor) at emit
+// time, so this is the only place the metadata travels — the consumer
+// can't fetch it later from the actor.
+//
+// Subscribers MUST NOT call the LLM inline (would hold the world
+// goroutine for seconds). Pattern: copy IDs + AttemptID + Warrants into a
+// worker queue; the worker reads world.Published() for perception build.
+type ReactorTickDue struct {
+	ActorID        ActorID
+	AttemptID      string
+	Warrants       []WarrantMeta // snapshot at emit; consumed from actor
+	WarrantedSince time.Time     // when the warrant cycle began
+	DueAt          time.Time     // when the warrant became due (= WarrantedSince + jitter)
+	EmittedAt      time.Time
+}
+
+func (ReactorTickDue) isSimEvent() {}
