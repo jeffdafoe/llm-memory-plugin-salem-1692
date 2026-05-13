@@ -172,6 +172,13 @@ func (app *App) runSleepSweep(ctx context.Context) {
 			if err := app.autoBedIdleLodgers(ctx); err != nil {
 				log.Printf("sleep sweep auto-bed: %v", err)
 			}
+			// ZBBS-HOME-281: NPC backstop for home==work vendors who
+			// never trigger maybeNPCAutoSleep via the arrival path
+			// (they never leave their structure). Without this they
+			// accumulate tiredness from needs_tick indefinitely.
+			if err := app.autoBedAtHomeNPCs(ctx); err != nil {
+				log.Printf("sleep sweep auto-bed NPC: %v", err)
+			}
 		}
 	}
 }
@@ -780,6 +787,111 @@ func (app *App) maybeNPCAutoSleep(ctx context.Context, actorID string) {
 	}
 }
 
+// autoBedAtHomeNPCs is the periodic backstop for the NPC sleep
+// mechanism (ZBBS-HOME-281). maybeNPCAutoSleep fires only from
+// applyArrivalSideEffects (npc_movement.go:701) — i.e. when an NPC
+// physically arrives at a structure. Home==work vendors (John Ellis
+// the tavernkeeper, Hannah Boggs the innkeeper — anyone tagged
+// "Your home and work: X" in their prompt) never leave their
+// structure during a normal day, so they never have an arrival
+// event, so the arrival-triggered auto-sleep path never fires for
+// them. Without this sweep, their tiredness accumulates from
+// needs_tick (+1/hour, clamped at needMax=24, "exhausted" tier)
+// with no offsetting sleep recovery. Symptom in prod 2026-05-13:
+// village-wide exhaustion among home==work vendors.
+//
+// Home!=work NPCs (Josiah Thorne, Prudence Ward) are also caught
+// here as defense-in-depth; the arrival path handles them in the
+// normal case so this sweep usually finds them already asleep.
+//
+// Gates:
+//   - actor is NPC (llm_memory_agent IS NOT NULL)
+//   - inside_structure_id IS NOT NULL AND home_structure_id IS NOT NULL
+//     AND inside_structure_id = home_structure_id
+//   - sleeping_until IS NULL
+//   - agent_override_until IS NULL OR <= NOW() (excludes vendors on
+//     take_break, summon errands, and any reactor activity that
+//     legitimately holds the actor; break_until sets override for
+//     its duration so a vendor on break stays awake)
+//   - off-shift: unscheduled NPCs are always eligible; scheduled
+//     NPCs are eligible when local minute-of-day is OUTSIDE the
+//     shift window. The CASE handles wrap-midnight shifts (e.g.
+//     tavernkeeper 16:00–03:00).
+//
+// Errors logged but not propagated; the sweep continues.
+func (app *App) autoBedAtHomeNPCs(ctx context.Context) error {
+	cfg, err := app.loadWorldConfig(ctx)
+	if err != nil {
+		return fmt.Errorf("auto-bed NPC: load world config: %w", err)
+	}
+	loc := cfg.Location
+	if loc == nil {
+		loc = time.UTC
+	}
+	nowLocal := time.Now().In(loc)
+	nowMinute := nowLocal.Hour()*60 + nowLocal.Minute()
+
+	rows, err := app.DB.Query(ctx,
+		`SELECT a.id::text, a.inside_structure_id::text
+		   FROM actor a
+		  WHERE a.llm_memory_agent IS NOT NULL
+		    AND a.inside_structure_id IS NOT NULL
+		    AND a.home_structure_id IS NOT NULL
+		    AND a.inside_structure_id = a.home_structure_id
+		    AND a.sleeping_until IS NULL
+		    AND (a.agent_override_until IS NULL OR a.agent_override_until <= NOW())
+		    AND (
+		      a.schedule_start_minute IS NULL
+		      OR a.schedule_end_minute IS NULL
+		      -- Off-shift: complement of the in-shift predicate in
+		      -- wakeExpiredNPCSleepers. Same CASE shape so the two
+		      -- expressions stay aligned if a future change touches
+		      -- the wrap-midnight handling.
+		      OR CASE
+		          WHEN a.schedule_start_minute <= a.schedule_end_minute THEN
+		              NOT ($1::int >= a.schedule_start_minute
+		                   AND $1::int <  a.schedule_end_minute)
+		          ELSE
+		              NOT ($1::int >= a.schedule_start_minute
+		                   OR  $1::int <  a.schedule_end_minute)
+		      END
+		    )`,
+		nowMinute,
+	)
+	if err != nil {
+		return fmt.Errorf("auto-bed NPC candidates query: %w", err)
+	}
+	type candidate struct {
+		ID          string
+		StructureID string
+	}
+	var candidates []candidate
+	for rows.Next() {
+		var c candidate
+		if err := rows.Scan(&c.ID, &c.StructureID); err != nil {
+			rows.Close()
+			return fmt.Errorf("auto-bed NPC scan: %w", err)
+		}
+		candidates = append(candidates, c)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("auto-bed NPC iter: %w", err)
+	}
+
+	for _, c := range candidates {
+		if _, err := app.executeNPCSleep(ctx, c.ID); err != nil {
+			log.Printf("auto-bed NPC executeNPCSleep(%s): %v", c.ID, err)
+			continue
+		}
+		// Refresh structure occupancy. Mirror of maybeNPCAutoSleep's
+		// tail — keeps any home==work structure's occupied/unoccupied
+		// visual state in sync now that the keeper is asleep.
+		app.refreshStructureOccupancyState(ctx, c.StructureID)
+	}
+	return nil
+}
+
 // executeNPCSleep beds an NPC. NPC analog of executePCSleep — sets
 // sleeping_until = NOW + npc_sleep_max_duration_hours and stamps
 // last_tiredness_recovery_at = NOW so the recovery sweep starts
@@ -824,29 +936,31 @@ func (app *App) executeNPCSleep(ctx context.Context, actorID string) (time.Time,
 }
 
 // wakeExpiredNPCSleepers clears sleeping_until on any NPC whose wake
-// condition has fired and broadcasts npc_sleep_ended for each. Three
+// condition has fired and broadcasts npc_sleep_ended for each. Two
 // wake conditions, ORed:
 //
 //   - sleeping_until <= NOW(): safety cap.
-//   - tiredness <= 0: rested (continuous recovery via
-//     tiredness_recovery_sweep brought them to 0).
 //   - ZBBS-HOME-262: current local minute-of-day is in the NPC's
 //     shift window. executeNPCSleep sets sleeping_until = NOW + 12h
-//     regardless of how close the actor's shift start is. An NPC
-//     who beds down ~an hour before dawn (the common case for
-//     keepers and morning-shift villagers) will otherwise sleep
-//     through almost their entire shift because tiredness recovery
-//     at 0.04/min only reaches 0 from a ~30 starting value over
-//     ~12.5h — strictly slower than the 12h cap, so the safety cap
-//     and tiredness floor both miss the shift-start boundary.
-//     Observed in prod 2026-05-11: Elizabeth Ellis (6:00-19:00
-//     shift) bed down at 5:19am EDT and Josiah Thorne (9:00-17:00
-//     shift) bed down at 8:49am EDT; both were still asleep at
-//     9:15am with tiredness already recovered to 2 and 8 respectively
-//     but stuck because neither cap had fired yet. Wake-at-shift
-//     fixes both forward (future sleeps cap naturally at shift
-//     start via this OR clause) and backward (already-asleep NPCs
-//     get woken at the next sweep tick).
+//     regardless of how close the actor's shift start is, so the
+//     safety cap on its own can leave an NPC asleep into their
+//     shift; wake-at-shift surfaces them on time.
+//
+// ZBBS-HOME-282: the third condition (tiredness <= 0) was removed
+// here. NPCs are not players — they should sleep through the night
+// like real villagers, not pop awake at 3am the moment recovery
+// completes. Previously, an NPC who bedded promptly at shift-end
+// would hit tiredness=0 a few hours later (4-10h depending on the
+// starting need value and recovery rate) and wake into the middle
+// of the night with nothing to do; they'd drift around the village
+// (or at home) and accumulate tiredness back up to "tired" tier
+// before their next shift started, perpetuating the village-wide
+// constant-tired equilibrium. Without the tiredness wake, a bedded
+// NPC stays asleep through to shift start (or the 12h cap, which
+// catches anyone whose schedule rolled past the cap), and starts
+// their shift fully rested. PC-side wakeExpiredSleepers keeps its
+// tiredness=0 wake (players are autonomous; auto-wake on rest is
+// the player-expected behavior).
 //
 // PC-side wakeExpiredSleepers also has a room_access checkout
 // branch; NPCs don't hold room_access today (they sleep at their
@@ -883,12 +997,9 @@ func (app *App) wakeExpiredNPCSleepers(ctx context.Context) error {
 		    AND a.sleeping_until IS NOT NULL
 		    AND (
 		      a.sleeping_until <= NOW()
-		      OR EXISTS (
-		        SELECT 1 FROM actor_need an
-		         WHERE an.actor_id = a.id
-		           AND an.key = 'tiredness'
-		           AND an.value <= 0
-		      )
+		      -- ZBBS-HOME-282: tiredness=0 wake removed; NPCs sleep
+		      -- through the night and wake on shift start, not on
+		      -- mid-recovery completion.
 		      OR (
 		        a.schedule_start_minute IS NOT NULL
 		        AND a.schedule_end_minute IS NOT NULL
