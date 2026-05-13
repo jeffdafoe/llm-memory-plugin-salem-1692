@@ -193,6 +193,18 @@ type Actor struct {
 
 	DwellCredits map[DwellCreditKey]*DwellCredit
 
+	// RestockPolicy carries this actor's produce/buy entries, unioned
+	// across their role attributes (tavernkeeper + worker, etc.). Read
+	// from actor_attribute.params.restock in legacy; nil for actors
+	// without a restock-bearing attribute.
+	RestockPolicy *RestockPolicy
+
+	// ProduceState carries the per-item production anchor — used by
+	// produce_tick to compute units owed since the last execution.
+	// One entry per item the actor produces; populated lazily on first
+	// observation.
+	ProduceState map[ItemKind]*ProduceState
+
 	// Free-form behavior specs (typed lazily per subsystem during port).
 	Attributes map[string][]byte
 }
