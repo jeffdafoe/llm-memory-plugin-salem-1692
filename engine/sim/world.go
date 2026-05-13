@@ -110,6 +110,10 @@ type World struct {
 	// (wholesale/retail prices).
 	Recipes map[ItemKind]*ItemRecipe
 
+	// Terrain — reference state, loaded once at startup. MapW * MapH
+	// bytes of per-tile terrain type. Hot-reload on SIGHUP if needed.
+	Terrain *Terrain
+
 	// Secondary indices — rebuildable from primary state at LoadWorld time
 	// and kept consistent by command handlers thereafter.
 	actorsByStructure map[StructureID]map[ActorID]struct{}
@@ -212,6 +216,12 @@ func LoadWorld(ctx context.Context, repo Repository) (*World, error) {
 		return nil, err
 	}
 	w.Recipes = recipes
+
+	terrain, err := repo.Terrain.Load(ctx)
+	if err != nil {
+		return nil, err
+	}
+	w.Terrain = terrain
 
 	villageObjects, err := repo.VillageObjects.LoadAll(ctx)
 	if err != nil {
