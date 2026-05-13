@@ -1043,6 +1043,17 @@ func get_input_eating_control() -> Control:
     return talk_sheet
 
 
+# Launcher chip (the "Talk" pill that appears when the panel is
+# minimized). Registered with camera._is_over_ui so main.gd's
+# click-to-walk handler skips clicks that land on the chip — without
+# this, tapping the chip to open the panel also issues a move_to.
+# Visibility flips with sheet_anchor, so _is_over_ui's
+# is_visible_in_tree() check naturally gates the block to the
+# minimized state.
+func get_launcher_control() -> Control:
+    return talk_launcher
+
+
 func open() -> void:
     if not pc_exists or huddle_members.is_empty():
         return
