@@ -1392,6 +1392,14 @@ func _on_pc_sleep_started(actor_id: String, wake_at_iso: String) -> void:
         sleep_fade.fade_to_sleep()
     if top_bar != null and top_bar.has_method("set_sleep_state"):
         top_bar.set_sleep_state(true, _pc_sleep_structure_label, wake_at_iso)
+    # Collapse the talk panel to its launcher chip — no one's going to
+    # talk to a sleeping PC, and the panel covers world view the player
+    # might want clear during the sleep overlay. minimize() is
+    # idempotent, so calling it when the panel is already minimized is
+    # a no-op. Wake does NOT auto-expand — the player taps the chip
+    # when they want chat back.
+    if talk_panel_layer != null and talk_panel_layer.has_method("minimize"):
+        talk_panel_layer.minimize()
     # Push an immediate snippet so the ticker carries flavor from the
     # bed-down moment instead of waiting up to DREAM_SNIPPET_INTERVAL_SEC
     # for the first scheduled tick.
