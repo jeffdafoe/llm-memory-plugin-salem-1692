@@ -263,8 +263,8 @@ func RunProduceTicker(ctx context.Context, w *World) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			_, err := w.Send(ApplyProduceTick(time.Now().UTC()))
-			if err != nil {
+			_, err := w.SendContext(ctx, ApplyProduceTick(time.Now().UTC()))
+			if err != nil && ctx.Err() == nil {
 				log.Printf("sim/produce_ticker: %v", err)
 			}
 		}

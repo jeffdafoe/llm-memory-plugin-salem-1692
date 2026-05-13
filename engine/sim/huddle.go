@@ -16,3 +16,25 @@ type Huddle struct {
 	StartedAt   time.Time
 	ConcludedAt *time.Time
 }
+
+// CloneHuddle returns a deep copy suitable for publication via Snapshot or
+// for serialization-equivalent boundaries (mem repo Seed / LoadAll /
+// SaveSnapshot). World goroutine mutations to the live Huddle (Members
+// add/remove, ConcludedAt rebind) won't leak into the returned copy.
+func CloneHuddle(h *Huddle) *Huddle {
+	if h == nil {
+		return nil
+	}
+	cp := *h
+	if h.Members != nil {
+		cp.Members = make(map[ActorID]struct{}, len(h.Members))
+		for k := range h.Members {
+			cp.Members[k] = struct{}{}
+		}
+	}
+	if h.ConcludedAt != nil {
+		t := *h.ConcludedAt
+		cp.ConcludedAt = &t
+	}
+	return &cp
+}

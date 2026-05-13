@@ -18,14 +18,14 @@ func NewHuddlesRepo() *HuddlesRepo {
 
 func (r *HuddlesRepo) Seed(huddles map[sim.HuddleID]*sim.Huddle) {
 	for id, h := range huddles {
-		r.huddles[id] = h
+		r.huddles[id] = sim.CloneHuddle(h)
 	}
 }
 
 func (r *HuddlesRepo) LoadAll(_ context.Context) (map[sim.HuddleID]*sim.Huddle, error) {
 	out := make(map[sim.HuddleID]*sim.Huddle, len(r.huddles))
 	for id, h := range r.huddles {
-		out[id] = h
+		out[id] = sim.CloneHuddle(h)
 	}
 	return out, nil
 }
@@ -33,7 +33,7 @@ func (r *HuddlesRepo) LoadAll(_ context.Context) (map[sim.HuddleID]*sim.Huddle, 
 func (r *HuddlesRepo) SaveSnapshot(_ context.Context, _ sim.Tx, huddles map[sim.HuddleID]*sim.Huddle) error {
 	r.huddles = make(map[sim.HuddleID]*sim.Huddle, len(huddles))
 	for id, h := range huddles {
-		r.huddles[id] = h
+		r.huddles[id] = sim.CloneHuddle(h)
 	}
 	return nil
 }

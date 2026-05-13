@@ -21,14 +21,14 @@ func NewStructuresRepo() *StructuresRepo {
 // world's named locations before LoadWorld.
 func (r *StructuresRepo) Seed(structures map[sim.StructureID]*sim.Structure) {
 	for id, s := range structures {
-		r.structures[id] = s
+		r.structures[id] = sim.CloneStructure(s)
 	}
 }
 
 func (r *StructuresRepo) LoadAll(_ context.Context) (map[sim.StructureID]*sim.Structure, error) {
 	out := make(map[sim.StructureID]*sim.Structure, len(r.structures))
 	for id, s := range r.structures {
-		out[id] = s
+		out[id] = sim.CloneStructure(s)
 	}
 	return out, nil
 }
@@ -36,7 +36,7 @@ func (r *StructuresRepo) LoadAll(_ context.Context) (map[sim.StructureID]*sim.St
 func (r *StructuresRepo) SaveSnapshot(_ context.Context, _ sim.Tx, structures map[sim.StructureID]*sim.Structure) error {
 	r.structures = make(map[sim.StructureID]*sim.Structure, len(structures))
 	for id, s := range structures {
-		r.structures[id] = s
+		r.structures[id] = sim.CloneStructure(s)
 	}
 	return nil
 }

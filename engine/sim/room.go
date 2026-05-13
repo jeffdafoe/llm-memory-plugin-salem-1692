@@ -77,13 +77,14 @@ type RoomAccess struct {
 	CreatedAt time.Time
 }
 
-// CommonRoomForStructure returns the ID of the "common" room in
+// commonRoomForStructure returns the ID of the "common" room in
 // structureID, or 0 if the structure has no common room declared.
 // Matches the legacy commonRoomForStructure soft-failure semantics
 // (callers leave InsideRoomID at zero when no common room exists).
 //
 // MUST be called from inside a Command.Fn (reads w.Structures).
-func CommonRoomForStructure(w *World, structureID StructureID) RoomID {
+// Unexported by design — see buildWalkGrid for the rationale.
+func commonRoomForStructure(w *World, structureID StructureID) RoomID {
 	s, ok := w.Structures[structureID]
 	if !ok {
 		return 0
@@ -96,7 +97,7 @@ func CommonRoomForStructure(w *World, structureID StructureID) RoomID {
 	return 0
 }
 
-// CanEnterRoom reports whether actor may enter room. Matches the legacy
+// canEnterRoom reports whether actor may enter room. Matches the legacy
 // gate exactly:
 //
 //   - common: always allow
@@ -104,8 +105,9 @@ func CommonRoomForStructure(w *World, structureID StructureID) RoomID {
 //   - staff: require actor.WorkStructureID == room.StructureID
 //   - unknown: fail closed
 //
-// MUST be called from inside a Command.Fn.
-func CanEnterRoom(w *World, actor *Actor, roomID RoomID) bool {
+// MUST be called from inside a Command.Fn. Unexported by design.
+// `now` lets callers control the expiry-clock for deterministic tests.
+func canEnterRoom(w *World, actor *Actor, roomID RoomID, now time.Time) bool {
 	if actor == nil || roomID == 0 {
 		return false
 	}
@@ -119,10 +121,19 @@ func CanEnterRoom(w *World, actor *Actor, roomID RoomID) bool {
 	case RoomKindPrivate:
 		key := RoomAccessKey{RoomID: roomID, Source: AccessSourceLedger}
 		ra, ok := actor.RoomAccess[key]
-		if !ok {
+		// Defensive nil guard: a map can carry a key with a nil value
+		// (e.g. a half-built test fixture). This is an auth gate — fail
+		// closed rather than risking a nil-deref panic.
+		if !ok || ra == nil || !ra.Active {
 			return false
 		}
-		return ra.Active
+		// Gate against expiry directly here so a request landing between
+		// ExpireRoomAccess sweeps doesn't get through on a stale Active=true
+		// row. Staff has nil ExpiresAt (never expires).
+		if ra.ExpiresAt != nil && !ra.ExpiresAt.After(now) {
+			return false
+		}
+		return true
 	case RoomKindStaff:
 		return actor.WorkStructureID == room.StructureID
 	default:

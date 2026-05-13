@@ -189,24 +189,26 @@ func RunNeedsTicker(ctx context.Context, w *World) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			runNeedsTickIteration(w)
+			runNeedsTickIteration(ctx, w)
 		}
 	}
 }
 
-func runNeedsTickIteration(w *World) {
+func runNeedsTickIteration(ctx context.Context, w *World) {
 	now := time.Now().UTC()
 	hourBoundary := now.Truncate(time.Hour)
 
 	// Snapshot the LastNeedsTickAt via a command so we read it consistent
 	// with any concurrent commits.
-	lastValue, err := w.Send(Command{
+	lastValue, err := w.SendContext(ctx, Command{
 		Fn: func(world *World) (any, error) {
 			return world.Environment.LastNeedsTickAt, nil
 		},
 	})
 	if err != nil {
-		log.Printf("sim/needs_tick: snapshot last: %v", err)
+		if ctx.Err() == nil {
+			log.Printf("sim/needs_tick: snapshot last: %v", err)
+		}
 		return
 	}
 	lastAt := lastValue.(time.Time)
@@ -215,7 +217,7 @@ func runNeedsTickIteration(w *World) {
 		// First run after deploy / process boot. Stamp the current hour
 		// boundary without incrementing (matches legacy behavior on
 		// NULL last_needs_tick_at).
-		_, _ = w.Send(Command{
+		_, _ = w.SendContext(ctx, Command{
 			Fn: func(world *World) (any, error) {
 				world.Environment.LastNeedsTickAt = hourBoundary
 				return nil, nil
@@ -237,9 +239,11 @@ func runNeedsTickIteration(w *World) {
 		cappedHours = MaxNeedsCatchupHours
 	}
 
-	res, err := w.Send(IncrementNeedsTick(cappedHours))
+	res, err := w.SendContext(ctx, IncrementNeedsTick(cappedHours))
 	if err != nil {
-		log.Printf("sim/needs_tick: increment failed: %v", err)
+		if ctx.Err() == nil {
+			log.Printf("sim/needs_tick: increment failed: %v", err)
+		}
 		return
 	}
 	touched := res.(int)
