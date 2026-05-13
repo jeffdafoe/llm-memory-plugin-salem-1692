@@ -6,11 +6,22 @@ import "time"
 type HuddleID string
 
 // Huddle is the set of actors who are conversationally co-present at one
-// structure within one scene. A scene may contain multiple huddles if the
-// physical layout fragments conversation (e.g. front room + back room).
+// structure. A huddle is the persistent co-location pocket — independent
+// of any single Scene (one huddle may be observed across many scenes over
+// its lifetime; one scene may observe many huddles).
+//
+// Single-goroutine ownership of huddle state means at most one active
+// huddle per structure by construction — the legacy parallel-huddle
+// consolidator (ZBBS-WORK-232) has no analog here because the race that
+// motivated it cannot occur.
+//
+// Membership is canonical on Members; Actor.CurrentHuddleID is a
+// denormalized back-reference kept in sync atomically by JoinHuddle /
+// LeaveHuddle / ConcludeHuddle. The invariant
+// "Huddle.Members[a] iff Actor[a].CurrentHuddleID == h.ID" holds across
+// every command-handler return.
 type Huddle struct {
 	ID          HuddleID
-	SceneID     SceneID
 	Members     map[ActorID]struct{}
 	StructureID StructureID
 	StartedAt   time.Time

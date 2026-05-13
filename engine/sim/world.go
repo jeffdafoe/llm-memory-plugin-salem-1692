@@ -161,6 +161,12 @@ type World struct {
 	// goroutine) use Add to make the bump observable.
 	WorldEventGen atomic.Uint64
 
+	// subscribers receive in-world Events emitted from command handlers.
+	// Registered via Subscribe before Run starts; each event is dispatched
+	// to every subscriber in registration order, synchronously inside the
+	// world goroutine. See events.go for the contract.
+	subscribers []EventSubscriber
+
 	repo Repository
 }
 
@@ -215,6 +221,12 @@ func LoadWorld(ctx context.Context, repo Repository) (*World, error) {
 		return nil, err
 	}
 	w.Huddles = huddles
+
+	scenes, err := repo.Scenes.LoadAll(ctx)
+	if err != nil {
+		return nil, err
+	}
+	w.Scenes = scenes
 
 	env, phase, settings, err := repo.Environment.Load(ctx)
 	if err != nil {
@@ -359,6 +371,34 @@ func (w *World) LifecycleContext() context.Context {
 // does not get to observe the outcome — use Send if you need the result.
 func (w *World) Submit(fn func(*World) (any, error)) {
 	w.cmds <- Command{Fn: fn}
+}
+
+// Subscribe registers an EventSubscriber to receive in-world Events emitted
+// by command handlers. Subscribers run synchronously inside the world
+// goroutine after each event is emitted; they may mutate world state
+// freely (atomic with the emitting command) but MUST NOT block on I/O or
+// call Send/SendContext (would deadlock the single goroutine).
+//
+// Safe to call (a) before Run has started, or (b) from inside a Command.Fn
+// (which runs on the world goroutine). Calling from an arbitrary goroutine
+// while Run is processing commands races against the dispatch loop in
+// emit — surface those registrations through a Command instead.
+//
+// Subscribers fire in registration order; later subscribers see any state
+// changes earlier subscribers made.
+func (w *World) Subscribe(s EventSubscriber) {
+	w.subscribers = append(w.subscribers, s)
+}
+
+// emit dispatches event evt to every registered subscriber. Called from
+// command Fn implementations after the underlying state mutation lands.
+// Inline dispatch keeps subscriber side effects atomic with the mutation
+// — readers of the next Snapshot see the post-mutation, post-subscriber
+// state.
+func (w *World) emit(evt Event) {
+	for _, s := range w.subscribers {
+		s.Handle(w, evt)
+	}
 }
 
 // Published returns the most recently published Snapshot. Safe to call

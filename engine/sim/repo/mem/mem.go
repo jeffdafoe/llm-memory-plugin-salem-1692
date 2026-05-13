@@ -2,9 +2,9 @@
 // interfaces, suitable for tests and local smoke runs without a Postgres
 // dependency.
 //
-// Sub-interfaces not yet implemented in v1 (Structures, Scenes, Orders,
-// Environment) return a "not implemented" error on use so tests touching
-// them fail fast with a clear message rather than silently passing.
+// Sub-interfaces not yet implemented in v1 (Orders) return a "not
+// implemented" error on use so tests touching them fail fast with a clear
+// message rather than silently passing.
 package mem
 
 import (
@@ -20,6 +20,7 @@ import (
 func NewRepository() (sim.Repository, *Handles) {
 	actors := NewActorsRepo()
 	huddles := NewHuddlesRepo()
+	scenes := NewScenesRepo()
 	env := NewEnvironmentRepo()
 	assets := NewAssetsRepo()
 	recipes := NewRecipesRepo()
@@ -29,6 +30,7 @@ func NewRepository() (sim.Repository, *Handles) {
 	h := &Handles{
 		Actors:         actors,
 		Huddles:        huddles,
+		Scenes:         scenes,
 		Environment:    env,
 		Assets:         assets,
 		Recipes:        recipes,
@@ -39,13 +41,13 @@ func NewRepository() (sim.Repository, *Handles) {
 	return sim.Repository{
 		Actors:         actors,
 		Huddles:        huddles,
+		Scenes:         scenes,
 		Environment:    env,
 		Assets:         assets,
 		Recipes:        recipes,
 		Terrain:        terrain,
 		Structures:     structures,
 		VillageObjects: villageObjects,
-		Scenes:         notImplScenes{},
 		Orders:         notImplOrders{},
 		PayLedger:      noopPayLedger{},
 		ActionLog:      noopActionLog{},
@@ -62,6 +64,7 @@ func NewRepository() (sim.Repository, *Handles) {
 type Handles struct {
 	Actors         *ActorsRepo
 	Huddles        *HuddlesRepo
+	Scenes         *ScenesRepo
 	Environment    *EnvironmentRepo
 	Assets         *AssetsRepo
 	Recipes        *RecipesRepo
@@ -73,15 +76,6 @@ type Handles struct {
 // errNotImpl is returned by sub-repos that haven't been ported into the
 // mem fake yet. Add the missing impl when the test requires it.
 var errNotImpl = errors.New("mem fake not implemented for this sub-repo yet — add it when the test requires it")
-
-type notImplScenes struct{}
-
-func (notImplScenes) LoadAll(_ context.Context) (map[sim.SceneID]*sim.Scene, error) {
-	return nil, errNotImpl
-}
-func (notImplScenes) SaveSnapshot(_ context.Context, _ sim.Tx, _ map[sim.SceneID]*sim.Scene) error {
-	return errNotImpl
-}
 
 type notImplOrders struct{}
 
