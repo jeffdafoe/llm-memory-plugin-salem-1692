@@ -24,6 +24,7 @@ func NewRepository() (sim.Repository, *Handles) {
 	assets := NewAssetsRepo()
 	recipes := NewRecipesRepo()
 	terrain := NewTerrainRepo()
+	structures := NewStructuresRepo()
 	villageObjects := NewVillageObjectsRepo()
 	h := &Handles{
 		Actors:         actors,
@@ -32,6 +33,7 @@ func NewRepository() (sim.Repository, *Handles) {
 		Assets:         assets,
 		Recipes:        recipes,
 		Terrain:        terrain,
+		Structures:     structures,
 		VillageObjects: villageObjects,
 	}
 	return sim.Repository{
@@ -41,8 +43,8 @@ func NewRepository() (sim.Repository, *Handles) {
 		Assets:         assets,
 		Recipes:        recipes,
 		Terrain:        terrain,
+		Structures:     structures,
 		VillageObjects: villageObjects,
-		Structures:     notImplStructures{},
 		Scenes:         notImplScenes{},
 		Orders:         notImplOrders{},
 		PayLedger:      noopPayLedger{},
@@ -64,21 +66,13 @@ type Handles struct {
 	Assets         *AssetsRepo
 	Recipes        *RecipesRepo
 	Terrain        *TerrainRepo
+	Structures     *StructuresRepo
 	VillageObjects *VillageObjectsRepo
 }
 
 // errNotImpl is returned by sub-repos that haven't been ported into the
 // mem fake yet. Add the missing impl when the test requires it.
 var errNotImpl = errors.New("mem fake not implemented for this sub-repo yet — add it when the test requires it")
-
-type notImplStructures struct{}
-
-func (notImplStructures) LoadAll(_ context.Context) (map[sim.StructureID]*sim.Structure, error) {
-	return nil, errNotImpl
-}
-func (notImplStructures) SaveSnapshot(_ context.Context, _ sim.Tx, _ map[sim.StructureID]*sim.Structure) error {
-	return errNotImpl
-}
 
 type notImplScenes struct{}
 

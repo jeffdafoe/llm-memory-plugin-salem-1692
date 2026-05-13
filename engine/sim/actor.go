@@ -148,6 +148,7 @@ type Actor struct {
 
 	// Spatial — current location.
 	InsideStructureID StructureID
+	InsideRoomID      RoomID // 0 when not in a room
 	CurrentX          int
 	CurrentY          int
 	CurrentHuddleID   HuddleID
@@ -204,6 +205,12 @@ type Actor struct {
 	// One entry per item the actor produces; populated lazily on first
 	// observation.
 	ProduceState map[ItemKind]*ProduceState
+
+	// RoomAccess — this actor's grants to enter private/staff rooms.
+	// Keyed by (RoomID, Source). Stamped by AssignBedroomForLodger
+	// (source=ledger) and flipped to Active=false by ExpireRoomAccess
+	// when ExpiresAt passes.
+	RoomAccess map[RoomAccessKey]*RoomAccess
 
 	// Free-form behavior specs (typed lazily per subsystem during port).
 	Attributes map[string][]byte

@@ -54,6 +54,11 @@ type WorldSettings struct {
 	// agent activity mid-session when a bad loop is being investigated.
 	AgentTicksPaused bool
 
+	// Lodging hour-of-day tunables (legacy lodging_check_in_hour /
+	// lodging_check_out_hour). Interpreted in WorldSettings.Location.
+	LodgingCheckInHour  int
+	LodgingCheckOutHour int
+
 	// Needs tunables. NeedsTickAmount is the per-hour increment magnitude
 	// applied to every eligible actor. NeedThresholds carries the per-need
 	// "red" boundary; TirednessCriticalThreshold is the absolute (not pct)
@@ -222,6 +227,12 @@ func LoadWorld(ctx context.Context, repo Repository) (*World, error) {
 		return nil, err
 	}
 	w.Terrain = terrain
+
+	structures, err := repo.Structures.LoadAll(ctx)
+	if err != nil {
+		return nil, err
+	}
+	w.Structures = structures
 
 	villageObjects, err := repo.VillageObjects.LoadAll(ctx)
 	if err != nil {

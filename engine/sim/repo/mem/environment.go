@@ -38,6 +38,8 @@ func NewEnvironmentRepo() *EnvironmentRepo {
 			NeedThresholds:             sim.DefaultNeedThresholds(),
 			TirednessCriticalThreshold: (sim.NeedMax*sim.DefaultTirednessCriticalThresholdPct + 99) / 100,
 			MovementFatiguePerTileX100: sim.DefaultMovementFatiguePerTileX100,
+			LodgingCheckInHour:         15,
+			LodgingCheckOutHour:        11,
 		},
 		phase: sim.PhaseDay,
 	}
