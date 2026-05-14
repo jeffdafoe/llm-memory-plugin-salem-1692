@@ -24,6 +24,7 @@ import "time"
 // on FromStructureID != ToStructureID; one that cares about arrival
 // subscribes to ActorArrived instead.
 type ActorMoved struct {
+	EventBase
 	ActorID           ActorID
 	FromPosition      Position
 	ToPosition        Position
@@ -42,6 +43,7 @@ func (ActorMoved) isSimEvent() {}
 // a structure and for StructureVisit destinations (the actor stands at a
 // visitor slot, outside).
 type ActorArrived struct {
+	EventBase
 	ActorID           ActorID
 	FinalPosition     Position
 	FinalStructureID  StructureID // empty = arrived outdoors / at a visitor slot
@@ -81,6 +83,7 @@ const (
 // movement completion should compare MovementAttemptID against the
 // actor's current MoveIntent.AttemptID before reacting.
 type ActorMoveStopped struct {
+	EventBase
 	ActorID           ActorID
 	Position          Position // where the actor stopped
 	StructureID       StructureID

@@ -123,6 +123,75 @@ type WarrantMeta struct {
 	TriggerActorID ActorID
 	Force          bool
 	Reason         WarrantReason
+
+	// PR 3a source metadata — makes a warrant causally identifiable so
+	// tryStampWarrant can dedup on (Kind, SourceEventID) and PR 3's
+	// perception can resolve the warrant's scene without reverse-scanning.
+	// All value-typed (plain IDs with empty sentinels, no pointers) so
+	// CloneActor's shallow Warrants copy stays correct.
+	//
+	// SourceEventID is the exact event that produced this warrant. It MUST
+	// be nonzero for PR 3 perception warrants — the three dedup paths key
+	// on it. A zero SourceEventID marks a warrant as "not event-sourced"
+	// (legacy / internal callsites predating PR 3 perception); those bypass
+	// dedup entirely, since (Kind, 0) would collapse unrelated warrants.
+	SourceEventID EventID
+	// RootEventID is a copy of the source event's causal root. Never a
+	// dedup key — distinct SourceEventIDs under the same root are distinct
+	// developments and must each stamp.
+	RootEventID EventID
+	// SourceActorID is the actor whose action produced the source event.
+	// Empty = none / bulk (e.g. a force-conclude eviction with no single
+	// trigger).
+	SourceActorID ActorID
+	// HuddleID / SceneID scope the warrant; empty = none. SceneID is load-
+	// bearing — it is step 1 of PR 3's scene-resolution order.
+	HuddleID HuddleID
+	SceneID  SceneID
+	// OccurredAt is the source event's wall-clock timestamp. Display /
+	// debug metadata only — EventID is the authoritative causal order.
+	OccurredAt time.Time
+}
+//
+// Zero-lineage invariant (PR 3a): a warrant either carries FULL event
+// lineage (SourceEventID != 0, with the rest of the source fields
+// populated from that event) or NONE (all source fields left at their
+// zero values). A nonzero RootEventID alongside a zero SourceEventID is
+// not a valid state — there is no partial "looks sourced" metadata. The
+// existing synchronous lifecycle stamp callsites (huddle join/leave/
+// conclude, arrival) are stamp-before-emit, so in PR 3a they produce
+// fully-zero, "not event-sourced" warrants; they are retrofitted with
+// real lineage in PR 3 (see the PR 3 design note).
+
+// WarrantSourceKey identifies the (warrant kind, source event) pair a
+// warrant came from. It is the single dedup key shared by all three of
+// tryStampWarrant's dedup paths — open-cycle, in-flight, and recently-
+// consumed. A single source event can produce different kinds for the
+// same actor, so Kind is part of the key.
+//
+// Dedup applies ONLY when SourceEventID != 0. A zero SourceEventID is the
+// "not event-sourced" sentinel; (Kind, 0) as a key would collapse
+// unrelated non-event-sourced warrants, so they bypass dedup. As a
+// consequence, a zero-SourceEventID key is NEVER stored in the in-flight
+// or recently-consumed sets either — sourceKeySet filters non-event-
+// sourced warrants out at consume time, so the sets only ever hold real
+// keys.
+type WarrantSourceKey struct {
+	Kind          WarrantKind
+	SourceEventID EventID
+}
+
+// sourceKey returns the WarrantSourceKey for this meta. The key is only
+// meaningful for dedup when SourceEventID != 0 — callers check that before
+// using it (eventSourced).
+func (m WarrantMeta) sourceKey() WarrantSourceKey {
+	return WarrantSourceKey{Kind: m.Kind(), SourceEventID: m.SourceEventID}
+}
+
+// eventSourced reports whether this meta carries a real source event and
+// therefore participates in tryStampWarrant's dedup paths.
+func (m WarrantMeta) eventSourced() bool {
+	return m.SourceEventID != 0
 }
 
 // Kind returns the WarrantKind of the meta's reason, or WarrantKindUnknown
@@ -145,14 +214,21 @@ func (m WarrantMeta) Kind() WarrantKind {
 //   - Not warranted: stamps WarrantedSince=now, picks a jitter from
 //     Settings.ReactorJitterMin..Max, stamps WarrantDueAt=now+jitter,
 //     initializes Warrants with [meta].
-//   - Idempotency on duplicate signal source: callers that want to dedup
-//     by (kind, triggerActor) must check Warrants themselves; the funnel
-//     does not de-duplicate by default.
 //
-// Tick-in-flight does NOT block stamping — fresh signals must accumulate
-// so they're available for the NEXT tick. The TickInFlight gate only
-// prevents the evaluator from re-emitting the same actor while their LLM
-// call is pending.
+// Source-aware dedup (PR 3a): an event-sourced warrant (SourceEventID
+// != 0) is dropped if its WarrantSourceKey is already (1) pending in the
+// open warrant cycle, (2) consumed into the in-flight tick attempt, or
+// (3) in the recently-consumed set within recentlyConsumedTTL. Together
+// these coalesce near-simultaneous multi-path triggers and suppress a
+// delayed duplicate of a stimulus a completed tick already addressed.
+// Warrants with SourceEventID == 0 ("not event-sourced") bypass dedup —
+// (Kind, 0) would collapse unrelated warrants.
+//
+// Tick-in-flight does NOT block stamping a NEW source — fresh signals must
+// accumulate so they're available for the NEXT tick. The TickInFlight gate
+// only prevents the evaluator from re-emitting the same actor while their
+// LLM call is pending; the in-flight DEDUP path above suppresses only an
+// exact-same-source duplicate, never a distinct development.
 //
 // Unexported by design — warrant stamping is the privilege of mutation
 // commands inside Command.Fn. External callers reach it through Commands.
@@ -160,6 +236,30 @@ func tryStampWarrant(w *World, actor *Actor, meta WarrantMeta, now time.Time) {
 	if actor == nil || meta.Reason == nil {
 		return
 	}
+
+	// Source-aware dedup. Only event-sourced warrants participate; reads
+	// from nil maps are safe (zero value, ok=false), so no nil-guards.
+	if meta.eventSourced() {
+		key := meta.sourceKey()
+		// 1. Open-cycle: same source already pending this cycle.
+		for _, pending := range actor.Warrants {
+			if pending.eventSourced() && pending.sourceKey() == key {
+				return
+			}
+		}
+		// 2. In-flight: same source consumed into the attempt mid-LLM-call.
+		if _, ok := actor.inFlightSourceKeys[key]; ok {
+			return
+		}
+		// 3. Recently-consumed: a completed attempt addressed this exact
+		//    source within the TTL window. Expired entries are ignored
+		//    here and swept on the next insert (rememberConsumedSourceKey).
+		if ts, ok := actor.recentlyConsumedSourceKeys[key]; ok &&
+			now.Sub(ts) < recentlyConsumedTTL {
+			return
+		}
+	}
+
 	if actor.WarrantedSince != nil {
 		actor.Warrants = appendCappedWarrant(actor.Warrants, meta, w.Settings.MaxWarrantsPerActor)
 		return
@@ -221,6 +321,8 @@ func resetReactorStateOnLoad(a *Actor) {
 	a.TickInFlight = false
 	a.TickAttemptID = ""
 	a.RecentReactorTicks = nil
+	a.inFlightSourceKeys = nil
+	a.recentlyConsumedSourceKeys = nil
 }
 
 // actorReactorDue is the cheap pre-check the evaluator runs against every
@@ -277,6 +379,29 @@ func actorCanReactNow(w *World, a *Actor) (eligible bool, stale bool) {
 	return true, false
 }
 
+// TickAdmissionController decides whether the reactor evaluator may admit
+// a tick right now — i.e. whether there is downstream capacity to actually
+// run it. The evaluator consults CanAdmit BEFORE consuming an actor's
+// warrants (Option A — admit before consume), so a "no" leaves the
+// warrants open and nothing is lost.
+//
+// The substrate owns this interface; the default is alwaysAdmit, so the
+// evaluator runs standalone in substrate tests with no handler wired. PR
+// 3's worker pool implements it (CanAdmit reports len(jobChan) <
+// cap(jobChan)) and MUST return false once the pool is stopping/stopped,
+// otherwise an admit-then-send-to-closed-channel race is possible during
+// shutdown.
+type TickAdmissionController interface {
+	CanAdmit() bool
+}
+
+// alwaysAdmit is the default TickAdmissionController — it admits every
+// tick. With no PR 3 worker pool wired, the evaluator behaves exactly as
+// it did before admission control existed.
+type alwaysAdmit struct{}
+
+func (alwaysAdmit) CanAdmit() bool { return true }
+
 // checkRateGate returns true when the actor is below the per-minute cap.
 // The cap is a "gross gate" — settings-driven, no cost calculation. cap
 // <= 0 disables the gate. RecentReactorTicks is the per-actor ring of
@@ -296,6 +421,18 @@ func checkRateGate(a *Actor, now time.Time, cap int, rateWindow time.Duration) b
 		}
 	}
 	return count < cap
+}
+
+// lastReactorTickAt returns the timestamp of the actor's most recent
+// reactor-tick emission — the newest entry of RecentReactorTicks. ok is
+// false when the actor has never ticked (nil/empty ring); the
+// MinReactorTickGap floor does not apply to a first tick.
+func lastReactorTickAt(a *Actor) (time.Time, bool) {
+	if a.RecentReactorTicks == nil || a.RecentReactorTicks.Len() == 0 {
+		return time.Time{}, false
+	}
+	snap := a.RecentReactorTicks.Snapshot()
+	return snap[len(snap)-1], true
 }
 
 // recordReactorTick appends now to the actor's RecentReactorTicks ring,
@@ -325,13 +462,21 @@ func recordReactorTick(a *Actor, now time.Time, cap int) {
 	a.RecentReactorTicks.Push(now)
 }
 
-// newTickAttemptID mints an opaque generation string for a reactor tick
-// attempt. Used to disambiguate stale completions: a completion command
-// is only honored when its AttemptID matches the actor's current
+// TickAttemptID is the generation identifier for a reactor tick attempt.
+// It disambiguates stale completions: CompleteReactorTick is honored only
+// when its AttemptID matches the actor's current TickAttemptID, so a late-
+// returning timed-out attempt cannot clear a newer attempt's in-flight
+// flag. Minted by newTickAttemptID; ephemeral — wiped on LoadWorld with
+// the rest of the reactor state.
+type TickAttemptID string
+
+// newTickAttemptID mints an opaque generation identifier for a reactor
+// tick attempt. Used to disambiguate stale completions: a completion
+// command is only honored when its AttemptID matches the actor's current
 // TickAttemptID. Implementation is random-hex (same idiom as huddle/scene
 // IDs) — sortability isn't required since the comparison is exact.
-func newTickAttemptID() string {
-	return "tk-" + randomHex(12)
+func newTickAttemptID() TickAttemptID {
+	return TickAttemptID("tk-" + randomHex(12))
 }
 
 // Defaults applied when WorldSettings hasn't been initialized (e.g. test
@@ -347,4 +492,74 @@ const (
 	defaultMaxWarrantsPerActor     = 16
 	defaultRateWindow              = time.Minute
 	defaultRecentReactorTicksCap   = 32
+
+	// defaultMinReactorTickGap is the per-actor minimum wall-clock gap
+	// between reactor ticks when WorldSettings.MinReactorTickGap is unset.
+	// A pacing floor independent of the optional per-minute rate cap.
+	defaultMinReactorTickGap = 5 * time.Second
+
+	// defaultAdmissionBackoff is how far the evaluator pushes an actor's
+	// WarrantDueAt when tick admission control turns it away, when
+	// WorldSettings.AdmissionBackoff is unset. ≈ the evaluator cadence, so
+	// a deferred warrant is re-examined on roughly the next scan.
+	defaultAdmissionBackoff = 250 * time.Millisecond
+
+	// recentlyConsumedTTL / recentlyConsumedCap bound the per-actor
+	// recently-consumed source-key set — tryStampWarrant's third dedup
+	// path. A consumed key suppresses a delayed duplicate of the same
+	// source event for up to the TTL; the cap is a hard ceiling with
+	// expired-first-then-oldest eviction (see rememberConsumedSourceKey).
+	recentlyConsumedTTL = 5 * time.Minute
+	recentlyConsumedCap = 256
 )
+
+// sourceKeySet collects the WarrantSourceKeys of the event-sourced
+// warrants in list into a set. Returns nil when none are event-sourced;
+// a nil in-flight set is the valid "no source keys consumed" state.
+// Called at ReactorTickDue emit to record what the attempt consumed.
+func sourceKeySet(list []WarrantMeta) map[WarrantSourceKey]struct{} {
+	var set map[WarrantSourceKey]struct{}
+	for _, m := range list {
+		if !m.eventSourced() {
+			continue
+		}
+		if set == nil {
+			set = make(map[WarrantSourceKey]struct{})
+		}
+		set[m.sourceKey()] = struct{}{}
+	}
+	return set
+}
+
+// rememberConsumedSourceKey records key in the actor's recently-consumed
+// set with insertion time now, allocating the map lazily. When the set is
+// already at recentlyConsumedCap it first sweeps entries older than
+// recentlyConsumedTTL, then — if still at cap — evicts the single oldest
+// entry by insertion time, before inserting. Called by CompleteReactorTick
+// when a terminal status marks a source key as addressed.
+func rememberConsumedSourceKey(a *Actor, key WarrantSourceKey, now time.Time) {
+	if a.recentlyConsumedSourceKeys == nil {
+		a.recentlyConsumedSourceKeys = make(map[WarrantSourceKey]time.Time)
+	}
+	m := a.recentlyConsumedSourceKeys
+	if len(m) >= recentlyConsumedCap {
+		cutoff := now.Add(-recentlyConsumedTTL)
+		for k, ts := range m {
+			if ts.Before(cutoff) {
+				delete(m, k)
+			}
+		}
+		for len(m) >= recentlyConsumedCap {
+			var oldestKey WarrantSourceKey
+			var oldestTS time.Time
+			first := true
+			for k, ts := range m {
+				if first || ts.Before(oldestTS) {
+					oldestKey, oldestTS, first = k, ts, false
+				}
+			}
+			delete(m, oldestKey)
+		}
+	}
+	m[key] = now
+}

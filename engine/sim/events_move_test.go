@@ -11,9 +11,9 @@ import (
 // would fail to build if the isSimEvent / isWarrantReason markers were
 // dropped.
 var (
-	_ sim.Event = sim.ActorMoved{}
-	_ sim.Event = sim.ActorArrived{}
-	_ sim.Event = sim.ActorMoveStopped{}
+	_ sim.Event = &sim.ActorMoved{}
+	_ sim.Event = &sim.ActorArrived{}
+	_ sim.Event = &sim.ActorMoveStopped{}
 
 	_ sim.WarrantReason = sim.ArrivalWarrantReason{}
 )

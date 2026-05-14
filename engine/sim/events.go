@@ -20,9 +20,63 @@ import "time"
 // a new side effect (e.g. "warn the LLM about loop patterns") would have
 // meant touching the lifecycle primitive. Here, lifecycle commands emit
 // typed events; concerns subscribe independently.
+//
+// Every Event also carries causal identity (EventID + RootEventID) stamped
+// by World.emit — see EventBase. The setEventBase mutation path is
+// unexported (pointer receiver), which both keeps the Event set closed at
+// the sim boundary AND makes every concrete event pointer-only: only
+// *ConcreteEvent satisfies Event, never the value.
 type Event interface {
 	isSimEvent()
+
+	// EventID is the event's unique per-run identifier.
+	EventID() EventID
+	// RootEventID is the EventID of the cascade's causal root.
+	RootEventID() EventID
+	// setEventBase stamps identity at emit time. Unexported — only
+	// World.emit assigns IDs, and the pointer receiver keeps the Event
+	// set closed (external packages can neither emit nor forge identity).
+	setEventBase(id, root EventID)
 }
+
+// EventID uniquely identifies an emitted event within a single world run.
+// Assigned by World.emit from a plain monotonic counter — the world
+// goroutine is the only emitter, so no atomic is needed. EventID(0) is the
+// reserved invalid/unset sentinel: the counter starts at 1, so a real
+// emitted event never has ID 0. The monotonic order is also a free total
+// emission order PR 3's prompt builder relies on.
+//
+// EventID is per-run only — it is NOT persisted across the checkpoint
+// boundary (warrants and event identity stay ephemeral).
+type EventID uint64
+
+// EventBase carries the causal identity every Event is stamped with at
+// emit time. It is embedded BY VALUE (not *EventBase) in every concrete
+// event type. A pointer embed would create a nil-base hazard — a
+// zero-value event pointer would satisfy Event with a nil base, and
+// setEventBase would panic. Value embedding has no nil risk and still
+// yields pointer-only events: setEventBase has a pointer receiver, so
+// only *ConcreteEvent satisfies Event, never the bare value.
+type EventBase struct {
+	id     EventID
+	rootID EventID
+}
+
+// EventID returns the event's unique per-run identifier, or 0 if the event
+// has not been emitted yet.
+func (b *EventBase) EventID() EventID { return b.id }
+
+// RootEventID returns the EventID of the causal root of the cascade this
+// event belongs to. A fresh-origin event is its own root; a consequent
+// event (emitted by a subscriber, or by a worker tool-call command
+// continuing the tick) inherits the triggering event's root.
+func (b *EventBase) RootEventID() EventID { return b.rootID }
+
+// setEventBase stamps identity onto the event. Unexported with a pointer
+// receiver: it is the mutation path World.emit uses to assign IDs, and the
+// pointer receiver is what keeps the Event set closed at the sim package
+// boundary.
+func (b *EventBase) setEventBase(id, root EventID) { b.id, b.rootID = id, root }
 
 // EventSubscriber consumes Events emitted by command handlers. Handle
 // runs inline in the world goroutine after the command's mutation lands,
@@ -51,6 +105,7 @@ func (f SubscriberFunc) Handle(w *World, evt Event) { f(w, evt) }
 // directly or use the helper OriginStructureID() for the legacy
 // "structure-id-or-empty" pattern.
 type SceneMinted struct {
+	EventBase
 	SceneID        SceneID
 	OriginKind     string
 	Bound          SceneBound
@@ -79,6 +134,7 @@ func (SceneMinted) isSimEvent() {}
 // emitted separately as ActorMet events so subscribers (acquaintance
 // reactor, future relationship reactor) don't have to derive pairs.
 type HuddleJoined struct {
+	EventBase
 	ActorID      ActorID
 	HuddleID     HuddleID
 	SceneID      SceneID
@@ -95,6 +151,7 @@ func (HuddleJoined) isSimEvent() {}
 // the huddle becomes empty, a HuddleConcluded event is emitted in
 // addition to (and after) HuddleLeft.
 type HuddleLeft struct {
+	EventBase
 	ActorID          ActorID
 	HuddleID         HuddleID
 	StructureID      StructureID
@@ -109,6 +166,7 @@ func (HuddleLeft) isSimEvent() {}
 // (or, for force-conclude, no HuddleLeft) for the last departing
 // member.
 type HuddleConcluded struct {
+	EventBase
 	HuddleID    HuddleID
 	StructureID StructureID
 	At          time.Time
@@ -126,6 +184,7 @@ func (HuddleConcluded) isSimEvent() {}
 // inside their handler — the event itself is a single pair (A joined,
 // B was already there).
 type ActorMet struct {
+	EventBase
 	A, B     ActorID
 	HuddleID HuddleID
 	At       time.Time
@@ -152,8 +211,9 @@ func (ActorMet) isSimEvent() {}
 // goroutine for seconds). Pattern: copy IDs + AttemptID + Warrants into a
 // worker queue; the worker reads world.Published() for perception build.
 type ReactorTickDue struct {
+	EventBase
 	ActorID        ActorID
-	AttemptID      string
+	AttemptID      TickAttemptID
 	Warrants       []WarrantMeta // snapshot at emit; consumed from actor
 	WarrantedSince time.Time     // when the warrant cycle began
 	DueAt          time.Time     // when the warrant became due (= WarrantedSince + jitter)

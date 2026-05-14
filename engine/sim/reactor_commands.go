@@ -45,45 +45,204 @@ type CompleteReactorTickResult struct {
 	Stale bool
 }
 
-// TickResult is the slim outcome of an LLM tick. PR 2 ships the type as a
-// placeholder so the completion command signature is stable; PR 3 fills
-// in what the tick handler returns (tool calls applied, speech emitted,
-// etc.).
+// TickTerminalStatus enumerates how a reactor tick attempt ended. PR 3a
+// defines it because CompleteReactorTick's terminal-status warrant policy
+// is the consumer; PR 3's harness is the producer. The policy switch has
+// a default branch, so adding a status later is safe — but the set below
+// covers every outcome PR 3's harness produces.
+type TickTerminalStatus int
+
+const (
+	// TickStatusUnknown is the zero value — an unset status, i.e. the PR 2
+	// placeholder TickResult{}. CompleteReactorTick treats it as a minimal
+	// completion: clear the attempt, move nothing to recently-consumed,
+	// carry nothing forward.
+	TickStatusUnknown TickTerminalStatus = iota
+	// TickStatusSuccess — the turn completed normally.
+	TickStatusSuccess
+	// TickStatusDone — the turn ended via the terminal `done` tool.
+	TickStatusDone
+	// TickStatusBudgetForced — the turn hit the iteration budget and was
+	// force-terminated; its rendered inputs were still addressed.
+	TickStatusBudgetForced
+	// TickStatusFailedBeforeRender — an LLM / render / infra failure before
+	// the actor could perceive the stimulus. Nothing was addressed.
+	TickStatusFailedBeforeRender
+	// TickStatusFailedAfterRender — a failure after the prompt rendered but
+	// before clean completion. Rendered inputs count as addressed; the rest
+	// carry forward.
+	TickStatusFailedAfterRender
+	// TickStatusStale — the attempt was superseded. CompleteReactorTick
+	// detects this from the AttemptID mismatch and returns before the
+	// policy runs, so this value is informational only.
+	TickStatusStale
+	// TickStatusShutdown — the world is shutting down. Treated like a
+	// before-render failure for warrant purposes: nothing addressed, the
+	// consumed batch carries forward (when the world persists).
+	TickStatusShutdown
+)
+
+// TickResult is the outcome of an LLM tick, handed to CompleteReactorTick.
+// PR 2 shipped it as an empty placeholder; PR 3a adds the two fields its
+// warrant-lifecycle behavior reads — TerminalStatus and UnaddressedWarrants
+// — and PR 3 (the 3d harness) adds the remaining diagnostic fields
+// (IterationCount, ToolsRequested, StaleStage, ...) and populates all of
+// them. PR 3a-era callers pass TickResult{}, which is a valid minimal
+// completion (TickStatusUnknown).
 type TickResult struct {
-	// Reserved for PR 3. Empty in PR 2.
+	// TerminalStatus is how the tick ended — it selects the terminal-status
+	// warrant policy in CompleteReactorTick (see applyTerminalWarrantPolicy).
+	TerminalStatus TickTerminalStatus
+
+	// UnaddressedWarrants are warrants the turn consumed but could not
+	// address — dropped by a prompt length/size cap, never rendered, or
+	// (for a before-render failure) the entire consumed batch. PR 3's
+	// harness collects them; CompleteReactorTick re-opens them directly so
+	// they fire again, and excludes their source keys from recently-
+	// consumed suppression. PR 3 populates this; nil in PR 2 / PR 3a.
+	UnaddressedWarrants []WarrantMeta
 }
 
 // CompleteReactorTick returns a Command that records the completion of an
 // in-flight reactor tick. The command:
 //
-//   - Returns Stale=true with no mutation if the AttemptID doesn't match
-//     the actor's current TickAttemptID. This catches the case where a
-//     timed-out attempt-1 worker returns AFTER attempt-2 has started —
-//     without the check, attempt-1's completion would clear attempt-2's
-//     in-flight flag and the world would think no tick was running.
+//   - Returns Stale=true with no mutation unless the actor is genuinely
+//     mid-tick under THIS exact attempt — TickInFlight set, attemptID
+//     non-empty, and matching the actor's current TickAttemptID. This
+//     catches a timed-out attempt-1 completing AFTER attempt-2 has started
+//     (attempt-1 must not clear attempt-2's in-flight flag) AND a stray
+//     completion against an idle actor: the zero value of TickAttemptID is
+//     "", so without the TickInFlight / non-empty guards a
+//     CompleteReactorTick(id, "", ...) would match an idle actor and
+//     wrongly run the warrant policy. A stale completion touches nothing.
 //
-//   - On match: clears TickInFlight and TickAttemptID. Does NOT clear
-//     WarrantedSince / WarrantDueAt / Warrants — a fresh warrant cycle
-//     may have started while the LLM call was pending and must survive
-//     the completion to fire on the next evaluator pass.
+//   - On a matching attempt: applies the terminal-status warrant policy
+//     (see applyTerminalWarrantPolicy) — carry-forward of unaddressed
+//     warrants and the move of addressed source keys into the recently-
+//     consumed dedup set — then clears TickInFlight, TickAttemptID, and
+//     inFlightSourceKeys. It does NOT clear a fresh warrant cycle stamped
+//     while the LLM call was pending: WarrantedSince / WarrantDueAt /
+//     Warrants for a NEW source survive completion to fire on the next
+//     evaluator pass.
 //
-// Result handling (applying tool calls, mutating state per the LLM's
-// returned actions) is PR 3's responsibility — this command just signals
-// "the LLM round-trip finished for attempt X."
-func CompleteReactorTick(actorID ActorID, attemptID string, _ TickResult) Command {
+// now is the wall-clock completion time, used for the recently-consumed
+// TTL stamp and for any carry-forward warrant cycle's WarrantDueAt jitter.
+//
+// Result handling beyond the warrant lifecycle (applying tool calls — they
+// self-apply as their own guarded commands) is PR 3's responsibility; the
+// TickResult fields PR 3a reads are TerminalStatus and UnaddressedWarrants.
+func CompleteReactorTick(actorID ActorID, attemptID TickAttemptID, result TickResult, now time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
 			actor, ok := w.Actors[actorID]
 			if !ok {
 				return CompleteReactorTickResult{}, fmt.Errorf("actor %q not found", actorID)
 			}
-			if actor.TickAttemptID != attemptID {
+			// Stale unless the actor is genuinely mid-tick under this exact
+			// attempt. The TickInFlight + non-empty guards matter because
+			// the zero value of TickAttemptID is also "" — without them a
+			// stray CompleteReactorTick(id, "", ...) would match an idle
+			// actor and wrongly run the warrant policy on it.
+			if !actor.TickInFlight || attemptID == "" || actor.TickAttemptID != attemptID {
 				return CompleteReactorTickResult{Stale: true}, nil
 			}
+
+			// Apply the terminal-status warrant policy BEFORE clearing the
+			// in-flight markers — the policy reads inFlightSourceKeys.
+			applyTerminalWarrantPolicy(w, actor, result, now)
+
 			actor.TickInFlight = false
 			actor.TickAttemptID = ""
+			actor.inFlightSourceKeys = nil
 			return CompleteReactorTickResult{Stale: false}, nil
 		},
+	}
+}
+
+// applyTerminalWarrantPolicy resolves a completing tick attempt's consumed
+// source keys per the terminal-status policy table. Called by
+// CompleteReactorTick on a matching (non-stale) attempt, before the
+// in-flight markers are cleared.
+//
+// The attempt's consumed keys are in actor.inFlightSourceKeys.
+// result.UnaddressedWarrants (populated by PR 3) names the warrants the
+// turn could not address — dropped by a prompt cap, never rendered, or,
+// for a before-render failure, the entire consumed batch. They are
+// re-opened directly (reopenWarrants), never via tryStampWarrant: their
+// source keys are still in the in-flight set and the addressed ones are
+// about to land in recently-consumed, so a normal re-stamp would be
+// dedup-rejected.
+//
+// "Addressed" keys = inFlightSourceKeys minus the carried-forward keys.
+// Whether the addressed keys move into recently-consumed depends on the
+// terminal status (terminalStatusAddresses):
+//
+//   success / done / budget-forced / failed-after-render — the turn
+//     perceived and addressed those inputs; addressed keys move into
+//     recently-consumed, suppressing a delayed duplicate for the TTL.
+//   failed-before-render / shutdown — the actor never perceived the
+//     stimulus (or the world is going away): move nothing; PR 3 carries
+//     the whole consumed set forward via UnaddressedWarrants.
+//   unknown (PR 2 placeholder TickResult{}) — minimal completion: with no
+//     carried-forward warrants and a non-addressing status, this re-opens
+//     nothing and moves nothing. The attempt is simply cleared.
+func applyTerminalWarrantPolicy(w *World, actor *Actor, result TickResult, now time.Time) {
+	// Carry-forward first — re-open the unaddressed warrants directly,
+	// bypassing tryStampWarrant's dedup.
+	reopenWarrants(w, actor, result.UnaddressedWarrants, now)
+
+	if !terminalStatusAddresses(result.TerminalStatus) {
+		return
+	}
+
+	// Addressed keys = consumed keys minus the carried-forward keys. Move
+	// them into the recently-consumed dedup set.
+	carried := make(map[WarrantSourceKey]struct{}, len(result.UnaddressedWarrants))
+	for _, m := range result.UnaddressedWarrants {
+		if m.eventSourced() {
+			carried[m.sourceKey()] = struct{}{}
+		}
+	}
+	for key := range actor.inFlightSourceKeys {
+		if _, isCarried := carried[key]; isCarried {
+			continue
+		}
+		rememberConsumedSourceKey(actor, key, now)
+	}
+}
+
+// terminalStatusAddresses reports whether a terminal status means the turn
+// actually perceived and addressed its inputs — i.e. whether its addressed
+// source keys should move into the recently-consumed dedup set. The
+// default branch (failed-before-render, shutdown, unknown, any future
+// status) is the conservative "not addressed — move nothing".
+func terminalStatusAddresses(s TickTerminalStatus) bool {
+	switch s {
+	case TickStatusSuccess, TickStatusDone, TickStatusBudgetForced, TickStatusFailedAfterRender:
+		return true
+	default:
+		return false
+	}
+}
+
+// reopenWarrants re-opens warrants directly onto the actor, bypassing
+// tryStampWarrant's dedup — used by carry-forward, where the warrants'
+// source keys are still in the in-flight set (and the addressed ones are
+// about to land in recently-consumed), so a normal re-stamp would be
+// rejected. An existing open cycle's WarrantedSince / WarrantDueAt are
+// preserved; a fresh cycle (now + jitter) starts when the actor has none.
+func reopenWarrants(w *World, actor *Actor, metas []WarrantMeta, now time.Time) {
+	if len(metas) == 0 {
+		return
+	}
+	if actor.WarrantedSince == nil {
+		t := now
+		actor.WarrantedSince = &t
+		due := now.Add(pickWarrantJitter(w.Settings, now))
+		actor.WarrantDueAt = &due
+	}
+	for _, m := range metas {
+		actor.Warrants = appendCappedWarrant(actor.Warrants, m, w.Settings.MaxWarrantsPerActor)
 	}
 }
 
@@ -99,15 +258,24 @@ func CompleteReactorTick(actorID ActorID, attemptID string, _ TickResult) Comman
 //     warrants (returns stale=true) are cleared inline; the warrant cycle
 //     is dropped — the conversational context no longer applies.
 //
-//  2. checkRateGate enforces MaxReactorTicksPerActorPerMinute. Capped
-//     actors get their WarrantDueAt pushed to the next allowed time
-//     rather than dropped — the warrant survives, just delayed.
+//  2. MinReactorTickGap enforces a per-actor pacing floor; checkRateGate
+//     enforces the optional per-minute cap (MaxReactorTicksPerActorPer-
+//     Minute). An actor that trips either gets its WarrantDueAt pushed
+//     rather than dropped — the warrant survives, just delayed. A Force
+//     warrant bypasses both pacing gates.
 //
-//  3. Warrant is consumed at EMIT time (clearWarrant) — see reactor.go.
-//     TickInFlight + TickAttemptID set. RecentReactorTicks ring appended
-//     for the rate-gate window count.
+//  3. TickAdmissionController.CanAdmit gates on downstream capacity
+//     (Option A — admit before consume). A "no" pushes WarrantDueAt by
+//     AdmissionBackoff, writes a `deferred` telemetry record, and emits
+//     nothing — the warrants stay OPEN. Force does NOT bypass this:
+//     admission is real capacity, not pacing.
 //
-//  4. ReactorTickDue emitted with the consumed Warrants list.
+//  4. Warrant is consumed at EMIT time (clearWarrant) — see reactor.go.
+//     TickInFlight + TickAttemptID set, inFlightSourceKeys recorded from
+//     the consumed warrants, RecentReactorTicks ring appended for the
+//     rate-gate window count.
+//
+//  5. ReactorTickDue emitted with the consumed Warrants list.
 //
 // After the scan, the next AfterFunc evaluation is re-armed via
 // armNextEvaluation. Idempotent re-arming: if a re-arm already happened
@@ -141,6 +309,24 @@ func EvaluateReactors(now time.Time) Command {
 					continue
 				}
 
+				// Per-actor minimum tick gap — an always-on pacing floor,
+				// separate from the optional per-minute rate cap below. A
+				// warrant coming due inside the gap has its WarrantDueAt
+				// pushed to the gap boundary. Force bypasses it (same as
+				// the rate gate): an admin / emergency tick must fire
+				// regardless of pacing.
+				if !hasForcedWarrant(actor.Warrants) {
+					gap := w.Settings.MinReactorTickGap
+					if gap <= 0 {
+						gap = defaultMinReactorTickGap
+					}
+					if last, ok := lastReactorTickAt(actor); ok && now.Sub(last) < gap {
+						next := last.Add(gap)
+						actor.WarrantDueAt = &next
+						continue
+					}
+				}
+
 				// Rate-gate check. Capped actors get their fire delayed to
 				// the next-allowed boundary (the cap'th-oldest entry in
 				// the window expires at that time). The cap is a
@@ -156,6 +342,31 @@ func EvaluateReactors(now time.Time) Command {
 					continue
 				}
 
+				// Tick admission control (Option A — admit before consume).
+				// If downstream capacity is unavailable, push the warrant
+				// out by AdmissionBackoff and emit nothing — the warrants
+				// stay OPEN, so no signal is lost. Force does NOT bypass
+				// this: admission is real downstream capacity, not pacing;
+				// emitting into a full pool would drop the job. A `deferred`
+				// telemetry record is written so the deferral is visible.
+				if !w.tickAdmission.CanAdmit() {
+					backoff := w.Settings.AdmissionBackoff
+					if backoff <= 0 {
+						backoff = defaultAdmissionBackoff
+					}
+					next := now.Add(backoff)
+					actor.WarrantDueAt = &next
+					if w.repo.TickTelemetry != nil {
+						w.repo.TickTelemetry.WriteTickTelemetry(TickTelemetryRecord{
+							At:      now,
+							ActorID: actor.ID,
+							Kind:    "deferred",
+							Detail:  map[string]string{"gate": "admission"},
+						})
+					}
+					continue
+				}
+
 				// Snapshot the warrant cycle metadata BEFORE clearing.
 				warrantsCopy := append([]WarrantMeta(nil), actor.Warrants...)
 				warrantedSince := *actor.WarrantedSince
@@ -164,9 +375,13 @@ func EvaluateReactors(now time.Time) Command {
 				clearWarrant(actor)
 				actor.TickInFlight = true
 				actor.TickAttemptID = newTickAttemptID()
+				// Record which source events this attempt consumed — the
+				// in-flight dedup path reads this set, and CompleteReactorTick
+				// resolves it under the terminal-status policy.
+				actor.inFlightSourceKeys = sourceKeySet(warrantsCopy)
 				recordReactorTick(actor, now, rateCap)
 
-				w.emit(ReactorTickDue{
+				w.emit(&ReactorTickDue{
 					ActorID:        actor.ID,
 					AttemptID:      actor.TickAttemptID,
 					Warrants:       warrantsCopy,

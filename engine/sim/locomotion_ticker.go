@@ -228,7 +228,7 @@ func advanceActorLocomotion(w *World, actor *Actor, grid *WalkGrid, now time.Tim
 	actor.CurrentY = nextTile.Y
 	updateInsideStructureIDFromTileOwnership(w, actor)
 
-	w.emit(ActorMoved{
+	w.emit(&ActorMoved{
 		ActorID:           actor.ID,
 		FromPosition:      from,
 		ToPosition:        nextTile,
@@ -303,7 +303,7 @@ func finishArrival(w *World, actor *Actor, dest MoveDestination, attemptID Movem
 	finalPos := Position{X: actor.CurrentX, Y: actor.CurrentY}
 	finalStructure := actor.InsideStructureID
 
-	w.emit(ActorArrived{
+	w.emit(&ActorArrived{
 		ActorID:           actor.ID,
 		FinalPosition:     finalPos,
 		FinalStructureID:  finalStructure,
@@ -324,7 +324,7 @@ func finishArrival(w *World, actor *Actor, dest MoveDestination, attemptID Movem
 // attempt. The destination is deep-copied so the event owns its pointer
 // fields rather than aliasing the MoveIntent the caller is about to nil.
 func emitMoveStopped(w *World, actor *Actor, dest MoveDestination, reason MoveStoppedReason, attemptID MovementAttemptID, now time.Time) {
-	w.emit(ActorMoveStopped{
+	w.emit(&ActorMoveStopped{
 		ActorID:           actor.ID,
 		Position:          Position{X: actor.CurrentX, Y: actor.CurrentY},
 		StructureID:       actor.InsideStructureID,

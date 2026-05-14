@@ -1,6 +1,9 @@
 package sim
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // Repository is the persistence facade for the world. Per-aggregate split:
 // each sub-repo owns one entity and all its child tables. Cross-aggregate
@@ -23,6 +26,13 @@ type Repository struct {
 	// is an audit trail. Both are appended outside the checkpoint.
 	PayLedger PayLedgerSink
 	ActionLog ActionLogSink
+
+	// TickTelemetry receives per-tick lifecycle records (Phase 2 PR 3a). The
+	// reactor evaluator writes "deferred" records when admission control
+	// turns an actor away; PR 3's worker pool adds started/completed/failed/
+	// stale. Diagnostic only — never part of the checkpoint, never on the
+	// hot path of a tick's correctness.
+	TickTelemetry TickTelemetrySink
 
 	// Begin opens a transaction used by the checkpoint flow. All aggregate
 	// snapshots are written inside one Tx so the checkpoint is atomic; a
@@ -121,6 +131,32 @@ type PayLedgerEntry struct{}
 
 // ActionLogEntry — concrete shape ported with agent_tick port.
 type ActionLogEntry struct{}
+
+// TickTelemetryRecord is one entry in the per-tick lifecycle telemetry
+// stream. PR 3a owns the minimal contract because the reactor evaluator is
+// the first writer (the "deferred" record, written when admission control
+// turns an actor away). PR 3 adds the worker-side Kinds (started /
+// completed / failed / stale) and their Detail conventions.
+//
+// Kind is an OPEN string set — consumers must tolerate unknown values.
+// Detail is structured and REDACTED: no raw prompts, raw LLM responses,
+// tool arguments carrying private text, or memory payloads ever go here.
+type TickTelemetryRecord struct {
+	At        time.Time
+	ActorID   ActorID
+	AttemptID TickAttemptID
+	Kind      string            // open set; PR 3a writes "deferred"
+	Detail    map[string]string // structured + redacted
+}
+
+// TickTelemetrySink receives TickTelemetryRecords. Implementations MUST be
+// non-blocking — WriteTickTelemetry runs on the world goroutine (for the
+// evaluator's "deferred" records) and must never block it; on a full
+// buffer the impl drops and counts rather than waiting. No context, no
+// error return: telemetry is fire-and-forget and best-effort by contract.
+type TickTelemetrySink interface {
+	WriteTickTelemetry(TickTelemetryRecord)
+}
 
 // Tx is a transaction handle exposing the pgx-style query surface our
 // repos need. Production wires a real *pgx.Tx; mem fakes wire a no-op.

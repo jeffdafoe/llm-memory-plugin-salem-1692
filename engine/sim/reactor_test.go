@@ -317,12 +317,12 @@ func TestEvaluateReactors_EmitsAndConsumesWarrant(t *testing.T) {
 	now := time.Now().UTC()
 	due := now.Add(-time.Millisecond) // due immediately
 
-	var received []sim.ReactorTickDue
+	var received []*sim.ReactorTickDue
 	var mu sync.Mutex
 	_, _ = w.Send(sim.Command{
 		Fn: func(world *sim.World) (any, error) {
 			world.Subscribe(sim.SubscriberFunc(func(_ *sim.World, evt sim.Event) {
-				if e, ok := evt.(sim.ReactorTickDue); ok {
+				if e, ok := evt.(*sim.ReactorTickDue); ok {
 					mu.Lock()
 					defer mu.Unlock()
 					received = append(received, e)
@@ -401,7 +401,7 @@ func TestEvaluateReactors_NewWarrantDuringInFlightSurvives(t *testing.T) {
 	_, _ = w.Send(sim.EvaluateReactors(now))
 
 	// Capture the in-flight attempt ID.
-	var attemptID string
+	var attemptID sim.TickAttemptID
 	inspectActor(t, w, "alice", func(a *sim.Actor) {
 		if !a.TickInFlight {
 			t.Fatal("expected TickInFlight after evaluate")
@@ -446,11 +446,11 @@ func TestEvaluateReactors_StaleWarrantCleared(t *testing.T) {
 	due := now.Add(-time.Millisecond)
 	concluded := now.Add(-time.Second)
 
-	var emitted []sim.ReactorTickDue
+	var emitted []*sim.ReactorTickDue
 	_, _ = w.Send(sim.Command{
 		Fn: func(world *sim.World) (any, error) {
 			world.Subscribe(sim.SubscriberFunc(func(_ *sim.World, evt sim.Event) {
-				if e, ok := evt.(sim.ReactorTickDue); ok {
+				if e, ok := evt.(*sim.ReactorTickDue); ok {
 					emitted = append(emitted, e)
 				}
 			}))
@@ -516,11 +516,11 @@ func TestEvaluateReactors_ForceBypassesRateGate(t *testing.T) {
 		},
 	})
 
-	var emitted []sim.ReactorTickDue
+	var emitted []*sim.ReactorTickDue
 	_, _ = w.Send(sim.Command{
 		Fn: func(world *sim.World) (any, error) {
 			world.Subscribe(sim.SubscriberFunc(func(_ *sim.World, evt sim.Event) {
-				if e, ok := evt.(sim.ReactorTickDue); ok {
+				if e, ok := evt.(*sim.ReactorTickDue); ok {
 					emitted = append(emitted, e)
 				}
 			}))
@@ -567,11 +567,11 @@ func TestEvaluateReactors_RateGateDelaysInsteadOfDropping(t *testing.T) {
 		},
 	})
 
-	var emitted []sim.ReactorTickDue
+	var emitted []*sim.ReactorTickDue
 	_, _ = w.Send(sim.Command{
 		Fn: func(world *sim.World) (any, error) {
 			world.Subscribe(sim.SubscriberFunc(func(_ *sim.World, evt sim.Event) {
-				if e, ok := evt.(sim.ReactorTickDue); ok {
+				if e, ok := evt.(*sim.ReactorTickDue); ok {
 					emitted = append(emitted, e)
 				}
 			}))
@@ -609,7 +609,7 @@ func TestCompleteReactorTick_MatchingAttemptIDClears(t *testing.T) {
 		},
 	})
 
-	res, err := w.Send(sim.CompleteReactorTick("alice", "tk-abc", sim.TickResult{}))
+	res, err := w.Send(sim.CompleteReactorTick("alice", "tk-abc", sim.TickResult{}, time.Now()))
 	if err != nil {
 		t.Fatalf("CompleteReactorTick: %v", err)
 	}
@@ -643,7 +643,7 @@ func TestCompleteReactorTick_StaleCompletionIgnored(t *testing.T) {
 		},
 	})
 
-	res, err := w.Send(sim.CompleteReactorTick("alice", "tk-1", sim.TickResult{})) // stale
+	res, err := w.Send(sim.CompleteReactorTick("alice", "tk-1", sim.TickResult{}, time.Now())) // stale
 	if err != nil {
 		t.Fatalf("CompleteReactorTick: %v", err)
 	}
@@ -687,7 +687,7 @@ func TestCompleteReactorTick_DoesNotClearWarrant(t *testing.T) {
 		},
 	})
 
-	_, _ = w.Send(sim.CompleteReactorTick("alice", "tk-1", sim.TickResult{}))
+	_, _ = w.Send(sim.CompleteReactorTick("alice", "tk-1", sim.TickResult{}, time.Now()))
 
 	inspectActor(t, w, "alice", func(a *sim.Actor) {
 		if a.WarrantedSince == nil {
@@ -836,11 +836,11 @@ func TestEvaluator_RunReactorEvaluatorFiresEventually(t *testing.T) {
 	w, cancel := buildReactorTestWorld(t)
 	defer cancel()
 
-	gotCh := make(chan sim.ReactorTickDue, 1)
+	gotCh := make(chan *sim.ReactorTickDue, 1)
 	_, _ = w.Send(sim.Command{
 		Fn: func(world *sim.World) (any, error) {
 			world.Subscribe(sim.SubscriberFunc(func(_ *sim.World, evt sim.Event) {
-				if e, ok := evt.(sim.ReactorTickDue); ok {
+				if e, ok := evt.(*sim.ReactorTickDue); ok {
 					select {
 					case gotCh <- e:
 					default:
@@ -964,10 +964,10 @@ func TestRecordReactorTick_ResizesRingOnRaisedCap(t *testing.T) {
 // TestNewTickAttemptID_UniqueAndPrefixed: attempt IDs are unique enough
 // for stale-completion guards and prefixed for log readability.
 func TestNewTickAttemptID_UniqueAndPrefixed(t *testing.T) {
-	seen := map[string]bool{}
+	seen := map[sim.TickAttemptID]bool{}
 	for i := 0; i < 100; i++ {
 		id := sim.NewTickAttemptID()
-		if !strings.HasPrefix(id, "tk-") {
+		if !strings.HasPrefix(string(id), "tk-") {
 			t.Errorf("id %q missing tk- prefix", id)
 		}
 		if seen[id] {

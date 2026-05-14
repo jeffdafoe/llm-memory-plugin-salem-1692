@@ -200,12 +200,28 @@ type Actor struct {
 	//
 	// Both wiped on LoadWorld.
 	TickInFlight  bool
-	TickAttemptID string
+	TickAttemptID TickAttemptID
 
 	// RecentReactorTicks is the per-actor ring of recent reactor-tick
 	// emission timestamps. Drives the per-minute gross gate
 	// (MaxReactorTicksPerActorPerMinute). Lazily allocated on first emit.
 	RecentReactorTicks *RingBuffer[time.Time]
+
+	// inFlightSourceKeys is the set of WarrantSourceKeys consumed into the
+	// actor's current in-flight tick attempt — recorded at ReactorTickDue
+	// emit, consulted by tryStampWarrant's in-flight dedup path, and
+	// resolved by CompleteReactorTick's terminal-status policy. nil when no
+	// tick is in flight. Unexported — internal dedup bookkeeping, not part
+	// of the observable reactor contract. Ephemeral: wiped on LoadWorld.
+	inFlightSourceKeys map[WarrantSourceKey]struct{}
+
+	// recentlyConsumedSourceKeys is the bounded per-actor set of warrant
+	// source keys whose tick attempt addressed them — tryStampWarrant's
+	// third dedup path, suppressing a delayed duplicate of an already-
+	// addressed stimulus. The value is the insertion time, for TTL expiry
+	// (recentlyConsumedTTL) and oldest-first eviction (recentlyConsumedCap).
+	// Unexported; ephemeral — wiped on LoadWorld.
+	recentlyConsumedSourceKeys map[WarrantSourceKey]time.Time
 
 	// Locomotion — Phase 2 PR 4.
 	//
@@ -342,6 +358,18 @@ func CloneActor(a *Actor) *Actor {
 	}
 	if a.RecentReactorTicks != nil {
 		cp.RecentReactorTicks = a.RecentReactorTicks.Clone()
+	}
+	if a.inFlightSourceKeys != nil {
+		cp.inFlightSourceKeys = make(map[WarrantSourceKey]struct{}, len(a.inFlightSourceKeys))
+		for k := range a.inFlightSourceKeys {
+			cp.inFlightSourceKeys[k] = struct{}{}
+		}
+	}
+	if a.recentlyConsumedSourceKeys != nil {
+		cp.recentlyConsumedSourceKeys = make(map[WarrantSourceKey]time.Time, len(a.recentlyConsumedSourceKeys))
+		for k, v := range a.recentlyConsumedSourceKeys {
+			cp.recentlyConsumedSourceKeys[k] = v
+		}
 	}
 	if a.Acquaintances != nil {
 		cp.Acquaintances = make(map[string]Acquaintance, len(a.Acquaintances))
