@@ -32,4 +32,19 @@ var (
 	ResetReactorStateOnLoad = resetReactorStateOnLoad
 	FireScheduledEvaluation = fireScheduledEvaluation
 	ArmNextEvaluation       = armNextEvaluation
+
+	// CheckHuddleDriftAfterPositionMutation exposes the drift-detection
+	// helper so PR 4a tests can exercise it directly inside a Command,
+	// without needing the locomotion port (PR 4) to provide a callsite.
+	CheckHuddleDriftAfterPositionMutation = checkHuddleDriftAfterPositionMutation
+
+	// AttachHuddleToScene exposes the single-mutation-point huddle/scene
+	// attach helper so PR 4a tests can exercise the area-scene 1:1
+	// invariant directly, without waiting for PR 4's StartOutdoorHuddle
+	// to provide a callsite.
+	AttachHuddleToScene = attachHuddleToScene
+
+	// NormalizeOutdoorSceneRadius exposes the LoadWorld settings
+	// normalizer so PR 4a can table-test default + clamp behavior.
+	NormalizeOutdoorSceneRadius = normalizeOutdoorSceneRadius
 )

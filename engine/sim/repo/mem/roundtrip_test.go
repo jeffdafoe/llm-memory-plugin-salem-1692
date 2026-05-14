@@ -319,10 +319,10 @@ func TestRoundTrip_SceneClonesBreakAliasing(t *testing.T) {
 	now := time.Now().UTC()
 	seed := map[sim.SceneID]*sim.Scene{
 		"sc1": {
-			ID:                "sc1",
-			OriginAt:          now,
-			OriginKind:        "pc_speak",
-			OriginStructureID: "tavern",
+			ID:         "sc1",
+			OriginAt:   now,
+			OriginKind: "pc_speak",
+			Bound:      sim.NewStructureBound("tavern"),
 			Huddles: map[sim.HuddleID]struct{}{
 				"h1": {},
 			},

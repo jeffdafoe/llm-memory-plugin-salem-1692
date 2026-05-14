@@ -50,32 +50,52 @@ type LeaveHuddleResult struct {
 }
 
 // CreateScene returns a Command that mints a fresh Scene at cascade
-// origin. originStructureID may be empty for non-structure-tied cascades
-// (chronicler atmosphere refresh, admin-triggered fires); in that case
-// ParticipantStateAtOrigin is empty and no origin huddle is associated.
+// origin. The Bound carries the scene's spatial scope:
 //
-// When originStructureID is set, the scene:
-//   - is rejected with an error if the structure is unknown — silent
-//     mint at a typo'd structureID would produce a scene that fails
-//     downstream perception lookups in non-obvious ways;
-//   - captures the snapshot of every actor currently inside that
-//     structure into ParticipantStateAtOrigin (perception build within
-//     the scene reads those snapshots to diff "what changed for me
-//     since the scene started" — the diff seam supporting loop
-//     detection and inventory-continuity claims);
-//   - adds the structure's currently active huddle (if any) to
-//     Scene.Huddles so the scene observes the in-flight conversation
-//     from mint instead of only catching huddles that form during the
-//     scene's lifetime.
+//   - SceneBoundStructure: indoor scene tied to a specific building.
+//     Captures the snapshot of every actor currently inside that
+//     structure (plus members of the structure's active huddle) into
+//     ParticipantStateAtOrigin; associates the structure's currently
+//     active huddle (if any) with the new scene.
+//   - SceneBoundArea: outdoor scene anchored on a position with a
+//     conversational radius. Captures the snapshot of every outdoor
+//     actor within the bound. No origin huddle is auto-associated —
+//     outdoor scenes are minted alongside a paired StartOutdoorHuddle
+//     command (PR 4) when an encounter fires.
+//   - SceneBoundUnbounded: chronicler atmosphere refresh, admin-
+//     triggered fires, village-scope scenes. ParticipantStateAtOrigin
+//     is empty and no origin huddle is associated; subscribers consume
+//     the scene without per-actor diff baselines.
+//
+// Validation rejects unknown structures (silent mint at a typo'd ID
+// would produce a scene that fails downstream perception lookups in
+// non-obvious ways).
 //
 // Returns the new SceneID through the command reply.
-func CreateScene(originKind string, originStructureID StructureID, now time.Time) Command {
+func CreateScene(originKind string, bound SceneBound, now time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
-			if originStructureID != "" {
-				if _, ok := w.Structures[originStructureID]; !ok {
-					return SceneID(""), fmt.Errorf("structure %q not found", originStructureID)
+			// Resolve OriginPosition and validate the bound's references.
+			var originPos Position
+			switch bound.Kind {
+			case SceneBoundStructure:
+				if bound.StructureID == nil {
+					return SceneID(""), fmt.Errorf("structure bound missing StructureID")
 				}
+				structure, ok := w.Structures[*bound.StructureID]
+				if !ok {
+					return SceneID(""), fmt.Errorf("structure %q not found", *bound.StructureID)
+				}
+				originPos = structure.Position
+			case SceneBoundArea:
+				if bound.Anchor == nil || bound.Radius == nil {
+					return SceneID(""), fmt.Errorf("area bound missing Anchor or Radius")
+				}
+				originPos = *bound.Anchor
+			case SceneBoundUnbounded:
+				// Zero position; no validation required.
+			default:
+				return SceneID(""), fmt.Errorf("unknown scene bound kind %q", bound.Kind)
 			}
 
 			id := SceneID(newSceneID())
@@ -83,12 +103,28 @@ func CreateScene(originKind string, originStructureID StructureID, now time.Time
 				ID:                       id,
 				OriginAt:                 now,
 				OriginKind:               originKind,
-				OriginStructureID:        originStructureID,
+				Bound:                    cloneSceneBound(bound),
+				OriginPosition:           originPos,
 				Huddles:                  make(map[HuddleID]struct{}),
 				ParticipantStateAtOrigin: make(map[ActorID]*ActorSnapshot),
 			}
 
-			if originStructureID != "" {
+			captured := map[ActorID]struct{}{}
+			capture := func(actorID ActorID) {
+				if _, seen := captured[actorID]; seen {
+					return
+				}
+				a, ok := w.Actors[actorID]
+				if !ok {
+					return
+				}
+				scene.ParticipantStateAtOrigin[actorID] = snapshotActor(a, w.TickCounter)
+				captured[actorID] = struct{}{}
+			}
+
+			switch bound.Kind {
+			case SceneBoundStructure:
+				structureID := *bound.StructureID
 				// Capture snapshots of every actor observable in the
 				// scene at mint: union of (a) actors physically present
 				// inside the structure (actorsByStructure index), and
@@ -98,22 +134,9 @@ func CreateScene(originKind string, originStructureID StructureID, now time.Time
 				// commands in a later phase). Long-term the two sets
 				// are identical by invariant — joining a huddle
 				// requires physical presence at the structure — but
-				// the union keeps PR 1 robust against the not-yet-
-				// wired locomotion gap and produces the right diff
-				// baseline either way.
-				captured := map[ActorID]struct{}{}
-				capture := func(actorID ActorID) {
-					if _, seen := captured[actorID]; seen {
-						return
-					}
-					a, ok := w.Actors[actorID]
-					if !ok {
-						return
-					}
-					scene.ParticipantStateAtOrigin[actorID] = snapshotActor(a, w.TickCounter)
-					captured[actorID] = struct{}{}
-				}
-				if members, ok := w.actorsByStructure[originStructureID]; ok {
+				// the union keeps the diff baseline robust against the
+				// not-yet-wired locomotion gap.
+				if members, ok := w.actorsByStructure[structureID]; ok {
 					for actorID := range members {
 						capture(actorID)
 					}
@@ -122,22 +145,46 @@ func CreateScene(originKind string, originStructureID StructureID, now time.Time
 				// Associate the structure's active huddle (if any) so
 				// the scene observes the in-flight conversation from
 				// mint, and capture its members' baselines too.
-				if huddleID, ok := findActiveHuddleAt(w, originStructureID); ok {
-					scene.Huddles[huddleID] = struct{}{}
+				if huddleID, ok := findActiveHuddleAt(w, structureID); ok {
+					// SceneBoundStructure permits any number of
+					// huddles, so attachHuddleToScene shouldn't reject
+					// here; propagate any error anyway so a future
+					// invariant change can't silently degrade the
+					// single-mutation-point guarantee.
+					if err := attachHuddleToScene(scene, huddleID); err != nil {
+						return SceneID(""), err
+					}
 					if h := w.Huddles[huddleID]; h != nil {
 						for actorID := range h.Members {
 							capture(actorID)
 						}
 					}
 				}
+			case SceneBoundArea:
+				// Outdoor scene — capture every actor satisfying the
+				// area-bound's Contains rule (outdoor AND within
+				// radius). No actorsByStructure lookup applies, and no
+				// huddle is auto-associated; the encounter command that
+				// minted this scene is responsible for creating the
+				// paired huddle.
+				for actorID, a := range w.Actors {
+					if scene.Bound.Contains(w, a) {
+						capture(actorID)
+					}
+				}
+			case SceneBoundUnbounded:
+				// No spatial scope; no participant capture at mint.
+				// Subscribers consume the scene without per-actor diff
+				// baselines.
 			}
 
 			w.Scenes[id] = scene
 			w.emit(SceneMinted{
-				SceneID:           id,
-				OriginKind:        originKind,
-				OriginStructureID: originStructureID,
-				At:                now,
+				SceneID:        id,
+				OriginKind:     originKind,
+				Bound:          cloneSceneBound(scene.Bound),
+				OriginPosition: scene.OriginPosition,
+				At:             now,
 			})
 			return id, nil
 		},
@@ -192,6 +239,36 @@ func JoinHuddle(actorID ActorID, structureID StructureID, sceneID SceneID, now t
 				if !ok {
 					return JoinHuddleResult{}, fmt.Errorf("scene %q not found", sceneID)
 				}
+				// JoinHuddle is the structure-huddle command path: it
+				// creates or extends an active huddle at structureID,
+				// which is by definition a structure huddle. The scene
+				// the caller passes must therefore be SceneBoundStructure
+				// and match structureID; SceneBoundArea has its own
+				// command path (PR 4's StartOutdoorHuddle), and
+				// SceneBoundUnbounded scenes don't accept JoinHuddle —
+				// they observe huddles only via a future explicit
+				// attach path if one is added.
+				switch s.Bound.Kind {
+				case SceneBoundStructure:
+					if s.Bound.StructureID == nil || *s.Bound.StructureID != structureID {
+						return JoinHuddleResult{}, fmt.Errorf(
+							"scene %q is bound to structure %q, cannot join at %q",
+							sceneID, s.OriginStructureID(), structureID,
+						)
+					}
+				case SceneBoundArea:
+					return JoinHuddleResult{}, fmt.Errorf(
+						"scene %q is area-bound; use the outdoor-huddle command path (PR 4 StartOutdoorHuddle)", sceneID,
+					)
+				case SceneBoundUnbounded:
+					return JoinHuddleResult{}, fmt.Errorf(
+						"scene %q is unbounded; JoinHuddle does not associate huddles with unbounded scenes", sceneID,
+					)
+				default:
+					return JoinHuddleResult{}, fmt.Errorf(
+						"scene %q has unknown bound kind %q", sceneID, s.Bound.Kind,
+					)
+				}
 				scene = s
 			}
 
@@ -207,7 +284,13 @@ func JoinHuddle(actorID ActorID, structureID StructureID, sceneID SceneID, now t
 					current.ConcludedAt == nil &&
 					current.StructureID == structureID {
 					if scene != nil {
-						scene.Huddles[actor.CurrentHuddleID] = struct{}{}
+						// Scene is SceneBoundStructure (validated above);
+						// propagate any error so a future invariant
+						// change can't silently degrade the
+						// single-mutation-point guarantee.
+						if err := attachHuddleToScene(scene, actor.CurrentHuddleID); err != nil {
+							return JoinHuddleResult{}, err
+						}
 					}
 					others := make([]ActorID, 0, len(current.Members))
 					for id := range current.Members {
@@ -265,7 +348,13 @@ func JoinHuddle(actorID ActorID, structureID StructureID, sceneID SceneID, now t
 			w.actorsByHuddle[huddleID][actorID] = struct{}{}
 
 			if scene != nil {
-				scene.Huddles[huddleID] = struct{}{}
+				// Scene is SceneBoundStructure (validated above);
+				// propagate any error so a future invariant change
+				// can't silently degrade the single-mutation-point
+				// guarantee.
+				if err := attachHuddleToScene(scene, huddleID); err != nil {
+					return JoinHuddleResult{}, err
+				}
 			}
 
 			// Tick-warrant the joiner and every prior member: peer change
@@ -372,7 +461,8 @@ func ConcludeHuddle(huddleID HuddleID, now time.Time) Command {
 			t := now
 			huddle.ConcludedAt = &t
 			delete(w.actorsByHuddle, huddleID)
-			detachHuddleFromAllScenes(w, huddleID)
+			orphanedAreaScenes := detachHuddleFromAllScenes(w, huddleID)
+			concludeOrphanedAreaScenes(w, orphanedAreaScenes)
 
 			w.emit(HuddleConcluded{
 				HuddleID:    huddleID,
@@ -455,7 +545,8 @@ func leaveCurrentHuddle(w *World, actor *Actor, now time.Time) LeaveHuddleResult
 		t := now
 		huddle.ConcludedAt = &t
 		concluded = true
-		detachHuddleFromAllScenes(w, huddleID)
+		orphanedAreaScenes := detachHuddleFromAllScenes(w, huddleID)
+		concludeOrphanedAreaScenes(w, orphanedAreaScenes)
 		w.emit(HuddleConcluded{
 			HuddleID:    huddleID,
 			StructureID: huddle.StructureID,
@@ -470,6 +561,50 @@ func leaveCurrentHuddle(w *World, actor *Actor, now time.Time) LeaveHuddleResult
 	}
 }
 
+// attachHuddleToScene adds a huddle to a scene's Huddles set, enforcing
+// the kind-specific invariants:
+//
+//   - SceneBoundStructure: any number of huddles permitted (the tavern
+//     with three parallel conversations case).
+//   - SceneBoundArea: at most one huddle (outdoor scene is 1:1 with
+//     its huddle). Re-attaching the same huddle is a no-op; attaching
+//     a different huddle when one is already present is rejected.
+//   - SceneBoundUnbounded: structure huddles cannot attach (PR 4a
+//     command paths don't reach this; the helper rejects defensively).
+//
+// Single mutation point for "Scene.Huddles[id] = struct{}{}" — callers
+// must not write to Scene.Huddles directly. Returns an error when the
+// attach would violate an invariant; on success the huddle is in
+// scene.Huddles when the function returns.
+//
+// Unexported by design — internal callers (JoinHuddle, future
+// StartOutdoorHuddle) reach the attachment through this helper to keep
+// invariants enforced at one place.
+func attachHuddleToScene(scene *Scene, huddleID HuddleID) error {
+	if scene == nil {
+		return fmt.Errorf("scene is nil")
+	}
+	if _, already := scene.Huddles[huddleID]; already {
+		return nil
+	}
+	switch scene.Bound.Kind {
+	case SceneBoundStructure:
+		// Multi-huddle scenes — no extra check.
+	case SceneBoundArea:
+		if len(scene.Huddles) > 0 {
+			return fmt.Errorf(
+				"area-bound scene %q already has a huddle; outdoor scenes are 1:1 with huddles", scene.ID,
+			)
+		}
+	case SceneBoundUnbounded:
+		return fmt.Errorf("cannot attach huddle to unbounded scene %q", scene.ID)
+	default:
+		return fmt.Errorf("scene %q has unknown bound kind %q", scene.ID, scene.Bound.Kind)
+	}
+	scene.Huddles[huddleID] = struct{}{}
+	return nil
+}
+
 // detachHuddleFromAllScenes removes the huddle from every scene's
 // observation set. Called when a huddle concludes (either through a
 // last-member leave or an explicit ConcludeHuddle) so Scene.Huddles
@@ -481,10 +616,44 @@ func leaveCurrentHuddle(w *World, actor *Actor, now time.Time) LeaveHuddleResult
 // If profiling shows this is hot, a per-huddle reverse index can be
 // added later without changing callers.
 //
+// Returns the IDs of any SceneBoundArea scenes that lost their last
+// huddle as a result of this detach — those scenes are required to
+// auto-conclude per the PR 4a invariant (outdoor scenes are 1:1 with
+// huddles; an outdoor scene with no huddle is dead state). Callers
+// invoke concludeAreaSceneIfOrphaned for each returned scene.
+//
 // Unexported by design.
-func detachHuddleFromAllScenes(w *World, huddleID HuddleID) {
-	for _, scene := range w.Scenes {
+func detachHuddleFromAllScenes(w *World, huddleID HuddleID) []SceneID {
+	var orphanedAreaScenes []SceneID
+	for sceneID, scene := range w.Scenes {
+		if scene == nil {
+			continue
+		}
+		if _, attached := scene.Huddles[huddleID]; !attached {
+			continue
+		}
 		delete(scene.Huddles, huddleID)
+		if scene.Bound.Kind == SceneBoundArea && len(scene.Huddles) == 0 {
+			orphanedAreaScenes = append(orphanedAreaScenes, sceneID)
+		}
+	}
+	return orphanedAreaScenes
+}
+
+// concludeOrphanedAreaScenes deletes any SceneBoundArea scenes that
+// have been orphaned (lost their sole huddle). Outdoor scenes are 1:1
+// with huddles by invariant; an outdoor scene with no huddle is dead
+// state that should not accumulate. Indoor (SceneBoundStructure) and
+// village-scope (SceneBoundUnbounded) scenes do not have a conclude
+// lifecycle yet — those follow the PR 1 model where scenes accrue
+// huddles and never officially end; the cascade controller in a later
+// PR will land that semantics.
+//
+// Unexported by design — invoked from detachHuddleFromAllScenes
+// callsites.
+func concludeOrphanedAreaScenes(w *World, sceneIDs []SceneID) {
+	for _, id := range sceneIDs {
+		delete(w.Scenes, id)
 	}
 }
 
