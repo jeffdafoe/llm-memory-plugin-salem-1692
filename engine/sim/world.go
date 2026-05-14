@@ -99,6 +99,41 @@ type WorldSettings struct {
 	MaxWarrantAge                    time.Duration
 	MaxReactorTicksPerActorPerMinute int
 	MaxWarrantsPerActor              int
+
+	// DefaultOutdoorSceneRadius is the conversational radius used by
+	// SceneBoundArea when callers don't specify one explicitly. Measured
+	// in king's-move (Chebyshev) tiles around the bound's Anchor.
+	// normalizeOutdoorSceneRadius applies the default and the bounds
+	// clamp at LoadWorld:
+	//   - 0 / unset / negative → DefaultOutdoorSceneRadiusValue (3 tiles)
+	//   - above DefaultOutdoorSceneRadiusMax (10) → clamped to max
+	DefaultOutdoorSceneRadius int
+}
+
+// DefaultOutdoorSceneRadiusValue is the fallback radius used when
+// callers don't specify one. 3 tiles is a reasonable "stop-and-chat"
+// distance on the village grid.
+const DefaultOutdoorSceneRadiusValue = 3
+
+// DefaultOutdoorSceneRadiusMax caps the configured radius. Larger
+// values are clamped down at LoadWorld. Conversational radii beyond
+// 10 tiles are unlikely to reflect "people standing close enough to
+// chat" — the cap is a sanity floor, not a hard physics constraint.
+const DefaultOutdoorSceneRadiusMax = 10
+
+// normalizeOutdoorSceneRadius applies the default + clamp to the
+// settings at load time. Called from LoadWorld after the environment
+// loader returns. Unexported by design.
+func normalizeOutdoorSceneRadius(s *WorldSettings) {
+	if s == nil {
+		return
+	}
+	switch {
+	case s.DefaultOutdoorSceneRadius <= 0:
+		s.DefaultOutdoorSceneRadius = DefaultOutdoorSceneRadiusValue
+	case s.DefaultOutdoorSceneRadius > DefaultOutdoorSceneRadiusMax:
+		s.DefaultOutdoorSceneRadius = DefaultOutdoorSceneRadiusMax
+	}
 }
 
 // SpeechHelper is the generic-dialogue pool. Pull(type, fromActor, toActor)
@@ -260,6 +295,7 @@ func LoadWorld(ctx context.Context, repo Repository) (*World, error) {
 	w.Environment = env
 	w.Phase = phase
 	w.Settings = settings
+	normalizeOutdoorSceneRadius(&w.Settings)
 
 	assets, err := repo.Assets.LoadAll(ctx)
 	if err != nil {

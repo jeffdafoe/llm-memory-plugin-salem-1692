@@ -22,10 +22,25 @@ type SceneID string
 // huddles at once. Huddle.SceneID has therefore been removed; Scene.Huddles
 // is the canonical mapping.
 type Scene struct {
-	ID                SceneID
-	OriginAt          time.Time
-	OriginKind        string      // "pc_speak", "chronicler_attend", "idle_backstop", "atmosphere_refresh", ...
-	OriginStructureID StructureID // empty for non-structure-tied cascades
+	ID         SceneID
+	OriginAt   time.Time
+	OriginKind string // "pc_speak", "chronicler_attend", "idle_backstop", "atmosphere_refresh", ...
+
+	// Bound is the scene's spatial scope — structure-bound (indoor),
+	// area-bound (outdoor circle of tiles), or unbounded (atmosphere
+	// refresh / admin-triggered / village-scope). Drives JoinHuddle's
+	// physical-presence invariant and the drift auto-leave check.
+	// Required field; use NewStructureBound / NewAreaBound /
+	// NewUnboundedBound to construct.
+	Bound SceneBound
+
+	// OriginPosition is the anchor tile of the scene at mint time. For
+	// SceneBoundStructure it equals the structure's Position (a
+	// deterministic representative point). For SceneBoundArea it equals
+	// Bound.Anchor. For SceneBoundUnbounded it is the zero Position.
+	// Used for snapshot replay, "where did this scene happen" debug
+	// queries, and the AreaBound anchor.
+	OriginPosition Position
 
 	// Huddles observed by this scene. Populated at scene mint for huddles
 	// already present at the origin structure, and extended as actors
@@ -44,6 +59,17 @@ type Scene struct {
 	ParticipantStateAtOrigin map[ActorID]*ActorSnapshot
 }
 
+// OriginStructureID returns the structure ID this scene is bound to,
+// or empty string if the scene is not structure-bound. Derived from
+// Bound — there is no separately stored OriginStructureID field, so
+// the value cannot drift from the bound.
+func (s *Scene) OriginStructureID() StructureID {
+	if s == nil || s.Bound.Kind != SceneBoundStructure || s.Bound.StructureID == nil {
+		return ""
+	}
+	return *s.Bound.StructureID
+}
+
 // CloneScene returns a deep copy suitable for publication via Snapshot or
 // for the mem-repo serialization boundary. Both maps and every captured
 // ActorSnapshot are cloned so a snapshot reader cannot reach back into
@@ -53,6 +79,7 @@ func CloneScene(s *Scene) *Scene {
 		return nil
 	}
 	cp := *s
+	cp.Bound = cloneSceneBound(s.Bound)
 	if s.Huddles != nil {
 		cp.Huddles = make(map[HuddleID]struct{}, len(s.Huddles))
 		for k := range s.Huddles {

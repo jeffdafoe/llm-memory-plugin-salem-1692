@@ -46,13 +46,26 @@ type SubscriberFunc func(w *World, evt Event)
 func (f SubscriberFunc) Handle(w *World, evt Event) { f(w, evt) }
 
 // SceneMinted fires when a fresh Scene is created at cascade origin.
-// OriginStructureID is empty for cascades not tied to a single structure
-// (chronicler atmosphere refresh, admin-triggered fires).
+// Bound carries the scene's spatial scope (structure / area / unbounded);
+// OriginPosition is the scene's anchor tile. Subscribers can read Bound
+// directly or use the helper OriginStructureID() for the legacy
+// "structure-id-or-empty" pattern.
 type SceneMinted struct {
-	SceneID           SceneID
-	OriginKind        string
-	OriginStructureID StructureID
-	At                time.Time
+	SceneID        SceneID
+	OriginKind     string
+	Bound          SceneBound
+	OriginPosition Position
+	At             time.Time
+}
+
+// OriginStructureID returns the structure ID this scene was minted at,
+// or empty string for non-structure-bound scenes. Convenience accessor
+// for subscribers that only care about the legacy structure-tied case.
+func (e SceneMinted) OriginStructureID() StructureID {
+	if e.Bound.Kind != SceneBoundStructure || e.Bound.StructureID == nil {
+		return ""
+	}
+	return *e.Bound.StructureID
 }
 
 func (SceneMinted) isSimEvent() {}

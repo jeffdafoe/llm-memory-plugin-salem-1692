@@ -376,7 +376,7 @@ func TestCreateScene_CapturesParticipantsAtOriginStructure(t *testing.T) {
 	go w.Run(ctx)
 
 	now := time.Now().UTC()
-	res := sendT(t, w, sim.CreateScene("pc_speak", "tavern", now))
+	res := sendT(t, w, sim.CreateScene("pc_speak", sim.NewStructureBound("tavern"), now))
 	sceneID := res.(sim.SceneID)
 
 	// Verify capture.
@@ -385,8 +385,8 @@ func TestCreateScene_CapturesParticipantsAtOriginStructure(t *testing.T) {
 	if scene == nil {
 		t.Fatal("scene not in snapshot")
 	}
-	if scene.OriginStructureID != "tavern" {
-		t.Errorf("scene OriginStructureID = %q, want tavern", scene.OriginStructureID)
+	if got := scene.OriginStructureID(); got != "tavern" {
+		t.Errorf("scene OriginStructureID = %q, want tavern", got)
 	}
 	captured, ok := scene.ParticipantStateAtOrigin["alice"]
 	if !ok {
@@ -422,7 +422,7 @@ func TestCreateScene_StructurelessOriginEmptyParticipants(t *testing.T) {
 	defer cancel()
 	now := time.Now().UTC()
 
-	res := sendT(t, w, sim.CreateScene("atmosphere_refresh", "", now))
+	res := sendT(t, w, sim.CreateScene("atmosphere_refresh", sim.NewUnboundedBound(), now))
 	sceneID := res.(sim.SceneID)
 
 	snap := w.Published()
@@ -430,8 +430,8 @@ func TestCreateScene_StructurelessOriginEmptyParticipants(t *testing.T) {
 	if scene == nil {
 		t.Fatal("scene not in snapshot")
 	}
-	if scene.OriginStructureID != "" {
-		t.Errorf("OriginStructureID = %q, want empty", scene.OriginStructureID)
+	if got := scene.OriginStructureID(); got != "" {
+		t.Errorf("OriginStructureID = %q, want empty", got)
 	}
 	if len(scene.ParticipantStateAtOrigin) != 0 {
 		t.Errorf("ParticipantStateAtOrigin = %v, want empty", scene.ParticipantStateAtOrigin)
@@ -447,7 +447,7 @@ func TestJoinHuddle_AssociatesWithSceneWhenProvided(t *testing.T) {
 	defer cancel()
 	now := time.Now().UTC()
 
-	sceneID := sendT(t, w, sim.CreateScene("pc_speak", "tavern", now)).(sim.SceneID)
+	sceneID := sendT(t, w, sim.CreateScene("pc_speak", sim.NewStructureBound("tavern"), now)).(sim.SceneID)
 
 	res := sendT(t, w, sim.JoinHuddle("alice", "tavern", sceneID, now)).(sim.JoinHuddleResult)
 
@@ -546,7 +546,7 @@ func TestJoinHuddle_SameStructureIdempotentAddsScene(t *testing.T) {
 	now := time.Now().UTC()
 
 	first := sendT(t, w, sim.JoinHuddle("alice", "tavern", "", now)).(sim.JoinHuddleResult)
-	sceneID := sendT(t, w, sim.CreateScene("pc_speak", "tavern", now.Add(time.Second))).(sim.SceneID)
+	sceneID := sendT(t, w, sim.CreateScene("pc_speak", sim.NewStructureBound("tavern"), now.Add(time.Second))).(sim.SceneID)
 	// CreateScene also adds the active huddle to scene at mint — wipe
 	// the scene's Huddles set so we can verify the idempotent rejoin
 	// re-adds it.
@@ -612,7 +612,7 @@ func TestCreateScene_RejectsUnknownStructure(t *testing.T) {
 	w, cancel := buildHuddleTestWorld(t)
 	defer cancel()
 
-	_, err := w.Send(sim.CreateScene("pc_speak", "ghost-structure", time.Now().UTC()))
+	_, err := w.Send(sim.CreateScene("pc_speak", sim.NewStructureBound("ghost-structure"), time.Now().UTC()))
 	if err == nil {
 		t.Error("expected error for unknown originStructureID")
 	}
@@ -628,7 +628,7 @@ func TestCreateScene_AddsActiveHuddleAtOrigin(t *testing.T) {
 	now := time.Now().UTC()
 
 	join := sendT(t, w, sim.JoinHuddle("alice", "tavern", "", now)).(sim.JoinHuddleResult)
-	sceneID := sendT(t, w, sim.CreateScene("pc_speak", "tavern", now.Add(time.Second))).(sim.SceneID)
+	sceneID := sendT(t, w, sim.CreateScene("pc_speak", sim.NewStructureBound("tavern"), now.Add(time.Second))).(sim.SceneID)
 
 	snap := w.Published()
 	if _, in := snap.Scenes[sceneID].Huddles[join.HuddleID]; !in {
@@ -662,7 +662,7 @@ func TestCreateScene_CapturesHuddleMembersNotInStructureIndex(t *testing.T) {
 		t.Fatalf("test setup assumed alice has no InsideStructureID, got %q", got)
 	}
 
-	sceneID := sendT(t, w, sim.CreateScene("pc_speak", "tavern", now.Add(time.Second))).(sim.SceneID)
+	sceneID := sendT(t, w, sim.CreateScene("pc_speak", sim.NewStructureBound("tavern"), now.Add(time.Second))).(sim.SceneID)
 
 	snap := w.Published()
 	if _, in := snap.Scenes[sceneID].ParticipantStateAtOrigin["alice"]; !in {
@@ -711,7 +711,7 @@ func TestLeaveHuddle_ConcludeDetachesFromScenes(t *testing.T) {
 	defer cancel()
 	now := time.Now().UTC()
 
-	sceneID := sendT(t, w, sim.CreateScene("pc_speak", "tavern", now)).(sim.SceneID)
+	sceneID := sendT(t, w, sim.CreateScene("pc_speak", sim.NewStructureBound("tavern"), now)).(sim.SceneID)
 	join := sendT(t, w, sim.JoinHuddle("alice", "tavern", sceneID, now.Add(time.Second))).(sim.JoinHuddleResult)
 
 	// Pre: scene observes the huddle.
@@ -740,7 +740,7 @@ func TestConcludeHuddle_DetachesFromScenes(t *testing.T) {
 	defer cancel()
 	now := time.Now().UTC()
 
-	sceneID := sendT(t, w, sim.CreateScene("pc_speak", "tavern", now)).(sim.SceneID)
+	sceneID := sendT(t, w, sim.CreateScene("pc_speak", sim.NewStructureBound("tavern"), now)).(sim.SceneID)
 	join := sendT(t, w, sim.JoinHuddle("alice", "tavern", sceneID, now.Add(time.Second))).(sim.JoinHuddleResult)
 
 	if _, err := w.Send(sim.ConcludeHuddle(join.HuddleID, now.Add(2*time.Second))); err != nil {
