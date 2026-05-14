@@ -51,6 +51,7 @@ func NewRepository() (sim.Repository, *Handles) {
 		Orders:         notImplOrders{},
 		PayLedger:      noopPayLedger{},
 		ActionLog:      noopActionLog{},
+		TickTelemetry:  noopTickTelemetry{},
 		Begin: func(_ context.Context) (sim.Tx, error) {
 			return noopTx{}, nil
 		},
@@ -95,6 +96,13 @@ func (noopPayLedger) Append(_ context.Context, _ sim.PayLedgerEntry) error { ret
 type noopActionLog struct{}
 
 func (noopActionLog) Append(_ context.Context, _ sim.ActionLogEntry) error { return nil }
+
+// noopTickTelemetry discards tick telemetry records — tests that care
+// about telemetry use a recording fake instead; the skeleton just needs
+// the world to have a non-nil sink to write through.
+type noopTickTelemetry struct{}
+
+func (noopTickTelemetry) WriteTickTelemetry(_ sim.TickTelemetryRecord) {}
 
 // noopTx satisfies sim.Tx without doing anything — fine for the skeleton
 // since no sub-repo here actually issues SQL. Real Tx behavior comes with

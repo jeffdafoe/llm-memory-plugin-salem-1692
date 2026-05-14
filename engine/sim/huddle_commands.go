@@ -179,7 +179,7 @@ func CreateScene(originKind string, bound SceneBound, now time.Time) Command {
 			}
 
 			w.Scenes[id] = scene
-			w.emit(SceneMinted{
+			w.emit(&SceneMinted{
 				SceneID:        id,
 				OriginKind:     originKind,
 				Bound:          cloneSceneBound(scene.Bound),
@@ -375,7 +375,7 @@ func JoinHuddle(actorID ActorID, structureID StructureID, sceneID SceneID, now t
 				}
 			}
 
-			w.emit(HuddleJoined{
+			w.emit(&HuddleJoined{
 				ActorID:      actorID,
 				HuddleID:     huddleID,
 				SceneID:      sceneID,
@@ -388,7 +388,7 @@ func JoinHuddle(actorID ActorID, structureID StructureID, sceneID SceneID, now t
 			// of introductions without having to derive pairs from the
 			// HuddleJoined event.
 			for _, otherID := range otherMembers {
-				w.emit(ActorMet{
+				w.emit(&ActorMet{
 					A:        actorID,
 					B:        otherID,
 					HuddleID: huddleID,
@@ -464,7 +464,7 @@ func ConcludeHuddle(huddleID HuddleID, now time.Time) Command {
 			orphanedAreaScenes := detachHuddleFromAllScenes(w, huddleID)
 			concludeOrphanedAreaScenes(w, orphanedAreaScenes)
 
-			w.emit(HuddleConcluded{
+			w.emit(&HuddleConcluded{
 				HuddleID:    huddleID,
 				StructureID: huddle.StructureID,
 				At:          now,
@@ -532,7 +532,7 @@ func leaveCurrentHuddle(w *World, actor *Actor, now time.Time) LeaveHuddleResult
 		}
 	}
 
-	w.emit(HuddleLeft{
+	w.emit(&HuddleLeft{
 		ActorID:          actor.ID,
 		HuddleID:         huddleID,
 		StructureID:      huddle.StructureID,
@@ -547,7 +547,7 @@ func leaveCurrentHuddle(w *World, actor *Actor, now time.Time) LeaveHuddleResult
 		concluded = true
 		orphanedAreaScenes := detachHuddleFromAllScenes(w, huddleID)
 		concludeOrphanedAreaScenes(w, orphanedAreaScenes)
-		w.emit(HuddleConcluded{
+		w.emit(&HuddleConcluded{
 			HuddleID:    huddleID,
 			StructureID: huddle.StructureID,
 			At:          now,

@@ -457,7 +457,7 @@ func StartOutdoorHuddle(participants []ActorID, anchor Position, radius int, rea
 				}
 				tryStampWarrant(w, actor, meta, now)
 
-				w.emit(HuddleJoined{
+				w.emit(&HuddleJoined{
 					ActorID:      id,
 					HuddleID:     huddleID,
 					SceneID:      sceneID,
@@ -467,7 +467,7 @@ func StartOutdoorHuddle(participants []ActorID, anchor Position, radius int, rea
 					At:           now,
 				})
 				for _, other := range others {
-					w.emit(ActorMet{A: id, B: other, HuddleID: huddleID, At: now})
+					w.emit(&ActorMet{A: id, B: other, HuddleID: huddleID, At: now})
 				}
 			}
 

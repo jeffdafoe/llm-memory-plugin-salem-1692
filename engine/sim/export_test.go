@@ -1,5 +1,7 @@
 package sim
 
+import "time"
+
 // export_test.go re-exports unexported, command-only world helpers under
 // their pre-cleanup names so the external `sim_test` package can keep
 // calling them. These aliases live in a _test.go file and therefore exist
@@ -32,6 +34,21 @@ var (
 	ResetReactorStateOnLoad = resetReactorStateOnLoad
 	FireScheduledEvaluation = fireScheduledEvaluation
 	ArmNextEvaluation       = armNextEvaluation
+
+	// PR 3a reactor helpers — source-aware stamping dedup, the in-flight /
+	// recently-consumed source-key bookkeeping, the admission backoff
+	// floor, and the terminal-status warrant policy.
+	SourceKeySet               = sourceKeySet
+	RememberConsumedSourceKey  = rememberConsumedSourceKey
+	LastReactorTickAt          = lastReactorTickAt
+	ReopenWarrants             = reopenWarrants
+	ApplyTerminalWarrantPolicy = applyTerminalWarrantPolicy
+	TerminalStatusAddresses    = terminalStatusAddresses
+
+	// NewRootedCommand exposes the internal cross-boundary root hook so
+	// tests can exercise its validation (rejects root == 0 / root >
+	// eventSeq) without waiting for PR 3's worker to provide a callsite.
+	NewRootedCommand = newRootedCommand
 
 	// CheckHuddleDriftAfterPositionMutation exposes the drift-detection
 	// helper so PR 4a tests can exercise it directly inside a Command,
@@ -106,3 +123,54 @@ func ActorsInStructure(w *World, sid StructureID) []ActorID {
 	}
 	return out
 }
+
+// PR 3a reactor tuning constants — exposed so tests can assert TTL / cap /
+// backoff behavior against the real values rather than re-declaring them.
+const (
+	RecentlyConsumedTTL      = recentlyConsumedTTL
+	RecentlyConsumedCap      = recentlyConsumedCap
+	DefaultMinReactorTickGap = defaultMinReactorTickGap
+	DefaultAdmissionBackoff  = defaultAdmissionBackoff
+)
+
+// ActorInFlightSourceKeys / ActorRecentlyConsumedSourceKeys expose the
+// unexported PR 3a dedup-bookkeeping maps on Actor so sim_test can assert
+// the in-flight key set and recently-consumed set without those fields
+// being part of the public Actor contract.
+func ActorInFlightSourceKeys(a *Actor) map[WarrantSourceKey]struct{} {
+	return a.inFlightSourceKeys
+}
+
+func ActorRecentlyConsumedSourceKeys(a *Actor) map[WarrantSourceKey]time.Time {
+	return a.recentlyConsumedSourceKeys
+}
+
+// SetActorInFlightSourceKeys / SetActorRecentlyConsumedSourceKeys let
+// sim_test seed the dedup-bookkeeping maps directly when arranging a test
+// without driving a full evaluator + completion round trip.
+func SetActorInFlightSourceKeys(a *Actor, m map[WarrantSourceKey]struct{}) {
+	a.inFlightSourceKeys = m
+}
+
+func SetActorRecentlyConsumedSourceKeys(a *Actor, m map[WarrantSourceKey]time.Time) {
+	a.recentlyConsumedSourceKeys = m
+}
+
+// WorldEventSeq exposes the per-run event counter so sim_test can assert
+// EventID monotonicity / "counter starts at 1" without an exported field.
+func WorldEventSeq(w *World) uint64 { return w.eventSeq }
+
+// WorldCurrentRootEventID exposes the ambient cascade root so sim_test can
+// assert withRoot's defer-scoped restore (including the panic path).
+func WorldCurrentRootEventID(w *World) EventID { return w.currentRootEventID }
+
+// EmitForTest invokes the unexported World.emit so sim_test can drive
+// event identity / nested-root behavior directly. MUST be called on the
+// world goroutine (inside a Command.Fn) or against a non-Run world in a
+// single-threaded test — same contract as a production subscriber's emit.
+func EmitForTest(w *World, evt Event) { w.emit(evt) }
+
+// SourceKey / EventSourced expose the unexported WarrantMeta dedup-key
+// helpers for sim_test.
+func SourceKey(m WarrantMeta) WarrantSourceKey { return m.sourceKey() }
+func EventSourced(m WarrantMeta) bool          { return m.eventSourced() }

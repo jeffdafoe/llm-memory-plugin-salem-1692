@@ -122,14 +122,14 @@ func TestLocomotion_PositionWalkToArrival(t *testing.T) {
 	}
 
 	moved := rec.countEvents(func(e sim.Event) bool {
-		m, ok := e.(sim.ActorMoved)
+		m, ok := e.(*sim.ActorMoved)
 		return ok && m.ActorID == "walker"
 	})
 	if moved != 3 {
 		t.Errorf("ActorMoved count = %d, want 3", moved)
 	}
 	arrived := rec.countEvents(func(e sim.Event) bool {
-		a, ok := e.(sim.ActorArrived)
+		a, ok := e.(*sim.ActorArrived)
 		return ok && a.ActorID == "walker" && a.FinalPosition == dest && a.MovementAttemptID == 1
 	})
 	if arrived != 1 {
@@ -172,7 +172,7 @@ func TestLocomotion_StructureEnterArrival(t *testing.T) {
 	}
 
 	arrived := rec.countEvents(func(e sim.Event) bool {
-		a, ok := e.(sim.ActorArrived)
+		a, ok := e.(*sim.ActorArrived)
 		return ok && a.ActorID == "walker" && a.FinalStructureID == "cottage"
 	})
 	if arrived != 1 {
@@ -205,7 +205,7 @@ func TestLocomotion_StructureVisitArrival(t *testing.T) {
 		t.Errorf("final position %+v is not a visitor slot around pin %+v", pos, pin)
 	}
 	arrived := rec.countEvents(func(e sim.Event) bool {
-		a, ok := e.(sim.ActorArrived)
+		a, ok := e.(*sim.ActorArrived)
 		return ok && a.ActorID == "walker" && a.FinalStructureID == ""
 	})
 	if arrived != 1 {
@@ -242,7 +242,7 @@ func TestLocomotion_BilateralPauseInHuddle(t *testing.T) {
 		t.Error("MoveIntent was cleared during the bilateral pause")
 	}
 	if n := rec.countEvents(func(e sim.Event) bool {
-		_, ok := e.(sim.ActorMoved)
+		_, ok := e.(*sim.ActorMoved)
 		return ok
 	}); n != 0 {
 		t.Errorf("ActorMoved fired %d times during the pause, want 0", n)
@@ -293,7 +293,7 @@ func TestLocomotion_SoftBlockerRetries(t *testing.T) {
 		t.Error("soft block cleared the MoveIntent — it must be preserved for retry")
 	}
 	if n := rec.countEvents(func(e sim.Event) bool {
-		m, ok := e.(sim.ActorMoved)
+		m, ok := e.(*sim.ActorMoved)
 		return ok && m.ActorID == "walker"
 	}); n != 0 {
 		t.Errorf("walker emitted %d ActorMoved while soft-blocked, want 0", n)
@@ -344,7 +344,7 @@ func TestLocomotion_InvalidatedWhenStructureRemoved(t *testing.T) {
 		t.Error("MoveIntent survived destination invalidation")
 	}
 	stopped := rec.countEvents(func(e sim.Event) bool {
-		s, ok := e.(sim.ActorMoveStopped)
+		s, ok := e.(*sim.ActorMoveStopped)
 		return ok && s.ActorID == "walker" && s.Reason == sim.MoveStoppedInvalidated
 	})
 	if stopped != 1 {

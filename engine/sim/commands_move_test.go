@@ -355,7 +355,7 @@ func TestMoveActor_LeaveHuddleFirst(t *testing.T) {
 		t.Error("walker has no MoveIntent after accepted LeaveHuddleFirst move")
 	}
 	left := rec.countEvents(func(e sim.Event) bool {
-		hl, ok := e.(sim.HuddleLeft)
+		hl, ok := e.(*sim.HuddleLeft)
 		return ok && hl.ActorID == "walker"
 	})
 	if left != 1 {
@@ -399,7 +399,7 @@ func TestMoveActor_Supersede(t *testing.T) {
 	}
 
 	stopped := rec.countEvents(func(e sim.Event) bool {
-		_, ok := e.(sim.ActorMoveStopped)
+		_, ok := e.(*sim.ActorMoveStopped)
 		return ok
 	})
 	if stopped != 0 {
@@ -634,21 +634,21 @@ func TestStartOutdoorHuddle_HappyPath(t *testing.T) {
 	}
 
 	joined := rec.countEvents(func(e sim.Event) bool {
-		hj, ok := e.(sim.HuddleJoined)
+		hj, ok := e.(*sim.HuddleJoined)
 		return ok && hj.HuddleID == r.HuddleID
 	})
 	if joined != 2 {
 		t.Errorf("HuddleJoined count = %d, want 2", joined)
 	}
 	met := rec.countEvents(func(e sim.Event) bool {
-		_, ok := e.(sim.ActorMet)
+		_, ok := e.(*sim.ActorMet)
 		return ok
 	})
 	if met != 1 {
 		t.Errorf("ActorMet count = %d, want 1 (one pair)", met)
 	}
 	minted := rec.countEvents(func(e sim.Event) bool {
-		sm, ok := e.(sim.SceneMinted)
+		sm, ok := e.(*sim.SceneMinted)
 		return ok && sm.SceneID == r.SceneID
 	})
 	if minted != 1 {

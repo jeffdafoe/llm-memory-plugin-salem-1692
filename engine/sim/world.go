@@ -93,12 +93,27 @@ type WorldSettings struct {
 	// MaxWarrantsPerActor: cap on the per-actor Warrants list size. When
 	// exceeded, oldest entries drop (freshest signals are most relevant).
 	// 0 = uncapped.
+	//
+	// MinReactorTickGap: per-actor minimum wall-clock gap between reactor
+	// ticks — an always-on pacing floor independent of the optional per-
+	// minute rate cap above. Default 5s (defaultMinReactorTickGap). A
+	// warrant coming due inside the gap has its WarrantDueAt pushed to the
+	// gap boundary; a Force warrant bypasses it.
+	//
+	// AdmissionBackoff: how far the evaluator pushes an actor's
+	// WarrantDueAt when tick admission control turns it away (downstream
+	// worker pool at capacity). Default 250ms (defaultAdmissionBackoff) ≈
+	// the evaluator cadence, so a deferred warrant is re-examined on
+	// roughly the next scan. The warrants stay OPEN — a deferral consumes
+	// nothing.
 	ReactorJitterMin                 time.Duration
 	ReactorJitterMax                 time.Duration
 	ReactorEvaluatorCadence          time.Duration
 	MaxWarrantAge                    time.Duration
 	MaxReactorTicksPerActorPerMinute int
 	MaxWarrantsPerActor              int
+	MinReactorTickGap                time.Duration
+	AdmissionBackoff                 time.Duration
 
 	// DefaultOutdoorSceneRadius is the conversational radius used by
 	// SceneBoundArea when callers don't specify one explicitly. Measured
@@ -238,7 +253,45 @@ type World struct {
 	// world goroutine. See events.go for the contract.
 	subscribers []EventSubscriber
 
+	// eventSeq is the monotonic per-run event counter. emit increments it
+	// and assigns the value as the new event's EventID. World-goroutine-
+	// only — emit runs exclusively inside Command.Fn, so no atomic is
+	// needed. Starts at 0; the first emitted event gets ID 1, leaving
+	// EventID(0) as the unset sentinel.
+	eventSeq uint64
+
+	// currentRootEventID is the ambient causal root for events emitted
+	// within the current cascade. 0 means no cascade is active — the next
+	// emit becomes a fresh root. Set and restored by withRoot (defer-
+	// scoped, panic-safe). World-goroutine-only.
+	currentRootEventID EventID
+
+	// tickAdmission gates the reactor evaluator — consulted before an
+	// actor's warrants are consumed (Option A — admit before consume).
+	// Never nil: NewWorld sets alwaysAdmit, and PR 3's worker pool installs
+	// a real one via SetTickAdmissionController.
+	tickAdmission TickAdmissionController
+
 	repo Repository
+}
+
+// nextEventSeq increments the per-run event counter and returns the new
+// EventID. World-goroutine-only (called from emit). The counter starts at
+// 0, so the first event is EventID(1) — EventID(0) is never assigned.
+func (w *World) nextEventSeq() EventID {
+	w.eventSeq++
+	return EventID(w.eventSeq)
+}
+
+// withRoot runs fn with currentRootEventID set to root, restoring the
+// previous value on return — including on panic, via defer. World-
+// goroutine-only; no atomic. Used by emit (to establish a fresh cascade
+// root) and by Run (to continue an inherited root across the worker seam).
+func (w *World) withRoot(root EventID, fn func()) {
+	prev := w.currentRootEventID
+	w.currentRootEventID = root
+	defer func() { w.currentRootEventID = prev }()
+	fn()
 }
 
 // NewWorld constructs an empty World bound to the given Repository.
@@ -263,10 +316,26 @@ func NewWorld(repo Repository) *World {
 		actorsByHuddle:    make(map[HuddleID]map[ActorID]struct{}),
 		Speech:            &SpeechHelper{},
 		cmds:              make(chan Command, 256),
+		tickAdmission:     alwaysAdmit{},
 		repo:              repo,
 	}
 	w.republish()
 	return w
+}
+
+// SetTickAdmissionController installs the controller the reactor evaluator
+// consults before consuming an actor's warrants. PR 3's worker pool calls
+// this at bootstrap (as one half of RegisterTickHandlers). A nil argument
+// resets to the alwaysAdmit default.
+//
+// Safe to call before Run, or from inside a Command.Fn (the world
+// goroutine). Calling it from an arbitrary goroutine while Run is
+// processing races the evaluator — route it through a Command instead.
+func (w *World) SetTickAdmissionController(c TickAdmissionController) {
+	if c == nil {
+		c = alwaysAdmit{}
+	}
+	w.tickAdmission = c
 }
 
 // LoadWorld constructs a World and populates primary state from the
@@ -372,7 +441,19 @@ func (w *World) Run(ctx context.Context) {
 			if !ok {
 				return
 			}
-			value, err := cmd.Fn(w)
+			var value any
+			var err error
+			if cmd.inheritedRoot != 0 {
+				// Cross-boundary command (PR 3's worker tool-call): run the
+				// whole handler under the inherited cascade root so events
+				// it emits continue that root and it cannot bleed into the
+				// next command. See newRootedCommand.
+				w.withRoot(cmd.inheritedRoot, func() {
+					value, err = cmd.Fn(w)
+				})
+			} else {
+				value, err = cmd.Fn(w)
+			}
 			w.TickCounter++
 			w.republish()
 			if cmd.Reply != nil {
@@ -469,12 +550,38 @@ func (w *World) Subscribe(s EventSubscriber) {
 	w.subscribers = append(w.subscribers, s)
 }
 
-// emit dispatches event evt to every registered subscriber. Called from
-// command Fn implementations after the underlying state mutation lands.
-// Inline dispatch keeps subscriber side effects atomic with the mutation
-// — readers of the next Snapshot see the post-mutation, post-subscriber
-// state.
+// emit assigns the event its per-run identity and dispatches it to every
+// registered subscriber. Called from command Fn implementations after the
+// underlying state mutation lands. Inline dispatch keeps subscriber side
+// effects atomic with the mutation — readers of the next Snapshot see the
+// post-mutation, post-subscriber state.
+//
+// Identity: every event gets a fresh monotonic EventID. The RootEventID
+// depends on whether a cascade is already active:
+//
+//   - No ambient root (currentRootEventID == 0): this is a fresh-origin
+//     event and is its own causal root. Subscriber dispatch runs under
+//     withRoot(id, ...) so events emitted by subscribers (the cascade)
+//     inherit this root, and the ambient root restores to 0 on unwind —
+//     even if a subscriber panics.
+//
+//   - Ambient root set: this is a consequent event; it inherits the
+//     ambient cascade root. Dispatch needs no extra withRoot — the
+//     ambient value is already correct for any nested emits.
 func (w *World) emit(evt Event) {
+	id := w.nextEventSeq()
+	root := w.currentRootEventID
+	if root == 0 {
+		root = id
+		evt.setEventBase(id, root)
+		w.withRoot(root, func() {
+			for _, s := range w.subscribers {
+				s.Handle(w, evt)
+			}
+		})
+		return
+	}
+	evt.setEventBase(id, root)
 	for _, s := range w.subscribers {
 		s.Handle(w, evt)
 	}

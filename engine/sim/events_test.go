@@ -63,15 +63,15 @@ func TestSubscriber_ReceivesEventsInEmissionOrder(t *testing.T) {
 	if len(events) != 3 {
 		t.Fatalf("got %d events, want 3: %#v", len(events), events)
 	}
-	first, ok := events[0].(sim.HuddleJoined)
+	first, ok := events[0].(*sim.HuddleJoined)
 	if !ok || first.ActorID != "alice" || !first.HuddleNew || len(first.OtherMembers) != 0 {
 		t.Errorf("event[0] = %#v, want HuddleJoined{alice, new=true, no others}", events[0])
 	}
-	second, ok := events[1].(sim.HuddleJoined)
+	second, ok := events[1].(*sim.HuddleJoined)
 	if !ok || second.ActorID != "bob" || second.HuddleNew || len(second.OtherMembers) != 1 || second.OtherMembers[0] != "alice" {
 		t.Errorf("event[1] = %#v, want HuddleJoined{bob, new=false, others=[alice]}", events[1])
 	}
-	third, ok := events[2].(sim.ActorMet)
+	third, ok := events[2].(*sim.ActorMet)
 	if !ok || third.A != "bob" || third.B != "alice" {
 		t.Errorf("event[2] = %#v, want ActorMet{bob, alice}", events[2])
 	}
@@ -125,13 +125,13 @@ func TestSubscriber_LeaveAndConcludeOrdering(t *testing.T) {
 	if len(events) != 3 {
 		t.Fatalf("got %d events, want 3: %#v", len(events), events)
 	}
-	if _, ok := events[0].(sim.HuddleJoined); !ok {
+	if _, ok := events[0].(*sim.HuddleJoined); !ok {
 		t.Errorf("event[0] = %#v, want HuddleJoined", events[0])
 	}
-	if _, ok := events[1].(sim.HuddleLeft); !ok {
+	if _, ok := events[1].(*sim.HuddleLeft); !ok {
 		t.Errorf("event[1] = %#v, want HuddleLeft", events[1])
 	}
-	if _, ok := events[2].(sim.HuddleConcluded); !ok {
+	if _, ok := events[2].(*sim.HuddleConcluded); !ok {
 		t.Errorf("event[2] = %#v, want HuddleConcluded", events[2])
 	}
 }
