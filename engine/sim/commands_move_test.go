@@ -1,0 +1,799 @@
+package sim_test
+
+import (
+	"context"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/repo/mem"
+)
+
+// eventRec is a mutex-guarded event sink for MoveActor tests that need to
+// assert which events did (or did not) fire.
+type eventRec struct {
+	mu     sync.Mutex
+	events []sim.Event
+}
+
+func (r *eventRec) handle(_ *sim.World, e sim.Event) {
+	r.mu.Lock()
+	r.events = append(r.events, e)
+	r.mu.Unlock()
+}
+
+// countEvents returns how many recorded events satisfy match. Safe to
+// call from the test goroutine after a synchronous Send round-trip — the
+// Send reply establishes happens-before over the subscriber appends.
+func (r *eventRec) countEvents(match func(sim.Event) bool) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, e := range r.events {
+		if match(e) {
+			n++
+		}
+	}
+	return n
+}
+
+// buildMoveTestWorld seeds a running world for MoveActor tests:
+//
+//   - all-grass terrain
+//   - "inn": a non-obstacle house structure at world (320,320); its
+//     asset has a door offset, so structureEntryTile resolves to a
+//     walkable door tile.
+//   - "well": a closed-entry structure (StructureEnter must be rejected;
+//     StructureVisit must still be allowed).
+//   - "gazebo": an OPEN-entry but doorless structure — its asset has no
+//     door offset, so StructureEnter must still be rejected (no entry
+//     tile), distinct from "well"'s closed-policy rejection.
+//   - "walker": an actor parked at the pad origin with a clear path to
+//     everything.
+//
+// The returned eventRec captures every emitted event.
+func buildMoveTestWorld(t *testing.T) (*sim.World, context.CancelFunc, *eventRec) {
+	t.Helper()
+	repo, handles := mem.NewRepository()
+	handles.Terrain.Seed(makeAllGrassTerrain())
+	handles.Assets.Seed(map[sim.AssetID]*sim.Asset{
+		"house":  {ID: "house", Category: "structure", DoorOffsetX: intp(0), DoorOffsetY: intp(2)},
+		"well":   {ID: "well", Category: "prop"},        // no door offset
+		"gazebo": {ID: "gazebo", Category: "structure"}, // no door offset
+	})
+	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
+		"inn":    {ID: "inn", AssetID: "house", X: 320, Y: 320},
+		"well":   {ID: "well", AssetID: "well", X: 640, Y: 320, EntryPolicy: sim.EntryPolicyClosed},
+		"gazebo": {ID: "gazebo", AssetID: "gazebo", X: 960, Y: 320, EntryPolicy: sim.EntryPolicyOpen},
+	})
+	handles.Structures.Seed(map[sim.StructureID]*sim.Structure{
+		"inn":    {ID: "inn", DisplayName: "Inn"},
+		"well":   {ID: "well", DisplayName: "Well"},
+		"gazebo": {ID: "gazebo", DisplayName: "Gazebo"},
+	})
+	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
+		"walker": {ID: "walker", DisplayName: "Walker", CurrentX: sim.PadX, CurrentY: sim.PadY},
+	})
+	w, err := sim.LoadWorld(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	rec := &eventRec{}
+	w.Subscribe(sim.SubscriberFunc(rec.handle))
+	ctx, cancel := context.WithCancel(context.Background())
+	go w.Run(ctx)
+	return w, cancel, rec
+}
+
+// moveIntentOf returns a deep copy of an actor's current MoveIntent (nil
+// when the actor isn't moving), read inside a command so the test
+// goroutine never touches live world state.
+func moveIntentOf(t *testing.T, w *sim.World, id sim.ActorID) *sim.MoveIntent {
+	t.Helper()
+	res, err := w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			a := world.Actors[id]
+			if a == nil {
+				return (*sim.MoveIntent)(nil), nil
+			}
+			return sim.CloneMoveIntent(a.MoveIntent), nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("moveIntentOf: %v", err)
+	}
+	return res.(*sim.MoveIntent)
+}
+
+// huddleIDOf returns an actor's CurrentHuddleID.
+func huddleIDOf(t *testing.T, w *sim.World, id sim.ActorID) sim.HuddleID {
+	t.Helper()
+	res, err := w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			return world.Actors[id].CurrentHuddleID, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("huddleIDOf: %v", err)
+	}
+	return res.(sim.HuddleID)
+}
+
+// TestMoveActor_HappyPathPerKind covers acceptance for each destination
+// kind: the command returns a fresh attempt ID and stamps a matching
+// MoveIntent on the actor.
+func TestMoveActor_HappyPathPerKind(t *testing.T) {
+	now := time.Now().UTC()
+	cases := []struct {
+		name     string
+		dest     sim.MoveDestination
+		wantKind sim.MoveDestinationKind
+	}{
+		{"structure enter", sim.NewStructureEnterDestination("inn"), sim.MoveDestinationStructureEnter},
+		{"structure visit", sim.NewStructureVisitDestination("inn"), sim.MoveDestinationStructureVisit},
+		{"position", sim.NewPositionDestination(sim.Position{X: sim.PadX + 5, Y: sim.PadY + 5}), sim.MoveDestinationPosition},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			w, cancel, _ := buildMoveTestWorld(t)
+			defer cancel()
+
+			res, err := w.Send(sim.MoveActor("walker", c.dest, false, now))
+			if err != nil {
+				t.Fatalf("MoveActor rejected: %v", err)
+			}
+			r := res.(sim.MoveActorResult)
+			if r.MovementAttemptID != 1 {
+				t.Errorf("MovementAttemptID = %d, want 1", r.MovementAttemptID)
+			}
+			if r.SupersededAttemptID != 0 {
+				t.Errorf("SupersededAttemptID = %d, want 0", r.SupersededAttemptID)
+			}
+
+			mi := moveIntentOf(t, w, "walker")
+			if mi == nil {
+				t.Fatal("walker has no MoveIntent after accepted MoveActor")
+			}
+			if mi.Destination.Kind != c.wantKind {
+				t.Errorf("MoveIntent kind = %q, want %q", mi.Destination.Kind, c.wantKind)
+			}
+			if mi.AttemptID != 1 {
+				t.Errorf("MoveIntent.AttemptID = %d, want 1", mi.AttemptID)
+			}
+		})
+	}
+}
+
+// TestMoveActor_Rejections covers the validation rejections — each
+// leaves the actor with no MoveIntent.
+func TestMoveActor_Rejections(t *testing.T) {
+	now := time.Now().UTC()
+	cases := []struct {
+		name  string
+		actor sim.ActorID
+		dest  sim.MoveDestination
+	}{
+		{"actor not found", "ghost", sim.NewPositionDestination(sim.Position{X: sim.PadX + 1, Y: sim.PadY + 1})},
+		{"structure not found", "walker", sim.NewStructureEnterDestination("nowhere")},
+		{"entry policy closed", "walker", sim.NewStructureEnterDestination("well")},
+		{"doorless structure (open policy)", "walker", sim.NewStructureEnterDestination("gazebo")},
+		{"untraversable position", "walker", sim.NewPositionDestination(sim.Position{X: -5, Y: -5})},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			w, cancel, _ := buildMoveTestWorld(t)
+			defer cancel()
+
+			if _, err := w.Send(sim.MoveActor(c.actor, c.dest, false, now)); err == nil {
+				t.Fatal("expected MoveActor to be rejected, got nil error")
+			}
+			if c.actor == "walker" {
+				if mi := moveIntentOf(t, w, "walker"); mi != nil {
+					t.Errorf("rejected MoveActor left a MoveIntent: %+v", mi)
+				}
+			}
+		})
+	}
+}
+
+// TestMoveActor_DoorlessStructureRejectedAtValidation covers the step-2
+// contract: a StructureEnter to a non-closed but doorless structure is
+// rejected at destination validation with the specific "no door" error
+// — not later by resolvePathTarget with a generic "cannot be resolved"
+// message. "gazebo" is EntryPolicyOpen with no door offset, so it gets
+// past the closed/membership checks and must be caught by the explicit
+// entry-tile check.
+func TestMoveActor_DoorlessStructureRejectedAtValidation(t *testing.T) {
+	w, cancel, _ := buildMoveTestWorld(t)
+	defer cancel()
+
+	now := time.Now().UTC()
+	_, err := w.Send(sim.MoveActor("walker", sim.NewStructureEnterDestination("gazebo"), false, now))
+	if err == nil {
+		t.Fatal("expected StructureEnter to a doorless structure to be rejected")
+	}
+	if !strings.Contains(err.Error(), "no door") {
+		t.Errorf("expected the step-2 'no door' rejection, got: %v", err)
+	}
+}
+
+// TestMoveActor_StructureVisitClosedStructureAllowed covers that
+// StructureVisit ignores entry policy — an actor can always walk to a
+// visitor slot outside a closed structure (a well).
+func TestMoveActor_StructureVisitClosedStructureAllowed(t *testing.T) {
+	w, cancel, _ := buildMoveTestWorld(t)
+	defer cancel()
+
+	now := time.Now().UTC()
+	if _, err := w.Send(sim.MoveActor("walker", sim.NewStructureVisitDestination("well"), false, now)); err != nil {
+		t.Fatalf("StructureVisit to a closed structure should be allowed: %v", err)
+	}
+	if mi := moveIntentOf(t, w, "walker"); mi == nil || mi.Destination.Kind != sim.MoveDestinationStructureVisit {
+		t.Errorf("walker MoveIntent = %+v, want a structure_visit intent", mi)
+	}
+}
+
+// TestMoveActor_NoPath covers the path-existence rejection: a walkable
+// target tile that is completely ringed by impassable water is
+// resolvable but unreachable.
+func TestMoveActor_NoPath(t *testing.T) {
+	terrain := makeAllGrassTerrain()
+	tx, ty := sim.PadX+20, sim.PadY+20
+	for dy := -1; dy <= 1; dy++ {
+		for dx := -1; dx <= 1; dx++ {
+			if dx == 0 && dy == 0 {
+				continue
+			}
+			terrain.Data[(ty+dy)*sim.MapW+(tx+dx)] = sim.TerrainDeepWater
+		}
+	}
+	repo, handles := mem.NewRepository()
+	handles.Terrain.Seed(terrain)
+	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
+		"walker": {ID: "walker", CurrentX: sim.PadX, CurrentY: sim.PadY},
+	})
+	w, err := sim.LoadWorld(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go w.Run(ctx)
+
+	now := time.Now().UTC()
+	_, err = w.Send(sim.MoveActor("walker", sim.NewPositionDestination(sim.Position{X: tx, Y: ty}), false, now))
+	if err == nil {
+		t.Fatal("expected no-path rejection for a water-ringed target")
+	}
+}
+
+// TestMoveActor_InHuddleRequiresLeaveFirst covers that an actor in an
+// active huddle cannot move unless LeaveHuddleFirst is set — and that the
+// rejected command leaves both the huddle and the (absent) MoveIntent
+// untouched.
+func TestMoveActor_InHuddleRequiresLeaveFirst(t *testing.T) {
+	w, cancel, _ := buildMoveTestWorld(t)
+	defer cancel()
+
+	now := time.Now().UTC()
+	if _, err := w.Send(sim.JoinHuddle("walker", "inn", "", now)); err != nil {
+		t.Fatalf("JoinHuddle: %v", err)
+	}
+	huddleBefore := huddleIDOf(t, w, "walker")
+	if huddleBefore == "" {
+		t.Fatal("walker not in a huddle after JoinHuddle")
+	}
+
+	_, err := w.Send(sim.MoveActor("walker", sim.NewPositionDestination(sim.Position{X: sim.PadX + 3, Y: sim.PadY + 3}), false, now))
+	if err == nil {
+		t.Fatal("expected MoveActor to reject an in-huddle actor without LeaveHuddleFirst")
+	}
+	if mi := moveIntentOf(t, w, "walker"); mi != nil {
+		t.Errorf("rejected in-huddle MoveActor left a MoveIntent: %+v", mi)
+	}
+	if got := huddleIDOf(t, w, "walker"); got != huddleBefore {
+		t.Errorf("rejected MoveActor changed huddle membership: %q -> %q", huddleBefore, got)
+	}
+}
+
+// TestMoveActor_InHuddleRejectionPrecedesPathCheck covers the ordering
+// fix: the active-huddle gate is evaluated BEFORE path validation, so an
+// in-huddle actor without LeaveHuddleFirst gets the huddle-specific
+// rejection even when the destination is also unreachable. Were the
+// order reversed, the actor would see a "destination cannot be resolved"
+// error and the LeaveHuddleFirst contract would depend on the
+// destination being valid.
+func TestMoveActor_InHuddleRejectionPrecedesPathCheck(t *testing.T) {
+	w, cancel, _ := buildMoveTestWorld(t)
+	defer cancel()
+
+	now := time.Now().UTC()
+	if _, err := w.Send(sim.JoinHuddle("walker", "inn", "", now)); err != nil {
+		t.Fatalf("JoinHuddle: %v", err)
+	}
+
+	// An untraversable destination — fails path resolution — issued by an
+	// in-huddle actor without LeaveHuddleFirst.
+	_, err := w.Send(sim.MoveActor("walker",
+		sim.NewPositionDestination(sim.Position{X: -5, Y: -5}), false, now))
+	if err == nil {
+		t.Fatal("expected MoveActor to be rejected")
+	}
+	if !strings.Contains(err.Error(), "LeaveHuddleFirst") {
+		t.Errorf("expected the active-huddle rejection (mentioning LeaveHuddleFirst), got: %v", err)
+	}
+}
+
+// TestMoveActor_LeaveHuddleFirst covers the LeaveHuddleFirst path: the
+// actor leaves its huddle (emitting HuddleLeft) before the MoveIntent is
+// stamped, and the result reports the huddle that was left.
+func TestMoveActor_LeaveHuddleFirst(t *testing.T) {
+	w, cancel, rec := buildMoveTestWorld(t)
+	defer cancel()
+
+	now := time.Now().UTC()
+	if _, err := w.Send(sim.JoinHuddle("walker", "inn", "", now)); err != nil {
+		t.Fatalf("JoinHuddle: %v", err)
+	}
+	huddleBefore := huddleIDOf(t, w, "walker")
+
+	res, err := w.Send(sim.MoveActor("walker",
+		sim.NewPositionDestination(sim.Position{X: sim.PadX + 3, Y: sim.PadY + 3}), true, now))
+	if err != nil {
+		t.Fatalf("MoveActor with LeaveHuddleFirst rejected: %v", err)
+	}
+	r := res.(sim.MoveActorResult)
+	if r.LeftHuddleID != huddleBefore {
+		t.Errorf("LeftHuddleID = %q, want %q", r.LeftHuddleID, huddleBefore)
+	}
+	if got := huddleIDOf(t, w, "walker"); got != "" {
+		t.Errorf("walker still in huddle %q after LeaveHuddleFirst move", got)
+	}
+	if mi := moveIntentOf(t, w, "walker"); mi == nil {
+		t.Error("walker has no MoveIntent after accepted LeaveHuddleFirst move")
+	}
+	left := rec.countEvents(func(e sim.Event) bool {
+		hl, ok := e.(sim.HuddleLeft)
+		return ok && hl.ActorID == "walker"
+	})
+	if left != 1 {
+		t.Errorf("HuddleLeft{walker} count = %d, want 1", left)
+	}
+}
+
+// TestMoveActor_Supersede covers re-issuing MoveActor against an actor
+// that already has an in-flight intent: the new attempt ID increments
+// monotonically, the result reports the superseded attempt, and NO
+// ActorMoveStopped event fires for the dead attempt.
+func TestMoveActor_Supersede(t *testing.T) {
+	w, cancel, rec := buildMoveTestWorld(t)
+	defer cancel()
+
+	now := time.Now().UTC()
+	first, err := w.Send(sim.MoveActor("walker", sim.NewStructureVisitDestination("inn"), false, now))
+	if err != nil {
+		t.Fatalf("first MoveActor: %v", err)
+	}
+	if first.(sim.MoveActorResult).MovementAttemptID != 1 {
+		t.Fatalf("first attempt ID = %d, want 1", first.(sim.MoveActorResult).MovementAttemptID)
+	}
+
+	second, err := w.Send(sim.MoveActor("walker",
+		sim.NewPositionDestination(sim.Position{X: sim.PadX + 4, Y: sim.PadY + 4}), false, now))
+	if err != nil {
+		t.Fatalf("second MoveActor: %v", err)
+	}
+	r := second.(sim.MoveActorResult)
+	if r.MovementAttemptID != 2 {
+		t.Errorf("second attempt ID = %d, want 2 (monotonic)", r.MovementAttemptID)
+	}
+	if r.SupersededAttemptID != 1 {
+		t.Errorf("SupersededAttemptID = %d, want 1", r.SupersededAttemptID)
+	}
+
+	mi := moveIntentOf(t, w, "walker")
+	if mi == nil || mi.AttemptID != 2 || mi.Destination.Kind != sim.MoveDestinationPosition {
+		t.Errorf("MoveIntent after supersede = %+v, want attempt 2 / position", mi)
+	}
+
+	stopped := rec.countEvents(func(e sim.Event) bool {
+		_, ok := e.(sim.ActorMoveStopped)
+		return ok
+	})
+	if stopped != 0 {
+		t.Errorf("ActorMoveStopped count = %d, want 0 (supersede dies silently)", stopped)
+	}
+}
+
+// buildMembershipTestWorld seeds a running world with one owner-only
+// structure ("cottage") and one actor per membership basis, so the
+// owner-only entry gate can be exercised through every leg:
+//
+//   - "homeowner" — owner (OwnerActorID), but NOT a resident, so the
+//     owner leg is tested in isolation.
+//   - "spouse"    — resident (HomeStructureID), not the owner.
+//   - "servant"   — staff (WorkStructureID).
+//   - "boarder"   — lodger (active RoomAccess for cottage's bedroom).
+//   - "stranger"  — no membership of any kind.
+//
+// The cottage asset carries a door offset so structureEntryTile resolves.
+func buildMembershipTestWorld(t *testing.T) (*sim.World, context.CancelFunc) {
+	t.Helper()
+	repo, handles := mem.NewRepository()
+	handles.Terrain.Seed(makeAllGrassTerrain())
+	handles.Assets.Seed(map[sim.AssetID]*sim.Asset{
+		"cottage-asset": {ID: "cottage-asset", Category: "structure", DoorOffsetX: intp(0), DoorOffsetY: intp(2)},
+	})
+	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
+		"cottage": {
+			ID: "cottage", AssetID: "cottage-asset", X: 320, Y: 320,
+			EntryPolicy: sim.EntryPolicyOwner, OwnerActorID: "homeowner",
+		},
+	})
+	handles.Structures.Seed(map[sim.StructureID]*sim.Structure{
+		"cottage": {
+			ID: "cottage", DisplayName: "Cottage",
+			Rooms: []*sim.Room{
+				{ID: 1, StructureID: "cottage", Kind: sim.RoomKindPrivate, Name: "bedroom_1"},
+			},
+		},
+	})
+	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
+		"homeowner": {ID: "homeowner", CurrentX: sim.PadX, CurrentY: sim.PadY},
+		"spouse":    {ID: "spouse", CurrentX: sim.PadX + 1, CurrentY: sim.PadY, HomeStructureID: "cottage"},
+		"servant":   {ID: "servant", CurrentX: sim.PadX + 2, CurrentY: sim.PadY, WorkStructureID: "cottage"},
+		"boarder": {
+			ID: "boarder", CurrentX: sim.PadX + 3, CurrentY: sim.PadY,
+			RoomAccess: map[sim.RoomAccessKey]*sim.RoomAccess{
+				{RoomID: 1, Source: sim.AccessSourceLedger}: {
+					RoomID: 1, Source: sim.AccessSourceLedger, Active: true,
+				},
+			},
+		},
+		"stranger": {ID: "stranger", CurrentX: sim.PadX + 4, CurrentY: sim.PadY},
+	})
+	w, err := sim.LoadWorld(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go w.Run(ctx)
+	return w, cancel
+}
+
+// TestStructureMembershipAllows covers the membership predicate directly:
+// each of the four legs admits, a non-member is rejected, and an expired
+// lodger grant does not count.
+func TestStructureMembershipAllows(t *testing.T) {
+	w, cancel := buildMembershipTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	allows := func(actorID sim.ActorID, when time.Time) bool {
+		res, err := w.Send(sim.Command{
+			Fn: func(world *sim.World) (any, error) {
+				return sim.StructureMembershipAllows(world, world.Actors[actorID], "cottage", when), nil
+			},
+		})
+		if err != nil {
+			t.Fatalf("StructureMembershipAllows(%s): %v", actorID, err)
+		}
+		return res.(bool)
+	}
+
+	for _, actorID := range []sim.ActorID{"homeowner", "spouse", "servant", "boarder"} {
+		if !allows(actorID, now) {
+			t.Errorf("%s should be a member of cottage", actorID)
+		}
+	}
+	if allows("stranger", now) {
+		t.Error("stranger should not be a member of cottage")
+	}
+
+	// Expire the boarder's RoomAccess and confirm the lodger leg drops.
+	expireRes, err := w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			ra := world.Actors["boarder"].RoomAccess[sim.RoomAccessKey{RoomID: 1, Source: sim.AccessSourceLedger}]
+			past := now.Add(-time.Hour)
+			ra.ExpiresAt = &past
+			return nil, nil
+		},
+	})
+	_ = expireRes
+	if err != nil {
+		t.Fatalf("expire RoomAccess: %v", err)
+	}
+	if allows("boarder", now) {
+		t.Error("boarder with an expired RoomAccess grant should not be a member")
+	}
+}
+
+// TestMoveActor_OwnerOnlyEntry covers the gate end-to-end through
+// MoveActor: every membership leg is admitted into an owner-only
+// structure, and a non-member is rejected.
+func TestMoveActor_OwnerOnlyEntry(t *testing.T) {
+	w, cancel := buildMembershipTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	for _, actorID := range []sim.ActorID{"homeowner", "spouse", "servant", "boarder"} {
+		if _, err := w.Send(sim.MoveActor(actorID, sim.NewStructureEnterDestination("cottage"), false, now)); err != nil {
+			t.Errorf("%s should be admitted into owner-only cottage: %v", actorID, err)
+		}
+	}
+	if _, err := w.Send(sim.MoveActor("stranger", sim.NewStructureEnterDestination("cottage"), false, now)); err == nil {
+		t.Error("stranger should be rejected from owner-only cottage")
+	}
+
+	// StructureVisit ignores membership — a stranger can still walk to a
+	// visitor slot outside an owner-only structure.
+	if _, err := w.Send(sim.MoveActor("stranger", sim.NewStructureVisitDestination("cottage"), false, now)); err != nil {
+		t.Errorf("StructureVisit to an owner-only structure should be allowed for a non-member: %v", err)
+	}
+}
+
+// buildOutdoorTestWorld seeds a running world for StartOutdoorHuddle
+// tests: all-grass terrain, three actors clustered outdoors near tile
+// (PadX+10, PadY+10), one actor far away, and one actor seeded inside a
+// structure (fails the outdoor area-bound check).
+func buildOutdoorTestWorld(t *testing.T) (*sim.World, context.CancelFunc, *eventRec) {
+	t.Helper()
+	repo, handles := mem.NewRepository()
+	handles.Terrain.Seed(makeAllGrassTerrain())
+	handles.Structures.Seed(map[sim.StructureID]*sim.Structure{
+		"hut": {ID: "hut", DisplayName: "Hut"},
+	})
+	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
+		"ann": {ID: "ann", CurrentX: sim.PadX + 10, CurrentY: sim.PadY + 10},
+		"ben": {ID: "ben", CurrentX: sim.PadX + 11, CurrentY: sim.PadY + 10},
+		"cal": {ID: "cal", CurrentX: sim.PadX + 10, CurrentY: sim.PadY + 11},
+		"far": {ID: "far", CurrentX: sim.PadX + 50, CurrentY: sim.PadY + 50},
+		"indoorsy": {
+			ID: "indoorsy", CurrentX: sim.PadX + 10, CurrentY: sim.PadY + 10,
+			InsideStructureID: "hut",
+		},
+	})
+	w, err := sim.LoadWorld(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	rec := &eventRec{}
+	w.Subscribe(sim.SubscriberFunc(rec.handle))
+	ctx, cancel := context.WithCancel(context.Background())
+	go w.Run(ctx)
+	return w, cancel, rec
+}
+
+// worldCounts reads the live Scene / Huddle map sizes inside a command —
+// used to assert StartOutdoorHuddle's all-or-nothing atomicity.
+func worldCounts(t *testing.T, w *sim.World) (scenes, huddles int) {
+	t.Helper()
+	type counts struct{ s, h int }
+	res, err := w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			return counts{s: len(world.Scenes), h: len(world.Huddles)}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("worldCounts: %v", err)
+	}
+	c := res.(counts)
+	return c.s, c.h
+}
+
+// outdoorAnchor is the encounter anchor used by the StartOutdoorHuddle
+// tests — ann sits exactly on it; ben and cal are one tile away.
+var outdoorAnchor = sim.Position{X: sim.PadX + 10, Y: sim.PadY + 10}
+
+// TestStartOutdoorHuddle_HappyPath covers the atomic create-and-join: two
+// outdoor actors are minted into one area-bound scene + huddle, both get
+// CurrentHuddleID set, and the expected SceneMinted / HuddleJoined /
+// ActorMet events fire.
+func TestStartOutdoorHuddle_HappyPath(t *testing.T) {
+	w, cancel, rec := buildOutdoorTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	res, err := w.Send(sim.StartOutdoorHuddle([]sim.ActorID{"ann", "ben"}, outdoorAnchor, 3, nil, now))
+	if err != nil {
+		t.Fatalf("StartOutdoorHuddle: %v", err)
+	}
+	r := res.(sim.StartOutdoorHuddleResult)
+	if r.SceneID == "" || r.HuddleID == "" {
+		t.Fatalf("result missing IDs: %+v", r)
+	}
+
+	annHuddle := huddleIDOf(t, w, "ann")
+	benHuddle := huddleIDOf(t, w, "ben")
+	if annHuddle != r.HuddleID || benHuddle != r.HuddleID {
+		t.Errorf("participants not in the new huddle: ann=%q ben=%q want %q", annHuddle, benHuddle, r.HuddleID)
+	}
+
+	// Scene must be area-bound and observe exactly the new huddle.
+	type sceneSt struct {
+		kind        sim.SceneBoundKind
+		huddleCount int
+	}
+	sres, _ := w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			s := world.Scenes[r.SceneID]
+			if s == nil {
+				return sceneSt{}, nil
+			}
+			return sceneSt{kind: s.Bound.Kind, huddleCount: len(s.Huddles)}, nil
+		},
+	})
+	ss := sres.(sceneSt)
+	if ss.kind != sim.SceneBoundArea {
+		t.Errorf("scene bound kind = %q, want area", ss.kind)
+	}
+	if ss.huddleCount != 1 {
+		t.Errorf("scene observes %d huddles, want 1", ss.huddleCount)
+	}
+
+	joined := rec.countEvents(func(e sim.Event) bool {
+		hj, ok := e.(sim.HuddleJoined)
+		return ok && hj.HuddleID == r.HuddleID
+	})
+	if joined != 2 {
+		t.Errorf("HuddleJoined count = %d, want 2", joined)
+	}
+	met := rec.countEvents(func(e sim.Event) bool {
+		_, ok := e.(sim.ActorMet)
+		return ok
+	})
+	if met != 1 {
+		t.Errorf("ActorMet count = %d, want 1 (one pair)", met)
+	}
+	minted := rec.countEvents(func(e sim.Event) bool {
+		sm, ok := e.(sim.SceneMinted)
+		return ok && sm.SceneID == r.SceneID
+	})
+	if minted != 1 {
+		t.Errorf("SceneMinted count = %d, want 1", minted)
+	}
+}
+
+// TestStartOutdoorHuddle_Rejections covers every validation rejection,
+// and asserts the all-or-nothing guarantee: a rejected command mints no
+// scene and no huddle.
+func TestStartOutdoorHuddle_Rejections(t *testing.T) {
+	now := time.Now().UTC()
+	cases := []struct {
+		name         string
+		participants []sim.ActorID
+		setup        func(t *testing.T, w *sim.World)
+	}{
+		{"empty", nil, nil},
+		{"duplicate", []sim.ActorID{"ann", "ann"}, nil},
+		{"actor not found", []sim.ActorID{"ann", "ghost"}, nil},
+		{"actor indoors", []sim.ActorID{"ann", "indoorsy"}, nil},
+		{"actor outside radius", []sim.ActorID{"ann", "far"}, nil},
+		{
+			"actor already in a huddle",
+			[]sim.ActorID{"ann", "ben"},
+			func(t *testing.T, w *sim.World) {
+				if _, err := w.Send(sim.JoinHuddle("ben", "hut", "", now)); err != nil {
+					t.Fatalf("pre-join ben: %v", err)
+				}
+			},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			w, cancel, _ := buildOutdoorTestWorld(t)
+			defer cancel()
+			if c.setup != nil {
+				c.setup(t, w)
+			}
+			scenesBefore, huddlesBefore := worldCounts(t, w)
+
+			if _, err := w.Send(sim.StartOutdoorHuddle(c.participants, outdoorAnchor, 3, nil, now)); err == nil {
+				t.Fatal("expected StartOutdoorHuddle to be rejected")
+			}
+			scenesAfter, huddlesAfter := worldCounts(t, w)
+			if scenesAfter != scenesBefore {
+				t.Errorf("rejected command changed scene count: %d -> %d", scenesBefore, scenesAfter)
+			}
+			if huddlesAfter != huddlesBefore {
+				t.Errorf("rejected command changed huddle count: %d -> %d", huddlesBefore, huddlesAfter)
+			}
+		})
+	}
+}
+
+// TestStartOutdoorHuddle_RadiusDefault covers radius <= 0 falling back to
+// the world's DefaultOutdoorSceneRadius.
+func TestStartOutdoorHuddle_RadiusDefault(t *testing.T) {
+	w, cancel, _ := buildOutdoorTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	res, err := w.Send(sim.StartOutdoorHuddle([]sim.ActorID{"ann", "ben"}, outdoorAnchor, 0, nil, now))
+	if err != nil {
+		t.Fatalf("StartOutdoorHuddle: %v", err)
+	}
+	sceneID := res.(sim.StartOutdoorHuddleResult).SceneID
+
+	rres, _ := w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			s := world.Scenes[sceneID]
+			if s == nil || s.Bound.Radius == nil {
+				return -1, nil
+			}
+			return *s.Bound.Radius, nil
+		},
+	})
+	if got := rres.(int); got != sim.DefaultOutdoorSceneRadiusValue {
+		t.Errorf("scene bound radius = %d, want default %d", got, sim.DefaultOutdoorSceneRadiusValue)
+	}
+}
+
+// TestStartOutdoorHuddle_BilateralPauseAfterJoin covers the encounter →
+// pause integration: an actor mid-walk that gets pulled into an outdoor
+// huddle stops advancing until it leaves.
+func TestStartOutdoorHuddle_BilateralPauseAfterJoin(t *testing.T) {
+	w, cancel, _ := buildOutdoorTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	// ann is walking somewhere when the encounter fires.
+	if _, err := w.Send(sim.MoveActor("ann",
+		sim.NewPositionDestination(sim.Position{X: sim.PadX + 10, Y: sim.PadY + 20}), false, now)); err != nil {
+		t.Fatalf("MoveActor ann: %v", err)
+	}
+	if _, err := w.Send(sim.StartOutdoorHuddle([]sim.ActorID{"ann", "ben"}, outdoorAnchor, 3, nil, now)); err != nil {
+		t.Fatalf("StartOutdoorHuddle: %v", err)
+	}
+
+	before, _ := actorSpatial(t, w, "ann")
+	for i := 0; i < 5; i++ {
+		tickLoco(t, w, now)
+	}
+	paused, _ := actorSpatial(t, w, "ann")
+	if paused != before {
+		t.Errorf("ann moved while in the outdoor huddle: %+v -> %+v", before, paused)
+	}
+	if moveIntentOf(t, w, "ann") == nil {
+		t.Error("ann's MoveIntent was cleared by the bilateral pause — it must be preserved")
+	}
+}
+
+// TestStartOutdoorHuddle_TeardownConcludesScene covers PR 4a's
+// area-scene-1:1 teardown: when the last participant leaves the outdoor
+// huddle, the orphaned area scene auto-concludes.
+func TestStartOutdoorHuddle_TeardownConcludesScene(t *testing.T) {
+	w, cancel, _ := buildOutdoorTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	res, err := w.Send(sim.StartOutdoorHuddle([]sim.ActorID{"ann", "ben"}, outdoorAnchor, 3, nil, now))
+	if err != nil {
+		t.Fatalf("StartOutdoorHuddle: %v", err)
+	}
+	sceneID := res.(sim.StartOutdoorHuddleResult).SceneID
+
+	if _, err := w.Send(sim.LeaveHuddle("ann", now)); err != nil {
+		t.Fatalf("LeaveHuddle ann: %v", err)
+	}
+	sceneAlive := func() bool {
+		out, _ := w.Send(sim.Command{
+			Fn: func(world *sim.World) (any, error) {
+				_, ok := world.Scenes[sceneID]
+				return ok, nil
+			},
+		})
+		return out.(bool)
+	}
+	if !sceneAlive() {
+		t.Fatal("scene concluded after only one of two participants left")
+	}
+	if _, err := w.Send(sim.LeaveHuddle("ben", now)); err != nil {
+		t.Fatalf("LeaveHuddle ben: %v", err)
+	}
+	if sceneAlive() {
+		t.Error("orphaned area scene was not auto-concluded after the last participant left")
+	}
+}

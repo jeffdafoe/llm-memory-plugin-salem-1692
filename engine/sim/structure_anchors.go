@@ -1,0 +1,254 @@
+package sim
+
+import (
+	"hash/fnv"
+	"log"
+)
+
+// structure_anchors.go — PR 4 structure-anchor layer.
+//
+// Carries v1's structure-anchor system (door / loiter pin / visitor
+// slots) onto the v2 substrate. Reference for the v1 algorithms:
+// shared/notes/codebase/salem/structure-lookups.
+//
+// SHARED-IDENTITY BRIDGE (option A, locked 2026-05-14). A building is
+// represented by BOTH a Structure (interior rooms, the thing actors bind
+// to via Inside/Home/WorkStructureID) AND a VillageObject (sprite
+// placement, footprint, loiter offset, entry policy) that share the same
+// UUID — i.e. for any building, its StructureID and VillageObjectID are
+// the same string. The anchor data PR 4 needs (door offset, footprint,
+// loiter offset) lives on the VillageObject and its Asset; it is NOT
+// duplicated onto Structure. villageObjectForStructure crosses that
+// bridge. v1 had a single village_object row per building, so this keeps
+// one source of truth the same way v1 did.
+
+// visitorSlotOffsets is the king's-move ring around a structure's loiter
+// pin. An arriving visitor stands on one of these eight tiles; the pin
+// tile itself is NOT a slot — it marks the gathering CENTRE. The order is
+// fixed and load-bearing: pickVisitorSlot scans from a per-actor
+// hash-derived start index through this slice in order, so changing the
+// order changes which slot a given actor lands on.
+var visitorSlotOffsets = [8]Position{
+	{X: -1, Y: -1}, {X: 0, Y: -1}, {X: 1, Y: -1},
+	{X: -1, Y: 0}, {X: 1, Y: 0},
+	{X: -1, Y: 1}, {X: 0, Y: 1}, {X: 1, Y: 1},
+}
+
+// villageObjectForStructure resolves the shared-identity bridge: returns
+// the VillageObject and its Asset for a building's StructureID. ok=false
+// when no VillageObject shares the structure's ID, or its Asset is not in
+// the catalog — callers treat that as "this structure has no usable
+// placement" and fail the operation rather than guessing an anchor.
+//
+// MUST be called from inside a Command.Fn (reads w.VillageObjects,
+// w.Assets). Unexported by design — see buildWalkGrid for the rationale.
+func villageObjectForStructure(w *World, structureID StructureID) (*VillageObject, *Asset, bool) {
+	vobj, ok := w.VillageObjects[VillageObjectID(structureID)]
+	if !ok {
+		return nil, nil, false
+	}
+	asset, ok := w.Assets[vobj.AssetID]
+	if !ok {
+		return nil, nil, false
+	}
+	return vobj, asset, true
+}
+
+// computeLoiterTile resolves a structure's loiter pin — the gathering
+// CENTRE tile, not a stand-on tile. Resolution order matches v1's
+// effectiveLoiterTile (engine/village_objects.go):
+//
+//  1. Per-instance loiter offset, when both axes are set on the
+//     VillageObject (the editor sets them as a pair — a dragged pin).
+//  2. Else the asset's door offset, one tile south of the door.
+//  3. Else (0, FootprintBottom + 2) — two tiles below the visible
+//     footprint.
+//
+// Pure function (no world access) so a future v2 editor port can share
+// the exact computation the engine uses — the green loiter pin the
+// editor draws then lands precisely where the engine parks visitors.
+//
+// Precondition: vobj and asset must both be non-nil — the function
+// dereferences both and intentionally does not guard against nil (a nil
+// here is bad data, not a runtime condition; a silent zero-position
+// fallback would hide it). Production callers reach it through
+// villageObjectForStructure, which guarantees both are non-nil.
+func computeLoiterTile(vobj *VillageObject, asset *Asset) Position {
+	anchor := WorldToTile(vobj.X, vobj.Y)
+	switch {
+	case vobj.LoiterOffsetX != nil && vobj.LoiterOffsetY != nil:
+		return Position{X: anchor.X + *vobj.LoiterOffsetX, Y: anchor.Y + *vobj.LoiterOffsetY}
+	case asset.DoorOffsetX != nil && asset.DoorOffsetY != nil:
+		return Position{X: anchor.X + *asset.DoorOffsetX, Y: anchor.Y + *asset.DoorOffsetY + 1}
+	default:
+		return Position{X: anchor.X, Y: anchor.Y + asset.FootprintBottom + 2}
+	}
+}
+
+// effectiveLoiterTile resolves the loiter pin for a building by its
+// StructureID, crossing the shared-identity bridge. ok=false when the
+// structure has no VillageObject placement (see villageObjectForStructure).
+//
+// MUST be called from inside a Command.Fn. Unexported by design.
+func effectiveLoiterTile(w *World, structureID StructureID) (Position, bool) {
+	vobj, asset, ok := villageObjectForStructure(w, structureID)
+	if !ok {
+		return Position{}, false
+	}
+	return computeLoiterTile(vobj, asset), true
+}
+
+// structureEntryTile returns the tile an actor must reach to count as
+// "inside" structureID for a StructureEnter move: the structure's door
+// tile (placement anchor + the asset's door offset).
+//
+// In v2's WalkGrid model the door tile is the sole walkable footprint
+// tile — buildWalkGrid stamps the rest of the footprint impassable and
+// carves a corridor only to the door — so the door tile is both the
+// pathfinding goal and, once the actor stands on it, the tile-ownership
+// signal that flips InsideStructureID.
+//
+// ok=false when the structure has no VillageObject placement, or its
+// asset declares no door offset. A doorless structure cannot be entered;
+// the caller rejects the StructureEnter (such a structure should be
+// targeted with StructureVisit instead).
+//
+// This is the v2 form of the PR 4 design note's closestReachableInteriorTile
+// helper — under the shared-identity bridge there is exactly one reachable
+// interior tile (the door), so no "closest of many" search is needed.
+//
+// MUST be called from inside a Command.Fn. Unexported by design.
+func structureEntryTile(w *World, structureID StructureID) (Position, bool) {
+	vobj, asset, ok := villageObjectForStructure(w, structureID)
+	if !ok {
+		return Position{}, false
+	}
+	if asset.DoorOffsetX == nil || asset.DoorOffsetY == nil {
+		return Position{}, false
+	}
+	anchor := WorldToTile(vobj.X, vobj.Y)
+	return Position{X: anchor.X + *asset.DoorOffsetX, Y: anchor.Y + *asset.DoorOffsetY}, true
+}
+
+// structureContainingTile returns the StructureID whose footprint
+// contains pos, or ok=false when pos sits inside no structure's
+// footprint. A "structure" here is a VillageObject that also has a
+// Structure entry under the shared-identity bridge — trees, wells, and
+// other placements that aren't structures never flip InsideStructureID.
+//
+// The footprint is the asset's per-side extent around the placement
+// anchor (the same rectangle buildWalkGrid stamps). Linear in
+// VillageObject count — fine at Salem scale; a tile→structure index can
+// be added if it ever shows up in a profile.
+//
+// MUST be called from inside a Command.Fn (reads w.VillageObjects,
+// w.Structures, w.Assets). Unexported by design.
+func structureContainingTile(w *World, pos Position) (StructureID, bool) {
+	for vobjID, vobj := range w.VillageObjects {
+		sid := StructureID(vobjID)
+		if _, isStructure := w.Structures[sid]; !isStructure {
+			continue
+		}
+		asset, ok := w.Assets[vobj.AssetID]
+		if !ok {
+			continue
+		}
+		anchor := WorldToTile(vobj.X, vobj.Y)
+		if pos.X >= anchor.X-asset.FootprintLeft && pos.X <= anchor.X+asset.FootprintRight &&
+			pos.Y >= anchor.Y-asset.FootprintTop && pos.Y <= anchor.Y+asset.FootprintBottom {
+			return sid, true
+		}
+	}
+	return "", false
+}
+
+// pickVisitorSlot picks the tile an arriving visitor stands on: one of
+// the eight visitorSlotOffsets around the structure's loiter pin.
+//
+// Selection is deterministic per actor — the same actor targeting the
+// same structure always starts its scan from the same slot, so an actor
+// re-resolving its destination tick after tick does not thrash between
+// slots. From that hash-derived start, the eight slots are scanned in
+// fixed order; the first slot that is both traversable (per grid) and
+// not already occupied by another actor wins. When all eight are
+// blocked, the loiter pin tile itself is the last resort — but only if
+// the pin is itself stand-able (walkable and unoccupied), since
+// returning an unwalkable or occupied tile would have resolvePathTarget
+// report success on a destination the mover can never finish at.
+//
+// ok=false when the structure has no VillageObject placement, OR when
+// every one of the eight slots AND the loiter pin are blocked — the
+// caller (MoveActor / the ticker) treats that as a clean reject rather
+// than accepting a move that can never make progress.
+//
+// The caller supplies the WalkGrid so the locomotion ticker can build it
+// once per tick and reuse it across every moving actor rather than
+// rebuilding per slot resolution. (This differs from the PR 4 design
+// note's gridless signature; passing the grid in is the per-tick-replan
+// model's natural shape.)
+//
+// MUST be called from inside a Command.Fn. Unexported by design.
+func pickVisitorSlot(w *World, structureID StructureID, actor *Actor, grid *WalkGrid) (Position, bool) {
+	if actor == nil {
+		return Position{}, false
+	}
+	pin, ok := effectiveLoiterTile(w, structureID)
+	if !ok {
+		return Position{}, false
+	}
+	n := len(visitorSlotOffsets)
+	start := int(hashActorID(actor.ID) % uint32(n))
+	for i := 0; i < n; i++ {
+		off := visitorSlotOffsets[(start+i)%n]
+		slot := Position{X: pin.X + off.X, Y: pin.Y + off.Y}
+		if !grid.CanWalk(slot.X, slot.Y) {
+			continue
+		}
+		if tileOccupiedByOtherActor(w, slot, actor.ID) {
+			continue
+		}
+		return slot, true
+	}
+	// All eight ring slots are blocked. Fall back to the loiter pin
+	// itself — but only if it is actually stand-able. An unwalkable or
+	// occupied pin returned here would be accepted by resolvePathTarget
+	// and then soft-block forever at the final step; failing resolution
+	// instead lets MoveActor reject cleanly.
+	if grid.CanWalk(pin.X, pin.Y) && !tileOccupiedByOtherActor(w, pin, actor.ID) {
+		log.Printf("pickVisitorSlot: all 8 visitor slots blocked for structure %s; "+
+			"falling back to loiter pin %+v (admin should relocate the pin)", structureID, pin)
+		return pin, true
+	}
+	log.Printf("pickVisitorSlot: all 8 visitor slots AND the loiter pin %+v are blocked "+
+		"for structure %s; no visitor tile available (admin should relocate the pin)", pin, structureID)
+	return Position{}, false
+}
+
+// hashActorID hashes an ActorID to a stable uint32 (FNV-1a over the raw
+// ID bytes). pickVisitorSlot uses it to derive a per-actor starting slot
+// — stable across ticks and process restarts, which is what keeps slot
+// selection from thrashing.
+func hashActorID(id ActorID) uint32 {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(id))
+	return h.Sum32()
+}
+
+// tileOccupiedByOtherActor reports whether any actor other than exceptID
+// currently stands on pos. Linear in actor count — fine at Salem scale (a
+// few dozen actors); a position index would help if actor counts ever
+// grow large.
+//
+// MUST be called from inside a Command.Fn (reads w.Actors). Unexported by
+// design.
+func tileOccupiedByOtherActor(w *World, pos Position, exceptID ActorID) bool {
+	for id, a := range w.Actors {
+		if id == exceptID {
+			continue
+		}
+		if a.CurrentX == pos.X && a.CurrentY == pos.Y {
+			return true
+		}
+	}
+	return false
+}

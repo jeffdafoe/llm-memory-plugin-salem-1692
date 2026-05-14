@@ -133,6 +133,82 @@ func TestRoundTrip_ActorClonesBreakAliasing(t *testing.T) {
 	}
 }
 
+// TestRoundTrip_ActorMoveIntentClonesBreakAliasing verifies an actor's
+// MoveIntent (Phase 2 PR 4) survives the repo boundary with values
+// preserved and pointer identity broken — including the nested
+// MoveDestination.StructureID pointer. MoveAttemptCounter is a scalar, so
+// it just needs to be preserved.
+func TestRoundTrip_ActorMoveIntentClonesBreakAliasing(t *testing.T) {
+	ctx := context.Background()
+	_, h := mem.NewRepository()
+
+	seed := map[sim.ActorID]*sim.Actor{
+		"walker": {
+			ID:                 "walker",
+			DisplayName:        "Walker",
+			MoveIntent:         &sim.MoveIntent{Destination: sim.NewStructureEnterDestination("inn"), AttemptID: 7},
+			MoveAttemptCounter: 7,
+		},
+	}
+	h.Actors.Seed(seed)
+
+	// Post-Seed mutation of the caller's MoveIntent must not leak.
+	*seed["walker"].MoveIntent.Destination.StructureID = "MUTATED"
+	seed["walker"].MoveIntent.AttemptID = 999
+
+	loaded1, err := h.Actors.LoadAll(ctx)
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	mi1 := loaded1["walker"].MoveIntent
+	if mi1 == nil {
+		t.Fatal("Seed dropped MoveIntent")
+	}
+	if mi1.AttemptID != 7 {
+		t.Errorf("Seed didn't clone MoveIntent: AttemptID=%d, want 7", mi1.AttemptID)
+	}
+	if *mi1.Destination.StructureID != "inn" {
+		t.Errorf("Seed didn't clone MoveDestination.StructureID: got %q, want inn", *mi1.Destination.StructureID)
+	}
+	if loaded1["walker"].MoveAttemptCounter != 7 {
+		t.Errorf("MoveAttemptCounter not preserved through Seed: got %d, want 7", loaded1["walker"].MoveAttemptCounter)
+	}
+
+	// Mutate the loaded MoveIntent, save, reload — values preserved.
+	*loaded1["walker"].MoveIntent.Destination.StructureID = "tavern"
+	loaded1["walker"].MoveIntent.AttemptID = 9
+	loaded1["walker"].MoveAttemptCounter = 9
+	if err := h.Actors.SaveSnapshot(ctx, nil, loaded1); err != nil {
+		t.Fatalf("SaveSnapshot: %v", err)
+	}
+	// Post-save mutation of the source must not leak.
+	loaded1["walker"].MoveIntent.AttemptID = 123
+
+	loaded2, err := h.Actors.LoadAll(ctx)
+	if err != nil {
+		t.Fatalf("LoadAll #2: %v", err)
+	}
+	mi2 := loaded2["walker"].MoveIntent
+	if mi2.AttemptID != 9 {
+		t.Errorf("MoveIntent.AttemptID after save+reload = %d, want 9", mi2.AttemptID)
+	}
+	if *mi2.Destination.StructureID != "tavern" {
+		t.Errorf("MoveDestination.StructureID after save+reload = %q, want tavern", *mi2.Destination.StructureID)
+	}
+	if loaded2["walker"].MoveAttemptCounter != 9 {
+		t.Errorf("MoveAttemptCounter after save+reload = %d, want 9", loaded2["walker"].MoveAttemptCounter)
+	}
+
+	// Pointer identity broken across reloads — the MoveIntent itself AND
+	// its nested MoveDestination.StructureID pointer.
+	if loaded1["walker"].MoveIntent == loaded2["walker"].MoveIntent {
+		t.Error("MoveIntent pointer aliased between LoadAll calls")
+	}
+	if loaded1["walker"].MoveIntent.Destination.StructureID == loaded2["walker"].MoveIntent.Destination.StructureID {
+		t.Error("MoveDestination.StructureID pointer aliased between LoadAll calls")
+	}
+}
+
 // TestRoundTrip_VillageObjectClonesBreakAliasing verifies the same
 // invariants for VillageObject — Tags slice, Refreshes slice, and each
 // ObjectRefresh pointer must be fresh across the repo boundary.
