@@ -106,6 +106,12 @@ type WorldSettings struct {
 	// the evaluator cadence, so a deferred warrant is re-examined on
 	// roughly the next scan. The warrants stay OPEN — a deferral consumes
 	// nothing.
+	//
+	// TickWorkerCount: number of off-world goroutines in PR 3's tick worker
+	// pool. Defaults to 1 (handlers.defaultTickWorkerCount) — a pool >1
+	// gives nondeterministic cross-actor commit order, so the default must
+	// not imply an ordering guarantee the system lacks. The pool derives
+	// its bounded job-buffer size from this; backpressure is a feature.
 	ReactorJitterMin                 time.Duration
 	ReactorJitterMax                 time.Duration
 	ReactorEvaluatorCadence          time.Duration
@@ -114,6 +120,7 @@ type WorldSettings struct {
 	MaxWarrantsPerActor              int
 	MinReactorTickGap                time.Duration
 	AdmissionBackoff                 time.Duration
+	TickWorkerCount                  int
 
 	// DefaultOutdoorSceneRadius is the conversational radius used by
 	// SceneBoundArea when callers don't specify one explicitly. Measured
