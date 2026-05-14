@@ -22,8 +22,8 @@ type EntryPolicy string
 const (
 	EntryPolicyDefault EntryPolicy = ""           // type-driven default
 	EntryPolicyOpen    EntryPolicy = "open"       // anyone may enter
-	EntryPolicyOwner   EntryPolicy = "owner-only" // only owner + lodgers
-	EntryPolicyClosed  EntryPolicy = "closed"     // no one enters
+	EntryPolicyOwner   EntryPolicy = "owner-only" // members only — see structureMembershipAllows
+	EntryPolicyClosed  EntryPolicy = "closed"     // no one enters (no interior)
 )
 
 // VillageObject is one placement on the village map.
@@ -39,9 +39,18 @@ type VillageObject struct {
 
 	// Admin metadata.
 	PlacedBy    string // llm-memory agent slug; "" if seeded by system
-	Owner       string // llm-memory agent slug; "" if unowned
 	DisplayName string // override for the catalog name; "" = use Asset.Name
 	EntryPolicy EntryPolicy
+
+	// OwnerActorID is the single owning actor of this structure ("" if
+	// unowned). A typed reference into World.Actors, not a stringly-typed
+	// slug — ownership is one input to entry access, not the whole story.
+	// Entry for an EntryPolicyOwner structure is a MEMBERSHIP check
+	// (owner OR resident OR staff OR lodger — see structureMembershipAllows),
+	// which is why a single owner suffices and co-ownership isn't needed:
+	// a family enters their home by being residents (shared
+	// HomeStructureID), not by co-owning it.
+	OwnerActorID ActorID
 
 	// AttachedTo links overlay objects (lamp on a wagon, etc.) to their
 	// parent VillageObject. Empty for top-level placements.

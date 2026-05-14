@@ -154,6 +154,14 @@ type reactorEvaluatorState struct {
 	scheduled bool
 }
 
+// locomotionTickerState carries the coalescing flag for the locomotion
+// ticker's AfterFunc self-rearm chain (Phase 2 PR 4). Same shape and
+// rules as reactorEvaluatorState — read/written exclusively from inside
+// Command.Fn, so no mutex.
+type locomotionTickerState struct {
+	scheduled bool
+}
+
 // World is the in-memory state of one realm's simulation. A single
 // goroutine (started by World.Run) owns all mutable fields below — every
 // mutation must go through the cmds channel. Readers consume the published
@@ -192,8 +200,9 @@ type World struct {
 	Settings    WorldSettings
 	TickCounter uint64
 
-	Speech      *SpeechHelper
-	reactorEval reactorEvaluatorState
+	Speech         *SpeechHelper
+	reactorEval    reactorEvaluatorState
+	locomotionTick locomotionTickerState
 
 	cmds      chan Command
 	published atomic.Pointer[Snapshot]

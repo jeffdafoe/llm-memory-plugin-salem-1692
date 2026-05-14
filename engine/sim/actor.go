@@ -207,6 +207,24 @@ type Actor struct {
 	// (MaxReactorTicksPerActorPerMinute). Lazily allocated on first emit.
 	RecentReactorTicks *RingBuffer[time.Time]
 
+	// Locomotion — Phase 2 PR 4.
+	//
+	// MoveIntent is the actor's in-flight movement state, nil when the
+	// actor is not moving. The locomotion ticker re-plans a path against
+	// it every tick (it deliberately caches no path — see MoveIntent).
+	//
+	// MoveAttemptCounter is the per-actor monotonic generation:
+	// incremented on every accepted MoveActor command and stamped as the
+	// new MoveIntent.AttemptID, so async subscribers can tell a
+	// superseded attempt's events from the current one.
+	//
+	// Both survive checkpoint reload — MoveDestination is a closed tagged
+	// struct (unlike the interface-typed reactor payloads), so MoveIntent
+	// serializes cleanly, and the counter must persist to stay monotonic
+	// across restarts.
+	MoveIntent         *MoveIntent
+	MoveAttemptCounter MovementAttemptID
+
 	// Relationships (per-actor views, not a global graph).
 	Acquaintances map[string]Acquaintance
 	Relationships map[ActorID]*Relationship
@@ -254,6 +272,9 @@ type Actor struct {
 // fields commands rebind (BreakUntil, SleepingUntil, LastTickedAt,
 // NextSelfTickAt) are cloned. Attributes is deep-cloned including each
 // []byte payload. The two RingBuffers are cloned via RingBuffer.Clone.
+// MoveIntent is deep-cloned via cloneMoveIntent (its MoveDestination
+// carries StructureID / Position pointer fields that would otherwise
+// alias across the boundary).
 //
 // Aliased today (NOT cloned) because no current command mutates them:
 //   - VisitorState, Narrative, LastSnapshot — placeholder/empty structs
@@ -384,6 +405,9 @@ func CloneActor(a *Actor) *Actor {
 			cp.Attributes[k] = append([]byte(nil), v...)
 		}
 	}
+	if a.MoveIntent != nil {
+		cp.MoveIntent = cloneMoveIntent(a.MoveIntent)
+	}
 	return &cp
 }
 
@@ -393,6 +417,11 @@ func CloneActor(a *Actor) *Actor {
 //   - Checkpoint writes (serialized to actor_snapshot row)
 //   - Scene origin capture (Scene.ParticipantStateAtOrigin) for diff-against-
 //     scene-start in perception build
+//
+// MoveIntent is deliberately NOT part of this slim view. In-flight
+// movement state crosses the mem-repo / checkpoint boundary on the full
+// Actor (via CloneActor); a consumer that needs it reads the Actor, not
+// the snapshot.
 type ActorSnapshot struct {
 	AtTick            uint64
 	State             ActorState // checkpointed; restart resumes in same state

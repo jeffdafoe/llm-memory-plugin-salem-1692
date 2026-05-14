@@ -47,4 +47,62 @@ var (
 	// NormalizeOutdoorSceneRadius exposes the LoadWorld settings
 	// normalizer so PR 4a can table-test default + clamp behavior.
 	NormalizeOutdoorSceneRadius = normalizeOutdoorSceneRadius
+
+	// PR 4 structure-anchor layer — the door / loiter pin / visitor slot
+	// helpers. All command-only (read w.VillageObjects / w.Assets /
+	// w.Actors) except ComputeLoiterTile, which is a pure function exposed
+	// so tests can table-drive the resolution order without a World.
+	VillageObjectForStructure = villageObjectForStructure
+	ComputeLoiterTile         = computeLoiterTile
+	EffectiveLoiterTile       = effectiveLoiterTile
+	PickVisitorSlot           = pickVisitorSlot
+	TileOccupiedByOtherActor  = tileOccupiedByOtherActor
 )
+
+// VisitorSlotOffsets exposes a copy of the visitor-slot ring so tests can
+// assert pickVisitorSlot's scan order without re-declaring the offsets.
+var VisitorSlotOffsets = visitorSlotOffsets
+
+// PR 4 locomotion type helpers — pure deep-copy helpers for the
+// MoveDestination / MoveIntent types. Exposed so the locomotion-type
+// tests can lock the pointer-identity-break contract directly, before
+// step 8 wires cloneMoveIntent into CloneActor.
+var (
+	CloneMoveDestination = cloneMoveDestination
+	CloneMoveIntent      = cloneMoveIntent
+)
+
+// PR 4 locomotion command-only helpers — read world maps, so they carry
+// the "must be inside a Command.Fn" discipline and stay unexported in
+// production.
+var (
+	StructureEntryTile        = structureEntryTile
+	ResolvePathTarget         = resolvePathTarget
+	StructureMembershipAllows = structureMembershipAllows
+	StructureContainingTile   = structureContainingTile
+)
+
+// PR 4 locomotion ticker — the per-tick scan helpers. EvaluateLocomotion
+// is the public Command (tests drive ticks through it directly); the
+// rest are command-only internals exposed for focused unit tests.
+var (
+	ArrivedAtDestination                     = arrivedAtDestination
+	ClassifyTileBlocker                      = classifyTileBlocker
+	AdvanceActorLocomotion                   = advanceActorLocomotion
+	ActorInActiveHuddle                      = actorInActiveHuddle
+	UpdateInsideStructureIDFromTileOwnership = updateInsideStructureIDFromTileOwnership
+	SetActorInsideStructure                  = setActorInsideStructure
+	ArmNextLocomotionTick                    = armNextLocomotionTick
+	FireScheduledLocomotionTick              = fireScheduledLocomotionTick
+)
+
+// ActorsInStructure returns the actor IDs the actorsByStructure secondary
+// index attributes to sid — lets PR 4 ticker tests assert the index moves
+// in lockstep with InsideStructureID.
+func ActorsInStructure(w *World, sid StructureID) []ActorID {
+	out := make([]ActorID, 0, len(w.actorsByStructure[sid]))
+	for id := range w.actorsByStructure[sid] {
+		out = append(out, id)
+	}
+	return out
+}
