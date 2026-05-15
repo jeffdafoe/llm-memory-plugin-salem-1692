@@ -106,22 +106,157 @@ type DwellCredit struct {
 	DwellPeriodMinutes int
 }
 
-// Acquaintance is a per-actor view of someone they know by display name.
+// Acquaintance is a per-actor "do I know this person by name?" marker.
+// Keyed by display name on the actor's Acquaintances map (TEXT-keyed in
+// the underlying npc_acquaintance table so NPC↔PC pairs work without a
+// cross-table FK). Applies to ALL NPCs regardless of Kind — even stateful
+// NPCs need the gate so perception renders strangers as descriptors
+// ("the blacksmith") rather than greeting unknowns by name.
 //
-// TODO: port from engine/actor_narrative.go acquaintance handling.
-type Acquaintance struct{}
+// Written by a subscriber to ActorMet, fired on huddle membership change.
+// Symmetric in concept but stored as directed pairs — the subscriber
+// writes both directions.
+type Acquaintance struct {
+	FirstInteractedAt time.Time
+}
 
-// Relationship is a per-actor relationship view keyed by other ActorID.
+// Relationship is the per-pair narrative state for a SHARED-VA NPC's
+// view of another actor: a summary + an append-only trail of recent
+// interactions, plus consolidation bookkeeping. Stateful NPCs do NOT
+// populate Relationships — their own VA carries continuity via memory-
+// api. Gate: Actor.Kind == KindNPCShared.
 //
-// TODO: port from engine/actor_relationship handling.
-type Relationship struct{}
+// SalientFacts is bounded by consolidation, which periodically rewrites
+// SummaryText from the trail and prunes consolidated facts. Per-fact
+// Text is truncated at write time to MaxSalientFactTextLen runes.
+type Relationship struct {
+	SummaryText        string
+	SalientFacts       []SalientFact
+	InteractionCount   int
+	LastInteractionAt  *time.Time
+	LastConsolidatedAt *time.Time
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+}
 
-// NarrativeState is the engine-side continuity layer for shared-VA NPCs
-// (Hannah, Moses, Elizabeth, etc.). Nil for stateful-VA actors that have
-// their own memory on llm-memory-api.
-//
-// TODO: port from engine/actor_narrative.go.
-type NarrativeState struct{}
+// SalientFact is one entry in a Relationship's interaction trail. Mirrors
+// the v1 JSONB element shape {at, kind, text} so the pg-impl SaveSnapshot
+// can round-trip without a separate intermediate.
+type SalientFact struct {
+	At   time.Time
+	Kind InteractionKind
+	Text string
+}
+
+// InteractionKind tags what produced a SalientFact. Stored as plain
+// string in JSONB; typed at the callsite to survive rename refactors
+// and prevent typos.
+type InteractionKind string
+
+const (
+	InteractionSpoke         InteractionKind = "spoke"
+	InteractionHeard         InteractionKind = "heard"
+	InteractionPaid          InteractionKind = "paid"
+	InteractionPaidBy        InteractionKind = "paid_by"
+	InteractionPayDeclinedBy InteractionKind = "pay_declined_by"
+	InteractionDeclinedPay   InteractionKind = "declined_pay"
+	InteractionCounteredBy   InteractionKind = "countered_by"
+	InteractionCountered     InteractionKind = "countered"
+	InteractionServed        InteractionKind = "served"
+	InteractionServedBy      InteractionKind = "served_by"
+	InteractionDelivered     InteractionKind = "delivered"
+	InteractionReceived      InteractionKind = "received"
+)
+
+// MaxSalientFactTextLen caps per-fact Text at write time so a single
+// rambling speech turn can't blow out a relationship's JSONB row. Mirrors
+// v1's salientTextMaxLen (220 runes).
+const MaxSalientFactTextLen = 220
+
+// NewSalientFact builds a SalientFact with Text truncated to
+// MaxSalientFactTextLen runes. Use this at every write callsite — never
+// construct a SalientFact directly when the text comes from LLM output
+// or other untrusted source.
+func NewSalientFact(at time.Time, kind InteractionKind, text string) SalientFact {
+	runes := []rune(text)
+	if len(runes) > MaxSalientFactTextLen {
+		text = string(runes[:MaxSalientFactTextLen])
+	}
+	return SalientFact{At: at, Kind: kind, Text: text}
+}
+
+// cloneRelationships deep-copies a Relationships map. Used by CloneActor
+// and snapshotActor so the published Snapshot's Relationships are
+// genuinely isolated from world state — a snapshot consumer mutating
+// rel.SalientFacts[0].Text would otherwise corrupt the world's source
+// of truth.
+func cloneRelationships(src map[ActorID]*Relationship) map[ActorID]*Relationship {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[ActorID]*Relationship, len(src))
+	for k, v := range src {
+		if v == nil {
+			continue
+		}
+		vc := *v
+		if v.LastInteractionAt != nil {
+			t := *v.LastInteractionAt
+			vc.LastInteractionAt = &t
+		}
+		if v.LastConsolidatedAt != nil {
+			t := *v.LastConsolidatedAt
+			vc.LastConsolidatedAt = &t
+		}
+		if v.SalientFacts != nil {
+			// SalientFact is a value type with no inner pointers
+			// (time.Time is a value), so slice copy is enough.
+			vc.SalientFacts = append([]SalientFact(nil), v.SalientFacts...)
+		}
+		dst[k] = &vc
+	}
+	return dst
+}
+
+// cloneNarrativeState deep-copies a NarrativeState pointer. Same
+// rationale as cloneRelationships — published snapshot must be
+// isolated from world state.
+func cloneNarrativeState(src *NarrativeState) *NarrativeState {
+	if src == nil {
+		return nil
+	}
+	nc := *src
+	if src.LastConsolidatedAt != nil {
+		t := *src.LastConsolidatedAt
+		nc.LastConsolidatedAt = &t
+	}
+	return &nc
+}
+
+// cloneAcquaintances copies an Acquaintances map. Acquaintance is a
+// value type with no inner pointers, so a per-key value-copy is enough.
+func cloneAcquaintances(src map[string]Acquaintance) map[string]Acquaintance {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]Acquaintance, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+// NarrativeState is the engine-side continuity layer for shared-VA NPCs:
+// the seed_text identity frame plus the evolving_summary the consolidator
+// rewrites from accumulated relationship trails. Nil for stateful-VA
+// actors — their own VA loads context/soul into the system prompt.
+type NarrativeState struct {
+	SeedText           string
+	EvolvingSummary    string
+	LastConsolidatedAt *time.Time
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+}
 
 // VisitorState is the per-visitor archetype state (wandering, leaving,
 // etc.). Nil for non-visitor actors.
@@ -284,23 +419,20 @@ type Actor struct {
 
 // CloneActor returns a deep copy of an Actor suitable for the mem-repo
 // serialization boundary. Mutated containers (Needs, Inventory,
-// DwellCredits, RoomAccess, ProduceState, Acquaintances) and pointer
-// fields commands rebind (BreakUntil, SleepingUntil, LastTickedAt,
-// NextSelfTickAt) are cloned. Attributes is deep-cloned including each
-// []byte payload. The two RingBuffers are cloned via RingBuffer.Clone.
-// MoveIntent is deep-cloned via cloneMoveIntent (its MoveDestination
-// carries StructureID / Position pointer fields that would otherwise
-// alias across the boundary).
+// DwellCredits, RoomAccess, ProduceState, Acquaintances, Relationships)
+// and pointer fields commands rebind (BreakUntil, SleepingUntil,
+// LastTickedAt, NextSelfTickAt, Narrative) are cloned. Attributes is
+// deep-cloned including each []byte payload. The two RingBuffers are
+// cloned via RingBuffer.Clone. MoveIntent is deep-cloned via
+// cloneMoveIntent (its MoveDestination carries StructureID / Position
+// pointer fields that would otherwise alias across the boundary).
 //
 // Aliased today (NOT cloned) because no current command mutates them:
-//   - VisitorState, Narrative, LastSnapshot — placeholder/empty structs
+//   - VisitorState, LastSnapshot — placeholder/empty structs
 //
-// TODO: clone Relationships values and RestockPolicy when a command
-// starts mutating them. Both are pointer-bearing domain state (the
-// Relationship struct is a placeholder today but will land with a
-// per-actor relationship view; RestockPolicy is read-only post-load but
-// future admin edits could mutate it via a command). Aliasing them now
-// is correct but fragile against future command authors.
+// TODO: clone RestockPolicy when a command starts mutating it. Read-only
+// post-load today but future admin edits could mutate it via a command;
+// aliasing now is correct but fragile against future command authors.
 //
 // Used by mem.ActorsRepo.Seed / LoadAll / SaveSnapshot to enforce that a
 // round-trip through the repo breaks pointer identity, the way the pg
@@ -372,16 +504,13 @@ func CloneActor(a *Actor) *Actor {
 		}
 	}
 	if a.Acquaintances != nil {
-		cp.Acquaintances = make(map[string]Acquaintance, len(a.Acquaintances))
-		for k, v := range a.Acquaintances {
-			cp.Acquaintances[k] = v
-		}
+		cp.Acquaintances = cloneAcquaintances(a.Acquaintances)
 	}
 	if a.Relationships != nil {
-		cp.Relationships = make(map[ActorID]*Relationship, len(a.Relationships))
-		for k, v := range a.Relationships {
-			cp.Relationships[k] = v // placeholder type; alias safe
-		}
+		cp.Relationships = cloneRelationships(a.Relationships)
+	}
+	if a.Narrative != nil {
+		cp.Narrative = cloneNarrativeState(a.Narrative)
 	}
 	if a.RecentActions != nil {
 		cp.RecentActions = a.RecentActions.Clone()
@@ -452,7 +581,10 @@ func CloneActor(a *Actor) *Actor {
 // the snapshot.
 type ActorSnapshot struct {
 	AtTick            uint64
+	DisplayName       string
+	Kind              ActorKind
 	State             ActorState // checkpointed; restart resumes in same state
+	Role              string
 	InsideStructureID StructureID
 	CurrentX          int
 	CurrentY          int
@@ -460,6 +592,18 @@ type ActorSnapshot struct {
 	Needs             map[NeedKey]int
 	InventoryHash     uint64 // fast-compare; computed at snapshot time
 	Coins             int
+
+	// Per-actor knowledge state — read by perception build:
+	//   - Acquaintances gates "Around you" name-vs-descriptor rendering
+	//     (all NPC kinds — stateful and shared).
+	//   - Relationships + Narrative populate the shared-only "Who you
+	//     are:" / "What you remember of those here:" sections; nil/empty
+	//     for stateful and PC kinds.
+	// All three deep-cloned by snapshotActor so the published Snapshot is
+	// isolated from world state.
+	Acquaintances map[string]Acquaintance
+	Relationships map[ActorID]*Relationship
+	Narrative     *NarrativeState
 
 	// TickInFlight + TickAttemptID mirror the live Actor fields so PR 3d's
 	// harness can do a cheap pre-LLM stale-check by reading the snapshot
@@ -488,6 +632,15 @@ func CloneActorSnapshot(s *ActorSnapshot) *ActorSnapshot {
 		for k, v := range s.Needs {
 			cp.Needs[k] = v
 		}
+	}
+	if s.Acquaintances != nil {
+		cp.Acquaintances = cloneAcquaintances(s.Acquaintances)
+	}
+	if s.Relationships != nil {
+		cp.Relationships = cloneRelationships(s.Relationships)
+	}
+	if s.Narrative != nil {
+		cp.Narrative = cloneNarrativeState(s.Narrative)
 	}
 	return &cp
 }

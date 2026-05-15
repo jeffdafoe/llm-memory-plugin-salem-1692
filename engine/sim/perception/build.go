@@ -43,6 +43,8 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 
 	p.Actor = buildActorView(actorSnap)
 	p.Surroundings = buildSurroundings(snap, actorID, actorSnap)
+	p.NarrativeState = buildNarrativeState(actorSnap)
+	p.Relationships = buildRelationships(actorSnap, p.Surroundings.HuddleMembers)
 
 	// Group the consumed warrants by the scene they reference. Only event-
 	// sourced warrants carry a scene (the zero-lineage invariant: full
@@ -328,6 +330,9 @@ func buildActorView(a *sim.ActorSnapshot) ActorView {
 
 // buildSurroundings assembles the actor's immediate context — the
 // structure it occupies and the other members of its current huddle.
+// Per-member acquaintance status is resolved against the subject
+// actor's Acquaintances map so Render can swap name vs. descriptor
+// without re-reading the snapshot.
 func buildSurroundings(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapshot) SurroundingsView {
 	s := SurroundingsView{
 		InsideStructureID: a.InsideStructureID,
@@ -340,16 +345,101 @@ func buildSurroundings(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnap
 	}
 	if a.CurrentHuddleID != "" {
 		if h := snap.Huddles[a.CurrentHuddleID]; h != nil {
-			for member := range h.Members {
-				if member == actorID {
+			for memberID := range h.Members {
+				if memberID == actorID {
 					continue
 				}
-				s.HuddleMembers = append(s.HuddleMembers, member)
+				m := HuddleMember{ID: memberID}
+				if peer := snap.Actors[memberID]; peer != nil {
+					m.DisplayName = peer.DisplayName
+					m.Role = peer.Role
+				}
+				if m.DisplayName != "" {
+					_, m.Acquainted = a.Acquaintances[m.DisplayName]
+				}
+				s.HuddleMembers = append(s.HuddleMembers, m)
 			}
 			sort.Slice(s.HuddleMembers, func(i, j int) bool {
-				return s.HuddleMembers[i] < s.HuddleMembers[j]
+				return s.HuddleMembers[i].ID < s.HuddleMembers[j].ID
 			})
 		}
 	}
 	return s
+}
+
+// buildNarrativeState returns the kind-aware "Who you are:" content
+// for shared-VA actors, or nil otherwise. Stateful and PC actors get
+// no engine-side narrative — their identity comes from their own VA's
+// <Self> block (stateful) or from the player (PC).
+//
+// Returns nil for an empty NarrativeState too — Render is content-
+// gated, so a nil view skips the section cleanly.
+func buildNarrativeState(a *sim.ActorSnapshot) *NarrativeStateView {
+	if a.Kind != sim.KindNPCShared || a.Narrative == nil {
+		return nil
+	}
+	if a.Narrative.SeedText == "" && a.Narrative.EvolvingSummary == "" {
+		return nil
+	}
+	return &NarrativeStateView{
+		SeedText:        a.Narrative.SeedText,
+		EvolvingSummary: a.Narrative.EvolvingSummary,
+	}
+}
+
+// recentSalientFactsPerPeer is the per-peer ceiling on facts surfaced
+// into perception. Mirrors v1's formatRelationshipsPerception which
+// renders the most-recent 3. RecentFacts is the slice end of the
+// stored oldest-first SalientFacts, reversed to most-recent-first.
+const recentSalientFactsPerPeer = 3
+
+// buildRelationships projects per-co-huddle-peer relationship views
+// from the subject actor's Relationships map. Populated only for
+// shared-VA actors. Peers in the huddle without a Relationship row
+// (e.g. just-met strangers — the Relationship is only written by
+// speech/pay/serve/deliver handlers, not first-encounter) are omitted
+// silently rather than rendered as empty views.
+//
+// Ordering: by PeerID, matching SurroundingsView.HuddleMembers'
+// sort order, so a reader of both blocks sees the same peer order.
+func buildRelationships(a *sim.ActorSnapshot, members []HuddleMember) []RelationshipPeerView {
+	if a.Kind != sim.KindNPCShared || len(a.Relationships) == 0 || len(members) == 0 {
+		return nil
+	}
+	out := make([]RelationshipPeerView, 0, len(members))
+	for _, m := range members {
+		rel := a.Relationships[m.ID]
+		if rel == nil {
+			continue
+		}
+		out = append(out, RelationshipPeerView{
+			PeerID:      m.ID,
+			PeerName:    m.DisplayName,
+			SummaryText: rel.SummaryText,
+			RecentFacts: recentFactsMostRecentFirst(rel.SalientFacts, recentSalientFactsPerPeer),
+		})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// recentFactsMostRecentFirst returns up to n facts from the tail of
+// the oldest-first stored slice, reversed so the most-recent is first.
+// Returns nil for an empty input.
+func recentFactsMostRecentFirst(facts []sim.SalientFact, n int) []sim.SalientFact {
+	if len(facts) == 0 || n <= 0 {
+		return nil
+	}
+	start := len(facts) - n
+	if start < 0 {
+		start = 0
+	}
+	tail := facts[start:]
+	out := make([]sim.SalientFact, len(tail))
+	for i, f := range tail {
+		out[len(tail)-1-i] = f
+	}
+	return out
 }

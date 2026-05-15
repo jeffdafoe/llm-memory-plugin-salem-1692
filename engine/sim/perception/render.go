@@ -98,8 +98,10 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	var b strings.Builder
 
 	b.WriteString("# Your turn\n\n")
+	renderNarrativeState(&b, p.NarrativeState)
 	renderActor(&b, p.Actor)
 	renderSurroundings(&b, p.Surroundings)
+	renderRelationships(&b, p.Relationships)
 	renderScene(&b, p)
 	renderSecondary(&b, p.Secondary)
 	renderWarrants(&b, p.Warrants, cfg, &out)
@@ -140,12 +142,89 @@ func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 	}
 	if s.HuddleID != "" {
 		if len(s.HuddleMembers) > 0 {
-			fmt.Fprintf(b, "huddle: %s with %s\n", s.HuddleID, joinActorIDs(s.HuddleMembers))
+			fmt.Fprintf(b, "huddle: %s with %s\n", s.HuddleID, joinHuddleMembers(s.HuddleMembers))
 		} else {
 			fmt.Fprintf(b, "huddle: %s (you are the only member)\n", s.HuddleID)
 		}
 	} else {
 		b.WriteString("huddle: not in a huddle\n")
+	}
+	b.WriteString("\n")
+}
+
+// joinHuddleMembers renders co-huddle peers with name-vs-descriptor
+// gating per Acquaintance. Acquainted → DisplayName; unacquainted with
+// a Role → "the <role>"; otherwise → "a stranger". Mirrors v1's
+// coLocatedHuddleMembers descriptor swap so unknown others don't get
+// greeted by name.
+func joinHuddleMembers(members []HuddleMember) string {
+	parts := make([]string, len(members))
+	for i, m := range members {
+		parts[i] = renderHuddleMember(m)
+	}
+	return strings.Join(parts, ", ")
+}
+
+func renderHuddleMember(m HuddleMember) string {
+	if m.Acquainted && m.DisplayName != "" {
+		return sanitizeInline(m.DisplayName)
+	}
+	if m.Role != "" {
+		return "the " + sanitizeInline(m.Role)
+	}
+	return "a stranger"
+}
+
+// renderNarrativeState writes the "Who you are:" section for shared-VA
+// actors. Content-gated: a nil view skips the section entirely so
+// stateful and PC actors don't see an empty block. The contract
+// matches the perception note — Render is kind-agnostic; Build is the
+// one that gates on Kind.
+func renderNarrativeState(b *strings.Builder, n *NarrativeStateView) {
+	if n == nil {
+		return
+	}
+	b.WriteString("## Who you are\n")
+	if n.SeedText != "" {
+		b.WriteString(sanitizeInline(n.SeedText))
+		b.WriteString("\n")
+	}
+	if n.EvolvingSummary != "" {
+		b.WriteString(sanitizeInline(n.EvolvingSummary))
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+}
+
+// renderRelationships writes the "What you remember of those here:"
+// section. One subsection per co-huddle peer the subject actor has a
+// Relationship row for — summary line first, then up to N most-recent
+// salient facts (Build already truncated and reversed to most-recent-
+// first). Empty when there are no per-peer entries (Build returns nil
+// for non-shared actors and for huddles with no relationships).
+func renderRelationships(b *strings.Builder, peers []RelationshipPeerView) {
+	if len(peers) == 0 {
+		return
+	}
+	b.WriteString("## What you remember of those here\n")
+	for _, p := range peers {
+		name := sanitizeInline(p.PeerName)
+		if name == "" {
+			name = string(p.PeerID)
+		}
+		fmt.Fprintf(b, "- %s:", name)
+		if p.SummaryText != "" {
+			fmt.Fprintf(b, " %s", sanitizeInline(p.SummaryText))
+		}
+		b.WriteString("\n")
+		for _, f := range p.RecentFacts {
+			excerpt, _ := sanitizeText(f.Text, 0)
+			kind := string(f.Kind)
+			if kind == "" {
+				kind = "noted"
+			}
+			fmt.Fprintf(b, "  - [%s] %s\n", kind, excerpt)
+		}
 	}
 	b.WriteString("\n")
 }
@@ -324,14 +403,6 @@ func renderNeeds(needs map[sim.NeedKey]int) string {
 	parts := make([]string, 0, len(keys))
 	for _, k := range keys {
 		parts = append(parts, fmt.Sprintf("%s=%d", k, needs[sim.NeedKey(k)]))
-	}
-	return strings.Join(parts, ", ")
-}
-
-func joinActorIDs(ids []sim.ActorID) string {
-	parts := make([]string, len(ids))
-	for i, id := range ids {
-		parts[i] = string(id)
 	}
 	return strings.Join(parts, ", ")
 }
