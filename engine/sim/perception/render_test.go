@@ -16,6 +16,48 @@ func speechWarrant(eventID sim.EventID, scene sim.SceneID, speaker sim.ActorID, 
 	}
 }
 
+func paidWarrant(eventID sim.EventID, buyer sim.ActorID, amount int, forText string) sim.WarrantMeta {
+	return sim.WarrantMeta{
+		TriggerActorID: buyer,
+		Reason:         sim.PaidWarrantReason{PaidID: eventID, Buyer: buyer, Amount: amount, ForText: forText},
+		SourceEventID:  eventID,
+	}
+}
+
+// TestRender_PaidWarrantSingularPlural pins the singular/plural agreement on
+// the paid warrant line — amount=1 must render "1 coin" not "1 coins".
+func TestRender_PaidWarrantSingularPlural(t *testing.T) {
+	cases := []struct {
+		name        string
+		amount      int
+		forText     string
+		wantPhrase  string
+		notExpected string
+	}{
+		{"singular_no_for", 1, "", "1 coin", "1 coins"},
+		{"singular_with_for", 1, "ale", "1 coin", "1 coins"},
+		{"plural_no_for", 3, "", "3 coins", ""},
+		{"plural_with_for", 5, "bread", "5 coins", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := Payload{
+				ActorID:  "alice",
+				Actor:    ActorView{State: sim.StateIdle},
+				Warrants: []sim.WarrantMeta{paidWarrant(7, "bob", tc.amount, tc.forText)},
+				Baseline: BaselinePresent,
+			}
+			out := Render(p, DefaultRenderConfig())
+			if !strings.Contains(out.Text, tc.wantPhrase) {
+				t.Errorf("Render output missing %q\nOutput:\n%s", tc.wantPhrase, out.Text)
+			}
+			if tc.notExpected != "" && strings.Contains(out.Text, tc.notExpected) {
+				t.Errorf("Render output contains forbidden %q\nOutput:\n%s", tc.notExpected, out.Text)
+			}
+		})
+	}
+}
+
 // --- determinism ---------------------------------------------------------
 
 func TestRender_Deterministic(t *testing.T) {

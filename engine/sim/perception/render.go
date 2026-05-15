@@ -378,6 +378,8 @@ func renderWarrantLine(n int, w sim.WarrantMeta, maxTextBytes int) (string, bool
 		return renderSpeechWarrantLine(n, w, kind, scope, r.Speaker, r.Excerpt, maxTextBytes)
 	case sim.NPCSpeechWarrantReason:
 		return renderSpeechWarrantLine(n, w, kind, scope, r.Speaker, r.Excerpt, maxTextBytes)
+	case sim.PaidWarrantReason:
+		return renderPaidWarrantLine(n, w, kind, scope, r.Buyer, r.Amount, r.ForText, maxTextBytes)
 	default:
 		if w.TriggerActorID != "" {
 			return fmt.Sprintf("%d. [%s]%s involving %s\n", n, kind, scope, w.TriggerActorID), false
@@ -401,6 +403,35 @@ func renderSpeechWarrantLine(n int, w sim.WarrantMeta, kind, scope string, speak
 		return fmt.Sprintf("%d. [%s]%s %s said: \"%s\"\n", n, kind, scope, speaker, sanitized), truncated
 	}
 	return fmt.Sprintf("%d. [%s]%s someone said: \"%s\"\n", n, kind, scope, sanitized), truncated
+}
+
+// renderPaidWarrantLine renders the warrant line for a PaidWarrantReason.
+// Surfaces the buyer, amount, and (optional) flavor text to the seller's
+// perception prompt — the seller's next reactor tick reads this and decides
+// what to do (speak thanks, walk over, ignore).
+//
+// Without ForText: `N. [paid] (scene X) <buyer> paid you N coins`.
+// With ForText:    `N. [paid] (scene X) <buyer> paid you N coins — "<for>"`.
+//
+// The ForText excerpt is sanitized + capped like the speech excerpt to keep
+// the per-tick prompt cost bounded. Returned bool reports truncation.
+func renderPaidWarrantLine(n int, w sim.WarrantMeta, kind, scope string, buyer sim.ActorID, amount int, forText string, maxTextBytes int) (string, bool) {
+	if buyer == "" {
+		buyer = w.TriggerActorID
+	}
+	buyerLabel := string(buyer)
+	if buyerLabel == "" {
+		buyerLabel = "someone"
+	}
+	unit := "coins"
+	if amount == 1 {
+		unit = "coin"
+	}
+	if strings.TrimSpace(forText) == "" {
+		return fmt.Sprintf("%d. [%s]%s %s paid you %d %s\n", n, kind, scope, buyerLabel, amount, unit), false
+	}
+	sanitized, truncated := sanitizeText(forText, maxTextBytes)
+	return fmt.Sprintf("%d. [%s]%s %s paid you %d %s — \"%s\"\n", n, kind, scope, buyerLabel, amount, unit, sanitized), truncated
 }
 
 // renderNeeds renders a need map as a deterministic "key=value" list,
