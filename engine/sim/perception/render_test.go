@@ -10,7 +10,7 @@ import (
 func speechWarrant(eventID sim.EventID, scene sim.SceneID, speaker sim.ActorID, excerpt string) sim.WarrantMeta {
 	return sim.WarrantMeta{
 		TriggerActorID: speaker,
-		Reason:         sim.SpeechWarrantReason{Speaker: speaker, Excerpt: excerpt},
+		Reason:         sim.PCSpeechWarrantReason{Speaker: speaker, Excerpt: excerpt},
 		SourceEventID:  eventID,
 		SceneID:        scene,
 	}

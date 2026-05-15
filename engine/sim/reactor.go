@@ -67,8 +67,9 @@ const (
 //
 // PR 2 ships two concrete reasons:
 //   - BasicWarrantReason for kinds without extra payload (most current callers).
-//   - SpeechWarrantReason as a bootstrap example of a reason that carries
-//     data the prompt builder will need (speech excerpt, speaker, ID).
+//   - PCSpeechWarrantReason / NPCSpeechWarrantReason for speech-triggered
+//     warrants — the speak handler subsystem (Phase 3 PR A) emits the Spoke
+//     event whose subscriber mints these.
 //
 // Future reasons (ArrivalWarrantReason, ProductionWarrantReason, etc.) land
 // in the PRs that introduce their producer subsystems.
@@ -87,24 +88,48 @@ type BasicWarrantReason struct {
 func (BasicWarrantReason) isWarrantReason()    {}
 func (r BasicWarrantReason) Kind() WarrantKind { return r.K }
 
-// SpeechWarrantReason captures the speech that warranted the tick.
+// PCSpeechWarrantReason captures speech by a PC (player character) that
+// warranted the listening NPC's tick. NPC-spoken warrants use the parallel
+// NPCSpeechWarrantReason. The two are split rather than unified-with-a-
+// kind-field for the same reason events.go has separate ActorMoved /
+// ActorArrived / ActorMet types instead of one generic Event{Kind}: it
+// matches the type-per-kind discriminated-union pattern used elsewhere,
+// makes the kind a compile-time guarantee rather than a runtime check, and
+// lets PC- vs NPC-specific fields diverge cleanly if future PRs need them.
 //
-// PR 2 ships this as a bootstrap example — no production callsite uses it
-// yet (speech subsystem hasn't ported). When speech ports, callsites build
-// this reason directly and the prompt builder type-switches on it to lead
-// with the unaddressed line.
+// SpeechID aliases the source event's EventID — the speak handler emits a
+// Spoke event whose EventID is the canonical identifier; the speech
+// reactor subscriber copies that EventID into both SpeechID (on the
+// warrant payload) and SourceEventID (on the warrant meta). One number
+// flows through event, payload, and dedup key, so logs and replay tooling
+// trace a single cascade by one ID.
 //
-// Excerpt is the literal speech text. Sanitization (max length, newline
-// handling, prompt-injection guards) is PR 3's responsibility at render
-// time — payload storage stays faithful to what was said.
-type SpeechWarrantReason struct {
+// Excerpt is the speech text truncated to MaxSalientFactTextLen runes —
+// other actors' perception prompts re-render this on every reactor tick
+// they consume, so bounding the excerpt at warrant-stamp time bounds the
+// per-tick prompt cost. The raw (1000-char-capped, control-char-rejected)
+// text travels on the Spoke event for any consumer that wants the full
+// utterance.
+type PCSpeechWarrantReason struct {
 	SpeechID SpeechID
 	Speaker  ActorID
 	Excerpt  string
 }
 
-func (SpeechWarrantReason) isWarrantReason()  {}
-func (SpeechWarrantReason) Kind() WarrantKind { return WarrantKindPCSpoke }
+func (PCSpeechWarrantReason) isWarrantReason()  {}
+func (PCSpeechWarrantReason) Kind() WarrantKind { return WarrantKindPCSpoke }
+
+// NPCSpeechWarrantReason captures speech by an NPC that warranted the
+// listening peer NPC's tick. Parallel to PCSpeechWarrantReason; see that
+// type's doc for the SpeechID / Excerpt invariants.
+type NPCSpeechWarrantReason struct {
+	SpeechID SpeechID
+	Speaker  ActorID
+	Excerpt  string
+}
+
+func (NPCSpeechWarrantReason) isWarrantReason()  {}
+func (NPCSpeechWarrantReason) Kind() WarrantKind { return WarrantKindNPCSpoke }
 
 // SpeechID is a stable identifier for a single speech utterance. Stub
 // today; speech subsystem port lands the producer + persistence.
