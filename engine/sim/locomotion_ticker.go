@@ -298,20 +298,30 @@ func arrivedAtDestination(w *World, actor *Actor, dest MoveDestination) bool {
 // finishArrival clears the MoveIntent, emits ActorArrived, and stamps an
 // ArrivalWarrantReason on the mover so the agent layer (PR 3) can react
 // to "you have arrived." Caller guarantees actor.MoveIntent is non-nil.
+//
+// The emit precedes the stamp so the warrant carries full PR 3a source
+// lineage (SourceEventID / RootEventID populated from the ActorArrived
+// event); the alternative "stamp first, emit after" produces a warrant
+// with zero lineage that bypasses source-aware dedup.
 func finishArrival(w *World, actor *Actor, dest MoveDestination, attemptID MovementAttemptID, now time.Time) {
 	actor.MoveIntent = nil
 	finalPos := Position{X: actor.CurrentX, Y: actor.CurrentY}
 	finalStructure := actor.InsideStructureID
 
-	w.emit(&ActorArrived{
+	arrivedEvt := &ActorArrived{
 		ActorID:           actor.ID,
 		FinalPosition:     finalPos,
 		FinalStructureID:  finalStructure,
 		MovementAttemptID: attemptID,
 		At:                now,
-	})
+	}
+	w.emit(arrivedEvt)
 	tryStampWarrant(w, actor, WarrantMeta{
 		TriggerActorID: actor.ID,
+		SourceEventID:  arrivedEvt.EventID(),
+		RootEventID:    arrivedEvt.RootEventID(),
+		SourceActorID:  actor.ID,
+		OccurredAt:     now,
 		Reason: ArrivalWarrantReason{
 			AttemptID:     attemptID,
 			AtStructureID: finalStructure,

@@ -340,9 +340,14 @@ type StartOutdoorHuddleResult struct {
 // radius <= 0 falls back to WorldSettings.DefaultOutdoorSceneRadius, and
 // then to DefaultOutdoorSceneRadiusValue for an unconfigured test world.
 //
-// reason, when non-nil, is the WarrantMeta stamped on every participant;
-// when nil, each participant gets a default WarrantKindHuddleJoined
-// warrant triggered by themselves.
+// reason, when non-nil, overrides the default warrant TRIGGER / FORCE /
+// REASON applied to every participant; when nil, each participant gets a
+// default WarrantKindHuddleJoined warrant triggered by themselves. Source
+// lineage fields on the per-participant warrant (SourceEventID,
+// RootEventID, SourceActorID, HuddleID, SceneID, OccurredAt) are ALWAYS
+// drawn from the participant's HuddleJoined event regardless of reason —
+// PR 3a's zero-lineage invariant rules out partial lineage. A caller that
+// passes pre-filled source fields in reason has them overwritten here.
 //
 // Transaction sequence (all-or-nothing — every check runs before any
 // mutation, so the mutation phase below cannot fail):
@@ -448,16 +453,12 @@ func StartOutdoorHuddle(participants []ActorID, anchor Position, radius int, rea
 				actor.CurrentHuddleID = huddleID
 				w.actorsByHuddle[huddleID][id] = struct{}{}
 
-				meta := WarrantMeta{
-					TriggerActorID: id,
-					Reason:         BasicWarrantReason{K: WarrantKindHuddleJoined},
-				}
-				if reason != nil {
-					meta = *reason
-				}
-				tryStampWarrant(w, actor, meta, now)
-
-				w.emit(&HuddleJoined{
+				// HuddleJoined emitted FIRST so the per-participant
+				// warrant carries full PR 3a source lineage from this
+				// event. Each participant gets their own HuddleJoined
+				// EventID — distinct SourceEventIDs across participants
+				// keep dedup precision intact.
+				joinedEvt := &HuddleJoined{
 					ActorID:      id,
 					HuddleID:     huddleID,
 					SceneID:      sceneID,
@@ -465,7 +466,31 @@ func StartOutdoorHuddle(participants []ActorID, anchor Position, radius int, rea
 					OtherMembers: others,
 					HuddleNew:    len(others) == 0,
 					At:           now,
-				})
+				}
+				w.emit(joinedEvt)
+
+				// reason, if supplied, controls trigger / force / reason;
+				// source lineage is ALWAYS sourced from the event we just
+				// emitted (PR 3a invariant — no partial lineage). A caller
+				// passing pre-filled source fields in reason would have
+				// them overwritten here, which is intentional.
+				meta := WarrantMeta{
+					TriggerActorID: id,
+					Reason:         BasicWarrantReason{K: WarrantKindHuddleJoined},
+				}
+				if reason != nil {
+					meta.TriggerActorID = reason.TriggerActorID
+					meta.Force = reason.Force
+					meta.Reason = reason.Reason
+				}
+				meta.SourceEventID = joinedEvt.EventID()
+				meta.RootEventID = joinedEvt.RootEventID()
+				meta.SourceActorID = id
+				meta.HuddleID = huddleID
+				meta.SceneID = sceneID
+				meta.OccurredAt = now
+				tryStampWarrant(w, actor, meta, now)
+
 				for _, other := range others {
 					w.emit(&ActorMet{A: id, B: other, HuddleID: huddleID, At: now})
 				}

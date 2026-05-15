@@ -357,25 +357,16 @@ func JoinHuddle(actorID ActorID, structureID StructureID, sceneID SceneID, now t
 				}
 			}
 
-			// Tick-warrant the joiner and every prior member: peer change
-			// is actionable. The funnel preserves earliest WarrantedSince /
-			// WarrantDueAt on already-warranted actors and appends the
-			// new meta to their Warrants list (so PR 3's prompt builder
-			// sees what triggered them).
-			tryStampWarrant(w, actor, WarrantMeta{
-				TriggerActorID: actorID,
-				Reason:         BasicWarrantReason{K: WarrantKindHuddleJoined},
-			}, now)
-			for _, id := range otherMembers {
-				if other, ok := w.Actors[id]; ok {
-					tryStampWarrant(w, other, WarrantMeta{
-						TriggerActorID: actorID,
-						Reason:         BasicWarrantReason{K: WarrantKindHuddlePeerJoined},
-					}, now)
-				}
-			}
-
-			w.emit(&HuddleJoined{
+			// HuddleJoined emitted FIRST so the joiner's + prior members'
+			// warrants carry full PR 3a source lineage (SourceEventID /
+			// RootEventID populated from this event). The funnel
+			// preserves earliest WarrantedSince / WarrantDueAt on
+			// already-warranted actors and appends the new meta to their
+			// Warrants list (so PR 3's prompt builder sees what triggered
+			// them). ActorMet emits follow — they are the pairwise
+			// introductions; warrant sourcing for "peer joined" semantics
+			// comes from HuddleJoined, not the per-pair events.
+			joinedEvt := &HuddleJoined{
 				ActorID:      actorID,
 				HuddleID:     huddleID,
 				SceneID:      sceneID,
@@ -383,7 +374,34 @@ func JoinHuddle(actorID ActorID, structureID StructureID, sceneID SceneID, now t
 				OtherMembers: otherMembers,
 				HuddleNew:    huddleNew,
 				At:           now,
-			})
+			}
+			w.emit(joinedEvt)
+
+			tryStampWarrant(w, actor, WarrantMeta{
+				TriggerActorID: actorID,
+				SourceEventID:  joinedEvt.EventID(),
+				RootEventID:    joinedEvt.RootEventID(),
+				SourceActorID:  actorID,
+				HuddleID:       huddleID,
+				SceneID:        sceneID,
+				OccurredAt:     now,
+				Reason:         BasicWarrantReason{K: WarrantKindHuddleJoined},
+			}, now)
+			for _, id := range otherMembers {
+				if other, ok := w.Actors[id]; ok {
+					tryStampWarrant(w, other, WarrantMeta{
+						TriggerActorID: actorID,
+						SourceEventID:  joinedEvt.EventID(),
+						RootEventID:    joinedEvt.RootEventID(),
+						SourceActorID:  actorID,
+						HuddleID:       huddleID,
+						SceneID:        sceneID,
+						OccurredAt:     now,
+						Reason:         BasicWarrantReason{K: WarrantKindHuddlePeerJoined},
+					}, now)
+				}
+			}
+
 			// One ActorMet per pair so subscribers receive the full set
 			// of introductions without having to derive pairs from the
 			// HuddleJoined event.
@@ -434,6 +452,11 @@ func LeaveHuddle(actorID ActorID, now time.Time) Command {
 // Idempotent: re-concluding an already-concluded huddle is a no-op.
 // Emits HuddleConcluded; no per-member HuddleLeft events fire (this is
 // a bulk operation, not a sequence of individual leaves).
+//
+// Lineage: HuddleConcluded is emitted FIRST so each member's warrant
+// carries the event's EventID / RootEventID. This is a bulk eviction
+// with no single trigger, so TriggerActorID and SourceActorID stay
+// empty on the per-member warrants.
 func ConcludeHuddle(huddleID HuddleID, now time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
@@ -452,9 +475,6 @@ func ConcludeHuddle(huddleID HuddleID, now time.Time) Command {
 			for _, actorID := range members {
 				if actor, ok := w.Actors[actorID]; ok {
 					actor.CurrentHuddleID = ""
-					tryStampWarrant(w, actor, WarrantMeta{
-						Reason: BasicWarrantReason{K: WarrantKindHuddleConcluded},
-					}, now)
 				}
 			}
 			huddle.Members = make(map[ActorID]struct{})
@@ -464,11 +484,24 @@ func ConcludeHuddle(huddleID HuddleID, now time.Time) Command {
 			orphanedAreaScenes := detachHuddleFromAllScenes(w, huddleID)
 			concludeOrphanedAreaScenes(w, orphanedAreaScenes)
 
-			w.emit(&HuddleConcluded{
+			concludedEvt := &HuddleConcluded{
 				HuddleID:    huddleID,
 				StructureID: huddle.StructureID,
 				At:          now,
-			})
+			}
+			w.emit(concludedEvt)
+
+			for _, actorID := range members {
+				if actor, ok := w.Actors[actorID]; ok {
+					tryStampWarrant(w, actor, WarrantMeta{
+						SourceEventID: concludedEvt.EventID(),
+						RootEventID:   concludedEvt.RootEventID(),
+						HuddleID:      huddleID,
+						OccurredAt:    now,
+						Reason:        BasicWarrantReason{K: WarrantKindHuddleConcluded},
+					}, now)
+				}
+			}
 			return nil, nil
 		},
 	}
@@ -504,14 +537,6 @@ func leaveCurrentHuddle(w *World, actor *Actor, now time.Time) LeaveHuddleResult
 
 	delete(huddle.Members, actor.ID)
 	actor.CurrentHuddleID = ""
-	// The leaver's macro-state changed (they're no longer in this huddle);
-	// the warrant funnel preserves earliest timestamp on already-warranted
-	// actors and appends meta to their Warrants list. An explicit
-	// LeaveHuddle from an unwarranted actor starts a fresh warrant cycle.
-	tryStampWarrant(w, actor, WarrantMeta{
-		TriggerActorID: actor.ID,
-		Reason:         BasicWarrantReason{K: WarrantKindHuddleLeft},
-	}, now)
 	if members, ok := w.actorsByHuddle[huddleID]; ok {
 		delete(members, actor.ID)
 		if len(members) == 0 {
@@ -523,22 +548,42 @@ func leaveCurrentHuddle(w *World, actor *Actor, now time.Time) LeaveHuddleResult
 	for id := range huddle.Members {
 		remaining = append(remaining, id)
 	}
-	for _, id := range remaining {
-		if other, ok := w.Actors[id]; ok {
-			tryStampWarrant(w, other, WarrantMeta{
-				TriggerActorID: actor.ID,
-				Reason:         BasicWarrantReason{K: WarrantKindHuddlePeerLeft},
-			}, now)
-		}
-	}
 
-	w.emit(&HuddleLeft{
+	// HuddleLeft is emitted FIRST so the leaver's and the remaining
+	// members' warrants carry full PR 3a source lineage (SourceEventID /
+	// RootEventID populated from this event). The warrant funnel
+	// preserves earliest WarrantedSince on already-warranted actors.
+	leftEvt := &HuddleLeft{
 		ActorID:          actor.ID,
 		HuddleID:         huddleID,
 		StructureID:      huddle.StructureID,
 		RemainingMembers: remaining,
 		At:               now,
-	})
+	}
+	w.emit(leftEvt)
+
+	tryStampWarrant(w, actor, WarrantMeta{
+		TriggerActorID: actor.ID,
+		SourceEventID:  leftEvt.EventID(),
+		RootEventID:    leftEvt.RootEventID(),
+		SourceActorID:  actor.ID,
+		HuddleID:       huddleID,
+		OccurredAt:     now,
+		Reason:         BasicWarrantReason{K: WarrantKindHuddleLeft},
+	}, now)
+	for _, id := range remaining {
+		if other, ok := w.Actors[id]; ok {
+			tryStampWarrant(w, other, WarrantMeta{
+				TriggerActorID: actor.ID,
+				SourceEventID:  leftEvt.EventID(),
+				RootEventID:    leftEvt.RootEventID(),
+				SourceActorID:  actor.ID,
+				HuddleID:       huddleID,
+				OccurredAt:     now,
+				Reason:         BasicWarrantReason{K: WarrantKindHuddlePeerLeft},
+			}, now)
+		}
+	}
 
 	concluded := false
 	if len(huddle.Members) == 0 {
@@ -547,6 +592,9 @@ func leaveCurrentHuddle(w *World, actor *Actor, now time.Time) LeaveHuddleResult
 		concluded = true
 		orphanedAreaScenes := detachHuddleFromAllScenes(w, huddleID)
 		concludeOrphanedAreaScenes(w, orphanedAreaScenes)
+		// No per-member stamp here: the huddle is empty, the leaver was
+		// already stamped above, and the conclude is a downstream
+		// consequence of the leave (root EventID inherited).
 		w.emit(&HuddleConcluded{
 			HuddleID:    huddleID,
 			StructureID: huddle.StructureID,
