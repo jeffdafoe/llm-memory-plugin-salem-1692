@@ -460,6 +460,18 @@ type ActorSnapshot struct {
 	Needs             map[NeedKey]int
 	InventoryHash     uint64 // fast-compare; computed at snapshot time
 	Coins             int
+
+	// TickInFlight + TickAttemptID mirror the live Actor fields so PR 3d's
+	// harness can do a cheap pre-LLM stale-check by reading the snapshot
+	// alone (no world-goroutine round trip). A worker that observes its
+	// job.attemptID no longer matching the snapshot's TickAttemptID — or
+	// observes TickInFlight false — can short-circuit before spending
+	// tokens on a tick the world has already moved past.
+	//
+	// Both fields are ephemeral on the live Actor (cleared on LoadWorld);
+	// they appear here only for the snapshot-time view the harness needs.
+	TickInFlight  bool
+	TickAttemptID TickAttemptID
 }
 
 // CloneActorSnapshot returns a deep copy of an ActorSnapshot. Needed by

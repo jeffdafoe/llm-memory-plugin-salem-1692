@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"context"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
@@ -59,9 +61,11 @@ func (p *TickWorkerPool) runJob(ctx context.Context, job tickJob) {
 
 	// A stale completion means the attempt was superseded before it
 	// landed — CompleteReactorTick's policy did not run. Informational:
-	// the superseding attempt now owns the actor.
+	// the superseding attempt now owns the actor. Carry the harness
+	// diagnostics too — the harness may have observed its own stale-at-tool
+	// or other interesting state before the completion landed.
 	if res, ok := val.(sim.CompleteReactorTickResult); ok && res.Stale {
-		p.writeTelemetry(job, telemetryStale, nil)
+		p.writeTelemetry(job, telemetryStale, harnessResultDetail(result))
 		return
 	}
 
@@ -69,9 +73,46 @@ func (p *TickWorkerPool) runJob(ctx context.Context, job tickJob) {
 	if isFailureStatus(result.TerminalStatus) {
 		kind = telemetryFailed
 	}
-	p.writeTelemetry(job, kind, map[string]string{
+	p.writeTelemetry(job, kind, harnessResultDetail(result))
+}
+
+// harnessResultDetail flattens the PR 3d harness's diagnostic fields on
+// the TickResult into the redacted Detail map the telemetry sink stores.
+// Tool names are joined with commas; integer/duration values stringified.
+// Empty / zero-valued fields are omitted to keep records sparse.
+//
+// Per the Detail-must-be-redacted contract: no raw prompts, LLM
+// responses, tool arguments carrying private text, or memory payloads.
+// Tool NAMES are fine — they come from the registry, not from the model.
+func harnessResultDetail(result sim.TickResult) map[string]string {
+	d := map[string]string{
 		"terminal_status": terminalStatusName(result.TerminalStatus),
-	})
+	}
+	if result.StaleStage != sim.StaleStageNone {
+		d["stale_stage"] = result.StaleStage.String()
+	}
+	if result.BudgetHit {
+		d["budget_hit"] = "true"
+	}
+	if result.LLMErrorClass != "" {
+		d["llm_error_class"] = result.LLMErrorClass
+	}
+	if result.IterationCount > 0 {
+		d["iteration_count"] = strconv.Itoa(result.IterationCount)
+	}
+	if result.Duration > 0 {
+		d["duration_ms"] = strconv.FormatInt(result.Duration.Milliseconds(), 10)
+	}
+	if len(result.ToolsRequested) > 0 {
+		d["tools_requested"] = strings.Join(result.ToolsRequested, ",")
+	}
+	if len(result.ToolsSucceeded) > 0 {
+		d["tools_succeeded"] = strings.Join(result.ToolsSucceeded, ",")
+	}
+	if len(result.ToolsFailedRejected) > 0 {
+		d["tools_failed_rejected"] = strings.Join(result.ToolsFailedRejected, ",")
+	}
+	return d
 }
 
 // isFailureStatus reports whether a terminal status represents a tick that
