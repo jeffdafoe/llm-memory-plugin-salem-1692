@@ -32,7 +32,7 @@ func TestHuddleDrift_StructureBoundLeaveOnStructureExit(t *testing.T) {
 
 	_, err := w.Send(sim.Command{
 		Fn: func(world *sim.World) (any, error) {
-			world.Actors["alice"].InsideStructureID = ""
+			sim.SetActorInsideStructure(world, world.Actors["alice"], "")
 			return sim.CheckHuddleDriftAfterPositionMutation(world, "alice", now.Add(3*time.Second)), nil
 		},
 	})
@@ -66,7 +66,7 @@ func TestHuddleDrift_AreaBoundLeaveOnDriftPastRadius(t *testing.T) {
 		Fn: func(world *sim.World) (any, error) {
 			world.Actors["alice"].CurrentX = 10
 			world.Actors["alice"].CurrentY = 10
-			world.Actors["alice"].InsideStructureID = ""
+			sim.SetActorInsideStructure(world, world.Actors["alice"], "")
 
 			world.Huddles[huddleID] = &sim.Huddle{
 				ID:        huddleID,
@@ -114,7 +114,7 @@ func TestHuddleDrift_NoDriftWhenStillContained(t *testing.T) {
 		Fn: func(world *sim.World) (any, error) {
 			world.Actors["alice"].CurrentX = 10
 			world.Actors["alice"].CurrentY = 10
-			world.Actors["alice"].InsideStructureID = ""
+			sim.SetActorInsideStructure(world, world.Actors["alice"], "")
 
 			world.Huddles[huddleID] = &sim.Huddle{
 				ID:        huddleID,

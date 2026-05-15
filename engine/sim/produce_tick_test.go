@@ -175,7 +175,7 @@ func TestApplyProduceTickGateOffShift(t *testing.T) {
 	// Move hannah away from work.
 	_, _ = w.Send(sim.Command{
 		Fn: func(world *sim.World) (any, error) {
-			world.Actors["hannah"].InsideStructureID = "tavern"
+			sim.SetActorInsideStructure(world, world.Actors["hannah"], "tavern")
 			return nil, nil
 		},
 	})
