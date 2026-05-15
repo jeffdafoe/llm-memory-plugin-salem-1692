@@ -481,7 +481,8 @@ func CloneActor(a *Actor) *Actor {
 	}
 	if a.Warrants != nil {
 		// WarrantMeta is a value type whose Reason field holds an interface
-		// over concrete value structs (BasicWarrantReason, SpeechWarrantReason).
+		// over concrete value structs (BasicWarrantReason, PCSpeechWarrantReason,
+		// NPCSpeechWarrantReason).
 		// Slice copy is safe — appending to one side won't reflect in the
 		// other, and the concrete reason structs have no inner pointers
 		// today. If a future WarrantReason adds inner pointers, deep-clone

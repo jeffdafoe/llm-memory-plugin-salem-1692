@@ -374,22 +374,33 @@ func renderWarrantLine(n int, w sim.WarrantMeta, maxTextBytes int) (string, bool
 	}
 
 	switch r := w.Reason.(type) {
-	case sim.SpeechWarrantReason:
-		speaker := r.Speaker
-		if speaker == "" {
-			speaker = w.TriggerActorID
-		}
-		excerpt, truncated := sanitizeText(r.Excerpt, maxTextBytes)
-		if speaker != "" {
-			return fmt.Sprintf("%d. [%s]%s %s said: \"%s\"\n", n, kind, scope, speaker, excerpt), truncated
-		}
-		return fmt.Sprintf("%d. [%s]%s someone said: \"%s\"\n", n, kind, scope, excerpt), truncated
+	case sim.PCSpeechWarrantReason:
+		return renderSpeechWarrantLine(n, w, kind, scope, r.Speaker, r.Excerpt, maxTextBytes)
+	case sim.NPCSpeechWarrantReason:
+		return renderSpeechWarrantLine(n, w, kind, scope, r.Speaker, r.Excerpt, maxTextBytes)
 	default:
 		if w.TriggerActorID != "" {
 			return fmt.Sprintf("%d. [%s]%s involving %s\n", n, kind, scope, w.TriggerActorID), false
 		}
 		return fmt.Sprintf("%d. [%s]%s\n", n, kind, scope), false
 	}
+}
+
+// renderSpeechWarrantLine renders the warrant line for both PC- and NPC-
+// speech warrant reasons. The two reason types are structurally identical
+// (SpeechID / Speaker / Excerpt) and the rendered line differs only in the
+// kind tag the caller already extracted via WarrantMeta.Kind(); so the
+// switch above hands the fields to this single body rather than
+// duplicating the format calls.
+func renderSpeechWarrantLine(n int, w sim.WarrantMeta, kind, scope string, speaker sim.ActorID, excerpt string, maxTextBytes int) (string, bool) {
+	if speaker == "" {
+		speaker = w.TriggerActorID
+	}
+	sanitized, truncated := sanitizeText(excerpt, maxTextBytes)
+	if speaker != "" {
+		return fmt.Sprintf("%d. [%s]%s %s said: \"%s\"\n", n, kind, scope, speaker, sanitized), truncated
+	}
+	return fmt.Sprintf("%d. [%s]%s someone said: \"%s\"\n", n, kind, scope, sanitized), truncated
 }
 
 // renderNeeds renders a need map as a deterministic "key=value" list,

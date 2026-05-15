@@ -71,7 +71,8 @@ func TestWarrantReason_KindAccessor(t *testing.T) {
 		want   sim.WarrantKind
 	}{
 		{"basic", sim.BasicWarrantReason{K: sim.WarrantKindHuddleJoined}, sim.WarrantKindHuddleJoined},
-		{"speech", sim.SpeechWarrantReason{SpeechID: "s1", Speaker: "alice"}, sim.WarrantKindPCSpoke},
+		{"pc_speech", sim.PCSpeechWarrantReason{SpeechID: "s1", Speaker: "alice"}, sim.WarrantKindPCSpoke},
+		{"npc_speech", sim.NPCSpeechWarrantReason{SpeechID: "s2", Speaker: "bob"}, sim.WarrantKindNPCSpoke},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -150,7 +151,7 @@ func TestTryStampWarrant_MergePreservesEarliest(t *testing.T) {
 
 	_, _ = w.Send(sim.StampWarrant("alice", sim.WarrantMeta{
 		TriggerActorID: "bob",
-		Reason:         sim.SpeechWarrantReason{SpeechID: "s2", Speaker: "bob", Excerpt: "hello"},
+		Reason:         sim.PCSpeechWarrantReason{SpeechID: "s2", Speaker: "bob", Excerpt: "hello"},
 	}, second))
 
 	inspectActor(t, w, "alice", func(a *sim.Actor) {
@@ -164,8 +165,8 @@ func TestTryStampWarrant_MergePreservesEarliest(t *testing.T) {
 			t.Fatalf("Warrants len = %d, want 2", len(a.Warrants))
 		}
 		// Second entry is the speech reason.
-		if _, ok := a.Warrants[1].Reason.(sim.SpeechWarrantReason); !ok {
-			t.Errorf("Warrants[1].Reason concrete type = %T, want SpeechWarrantReason", a.Warrants[1].Reason)
+		if _, ok := a.Warrants[1].Reason.(sim.PCSpeechWarrantReason); !ok {
+			t.Errorf("Warrants[1].Reason concrete type = %T, want PCSpeechWarrantReason", a.Warrants[1].Reason)
 		}
 	})
 }
@@ -179,7 +180,7 @@ func TestTryStampWarrant_CapDropsOldest(t *testing.T) {
 	now := time.Now().UTC()
 	for i := 0; i < 7; i++ {
 		_, _ = w.Send(sim.StampWarrant("alice", sim.WarrantMeta{
-			Reason: sim.SpeechWarrantReason{
+			Reason: sim.PCSpeechWarrantReason{
 				SpeechID: sim.SpeechID(string(rune('a' + i))),
 				Speaker:  "bob",
 				Excerpt:  "msg",
@@ -192,11 +193,11 @@ func TestTryStampWarrant_CapDropsOldest(t *testing.T) {
 			t.Fatalf("Warrants len = %d, want 4 (capped)", len(a.Warrants))
 		}
 		// Oldest dropped → freshest 4 remain (indices 3..6).
-		got := a.Warrants[0].Reason.(sim.SpeechWarrantReason).SpeechID
+		got := a.Warrants[0].Reason.(sim.PCSpeechWarrantReason).SpeechID
 		if got != "d" {
 			t.Errorf("oldest retained = %q, want d (oldest 3 dropped)", got)
 		}
-		got = a.Warrants[3].Reason.(sim.SpeechWarrantReason).SpeechID
+		got = a.Warrants[3].Reason.(sim.PCSpeechWarrantReason).SpeechID
 		if got != "g" {
 			t.Errorf("newest = %q, want g", got)
 		}
@@ -414,7 +415,7 @@ func TestEvaluateReactors_NewWarrantDuringInFlightSurvives(t *testing.T) {
 	// the LLM call. Should start a fresh cycle.
 	mid := now.Add(time.Millisecond)
 	_, _ = w.Send(sim.StampWarrant("alice", sim.WarrantMeta{
-		Reason: sim.SpeechWarrantReason{SpeechID: "s-new", Speaker: "bob"},
+		Reason: sim.PCSpeechWarrantReason{SpeechID: "s-new", Speaker: "bob"},
 	}, mid))
 
 	inspectActor(t, w, "alice", func(a *sim.Actor) {
