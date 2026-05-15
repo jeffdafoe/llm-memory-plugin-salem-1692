@@ -135,6 +135,43 @@ func (NPCSpeechWarrantReason) Kind() WarrantKind { return WarrantKindNPCSpoke }
 // today; speech subsystem port lands the producer + persistence.
 type SpeechID string
 
+// PaidWarrantReason captures a pay transaction that warranted the seller's
+// tick. Phase 3 PR B — pure coin transfer slice. The pay handler emits a
+// Paid event whose subscriber mints this reason on the seller; the seller's
+// next reactor tick can then speak thanks, walk over, or otherwise respond.
+//
+// PaidID aliases the source Paid event's EventID — same one-ID-flows-
+// through-everything pattern as SpeechID. The pay reactor subscriber copies
+// EventID into both PaidID (on the warrant payload) and SourceEventID /
+// RootEventID (on the warrant meta), giving free dedup via the (Kind,
+// SourceEventID) source key.
+//
+// Buyer is the actor whose pay tool call triggered this warrant — surfaces
+// to the seller's perception prompt as the source of the payment.
+//
+// Amount is the coin total transferred (always > 0 — the handler decode
+// rejects zero/negative).
+//
+// ForText is the buyer's flavor text rune-truncated to MaxSalientFactTextLen
+// — the seller's perception prompt re-renders the excerpt on every reactor
+// tick they consume, so bounding the excerpt at warrant-stamp time bounds
+// the per-tick prompt cost. The raw (200-char-capped, control-char-rejected)
+// text travels on the Paid event for any consumer that wants the full
+// flavor.
+//
+// No PC/NPC split for now — pay warrants only fire on NPC sellers (PCs
+// don't deliberate). When a PC-as-recipient flow lands, split type-per-kind
+// the same way speech split into PCSpeechWarrantReason / NPCSpeechWarrantReason.
+type PaidWarrantReason struct {
+	PaidID  EventID
+	Buyer   ActorID
+	Amount  int
+	ForText string
+}
+
+func (PaidWarrantReason) isWarrantReason()  {}
+func (PaidWarrantReason) Kind() WarrantKind { return WarrantKindPaid }
+
 // WarrantMeta is one entry in an actor's Warrants list — a signal that
 // fired during the actor's warranted window. The evaluator carries the
 // full list into ReactorTickDue; the prompt builder (PR 3) renders each
