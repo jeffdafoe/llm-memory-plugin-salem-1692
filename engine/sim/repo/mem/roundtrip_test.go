@@ -133,6 +133,167 @@ func TestRoundTrip_ActorClonesBreakAliasing(t *testing.T) {
 	}
 }
 
+// TestRoundTrip_ActorNarrativeAndRelationshipsClonesBreakAliasing
+// verifies the per-actor knowledge state (Acquaintances, Relationships,
+// Narrative) round-trips with values preserved and pointer identity
+// broken — including the *time.Time pointers on Relationship /
+// NarrativeState and the SalientFacts slice on each Relationship.
+//
+// Acquaintances is a value-typed map so pointer-identity isn't an issue
+// for the values themselves; the test still asserts post-Seed mutation
+// of the caller's map doesn't leak (the map itself is cloned).
+func TestRoundTrip_ActorNarrativeAndRelationshipsClonesBreakAliasing(t *testing.T) {
+	ctx := context.Background()
+	_, h := mem.NewRepository()
+
+	now := time.Now().UTC()
+	earlier := now.Add(-2 * time.Hour)
+	consolidated := now.Add(-1 * time.Hour)
+
+	seed := map[sim.ActorID]*sim.Actor{
+		"hannah": {
+			ID:          "hannah",
+			DisplayName: "Hannah",
+			Kind:        sim.KindNPCShared,
+			Acquaintances: map[string]sim.Acquaintance{
+				"Ezekiel Crane": {FirstInteractedAt: earlier},
+				"John Ellis":    {FirstInteractedAt: now},
+			},
+			Relationships: map[sim.ActorID]*sim.Relationship{
+				"ezekiel": {
+					SummaryText:        "Talks about iron a lot.",
+					SalientFacts:       []sim.SalientFact{{At: earlier, Kind: sim.InteractionHeard, Text: "Said he needs charcoal."}},
+					InteractionCount:   3,
+					LastInteractionAt:  &now,
+					LastConsolidatedAt: &consolidated,
+					CreatedAt:          earlier,
+					UpdatedAt:          now,
+				},
+			},
+			Narrative: &sim.NarrativeState{
+				SeedText:           "You are Hannah, daughter of the innkeeper.",
+				EvolvingSummary:    "Has been worried about the harvest.",
+				LastConsolidatedAt: &consolidated,
+				CreatedAt:          earlier,
+				UpdatedAt:          now,
+			},
+		},
+	}
+	h.Actors.Seed(seed)
+
+	// Post-Seed mutation of the caller's structures must not leak. The
+	// *time.Time mutations dereference and overwrite the local `now` /
+	// `consolidated` variables, so assertions below use the leak-marker
+	// value rather than re-comparing to those vars.
+	leakMarker := time.Unix(0, 0)
+	seed["hannah"].Acquaintances["Ezekiel Crane"] = sim.Acquaintance{FirstInteractedAt: leakMarker}
+	seed["hannah"].Relationships["ezekiel"].SummaryText = "MUTATED"
+	seed["hannah"].Relationships["ezekiel"].SalientFacts[0].Text = "MUTATED"
+	*seed["hannah"].Relationships["ezekiel"].LastInteractionAt = leakMarker
+	seed["hannah"].Narrative.EvolvingSummary = "MUTATED"
+	*seed["hannah"].Narrative.LastConsolidatedAt = leakMarker
+
+	loaded1, err := h.Actors.LoadAll(ctx)
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	if got := loaded1["hannah"].Acquaintances["Ezekiel Crane"].FirstInteractedAt; got.Equal(leakMarker) {
+		t.Error("Seed didn't clone Acquaintances: post-Seed mutation leaked")
+	}
+	if got := loaded1["hannah"].Relationships["ezekiel"].SummaryText; got != "Talks about iron a lot." {
+		t.Errorf("Seed didn't clone Relationship: SummaryText = %q", got)
+	}
+	if got := loaded1["hannah"].Relationships["ezekiel"].SalientFacts[0].Text; got != "Said he needs charcoal." {
+		t.Errorf("Seed didn't clone SalientFacts slice element: Text = %q", got)
+	}
+	if got := *loaded1["hannah"].Relationships["ezekiel"].LastInteractionAt; got.Equal(leakMarker) {
+		t.Error("Seed didn't clone LastInteractionAt pointer: post-Seed mutation leaked")
+	}
+	if got := loaded1["hannah"].Narrative.EvolvingSummary; got != "Has been worried about the harvest." {
+		t.Errorf("Seed didn't clone Narrative: EvolvingSummary = %q", got)
+	}
+	if got := *loaded1["hannah"].Narrative.LastConsolidatedAt; got.Equal(leakMarker) {
+		t.Error("Seed didn't clone Narrative.LastConsolidatedAt pointer: post-Seed mutation leaked")
+	}
+
+	// Mutate loaded, save, reload — values preserved across the round-trip.
+	loaded1["hannah"].Relationships["ezekiel"].SummaryText = "Stopped buying charcoal — switched suppliers."
+	loaded1["hannah"].Relationships["ezekiel"].SalientFacts = append(loaded1["hannah"].Relationships["ezekiel"].SalientFacts,
+		sim.SalientFact{At: now, Kind: sim.InteractionPaidBy, Text: "Paid 4 coins for ale."})
+	loaded1["hannah"].Relationships["ezekiel"].InteractionCount = 4
+	loaded1["hannah"].Narrative.EvolvingSummary = "Less worried — Ezekiel's order came through."
+
+	if err := h.Actors.SaveSnapshot(ctx, nil, loaded1); err != nil {
+		t.Fatalf("SaveSnapshot: %v", err)
+	}
+
+	// Post-save mutation of the source must not leak.
+	loaded1["hannah"].Relationships["ezekiel"].SummaryText = "MUTATED-POST-SAVE"
+
+	loaded2, err := h.Actors.LoadAll(ctx)
+	if err != nil {
+		t.Fatalf("LoadAll #2: %v", err)
+	}
+	if got := loaded2["hannah"].Relationships["ezekiel"].SummaryText; got != "Stopped buying charcoal — switched suppliers." {
+		t.Errorf("Relationship.SummaryText after save+reload = %q", got)
+	}
+	if got := len(loaded2["hannah"].Relationships["ezekiel"].SalientFacts); got != 2 {
+		t.Errorf("SalientFacts after save+reload: len = %d, want 2", got)
+	}
+	if got := loaded2["hannah"].Relationships["ezekiel"].InteractionCount; got != 4 {
+		t.Errorf("Relationship.InteractionCount after save+reload = %d, want 4", got)
+	}
+	if got := loaded2["hannah"].Narrative.EvolvingSummary; got != "Less worried — Ezekiel's order came through." {
+		t.Errorf("Narrative.EvolvingSummary after save+reload = %q", got)
+	}
+
+	// Pointer identity broken across reloads for every clonable boundary.
+	if loaded1["hannah"].Relationships["ezekiel"] == loaded2["hannah"].Relationships["ezekiel"] {
+		t.Error("Relationship pointer aliased between LoadAll calls")
+	}
+	if loaded1["hannah"].Relationships["ezekiel"].LastInteractionAt == loaded2["hannah"].Relationships["ezekiel"].LastInteractionAt {
+		t.Error("Relationship.LastInteractionAt *time.Time aliased between LoadAll calls")
+	}
+	if loaded1["hannah"].Narrative == loaded2["hannah"].Narrative {
+		t.Error("Narrative pointer aliased between LoadAll calls")
+	}
+	if loaded1["hannah"].Narrative.LastConsolidatedAt == loaded2["hannah"].Narrative.LastConsolidatedAt {
+		t.Error("Narrative.LastConsolidatedAt *time.Time aliased between LoadAll calls")
+	}
+}
+
+// TestNewSalientFact_TruncatesText verifies the rune-aware Text cap.
+// MaxSalientFactTextLen is in runes, not bytes — multibyte text mustn't
+// be split mid-rune.
+func TestNewSalientFact_TruncatesText(t *testing.T) {
+	now := time.Now().UTC()
+	// ASCII: each rune is 1 byte; 250-char input gets capped to 220.
+	long := ""
+	for i := 0; i < 250; i++ {
+		long += "x"
+	}
+	got := sim.NewSalientFact(now, sim.InteractionSpoke, long)
+	if len([]rune(got.Text)) != sim.MaxSalientFactTextLen {
+		t.Errorf("ASCII truncation: got %d runes, want %d", len([]rune(got.Text)), sim.MaxSalientFactTextLen)
+	}
+	// Multibyte: 250 'é' (2 bytes each in UTF-8). Truncating by bytes
+	// would split a rune; this test catches that.
+	multi := ""
+	for i := 0; i < 250; i++ {
+		multi += "é"
+	}
+	got2 := sim.NewSalientFact(now, sim.InteractionSpoke, multi)
+	if len([]rune(got2.Text)) != sim.MaxSalientFactTextLen {
+		t.Errorf("Multibyte truncation: got %d runes, want %d", len([]rune(got2.Text)), sim.MaxSalientFactTextLen)
+	}
+	for _, r := range got2.Text {
+		if r != 'é' {
+			t.Errorf("Multibyte truncation split a rune: found %q", r)
+			break
+		}
+	}
+}
+
 // TestRoundTrip_ActorMoveIntentClonesBreakAliasing verifies an actor's
 // MoveIntent (Phase 2 PR 4) survives the repo boundary with values
 // preserved and pointer identity broken — including the nested

@@ -685,7 +685,10 @@ func snapshotActor(a *Actor, atTick uint64) *ActorSnapshot {
 	}
 	return &ActorSnapshot{
 		AtTick:            atTick,
+		DisplayName:       a.DisplayName,
+		Kind:              a.Kind,
 		State:             a.State,
+		Role:              a.Role,
 		InsideStructureID: a.InsideStructureID,
 		CurrentX:          a.CurrentX,
 		CurrentY:          a.CurrentY,
@@ -693,6 +696,9 @@ func snapshotActor(a *Actor, atTick uint64) *ActorSnapshot {
 		Needs:             needsCopy,
 		InventoryHash:     hash,
 		Coins:             a.Coins,
+		Acquaintances:     cloneAcquaintances(a.Acquaintances),
+		Relationships:     cloneRelationships(a.Relationships),
+		Narrative:         cloneNarrativeState(a.Narrative),
 		TickInFlight:      a.TickInFlight,
 		TickAttemptID:     a.TickAttemptID,
 	}

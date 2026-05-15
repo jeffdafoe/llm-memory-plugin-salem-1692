@@ -105,10 +105,49 @@ type Payload struct {
 	// telemetry field of the same name.
 	MultiSceneWarrantCount int
 
+	// NarrativeState is the actor's engine-side identity continuity —
+	// seed_text identity frame + evolving_summary the consolidator
+	// rewrites. Non-nil ONLY for KindNPCShared actors that have a
+	// populated NarrativeState in the snapshot. Stateful-VA actors get
+	// this content from their own VA's <Self> system prompt block via
+	// memory-api; injecting engine-side would duplicate or conflict.
+	NarrativeState *NarrativeStateView
+
+	// Relationships are per-co-huddle-peer relationship views for the
+	// subject actor — summary + recent salient facts for each peer in
+	// the actor's current huddle. Populated ONLY for KindNPCShared
+	// actors and only for peers the actor has a Relationship row for;
+	// empty otherwise. Stateful-VA actors don't get this for the same
+	// reason as NarrativeState (their own VA's per-peer context notes
+	// cover this — see the symmetric stateful-VA gap at
+	// shared/tasks/pending/salem-stateful-va-missing-peer-context).
+	//
+	// Ordering: sorted by PeerID for determinism.
+	Relationships []RelationshipPeerView
+
 	// SelectionReason is a human-readable explanation of how Primary was
 	// chosen (or why it wasn't) — debug/test output only, never prompt
 	// content.
 	SelectionReason string
+}
+
+// NarrativeStateView is the kind-aware "Who you are:" content. Slim by
+// design — Render combines SeedText and EvolvingSummary into one
+// section.
+type NarrativeStateView struct {
+	SeedText        string
+	EvolvingSummary string
+}
+
+// RelationshipPeerView is the per-peer entry in the "What you remember
+// of those here:" section. RecentFacts holds the most-recent N facts
+// (most-recent-first) — Build slices them from the actor's
+// Relationships[peerID].SalientFacts, which is stored oldest-first.
+type RelationshipPeerView struct {
+	PeerID      sim.ActorID
+	PeerName    string
+	SummaryText string
+	RecentFacts []sim.SalientFact
 }
 
 // ActorView is the subject actor's own current state, lifted from the
@@ -124,7 +163,8 @@ type ActorView struct {
 }
 
 // SurroundingsView is the actor's immediate context — the structure it is
-// in and the huddle it belongs to, with co-present actors named.
+// in and the huddle it belongs to, with co-present actors named or
+// rendered as descriptors based on acquaintance.
 type SurroundingsView struct {
 	InsideStructureID sim.StructureID
 
@@ -136,8 +176,22 @@ type SurroundingsView struct {
 	HuddleID sim.HuddleID
 
 	// HuddleMembers are the *other* members of the actor's current huddle
-	// (the subject actor is excluded), sorted by ActorID for determinism.
-	HuddleMembers []sim.ActorID
+	// (the subject actor is excluded), sorted by ID for determinism.
+	// Each carries acquaintance info so Render can pick name vs.
+	// descriptor without re-reading the snapshot.
+	HuddleMembers []HuddleMember
+}
+
+// HuddleMember is one co-huddle peer's identity slice for the
+// SurroundingsView. Render emits DisplayName when Acquainted is true,
+// otherwise falls back to Role ("the blacksmith") or a generic
+// stranger label. Mirrors v1's coLocatedHuddleMembers name-vs-
+// descriptor gating.
+type HuddleMember struct {
+	ID          sim.ActorID
+	DisplayName string
+	Role        string
+	Acquainted  bool
 }
 
 // SceneView describes the primary scene and, when a baseline could be

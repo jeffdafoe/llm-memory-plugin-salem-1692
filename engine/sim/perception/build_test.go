@@ -388,8 +388,8 @@ func TestBuild_SurroundingsHuddleMembersSortedAndSelfExcluded(t *testing.T) {
 	}
 	want := []sim.ActorID{"bob", "carol"}
 	if len(p.Surroundings.HuddleMembers) != 2 ||
-		p.Surroundings.HuddleMembers[0] != want[0] ||
-		p.Surroundings.HuddleMembers[1] != want[1] {
-		t.Errorf("HuddleMembers = %v, want %v (sorted, self excluded)", p.Surroundings.HuddleMembers, want)
+		p.Surroundings.HuddleMembers[0].ID != want[0] ||
+		p.Surroundings.HuddleMembers[1].ID != want[1] {
+		t.Errorf("HuddleMembers = %v, want %v (sorted by ID, self excluded)", p.Surroundings.HuddleMembers, want)
 	}
 }
