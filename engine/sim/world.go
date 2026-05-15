@@ -693,5 +693,7 @@ func snapshotActor(a *Actor, atTick uint64) *ActorSnapshot {
 		Needs:             needsCopy,
 		InventoryHash:     hash,
 		Coins:             a.Coins,
+		TickInFlight:      a.TickInFlight,
+		TickAttemptID:     a.TickAttemptID,
 	}
 }

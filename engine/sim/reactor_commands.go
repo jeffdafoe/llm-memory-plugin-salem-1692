@@ -82,24 +82,122 @@ const (
 	TickStatusShutdown
 )
 
+// StaleStage names where in the tick lifecycle a stale attempt was
+// detected. Diagnostic only — CompleteReactorTick reads only
+// TerminalStatus and UnaddressedWarrants. Telemetry consumers (and
+// debug tooling) read StaleStage to localize the timeout/supersede.
+type StaleStage int
+
+const (
+	// StaleStageNone — the tick did not go stale.
+	StaleStageNone StaleStage = iota
+
+	// StaleStageBeforeRender — preflight stale-check fired before the
+	// harness built perception (snapshot's TickAttemptID no longer
+	// matched the job's). Cheapest detection; the LLM was not called.
+	StaleStageBeforeRender
+
+	// StaleStageAtTool — a commit-class tool dispatch returned
+	// sim.ErrTickAttemptStale (the in-flight attempt was superseded
+	// between the LLM response and the world-goroutine guard).
+	StaleStageAtTool
+
+	// StaleStageAtComplete — CompleteReactorTick itself returned
+	// Stale=true (the attempt was superseded between the harness
+	// finishing and the completion landing on the world goroutine).
+	// The harness can't observe this from inside RunTick; the worker
+	// (which calls CompleteReactorTick) does, and may overwrite the
+	// staged StaleStage on the telemetry record.
+	StaleStageAtComplete
+)
+
+// String renders the stage as a stable lowercase label.
+func (s StaleStage) String() string {
+	switch s {
+	case StaleStageNone:
+		return "none"
+	case StaleStageBeforeRender:
+		return "before_render"
+	case StaleStageAtTool:
+		return "at_tool"
+	case StaleStageAtComplete:
+		return "at_complete"
+	default:
+		return "unknown"
+	}
+}
+
 // TickResult is the outcome of an LLM tick, handed to CompleteReactorTick.
-// PR 2 shipped it as an empty placeholder; PR 3a adds the two fields its
-// warrant-lifecycle behavior reads — TerminalStatus and UnaddressedWarrants
-// — and PR 3 (the 3d harness) adds the remaining diagnostic fields
-// (IterationCount, ToolsRequested, StaleStage, ...) and populates all of
-// them. PR 3a-era callers pass TickResult{}, which is a valid minimal
-// completion (TickStatusUnknown).
+// PR 2 shipped it as an empty placeholder; PR 3a added the two fields its
+// warrant-lifecycle behavior reads — TerminalStatus and UnaddressedWarrants;
+// PR 3d adds the diagnostic fields the harness populates and telemetry
+// consumes. PR 2 / PR 3a callers passing TickResult{} still work — every
+// added field has a meaningful zero value (TickStatusUnknown, etc.).
+//
+// CompleteReactorTick reads only TerminalStatus and UnaddressedWarrants;
+// the other fields are for telemetry (TickTelemetrySink) and debug.
 type TickResult struct {
+	// AttemptID is the tick attempt this result describes — matches the
+	// job's attemptID. Diagnostic; CompleteReactorTick takes attemptID
+	// as a separate argument and uses that for the stale check.
+	AttemptID TickAttemptID
+
+	// ActorID is the actor whose tick this result describes — matches
+	// the job's actorID. Diagnostic.
+	ActorID ActorID
+
 	// TerminalStatus is how the tick ended — it selects the terminal-status
 	// warrant policy in CompleteReactorTick (see applyTerminalWarrantPolicy).
 	TerminalStatus TickTerminalStatus
+
+	// IterationCount is the number of LLM Complete calls the harness
+	// made for this tick (1-based: 0 means the harness short-circuited
+	// before reaching the iteration loop). Counts ALL iterations,
+	// including the final one that ended the tick.
+	IterationCount int
+
+	// ToolsRequested is the ordered list of tool names the model
+	// dispatched across all iterations (including post-cap-truncated
+	// calls and validation failures). Useful for diagnosing prompt
+	// regressions and runaway-call patterns.
+	ToolsRequested []string
+
+	// ToolsSucceeded is the subset of ToolsRequested whose handler ran
+	// without error AND (for commits) whose world-goroutine command
+	// returned no error. A successful commit + a tool that returned an
+	// error are NOT bundled; the failure goes to ToolsFailedRejected.
+	ToolsSucceeded []string
+
+	// ToolsFailedRejected is the subset of ToolsRequested rejected by
+	// the validator (unknown / disabled / oversize / malformed args),
+	// rejected by the multi-call cap (excess_calls_truncated), or
+	// failed at handler execution (handler error or command failure).
+	ToolsFailedRejected []string
+
+	// StaleStage names where staleness was detected, when it was.
+	// StaleStageNone for non-stale completions; one of the other
+	// stages for TerminalStatus == TickStatusStale.
+	StaleStage StaleStage
+
+	// BudgetHit is true iff the iteration budget was exhausted
+	// (TerminalStatus == TickStatusBudgetForced).
+	BudgetHit bool
+
+	// LLMErrorClass is the llm.ErrorClass label that ended the tick on
+	// an LLM failure path, empty for non-LLM-error exits. The harness
+	// uses llm.Classify to populate.
+	LLMErrorClass string
+
+	// Duration is the wall-clock time spent inside RunTick (preflight
+	// through final return). Telemetry consumes it directly.
+	Duration time.Duration
 
 	// UnaddressedWarrants are warrants the turn consumed but could not
 	// address — dropped by a prompt length/size cap, never rendered, or
 	// (for a before-render failure) the entire consumed batch. PR 3's
 	// harness collects them; CompleteReactorTick re-opens them directly so
 	// they fire again, and excludes their source keys from recently-
-	// consumed suppression. PR 3 populates this; nil in PR 2 / PR 3a.
+	// consumed suppression.
 	UnaddressedWarrants []WarrantMeta
 }
 
@@ -177,15 +275,15 @@ func CompleteReactorTick(actorID ActorID, attemptID TickAttemptID, result TickRe
 // Whether the addressed keys move into recently-consumed depends on the
 // terminal status (terminalStatusAddresses):
 //
-//   success / done / budget-forced / failed-after-render — the turn
-//     perceived and addressed those inputs; addressed keys move into
-//     recently-consumed, suppressing a delayed duplicate for the TTL.
-//   failed-before-render / shutdown — the actor never perceived the
-//     stimulus (or the world is going away): move nothing; PR 3 carries
-//     the whole consumed set forward via UnaddressedWarrants.
-//   unknown (PR 2 placeholder TickResult{}) — minimal completion: with no
-//     carried-forward warrants and a non-addressing status, this re-opens
-//     nothing and moves nothing. The attempt is simply cleared.
+//	success / done / budget-forced / failed-after-render — the turn
+//	  perceived and addressed those inputs; addressed keys move into
+//	  recently-consumed, suppressing a delayed duplicate for the TTL.
+//	failed-before-render / shutdown — the actor never perceived the
+//	  stimulus (or the world is going away): move nothing; PR 3 carries
+//	  the whole consumed set forward via UnaddressedWarrants.
+//	unknown (PR 2 placeholder TickResult{}) — minimal completion: with no
+//	  carried-forward warrants and a non-addressing status, this re-opens
+//	  nothing and moves nothing. The attempt is simply cleared.
 func applyTerminalWarrantPolicy(w *World, actor *Actor, result TickResult, now time.Time) {
 	// Carry-forward first — re-open the unaddressed warrants directly,
 	// bypassing tryStampWarrant's dedup.

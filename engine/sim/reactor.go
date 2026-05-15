@@ -152,6 +152,7 @@ type WarrantMeta struct {
 	// debug metadata only — EventID is the authoritative causal order.
 	OccurredAt time.Time
 }
+
 //
 // Zero-lineage invariant (PR 3a): a warrant either carries FULL event
 // lineage (SourceEventID != 0, with the rest of the source fields

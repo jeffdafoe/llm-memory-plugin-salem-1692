@@ -59,19 +59,38 @@ type TickWorkerPool struct {
 	wg     sync.WaitGroup
 }
 
-// NewTickWorkerPool builds a pool for w. The worker count comes from
-// w.Settings.TickWorkerCount (defaulting to defaultTickWorkerCount when
-// unset); the job-channel buffer is clamp(2*workerCount, minTickJobBuffer,
-// maxTickJobBuffer). sink receives the per-tick lifecycle telemetry — pass
-// repo.TickTelemetry.
+// NewTickWorkerPool builds a pool for w with the PR 3b stub runner —
+// retained for backward-compat with tests that don't need a real turn
+// executor. Production builds + integration tests should use
+// NewTickWorkerPoolWithHarness instead; this constructor exists to keep
+// the PR 3b worker / subscriber / admission tests focused on pipeline
+// plumbing without dragging in a full LLM stack.
 //
-// The pool is not wired into the world until RegisterTickHandlers, and its
-// workers do not run until Start.
+// Worker count and channel buffer come from w.Settings.TickWorkerCount /
+// the clamp; see newPoolWithRunner. The pool is not wired into the world
+// until RegisterTickHandlers, and its workers do not run until Start.
 func NewTickWorkerPool(w *sim.World, sink sim.TickTelemetrySink) *TickWorkerPool {
 	if w == nil {
 		panic("handlers: NewTickWorkerPool requires a non-nil world")
 	}
 	return newPoolWithRunner(w, sink, stubRunner{})
+}
+
+// NewTickWorkerPoolWithHarness builds a TickWorkerPool with the PR 3d
+// Harness as its tickRunner — the production constructor for the
+// agent-tick execution pipeline.
+//
+// h MUST be non-nil. The harness, the registry it dispatches to, the LLM
+// client it calls, and the world it submits commands to must all be
+// configured and ready before Start is called on the returned pool.
+func NewTickWorkerPoolWithHarness(w *sim.World, sink sim.TickTelemetrySink, h *Harness) *TickWorkerPool {
+	if w == nil {
+		panic("handlers: NewTickWorkerPoolWithHarness requires a non-nil world")
+	}
+	if h == nil {
+		panic("handlers: NewTickWorkerPoolWithHarness requires a non-nil harness")
+	}
+	return newPoolWithRunner(w, sink, h)
 }
 
 // newPoolWithRunner is the shared constructor. NewTickWorkerPool passes the

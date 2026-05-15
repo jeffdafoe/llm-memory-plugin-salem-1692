@@ -1,0 +1,143 @@
+package llm
+
+import (
+	"context"
+	"fmt"
+	"sync"
+)
+
+// FakeClient is a scripted LLM client for deterministic pipeline tests.
+// Tests construct it with a sequence of scripted turns; each Complete
+// call returns (and consumes) the next entry from the script.
+//
+// Concurrency: FakeClient is safe for concurrent Complete calls — the
+// internal cursor is protected by a mutex. Tests that need to observe
+// the requests their code made can read Requests() after the fact.
+//
+// Failure modes:
+//
+//   - Empty script + Complete call → returns ErrorMalformed (a test that
+//     under-scripts is a test bug, not a tick failure to simulate; use
+//     a scripted *Error turn to simulate a real LLM failure).
+//   - Scripted entry has both Response AND Err set → Err wins (Response
+//     is returned zero-valued).
+//   - Context cancelled before Complete is called → returns Error{Class:
+//     ErrorContextCancelled} and does NOT record the request, since the
+//     work was never done.
+type FakeClient struct {
+	mu       sync.Mutex
+	script   []ScriptedTurn
+	cursor   int
+	requests []Request
+}
+
+// ScriptedTurn is one entry in the FakeClient script. Exactly one of
+// Response or Err should be set; if both are, Err wins.
+type ScriptedTurn struct {
+	Response Response
+	Err      error
+}
+
+// NewFakeClient returns a FakeClient that will return the given turns in
+// order. The script may be empty (tests that want to assert "Complete
+// was never called" or that script lazily via Push).
+func NewFakeClient(turns ...ScriptedTurn) *FakeClient {
+	return &FakeClient{script: append([]ScriptedTurn(nil), turns...)}
+}
+
+// Complete returns the next scripted turn, advancing the cursor and
+// recording a deep-copy of the Request for later inspection via
+// Requests(). Safe for concurrent calls.
+func (f *FakeClient) Complete(ctx context.Context, req Request) (Response, error) {
+	if err := ctx.Err(); err != nil {
+		return Response{}, &Error{
+			Class:   ErrorContextCancelled,
+			Message: "ctx cancelled before fake Complete",
+			Cause:   err,
+		}
+	}
+
+	f.mu.Lock()
+	f.requests = append(f.requests, cloneRequest(req))
+	if f.cursor >= len(f.script) {
+		called := f.cursor + 1
+		f.mu.Unlock()
+		return Response{}, &Error{
+			Class:   ErrorMalformed,
+			Message: fmt.Sprintf("FakeClient script exhausted at call %d", called),
+		}
+	}
+	turn := f.script[f.cursor]
+	f.cursor++
+	f.mu.Unlock()
+
+	if turn.Err != nil {
+		return Response{}, turn.Err
+	}
+	return turn.Response, nil
+}
+
+// Push appends one more scripted turn. Useful for tests that script
+// reactively (in response to observed behavior between Complete calls).
+func (f *FakeClient) Push(turn ScriptedTurn) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.script = append(f.script, turn)
+}
+
+// Requests returns a deep copy of every Request seen so far, in call
+// order. Safe to call from any goroutine, and safe to mutate the returned
+// slice (including nested Messages / Tools / ToolCalls / Arguments) — the
+// FakeClient's recorded history will not be corrupted.
+func (f *FakeClient) Requests() []Request {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]Request, len(f.requests))
+	for i, req := range f.requests {
+		out[i] = cloneRequest(req)
+	}
+	return out
+}
+
+// CallCount returns the number of Complete calls that recorded a request
+// (calls that errored on ctx-cancel before any work happened do NOT count).
+func (f *FakeClient) CallCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.requests)
+}
+
+// cloneRequest deep-copies the Request so a caller observing Requests()
+// can't be confused by a later mutation to a slice the harness reused
+// (the harness appends to req.Messages across iterations within a tick).
+func cloneRequest(req Request) Request {
+	out := req
+	if req.Messages != nil {
+		out.Messages = make([]Message, len(req.Messages))
+		for i, m := range req.Messages {
+			cm := m
+			if m.ToolCalls != nil {
+				cm.ToolCalls = make([]RawToolCall, len(m.ToolCalls))
+				for j, tc := range m.ToolCalls {
+					ctc := tc
+					if tc.Arguments != nil {
+						ctc.Arguments = append([]byte(nil), tc.Arguments...)
+					}
+					cm.ToolCalls[j] = ctc
+				}
+			}
+			out.Messages[i] = cm
+		}
+	}
+	if req.Tools != nil {
+		out.Tools = make([]ToolSpec, len(req.Tools))
+		for i, t := range req.Tools {
+			ct := t
+			if t.Schema != nil {
+				ct.Schema = append([]byte(nil), t.Schema...)
+			}
+			out.Tools[i] = ct
+		}
+	}
+	return out
+}
