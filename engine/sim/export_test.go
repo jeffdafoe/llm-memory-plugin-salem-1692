@@ -124,6 +124,19 @@ func ActorsInStructure(w *World, sid StructureID) []ActorID {
 	return out
 }
 
+// OutdoorActorIDs returns the actor IDs the outdoorActors secondary index
+// currently holds — lets tests assert lockstep maintenance against
+// InsideStructureID across setActorInsideStructure transitions and
+// rebuildIndices. Order is undefined; sort if asserting against a fixed
+// expected list.
+func OutdoorActorIDs(w *World) []ActorID {
+	out := make([]ActorID, 0, len(w.outdoorActors))
+	for id := range w.outdoorActors {
+		out = append(out, id)
+	}
+	return out
+}
+
 // PR 3a reactor tuning constants — exposed so tests can assert TTL / cap /
 // backoff behavior against the real values rather than re-declaring them.
 const (

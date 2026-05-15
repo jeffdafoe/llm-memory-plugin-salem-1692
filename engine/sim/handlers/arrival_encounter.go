@@ -7,7 +7,7 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
 
-// arrival_encounter.go — PR 3e arrival-encounter detection.
+// arrival_encounter.go — arrival-encounter detection.
 //
 // Subscribes to sim.ActorArrived. When an outdoor actor arrives, scans
 // for other outdoor non-huddled actors within the world's default
@@ -15,18 +15,15 @@ import (
 // them via StartOutdoorHuddle (PR 4 — already mints its own area-bound
 // scene atomically).
 //
-// Trigger is ActorArrived only. The "two NPCs walking past each other
-// mid-route" case (LOS encounters off ActorMoved) is a documented
-// semantic hole, deferred to the cascade-controller PR: per-tile
-// scanning is expensive, an LOS filter needs design beyond a cheap
-// nearby-actor check (terrain occlusion, sight lines), and bilateral-
-// pause-on-huddle already limits the "ships passing" window to one
-// tile — so the missed encounter only matters if neither actor arrives
-// near the other.
+// Pairs with handleMovedEncounter (moved_encounter.go) which covers the
+// mid-route case (two NPCs walking past each other within encounter
+// radius without either arriving). LOS-proper (terrain occlusion, sight
+// lines) is still future work; both subscribers use bounded radius.
 //
 // PR 3 explicitly does NOT own general scene origination (that's the
-// later engine/sim/cascade/ controller PR). This subscriber is the one
-// narrow slice PR 3 owns: arrival-driven outdoor huddle formation.
+// later engine/sim/cascade/ controller PR). This subscriber + the moved
+// counterpart are the encounter-formation slice; broader cascade
+// origination remains future work.
 
 // handleArrivalEncounter is the ActorArrived subscriber that detects
 // outdoor encounters and forms huddles. Registered via
@@ -108,24 +105,26 @@ func handleArrivalEncounter(w *sim.World, evt sim.Event) {
 	}
 	bound := sim.NewAreaBound(arrived.FinalPosition, radius)
 
-	// O(actors) scan. At v2's actor counts (< 100 in dev) this is fine;
-	// a spatial index on outdoor actors is the natural optimization if
-	// the hot path grows. The pre-filter uses the same SceneBound.Contains
-	// helper StartOutdoorHuddle uses internally, so eligibility here
-	// matches the command's own validation rule exactly.
+	// Outdoor-set scan via World.ForEachOutdoorActor — iterates only
+	// actors with InsideStructureID == "" (the outdoorActors secondary
+	// index), bounded by outdoor population rather than total actor
+	// count. SceneBound.Contains for an area bound already rejects
+	// indoor actors, so this is purely an optimization with identical
+	// semantics to the prior w.Actors scan.
 	var nearby []sim.ActorID
-	for id, a := range w.Actors {
-		if id == arriver.ID {
-			continue
+	w.ForEachOutdoorActor(func(a *sim.Actor) bool {
+		if a.ID == arriver.ID {
+			return true
 		}
 		if a.CurrentHuddleID != "" {
-			continue
+			return true
 		}
 		if !bound.Contains(w, a) {
-			continue
+			return true
 		}
-		nearby = append(nearby, id)
-	}
+		nearby = append(nearby, a.ID)
+		return true
+	})
 	if len(nearby) == 0 {
 		return
 	}
@@ -143,25 +142,28 @@ func handleArrivalEncounter(w *sim.World, evt sim.Event) {
 	}
 }
 
-// RegisterEncounterHandlers wires the arrival-encounter subscriber into
-// the world. Separate from RegisterTickHandlers because the two
-// registrations are independent — a world that wants encounter
-// detection without the agent-tick pipeline (or vice versa) can opt in
-// piecewise — and because conflating them under one name would hide
-// what is actually being registered.
+// RegisterEncounterHandlers wires both encounter subscribers
+// (arrival-driven + mid-route-move-driven) into the world. Separate
+// from RegisterTickHandlers because the two registration groups are
+// independent — a world that wants encounter detection without the
+// agent-tick pipeline (or vice versa) can opt in piecewise — and
+// because conflating them under one name would hide what is actually
+// being registered.
 //
 // Must run on the world goroutine (call before World.Run or from inside
 // a Command.Fn).
 //
-// Idempotency: registering twice would dispatch the subscriber twice
-// per ActorArrived. The second invocation always observes the arriver
+// Idempotency: registering twice would dispatch each subscriber twice
+// per event. The second invocation always observes the trigger actor
 // already in the huddle the first invocation just minted, so its
 // pre-filter (`CurrentHuddleID != "" → return`) short-circuits before
 // any StartOutdoorHuddle call — a no-op, not an error. Tests pin this
-// in TestArrivalEncounter_DoubleRegistrationProducesOneHuddle.
+// in TestArrivalEncounter_DoubleRegistrationProducesOneHuddle for the
+// arrival subscriber; the moved subscriber inherits the same shape.
 func RegisterEncounterHandlers(w *sim.World) {
 	if w == nil {
 		panic("handlers: RegisterEncounterHandlers requires a non-nil world")
 	}
 	w.Subscribe(sim.SubscriberFunc(handleArrivalEncounter))
+	w.Subscribe(sim.SubscriberFunc(handleMovedEncounter))
 }

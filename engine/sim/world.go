@@ -216,6 +216,18 @@ type World struct {
 	// and kept consistent by command handlers thereafter.
 	actorsByStructure map[StructureID]map[ActorID]struct{}
 	actorsByHuddle    map[HuddleID]map[ActorID]struct{}
+	// outdoorActors tracks every actor with InsideStructureID == "". Hot-
+	// path optimization for the encounter subscribers (handleArrival-
+	// Encounter, handleMovedEncounter): at 200+ actors, scanning w.Actors
+	// linearly on every ActorMoved is the wrong shape. Most actors are
+	// indoor at any moment (sleeping, working, dining), so the outdoor set
+	// is a small fraction of the population and the scan stays bounded by
+	// outdoor density rather than total population.
+	//
+	// Maintained in lockstep with InsideStructureID by setActorInside-
+	// Structure (the single mutation chokepoint) and rebuilt from primary
+	// state by rebuildIndices. Iterated read-only via ForEachOutdoorActor.
+	outdoorActors map[ActorID]struct{}
 
 	Environment WorldEnvironment
 	Phase       Phase
@@ -321,6 +333,7 @@ func NewWorld(repo Repository) *World {
 		Recipes:           make(map[ItemKind]*ItemRecipe),
 		actorsByStructure: make(map[StructureID]map[ActorID]struct{}),
 		actorsByHuddle:    make(map[HuddleID]map[ActorID]struct{}),
+		outdoorActors:     make(map[ActorID]struct{}),
 		Speech:            &SpeechHelper{},
 		cmds:              make(chan Command, 256),
 		tickAdmission:     alwaysAdmit{},
@@ -600,24 +613,74 @@ func (w *World) Published() *Snapshot {
 	return w.published.Load()
 }
 
-// rebuildIndices populates the actorsByStructure / actorsByHuddle
-// secondary indices from primary state. Called by LoadWorld and as a
-// defensive recovery path if drift is ever detected.
+// rebuildIndices populates the actorsByStructure / actorsByHuddle /
+// outdoorActors secondary indices from primary state. Called by
+// LoadWorld and as a defensive recovery path if drift is ever detected.
 func (w *World) rebuildIndices() {
 	w.actorsByStructure = make(map[StructureID]map[ActorID]struct{})
 	w.actorsByHuddle = make(map[HuddleID]map[ActorID]struct{})
+	w.outdoorActors = make(map[ActorID]struct{})
 	for id, a := range w.Actors {
 		if a.InsideStructureID != "" {
 			if w.actorsByStructure[a.InsideStructureID] == nil {
 				w.actorsByStructure[a.InsideStructureID] = make(map[ActorID]struct{})
 			}
 			w.actorsByStructure[a.InsideStructureID][id] = struct{}{}
+		} else {
+			w.outdoorActors[id] = struct{}{}
 		}
 		if a.CurrentHuddleID != "" {
 			if w.actorsByHuddle[a.CurrentHuddleID] == nil {
 				w.actorsByHuddle[a.CurrentHuddleID] = make(map[ActorID]struct{})
 			}
 			w.actorsByHuddle[a.CurrentHuddleID][id] = struct{}{}
+		}
+	}
+}
+
+// ForEachOutdoorActor invokes fn for every actor currently outdoors
+// (InsideStructureID == ""). Iteration stops if fn returns false. Order
+// is undefined; callers needing a deterministic order must sort the
+// IDs they collect.
+//
+// Backed by the outdoorActors secondary index — O(K) where K is the
+// outdoor population, not O(N) where N is total actor count. Intended
+// for hot-path subscribers (encounter detection on ActorMoved /
+// ActorArrived) at 200+ actor scale.
+//
+// MUST be called from inside a Command.Fn or a subscriber dispatched
+// from emit (both run on the world goroutine).
+//
+// SNAPSHOT SEMANTICS. Iteration is over a snapshot of outdoor IDs taken
+// at entry, then each ID is re-checked against w.outdoorActors and
+// w.Actors before fn is invoked. So fn MAY safely mutate world state —
+// including calls that flow through setActorInsideStructure — without
+// breaking iteration: an actor moved indoor mid-iteration is skipped
+// on its re-check, and newly-outdoor actors after entry are not seen
+// by this call (they will be by the next ForEachOutdoorActor on the
+// next event). Allocation is O(K) per call; this is intentional to
+// avoid exposing range-while-mutating map semantics to callbacks.
+func (w *World) ForEachOutdoorActor(fn func(*Actor) bool) {
+	ids := make([]ActorID, 0, len(w.outdoorActors))
+	for id := range w.outdoorActors {
+		ids = append(ids, id)
+	}
+	for _, id := range ids {
+		// Re-check membership: fn from a prior iteration may have moved
+		// this actor indoor (e.g. by calling setActorInsideStructure via
+		// a command). Skip rather than visit a now-indoor actor.
+		if _, ok := w.outdoorActors[id]; !ok {
+			continue
+		}
+		a, ok := w.Actors[id]
+		if !ok {
+			// Defensive: index drift would only happen if a caller
+			// bypassed setActorInsideStructure or removed an actor
+			// without unhooking the index. Skip rather than panic.
+			continue
+		}
+		if !fn(a) {
+			return
 		}
 	}
 }

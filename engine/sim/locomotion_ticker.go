@@ -373,9 +373,11 @@ func updateInsideStructureIDFromTileOwnership(w *World, actor *Actor) {
 }
 
 // setActorInsideStructure sets actor.InsideStructureID AND the
-// actorsByStructure secondary index together — the two must move as one,
-// since CreateScene reads actorsByStructure for participant capture. A
-// no-op when the actor is already attributed to structureID.
+// actorsByStructure + outdoorActors secondary indices together — the
+// three must move as one, since CreateScene reads actorsByStructure for
+// participant capture and the encounter subscribers iterate
+// outdoorActors. A no-op when the actor is already attributed to
+// structureID.
 //
 // MUST be called from inside a Command.Fn.
 func setActorInsideStructure(w *World, actor *Actor, structureID StructureID) {
@@ -390,6 +392,8 @@ func setActorInsideStructure(w *World, actor *Actor, structureID StructureID) {
 				delete(w.actorsByStructure, old)
 			}
 		}
+	} else {
+		delete(w.outdoorActors, actor.ID)
 	}
 	actor.InsideStructureID = structureID
 	if structureID != "" {
@@ -397,5 +401,7 @@ func setActorInsideStructure(w *World, actor *Actor, structureID StructureID) {
 			w.actorsByStructure[structureID] = make(map[ActorID]struct{})
 		}
 		w.actorsByStructure[structureID][actor.ID] = struct{}{}
+	} else {
+		w.outdoorActors[actor.ID] = struct{}{}
 	}
 }
