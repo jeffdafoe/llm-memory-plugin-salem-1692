@@ -476,10 +476,18 @@ func runPayWithItemFastPath(
 			seller.DisplayName,
 		)
 	}
-	if seller.Inventory[kind] < needed {
+	// Stock reservation accounting (PR S6 R1 code_review fix): post-S6,
+	// accepted-but-not-yet-delivered Orders keep goods in the seller's
+	// inventory. The visible Inventory doesn't reflect those obligations,
+	// so we subtract outstandingReadyOrderQty before comparing against
+	// `needed` — otherwise two concurrent fast-path accepts against the
+	// same physical stew could both pass and only one could deliver.
+	reserved := outstandingReadyOrderQty(w, seller.ID, kind)
+	available := seller.Inventory[kind] - reserved
+	if available < needed {
 		return nil, fmt.Errorf(
-			"%s doesn't have enough %s (have %d, need %d)",
-			seller.DisplayName, kind, seller.Inventory[kind], needed,
+			"%s doesn't have enough %s (have %d, reserved %d, need %d)",
+			seller.DisplayName, kind, seller.Inventory[kind], reserved, needed,
 		)
 	}
 	if buyer.Coins < amount {
@@ -690,7 +698,12 @@ func AcceptPay(callerID ActorID, ledgerID LedgerID, at time.Time) Command {
 				return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedUnavailable, "", at), nil
 			}
 			needed := entry.Qty * effectiveConsumers
-			if caller.Inventory[entry.ItemKind] < needed {
+			// Stock reservation accounting (PR S6 R1 code_review fix):
+			// subtract Ready-Order obligations on this seller+item so
+			// two pending offers against the same physical stock cannot
+			// both accept. See outstandingReadyOrderQty in order.go.
+			reserved := outstandingReadyOrderQty(w, caller.ID, entry.ItemKind)
+			if caller.Inventory[entry.ItemKind]-reserved < needed {
 				return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedInsufficientStock, "", at), nil
 			}
 

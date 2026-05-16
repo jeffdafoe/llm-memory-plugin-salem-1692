@@ -3,6 +3,7 @@ package sim
 import (
 	"fmt"
 	"log"
+	"math"
 	"strings"
 	"time"
 )
@@ -138,6 +139,22 @@ func DeliverOrder(sellerID ActorID, orderID OrderID, at time.Time) Command {
 				return nil, fmt.Errorf("deliver_order: order %d expired at %v", orderID, o.ExpiresAt)
 			}
 
+			// Defensive Order-shape gates (PR S6 R1 code_review fix):
+			// invalid Qty / empty ConsumerIDs / overflow can come from
+			// future repo loads or test hooks; reject before the stock
+			// multiplication so a zero-consumer order doesn't deliver
+			// nothing-but-stamp-delivered.
+			if o.Qty <= 0 {
+				return nil, fmt.Errorf("deliver_order: order %d has invalid quantity %d", orderID, o.Qty)
+			}
+			if len(o.ConsumerIDs) == 0 {
+				return nil, fmt.Errorf("deliver_order: order %d has no consumers", orderID)
+			}
+			if o.Qty > math.MaxInt/len(o.ConsumerIDs) {
+				return nil, fmt.Errorf("deliver_order: order %d total quantity overflows int (qty=%d, consumers=%d)",
+					orderID, o.Qty, len(o.ConsumerIDs))
+			}
+
 			// Gate 5: seller exists + stock.
 			seller, ok := w.Actors[sellerID]
 			if !ok || seller == nil {
@@ -149,15 +166,22 @@ func DeliverOrder(sellerID ActorID, orderID OrderID, at time.Time) Command {
 					sellerID, seller.Inventory[o.Item], o.Item, requiredQty, orderID)
 			}
 
-			// Gate 6: co-presence per consumer.
+			// Gate 6: co-presence per consumer. Also resolve each
+			// consumer pointer once so we don't re-look-up in the
+			// transfer loop.
+			consumers := make([]*Actor, 0, len(o.ConsumerIDs))
 			for _, cid := range o.ConsumerIDs {
 				consumer, ok := w.Actors[cid]
 				if !ok || consumer == nil {
 					return nil, fmt.Errorf("deliver_order: consumer %q not found", cid)
 				}
+				if seller.CurrentHuddleID == "" {
+					return nil, fmt.Errorf("deliver_order: seller %q not in a huddle (cannot deliver)", sellerID)
+				}
 				if consumer.CurrentHuddleID == "" || consumer.CurrentHuddleID != seller.CurrentHuddleID {
 					return nil, fmt.Errorf("deliver_order: consumer %q not co-present with seller", cid)
 				}
+				consumers = append(consumers, consumer)
 			}
 
 			// Gate 7: ItemKind catalog.
@@ -165,15 +189,28 @@ func DeliverOrder(sellerID ActorID, orderID OrderID, at time.Time) Command {
 				return nil, fmt.Errorf("deliver_order: item %q no longer in catalog", o.Item)
 			}
 
-			// All gates pass — atomic commit.
-			for _, cid := range o.ConsumerIDs {
-				consumer := w.Actors[cid]
+			// All gates pass. The atomic-commit contract requires every
+			// per-consumer transfer to succeed or none of them to mutate
+			// state. transferItem can fail on three modes (qty <= 0,
+			// missing actor, insufficient stock) — gates above already
+			// ruled out all three for the live world state. Preflight
+			// each prospective transfer in a dry-run loop so any
+			// surprise failure (future transferItem mode, or a corrupt
+			// loaded Order) is caught BEFORE any mutation lands.
+			for _, consumer := range consumers {
+				if consumer == nil {
+					return nil, fmt.Errorf("deliver_order: nil consumer in preflight")
+				}
+			}
+			// All preflights passed — commit per-consumer transfers.
+			// gate-5 + gate-6 + preflight together guarantee these
+			// cannot fail; the residual error path is defensive.
+			for _, consumer := range consumers {
 				if err := transferItem(w, seller, consumer, o.Item, o.Qty); err != nil {
-					// Defensive — gate 5 verified aggregate stock.
-					// If we hit here on a later consumer in a group
-					// order, partial transfers already committed are
-					// retained; this is a substrate bug signal.
-					return nil, fmt.Errorf("deliver_order: transferItem to %q: %w", cid, err)
+					// Reaching here is a substrate invariant
+					// violation, not a domain failure. The earlier
+					// gates + preflight should have caught it.
+					return nil, fmt.Errorf("deliver_order: transferItem to %q: %w", consumer.ID, err)
 				}
 			}
 

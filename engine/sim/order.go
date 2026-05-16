@@ -204,6 +204,45 @@ func finalizeOrderTerminal(w *World, o *Order, terminal OrderState, at time.Time
 	}
 }
 
+// outstandingReadyOrderQty returns the total quantity of `item` that
+// the given seller has committed to deliver across all Ready Orders.
+// Per-Order obligation = Qty * len(ConsumerIDs) (the same formula
+// DeliverOrder uses for its stock check).
+//
+// Called from accept_pay's gate-9 stock check and PayWithItem's
+// fast-path predicate-6 to enforce reservation accounting: post-S6,
+// goods stay in the seller's inventory between accept and deliver,
+// so the visible inventory doesn't reflect reservations. Without
+// subtracting outstanding obligations, two pending offers against
+// the same 1-stew inventory could both accept and only one could
+// deliver — paid-without-fulfillable-goods (code_review PR S6 R1
+// finding).
+//
+// MUST be called from inside a Command.Fn (world goroutine) —
+// iterates w.Orders without coordination.
+func outstandingReadyOrderQty(w *World, sellerID ActorID, item ItemKind) int {
+	if w == nil || len(w.Orders) == 0 {
+		return 0
+	}
+	total := 0
+	for _, o := range w.Orders {
+		if o == nil || o.State != OrderStateReady {
+			continue
+		}
+		if o.SellerID != sellerID || o.Item != item {
+			continue
+		}
+		// Defensive — both fields should be sane on a valid Order,
+		// but if a future repo path loads a malformed row we'd
+		// rather skip than panic.
+		if o.Qty <= 0 || len(o.ConsumerIDs) <= 0 {
+			continue
+		}
+		total += o.Qty * len(o.ConsumerIDs)
+	}
+	return total
+}
+
 // restartExpirePendingOrders walks World.Orders at LoadWorld time and
 // flips any Ready Order whose ExpiresAt has already elapsed to Expired
 // in-band. Mirrors restartExpirePendingEntries for the pay-ledger side

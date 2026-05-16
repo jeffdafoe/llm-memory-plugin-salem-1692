@@ -288,6 +288,13 @@ func FinalizeOrderTerminal(w *World, o *Order, terminal OrderState, at time.Time
 	finalizeOrderTerminal(w, o, terminal, at)
 }
 
+// OutstandingReadyOrderQty exposes the order-reservation accounting
+// helper (PR S6 R1 code_review fix) for direct tests of accept_pay's
+// gate-9 / fast-path predicate-6 reservation math.
+func OutstandingReadyOrderQty(w *World, sellerID ActorID, item ItemKind) int {
+	return outstandingReadyOrderQty(w, sellerID, item)
+}
+
 // RepublishForTest invokes World.republish so substrate tests can swap
 // the published Snapshot without driving a full Command round trip
 // (which would require starting Run). Production callers never need
