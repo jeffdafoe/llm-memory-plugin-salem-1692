@@ -36,13 +36,23 @@ type ItemKindDef struct {
 	// SortOrder is the UI sort hint (low → high). v1's item_kind.sort_order.
 	SortOrder int
 
-	// Satisfies is the per-need amount > 0 when one unit is consumed. Port
-	// of v1's item_satisfies table (PK (item_kind, attribute)), embedded
-	// here because the v2 single-goroutine substrate doesn't need the join
-	// normalization and the read pattern is always "what does this item
-	// satisfy?" — never the reverse direction. Nil/empty for non-consumables
-	// (materials).
-	Satisfies map[NeedKey]int
+	// Satisfies is the per-need effect of consuming one unit of this item.
+	// Port of v1's item_satisfies table (PK (item_kind, attribute), one row
+	// per attribute), embedded here because the v2 single-goroutine substrate
+	// doesn't need the join normalization and the read pattern is always
+	// "what does this item satisfy?" — never the reverse direction.
+	//
+	// Each entry carries the immediate-hit amount (post-clamp subtracted from
+	// Actor.Needs at consume time) AND the optional dwell triple
+	// (DwellAmount, DwellPeriodMinutes, DwellTotalTicks) for the slow-burn
+	// per-tick payoff handled by UpsertItemDwellCredits + ApplyDwellTick
+	// (see dwell.go + dwell_tick.go). Nil/empty for non-consumables
+	// (materials like wheat / flour / iron).
+	//
+	// Callers shouldn't have duplicate Attribute entries; the load path
+	// (v1 schema PK is (item_kind, attribute)) enforces uniqueness, and the
+	// in-memory shape relies on that contract. No runtime dedup.
+	Satisfies []ItemSatisfaction
 }
 
 // ItemCategory is the typed item-category enum. Consumers must always
@@ -60,8 +70,12 @@ const (
 // Consumable reports whether this item kind satisfies any need when a unit
 // is consumed. v1 used `satisfies_attribute IS NOT NULL` for the same
 // signal pre-ZBBS-125, and `EXISTS (... FROM item_satisfies ...)` after.
-// v2 derives it from the embedded Satisfies map. Materials with no entries
-// return false; food/drink with entries return true.
+// v2 derives it from the embedded Satisfies slice — any entries → consumable.
+// Materials with no entries return false; food/drink with entries return
+// true. An all-zero entry (no immediate, no dwell triple) is technically
+// consumable here but is a catalog-author bug; Consume silent-skips zero-
+// magnitude entries at apply time so the consume succeeds-with-no-effect
+// rather than rejecting (matches v1 behavior).
 func (d *ItemKindDef) Consumable() bool {
 	return len(d.Satisfies) > 0
 }

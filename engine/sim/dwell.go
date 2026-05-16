@@ -29,11 +29,17 @@ import "time"
 // ItemSatisfaction is one entry from the item_satisfies catalog — the
 // effect of consuming a unit of an item on one need.
 //
-// DwellAmount is POSITIVE magnitude (matches legacy item_satisfies
-// column convention); UpsertItemDwellCredits flips it to a negative
-// delta on the credit row.
+// Immediate and DwellAmount are both POSITIVE magnitudes (matches legacy
+// item_satisfies column convention — `amount` for immediate, `dwell_amount`
+// for per-tick). Consume negates Immediate to subtract from Needs;
+// UpsertItemDwellCredits negates DwellAmount on the credit row.
+//
+// Immediate = 0 with a complete dwell triple is legal (rare — a pure
+// slow-burn item). HasDwell() requires all three dwell fields > 0; the
+// upsert silent-skips entries that fail HasDwell.
 type ItemSatisfaction struct {
 	Attribute          NeedKey
+	Immediate          int // positive magnitude; 0 = no immediate hit
 	DwellAmount        int // positive magnitude; 0 = no dwell effect
 	DwellPeriodMinutes int // 0 = no dwell effect
 	DwellTotalTicks    int // 0 = no dwell effect
