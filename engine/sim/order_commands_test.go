@@ -3,6 +3,7 @@ package sim_test
 import (
 	"context"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -505,6 +506,37 @@ func TestOutstandingReadyOrderQty_SumsObligations(t *testing.T) {
 	}})
 	if got.(int) != 0 {
 		t.Errorf("different seller: outstandingReadyOrderQty = %d, want 0", got)
+	}
+}
+
+// TestOutstandingReadyOrderQty_OverflowSaturates is the PR S6 R2
+// code_review regression test. A corrupt Ready Order with a huge Qty
+// (e.g. a future repo path loading malformed data) cannot be allowed
+// to wrap the multiplication arithmetic — that would yield a negative
+// or wrap-small `reserved` and reopen the over-selling path R1 patched.
+// The helper saturates to math.MaxInt on overflow, which makes the
+// downstream accept stock gate fail closed (treats the seller as
+// having infinite outstanding reservations).
+func TestOutstandingReadyOrderQty_OverflowSaturates(t *testing.T) {
+	w, stop := buildOrderTestWorld(t)
+	defer stop()
+	at := time.Now().UTC()
+
+	// Mint a normal Ready Order, then directly corrupt its Qty to a
+	// value that would overflow when multiplied by 2 consumers.
+	id := mintReadyOrder(t, w, []sim.ActorID{"jefferey", "mary"}, 1, at)
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Orders[id].Qty = math.MaxInt
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("corrupt qty: %v", err)
+	}
+
+	got, _ := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return sim.OutstandingReadyOrderQty(world, "hannah", "stew"), nil
+	}})
+	if got.(int) != math.MaxInt {
+		t.Errorf("overflow case: outstandingReadyOrderQty = %d, want math.MaxInt (saturated)", got)
 	}
 }
 

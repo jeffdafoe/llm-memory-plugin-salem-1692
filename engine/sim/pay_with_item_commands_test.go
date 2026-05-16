@@ -2,6 +2,7 @@ package sim_test
 
 import (
 	"context"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -1026,6 +1027,60 @@ func TestAcceptPay_StockReservation_PreventsOverselling(t *testing.T) {
 	snap = w.Published()
 	if got := snap.Actors["carol"].Coins; got != 50 {
 		t.Errorf("carol.Coins = %d, want 50 (no transfer on stock-fail)", got)
+	}
+}
+
+// TestAcceptPay_StockReservation_OverflowFailsClosed is the PR S6 R2
+// code_review regression test. A corrupt Ready Order with math.MaxInt
+// Qty must not be allowed to wrap the multiplication arithmetic in
+// outstandingReadyOrderQty and reopen the over-selling path. The
+// helper saturates to math.MaxInt on overflow; this test verifies
+// that propagates through to accept_pay's gate-10 stock check:
+// `Inventory[item] - MaxInt < needed` is always true and the gate
+// rejects with FailedInsufficientStock.
+func TestAcceptPay_StockReservation_OverflowFailsClosed(t *testing.T) {
+	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
+		{id: "alice", displayName: "Alice", kind: sim.KindNPCShared, huddleID: "h1", coins: 50},
+		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1", inventory: map[sim.ItemKind]int{"stew": 5}},
+		{id: "carol", displayName: "Carol", kind: sim.KindNPCShared, huddleID: "h1", coins: 50},
+	})
+	defer stop()
+	at := time.Now().UTC()
+
+	// Seed a corrupt Ready Order with math.MaxInt qty on bob+stew.
+	// Bypasses normal mint validation; simulates a future-bugged
+	// repo path loading malformed data.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Orders[42] = &sim.Order{
+			ID: 42, State: sim.OrderStateReady,
+			BuyerID: "alice", SellerID: "bob",
+			Item: "stew", Qty: math.MaxInt,
+			ConsumerIDs: []sim.ActorID{"alice"},
+			CreatedAt:   at, ExpiresAt: at.Add(time.Hour),
+		}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed corrupt Order: %v", err)
+	}
+
+	// A normal pending offer for 1 stew. Bob has 5 stew physically,
+	// but the corrupt Order's saturated reservation should fail the
+	// stock gate closed.
+	seedLedgerEntry(t, w, sim.PayLedgerEntry{
+		ID: 7, BuyerID: "carol", SellerID: "bob",
+		ItemKind: "stew", Qty: 1, Amount: 4,
+		State:     sim.PayLedgerStatePending,
+		CreatedAt: at, ExpiresAt: at.Add(3 * time.Minute),
+		SceneID: "sc1", HuddleID: "h1",
+	})
+
+	if _, err := w.Send(sim.AcceptPay("bob", 7, at.Add(time.Second))); err != nil {
+		t.Fatalf("AcceptPay (transitioning): %v", err)
+	}
+	ledger := readPayLedger(t, w)
+	if ledger[7].State != sim.PayLedgerStateFailedInsufficientStock {
+		t.Errorf("ledger[7].State = %q, want failed_insufficient_stock (corrupt-Order overflow must fail closed)",
+			ledger[7].State)
 	}
 }
 

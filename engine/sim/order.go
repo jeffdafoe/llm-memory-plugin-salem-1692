@@ -1,6 +1,9 @@
 package sim
 
-import "time"
+import (
+	"math"
+	"time"
+)
 
 // Order is the post-acceptance fulfillment state machine for take-away
 // pay-with-item transactions (Phase 3 PR S6). Created in
@@ -238,7 +241,21 @@ func outstandingReadyOrderQty(w *World, sellerID ActorID, item ItemKind) int {
 		if o.Qty <= 0 || len(o.ConsumerIDs) <= 0 {
 			continue
 		}
-		total += o.Qty * len(o.ConsumerIDs)
+		n := len(o.ConsumerIDs)
+		// Per-Order multiplication overflow. Saturate to MaxInt so
+		// the accept stock gate fails closed (treats "infinitely
+		// reserved" as the safest reading of corrupt data) rather
+		// than wrapping negative and re-opening the over-selling
+		// path R1 patched. PR S6 R2 code_review fix.
+		if o.Qty > math.MaxInt/n {
+			return math.MaxInt
+		}
+		needed := o.Qty * n
+		// Running-total overflow. Same saturation posture.
+		if total > math.MaxInt-needed {
+			return math.MaxInt
+		}
+		total += needed
 	}
 	return total
 }
