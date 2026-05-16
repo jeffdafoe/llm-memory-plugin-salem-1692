@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
@@ -102,6 +103,8 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderActor(&b, p.Actor)
 	renderSurroundings(&b, p.Surroundings)
 	renderRelationships(&b, p.Relationships)
+	renderPendingDeliveriesFromMe(&b, p.PendingDeliveriesFromMe)
+	renderPendingDeliveriesToMe(&b, p.PendingDeliveriesToMe)
 	renderScene(&b, p)
 	renderSecondary(&b, p.Secondary)
 	renderWarrants(&b, p.Warrants, cfg, &out)
@@ -292,6 +295,85 @@ func renderRelationships(b *strings.Builder, peers []RelationshipPeerView) {
 		}
 	}
 	b.WriteString("\n")
+}
+
+// renderPendingDeliveriesFromMe writes the "Orders to deliver:" section
+// for the seller side. One line per pending Order — item + qty,
+// buyer name, optional consumer-list if this is a group order, and a
+// time-remaining hint. Empty list skips the section.
+//
+// Phase 3 PR S6 — surfacing pending deliveries to the seller's LLM
+// is the load-bearing perception mechanism (no warrant kind for
+// Order state; the seller relies on baseline perception to remember
+// to call deliver_order).
+func renderPendingDeliveriesFromMe(b *strings.Builder, orders []OrderView) {
+	if len(orders) == 0 {
+		return
+	}
+	b.WriteString("## Orders to deliver\n")
+	for _, o := range orders {
+		itemDesc := string(o.Item)
+		if o.Qty > 1 {
+			itemDesc = fmt.Sprintf("%d %s", o.Qty, o.Item)
+		}
+		buyer := sanitizeInline(o.BuyerName)
+		fmt.Fprintf(b, "- #%d: %s for %s", uint64(o.ID), itemDesc, buyer)
+		if len(o.ConsumerNames) > 0 {
+			fmt.Fprintf(b, " (to deliver to: %s)", sanitizeInline(strings.Join(o.ConsumerNames, ", ")))
+		}
+		if !o.ExpiresAt.IsZero() {
+			fmt.Fprintf(b, " — expires in %s", humanizeDurationUntil(o.ExpiresAt, time.Now()))
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+}
+
+// renderPendingDeliveriesToMe writes the "Orders you're waiting on:"
+// section for the buyer/consumer side. One line per pending Order —
+// item + qty, seller name, time-remaining hint. Empty list skips
+// the section.
+//
+// Phase 3 PR S6 — gives the buyer's LLM a structured "I'm waiting
+// for X from Y" cue so they can speak follow-ups ("Hannah, where's
+// my stew?") or make wait/depart decisions.
+func renderPendingDeliveriesToMe(b *strings.Builder, orders []OrderView) {
+	if len(orders) == 0 {
+		return
+	}
+	b.WriteString("## Orders you're waiting on\n")
+	for _, o := range orders {
+		itemDesc := string(o.Item)
+		if o.Qty > 1 {
+			itemDesc = fmt.Sprintf("%d %s", o.Qty, o.Item)
+		}
+		seller := sanitizeInline(o.SellerName)
+		fmt.Fprintf(b, "- #%d: %s from %s", uint64(o.ID), itemDesc, seller)
+		if !o.ExpiresAt.IsZero() {
+			fmt.Fprintf(b, " — expires in %s", humanizeDurationUntil(o.ExpiresAt, time.Now()))
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+}
+
+// humanizeDurationUntil renders a coarse "X minute(s)" string for a
+// future time relative to now. Returns "now" when the deadline has
+// passed (clamped to 0) — keeps the render readable even if a clock
+// drift causes a brief past-due window before the sweep flips state.
+func humanizeDurationUntil(deadline, now time.Time) string {
+	d := deadline.Sub(now)
+	if d <= 0 {
+		return "now"
+	}
+	mins := int(d / time.Minute)
+	if mins <= 0 {
+		return "<1 minute"
+	}
+	if mins == 1 {
+		return "1 minute"
+	}
+	return fmt.Sprintf("%d minutes", mins)
 }
 
 func renderScene(b *strings.Builder, p Payload) {

@@ -696,7 +696,8 @@ func TestPayWithItem_FastPath_HappyPath_Takeaway(t *testing.T) {
 		t.Errorf("sink call State = %q, want accepted", sink.calls[0].State)
 	}
 
-	// Coin + item transfer landed (takeaway → items in buyer inventory).
+	// Coin transfer landed. Post-S6: goods stay in seller's inventory
+	// until deliver_order; an Order is minted at accept-time instead.
 	snap := w.Published()
 	if got := snap.Actors["alice"].Coins; got != 46 {
 		t.Errorf("alice.Coins = %d, want 46", got)
@@ -704,8 +705,19 @@ func TestPayWithItem_FastPath_HappyPath_Takeaway(t *testing.T) {
 	if got := snap.Actors["bob"].Coins; got != 4 {
 		t.Errorf("bob.Coins = %d, want 4", got)
 	}
-	if got := snap.Actors["alice"].InventoryHash; got != 1 {
-		t.Errorf("alice.InventoryHash = %d, want 1 (stew acquired)", got)
+	if got := snap.Actors["alice"].InventoryHash; got != 0 {
+		t.Errorf("alice.InventoryHash = %d, want 0 (S6: goods deferred to deliver_order)", got)
+	}
+	// Order minted at accept-time.
+	var foundOrder *sim.Order
+	for _, o := range snap.Orders {
+		if o != nil && o.SellerID == "bob" && o.BuyerID == "alice" && o.State == sim.OrderStateReady {
+			foundOrder = o
+			break
+		}
+	}
+	if foundOrder == nil {
+		t.Fatalf("no Ready Order minted at fast-path accept; snapshot.Orders = %+v", snap.Orders)
 	}
 
 	// No ItemConsumed events on takeaway.

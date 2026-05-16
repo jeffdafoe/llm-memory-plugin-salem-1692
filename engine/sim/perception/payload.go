@@ -125,10 +125,56 @@ type Payload struct {
 	// Ordering: sorted by PeerID for determinism.
 	Relationships []RelationshipPeerView
 
+	// PendingDeliveriesFromMe lists open Orders where the subject is
+	// the seller — items they owe to a buyer/consumers from a previously
+	// accepted pay-with-item offer that hasn't been delivered yet.
+	// Populated for any KindNPCShared/Stateful seller; empty for PCs.
+	// Renders as "## Orders to deliver:" surfacing item, qty, buyer/
+	// consumer names, age, and time-remaining.
+	//
+	// Ordering: sorted by Order.ID (uint64 ascending) for determinism.
+	// Phase 3 PR S6 — perception is the only awareness mechanism for
+	// pending delivery; no new warrant kind (S4's PayResolved warrant
+	// handles the initial post-accept tick cue).
+	PendingDeliveriesFromMe []OrderView
+
+	// PendingDeliveriesToMe lists open Orders where the subject is
+	// the buyer OR a member of ConsumerIDs — items they're waiting on
+	// the seller to hand over. Populated for any NPC subject; PCs get
+	// this via UI.
+	//
+	// Renders as "## Orders you're waiting on:" surfacing item, qty,
+	// seller name, age, time-remaining. Same OrderView struct as
+	// PendingDeliveriesFromMe; the renderer picks fields per subject
+	// role.
+	//
+	// Ordering: sorted by Order.ID for determinism.
+	PendingDeliveriesToMe []OrderView
+
 	// SelectionReason is a human-readable explanation of how Primary was
 	// chosen (or why it wasn't) — debug/test output only, never prompt
 	// content.
 	SelectionReason string
+}
+
+// OrderView is the perception-side projection of one sim.Order.
+// Same struct shape regardless of whether the subject is the seller
+// (PendingDeliveriesFromMe) or a buyer/consumer (PendingDeliveriesToMe);
+// the renderer interprets fields differently based on which slice
+// the view appears in.
+//
+// Names are resolved at build time from the snapshot's ActorSnapshot
+// map (DisplayName falls back to ActorID when the actor is missing
+// from the snapshot — defensive).
+type OrderView struct {
+	ID            sim.OrderID
+	Item          sim.ItemKind
+	Qty           int
+	BuyerName     string
+	SellerName    string
+	ConsumerNames []string // empty when ConsumerIDs == [BuyerID] (implicit buyer-is-consumer)
+	CreatedAt     time.Time
+	ExpiresAt     time.Time
 }
 
 // NarrativeStateView is the kind-aware "Who you are:" content. Slim by

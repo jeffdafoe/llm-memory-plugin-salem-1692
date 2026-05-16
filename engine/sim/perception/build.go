@@ -45,6 +45,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 	p.Surroundings = buildSurroundings(snap, actorID, actorSnap)
 	p.NarrativeState = buildNarrativeState(actorSnap)
 	p.Relationships = buildRelationships(actorSnap, p.Surroundings.HuddleMembers)
+	p.PendingDeliveriesFromMe, p.PendingDeliveriesToMe = buildPendingOrderViews(snap, actorID)
 
 	// Group the consumed warrants by the scene they reference. Only event-
 	// sourced warrants carry a scene (the zero-lineage invariant: full
@@ -499,6 +500,96 @@ func buildRelationships(a *sim.ActorSnapshot, members []HuddleMember) []Relation
 		return nil
 	}
 	return out
+}
+
+// buildPendingOrderViews scans snap.Orders for open Orders touching
+// the subject and returns two slices:
+//   - fromMe: Orders where subject is the seller (handed-over duty).
+//   - toMe:   Orders where subject is the buyer OR a consumer
+//     (incoming delivery).
+//
+// Only OrderStateReady entries appear; terminal Orders are filtered
+// out (no actionable signal). Returns nil for empty results so render
+// can content-gate cheaply.
+//
+// Names are resolved via snap.Actors; missing actors fall back to the
+// stringified ActorID (defensive, e.g. if an actor was deleted between
+// Order creation and the next snapshot).
+//
+// ConsumerNames is populated only when ConsumerIDs differs from
+// [BuyerID] — the implicit "buyer is the consumer" case leaves it
+// empty so render skips the "and others" embellishment.
+//
+// Ordering: by Order.ID ascending. Deterministic across runs.
+func buildPendingOrderViews(snap *sim.Snapshot, subject sim.ActorID) (fromMe, toMe []OrderView) {
+	if snap == nil || len(snap.Orders) == 0 {
+		return nil, nil
+	}
+	resolveName := func(id sim.ActorID) string {
+		if a := snap.Actors[id]; a != nil && a.DisplayName != "" {
+			return a.DisplayName
+		}
+		return string(id)
+	}
+	// Pre-collect IDs so we can sort deterministically before
+	// resolving names + building views.
+	var fromIDs, toIDs []sim.OrderID
+	for id, o := range snap.Orders {
+		if o == nil || o.State != sim.OrderStateReady {
+			continue
+		}
+		if o.SellerID == subject {
+			fromIDs = append(fromIDs, id)
+			continue
+		}
+		// toMe: subject is buyer or in ConsumerIDs.
+		if o.BuyerID == subject {
+			toIDs = append(toIDs, id)
+			continue
+		}
+		for _, cid := range o.ConsumerIDs {
+			if cid == subject {
+				toIDs = append(toIDs, id)
+				break
+			}
+		}
+	}
+	sort.Slice(fromIDs, func(i, j int) bool { return fromIDs[i] < fromIDs[j] })
+	sort.Slice(toIDs, func(i, j int) bool { return toIDs[i] < toIDs[j] })
+
+	toView := func(o *sim.Order) OrderView {
+		v := OrderView{
+			ID:         o.ID,
+			Item:       o.Item,
+			Qty:        o.Qty,
+			BuyerName:  resolveName(o.BuyerID),
+			SellerName: resolveName(o.SellerID),
+			CreatedAt:  o.CreatedAt,
+			ExpiresAt:  o.ExpiresAt,
+		}
+		// Only populate ConsumerNames when there's more than just
+		// the implicit buyer-as-consumer entry.
+		if len(o.ConsumerIDs) > 1 || (len(o.ConsumerIDs) == 1 && o.ConsumerIDs[0] != o.BuyerID) {
+			v.ConsumerNames = make([]string, 0, len(o.ConsumerIDs))
+			for _, cid := range o.ConsumerIDs {
+				v.ConsumerNames = append(v.ConsumerNames, resolveName(cid))
+			}
+		}
+		return v
+	}
+	if len(fromIDs) > 0 {
+		fromMe = make([]OrderView, 0, len(fromIDs))
+		for _, id := range fromIDs {
+			fromMe = append(fromMe, toView(snap.Orders[id]))
+		}
+	}
+	if len(toIDs) > 0 {
+		toMe = make([]OrderView, 0, len(toIDs))
+		for _, id := range toIDs {
+			toMe = append(toMe, toView(snap.Orders[id]))
+		}
+	}
+	return fromMe, toMe
 }
 
 // recentFactsMostRecentFirst returns up to n facts from the tail of

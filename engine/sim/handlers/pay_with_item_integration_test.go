@@ -123,9 +123,13 @@ func buildIntegrationWorld(t *testing.T) (*sim.World, *integrationSink, func()) 
 //  1. Alice calls pay_with_item (slow path → Pending).
 //  2. PayOfferReceived subscriber stamps PayOfferWarrantReason on Bob.
 //  3. Bob calls accept_pay.
-//  4. Atomic transfer fires (4 coins alice→bob, 1 stew bob→alice).
+//  4. At accept, coins move (4 alice→bob) and an Order is minted
+//     (Phase 3 PR S6 — goods STAY in bob's inventory until
+//     deliver_order). Pre-S6 this asserted goods moved at accept;
+//     the architecture lock moved goods movement to deliver_order
+//     so the seller has narrative agency in the handover.
 //  5. PayWithItemResolved subscriber stamps PayResolvedWarrantReason
-//     on Alice.
+//     on Alice. OrderCreated event fires under the same root.
 //  6. Sink received TWO Project calls (pending insert + Accepted flip).
 func TestIntegration_SlowPathAcceptedHappyPath(t *testing.T) {
 	w, sink, stop := buildIntegrationWorld(t)
@@ -170,12 +174,29 @@ func TestIntegration_SlowPathAcceptedHappyPath(t *testing.T) {
 	if got := snap.Actors["bob"].Coins; got != 4 {
 		t.Errorf("bob.Coins = %d, want 4", got)
 	}
-	// bob: stew 5→4 (one transferred). alice: stew 0→1.
-	if got := snap.Actors["alice"].InventoryHash; got != 1 {
-		t.Errorf("alice.InventoryHash = %d, want 1 (stew received)", got)
+	// Post-S6: goods stay in bob's inventory until deliver_order
+	// fires. Alice's inventory is unchanged at accept time; bob's
+	// stew count is still 5. An Order should be present in the
+	// snapshot at OrderStateReady against bob.
+	if got := snap.Actors["alice"].InventoryHash; got != 0 {
+		t.Errorf("alice.InventoryHash = %d, want 0 (goods deferred to deliver_order)", got)
 	}
-	if got := snap.Actors["bob"].InventoryHash; got != 4 {
-		t.Errorf("bob.InventoryHash = %d, want 4 (stew sold one of 5)", got)
+	if got := snap.Actors["bob"].InventoryHash; got != 5 {
+		t.Errorf("bob.InventoryHash = %d, want 5 (stock retained until deliver_order)", got)
+	}
+	// Verify the Order was minted at AcceptPay.
+	var foundOrder *sim.Order
+	for _, o := range snap.Orders {
+		if o != nil && o.SellerID == "bob" && o.BuyerID == "alice" && o.State == sim.OrderStateReady {
+			foundOrder = o
+			break
+		}
+	}
+	if foundOrder == nil {
+		t.Fatalf("no Ready Order minted at accept; snapshot.Orders = %+v", snap.Orders)
+	}
+	if foundOrder.Item != "stew" || foundOrder.Qty != 1 {
+		t.Errorf("Order item/qty = %s/%d, want stew/1", foundOrder.Item, foundOrder.Qty)
 	}
 
 	// Sink received pending + accepted (in that order).
