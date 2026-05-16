@@ -41,7 +41,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 		return p
 	}
 
-	p.Actor = buildActorView(actorSnap)
+	p.Actor = buildActorView(snap, actorSnap)
 	p.Surroundings = buildSurroundings(snap, actorID, actorSnap)
 	p.NarrativeState = buildNarrativeState(actorSnap)
 	p.Relationships = buildRelationships(actorSnap, p.Surroundings.HuddleMembers)
@@ -309,8 +309,12 @@ func needsEqual(a, b map[sim.NeedKey]int) bool {
 
 // buildActorView lifts the subject actor's own decision-relevant state out
 // of its ActorSnapshot. The Needs map is copied so the Payload does not
-// alias the snapshot's map.
-func buildActorView(a *sim.ActorSnapshot) ActorView {
+// alias the snapshot's map. Active dwell credits are projected from
+// a.DwellCredits with StructureLabel resolved against snap.Structures
+// (preferred) or snap.VillageObjects (fallback for object-source
+// credits whose pin is a free-standing object like a well or shade
+// tree, not a structure).
+func buildActorView(snap *sim.Snapshot, a *sim.ActorSnapshot) ActorView {
 	var needs map[sim.NeedKey]int
 	if len(a.Needs) > 0 {
 		needs = make(map[sim.NeedKey]int, len(a.Needs))
@@ -319,13 +323,85 @@ func buildActorView(a *sim.ActorSnapshot) ActorView {
 		}
 	}
 	return ActorView{
-		State:             a.State,
-		InsideStructureID: a.InsideStructureID,
-		Position:          sim.Position{X: a.CurrentX, Y: a.CurrentY},
-		CurrentHuddleID:   a.CurrentHuddleID,
-		Coins:             a.Coins,
-		Needs:             needs,
+		State:              a.State,
+		InsideStructureID:  a.InsideStructureID,
+		Position:           sim.Position{X: a.CurrentX, Y: a.CurrentY},
+		CurrentHuddleID:    a.CurrentHuddleID,
+		Coins:              a.Coins,
+		Needs:              needs,
+		ActiveDwellCredits: buildActiveDwellCredits(snap, a),
 	}
+}
+
+// buildActiveDwellCredits projects the actor's DwellCredits map into a
+// deterministic, render-ready slice. Returns nil for an empty map.
+// StructureLabel resolution:
+//
+//   - Look up the credit's ObjectID in snap.Structures first — for
+//     item-source credits the pin is usually the structure (tavern,
+//     bakery) where the actor ate.
+//   - Fall back to snap.VillageObjects.DisplayName — covers
+//     object-source credits whose pin is a free-standing object (well,
+//     shade tree).
+//   - Empty when neither resolves.
+//
+// Order: (Source ascending, Attribute ascending, ObjectID ascending)
+// — stable for golden tests and admin replay.
+func buildActiveDwellCredits(snap *sim.Snapshot, a *sim.ActorSnapshot) []DwellCreditView {
+	if len(a.DwellCredits) == 0 {
+		return nil
+	}
+	out := make([]DwellCreditView, 0, len(a.DwellCredits))
+	for _, c := range a.DwellCredits {
+		if c == nil {
+			continue
+		}
+		view := DwellCreditView{
+			ObjectID:       c.ObjectID,
+			StructureLabel: resolveDwellPinLabel(snap, c.ObjectID),
+			Source:         c.Source,
+			Kind:           c.Kind,
+			Attribute:      c.Attribute,
+			PeriodMinutes:  c.DwellPeriodMinutes,
+			DwellDelta:     c.DwellDelta,
+			LastCreditedAt: c.LastCreditedAt,
+		}
+		if c.RemainingTicks != nil {
+			rt := *c.RemainingTicks
+			view.RemainingTicks = &rt
+		}
+		out = append(out, view)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Source != out[j].Source {
+			return out[i].Source < out[j].Source
+		}
+		if out[i].Attribute != out[j].Attribute {
+			return out[i].Attribute < out[j].Attribute
+		}
+		return out[i].ObjectID < out[j].ObjectID
+	})
+	return out
+}
+
+// resolveDwellPinLabel resolves the human-facing label for a dwell
+// pin. The pin's ObjectID may be either a StructureID (item-source
+// credits pin to the structure where the actor ate) or a
+// VillageObjectID (object-source credits pin to a free-standing
+// object — a well, a shade tree). Try structure first, then village
+// object, and return "" when neither has a label so render can fall
+// back to a generic phrasing.
+func resolveDwellPinLabel(snap *sim.Snapshot, objID sim.VillageObjectID) string {
+	if objID == "" {
+		return ""
+	}
+	if st := snap.Structures[sim.StructureID(objID)]; st != nil && st.DisplayName != "" {
+		return st.DisplayName
+	}
+	if obj := snap.VillageObjects[objID]; obj != nil && obj.DisplayName != "" {
+		return obj.DisplayName
+	}
+	return ""
 }
 
 // buildSurroundings assembles the actor's immediate context — the

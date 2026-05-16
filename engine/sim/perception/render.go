@@ -126,7 +126,72 @@ func renderActor(b *strings.Builder, a ActorView) {
 	if len(a.Needs) > 0 {
 		fmt.Fprintf(b, "needs: %s\n", renderNeeds(a.Needs))
 	}
+	for _, c := range a.ActiveDwellCredits {
+		fmt.Fprintf(b, "currently: %s\n", renderActiveDwellCredit(c))
+	}
 	b.WriteString("\n")
+}
+
+// renderActiveDwellCredit produces the felt-language self-perception
+// line for one in-progress dwell credit ("eating stew at the tavern,
+// ~14 minutes remaining"). The load-bearing prompt line that keeps
+// LLM-driven NPCs from walking away mid-meal: every perception build
+// during the meal renders this, so plan-stage always sees the active
+// effect even if no per-tick narration warrant landed this turn.
+//
+// Source=item with a known Kind → "eating <kind> at <where>".
+// Source=item with empty Kind → "having a meal at <where>" (fallback).
+// Source=object → "resting at <where>" / "drawing from <where>" by
+// attribute (covers shade-tree tiredness, well thirst, berry-bush
+// hunger).
+func renderActiveDwellCredit(c DwellCreditView) string {
+	where := c.StructureLabel
+	if where == "" && c.ObjectID != "" {
+		where = string(c.ObjectID)
+	}
+	verb := dwellActivityVerb(c)
+	var subject string
+	if c.Source == sim.DwellSourceItem && c.Kind != "" {
+		subject = fmt.Sprintf("%s %s", verb, sanitizeInline(string(c.Kind)))
+	} else {
+		subject = verb
+	}
+	if where != "" {
+		subject = fmt.Sprintf("%s at %s", subject, sanitizeInline(where))
+	}
+	if c.RemainingTicks != nil && c.PeriodMinutes > 0 {
+		minutes := (*c.RemainingTicks) * c.PeriodMinutes
+		subject = fmt.Sprintf("%s, ~%d minute(s) remaining", subject, minutes)
+	}
+	return subject
+}
+
+// dwellActivityVerb picks the verb for a dwell-in-progress line based
+// on source + attribute. Item-source meals lead with "eating" /
+// "drinking" / "resting" by attribute; object-source lines lead with
+// the activity matching the pin (resting under a tree, sipping at a
+// well). Defaults to "lingering" when nothing fits.
+func dwellActivityVerb(c DwellCreditView) string {
+	if c.Source == sim.DwellSourceItem {
+		switch c.Attribute {
+		case "hunger":
+			return "eating"
+		case "thirst":
+			return "drinking"
+		case "tiredness":
+			return "resting with"
+		}
+		return "having"
+	}
+	switch c.Attribute {
+	case "hunger":
+		return "foraging"
+	case "thirst":
+		return "drinking"
+	case "tiredness":
+		return "resting"
+	}
+	return "lingering"
 }
 
 func renderSurroundings(b *strings.Builder, s SurroundingsView) {

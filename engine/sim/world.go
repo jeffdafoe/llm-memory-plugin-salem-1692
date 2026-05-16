@@ -956,6 +956,7 @@ func snapshotActor(a *Actor, atTick uint64) *ActorSnapshot {
 		Acquaintances:     cloneAcquaintances(a.Acquaintances),
 		Relationships:     cloneRelationships(a.Relationships),
 		Narrative:         cloneNarrativeState(a.Narrative),
+		DwellCredits:      cloneDwellCredits(a.DwellCredits),
 		TickInFlight:      a.TickInFlight,
 		TickAttemptID:     a.TickAttemptID,
 	}

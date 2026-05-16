@@ -96,8 +96,14 @@ type DwellCreditKey struct {
 // object; their RemainingTicks is nil (open-ended). Source="item"
 // credits have a finite RemainingTicks countdown that decrements per
 // applied period and removes the row at zero.
+//
+// Kind carries the ItemKind that created an item-source credit so
+// perception ("you are currently eating stew at the tavern") and event
+// payloads can identify the meal without a separate lookup. Empty for
+// source=object credits (no item involved).
 type DwellCredit struct {
 	ObjectID           VillageObjectID
+	Kind               ItemKind // empty for source=object
 	Attribute          NeedKey
 	Source             DwellCreditSource
 	LastCreditedAt     time.Time
@@ -537,18 +543,7 @@ func CloneActor(a *Actor) *Actor {
 		cp.RecentStateTrans = a.RecentStateTrans.Clone()
 	}
 	if a.DwellCredits != nil {
-		cp.DwellCredits = make(map[DwellCreditKey]*DwellCredit, len(a.DwellCredits))
-		for k, v := range a.DwellCredits {
-			if v == nil {
-				continue
-			}
-			vc := *v
-			if v.RemainingTicks != nil {
-				rt := *v.RemainingTicks
-				vc.RemainingTicks = &rt
-			}
-			cp.DwellCredits[k] = &vc
-		}
+		cp.DwellCredits = cloneDwellCredits(a.DwellCredits)
 	}
 	if a.ProduceState != nil {
 		cp.ProduceState = make(map[ItemKind]*ProduceState, len(a.ProduceState))
@@ -623,6 +618,13 @@ type ActorSnapshot struct {
 	Relationships map[ActorID]*Relationship
 	Narrative     *NarrativeState
 
+	// DwellCredits mirror the live Actor's per-pin recovery credits at
+	// snapshot time so perception build can surface "you are currently
+	// eating stew at the tavern" as part of the actor's self-state. Deep-
+	// cloned by snapshotActor so the published Snapshot does not alias
+	// the world's mutable credit map.
+	DwellCredits map[DwellCreditKey]*DwellCredit
+
 	// TickInFlight + TickAttemptID mirror the live Actor fields so PR 3d's
 	// harness can do a cheap pre-LLM stale-check by reading the snapshot
 	// alone (no world-goroutine round trip). A worker that observes its
@@ -660,5 +662,30 @@ func CloneActorSnapshot(s *ActorSnapshot) *ActorSnapshot {
 	if s.Narrative != nil {
 		cp.Narrative = cloneNarrativeState(s.Narrative)
 	}
+	if s.DwellCredits != nil {
+		cp.DwellCredits = cloneDwellCredits(s.DwellCredits)
+	}
 	return &cp
+}
+
+// cloneDwellCredits deep-copies a DwellCredits map. RemainingTicks is a
+// pointer so it must be cloned separately; the other fields are value
+// types and a per-entry struct copy is enough.
+func cloneDwellCredits(src map[DwellCreditKey]*DwellCredit) map[DwellCreditKey]*DwellCredit {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[DwellCreditKey]*DwellCredit, len(src))
+	for k, v := range src {
+		if v == nil {
+			continue
+		}
+		vc := *v
+		if v.RemainingTicks != nil {
+			rt := *v.RemainingTicks
+			vc.RemainingTicks = &rt
+		}
+		dst[k] = &vc
+	}
+	return dst
 }

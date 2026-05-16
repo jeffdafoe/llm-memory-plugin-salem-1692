@@ -253,9 +253,16 @@ func Consume(actorID ActorID, itemName string, qty int, at time.Time) Command {
 			// structure anchor), structureID="" and UpsertItemDwellCredits
 			// silent-skips — matches v1 behavior where eat-while-walking
 			// gets only the immediate hit, not the per-tick payoff.
+			//
+			// When at least one credit lands, emit DwellStarted so dwell-
+			// reactor subscribers can stamp the next-tick perception cue
+			// ("this stew looks really good — you'll need some time to
+			// enjoy it properly"). No event when nothing landed (skipped
+			// item, eat-while-walking, no dwell triples on satisfactions).
 			structureID := findNearestVillageObject(w, float64(actor.CurrentX), float64(actor.CurrentY))
+			var stamped []DwellCreditSnapshot
 			if structureID != "" {
-				UpsertItemDwellCredits(actor, def.Satisfies, structureID, at)
+				stamped = UpsertItemDwellCredits(actor, kind, def.Satisfies, structureID, at)
 			}
 
 			w.emit(&ItemConsumed{
@@ -265,6 +272,16 @@ func Consume(actorID ActorID, itemName string, qty int, at time.Time) Command {
 				Applied: applied,
 				At:      at,
 			})
+			if len(stamped) > 0 {
+				w.emit(&DwellStarted{
+					ActorID:       actorID,
+					Kind:          kind,
+					StructureID:   structureID,
+					Credits:       stamped,
+					NarrationText: def.ConsumeDwellNarration,
+					At:            at,
+				})
+			}
 			return nil, nil
 		},
 	}

@@ -54,9 +54,18 @@ func (s ItemSatisfaction) HasDwell() bool {
 
 // UpsertItemDwellCredits stamps source="item" dwell credit rows on the
 // actor for any satisfaction with a complete dwell triple, pinned to
-// the supplied structureID. Empty structureID is a silent skip —
-// eating-while-walking gets only the immediate hit, not the per-tick
-// payoff.
+// the supplied structureID. Returns the list of credits that were
+// stamped (or refreshed) so callers can emit a DwellStarted event off
+// the same write — empty when nothing landed (no dwell triples in the
+// satisfactions, empty structureID, or nil actor).
+//
+// kind labels every stamped credit so perception ("you are eating
+// stew") and downstream events can identify the meal without a separate
+// catalog lookup. Pass the ItemKind whose Satisfies slice is being
+// applied; an empty kind is allowed but yields generic narration.
+//
+// Empty structureID is a silent skip — eating-while-walking gets only
+// the immediate hit, not the per-tick payoff.
 //
 // On re-consume of the same item at the same structure (eating a
 // second bowl of stew while the first is still credited), the existing
@@ -64,13 +73,14 @@ func (s ItemSatisfaction) HasDwell() bool {
 // DwellTotalTicks — a fresh meal restarts the timer rather than
 // stacking. Stacking would let an actor double-up by paying twice in
 // quick succession.
-func UpsertItemDwellCredits(actor *Actor, satisfactions []ItemSatisfaction, structureID VillageObjectID, now time.Time) {
+func UpsertItemDwellCredits(actor *Actor, kind ItemKind, satisfactions []ItemSatisfaction, structureID VillageObjectID, now time.Time) []DwellCreditSnapshot {
 	if actor == nil || structureID == "" {
-		return
+		return nil
 	}
 	if actor.DwellCredits == nil {
 		actor.DwellCredits = make(map[DwellCreditKey]*DwellCredit)
 	}
+	var stamped []DwellCreditSnapshot
 	for _, s := range satisfactions {
 		if !s.HasDwell() {
 			continue
@@ -82,6 +92,7 @@ func UpsertItemDwellCredits(actor *Actor, satisfactions []ItemSatisfaction, stru
 			Source:    DwellSourceItem,
 		}] = &DwellCredit{
 			ObjectID:           structureID,
+			Kind:               kind,
 			Attribute:          s.Attribute,
 			Source:             DwellSourceItem,
 			LastCreditedAt:     now,
@@ -89,16 +100,28 @@ func UpsertItemDwellCredits(actor *Actor, satisfactions []ItemSatisfaction, stru
 			DwellDelta:         -s.DwellAmount,
 			DwellPeriodMinutes: s.DwellPeriodMinutes,
 		}
+		ticks := totalTicks
+		stamped = append(stamped, DwellCreditSnapshot{
+			Attribute:      s.Attribute,
+			DwellDelta:     -s.DwellAmount,
+			PeriodMinutes:  s.DwellPeriodMinutes,
+			RemainingTicks: &ticks,
+		})
 	}
+	return stamped
 }
 
 // DwellCompletionNarration returns the felt-language line for a dwell
-// completion event. Item-exhausted takes precedence over floor-hit
-// (more specific). Returns "" for unhandled combinations — callers
-// silently skip the broadcast.
+// completion event. Precedence: item-exhausted → floor-hit → walked-
+// away. Returns "" for unhandled combinations — callers silently skip
+// the broadcast.
 //
-// Vocabulary mirrors legacy dwellCompletionNarration.
-func DwellCompletionNarration(attribute NeedKey, source DwellCreditSource, itemExhausted, floorHit bool) string {
+// Vocabulary for exhausted/floor-hit mirrors legacy
+// dwellCompletionNarration. Walked-away is v2-new — v1 never narrated
+// abandoned meals because the credit was deleted silently; v2 promotes
+// the abandonment to a DwellEnded event so the LLM can perceive its own
+// abandonment ("you walk away from your meal").
+func DwellCompletionNarration(attribute NeedKey, source DwellCreditSource, itemExhausted, floorHit, walkedAway bool) string {
 	if itemExhausted {
 		switch attribute {
 		case "hunger":
@@ -119,6 +142,50 @@ func DwellCompletionNarration(attribute NeedKey, source DwellCreditSource, itemE
 			return "Your thirst is quenched."
 		case "tiredness":
 			return "You feel rested."
+		}
+	}
+	if walkedAway {
+		switch attribute {
+		case "hunger":
+			if source == DwellSourceItem {
+				return "You walk away from your meal, leaving it half-eaten."
+			}
+		case "thirst":
+			if source == DwellSourceItem {
+				return "You walk away from your drink."
+			}
+		case "tiredness":
+			return "You stop resting and move on."
+		}
+	}
+	return ""
+}
+
+// DwellTickNarration returns the per-tick felt-language line for an
+// applied dwell credit ("you eat — the gnawing ebbs"). Attribute +
+// source keyed; no item-Kind variation — v1's per-tick payoff narration
+// didn't differentiate per item either. Returns "" for unhandled
+// combinations.
+func DwellTickNarration(attribute NeedKey, source DwellCreditSource) string {
+	if source == DwellSourceItem {
+		switch attribute {
+		case "hunger":
+			return "You take another bite, the gnawing ebbs."
+		case "thirst":
+			return "You drink; the dryness fades."
+		case "tiredness":
+			return "You rest a moment; the weariness eases."
+		}
+		return ""
+	}
+	if source == DwellSourceObject {
+		switch attribute {
+		case "hunger":
+			return "You pick at what's here; the gnawing eases."
+		case "thirst":
+			return "You sip from the source; the dryness fades."
+		case "tiredness":
+			return "You linger here; the weariness eases."
 		}
 	}
 	return ""
