@@ -56,6 +56,7 @@ const (
 	WarrantKindPaid               WarrantKind = "paid"
 	WarrantKindSceneQuoteTargeted WarrantKind = "scene_quote_targeted"
 	WarrantKindPayOffer           WarrantKind = "pay_offer"
+	WarrantKindPayResolved        WarrantKind = "pay_resolved"
 	WarrantKindAdmin              WarrantKind = "admin" // operator forced a tick
 )
 
@@ -294,6 +295,56 @@ type PayOfferWarrantReason struct {
 func (PayOfferWarrantReason) isWarrantReason()             {}
 func (PayOfferWarrantReason) Kind() WarrantKind            { return WarrantKindPayOffer }
 func (r PayOfferWarrantReason) DedupDiscriminator() uint64 { return uint64(r.LedgerID) }
+
+// PayResolvedWarrantReason captures the buyer-side resolution of a
+// pay-with-item offer. Phase 3 PR S4 step 7 — the pay-resolved
+// subscriber emits this on the buyer when PayWithItemResolved or
+// PayCountered fires, so the buyer's next reactor tick perceives the
+// outcome (accept / decline / counter / expire / failed_*) and can
+// follow up via speak, in_response_to chain, etc.
+//
+// Dedup key uses ResolvedEventID (the PayWithItemResolved /
+// PayCountered event's ID — same one-ID-flows-through-everything
+// pattern as Spoke/Paid/SceneQuoteCreated). Restart-noncritical:
+// resolution warrants fire once per terminal transition, and LoadWorld
+// wipes ephemeral warrant state. If a buyer was about to address a
+// resolution and the world restarted, the resolution itself is
+// preserved in PayLedger state — the buyer can re-discover via
+// perception render off Snapshot.PayLedger on their next tick rather
+// than via a fresh warrant (contrast PayOfferWarrantReason, which
+// re-stamps at restart because a missed seller warrant would mean the
+// offer sits forgotten).
+//
+// Seller is the actor who drove the resolution (accept_pay /
+// decline_pay / counter_pay caller). Empty for terminal states the
+// buyer themselves drove (withdraw_pay — the resolution subscriber
+// skips those, see the buyer-driven-skip in
+// handlePayResolvedWarrants). Also empty for expired / failed_*
+// (aging sweep / AcceptPay revalidation drives those, not a specific
+// actor).
+//
+// Message carries the seller's counter / decline note (already
+// rune-truncated at PayLedgerEntry intake). CounterAmount is populated
+// only when TerminalState == PayTerminalStateCountered.
+//
+// No PC variant — PCs don't deliberate via the reactor loop. PC-as-
+// buyer resolution surfaces via the client's perception against
+// Snapshot.PayLedger, not via warrant.
+type PayResolvedWarrantReason struct {
+	LedgerID        LedgerID
+	Seller          ActorID
+	ItemKind        ItemKind
+	Qty             int
+	Amount          int
+	TerminalState   PayTerminalState
+	Message         string
+	CounterAmount   int
+	ResolvedEventID EventID
+}
+
+func (PayResolvedWarrantReason) isWarrantReason()             {}
+func (PayResolvedWarrantReason) Kind() WarrantKind            { return WarrantKindPayResolved }
+func (r PayResolvedWarrantReason) DedupDiscriminator() uint64 { return uint64(r.ResolvedEventID) }
 
 // WarrantMeta is one entry in an actor's Warrants list — a signal that
 // fired during the actor's warranted window. The evaluator carries the

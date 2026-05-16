@@ -372,3 +372,71 @@ type PayLedgerSink interface {
 type nullPayLedgerSink struct{}
 
 func (nullPayLedgerSink) Project(PayLedgerEntry) {}
+
+// restartReStampPayOfferWarrants walks World.PayLedger and stamps
+// PayOfferWarrantReason on the seller for every still-pending entry.
+// Phase 3 PR S4 step 7 — the load-bearing use case for the
+// DedupDiscriminator interface migration.
+//
+// MUST be called from inside LoadWorld AFTER restartExpirePendingEntries
+// (so already-expired pendings are skipped) and AFTER subscribers have
+// been registered (so a future cascade-driven re-stamp dedupes against
+// these load-time stamps). Today's LoadWorld calls this with no
+// subscribers registered yet — the cascade-driven path runs on every
+// normal-flow PayOfferReceived emit AFTER LoadWorld returns and
+// handlers register; the dedup interlock relies on
+// (WarrantKindPayOffer, LedgerID) being stable across both flows.
+//
+// The stamp uses SourceEventID=0 + RootEventID=0 (the original
+// PayOfferReceived event is gone post-restart, but the LedgerID-based
+// DedupDiscriminator still gives the stamp a non-zero discriminator,
+// so it participates in dedup normally). Calling LoadWorld twice on
+// the same checkpoint produces identical WarrantSourceKey{Kind:
+// PayOffer, Discriminator: LedgerID}, and the second pass's stamps
+// are dropped at the open-cycle dedup gate.
+//
+// Skips entries whose seller no longer exists in the world (caller bug
+// or repo drift — defensive). Skips entries with empty SellerID
+// (defensive — substrate intake gates this). Non-pending entries are
+// silently skipped (terminal entries don't need a warrant).
+func restartReStampPayOfferWarrants(w *World, now time.Time) {
+	if w == nil {
+		return
+	}
+	for _, e := range w.PayLedger {
+		if e == nil || e.State != PayLedgerStatePending {
+			continue
+		}
+		if e.SellerID == "" {
+			continue
+		}
+		seller, ok := w.Actors[e.SellerID]
+		if !ok || seller == nil {
+			continue
+		}
+		meta := WarrantMeta{
+			TriggerActorID: e.BuyerID,
+			Force:          false,
+			Reason: PayOfferWarrantReason{
+				LedgerID:    e.ID,
+				Buyer:       e.BuyerID,
+				Item:        e.ItemKind,
+				Qty:         e.Qty,
+				Amount:      e.Amount,
+				ConsumeNow:  e.ConsumeNow,
+				ConsumerIDs: append([]ActorID(nil), e.ConsumerIDs...),
+				ExpiresAt:   e.ExpiresAt,
+			},
+			// SourceEventID/RootEventID intentionally zero — the
+			// original PayOfferReceived event no longer exists.
+			// Dedup keys off the Reason's DedupDiscriminator
+			// (uint64(LedgerID)), which IS stable across restart;
+			// see WarrantReason interface contract.
+			SourceActorID: e.BuyerID,
+			HuddleID:      e.HuddleID,
+			SceneID:       e.SceneID,
+			OccurredAt:    e.CreatedAt,
+		}
+		tryStampWarrant(w, seller, meta, now)
+	}
+}

@@ -224,6 +224,13 @@ type sceneQuoteSweepState struct {
 	scheduled bool
 }
 
+// payLedgerSweepState carries the coalescing flag for the pay-ledger
+// aging sweep's AfterFunc self-rearm chain (Phase 3 PR S4 step 8).
+// Same shape and rules as sceneQuoteSweepState.
+type payLedgerSweepState struct {
+	scheduled bool
+}
+
 // World is the in-memory state of one realm's simulation. A single
 // goroutine (started by World.Run) owns all mutable fields below — every
 // mutation must go through the cmds channel. Readers consume the published
@@ -316,6 +323,7 @@ type World struct {
 	reactorEval     reactorEvaluatorState
 	locomotionTick  locomotionTickerState
 	sceneQuoteSweep sceneQuoteSweepState
+	payLedgerSweep  payLedgerSweepState
 
 	// quoteSeq is the monotonic per-run QuoteID counter — same shape
 	// and rules as eventSeq. Incremented before assignment; first
@@ -600,6 +608,19 @@ func LoadWorld(ctx context.Context, repo Repository) (*World, error) {
 			w.payLedgerSeq = uint64(id)
 		}
 	}
+	// Pay-offer warrant restart re-stamp (Phase 3 PR S4 step 7 — the
+	// load-bearing use case for the DedupDiscriminator interface
+	// migration). Walks pending ledger entries and stamps
+	// PayOfferWarrantReason on each seller so post-restart the seller's
+	// next reactor tick still perceives the offer. Discriminator =
+	// uint64(LedgerID), so a normal-flow PayOfferReceived emit that
+	// fires AFTER this stamp dedupes against it cleanly. Done after
+	// restartExpirePendingEntries so already-expired pendings are
+	// skipped. Subscribers haven't registered yet at LoadWorld time;
+	// that's fine — the re-stamp doesn't go through a subscriber, it
+	// reaches into the actor's warrant slice directly via
+	// tryStampWarrant.
+	restartReStampPayOfferWarrants(w, time.Now())
 	w.republish()
 	return w, nil
 }
