@@ -958,6 +958,77 @@ func TestAcceptPay_HappyPath(t *testing.T) {
 	}
 }
 
+// TestAcceptPay_StockReservation_PreventsOverselling is the PR S6 R1
+// code_review regression test. Pre-fix: post-S6, accept no longer
+// moves goods, so two pending offers against the same 1-stew
+// inventory could both accept (gate-10 only saw the raw seller
+// inventory, not the outstanding Order obligations). Post-fix:
+// outstandingReadyOrderQty subtracts Ready-Order obligations from
+// visible inventory before the stock comparison.
+func TestAcceptPay_StockReservation_PreventsOverselling(t *testing.T) {
+	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
+		{id: "alice", displayName: "Alice", kind: sim.KindNPCShared, huddleID: "h1", coins: 50},
+		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1", inventory: map[sim.ItemKind]int{"stew": 1}},
+		{id: "carol", displayName: "Carol", kind: sim.KindNPCShared, huddleID: "h1", coins: 50},
+	})
+	defer stop()
+	at := time.Now().UTC()
+
+	// Two pending offers against the same 1-stew inventory.
+	seedLedgerEntry(t, w, sim.PayLedgerEntry{
+		ID: 1, BuyerID: "alice", SellerID: "bob",
+		ItemKind: "stew", Qty: 1, Amount: 4,
+		State:     sim.PayLedgerStatePending,
+		CreatedAt: at, ExpiresAt: at.Add(3 * time.Minute),
+		SceneID: "sc1", HuddleID: "h1",
+	})
+	seedLedgerEntry(t, w, sim.PayLedgerEntry{
+		ID: 2, BuyerID: "carol", SellerID: "bob",
+		ItemKind: "stew", Qty: 1, Amount: 4,
+		State:     sim.PayLedgerStatePending,
+		CreatedAt: at, ExpiresAt: at.Add(3 * time.Minute),
+		SceneID: "sc1", HuddleID: "h1",
+	})
+
+	// First accept succeeds, mints an Order (S6 takeaway path), and
+	// reserves the stew.
+	if _, err := w.Send(sim.AcceptPay("bob", 1, at)); err != nil {
+		t.Fatalf("first AcceptPay: %v", err)
+	}
+	ledger := readPayLedger(t, w)
+	if ledger[1].State != sim.PayLedgerStateAccepted {
+		t.Errorf("ledger[1].State = %q, want accepted", ledger[1].State)
+	}
+	// Bob's inventory still shows 1 stew (goods stay until deliver_order).
+	snap := w.Published()
+	if got := snap.Actors["bob"].InventoryHash; got != 1 {
+		t.Errorf("bob.InventoryHash = %d, want 1 (goods retained)", got)
+	}
+	// But outstandingReadyOrderQty reports 1 stew reserved.
+	got, _ := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return sim.OutstandingReadyOrderQty(world, "bob", "stew"), nil
+	}})
+	if got.(int) != 1 {
+		t.Errorf("outstandingReadyOrderQty = %d, want 1 (reservation)", got)
+	}
+
+	// Second accept must FAIL — visible inventory (1) - reserved (1)
+	// = 0, less than required (1). Flip to FailedInsufficientStock.
+	if _, err := w.Send(sim.AcceptPay("bob", 2, at)); err != nil {
+		t.Fatalf("second AcceptPay (transitioning): %v", err)
+	}
+	ledger = readPayLedger(t, w)
+	if ledger[2].State != sim.PayLedgerStateFailedInsufficientStock {
+		t.Errorf("ledger[2].State = %q, want failed_insufficient_stock (over-selling rejected)", ledger[2].State)
+	}
+
+	// Carol got her coins back (atomic transfer didn't fire).
+	snap = w.Published()
+	if got := snap.Actors["carol"].Coins; got != 50 {
+		t.Errorf("carol.Coins = %d, want 50 (no transfer on stock-fail)", got)
+	}
+}
+
 func TestAcceptPay_AuthGate_NotSeller(t *testing.T) {
 	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
 		{id: "alice", displayName: "Alice", kind: sim.KindNPCShared, huddleID: "h1", coins: 50},

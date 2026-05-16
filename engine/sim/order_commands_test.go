@@ -459,6 +459,113 @@ func TestDeliverOrder_Gate3_AlreadyExpired(t *testing.T) {
 	}
 }
 
+// TestOutstandingReadyOrderQty_SumsObligations verifies the reservation
+// accounting helper that prevents over-selling.
+func TestOutstandingReadyOrderQty_SumsObligations(t *testing.T) {
+	w, stop := buildOrderTestWorld(t)
+	defer stop()
+	at := time.Now().UTC()
+
+	// No orders → 0.
+	if got, _ := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return sim.OutstandingReadyOrderQty(world, "hannah", "stew"), nil
+	}}); got.(int) != 0 {
+		t.Errorf("empty world: outstandingReadyOrderQty = %d, want 0", got)
+	}
+
+	// Mint two Ready orders + one Delivered (should not count).
+	mintReadyOrder(t, w, nil, 1, at)                               // qty 1, 1 consumer = 1
+	mintReadyOrder(t, w, []sim.ActorID{"jefferey", "mary"}, 2, at) // qty 2, 2 consumers = 4
+	deliveredID := mintReadyOrder(t, w, nil, 1, at)                // will flip to Delivered
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		sim.FinalizeOrderTerminal(world, world.Orders[deliveredID], sim.OrderStateDelivered, at.Add(time.Second))
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("flip to Delivered: %v", err)
+	}
+
+	got, _ := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return sim.OutstandingReadyOrderQty(world, "hannah", "stew"), nil
+	}})
+	if got.(int) != 5 {
+		t.Errorf("outstandingReadyOrderQty = %d, want 5 (1 + 4, Delivered excluded)", got)
+	}
+
+	// Different item kind → 0.
+	got, _ = w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return sim.OutstandingReadyOrderQty(world, "hannah", "bread"), nil
+	}})
+	if got.(int) != 0 {
+		t.Errorf("different item: outstandingReadyOrderQty = %d, want 0", got)
+	}
+
+	// Different seller → 0.
+	got, _ = w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return sim.OutstandingReadyOrderQty(world, "jefferey", "stew"), nil
+	}})
+	if got.(int) != 0 {
+		t.Errorf("different seller: outstandingReadyOrderQty = %d, want 0", got)
+	}
+}
+
+// TestDeliverOrder_DefensiveGate_ZeroQty — Order.Qty = 0 must reject
+// before stock math runs.
+func TestDeliverOrder_DefensiveGate_ZeroQty(t *testing.T) {
+	w, stop := buildOrderTestWorld(t)
+	defer stop()
+	at := time.Now().UTC()
+	id := mintReadyOrder(t, w, nil, 1, at)
+	// Corrupt the Order's Qty to 0.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Orders[id].Qty = 0
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("corrupt qty: %v", err)
+	}
+	_, err := w.Send(sim.DeliverOrder("hannah", id, at.Add(time.Second)))
+	if err == nil || !strings.Contains(err.Error(), "invalid quantity") {
+		t.Errorf("expected 'invalid quantity' error, got %v", err)
+	}
+}
+
+// TestDeliverOrder_DefensiveGate_EmptyConsumers — Order.ConsumerIDs
+// empty must reject before stock math.
+func TestDeliverOrder_DefensiveGate_EmptyConsumers(t *testing.T) {
+	w, stop := buildOrderTestWorld(t)
+	defer stop()
+	at := time.Now().UTC()
+	id := mintReadyOrder(t, w, nil, 1, at)
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Orders[id].ConsumerIDs = nil
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("clear consumers: %v", err)
+	}
+	_, err := w.Send(sim.DeliverOrder("hannah", id, at.Add(time.Second)))
+	if err == nil || !strings.Contains(err.Error(), "no consumers") {
+		t.Errorf("expected 'no consumers' error, got %v", err)
+	}
+}
+
+// TestDeliverOrder_SellerNotHuddled — seller's CurrentHuddleID is
+// empty; gate-6 rejects with a seller-specific message.
+func TestDeliverOrder_SellerNotHuddled(t *testing.T) {
+	w, stop := buildOrderTestWorld(t)
+	defer stop()
+	at := time.Now().UTC()
+	id := mintReadyOrder(t, w, nil, 1, at)
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["hannah"].CurrentHuddleID = ""
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("clear seller huddle: %v", err)
+	}
+	_, err := w.Send(sim.DeliverOrder("hannah", id, at.Add(time.Second)))
+	if err == nil || !strings.Contains(err.Error(), "seller") {
+		t.Errorf("expected seller-not-huddled error, got %v", err)
+	}
+}
+
 // TestDeliverOrder_AllGatesPassButSellerVanishes is a defensive belt
 // check: if the seller actor was deleted between gates running and
 // the transfer step, the error is surfaced cleanly. Today the actor
