@@ -1,0 +1,133 @@
+package sim_test
+
+import (
+	"context"
+	"testing"
+
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/repo/mem"
+)
+
+// TestItemKindDef_Consumable covers the helper that derives consumability
+// from the Satisfies map: any entries → consumable, none → not. Mirrors v1's
+// `satisfies_attribute IS NOT NULL` discriminator (pre-ZBBS-125) and the
+// `EXISTS (... FROM item_satisfies)` discriminator (post-ZBBS-125).
+func TestItemKindDef_Consumable(t *testing.T) {
+	cases := []struct {
+		name string
+		def  sim.ItemKindDef
+		want bool
+	}{
+		{
+			name: "food with entries",
+			def:  sim.ItemKindDef{Satisfies: map[sim.NeedKey]int{"hunger": 8}},
+			want: true,
+		},
+		{
+			name: "drink with multi-need entries",
+			def:  sim.ItemKindDef{Satisfies: map[sim.NeedKey]int{"thirst": 4, "hunger": 2}},
+			want: true,
+		},
+		{
+			name: "material with no entries",
+			def:  sim.ItemKindDef{Satisfies: nil},
+			want: false,
+		},
+		{
+			name: "empty (non-nil) Satisfies map is not consumable",
+			def:  sim.ItemKindDef{Satisfies: map[sim.NeedKey]int{}},
+			want: false,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := c.def.Consumable(); got != c.want {
+				t.Errorf("Consumable() = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+// TestLoadWorldItemKinds exercises the full LoadWorld path for the new
+// ItemKinds sub-repo: seed the mem-fake catalog, load the world, assert
+// the map lands on World.ItemKinds with values preserved.
+func TestLoadWorldItemKinds(t *testing.T) {
+	repo, handles := mem.NewRepository()
+	handles.ItemKinds.Seed(mem.SeedItemKinds())
+
+	w, err := sim.LoadWorld(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+
+	if got, want := len(w.ItemKinds), 4; got != want {
+		t.Fatalf("w.ItemKinds count = %d, want %d", got, want)
+	}
+
+	ale, ok := w.ItemKinds["ale"]
+	if !ok {
+		t.Fatal("w.ItemKinds missing 'ale'")
+	}
+	if ale.DisplayLabel != "Ale" {
+		t.Errorf("ale.DisplayLabel = %q, want Ale", ale.DisplayLabel)
+	}
+	if ale.Category != sim.ItemCategoryDrink {
+		t.Errorf("ale.Category = %q, want drink", ale.Category)
+	}
+	if ale.Price != 2 {
+		t.Errorf("ale.Price = %d, want 2", ale.Price)
+	}
+	if got, want := ale.Satisfies["thirst"], 4; got != want {
+		t.Errorf("ale.Satisfies[thirst] = %d, want %d", got, want)
+	}
+	if got, want := ale.Satisfies["hunger"], 2; got != want {
+		t.Errorf("ale.Satisfies[hunger] = %d, want %d", got, want)
+	}
+	if !ale.Consumable() {
+		t.Error("ale.Consumable() = false, want true")
+	}
+
+	wheat, ok := w.ItemKinds["wheat"]
+	if !ok {
+		t.Fatal("w.ItemKinds missing 'wheat'")
+	}
+	if wheat.Category != sim.ItemCategoryMaterial {
+		t.Errorf("wheat.Category = %q, want material", wheat.Category)
+	}
+	if wheat.Consumable() {
+		t.Error("wheat.Consumable() = true, want false (material)")
+	}
+}
+
+// TestItemKindsRepo_SeedLoadAll covers the mem-fake directly: Seed populates
+// LoadAll output, and the returned map is independent of the repo's
+// internal map (callers can mutate it without corrupting subsequent loads).
+// Mirrors RecipesRepo's reference-data semantics — entries are stored by
+// pointer, so mutating a *ItemKindDef from outside would leak; that's a
+// caller contract (reference data is read-only post-Seed), not a test
+// invariant.
+func TestItemKindsRepo_SeedLoadAll(t *testing.T) {
+	ctx := context.Background()
+	r := mem.NewItemKindsRepo()
+	r.Seed(map[sim.ItemKind]*sim.ItemKindDef{
+		"bread": {Name: "bread", DisplayLabel: "Bread", Category: sim.ItemCategoryFood, Price: 2, Satisfies: map[sim.NeedKey]int{"hunger": 8}},
+	})
+
+	got1, err := r.LoadAll(ctx)
+	if err != nil {
+		t.Fatalf("LoadAll #1: %v", err)
+	}
+	if len(got1) != 1 {
+		t.Fatalf("LoadAll #1 size = %d, want 1", len(got1))
+	}
+
+	// Caller mutating the returned map must not corrupt the next LoadAll.
+	delete(got1, "bread")
+	got2, err := r.LoadAll(ctx)
+	if err != nil {
+		t.Fatalf("LoadAll #2: %v", err)
+	}
+	if _, ok := got2["bread"]; !ok {
+		t.Error("LoadAll #2 missing 'bread' after caller deleted from prior result — Seed map leaked")
+	}
+}

@@ -18,6 +18,7 @@ type Repository struct {
 	Environment    EnvironmentRepo
 	Assets         AssetsRepo
 	Recipes        RecipesRepo
+	ItemKinds      ItemKindsRepo
 	Terrain        TerrainRepo
 	VillageObjects VillageObjectsRepo
 
@@ -86,6 +87,15 @@ type AssetsRepo interface {
 // lifecycle as AssetsRepo (load at startup, hot-reload on SIGHUP).
 type RecipesRepo interface {
 	LoadAll(ctx context.Context) (map[ItemKind]*ItemRecipe, error)
+}
+
+// ItemKindsRepo loads the item_kind + item_satisfies catalog flattened into
+// ItemKindDef aggregates. Reference state — same lifecycle as AssetsRepo /
+// RecipesRepo (load at startup, hot-reload on SIGHUP). No checkpoint path:
+// admin edits write directly to the underlying tables and the world
+// rebuilds the map wholesale via this LoadAll.
+type ItemKindsRepo interface {
+	LoadAll(ctx context.Context) (map[ItemKind]*ItemKindDef, error)
 }
 
 // TerrainRepo loads the village_terrain blob. Reference state — one
