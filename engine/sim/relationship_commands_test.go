@@ -2,6 +2,7 @@ package sim_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -185,5 +186,69 @@ func TestRecordInteraction_TextTruncatedAtWrite(t *testing.T) {
 	fact := snap.Actors["hannah"].Relationships["ezekiel"].SalientFacts[0]
 	if got := len([]rune(fact.Text)); got != sim.MaxSalientFactTextLen {
 		t.Errorf("fact Text len = %d runes, want %d", got, sim.MaxSalientFactTextLen)
+	}
+}
+
+// TestRecordInteraction_SubCapNoDrop confirms appends below the cap
+// don't trigger FIFO eviction and DroppedFactCount stays zero.
+func TestRecordInteraction_SubCapNoDrop(t *testing.T) {
+	w, stop := buildRelationshipTestWorld(t)
+	defer stop()
+
+	at := time.Now().UTC()
+	for i := 0; i < sim.MaxSalientFactsPerRelationship; i++ {
+		if _, err := w.Send(sim.RecordInteraction("hannah", "ezekiel", sim.InteractionHeard, "x", at.Add(time.Duration(i)*time.Second))); err != nil {
+			t.Fatalf("Send #%d: %v", i, err)
+		}
+	}
+	rel := w.Published().Actors["hannah"].Relationships["ezekiel"]
+	if len(rel.SalientFacts) != sim.MaxSalientFactsPerRelationship {
+		t.Errorf("SalientFacts len = %d, want %d (full but not over)", len(rel.SalientFacts), sim.MaxSalientFactsPerRelationship)
+	}
+	if rel.DroppedFactCount != 0 {
+		t.Errorf("DroppedFactCount = %d, want 0", rel.DroppedFactCount)
+	}
+	if rel.InteractionCount != sim.MaxSalientFactsPerRelationship {
+		t.Errorf("InteractionCount = %d, want %d", rel.InteractionCount, sim.MaxSalientFactsPerRelationship)
+	}
+}
+
+// TestRecordInteraction_OverCapFIFOEviction confirms appends past the
+// cap drop oldest first, increment DroppedFactCount per drop, and
+// preserve InteractionCount (lifetime counter, not slice length).
+func TestRecordInteraction_OverCapFIFOEviction(t *testing.T) {
+	w, stop := buildRelationshipTestWorld(t)
+	defer stop()
+
+	at := time.Now().UTC()
+	overflow := 5
+	total := sim.MaxSalientFactsPerRelationship + overflow
+
+	for i := 0; i < total; i++ {
+		text := fmt.Sprintf("fact-%03d", i)
+		if _, err := w.Send(sim.RecordInteraction("hannah", "ezekiel", sim.InteractionHeard, text, at.Add(time.Duration(i)*time.Second))); err != nil {
+			t.Fatalf("Send #%d: %v", i, err)
+		}
+	}
+
+	rel := w.Published().Actors["hannah"].Relationships["ezekiel"]
+	if len(rel.SalientFacts) != sim.MaxSalientFactsPerRelationship {
+		t.Fatalf("SalientFacts len = %d, want capped at %d", len(rel.SalientFacts), sim.MaxSalientFactsPerRelationship)
+	}
+	if rel.DroppedFactCount != overflow {
+		t.Errorf("DroppedFactCount = %d, want %d (one per overflow append)", rel.DroppedFactCount, overflow)
+	}
+	if rel.InteractionCount != total {
+		t.Errorf("InteractionCount = %d, want %d (lifetime, not slice length)", rel.InteractionCount, total)
+	}
+	// FIFO: oldest survivor is fact-<overflow> (indices 0..overflow-1 dropped).
+	wantOldest := fmt.Sprintf("fact-%03d", overflow)
+	if rel.SalientFacts[0].Text != wantOldest {
+		t.Errorf("oldest survivor Text = %q, want %q (indices 0..%d should have dropped)", rel.SalientFacts[0].Text, wantOldest, overflow-1)
+	}
+	// And the newest is the last we wrote.
+	wantNewest := fmt.Sprintf("fact-%03d", total-1)
+	if rel.SalientFacts[len(rel.SalientFacts)-1].Text != wantNewest {
+		t.Errorf("newest Text = %q, want %q", rel.SalientFacts[len(rel.SalientFacts)-1].Text, wantNewest)
 	}
 }

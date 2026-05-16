@@ -58,6 +58,10 @@ func RecordInteraction(actorID, otherID ActorID, kind InteractionKind, text stri
 				actor.Relationships[otherID] = rel
 			}
 			rel.SalientFacts = append(rel.SalientFacts, NewSalientFact(at, kind, text))
+			if len(rel.SalientFacts) > MaxSalientFactsPerRelationship {
+				rel.SalientFacts = rel.SalientFacts[1:]
+				rel.DroppedFactCount++
+			}
 			rel.InteractionCount++
 			lastAt := at
 			rel.LastInteractionAt = &lastAt
