@@ -113,6 +113,19 @@ var (
 	FireScheduledLocomotionTick              = fireScheduledLocomotionTick
 )
 
+// PR S2 inventory primitives — unexported helpers exposed for direct unit
+// tests. TransferItem is called from inside larger transactions (the future
+// S4 accept_pay commit path will be its first production caller);
+// ResolveItemKind and FindNearestVillageObject are also command-only
+// internals to Consume but worth direct tests so failure modes (ambiguity,
+// case, trim, empty needle, out-of-tolerance distance) can be exercised
+// without driving a full Consume round trip.
+var (
+	TransferItem             = transferItem
+	ResolveItemKind          = resolveItemKind
+	FindNearestVillageObject = findNearestVillageObject
+)
+
 // ActorsInStructure returns the actor IDs the actorsByStructure secondary
 // index attributes to sid — lets PR 4 ticker tests assert the index moves
 // in lockstep with InsideStructureID.

@@ -9,7 +9,7 @@ import (
 )
 
 // TestItemKindDef_Consumable covers the helper that derives consumability
-// from the Satisfies map: any entries → consumable, none → not. Mirrors v1's
+// from the Satisfies slice: any entries → consumable, none → not. Mirrors v1's
 // `satisfies_attribute IS NOT NULL` discriminator (pre-ZBBS-125) and the
 // `EXISTS (... FROM item_satisfies)` discriminator (post-ZBBS-125).
 func TestItemKindDef_Consumable(t *testing.T) {
@@ -20,12 +20,17 @@ func TestItemKindDef_Consumable(t *testing.T) {
 	}{
 		{
 			name: "food with entries",
-			def:  sim.ItemKindDef{Satisfies: map[sim.NeedKey]int{"hunger": 8}},
+			def: sim.ItemKindDef{Satisfies: []sim.ItemSatisfaction{
+				{Attribute: "hunger", Immediate: 8},
+			}},
 			want: true,
 		},
 		{
 			name: "drink with multi-need entries",
-			def:  sim.ItemKindDef{Satisfies: map[sim.NeedKey]int{"thirst": 4, "hunger": 2}},
+			def: sim.ItemKindDef{Satisfies: []sim.ItemSatisfaction{
+				{Attribute: "thirst", Immediate: 4},
+				{Attribute: "hunger", Immediate: 2},
+			}},
 			want: true,
 		},
 		{
@@ -34,9 +39,16 @@ func TestItemKindDef_Consumable(t *testing.T) {
 			want: false,
 		},
 		{
-			name: "empty (non-nil) Satisfies map is not consumable",
-			def:  sim.ItemKindDef{Satisfies: map[sim.NeedKey]int{}},
+			name: "empty (non-nil) Satisfies slice is not consumable",
+			def:  sim.ItemKindDef{Satisfies: []sim.ItemSatisfaction{}},
 			want: false,
+		},
+		{
+			name: "dwell-only stew is consumable (HasDwell triple set, Immediate=0)",
+			def: sim.ItemKindDef{Satisfies: []sim.ItemSatisfaction{
+				{Attribute: "hunger", DwellAmount: 1, DwellPeriodMinutes: 2, DwellTotalTicks: 8},
+			}},
+			want: true,
 		},
 	}
 	for _, c := range cases {
@@ -60,7 +72,7 @@ func TestLoadWorldItemKinds(t *testing.T) {
 		t.Fatalf("LoadWorld: %v", err)
 	}
 
-	if got, want := len(w.ItemKinds), 4; got != want {
+	if got, want := len(w.ItemKinds), 5; got != want {
 		t.Fatalf("w.ItemKinds count = %d, want %d", got, want)
 	}
 
@@ -77,14 +89,38 @@ func TestLoadWorldItemKinds(t *testing.T) {
 	if ale.Price != 2 {
 		t.Errorf("ale.Price = %d, want 2", ale.Price)
 	}
-	if got, want := ale.Satisfies["thirst"], 4; got != want {
-		t.Errorf("ale.Satisfies[thirst] = %d, want %d", got, want)
+	if got, want := findSatisfies(t, ale, "thirst").Immediate, 4; got != want {
+		t.Errorf("ale.Satisfies[thirst].Immediate = %d, want %d", got, want)
 	}
-	if got, want := ale.Satisfies["hunger"], 2; got != want {
-		t.Errorf("ale.Satisfies[hunger] = %d, want %d", got, want)
+	if got, want := findSatisfies(t, ale, "hunger").Immediate, 2; got != want {
+		t.Errorf("ale.Satisfies[hunger].Immediate = %d, want %d", got, want)
 	}
 	if !ale.Consumable() {
 		t.Error("ale.Consumable() = false, want true")
+	}
+
+	// Stew is the canonical dwell-bearing fixture (ZBBS-172): immediate-4 +
+	// dwell triple (1 / 2min / 8 ticks). Total recovery over the full meal is
+	// 4 + 8 = 12 hunger; walk-away abandons the dwell portion.
+	stew, ok := w.ItemKinds["stew"]
+	if !ok {
+		t.Fatal("w.ItemKinds missing 'stew'")
+	}
+	stewHunger := findSatisfies(t, stew, "hunger")
+	if got, want := stewHunger.Immediate, 4; got != want {
+		t.Errorf("stew.Satisfies[hunger].Immediate = %d, want %d", got, want)
+	}
+	if got, want := stewHunger.DwellAmount, 1; got != want {
+		t.Errorf("stew.Satisfies[hunger].DwellAmount = %d, want %d", got, want)
+	}
+	if got, want := stewHunger.DwellPeriodMinutes, 2; got != want {
+		t.Errorf("stew.Satisfies[hunger].DwellPeriodMinutes = %d, want %d", got, want)
+	}
+	if got, want := stewHunger.DwellTotalTicks, 8; got != want {
+		t.Errorf("stew.Satisfies[hunger].DwellTotalTicks = %d, want %d", got, want)
+	}
+	if !stewHunger.HasDwell() {
+		t.Error("stew.Satisfies[hunger].HasDwell() = false, want true")
 	}
 
 	wheat, ok := w.ItemKinds["wheat"]
@@ -99,6 +135,26 @@ func TestLoadWorldItemKinds(t *testing.T) {
 	}
 }
 
+// findSatisfies finds the single ItemSatisfaction matching attr in def.Satisfies.
+// Fails the test if zero or multiple entries match — the catalog contract is
+// one row per (kind, attribute).
+func findSatisfies(t *testing.T, def *sim.ItemKindDef, attr sim.NeedKey) sim.ItemSatisfaction {
+	t.Helper()
+	var hits []sim.ItemSatisfaction
+	for _, s := range def.Satisfies {
+		if s.Attribute == attr {
+			hits = append(hits, s)
+		}
+	}
+	if len(hits) == 0 {
+		t.Fatalf("%s.Satisfies missing entry for %q", def.Name, attr)
+	}
+	if len(hits) > 1 {
+		t.Fatalf("%s.Satisfies has %d entries for %q (want 1)", def.Name, len(hits), attr)
+	}
+	return hits[0]
+}
+
 // TestItemKindsRepo_SeedLoadAll covers the mem-fake directly: Seed populates
 // LoadAll output, and the returned map is independent of the repo's
 // internal map (callers can mutate it without corrupting subsequent loads).
@@ -110,7 +166,10 @@ func TestItemKindsRepo_SeedLoadAll(t *testing.T) {
 	ctx := context.Background()
 	r := mem.NewItemKindsRepo()
 	r.Seed(map[sim.ItemKind]*sim.ItemKindDef{
-		"bread": {Name: "bread", DisplayLabel: "Bread", Category: sim.ItemCategoryFood, Price: 2, Satisfies: map[sim.NeedKey]int{"hunger": 8}},
+		"bread": {
+			Name: "bread", DisplayLabel: "Bread", Category: sim.ItemCategoryFood, Price: 2,
+			Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 8}},
+		},
 	})
 
 	got1, err := r.LoadAll(ctx)

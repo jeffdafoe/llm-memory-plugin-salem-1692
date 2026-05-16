@@ -40,8 +40,9 @@ func (r *ItemKindsRepo) LoadAll(_ context.Context) (map[sim.ItemKind]*sim.ItemKi
 // SeedItemKinds is a convenience helper for tests that need a minimal
 // catalog without constructing every field by hand. Builds a small set of
 // tavern-style items mirroring v1's seed in ZBBS-091 (post-ZBBS-125
-// calibration on ale + water). Callers can mutate the returned map or pass
-// it through to ItemKindsRepo.Seed.
+// calibration on ale + water; post-ZBBS-172 dwell triple on stew).
+// Callers can mutate the returned map or pass it through to
+// ItemKindsRepo.Seed.
 //
 // Kept in the mem package (not engine/sim) so production code doesn't
 // accidentally depend on a test fixture path. Tests in other packages can
@@ -54,9 +55,9 @@ func SeedItemKinds() map[sim.ItemKind]*sim.ItemKindDef {
 			Category:     sim.ItemCategoryDrink,
 			Price:        2,
 			SortOrder:    10,
-			Satisfies: map[sim.NeedKey]int{
-				"thirst": 4,
-				"hunger": 2,
+			Satisfies: []sim.ItemSatisfaction{
+				{Attribute: "thirst", Immediate: 4},
+				{Attribute: "hunger", Immediate: 2},
 			},
 		},
 		"water": {
@@ -65,8 +66,8 @@ func SeedItemKinds() map[sim.ItemKind]*sim.ItemKindDef {
 			Category:     sim.ItemCategoryDrink,
 			Price:        0,
 			SortOrder:    20,
-			Satisfies: map[sim.NeedKey]int{
-				"thirst": 8,
+			Satisfies: []sim.ItemSatisfaction{
+				{Attribute: "thirst", Immediate: 8},
 			},
 		},
 		"bread": {
@@ -75,8 +76,29 @@ func SeedItemKinds() map[sim.ItemKind]*sim.ItemKindDef {
 			Category:     sim.ItemCategoryFood,
 			Price:        2,
 			SortOrder:    120,
-			Satisfies: map[sim.NeedKey]int{
-				"hunger": 8,
+			Satisfies: []sim.ItemSatisfaction{
+				{Attribute: "hunger", Immediate: 8},
+			},
+		},
+		// Stew carries the v1 dwell triple from ZBBS-172: immediate 4-hunger
+		// hit on consume, then -1 hunger every 2 minutes for 8 ticks (16
+		// minutes total = 12 hunger recovery if the buyer stays for the full
+		// meal). Walking away mid-meal abandons the dwell credit. Canonical
+		// dwell-bearing item fixture for tests.
+		"stew": {
+			Name:         "stew",
+			DisplayLabel: "Stew",
+			Category:     sim.ItemCategoryFood,
+			Price:        3,
+			SortOrder:    110,
+			Satisfies: []sim.ItemSatisfaction{
+				{
+					Attribute:          "hunger",
+					Immediate:          4,
+					DwellAmount:        1,
+					DwellPeriodMinutes: 2,
+					DwellTotalTicks:    8,
+				},
 			},
 		},
 		"wheat": {
