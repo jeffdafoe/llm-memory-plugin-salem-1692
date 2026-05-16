@@ -31,6 +31,13 @@ type Snapshot struct {
 	// trip needed). Phase 3 PR S3.
 	Quotes map[QuoteID]*SceneQuote
 
+	// PayLedger is the published snapshot of World.PayLedger — every
+	// pay-offer entry in the world (pending and terminal), deep-cloned
+	// via ClonePayLedgerEntry. Source of truth for admin reconciliation
+	// against the projection store (the projection is best-effort;
+	// authoritative state lives here). Phase 3 PR S4.
+	PayLedger map[LedgerID]*PayLedgerEntry
+
 	Environment WorldEnvironment
 	Phase       Phase
 }

@@ -146,6 +146,22 @@ type WorldSettings struct {
 	// latency against the 10-min TTL, invisible at gameplay scale.
 	SceneQuoteTTL          time.Duration
 	SceneQuoteSweepCadence time.Duration
+
+	// Pay-ledger substrate tunables (Phase 3 PR S4). Both fall back to
+	// pay_ledger.go's *Default constants when zero. Shorter TTL than
+	// SceneQuoteTTL — a pending pay offer has the buyer staked into a
+	// social moment, which decays faster than a passive quote ad does.
+	//
+	// PayLedgerTTL: how long a freshly minted pending entry stays
+	// Pending before the aging sweep flips it Expired. Default 3 min —
+	// middle of architecture § 3's 2-5 minute range.
+	//
+	// PayLedgerSweepCadence: how often the aging sweep scans
+	// World.PayLedger for expired pending entries. Default 60s —
+	// matches the scene-quote sweep cadence so admin tuning sees one
+	// mental model.
+	PayLedgerTTL          time.Duration
+	PayLedgerSweepCadence time.Duration
 }
 
 // DefaultOutdoorSceneRadiusValue is the fallback radius used when
@@ -237,6 +253,23 @@ type World struct {
 	// call, not be resurrected with stale ExpiresAt.
 	Quotes map[QuoteID]*SceneQuote
 
+	// PayLedger is the world-level flat map of all PayLedgerEntries
+	// (pending and terminal). Keyed by LedgerID — the LLM-visible
+	// uint64 the seller references in accept_pay / decline_pay /
+	// counter_pay, and the buyer references in withdraw_pay /
+	// pay_with_item(in_response_to=N).
+	//
+	// Phase 3 PR S4 substrate. Source of truth for the offer-side
+	// state machine; Postgres pay_ledger table is the best-effort
+	// downstream projection via PayLedgerSink (drift-recovered by
+	// admin reconciliation, not by command logic — see
+	// ledger-substrate-design § 10). No PayLedgerRepo yet — the
+	// pg-impl checkpoint layer lands at cutover. For now NewWorld /
+	// LoadWorld both start with an empty PayLedger map; restart
+	// re-engagement happens via the warrant re-stamp pass during
+	// LoadWorld.
+	PayLedger map[LedgerID]*PayLedgerEntry
+
 	// Asset catalog — reference state, loaded at startup. Looked up by
 	// VillageObject.AssetID for state resolution, footprint, anchor, etc.
 	Assets map[AssetID]*Asset
@@ -289,6 +322,22 @@ type World struct {
 	// minted QuoteID is 1 (QuoteID(0) reserved as the unset sentinel).
 	// World-goroutine-only (touched exclusively from inside Command.Fn).
 	quoteSeq uint64
+
+	// payLedgerSeq is the monotonic per-run LedgerID counter — same
+	// shape and rules as quoteSeq. Incremented before assignment;
+	// first minted LedgerID is 1 (LedgerID(0) reserved as the unset
+	// sentinel / "no parent" / "no quote referenced").
+	// World-goroutine-only (touched exclusively from inside Command.Fn).
+	payLedgerSeq uint64
+
+	// payLedgerSink is the best-effort projection target for PayLedger
+	// state transitions. Never nil: NewWorld installs nullPayLedgerSink,
+	// SetPayLedgerSink(nil) restores it. The world goroutine invokes
+	// payLedgerSink.Project(entry) after every state transition; the
+	// impl is required not to block the goroutine (typical impl pushes
+	// onto a buffered channel and drains in a side goroutine). Sink
+	// failures never propagate to commands.
+	payLedgerSink PayLedgerSink
 
 	cmds      chan Command
 	published atomic.Pointer[Snapshot]
@@ -382,6 +431,7 @@ func NewWorld(repo Repository) *World {
 		Orders:            make(map[OrderID]*Order),
 		VillageObjects:    make(map[VillageObjectID]*VillageObject),
 		Quotes:            make(map[QuoteID]*SceneQuote),
+		PayLedger:         make(map[LedgerID]*PayLedgerEntry),
 		Assets:            make(map[AssetID]*Asset),
 		Recipes:           make(map[ItemKind]*ItemRecipe),
 		ItemKinds:         make(map[ItemKind]*ItemKindDef),
@@ -391,10 +441,24 @@ func NewWorld(repo Repository) *World {
 		Speech:            &SpeechHelper{},
 		cmds:              make(chan Command, 256),
 		tickAdmission:     alwaysAdmit{},
+		payLedgerSink:     nullPayLedgerSink{},
 		repo:              repo,
 	}
 	w.republish()
 	return w
+}
+
+// SetPayLedgerSink installs the projection target the world invokes on
+// every PayLedger state transition (pending creation + every terminal
+// flip). Nil restores nullPayLedgerSink so the field is never nil at
+// call sites. Mirrors SetTickAdmissionController's contract — safe to
+// call before Run, or from inside a Command.Fn. The impl is required
+// not to block the world goroutine; see PayLedgerSink doc.
+func (w *World) SetPayLedgerSink(s PayLedgerSink) {
+	if s == nil {
+		s = nullPayLedgerSink{}
+	}
+	w.payLedgerSink = s
 }
 
 // SetTickAdmissionController installs the controller the reactor evaluator
@@ -516,6 +580,24 @@ func LoadWorld(ctx context.Context, repo Repository) (*World, error) {
 	for id := range w.Quotes {
 		if uint64(id) > w.quoteSeq {
 			w.quoteSeq = uint64(id)
+		}
+	}
+	// Pay-ledger restart housekeeping. No PayLedgerRepo exists yet
+	// (pg-impl deferred to cutover), so this loop iterates an empty
+	// map today. Implementation is correct for the future case where
+	// entries load from a repo: any pending entry already past its
+	// ExpiresAt at restart is flipped to expired with ResolvedAt
+	// stamped, no event emitted (the original PayOfferReceived event
+	// is gone — restart re-engagement happens via the warrant
+	// re-stamp pass which lands later in PR S4 alongside
+	// PayOfferWarrantReason). Active pending entries with ExpiresAt
+	// in the future survive the load with absolute ExpiresAt intact;
+	// the aging sweep picks them up on its first pass.
+	restartExpirePendingEntries(w, time.Now())
+	// Ledger sequence counter safety floor: same posture as quoteSeq.
+	for id := range w.PayLedger {
+		if uint64(id) > w.payLedgerSeq {
+			w.payLedgerSeq = uint64(id)
 		}
 	}
 	w.republish()
@@ -791,6 +873,7 @@ func (w *World) republish() {
 		Orders:         make(map[OrderID]*Order, len(w.Orders)),
 		VillageObjects: make(map[VillageObjectID]*VillageObject, len(w.VillageObjects)),
 		Quotes:         make(map[QuoteID]*SceneQuote, len(w.Quotes)),
+		PayLedger:      make(map[LedgerID]*PayLedgerEntry, len(w.PayLedger)),
 		Environment:    w.Environment,
 		Phase:          w.Phase,
 	}
@@ -814,6 +897,9 @@ func (w *World) republish() {
 	}
 	for id, q := range w.Quotes {
 		snap.Quotes[id] = CloneSceneQuote(q)
+	}
+	for id, e := range w.PayLedger {
+		snap.PayLedger[id] = ClonePayLedgerEntry(e)
 	}
 	w.published.Store(snap)
 }

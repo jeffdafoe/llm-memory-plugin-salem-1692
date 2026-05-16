@@ -52,7 +52,6 @@ func NewRepository() (sim.Repository, *Handles) {
 		Structures:     structures,
 		VillageObjects: villageObjects,
 		Orders:         notImplOrders{},
-		PayLedger:      noopPayLedger{},
 		ActionLog:      noopActionLog{},
 		TickTelemetry:  noopTickTelemetry{},
 		Begin: func(_ context.Context) (sim.Tx, error) {
@@ -91,12 +90,10 @@ func (notImplOrders) SaveSnapshot(_ context.Context, _ sim.Tx, _ map[sim.OrderID
 	return errNotImpl
 }
 
-// noopPayLedger / noopActionLog accept appends silently; tests don't need
-// to assert ledger writes at the skeleton level.
-type noopPayLedger struct{}
-
-func (noopPayLedger) Append(_ context.Context, _ sim.PayLedgerEntry) error { return nil }
-
+// noopActionLog accepts appends silently; tests don't need to assert
+// action-log writes at the skeleton level. (Pay-ledger no longer goes
+// through the repo — it's substrate state with a separate best-effort
+// projection sink installed via World.SetPayLedgerSink.)
 type noopActionLog struct{}
 
 func (noopActionLog) Append(_ context.Context, _ sim.ActionLogEntry) error { return nil }

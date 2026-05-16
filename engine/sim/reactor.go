@@ -55,6 +55,7 @@ const (
 	WarrantKindIdleBackstop       WarrantKind = "idle_backstop"
 	WarrantKindPaid               WarrantKind = "paid"
 	WarrantKindSceneQuoteTargeted WarrantKind = "scene_quote_targeted"
+	WarrantKindPayOffer           WarrantKind = "pay_offer"
 	WarrantKindAdmin              WarrantKind = "admin" // operator forced a tick
 )
 
@@ -74,9 +75,22 @@ const (
 //
 // Future reasons (ArrivalWarrantReason, ProductionWarrantReason, etc.) land
 // in the PRs that introduce their producer subsystems.
+//
+// DedupDiscriminator returns the uint64 used alongside Kind in
+// WarrantSourceKey for tryStampWarrant's three dedup paths. Each Reason
+// returns its inherent identity field (SpeechID / PaidID / AttemptID /
+// QuoteID / LedgerID — all uint64-typed engine mints). Reasons without
+// an inherent identity (BasicWarrantReason for lifecycle stamps) return
+// 0 — the "not event-sourced" sentinel that bypasses dedup, since
+// (Kind, 0) would collapse unrelated warrants. The per-Reason
+// discriminator scheme (vs the original meta.SourceEventID scheme)
+// supports restart-stable dedup for aggregate-keyed reasons like
+// PayOfferWarrantReason (PR S4), where the source event is gone after
+// LoadWorld but the aggregate ID survives in world state.
 type WarrantReason interface {
 	isWarrantReason()
 	Kind() WarrantKind
+	DedupDiscriminator() uint64
 }
 
 // BasicWarrantReason is the catch-all reason for warrant kinds that don't
@@ -86,8 +100,9 @@ type BasicWarrantReason struct {
 	K WarrantKind
 }
 
-func (BasicWarrantReason) isWarrantReason()    {}
-func (r BasicWarrantReason) Kind() WarrantKind { return r.K }
+func (BasicWarrantReason) isWarrantReason()           {}
+func (r BasicWarrantReason) Kind() WarrantKind        { return r.K }
+func (BasicWarrantReason) DedupDiscriminator() uint64 { return 0 }
 
 // PCSpeechWarrantReason captures speech by a PC (player character) that
 // warranted the listening NPC's tick. NPC-spoken warrants use the parallel
@@ -117,8 +132,9 @@ type PCSpeechWarrantReason struct {
 	Excerpt  string
 }
 
-func (PCSpeechWarrantReason) isWarrantReason()  {}
-func (PCSpeechWarrantReason) Kind() WarrantKind { return WarrantKindPCSpoke }
+func (PCSpeechWarrantReason) isWarrantReason()             {}
+func (PCSpeechWarrantReason) Kind() WarrantKind            { return WarrantKindPCSpoke }
+func (r PCSpeechWarrantReason) DedupDiscriminator() uint64 { return uint64(r.SpeechID) }
 
 // NPCSpeechWarrantReason captures speech by an NPC that warranted the
 // listening peer NPC's tick. Parallel to PCSpeechWarrantReason; see that
@@ -129,12 +145,16 @@ type NPCSpeechWarrantReason struct {
 	Excerpt  string
 }
 
-func (NPCSpeechWarrantReason) isWarrantReason()  {}
-func (NPCSpeechWarrantReason) Kind() WarrantKind { return WarrantKindNPCSpoke }
+func (NPCSpeechWarrantReason) isWarrantReason()             {}
+func (NPCSpeechWarrantReason) Kind() WarrantKind            { return WarrantKindNPCSpoke }
+func (r NPCSpeechWarrantReason) DedupDiscriminator() uint64 { return uint64(r.SpeechID) }
 
-// SpeechID is a stable identifier for a single speech utterance. Stub
-// today; speech subsystem port lands the producer + persistence.
-type SpeechID string
+// SpeechID is a stable identifier for a single speech utterance. The
+// speech reactor subscriber copies the source Spoke event's EventID into
+// the SpeechID — same one-ID-flows-through-everything pattern as
+// PaidID / QuoteID / LedgerID. v1 used a UUID-string shape; v2 normalizes
+// to the engine's uint64 event sequence for LLM readback reliability.
+type SpeechID uint64
 
 // PaidWarrantReason captures a pay transaction that warranted the seller's
 // tick. Phase 3 PR B — pure coin transfer slice. The pay handler emits a
@@ -170,8 +190,9 @@ type PaidWarrantReason struct {
 	ForText string
 }
 
-func (PaidWarrantReason) isWarrantReason()  {}
-func (PaidWarrantReason) Kind() WarrantKind { return WarrantKindPaid }
+func (PaidWarrantReason) isWarrantReason()             {}
+func (PaidWarrantReason) Kind() WarrantKind            { return WarrantKindPaid }
+func (r PaidWarrantReason) DedupDiscriminator() uint64 { return uint64(r.PaidID) }
 
 // SceneQuoteTargetedWarrantReason captures a vendor-posted scene quote
 // directly addressed to this actor. Phase 3 PR S3 — the quote handler
@@ -211,8 +232,68 @@ type SceneQuoteTargetedWarrantReason struct {
 	ExpiresAt  time.Time
 }
 
-func (SceneQuoteTargetedWarrantReason) isWarrantReason()  {}
-func (SceneQuoteTargetedWarrantReason) Kind() WarrantKind { return WarrantKindSceneQuoteTargeted }
+func (SceneQuoteTargetedWarrantReason) isWarrantReason()             {}
+func (SceneQuoteTargetedWarrantReason) Kind() WarrantKind            { return WarrantKindSceneQuoteTargeted }
+func (r SceneQuoteTargetedWarrantReason) DedupDiscriminator() uint64 { return uint64(r.QuoteID) }
+
+// PayOfferWarrantReason captures a pending pay-with-item offer staked
+// against this actor (the seller). Phase 3 PR S4 — the pay-with-item
+// handler emits a PayOfferReceived event whose subscriber mints this
+// reason on the seller so their next reactor tick perceives the
+// offer terms and decides among accept_pay / decline_pay /
+// counter_pay.
+//
+// Restart-stable dedup: DedupDiscriminator returns uint64(LedgerID),
+// not the source event ID. LoadWorld walks World.PayLedger and
+// re-stamps PayOfferWarrant on every still-pending entry's seller —
+// the original PayOfferReceived event is gone post-restart, but the
+// aggregate LedgerID survives, which is exactly what the PR S4
+// WarrantReason interface migration exists to support. Normal-flow
+// stamp also keys on LedgerID, so the two paths dedupe cleanly
+// against each other (calling LoadWorld twice on the same checkpoint
+// doesn't produce duplicate warrants).
+//
+// All offer terms travel on the warrant payload (LedgerID + Buyer +
+// item terms + ExpiresAt) so the seller's tick prompt builder can
+// render the offer directly off WarrantMeta without a separate
+// World.PayLedger lookup. Same posture as SceneQuoteTargetedWarrantReason
+// — prompt build runs on the world goroutine via Snapshot, and pulling
+// the live ledger entry at prompt time would race the world's owning
+// goroutine.
+//
+// Buyer is the actor whose pay_with_item tool call staked the offer.
+// Surfaces in the seller's perception prompt as the offerer.
+//
+// ConsumerIDs is the group-order participant set (empty for a
+// sole-buyer offer; buyer is the implicit single consumer in that
+// case). Length-capped at handler intake (architecture § 9 caps at 8).
+//
+// No fast-path / quote_id field on this reason — the fast path skips
+// the pending state entirely, so a quote-matched offer never
+// produces a PayOfferReceived event or a PayOfferWarrant. Slow-path
+// offers may reference a quote_id that failed fast-path gates, but
+// at that point the buyer's tool call returns an error rather than
+// falling through to pending (architecture § 4 "strict reject — no
+// silent fall-through").
+//
+// No PC variant — PCs don't deliberate via the reactor loop, so a
+// PC-as-seller flow uses a different (UI-driven) decision surface.
+// PR S4 ships NPC-seller-only; PC-as-seller lands at the cutover-layer
+// PC commit path.
+type PayOfferWarrantReason struct {
+	LedgerID    LedgerID
+	Buyer       ActorID
+	Item        ItemKind
+	Qty         int
+	Amount      int
+	ConsumeNow  bool
+	ConsumerIDs []ActorID
+	ExpiresAt   time.Time
+}
+
+func (PayOfferWarrantReason) isWarrantReason()             {}
+func (PayOfferWarrantReason) Kind() WarrantKind            { return WarrantKindPayOffer }
+func (r PayOfferWarrantReason) DedupDiscriminator() uint64 { return uint64(r.LedgerID) }
 
 // WarrantMeta is one entry in an actor's Warrants list — a signal that
 // fired during the actor's warranted window. The evaluator carries the
@@ -229,16 +310,19 @@ type WarrantMeta struct {
 	Reason         WarrantReason
 
 	// PR 3a source metadata — makes a warrant causally identifiable so
-	// tryStampWarrant can dedup on (Kind, SourceEventID) and PR 3's
-	// perception can resolve the warrant's scene without reverse-scanning.
-	// All value-typed (plain IDs with empty sentinels, no pointers) so
-	// CloneActor's shallow Warrants copy stays correct.
+	// PR 3's perception can resolve the warrant's scene without reverse-
+	// scanning, and admin replay can trace cascade lineage. All value-
+	// typed (plain IDs with empty sentinels, no pointers) so CloneActor's
+	// shallow Warrants copy stays correct.
 	//
-	// SourceEventID is the exact event that produced this warrant. It MUST
-	// be nonzero for PR 3 perception warrants — the three dedup paths key
-	// on it. A zero SourceEventID marks a warrant as "not event-sourced"
-	// (legacy / internal callsites predating PR 3 perception); those bypass
-	// dedup entirely, since (Kind, 0) would collapse unrelated warrants.
+	// SourceEventID is the exact event that produced this warrant. Carried
+	// as lineage metadata for perception/debug only; the dedup key now
+	// comes from the Reason itself via Reason.DedupDiscriminator() (PR S4)
+	// to support restart-stable dedup for aggregate-keyed reasons like
+	// PayOfferWarrantReason. SourceEventID stays populated by PR 3
+	// perception callsites for prompt-render and admin-replay lookups; a
+	// zero SourceEventID still marks a warrant as not-event-sourced per
+	// the zero-lineage invariant below.
 	SourceEventID EventID
 	// RootEventID is a copy of the source event's causal root. Never a
 	// dedup key — distinct SourceEventIDs under the same root are distinct
@@ -268,35 +352,55 @@ type WarrantMeta struct {
 // fully-zero, "not event-sourced" warrants; they are retrofitted with
 // real lineage in PR 3 (see the PR 3 design note).
 
-// WarrantSourceKey identifies the (warrant kind, source event) pair a
+// WarrantSourceKey identifies the (warrant kind, discriminator) pair a
 // warrant came from. It is the single dedup key shared by all three of
 // tryStampWarrant's dedup paths — open-cycle, in-flight, and recently-
-// consumed. A single source event can produce different kinds for the
-// same actor, so Kind is part of the key.
+// consumed. A single source can produce different kinds for the same
+// actor, so Kind is part of the key.
 //
-// Dedup applies ONLY when SourceEventID != 0. A zero SourceEventID is the
+// Discriminator comes from the Reason itself via Reason.DedupDiscriminator()
+// — for event-sourced reasons it's the source event's ID (SpeechID /
+// PaidID / AttemptID / QuoteID, all 1:1 with their source event); for
+// aggregate-keyed reasons it's the aggregate's ID (LedgerID for
+// PayOfferWarrantReason), which survives LoadWorld so restart re-stamp
+// dedupes against the normal-flow stamp.
+//
+// Dedup applies ONLY when Discriminator != 0. A zero Discriminator is the
 // "not event-sourced" sentinel; (Kind, 0) as a key would collapse
 // unrelated non-event-sourced warrants, so they bypass dedup. As a
-// consequence, a zero-SourceEventID key is NEVER stored in the in-flight
+// consequence, a zero-Discriminator key is NEVER stored in the in-flight
 // or recently-consumed sets either — sourceKeySet filters non-event-
 // sourced warrants out at consume time, so the sets only ever hold real
 // keys.
 type WarrantSourceKey struct {
 	Kind          WarrantKind
-	SourceEventID EventID
+	Discriminator uint64
 }
 
 // sourceKey returns the WarrantSourceKey for this meta. The key is only
-// meaningful for dedup when SourceEventID != 0 — callers check that before
-// using it (eventSourced).
+// meaningful for dedup when the Reason's discriminator is non-zero —
+// callers check that via eventSourced before using it.
 func (m WarrantMeta) sourceKey() WarrantSourceKey {
-	return WarrantSourceKey{Kind: m.Kind(), SourceEventID: m.SourceEventID}
+	return WarrantSourceKey{Kind: m.Kind(), Discriminator: m.dedupDiscriminator()}
 }
 
-// eventSourced reports whether this meta carries a real source event and
-// therefore participates in tryStampWarrant's dedup paths.
+// eventSourced reports whether this meta's Reason carries a non-zero
+// dedup discriminator and therefore participates in tryStampWarrant's
+// dedup paths. A nil Reason or a Reason whose DedupDiscriminator returns
+// 0 bypasses dedup.
 func (m WarrantMeta) eventSourced() bool {
-	return m.SourceEventID != 0
+	return m.dedupDiscriminator() != 0
+}
+
+// dedupDiscriminator returns the Reason's dedup discriminator, or 0 when
+// Reason is nil. Nil-Reason warrants are rejected at the tryStampWarrant
+// entry guard anyway, but defensive iteration through warrant slices
+// (sourceKeySet, the open-cycle dedup scan) reaches this helper too.
+func (m WarrantMeta) dedupDiscriminator() uint64 {
+	if m.Reason == nil {
+		return 0
+	}
+	return m.Reason.DedupDiscriminator()
 }
 
 // Kind returns the WarrantKind of the meta's reason, or WarrantKindUnknown
@@ -320,14 +424,16 @@ func (m WarrantMeta) Kind() WarrantKind {
 //     Settings.ReactorJitterMin..Max, stamps WarrantDueAt=now+jitter,
 //     initializes Warrants with [meta].
 //
-// Source-aware dedup (PR 3a): an event-sourced warrant (SourceEventID
-// != 0) is dropped if its WarrantSourceKey is already (1) pending in the
-// open warrant cycle, (2) consumed into the in-flight tick attempt, or
-// (3) in the recently-consumed set within recentlyConsumedTTL. Together
-// these coalesce near-simultaneous multi-path triggers and suppress a
-// delayed duplicate of a stimulus a completed tick already addressed.
-// Warrants with SourceEventID == 0 ("not event-sourced") bypass dedup —
-// (Kind, 0) would collapse unrelated warrants.
+// Source-aware dedup (PR 3a, refined PR S4): an event-sourced warrant
+// (Reason.DedupDiscriminator() != 0) is dropped if its WarrantSourceKey
+// is already (1) pending in the open warrant cycle, (2) consumed into the
+// in-flight tick attempt, or (3) in the recently-consumed set within
+// recentlyConsumedTTL. Together these coalesce near-simultaneous multi-
+// path triggers and suppress a delayed duplicate of a stimulus a
+// completed tick already addressed. Warrants whose Reason returns
+// discriminator 0 ("not event-sourced", e.g. BasicWarrantReason from
+// lifecycle stamps) bypass dedup — (Kind, 0) would collapse unrelated
+// warrants.
 //
 // Tick-in-flight does NOT block stamping a NEW source — fresh signals must
 // accumulate so they're available for the NEXT tick. The TickInFlight gate

@@ -2,7 +2,6 @@ package handlers_test
 
 import (
 	"context"
-	"strconv"
 	"testing"
 	"time"
 
@@ -154,9 +153,9 @@ func TestSpeechReactor_WarrantShape(t *testing.T) {
 	if reason.Excerpt != "Have a good day." {
 		t.Errorf("Reason.Excerpt = %q, want %q", reason.Excerpt, "Have a good day.")
 	}
-	// SpeechID is the decimal of the SourceEventID.
-	if reason.SpeechID != sim.SpeechID(strconv.FormatUint(uint64(m.SourceEventID), 10)) {
-		t.Errorf("SpeechID = %q, want %d", reason.SpeechID, m.SourceEventID)
+	// SpeechID is the Spoke event's EventID, uint64-typed.
+	if reason.SpeechID != sim.SpeechID(m.SourceEventID) {
+		t.Errorf("SpeechID = %d, want %d", reason.SpeechID, m.SourceEventID)
 	}
 }
 

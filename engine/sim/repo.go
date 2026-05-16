@@ -23,9 +23,11 @@ type Repository struct {
 	VillageObjects VillageObjectsRepo
 
 	// Event sinks — write-through per-event, NOT part of the checkpoint tx.
-	// Pay-ledger is an event log of attempts and outcomes; agent-action-log
-	// is an audit trail. Both are appended outside the checkpoint.
-	PayLedger PayLedgerSink
+	// agent-action-log is an audit trail appended outside the checkpoint.
+	// (Pay-ledger was originally framed as an event log here too; the
+	// PR S4 ledger-substrate redesign moved it onto World state with a
+	// best-effort projection sink installed via World.SetPayLedgerSink.
+	// See engine/sim/pay_ledger.go.)
 	ActionLog ActionLogSink
 
 	// TickTelemetry receives per-tick lifecycle records (Phase 2 PR 3a). The
@@ -125,19 +127,10 @@ type EnvironmentRepo interface {
 	SaveSnapshot(ctx context.Context, tx Tx, env WorldEnvironment, phase Phase) error
 }
 
-// PayLedgerSink appends pay-ledger events transactionally per-event, NOT
-// at checkpoint time. Pay-ledger is an event log, not snapshot state.
-type PayLedgerSink interface {
-	Append(ctx context.Context, entry PayLedgerEntry) error
-}
-
 // ActionLogSink appends agent action log rows per-event.
 type ActionLogSink interface {
 	Append(ctx context.Context, entry ActionLogEntry) error
 }
-
-// PayLedgerEntry — concrete shape ported with pay/order subsystem.
-type PayLedgerEntry struct{}
 
 // ActionLogEntry — concrete shape ported with agent_tick port.
 type ActionLogEntry struct{}

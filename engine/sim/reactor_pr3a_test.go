@@ -132,12 +132,12 @@ func TestTryStampWarrant_OpenCycleDedup(t *testing.T) {
 		a := world.Actors["alice"]
 		meta := sim.WarrantMeta{
 			TriggerActorID: "bob",
-			Reason:         sim.BasicWarrantReason{K: sim.WarrantKindNPCSpoke},
+			Reason:         sim.NPCSpeechWarrantReason{SpeechID: 7, Speaker: "bob"},
 			SourceEventID:  sim.EventID(7),
 			RootEventID:    sim.EventID(7),
 		}
 		sim.TryStampWarrant(world, a, meta, now)
-		sim.TryStampWarrant(world, a, meta, now) // same (Kind, SourceEventID)
+		sim.TryStampWarrant(world, a, meta, now) // same (Kind, Discriminator)
 		if len(a.Warrants) != 1 {
 			t.Errorf("open-cycle dedup: Warrants len = %d, want 1", len(a.Warrants))
 		}
@@ -158,12 +158,13 @@ func TestTryStampWarrant_DistinctSourceEventStillStamps(t *testing.T) {
 		a := world.Actors["alice"]
 		base := sim.WarrantMeta{
 			TriggerActorID: "bob",
-			Reason:         sim.BasicWarrantReason{K: sim.WarrantKindNPCSpoke},
 			RootEventID:    sim.EventID(3), // same root for both
 		}
 		m1 := base
+		m1.Reason = sim.NPCSpeechWarrantReason{SpeechID: 7, Speaker: "bob"}
 		m1.SourceEventID = sim.EventID(7)
 		m2 := base
+		m2.Reason = sim.NPCSpeechWarrantReason{SpeechID: 8, Speaker: "bob"}
 		m2.SourceEventID = sim.EventID(8)
 		sim.TryStampWarrant(world, a, m1, now)
 		sim.TryStampWarrant(world, a, m2, now)
@@ -212,11 +213,11 @@ func TestTryStampWarrant_InFlightDedup(t *testing.T) {
 
 	_, _ = w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		a := world.Actors["alice"]
-		key := sim.WarrantSourceKey{Kind: sim.WarrantKindNPCSpoke, SourceEventID: sim.EventID(7)}
+		key := sim.WarrantSourceKey{Kind: sim.WarrantKindNPCSpoke, Discriminator: 7}
 		sim.SetActorInFlightSourceKeys(a, map[sim.WarrantSourceKey]struct{}{key: {}})
 
 		meta := sim.WarrantMeta{
-			Reason:        sim.BasicWarrantReason{K: sim.WarrantKindNPCSpoke},
+			Reason:        sim.NPCSpeechWarrantReason{SpeechID: 7, Speaker: "bob"},
 			SourceEventID: sim.EventID(7),
 		}
 		sim.TryStampWarrant(world, a, meta, now)
@@ -227,6 +228,7 @@ func TestTryStampWarrant_InFlightDedup(t *testing.T) {
 
 		// A DIFFERENT source event of the same kind is a new development —
 		// it must still stamp.
+		meta.Reason = sim.NPCSpeechWarrantReason{SpeechID: 8, Speaker: "bob"}
 		meta.SourceEventID = sim.EventID(8)
 		sim.TryStampWarrant(world, a, meta, now)
 		if a.WarrantedSince == nil || len(a.Warrants) != 1 {
@@ -247,11 +249,11 @@ func TestTryStampWarrant_RecentlyConsumedDedup(t *testing.T) {
 
 	_, _ = w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		a := world.Actors["alice"]
-		key := sim.WarrantSourceKey{Kind: sim.WarrantKindNPCSpoke, SourceEventID: sim.EventID(7)}
+		key := sim.WarrantSourceKey{Kind: sim.WarrantKindNPCSpoke, Discriminator: 7}
 		sim.RememberConsumedSourceKey(a, key, base)
 
 		meta := sim.WarrantMeta{
-			Reason:        sim.BasicWarrantReason{K: sim.WarrantKindNPCSpoke},
+			Reason:        sim.NPCSpeechWarrantReason{SpeechID: 7, Speaker: "bob"},
 			SourceEventID: sim.EventID(7),
 		}
 		// Within the TTL — suppressed.
@@ -279,7 +281,7 @@ func TestRememberConsumedSourceKey_CapEviction(t *testing.T) {
 
 	total := sim.RecentlyConsumedCap + 25
 	for i := 0; i < total; i++ {
-		key := sim.WarrantSourceKey{Kind: sim.WarrantKindNPCSpoke, SourceEventID: sim.EventID(i + 1)}
+		key := sim.WarrantSourceKey{Kind: sim.WarrantKindNPCSpoke, Discriminator: uint64(i + 1)}
 		sim.RememberConsumedSourceKey(a, key, base.Add(time.Duration(i)*time.Millisecond))
 	}
 
@@ -289,11 +291,11 @@ func TestRememberConsumedSourceKey_CapEviction(t *testing.T) {
 	}
 	// The very first (oldest) key must have been evicted; the last
 	// (newest) must remain.
-	oldest := sim.WarrantSourceKey{Kind: sim.WarrantKindNPCSpoke, SourceEventID: sim.EventID(1)}
+	oldest := sim.WarrantSourceKey{Kind: sim.WarrantKindNPCSpoke, Discriminator: 1}
 	if _, ok := got[oldest]; ok {
 		t.Error("oldest-by-insertion key should have been evicted")
 	}
-	newest := sim.WarrantSourceKey{Kind: sim.WarrantKindNPCSpoke, SourceEventID: sim.EventID(total)}
+	newest := sim.WarrantSourceKey{Kind: sim.WarrantKindNPCSpoke, Discriminator: uint64(total)}
 	if _, ok := got[newest]; !ok {
 		t.Error("newest key should still be present")
 	}
@@ -308,12 +310,12 @@ func TestRememberConsumedSourceKey_TTLSweep(t *testing.T) {
 	stale := now.Add(-2 * sim.RecentlyConsumedTTL)
 
 	for i := 0; i < sim.RecentlyConsumedCap; i++ {
-		key := sim.WarrantSourceKey{Kind: sim.WarrantKindNPCSpoke, SourceEventID: sim.EventID(i + 1)}
+		key := sim.WarrantSourceKey{Kind: sim.WarrantKindNPCSpoke, Discriminator: uint64(i + 1)}
 		sim.RememberConsumedSourceKey(a, key, stale)
 	}
 	// The set is at cap and entirely stale; this insert triggers the
 	// expired-first sweep.
-	fresh := sim.WarrantSourceKey{Kind: sim.WarrantKindNPCSpoke, SourceEventID: sim.EventID(9999)}
+	fresh := sim.WarrantSourceKey{Kind: sim.WarrantKindNPCSpoke, Discriminator: 9999}
 	sim.RememberConsumedSourceKey(a, fresh, now)
 
 	got := sim.ActorRecentlyConsumedSourceKeys(a)
@@ -332,10 +334,10 @@ func TestLoadWorld_WipesPR3aReactorState(t *testing.T) {
 	repo, handles := mem.NewRepository()
 	a := &sim.Actor{ID: "alice"}
 	sim.SetActorInFlightSourceKeys(a, map[sim.WarrantSourceKey]struct{}{
-		{Kind: sim.WarrantKindNPCSpoke, SourceEventID: sim.EventID(1)}: {},
+		{Kind: sim.WarrantKindNPCSpoke, Discriminator: 1}: {},
 	})
 	sim.SetActorRecentlyConsumedSourceKeys(a, map[sim.WarrantSourceKey]time.Time{
-		{Kind: sim.WarrantKindNPCSpoke, SourceEventID: sim.EventID(2)}: time.Now(),
+		{Kind: sim.WarrantKindNPCSpoke, Discriminator: 2}: time.Now(),
 	})
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{"alice": a})
 
@@ -488,9 +490,9 @@ func TestEvaluateReactors_RecordsInFlightSourceKeys(t *testing.T) {
 	now := time.Now().UTC()
 
 	seedDueWarrant(t, w, "alice", []sim.WarrantMeta{
-		{Reason: sim.BasicWarrantReason{K: sim.WarrantKindNPCSpoke}, SourceEventID: sim.EventID(11)},
-		{Reason: sim.BasicWarrantReason{K: sim.WarrantKindArrived}, SourceEventID: sim.EventID(12)},
-		{Reason: sim.BasicWarrantReason{K: sim.WarrantKindHuddleJoined}}, // zero-sourced — no key
+		{Reason: sim.NPCSpeechWarrantReason{SpeechID: 11, Speaker: "bob"}, SourceEventID: sim.EventID(11)},
+		{Reason: sim.ArrivalWarrantReason{AttemptID: 12}, SourceEventID: sim.EventID(12)},
+		{Reason: sim.BasicWarrantReason{K: sim.WarrantKindHuddleJoined}}, // zero-discriminator — no key
 	}, now)
 	emitted := subscribeReactorTicks(t, w)
 
@@ -504,8 +506,8 @@ func TestEvaluateReactors_RecordsInFlightSourceKeys(t *testing.T) {
 			t.Fatalf("inFlightSourceKeys len = %d, want 2 (zero-sourced warrant contributes none)", len(keys))
 		}
 		want := []sim.WarrantSourceKey{
-			{Kind: sim.WarrantKindNPCSpoke, SourceEventID: sim.EventID(11)},
-			{Kind: sim.WarrantKindArrived, SourceEventID: sim.EventID(12)},
+			{Kind: sim.WarrantKindNPCSpoke, Discriminator: 11},
+			{Kind: sim.WarrantKindArrived, Discriminator: 12},
 		}
 		for _, k := range want {
 			if _, ok := keys[k]; !ok {
@@ -557,8 +559,8 @@ func TestCompleteReactorTick_SuccessMovesAddressedKeys(t *testing.T) {
 	defer cancel()
 	now := time.Now().UTC()
 
-	k1 := sim.WarrantSourceKey{Kind: sim.WarrantKindNPCSpoke, SourceEventID: sim.EventID(21)}
-	k2 := sim.WarrantSourceKey{Kind: sim.WarrantKindArrived, SourceEventID: sim.EventID(22)}
+	k1 := sim.WarrantSourceKey{Kind: sim.WarrantKindNPCSpoke, Discriminator: 21}
+	k2 := sim.WarrantSourceKey{Kind: sim.WarrantKindArrived, Discriminator: 22}
 	completeWithStatus(t, w, []sim.WarrantSourceKey{k1, k2}, sim.TickStatusSuccess, nil, now)
 
 	inspectActor(t, w, "alice", func(a *sim.Actor) {
@@ -586,7 +588,7 @@ func TestCompleteReactorTick_FailedBeforeRenderMovesNothing(t *testing.T) {
 	defer cancel()
 	now := time.Now().UTC()
 
-	k1 := sim.WarrantSourceKey{Kind: sim.WarrantKindNPCSpoke, SourceEventID: sim.EventID(31)}
+	k1 := sim.WarrantSourceKey{Kind: sim.WarrantKindNPCSpoke, Discriminator: 31}
 	completeWithStatus(t, w, []sim.WarrantSourceKey{k1}, sim.TickStatusFailedBeforeRender, nil, now)
 
 	inspectActor(t, w, "alice", func(a *sim.Actor) {
@@ -609,11 +611,11 @@ func TestCompleteReactorTick_CarryForwardReopensAndExcludes(t *testing.T) {
 	defer cancel()
 	now := time.Now().UTC()
 
-	addressed := sim.WarrantSourceKey{Kind: sim.WarrantKindNPCSpoke, SourceEventID: sim.EventID(41)}
-	carriedKey := sim.WarrantSourceKey{Kind: sim.WarrantKindArrived, SourceEventID: sim.EventID(42)}
+	addressed := sim.WarrantSourceKey{Kind: sim.WarrantKindNPCSpoke, Discriminator: 41}
+	carriedKey := sim.WarrantSourceKey{Kind: sim.WarrantKindArrived, Discriminator: 42}
 	// The carried warrant's sourceKey() must equal carriedKey.
 	carriedMeta := sim.WarrantMeta{
-		Reason:        sim.BasicWarrantReason{K: sim.WarrantKindArrived},
+		Reason:        sim.ArrivalWarrantReason{AttemptID: 42},
 		SourceEventID: sim.EventID(42),
 	}
 	completeWithStatus(t, w,
@@ -648,7 +650,7 @@ func TestCompleteReactorTick_StaleLeavesAttemptUntouched(t *testing.T) {
 	defer cancel()
 	now := time.Now().UTC()
 
-	k1 := sim.WarrantSourceKey{Kind: sim.WarrantKindNPCSpoke, SourceEventID: sim.EventID(51)}
+	k1 := sim.WarrantSourceKey{Kind: sim.WarrantKindNPCSpoke, Discriminator: 51}
 	_, _ = w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		a := world.Actors["alice"]
 		a.TickInFlight = true
@@ -727,8 +729,8 @@ func TestCloneActor_PR3aFieldsRoundTrip(t *testing.T) {
 	now := time.Now().UTC()
 	since := now.Add(-time.Second)
 	due := now.Add(time.Second)
-	k1 := sim.WarrantSourceKey{Kind: sim.WarrantKindNPCSpoke, SourceEventID: sim.EventID(1)}
-	k2 := sim.WarrantSourceKey{Kind: sim.WarrantKindArrived, SourceEventID: sim.EventID(2)}
+	k1 := sim.WarrantSourceKey{Kind: sim.WarrantKindNPCSpoke, Discriminator: 1}
+	k2 := sim.WarrantSourceKey{Kind: sim.WarrantKindArrived, Discriminator: 2}
 
 	orig := &sim.Actor{
 		ID:             "alice",
