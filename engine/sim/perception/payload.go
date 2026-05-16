@@ -160,6 +160,43 @@ type ActorView struct {
 	CurrentHuddleID   sim.HuddleID
 	Coins             int
 	Needs             map[sim.NeedKey]int
+
+	// ActiveDwellCredits is the actor's in-progress dwell credits at
+	// snapshot time — meals being eaten, rests being taken. Renders as
+	// "you are currently eating stew at the tavern, ~14 minutes
+	// remaining" so the LLM can see the meal as a coherent state across
+	// the per-minute event stream (DwellTickApplied warrants). The
+	// structured surface is the load-bearing piece that keeps NPCs
+	// parked: even if the per-tick narration warrant hasn't landed yet
+	// for this tick, the structured field is always present while the
+	// credit lives, so perception render can keep the cue in front of
+	// the LLM on every tick.
+	//
+	// Sort order is deterministic: by (Source, Attribute, ObjectID) so
+	// golden tests + admin replay see stable ordering.
+	ActiveDwellCredits []DwellCreditView
+}
+
+// DwellCreditView is the perception-side projection of one
+// sim.DwellCredit. Carries the structure label resolved at build time
+// (so render doesn't re-fetch from world state), plus the raw
+// countdown fields so Hub clients can derive "next-tick at" and
+// "remaining time" without tracking prior state.
+//
+// Kind is empty for source=object credits (resting under a tree —
+// no item involved); render falls back to a generic phrasing in that
+// case ("you are resting under the willow" rather than "you are
+// currently eating X").
+type DwellCreditView struct {
+	ObjectID       sim.VillageObjectID
+	StructureLabel string // resolved from snap.Structures or snap.VillageObjects; "" when neither resolves
+	Source         sim.DwellCreditSource
+	Kind           sim.ItemKind
+	Attribute      sim.NeedKey
+	RemainingTicks *int // nil for source=object; >0 for source=item
+	PeriodMinutes  int
+	DwellDelta     int // negative — applied per period
+	LastCreditedAt time.Time
 }
 
 // SurroundingsView is the actor's immediate context — the structure it is

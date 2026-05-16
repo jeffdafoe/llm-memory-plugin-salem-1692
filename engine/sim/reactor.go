@@ -57,6 +57,9 @@ const (
 	WarrantKindSceneQuoteTargeted WarrantKind = "scene_quote_targeted"
 	WarrantKindPayOffer           WarrantKind = "pay_offer"
 	WarrantKindPayResolved        WarrantKind = "pay_resolved"
+	WarrantKindDwellStarted       WarrantKind = "dwell_started"
+	WarrantKindDwellTickApplied   WarrantKind = "dwell_tick_applied"
+	WarrantKindDwellEnded         WarrantKind = "dwell_ended"
 	WarrantKindAdmin              WarrantKind = "admin" // operator forced a tick
 )
 

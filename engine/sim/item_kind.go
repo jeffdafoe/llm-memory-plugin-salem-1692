@@ -53,6 +53,19 @@ type ItemKindDef struct {
 	// (v1 schema PK is (item_kind, attribute)) enforces uniqueness, and the
 	// in-memory shape relies on that contract. No runtime dedup.
 	Satisfies []ItemSatisfaction
+
+	// ConsumeDwellNarration is the one-shot "you're starting a dwell-bearing
+	// meal" hint (port of v1's item_kind.consume_dwell_narration). Stamped
+	// onto the DwellStarted event when Consume upserts at least one dwell
+	// credit for this item, so the eater's NEXT-tick perception surfaces
+	// the LLM-readable cue:
+	//
+	//   "This stew looks really good. You'll need some time to enjoy it
+	//    properly."
+	//
+	// Empty when the item has no narration configured (or no dwell triple).
+	// Subscribers render only when non-empty.
+	ConsumeDwellNarration string
 }
 
 // ItemCategory is the typed item-category enum. Consumers must always

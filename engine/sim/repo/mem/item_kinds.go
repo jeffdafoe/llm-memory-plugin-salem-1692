@@ -84,13 +84,16 @@ func SeedItemKinds() map[sim.ItemKind]*sim.ItemKindDef {
 		// hit on consume, then -1 hunger every 2 minutes for 8 ticks (16
 		// minutes total = 12 hunger recovery if the buyer stays for the full
 		// meal). Walking away mid-meal abandons the dwell credit. Canonical
-		// dwell-bearing item fixture for tests.
+		// dwell-bearing item fixture for tests. ConsumeDwellNarration is
+		// the v1-verbatim consume-time hint that DwellStarted carries onto
+		// the eater's next-tick perception cue.
 		"stew": {
-			Name:         "stew",
-			DisplayLabel: "Stew",
-			Category:     sim.ItemCategoryFood,
-			Price:        3,
-			SortOrder:    110,
+			Name:                  "stew",
+			DisplayLabel:          "Stew",
+			Category:              sim.ItemCategoryFood,
+			Price:                 3,
+			SortOrder:             110,
+			ConsumeDwellNarration: "This stew looks really good. You'll need some time to enjoy it properly.",
 			Satisfies: []sim.ItemSatisfaction{
 				{
 					Attribute:          "hunger",

@@ -246,9 +246,11 @@ func TestApplyDwellTickItemExhaustedDeletes(t *testing.T) {
 	}
 }
 
-// TestApplyDwellTickFloorHitNarration covers source=object reaching
-// hunger=0 → "You feel full." for PC.
-func TestApplyDwellTickFloorHitNarration(t *testing.T) {
+// TestApplyDwellTickFloorHitTerminatesCredit covers source=object
+// reaching hunger=0 → "You feel full." narration AND credit deletion
+// (floor-hit now terminates the credit, parity with v1's "you feel
+// full → meal done" intent — design call 4 of the dwell-perception PR).
+func TestApplyDwellTickFloorHitTerminatesCredit(t *testing.T) {
 	now := time.Now().UTC()
 	anchor := now.Add(-11 * time.Minute)
 	repo, handles := mem.NewRepository()
@@ -289,12 +291,26 @@ func TestApplyDwellTickFloorHitNarration(t *testing.T) {
 	if r.Completions[0].Text != "You feel full." {
 		t.Errorf("narration = %q, want 'You feel full.'", r.Completions[0].Text)
 	}
+	// Floor-hit now terminates the credit (call 4 design change). Credit
+	// map should be empty post-tick.
+	count, _ := w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			return len(world.Actors["player"].DwellCredits), nil
+		},
+	})
+	if count.(int) != 0 {
+		t.Errorf("floor-hit did not terminate credit: %d remaining", count.(int))
+	}
 }
 
-// TestApplyDwellTickNPCSkipsNarration covers the NPC branch — no
-// LoginUsername means no completion stamped (NPCs perceive via the
-// next tick build, not a private room_event).
-func TestApplyDwellTickNPCSkipsNarration(t *testing.T) {
+// TestApplyDwellTickNPCAlsoNarrates covers the v2 behavior change
+// (call 4: PC-only gating dropped): NPCs produce Completions on the
+// same terminal conditions as PCs, so subscribers and the Hub-broadcast
+// layer (when ported) can pick who gets render-time treatment instead
+// of emit-time hiding the signal entirely. This is load-bearing for
+// the LLM perception cue — without it, the NPC would never see a
+// "you feel rested" terminal beat in their warrant batch.
+func TestApplyDwellTickNPCAlsoNarrates(t *testing.T) {
 	now := time.Now().UTC()
 	anchor := now.Add(-11 * time.Minute)
 	w, cancel := buildDwellTestWorld(t, anchor, 200, 200)
@@ -314,22 +330,32 @@ func TestApplyDwellTickNPCSkipsNarration(t *testing.T) {
 	if r.Applied != 1 {
 		t.Errorf("Applied = %d, want 1", r.Applied)
 	}
-	if len(r.Completions) != 0 {
-		t.Errorf("NPC produced completions: %+v, want none", r.Completions)
+	if len(r.Completions) != 1 {
+		t.Fatalf("NPC Completions = %d, want 1 (PC-only gating dropped)", len(r.Completions))
+	}
+	if !r.Completions[0].FloorHit {
+		t.Errorf("Completion FloorHit = false, want true")
+	}
+	if r.Completions[0].Text != "You feel rested." {
+		t.Errorf("Completion Text = %q, want 'You feel rested.'", r.Completions[0].Text)
 	}
 }
 
-// TestUpsertItemDwellCreditsHappy covers the basic upsert.
+// TestUpsertItemDwellCreditsHappy covers the basic upsert. The returned
+// stamped snapshots should reflect every credit that landed.
 func TestUpsertItemDwellCreditsHappy(t *testing.T) {
 	actor := &sim.Actor{ID: "p", DwellCredits: nil}
 	now := time.Now().UTC()
-	sim.UpsertItemDwellCredits(actor, []sim.ItemSatisfaction{
+	stamped := sim.UpsertItemDwellCredits(actor, "stew", []sim.ItemSatisfaction{
 		{Attribute: "hunger", DwellAmount: 3, DwellPeriodMinutes: 15, DwellTotalTicks: 4},
 		{Attribute: "thirst", DwellAmount: 2, DwellPeriodMinutes: 10, DwellTotalTicks: 3},
 	}, "inn", now)
 
 	if len(actor.DwellCredits) != 2 {
 		t.Fatalf("DwellCredits count = %d, want 2", len(actor.DwellCredits))
+	}
+	if len(stamped) != 2 {
+		t.Fatalf("stamped count = %d, want 2", len(stamped))
 	}
 	hunger := actor.DwellCredits[sim.DwellCreditKey{ObjectID: "inn", Attribute: "hunger", Source: sim.DwellSourceItem}]
 	if hunger == nil || hunger.DwellDelta != -3 || hunger.DwellPeriodMinutes != 15 {
@@ -338,13 +364,16 @@ func TestUpsertItemDwellCreditsHappy(t *testing.T) {
 	if hunger.RemainingTicks == nil || *hunger.RemainingTicks != 4 {
 		t.Errorf("hunger RemainingTicks = %v, want 4", hunger.RemainingTicks)
 	}
+	if hunger.Kind != "stew" {
+		t.Errorf("hunger Kind = %q, want %q", hunger.Kind, "stew")
+	}
 }
 
 // TestUpsertItemDwellCreditsSkipsIncomplete covers missing dwell triple.
 func TestUpsertItemDwellCreditsSkipsIncomplete(t *testing.T) {
 	actor := &sim.Actor{ID: "p"}
 	now := time.Now().UTC()
-	sim.UpsertItemDwellCredits(actor, []sim.ItemSatisfaction{
+	stamped := sim.UpsertItemDwellCredits(actor, "soup", []sim.ItemSatisfaction{
 		{Attribute: "hunger", DwellAmount: 0, DwellPeriodMinutes: 15, DwellTotalTicks: 4},   // amount=0 → skip
 		{Attribute: "thirst", DwellAmount: 2, DwellPeriodMinutes: 0, DwellTotalTicks: 3},    // period=0 → skip
 		{Attribute: "tiredness", DwellAmount: 1, DwellPeriodMinutes: 5, DwellTotalTicks: 0}, // ticks=0 → skip
@@ -354,17 +383,24 @@ func TestUpsertItemDwellCreditsSkipsIncomplete(t *testing.T) {
 	if len(actor.DwellCredits) != 1 {
 		t.Errorf("DwellCredits count = %d, want 1 (only the complete triple)", len(actor.DwellCredits))
 	}
+	if len(stamped) != 1 {
+		t.Errorf("stamped count = %d, want 1", len(stamped))
+	}
 }
 
 // TestUpsertItemDwellCreditsSkipsEmptyStructure covers the
-// eating-while-walking case (structure unknown).
+// eating-while-walking case (structure unknown). Returns nil stamped
+// since no credits landed.
 func TestUpsertItemDwellCreditsSkipsEmptyStructure(t *testing.T) {
 	actor := &sim.Actor{ID: "p"}
-	sim.UpsertItemDwellCredits(actor, []sim.ItemSatisfaction{
+	stamped := sim.UpsertItemDwellCredits(actor, "stew", []sim.ItemSatisfaction{
 		{Attribute: "hunger", DwellAmount: 3, DwellPeriodMinutes: 10, DwellTotalTicks: 2},
 	}, "", time.Now().UTC())
 	if len(actor.DwellCredits) != 0 {
 		t.Errorf("empty structureID produced credits: %d", len(actor.DwellCredits))
+	}
+	if stamped != nil {
+		t.Errorf("empty structureID returned stamped = %v, want nil", stamped)
 	}
 }
 
@@ -377,6 +413,7 @@ func TestUpsertItemDwellCreditsResetsExisting(t *testing.T) {
 		DwellCredits: map[sim.DwellCreditKey]*sim.DwellCredit{
 			{ObjectID: "inn", Attribute: "hunger", Source: sim.DwellSourceItem}: {
 				ObjectID:           "inn",
+				Kind:               "stew",
 				Attribute:          "hunger",
 				Source:             sim.DwellSourceItem,
 				LastCreditedAt:     initial,
@@ -387,7 +424,7 @@ func TestUpsertItemDwellCreditsResetsExisting(t *testing.T) {
 		},
 	}
 	fresh := time.Now().UTC()
-	sim.UpsertItemDwellCredits(actor, []sim.ItemSatisfaction{
+	sim.UpsertItemDwellCredits(actor, "stew", []sim.ItemSatisfaction{
 		{Attribute: "hunger", DwellAmount: 3, DwellPeriodMinutes: 10, DwellTotalTicks: 4},
 	}, "inn", fresh)
 
@@ -401,31 +438,64 @@ func TestUpsertItemDwellCreditsResetsExisting(t *testing.T) {
 }
 
 // TestDwellCompletionNarrationVocab covers vocabulary by attribute,
-// including the precedence rule (item-exhausted over floor-hit).
+// including the precedence rule (item-exhausted over floor-hit) and
+// the v2-new walked-away branch.
 func TestDwellCompletionNarrationVocab(t *testing.T) {
 	cases := []struct {
 		attr      sim.NeedKey
 		source    sim.DwellCreditSource
 		exhausted bool
 		floor     bool
+		walked    bool
 		want      string
 	}{
-		{"hunger", sim.DwellSourceItem, true, false, "You finish the last bite, satisfied."},
-		{"thirst", sim.DwellSourceItem, true, false, "You drain the last drop."},
-		{"tiredness", sim.DwellSourceItem, true, false, "You feel a little less tired than before."},
-		{"hunger", sim.DwellSourceObject, false, true, "You feel full."},
-		{"thirst", sim.DwellSourceObject, false, true, "Your thirst is quenched."},
-		{"tiredness", sim.DwellSourceObject, false, true, "You feel rested."},
-		{"hunger", sim.DwellSourceItem, true, true, "You finish the last bite, satisfied."}, // exhausted wins
-		{"hunger", sim.DwellSourceObject, false, false, ""},                                 // no event
-		{"mood", sim.DwellSourceItem, true, false, "You finish what you had."},              // unknown attr fallback
-		{"mood", sim.DwellSourceObject, false, true, ""},                                    // unknown attr + floor → ""
+		{"hunger", sim.DwellSourceItem, true, false, false, "You finish the last bite, satisfied."},
+		{"thirst", sim.DwellSourceItem, true, false, false, "You drain the last drop."},
+		{"tiredness", sim.DwellSourceItem, true, false, false, "You feel a little less tired than before."},
+		{"hunger", sim.DwellSourceObject, false, true, false, "You feel full."},
+		{"thirst", sim.DwellSourceObject, false, true, false, "Your thirst is quenched."},
+		{"tiredness", sim.DwellSourceObject, false, true, false, "You feel rested."},
+		{"hunger", sim.DwellSourceItem, true, true, false, "You finish the last bite, satisfied."}, // exhausted wins
+		{"hunger", sim.DwellSourceItem, false, false, true, "You walk away from your meal, leaving it half-eaten."},
+		{"thirst", sim.DwellSourceItem, false, false, true, "You walk away from your drink."},
+		{"tiredness", sim.DwellSourceObject, false, false, true, "You stop resting and move on."},
+		{"hunger", sim.DwellSourceObject, false, false, true, ""},                     // object+walked+hunger has no line
+		{"hunger", sim.DwellSourceObject, false, false, false, ""},                    // no event
+		{"mood", sim.DwellSourceItem, true, false, false, "You finish what you had."}, // unknown attr fallback
+		{"mood", sim.DwellSourceObject, false, true, false, ""},                       // unknown attr + floor → ""
 	}
 	for _, c := range cases {
-		got := sim.DwellCompletionNarration(c.attr, c.source, c.exhausted, c.floor)
+		got := sim.DwellCompletionNarration(c.attr, c.source, c.exhausted, c.floor, c.walked)
 		if got != c.want {
-			t.Errorf("Narration(%q, %q, exh=%t, floor=%t) = %q, want %q",
-				c.attr, c.source, c.exhausted, c.floor, got, c.want)
+			t.Errorf("Narration(%q, %q, exh=%t, floor=%t, walked=%t) = %q, want %q",
+				c.attr, c.source, c.exhausted, c.floor, c.walked, got, c.want)
+		}
+	}
+}
+
+// TestDwellTickNarrationVocab covers the per-tick payoff vocab — one
+// felt-language line per (attribute, source). Unknown combinations
+// return "".
+func TestDwellTickNarrationVocab(t *testing.T) {
+	cases := []struct {
+		attr   sim.NeedKey
+		source sim.DwellCreditSource
+		want   string
+	}{
+		{"hunger", sim.DwellSourceItem, "You take another bite, the gnawing ebbs."},
+		{"thirst", sim.DwellSourceItem, "You drink; the dryness fades."},
+		{"tiredness", sim.DwellSourceItem, "You rest a moment; the weariness eases."},
+		{"hunger", sim.DwellSourceObject, "You pick at what's here; the gnawing eases."},
+		{"thirst", sim.DwellSourceObject, "You sip from the source; the dryness fades."},
+		{"tiredness", sim.DwellSourceObject, "You linger here; the weariness eases."},
+		{"mood", sim.DwellSourceItem, ""},   // unknown attr → ""
+		{"mood", sim.DwellSourceObject, ""}, // unknown attr → ""
+	}
+	for _, c := range cases {
+		got := sim.DwellTickNarration(c.attr, c.source)
+		if got != c.want {
+			t.Errorf("DwellTickNarration(%q, %q) = %q, want %q",
+				c.attr, c.source, got, c.want)
 		}
 	}
 }

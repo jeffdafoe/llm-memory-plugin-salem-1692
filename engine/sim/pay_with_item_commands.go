@@ -1226,8 +1226,9 @@ func commitPayTransfer(
 			}
 			applied := applyConsumeSatisfactions(consumer, def, entry.Qty)
 			structureID := findNearestVillageObject(w, float64(consumer.CurrentX), float64(consumer.CurrentY))
+			var stamped []DwellCreditSnapshot
 			if structureID != "" && def != nil {
-				UpsertItemDwellCredits(consumer, def.Satisfies, structureID, at)
+				stamped = UpsertItemDwellCredits(consumer, entry.ItemKind, def.Satisfies, structureID, at)
 			}
 			w.emit(&ItemConsumed{
 				ActorID: cid,
@@ -1236,6 +1237,20 @@ func commitPayTransfer(
 				Applied: applied,
 				At:      at,
 			})
+			if len(stamped) > 0 {
+				narration := ""
+				if def != nil {
+					narration = def.ConsumeDwellNarration
+				}
+				w.emit(&DwellStarted{
+					ActorID:       cid,
+					Kind:          entry.ItemKind,
+					StructureID:   structureID,
+					Credits:       stamped,
+					NarrationText: narration,
+					At:            at,
+				})
+			}
 		} else {
 			// Takeaway: items go to consumer inventory.
 			if err := transferItem(w, seller, consumer, entry.ItemKind, entry.Qty); err != nil {
