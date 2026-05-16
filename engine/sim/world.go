@@ -208,6 +208,13 @@ type World struct {
 	// (wholesale/retail prices).
 	Recipes map[ItemKind]*ItemRecipe
 
+	// ItemKind catalog — reference state. Keyed by Name (== ItemKind). The
+	// definitional source for an item's display label, category, default
+	// price, sort order, and per-need satisfies entries (port of v1's
+	// item_kind + item_satisfies tables). Loaded at startup; hot-reloaded
+	// on SIGHUP when admin edits land. See item_kind.go.
+	ItemKinds map[ItemKind]*ItemKindDef
+
 	// Terrain — reference state, loaded once at startup. MapW * MapH
 	// bytes of per-tile terrain type. Hot-reload on SIGHUP if needed.
 	Terrain *Terrain
@@ -331,6 +338,7 @@ func NewWorld(repo Repository) *World {
 		VillageObjects:    make(map[VillageObjectID]*VillageObject),
 		Assets:            make(map[AssetID]*Asset),
 		Recipes:           make(map[ItemKind]*ItemRecipe),
+		ItemKinds:         make(map[ItemKind]*ItemKindDef),
 		actorsByStructure: make(map[StructureID]map[ActorID]struct{}),
 		actorsByHuddle:    make(map[HuddleID]map[ActorID]struct{}),
 		outdoorActors:     make(map[ActorID]struct{}),
@@ -406,6 +414,12 @@ func LoadWorld(ctx context.Context, repo Repository) (*World, error) {
 		return nil, err
 	}
 	w.Recipes = recipes
+
+	itemKinds, err := repo.ItemKinds.LoadAll(ctx)
+	if err != nil {
+		return nil, err
+	}
+	w.ItemKinds = itemKinds
 
 	terrain, err := repo.Terrain.Load(ctx)
 	if err != nil {
