@@ -2,6 +2,7 @@ package sim_test
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"testing"
 	"time"
@@ -119,9 +120,6 @@ func TestFindCandidates_FirstQualifiesAtMinFacts(t *testing.T) {
 	if c.ActorID != "hannah" || c.PeerID != "ezekiel" {
 		t.Errorf("candidate = (%s→%s), want (hannah→ezekiel)", c.ActorID, c.PeerID)
 	}
-	if c.SnapshotLen != sim.ConsolidationFirstMinFacts {
-		t.Errorf("SnapshotLen = %d, want %d", c.SnapshotLen, sim.ConsolidationFirstMinFacts)
-	}
 	if c.ActorName != "Hannah" || c.PeerName != "Ezekiel Crane" {
 		t.Errorf("display names = (%q,%q)", c.ActorName, c.PeerName)
 	}
@@ -145,7 +143,7 @@ func TestFindCandidates_CeilingForcesPass(t *testing.T) {
 	// Pretend we just consolidated 1 minute ago — well inside the
 	// daily floor.
 	recent := at.Add(-1 * time.Minute)
-	if _, err := w.Send(sim.ApplyConsolidation("hannah", "ezekiel", "prior summary", 0, recent)); err != nil {
+	if _, err := w.Send(sim.ApplyConsolidation("hannah", "ezekiel", "prior summary", nil, recent)); err != nil {
 		t.Fatalf("ApplyConsolidation seed: %v", err)
 	}
 	cs := candidates(t, w, at, 5)
@@ -170,15 +168,15 @@ func TestFindCandidates_FloorOverdue(t *testing.T) {
 	recordN(t, w, "ezekiel", 1, at)
 	// Pretend we consolidated 25h ago — past the daily floor.
 	stale := at.Add(-25 * time.Hour)
-	if _, err := w.Send(sim.ApplyConsolidation("hannah", "ezekiel", "old summary", 0, stale)); err != nil {
+	if _, err := w.Send(sim.ApplyConsolidation("hannah", "ezekiel", "old summary", nil, stale)); err != nil {
 		t.Fatalf("ApplyConsolidation seed: %v", err)
 	}
 	cs := candidates(t, w, at, 5)
 	if len(cs) != 1 {
 		t.Fatalf("len(candidates) = %d, want 1 (floor)", len(cs))
 	}
-	if cs[0].SnapshotLen != 1 {
-		t.Errorf("SnapshotLen = %d, want 1", cs[0].SnapshotLen)
+	if len(cs[0].Facts) != 1 {
+		t.Errorf("len(Facts) = %d, want 1", len(cs[0].Facts))
 	}
 }
 
@@ -230,7 +228,7 @@ func TestFindCandidates_OrderingCeilingFirst(t *testing.T) {
 	// is on the rememberer side (hannah is KindNPCShared).
 	recordN(t, w, "ezekiel", sim.ConsolidationCeiling, at)
 	recent := at.Add(-1 * time.Minute)
-	if _, err := w.Send(sim.ApplyConsolidation("hannah", "ezekiel", "recent summary", 0, recent)); err != nil {
+	if _, err := w.Send(sim.ApplyConsolidation("hannah", "ezekiel", "recent summary", nil, recent)); err != nil {
 		t.Fatalf("ApplyConsolidation seed: %v", err)
 	}
 	recordN(t, w, "player", sim.ConsolidationFirstMinFacts, at)
@@ -287,8 +285,8 @@ func TestFindCandidates_DeterministicOrder(t *testing.T) {
 }
 
 // TestApplyConsolidation_BasicReplaceAndPrune confirms the apply path
-// replaces SummaryText, prunes the first SnapshotLen facts, and stamps
-// LastConsolidatedAt.
+// replaces SummaryText, prunes the snapshotted facts from the prefix,
+// and stamps LastConsolidatedAt.
 func TestApplyConsolidation_BasicReplaceAndPrune(t *testing.T) {
 	w, stop := buildConsolidationTestWorld(t)
 	defer stop()
@@ -301,7 +299,7 @@ func TestApplyConsolidation_BasicReplaceAndPrune(t *testing.T) {
 	}
 	c := cs[0]
 	apply := at.Add(1 * time.Second)
-	if _, err := w.Send(sim.ApplyConsolidation(c.ActorID, c.PeerID, "she's a regular", c.SnapshotLen, apply)); err != nil {
+	if _, err := w.Send(sim.ApplyConsolidation(c.ActorID, c.PeerID, "she's a regular", c.Facts, apply)); err != nil {
 		t.Fatalf("ApplyConsolidation: %v", err)
 	}
 
@@ -319,8 +317,9 @@ func TestApplyConsolidation_BasicReplaceAndPrune(t *testing.T) {
 }
 
 // TestApplyConsolidation_PostSnapshotAppendsSurvive is the load-bearing
-// race-safety test: facts appended between snapshot and apply must
-// remain in SalientFacts after the prune.
+// race-safety test: facts appended between snapshot and apply (without
+// FIFO eviction shifting the prefix) must remain in SalientFacts after
+// the prune.
 func TestApplyConsolidation_PostSnapshotAppendsSurvive(t *testing.T) {
 	w, stop := buildConsolidationTestWorld(t)
 	defer stop()
@@ -332,7 +331,7 @@ func TestApplyConsolidation_PostSnapshotAppendsSurvive(t *testing.T) {
 		t.Fatalf("setup: candidates = %d", len(cs))
 	}
 	c := cs[0]
-	snapshotLen := c.SnapshotLen
+	snapshotFacts := c.Facts
 
 	// Simulate facts landing during the LLM call.
 	post := at.Add(1 * time.Second)
@@ -344,7 +343,7 @@ func TestApplyConsolidation_PostSnapshotAppendsSurvive(t *testing.T) {
 	}
 
 	apply := at.Add(2 * time.Second)
-	if _, err := w.Send(sim.ApplyConsolidation(c.ActorID, c.PeerID, "new summary", snapshotLen, apply)); err != nil {
+	if _, err := w.Send(sim.ApplyConsolidation(c.ActorID, c.PeerID, "new summary", snapshotFacts, apply)); err != nil {
 		t.Fatalf("ApplyConsolidation: %v", err)
 	}
 
@@ -366,7 +365,7 @@ func TestApplyConsolidation_RejectsEmptySummary(t *testing.T) {
 	at := time.Now().UTC()
 	recordN(t, w, "ezekiel", sim.ConsolidationFirstMinFacts, at)
 
-	_, err := w.Send(sim.ApplyConsolidation("hannah", "ezekiel", "", 5, at))
+	_, err := w.Send(sim.ApplyConsolidation("hannah", "ezekiel", "", nil, at))
 	if err == nil {
 		t.Fatal("ApplyConsolidation with empty summary: no error")
 	}
@@ -376,7 +375,7 @@ func TestApplyConsolidation_RejectsEmptySummary(t *testing.T) {
 func TestApplyConsolidation_RejectsUnknownActor(t *testing.T) {
 	w, stop := buildConsolidationTestWorld(t)
 	defer stop()
-	_, err := w.Send(sim.ApplyConsolidation("ghost", "ezekiel", "x", 0, time.Now()))
+	_, err := w.Send(sim.ApplyConsolidation("ghost", "ezekiel", "x", nil, time.Now()))
 	if err == nil {
 		t.Fatal("ApplyConsolidation with unknown actor: no error")
 	}
@@ -388,39 +387,82 @@ func TestApplyConsolidation_RejectsUnknownActor(t *testing.T) {
 func TestApplyConsolidation_RejectsNonShared(t *testing.T) {
 	w, stop := buildConsolidationTestWorld(t)
 	defer stop()
-	_, err := w.Send(sim.ApplyConsolidation("ezekiel", "hannah", "x", 0, time.Now()))
+	_, err := w.Send(sim.ApplyConsolidation("ezekiel", "hannah", "x", nil, time.Now()))
 	if err == nil {
 		t.Fatal("ApplyConsolidation on stateful actor: no error")
 	}
 }
 
-// TestApplyConsolidation_StaleSnapshotPreservesFactsAndStamps confirms
-// the defensive branch: if SalientFacts shrunk below snapshotLen
-// between snapshot and apply, we still install the summary and stamp
-// the marker but skip the prune (avoid panic / data loss).
-func TestApplyConsolidation_StaleSnapshotPreservesFactsAndStamps(t *testing.T) {
+// TestApplyConsolidation_StaleSnapshotErrors verifies that a snapshot
+// whose facts no longer match the live SalientFacts prefix returns
+// ErrStaleConsolidationSnapshot and writes nothing — no summary
+// install, no prune, no LastConsolidatedAt stamp. This is the
+// FIFO-eviction-during-LLM-call race case: the prefix the worker saw
+// has been evicted off the front, so we cannot safely prune by length
+// without losing post-snapshot appends.
+func TestApplyConsolidation_StaleSnapshotErrors(t *testing.T) {
 	w, stop := buildConsolidationTestWorld(t)
 	defer stop()
 	at := time.Now().UTC()
 	recordN(t, w, "ezekiel", 3, at)
 
-	// Snapshot says 3 but pretend the slice has dropped to 1 by apply
-	// time. No command does this today; we simulate by calling apply
-	// with snapshotLen=10 (well above current len).
-	apply := at.Add(time.Second)
-	if _, err := w.Send(sim.ApplyConsolidation("hannah", "ezekiel", "summary", 10, apply)); err != nil {
-		t.Fatalf("ApplyConsolidation: %v", err)
+	// Construct a snapshot that does NOT match the live prefix. The
+	// live slice has 3 facts with text "x"; we pass a "snapshot" with
+	// different text so prefix-equal returns false.
+	bogusSnapshot := []sim.SalientFact{
+		{At: at, Kind: sim.InteractionHeard, Text: "wrong text 1"},
+		{At: at.Add(time.Second), Kind: sim.InteractionHeard, Text: "wrong text 2"},
+		{At: at.Add(2 * time.Second), Kind: sim.InteractionHeard, Text: "wrong text 3"},
+	}
+	apply := at.Add(time.Minute)
+	_, err := w.Send(sim.ApplyConsolidation("hannah", "ezekiel", "would-be summary", bogusSnapshot, apply))
+	if err == nil {
+		t.Fatal("ApplyConsolidation with stale snapshot: no error (want ErrStaleConsolidationSnapshot)")
+	}
+	if !errors.Is(err, sim.ErrStaleConsolidationSnapshot) {
+		t.Errorf("err = %v, want ErrStaleConsolidationSnapshot via errors.Is", err)
 	}
 
+	// Row left untouched: SummaryText empty, all 3 facts present,
+	// LastConsolidatedAt nil.
 	snap := w.Published()
 	rel := snap.Actors["hannah"].Relationships["ezekiel"]
-	if rel.SummaryText != "summary" {
-		t.Errorf("SummaryText = %q, want summary", rel.SummaryText)
+	if rel.SummaryText != "" {
+		t.Errorf("SummaryText = %q, want untouched empty", rel.SummaryText)
 	}
 	if len(rel.SalientFacts) != 3 {
-		t.Errorf("SalientFacts len = %d, want 3 (stale snapshot skips prune)", len(rel.SalientFacts))
+		t.Errorf("SalientFacts len = %d, want 3 (no prune on stale)", len(rel.SalientFacts))
+	}
+	if rel.LastConsolidatedAt != nil {
+		t.Errorf("LastConsolidatedAt = %v, want nil (no stamp on stale)", rel.LastConsolidatedAt)
+	}
+}
+
+// TestApplyConsolidation_EmptySnapshotInstallsSummary verifies the
+// edge case where the snapshot has zero facts (e.g. all facts evicted
+// before the worker even got the snapshot from FindCandidates — not
+// realistic today since FindCandidates filters on len > 0, but the
+// apply path defends against it). Should install summary + stamp.
+func TestApplyConsolidation_EmptySnapshotInstallsSummary(t *testing.T) {
+	w, stop := buildConsolidationTestWorld(t)
+	defer stop()
+	at := time.Now().UTC()
+	recordN(t, w, "ezekiel", 3, at)
+	// Send a first "seed" apply with nil snapshot to install the
+	// relationship's LastConsolidatedAt — this is the same path the
+	// other test seeds use, and it must succeed.
+	if _, err := w.Send(sim.ApplyConsolidation("hannah", "ezekiel", "first summary", nil, at.Add(time.Second))); err != nil {
+		t.Fatalf("ApplyConsolidation empty-snapshot: %v", err)
+	}
+	snap := w.Published()
+	rel := snap.Actors["hannah"].Relationships["ezekiel"]
+	if rel.SummaryText != "first summary" {
+		t.Errorf("SummaryText = %q, want 'first summary'", rel.SummaryText)
+	}
+	if len(rel.SalientFacts) != 3 {
+		t.Errorf("SalientFacts len = %d, want 3 (empty snapshot does not prune)", len(rel.SalientFacts))
 	}
 	if rel.LastConsolidatedAt == nil {
-		t.Error("LastConsolidatedAt not stamped on stale-snapshot path")
+		t.Error("LastConsolidatedAt not stamped on empty-snapshot apply")
 	}
 }

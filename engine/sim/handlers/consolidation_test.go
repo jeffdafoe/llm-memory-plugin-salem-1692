@@ -430,6 +430,123 @@ func TestRegisterConsolidation_PanicsOnNilClient(t *testing.T) {
 	RegisterConsolidation(context.Background(), w, nil)
 }
 
+// TestRunOneSweep_CapEvictionDuringLLMCallPreservesFacts is the
+// load-bearing regression test for the FIFO-eviction-during-LLM-call
+// race that code_review caught.
+//
+// Scenario:
+//  1. Snapshot taken at len(SalientFacts) = 20 = ConsolidationCeiling.
+//  2. LLM call blocks.
+//  3. 15 new facts land via RecordInteraction.
+//  4. After fact 11 lands, live len would be 31 → FIFO cap
+//     (MaxSalientFactsPerRelationship=30) evicts oldest. After all
+//     15 land, the slice's first 5 entries have been evicted —
+//     so the original snapshot's prefix is no longer in the slice.
+//  5. Apply runs with the original snapshot.
+//
+// Pre-fix bug: ApplyConsolidation pruned by raw length, which deleted
+// the first 5 post-snapshot facts (they had shifted into the [0:5]
+// indices after eviction).
+//
+// Post-fix behavior: ApplyConsolidation detects the prefix mismatch,
+// returns ErrStaleConsolidationSnapshot, makes no writes. The
+// relationship's SalientFacts retains the post-eviction live state:
+// 15 old facts that survived eviction + 15 new facts. SummaryText
+// stays empty (not stamped); LastConsolidatedAt stays nil. The next
+// sweep will pick this relationship up via the ceiling branch and
+// retry from a fresh snapshot.
+func TestRunOneSweep_CapEvictionDuringLLMCallPreservesFacts(t *testing.T) {
+	w, stop := buildConsolidationHandlerWorld(t)
+	defer stop()
+	at := time.Now().UTC()
+
+	// Drive exactly ConsolidationCeiling (20) facts pre-snapshot.
+	// Each fact has a distinct text so we can verify which survived.
+	for i := 0; i < sim.ConsolidationCeiling; i++ {
+		text := "old-" + string(rune('A'+i))
+		if _, err := w.Send(sim.RecordInteraction("hannah", "ezekiel", sim.InteractionHeard, text, at.Add(time.Duration(i)*time.Second))); err != nil {
+			t.Fatalf("RecordInteraction old-%d: %v", i, err)
+		}
+	}
+
+	client := newBlockingLLMClient()
+
+	done := make(chan struct{})
+	go func() {
+		runOneSweep(context.Background(), w, client)
+		close(done)
+	}()
+
+	// Wait for the worker to reach the LLM call.
+	select {
+	case <-client.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("worker did not reach LLM call within timeout")
+	}
+
+	// Now push enough new facts to make live len exceed
+	// MaxSalientFactsPerRelationship — FIFO will evict from the
+	// front. We append 15 new facts: live grows from 20 to 30 (no
+	// eviction yet), then 31 → evict oldest → 30, then 32 → 30,
+	// ..., final state: 15 oldest evicted, slice = old[5:20] + new[0:15].
+	newFactCount := 15
+	postBase := at.Add(time.Hour)
+	for i := 0; i < newFactCount; i++ {
+		text := "new-" + string(rune('A'+i))
+		if _, err := w.Send(sim.RecordInteraction("hannah", "ezekiel", sim.InteractionHeard, text, postBase.Add(time.Duration(i)*time.Second))); err != nil {
+			t.Fatalf("RecordInteraction new-%d: %v", i, err)
+		}
+	}
+
+	// Sanity check the live state before release.
+	{
+		snap := w.Published()
+		rel := snap.Actors["hannah"].Relationships["ezekiel"]
+		if got := len(rel.SalientFacts); got != sim.MaxSalientFactsPerRelationship {
+			t.Fatalf("pre-release SalientFacts len = %d, want %d (FIFO cap)", got, sim.MaxSalientFactsPerRelationship)
+		}
+		if got := rel.DroppedFactCount; got != newFactCount-(sim.MaxSalientFactsPerRelationship-sim.ConsolidationCeiling) {
+			// Eviction count = total appends - headroom-before-cap
+			// = 15 - (30 - 20) = 5
+			t.Fatalf("DroppedFactCount = %d, want %d", got, newFactCount-(sim.MaxSalientFactsPerRelationship-sim.ConsolidationCeiling))
+		}
+	}
+
+	// Release the LLM call. The worker will Apply with the original
+	// 20-fact snapshot, which no longer matches the live prefix.
+	client.release <- llm.Response{Content: "would-be summary"}
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runOneSweep did not complete after release")
+	}
+
+	// Verify: no writes happened on the relationship. The live slice
+	// is still 30 facts (post-eviction live state), SummaryText is
+	// empty, LastConsolidatedAt is nil.
+	snap := w.Published()
+	rel := snap.Actors["hannah"].Relationships["ezekiel"]
+	if rel.SummaryText != "" {
+		t.Errorf("SummaryText = %q, want untouched empty (stale snapshot must not install summary)", rel.SummaryText)
+	}
+	if rel.LastConsolidatedAt != nil {
+		t.Errorf("LastConsolidatedAt = %v, want nil (stale snapshot must not stamp)", rel.LastConsolidatedAt)
+	}
+	if got := len(rel.SalientFacts); got != sim.MaxSalientFactsPerRelationship {
+		t.Errorf("SalientFacts len = %d, want %d (apply must not touch the slice on stale)",
+			got, sim.MaxSalientFactsPerRelationship)
+	}
+	// First fact should be old-F (index 5 of original = 'A'+5 = 'F')
+	// since the first 5 were FIFO-evicted. Last fact should be new-O.
+	if got := rel.SalientFacts[0].Text; got != "old-F" {
+		t.Errorf("first surviving fact = %q, want old-F (after 5 evictions from front)", got)
+	}
+	if got := rel.SalientFacts[len(rel.SalientFacts)-1].Text; got != "new-O" {
+		t.Errorf("last fact = %q, want new-O", got)
+	}
+}
+
 // TestRunOneSweep_ErrorIsClassified pins behavior on classified
 // llm.Error types — they propagate as-is via errors.Is.
 func TestRunOneSweep_ErrorIsClassified(t *testing.T) {
