@@ -162,6 +162,22 @@ type WorldSettings struct {
 	// mental model.
 	PayLedgerTTL          time.Duration
 	PayLedgerSweepCadence time.Duration
+
+	// Order substrate tunables (Phase 3 PR S6). Both fall back to
+	// order.go's *Default constants when zero. The order TTL is the
+	// post-acceptance fulfillment window — longer than PayLedgerTTL
+	// since at this stage the buyer has already committed (coins
+	// debited) and we want plenty of room for the seller's reactor
+	// to fire and deliver.
+	//
+	// OrderTTL: how long an Order at OrderStateReady sits before
+	// the aging sweep flips it OrderStateExpired. Default 10 min.
+	//
+	// OrderSweepCadence: how often the aging sweep scans World.Orders
+	// for expired entries. Default 60s — matches the PayLedger and
+	// SceneQuote sweep cadences.
+	OrderTTL          time.Duration
+	OrderSweepCadence time.Duration
 }
 
 // DefaultOutdoorSceneRadiusValue is the fallback radius used when
@@ -228,6 +244,13 @@ type sceneQuoteSweepState struct {
 // aging sweep's AfterFunc self-rearm chain (Phase 3 PR S4 step 8).
 // Same shape and rules as sceneQuoteSweepState.
 type payLedgerSweepState struct {
+	scheduled bool
+}
+
+// orderSweepState carries the coalescing flag for the Order aging
+// sweep's AfterFunc self-rearm chain (Phase 3 PR S6). Same shape
+// and rules as payLedgerSweepState.
+type orderSweepState struct {
 	scheduled bool
 }
 
@@ -324,6 +347,7 @@ type World struct {
 	locomotionTick  locomotionTickerState
 	sceneQuoteSweep sceneQuoteSweepState
 	payLedgerSweep  payLedgerSweepState
+	orderSweep      orderSweepState
 
 	// quoteSeq is the monotonic per-run QuoteID counter — same shape
 	// and rules as eventSeq. Incremented before assignment; first
@@ -337,6 +361,12 @@ type World struct {
 	// sentinel / "no parent" / "no quote referenced").
 	// World-goroutine-only (touched exclusively from inside Command.Fn).
 	payLedgerSeq uint64
+
+	// orderSeq is the monotonic per-run OrderID counter — same shape
+	// and rules as payLedgerSeq. Incremented before assignment; first
+	// minted OrderID is 1 (OrderID(0) reserved as the unset sentinel).
+	// World-goroutine-only (touched exclusively from inside Command.Fn).
+	orderSeq uint64
 
 	// payLedgerSink is the best-effort projection target for PayLedger
 	// state transitions. Never nil: NewWorld installs nullPayLedgerSink,
@@ -621,6 +651,24 @@ func LoadWorld(ctx context.Context, repo Repository) (*World, error) {
 	// reaches into the actor's warrant slice directly via
 	// tryStampWarrant.
 	restartReStampPayOfferWarrants(w, time.Now())
+
+	// Order restart housekeeping (Phase 3 PR S6). No OrdersRepo exists
+	// yet (pg-impl deferred to cutover), so this loop iterates an empty
+	// map today. Implementation is correct for the future case where
+	// orders load from a repo: any Ready Order already past its
+	// ExpiresAt at restart is flipped to Expired in-band, mirroring
+	// restartExpirePendingEntries' pay-ledger pattern. Active Ready
+	// orders survive the load with absolute ExpiresAt intact; the
+	// aging sweep picks them up on its first pass.
+	restartExpirePendingOrders(w, time.Now())
+	// Order sequence counter safety floor: same posture as quoteSeq /
+	// payLedgerSeq.
+	for id := range w.Orders {
+		if uint64(id) > w.orderSeq {
+			w.orderSeq = uint64(id)
+		}
+	}
+
 	w.republish()
 	return w, nil
 }

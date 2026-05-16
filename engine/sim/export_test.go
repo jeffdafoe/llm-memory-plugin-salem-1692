@@ -252,6 +252,42 @@ func ApplyPayLedgerCounterSafetyFloor(w *World) {
 // behavior in isolation.
 func PayLedgerSeqForTest(w *World) uint64 { return w.payLedgerSeq }
 
+// NextOrderSeq is the world-goroutine-only OrderID minter for tests
+// (callers MUST be inside a Command.Fn). Phase 3 PR S6.
+func NextOrderSeq(w *World) OrderID { return w.nextOrderSeq() }
+
+// EffectiveOrderTTL exposes the WorldSettings → default fallback for
+// table tests. Phase 3 PR S6.
+func EffectiveOrderTTL(s WorldSettings) time.Duration { return effectiveOrderTTL(s) }
+
+// EffectiveOrderSweepCadence exposes the WorldSettings → default
+// fallback for table tests. Phase 3 PR S6.
+func EffectiveOrderSweepCadence(s WorldSettings) time.Duration { return effectiveOrderSweepCadence(s) }
+
+// RestartExpirePendingOrders is the LoadWorld-time order expiry pass.
+// Test hook for the PR S6 restart contract.
+func RestartExpirePendingOrders(w *World, now time.Time) { restartExpirePendingOrders(w, now) }
+
+// OrderSeqForTest exposes the per-run OrderID counter so PR S6
+// sim_test can assert "counter starts at 0" and restart safety-floor
+// behavior in isolation.
+func OrderSeqForTest(w *World) uint64 { return w.orderSeq }
+
+// CreateOrderForPayWithItem exposes the internal helper that mints
+// an Order from a PayLedgerEntry at AcceptPay time. Test hook so
+// the order_commands_test.go suite can verify substrate behavior
+// without driving a full pay-with-item flow.
+func CreateOrderForPayWithItem(w *World, entry *PayLedgerEntry, at time.Time) OrderID {
+	return createOrderForPayWithItem(w, entry, at)
+}
+
+// FinalizeOrderTerminal exposes the helper used by both DeliverOrder
+// and EvaluateOrderSweep so direct sweep-skip tests can pre-flip an
+// Order's state without running the full sweep.
+func FinalizeOrderTerminal(w *World, o *Order, terminal OrderState, at time.Time) {
+	finalizeOrderTerminal(w, o, terminal, at)
+}
+
 // RepublishForTest invokes World.republish so substrate tests can swap
 // the published Snapshot without driving a full Command round trip
 // (which would require starting Run). Production callers never need

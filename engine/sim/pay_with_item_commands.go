@@ -1172,15 +1172,21 @@ func finalizePayLedgerTerminal(
 //
 // Item flow:
 //
-//   - ConsumeNow=false: stock moves from seller into each consumer's
-//     inventory (qty per consumer). Empty consumer set = buyer is the
-//     single consumer.
+//   - ConsumeNow=false: stock STAYS in seller's inventory. An Order
+//     is minted via createOrderForPayWithItem and OrderCreated is
+//     emitted. Goods transfer happens at deliver_order time on the
+//     seller's subsequent reactor tick (Phase 3 PR S6 — the
+//     post-acceptance fulfillment state machine). Pre-S6 this branch
+//     transferred goods immediately at accept; the architecture lock
+//     (ledger-substrate § 2) moved goods movement to deliver_order
+//     so the seller has narrative agency in the handover.
 //   - ConsumeNow=true: stock leaves seller's inventory, but does NOT
 //     land on the consumer's. Instead, the consumer's needs decrement
 //     per the ItemKind's Satisfies list (mirrors sim.Consume), dwell
 //     credits are upserted at the consumer's nearest VillageObject, and
 //     one ItemConsumed event per consumer is emitted with the applied
-//     deltas.
+//     deltas. No Order minted — eat-on-the-spot has no post-accept
+//     fulfillment to track.
 //
 // forText (slow-path: empty; fast-path: the buyer's flavor text on the
 // pay_with_item call) is folded into the buyer/seller SalientFact via
@@ -1203,16 +1209,17 @@ func commitPayTransfer(
 	}
 
 	def := w.ItemKinds[entry.ItemKind]
-	for _, cid := range consumers {
-		consumer, ok := w.Actors[cid]
-		if !ok {
-			// Shouldn't happen — gate 9 verified consumer presence in
-			// the huddle. Conservative skip.
-			continue
-		}
-		if entry.ConsumeNow {
-			// Items leave seller inventory; consumer needs satisfied
-			// directly. Mirrors sim.Consume's apply + dwell-stamp shape.
+	if entry.ConsumeNow {
+		// Eat-on-the-spot: stock leaves seller, consumer needs
+		// satisfied directly. Per-consumer apply + dwell stamp +
+		// ItemConsumed emit. No Order minted.
+		for _, cid := range consumers {
+			consumer, ok := w.Actors[cid]
+			if !ok {
+				// Shouldn't happen — gate 9 verified consumer presence
+				// in the huddle. Conservative skip.
+				continue
+			}
 			have := seller.Inventory[entry.ItemKind]
 			if have < entry.Qty {
 				// Defensive — gate 10 ensured `seller.Inventory[kind]
@@ -1251,12 +1258,13 @@ func commitPayTransfer(
 					At:            at,
 				})
 			}
-		} else {
-			// Takeaway: items go to consumer inventory.
-			if err := transferItem(w, seller, consumer, entry.ItemKind, entry.Qty); err != nil {
-				return fmt.Errorf("commitPayTransfer: transferItem to %q: %w", cid, err)
-			}
 		}
+	} else {
+		// Take-home: stock STAYS in seller's inventory. Mint an Order
+		// to track the pending delivery; the seller's deliver_order
+		// tool call will transfer goods to each consumer when the
+		// handover narrative beat fires (Phase 3 PR S6).
+		createOrderForPayWithItem(w, entry, at)
 	}
 
 	// Bidirectional Paid / PaidBy SalientFacts for the buyer↔seller
