@@ -221,7 +221,13 @@ func RebuildSceneQuoteIndexForTest(w *World) { rebuildSceneQuoteIndex(w) }
 // InvokePayLedgerSink calls through to the installed sink's Project so
 // the SetPayLedgerSink(nil) restoration test can verify the field is
 // never nil at call sites.
-func NextLedgerSeq(w *World) LedgerID                     { return w.nextLedgerSeq() }
+func NextLedgerSeq(w *World) LedgerID { return w.nextLedgerSeq() }
+
+// RestartReStampPayOfferWarrants exposes the LoadWorld pay-offer
+// warrant re-stamp pass for direct unit tests. PR S4 step 7.
+func RestartReStampPayOfferWarrants(w *World, now time.Time) {
+	restartReStampPayOfferWarrants(w, now)
+}
 func EffectivePayLedgerTTL(s WorldSettings) time.Duration { return effectivePayLedgerTTL(s) }
 func EffectivePayLedgerSweepCadence(s WorldSettings) time.Duration {
 	return effectivePayLedgerSweepCadence(s)
