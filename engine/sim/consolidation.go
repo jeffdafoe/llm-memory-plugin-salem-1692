@@ -22,11 +22,13 @@ import (
 //   2. Worker (handlers/) calls the LLM with the prompt, receives a
 //      new SummaryText.
 //
-//   3. ApplyConsolidation runs back on the world goroutine: replace
-//      Relationship.SummaryText, prune the first SnapshotLen entries
-//      from SalientFacts (anything appended during the LLM call
-//      survives — race-safety via prune-by-snapshot-length, same
-//      pattern as v1), stamp LastConsolidatedAt.
+//   3. ApplyConsolidation runs back on the world goroutine: verify
+//      that the snapshot facts still match the live SalientFacts
+//      prefix (defends against FIFO cap eviction during the LLM
+//      call); on match, replace Relationship.SummaryText, prune
+//      the prefix, stamp LastConsolidatedAt; on mismatch, return
+//      ErrStaleConsolidationSnapshot — no writes, next sweep
+//      re-snapshots from current state and retries.
 //
 // Selection rules (3 OR branches):
 //
@@ -84,7 +86,8 @@ const ConsolidationSweepInterval = 15 * time.Minute
 // off-world worker needs to build a consolidation prompt and apply
 // the result. Produced by FindConsolidationCandidates; consumed by
 // the worker which builds the LLM Request and then issues
-// ApplyConsolidation with the SnapshotLen for race-safe pruning.
+// ApplyConsolidation, passing Facts through as the snapshot that the
+// apply path verifies against the live slice's prefix.
 //
 // All fields are owned by the candidate (deep-copied at scan time)
 // so the worker can read them without holding any reference back
@@ -97,7 +100,6 @@ type ConsolidationCandidate struct {
 	ActorLLMAgent    string
 	PriorSummary     string
 	Facts            []SalientFact
-	SnapshotLen      int
 	LastConsolidated *time.Time
 }
 
@@ -199,7 +201,6 @@ func FindConsolidationCandidates(at time.Time, limit int) Command {
 					ActorLLMAgent:    e.actor.LLMAgent,
 					PriorSummary:     e.rel.SummaryText,
 					Facts:            factsCopy,
-					SnapshotLen:      len(factsCopy),
 					LastConsolidated: lastCons,
 				})
 			}
@@ -208,34 +209,44 @@ func FindConsolidationCandidates(at time.Time, limit int) Command {
 	}
 }
 
-// ApplyConsolidation returns a Command that replaces the relationship's
-// SummaryText with newSummary, prunes the first snapshotLen entries
-// from SalientFacts (preserving anything appended after the snapshot),
-// and stamps LastConsolidatedAt = at.
+// ApplyConsolidation returns a Command that atomically replaces the
+// relationship's SummaryText, prunes the consolidated facts, and
+// stamps LastConsolidatedAt — but only after verifying that the
+// snapshot the worker took at scan time still matches the live
+// slice's prefix.
 //
-// Race-safety: the worker snapshots facts at length L1, issues an LLM
-// call, and submits this Command. Between snapshot and apply, more
-// facts may have landed via RecordInteraction. We prune by slicing
-// SalientFacts[snapshotLen:], which keeps every post-snapshot
-// append. This is the same pattern v1 used with the SQL ORDINALITY
-// window.
+// Race-safety: between snapshot and apply, RecordInteraction may
+// have appended new facts AND the FIFO cap eviction in
+// relationship_commands.go may have dropped some of the snapshotted
+// facts off the front. We CANNOT prune by raw length — that drops
+// post-snapshot appends from the prefix once eviction has shifted
+// the slice. Instead, we verify that rel.SalientFacts[:len(snapshot)]
+// equals the snapshot value-wise, then prune that prefix.
 //
-// Defensive: if SalientFacts shrunk below snapshotLen between snapshot
-// and apply (no command does this today, but cap eviction in
-// RecordInteraction could in principle race the apply), we still
-// install the new summary and stamp the marker but skip the prune.
-// A subsequent sweep will pick the relationship back up if it's still
-// over threshold.
+// Match: install summary, prune the prefix, stamp LastConsolidatedAt.
+//
+// Mismatch (the slice's prefix no longer equals the snapshot —
+// eviction has happened or some other mutation): return a typed
+// ErrStaleConsolidationSnapshot error. NO writes anywhere — summary
+// is not installed, prune is not done, LastConsolidatedAt is not
+// stamped. The next sweep re-snapshots from the new live state and
+// retries. We lose one LLM call's work; the row stays consistent.
+//
+// Empty snapshot (no facts to prune): install summary + stamp. This
+// is a legitimate edge case if a relationship has facts at scan
+// time but they all evict before apply; the worker still has a
+// non-empty Facts slice but we treat zero facts as "nothing to
+// verify, nothing to prune."
 //
 // Errors:
 //   - empty newSummary
 //   - actor not found
 //   - actor is not KindNPCShared (substrate invariant violation)
 //   - relationship not found
+//   - stale snapshot (ErrStaleConsolidationSnapshot)
 //
-// On error the relationship is left untouched; the sweep logs and
-// retries next cycle. No partial-state writes.
-func ApplyConsolidation(actorID, peerID ActorID, newSummary string, snapshotLen int, at time.Time) Command {
+// On any error the relationship is left untouched.
+func ApplyConsolidation(actorID, peerID ActorID, newSummary string, snapshotFacts []SalientFact, at time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
 			if newSummary == "" {
@@ -255,14 +266,61 @@ func ApplyConsolidation(actorID, peerID ActorID, newSummary string, snapshotLen 
 			if !ok || rel == nil {
 				return nil, fmt.Errorf("ApplyConsolidation: relationship %q→%q not found", actorID, peerID)
 			}
-			rel.SummaryText = newSummary
-			if snapshotLen > 0 && snapshotLen <= len(rel.SalientFacts) {
-				rel.SalientFacts = rel.SalientFacts[snapshotLen:]
+			n := len(snapshotFacts)
+			if n == 0 {
+				// No facts to verify / prune. Still install summary +
+				// stamp — empty-snapshot apply is benign.
+				rel.SummaryText = newSummary
+				t := at
+				rel.LastConsolidatedAt = &t
+				rel.UpdatedAt = t
+				return nil, nil
 			}
+			if n > len(rel.SalientFacts) || !salientFactsPrefixEqual(rel.SalientFacts[:n], snapshotFacts) {
+				return nil, ErrStaleConsolidationSnapshot
+			}
+			rel.SummaryText = newSummary
+			rel.SalientFacts = rel.SalientFacts[n:]
 			t := at
 			rel.LastConsolidatedAt = &t
 			rel.UpdatedAt = t
 			return nil, nil
 		},
 	}
+}
+
+// ErrStaleConsolidationSnapshot is returned by ApplyConsolidation
+// when the live SalientFacts slice's prefix no longer matches the
+// snapshot the worker took at scan time — typically because the
+// FIFO cap eviction in RecordInteraction fired during the LLM call.
+// The sweep worker logs and skips; the next sweep retries from a
+// fresh snapshot.
+var ErrStaleConsolidationSnapshot = fmt.Errorf("ApplyConsolidation: snapshot stale (FIFO eviction or unexpected mutation)")
+
+// salientFactsPrefixEqual reports whether `live` and `snap` have the
+// same length and equal SalientFact values element-wise. Comparison
+// is by-value on (At, Kind, Text) — the only fields a SalientFact
+// carries (no engine-minted ID on this type as of PR C1; future
+// work may add one if salvaging-on-eviction becomes necessary).
+//
+// time.Time.Equal is used instead of == to avoid wall/monotonic
+// clock mismatches; in practice all SalientFact.At values come from
+// the same time.Now() call path and don't carry monotonic readings,
+// but Equal is the correct comparator regardless.
+func salientFactsPrefixEqual(live, snap []SalientFact) bool {
+	if len(live) != len(snap) {
+		return false
+	}
+	for i := range live {
+		if live[i].Kind != snap[i].Kind {
+			return false
+		}
+		if live[i].Text != snap[i].Text {
+			return false
+		}
+		if !live[i].At.Equal(snap[i].At) {
+			return false
+		}
+	}
+	return true
 }

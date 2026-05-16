@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -41,9 +42,13 @@ import (
 //     untouched; the next sweep retries.
 //   - Empty / whitespace-only LLM reply → log + continue. Same retry
 //     posture.
-//   - ApplyConsolidation error → log + continue. The relationship
-//     may have changed between snapshot and apply (e.g. cap eviction
-//     trimmed below snapshotLen — defended in the apply path).
+//   - ApplyConsolidation ErrStaleConsolidationSnapshot → distinct
+//     log line ("snapshot stale, next sweep will retry"). The race
+//     case: FIFO cap eviction in RecordInteraction fired during the
+//     LLM call and the snapshot's prefix no longer matches the live
+//     slice. No writes happened; next sweep re-snapshots and retries.
+//   - ApplyConsolidation other error → log + continue. Defensive
+//     against substrate invariant violations.
 
 // RegisterConsolidation spawns the consolidation sweep goroutine.
 // The goroutine returns when ctx is cancelled. Call once at world
@@ -154,15 +159,24 @@ func consolidateOne(ctx context.Context, w *sim.World, client llm.Client, c sim.
 		return
 	}
 	applyAt := time.Now()
-	if _, err := w.SendContext(ctx, sim.ApplyConsolidation(c.ActorID, c.PeerID, newSummary, c.SnapshotLen, applyAt)); err != nil {
+	if _, err := w.SendContext(ctx, sim.ApplyConsolidation(c.ActorID, c.PeerID, newSummary, c.Facts, applyAt)); err != nil {
 		if ctx.Err() == nil {
-			log.Printf("handlers/consolidation: apply for %s→%s failed: %v",
-				c.ActorID, c.PeerID, err)
+			// ErrStaleConsolidationSnapshot is the FIFO-eviction race
+			// case — common-enough to merit a distinct log line so it
+			// doesn't read as a bug. The sweep retries from a fresh
+			// snapshot on the next cycle.
+			if errors.Is(err, sim.ErrStaleConsolidationSnapshot) {
+				log.Printf("handlers/consolidation: snapshot stale for %s→%s (FIFO race during LLM call); next sweep will retry",
+					c.ActorID, c.PeerID)
+			} else {
+				log.Printf("handlers/consolidation: apply for %s→%s failed: %v",
+					c.ActorID, c.PeerID, err)
+			}
 		}
 		return
 	}
 	log.Printf("handlers/consolidation: %s↔%s ok (pruned=%d, summary_len=%d)",
-		c.ActorName, c.PeerName, c.SnapshotLen, len(newSummary))
+		c.ActorName, c.PeerName, len(c.Facts), len(newSummary))
 }
 
 // buildConsolidationPrompt composes the user-message text the actor's
