@@ -126,7 +126,9 @@ type Acquaintance struct {
 // populate Relationships — their own VA carries continuity via memory-
 // api. Gate: Actor.Kind == KindNPCShared.
 //
-// SalientFacts is bounded by consolidation, which periodically rewrites
+// SalientFacts is hard-bounded by MaxSalientFactsPerRelationship in
+// RecordInteraction (FIFO eviction, DroppedFactCount telemetry) and
+// further bounded by consolidation (when it lands), which rewrites
 // SummaryText from the trail and prunes consolidated facts. Per-fact
 // Text is truncated at write time to MaxSalientFactTextLen runes.
 type Relationship struct {
@@ -137,6 +139,11 @@ type Relationship struct {
 	LastConsolidatedAt *time.Time
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
+	// DroppedFactCount counts FIFO evictions when SalientFacts hit
+	// MaxSalientFactsPerRelationship. Per-pair telemetry: admin views
+	// can spot relationships that are churning facts faster than
+	// consolidation prunes them. Never decremented.
+	DroppedFactCount int
 }
 
 // SalientFact is one entry in a Relationship's interaction trail. Mirrors
@@ -172,6 +179,16 @@ const (
 // rambling speech turn can't blow out a relationship's JSONB row. Mirrors
 // v1's salientTextMaxLen (220 runes).
 const MaxSalientFactTextLen = 220
+
+// MaxSalientFactsPerRelationship caps stored SalientFacts per pair.
+// Enforced in RecordInteraction with FIFO eviction (oldest dropped) +
+// Relationship.DroppedFactCount increment. The cap is the upper-bound
+// safety net — the consolidation cascade (when it lands) is expected to
+// trigger and prune well below this in normal operation, so hitting the
+// cap signals consolidation is failing or hasn't run yet. Will likely
+// move to WorldSettings when consolidation MVP lands and tuning becomes
+// per-environment.
+const MaxSalientFactsPerRelationship = 30
 
 // NewSalientFact builds a SalientFact with Text truncated to
 // MaxSalientFactTextLen runes. Use this at every write callsite — never

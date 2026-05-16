@@ -168,6 +168,7 @@ func TestRoundTrip_ActorNarrativeAndRelationshipsClonesBreakAliasing(t *testing.
 					LastConsolidatedAt: &consolidated,
 					CreatedAt:          earlier,
 					UpdatedAt:          now,
+					DroppedFactCount:   7,
 				},
 			},
 			Narrative: &sim.NarrativeState{
@@ -242,6 +243,9 @@ func TestRoundTrip_ActorNarrativeAndRelationshipsClonesBreakAliasing(t *testing.
 	}
 	if got := loaded2["hannah"].Relationships["ezekiel"].InteractionCount; got != 4 {
 		t.Errorf("Relationship.InteractionCount after save+reload = %d, want 4", got)
+	}
+	if got := loaded2["hannah"].Relationships["ezekiel"].DroppedFactCount; got != 7 {
+		t.Errorf("Relationship.DroppedFactCount after save+reload = %d, want 7", got)
 	}
 	if got := loaded2["hannah"].Narrative.EvolvingSummary; got != "Less worried — Ezekiel's order came through." {
 		t.Errorf("Narrative.EvolvingSummary after save+reload = %q", got)
