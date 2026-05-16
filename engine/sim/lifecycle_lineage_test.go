@@ -119,7 +119,13 @@ func firstActorArrivedFor(rec *eventRec, actorID sim.ActorID) *sim.ActorArrived 
 }
 
 // assertFullLineage fails the test if the warrant doesn't carry every
-// source-lineage field PR 3a requires.
+// source-lineage field PR 3a requires. PR S4 decoupled lineage from
+// dedup-participation: lifecycle warrants (BasicWarrantReason kind) carry
+// full lineage for perception/debug but their Reason returns 0 from
+// DedupDiscriminator, so they no longer participate in the in-flight /
+// recently-consumed dedup paths. That's correct in practice — lifecycle
+// stamps are 1:1 with their source events, so dedup never had anything
+// to suppress. Hence no eventSourced() check here.
 func assertFullLineage(t *testing.T, label string, m *sim.WarrantMeta, expectedKind sim.WarrantKind) {
 	t.Helper()
 	if m == nil {
@@ -133,9 +139,6 @@ func assertFullLineage(t *testing.T, label string, m *sim.WarrantMeta, expectedK
 	}
 	if m.RootEventID == 0 {
 		t.Errorf("%s: RootEventID == 0", label)
-	}
-	if !sim.EventSourced(*m) {
-		t.Errorf("%s: warrant must report eventSourced() == true after retrofit", label)
 	}
 }
 

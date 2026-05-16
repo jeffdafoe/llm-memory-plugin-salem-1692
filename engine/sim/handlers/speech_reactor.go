@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"log"
-	"strconv"
 	"time"
 	"unicode/utf8"
 
@@ -28,8 +27,9 @@ import (
 //     reserved for the Admin warrant kind.
 //   - SourceEventID = Spoke.EventID. The Spoke event's ID is the
 //     authoritative speech identifier; it flows into both the warrant
-//     payload (SpeechID) and the meta (SourceEventID, RootEventID),
-//     giving free dedup via the (Kind, SourceEventID) source key.
+//     payload (SpeechID, now uint64) and the meta (SourceEventID,
+//     RootEventID), giving free dedup via the (Kind, SourceEventID)
+//     source key.
 //   - No self-warrant. RecipientIDs already excludes the speaker, so an
 //     explicit speaker-skip would be redundant — but defensive in case
 //     a future change to sim.Speak forgets the exclusion.
@@ -61,7 +61,7 @@ func handleSpokeWarrants(w *sim.World, evt sim.Event) {
 			TriggerActorID: spoke.SpeakerID,
 			Force:          false,
 			Reason: sim.NPCSpeechWarrantReason{
-				SpeechID: sim.SpeechID(formatEventID(spoke.EventID())),
+				SpeechID: sim.SpeechID(spoke.EventID()),
 				Speaker:  spoke.SpeakerID,
 				Excerpt:  excerpt,
 			},
@@ -117,13 +117,4 @@ func truncateRunes(s string, max int) string {
 	}
 	runes := []rune(s)
 	return string(runes[:max])
-}
-
-// formatEventID renders an EventID as the decimal string used for
-// SpeechID. The SpeechID type is a string for consistency with v1's
-// SpeechID shape (where it was a UUID), but PR A aliases it to the
-// numeric event sequence — the decimal form keeps logs human-readable
-// and is reversible at any consumer that wants the raw ID.
-func formatEventID(id sim.EventID) string {
-	return strconv.FormatUint(uint64(id), 10)
 }

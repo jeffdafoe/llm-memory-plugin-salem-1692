@@ -111,5 +111,6 @@ type ArrivalWarrantReason struct {
 	AtPosition    Position
 }
 
-func (ArrivalWarrantReason) isWarrantReason()  {}
-func (ArrivalWarrantReason) Kind() WarrantKind { return WarrantKindArrived }
+func (ArrivalWarrantReason) isWarrantReason()             {}
+func (ArrivalWarrantReason) Kind() WarrantKind            { return WarrantKindArrived }
+func (r ArrivalWarrantReason) DedupDiscriminator() uint64 { return uint64(r.AttemptID) }

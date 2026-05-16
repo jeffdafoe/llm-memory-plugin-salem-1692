@@ -206,6 +206,53 @@ func RestartExpireScannedQuotesForTest(w *World, now time.Time) {
 // reverse-index rebuild helper. PR S3 substrate test only.
 func RebuildSceneQuoteIndexForTest(w *World) { rebuildSceneQuoteIndex(w) }
 
+// PR S4 pay-ledger substrate helpers — exposed so sim_test can exercise
+// the substrate primitives without needing the (later-shipping) Command
+// Fns to drive them.
+//
+// NextLedgerSeq is the world-goroutine-only LedgerID minter (callers
+// MUST be inside a Command.Fn). EffectivePayLedgerTTL /
+// EffectivePayLedgerSweepCadence wrap the WorldSettings → default
+// fallbacks for direct table tests. RestartExpirePendingEntries is the
+// LoadWorld-time pending-entry expiry pass. ApplyPayLedgerCounterSafetyFloor
+// re-runs LoadWorld's counter-safety loop against the current
+// World.PayLedger so tests can simulate "loaded from a future
+// PayLedgerRepo with high-water IDs but a stale counter."
+// InvokePayLedgerSink calls through to the installed sink's Project so
+// the SetPayLedgerSink(nil) restoration test can verify the field is
+// never nil at call sites.
+func NextLedgerSeq(w *World) LedgerID                     { return w.nextLedgerSeq() }
+func EffectivePayLedgerTTL(s WorldSettings) time.Duration { return effectivePayLedgerTTL(s) }
+func EffectivePayLedgerSweepCadence(s WorldSettings) time.Duration {
+	return effectivePayLedgerSweepCadence(s)
+}
+func RestartExpirePendingEntries(w *World, now time.Time) { restartExpirePendingEntries(w, now) }
+func InvokePayLedgerSink(w *World, entry PayLedgerEntry)  { w.payLedgerSink.Project(entry) }
+
+// ApplyPayLedgerCounterSafetyFloor re-runs the floor loop LoadWorld
+// performs after loading PayLedger entries from a repo. Used by the
+// substrate test to simulate "loaded entries have higher IDs than the
+// loaded counter" — the next mint must still avoid collisions.
+func ApplyPayLedgerCounterSafetyFloor(w *World) {
+	for id := range w.PayLedger {
+		if uint64(id) > w.payLedgerSeq {
+			w.payLedgerSeq = uint64(id)
+		}
+	}
+}
+
+// PayLedgerSeqForTest exposes the per-run LedgerID counter so PR S4
+// sim_test can assert "counter starts at 0" and restart safety-floor
+// behavior in isolation.
+func PayLedgerSeqForTest(w *World) uint64 { return w.payLedgerSeq }
+
+// RepublishForTest invokes World.republish so substrate tests can swap
+// the published Snapshot without driving a full Command round trip
+// (which would require starting Run). Production callers never need
+// this — republish is invoked automatically after every command on the
+// world goroutine.
+func RepublishForTest(w *World) { w.republish() }
+
 // WorldCurrentRootEventID exposes the ambient cascade root so sim_test can
 // assert withRoot's defer-scoped restore (including the panic path).
 func WorldCurrentRootEventID(w *World) EventID { return w.currentRootEventID }
