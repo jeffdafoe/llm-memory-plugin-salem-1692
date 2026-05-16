@@ -57,6 +57,18 @@ type Scene struct {
 	// Snapshots are deep-cloned via CloneActorSnapshot at the
 	// published-Snapshot and mem-repo boundaries.
 	ParticipantStateAtOrigin map[ActorID]*ActorSnapshot
+
+	// QuoteIDs is the reverse index of SceneQuotes anchored to this
+	// scene — populated when sim.SceneQuoteCreate inserts a quote
+	// into World.Quotes and trimmed when the aging sweep or terminal-
+	// state transitions remove a quote. Iterated at perception build
+	// to render active quotes visible to scene participants. Phase 3
+	// PR S3 substrate; the canonical entries live on World.Quotes,
+	// this is a presence index only.
+	//
+	// Rebuilt from World.Quotes by rebuildIndices at LoadWorld so
+	// drift between the two stores can never persist past a restart.
+	QuoteIDs []QuoteID
 }
 
 // OriginStructureID returns the structure ID this scene is bound to,
@@ -91,6 +103,10 @@ func CloneScene(s *Scene) *Scene {
 		for k, v := range s.ParticipantStateAtOrigin {
 			cp.ParticipantStateAtOrigin[k] = CloneActorSnapshot(v)
 		}
+	}
+	if s.QuoteIDs != nil {
+		cp.QuoteIDs = make([]QuoteID, len(s.QuoteIDs))
+		copy(cp.QuoteIDs, s.QuoteIDs)
 	}
 	return &cp
 }

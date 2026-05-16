@@ -42,19 +42,20 @@ import (
 type WarrantKind string
 
 const (
-	WarrantKindUnknown          WarrantKind = ""
-	WarrantKindPCSpoke          WarrantKind = "pc_spoke"
-	WarrantKindNPCSpoke         WarrantKind = "npc_spoke"
-	WarrantKindHuddleJoined     WarrantKind = "huddle_joined"      // the joiner
-	WarrantKindHuddlePeerJoined WarrantKind = "huddle_peer_joined" // prior members
-	WarrantKindHuddleLeft       WarrantKind = "huddle_left"        // the leaver
-	WarrantKindHuddlePeerLeft   WarrantKind = "huddle_peer_left"   // remaining members
-	WarrantKindHuddleConcluded  WarrantKind = "huddle_concluded"   // evicted members
-	WarrantKindArrived          WarrantKind = "arrived"
-	WarrantKindNeedThreshold    WarrantKind = "need_threshold"
-	WarrantKindIdleBackstop     WarrantKind = "idle_backstop"
-	WarrantKindPaid             WarrantKind = "paid"
-	WarrantKindAdmin            WarrantKind = "admin" // operator forced a tick
+	WarrantKindUnknown            WarrantKind = ""
+	WarrantKindPCSpoke            WarrantKind = "pc_spoke"
+	WarrantKindNPCSpoke           WarrantKind = "npc_spoke"
+	WarrantKindHuddleJoined       WarrantKind = "huddle_joined"      // the joiner
+	WarrantKindHuddlePeerJoined   WarrantKind = "huddle_peer_joined" // prior members
+	WarrantKindHuddleLeft         WarrantKind = "huddle_left"        // the leaver
+	WarrantKindHuddlePeerLeft     WarrantKind = "huddle_peer_left"   // remaining members
+	WarrantKindHuddleConcluded    WarrantKind = "huddle_concluded"   // evicted members
+	WarrantKindArrived            WarrantKind = "arrived"
+	WarrantKindNeedThreshold      WarrantKind = "need_threshold"
+	WarrantKindIdleBackstop       WarrantKind = "idle_backstop"
+	WarrantKindPaid               WarrantKind = "paid"
+	WarrantKindSceneQuoteTargeted WarrantKind = "scene_quote_targeted"
+	WarrantKindAdmin              WarrantKind = "admin" // operator forced a tick
 )
 
 // WarrantReason is the marker interface for kind-specific warrant payloads.
@@ -171,6 +172,47 @@ type PaidWarrantReason struct {
 
 func (PaidWarrantReason) isWarrantReason()  {}
 func (PaidWarrantReason) Kind() WarrantKind { return WarrantKindPaid }
+
+// SceneQuoteTargetedWarrantReason captures a vendor-posted scene quote
+// directly addressed to this actor. Phase 3 PR S3 — the quote handler
+// emits a SceneQuoteCreated event whose subscriber mints this reason on
+// the TargetBuyer when TargetBuyer is an NPC. PCs receive targeted
+// quotes via Snapshot.Quotes + per-scene QuoteIDs index in the client's
+// perception (PCs don't deliberate, so a warrant on a PC would be inert).
+//
+// Public quotes (no target buyer) do NOT stamp warrants on anyone —
+// they're surfaced at perception build via the pull-based render path,
+// not via reactor activation. The asymmetry is deliberate: a public
+// quote is a passive ad and stamping warrants on every buyer in scene
+// would flood the reactor with low-signal activations.
+//
+// QuoteID aliases the SceneQuote's ID — same one-ID-flows-through-
+// everything pattern as PaidID/SpeechID. The subscriber copies the
+// quote's ID into both this payload AND the WarrantMeta's
+// SourceEventID (pre-§8 dedup scheme — uses the SceneQuoteCreated
+// event's EventID, NOT the QuoteID, as SourceEventID; quote warrants
+// are restart-noncritical so they ride the existing
+// (Kind, SourceEventID) discriminator pattern rather than the
+// restart-stable scheme ledger-substrate-design § 8 designs for
+// pay-offer warrants).
+//
+// Amount/Qty/ConsumeNow/ItemKind/ExpiresAt all travel on the warrant
+// payload so the buyer's tick prompt can render the offer terms
+// directly off WarrantMeta without a separate World.Quotes lookup
+// (the prompt builder runs off the published Snapshot off the world
+// goroutine; pulling the live quote at prompt time would race).
+type SceneQuoteTargetedWarrantReason struct {
+	QuoteID    QuoteID
+	SellerID   ActorID
+	ItemKind   ItemKind
+	Qty        int
+	Amount     int
+	ConsumeNow bool
+	ExpiresAt  time.Time
+}
+
+func (SceneQuoteTargetedWarrantReason) isWarrantReason()  {}
+func (SceneQuoteTargetedWarrantReason) Kind() WarrantKind { return WarrantKindSceneQuoteTargeted }
 
 // WarrantMeta is one entry in an actor's Warrants list — a signal that
 // fired during the actor's warranted window. The evaluator carries the

@@ -186,6 +186,26 @@ func SetActorRecentlyConsumedSourceKeys(a *Actor, m map[WarrantSourceKey]time.Ti
 // EventID monotonicity / "counter starts at 1" without an exported field.
 func WorldEventSeq(w *World) uint64 { return w.eventSeq }
 
+// QuoteSeqForTest exposes the per-run QuoteID counter so PR S3 sim_test
+// can assert "counter starts at 1" and restart safety-floor behavior.
+func QuoteSeqForTest(w *World) uint64 { return w.quoteSeq }
+
+// RebuildIndicesForTest exposes World.rebuildIndices so sim_test can
+// repopulate the actorsByStructure / actorsByHuddle / outdoorActors
+// secondary indices after a direct map mutation (used when a test
+// seeds a huddle via raw map write rather than through JoinHuddle).
+func RebuildIndicesForTest(w *World) { w.rebuildIndices() }
+
+// RestartExpireScannedQuotesForTest exposes the LoadWorld-time
+// expired-scan helper. PR S3 substrate test only.
+func RestartExpireScannedQuotesForTest(w *World, now time.Time) {
+	restartExpireScannedQuotes(w, now)
+}
+
+// RebuildSceneQuoteIndexForTest exposes the LoadWorld-time Scene.QuoteIDs
+// reverse-index rebuild helper. PR S3 substrate test only.
+func RebuildSceneQuoteIndexForTest(w *World) { rebuildSceneQuoteIndex(w) }
+
 // WorldCurrentRootEventID exposes the ambient cascade root so sim_test can
 // assert withRoot's defer-scoped restore (including the panic path).
 func WorldCurrentRootEventID(w *World) EventID { return w.currentRootEventID }

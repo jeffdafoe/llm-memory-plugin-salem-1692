@@ -130,6 +130,22 @@ type WorldSettings struct {
 	//   - 0 / unset / negative → DefaultOutdoorSceneRadiusValue (3 tiles)
 	//   - above DefaultOutdoorSceneRadiusMax (10) → clamped to max
 	DefaultOutdoorSceneRadius int
+
+	// Scene-quote substrate tunables (Phase 3 PR S3). Both fall back to
+	// scene_quote.go's *Default constants when zero, so tests that
+	// bypass the environment loader get sensible behavior without
+	// seeding them.
+	//
+	// SceneQuoteTTL: how long a freshly minted quote stays Active before
+	// the aging sweep flips it Expired. Default 10 min — asymmetric
+	// (longer) with the pay-ledger pending TTL (2-5 min) since a
+	// quote is a passive ad rather than a staked offer.
+	//
+	// SceneQuoteSweepCadence: how often the aging sweep scans
+	// World.Quotes for expired entries. Default 60s — gives ±60s expiry
+	// latency against the 10-min TTL, invisible at gameplay scale.
+	SceneQuoteTTL          time.Duration
+	SceneQuoteSweepCadence time.Duration
 }
 
 // DefaultOutdoorSceneRadiusValue is the fallback radius used when
@@ -184,6 +200,14 @@ type locomotionTickerState struct {
 	scheduled bool
 }
 
+// sceneQuoteSweepState carries the coalescing flag for the scene-quote
+// aging sweep's AfterFunc self-rearm chain (Phase 3 PR S3). Same shape
+// and rules as locomotionTickerState — read/written exclusively from
+// inside Command.Fn.
+type sceneQuoteSweepState struct {
+	scheduled bool
+}
+
 // World is the in-memory state of one realm's simulation. A single
 // goroutine (started by World.Run) owns all mutable fields below — every
 // mutation must go through the cmds channel. Readers consume the published
@@ -198,6 +222,20 @@ type World struct {
 	Scenes         map[SceneID]*Scene
 	Orders         map[OrderID]*Order
 	VillageObjects map[VillageObjectID]*VillageObject
+
+	// Quotes is the world-level flat map of all SceneQuotes (active and
+	// terminal). Keyed by QuoteID — the LLM-visible uint64 the buyer
+	// references in pay_with_item(quote_id=N, ...) at fast-path time.
+	// Mirrored by a per-scene reverse index at Scene.QuoteIDs (rebuilt
+	// at LoadWorld from this map; the canonical entries live here).
+	//
+	// Phase 3 PR S3 substrate. No checkpoint persistence layer yet —
+	// QuotesRepo lands at the pg-impl cutover. For now NewWorld /
+	// LoadWorld both start with an empty Quotes map, which is also
+	// the correct restart behavior: a pending quote crossing a
+	// restart should re-emit fresh via the next scene_quote tool
+	// call, not be resurrected with stale ExpiresAt.
+	Quotes map[QuoteID]*SceneQuote
 
 	// Asset catalog — reference state, loaded at startup. Looked up by
 	// VillageObject.AssetID for state resolution, footprint, anchor, etc.
@@ -241,9 +279,16 @@ type World struct {
 	Settings    WorldSettings
 	TickCounter uint64
 
-	Speech         *SpeechHelper
-	reactorEval    reactorEvaluatorState
-	locomotionTick locomotionTickerState
+	Speech          *SpeechHelper
+	reactorEval     reactorEvaluatorState
+	locomotionTick  locomotionTickerState
+	sceneQuoteSweep sceneQuoteSweepState
+
+	// quoteSeq is the monotonic per-run QuoteID counter — same shape
+	// and rules as eventSeq. Incremented before assignment; first
+	// minted QuoteID is 1 (QuoteID(0) reserved as the unset sentinel).
+	// World-goroutine-only (touched exclusively from inside Command.Fn).
+	quoteSeq uint64
 
 	cmds      chan Command
 	published atomic.Pointer[Snapshot]
@@ -336,6 +381,7 @@ func NewWorld(repo Repository) *World {
 		Scenes:            make(map[SceneID]*Scene),
 		Orders:            make(map[OrderID]*Order),
 		VillageObjects:    make(map[VillageObjectID]*VillageObject),
+		Quotes:            make(map[QuoteID]*SceneQuote),
 		Assets:            make(map[AssetID]*Asset),
 		Recipes:           make(map[ItemKind]*ItemRecipe),
 		ItemKinds:         make(map[ItemKind]*ItemKindDef),
@@ -448,6 +494,29 @@ func LoadWorld(ctx context.Context, repo Repository) (*World, error) {
 	// conversational moment passed).
 	for _, a := range w.Actors {
 		resetReactorStateOnLoad(a)
+	}
+	// Scene-quote restart housekeeping. No QuotesRepo exists yet
+	// (pg-impl deferred to cutover), so this loop iterates an empty
+	// map today. Implementation is correct for the future case where
+	// quotes do load from a repo: any quote already past its
+	// ExpiresAt at restart is flipped to expired with ResolvedAt
+	// stamped, no event emitted (the original SceneQuoteCreated event
+	// is gone, so a re-stamped expired event would have nothing to
+	// reference causally — restart-noncritical per the design pass).
+	// Active non-expired quotes survive with their absolute ExpiresAt
+	// intact; the sweep picks them up on its next pass.
+	restartExpireScannedQuotes(w, time.Now())
+	// QuoteIDs reverse index is rebuilt from the canonical World.Quotes
+	// map so any drift loaded from a repo can't persist past startup.
+	rebuildSceneQuoteIndex(w)
+	// Quote sequence counter safety floor: if the loaded counter is
+	// somehow below the max QuoteID actually present, bump it so the
+	// next mint doesn't collide. Idempotent — both paths produce the
+	// same result when the counter was correct.
+	for id := range w.Quotes {
+		if uint64(id) > w.quoteSeq {
+			w.quoteSeq = uint64(id)
+		}
 	}
 	w.republish()
 	return w, nil
@@ -721,6 +790,7 @@ func (w *World) republish() {
 		Structures:     make(map[StructureID]*Structure, len(w.Structures)),
 		Orders:         make(map[OrderID]*Order, len(w.Orders)),
 		VillageObjects: make(map[VillageObjectID]*VillageObject, len(w.VillageObjects)),
+		Quotes:         make(map[QuoteID]*SceneQuote, len(w.Quotes)),
 		Environment:    w.Environment,
 		Phase:          w.Phase,
 	}
@@ -741,6 +811,9 @@ func (w *World) republish() {
 	}
 	for id, v := range w.VillageObjects {
 		snap.VillageObjects[id] = CloneVillageObject(v)
+	}
+	for id, q := range w.Quotes {
+		snap.Quotes[id] = CloneSceneQuote(q)
 	}
 	w.published.Store(snap)
 }
