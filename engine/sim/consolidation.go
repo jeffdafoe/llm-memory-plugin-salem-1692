@@ -136,6 +136,16 @@ func FindConsolidationCandidates(at time.Time, limit int) Command {
 				if actor.Kind != KindNPCShared {
 					continue
 				}
+				// Transient-visitor skip: visitors are KindNPCShared but
+				// stateless by design — they don't accumulate relationship
+				// state (RecordInteraction skips when VisitorState != nil
+				// on either side). Belt-and-braces gate here: even if a
+				// stray Relationship row exists on a visitor somehow, the
+				// consolidation cascade skips it. See
+				// shared/notes/codebase/salem-engine-v2/visitor.
+				if actor.VisitorState != nil {
+					continue
+				}
 				for peerID, rel := range actor.Relationships {
 					if rel == nil {
 						continue
@@ -267,6 +277,9 @@ func ApplyConsolidation(actorID, peerID ActorID, newSummary string, snapshotFact
 			}
 			if actor.Kind != KindNPCShared {
 				return nil, fmt.Errorf("ApplyConsolidation: actor %q is not KindNPCShared", actorID)
+			}
+			if actor.VisitorState != nil {
+				return nil, fmt.Errorf("ApplyConsolidation: actor %q is a transient visitor", actorID)
 			}
 			if actor.Relationships == nil {
 				return nil, fmt.Errorf("ApplyConsolidation: actor %q has no Relationships", actorID)

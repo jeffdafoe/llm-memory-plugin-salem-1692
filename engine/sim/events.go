@@ -221,3 +221,32 @@ type ReactorTickDue struct {
 }
 
 func (ReactorTickDue) isSimEvent() {}
+
+// ActorDeparted fires when an actor is removed from World.Actors —
+// today only emitted by the visitor cleanup path (engine/sim/visitor.go
+// CleanupExpiredVisitor) past the visitor's ExpiresAt + grace window.
+// Subscribers handle "left the village" semantics: action-log entry,
+// analytics, downstream cache invalidation. Distinct from ActorMoveStopped
+// (which is a movement-state transition for a still-present actor) and
+// HuddleLeft (which only fires while the actor is alive).
+//
+// LastInsideStructureID and LastPosition capture the actor's last known
+// location BEFORE removal so subscribers needn't read a freshly-deleted
+// row off the world. Both are snapshots, not pointers into world state.
+//
+// VisitorContext is non-nil when the departing actor was a visitor;
+// carries Archetype/Origin/Disposition so action-log / analytics can
+// surface "Elias the peddler left the village" prose without joining
+// back to a world record that no longer exists. Nil for non-visitor
+// departures (no such path today; reserved for future).
+type ActorDeparted struct {
+	EventBase
+	ActorID               ActorID
+	DisplayName           string
+	LastInsideStructureID StructureID
+	LastPosition          Position
+	VisitorContext        *VisitorState
+	At                    time.Time
+}
+
+func (ActorDeparted) isSimEvent() {}

@@ -178,6 +178,17 @@ func FindNarrativeConsolidationCandidates(at time.Time, limit int) Command {
 				if actor == nil || actor.Kind != KindNPCShared {
 					continue
 				}
+				// Transient-visitor skip: visitors are KindNPCShared but
+				// stateless by design — they don't accumulate Narrative
+				// state (the shared salem-visitor VA has dream_mode='none',
+				// learning_enabled=false, cache_prompts=false). Identity
+				// for each visitor is engine-injected per call from
+				// VisitorState; reflection across days would be meaningless
+				// for an actor whose existence is bounded in hours. See
+				// shared/notes/codebase/salem-engine-v2/visitor.
+				if actor.VisitorState != nil {
+					continue
+				}
 				var lastCons *time.Time
 				var prior string
 				if actor.Narrative != nil {
@@ -348,6 +359,9 @@ func ApplyNarrativeConsolidation(actorID ActorID, newSummary string, at time.Tim
 			if actor.Kind != KindNPCShared {
 				return nil, fmt.Errorf("ApplyNarrativeConsolidation: actor %q is not KindNPCShared", actorID)
 			}
+			if actor.VisitorState != nil {
+				return nil, fmt.Errorf("ApplyNarrativeConsolidation: actor %q is a transient visitor", actorID)
+			}
 			if actor.Narrative == nil {
 				actor.Narrative = &NarrativeState{CreatedAt: at}
 			}
@@ -383,6 +397,9 @@ func StampNarrativeConsolidated(actorID ActorID, at time.Time) Command {
 			}
 			if actor.Kind != KindNPCShared {
 				return nil, fmt.Errorf("StampNarrativeConsolidated: actor %q is not KindNPCShared", actorID)
+			}
+			if actor.VisitorState != nil {
+				return nil, fmt.Errorf("StampNarrativeConsolidated: actor %q is a transient visitor", actorID)
 			}
 			if actor.Narrative == nil {
 				actor.Narrative = &NarrativeState{CreatedAt: at}

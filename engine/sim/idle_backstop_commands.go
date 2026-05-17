@@ -29,8 +29,12 @@ import "time"
 //      LLM call doesn't need a parallel idle warrant queued for the
 //      next attempt; existing reactor semantics already handle that.
 //
-// Scope: KindNPCStateful AND KindNPCShared. PCs (KindPC) don't tick via
-// the reactor (player-driven); idle backstop is meaningless for them.
+// Scope: KindNPCStateful AND KindNPCShared, excluding transient visitors
+// (VisitorState != nil). PCs (KindPC) don't tick via the reactor (player-
+// driven); idle backstop is meaningless for them. Visitors fire on
+// encounter via the existing speech / huddle subscribers but don't need
+// engine-injected liveness — ExpiresAt drives their lifecycle. See
+// shared/notes/codebase/salem-engine-v2/visitor.
 //
 // Source-event: idle backstop fires from the absence of activity, not
 // a specific stimulus. WarrantMeta is stamped with SourceEventID = 0
@@ -95,6 +99,18 @@ func EvaluateIdleBackstop(now time.Time) Command {
 			var t IdleBackstopTelemetry
 			for _, a := range w.Actors {
 				if a.Kind != KindNPCStateful && a.Kind != KindNPCShared {
+					t.SkippedScope++
+					continue
+				}
+				// Transient-visitor skip: visitors fire on encounter
+				// (nearby PC speaks → speech reactor stamps a warrant via
+				// the existing huddle subscribers) but don't need engine-
+				// injected liveness — they have ExpiresAt to drive their
+				// lifecycle. An idle-backstop tick on a visitor who has
+				// nothing scheduled to do would burn tokens for no
+				// observable behavior. See
+				// shared/notes/codebase/salem-engine-v2/visitor.
+				if a.VisitorState != nil {
 					t.SkippedScope++
 					continue
 				}
