@@ -3,6 +3,7 @@ package sim
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -239,7 +240,7 @@ func FindConsolidationCandidates(at time.Time, limit int) Command {
 // verify, nothing to prune."
 //
 // Errors:
-//   - empty newSummary
+//   - empty or whitespace-only newSummary (trimmed at the boundary)
 //   - actor not found
 //   - actor is not KindNPCShared (substrate invariant violation)
 //   - relationship not found
@@ -249,6 +250,14 @@ func FindConsolidationCandidates(at time.Time, limit int) Command {
 func ApplyConsolidation(actorID, peerID ActorID, newSummary string, snapshotFacts []SalientFact, at time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
+			// Trim at the substrate boundary — the cascade driver
+			// already trims, but the Command is public (callable from
+			// tests / admin paths / future code) and the invariant
+			// "SummaryText is never set to whitespace-only via this
+			// path" belongs here, not just in the cascade. Mirrors
+			// AppendActionLogEntry's rune-truncate posture +
+			// ApplyNarrativeConsolidation's trim posture (PR C2).
+			newSummary = strings.TrimSpace(newSummary)
 			if newSummary == "" {
 				return nil, fmt.Errorf("ApplyConsolidation: empty new summary for %q→%q", actorID, peerID)
 			}
