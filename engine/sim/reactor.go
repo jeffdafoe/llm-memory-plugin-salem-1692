@@ -662,16 +662,38 @@ func actorReactorDue(a *Actor, now time.Time) bool {
 	return !now.Before(*a.WarrantDueAt)
 }
 
-// actorCanReactNow is the context-aware eligibility check. Currently
-// minimal — the v1 conditions (asleep, off-stage, deceased, no current
-// huddle) hang off subsystems that haven't ported yet. PR 2 lands the
-// hook; later PRs fill in the checks as their state lands.
+// actorCanReactNow is the context-aware eligibility check the reactor
+// evaluator consults BEFORE consuming warrants. Filters out states
+// where firing an LLM tick is wasted cost — sleeping/resting actors,
+// concluded huddles. Replaces v1's scattered "skip if NPC asleep"
+// checks at individual subscriber callsites with one chokepoint that
+// applies to all warrant kinds.
 //
 // What's checked today:
-//   - Actor still exists (caller already has the pointer, so this is a nil
-//     guard).
-//   - If the actor's CurrentHuddleID points at a concluded huddle, the
-//     warrant is stale — caller should clear and skip.
+//   - Nil-actor guard (caller already has the pointer; this is defensive).
+//   - Concluded-huddle stale: if CurrentHuddleID points at a huddle that
+//     has been concluded, the warrant's conversational context no longer
+//     exists. Return stale=true; caller clears the warrant.
+//   - Sleeping or Resting (the "do-not-disturb" macro-states): return
+//     eligible=false, stale=false. The warrant stays OPEN and the
+//     evaluator pushes WarrantDueAt out by unavailableBackoff. When the
+//     actor transitions out of sleeping/resting (e.g. wakes up via the
+//     dwell substrate or a state-flip command), the next scan picks the
+//     warrant up. Lazy clear — no state-transition pass walks the
+//     warrant list.
+//
+// Note on StateResting: per actor.go's State enum comment, Resting is
+// the take_break / dwell-credit-accumulating posture (in-bed/recovering),
+// NOT "sitting in tavern, can respond." Gating Resting alongside
+// Sleeping is correct for the same reason — both signal the actor has
+// withdrawn from the conversational/active surface.
+//
+// What's NOT checked here (deferred):
+//   - Off-stage / deceased actors (subsystems haven't ported).
+//   - Noop-skip — "actor has nothing to act on" gating belongs in
+//     tick-handler preflight where full perception is available; applies
+//     across warrant kinds but needs the perception build to make the
+//     call.
 //
 // Returns (eligible, stale). When stale=true, caller clears the warrant
 // (it was for a context that no longer exists). When eligible=false but
@@ -684,6 +706,9 @@ func actorCanReactNow(w *World, a *Actor) (eligible bool, stale bool) {
 		if h, ok := w.Huddles[a.CurrentHuddleID]; ok && h.ConcludedAt != nil {
 			return false, true
 		}
+	}
+	if a.State == StateSleeping || a.State == StateResting {
+		return false, false
 	}
 	return true, false
 }

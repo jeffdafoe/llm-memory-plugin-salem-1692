@@ -46,15 +46,21 @@ import "time"
 //
 // What it does NOT check today (deferred):
 //
-//   - Sleeping / resting actors. Belongs in actorCanReactNow (substrate
-//     eligibility primitive) alongside the future asleep / off-stage /
-//     deceased checks, not in the cascade slice. The reactor evaluator
-//     will clear an idle warrant on a sleeping actor for free once that
-//     check lands.
+//   - Off-stage / deceased actors. Belongs in actorCanReactNow alongside
+//     the sleeping/resting check that already lives there. Subsystems
+//     for these states haven't ported yet.
 //
 //   - Noop-tick prevention (actor has no needs / no peers / nothing
 //     to act on). Belongs in tick-handler preflight, which has full
 //     perception in hand. Applies to all warrant kinds, not just idle.
+//
+// Sleeping/resting are filtered at the reactor evaluator gate, not
+// here — the cascade slice still stamps the warrant on a sleeping
+// actor, and `actorCanReactNow` shelves it (eligible=false, stale=false)
+// when the evaluator picks it up. When the actor transitions out of
+// sleeping/resting, the warrant fires on the next scan. This is the
+// "engine evaluator will clear an idle warrant on a sleeping actor for
+// free" pattern the original cascade design pass anchored on.
 
 // IdleBackstopTelemetry is the return value of EvaluateIdleBackstop.
 // Stamped reports how many actors got a fresh idle warrant on this
