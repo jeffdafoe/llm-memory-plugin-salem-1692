@@ -184,8 +184,10 @@ type WorldSettings struct {
 	// VisitorTickInterval = 60s, a value of ~10-30 produces "one visitor
 	// per game day on average."
 	//
-	// VisitorMaxConcurrent: cap on simultaneous visitors. 0 halts spawn
-	// even with chance > 0 (cheap admin dial). Default 2.
+	// VisitorMaxConcurrent: cap on simultaneous visitors. Zero or unset
+	// falls back to DefaultVisitorMaxConcurrent (2). The documented
+	// halt-spawn admin dial is VisitorSpawnChancePermille=0, not a
+	// sentinel here.
 	//
 	// VisitorMinStayMinutes / VisitorMaxStayMinutes: stay-window bounds.
 	// Concrete stay is a uniform random pull from [min, max] at spawn.

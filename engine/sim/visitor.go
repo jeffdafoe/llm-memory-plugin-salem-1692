@@ -338,6 +338,12 @@ func dispatchVisitorCleanup(w *World, now time.Time, t *VisitorCascadeTelemetry)
 			VisitorContext:        cloneVisitorState(actor.VisitorState),
 			At:                    now,
 		}
+		// Emit BEFORE removal so subscribers can still look up the actor
+		// in w.Actors mid-event if they need to. The event already carries
+		// the load-bearing pre-removal fields directly, but the actor row
+		// remains reachable for any subscriber that wants more (e.g. a
+		// future debug logger reading Acquaintances).
+		w.emit(evt)
 		// Remove from secondary indices. setActorInsideStructure handles
 		// outdoorActors / actorsByStructure transitions when we drop the
 		// actor's inside flag; the actorsByHuddle index doesn't have a
@@ -353,7 +359,6 @@ func dispatchVisitorCleanup(w *World, now time.Time, t *VisitorCascadeTelemetry)
 		setActorInsideStructure(w, actor, "")
 		delete(w.outdoorActors, id)
 		delete(w.Actors, id)
-		w.emit(evt)
 		t.CleanedUp++
 	}
 }
@@ -453,7 +458,10 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 	}
 	stayMinutes := minStay
 	if maxStay > minStay {
-		stayMinutes = minStay + r.Intn(maxStay-minStay)
+		// +1 makes the upper bound inclusive — matches the documented
+		// [min, max] semantics. r.Intn(n) returns [0, n), so n=maxStay-
+		// minStay+1 produces additions in [0, maxStay-minStay].
+		stayMinutes = minStay + r.Intn(maxStay-minStay+1)
 	}
 	expiresAt := inputs.Now.Add(time.Duration(stayMinutes) * time.Minute)
 
@@ -466,8 +474,24 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 		displayName = fmt.Sprintf("%s the %s (%d)", profile.Name, profile.Archetype, inputs.Now.Unix()%10000)
 	}
 
-	// Mint actor ID + insert the visitor row.
-	id := ActorID(newVisitorActorID())
+	// Mint actor ID with collision retry. 8 hex chars = 32 bits of
+	// entropy — collision is astronomically unlikely at Salem scale but
+	// not impossible, and a collision means silently replacing an
+	// existing actor row. The retry loop checks against w.Actors and
+	// caps at 10 attempts; on exhaustion (genuinely shouldn't happen),
+	// log + skip this spawn.
+	id := ActorID("")
+	for attempt := 0; attempt < 10; attempt++ {
+		candidate := ActorID(newVisitorActorID())
+		if _, exists := w.Actors[candidate]; !exists {
+			id = candidate
+			break
+		}
+	}
+	if id == "" {
+		log.Printf("sim/visitor: dispatchSpawn: actor-ID minting exhausted 10 retries; skipping")
+		return
+	}
 	visitor := &Actor{
 		ID:                id,
 		DisplayName:       displayName,
@@ -649,11 +673,12 @@ func structureIDValid(w *World, id VillageObjectID) bool {
 //
 //  1. Shuffle the four edges (top / bottom / left / right) using the
 //     supplied random source.
-//  2. For each edge in order, sweep depth 0..VisitorEdgeScanMaxDepth
-//     perpendicular to the edge. At each depth, collect tiles whose raw
-//     terrain byte is TerrainDirt or TerrainCobblestone (roads). Shuffle
-//     candidates at that depth and return the first one that is both
-//     walkable in the obstacle-aware WalkGrid AND path-connected to
+//  2. For each edge in order, sweep depths in [0, VisitorEdgeScanMaxDepth)
+//     (exclusive upper bound — matches v1's loop, depth tile 30 itself is
+//     not sampled) perpendicular to the edge. At each depth, collect tiles
+//     whose raw terrain byte is TerrainDirt or TerrainCobblestone (roads).
+//     Shuffle candidates at that depth and return the first one that is
+//     both walkable in the obstacle-aware WalkGrid AND path-connected to
 //     anchorTile via FindPathToAdjacent.
 //  3. If no edge yields a candidate within the depth cap, return ok=false.
 //     Caller skips this cycle.
