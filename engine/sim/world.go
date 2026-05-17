@@ -20,13 +20,14 @@ const (
 // line refreshed every ~4h), and timestamps the various tickers use to
 // avoid re-firing a boundary they have already processed.
 type WorldEnvironment struct {
-	Now              time.Time
-	Weather          string
-	Atmosphere       string
-	LastRefreshed    time.Time
-	LastTransitionAt time.Time // last day↔night transition (UTC)
-	LastRotationAt   time.Time // last daily asset rotation (UTC)
-	LastNeedsTickAt  time.Time // last hourly needs increment (UTC, hour-truncated)
+	Now                     time.Time
+	Weather                 string
+	Atmosphere              string
+	LastRefreshed           time.Time
+	LastAtmosphereRefreshAt time.Time // last successful atmosphere refresh (UTC); see engine/sim/atmosphere.go
+	LastTransitionAt        time.Time // last day↔night transition (UTC)
+	LastRotationAt          time.Time // last daily asset rotation (UTC)
+	LastNeedsTickAt         time.Time // last hourly needs increment (UTC, hour-truncated)
 }
 
 // WorldSettings carries world-level config — checkpoint cadence, phase
@@ -141,6 +142,15 @@ type WorldSettings struct {
 	// reads on the world goroutine, no allocations).
 	IdleBackstopThreshold     time.Duration
 	IdleBackstopSweepInterval time.Duration
+
+	// AtmosphereRefreshInterval is the cadence at which the atmosphere
+	// refresh cascade slice fires a salem-generic LLM call to rewrite
+	// World.Environment.Atmosphere. Default 4h
+	// (defaultAtmosphereRefreshInterval in
+	// engine/sim/cascade/atmosphere.go — owned by cascade since cascade
+	// owns the goroutine driver). Settings-driven from day one so dev /
+	// staging can tune it down for testing without rebuilding.
+	AtmosphereRefreshInterval time.Duration
 
 	// DefaultOutdoorSceneRadius is the conversational radius used by
 	// SceneBoundArea when callers don't specify one explicitly. Measured

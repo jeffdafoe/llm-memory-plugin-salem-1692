@@ -1,0 +1,278 @@
+package cascade
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/llm"
+)
+
+// atmosphere.go — world-level atmosphere refresh cascade slice. The
+// sim-package primitives (FetchAtmosphereContext + ApplyAtmosphereRefresh
+// Commands, AtmosphereContext) live in engine/sim/atmosphere.go; this
+// file owns the long-running goroutine that drives the periodic refresh
+// and the LLM-call adapter against salem-generic.
+//
+// Why off-world: the LLM call blocks for seconds. Running it on the
+// world goroutine would freeze the engine. The sweep ticker runs on a
+// dedicated goroutine, bounces to the world for context data (via
+// FetchAtmosphereContext), issues the LLM call off-world against
+// salem-generic, then bounces back to the world to apply the result
+// (via ApplyAtmosphereRefresh). Same shape as the consolidation cascade
+// slice — but world-scoped instead of per-relationship.
+//
+// Lifecycle:
+//
+//   RegisterAtmosphere(ctx, w, client)
+//   └─> go runAtmosphereSweep(ctx, w, client)
+//        ├─> immediate first sweep (no initial-interval wait)
+//        └─> time.Ticker @ AtmosphereRefreshInterval until ctx.Done
+//
+// Failure modes (per consolidation):
+//
+//   - World SendContext error → log + return (sweep is shut down and
+//     the world goroutine is gone; nothing to do).
+//   - LLM call error → log + continue. The atmosphere is left untouched;
+//     the next sweep retries.
+//   - Empty / whitespace-only LLM reply → log + continue. Same retry
+//     posture.
+//   - ApplyAtmosphereRefresh error → log + continue. Defensive against
+//     substrate invariant violations (empty-after-trim should already
+//     be caught above, but the substrate enforces it independently).
+//   - Dedup (LLM emitted the existing atmosphere) → log + continue. No
+//     write, no stamp change.
+
+// defaultAtmosphereRefreshInterval is the fallback cadence when
+// WorldSettings.AtmosphereRefreshInterval is unset. 4h — matches the
+// design locked in shared/tasks/engine-in-memory-rewrite/start-here
+// (replaces v1 chronicler phase-boundary fires; same wall-clock
+// cadence as v1's three-fires-per-game-day at dawn / midday / dusk
+// when game time is wall-clock-paced).
+//
+// Lives in cascade rather than sim because cascade owns the goroutine
+// driver; sim owns the substrate Commands. sim/atmosphere.go re-exports
+// the same value as AtmosphereRefreshIntervalDefault for callers
+// authoring tests or admin tools that don't pull cascade in.
+const defaultAtmosphereRefreshInterval = 4 * time.Hour
+
+// atmosphereLLMModel is the VA slug routed in llm.Request.Model. The
+// real cutover-layer HTTP adapter routes this to the salem-generic
+// shared utility VA — blank startup_instructions, no persona, no
+// dream/learning state, no prompt cache. The caller (this slice) ships
+// the full instruction set inline in the user message.
+//
+// FakeClient in tests ignores Model; tests still assert it's passed
+// through correctly so a future adapter rename doesn't silently break
+// routing.
+const atmosphereLLMModel = "salem-generic"
+
+// RegisterAtmosphere spawns the atmosphere refresh goroutine. The
+// goroutine returns when ctx is cancelled. Call once at world startup;
+// order relative to other Register*(...) calls doesn't matter
+// functionally, but keep the registrations grouped for readability.
+//
+// Panics on nil w or nil client to fail fast at wiring time rather
+// than silently no-op.
+func RegisterAtmosphere(ctx context.Context, w *sim.World, client llm.Client) {
+	if w == nil {
+		panic("cascade: RegisterAtmosphere requires a non-nil world")
+	}
+	if client == nil {
+		panic("cascade: RegisterAtmosphere requires a non-nil LLM client")
+	}
+	go runAtmosphereSweep(ctx, w, client)
+}
+
+// runAtmosphereSweep is the goroutine body. Runs an immediate first
+// sweep on entry (so a fresh-loaded world's stale-or-empty atmosphere
+// doesn't have to wait a full 4h before its first refresh), then ticks
+// at AtmosphereRefreshInterval.
+//
+// Exported as a package-private symbol for tests; integration tests
+// drive single sweeps via runOneAtmosphereSweep directly.
+func runAtmosphereSweep(ctx context.Context, w *sim.World, client llm.Client) {
+	interval := readAtmosphereRefreshInterval(ctx, w)
+	if ctx.Err() != nil {
+		return
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	// Immediate first sweep.
+	runOneAtmosphereSweep(ctx, w, client)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			runOneAtmosphereSweep(ctx, w, client)
+		}
+	}
+}
+
+// runOneAtmosphereSweep executes one refresh cycle: fetch context from
+// the world, issue the LLM call, apply the result. Single round-trip
+// per sweep — atmosphere is world-scoped, not per-candidate like
+// consolidation, so there's no inner loop.
+//
+// Honors ctx cancellation between the world round-trips so a shutdown
+// mid-sweep returns promptly.
+func runOneAtmosphereSweep(ctx context.Context, w *sim.World, client llm.Client) {
+	if ctx.Err() != nil {
+		return
+	}
+	now := time.Now().UTC()
+	res, err := w.SendContext(ctx, sim.FetchAtmosphereContext(now))
+	if err != nil {
+		if ctx.Err() == nil {
+			log.Printf("cascade/atmosphere: fetch context: %v", err)
+		}
+		return
+	}
+	actx, ok := res.(sim.AtmosphereContext)
+	if !ok {
+		log.Printf("cascade/atmosphere: fetch returned %T, want sim.AtmosphereContext", res)
+		return
+	}
+
+	prompt := buildAtmospherePrompt(actx)
+	req := llm.Request{
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: prompt}},
+		// No tools — atmosphere is prose-only. The llm.Client contract
+		// allows empty Tools (rare but legal).
+		Tools: nil,
+		// Routes through the cutover-layer HTTP adapter to salem-generic
+		// (blank instructions, no persona, no state). FakeClient ignores
+		// Model; tests assert it's passed through.
+		Model: atmosphereLLMModel,
+	}
+	reply, err := client.Complete(ctx, req)
+	if err != nil {
+		if ctx.Err() == nil {
+			log.Printf("cascade/atmosphere: LLM call failed: %v", err)
+		}
+		return
+	}
+	// Cancellation can land between client.Complete's start and its return
+	// (the response arrived just before ctx-cancel reached the client).
+	// Stop here rather than proceed to log empty-reply or attempt apply
+	// during shutdown. (code_review R0 finding #1.)
+	if ctx.Err() != nil {
+		return
+	}
+	text := strings.TrimSpace(reply.Content)
+	if text == "" {
+		log.Printf("cascade/atmosphere: empty reply (tool_calls=%d)", len(reply.ToolCalls))
+		return
+	}
+
+	applyAt := time.Now().UTC()
+	res, err = w.SendContext(ctx, sim.ApplyAtmosphereRefresh(text, applyAt))
+	if err != nil {
+		if ctx.Err() == nil {
+			log.Printf("cascade/atmosphere: apply failed: %v", err)
+		}
+		return
+	}
+	// Same posture as post-LLM: suppress success/dedup logging during
+	// shutdown for consistency with the error-path suppression above.
+	// (code_review R0 finding #2.)
+	if ctx.Err() != nil {
+		return
+	}
+	wrote, _ := res.(bool)
+	if wrote {
+		log.Printf("cascade/atmosphere: refreshed (len=%d)", len(text))
+	} else {
+		log.Printf("cascade/atmosphere: dedup — LLM returned current atmosphere; skipping write")
+	}
+}
+
+// readAtmosphereRefreshInterval reads WorldSettings.AtmosphereRefreshInterval
+// via a context-aware Command and falls back to
+// defaultAtmosphereRefreshInterval when unset, when the read can't
+// complete, or when the configured value is non-positive (which would
+// panic time.NewTicker). Same shape as cascade/idle_backstop.go's
+// readSweepInterval — see the comment there for the SendContext-vs-Send
+// rationale.
+//
+// Production tuning is intended to happen via environment config +
+// restart, not hot-reload mid-run.
+func readAtmosphereRefreshInterval(ctx context.Context, w *sim.World) time.Duration {
+	res, err := w.SendContext(ctx, sim.Command{Fn: func(world *sim.World) (any, error) {
+		interval := world.Settings.AtmosphereRefreshInterval
+		if interval <= 0 {
+			interval = defaultAtmosphereRefreshInterval
+		}
+		return interval, nil
+	}})
+	if err != nil {
+		return defaultAtmosphereRefreshInterval
+	}
+	interval, ok := res.(time.Duration)
+	if !ok || interval <= 0 {
+		return defaultAtmosphereRefreshInterval
+	}
+	return interval
+}
+
+// buildAtmospherePrompt composes the user-message text the salem-generic
+// VA reads. salem-generic ships with blank startup_instructions, so the
+// prompt MUST self-frame in full — task description, inputs, and output
+// constraints all inline.
+//
+// Tool disclaimer mirrors the consolidation prompt's posture: explicit
+// "no tools" override, since some cutover-layer system-prompt loader
+// down the line may add tool-discipline boilerplate.
+//
+// "Biblical in cadence" is lifted verbatim from v1's chronicler
+// set_environment tool description — it shapes the prose without
+// requiring a long stylistic preamble. The brevity ask is a soft
+// target; the LLM tends to honor "1-2 sentences" loosely.
+func buildAtmospherePrompt(c sim.AtmosphereContext) string {
+	var b strings.Builder
+	b.WriteString("You author the village's current atmosphere — weather, mood, ambient texture. There are no tools available for this turn; respond with prose only.\n\n")
+
+	fmt.Fprintf(&b, "It is %s.", c.Phase)
+	if weather := strings.TrimSpace(c.Weather); weather != "" {
+		fmt.Fprintf(&b, " The weather: %s.", weather)
+	}
+	b.WriteString("\n\n")
+
+	if prior := strings.TrimSpace(c.PriorAtmosphere); prior != "" {
+		b.WriteString("The previous atmosphere you wrote:\n")
+		b.WriteString(prior)
+		b.WriteString("\n\n")
+	} else {
+		b.WriteString("You haven't written the atmosphere before now.\n\n")
+	}
+
+	if len(c.Roster) > 0 {
+		b.WriteString("The village right now:\n")
+		for _, e := range c.Roster {
+			// FetchAtmosphereContext doesn't produce empty buckets, but
+			// buildAtmospherePrompt is tested directly with synthetic
+			// contexts — skip empty-name entries so a future caller can't
+			// generate `- At the X: .` lines. (code_review R0 finding #4.)
+			if len(e.DisplayNames) == 0 {
+				continue
+			}
+			label := e.StructureLabel
+			if label == "" {
+				label = "Out in the open"
+			} else {
+				label = "At the " + label
+			}
+			fmt.Fprintf(&b, "- %s: %s.\n", label, strings.Join(e.DisplayNames, ", "))
+		}
+		b.WriteString("\n")
+	}
+
+	b.WriteString("Write 1-2 brief sentences capturing the village's current atmosphere. Plain prose, biblical in cadence. No preamble, no sign-off — just the prose.")
+	return b.String()
+}
