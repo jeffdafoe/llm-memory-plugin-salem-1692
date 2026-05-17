@@ -371,6 +371,58 @@ func TestApplyConsolidation_RejectsEmptySummary(t *testing.T) {
 	}
 }
 
+// TestApplyConsolidation_RejectsWhitespaceOnly confirms the substrate
+// trims at the boundary and rejects whitespace-only input. Defends the
+// "SummaryText is never set to whitespace-only via this path" invariant
+// against direct callers (tests / admin paths / future code) — the
+// cascade driver already trims, but the substrate Command is public.
+func TestApplyConsolidation_RejectsWhitespaceOnly(t *testing.T) {
+	w, stop := buildConsolidationTestWorld(t)
+	defer stop()
+	at := time.Now().UTC()
+	recordN(t, w, "ezekiel", sim.ConsolidationFirstMinFacts, at)
+
+	_, err := w.Send(sim.ApplyConsolidation("hannah", "ezekiel", "   \n\t  ", nil, at))
+	if err == nil {
+		t.Fatal("ApplyConsolidation with whitespace-only summary: no error")
+	}
+
+	// Row left untouched: SummaryText empty, no prune, no stamp.
+	snap := w.Published()
+	rel := snap.Actors["hannah"].Relationships["ezekiel"]
+	if rel.SummaryText != "" {
+		t.Errorf("SummaryText = %q, want untouched empty", rel.SummaryText)
+	}
+	if rel.LastConsolidatedAt != nil {
+		t.Errorf("LastConsolidatedAt = %v, want nil (no stamp on whitespace-only)", rel.LastConsolidatedAt)
+	}
+}
+
+// TestApplyConsolidation_TrimsAcceptedInput confirms that when the trim
+// leaves non-empty content, the substrate stores the trimmed form (not
+// the original with leading/trailing whitespace).
+func TestApplyConsolidation_TrimsAcceptedInput(t *testing.T) {
+	w, stop := buildConsolidationTestWorld(t)
+	defer stop()
+	at := time.Now().UTC()
+	recordN(t, w, "ezekiel", sim.ConsolidationFirstMinFacts, at)
+
+	cs := candidates(t, w, at, 1)
+	if len(cs) != 1 {
+		t.Fatalf("setup: candidates = %d", len(cs))
+	}
+	apply := at.Add(time.Second)
+	if _, err := w.Send(sim.ApplyConsolidation(cs[0].ActorID, cs[0].PeerID, "   surrounded by whitespace.   ", cs[0].Facts, apply)); err != nil {
+		t.Fatalf("ApplyConsolidation: %v", err)
+	}
+
+	snap := w.Published()
+	rel := snap.Actors["hannah"].Relationships["ezekiel"]
+	if rel.SummaryText != "surrounded by whitespace." {
+		t.Errorf("SummaryText = %q, want trimmed 'surrounded by whitespace.'", rel.SummaryText)
+	}
+}
+
 // TestApplyConsolidation_RejectsUnknownActor confirms the guard.
 func TestApplyConsolidation_RejectsUnknownActor(t *testing.T) {
 	w, stop := buildConsolidationTestWorld(t)
