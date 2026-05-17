@@ -368,3 +368,201 @@ func TestRegisterAtmosphere_PanicsOnNilClient(t *testing.T) {
 	}()
 	RegisterAtmosphere(context.Background(), w, nil)
 }
+
+// --- Activity digest rendering tests --------------------------------
+
+// TestBuildAtmospherePrompt_DigestSingleActor renders one actor's
+// counts with the expected verbs and pluralization.
+func TestBuildAtmospherePrompt_DigestSingleActor(t *testing.T) {
+	c := sim.AtmosphereContext{
+		Phase: sim.PhaseDay,
+		ActivityDigest: []sim.ActivityDigestEntry{
+			{
+				ActorID:     "hannah",
+				DisplayName: "Hannah",
+				Counts: map[sim.ActionType]int{
+					sim.ActionTypeSpoke:  3,
+					sim.ActionTypeWalked: 1,
+				},
+			},
+		},
+	}
+	got := buildAtmospherePrompt(c)
+	if !strings.Contains(got, "Since your last attention:") {
+		t.Errorf("missing digest header\n--- prompt ---\n%s", got)
+	}
+	// Parts alphabetical by verb: spoke before walked.
+	wantLine := "- Hannah spoke 3 times, walked 1 time."
+	if !strings.Contains(got, wantLine) {
+		t.Errorf("missing line %q\n--- prompt ---\n%s", wantLine, got)
+	}
+}
+
+// TestBuildAtmospherePrompt_DigestMultipleActorsOrdered renders
+// multiple actors in the order given by AtmosphereContext (which
+// FetchAtmosphereContext pre-sorts by DisplayName).
+func TestBuildAtmospherePrompt_DigestMultipleActorsOrdered(t *testing.T) {
+	c := sim.AtmosphereContext{
+		Phase: sim.PhaseDay,
+		ActivityDigest: []sim.ActivityDigestEntry{
+			{ActorID: "a", DisplayName: "Alice", Counts: map[sim.ActionType]int{sim.ActionTypeSpoke: 1}},
+			{ActorID: "b", DisplayName: "Bob", Counts: map[sim.ActionType]int{sim.ActionTypeConsumed: 2}},
+		},
+	}
+	got := buildAtmospherePrompt(c)
+	aliceIdx := strings.Index(got, "- Alice spoke 1 time.")
+	bobIdx := strings.Index(got, "- Bob ate 2 times.")
+	if aliceIdx < 0 {
+		t.Errorf("missing Alice line\n--- prompt ---\n%s", got)
+	}
+	if bobIdx < 0 {
+		t.Errorf("missing Bob line\n--- prompt ---\n%s", got)
+	}
+	if aliceIdx >= 0 && bobIdx >= 0 && aliceIdx > bobIdx {
+		t.Errorf("Alice (%d) should come before Bob (%d) — context order preserved", aliceIdx, bobIdx)
+	}
+}
+
+// TestBuildAtmospherePrompt_DigestSingularPlural: "1 time" vs "N times".
+func TestBuildAtmospherePrompt_DigestSingularPlural(t *testing.T) {
+	c := sim.AtmosphereContext{
+		Phase: sim.PhaseDay,
+		ActivityDigest: []sim.ActivityDigestEntry{
+			{ActorID: "h", DisplayName: "Hannah", Counts: map[sim.ActionType]int{
+				sim.ActionTypeSpoke:  1,
+				sim.ActionTypeWalked: 5,
+			}},
+		},
+	}
+	got := buildAtmospherePrompt(c)
+	if !strings.Contains(got, "spoke 1 time") {
+		t.Errorf("singular missing\n--- prompt ---\n%s", got)
+	}
+	if !strings.Contains(got, "walked 5 times") {
+		t.Errorf("plural missing\n--- prompt ---\n%s", got)
+	}
+	if strings.Contains(got, "spoke 1 times") {
+		t.Errorf("over-pluralized\n--- prompt ---\n%s", got)
+	}
+}
+
+// TestBuildAtmospherePrompt_DigestOmittedWhenEmpty: empty digest →
+// no "Since your last attention:" section.
+func TestBuildAtmospherePrompt_DigestOmittedWhenEmpty(t *testing.T) {
+	c := sim.AtmosphereContext{Phase: sim.PhaseDay}
+	got := buildAtmospherePrompt(c)
+	if strings.Contains(got, "Since your last attention:") {
+		t.Errorf("empty digest emitted header\n--- prompt ---\n%s", got)
+	}
+}
+
+// TestBuildAtmospherePrompt_DigestSkipsZeroAndUnknownActionTypes:
+// defensive — Counts entries with zero/negative counts or unmapped
+// ActionType values should not render.
+func TestBuildAtmospherePrompt_DigestSkipsZeroAndUnknownActionTypes(t *testing.T) {
+	c := sim.AtmosphereContext{
+		Phase: sim.PhaseDay,
+		ActivityDigest: []sim.ActivityDigestEntry{
+			{ActorID: "h", DisplayName: "Hannah", Counts: map[sim.ActionType]int{
+				sim.ActionTypeSpoke:        2,
+				sim.ActionTypeWalked:       0, // zero — skipped
+				sim.ActionType("teleport"): 5, // not in verb map — skipped
+			}},
+		},
+	}
+	got := buildAtmospherePrompt(c)
+	if !strings.Contains(got, "spoke 2 times") {
+		t.Errorf("Spoke part missing\n--- prompt ---\n%s", got)
+	}
+	if strings.Contains(got, "walked") {
+		t.Errorf("zero-count Walked should have been skipped\n--- prompt ---\n%s", got)
+	}
+	if strings.Contains(got, "teleport") {
+		t.Errorf("unmapped ActionType should have been skipped\n--- prompt ---\n%s", got)
+	}
+}
+
+// TestBuildAtmospherePrompt_DigestActorWithOnlyUnmappedTypesSkipped:
+// an actor whose Counts map is entirely unmapped/zero contributes no
+// line and shouldn't produce a blank "- Hannah ." artifact.
+func TestBuildAtmospherePrompt_DigestActorWithOnlyUnmappedTypesSkipped(t *testing.T) {
+	c := sim.AtmosphereContext{
+		Phase: sim.PhaseDay,
+		ActivityDigest: []sim.ActivityDigestEntry{
+			{ActorID: "a", DisplayName: "Alice", Counts: map[sim.ActionType]int{sim.ActionTypeSpoke: 1}},
+			{ActorID: "b", DisplayName: "Bob", Counts: map[sim.ActionType]int{sim.ActionType("ghost"): 7}},
+		},
+	}
+	got := buildAtmospherePrompt(c)
+	if !strings.Contains(got, "- Alice spoke 1 time.") {
+		t.Errorf("Alice line missing\n--- prompt ---\n%s", got)
+	}
+	if strings.Contains(got, "Bob") {
+		t.Errorf("Bob (all-unmapped counts) should produce no line\n--- prompt ---\n%s", got)
+	}
+}
+
+// TestDigestActorParts directly covers the verb mapping + ordering +
+// pluralization without going through buildAtmospherePrompt.
+func TestDigestActorParts(t *testing.T) {
+	cases := []struct {
+		name   string
+		counts map[sim.ActionType]int
+		want   []string
+	}{
+		{
+			name:   "empty",
+			counts: map[sim.ActionType]int{},
+			want:   []string{},
+		},
+		{
+			name:   "single singular",
+			counts: map[sim.ActionType]int{sim.ActionTypeSpoke: 1},
+			want:   []string{"spoke 1 time"},
+		},
+		{
+			name:   "single plural",
+			counts: map[sim.ActionType]int{sim.ActionTypeSpoke: 3},
+			want:   []string{"spoke 3 times"},
+		},
+		{
+			name: "alphabetical multi",
+			counts: map[sim.ActionType]int{
+				sim.ActionTypeSpoke:    2,
+				sim.ActionTypeWalked:   1,
+				sim.ActionTypeConsumed: 4,
+			},
+			// Alphabetical by verb: ate, spoke, walked.
+			want: []string{"ate 4 times", "spoke 2 times", "walked 1 time"},
+		},
+		{
+			name: "zero skipped",
+			counts: map[sim.ActionType]int{
+				sim.ActionTypeSpoke:  0,
+				sim.ActionTypeWalked: 1,
+			},
+			want: []string{"walked 1 time"},
+		},
+		{
+			name: "unmapped skipped",
+			counts: map[sim.ActionType]int{
+				sim.ActionType("unknown"): 5,
+				sim.ActionTypeSpoke:       1,
+			},
+			want: []string{"spoke 1 time"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := digestActorParts(c.counts)
+			if len(got) != len(c.want) {
+				t.Fatalf("len = %d, want %d (got %v, want %v)", len(got), len(c.want), got, c.want)
+			}
+			for i := range got {
+				if got[i] != c.want[i] {
+					t.Errorf("[%d] = %q, want %q", i, got[i], c.want[i])
+				}
+			}
+		})
+	}
+}
