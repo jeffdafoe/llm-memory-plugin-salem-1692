@@ -139,6 +139,13 @@ func TestRegisterIdleBackstop_TickerFiresRepeatedly(t *testing.T) {
 // TestRegisterIdleBackstop_CtxCancelExitsGoroutine: cancelling the
 // passed ctx unblocks the sweep goroutine. Verifies via the absence of
 // new stamps after cancel.
+//
+// Test shape (R1 robustness): wait for first stamp, then cancel driver,
+// then give the goroutine a generous quiet window for any already-
+// queued sweep to drain, THEN clear the warrant. Then wait > sweep
+// interval to confirm no re-stamp. This avoids the race where a sweep
+// queued just before cancel could re-stamp into the cleared state and
+// look indistinguishable from "goroutine didn't exit."
 func TestRegisterIdleBackstop_CtxCancelExitsGoroutine(t *testing.T) {
 	w, cancel := buildBackstopDriverWorld(t)
 	defer cancel()
@@ -147,7 +154,7 @@ func TestRegisterIdleBackstop_CtxCancelExitsGoroutine(t *testing.T) {
 	cascade.RegisterIdleBackstop(driverCtx, w)
 
 	// Wait for first stamp.
-	deadline := time.Now().Add(500 * time.Millisecond)
+	deadline := time.Now().Add(1 * time.Second)
 	for time.Now().Before(deadline) && !readActorWarranted(t, w, "hannah") {
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -155,9 +162,11 @@ func TestRegisterIdleBackstop_CtxCancelExitsGoroutine(t *testing.T) {
 		t.Fatal("first sweep did not warrant hannah")
 	}
 
-	// Cancel driver, then clear warrant. If the goroutine had not
-	// exited, the next ticker tick (20ms later) would re-stamp.
+	// Cancel, then drain — let any in-flight sweep complete and any
+	// queued SendContext error out cleanly before we clear.
 	driverCancel()
+	time.Sleep(100 * time.Millisecond)
+
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		a := world.Actors["hannah"]
 		a.WarrantedSince = nil
@@ -169,7 +178,7 @@ func TestRegisterIdleBackstop_CtxCancelExitsGoroutine(t *testing.T) {
 	}
 
 	// Wait > one sweep interval. No re-stamp should occur.
-	time.Sleep(80 * time.Millisecond)
+	time.Sleep(150 * time.Millisecond)
 	if readActorWarranted(t, w, "hannah") {
 		t.Error("idle backstop re-stamped after ctx cancel; goroutine didn't exit")
 	}

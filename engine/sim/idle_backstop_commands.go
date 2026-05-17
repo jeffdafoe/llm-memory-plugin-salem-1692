@@ -108,14 +108,34 @@ func EvaluateIdleBackstop(now time.Time) Command {
 				if lastTick, ok := lastReactorTickAt(a); ok && lastTick.After(effective) {
 					effective = lastTick
 				}
-				if !effective.IsZero() && now.Sub(effective) < threshold {
+				// Compute quiet once and clamp at zero — a wall-clock
+				// jump backward or a test-supplied `now` before the
+				// effective anchor would otherwise produce a negative
+				// duration. (R1 fix.)
+				quiet := time.Duration(0)
+				if !effective.IsZero() {
+					quiet = now.Sub(effective)
+					if quiet < 0 {
+						quiet = 0
+					}
+				}
+				// Boundary: "older than threshold" is strict — at exactly
+				// the threshold (quiet == threshold), the actor is "at
+				// threshold," not "past it." Stamp only when quiet >
+				// threshold. (R1 fix.)
+				if effective.IsZero() || quiet <= threshold {
 					t.SkippedRecentlyTicked++
 					continue
 				}
-				var quiet time.Duration
-				if !effective.IsZero() {
-					quiet = now.Sub(effective)
-				}
+				// tryStampWarrant has no return value but is guaranteed
+				// to stamp given the pre-conditions enforced above:
+				// non-nil actor, non-nil Reason, no open WarrantedSince
+				// (open-cycle path checks SourceEventID != 0 and bails
+				// on zero-source like ours), no in-flight markers, no
+				// recently-consumed dedup (same SourceEventID == 0
+				// bypass). MaxWarrantsPerActor cap caps the list size
+				// via drop-oldest, which is still a stamp. So
+				// t.Stamped++ is accurate.
 				tryStampWarrant(w, a, WarrantMeta{
 					TriggerActorID: a.ID,
 					Force:          false,

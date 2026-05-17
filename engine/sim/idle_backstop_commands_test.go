@@ -308,8 +308,9 @@ func TestEvaluateIdleBackstop_RespectsConfiguredThreshold(t *testing.T) {
 
 // TestEvaluateIdleBackstop_ColdStartNoStorm: post-LoadWorld first sweep
 // with `now` close to the load moment does NOT stamp idle warrants on
-// every actor — the cold-start seed in RecentReactorTicks is the whole
-// point of resetReactorStateOnLoad seeding a single entry at LoadedAt.
+// every actor — World.LoadedAt is used as the cold-start floor for
+// effective-last-activity, so fresh-loaded actors with no
+// RecentReactorTicks aren't treated as "idle forever."
 func TestEvaluateIdleBackstop_ColdStartNoStorm(t *testing.T) {
 	actors := map[sim.ActorID]*sim.Actor{}
 	for _, id := range []sim.ActorID{"a", "b", "c", "d", "e"} {
@@ -320,7 +321,8 @@ func TestEvaluateIdleBackstop_ColdStartNoStorm(t *testing.T) {
 
 	loadAt := loadTimeOf(t, w, "a")
 	// First sweep ~immediately after load: all actors look "freshly
-	// ticked" because of the LoadWorld anchor. None should backstop.
+	// active" because effective-last-activity falls back to
+	// World.LoadedAt. None should backstop.
 	now := loadAt.Add(time.Second)
 
 	tm := runEvaluate(t, w, now)
@@ -387,4 +389,75 @@ func TestEvaluateIdleBackstop_TelemetryShape(t *testing.T) {
 	if tm.SkippedTickInFlight != 1 {
 		t.Errorf("SkippedTickInFlight = %d, want 1 (flight)", tm.SkippedTickInFlight)
 	}
+}
+
+// TestEvaluateIdleBackstop_ThresholdBoundary pins the strict "older
+// than threshold" semantics. At exactly `threshold` past the effective
+// anchor, the actor is "at threshold," not "past it" — skip. One
+// nanosecond past, stamp. (R1 boundary fix.)
+func TestEvaluateIdleBackstop_ThresholdBoundary(t *testing.T) {
+	w, cancel := buildIdleBackstopWorld(t, map[sim.ActorID]*sim.Actor{
+		"hannah": {ID: "hannah", Kind: sim.KindNPCShared},
+	})
+	defer cancel()
+
+	loadAt := loadTimeOf(t, w, "hannah")
+	threshold := 30 * time.Minute // default
+
+	cases := []struct {
+		name        string
+		offset      time.Duration
+		wantStamped int
+	}{
+		{"one_ns_before", threshold - time.Nanosecond, 0},
+		{"exactly_threshold", threshold, 0},
+		{"one_ns_after", threshold + time.Nanosecond, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Clear any warrant from a prior sub-test on the same world.
+			if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+				a := world.Actors["hannah"]
+				a.WarrantedSince = nil
+				a.WarrantDueAt = nil
+				a.Warrants = nil
+				return nil, nil
+			}}); err != nil {
+				t.Fatalf("clear: %v", err)
+			}
+			tm := runEvaluate(t, w, loadAt.Add(tc.offset))
+			if tm.Stamped != tc.wantStamped {
+				t.Errorf("offset=%v: Stamped = %d, want %d; telemetry=%+v",
+					tc.offset, tm.Stamped, tc.wantStamped, tm)
+			}
+		})
+	}
+}
+
+// TestEvaluateIdleBackstop_NegativeQuietClamped: a wall-clock jump
+// backward (or a test-supplied `now` before the effective anchor) is
+// treated as "not yet past threshold" — skip without panic and without
+// stamping with a negative QuietDuration. (R1 defensive clamp.)
+func TestEvaluateIdleBackstop_NegativeQuietClamped(t *testing.T) {
+	w, cancel := buildIdleBackstopWorld(t, map[sim.ActorID]*sim.Actor{
+		"hannah": {ID: "hannah", Kind: sim.KindNPCShared},
+	})
+	defer cancel()
+
+	loadAt := loadTimeOf(t, w, "hannah")
+	now := loadAt.Add(-5 * time.Minute) // before load
+
+	tm := runEvaluate(t, w, now)
+	if tm.Stamped != 0 {
+		t.Errorf("Stamped = %d on negative-quiet input, want 0", tm.Stamped)
+	}
+	if tm.SkippedRecentlyTicked != 1 {
+		t.Errorf("SkippedRecentlyTicked = %d, want 1", tm.SkippedRecentlyTicked)
+	}
+
+	inspectActor(t, w, "hannah", func(a *sim.Actor) {
+		if a.WarrantedSince != nil {
+			t.Errorf("hannah was warranted on negative-quiet: %v", a.WarrantedSince)
+		}
+	})
 }
