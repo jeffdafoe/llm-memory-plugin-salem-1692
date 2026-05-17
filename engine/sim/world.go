@@ -122,6 +122,26 @@ type WorldSettings struct {
 	AdmissionBackoff                 time.Duration
 	TickWorkerCount                  int
 
+	// Idle-backstop tunables (engine/sim/cascade/idle_backstop.go). Both
+	// fall back to defaults when zero, so tests that bypass the
+	// environment loader get sensible behavior without seeding them.
+	//
+	// IdleBackstopThreshold: how long an actor must go without a reactor
+	// tick before the idle-backstop sweep stamps a WarrantKindIdleBackstop
+	// warrant. Default 30 min (defaultIdleBackstopThreshold in
+	// reactor.go) — engine-injected liveness for actors no other warrant
+	// has engaged. Production can tune up; sandbox / dev keeps the
+	// default for visible behavior.
+	//
+	// IdleBackstopSweepInterval: how often the idle-backstop sweep walks
+	// the actor list. Default 5 min (defaultIdleBackstopSweepInterval in
+	// engine/sim/cascade/idle_backstop.go — owned by cascade since cascade
+	// owns the goroutine driver). Detection latency ≤ this interval
+	// against the threshold; oversample cost is trivial (per-actor field
+	// reads on the world goroutine, no allocations).
+	IdleBackstopThreshold     time.Duration
+	IdleBackstopSweepInterval time.Duration
+
 	// DefaultOutdoorSceneRadius is the conversational radius used by
 	// SceneBoundArea when callers don't specify one explicitly. Measured
 	// in king's-move (Chebyshev) tiles around the bound's Anchor.
@@ -341,6 +361,17 @@ type World struct {
 	Phase       Phase
 	Settings    WorldSettings
 	TickCounter uint64
+
+	// LoadedAt is the wall-clock moment LoadWorld populated this world
+	// from the repository. Set once by LoadWorld; never modified
+	// afterward. Read by the idle-backstop cascade slice as the cold-
+	// start anchor for actors with no RecentReactorTicks history (a
+	// fresh-loaded actor is "active at LoadedAt," not "idle forever").
+	// Other consumers don't need this — lastReactorTickAt is the
+	// authoritative source for per-actor tick history, and its
+	// nil-RecentReactorTicks "never ticked" semantics is what the
+	// MinReactorTickGap pacing floor and rate gate both rely on.
+	LoadedAt time.Time
 
 	Speech          *SpeechHelper
 	reactorEval     reactorEvaluatorState
@@ -597,6 +628,15 @@ func LoadWorld(ctx context.Context, repo Repository) (*World, error) {
 	for _, a := range w.Actors {
 		resetReactorStateOnLoad(a)
 	}
+	// LoadedAt is the wall-clock moment this world woke up (not
+	// w.Environment.Now, which can lag arbitrarily on a long-crash
+	// recovery). Read by the idle-backstop sweep so fresh-loaded actors
+	// — who have no RecentReactorTicks history yet — are treated as
+	// "active at world wake-up" rather than "never ticked, idle by
+	// maximum duration." Without that, the first sweep after restart
+	// would stamp idle warrants on every actor simultaneously. See
+	// engine/sim/idle_backstop_commands.go.
+	w.LoadedAt = time.Now().UTC()
 	// Scene-quote restart housekeeping. No QuotesRepo exists yet
 	// (pg-impl deferred to cutover), so this loop iterates an empty
 	// map today. Implementation is correct for the future case where

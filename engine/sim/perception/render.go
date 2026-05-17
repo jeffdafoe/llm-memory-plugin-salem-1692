@@ -527,6 +527,8 @@ func renderWarrantLine(n int, w sim.WarrantMeta, maxTextBytes int) (string, bool
 		return renderSpeechWarrantLine(n, w, kind, scope, r.Speaker, r.Excerpt, maxTextBytes)
 	case sim.PaidWarrantReason:
 		return renderPaidWarrantLine(n, w, kind, scope, r.Buyer, r.Amount, r.ForText, maxTextBytes)
+	case sim.IdleBackstopWarrantReason:
+		return renderIdleBackstopWarrantLine(n, kind, scope, r.QuietDuration), false
 	default:
 		if w.TriggerActorID != "" {
 			return fmt.Sprintf("%d. [%s]%s involving %s\n", n, kind, scope, w.TriggerActorID), false
@@ -579,6 +581,31 @@ func renderPaidWarrantLine(n int, w sim.WarrantMeta, kind, scope string, buyer s
 	}
 	sanitized, truncated := sanitizeText(forText, maxTextBytes)
 	return fmt.Sprintf("%d. [%s]%s %s paid you %d %s — \"%s\"\n", n, kind, scope, buyerLabel, amount, unit, sanitized), truncated
+}
+
+// renderIdleBackstopWarrantLine renders the warrant line for an
+// IdleBackstopWarrantReason — the engine-injected liveness tick for an
+// actor that no other warrant has engaged.
+//
+// Surfaces the quiet duration so the actor's LLM tick can decide what
+// (if anything) to do: pursue a need, walk somewhere, sit and wait.
+// The replacement for v1's chronicler-attend-to dispatch; v1 had the
+// chronicler decide who to engage, v2 lets the actor's own tick decide
+// what to do given that they've been quiet.
+//
+// Form: `N. [idle_backstop] you've been quiet for <duration> — consider
+// what to do next`. The duration is rounded to whole seconds (sub-second
+// resolution is noise at the minute-scale this warrant fires at).
+//
+// Returned without truncation since there's no untrusted free-text
+// payload — the line is composed of fixed prose and an engine-computed
+// duration.
+func renderIdleBackstopWarrantLine(n int, kind, scope string, quiet time.Duration) string {
+	if quiet <= 0 {
+		return fmt.Sprintf("%d. [%s]%s you've been quiet — consider what to do next\n", n, kind, scope)
+	}
+	return fmt.Sprintf("%d. [%s]%s you've been quiet for %s — consider what to do next\n",
+		n, kind, scope, quiet.Round(time.Second))
 }
 
 // renderNeeds renders a need map as a deterministic "key=value" list,

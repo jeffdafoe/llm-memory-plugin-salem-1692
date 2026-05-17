@@ -3,6 +3,7 @@ package perception
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
@@ -324,5 +325,45 @@ func TestSanitizeText_CollapsesControlChars(t *testing.T) {
 	}
 	if got != "a b c" {
 		t.Errorf("sanitizeText = %q, want %q", got, "a b c")
+	}
+}
+
+// --- idle backstop warrant -----------------------------------------------
+
+// idleBackstopWarrant constructs a warrant with the idle-backstop reason
+// for the given quiet duration.
+func idleBackstopWarrant(quiet time.Duration) sim.WarrantMeta {
+	return sim.WarrantMeta{
+		Reason: sim.IdleBackstopWarrantReason{QuietDuration: quiet},
+	}
+}
+
+// TestRender_IdleBackstopWarrantLine pins the idle-backstop warrant line
+// shape — kind tag, duration rounded to whole seconds, the "consider
+// what to do next" prompt-shape that nudges the LLM without prescribing
+// an action.
+func TestRender_IdleBackstopWarrantLine(t *testing.T) {
+	cases := []struct {
+		name       string
+		quiet      time.Duration
+		wantPhrase string
+	}{
+		{"thirty_minutes", 30 * time.Minute, "[idle_backstop] you've been quiet for 30m0s — consider what to do next"},
+		{"sub_second_rounded", 32*time.Minute + 750*time.Millisecond, "you've been quiet for 32m1s"},
+		{"zero_duration", 0, "[idle_backstop] you've been quiet — consider what to do next"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := Payload{
+				ActorID:  "hannah",
+				Actor:    ActorView{State: sim.StateIdle},
+				Warrants: []sim.WarrantMeta{idleBackstopWarrant(tc.quiet)},
+				Baseline: BaselinePresent,
+			}
+			out := Render(p, DefaultRenderConfig())
+			if !strings.Contains(out.Text, tc.wantPhrase) {
+				t.Errorf("Render output missing %q\nOutput:\n%s", tc.wantPhrase, out.Text)
+			}
+		})
 	}
 }

@@ -785,6 +785,11 @@ func TestHuddleCommands_StampWarrantsWithExpectedKinds(t *testing.T) {
 // TestLoadWorld_WipesReactorState: ephemeral reactor state is cleared on
 // LoadWorld so checkpoint reload doesn't wedge actors or carry stale
 // rate-gate history that would delay fresh post-restart warrants.
+//
+// World.LoadedAt is set as the cold-start anchor for the idle-backstop
+// cascade slice — read by that slice's effective-last-activity floor
+// so fresh-loaded actors with no RecentReactorTicks aren't treated as
+// "idle forever" on the first post-restart sweep.
 func TestLoadWorld_WipesReactorState(t *testing.T) {
 	repo, handles := mem.NewRepository()
 	now := time.Now().UTC()
@@ -808,10 +813,12 @@ func TestLoadWorld_WipesReactorState(t *testing.T) {
 		},
 	})
 
+	beforeLoad := time.Now().UTC()
 	w, err := sim.LoadWorld(context.Background(), repo)
 	if err != nil {
 		t.Fatalf("LoadWorld: %v", err)
 	}
+	afterLoad := time.Now().UTC()
 
 	a := w.Actors["alice"]
 	if a.WarrantedSince != nil || a.WarrantDueAt != nil || a.Warrants != nil {
@@ -826,6 +833,13 @@ func TestLoadWorld_WipesReactorState(t *testing.T) {
 	}
 	if a.RecentReactorTicks != nil {
 		t.Errorf("RecentReactorTicks survived LoadWorld (len=%d)", a.RecentReactorTicks.Len())
+	}
+	// World.LoadedAt is the cold-start anchor; must be set inside the
+	// load window so the idle-backstop sweep treats fresh-loaded actors
+	// as "active at load time" rather than "idle forever."
+	if w.LoadedAt.Before(beforeLoad) || w.LoadedAt.After(afterLoad) {
+		t.Errorf("World.LoadedAt = %v, expected within [%v, %v]",
+			w.LoadedAt, beforeLoad, afterLoad)
 	}
 }
 
