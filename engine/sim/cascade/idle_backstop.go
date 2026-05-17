@@ -50,11 +50,14 @@ func RegisterIdleBackstop(ctx context.Context, w *sim.World) {
 
 // runIdleBackstopSweep is the goroutine body. Runs an immediate first
 // sweep on entry (so an actor past threshold at world startup doesn't
-// have to wait a full cadence interval — though LoadWorld's cold-start
-// anchor in RecentReactorTicks makes that case very rare in practice),
-// then ticks at IdleBackstopSweepInterval.
+// have to wait a full cadence interval — though World.LoadedAt's
+// cold-start anchor makes the past-threshold-at-startup case rare in
+// practice), then ticks at IdleBackstopSweepInterval.
 func runIdleBackstopSweep(ctx context.Context, w *sim.World) {
-	interval := readSweepInterval(w)
+	interval := readSweepInterval(ctx, w)
+	if ctx.Err() != nil {
+		return
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
@@ -112,24 +115,38 @@ func runOneIdleBackstopSweep(ctx context.Context, w *sim.World) {
 const defaultIdleBackstopSweepInterval = 5 * time.Minute
 
 // readSweepInterval reads WorldSettings.IdleBackstopSweepInterval via a
-// Command (the settings live on world-goroutine-owned state); falls
-// back to defaultIdleBackstopSweepInterval when unset. Called once at
-// sweep startup; if Settings changes mid-run, the new value takes
-// effect on the next process start. Production tuning is intended to
-// happen via environment config + restart, not hot-reload.
-func readSweepInterval(w *sim.World) time.Duration {
-	var interval time.Duration
-	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		interval = world.Settings.IdleBackstopSweepInterval
-		return nil, nil
-	}}); err != nil {
-		// World not running, or shutting down. Fall back to default —
-		// the next select on ctx.Done in the sweep loop will exit
-		// promptly anyway.
+// context-aware Command (the settings live on world-goroutine-owned
+// state); falls back to defaultIdleBackstopSweepInterval when unset
+// or when the read can't complete. Called once at sweep startup; if
+// Settings changes mid-run, the new value takes effect on the next
+// process start. Production tuning is intended to happen via
+// environment config + restart, not hot-reload.
+//
+// Must be SendContext, not Send: this runs before the goroutine
+// reaches its ctx.Done()-aware select loop. If the world isn't yet
+// running (registration ordering off, shutdown racing startup), a
+// plain Send blocks forever and the goroutine is unkillable. The
+// SendContext + caller-side ctx.Err() check after return give a
+// clean exit path when registration runs against a world that's
+// already shutting down. (R1 fix.)
+func readSweepInterval(ctx context.Context, w *sim.World) time.Duration {
+	res, err := w.SendContext(ctx, sim.Command{Fn: func(world *sim.World) (any, error) {
+		interval := world.Settings.IdleBackstopSweepInterval
+		if interval <= 0 {
+			interval = defaultIdleBackstopSweepInterval
+		}
+		return interval, nil
+	}})
+	if err != nil {
+		// ctx cancelled, world not running, or shutting down. The
+		// caller (runIdleBackstopSweep) checks ctx.Err() after this
+		// returns and bails before installing the ticker. A non-zero
+		// fallback is still safer than 0 (time.NewTicker would panic).
 		return defaultIdleBackstopSweepInterval
 	}
-	if interval <= 0 {
-		interval = defaultIdleBackstopSweepInterval
+	interval, ok := res.(time.Duration)
+	if !ok || interval <= 0 {
+		return defaultIdleBackstopSweepInterval
 	}
 	return interval
 }
