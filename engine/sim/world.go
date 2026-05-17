@@ -173,6 +173,33 @@ type WorldSettings struct {
 	ActionLogRetention     time.Duration
 	ActionLogSweepInterval time.Duration
 
+	// Visitor cascade tunables (engine/sim/visitor.go +
+	// engine/sim/cascade/visitor.go). All fall back to *Default constants
+	// in engine/sim/visitor.go when zero, so tests that bypass the
+	// environment loader get sensible behavior without seeding them.
+	//
+	// VisitorSpawnChancePermille: per-tick (per-thousand) probability of
+	// spawning a new visitor when below the concurrent cap. Default 0 —
+	// the feature is no-op until an admin opts in by raising this. At
+	// VisitorTickInterval = 60s, a value of ~10-30 produces "one visitor
+	// per game day on average."
+	//
+	// VisitorMaxConcurrent: cap on simultaneous visitors. 0 halts spawn
+	// even with chance > 0 (cheap admin dial). Default 2.
+	//
+	// VisitorMinStayMinutes / VisitorMaxStayMinutes: stay-window bounds.
+	// Concrete stay is a uniform random pull from [min, max] at spawn.
+	// Defaults 240 / 1440 (4h floor, 24h ceiling).
+	//
+	// VisitorTickInterval: how often the cascade slice runs its three
+	// dispatchers (despawn → cleanup → spawn). Default 60s — matches
+	// v1's runServerTickOnce cadence the visitor handlers piggybacked on.
+	VisitorSpawnChancePermille int
+	VisitorMaxConcurrent       int
+	VisitorMinStayMinutes      int
+	VisitorMaxStayMinutes      int
+	VisitorTickInterval        time.Duration
+
 	// DefaultOutdoorSceneRadius is the conversational radius used by
 	// SceneBoundArea when callers don't specify one explicitly. Measured
 	// in king's-move (Chebyshev) tiles around the bound's Anchor.
@@ -1091,6 +1118,7 @@ func snapshotActor(a *Actor, atTick uint64) *ActorSnapshot {
 		Acquaintances:     cloneAcquaintances(a.Acquaintances),
 		Relationships:     cloneRelationships(a.Relationships),
 		Narrative:         cloneNarrativeState(a.Narrative),
+		VisitorState:      cloneVisitorState(a.VisitorState),
 		DwellCredits:      cloneDwellCredits(a.DwellCredits),
 		TickInFlight:      a.TickInFlight,
 		TickAttemptID:     a.TickAttemptID,

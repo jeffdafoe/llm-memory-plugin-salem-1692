@@ -17,6 +17,12 @@ import (
 // no-ops on a non-shared actor — not an error, the caller doesn't have
 // to gate.
 //
+// Visitor skip: a relationship between two actors is only recorded when
+// NEITHER side is a transient salem-visitor (VisitorState == nil on both).
+// Visitors don't accumulate relationship rows (stateless by design), and
+// persistent NPCs don't accumulate rows keyed by visitor IDs that will
+// be deleted at cleanup. See shared/notes/codebase/salem-engine-v2/visitor.
+//
 // Self-interactions are silently no-op'd (an actor's relationship with
 // themselves is not a meaningful primitive).
 //
@@ -42,10 +48,21 @@ func RecordInteraction(actorID, otherID ActorID, kind InteractionKind, text stri
 			if !ok {
 				return nil, fmt.Errorf("RecordInteraction: actor %q not found", actorID)
 			}
-			if _, ok := w.Actors[otherID]; !ok {
+			other, ok := w.Actors[otherID]
+			if !ok {
 				return nil, fmt.Errorf("RecordInteraction: other actor %q not found", otherID)
 			}
 			if actor.Kind != KindNPCShared {
+				return nil, nil
+			}
+			// Transient-visitor skip: visitors don't accumulate relationship
+			// rows (stateless by design — the shared salem-visitor VA has
+			// dream_mode='none'), and persistent NPCs don't accumulate
+			// relationship rows keyed by transient visitor IDs that will be
+			// deleted at cleanup. Both sides skip — eliminates the orphan-ref
+			// case (persistent NPC's Relationship still pointing at a
+			// visitor's ActorID after the visitor row is gone).
+			if actor.VisitorState != nil || other.VisitorState != nil {
 				return nil, nil
 			}
 

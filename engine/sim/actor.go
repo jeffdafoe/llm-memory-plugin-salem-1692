@@ -281,11 +281,43 @@ type NarrativeState struct {
 	UpdatedAt          time.Time
 }
 
-// VisitorState is the per-visitor archetype state (wandering, leaving,
-// etc.). Nil for non-visitor actors.
+// VisitorState is the per-visitor archetype state. Non-nil marks the actor
+// as a transient salem-visitor — a shared-VA NPC that arrived on a random
+// map edge, hangs around the tavern for hours-to-a-day, then departs.
+// Nil for every non-visitor actor (stateful NPCs, persistent shared-VA
+// vendors, PCs, decoratives).
 //
-// TODO: port from engine/visitor.go.
-type VisitorState struct{}
+// Visitors are KindNPCShared but cross-cascade gates check VisitorState !=
+// nil to skip narrative state accumulation (relationships, narrative
+// consolidation, idle backstops). The pointer-presence check is the
+// "transient visitor" predicate across the engine; see
+// shared/notes/codebase/salem-engine-v2/visitor for the full surface.
+//
+// Archetype / Origin / Disposition come from per-spawn random pools in
+// engine/sim/visitor.go and feed the perception "Visitors here" block plus
+// the per-call identity preface the shared salem-visitor VA reads.
+// ExpiresAt is the wall-clock departure deadline; LeaveDispatched flags
+// whether the despawn walk has been issued (so the visitor ticker
+// doesn't keep re-issuing it tick after tick).
+type VisitorState struct {
+	Archetype       string
+	Origin          string
+	Disposition     string
+	ExpiresAt       time.Time
+	LeaveDispatched bool
+}
+
+// cloneVisitorState deep-copies a VisitorState pointer. All fields are
+// value types (string / time.Time / bool), so a struct copy is sufficient
+// — but the helper exists so future pointer-bearing fields don't silently
+// alias across the snapshot / mem-repo boundary.
+func cloneVisitorState(src *VisitorState) *VisitorState {
+	if src == nil {
+		return nil
+	}
+	cp := *src
+	return &cp
+}
 
 // Actor is the in-memory model of one participant in the simulation: NPC,
 // PC, or decorative. One actor's data is logically one aggregate from the
@@ -451,7 +483,7 @@ type Actor struct {
 // pointer fields that would otherwise alias across the boundary).
 //
 // Aliased today (NOT cloned) because no current command mutates them:
-//   - VisitorState, LastSnapshot — placeholder/empty structs
+//   - LastSnapshot — placeholder/empty struct
 //
 // TODO: clone RestockPolicy when a command starts mutating it. Read-only
 // post-load today but future admin edits could mutate it via a command;
@@ -536,6 +568,9 @@ func CloneActor(a *Actor) *Actor {
 	if a.Narrative != nil {
 		cp.Narrative = cloneNarrativeState(a.Narrative)
 	}
+	if a.VisitorState != nil {
+		cp.VisitorState = cloneVisitorState(a.VisitorState)
+	}
 	if a.RecentActions != nil {
 		cp.RecentActions = a.RecentActions.Clone()
 	}
@@ -618,6 +653,14 @@ type ActorSnapshot struct {
 	Relationships map[ActorID]*Relationship
 	Narrative     *NarrativeState
 
+	// VisitorState mirrors the live Actor's transient-visitor state at
+	// snapshot time. Non-nil marks the actor as a salem-visitor; the
+	// perception "Visitors here" block reads Archetype/Origin/Disposition
+	// from it. Nil for every non-visitor actor (the steady-state case).
+	// Deep-cloned by snapshotActor so published snapshots don't alias the
+	// world's mutable visitor record.
+	VisitorState *VisitorState
+
 	// DwellCredits mirror the live Actor's per-pin recovery credits at
 	// snapshot time so perception build can surface "you are currently
 	// eating stew at the tavern" as part of the actor's self-state. Deep-
@@ -661,6 +704,9 @@ func CloneActorSnapshot(s *ActorSnapshot) *ActorSnapshot {
 	}
 	if s.Narrative != nil {
 		cp.Narrative = cloneNarrativeState(s.Narrative)
+	}
+	if s.VisitorState != nil {
+		cp.VisitorState = cloneVisitorState(s.VisitorState)
 	}
 	if s.DwellCredits != nil {
 		cp.DwellCredits = cloneDwellCredits(s.DwellCredits)

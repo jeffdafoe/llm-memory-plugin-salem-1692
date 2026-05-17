@@ -113,6 +113,44 @@ var (
 	FireScheduledLocomotionTick              = fireScheduledLocomotionTick
 )
 
+// Phase 3 Group A visitor cascade primitives — exposed so sim_test can
+// drive the substrate-side helpers (extractSurname, pickVisitorDestination
+// behind a Command, seed-need-map constructor, archetype-pool iteration)
+// without those internals being part of the public sim package surface.
+var (
+	ExtractSurname          = extractSurname
+	SeedVisitorNeedsForTest = seedVisitorNeeds
+)
+
+// VisitorArchetypePoolForTest returns a copy of the closed-set archetype
+// pool. Used by the init-exhaustiveness regression test to assert every
+// archetype has a sprite mapping.
+func VisitorArchetypePoolForTest() []string {
+	out := make([]string, len(visitorArchetypePool))
+	copy(out, visitorArchetypePool)
+	return out
+}
+
+// PickVisitorDestinationResult bundles pickVisitorDestination's
+// (StructureID, GridPoint, bool) return tuple so the helper can be
+// invoked through a Command.
+type PickVisitorDestinationResult struct {
+	StructureID StructureID
+	Anchor      GridPoint
+	Ok          bool
+}
+
+// PickVisitorDestinationForTest returns a Command that drives the
+// unexported pickVisitorDestination helper and packages its three-tuple
+// result. Lets sim_test exercise destination preference rules without
+// reaching into the cascade tick.
+func PickVisitorDestinationForTest() Command {
+	return Command{Fn: func(w *World) (any, error) {
+		sid, anchor, ok := pickVisitorDestination(w)
+		return PickVisitorDestinationResult{StructureID: sid, Anchor: anchor, Ok: ok}, nil
+	}}
+}
+
 // PR S2 inventory primitives — unexported helpers exposed for direct unit
 // tests. TransferItem is called from inside larger transactions (the future
 // S4 accept_pay commit path will be its first production caller);
