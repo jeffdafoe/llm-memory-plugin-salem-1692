@@ -199,11 +199,19 @@ func init() {
 // cascade driver for log lines and load-bearing for the substrate-side
 // unit tests. Fields parallel the three inline phases of
 // TickVisitorCascade.
+//
+// SpawnSkipChance currently lumps two cases — "feature disabled by
+// config" (chance=0) AND "roll didn't fire on an enabled cascade." Until
+// the separate SpawnDisabled counter lands (deferred from R1 review),
+// consumers must branch on SpawnSkipReason to disambiguate; a dashboard
+// or alert that treats SpawnSkipChance == 1 as "unlucky roll" without
+// reading SpawnSkipReason will misreport disabled worlds as low-roll
+// luck. See shared/notes/codebase/salem-engine-v2/visitor "Future work."
 type VisitorCascadeTelemetry struct {
 	DespawnsStarted int // visitors whose despawn walk was issued this tick
 	CleanedUp       int // visitor rows removed past ExpiresAt + grace
 	Spawned         int // new visitors created (0 or 1 per tick)
-	SpawnSkipChance int // 1 if spawn skipped because the roll didn't fire
+	SpawnSkipChance int // 1 if spawn skipped — chance=0 OR unlucky roll; check SpawnSkipReason
 	SpawnSkipCap    int // 1 if spawn skipped because MaxConcurrent reached
 	SpawnSkipReason string
 }
