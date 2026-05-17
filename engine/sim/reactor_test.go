@@ -307,6 +307,217 @@ func TestActorCanReactNow_HealthyActor(t *testing.T) {
 	})
 }
 
+// TestActorCanReactNow_SleepingNotEligible: a sleeping actor returns
+// eligible=false, stale=false — the warrant stays open and the
+// evaluator backs off by unavailableBackoff.
+func TestActorCanReactNow_SleepingNotEligible(t *testing.T) {
+	w, cancel := buildReactorTestWorld(t)
+	defer cancel()
+	_, _ = w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			world.Actors["alice"].State = sim.StateSleeping
+			eligible, stale := sim.ActorCanReactNow(world, world.Actors["alice"])
+			if eligible {
+				t.Errorf("sleeping actor: eligible=true, want false")
+			}
+			if stale {
+				t.Errorf("sleeping actor: stale=true, want false (warrant stays open)")
+			}
+			return nil, nil
+		},
+	})
+}
+
+// TestActorCanReactNow_RestingNotEligible: same posture as sleeping.
+// Resting per actor.go's State enum is the take_break / dwell-credit-
+// accumulating posture — recovering, do-not-disturb.
+func TestActorCanReactNow_RestingNotEligible(t *testing.T) {
+	w, cancel := buildReactorTestWorld(t)
+	defer cancel()
+	_, _ = w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			world.Actors["alice"].State = sim.StateResting
+			eligible, stale := sim.ActorCanReactNow(world, world.Actors["alice"])
+			if eligible {
+				t.Errorf("resting actor: eligible=true, want false")
+			}
+			if stale {
+				t.Errorf("resting actor: stale=true, want false (warrant stays open)")
+			}
+			return nil, nil
+		},
+	})
+}
+
+// TestActorCanReactNow_OtherStatesEligible — table-drives every other
+// macro-state to confirm the gate only fires on sleeping/resting.
+// Pinning the negative cases prevents an over-eager future addition
+// from silently muting warrants on, say, in-transaction or conversing
+// actors.
+func TestActorCanReactNow_OtherStatesEligible(t *testing.T) {
+	others := []sim.ActorState{
+		sim.StateIdle,
+		sim.StateWalking,
+		sim.StateConversing,
+		sim.StateWorking,
+		sim.StateShopping,
+		sim.StateInTransaction,
+		sim.StateEating,
+	}
+	for _, s := range others {
+		state := s
+		t.Run(string(state), func(t *testing.T) {
+			w, cancel := buildReactorTestWorld(t)
+			defer cancel()
+			_, _ = w.Send(sim.Command{
+				Fn: func(world *sim.World) (any, error) {
+					world.Actors["alice"].State = state
+					eligible, stale := sim.ActorCanReactNow(world, world.Actors["alice"])
+					if !eligible || stale {
+						t.Errorf("state %q: eligible=%v stale=%v; want true,false",
+							state, eligible, stale)
+					}
+					return nil, nil
+				},
+			})
+		})
+	}
+}
+
+// TestEvaluateReactors_SleepingActorWarrantStaysOpen — end-to-end. A
+// sleeping actor with a due warrant must NOT tick, and the warrant
+// must survive (WarrantedSince stays set, Warrants slice intact);
+// WarrantDueAt gets pushed by unavailableBackoff so the next scan
+// doesn't immediately reconsider this actor.
+func TestEvaluateReactors_SleepingActorWarrantStaysOpen(t *testing.T) {
+	w, cancel := buildReactorTestWorld(t)
+	defer cancel()
+
+	now := time.Now().UTC()
+	due := now.Add(-time.Millisecond)
+
+	var emitted int
+	var mu sync.Mutex
+	_, _ = w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			world.Subscribe(sim.SubscriberFunc(func(_ *sim.World, evt sim.Event) {
+				if _, ok := evt.(*sim.ReactorTickDue); ok {
+					mu.Lock()
+					emitted++
+					mu.Unlock()
+				}
+			}))
+			a := world.Actors["alice"]
+			a.State = sim.StateSleeping
+			t1 := now.Add(-50 * time.Millisecond)
+			a.WarrantedSince = &t1
+			a.WarrantDueAt = &due
+			a.Warrants = []sim.WarrantMeta{
+				{TriggerActorID: "bob", Reason: sim.BasicWarrantReason{K: sim.WarrantKindHuddlePeerJoined}},
+			}
+			return nil, nil
+		},
+	})
+
+	_, _ = w.Send(sim.EvaluateReactors(now))
+
+	mu.Lock()
+	if emitted != 0 {
+		mu.Unlock()
+		t.Fatalf("ReactorTickDue events = %d, want 0 (sleeping actor must not tick)", emitted)
+	}
+	mu.Unlock()
+
+	inspectActor(t, w, "alice", func(a *sim.Actor) {
+		if a.WarrantedSince == nil {
+			t.Error("WarrantedSince cleared; want warrant still open after eligible=false")
+		}
+		if len(a.Warrants) != 1 {
+			t.Errorf("Warrants len = %d, want 1 (unconsumed)", len(a.Warrants))
+		}
+		if a.TickInFlight {
+			t.Error("TickInFlight set; sleeping actor must not be marked mid-tick")
+		}
+		if a.WarrantDueAt == nil {
+			t.Fatal("WarrantDueAt cleared; want push by unavailableBackoff")
+		}
+		// WarrantDueAt should be pushed forward — strictly after `due`.
+		// (Not asserting exact backoff value here — that's an internal
+		// constant; this test pins the push-forward behavior, not the
+		// magnitude.)
+		if !a.WarrantDueAt.After(due) {
+			t.Errorf("WarrantDueAt = %v, want pushed past original due=%v",
+				a.WarrantDueAt, due)
+		}
+	})
+}
+
+// TestEvaluateReactors_WakingActorFiresWarrant — state-transition
+// liveness. A sleeping actor's warrant survives the gate; flipping the
+// actor's State back out of sleeping makes the next EvaluateReactors
+// pass tick them. Confirms the "lazy clear, state change revives" path
+// — no explicit state-transition pass walks the warrant list.
+func TestEvaluateReactors_WakingActorFiresWarrant(t *testing.T) {
+	w, cancel := buildReactorTestWorld(t)
+	defer cancel()
+
+	now := time.Now().UTC()
+	due := now.Add(-time.Millisecond)
+
+	var emitted int
+	var mu sync.Mutex
+	_, _ = w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			world.Subscribe(sim.SubscriberFunc(func(_ *sim.World, evt sim.Event) {
+				if _, ok := evt.(*sim.ReactorTickDue); ok {
+					mu.Lock()
+					emitted++
+					mu.Unlock()
+				}
+			}))
+			a := world.Actors["alice"]
+			a.State = sim.StateSleeping
+			t1 := now.Add(-50 * time.Millisecond)
+			a.WarrantedSince = &t1
+			a.WarrantDueAt = &due
+			a.Warrants = []sim.WarrantMeta{
+				{Reason: sim.BasicWarrantReason{K: sim.WarrantKindHuddleJoined}},
+			}
+			return nil, nil
+		},
+	})
+
+	// First pass — sleeping, no tick.
+	_, _ = w.Send(sim.EvaluateReactors(now))
+	mu.Lock()
+	if emitted != 0 {
+		mu.Unlock()
+		t.Fatalf("first pass while sleeping: emitted=%d, want 0", emitted)
+	}
+	mu.Unlock()
+
+	// Wake up + ensure the pushed WarrantDueAt is back in the past so
+	// the actor is "due" again for the second pass.
+	wakeAt := now.Add(time.Hour)
+	_, _ = w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			a := world.Actors["alice"]
+			a.State = sim.StateIdle
+			pastDue := wakeAt.Add(-time.Millisecond)
+			a.WarrantDueAt = &pastDue
+			return nil, nil
+		},
+	})
+
+	// Second pass — awake, ticks.
+	_, _ = w.Send(sim.EvaluateReactors(wakeAt))
+	mu.Lock()
+	defer mu.Unlock()
+	if emitted != 1 {
+		t.Errorf("second pass after waking: emitted=%d, want 1", emitted)
+	}
+}
+
 // TestEvaluateReactors_EmitsAndConsumesWarrant — the core consume-at-emit
 // contract. A due actor's warrant is consumed (cleared); TickInFlight
 // flips on; AttemptID is set; ReactorTickDue event fires with the
