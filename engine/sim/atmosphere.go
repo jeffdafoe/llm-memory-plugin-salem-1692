@@ -38,10 +38,15 @@ import (
 // JOIN against village_object/asset — v2's Structure.DisplayName is the
 // direct source of truth.
 //
-// Activity digest (v1's agent_action_log group-by-NPC-by-action since
-// last fire) deliberately omitted from the MVP — agent_action_log isn't
-// ported to v2 yet (blocking C2 per-actor narrative consolidation too).
-// Add to AtmosphereContext when the log lands.
+// Activity digest: AtmosphereContext.ActivityDigest carries a
+// per-actor group-by-action-type count of committed actions since
+// World.Environment.LastAtmosphereRefreshAt. Mirrors v1 chronicler's
+// buildActivityDigest read against agent_action_log; v2 reads against
+// the in-memory action log (engine/sim/action_log.go). Scope: NPCs
+// only (atmosphere is village-mood-focused; PC actions are
+// player-driven and noisy). First fire (LastAtmosphereRefreshAt
+// zero) produces an empty digest — there's no prior window to digest
+// against.
 
 // AtmosphereRefreshIntervalDefault is the fallback cadence when
 // WorldSettings.AtmosphereRefreshInterval is unset. 4h — matches the
@@ -63,6 +68,17 @@ type AtmosphereRosterEntry struct {
 	DisplayNames   []string
 }
 
+// ActivityDigestEntry is one actor's per-ActionType count in the
+// since-last-refresh window. One entry per actor with at least one
+// counted action. Counts is keyed by ActionType; values are the count
+// of committed actions of that type within the window. Order across
+// entries is DisplayName-ascending — see AtmosphereContext.ActivityDigest.
+type ActivityDigestEntry struct {
+	ActorID     ActorID
+	DisplayName string
+	Counts      map[ActionType]int
+}
+
 // AtmosphereContext is the snapshot the world goroutine builds for the
 // off-world atmosphere sweep. All fields are owned by the caller — no
 // pointers back into world state.
@@ -71,12 +87,18 @@ type AtmosphereRosterEntry struct {
 // structure groups in DisplayName-ascending order before it. Names
 // within each bucket are sorted ascending. This matches v1's chronicler
 // roster posture.
+//
+// ActivityDigest is ordered: DisplayName-ascending across actors. Empty
+// (nil) on first fire (LastAtmosphereRefreshAt zero), on quiet windows
+// (no NPC actions since the last refresh), and when the action log is
+// empty. Inner Counts maps are freshly allocated per actor.
 type AtmosphereContext struct {
 	Now             time.Time
 	Phase           Phase
 	Weather         string
 	PriorAtmosphere string
 	Roster          []AtmosphereRosterEntry
+	ActivityDigest  []ActivityDigestEntry
 }
 
 // FetchAtmosphereContext returns a Command that snapshots the world-
@@ -137,6 +159,47 @@ func FetchAtmosphereContext(at time.Time) Command {
 					StructureLabel: "",
 					DisplayNames:   outdoor,
 				})
+			}
+
+			// Activity digest: per-actor counts of action-log entries
+			// after LastAtmosphereRefreshAt, NPCs only. First fire
+			// (LastAtmosphereRefreshAt zero) skips the digest — no
+			// "since beginning of time" dump at startup. Strict
+			// `After` (matches v1's `occurred_at > $1` boundary
+			// semantic) — entries exactly at the refresh stamp belong
+			// to the prior window.
+			since := w.Environment.LastAtmosphereRefreshAt
+			if !since.IsZero() && len(w.ActionLog) > 0 {
+				perActor := make(map[ActorID]map[ActionType]int)
+				for _, e := range w.ActionLog {
+					if !e.OccurredAt.After(since) {
+						continue
+					}
+					a, ok := w.Actors[e.ActorID]
+					if !ok || a == nil || a.Kind == KindPC {
+						continue
+					}
+					if perActor[e.ActorID] == nil {
+						perActor[e.ActorID] = make(map[ActionType]int)
+					}
+					perActor[e.ActorID][e.ActionType]++
+				}
+				if len(perActor) > 0 {
+					ids := make([]ActorID, 0, len(perActor))
+					for id := range perActor {
+						ids = append(ids, id)
+					}
+					sort.Slice(ids, func(i, j int) bool {
+						return w.Actors[ids[i]].DisplayName < w.Actors[ids[j]].DisplayName
+					})
+					for _, id := range ids {
+						ctx.ActivityDigest = append(ctx.ActivityDigest, ActivityDigestEntry{
+							ActorID:     id,
+							DisplayName: w.Actors[id].DisplayName,
+							Counts:      perActor[id],
+						})
+					}
+				}
 			}
 			return ctx, nil
 		},

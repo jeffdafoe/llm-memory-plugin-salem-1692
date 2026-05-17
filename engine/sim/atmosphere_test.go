@@ -293,3 +293,181 @@ func TestApplyAtmosphereRefresh_EmptyRejectsEvenWithEmptyPrior(t *testing.T) {
 		t.Error("expected wrote=false")
 	}
 }
+
+// --- Activity digest tests -----------------------------------------
+
+// TestFetchAtmosphereContext_NoDigestOnFirstFire: with
+// LastAtmosphereRefreshAt zero, no digest is emitted even if the
+// action log has entries — first fire has no prior window.
+func TestFetchAtmosphereContext_NoDigestOnFirstFire(t *testing.T) {
+	w := newAtmosphereTestWorld(t)
+	w.Actors["hannah"] = &Actor{ID: "hannah", DisplayName: "Hannah", Kind: KindNPCShared}
+	w.ActionLog = []ActionLogEntry{
+		{ActorID: "hannah", OccurredAt: time.Now().UTC(), ActionType: ActionTypeSpoke, Text: "hi"},
+	}
+	// LastAtmosphereRefreshAt deliberately zero.
+
+	v := runAtmosphereCmd(t, w, FetchAtmosphereContext(time.Now()))
+	ctx := v.(AtmosphereContext)
+	if ctx.ActivityDigest != nil {
+		t.Errorf("ActivityDigest = %v, want nil on first fire (zero LastAtmosphereRefreshAt)", ctx.ActivityDigest)
+	}
+}
+
+// TestFetchAtmosphereContext_DigestSinceLastRefresh: only entries
+// strictly after LastAtmosphereRefreshAt are included.
+func TestFetchAtmosphereContext_DigestSinceLastRefresh(t *testing.T) {
+	w := newAtmosphereTestWorld(t)
+	priorAt := time.Date(2026, 5, 17, 8, 0, 0, 0, time.UTC)
+	w.Environment.LastAtmosphereRefreshAt = priorAt
+	w.Actors["hannah"] = &Actor{ID: "hannah", DisplayName: "Hannah", Kind: KindNPCShared}
+	w.ActionLog = []ActionLogEntry{
+		// Before the refresh — should be excluded.
+		{ActorID: "hannah", OccurredAt: priorAt.Add(-1 * time.Hour), ActionType: ActionTypeSpoke, Text: "old"},
+		// At the refresh — should be excluded (strict After).
+		{ActorID: "hannah", OccurredAt: priorAt, ActionType: ActionTypeSpoke, Text: "boundary"},
+		// After the refresh — should be included.
+		{ActorID: "hannah", OccurredAt: priorAt.Add(30 * time.Minute), ActionType: ActionTypeSpoke, Text: "fresh-1"},
+		{ActorID: "hannah", OccurredAt: priorAt.Add(45 * time.Minute), ActionType: ActionTypeSpoke, Text: "fresh-2"},
+	}
+
+	v := runAtmosphereCmd(t, w, FetchAtmosphereContext(priorAt.Add(4*time.Hour)))
+	ctx := v.(AtmosphereContext)
+	if len(ctx.ActivityDigest) != 1 {
+		t.Fatalf("ActivityDigest len = %d, want 1", len(ctx.ActivityDigest))
+	}
+	got := ctx.ActivityDigest[0]
+	if got.ActorID != "hannah" {
+		t.Errorf("ActorID = %q, want hannah", got.ActorID)
+	}
+	if got.Counts[ActionTypeSpoke] != 2 {
+		t.Errorf("Counts[Spoke] = %d, want 2 (only fresh-1 + fresh-2 after the boundary)", got.Counts[ActionTypeSpoke])
+	}
+}
+
+// TestFetchAtmosphereContext_DigestGroupsByActor: entries for the
+// same actor across multiple ActionTypes collapse into one digest
+// entry with per-type counts.
+func TestFetchAtmosphereContext_DigestGroupsByActor(t *testing.T) {
+	w := newAtmosphereTestWorld(t)
+	priorAt := time.Date(2026, 5, 17, 8, 0, 0, 0, time.UTC)
+	w.Environment.LastAtmosphereRefreshAt = priorAt
+	w.Actors["hannah"] = &Actor{ID: "hannah", DisplayName: "Hannah", Kind: KindNPCShared}
+	w.ActionLog = []ActionLogEntry{
+		{ActorID: "hannah", OccurredAt: priorAt.Add(10 * time.Minute), ActionType: ActionTypeSpoke},
+		{ActorID: "hannah", OccurredAt: priorAt.Add(20 * time.Minute), ActionType: ActionTypeSpoke},
+		{ActorID: "hannah", OccurredAt: priorAt.Add(30 * time.Minute), ActionType: ActionTypeSpoke},
+		{ActorID: "hannah", OccurredAt: priorAt.Add(40 * time.Minute), ActionType: ActionTypeWalked},
+		{ActorID: "hannah", OccurredAt: priorAt.Add(50 * time.Minute), ActionType: ActionTypeConsumed},
+	}
+
+	v := runAtmosphereCmd(t, w, FetchAtmosphereContext(priorAt.Add(4*time.Hour)))
+	ctx := v.(AtmosphereContext)
+	if len(ctx.ActivityDigest) != 1 {
+		t.Fatalf("ActivityDigest len = %d, want 1 (one actor)", len(ctx.ActivityDigest))
+	}
+	got := ctx.ActivityDigest[0]
+	if got.Counts[ActionTypeSpoke] != 3 {
+		t.Errorf("Counts[Spoke] = %d, want 3", got.Counts[ActionTypeSpoke])
+	}
+	if got.Counts[ActionTypeWalked] != 1 {
+		t.Errorf("Counts[Walked] = %d, want 1", got.Counts[ActionTypeWalked])
+	}
+	if got.Counts[ActionTypeConsumed] != 1 {
+		t.Errorf("Counts[Consumed] = %d, want 1", got.Counts[ActionTypeConsumed])
+	}
+	if got.Counts[ActionTypePaid] != 0 {
+		t.Errorf("Counts[Paid] = %d, want 0 (absent)", got.Counts[ActionTypePaid])
+	}
+}
+
+// TestFetchAtmosphereContext_DigestExcludesPC: PC entries in the
+// action log are filtered out — atmosphere is village-NPC-focused.
+func TestFetchAtmosphereContext_DigestExcludesPC(t *testing.T) {
+	w := newAtmosphereTestWorld(t)
+	priorAt := time.Date(2026, 5, 17, 8, 0, 0, 0, time.UTC)
+	w.Environment.LastAtmosphereRefreshAt = priorAt
+	w.Actors["jeff"] = &Actor{ID: "jeff", DisplayName: "Jeff", Kind: KindPC}
+	w.Actors["hannah"] = &Actor{ID: "hannah", DisplayName: "Hannah", Kind: KindNPCShared}
+	w.ActionLog = []ActionLogEntry{
+		{ActorID: "jeff", OccurredAt: priorAt.Add(10 * time.Minute), ActionType: ActionTypeSpoke},
+		{ActorID: "hannah", OccurredAt: priorAt.Add(20 * time.Minute), ActionType: ActionTypeSpoke},
+	}
+
+	v := runAtmosphereCmd(t, w, FetchAtmosphereContext(priorAt.Add(4*time.Hour)))
+	ctx := v.(AtmosphereContext)
+	if len(ctx.ActivityDigest) != 1 {
+		t.Fatalf("ActivityDigest len = %d, want 1 (PC filtered)", len(ctx.ActivityDigest))
+	}
+	if ctx.ActivityDigest[0].ActorID != "hannah" {
+		t.Errorf("ActorID = %q, want hannah (PC excluded)", ctx.ActivityDigest[0].ActorID)
+	}
+}
+
+// TestFetchAtmosphereContext_DigestOrderedByDisplayName: multiple
+// actors are sorted ascending by DisplayName so the prompt rendering
+// is deterministic.
+func TestFetchAtmosphereContext_DigestOrderedByDisplayName(t *testing.T) {
+	w := newAtmosphereTestWorld(t)
+	priorAt := time.Date(2026, 5, 17, 8, 0, 0, 0, time.UTC)
+	w.Environment.LastAtmosphereRefreshAt = priorAt
+	w.Actors["c"] = &Actor{ID: "c", DisplayName: "Charlie", Kind: KindNPCShared}
+	w.Actors["a"] = &Actor{ID: "a", DisplayName: "Alice", Kind: KindNPCShared}
+	w.Actors["b"] = &Actor{ID: "b", DisplayName: "Bob", Kind: KindNPCShared}
+	at := priorAt.Add(30 * time.Minute)
+	w.ActionLog = []ActionLogEntry{
+		{ActorID: "c", OccurredAt: at, ActionType: ActionTypeSpoke},
+		{ActorID: "a", OccurredAt: at, ActionType: ActionTypeSpoke},
+		{ActorID: "b", OccurredAt: at, ActionType: ActionTypeSpoke},
+	}
+
+	v := runAtmosphereCmd(t, w, FetchAtmosphereContext(priorAt.Add(4*time.Hour)))
+	ctx := v.(AtmosphereContext)
+	if len(ctx.ActivityDigest) != 3 {
+		t.Fatalf("ActivityDigest len = %d, want 3", len(ctx.ActivityDigest))
+	}
+	want := []string{"Alice", "Bob", "Charlie"}
+	for i, w := range want {
+		if ctx.ActivityDigest[i].DisplayName != w {
+			t.Errorf("ActivityDigest[%d].DisplayName = %q, want %q", i, ctx.ActivityDigest[i].DisplayName, w)
+		}
+	}
+}
+
+// TestFetchAtmosphereContext_DigestUnknownActorSkipped: action log
+// entries for actors no longer in World (defensive — actor removed
+// while log still has rows) are skipped, not panicked-on.
+func TestFetchAtmosphereContext_DigestUnknownActorSkipped(t *testing.T) {
+	w := newAtmosphereTestWorld(t)
+	priorAt := time.Date(2026, 5, 17, 8, 0, 0, 0, time.UTC)
+	w.Environment.LastAtmosphereRefreshAt = priorAt
+	w.Actors["hannah"] = &Actor{ID: "hannah", DisplayName: "Hannah", Kind: KindNPCShared}
+	at := priorAt.Add(30 * time.Minute)
+	w.ActionLog = []ActionLogEntry{
+		{ActorID: "ghost", OccurredAt: at, ActionType: ActionTypeSpoke}, // not in Actors
+		{ActorID: "hannah", OccurredAt: at, ActionType: ActionTypeSpoke},
+	}
+
+	v := runAtmosphereCmd(t, w, FetchAtmosphereContext(priorAt.Add(4*time.Hour)))
+	ctx := v.(AtmosphereContext)
+	if len(ctx.ActivityDigest) != 1 {
+		t.Fatalf("ActivityDigest len = %d, want 1 (ghost skipped)", len(ctx.ActivityDigest))
+	}
+	if ctx.ActivityDigest[0].ActorID != "hannah" {
+		t.Errorf("ActorID = %q, want hannah", ctx.ActivityDigest[0].ActorID)
+	}
+}
+
+// TestFetchAtmosphereContext_DigestEmptyActionLog: with non-zero
+// LastAtmosphereRefreshAt but no action-log entries, digest is empty.
+func TestFetchAtmosphereContext_DigestEmptyActionLog(t *testing.T) {
+	w := newAtmosphereTestWorld(t)
+	w.Environment.LastAtmosphereRefreshAt = time.Date(2026, 5, 17, 8, 0, 0, 0, time.UTC)
+	w.Actors["hannah"] = &Actor{ID: "hannah", DisplayName: "Hannah", Kind: KindNPCShared}
+
+	v := runAtmosphereCmd(t, w, FetchAtmosphereContext(time.Now()))
+	ctx := v.(AtmosphereContext)
+	if ctx.ActivityDigest != nil {
+		t.Errorf("ActivityDigest = %v, want nil on empty action log", ctx.ActivityDigest)
+	}
+}

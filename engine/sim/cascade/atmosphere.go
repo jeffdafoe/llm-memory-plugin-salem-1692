@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 
@@ -273,6 +274,85 @@ func buildAtmospherePrompt(c sim.AtmosphereContext) string {
 		b.WriteString("\n")
 	}
 
+	if len(c.ActivityDigest) > 0 {
+		// Render the per-actor digest only if at least one actor has
+		// at least one verb to render. An actor whose Counts map is
+		// non-empty but contains only unmapped ActionTypes contributes
+		// nothing; in that case the header still prints, but the loop
+		// produces no lines. wroteAny tracks whether we emitted any
+		// body lines so we can suppress the header in pathological
+		// no-verbs-mapped cases (defensive — today's enum is fully
+		// mapped).
+		var rendered []string
+		for _, e := range c.ActivityDigest {
+			parts := digestActorParts(e.Counts)
+			if len(parts) == 0 {
+				continue
+			}
+			rendered = append(rendered, fmt.Sprintf("- %s %s.", e.DisplayName, strings.Join(parts, ", ")))
+		}
+		if len(rendered) > 0 {
+			b.WriteString("Since your last attention:\n")
+			for _, line := range rendered {
+				b.WriteString(line)
+				b.WriteString("\n")
+			}
+			b.WriteString("\n")
+		}
+	}
+
 	b.WriteString("Write 1-2 brief sentences capturing the village's current atmosphere. Plain prose, biblical in cadence. No preamble, no sign-off — just the prose.")
 	return b.String()
+}
+
+// atmosphereDigestVerbs maps each ActionType to the past-tense verb
+// rendered into the digest. Closed set — ActionType values not in the
+// map are silently skipped (graceful degradation if a new ActionType
+// lands without a verb mapping, the digest still renders for known
+// types and the new type is invisible until a verb is added here).
+//
+// "ate" for ActionTypeConsumed mirrors v1 chronicler's "completed N
+// chore" framing — past-tense verb that reads naturally in the
+// "Since your last attention: Hannah ate 2 times" rendering.
+var atmosphereDigestVerbs = map[sim.ActionType]string{
+	sim.ActionTypeSpoke:     "spoke",
+	sim.ActionTypeWalked:    "walked",
+	sim.ActionTypeConsumed:  "ate",
+	sim.ActionTypePaid:      "paid",
+	sim.ActionTypeDelivered: "delivered",
+}
+
+// digestActorParts renders one actor's per-action-type counts as
+// ordered "verb N time(s)" parts. Output ordered alphabetically by
+// verb for deterministic prompt rendering. Counts of zero or negative
+// are skipped (defensive — FetchAtmosphereContext doesn't produce
+// non-positive counts, but the helper is tested directly with
+// synthetic input). ActionTypes not in atmosphereDigestVerbs are
+// silently skipped.
+func digestActorParts(counts map[sim.ActionType]int) []string {
+	type kv struct {
+		verb  string
+		count int
+	}
+	entries := make([]kv, 0, len(counts))
+	for at, n := range counts {
+		if n <= 0 {
+			continue
+		}
+		verb, ok := atmosphereDigestVerbs[at]
+		if !ok {
+			continue
+		}
+		entries = append(entries, kv{verb: verb, count: n})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].verb < entries[j].verb })
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		suffix := "time"
+		if e.count != 1 {
+			suffix = "times"
+		}
+		out = append(out, fmt.Sprintf("%s %d %s", e.verb, e.count, suffix))
+	}
+	return out
 }
