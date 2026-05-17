@@ -802,6 +802,11 @@ func TestTerminalStatusAddresses(t *testing.T) {
 		{sim.TickStatusDone, true},
 		{sim.TickStatusBudgetForced, true},
 		{sim.TickStatusFailedAfterRender, true},
+		// Skipped addresses too — the noop-skip preflight read perception
+		// and concluded the batch wasn't worth an LLM call. Consumed keys
+		// MUST land in recently-consumed or the same warrants would
+		// re-emit on the next scan and re-skip, busy-looping the gate.
+		{sim.TickStatusSkipped, true},
 		{sim.TickStatusFailedBeforeRender, false},
 		{sim.TickStatusShutdown, false},
 		{sim.TickStatusUnknown, false},

@@ -54,6 +54,8 @@ func terminalStatusName(s sim.TickTerminalStatus) string {
 		return "stale"
 	case sim.TickStatusShutdown:
 		return "shutdown"
+	case sim.TickStatusSkipped:
+		return "skipped"
 	default:
 		return "unknown"
 	}
