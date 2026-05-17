@@ -1,4 +1,4 @@
-package handlers
+package cascade
 
 import (
 	"log"
@@ -16,10 +16,10 @@ import (
 // of ActorArrived.
 //
 // Closes the "two NPCs walking past each other within encounter radius
-// but neither arriving" semantic hole that PR 3e's arrival_encounter.go
-// explicitly documented as future cascade-controller work. LOS-proper
-// (terrain occlusion, sight lines) is still future work; bounded radius
-// matches handleArrivalEncounter and is the scope here.
+// but neither arriving" semantic hole arrival_encounter.go alone could
+// not cover. LOS-proper (terrain occlusion, sight lines) is still
+// future work; bounded radius matches handleArrivalEncounter and is
+// the scope here.
 //
 // SUBSCRIBER-LIGHTNESS BUDGET. ActorMoved fires once per tile per moving
 // actor (~5 Hz per walker per locomotion ticker cadence). Synchronous
@@ -43,7 +43,7 @@ import (
 // pre-filter pattern, no new coordination needed.
 
 // handleMovedEncounter is the ActorMoved subscriber. Registered by
-// RegisterEncounterHandlers; runs synchronously on the world goroutine
+// RegisterEncounter; runs synchronously on the world goroutine
 // from inside sim.World.emit.
 //
 // Calling StartOutdoorHuddle(...).Fn(w) directly here is safe and
@@ -103,7 +103,7 @@ func handleMovedEncounter(w *sim.World, evt sim.Event) {
 		mover.CurrentY != moved.ToPosition.Y ||
 		mover.InsideStructureID != moved.ToStructureID {
 		log.Printf(
-			"sim/handlers: moved-encounter skipped — mover %q state (%d,%d,%q) != event to (%d,%d,%q)",
+			"sim/cascade: moved-encounter skipped — mover %q state (%d,%d,%q) != event to (%d,%d,%q)",
 			mover.ID,
 			mover.CurrentX, mover.CurrentY, mover.InsideStructureID,
 			moved.ToPosition.X, moved.ToPosition.Y, moved.ToStructureID,
@@ -145,7 +145,7 @@ func handleMovedEncounter(w *sim.World, evt sim.Event) {
 
 	if _, err := sim.StartOutdoorHuddle(participants, moved.ToPosition, radius, nil, moved.At).Fn(w); err != nil {
 		log.Printf(
-			"sim/handlers: moved-encounter StartOutdoorHuddle rejected for %v: %v",
+			"sim/cascade: moved-encounter StartOutdoorHuddle rejected for %v: %v",
 			participants, err,
 		)
 	}

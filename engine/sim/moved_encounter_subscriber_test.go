@@ -5,13 +5,14 @@ import (
 	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
-	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/handlers"
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/cascade"
 )
 
 // moved_encounter_subscriber_test.go — mid-route encounter subscriber
 // tests. Lives alongside arrival_encounter_subscriber_test.go so they
-// share buildEncounterWorld / readEncounterHuddleState / encounterEventRec
-// helpers (defined in the arrival test file, same package sim_test).
+// share buildEncounterWorld / readEncounterHuddleState /
+// encounterEventRec helpers (defined in the arrival test file, same
+// package sim_test).
 //
 // All tests synthesize ActorMoved via sim.EmitForTest rather than driving
 // the locomotion ticker — isolates the subscriber from pathfinding /
@@ -438,10 +439,10 @@ func TestMovedEncounter_DoubleRegistrationProducesOneHuddle(t *testing.T) {
 
 	// Second registration on the same world.
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		handlers.RegisterEncounterHandlers(world)
+		cascade.RegisterEncounter(world)
 		return nil, nil
 	}}); err != nil {
-		t.Fatalf("second RegisterEncounterHandlers: %v", err)
+		t.Fatalf("second RegisterEncounter: %v", err)
 	}
 
 	emitMovedFor(t, w, "ann", time.Now().UTC())

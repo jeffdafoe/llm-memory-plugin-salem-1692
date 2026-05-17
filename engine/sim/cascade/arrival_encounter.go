@@ -1,4 +1,4 @@
-package handlers
+package cascade
 
 import (
 	"log"
@@ -19,15 +19,10 @@ import (
 // mid-route case (two NPCs walking past each other within encounter
 // radius without either arriving). LOS-proper (terrain occlusion, sight
 // lines) is still future work; both subscribers use bounded radius.
-//
-// PR 3 explicitly does NOT own general scene origination (that's the
-// later engine/sim/cascade/ controller PR). This subscriber + the moved
-// counterpart are the encounter-formation slice; broader cascade
-// origination remains future work.
 
 // handleArrivalEncounter is the ActorArrived subscriber that detects
 // outdoor encounters and forms huddles. Registered via
-// RegisterEncounterHandlers; runs synchronously on the world goroutine
+// RegisterEncounter; runs synchronously on the world goroutine
 // from inside sim.World.emit.
 //
 // Calling StartOutdoorHuddle(...).Fn(w) directly here is safe and
@@ -88,7 +83,7 @@ func handleArrivalEncounter(w *sim.World, evt sim.Event) {
 		arriver.CurrentY != arrived.FinalPosition.Y ||
 		arriver.InsideStructureID != arrived.FinalStructureID {
 		log.Printf(
-			"sim/handlers: arrival-encounter skipped — arriver %q state (%d,%d,%q) != event final (%d,%d,%q)",
+			"sim/cascade: arrival-encounter skipped — arriver %q state (%d,%d,%q) != event final (%d,%d,%q)",
 			arriver.ID,
 			arriver.CurrentX, arriver.CurrentY, arriver.InsideStructureID,
 			arrived.FinalPosition.X, arrived.FinalPosition.Y, arrived.FinalStructureID,
@@ -136,19 +131,17 @@ func handleArrivalEncounter(w *sim.World, evt sim.Event) {
 
 	if _, err := sim.StartOutdoorHuddle(participants, arrived.FinalPosition, radius, nil, arrived.At).Fn(w); err != nil {
 		log.Printf(
-			"sim/handlers: arrival-encounter StartOutdoorHuddle rejected for %v: %v",
+			"sim/cascade: arrival-encounter StartOutdoorHuddle rejected for %v: %v",
 			participants, err,
 		)
 	}
 }
 
-// RegisterEncounterHandlers wires both encounter subscribers
+// RegisterEncounter wires both encounter subscribers
 // (arrival-driven + mid-route-move-driven) into the world. Separate
-// from RegisterTickHandlers because the two registration groups are
+// from the tick-handler registrations because the two groups are
 // independent — a world that wants encounter detection without the
-// agent-tick pipeline (or vice versa) can opt in piecewise — and
-// because conflating them under one name would hide what is actually
-// being registered.
+// agent-tick pipeline (or vice versa) can opt in piecewise.
 //
 // Must run on the world goroutine (call before World.Run or from inside
 // a Command.Fn).
@@ -160,9 +153,9 @@ func handleArrivalEncounter(w *sim.World, evt sim.Event) {
 // any StartOutdoorHuddle call — a no-op, not an error. Tests pin this
 // in TestArrivalEncounter_DoubleRegistrationProducesOneHuddle for the
 // arrival subscriber; the moved subscriber inherits the same shape.
-func RegisterEncounterHandlers(w *sim.World) {
+func RegisterEncounter(w *sim.World) {
 	if w == nil {
-		panic("handlers: RegisterEncounterHandlers requires a non-nil world")
+		panic("cascade: RegisterEncounter requires a non-nil world")
 	}
 	w.Subscribe(sim.SubscriberFunc(handleArrivalEncounter))
 	w.Subscribe(sim.SubscriberFunc(handleMovedEncounter))

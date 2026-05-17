@@ -86,7 +86,7 @@ func handleSpokeWarrants(w *sim.World, evt sim.Event) {
 }
 
 // RegisterSpeechHandlers wires the Spoke event subscriber into the
-// world. Separate from RegisterTickHandlers / RegisterEncounterHandlers
+// world. Separate from RegisterTickHandlers / cascade.RegisterEncounter
 // for the same opt-in-piecewise reason: a build that wants encounters
 // but not the speak reactor (or vice versa) can compose. Must run on
 // the world goroutine — call before World.Run or from inside a

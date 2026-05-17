@@ -95,7 +95,7 @@ func handleSceneQuoteWarrants(w *sim.World, evt sim.Event) {
 
 // RegisterSceneQuoteHandlers wires the SceneQuoteCreated subscriber
 // into the world. Separate from RegisterSpeechHandlers /
-// RegisterPayHandlers / RegisterEncounterHandlers for the same
+// RegisterPayHandlers / cascade.RegisterEncounter for the same
 // opt-in-piecewise reason: a build that wants speech but not the
 // quote reactor (or vice versa) can compose. Must run on the world
 // goroutine — call before World.Run or from inside a Command.Fn.
