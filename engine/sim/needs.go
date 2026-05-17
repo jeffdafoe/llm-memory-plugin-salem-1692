@@ -175,6 +175,20 @@ func DefaultNeedThresholds() NeedThresholds {
 	return out
 }
 
+// Clone returns a shallow copy of the map. Used by Snapshot.republish so
+// snapshot consumers see an immutable view even if Settings is admin-tuned
+// later. NeedThresholds values are ints, so shallow clone is sufficient.
+func (t NeedThresholds) Clone() NeedThresholds {
+	if t == nil {
+		return nil
+	}
+	out := make(NeedThresholds, len(t))
+	for k, v := range t {
+		out[k] = v
+	}
+	return out
+}
+
 // NeedLabel returns the descriptor for a value against its threshold.
 // Convenience for callers that have a key string but don't need a Need.
 func NeedLabel(key NeedKey, value, threshold int) string {

@@ -1,0 +1,330 @@
+package handlers
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/llm"
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/perception"
+)
+
+// --- shouldSkipNoop unit tests --------------------------------------------
+
+// quietPayload is the all-empty perception baseline that triggers the gate
+// when warrants are also low-info: no peer, no needs at red.
+func quietPayload() perception.Payload {
+	return perception.Payload{
+		ActorID: "alice",
+		Actor:   perception.ActorView{Needs: map[sim.NeedKey]int{}},
+		Surroundings: perception.SurroundingsView{
+			HuddleMembers: nil,
+		},
+	}
+}
+
+func idleBackstopWarrant() sim.WarrantMeta {
+	return sim.WarrantMeta{
+		TriggerActorID: "alice",
+		Reason:         sim.IdleBackstopWarrantReason{QuietDuration: 30 * time.Minute},
+	}
+}
+
+func defaultThresholds() sim.NeedThresholds {
+	return sim.DefaultNeedThresholds()
+}
+
+func TestShouldSkipNoop_IdleBackstopAlone_NoPeerNoNeeds_Skips(t *testing.T) {
+	got := shouldSkipNoop(quietPayload(), defaultThresholds(), []sim.WarrantMeta{idleBackstopWarrant()})
+	if !got {
+		t.Fatalf("expected skip=true for idle-backstop-only + no peer + no needs")
+	}
+}
+
+func TestShouldSkipNoop_HuddleConcludedAlone_NoPeerNoNeeds_Skips(t *testing.T) {
+	w := sim.WarrantMeta{
+		TriggerActorID: "",
+		Reason:         sim.BasicWarrantReason{K: sim.WarrantKindHuddleConcluded},
+	}
+	if !shouldSkipNoop(quietPayload(), defaultThresholds(), []sim.WarrantMeta{w}) {
+		t.Fatalf("expected skip=true for huddle-concluded-only + no peer + no needs")
+	}
+}
+
+func TestShouldSkipNoop_HuddleLeftAlone_NoPeerNoNeeds_Skips(t *testing.T) {
+	w := sim.WarrantMeta{
+		TriggerActorID: "alice",
+		Reason:         sim.BasicWarrantReason{K: sim.WarrantKindHuddleLeft},
+	}
+	if !shouldSkipNoop(quietPayload(), defaultThresholds(), []sim.WarrantMeta{w}) {
+		t.Fatalf("expected skip=true for huddle-left-only + no peer + no needs")
+	}
+}
+
+func TestShouldSkipNoop_PeerPresent_DoesNotSkip(t *testing.T) {
+	pl := quietPayload()
+	pl.Surroundings.HuddleMembers = []perception.HuddleMember{
+		{ID: "bob", DisplayName: "Bob", Acquainted: true},
+	}
+	if shouldSkipNoop(pl, defaultThresholds(), []sim.WarrantMeta{idleBackstopWarrant()}) {
+		t.Fatalf("expected skip=false when a co-huddle peer is present")
+	}
+}
+
+func TestShouldSkipNoop_NeedAtRed_DoesNotSkip(t *testing.T) {
+	pl := quietPayload()
+	// Hunger value at the default red threshold (18).
+	pl.Actor.Needs = map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold}
+	if shouldSkipNoop(pl, defaultThresholds(), []sim.WarrantMeta{idleBackstopWarrant()}) {
+		t.Fatalf("expected skip=false when hunger value == red threshold")
+	}
+}
+
+func TestShouldSkipNoop_NeedAboveRed_DoesNotSkip(t *testing.T) {
+	pl := quietPayload()
+	pl.Actor.Needs = map[sim.NeedKey]int{"tiredness": sim.DefaultTirednessRedThreshold + 5}
+	if shouldSkipNoop(pl, defaultThresholds(), []sim.WarrantMeta{idleBackstopWarrant()}) {
+		t.Fatalf("expected skip=false when tiredness value > red threshold")
+	}
+}
+
+func TestShouldSkipNoop_NeedSubRed_StillSkipsForLowInfoBatch(t *testing.T) {
+	pl := quietPayload()
+	// Below default red thresholds — gate stays open.
+	pl.Actor.Needs = map[sim.NeedKey]int{
+		"hunger":    sim.DefaultHungerRedThreshold - 1,
+		"thirst":    sim.DefaultThirstRedThreshold - 1,
+		"tiredness": sim.DefaultTirednessRedThreshold - 1,
+	}
+	if !shouldSkipNoop(pl, defaultThresholds(), []sim.WarrantMeta{idleBackstopWarrant()}) {
+		t.Fatalf("expected skip=true with all needs below red threshold")
+	}
+}
+
+func TestShouldSkipNoop_HighInfoWarrantInBatch_DoesNotSkip(t *testing.T) {
+	cases := []sim.WarrantKind{
+		sim.WarrantKindNPCSpoke,
+		sim.WarrantKindPCSpoke,
+		sim.WarrantKindHuddlePeerJoined,
+		sim.WarrantKindHuddlePeerLeft,
+		sim.WarrantKindArrived,
+		sim.WarrantKindNeedThreshold,
+		sim.WarrantKindPaid,
+		sim.WarrantKindSceneQuoteTargeted,
+		sim.WarrantKindAdmin,
+		sim.WarrantKindHuddleJoined, // your-own-join: high-info (you're entering a new context)
+	}
+	for _, k := range cases {
+		k := k
+		t.Run(string(k), func(t *testing.T) {
+			batch := []sim.WarrantMeta{
+				idleBackstopWarrant(),
+				{TriggerActorID: "bob", Reason: sim.BasicWarrantReason{K: k}},
+			}
+			if shouldSkipNoop(quietPayload(), defaultThresholds(), batch) {
+				t.Fatalf("expected skip=false when batch contains high-info kind %q", k)
+			}
+		})
+	}
+}
+
+func TestShouldSkipNoop_ForceBypassesGate(t *testing.T) {
+	batch := []sim.WarrantMeta{{
+		TriggerActorID: "alice",
+		Force:          true,
+		Reason:         sim.IdleBackstopWarrantReason{QuietDuration: time.Hour},
+	}}
+	if shouldSkipNoop(quietPayload(), defaultThresholds(), batch) {
+		t.Fatalf("expected skip=false when batch carries a Force warrant")
+	}
+}
+
+func TestShouldSkipNoop_EmptyBatch_DoesNotSkip(t *testing.T) {
+	// Empty batch should NOT skip — it means the evaluator emitted a tick
+	// without warrants, which is suspicious. Let the LLM tick run; the
+	// alternative (silent skip) would mask an upstream bug.
+	if shouldSkipNoop(quietPayload(), defaultThresholds(), nil) {
+		t.Fatalf("expected skip=false on empty batch (let suspicious empty ticks proceed)")
+	}
+}
+
+func TestShouldSkipNoop_AdminTunedThresholds_RespectsSnapshot(t *testing.T) {
+	pl := quietPayload()
+	pl.Actor.Needs = map[sim.NeedKey]int{"hunger": 10}
+	// Admin-tuned: hunger red threshold lowered to 8 (default is 18). At
+	// value 10 the actor is at red and should tick.
+	tuned := sim.NeedThresholds{"hunger": 8}
+	if shouldSkipNoop(pl, tuned, []sim.WarrantMeta{idleBackstopWarrant()}) {
+		t.Fatalf("expected skip=false with admin-tuned threshold below the need value")
+	}
+}
+
+// --- isLowInfoWarrantKind unit tests --------------------------------------
+
+func TestIsLowInfoWarrantKind(t *testing.T) {
+	low := []sim.WarrantKind{
+		sim.WarrantKindIdleBackstop,
+		sim.WarrantKindHuddleConcluded,
+		sim.WarrantKindHuddleLeft,
+	}
+	for _, k := range low {
+		if !isLowInfoWarrantKind(k) {
+			t.Errorf("kind %q should be low-info", k)
+		}
+	}
+	high := []sim.WarrantKind{
+		sim.WarrantKindUnknown, // default → high-info; unknown gets a tick
+		sim.WarrantKindNPCSpoke,
+		sim.WarrantKindPCSpoke,
+		sim.WarrantKindHuddleJoined,
+		sim.WarrantKindHuddlePeerJoined,
+		sim.WarrantKindHuddlePeerLeft,
+		sim.WarrantKindArrived,
+		sim.WarrantKindNeedThreshold,
+		sim.WarrantKindPaid,
+		sim.WarrantKindSceneQuoteTargeted,
+		sim.WarrantKindAdmin,
+	}
+	for _, k := range high {
+		if isLowInfoWarrantKind(k) {
+			t.Errorf("kind %q should NOT be low-info", k)
+		}
+	}
+}
+
+// --- Harness.RunTick integration ------------------------------------------
+
+// TestHarness_NoopSkip_NoLLMCallEmitted exercises the full RunTick gate
+// path: alice has no peer, no needs at red, and a batch of one idle-backstop
+// warrant. RunTick must return TickStatusSkipped WITHOUT calling
+// FakeClient.Complete (CallCount stays 0). Carry-forward must be empty.
+func TestHarness_NoopSkip_NoLLMCallEmitted(t *testing.T) {
+	w, _, cancel := newTestWorld(t, 0)
+	defer cancel()
+	attemptID := sim.TickAttemptID("attempt-noopskip-1")
+	setInFlight(t, w, attemptID)
+
+	// FakeClient with no scripted turns. If RunTick calls Complete the
+	// fake returns an ErrorMalformed; we also assert CallCount == 0
+	// post-hoc as the load-bearing check.
+	fake := llm.NewFakeClient()
+	// Fixed-step fake clock so the Duration stamp is non-zero on Windows
+	// (time.Now has coarse resolution there and can return 0 elapsed for
+	// the gate path's ~no-work case).
+	clockN := int64(0)
+	fakeClock := func() time.Time {
+		clockN++
+		return time.Unix(0, clockN*int64(time.Millisecond))
+	}
+	cfg := HarnessConfig{
+		Client:   fake,
+		Registry: newTestRegistry(t).r,
+		Clock:    fakeClock,
+	}
+	h, err := NewHarness(cfg)
+	if err != nil {
+		t.Fatalf("NewHarness: %v", err)
+	}
+
+	job := newTestJob(attemptID, []sim.WarrantMeta{idleBackstopWarrant()})
+
+	result := h.RunTick(context.Background(), w, job)
+
+	if result.TerminalStatus != sim.TickStatusSkipped {
+		t.Fatalf("TerminalStatus = %v, want TickStatusSkipped", result.TerminalStatus)
+	}
+	if got := fake.CallCount(); got != 0 {
+		t.Fatalf("FakeClient.Complete was called %d times; want 0 (gate must short-circuit before LLM)", got)
+	}
+	if got := result.IterationCount; got != 0 {
+		t.Fatalf("IterationCount = %d, want 0 (iteration loop must not run)", got)
+	}
+	if got := result.UnaddressedWarrants; len(got) != 0 {
+		t.Fatalf("UnaddressedWarrants = %v, want nil (consumed batch is addressed, not carried forward)", got)
+	}
+	if result.AttemptID != attemptID {
+		t.Fatalf("AttemptID = %q, want %q", result.AttemptID, attemptID)
+	}
+	if result.Duration <= 0 {
+		t.Fatalf("Duration not stamped (= %v); the defer must run on the skip path", result.Duration)
+	}
+}
+
+// TestHarness_NoopSkip_PeerPresent_FiresLLMCall confirms the gate steps
+// aside when a co-huddle peer exists. We seed alice into a huddle with bob,
+// script a content-only response (no tool calls → TickStatusSuccess), and
+// assert Complete was called once.
+func TestHarness_NoopSkip_PeerPresent_FiresLLMCall(t *testing.T) {
+	w, _, cancel := newTestWorldWithActors(t, []sim.ActorID{"alice", "bob"}, 0)
+	defer cancel()
+	attemptID := sim.TickAttemptID("attempt-noopskip-2")
+	setInFlight(t, w, attemptID)
+
+	// Put alice + bob into the same huddle so SurroundingsView.HuddleMembers
+	// includes bob from alice's perspective.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		hid := sim.HuddleID("h-1")
+		world.Huddles[hid] = &sim.Huddle{
+			ID:      hid,
+			Members: map[sim.ActorID]struct{}{"alice": {}, "bob": {}},
+		}
+		world.Actors["alice"].CurrentHuddleID = hid
+		world.Actors["bob"].CurrentHuddleID = hid
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed huddle: %v", err)
+	}
+
+	// Scripted: content-only response (no tools) → harness returns Success.
+	fake := llm.NewFakeClient(llm.ScriptedTurn{Response: llm.Response{Content: "..."}})
+	h, _ := newTestHarness(t, fake, 0, 0)
+
+	job := newTestJob(attemptID, []sim.WarrantMeta{idleBackstopWarrant()})
+	result := h.RunTick(context.Background(), w, job)
+
+	if result.TerminalStatus != sim.TickStatusSuccess {
+		t.Fatalf("TerminalStatus = %v, want TickStatusSuccess (peer present should NOT skip)", result.TerminalStatus)
+	}
+	if got := fake.CallCount(); got != 1 {
+		t.Fatalf("FakeClient.Complete called %d times; want 1", got)
+	}
+}
+
+// TestHarness_NoopSkip_HighInfoWarrant_FiresLLMCall confirms the gate
+// steps aside when the batch contains a high-info warrant kind (here:
+// speech). Alice is still alone with no needs — the warrant alone is the
+// reason to tick.
+func TestHarness_NoopSkip_HighInfoWarrant_FiresLLMCall(t *testing.T) {
+	w, _, cancel := newTestWorld(t, 0)
+	defer cancel()
+	attemptID := sim.TickAttemptID("attempt-noopskip-3")
+	setInFlight(t, w, attemptID)
+
+	fake := llm.NewFakeClient(llm.ScriptedTurn{Response: llm.Response{Content: "..."}})
+	h, _ := newTestHarness(t, fake, 0, 0)
+
+	job := newTestJob(attemptID, []sim.WarrantMeta{{
+		TriggerActorID: "bob",
+		Reason: sim.NPCSpeechWarrantReason{
+			SpeechID: sim.SpeechID(1234),
+			Speaker:  "bob",
+			Excerpt:  "hello",
+		},
+	}})
+	result := h.RunTick(context.Background(), w, job)
+
+	if result.TerminalStatus != sim.TickStatusSuccess {
+		t.Fatalf("TerminalStatus = %v, want TickStatusSuccess (NPCSpoke warrant should NOT skip)", result.TerminalStatus)
+	}
+	if got := fake.CallCount(); got != 1 {
+		t.Fatalf("FakeClient.Complete called %d times; want 1", got)
+	}
+}
+
+// The "Skipped addresses consumed keys" guarantee (so the gate doesn't
+// busy-loop by re-emitting the same warrants on the next scan) is covered
+// at the sim layer in TestTerminalStatusAddresses, which now pins
+// terminalStatusAddresses(TickStatusSkipped) == true. The end-to-end
+// flow (RunTick → Skipped → CompleteReactorTick → recently-consumed) is
+// implicit in those two pieces composing.

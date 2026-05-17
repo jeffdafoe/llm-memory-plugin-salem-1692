@@ -166,8 +166,27 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 		return result
 	}
 
-	// --- perception + render (once per tick) ---
+	// --- perception build (cheap; no rendering yet) ---
 	payload := perception.Build(snap, job.actorID, job.warrants)
+
+	// --- noop-skip preflight (pre-LLM gate) ---
+	// If perception has nothing actionable (no co-present peer, no need
+	// at red) AND the consumed batch carries only low-information warrant
+	// kinds (idle-backstop / huddle-concluded / huddle-left), the LLM
+	// call would produce a noop tick. Skip it — the consumed warrants
+	// land in recently-consumed via terminalStatusAddresses so they
+	// don't re-fire on the next scan.
+	//
+	// Replaces v1's salem-vendor-only skip at engine/agent_tick.go:
+	// 211-221 (ZBBS-WORK-235). Order is deliberate: this runs BEFORE
+	// perception.Render, so the prompt-build allocations are skipped
+	// too on the gate-hit path.
+	if shouldSkipNoop(payload, snap.NeedThresholds, job.warrants) {
+		result.TerminalStatus = sim.TickStatusSkipped
+		return result
+	}
+
+	// --- render (allocates the prompt) ---
 	rendered := perception.Render(payload, h.renderConfig)
 	// Render-time drops are the "consumed but not addressed" set the
 	// harness must carry forward. Subsequent paths append to this set on

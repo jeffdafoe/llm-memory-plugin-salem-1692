@@ -995,6 +995,7 @@ func (w *World) republish() {
 		PayLedger:      make(map[LedgerID]*PayLedgerEntry, len(w.PayLedger)),
 		Environment:    w.Environment,
 		Phase:          w.Phase,
+		NeedThresholds: w.Settings.NeedThresholds.Clone(),
 	}
 	for id, a := range w.Actors {
 		snap.Actors[id] = snapshotActor(a, w.TickCounter)

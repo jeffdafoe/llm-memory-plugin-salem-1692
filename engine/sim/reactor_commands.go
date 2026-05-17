@@ -80,6 +80,13 @@ const (
 	// before-render failure for warrant purposes: nothing addressed, the
 	// consumed batch carries forward (when the world persists).
 	TickStatusShutdown
+	// TickStatusSkipped — the harness's noop-skip preflight determined
+	// the rendered perception had nothing actionable (no co-present peer,
+	// no need at red, and the consumed batch carried only low-information
+	// warrant kinds). The LLM was not called; the consumed warrants are
+	// treated as addressed so they don't re-fire in a loop. Replaces v1's
+	// salem-vendor-only `agent_tick.go` skip at lines 211-221.
+	TickStatusSkipped
 )
 
 // StaleStage names where in the tick lifecycle a stale attempt was
@@ -314,9 +321,14 @@ func applyTerminalWarrantPolicy(w *World, actor *Actor, result TickResult, now t
 // source keys should move into the recently-consumed dedup set. The
 // default branch (failed-before-render, shutdown, unknown, any future
 // status) is the conservative "not addressed — move nothing".
+//
+// TickStatusSkipped addresses too: the noop-skip preflight read perception
+// and concluded the batch wasn't worth an LLM call. The consumed keys must
+// land in recently-consumed or the same warrants would re-emit on the next
+// scan and re-skip — turning the gate into a busy-loop.
 func terminalStatusAddresses(s TickTerminalStatus) bool {
 	switch s {
-	case TickStatusSuccess, TickStatusDone, TickStatusBudgetForced, TickStatusFailedAfterRender:
+	case TickStatusSuccess, TickStatusDone, TickStatusBudgetForced, TickStatusFailedAfterRender, TickStatusSkipped:
 		return true
 	default:
 		return false

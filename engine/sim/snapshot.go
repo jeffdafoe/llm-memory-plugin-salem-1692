@@ -40,4 +40,10 @@ type Snapshot struct {
 
 	Environment WorldEnvironment
 	Phase       Phase
+
+	// NeedThresholds is a cloned view of WorldSettings.NeedThresholds —
+	// the per-need red-tier boundary. Consumers reading the snapshot
+	// off-world (perception, noop-skip preflight) read thresholds here
+	// rather than racing on w.Settings directly.
+	NeedThresholds NeedThresholds
 }
