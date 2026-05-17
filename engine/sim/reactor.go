@@ -349,6 +349,41 @@ func (PayResolvedWarrantReason) isWarrantReason()             {}
 func (PayResolvedWarrantReason) Kind() WarrantKind            { return WarrantKindPayResolved }
 func (r PayResolvedWarrantReason) DedupDiscriminator() uint64 { return uint64(r.ResolvedEventID) }
 
+// IdleBackstopWarrantReason captures an engine-injected liveness tick —
+// the actor has been quiet for longer than WorldSettings.IdleBackstopThreshold
+// (measured against max(lastReactorTickAt, World.LoadedAt)), so the
+// idle-backstop sweep (engine/sim/cascade/idle_backstop.go) stamps this
+// warrant to give them a chance to act on their own initiative.
+//
+// Replaces v1's chronicler-attend-to dispatch role: in v1 the chronicler
+// LLM decided who to engage; in v2 a cheap periodic sweep stamps idle
+// warrants on quiet actors and the actor's own LLM tick decides what (if
+// anything) to do.
+//
+// QuietDuration is the wall-clock duration since the actor's last
+// reactor tick at the moment the warrant was stamped, so perception can
+// render meaningful context ("you've been quiet for 32 minutes —
+// consider what to do next"). Carried as duration not timestamps to
+// keep the rendering deterministic across runs.
+//
+// Not event-sourced: idle backstop has no source event (it fires from
+// the absence of activity, not a specific stimulus). WarrantMeta is
+// stamped with SourceEventID = 0 and the substrate dedup paths are
+// bypassed by design — the cascade slice does cheap pre-filter against
+// already-pending actors (open WarrantedSince / TickInFlight) on the
+// world goroutine before stamping. DedupDiscriminator returns 0 to
+// match the zero-source posture; per-cycle dedup against an open
+// IdleBackstop warrant on the same actor still works via the open-
+// cycle path because the slice's pre-filter rejects already-warranted
+// actors outright.
+type IdleBackstopWarrantReason struct {
+	QuietDuration time.Duration
+}
+
+func (IdleBackstopWarrantReason) isWarrantReason()           {}
+func (IdleBackstopWarrantReason) Kind() WarrantKind          { return WarrantKindIdleBackstop }
+func (IdleBackstopWarrantReason) DedupDiscriminator() uint64 { return 0 }
+
 // WarrantMeta is one entry in an actor's Warrants list — a signal that
 // fired during the actor's warranted window. The evaluator carries the
 // full list into ReactorTickDue; the prompt builder (PR 3) renders each
@@ -581,6 +616,15 @@ func clearWarrant(a *Actor) {
 // Warrants are also cleared — interface-typed payloads aren't designed to
 // survive serialization, and post-restart cascade origins re-engage actors
 // via fresh events anyway.
+//
+// RecentReactorTicks stays nil after the reset — lastReactorTickAt
+// reports ok=false for fresh-loaded actors, which is what the
+// MinReactorTickGap pacing floor and per-minute rate gate both expect
+// (a fresh actor has no recent-tick history; both gates correctly
+// no-op). The cold-start anchor for the idle-backstop sweep lives on
+// World.LoadedAt instead, so only that consumer sees the "world woke
+// up" timestamp; lastReactorTickAt's semantics ("most recent reactor
+// tick — newest entry of RecentReactorTicks") stay pure.
 func resetReactorStateOnLoad(a *Actor) {
 	clearWarrant(a)
 	a.TickInFlight = false
@@ -768,6 +812,17 @@ const (
 	// WorldSettings.AdmissionBackoff is unset. ≈ the evaluator cadence, so
 	// a deferred warrant is re-examined on roughly the next scan.
 	defaultAdmissionBackoff = 250 * time.Millisecond
+
+	// defaultIdleBackstopThreshold is the wall-clock duration an actor
+	// must go without a reactor tick before the idle-backstop sweep
+	// stamps a WarrantKindIdleBackstop warrant, when
+	// WorldSettings.IdleBackstopThreshold is unset. 30 min — engine-
+	// injected liveness for actors no other warrant has engaged.
+	//
+	// The companion sweep-cadence default lives in the cascade package
+	// (engine/sim/cascade/idle_backstop.go) since cascade owns the
+	// goroutine driver; sim only knows the per-actor criterion.
+	defaultIdleBackstopThreshold = 30 * time.Minute
 
 	// recentlyConsumedTTL / recentlyConsumedCap bound the per-actor
 	// recently-consumed source-key set — tryStampWarrant's third dedup
