@@ -152,6 +152,27 @@ type WorldSettings struct {
 	// staging can tune it down for testing without rebuilding.
 	AtmosphereRefreshInterval time.Duration
 
+	// Action-log substrate tunables (engine/sim/action_log.go +
+	// engine/sim/cascade/action_log.go). Both fall back to defaults
+	// when zero, so tests that bypass the environment loader get
+	// sensible behavior without seeding them.
+	//
+	// ActionLogRetention: how far back the in-memory action log
+	// keeps entries. Compaction sweep drops entries with OccurredAt
+	// before (now - retention). Default 48h
+	// (sim.DefaultActionLogRetention) — covers atmosphere's 4h refresh
+	// interval with headroom and consolidation's expected 24h window
+	// cleanly. Dev / staging can tune down.
+	//
+	// ActionLogSweepInterval: how often the compaction sweep fires.
+	// Default 1h (defaultActionLogSweepInterval in
+	// engine/sim/cascade/action_log.go — owned by cascade since
+	// cascade owns the goroutine driver). Stale entries past
+	// retention are still tens of hours old; the sweep cadence just
+	// controls how promptly memory is reclaimed.
+	ActionLogRetention     time.Duration
+	ActionLogSweepInterval time.Duration
+
 	// DefaultOutdoorSceneRadius is the conversational radius used by
 	// SceneBoundArea when callers don't specify one explicitly. Measured
 	// in king's-move (Chebyshev) tiles around the bound's Anchor.
@@ -329,6 +350,20 @@ type World struct {
 	// re-engagement happens via the warrant re-stamp pass during
 	// LoadWorld.
 	PayLedger map[LedgerID]*PayLedgerEntry
+
+	// ActionLog is the world-level append-only audit trail of
+	// committed agent + engine-source actions. Consumed by the
+	// atmosphere refresh cascade (group-by-actor-by-action since
+	// last fire) and per-actor narrative consolidation (own + peer
+	// rows within a recent window). See engine/sim/action_log.go
+	// for the entry shape and the package doc explaining what's
+	// dropped vs v1's pg schema.
+	//
+	// In-memory only at MVP — no repo wire-through; mem package
+	// keeps the noopActionLog sink. Restart-loss is acceptable:
+	// atmosphere's last-fire stamp resets on restart and C2
+	// re-snapshots from current state.
+	ActionLog []ActionLogEntry
 
 	// Asset catalog — reference state, loaded at startup. Looked up by
 	// VillageObject.AssetID for state resolution, footprint, anchor, etc.
@@ -993,6 +1028,7 @@ func (w *World) republish() {
 		VillageObjects: make(map[VillageObjectID]*VillageObject, len(w.VillageObjects)),
 		Quotes:         make(map[QuoteID]*SceneQuote, len(w.Quotes)),
 		PayLedger:      make(map[LedgerID]*PayLedgerEntry, len(w.PayLedger)),
+		ActionLog:      CloneActionLog(w.ActionLog),
 		Environment:    w.Environment,
 		Phase:          w.Phase,
 		NeedThresholds: w.Settings.NeedThresholds.Clone(),

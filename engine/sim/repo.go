@@ -127,13 +127,14 @@ type EnvironmentRepo interface {
 	SaveSnapshot(ctx context.Context, tx Tx, env WorldEnvironment, phase Phase) error
 }
 
-// ActionLogSink appends agent action log rows per-event.
+// ActionLogSink appends action log rows per-event. v2 MVP wires a noop
+// implementation (mem.noopActionLog) — the in-engine consumers
+// (atmosphere digest, C2 consolidation) read from World.ActionLog
+// directly; durable pg projection lands at cutover. See
+// engine/sim/action_log.go for the entry shape.
 type ActionLogSink interface {
 	Append(ctx context.Context, entry ActionLogEntry) error
 }
-
-// ActionLogEntry — concrete shape ported with agent_tick port.
-type ActionLogEntry struct{}
 
 // TickTelemetryRecord is one entry in the per-tick lifecycle telemetry
 // stream. PR 3a owns the minimal contract because the reactor evaluator is
