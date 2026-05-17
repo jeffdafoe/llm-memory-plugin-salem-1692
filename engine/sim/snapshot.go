@@ -38,6 +38,14 @@ type Snapshot struct {
 	// authoritative state lives here). Phase 3 PR S4.
 	PayLedger map[LedgerID]*PayLedgerEntry
 
+	// ActionLog is the published snapshot of World.ActionLog — the
+	// append-only audit trail of committed agent + engine-source
+	// actions, value-copied via CloneActionLog. Consumed by the
+	// atmosphere refresh cascade and per-actor narrative
+	// consolidation. See engine/sim/action_log.go for the entry
+	// shape. nil for an empty log.
+	ActionLog []ActionLogEntry
+
 	Environment WorldEnvironment
 	Phase       Phase
 
