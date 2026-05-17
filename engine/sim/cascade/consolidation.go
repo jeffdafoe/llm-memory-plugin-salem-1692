@@ -1,4 +1,4 @@
-package handlers
+package cascade
 
 import (
 	"context"
@@ -52,18 +52,18 @@ import (
 
 // RegisterConsolidation spawns the consolidation sweep goroutine.
 // The goroutine returns when ctx is cancelled. Call once at world
-// startup, after RegisterTickHandlers / RegisterEncounterHandlers /
-// the substrate runners — the order doesn't matter functionally, but
+// startup; order relative to RegisterEncounter / the tick-handler
+// registrations / substrate runners doesn't matter functionally, but
 // keep the registrations grouped for readability.
 //
 // Panics on nil w or nil client to fail fast at wiring time rather
 // than silently no-op.
 func RegisterConsolidation(ctx context.Context, w *sim.World, client llm.Client) {
 	if w == nil {
-		panic("handlers: RegisterConsolidation requires a non-nil world")
+		panic("cascade: RegisterConsolidation requires a non-nil world")
 	}
 	if client == nil {
-		panic("handlers: RegisterConsolidation requires a non-nil LLM client")
+		panic("cascade: RegisterConsolidation requires a non-nil LLM client")
 	}
 	go runConsolidationSweep(ctx, w, client)
 }
@@ -110,13 +110,13 @@ func runOneSweep(ctx context.Context, w *sim.World, client llm.Client) {
 	res, err := w.SendContext(ctx, sim.FindConsolidationCandidates(now, sim.ConsolidationsPerSweep))
 	if err != nil {
 		if ctx.Err() == nil {
-			log.Printf("handlers/consolidation: find candidates: %v", err)
+			log.Printf("cascade/consolidation: find candidates: %v", err)
 		}
 		return
 	}
 	candidates, ok := res.([]sim.ConsolidationCandidate)
 	if !ok {
-		log.Printf("handlers/consolidation: find candidates returned %T, want []sim.ConsolidationCandidate", res)
+		log.Printf("cascade/consolidation: find candidates returned %T, want []sim.ConsolidationCandidate", res)
 		return
 	}
 	for _, c := range candidates {
@@ -147,14 +147,14 @@ func consolidateOne(ctx context.Context, w *sim.World, client llm.Client, c sim.
 		// Don't log on context cancellation — that's a normal shutdown
 		// path, not a failure.
 		if ctx.Err() == nil {
-			log.Printf("handlers/consolidation: LLM call for %s→%s failed: %v",
+			log.Printf("cascade/consolidation: LLM call for %s→%s failed: %v",
 				c.ActorID, c.PeerID, err)
 		}
 		return
 	}
 	newSummary := strings.TrimSpace(reply.Content)
 	if newSummary == "" {
-		log.Printf("handlers/consolidation: empty reply for %s→%s (tool_calls=%d)",
+		log.Printf("cascade/consolidation: empty reply for %s→%s (tool_calls=%d)",
 			c.ActorID, c.PeerID, len(reply.ToolCalls))
 		return
 	}
@@ -166,16 +166,16 @@ func consolidateOne(ctx context.Context, w *sim.World, client llm.Client, c sim.
 			// doesn't read as a bug. The sweep retries from a fresh
 			// snapshot on the next cycle.
 			if errors.Is(err, sim.ErrStaleConsolidationSnapshot) {
-				log.Printf("handlers/consolidation: snapshot stale for %s→%s (FIFO race during LLM call); next sweep will retry",
+				log.Printf("cascade/consolidation: snapshot stale for %s→%s (FIFO race during LLM call); next sweep will retry",
 					c.ActorID, c.PeerID)
 			} else {
-				log.Printf("handlers/consolidation: apply for %s→%s failed: %v",
+				log.Printf("cascade/consolidation: apply for %s→%s failed: %v",
 					c.ActorID, c.PeerID, err)
 			}
 		}
 		return
 	}
-	log.Printf("handlers/consolidation: %s↔%s ok (pruned=%d, summary_len=%d)",
+	log.Printf("cascade/consolidation: %s↔%s ok (pruned=%d, summary_len=%d)",
 		c.ActorName, c.PeerName, len(c.Facts), len(newSummary))
 }
 

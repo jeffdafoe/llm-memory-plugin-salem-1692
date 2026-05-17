@@ -76,10 +76,10 @@ func handlePaidWarrants(w *sim.World, evt sim.Event) {
 }
 
 // RegisterPayHandlers wires the Paid event subscriber into the world.
-// Separate from RegisterSpeechHandlers / RegisterEncounterHandlers for the
-// same opt-in-piecewise reason: a build that wants speech but not pay (or
-// vice versa) can compose. Must run on the world goroutine — call before
-// World.Run or from inside a Command.Fn.
+// Separate from RegisterSpeechHandlers / cascade.RegisterEncounter for
+// the same opt-in-piecewise reason: a build that wants speech but not
+// pay (or vice versa) can compose. Must run on the world goroutine —
+// call before World.Run or from inside a Command.Fn.
 //
 // Idempotency: registering twice would invoke the subscriber twice per
 // Paid event, but tryStampWarrant's source-aware dedup catches the

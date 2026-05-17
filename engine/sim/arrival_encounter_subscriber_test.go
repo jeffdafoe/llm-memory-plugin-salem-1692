@@ -7,14 +7,14 @@ import (
 	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
-	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/handlers"
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/cascade"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/repo/mem"
 )
 
-// arrival_encounter_subscriber_test.go — PR 3e arrival-encounter
-// subscriber tests. Lives in package sim_test (not handlers) so it can
-// reach sim.EmitForTest, which is unexported across package boundaries
-// because export_test.go is test-only.
+// arrival_encounter_subscriber_test.go — arrival-encounter subscriber
+// tests. Lives in package sim_test (in engine/sim/, not in cascade/)
+// so it can reach sim.EmitForTest, which export_test.go only exposes
+// inside the sim package's own test scope.
 //
 // All tests synthesize ActorArrived via sim.EmitForTest rather than
 // driving the locomotion ticker — that isolates the subscriber from
@@ -89,11 +89,11 @@ func buildEncounterWorld(t *testing.T, actors []encounterActor, register bool) (
 
 	if register {
 		if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-			handlers.RegisterEncounterHandlers(world)
+			cascade.RegisterEncounter(world)
 			return nil, nil
 		}}); err != nil {
 			cancel()
-			t.Fatalf("RegisterEncounterHandlers: %v", err)
+			t.Fatalf("RegisterEncounter: %v", err)
 		}
 	}
 	return w, cancel
@@ -482,10 +482,10 @@ func TestArrivalEncounter_DoubleRegistrationProducesOneHuddle(t *testing.T) {
 
 	// Second registration on the same world.
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		handlers.RegisterEncounterHandlers(world)
+		cascade.RegisterEncounter(world)
 		return nil, nil
 	}}); err != nil {
-		t.Fatalf("second RegisterEncounterHandlers: %v", err)
+		t.Fatalf("second RegisterEncounter: %v", err)
 	}
 
 	emitArrivalFor(t, w, "ann", time.Now().UTC())
