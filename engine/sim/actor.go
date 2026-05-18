@@ -331,10 +331,13 @@ type Actor struct {
 	Kind        ActorKind
 
 	// Identity routing — which VA backs this actor, login binding for PCs,
-	// visitor archetype state.
-	LLMAgent      string
-	LoginUsername string
-	VisitorState  *VisitorState
+	// visitor archetype state, businessowner attribute (engine-authored
+	// hospitality speech for shopkeepers / innkeepers / smiths — see
+	// engine/sim/businessowner.go).
+	LLMAgent           string
+	LoginUsername      string
+	VisitorState       *VisitorState
+	BusinessownerState *BusinessownerState
 
 	// Spatial — current location.
 	InsideStructureID StructureID
@@ -571,6 +574,9 @@ func CloneActor(a *Actor) *Actor {
 	if a.VisitorState != nil {
 		cp.VisitorState = cloneVisitorState(a.VisitorState)
 	}
+	if a.BusinessownerState != nil {
+		cp.BusinessownerState = cloneBusinessownerState(a.BusinessownerState)
+	}
 	if a.RecentActions != nil {
 		cp.RecentActions = a.RecentActions.Clone()
 	}
@@ -661,6 +667,14 @@ type ActorSnapshot struct {
 	// world's mutable visitor record.
 	VisitorState *VisitorState
 
+	// BusinessownerState mirrors the live Actor's businessowner attribute
+	// at snapshot time. Non-nil marks the actor as a shopkeeper / innkeeper
+	// / smith eligible for engine-authored hospitality speech. Flavor
+	// selects the phrase pool (see engine/sim/businessowner.go). Deep-cloned
+	// by snapshotActor so published snapshots don't alias the world's
+	// mutable record.
+	BusinessownerState *BusinessownerState
+
 	// DwellCredits mirror the live Actor's per-pin recovery credits at
 	// snapshot time so perception build can surface "you are currently
 	// eating stew at the tavern" as part of the actor's self-state. Deep-
@@ -707,6 +721,9 @@ func CloneActorSnapshot(s *ActorSnapshot) *ActorSnapshot {
 	}
 	if s.VisitorState != nil {
 		cp.VisitorState = cloneVisitorState(s.VisitorState)
+	}
+	if s.BusinessownerState != nil {
+		cp.BusinessownerState = cloneBusinessownerState(s.BusinessownerState)
 	}
 	if s.DwellCredits != nil {
 		cp.DwellCredits = cloneDwellCredits(s.DwellCredits)
