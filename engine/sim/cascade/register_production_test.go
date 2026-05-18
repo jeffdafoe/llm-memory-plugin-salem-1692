@@ -12,8 +12,7 @@ import (
 // register_production_test.go — covers the production cascade
 // composition helper. The per-subsystem Register* helpers have their
 // own subscriber tests; this file's job is to assert the composition
-// runs end-to-end without panicking, rejects nil inputs, and adds
-// every Register* helper's subscriber to the world.
+// runs end-to-end without panicking and rejects nil inputs.
 
 func buildRegisterProductionWorld(t *testing.T) *sim.World {
 	t.Helper()
