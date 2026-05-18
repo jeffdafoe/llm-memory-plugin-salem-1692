@@ -24,11 +24,18 @@ func NewOrdersRepo(pool Pool) *OrdersRepo {
 	return &OrdersRepo{pool: pool}
 }
 
-// loadAllSQL selects the v2 in-flight set. Hits the partial index
-// ix_pay_ledger_v2_in_flight (state='accepted' AND
-// fulfillment_status IN ('ready','pending')). Today v2 emits only
-// Ready; Pending support lands when the craft-lead-time slice
-// ships and is forward-compatible with no repo change.
+// loadAllSQL selects the v2 in-flight set. The partial index
+// ix_pay_ledger_v2_in_flight matches the WHERE clause, supporting
+// the ordered scan over the in-flight subset. It is NOT a
+// selective filter index — only `id` is indexed, so within the
+// partial set there's no further pruning. That's fine for the
+// expected workload (load-all-in-flight at restart over a small
+// set); if future read patterns need selective filtering, add a
+// columns-included or composite index.
+//
+// Today v2 emits only Ready; Pending support lands when the
+// craft-lead-time slice ships and is forward-compatible with no
+// repo change.
 const loadAllSQL = `
 SELECT
     id,
@@ -51,6 +58,11 @@ ORDER BY id`
 // carry state='accepted'; haggle states (pending/declined/...) live
 // in-memory pre-acceptance and don't persist. Columns v2 doesn't track
 // stay at their defaults or NULL.
+//
+// ON CONFLICT (id) infers pay_ledger's PRIMARY KEY (id) — established
+// by migration ZBBS-128 (`id bigserial PRIMARY KEY`). If a future
+// migration changes the key shape, this conflict target needs to
+// follow.
 //
 // resolved_at == created_at because v2 transitions to accepted in the
 // same in-memory step that mints the Order — pay_ledger's
@@ -80,6 +92,34 @@ ON CONFLICT (id) DO UPDATE SET
     fulfillment_status = EXCLUDED.fulfillment_status,
     expires_at         = EXCLUDED.expires_at,
     delivered_on       = EXCLUDED.delivered_on`
+
+// expireAbsentSQL enforces SaveSnapshot's contract: the supplied map
+// IS the complete in-flight set. Any pay_ledger row currently
+// state='accepted' AND fulfillment_status IN ('ready','pending')
+// whose id is NOT in the snapshot's ID list gets flipped to
+// fulfillment_status='expired' with expires_at stamped (or
+// preserved if non-null).
+//
+// Why this matters: without it, mem and pg SaveSnapshot diverge —
+// mem replaces wholesale, pg only upserts. After Slice 6's terminal-
+// pruning behavior lands, a SaveSnapshot containing only in-flight
+// orders would leave previously-pruned terminal orders in pg as
+// state='accepted' AND fulfillment_status='ready' (their LAST upserted
+// state). Restart would resurrect them.
+//
+// Empty IDs slice intentionally expires all in-flight rows — the
+// snapshot semantic is "this is everything in-flight"; empty means
+// "no in-flight orders."
+//
+// Runs INSIDE the caller's checkpoint Tx so atomicity is preserved:
+// if the upsert loop fails, the expire rolls back too.
+const expireAbsentSQL = `
+UPDATE pay_ledger
+SET fulfillment_status = 'expired',
+    expires_at         = COALESCE(expires_at, NOW())
+WHERE state = 'accepted'
+  AND fulfillment_status IN ('ready', 'pending')
+  AND NOT (id = ANY($1))`
 
 // LoadAll loads in-flight Orders from pay_ledger.
 //
@@ -115,10 +155,13 @@ func (r *OrdersRepo) LoadAll(ctx context.Context) (map[sim.OrderID]*sim.Order, e
 		}
 		state, err := fulfillmentToOrderState(status)
 		if err != nil {
-			// Skip rather than fail the whole load — a row in an
-			// unexpected fulfillment_status is a data anomaly the
-			// admin can investigate; don't block engine startup.
-			continue
+			// loadAllSQL filters fulfillment_status IN
+			// ('ready','pending') and the column has a CHECK
+			// constraint to the same set + delivered/expired — an
+			// unknown value here means the DB is in an unexpected
+			// shape (schema drift, manual SQL mutation). Surface
+			// it loudly rather than silently dropping data.
+			return nil, fmt.Errorf("pg orders LoadAll: row id=%d unknown fulfillment_status %q", id, status)
 		}
 		oid := sim.OrderID(id)
 		consumers := make([]sim.ActorID, len(consumerIDs))
@@ -156,21 +199,57 @@ func (r *OrdersRepo) LoadAll(ctx context.Context) (map[sim.OrderID]*sim.Order, e
 	return out, nil
 }
 
-// SaveSnapshot upserts every Order in the snapshot map. Runs inside
-// the caller's checkpoint Tx — the world's checkpoint flow calls
-// repo.Begin once and passes the Tx to each sub-repo's SaveSnapshot
-// in turn.
+// SaveSnapshot writes the in-flight Order set durably. The supplied
+// map IS the complete in-flight set — any pay_ledger row currently
+// in-flight whose id is absent from the map gets flipped to
+// fulfillment_status='expired' so that the next LoadAll returns the
+// caller's authoritative set, not a superset including stale rows.
 //
-// Terminal-Order pruning from World.Orders is Slice 6's job; for
-// Slice 5 this method writes whatever map the caller supplies. Today
-// the caller is no one (pg-impl isn't wired into the world yet).
+// Two-step inside one Tx:
+//
+//  1. Expire absent rows (UPDATE ... WHERE NOT (id = ANY(supplied_ids))).
+//  2. Upsert each Order in the supplied map.
+//
+// Runs inside the caller's checkpoint Tx — the world's checkpoint
+// flow calls repo.Begin once and passes the Tx to each sub-repo's
+// SaveSnapshot in turn. If either step fails, the whole Tx rolls
+// back; pg stays consistent with the prior checkpoint.
+//
+// Slice 5 has no caller wired (pg isn't in main.go yet); Slice 6
+// wires the substrate terminal write-through + prune, and the
+// caller invariant becomes load-bearing then.
 func (r *OrdersRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, orders map[sim.OrderID]*sim.Order) error {
 	if tx == nil {
 		return fmt.Errorf("pg orders SaveSnapshot: nil tx")
 	}
+
+	// Step 1: expire any in-flight row whose id is not in the snapshot.
+	// Build the id slice first (skipping nil entries) so the UPDATE
+	// argument and the upsert loop agree on what IS in the snapshot.
+	ids := make([]int64, 0, len(orders))
+	for id, o := range orders {
+		if o == nil {
+			continue
+		}
+		ids = append(ids, int64(id))
+	}
+	if _, err := tx.Exec(ctx, expireAbsentSQL, ids); err != nil {
+		return fmt.Errorf("pg orders SaveSnapshot: expire absent: %w", err)
+	}
+
+	// Step 2: upsert each Order in the snapshot.
 	for _, o := range orders {
 		if o == nil {
 			continue
+		}
+		// Order.ID and Order.LedgerID are the same value by domain
+		// invariant — Order.LedgerID is a back-reference to the
+		// originating pay_ledger row, which IS the same row now that
+		// pay_ledger is Order's durable home. Catch the mismatch
+		// rather than silently writing $1=Order.ID and ignoring
+		// LedgerID.
+		if o.LedgerID != 0 && sim.OrderID(o.LedgerID) != o.ID {
+			return fmt.Errorf("pg orders SaveSnapshot: order %d LedgerID %d mismatch", o.ID, o.LedgerID)
 		}
 		status, err := orderStateToFulfillment(o.State)
 		if err != nil {

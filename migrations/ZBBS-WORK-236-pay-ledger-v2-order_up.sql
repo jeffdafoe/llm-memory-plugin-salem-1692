@@ -41,8 +41,12 @@
 BEGIN;
 
 -- Drop the FKs and convert ID columns to TEXT.
-ALTER TABLE pay_ledger DROP CONSTRAINT pay_ledger_buyer_id_fkey;
-ALTER TABLE pay_ledger DROP CONSTRAINT pay_ledger_seller_id_fkey;
+-- IF EXISTS guards against re-runs and against operator environments
+-- where ZBBS-128's constraint naming differs (the FK names below
+-- match the default Postgres naming convention, but defensive is
+-- cheaper than a partial-applied migration).
+ALTER TABLE pay_ledger DROP CONSTRAINT IF EXISTS pay_ledger_buyer_id_fkey;
+ALTER TABLE pay_ledger DROP CONSTRAINT IF EXISTS pay_ledger_seller_id_fkey;
 ALTER TABLE pay_ledger ALTER COLUMN buyer_id  TYPE TEXT USING buyer_id::text;
 ALTER TABLE pay_ledger ALTER COLUMN seller_id TYPE TEXT USING seller_id::text;
 ALTER TABLE pay_ledger ALTER COLUMN consumer_actor_ids TYPE TEXT[] USING consumer_actor_ids::text[];
@@ -51,7 +55,7 @@ ALTER TABLE pay_ledger ALTER COLUMN consumer_actor_ids TYPE TEXT[] USING consume
 ALTER TABLE pay_ledger ADD COLUMN expires_at TIMESTAMP WITH TIME ZONE;
 
 -- Extend fulfillment_status CHECK with 'expired'.
-ALTER TABLE pay_ledger DROP CONSTRAINT pay_ledger_fulfillment_status_check;
+ALTER TABLE pay_ledger DROP CONSTRAINT IF EXISTS pay_ledger_fulfillment_status_check;
 ALTER TABLE pay_ledger ADD CONSTRAINT pay_ledger_fulfillment_status_check
     CHECK (fulfillment_status IN ('pending', 'ready', 'delivered', 'expired'));
 
