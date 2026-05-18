@@ -433,6 +433,18 @@ type World struct {
 	// correctness failure.
 	ActiveRoutes map[ActorID]*NPCRoute
 
+	// NoticeboardContent stores per-board authored prose — what the
+	// town crier reads on arrival, what NPCs loitering at the board
+	// will perceive once that read path ports. Keyed by VillageObjectID
+	// of the noticeboard placement; nil-readable as empty (lazy-
+	// allocated on first SaveNoticeboardContent).
+	//
+	// World-goroutine-only; restart-loss is acceptable. A board with
+	// stamped content across a restart loses it; the next rotation
+	// cycle authors fresh content. First cycle after cold start: crier
+	// reads nothing (board empty); subsequent cycles read normally.
+	NoticeboardContent map[VillageObjectID]*NoticeboardContent
+
 	// ActionLog is the world-level append-only audit trail of
 	// committed agent + engine-source actions. Consumed by the
 	// atmosphere refresh cascade (group-by-actor-by-action since

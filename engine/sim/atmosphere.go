@@ -2,7 +2,6 @@ package sim
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 )
@@ -79,132 +78,10 @@ type ActivityDigestEntry struct {
 	Counts      map[ActionType]int
 }
 
-// AtmosphereContext is the snapshot the world goroutine builds for the
-// off-world atmosphere sweep. All fields are owned by the caller — no
-// pointers back into world state.
-//
-// Roster is ordered: outdoor bucket (StructureLabel == "") last,
-// structure groups in DisplayName-ascending order before it. Names
-// within each bucket are sorted ascending. This matches v1's chronicler
-// roster posture.
-//
-// ActivityDigest is ordered: DisplayName-ascending across actors. Empty
-// (nil) on first fire (LastAtmosphereRefreshAt zero), on quiet windows
-// (no NPC actions since the last refresh), and when the action log is
-// empty. Inner Counts maps are freshly allocated per actor.
-type AtmosphereContext struct {
-	Now             time.Time
-	Phase           Phase
-	Weather         string
-	PriorAtmosphere string
-	Roster          []AtmosphereRosterEntry
-	ActivityDigest  []ActivityDigestEntry
-}
-
-// FetchAtmosphereContext returns a Command that snapshots the world-
-// level inputs the atmosphere prompt needs. `at` is the wall-clock
-// moment the sweep was driven; production passes time.Now(), tests pass
-// a fixed value for determinism. The Roster slice is freshly allocated;
-// the caller may mutate without affecting world state.
-//
-// Never returns an error — even an empty world produces a valid
-// (possibly-empty-Roster) context.
-func FetchAtmosphereContext(at time.Time) Command {
-	return Command{
-		Fn: func(w *World) (any, error) {
-			ctx := AtmosphereContext{
-				Now:             at,
-				Phase:           w.Phase,
-				Weather:         w.Environment.Weather,
-				PriorAtmosphere: w.Environment.Atmosphere,
-			}
-
-			byLoc := make(map[string][]string)
-			var outdoor []string
-			for _, a := range w.Actors {
-				if a == nil || a.Kind == KindPC {
-					continue
-				}
-				if a.InsideStructureID == "" {
-					outdoor = append(outdoor, a.DisplayName)
-					continue
-				}
-				s, ok := w.Structures[a.InsideStructureID]
-				if !ok || s == nil || s.DisplayName == "" {
-					// Indoor-but-unnamed-structure falls through to
-					// outdoor, matching v1 chronicler's "label empty
-					// → openAir" branch.
-					outdoor = append(outdoor, a.DisplayName)
-					continue
-				}
-				byLoc[s.DisplayName] = append(byLoc[s.DisplayName], a.DisplayName)
-			}
-
-			labels := make([]string, 0, len(byLoc))
-			for label := range byLoc {
-				labels = append(labels, label)
-			}
-			sort.Strings(labels)
-			for _, label := range labels {
-				names := byLoc[label]
-				sort.Strings(names)
-				ctx.Roster = append(ctx.Roster, AtmosphereRosterEntry{
-					StructureLabel: label,
-					DisplayNames:   names,
-				})
-			}
-			if len(outdoor) > 0 {
-				sort.Strings(outdoor)
-				ctx.Roster = append(ctx.Roster, AtmosphereRosterEntry{
-					StructureLabel: "",
-					DisplayNames:   outdoor,
-				})
-			}
-
-			// Activity digest: per-actor counts of action-log entries
-			// after LastAtmosphereRefreshAt, NPCs only. First fire
-			// (LastAtmosphereRefreshAt zero) skips the digest — no
-			// "since beginning of time" dump at startup. Strict
-			// `After` (matches v1's `occurred_at > $1` boundary
-			// semantic) — entries exactly at the refresh stamp belong
-			// to the prior window.
-			since := w.Environment.LastAtmosphereRefreshAt
-			if !since.IsZero() && len(w.ActionLog) > 0 {
-				perActor := make(map[ActorID]map[ActionType]int)
-				for _, e := range w.ActionLog {
-					if !e.OccurredAt.After(since) {
-						continue
-					}
-					a, ok := w.Actors[e.ActorID]
-					if !ok || a == nil || a.Kind == KindPC {
-						continue
-					}
-					if perActor[e.ActorID] == nil {
-						perActor[e.ActorID] = make(map[ActionType]int)
-					}
-					perActor[e.ActorID][e.ActionType]++
-				}
-				if len(perActor) > 0 {
-					ids := make([]ActorID, 0, len(perActor))
-					for id := range perActor {
-						ids = append(ids, id)
-					}
-					sort.Slice(ids, func(i, j int) bool {
-						return w.Actors[ids[i]].DisplayName < w.Actors[ids[j]].DisplayName
-					})
-					for _, id := range ids {
-						ctx.ActivityDigest = append(ctx.ActivityDigest, ActivityDigestEntry{
-							ActorID:     id,
-							DisplayName: w.Actors[id].DisplayName,
-							Counts:      perActor[id],
-						})
-					}
-				}
-			}
-			return ctx, nil
-		},
-	}
-}
+// AtmosphereContext and FetchAtmosphereContext have moved to
+// village_context.go as VillageContext / FetchVillageContext (renamed
+// when the noticeboard authoring slice added a second consumer).
+// Type-alias + thin wrapper retained there for legacy callers.
 
 // ApplyAtmosphereRefresh returns a Command that installs `text` as the
 // new World.Environment.Atmosphere and stamps LastAtmosphereRefreshAt.

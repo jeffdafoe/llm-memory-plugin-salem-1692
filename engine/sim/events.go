@@ -314,3 +314,25 @@ type PhaseApplied struct {
 }
 
 func (PhaseApplied) isSimEvent() {}
+
+// VillageObjectStateChanged is emitted by SetVillageObjectState
+// whenever an object's CurrentState actually changes (Applied=true
+// path). Subscribers wanting to react to state transitions — the
+// noticeboard authoring cascade reads this, schedules an LLM call
+// to author content for the new state — register against this
+// event.
+//
+// FromState / ToState carry the pre-mutation + post-mutation state
+// names. At is the wall-clock instant the command landed. The
+// post-mutation WorldEventGen is NOT included here — subscribers
+// that need to gate against generation drift consult
+// World.WorldEventGen.Load() themselves.
+type VillageObjectStateChanged struct {
+	EventBase
+	ObjectID  VillageObjectID
+	FromState string
+	ToState   string
+	At        time.Time
+}
+
+func (VillageObjectStateChanged) isSimEvent() {}

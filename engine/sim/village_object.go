@@ -1,5 +1,7 @@
 package sim
 
+import "time"
+
 // VillageObject — per-placement instance of an Asset on the village map.
 // In-memory port of the legacy village_object + village_object_tag tables.
 //
@@ -207,7 +209,14 @@ func SetVillageObjectState(id VillageObjectID, newState string, guardGen uint64)
 			if obj.CurrentState == newState {
 				return SetStateResult{Applied: false, Reason: "already_at_target"}, nil
 			}
+			prev := obj.CurrentState
 			obj.CurrentState = newState
+			w.emit(&VillageObjectStateChanged{
+				ObjectID:  id,
+				FromState: prev,
+				ToState:   newState,
+				At:        time.Now().UTC(),
+			})
 			return SetStateResult{Applied: true, Reason: "applied"}, nil
 		},
 	}

@@ -3,6 +3,7 @@ package cascade
 import (
 	"context"
 	"math/rand"
+	"sync"
 	"testing"
 	"time"
 
@@ -245,6 +246,133 @@ func TestTownCrierDispatchesOnRotationApplied(t *testing.T) {
 	}
 }
 
+// TestTownCrierReadsBoardContentBeforeFlip: the npc_route subscriber's
+// town_crier branch reads NoticeboardContent for the just-arrived
+// stop's object BEFORE dispatching AdvanceNPCRoute (which flips the
+// state). Verifies a Spoke event was emitted carrying the board's
+// content text. White-box test — invokes
+// handleActorArrivedAdvanceRoute directly with a synthesized
+// ActorArrived event under the world goroutine.
+func TestTownCrierReadsBoardContentBeforeFlip(t *testing.T) {
+	w, _ := buildRouteCascadeWorld(t)
+	seedActorAttribute(w, sim.AttrTownCrier)
+
+	// Install a synthetic town_crier route with one stop on the
+	// "notice" board (which is the notice-board-tagged rotatable
+	// object in the cascade test fixture). Stop's WalkTo is the
+	// notice board's adjacent walkable tile; the actor will be
+	// teleported there before the synthesized arrival fires.
+	noticeStop := sim.RouteStop{
+		ObjectID: "notice",
+		WalkTo:   sim.Position{X: sim.PadX + 30, Y: sim.PadY + 21},
+		NewState: "posted",
+	}
+	if w.ActiveRoutes == nil {
+		w.ActiveRoutes = map[sim.ActorID]*sim.NPCRoute{}
+	}
+	w.ActiveRoutes["runner"] = &sim.NPCRoute{
+		NPCID:           "runner",
+		Label:           sim.AttrTownCrier,
+		Stops:           []sim.RouteStop{noticeStop},
+		StopIdx:         0,
+		Phase:           sim.RoutePhaseActive,
+		HomeDestination: sim.NewPositionDestination(sim.Position{X: sim.PadX + 10, Y: sim.PadY + 10}),
+	}
+	// Position the actor at the stop's WalkTo so the active-phase
+	// stale-arrival guard accepts the arrival.
+	w.Actors["runner"].CurrentX = noticeStop.WalkTo.X
+	w.Actors["runner"].CurrentY = noticeStop.WalkTo.Y
+	// Pre-stamp the board with content the crier should read.
+	w.NoticeboardContent = map[sim.VillageObjectID]*sim.NoticeboardContent{
+		"notice": {Text: "A travelling cobbler lodges at the Ordinary.", PostedAt: time.Now(), AtState: "blank"},
+	}
+
+	// Subscribe a spoke recorder BEFORE Run starts.
+	spokeRec := &cascadeSpokeRecorder{}
+	w.Subscribe(sim.SubscriberFunc(spokeRec.handle))
+
+	RegisterNPCRoutes(context.Background(), w)
+
+	cancel := runRouteCascadeWorld(t, w)
+	defer cancel()
+
+	// Synthesize the ActorArrived event and dispatch the subscriber
+	// directly. (Going through the locomotion ticker would require
+	// driving the actor tile-by-tile, which is out of scope for this
+	// subscriber test.)
+	arrivedEvt := &sim.ActorArrived{
+		ActorID:          "runner",
+		FinalPosition:    noticeStop.WalkTo,
+		FinalStructureID: "",
+		At:               time.Now(),
+	}
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		handleActorArrivedAdvanceRoute(world, arrivedEvt)
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("invoke handler: %v", err)
+	}
+
+	got := spokeRec.collect()
+	if len(got) == 0 {
+		t.Fatal("no Spoke event emitted after town_crier arrival")
+	}
+	last := got[len(got)-1]
+	if last.SpeakerID != "runner" {
+		t.Errorf("Spoke.SpeakerID = %q, want runner", last.SpeakerID)
+	}
+	if last.Text != "A travelling cobbler lodges at the Ordinary." {
+		t.Errorf("Spoke.Text = %q, want board content", last.Text)
+	}
+}
+
+// TestTownCrierSilentWhenBoardEmpty: town_crier arrival at a stop
+// with NO NoticeboardContent stored does NOT emit a Spoke (cold-start
+// / first-cycle silent path).
+func TestTownCrierSilentWhenBoardEmpty(t *testing.T) {
+	w, _ := buildRouteCascadeWorld(t)
+	seedActorAttribute(w, sim.AttrTownCrier)
+
+	if w.ActiveRoutes == nil {
+		w.ActiveRoutes = map[sim.ActorID]*sim.NPCRoute{}
+	}
+	w.ActiveRoutes["runner"] = &sim.NPCRoute{
+		NPCID: "runner",
+		Label: sim.AttrTownCrier,
+		Stops: []sim.RouteStop{
+			{ObjectID: "notice", WalkTo: sim.Position{X: sim.PadX + 30, Y: sim.PadY + 21}, NewState: "posted"},
+		},
+		Phase:           sim.RoutePhaseActive,
+		HomeDestination: sim.NewPositionDestination(sim.Position{X: sim.PadX + 10, Y: sim.PadY + 10}),
+	}
+	w.Actors["runner"].CurrentX = sim.PadX + 30
+	w.Actors["runner"].CurrentY = sim.PadY + 21
+	// NO NoticeboardContent stamped.
+
+	spokeRec := &cascadeSpokeRecorder{}
+	w.Subscribe(sim.SubscriberFunc(spokeRec.handle))
+
+	RegisterNPCRoutes(context.Background(), w)
+	cancel := runRouteCascadeWorld(t, w)
+	defer cancel()
+
+	arrivedEvt := &sim.ActorArrived{
+		ActorID:       "runner",
+		FinalPosition: sim.Position{X: sim.PadX + 30, Y: sim.PadY + 21},
+		At:            time.Now(),
+	}
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		handleActorArrivedAdvanceRoute(world, arrivedEvt)
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("invoke handler: %v", err)
+	}
+
+	if got := spokeRec.collect(); len(got) != 0 {
+		t.Errorf("emitted %d Spoke events on empty board, want 0", len(got))
+	}
+}
+
 // TestArrivalAdvancesRoute: with a route installed, emitting
 // ActorArrived for the route owner advances StopIdx (verified
 // indirectly via "route exists" then "route gone after all
@@ -308,4 +436,25 @@ func teleportActorToCurrentStop(w *sim.World) error {
 // runs are deterministic.
 func newDeterministicRand() *rand.Rand {
 	return rand.New(rand.NewSource(42))
+}
+
+// cascadeSpokeRecorder accumulates *sim.Spoke events under a mutex so
+// the test goroutine can read after the world goroutine emits.
+type cascadeSpokeRecorder struct {
+	mu     sync.Mutex
+	events []sim.Spoke
+}
+
+func (r *cascadeSpokeRecorder) handle(_ *sim.World, evt sim.Event) {
+	if e, ok := evt.(*sim.Spoke); ok {
+		r.mu.Lock()
+		r.events = append(r.events, *e)
+		r.mu.Unlock()
+	}
+}
+
+func (r *cascadeSpokeRecorder) collect() []sim.Spoke {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]sim.Spoke(nil), r.events...)
 }
