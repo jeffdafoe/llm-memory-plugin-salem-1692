@@ -46,6 +46,16 @@ type Snapshot struct {
 	// shape. nil for an empty log.
 	ActionLog []ActionLogEntry
 
+	// PriceBook is the published snapshot of World.PriceBook — the
+	// per-(seller, item) ring buffer of recent accepted-price
+	// observations, deep-cloned via ClonePriceBook so snapshot
+	// readers can't reach back into world state. Consumed by the
+	// (not-yet-ported) buyer-side recovery-options / satiation
+	// perception blocks and the future seller-side pricing
+	// perception. See engine/sim/price_book.go for the substrate
+	// contract. nil for an empty book.
+	PriceBook map[PriceBookKey]*RingBuffer[PriceObservation]
+
 	Environment WorldEnvironment
 	Phase       Phase
 

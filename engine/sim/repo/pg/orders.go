@@ -391,6 +391,116 @@ func (r *OrdersRepo) WriteTerminal(ctx context.Context, o *sim.Order) error {
 	return nil
 }
 
+// loadRecentPricesSQL pulls the top-N most recent accepted rows per
+// (seller_id, item_kind) tuple, bounded by a `since` floor on
+// created_at. ROW_NUMBER() OVER (PARTITION BY ... ORDER BY created_at
+// DESC) ranks within each tuple; the outer WHERE keeps only ranks ≤
+// perKeyCap. Final ORDER BY guarantees chronological (oldest-first)
+// per-key ordering so World.SeedPriceBook's ring buffer pushes land
+// in the right slots (RingBuffer.Push at capacity drops oldest).
+//
+// state='accepted' filter is the v1-parity rule: knowledge of price
+// lands at acceptance. fulfillment_status is NOT in the filter —
+// terminal-delivered rows count (the buyer paid; that knowledge stays).
+// expired rows: filtered out via state='accepted' only if the schema
+// has them at non-accepted; in practice pay_ledger.state ENUMs
+// pre-acceptance and acceptance separately from fulfillment, and the
+// rejected pre-acceptance terminals (declined/withdrawn/expired/
+// failed_*) all have state != 'accepted'.
+//
+// Index opportunity: a partial index
+//
+//	(seller_id, item_kind, created_at DESC)
+//	WHERE state = 'accepted'
+//
+// would cover this query's PARTITION BY / ORDER BY exactly. Not yet
+// added; LoadWorld runs once at boot so seq-scan cost is paid once
+// per restart. Add the index if seed time becomes noticeable.
+const loadRecentPricesSQL = `
+SELECT seller_id, item_kind, buyer_id, offered_amount, qty,
+       cardinality(consumer_actor_ids), created_at
+  FROM (
+        SELECT seller_id, item_kind, buyer_id, offered_amount, qty,
+               consumer_actor_ids, created_at,
+               ROW_NUMBER() OVER (
+                   PARTITION BY seller_id, item_kind
+                   ORDER BY created_at DESC
+               ) AS rn
+          FROM pay_ledger
+         WHERE state = 'accepted'
+           AND created_at >= $1
+       ) t
+ WHERE rn <= $2
+ ORDER BY seller_id, item_kind, created_at ASC`
+
+// LoadRecentPrices returns top-perKeyCap most-recent accepted-price
+// observations per (seller, item) tuple, within the `since` window,
+// for World.SeedPriceBook at LoadWorld time. See loadRecentPricesSQL
+// for the query shape and rationale.
+//
+// Returns observations in chronological (oldest-first) order per key
+// so SeedPriceBook's ring-buffer push contract is satisfied directly.
+// Cross-key ordering is by (seller_id, item_kind) as a side effect
+// of the partition's ORDER BY in SQL; that ordering is not load-
+// bearing — SeedPriceBook treats records as independent.
+//
+// Runs against the pool directly (no Tx) — read-only seed path,
+// same posture as LoadAll.
+//
+// cardinality(consumer_actor_ids) is computed in SQL so we don't pull
+// the consumer_actor_ids[] payload across the wire just to length-check
+// it. NULL consumer_actor_ids (legacy v1 rows pre-multi-consumer)
+// yields cardinality=NULL, which Go scans into 0; the cascade-side
+// `consumers < 1 ? 1` normalization in SeedPriceBook's caller floors
+// it back to 1. Solo orders therefore round-trip cleanly.
+func (r *OrdersRepo) LoadRecentPrices(ctx context.Context, since time.Time, perKeyCap int) ([]sim.PriceBookSeedRecord, error) {
+	if perKeyCap <= 0 {
+		return nil, fmt.Errorf("pg orders LoadRecentPrices: perKeyCap must be > 0, got %d", perKeyCap)
+	}
+	rows, err := r.pool.Query(ctx, loadRecentPricesSQL, since, perKeyCap)
+	if err != nil {
+		return nil, fmt.Errorf("pg orders LoadRecentPrices query: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]sim.PriceBookSeedRecord, 0)
+	for rows.Next() {
+		var (
+			sellerID    string
+			itemKind    string
+			buyerID     string
+			amount      int
+			qty         int
+			consumerCnt *int
+			at          time.Time
+		)
+		if err := rows.Scan(&sellerID, &itemKind, &buyerID, &amount, &qty, &consumerCnt, &at); err != nil {
+			return nil, fmt.Errorf("pg orders LoadRecentPrices scan: %w", err)
+		}
+		consumers := 1
+		if consumerCnt != nil && *consumerCnt > 1 {
+			consumers = *consumerCnt
+		}
+		out = append(out, sim.PriceBookSeedRecord{
+			Key: sim.PriceBookKey{
+				SellerID: sim.ActorID(sellerID),
+				Item:     sim.ItemKind(itemKind),
+			},
+			Observation: sim.PriceObservation{
+				BuyerID:   sim.ActorID(buyerID),
+				Amount:    amount,
+				Qty:       qty,
+				Consumers: consumers,
+				At:        at,
+			},
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("pg orders LoadRecentPrices iter: %w", err)
+	}
+	return out, nil
+}
+
 // fulfillmentToOrderState maps a pay_ledger.fulfillment_status string
 // to sim.OrderState. Returns an error on unknown values so the caller
 // can skip + log instead of silently materializing an Order with an

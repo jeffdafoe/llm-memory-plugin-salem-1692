@@ -135,3 +135,74 @@ func TestRoundTrip_OrderClonesBreakAliasing(t *testing.T) {
 		t.Errorf("post-save loaded[3].Item = %q, want bread", got)
 	}
 }
+
+// TestLoadRecentPrices_FiltersBySinceAndCaps verifies that mem's
+// LoadRecentPrices implementation matches the pg contract: rows
+// older than `since` are filtered out, per-(seller, item) bucket
+// capped at perKeyCap most-recent entries, returned chronologically
+// (oldest first) per key.
+func TestLoadRecentPrices_FiltersBySinceAndCaps(t *testing.T) {
+	_, h := mem.NewRepository()
+
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	k := sim.PriceBookKey{SellerID: "bob", Item: "ale"}
+
+	h.Orders.SeedPrices([]sim.PriceBookSeedRecord{
+		{Key: k, Observation: sim.PriceObservation{BuyerID: "ancient", Amount: 1, Qty: 1, Consumers: 1, At: base.Add(-100 * 24 * time.Hour)}},
+		{Key: k, Observation: sim.PriceObservation{BuyerID: "alice", Amount: 2, Qty: 1, Consumers: 1, At: base.Add(-5 * 24 * time.Hour)}},
+		{Key: k, Observation: sim.PriceObservation{BuyerID: "alice", Amount: 3, Qty: 1, Consumers: 1, At: base.Add(-3 * 24 * time.Hour)}},
+		{Key: k, Observation: sim.PriceObservation{BuyerID: "carol", Amount: 2, Qty: 1, Consumers: 1, At: base.Add(-2 * 24 * time.Hour)}},
+		{Key: k, Observation: sim.PriceObservation{BuyerID: "alice", Amount: 3, Qty: 1, Consumers: 1, At: base.Add(-1 * 24 * time.Hour)}}, // newest
+		// Different seller-item key, separately capped.
+		{Key: sim.PriceBookKey{SellerID: "joe", Item: "bread"}, Observation: sim.PriceObservation{BuyerID: "alice", Amount: 1, Qty: 1, Consumers: 1, At: base.Add(-2 * 24 * time.Hour)}},
+	})
+
+	since := base.Add(-30 * 24 * time.Hour) // filters out the "ancient" entry
+	got, err := h.Orders.LoadRecentPrices(context.Background(), since, 3)
+	if err != nil {
+		t.Fatalf("LoadRecentPrices: %v", err)
+	}
+
+	// Expect (bob, ale) capped at 3 entries (the 4 in-window ones minus the oldest)
+	// plus (joe, bread) at 1 entry.
+	if len(got) != 4 {
+		t.Fatalf("got %d records, want 4 (3 for bob/ale + 1 for joe/bread)", len(got))
+	}
+
+	// Bucket (bob, ale): per-key oldest-first ordering.
+	aleBucket := []sim.PriceBookSeedRecord{}
+	for _, r := range got {
+		if r.Key == k {
+			aleBucket = append(aleBucket, r)
+		}
+	}
+	if len(aleBucket) != 3 {
+		t.Fatalf("bob/ale bucket has %d entries, want 3", len(aleBucket))
+	}
+	// "ancient" filtered, oldest in-window "alice@-5d" capped out, leaving
+	// alice@-3d, carol@-2d, alice@-1d.
+	expectedBuyers := []sim.ActorID{"alice", "carol", "alice"}
+	for i, b := range expectedBuyers {
+		if aleBucket[i].Observation.BuyerID != b {
+			t.Errorf("bob/ale[%d].BuyerID = %q, want %q", i, aleBucket[i].Observation.BuyerID, b)
+		}
+	}
+	// And chronological order within bucket.
+	if !aleBucket[0].Observation.At.Before(aleBucket[2].Observation.At) {
+		t.Errorf("bob/ale bucket not in chronological order: %+v", aleBucket)
+	}
+}
+
+func TestLoadRecentPrices_InvalidPerKeyCapReturnsEmpty(t *testing.T) {
+	_, h := mem.NewRepository()
+	h.Orders.SeedPrices([]sim.PriceBookSeedRecord{
+		{Key: sim.PriceBookKey{SellerID: "bob", Item: "ale"}, Observation: sim.PriceObservation{BuyerID: "alice", Amount: 2, At: time.Now()}},
+	})
+	got, err := h.Orders.LoadRecentPrices(context.Background(), time.Time{}, 0)
+	if err != nil {
+		t.Errorf("expected nil error for perKeyCap=0, got %v", err)
+	}
+	if got != nil {
+		t.Errorf("expected nil records, got %v", got)
+	}
+}
