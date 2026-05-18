@@ -35,6 +35,24 @@ import (
 // AdvanceNPCRoute is purely the route-walking machinery; per-NPC
 // flavor lives in the cascade driver.
 
+// hasActorWithAttribute reports whether any actor in the world carries
+// the given attribute slug. Used by ApplyPhaseTransition to decide
+// whether to carve out the lamplighter-target tag from the bulk flip
+// (only when an actor will actually consume the carve-out).
+//
+// MUST be called from inside a Command.Fn (reads w.Actors).
+func hasActorWithAttribute(w *World, slug string) bool {
+	for _, a := range w.Actors {
+		if a == nil {
+			continue
+		}
+		if _, ok := a.Attributes[slug]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 // Attribute slugs that carry route behavior. The cascade dispatcher
 // scans Actor.Attributes for one of these to find the eligible actor.
 // Empty values are fine — these are marker attributes, not parameterised.
@@ -164,9 +182,10 @@ type StartNPCRouteResult struct {
 // the actor steps off the home footprint, and the home-walk's
 // MoveDestinationStructureEnter does the same on arrival back inside.
 //
-// MUST be dispatched as a Command (modifies world state). The cascade
-// wraps it: subscriber receives the trigger event → builds candidates
-// → calls w.SendContext(ctx, StartNPCRoute(args)).
+// MUST be invoked on the world goroutine. Cascade subscribers call it
+// inline via `cmd.Fn(w)` from inside their dispatch (subscribers
+// already run on the world goroutine via emit). External callers go
+// through `w.SendContext(ctx, StartNPCRoute(args))`.
 func StartNPCRoute(actorID ActorID, label string, homeDest MoveDestination, candidates []RouteCandidate, now time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
@@ -231,9 +250,17 @@ func StartNPCRoute(actorID ActorID, label string, homeDest MoveDestination, cand
 				// Movement rejected (no path to first stop). Clear the
 				// route — better to report 0 stops than leave the
 				// world with a dangling route that arrival can't
-				// advance.
+				// advance. Return the populated result so callers
+				// observe Replaced=true on a supersede-then-fail (the
+				// prior route IS gone; reporting Replaced=false would
+				// be wrong).
 				delete(w.ActiveRoutes, actorID)
-				return StartNPCRouteResult{}, fmt.Errorf("dispatch first walk: %w", err)
+				return StartNPCRouteResult{
+					NPCID:    actorID,
+					Label:    label,
+					Stops:    0,
+					Replaced: replaced,
+				}, fmt.Errorf("dispatch first walk: %w", err)
 			}
 
 			log.Printf("sim/npc_route: %s %q started route with %d stops (replaced=%v)",
@@ -266,17 +293,20 @@ type AdvanceNPCRouteResult struct {
 //
 // Behavior by phase:
 //
-//   - Active and StopIdx < len(Stops): flip the current stop's
-//     village_object state to NewState; advance StopIdx; dispatch next
-//     MoveActor (next stop OR home if last). Returns "stop_advanced".
+//   - Active and the actor's tile matches the current stop's WalkTo:
+//     flip the current stop's village_object state to NewState; advance
+//     StopIdx; dispatch next MoveActor (next stop OR home if last).
+//     Returns "stop_advanced".
 //
-//   - Active and StopIdx == len(Stops): unreachable — once StopIdx
-//     reaches the last stop, the previous AdvanceNPCRoute call would
-//     have transitioned Phase to Returning. Defensive log + clear.
+//   - Active and the actor's tile DOES NOT match the current stop's
+//     WalkTo: stale arrival (the actor was force-moved or arrived via
+//     an out-of-band MoveActor). Skip the flip; the next legitimate
+//     arrival will resync. Returns "stale_stop".
 //
-//   - Returning: clear the route. If HomeStructureID is non-empty, set
-//     InsideStructureID = HomeStructureID so the actor re-enters home.
-//     Returns "arrived_home".
+//   - Returning: clear the route. The locomotion ticker reconciled
+//     InsideStructureID via updateInsideStructureIDFromTileOwnership
+//     as the actor stepped onto the home structure's door tile (for
+//     StructureEnter destinations) or position. Returns "arrived_home".
 //
 // The per-stop flip passes guardGen=0 (no gen check). The route is
 // not gen-tied: a phase or rotation transition that happens mid-walk
@@ -311,6 +341,16 @@ func AdvanceNPCRoute(actorID ActorID) Command {
 // advanceActiveRoute is AdvanceNPCRoute's active-phase body. Flips the
 // current stop's state, advances StopIdx, dispatches next walk OR
 // transitions to returning + dispatches home walk.
+//
+// Stale-arrival guard: the cascade subscriber dispatches us on every
+// ActorArrived for an actor with an active route. If something other
+// than the route's MoveActor brought the actor to this tile (admin
+// force-move, an externally-issued MoveActor between supersede and
+// arrival, a still-in-flight prior cascade emit), the actor's tile
+// won't match the route's expected WalkTo. Skip the flip in that case
+// — the route is in an inconsistent state we shouldn't compound by
+// flipping a stop the actor may not have visited. The next legitimate
+// arrival will land us at the expected WalkTo.
 func advanceActiveRoute(w *World, route *NPCRoute) (AdvanceNPCRouteResult, error) {
 	if route.StopIdx >= len(route.Stops) {
 		// Defensive — StopIdx should never exceed len(Stops) in active
@@ -322,6 +362,18 @@ func advanceActiveRoute(w *World, route *NPCRoute) (AdvanceNPCRouteResult, error
 	}
 
 	stop := route.Stops[route.StopIdx]
+
+	actor, ok := w.Actors[route.NPCID]
+	if !ok {
+		// Actor gone — clear the route.
+		delete(w.ActiveRoutes, route.NPCID)
+		return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "stale_stop"}, nil
+	}
+	if actor.CurrentX != stop.WalkTo.X || actor.CurrentY != stop.WalkTo.Y {
+		log.Printf("sim/npc_route: %q stale arrival at (%d,%d), expected stop %d at (%d,%d) — skipping flip",
+			route.NPCID, actor.CurrentX, actor.CurrentY, route.StopIdx, stop.WalkTo.X, stop.WalkTo.Y)
+		return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "stale_stop"}, nil
+	}
 
 	// Per-stop flip. guardGen=0 disables the gen check — a fresher
 	// rotation/transition that overwrote the same object since route
