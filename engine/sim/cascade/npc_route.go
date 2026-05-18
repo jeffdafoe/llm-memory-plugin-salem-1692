@@ -135,6 +135,21 @@ func handleRotationAppliedTownCrier(w *sim.World, evt sim.Event) {
 // handleActorArrivedAdvanceRoute is the cascade-wide arrival hook for
 // NPC routes. Most arrivals match no entry in World.ActiveRoutes and
 // the AdvanceNPCRoute command no-ops cheaply.
+//
+// Town crier branch: BEFORE dispatching AdvanceNPCRoute (which flips
+// the noticeboard state), read this-cycle's NoticeboardContent for
+// the current stop's object and emit a Spoke via
+// EmitTownCrierAnnouncement. The crier "reads what's currently
+// posted" — which was authored by the previous rotation cycle's
+// flip-triggered authoring. After the read, AdvanceNPCRoute flips
+// the state; that flip emits VillageObjectStateChanged which the
+// noticeboard cascade subscribes to, spawning fresh authoring for
+// the NEW state (consumed next time the board is read).
+//
+// Cold-start: a freshly-loaded world has no NoticeboardContent
+// stamped. The first crier cycle reads nothing (silent stops); the
+// flip-triggered authoring lands content for the next cycle. From
+// the second cycle on, crier reads + boards rotate normally.
 func handleActorArrivedAdvanceRoute(w *sim.World, evt sim.Event) {
 	arrived, ok := evt.(*sim.ActorArrived)
 	if !ok {
@@ -143,9 +158,32 @@ func handleActorArrivedAdvanceRoute(w *sim.World, evt sim.Event) {
 	if w.ActiveRoutes == nil {
 		return
 	}
-	if _, has := w.ActiveRoutes[arrived.ActorID]; !has {
+	route, has := w.ActiveRoutes[arrived.ActorID]
+	if !has || route == nil {
 		return
 	}
+
+	// Town crier branch: emit existing board content before the
+	// flip. Active-phase stale-arrival guard mirrors
+	// AdvanceNPCRoute's — only emit if the actor is actually at the
+	// expected stop's WalkTo.
+	if route.Label == sim.AttrTownCrier &&
+		route.Phase == sim.RoutePhaseActive &&
+		route.StopIdx < len(route.Stops) {
+		stop := route.Stops[route.StopIdx]
+		actor, ok := w.Actors[arrived.ActorID]
+		atExpected := ok && actor.CurrentX == stop.WalkTo.X && actor.CurrentY == stop.WalkTo.Y
+		if atExpected && w.NoticeboardContent != nil {
+			if content, present := w.NoticeboardContent[stop.ObjectID]; present && content != nil && content.Text != "" {
+				emitCmd := sim.EmitTownCrierAnnouncement(arrived.ActorID, content.Text, arrived.At)
+				if _, err := emitCmd.Fn(w); err != nil {
+					log.Printf("cascade/npc_route: town_crier announce (actor %q event %d): %v",
+						arrived.ActorID, arrived.EventID(), err)
+				}
+			}
+		}
+	}
+
 	cmd := sim.AdvanceNPCRoute(arrived.ActorID)
 	if _, err := cmd.Fn(w); err != nil {
 		log.Printf("cascade/npc_route: advance (actor %q event %d): %v",
