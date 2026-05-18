@@ -111,19 +111,38 @@ ON CONFLICT (id) DO UPDATE SET
 // expires_at is preserved (the field already records the planned
 // boundary; restamping would obscure the by-when contract).
 //
-// No fulfillment_status guard in the WHERE clause: the in-memory
-// Order state is the source of truth for in-flight; if pg has
-// drifted (e.g. a previous run's SaveSnapshot expireAbsent flipped
-// the row to 'expired' before the in-memory entry was pruned), the
-// terminal write-through still wins. Rows-affected = 0 means the id
-// itself doesn't exist in pay_ledger — a substrate-level error,
-// surfaced to the caller.
+// WHERE guard scope (post-R1 code_review fix). pay_ledger is shared
+// substrate state across v1 + v2; a bare `WHERE id = $1` could stamp
+// fulfillment_status onto an arbitrary v1 row on stale-id / collision /
+// caller-bug. The two-clause guard restricts the write to v2-owned
+// fulfillment-tracking rows:
+//
+//   - `state = 'accepted'` — v2 only writes accepted rows. Pre-acceptance
+//     haggle states (pending/declined/...) live in-memory in v2 and never
+//     reach this path; a row with state != 'accepted' is by definition
+//     not a v2 Order.
+//   - `fulfillment_status IN ('ready', 'pending', 'delivered', 'expired')`
+//     — matches the CHECK constraint set, excluding rows where
+//     fulfillment_status is NULL (legacy v1 pre-fulfillment-column rows).
+//     The terminal members are INCLUDED so a drift-correction write still
+//     succeeds: if pg has 'delivered' and memory has 'expired' (or vice
+//     versa), in-memory still wins.
+//
+// Discriminator-column posture for the v1+v2 coexistence concern is
+// carried forward in the orders-pg codebase note; this WHERE clause is
+// the best-available protection without a discriminator column.
+//
+// RowsAffected = 0 means either (a) the id is absent from pay_ledger or
+// (b) the row exists but doesn't pass the two-clause guard (not accepted
+// / non-fulfillment-tracking). Both surface as a substrate-level error.
 const writeTerminalSQL = `
 UPDATE pay_ledger
 SET fulfillment_status = $2,
     delivered_on       = $3,
     expires_at         = CASE WHEN $2 = 'expired' THEN NOW() ELSE expires_at END
-WHERE id = $1`
+WHERE id = $1
+  AND state = 'accepted'
+  AND fulfillment_status IN ('ready', 'pending', 'delivered', 'expired')`
 
 // expireAbsentSQL enforces SaveSnapshot's contract: the supplied map
 // IS the complete in-flight set. Any pay_ledger row currently
@@ -341,7 +360,8 @@ func (r *OrdersRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, orders map[sim
 //
 // Rejects non-terminal states (caller bug — finalizeOrderTerminal
 // guarantees terminal-only). Returns an error on RowsAffected = 0
-// (id not present in pay_ledger — substrate inconsistency).
+// (id absent from pay_ledger, or row present but not a writable v2
+// accepted order row — see writeTerminalSQL's WHERE guard).
 //
 // On error, finalizeOrderTerminal logs and skips the prune, leaving
 // the in-memory terminal entry in w.Orders for the next checkpoint
@@ -366,7 +386,7 @@ func (r *OrdersRepo) WriteTerminal(ctx context.Context, o *sim.Order) error {
 		return fmt.Errorf("pg orders WriteTerminal: order %d exec: %w", o.ID, err)
 	}
 	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("pg orders WriteTerminal: order %d not found in pay_ledger", o.ID)
+		return fmt.Errorf("pg orders WriteTerminal: order %d not found or not a writable v2 accepted order row", o.ID)
 	}
 	return nil
 }
