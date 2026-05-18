@@ -259,10 +259,13 @@ func (ActorDeparted) isSimEvent() {}
 // fresh state).
 //
 // ExcludedTags carries the scope.ExcludeTags from the calling
-// ApplyDailyRotation. Subscribers that own those tags (the npc_behaviors
-// cascade slice, when it lands) read this to know whether the rotation
-// pass carved tags out for them. Subscribers MUST NOT mutate the slice;
-// it is shared with the emitter and other subscribers.
+// ApplyDailyRotation. The emitter defensively copies the caller's slice
+// before emit (so a caller mutating after the call doesn't leak through),
+// but the resulting slice is then SHARED across all subscribers — they
+// all receive the same backing array. Subscribers MUST treat it as
+// read-only; mutating would affect later subscribers in the dispatch
+// order. True per-subscriber isolation would require clone-on-dispatch
+// in World.emit, which is out of scope for this slice.
 //
 // Subscribers in this slice: none. The npc_behaviors cascade (Slice 2)
 // will subscribe here to start washerwoman / town_crier routes — when

@@ -83,13 +83,19 @@ const (
 // MostRecentRotationBoundary returns the wall-clock instant of the most
 // recent daily-rotation boundary at or before now. Rotation runs once
 // per day at the (h, m) wall-clock time interpreted in now's location.
-// If today's boundary hasn't yet passed, returns yesterday's.
+// If today's boundary hasn't yet passed, returns yesterday's at the same
+// wall-clock time.
+//
+// DST safety: yesterday is computed via time.Date(y, mo, d-1, ...) NOT
+// today.Add(-24*time.Hour). On a spring-forward / fall-back day the two
+// differ by an hour; we want the wall-clock semantic (yesterday at
+// HH:MM in loc) so a noon rotation stays at noon across the transition.
 func MostRecentRotationBoundary(now time.Time, h, m int) time.Time {
 	loc := now.Location()
 	y, mo, d := now.Date()
 	today := time.Date(y, mo, d, h, m, 0, 0, loc)
 	if today.After(now) {
-		return today.Add(-24 * time.Hour)
+		return time.Date(y, mo, d-1, h, m, 0, 0, loc)
 	}
 	return today
 }
@@ -201,9 +207,17 @@ func ApplyDailyRotation(inputs RotationTickInputs, scope RotationScope) Command 
 // the next state per asset's RotationAlgo.
 //
 // For RotationAlgoRandomPerAsset, the per-asset target is decided once
-// (first time an instance of that asset is seen) and reused for every
-// subsequent instance in the same pass — uniform visual flip across the
-// asset.
+// over the FULL candidate set: pick a pool state that no candidate
+// instance currently occupies (so all instances flip). When every pool
+// state is already occupied by some instance, fall back to any random
+// pool state — convergence still happens (instances at the target are
+// no-op flips, instances elsewhere flip to it).
+//
+// This is a v2-improved semantic vs v1's "decide target from the first
+// instance encountered" (which produced non-deterministic targets based
+// on map iteration order and could undercount ObjectsAffected when a
+// late-encountered instance was already at the memo'd target). See
+// code_review R1 finding 1 in the world-rotation codebase note.
 //
 // Unexported by design (matches determineTransitionFlips). Tests reach
 // it via DetermineRotationFlipsForTest in export_test.go.
@@ -218,11 +232,21 @@ func determineRotationFlips(w *World, scope RotationScope, r *rand.Rand) []Pendi
 	if r == nil {
 		return nil
 	}
-	// Per-asset target memo for RotationAlgoRandomPerAsset. Populated
-	// lazily as we hit the first instance of each affected asset.
-	assetTarget := map[AssetID]string{}
 
-	var flips []PendingFlip
+	// Pass 1: collect the candidate set and (for random_per_asset assets)
+	// the per-asset set of current states. The two-pass shape is what
+	// makes "all instances flip" actually true for random_per_asset:
+	// pick a target that no candidate currently occupies.
+	type candidate struct {
+		id    VillageObjectID
+		asset *Asset
+		obj   *VillageObject
+		pool  []*AssetState
+		algo  string
+	}
+	var candidates []candidate
+	perAssetCurrents := map[AssetID]map[string]struct{}{}
+
 	for id, obj := range w.VillageObjects {
 		if obj == nil {
 			continue
@@ -250,42 +274,88 @@ func determineRotationFlips(w *World, scope RotationScope, r *rand.Rand) []Pendi
 		if len(pool) == 0 {
 			continue
 		}
-
-		var nextState string
-		switch asset.RotationAlgo {
-		case RotationAlgoRandomPerObject:
-			nextState = pickRandomExcluding(pool, obj.CurrentState, r)
-		case RotationAlgoRandomPerAsset:
-			target, memoed := assetTarget[obj.AssetID]
-			if !memoed {
-				target = pickRandomExcluding(pool, obj.CurrentState, r)
-				assetTarget[obj.AssetID] = target
+		candidates = append(candidates, candidate{
+			id:    id,
+			asset: asset,
+			obj:   obj,
+			pool:  pool,
+			algo:  asset.RotationAlgo,
+		})
+		if asset.RotationAlgo == RotationAlgoRandomPerAsset {
+			set, ok := perAssetCurrents[obj.AssetID]
+			if !ok {
+				set = map[string]struct{}{}
+				perAssetCurrents[obj.AssetID] = set
 			}
-			nextState = target
+			set[obj.CurrentState] = struct{}{}
+		}
+	}
+
+	// Pre-compute per-asset targets for RotationAlgoRandomPerAsset over
+	// the full candidate set. Pick a pool state that no candidate currently
+	// occupies, if any exist; otherwise pick any random pool member (every
+	// pool state is occupied by some candidate; convergence still happens).
+	assetTarget := map[AssetID]string{}
+	for assetID, currents := range perAssetCurrents {
+		// Find the canonical pool for this asset from one of the candidates.
+		// Every candidate of the same asset shares the same pool slice
+		// (asset.RotatablePool returns deterministic content), so reading
+		// from any one of them is fine.
+		var pool []*AssetState
+		for _, c := range candidates {
+			if c.obj.AssetID == assetID {
+				pool = c.pool
+				break
+			}
+		}
+		var nonCurrent []*AssetState
+		for _, s := range pool {
+			if _, occupied := currents[s.State]; !occupied {
+				nonCurrent = append(nonCurrent, s)
+			}
+		}
+		if len(nonCurrent) > 0 {
+			assetTarget[assetID] = nonCurrent[r.Intn(len(nonCurrent))].State
+		} else if len(pool) > 0 {
+			assetTarget[assetID] = pool[r.Intn(len(pool))].State
+		}
+	}
+
+	// Pass 2: emit flips against the candidate set.
+	var flips []PendingFlip
+	for _, c := range candidates {
+		var nextState string
+		switch c.algo {
+		case RotationAlgoRandomPerObject:
+			nextState = pickRandomExcluding(c.pool, c.obj.CurrentState, r)
+		case RotationAlgoRandomPerAsset:
+			nextState = assetTarget[c.obj.AssetID]
 		case RotationAlgoDeterministic:
-			nextState = pickDeterministicNext(pool, obj.CurrentState)
+			nextState = pickDeterministicNext(c.pool, c.obj.CurrentState)
 		default:
 			log.Printf("sim/world_rotation: unknown RotationAlgo %q for asset %s — skipping",
-				asset.RotationAlgo, obj.AssetID)
+				c.algo, c.obj.AssetID)
 			continue
 		}
 
-		if nextState == obj.CurrentState {
+		if nextState == c.obj.CurrentState {
 			continue
 		}
 		flips = append(flips, PendingFlip{
-			ObjectID:      id,
+			ObjectID:      c.id,
 			NewState:      nextState,
-			SpreadSeconds: asset.TransitionSpreadSeconds,
+			SpreadSeconds: c.asset.TransitionSpreadSeconds,
 		})
 	}
 	return flips
 }
 
 // excludedByScope reports whether state carries any of the excludeTags.
-// Empty / nil excludeTags → never excluded.
+// Empty / nil excludeTags → never excluded. Nil state → never excluded
+// (defensive; production callers always pass non-nil but the helper is
+// exported via export_test.go).
 func excludedByScope(state *AssetState, excludeTags []string) bool {
-	if len(excludeTags) == 0 {
+	if state == nil || len(excludeTags) == 0 {
 		return false
 	}
 	for _, tag := range excludeTags {
@@ -421,13 +491,15 @@ func checkAndRotate(ctx context.Context, w *World, r *rand.Rand, scope RotationS
 	if res == nil {
 		return
 	}
-	// boundary returned — boundary processing not yet done. Fire the
-	// pass. Now reuses wall-clock time as the stamp; the boundary itself
-	// is the "scheduled" time but stamping wall-clock matches phase-
-	// transition semantics (LastTransitionAt is wall-clock too).
-	now := time.Now().UTC()
+	// boundary returned — boundary processing not yet done. Stamp the
+	// boundary itself (not wall-clock execution time) so a force-rotate
+	// invocation later in the day can't accidentally land a stamp earlier
+	// than today's boundary and re-fire on the next ticker. Code_review
+	// R1 finding 3: "if LastRotationAt is meant to mean 'boundary
+	// processed,' then ticker should stamp/use the boundary." Adopting.
+	boundary := res.(time.Time)
 	if _, err := w.SendContext(ctx, ApplyDailyRotation(
-		RotationTickInputs{Now: now, Rand: r},
+		RotationTickInputs{Now: boundary, Rand: r},
 		scope,
 	)); err != nil {
 		if ctx.Err() == nil {

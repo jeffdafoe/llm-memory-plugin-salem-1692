@@ -257,13 +257,16 @@ func TestDetermineRotationFlips_ScopeNarrowsToTag(t *testing.T) {
 	defer cancel()
 
 	r := rand.New(rand.NewSource(1))
-	res, _ := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		return sim.DetermineRotationFlipsForTest(
 			world,
 			sim.RotationScope{Tag: "laundry"},
 			r,
 		), nil
 	}})
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
 	flips := res.([]sim.PendingFlip)
 	if len(flips) != 3 {
 		t.Errorf("laundry scope flips = %d, want 3 (got %+v)", len(flips), flips)
@@ -282,13 +285,16 @@ func TestDetermineRotationFlips_ScopeExcludesTags(t *testing.T) {
 	defer cancel()
 
 	r := rand.New(rand.NewSource(1))
-	res, _ := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		return sim.DetermineRotationFlipsForTest(
 			world,
 			sim.RotationScope{ExcludeTags: []string{"laundry", "notice-board"}},
 			r,
 		), nil
 	}})
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
 	flips := res.([]sim.PendingFlip)
 	// Only det-X remains.
 	if len(flips) != 1 {
@@ -303,9 +309,12 @@ func TestDetermineRotationFlips_ScopeExcludesTags(t *testing.T) {
 func TestDetermineRotationFlips_NilRandReturnsNil(t *testing.T) {
 	w, cancel := rotationFixture(t)
 	defer cancel()
-	res, _ := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		return sim.DetermineRotationFlipsForTest(world, sim.RotationScope{}, nil), nil
 	}})
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
 	flips := res.([]sim.PendingFlip)
 	if len(flips) != 0 {
 		t.Errorf("nil rand returned %d flips, want 0", len(flips))
@@ -321,14 +330,16 @@ func TestApplyDailyRotation_StampsAndEmits(t *testing.T) {
 
 	// Subscribe before invoking so we can observe the event.
 	var got []*sim.RotationApplied
-	w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		world.Subscribe(sim.SubscriberFunc(func(_ *sim.World, evt sim.Event) {
 			if e, ok := evt.(*sim.RotationApplied); ok {
 				got = append(got, e)
 			}
 		}))
 		return nil, nil
-	}})
+	}}); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
 
 	stamp := time.Date(2026, 5, 18, 8, 0, 0, 0, time.UTC)
 	res, err := w.Send(sim.ApplyDailyRotation(
@@ -363,9 +374,12 @@ func TestApplyDailyRotation_StampsAndEmits(t *testing.T) {
 	}
 
 	// LastRotationAt mutated.
-	envRes, _ := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+	envRes, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		return world.Environment.LastRotationAt, nil
 	}})
+	if err != nil {
+		t.Fatalf("read LastRotationAt: %v", err)
+	}
 	last := envRes.(time.Time)
 	if !last.Equal(stamp) {
 		t.Errorf("LastRotationAt = %v, want %v", last, stamp)
@@ -379,20 +393,24 @@ func TestApplyDailyRotation_ExcludedTagsRoundTrip(t *testing.T) {
 	defer cancel()
 
 	var got *sim.RotationApplied
-	w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		world.Subscribe(sim.SubscriberFunc(func(_ *sim.World, evt sim.Event) {
 			if e, ok := evt.(*sim.RotationApplied); ok {
 				got = e
 			}
 		}))
 		return nil, nil
-	}})
+	}}); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
 
 	excludes := []string{"laundry", "notice-board"}
-	w.Send(sim.ApplyDailyRotation(
+	if _, err := w.Send(sim.ApplyDailyRotation(
 		sim.RotationTickInputs{Now: time.Now().UTC(), Rand: rand.New(rand.NewSource(1))},
 		sim.RotationScope{ExcludeTags: excludes},
-	))
+	)); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
 	if got == nil {
 		t.Fatalf("event not received")
 	}
@@ -424,50 +442,152 @@ func TestApplyDailyRotation_NilRandErrors(t *testing.T) {
 	}
 }
 
-// TestApplyDailyRotation_IdempotentAfterConverge — a redundant invocation
-// against a converged world returns ObjectsAffected=0 but still stamps
-// LastRotationAt + bumps Gen (parity with ApplyPhaseTransition).
+// TestApplyDailyRotation_IdempotentAfterConverge covers the design call:
+// a redundant invocation against a world that cannot produce flips
+// (single-state rotatable pools — nowhere to rotate TO) returns
+// ObjectsAffected=0 BUT still stamps LastRotationAt + bumps Gen, mirroring
+// ApplyPhaseTransition's "force-rotate always stamps" semantics.
+//
+// Setup uses a fixture where every rotatable asset has a single-state
+// pool, so the substrate genuinely cannot flip anything regardless of
+// RNG choice — exercises the actual no-op path, not the "happened to
+// pick the same state" path.
 func TestApplyDailyRotation_IdempotentAfterConverge(t *testing.T) {
-	w, cancel := rotationFixture(t)
+	repo, handles := mem.NewRepository()
+	handles.Assets.Seed(map[sim.AssetID]*sim.Asset{
+		"single-state-prop": {
+			ID:           "single-state-prop",
+			Name:         "Single-State Prop",
+			Category:     "prop",
+			DefaultState: "only",
+			RotationAlgo: sim.RotationAlgoRandomPerObject,
+			States: []sim.AssetState{
+				{ID: 1, State: "only", Tags: []string{sim.TagRotatable}},
+			},
+		},
+	})
+	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
+		"prop-A": {ID: "prop-A", AssetID: "single-state-prop", CurrentState: "only", X: 1, Y: 1},
+	})
+	w, err := sim.LoadWorld(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go w.Run(ctx)
 	defer cancel()
 
 	r := rand.New(rand.NewSource(1))
-	first := time.Date(2026, 5, 18, 0, 0, 0, 0, time.UTC)
-	r1, _ := w.Send(sim.ApplyDailyRotation(
-		sim.RotationTickInputs{Now: first, Rand: r},
+	stamp := time.Date(2026, 5, 18, 0, 0, 0, 0, time.UTC)
+	res1, err := w.Send(sim.ApplyDailyRotation(
+		sim.RotationTickInputs{Now: stamp, Rand: r},
 		sim.RotationScope{},
 	))
-	gen1 := r1.(sim.RotationResult).Gen
+	if err != nil {
+		t.Fatalf("first apply: %v", err)
+	}
+	r1 := res1.(sim.RotationResult)
+	if r1.ObjectsAffected != 0 {
+		t.Errorf("first pass ObjectsAffected = %d, want 0 (single-state pool)", r1.ObjectsAffected)
+	}
+	if r1.Gen == 0 {
+		t.Errorf("first pass Gen = 0, want >0 (stamp advances even on no-op)")
+	}
 
-	// Drain scheduled flips on the world goroutine so a second pass sees
-	// post-rotation state. We can't wait for time.AfterFunc deterministically
-	// in unit tests; instead force the world to apply each pending flip
-	// inline by re-reading current state and setting it via the substrate.
-	// This test exercises the "second invocation is a no-op when nothing
-	// to flip" path against the substrate, not the timer-fire path.
-	w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		// Force every rotatable object to a no-op-from-here state by
-		// flipping it to itself (a no-op SetVillageObjectState) — better
-		// approach: just snapshot current states.
-		return nil, nil
-	}})
-	// Run a second rotation pass — most flips will pick fresh states (it's
-	// still randomized) so this isn't strictly "no flips," but Gen + stamp
-	// still update.
-	second := first.Add(24 * time.Hour)
-	r2, _ := w.Send(sim.ApplyDailyRotation(
+	second := stamp.Add(24 * time.Hour)
+	res2, err := w.Send(sim.ApplyDailyRotation(
 		sim.RotationTickInputs{Now: second, Rand: r},
 		sim.RotationScope{},
 	))
-	gen2 := r2.(sim.RotationResult).Gen
-	if gen2 <= gen1 {
-		t.Errorf("Gen did not advance: gen1=%d gen2=%d", gen1, gen2)
+	if err != nil {
+		t.Fatalf("second apply: %v", err)
 	}
-	envRes, _ := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+	r2 := res2.(sim.RotationResult)
+	if r2.ObjectsAffected != 0 {
+		t.Errorf("second pass ObjectsAffected = %d, want 0", r2.ObjectsAffected)
+	}
+	if r2.Gen <= r1.Gen {
+		t.Errorf("Gen did not advance across no-op passes: r1.Gen=%d r2.Gen=%d", r1.Gen, r2.Gen)
+	}
+	envRes, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		return world.Environment.LastRotationAt, nil
 	}})
-	if !envRes.(time.Time).Equal(second) {
-		t.Errorf("LastRotationAt = %v, want %v", envRes.(time.Time), second)
+	if err != nil {
+		t.Fatalf("read LastRotationAt: %v", err)
+	}
+	if got := envRes.(time.Time); !got.Equal(second) {
+		t.Errorf("LastRotationAt = %v, want %v", got, second)
+	}
+}
+
+// TestDetermineRotationFlips_RandomPerAssetConverges covers code_review
+// R1 finding 1: when multiple instances of a random_per_asset asset start
+// in DIFFERENT current states, the per-asset target is picked over the
+// FULL candidate set (excluding all currents when possible) so that "all
+// instances flip to one target" actually holds — no instance is silently
+// skipped because the memo'd target happened to equal its current state.
+//
+// Setup: two noticeboards, one at variant-1 and one at variant-2. Pool
+// has 5 states. After rotation, both must end up at the SAME state which
+// is neither variant-1 nor variant-2. ObjectsAffected must be 2.
+func TestDetermineRotationFlips_RandomPerAssetConverges(t *testing.T) {
+	repo, handles := mem.NewRepository()
+	handles.Assets.Seed(map[sim.AssetID]*sim.Asset{
+		"notice-board": {
+			ID:           "notice-board",
+			Name:         "Notice Board",
+			Category:     "prop",
+			DefaultState: "variant-1",
+			RotationAlgo: sim.RotationAlgoRandomPerAsset,
+			States: []sim.AssetState{
+				{ID: 200, State: "variant-1", Tags: []string{sim.TagRotatable, "notice-board"}},
+				{ID: 201, State: "variant-2", Tags: []string{sim.TagRotatable, "notice-board"}},
+				{ID: 202, State: "variant-3", Tags: []string{sim.TagRotatable, "notice-board"}},
+				{ID: 203, State: "variant-4", Tags: []string{sim.TagRotatable, "notice-board"}},
+				{ID: 204, State: "variant-5", Tags: []string{sim.TagRotatable, "notice-board"}},
+			},
+		},
+	})
+	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
+		"notice-A": {ID: "notice-A", AssetID: "notice-board", CurrentState: "variant-1", X: 10, Y: 10},
+		"notice-B": {ID: "notice-B", AssetID: "notice-board", CurrentState: "variant-2", X: 20, Y: 20},
+	})
+	w, err := sim.LoadWorld(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go w.Run(ctx)
+	defer cancel()
+
+	// Drive determineRotationFlips through a Command. Use multiple RNG seeds
+	// to assert the convergence property holds regardless of which
+	// non-current state the picker happens to land on.
+	for _, seed := range []int64{1, 7, 42, 100, 999} {
+		r := rand.New(rand.NewSource(seed))
+		res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+			return sim.DetermineRotationFlipsForTest(world, sim.RotationScope{}, r), nil
+		}})
+		if err != nil {
+			t.Fatalf("seed=%d: send: %v", seed, err)
+		}
+		flips := res.([]sim.PendingFlip)
+		if len(flips) != 2 {
+			t.Errorf("seed=%d: flip count = %d, want 2 (both notice boards must flip)",
+				seed, len(flips))
+			continue
+		}
+		// Both flips must target the SAME state — convergence.
+		if flips[0].NewState != flips[1].NewState {
+			t.Errorf("seed=%d: targets diverged: %q vs %q",
+				seed, flips[0].NewState, flips[1].NewState)
+		}
+		// Neither target may match either instance's current state.
+		target := flips[0].NewState
+		if target == "variant-1" || target == "variant-2" {
+			t.Errorf("seed=%d: target = %q must not equal either current state",
+				seed, target)
+		}
 	}
 }
 
