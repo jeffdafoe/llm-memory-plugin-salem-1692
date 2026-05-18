@@ -40,6 +40,9 @@ ALTER TABLE village_object ADD CONSTRAINT village_object_entry_policy_check
 -- Drop owner_actor_id (v1 owner column stayed in place — nothing to rename).
 ALTER TABLE village_object DROP COLUMN owner_actor_id;
 
+-- Drop tags NULL-element CHECK (added in the up migration).
+ALTER TABLE village_object DROP CONSTRAINT IF EXISTS village_object_tags_no_nulls;
+
 -- Recreate village_object_tag and explode tags array back into rows.
 CREATE TABLE village_object_tag (
     object_id UUID NOT NULL REFERENCES village_object(id) ON DELETE CASCADE,
@@ -47,10 +50,17 @@ CREATE TABLE village_object_tag (
     PRIMARY KEY (object_id, tag)
 );
 CREATE INDEX idx_village_object_tag_tag ON village_object_tag(tag);
+-- DISTINCT defends against duplicate tags in the array (no UNIQUE
+-- constraint on the v2 column); NOT NULL filter defends against any
+-- NULL elements that bypassed the up migration's CHECK constraint
+-- (shouldn't happen, but down migration shouldn't compound a prior
+-- failure). Long tags (>VARCHAR(64)) still fail — documented in the
+-- caveat block above.
 INSERT INTO village_object_tag (object_id, tag)
-    SELECT vo.id, t
-      FROM village_object vo, unnest(vo.tags) AS t
-     WHERE array_length(vo.tags, 1) > 0;
+    SELECT DISTINCT vo.id, t
+      FROM village_object vo
+ CROSS JOIN unnest(vo.tags) AS t
+     WHERE t IS NOT NULL;
 
 -- Drop v2-only fields.
 ALTER TABLE village_object
