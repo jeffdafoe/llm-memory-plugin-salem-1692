@@ -480,3 +480,99 @@ func TestOrdersRepo_WriteTerminal_ExecError(t *testing.T) {
 		t.Fatal("expected error for pool Exec failure")
 	}
 }
+
+// --- LoadRecentPrices ----------------------------------------------------
+
+func TestOrdersRepo_LoadRecentPrices_HappyPath(t *testing.T) {
+	mock, repo := newMockPool(t)
+
+	base := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	since := base.Add(-30 * 24 * time.Hour)
+
+	// Mock returns rows in chronological order per (seller, item) — the
+	// outer ORDER BY in loadRecentPricesSQL is what guarantees this in
+	// production; the mock just hands back whatever we hand it.
+	rows := pgxmock.NewRows([]string{
+		"seller_id", "item_kind", "buyer_id", "offered_amount", "qty",
+		"cardinality", "created_at",
+	}).
+		AddRow("bob", "ale", "alice", 2, 1, intPtr(1), base.Add(-2*time.Hour)).
+		AddRow("bob", "ale", "carol", 3, 1, intPtr(1), base.Add(-1*time.Hour)).
+		AddRow("bob", "stew", "alice", 4, 2, intPtr(2), base) // multi-consumer
+
+	mock.ExpectQuery(`ROW_NUMBER\(\) OVER`).
+		WithArgs(since, 20).
+		WillReturnRows(rows)
+
+	got, err := repo.LoadRecentPrices(context.Background(), since, 20)
+	if err != nil {
+		t.Fatalf("LoadRecentPrices: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("loaded %d rows, want 3", len(got))
+	}
+
+	if got[0].Key.SellerID != "bob" || got[0].Key.Item != "ale" {
+		t.Errorf("row 0 key = %+v", got[0].Key)
+	}
+	if got[0].Observation.BuyerID != "alice" || got[0].Observation.Amount != 2 {
+		t.Errorf("row 0 observation = %+v", got[0].Observation)
+	}
+	if got[2].Observation.Consumers != 2 {
+		t.Errorf("row 2 Consumers = %d, want 2 (cardinality round-trip)", got[2].Observation.Consumers)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+}
+
+func TestOrdersRepo_LoadRecentPrices_NullConsumersDefaultsTo1(t *testing.T) {
+	mock, repo := newMockPool(t)
+
+	now := time.Now().UTC()
+	since := now.Add(-time.Hour)
+
+	rows := pgxmock.NewRows([]string{
+		"seller_id", "item_kind", "buyer_id", "offered_amount", "qty",
+		"cardinality", "created_at",
+	}).
+		// Legacy row with NULL consumer_actor_ids → cardinality NULL → scan into *int = nil.
+		AddRow("bob", "ale", "alice", 2, 1, (*int)(nil), now)
+
+	mock.ExpectQuery(`ROW_NUMBER\(\) OVER`).WithArgs(since, 5).WillReturnRows(rows)
+
+	got, err := repo.LoadRecentPrices(context.Background(), since, 5)
+	if err != nil {
+		t.Fatalf("LoadRecentPrices: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("loaded %d rows, want 1", len(got))
+	}
+	if got[0].Observation.Consumers != 1 {
+		t.Errorf("NULL cardinality should default Consumers to 1, got %d", got[0].Observation.Consumers)
+	}
+}
+
+func TestOrdersRepo_LoadRecentPrices_InvalidPerKeyCapErrors(t *testing.T) {
+	_, repo := newMockPool(t)
+
+	for _, n := range []int{0, -1} {
+		if _, err := repo.LoadRecentPrices(context.Background(), time.Now(), n); err == nil {
+			t.Errorf("LoadRecentPrices(perKeyCap=%d) should error", n)
+		}
+	}
+}
+
+func TestOrdersRepo_LoadRecentPrices_QueryError(t *testing.T) {
+	mock, repo := newMockPool(t)
+	now := time.Now()
+	mock.ExpectQuery(`ROW_NUMBER\(\) OVER`).WithArgs(now, 10).WillReturnError(errors.New("conn lost"))
+
+	if _, err := repo.LoadRecentPrices(context.Background(), now, 10); err == nil {
+		t.Fatal("expected error from pool.Query failure")
+	}
+}
+
+// intPtr returns &i; helper for cardinality column mock values.
+func intPtr(i int) *int { return &i }

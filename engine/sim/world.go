@@ -2,6 +2,7 @@ package sim
 
 import (
 	"context"
+	"log"
 	"sync/atomic"
 	"time"
 )
@@ -459,6 +460,25 @@ type World struct {
 	// re-snapshots from current state.
 	ActionLog []ActionLogEntry
 
+	// PriceBook is the in-memory per-(seller, item) ring buffer of
+	// recent accepted-price observations — v2's substrate for v1's
+	// price-history perception cues ("you paid X coins last time").
+	// Keyed by (SellerID, Item); each ring buffer holds the latest
+	// PriceBookRingCapacity transactions across all buyers. Per-buyer
+	// reads filter the buffer; per-seller reads aggregate it. See
+	// engine/sim/price_book.go for the substrate contract.
+	//
+	// In-memory only — no checkpoint pass, no projection sink.
+	// pay_ledger remains the source of truth; this is a perception
+	// cache. Seeded at LoadWorld from OrdersRepo.LoadRecentPrices
+	// over a PriceBookSeedWindow-wide tail; maintained via the
+	// PayWithItemResolved{Accepted} subscriber in
+	// cascade/price_book.go.
+	//
+	// Lazy-allocated on first SeedPriceBook or RecordPriceObservation;
+	// nil-readable as empty.
+	PriceBook map[PriceBookKey]*RingBuffer[PriceObservation]
+
 	// Asset catalog — reference state, loaded at startup. Looked up by
 	// VillageObject.AssetID for state resolution, footprint, anchor, etc.
 	Assets map[AssetID]*Asset
@@ -872,6 +892,28 @@ func LoadWorld(ctx context.Context, repo Repository) (*World, error) {
 		}
 	}
 
+	// Price-book seed (Phase 4 Slice 7). Pulls the top-K most recent
+	// accepted pay_ledger rows per (seller, item) within
+	// PriceBookSeedWindow, populating the in-memory price book so
+	// post-restart perception has v1-parity buyer recall ("you paid
+	// X last time") and seller-side aggregates available without
+	// a thundering herd of "ask the keeper" turns.
+	//
+	// Seed source is pay_ledger (state='accepted') — the source of
+	// truth for accepted transactions across both ConsumeNow and
+	// take-home flows; LoadRecentPrices reads it directly without
+	// going through the (not-yet-loaded) Orders working set.
+	//
+	// Failures here are non-fatal to LoadWorld: a missing seed
+	// produces "ask the keeper" until the cascade subscriber re-
+	// populates the book through normal play. Surfaced via log so
+	// operator can spot a degraded restart in stderr.
+	if seedRecords, err := repo.Orders.LoadRecentPrices(ctx, time.Now().UTC().Add(-PriceBookSeedWindow), PriceBookRingCapacity); err != nil {
+		log.Printf("sim: LoadWorld price-book seed: %v (continuing with empty book)", err)
+	} else {
+		w.SeedPriceBook(seedRecords)
+	}
+
 	w.republish()
 	return w, nil
 }
@@ -1147,6 +1189,7 @@ func (w *World) republish() {
 		Quotes:         make(map[QuoteID]*SceneQuote, len(w.Quotes)),
 		PayLedger:      make(map[LedgerID]*PayLedgerEntry, len(w.PayLedger)),
 		ActionLog:      CloneActionLog(w.ActionLog),
+		PriceBook:      ClonePriceBook(w.PriceBook),
 		Environment:    w.Environment,
 		Phase:          w.Phase,
 		NeedThresholds: w.Settings.NeedThresholds.Clone(),

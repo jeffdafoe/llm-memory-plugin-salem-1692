@@ -71,10 +71,24 @@ type ScenesRepo interface {
 	SaveSnapshot(ctx context.Context, tx Tx, scenes map[SceneID]*Scene) error
 }
 
-// OrdersRepo loads + checkpoints in-flight order state.
+// OrdersRepo loads + checkpoints in-flight order state, and loads
+// historical accepted-price observations for the price book seed
+// at LoadWorld time.
 type OrdersRepo interface {
 	LoadAll(ctx context.Context) (map[OrderID]*Order, error)
 	SaveSnapshot(ctx context.Context, tx Tx, orders map[OrderID]*Order) error
+
+	// LoadRecentPrices returns up to perKeyCap most-recent accepted
+	// PayLedger rows per (seller, item) tuple within the time window
+	// (created_at >= since), packaged as PriceBookSeedRecord values for
+	// World.SeedPriceBook. Returned in chronological order per key
+	// (oldest first) so the ring-buffer push contract is satisfied
+	// directly without re-sorting.
+	//
+	// Source table is pay_ledger — the source of truth for accepted
+	// transactions across both ConsumeNow and take-home flows.
+	// Implementations filter state='accepted' and bound by `since`.
+	LoadRecentPrices(ctx context.Context, since time.Time, perKeyCap int) ([]PriceBookSeedRecord, error)
 }
 
 // AssetsRepo loads the asset catalog (assets + states + slots + lights +
