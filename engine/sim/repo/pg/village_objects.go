@@ -94,23 +94,74 @@ ON CONFLICT (id) DO UPDATE SET
     tags               = EXCLUDED.tags,
     snapshot_gen       = EXCLUDED.snapshot_gen`
 
-// deleteStaleSQLVO prunes any village_object row whose snapshot_gen is
+// deleteStaleSQLVO prunes village_object rows whose snapshot_gen is
 // less than the just-bumped checkpoint gen — i.e., rows that exist in
 // pg but were absent from the in-memory snapshot map. This is the
 // generation-marker pattern's delete-absent step.
 //
 // FK village_object.attached_to → village_object.id ON DELETE CASCADE
-// means dropping a parent also drops its attached overlays. World-side
-// invariants keep parent + child in the same gen tier within a single
-// snapshot, so the CASCADE doesn't accidentally drop a fresh child of
-// a stale parent in practice.
-const deleteStaleSQLVO = `DELETE FROM village_object WHERE snapshot_gen < $1`
+// means dropping a parent would also drop its attached overlays. The
+// safer DELETE refuses to drop a stale parent that still has a fresh
+// child attached to it — a naive `DELETE WHERE snapshot_gen < $1`
+// would silently destroy the fresh child via CASCADE. World-side
+// invariants normally keep parent + child in the same gen tier; this
+// guard is defense-in-depth, and the follow-up orphan check (see
+// orphanCheckSQLVO) surfaces any cross-tier violation loudly.
+const deleteStaleSQLVO = `
+DELETE FROM village_object stale
+ WHERE stale.snapshot_gen < $1
+   AND NOT EXISTS (
+       SELECT 1 FROM village_object fresh
+        WHERE fresh.attached_to = stale.id
+          AND fresh.snapshot_gen = $1
+   )`
+
+// orphanCheckSQLVO counts fresh children that reference a stale parent
+// (one whose snapshot_gen is older than the current checkpoint gen).
+// World-side invariants should keep parent + child in the same gen
+// tier, so this count is always 0 in practice. A non-zero count means
+// the world goroutine wrote a fresh child referencing a parent that
+// isn't in the snapshot — a bug surface the caller needs to know
+// about. SaveSnapshot returns an error and rolls back the Tx so the
+// invariant violation is loud rather than silent.
+const orphanCheckSQLVO = `
+SELECT COUNT(*) FROM village_object fresh
+  JOIN village_object stale ON fresh.attached_to = stale.id
+ WHERE fresh.snapshot_gen = $1 AND stale.snapshot_gen < $1`
 
 // nextGenSQLVO bumps the per-aggregate sequence and returns the new
 // gen. Per-aggregate sequence (not a process-local counter) is atomic,
 // persistent across restart, and avoids cross-aggregate coordination
 // at checkpoint time.
 const nextGenSQLVO = `SELECT nextval('village_object_snapshot_gen_seq')`
+
+// advisoryLockSQLVO serializes SaveSnapshot calls for village_object
+// at the Tx boundary. Held for the Tx duration (released automatically
+// on commit/rollback). The gen-marker pattern is only correct when
+// snapshots for the same aggregate don't interleave — a concurrent
+// older snapshot's delete-stale step would silently wipe a newer
+// snapshot's just-written rows (gen=10 vs gen=11; the older Tx's
+// `DELETE WHERE snapshot_gen < 10` runs after the newer Tx commits
+// at gen=11, deleting nothing — BUT the newer Tx's `DELETE WHERE
+// snapshot_gen < 11` runs after the older Tx commits at gen=10,
+// deleting the older Tx's just-written set).
+//
+// In v2's single-world-goroutine architecture this is normally
+// guaranteed by caller serialization (the world goroutine is the sole
+// checkpoint writer). The advisory lock makes the invariant enforced
+// rather than assumed — defense against future callers that bypass
+// the world goroutine (admin tools, cutover scripts, parallel
+// migrations).
+//
+// `hashtext` maps the aggregate label to a 32-bit int; the
+// 2-int-arg form of pg_advisory_xact_lock takes a (classid, objid)
+// pair, so the second arg discriminates between aggregates sharing a
+// hashtext collision. We use hashtext('village_object_snapshot') as
+// classid and 0 as objid — collisions across different aggregates'
+// labels are statistically negligible at the 32-bit hash space and a
+// false-positive collision just means brief serialization between
+// unrelated aggregates' snapshots, not correctness loss.
+const advisoryLockSQLVO = `SELECT pg_advisory_xact_lock(hashtext('village_object_snapshot'), 0)`
 
 // LoadAll loads every village_object row into memory.
 //
@@ -157,6 +208,14 @@ func (r *VillageObjectsRepo) LoadAll(ctx context.Context) (map[sim.VillageObject
 		var attached sim.VillageObjectID
 		if attachedTo != nil {
 			attached = sim.VillageObjectID(*attachedTo)
+		}
+		// Normalize nil → empty slice. The column is NOT NULL DEFAULT
+		// '{}' so this should never trigger in practice, but a future
+		// schema drift (manual SQL writing NULL) shouldn't propagate as
+		// nil into the in-memory shape — SaveSnapshot normalizes nil to
+		// empty too, so consistent semantic on both sides.
+		if tags == nil {
+			tags = []string{}
 		}
 		out[sim.VillageObjectID(id)] = &sim.VillageObject{
 			ID:                sim.VillageObjectID(id),
@@ -208,6 +267,13 @@ func (r *VillageObjectsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, object
 		return fmt.Errorf("pg village_objects SaveSnapshot: nil tx")
 	}
 
+	// Step 0: acquire the per-aggregate advisory lock. Held for the Tx
+	// duration; serializes concurrent SaveSnapshot calls for this
+	// aggregate. See advisoryLockSQLVO doc for rationale.
+	if _, err := tx.Exec(ctx, advisoryLockSQLVO); err != nil {
+		return fmt.Errorf("pg village_objects SaveSnapshot: advisory lock: %w", err)
+	}
+
 	// Step 1: bump the sequence for this checkpoint.
 	var gen int64
 	if err := tx.QueryRow(ctx, nextGenSQLVO).Scan(&gen); err != nil {
@@ -256,9 +322,24 @@ func (r *VillageObjectsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, object
 		}
 	}
 
-	// Step 3: prune absent rows.
+	// Step 3: prune absent rows. The safer DELETE keeps stale parents
+	// alive when they still have fresh children attached, so the FK
+	// CASCADE never destroys fresh data.
 	if _, err := tx.Exec(ctx, deleteStaleSQLVO, gen); err != nil {
 		return fmt.Errorf("pg village_objects SaveSnapshot: delete stale: %w", err)
+	}
+
+	// Step 4: orphan check. Any fresh child referencing a stale parent
+	// means the world-side parent/child-same-gen invariant got broken
+	// (the safer DELETE preserved the stale parent so the FK didn't
+	// CASCADE-destroy the child, but the in-memory snapshot is internally
+	// inconsistent). Error + rollback so the violation surfaces.
+	var orphanCount int64
+	if err := tx.QueryRow(ctx, orphanCheckSQLVO, gen).Scan(&orphanCount); err != nil {
+		return fmt.Errorf("pg village_objects SaveSnapshot: orphan check: %w", err)
+	}
+	if orphanCount > 0 {
+		return fmt.Errorf("pg village_objects SaveSnapshot: world invariant violation — %d fresh children reference stale parents (cross-tier snapshot; world goroutine bug)", orphanCount)
 	}
 	return nil
 }

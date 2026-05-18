@@ -91,11 +91,24 @@ ALTER TABLE village_object
     ADD COLUMN snapshot_gen BIGINT NOT NULL DEFAULT 0;
 CREATE INDEX idx_village_object_snapshot_gen ON village_object(snapshot_gen);
 
--- v2-only fields.
+-- v2-only fields. owner_actor_id is TEXT (not UUID + FK) because v2
+-- ActorIDs are heterogeneous strings (visitors "vstr-<hex>", PCs
+-- login-username-derived, NPCs UUID-shaped) — same precedent as Slice 5's
+-- pay_ledger.buyer_id/seller_id. Soft-reference at the schema level;
+-- typed reference at the application level (sim.ActorID).
 ALTER TABLE village_object
     ADD COLUMN available_quantity INTEGER NOT NULL DEFAULT 0,
     ADD COLUMN tags TEXT[] NOT NULL DEFAULT '{}',
     ADD COLUMN owner_actor_id TEXT NULL;
+
+-- Defend the tags column against NULL elements. v1 village_object_tag
+-- had NOT NULL on the tag column so the data is clean today; the CHECK
+-- protects against a future caller passing {NULL} via the array
+-- binding. Down migration's per-row INSERT would otherwise fail on the
+-- v1 NOT NULL.
+ALTER TABLE village_object
+    ADD CONSTRAINT village_object_tags_no_nulls
+    CHECK (array_position(tags, NULL) IS NULL);
 
 -- Collapse per-tag rows into the array column. COALESCE handles
 -- objects with no tags (array_agg returns NULL on empty input).
@@ -107,20 +120,31 @@ UPDATE village_object vo SET tags = COALESCE(
 );
 DROP TABLE village_object_tag;
 
--- Backfill owner_actor_id from v1 owner string. login_username (PCs)
--- is the documented value per structure-lookups; llm_memory_agent
--- (NPCs) is the drifted alternative. LIMIT 1 because either match
--- alone identifies the actor uniquely (both columns are UNIQUE).
--- Rows where v1 owner is NULL or '' (the default for "no owner")
--- skip the lookup and stay NULL.
+-- Backfill owner_actor_id with explicit precedence. login_username (PCs)
+-- is the documented value per structure-lookups; llm_memory_agent (NPCs)
+-- is the drifted alternative. Two passes give deterministic precedence
+-- without depending on query-plan ordering — the original OR + LIMIT 1
+-- approach was non-deterministic on cross-column value collisions
+-- (login_username uniqueness doesn't prevent collision with another
+-- row's llm_memory_agent).
+--
+-- Rows where v1 owner is NULL or '' (the default for "no owner") skip
+-- the lookup and stay NULL.
+--
+-- Pass 1: login_username match (PCs win the precedence tie).
 UPDATE village_object vo
-   SET owner_actor_id = (
-       SELECT a.id::text
-         FROM actor a
-        WHERE a.login_username = vo.owner OR a.llm_memory_agent = vo.owner
-        LIMIT 1
-   )
- WHERE vo.owner IS NOT NULL AND vo.owner <> '';
+   SET owner_actor_id = a.id::text
+  FROM actor a
+ WHERE a.login_username = vo.owner
+   AND vo.owner IS NOT NULL AND vo.owner <> '';
+
+-- Pass 2: llm_memory_agent match (only fills rows still NULL after pass 1).
+UPDATE village_object vo
+   SET owner_actor_id = a.id::text
+  FROM actor a
+ WHERE a.llm_memory_agent = vo.owner
+   AND vo.owner_actor_id IS NULL
+   AND vo.owner IS NOT NULL AND vo.owner <> '';
 
 -- entry_policy value migration + CHECK replacement. v1 enum doesn't
 -- include v2's '' (type-driven default — runtime-equivalent to 'open');
