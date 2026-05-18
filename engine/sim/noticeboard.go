@@ -130,6 +130,9 @@ func SaveNoticeboardContent(id VillageObjectID, text, atState string, at time.Ti
 // emitted; SkipReason describes the "not fired" cases:
 //
 //   - "speaker_missing": no actor with the given SpeakerID.
+//   - "speaker_not_town_crier": actor exists but doesn't carry
+//     AttrTownCrier — enforces the command's town-crier-only
+//     scope (the substrate-level v1-faithful gate).
 //   - "empty_content": content was empty / whitespace-only after
 //     trim.
 type EmitTownCrierAnnouncementResult struct {
@@ -148,6 +151,12 @@ type EmitTownCrierAnnouncementResult struct {
 // pulls from NoticeboardContent which is already capped, but the
 // guard defends against future authoring paths that skip the cap).
 //
+// Speaker MUST carry AttrTownCrier — this Command is the engine-
+// authored town crier voice, NOT a general atmospheric speech
+// helper. Calling with a non-crier actor returns Fired=false +
+// "speaker_not_town_crier" (defense-in-depth even though the cascade
+// already gates on `route.Label == AttrTownCrier`).
+//
 // MUST be invoked on the world goroutine. Cascade subscribers call
 // inline via cmd.Fn(w); external callers go through w.SendContext.
 func EmitTownCrierAnnouncement(speakerID ActorID, content string, at time.Time) Command {
@@ -163,8 +172,12 @@ func EmitTownCrierAnnouncement(speakerID ActorID, content string, at time.Time) 
 			if runes := []rune(trimmed); len(runes) > MaxNoticeboardContentLen {
 				trimmed = string(runes[:MaxNoticeboardContentLen])
 			}
-			if _, ok := w.Actors[speakerID]; !ok {
+			actor, ok := w.Actors[speakerID]
+			if !ok || actor == nil {
 				return EmitTownCrierAnnouncementResult{Fired: false, SkipReason: "speaker_missing"}, nil
+			}
+			if _, hasAttr := actor.Attributes[AttrTownCrier]; !hasAttr {
+				return EmitTownCrierAnnouncementResult{Fired: false, SkipReason: "speaker_not_town_crier"}, nil
 			}
 			w.emit(&Spoke{
 				SpeakerID:    speakerID,

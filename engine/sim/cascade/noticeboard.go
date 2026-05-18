@@ -129,7 +129,10 @@ func runNoticeboardAuthor(ctx context.Context, w *sim.World, client llm.Client, 
 
 	ctxRes, err := w.SendContext(callCtx, sim.FetchVillageContext(time.Now()))
 	if err != nil {
-		if ctx.Err() == nil {
+		// Check callCtx (the timeout-wrapped ctx) — timeout sets
+		// callCtx.Err() but not ctx.Err(); we want to suppress
+		// both shutdown-cancellation AND timeout noise.
+		if callCtx.Err() == nil {
 			log.Printf("cascade/noticeboard: fetch context (%q): %v", objectID, err)
 		}
 		return
@@ -148,7 +151,7 @@ func runNoticeboardAuthor(ctx context.Context, w *sim.World, client llm.Client, 
 		MaxTokens:   200,
 	})
 	if err != nil {
-		if ctx.Err() == nil {
+		if callCtx.Err() == nil {
 			log.Printf("cascade/noticeboard: Complete (%q, state=%q): %v", objectID, atState, err)
 		}
 		return
@@ -169,12 +172,16 @@ func runNoticeboardAuthor(ctx context.Context, w *sim.World, client llm.Client, 
 
 	saveRes, err := w.SendContext(callCtx, sim.SaveNoticeboardContent(objectID, text, atState, time.Now()))
 	if err != nil {
-		if ctx.Err() == nil {
+		if callCtx.Err() == nil {
 			log.Printf("cascade/noticeboard: SaveNoticeboardContent (%q, state=%q): %v", objectID, atState, err)
 		}
 		return
 	}
-	r := saveRes.(sim.SaveNoticeboardContentResult)
+	r, ok := saveRes.(sim.SaveNoticeboardContentResult)
+	if !ok {
+		log.Printf("cascade/noticeboard: unexpected SaveNoticeboardContent result type %T", saveRes)
+		return
+	}
 	if !r.Applied && r.SkipReason != "stale_state" {
 		// stale_state is expected (rotation overtook us); other
 		// reasons are worth logging at info-level so admin tools
@@ -290,6 +297,13 @@ func buildNoticeboardUserPrompt(snap sim.VillageContext, boardLabel, priorText s
 		b.WriteString("Wares and services offered in the village:\n")
 		for _, e := range snap.BusinessCatalog {
 			items := renderBusinessItems(e.Items)
+			// FetchVillageContext skips entries with empty Items
+			// today; defensive skip here in case a direct caller
+			// passes a malformed BusinessCatalog (prompt builder
+			// is exported via tests and may be reused).
+			if items == "" {
+				continue
+			}
 			fmt.Fprintf(&b, "  - %s at %s: %s\n", e.OwnerDisplayName, e.StructureLabel, items)
 		}
 		b.WriteString("\n")

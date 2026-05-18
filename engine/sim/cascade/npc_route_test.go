@@ -326,6 +326,65 @@ func TestTownCrierReadsBoardContentBeforeFlip(t *testing.T) {
 	}
 }
 
+// TestTownCrierSilentOnStaleAtState: town_crier arrives at a stop
+// whose NoticeboardContent.AtState DOES NOT match the board's
+// current CurrentState — content is stale (from a previous rotation
+// cycle). The read-path AtState guard rejects this; no Spoke event
+// emitted. Mirrors the "out-of-band state mutation" case (admin
+// direct flip, future code paths that change state without
+// clearing content).
+func TestTownCrierSilentOnStaleAtState(t *testing.T) {
+	w, _ := buildRouteCascadeWorld(t)
+	seedActorAttribute(w, sim.AttrTownCrier)
+
+	// Mutate the noticeboard's CurrentState to "posted" so it no
+	// longer matches the AtState we stamp on the content (which
+	// will say "blank" — a state authored two cycles ago).
+	w.VillageObjects["notice"].CurrentState = "posted"
+
+	if w.ActiveRoutes == nil {
+		w.ActiveRoutes = map[sim.ActorID]*sim.NPCRoute{}
+	}
+	w.ActiveRoutes["runner"] = &sim.NPCRoute{
+		NPCID: "runner",
+		Label: sim.AttrTownCrier,
+		Stops: []sim.RouteStop{
+			{ObjectID: "notice", WalkTo: sim.Position{X: sim.PadX + 30, Y: sim.PadY + 21}, NewState: "blank"},
+		},
+		Phase:           sim.RoutePhaseActive,
+		HomeDestination: sim.NewPositionDestination(sim.Position{X: sim.PadX + 10, Y: sim.PadY + 10}),
+	}
+	w.Actors["runner"].CurrentX = sim.PadX + 30
+	w.Actors["runner"].CurrentY = sim.PadY + 21
+	// Stale content: AtState=blank but the board's CurrentState is now "posted".
+	w.NoticeboardContent = map[sim.VillageObjectID]*sim.NoticeboardContent{
+		"notice": {Text: "Yesterday's news.", PostedAt: time.Now(), AtState: "blank"},
+	}
+
+	spokeRec := &cascadeSpokeRecorder{}
+	w.Subscribe(sim.SubscriberFunc(spokeRec.handle))
+
+	RegisterNPCRoutes(context.Background(), w)
+	cancel := runRouteCascadeWorld(t, w)
+	defer cancel()
+
+	arrivedEvt := &sim.ActorArrived{
+		ActorID:       "runner",
+		FinalPosition: sim.Position{X: sim.PadX + 30, Y: sim.PadY + 21},
+		At:            time.Now(),
+	}
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		handleActorArrivedAdvanceRoute(world, arrivedEvt)
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("invoke handler: %v", err)
+	}
+
+	if got := spokeRec.collect(); len(got) != 0 {
+		t.Errorf("emitted %d Spoke events on stale AtState, want 0", len(got))
+	}
+}
+
 // TestTownCrierSilentWhenBoardEmpty: town_crier arrival at a stop
 // with NO NoticeboardContent stored does NOT emit a Spoke (cold-start
 // / first-cycle silent path).

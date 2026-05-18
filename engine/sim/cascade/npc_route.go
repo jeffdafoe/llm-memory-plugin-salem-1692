@@ -164,9 +164,19 @@ func handleActorArrivedAdvanceRoute(w *sim.World, evt sim.Event) {
 	}
 
 	// Town crier branch: emit existing board content before the
-	// flip. Active-phase stale-arrival guard mirrors
-	// AdvanceNPCRoute's — only emit if the actor is actually at the
-	// expected stop's WalkTo.
+	// flip. Two guards:
+	//
+	//  - Active-phase stale-arrival (actor must be at expected
+	//    WalkTo; mirrors AdvanceNPCRoute's check).
+	//
+	//  - AtState parity (content.AtState must match the board's
+	//    current CurrentState). The save path's stale-guard
+	//    rejects writes whose captured state no longer matches,
+	//    but content can still sit on the board across an
+	//    out-of-band state change (admin direct flip, future
+	//    code mutating CurrentState without clearing content).
+	//    The crier must not voice content authored for a
+	//    different state.
 	if route.Label == sim.AttrTownCrier &&
 		route.Phase == sim.RoutePhaseActive &&
 		route.StopIdx < len(route.Stops) {
@@ -174,7 +184,9 @@ func handleActorArrivedAdvanceRoute(w *sim.World, evt sim.Event) {
 		actor, ok := w.Actors[arrived.ActorID]
 		atExpected := ok && actor.CurrentX == stop.WalkTo.X && actor.CurrentY == stop.WalkTo.Y
 		if atExpected && w.NoticeboardContent != nil {
-			if content, present := w.NoticeboardContent[stop.ObjectID]; present && content != nil && content.Text != "" {
+			content, present := w.NoticeboardContent[stop.ObjectID]
+			obj, hasObj := w.VillageObjects[stop.ObjectID]
+			if present && content != nil && content.Text != "" && hasObj && obj != nil && content.AtState == obj.CurrentState {
 				emitCmd := sim.EmitTownCrierAnnouncement(arrived.ActorID, content.Text, arrived.At)
 				if _, err := emitCmd.Fn(w); err != nil {
 					log.Printf("cascade/npc_route: town_crier announce (actor %q event %d): %v",

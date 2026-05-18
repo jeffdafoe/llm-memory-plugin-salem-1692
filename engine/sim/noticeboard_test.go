@@ -35,7 +35,17 @@ func buildNoticeboardTestWorld(t *testing.T) (*sim.World, *eventRecorder, *spoke
 		"board": {ID: "board", AssetID: "notice-board", CurrentState: "blank", X: 320, Y: 320},
 	})
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
-		"crier": {ID: "crier", DisplayName: "The Crier", Kind: sim.KindNPCShared},
+		"crier": {
+			ID:          "crier",
+			DisplayName: "The Crier",
+			Kind:        sim.KindNPCShared,
+			Attributes:  map[string][]byte{sim.AttrTownCrier: {}},
+		},
+		"non-crier": {
+			ID:          "non-crier",
+			DisplayName: "Just A Villager",
+			Kind:        sim.KindNPCShared,
+		},
 	})
 
 	w, err := sim.LoadWorld(context.Background(), repo)
@@ -264,6 +274,19 @@ func TestEmitTownCrierAnnouncement_SpeakerMissing(t *testing.T) {
 	r := res.(sim.EmitTownCrierAnnouncementResult)
 	if r.Fired || r.SkipReason != "speaker_missing" {
 		t.Errorf("result = %+v, want Fired=false speaker_missing", r)
+	}
+}
+
+// TestEmitTownCrierAnnouncement_SpeakerNotTownCrier: actor exists but
+// lacks AttrTownCrier → skip with speaker_not_town_crier.
+func TestEmitTownCrierAnnouncement_SpeakerNotTownCrier(t *testing.T) {
+	w, _, _, stop := buildNoticeboardTestWorld(t)
+	defer stop()
+
+	res, _ := w.Send(sim.EmitTownCrierAnnouncement("non-crier", "anything", time.Now()))
+	r := res.(sim.EmitTownCrierAnnouncementResult)
+	if r.Fired || r.SkipReason != "speaker_not_town_crier" {
+		t.Errorf("result = %+v, want Fired=false speaker_not_town_crier", r)
 	}
 }
 
