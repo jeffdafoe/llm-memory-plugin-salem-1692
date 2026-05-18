@@ -103,7 +103,12 @@ func TestOrdersRepo_LoadAll_QueryError(t *testing.T) {
 	}
 }
 
-func TestOrdersRepo_LoadAll_SkipsUnknownStatus(t *testing.T) {
+// TestOrdersRepo_LoadAll_UnknownStatusErrors — loadAllSQL filters to
+// 'ready'/'pending' so unknown values should never be returned by the
+// real DB, but we defend the mapping anyway. If a row with an
+// unexpected fulfillment_status DOES surface (schema drift, manual
+// SQL), LoadAll must error rather than silently drop data.
+func TestOrdersRepo_LoadAll_UnknownStatusErrors(t *testing.T) {
 	mock, repo := newMockPool(t)
 
 	now := time.Now().UTC()
@@ -114,26 +119,14 @@ func TestOrdersRepo_LoadAll_SkipsUnknownStatus(t *testing.T) {
 		"created_at", "delivered_on", "expires_at",
 	}).
 		AddRow(int64(1), "alice", "bob", "stew", 1,
-			3, []string{}, "ready",
-			now, (*time.Time)(nil), &expires).
-		AddRow(int64(2), "eve", "bob", "ale", 1,
-			2, []string{}, "weirdo_status",
+			3, []string{}, "weirdo_status",
 			now, (*time.Time)(nil), &expires)
 
 	mock.ExpectQuery(`SELECT[\s\S]+FROM pay_ledger`).WillReturnRows(rows)
 
-	got, err := repo.LoadAll(context.Background())
-	if err != nil {
-		t.Fatalf("LoadAll: %v", err)
-	}
-	if len(got) != 1 {
-		t.Errorf("loaded %d, want 1 (anomaly row skipped, not error)", len(got))
-	}
-	if _, ok := got[1]; !ok {
-		t.Error("order 1 missing")
-	}
-	if _, ok := got[2]; ok {
-		t.Error("order 2 with unknown status should have been skipped")
+	_, err := repo.LoadAll(context.Background())
+	if err == nil {
+		t.Fatal("expected error for unknown fulfillment_status")
 	}
 }
 
@@ -165,6 +158,15 @@ func TestOrdersRepo_SaveSnapshot_UpsertsEachOrder(t *testing.T) {
 	now := time.Now().UTC()
 	expires := now.Add(time.Hour)
 	delivered := now.Add(time.Minute)
+
+	// SaveSnapshot now does two steps inside the Tx: expire absent
+	// rows first, then upsert. The expire-absent UPDATE accepts the
+	// snapshot's IDs and is matched without a strict arg check (map
+	// iteration order varies). The two upserts then run in either
+	// order.
+	mock.ExpectExec(`UPDATE pay_ledger[\s\S]+SET fulfillment_status = 'expired'`).
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgconn.NewCommandTag("UPDATE 0"))
 
 	mock.ExpectExec(`INSERT INTO pay_ledger`).
 		WithArgs(
@@ -221,6 +223,59 @@ func TestOrdersRepo_SaveSnapshot_UpsertsEachOrder(t *testing.T) {
 	}
 }
 
+// TestOrdersRepo_SaveSnapshot_ExpiresAbsentRows — even when the
+// snapshot map is empty, the expire-absent UPDATE runs (with an
+// empty ID list, expiring all in-flight rows). This is the snapshot
+// contract: "this is everything in-flight" → empty means "no
+// in-flight orders."
+func TestOrdersRepo_SaveSnapshot_ExpiresAbsentRows_EmptyMap(t *testing.T) {
+	mock, repo := newMockPool(t)
+	tx := fakeTx{mock: mock}
+
+	mock.ExpectExec(`UPDATE pay_ledger[\s\S]+SET fulfillment_status = 'expired'`).
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgconn.NewCommandTag("UPDATE 0"))
+
+	if err := repo.SaveSnapshot(context.Background(), tx, map[sim.OrderID]*sim.Order{}); err != nil {
+		t.Fatalf("SaveSnapshot: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+}
+
+// TestOrdersRepo_SaveSnapshot_LedgerIDMismatchRejected — if a caller
+// constructs an Order whose LedgerID disagrees with ID, the upsert
+// would silently use ID and drop the LedgerID information. We
+// detect and refuse instead.
+func TestOrdersRepo_SaveSnapshot_LedgerIDMismatchRejected(t *testing.T) {
+	mock, repo := newMockPool(t)
+	tx := fakeTx{mock: mock}
+
+	mock.ExpectExec(`UPDATE pay_ledger[\s\S]+SET fulfillment_status = 'expired'`).
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgconn.NewCommandTag("UPDATE 0"))
+
+	now := time.Now().UTC()
+	bad := map[sim.OrderID]*sim.Order{
+		1: {
+			ID:        1,
+			State:     sim.OrderStateReady,
+			BuyerID:   "alice",
+			SellerID:  "bob",
+			Item:      "stew",
+			Qty:       1,
+			Amount:    1,
+			LedgerID:  999, // mismatched
+			CreatedAt: now,
+			ExpiresAt: now.Add(time.Hour),
+		},
+	}
+	if err := repo.SaveSnapshot(context.Background(), tx, bad); err == nil {
+		t.Fatal("expected error for LedgerID/ID mismatch")
+	}
+}
+
 func TestOrdersRepo_SaveSnapshot_NilTx(t *testing.T) {
 	_, repo := newMockPool(t)
 	err := repo.SaveSnapshot(context.Background(), nil, map[sim.OrderID]*sim.Order{
@@ -234,7 +289,11 @@ func TestOrdersRepo_SaveSnapshot_NilTx(t *testing.T) {
 func TestOrdersRepo_SaveSnapshot_NilOrderSkipped(t *testing.T) {
 	mock, repo := newMockPool(t)
 	tx := fakeTx{mock: mock}
-	// Expect no Exec calls — nil entries are silently skipped.
+	// nil entries are silently skipped — the expire-absent UPDATE
+	// still runs (with an empty ID slice; expires-all-in-flight).
+	mock.ExpectExec(`UPDATE pay_ledger[\s\S]+SET fulfillment_status = 'expired'`).
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgconn.NewCommandTag("UPDATE 0"))
 	err := repo.SaveSnapshot(context.Background(), tx, map[sim.OrderID]*sim.Order{1: nil})
 	if err != nil {
 		t.Fatalf("SaveSnapshot: %v", err)
@@ -247,26 +306,16 @@ func TestOrdersRepo_SaveSnapshot_NilOrderSkipped(t *testing.T) {
 func TestOrdersRepo_SaveSnapshot_UnknownStateErrors(t *testing.T) {
 	mock, repo := newMockPool(t)
 	tx := fakeTx{mock: mock}
+	// expire-absent UPDATE runs first; mapping error surfaces on
+	// the first upsert attempt.
+	mock.ExpectExec(`UPDATE pay_ledger[\s\S]+SET fulfillment_status = 'expired'`).
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgconn.NewCommandTag("UPDATE 0"))
 	err := repo.SaveSnapshot(context.Background(), tx, map[sim.OrderID]*sim.Order{
 		1: {ID: 1, State: sim.OrderState("garbage")},
 	})
 	if err == nil {
 		t.Fatal("expected error for unknown OrderState")
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("expectations: %v", err)
-	}
-}
-
-func TestOrdersRepo_SaveSnapshot_EmptyMapIsNoop(t *testing.T) {
-	mock, repo := newMockPool(t)
-	tx := fakeTx{mock: mock}
-	err := repo.SaveSnapshot(context.Background(), tx, map[sim.OrderID]*sim.Order{})
-	if err != nil {
-		t.Fatalf("SaveSnapshot empty: %v", err)
-	}
-	if err := mock.ExpectationsWereMet(); err != nil {
-		t.Errorf("expectations: %v", err)
 	}
 }
 
