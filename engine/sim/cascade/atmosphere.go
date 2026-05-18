@@ -151,6 +151,11 @@ func runOneAtmosphereSweep(ctx context.Context, w *sim.World, client llm.Client)
 		// (blank instructions, no persona, no state). FakeClient ignores
 		// Model; tests assert it's passed through.
 		Model: atmosphereLLMModel,
+		// Fresh scene per refresh: memory-api's chat_messages history
+		// loader filters by scene_id when set, so each refresh is its
+		// own isolated conversation — without this, salem-generic would
+		// accumulate every prior atmosphere prompt as history.
+		SceneID: llm.NewSceneID(),
 	}
 	reply, err := client.Complete(ctx, req)
 	if err != nil {

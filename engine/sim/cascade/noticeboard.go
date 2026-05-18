@@ -149,6 +149,12 @@ func runNoticeboardAuthor(ctx context.Context, w *sim.World, client llm.Client, 
 		Model:       noticeboardLLMModel,
 		Temperature: 0.7,
 		MaxTokens:   200,
+		// Fresh scene per authoring call: memory-api's chat_messages
+		// history loader filters by scene_id when set, so each notice
+		// authoring is its own isolated conversation — without this,
+		// salem-generic would accumulate every prior board prompt as
+		// history.
+		SceneID: llm.NewSceneID(),
 	})
 	if err != nil {
 		if callCtx.Err() == nil {

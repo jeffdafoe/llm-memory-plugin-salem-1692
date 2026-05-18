@@ -86,6 +86,34 @@ func TestRunOneAtmosphereSweep_HappyPath(t *testing.T) {
 	}
 }
 
+// TestRunOneAtmosphereSweep_MintsFreshSceneID — each refresh issues its
+// own scene_id so memory-api's chat_messages history loader isolates one
+// refresh's conversation from the next. Without this, salem-generic
+// would accumulate every prior atmosphere prompt as history (no persona
+// concerns; but volume + admin-page noise).
+func TestRunOneAtmosphereSweep_MintsFreshSceneID(t *testing.T) {
+	w, stop := buildAtmosphereDriverWorld(t)
+	defer stop()
+
+	client := llm.NewFakeClient(
+		llm.ScriptedTurn{Response: llm.Response{Content: "first prose"}},
+		llm.ScriptedTurn{Response: llm.Response{Content: "second prose"}},
+	)
+	runOneAtmosphereSweep(context.Background(), w, client)
+	runOneAtmosphereSweep(context.Background(), w, client)
+
+	reqs := client.Requests()
+	if len(reqs) != 2 {
+		t.Fatalf("Request count = %d, want 2", len(reqs))
+	}
+	if reqs[0].SceneID == "" || reqs[1].SceneID == "" {
+		t.Fatalf("SceneIDs empty: %q / %q", reqs[0].SceneID, reqs[1].SceneID)
+	}
+	if reqs[0].SceneID == reqs[1].SceneID {
+		t.Errorf("SceneIDs equal across sweeps: %q (each sweep must mint a fresh one)", reqs[0].SceneID)
+	}
+}
+
 func TestRunOneAtmosphereSweep_EmptyReplyLeavesStateUntouched(t *testing.T) {
 	w, stop := buildAtmosphereDriverWorld(t)
 	defer stop()
