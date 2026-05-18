@@ -44,7 +44,7 @@ func NewRepository(pool Pool) sim.Repository {
 		Recipes:        notImplRecipes{},
 		ItemKinds:      notImplItemKinds{},
 		Terrain:        notImplTerrain{},
-		VillageObjects: notImplVillageObjects{},
+		VillageObjects: &VillageObjectsRepo{pool: pool},
 		ActionLog:      notImplActionLog{},
 		TickTelemetry:  notImplTickTelemetry{},
 		Begin: func(ctx context.Context) (sim.Tx, error) {
@@ -129,15 +129,6 @@ func (notImplItemKinds) LoadAll(_ context.Context) (map[sim.ItemKind]*sim.ItemKi
 type notImplTerrain struct{}
 
 func (notImplTerrain) Load(_ context.Context) (*sim.Terrain, error) { return nil, errNotImpl }
-
-type notImplVillageObjects struct{}
-
-func (notImplVillageObjects) LoadAll(_ context.Context) (map[sim.VillageObjectID]*sim.VillageObject, error) {
-	return nil, errNotImpl
-}
-func (notImplVillageObjects) SaveSnapshot(_ context.Context, _ sim.Tx, _ map[sim.VillageObjectID]*sim.VillageObject) error {
-	return errNotImpl
-}
 
 type notImplActionLog struct{}
 
