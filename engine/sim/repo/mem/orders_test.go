@@ -193,16 +193,19 @@ func TestLoadRecentPrices_FiltersBySinceAndCaps(t *testing.T) {
 	}
 }
 
-func TestLoadRecentPrices_InvalidPerKeyCapReturnsEmpty(t *testing.T) {
+func TestLoadRecentPrices_InvalidPerKeyCapErrors(t *testing.T) {
 	_, h := mem.NewRepository()
 	h.Orders.SeedPrices([]sim.PriceBookSeedRecord{
 		{Key: sim.PriceBookKey{SellerID: "bob", Item: "ale"}, Observation: sim.PriceObservation{BuyerID: "alice", Amount: 2, At: time.Now()}},
 	})
-	got, err := h.Orders.LoadRecentPrices(context.Background(), time.Time{}, 0)
-	if err != nil {
-		t.Errorf("expected nil error for perKeyCap=0, got %v", err)
-	}
-	if got != nil {
-		t.Errorf("expected nil records, got %v", got)
+	// Contract symmetric with pg: perKeyCap <= 0 is a caller bug.
+	for _, n := range []int{0, -1} {
+		got, err := h.Orders.LoadRecentPrices(context.Background(), time.Time{}, n)
+		if err == nil {
+			t.Errorf("LoadRecentPrices(perKeyCap=%d) should error", n)
+		}
+		if got != nil {
+			t.Errorf("LoadRecentPrices(perKeyCap=%d) should return nil records, got %v", n, got)
+		}
 	}
 }

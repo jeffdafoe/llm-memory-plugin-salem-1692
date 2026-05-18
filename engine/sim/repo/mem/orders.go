@@ -2,6 +2,7 @@ package mem
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"time"
 
@@ -69,8 +70,11 @@ func (r *OrdersRepo) SaveSnapshot(_ context.Context, _ sim.Tx, orders map[sim.Or
 // matching the pg impl's contract so SeedPriceBook behaves identically
 // across both backends.
 func (r *OrdersRepo) LoadRecentPrices(_ context.Context, since time.Time, perKeyCap int) ([]sim.PriceBookSeedRecord, error) {
+	// Symmetric with pg: perKeyCap <= 0 is a caller bug. Surface as
+	// error so tests that pass it accidentally fail loudly instead of
+	// silently shipping an empty seed. (R1 code_review finding.)
 	if perKeyCap <= 0 {
-		return nil, nil
+		return nil, fmt.Errorf("mem orders LoadRecentPrices: perKeyCap must be > 0, got %d", perKeyCap)
 	}
 	// Filter by window first so the per-key cap operates on the
 	// post-filter set (matches the pg WHERE/window-function order).
