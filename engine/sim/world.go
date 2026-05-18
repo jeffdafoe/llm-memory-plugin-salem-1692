@@ -202,6 +202,26 @@ type WorldSettings struct {
 	VisitorMaxStayMinutes      int
 	VisitorTickInterval        time.Duration
 
+	// Businessowner cascade tunables (engine/sim/businessowner.go +
+	// engine/sim/cascade/businessowner.go). Both fall back to
+	// *Default constants when zero, so tests that bypass the
+	// environment loader get sensible behavior without seeding them.
+	//
+	// BusinessownerGreetCooldownMinutes: per-(keeper, customer) gap
+	// between engine-spoken greet lines. Default 30 min — covers "the
+	// customer popped out for an errand and came back" with a re-greet
+	// on the second visit, but suppresses the redundant "welcome friend"
+	// when the same customer rejoins the huddle ten seconds later after
+	// stepping outside to fetch something.
+	//
+	// BusinessownerFarewellCooldownMinutes: mirrors the greet cooldown.
+	// Same UX reasoning.
+	//
+	// Handover (OrderDelivered) has no cooldown by design — every
+	// transaction deserves a verbal handover line.
+	BusinessownerGreetCooldownMinutes    int
+	BusinessownerFarewellCooldownMinutes int
+
 	// DefaultOutdoorSceneRadius is the conversational radius used by
 	// SceneBoundArea when callers don't specify one explicitly. Measured
 	// in king's-move (Chebyshev) tiles around the bound's Anchor.
@@ -379,6 +399,24 @@ type World struct {
 	// re-engagement happens via the warrant re-stamp pass during
 	// LoadWorld.
 	PayLedger map[LedgerID]*PayLedgerEntry
+
+	// BusinessownerCooldowns is the per-(speaker, listener, trigger) gap
+	// map used by the businessowner cascade slice to suppress redundant
+	// engine-spoken hospitality lines (e.g. don't re-greet the same
+	// customer who just popped out and came back in seconds). Lazy-
+	// allocated on first stamp; nil-readable as empty. World-goroutine-
+	// only; restart-loss is acceptable (first-greet on re-encounter post-
+	// restart is a UX wrinkle, not a correctness failure).
+	BusinessownerCooldowns map[BusinessownerCooldownKey]time.Time
+
+	// BusinessownerSpeechAt stamps the last engine-authored hospitality
+	// speech instant per keeper actor. Consulted by actorCanReactNow to
+	// suppress an LLM follow-up tick on the same triggering event for
+	// businessownerEngineSpeechSuppressionTTL (5s). Lazy-allocated on
+	// first stamp; nil-readable as empty. World-goroutine-only; restart-
+	// loss is acceptable (the in-flight reactor schedule the suppression
+	// guards against is itself lost on restart).
+	BusinessownerSpeechAt map[ActorID]time.Time
 
 	// ActionLog is the world-level append-only audit trail of
 	// committed agent + engine-source actions. Consumed by the
@@ -1105,24 +1143,25 @@ func snapshotActor(a *Actor, atTick uint64) *ActorSnapshot {
 		needsCopy[k] = v
 	}
 	return &ActorSnapshot{
-		AtTick:            atTick,
-		DisplayName:       a.DisplayName,
-		Kind:              a.Kind,
-		State:             a.State,
-		Role:              a.Role,
-		InsideStructureID: a.InsideStructureID,
-		CurrentX:          a.CurrentX,
-		CurrentY:          a.CurrentY,
-		CurrentHuddleID:   a.CurrentHuddleID,
-		Needs:             needsCopy,
-		InventoryHash:     hash,
-		Coins:             a.Coins,
-		Acquaintances:     cloneAcquaintances(a.Acquaintances),
-		Relationships:     cloneRelationships(a.Relationships),
-		Narrative:         cloneNarrativeState(a.Narrative),
-		VisitorState:      cloneVisitorState(a.VisitorState),
-		DwellCredits:      cloneDwellCredits(a.DwellCredits),
-		TickInFlight:      a.TickInFlight,
-		TickAttemptID:     a.TickAttemptID,
+		AtTick:             atTick,
+		DisplayName:        a.DisplayName,
+		Kind:               a.Kind,
+		State:              a.State,
+		Role:               a.Role,
+		InsideStructureID:  a.InsideStructureID,
+		CurrentX:           a.CurrentX,
+		CurrentY:           a.CurrentY,
+		CurrentHuddleID:    a.CurrentHuddleID,
+		Needs:              needsCopy,
+		InventoryHash:      hash,
+		Coins:              a.Coins,
+		Acquaintances:      cloneAcquaintances(a.Acquaintances),
+		Relationships:      cloneRelationships(a.Relationships),
+		Narrative:          cloneNarrativeState(a.Narrative),
+		VisitorState:       cloneVisitorState(a.VisitorState),
+		BusinessownerState: cloneBusinessownerState(a.BusinessownerState),
+		DwellCredits:       cloneDwellCredits(a.DwellCredits),
+		TickInFlight:       a.TickInFlight,
+		TickAttemptID:      a.TickAttemptID,
 	}
 }

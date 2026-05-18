@@ -665,9 +665,9 @@ func actorReactorDue(a *Actor, now time.Time) bool {
 // actorCanReactNow is the context-aware eligibility check the reactor
 // evaluator consults BEFORE consuming warrants. Filters out states
 // where firing an LLM tick is wasted cost — sleeping/resting actors,
-// concluded huddles. Replaces v1's scattered "skip if NPC asleep"
-// checks at individual subscriber callsites with one chokepoint that
-// applies to all warrant kinds.
+// concluded huddles, keepers who just engine-spoke. Replaces v1's
+// scattered "skip if NPC asleep" checks at individual subscriber callsites
+// with one chokepoint that applies to all warrant kinds.
 //
 // What's checked today:
 //   - Nil-actor guard (caller already has the pointer; this is defensive).
@@ -681,6 +681,13 @@ func actorReactorDue(a *Actor, now time.Time) bool {
 //     dwell substrate or a state-flip command), the next scan picks the
 //     warrant up. Lazy clear — no state-transition pass walks the
 //     warrant list.
+//   - Businessowner engine-speech suppression: if the actor engine-spoke
+//     a hospitality line within businessownerEngineSpeechSuppressionTTL
+//     (5s), their LLM tick on the same triggering event is skipped so
+//     the model doesn't follow up with a redundant "welcome friend" of
+//     its own. Returns (false, false); the warrant stays OPEN and the
+//     evaluator backs off, then picks the warrant up once the suppression
+//     window expires.
 //
 // Note on StateResting: per actor.go's State enum comment, Resting is
 // the take_break / dwell-credit-accumulating posture (in-bed/recovering),
@@ -708,6 +715,9 @@ func actorCanReactNow(w *World, a *Actor) (eligible bool, stale bool) {
 		}
 	}
 	if a.State == StateSleeping || a.State == StateResting {
+		return false, false
+	}
+	if businessownerEngineSpeechRecent(w, a.ID, time.Now().UTC()) {
 		return false, false
 	}
 	return true, false
