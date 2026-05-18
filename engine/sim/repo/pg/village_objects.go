@@ -3,26 +3,31 @@ package pg
 import (
 	"context"
 	"fmt"
+	"log"
+	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
 
 // VillageObjectsRepo reads and writes VillageObject rows against
-// village_object. Owns the table as one aggregate: the v1 sidecar
-// village_object_tag is collapsed into the parent's tags TEXT[] column
-// by migration ZBBS-WORK-237.
+// village_object plus the object_refresh child table. Owns both as one
+// aggregate: the v1 sidecar village_object_tag was collapsed into the
+// parent's tags TEXT[] column by migration ZBBS-WORK-237; the
+// object_refresh child gained v2's runtime columns and the gen-marker
+// snapshot_gen bookkeeping by migration ZBBS-WORK-238.
 //
 // SaveSnapshot semantics use the generation-marker pattern (Slice 9 —
 // see `shared/notes/codebase/salem-engine-v2/pg-snapshot-pattern`).
-// Per-row UPSERT inside one Tx, stamping the new gen on every snapshot
-// row, then `DELETE WHERE snapshot_gen < $gen` prunes anything absent
-// from the snapshot. The supplied map IS the complete VillageObject set.
+// Both tables get per-row UPSERT inside the caller's checkpoint Tx,
+// stamping the new gen on every snapshot row, then per-table
+// `DELETE WHERE snapshot_gen < $gen` prunes anything absent. The
+// supplied map IS the complete VillageObject + Refreshes set.
 //
-// LoadAll returns Refreshes: nil — per-instance refresh state lives in
-// a separate object_refresh table whose port is a follow-up slice (v1
-// has 3 columns, v2 needs 6+; schema redesign, not just a port). The
-// in-memory subsystem reconstructs refresh state from catalog defaults
-// on first tick until that slice ships.
+// The two tables share the parent's advisory lock (acquired at the
+// start of SaveSnapshot) — Refreshes never SaveSnapshot independently;
+// it's always part of the same Tx. Each table owns its own sequence
+// for the gen counter so the tiers are independent (writes to
+// village_object don't perturb the object_refresh counter).
 type VillageObjectsRepo struct {
 	pool Pool
 }
@@ -172,13 +177,95 @@ const nextGenSQLVO = `SELECT nextval('village_object_snapshot_gen_seq')`
 // correct and there's no parameter to pass.
 const advisoryLockSQLVO = `SELECT pg_advisory_xact_lock(hashtext('village_object_snapshot'), 0)`
 
-// LoadAll loads every village_object row into memory.
+// loadAllSQLOR selects every object_refresh row across all parents.
+// Group-by-object_id happens in Go after the query (LoadAll stitches
+// the slice into each parent's Refreshes field). No ORDER BY — the
+// in-memory slice is built as encountered.
+//
+// snapshot_gen is not selected — same posture as the parent table:
+// gen is pure sync bookkeeping, no in-memory representation.
+const loadAllSQLOR = `
+SELECT
+    object_id, attribute, amount,
+    max_quantity, available_quantity,
+    refresh_mode, refresh_period_hours, last_refresh_at,
+    dwell_delta, dwell_period_minutes
+FROM object_refresh`
+
+// upsertSQLOR writes one object_refresh row. Composite PK
+// (object_id, attribute) is the conflict target — one row per
+// attribute per parent matches the v1 design and the v2 slice-of-
+// refreshes shape (multi-attribute objects like a shaded oak carry
+// one entry per attribute).
+//
+// snapshot_gen is included in both INSERT and UPDATE branches; the
+// trailing DELETE step prunes rows absent from the snapshot.
+//
+// On conflict, every v2-owned column gets refreshed — the snapshot
+// is authoritative for the full row state.
+const upsertSQLOR = `
+INSERT INTO object_refresh (
+    object_id, attribute, amount,
+    max_quantity, available_quantity,
+    refresh_mode, refresh_period_hours, last_refresh_at,
+    dwell_delta, dwell_period_minutes,
+    snapshot_gen
+) VALUES (
+    $1::uuid, $2, $3,
+    $4, $5,
+    $6, $7, $8,
+    $9, $10,
+    $11
+)
+ON CONFLICT (object_id, attribute) DO UPDATE SET
+    amount               = EXCLUDED.amount,
+    max_quantity         = EXCLUDED.max_quantity,
+    available_quantity   = EXCLUDED.available_quantity,
+    refresh_mode         = EXCLUDED.refresh_mode,
+    refresh_period_hours = EXCLUDED.refresh_period_hours,
+    last_refresh_at      = EXCLUDED.last_refresh_at,
+    dwell_delta          = EXCLUDED.dwell_delta,
+    dwell_period_minutes = EXCLUDED.dwell_period_minutes,
+    snapshot_gen         = EXCLUDED.snapshot_gen`
+
+// deleteStaleSQLOR prunes object_refresh rows whose snapshot_gen is
+// below the just-bumped checkpoint gen — i.e., rows that exist in pg
+// but were absent from the in-memory snapshot's Refreshes slices.
+//
+// Two categories of stale row get pruned here:
+//  1. Parent survived but a refresh attribute was removed (e.g.,
+//     admin deleted "hunger" from a shaded oak that used to refresh
+//     both hunger and tiredness).
+//  2. Parent rows already FK-CASCADE-deleted by the village_object
+//     delete-stale step would normally take their refreshes down
+//     with them; in the unlikely case a stale refresh row survives
+//     (orphan; FK didn't fire), this DELETE sweeps it.
+//
+// No safer-DELETE variant needed — object_refresh has no self-FK,
+// so no CASCADE pathology to defend against.
+const deleteStaleSQLOR = `DELETE FROM object_refresh WHERE snapshot_gen < $1`
+
+// nextGenSQLOR bumps the object_refresh sequence and returns the new
+// gen. Independent from the village_object sequence so the two tables
+// have separate gen tiers (writes to one don't perturb the other's
+// counter).
+const nextGenSQLOR = `SELECT nextval('object_refresh_snapshot_gen_seq')`
+
+// LoadAll loads every village_object row and its object_refresh
+// children into memory.
 //
 // Runs against the pool directly (no Tx) — read-only restart path,
-// same posture as OrdersRepo.LoadAll.
+// same posture as OrdersRepo.LoadAll. The two queries can run
+// non-transactionally because LoadAll is invoked at engine start
+// before the world goroutine begins mutations, so no checkpoint can
+// be in flight; a fresh refresh row written by some other path
+// between the two queries would just be picked up consistently with
+// pg's prior snapshot.
 //
-// Returns objects with Refreshes: nil. See type doc-comment for
-// rationale; cross-restart refresh state is a follow-up slice.
+// Refresh rows referencing an object_id that isn't in the loaded
+// parent set are skipped with a log line (FK CASCADE makes this
+// impossible from valid writes; the guard surfaces schema drift
+// loudly rather than silently dropping data).
 func (r *VillageObjectsRepo) LoadAll(ctx context.Context) (map[sim.VillageObjectID]*sim.VillageObject, error) {
 	rows, err := r.pool.Query(ctx, loadAllSQLVO)
 	if err != nil {
@@ -241,36 +328,125 @@ func (r *VillageObjectsRepo) LoadAll(ctx context.Context) (map[sim.VillageObject
 			LoiterOffsetY:     loiterY,
 			Tags:              tags,
 			AvailableQuantity: availableQty,
-			// Refreshes intentionally nil — see type doc-comment.
+			// Refreshes populated below by loadAllRefreshes.
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("pg village_objects LoadAll iter: %w", err)
 	}
+
+	if err := r.loadAllRefreshes(ctx, out); err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 
-// SaveSnapshot writes the full VillageObject set durably using the
-// generation-marker pattern. The supplied map IS the complete snapshot;
-// any village_object row whose id is absent gets DELETEd.
+// loadAllRefreshes reads every object_refresh row and attaches it to
+// the corresponding parent in `objects` as an entry in its Refreshes
+// slice. Rows whose parent is absent from the map are logged + skipped
+// (FK CASCADE should make this impossible from valid writes).
+func (r *VillageObjectsRepo) loadAllRefreshes(ctx context.Context, objects map[sim.VillageObjectID]*sim.VillageObject) error {
+	rows, err := r.pool.Query(ctx, loadAllSQLOR)
+	if err != nil {
+		return fmt.Errorf("pg village_objects LoadAll refreshes query: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			objectID       string
+			attribute      string
+			amount         int
+			maxQty         *int
+			availableQty   *int
+			refreshMode    *string
+			periodHours    *int
+			lastRefreshAt  *time.Time
+			dwellDelta     *int
+			dwellPeriodMin *int
+		)
+		if err := rows.Scan(
+			&objectID, &attribute, &amount,
+			&maxQty, &availableQty,
+			&refreshMode, &periodHours, &lastRefreshAt,
+			&dwellDelta, &dwellPeriodMin,
+		); err != nil {
+			return fmt.Errorf("pg village_objects LoadAll refreshes scan: %w", err)
+		}
+
+		parent, ok := objects[sim.VillageObjectID(objectID)]
+		if !ok {
+			// FK CASCADE makes this unreachable from valid writes; log
+			// + skip surfaces schema drift loudly without dropping the
+			// load. Don't fail LoadAll — the engine can come up with
+			// the missing rows pruned.
+			log.Printf("pg village_objects LoadAll: orphan refresh row object_id=%s attribute=%s (parent missing) — skipped",
+				objectID, attribute)
+			continue
+		}
+
+		mode := ""
+		if refreshMode != nil {
+			mode = *refreshMode
+		}
+		parent.Refreshes = append(parent.Refreshes, &sim.ObjectRefresh{
+			Attribute:          sim.NeedKey(attribute),
+			Amount:             amount,
+			AvailableQuantity:  availableQty,
+			MaxQuantity:        maxQty,
+			RefreshMode:        sim.RefreshMode(mode),
+			RefreshPeriodHours: periodHours,
+			LastRefreshAt:      lastRefreshAt,
+			DwellDelta:         dwellDelta,
+			DwellPeriodMinutes: dwellPeriodMin,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("pg village_objects LoadAll refreshes iter: %w", err)
+	}
+	return nil
+}
+
+// SaveSnapshot writes the full VillageObject + Refreshes set durably
+// using the generation-marker pattern. The supplied map IS the
+// complete snapshot for both tables; any village_object row whose id
+// is absent gets DELETEd, and any object_refresh row absent from the
+// snapshot's per-parent Refreshes slices gets DELETEd.
 //
-// Three steps inside the caller's checkpoint Tx:
+// Steps inside the caller's checkpoint Tx (order matters — VO snapshot
+// fully settles before refreshes are synced against the surviving
+// parent set):
 //
-//  1. SELECT nextval(seq) → $gen.
-//  2. Per-row UPSERT, stamping snapshot_gen = $gen on each.
-//  3. DELETE WHERE snapshot_gen < $gen — prune anything absent from
-//     the snapshot.
+//  0. Advisory lock — shared by both tables (Refreshes is co-managed
+//     under the same Tx; no separate lock for the child).
+//  1. nextval(village_object_snapshot_gen_seq) → $genVO.
+//  2. Per-row UPSERT village_object, stamping snapshot_gen = $genVO.
+//  3. Safer DELETE village_object — FK CASCADE drops orphan refresh
+//     rows for deleted parents.
+//  4. Orphan check village_object — error + rollback on cross-tier
+//     parent/child invariant violation.
+//  5. nextval(object_refresh_snapshot_gen_seq) → $genOR.
+//  6. Per-row UPSERT object_refresh, stamping snapshot_gen = $genOR.
+//     Only iterates parents in the snapshot — refreshes for absent
+//     parents were cascade-dropped in step 3.
+//  7. DELETE object_refresh WHERE snapshot_gen < $genOR — prunes
+//     refreshes where the parent survived but the refresh attribute
+//     was removed from its slice.
 //
 // All steps share the Tx so the checkpoint is atomic — a crash
 // mid-snapshot rolls back, leaving pg consistent with the prior
 // checkpoint.
 //
-// Empty map: $gen is still bumped, no UPSERTs happen, DELETE removes
-// every row in the table (snapshot semantic: "this is everything;
-// empty means nothing should be here").
+// Empty map: both gens are still bumped, no UPSERTs happen, both
+// DELETEs remove every row in their respective tables (snapshot
+// semantic: "this is everything; empty means nothing should be
+// here"). Step 3 cascades to clear refreshes; step 7 is then a no-op
+// against the empty table.
 //
 // nil object entries in the map are silently skipped (matches Slice 5
-// OrdersRepo.SaveSnapshot pattern).
+// OrdersRepo.SaveSnapshot pattern). nil refresh entries in an
+// object's Refreshes slice are skipped at the upsert loop (matches
+// CloneVillageObject's defensive posture).
 func (r *VillageObjectsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, objects map[sim.VillageObjectID]*sim.VillageObject) error {
 	if tx == nil {
 		return fmt.Errorf("pg village_objects SaveSnapshot: nil tx")
@@ -349,6 +525,60 @@ func (r *VillageObjectsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, object
 	}
 	if orphanCount > 0 {
 		return fmt.Errorf("pg village_objects SaveSnapshot: world invariant violation — %d fresh children reference stale parents (cross-tier snapshot; world goroutine bug)", orphanCount)
+	}
+
+	// Step 5: bump the object_refresh sequence — independent gen tier
+	// from the parent. Shares the same Tx + advisory lock.
+	var refreshGen int64
+	if err := tx.QueryRow(ctx, nextGenSQLOR).Scan(&refreshGen); err != nil {
+		return fmt.Errorf("pg village_objects SaveSnapshot: nextval refresh: %w", err)
+	}
+
+	// Step 6: upsert every refresh on every snapshot parent. Refreshes
+	// for absent parents were already FK-CASCADE-dropped at step 3, so
+	// iterating only `objects` is correct (no missing parents to
+	// reference). nil refresh entries are skipped.
+	for _, obj := range objects {
+		if obj == nil {
+			continue
+		}
+		for _, ref := range obj.Refreshes {
+			if ref == nil {
+				continue
+			}
+			// RefreshMode is a typed string; empty string maps to SQL
+			// NULL per the mode_only_when_finite CHECK (infinite rows
+			// must have NULL mode). Non-empty rides through as the
+			// string for the CHECK to validate ('continuous' or
+			// 'periodic').
+			var modeArg any
+			if ref.RefreshMode != "" {
+				modeArg = string(ref.RefreshMode)
+			}
+			if _, err := tx.Exec(ctx, upsertSQLOR,
+				string(obj.ID),         // $1 object_id (UUID)
+				string(ref.Attribute),  // $2 attribute
+				ref.Amount,             // $3 amount
+				ref.MaxQuantity,        // $4 max_quantity (nullable)
+				ref.AvailableQuantity,  // $5 available_quantity (nullable)
+				modeArg,                // $6 refresh_mode (nullable)
+				ref.RefreshPeriodHours, // $7 refresh_period_hours (nullable)
+				ref.LastRefreshAt,      // $8 last_refresh_at (nullable)
+				ref.DwellDelta,         // $9 dwell_delta (nullable)
+				ref.DwellPeriodMinutes, // $10 dwell_period_minutes (nullable)
+				refreshGen,             // $11 snapshot_gen
+			); err != nil {
+				return fmt.Errorf("pg village_objects SaveSnapshot: upsert refresh oid=%s attr=%s: %w",
+					obj.ID, ref.Attribute, err)
+			}
+		}
+	}
+
+	// Step 7: prune absent refresh rows. Catches the "parent survived
+	// but refresh attribute dropped" case. No CASCADE concerns here —
+	// object_refresh has no children.
+	if _, err := tx.Exec(ctx, deleteStaleSQLOR, refreshGen); err != nil {
+		return fmt.Errorf("pg village_objects SaveSnapshot: delete stale refresh: %w", err)
 	}
 	return nil
 }
