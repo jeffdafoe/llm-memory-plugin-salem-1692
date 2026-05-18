@@ -113,13 +113,26 @@ ON CONFLICT (id) DO UPDATE SET
 //
 // Runs INSIDE the caller's checkpoint Tx so atomicity is preserved:
 // if the upsert loop fails, the expire rolls back too.
+// Empty-array case: pgx may bind an untyped empty []int64 to $1
+// with ambiguous element type; explicit cast to bigint[] removes
+// any ambiguity. pay_ledger.id is bigint, so the cast is exact
+// (R2 finding).
+//
+// Domain-scope note: the UPDATE predicate matches the same
+// (state='accepted' AND fulfillment_status IN ('ready','pending'))
+// surface that LoadAll owns. If v1 and v2 ever coexist on the same
+// pay_ledger table during a transition (no current plan; v2 fully
+// replaces v1 at cutover), v2's SaveSnapshot would expire v1-
+// written in-flight rows that v2 doesn't know about — a
+// discriminator column would be needed. Documented here so the
+// concern doesn't get rediscovered later.
 const expireAbsentSQL = `
 UPDATE pay_ledger
 SET fulfillment_status = 'expired',
     expires_at         = COALESCE(expires_at, NOW())
 WHERE state = 'accepted'
   AND fulfillment_status IN ('ready', 'pending')
-  AND NOT (id = ANY($1))`
+  AND NOT (id = ANY($1::bigint[]))`
 
 // LoadAll loads in-flight Orders from pay_ledger.
 //
@@ -248,6 +261,11 @@ func (r *OrdersRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, orders map[sim
 		// pay_ledger is Order's durable home. Catch the mismatch
 		// rather than silently writing $1=Order.ID and ignoring
 		// LedgerID.
+		//
+		// Both sim.OrderID and sim.LedgerID are uint64 today, so the
+		// cast is exact. If either type ever widens (rare for ID
+		// types but worth noting), revisit this comparison to add an
+		// explicit range check before conversion.
 		if o.LedgerID != 0 && sim.OrderID(o.LedgerID) != o.ID {
 			return fmt.Errorf("pg orders SaveSnapshot: order %d LedgerID %d mismatch", o.ID, o.LedgerID)
 		}
