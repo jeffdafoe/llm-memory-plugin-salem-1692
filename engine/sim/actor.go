@@ -634,11 +634,19 @@ func CloneActor(a *Actor) *Actor {
 // Actor (via CloneActor); a consumer that needs it reads the Actor, not
 // the snapshot.
 type ActorSnapshot struct {
-	AtTick            uint64
-	DisplayName       string
-	Kind              ActorKind
-	State             ActorState // checkpointed; restart resumes in same state
-	Role              string
+	AtTick      uint64
+	DisplayName string
+	Kind        ActorKind
+	State       ActorState // checkpointed; restart resumes in same state
+	Role        string
+
+	// LLMAgent mirrors the live Actor's LLM-agent slug (VA backing this
+	// actor in llm-memory-api). Off-world consumers — notably the
+	// reactor-tick harness — read this to populate llm.Request.Model when
+	// calling Complete. Empty for actors with no VA backing (PCs, purely
+	// decorative NPCs).
+	LLMAgent string
+
 	InsideStructureID StructureID
 	CurrentX          int
 	CurrentY          int

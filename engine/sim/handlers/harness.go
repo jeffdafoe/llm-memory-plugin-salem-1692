@@ -204,6 +204,27 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 	}
 	tools := h.registry.AdvertisedSpecs()
 
+	// Scene + VA-routing context for every Complete + persist call this
+	// tick. SceneID is minted once and reused so the API's per-scene
+	// history loader (chat_messages.scene_id filter) sees a coherent
+	// conversation across iterations. Model is the actor's VA slug.
+	sceneID := llm.NewSceneID()
+	model := actor.LLMAgent
+
+	// Defer persist-on-exit for the orphan-tool_use case. v1's bug: a
+	// terminal-class tool (done() / TerminalOnSuccess commit) ends the
+	// tick without firing another Complete to deliver tool_result rows
+	// to the API. The assistant message that contained the terminal
+	// tool_call sits in chat_messages history with no matching tool_use
+	// row, breaking the NEXT tool-use call against the same VA
+	// ("tool_use without tool_result"). The defer runs on every exit
+	// path; persistTickToolResults gates on TerminalStatus + the
+	// presence of trailing tool messages, so spurious exits skip the
+	// call. See engine/sim/llm/memapi package doc.
+	defer func() {
+		h.persistTickToolResults(ctx, model, sceneID, transcript, result.TerminalStatus)
+	}()
+
 	// --- iteration loop ---
 	for iter := 0; iter < h.iterationBudget; iter++ {
 		result.IterationCount = iter + 1
@@ -215,6 +236,8 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 		}
 
 		resp, err := h.client.Complete(ctx, llm.Request{
+			Model:    model,
+			SceneID:  sceneID,
 			Messages: transcript,
 			Tools:    tools,
 		})
@@ -490,5 +513,101 @@ func copyWarrants(src []sim.WarrantMeta) []sim.WarrantMeta {
 	}
 	out := make([]sim.WarrantMeta, len(src))
 	copy(out, src)
+	return out
+}
+
+// persistTickToolResults runs at tick-exit (deferred from RunTick) and
+// writes the last batch's tool-result rows to the provider's history
+// via the optional llm.ToolResultPersister. Closes the v1 orphan-
+// tool_use defect: when a terminal-class tool ends the tick without
+// firing another Complete, the assistant's tool_call sits in history
+// with no matching tool_result row, breaking the next tool-use call.
+//
+// Gates:
+//
+//   - Adapter must implement llm.ToolResultPersister. FakeClient does;
+//     a hypothetical non-history adapter would skip this branch.
+//   - Model must be non-empty (no VA → no persist target).
+//   - Status must be one of the "clean exit with possibly-orphan
+//     tool_results" set: TickStatusDone (terminal tool fired),
+//     TickStatusSuccess (TerminalOnSuccess commit ended the tick), or
+//     TickStatusBudgetForced (budget exhausted before next Complete).
+//     Other statuses are either no-op (Skipped, Shutdown, Stale,
+//     FailedBeforeRender) or have already had their results delivered
+//     via a prior Complete (FailedAfterRender — the failed Complete
+//     posted iter N-1's results).
+//   - Transcript must end in one or more tool messages after the last
+//     assistant — that's the unpersisted last batch.
+//
+// Errors are logged, not returned: the TickResult is already populated
+// and the worker's CompleteReactorTick contract is the harness's
+// authoritative exit. A persist failure leaves orphans in history —
+// surfaced via logs for monitoring.
+func (h *Harness) persistTickToolResults(
+	ctx context.Context,
+	model, sceneID string,
+	transcript []llm.Message,
+	status sim.TickTerminalStatus,
+) {
+	if model == "" {
+		return
+	}
+	switch status {
+	case sim.TickStatusDone, sim.TickStatusSuccess, sim.TickStatusBudgetForced:
+		// proceed
+	default:
+		return
+	}
+	persister, ok := h.client.(llm.ToolResultPersister)
+	if !ok {
+		return
+	}
+	results := extractTrailingToolResults(transcript)
+	if len(results) == 0 {
+		return
+	}
+	err := persister.PersistToolResults(ctx, llm.PersistRequest{
+		Model:   model,
+		SceneID: sceneID,
+		Results: results,
+	})
+	if err != nil && ctx.Err() == nil {
+		log.Printf("handlers: persist tick tool results (model=%q scene=%q n=%d): %v",
+			model, sceneID, len(results), err)
+	}
+}
+
+// extractTrailingToolResults walks the transcript from the end,
+// collecting tool messages until the first non-tool boundary (the
+// preceding assistant message). Defensive: tool messages without
+// ToolCallID are skipped silently (toolResultMsg ensures the ID is
+// set, but a future caller could violate that).
+func extractTrailingToolResults(transcript []llm.Message) []llm.ToolResult {
+	// Find first non-tool from the end.
+	end := len(transcript)
+	start := end
+	for i := end - 1; i >= 0; i-- {
+		if transcript[i].Role != llm.RoleTool {
+			start = i + 1
+			break
+		}
+		if i == 0 {
+			start = 0
+		}
+	}
+	if start >= end {
+		return nil
+	}
+	out := make([]llm.ToolResult, 0, end-start)
+	for i := start; i < end; i++ {
+		m := transcript[i]
+		if m.ToolCallID == "" {
+			continue
+		}
+		out = append(out, llm.ToolResult{ID: m.ToolCallID, Content: m.Content})
+	}
+	if len(out) == 0 {
+		return nil
+	}
 	return out
 }

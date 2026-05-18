@@ -140,6 +140,37 @@ func TestRunNoticeboardAuthor_HappyPath(t *testing.T) {
 	}
 }
 
+// TestRunNoticeboardAuthor_MintsFreshSceneID — each authoring cycle
+// issues its own scene_id so memory-api's chat_messages history loader
+// isolates one cycle's conversation from the next.
+func TestRunNoticeboardAuthor_MintsFreshSceneID(t *testing.T) {
+	w, _ := buildNoticeboardCascadeWorld(t)
+	stop := runNoticeboardCascadeWorld(t, w)
+	defer stop()
+
+	client := llm.NewFakeClient(
+		llm.ScriptedTurn{Response: llm.Response{Content: "first notice"}},
+		llm.ScriptedTurn{Response: llm.Response{Content: "second notice"}},
+	)
+	if _, err := w.Send(sim.SetVillageObjectState("board", "posted", 0)); err != nil {
+		t.Fatalf("set state: %v", err)
+	}
+
+	runNoticeboardAuthor(context.Background(), w, client, "board", "posted", "Notice Board", "")
+	runNoticeboardAuthor(context.Background(), w, client, "board", "posted", "Notice Board", "")
+
+	reqs := client.Requests()
+	if len(reqs) != 2 {
+		t.Fatalf("Request count = %d, want 2", len(reqs))
+	}
+	if reqs[0].SceneID == "" || reqs[1].SceneID == "" {
+		t.Fatalf("SceneIDs empty: %q / %q", reqs[0].SceneID, reqs[1].SceneID)
+	}
+	if reqs[0].SceneID == reqs[1].SceneID {
+		t.Errorf("SceneIDs equal across cycles: %q (each call must mint fresh)", reqs[0].SceneID)
+	}
+}
+
 // TestRunNoticeboardAuthor_EmptyReply: FakeClient returns empty →
 // nothing saved.
 func TestRunNoticeboardAuthor_EmptyReply(t *testing.T) {

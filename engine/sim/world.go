@@ -1175,6 +1175,7 @@ func snapshotActor(a *Actor, atTick uint64) *ActorSnapshot {
 		Kind:               a.Kind,
 		State:              a.State,
 		Role:               a.Role,
+		LLMAgent:           a.LLMAgent,
 		InsideStructureID:  a.InsideStructureID,
 		CurrentX:           a.CurrentX,
 		CurrentY:           a.CurrentY,

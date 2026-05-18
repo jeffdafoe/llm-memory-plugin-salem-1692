@@ -43,6 +43,53 @@ type Request struct {
 	// Model is the provider's model identifier (e.g. "claude-sonnet-4-6").
 	// Empty when the adapter should use its configured default.
 	Model string
+
+	// SceneID, when set, identifies the conversation scope for this call.
+	// Adapters that support history scoping (memory-api: filters
+	// chat_messages by scene_id when loading history for the next VA
+	// dispatch) thread this through; adapters that don't ignore it.
+	//
+	// Single-call cascade consumers (atmosphere, noticeboard) mint a
+	// fresh UUID per Complete to isolate one-shot completions from prior
+	// runs. Multi-iteration callers (the per-tick harness) mint once at
+	// tick start and reuse across iterations so tool_call → tool_result
+	// pairs thread within the same scene.
+	SceneID string
+}
+
+// ToolResult is one engine-side answer to a tool call the model emitted
+// in a prior assistant message. Used by ToolResultPersister to write
+// orphaned tool-result rows to history without firing a follow-up LLM
+// call (see ToolResultPersister doc for why this matters).
+type ToolResult struct {
+	// ID matches a prior assistant RawToolCall.ID. The adapter writes
+	// one history row per ID so the next assistant turn sees all of
+	// them in transcript order.
+	ID string
+
+	// Content is the result string the model would have seen as the
+	// "tool" message body. Same content the harness already appended to
+	// its local transcript; this just persists it provider-side.
+	Content string
+}
+
+// PersistRequest is the input to ToolResultPersister.PersistToolResults.
+// Model + SceneID are scoped the same way Request's are; Results is the
+// batch from the assistant message that ended the tick.
+type PersistRequest struct {
+	// Model routes the persist call to the right VA slug (the API uses
+	// it to attribute the rows to the same conversation pair the prior
+	// assistant message wrote into). Required.
+	Model string
+
+	// SceneID scopes the persisted rows the same way Request.SceneID
+	// scopes Complete. Should match the SceneID used on the prior
+	// Complete that produced the tool_calls being persisted.
+	SceneID string
+
+	// Results is the per-call list, ordered to match the model's emit
+	// order. Must be non-empty.
+	Results []ToolResult
 }
 
 // Message is one role-tagged entry in the transcript. Field population

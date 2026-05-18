@@ -17,6 +17,31 @@ type Client interface {
 	Complete(ctx context.Context, req Request) (Response, error)
 }
 
+// ToolResultPersister is an OPTIONAL interface adapters may implement
+// when the backing transport keeps conversation history (e.g. memory-api
+// writes chat_messages rows for every Complete call). The harness calls
+// it after a terminal-class tool fires to write the last batch of
+// tool-result rows without firing another LLM call.
+//
+// Why it exists: when a terminal tool (done(), unknown) ends the tick,
+// the assistant message that contained that tool_call has already been
+// written to provider history by the prior Complete. Without a
+// persist-only follow-up, that tool_call sits in history with no
+// matching tool_result — a corruption that breaks every subsequent
+// tool-use call against the same VA (Anthropic 400 "tool_use without
+// tool_result"). v1 hit this; v2 closes it via this interface.
+//
+// Adapters whose transports do not have a server-side history concept
+// (e.g. a direct-provider adapter) do not implement this interface.
+// Harness callers type-assert and skip the call when the assertion
+// fails.
+//
+// FakeClient implements this for test inspection; PersistRequests() is
+// the test-side accessor.
+type ToolResultPersister interface {
+	PersistToolResults(ctx context.Context, req PersistRequest) error
+}
+
 // ErrorClass categorizes Client.Complete failures into the cases the
 // harness's CompleteReactorTick policy table reads. Every Complete error
 // must classify; an error that returns ErrorUnknown is itself a bug to

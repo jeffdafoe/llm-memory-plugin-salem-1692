@@ -25,10 +25,12 @@ import (
 //     ErrorContextCancelled} and does NOT record the request, since the
 //     work was never done.
 type FakeClient struct {
-	mu       sync.Mutex
-	script   []ScriptedTurn
-	cursor   int
-	requests []Request
+	mu              sync.Mutex
+	script          []ScriptedTurn
+	cursor          int
+	requests        []Request
+	persistRequests []PersistRequest
+	persistErr      error
 }
 
 // ScriptedTurn is one entry in the FakeClient script. Exactly one of
@@ -105,6 +107,62 @@ func (f *FakeClient) CallCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.requests)
+}
+
+// PersistToolResults implements ToolResultPersister. Records the request
+// for inspection via PersistRequests(). Returns the configured persistErr
+// when set (use SetPersistError to script a failure); otherwise nil.
+//
+// Ctx-cancel before the call is observed returns ErrorContextCancelled
+// without recording — symmetric with Complete's posture so a test that
+// asserts "no persist was made under cancel" reads cleanly.
+func (f *FakeClient) PersistToolResults(ctx context.Context, req PersistRequest) error {
+	if err := ctx.Err(); err != nil {
+		return &Error{
+			Class:   ErrorContextCancelled,
+			Message: "ctx cancelled before fake PersistToolResults",
+			Cause:   err,
+		}
+	}
+	f.mu.Lock()
+	f.persistRequests = append(f.persistRequests, clonePersistRequest(req))
+	err := f.persistErr
+	f.mu.Unlock()
+	return err
+}
+
+// PersistRequests returns a deep copy of every PersistToolResults call
+// seen so far, in call order. Safe to call from any goroutine, and safe
+// to mutate the returned slice — the FakeClient's recorded history is
+// not corrupted.
+func (f *FakeClient) PersistRequests() []PersistRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]PersistRequest, len(f.persistRequests))
+	for i, req := range f.persistRequests {
+		out[i] = clonePersistRequest(req)
+	}
+	return out
+}
+
+// SetPersistError configures the error PersistToolResults returns on
+// every call. Pass nil to clear. Useful for testing the harness's
+// "persist failed, log and proceed" posture.
+func (f *FakeClient) SetPersistError(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.persistErr = err
+}
+
+// clonePersistRequest deep-copies the Results slice so a later caller
+// mutation can't corrupt FakeClient's recorded history.
+func clonePersistRequest(req PersistRequest) PersistRequest {
+	out := req
+	if req.Results != nil {
+		out.Results = make([]ToolResult, len(req.Results))
+		copy(out.Results, req.Results)
+	}
+	return out
 }
 
 // cloneRequest deep-copies the Request so a caller observing Requests()
