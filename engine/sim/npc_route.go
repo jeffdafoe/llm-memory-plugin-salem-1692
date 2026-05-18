@@ -369,6 +369,12 @@ func advanceActiveRoute(w *World, route *NPCRoute) (AdvanceNPCRouteResult, error
 		delete(w.ActiveRoutes, route.NPCID)
 		return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "stale_stop"}, nil
 	}
+	// Locomotion contract dependency: this guard assumes
+	// actor.CurrentX/CurrentY already reflect the arrival tile when
+	// ActorArrived's subscribers run. The locomotion ticker's
+	// finishArrival commits actor.CurrentX/Y in advanceActorLocomotion
+	// (one tile per tick) BEFORE emitting ActorArrived. Reversing
+	// that ordering would make valid arrivals look stale.
 	if actor.CurrentX != stop.WalkTo.X || actor.CurrentY != stop.WalkTo.Y {
 		log.Printf("sim/npc_route: %q stale arrival at (%d,%d), expected stop %d at (%d,%d) — skipping flip",
 			route.NPCID, actor.CurrentX, actor.CurrentY, route.StopIdx, stop.WalkTo.X, stop.WalkTo.Y)
