@@ -46,6 +46,13 @@ func (OrderCreated) isSimEvent()     {}
 // Subscribers receive the canonical "this happened" signal for the
 // fulfillment side; future room broadcasts, dwell-narration hooks, etc.
 // will subscribe here.
+//
+// Amount carries the agreed-on coin total from the originating
+// pay-with-item transaction (= the PayLedger entry's Amount = the
+// Order's Amount, stable through the post-accept fulfillment window).
+// Added in Slice 6 so the future per-(seller, item) price-book ring
+// buffer can subscribe to OrderDelivered directly and append a price
+// observation without a re-lookup against pay_ledger.
 type OrderDelivered struct {
 	EventBase
 	OrderID     OrderID
@@ -53,6 +60,7 @@ type OrderDelivered struct {
 	SellerID    ActorID
 	Item        ItemKind
 	Qty         int
+	Amount      int
 	ConsumerIDs []ActorID
 	LedgerID    LedgerID
 	At          time.Time

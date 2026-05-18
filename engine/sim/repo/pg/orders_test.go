@@ -371,3 +371,112 @@ func TestOrderStateToFulfillment_Mapping(t *testing.T) {
 		})
 	}
 }
+
+// --- WriteTerminal (Slice 6) ---------------------------------------------
+
+// TestOrdersRepo_WriteTerminal_Delivered — happy path. Stamps
+// fulfillment_status='delivered' + delivered_on; expires_at preserved.
+func TestOrdersRepo_WriteTerminal_Delivered(t *testing.T) {
+	mock, repo := newMockPool(t)
+
+	now := time.Now().UTC()
+	delivered := now.Add(time.Minute)
+	mock.ExpectExec(`UPDATE pay_ledger[\s\S]+SET fulfillment_status = \$2`).
+		WithArgs(int64(1), "delivered", &delivered).
+		WillReturnResult(pgconn.NewCommandTag("UPDATE 1"))
+
+	o := &sim.Order{
+		ID:          1,
+		State:       sim.OrderStateDelivered,
+		Item:        "stew",
+		Qty:         1,
+		ConsumerIDs: []sim.ActorID{"alice"},
+		LedgerID:    1,
+		DeliveredAt: &delivered,
+	}
+	if err := repo.WriteTerminal(context.Background(), o); err != nil {
+		t.Fatalf("WriteTerminal: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+}
+
+// TestOrdersRepo_WriteTerminal_Expired — same path with state='expired'
+// and DeliveredAt=nil. The CASE expression in SQL restamps expires_at
+// to NOW(), preserved as part of the SQL shape (the mock doesn't
+// evaluate the CASE; we just verify the binding shape).
+func TestOrdersRepo_WriteTerminal_Expired(t *testing.T) {
+	mock, repo := newMockPool(t)
+
+	mock.ExpectExec(`UPDATE pay_ledger[\s\S]+SET fulfillment_status = \$2`).
+		WithArgs(int64(7), "expired", (*time.Time)(nil)).
+		WillReturnResult(pgconn.NewCommandTag("UPDATE 1"))
+
+	o := &sim.Order{
+		ID:          7,
+		State:       sim.OrderStateExpired,
+		Item:        "stew",
+		Qty:         1,
+		ConsumerIDs: []sim.ActorID{"alice"},
+		LedgerID:    7,
+	}
+	if err := repo.WriteTerminal(context.Background(), o); err != nil {
+		t.Fatalf("WriteTerminal: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+}
+
+// TestOrdersRepo_WriteTerminal_RejectsNonTerminal — caller-bug guard.
+func TestOrdersRepo_WriteTerminal_RejectsNonTerminal(t *testing.T) {
+	_, repo := newMockPool(t)
+	o := &sim.Order{ID: 1, State: sim.OrderStateReady}
+	if err := repo.WriteTerminal(context.Background(), o); err == nil {
+		t.Fatal("expected error for non-terminal state")
+	}
+}
+
+// TestOrdersRepo_WriteTerminal_RejectsNil — nil guard.
+func TestOrdersRepo_WriteTerminal_RejectsNil(t *testing.T) {
+	_, repo := newMockPool(t)
+	if err := repo.WriteTerminal(context.Background(), nil); err == nil {
+		t.Fatal("expected error for nil order")
+	}
+}
+
+// TestOrdersRepo_WriteTerminal_RowsAffectedZero — the row doesn't exist
+// in pay_ledger. Surface as an error so finalizeOrderTerminal logs +
+// retains the entry for the next checkpoint to reconcile.
+func TestOrdersRepo_WriteTerminal_RowsAffectedZero(t *testing.T) {
+	mock, repo := newMockPool(t)
+
+	mock.ExpectExec(`UPDATE pay_ledger`).
+		WillReturnResult(pgconn.NewCommandTag("UPDATE 0"))
+
+	o := &sim.Order{
+		ID: 999, State: sim.OrderStateDelivered, Item: "stew", Qty: 1,
+		ConsumerIDs: []sim.ActorID{"alice"}, LedgerID: 999,
+	}
+	if err := repo.WriteTerminal(context.Background(), o); err == nil {
+		t.Fatal("expected error for RowsAffected=0")
+	}
+}
+
+// TestOrdersRepo_WriteTerminal_ExecError — pg-side error surfaces to
+// the caller (finalizeOrderTerminal logs + retains).
+func TestOrdersRepo_WriteTerminal_ExecError(t *testing.T) {
+	mock, repo := newMockPool(t)
+
+	mock.ExpectExec(`UPDATE pay_ledger`).
+		WillReturnError(errors.New("conn lost"))
+
+	o := &sim.Order{
+		ID: 1, State: sim.OrderStateDelivered, Item: "stew", Qty: 1,
+		ConsumerIDs: []sim.ActorID{"alice"}, LedgerID: 1,
+	}
+	if err := repo.WriteTerminal(context.Background(), o); err == nil {
+		t.Fatal("expected error for pool Exec failure")
+	}
+}

@@ -547,6 +547,15 @@ type World struct {
 	// failures never propagate to commands.
 	payLedgerSink PayLedgerSink
 
+	// terminalOrderSink is the synchronous durable-write target for Order
+	// terminal transitions (Slice 6 write-through-then-prune). Nil by
+	// default; SetTerminalOrderSink installs the pg impl at production
+	// startup. When nil, finalizeOrderTerminal preserves the legacy
+	// no-prune behavior so unit tests that build a world via NewWorld
+	// without wiring a sink continue to see terminal entries remain in
+	// w.Orders. See TerminalOrderSink doc for the contract.
+	terminalOrderSink TerminalOrderSink
+
 	cmds      chan Command
 	published atomic.Pointer[Snapshot]
 
@@ -667,6 +676,21 @@ func (w *World) SetPayLedgerSink(s PayLedgerSink) {
 		s = nullPayLedgerSink{}
 	}
 	w.payLedgerSink = s
+}
+
+// SetTerminalOrderSink installs the synchronous durable-write target the
+// world invokes during Order terminal transitions (Slice 6 write-through-
+// then-prune). Passing nil clears the sink and restores legacy no-prune
+// behavior. Safe to call before Run, or from inside a Command.Fn.
+//
+// Wiring order matters at production startup: SetTerminalOrderSink must
+// be called BEFORE LoadWorld so the LoadWorld-time
+// restartExpirePendingOrders pass also write-through-prunes any orders
+// whose ExpiresAt elapsed during downtime. Calling it after LoadWorld
+// leaves those restart-time terminal entries sitting in w.Orders until
+// the next checkpoint reconciles them.
+func (w *World) SetTerminalOrderSink(s TerminalOrderSink) {
+	w.terminalOrderSink = s
 }
 
 // SetTickAdmissionController installs the controller the reactor evaluator

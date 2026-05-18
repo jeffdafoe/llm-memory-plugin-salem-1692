@@ -1,9 +1,38 @@
 package sim
 
 import (
+	"context"
+	"log"
 	"math"
 	"time"
 )
+
+// TerminalOrderSink is the synchronous durable-write target for Order
+// terminal transitions. Implementations write the post-flip Order to
+// the durable store and return any error. Unlike PayLedgerSink (which
+// is best-effort, async, non-blocking), this sink IS allowed to block
+// the world goroutine — the design intent is write-through-then-prune
+// (Slice 6): the world commits the durable state before pruning the
+// in-memory entry from World.Orders, so a crash between the two leaves
+// the order durable in pg and dropped from memory on the next restart
+// via the Ready+Pending-only LoadAll filter.
+//
+// Failure mode: on a non-nil error, the caller (finalizeOrderTerminal)
+// logs and SKIPS the prune. The in-memory Order stays at its terminal
+// state; the next checkpoint SaveSnapshot reconciles pg with the
+// in-memory shape. Brief divergence window is acceptable since the
+// OrderDelivered / OrderExpired event has already fired and any
+// narrative subscribers have observed the transition.
+//
+// Wiring: optional. The default is no sink installed (w.terminalOrderSink
+// == nil), which preserves the legacy behavior of letting terminal
+// entries accumulate in w.Orders until restart. Tests that don't need
+// the prune behavior simply don't install a sink. Production wires the
+// pg impl via SetTerminalOrderSink before LoadWorld so the LoadWorld-
+// time restartExpirePendingOrders pass also write-through-prunes.
+type TerminalOrderSink interface {
+	WriteTerminal(ctx context.Context, o *Order) error
+}
 
 // Order is the post-acceptance fulfillment state machine for take-away
 // pay-with-item transactions (Phase 3 PR S6). Created in
@@ -158,12 +187,13 @@ func (w *World) nextOrderSeq() OrderID {
 }
 
 // finalizeOrderTerminal flips an Order to a terminal state, stamps the
-// terminal timestamps, and emits the matching event. Shared by the
-// happy-path DeliverOrder commit and the safety-net order sweep.
+// terminal timestamps, emits the matching event, and (when a sink is
+// installed) write-through-prunes the entry from World.Orders. Shared
+// by the happy-path DeliverOrder commit and the safety-net order sweep.
 //
 // MUST be called from inside a Command.Fn (world goroutine). The
 // caller is responsible for any pre-flip validation (e.g. DeliverOrder
-// re-validates the 6-gate matrix before calling); finalizeOrderTerminal
+// re-validates the 7-gate matrix before calling); finalizeOrderTerminal
 // trusts that the transition is legal.
 //
 // terminal must be a real terminal state (OrderStateDelivered or
@@ -171,6 +201,16 @@ func (w *World) nextOrderSeq() OrderID {
 // caller has already done the per-consumer transferItem calls).
 // For Expired, only the State field changes — no goods move, no
 // coins refund (per design call 5 option A).
+//
+// Slice 6 write-through-then-prune (active only when a non-nil
+// TerminalOrderSink is wired): after the existing event emit, the
+// post-flip Order is written to the durable store via the sink. On
+// success, the entry is deleted from w.Orders. On error, the entry
+// stays in w.Orders at its terminal state; the next checkpoint
+// SaveSnapshot reconciles pg with the in-memory shape. Without a
+// sink installed (typical for unit tests, and for the period before
+// main.go wires the pg sink), this function preserves the legacy
+// no-prune behavior so existing tests still pass.
 func finalizeOrderTerminal(w *World, o *Order, terminal OrderState, at time.Time) {
 	if o == nil {
 		return
@@ -189,6 +229,7 @@ func finalizeOrderTerminal(w *World, o *Order, terminal OrderState, at time.Time
 			SellerID:    o.SellerID,
 			Item:        o.Item,
 			Qty:         o.Qty,
+			Amount:      o.Amount,
 			ConsumerIDs: append([]ActorID(nil), o.ConsumerIDs...),
 			LedgerID:    o.LedgerID,
 			At:          at,
@@ -205,6 +246,23 @@ func finalizeOrderTerminal(w *World, o *Order, terminal OrderState, at time.Time
 			At:          at,
 		})
 	}
+
+	// Slice 6: write-through + prune. Skip entirely when no sink is
+	// installed (legacy no-prune behavior; tests, pre-cutover builds).
+	sink := w.terminalOrderSink
+	if sink == nil {
+		return
+	}
+	if err := sink.WriteTerminal(w.LifecycleContext(), o); err != nil {
+		// Log and leave the entry in w.Orders at its terminal state.
+		// Brief memory-vs-pg divergence resolves at next checkpoint;
+		// the OrderDelivered/OrderExpired event has already fired so
+		// narrative subscribers aren't re-notified on the next run.
+		log.Printf("sim/order: terminal write-through for order %d (%s) failed: %v",
+			o.ID, terminal, err)
+		return
+	}
+	delete(w.Orders, o.ID)
 }
 
 // outstandingReadyOrderQty returns the total quantity of `item` that
