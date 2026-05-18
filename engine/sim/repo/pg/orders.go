@@ -93,6 +93,38 @@ ON CONFLICT (id) DO UPDATE SET
     expires_at         = EXCLUDED.expires_at,
     delivered_on       = EXCLUDED.delivered_on`
 
+// writeTerminalSQL is Slice 6's single-row terminal-flip statement.
+// Runs against the pool directly (no Tx) — terminal write-through
+// is one row, one statement; atomicity is inherent in pg's row-level
+// MVCC. Tracks the same UPDATE column set as upsertSQL's conflict
+// path (fulfillment_status, expires_at, delivered_on) so a terminal
+// reached via write-through and a terminal observed at the next
+// SaveSnapshot upsert produce identical column values.
+//
+// state stays 'accepted' — pay-ledger acceptance is the gate that
+// minted the Order; the macro state column doesn't move on
+// fulfillment terminations (only fulfillment_status does).
+//
+// expires_at is restamped to NOW() on Expired transitions so admin
+// reads can see when the safety-net sweep fired vs when the original
+// TTL would have elapsed. For Delivered transitions the original
+// expires_at is preserved (the field already records the planned
+// boundary; restamping would obscure the by-when contract).
+//
+// No fulfillment_status guard in the WHERE clause: the in-memory
+// Order state is the source of truth for in-flight; if pg has
+// drifted (e.g. a previous run's SaveSnapshot expireAbsent flipped
+// the row to 'expired' before the in-memory entry was pruned), the
+// terminal write-through still wins. Rows-affected = 0 means the id
+// itself doesn't exist in pay_ledger — a substrate-level error,
+// surfaced to the caller.
+const writeTerminalSQL = `
+UPDATE pay_ledger
+SET fulfillment_status = $2,
+    delivered_on       = $3,
+    expires_at         = CASE WHEN $2 = 'expired' THEN NOW() ELSE expires_at END
+WHERE id = $1`
+
 // expireAbsentSQL enforces SaveSnapshot's contract: the supplied map
 // IS the complete in-flight set. Any pay_ledger row currently
 // state='accepted' AND fulfillment_status IN ('ready','pending')
@@ -293,6 +325,48 @@ func (r *OrdersRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, orders map[sim
 		); err != nil {
 			return fmt.Errorf("pg orders SaveSnapshot: upsert id=%d: %w", o.ID, err)
 		}
+	}
+	return nil
+}
+
+// WriteTerminal stamps a single Order's terminal state durably (Slice
+// 6 write-through-then-prune). Called from inside finalizeOrderTerminal
+// on the world goroutine, synchronously, between the in-memory state
+// flip and the w.Orders prune. Blocks until pg returns; the world
+// goroutine waits.
+//
+// Runs against the pool directly (no Tx) — single-row UPDATE on the
+// pay_ledger primary key, atomicity inherent in row-level MVCC. No
+// checkpoint coupling.
+//
+// Rejects non-terminal states (caller bug — finalizeOrderTerminal
+// guarantees terminal-only). Returns an error on RowsAffected = 0
+// (id not present in pay_ledger — substrate inconsistency).
+//
+// On error, finalizeOrderTerminal logs and skips the prune, leaving
+// the in-memory terminal entry in w.Orders for the next checkpoint
+// SaveSnapshot to reconcile.
+func (r *OrdersRepo) WriteTerminal(ctx context.Context, o *sim.Order) error {
+	if o == nil {
+		return fmt.Errorf("pg orders WriteTerminal: nil order")
+	}
+	if !o.State.IsTerminal() {
+		return fmt.Errorf("pg orders WriteTerminal: order %d state %q is not terminal", o.ID, o.State)
+	}
+	status, err := orderStateToFulfillment(o.State)
+	if err != nil {
+		return fmt.Errorf("pg orders WriteTerminal: order %d: %w", o.ID, err)
+	}
+	tag, err := r.pool.Exec(ctx, writeTerminalSQL,
+		int64(o.ID),   // $1 id
+		status,        // $2 fulfillment_status
+		o.DeliveredAt, // $3 delivered_on (nil for Expired)
+	)
+	if err != nil {
+		return fmt.Errorf("pg orders WriteTerminal: order %d exec: %w", o.ID, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("pg orders WriteTerminal: order %d not found in pay_ledger", o.ID)
 	}
 	return nil
 }
