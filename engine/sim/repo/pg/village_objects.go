@@ -135,16 +135,21 @@ SELECT COUNT(*) FROM village_object fresh
 // at checkpoint time.
 const nextGenSQLVO = `SELECT nextval('village_object_snapshot_gen_seq')`
 
-// advisoryLockSQLVO serializes SaveSnapshot calls for village_object
-// at the Tx boundary. Held for the Tx duration (released automatically
-// on commit/rollback). The gen-marker pattern is only correct when
-// snapshots for the same aggregate don't interleave — a concurrent
-// older snapshot's delete-stale step would silently wipe a newer
-// snapshot's just-written rows (gen=10 vs gen=11; the older Tx's
-// `DELETE WHERE snapshot_gen < 10` runs after the newer Tx commits
-// at gen=11, deleting nothing — BUT the newer Tx's `DELETE WHERE
-// snapshot_gen < 11` runs after the older Tx commits at gen=10,
-// deleting the older Tx's just-written set).
+// advisoryLockSQLVO is the **single global lock for the village_object
+// snapshot** — held for the Tx duration (released automatically on
+// commit/rollback). Serializes ALL concurrent SaveSnapshot calls for
+// this table. Today v2 is single-realm and SaveSnapshot is always the
+// full village_object set, so "global per table" is equivalent to
+// "per snapshot" — every SaveSnapshot covers the same aggregate
+// instance.
+//
+// The gen-marker pattern is only correct when snapshots don't
+// interleave — a concurrent older snapshot's delete-stale step would
+// silently wipe a newer snapshot's just-written rows (gen=10 vs
+// gen=11; the older Tx's `DELETE WHERE snapshot_gen < 10` runs after
+// the newer Tx commits at gen=11, deleting nothing — BUT the newer
+// Tx's `DELETE WHERE snapshot_gen < 11` runs after the older Tx
+// commits at gen=10, deleting the older Tx's just-written set).
 //
 // In v2's single-world-goroutine architecture this is normally
 // guaranteed by caller serialization (the world goroutine is the sole
@@ -153,14 +158,18 @@ const nextGenSQLVO = `SELECT nextval('village_object_snapshot_gen_seq')`
 // the world goroutine (admin tools, cutover scripts, parallel
 // migrations).
 //
-// `hashtext` maps the aggregate label to a 32-bit int; the
-// 2-int-arg form of pg_advisory_xact_lock takes a (classid, objid)
-// pair, so the second arg discriminates between aggregates sharing a
-// hashtext collision. We use hashtext('village_object_snapshot') as
-// classid and 0 as objid — collisions across different aggregates'
-// labels are statistically negligible at the 32-bit hash space and a
-// false-positive collision just means brief serialization between
-// unrelated aggregates' snapshots, not correctness loss.
+// `pg_advisory_xact_lock(classid, objid)` takes two int4 args.
+// `hashtext('village_object_snapshot')` is the classid; objid is 0.
+// classid collisions across aggregate-type labels are statistically
+// negligible (32-bit hash space); a false collision would just briefly
+// serialize unrelated aggregates' snapshots without correctness loss.
+//
+// **Multi-realm upgrade path** (when realms land): the second arg
+// should become a realm/world identifier so SaveSnapshot for realm A
+// doesn't serialize against realm B's snapshot, e.g.
+// `pg_advisory_xact_lock(hashtext('village_object_snapshot'), hashtext($1))`
+// where $1 is the realm ID. Today single-realm so the global lock is
+// correct and there's no parameter to pass.
 const advisoryLockSQLVO = `SELECT pg_advisory_xact_lock(hashtext('village_object_snapshot'), 0)`
 
 // LoadAll loads every village_object row into memory.
