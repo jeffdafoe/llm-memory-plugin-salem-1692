@@ -566,16 +566,34 @@ func (h *Harness) persistTickToolResults(
 	if len(results) == 0 {
 		return
 	}
-	err := persister.PersistToolResults(ctx, llm.PersistRequest{
+	// On engine shutdown (parent ctx cancelled): skip persist — the
+	// orphan is acceptable, engine restart is the bigger concern. On
+	// any other live path: run persist on a fresh detached context
+	// with a short budget so a future per-tick deadline (not yet
+	// implemented but plausible) doesn't abort cleanup that's
+	// specifically there to prevent provider-side corruption (R1
+	// finding #7).
+	if ctx.Err() != nil {
+		return
+	}
+	persistCtx, cancel := context.WithTimeout(context.Background(), persistTimeout)
+	defer cancel()
+	err := persister.PersistToolResults(persistCtx, llm.PersistRequest{
 		Model:   model,
 		SceneID: sceneID,
 		Results: results,
 	})
-	if err != nil && ctx.Err() == nil {
+	if err != nil {
 		log.Printf("handlers: persist tick tool results (model=%q scene=%q n=%d): %v",
 			model, sceneID, len(results), err)
 	}
 }
+
+// persistTimeout caps the deferred persist call. v1's per-attempt
+// budget is 90s but the retry schedule sums to ~800ms; 5s here is
+// generous for the typical case and bounded enough that engine
+// shutdown won't block on it past the operator's patience.
+const persistTimeout = 5 * time.Second
 
 // extractTrailingToolResults walks the transcript from the end,
 // collecting tool messages until the first non-tool boundary (the

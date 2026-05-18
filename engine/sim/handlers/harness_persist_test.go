@@ -71,48 +71,80 @@ func TestHarness_Persist_OnTerminalDone(t *testing.T) {
 	}
 }
 
-// --- happy path: commit with TerminalOnSuccess persists last batch -------
+// --- happy path: TerminalOnSuccess commit triggers persist --------------
 
-func TestHarness_Persist_OnTerminalOnSuccessCommit(t *testing.T) {
-	w, cancel := newHarnessWorldWithAgent(t, "attempt-A", "zbbs-josiah")
-	defer cancel()
-
-	// move_to in the test registry is registered with terminal=true, so a
-	// successful commit ends the tick as TickStatusSuccess.
-	client := llm.NewFakeClient(llm.ScriptedTurn{Response: llm.Response{
-		ToolCalls: []llm.RawToolCall{newToolCall("c-move", 0, "move_to", `{}`)},
-	}})
+// TestHarness_PersistTickToolResults_OnSuccess exercises the
+// TickStatusSuccess persist path directly. Driving TickStatusSuccess
+// through RunTick requires a real eventSeq (sim.RunTickToolCommand
+// rejects rootEventID > w.eventSeq, which is 0 in unit-test worlds).
+// Calling persistTickToolResults directly with a hand-built transcript
+// covers the gate behavior without that plumbing.
+func TestHarness_PersistTickToolResults_OnSuccess(t *testing.T) {
+	client := llm.NewFakeClient()
 	h, _ := newTestHarness(t, client, 0, 0)
+	transcript := []llm.Message{
+		{Role: llm.RoleUser, Content: "perception"},
+		{Role: llm.RoleAssistant, ToolCalls: []llm.RawToolCall{{ID: "c-move", Name: "move_to"}}},
+		{Role: llm.RoleTool, ToolCallID: "c-move", Content: "[ok]"},
+	}
+	h.persistTickToolResults(context.Background(), "zbbs-josiah", "scene-x",
+		transcript, sim.TickStatusSuccess)
 
-	// move_to needs a valid rootEventID — sim.RunTickToolCommand rejects
-	// root > w.eventSeq. The unit-test world has eventSeq=0; the
-	// commit-end pathway is exercised elsewhere with proper plumbing.
-	// Here we use the rootEventID=0 path which the helper accepts.
-	job := newTestJob("attempt-A", nil)
-	job.rootEventID = 0
+	persists := client.PersistRequests()
+	if len(persists) != 1 {
+		t.Fatalf("PersistRequests len = %d, want 1", len(persists))
+	}
+	if persists[0].Model != "zbbs-josiah" {
+		t.Errorf("Model = %q", persists[0].Model)
+	}
+	if persists[0].SceneID != "scene-x" {
+		t.Errorf("SceneID = %q", persists[0].SceneID)
+	}
+	if len(persists[0].Results) != 1 || persists[0].Results[0].ID != "c-move" {
+		t.Errorf("Results = %+v", persists[0].Results)
+	}
+}
 
-	result := h.RunTick(context.Background(), w, job)
-	// The commit may fail with the world-side rootEventID guard, in
-	// which case status is Done (no — done is reserved for the
-	// terminal class). Actually the failure path returns
-	// `[error: command_failed]` and outcome.success=false, no ended.
-	// Then iter loops again and FakeClient script exhausts → second
-	// Complete returns ErrorMalformed → llmErrorToStatus(Malformed, 1)
-	// → FailedAfterRender. That's NOT in our persist set, so persist
-	// is skipped. That's actually correct behavior for the
-	// command-failed case, but not the test we want.
-	//
-	// Workaround: assert that IF status was Success, persist fired.
-	// For now we skip this test until the integration harness is wired
-	// — TickStatusSuccess is hard to drive without a real world.
-	if result.TerminalStatus == sim.TickStatusSuccess {
-		persists := client.PersistRequests()
-		if len(persists) != 1 {
-			t.Errorf("Success path: PersistRequests len = %d, want 1", len(persists))
-		}
-	} else {
-		t.Skipf("status %v is not Success (requires real eventSeq plumbing); "+
-			"the success-status persist path is exercised in integration", result.TerminalStatus)
+// TestHarness_PersistTickToolResults_GateMatrix covers the status-gate
+// table directly: each TerminalStatus value is checked for whether it
+// triggers persist. Pairs with TestHarness_PersistTickToolResults_OnSuccess
+// above so the full gate matrix has direct coverage.
+func TestHarness_PersistTickToolResults_GateMatrix(t *testing.T) {
+	transcript := []llm.Message{
+		{Role: llm.RoleAssistant, ToolCalls: []llm.RawToolCall{{ID: "x"}}},
+		{Role: llm.RoleTool, ToolCallID: "x", Content: "[ok]"},
+	}
+	cases := []struct {
+		name        string
+		status      sim.TickTerminalStatus
+		wantPersist bool
+	}{
+		{"Done", sim.TickStatusDone, true},
+		{"Success", sim.TickStatusSuccess, true},
+		{"BudgetForced", sim.TickStatusBudgetForced, true},
+		{"Skipped", sim.TickStatusSkipped, false},
+		{"Shutdown", sim.TickStatusShutdown, false},
+		{"Stale", sim.TickStatusStale, false},
+		{"FailedBeforeRender", sim.TickStatusFailedBeforeRender, false},
+		{"FailedAfterRender", sim.TickStatusFailedAfterRender, false},
+		{"Unknown", sim.TickStatusUnknown, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client := llm.NewFakeClient()
+			h, _ := newTestHarness(t, client, 0, 0)
+			h.persistTickToolResults(context.Background(), "zbbs-josiah", "scene-x",
+				transcript, tc.status)
+			got := len(client.PersistRequests())
+			want := 0
+			if tc.wantPersist {
+				want = 1
+			}
+			if got != want {
+				t.Errorf("status=%v: PersistRequests len = %d, want %d",
+					tc.status, got, want)
+			}
+		})
 	}
 }
 

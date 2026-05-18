@@ -34,6 +34,13 @@ type Client struct {
 	apiKey     string
 	httpClient *http.Client
 
+	// httpClientSupplied tracks whether httpClient came from
+	// WithHTTPClient (true) or from the adapter's default
+	// constructor path (false). WithTimeout reads this so it only
+	// mutates the default — never a caller-owned http.Client. Makes
+	// option ordering irrelevant (R1 finding #3).
+	httpClientSupplied bool
+
 	persistBackoffs []time.Duration
 }
 
@@ -42,20 +49,24 @@ type Option func(*Client)
 
 // WithHTTPClient replaces the default http.Client (90s timeout). Mainly
 // for tests that need to swap in a server-side fixture's transport.
+// Marks the client as caller-supplied so WithTimeout won't mutate it,
+// regardless of option order.
 func WithHTTPClient(hc *http.Client) Option {
 	return func(c *Client) {
 		if hc != nil {
 			c.httpClient = hc
+			c.httpClientSupplied = true
 		}
 	}
 }
 
-// WithTimeout overrides the default 90s HTTP timeout. Applied to the
-// adapter's internal http.Client; ignored if WithHTTPClient also set a
-// caller-supplied client.
+// WithTimeout overrides the default 90s HTTP timeout. Applies ONLY to
+// the adapter's default http.Client — caller-supplied clients (via
+// WithHTTPClient) are left alone, regardless of option order. Pass
+// nothing to keep the default.
 func WithTimeout(d time.Duration) Option {
 	return func(c *Client) {
-		if c.httpClient != nil && d > 0 {
+		if d > 0 && !c.httpClientSupplied {
 			c.httpClient.Timeout = d
 		}
 	}
@@ -64,11 +75,14 @@ func WithTimeout(d time.Duration) Option {
 // WithPersistBackoffs overrides the retry schedule for
 // PersistToolResults. Mainly for tests that want zero-delay retries.
 // Pass a slice where the first element is the initial-attempt delay
-// (typically 0) and subsequent elements are inter-attempt delays.
+// (typically 0) and subsequent elements are inter-attempt delays. The
+// caller's slice is copied so later mutation can't change retry
+// behavior post-construction. Empty slices are rejected (would
+// silently drop persist — R1 finding #1).
 func WithPersistBackoffs(backoffs []time.Duration) Option {
 	return func(c *Client) {
-		if backoffs != nil {
-			c.persistBackoffs = backoffs
+		if len(backoffs) > 0 {
+			c.persistBackoffs = append([]time.Duration(nil), backoffs...)
 		}
 	}
 }
@@ -88,10 +102,14 @@ func NewClient(baseURL, apiKey string, opts ...Option) *Client {
 		panic("memapi: NewClient requires a non-empty apiKey")
 	}
 	c := &Client{
-		baseURL:         strings.TrimRight(baseURL, "/"),
-		apiKey:          apiKey,
-		httpClient:      &http.Client{Timeout: DefaultTimeout},
-		persistBackoffs: defaultPersistBackoffs,
+		baseURL:    strings.TrimRight(baseURL, "/"),
+		apiKey:     apiKey,
+		httpClient: &http.Client{Timeout: DefaultTimeout},
+		// Copy the package-default slice so a Client's backoffs are
+		// always its own — defense against accidental mutation of the
+		// package-level default and against WithPersistBackoffs
+		// aliasing (R1 finding #2).
+		persistBackoffs: append([]time.Duration(nil), defaultPersistBackoffs...),
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -290,7 +308,14 @@ func (c *Client) post(ctx context.Context, body []byte) ([]byte, error) {
 	}
 	defer resp.Body.Close()
 
-	respBytes, _ := io.ReadAll(resp.Body)
+	respBytes, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		// Surface body-read failures as transport — not malformed.
+		// A partial 2xx body parsed by parseChatResponse would
+		// otherwise be reported as Malformed when the real cause is
+		// network/transport (R1 finding #4).
+		return nil, fmt.Errorf("read response body: %w", readErr)
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, &statusError{status: resp.StatusCode, body: string(respBytes)}
 	}
@@ -420,7 +445,17 @@ func parseChatResponse(respBytes []byte) (llm.Response, error) {
 
 	response := llm.Response{Content: out.Reply.Text}
 	for i, tc := range out.Reply.ToolCalls {
-		args, err := json.Marshal(tc.Input)
+		// Normalize missing/null input to an empty object. memory-api
+		// may emit `"input": null` (or omit it) for zero-arg tools;
+		// most tool-arg parsers expect an object and choke on null
+		// (R1 finding #5). The empty-object normalization is
+		// downstream-friendly and the registry's DisallowUnknownFields
+		// decode handles `{}` cleanly.
+		input := tc.Input
+		if input == nil {
+			input = map[string]interface{}{}
+		}
+		args, err := json.Marshal(input)
 		if err != nil {
 			return llm.Response{}, &llm.Error{
 				Class:   llm.ErrorMalformed,

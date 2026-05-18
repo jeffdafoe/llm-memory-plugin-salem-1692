@@ -753,9 +753,132 @@ func TestComplete_FullToolUseRoundTrip(t *testing.T) {
 	}
 }
 
-// --- benchmark to confirm parse path is allocation-bounded ----------------
-//
-// Not a benchmark run target — kept as compile-only documentation that the
-// hot path uses standard library only.
+// --- R1 follow-ups -------------------------------------------------------
+
+// WithPersistBackoffs must reject empty (but non-nil) slices — otherwise
+// the retry loop runs zero attempts and PersistToolResults silently
+// returns nil without making any HTTP call.
+func TestWithPersistBackoffs_EmptySliceRejected(t *testing.T) {
+	c := NewClient("http://x", "k", WithPersistBackoffs([]time.Duration{}))
+	if len(c.persistBackoffs) == 0 {
+		t.Fatal("empty slice from option was accepted — would silently drop persist")
+	}
+	// Should match the package default exactly.
+	if len(c.persistBackoffs) != len(defaultPersistBackoffs) {
+		t.Errorf("persistBackoffs len = %d, want default len = %d",
+			len(c.persistBackoffs), len(defaultPersistBackoffs))
+	}
+}
+
+// WithPersistBackoffs must copy the caller's slice so post-construction
+// mutation can't change retry behavior.
+func TestWithPersistBackoffs_CopiesSlice(t *testing.T) {
+	ts := newTestServer(t)
+	ts.pushResponse(serverResponse{status: 502, body: ""})
+	ts.pushResponse(serverResponse{status: 200, body: `{}`})
+
+	backoffs := []time.Duration{0, 0}
+	c := NewClient(ts.server.URL, "test-key", WithPersistBackoffs(backoffs))
+	// Mutate the caller's slice — must not affect the client's
+	// internal copy.
+	backoffs[0] = time.Hour
+	backoffs[1] = time.Hour
+
+	err := c.PersistToolResults(context.Background(), llm.PersistRequest{
+		Model:   "x",
+		Results: []llm.ToolResult{{ID: "a", Content: "[ok]"}},
+	})
+	if err != nil {
+		t.Fatalf("PersistToolResults: %v", err)
+	}
+	// If the slice wasn't copied, the second attempt would sleep 1
+	// hour and the test would time out.
+}
+
+// Default backoffs must not be aliased between Clients — mutating one
+// Client's slice can't bleed into another's.
+func TestNewClient_DoesNotAliasDefaultBackoffs(t *testing.T) {
+	c1 := NewClient("http://a", "k1")
+	c2 := NewClient("http://b", "k2")
+	c1.persistBackoffs[0] = time.Hour
+	if c2.persistBackoffs[0] == time.Hour {
+		t.Error("default backoff slice is aliased across Clients")
+	}
+	// Also ensure the package-level default itself wasn't mutated.
+	if defaultPersistBackoffs[0] == time.Hour {
+		t.Error("Client.persistBackoffs aliases the package default")
+	}
+}
+
+// WithTimeout must NOT mutate a caller-supplied http.Client, regardless
+// of option order.
+func TestWithTimeout_DoesNotMutateCallerHTTPClient(t *testing.T) {
+	cases := []struct {
+		name string
+		opts func(hc *http.Client) []Option
+	}{
+		{
+			"hc-then-timeout",
+			func(hc *http.Client) []Option {
+				return []Option{WithHTTPClient(hc), WithTimeout(time.Second)}
+			},
+		},
+		{
+			"timeout-then-hc",
+			func(hc *http.Client) []Option {
+				return []Option{WithTimeout(time.Second), WithHTTPClient(hc)}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			callerHC := &http.Client{Timeout: 30 * time.Second}
+			_ = NewClient("http://x", "k", tc.opts(callerHC)...)
+			if callerHC.Timeout != 30*time.Second {
+				t.Errorf("caller http.Client.Timeout mutated to %v, want 30s",
+					callerHC.Timeout)
+			}
+		})
+	}
+}
+
+// WithTimeout still applies to the default http.Client when no
+// WithHTTPClient is supplied.
+func TestWithTimeout_AppliesToDefaultClient(t *testing.T) {
+	c := NewClient("http://x", "k", WithTimeout(7*time.Second))
+	if c.httpClient.Timeout != 7*time.Second {
+		t.Errorf("default client Timeout = %v, want 7s", c.httpClient.Timeout)
+	}
+}
+
+// Response with `"input": null` (or missing input) — adapter must
+// normalize to empty object, not pass null through.
+func TestComplete_NullToolCallInputNormalizedToEmptyObject(t *testing.T) {
+	ts := newTestServer(t)
+	// Hand-roll a body where input is JSON null.
+	ts.pushResponse(serverResponse{
+		status: 200,
+		body:   `{"reply":{"text":"","tool_calls":[{"id":"c1","name":"done","input":null}]}}`,
+	})
+	c := newTestClient(t, ts)
+
+	resp, err := c.Complete(context.Background(), llm.Request{
+		Model:    "x",
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: "p"}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if len(resp.ToolCalls) != 1 {
+		t.Fatalf("tool calls len = %d", len(resp.ToolCalls))
+	}
+	got := string(resp.ToolCalls[0].Arguments)
+	if got != "{}" {
+		t.Errorf("Arguments = %q, want %q (null normalized to empty object)", got, "{}")
+	}
+}
+
+// _ "var" sinks to keep imports referenced by retired unit-level
+// scaffolding around for future tests.
 var _ = fmt.Sprintf
 var _ = strings.TrimRight
