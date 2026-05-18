@@ -250,3 +250,30 @@ type ActorDeparted struct {
 }
 
 func (ActorDeparted) isSimEvent() {}
+
+// RotationApplied fires when the daily rotation cascade completes a
+// rotation pass. ObjectsAffected is the count of village_object flips
+// scheduled this pass (after scope filtering); Gen is the WorldEventGen
+// stamped on each flip (generation-checked at flip-fire time so
+// rotations that complete during a subsequent transition don't overwrite
+// fresh state).
+//
+// ExcludedTags carries the scope.ExcludeTags from the calling
+// ApplyDailyRotation. Subscribers that own those tags (the npc_behaviors
+// cascade slice, when it lands) read this to know whether the rotation
+// pass carved tags out for them. Subscribers MUST NOT mutate the slice;
+// it is shared with the emitter and other subscribers.
+//
+// Subscribers in this slice: none. The npc_behaviors cascade (Slice 2)
+// will subscribe here to start washerwoman / town_crier routes — when
+// the pass carved out their domain tag, the handler walks the NPC
+// through each carved-out object to flip on arrival.
+type RotationApplied struct {
+	EventBase
+	At              time.Time
+	Gen             uint64
+	ObjectsAffected int
+	ExcludedTags    []string
+}
+
+func (RotationApplied) isSimEvent() {}

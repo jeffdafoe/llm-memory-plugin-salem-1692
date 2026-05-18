@@ -113,6 +113,17 @@ var (
 	FireScheduledLocomotionTick              = fireScheduledLocomotionTick
 )
 
+// World-rotation substrate primitives — exposed so sim_test can drive
+// the determineRotationFlips helper + ticker check primitives without
+// those internals being part of the public sim package surface.
+var (
+	DetermineRotationFlipsForTest = determineRotationFlips
+	PickRandomExcluding           = pickRandomExcluding
+	PickDeterministicNext         = pickDeterministicNext
+	ExcludedByScope               = excludedByScope
+	CheckAndRotateForTest         = checkAndRotate
+)
+
 // Phase 3 Group A visitor cascade primitives — exposed so sim_test can
 // drive the substrate-side helpers (extractSurname, pickVisitorDestination
 // behind a Command, seed-need-map constructor, archetype-pool iteration)

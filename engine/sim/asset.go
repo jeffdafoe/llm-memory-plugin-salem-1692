@@ -77,8 +77,19 @@ type Asset struct {
 
 	// TransitionSpreadSeconds — used by the phase-change flip mechanism
 	// to scatter per-object state changes uniformly in [0, N) seconds
-	// rather than all firing instantly. Zero = immediate.
+	// rather than all firing instantly. Zero = immediate. Reused by the
+	// daily-rotation flip path (engine/sim/world_rotation.go) — same
+	// stagger semantics for rotation-driven flips (laundry over a window,
+	// notices over a shorter window, etc.).
 	TransitionSpreadSeconds int
+
+	// RotationAlgo controls how the daily-rotation pass picks the next
+	// state for an instance of this asset when its current state carries
+	// the "rotatable" tag. Empty disables rotation for this asset
+	// regardless of state tagging. See engine/sim/world_rotation.go for
+	// the three modes (random_per_object / random_per_asset /
+	// deterministic) and their semantics.
+	RotationAlgo string
 
 	Pack   *TilesetPack
 	States []AssetState
@@ -138,6 +149,31 @@ func (s *AssetState) HasTag(tag string) bool {
 		}
 	}
 	return false
+}
+
+// RotatablePool returns the asset's "rotatable"-tagged states in
+// AssetStateID order. The order is stable across calls — used by the
+// deterministic rotation algorithm as the cycle sequence and by the
+// random algorithms as the candidate pool. Returns nil for assets with
+// no rotatable states.
+func (a *Asset) RotatablePool() []*AssetState {
+	var out []*AssetState
+	for i := range a.States {
+		if a.States[i].HasTag(TagRotatable) {
+			out = append(out, &a.States[i])
+		}
+	}
+	if len(out) <= 1 {
+		return out
+	}
+	// Insertion sort by AssetStateID — pools are small (single digits)
+	// so sort.Slice overhead isn't worth pulling in.
+	for i := 1; i < len(out); i++ {
+		for j := i; j > 0 && out[j].ID < out[j-1].ID; j-- {
+			out[j], out[j-1] = out[j-1], out[j]
+		}
+	}
+	return out
 }
 
 // AssetLight describes the PointLight2D parameters for a light-emitting
