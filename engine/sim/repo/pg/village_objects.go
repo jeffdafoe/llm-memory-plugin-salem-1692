@@ -255,12 +255,14 @@ const nextGenSQLOR = `SELECT nextval('object_refresh_snapshot_gen_seq')`
 // children into memory.
 //
 // Runs against the pool directly (no Tx) — read-only restart path,
-// same posture as OrdersRepo.LoadAll. The two queries can run
-// non-transactionally because LoadAll is invoked at engine start
-// before the world goroutine begins mutations, so no checkpoint can
-// be in flight; a fresh refresh row written by some other path
-// between the two queries would just be picked up consistently with
-// pg's prior snapshot.
+// same posture as OrdersRepo.LoadAll. This relies on LoadAll running
+// before the world goroutine starts and before any checkpoint writer
+// can mutate these tables. Without that startup guarantee, the parent
+// and child queries could observe different committed states under
+// READ COMMITTED — a fresh refresh row could be visible to the
+// child query but its newly-inserted parent invisible to the parent
+// query (or vice versa for a delete), producing an orphan-skip log
+// and a missing refresh.
 //
 // Refresh rows referencing an object_id that isn't in the loaded
 // parent set are skipped with a log line (FK CASCADE makes this
