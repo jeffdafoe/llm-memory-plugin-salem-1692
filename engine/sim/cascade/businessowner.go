@@ -193,9 +193,11 @@ func handleOrderDeliveredBusinessowner(w *sim.World, evt sim.Event, r *rand.Rand
 	// (excluding the seller themselves). The buyer should be in the
 	// seller's huddle by the deliver_order same-huddle gate, but we
 	// defensively include them by ID rather than relying on huddle
-	// membership.
+	// membership. The "" gate matches buildBusinessownerRecipients —
+	// RecipientIDs should not carry "" under any circumstances even
+	// when an upstream invariant is malformed.
 	recipients := huddlePeers(w, seller.CurrentHuddleID, delivered.SellerID)
-	if !containsActorID(recipients, delivered.BuyerID) {
+	if delivered.BuyerID != "" && !containsActorID(recipients, delivered.BuyerID) {
 		recipients = append(recipients, delivered.BuyerID)
 	}
 
@@ -338,7 +340,7 @@ func huddlePeers(w *sim.World, huddleID sim.HuddleID, speakerID sim.ActorID) []s
 		if a == nil {
 			continue
 		}
-		if id == speakerID {
+		if id == "" || id == speakerID {
 			continue
 		}
 		if a.CurrentHuddleID == huddleID {

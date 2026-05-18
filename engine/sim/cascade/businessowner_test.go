@@ -400,6 +400,37 @@ func TestBuildBusinessownerRecipients(t *testing.T) {
 	})
 }
 
+// TestHuddlePeers_FiltersEmptyAndSpeakerIDs locks the defensive
+// behavior code_review R1 requested: huddlePeers must never return ""
+// or the speaker, even when a malformed empty-ID actor exists in the
+// world. Matches the buildBusinessownerRecipients filter posture.
+func TestHuddlePeers_FiltersEmptyAndSpeakerIDs(t *testing.T) {
+	w, cleanup := buildBusinessownerCascadeWorld(t)
+	defer cleanup()
+
+	var got []sim.ActorID
+	invokeBusinessownerOnWorld(t, w, func(world *sim.World) {
+		// Seed a malformed empty-ID actor in the same huddle the seller
+		// is in. Production invariants forbid this, but the filter
+		// defends against the case anyway.
+		world.Actors[""] = &sim.Actor{
+			ID:              "",
+			DisplayName:     "(malformed)",
+			Kind:            sim.KindNPCShared,
+			CurrentHuddleID: "h1",
+		}
+		got = huddlePeers(world, "h1", "hannah")
+	})
+	for _, id := range got {
+		if id == "" {
+			t.Errorf("huddlePeers returned empty ID: %v", got)
+		}
+		if id == "hannah" {
+			t.Errorf("huddlePeers returned speaker ID: %v", got)
+		}
+	}
+}
+
 func equalActorIDs(a, b []sim.ActorID) bool {
 	if len(a) != len(b) {
 		return false
