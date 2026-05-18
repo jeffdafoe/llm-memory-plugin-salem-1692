@@ -1,15 +1,10 @@
 // Package mem provides in-memory fakes for the sim.Repository sub-
 // interfaces, suitable for tests and local smoke runs without a Postgres
 // dependency.
-//
-// Sub-interfaces not yet implemented in v1 (Orders) return a "not
-// implemented" error on use so tests touching them fail fast with a clear
-// message rather than silently passing.
 package mem
 
 import (
 	"context"
-	"errors"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
@@ -21,6 +16,7 @@ func NewRepository() (sim.Repository, *Handles) {
 	actors := NewActorsRepo()
 	huddles := NewHuddlesRepo()
 	scenes := NewScenesRepo()
+	orders := NewOrdersRepo()
 	env := NewEnvironmentRepo()
 	assets := NewAssetsRepo()
 	recipes := NewRecipesRepo()
@@ -32,6 +28,7 @@ func NewRepository() (sim.Repository, *Handles) {
 		Actors:         actors,
 		Huddles:        huddles,
 		Scenes:         scenes,
+		Orders:         orders,
 		Environment:    env,
 		Assets:         assets,
 		Recipes:        recipes,
@@ -44,6 +41,7 @@ func NewRepository() (sim.Repository, *Handles) {
 		Actors:         actors,
 		Huddles:        huddles,
 		Scenes:         scenes,
+		Orders:         orders,
 		Environment:    env,
 		Assets:         assets,
 		Recipes:        recipes,
@@ -51,7 +49,6 @@ func NewRepository() (sim.Repository, *Handles) {
 		Terrain:        terrain,
 		Structures:     structures,
 		VillageObjects: villageObjects,
-		Orders:         notImplOrders{},
 		ActionLog:      noopActionLog{},
 		TickTelemetry:  noopTickTelemetry{},
 		Begin: func(_ context.Context) (sim.Tx, error) {
@@ -68,6 +65,7 @@ type Handles struct {
 	Actors         *ActorsRepo
 	Huddles        *HuddlesRepo
 	Scenes         *ScenesRepo
+	Orders         *OrdersRepo
 	Environment    *EnvironmentRepo
 	Assets         *AssetsRepo
 	Recipes        *RecipesRepo
@@ -75,19 +73,6 @@ type Handles struct {
 	Terrain        *TerrainRepo
 	Structures     *StructuresRepo
 	VillageObjects *VillageObjectsRepo
-}
-
-// errNotImpl is returned by sub-repos that haven't been ported into the
-// mem fake yet. Add the missing impl when the test requires it.
-var errNotImpl = errors.New("mem fake not implemented for this sub-repo yet — add it when the test requires it")
-
-type notImplOrders struct{}
-
-func (notImplOrders) LoadAll(_ context.Context) (map[sim.OrderID]*sim.Order, error) {
-	return nil, errNotImpl
-}
-func (notImplOrders) SaveSnapshot(_ context.Context, _ sim.Tx, _ map[sim.OrderID]*sim.Order) error {
-	return errNotImpl
 }
 
 // noopActionLog accepts appends silently; tests don't need to assert
