@@ -280,3 +280,37 @@ type RotationApplied struct {
 }
 
 func (RotationApplied) isSimEvent() {}
+
+// PhaseApplied is emitted by ApplyPhaseTransition immediately after the
+// per-object flips have been scheduled. Mirrors RotationApplied's shape
+// for the day/night boundary side of the engine: subscribers (notably the
+// lamplighter cascade slice) react by starting an NPC route over the
+// objects the bulk pass carved out (via excludeTag=TagLamplighterTarget).
+//
+// At is the wall-clock instant the transition command landed (matches
+// World.Environment.LastTransitionAt). From / To bracket the phase change;
+// idempotent re-applies (admin force-phase to the current phase) still
+// emit with From == To.
+//
+// Gen is the WorldEventGen value after the bump — subscribers stamping
+// their own follow-up flips can use it as the guardGen on
+// SetVillageObjectState so a rapid re-transition supersedes their work
+// cleanly (same pattern as the bulk pass's PendingFlip.Gen).
+//
+// ObjectsAffected counts the bulk-pass flips scheduled; objects carved
+// out for an NPC route are NOT counted here (the route's own per-stop
+// flips are out-of-band from the bulk path).
+//
+// Subscribers in this slice (engine/sim/cascade/npc_route.go): the
+// lamplighter cascade reads (At, To, Gen) to decide which target tag to
+// walk to (day-active when To==PhaseDay, night-active when To==PhaseNight).
+type PhaseApplied struct {
+	EventBase
+	At              time.Time
+	From            Phase
+	To              Phase
+	Gen             uint64
+	ObjectsAffected int
+}
+
+func (PhaseApplied) isSimEvent() {}

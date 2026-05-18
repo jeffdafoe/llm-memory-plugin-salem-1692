@@ -418,6 +418,21 @@ type World struct {
 	// guards against is itself lost on restart).
 	BusinessownerSpeechAt map[ActorID]time.Time
 
+	// ActiveRoutes holds the in-flight per-NPC scheduled-route state
+	// machines (lamplighter / washerwoman / town_crier). Keyed by the
+	// running NPC's ActorID; nil-readable as empty (lazy-allocated on
+	// first StartNPCRoute). The cascade ActorArrived subscriber consults
+	// this map to advance an arrived actor's route — most arrivals match
+	// no entry and are no-ops.
+	//
+	// World-goroutine-only; restart-loss is acceptable. A lamplighter or
+	// washerwoman walking mid-route across an engine restart loses the
+	// in-flight route; the next phase / rotation boundary re-triggers
+	// the cycle. The carved-out objects sit at their pre-route state
+	// until then — same UX wrinkle as a missed boundary, not a
+	// correctness failure.
+	ActiveRoutes map[ActorID]*NPCRoute
+
 	// ActionLog is the world-level append-only audit trail of
 	// committed agent + engine-source actions. Consumed by the
 	// atmosphere refresh cascade (group-by-actor-by-action since

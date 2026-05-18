@@ -224,38 +224,47 @@ func TestSetVillageObjectStateSuperseded(t *testing.T) {
 // ApplyPhaseTransition kicks off async flips via time.AfterFunc, the world
 // goroutine executes them on its own thread, and the published state
 // eventually catches up. Uses SpreadSeconds=0 so flips fire immediately.
+//
+// Lamplighter carve-out: ApplyPhaseTransition unconditionally excludes
+// TagLamplighterTarget from the bulk flips, leaving torch for the
+// lamplighter cascade slice. No lamplighter actor in this fixture, so
+// torch stays at its old state.
 func TestApplyPhaseTransitionFiresFlips(t *testing.T) {
 	w, cancel := buildPhaseTestWorld(t)
 	defer cancel()
 
-	// Transition night → day. lamp-A and torch should flip "lit" → "unlit".
-	// lamp-B is already at "unlit" (its day-state target), so no flip.
+	// Transition night → day. lamp-A flips "lit" → "unlit". torch is
+	// the lamplighter-target carve-out and stays at "lit". lamp-B is
+	// already at "unlit" (its day-state target).
 	res, err := w.Send(sim.ApplyPhaseTransition(sim.PhaseDay))
 	if err != nil {
 		t.Fatalf("transition: %v", err)
 	}
 	tr := res.(sim.PhaseTransitionResult)
-	if tr.ObjectsAffected != 2 {
-		t.Errorf("ObjectsAffected = %d, want 2 (lamp-A + torch)", tr.ObjectsAffected)
+	if tr.ObjectsAffected != 1 {
+		t.Errorf("ObjectsAffected = %d, want 1 (lamp-A only; torch carved out)", tr.ObjectsAffected)
 	}
 	if tr.Gen == 0 {
 		t.Error("transition Gen = 0, expected non-zero")
 	}
 
-	// Eventually-consistent: poll up to 500ms for the async flips to land.
+	// Eventually-consistent: poll up to 500ms for the async flip to land.
 	deadline := time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(deadline) {
 		snap := w.Published()
-		if snap.VillageObjects["lamp-A"].CurrentState == "unlit" &&
-			snap.VillageObjects["torch"].CurrentState == "unlit" {
-			return // success
+		if snap.VillageObjects["lamp-A"].CurrentState == "unlit" {
+			// Sanity: torch (lamplighter-target carve-out) was NOT
+			// flipped by the bulk pass.
+			if torch := snap.VillageObjects["torch"].CurrentState; torch != "lit" {
+				t.Errorf("torch (lamplighter-target) leaked into bulk flips: state = %q, want %q", torch, "lit")
+			}
+			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	snap := w.Published()
-	t.Fatalf("flips didn't land within deadline: lamp-A=%q torch=%q",
-		snap.VillageObjects["lamp-A"].CurrentState,
-		snap.VillageObjects["torch"].CurrentState)
+	t.Fatalf("flips didn't land within deadline: lamp-A=%q",
+		snap.VillageObjects["lamp-A"].CurrentState)
 }
 
 // TestApplyPhaseTransitionRedundantAlignsStragglers covers a redundant

@@ -160,11 +160,13 @@ type PendingFlip struct {
 // WorldEventGen so a subsequent transition supersedes its predecessor's
 // pending flips cleanly.
 //
-// LAMPLIGHTER carve-out (legacy hasLamplighter branch): when an NPC with
-// the lamplighter behavior is on-duty, lamplighter-target objects are
-// excluded from the bulk flip and a route is started instead. NOT WIRED
-// here — npc_behaviors is phase 4. For now excludeTag stays empty and
-// all tagged objects flip in the bulk pass.
+// LAMPLIGHTER carve-out: lamplighter-target objects are excluded from
+// the bulk flip — the lamplighter cascade slice (engine/sim/cascade/
+// npc_route.go) consumes the PhaseApplied event this command emits and
+// walks the lamplighter NPC through them. The carve-out is unconditional:
+// if no actor carries the lamplighter Attribute, the carve-out objects
+// stay at their old state until the next transition. That matches v1's
+// intent — those objects are meant to be the lamplighter's responsibility.
 //
 // HUB/WS broadcast (world_phase_changed and object_state_changed) is also
 // stubbed pending the Hub layer port.
@@ -195,10 +197,15 @@ func ApplyPhaseTransition(newPhase Phase) Command {
 			w.Environment.LastTransitionAt = now
 
 			// Determine which objects need to flip BEFORE bumping the
-			// generation, so the snapshot we compute is consistent. The
-			// excludeTag stays empty for now — lamplighter carve-out lands
-			// with the npc_behaviors port.
-			flips := determineTransitionFlips(w, newPhase, "")
+			// generation, so the snapshot we compute is consistent.
+			// TagLamplighterTarget carved out for the lamplighter cascade
+			// (npc_route.go); the bulk pass leaves those objects alone and
+			// the lamplighter NPC walks them on its own route. If no
+			// lamplighter actor carries the lamplighter Attribute, the
+			// objects sit at their old state until next transition — fine
+			// because the carve-out objects are exactly the ones the
+			// lamplighter is meant to own.
+			flips := determineTransitionFlips(w, newPhase, TagLamplighterTarget)
 
 			// Bump generation AFTER the mutation. Anything racing against
 			// us via WorldEventGen.Load() will see one of two consistent
@@ -221,6 +228,14 @@ func ApplyPhaseTransition(newPhase Phase) Command {
 			// structure states here so taverns/inns light up at dusk even
 			// if no one is currently entering.
 			scheduleFlips(w, flips)
+
+			w.emit(&PhaseApplied{
+				At:              now,
+				From:            from,
+				To:              newPhase,
+				Gen:             gen,
+				ObjectsAffected: len(flips),
+			})
 
 			log.Printf("sim/world_phase: transitioned %s -> %s at %s (gen %d, %d flips scheduled)",
 				from, newPhase, now.Format(time.RFC3339), gen, len(flips))

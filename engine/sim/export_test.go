@@ -124,6 +124,16 @@ var (
 	CheckAndRotateForTest         = checkAndRotate
 )
 
+// NPC-route substrate primitives — exposed for the npc_route_test
+// suite. BuildWalkGridForTest lets tests run pathfinding against the
+// real walk grid (the unexported buildWalkGrid is the production
+// builder; making it exported would leak walk-grid construction into
+// the public surface).
+var (
+	BuildWalkGridForTest   = buildWalkGrid
+	BuildRouteStopsForTest = buildRouteStops
+)
+
 // Phase 3 Group A visitor cascade primitives — exposed so sim_test can
 // drive the substrate-side helpers (extractSurname, pickVisitorDestination
 // behind a Command, seed-need-map constructor, archetype-pool iteration)
