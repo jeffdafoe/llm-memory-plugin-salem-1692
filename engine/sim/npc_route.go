@@ -1,0 +1,436 @@
+package sim
+
+import (
+	"fmt"
+	"log"
+	"time"
+)
+
+// npc_route.go — substrate for scheduled NPC routes. Lamplighter walks
+// the lamps at dawn/dusk; washerwoman walks laundry tiles at the daily
+// rotation boundary; town_crier walks notice boards at the same boundary.
+//
+// All three share the same skeleton: a list of RouteStop entries (each
+// an object to visit with a pre-decided NewState), a phase ("active"
+// while visiting stops, "returning" on the home leg), and a StopIdx
+// cursor. Per-behavior logic (which candidates to visit, what target
+// state to land in) lives in the cascade driver — it builds the
+// candidate list and calls StartNPCRoute.
+//
+// The driver wires the lifecycle event-by-event:
+//
+//   - PhaseApplied (lamplighter) / RotationApplied (washerwoman /
+//     town_crier) → start route via StartNPCRoute
+//   - ActorArrived for an actor with an entry in World.ActiveRoutes →
+//     advance route via AdvanceNPCRoute (flip current stop's state,
+//     dispatch next walk OR transition to returning OR clear)
+//
+// The substrate owns: route state shape, the StartNPCRoute Command
+// (which builds the ordered stop list via nearest-neighbor pathfinding
+// and dispatches the first MoveActor), the AdvanceNPCRoute Command
+// (which flips state at the current stop and dispatches the next walk).
+//
+// On-stop side-effects beyond the village_object state flip (e.g. the
+// town_crier reading an announcement) are deferred to Slice 3. Today
+// AdvanceNPCRoute is purely the route-walking machinery; per-NPC
+// flavor lives in the cascade driver.
+
+// Attribute slugs that carry route behavior. The cascade dispatcher
+// scans Actor.Attributes for one of these to find the eligible actor.
+// Empty values are fine — these are marker attributes, not parameterised.
+const (
+	// AttrLamplighter — actor walks the lamplighter-target objects at
+	// each day/night phase boundary, flipping them to the target tag's
+	// state. At most one actor per world should carry this attribute;
+	// the dispatcher picks deterministically by ActorID when multiple
+	// carriers exist.
+	AttrLamplighter = "lamplighter"
+
+	// AttrWasherwoman — actor walks the laundry-tagged rotatable
+	// objects at the daily rotation boundary, rotating each per the
+	// asset's RotationAlgo.
+	AttrWasherwoman = "washerwoman"
+
+	// AttrTownCrier — actor walks the notice-board-tagged rotatable
+	// objects at the daily rotation boundary. Slice 2 walks silently;
+	// Slice 3 will wire an LLM-authored saying broadcast on each stop.
+	AttrTownCrier = "town_crier"
+)
+
+// Tag slugs the route dispatcher narrows candidates by.
+const (
+	TagLaundry     = "laundry"
+	TagNoticeBoard = "notice-board"
+)
+
+// RoutePhase discriminates the two legs of a route. Active walks
+// candidate stops in order; Returning is the home leg after the last
+// stop. AdvanceNPCRoute's behavior depends on phase: an arrival in
+// Active flips the current stop's state and dispatches the next walk;
+// an arrival in Returning clears the route.
+type RoutePhase string
+
+const (
+	RoutePhaseActive    RoutePhase = "active"
+	RoutePhaseReturning RoutePhase = "returning"
+)
+
+// RouteStop is one object the route visits with a pre-decided target
+// state. WalkTo is the grid-tile destination the actor moves to —
+// typically the adjacent walkable tile next to the object's anchor.
+// NewState is the AssetState.State the object's CurrentState flips to
+// on arrival.
+type RouteStop struct {
+	ObjectID VillageObjectID
+	WalkTo   Position
+	NewState string
+}
+
+// NPCRoute is the in-flight per-NPC route state. Stored in
+// World.ActiveRoutes keyed by ActorID. Owned by the world goroutine
+// (mutated only from inside Command.Fn).
+//
+// Label is the route's caller-supplied tag ("lamplighter", "washerwoman",
+// "town_crier") — kept for log lines and future per-label side-effects
+// (Slice 3 will branch on it for the town_crier on-stop reading).
+//
+// HomeDestination is the MoveDestination the actor walks to after the
+// last stop. Typically a MoveDestinationStructureEnter on the actor's
+// HomeStructureID so the locomotion ticker handles door-tile
+// resolution + InsideStructureID re-entry automatically. Actors with
+// no home structure get a MoveDestinationPosition at their start tile
+// (route is effectively a one-way: visit all stops, stand at the
+// last reachable tile).
+type NPCRoute struct {
+	NPCID           ActorID
+	Label           string
+	Stops           []RouteStop
+	StopIdx         int
+	Phase           RoutePhase
+	HomeDestination MoveDestination
+}
+
+// RouteCandidate is one input to StartNPCRoute's route builder: an
+// object to visit with a pre-decided target state. The substrate orders
+// candidates into a nearest-neighbor walk via FindPathToAdjacent;
+// callers don't pre-order (the cascade may scan w.VillageObjects in
+// map-iteration order, which Go randomizes — the substrate is the
+// right place to canonicalize).
+//
+// WorldX / WorldY are the village_object's pixel-coord anchor —
+// converted to tile coords internally via WorldToTile (PadX/PadY
+// offsets included).
+type RouteCandidate struct {
+	ObjectID VillageObjectID
+	NewState string
+	WorldX   float64
+	WorldY   float64
+}
+
+// StartNPCRouteResult is the typed reply from StartNPCRoute. Carries
+// the count of stops the route was laid out with — callers (cascade
+// subscribers) log it; tests assert on it.
+type StartNPCRouteResult struct {
+	NPCID    ActorID
+	Label    string
+	Stops    int
+	Replaced bool // true when an in-flight route was superseded
+}
+
+// StartNPCRoute returns a Command that installs a new NPCRoute for the
+// given actor and dispatches the first MoveActor. Cancels any prior
+// in-flight route on the same actor (the new route is the observable
+// transition; the prior one dies silently — same shape as MoveActor's
+// supersede contract).
+//
+// The candidate list is laid out into a nearest-neighbor walk:
+//
+//  1. Compute the actor's current tile.
+//  2. Build the walk grid via buildWalkGrid.
+//  3. Repeatedly pick the candidate whose adjacent walkable tile is
+//     shortest from the current position; advance the cursor to that
+//     neighbor; remove the candidate from the remaining set. O(n²)
+//     A* calls in the worst case — fine for the dozen-or-so candidates
+//     a village-scale route carries.
+//
+// Empty candidate list (or all unreachable) returns Stops=0 and no
+// MoveActor dispatch — the caller's cascade subscriber treats it as a
+// no-op. Replaced still reports whether a prior route was superseded:
+// the supersede semantic applies independent of new-route content, so
+// a re-trigger with no candidates still clears any in-flight route.
+//
+// InsideStructureID is NOT mutated here — the locomotion ticker's
+// per-tile updateInsideStructureIDFromTileOwnership reconciles it as
+// the actor steps off the home footprint, and the home-walk's
+// MoveDestinationStructureEnter does the same on arrival back inside.
+//
+// MUST be dispatched as a Command (modifies world state). The cascade
+// wraps it: subscriber receives the trigger event → builds candidates
+// → calls w.SendContext(ctx, StartNPCRoute(args)).
+func StartNPCRoute(actorID ActorID, label string, homeDest MoveDestination, candidates []RouteCandidate, now time.Time) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			actor, ok := w.Actors[actorID]
+			if !ok {
+				return StartNPCRouteResult{}, fmt.Errorf("actor %q not found", actorID)
+			}
+
+			grid, err := buildWalkGrid(w)
+			if err != nil {
+				return StartNPCRouteResult{}, fmt.Errorf("build walk grid: %w", err)
+			}
+			stops := buildRouteStops(grid, actor.CurrentX, actor.CurrentY, candidates)
+
+			// Whether or not we have any stops, an in-flight prior route
+			// is superseded. The supersede signal is the route start
+			// itself; the prior route's pending stops evaporate.
+			replaced := false
+			if w.ActiveRoutes != nil {
+				if _, exists := w.ActiveRoutes[actorID]; exists {
+					replaced = true
+				}
+			}
+
+			if len(stops) == 0 {
+				// Nothing reachable. Clear any prior route (the new
+				// trigger supersedes it) but don't install an empty
+				// route or dispatch a MoveActor.
+				if replaced {
+					delete(w.ActiveRoutes, actorID)
+				}
+				return StartNPCRouteResult{
+					NPCID:    actorID,
+					Label:    label,
+					Stops:    0,
+					Replaced: replaced,
+				}, nil
+			}
+
+			route := &NPCRoute{
+				NPCID:           actorID,
+				Label:           label,
+				Stops:           stops,
+				StopIdx:         0,
+				Phase:           RoutePhaseActive,
+				HomeDestination: cloneMoveDestination(homeDest),
+			}
+			if w.ActiveRoutes == nil {
+				w.ActiveRoutes = map[ActorID]*NPCRoute{}
+			}
+			w.ActiveRoutes[actorID] = route
+
+			// Dispatch the first walk. Inline call to MoveActor's Fn so
+			// the whole start-route sequence is a single atomic
+			// world-goroutine transaction — no SendContext round-trip.
+			// LeaveHuddleFirst: true so a route-starting NPC who
+			// happens to be huddling somewhere cleanly leaves the
+			// huddle (HuddleLeft fires as a side-effect).
+			first := stops[0]
+			moveCmd := MoveActor(actorID, NewPositionDestination(first.WalkTo), true, now)
+			if _, err := moveCmd.Fn(w); err != nil {
+				// Movement rejected (no path to first stop). Clear the
+				// route — better to report 0 stops than leave the
+				// world with a dangling route that arrival can't
+				// advance.
+				delete(w.ActiveRoutes, actorID)
+				return StartNPCRouteResult{}, fmt.Errorf("dispatch first walk: %w", err)
+			}
+
+			log.Printf("sim/npc_route: %s %q started route with %d stops (replaced=%v)",
+				label, actorID, len(stops), replaced)
+
+			return StartNPCRouteResult{
+				NPCID:    actorID,
+				Label:    label,
+				Stops:    len(stops),
+				Replaced: replaced,
+			}, nil
+		},
+	}
+}
+
+// AdvanceNPCRouteResult is the typed reply from AdvanceNPCRoute. Reason
+// describes the route state the call observed; tests + cascade logging
+// use it to discriminate happy advance vs final-stop-handled vs
+// returned-home vs no-route-found.
+type AdvanceNPCRouteResult struct {
+	NPCID  ActorID
+	Reason string // "stop_advanced" | "returning_home" | "arrived_home" | "no_route" | "stale_stop"
+}
+
+// AdvanceNPCRoute returns a Command that advances the named actor's
+// route by one step in response to an ActorArrived event. The expected
+// caller is the cascade ActorArrived subscriber — it dispatches one of
+// these per arrival, and the Command no-ops for actors with no entry
+// in World.ActiveRoutes.
+//
+// Behavior by phase:
+//
+//   - Active and StopIdx < len(Stops): flip the current stop's
+//     village_object state to NewState; advance StopIdx; dispatch next
+//     MoveActor (next stop OR home if last). Returns "stop_advanced".
+//
+//   - Active and StopIdx == len(Stops): unreachable — once StopIdx
+//     reaches the last stop, the previous AdvanceNPCRoute call would
+//     have transitioned Phase to Returning. Defensive log + clear.
+//
+//   - Returning: clear the route. If HomeStructureID is non-empty, set
+//     InsideStructureID = HomeStructureID so the actor re-enters home.
+//     Returns "arrived_home".
+//
+// The per-stop flip passes guardGen=0 (no gen check). The route is
+// not gen-tied: a phase or rotation transition that happens mid-walk
+// doesn't kill the route, and the per-stop flip is meant to land
+// regardless of whether WorldEventGen has advanced since route start.
+// SetVillageObjectState's "already_at_target" reason absorbs the
+// converged case (object already at NewState — happens when a fresher
+// bulk pass overwrote the same object).
+func AdvanceNPCRoute(actorID ActorID) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			route, ok := w.ActiveRoutes[actorID]
+			if !ok || route == nil {
+				return AdvanceNPCRouteResult{NPCID: actorID, Reason: "no_route"}, nil
+			}
+
+			switch route.Phase {
+			case RoutePhaseActive:
+				return advanceActiveRoute(w, route)
+			case RoutePhaseReturning:
+				return advanceReturningRoute(w, route)
+			default:
+				log.Printf("sim/npc_route: %q route in unknown phase %q — clearing",
+					actorID, route.Phase)
+				delete(w.ActiveRoutes, actorID)
+				return AdvanceNPCRouteResult{NPCID: actorID, Reason: "no_route"}, nil
+			}
+		},
+	}
+}
+
+// advanceActiveRoute is AdvanceNPCRoute's active-phase body. Flips the
+// current stop's state, advances StopIdx, dispatches next walk OR
+// transitions to returning + dispatches home walk.
+func advanceActiveRoute(w *World, route *NPCRoute) (AdvanceNPCRouteResult, error) {
+	if route.StopIdx >= len(route.Stops) {
+		// Defensive — StopIdx should never exceed len(Stops) in active
+		// phase. Clear and return.
+		log.Printf("sim/npc_route: %q active route StopIdx=%d >= len(Stops)=%d — clearing",
+			route.NPCID, route.StopIdx, len(route.Stops))
+		delete(w.ActiveRoutes, route.NPCID)
+		return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "stale_stop"}, nil
+	}
+
+	stop := route.Stops[route.StopIdx]
+
+	// Per-stop flip. guardGen=0 disables the gen check — a fresher
+	// rotation/transition that overwrote the same object since route
+	// start would just bounce off SetVillageObjectState's
+	// "already_at_target" path (no-op).
+	flipCmd := SetVillageObjectState(stop.ObjectID, stop.NewState, 0)
+	if _, err := flipCmd.Fn(w); err != nil {
+		log.Printf("sim/npc_route: %q stop %d (%q -> %q): flip failed: %v",
+			route.NPCID, route.StopIdx, stop.ObjectID, stop.NewState, err)
+		// Fall through — a flip failure shouldn't abort the route, the
+		// next walk should still dispatch.
+	}
+
+	route.StopIdx++
+
+	if route.StopIdx < len(route.Stops) {
+		// More stops — dispatch next walk.
+		next := route.Stops[route.StopIdx]
+		moveCmd := MoveActor(route.NPCID, NewPositionDestination(next.WalkTo), false, time.Now())
+		if _, err := moveCmd.Fn(w); err != nil {
+			log.Printf("sim/npc_route: %q dispatch next walk failed: %v — clearing route",
+				route.NPCID, err)
+			delete(w.ActiveRoutes, route.NPCID)
+			return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "stale_stop"}, nil
+		}
+		return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "stop_advanced"}, nil
+	}
+
+	// All stops done — transition to returning, dispatch home walk.
+	route.Phase = RoutePhaseReturning
+	moveCmd := MoveActor(route.NPCID, route.HomeDestination, false, time.Now())
+	if _, err := moveCmd.Fn(w); err != nil {
+		// Home walk rejected. Clear the route — the actor stays at the
+		// last stop; next phase / rotation boundary re-triggers.
+		log.Printf("sim/npc_route: %q dispatch home walk failed: %v — clearing route",
+			route.NPCID, err)
+		delete(w.ActiveRoutes, route.NPCID)
+		return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "stale_stop"}, nil
+	}
+	return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "returning_home"}, nil
+}
+
+// advanceReturningRoute is AdvanceNPCRoute's returning-phase body. The
+// locomotion ticker already reconciled InsideStructureID via
+// updateInsideStructureIDFromTileOwnership as the actor stepped onto
+// the home structure's door tile (for StructureEnter destinations) or
+// the home position (for Position destinations); we just clear the
+// route.
+func advanceReturningRoute(w *World, route *NPCRoute) (AdvanceNPCRouteResult, error) {
+	delete(w.ActiveRoutes, route.NPCID)
+	return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "arrived_home"}, nil
+}
+
+// buildRouteStops lays out an ordered nearest-neighbor walk over the
+// candidates from (startX, startY). At each step:
+//
+//   - Try every remaining candidate, using FindPathToAdjacent to find
+//     an adjacent walkable tile and the path length from the cursor.
+//   - Pick the candidate with the shortest path; record the chosen
+//     neighbor tile as the RouteStop's WalkTo; advance the cursor.
+//   - Unreachable candidates are skipped (no path → that candidate
+//     can't be visited this cycle).
+//
+// O(n²) FindPath calls in the worst case (n candidates, each iteration
+// scans the remainder). Fine for the dozen-or-so stops a village-scale
+// route carries; would need optimization at 100+ stops (e.g. a TSP-ish
+// 2-opt over a coarse seed ordering, or a precomputed all-pairs
+// shortest-path table).
+//
+// Stable ordering: when two candidates tie on path length, the earlier
+// (lower index in the input) wins. Callers pre-sort candidates by
+// ObjectID before calling if they want deterministic tie-breaking
+// across runs.
+func buildRouteStops(grid *WalkGrid, startX, startY int, candidates []RouteCandidate) []RouteStop {
+	if len(candidates) == 0 {
+		return nil
+	}
+	remaining := make([]RouteCandidate, len(candidates))
+	copy(remaining, candidates)
+
+	cursor := GridPoint{X: startX, Y: startY}
+	stops := make([]RouteStop, 0, len(remaining))
+	for len(remaining) > 0 {
+		bestIdx := -1
+		bestNeighbor := GridPoint{}
+		bestLen := -1
+		for i, c := range remaining {
+			objTile := WorldToTile(c.WorldX, c.WorldY)
+			path, neighbor := FindPathToAdjacent(grid, cursor, objTile)
+			if path == nil {
+				continue
+			}
+			if bestLen < 0 || len(path) < bestLen {
+				bestIdx = i
+				bestNeighbor = neighbor
+				bestLen = len(path)
+			}
+		}
+		if bestIdx < 0 {
+			break // nothing else reachable
+		}
+		chosen := remaining[bestIdx]
+		stops = append(stops, RouteStop{
+			ObjectID: chosen.ObjectID,
+			WalkTo:   Position{X: bestNeighbor.X, Y: bestNeighbor.Y},
+			NewState: chosen.NewState,
+		})
+		cursor = bestNeighbor
+		remaining = append(remaining[:bestIdx], remaining[bestIdx+1:]...)
+	}
+	return stops
+}
