@@ -147,9 +147,14 @@ func (f fakeTx) Exec(ctx context.Context, sql string, args ...any) (sim.CommandT
 	return cmdTagAdapter{ct: ct}, nil
 }
 func (fakeTx) Query(_ context.Context, _ string, _ ...any) (sim.Rows, error) { return nil, nil }
-func (fakeTx) QueryRow(_ context.Context, _ string, _ ...any) sim.Row        { return nil }
-func (fakeTx) Commit(_ context.Context) error                                { return nil }
-func (fakeTx) Rollback(_ context.Context) error                              { return nil }
+func (f fakeTx) QueryRow(ctx context.Context, sql string, args ...any) sim.Row {
+	// Forward to the mock pool so SaveSnapshot implementations that
+	// use QueryRow (e.g., Slice 9's nextval sequence call) can be
+	// driven from pgxmock fixtures.
+	return rowAdapter{row: f.mock.QueryRow(ctx, sql, args...)}
+}
+func (fakeTx) Commit(_ context.Context) error   { return nil }
+func (fakeTx) Rollback(_ context.Context) error { return nil }
 
 func TestOrdersRepo_SaveSnapshot_UpsertsEachOrder(t *testing.T) {
 	mock, repo := newMockPool(t)
