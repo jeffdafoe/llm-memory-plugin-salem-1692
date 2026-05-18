@@ -37,10 +37,13 @@
 --      Commands are public-callable, so the contract is guarded at the
 --      schema layer too — a buggy writer can't silently install a
 --      half-configured refresh row.
---        - finite_pair:           available_quantity ↔ max_quantity
---        - finite_regen:          finite rows must have mode + period_hours > 0
---        - mode_only_when_finite: infinite rows must have NULL mode
---        - dwell_pair:            dwell_delta ↔ dwell_period_minutes
+--        - finite_pair:                available_quantity ↔ max_quantity
+--        - finite_regen:               finite rows must have mode + period_hours > 0
+--        - regen_only_when_finite:     infinite rows must have NULL mode + period_hours + last_refresh_at
+--        - supply_bounds:              finite rows: max > 0 AND 0 <= available <= max
+--        - dwell_pair:                 dwell_delta ↔ dwell_period_minutes
+--        - dwell_delta_negative:       dwell_delta < 0 when set (decrement)
+--        - dwell_period_positive:      dwell_period_minutes > 0 when set
 --
 -- Restart-loss flagged by Slice 9 closes with this slice. Per-instance
 -- refresh state (available_quantity decrements, last_refresh_at anchor
@@ -94,15 +97,49 @@ ALTER TABLE object_refresh
             AND refresh_period_hours > 0)
     );
 
--- Mode only makes sense for finite rows. Infinite rows never regen.
+-- Infinite rows carry NO regen config at all — mode, period_hours,
+-- and last_refresh_at must all be NULL. A narrower mode-only gate
+-- would allow an infinite row with period_hours/last_refresh_at set
+-- to bypass the rest of the CHECK surface (code_review R1 catch).
 ALTER TABLE object_refresh
-    ADD CONSTRAINT object_refresh_mode_only_when_finite
-    CHECK (available_quantity IS NOT NULL OR refresh_mode IS NULL);
+    ADD CONSTRAINT object_refresh_regen_only_when_finite
+    CHECK (
+        available_quantity IS NOT NULL
+        OR (refresh_mode IS NULL
+            AND refresh_period_hours IS NULL
+            AND last_refresh_at IS NULL)
+    );
+
+-- Supply bounds on finite rows. max_quantity must be positive (the
+-- continuous regen step divides by it — engine/sim/object_refresh.go
+-- regenObjectRefresh); available_quantity must lie in [0, max].
+-- Infinite rows are unconstrained (both NULL via finite_pair).
+ALTER TABLE object_refresh
+    ADD CONSTRAINT object_refresh_supply_bounds
+    CHECK (
+        available_quantity IS NULL
+        OR (available_quantity >= 0
+            AND max_quantity > 0
+            AND available_quantity <= max_quantity)
+    );
 
 -- Dwell config is paired (both NULL or both set). v2's HasDwell()
 -- check pairs them.
 ALTER TABLE object_refresh
     ADD CONSTRAINT object_refresh_dwell_pair
     CHECK ((dwell_delta IS NULL) = (dwell_period_minutes IS NULL));
+
+-- Dwell delta is a need decrement (matches the existing `amount < 0`
+-- convention on the parent column). v2 doc-comment on ObjectRefresh
+-- explicitly types it as negative.
+ALTER TABLE object_refresh
+    ADD CONSTRAINT object_refresh_dwell_delta_negative
+    CHECK (dwell_delta IS NULL OR dwell_delta < 0);
+
+-- Dwell period must be positive — the dwell tick divides time
+-- elapsed by it.
+ALTER TABLE object_refresh
+    ADD CONSTRAINT object_refresh_dwell_period_positive
+    CHECK (dwell_period_minutes IS NULL OR dwell_period_minutes > 0);
 
 COMMIT;

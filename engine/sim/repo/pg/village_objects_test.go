@@ -264,6 +264,13 @@ func TestVillageObjectsRepo_SaveSnapshot_HappyPath(t *testing.T) {
 	// delete-stale on the child table.
 	expectSaveSnapshotRefreshTail(mock, 50)
 
+	// Relaxed only because the two parent UPSERTs run in map-iteration
+	// order (undefined). The lock/nextval/delete/orphan-check/refresh-tail
+	// calls have distinct SQL patterns so they can't cross-match with the
+	// UPSERTs; tests with deterministic parent ordering (EmptyMap,
+	// NilObjectSkipped, OwnerNullVsValue, WithRefreshes) keep the
+	// default in-order matching and cover refresh-tail-after-orphan-check
+	// ordering.
 	mock.MatchExpectationsInOrder(false)
 
 	objects := map[sim.VillageObjectID]*sim.VillageObject{

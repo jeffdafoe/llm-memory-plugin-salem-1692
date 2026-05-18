@@ -5,7 +5,11 @@
 
 BEGIN;
 
+ALTER TABLE object_refresh DROP CONSTRAINT IF EXISTS object_refresh_dwell_period_positive;
+ALTER TABLE object_refresh DROP CONSTRAINT IF EXISTS object_refresh_dwell_delta_negative;
 ALTER TABLE object_refresh DROP CONSTRAINT IF EXISTS object_refresh_dwell_pair;
+ALTER TABLE object_refresh DROP CONSTRAINT IF EXISTS object_refresh_supply_bounds;
+ALTER TABLE object_refresh DROP CONSTRAINT IF EXISTS object_refresh_regen_only_when_finite;
 ALTER TABLE object_refresh DROP CONSTRAINT IF EXISTS object_refresh_mode_only_when_finite;
 ALTER TABLE object_refresh DROP CONSTRAINT IF EXISTS object_refresh_finite_regen;
 ALTER TABLE object_refresh DROP CONSTRAINT IF EXISTS object_refresh_finite_pair;
