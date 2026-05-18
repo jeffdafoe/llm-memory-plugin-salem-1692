@@ -161,12 +161,14 @@ type PendingFlip struct {
 // pending flips cleanly.
 //
 // LAMPLIGHTER carve-out: lamplighter-target objects are excluded from
-// the bulk flip — the lamplighter cascade slice (engine/sim/cascade/
-// npc_route.go) consumes the PhaseApplied event this command emits and
-// walks the lamplighter NPC through them. The carve-out is unconditional:
-// if no actor carries the lamplighter Attribute, the carve-out objects
-// stay at their old state until the next transition. That matches v1's
-// intent — those objects are meant to be the lamplighter's responsibility.
+// the bulk flip when (and only when) an actor carries AttrLamplighter
+// — the lamplighter cascade slice (engine/sim/cascade/npc_route.go)
+// consumes the PhaseApplied event this command emits and walks the
+// lamplighter NPC through them. With no lamplighter actor configured,
+// the carve-out is skipped and lamplighter-target objects flip in the
+// bulk pass — keeps deployment ordering forgiving (lamps don't get
+// stuck if the cascade isn't registered yet or no actor has been
+// tagged).
 //
 // HUB/WS broadcast (world_phase_changed and object_state_changed) is also
 // stubbed pending the Hub layer port.
@@ -198,14 +200,15 @@ func ApplyPhaseTransition(newPhase Phase) Command {
 
 			// Determine which objects need to flip BEFORE bumping the
 			// generation, so the snapshot we compute is consistent.
-			// TagLamplighterTarget carved out for the lamplighter cascade
-			// (npc_route.go); the bulk pass leaves those objects alone and
-			// the lamplighter NPC walks them on its own route. If no
-			// lamplighter actor carries the lamplighter Attribute, the
-			// objects sit at their old state until next transition — fine
-			// because the carve-out objects are exactly the ones the
-			// lamplighter is meant to own.
-			flips := determineTransitionFlips(w, newPhase, TagLamplighterTarget)
+			// Carve out TagLamplighterTarget for the lamplighter
+			// cascade ONLY when an actor carries AttrLamplighter; if no
+			// lamplighter is configured, those objects flip in the bulk
+			// pass so they don't get stuck.
+			excludeTag := ""
+			if hasActorWithAttribute(w, AttrLamplighter) {
+				excludeTag = TagLamplighterTarget
+			}
+			flips := determineTransitionFlips(w, newPhase, excludeTag)
 
 			// Bump generation AFTER the mutation. Anything racing against
 			// us via WorldEventGen.Load() will see one of two consistent

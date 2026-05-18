@@ -225,17 +225,66 @@ func TestSetVillageObjectStateSuperseded(t *testing.T) {
 // goroutine executes them on its own thread, and the published state
 // eventually catches up. Uses SpreadSeconds=0 so flips fire immediately.
 //
-// Lamplighter carve-out: ApplyPhaseTransition unconditionally excludes
-// TagLamplighterTarget from the bulk flips, leaving torch for the
-// lamplighter cascade slice. No lamplighter actor in this fixture, so
-// torch stays at its old state.
+// No lamplighter actor in this fixture, so the lamplighter carve-out
+// is SKIPPED and torch flips in the bulk pass alongside lamp-A. The
+// carve-out's actor-present branch is exercised by
+// TestApplyPhaseTransitionFiresFlips_LamplighterCarveOut below.
 func TestApplyPhaseTransitionFiresFlips(t *testing.T) {
 	w, cancel := buildPhaseTestWorld(t)
 	defer cancel()
 
-	// Transition night → day. lamp-A flips "lit" → "unlit". torch is
-	// the lamplighter-target carve-out and stays at "lit". lamp-B is
+	// Transition night → day. lamp-A flips "lit" → "unlit". torch
+	// also flips (no lamplighter actor → no carve-out). lamp-B is
 	// already at "unlit" (its day-state target).
+	res, err := w.Send(sim.ApplyPhaseTransition(sim.PhaseDay))
+	if err != nil {
+		t.Fatalf("transition: %v", err)
+	}
+	tr := res.(sim.PhaseTransitionResult)
+	if tr.ObjectsAffected != 2 {
+		t.Errorf("ObjectsAffected = %d, want 2 (lamp-A + torch; no lamplighter actor → no carve-out)", tr.ObjectsAffected)
+	}
+	if tr.Gen == 0 {
+		t.Error("transition Gen = 0, expected non-zero")
+	}
+
+	// Eventually-consistent: poll up to 500ms for the async flips to land.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		snap := w.Published()
+		if snap.VillageObjects["lamp-A"].CurrentState == "unlit" &&
+			snap.VillageObjects["torch"].CurrentState == "unlit" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	snap := w.Published()
+	t.Fatalf("flips didn't land within deadline: lamp-A=%q torch=%q",
+		snap.VillageObjects["lamp-A"].CurrentState,
+		snap.VillageObjects["torch"].CurrentState)
+}
+
+// TestApplyPhaseTransitionFiresFlips_LamplighterCarveOut covers the
+// conditional carve-out branch: when an actor carries
+// AttrLamplighter, TagLamplighterTarget IS excluded from the bulk
+// flip — torch sits at "lit" until the lamplighter cascade slice
+// walks it (the cascade isn't registered here; we just verify the
+// carve-out predicate).
+func TestApplyPhaseTransitionFiresFlips_LamplighterCarveOut(t *testing.T) {
+	w, cancel := buildPhaseTestWorld(t)
+	defer cancel()
+
+	// Seed a lamplighter actor.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["lamp"] = &sim.Actor{
+			ID:         "lamp",
+			Attributes: map[string][]byte{sim.AttrLamplighter: {}},
+		}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed lamplighter: %v", err)
+	}
+
 	res, err := w.Send(sim.ApplyPhaseTransition(sim.PhaseDay))
 	if err != nil {
 		t.Fatalf("transition: %v", err)
@@ -244,17 +293,11 @@ func TestApplyPhaseTransitionFiresFlips(t *testing.T) {
 	if tr.ObjectsAffected != 1 {
 		t.Errorf("ObjectsAffected = %d, want 1 (lamp-A only; torch carved out)", tr.ObjectsAffected)
 	}
-	if tr.Gen == 0 {
-		t.Error("transition Gen = 0, expected non-zero")
-	}
 
-	// Eventually-consistent: poll up to 500ms for the async flip to land.
 	deadline := time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(deadline) {
 		snap := w.Published()
 		if snap.VillageObjects["lamp-A"].CurrentState == "unlit" {
-			// Sanity: torch (lamplighter-target carve-out) was NOT
-			// flipped by the bulk pass.
 			if torch := snap.VillageObjects["torch"].CurrentState; torch != "lit" {
 				t.Errorf("torch (lamplighter-target) leaked into bulk flips: state = %q, want %q", torch, "lit")
 			}
@@ -262,9 +305,7 @@ func TestApplyPhaseTransitionFiresFlips(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	snap := w.Published()
-	t.Fatalf("flips didn't land within deadline: lamp-A=%q",
-		snap.VillageObjects["lamp-A"].CurrentState)
+	t.Fatal("flips didn't land within deadline")
 }
 
 // TestApplyPhaseTransitionRedundantAlignsStragglers covers a redundant

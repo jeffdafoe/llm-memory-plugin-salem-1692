@@ -76,30 +76,34 @@ func buildRouteCascadeWorld(t *testing.T) (*sim.World, func()) {
 	if err != nil {
 		t.Fatalf("LoadWorld: %v", err)
 	}
+	return w, func() {}
+}
+
+// runRouteCascadeWorld starts the world goroutine. Call after any
+// pre-Run registrations or seeding the test wants to do directly
+// against w.subscribers / w.Actors — once Run is going, those
+// mutations must happen via w.Send(Command{Fn: ...}).
+func runRouteCascadeWorld(t *testing.T, w *sim.World) func() {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
 		w.Run(ctx)
 		close(done)
 	}()
-	return w, func() { cancel(); <-done }
+	return func() { cancel(); <-done }
 }
 
-// setActorAttribute sets a single attribute on the runner actor under
-// the world goroutine — Attributes is on Actor, so we mutate it
-// inside a Command.Fn.
-func setActorAttribute(t *testing.T, w *sim.World, slug string) {
-	t.Helper()
-	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		actor := world.Actors["runner"]
-		if actor.Attributes == nil {
-			actor.Attributes = map[string][]byte{}
-		}
-		actor.Attributes[slug] = []byte{}
-		return nil, nil
-	}}); err != nil {
-		t.Fatalf("setActorAttribute: %v", err)
+// seedActorAttribute mutates the runner actor's Attributes map
+// directly. Must be called BEFORE runRouteCascadeWorld starts the
+// world goroutine — direct mutation of the world map is unsafe once
+// Run is dispatching commands.
+func seedActorAttribute(w *sim.World, slug string) {
+	actor := w.Actors["runner"]
+	if actor.Attributes == nil {
+		actor.Attributes = map[string][]byte{}
 	}
+	actor.Attributes[slug] = []byte{}
 }
 
 // hasActiveRoute reads ActiveRoutes for the runner inside a Command.
@@ -141,21 +145,17 @@ func TestRegisterNPCRoutes_NilWorldPanics(t *testing.T) {
 // AttrLamplighter; ApplyPhaseTransition emits PhaseApplied; the
 // subscriber dispatches StartNPCRoute and installs an active route.
 func TestLamplighterDispatchesOnPhaseApplied(t *testing.T) {
-	w, cancel := buildRouteCascadeWorld(t)
-	defer cancel()
+	w, _ := buildRouteCascadeWorld(t)
+	seedActorAttribute(w, sim.AttrLamplighter)
+	// Lamps start at "lit" (the night state). Pre-flip them to
+	// "unlit" so the upcoming night transition produces actual route
+	// stops (target=lit on lamps already at lit yields zero stops).
+	w.VillageObjects["lamp-A"].CurrentState = "unlit"
+	w.VillageObjects["lamp-B"].CurrentState = "unlit"
 
 	RegisterNPCRoutes(context.Background(), w)
-	setActorAttribute(t, w, sim.AttrLamplighter)
-
-	// Lamps start at "lit" (the night state). Force them to "unlit"
-	// so the upcoming night transition produces actual route stops
-	// (target=lit on lamps already at lit yields zero stops).
-	if _, err := w.Send(sim.SetVillageObjectState("lamp-A", "unlit", 0)); err != nil {
-		t.Fatalf("force lamp-A unlit: %v", err)
-	}
-	if _, err := w.Send(sim.SetVillageObjectState("lamp-B", "unlit", 0)); err != nil {
-		t.Fatalf("force lamp-B unlit: %v", err)
-	}
+	cancel := runRouteCascadeWorld(t, w)
+	defer cancel()
 
 	// Night transition: lamp-A/B carved out of the bulk pass; the
 	// lamplighter cascade subscriber dispatches a route to flip
@@ -169,12 +169,17 @@ func TestLamplighterDispatchesOnPhaseApplied(t *testing.T) {
 }
 
 // TestLamplighterNoActor: no actor carries AttrLamplighter — no route.
+// Also verifies the conditional carve-out: lamp-A flips in the bulk
+// pass (no actor to carve out for).
 func TestLamplighterNoActor(t *testing.T) {
-	w, cancel := buildRouteCascadeWorld(t)
-	defer cancel()
+	w, _ := buildRouteCascadeWorld(t)
+	// Deliberately skip seedActorAttribute.
+	w.VillageObjects["lamp-A"].CurrentState = "unlit"
+	w.VillageObjects["lamp-B"].CurrentState = "unlit"
 
 	RegisterNPCRoutes(context.Background(), w)
-	// Deliberately skip setActorAttribute.
+	cancel := runRouteCascadeWorld(t, w)
+	defer cancel()
 
 	if _, err := w.Send(sim.ApplyPhaseTransition(sim.PhaseNight)); err != nil {
 		t.Fatalf("transition: %v", err)
@@ -187,11 +192,11 @@ func TestLamplighterNoActor(t *testing.T) {
 // TestWasherwomanDispatchesOnRotationApplied: ApplyDailyRotation with
 // TagLaundry in ExcludeTags fires the washerwoman.
 func TestWasherwomanDispatchesOnRotationApplied(t *testing.T) {
-	w, cancel := buildRouteCascadeWorld(t)
-	defer cancel()
-
+	w, _ := buildRouteCascadeWorld(t)
+	seedActorAttribute(w, sim.AttrWasherwoman)
 	RegisterNPCRoutes(context.Background(), w)
-	setActorAttribute(t, w, sim.AttrWasherwoman)
+	cancel := runRouteCascadeWorld(t, w)
+	defer cancel()
 
 	r := newDeterministicRand()
 	scope := sim.RotationScope{ExcludeTags: []string{sim.TagLaundry, sim.TagNoticeBoard}}
@@ -206,11 +211,11 @@ func TestWasherwomanDispatchesOnRotationApplied(t *testing.T) {
 // TestWasherwomanSkipsWhenTagNotExcluded: ApplyDailyRotation with empty
 // ExcludeTags — the bulk pass rotates laundry directly, washerwoman skips.
 func TestWasherwomanSkipsWhenTagNotExcluded(t *testing.T) {
-	w, cancel := buildRouteCascadeWorld(t)
-	defer cancel()
-
+	w, _ := buildRouteCascadeWorld(t)
+	seedActorAttribute(w, sim.AttrWasherwoman)
 	RegisterNPCRoutes(context.Background(), w)
-	setActorAttribute(t, w, sim.AttrWasherwoman)
+	cancel := runRouteCascadeWorld(t, w)
+	defer cancel()
 
 	r := newDeterministicRand()
 	if _, err := w.Send(sim.ApplyDailyRotation(sim.RotationTickInputs{Now: time.Now().UTC(), Rand: r}, sim.RotationScope{})); err != nil {
@@ -224,11 +229,11 @@ func TestWasherwomanSkipsWhenTagNotExcluded(t *testing.T) {
 // TestTownCrierDispatchesOnRotationApplied: TagNoticeBoard variant of
 // the washerwoman test.
 func TestTownCrierDispatchesOnRotationApplied(t *testing.T) {
-	w, cancel := buildRouteCascadeWorld(t)
-	defer cancel()
-
+	w, _ := buildRouteCascadeWorld(t)
+	seedActorAttribute(w, sim.AttrTownCrier)
 	RegisterNPCRoutes(context.Background(), w)
-	setActorAttribute(t, w, sim.AttrTownCrier)
+	cancel := runRouteCascadeWorld(t, w)
+	defer cancel()
 
 	r := newDeterministicRand()
 	scope := sim.RotationScope{ExcludeTags: []string{sim.TagLaundry, sim.TagNoticeBoard}}
@@ -243,39 +248,60 @@ func TestTownCrierDispatchesOnRotationApplied(t *testing.T) {
 // TestArrivalAdvancesRoute: with a route installed, emitting
 // ActorArrived for the route owner advances StopIdx (verified
 // indirectly via "route exists" then "route gone after all
-// advances").
+// advances"). Manually positions the actor at each stop's WalkTo
+// before dispatching AdvanceNPCRoute, satisfying the active-phase
+// stale-arrival guard.
 func TestArrivalAdvancesRoute(t *testing.T) {
-	w, cancel := buildRouteCascadeWorld(t)
+	w, _ := buildRouteCascadeWorld(t)
+	seedActorAttribute(w, sim.AttrLamplighter)
+	RegisterNPCRoutes(context.Background(), w)
+	cancel := runRouteCascadeWorld(t, w)
 	defer cancel()
 
-	RegisterNPCRoutes(context.Background(), w)
-	setActorAttribute(t, w, sim.AttrLamplighter)
-
-	// Get a route installed (re-uses the lamplighter dispatch path).
 	if _, err := w.Send(sim.ApplyPhaseTransition(sim.PhaseDay)); err != nil {
 		t.Fatalf("transition: %v", err)
 	}
-	// Lamps are at "lit" (night state) and we transitioned to day, so
-	// lamplighter route fires with target=unlit. Verify the route
-	// installed.
 	if !hasActiveRoute(t, w) {
 		t.Fatal("expected route after PhaseApplied")
 	}
 
-	// Drive enough AdvanceNPCRoute calls (one per stop, plus the
-	// transition-to-returning, plus the arrived-home) to clear the
-	// route. The cascade subscribes to ActorArrived, so dispatching
-	// AdvanceNPCRoute directly under the world goroutine simulates
-	// the locomotion-ticker arrival sequence.
+	// Drive enough Advance calls to clear the route. Before each call,
+	// teleport the actor to the expected stop's WalkTo so the
+	// active-phase stale-arrival guard accepts the advance.
 	for i := 0; i < 10; i++ {
 		if !hasActiveRoute(t, w) {
-			return // route cleared — happy path
+			return
+		}
+		if err := teleportActorToCurrentStop(w); err != nil {
+			t.Fatalf("teleport %d: %v", i, err)
 		}
 		if _, err := w.Send(sim.AdvanceNPCRoute("runner")); err != nil {
 			t.Fatalf("advance %d: %v", i, err)
 		}
 	}
 	t.Fatal("route did not clear after 10 advances")
+}
+
+// teleportActorToCurrentStop sets the runner's tile to the active
+// route's current stop's WalkTo (or to the home position for routes
+// in returning phase). Used by TestArrivalAdvancesRoute to satisfy
+// the active-phase stale-arrival guard without driving the real
+// locomotion ticker.
+func teleportActorToCurrentStop(w *sim.World) error {
+	_, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		route, ok := world.ActiveRoutes["runner"]
+		if !ok {
+			return nil, nil
+		}
+		actor := world.Actors["runner"]
+		if route.Phase == sim.RoutePhaseActive && route.StopIdx < len(route.Stops) {
+			stop := route.Stops[route.StopIdx]
+			actor.CurrentX = stop.WalkTo.X
+			actor.CurrentY = stop.WalkTo.Y
+		}
+		return nil, nil
+	}})
+	return err
 }
 
 // newDeterministicRand returns a *rand.Rand seeded predictably so test

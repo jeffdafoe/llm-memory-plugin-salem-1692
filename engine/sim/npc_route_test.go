@@ -17,7 +17,7 @@ import (
 //     used for route-candidate fixtures.
 //   - One actor "lamp" seeded at the pad origin with HomeStructureID
 //     set to "home" (a tagged house structure).
-func buildRouteTestWorld(t *testing.T) (*sim.World, context.CancelFunc) {
+func buildRouteTestWorld(t *testing.T) (*sim.World, func()) {
 	t.Helper()
 	repo, handles := mem.NewRepository()
 	handles.Terrain.Seed(makeAllGrassTerrain())
@@ -70,8 +70,12 @@ func buildRouteTestWorld(t *testing.T) (*sim.World, context.CancelFunc) {
 		t.Fatalf("LoadWorld: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	go w.Run(ctx)
-	return w, cancel
+	done := make(chan struct{})
+	go func() {
+		w.Run(ctx)
+		close(done)
+	}()
+	return w, func() { cancel(); <-done }
 }
 
 func sampleLampCandidates() []sim.RouteCandidate {
@@ -204,8 +208,10 @@ func TestAdvanceNPCRoute_StopAdvancesFlipsAndWalks(t *testing.T) {
 
 	// Manually fast-forward: pretend the actor arrived at stop 0.
 	// AdvanceNPCRoute is the arrival hook; it flips the stop's object
-	// and dispatches the next walk.
+	// and dispatches the next walk. Teleport to stop 0's WalkTo first
+	// so the active-phase stale-arrival guard accepts the advance.
 	firstStopID := firstStopObjectID(t, w, "lamp")
+	teleportToCurrentStop(t, w, "lamp")
 	res, err := w.Send(sim.AdvanceNPCRoute("lamp"))
 	if err != nil {
 		t.Fatalf("AdvanceNPCRoute: %v", err)
@@ -227,6 +233,38 @@ func TestAdvanceNPCRoute_StopAdvancesFlipsAndWalks(t *testing.T) {
 	}
 }
 
+// TestAdvanceNPCRoute_StaleArrivalSkipsFlip: an Advance triggered when
+// the actor is NOT at the current stop's WalkTo (e.g. an out-of-band
+// MoveActor or admin teleport landed them elsewhere) returns
+// "stale_stop" without flipping the object or advancing StopIdx.
+func TestAdvanceNPCRoute_StaleArrivalSkipsFlip(t *testing.T) {
+	w, cancel := buildRouteTestWorld(t)
+	defer cancel()
+
+	homeDest := sim.NewStructureEnterDestination("home")
+	if _, err := w.Send(sim.StartNPCRoute("lamp", sim.AttrLamplighter, homeDest, sampleLampCandidates(), time.Now().UTC())); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	// Don't teleport — actor remains at the route start tile, which
+	// is NOT the first stop's WalkTo. The guard should reject.
+	firstStopID := firstStopObjectID(t, w, "lamp")
+	beforeState := w.Published().VillageObjects[firstStopID].CurrentState
+
+	res, err := w.Send(sim.AdvanceNPCRoute("lamp"))
+	if err != nil {
+		t.Fatalf("AdvanceNPCRoute: %v", err)
+	}
+	r := res.(sim.AdvanceNPCRouteResult)
+	if r.Reason != "stale_stop" {
+		t.Errorf("Reason = %q, want stale_stop", r.Reason)
+	}
+	afterState := w.Published().VillageObjects[firstStopID].CurrentState
+	if afterState != beforeState {
+		t.Errorf("stale-arrival flipped object: %q → %q", beforeState, afterState)
+	}
+}
+
 // TestAdvanceNPCRoute_LastStopGoesReturning: arriving at the last stop
 // transitions Phase to Returning and dispatches the home walk.
 func TestAdvanceNPCRoute_LastStopGoesReturning(t *testing.T) {
@@ -240,8 +278,11 @@ func TestAdvanceNPCRoute_LastStopGoesReturning(t *testing.T) {
 
 	// Drive arrivals for every stop. Each advance flips one object and
 	// dispatches the next walk; the last advance returns the actor home.
+	// Teleport to the current stop's WalkTo before each advance so the
+	// active-phase stale-arrival guard accepts the advance.
 	nStops := stopCountOf(t, w, "lamp")
 	for i := 0; i < nStops-1; i++ {
+		teleportToCurrentStop(t, w, "lamp")
 		res, err := w.Send(sim.AdvanceNPCRoute("lamp"))
 		if err != nil {
 			t.Fatalf("advance %d: %v", i, err)
@@ -252,6 +293,7 @@ func TestAdvanceNPCRoute_LastStopGoesReturning(t *testing.T) {
 		}
 	}
 	// Final advance — last stop done, transitions to returning.
+	teleportToCurrentStop(t, w, "lamp")
 	res, err := w.Send(sim.AdvanceNPCRoute("lamp"))
 	if err != nil {
 		t.Fatalf("final advance: %v", err)
@@ -277,8 +319,9 @@ func TestAdvanceNPCRoute_ArrivedHomeClearsRoute(t *testing.T) {
 	}
 
 	nStops := stopCountOf(t, w, "lamp")
-	// Advance to returning.
+	// Advance to returning. Teleport to each active stop first.
 	for i := 0; i < nStops; i++ {
+		teleportToCurrentStop(t, w, "lamp")
 		if _, err := w.Send(sim.AdvanceNPCRoute("lamp")); err != nil {
 			t.Fatalf("advance %d: %v", i, err)
 		}
@@ -391,4 +434,26 @@ func routePhaseOf(t *testing.T, w *sim.World, id sim.ActorID) sim.RoutePhase {
 		return ""
 	}
 	return route.Phase
+}
+
+// teleportToCurrentStop sets the actor's CurrentX/CurrentY to the
+// active route's current-stop WalkTo, so AdvanceNPCRoute's
+// active-phase stale-arrival guard accepts the advance. No-op for
+// routes in returning phase (the returning branch doesn't gate on
+// tile).
+func teleportToCurrentStop(t *testing.T, w *sim.World, id sim.ActorID) {
+	t.Helper()
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		route, ok := world.ActiveRoutes[id]
+		if !ok || route.Phase != sim.RoutePhaseActive || route.StopIdx >= len(route.Stops) {
+			return nil, nil
+		}
+		stop := route.Stops[route.StopIdx]
+		actor := world.Actors[id]
+		actor.CurrentX = stop.WalkTo.X
+		actor.CurrentY = stop.WalkTo.Y
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("teleportToCurrentStop: %v", err)
+	}
 }

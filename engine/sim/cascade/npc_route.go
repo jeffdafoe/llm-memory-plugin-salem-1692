@@ -237,19 +237,22 @@ func buildLamplighterCandidates(w *sim.World, targetTag string) []sim.RouteCandi
 // buildRotationCandidates collects the village_objects in domainTag
 // that need rotation. Predicate per object:
 //
-//   - Its asset has a non-empty RotationAlgo.
+//   - Its asset has RotationAlgo == RotationAlgoDeterministic.
 //   - Its CurrentState carries TagRotatable AND domainTag.
 //   - The asset's rotatable pool has at least one non-current state to
 //     flip to.
 //
-// The target state is decided by re-running the rotation algo for this
-// object — but with the algo's full pool (not constrained to domainTag)
-// matching the substrate's semantic. Today we just pick the next
-// non-current pool entry deterministically (== RotationAlgoDeterministic
-// behavior) regardless of asset config: the route is a single-actor
-// linear walk and visual variety isn't load-bearing the way the bulk
-// pass is. Slice 3 (or a follow-up) can revisit if a per-instance random
-// target is preferred.
+// Non-deterministic algos (random_per_object / random_per_asset) are
+// skipped: the route's per-stop pick happens outside the bulk
+// rotation pass, so we'd need to reproduce the bulk's rand source to
+// stay consistent with what the bulk would have done — and the route
+// has no shared rand. Domain assets in production today (laundry,
+// noticeboards) are deterministic; if a random algo is ever wanted on
+// a route-domain asset, factor the bulk picker into a shared helper +
+// thread rand through this path. Today: just skip and log.
+//
+// The deterministic pick uses nextPoolState — same semantic as the
+// substrate's pickDeterministicNext (next pool entry wrapping).
 func buildRotationCandidates(w *sim.World, domainTag string) []sim.RouteCandidate {
 	var out []sim.RouteCandidate
 	for id, obj := range w.VillageObjects {
@@ -260,7 +263,11 @@ func buildRotationCandidates(w *sim.World, domainTag string) []sim.RouteCandidat
 		if !ok {
 			continue
 		}
-		if asset.RotationAlgo == "" {
+		if asset.RotationAlgo != sim.RotationAlgoDeterministic {
+			if asset.RotationAlgo != "" {
+				log.Printf("cascade/npc_route: skipping route candidate %q — asset %q uses non-deterministic RotationAlgo %q",
+					id, obj.AssetID, asset.RotationAlgo)
+			}
 			continue
 		}
 		current := asset.FindState(obj.CurrentState)
