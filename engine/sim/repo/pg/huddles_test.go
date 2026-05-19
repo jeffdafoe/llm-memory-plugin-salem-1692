@@ -377,6 +377,74 @@ func TestHuddlesRepo_SaveSnapshot_ZeroStartedAtRejected(t *testing.T) {
 	}
 }
 
+// TestHuddlesRepo_SaveSnapshot_EmptyHuddleIDRejected — substrate-
+// boundary validation. Empty IDs would trip the scene_huddle_id_nonempty
+// CHECK mid-Tx; catch them at the repo boundary so the failing
+// checkpoint surfaces a clearer error than a CHECK violation buried
+// in a partial-Tx rollback.
+func TestHuddlesRepo_SaveSnapshot_EmptyHuddleIDRejected(t *testing.T) {
+	mock, repo := newMockPoolH(t)
+	tx := fakeTx{mock: mock}
+
+	expectHuddleSaveSnapshotPrelude(mock, 1)
+
+	err := repo.SaveSnapshot(context.Background(), tx, map[sim.HuddleID]*sim.Huddle{
+		"": {ID: "", StartedAt: time.Date(2026, 5, 18, 19, 0, 0, 0, time.UTC)},
+	})
+	if err == nil {
+		t.Fatal("expected error for empty HuddleID")
+	}
+}
+
+// TestHuddlesRepo_SaveSnapshot_KeyMismatchRejected — substrate-boundary
+// validation. Defends against shape bugs in callers that build the map
+// with mismatched keys (e.g. `huddles[hudA] = &Huddle{ID: hudB}`),
+// which would otherwise stamp the row under h.ID while LoadAll would
+// re-key it correctly — but any in-flight reader of `huddles[hudA]`
+// would see a Huddle whose persisted shape doesn't match its key.
+func TestHuddlesRepo_SaveSnapshot_KeyMismatchRejected(t *testing.T) {
+	mock, repo := newMockPoolH(t)
+	tx := fakeTx{mock: mock}
+
+	expectHuddleSaveSnapshotPrelude(mock, 1)
+
+	err := repo.SaveSnapshot(context.Background(), tx, map[sim.HuddleID]*sim.Huddle{
+		sim.HuddleID(hudA): {
+			ID:        sim.HuddleID(hudB),
+			StartedAt: time.Date(2026, 5, 18, 19, 0, 0, 0, time.UTC),
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error for map-key vs h.ID mismatch")
+	}
+}
+
+// TestHuddlesRepo_SaveSnapshot_ConcludedWithMembersRejected — substrate-
+// boundary validation. v2 invariant: ConcludeHuddle wipes
+// Huddle.Members in memory (engine/sim/huddle_commands.go:480), so a
+// concluded huddle MUST have zero Members at SaveSnapshot time. A
+// concluded huddle arriving with Members non-empty implies a missed
+// wipe somewhere; surface it at the boundary.
+func TestHuddlesRepo_SaveSnapshot_ConcludedWithMembersRejected(t *testing.T) {
+	mock, repo := newMockPoolH(t)
+	tx := fakeTx{mock: mock}
+
+	expectHuddleSaveSnapshotPrelude(mock, 1)
+
+	concluded := time.Date(2026, 5, 18, 19, 30, 0, 0, time.UTC)
+	err := repo.SaveSnapshot(context.Background(), tx, map[sim.HuddleID]*sim.Huddle{
+		sim.HuddleID(hudA): {
+			ID:          sim.HuddleID(hudA),
+			Members:     map[sim.ActorID]struct{}{actorAlice: {}},
+			StartedAt:   time.Date(2026, 5, 18, 19, 0, 0, 0, time.UTC),
+			ConcludedAt: &concluded,
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error for concluded huddle with non-empty Members")
+	}
+}
+
 // TestHuddlesRepo_SaveSnapshot_OutdoorHuddleNullStructure — empty
 // StructureID → SQL NULL binding (outdoor huddle).
 func TestHuddlesRepo_SaveSnapshot_OutdoorHuddleNullStructure(t *testing.T) {
