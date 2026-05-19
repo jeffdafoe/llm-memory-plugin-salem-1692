@@ -3,6 +3,7 @@ package pg
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -218,14 +219,26 @@ func TestEnvironmentRepo_Load_AllDefaults_WhenSettingsEmpty(t *testing.T) {
 // TestEnvironmentRepo_Load_NoWorldStateRow_HardFails — defensive
 // against the impossible-post-migration case. Surfaces loudly so a
 // fresh deploy without the ZBBS-038 seed gets a clear diagnostic.
+//
+// Models pgx behavior accurately: an empty result set causes
+// QueryRow.Scan to return pgx.ErrNoRows, not Query itself to return
+// an error.
 func TestEnvironmentRepo_Load_NoWorldStateRow_HardFails(t *testing.T) {
 	mock, repo := newMockPoolE(t)
 	mock.ExpectQuery(`SELECT[\s\S]+FROM world_state`).
-		WillReturnError(pgx.ErrNoRows)
+		WillReturnRows(pgxmock.NewRows(worldStateColumns))
 
 	_, _, _, err := repo.Load(context.Background())
 	if err == nil {
 		t.Fatal("Load should error on missing world_state row")
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		// Wrapped error still wraps ErrNoRows via our explicit check
+		// and the manual fmt.Errorf in loadWorldState; verify the
+		// diagnostic message mentions the row.
+		if got := err.Error(); !strings.Contains(got, "world_state row missing") {
+			t.Errorf("error = %q, want substring about missing world_state row", got)
+		}
 	}
 }
 
@@ -337,6 +350,49 @@ func TestEnvironmentRepo_SaveSnapshot_NilTx(t *testing.T) {
 	}
 }
 
+// --- SaveSnapshot: zero LastTransitionAt / LastRotationAt -----------------
+
+// TestEnvironmentRepo_SaveSnapshot_ZeroLastTransition_Error — substrate-
+// boundary guard against scheduler corruption. Zero time.Time encodes
+// as PG year-0001 (NOT NULL passes), which would silently corrupt the
+// next phase-transition decision. The guard surfaces upstream bugs
+// before they reach the DB.
+func TestEnvironmentRepo_SaveSnapshot_ZeroLastTransition_Error(t *testing.T) {
+	mock, repo := newMockPoolE(t)
+	tx := fakeTx{mock: mock}
+	at := time.Date(2026, 5, 19, 7, 0, 0, 0, time.UTC)
+	env := sim.WorldEnvironment{
+		// LastTransitionAt intentionally zero.
+		LastRotationAt: at,
+	}
+	err := repo.SaveSnapshot(context.Background(), tx, env, sim.PhaseDay)
+	if err == nil {
+		t.Fatal("SaveSnapshot(zero LastTransitionAt) should error")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unexpected SQL fired: %v", err)
+	}
+}
+
+// TestEnvironmentRepo_SaveSnapshot_ZeroLastRotation_Error — mirror of
+// the LastTransitionAt guard for the daily asset rotation gate.
+func TestEnvironmentRepo_SaveSnapshot_ZeroLastRotation_Error(t *testing.T) {
+	mock, repo := newMockPoolE(t)
+	tx := fakeTx{mock: mock}
+	at := time.Date(2026, 5, 19, 7, 0, 0, 0, time.UTC)
+	env := sim.WorldEnvironment{
+		LastTransitionAt: at,
+		// LastRotationAt intentionally zero.
+	}
+	err := repo.SaveSnapshot(context.Background(), tx, env, sim.PhaseDay)
+	if err == nil {
+		t.Fatal("SaveSnapshot(zero LastRotationAt) should error")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unexpected SQL fired: %v", err)
+	}
+}
+
 // --- SaveSnapshot: invalid phase ------------------------------------------
 
 // TestEnvironmentRepo_SaveSnapshot_InvalidPhase — phase outside the
@@ -402,6 +458,8 @@ func TestParseDurationSetting(t *testing.T) {
 		{"missing key falls to default", "checkpoint_interval_seconds", "", 60 * time.Second, 60 * time.Second},
 		{"malformed value falls to default", "checkpoint_interval_seconds", "abc", 60 * time.Second, 60 * time.Second},
 		{"unrecognized suffix falls to default", "checkpoint_interval_centuries", "1", 5 * time.Second, 5 * time.Second},
+		{"negative value falls to default", "checkpoint_interval_seconds", "-1", 60 * time.Second, 60 * time.Second},
+		{"overflowing value falls to default", "atmosphere_refresh_interval_hours", "99999999999", 4 * time.Hour, 4 * time.Hour},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

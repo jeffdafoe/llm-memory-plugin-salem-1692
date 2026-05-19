@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -327,12 +328,21 @@ func parseBoolSetting(values map[string]string, key string, def bool) bool {
 
 // parseDurationSetting reads a scalar-int setting and multiplies by
 // the unit implied by the key's suffix (_ms / _seconds / _minutes /
-// _hours). Missing rows, malformed values, or unrecognized suffixes
-// all log a warning and return def.
+// _hours). Missing rows, malformed values, unrecognized suffixes,
+// negative values, and overflowing multiplications all log a warning
+// and return def.
+//
+// Negative values are universally invalid for cadences/TTLs/backoffs
+// (would produce tight loops or immediate-expiry behavior). Zero IS
+// valid per-key — many fields use zero to mean "disabled" — so the
+// zero floor stays open here.
+//
+// Overflow guard prevents an admin typo like 'atmosphere_refresh_
+// interval_hours = 99999999' from wrapping time.Duration negative.
 //
 // Unrecognized suffix is a programming error (the caller passed a key
-// without one of the four supported suffixes); separate from a
-// malformed value to make the diagnostic clearer.
+// without one of the four supported suffixes); separate diagnostic
+// path to make the cause obvious.
 func parseDurationSetting(values map[string]string, key string, def time.Duration) time.Duration {
 	unit, ok := durationUnitForKey(key)
 	if !ok {
@@ -348,6 +358,16 @@ func parseDurationSetting(values map[string]string, key string, def time.Duratio
 	if err != nil {
 		log.Printf("pg environment: setting %q=%q is not a valid int (%v) — falling back to %v",
 			key, raw, err, def)
+		return def
+	}
+	if n < 0 {
+		log.Printf("pg environment: setting %q=%q is negative — falling back to %v",
+			key, raw, def)
+		return def
+	}
+	if n > math.MaxInt64/int64(unit) {
+		log.Printf("pg environment: setting %q=%q overflows time.Duration when multiplied by %v — falling back to %v",
+			key, raw, unit, def)
 		return def
 	}
 	return time.Duration(n) * unit
@@ -388,6 +408,18 @@ func (r *EnvironmentRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, env sim.W
 	}
 	if phase != sim.PhaseDay && phase != sim.PhaseNight {
 		return fmt.Errorf("pg environment SaveSnapshot: invalid phase %q (expected day | night)", phase)
+	}
+	// Substrate-boundary guard: both required timestamps must be set.
+	// Zero time.Time encodes as PG year-0001 (not caught by NOT NULL),
+	// which would silently corrupt the scheduler gates the engine
+	// relies on. LoadWorld seeds these from world_state at startup; a
+	// zero value here indicates upstream forgot to copy through.
+	// LastNeedsTickAt zero IS legitimate (= "never run yet" = SQL NULL).
+	if env.LastTransitionAt.IsZero() {
+		return fmt.Errorf("pg environment SaveSnapshot: zero LastTransitionAt (scheduler state would corrupt to year 0001)")
+	}
+	if env.LastRotationAt.IsZero() {
+		return fmt.Errorf("pg environment SaveSnapshot: zero LastRotationAt (scheduler state would corrupt to year 0001)")
 	}
 	var lastNeedsArg any
 	if !env.LastNeedsTickAt.IsZero() {

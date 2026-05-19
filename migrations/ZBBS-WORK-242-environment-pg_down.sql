@@ -2,14 +2,17 @@
 --
 -- Reverses the rename, drops the new env columns, restores the
 -- engine-state kv rows (chronicler stamps + last_attribute_tick_at),
--- reverses the tiredness pct/abs swap, and deletes the seeded v2
--- tunables. The zoom catch-up rows are NOT deleted on rollback — the
--- code defaults match the seeded values anyway, so leaving them is a
--- no-op for the engine but preserves any admin edits.
+-- reverses the tiredness pct/abs swap (deriving the pct from any
+-- admin-customized abs row), and deletes everything the up migration
+-- seeded. Strict rollback — including the zoom catch-up rows; on
+-- rollback the engine still uses its code defaults for those.
+-- Admin edits to seeded rows ARE lost on rollback by design.
 
 BEGIN;
 
--- 1. Delete the ~28 v2 tunables.
+-- 1. Delete the ~28 v2 tunables + the zoom catch-up rows. Strict
+-- rollback — admin edits to these rows are lost; the engine still
+-- uses code defaults for zoom when the rows are absent.
 DELETE FROM setting WHERE key IN (
     'reactor_jitter_min_ms',
     'reactor_jitter_max_ms',
@@ -38,10 +41,28 @@ DELETE FROM setting WHERE key IN (
     'order_ttl_minutes',
     'order_sweep_cadence_seconds',
     'agent_ticks_paused',
-    'checkpoint_interval_seconds'
+    'checkpoint_interval_seconds',
+    'world_zoom_min_admin',
+    'world_zoom_min_regular'
 );
 
--- 2. Reverse the tiredness pct/abs swap.
+-- 2. Reverse the tiredness pct/abs swap. Derive pct from any
+-- admin-customized abs row so admin edits round-trip (within int
+-- precision; ceil(abs*100/24) is the inverse of ceil(24*pct/100) up
+-- to off-by-one at rounding boundaries). Falls back to default
+-- pct=90 if no abs row existed.
+
+INSERT INTO setting (key, value, description, is_public)
+SELECT
+    'tiredness_critical_threshold_pct',
+    CEIL(value::numeric * 100 / 24)::int::text,
+    'Critical-tier tiredness threshold as percent of needMax. Engine computes the absolute as ceil(needMax * pct / 100). Lifts the on-shift gate that hides home/inn/tavern from tired-NPC recovery options.',
+    FALSE
+FROM setting
+WHERE key = 'tiredness_critical_threshold'
+  AND value IS NOT NULL
+ON CONFLICT (key) DO NOTHING;
+
 DELETE FROM setting WHERE key = 'tiredness_critical_threshold';
 
 INSERT INTO setting (key, value, description, is_public) VALUES
@@ -74,7 +95,20 @@ ALTER TABLE world_state DROP COLUMN IF EXISTS atmosphere;
 ALTER TABLE world_state DROP COLUMN IF EXISTS weather;
 
 -- 6. Rename the singleton constraint back, then the table itself.
-ALTER TABLE world_state RENAME CONSTRAINT world_state_singleton TO world_phase_singleton;
+-- Wrapped in a DO block so the rollback survives a partially-applied
+-- up (constraint already absent under the new name).
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+          FROM pg_constraint
+         WHERE conname = 'world_state_singleton'
+           AND conrelid = 'world_state'::regclass
+    ) THEN
+        ALTER TABLE world_state RENAME CONSTRAINT world_state_singleton TO world_phase_singleton;
+    END IF;
+END $$;
+
 ALTER TABLE world_state RENAME TO world_phase;
 
 COMMIT;
