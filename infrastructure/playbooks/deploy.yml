@@ -69,6 +69,23 @@
         group: "{{ app_user }}"
 
     # Migrations
+    # On a fresh database, load the schema baseline (schema.sql) before running
+    # migrations. The migration runner below assumes migrations_applied already
+    # exists; schema.sql creates it (empty) along with all baseline tables. On an
+    # existing database that table is present, so this is skipped entirely.
+    - name: Check whether the schema baseline has been applied
+      shell: |
+        sudo -u postgres psql -d {{ database_name }} -tAc "SELECT to_regclass('public.migrations_applied') IS NOT NULL;"
+      register: baseline_present
+      changed_when: false
+
+    - name: Load schema baseline on a fresh database
+      shell: |
+        sudo -u postgres psql -d {{ database_name }} -v ON_ERROR_STOP=1 -f "{{ project_root }}/migrations/schema.sql"
+      when:
+        - run_migrations | default(false) | bool
+        - baseline_present.stdout | trim != 't'
+
     - name: Find all SQL migrations
       find:
         paths: "{{ project_root }}/migrations"
