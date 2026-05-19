@@ -24,11 +24,10 @@ type WorldEnvironment struct {
 	Now                     time.Time
 	Weather                 string
 	Atmosphere              string
-	LastRefreshed           time.Time
-	LastAtmosphereRefreshAt time.Time // last successful atmosphere refresh (UTC); see engine/sim/atmosphere.go
-	LastTransitionAt        time.Time // last day↔night transition (UTC)
-	LastRotationAt          time.Time // last daily asset rotation (UTC)
-	LastNeedsTickAt         time.Time // last hourly needs increment (UTC, hour-truncated)
+	LastAtmosphereRefreshAt time.Time // last successful atmosphere refresh (UTC); see engine/sim/atmosphere.go. Restart-lossy by design — cosmetic prose, fresh fire after restart is acceptable.
+	LastTransitionAt        time.Time // last day↔night transition (UTC). Durable — persisted in world_state.last_transition_at.
+	LastRotationAt          time.Time // last daily asset rotation (UTC). Durable — persisted in world_state.last_rotation_at.
+	LastNeedsTickAt         time.Time // last hourly needs increment (UTC, hour-truncated). Durable — persisted in world_state.last_needs_tick_at.
 }
 
 // WorldSettings carries world-level config — checkpoint cadence, phase
@@ -86,11 +85,13 @@ type WorldSettings struct {
 	// MaxWarrantAge: cleared on LoadWorld; not currently used at runtime
 	// (warrants are ephemeral). Kept for future use if persistence lands.
 	//
-	// MaxReactorTicksPerActorPerMinute: per-actor rate floor. Drops to 0
-	// (disabled) by default; turn on if a noisy environment produces sub-
-	// jitter ping-pong loops in practice. Capped actors get their
-	// WarrantDueAt pushed to the next allowed time rather than silently
-	// skipped each scan.
+	// MaxReactorTicksPerActorPerMinute: per-actor rate cap over a rolling
+	// 1-minute window. Drops to 0 (disabled) by default; turn on if a
+	// noisy environment produces sub-jitter ping-pong loops in practice.
+	// Capped actors get their WarrantDueAt pushed to the next allowed
+	// time rather than silently skipped each scan. Distinct from
+	// MinReactorTickGap below — that is the always-on per-tick pacing
+	// floor; this is the rolling-window ceiling.
 	//
 	// MaxWarrantsPerActor: cap on the per-actor Warrants list size. When
 	// exceeded, oldest entries drop (freshest signals are most relevant).

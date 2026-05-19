@@ -248,7 +248,7 @@ func TestLoadWorld_NotImpl_Tolerated(t *testing.T) {
 		Huddles:        fakeHuddles{out: map[sim.HuddleID]*sim.Huddle{}},
 		Scenes:         fakeScenes{out: map[sim.SceneID]*sim.Scene{}},
 		Orders:         fakeOrders{out: map[sim.OrderID]*sim.Order{}},
-		Environment:    notImplEnvironment{},
+		Environment:    fakeEnvironment{err: errNotImpl},
 		Assets:         notImplAssets{},
 		Recipes:        notImplRecipes{},
 		ItemKinds:      notImplItemKinds{},
