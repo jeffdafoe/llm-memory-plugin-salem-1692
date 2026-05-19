@@ -170,6 +170,121 @@ func TestScenesRepo_LoadAll_OrphanRefRejected(t *testing.T) {
 	}
 }
 
+// TestScenesRepo_LoadAll_DuplicateSceneIDRejected — defensive against
+// admin-direct writes / schema drift (code_review R1). PK prevents
+// duplicates in valid DB state; this matches the loud-drift guards on
+// orphan rows + unknown bound_kind.
+func TestScenesRepo_LoadAll_DuplicateSceneIDRejected(t *testing.T) {
+	mock, repo := newMockPoolSc(t)
+
+	structureID := strA
+	mock.ExpectQuery(`FROM scene\b`).
+		WillReturnRows(pgxmock.NewRows([]string{
+			"id", "origin_at", "origin_kind", "bound_kind",
+			"bound_structure_id", "bound_anchor_x", "bound_anchor_y", "bound_radius",
+			"origin_position_x", "origin_position_y",
+		}).
+			AddRow(sceA, time.Now(), "pc_speak", "structure",
+				&structureID, (*int)(nil), (*int)(nil), (*int)(nil), 5, 10).
+			AddRow(sceA, time.Now(), "idle_backstop", "structure",
+				&structureID, (*int)(nil), (*int)(nil), (*int)(nil), 5, 10))
+
+	_, err := repo.LoadAll(context.Background())
+	if err == nil {
+		t.Fatal("expected error for duplicate scene id in result set")
+	}
+}
+
+// TestScenesRepo_LoadAll_StructureBoundWithAreaFieldsRejected —
+// scanBound tightening (code_review R1). A corrupt row with bound_kind=
+// structure but anchor/radius columns populated must error loudly
+// rather than silently load as structure ignoring the area payload.
+func TestScenesRepo_LoadAll_StructureBoundWithAreaFieldsRejected(t *testing.T) {
+	mock, repo := newMockPoolSc(t)
+
+	structureID := strA
+	mock.ExpectQuery(`FROM scene\b`).
+		WillReturnRows(pgxmock.NewRows([]string{
+			"id", "origin_at", "origin_kind", "bound_kind",
+			"bound_structure_id", "bound_anchor_x", "bound_anchor_y", "bound_radius",
+			"origin_position_x", "origin_position_y",
+		}).
+			AddRow(sceA, time.Now(), "pc_speak", "structure",
+				&structureID, ptrInt(0), ptrInt(0), ptrInt(3), 5, 10))
+
+	_, err := repo.LoadAll(context.Background())
+	if err == nil {
+		t.Fatal("expected error for structure-bound row with area columns populated")
+	}
+}
+
+// TestScenesRepo_LoadAll_AreaBoundWithStructureIDRejected.
+func TestScenesRepo_LoadAll_AreaBoundWithStructureIDRejected(t *testing.T) {
+	mock, repo := newMockPoolSc(t)
+
+	structureID := strA
+	mock.ExpectQuery(`FROM scene\b`).
+		WillReturnRows(pgxmock.NewRows([]string{
+			"id", "origin_at", "origin_kind", "bound_kind",
+			"bound_structure_id", "bound_anchor_x", "bound_anchor_y", "bound_radius",
+			"origin_position_x", "origin_position_y",
+		}).
+			AddRow(sceA, time.Now(), "pc_speak", "area",
+				&structureID, ptrInt(8), ptrInt(12), ptrInt(3), 5, 10))
+
+	_, err := repo.LoadAll(context.Background())
+	if err == nil {
+		t.Fatal("expected error for area-bound row with bound_structure_id populated")
+	}
+}
+
+// TestScenesRepo_LoadAll_AreaBoundNegativeRadiusRejected — NewAreaBound
+// clamps negative radii to 0, which would hide DB corruption. scanBound
+// must catch it explicitly. (code_review R1.)
+func TestScenesRepo_LoadAll_AreaBoundNegativeRadiusRejected(t *testing.T) {
+	mock, repo := newMockPoolSc(t)
+
+	mock.ExpectQuery(`FROM scene\b`).
+		WillReturnRows(pgxmock.NewRows([]string{
+			"id", "origin_at", "origin_kind", "bound_kind",
+			"bound_structure_id", "bound_anchor_x", "bound_anchor_y", "bound_radius",
+			"origin_position_x", "origin_position_y",
+		}).
+			AddRow(sceA, time.Now(), "pc_speak", "area",
+				(*string)(nil), ptrInt(8), ptrInt(12), ptrInt(-1), 5, 10))
+
+	_, err := repo.LoadAll(context.Background())
+	if err == nil {
+		t.Fatal("expected error for area-bound row with negative radius")
+	}
+}
+
+// TestScenesRepo_SaveSnapshot_UnboundedWithPayloadRejected — code_review
+// R1: Unbounded scenes must have all variant fields nil. An in-memory
+// Unbounded scene with populated StructureID/Anchor/Radius is corrupt
+// state; lock down today, loosen via migration if future world-scope
+// variants need payload.
+func TestScenesRepo_SaveSnapshot_UnboundedWithPayloadRejected(t *testing.T) {
+	mock, repo := newMockPoolSc(t)
+	tx := fakeTx{mock: mock}
+
+	expectSceneSaveSnapshotPrelude(mock, 1)
+
+	id := sim.StructureID(strA)
+	badBound := sim.SceneBound{Kind: sim.SceneBoundUnbounded, StructureID: &id}
+	err := repo.SaveSnapshot(context.Background(), tx, map[sim.SceneID]*sim.Scene{
+		sim.SceneID(sceA): {
+			ID:         sim.SceneID(sceA),
+			OriginKind: "atmosphere_refresh",
+			OriginAt:   time.Now(),
+			Bound:      badBound,
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error for Unbounded scene with payload")
+	}
+}
+
 // TestScenesRepo_LoadAll_UnknownBoundKindRejected — defensive against
 // schema drift.
 func TestScenesRepo_LoadAll_UnknownBoundKindRejected(t *testing.T) {

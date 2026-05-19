@@ -130,8 +130,15 @@ func (r *ScenesRepo) LoadAll(ctx context.Context) (map[sim.SceneID]*sim.Scene, e
 		if err != nil {
 			return nil, fmt.Errorf("pg scenes LoadAll id=%s: %w", id, err)
 		}
-		out[sim.SceneID(id)] = &sim.Scene{
-			ID:             sim.SceneID(id),
+		sid := sim.SceneID(id)
+		// Defensive against admin-direct writes / schema drift: PK
+		// prevents duplicates in valid DB state, but matching the loud-
+		// drift guards on orphan rows + unknown bound_kind. (code_review R1.)
+		if _, exists := out[sid]; exists {
+			return nil, fmt.Errorf("pg scenes LoadAll: duplicate scene id=%s in result set (schema drift or out-of-band write)", id)
+		}
+		out[sid] = &sim.Scene{
+			ID:             sid,
 			OriginAt:       originAt,
 			OriginKind:     originKind,
 			Bound:          bound,
@@ -149,19 +156,38 @@ func (r *ScenesRepo) LoadAll(ctx context.Context) (map[sim.SceneID]*sim.Scene, e
 	return out, nil
 }
 
-// scanBound rebuilds a SceneBound from the variant columns. Returns an
-// error for unknown bound_kind values — defensive against schema drift
-// or pre-Slice-13 admin-direct writes.
+// scanBound rebuilds a SceneBound from the variant columns. Mirrors
+// validateBoundShape's rejections at the load boundary — the DB CHECK
+// should prevent these states, but a corrupted row (admin-direct
+// write, dropped CHECK during a botched migration, etc.) must surface
+// as a load error rather than silently load with extra fields ignored.
+// (code_review R1 2026-05-19.)
+//
+// Also: NewAreaBound clamps negative radii to 0, which would HIDE
+// corruption on load. The explicit `*radius < 0` check below catches
+// it loudly.
 func scanBound(kind string, structureID *string, anchorX, anchorY, radius *int) (sim.SceneBound, error) {
 	switch kind {
 	case string(sim.SceneBoundStructure):
 		if structureID == nil {
 			return sim.SceneBound{}, fmt.Errorf("bound_kind=structure but bound_structure_id is NULL (schema drift)")
 		}
+		if strings.TrimSpace(*structureID) == "" {
+			return sim.SceneBound{}, fmt.Errorf("bound_kind=structure but bound_structure_id is empty/whitespace (schema drift)")
+		}
+		if anchorX != nil || anchorY != nil || radius != nil {
+			return sim.SceneBound{}, fmt.Errorf("bound_kind=structure but area columns (bound_anchor_x/y/radius) are populated (schema drift)")
+		}
 		return sim.NewStructureBound(sim.StructureID(*structureID)), nil
 	case string(sim.SceneBoundArea):
 		if anchorX == nil || anchorY == nil || radius == nil {
 			return sim.SceneBound{}, fmt.Errorf("bound_kind=area but one of bound_anchor_x/y/radius is NULL (schema drift)")
+		}
+		if structureID != nil {
+			return sim.SceneBound{}, fmt.Errorf("bound_kind=area but bound_structure_id is populated (schema drift)")
+		}
+		if *radius < 0 {
+			return sim.SceneBound{}, fmt.Errorf("bound_kind=area but bound_radius=%d is negative (schema drift; NewAreaBound clamps to 0 which would hide this)", *radius)
 		}
 		return sim.NewAreaBound(sim.Position{X: *anchorX, Y: *anchorY}, *radius), nil
 	default:
@@ -352,10 +378,16 @@ func validateBoundShape(id sim.SceneID, b sim.SceneBound) error {
 			return fmt.Errorf("pg scenes SaveSnapshot: id=%s Bound.Kind=area must not set StructureID", id)
 		}
 	case sim.SceneBoundUnbounded:
-		// Valid — will be filtered from upsert. No field expectations
-		// (StructureID/Anchor/Radius all nil is the canonical shape;
-		// don't enforce strictly here in case future Unbounded
-		// variants carry payload).
+		// Valid kind — will be filtered from upsert. Lock down to
+		// all-nil today (code_review R1): an Unbounded scene with
+		// populated StructureID/Anchor/Radius is corrupt in-memory
+		// state, and accepting it silently weakens the "pre-pass
+		// validates the WHOLE snapshot" guarantee. If future
+		// world-scope Unbounded variants need payload, loosen with a
+		// matching schema migration + repo change.
+		if b.StructureID != nil || b.Anchor != nil || b.Radius != nil {
+			return fmt.Errorf("pg scenes SaveSnapshot: id=%s Bound.Kind=unbounded must not set StructureID/Anchor/Radius", id)
+		}
 	default:
 		return fmt.Errorf("pg scenes SaveSnapshot: id=%s unknown Bound.Kind=%q", id, b.Kind)
 	}
