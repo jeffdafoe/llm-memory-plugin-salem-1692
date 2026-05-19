@@ -351,6 +351,81 @@ func TestStructuresRepo_SaveSnapshot_EmptyDisplayNameRejected(t *testing.T) {
 	}
 }
 
+// TestStructuresRepo_SaveSnapshot_WhitespaceStructureIDRejected — repo
+// validation must match the DB btrim CHECK (code_review R1).
+func TestStructuresRepo_SaveSnapshot_WhitespaceStructureIDRejected(t *testing.T) {
+	mock, repo := newMockPoolS(t)
+	tx := fakeTx{mock: mock}
+
+	expectStructureSaveSnapshotPrelude(mock, 1)
+
+	err := repo.SaveSnapshot(context.Background(), tx, map[sim.StructureID]*sim.Structure{
+		"   ": {ID: "   ", DisplayName: "Tavern"},
+	})
+	if err == nil {
+		t.Fatal("expected error for whitespace-only StructureID")
+	}
+}
+
+// TestStructuresRepo_SaveSnapshot_WhitespaceDisplayNameRejected — repo
+// validation must match the DB btrim CHECK (code_review R1).
+func TestStructuresRepo_SaveSnapshot_WhitespaceDisplayNameRejected(t *testing.T) {
+	mock, repo := newMockPoolS(t)
+	tx := fakeTx{mock: mock}
+
+	expectStructureSaveSnapshotPrelude(mock, 1)
+
+	err := repo.SaveSnapshot(context.Background(), tx, map[sim.StructureID]*sim.Structure{
+		sim.StructureID(strA): {ID: sim.StructureID(strA), DisplayName: "  \t  "},
+	})
+	if err == nil {
+		t.Fatal("expected error for whitespace-only DisplayName")
+	}
+}
+
+// TestStructuresRepo_SaveSnapshot_WhitespaceRoomNameRejected — repo
+// validation must match the DB btrim CHECK (code_review R1).
+func TestStructuresRepo_SaveSnapshot_WhitespaceRoomNameRejected(t *testing.T) {
+	mock, repo := newMockPoolS(t)
+	tx := fakeTx{mock: mock}
+
+	expectStructureSaveSnapshotPrelude(mock, 1)
+
+	err := repo.SaveSnapshot(context.Background(), tx, map[sim.StructureID]*sim.Structure{
+		sim.StructureID(strA): {
+			ID:          sim.StructureID(strA),
+			DisplayName: "Tavern",
+			Rooms: []*sim.Room{
+				{ID: 1, StructureID: sim.StructureID(strA), Kind: sim.RoomKindCommon, Name: "  "},
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error for whitespace-only room Name")
+	}
+}
+
+// TestStructuresRepo_SaveSnapshot_EmptyTagRejected — repo enforces
+// tag-element nonemptiness (replacing the dropped array_position CHECK
+// per code_review R1).
+func TestStructuresRepo_SaveSnapshot_EmptyTagRejected(t *testing.T) {
+	mock, repo := newMockPoolS(t)
+	tx := fakeTx{mock: mock}
+
+	expectStructureSaveSnapshotPrelude(mock, 1)
+
+	err := repo.SaveSnapshot(context.Background(), tx, map[sim.StructureID]*sim.Structure{
+		sim.StructureID(strA): {
+			ID:          sim.StructureID(strA),
+			DisplayName: "Tavern",
+			Tags:        []string{"tavern", "", "lodging"},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error for empty tag element")
+	}
+}
+
 // TestStructuresRepo_SaveSnapshot_NilRoomRejected — design_review #5.
 func TestStructuresRepo_SaveSnapshot_NilRoomRejected(t *testing.T) {
 	mock, repo := newMockPoolS(t)
