@@ -3,6 +3,7 @@ package pg
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
@@ -219,20 +220,33 @@ func (r *StructuresRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, structures
 	// Slice 12 differs from Slice 11 here because Rooms is a slice
 	// (not a map) so duplicate IDs across the full snapshot need a
 	// cross-structure check.
+	// Validation uses strings.TrimSpace to match the DB-side btrim CHECKs
+	// — without that, a whitespace-only ID / DisplayName / Name passes Go
+	// validation and then trips the CHECK mid-Tx, leaving a worse error
+	// than a clean substrate rejection. (code_review R1 2026-05-19.)
 	seenRoomIDs := make(map[sim.RoomID]sim.StructureID)
 	seenRoomNames := make(map[sim.StructureID]map[string]struct{})
 	for key, s := range structures {
 		if s == nil {
 			return fmt.Errorf("pg structures SaveSnapshot: nil entry at map key=%s (use deletion via gen-marker absence, not nil)", key)
 		}
-		if s.ID == "" {
+		if strings.TrimSpace(string(s.ID)) == "" {
 			return fmt.Errorf("pg structures SaveSnapshot: empty StructureID (map key=%s)", key)
 		}
 		if s.ID != key {
 			return fmt.Errorf("pg structures SaveSnapshot: map key=%s does not match s.ID=%s", key, s.ID)
 		}
-		if s.DisplayName == "" {
+		if strings.TrimSpace(s.DisplayName) == "" {
 			return fmt.Errorf("pg structures SaveSnapshot: id=%s has empty DisplayName (load-bearing for prompts)", s.ID)
+		}
+		// Tag-element validation matches the (now repo-only) no-nulls /
+		// no-empty invariant. The DB CHECK was dropped in R1 because
+		// `array_position(tags, NULL)` has unreliable semantics for
+		// null-element detection; pure repo validation replaces it.
+		for i, t := range s.Tags {
+			if t == "" {
+				return fmt.Errorf("pg structures SaveSnapshot: id=%s has empty tag at index %d", s.ID, i)
+			}
 		}
 		for i, room := range s.Rooms {
 			if room == nil {
@@ -244,7 +258,7 @@ func (r *StructuresRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, structures
 			if room.StructureID != s.ID {
 				return fmt.Errorf("pg structures SaveSnapshot: id=%s room id=%d has mismatched StructureID=%s", s.ID, room.ID, room.StructureID)
 			}
-			if room.Name == "" {
+			if strings.TrimSpace(room.Name) == "" {
 				return fmt.Errorf("pg structures SaveSnapshot: id=%s room id=%d has empty Name", s.ID, room.ID)
 			}
 			if owner, dup := seenRoomIDs[room.ID]; dup {
