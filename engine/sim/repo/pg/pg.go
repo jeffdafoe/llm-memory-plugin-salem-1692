@@ -35,7 +35,7 @@ type Pool interface {
 func NewRepository(pool Pool) sim.Repository {
 	return sim.Repository{
 		Actors:         notImplActors{},
-		Structures:     notImplStructures{},
+		Structures:     &StructuresRepo{pool: pool},
 		Huddles:        &HuddlesRepo{pool: pool},
 		Scenes:         notImplScenes{},
 		Orders:         &OrdersRepo{pool: pool},
@@ -69,15 +69,6 @@ func (notImplActors) LoadAll(_ context.Context) (map[sim.ActorID]*sim.Actor, err
 	return nil, errNotImpl
 }
 func (notImplActors) SaveSnapshot(_ context.Context, _ sim.Tx, _ map[sim.ActorID]*sim.Actor) error {
-	return errNotImpl
-}
-
-type notImplStructures struct{}
-
-func (notImplStructures) LoadAll(_ context.Context) (map[sim.StructureID]*sim.Structure, error) {
-	return nil, errNotImpl
-}
-func (notImplStructures) SaveSnapshot(_ context.Context, _ sim.Tx, _ map[sim.StructureID]*sim.Structure) error {
 	return errNotImpl
 }
 
