@@ -44,10 +44,24 @@
 BEGIN;
 
 -- 1. Rename the table. Singleton CHECK constraint name carries forward
--- under its old name in PG; rename it explicitly for clarity.
+-- under its old name in PG; rename it explicitly for clarity. Wrapped
+-- in a DO block so the migration survives baseline variance (e.g. a
+-- partially-applied up from a recovery scenario where the rename ran
+-- but ADD COLUMNs didn't).
 
 ALTER TABLE world_phase RENAME TO world_state;
-ALTER TABLE world_state RENAME CONSTRAINT world_phase_singleton TO world_state_singleton;
+
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1
+          FROM pg_constraint
+         WHERE conname = 'world_phase_singleton'
+           AND conrelid = 'world_state'::regclass
+    ) THEN
+        ALTER TABLE world_state RENAME CONSTRAINT world_phase_singleton TO world_state_singleton;
+    END IF;
+END $$;
 
 -- 2. ADD COLUMNs for env state not yet represented. DEFAULT '' on the
 -- prose fields so existing-row backfill is a no-op. last_needs_tick_at
@@ -61,6 +75,13 @@ ALTER TABLE world_state ADD COLUMN last_needs_tick_at  TIMESTAMPTZ;
 -- 3. Backfill last_needs_tick_at from the v1 kv row. RFC3339 string in
 -- v1; cast straight to timestamptz. NULL stays NULL. After backfill,
 -- delete the kv row — the column is now authoritative.
+--
+-- setting.key is the PK (ZBBS-003) so the subquery returns at most one
+-- row. A malformed timestamp causes the cast to abort the migration
+-- transaction — intentional: surfacing corrupt scheduler state loudly
+-- is preferable to silently dropping it. If a production deployment
+-- has a malformed last_attribute_tick_at row, fix it manually before
+-- re-running this migration.
 
 UPDATE world_state
    SET last_needs_tick_at = (SELECT value::timestamptz
@@ -83,10 +104,27 @@ DELETE FROM setting WHERE key IN (
 );
 
 -- 5. Rename + convert tiredness_critical from pct to abs (fixes a v1
--- representation inconsistency — see header). 22 = ceil(24*90/100).
+-- representation inconsistency — see header). Derives the new value
+-- from the existing kv row so admin-customized values survive the
+-- conversion (e.g. pct=80 → abs=20 = ceil(24*80/100), not the default
+-- abs=22). If no pre-existing row exists, the second INSERT seeds the
+-- default abs=22 = ceil(24*90/100).
+
+INSERT INTO setting (key, value, description, is_public)
+SELECT
+    'tiredness_critical_threshold',
+    CEIL(24 * value::numeric / 100)::int::text,
+    'Critical-tier tiredness threshold as an absolute value (0-24). Lifts the on-shift gate that hides home/inn/tavern from tired-NPC recovery options. Converted from pre-ZBBS-WORK-242 tiredness_critical_threshold_pct via ceil(24 * pct / 100).',
+    FALSE
+FROM setting
+WHERE key = 'tiredness_critical_threshold_pct'
+  AND value IS NOT NULL
+ON CONFLICT (key) DO NOTHING;
 
 DELETE FROM setting WHERE key = 'tiredness_critical_threshold_pct';
 
+-- Fallback default if no v1 pct row existed (e.g. fresh deploy before
+-- ZBBS-172 ever ran). 22 = ceil(24*90/100).
 INSERT INTO setting (key, value, description, is_public) VALUES
     ('tiredness_critical_threshold', '22',
      'Critical-tier tiredness threshold as an absolute value (0-24). Lifts the on-shift gate that hides home/inn/tavern from tired-NPC recovery options. Default 22 = ceil(24*90/100), matching the pre-ZBBS-WORK-242 percent-form default of 90.',
