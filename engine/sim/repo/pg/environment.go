@@ -122,7 +122,7 @@ func (r *EnvironmentRepo) loadWorldState(ctx context.Context) (sim.WorldEnvironm
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return sim.WorldEnvironment{}, sim.Phase(""),
-				fmt.Errorf("pg environment Load: world_state row missing (expected id=1 — seeded by ZBBS-038 / renamed by ZBBS-WORK-242)")
+				fmt.Errorf("pg environment Load: world_state row missing (expected id=1 — seeded by ZBBS-038 / renamed by ZBBS-WORK-242): %w", err)
 		}
 		return sim.WorldEnvironment{}, sim.Phase(""),
 			fmt.Errorf("pg environment Load: world_state query: %w", err)
