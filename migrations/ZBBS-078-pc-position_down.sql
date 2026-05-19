@@ -1,5 +1,0 @@
-BEGIN;
-
-DROP TABLE IF EXISTS pc_position;
-
-COMMIT;

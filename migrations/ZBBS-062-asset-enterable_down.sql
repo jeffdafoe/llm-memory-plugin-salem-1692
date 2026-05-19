@@ -1,5 +1,0 @@
-BEGIN;
-
-ALTER TABLE asset DROP COLUMN enterable;
-
-COMMIT;
