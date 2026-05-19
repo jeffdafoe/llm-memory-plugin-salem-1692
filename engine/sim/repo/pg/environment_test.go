@@ -232,13 +232,16 @@ func TestEnvironmentRepo_Load_NoWorldStateRow_HardFails(t *testing.T) {
 	if err == nil {
 		t.Fatal("Load should error on missing world_state row")
 	}
+	// Two independent assertions: (1) the error chain still surfaces
+	// pgx.ErrNoRows for callers using errors.Is, AND (2) the
+	// user-facing message names the missing row. Gating the substring
+	// check on (!errors.Is) would let a regression to bare ErrNoRows
+	// silently pass. (code_review R2.)
 	if !errors.Is(err, pgx.ErrNoRows) {
-		// Wrapped error still wraps ErrNoRows via our explicit check
-		// and the manual fmt.Errorf in loadWorldState; verify the
-		// diagnostic message mentions the row.
-		if got := err.Error(); !strings.Contains(got, "world_state row missing") {
-			t.Errorf("error = %q, want substring about missing world_state row", got)
-		}
+		t.Errorf("error = %v, want wrapped pgx.ErrNoRows", err)
+	}
+	if got := err.Error(); !strings.Contains(got, "world_state row missing") {
+		t.Errorf("error = %q, want substring about missing world_state row", got)
 	}
 }
 
