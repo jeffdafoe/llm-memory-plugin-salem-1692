@@ -77,6 +77,78 @@ func emptyInvRows() *pgxmock.Rows {
 	return pgxmock.NewRows([]string{"actor_id", "item_kind", "quantity"})
 }
 
+// --- Slice 2 continuity-tier column lists + empty-row builders -----------
+
+func relationshipColumns() []string {
+	return []string{
+		"actor_id", "other_actor_id", "summary_text", "salient_facts",
+		"interaction_count", "last_interaction_at", "last_consolidated_at",
+		"created_at", "updated_at", "dropped_fact_count",
+	}
+}
+
+func narrativeColumns() []string {
+	return []string{
+		"actor_id", "seed_text", "evolving_summary",
+		"last_consolidated_at", "created_at", "updated_at",
+	}
+}
+
+func acquaintanceColumns() []string {
+	return []string{"actor_id", "other_name", "first_interacted_at"}
+}
+
+func emptyRelRows() *pgxmock.Rows  { return pgxmock.NewRows(relationshipColumns()) }
+func emptyNarrRows() *pgxmock.Rows { return pgxmock.NewRows(narrativeColumns()) }
+func emptyAcqRows() *pgxmock.Rows  { return pgxmock.NewRows(acquaintanceColumns()) }
+
+// oneBareActorRows returns a parent result set with a single all-nullable
+// actA row, for continuity child-loader tests that just need a valid
+// parent to attach to.
+func oneBareActorRows() *pgxmock.Rows {
+	return pgxmock.NewRows(actorParentColumns()).AddRow(
+		actA, "Hannah", 0, 0,
+		(*string)(nil), (*string)(nil), (*int64)(nil),
+		(*string)(nil), (*string)(nil),
+		20, (*string)(nil), (*string)(nil), (*string)(nil),
+		(*int16)(nil), (*int16)(nil),
+		(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
+		(*string)(nil), (*time.Time)(nil),
+		int64(0), "idle", tsEntered,
+	)
+}
+
+// expectLoadAllContinuityEmpty programs empty result sets for the three
+// continuity child queries (relationship / narrative / acquaintance) so
+// parent-focused LoadAll tests don't have to spell them out.
+func expectLoadAllContinuityEmpty(mock pgxmock.PgxPoolIface) {
+	mock.ExpectQuery(`FROM actor_relationship\b`).WillReturnRows(emptyRelRows())
+	mock.ExpectQuery(`FROM actor_narrative_state\b`).WillReturnRows(emptyNarrRows())
+	mock.ExpectQuery(`FROM npc_acquaintance\b`).WillReturnRows(emptyAcqRows())
+}
+
+// expectActorContinuityTailsEmpty programs the relationship + narrative +
+// acquaintance nextval/delete tails with no UPSERTs (the standard suffix
+// when the snapshot has no continuity rows). Mirrors
+// expectActorSaveSnapshotChildTails for the Slice 2 tiers.
+func expectActorContinuityTailsEmpty(mock pgxmock.PgxPoolIface, relGen, narrGen, acqGen int64) {
+	mock.ExpectQuery(`SELECT nextval\('actor_relationship_snapshot_gen_seq`).
+		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(relGen))
+	mock.ExpectExec(`DELETE FROM actor_relationship .*WHERE snapshot_gen < \$1`).
+		WithArgs(relGen).
+		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+	mock.ExpectQuery(`SELECT nextval\('actor_narrative_state_snapshot_gen_seq`).
+		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(narrGen))
+	mock.ExpectExec(`DELETE FROM actor_narrative_state .*WHERE snapshot_gen < \$1`).
+		WithArgs(narrGen).
+		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+	mock.ExpectQuery(`SELECT nextval\('npc_acquaintance_snapshot_gen_seq`).
+		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(acqGen))
+	mock.ExpectExec(`DELETE FROM npc_acquaintance .*WHERE snapshot_gen < \$1`).
+		WithArgs(acqGen).
+		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+}
+
 // expectActorSaveSnapshotPrelude programs advisory lock + parent
 // nextval. Called once per SaveSnapshot test.
 func expectActorSaveSnapshotPrelude(mock pgxmock.PgxPoolIface, actorGen int64) {
@@ -156,6 +228,8 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 		WillReturnRows(pgxmock.NewRows([]string{"actor_id", "item_kind", "quantity"}).
 			AddRow(actA, "ale", 3).
 			AddRow(actA, "coin_purse", 1))
+
+	expectLoadAllContinuityEmpty(mock)
 
 	got, err := repo.LoadAll(context.Background())
 	if err != nil {
@@ -384,6 +458,8 @@ func TestActorsRepo_SaveSnapshot_FullActor(t *testing.T) {
 		WithArgs(int64(301)).
 		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
 
+	expectActorContinuityTailsEmpty(mock, 401, 501, 601)
+
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
 			ID:                 actA,
@@ -448,6 +524,7 @@ func TestActorsRepo_SaveSnapshot_BareActor(t *testing.T) {
 		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
 
 	expectActorSaveSnapshotChildTails(mock, 202, 302)
+	expectActorContinuityTailsEmpty(mock, 402, 502, 602)
 
 	actors := map[sim.ActorID]*sim.Actor{
 		actB: {
@@ -484,6 +561,7 @@ func TestActorsRepo_SaveSnapshot_VisitorFiltered(t *testing.T) {
 		WithArgs(int64(103)).
 		WillReturnResult(pgconn.NewCommandTag("DELETE 1"))
 	expectActorSaveSnapshotChildTails(mock, 203, 303)
+	expectActorContinuityTailsEmpty(mock, 403, 503, 603)
 
 	actors := map[sim.ActorID]*sim.Actor{
 		actV: {
@@ -513,6 +591,7 @@ func TestActorsRepo_SaveSnapshot_EmptyMap(t *testing.T) {
 		WithArgs(int64(104)).
 		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
 	expectActorSaveSnapshotChildTails(mock, 204, 304)
+	expectActorContinuityTailsEmpty(mock, 404, 504, 604)
 
 	if err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, map[sim.ActorID]*sim.Actor{}); err != nil {
 		t.Fatalf("SaveSnapshot: %v", err)
@@ -564,6 +643,8 @@ func TestActorsRepo_SaveSnapshot_ZeroQtyInventoryDropped(t *testing.T) {
 	mock.ExpectExec(`DELETE FROM actor_inventory .*WHERE snapshot_gen < \$1`).
 		WithArgs(int64(305)).
 		WillReturnResult(pgconn.NewCommandTag("DELETE 1")) // bread row swept
+
+	expectActorContinuityTailsEmpty(mock, 405, 505, 605)
 
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
@@ -778,6 +859,573 @@ func TestActorsRepo_SaveSnapshot_NilTx(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "nil tx") {
 		t.Fatalf("err = %v", err)
 	}
+}
+
+// --- Slice 2: salient-fact JSONB marshal/unmarshal ------------------------
+
+// TestSalientFacts_MarshalRoundTrip pins the lowercase {at, kind, text}
+// key shape (matches v1's stored JSONB) and the empty-slice ↔ `[]` ↔ nil
+// round-trip.
+func TestSalientFacts_MarshalRoundTrip(t *testing.T) {
+	facts := []sim.SalientFact{
+		{At: time.Date(2026, 5, 19, 14, 30, 0, 0, time.UTC), Kind: "spoke", Text: "Good morrow"},
+		{At: time.Date(2026, 5, 19, 15, 0, 0, 0, time.UTC), Kind: "paid", Text: "bought ale"},
+	}
+
+	got, err := marshalSalientFacts(facts)
+	if err != nil {
+		t.Fatalf("marshalSalientFacts: %v", err)
+	}
+	want := `[{"at":"2026-05-19T14:30:00Z","kind":"spoke","text":"Good morrow"},` +
+		`{"at":"2026-05-19T15:00:00Z","kind":"paid","text":"bought ale"}]`
+	if got != want {
+		t.Errorf("marshal =\n %s\nwant\n %s", got, want)
+	}
+
+	back, err := unmarshalSalientFacts([]byte(got))
+	if err != nil {
+		t.Fatalf("unmarshalSalientFacts: %v", err)
+	}
+	if len(back) != len(facts) {
+		t.Fatalf("round-trip len = %d, want %d", len(back), len(facts))
+	}
+	for i := range facts {
+		if !back[i].At.Equal(facts[i].At) || back[i].Kind != facts[i].Kind || back[i].Text != facts[i].Text {
+			t.Errorf("fact[%d] = %+v, want %+v", i, back[i], facts[i])
+		}
+	}
+}
+
+func TestSalientFacts_EmptyAndNil(t *testing.T) {
+	got, err := marshalSalientFacts(nil)
+	if err != nil {
+		t.Fatalf("marshal nil: %v", err)
+	}
+	if got != "[]" {
+		t.Errorf("marshal(nil) = %q, want %q", got, "[]")
+	}
+	if f, err := unmarshalSalientFacts(nil); err != nil || f != nil {
+		t.Errorf("unmarshal(nil) = %v, %v; want nil, nil", f, err)
+	}
+	if f, err := unmarshalSalientFacts([]byte("[]")); err != nil || f != nil {
+		t.Errorf("unmarshal([]) = %v, %v; want nil, nil", f, err)
+	}
+}
+
+// --- Slice 2: LoadAll continuity tiers ------------------------------------
+
+// TestActorsRepo_LoadAll_Continuity — relationships (multi-fact JSONB +
+// nil-time variant + lenient peer-not-in-world), narrative, and
+// acquaintance all attach to the owning actor.
+func TestActorsRepo_LoadAll_Continuity(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+	mock.MatchExpectationsInOrder(false)
+
+	actZ := "00000000-0000-0000-0000-zzzz00000009" // peer NOT loaded as an actor
+
+	// One parent actor.
+	mock.ExpectQuery(`FROM actor\b`).
+		WillReturnRows(pgxmock.NewRows(actorParentColumns()).
+			AddRow(
+				actA, "Hannah", 0, 0,
+				(*string)(nil), (*string)(nil), (*int64)(nil),
+				(*string)(nil), (*string)(nil),
+				20, (*string)(nil), (*string)(nil), (*string)(nil),
+				(*int16)(nil), (*int16)(nil),
+				(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
+				(*string)(nil), (*time.Time)(nil),
+				int64(0), "idle", tsEntered,
+			))
+	mock.ExpectQuery(`FROM actor_need\b`).WillReturnRows(emptyNeedRows())
+	mock.ExpectQuery(`FROM actor_inventory\b`).WillReturnRows(emptyInvRows())
+
+	factsJSON := []byte(`[{"at":"2026-05-19T14:30:00Z","kind":"spoke","text":"Good morrow"},` +
+		`{"at":"2026-05-19T15:00:00Z","kind":"paid","text":"bought ale"}]`)
+	mock.ExpectQuery(`FROM actor_relationship\b`).
+		WillReturnRows(pgxmock.NewRows(relationshipColumns()).
+			// Full relationship with facts + both timestamps set.
+			AddRow(actA, actB, "John runs the tavern", factsJSON, 5, &tsTickedAt, &tsBreak, tsEntered, tsTickedAt, 2).
+			// Bare relationship: empty facts, nil timestamps. Peer (actZ)
+			// is NOT a loaded actor — must still load (lenient).
+			AddRow(actA, actZ, "", []byte("[]"), 0, (*time.Time)(nil), (*time.Time)(nil), tsEntered, tsEntered, 0))
+
+	mock.ExpectQuery(`FROM actor_narrative_state\b`).
+		WillReturnRows(pgxmock.NewRows(narrativeColumns()).
+			AddRow(actA, "seed frame", "evolving impression", &tsBreak, tsEntered, tsTickedAt))
+
+	mock.ExpectQuery(`FROM npc_acquaintance\b`).
+		WillReturnRows(pgxmock.NewRows(acquaintanceColumns()).
+			AddRow(actA, "Goodwife Smith", tsTickedAt))
+
+	got, err := repo.LoadAll(context.Background())
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	a := got[actA]
+	if a == nil {
+		t.Fatal("actA missing")
+	}
+
+	rel := a.Relationships[actB]
+	if rel == nil {
+		t.Fatal("relationship actA→actB missing")
+	}
+	if rel.SummaryText != "John runs the tavern" {
+		t.Errorf("SummaryText = %q", rel.SummaryText)
+	}
+	if len(rel.SalientFacts) != 2 {
+		t.Fatalf("SalientFacts len = %d, want 2", len(rel.SalientFacts))
+	}
+	if rel.SalientFacts[0].Kind != "spoke" || rel.SalientFacts[0].Text != "Good morrow" {
+		t.Errorf("fact[0] = %+v", rel.SalientFacts[0])
+	}
+	if rel.SalientFacts[1].Kind != "paid" {
+		t.Errorf("fact[1].Kind = %q", rel.SalientFacts[1].Kind)
+	}
+	if rel.InteractionCount != 5 || rel.DroppedFactCount != 2 {
+		t.Errorf("counts = %d/%d", rel.InteractionCount, rel.DroppedFactCount)
+	}
+	if rel.LastInteractionAt == nil || !rel.LastInteractionAt.Equal(tsTickedAt) {
+		t.Errorf("LastInteractionAt = %v", rel.LastInteractionAt)
+	}
+	if rel.LastConsolidatedAt == nil || !rel.LastConsolidatedAt.Equal(tsBreak) {
+		t.Errorf("LastConsolidatedAt = %v", rel.LastConsolidatedAt)
+	}
+
+	bare := a.Relationships[sim.ActorID(actZ)]
+	if bare == nil {
+		t.Fatal("lenient relationship actA→actZ (peer not loaded) should still load")
+	}
+	if len(bare.SalientFacts) != 0 {
+		t.Errorf("bare SalientFacts = %v, want empty", bare.SalientFacts)
+	}
+	if bare.LastInteractionAt != nil || bare.LastConsolidatedAt != nil {
+		t.Errorf("bare timestamps not nil: %v/%v", bare.LastInteractionAt, bare.LastConsolidatedAt)
+	}
+
+	if a.Narrative == nil {
+		t.Fatal("narrative missing")
+	}
+	if a.Narrative.SeedText != "seed frame" || a.Narrative.EvolvingSummary != "evolving impression" {
+		t.Errorf("narrative = %+v", a.Narrative)
+	}
+	if a.Narrative.LastConsolidatedAt == nil || !a.Narrative.LastConsolidatedAt.Equal(tsBreak) {
+		t.Errorf("narrative LastConsolidatedAt = %v", a.Narrative.LastConsolidatedAt)
+	}
+
+	acq, ok := a.Acquaintances["Goodwife Smith"]
+	if !ok {
+		t.Fatal("acquaintance 'Goodwife Smith' missing")
+	}
+	if !acq.FirstInteractedAt.Equal(tsTickedAt) {
+		t.Errorf("acquaintance FirstInteractedAt = %v", acq.FirstInteractedAt)
+	}
+}
+
+func TestActorsRepo_LoadAll_OrphanRelationship(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+	mock.MatchExpectationsInOrder(false)
+	mock.ExpectQuery(`FROM actor\b`).WillReturnRows(pgxmock.NewRows(actorParentColumns()))
+	mock.ExpectQuery(`FROM actor_need\b`).WillReturnRows(emptyNeedRows())
+	mock.ExpectQuery(`FROM actor_inventory\b`).WillReturnRows(emptyInvRows())
+	mock.ExpectQuery(`FROM actor_relationship\b`).
+		WillReturnRows(pgxmock.NewRows(relationshipColumns()).
+			AddRow(actA, actB, "", []byte("[]"), 0, (*time.Time)(nil), (*time.Time)(nil), tsEntered, tsEntered, 0))
+
+	_, err := repo.LoadAll(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "orphan relationship row") {
+		t.Fatalf("err = %v, want 'orphan relationship row'", err)
+	}
+}
+
+func TestActorsRepo_LoadAll_OrphanNarrative(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+	mock.MatchExpectationsInOrder(false)
+	mock.ExpectQuery(`FROM actor\b`).WillReturnRows(pgxmock.NewRows(actorParentColumns()))
+	mock.ExpectQuery(`FROM actor_need\b`).WillReturnRows(emptyNeedRows())
+	mock.ExpectQuery(`FROM actor_inventory\b`).WillReturnRows(emptyInvRows())
+	mock.ExpectQuery(`FROM actor_relationship\b`).WillReturnRows(emptyRelRows())
+	mock.ExpectQuery(`FROM actor_narrative_state\b`).
+		WillReturnRows(pgxmock.NewRows(narrativeColumns()).
+			AddRow(actA, "seed", "", (*time.Time)(nil), tsEntered, tsEntered))
+
+	_, err := repo.LoadAll(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "orphan narrative row") {
+		t.Fatalf("err = %v, want 'orphan narrative row'", err)
+	}
+}
+
+func TestActorsRepo_LoadAll_OrphanAcquaintance(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+	mock.MatchExpectationsInOrder(false)
+	mock.ExpectQuery(`FROM actor\b`).WillReturnRows(pgxmock.NewRows(actorParentColumns()))
+	mock.ExpectQuery(`FROM actor_need\b`).WillReturnRows(emptyNeedRows())
+	mock.ExpectQuery(`FROM actor_inventory\b`).WillReturnRows(emptyInvRows())
+	mock.ExpectQuery(`FROM actor_relationship\b`).WillReturnRows(emptyRelRows())
+	mock.ExpectQuery(`FROM actor_narrative_state\b`).WillReturnRows(emptyNarrRows())
+	mock.ExpectQuery(`FROM npc_acquaintance\b`).
+		WillReturnRows(pgxmock.NewRows(acquaintanceColumns()).
+			AddRow(actA, "Goodwife Smith", tsTickedAt))
+
+	_, err := repo.LoadAll(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "orphan acquaintance row") {
+		t.Fatalf("err = %v, want 'orphan acquaintance row'", err)
+	}
+}
+
+// TestActorsRepo_LoadAll_RelationshipSelfRejected — Load enforces the
+// same shape invariants as Save (Go owns the invariants; the schema
+// deliberately omits some CHECKs). A self-relationship row from
+// out-of-band data / legacy state hard-errors at load.
+func TestActorsRepo_LoadAll_RelationshipSelfRejected(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+	mock.MatchExpectationsInOrder(false)
+	mock.ExpectQuery(`FROM actor\b`).WillReturnRows(oneBareActorRows())
+	mock.ExpectQuery(`FROM actor_need\b`).WillReturnRows(emptyNeedRows())
+	mock.ExpectQuery(`FROM actor_inventory\b`).WillReturnRows(emptyInvRows())
+	mock.ExpectQuery(`FROM actor_relationship\b`).
+		WillReturnRows(pgxmock.NewRows(relationshipColumns()).
+			AddRow(actA, actA, "", []byte("[]"), 0, (*time.Time)(nil), (*time.Time)(nil), tsEntered, tsEntered, 0))
+
+	_, err := repo.LoadAll(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "self-relationship") {
+		t.Fatalf("err = %v, want 'self-relationship'", err)
+	}
+}
+
+// TestActorsRepo_LoadAll_RelationshipNegativeCount — negative
+// interaction_count (no DB CHECK in v1) hard-errors at load.
+func TestActorsRepo_LoadAll_RelationshipNegativeCount(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+	mock.MatchExpectationsInOrder(false)
+	mock.ExpectQuery(`FROM actor\b`).WillReturnRows(oneBareActorRows())
+	mock.ExpectQuery(`FROM actor_need\b`).WillReturnRows(emptyNeedRows())
+	mock.ExpectQuery(`FROM actor_inventory\b`).WillReturnRows(emptyInvRows())
+	mock.ExpectQuery(`FROM actor_relationship\b`).
+		WillReturnRows(pgxmock.NewRows(relationshipColumns()).
+			AddRow(actA, actB, "", []byte("[]"), -1, (*time.Time)(nil), (*time.Time)(nil), tsEntered, tsEntered, 0))
+
+	_, err := repo.LoadAll(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "interaction_count=-1") {
+		t.Fatalf("err = %v, want 'interaction_count=-1'", err)
+	}
+}
+
+// --- Slice 2: SaveSnapshot continuity tiers -------------------------------
+
+// TestActorsRepo_SaveSnapshot_Continuity — one actor with a relationship
+// (incl. salient-fact JSONB), narrative, and acquaintance. Asserts the
+// UPSERT args for each new tier, including the marshalled JSON string.
+func TestActorsRepo_SaveSnapshot_Continuity(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+
+	expectActorSaveSnapshotPrelude(mock, 701)
+	mock.ExpectExec(`INSERT INTO actor `).
+		WithArgs(
+			actA, "Hannah", 0, 0,
+			nil, nil, nil,
+			nil, nil,
+			20, nil, nil, nil,
+			nil, nil,
+			(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
+			nil, (*time.Time)(nil),
+			int64(0), "idle", tsEntered,
+			int64(701),
+		).
+		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
+	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
+		WithArgs(int64(701)).
+		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+	expectActorSaveSnapshotChildTails(mock, 801, 901)
+
+	// Relationship tier.
+	wantFacts := []sim.SalientFact{{At: tsTickedAt, Kind: "spoke", Text: "Good morrow"}}
+	wantFactsJSON, err := marshalSalientFacts(wantFacts)
+	if err != nil {
+		t.Fatalf("marshalSalientFacts: %v", err)
+	}
+	mock.ExpectQuery(`SELECT nextval\('actor_relationship_snapshot_gen_seq`).
+		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(int64(1001)))
+	mock.ExpectExec(`INSERT INTO actor_relationship `).
+		WithArgs(
+			actA, actB, "John runs the tavern", wantFactsJSON,
+			5, &tsTickedAt, &tsBreak,
+			tsEntered, tsTickedAt, 2, int64(1001),
+		).
+		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
+	mock.ExpectExec(`DELETE FROM actor_relationship .*WHERE snapshot_gen < \$1`).
+		WithArgs(int64(1001)).
+		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+
+	// Narrative tier.
+	mock.ExpectQuery(`SELECT nextval\('actor_narrative_state_snapshot_gen_seq`).
+		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(int64(1101)))
+	mock.ExpectExec(`INSERT INTO actor_narrative_state `).
+		WithArgs(actA, "seed frame", "evolving impression", &tsBreak, tsEntered, tsTickedAt, int64(1101)).
+		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
+	mock.ExpectExec(`DELETE FROM actor_narrative_state .*WHERE snapshot_gen < \$1`).
+		WithArgs(int64(1101)).
+		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+
+	// Acquaintance tier.
+	mock.ExpectQuery(`SELECT nextval\('npc_acquaintance_snapshot_gen_seq`).
+		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(int64(1201)))
+	mock.ExpectExec(`INSERT INTO npc_acquaintance `).
+		WithArgs(actA, "Goodwife Smith", tsTickedAt, int64(1201)).
+		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
+	mock.ExpectExec(`DELETE FROM npc_acquaintance .*WHERE snapshot_gen < \$1`).
+		WithArgs(int64(1201)).
+		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+
+	actors := map[sim.ActorID]*sim.Actor{
+		actA: {
+			ID: actA, DisplayName: "Hannah", Coins: 20, State: "idle", StateEnteredAt: tsEntered,
+			Relationships: map[sim.ActorID]*sim.Relationship{
+				actB: {
+					SummaryText:        "John runs the tavern",
+					SalientFacts:       wantFacts,
+					InteractionCount:   5,
+					LastInteractionAt:  &tsTickedAt,
+					LastConsolidatedAt: &tsBreak,
+					CreatedAt:          tsEntered,
+					UpdatedAt:          tsTickedAt,
+					DroppedFactCount:   2,
+				},
+			},
+			Narrative: &sim.NarrativeState{
+				SeedText:           "seed frame",
+				EvolvingSummary:    "evolving impression",
+				LastConsolidatedAt: &tsBreak,
+				CreatedAt:          tsEntered,
+				UpdatedAt:          tsTickedAt,
+			},
+			Acquaintances: map[string]sim.Acquaintance{
+				"Goodwife Smith": {FirstInteractedAt: tsTickedAt},
+			},
+		},
+	}
+
+	if err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors); err != nil {
+		t.Fatalf("SaveSnapshot: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+}
+
+// TestActorsRepo_SaveSnapshot_EmptySalientFacts — a relationship with no
+// facts is persisted with salient_facts = `[]` (not NULL), matching the
+// column DEFAULT and v1's stored shape.
+func TestActorsRepo_SaveSnapshot_EmptySalientFacts(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+
+	expectActorSaveSnapshotPrelude(mock, 702)
+	mock.ExpectExec(`INSERT INTO actor `).
+		WithArgs(
+			actA, "Hannah", 0, 0,
+			nil, nil, nil, nil, nil,
+			20, nil, nil, nil,
+			nil, nil,
+			(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
+			nil, (*time.Time)(nil),
+			int64(0), "idle", tsEntered,
+			int64(702),
+		).
+		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
+	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
+		WithArgs(int64(702)).
+		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+	expectActorSaveSnapshotChildTails(mock, 802, 902)
+
+	mock.ExpectQuery(`SELECT nextval\('actor_relationship_snapshot_gen_seq`).
+		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(int64(1002)))
+	mock.ExpectExec(`INSERT INTO actor_relationship `).
+		WithArgs(
+			actA, actB, "", "[]",
+			0, (*time.Time)(nil), (*time.Time)(nil),
+			tsEntered, tsEntered, 0, int64(1002),
+		).
+		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
+	mock.ExpectExec(`DELETE FROM actor_relationship .*WHERE snapshot_gen < \$1`).
+		WithArgs(int64(1002)).
+		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+
+	// Narrative + acquaintance tiers empty (this actor has neither).
+	mock.ExpectQuery(`SELECT nextval\('actor_narrative_state_snapshot_gen_seq`).
+		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(int64(1102)))
+	mock.ExpectExec(`DELETE FROM actor_narrative_state .*WHERE snapshot_gen < \$1`).
+		WithArgs(int64(1102)).
+		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+	mock.ExpectQuery(`SELECT nextval\('npc_acquaintance_snapshot_gen_seq`).
+		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(int64(1202)))
+	mock.ExpectExec(`DELETE FROM npc_acquaintance .*WHERE snapshot_gen < \$1`).
+		WithArgs(int64(1202)).
+		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+
+	actors := map[sim.ActorID]*sim.Actor{
+		actA: {
+			ID: actA, DisplayName: "Hannah", Coins: 20, State: "idle", StateEnteredAt: tsEntered,
+			Relationships: map[sim.ActorID]*sim.Relationship{
+				actB: {CreatedAt: tsEntered, UpdatedAt: tsEntered}, // no facts
+			},
+		},
+	}
+	if err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors); err != nil {
+		t.Fatalf("SaveSnapshot: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+}
+
+// --- Slice 2: SaveSnapshot continuity validation --------------------------
+
+func TestActorsRepo_SaveSnapshot_SelfRelationship(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+	actors := map[sim.ActorID]*sim.Actor{
+		actA: {
+			ID: actA, DisplayName: "X", State: "idle", StateEnteredAt: tsEntered,
+			Relationships: map[sim.ActorID]*sim.Relationship{actA: {}},
+		},
+	}
+	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
+	assertValidationOnly(t, mock, err, "self-relationship")
+}
+
+func TestActorsRepo_SaveSnapshot_EmptyRelationshipPeer(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+	actors := map[sim.ActorID]*sim.Actor{
+		actA: {
+			ID: actA, DisplayName: "X", State: "idle", StateEnteredAt: tsEntered,
+			Relationships: map[sim.ActorID]*sim.Relationship{"  ": {}},
+		},
+	}
+	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
+	assertValidationOnly(t, mock, err, "empty relationship peer key")
+}
+
+func TestActorsRepo_SaveSnapshot_NegativeRelationshipCounts(t *testing.T) {
+	cases := []struct {
+		name string
+		rel  *sim.Relationship
+		want string
+	}{
+		{"interaction", &sim.Relationship{InteractionCount: -1}, "InteractionCount=-1"},
+		{"dropped", &sim.Relationship{DroppedFactCount: -1}, "DroppedFactCount=-1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mock, repo := newMockPoolA(t)
+			actors := map[sim.ActorID]*sim.Actor{
+				actA: {
+					ID: actA, DisplayName: "X", State: "idle", StateEnteredAt: tsEntered,
+					Relationships: map[sim.ActorID]*sim.Relationship{actB: tc.rel},
+				},
+			}
+			err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
+			assertValidationOnly(t, mock, err, tc.want)
+		})
+	}
+}
+
+func TestActorsRepo_SaveSnapshot_EmptyAcquaintanceName(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+	actors := map[sim.ActorID]*sim.Actor{
+		actA: {
+			ID: actA, DisplayName: "X", State: "idle", StateEnteredAt: tsEntered,
+			Acquaintances: map[string]sim.Acquaintance{"   ": {FirstInteractedAt: tsEntered}},
+		},
+	}
+	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
+	assertValidationOnly(t, mock, err, "empty acquaintance name")
+}
+
+func TestActorsRepo_SaveSnapshot_OverLongAcquaintanceName(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+	actors := map[sim.ActorID]*sim.Actor{
+		actA: {
+			ID: actA, DisplayName: "X", State: "idle", StateEnteredAt: tsEntered,
+			Acquaintances: map[string]sim.Acquaintance{strings.Repeat("x", 101): {FirstInteractedAt: tsEntered}},
+		},
+	}
+	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
+	assertValidationOnly(t, mock, err, "exceeds 100 chars")
+}
+
+// TestActorsRepo_SaveSnapshot_AcquaintanceMultibyteWithinLimit — a name
+// of 100 multibyte runes (200 bytes) is WITHIN VARCHAR(100) and must be
+// accepted. Regression for the byte-vs-rune length bug (round 1).
+func TestActorsRepo_SaveSnapshot_AcquaintanceMultibyteWithinLimit(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+	name := strings.Repeat("é", 100) // 100 runes, 200 bytes
+
+	expectActorSaveSnapshotPrelude(mock, 706)
+	mock.ExpectExec(`INSERT INTO actor `).
+		WithArgs(
+			actA, "Hannah", 0, 0,
+			nil, nil, nil, nil, nil,
+			20, nil, nil, nil,
+			nil, nil,
+			(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
+			nil, (*time.Time)(nil),
+			int64(0), "idle", tsEntered,
+			int64(706),
+		).
+		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
+	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
+		WithArgs(int64(706)).
+		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+	expectActorSaveSnapshotChildTails(mock, 806, 906)
+
+	// Relationship + narrative tiers empty.
+	mock.ExpectQuery(`SELECT nextval\('actor_relationship_snapshot_gen_seq`).
+		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(int64(1006)))
+	mock.ExpectExec(`DELETE FROM actor_relationship .*WHERE snapshot_gen < \$1`).
+		WithArgs(int64(1006)).
+		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+	mock.ExpectQuery(`SELECT nextval\('actor_narrative_state_snapshot_gen_seq`).
+		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(int64(1106)))
+	mock.ExpectExec(`DELETE FROM actor_narrative_state .*WHERE snapshot_gen < \$1`).
+		WithArgs(int64(1106)).
+		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+
+	// Acquaintance tier with the multibyte name.
+	mock.ExpectQuery(`SELECT nextval\('npc_acquaintance_snapshot_gen_seq`).
+		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(int64(1206)))
+	mock.ExpectExec(`INSERT INTO npc_acquaintance `).
+		WithArgs(actA, name, tsTickedAt, int64(1206)).
+		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
+	mock.ExpectExec(`DELETE FROM npc_acquaintance .*WHERE snapshot_gen < \$1`).
+		WithArgs(int64(1206)).
+		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+
+	actors := map[sim.ActorID]*sim.Actor{
+		actA: {
+			ID: actA, DisplayName: "Hannah", Coins: 20, State: "idle", StateEnteredAt: tsEntered,
+			Acquaintances: map[string]sim.Acquaintance{name: {FirstInteractedAt: tsTickedAt}},
+		},
+	}
+	if err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors); err != nil {
+		t.Fatalf("SaveSnapshot: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+}
+
+// TestActorsRepo_SaveSnapshot_AcquaintanceOverLongRunes — 101 multibyte
+// runes exceeds VARCHAR(100) and is rejected (rune-counted, not byte).
+func TestActorsRepo_SaveSnapshot_AcquaintanceOverLongRunes(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+	name := strings.Repeat("é", 101) // 101 runes
+	actors := map[sim.ActorID]*sim.Actor{
+		actA: {
+			ID: actA, DisplayName: "X", State: "idle", StateEnteredAt: tsEntered,
+			Acquaintances: map[string]sim.Acquaintance{name: {FirstInteractedAt: tsEntered}},
+		},
+	}
+	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
+	assertValidationOnly(t, mock, err, "exceeds 100 chars")
 }
 
 // --- helpers --------------------------------------------------------------
