@@ -39,7 +39,7 @@ func NewRepository(pool Pool) sim.Repository {
 		Huddles:        &HuddlesRepo{pool: pool},
 		Scenes:         &ScenesRepo{pool: pool},
 		Orders:         &OrdersRepo{pool: pool},
-		Environment:    notImplEnvironment{},
+		Environment:    &EnvironmentRepo{pool: pool},
 		Assets:         notImplAssets{},
 		Recipes:        notImplRecipes{},
 		ItemKinds:      notImplItemKinds{},
@@ -69,15 +69,6 @@ func (notImplActors) LoadAll(_ context.Context) (map[sim.ActorID]*sim.Actor, err
 	return nil, errNotImpl
 }
 func (notImplActors) SaveSnapshot(_ context.Context, _ sim.Tx, _ map[sim.ActorID]*sim.Actor) error {
-	return errNotImpl
-}
-
-type notImplEnvironment struct{}
-
-func (notImplEnvironment) Load(_ context.Context) (sim.WorldEnvironment, sim.Phase, sim.WorldSettings, error) {
-	return sim.WorldEnvironment{}, sim.Phase(""), sim.WorldSettings{}, errNotImpl
-}
-func (notImplEnvironment) SaveSnapshot(_ context.Context, _ sim.Tx, _ sim.WorldEnvironment, _ sim.Phase) error {
 	return errNotImpl
 }
 
