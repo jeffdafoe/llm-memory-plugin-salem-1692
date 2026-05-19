@@ -1,6 +1,0 @@
-BEGIN;
-
-DROP TABLE IF EXISTS actor_inventory;
-DROP TABLE IF EXISTS item_kind;
-
-COMMIT;
