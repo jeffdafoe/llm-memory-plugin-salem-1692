@@ -350,9 +350,10 @@ type Actor struct {
 	HomeStructureID StructureID
 	WorkStructureID StructureID
 
-	// Schedule (minute-of-day; -1 if unset — falls back to world dawn/dusk).
-	ScheduleStartMin int
-	ScheduleEndMin   int
+	// Schedule (minute-of-day; nil if unset — falls back to world dawn/dusk).
+	// Persisted as nullable SMALLINT; nil round-trips through SQL NULL.
+	ScheduleStartMin *int
+	ScheduleEndMin   *int
 
 	// Mutable state.
 	Needs     map[NeedKey]int
@@ -440,7 +441,9 @@ type Actor struct {
 	Narrative     *NarrativeState
 
 	// Behavior history — load-bearing for diff-against-previous and loop
-	// detection.
+	// detection. RecentActions and LastSnapshot are in-memory only (not
+	// checkpointed); post-restart blind spot for the first few ticks is
+	// acceptable, mirrors RecentStateTrans.
 	RecentActions *RingBuffer[Action]
 	LastSnapshot  *ActorSnapshot
 

@@ -34,7 +34,7 @@ type Pool interface {
 // pattern other aggregates follow.
 func NewRepository(pool Pool) sim.Repository {
 	return sim.Repository{
-		Actors:         notImplActors{},
+		Actors:         &ActorsRepo{pool: pool},
 		Structures:     &StructuresRepo{pool: pool},
 		Huddles:        &HuddlesRepo{pool: pool},
 		Scenes:         &ScenesRepo{pool: pool},
@@ -63,6 +63,10 @@ func NewRepository(pool Pool) sim.Repository {
 // drop-in replacement, no caller change.
 var errNotImpl = errors.New("pg sub-repo not implemented yet — lands in a later slice")
 
+// notImplActors is no longer wired by NewRepository (Slice 1 ships
+// ActorsRepo), but load_world_test.go retains a test that exercises
+// LoadWorld's notImpl-tolerance with an Actors stub. Kept here so the
+// test continues to compile; remove when all aggregates are pg-impl.
 type notImplActors struct{}
 
 func (notImplActors) LoadAll(_ context.Context) (map[sim.ActorID]*sim.Actor, error) {

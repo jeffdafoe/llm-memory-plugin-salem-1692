@@ -82,13 +82,20 @@ import (
 //     structure-bound scene with nil StructureID is a separate
 //     corruption case and is a HARD ERROR (not warn-and-drop).
 //
-// # Out of scope (Slice 14)
+// # Actor carry-forwards (Slice 1 / ZBBS-WORK-243)
 //
-//   - Actor reconciliations from loaded peer state (Slice 11
-//     carry-forward: actor.current_huddle_id from huddle_member;
-//     Slice 12 carry-forward: actor.{home,work,inside}_structure_id +
-//     actor.inside_room_id). Blocked on Actors-pg-impl. Hook stubs +
-//     TODO comments mark the call sites.
+// After cross-aggregate consistency runs (and only if Actors actually
+// loaded — notImpl tolerance), two actor-side reconciliations enforce
+// invariants that couldn't be checked at single-aggregate granularity:
+//
+//   - reconcileActorHuddleMembership rebuilds actor.CurrentHuddleID
+//     from canonical Huddle.Members (Slice 11 carry-forward).
+//   - validateActorStructureRefs enforces that actor.{Home,Work,Inside}
+//     StructureID + actor.InsideRoomID resolve against loaded
+//     Structures (Slice 12 carry-forward; FKs dropped, invariant
+//     stays).
+//
+// # Out of scope (Slice 14)
 //
 //   - main.go wiring.
 //
@@ -108,20 +115,32 @@ func LoadWorld(ctx context.Context, repo sim.Repository, requireAllImpl bool) (*
 	}
 	w.VillageObjects = villageObjects
 
-	// Step 2: Structures.
-	structures, err := repo.Structures.LoadAll(ctx)
+	// Step 2: Structures. Loaded through handleNotImpl so the carry-
+	// forward gating below can tell "loaded successfully" from "notImpl
+	// tolerated" — without this distinction, a notImpl Structures with
+	// requireAllImpl=false would silently make validateActorStructureRefs
+	// false-positive every actor with non-empty structure refs.
+	structures, structuresErr := repo.Structures.LoadAll(ctx)
+	structuresLoaded, err := handleNotImpl("Structures", structuresErr, requireAllImpl)
 	if err != nil {
-		return nil, fmt.Errorf("pg LoadWorld: Structures.LoadAll: %w", err)
+		return nil, err
 	}
-	w.Structures = structures
+	if structuresLoaded {
+		w.Structures = structures
+	}
 
 	// Step 3: Huddles (no peer deps; loaded before Scenes for the
-	// Scene.Huddles ref check).
-	huddles, err := repo.Huddles.LoadAll(ctx)
+	// Scene.Huddles ref check). Same handleNotImpl posture as Structures
+	// — gating the Slice 11 reconciliation below requires knowing
+	// "really loaded" vs "tolerated empty."
+	huddles, huddlesErr := repo.Huddles.LoadAll(ctx)
+	huddlesLoaded, err := handleNotImpl("Huddles", huddlesErr, requireAllImpl)
 	if err != nil {
-		return nil, fmt.Errorf("pg LoadWorld: Huddles.LoadAll: %w", err)
+		return nil, err
 	}
-	w.Huddles = huddles
+	if huddlesLoaded {
+		w.Huddles = huddles
+	}
 
 	// Step 4: Scenes (depends on Structures + Huddles for the checks).
 	scenes, err := repo.Scenes.LoadAll(ctx)
@@ -146,16 +165,16 @@ func LoadWorld(ctx context.Context, repo sim.Repository, requireAllImpl bool) (*
 	// cutover-time main.go wiring is where ActionLog gains a pg
 	// projection.
 	actors, actorsErr := repo.Actors.LoadAll(ctx)
-	loaded, err := handleNotImpl("Actors", actorsErr, requireAllImpl)
+	actorsLoaded, err := handleNotImpl("Actors", actorsErr, requireAllImpl)
 	if err != nil {
 		return nil, err
 	}
-	if loaded {
+	if actorsLoaded {
 		w.Actors = actors
 	}
 
 	env, phase, settings, envErr := repo.Environment.Load(ctx)
-	loaded, err = handleNotImpl("Environment", envErr, requireAllImpl)
+	loaded, err := handleNotImpl("Environment", envErr, requireAllImpl)
 	if err != nil {
 		return nil, err
 	}
@@ -217,18 +236,32 @@ func LoadWorld(ctx context.Context, repo sim.Repository, requireAllImpl bool) (*
 		return nil, err
 	}
 
-	// TODO(Slice 11 carry-forward): once Actors-pg-impl lands, reconcile
-	// actor.CurrentHuddleID from Huddle.Members. Each actor referenced
-	// in any loaded huddle's Members set gets its CurrentHuddleID
-	// stamped to that huddle's ID. Conflicting memberships (an actor in
-	// two huddles' Members sets) are substrate corruption — hard error.
-
-	// TODO(Slice 12 carry-forward): once Actors-pg-impl lands, populate
-	// actor.{Home,Work,Inside}StructureID and actor.InsideRoomID from
-	// their actor-table columns (loaded via Actors.LoadAll). Slice 12
-	// dropped the FKs (CASCADE pathology) but left the columns in
-	// place; the substrate invariant that those refs resolve against
-	// loaded Structures is enforced here at LoadWorld time.
+	// Slice 1 / ZBBS-WORK-243 — actor carry-forwards. Each reconciliation
+	// is gated on BOTH actors and its peer aggregate loading successfully:
+	//
+	//   - reconcileActorHuddleMembership requires Huddles.Members as the
+	//     canonical source. If Huddles is notImpl-tolerated (w.Huddles
+	//     empty), this would otherwise clear every actor's
+	//     CurrentHuddleID — silently corrupting the cache.
+	//   - validateActorStructureRefs would otherwise hard-error any
+	//     actor with structure refs the moment Structures is tolerated
+	//     empty.
+	if actorsLoaded && huddlesLoaded {
+		// Slice 11 carry-forward: rebuild actor.CurrentHuddleID from
+		// canonical Huddle.Members.
+		if err := reconcileActorHuddleMembership(w.Actors, w.Huddles); err != nil {
+			return nil, err
+		}
+	}
+	if actorsLoaded && structuresLoaded {
+		// Slice 12 carry-forward: validate actor.{Home,Work,Inside}
+		// StructureID and actor.InsideRoomID against loaded Structures.
+		// Slice 12 dropped the FKs (CASCADE pathology) but left the
+		// columns; substrate consistency is enforced here.
+		if err := validateActorStructureRefs(w.Actors, w.Structures); err != nil {
+			return nil, err
+		}
+	}
 
 	return w, nil
 }
@@ -310,6 +343,144 @@ func checkSceneHuddleRefs(scenes map[sim.SceneID]*sim.Scene, huddles map[sim.Hud
 		for hid := range s.Huddles {
 			if _, ok := huddles[hid]; !ok {
 				return fmt.Errorf("pg LoadWorld: scene huddle ref check: scene id=%s references missing huddle id=%s (Scene.Huddles is canonical — substrate corruption)", sid, hid)
+			}
+		}
+	}
+	return nil
+}
+
+// reconcileActorHuddleMembership rebuilds actor.CurrentHuddleID from
+// the canonical Huddle.Members set. v1 stored membership both on the
+// actor row and in huddle_member; v2 elects Huddle.Members as the
+// canonical direction (Slice 11) — actor.CurrentHuddleID is a
+// denormalized cache. At LoadWorld time we OVERWRITE the cache with
+// whatever Members says, discarding any drift the actor row had.
+//
+// Substrate violations:
+//
+//   - Member references a missing actor — hard error. FK CASCADE
+//     should make this unreachable from valid writes.
+//   - An actor appears in two huddles' Members sets — hard error.
+//     The single-active-huddle-per-actor invariant is enforced by a
+//     UNIQUE(actor_id) on huddle_member; a duplicate here means
+//     schema drift or out-of-band INSERT.
+//
+// Empty Actors map: no-op. Empty Huddles map: clears every actor's
+// CurrentHuddleID (correct — no huddles, no memberships).
+func reconcileActorHuddleMembership(actors map[sim.ActorID]*sim.Actor, huddles map[sim.HuddleID]*sim.Huddle) error {
+	// Clear every actor's cached huddle first; we'll re-stamp from
+	// Members. This makes the canonical direction explicit and avoids
+	// preserving stale values for actors no huddle claims.
+	for _, a := range actors {
+		if a == nil {
+			continue
+		}
+		a.CurrentHuddleID = ""
+	}
+	// Re-stamp from canonical Members. Track per-actor sightings so we
+	// can hard-error on duplicate memberships.
+	claimed := make(map[sim.ActorID]sim.HuddleID)
+	for hid, h := range huddles {
+		if h == nil {
+			continue
+		}
+		for actorID := range h.Members {
+			a, ok := actors[actorID]
+			if !ok {
+				return fmt.Errorf("pg LoadWorld: actor-huddle reconciliation: huddle id=%s lists missing actor id=%s (FK CASCADE should make this unreachable — schema drift or out-of-band write)",
+					hid, actorID)
+			}
+			if prior, dup := claimed[actorID]; dup {
+				return fmt.Errorf("pg LoadWorld: actor-huddle reconciliation: actor id=%s appears in two huddles' Members (%s and %s) — single-active-huddle invariant violated",
+					actorID, prior, hid)
+			}
+			claimed[actorID] = hid
+			a.CurrentHuddleID = hid
+		}
+	}
+	return nil
+}
+
+// validateActorStructureRefs enforces the substrate invariant that
+// every non-empty actor.{Home,Work,Inside}StructureID resolves against
+// the loaded Structures map and every non-zero actor.InsideRoomID
+// resolves against some loaded Structure's Rooms. Slice 12 dropped the
+// FKs from these columns (the CASCADE pathology bit the load path),
+// but the consistency contract still holds — v2 owns the integrity
+// check here at LoadWorld.
+//
+// Hard error on any unresolved ref. Out-of-band structure deletion is
+// NOT a legitimate cause for drift on actor refs (unlike the Scene
+// orphan-drop case, where admin tools may legitimately remove a
+// structure mid-edit); actor refs are engine-authored exclusively.
+//
+// Empty Actors map: no-op. Empty Structures map with actors that have
+// non-empty refs: hard error (every ref unresolved).
+func validateActorStructureRefs(actors map[sim.ActorID]*sim.Actor, structures map[sim.StructureID]*sim.Structure) error {
+	// Build a one-shot RoomID → Structure index. Each Structure carries
+	// a Rooms slice; a flat map lets InsideRoomID resolve in one lookup.
+	// Index-build also validates two invariants that a malformed loaded
+	// set could otherwise smuggle through:
+	//   - Nested room's StructureID must match its parent (otherwise
+	//     the room belongs to one structure in the slice but reports
+	//     membership in another — substrate corruption).
+	//   - RoomID uniqueness across all structures (last-writer-wins
+	//     would silently let an actor's ref resolve against the wrong
+	//     structure).
+	roomIndex := make(map[sim.RoomID]sim.StructureID)
+	for sid, s := range structures {
+		if s == nil {
+			continue
+		}
+		for _, r := range s.Rooms {
+			if r == nil {
+				continue
+			}
+			if r.StructureID != "" && r.StructureID != sid {
+				return fmt.Errorf("pg LoadWorld: actor structure ref check: room id=%d is nested under structure %s but has StructureID=%s (substrate corruption)",
+					r.ID, sid, r.StructureID)
+			}
+			if prior, dup := roomIndex[r.ID]; dup {
+				return fmt.Errorf("pg LoadWorld: actor structure ref check: duplicate RoomID=%d (appears under structures %s and %s)",
+					r.ID, prior, sid)
+			}
+			roomIndex[r.ID] = sid
+		}
+	}
+	for aid, a := range actors {
+		if a == nil {
+			continue
+		}
+		if a.HomeStructureID != "" {
+			if _, ok := structures[a.HomeStructureID]; !ok {
+				return fmt.Errorf("pg LoadWorld: actor structure ref check: actor id=%s HomeStructureID=%s missing from loaded Structures",
+					aid, a.HomeStructureID)
+			}
+		}
+		if a.WorkStructureID != "" {
+			if _, ok := structures[a.WorkStructureID]; !ok {
+				return fmt.Errorf("pg LoadWorld: actor structure ref check: actor id=%s WorkStructureID=%s missing from loaded Structures",
+					aid, a.WorkStructureID)
+			}
+		}
+		if a.InsideStructureID != "" {
+			if _, ok := structures[a.InsideStructureID]; !ok {
+				return fmt.Errorf("pg LoadWorld: actor structure ref check: actor id=%s InsideStructureID=%s missing from loaded Structures",
+					aid, a.InsideStructureID)
+			}
+		}
+		if a.InsideRoomID != 0 {
+			owner, ok := roomIndex[a.InsideRoomID]
+			if !ok {
+				return fmt.Errorf("pg LoadWorld: actor structure ref check: actor id=%s InsideRoomID=%d missing from any loaded Structure's Rooms",
+					aid, a.InsideRoomID)
+			}
+			// Room exists. If the actor also claims InsideStructureID,
+			// the room must belong to that structure — otherwise
+			// the locomotion / room-access invariants are broken.
+			if a.InsideStructureID != "" && owner != a.InsideStructureID {
+				return fmt.Errorf("pg LoadWorld: actor structure ref check: actor id=%s InsideRoomID=%d belongs to structure %s but InsideStructureID=%s",
+					aid, a.InsideRoomID, owner, a.InsideStructureID)
 			}
 		}
 	}

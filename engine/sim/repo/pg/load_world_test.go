@@ -212,8 +212,16 @@ func TestLoadWorld_HappyPath(t *testing.T) {
 		Bound:      sim.NewStructureBound(bldgA),
 		Huddles:    map[sim.HuddleID]struct{}{"h-a": {}},
 	}
+	// act-1 is huddleA's member — Slice 1 reconciliation requires the
+	// actor to be in the loaded set or the load hard-errors as
+	// "missing actor referenced by huddle member".
+	actA1 := &sim.Actor{
+		ID: "act-1", DisplayName: "Anya", State: "working",
+		StateEnteredAt: startedAt,
+	}
 
 	repo := fakeRepoOpts{
+		actors:         fakeActors{out: map[sim.ActorID]*sim.Actor{"act-1": actA1}},
 		structures:     fakeStructures{out: map[sim.StructureID]*sim.Structure{bldgA: structA}},
 		villageObjects: fakeVillageObjects{out: map[sim.VillageObjectID]*sim.VillageObject{bldgA: voA}},
 		huddles:        fakeHuddles{out: map[sim.HuddleID]*sim.Huddle{"h-a": huddleA}},
@@ -535,5 +543,384 @@ func TestLoadWorld_NotImplLoaders_NonErrorPassesThrough(t *testing.T) {
 	}
 	if w.Terrain != terrain {
 		t.Errorf("Terrain not propagated; got %v", w.Terrain)
+	}
+}
+
+// --- Slice 1 / ZBBS-WORK-243 actor carry-forwards ---
+
+// TestLoadWorld_ActorHuddleReconciliation_StampsAndClears — Slice 11
+// reconciliation rebuilds actor.CurrentHuddleID from canonical
+// Huddle.Members. Validates two paths: (a) an actor referenced by a
+// huddle's Members has CurrentHuddleID stamped to that huddle's ID
+// regardless of what was loaded from the actor row; (b) an actor with
+// a stale CurrentHuddleID but no membership has it cleared.
+func TestLoadWorld_ActorHuddleReconciliation_StampsAndClears(t *testing.T) {
+	startedAt := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
+	huddle := &sim.Huddle{
+		ID:        "h-a",
+		Members:   map[sim.ActorID]struct{}{"act-member": {}},
+		StartedAt: startedAt,
+	}
+	// act-member should pick up CurrentHuddleID="h-a" from canonical
+	// Members regardless of any prior column value.
+	actorMember := &sim.Actor{
+		ID:              "act-member",
+		DisplayName:     "M",
+		State:           "idle",
+		StateEnteredAt:  startedAt,
+		CurrentHuddleID: "old-stale-huddle-from-actor-row",
+	}
+	// act-stale claims membership in a huddle but isn't in any
+	// Members set — reconciliation clears the field.
+	actorStale := &sim.Actor{
+		ID:              "act-stale",
+		DisplayName:     "S",
+		State:           "idle",
+		StateEnteredAt:  startedAt,
+		CurrentHuddleID: "h-a", // stale — Members doesn't include it
+	}
+
+	repo := fakeRepoOpts{
+		actors: fakeActors{out: map[sim.ActorID]*sim.Actor{
+			"act-member": actorMember,
+			"act-stale":  actorStale,
+		}},
+		huddles: fakeHuddles{out: map[sim.HuddleID]*sim.Huddle{"h-a": huddle}},
+	}.build()
+
+	w, err := LoadWorld(context.Background(), repo, true)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	if w.Actors["act-member"].CurrentHuddleID != "h-a" {
+		t.Errorf("act-member CurrentHuddleID = %q, want h-a", w.Actors["act-member"].CurrentHuddleID)
+	}
+	if w.Actors["act-stale"].CurrentHuddleID != "" {
+		t.Errorf("act-stale CurrentHuddleID = %q, want empty (cache cleared)", w.Actors["act-stale"].CurrentHuddleID)
+	}
+}
+
+// TestLoadWorld_ActorHuddleReconciliation_MissingActor_HardFails — a
+// huddle referencing a missing actor is substrate corruption. FK
+// CASCADE should make this unreachable from valid writes.
+func TestLoadWorld_ActorHuddleReconciliation_MissingActor_HardFails(t *testing.T) {
+	startedAt := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
+	huddle := &sim.Huddle{
+		ID: "h-a", Members: map[sim.ActorID]struct{}{"act-ghost": {}}, StartedAt: startedAt,
+	}
+	repo := fakeRepoOpts{
+		actors:  fakeActors{out: map[sim.ActorID]*sim.Actor{}}, // ghost not present
+		huddles: fakeHuddles{out: map[sim.HuddleID]*sim.Huddle{"h-a": huddle}},
+	}.build()
+
+	_, err := LoadWorld(context.Background(), repo, true)
+	if err == nil || !strings.Contains(err.Error(), "missing actor id=act-ghost") {
+		t.Errorf("err = %v, want substring 'missing actor id=act-ghost'", err)
+	}
+}
+
+// TestLoadWorld_ActorHuddleReconciliation_DoubleMembership_HardFails — an
+// actor in two huddles' Members sets violates the single-active-huddle
+// invariant.
+func TestLoadWorld_ActorHuddleReconciliation_DoubleMembership_HardFails(t *testing.T) {
+	startedAt := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
+	h1 := &sim.Huddle{ID: "h-1", Members: map[sim.ActorID]struct{}{"act-doubled": {}}, StartedAt: startedAt}
+	h2 := &sim.Huddle{ID: "h-2", Members: map[sim.ActorID]struct{}{"act-doubled": {}}, StartedAt: startedAt}
+	actor := &sim.Actor{ID: "act-doubled", DisplayName: "D", State: "idle", StateEnteredAt: startedAt}
+
+	repo := fakeRepoOpts{
+		actors:  fakeActors{out: map[sim.ActorID]*sim.Actor{"act-doubled": actor}},
+		huddles: fakeHuddles{out: map[sim.HuddleID]*sim.Huddle{"h-1": h1, "h-2": h2}},
+	}.build()
+
+	_, err := LoadWorld(context.Background(), repo, true)
+	if err == nil || !strings.Contains(err.Error(), "appears in two huddles") {
+		t.Errorf("err = %v, want substring 'appears in two huddles'", err)
+	}
+}
+
+// TestLoadWorld_ActorStructureRefs_HappyPath — actor with all three
+// structure refs + a room ref to a loaded room loads cleanly.
+func TestLoadWorld_ActorStructureRefs_HappyPath(t *testing.T) {
+	startedAt := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
+	structA := &sim.Structure{
+		ID: bldgA, DisplayName: "Tavern", Position: sim.Position{},
+		Tags: []string{},
+		Rooms: []*sim.Room{
+			{ID: 42, StructureID: bldgA, Kind: "common", Name: "common"},
+		},
+	}
+	voA := &sim.VillageObject{ID: bldgA}
+	actor := &sim.Actor{
+		ID: "act-1", DisplayName: "A", State: "idle", StateEnteredAt: startedAt,
+		HomeStructureID:   bldgA,
+		WorkStructureID:   bldgA,
+		InsideStructureID: bldgA,
+		InsideRoomID:      42,
+	}
+
+	repo := fakeRepoOpts{
+		actors:         fakeActors{out: map[sim.ActorID]*sim.Actor{"act-1": actor}},
+		structures:     fakeStructures{out: map[sim.StructureID]*sim.Structure{bldgA: structA}},
+		villageObjects: fakeVillageObjects{out: map[sim.VillageObjectID]*sim.VillageObject{bldgA: voA}},
+	}.build()
+
+	if _, err := LoadWorld(context.Background(), repo, true); err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+}
+
+// TestLoadWorld_ActorStructureRefs_MissingStructure — actor refs a
+// structure that didn't load — hard error per substrate invariant.
+// Drives all four ref columns through table-driven cases.
+func TestLoadWorld_ActorStructureRefs_MissingStructure(t *testing.T) {
+	startedAt := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
+	bogusStr := sim.StructureID("11111111-1111-1111-1111-deadbeefdead")
+	structA := &sim.Structure{
+		ID: bldgA, DisplayName: "Tavern", Position: sim.Position{}, Tags: []string{},
+	}
+	voA := &sim.VillageObject{ID: bldgA}
+
+	cases := []struct {
+		name string
+		mut  func(*sim.Actor)
+		want string
+	}{
+		{
+			name: "home",
+			mut:  func(a *sim.Actor) { a.HomeStructureID = bogusStr },
+			want: "HomeStructureID",
+		},
+		{
+			name: "work",
+			mut:  func(a *sim.Actor) { a.WorkStructureID = bogusStr },
+			want: "WorkStructureID",
+		},
+		{
+			name: "inside",
+			mut:  func(a *sim.Actor) { a.InsideStructureID = bogusStr },
+			want: "InsideStructureID",
+		},
+		{
+			name: "room",
+			mut:  func(a *sim.Actor) { a.InsideRoomID = 999 }, // no Rooms loaded
+			want: "InsideRoomID=999",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			actor := &sim.Actor{
+				ID: "act-1", DisplayName: "A", State: "idle", StateEnteredAt: startedAt,
+			}
+			tc.mut(actor)
+
+			repo := fakeRepoOpts{
+				actors:         fakeActors{out: map[sim.ActorID]*sim.Actor{"act-1": actor}},
+				structures:     fakeStructures{out: map[sim.StructureID]*sim.Structure{bldgA: structA}},
+				villageObjects: fakeVillageObjects{out: map[sim.VillageObjectID]*sim.VillageObject{bldgA: voA}},
+			}.build()
+
+			_, err := LoadWorld(context.Background(), repo, true)
+			if err == nil {
+				t.Fatalf("expected error for missing %s ref", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("err = %v, want substring %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestLoadWorld_ActorStructureRefs_RoomStructureMismatch — InsideRoomID
+// resolves to a room that belongs to structure X, but InsideStructureID
+// is Y. Locomotion / room-access invariant violated — hard error.
+func TestLoadWorld_ActorStructureRefs_RoomStructureMismatch(t *testing.T) {
+	startedAt := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
+	structA := &sim.Structure{
+		ID: bldgA, DisplayName: "Tavern", Position: sim.Position{}, Tags: []string{},
+		Rooms: []*sim.Room{
+			{ID: 42, StructureID: bldgA, Kind: "common", Name: "common"},
+		},
+	}
+	structB := &sim.Structure{
+		ID: bldgB, DisplayName: "Smithy", Position: sim.Position{}, Tags: []string{},
+	}
+	voA := &sim.VillageObject{ID: bldgA}
+	voB := &sim.VillageObject{ID: bldgB}
+	actor := &sim.Actor{
+		ID: "act-1", DisplayName: "A", State: "idle", StateEnteredAt: startedAt,
+		InsideStructureID: bldgB, // wrong — room 42 is in bldgA
+		InsideRoomID:      42,
+	}
+
+	repo := fakeRepoOpts{
+		actors:     fakeActors{out: map[sim.ActorID]*sim.Actor{"act-1": actor}},
+		structures: fakeStructures{out: map[sim.StructureID]*sim.Structure{bldgA: structA, bldgB: structB}},
+		villageObjects: fakeVillageObjects{out: map[sim.VillageObjectID]*sim.VillageObject{
+			bldgA: voA, bldgB: voB,
+		}},
+	}.build()
+
+	_, err := LoadWorld(context.Background(), repo, true)
+	if err == nil || !strings.Contains(err.Error(), "belongs to structure") {
+		t.Errorf("err = %v, want substring 'belongs to structure'", err)
+	}
+}
+
+// TestLoadWorld_ActorStructureRefs_DuplicateRoomID — index-build
+// detects RoomID collisions across structures (last-writer-wins would
+// silently misroute actor refs).
+func TestLoadWorld_ActorStructureRefs_DuplicateRoomID(t *testing.T) {
+	startedAt := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
+	structA := &sim.Structure{
+		ID: bldgA, DisplayName: "Tavern", Position: sim.Position{}, Tags: []string{},
+		Rooms: []*sim.Room{{ID: 42, StructureID: bldgA, Kind: "common", Name: "common"}},
+	}
+	structB := &sim.Structure{
+		ID: bldgB, DisplayName: "Smithy", Position: sim.Position{}, Tags: []string{},
+		Rooms: []*sim.Room{{ID: 42, StructureID: bldgB, Kind: "common", Name: "common"}}, // dup
+	}
+	voA := &sim.VillageObject{ID: bldgA}
+	voB := &sim.VillageObject{ID: bldgB}
+	actor := &sim.Actor{
+		ID: "act-1", DisplayName: "A", State: "idle", StateEnteredAt: startedAt,
+	}
+
+	repo := fakeRepoOpts{
+		actors:     fakeActors{out: map[sim.ActorID]*sim.Actor{"act-1": actor}},
+		structures: fakeStructures{out: map[sim.StructureID]*sim.Structure{bldgA: structA, bldgB: structB}},
+		villageObjects: fakeVillageObjects{out: map[sim.VillageObjectID]*sim.VillageObject{
+			bldgA: voA, bldgB: voB,
+		}},
+	}.build()
+
+	_, err := LoadWorld(context.Background(), repo, true)
+	if err == nil || !strings.Contains(err.Error(), "duplicate RoomID=42") {
+		t.Errorf("err = %v, want substring 'duplicate RoomID=42'", err)
+	}
+}
+
+// TestLoadWorld_ActorStructureRefs_RoomNestingMismatch — index-build
+// rejects rooms whose own StructureID disagrees with the parent
+// structure they're nested under in the loaded map.
+func TestLoadWorld_ActorStructureRefs_RoomNestingMismatch(t *testing.T) {
+	startedAt := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
+	structA := &sim.Structure{
+		ID: bldgA, DisplayName: "Tavern", Position: sim.Position{}, Tags: []string{},
+		// Room claims to belong to bldgB but is nested under bldgA in the map.
+		Rooms: []*sim.Room{{ID: 7, StructureID: bldgB, Kind: "common", Name: "weird"}},
+	}
+	voA := &sim.VillageObject{ID: bldgA}
+	actor := &sim.Actor{
+		ID: "act-1", DisplayName: "A", State: "idle", StateEnteredAt: startedAt,
+	}
+
+	repo := fakeRepoOpts{
+		actors:         fakeActors{out: map[sim.ActorID]*sim.Actor{"act-1": actor}},
+		structures:     fakeStructures{out: map[sim.StructureID]*sim.Structure{bldgA: structA}},
+		villageObjects: fakeVillageObjects{out: map[sim.VillageObjectID]*sim.VillageObject{bldgA: voA}},
+	}.build()
+
+	_, err := LoadWorld(context.Background(), repo, true)
+	if err == nil || !strings.Contains(err.Error(), "nested under structure") {
+		t.Errorf("err = %v, want substring 'nested under structure'", err)
+	}
+}
+
+// TestLoadWorld_ActorHuddleReconciliation_SkippedWhenHuddlesNotImpl —
+// gating must NOT clear actor.CurrentHuddleID when Huddles failed to
+// load via notImpl tolerance. Without the peer gating, the
+// reconciliation would silently wipe every actor's huddle cache.
+func TestLoadWorld_ActorHuddleReconciliation_SkippedWhenHuddlesNotImpl(t *testing.T) {
+	startedAt := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
+	actor := &sim.Actor{
+		ID: "act-1", DisplayName: "A", State: "idle", StateEnteredAt: startedAt,
+		CurrentHuddleID: "h-prev", // cached from previous run; Huddles can't be loaded
+	}
+	repo := sim.Repository{
+		Actors:         fakeActors{out: map[sim.ActorID]*sim.Actor{"act-1": actor}},
+		Structures:     fakeStructures{out: map[sim.StructureID]*sim.Structure{}},
+		Huddles:        fakeHuddles{err: errNotImpl}, // <-- notImpl
+		Scenes:         fakeScenes{out: map[sim.SceneID]*sim.Scene{}},
+		Orders:         fakeOrders{out: map[sim.OrderID]*sim.Order{}},
+		Environment:    fakeEnvironment{},
+		Assets:         fakeAssets{out: map[sim.AssetID]*sim.Asset{}},
+		Recipes:        fakeRecipes{out: map[sim.ItemKind]*sim.ItemRecipe{}},
+		ItemKinds:      fakeItemKinds{out: map[sim.ItemKind]*sim.ItemKindDef{}},
+		Terrain:        fakeTerrain{out: &sim.Terrain{}},
+		VillageObjects: fakeVillageObjects{out: map[sim.VillageObjectID]*sim.VillageObject{}},
+		ActionLog:      fakeActionLog{},
+		TickTelemetry:  fakeTickTelemetry{},
+	}
+	w, err := LoadWorld(context.Background(), repo, false /*requireAllImpl*/)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	if w.Actors["act-1"].CurrentHuddleID != "h-prev" {
+		t.Errorf("CurrentHuddleID = %q, want preserved 'h-prev' (Huddles notImpl — must skip reconciliation)",
+			w.Actors["act-1"].CurrentHuddleID)
+	}
+}
+
+// TestLoadWorld_ActorStructureRefs_SkippedWhenStructuresNotImpl — same
+// idea for Slice 12 carry-forward. validateActorStructureRefs would
+// otherwise hard-error any actor with structure refs the moment
+// Structures was tolerated empty.
+func TestLoadWorld_ActorStructureRefs_SkippedWhenStructuresNotImpl(t *testing.T) {
+	startedAt := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
+	actor := &sim.Actor{
+		ID: "act-1", DisplayName: "A", State: "idle", StateEnteredAt: startedAt,
+		HomeStructureID:   bldgA,
+		WorkStructureID:   bldgA,
+		InsideStructureID: bldgA,
+		InsideRoomID:      42,
+	}
+	repo := sim.Repository{
+		Actors:         fakeActors{out: map[sim.ActorID]*sim.Actor{"act-1": actor}},
+		Structures:     fakeStructures{err: errNotImpl}, // <-- notImpl
+		Huddles:        fakeHuddles{out: map[sim.HuddleID]*sim.Huddle{}},
+		Scenes:         fakeScenes{out: map[sim.SceneID]*sim.Scene{}},
+		Orders:         fakeOrders{out: map[sim.OrderID]*sim.Order{}},
+		Environment:    fakeEnvironment{},
+		Assets:         fakeAssets{out: map[sim.AssetID]*sim.Asset{}},
+		Recipes:        fakeRecipes{out: map[sim.ItemKind]*sim.ItemRecipe{}},
+		ItemKinds:      fakeItemKinds{out: map[sim.ItemKind]*sim.ItemKindDef{}},
+		Terrain:        fakeTerrain{out: &sim.Terrain{}},
+		VillageObjects: fakeVillageObjects{out: map[sim.VillageObjectID]*sim.VillageObject{}},
+		ActionLog:      fakeActionLog{},
+		TickTelemetry:  fakeTickTelemetry{},
+	}
+	if _, err := LoadWorld(context.Background(), repo, false /*requireAllImpl*/); err != nil {
+		t.Errorf("LoadWorld should tolerate actor structure refs when Structures notImpl: %v", err)
+	}
+}
+
+// TestLoadWorld_ActorReconciliation_SkippedWhenActorsNotImpl — when
+// Actors is notImpl-tolerated, the reconciliation does NOT run. A
+// Huddles.Members pointing at a "missing" actor isn't an error because
+// the actors aren't really missing — they just didn't load.
+func TestLoadWorld_ActorReconciliation_SkippedWhenActorsNotImpl(t *testing.T) {
+	startedAt := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
+	huddle := &sim.Huddle{
+		ID: "h-a", Members: map[sim.ActorID]struct{}{"act-ghost": {}}, StartedAt: startedAt,
+	}
+	repo := sim.Repository{
+		Actors:         notImplActors{}, // <-- notImpl, reconciliation must skip
+		Structures:     fakeStructures{out: map[sim.StructureID]*sim.Structure{}},
+		Huddles:        fakeHuddles{out: map[sim.HuddleID]*sim.Huddle{"h-a": huddle}},
+		Scenes:         fakeScenes{out: map[sim.SceneID]*sim.Scene{}},
+		Orders:         fakeOrders{out: map[sim.OrderID]*sim.Order{}},
+		Environment:    fakeEnvironment{},
+		Assets:         fakeAssets{out: map[sim.AssetID]*sim.Asset{}},
+		Recipes:        fakeRecipes{out: map[sim.ItemKind]*sim.ItemRecipe{}},
+		ItemKinds:      fakeItemKinds{out: map[sim.ItemKind]*sim.ItemKindDef{}},
+		Terrain:        fakeTerrain{out: &sim.Terrain{}},
+		VillageObjects: fakeVillageObjects{out: map[sim.VillageObjectID]*sim.VillageObject{}},
+		ActionLog:      fakeActionLog{},
+		TickTelemetry:  fakeTickTelemetry{},
+	}
+
+	if _, err := LoadWorld(context.Background(), repo, false); err != nil {
+		t.Errorf("LoadWorld with notImpl Actors should tolerate Huddles.Members: %v", err)
 	}
 }

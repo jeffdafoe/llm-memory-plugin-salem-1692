@@ -1,0 +1,786 @@
+package pg
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/pashagolub/pgxmock/v4"
+
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
+)
+
+// pgxmock-based tests for ActorsRepo (Slice 1, ZBBS-WORK-243). Asserts
+// SQL shape + arg bindings + nullable scan mapping. Real-pg behaviors
+// (CHECK constraints, FK CASCADE, advisory lock blocking, UNIQUE
+// constraints) land with the testcontainers smoke slice (parked
+// pending migrations/baseline.sql).
+//
+// Actor IDs follow v1-UUID-as-text shape (same posture as Structures /
+// Huddles slices). The `*::text` cast in loadAllSQLA lets pgxmock
+// return bare strings.
+
+// Predictable actor IDs.
+const (
+	actA = "00000000-0000-0000-0000-aaaaaaaaaaa1"
+	actB = "00000000-0000-0000-0000-bbbbbbbbbbb2"
+	actC = "00000000-0000-0000-0000-ccccccccccc3"
+	actV = "00000000-0000-0000-0000-deadbeef0001" // visitor actor
+)
+
+// Predictable timestamps. Use a fixed point so test expectations stay
+// stable across runs.
+var (
+	tsTickedAt = time.Date(2026, 5, 19, 14, 30, 0, 0, time.UTC)
+	tsBreak    = time.Date(2026, 5, 19, 15, 0, 0, 0, time.UTC)
+	tsNextSelf = time.Date(2026, 5, 19, 15, 5, 0, 0, time.UTC)
+	tsSleep    = time.Date(2026, 5, 19, 22, 0, 0, 0, time.UTC)
+	tsEntered  = time.Date(2026, 5, 19, 8, 0, 0, 0, time.UTC)
+)
+
+func newMockPoolA(t *testing.T) (pgxmock.PgxPoolIface, *ActorsRepo) {
+	t.Helper()
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("NewPool: %v", err)
+	}
+	t.Cleanup(mock.Close)
+	return mock, NewActorsRepo(mock)
+}
+
+// actorParentColumns is the SELECT column ordering for the parent
+// LoadAll query. Centralized so per-test row builders stay in sync if
+// the column list changes.
+func actorParentColumns() []string {
+	return []string{
+		"id", "display_name", "current_x", "current_y",
+		"inside_structure_id", "current_huddle_id", "inside_room_id",
+		"home_structure_id", "work_structure_id",
+		"coins", "llm_memory_agent", "role", "login_username",
+		"schedule_start_minute", "schedule_end_minute",
+		"last_agent_tick_at", "break_until", "next_self_tick_at",
+		"next_self_tick_reason", "sleeping_until",
+		"move_attempt_counter", "sim_state", "sim_state_entered_at",
+	}
+}
+
+// emptyNeedRows / emptyInvRows: no-row sets for the child-table
+// LoadAll queries. Used in tests that only exercise the parent path.
+func emptyNeedRows() *pgxmock.Rows {
+	return pgxmock.NewRows([]string{"actor_id", "key", "value"})
+}
+
+func emptyInvRows() *pgxmock.Rows {
+	return pgxmock.NewRows([]string{"actor_id", "item_kind", "quantity"})
+}
+
+// expectActorSaveSnapshotPrelude programs advisory lock + parent
+// nextval. Called once per SaveSnapshot test.
+func expectActorSaveSnapshotPrelude(mock pgxmock.PgxPoolIface, actorGen int64) {
+	mock.ExpectExec(`SELECT pg_advisory_xact_lock\(hashtext\('actor_snapshot'`).
+		WillReturnResult(pgconn.NewCommandTag("SELECT 1"))
+	mock.ExpectQuery(`SELECT nextval\('actor_snapshot_gen_seq`).
+		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(actorGen))
+}
+
+// expectActorSaveSnapshotChildTails programs the need + inventory
+// nextval/delete tails (the standard suffix once parent UPSERTs are
+// declared). Need + inventory UPSERTs are programmed per-test.
+func expectActorSaveSnapshotChildTails(mock pgxmock.PgxPoolIface, needGen, invGen int64) {
+	mock.ExpectQuery(`SELECT nextval\('actor_need_snapshot_gen_seq`).
+		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(needGen))
+	// Need UPSERTs (if any) are programmed by the test before this.
+	mock.ExpectExec(`DELETE FROM actor_need .*WHERE snapshot_gen < \$1`).
+		WithArgs(needGen).
+		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+	mock.ExpectQuery(`SELECT nextval\('actor_inventory_snapshot_gen_seq`).
+		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(invGen))
+	// Inventory UPSERTs (if any) are programmed by the test before this.
+	mock.ExpectExec(`DELETE FROM actor_inventory .*WHERE snapshot_gen < \$1`).
+		WithArgs(invGen).
+		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+}
+
+// --- LoadAll happy path ---------------------------------------------------
+
+// TestActorsRepo_LoadAll_HappyPath — full-shape actor with all nullable
+// fields populated. Also covers the cross-aggregate carry-forward
+// columns (Slice 11 current_huddle_id, Slice 12 home/work/inside
+// structure refs + inside_room_id) — they arrive as `*string` /
+// `*int64` scans and land on the v2 sim.Actor fields with the
+// empty-string / zero-int sentinels.
+func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+	mock.MatchExpectationsInOrder(false)
+
+	insideStr := "00000000-0000-0000-0000-1111aaaaaaaa"
+	huddleID := "00000000-0000-0000-0000-2222bbbbbbbb"
+	homeStr := "00000000-0000-0000-0000-3333cccccccc"
+	workStr := "00000000-0000-0000-0000-4444dddddddd"
+	roomID := int64(42)
+	startMin := int16(540) // 09:00
+	endMin := int16(1020)  // 17:00
+	reason := "low_tiredness"
+
+	mock.ExpectQuery(`FROM actor\b`).
+		WillReturnRows(pgxmock.NewRows(actorParentColumns()).
+			AddRow(
+				actA, "Mira", 5, 10,
+				&insideStr, &huddleID, &roomID,
+				&homeStr, &workStr,
+				20, ptrStr("mira-agent"), ptrStr("tavernkeeper"), (*string)(nil),
+				&startMin, &endMin,
+				&tsTickedAt, &tsBreak, &tsNextSelf, ptrStr(reason), &tsSleep,
+				int64(7), "working", tsEntered,
+			).
+			AddRow(
+				actB, "Bare", 0, 0,
+				(*string)(nil), (*string)(nil), (*int64)(nil),
+				(*string)(nil), (*string)(nil),
+				20, (*string)(nil), (*string)(nil), (*string)(nil),
+				(*int16)(nil), (*int16)(nil),
+				(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
+				(*string)(nil), (*time.Time)(nil),
+				int64(0), "idle", tsEntered,
+			))
+
+	mock.ExpectQuery(`FROM actor_need\b`).
+		WillReturnRows(pgxmock.NewRows([]string{"actor_id", "key", "value"}).
+			AddRow(actA, "hunger", 4).
+			AddRow(actA, "tiredness", 18))
+
+	mock.ExpectQuery(`FROM actor_inventory\b`).
+		WillReturnRows(pgxmock.NewRows([]string{"actor_id", "item_kind", "quantity"}).
+			AddRow(actA, "ale", 3).
+			AddRow(actA, "coin_purse", 1))
+
+	got, err := repo.LoadAll(context.Background())
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2", len(got))
+	}
+
+	a := got[actA]
+	if a == nil {
+		t.Fatal("actA missing")
+	}
+	if a.DisplayName != "Mira" {
+		t.Errorf("actA DisplayName = %q", a.DisplayName)
+	}
+	if a.CurrentX != 5 || a.CurrentY != 10 {
+		t.Errorf("actA pos = (%d,%d)", a.CurrentX, a.CurrentY)
+	}
+	if string(a.InsideStructureID) != insideStr {
+		t.Errorf("InsideStructureID = %q want %q", a.InsideStructureID, insideStr)
+	}
+	if string(a.CurrentHuddleID) != huddleID {
+		t.Errorf("CurrentHuddleID = %q want %q", a.CurrentHuddleID, huddleID)
+	}
+	if int64(a.InsideRoomID) != roomID {
+		t.Errorf("InsideRoomID = %d want %d", a.InsideRoomID, roomID)
+	}
+	if string(a.HomeStructureID) != homeStr || string(a.WorkStructureID) != workStr {
+		t.Errorf("Home/Work = %q/%q", a.HomeStructureID, a.WorkStructureID)
+	}
+	if a.Coins != 20 {
+		t.Errorf("Coins = %d", a.Coins)
+	}
+	if a.LLMAgent != "mira-agent" || a.Role != "tavernkeeper" {
+		t.Errorf("LLMAgent=%q Role=%q", a.LLMAgent, a.Role)
+	}
+	if a.LoginUsername != "" {
+		t.Errorf("LoginUsername = %q want empty", a.LoginUsername)
+	}
+	if a.ScheduleStartMin == nil || *a.ScheduleStartMin != int(startMin) {
+		t.Errorf("ScheduleStartMin = %v", a.ScheduleStartMin)
+	}
+	if a.ScheduleEndMin == nil || *a.ScheduleEndMin != int(endMin) {
+		t.Errorf("ScheduleEndMin = %v", a.ScheduleEndMin)
+	}
+	if a.LastTickedAt == nil || !a.LastTickedAt.Equal(tsTickedAt) {
+		t.Errorf("LastTickedAt = %v", a.LastTickedAt)
+	}
+	if a.BreakUntil == nil || !a.BreakUntil.Equal(tsBreak) {
+		t.Errorf("BreakUntil = %v", a.BreakUntil)
+	}
+	if a.NextSelfTickAt == nil || !a.NextSelfTickAt.Equal(tsNextSelf) {
+		t.Errorf("NextSelfTickAt = %v", a.NextSelfTickAt)
+	}
+	if a.NextSelfTickReason != reason {
+		t.Errorf("NextSelfTickReason = %q", a.NextSelfTickReason)
+	}
+	if a.SleepingUntil == nil || !a.SleepingUntil.Equal(tsSleep) {
+		t.Errorf("SleepingUntil = %v", a.SleepingUntil)
+	}
+	if int64(a.MoveAttemptCounter) != 7 {
+		t.Errorf("MoveAttemptCounter = %d", a.MoveAttemptCounter)
+	}
+	if string(a.State) != "working" {
+		t.Errorf("State = %q", a.State)
+	}
+	if !a.StateEnteredAt.Equal(tsEntered) {
+		t.Errorf("StateEnteredAt = %v", a.StateEnteredAt)
+	}
+	if len(a.Needs) != 2 || a.Needs["hunger"] != 4 || a.Needs["tiredness"] != 18 {
+		t.Errorf("Needs = %v", a.Needs)
+	}
+	if len(a.Inventory) != 2 || a.Inventory["ale"] != 3 {
+		t.Errorf("Inventory = %v", a.Inventory)
+	}
+
+	// Bare actor with all-NULL nullable fields.
+	b := got[actB]
+	if b == nil {
+		t.Fatal("actB missing")
+	}
+	if b.InsideStructureID != "" || b.CurrentHuddleID != "" || b.HomeStructureID != "" || b.WorkStructureID != "" {
+		t.Errorf("actB IDs not empty: in=%q hud=%q home=%q work=%q",
+			b.InsideStructureID, b.CurrentHuddleID, b.HomeStructureID, b.WorkStructureID)
+	}
+	if int64(b.InsideRoomID) != 0 {
+		t.Errorf("actB InsideRoomID = %d, want 0", b.InsideRoomID)
+	}
+	if b.LLMAgent != "" || b.Role != "" || b.LoginUsername != "" {
+		t.Errorf("actB strings not empty")
+	}
+	if b.ScheduleStartMin != nil || b.ScheduleEndMin != nil {
+		t.Errorf("actB schedule not nil: %v/%v", b.ScheduleStartMin, b.ScheduleEndMin)
+	}
+	if b.LastTickedAt != nil || b.BreakUntil != nil || b.NextSelfTickAt != nil || b.SleepingUntil != nil {
+		t.Errorf("actB time ptrs not nil")
+	}
+	if b.NextSelfTickReason != "" {
+		t.Errorf("actB NextSelfTickReason = %q", b.NextSelfTickReason)
+	}
+	if int64(b.MoveAttemptCounter) != 0 {
+		t.Errorf("actB MoveAttemptCounter = %d", b.MoveAttemptCounter)
+	}
+	if len(b.Needs) != 0 || len(b.Inventory) != 0 {
+		t.Errorf("actB Needs=%v Inventory=%v", b.Needs, b.Inventory)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+}
+
+// TestActorsRepo_LoadAll_OrphanNeed — child need row whose parent actor
+// isn't in the loaded set surfaces as a clean error (schema drift
+// signal). FK CASCADE makes this unreachable from valid writes.
+func TestActorsRepo_LoadAll_OrphanNeed(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+	mock.MatchExpectationsInOrder(false)
+
+	mock.ExpectQuery(`FROM actor\b`).
+		WillReturnRows(pgxmock.NewRows(actorParentColumns())) // empty
+
+	mock.ExpectQuery(`FROM actor_need\b`).
+		WillReturnRows(pgxmock.NewRows([]string{"actor_id", "key", "value"}).
+			AddRow(actA, "hunger", 4))
+
+	// inventory not reached due to error.
+
+	_, err := repo.LoadAll(context.Background())
+	if err == nil {
+		t.Fatal("LoadAll: want orphan-need error, got nil")
+	}
+	if !strings.Contains(err.Error(), "orphan need row") {
+		t.Errorf("err = %v, want substring 'orphan need row'", err)
+	}
+}
+
+// TestActorsRepo_LoadAll_OrphanInventory — same shape but on inventory.
+func TestActorsRepo_LoadAll_OrphanInventory(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+	mock.MatchExpectationsInOrder(false)
+
+	mock.ExpectQuery(`FROM actor\b`).
+		WillReturnRows(pgxmock.NewRows(actorParentColumns()))
+
+	mock.ExpectQuery(`FROM actor_need\b`).
+		WillReturnRows(emptyNeedRows())
+
+	mock.ExpectQuery(`FROM actor_inventory\b`).
+		WillReturnRows(pgxmock.NewRows([]string{"actor_id", "item_kind", "quantity"}).
+			AddRow(actA, "ale", 3))
+
+	_, err := repo.LoadAll(context.Background())
+	if err == nil {
+		t.Fatal("LoadAll: want orphan-inventory error, got nil")
+	}
+	if !strings.Contains(err.Error(), "orphan inventory row") {
+		t.Errorf("err = %v, want substring 'orphan inventory row'", err)
+	}
+}
+
+// TestActorsRepo_LoadAll_ParentQueryError — top-level query error
+// surfaces wrapped.
+func TestActorsRepo_LoadAll_ParentQueryError(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+	sentinel := errors.New("connection lost")
+	mock.ExpectQuery(`FROM actor\b`).WillReturnError(sentinel)
+
+	_, err := repo.LoadAll(context.Background())
+	if !errors.Is(err, sentinel) {
+		t.Errorf("err = %v, want wrapping %v", err, sentinel)
+	}
+}
+
+// --- SaveSnapshot happy path ----------------------------------------------
+
+// TestActorsRepo_SaveSnapshot_FullActor — single fully-populated actor
+// with needs + inventory. Asserts the parent UPSERT carries all 24
+// positional args correctly, including the nullable conversions
+// (*string → SQL NULL when empty, *int → SQL NULL when nil,
+// InsideRoomID 0 → SQL NULL).
+func TestActorsRepo_SaveSnapshot_FullActor(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+
+	expectActorSaveSnapshotPrelude(mock, 101)
+
+	startMin := 540
+	endMin := 1020
+
+	mock.ExpectExec(`INSERT INTO actor `).
+		WithArgs(
+			actA, "Mira", 5, 10,
+			"00000000-0000-0000-0000-1111aaaaaaaa",
+			"00000000-0000-0000-0000-2222bbbbbbbb",
+			int64(42),
+			"00000000-0000-0000-0000-3333cccccccc",
+			"00000000-0000-0000-0000-4444dddddddd",
+			20, "mira-agent", "tavernkeeper", nil,
+			int16(540), int16(1020),
+			&tsTickedAt, &tsBreak, &tsNextSelf, "low_tiredness", &tsSleep,
+			int64(7), "working", tsEntered,
+			int64(101),
+		).
+		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
+
+	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
+		WithArgs(int64(101)).
+		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+
+	mock.ExpectQuery(`SELECT nextval\('actor_need_snapshot_gen_seq`).
+		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(int64(201)))
+	mock.ExpectExec(`INSERT INTO actor_need `).
+		WithArgs(actA, "hunger", 4, int64(201)).
+		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
+	mock.ExpectExec(`DELETE FROM actor_need .*WHERE snapshot_gen < \$1`).
+		WithArgs(int64(201)).
+		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+
+	mock.ExpectQuery(`SELECT nextval\('actor_inventory_snapshot_gen_seq`).
+		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(int64(301)))
+	mock.ExpectExec(`INSERT INTO actor_inventory `).
+		WithArgs(actA, "ale", 3, int64(301)).
+		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
+	mock.ExpectExec(`DELETE FROM actor_inventory .*WHERE snapshot_gen < \$1`).
+		WithArgs(int64(301)).
+		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+
+	actors := map[sim.ActorID]*sim.Actor{
+		actA: {
+			ID:                 actA,
+			DisplayName:        "Mira",
+			CurrentX:           5,
+			CurrentY:           10,
+			InsideStructureID:  "00000000-0000-0000-0000-1111aaaaaaaa",
+			CurrentHuddleID:    "00000000-0000-0000-0000-2222bbbbbbbb",
+			InsideRoomID:       42,
+			HomeStructureID:    "00000000-0000-0000-0000-3333cccccccc",
+			WorkStructureID:    "00000000-0000-0000-0000-4444dddddddd",
+			Coins:              20,
+			LLMAgent:           "mira-agent",
+			Role:               "tavernkeeper",
+			LoginUsername:      "",
+			ScheduleStartMin:   &startMin,
+			ScheduleEndMin:     &endMin,
+			LastTickedAt:       &tsTickedAt,
+			BreakUntil:         &tsBreak,
+			NextSelfTickAt:     &tsNextSelf,
+			NextSelfTickReason: "low_tiredness",
+			SleepingUntil:      &tsSleep,
+			MoveAttemptCounter: 7,
+			State:              "working",
+			StateEnteredAt:     tsEntered,
+			Needs:              map[sim.NeedKey]int{"hunger": 4},
+			Inventory:          map[sim.ItemKind]int{"ale": 3},
+		},
+	}
+
+	if err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors); err != nil {
+		t.Fatalf("SaveSnapshot: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+}
+
+// TestActorsRepo_SaveSnapshot_BareActor — empty-string / nil-pointer /
+// zero-RoomID fields all round-trip through nil → SQL NULL. Crucial
+// for the empty-string ↔ NULL convention this slice establishes.
+func TestActorsRepo_SaveSnapshot_BareActor(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+
+	expectActorSaveSnapshotPrelude(mock, 102)
+
+	mock.ExpectExec(`INSERT INTO actor `).
+		WithArgs(
+			actB, "Bare", 0, 0,
+			nil, nil, nil, // InsideStructureID, CurrentHuddleID, InsideRoomID
+			nil, nil, // Home/Work StructureID
+			20, nil, nil, nil, // Coins, LLMAgent, Role, LoginUsername
+			nil, nil, // schedule
+			(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil), // time pointers
+			nil, (*time.Time)(nil), // NextSelfTickReason, SleepingUntil
+			int64(0), "idle", tsEntered, // counter, state, entered
+			int64(102),
+		).
+		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
+	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
+		WithArgs(int64(102)).
+		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+
+	expectActorSaveSnapshotChildTails(mock, 202, 302)
+
+	actors := map[sim.ActorID]*sim.Actor{
+		actB: {
+			ID:             actB,
+			DisplayName:    "Bare",
+			Coins:          20,
+			State:          "idle",
+			StateEnteredAt: tsEntered,
+			// All other fields are zero values — empty strings, nil pointers,
+			// zero RoomID, zero MoveAttemptCounter.
+		},
+	}
+
+	if err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors); err != nil {
+		t.Fatalf("SaveSnapshot: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+}
+
+// TestActorsRepo_SaveSnapshot_VisitorFiltered — actors with non-nil
+// VisitorState are filtered out of SaveSnapshot entirely (no UPSERT
+// fires for them). Per visitor codebase note "No durable visitor row
+// persistence." All three gen-marker tiers still bump + DELETE-stale
+// run to prune absent rows.
+func TestActorsRepo_SaveSnapshot_VisitorFiltered(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+
+	expectActorSaveSnapshotPrelude(mock, 103)
+	// Note: ZERO actor UPSERTs expected — the visitor is filtered,
+	// no non-visitor actors in the snapshot.
+	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
+		WithArgs(int64(103)).
+		WillReturnResult(pgconn.NewCommandTag("DELETE 1"))
+	expectActorSaveSnapshotChildTails(mock, 203, 303)
+
+	actors := map[sim.ActorID]*sim.Actor{
+		actV: {
+			ID:             actV,
+			DisplayName:    "Visitor Vince",
+			State:          "idle",
+			StateEnteredAt: tsEntered,
+			VisitorState:   &sim.VisitorState{Archetype: "scholar"},
+		},
+	}
+
+	if err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors); err != nil {
+		t.Fatalf("SaveSnapshot: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+}
+
+// TestActorsRepo_SaveSnapshot_EmptyMap — empty actors map. All three
+// gens bump, no UPSERTs run, all three deletes sweep the tables.
+func TestActorsRepo_SaveSnapshot_EmptyMap(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+
+	expectActorSaveSnapshotPrelude(mock, 104)
+	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
+		WithArgs(int64(104)).
+		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+	expectActorSaveSnapshotChildTails(mock, 204, 304)
+
+	if err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, map[sim.ActorID]*sim.Actor{}); err != nil {
+		t.Fatalf("SaveSnapshot: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+}
+
+// TestActorsRepo_SaveSnapshot_ZeroQtyInventoryDropped — inventory
+// entries with quantity <= 0 are NOT UPSERTed. The trailing DELETE
+// sweep eventually prunes the row from the table; in this test we
+// just confirm no INSERT into actor_inventory fires for the zero
+// entry.
+func TestActorsRepo_SaveSnapshot_ZeroQtyInventoryDropped(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+
+	expectActorSaveSnapshotPrelude(mock, 105)
+
+	mock.ExpectExec(`INSERT INTO actor `).
+		WithArgs(
+			actA, "Mira", 0, 0,
+			nil, nil, nil,
+			nil, nil,
+			20, nil, nil, nil,
+			nil, nil,
+			(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
+			nil, (*time.Time)(nil),
+			int64(0), "idle", tsEntered,
+			int64(105),
+		).
+		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
+	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
+		WithArgs(int64(105)).
+		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+
+	mock.ExpectQuery(`SELECT nextval\('actor_need_snapshot_gen_seq`).
+		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(int64(205)))
+	mock.ExpectExec(`DELETE FROM actor_need .*WHERE snapshot_gen < \$1`).
+		WithArgs(int64(205)).
+		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+
+	// Inventory tier: ale gets UPSERTed (qty=3), bread is SKIPPED (qty=0).
+	mock.ExpectQuery(`SELECT nextval\('actor_inventory_snapshot_gen_seq`).
+		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(int64(305)))
+	mock.ExpectExec(`INSERT INTO actor_inventory `).
+		WithArgs(actA, "ale", 3, int64(305)).
+		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
+	mock.ExpectExec(`DELETE FROM actor_inventory .*WHERE snapshot_gen < \$1`).
+		WithArgs(int64(305)).
+		WillReturnResult(pgconn.NewCommandTag("DELETE 1")) // bread row swept
+
+	actors := map[sim.ActorID]*sim.Actor{
+		actA: {
+			ID:             actA,
+			DisplayName:    "Mira",
+			Coins:          20,
+			State:          "idle",
+			StateEnteredAt: tsEntered,
+			Inventory: map[sim.ItemKind]int{
+				"ale":   3,
+				"bread": 0, // zero qty → skip UPSERT, swept by DELETE
+			},
+		},
+	}
+	if err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors); err != nil {
+		t.Fatalf("SaveSnapshot: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+}
+
+// --- SaveSnapshot validation ----------------------------------------------
+
+// All validation errors abort BEFORE any SQL fires (advisory lock
+// included — Slice 1 R1 moved validation in front of the lock). We
+// assert that by programming NO expectations on the mock and confirming
+// ExpectationsWereMet after the error returns.
+
+func assertValidationOnly(t *testing.T, mock pgxmock.PgxPoolIface, err error, wantSubstr string) {
+	t.Helper()
+	if err == nil || !strings.Contains(err.Error(), wantSubstr) {
+		t.Fatalf("err = %v, want substring %q", err, wantSubstr)
+	}
+	if exErr := mock.ExpectationsWereMet(); exErr != nil {
+		t.Errorf("validation path fired unexpected SQL: %v", exErr)
+	}
+}
+
+func TestActorsRepo_SaveSnapshot_NilEntry(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+	actors := map[sim.ActorID]*sim.Actor{actA: nil}
+	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
+	assertValidationOnly(t, mock, err, "nil entry")
+}
+
+func TestActorsRepo_SaveSnapshot_EmptyID(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+	actors := map[sim.ActorID]*sim.Actor{
+		"   ": {ID: "   ", DisplayName: "X", State: "idle", StateEnteredAt: tsEntered},
+	}
+	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
+	assertValidationOnly(t, mock, err, "empty ActorID")
+}
+
+func TestActorsRepo_SaveSnapshot_KeyMismatch(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+	actors := map[sim.ActorID]*sim.Actor{
+		actA: {ID: actB, DisplayName: "X", State: "idle", StateEnteredAt: tsEntered},
+	}
+	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
+	assertValidationOnly(t, mock, err, "does not match a.ID")
+}
+
+func TestActorsRepo_SaveSnapshot_EmptyDisplayName(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+	actors := map[sim.ActorID]*sim.Actor{
+		actA: {ID: actA, DisplayName: "  ", State: "idle", StateEnteredAt: tsEntered},
+	}
+	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
+	assertValidationOnly(t, mock, err, "empty DisplayName")
+}
+
+func TestActorsRepo_SaveSnapshot_EmptyState(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+	actors := map[sim.ActorID]*sim.Actor{
+		actA: {ID: actA, DisplayName: "X", State: "", StateEnteredAt: tsEntered},
+	}
+	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
+	assertValidationOnly(t, mock, err, "empty State")
+}
+
+func TestActorsRepo_SaveSnapshot_ZeroStateEnteredAt(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+	actors := map[sim.ActorID]*sim.Actor{
+		actA: {ID: actA, DisplayName: "X", State: "idle"}, // zero StateEnteredAt
+	}
+	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
+	assertValidationOnly(t, mock, err, "zero StateEnteredAt")
+}
+
+func TestActorsRepo_SaveSnapshot_HalfSetSchedule(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+	start := 540
+	actors := map[sim.ActorID]*sim.Actor{
+		actA: {
+			ID: actA, DisplayName: "X", State: "idle", StateEnteredAt: tsEntered,
+			ScheduleStartMin: &start, // ScheduleEndMin: nil
+		},
+	}
+	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
+	assertValidationOnly(t, mock, err, "half-set schedule")
+}
+
+// TestActorsRepo_SaveSnapshot_ScheduleOutOfRange — guards intPtrToSQL's
+// int16 narrowing. A 40000 value would wrap silently if validation
+// didn't catch it.
+func TestActorsRepo_SaveSnapshot_ScheduleOutOfRange(t *testing.T) {
+	cases := []struct {
+		name string
+		mut  func(*sim.Actor)
+		want string
+	}{
+		{
+			name: "start_above",
+			mut: func(a *sim.Actor) {
+				v := 40000
+				e := 100
+				a.ScheduleStartMin, a.ScheduleEndMin = &v, &e
+			},
+			want: "ScheduleStartMin=40000",
+		},
+		{
+			name: "start_below",
+			mut: func(a *sim.Actor) {
+				v := -1
+				e := 100
+				a.ScheduleStartMin, a.ScheduleEndMin = &v, &e
+			},
+			want: "ScheduleStartMin=-1",
+		},
+		{
+			name: "end_above",
+			mut: func(a *sim.Actor) {
+				s := 100
+				v := 1440
+				a.ScheduleStartMin, a.ScheduleEndMin = &s, &v
+			},
+			want: "ScheduleEndMin=1440",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mock, repo := newMockPoolA(t)
+			a := &sim.Actor{ID: actA, DisplayName: "X", State: "idle", StateEnteredAt: tsEntered}
+			tc.mut(a)
+			err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, map[sim.ActorID]*sim.Actor{actA: a})
+			assertValidationOnly(t, mock, err, tc.want)
+		})
+	}
+}
+
+func TestActorsRepo_SaveSnapshot_NeedOutOfRange(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+	actors := map[sim.ActorID]*sim.Actor{
+		actA: {
+			ID: actA, DisplayName: "X", State: "idle", StateEnteredAt: tsEntered,
+			Needs: map[sim.NeedKey]int{"hunger": 99}, // > 24
+		},
+	}
+	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
+	assertValidationOnly(t, mock, err, "out of range")
+}
+
+// TestActorsRepo_SaveSnapshot_EmptyNeedKey — guards against whitespace
+// or empty need keys (would trip btrim CHECK mid-Tx otherwise).
+func TestActorsRepo_SaveSnapshot_EmptyNeedKey(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+	actors := map[sim.ActorID]*sim.Actor{
+		actA: {
+			ID: actA, DisplayName: "X", State: "idle", StateEnteredAt: tsEntered,
+			Needs: map[sim.NeedKey]int{"  ": 4},
+		},
+	}
+	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
+	assertValidationOnly(t, mock, err, "empty need key")
+}
+
+// TestActorsRepo_SaveSnapshot_NegativeInventoryQuantity — negative
+// quantities are almost certainly command-handler bugs; reject rather
+// than silently treat as deletion.
+func TestActorsRepo_SaveSnapshot_NegativeInventoryQuantity(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+	actors := map[sim.ActorID]*sim.Actor{
+		actA: {
+			ID: actA, DisplayName: "X", State: "idle", StateEnteredAt: tsEntered,
+			Inventory: map[sim.ItemKind]int{"ale": -1},
+		},
+	}
+	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
+	assertValidationOnly(t, mock, err, "quantity=-1")
+}
+
+// TestActorsRepo_SaveSnapshot_EmptyInventoryKind — guards whitespace /
+// empty item_kind keys.
+func TestActorsRepo_SaveSnapshot_EmptyInventoryKind(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+	actors := map[sim.ActorID]*sim.Actor{
+		actA: {
+			ID: actA, DisplayName: "X", State: "idle", StateEnteredAt: tsEntered,
+			Inventory: map[sim.ItemKind]int{"   ": 3},
+		},
+	}
+	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
+	assertValidationOnly(t, mock, err, "empty inventory item kind")
+}
+
+// TestActorsRepo_SaveSnapshot_NilTx — defensive guard.
+func TestActorsRepo_SaveSnapshot_NilTx(t *testing.T) {
+	_, repo := newMockPoolA(t)
+	err := repo.SaveSnapshot(context.Background(), nil, map[sim.ActorID]*sim.Actor{})
+	if err == nil || !strings.Contains(err.Error(), "nil tx") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// --- helpers --------------------------------------------------------------
+
+// ptrStr returns &s as *string for AddRow nullable-column fixtures.
+func ptrStr(s string) *string { return &s }
