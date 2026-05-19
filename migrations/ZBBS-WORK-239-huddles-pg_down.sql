@@ -35,8 +35,11 @@ ALTER TABLE scene_huddle ALTER COLUMN structure_id TYPE UUID USING structure_id:
 ALTER TABLE scene_huddle ADD CONSTRAINT scene_huddle_structure_id_fkey
     FOREIGN KEY (structure_id) REFERENCES village_object(id) ON DELETE CASCADE;
 
--- Reverse actor.current_huddle_id type + FK. Values are NULL post-up
--- so the cast is trivial.
+-- Reverse actor.current_huddle_id type + FK. Up migration cleared the
+-- column; explicit NULL pass here makes the precondition for the
+-- USING NULL cast self-evident in this script rather than implicit
+-- from up's behavior (clarity nit, code_review).
+UPDATE actor SET current_huddle_id = NULL WHERE current_huddle_id IS NOT NULL;
 ALTER TABLE actor ALTER COLUMN current_huddle_id TYPE UUID USING NULL;
 ALTER TABLE actor ADD CONSTRAINT actor_current_huddle_id_fkey
     FOREIGN KEY (current_huddle_id) REFERENCES scene_huddle(id) ON DELETE SET NULL;

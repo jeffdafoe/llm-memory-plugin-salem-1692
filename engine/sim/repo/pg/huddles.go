@@ -207,7 +207,9 @@ func (r *HuddlesRepo) loadAllMembers(ctx context.Context, huddles map[sim.Huddle
 //  0. Advisory lock — shared by both tables.
 //  1. nextval(huddle_snapshot_gen_seq) → $genHuddle.
 //  2. Per-row UPSERT scene_huddle, stamping snapshot_gen = $genHuddle.
-//     Substrate-boundary validation: reject zero StartedAt.
+//     Substrate-boundary validation: reject empty HuddleID, map-key
+//     ↔ h.ID mismatch, concluded-with-non-empty-Members, zero
+//     StartedAt. Nil entries silently skipped.
 //  3. DELETE scene_huddle WHERE snapshot_gen < $genHuddle. Plain
 //     DELETE — no self-FK. FK CASCADE drops orphan huddle_member rows
 //     for deleted parents.
@@ -241,9 +243,26 @@ func (r *HuddlesRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, huddles map[s
 	}
 
 	// Step 2: upsert each huddle.
-	for _, h := range huddles {
+	//
+	// Substrate-boundary validation: every guard here defends an
+	// invariant the in-memory model already enforces, but Commands are
+	// public-callable. Catching shape bugs at the repo boundary
+	// surfaces them on the failing checkpoint Tx instead of as a
+	// partial-Tx CHECK / UNIQUE violation downstream, and avoids
+	// stamping inconsistent state.
+	for key, h := range huddles {
 		if h == nil {
 			continue
+		}
+		if h.ID == "" {
+			return fmt.Errorf("pg huddles SaveSnapshot: empty HuddleID (map key=%s)", key)
+		}
+		if h.ID != key {
+			return fmt.Errorf("pg huddles SaveSnapshot: map key=%s does not match h.ID=%s", key, h.ID)
+		}
+		if h.ConcludedAt != nil && len(h.Members) != 0 {
+			return fmt.Errorf("pg huddles SaveSnapshot: id=%s concluded but Members non-empty (size=%d) — ConcludeHuddle must wipe Members",
+				h.ID, len(h.Members))
 		}
 		if h.StartedAt.IsZero() {
 			return fmt.Errorf("pg huddles SaveSnapshot: id=%s has zero StartedAt", h.ID)
