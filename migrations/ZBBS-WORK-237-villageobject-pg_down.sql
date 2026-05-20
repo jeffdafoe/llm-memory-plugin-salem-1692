@@ -18,6 +18,12 @@
 
 BEGIN;
 
+-- Revert attached_to self-FK to v1's immediate (non-deferrable) checking.
+ALTER TABLE village_object DROP CONSTRAINT IF EXISTS village_object_attached_to_fkey;
+ALTER TABLE village_object
+    ADD CONSTRAINT village_object_attached_to_fkey
+    FOREIGN KEY (attached_to) REFERENCES village_object(id) ON DELETE CASCADE;
+
 -- Restore noticeboard content columns (no data to restore).
 ALTER TABLE village_object
     ADD COLUMN content_text TEXT NULL,

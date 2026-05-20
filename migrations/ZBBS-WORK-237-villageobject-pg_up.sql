@@ -167,4 +167,18 @@ ALTER TABLE village_object ADD CONSTRAINT village_object_entry_policy_check
 ALTER TABLE village_object DROP COLUMN content_text;
 ALTER TABLE village_object DROP COLUMN content_posted_at;
 
+-- attached_to self-FK → DEFERRABLE INITIALLY DEFERRED. The v1 baseline
+-- declares this FK with default (immediate) checking. The v2 gen-marker
+-- SaveSnapshot writes the full village_object set in one Tx in arbitrary
+-- map order, so an overlay (attached_to set) can be UPSERTed before its
+-- parent within the checkpoint. Deferring the check to commit time makes
+-- intra-Tx insertion order irrelevant at any attachment depth. ON DELETE
+-- CASCADE is unchanged. (VillageObjectsRepo.SaveSnapshot also orders roots
+-- before overlays as a defensive eager pass, but correctness rests here.)
+ALTER TABLE village_object DROP CONSTRAINT IF EXISTS village_object_attached_to_fkey;
+ALTER TABLE village_object
+    ADD CONSTRAINT village_object_attached_to_fkey
+    FOREIGN KEY (attached_to) REFERENCES village_object(id)
+    ON DELETE CASCADE DEFERRABLE INITIALLY DEFERRED;
+
 COMMIT;
