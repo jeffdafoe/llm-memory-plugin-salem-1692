@@ -40,7 +40,7 @@ func NewRepository(pool Pool) sim.Repository {
 		Scenes:         &ScenesRepo{pool: pool},
 		Orders:         &OrdersRepo{pool: pool},
 		Environment:    &EnvironmentRepo{pool: pool},
-		Assets:         notImplAssets{},
+		Assets:         &AssetsRepo{pool: pool},
 		Recipes:        &RecipesRepo{pool: pool},
 		ItemKinds:      &ItemKindsRepo{pool: pool},
 		Terrain:        &TerrainRepo{pool: pool},
@@ -76,6 +76,10 @@ func (notImplActors) SaveSnapshot(_ context.Context, _ sim.Tx, _ map[sim.ActorID
 	return errNotImpl
 }
 
+// notImplAssets is no longer wired by NewRepository (ZBBS-WORK-247 ships
+// AssetsRepo), but load_world_test.go retains a test that exercises
+// LoadWorld's notImpl-tolerance with an Assets stub. Kept here so the test
+// continues to compile; remove when the notImpl-tolerance test is retired.
 type notImplAssets struct{}
 
 func (notImplAssets) LoadAll(_ context.Context) (map[sim.AssetID]*sim.Asset, error) {
