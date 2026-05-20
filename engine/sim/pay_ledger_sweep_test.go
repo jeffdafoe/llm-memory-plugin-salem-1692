@@ -214,3 +214,64 @@ func TestEvaluatePayLedgerSweep_ZeroExpiresAtSkipped(t *testing.T) {
 		t.Errorf("State = %q, want pending (zero ExpiresAt should be left alone)", got)
 	}
 }
+
+// TestEvaluatePayLedgerSweep_ReapsOldTerminal — the sweep's reap pass
+// removes terminal entries older than the retention window. The reap
+// runs even though nothing expires this tick, and reaping is silent (no
+// PayWithItemResolved emit — that fired when the entry first went
+// terminal). A recent terminal and a within-TTL pending both survive.
+func TestEvaluatePayLedgerSweep_ReapsOldTerminal(t *testing.T) {
+	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
+		{id: "alice", displayName: "Alice", kind: sim.KindNPCShared, huddleID: "h1", coins: 50},
+		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1"},
+	})
+	defer stop()
+	events := capturePayWithItemEvents(t, w)
+
+	now := time.Now().UTC()
+	retention := sim.EffectivePayLedgerTerminalRetention(sim.WorldSettings{}) // default 1h
+
+	// 1: terminal resolved past retention → reaped.
+	seedLedgerEntry(t, w, sim.PayLedgerEntry{
+		ID: 1, BuyerID: "alice", SellerID: "bob",
+		ItemKind: "stew", Qty: 1, Amount: 4,
+		State:      sim.PayLedgerStateDeclined,
+		ResolvedAt: now.Add(-retention - time.Minute),
+		SceneID:    "sc1", HuddleID: "h1",
+	})
+	// 2: terminal resolved recently → survives.
+	seedLedgerEntry(t, w, sim.PayLedgerEntry{
+		ID: 2, BuyerID: "alice", SellerID: "bob",
+		ItemKind: "stew", Qty: 1, Amount: 4,
+		State:      sim.PayLedgerStateExpired,
+		ResolvedAt: now.Add(-time.Minute),
+		SceneID:    "sc1", HuddleID: "h1",
+	})
+	// 3: pending within TTL → untouched (and proves reap runs without
+	// any expiry happening this tick).
+	seedLedgerEntry(t, w, sim.PayLedgerEntry{
+		ID: 3, BuyerID: "alice", SellerID: "bob",
+		ItemKind: "stew", Qty: 1, Amount: 4,
+		State:     sim.PayLedgerStatePending,
+		ExpiresAt: now.Add(2 * time.Minute),
+		SceneID:   "sc1", HuddleID: "h1",
+	})
+
+	if _, err := w.Send(sim.EvaluatePayLedgerSweep(now)); err != nil {
+		t.Fatalf("EvaluatePayLedgerSweep: %v", err)
+	}
+
+	ledger := readPayLedger(t, w)
+	if _, ok := ledger[1]; ok {
+		t.Error("entry 1 (old terminal) should have been reaped by the sweep")
+	}
+	if _, ok := ledger[2]; !ok {
+		t.Error("entry 2 (recent terminal) should survive")
+	}
+	if got, ok := ledger[3]; !ok || got.State != sim.PayLedgerStatePending {
+		t.Errorf("entry 3 (pending) = %+v, ok=%v; want surviving pending", got, ok)
+	}
+	if len(events.Resolved) != 0 {
+		t.Errorf("reaping must not emit PayWithItemResolved: %+v", events.Resolved)
+	}
+}

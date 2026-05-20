@@ -288,7 +288,11 @@ func EffectivePayLedgerTTL(s WorldSettings) time.Duration { return effectivePayL
 func EffectivePayLedgerSweepCadence(s WorldSettings) time.Duration {
 	return effectivePayLedgerSweepCadence(s)
 }
-func RestartExpirePendingEntries(w *World, now time.Time) { restartExpirePendingEntries(w, now) }
+func RestartExpirePendingEntries(w *World, now time.Time)  { restartExpirePendingEntries(w, now) }
+func ReapTerminalPayLedgerEntries(w *World, now time.Time) { reapTerminalPayLedgerEntries(w, now) }
+func EffectivePayLedgerTerminalRetention(s WorldSettings) time.Duration {
+	return effectivePayLedgerTerminalRetention(s)
+}
 
 // ApplyPayLedgerCounterSafetyFloor re-runs the floor loop LoadWorld
 // performs after loading PayLedger entries from a repo. Used by the

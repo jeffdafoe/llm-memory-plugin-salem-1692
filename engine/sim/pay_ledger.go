@@ -156,6 +156,23 @@ const PayLedgerTTLDefault = 3 * time.Minute
 // so admin tuning sees one mental model across the two substrates.
 const PayLedgerSweepCadenceDefault = 60 * time.Second
 
+// PayLedgerTerminalRetentionDefault is how long a terminal entry lingers
+// in World.PayLedger before reapTerminalPayLedgerEntries removes it
+// (default when WorldSettings.PayLedgerTerminalRetention is unset).
+//
+// The offer-side map is the ONLY home for these entries (pending entries
+// are restart-lossy, no checkpoint, no projection sink — see
+// work/tasks/payledger-restart-lossy/decision), and unlike Orders'
+// write-through-then-prune nothing else removes terminal entries. Without
+// the reaper the map — and the O(N) aging-sweep + parent-uniqueness scans
+// over it — grow without bound for the life of the world.
+//
+// Set to PayLedgerInResponseToWindow (1h): a countered parent must stay
+// referenceable for in_response_to follow-ups that long. effectivePayLedgerTerminalRetention
+// re-asserts that floor even if the setting is configured shorter, so a
+// buyer's pending counter-response can never dangle.
+const PayLedgerTerminalRetentionDefault = PayLedgerInResponseToWindow
+
 // PayLedgerEntry is the in-memory state of one buyer-staked pay offer.
 // Lives in World.PayLedger keyed by ID. In-memory only — pending
 // entries are intentionally restart-lossy (no checkpoint, no projection
@@ -308,6 +325,69 @@ func effectivePayLedgerSweepCadence(s WorldSettings) time.Duration {
 		return s.PayLedgerSweepCadence
 	}
 	return PayLedgerSweepCadenceDefault
+}
+
+// effectivePayLedgerTerminalRetention returns the configured terminal-
+// retention window or the default when unset, with a hard floor of
+// PayLedgerInResponseToWindow. The floor is load-bearing: a countered
+// parent stays a valid in_response_to target for PayLedgerInResponseToWindow
+// after ResolvedAt, so reaping inside that window would dangle a buyer's
+// pending counter-response. A misconfigured (too-short) setting can never
+// breach the floor.
+func effectivePayLedgerTerminalRetention(s WorldSettings) time.Duration {
+	r := s.PayLedgerTerminalRetention
+	if r <= 0 {
+		r = PayLedgerTerminalRetentionDefault
+	}
+	if r < PayLedgerInResponseToWindow {
+		r = PayLedgerInResponseToWindow
+	}
+	return r
+}
+
+// reapTerminalPayLedgerEntries removes terminal PayLedgerEntries from
+// World.PayLedger once they are older than the terminal-retention window
+// (measured from ResolvedAt). This is what bounds the offer-side map:
+// terminal entries (accepted / declined / countered / withdrawn_by_buyer
+// / expired / failed_*) are otherwise never removed — there is no
+// per-event prune like Orders' write-through-then-prune, and the map is
+// the sole home for offer-side state (restart-lossy, no checkpoint, no
+// sink). Without this the map and the O(N) scans over it (aging sweep +
+// in_response_to parent-uniqueness) grow unbounded for the life of the
+// world.
+//
+// MUST be called from inside a Command.Fn (world goroutine) — the aging
+// sweep is its production caller. Reaping a terminal entry is safe:
+//   - Accepted entries already minted their durable Order (separate
+//     World.Orders map + OrdersRepo persistence) and recorded their
+//     price-book observation at accept time — neither reads back this
+//     entry.
+//   - Countered parents are protected by the retention floor (>= the
+//     in_response_to window), so a still-referenceable parent is never
+//     reaped.
+//   - Warrants carry LedgerID by value, not a pointer; Snapshot.PayLedger
+//     deep-clones — so nothing dangles when the entry is deleted.
+//
+// Pending entries are skipped (not terminal). Entries with a zero
+// ResolvedAt are skipped defensively (a terminal entry should always
+// carry one; skipping avoids reaping anything mid-construction).
+func reapTerminalPayLedgerEntries(w *World, now time.Time) {
+	if w == nil || len(w.PayLedger) == 0 {
+		return
+	}
+	retention := effectivePayLedgerTerminalRetention(w.Settings)
+	for id, e := range w.PayLedger {
+		if e == nil {
+			delete(w.PayLedger, id)
+			continue
+		}
+		if e.State == PayLedgerStatePending || e.ResolvedAt.IsZero() {
+			continue
+		}
+		if now.Sub(e.ResolvedAt) > retention {
+			delete(w.PayLedger, id)
+		}
+	}
 }
 
 // restartExpirePendingEntries walks World.PayLedger at LoadWorld time

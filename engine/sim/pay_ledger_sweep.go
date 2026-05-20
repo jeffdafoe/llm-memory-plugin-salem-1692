@@ -8,14 +8,16 @@ import (
 )
 
 // pay_ledger_sweep.go — Phase 3 PR S4 step 8. Aging sweep for
-// PayLedger pending entries.
+// PayLedger pending entries (+ terminal reaper, ZBBS-WORK-251).
 //
 // RunPayLedgerSweep periodically scans World.PayLedger for entries in
 // PayLedgerStatePending whose ExpiresAt has passed and flips them to
 // PayLedgerStateExpired terminal, emitting PayWithItemResolved{Expired}
-// + projecting to the sink for each. Coalesced AfterFunc self-rearm
-// chain — same shape as the PR S3 scene-quote sweep and the PR 4
-// locomotion ticker.
+// for each. The same sweep then reaps terminal entries older than the
+// retention window (reapTerminalPayLedgerEntries) — this is what bounds
+// the offer-side map, which is otherwise never pruned. Coalesced
+// AfterFunc self-rearm chain — same shape as the PR S3 scene-quote
+// sweep and the PR 4 locomotion ticker.
 //
 // Cadence: WorldSettings.PayLedgerSweepCadence (default 60s via
 // PayLedgerSweepCadenceDefault). Matches the scene-quote sweep cadence
@@ -116,10 +118,10 @@ func evaluatePayLedgerAndRearm(now time.Time) Command {
 
 // EvaluatePayLedgerSweep returns a Command that flips every pending
 // PayLedgerEntry past its ExpiresAt to the Expired terminal state and
-// emits PayWithItemResolved{TerminalState: Expired} + projects to the
-// sink for each. Exposed as a Command (not just an internal Fn) so
-// tests can drive sweeps deterministically without the AfterFunc
-// timing chain.
+// emits PayWithItemResolved{TerminalState: Expired} for each, then reaps
+// terminal entries past the retention window. Exposed as a Command (not
+// just an internal Fn) so tests can drive sweeps deterministically
+// without the AfterFunc timing chain.
 //
 // Iteration order is sorted by LedgerID so PayWithItemResolved events
 // emit in a stable order — important for replay tests and admin trace
@@ -147,21 +149,27 @@ func EvaluatePayLedgerSweep(now time.Time) Command {
 				}
 				expired = append(expired, id)
 			}
-			if len(expired) == 0 {
-				return nil, nil
-			}
-			sort.Slice(expired, func(i, j int) bool { return expired[i] < expired[j] })
-			for _, id := range expired {
-				e, ok := w.PayLedger[id]
-				if !ok || e == nil || e.State != PayLedgerStatePending {
-					// Subscriber from an earlier expire in this batch
-					// could have flipped this one already (unlikely
-					// but defensive — matches the scene-quote sweep
-					// posture).
-					continue
+			if len(expired) > 0 {
+				sort.Slice(expired, func(i, j int) bool { return expired[i] < expired[j] })
+				for _, id := range expired {
+					e, ok := w.PayLedger[id]
+					if !ok || e == nil || e.State != PayLedgerStatePending {
+						// Subscriber from an earlier expire in this batch
+						// could have flipped this one already (unlikely
+						// but defensive — matches the scene-quote sweep
+						// posture).
+						continue
+					}
+					finalizePayLedgerTerminal(w, e, PayTerminalStateExpired, "", now)
 				}
-				finalizePayLedgerTerminal(w, e, PayTerminalStateExpired, "", now)
 			}
+			// Reap terminal entries past the retention window. Runs every
+			// sweep regardless of whether anything expired this tick —
+			// this is what bounds the offer-side map (terminal entries are
+			// never otherwise removed). Runs AFTER the expiry flip so an
+			// entry that expires this same tick gets the full retention
+			// window (its ResolvedAt is `now`) before becoming reapable.
+			reapTerminalPayLedgerEntries(w, now)
 			return nil, nil
 		},
 	}
