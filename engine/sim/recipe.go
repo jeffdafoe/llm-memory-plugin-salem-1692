@@ -17,10 +17,12 @@ type ItemRecipe struct {
 	RetailPrice    int // merchant → customer
 }
 
-// RecipeInput is one input requirement for a recipe execution.
+// RecipeInput is one input requirement for a recipe execution. JSON tags
+// match the item_recipe.inputs JSONB wire shape ([{"item","qty"}, ...])
+// the pg RecipesRepo unmarshals.
 type RecipeInput struct {
-	Item ItemKind
-	Qty  int
+	Item ItemKind `json:"item"`
+	Qty  int      `json:"qty"`
 }
 
 // RestockSource enumerates the supply modes a restock entry can use.
