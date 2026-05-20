@@ -176,7 +176,7 @@ func TestSaveWorld_HappyPath(t *testing.T) {
 	tx := &spyTx{}
 	repo := saveSpyRepo(rec, tx, nil)
 
-	if err := SaveWorld(context.Background(), repo, sim.NewWorld(repo)); err != nil {
+	if err := SaveWorld(context.Background(), repo, sim.NewWorld(repo).BuildCheckpointSnapshot()); err != nil {
 		t.Fatalf("SaveWorld: %v", err)
 	}
 	if !sameOrder(rec.order, expectedSaveOrder) {
@@ -199,7 +199,7 @@ func TestSaveWorld_AbortsAndRollsBackMidCheckpoint(t *testing.T) {
 	tx := &spyTx{}
 	repo := saveSpyRepo(rec, tx, nil)
 
-	err := SaveWorld(context.Background(), repo, sim.NewWorld(repo))
+	err := SaveWorld(context.Background(), repo, sim.NewWorld(repo).BuildCheckpointSnapshot())
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -225,7 +225,7 @@ func TestSaveWorld_BeginError(t *testing.T) {
 	rec := &saveRecorder{}
 	repo := saveSpyRepo(rec, nil, sentinel)
 
-	err := SaveWorld(context.Background(), repo, sim.NewWorld(repo))
+	err := SaveWorld(context.Background(), repo, sim.NewWorld(repo).BuildCheckpointSnapshot())
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -246,7 +246,7 @@ func TestSaveWorld_CommitError(t *testing.T) {
 	tx := &spyTx{commitErr: sentinel}
 	repo := saveSpyRepo(rec, tx, nil)
 
-	err := SaveWorld(context.Background(), repo, sim.NewWorld(repo))
+	err := SaveWorld(context.Background(), repo, sim.NewWorld(repo).BuildCheckpointSnapshot())
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -267,16 +267,16 @@ func TestSaveWorld_CommitError(t *testing.T) {
 	}
 }
 
-// TestSaveWorld_NilWorld — guard returns before Begin.
-func TestSaveWorld_NilWorld(t *testing.T) {
+// TestSaveWorld_NilSnapshot — guard returns before Begin.
+func TestSaveWorld_NilSnapshot(t *testing.T) {
 	rec := &saveRecorder{}
 	tx := &spyTx{}
 	repo := saveSpyRepo(rec, tx, nil)
 
 	if err := SaveWorld(context.Background(), repo, nil); err == nil {
-		t.Fatal("expected error on nil world")
+		t.Fatal("expected error on nil checkpoint snapshot")
 	}
 	if tx.committed || tx.rolledBack {
-		t.Error("nil-world guard must return before touching the Tx")
+		t.Error("nil-snapshot guard must return before touching the Tx")
 	}
 }

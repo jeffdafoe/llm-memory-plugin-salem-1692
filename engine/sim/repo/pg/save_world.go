@@ -7,8 +7,9 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
 
-// SaveWorld orchestrates a full pg-backed checkpoint of a sim.World — the
-// write-side mirror of LoadWorld. It opens one transaction via repo.Begin,
+// SaveWorld orchestrates a full pg-backed checkpoint of a
+// sim.CheckpointSnapshot — the write-side mirror of LoadWorld. It opens one
+// transaction via repo.Begin,
 // calls every checkpointed aggregate's SaveSnapshot inside that single Tx,
 // and commits atomically. Any sub-repo error aborts the whole checkpoint:
 // the deferred Rollback discards every write, so a crash or failure mid-
@@ -33,9 +34,10 @@ import (
 //     startup and hot-reloaded on SIGHUP, never written by the engine loop.
 //     They have no SaveSnapshot.
 //   - ActionLog / TickTelemetry — append-only sinks, not snapshot state.
-//   - Quotes / PayLedger — no repo in the sim.Repository facade yet; their
-//     checkpoint/reload is its own future slice. (PayLedger in particular
-//     carries a real reconcile concern — see notes/active-work.)
+//   - Quotes / PayLedger — intentionally restart-lossy: no repo in the
+//     sim.Repository facade and none planned. Pending entries lock no
+//     coins/stock/presence and carry short TTLs, so losing them on restart
+//     is materially harmless (decided 2026-05-20).
 //
 // # No notImpl tolerance (unlike LoadWorld)
 //
@@ -66,15 +68,17 @@ import (
 //
 // # Concurrency
 //
-// SaveWorld reads the World's aggregate maps directly. The caller must
-// ensure the World is quiesced for the duration of the call — i.e. invoke
-// it from the world goroutine (between command applications) or under
-// whatever mutex the entrypoint uses to serialize writes against the
-// checkpoint. Wiring that into a periodic checkpoint timer is the engine-
-// entrypoint slice's job, not this orchestrator's.
-func SaveWorld(ctx context.Context, repo sim.Repository, w *sim.World) error {
-	if w == nil {
-		return fmt.Errorf("pg SaveWorld: nil world")
+// SaveWorld reads a sim.CheckpointSnapshot — a full-fidelity, immutable
+// deep-clone of the seven aggregates built by World.BuildCheckpointSnapshot
+// on the world goroutine. Because the snapshot is frozen and disconnected
+// from live world state, the slow Tx here runs safely OFF the world
+// goroutine while the world keeps processing commands. The quiescence point
+// is the in-memory clone, not this multi-second write. sim.RunCheckpointer
+// (the periodic driver) and the entrypoint's shutdown path compose the
+// clone-then-write; see engine/sim/checkpoint.go.
+func SaveWorld(ctx context.Context, repo sim.Repository, cp *sim.CheckpointSnapshot) error {
+	if cp == nil {
+		return fmt.Errorf("pg SaveWorld: nil checkpoint snapshot")
 	}
 
 	tx, err := repo.Begin(ctx)
@@ -92,25 +96,25 @@ func SaveWorld(ctx context.Context, repo sim.Repository, w *sim.World) error {
 		}
 	}()
 
-	if err := repo.VillageObjects.SaveSnapshot(ctx, tx, w.VillageObjects); err != nil {
+	if err := repo.VillageObjects.SaveSnapshot(ctx, tx, cp.VillageObjects); err != nil {
 		return fmt.Errorf("pg SaveWorld: VillageObjects.SaveSnapshot: %w", err)
 	}
-	if err := repo.Structures.SaveSnapshot(ctx, tx, w.Structures); err != nil {
+	if err := repo.Structures.SaveSnapshot(ctx, tx, cp.Structures); err != nil {
 		return fmt.Errorf("pg SaveWorld: Structures.SaveSnapshot: %w", err)
 	}
-	if err := repo.Huddles.SaveSnapshot(ctx, tx, w.Huddles); err != nil {
+	if err := repo.Huddles.SaveSnapshot(ctx, tx, cp.Huddles); err != nil {
 		return fmt.Errorf("pg SaveWorld: Huddles.SaveSnapshot: %w", err)
 	}
-	if err := repo.Scenes.SaveSnapshot(ctx, tx, w.Scenes); err != nil {
+	if err := repo.Scenes.SaveSnapshot(ctx, tx, cp.Scenes); err != nil {
 		return fmt.Errorf("pg SaveWorld: Scenes.SaveSnapshot: %w", err)
 	}
-	if err := repo.Actors.SaveSnapshot(ctx, tx, w.Actors); err != nil {
+	if err := repo.Actors.SaveSnapshot(ctx, tx, cp.Actors); err != nil {
 		return fmt.Errorf("pg SaveWorld: Actors.SaveSnapshot: %w", err)
 	}
-	if err := repo.Orders.SaveSnapshot(ctx, tx, w.Orders); err != nil {
+	if err := repo.Orders.SaveSnapshot(ctx, tx, cp.Orders); err != nil {
 		return fmt.Errorf("pg SaveWorld: Orders.SaveSnapshot: %w", err)
 	}
-	if err := repo.Environment.SaveSnapshot(ctx, tx, w.Environment, w.Phase); err != nil {
+	if err := repo.Environment.SaveSnapshot(ctx, tx, cp.Environment, cp.Phase); err != nil {
 		return fmt.Errorf("pg SaveWorld: Environment.SaveSnapshot: %w", err)
 	}
 
