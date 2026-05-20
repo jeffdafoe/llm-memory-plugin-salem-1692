@@ -15,7 +15,10 @@ package sim
 // admin endpoints live in the HTTP-layer port; this file is the runtime
 // data model only.
 
-// AssetID is a slug-style identifier ("tree-maple", "stall-wood", etc.).
+// AssetID is the asset.id UUID (the table's primary key), held as a
+// string. VillageObject.AssetID references it and the asset_state /
+// asset_slot child rows FK it. The human-readable slug lives in
+// Asset.Name, not here.
 type AssetID string
 
 // AssetStateID is the SERIAL primary key from asset_state.
@@ -90,6 +93,18 @@ type Asset struct {
 	// the three modes (random_per_object / random_per_asset /
 	// deterministic) and their semantics.
 	RotationAlgo string
+
+	// OccupiedMinCount / OccupiedNightOnly refine structure occupancy
+	// state-flipping (ZBBS-070) for assets with 'occupied'/'unoccupied'
+	// tagged states. OccupiedMinCount is the minimum headcount inside
+	// before the structure flips to its occupied state (tavern sets 2 so
+	// the keeper alone doesn't light the hearth). OccupiedNightOnly
+	// suppresses the occupied state during day phase regardless of
+	// headcount (tavern goes dark at dawn). The v2 occupancy reactor that
+	// reads these is still stubbed (see world_phase.go); loaded now so the
+	// port doesn't have to re-touch this repo.
+	OccupiedMinCount  int
+	OccupiedNightOnly bool
 
 	Pack   *TilesetPack
 	States []AssetState
