@@ -53,7 +53,6 @@ func SeedItemKinds() map[sim.ItemKind]*sim.ItemKindDef {
 			Name:         "ale",
 			DisplayLabel: "Ale",
 			Category:     sim.ItemCategoryDrink,
-			Price:        2,
 			SortOrder:    10,
 			Satisfies: []sim.ItemSatisfaction{
 				{Attribute: "thirst", Immediate: 4},
@@ -64,7 +63,6 @@ func SeedItemKinds() map[sim.ItemKind]*sim.ItemKindDef {
 			Name:         "water",
 			DisplayLabel: "Water",
 			Category:     sim.ItemCategoryDrink,
-			Price:        0,
 			SortOrder:    20,
 			Satisfies: []sim.ItemSatisfaction{
 				{Attribute: "thirst", Immediate: 8},
@@ -74,7 +72,6 @@ func SeedItemKinds() map[sim.ItemKind]*sim.ItemKindDef {
 			Name:         "bread",
 			DisplayLabel: "Bread",
 			Category:     sim.ItemCategoryFood,
-			Price:        2,
 			SortOrder:    120,
 			Satisfies: []sim.ItemSatisfaction{
 				{Attribute: "hunger", Immediate: 8},
@@ -91,7 +88,6 @@ func SeedItemKinds() map[sim.ItemKind]*sim.ItemKindDef {
 			Name:                  "stew",
 			DisplayLabel:          "Stew",
 			Category:              sim.ItemCategoryFood,
-			Price:                 3,
 			SortOrder:             110,
 			ConsumeDwellNarration: "This stew looks really good. You'll need some time to enjoy it properly.",
 			Satisfies: []sim.ItemSatisfaction{
@@ -108,7 +104,6 @@ func SeedItemKinds() map[sim.ItemKind]*sim.ItemKindDef {
 			Name:         "wheat",
 			DisplayLabel: "Wheat",
 			Category:     sim.ItemCategoryMaterial,
-			Price:        1,
 			SortOrder:    210,
 			// No Satisfies — materials are not consumable on their own.
 		},

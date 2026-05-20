@@ -87,7 +87,7 @@ func buildOrderTestWorld(t *testing.T) (*sim.World, func()) {
 	// Seed the ItemKinds catalog with a stew entry. Direct mutation is
 	// safe pre-Run.
 	w.ItemKinds = map[sim.ItemKind]*sim.ItemKindDef{
-		"stew": {Name: "stew", DisplayLabel: "stew", Category: sim.ItemCategoryFood, Price: 4},
+		"stew": {Name: "stew", DisplayLabel: "stew", Category: sim.ItemCategoryFood},
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

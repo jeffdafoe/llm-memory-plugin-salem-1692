@@ -12,12 +12,10 @@ import (
 // path (admin edits write directly to the underlying tables; the world
 // rebuilds the map wholesale via LoadAll on SIGHUP).
 //
-// ItemKindDef.Price is intentionally left at its zero value: prod
-// item_kind has no price column (the sim type's "v1's item_kind.price"
-// doc comment is stale — that column never existed in the schema), and
-// nothing reads ItemKindDef.Price at runtime. Sale-boundary pricing
-// comes from ItemRecipe wholesale/retail and the pay_ledger-derived
-// PriceBook.
+// Pricing is not catalog-static: item_kind has no price column. Prices
+// are negotiated/quoted dynamically (NPC speak-price → scene_quote,
+// enforced at pay) anchored on ItemRecipe wholesale/retail, with the
+// pay_ledger-derived PriceBook as observed history.
 type ItemKindsRepo struct {
 	pool Pool
 }
