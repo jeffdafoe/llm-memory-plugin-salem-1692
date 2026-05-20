@@ -67,6 +67,13 @@ func TestBuildCheckpointSnapshot_FullFidelityAndIsolation(t *testing.T) {
 	w.VillageObjects = map[sim.VillageObjectID]*sim.VillageObject{
 		"obj1": {ID: "obj1", AssetID: "asset-x", EntryPolicy: sim.EntryPolicyOpen},
 	}
+	// Order is the one checkpoint aggregate without a repo/mem roundtrip
+	// aliasing test, so cover its nested refs (ConsumerIDs slice +
+	// DeliveredAt *time.Time) directly at this boundary.
+	deliveredAt := time.Date(2026, 5, 20, 13, 0, 0, 0, time.UTC)
+	w.Orders = map[sim.OrderID]*sim.Order{
+		1: {ID: 1, ConsumerIDs: []sim.ActorID{"buyer1"}, DeliveredAt: &deliveredAt},
+	}
 
 	cp := w.BuildCheckpointSnapshot()
 
@@ -84,6 +91,16 @@ func TestBuildCheckpointSnapshot_FullFidelityAndIsolation(t *testing.T) {
 	if cp.VillageObjects["obj1"] == nil {
 		t.Fatal("checkpoint missing village_object obj1")
 	}
+	ord := cp.Orders[1]
+	if ord == nil {
+		t.Fatal("checkpoint missing order ord1")
+	}
+	if len(ord.ConsumerIDs) != 1 || ord.ConsumerIDs[0] != "buyer1" {
+		t.Errorf("Order.ConsumerIDs = %v, want [buyer1]", ord.ConsumerIDs)
+	}
+	if ord.DeliveredAt == nil || !ord.DeliveredAt.Equal(deliveredAt) {
+		t.Errorf("Order.DeliveredAt = %v, want %v", ord.DeliveredAt, deliveredAt)
+	}
 	if cp.Phase != sim.PhaseDay {
 		t.Errorf("Phase = %q, want %q", cp.Phase, sim.PhaseDay)
 	}
@@ -93,10 +110,15 @@ func TestBuildCheckpointSnapshot_FullFidelityAndIsolation(t *testing.T) {
 
 	// Isolation — mutate the live world every way that would alias a shallow
 	// copy: value in a map, a byte inside a nested slice, a field on a
-	// pointed-to aggregate, and deleting a whole map entry.
+	// pointed-to aggregate, the time a *time.Time points at, and deleting a
+	// whole map entry. wantDelivered captures the original time value before
+	// the mutation zeroes it through the (aliased) source pointer.
+	wantDelivered := deliveredAt
 	w.Actors["hannah"].Inventory["bread"] = 99
 	w.Actors["hannah"].Attributes["mood"][0] = 'X'
 	w.VillageObjects["obj1"].EntryPolicy = sim.EntryPolicyClosed
+	w.Orders[1].ConsumerIDs[0] = "mutated"
+	*w.Orders[1].DeliveredAt = time.Time{}
 	delete(w.Actors, "hannah")
 
 	if cp.Actors["hannah"] == nil {
@@ -110,6 +132,12 @@ func TestBuildCheckpointSnapshot_FullFidelityAndIsolation(t *testing.T) {
 	}
 	if cp.VillageObjects["obj1"].EntryPolicy != sim.EntryPolicyOpen {
 		t.Errorf("snapshot village_object EntryPolicy changed after live mutation (aggregate not cloned)")
+	}
+	if cp.Orders[1].ConsumerIDs[0] != "buyer1" {
+		t.Errorf("snapshot Order.ConsumerIDs[0] = %q after live mutation, want buyer1 (slice not cloned)", cp.Orders[1].ConsumerIDs[0])
+	}
+	if !cp.Orders[1].DeliveredAt.Equal(wantDelivered) {
+		t.Errorf("snapshot Order.DeliveredAt changed after live mutation (*time.Time not cloned)")
 	}
 }
 
