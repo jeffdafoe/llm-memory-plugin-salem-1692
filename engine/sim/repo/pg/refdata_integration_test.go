@@ -187,8 +187,8 @@ func TestIntegration_Recipes_InvalidInputQtyErrors(t *testing.T) {
 // --- ItemKinds ------------------------------------------------------------
 
 // I1 happy path — defs join their item_satisfies effects (amount-DESC
-// order), dwell triple round-trips, NULL narration → "", Price stays 0
-// (no source column), and a material with no effects is non-consumable.
+// order), dwell triple round-trips, NULL narration → "", and a material
+// with no effects is non-consumable.
 func TestIntegration_ItemKinds_LoadAllHappyPath(t *testing.T) {
 	f := newFixture(t)
 	ctx := t.Context()
@@ -224,9 +224,6 @@ func TestIntegration_ItemKinds_LoadAllHappyPath(t *testing.T) {
 	}
 	if ale.DisplayLabel != "Ale" || ale.Category != sim.ItemCategoryDrink || ale.SortOrder != 2 {
 		t.Errorf("ale fields: %+v", ale)
-	}
-	if ale.Price != 0 {
-		t.Errorf("ale.Price should be 0 (no source column in prod), got %d", ale.Price)
 	}
 	if ale.ConsumeDwellNarration != "" {
 		t.Errorf("ale narration should be empty for NULL, got %q", ale.ConsumeDwellNarration)

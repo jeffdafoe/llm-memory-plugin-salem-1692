@@ -86,9 +86,6 @@ func TestLoadWorldItemKinds(t *testing.T) {
 	if ale.Category != sim.ItemCategoryDrink {
 		t.Errorf("ale.Category = %q, want drink", ale.Category)
 	}
-	if ale.Price != 2 {
-		t.Errorf("ale.Price = %d, want 2", ale.Price)
-	}
 	if got, want := findSatisfies(t, ale, "thirst").Immediate, 4; got != want {
 		t.Errorf("ale.Satisfies[thirst].Immediate = %d, want %d", got, want)
 	}
@@ -167,7 +164,7 @@ func TestItemKindsRepo_SeedLoadAll(t *testing.T) {
 	r := mem.NewItemKindsRepo()
 	r.Seed(map[sim.ItemKind]*sim.ItemKindDef{
 		"bread": {
-			Name: "bread", DisplayLabel: "Bread", Category: sim.ItemCategoryFood, Price: 2,
+			Name: "bread", DisplayLabel: "Bread", Category: sim.ItemCategoryFood,
 			Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 8}},
 		},
 	})

@@ -27,12 +27,6 @@ type ItemKindDef struct {
 	// misspellings fail to compile.
 	Category ItemCategory
 
-	// Price is the default per-unit price in coins. v1's item_kind.price.
-	// Recipe pricing (ItemRecipe.WholesalePrice / RetailPrice) overrides at
-	// the sale boundary for items that have a recipe; Price is the catalog
-	// default for everything else.
-	Price int
-
 	// SortOrder is the UI sort hint (low → high). v1's item_kind.sort_order.
 	SortOrder int
 
