@@ -764,7 +764,6 @@ func LoadWorld(ctx context.Context, repo Repository) (*World, error) {
 	w.Environment = env
 	w.Phase = phase
 	w.Settings = settings
-	normalizeOutdoorSceneRadius(&w.Settings)
 
 	assets, err := repo.Assets.LoadAll(ctx)
 	if err != nil {
@@ -802,6 +801,29 @@ func LoadWorld(ctx context.Context, repo Repository) (*World, error) {
 	}
 	w.VillageObjects = villageObjects
 
+	w.FinalizeLoad(ctx)
+	return w, nil
+}
+
+// FinalizeLoad runs the post-load housekeeping that turns a freshly
+// populated World into a runnable one: index rebuild, reactor-state
+// reset, the restart-time expiry/re-stamp passes, sequence-counter
+// safety floors, the price-book seed, and the initial snapshot publish.
+//
+// Extracted from LoadWorld so the pg orchestrator (engine/sim/repo/pg)
+// can reuse this exact finalize sequence: it lives in a different
+// package and can't reach these unexported sim internals (rebuildIndices,
+// the restart* helpers, the seq counters, republish) directly. Keeping
+// the sequence in one place is the whole point — both LoadWorld and
+// pg.LoadWorld stay in lockstep as housekeeping evolves.
+//
+// Callers MUST invoke this only after every aggregate has loaded — and,
+// for pg.LoadWorld, after the cross-aggregate consistency checks and the
+// actor carry-forwards (reconcileActorHuddleMembership in particular,
+// since rebuildIndices reads actor.CurrentHuddleID).
+func (w *World) FinalizeLoad(ctx context.Context) {
+	normalizeOutdoorSceneRadius(&w.Settings)
+
 	w.rebuildIndices()
 	// Reactor state (warrants + in-flight + attempt-id + recent-tick ring)
 	// is ephemeral by design — payloads are interface-typed and weren't
@@ -821,9 +843,10 @@ func LoadWorld(ctx context.Context, repo Repository) (*World, error) {
 	// would stamp idle warrants on every actor simultaneously. See
 	// engine/sim/idle_backstop_commands.go.
 	w.LoadedAt = time.Now().UTC()
-	// Scene-quote restart housekeeping. No QuotesRepo exists yet
-	// (pg-impl deferred to cutover), so this loop iterates an empty
-	// map today. Implementation is correct for the future case where
+	// Scene-quote restart housekeeping. No QuotesRepo exists in the
+	// repository facade (Quotes load lands in a later slice), so this
+	// loop iterates an empty map today under both LoadWorld paths.
+	// Implementation is correct for the future case where
 	// quotes do load from a repo: any quote already past its
 	// ExpiresAt at restart is flipped to expired with ResolvedAt
 	// stamped, no event emitted (the original SceneQuoteCreated event
@@ -844,9 +867,10 @@ func LoadWorld(ctx context.Context, repo Repository) (*World, error) {
 			w.quoteSeq = uint64(id)
 		}
 	}
-	// Pay-ledger restart housekeeping. No PayLedgerRepo exists yet
-	// (pg-impl deferred to cutover), so this loop iterates an empty
-	// map today. Implementation is correct for the future case where
+	// Pay-ledger restart housekeeping. No PayLedgerRepo exists in the
+	// repository facade (PayLedger load lands in a later slice), so this
+	// loop iterates an empty map today under both LoadWorld paths.
+	// Implementation is correct for the future case where
 	// entries load from a repo: any pending entry already past its
 	// ExpiresAt at restart is flipped to expired with ResolvedAt
 	// stamped, no event emitted (the original PayOfferReceived event
@@ -876,10 +900,10 @@ func LoadWorld(ctx context.Context, repo Repository) (*World, error) {
 	// tryStampWarrant.
 	restartReStampPayOfferWarrants(w, time.Now())
 
-	// Order restart housekeeping (Phase 3 PR S6). No OrdersRepo exists
-	// yet (pg-impl deferred to cutover), so this loop iterates an empty
-	// map today. Implementation is correct for the future case where
-	// orders load from a repo: any Ready Order already past its
+	// Order restart housekeeping (Phase 3 PR S6). w.Orders is populated
+	// under pg.LoadWorld (OrdersRepo.LoadAll) and empty under sim.LoadWorld
+	// (the mem path doesn't load orders), so this pass is a no-op there and
+	// live under pg: any Ready Order already past its
 	// ExpiresAt at restart is flipped to Expired in-band, mirroring
 	// restartExpirePendingEntries' pay-ledger pattern. Active Ready
 	// orders survive the load with absolute ExpiresAt intact; the
@@ -909,14 +933,13 @@ func LoadWorld(ctx context.Context, repo Repository) (*World, error) {
 	// produces "ask the keeper" until the cascade subscriber re-
 	// populates the book through normal play. Surfaced via log so
 	// operator can spot a degraded restart in stderr.
-	if seedRecords, err := repo.Orders.LoadRecentPrices(ctx, time.Now().UTC().Add(-PriceBookSeedWindow), PriceBookRingCapacity); err != nil {
-		log.Printf("sim: LoadWorld price-book seed: %v (continuing with empty book)", err)
+	if seedRecords, err := w.repo.Orders.LoadRecentPrices(ctx, time.Now().UTC().Add(-PriceBookSeedWindow), PriceBookRingCapacity); err != nil {
+		log.Printf("sim: FinalizeLoad price-book seed: %v (continuing with empty book)", err)
 	} else {
 		w.SeedPriceBook(seedRecords)
 	}
 
 	w.republish()
-	return w, nil
 }
 
 // Run owns the world goroutine. Processes commands until ctx is cancelled
