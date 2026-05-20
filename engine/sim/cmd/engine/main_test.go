@@ -79,6 +79,15 @@ func TestRun_LifecycleAndFinalCheckpoint(t *testing.T) {
 		t.Fatal("run did not return within 5s of shutdown signal")
 	}
 
+	// run() must not return until the world goroutine has actually stopped
+	// (so the caller can safely tear down the pool). A command sent after
+	// return should fail rather than be serviced.
+	sctx, scancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer scancel()
+	if _, err := world.SendContext(sctx, sim.Command{Fn: func(*sim.World) (any, error) { return nil, nil }}); err == nil {
+		t.Error("world still processing commands after run() returned — run did not wait for world stop")
+	}
+
 	// The final checkpoint must have run during shutdown.
 	mu.Lock()
 	defer mu.Unlock()

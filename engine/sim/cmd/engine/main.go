@@ -32,6 +32,10 @@ import (
 // hang the process forever on the way out.
 const finalCheckpointTimeout = 30 * time.Second
 
+// worldStopTimeout bounds how long shutdown waits for World.Run to exit after
+// the world context is cancelled, so a stuck command loop can't hang exit.
+const worldStopTimeout = 10 * time.Second
+
 // runtime bundles the dependencies run needs. World is already loaded +
 // finalized by the caller (so the choice of repo / load orchestrator stays in
 // main, and tests can supply a mem-backed world). Save adapts the durable
@@ -141,8 +145,14 @@ func run(rt runtime, stop <-chan struct{}) error {
 	cascade.RegisterProductionCascades(worldCtx, rt.World, rt.LLMClient)
 
 	// Start the world command loop. This stamps world.LifecycleContext, which
-	// the sweep goroutines' AfterFunc re-arm chains key off.
-	go rt.World.Run(worldCtx)
+	// the sweep goroutines' AfterFunc re-arm chains key off. worldDone closes
+	// when Run returns — shutdown waits on it so the process doesn't tear down
+	// dependencies (the pgxpool) while the world goroutine is still unwinding.
+	worldDone := make(chan struct{})
+	go func() {
+		rt.World.Run(worldCtx)
+		close(worldDone)
+	}()
 
 	// Launch the worker pool (workers complete ticks via SendContext to world)
 	// and every periodic ticker/sweep, all bound to worldCtx.
@@ -174,8 +184,8 @@ func run(rt runtime, stop <-chan struct{}) error {
 	//  3. Force ONE final checkpoint with a fresh (uncancelled) context while
 	//     the world goroutine is still alive — this is the authoritative
 	//     persisted state.
-	//  4. Cancel worldCtx (via the deferred cancelWorld): world.Run returns
-	//     and every ticker/cascade stops.
+	//  4. Cancel worldCtx and WAIT for World.Run to exit: only then is it safe
+	//     for the caller to tear down the repo/pool.
 	cancelCheckpointer()
 	<-checkpointerDone
 
@@ -183,13 +193,26 @@ func run(rt runtime, stop <-chan struct{}) error {
 	tickPool.Wait()
 
 	finalCtx, cancelFinal := context.WithTimeout(context.Background(), finalCheckpointTimeout)
-	defer cancelFinal()
 	if err := sim.CheckpointNow(finalCtx, rt.World, rt.Save); err != nil {
 		// Don't fail the whole shutdown on a final-checkpoint error — the
 		// prior checkpoint is still intact. Log and proceed to stop the world.
 		log.Printf("engine: final checkpoint failed: %v", err)
 	} else {
 		log.Println("engine: final checkpoint written")
+	}
+	cancelFinal()
+
+	// Stop the world and block until Run has actually returned. cancelWorld is
+	// also deferred (cleanup for early returns before the world starts);
+	// calling it explicitly here makes the normal-path wait unambiguous. The
+	// tickers/cascades are keyed to worldCtx and exit alongside Run; none of
+	// them touch the repo directly (only the now-stopped checkpointer did), so
+	// waiting on Run is sufficient before the caller closes the pool.
+	cancelWorld()
+	select {
+	case <-worldDone:
+	case <-time.After(worldStopTimeout):
+		return fmt.Errorf("world did not stop within %s of cancellation", worldStopTimeout)
 	}
 
 	return nil
