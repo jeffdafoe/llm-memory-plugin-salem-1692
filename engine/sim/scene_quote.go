@@ -262,6 +262,13 @@ func effectiveSceneQuoteSweepCadence(s WorldSettings) time.Duration {
 // would have no causal anchor (intentional: quote warrants are
 // restart-noncritical per scene-quote-design § 7).
 //
+// DORMANT BY DESIGN: pending scene quotes are intentionally
+// restart-lossy (decided 2026-05-20 — see
+// work/tasks/payledger-restart-lossy/decision). There is no QuotesRepo
+// and none planned, so w.Quotes always starts empty and this never has
+// quotes to expire today. Kept because it encodes correct behavior if
+// the decision is ever reversed.
+//
 // MUST be called from inside LoadWorld (single-threaded, before
 // republish), or from inside a Command.Fn. ResolvedAt is stamped with
 // `now` to give admin queries an honest "found-expired-at-load"

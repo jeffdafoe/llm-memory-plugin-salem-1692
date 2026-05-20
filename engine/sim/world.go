@@ -377,12 +377,13 @@ type World struct {
 	// Mirrored by a per-scene reverse index at Scene.QuoteIDs (rebuilt
 	// at LoadWorld from this map; the canonical entries live here).
 	//
-	// Phase 3 PR S3 substrate. No checkpoint persistence layer yet —
-	// QuotesRepo lands at the pg-impl cutover. For now NewWorld /
-	// LoadWorld both start with an empty Quotes map, which is also
-	// the correct restart behavior: a pending quote crossing a
-	// restart should re-emit fresh via the next scene_quote tool
-	// call, not be resurrected with stale ExpiresAt.
+	// Phase 3 PR S3 substrate. No checkpoint persistence layer, and
+	// none planned — pending quotes are intentionally restart-lossy
+	// (decided 2026-05-20 — see work/tasks/payledger-restart-lossy/decision).
+	// NewWorld / LoadWorld both start with an empty Quotes map, which
+	// IS the intended restart behavior: a pending quote crossing a
+	// restart should re-emit fresh via the next scene_quote tool call,
+	// not be resurrected with stale ExpiresAt.
 	Quotes map[QuoteID]*SceneQuote
 
 	// PayLedger is the world-level flat map of all PayLedgerEntries
@@ -392,14 +393,18 @@ type World struct {
 	// pay_with_item(in_response_to=N).
 	//
 	// Phase 3 PR S4 substrate. Source of truth for the offer-side
-	// state machine; Postgres pay_ledger table is the best-effort
-	// downstream projection via PayLedgerSink (drift-recovered by
-	// admin reconciliation, not by command logic — see
-	// ledger-substrate-design § 10). No PayLedgerRepo yet — the
-	// pg-impl checkpoint layer lands at cutover. For now NewWorld /
-	// LoadWorld both start with an empty PayLedger map; restart
-	// re-engagement happens via the warrant re-stamp pass during
-	// LoadWorld.
+	// state machine. PayLedgerSink (interface in pay_ledger.go) is a
+	// best-effort downstream projection hook for admin/audit, but it
+	// has no pg implementation and pending entries are NOT persisted:
+	// pending pay_ledger entries are intentionally restart-lossy
+	// (decided 2026-05-20 — see work/tasks/payledger-restart-lossy/decision).
+	// There is no PayLedgerRepo and none planned, and pg.SaveWorld does
+	// not checkpoint pending entries. NewWorld / LoadWorld both start
+	// with an empty PayLedger map and stay that way until live commerce
+	// mints fresh entries; the LoadWorld restart re-stamp pass is
+	// dormant by design (nothing to re-stamp). Accepted entries that
+	// became Orders persist separately via OrdersRepo on the shared
+	// pay_ledger table.
 	PayLedger map[LedgerID]*PayLedgerEntry
 
 	// BusinessownerCooldowns is the per-(speaker, listener, trigger) gap
@@ -843,17 +848,20 @@ func (w *World) FinalizeLoad(ctx context.Context) {
 	// would stamp idle warrants on every actor simultaneously. See
 	// engine/sim/idle_backstop_commands.go.
 	w.LoadedAt = time.Now().UTC()
-	// Scene-quote restart housekeeping. No QuotesRepo exists in the
-	// repository facade (Quotes load lands in a later slice), so this
-	// loop iterates an empty map today under both LoadWorld paths.
-	// Implementation is correct for the future case where
-	// quotes do load from a repo: any quote already past its
-	// ExpiresAt at restart is flipped to expired with ResolvedAt
-	// stamped, no event emitted (the original SceneQuoteCreated event
-	// is gone, so a re-stamped expired event would have nothing to
-	// reference causally — restart-noncritical per the design pass).
-	// Active non-expired quotes survive with their absolute ExpiresAt
-	// intact; the sweep picks them up on its next pass.
+	// Scene-quote restart housekeeping. Pending scene quotes are
+	// intentionally restart-lossy (decided 2026-05-20 — see
+	// work/tasks/payledger-restart-lossy/decision): there is no
+	// QuotesRepo and none will be built, so w.Quotes always starts
+	// empty and this pass is DORMANT BY DESIGN — it iterates an empty
+	// map under both LoadWorld paths. Kept (not deleted) because it
+	// encodes correct behavior if that decision is ever reversed: any
+	// quote already past its ExpiresAt at restart would flip to expired
+	// with ResolvedAt stamped, no event emitted (the original
+	// SceneQuoteCreated event is gone, so a re-stamped expired event
+	// would have nothing to reference causally — restart-noncritical
+	// per scene-quote-design § 7). A pending quote crossing a restart
+	// is meant to re-emit fresh via the next scene_quote tool call, not
+	// be resurrected with stale ExpiresAt.
 	restartExpireScannedQuotes(w, time.Now())
 	// QuoteIDs reverse index is rebuilt from the canonical World.Quotes
 	// map so any drift loaded from a repo can't persist past startup.
@@ -867,18 +875,21 @@ func (w *World) FinalizeLoad(ctx context.Context) {
 			w.quoteSeq = uint64(id)
 		}
 	}
-	// Pay-ledger restart housekeeping. No PayLedgerRepo exists in the
-	// repository facade (PayLedger load lands in a later slice), so this
-	// loop iterates an empty map today under both LoadWorld paths.
-	// Implementation is correct for the future case where
-	// entries load from a repo: any pending entry already past its
-	// ExpiresAt at restart is flipped to expired with ResolvedAt
-	// stamped, no event emitted (the original PayOfferReceived event
-	// is gone — restart re-engagement happens via the warrant
-	// re-stamp pass which lands later in PR S4 alongside
-	// PayOfferWarrantReason). Active pending entries with ExpiresAt
-	// in the future survive the load with absolute ExpiresAt intact;
-	// the aging sweep picks them up on its first pass.
+	// Pay-ledger restart housekeeping. Pending pay_ledger entries are
+	// intentionally restart-lossy (decided 2026-05-20 — see
+	// work/tasks/payledger-restart-lossy/decision): there is no
+	// PayLedgerRepo and none will be built, pending entries are not
+	// checkpointed by pg.SaveWorld, so w.PayLedger always starts empty
+	// and this pass is DORMANT BY DESIGN — it iterates an empty map
+	// under both LoadWorld paths. Losing a pending entry on crash is
+	// materially harmless (architecture section 2 — a pending entry locks
+	// no coins, stock, or presence; accept_pay revalidates every gate),
+	// and the 3-minute TTL means most pending offers would have expired
+	// during any real downtime anyway. Kept (not deleted) because it
+	// encodes correct behavior if the decision is ever reversed: any
+	// pending entry already past its ExpiresAt would flip to expired
+	// with ResolvedAt stamped, no event emitted (the original
+	// PayOfferReceived event is gone, so the flip has no causal anchor).
 	restartExpirePendingEntries(w, time.Now())
 	// Ledger sequence counter safety floor: same posture as quoteSeq.
 	for id := range w.PayLedger {
@@ -886,18 +897,20 @@ func (w *World) FinalizeLoad(ctx context.Context) {
 			w.payLedgerSeq = uint64(id)
 		}
 	}
-	// Pay-offer warrant restart re-stamp (Phase 3 PR S4 step 7 — the
-	// load-bearing use case for the DedupDiscriminator interface
-	// migration). Walks pending ledger entries and stamps
-	// PayOfferWarrantReason on each seller so post-restart the seller's
-	// next reactor tick still perceives the offer. Discriminator =
-	// uint64(LedgerID), so a normal-flow PayOfferReceived emit that
-	// fires AFTER this stamp dedupes against it cleanly. Done after
-	// restartExpirePendingEntries so already-expired pendings are
-	// skipped. Subscribers haven't registered yet at LoadWorld time;
-	// that's fine — the re-stamp doesn't go through a subscriber, it
-	// reaches into the actor's warrant slice directly via
-	// tryStampWarrant.
+	// Pay-offer warrant restart re-stamp (Phase 3 PR S4 step 7).
+	// DORMANT BY DESIGN — pending pay_ledger entries are restart-lossy
+	// (decided 2026-05-20 — see work/tasks/payledger-restart-lossy/decision),
+	// so w.PayLedger is always empty here and there is nothing to
+	// re-stamp. Kept (not deleted) because it documents the load-bearing
+	// rationale for the WarrantReason.DedupDiscriminator migration: if
+	// pending entries were ever reloaded, this pass would walk them and
+	// stamp PayOfferWarrantReason on each seller so the seller's next
+	// reactor tick still perceives the offer, with Discriminator =
+	// uint64(LedgerID) so a normal-flow PayOfferReceived emit firing
+	// AFTER this stamp dedupes against it cleanly. It would run after
+	// restartExpirePendingEntries (so already-expired pendings are
+	// skipped) and reach the actor's warrant slice directly via
+	// tryStampWarrant (no subscriber needed).
 	restartReStampPayOfferWarrants(w, time.Now())
 
 	// Order restart housekeeping (Phase 3 PR S6). w.Orders is populated

@@ -316,6 +316,13 @@ func effectivePayLedgerSweepCadence(s WorldSettings) time.Duration {
 // would have no causal anchor (mirrors the scene-quote
 // restartExpireScannedQuotes posture).
 //
+// DORMANT BY DESIGN: pending pay_ledger entries are intentionally
+// restart-lossy (decided 2026-05-20 — see
+// work/tasks/payledger-restart-lossy/decision). w.PayLedger always
+// starts empty, so this never has entries to expire today. Kept
+// because it encodes correct behavior if the decision is ever
+// reversed (a PayLedgerRepo is added).
+//
 // MUST be called from inside LoadWorld (single-threaded, before the
 // aging sweep starts), or from inside a Command.Fn. ResolvedAt is
 // stamped with `now` to give admin queries an honest
@@ -377,6 +384,15 @@ func (nullPayLedgerSink) Project(PayLedgerEntry) {}
 // PayOfferWarrantReason on the seller for every still-pending entry.
 // Phase 3 PR S4 step 7 — the load-bearing use case for the
 // DedupDiscriminator interface migration.
+//
+// DORMANT BY DESIGN: pending pay_ledger entries are intentionally
+// restart-lossy (decided 2026-05-20 — see
+// work/tasks/payledger-restart-lossy/decision), so w.PayLedger is
+// always empty here and there is nothing to re-stamp. Kept because it
+// documents the rationale the DedupDiscriminator migration exists to
+// support: were entries reloaded, this re-stamp keyed on
+// uint64(LedgerID) would dedupe cleanly against a normal-flow
+// PayOfferReceived emit firing after it.
 //
 // MUST be called from inside LoadWorld AFTER restartExpirePendingEntries
 // (so already-expired pendings are skipped) and AFTER subscribers have
