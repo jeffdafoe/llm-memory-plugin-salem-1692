@@ -10,9 +10,9 @@ import (
 
 // events_pay_with_item_test.go — PR S4 event family coverage. The
 // three events ship without any subscribers in this step; later steps
-// add the pay-offer warrant subscriber, the resolution warrant
-// subscriber, and the PayLedgerSink projection wiring. Until then
-// these tests pin the event shapes and the EventBase identity flow.
+// add the pay-offer warrant subscriber and the resolution warrant
+// subscriber. These tests pin the event shapes and the EventBase
+// identity flow.
 
 // Compile-time checks: pointer receivers on EventBase mean only
 // *ConcreteEvent satisfies sim.Event. A `var _ sim.Event = sim.PayOfferReceived{}`

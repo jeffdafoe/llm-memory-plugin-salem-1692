@@ -16,8 +16,8 @@ import (
 // events_pay_with_item.go) and the PR S3 scene_quote substrate. Mirrors
 // the established pattern from PR B (Pay) and PR S3 (SceneQuoteCreate):
 // every Command Fn re-validates everything its handler did, mutates on
-// the world goroutine, emits events, calls the projection sink, and
-// kicks off relationship writes via RecordInteraction.
+// the world goroutine, emits events, and kicks off relationship writes
+// via RecordInteraction.
 //
 // Design spec:
 //   - shared/tasks/engine-in-memory-rewrite/pay-with-item-architecture-design
@@ -41,10 +41,6 @@ import (
 //     layer's EntryPolicy + huddle co-presence already enforces that —
 //     a buyer not allowed inside the seller's shop can't share the
 //     seller's huddle, and the co-presence gate catches it.
-//
-//   - PayLedgerSink restart contract punted to admin-dashboard
-//     reconciliation. Every state transition calls Project() post-
-//     mutation; nothing more in S4.
 //
 //   - PayCountered owns the countered transition (separate event family
 //     from PayWithItemResolved). Per architecture § 10 + ledger-substrate
@@ -350,8 +346,6 @@ func PayWithItem(
 			entry.RootEventID = evt.RootEventID()
 			entry.SourceEventID = evt.EventID()
 
-			w.payLedgerSink.Project(*entry)
-
 			return PayWithItemResult{
 				LedgerID: id,
 				State:    PayLedgerStatePending,
@@ -569,8 +563,6 @@ func runPayWithItemFastPath(
 	entry.RootEventID = evt.RootEventID()
 	entry.SourceEventID = evt.EventID()
 
-	w.payLedgerSink.Project(*entry)
-
 	return PayWithItemResult{
 		LedgerID: id,
 		State:    PayLedgerStateAccepted,
@@ -611,10 +603,10 @@ func runPayWithItemFastPath(
 //
 // On all-pass: atomic coin debit + item transfer + ConsumeNow per-
 // consumer apply, flip entry.State to Accepted, emit
-// PayWithItemResolved{Accepted}, project to sink.
+// PayWithItemResolved{Accepted}.
 //
 // On gate 5-11 fail: flip entry to the specific terminal state, emit
-// PayWithItemResolved with matching TerminalState, project to sink. NOT
+// PayWithItemResolved with matching TerminalState. NOT
 // a tool error — the gate failure IS the terminal resolution. Returns
 // nil err with the PayLedgerEntry's new state so callers can inspect
 // the outcome.
@@ -741,7 +733,6 @@ func AcceptPay(callerID ActorID, ledgerID LedgerID, at time.Time) Command {
 			}
 			w.emit(evt)
 
-			w.payLedgerSink.Project(*entry)
 			return entry.State, nil
 		},
 	}
@@ -763,7 +754,7 @@ func AcceptPay(callerID ActorID, ledgerID LedgerID, at time.Time) Command {
 //
 // On all-pass: flip entry to Declined terminal, populate entry.Message
 // with the decline reason (trim + rune-truncate), emit
-// PayWithItemResolved{Declined}, project to sink. Returns the new state.
+// PayWithItemResolved{Declined}. Returns the new state.
 func DeclinePay(callerID ActorID, ledgerID LedgerID, reason string, at time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
@@ -813,7 +804,7 @@ func DeclinePay(callerID ActorID, ledgerID LedgerID, reason string, at time.Time
 // entry.CounterAmount with the seller's terms + entry.Message with
 // the trimmed/truncated counter text + entry.ResolvedAt, emit
 // PayCountered (NOT PayWithItemResolved — distinct event family per
-// EOS-26 architecture lock), project to sink.
+// EOS-26 architecture lock).
 //
 // PayCountered.OriginalAmount carries the buyer's original offer for
 // the buyer's perception prompt; CounterAmount carries the seller's
@@ -877,8 +868,6 @@ func CounterPay(callerID ActorID, ledgerID LedgerID, counterAmount int, message 
 			}
 			w.emit(evt)
 
-			w.payLedgerSink.Project(*entry)
-
 			// Bidirectional relationship writes (KindNPCShared gate
 			// filters which writes persist). Counter is a non-trivial
 			// social move — worth capturing on both sides.
@@ -913,7 +902,7 @@ func CounterPay(callerID ActorID, ledgerID LedgerID, counterAmount int, message 
 //
 // On all-pass: flip entry to WithdrawnByBuyer terminal, populate
 // entry.Message with the trimmed/truncated withdraw note, emit
-// PayWithItemResolved{WithdrawnByBuyer}, project to sink.
+// PayWithItemResolved{WithdrawnByBuyer}.
 func WithdrawPay(callerID ActorID, ledgerID LedgerID, message string, at time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
@@ -1115,10 +1104,9 @@ func allConsumersInHuddle(w *World, huddleID HuddleID, consumerIDs []ActorID) bo
 }
 
 // finalizePayLedgerTerminal flips entry to the given terminal state,
-// stamps ResolvedAt + Message, emits PayWithItemResolved, projects to
-// the sink, and returns the new state. Used by every terminal flip path
-// EXCEPT counter (which has its own event family and lives inline in
-// CounterPay).
+// stamps ResolvedAt + Message, emits PayWithItemResolved, and returns
+// the new state. Used by every terminal flip path EXCEPT counter
+// (which has its own event family and lives inline in CounterPay).
 //
 // Caller guarantees entry.State is currently Pending — this helper
 // performs no state-check itself.
@@ -1149,8 +1137,6 @@ func finalizePayLedgerTerminal(
 		At:             at,
 	}
 	w.emit(evt)
-
-	w.payLedgerSink.Project(*entry)
 
 	// Relationship writes for the decline path — both directions, so a
 	// shared-VA NPC's perception can later render "Bob declined my offer

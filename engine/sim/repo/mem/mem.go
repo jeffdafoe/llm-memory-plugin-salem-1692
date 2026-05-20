@@ -77,8 +77,8 @@ type Handles struct {
 
 // noopActionLog accepts appends silently; tests don't need to assert
 // action-log writes at the skeleton level. (Pay-ledger no longer goes
-// through the repo — it's substrate state with a separate best-effort
-// projection sink installed via World.SetPayLedgerSink.)
+// through the repo — it's substrate state with no durable backing;
+// pending entries are intentionally restart-lossy.)
 type noopActionLog struct{}
 
 func (noopActionLog) Append(_ context.Context, _ sim.ActionLogEntry) error { return nil }

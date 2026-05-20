@@ -5,8 +5,7 @@ import "time"
 // pay_ledger.go — Phase 3 PR S4 substrate. Carries the PayLedger
 // aggregate (offer-side state machine for the buyer-initiated
 // pay_with_item commerce flow), the per-entry state enum, the LedgerID
-// type, the deep-clone helper, the best-effort PayLedgerSink projection
-// interface, and the LoadWorld restart-expire helper.
+// type, the deep-clone helper, and the LoadWorld restart-expire helper.
 //
 // Design spec: shared/tasks/engine-in-memory-rewrite/pay-ledger-substrate-design
 // (settled 2026-05-16 EOS-24 — 11 substrate decisions). Parent
@@ -158,9 +157,11 @@ const PayLedgerTTLDefault = 3 * time.Minute
 const PayLedgerSweepCadenceDefault = 60 * time.Second
 
 // PayLedgerEntry is the in-memory state of one buyer-staked pay offer.
-// Lives in World.PayLedger keyed by ID. Survives checkpoint as part of
-// world state (per architecture § 5 — pay_ledger is part of the world,
-// Postgres is a best-effort projection via PayLedgerSink).
+// Lives in World.PayLedger keyed by ID. In-memory only — pending
+// entries are intentionally restart-lossy (no checkpoint, no projection
+// sink; see work/tasks/payledger-restart-lossy/decision). Accepted
+// entries that become Orders persist separately via OrdersRepo on the
+// shared pay_ledger table.
 //
 // Single-Message-three-meanings field choice: Message holds the
 // counter message (when State == Countered), the decline reason (when
@@ -345,40 +346,6 @@ func restartExpirePendingEntries(w *World, now time.Time) {
 		}
 	}
 }
-
-// PayLedgerSink is a best-effort projection of pay-ledger state to an
-// external store (admin / audit / Postgres pay_ledger table).
-// Implementations MUST NOT block the world goroutine — the typical
-// impl pushes onto a buffered channel and drains in a separate
-// goroutine. Errors are implementation-handled; sink failures never
-// propagate to commands.
-//
-// Project is invoked on every state transition: once at entry
-// creation (initial pending insert) and again at every terminal flip
-// (accepted / declined / countered / withdrawn_by_buyer / expired /
-// failed_*). Each call carries the full post-transition entry; the
-// impl handles upsert internally keyed on LedgerID.
-//
-// Drift-recovery is the admin tool's responsibility — periodically
-// compare Snapshot.PayLedger against the projection store and upsert
-// missing rows. The in-memory PayLedger is the source of truth;
-// projection failure is bounded to "admin view stale," never "data
-// lost from the world." Scheduled with the admin-dashboard PR; not
-// in scope for S4.
-//
-// nullPayLedgerSink{} is the default installed by NewWorld so
-// substrate tests + non-production builds run without a real
-// projection target wired up.
-type PayLedgerSink interface {
-	Project(entry PayLedgerEntry)
-}
-
-// nullPayLedgerSink is the no-op default sink. Installed by NewWorld
-// and restored by SetPayLedgerSink(nil) so the world is never carrying
-// a nil sink — every Project call site can invoke without a nil guard.
-type nullPayLedgerSink struct{}
-
-func (nullPayLedgerSink) Project(PayLedgerEntry) {}
 
 // restartReStampPayOfferWarrants walks World.PayLedger and stamps
 // PayOfferWarrantReason on the seller for every still-pending entry.

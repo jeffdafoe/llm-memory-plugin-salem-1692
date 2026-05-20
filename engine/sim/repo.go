@@ -25,9 +25,10 @@ type Repository struct {
 	// Event sinks — write-through per-event, NOT part of the checkpoint tx.
 	// agent-action-log is an audit trail appended outside the checkpoint.
 	// (Pay-ledger was originally framed as an event log here too; the
-	// PR S4 ledger-substrate redesign moved it onto World state with a
-	// best-effort projection sink installed via World.SetPayLedgerSink.
-	// See engine/sim/pay_ledger.go.)
+	// PR S4 ledger-substrate redesign moved it onto World state. Pending
+	// entries are now intentionally restart-lossy with no durable backing
+	// at all — see engine/sim/pay_ledger.go and
+	// work/tasks/payledger-restart-lossy/decision.)
 	ActionLog ActionLogSink
 
 	// TickTelemetry receives per-tick lifecycle records (Phase 2 PR 3a). The

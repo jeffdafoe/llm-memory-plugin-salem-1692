@@ -9,8 +9,7 @@ import (
 
 // TerminalOrderSink is the synchronous durable-write target for Order
 // terminal transitions. Implementations write the post-flip Order to
-// the durable store and return any error. Unlike PayLedgerSink (which
-// is best-effort, async, non-blocking), this sink IS allowed to block
+// the durable store and return any error. This sink IS allowed to block
 // the world goroutine — the design intent is write-through-then-prune
 // (Slice 6): the world commits the durable state before pruning the
 // in-memory entry from World.Orders, so a crash between the two leaves

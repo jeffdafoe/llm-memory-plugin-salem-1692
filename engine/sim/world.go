@@ -392,15 +392,13 @@ type World struct {
 	// counter_pay, and the buyer references in withdraw_pay /
 	// pay_with_item(in_response_to=N).
 	//
-	// Phase 3 PR S4 substrate. Source of truth for the offer-side
-	// state machine. PayLedgerSink (interface in pay_ledger.go) is a
-	// best-effort downstream projection hook for admin/audit, but it
-	// has no pg implementation and pending entries are NOT persisted:
-	// pending pay_ledger entries are intentionally restart-lossy
-	// (decided 2026-05-20 — see work/tasks/payledger-restart-lossy/decision).
-	// There is no PayLedgerRepo and none planned, and pg.SaveWorld does
-	// not checkpoint pending entries. NewWorld / LoadWorld both start
-	// with an empty PayLedger map and stay that way until live commerce
+	// Phase 3 PR S4 substrate. Sole source of truth for the offer-side
+	// state machine — there is no durable backing at all. Pending
+	// pay_ledger entries are intentionally restart-lossy (decided
+	// 2026-05-20 — see work/tasks/payledger-restart-lossy/decision):
+	// no PayLedgerRepo, no projection sink, and pg.SaveWorld does not
+	// checkpoint pending entries. NewWorld / LoadWorld both start with
+	// an empty PayLedger map and stay that way until live commerce
 	// mints fresh entries; the LoadWorld restart re-stamp pass is
 	// dormant by design (nothing to re-stamp). Accepted entries that
 	// became Orders persist separately via OrdersRepo on the shared
@@ -564,15 +562,6 @@ type World struct {
 	// World-goroutine-only (touched exclusively from inside Command.Fn).
 	orderSeq uint64
 
-	// payLedgerSink is the best-effort projection target for PayLedger
-	// state transitions. Never nil: NewWorld installs nullPayLedgerSink,
-	// SetPayLedgerSink(nil) restores it. The world goroutine invokes
-	// payLedgerSink.Project(entry) after every state transition; the
-	// impl is required not to block the goroutine (typical impl pushes
-	// onto a buffered channel and drains in a side goroutine). Sink
-	// failures never propagate to commands.
-	payLedgerSink PayLedgerSink
-
 	// terminalOrderSink is the synchronous durable-write target for Order
 	// terminal transitions (Slice 6 write-through-then-prune). Nil by
 	// default; SetTerminalOrderSink installs the pg impl at production
@@ -684,24 +673,10 @@ func NewWorld(repo Repository) *World {
 		Speech:            &SpeechHelper{},
 		cmds:              make(chan Command, 256),
 		tickAdmission:     alwaysAdmit{},
-		payLedgerSink:     nullPayLedgerSink{},
 		repo:              repo,
 	}
 	w.republish()
 	return w
-}
-
-// SetPayLedgerSink installs the projection target the world invokes on
-// every PayLedger state transition (pending creation + every terminal
-// flip). Nil restores nullPayLedgerSink so the field is never nil at
-// call sites. Mirrors SetTickAdmissionController's contract — safe to
-// call before Run, or from inside a Command.Fn. The impl is required
-// not to block the world goroutine; see PayLedgerSink doc.
-func (w *World) SetPayLedgerSink(s PayLedgerSink) {
-	if s == nil {
-		s = nullPayLedgerSink{}
-	}
-	w.payLedgerSink = s
 }
 
 // SetTerminalOrderSink installs the synchronous durable-write target the
