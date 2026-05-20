@@ -13,15 +13,15 @@ import (
 
 // LoadWorld orchestrates the pg-backed cold-start of a sim.World. Calls
 // each sub-repo's LoadAll in dependency order, validates cross-aggregate
-// invariants against the loaded set, and returns the populated World.
+// invariants against the loaded set, runs the actor carry-forwards, then
+// finalizes via World.FinalizeLoad and returns a runnable World.
 //
-// The function is intentionally INCOMPLETE today (Slice 14): it loads
-// primary state and runs the consistency checks, but does NOT perform
-// the post-load housekeeping that sim.LoadWorld does (rebuildIndices,
-// LoadedAt, restartExpire* passes, SeedPriceBook, republish). That
-// wiring lands at the main.go cutover slice. Until then this is the
-// canonical orchestration shape for cutover-prep tests; nobody Runs the
-// returned World yet.
+// Post-load housekeeping (index rebuild, restart expiry/re-stamp passes,
+// sequence-counter floors, price-book seed, snapshot publish) is shared
+// with sim.LoadWorld through World.FinalizeLoad, so both orchestrators
+// finalize identically. What still stands between this and a running
+// server is the engine entrypoint wiring (command channel, HTTP handlers,
+// checkpoint writer) plus Quotes/PayLedger load — each its own slice.
 //
 // # notImpl tolerance
 //
@@ -101,15 +101,20 @@ import (
 //     ActorsRepo loaded into Actor.Attributes (Slice 3 carry-forward;
 //     the pg layer stays a dumb mirror, projection logic lives here).
 //
-// # Out of scope (Slice 14)
+// # Out of scope
 //
-//   - main.go wiring.
+//   - Engine entrypoint wiring (command channel, HTTP handlers,
+//     checkpoint writer) — its own slice.
+//
+//   - Quotes / PayLedger load — no repo in the facade yet, so their
+//     restart passes inside FinalizeLoad iterate empty maps until those
+//     slices land.
 //
 //   - Snapshot-isolation Tx wrapping the multi-query load. Today's
 //     single-pool READ COMMITTED is safe because LoadWorld runs
 //     before the world goroutine starts and before any checkpoint
-//     writer can mutate these tables. Multi-process scenarios are
-//     post-cutover.
+//     writer can mutate these tables. Multi-process scenarios are a
+//     later concern.
 func LoadWorld(ctx context.Context, repo sim.Repository, requireAllImpl bool) (*sim.World, error) {
 	w := sim.NewWorld(repo)
 
@@ -275,6 +280,13 @@ func LoadWorld(ctx context.Context, repo sim.Repository, requireAllImpl bool) (*
 		// best-effort by design — never fails the load.
 		rebuildActorAttributeProjections(w.Actors)
 	}
+
+	// Post-load housekeeping shared with sim.LoadWorld (index rebuild,
+	// restart expiry/re-stamp passes, sequence-counter floors, price-book
+	// seed, snapshot publish). Runs last on purpose: rebuildIndices inside
+	// FinalizeLoad reads actor.CurrentHuddleID, which the carry-forwards
+	// above have just reconciled from canonical Huddle.Members.
+	w.FinalizeLoad(ctx)
 
 	return w, nil
 }
