@@ -249,6 +249,119 @@ func TestRestartExpirePendingEntries_ZeroExpiresAtLeftPending(t *testing.T) {
 	}
 }
 
+// TestEffectivePayLedgerTerminalRetention — default when unset, honors a
+// custom value at/above the floor, and re-asserts the
+// PayLedgerInResponseToWindow floor when configured shorter (so a
+// countered parent can never be reaped while still referenceable).
+func TestEffectivePayLedgerTerminalRetention(t *testing.T) {
+	cases := []struct {
+		name string
+		set  time.Duration
+		want time.Duration
+	}{
+		{"unset uses default", 0, sim.PayLedgerTerminalRetentionDefault},
+		{"negative uses default", -time.Minute, sim.PayLedgerTerminalRetentionDefault},
+		{"custom above floor honored", 3 * time.Hour, 3 * time.Hour},
+		{"too-short floored", 5 * time.Minute, sim.PayLedgerInResponseToWindow},
+		{"exactly floor honored", sim.PayLedgerInResponseToWindow, sim.PayLedgerInResponseToWindow},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sim.EffectivePayLedgerTerminalRetention(sim.WorldSettings{PayLedgerTerminalRetention: tc.set})
+			if got != tc.want {
+				t.Errorf("retention = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	// The default itself must never be below the floor.
+	if sim.PayLedgerTerminalRetentionDefault < sim.PayLedgerInResponseToWindow {
+		t.Errorf("default %v < in_response_to floor %v", sim.PayLedgerTerminalRetentionDefault, sim.PayLedgerInResponseToWindow)
+	}
+}
+
+// TestReapTerminalPayLedgerEntries — terminal entries older than the
+// retention window are removed; pending entries, recently-resolved
+// terminals, just-this-tick terminals, and zero-ResolvedAt terminals are
+// all left in place. Nil entries are swept defensively.
+func TestReapTerminalPayLedgerEntries(t *testing.T) {
+	repo, _ := mem.NewRepository()
+	w := sim.NewWorld(repo)
+	now := time.Now().UTC()
+	retention := sim.EffectivePayLedgerTerminalRetention(w.Settings) // default 1h
+
+	// 1: terminal, resolved well past retention → reaped.
+	w.PayLedger[1] = &sim.PayLedgerEntry{
+		ID: 1, State: sim.PayLedgerStateDeclined,
+		ResolvedAt: now.Add(-retention - time.Minute),
+	}
+	// 2: terminal, resolved within retention → survives.
+	w.PayLedger[2] = &sim.PayLedgerEntry{
+		ID: 2, State: sim.PayLedgerStateExpired,
+		ResolvedAt: now.Add(-retention + time.Minute),
+	}
+	// 3: pending → never reaped regardless of age.
+	w.PayLedger[3] = &sim.PayLedgerEntry{
+		ID: 3, State: sim.PayLedgerStatePending,
+		CreatedAt: now.Add(-24 * time.Hour),
+		ExpiresAt: now.Add(time.Minute),
+	}
+	// 4: terminal, resolved exactly now (just flipped this tick) → survives.
+	w.PayLedger[4] = &sim.PayLedgerEntry{
+		ID: 4, State: sim.PayLedgerStateAccepted,
+		ResolvedAt: now,
+	}
+	// 5: terminal but zero ResolvedAt → skipped (defensive).
+	w.PayLedger[5] = &sim.PayLedgerEntry{
+		ID: 5, State: sim.PayLedgerStateWithdrawnByBuyer,
+	}
+	// 6: nil entry → deleted.
+	w.PayLedger[6] = nil
+
+	sim.ReapTerminalPayLedgerEntries(w, now)
+
+	if _, ok := w.PayLedger[1]; ok {
+		t.Error("entry 1 (old terminal) should have been reaped")
+	}
+	if _, ok := w.PayLedger[2]; !ok {
+		t.Error("entry 2 (recent terminal) should survive")
+	}
+	if _, ok := w.PayLedger[3]; !ok {
+		t.Error("entry 3 (pending) should survive")
+	}
+	if _, ok := w.PayLedger[4]; !ok {
+		t.Error("entry 4 (resolved this tick) should survive")
+	}
+	if _, ok := w.PayLedger[5]; !ok {
+		t.Error("entry 5 (zero ResolvedAt) should be skipped, not reaped")
+	}
+	if _, ok := w.PayLedger[6]; ok {
+		t.Error("entry 6 (nil) should have been deleted")
+	}
+}
+
+// TestReapTerminalPayLedgerEntries_CounteredFloorProtection — even with a
+// misconfigured sub-floor retention setting, a countered parent resolved
+// inside the in_response_to window is NOT reaped, because the effective
+// retention is floored at PayLedgerInResponseToWindow. Reaping it would
+// dangle a buyer's pending in_response_to follow-up.
+func TestReapTerminalPayLedgerEntries_CounteredFloorProtection(t *testing.T) {
+	repo, _ := mem.NewRepository()
+	w := sim.NewWorld(repo)
+	w.Settings.PayLedgerTerminalRetention = time.Nanosecond // absurdly short
+	now := time.Now().UTC()
+
+	// Countered parent resolved 30 min ago — well inside the 1h
+	// in_response_to window, so still referenceable.
+	w.PayLedger[1] = &sim.PayLedgerEntry{
+		ID: 1, State: sim.PayLedgerStateCountered,
+		ResolvedAt: now.Add(-30 * time.Minute),
+	}
+	sim.ReapTerminalPayLedgerEntries(w, now)
+	if _, ok := w.PayLedger[1]; !ok {
+		t.Error("countered parent inside in_response_to window was reaped; the floor must protect it")
+	}
+}
+
 // TestSnapshot_PayLedgerIsolation — mutating a PayLedger entry after
 // republish must NOT leak to the published snapshot. The snapshot is
 // the contract surface for admin readers / reconciliation jobs, so

@@ -262,8 +262,16 @@ type WorldSettings struct {
 	// World.PayLedger for expired pending entries. Default 60s —
 	// matches the scene-quote sweep cadence so admin tuning sees one
 	// mental model.
-	PayLedgerTTL          time.Duration
-	PayLedgerSweepCadence time.Duration
+	//
+	// PayLedgerTerminalRetention: how long a terminal entry lingers in
+	// World.PayLedger before the sweep reaps it. Bounds the otherwise-
+	// unbounded growth of the offer-side map (terminal entries are never
+	// otherwise removed). Default 1h; floored at PayLedgerInResponseToWindow
+	// so a countered parent is never reaped while still referenceable via
+	// in_response_to. See pay_ledger.go.
+	PayLedgerTTL               time.Duration
+	PayLedgerSweepCadence      time.Duration
+	PayLedgerTerminalRetention time.Duration
 
 	// Order substrate tunables (Phase 3 PR S6). Both fall back to
 	// order.go's *Default constants when zero. The order TTL is the
