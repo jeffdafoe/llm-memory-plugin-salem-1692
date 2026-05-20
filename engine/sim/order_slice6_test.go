@@ -147,10 +147,8 @@ func TestFinalizeOrderTerminal_NoSinkLeavesEntry(t *testing.T) {
 
 // TestSetTerminalOrderSink_NilClears — passing nil clears the field
 // back to the legacy no-prune behavior, mirroring "test installs
-// sink, then a teardown nils it" patterns. Different from
-// SetPayLedgerSink (which installs nullPayLedgerSink on nil) — the
-// terminal sink has no null impl, and finalizeOrderTerminal nil-checks
-// at the call site.
+// sink, then a teardown nils it" patterns. The terminal sink has no
+// null impl, so finalizeOrderTerminal nil-checks at the call site.
 func TestSetTerminalOrderSink_NilClears(t *testing.T) {
 	repo, _ := mem.NewRepository()
 	w := sim.NewWorld(repo)

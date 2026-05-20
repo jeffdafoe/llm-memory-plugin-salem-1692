@@ -277,9 +277,6 @@ func RebuildSceneQuoteIndexForTest(w *World) { rebuildSceneQuoteIndex(w) }
 // re-runs LoadWorld's counter-safety loop against the current
 // World.PayLedger so tests can simulate "loaded from a future
 // PayLedgerRepo with high-water IDs but a stale counter."
-// InvokePayLedgerSink calls through to the installed sink's Project so
-// the SetPayLedgerSink(nil) restoration test can verify the field is
-// never nil at call sites.
 func NextLedgerSeq(w *World) LedgerID { return w.nextLedgerSeq() }
 
 // RestartReStampPayOfferWarrants exposes the LoadWorld pay-offer
@@ -292,7 +289,6 @@ func EffectivePayLedgerSweepCadence(s WorldSettings) time.Duration {
 	return effectivePayLedgerSweepCadence(s)
 }
 func RestartExpirePendingEntries(w *World, now time.Time) { restartExpirePendingEntries(w, now) }
-func InvokePayLedgerSink(w *World, entry PayLedgerEntry)  { w.payLedgerSink.Project(entry) }
 
 // ApplyPayLedgerCounterSafetyFloor re-runs the floor loop LoadWorld
 // performs after loading PayLedger entries from a repo. Used by the

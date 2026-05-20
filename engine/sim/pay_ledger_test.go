@@ -17,8 +17,6 @@ import (
 //   - restartExpirePendingEntries state-machine flip + non-pending skip.
 //   - Snapshot.PayLedger deep-clone isolation through republish.
 //   - LoadWorld pay-ledger counter safety floor.
-//   - SetPayLedgerSink nil restoration.
-//   - nullPayLedgerSink no-op.
 //
 // Command Fn coverage (pay_with_item / accept_pay / decline_pay /
 // counter_pay / withdraw_pay) lands in a later test file alongside
@@ -324,53 +322,6 @@ func TestLoadWorld_LedgerCounterSafetyFloor_NoEntries(t *testing.T) {
 	if got := sim.PayLedgerSeqForTest(w); got != 0 {
 		t.Errorf("payLedgerSeq with empty PayLedger = %d, want 0", got)
 	}
-}
-
-// TestSetPayLedgerSink_NilRestoresNull — passing nil to the setter
-// installs the no-op default rather than nilling the field. Ensures
-// every Project call site can invoke without a nil guard.
-func TestSetPayLedgerSink_NilRestoresNull(t *testing.T) {
-	repo, _ := mem.NewRepository()
-	w := sim.NewWorld(repo)
-	w.SetPayLedgerSink(&recordingPayLedgerSink{})
-	w.SetPayLedgerSink(nil) // must NOT nil the field
-
-	// Verify Project doesn't panic — works only if SetPayLedgerSink
-	// installed nullPayLedgerSink (not nil).
-	defer func() {
-		if r := recover(); r != nil {
-			t.Errorf("Project on nil-reset sink panicked: %v", r)
-		}
-	}()
-	sim.InvokePayLedgerSink(w, sim.PayLedgerEntry{ID: 1})
-}
-
-// TestSetPayLedgerSink_HonorsCustom — a non-nil sink installed via the
-// setter receives subsequent Project calls.
-func TestSetPayLedgerSink_HonorsCustom(t *testing.T) {
-	repo, _ := mem.NewRepository()
-	w := sim.NewWorld(repo)
-	sink := &recordingPayLedgerSink{}
-	w.SetPayLedgerSink(sink)
-	sim.InvokePayLedgerSink(w, sim.PayLedgerEntry{ID: 99, State: sim.PayLedgerStatePending})
-	if len(sink.calls) != 1 {
-		t.Fatalf("recording sink got %d Project calls, want 1", len(sink.calls))
-	}
-	if sink.calls[0].ID != 99 {
-		t.Errorf("recorded entry ID = %d, want 99", sink.calls[0].ID)
-	}
-}
-
-// recordingPayLedgerSink — minimal test impl. Records every Project
-// call; pointer receiver because the recordings need to persist
-// across the value-copy at interface boxing time (Project takes
-// PayLedgerEntry by value, but the sink itself must retain calls).
-type recordingPayLedgerSink struct {
-	calls []sim.PayLedgerEntry
-}
-
-func (s *recordingPayLedgerSink) Project(entry sim.PayLedgerEntry) {
-	s.calls = append(s.calls, entry)
 }
 
 // ---- PayOfferWarrantReason — the load-bearing piece of the PR S4

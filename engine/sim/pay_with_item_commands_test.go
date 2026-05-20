@@ -16,9 +16,9 @@ import (
 // DeclinePay, CounterPay, WithdrawPay.
 //
 // Handler-side decode + bounds tests live in handlers/pay_with_item_test.go
-// (later step). Substrate-only tests (clone, sequence, sink, restart
-// helpers) live in pay_ledger_test.go and were locked in the PR S4
-// substrate commit.
+// (later step). Substrate-only tests (clone, sequence, restart helpers)
+// live in pay_ledger_test.go and were locked in the PR S4 substrate
+// commit.
 
 // pwiActor — minimal actor seed for pay-with-item Command tests. Mirrors
 // quoteTestActor + payActorSpec; bundling fields for both because S4
@@ -140,32 +140,6 @@ func capturePayWithItemEvents(t *testing.T, w *sim.World) *pwiEvents {
 	return out
 }
 
-// pwiSinkRecorder is a sink that records every Project call. Used by
-// tests that need to verify the projection contract fires on every
-// state transition.
-type pwiSinkRecorder struct {
-	calls []sim.PayLedgerEntry
-}
-
-func (s *pwiSinkRecorder) Project(entry sim.PayLedgerEntry) {
-	s.calls = append(s.calls, entry)
-}
-
-// installSinkRecorder attaches a fresh recorder to the world and returns
-// it. Mirrors capturePayWithItemEvents's "drive on the world goroutine"
-// shape.
-func installSinkRecorder(t *testing.T, w *sim.World) *pwiSinkRecorder {
-	t.Helper()
-	sink := &pwiSinkRecorder{}
-	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		world.SetPayLedgerSink(sink)
-		return nil, nil
-	}}); err != nil {
-		t.Fatalf("installSinkRecorder: %v", err)
-	}
-	return sink
-}
-
 // readPayLedger returns a snapshot of World.PayLedger for inspection,
 // taken on the world goroutine. Terminal-state entries stay in the map
 // (the sweep doesn't remove them), so tests can assert on the final
@@ -239,7 +213,6 @@ func TestPayWithItem_SlowPath_HappyPath(t *testing.T) {
 	defer stop()
 
 	events := capturePayWithItemEvents(t, w)
-	sink := installSinkRecorder(t, w)
 	at := time.Now().UTC()
 
 	res, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, 0, 0, "", at))
@@ -270,13 +243,6 @@ func TestPayWithItem_SlowPath_HappyPath(t *testing.T) {
 	}
 	if len(events.Resolved) != 0 {
 		t.Errorf("PayWithItemResolved emitted on slow-path mint: %v", events.Resolved)
-	}
-
-	if len(sink.calls) != 1 {
-		t.Fatalf("sink calls = %d, want 1", len(sink.calls))
-	}
-	if sink.calls[0].State != sim.PayLedgerStatePending {
-		t.Errorf("sink call State = %q, want pending", sink.calls[0].State)
 	}
 
 	// No coin or inventory movement on slow-path mint.
@@ -663,7 +629,6 @@ func TestPayWithItem_FastPath_HappyPath_Takeaway(t *testing.T) {
 	w, stop, at := buildFastPathFixture(t, 7)
 	defer stop()
 	events := capturePayWithItemEvents(t, w)
-	sink := installSinkRecorder(t, w)
 
 	res, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, 7, 0, "", at))
 	if err != nil {
@@ -687,14 +652,6 @@ func TestPayWithItem_FastPath_HappyPath_Takeaway(t *testing.T) {
 	}
 	if events.Resolved[0].TerminalState != sim.PayTerminalStateAccepted {
 		t.Errorf("TerminalState = %q, want accepted", events.Resolved[0].TerminalState)
-	}
-
-	// Sink receives ONE call (terminal state directly).
-	if len(sink.calls) != 1 {
-		t.Fatalf("sink calls = %d, want 1", len(sink.calls))
-	}
-	if sink.calls[0].State != sim.PayLedgerStateAccepted {
-		t.Errorf("sink call State = %q, want accepted", sink.calls[0].State)
 	}
 
 	// Coin transfer landed. Post-S6: goods stay in seller's inventory
@@ -934,7 +891,6 @@ func TestAcceptPay_HappyPath(t *testing.T) {
 		SceneID: "sc1", HuddleID: "h1",
 	})
 	events := capturePayWithItemEvents(t, w)
-	sink := installSinkRecorder(t, w)
 
 	if _, err := w.Send(sim.AcceptPay("bob", 1, at)); err != nil {
 		t.Fatalf("AcceptPay: %v", err)
@@ -946,9 +902,6 @@ func TestAcceptPay_HappyPath(t *testing.T) {
 	}
 	if len(events.Resolved) != 1 || events.Resolved[0].TerminalState != sim.PayTerminalStateAccepted {
 		t.Errorf("PayWithItemResolved = %+v", events.Resolved)
-	}
-	if len(sink.calls) != 1 {
-		t.Errorf("sink calls = %d, want 1", len(sink.calls))
 	}
 	snap := w.Published()
 	if got := snap.Actors["alice"].Coins; got != 46 {
@@ -1338,7 +1291,6 @@ func TestDeclinePay_HappyPath(t *testing.T) {
 		SceneID: "sc1", HuddleID: "h1",
 	})
 	events := capturePayWithItemEvents(t, w)
-	sink := installSinkRecorder(t, w)
 
 	if _, err := w.Send(sim.DeclinePay("bob", 1, "not enough", at)); err != nil {
 		t.Fatalf("DeclinePay: %v", err)
@@ -1352,9 +1304,6 @@ func TestDeclinePay_HappyPath(t *testing.T) {
 	}
 	if len(events.Resolved) != 1 || events.Resolved[0].TerminalState != sim.PayTerminalStateDeclined {
 		t.Errorf("PayWithItemResolved = %+v", events.Resolved)
-	}
-	if len(sink.calls) != 1 || sink.calls[0].State != sim.PayLedgerStateDeclined {
-		t.Errorf("sink calls = %+v", sink.calls)
 	}
 	// Bidirectional relationship facts — both shared NPCs.
 	snap := w.Published()
@@ -1436,7 +1385,6 @@ func TestCounterPay_HappyPath(t *testing.T) {
 		SceneID: "sc1", HuddleID: "h1",
 	})
 	events := capturePayWithItemEvents(t, w)
-	sink := installSinkRecorder(t, w)
 
 	if _, err := w.Send(sim.CounterPay("bob", 1, 6, "how about six", at)); err != nil {
 		t.Fatalf("CounterPay: %v", err)
@@ -1461,9 +1409,6 @@ func TestCounterPay_HappyPath(t *testing.T) {
 	}
 	if len(events.Resolved) != 0 {
 		t.Errorf("PayWithItemResolved emitted on counter: %v", events.Resolved)
-	}
-	if len(sink.calls) != 1 || sink.calls[0].State != sim.PayLedgerStateCountered {
-		t.Errorf("sink calls = %+v", sink.calls)
 	}
 	snap := w.Published()
 	if rel := snap.Actors["alice"].Relationships["bob"]; rel == nil || rel.SalientFacts[0].Kind != sim.InteractionCounteredBy {
@@ -1533,7 +1478,6 @@ func TestWithdrawPay_HappyPath(t *testing.T) {
 		SceneID: "sc1", HuddleID: "h1",
 	})
 	events := capturePayWithItemEvents(t, w)
-	sink := installSinkRecorder(t, w)
 
 	if _, err := w.Send(sim.WithdrawPay("alice", 1, "changed my mind", at)); err != nil {
 		t.Fatalf("WithdrawPay: %v", err)
@@ -1547,9 +1491,6 @@ func TestWithdrawPay_HappyPath(t *testing.T) {
 	}
 	if len(events.Resolved) != 1 || events.Resolved[0].TerminalState != sim.PayTerminalStateWithdrawnByBuyer {
 		t.Errorf("PayWithItemResolved = %+v", events.Resolved)
-	}
-	if len(sink.calls) != 1 {
-		t.Errorf("sink calls = %d, want 1", len(sink.calls))
 	}
 }
 

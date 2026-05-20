@@ -12,13 +12,12 @@ import (
 // scene_quote_sweep.go and the substrate-level reactor evaluator; the
 // substrate test exercises EvaluatePayLedgerSweep directly to keep
 // timing deterministic. Test fixtures (buildPayWithItemWorld /
-// seedLedgerEntry / installSinkRecorder / capturePayWithItemEvents /
-// readPayLedger) come from pay_with_item_commands_test.go.
+// seedLedgerEntry / capturePayWithItemEvents / readPayLedger) come from
+// pay_with_item_commands_test.go.
 
 // TestEvaluatePayLedgerSweep_ExpiresPastTTL — a pending entry whose
 // ExpiresAt has passed flips to Expired with ResolvedAt stamped and
-// emits PayWithItemResolved{Expired}; the sink receives a Project
-// call for the terminal state.
+// emits PayWithItemResolved{Expired}.
 func TestEvaluatePayLedgerSweep_ExpiresPastTTL(t *testing.T) {
 	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
 		{id: "alice", displayName: "Alice", kind: sim.KindNPCShared, huddleID: "h1", coins: 50},
@@ -26,7 +25,6 @@ func TestEvaluatePayLedgerSweep_ExpiresPastTTL(t *testing.T) {
 	})
 	defer stop()
 	events := capturePayWithItemEvents(t, w)
-	sink := installSinkRecorder(t, w)
 
 	now := time.Now().UTC()
 	seedLedgerEntry(t, w, sim.PayLedgerEntry{
@@ -55,9 +53,6 @@ func TestEvaluatePayLedgerSweep_ExpiresPastTTL(t *testing.T) {
 
 	if len(events.Resolved) != 1 || events.Resolved[0].TerminalState != sim.PayTerminalStateExpired {
 		t.Errorf("PayWithItemResolved = %+v", events.Resolved)
-	}
-	if len(sink.calls) != 1 || sink.calls[0].State != sim.PayLedgerStateExpired {
-		t.Errorf("sink calls = %+v", sink.calls)
 	}
 }
 

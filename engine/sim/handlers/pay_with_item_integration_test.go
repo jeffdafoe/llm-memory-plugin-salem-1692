@@ -13,24 +13,13 @@ import (
 // pay_with_item_integration_test.go — Phase 3 PR S4 step 9.
 // End-to-end exercises that walk the full pay-with-item lifecycle
 // through the production interfaces: handlers register, world spins,
-// real Commands fire, subscribers stamp warrants, sink projects, sweep
-// expires.
+// real Commands fire, subscribers stamp warrants, sweep expires.
 //
 // Scope: pin the surfaces a future regression would break — the
-// handler→Command→subscriber wiring, the sink contract, and the sweep's
-// in-line behavior when AcceptPay arrives past TTL. Gate-level
-// failure-mode coverage is in pay_with_item_commands_test.go; this
-// file's tests are whole-flow smoke checks.
-
-// integrationSink — captures every Project call for assertion. Pointer
-// receiver so calls persist across the value-copy at interface boxing.
-type integrationSink struct {
-	states []sim.PayLedgerState
-}
-
-func (s *integrationSink) Project(entry sim.PayLedgerEntry) {
-	s.states = append(s.states, entry.State)
-}
+// handler→Command→subscriber wiring and the sweep's in-line behavior
+// when AcceptPay arrives past TTL. Gate-level failure-mode coverage is
+// in pay_with_item_commands_test.go; this file's tests are whole-flow
+// smoke checks.
 
 // integrationEvents accumulates every pay-with-item event emitted so
 // tests can assert ordering and content. Local to handlers_test
@@ -64,9 +53,8 @@ func captureIntegrationEvents(t *testing.T, w *sim.World) *integrationEvents {
 
 // buildIntegrationWorld stands up a fixture suitable for end-to-end
 // flows: huddle "h1" + scene "sc1" + ItemKinds + the pay-with-item
-// subscribers registered. The returned sink captures every Project
-// call so tests can assert the sink contract fires on every transition.
-func buildIntegrationWorld(t *testing.T) (*sim.World, *integrationSink, func()) {
+// subscribers registered.
+func buildIntegrationWorld(t *testing.T) (*sim.World, func()) {
 	t.Helper()
 	repo, handles := mem.NewRepository()
 	handles.ItemKinds.Seed(mem.SeedItemKinds())
@@ -98,7 +86,6 @@ func buildIntegrationWorld(t *testing.T) (*sim.World, *integrationSink, func()) 
 		w.Run(ctx)
 		close(done)
 	}()
-	sink := &integrationSink{}
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		world.Huddles["h1"] = &sim.Huddle{
 			ID: "h1", StartedAt: now,
@@ -109,14 +96,13 @@ func buildIntegrationWorld(t *testing.T) (*sim.World, *integrationSink, func()) 
 			Huddles: map[sim.HuddleID]struct{}{"h1": {}},
 		}
 		handlers.RegisterPayWithItemHandlers(world)
-		world.SetPayLedgerSink(sink)
 		return nil, nil
 	}}); err != nil {
 		cancel()
 		<-done
 		t.Fatalf("setup: %v", err)
 	}
-	return w, sink, func() { cancel(); <-done }
+	return w, func() { cancel(); <-done }
 }
 
 // TestIntegration_SlowPathAcceptedHappyPath — the canonical end-to-end:
@@ -130,9 +116,8 @@ func buildIntegrationWorld(t *testing.T) (*sim.World, *integrationSink, func()) 
 //     so the seller has narrative agency in the handover.
 //  5. PayWithItemResolved subscriber stamps PayResolvedWarrantReason
 //     on Alice. OrderCreated event fires under the same root.
-//  6. Sink received TWO Project calls (pending insert + Accepted flip).
 func TestIntegration_SlowPathAcceptedHappyPath(t *testing.T) {
-	w, sink, stop := buildIntegrationWorld(t)
+	w, stop := buildIntegrationWorld(t)
 	defer stop()
 
 	aliceCmd, err := handlers.HandlePayWithItem(handlers.HandlerInput{
@@ -199,14 +184,6 @@ func TestIntegration_SlowPathAcceptedHappyPath(t *testing.T) {
 		t.Errorf("Order item/qty = %s/%d, want stew/1", foundOrder.Item, foundOrder.Qty)
 	}
 
-	// Sink received pending + accepted (in that order).
-	if len(sink.states) != 2 {
-		t.Fatalf("sink calls = %d, want 2 (pending + accepted)", len(sink.states))
-	}
-	if sink.states[0] != sim.PayLedgerStatePending || sink.states[1] != sim.PayLedgerStateAccepted {
-		t.Errorf("sink states = %v, want [pending accepted]", sink.states)
-	}
-
 	// Alice (buyer) carries a PayResolvedWarrant from the accept.
 	warrants := readWarrants(t, w, "alice")
 	if meta, ok := firstByKind(warrants, sim.WarrantKindPayResolved); !ok {
@@ -222,7 +199,7 @@ func TestIntegration_SlowPathAcceptedHappyPath(t *testing.T) {
 // chain depth, ParentID linkage, and dual-direction warrant flow all
 // land correctly.
 func TestIntegration_CounterChain(t *testing.T) {
-	w, sink, stop := buildIntegrationWorld(t)
+	w, stop := buildIntegrationWorld(t)
 	defer stop()
 
 	// Round 1: alice offers 4 coins.
@@ -304,21 +281,6 @@ func TestIntegration_CounterChain(t *testing.T) {
 	if got := snap.Actors["bob"].Coins; got != 6 {
 		t.Errorf("bob.Coins = %d, want 6", got)
 	}
-	// Sink saw: pending(parent), countered(parent), pending(child), accepted(child).
-	if len(sink.states) != 4 {
-		t.Fatalf("sink states = %v, want 4 entries", sink.states)
-	}
-	want := []sim.PayLedgerState{
-		sim.PayLedgerStatePending,
-		sim.PayLedgerStateCountered,
-		sim.PayLedgerStatePending,
-		sim.PayLedgerStateAccepted,
-	}
-	for i, w := range want {
-		if sink.states[i] != w {
-			t.Errorf("sink.states[%d] = %q, want %q", i, sink.states[i], w)
-		}
-	}
 }
 
 // TestIntegration_ExpiredViaSweep — alice offers, time advances, sweep
@@ -327,7 +289,7 @@ func TestIntegration_CounterChain(t *testing.T) {
 // stamp is left as-is (warrants are ephemeral; reactor consumes them
 // on next tick).
 func TestIntegration_ExpiredViaSweep(t *testing.T) {
-	w, sink, stop := buildIntegrationWorld(t)
+	w, stop := buildIntegrationWorld(t)
 	defer stop()
 
 	// Squeeze the TTL so we can drive expiry without waiting.
@@ -359,13 +321,6 @@ func TestIntegration_ExpiredViaSweep(t *testing.T) {
 	if state != sim.PayLedgerStateExpired {
 		t.Errorf("state = %q, want expired", state)
 	}
-	// Sink received pending + expired.
-	if len(sink.states) != 2 {
-		t.Fatalf("sink states = %v, want [pending expired]", sink.states)
-	}
-	if sink.states[0] != sim.PayLedgerStatePending || sink.states[1] != sim.PayLedgerStateExpired {
-		t.Errorf("sink states = %v, want [pending expired]", sink.states)
-	}
 	// Alice got the PayResolved{Expired} warrant.
 	if meta, ok := firstByKind(readWarrants(t, w, "alice"), sim.WarrantKindPayResolved); !ok {
 		t.Error("alice missing PayResolved warrant after sweep")
@@ -380,7 +335,7 @@ func TestIntegration_ExpiredViaSweep(t *testing.T) {
 // the 10-gate revalidation matrix). No sweep needed; AcceptPay
 // flips, emits, and the buyer warrant carries TerminalState=Expired.
 func TestIntegration_AcceptPastTTL(t *testing.T) {
-	w, sink, stop := buildIntegrationWorld(t)
+	w, stop := buildIntegrationWorld(t)
 	defer stop()
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		world.Settings.PayLedgerTTL = 1 * time.Microsecond
@@ -416,9 +371,6 @@ func TestIntegration_AcceptPastTTL(t *testing.T) {
 	if got := snap.Actors["alice"].Coins; got != 50 {
 		t.Errorf("alice.Coins moved on expired accept: %d", got)
 	}
-	if len(sink.states) != 2 {
-		t.Fatalf("sink states = %v, want [pending expired]", sink.states)
-	}
 }
 
 // TestIntegration_QuoteFastPath — bob posts a quote (via the existing
@@ -427,7 +379,7 @@ func TestIntegration_AcceptPastTTL(t *testing.T) {
 // fires with FastPath=true, and PayOfferReceived is NOT emitted
 // (architecture § 4 — quote fast-path skips the pending state).
 func TestIntegration_QuoteFastPath(t *testing.T) {
-	w, sink, stop := buildIntegrationWorld(t)
+	w, stop := buildIntegrationWorld(t)
 	defer stop()
 	events := captureIntegrationEvents(t, w)
 
@@ -469,10 +421,6 @@ func TestIntegration_QuoteFastPath(t *testing.T) {
 	}
 	if len(events.Resolved) != 1 || events.Resolved[0].TerminalState != sim.PayTerminalStateAccepted {
 		t.Errorf("PayWithItemResolved = %+v", events.Resolved)
-	}
-	// Sink got ONE call (terminal directly, no pending intermediate).
-	if len(sink.states) != 1 || sink.states[0] != sim.PayLedgerStateAccepted {
-		t.Errorf("sink states = %v, want [accepted]", sink.states)
 	}
 	// Coins + items transferred.
 	snap := w.Published()
