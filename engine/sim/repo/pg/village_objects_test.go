@@ -34,6 +34,11 @@ const (
 	uuidAssetLamp  = "a0000000-0000-0000-0000-000000000003"
 )
 
+// sp returns a pointer to s. LoadAll scans asset_id / placed_by /
+// display_name into *string (they're nullable in the prod baseline), so
+// mock rows must supply *string for those columns.
+func sp(s string) *string { return &s }
+
 func newMockPoolVO(t *testing.T) (pgxmock.PgxPoolIface, *VillageObjectsRepo) {
 	t.Helper()
 	mock, err := pgxmock.NewPool()
@@ -114,16 +119,16 @@ func TestVillageObjectsRepo_LoadAll_HappyPath(t *testing.T) {
 		"loiter_offset_x", "loiter_offset_y", "available_quantity", "tags",
 	}).
 		// Top-level placement, owned, with loiter offsets, tags.
-		AddRow(uuidObj1, uuidAssetWell, "default", 640.0, 320.0, "admin",
-			"Old Well", "closed", &ownerStr, (*string)(nil),
+		AddRow(uuidObj1, sp(uuidAssetWell), "default", 640.0, 320.0, sp("admin"),
+			sp("Old Well"), "closed", &ownerStr, (*string)(nil),
 			&loiterX, &loiterY, 10, []string{"vendor", "well"}).
 		// Top-level placement, unowned, no loiter, empty tags.
-		AddRow(uuidObj2, uuidAssetBench, "variant-1", 1000.0, 500.0, "",
-			"", "open", (*string)(nil), (*string)(nil),
+		AddRow(uuidObj2, sp(uuidAssetBench), "variant-1", 1000.0, 500.0, sp(""),
+			sp(""), "open", (*string)(nil), (*string)(nil),
 			(*int)(nil), (*int)(nil), 0, []string{}).
 		// Overlay attached to obj-1, owner-only, no tags.
-		AddRow(uuidObj3, uuidAssetLamp, "lit", 645.0, 325.0, "admin",
-			"Lamp", "owner-only", &ownerStr, &parentRef,
+		AddRow(uuidObj3, sp(uuidAssetLamp), "lit", 645.0, 325.0, sp("admin"),
+			sp("Lamp"), "owner-only", &ownerStr, &parentRef,
 			(*int)(nil), (*int)(nil), 0, []string{})
 
 	mock.ExpectQuery(`SELECT[\s\S]+FROM village_object`).WillReturnRows(rows)
@@ -509,11 +514,11 @@ func TestVillageObjectsRepo_LoadAll_WithRefreshes(t *testing.T) {
 		"display_name", "entry_policy", "owner_actor_id", "attached_to",
 		"loiter_offset_x", "loiter_offset_y", "available_quantity", "tags",
 	}).
-		AddRow(uuidObj1, uuidAssetWell, "default", 640.0, 320.0, "",
-			"Well", "open", (*string)(nil), (*string)(nil),
+		AddRow(uuidObj1, sp(uuidAssetWell), "default", 640.0, 320.0, sp(""),
+			sp("Well"), "open", (*string)(nil), (*string)(nil),
 			(*int)(nil), (*int)(nil), 0, []string{}).
-		AddRow(uuidObj2, uuidAssetBench, "default", 0.0, 0.0, "",
-			"Shaded Oak", "open", (*string)(nil), (*string)(nil),
+		AddRow(uuidObj2, sp(uuidAssetBench), "default", 0.0, 0.0, sp(""),
+			sp("Shaded Oak"), "open", (*string)(nil), (*string)(nil),
 			(*int)(nil), (*int)(nil), 0, []string{})
 	mock.ExpectQuery(`SELECT[\s\S]+FROM village_object`).WillReturnRows(parentRows)
 
@@ -545,10 +550,13 @@ func TestVillageObjectsRepo_LoadAll_WithRefreshes(t *testing.T) {
 			&max20, &avail0,
 			&periodicMode, &period24, &oakAnchor,
 			(*int)(nil), (*int)(nil)).
-		// Oak (row 2): tiredness -1, infinite supply, no mode, dwell enabled.
+		// Oak (row 2): tiredness -1, infinite supply, dwell enabled. prod's
+		// refresh_mode is NOT NULL DEFAULT 'continuous', so an infinite row
+		// carries 'continuous' even though mode is irrelevant when
+		// available_quantity IS NULL.
 		AddRow(uuidObj2, "tiredness", -1,
 			(*int)(nil), (*int)(nil),
-			(*string)(nil), (*int)(nil), (*time.Time)(nil),
+			&continuousMode, (*int)(nil), (*time.Time)(nil),
 			&dwellDelta, &dwellPeriod)
 	mock.ExpectQuery(`SELECT[\s\S]+FROM object_refresh`).WillReturnRows(refreshRows)
 
@@ -598,14 +606,16 @@ func TestVillageObjectsRepo_LoadAll_WithRefreshes(t *testing.T) {
 		t.Errorf("oak hunger refresh = %+v", hunger)
 	}
 	tiredness := oak.Refreshes[1]
+	// IsFinite() (available_quantity IS NULL) is the real infinite
+	// discriminant — not the mode.
 	if tiredness.Attribute != "tiredness" || tiredness.IsFinite() {
 		t.Errorf("oak tiredness refresh should be infinite: %+v", tiredness)
 	}
 	if !tiredness.HasDwell() {
 		t.Error("oak tiredness refresh should have dwell")
 	}
-	if tiredness.RefreshMode != "" {
-		t.Errorf("oak tiredness RefreshMode=%q, want empty (infinite)", tiredness.RefreshMode)
+	if tiredness.RefreshMode != sim.RefreshModeContinuous {
+		t.Errorf("oak tiredness RefreshMode=%q, want continuous (prod NOT NULL default)", tiredness.RefreshMode)
 	}
 
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -625,8 +635,8 @@ func TestVillageObjectsRepo_LoadAll_RefreshOrphanSkipped(t *testing.T) {
 		"id", "asset_id", "current_state", "x", "y", "placed_by",
 		"display_name", "entry_policy", "owner_actor_id", "attached_to",
 		"loiter_offset_x", "loiter_offset_y", "available_quantity", "tags",
-	}).AddRow(uuidObj1, uuidAssetWell, "default", 0.0, 0.0, "",
-		"Well", "open", (*string)(nil), (*string)(nil),
+	}).AddRow(uuidObj1, sp(uuidAssetWell), "default", 0.0, 0.0, sp(""),
+		sp("Well"), "open", (*string)(nil), (*string)(nil),
 		(*int)(nil), (*int)(nil), 0, []string{})
 	mock.ExpectQuery(`SELECT[\s\S]+FROM village_object`).WillReturnRows(parentRows)
 
@@ -674,8 +684,8 @@ func TestVillageObjectsRepo_LoadAll_RefreshQueryError(t *testing.T) {
 		"id", "asset_id", "current_state", "x", "y", "placed_by",
 		"display_name", "entry_policy", "owner_actor_id", "attached_to",
 		"loiter_offset_x", "loiter_offset_y", "available_quantity", "tags",
-	}).AddRow(uuidObj1, uuidAssetWell, "default", 0.0, 0.0, "",
-		"", "open", (*string)(nil), (*string)(nil),
+	}).AddRow(uuidObj1, sp(uuidAssetWell), "default", 0.0, 0.0, sp(""),
+		sp(""), "open", (*string)(nil), (*string)(nil),
 		(*int)(nil), (*int)(nil), 0, []string{})
 	mock.ExpectQuery(`SELECT[\s\S]+FROM village_object`).WillReturnRows(parentRows)
 	mock.ExpectQuery(`SELECT[\s\S]+FROM object_refresh`).
@@ -691,8 +701,8 @@ func TestVillageObjectsRepo_LoadAll_RefreshQueryError(t *testing.T) {
 
 // TestVillageObjectsRepo_SaveSnapshot_WithRefreshes covers the full
 // refresh-column write matrix: finite continuous (with last_refresh_at
-// non-NULL), infinite (all regen/dwell NULL), dwell-only on an
-// infinite row, and a mix of refreshes on one parent.
+// non-NULL), infinite (supply/regen NULL, mode defaulted to 'continuous'),
+// dwell-only on an infinite row, and a mix of refreshes on one parent.
 func TestVillageObjectsRepo_SaveSnapshot_WithRefreshes(t *testing.T) {
 	mock, repo := newMockPoolVO(t)
 	tx := fakeTx{mock: mock}
@@ -737,12 +747,15 @@ func TestVillageObjectsRepo_SaveSnapshot_WithRefreshes(t *testing.T) {
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 
-	// Refresh 2: infinite + no mode + dwell enabled.
+	// Refresh 2: infinite + dwell enabled. refresh_mode is irrelevant for
+	// infinite rows (discriminant is available_quantity IS NULL), but prod's
+	// column is NOT NULL DEFAULT 'continuous' — SaveSnapshot writes the
+	// 'continuous' default rather than NULL.
 	mock.ExpectExec(`INSERT INTO object_refresh`).
 		WithArgs(
 			uuidObj1, "tiredness", -1,
 			(*int)(nil), (*int)(nil),
-			nil, (*int)(nil), (*time.Time)(nil),
+			"continuous", (*int)(nil), (*time.Time)(nil),
 			&dwellDelta, &dwellPeriod,
 			int64(90),
 		).

@@ -33,6 +33,13 @@
 --      referential integrity. Actors-pg-impl handles future writes
 --      from the loaded huddle_member set.
 --
+--   4b. (reconciliation 2026-05-20) agent_action_log.huddle_id,
+--      pay_ledger.huddle_id, scene_quote.huddle_id FKs dropped + columns
+--      retyped UUID→TEXT — same posture as §4. These prod-baseline FK
+--      referrers of scene_huddle.id postdated the original draft; the
+--      scene_huddle.id retype (§2) can't proceed while a uuid FK
+--      references it. Soft-ref TEXT, no FK re-add.
+--
 --   5. New child table huddle_member (huddle_id, actor_id) for
 --      Huddle.Members. UNIQUE(actor_id) enforces the v2 single-active-
 --      huddle-per-actor invariant. ConcludeHuddle wipes Huddle.Members
@@ -75,6 +82,28 @@ DELETE FROM scene_huddle;
 -- §4 (design): Drop FK + retype actor.current_huddle_id.
 ALTER TABLE actor DROP CONSTRAINT IF EXISTS actor_current_huddle_id_fkey;
 ALTER TABLE actor ALTER COLUMN current_huddle_id TYPE TEXT USING NULL;
+
+-- §4b (reconciliation 2026-05-20): Drop + retype the remaining prod-baseline
+-- FK referrers of scene_huddle.id. The canonical prod baseline carries three
+-- uuid FKs to scene_huddle(id) that this migration's original draft predated:
+-- agent_action_log.huddle_id and pay_ledger.huddle_id (both ON DELETE SET
+-- NULL), and scene_quote.huddle_id (ON DELETE CASCADE; part of
+-- scene_quote_pkey). Retyping scene_huddle.id to TEXT (§2 below) is rejected
+-- by Postgres (SQLSTATE 42804) while a uuid FK still references it — same
+-- constraint that drove the actor handling above. Posture matches §4 and the
+-- Slice 5 cross-aggregate rule: drop the cross-aggregate FK, keep a TEXT
+-- soft-ref, rely on loud orphan rejection at LoadWorld. The §3 DELETE FROM
+-- scene_huddle already fired these FKs' ON DELETE rules (SET NULL / CASCADE),
+-- so the columns are all-NULL / empty here and the ::text cast can't trip the
+-- hud-<hex> format.
+ALTER TABLE agent_action_log DROP CONSTRAINT IF EXISTS agent_action_log_huddle_id_fkey;
+ALTER TABLE agent_action_log ALTER COLUMN huddle_id TYPE TEXT USING huddle_id::text;
+
+ALTER TABLE pay_ledger DROP CONSTRAINT IF EXISTS pay_ledger_huddle_id_fkey;
+ALTER TABLE pay_ledger ALTER COLUMN huddle_id TYPE TEXT USING huddle_id::text;
+
+ALTER TABLE scene_quote DROP CONSTRAINT IF EXISTS scene_quote_huddle_id_fkey;
+ALTER TABLE scene_quote ALTER COLUMN huddle_id TYPE TEXT USING huddle_id::text;
 
 -- §2 (design): Reshape scene_huddle.
 ALTER TABLE scene_huddle DROP CONSTRAINT IF EXISTS scene_huddle_structure_id_fkey;

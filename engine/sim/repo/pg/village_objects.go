@@ -12,9 +12,10 @@ import (
 // VillageObjectsRepo reads and writes VillageObject rows against
 // village_object plus the object_refresh child table. Owns both as one
 // aggregate: the v1 sidecar village_object_tag was collapsed into the
-// parent's tags TEXT[] column by migration ZBBS-WORK-237; the
-// object_refresh child gained v2's runtime columns and the gen-marker
-// snapshot_gen bookkeeping by migration ZBBS-WORK-238.
+// parent's tags TEXT[] column by migration ZBBS-WORK-237. The
+// object_refresh supply/regen/dwell columns are the prod baseline shape
+// (HOME ZBBS-090 / ZBBS-172); migration ZBBS-WORK-238 adds only the
+// gen-marker snapshot_gen bookkeeping on top.
 //
 // SaveSnapshot semantics use the generation-marker pattern (Slice 9 —
 // see `shared/notes/codebase/salem-engine-v2/pg-snapshot-pattern`).
@@ -189,7 +190,7 @@ SELECT
     object_id, attribute, amount,
     max_quantity, available_quantity,
     refresh_mode, refresh_period_hours, last_refresh_at,
-    dwell_delta, dwell_period_minutes
+    dwell_amount, dwell_period_minutes
 FROM object_refresh`
 
 // upsertSQLOR writes one object_refresh row. Composite PK
@@ -203,12 +204,22 @@ FROM object_refresh`
 //
 // On conflict, every v2-owned column gets refreshed — the snapshot
 // is authoritative for the full row state.
+//
+// Column-name note (prod baseline ZBBS-090 / ZBBS-172):
+//   - object_refresh's config-rate column is `dwell_amount` (smallint,
+//     CHECK < 0). The in-memory field is ObjectRefresh.DwellDelta — kept
+//     "Delta" because it's stored negative and is copied verbatim onto
+//     the per-actor DwellCredit.DwellDelta. The separate per-actor credit
+//     snapshot column `dwell_delta` lives on actor_dwell_credit, not here.
+//   - refresh_mode is NOT NULL DEFAULT 'continuous' in prod; SaveSnapshot
+//     writes 'continuous' for infinite rows (mode is irrelevant when
+//     available_quantity IS NULL, but the column can't be NULL).
 const upsertSQLOR = `
 INSERT INTO object_refresh (
     object_id, attribute, amount,
     max_quantity, available_quantity,
     refresh_mode, refresh_period_hours, last_refresh_at,
-    dwell_delta, dwell_period_minutes,
+    dwell_amount, dwell_period_minutes,
     snapshot_gen
 ) VALUES (
     $1::uuid, $2, $3,
@@ -224,7 +235,7 @@ ON CONFLICT (object_id, attribute) DO UPDATE SET
     refresh_mode         = EXCLUDED.refresh_mode,
     refresh_period_hours = EXCLUDED.refresh_period_hours,
     last_refresh_at      = EXCLUDED.last_refresh_at,
-    dwell_delta          = EXCLUDED.dwell_delta,
+    dwell_amount         = EXCLUDED.dwell_amount,
     dwell_period_minutes = EXCLUDED.dwell_period_minutes,
     snapshot_gen         = EXCLUDED.snapshot_gen`
 
@@ -279,11 +290,11 @@ func (r *VillageObjectsRepo) LoadAll(ctx context.Context) (map[sim.VillageObject
 	for rows.Next() {
 		var (
 			id           string
-			assetID      string
+			assetID      *string // nullable in baseline; required in-memory (validated below)
 			currentState string
 			x, y         float64
-			placedBy     string
-			displayName  string
+			placedBy     *string // nullable in baseline; required in-memory (validated below)
+			displayName  *string // nullable in baseline; required in-memory (validated below)
 			entryPolicy  string
 			ownerActorID *string // NULL when no owner
 			attachedTo   *string // NULL when not an overlay
@@ -298,6 +309,28 @@ func (r *VillageObjectsRepo) LoadAll(ctx context.Context) (map[sim.VillageObject
 			&loiterX, &loiterY, &availableQty, &tags,
 		); err != nil {
 			return nil, fmt.Errorf("pg village_objects LoadAll scan: %w", err)
+		}
+
+		// asset_id / placed_by / display_name are nullable in the prod
+		// baseline but the in-memory model requires them (asset_id is the
+		// catalog ref; the other two scan into non-pointer Go strings). A
+		// NULL means malformed data (legacy / external write). Refuse to
+		// load with a precise, logged reason naming the offending row +
+		// column — better than an opaque scan error or silently coercing
+		// to "". Operator runs the village_object NULL data fixup (home
+		// mail 2026-05-20) to clear these before the engine can start.
+		if assetID == nil || placedBy == nil || displayName == nil {
+			var col string
+			switch {
+			case assetID == nil:
+				col = "asset_id"
+			case placedBy == nil:
+				col = "placed_by"
+			default:
+				col = "display_name"
+			}
+			log.Printf("pg village_objects LoadAll: village_object %s has NULL %s — refusing to load; engine cannot start until the village_object NULL data fixup runs", id, col)
+			return nil, fmt.Errorf("pg village_objects LoadAll: village_object %s has NULL %s (required column) — aborting load", id, col)
 		}
 		var owner sim.ActorID
 		if ownerActorID != nil {
@@ -317,12 +350,12 @@ func (r *VillageObjectsRepo) LoadAll(ctx context.Context) (map[sim.VillageObject
 		}
 		out[sim.VillageObjectID(id)] = &sim.VillageObject{
 			ID:                sim.VillageObjectID(id),
-			AssetID:           sim.AssetID(assetID),
+			AssetID:           sim.AssetID(*assetID),
 			CurrentState:      currentState,
 			X:                 x,
 			Y:                 y,
-			PlacedBy:          placedBy,
-			DisplayName:       displayName,
+			PlacedBy:          *placedBy,
+			DisplayName:       *displayName,
 			EntryPolicy:       sim.EntryPolicy(entryPolicy),
 			OwnerActorID:      owner,
 			AttachedTo:        attached,
@@ -467,11 +500,24 @@ func (r *VillageObjectsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, object
 		return fmt.Errorf("pg village_objects SaveSnapshot: nextval: %w", err)
 	}
 
-	// Step 2: upsert each object, stamping the new gen.
+	// Step 2: upsert each object, stamping the new gen. Order roots (no
+	// attached_to) before overlays (attached_to set) so a single-level
+	// overlay's parent is written first — a defensive eager pass. The
+	// attached_to self-FK is DEFERRABLE INITIALLY DEFERRED (ZBBS-WORK-237),
+	// so deeper attachment chains and any residual ordering still resolve at
+	// commit; this pass just keeps the common case eager and intent clear.
+	ordered := make([]*sim.VillageObject, 0, len(objects))
 	for _, obj := range objects {
-		if obj == nil {
-			continue
+		if obj != nil && obj.AttachedTo == "" {
+			ordered = append(ordered, obj)
 		}
+	}
+	for _, obj := range objects {
+		if obj != nil && obj.AttachedTo != "" {
+			ordered = append(ordered, obj)
+		}
+	}
+	for _, obj := range ordered {
 		// owner_actor_id is nullable; convert empty ActorID to nil so pg
 		// stores NULL (not the empty string — semantically "no owner",
 		// matching the nullable column intent).
@@ -548,14 +594,17 @@ func (r *VillageObjectsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, object
 			if ref == nil {
 				continue
 			}
-			// RefreshMode is a typed string; empty string maps to SQL
-			// NULL per the mode_only_when_finite CHECK (infinite rows
-			// must have NULL mode). Non-empty rides through as the
-			// string for the CHECK to validate ('continuous' or
-			// 'periodic').
-			var modeArg any
-			if ref.RefreshMode != "" {
-				modeArg = string(ref.RefreshMode)
+			// refresh_mode is NOT NULL DEFAULT 'continuous' in prod
+			// (ZBBS-090). The finite/infinite discriminant is
+			// available_quantity IS NULL — not the mode — so an infinite
+			// row's mode is irrelevant, but the column still can't be NULL.
+			// In-memory infinite rows carry RefreshMode == ""; write the
+			// 'continuous' default for them so the NOT NULL holds. Finite
+			// rows ride through as their set mode ('continuous'|'periodic')
+			// for the mode_check CHECK to validate.
+			modeArg := string(ref.RefreshMode)
+			if modeArg == "" {
+				modeArg = string(sim.RefreshModeContinuous)
 			}
 			if _, err := tx.Exec(ctx, upsertSQLOR,
 				string(obj.ID),         // $1 object_id (UUID)
@@ -566,7 +615,7 @@ func (r *VillageObjectsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, object
 				modeArg,                // $6 refresh_mode (nullable)
 				ref.RefreshPeriodHours, // $7 refresh_period_hours (nullable)
 				ref.LastRefreshAt,      // $8 last_refresh_at (nullable)
-				ref.DwellDelta,         // $9 dwell_delta (nullable)
+				ref.DwellDelta,         // $9 dwell_amount (nullable; prod col name)
 				ref.DwellPeriodMinutes, // $10 dwell_period_minutes (nullable)
 				refreshGen,             // $11 snapshot_gen
 			); err != nil {
