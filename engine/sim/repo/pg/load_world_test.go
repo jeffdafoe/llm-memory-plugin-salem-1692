@@ -924,3 +924,81 @@ func TestLoadWorld_ActorReconciliation_SkippedWhenActorsNotImpl(t *testing.T) {
 		t.Errorf("LoadWorld with notImpl Actors should tolerate Huddles.Members: %v", err)
 	}
 }
+
+// --- Slice 3 (ZBBS-WORK-245): actor_attribute projection rebuild ----------
+
+// TestRebuildActorAttributeProjections covers the businessowner + restock
+// projections the ActorsRepo deliberately leaves to LoadWorld: keeper iff
+// businessowner flavor non-empty; restock union across attributes in slug
+// order with first-listed-wins on item ties; lenient skip of unparseable
+// params and unknown-source entries.
+func TestRebuildActorAttributeProjections(t *testing.T) {
+	const (
+		aKeeper  = "00000000-0000-0000-0000-00000000aaa1"
+		aBlank   = "00000000-0000-0000-0000-00000000bbb2"
+		aStock   = "00000000-0000-0000-0000-00000000ccc3"
+		aBad     = "00000000-0000-0000-0000-00000000ddd4"
+		aUnknown = "00000000-0000-0000-0000-00000000eee5"
+	)
+	actors := map[sim.ActorID]*sim.Actor{
+		// Keeper: businessowner flavor set → BusinessownerState.
+		aKeeper: {ID: aKeeper, Attributes: map[string][]byte{
+			"businessowner": []byte(`{"flavor":"flamboyant"}`),
+		}},
+		// Empty flavor → NOT a keeper (v1 parity).
+		aBlank: {ID: aBlank, Attributes: map[string][]byte{
+			"businessowner": []byte(`{"flavor":""}`),
+		}},
+		// Restock union: "worker" lists bread(produce); "tavernkeeper"
+		// re-lists bread(buy) + adds ale(buy). Slug order is
+		// tavernkeeper < worker, so tavernkeeper's bread(buy) wins the tie.
+		aStock: {ID: aStock, Attributes: map[string][]byte{
+			"tavernkeeper": []byte(`{"restock":[{"item":"bread","source":"buy","max":4},{"item":"ale","source":"buy","target":6}]}`),
+			"worker":       []byte(`{"restock":[{"item":"bread","source":"produce","max":9}]}`),
+		}},
+		// Unparseable params → skipped, no projection, no panic.
+		aBad: {ID: aBad, Attributes: map[string][]byte{
+			"businessowner": []byte("{broken"),
+			"worker":        []byte("also broken"),
+		}},
+		// Unknown source → entry dropped.
+		aUnknown: {ID: aUnknown, Attributes: map[string][]byte{
+			"worker": []byte(`{"restock":[{"item":"gold","source":"mine","max":1}]}`),
+		}},
+	}
+
+	rebuildActorAttributeProjections(actors)
+
+	if bo := actors[aKeeper].BusinessownerState; bo == nil || bo.Flavor != "flamboyant" {
+		t.Errorf("keeper BusinessownerState = %+v, want flavor flamboyant", bo)
+	}
+	if bo := actors[aBlank].BusinessownerState; bo != nil {
+		t.Errorf("blank-flavor BusinessownerState = %+v, want nil", bo)
+	}
+
+	rp := actors[aStock].RestockPolicy
+	if rp == nil {
+		t.Fatal("stock RestockPolicy nil")
+	}
+	if len(rp.Restock) != 2 {
+		t.Fatalf("stock entries = %d, want 2", len(rp.Restock))
+	}
+	byItem := map[sim.ItemKind]sim.RestockEntry{}
+	for _, e := range rp.Restock {
+		byItem[e.Item] = e
+	}
+	// bread: tavernkeeper (slug-first) wins → buy, max 4.
+	if e := byItem["bread"]; e.Source != sim.RestockSourceBuy || e.Max != 4 {
+		t.Errorf("bread entry = %+v, want buy/max4 (first-listed wins)", e)
+	}
+	if e := byItem["ale"]; e.Source != sim.RestockSourceBuy || e.Target != 6 {
+		t.Errorf("ale entry = %+v, want buy/target6", e)
+	}
+
+	if actors[aBad].BusinessownerState != nil || actors[aBad].RestockPolicy != nil {
+		t.Errorf("bad-params actor got projections: bo=%+v rp=%+v", actors[aBad].BusinessownerState, actors[aBad].RestockPolicy)
+	}
+	if rp := actors[aUnknown].RestockPolicy; rp != nil {
+		t.Errorf("unknown-source RestockPolicy = %+v, want nil (entry dropped)", rp)
+	}
+}

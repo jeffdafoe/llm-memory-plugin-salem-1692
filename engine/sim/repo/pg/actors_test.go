@@ -29,6 +29,7 @@ const (
 	actB = "00000000-0000-0000-0000-bbbbbbbbbbb2"
 	actC = "00000000-0000-0000-0000-ccccccccccc3"
 	actV = "00000000-0000-0000-0000-deadbeef0001" // visitor actor
+	objX = "11111111-1111-1111-1111-111111111111" // a village object (dwell credit)
 )
 
 // Predictable timestamps. Use a fixed point so test expectations stay
@@ -176,6 +177,73 @@ func expectActorSaveSnapshotChildTails(mock pgxmock.PgxPoolIface, needGen, invGe
 		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
 }
 
+// --- Slice 3 final-tier column lists + empty-row / tail builders ----------
+
+func dwellCreditColumns() []string {
+	return []string{
+		"actor_id", "object_id", "attribute", "source",
+		"last_credited_at", "remaining_ticks", "dwell_delta", "dwell_period_minutes",
+	}
+}
+
+func produceStateColumns() []string {
+	return []string{"actor_id", "item_kind", "last_produced_at"}
+}
+
+func roomAccessColumns() []string {
+	return []string{
+		"actor_id", "room_id", "granted_via_ledger_id",
+		"granted_at", "expires_at", "active",
+	}
+}
+
+func attributeColumns() []string {
+	return []string{"actor_id", "slug", "params"}
+}
+
+func emptyDwellRows() *pgxmock.Rows      { return pgxmock.NewRows(dwellCreditColumns()) }
+func emptyProduceRows() *pgxmock.Rows    { return pgxmock.NewRows(produceStateColumns()) }
+func emptyRoomAccessRows() *pgxmock.Rows { return pgxmock.NewRows(roomAccessColumns()) }
+func emptyAttrRows() *pgxmock.Rows       { return pgxmock.NewRows(attributeColumns()) }
+
+// expectLoadAllSlice3Empty programs empty result sets for the four Slice 3
+// child queries (dwell credit / produce state / room access / attribute),
+// in LoadAll order. Pairs with expectLoadAllContinuityEmpty for the full
+// post-inventory child suffix.
+func expectLoadAllSlice3Empty(mock pgxmock.PgxPoolIface) {
+	mock.ExpectQuery(`FROM actor_dwell_credit\b`).WillReturnRows(emptyDwellRows())
+	mock.ExpectQuery(`FROM actor_produce_state\b`).WillReturnRows(emptyProduceRows())
+	mock.ExpectQuery(`FROM room_access\b`).WillReturnRows(emptyRoomAccessRows())
+	mock.ExpectQuery(`FROM actor_attribute\b`).WillReturnRows(emptyAttrRows())
+}
+
+// expectActorSlice3TailsEmpty programs the dwell-credit + produce-state +
+// room-access + attribute nextval/delete tails with no UPSERTs (the
+// standard suffix when the snapshot has no Slice 3 rows). Mirrors
+// expectActorContinuityTailsEmpty for the Slice 3 tiers.
+func expectActorSlice3TailsEmpty(mock pgxmock.PgxPoolIface, dwellGen, produceGen, roomGen, attrGen int64) {
+	mock.ExpectQuery(`SELECT nextval\('actor_dwell_credit_snapshot_gen_seq`).
+		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(dwellGen))
+	mock.ExpectExec(`DELETE FROM actor_dwell_credit .*WHERE snapshot_gen < \$1`).
+		WithArgs(dwellGen).
+		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+	mock.ExpectQuery(`SELECT nextval\('actor_produce_state_snapshot_gen_seq`).
+		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(produceGen))
+	mock.ExpectExec(`DELETE FROM actor_produce_state .*WHERE snapshot_gen < \$1`).
+		WithArgs(produceGen).
+		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+	mock.ExpectQuery(`SELECT nextval\('room_access_snapshot_gen_seq`).
+		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(roomGen))
+	mock.ExpectExec(`DELETE FROM room_access .*WHERE snapshot_gen < \$1`).
+		WithArgs(roomGen).
+		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+	mock.ExpectQuery(`SELECT nextval\('actor_attribute_snapshot_gen_seq`).
+		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(attrGen))
+	mock.ExpectExec(`DELETE FROM actor_attribute .*WHERE snapshot_gen < \$1`).
+		WithArgs(attrGen).
+		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+}
+
 // --- LoadAll happy path ---------------------------------------------------
 
 // TestActorsRepo_LoadAll_HappyPath — full-shape actor with all nullable
@@ -230,6 +298,7 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 			AddRow(actA, "coin_purse", 1))
 
 	expectLoadAllContinuityEmpty(mock)
+	expectLoadAllSlice3Empty(mock)
 
 	got, err := repo.LoadAll(context.Background())
 	if err != nil {
@@ -459,6 +528,7 @@ func TestActorsRepo_SaveSnapshot_FullActor(t *testing.T) {
 		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
 
 	expectActorContinuityTailsEmpty(mock, 401, 501, 601)
+	expectActorSlice3TailsEmpty(mock, 4001, 5001, 6001, 7001)
 
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
@@ -525,6 +595,7 @@ func TestActorsRepo_SaveSnapshot_BareActor(t *testing.T) {
 
 	expectActorSaveSnapshotChildTails(mock, 202, 302)
 	expectActorContinuityTailsEmpty(mock, 402, 502, 602)
+	expectActorSlice3TailsEmpty(mock, 4002, 5002, 6002, 7002)
 
 	actors := map[sim.ActorID]*sim.Actor{
 		actB: {
@@ -562,6 +633,7 @@ func TestActorsRepo_SaveSnapshot_VisitorFiltered(t *testing.T) {
 		WillReturnResult(pgconn.NewCommandTag("DELETE 1"))
 	expectActorSaveSnapshotChildTails(mock, 203, 303)
 	expectActorContinuityTailsEmpty(mock, 403, 503, 603)
+	expectActorSlice3TailsEmpty(mock, 4003, 5003, 6003, 7003)
 
 	actors := map[sim.ActorID]*sim.Actor{
 		actV: {
@@ -592,6 +664,7 @@ func TestActorsRepo_SaveSnapshot_EmptyMap(t *testing.T) {
 		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
 	expectActorSaveSnapshotChildTails(mock, 204, 304)
 	expectActorContinuityTailsEmpty(mock, 404, 504, 604)
+	expectActorSlice3TailsEmpty(mock, 4004, 5004, 6004, 7004)
 
 	if err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, map[sim.ActorID]*sim.Actor{}); err != nil {
 		t.Fatalf("SaveSnapshot: %v", err)
@@ -645,6 +718,7 @@ func TestActorsRepo_SaveSnapshot_ZeroQtyInventoryDropped(t *testing.T) {
 		WillReturnResult(pgconn.NewCommandTag("DELETE 1")) // bread row swept
 
 	expectActorContinuityTailsEmpty(mock, 405, 505, 605)
+	expectActorSlice3TailsEmpty(mock, 4005, 5005, 6005, 7005)
 
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
@@ -956,6 +1030,7 @@ func TestActorsRepo_LoadAll_Continuity(t *testing.T) {
 	mock.ExpectQuery(`FROM npc_acquaintance\b`).
 		WillReturnRows(pgxmock.NewRows(acquaintanceColumns()).
 			AddRow(actA, "Goodwife Smith", tsTickedAt))
+	expectLoadAllSlice3Empty(mock)
 
 	got, err := repo.LoadAll(context.Background())
 	if err != nil {
@@ -1176,6 +1251,7 @@ func TestActorsRepo_SaveSnapshot_Continuity(t *testing.T) {
 	mock.ExpectExec(`DELETE FROM npc_acquaintance .*WHERE snapshot_gen < \$1`).
 		WithArgs(int64(1201)).
 		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+	expectActorSlice3TailsEmpty(mock, 1301, 1401, 1501, 1601)
 
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
@@ -1261,6 +1337,7 @@ func TestActorsRepo_SaveSnapshot_EmptySalientFacts(t *testing.T) {
 	mock.ExpectExec(`DELETE FROM npc_acquaintance .*WHERE snapshot_gen < \$1`).
 		WithArgs(int64(1202)).
 		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+	expectActorSlice3TailsEmpty(mock, 1302, 1402, 1502, 1602)
 
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
@@ -1398,6 +1475,7 @@ func TestActorsRepo_SaveSnapshot_AcquaintanceMultibyteWithinLimit(t *testing.T) 
 	mock.ExpectExec(`DELETE FROM npc_acquaintance .*WHERE snapshot_gen < \$1`).
 		WithArgs(int64(1206)).
 		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+	expectActorSlice3TailsEmpty(mock, 1306, 1406, 1506, 1606)
 
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
@@ -1428,7 +1506,437 @@ func TestActorsRepo_SaveSnapshot_AcquaintanceOverLongRunes(t *testing.T) {
 	assertValidationOnly(t, mock, err, "exceeds 100 chars")
 }
 
+// --- Slice 3 (ZBBS-WORK-245): dwell / produce / room_access / attribute ---
+
+// TestActorsRepo_LoadAll_Slice3 — round-trips one of each Slice 3 child
+// onto a bare actor: an object-source and an item-source dwell credit
+// (covering the remaining_ticks NULL/non-NULL pairing + the Kind-not-
+// persisted gap), a produce-state anchor, a ledger room-access grant and
+// a staff one (covering the Source derivation from granted_via_ledger_id),
+// and a raw attribute blob.
+func TestActorsRepo_LoadAll_Slice3(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+
+	mock.ExpectQuery(`FROM actor\b`).WillReturnRows(oneBareActorRows())
+	mock.ExpectQuery(`FROM actor_need\b`).WillReturnRows(emptyNeedRows())
+	mock.ExpectQuery(`FROM actor_inventory\b`).WillReturnRows(emptyInvRows())
+	expectLoadAllContinuityEmpty(mock)
+
+	rem := 3
+	mock.ExpectQuery(`FROM actor_dwell_credit\b`).
+		WillReturnRows(pgxmock.NewRows(dwellCreditColumns()).
+			AddRow(actA, objX, "tiredness", "object", tsTickedAt, (*int)(nil), -2, 10).
+			AddRow(actA, objX, "hunger", "item", tsBreak, &rem, -1, 5))
+	mock.ExpectQuery(`FROM actor_produce_state\b`).
+		WillReturnRows(pgxmock.NewRows(produceStateColumns()).
+			AddRow(actA, "bread", &tsTickedAt))
+	mock.ExpectQuery(`FROM room_access\b`).
+		WillReturnRows(pgxmock.NewRows(roomAccessColumns()).
+			AddRow(actA, int64(42), ptrInt64(77), tsEntered, &tsSleep, true).
+			AddRow(actA, int64(7), (*int64)(nil), tsEntered, (*time.Time)(nil), true))
+	mock.ExpectQuery(`FROM actor_attribute\b`).
+		WillReturnRows(pgxmock.NewRows(attributeColumns()).
+			AddRow(actA, "businessowner", []byte(`{"flavor":"flamboyant"}`)))
+
+	actors, err := repo.LoadAll(context.Background())
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	a := actors[actA]
+	if a == nil {
+		t.Fatal("actA missing")
+	}
+
+	// Dwell credits.
+	objKey := sim.DwellCreditKey{ObjectID: objX, Attribute: "tiredness", Source: sim.DwellSourceObject}
+	itemKey := sim.DwellCreditKey{ObjectID: objX, Attribute: "hunger", Source: sim.DwellSourceItem}
+	if dc := a.DwellCredits[objKey]; dc == nil {
+		t.Fatal("object-source dwell credit missing")
+	} else if dc.RemainingTicks != nil || dc.DwellDelta != -2 || dc.DwellPeriodMinutes != 10 {
+		t.Errorf("object dwell = %+v", dc)
+	}
+	if dc := a.DwellCredits[itemKey]; dc == nil {
+		t.Fatal("item-source dwell credit missing")
+	} else {
+		if dc.RemainingTicks == nil || *dc.RemainingTicks != 3 {
+			t.Errorf("item dwell remaining = %v, want 3", dc.RemainingTicks)
+		}
+		if dc.Kind != "" {
+			t.Errorf("item dwell Kind = %q, want empty (not persisted)", dc.Kind)
+		}
+	}
+
+	// Produce state.
+	if ps := a.ProduceState["bread"]; ps == nil || !ps.LastProducedAt.Equal(tsTickedAt) {
+		t.Errorf("produce state bread = %+v", ps)
+	}
+
+	// Room access — ledger Source derived from non-NULL ledger id, staff
+	// from NULL.
+	ledgerKey := sim.RoomAccessKey{RoomID: 42, Source: sim.AccessSourceLedger}
+	staffKey := sim.RoomAccessKey{RoomID: 7, Source: sim.AccessSourceStaff}
+	if ra := a.RoomAccess[ledgerKey]; ra == nil || ra.LedgerID != 77 || !ra.Active {
+		t.Errorf("ledger room access = %+v", ra)
+	}
+	if ra := a.RoomAccess[staffKey]; ra == nil || ra.LedgerID != 0 {
+		t.Errorf("staff room access = %+v", ra)
+	}
+
+	// Attribute raw bytes carried verbatim.
+	if got := string(a.Attributes["businessowner"]); got != `{"flavor":"flamboyant"}` {
+		t.Errorf("attribute params = %q", got)
+	}
+}
+
+// TestActorsRepo_LoadAll_OrphanDwellCredit — a dwell credit whose actor is
+// absent from the parent set is a hard error (schema drift / out-of-band).
+func TestActorsRepo_LoadAll_OrphanDwellCredit(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+
+	mock.ExpectQuery(`FROM actor\b`).WillReturnRows(pgxmock.NewRows(actorParentColumns()))
+	mock.ExpectQuery(`FROM actor_need\b`).WillReturnRows(emptyNeedRows())
+	mock.ExpectQuery(`FROM actor_inventory\b`).WillReturnRows(emptyInvRows())
+	expectLoadAllContinuityEmpty(mock)
+	mock.ExpectQuery(`FROM actor_dwell_credit\b`).
+		WillReturnRows(pgxmock.NewRows(dwellCreditColumns()).
+			AddRow(actA, objX, "hunger", "object", tsTickedAt, (*int)(nil), -1, 5))
+
+	_, err := repo.LoadAll(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "orphan dwell credit") {
+		t.Fatalf("err = %v, want orphan dwell credit", err)
+	}
+}
+
+// TestActorsRepo_LoadAll_DwellCreditShapeRejected — load enforces the same
+// remaining↔source pairing the baseline CHECK does: an object-source row
+// with a non-NULL remaining_ticks is rejected.
+func TestActorsRepo_LoadAll_DwellCreditShapeRejected(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+
+	mock.ExpectQuery(`FROM actor\b`).WillReturnRows(oneBareActorRows())
+	mock.ExpectQuery(`FROM actor_need\b`).WillReturnRows(emptyNeedRows())
+	mock.ExpectQuery(`FROM actor_inventory\b`).WillReturnRows(emptyInvRows())
+	expectLoadAllContinuityEmpty(mock)
+	bad := 4
+	mock.ExpectQuery(`FROM actor_dwell_credit\b`).
+		WillReturnRows(pgxmock.NewRows(dwellCreditColumns()).
+			AddRow(actA, objX, "hunger", "object", tsTickedAt, &bad, -1, 5))
+
+	_, err := repo.LoadAll(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "non-nil remaining_ticks") {
+		t.Fatalf("err = %v, want non-nil remaining_ticks", err)
+	}
+}
+
+// TestActorsRepo_LoadAll_RoomAccessNonPositiveLedger — a row with a
+// non-NULL but non-positive granted_via_ledger_id derives source=ledger
+// yet stores an invalid LedgerID; load rejects it symmetrically with Save
+// (R1 finding 1).
+func TestActorsRepo_LoadAll_RoomAccessNonPositiveLedger(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+
+	mock.ExpectQuery(`FROM actor\b`).WillReturnRows(oneBareActorRows())
+	mock.ExpectQuery(`FROM actor_need\b`).WillReturnRows(emptyNeedRows())
+	mock.ExpectQuery(`FROM actor_inventory\b`).WillReturnRows(emptyInvRows())
+	expectLoadAllContinuityEmpty(mock)
+	mock.ExpectQuery(`FROM actor_dwell_credit\b`).WillReturnRows(emptyDwellRows())
+	mock.ExpectQuery(`FROM actor_produce_state\b`).WillReturnRows(emptyProduceRows())
+	mock.ExpectQuery(`FROM room_access\b`).
+		WillReturnRows(pgxmock.NewRows(roomAccessColumns()).
+			AddRow(actA, int64(42), ptrInt64(0), tsEntered, (*time.Time)(nil), true))
+
+	_, err := repo.LoadAll(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "non-positive ledger id") {
+		t.Fatalf("err = %v, want non-positive ledger id", err)
+	}
+}
+
+// TestActorsRepo_LoadAll_AttributeInvalidJSON — load enforces JSON validity
+// on params symmetrically with Save (R1 finding 2).
+func TestActorsRepo_LoadAll_AttributeInvalidJSON(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+
+	mock.ExpectQuery(`FROM actor\b`).WillReturnRows(oneBareActorRows())
+	mock.ExpectQuery(`FROM actor_need\b`).WillReturnRows(emptyNeedRows())
+	mock.ExpectQuery(`FROM actor_inventory\b`).WillReturnRows(emptyInvRows())
+	expectLoadAllContinuityEmpty(mock)
+	mock.ExpectQuery(`FROM actor_dwell_credit\b`).WillReturnRows(emptyDwellRows())
+	mock.ExpectQuery(`FROM actor_produce_state\b`).WillReturnRows(emptyProduceRows())
+	mock.ExpectQuery(`FROM room_access\b`).WillReturnRows(emptyRoomAccessRows())
+	mock.ExpectQuery(`FROM actor_attribute\b`).
+		WillReturnRows(pgxmock.NewRows(attributeColumns()).
+			AddRow(actA, "businessowner", []byte("{not json")))
+
+	_, err := repo.LoadAll(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "invalid JSON params") {
+		t.Fatalf("err = %v, want invalid JSON params", err)
+	}
+}
+
+// TestActorsRepo_LoadAll_OrphanAttribute — an attribute row whose actor is
+// absent is a hard error. attribute is the last child loader, so all prior
+// child queries are programmed empty first.
+func TestActorsRepo_LoadAll_OrphanAttribute(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+
+	mock.ExpectQuery(`FROM actor\b`).WillReturnRows(pgxmock.NewRows(actorParentColumns()))
+	mock.ExpectQuery(`FROM actor_need\b`).WillReturnRows(emptyNeedRows())
+	mock.ExpectQuery(`FROM actor_inventory\b`).WillReturnRows(emptyInvRows())
+	expectLoadAllContinuityEmpty(mock)
+	mock.ExpectQuery(`FROM actor_dwell_credit\b`).WillReturnRows(emptyDwellRows())
+	mock.ExpectQuery(`FROM actor_produce_state\b`).WillReturnRows(emptyProduceRows())
+	mock.ExpectQuery(`FROM room_access\b`).WillReturnRows(emptyRoomAccessRows())
+	mock.ExpectQuery(`FROM actor_attribute\b`).
+		WillReturnRows(pgxmock.NewRows(attributeColumns()).
+			AddRow(actA, "businessowner", []byte(`{}`)))
+
+	_, err := repo.LoadAll(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "orphan attribute") {
+		t.Fatalf("err = %v, want orphan attribute", err)
+	}
+}
+
+// TestActorsRepo_SaveSnapshot_Slice3 — full write path for one of each
+// Slice 3 child (single-entry maps keep the UPSERT order deterministic
+// under pgxmock's ordered matching). Asserts SQL shape + arg bindings
+// including kind synthesis (ledger→private) and the jsonb params cast.
+func TestActorsRepo_SaveSnapshot_Slice3(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+
+	expectActorSaveSnapshotPrelude(mock, 710)
+	mock.ExpectExec(`INSERT INTO actor `).
+		WithArgs(
+			actA, "Hannah", 0, 0,
+			nil, nil, nil,
+			nil, nil,
+			20, nil, nil, nil,
+			nil, nil,
+			(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
+			nil, (*time.Time)(nil),
+			int64(0), "idle", tsEntered,
+			int64(710),
+		).
+		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
+	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
+		WithArgs(int64(710)).
+		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+	expectActorSaveSnapshotChildTails(mock, 810, 910)
+	expectActorContinuityTailsEmpty(mock, 410, 510, 610)
+
+	// Dwell credit tier (one item-source credit).
+	rem := 3
+	mock.ExpectQuery(`SELECT nextval\('actor_dwell_credit_snapshot_gen_seq`).
+		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(int64(1110)))
+	mock.ExpectExec(`INSERT INTO actor_dwell_credit `).
+		WithArgs(actA, objX, "hunger", "item", tsTickedAt, &rem, -1, 5, int64(1110)).
+		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
+	mock.ExpectExec(`DELETE FROM actor_dwell_credit .*WHERE snapshot_gen < \$1`).
+		WithArgs(int64(1110)).
+		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+
+	// Produce state tier.
+	mock.ExpectQuery(`SELECT nextval\('actor_produce_state_snapshot_gen_seq`).
+		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(int64(1210)))
+	mock.ExpectExec(`INSERT INTO actor_produce_state `).
+		WithArgs(actA, "bread", tsTickedAt, int64(1210)).
+		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
+	mock.ExpectExec(`DELETE FROM actor_produce_state .*WHERE snapshot_gen < \$1`).
+		WithArgs(int64(1210)).
+		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+
+	// Room access tier (ledger grant → kind synthesized as private).
+	mock.ExpectQuery(`SELECT nextval\('room_access_snapshot_gen_seq`).
+		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(int64(1310)))
+	mock.ExpectExec(`INSERT INTO room_access `).
+		WithArgs(int64(42), actA, int64(77), tsEntered, &tsSleep, "private", true, int64(1310)).
+		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
+	mock.ExpectExec(`DELETE FROM room_access .*WHERE snapshot_gen < \$1`).
+		WithArgs(int64(1310)).
+		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+
+	// Attribute tier (raw params written verbatim with the ::jsonb cast).
+	mock.ExpectQuery(`SELECT nextval\('actor_attribute_snapshot_gen_seq`).
+		WillReturnRows(pgxmock.NewRows([]string{"nextval"}).AddRow(int64(1410)))
+	mock.ExpectExec(`INSERT INTO actor_attribute `).
+		WithArgs(actA, "businessowner", `{"flavor":"flamboyant"}`, int64(1410)).
+		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
+	mock.ExpectExec(`DELETE FROM actor_attribute .*WHERE snapshot_gen < \$1`).
+		WithArgs(int64(1410)).
+		WillReturnResult(pgconn.NewCommandTag("DELETE 0"))
+
+	actors := map[sim.ActorID]*sim.Actor{
+		actA: {
+			ID: actA, DisplayName: "Hannah", Coins: 20, State: "idle", StateEnteredAt: tsEntered,
+			DwellCredits: map[sim.DwellCreditKey]*sim.DwellCredit{
+				{ObjectID: objX, Attribute: "hunger", Source: sim.DwellSourceItem}: {
+					ObjectID: objX, Attribute: "hunger", Source: sim.DwellSourceItem,
+					LastCreditedAt: tsTickedAt, RemainingTicks: &rem, DwellDelta: -1, DwellPeriodMinutes: 5,
+				},
+			},
+			ProduceState: map[sim.ItemKind]*sim.ProduceState{
+				"bread": {Item: "bread", LastProducedAt: tsTickedAt},
+			},
+			RoomAccess: map[sim.RoomAccessKey]*sim.RoomAccess{
+				{RoomID: 42, Source: sim.AccessSourceLedger}: {
+					RoomID: 42, Source: sim.AccessSourceLedger, LedgerID: 77,
+					ExpiresAt: &tsSleep, Active: true, CreatedAt: tsEntered,
+				},
+			},
+			Attributes: map[string][]byte{
+				"businessowner": []byte(`{"flavor":"flamboyant"}`),
+			},
+		},
+	}
+
+	if err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors); err != nil {
+		t.Fatalf("SaveSnapshot: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("expectations: %v", err)
+	}
+}
+
+// TestActorsRepo_SaveSnapshot_DwellCreditItemNilRemaining — an item-source
+// credit must carry a remaining_ticks countdown (pre-pass rejection,
+// mirrors the baseline pairing CHECK).
+func TestActorsRepo_SaveSnapshot_DwellCreditItemNilRemaining(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+	actors := map[sim.ActorID]*sim.Actor{
+		actA: {
+			ID: actA, DisplayName: "X", State: "idle", StateEnteredAt: tsEntered,
+			DwellCredits: map[sim.DwellCreditKey]*sim.DwellCredit{
+				{ObjectID: objX, Attribute: "hunger", Source: sim.DwellSourceItem}: {
+					ObjectID: objX, Attribute: "hunger", Source: sim.DwellSourceItem,
+					LastCreditedAt: tsTickedAt, RemainingTicks: nil, DwellDelta: -1, DwellPeriodMinutes: 5,
+				},
+			},
+		},
+	}
+	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
+	assertValidationOnly(t, mock, err, "nil remaining_ticks")
+}
+
+// TestActorsRepo_SaveSnapshot_RoomAccessNonPositiveRoom — a room-access
+// key with room_id <= 0 is rejected (RoomID 0 is the "not in a room"
+// sentinel; a grant for it is corruption).
+func TestActorsRepo_SaveSnapshot_RoomAccessNonPositiveRoom(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+	actors := map[sim.ActorID]*sim.Actor{
+		actA: {
+			ID: actA, DisplayName: "X", State: "idle", StateEnteredAt: tsEntered,
+			RoomAccess: map[sim.RoomAccessKey]*sim.RoomAccess{
+				{RoomID: 0, Source: sim.AccessSourceLedger}: {
+					RoomID: 0, Source: sim.AccessSourceLedger, LedgerID: 1, CreatedAt: tsEntered,
+				},
+			},
+		},
+	}
+	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
+	assertValidationOnly(t, mock, err, "non-positive room_id")
+}
+
+// TestActorsRepo_SaveSnapshot_RoomAccessLedgerMissingLedgerID — a ledger
+// grant must carry a positive LedgerID so the load-side Source derivation
+// (non-NULL ledger id ⇒ ledger) round-trips.
+func TestActorsRepo_SaveSnapshot_RoomAccessLedgerMissingLedgerID(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+	actors := map[sim.ActorID]*sim.Actor{
+		actA: {
+			ID: actA, DisplayName: "X", State: "idle", StateEnteredAt: tsEntered,
+			RoomAccess: map[sim.RoomAccessKey]*sim.RoomAccess{
+				{RoomID: 42, Source: sim.AccessSourceLedger}: {
+					RoomID: 42, Source: sim.AccessSourceLedger, LedgerID: 0, CreatedAt: tsEntered,
+				},
+			},
+		},
+	}
+	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
+	assertValidationOnly(t, mock, err, "non-positive ledger id")
+}
+
+// TestActorsRepo_SaveSnapshot_RoomAccessDuplicateActivePrivate — two actors
+// each holding an active ledger (private) grant for the same room violates
+// ux_room_access_one_private_active; the cross-actor pre-pass guard rejects
+// it before any UPSERT (R1 finding 5).
+func TestActorsRepo_SaveSnapshot_RoomAccessDuplicateActivePrivate(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+	actors := map[sim.ActorID]*sim.Actor{
+		actA: {
+			ID: actA, DisplayName: "A", State: "idle", StateEnteredAt: tsEntered,
+			RoomAccess: map[sim.RoomAccessKey]*sim.RoomAccess{
+				{RoomID: 42, Source: sim.AccessSourceLedger}: {
+					RoomID: 42, Source: sim.AccessSourceLedger, LedgerID: 77, Active: true, CreatedAt: tsEntered,
+				},
+			},
+		},
+		actB: {
+			ID: actB, DisplayName: "B", State: "idle", StateEnteredAt: tsEntered,
+			RoomAccess: map[sim.RoomAccessKey]*sim.RoomAccess{
+				{RoomID: 42, Source: sim.AccessSourceLedger}: {
+					RoomID: 42, Source: sim.AccessSourceLedger, LedgerID: 88, Active: true, CreatedAt: tsEntered,
+				},
+			},
+		},
+	}
+	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
+	assertValidationOnly(t, mock, err, "active ledger (private) grant for room")
+}
+
+// TestActorsRepo_SaveSnapshot_RoomAccessDuplicateRoom — two in-memory
+// grants for the same room under different sources would collide on the
+// (room_id, actor_id) PK; the pre-pass rejects it.
+func TestActorsRepo_SaveSnapshot_RoomAccessDuplicateRoom(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+	actors := map[sim.ActorID]*sim.Actor{
+		actA: {
+			ID: actA, DisplayName: "X", State: "idle", StateEnteredAt: tsEntered,
+			RoomAccess: map[sim.RoomAccessKey]*sim.RoomAccess{
+				{RoomID: 42, Source: sim.AccessSourceLedger}: {
+					RoomID: 42, Source: sim.AccessSourceLedger, LedgerID: 77, CreatedAt: tsEntered,
+				},
+				{RoomID: 42, Source: sim.AccessSourceStaff}: {
+					RoomID: 42, Source: sim.AccessSourceStaff, LedgerID: 0, CreatedAt: tsEntered,
+				},
+			},
+		},
+	}
+	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
+	assertValidationOnly(t, mock, err, "two room-access entries for room")
+}
+
+// TestActorsRepo_SaveSnapshot_AttributeInvalidJSON — a params blob that
+// isn't valid JSON would trip the ::jsonb cast mid-Tx; reject in the
+// pre-pass for a clean error.
+func TestActorsRepo_SaveSnapshot_AttributeInvalidJSON(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+	actors := map[sim.ActorID]*sim.Actor{
+		actA: {
+			ID: actA, DisplayName: "X", State: "idle", StateEnteredAt: tsEntered,
+			Attributes: map[string][]byte{"businessowner": []byte("{not json")},
+		},
+	}
+	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
+	assertValidationOnly(t, mock, err, "invalid JSON params")
+}
+
+// TestActorsRepo_SaveSnapshot_AttributeOverLongSlug — slug exceeds
+// VARCHAR(64).
+func TestActorsRepo_SaveSnapshot_AttributeOverLongSlug(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+	actors := map[sim.ActorID]*sim.Actor{
+		actA: {
+			ID: actA, DisplayName: "X", State: "idle", StateEnteredAt: tsEntered,
+			Attributes: map[string][]byte{strings.Repeat("a", 65): []byte(`{}`)},
+		},
+	}
+	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
+	assertValidationOnly(t, mock, err, "exceeds 64 chars")
+}
+
 // --- helpers --------------------------------------------------------------
 
 // ptrStr returns &s as *string for AddRow nullable-column fixtures.
 func ptrStr(s string) *string { return &s }
+
+// ptrInt64 returns &v as *int64 for AddRow nullable-column fixtures.
+func ptrInt64(v int64) *int64 { return &v }

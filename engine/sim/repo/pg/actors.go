@@ -306,6 +306,139 @@ const nextGenRelationshipSQLA = `SELECT nextval('actor_relationship_snapshot_gen
 const nextGenNarrativeSQLA = `SELECT nextval('actor_narrative_state_snapshot_gen_seq')`
 const nextGenAcquaintanceSQLA = `SELECT nextval('npc_acquaintance_snapshot_gen_seq')`
 
+// --- Slice 3 final tier (dwell credit / produce state / room access / attribute) ---
+
+// loadAllDwellCreditsSQLA selects every actor_dwell_credit row. The
+// in-memory DwellCredit.Kind field has NO column in the v1 schema —
+// item-source credits store object_id (the structure-as-object id) but
+// not the originating item kind (see engine/dwell.go's INSERT). Faithful
+// port: Kind is left empty on load, matching v1 (which has nowhere to
+// read it from either). It regenerates only on the next item consume.
+const loadAllDwellCreditsSQLA = `
+SELECT
+    actor_id::text, object_id::text, attribute, source,
+    last_credited_at, remaining_ticks, dwell_delta, dwell_period_minutes
+  FROM actor_dwell_credit`
+
+// loadAllProduceStateSQLA selects every actor_produce_state row.
+// last_produced_at is nullable (the produce anchor before first run);
+// NULL maps to the Go zero time.Time.
+const loadAllProduceStateSQLA = `
+SELECT actor_id::text, item_kind, last_produced_at
+  FROM actor_produce_state`
+
+// loadAllRoomAccessSQLA selects every room_access row. `kind` is NOT
+// selected — it's the room category (common/private/staff), recomputed
+// by canEnterRoom from the loaded Room at access-check time, and is not
+// part of the in-memory RoomAccessKey. Source is DERIVED from
+// granted_via_ledger_id: a non-NULL ledger id means a paid lodging grant
+// (AccessSourceLedger); NULL means staff (AccessSourceStaff, which the
+// engine normally derives from WorkStructureID and rarely persists). See
+// the actors-pg codebase note for the reconciliation rationale.
+const loadAllRoomAccessSQLA = `
+SELECT
+    actor_id::text, room_id, granted_via_ledger_id,
+    granted_at, expires_at, active
+  FROM room_access`
+
+// loadAllAttributesSQLA selects every actor_attribute row. params is the
+// raw JSONB blob, carried verbatim into Actor.Attributes[slug]. created_at
+// is NOT selected — it's not modeled in-memory (the v1↔v2 column-scope
+// posture: untouched on UPDATE, schema default on INSERT). The
+// businessowner / restock projections are rebuilt from these raw rows in
+// a LoadWorld carry-forward pass, not here.
+const loadAllAttributesSQLA = `
+SELECT actor_id::text, slug, params
+  FROM actor_attribute`
+
+// upsertDwellCreditSQLA writes one actor_dwell_credit row. PK is
+// (actor_id, object_id, attribute, source). actor_id / object_id are
+// bound as plain strings — pgx encodes text→uuid via the column type
+// (Slice 1/2 precedent, no explicit cast). The baseline CHECKs
+// (dwell_delta < 0, dwell_period_minutes > 0, source allowlist,
+// remaining↔source pairing) are mirrored by the SaveSnapshot pre-pass so
+// a violation is a clean substrate rejection rather than a mid-Tx CHECK.
+const upsertDwellCreditSQLA = `
+INSERT INTO actor_dwell_credit (
+    actor_id, object_id, attribute, source,
+    last_credited_at, remaining_ticks, dwell_delta, dwell_period_minutes,
+    snapshot_gen
+) VALUES (
+    $1, $2, $3, $4,
+    $5, $6, $7, $8,
+    $9
+)
+ON CONFLICT (actor_id, object_id, attribute, source) DO UPDATE SET
+    last_credited_at     = EXCLUDED.last_credited_at,
+    remaining_ticks      = EXCLUDED.remaining_ticks,
+    dwell_delta          = EXCLUDED.dwell_delta,
+    dwell_period_minutes = EXCLUDED.dwell_period_minutes,
+    snapshot_gen         = EXCLUDED.snapshot_gen`
+
+// upsertProduceStateSQLA writes one actor_produce_state row. PK is
+// (actor_id, item_kind). last_produced_at is nilOnZeroTime'd — the Go
+// zero time round-trips through SQL NULL.
+const upsertProduceStateSQLA = `
+INSERT INTO actor_produce_state (
+    actor_id, item_kind, last_produced_at, snapshot_gen
+) VALUES (
+    $1, $2, $3, $4
+)
+ON CONFLICT (actor_id, item_kind) DO UPDATE SET
+    last_produced_at = EXCLUDED.last_produced_at,
+    snapshot_gen     = EXCLUDED.snapshot_gen`
+
+// upsertRoomAccessSQLA writes one room_access row. PK is
+// (room_id, actor_id) — so an actor holds at most ONE row per room
+// regardless of source (the SaveSnapshot pre-pass rejects two in-memory
+// entries for the same room under different sources). `kind` is NOT NULL
+// with no default, so it is SYNTHESIZED from Source: ledger→'private'
+// (paid bedroom), staff→'staff'. granted_at is written from CreatedAt
+// verbatim (faithful mirror); granted_via_ledger_id is non-NULL exactly
+// for ledger grants (the load-side Source derivation depends on this).
+const upsertRoomAccessSQLA = `
+INSERT INTO room_access (
+    room_id, actor_id, granted_via_ledger_id,
+    granted_at, expires_at, kind, active, snapshot_gen
+) VALUES (
+    $1, $2, $3,
+    $4, $5, $6::room_kind, $7, $8
+)
+ON CONFLICT (room_id, actor_id) DO UPDATE SET
+    granted_via_ledger_id = EXCLUDED.granted_via_ledger_id,
+    granted_at            = EXCLUDED.granted_at,
+    expires_at            = EXCLUDED.expires_at,
+    kind                  = EXCLUDED.kind,
+    active                = EXCLUDED.active,
+    snapshot_gen          = EXCLUDED.snapshot_gen`
+
+// upsertAttributeSQLA writes one actor_attribute row. PK is
+// (actor_id, slug). created_at is deliberately omitted from BOTH the
+// INSERT column list (falls back to schema DEFAULT now() on new rows)
+// AND the ON CONFLICT SET (existing rows keep their original created_at)
+// — same v1↔v2 column-scope posture as the parent actor row. params is
+// bound as text + cast to jsonb (pgx encodes a Go string as text; the
+// explicit ::jsonb cast is unambiguous).
+const upsertAttributeSQLA = `
+INSERT INTO actor_attribute (
+    actor_id, slug, params, snapshot_gen
+) VALUES (
+    $1, $2, $3::jsonb, $4
+)
+ON CONFLICT (actor_id, slug) DO UPDATE SET
+    params       = EXCLUDED.params,
+    snapshot_gen = EXCLUDED.snapshot_gen`
+
+const deleteStaleDwellCreditSQLA = `DELETE FROM actor_dwell_credit  WHERE snapshot_gen < $1`
+const deleteStaleProduceStateSQLA = `DELETE FROM actor_produce_state WHERE snapshot_gen < $1`
+const deleteStaleRoomAccessSQLA = `DELETE FROM room_access         WHERE snapshot_gen < $1`
+const deleteStaleAttributeSQLA = `DELETE FROM actor_attribute     WHERE snapshot_gen < $1`
+
+const nextGenDwellCreditSQLA = `SELECT nextval('actor_dwell_credit_snapshot_gen_seq')`
+const nextGenProduceStateSQLA = `SELECT nextval('actor_produce_state_snapshot_gen_seq')`
+const nextGenRoomAccessSQLA = `SELECT nextval('room_access_snapshot_gen_seq')`
+const nextGenAttributeSQLA = `SELECT nextval('actor_attribute_snapshot_gen_seq')`
+
 // LoadAll loads every actor row plus its needs and inventory children.
 //
 // Runs against the pool directly (no Tx — read-only restart path).
@@ -401,6 +534,10 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			Inventory:          make(map[sim.ItemKind]int),
 			Relationships:      make(map[sim.ActorID]*sim.Relationship),
 			Acquaintances:      make(map[string]sim.Acquaintance),
+			DwellCredits:       make(map[sim.DwellCreditKey]*sim.DwellCredit),
+			ProduceState:       make(map[sim.ItemKind]*sim.ProduceState),
+			RoomAccess:         make(map[sim.RoomAccessKey]*sim.RoomAccess),
+			Attributes:         make(map[string][]byte),
 		}
 		out[a.ID] = a
 	}
@@ -421,6 +558,18 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 		return nil, err
 	}
 	if err := r.loadAllAcquaintances(ctx, out); err != nil {
+		return nil, err
+	}
+	if err := r.loadAllDwellCredits(ctx, out); err != nil {
+		return nil, err
+	}
+	if err := r.loadAllProduceState(ctx, out); err != nil {
+		return nil, err
+	}
+	if err := r.loadAllRoomAccess(ctx, out); err != nil {
+		return nil, err
+	}
+	if err := r.loadAllAttributes(ctx, out); err != nil {
 		return nil, err
 	}
 	return out, nil
@@ -655,7 +804,217 @@ func (r *ActorsRepo) loadAllAcquaintances(ctx context.Context, actors map[sim.Ac
 	return nil
 }
 
-// SaveSnapshot writes the full actor aggregate (six tiers) durably
+// loadAllDwellCredits reads every actor_dwell_credit row and attaches it
+// to the owning actor's DwellCredits map (keyed by object+attribute+
+// source). Orphan rows return an error. Load-side shape validation is
+// symmetric with SaveSnapshot's pre-pass — v2's posture is "Go owns the
+// invariants," so Load enforces the same shape the baseline CHECKs would,
+// surfacing out-of-band / legacy bad rows as clean errors.
+func (r *ActorsRepo) loadAllDwellCredits(ctx context.Context, actors map[sim.ActorID]*sim.Actor) error {
+	rows, err := r.pool.Query(ctx, loadAllDwellCreditsSQLA)
+	if err != nil {
+		return fmt.Errorf("pg actors LoadAll dwell credits query: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			actorID            string
+			objectID           string
+			attribute          string
+			source             string
+			lastCreditedAt     time.Time
+			remainingTicks     *int
+			dwellDelta         int
+			dwellPeriodMinutes int
+		)
+		if err := rows.Scan(
+			&actorID, &objectID, &attribute, &source,
+			&lastCreditedAt, &remainingTicks, &dwellDelta, &dwellPeriodMinutes,
+		); err != nil {
+			return fmt.Errorf("pg actors LoadAll dwell credits scan: %w", err)
+		}
+		parent, ok := actors[sim.ActorID(actorID)]
+		if !ok {
+			return fmt.Errorf("pg actors LoadAll: orphan dwell credit row actor_id=%s object=%s attr=%s (parent missing — schema drift or out-of-band write)",
+				actorID, objectID, attribute)
+		}
+		if err := validateDwellCreditShape(actorID, objectID, attribute, source, remainingTicks, dwellDelta, dwellPeriodMinutes); err != nil {
+			return fmt.Errorf("pg actors LoadAll: %w", err)
+		}
+		key := sim.DwellCreditKey{
+			ObjectID:  sim.VillageObjectID(objectID),
+			Attribute: sim.NeedKey(attribute),
+			Source:    sim.DwellCreditSource(source),
+		}
+		parent.DwellCredits[key] = &sim.DwellCredit{
+			ObjectID:           sim.VillageObjectID(objectID),
+			Attribute:          sim.NeedKey(attribute),
+			Source:             sim.DwellCreditSource(source),
+			LastCreditedAt:     lastCreditedAt,
+			RemainingTicks:     remainingTicks,
+			DwellDelta:         dwellDelta,
+			DwellPeriodMinutes: dwellPeriodMinutes,
+			// Kind is not persisted (no column); see loadAllDwellCreditsSQLA.
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("pg actors LoadAll dwell credits iter: %w", err)
+	}
+	return nil
+}
+
+// loadAllProduceState reads every actor_produce_state row and attaches it
+// to the owning actor's ProduceState map (keyed by item). Orphan rows
+// return an error. last_produced_at NULL → Go zero time.Time.
+func (r *ActorsRepo) loadAllProduceState(ctx context.Context, actors map[sim.ActorID]*sim.Actor) error {
+	rows, err := r.pool.Query(ctx, loadAllProduceStateSQLA)
+	if err != nil {
+		return fmt.Errorf("pg actors LoadAll produce state query: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			actorID        string
+			itemKind       string
+			lastProducedAt *time.Time
+		)
+		if err := rows.Scan(&actorID, &itemKind, &lastProducedAt); err != nil {
+			return fmt.Errorf("pg actors LoadAll produce state scan: %w", err)
+		}
+		parent, ok := actors[sim.ActorID(actorID)]
+		if !ok {
+			return fmt.Errorf("pg actors LoadAll: orphan produce state row actor_id=%s item=%s (parent missing — schema drift or out-of-band write)",
+				actorID, itemKind)
+		}
+		if strings.TrimSpace(itemKind) == "" {
+			return fmt.Errorf("pg actors LoadAll: produce state actor_id=%s has empty item_kind", actorID)
+		}
+		parent.ProduceState[sim.ItemKind(itemKind)] = &sim.ProduceState{
+			Item:           sim.ItemKind(itemKind),
+			LastProducedAt: derefTime(lastProducedAt),
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("pg actors LoadAll produce state iter: %w", err)
+	}
+	return nil
+}
+
+// loadAllRoomAccess reads every room_access row and attaches it to the
+// owning actor's RoomAccess map (keyed by room+source). Orphan rows
+// return an error. Source is derived from granted_via_ledger_id:
+// non-NULL → ledger (with LedgerID); NULL → staff. `kind` is intentionally
+// not read (canEnterRoom recomputes room category from the Room).
+func (r *ActorsRepo) loadAllRoomAccess(ctx context.Context, actors map[sim.ActorID]*sim.Actor) error {
+	rows, err := r.pool.Query(ctx, loadAllRoomAccessSQLA)
+	if err != nil {
+		return fmt.Errorf("pg actors LoadAll room access query: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			actorID            string
+			roomID             int64
+			grantedViaLedgerID *int64
+			grantedAt          time.Time
+			expiresAt          *time.Time
+			active             bool
+		)
+		if err := rows.Scan(&actorID, &roomID, &grantedViaLedgerID, &grantedAt, &expiresAt, &active); err != nil {
+			return fmt.Errorf("pg actors LoadAll room access scan: %w", err)
+		}
+		parent, ok := actors[sim.ActorID(actorID)]
+		if !ok {
+			return fmt.Errorf("pg actors LoadAll: orphan room access row actor_id=%s room_id=%d (parent missing — schema drift or out-of-band write)",
+				actorID, roomID)
+		}
+		source := sim.AccessSourceStaff
+		var ledgerID int64
+		if grantedViaLedgerID != nil {
+			source = sim.AccessSourceLedger
+			ledgerID = *grantedViaLedgerID
+		}
+		// Shape validation symmetric with SaveSnapshot — a non-positive
+		// granted_via_ledger_id derives source=ledger but stores an invalid
+		// LedgerID, which Save would reject; catch it on load too.
+		if err := validateRoomAccessShape(roomID, source, ledgerID); err != nil {
+			return fmt.Errorf("pg actors LoadAll: actor_id=%s %w", actorID, err)
+		}
+		key := sim.RoomAccessKey{RoomID: sim.RoomID(roomID), Source: source}
+		if _, exists := parent.RoomAccess[key]; exists {
+			return fmt.Errorf("pg actors LoadAll: duplicate room access actor_id=%s room_id=%d source=%s (PK is (room_id, actor_id) — schema drift or out-of-band write)",
+				actorID, roomID, source)
+		}
+		parent.RoomAccess[key] = &sim.RoomAccess{
+			RoomID:    sim.RoomID(roomID),
+			Source:    source,
+			LedgerID:  ledgerID,
+			ExpiresAt: expiresAt,
+			Active:    active,
+			CreatedAt: grantedAt,
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("pg actors LoadAll room access iter: %w", err)
+	}
+	return nil
+}
+
+// loadAllAttributes reads every actor_attribute row and attaches the raw
+// params JSONB to the owning actor's Attributes map (keyed by slug).
+// Orphan rows return an error. The repo stays a dumb mirror — the
+// businessowner / restock projections are rebuilt from these raw rows in
+// a LoadWorld carry-forward pass.
+func (r *ActorsRepo) loadAllAttributes(ctx context.Context, actors map[sim.ActorID]*sim.Actor) error {
+	rows, err := r.pool.Query(ctx, loadAllAttributesSQLA)
+	if err != nil {
+		return fmt.Errorf("pg actors LoadAll attributes query: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			actorID string
+			slug    string
+			params  []byte
+		)
+		if err := rows.Scan(&actorID, &slug, &params); err != nil {
+			return fmt.Errorf("pg actors LoadAll attributes scan: %w", err)
+		}
+		parent, ok := actors[sim.ActorID(actorID)]
+		if !ok {
+			return fmt.Errorf("pg actors LoadAll: orphan attribute row actor_id=%s slug=%s (parent missing — schema drift or out-of-band write)",
+				actorID, slug)
+		}
+		if strings.TrimSpace(slug) == "" {
+			return fmt.Errorf("pg actors LoadAll: attribute actor_id=%s has empty slug", actorID)
+		}
+		// Shape validation symmetric with SaveSnapshot (slug ≤ VARCHAR(64),
+		// params valid JSON). DB-origin jsonb rows are always valid, but
+		// this catches legacy / out-of-band drift before it survives into
+		// the projection rebuild or a later checkpoint.
+		if utf8.RuneCountInString(slug) > 64 {
+			return fmt.Errorf("pg actors LoadAll: attribute actor_id=%s slug=%q exceeds 64 chars", actorID, slug)
+		}
+		if len(params) > 0 && !json.Valid(params) {
+			return fmt.Errorf("pg actors LoadAll: attribute actor_id=%s slug=%q has invalid JSON params", actorID, slug)
+		}
+		// Copy the scan buffer — pgx may reuse the underlying array across
+		// rows.Next() calls, so storing the slice directly would alias.
+		buf := make([]byte, len(params))
+		copy(buf, params)
+		parent.Attributes[slug] = buf
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("pg actors LoadAll attributes iter: %w", err)
+	}
+	return nil
+}
+
+// SaveSnapshot writes the full actor aggregate (ten tiers) durably
 // using the generation-marker pattern (Slice 9/10/11/12/13 standard).
 //
 // Visitor actors (VisitorState != nil) are filtered out entirely —
@@ -668,15 +1027,19 @@ func (r *ActorsRepo) loadAllAcquaintances(ctx context.Context, actors map[sim.Ac
 // Steps inside the caller's checkpoint Tx (order matters — validation
 // runs first so shape errors abort BEFORE the advisory lock; parent
 // settles before children sync). Each tier owns its own gen sequence;
-// all six share the one advisory lock:
+// all ten share the one advisory lock:
 //
 //  0. Pre-pass validation: nil entries, empty/whitespace IDs, map-key
 //     vs a.ID mismatch, empty DisplayName/State, zero StateEnteredAt,
 //     half-set / out-of-range schedule, need values out of range,
 //     empty need-key / inventory-kind, negative inventory, empty
 //     relationship peer key, self-relationship, negative relationship
-//     counts, empty / over-length acquaintance name.
-//  1. Advisory lock — shared by all six tables.
+//     counts, empty / over-length acquaintance name, dwell-credit shape
+//     (source allowlist, remaining↔source pairing, dwell_delta < 0,
+//     period > 0), empty produce item / item-key mismatch, room-access
+//     room>0 + source/ledger-id pairing + per-room single-source, empty
+//     attribute slug / over-length / invalid JSON params.
+//  1. Advisory lock — shared by all ten tables.
 //     2-4.   actor  : nextval → UPSERT → DELETE stale (FK CASCADE drops
 //     children of absent parents).
 //     5-7.   actor_need        : nextval → UPSERT → DELETE stale.
@@ -685,8 +1048,12 @@ func (r *ActorsRepo) loadAllAcquaintances(ctx context.Context, actors map[sim.Ac
 //     14-16. actor_narrative_state: nextval → UPSERT (skip nil Narrative)
 //     → DELETE.
 //     17-19. npc_acquaintance  : nextval → UPSERT → DELETE stale.
+//     20-22. actor_dwell_credit : nextval → UPSERT → DELETE stale.
+//     23-25. actor_produce_state: nextval → UPSERT (skip nil) → DELETE.
+//     26-28. room_access        : nextval → UPSERT (skip nil) → DELETE.
+//     29-31. actor_attribute    : nextval → UPSERT → DELETE stale.
 //
-// Empty actors map: all six gens still bump, no UPSERTs run, all six
+// Empty actors map: all ten gens still bump, no UPSERTs run, all ten
 // DELETEs sweep their tables.
 //
 // nil actor entries surface as an error (structures.go precedent;
@@ -715,6 +1082,15 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 	// would pgx-encode as a wrapped negative without ever tripping the
 	// SMALLINT range error. (Slice 1 R1 precedent.)
 	persisted := make([]*sim.Actor, 0, len(actors))
+	// activePrivateRooms tracks, across ALL persisted actors, which rooms
+	// already have an active ledger (→ private kind) grant. Enforces the
+	// ux_room_access_one_private_active partial unique index in Go so a
+	// double-occupancy snapshot surfaces as a clean pre-pass rejection
+	// rather than a mid-Tx unique-violation when the second active private
+	// row UPSERTs ahead of the stale DELETE (the gen-marker order is
+	// upsert-then-sweep). This is the robust guard the step-27 ordering
+	// comment relies on.
+	activePrivateRooms := make(map[sim.RoomID]sim.ActorID)
 	for key, a := range actors {
 		if a == nil {
 			return fmt.Errorf("pg actors SaveSnapshot: nil entry at map key=%s (use deletion via gen-marker absence, not nil)", key)
@@ -808,6 +1184,90 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 			// over the byte length while under the char limit.
 			if utf8.RuneCountInString(name) > 100 {
 				return fmt.Errorf("pg actors SaveSnapshot: id=%s acquaintance name=%q exceeds 100 chars", a.ID, name)
+			}
+		}
+		// Dwell credits: shape mirrors the baseline CHECKs (source allowlist,
+		// remaining↔source pairing, dwell_delta < 0, period > 0). The map key
+		// is the PK source of truth; the struct's redundant ObjectID/
+		// Attribute/Source must agree with it. nil values skipped at write.
+		for dk, dc := range a.DwellCredits {
+			if dc == nil {
+				continue
+			}
+			if dc.ObjectID != dk.ObjectID || dc.Attribute != dk.Attribute || dc.Source != dk.Source {
+				return fmt.Errorf("pg actors SaveSnapshot: id=%s dwell credit struct (obj=%s attr=%s src=%s) disagrees with map key (obj=%s attr=%s src=%s)",
+					a.ID, dc.ObjectID, dc.Attribute, dc.Source, dk.ObjectID, dk.Attribute, dk.Source)
+			}
+			if err := validateDwellCreditShape(string(a.ID), string(dk.ObjectID), string(dk.Attribute), string(dk.Source), dc.RemainingTicks, dc.DwellDelta, dc.DwellPeriodMinutes); err != nil {
+				return fmt.Errorf("pg actors SaveSnapshot: %w", err)
+			}
+			if dc.LastCreditedAt.IsZero() {
+				return fmt.Errorf("pg actors SaveSnapshot: id=%s dwell credit obj=%s attr=%s has zero LastCreditedAt (last_credited_at is NOT NULL)", a.ID, dk.ObjectID, dk.Attribute)
+			}
+		}
+		// Produce state: non-empty item key; struct Item must agree with key.
+		// nil values skipped at write.
+		for item, ps := range a.ProduceState {
+			if ps == nil {
+				continue
+			}
+			if strings.TrimSpace(string(item)) == "" {
+				return fmt.Errorf("pg actors SaveSnapshot: id=%s has empty produce-state item key", a.ID)
+			}
+			if ps.Item != "" && ps.Item != item {
+				return fmt.Errorf("pg actors SaveSnapshot: id=%s produce-state struct Item=%s disagrees with map key=%s", a.ID, ps.Item, item)
+			}
+		}
+		// Room access: struct must agree with key; source↔ledger-id pairing
+		// (shared with the load derivation via validateRoomAccessShape);
+		// CreatedAt non-zero (granted_at is NOT NULL). The table PK is
+		// (room_id, actor_id), so two in-memory entries for the same room
+		// under different sources would collide on UPSERT — reject that
+		// here. The cross-actor activePrivateRooms guard enforces the
+		// single-active-private-occupant index. nil skipped at write.
+		seenRooms := make(map[sim.RoomID]sim.RoomAccessSource)
+		for rk, ra := range a.RoomAccess {
+			if ra == nil {
+				continue
+			}
+			if ra.RoomID != rk.RoomID || ra.Source != rk.Source {
+				return fmt.Errorf("pg actors SaveSnapshot: id=%s room-access struct (room=%d src=%s) disagrees with map key (room=%d src=%s)",
+					a.ID, ra.RoomID, ra.Source, rk.RoomID, rk.Source)
+			}
+			if err := validateRoomAccessShape(int64(rk.RoomID), rk.Source, ra.LedgerID); err != nil {
+				return fmt.Errorf("pg actors SaveSnapshot: id=%s %w", a.ID, err)
+			}
+			if prior, dup := seenRooms[rk.RoomID]; dup {
+				return fmt.Errorf("pg actors SaveSnapshot: id=%s has two room-access entries for room=%d (sources %s and %s) — PK (room_id, actor_id) holds one row per room",
+					a.ID, rk.RoomID, prior, rk.Source)
+			}
+			seenRooms[rk.RoomID] = rk.Source
+			if ra.CreatedAt.IsZero() {
+				return fmt.Errorf("pg actors SaveSnapshot: id=%s room-access room=%d has zero CreatedAt (granted_at is NOT NULL)", a.ID, rk.RoomID)
+			}
+			// Single active private occupant per room (ux_room_access_one_
+			// private_active): ledger grants map to kind=private; an active
+			// one claims the room. Reject a second claimant up front.
+			if rk.Source == sim.AccessSourceLedger && ra.Active {
+				if prior, taken := activePrivateRooms[rk.RoomID]; taken {
+					return fmt.Errorf("pg actors SaveSnapshot: two actors hold an active ledger (private) grant for room=%d (%s and %s) — violates ux_room_access_one_private_active",
+						rk.RoomID, prior, a.ID)
+				}
+				activePrivateRooms[rk.RoomID] = a.ID
+			}
+		}
+		// Attributes: slug non-empty/non-whitespace and within VARCHAR(64);
+		// params must be valid JSON (the column is jsonb; an invalid blob
+		// would trip the ::jsonb cast mid-Tx).
+		for slug, params := range a.Attributes {
+			if strings.TrimSpace(slug) == "" {
+				return fmt.Errorf("pg actors SaveSnapshot: id=%s has empty attribute slug", a.ID)
+			}
+			if utf8.RuneCountInString(slug) > 64 {
+				return fmt.Errorf("pg actors SaveSnapshot: id=%s attribute slug=%q exceeds 64 chars", a.ID, slug)
+			}
+			if len(params) > 0 && !json.Valid(params) {
+				return fmt.Errorf("pg actors SaveSnapshot: id=%s attribute slug=%q has invalid JSON params", a.ID, slug)
 			}
 		}
 		persisted = append(persisted, a)
@@ -1021,6 +1481,138 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 	if _, err := tx.Exec(ctx, deleteStaleAcquaintanceSQLA, acqGen); err != nil {
 		return fmt.Errorf("pg actors SaveSnapshot: delete stale acquaintance: %w", err)
 	}
+
+	// Step 20: dwell-credit gen — independent tier (Slice 3).
+	var dwellGen int64
+	if err := tx.QueryRow(ctx, nextGenDwellCreditSQLA).Scan(&dwellGen); err != nil {
+		return fmt.Errorf("pg actors SaveSnapshot: nextval dwell credit: %w", err)
+	}
+
+	// Step 21: upsert each dwell credit. nil entries skipped (pre-pass
+	// validated the rest). The map key supplies the PK columns.
+	for _, a := range persisted {
+		for dk, dc := range a.DwellCredits {
+			if dc == nil {
+				continue
+			}
+			if _, err := tx.Exec(ctx, upsertDwellCreditSQLA,
+				string(a.ID),          // $1 actor_id
+				string(dk.ObjectID),   // $2 object_id
+				string(dk.Attribute),  // $3 attribute
+				string(dk.Source),     // $4 source
+				dc.LastCreditedAt,     // $5 last_credited_at
+				dc.RemainingTicks,     // $6 remaining_ticks (nil for object)
+				dc.DwellDelta,         // $7 dwell_delta (< 0)
+				dc.DwellPeriodMinutes, // $8 dwell_period_minutes
+				dwellGen,              // $9 snapshot_gen
+			); err != nil {
+				return fmt.Errorf("pg actors SaveSnapshot: upsert dwell credit actor=%s obj=%s attr=%s: %w", a.ID, dk.ObjectID, dk.Attribute, err)
+			}
+		}
+	}
+
+	// Step 22: prune absent dwell-credit rows.
+	if _, err := tx.Exec(ctx, deleteStaleDwellCreditSQLA, dwellGen); err != nil {
+		return fmt.Errorf("pg actors SaveSnapshot: delete stale dwell credit: %w", err)
+	}
+
+	// Step 23: produce-state gen — independent tier (Slice 3).
+	var produceGen int64
+	if err := tx.QueryRow(ctx, nextGenProduceStateSQLA).Scan(&produceGen); err != nil {
+		return fmt.Errorf("pg actors SaveSnapshot: nextval produce state: %w", err)
+	}
+
+	// Step 24: upsert each produce-state entry. nil skipped. The map key
+	// supplies item_kind; zero LastProducedAt round-trips through NULL.
+	for _, a := range persisted {
+		for item, ps := range a.ProduceState {
+			if ps == nil {
+				continue
+			}
+			if _, err := tx.Exec(ctx, upsertProduceStateSQLA,
+				string(a.ID),                     // $1 actor_id
+				string(item),                     // $2 item_kind
+				nilOnZeroTime(ps.LastProducedAt), // $3 last_produced_at
+				produceGen,                       // $4 snapshot_gen
+			); err != nil {
+				return fmt.Errorf("pg actors SaveSnapshot: upsert produce state actor=%s item=%s: %w", a.ID, item, err)
+			}
+		}
+	}
+
+	// Step 25: prune absent produce-state rows.
+	if _, err := tx.Exec(ctx, deleteStaleProduceStateSQLA, produceGen); err != nil {
+		return fmt.Errorf("pg actors SaveSnapshot: delete stale produce state: %w", err)
+	}
+
+	// Step 26: room-access gen — independent tier (Slice 3).
+	var roomGen int64
+	if err := tx.QueryRow(ctx, nextGenRoomAccessSQLA).Scan(&roomGen); err != nil {
+		return fmt.Errorf("pg actors SaveSnapshot: nextval room access: %w", err)
+	}
+
+	// Step 27: upsert each room-access grant. nil skipped. kind is
+	// synthesized from source (ledger→private, staff→staff);
+	// granted_via_ledger_id is non-NULL only for ledger grants so the
+	// load-side Source derivation round-trips. The partial unique index
+	// ux_room_access_one_private_active (one active private occupant per
+	// room) could otherwise trip mid-loop if a stale active private row for
+	// a room is still present (gen-marker sweeps AFTER upserts) when a new
+	// occupant's active row UPSERTs; the pre-pass activePrivateRooms guard
+	// rejects a double-occupancy snapshot up front, so this loop never
+	// presents two active private claimants for one room to the index.
+	for _, a := range persisted {
+		for rk, ra := range a.RoomAccess {
+			if ra == nil {
+				continue
+			}
+			if _, err := tx.Exec(ctx, upsertRoomAccessSQLA,
+				int64(rk.RoomID),                     // $1 room_id
+				string(a.ID),                         // $2 actor_id
+				nilOnZero(ra.LedgerID),               // $3 granted_via_ledger_id
+				ra.CreatedAt,                         // $4 granted_at
+				ra.ExpiresAt,                         // $5 expires_at
+				string(roomKindForSource(rk.Source)), // $6 kind
+				ra.Active,                            // $7 active
+				roomGen,                              // $8 snapshot_gen
+			); err != nil {
+				return fmt.Errorf("pg actors SaveSnapshot: upsert room access actor=%s room=%d: %w", a.ID, rk.RoomID, err)
+			}
+		}
+	}
+
+	// Step 28: prune absent room-access rows.
+	if _, err := tx.Exec(ctx, deleteStaleRoomAccessSQLA, roomGen); err != nil {
+		return fmt.Errorf("pg actors SaveSnapshot: delete stale room access: %w", err)
+	}
+
+	// Step 29: attribute gen — independent tier (Slice 3).
+	var attrGen int64
+	if err := tx.QueryRow(ctx, nextGenAttributeSQLA).Scan(&attrGen); err != nil {
+		return fmt.Errorf("pg actors SaveSnapshot: nextval attribute: %w", err)
+	}
+
+	// Step 30: upsert each attribute. The raw params bytes are written
+	// back verbatim (empty → '{}' for the NOT NULL jsonb column). created_at
+	// is preserved by the UPSERT (not in the SET list); new rows get the
+	// schema default.
+	for _, a := range persisted {
+		for slug, params := range a.Attributes {
+			if _, err := tx.Exec(ctx, upsertAttributeSQLA,
+				string(a.ID),              // $1 actor_id
+				slug,                      // $2 slug
+				jsonOrEmptyObject(params), // $3 params (::jsonb)
+				attrGen,                   // $4 snapshot_gen
+			); err != nil {
+				return fmt.Errorf("pg actors SaveSnapshot: upsert attribute actor=%s slug=%s: %w", a.ID, slug, err)
+			}
+		}
+	}
+
+	// Step 31: prune absent attribute rows.
+	if _, err := tx.Exec(ctx, deleteStaleAttributeSQLA, attrGen); err != nil {
+		return fmt.Errorf("pg actors SaveSnapshot: delete stale attribute: %w", err)
+	}
 	return nil
 }
 
@@ -1074,6 +1666,112 @@ func intPtrToSQL(v *int) any {
 	}
 	x := int16(*v)
 	return x
+}
+
+// derefTime unwraps a *time.Time scan target (matching a nullable
+// TIMESTAMPTZ column) to a value time.Time, returning the Go zero time on
+// NULL. Pairs with nilOnZeroTime on the write side.
+func derefTime(t *time.Time) time.Time {
+	if t == nil {
+		return time.Time{}
+	}
+	return *t
+}
+
+// nilOnZeroTime is the time sibling of nilOnZero — the Go zero time.Time
+// (the "never produced" / unset sentinel for ProduceState.LastProducedAt)
+// maps to SQL NULL on write.
+func nilOnZeroTime(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return t
+}
+
+// roomKindForSource synthesizes the NOT-NULL room_access.kind column
+// value from the in-memory RoomAccessSource. The in-memory model keys
+// access by (room, source) and does not carry the room category; ledger
+// grants are paid private bedrooms, staff access is to staff rooms. Any
+// unknown source defaults to staff (the most-restrictive non-private
+// category); the SaveSnapshot pre-pass rejects unknown sources before
+// this is reached, so the default is defensive only.
+func roomKindForSource(s sim.RoomAccessSource) sim.RoomKind {
+	if s == sim.AccessSourceLedger {
+		return sim.RoomKindPrivate
+	}
+	return sim.RoomKindStaff
+}
+
+// jsonOrEmptyObject returns the params bytes as a string for the $N::jsonb
+// cast, substituting the empty JSON object for an empty/nil blob (the
+// actor_attribute.params column is NOT NULL DEFAULT '{}').
+func jsonOrEmptyObject(b []byte) string {
+	if len(b) == 0 {
+		return "{}"
+	}
+	return string(b)
+}
+
+// validateDwellCreditShape enforces the actor_dwell_credit baseline
+// CHECKs in Go (source allowlist, remaining_ticks↔source pairing,
+// dwell_delta < 0, dwell_period_minutes > 0) plus non-empty key columns.
+// Shared by LoadAll (out-of-band / legacy row defense) and SaveSnapshot
+// (catch shape bugs before the lock). actorID is for the error message
+// only. Returns a wrapped, context-free error (caller prefixes its phase).
+func validateDwellCreditShape(actorID, objectID, attribute, source string, remainingTicks *int, dwellDelta, dwellPeriodMinutes int) error {
+	if strings.TrimSpace(objectID) == "" {
+		return fmt.Errorf("dwell credit actor_id=%s has empty object_id", actorID)
+	}
+	if strings.TrimSpace(attribute) == "" {
+		return fmt.Errorf("dwell credit actor_id=%s object=%s has empty attribute", actorID, objectID)
+	}
+	switch sim.DwellCreditSource(source) {
+	case sim.DwellSourceObject:
+		if remainingTicks != nil {
+			return fmt.Errorf("dwell credit actor_id=%s object=%s attr=%s is source=object but has non-nil remaining_ticks (violates remaining↔source pairing)", actorID, objectID, attribute)
+		}
+	case sim.DwellSourceItem:
+		if remainingTicks == nil {
+			return fmt.Errorf("dwell credit actor_id=%s object=%s attr=%s is source=item but has nil remaining_ticks (violates remaining↔source pairing)", actorID, objectID, attribute)
+		}
+		if *remainingTicks <= 0 {
+			return fmt.Errorf("dwell credit actor_id=%s object=%s attr=%s has remaining_ticks=%d (must be > 0)", actorID, objectID, attribute, *remainingTicks)
+		}
+	default:
+		return fmt.Errorf("dwell credit actor_id=%s object=%s attr=%s has unknown source=%q (must be object|item)", actorID, objectID, attribute, source)
+	}
+	if dwellDelta >= 0 {
+		return fmt.Errorf("dwell credit actor_id=%s object=%s attr=%s has dwell_delta=%d (must be < 0)", actorID, objectID, attribute, dwellDelta)
+	}
+	if dwellPeriodMinutes <= 0 {
+		return fmt.Errorf("dwell credit actor_id=%s object=%s attr=%s has dwell_period_minutes=%d (must be > 0)", actorID, objectID, attribute, dwellPeriodMinutes)
+	}
+	return nil
+}
+
+// validateRoomAccessShape enforces the room-access source↔ledger-id
+// invariant in Go (room_id > 0; ledger ⇒ LedgerID > 0; staff ⇒ LedgerID
+// == 0; known source). Shared by LoadAll (where source is derived from
+// granted_via_ledger_id) and SaveSnapshot, so a non-positive ledger id —
+// which the load derivation would still classify as ledger — is rejected
+// on both sides. Returns a context-free error (caller prefixes its phase).
+func validateRoomAccessShape(roomID int64, source sim.RoomAccessSource, ledgerID int64) error {
+	if roomID <= 0 {
+		return fmt.Errorf("room access has non-positive room_id=%d", roomID)
+	}
+	switch source {
+	case sim.AccessSourceLedger:
+		if ledgerID <= 0 {
+			return fmt.Errorf("ledger room access room_id=%d has non-positive ledger id=%d", roomID, ledgerID)
+		}
+	case sim.AccessSourceStaff:
+		if ledgerID != 0 {
+			return fmt.Errorf("staff room access room_id=%d has ledger id=%d (must be 0)", roomID, ledgerID)
+		}
+	default:
+		return fmt.Errorf("room access room_id=%d has unknown source=%q", roomID, source)
+	}
+	return nil
 }
 
 // salientFactRow is the JSONB serialization shape for a single
