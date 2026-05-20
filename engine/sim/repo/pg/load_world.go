@@ -2,9 +2,11 @@ package pg
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
@@ -94,6 +96,10 @@ import (
 //     StructureID + actor.InsideRoomID resolve against loaded
 //     Structures (Slice 12 carry-forward; FKs dropped, invariant
 //     stays).
+//   - rebuildActorAttributeProjections materializes Actor.Businessowner
+//     State + RestockPolicy from the raw actor_attribute rows the
+//     ActorsRepo loaded into Actor.Attributes (Slice 3 carry-forward;
+//     the pg layer stays a dumb mirror, projection logic lives here).
 //
 // # Out of scope (Slice 14)
 //
@@ -261,6 +267,13 @@ func LoadWorld(ctx context.Context, repo sim.Repository, requireAllImpl bool) (*
 		if err := validateActorStructureRefs(w.Actors, w.Structures); err != nil {
 			return nil, err
 		}
+	}
+	if actorsLoaded {
+		// Slice 3 / ZBBS-WORK-245 carry-forward: rebuild the businessowner
+		// + restock projections from each actor's raw actor_attribute rows.
+		// No peer aggregate needed (works from each actor's own Attributes);
+		// best-effort by design — never fails the load.
+		rebuildActorAttributeProjections(w.Actors)
 	}
 
 	return w, nil
@@ -526,4 +539,120 @@ func dropStructureBoundOrphanScenes(scenes map[sim.SceneID]*sim.Scene, structure
 		log.Printf("pg LoadWorld: dropped %d structure-bound orphan scene(s)", dropped)
 	}
 	return nil
+}
+
+// businessownerSlug is the actor_attribute slug that marks a hospitality
+// keeper. Mirrors engine/businessowner.go's businessownerSlug constant.
+const businessownerSlug = "businessowner"
+
+// businessownerParamsRow is the JSONB shape read for the keeper flavor.
+// Repo-local DTO — persistence detail kept out of the sim domain types.
+type businessownerParamsRow struct {
+	Flavor string `json:"flavor"`
+}
+
+// restockParamsRow / restockEntryRow mirror the v1 stored shape of an
+// actor_attribute.params blob's restock array ({item, source, max,
+// target}) so a v1-written or hand-seeded row round-trips. Repo-local.
+type restockParamsRow struct {
+	Restock []restockEntryRow `json:"restock"`
+}
+
+type restockEntryRow struct {
+	Item   string `json:"item"`
+	Source string `json:"source"`
+	Max    int    `json:"max,omitempty"`
+	Target int    `json:"target,omitempty"`
+}
+
+// rebuildActorAttributeProjections reconstructs the two derived views that
+// Slice 3 deliberately keeps OUT of the pg layer: Actor.BusinessownerState
+// (from the `businessowner` attribute's params.flavor) and
+// Actor.RestockPolicy (unioned from every attribute's params.restock). The
+// ActorsRepo loads actor_attribute rows as raw params bytes into
+// Actor.Attributes; this pass walks those raw rows and materializes the
+// projections, mirroring v1's loadBusinessownerFlavor +
+// loadActorRestockPolicy exactly:
+//
+//   - Keeper iff the businessowner attribute is present AND its
+//     params.flavor is non-empty (v1 skips a missing/empty flavor).
+//   - Restock entries union across ALL attributes in slug order;
+//     first-listed wins on item ties; unparseable params and
+//     unknown-source entries are skipped.
+//
+// Best-effort by design — it never fails the load. A malformed params blob
+// is logged (businessowner) or silently skipped (restock), exactly as v1
+// did: operator config is best-effort and other roles on the same actor
+// may still be valid. Gated by the caller on actorsLoaded.
+//
+// nil RestockPolicy / nil BusinessownerState (rather than empty structs)
+// marks "not a restocker / not a keeper", matching the sim field
+// semantics (RestockPolicy.ProduceEntries and the businessowner triggers
+// both treat nil as "skip").
+func rebuildActorAttributeProjections(actors map[sim.ActorID]*sim.Actor) {
+	for aid, a := range actors {
+		if a == nil {
+			continue
+		}
+		// Idempotent: clear any prior projection before rebuilding so a
+		// re-run on an actor whose attributes no longer yield a keeper /
+		// restocker doesn't leave stale derived state behind.
+		a.BusinessownerState = nil
+		a.RestockPolicy = nil
+		// BusinessownerState — from the businessowner attribute's flavor.
+		if raw, ok := a.Attributes[businessownerSlug]; ok && len(raw) > 0 {
+			var bo businessownerParamsRow
+			if err := json.Unmarshal(raw, &bo); err != nil {
+				log.Printf("pg LoadWorld: actor id=%s businessowner params unparseable — skipping keeper projection: %v", aid, err)
+			} else if bo.Flavor != "" {
+				a.BusinessownerState = &sim.BusinessownerState{Flavor: bo.Flavor}
+			}
+		}
+		// RestockPolicy — union across all attributes in slug order so the
+		// first-listed-wins tiebreak is deterministic (v1's ORDER BY slug).
+		var entries []sim.RestockEntry
+		seen := make(map[sim.ItemKind]bool)
+		for _, slug := range sortedAttributeSlugs(a.Attributes) {
+			raw := a.Attributes[slug]
+			if len(raw) == 0 {
+				continue
+			}
+			var params restockParamsRow
+			if err := json.Unmarshal(raw, &params); err != nil {
+				continue // unparseable — other roles may still be valid (v1 parity)
+			}
+			for _, e := range params.Restock {
+				item := sim.ItemKind(e.Item)
+				if item == "" || seen[item] {
+					continue
+				}
+				source := sim.RestockSource(e.Source)
+				if source != sim.RestockSourceProduce && source != sim.RestockSourceBuy {
+					continue // unknown source mode — skip (v1 parity)
+				}
+				seen[item] = true
+				entries = append(entries, sim.RestockEntry{
+					Item:   item,
+					Source: source,
+					Max:    e.Max,
+					Target: e.Target,
+				})
+			}
+		}
+		if len(entries) > 0 {
+			a.RestockPolicy = &sim.RestockPolicy{Restock: entries}
+		}
+	}
+}
+
+// sortedAttributeSlugs returns the attribute slugs in deterministic
+// ascending order, matching v1's `ORDER BY slug` so the restock union's
+// first-listed-wins tiebreak is stable across loads.
+func sortedAttributeSlugs(attrs map[string][]byte) []string {
+	slugs := make([]string, 0, len(attrs))
+	for slug := range attrs {
+		slugs = append(slugs, slug)
+	}
+	sort.Strings(slugs)
+	return slugs
 }
