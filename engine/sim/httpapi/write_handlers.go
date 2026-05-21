@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -480,6 +481,188 @@ func (s *Server) handleAdminPhase(w http.ResponseWriter, r *http.Request) {
 		To:              string(out.To),
 		ObjectsAffected: out.ObjectsAffected,
 	})
+}
+
+// adminObjectMoveRequest is the POST /api/village/admin/object/move body: the
+// target object id + its new absolute world-pixel anchor. Coordinates are the
+// ObjectDTO space (float world-pixels), NOT the integer tile space pc/move
+// uses — objects are placed at fractional pixel positions, so the editor sends
+// pixels and we echo them back without conversion.
+type adminObjectMoveRequest struct {
+	ObjectID string  `json:"object_id"`
+	X        float64 `json:"x"`
+	Y        float64 `json:"y"`
+}
+
+// adminObjectMoveResponse reports the applied position. The visible canvas
+// update reaches all clients via the object_moved WS broadcast the
+// VillageObjectMoved event triggers, so the HTTP body is just the new anchor.
+type adminObjectMoveResponse struct {
+	ID string  `json:"id"`
+	X  float64 `json:"x"`
+	Y  float64 `json:"y"`
+}
+
+// handleAdminObjectMove repositions a placed village object. Admin-only:
+// wrapped in requireAuth (valid salem session) and gated again by adminCommand
+// (the caller's actor must have admin = true). Delegates to
+// sim.MoveVillageObject. 400 malformed / missing id / non-finite or off-map
+// position; 403 not admin; 404 object not found; 200 ok.
+func (s *Server) handleAdminObjectMove(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	if user == nil {
+		writeAuthError(w, "invalid")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxAdminBodyBytes)
+	dec := json.NewDecoder(r.Body)
+	var req adminObjectMoveRequest
+	if err := dec.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.ObjectID == "" {
+		writeError(w, http.StatusBadRequest, "object_id is required")
+		return
+	}
+	if status, msg := validateObjectPosition(req.X, req.Y); msg != "" {
+		writeError(w, status, msg)
+		return
+	}
+
+	res, err := s.world.SendContext(r.Context(), adminCommand(user.Username, func(world *sim.World) (any, error) {
+		return sim.MoveVillageObject(sim.VillageObjectID(req.ObjectID), req.X, req.Y).Fn(world)
+	}))
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
+		if errors.Is(err, errAdminForbidden) {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
+		if errors.Is(err, sim.ErrVillageObjectNotFound) {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		// sim.ErrInvalidObjectPosition is the command's own non-finite guard;
+		// the handler's validateObjectPosition already rejects these at 400
+		// before the command runs, so this maps the defense-in-depth path
+		// consistently for completeness.
+		if errors.Is(err, sim.ErrInvalidObjectPosition) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+
+	out, ok := res.(sim.MoveObjectResult)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "unexpected move result")
+		return
+	}
+	writeJSON(w, adminObjectMoveResponse{ID: string(out.ID), X: out.X, Y: out.Y})
+}
+
+// validateObjectPosition checks an object move target. Objects live in absolute
+// world-pixel coordinates: the renderable grid spans tiles [0, MapW) × [0, MapH)
+// and world (0,0) sits at tile (PadX, PadY), so world-pixel x = (tile-PadX)*
+// TileSize. The full padded grid therefore covers [-PadX*TileSize,
+// (MapW-PadX)*TileSize] in x and the PadY/MapH analog in y; a target outside
+// that rectangle would place the object off the map (422). A non-finite
+// coordinate is a malformed request (400). Returns (0, "") when valid.
+func validateObjectPosition(x, y float64) (int, string) {
+	if math.IsNaN(x) || math.IsNaN(y) || math.IsInf(x, 0) || math.IsInf(y, 0) {
+		return http.StatusBadRequest, "position must be a finite coordinate"
+	}
+	minX := -float64(sim.PadX) * sim.TileSize
+	maxX := float64(sim.MapW-sim.PadX) * sim.TileSize
+	minY := -float64(sim.PadY) * sim.TileSize
+	maxY := float64(sim.MapH-sim.PadY) * sim.TileSize
+	if x < minX || x > maxX || y < minY || y > maxY {
+		return http.StatusUnprocessableEntity, "position is outside the map"
+	}
+	return 0, ""
+}
+
+// adminObjectDeleteRequest is the POST /api/village/admin/object/delete body:
+// the id of the object to remove.
+type adminObjectDeleteRequest struct {
+	ObjectID string `json:"object_id"`
+}
+
+// adminObjectDeleteResponse lists every removed id — the target plus any
+// overlay objects cascade-removed with it (attached_to chain), children first.
+// Each removed object also reaches all clients as its own object_deleted WS
+// broadcast.
+type adminObjectDeleteResponse struct {
+	DeletedIDs []string `json:"deleted_ids"`
+}
+
+// handleAdminObjectDelete removes a placed village object (and its attached
+// overlays). Admin-only: requireAuth + adminCommand. Delegates to
+// sim.DeleteVillageObject. 400 malformed / missing id; 403 not admin; 404
+// object not found; 422 the object backs a structure (refused — structure
+// teardown is a separate operation); 200 ok.
+func (s *Server) handleAdminObjectDelete(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	if user == nil {
+		writeAuthError(w, "invalid")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxAdminBodyBytes)
+	dec := json.NewDecoder(r.Body)
+	var req adminObjectDeleteRequest
+	if err := dec.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.ObjectID == "" {
+		writeError(w, http.StatusBadRequest, "object_id is required")
+		return
+	}
+
+	res, err := s.world.SendContext(r.Context(), adminCommand(user.Username, func(world *sim.World) (any, error) {
+		return sim.DeleteVillageObject(sim.VillageObjectID(req.ObjectID)).Fn(world)
+	}))
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
+		if errors.Is(err, errAdminForbidden) {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
+		if errors.Is(err, sim.ErrVillageObjectNotFound) {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		// sim.ErrVillageObjectIsStructure + any other rejection → 422.
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+
+	out, ok := res.(sim.DeleteObjectResult)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "unexpected delete result")
+		return
+	}
+	ids := make([]string, len(out.DeletedIDs))
+	for i, id := range out.DeletedIDs {
+		ids[i] = string(id)
+	}
+	writeJSON(w, adminObjectDeleteResponse{DeletedIDs: ids})
 }
 
 // writeError writes a JSON {error} body with the given status.

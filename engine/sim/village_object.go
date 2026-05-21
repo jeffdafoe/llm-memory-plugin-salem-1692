@@ -1,6 +1,11 @@
 package sim
 
-import "time"
+import (
+	"errors"
+	"math"
+	"sort"
+	"time"
+)
 
 // VillageObject — per-placement instance of an Asset on the village map.
 // In-memory port of the legacy village_object + village_object_tag tables.
@@ -220,4 +225,147 @@ func SetVillageObjectState(id VillageObjectID, newState string, guardGen uint64)
 			return SetStateResult{Applied: true, Reason: "applied"}, nil
 		},
 	}
+}
+
+// Admin object commands (MoveVillageObject / DeleteVillageObject) back the
+// admin/editor write routes. Both run on the world goroutine via a Command and,
+// on success, emit a bus event the httpapi hub broadcasts (object_moved /
+// object_deleted). Neither writes through to Postgres directly: the next
+// gen-marker checkpoint UPSERTs the moved row and prunes the deleted one via
+// its delete-not-present sweep, so the durable store converges on the next
+// SaveSnapshot. A crash before that checkpoint loses the move/delete — the same
+// restart-loss posture every other in-memory mutation has.
+
+// ErrVillageObjectNotFound is returned by the admin object commands when no
+// village object has the given id (→ 404 at the HTTP layer).
+var ErrVillageObjectNotFound = errors.New("village object not found")
+
+// ErrInvalidObjectPosition is returned by MoveVillageObject when the target
+// coordinate is non-finite (NaN or ±Inf). The HTTP layer rejects these before
+// the command runs, but the command is exported and guards the invariant for
+// any direct caller — a NaN/Inf coordinate would corrupt JSON serialization and
+// the checkpoint (→ 400 at the HTTP layer).
+var ErrInvalidObjectPosition = errors.New("invalid object position")
+
+// ErrVillageObjectIsStructure is returned by DeleteVillageObject when the
+// target object backs a Structure. A building is the shared-identity bridge
+// (structure_anchors.go): its StructureID and VillageObjectID are the same
+// UUID, so deleting the placement would orphan the live Structure aggregate
+// (occupants bound via Inside/Home/WorkStructureID, ownership, anchored
+// huddles). The command refuses; tearing down a structure is a separate,
+// larger operation (→ 422 at the HTTP layer).
+var ErrVillageObjectIsStructure = errors.New("village object backs a structure")
+
+// MoveObjectResult is the outcome of a MoveVillageObject command — the object
+// id and its new absolute world-pixel anchor.
+type MoveObjectResult struct {
+	ID VillageObjectID
+	X  float64
+	Y  float64
+}
+
+// MoveVillageObject returns a Command that repositions a village object to
+// (x, y), absolute world-pixel anchor coordinates (the same space ObjectDTO
+// emits, NOT actor tile coords). Returns ErrVillageObjectNotFound if no object
+// has the id. On success it mutates X/Y in place and emits VillageObjectMoved →
+// the object_moved broadcast.
+//
+// Moves only the targeted object. An overlay attached to it (AttachedTo) is
+// rendered by the client at the parent's anchor plus the asset slot offset, so
+// a parent move carries its overlays on screen without moving their rows here;
+// independent repositioning of an attached overlay is left to a follow-up if a
+// live run shows it's needed.
+func MoveVillageObject(id VillageObjectID, x, y float64) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			if math.IsNaN(x) || math.IsNaN(y) || math.IsInf(x, 0) || math.IsInf(y, 0) {
+				return nil, ErrInvalidObjectPosition
+			}
+			obj, ok := w.VillageObjects[id]
+			if !ok {
+				return nil, ErrVillageObjectNotFound
+			}
+			obj.X = x
+			obj.Y = y
+			w.emit(&VillageObjectMoved{
+				ObjectID: id,
+				X:        x,
+				Y:        y,
+				At:       time.Now().UTC(),
+			})
+			return MoveObjectResult{ID: id, X: x, Y: y}, nil
+		},
+	}
+}
+
+// DeleteObjectResult is the outcome of a DeleteVillageObject command.
+// DeletedIDs lists every object removed — the target plus any overlay objects
+// transitively attached to it — with children before the parent they hung off.
+type DeleteObjectResult struct {
+	DeletedIDs []VillageObjectID
+}
+
+// DeleteVillageObject returns a Command that removes a village object and every
+// overlay object attached to it (transitively, mirroring the pg attached_to
+// ON DELETE CASCADE so the in-memory world and a later checkpoint agree).
+// Returns ErrVillageObjectNotFound if the object is absent, or
+// ErrVillageObjectIsStructure if it backs a Structure (refused — see that
+// error). On success it deletes the rows from World.VillageObjects and emits
+// one VillageObjectDeleted per removed id → object_deleted broadcasts, children
+// first.
+func DeleteVillageObject(id VillageObjectID) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			if _, ok := w.VillageObjects[id]; !ok {
+				return nil, ErrVillageObjectNotFound
+			}
+			if _, ok := w.Structures[StructureID(id)]; ok {
+				return nil, ErrVillageObjectIsStructure
+			}
+			removed := deleteObjectCascade(w, id)
+			now := time.Now().UTC()
+			for _, rid := range removed {
+				w.emit(&VillageObjectDeleted{ObjectID: rid, At: now})
+			}
+			return DeleteObjectResult{DeletedIDs: removed}, nil
+		},
+	}
+}
+
+// deleteObjectCascade removes root and every object transitively attached to it
+// from w.VillageObjects, returning the removed ids in post-order: every
+// descendant is emitted before the object it is attached to, so a delete always
+// reports (and broadcasts) a child overlay before its parent. It builds the
+// attached_to adjacency (parent → children) up front so the map is never
+// mutated mid-range; children slices are sorted for a deterministic delete/emit
+// order, and a seen-set makes a pathological attached_to cycle (which the
+// schema's self-FK doesn't structurally prevent) terminate.
+func deleteObjectCascade(w *World, root VillageObjectID) []VillageObjectID {
+	children := make(map[VillageObjectID][]VillageObjectID)
+	for id, obj := range w.VillageObjects {
+		if obj != nil {
+			children[obj.AttachedTo] = append(children[obj.AttachedTo], id)
+		}
+	}
+	for parent := range children {
+		kids := children[parent]
+		sort.Slice(kids, func(i, j int) bool { return kids[i] < kids[j] })
+	}
+
+	seen := make(map[VillageObjectID]bool)
+	var removed []VillageObjectID
+	var visit func(VillageObjectID)
+	visit = func(id VillageObjectID) {
+		if seen[id] {
+			return
+		}
+		seen[id] = true
+		for _, childID := range children[id] {
+			visit(childID)
+		}
+		delete(w.VillageObjects, id)
+		removed = append(removed, id)
+	}
+	visit(root)
+	return removed
 }

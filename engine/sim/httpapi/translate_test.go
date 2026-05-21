@@ -41,6 +41,39 @@ func TestTranslateEvent_MoveStarted(t *testing.T) {
 	}
 }
 
+func TestTranslateEvent_ObjectMoved(t *testing.T) {
+	frame, ok := TranslateEvent(&sim.VillageObjectMoved{
+		ObjectID: "bench-1",
+		X:        150.5,
+		Y:        175.25,
+	})
+	if !ok {
+		t.Fatal("VillageObjectMoved should translate")
+	}
+	if frame.Type != "object_moved" {
+		t.Fatalf("type = %q, want object_moved", frame.Type)
+	}
+	d := frame.Data.(objectMovedWireDTO)
+	want := objectMovedWireDTO{ID: "bench-1", X: 150.5, Y: 175.25}
+	if d != want {
+		t.Errorf("object_moved payload = %+v, want %+v", d, want)
+	}
+}
+
+func TestTranslateEvent_ObjectDeleted(t *testing.T) {
+	frame, ok := TranslateEvent(&sim.VillageObjectDeleted{ObjectID: "bench-1"})
+	if !ok {
+		t.Fatal("VillageObjectDeleted should translate")
+	}
+	if frame.Type != "object_deleted" {
+		t.Fatalf("type = %q, want object_deleted", frame.Type)
+	}
+	d := frame.Data.(objectDeletedWireDTO)
+	if d != (objectDeletedWireDTO{ID: "bench-1"}) {
+		t.Errorf("object_deleted payload = %+v, want {bench-1}", d)
+	}
+}
+
 func TestTranslateEvent_Arrived(t *testing.T) {
 	frame, ok := TranslateEvent(&sim.ActorArrived{
 		ActorID:           "hannah",
