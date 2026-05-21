@@ -12,15 +12,18 @@ import (
 
 // upgrader promotes the GET /api/village/events request to a WebSocket.
 //
+// The authorization gate is the ?token= verify in handleEvents, which runs
+// before the upgrade (browsers and Godot can't set WS handshake headers, so the
+// token rides in a query param rather than the Bearer requireAuth middleware the
+// REST routes use). CheckOrigin is defense in depth on top of that.
+//
 // CheckOrigin enforces same-origin for browser clients while permitting native
 // clients. A browser sets the Origin header to the page's origin; the web-export
 // Godot client connects to its own origin (wss from window.location.origin), so
 // same-host passes. A cross-origin website's Origin would NOT match the request
 // Host and is rejected — without this, any site the user visits could open a WS
-// to a locally running engine and read the (unauthenticated) village stream.
-// Native Godot builds send no Origin header (Origin is a browser concept), so an
-// empty Origin is allowed. When the auth middleware lands with the write routes,
-// the token becomes the real gate and this stays as defense in depth.
+// to a locally running engine. Native Godot builds send no Origin header (Origin
+// is a browser concept), so an empty Origin is allowed.
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool {
 		origin := r.Header.Get("Origin")
