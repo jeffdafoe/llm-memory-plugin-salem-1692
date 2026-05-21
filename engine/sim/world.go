@@ -495,6 +495,13 @@ type World struct {
 	// VillageObject.AssetID for state resolution, footprint, anchor, etc.
 	Assets map[AssetID]*Asset
 
+	// Sprite catalog — reference state, loaded at startup. The character-
+	// render definitions; looked up by Actor.SpriteID to resolve the sheet
+	// + animation rows for the client read surface. Separate catalog from
+	// Assets (object/terrain art). Hot-reload on SIGHUP when admin edits
+	// land. See sprite.go.
+	Sprites map[SpriteID]*Sprite
+
 	// Recipe catalog — reference state. Keyed by OutputItem. Used by
 	// produce_tick (rate + inputs + output_qty) and pay-deliberation
 	// (wholesale/retail prices).
@@ -673,6 +680,7 @@ func NewWorld(repo Repository) *World {
 		Quotes:            make(map[QuoteID]*SceneQuote),
 		PayLedger:         make(map[LedgerID]*PayLedgerEntry),
 		Assets:            make(map[AssetID]*Asset),
+		Sprites:           make(map[SpriteID]*Sprite),
 		Recipes:           make(map[ItemKind]*ItemRecipe),
 		ItemKinds:         make(map[ItemKind]*ItemKindDef),
 		actorsByStructure: make(map[StructureID]map[ActorID]struct{}),
@@ -758,6 +766,12 @@ func LoadWorld(ctx context.Context, repo Repository) (*World, error) {
 		return nil, err
 	}
 	w.Assets = assets
+
+	sprites, err := repo.Sprites.LoadAll(ctx)
+	if err != nil {
+		return nil, err
+	}
+	w.Sprites = sprites
 
 	recipes, err := repo.Recipes.LoadAll(ctx)
 	if err != nil {
