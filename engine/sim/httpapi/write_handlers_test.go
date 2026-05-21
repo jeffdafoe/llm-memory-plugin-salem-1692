@@ -370,6 +370,43 @@ func TestHandleAdminPhase_NonAdminActorForbidden(t *testing.T) {
 	}
 }
 
+// TestHandleAdminPhase_ForbiddenDoesNotMutate proves the authz boundary: a
+// forbidden request must not have run ApplyPhaseTransition. Asserts the world
+// phase is unchanged after the 403 (not just the status code).
+func TestHandleAdminPhase_ForbiddenDoesNotMutate(t *testing.T) {
+	w := seededWorld(t) // night; no actor maps to "tester"
+	srv := NewServer(w, okAuth{})
+
+	rec := post(t, srv, "/api/village/admin/phase", `{"phase":"day"}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", rec.Code, rec.Body.String())
+	}
+	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return world.Phase, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := res.(sim.Phase); got != sim.PhaseNight {
+		t.Fatalf("phase mutated to %q, want night (forbidden request must not mutate)", got)
+	}
+}
+
+// TestHandleAdminPhase_AmbiguousLoginForbidden: two actors share login_username
+// "tester" (one admin, one not). The gate fails closed on the ambiguity → 403,
+// rather than granting admin via the matching admin row.
+func TestHandleAdminPhase_AmbiguousLoginForbidden(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester") // IsAdmin
+	seedPC(t, w, "pc-tester", "tester", 1, 1) // same login, not admin
+	srv := NewServer(w, okAuth{})
+
+	rec := post(t, srv, "/api/village/admin/phase", `{"phase":"day"}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (ambiguous login); body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestHandleAdminPhase_UnknownPhase(t *testing.T) {
 	w := seededWorld(t)
 	seedAdmin(t, w, "admin-tester", "tester")

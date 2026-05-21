@@ -359,20 +359,36 @@ const maxAdminBodyBytes = 64 << 10
 // the response never reveals whether a given login maps to a real actor.
 var errAdminForbidden = errors.New("admin privileges required")
 
-// findAdminByLogin returns the id of an admin actor bound to loginUsername.
+// findAdminByLogin returns the id of the admin actor bound to loginUsername.
 // Runs on the world goroutine (called from a command Fn), so the map read is
 // safe. Admin is an actor-row flag (sim.Actor.IsAdmin), set out-of-band in the
 // DB for the human operators — see migration ZBBS-WORK-271.
+//
+// login_username is expected to be unique (it mirrors the unique llm-memory-api
+// actors.name the session token authenticates as). This being an authorization
+// gate, it FAILS CLOSED on a duplicate: if two actors share loginUsername it
+// denies rather than guess which one's admin flag governs — a stricter posture
+// than findPCByLogin's first-match (ownership resolution, not a privilege gate).
 func findAdminByLogin(world *sim.World, loginUsername string) (sim.ActorID, bool) {
 	if loginUsername == "" {
 		return "", false
 	}
+	var matched sim.ActorID
+	var found *sim.Actor
 	for id, a := range world.Actors {
-		if a.LoginUsername == loginUsername && a.IsAdmin {
-			return id, true
+		if a.LoginUsername != loginUsername {
+			continue
 		}
+		if found != nil {
+			return "", false // ambiguous login binding → fail closed
+		}
+		matched = id
+		found = a
 	}
-	return "", false
+	if found == nil || !found.IsAdmin {
+		return "", false
+	}
+	return matched, true
 }
 
 // adminCommand wraps an admin-gated world mutation. It resolves the caller's
