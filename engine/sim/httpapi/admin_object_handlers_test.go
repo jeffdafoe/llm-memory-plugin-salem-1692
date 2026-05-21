@@ -184,6 +184,311 @@ func TestHandleAdminObjectDelete_MissingToken(t *testing.T) {
 	}
 }
 
+// obj1 is seeded at CurrentState "lit" (asset-x defines "unlit" and "lit").
+func TestHandleAdminObjectSetState_Accepted(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+
+	rec := post(t, srv, "/api/village/admin/object/set-state", `{"object_id":"obj1","state":"unlit"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var res adminObjectStateResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if res.ID != "obj1" || res.State != "unlit" || !res.Applied {
+		t.Errorf("response = %+v, want obj1/unlit/applied=true", res)
+	}
+	if got := w.Published().VillageObjects["obj1"].CurrentState; got != "unlit" {
+		t.Errorf("current_state = %q, want unlit", got)
+	}
+}
+
+// Setting an object to the state it is already in is an idempotent 200 with
+// applied=false (no spurious VillageObjectStateChanged emitted).
+func TestHandleAdminObjectSetState_AlreadyAtTarget(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+
+	rec := post(t, srv, "/api/village/admin/object/set-state", `{"object_id":"obj1","state":"lit"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var res adminObjectStateResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if res.Applied {
+		t.Errorf("applied = true, want false (already at target)")
+	}
+}
+
+func TestHandleAdminObjectSetState_NotFound(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+
+	rec := post(t, srv, "/api/village/admin/object/set-state", `{"object_id":"ghost","state":"unlit"}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleAdminObjectSetState_MissingObjectID(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+
+	rec := post(t, srv, "/api/village/admin/object/set-state", `{"state":"unlit"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleAdminObjectSetState_MissingState(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+
+	rec := post(t, srv, "/api/village/admin/object/set-state", `{"object_id":"obj1"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestHandleAdminObjectSetState_Forbidden: caller resolves to no actor → 403,
+// and the object's state must be left untouched.
+func TestHandleAdminObjectSetState_Forbidden(t *testing.T) {
+	w := seededWorld(t)
+	srv := NewServer(w, okAuth{})
+
+	rec := post(t, srv, "/api/village/admin/object/set-state", `{"object_id":"obj1","state":"unlit"}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", rec.Code, rec.Body.String())
+	}
+	if got := w.Published().VillageObjects["obj1"].CurrentState; got != "lit" {
+		t.Errorf("current_state = %q, want unchanged (lit) after forbidden request", got)
+	}
+}
+
+// --- set-owner ---
+
+// seededWorld seeds actor "hannah", used here as a valid owner.
+func TestHandleAdminObjectSetOwner_Accepted(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+
+	rec := post(t, srv, "/api/village/admin/object/set-owner", `{"object_id":"obj1","owner_actor_id":"hannah"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var res adminObjectOwnerResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if res.ID != "obj1" || res.OwnerActorID != "hannah" {
+		t.Errorf("response = %+v, want obj1/hannah", res)
+	}
+	if got := w.Published().VillageObjects["obj1"].OwnerActorID; got != "hannah" {
+		t.Errorf("owner = %q, want hannah", got)
+	}
+}
+
+func TestHandleAdminObjectSetOwner_Clear(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+
+	rec := post(t, srv, "/api/village/admin/object/set-owner", `{"object_id":"obj1","owner_actor_id":""}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if got := w.Published().VillageObjects["obj1"].OwnerActorID; got != "" {
+		t.Errorf("owner = %q, want cleared", got)
+	}
+}
+
+func TestHandleAdminObjectSetOwner_OwnerNotFound(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+
+	rec := post(t, srv, "/api/village/admin/object/set-owner", `{"object_id":"obj1","owner_actor_id":"ghost"}`)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleAdminObjectSetOwner_NotFound(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+
+	rec := post(t, srv, "/api/village/admin/object/set-owner", `{"object_id":"ghost","owner_actor_id":"hannah"}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleAdminObjectSetOwner_MissingObjectID(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+
+	rec := post(t, srv, "/api/village/admin/object/set-owner", `{"owner_actor_id":"hannah"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleAdminObjectSetOwner_Forbidden(t *testing.T) {
+	srv := NewServer(seededWorld(t), okAuth{})
+	rec := post(t, srv, "/api/village/admin/object/set-owner", `{"object_id":"obj1","owner_actor_id":"hannah"}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// --- set-loiter-offset ---
+
+func TestHandleAdminObjectSetLoiterOffset_Accepted(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+
+	rec := post(t, srv, "/api/village/admin/object/set-loiter-offset", `{"object_id":"obj1","x":2,"y":-3}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var res adminObjectLoiterOffsetResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if res.X == nil || res.Y == nil || *res.X != 2 || *res.Y != -3 {
+		t.Errorf("response = (%v,%v), want (2,-3)", res.X, res.Y)
+	}
+	obj := w.Published().VillageObjects["obj1"]
+	if obj.LoiterOffsetX == nil || *obj.LoiterOffsetX != 2 || obj.LoiterOffsetY == nil || *obj.LoiterOffsetY != -3 {
+		t.Errorf("stored offset = (%v,%v), want (2,-3)", obj.LoiterOffsetX, obj.LoiterOffsetY)
+	}
+}
+
+func TestHandleAdminObjectSetLoiterOffset_Clear(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+
+	rec := post(t, srv, "/api/village/admin/object/set-loiter-offset", `{"object_id":"obj1"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var res adminObjectLoiterOffsetResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if res.X != nil || res.Y != nil {
+		t.Errorf("response = (%v,%v), want cleared (null,null)", res.X, res.Y)
+	}
+}
+
+func TestHandleAdminObjectSetLoiterOffset_OnlyOneAxis(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+
+	rec := post(t, srv, "/api/village/admin/object/set-loiter-offset", `{"object_id":"obj1","x":2}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleAdminObjectSetLoiterOffset_NotFound(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+
+	rec := post(t, srv, "/api/village/admin/object/set-loiter-offset", `{"object_id":"ghost","x":1,"y":1}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleAdminObjectSetLoiterOffset_Forbidden(t *testing.T) {
+	srv := NewServer(seededWorld(t), okAuth{})
+	rec := post(t, srv, "/api/village/admin/object/set-loiter-offset", `{"object_id":"obj1","x":1,"y":1}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// --- set-entry-policy ---
+
+func TestHandleAdminObjectSetEntryPolicy_Accepted(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+
+	rec := post(t, srv, "/api/village/admin/object/set-entry-policy", `{"object_id":"obj1","entry_policy":"owner-only"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var res adminObjectEntryPolicyResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if res.EntryPolicy != "owner-only" {
+		t.Errorf("entry_policy = %q, want owner-only", res.EntryPolicy)
+	}
+	if got := w.Published().VillageObjects["obj1"].EntryPolicy; got != sim.EntryPolicyOwner {
+		t.Errorf("stored policy = %q, want owner-only", got)
+	}
+}
+
+func TestHandleAdminObjectSetEntryPolicy_Invalid(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+
+	rec := post(t, srv, "/api/village/admin/object/set-entry-policy", `{"object_id":"obj1","entry_policy":"bogus"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleAdminObjectSetEntryPolicy_NotFound(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+
+	rec := post(t, srv, "/api/village/admin/object/set-entry-policy", `{"object_id":"ghost","entry_policy":"open"}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleAdminObjectSetEntryPolicy_MissingObjectID(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+
+	rec := post(t, srv, "/api/village/admin/object/set-entry-policy", `{"entry_policy":"open"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleAdminObjectSetEntryPolicy_Forbidden(t *testing.T) {
+	srv := NewServer(seededWorld(t), okAuth{})
+	rec := post(t, srv, "/api/village/admin/object/set-entry-policy", `{"object_id":"obj1","entry_policy":"open"}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 // TestValidateObjectPosition unit-tests the move position guard directly: the
 // non-finite path (400) can't be reached through the JSON decoder (NaN/Inf
 // aren't valid JSON numbers), so it's exercised here alongside the bounds rule.

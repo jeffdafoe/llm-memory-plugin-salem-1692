@@ -665,6 +665,341 @@ func (s *Server) handleAdminObjectDelete(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, adminObjectDeleteResponse{DeletedIDs: ids})
 }
 
+// adminObjectStateRequest is the POST /api/village/admin/object/set-state body:
+// the target object id + the asset-state name to set it to. State is a free-form
+// catalog state string; an admin override is trusted and the engine does NOT
+// reject an unknown state name here (matching the v1 PATCH state route — a state
+// the asset doesn't define simply renders as the asset fallback). object_id and
+// state are both required.
+type adminObjectStateRequest struct {
+	ObjectID string `json:"object_id"`
+	State    string `json:"state"`
+}
+
+// adminObjectStateResponse reports the applied state. Applied is false when the
+// object was already at the target state — an idempotent no-op that still
+// returns 200. A real flip reaches all clients via the object_state_changed WS
+// broadcast the VillageObjectStateChanged event triggers, so the body just
+// carries the outcome.
+type adminObjectStateResponse struct {
+	ID      string `json:"id"`
+	State   string `json:"state"`
+	Applied bool   `json:"applied"`
+}
+
+// handleAdminObjectSetState sets a placed object's current_state. Admin-only:
+// requireAuth + adminCommand. Delegates to sim.SetVillageObjectState with
+// guardGen=0 (an admin override is unconditional — no generation gate, unlike a
+// scheduled phase flip). 400 malformed / missing id or state; 403 not admin;
+// 404 object not found; 200 ok (Applied=false when already at the target state).
+func (s *Server) handleAdminObjectSetState(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	if user == nil {
+		writeAuthError(w, "invalid")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxAdminBodyBytes)
+	dec := json.NewDecoder(r.Body)
+	var req adminObjectStateRequest
+	if err := dec.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.ObjectID == "" {
+		writeError(w, http.StatusBadRequest, "object_id is required")
+		return
+	}
+	if req.State == "" {
+		writeError(w, http.StatusBadRequest, "state is required")
+		return
+	}
+
+	res, err := s.world.SendContext(r.Context(), adminCommand(user.Username, func(world *sim.World) (any, error) {
+		out, err := sim.SetVillageObjectState(sim.VillageObjectID(req.ObjectID), req.State, 0).Fn(world)
+		if err != nil {
+			return nil, err
+		}
+		// SetVillageObjectState reports a missing object as a result Reason
+		// (Applied=false, nil error), not an error — that shape suits its
+		// scheduled-flip callers. Translate it to the shared sentinel so this
+		// admin route maps a missing object to 404 like object/move + delete.
+		sr := out.(sim.SetStateResult)
+		if sr.Reason == "not_found" {
+			return nil, sim.ErrVillageObjectNotFound
+		}
+		return sr, nil
+	}))
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
+		if errors.Is(err, errAdminForbidden) {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
+		if errors.Is(err, sim.ErrVillageObjectNotFound) {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+
+	out, ok := res.(sim.SetStateResult)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "unexpected set-state result")
+		return
+	}
+	writeJSON(w, adminObjectStateResponse{ID: req.ObjectID, State: req.State, Applied: out.Applied})
+}
+
+// adminObjectOwnerRequest is the POST /api/village/admin/object/set-owner body:
+// the target object id + the owning actor id. An empty owner_actor_id clears
+// ownership (unowned); a non-empty one must resolve to a live actor.
+type adminObjectOwnerRequest struct {
+	ObjectID     string `json:"object_id"`
+	OwnerActorID string `json:"owner_actor_id"`
+}
+
+// adminObjectOwnerResponse echoes the applied owner. There's no WS broadcast —
+// owner is not in ObjectDTO — so the body is the editor's only confirmation.
+type adminObjectOwnerResponse struct {
+	ID           string `json:"id"`
+	OwnerActorID string `json:"owner_actor_id"`
+}
+
+// handleAdminObjectSetOwner sets (or clears) a placed object's owning actor.
+// Admin-only: requireAuth + adminCommand. Delegates to
+// sim.SetVillageObjectOwner. 400 malformed / missing id; 403 not admin; 404
+// object not found; 422 owner actor not found (non-empty id with no live
+// actor); 200 ok.
+func (s *Server) handleAdminObjectSetOwner(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	if user == nil {
+		writeAuthError(w, "invalid")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxAdminBodyBytes)
+	dec := json.NewDecoder(r.Body)
+	var req adminObjectOwnerRequest
+	if err := dec.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.ObjectID == "" {
+		writeError(w, http.StatusBadRequest, "object_id is required")
+		return
+	}
+
+	res, err := s.world.SendContext(r.Context(), adminCommand(user.Username, func(world *sim.World) (any, error) {
+		return sim.SetVillageObjectOwner(sim.VillageObjectID(req.ObjectID), sim.ActorID(req.OwnerActorID)).Fn(world)
+	}))
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
+		if errors.Is(err, errAdminForbidden) {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
+		if errors.Is(err, sim.ErrVillageObjectNotFound) {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		// sim.ErrOwnerActorNotFound (a dangling owner id) and any other
+		// rejection are state-validation failures → 422.
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+
+	out, ok := res.(sim.SetOwnerResult)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "unexpected set-owner result")
+		return
+	}
+	writeJSON(w, adminObjectOwnerResponse{ID: string(out.ID), OwnerActorID: string(out.OwnerActorID)})
+}
+
+// adminObjectLoiterOffsetRequest is the POST .../set-loiter-offset body. X and Y
+// are nullable tile-unit offsets: both present sets the override, both null (or
+// omitted) clears it back to the catalog default. Exactly one set is rejected
+// (400) — the offset is treated as an (x, y) pair on this route.
+type adminObjectLoiterOffsetRequest struct {
+	ObjectID string `json:"object_id"`
+	X        *int   `json:"x"`
+	Y        *int   `json:"y"`
+}
+
+// adminObjectLoiterOffsetResponse echoes the applied offset. A cleared axis
+// serializes as null (no omitempty) so the editor can tell "cleared" from 0.
+type adminObjectLoiterOffsetResponse struct {
+	ID string `json:"id"`
+	X  *int   `json:"x"`
+	Y  *int   `json:"y"`
+}
+
+// handleAdminObjectSetLoiterOffset sets (or clears) a placed object's loiter
+// offset. Admin-only: requireAuth + adminCommand. Delegates to
+// sim.SetVillageObjectLoiterOffset. 400 malformed / missing id / only one of
+// x,y; 403 not admin; 404 object not found; 200 ok.
+func (s *Server) handleAdminObjectSetLoiterOffset(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	if user == nil {
+		writeAuthError(w, "invalid")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxAdminBodyBytes)
+	dec := json.NewDecoder(r.Body)
+	var req adminObjectLoiterOffsetRequest
+	if err := dec.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.ObjectID == "" {
+		writeError(w, http.StatusBadRequest, "object_id is required")
+		return
+	}
+	// Both-or-neither: the offset is an (x, y) pair on the wire. A lone axis is
+	// almost certainly a client mistake, so reject it rather than silently
+	// clearing the other.
+	if (req.X == nil) != (req.Y == nil) {
+		writeError(w, http.StatusBadRequest, "x and y must both be set or both omitted")
+		return
+	}
+
+	res, err := s.world.SendContext(r.Context(), adminCommand(user.Username, func(world *sim.World) (any, error) {
+		return sim.SetVillageObjectLoiterOffset(sim.VillageObjectID(req.ObjectID), req.X, req.Y).Fn(world)
+	}))
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
+		if errors.Is(err, errAdminForbidden) {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
+		if errors.Is(err, sim.ErrVillageObjectNotFound) {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+
+	out, ok := res.(sim.SetLoiterOffsetResult)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "unexpected set-loiter-offset result")
+		return
+	}
+	writeJSON(w, adminObjectLoiterOffsetResponse{ID: string(out.ID), X: out.X, Y: out.Y})
+}
+
+// adminObjectEntryPolicyRequest is the POST .../set-entry-policy body: the
+// target object id + the entry policy. Valid values are "" (type default),
+// "open", "owner-only", "closed".
+type adminObjectEntryPolicyRequest struct {
+	ObjectID    string `json:"object_id"`
+	EntryPolicy string `json:"entry_policy"`
+}
+
+// adminObjectEntryPolicyResponse echoes the applied policy.
+type adminObjectEntryPolicyResponse struct {
+	ID          string `json:"id"`
+	EntryPolicy string `json:"entry_policy"`
+}
+
+// handleAdminObjectSetEntryPolicy sets a placed object's entry policy.
+// Admin-only: requireAuth + adminCommand. The handler validates the enum (400)
+// and sim.SetVillageObjectEntryPolicy guards it again (defense-in-depth). 400
+// malformed / missing id / unknown policy; 403 not admin; 404 object not found;
+// 200 ok.
+func (s *Server) handleAdminObjectSetEntryPolicy(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	if user == nil {
+		writeAuthError(w, "invalid")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxAdminBodyBytes)
+	dec := json.NewDecoder(r.Body)
+	var req adminObjectEntryPolicyRequest
+	if err := dec.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.ObjectID == "" {
+		writeError(w, http.StatusBadRequest, "object_id is required")
+		return
+	}
+	if !validEntryPolicy(req.EntryPolicy) {
+		writeError(w, http.StatusBadRequest, `entry_policy must be "", "open", "owner-only", or "closed"`)
+		return
+	}
+
+	res, err := s.world.SendContext(r.Context(), adminCommand(user.Username, func(world *sim.World) (any, error) {
+		return sim.SetVillageObjectEntryPolicy(sim.VillageObjectID(req.ObjectID), sim.EntryPolicy(req.EntryPolicy)).Fn(world)
+	}))
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
+		if errors.Is(err, errAdminForbidden) {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
+		if errors.Is(err, sim.ErrVillageObjectNotFound) {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		// sim.ErrInvalidEntryPolicy is the command's own enum guard; the handler
+		// rejects unknown values at 400 before the command runs, so map this
+		// defense-in-depth path to 400 consistently rather than the 422 default.
+		if errors.Is(err, sim.ErrInvalidEntryPolicy) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+
+	out, ok := res.(sim.SetEntryPolicyResult)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "unexpected set-entry-policy result")
+		return
+	}
+	writeJSON(w, adminObjectEntryPolicyResponse{ID: string(out.ID), EntryPolicy: string(out.EntryPolicy)})
+}
+
+// validEntryPolicy reports whether s is one of the four accepted entry-policy
+// values. Mirrors the sim.EntryPolicy consts (kept in sync with village_object.go).
+func validEntryPolicy(s string) bool {
+	switch sim.EntryPolicy(s) {
+	case sim.EntryPolicyDefault, sim.EntryPolicyOpen, sim.EntryPolicyOwner, sim.EntryPolicyClosed:
+		return true
+	default:
+		return false
+	}
+}
+
 // writeError writes a JSON {error} body with the given status.
 func writeError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")

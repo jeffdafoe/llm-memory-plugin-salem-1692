@@ -75,6 +75,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/village/admin/phase", s.requireAuth(s.handleAdminPhase))
 	mux.HandleFunc("POST /api/village/admin/object/move", s.requireAuth(s.handleAdminObjectMove))
 	mux.HandleFunc("POST /api/village/admin/object/delete", s.requireAuth(s.handleAdminObjectDelete))
+	mux.HandleFunc("POST /api/village/admin/object/set-state", s.requireAuth(s.handleAdminObjectSetState))
+	mux.HandleFunc("POST /api/village/admin/object/set-owner", s.requireAuth(s.handleAdminObjectSetOwner))
+	mux.HandleFunc("POST /api/village/admin/object/set-loiter-offset", s.requireAuth(s.handleAdminObjectSetLoiterOffset))
+	mux.HandleFunc("POST /api/village/admin/object/set-entry-policy", s.requireAuth(s.handleAdminObjectSetEntryPolicy))
 	if s.hub != nil {
 		mux.HandleFunc("GET /api/village/events", s.handleEvents)
 	}

@@ -382,3 +382,120 @@ func deleteObjectCascade(w *World, root VillageObjectID) []VillageObjectID {
 	visit(root)
 	return removed
 }
+
+// Admin metadata commands (SetVillageObjectOwner / SetVillageObjectLoiterOffset
+// / SetVillageObjectEntryPolicy) back the editor's object-metadata write routes.
+// Each runs on the world goroutine via a Command and mutates one VillageObject
+// field. Unlike Move/Delete/SetState these emit NO bus event: owner, loiter
+// offset, and entry policy are not part of ObjectDTO, so a change is invisible
+// to a connected client and needs no broadcast (the editing client re-reads).
+// Same restart-loss-until-checkpoint persistence as the other admin object
+// commands — the next gen-marker SaveSnapshot converges the durable store.
+
+// ErrOwnerActorNotFound is returned by SetVillageObjectOwner when a non-empty
+// owner actor id does not resolve to a live actor (→ 422 at the HTTP layer).
+// Clearing the owner (empty id) is always allowed and never returns this.
+var ErrOwnerActorNotFound = errors.New("owner actor not found")
+
+// ErrInvalidEntryPolicy is returned by SetVillageObjectEntryPolicy when the
+// policy is not one of the four EntryPolicy values (→ 400 at the HTTP layer).
+var ErrInvalidEntryPolicy = errors.New("invalid entry policy")
+
+// SetOwnerResult / SetLoiterOffsetResult / SetEntryPolicyResult echo the applied
+// value back to the HTTP layer. There's no broadcast for these metadata
+// changes, so the command result is the only confirmation the editor gets.
+type SetOwnerResult struct {
+	ID           VillageObjectID
+	OwnerActorID ActorID
+}
+
+type SetLoiterOffsetResult struct {
+	ID VillageObjectID
+	X  *int
+	Y  *int
+}
+
+type SetEntryPolicyResult struct {
+	ID          VillageObjectID
+	EntryPolicy EntryPolicy
+}
+
+// SetVillageObjectOwner sets (or clears) a village object's owning actor.
+// An empty ownerActorID clears ownership (unowned). A non-empty id must resolve
+// to a live actor in World.Actors — OwnerActorID is a typed reference, so
+// refusing a dangling id (ErrOwnerActorNotFound) keeps that reference honest.
+// Returns ErrVillageObjectNotFound if the object is absent. Emits no event —
+// owner is not in ObjectDTO, so the change is client-invisible.
+func SetVillageObjectOwner(id VillageObjectID, ownerActorID ActorID) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			obj, ok := w.VillageObjects[id]
+			if !ok {
+				return nil, ErrVillageObjectNotFound
+			}
+			if ownerActorID != "" {
+				if _, ok := w.Actors[ownerActorID]; !ok {
+					return nil, ErrOwnerActorNotFound
+				}
+			}
+			obj.OwnerActorID = ownerActorID
+			return SetOwnerResult{ID: id, OwnerActorID: ownerActorID}, nil
+		},
+	}
+}
+
+// SetVillageObjectLoiterOffset sets (or clears) a village object's loiter
+// offset — where loitering/visiting actors stand relative to its anchor tile,
+// in tile units. A nil x or y clears that axis back to the catalog default (see
+// EffectiveLoiterOffset). The HTTP layer enforces both-or-neither; this command
+// faithfully applies whatever pointers it's given, because an axis-independent
+// override is a legal world state. The pointed-to ints are copied so world
+// state never aliases a caller-owned pointer. Returns ErrVillageObjectNotFound
+// if the object is absent. Emits no event — loiter offset is not in ObjectDTO.
+func SetVillageObjectLoiterOffset(id VillageObjectID, x, y *int) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			obj, ok := w.VillageObjects[id]
+			if !ok {
+				return nil, ErrVillageObjectNotFound
+			}
+			obj.LoiterOffsetX = copyIntPtr(x)
+			obj.LoiterOffsetY = copyIntPtr(y)
+			return SetLoiterOffsetResult{ID: id, X: obj.LoiterOffsetX, Y: obj.LoiterOffsetY}, nil
+		},
+	}
+}
+
+// copyIntPtr returns a fresh pointer to a copy of *p, or nil when p is nil — so
+// a stored pointer never aliases the caller's int.
+func copyIntPtr(p *int) *int {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
+}
+
+// SetVillageObjectEntryPolicy sets a village object's entry policy. policy must
+// be one of the four EntryPolicy values ("" = type default, "open",
+// "owner-only", "closed"); an unknown value is ErrInvalidEntryPolicy. Returns
+// ErrVillageObjectNotFound if the object is absent. Emits no event — entry
+// policy is not in ObjectDTO.
+func SetVillageObjectEntryPolicy(id VillageObjectID, policy EntryPolicy) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			switch policy {
+			case EntryPolicyDefault, EntryPolicyOpen, EntryPolicyOwner, EntryPolicyClosed:
+				// valid
+			default:
+				return nil, ErrInvalidEntryPolicy
+			}
+			obj, ok := w.VillageObjects[id]
+			if !ok {
+				return nil, ErrVillageObjectNotFound
+			}
+			obj.EntryPolicy = policy
+			return SetEntryPolicyResult{ID: id, EntryPolicy: policy}, nil
+		},
+	}
+}
