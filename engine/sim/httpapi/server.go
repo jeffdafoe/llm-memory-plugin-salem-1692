@@ -52,7 +52,8 @@ func (s *Server) SetEventsHub(h *Hub) {
 // sprites off *sim.World reference state), plus the WS /events push channel
 // when an event hub is attached via SetEventsHub. Every route requires a valid
 // salem-realm session token — REST via requireAuth (Bearer header), WS via its
-// own ?token= verify. Write routes land in a later phase.
+// own ?token= verify. Write routes (POST) run the mutation through the world
+// command channel — see write_handlers.go.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	// Every REST read is wrapped in requireAuth (Bearer token → verify →
@@ -64,6 +65,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/village/terrain", s.requireAuth(s.handleTerrain))
 	mux.HandleFunc("GET /api/village/assets", s.requireAuth(s.handleAssets))
 	mux.HandleFunc("GET /api/village/sprites", s.requireAuth(s.handleSprites))
+	// Write routes — same requireAuth gate; the mutation runs through the
+	// world command channel (see write_handlers.go).
+	mux.HandleFunc("POST /api/village/pc/move", s.requireAuth(s.handlePCMove))
 	if s.hub != nil {
 		mux.HandleFunc("GET /api/village/events", s.handleEvents)
 	}
