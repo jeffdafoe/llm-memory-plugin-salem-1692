@@ -180,20 +180,24 @@ func TestHandleAgents(t *testing.T) {
 	if len(hannah.Sprite.Animations) != 2 || hannah.Sprite.Animations[0].Animation != "idle" {
 		t.Errorf("hannah sprite animations wrong: %+v", hannah.Sprite.Animations)
 	}
-	// bram has no sprite_id → Sprite omitted, no facing set.
+	// bram has no sprite_id → Sprite omitted; facing normalizes to "south"
+	// (always present so pg-loaded and in-memory actors share a wire shape).
 	if bram.Sprite != nil {
 		t.Errorf("bram.sprite should be nil, got %+v", bram.Sprite)
+	}
+	if bram.Facing != "south" {
+		t.Errorf("bram.facing = %q, want normalized south", bram.Facing)
 	}
 	var raw []map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
 		t.Fatalf("decode raw: %v", err)
 	}
-	// raw[0] is bram (sorted): sprite + facing keys omitted entirely.
+	// raw[0] is bram (sorted): sprite key omitted, facing always present.
 	if _, present := raw[0]["sprite"]; present {
 		t.Errorf("bram sprite should be omitted, got present")
 	}
-	if _, present := raw[0]["facing"]; present {
-		t.Errorf("bram facing should be omitted (empty), got present")
+	if f, _ := raw[0]["facing"].(string); f != "south" {
+		t.Errorf("bram facing should be present and 'south', got %q", f)
 	}
 	// inline sprite must NOT carry pack (that's only on the raw catalog).
 	hannahRaw := raw[1]["sprite"].(map[string]any)

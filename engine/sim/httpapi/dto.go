@@ -2,7 +2,7 @@
 // close over a *sim.World and read lock-free, with no command channel on the
 // read path. Per-tick state (world / agents / objects) is read from the
 // published snapshot (world.Published()); reference state loaded once at
-// startup (assets / terrain catalog) is read directly off *sim.World, which is
+// startup (assets / terrain / sprite catalogs) is read directly off *sim.World, which is
 // immutable post-load. The wire DTOs here are v2-native — shaped by
 // sim.Snapshot + the reference catalogs, not v1's DB-era JSON — and are the
 // single source of truth documented in the shared contract note
@@ -41,7 +41,10 @@ type WorldStateDTO struct {
 // from this one fetch. Absent (omitempty) for actors with no sprite_id or a
 // dangling ref. Facing is the spawn/initial render direction; the client
 // derives live facing from movement delta, so this only seeds the first
-// render.
+// render. Facing is ALWAYS present and normalized to a valid enum member
+// ("south" when unset) so the wire shape is identical for pg-loaded and
+// in-memory-spawned actors (a pg actor's facing column is NOT NULL default
+// 'south').
 type AgentDTO struct {
 	ID                string          `json:"id"`
 	DisplayName       string          `json:"display_name"`
@@ -50,7 +53,7 @@ type AgentDTO struct {
 	Role              string          `json:"role,omitempty"`
 	X                 int             `json:"x"` // tile coordinate (actors move on the integer grid)
 	Y                 int             `json:"y"`
-	Facing            string          `json:"facing,omitempty"` // north | south | east | west (spawn facing)
+	Facing            string          `json:"facing"` // north | south | east | west (spawn facing; "south" when unset)
 	InsideStructureID string          `json:"inside_structure_id,omitempty"`
 	CurrentHuddleID   string          `json:"current_huddle_id,omitempty"`
 	Sprite            *AgentSpriteDTO `json:"sprite,omitempty"`
@@ -105,7 +108,7 @@ type TerrainDTO struct {
 // engine-only behavior fields (rotation_algo, transition_spread_seconds,
 // occupied_*, is_obstacle, is_passage) are intentionally absent. This is the
 // object/terrain catalog only — character sprites live in a separate catalog
-// (not yet on the wire; tracked as the agent-sprite gap, contract note V3).
+// (SpriteDTO, served at GET /api/village/sprites + inlined onto AgentDTO).
 type AssetDTO struct {
 	ID                string          `json:"id"` // asset.id UUID; ObjectDTO.asset_id references it
 	Name              string          `json:"name"`
