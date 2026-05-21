@@ -19,6 +19,7 @@ func NewRepository() (sim.Repository, *Handles) {
 	orders := NewOrdersRepo()
 	env := NewEnvironmentRepo()
 	assets := NewAssetsRepo()
+	sprites := NewSpritesRepo()
 	recipes := NewRecipesRepo()
 	itemKinds := NewItemKindsRepo()
 	terrain := NewTerrainRepo()
@@ -31,6 +32,7 @@ func NewRepository() (sim.Repository, *Handles) {
 		Orders:         orders,
 		Environment:    env,
 		Assets:         assets,
+		Sprites:        sprites,
 		Recipes:        recipes,
 		ItemKinds:      itemKinds,
 		Terrain:        terrain,
@@ -44,6 +46,7 @@ func NewRepository() (sim.Repository, *Handles) {
 		Orders:         orders,
 		Environment:    env,
 		Assets:         assets,
+		Sprites:        sprites,
 		Recipes:        recipes,
 		ItemKinds:      itemKinds,
 		Terrain:        terrain,
@@ -68,6 +71,7 @@ type Handles struct {
 	Orders         *OrdersRepo
 	Environment    *EnvironmentRepo
 	Assets         *AssetsRepo
+	Sprites        *SpritesRepo
 	Recipes        *RecipesRepo
 	ItemKinds      *ItemKindsRepo
 	Terrain        *TerrainRepo

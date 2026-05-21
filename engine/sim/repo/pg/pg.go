@@ -41,6 +41,7 @@ func NewRepository(pool Pool) sim.Repository {
 		Orders:         &OrdersRepo{pool: pool},
 		Environment:    &EnvironmentRepo{pool: pool},
 		Assets:         &AssetsRepo{pool: pool},
+		Sprites:        &SpritesRepo{pool: pool},
 		Recipes:        &RecipesRepo{pool: pool},
 		ItemKinds:      &ItemKindsRepo{pool: pool},
 		Terrain:        &TerrainRepo{pool: pool},

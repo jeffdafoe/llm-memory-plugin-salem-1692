@@ -17,6 +17,7 @@ type Repository struct {
 	Orders         OrdersRepo
 	Environment    EnvironmentRepo
 	Assets         AssetsRepo
+	Sprites        SpritesRepo
 	Recipes        RecipesRepo
 	ItemKinds      ItemKindsRepo
 	Terrain        TerrainRepo
@@ -98,6 +99,15 @@ type OrdersRepo interface {
 // asset / asset_state tables through the editor port).
 type AssetsRepo interface {
 	LoadAll(ctx context.Context) (map[AssetID]*Asset, error)
+}
+
+// SpritesRepo loads the character-sprite catalog (npc_sprite + animation
+// rows + packs) flattened into sim.Sprite aggregates keyed by sprite UUID.
+// Reference state — loaded at startup, hot-reloaded on SIGHUP. Same
+// lifecycle as AssetsRepo; NOT part of the checkpoint cycle (admin edits
+// write directly to the npc_sprite tables through the editor port).
+type SpritesRepo interface {
+	LoadAll(ctx context.Context) (map[SpriteID]*Sprite, error)
 }
 
 // RecipesRepo loads the item_recipe catalog. Reference state — same

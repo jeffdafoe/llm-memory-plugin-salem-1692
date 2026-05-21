@@ -161,6 +161,35 @@ type AssetSlotDTO struct {
 	OffsetY  int    `json:"offset_y"`
 }
 
+// SpriteDTO is one entry in the GET /api/village/sprites response — the raw
+// character-sprite catalog the editor's sprite picker renders. It is a
+// SEPARATE catalog from AssetDTO: character sprites use a row-indexed
+// directional animation model (direction × animation → row_index), unlike an
+// asset state's single src-rect. AgentDTO references a sprite by id and (in
+// V3) inlines the resolved sheet + animations so the client can build the
+// AnimatedSprite2D from one agents fetch.
+type SpriteDTO struct {
+	ID          string               `json:"id"` // npc_sprite.id UUID; Actor.sprite_id references it
+	Name        string               `json:"name"`
+	Sheet       string               `json:"sheet"`
+	FrameWidth  int                  `json:"frame_width"`
+	FrameHeight int                  `json:"frame_height"`
+	Pack        *TilesetPackDTO      `json:"pack,omitempty"`
+	Animations  []SpriteAnimationDTO `json:"animations"`
+}
+
+// SpriteAnimationDTO is one (direction, animation) row mapping into a sprite
+// sheet. RowIndex is the 0-indexed sheet row; frames run left-to-right from
+// column 0 through frame_count-1. Direction is north/south/east/west and
+// Animation is idle/walk.
+type SpriteAnimationDTO struct {
+	Direction  string  `json:"direction"`
+	Animation  string  `json:"animation"`
+	RowIndex   int     `json:"row_index"`
+	FrameCount int     `json:"frame_count"`
+	FrameRate  float64 `json:"frame_rate"`
+}
+
 // actorKindString maps the internal ActorKind enum to its stable wire form.
 // A new enum value renders as "unknown" rather than leaking the int.
 func actorKindString(k sim.ActorKind) string {

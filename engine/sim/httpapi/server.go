@@ -38,6 +38,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/village/objects", s.handleObjects)
 	mux.HandleFunc("GET /api/village/terrain", s.handleTerrain)
 	mux.HandleFunc("GET /api/village/assets", s.handleAssets)
+	mux.HandleFunc("GET /api/village/sprites", s.handleSprites)
 	return mux
 }
 
@@ -76,6 +77,13 @@ func (s *Server) handleTerrain(w http.ResponseWriter, _ *http.Request) {
 // lock-free reference-state posture and same SIGHUP invariant as handleTerrain.
 func (s *Server) handleAssets(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, assetsFromCatalog(s.world.Assets))
+}
+
+// handleSprites serves the raw character-sprite catalog (the editor's sprite
+// picker source). Reads world.Sprites directly — same lock-free reference-
+// state posture and same SIGHUP invariant as handleTerrain/handleAssets.
+func (s *Server) handleSprites(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, spritesFromCatalog(s.world.Sprites))
 }
 
 // worldStateFromSnapshot maps the snapshot's world-level state to the wire DTO.
@@ -249,6 +257,57 @@ func assetSlotsDTO(slots []sim.AssetSlot) []AssetSlotDTO {
 			SlotName: slots[i].SlotName,
 			OffsetX:  slots[i].OffsetX,
 			OffsetY:  slots[i].OffsetY,
+		})
+	}
+	return out
+}
+
+// spritesFromCatalog maps the sprite catalog to a DTO slice, sorted by ID so
+// the response is deterministic (stable client diffs + testable).
+func spritesFromCatalog(sprites map[sim.SpriteID]*sim.Sprite) []SpriteDTO {
+	out := make([]SpriteDTO, 0, len(sprites))
+	for id, sp := range sprites {
+		if sp == nil {
+			continue
+		}
+		out = append(out, spriteDTO(id, sp))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+// spriteDTO maps one catalog sprite to its render DTO.
+func spriteDTO(id sim.SpriteID, sp *sim.Sprite) SpriteDTO {
+	dto := SpriteDTO{
+		ID:          string(id),
+		Name:        sp.Name,
+		Sheet:       sp.Sheet,
+		FrameWidth:  sp.FrameWidth,
+		FrameHeight: sp.FrameHeight,
+		Animations:  spriteAnimationsDTO(sp.Animations),
+	}
+	if sp.Pack != nil {
+		dto.Pack = &TilesetPackDTO{
+			ID:   sp.Pack.ID,
+			Name: sp.Pack.Name,
+			URL:  sp.Pack.URL,
+		}
+	}
+	return dto
+}
+
+// spriteAnimationsDTO maps a sprite's animation rows. Always returns a
+// non-nil slice — animations is required on the wire (no omitempty), so a
+// sprite with no animation rows serializes as [] rather than null.
+func spriteAnimationsDTO(anims []sim.SpriteAnimation) []SpriteAnimationDTO {
+	out := make([]SpriteAnimationDTO, 0, len(anims))
+	for i := range anims {
+		out = append(out, SpriteAnimationDTO{
+			Direction:  anims[i].Direction,
+			Animation:  anims[i].Animation,
+			RowIndex:   anims[i].RowIndex,
+			FrameCount: anims[i].FrameCount,
+			FrameRate:  anims[i].FrameRate,
 		})
 	}
 	return out

@@ -81,6 +81,22 @@ func seededWorld(t *testing.T) *sim.World {
 				States: []sim.AssetState{{ID: 3, State: "default", Sheet: "nature.png", SrcW: 32, SrcH: 32, FrameCount: 1}},
 			},
 		}
+		spritePackURL := "https://cdn.example/npc/woman_A.png"
+		world.Sprites = map[sim.SpriteID]*sim.Sprite{
+			"sprite-1": {
+				ID: "sprite-1", Name: "Woman A v00", Sheet: "npc/woman_A_v00.png",
+				FrameWidth: 64, FrameHeight: 64,
+				Pack: &sim.TilesetPack{ID: "mana-seed", Name: "Mana Seed", URL: &spritePackURL},
+				Animations: []sim.SpriteAnimation{
+					{Direction: "south", Animation: "idle", RowIndex: 0, FrameCount: 1, FrameRate: 6},
+					{Direction: "south", Animation: "walk", RowIndex: 1, FrameCount: 4, FrameRate: 8},
+				},
+			},
+			"sprite-2": {
+				ID: "sprite-2", Name: "Old Man B v02", Sheet: "npc/old_man_B_v02.png",
+				FrameWidth: 64, FrameHeight: 64,
+			},
+		}
 		return nil, nil
 	}})
 	if err != nil {
@@ -294,6 +310,57 @@ func TestHandleAssets(t *testing.T) {
 	}
 	if _, present := bush["door_offset_x"]; present {
 		t.Errorf("nil door_offset_x should be omitted, got present")
+	}
+}
+
+func TestHandleSprites(t *testing.T) {
+	srv := NewServer(seededWorld(t))
+	rec := get(t, srv, "/api/village/sprites")
+
+	var sprites []SpriteDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &sprites); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(sprites) != 2 {
+		t.Fatalf("len(sprites) = %d, want 2", len(sprites))
+	}
+	// Sorted by ID: sprite-1 < sprite-2.
+	if sprites[0].ID != "sprite-1" || sprites[1].ID != "sprite-2" {
+		t.Fatalf("order = [%s %s], want [sprite-1 sprite-2]", sprites[0].ID, sprites[1].ID)
+	}
+	woman := sprites[0]
+	if woman.Name != "Woman A v00" || woman.Sheet != "npc/woman_A_v00.png" {
+		t.Errorf("woman scalars wrong: %+v", woman)
+	}
+	if woman.FrameWidth != 64 || woman.FrameHeight != 64 {
+		t.Errorf("woman frame dims = %dx%d, want 64x64", woman.FrameWidth, woman.FrameHeight)
+	}
+	if woman.Pack == nil || woman.Pack.ID != "mana-seed" || woman.Pack.URL == nil || *woman.Pack.URL != "https://cdn.example/npc/woman_A.png" {
+		t.Errorf("woman pack wrong: %+v", woman.Pack)
+	}
+	if len(woman.Animations) != 2 {
+		t.Fatalf("woman animations = %d, want 2", len(woman.Animations))
+	}
+	walk := woman.Animations[1]
+	if walk.Direction != "south" || walk.Animation != "walk" || walk.RowIndex != 1 || walk.FrameCount != 4 || walk.FrameRate != 8 {
+		t.Errorf("walk animation wrong: %+v", walk)
+	}
+
+	// A sprite with no pack and no animations: pack omitted, animations is [].
+	var raw []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode raw: %v", err)
+	}
+	oldMan := raw[1]
+	if _, present := oldMan["pack"]; present {
+		t.Errorf("nil pack should be omitted, got present")
+	}
+	anims, ok := oldMan["animations"].([]any)
+	if !ok {
+		t.Fatalf("animations not an array: %T", oldMan["animations"])
+	}
+	if len(anims) != 0 {
+		t.Errorf("empty animations should serialize as [], got %v", anims)
 	}
 }
 
