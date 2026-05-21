@@ -115,8 +115,10 @@ type ArrivalRefreshResult struct {
 // TODO(rewrite): replace the simple-tolerance lookup with the loiter-pin
 // resolver once the loitering geometry is ported.
 //
-// TODO(rewrite): when Hub/WS layer ports, broadcast object_state_changed
-// (for supply UI updates) and a per-actor refresh-event line.
+// TODO(rewrite): the Hub/WS layer now exists (state flips ride
+// object_state_changed), but a finite-supply DECREMENT here does not yet
+// surface to clients — wire a supply-update broadcast (and a per-actor
+// refresh-event line) over the hub when supply UI is needed.
 //
 // TODO(rewrite): when agent_action_log sink is wired in, append an
 // 'engine'-source log row capturing the hits.

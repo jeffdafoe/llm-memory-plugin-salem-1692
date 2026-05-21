@@ -199,8 +199,9 @@ type SetStateResult struct {
 // guardGen=0 disables the check (admin overrides, occupancy refresh that
 // just-happened, etc.).
 //
-// TODO: when the Hub/WS layer ports, broadcast object_state_changed on
-// successful apply so clients update their sprites.
+// A successful apply emits VillageObjectStateChanged, which the httpapi hub
+// translates to the object_state_changed client frame so clients update their
+// sprites.
 func SetVillageObjectState(id VillageObjectID, newState string, guardGen uint64) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
