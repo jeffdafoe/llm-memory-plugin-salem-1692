@@ -201,6 +201,127 @@ func TestDeleteVillageObject_NotFound(t *testing.T) {
 	}
 }
 
+func TestSetVillageObjectOwner_SetAndClear(t *testing.T) {
+	w, cap := buildObjectAdminWorld(t)
+	// Seed an actor to own the prop.
+	_, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["alice"] = &sim.Actor{ID: "alice", DisplayName: "Alice", Kind: sim.KindNPCShared}
+		return nil, nil
+	}})
+	if err != nil {
+		t.Fatalf("seed actor: %v", err)
+	}
+
+	res, err := w.Send(sim.SetVillageObjectOwner("prop-1", "alice"))
+	if err != nil {
+		t.Fatalf("set owner: %v", err)
+	}
+	if r := res.(sim.SetOwnerResult); r.ID != "prop-1" || r.OwnerActorID != "alice" {
+		t.Errorf("result = %+v, want prop-1/alice", r)
+	}
+	if got := w.Published().VillageObjects["prop-1"].OwnerActorID; got != "alice" {
+		t.Errorf("owner = %q, want alice", got)
+	}
+
+	// Clearing with an empty id is always allowed.
+	if _, err := w.Send(sim.SetVillageObjectOwner("prop-1", "")); err != nil {
+		t.Fatalf("clear owner: %v", err)
+	}
+	if got := w.Published().VillageObjects["prop-1"].OwnerActorID; got != "" {
+		t.Errorf("owner = %q, want cleared", got)
+	}
+
+	// Metadata commands emit nothing — owner isn't in ObjectDTO.
+	if got := len(cap.snapshot()); got != 0 {
+		t.Errorf("emitted %d events, want 0 (owner change is client-invisible)", got)
+	}
+}
+
+func TestSetVillageObjectOwner_OwnerNotFound(t *testing.T) {
+	w, _ := buildObjectAdminWorld(t)
+	_, err := w.Send(sim.SetVillageObjectOwner("prop-1", "ghost"))
+	if !errors.Is(err, sim.ErrOwnerActorNotFound) {
+		t.Errorf("err = %v, want ErrOwnerActorNotFound", err)
+	}
+	if got := w.Published().VillageObjects["prop-1"].OwnerActorID; got != "" {
+		t.Errorf("owner = %q, want unchanged (empty) after rejected set", got)
+	}
+}
+
+func TestSetVillageObjectOwner_NotFound(t *testing.T) {
+	w, _ := buildObjectAdminWorld(t)
+	_, err := w.Send(sim.SetVillageObjectOwner("ghost", ""))
+	if !errors.Is(err, sim.ErrVillageObjectNotFound) {
+		t.Errorf("err = %v, want ErrVillageObjectNotFound", err)
+	}
+}
+
+func TestSetVillageObjectLoiterOffset_SetAndClear(t *testing.T) {
+	w, _ := buildObjectAdminWorld(t)
+	x, y := 2, -3
+
+	if _, err := w.Send(sim.SetVillageObjectLoiterOffset("prop-1", &x, &y)); err != nil {
+		t.Fatalf("set offset: %v", err)
+	}
+	obj := w.Published().VillageObjects["prop-1"]
+	if obj.LoiterOffsetX == nil || obj.LoiterOffsetY == nil || *obj.LoiterOffsetX != 2 || *obj.LoiterOffsetY != -3 {
+		t.Errorf("offset = (%v,%v), want (2,-3)", obj.LoiterOffsetX, obj.LoiterOffsetY)
+	}
+	// Stored pointers must not alias the caller's — mutating the source after the
+	// command must not change world state.
+	x = 99
+	if got := *w.Published().VillageObjects["prop-1"].LoiterOffsetX; got != 2 {
+		t.Errorf("offset X = %d after mutating source, want 2 (must be copied)", got)
+	}
+
+	if _, err := w.Send(sim.SetVillageObjectLoiterOffset("prop-1", nil, nil)); err != nil {
+		t.Fatalf("clear offset: %v", err)
+	}
+	obj = w.Published().VillageObjects["prop-1"]
+	if obj.LoiterOffsetX != nil || obj.LoiterOffsetY != nil {
+		t.Errorf("offset = (%v,%v), want cleared (nil,nil)", obj.LoiterOffsetX, obj.LoiterOffsetY)
+	}
+}
+
+func TestSetVillageObjectLoiterOffset_NotFound(t *testing.T) {
+	w, _ := buildObjectAdminWorld(t)
+	x, y := 1, 1
+	_, err := w.Send(sim.SetVillageObjectLoiterOffset("ghost", &x, &y))
+	if !errors.Is(err, sim.ErrVillageObjectNotFound) {
+		t.Errorf("err = %v, want ErrVillageObjectNotFound", err)
+	}
+}
+
+func TestSetVillageObjectEntryPolicy_Applied(t *testing.T) {
+	w, _ := buildObjectAdminWorld(t)
+	res, err := w.Send(sim.SetVillageObjectEntryPolicy("prop-1", sim.EntryPolicyOwner))
+	if err != nil {
+		t.Fatalf("set entry policy: %v", err)
+	}
+	if r := res.(sim.SetEntryPolicyResult); r.EntryPolicy != sim.EntryPolicyOwner {
+		t.Errorf("result = %+v, want owner-only", r)
+	}
+	if got := w.Published().VillageObjects["prop-1"].EntryPolicy; got != sim.EntryPolicyOwner {
+		t.Errorf("entry policy = %q, want owner-only", got)
+	}
+}
+
+func TestSetVillageObjectEntryPolicy_Invalid(t *testing.T) {
+	w, _ := buildObjectAdminWorld(t)
+	_, err := w.Send(sim.SetVillageObjectEntryPolicy("prop-1", sim.EntryPolicy("bogus")))
+	if !errors.Is(err, sim.ErrInvalidEntryPolicy) {
+		t.Errorf("err = %v, want ErrInvalidEntryPolicy", err)
+	}
+}
+
+func TestSetVillageObjectEntryPolicy_NotFound(t *testing.T) {
+	w, _ := buildObjectAdminWorld(t)
+	_, err := w.Send(sim.SetVillageObjectEntryPolicy("ghost", sim.EntryPolicyOpen))
+	if !errors.Is(err, sim.ErrVillageObjectNotFound) {
+		t.Errorf("err = %v, want ErrVillageObjectNotFound", err)
+	}
+}
+
 // indexOf maps each id to its position in the slice (for ordering assertions).
 func indexOf(ids []sim.VillageObjectID) map[sim.VillageObjectID]int {
 	out := make(map[sim.VillageObjectID]int, len(ids))
