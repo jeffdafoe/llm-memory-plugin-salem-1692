@@ -29,9 +29,9 @@ type client struct {
 	hub  *Hub
 	conn *websocket.Conn
 	send chan []byte
-	// token is the ?token= query value. Stored but not enforced this slice —
-	// reads are unauthenticated, matching the REST read surface. Kept so auth
-	// middleware can validate it when the write routes land.
+	// token is the verified ?token= query value (handleEvents validates it
+	// before the upgrade). Kept for re-verification / role checks when the
+	// write routes land.
 	token string
 }
 

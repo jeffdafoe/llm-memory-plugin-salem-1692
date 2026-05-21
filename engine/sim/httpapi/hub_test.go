@@ -37,7 +37,7 @@ func newHubServer(t *testing.T, translate EventTranslator) (*httptest.Server, *H
 	t.Cleanup(cancel)
 	go hub.Run(ctx)
 
-	srv := NewServer(w)
+	srv := NewServer(w, okAuth{})
 	srv.SetEventsHub(hub)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
@@ -161,7 +161,7 @@ func TestHubRejectsConnectAfterShutdown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go hub.Run(ctx)
 
-	srv := NewServer(w)
+	srv := NewServer(w, okAuth{})
 	srv.SetEventsHub(hub)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)

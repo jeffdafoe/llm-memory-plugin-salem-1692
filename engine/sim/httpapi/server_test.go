@@ -106,10 +106,26 @@ func seededWorld(t *testing.T) *sim.World {
 	return w
 }
 
+// okAuth is a test Authenticator: any non-empty token is a valid salem user;
+// an empty token is rejected (exercises the missing-token path). Shared with
+// hub_test.go (same package).
+type okAuth struct{}
+
+func (okAuth) Verify(token string) VerifyResult {
+	if token == "" {
+		return VerifyResult{Reason: "missing"}
+	}
+	return VerifyResult{Valid: true, User: &AuthUser{Username: "tester", Realms: []string{"salem"}}}
+}
+
+const testToken = "test-token"
+
 func get(t *testing.T, srv *Server, path string) *httptest.ResponseRecorder {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	srv.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET %s = %d, want 200; body=%s", path, rec.Code, rec.Body.String())
 	}
@@ -117,7 +133,7 @@ func get(t *testing.T, srv *Server, path string) *httptest.ResponseRecorder {
 }
 
 func TestHandleWorld(t *testing.T) {
-	srv := NewServer(seededWorld(t))
+	srv := NewServer(seededWorld(t), okAuth{})
 	rec := get(t, srv, "/api/village/world")
 
 	var dto WorldStateDTO
@@ -139,7 +155,7 @@ func TestHandleWorld(t *testing.T) {
 }
 
 func TestHandleAgents(t *testing.T) {
-	srv := NewServer(seededWorld(t))
+	srv := NewServer(seededWorld(t), okAuth{})
 	rec := get(t, srv, "/api/village/agents")
 
 	var agents []AgentDTO
@@ -207,7 +223,7 @@ func TestHandleAgents(t *testing.T) {
 }
 
 func TestHandleObjects(t *testing.T) {
-	srv := NewServer(seededWorld(t))
+	srv := NewServer(seededWorld(t), okAuth{})
 	rec := get(t, srv, "/api/village/objects")
 
 	var objs []ObjectDTO
@@ -227,7 +243,7 @@ func TestHandleObjects(t *testing.T) {
 }
 
 func TestHandleTerrain(t *testing.T) {
-	srv := NewServer(seededWorld(t))
+	srv := NewServer(seededWorld(t), okAuth{})
 	rec := get(t, srv, "/api/village/terrain")
 
 	var dto TerrainDTO
@@ -268,7 +284,7 @@ func TestHandleTerrain_NilTerrain(t *testing.T) {
 		t.Fatalf("LoadWorld: %v", err)
 	}
 	w.Terrain = nil
-	srv := NewServer(w)
+	srv := NewServer(w, okAuth{})
 	rec := get(t, srv, "/api/village/terrain")
 
 	var dto TerrainDTO
@@ -281,7 +297,7 @@ func TestHandleTerrain_NilTerrain(t *testing.T) {
 }
 
 func TestHandleAssets(t *testing.T) {
-	srv := NewServer(seededWorld(t))
+	srv := NewServer(seededWorld(t), okAuth{})
 	rec := get(t, srv, "/api/village/assets")
 
 	var assets []AssetDTO
@@ -353,7 +369,7 @@ func TestHandleAssets(t *testing.T) {
 }
 
 func TestHandleSprites(t *testing.T) {
-	srv := NewServer(seededWorld(t))
+	srv := NewServer(seededWorld(t), okAuth{})
 	rec := get(t, srv, "/api/village/sprites")
 
 	var sprites []SpriteDTO
@@ -409,5 +425,14 @@ func TestNewServer_NilWorldPanics(t *testing.T) {
 			t.Error("expected panic on nil world")
 		}
 	}()
-	NewServer(nil)
+	NewServer(nil, okAuth{})
+}
+
+func TestNewServer_NilAuthPanics(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Error("expected panic on nil authenticator")
+		}
+	}()
+	NewServer(seededWorld(t), nil)
 }

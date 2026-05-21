@@ -4,9 +4,11 @@ import "time"
 
 // events_move.go — PR 4 locomotion events + the arrival warrant reason.
 //
-// All three movement events ride PR 1's typed event bus (see events.go):
+// All four movement events ride PR 1's typed event bus (see events.go):
 // concrete struct + unexported isSimEvent marker, emitted synchronously
 // from the locomotion command handlers / ticker as the mutation lands.
+// (ActorMoveStarted was added later for the client read surface — see its
+// doc-comment.)
 //
 // STRUCTURE-ID CONVENTION. The PR 4 design note typed the structure
 // fields as *StructureID ("nullable — outdoor positions have no
@@ -15,6 +17,33 @@ import "time"
 // StructureID with the empty string as the "no structure" sentinel.
 // These events follow the v2 convention: an empty StructureID means the
 // actor is outdoors / at a bare position.
+
+// ActorMoveStarted fires when MoveActor accepts a request and stamps a
+// fresh MoveIntent (the start of a walk). Unlike the per-tile ActorMoved
+// — which is engine-internal — this is the event the CLIENT consumes to
+// begin animating a walk. It carries the RESOLVED goal tile
+// (TargetPosition: the door tile / visitor slot / exact tile the
+// locomotion ticker aims at), so a viewer can path to it locally (e.g.
+// via its own navigation) instead of being fed every tile. The engine
+// stays authoritative on the outcome: ActorArrived on success,
+// ActorMoveStopped on failure, both carrying the same MovementAttemptID.
+//
+// A superseding MoveActor (replacing an in-flight intent) emits a fresh
+// ActorMoveStarted with a new MovementAttemptID; the prior attempt has no
+// explicit cancel event (same supersede posture as ActorMoveStopped) —
+// the new attempt ID is the signal that the old walk is obsolete.
+type ActorMoveStarted struct {
+	EventBase
+	ActorID           ActorID
+	FromPosition      Position            // actor's tile at move start
+	TargetPosition    Position            // resolved goal tile (door / visitor slot / exact)
+	DestinationKind   MoveDestinationKind // structure_enter | structure_visit | position
+	StructureID       StructureID         // destination structure for enter/visit; empty for position
+	MovementAttemptID MovementAttemptID
+	At                time.Time
+}
+
+func (ActorMoveStarted) isSimEvent() {}
 
 // ActorMoved fires once per tile the locomotion ticker advances an actor.
 // The event bus is synchronous with world mutation, so subscribers MUST
