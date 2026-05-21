@@ -201,7 +201,9 @@ func _load_npcs() -> void:
     add_child(http)
     http.request_completed.connect(_on_npcs_loaded.bind(http))
     var headers: PackedStringArray = Auth.auth_headers(false)
-    http.request(api_base + "/api/village/npcs", headers)
+    # v2: renderable actors come from /api/village/agents (v1 used /npcs). The
+    # response is normalized through VillageApi in _on_npcs_loaded.
+    http.request(api_base + "/api/village/agents", headers)
 
 func _on_npcs_loaded(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest) -> void:
     http.queue_free()
@@ -214,16 +216,23 @@ func _on_npcs_loaded(result: int, response_code: int, _headers: PackedStringArra
     if json == null or not (json is Array):
         return
 
+    # v2: each entry is an AgentDTO (tile coords, leaner shape). Normalize to
+    # the renderer's field shape (world-pixel current_x/y, derived `inside`,
+    # sprite passthrough) via the VillageApi seam before rendering.
+    var npcs: Array = []
+    for dto in json:
+        npcs.append(VillageApi.normalize_agent(dto))
+
     # Collect unique sheet paths across all NPCs, kick off one download per sheet.
     var unique_sheets: Dictionary = {}
-    for npc in json:
+    for npc in npcs:
         var sprite = npc.get("sprite", null)
         if sprite == null:
             continue
         var sheet: String = sprite.get("sheet", "")
         if sheet != "" and not _npc_sheets.has(sheet) and not unique_sheets.has(sheet):
             unique_sheets[sheet] = true
-    _pending_npcs = json
+    _pending_npcs = npcs
     # ZBBS-HOME-210: response landed. _check_world_ready can now flip
     # _npcs_render_complete once _render_pending_npcs drains the list.
     _npcs_response_received = true
@@ -921,6 +930,10 @@ func _on_world_phase_loaded(result: int, response_code: int, headers: PackedStri
         return
     var json = JSON.parse_string(body.get_string_from_utf8())
     if json == null:
+        return
+    # /api/village/world is the contract_version carrier. Fail loud on a
+    # mismatch rather than rendering against a contract we don't understand.
+    if not VillageApi.check_contract_version(int(json.get("contract_version", -1))):
         return
     var phase: String = json.get("phase", "day")
     set_phase(phase, false)  # instant — no tween on first load
@@ -1636,7 +1649,8 @@ func _on_agents_loaded(result: int, response_code: int, headers: PackedStringArr
     agent_names.clear()
     for agent in json:
         var llm_name: String = agent.get("llm_memory_agent", "")
-        var display_name: String = agent.get("name", "")
+        # v2 AgentDTO carries display_name (v1 used "name").
+        var display_name: String = agent.get("display_name", "")
         if llm_name != "" and display_name != "":
             agent_names[llm_name] = display_name
             agent_list.append(llm_name)
