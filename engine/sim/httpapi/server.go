@@ -140,6 +140,7 @@ func agentsFromSnapshot(s *sim.Snapshot, sprites map[sim.SpriteID]*sim.Sprite) [
 			Kind:              actorKindString(a.Kind),
 			State:             string(a.State),
 			Role:              a.Role,
+			LLMAgent:          a.LLMAgent,
 			X:                 a.CurrentX,
 			Y:                 a.CurrentY,
 			Facing:            normalizeFacing(a.Facing),
