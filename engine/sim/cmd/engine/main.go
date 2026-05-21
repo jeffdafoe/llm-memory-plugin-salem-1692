@@ -13,6 +13,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -23,6 +24,7 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/cascade"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/handlers"
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/httpapi"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/llm"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/llm/memapi"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/repo/pg"
@@ -36,20 +38,27 @@ const finalCheckpointTimeout = 30 * time.Second
 // the world context is cancelled, so a stuck command loop can't hang exit.
 const worldStopTimeout = 10 * time.Second
 
+// httpShutdownTimeout bounds the graceful HTTP server drain on shutdown.
+const httpShutdownTimeout = 5 * time.Second
+
 // runtime bundles the dependencies run needs. World is already loaded +
 // finalized by the caller (so the choice of repo / load orchestrator stays in
 // main, and tests can supply a mem-backed world). Save adapts the durable
 // checkpoint writer. TickSink may be nil — the worker pool null-checks it.
+// HTTPAddr is the read-surface listen address (e.g. ":8080"); empty disables
+// the HTTP server (headless-only, used by the lifecycle test).
 type runtime struct {
 	World     *sim.World
 	LLMClient llm.Client
 	Save      sim.CheckpointFunc
 	TickSink  sim.TickTelemetrySink
+	HTTPAddr  string
 }
 
 func main() {
 	databaseURL := requireEnv("DATABASE_URL")
 	llmMemoryURL := getEnv("LLM_MEMORY_URL", "http://127.0.0.1:3100")
+	port := getEnv("PORT", "8080")
 	// Every NPC tick's LLM call is authenticated as salem-engine on
 	// llm-memory-api; the cascades that author prose need the same client.
 	engineKey := requireEnv("LLM_MEMORY_ENGINE_KEY")
@@ -83,6 +92,7 @@ func main() {
 		// notImpl sink today (silently drops); the slot is occupied so a real
 		// sink later is a drop-in.
 		TickSink: repo.TickTelemetry,
+		HTTPAddr: ":" + port,
 	}
 
 	// Shutdown on SIGINT/SIGTERM.
@@ -168,10 +178,37 @@ func run(rt runtime, stop <-chan struct{}) error {
 		close(checkpointerDone)
 	}()
 
-	log.Printf("engine: v2 sim engine running (headless)")
+	// Read surface (Slice 2). Handlers read world.Published() lock-free, so the
+	// HTTP server is independent of the world goroutine's liveness — it's shut
+	// down first on the way out (stop accepting reads before anything else
+	// unwinds). Skipped when HTTPAddr is empty (headless-only).
+	var httpServer *http.Server
+	if rt.HTTPAddr != "" {
+		httpServer = &http.Server{
+			Addr:    rt.HTTPAddr,
+			Handler: httpapi.NewServer(rt.World).Handler(),
+		}
+		go func() {
+			if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Printf("engine: http server: %v", err)
+			}
+		}()
+		log.Printf("engine: read surface listening on %s", rt.HTTPAddr)
+	}
+
+	log.Printf("engine: v2 sim engine running")
 
 	<-stop
 	log.Println("engine: shutting down...")
+
+	// Stop accepting HTTP reads first, before any runtime teardown.
+	if httpServer != nil {
+		httpCtx, cancelHTTP := context.WithTimeout(context.Background(), httpShutdownTimeout)
+		if err := httpServer.Shutdown(httpCtx); err != nil {
+			log.Printf("engine: http shutdown: %v", err)
+		}
+		cancelHTTP()
+	}
 
 	// Shutdown order is load-bearing:
 	//
