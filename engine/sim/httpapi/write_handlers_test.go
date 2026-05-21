@@ -27,6 +27,22 @@ func seedPC(t *testing.T, w *sim.World, id, loginUsername string, x, y int) {
 	}
 }
 
+// seedAdmin adds an admin actor bound to loginUsername (IsAdmin = true). Used by
+// the admin-route tests; mirrors seedPC but flips the authorization flag.
+func seedAdmin(t *testing.T, w *sim.World, id, loginUsername string) {
+	t.Helper()
+	_, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors[sim.ActorID(id)] = &sim.Actor{
+			ID: sim.ActorID(id), DisplayName: id, Kind: sim.KindPC,
+			State: sim.StateIdle, LoginUsername: loginUsername, IsAdmin: true,
+		}
+		return nil, nil
+	}})
+	if err != nil {
+		t.Fatalf("seedAdmin: %v", err)
+	}
+}
+
 // post issues an authenticated POST (Bearer testToken) and returns the recorder
 // without asserting status — the write tests check varied statuses.
 func post(t *testing.T, srv *Server, path, body string) *httptest.ResponseRecorder {
@@ -288,6 +304,107 @@ func TestHandlePCMove_MissingToken(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/village/pc/move",
 		strings.NewReader(`{"destination":{"kind":"position","position":{"x":12,"y":10}}}`))
 	// No Authorization header → requireAuth rejects before the handler runs.
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleAdminPhase_Accepted(t *testing.T) {
+	w := seededWorld(t) // seeded phase = night
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+
+	rec := post(t, srv, "/api/village/admin/phase", `{"phase":"day"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var res adminPhaseResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if res.From != "night" || res.To != "day" {
+		t.Errorf("transition = %q->%q, want night->day", res.From, res.To)
+	}
+}
+
+// TestHandleAdminPhase_Idempotent: forcing to the current phase is allowed and
+// still applies (From == To).
+func TestHandleAdminPhase_Idempotent(t *testing.T) {
+	w := seededWorld(t) // night
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+
+	rec := post(t, srv, "/api/village/admin/phase", `{"phase":"night"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var res adminPhaseResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if res.To != "night" {
+		t.Errorf("to = %q, want night", res.To)
+	}
+}
+
+// TestHandleAdminPhase_Forbidden: the authenticated caller resolves to no actor
+// (base seededWorld has no actor with login_username "tester") → 403.
+func TestHandleAdminPhase_Forbidden(t *testing.T) {
+	srv := NewServer(seededWorld(t), okAuth{})
+	rec := post(t, srv, "/api/village/admin/phase", `{"phase":"day"}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestHandleAdminPhase_NonAdminActorForbidden: the caller maps to a real actor
+// that is NOT an admin → 403. Proves the gate checks IsAdmin, not mere existence.
+func TestHandleAdminPhase_NonAdminActorForbidden(t *testing.T) {
+	w := seededWorld(t)
+	seedPC(t, w, "pc-tester", "tester", 10, 10) // KindPC, IsAdmin = false
+	srv := NewServer(w, okAuth{})
+	rec := post(t, srv, "/api/village/admin/phase", `{"phase":"day"}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleAdminPhase_UnknownPhase(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+	rec := post(t, srv, "/api/village/admin/phase", `{"phase":"dusk"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleAdminPhase_MalformedBody(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+	rec := post(t, srv, "/api/village/admin/phase", `{"phase":`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleAdminPhase_TrailingJSON(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+	rec := post(t, srv, "/api/village/admin/phase", `{"phase":"day"} garbage`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleAdminPhase_MissingToken(t *testing.T) {
+	srv := NewServer(seededWorld(t), okAuth{})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/village/admin/phase",
+		strings.NewReader(`{"phase":"day"}`))
 	srv.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want 401; body=%s", rec.Code, rec.Body.String())
