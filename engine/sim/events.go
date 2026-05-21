@@ -336,3 +336,30 @@ type VillageObjectStateChanged struct {
 }
 
 func (VillageObjectStateChanged) isSimEvent() {}
+
+// VillageObjectMoved is emitted by MoveVillageObject when an admin repositions
+// a placed object. X / Y are the new absolute world-pixel anchor coordinates
+// (the same space ObjectDTO emits). The client moves the rendered object on
+// receipt (object_moved). Distinct from VillageObjectStateChanged, which is a
+// sprite/state flip rather than a position change.
+type VillageObjectMoved struct {
+	EventBase
+	ObjectID VillageObjectID
+	X        float64
+	Y        float64
+	At       time.Time
+}
+
+func (VillageObjectMoved) isSimEvent() {}
+
+// VillageObjectDeleted is emitted by DeleteVillageObject — once for the target
+// object and once for each overlay object cascade-removed with it (attached_to
+// chain). The client removes the rendered object on receipt (object_deleted).
+// Children are emitted before the parent they were attached to.
+type VillageObjectDeleted struct {
+	EventBase
+	ObjectID VillageObjectID
+	At       time.Time
+}
+
+func (VillageObjectDeleted) isSimEvent() {}

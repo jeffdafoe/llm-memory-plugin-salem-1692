@@ -20,11 +20,14 @@ import (
 // both produce), PHASE (PhaseApplied → world_phase_changed, the day/night
 // boundary the client uses to flip its lighting), and OBJECT STATE
 // (VillageObjectStateChanged → object_state_changed, an object's sprite/light
-// flip — e.g. a lamp lighting at dusk). Per-tile ActorMoved is deliberately NOT
-// mapped — it stays internal; nor are spawn/despawn or object create/delete
-// (no sim bus source until the admin/spawn write routes exist). An unmapped
-// event returns ok=false and is dropped, so adding cases later needs no change
-// here or in the hub. Wire shapes: shared/notes/codebase/salem-engine-v2/client-contract.
+// flip — e.g. a lamp lighting at dusk), OBJECT REPOSITION/DELETE
+// (VillageObjectMoved → object_moved and VillageObjectDeleted → object_deleted,
+// the admin object write routes — a deleted object's cascade-removed overlays
+// each emit their own object_deleted). Per-tile ActorMoved is deliberately NOT
+// mapped — it stays internal; nor are spawn/despawn or object create (no sim
+// bus source until those write routes exist). An unmapped event returns
+// ok=false and is dropped, so adding cases later needs no change here or in the
+// hub. Wire shapes: shared/notes/codebase/salem-engine-v2/client-contract.
 
 // TranslateEvent maps a sim.Event to a client WireFrame. ok=false drops the
 // event (the common case — most bus events are engine-internal). Pure and
@@ -80,6 +83,16 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 		return WireFrame{Type: "object_state_changed", Data: objectStateChangedWireDTO{
 			ID:    string(e.ObjectID),
 			State: e.ToState,
+		}}, true
+	case *sim.VillageObjectMoved:
+		return WireFrame{Type: "object_moved", Data: objectMovedWireDTO{
+			ID: string(e.ObjectID),
+			X:  e.X,
+			Y:  e.Y,
+		}}, true
+	case *sim.VillageObjectDeleted:
+		return WireFrame{Type: "object_deleted", Data: objectDeletedWireDTO{
+			ID: string(e.ObjectID),
 		}}, true
 	default:
 		return WireFrame{}, false
@@ -171,4 +184,23 @@ type phaseChangedWireDTO struct {
 type objectStateChangedWireDTO struct {
 	ID    string `json:"id"`
 	State string `json:"state"`
+}
+
+// objectMovedWireDTO is the object_moved payload — a placed object repositioned
+// by an admin. id is the village object id; x / y are the new absolute
+// world-pixel anchor (matching ObjectDTO's float coordinate space, NOT the
+// integer tile space agents use). The client moves the rendered object to
+// (x, y); an event for an object the client doesn't know is ignored client-side.
+type objectMovedWireDTO struct {
+	ID string  `json:"id"`
+	X  float64 `json:"x"`
+	Y  float64 `json:"y"`
+}
+
+// objectDeletedWireDTO is the object_deleted payload — a placed object removed
+// by an admin (or cascade-removed as an overlay attached to a deleted object).
+// id is the village object id; the client removes the rendered object. An event
+// for an object the client doesn't know is ignored client-side.
+type objectDeletedWireDTO struct {
+	ID string `json:"id"`
 }
