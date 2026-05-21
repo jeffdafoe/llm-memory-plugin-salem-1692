@@ -138,6 +138,57 @@ func TestTranslateEvent_SpokeEmptyHuddle(t *testing.T) {
 	}
 }
 
+func TestTranslateEvent_PhaseApplied(t *testing.T) {
+	frame, ok := TranslateEvent(&sim.PhaseApplied{From: sim.PhaseDay, To: sim.PhaseNight})
+	if !ok {
+		t.Fatal("PhaseApplied should translate")
+	}
+	if frame.Type != "world_phase_changed" {
+		t.Fatalf("type = %q, want world_phase_changed", frame.Type)
+	}
+	d, isType := frame.Data.(phaseChangedWireDTO)
+	if !isType {
+		t.Fatalf("data type = %T, want phaseChangedWireDTO", frame.Data)
+	}
+	if d.Phase != "night" {
+		t.Errorf("phase = %q, want night", d.Phase)
+	}
+}
+
+// TestTranslateEvent_PhaseAppliedIdempotent: an admin force-phase to the current
+// phase emits with From == To and still translates (the client treats it as a
+// harmless no-op set).
+func TestTranslateEvent_PhaseAppliedIdempotent(t *testing.T) {
+	frame, ok := TranslateEvent(&sim.PhaseApplied{From: sim.PhaseDay, To: sim.PhaseDay})
+	if !ok {
+		t.Fatal("idempotent PhaseApplied should still translate")
+	}
+	if d := frame.Data.(phaseChangedWireDTO); d.Phase != "day" {
+		t.Errorf("phase = %q, want day", d.Phase)
+	}
+}
+
+func TestTranslateEvent_VillageObjectStateChanged(t *testing.T) {
+	frame, ok := TranslateEvent(&sim.VillageObjectStateChanged{
+		ObjectID:  "lamp-3",
+		FromState: "unlit",
+		ToState:   "lit",
+	})
+	if !ok {
+		t.Fatal("VillageObjectStateChanged should translate")
+	}
+	if frame.Type != "object_state_changed" {
+		t.Fatalf("type = %q, want object_state_changed", frame.Type)
+	}
+	d, isType := frame.Data.(objectStateChangedWireDTO)
+	if !isType {
+		t.Fatalf("data type = %T, want objectStateChangedWireDTO", frame.Data)
+	}
+	if d.ID != "lamp-3" || d.State != "lit" {
+		t.Errorf("object state fields = %+v, want {lamp-3 lit}", d)
+	}
+}
+
 // TestTranslateEvent_UnmappedDropped covers the default case: per-tile
 // ActorMoved is engine-internal and must not reach the client.
 func TestTranslateEvent_UnmappedDropped(t *testing.T) {

@@ -15,10 +15,14 @@ import (
 // the outcome via npc_arrived / npc_move_stopped; the client follows the path
 // tile by tile and snaps to the engine's arrival; broadcasting the path vs only
 // the destination keeps road-preferring / building-avoiding routing on screen
-// without the client re-implementing the cost model) and SPEECH (Spoke →
+// without the client re-implementing the cost model), SPEECH (Spoke →
 // npc_spoke, the huddle-scoped utterance the player's pc/speak and NPC speak
-// both produce). Per-tile ActorMoved is deliberately NOT mapped — it stays
-// internal. Phase / object events remain an additive follow-on: an unmapped
+// both produce), PHASE (PhaseApplied → world_phase_changed, the day/night
+// boundary the client uses to flip its lighting), and OBJECT STATE
+// (VillageObjectStateChanged → object_state_changed, an object's sprite/light
+// flip — e.g. a lamp lighting at dusk). Per-tile ActorMoved is deliberately NOT
+// mapped — it stays internal; nor are spawn/despawn or object create/delete
+// (no sim bus source until the admin/spawn write routes exist). An unmapped
 // event returns ok=false and is dropped, so adding cases later needs no change
 // here or in the hub. Wire shapes: shared/notes/codebase/salem-engine-v2/client-contract.
 
@@ -67,6 +71,15 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			Text:         e.Text,
 			SpeechID:     uint64(e.EventID()),
 			At:           e.At.UTC().Format(time.RFC3339),
+		}}, true
+	case *sim.PhaseApplied:
+		return WireFrame{Type: "world_phase_changed", Data: phaseChangedWireDTO{
+			Phase: string(e.To),
+		}}, true
+	case *sim.VillageObjectStateChanged:
+		return WireFrame{Type: "object_state_changed", Data: objectStateChangedWireDTO{
+			ID:    string(e.ObjectID),
+			State: e.ToState,
 		}}, true
 	default:
 		return WireFrame{}, false
@@ -135,4 +148,27 @@ type spokeWireDTO struct {
 	Text         string   `json:"text"`
 	SpeechID     uint64   `json:"speech_id"`
 	At           string   `json:"at"`
+}
+
+// phaseChangedWireDTO is the world_phase_changed payload — the day/night
+// boundary. phase is the post-transition phase ("day" | "night", matching the
+// world DTO's phase token); the client flips its global lighting on receipt
+// (event_client.gd _on_world_phase_changed → world.set_phase). Idempotent
+// re-applies (admin force-phase to the current phase) still emit with the same
+// value, which the client treats as a harmless no-op set. The bulk per-object
+// lamp flips the transition schedules surface separately as object_state_changed
+// frames, so this carries only the scalar phase.
+type phaseChangedWireDTO struct {
+	Phase string `json:"phase"`
+}
+
+// objectStateChangedWireDTO is the object_state_changed payload — one placed
+// object's CurrentState flipped (e.g. a streetlamp unlit→lit at dusk, a
+// noticeboard gaining authored content). id is the village object id; state is
+// the new state name, which the client resolves against the asset catalog to
+// swap the sprite + light (event_client.gd _on_object_state_changed). The
+// previous state is not carried — the client renders the new state outright.
+type objectStateChangedWireDTO struct {
+	ID    string `json:"id"`
+	State string `json:"state"`
 }
