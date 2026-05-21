@@ -158,6 +158,8 @@ func _handle_message(data: String) -> void:
             _on_npc_walking(event_data)
         "npc_arrived":
             _on_npc_arrived(event_data)
+        "npc_move_stopped":
+            _on_npc_move_stopped(event_data)
         "npc_created":
             if world != null:
                 world.add_npc_from_broadcast(event_data)
@@ -550,10 +552,19 @@ func _on_world_phase_changed(data: Dictionary) -> void:
     var phase: String = data.get("phase", "day")
     world.set_phase(phase, true)
 
-## Server says an NPC is starting a waypoint walk. Store the path + start
-## time on the container's "walking" meta; world._process will tick it every
-## frame until npc_arrived lands. Picks the initial facing from the first leg
-## so the walk animation starts correctly.
+## Server says an NPC is starting a walk. The v2 engine sends the full
+## cost-weighted TILE path it computed (road-preferring, building-avoiding) —
+## not a precomputed world-pixel path. Convert the tile waypoints to world
+## pixels through the VillageApi seam, then drive the same per-frame
+## interpolation machinery (world._tick_npc_walk) the v1 path used. Movement is
+## paced at the engine's locomotion rate (1 tile / 200ms) so the visual arrival
+## lines up with the authoritative npc_arrived.
+##
+## Supersede: a fresh npc_walking for an actor overwrites its "walking" meta,
+## which cancels any in-flight local nav for the superseded attempt. The engine
+## emits no terminal frame for a superseded attempt, and WebSocket delivery is
+## ordered, so the overwrite is the whole supersede mechanism (no attempt_id
+## filtering needed). attempt_id is stored for correlation/debugging.
 func _on_npc_walking(data: Dictionary) -> void:
     if world == null:
         return
@@ -562,37 +573,44 @@ func _on_npc_walking(data: Dictionary) -> void:
         return
     var container: Node2D = world.placed_npcs[npc_id]
 
-    var start_pos := Vector2(
-        float(data.get("start_x", 0.0)),
-        float(data.get("start_y", 0.0))
-    )
-    var path: Array = []
+    # v2 path: tile waypoints (internal-grid coords), inclusive of the start
+    # tile at index 0. Convert each to a world-pixel position.
+    var world_path: Array = []
     for p in data.get("path", []):
-        path.append(Vector2(float(p.get("x", 0.0)), float(p.get("y", 0.0))))
-    if path.is_empty():
+        world_path.append(VillageApi.tile_to_world(int(p.get("x", 0)), int(p.get("y", 0))))
+    if world_path.is_empty():
+        return
+
+    var start_pos: Vector2 = world_path[0]
+    # Waypoints to actually walk through (index 0 is where the actor already is).
+    var waypoints: Array = world_path.slice(1)
+
+    # If the NPC was indoors when the walk started, the inside_changed
+    # broadcast should have un-hidden them — but defensively ensure it here so a
+    # reordered / missed event doesn't leave them invisible during the walk.
+    container.set_meta("inside", false)
+    container.visible = true
+    # Snap to the start so interpolation begins from the right spot rather than
+    # jumping mid-path (e.g. if inside=true had kept them frozen elsewhere).
+    container.position = start_pos
+
+    if waypoints.is_empty():
+        # No-op move (already on the goal tile). Nothing to animate; the
+        # authoritative npc_arrived will idle it.
+        container.remove_meta("walking")
         return
 
     var walk := {
         "start_pos": start_pos,
-        "path": path,
-        "speed": float(data.get("speed", 48.0)),
+        "path": waypoints,
+        "speed": VillageApi.walk_speed_px_per_s(),
         "started_at_s": Time.get_ticks_msec() / 1000.0,
+        "attempt_id": int(data.get("attempt_id", 0)),
     }
     container.set_meta("walking", walk)
-    # If the NPC was indoors when the walk started, the inside_changed
-    # broadcast should have un-hidden them — but defensively ensure it
-    # here so a reordered / missed event doesn't leave them invisible
-    # during their entire walk (looks like a teleport on arrival).
-    container.set_meta("inside", false)
-    container.visible = true
-    # The walk begins at start_pos; if the container is still parked at
-    # the pre-walk persisted position (e.g., inside=true kept it frozen),
-    # snap to the broadcast start so interpolation begins from the right
-    # spot rather than jumping mid-path.
-    container.position = start_pos
 
     # Kick off walk animation in the first leg's direction.
-    var first_dir: Vector2 = path[0] - start_pos
+    var first_dir: Vector2 = waypoints[0] - start_pos
     var facing: String = world.facing_from_vec(first_dir)
     container.set_meta("facing", facing)
     world.play_npc_animation(container, facing, "walk")
@@ -608,9 +626,14 @@ func _on_npc_arrived(data: Dictionary) -> void:
     if not world.placed_npcs.has(npc_id):
         return
     var container: Node2D = world.placed_npcs[npc_id]
-    var final_x: float = float(data.get("x", 0.0))
-    var final_y: float = float(data.get("y", 0.0))
-    var facing: String = data.get("facing", "south")
+    # v2 npc_arrived carries TILE coords (internal-grid); convert to world pixels.
+    var final_pos: Vector2 = VillageApi.tile_to_world(int(data.get("x", 0)), int(data.get("y", 0)))
+    var final_x: float = final_pos.x
+    var final_y: float = final_pos.y
+    # v2 npc_arrived carries NO facing — the client derives it. Default to ""
+    # so the fallback below uses the actor's last movement-derived facing meta
+    # (set per walk leg in _tick_npc_walk) rather than snapping everyone south.
+    var facing: String = String(data.get("facing", ""))
     # Empty-facing fallback (ZBBS-HOME-225). Dictionary.get returns the
     # value when the key is present, default only when missing — so a
     # broadcast carrying `"facing": ""` ends up here as the empty string,
@@ -629,3 +652,23 @@ func _on_npc_arrived(data: Dictionary) -> void:
     container.remove_meta("walking")
     world.play_npc_animation(container, facing, "idle")
     npc_arrived.emit(npc_id, final_x, final_y, facing)
+
+## Server says an accepted walk failed to reach its goal (blocked / unreachable
+## / invalidated). Stop local nav and snap to where the engine says the actor
+## stopped, then idle. Distinct from npc_arrived so the viewer doesn't render an
+## arrival that never happened. x/y are TILE coords (internal-grid), like
+## npc_arrived.
+func _on_npc_move_stopped(data: Dictionary) -> void:
+    if world == null:
+        return
+    var npc_id: String = data.get("id", "")
+    if not world.placed_npcs.has(npc_id):
+        return
+    var container: Node2D = world.placed_npcs[npc_id]
+    var stop_pos: Vector2 = VillageApi.tile_to_world(int(data.get("x", 0)), int(data.get("y", 0)))
+    container.position = stop_pos
+    container.remove_meta("walking")
+    var facing: String = String(container.get_meta("facing", "south"))
+    if facing == "":
+        facing = "south"
+    world.play_npc_animation(container, facing, "idle")

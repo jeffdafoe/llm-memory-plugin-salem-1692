@@ -21,6 +21,17 @@ extends Node
 ## with the server's httpapi.ContractVersion on any breaking read-contract change.
 const CONTRACT_VERSION: int = 1
 
+## The engine's locomotion tick interval in seconds — the authoritative actor
+## advances one tile per this interval (engine sim.LocomotionTickInterval =
+## 200ms). The client paces its walk animation at the same rate so visual
+## arrival lines up with the authoritative npc_arrived.
+const LOCOMOTION_TICK_SECONDS: float = 0.2
+
+## World-pixel walk speed (px/sec) that matches the engine's 1-tile-per-tick
+## rate. Used to drive the per-frame walk interpolation.
+func walk_speed_px_per_s() -> float:
+    return float(tile_size) / LOCOMOTION_TICK_SECONDS
+
 ## Engine grid geometry. The v2 engine places actors on an internal tile grid
 ## where world (0,0) maps to internal tile (pad_x, pad_y) and one tile spans
 ## tile_size world pixels. These defaults mirror the engine constants
