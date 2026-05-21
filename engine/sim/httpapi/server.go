@@ -13,8 +13,10 @@ import (
 // Server serves the read surface for one world. It holds the *sim.World and
 // reads world.Published() per request — lock-free, no command channel. Safe
 // for concurrent requests: every handler only reads the immutable snapshot.
+// An optional event hub (SetEventsHub) adds the WS /events push channel.
 type Server struct {
 	world *sim.World
+	hub   *Hub
 }
 
 // NewServer builds a Server for w. Panics on nil w — a wiring bug.
@@ -25,12 +27,25 @@ func NewServer(w *sim.World) *Server {
 	return &Server{world: w}
 }
 
-// Handler returns the read-surface routes. Slice 2 phases 1-2 — the full
-// static-render read set: world / agents / objects (per-tick, off the published
-// snapshot) plus terrain / assets (reference state, off *sim.World). The WS
-// /events endpoint and write routes land in later phases. Reads are
-// unauthenticated during the validation phase; auth middleware ports with the
-// write routes.
+// SetEventsHub attaches the WS event hub. When set, Handler exposes the
+// GET /api/village/events WebSocket route. The hub must already be Subscribed
+// to the world and have its Run goroutine started (both happen at wiring time,
+// before world.Run). Wired separately from NewServer so the read-only REST
+// surface can stand up without a hub (e.g. existing tests).
+//
+// MUST be called before Handler and before serving requests — it mutates s
+// without synchronization, so calling it concurrently with Handler or a live
+// handler races. The intended wiring sets it once during startup.
+func (s *Server) SetEventsHub(h *Hub) {
+	s.hub = h
+}
+
+// Handler returns the read-surface routes: the static-render read set
+// (world / agents / objects off the published snapshot; terrain / assets /
+// sprites off *sim.World reference state), plus the WS /events push channel
+// when an event hub is attached via SetEventsHub. Write routes land in a later
+// phase. Reads (REST and WS) are unauthenticated during the validation phase;
+// auth middleware ports with the write routes.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/village/world", s.handleWorld)
@@ -39,6 +54,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/village/terrain", s.handleTerrain)
 	mux.HandleFunc("GET /api/village/assets", s.handleAssets)
 	mux.HandleFunc("GET /api/village/sprites", s.handleSprites)
+	if s.hub != nil {
+		mux.HandleFunc("GET /api/village/events", s.handleEvents)
+	}
 	return mux
 }
 
