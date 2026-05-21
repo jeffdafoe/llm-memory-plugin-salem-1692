@@ -78,7 +78,10 @@ func _load_catalog() -> void:
     add_child(http)
 
     http.request_completed.connect(_on_catalog_loaded.bind(http))
-    var error = http.request(api_base + "/api/assets")
+    # v2 serves the asset catalog at /api/village/assets (v1 used /api/assets).
+    # The AssetDTO is snake_case; _parse_catalog already reads snake_case (with
+    # camelCase fallbacks) so no field changes are needed here.
+    var error = http.request(api_base + "/api/village/assets")
     if error != OK:
         push_error("Failed to request asset catalog: " + str(error))
 

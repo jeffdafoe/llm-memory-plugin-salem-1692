@@ -1061,8 +1061,14 @@ func _on_terrain_loaded(result: int, response_code: int, headers: PackedStringAr
     if json == null:
         return
 
-    var saved_width: int = json.get("width", 0)
-    var saved_height: int = json.get("height", 0)
+    # v2 terrain DTO carries the grid geometry (pad_x/pad_y/tile_size); re-seed
+    # the VillageApi conversion from it so tile->world can't drift if the engine
+    # ever changes the grid.
+    VillageApi.refresh_geometry(json)
+
+    # v2 renamed the dimension keys width/height -> map_w/map_h.
+    var saved_width: int = json.get("map_w", 0)
+    var saved_height: int = json.get("map_h", 0)
     var data_b64: String = json.get("data", "")
 
     if saved_width != map_width or saved_height != map_height:
