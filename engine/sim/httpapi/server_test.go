@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,8 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/repo/mem"
 )
+
+func intPtr(v int) *int { return &v }
 
 // seededWorld stands up a running mem-backed world and applies a command that
 // sets world state + a couple of actors and an object. Because Run republishes
@@ -42,6 +45,41 @@ func seededWorld(t *testing.T) *sim.World {
 		world.VillageObjects["obj1"] = &sim.VillageObject{
 			ID: "obj1", AssetID: "asset-x", X: 5.5, Y: 6.5,
 			CurrentState: "lit", DisplayName: "Tavern", Tags: []string{"vendor"},
+		}
+		// Reference state — read by the terrain/assets handlers directly off
+		// *sim.World (not the published snapshot). Set here so the post-Send
+		// happens-before makes them visible to the test goroutine.
+		grid := make([]byte, sim.MapW*sim.MapH)
+		grid[0] = sim.TerrainDirt                 // tile (0,0)
+		grid[1*sim.MapW+2] = sim.TerrainDeepWater // tile (2,1) = y*MapW+x
+		world.Terrain = &sim.Terrain{Data: grid}
+		packURL := "https://cdn.example/tavern.png"
+		world.Assets = map[sim.AssetID]*sim.Asset{
+			"asset-x": {
+				ID: "asset-x", Name: "Tavern", Category: "structure",
+				DefaultState: "unlit", AnchorX: 1.5, AnchorY: 2, Layer: "objects",
+				ZIndex: 3, VisibleWhenInside: false,
+				FootprintLeft: 1, FootprintRight: 1, FootprintTop: 0, FootprintBottom: 2,
+				DoorOffsetX: intPtr(1), DoorOffsetY: intPtr(2),
+				Pack: &sim.TilesetPack{ID: "pack1", Name: "Town", URL: &packURL},
+				States: []sim.AssetState{
+					{ID: 1, State: "unlit", Sheet: "town.png", SrcX: 0, SrcY: 0, SrcW: 64, SrcH: 96, FrameCount: 1, FrameRate: 0},
+					{
+						ID: 2, State: "lit", Sheet: "town.png", SrcX: 64, SrcY: 0, SrcW: 64, SrcH: 96,
+						FrameCount: 2, FrameRate: 4, Tags: []string{"night-active"},
+						Light: &sim.AssetLight{Color: "#ffaa33", Radius: 80, Energy: 1.2, OffsetX: 0, OffsetY: -16, FlickerAmplitude: 0.1, FlickerPeriodMs: 600},
+					},
+				},
+				Slots: []sim.AssetSlot{{SlotName: "sign", OffsetX: 4, OffsetY: -8}},
+			},
+			// Engine-only fields populated to prove they DON'T leak to the wire.
+			"asset-y": {
+				ID: "asset-y", Name: "Bush", Category: "nature", DefaultState: "default",
+				Layer: "objects", IsObstacle: true, IsPassage: true,
+				RotationAlgo: "deterministic", TransitionSpreadSeconds: 5,
+				OccupiedMinCount: 2, OccupiedNightOnly: true,
+				States: []sim.AssetState{{ID: 3, State: "default", Sheet: "nature.png", SrcW: 32, SrcH: 32, FrameCount: 1}},
+			},
 		}
 		return nil, nil
 	}})
@@ -130,6 +168,132 @@ func TestHandleObjects(t *testing.T) {
 	}
 	if o.CurrentState != "lit" || o.DisplayName != "Tavern" || len(o.Tags) != 1 || o.Tags[0] != "vendor" {
 		t.Errorf("object fields wrong: %+v", o)
+	}
+}
+
+func TestHandleTerrain(t *testing.T) {
+	srv := NewServer(seededWorld(t))
+	rec := get(t, srv, "/api/village/terrain")
+
+	var dto TerrainDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &dto); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if dto.ContractVersion != ContractVersion {
+		t.Errorf("contract_version = %d, want %d", dto.ContractVersion, ContractVersion)
+	}
+	if dto.MapW != sim.MapW || dto.MapH != sim.MapH {
+		t.Errorf("dims = %dx%d, want %dx%d", dto.MapW, dto.MapH, sim.MapW, sim.MapH)
+	}
+	if dto.PadX != sim.PadX || dto.PadY != sim.PadY || dto.TileSize != int(sim.TileSize) {
+		t.Errorf("pad/tile = (%d,%d) %d, want (%d,%d) %d", dto.PadX, dto.PadY, dto.TileSize, sim.PadX, sim.PadY, int(sim.TileSize))
+	}
+	grid, err := base64.StdEncoding.DecodeString(dto.Data)
+	if err != nil {
+		t.Fatalf("base64 decode data: %v", err)
+	}
+	if len(grid) != sim.MapW*sim.MapH {
+		t.Fatalf("decoded grid len = %d, want %d", len(grid), sim.MapW*sim.MapH)
+	}
+	// Row-major: client indexes data[y*map_w + x].
+	if grid[0] != sim.TerrainDirt {
+		t.Errorf("tile (0,0) = %d, want dirt %d", grid[0], sim.TerrainDirt)
+	}
+	if grid[1*sim.MapW+2] != sim.TerrainDeepWater {
+		t.Errorf("tile (2,1) = %d, want deep-water %d", grid[1*sim.MapW+2], sim.TerrainDeepWater)
+	}
+}
+
+func TestHandleTerrain_NilTerrain(t *testing.T) {
+	// A world with no terrain loaded still answers with the metadata header and
+	// an empty data string (decodes to a zero-length grid client-side).
+	repo, _ := mem.NewRepository()
+	w, err := sim.LoadWorld(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	w.Terrain = nil
+	srv := NewServer(w)
+	rec := get(t, srv, "/api/village/terrain")
+
+	var dto TerrainDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &dto); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if dto.MapW != sim.MapW || dto.MapH != sim.MapH || dto.Data != "" {
+		t.Errorf("nil-terrain response wrong: %+v", dto)
+	}
+}
+
+func TestHandleAssets(t *testing.T) {
+	srv := NewServer(seededWorld(t))
+	rec := get(t, srv, "/api/village/assets")
+
+	var assets []AssetDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &assets); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(assets) != 2 {
+		t.Fatalf("len(assets) = %d, want 2", len(assets))
+	}
+	// Sorted by ID: asset-x < asset-y.
+	if assets[0].ID != "asset-x" || assets[1].ID != "asset-y" {
+		t.Fatalf("order = [%s %s], want [asset-x asset-y]", assets[0].ID, assets[1].ID)
+	}
+	tavern := assets[0]
+	if tavern.Name != "Tavern" || tavern.Category != "structure" || tavern.DefaultState != "unlit" {
+		t.Errorf("tavern scalars wrong: %+v", tavern)
+	}
+	if tavern.AnchorX != 1.5 || tavern.AnchorY != 2 || tavern.Layer != "objects" || tavern.ZIndex != 3 {
+		t.Errorf("tavern anchor/layer/z wrong: %+v", tavern)
+	}
+	if tavern.Footprint != (FootprintDTO{Left: 1, Right: 1, Top: 0, Bottom: 2}) {
+		t.Errorf("tavern footprint = %+v", tavern.Footprint)
+	}
+	if tavern.DoorOffsetX == nil || *tavern.DoorOffsetX != 1 || tavern.DoorOffsetY == nil || *tavern.DoorOffsetY != 2 {
+		t.Errorf("tavern door offset wrong: %+v", tavern)
+	}
+	if tavern.Pack == nil || tavern.Pack.ID != "pack1" || tavern.Pack.Name != "Town" || tavern.Pack.URL == nil || *tavern.Pack.URL != "https://cdn.example/tavern.png" {
+		t.Errorf("tavern pack wrong: %+v", tavern.Pack)
+	}
+	if len(tavern.States) != 2 {
+		t.Fatalf("tavern states = %d, want 2", len(tavern.States))
+	}
+	lit := tavern.States[1]
+	if lit.State != "lit" || lit.SrcX != 64 || lit.FrameCount != 2 || lit.FrameRate != 4 {
+		t.Errorf("lit state wrong: %+v", lit)
+	}
+	if len(lit.Tags) != 1 || lit.Tags[0] != "night-active" {
+		t.Errorf("lit tags = %v", lit.Tags)
+	}
+	if lit.Light == nil || lit.Light.Color != "#ffaa33" || lit.Light.Radius != 80 || lit.Light.FlickerPeriodMs != 600 {
+		t.Errorf("lit light wrong: %+v", lit.Light)
+	}
+	if tavern.States[0].Light != nil {
+		t.Errorf("unlit state should have no light, got %+v", tavern.States[0].Light)
+	}
+	if len(tavern.Slots) != 1 || tavern.Slots[0].SlotName != "sign" || tavern.Slots[0].OffsetX != 4 || tavern.Slots[0].OffsetY != -8 {
+		t.Errorf("tavern slots wrong: %+v", tavern.Slots)
+	}
+
+	// Engine-only fields must NOT appear on the wire. Re-decode asset-y into a
+	// permissive map and assert the dropped keys are absent.
+	var raw []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode raw: %v", err)
+	}
+	bush := raw[1]
+	for _, k := range []string{"rotation_algo", "transition_spread_seconds", "occupied_min_count", "occupied_night_only", "is_obstacle", "is_passage"} {
+		if _, present := bush[k]; present {
+			t.Errorf("engine-only key %q leaked to the wire", k)
+		}
+	}
+	// asset-y has no slots and no door offset → those keys are omitted entirely.
+	if _, present := bush["slots"]; present {
+		t.Errorf("empty slots should be omitted, got present")
+	}
+	if _, present := bush["door_offset_x"]; present {
+		t.Errorf("nil door_offset_x should be omitted, got present")
 	}
 }
 
