@@ -227,11 +227,15 @@ func ApplyPhaseTransition(newPhase Phase) Command {
 			// world_phase_changed client frame by the httpapi hub (it
 			// subscribes to the bus), so connected clients flip the canvas
 			// lighting without any explicit broadcast here.
-			//
-			// TODO(rewrite): when occupancy ports, refresh night-only
-			// structure states here so taverns/inns light up at dusk even
-			// if no one is currently entering.
 			scheduleFlips(w, flips)
+
+			// Refresh night-only occupancy: an inn / tavern marked
+			// occupied_night_only flips its occupied state on the day↔night
+			// boundary with no actor moving, so the per-arrival hook in
+			// setActorInsideStructure wouldn't catch it. w.Phase is already
+			// set above, so the recompute reads the post-transition phase
+			// (ZBBS-070).
+			refreshNightOnlyOccupancyStates(w)
 
 			w.emit(&PhaseApplied{
 				At:              now,

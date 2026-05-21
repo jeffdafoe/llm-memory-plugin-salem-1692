@@ -404,4 +404,18 @@ func setActorInsideStructure(w *World, actor *Actor, structureID StructureID) {
 	} else {
 		w.outdoorActors[actor.ID] = struct{}{}
 	}
+
+	// Occupancy: the headcount of both the structure left and the one entered
+	// just changed, so recompute their derived occupied/unoccupied visual
+	// state. Outdoors ("") has no occupancy. No-op for structures whose asset
+	// isn't occupancy-tracked. This is the per-arrival/departure trigger
+	// (ZBBS-070) — hooking the single index chokepoint catches every
+	// inside-structure change (locomotion, visitor cleanup) the way v1 hooked
+	// setNPCInside/Outside.
+	if old != "" {
+		refreshStructureOccupancyState(w, old)
+	}
+	if structureID != "" {
+		refreshStructureOccupancyState(w, structureID)
+	}
 }

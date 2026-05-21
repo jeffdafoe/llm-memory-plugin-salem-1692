@@ -214,17 +214,29 @@ func SetVillageObjectState(id VillageObjectID, newState string, guardGen uint64)
 			if obj.CurrentState == newState {
 				return SetStateResult{Applied: false, Reason: "already_at_target"}, nil
 			}
-			prev := obj.CurrentState
-			obj.CurrentState = newState
-			w.emit(&VillageObjectStateChanged{
-				ObjectID:  id,
-				FromState: prev,
-				ToState:   newState,
-				At:        time.Now().UTC(),
-			})
+			setVillageObjectStateInline(w, obj, newState)
 			return SetStateResult{Applied: true, Reason: "applied"}, nil
 		},
 	}
+}
+
+// setVillageObjectStateInline mutates obj.CurrentState to newState and emits
+// VillageObjectStateChanged (which the httpapi hub translates to the
+// object_state_changed client frame). The single mutate+emit path shared by
+// SetVillageObjectState and the occupancy reactor (occupancy.go) — callers are
+// responsible for the no-op short-circuit (newState == current) so this never
+// emits a spurious same-state change.
+//
+// MUST be called from inside a Command.Fn (mutates world state + emits).
+func setVillageObjectStateInline(w *World, obj *VillageObject, newState string) {
+	prev := obj.CurrentState
+	obj.CurrentState = newState
+	w.emit(&VillageObjectStateChanged{
+		ObjectID:  obj.ID,
+		FromState: prev,
+		ToState:   newState,
+		At:        time.Now().UTC(),
+	})
 }
 
 // Admin object commands (MoveVillageObject / DeleteVillageObject) back the
