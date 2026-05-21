@@ -6,15 +6,27 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
 
-// maxMoveBodyBytes caps the pc/move request body. The payload is tiny (a kind
-// tag + a coord pair or a structure id); 64 KiB is generous headroom while
-// still rejecting an attacker-controlled flood before it's buffered/decoded.
-const maxMoveBodyBytes = 64 << 10
+// maxMoveBodyBytes / maxSpeakBodyBytes cap the write request bodies. The
+// payloads are tiny (a move is a kind tag + coord/structure id; a speak is
+// <=1000 chars of text); 64 KiB is generous headroom while still rejecting an
+// attacker-controlled flood before it's buffered/decoded.
+const (
+	maxMoveBodyBytes  = 64 << 10
+	maxSpeakBodyBytes = 64 << 10
+)
+
+// maxSpeakTextChars mirrors sim.Speak's documented precondition (the same cap
+// handlers.MaxSpeakTextChars enforces on the LLM tool path): speech text is
+// capped at 1000 Unicode characters. sim.Speak does NOT re-check text, so the
+// caller (this handler) owns it.
+const maxSpeakTextChars = 1000
 
 // write_handlers.go — the client surface's write routes. Unlike the reads
 // (which serve the published snapshot lock-free), a write goes through the
@@ -88,7 +100,7 @@ func (s *Server) handlePCMove(w http.ResponseWriter, r *http.Request) {
 	// Reject trailing content after the JSON object — a write route shouldn't
 	// silently accept `{...} garbage` or a second object. A clean body leaves
 	// exactly io.EOF on the next read.
-	if dec.Decode(&struct{}{}) != io.EOF {
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -212,6 +224,129 @@ func findPCByLogin(world *sim.World, loginUsername string) (sim.ActorID, bool) {
 		}
 	}
 	return "", false
+}
+
+// pcSpeakRequest is the POST /api/village/pc/speak body. Like pc/move there's
+// no actor_id — the speaker is the caller's own PC, resolved from the session.
+type pcSpeakRequest struct {
+	Text string `json:"text"`
+}
+
+// pcSpeakResponse acks an accepted speak. The speech itself reaches every
+// connected client (the speaker's own included) via the npc_spoke WS broadcast
+// the Spoke event triggers, so the HTTP body is just a minimal confirmation.
+type pcSpeakResponse struct {
+	Status string `json:"status"`
+}
+
+// handlePCSpeak makes the caller's PC speak to its current huddle. Text
+// validation (trim / non-empty / length / control-char) happens here because
+// sim.Speak's contract makes the caller responsible for it; the world-state
+// checks (not-walking, vocative-stale-addressee) run inside sim.Speak. A
+// successful speak emits sim.Spoke → the speech reactor (NPC reactions) and the
+// hub's npc_spoke broadcast.
+func (s *Server) handlePCSpeak(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	if user == nil {
+		writeAuthError(w, "invalid")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxSpeakBodyBytes)
+	dec := json.NewDecoder(r.Body)
+	var req pcSpeakRequest
+	if err := dec.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	text, msg := validateSpeakText(req.Text)
+	if msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
+
+	_, err := s.world.SendContext(r.Context(), speakPCCommand(user.Username, text))
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
+		if errors.Is(err, errPCNotFound) {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		// sim.Speak rejections (walking, vocative-stale-addressee) are
+		// state-validation failures — the speak can't happen right now.
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	writeJSON(w, pcSpeakResponse{Status: "ok"})
+}
+
+// speakPCCommand resolves username → PC actor (on the world goroutine) and
+// delegates to sim.Speak. Same session→actor identity rule as movePCCommand;
+// the clock is captured inside the Fn so the Spoke timestamp reflects execution.
+func speakPCCommand(username, text string) sim.Command {
+	return sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			actorID, ok := findPCByLogin(world, username)
+			if !ok {
+				return nil, errPCNotFound
+			}
+			return sim.Speak(actorID, text, time.Now().UTC()).Fn(world)
+		},
+	}
+}
+
+// validateSpeakText applies sim.Speak's caller-owned text precondition and
+// returns the trimmed text, or a non-empty msg describing the rejection (→ 400).
+// Mirrors handlers.HandleSpeak / handlers.DecodeSpeakArgs (the LLM tool path);
+// kept local rather than imported because that contract lives in the heavy
+// handlers package and relocating it to sim would churn freshly-shipped code.
+// The cap is character-based (utf8.RuneCountInString) to agree with the rune
+// cap the tool-path schema enforces — a byte cap would reject multi-byte text
+// the model side lets through.
+func validateSpeakText(raw string) (string, string) {
+	text := strings.TrimSpace(raw)
+	if text == "" {
+		return "", "text is required"
+	}
+	if utf8.RuneCountInString(text) > maxSpeakTextChars {
+		return "", "text exceeds the length limit"
+	}
+	if hasInvalidControlChar(text) {
+		return "", "text contains a disallowed control character"
+	}
+	return text, ""
+}
+
+// hasInvalidControlChar reports whether text contains a control character
+// outside the allowed \n \r \t. Rejects the C0 range (except those three),
+// DEL (0x7F), and the C1 range (0x80..0x9F) — these would derail the speech
+// bubble + downstream perception-prompt rendering. Invalid UTF-8 is rejected up
+// front via utf8.ValidString; the per-rune loop does NOT special-case
+// utf8.RuneError, because ranging a string yields RuneError for BOTH a decode
+// error AND the legitimate replacement character U+FFFD ("�") — guarding
+// on it would wrongly reject valid text containing that printable code point.
+func hasInvalidControlChar(text string) bool {
+	if !utf8.ValidString(text) {
+		return true
+	}
+	for _, rn := range text {
+		switch {
+		case rn == '\n' || rn == '\r' || rn == '\t':
+			continue
+		case rn >= 0x20 && rn < 0x7F:
+			continue
+		case rn == 0x7F, rn < 0x20, rn >= 0x80 && rn <= 0x9F:
+			return true
+		}
+	}
+	return false
 }
 
 // writeError writes a JSON {error} body with the given status.
