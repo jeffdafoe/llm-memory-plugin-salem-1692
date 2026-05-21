@@ -21,12 +21,26 @@ import "time"
 // ActorMoveStarted fires when MoveActor accepts a request and stamps a
 // fresh MoveIntent (the start of a walk). Unlike the per-tile ActorMoved
 // — which is engine-internal — this is the event the CLIENT consumes to
-// begin animating a walk. It carries the RESOLVED goal tile
-// (TargetPosition: the door tile / visitor slot / exact tile the
-// locomotion ticker aims at), so a viewer can path to it locally (e.g.
-// via its own navigation) instead of being fed every tile. The engine
-// stays authoritative on the outcome: ActorArrived on success,
-// ActorMoveStopped on failure, both carrying the same MovementAttemptID.
+// begin animating a walk.
+//
+// It carries the FULL cost-weighted tile Path the engine computed at
+// move-accept (FindPath over the same WalkGrid the locomotion ticker
+// uses: roads preferred, buildings + their overhang avoided, water
+// impassable, door corridors carved). MoveActor already runs that
+// FindPath as its reachability check, so broadcasting the result is free
+// — and it keeps the engine's pathing intelligence on the screen rather
+// than forcing the viewer to re-derive a (dumber) route to the goal.
+// Path is inclusive of both endpoints: Path[0] is the actor's start tile
+// (== FromPosition) and Path[len-1] is the resolved goal (==
+// TargetPosition). FromPosition / TargetPosition are retained as
+// convenience accessors for those endpoints.
+//
+// The Path is a VISUAL PREVIEW: the locomotion ticker re-plans one tile
+// per LocomotionTickInterval and may diverge under dynamic actor-
+// occupancy contention the static grid does not model. The engine stays
+// authoritative on the outcome — ActorArrived on success, ActorMoveStopped
+// on failure, both carrying the same MovementAttemptID — and the client
+// reconciles any in-transit drift by snapping on arrival.
 //
 // A superseding MoveActor (replacing an in-flight intent) emits a fresh
 // ActorMoveStarted with a new MovementAttemptID; the prior attempt has no
@@ -35,8 +49,9 @@ import "time"
 type ActorMoveStarted struct {
 	EventBase
 	ActorID           ActorID
-	FromPosition      Position            // actor's tile at move start
-	TargetPosition    Position            // resolved goal tile (door / visitor slot / exact)
+	FromPosition      Position            // actor's tile at move start (== Path[0])
+	TargetPosition    Position            // resolved goal tile (== Path[len-1])
+	Path              []GridPoint         // full cost-weighted tile path, start→goal inclusive
 	DestinationKind   MoveDestinationKind // structure_enter | structure_visit | position
 	StructureID       StructureID         // destination structure for enter/visit; empty for position
 	MovementAttemptID MovementAttemptID

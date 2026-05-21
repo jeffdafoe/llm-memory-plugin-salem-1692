@@ -166,7 +166,8 @@ func MoveActor(actorID ActorID, dest MoveDestination, leaveHuddleFirst bool, now
 				return MoveActorResult{}, fmt.Errorf("destination cannot be resolved to a reachable tile")
 			}
 			start := GridPoint{X: actor.CurrentX, Y: actor.CurrentY}
-			if FindPath(grid, start, GridPoint{X: target.X, Y: target.Y}) == nil {
+			path := FindPath(grid, start, GridPoint{X: target.X, Y: target.Y})
+			if path == nil {
 				return MoveActorResult{}, fmt.Errorf("no path from (%d,%d) to target (%d,%d)",
 					actor.CurrentX, actor.CurrentY, target.X, target.Y)
 			}
@@ -201,10 +202,13 @@ func MoveActor(actorID ActorID, dest MoveDestination, leaveHuddleFirst bool, now
 			}
 
 			// Step 8 - announce the walk to the client read surface. Carries
-			// the resolved goal tile (target, from step 4) so a viewer can path
-			// to it locally; the actor hasn't moved yet, so its current tile is
-			// the walk's start. dest.StructureID is non-nil for the enter/visit
-			// kinds and nil for position (empty StructureID).
+			// the full cost-weighted tile path (computed as the step-4
+			// reachability check, reused here) so the viewer renders the
+			// engine's road-preferring, building-avoiding route rather than a
+			// locally re-derived one. path[0] is the actor's current tile (the
+			// walk start); path[len-1] is the resolved goal. dest.StructureID is
+			// non-nil for the enter/visit kinds and nil for position (empty
+			// StructureID).
 			destStructureID := StructureID("")
 			if dest.StructureID != nil {
 				destStructureID = *dest.StructureID
@@ -213,6 +217,7 @@ func MoveActor(actorID ActorID, dest MoveDestination, leaveHuddleFirst bool, now
 				ActorID:           actorID,
 				FromPosition:      Position{X: actor.CurrentX, Y: actor.CurrentY},
 				TargetPosition:    target,
+				Path:              path,
 				DestinationKind:   dest.Kind,
 				StructureID:       destStructureID,
 				MovementAttemptID: attemptID,
