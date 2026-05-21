@@ -36,8 +36,9 @@ SELECT id, name, url
   FROM tileset_pack
  ORDER BY name`
 
-// loadAllSpritesSQL reads the sprite rows. pack_id is nullable (varchar, no
-// FK) so it scans into a *string; a dangling pack ref is tolerated (see
+// loadAllSpritesSQL reads the sprite rows. pack_id is nullable (varchar) so
+// it scans into a *string; it has an FK to tileset_pack, so a dangling ref is
+// unreachable in valid data (the attach guard below is defensive only — see
 // LoadAll's orphan note).
 const loadAllSpritesSQL = `
 SELECT id::text, name, sheet, frame_width, frame_height, pack_id
@@ -133,9 +134,10 @@ func (r *SpritesRepo) loadSprites(ctx context.Context, packs map[string]*sim.Til
 			if pack, ok := packs[*s.PackID]; ok {
 				s.Pack = pack
 			} else {
-				// No FK on npc_sprite.pack_id; a dangling ref is reachable.
-				// Leave Pack nil (the in-memory model tolerates it) and keep
-				// PackID as stored, but log the drift.
+				// pack_id has an FK to tileset_pack, so this branch is
+				// unreachable in valid data — defensive only against schema
+				// drift. Leave Pack nil (the in-memory model tolerates it)
+				// and keep PackID as stored, but log the drift loudly.
 				log.Printf("pg sprites LoadAll: npc_sprite %s references unknown tileset_pack %q — leaving Pack unset", id, *s.PackID)
 			}
 		}

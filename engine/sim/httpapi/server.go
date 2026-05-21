@@ -114,7 +114,7 @@ func agentsFromSnapshot(s *sim.Snapshot, sprites map[sim.SpriteID]*sim.Sprite) [
 			Role:              a.Role,
 			X:                 a.CurrentX,
 			Y:                 a.CurrentY,
-			Facing:            a.Facing,
+			Facing:            normalizeFacing(a.Facing),
 			InsideStructureID: string(a.InsideStructureID),
 			CurrentHuddleID:   string(a.CurrentHuddleID),
 			Sprite:            resolveAgentSprite(a.SpriteID, sprites),
@@ -122,6 +122,20 @@ func agentsFromSnapshot(s *sim.Snapshot, sprites map[sim.SpriteID]*sim.Sprite) [
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
+}
+
+// normalizeFacing coalesces an unset Facing to "south" so every agent emits a
+// valid facing regardless of origin. A pg-loaded actor's facing column is NOT
+// NULL (default 'south'); an in-memory-spawned actor may have an empty Facing.
+// Without this the wire would carry "south" for the former and omit it for the
+// latter — an origin-dependent inconsistency. Non-empty values pass through
+// unchanged (the write path validates the enum; this read path is display-only
+// and never the source of a bad stored value).
+func normalizeFacing(facing string) string {
+	if facing == "" {
+		return "south"
+	}
+	return facing
 }
 
 // resolveAgentSprite looks up spriteID in the catalog and maps it to the

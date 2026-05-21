@@ -13,6 +13,41 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
 
+// TestValidateFacing covers the facing write-path coalesce + enum guard:
+// empty -> 'south' (schema default), valid enum members pass through, and a
+// non-empty bad value is rejected before SQL so a CHECK violation can't fail
+// the whole checkpoint Tx late.
+func TestValidateFacing(t *testing.T) {
+	for _, tc := range []struct {
+		in      string
+		want    string
+		wantErr bool
+	}{
+		{"", "south", false},
+		{"north", "north", false},
+		{"south", "south", false},
+		{"east", "east", false},
+		{"west", "west", false},
+		{"South", "", true},     // wrong case — CHECK is exact
+		{"northeast", "", true}, // not a member
+		{"garbage", "", true},
+	} {
+		got, err := validateFacing(tc.in)
+		if tc.wantErr {
+			if err == nil {
+				t.Errorf("validateFacing(%q): want error, got %q", tc.in, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("validateFacing(%q): unexpected error %v", tc.in, err)
+		}
+		if got != tc.want {
+			t.Errorf("validateFacing(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 // pgxmock-based tests for ActorsRepo (Slice 1, ZBBS-WORK-243). Asserts
 // SQL shape + arg bindings + nullable scan mapping. Real-pg behaviors
 // (CHECK constraints, FK CASCADE, advisory lock blocking, UNIQUE

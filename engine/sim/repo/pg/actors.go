@@ -1304,6 +1304,10 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 
 	// Step 3: upsert each persisted actor.
 	for _, a := range persisted {
+		facing, err := validateFacing(a.Facing)
+		if err != nil {
+			return fmt.Errorf("pg actors SaveSnapshot: actor id=%s: %w", a.ID, err)
+		}
 		if _, err := tx.Exec(ctx, upsertSQLA,
 			string(a.ID),                            // $1 id
 			a.DisplayName,                           // $2 display_name
@@ -1329,7 +1333,7 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 			string(a.State),                         // $22 sim_state
 			a.StateEnteredAt,                        // $23 sim_state_entered_at
 			nilOnEmpty(string(a.SpriteID)),          // $24 sprite_id (nullable uuid)
-			facingOrDefault(a.Facing),               // $25 facing (NOT NULL, CHECK'd enum)
+			facing,                                  // $25 facing (validated above)
 			actorGen,                                // $26 snapshot_gen
 		); err != nil {
 			return fmt.Errorf("pg actors SaveSnapshot: upsert actor id=%s: %w", a.ID, err)
@@ -1666,19 +1670,24 @@ func nilOnEmpty(s string) any {
 	return s
 }
 
-// facingOrDefault coalesces an empty Facing to the schema default 'south'.
-// actor.facing is NOT NULL with a CHECK constraint restricting it to
-// {north,south,east,west}, so an in-engine-spawned actor that never had its
-// facing set (Facing == "") would violate the CHECK on write. The v2 engine
-// doesn't manage facing (the client derives it from movement); 'south' is the
-// table's own DEFAULT, so this is the no-information fallback the column
-// already expects. pg-loaded actors always carry a valid value (NOT NULL), so
-// this only fires for fresh actors.
-func facingOrDefault(facing string) string {
-	if facing == "" {
-		return "south"
+// validateFacing maps an actor's Facing to the value written to the facing
+// column. actor.facing is NOT NULL with a CHECK constraint restricting it to
+// {north,south,east,west}. Empty coalesces to the schema default 'south' —
+// the v2 engine doesn't manage facing (the client derives it from movement),
+// and 'south' is the table's own DEFAULT, the no-information fallback the
+// column already expects. A non-empty value MUST be a valid enum member;
+// anything else is rejected here so a bad value surfaces at the offending
+// actor rather than failing the whole checkpoint Tx late on the DB CHECK
+// (which would also lose every other actor's write in that Tx).
+func validateFacing(facing string) (string, error) {
+	switch facing {
+	case "":
+		return "south", nil
+	case "north", "south", "east", "west":
+		return facing, nil
+	default:
+		return "", fmt.Errorf("invalid actor facing %q", facing)
 	}
-	return facing
 }
 
 // nilOnZero is the int64 sibling of nilOnEmpty — used for the
