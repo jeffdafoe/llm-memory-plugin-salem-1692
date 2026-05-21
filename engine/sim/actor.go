@@ -346,6 +346,19 @@ type Actor struct {
 	CurrentY          int
 	CurrentHuddleID   HuddleID
 
+	// Render identity — client-facing only, the engine never branches on
+	// these. SpriteID references the npc_sprite catalog (World.Sprites) for
+	// the sheet + animation rows; the client read surface inlines the
+	// resolved sprite onto the agent DTO. Facing is the initial/spawn render
+	// direction (north/south/east/west). The v2 engine does NOT update Facing
+	// per-tick — the client derives live facing from movement delta — so it
+	// round-trips through checkpoint as the last-persisted value, restoring
+	// spawn orientation on restart (interior-facing writeback is a far-out
+	// follow-up). Both empty for actors without a sprite (some PCs / purely
+	// logical actors).
+	SpriteID SpriteID
+	Facing   string
+
 	// Anchors — home and work bindings (empty for actors without them).
 	HomeStructureID StructureID
 	WorkStructureID StructureID
@@ -657,6 +670,14 @@ type ActorSnapshot struct {
 	Needs             map[NeedKey]int
 	InventoryHash     uint64 // fast-compare; computed at snapshot time
 	Coins             int
+
+	// SpriteID + Facing mirror the live Actor's render identity at snapshot
+	// time so the client read surface (httpapi) can resolve + inline the
+	// sprite without a world-goroutine round trip. Both checkpointed (carried
+	// on the full *Actor via CloneActor); these snapshot copies are the
+	// read-path view. See Actor.SpriteID / Actor.Facing.
+	SpriteID SpriteID
+	Facing   string
 
 	// Per-actor knowledge state — read by perception build:
 	//   - Acquaintances gates "Around you" name-vs-descriptor rendering

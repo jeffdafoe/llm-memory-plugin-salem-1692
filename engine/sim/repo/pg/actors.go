@@ -33,8 +33,8 @@ import (
 // their continuity rows are never written.
 //
 // v1↔v2 column scope. v2 reads/writes only the subset of `actor`
-// columns the engine actually tracks. v1-only columns (`facing`,
-// `inside`, `lateness_window_minutes`, `social_*`, the visitor cluster,
+// columns the engine actually tracks. v1-only columns (`inside`,
+// `lateness_window_minutes`, `social_*`, the visitor cluster,
 // PC-liveness stamps, etc.) are not in the UPSERT column list — on
 // existing rows they retain their values across checkpoint
 // (`ON CONFLICT DO UPDATE SET` only touches the listed columns); on
@@ -42,6 +42,12 @@ import (
 // actors are filtered out of SaveSnapshot entirely (per visitor
 // codebase note "No durable visitor row persistence"); their parent
 // rows in v1 will be cleaned up by a separate cutover-prep migration.
+//
+// `sprite_id` and `facing` graduated into the v2-tracked set with the
+// agent-sprite work (ZBBS-WORK-257) — they back the client read surface's
+// inlined agent sprite. sprite_id is nullable uuid (empty↔NULL); facing is
+// NOT NULL with a CHECK'd enum, so writes coalesce empty→'south' (the schema
+// default) via facingOrDefault.
 //
 // Empty-string ↔ NULL convention (Slice 1 establishes the pattern;
 // codified at `shared/notes/codebase/salem-engine-v2/actors-pg` when
@@ -107,7 +113,9 @@ SELECT
     sleeping_until,
     move_attempt_counter,
     sim_state,
-    sim_state_entered_at
+    sim_state_entered_at,
+    sprite_id::text,
+    facing
   FROM actor`
 
 // loadAllNeedsSQLA selects every actor_need row. Joined to actors in
@@ -135,6 +143,7 @@ INSERT INTO actor (
     last_agent_tick_at, break_until, next_self_tick_at,
     next_self_tick_reason, sleeping_until,
     move_attempt_counter, sim_state, sim_state_entered_at,
+    sprite_id, facing,
     snapshot_gen
 ) VALUES (
     $1, $2, $3, $4,
@@ -145,7 +154,8 @@ INSERT INTO actor (
     $16, $17, $18,
     $19, $20,
     $21, $22, $23,
-    $24
+    $24, $25,
+    $26
 )
 ON CONFLICT (id) DO UPDATE SET
     display_name           = EXCLUDED.display_name,
@@ -170,6 +180,8 @@ ON CONFLICT (id) DO UPDATE SET
     move_attempt_counter   = EXCLUDED.move_attempt_counter,
     sim_state              = EXCLUDED.sim_state,
     sim_state_entered_at   = EXCLUDED.sim_state_entered_at,
+    sprite_id              = EXCLUDED.sprite_id,
+    facing                 = EXCLUDED.facing,
     snapshot_gen           = EXCLUDED.snapshot_gen`
 
 // upsertNeedSQLA writes one actor_need row. PK is (actor_id, key)
@@ -487,6 +499,8 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			moveAttemptCounter  int64
 			simState            string
 			simStateEnteredAt   time.Time
+			spriteID            *string
+			facing              string
 		)
 		if err := rows.Scan(
 			&id, &displayName, &currentX, &currentY,
@@ -497,6 +511,7 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			&lastAgentTickAt, &breakUntil, &nextSelfTickAt,
 			&nextSelfTickReason, &sleepingUntil,
 			&moveAttemptCounter, &simState, &simStateEnteredAt,
+			&spriteID, &facing,
 		); err != nil {
 			return nil, fmt.Errorf("pg actors LoadAll scan: %w", err)
 		}
@@ -530,6 +545,8 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			MoveAttemptCounter: sim.MovementAttemptID(moveAttemptCounter),
 			State:              sim.ActorState(simState),
 			StateEnteredAt:     simStateEnteredAt,
+			SpriteID:           sim.SpriteID(deref(spriteID)),
+			Facing:             facing,
 			Needs:              make(map[sim.NeedKey]int),
 			Inventory:          make(map[sim.ItemKind]int),
 			Relationships:      make(map[sim.ActorID]*sim.Relationship),
@@ -1311,7 +1328,9 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 			int64(a.MoveAttemptCounter),             // $21 move_attempt_counter
 			string(a.State),                         // $22 sim_state
 			a.StateEnteredAt,                        // $23 sim_state_entered_at
-			actorGen,                                // $24 snapshot_gen
+			nilOnEmpty(string(a.SpriteID)),          // $24 sprite_id (nullable uuid)
+			facingOrDefault(a.Facing),               // $25 facing (NOT NULL, CHECK'd enum)
+			actorGen,                                // $26 snapshot_gen
 		); err != nil {
 			return fmt.Errorf("pg actors SaveSnapshot: upsert actor id=%s: %w", a.ID, err)
 		}
@@ -1645,6 +1664,21 @@ func nilOnEmpty(s string) any {
 		return nil
 	}
 	return s
+}
+
+// facingOrDefault coalesces an empty Facing to the schema default 'south'.
+// actor.facing is NOT NULL with a CHECK constraint restricting it to
+// {north,south,east,west}, so an in-engine-spawned actor that never had its
+// facing set (Facing == "") would violate the CHECK on write. The v2 engine
+// doesn't manage facing (the client derives it from movement); 'south' is the
+// table's own DEFAULT, so this is the no-information fallback the column
+// already expects. pg-loaded actors always carry a valid value (NOT NULL), so
+// this only fires for fresh actors.
+func facingOrDefault(facing string) string {
+	if facing == "" {
+		return "south"
+	}
+	return facing
 }
 
 // nilOnZero is the int64 sibling of nilOnEmpty — used for the

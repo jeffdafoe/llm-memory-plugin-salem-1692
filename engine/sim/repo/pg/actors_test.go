@@ -65,6 +65,7 @@ func actorParentColumns() []string {
 		"last_agent_tick_at", "break_until", "next_self_tick_at",
 		"next_self_tick_reason", "sleeping_until",
 		"move_attempt_counter", "sim_state", "sim_state_entered_at",
+		"sprite_id", "facing",
 	}
 }
 
@@ -116,6 +117,7 @@ func oneBareActorRows() *pgxmock.Rows {
 		(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
 		(*string)(nil), (*time.Time)(nil),
 		int64(0), "idle", tsEntered,
+		(*string)(nil), "south",
 	)
 }
 
@@ -275,6 +277,7 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 				&startMin, &endMin,
 				&tsTickedAt, &tsBreak, &tsNextSelf, ptrStr(reason), &tsSleep,
 				int64(7), "working", tsEntered,
+				ptrStr("00000000-0000-0000-0000-5555eeeeeeee"), "east",
 			).
 			AddRow(
 				actB, "Bare", 0, 0,
@@ -285,6 +288,7 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 				(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
 				(*string)(nil), (*time.Time)(nil),
 				int64(0), "idle", tsEntered,
+				(*string)(nil), "south",
 			))
 
 	mock.ExpectQuery(`FROM actor_need\b`).
@@ -369,6 +373,12 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 	if !a.StateEnteredAt.Equal(tsEntered) {
 		t.Errorf("StateEnteredAt = %v", a.StateEnteredAt)
 	}
+	if string(a.SpriteID) != "00000000-0000-0000-0000-5555eeeeeeee" {
+		t.Errorf("SpriteID = %q", a.SpriteID)
+	}
+	if a.Facing != "east" {
+		t.Errorf("Facing = %q want east", a.Facing)
+	}
 	if len(a.Needs) != 2 || a.Needs["hunger"] != 4 || a.Needs["tiredness"] != 18 {
 		t.Errorf("Needs = %v", a.Needs)
 	}
@@ -399,6 +409,12 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 	}
 	if b.NextSelfTickReason != "" {
 		t.Errorf("actB NextSelfTickReason = %q", b.NextSelfTickReason)
+	}
+	if b.SpriteID != "" {
+		t.Errorf("actB SpriteID = %q, want empty (NULL sprite_id)", b.SpriteID)
+	}
+	if b.Facing != "south" {
+		t.Errorf("actB Facing = %q, want south", b.Facing)
 	}
 	if int64(b.MoveAttemptCounter) != 0 {
 		t.Errorf("actB MoveAttemptCounter = %d", b.MoveAttemptCounter)
@@ -501,6 +517,7 @@ func TestActorsRepo_SaveSnapshot_FullActor(t *testing.T) {
 			int16(540), int16(1020),
 			&tsTickedAt, &tsBreak, &tsNextSelf, "low_tiredness", &tsSleep,
 			int64(7), "working", tsEntered,
+			"00000000-0000-0000-0000-5555eeeeeeee", "east",
 			int64(101),
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
@@ -555,6 +572,8 @@ func TestActorsRepo_SaveSnapshot_FullActor(t *testing.T) {
 			MoveAttemptCounter: 7,
 			State:              "working",
 			StateEnteredAt:     tsEntered,
+			SpriteID:           "00000000-0000-0000-0000-5555eeeeeeee",
+			Facing:             "east",
 			Needs:              map[sim.NeedKey]int{"hunger": 4},
 			Inventory:          map[sim.ItemKind]int{"ale": 3},
 		},
@@ -586,6 +605,7 @@ func TestActorsRepo_SaveSnapshot_BareActor(t *testing.T) {
 			(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil), // time pointers
 			nil, (*time.Time)(nil), // NextSelfTickReason, SleepingUntil
 			int64(0), "idle", tsEntered, // counter, state, entered
+			nil, "south", // sprite_id (empty→NULL), facing (empty→default 'south')
 			int64(102),
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
@@ -694,6 +714,7 @@ func TestActorsRepo_SaveSnapshot_ZeroQtyInventoryDropped(t *testing.T) {
 			(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
 			nil, (*time.Time)(nil),
 			int64(0), "idle", tsEntered,
+			nil, "south",
 			int64(105),
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
@@ -1009,6 +1030,7 @@ func TestActorsRepo_LoadAll_Continuity(t *testing.T) {
 				(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
 				(*string)(nil), (*time.Time)(nil),
 				int64(0), "idle", tsEntered,
+				(*string)(nil), "south",
 			))
 	mock.ExpectQuery(`FROM actor_need\b`).WillReturnRows(emptyNeedRows())
 	mock.ExpectQuery(`FROM actor_inventory\b`).WillReturnRows(emptyInvRows())
@@ -1205,6 +1227,7 @@ func TestActorsRepo_SaveSnapshot_Continuity(t *testing.T) {
 			(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
 			nil, (*time.Time)(nil),
 			int64(0), "idle", tsEntered,
+			nil, "south",
 			int64(701),
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
@@ -1305,6 +1328,7 @@ func TestActorsRepo_SaveSnapshot_EmptySalientFacts(t *testing.T) {
 			(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
 			nil, (*time.Time)(nil),
 			int64(0), "idle", tsEntered,
+			nil, "south",
 			int64(702),
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
@@ -1446,6 +1470,7 @@ func TestActorsRepo_SaveSnapshot_AcquaintanceMultibyteWithinLimit(t *testing.T) 
 			(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
 			nil, (*time.Time)(nil),
 			int64(0), "idle", tsEntered,
+			nil, "south",
 			int64(706),
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
@@ -1714,6 +1739,7 @@ func TestActorsRepo_SaveSnapshot_Slice3(t *testing.T) {
 			(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
 			nil, (*time.Time)(nil),
 			int64(0), "idle", tsEntered,
+			nil, "south",
 			int64(710),
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))

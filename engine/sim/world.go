@@ -1281,6 +1281,8 @@ func snapshotActor(a *Actor, atTick uint64) *ActorSnapshot {
 		CurrentX:           a.CurrentX,
 		CurrentY:           a.CurrentY,
 		CurrentHuddleID:    a.CurrentHuddleID,
+		SpriteID:           a.SpriteID,
+		Facing:             a.Facing,
 		Needs:              needsCopy,
 		InventoryHash:      hash,
 		Coins:              a.Coins,

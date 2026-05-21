@@ -35,20 +35,38 @@ type WorldStateDTO struct {
 
 // AgentDTO is one actor in the GET /api/village/agents response.
 //
-// No sprite reference yet: v2 sim.Actor / ActorSnapshot carry no sprite field
-// (v1 joined a sprite catalog the v2 model hasn't ported). Flagged in the
-// contract note as a known gap — the client renders a placeholder until a v2
-// sprite field or asset-based convention lands.
+// Sprite is the resolved character sprite inlined from the npc_sprite catalog
+// (World.Sprites) keyed by the actor's SpriteID — sheet + frame dims +
+// animation rows, everything the client needs to build the AnimatedSprite2D
+// from this one fetch. Absent (omitempty) for actors with no sprite_id or a
+// dangling ref. Facing is the spawn/initial render direction; the client
+// derives live facing from movement delta, so this only seeds the first
+// render.
 type AgentDTO struct {
-	ID                string `json:"id"`
-	DisplayName       string `json:"display_name"`
-	Kind              string `json:"kind"`  // npc_stateful | npc_shared | pc | decorative
-	State             string `json:"state"` // idle | walking | conversing | ...
-	Role              string `json:"role,omitempty"`
-	X                 int    `json:"x"` // tile coordinate (actors move on the integer grid)
-	Y                 int    `json:"y"`
-	InsideStructureID string `json:"inside_structure_id,omitempty"`
-	CurrentHuddleID   string `json:"current_huddle_id,omitempty"`
+	ID                string          `json:"id"`
+	DisplayName       string          `json:"display_name"`
+	Kind              string          `json:"kind"`  // npc_stateful | npc_shared | pc | decorative
+	State             string          `json:"state"` // idle | walking | conversing | ...
+	Role              string          `json:"role,omitempty"`
+	X                 int             `json:"x"` // tile coordinate (actors move on the integer grid)
+	Y                 int             `json:"y"`
+	Facing            string          `json:"facing,omitempty"` // north | south | east | west (spawn facing)
+	InsideStructureID string          `json:"inside_structure_id,omitempty"`
+	CurrentHuddleID   string          `json:"current_huddle_id,omitempty"`
+	Sprite            *AgentSpriteDTO `json:"sprite,omitempty"`
+}
+
+// AgentSpriteDTO is the resolved character sprite inlined onto an AgentDTO.
+// It is the render subset of the sprite catalog entry (no pack — the inline
+// view carries only what the client needs to draw + animate the actor). The
+// raw catalog (with pack) is available at GET /api/village/sprites.
+type AgentSpriteDTO struct {
+	ID          string               `json:"id"`
+	Name        string               `json:"name"`
+	Sheet       string               `json:"sheet"`
+	FrameWidth  int                  `json:"frame_width"`
+	FrameHeight int                  `json:"frame_height"`
+	Animations  []SpriteAnimationDTO `json:"animations"`
 }
 
 // ObjectDTO is one placed village object in the GET /api/village/objects
