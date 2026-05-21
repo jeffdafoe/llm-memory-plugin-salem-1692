@@ -173,6 +173,20 @@ func TestMoveActor_EmitsMoveStarted(t *testing.T) {
 		if want := (sim.Position{X: sim.PadX, Y: sim.PadY}); ev.FromPosition != want {
 			t.Errorf("FromPosition = %+v, want %+v (the walk start)", ev.FromPosition, want)
 		}
+		// Path is the full cost-weighted route, inclusive of both endpoints:
+		// it starts at the actor's tile and ends at the resolved goal. The
+		// contract is len >= 1 (a no-op move to the current tile yields a
+		// single-point path); this route is non-trivial so both endpoint
+		// checks below apply.
+		if len(ev.Path) == 0 {
+			t.Fatalf("Path is empty, want at least the start tile")
+		}
+		if got, want := ev.Path[0], (sim.GridPoint{X: ev.FromPosition.X, Y: ev.FromPosition.Y}); got != want {
+			t.Errorf("Path[0] = %+v, want %+v (the walk start)", got, want)
+		}
+		if got, want := ev.Path[len(ev.Path)-1], (sim.GridPoint{X: ev.TargetPosition.X, Y: ev.TargetPosition.Y}); got != want {
+			t.Errorf("Path[last] = %+v, want %+v (the resolved goal)", got, want)
+		}
 		if ev.StructureID != "" {
 			t.Errorf("StructureID = %q, want empty for a position destination", ev.StructureID)
 		}

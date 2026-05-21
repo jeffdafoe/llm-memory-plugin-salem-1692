@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
@@ -8,9 +9,12 @@ import (
 
 func TestTranslateEvent_MoveStarted(t *testing.T) {
 	frame, ok := TranslateEvent(&sim.ActorMoveStarted{
-		ActorID:           "hannah",
-		FromPosition:      sim.Position{X: 3, Y: 4},
-		TargetPosition:    sim.Position{X: 10, Y: 12},
+		ActorID:        "hannah",
+		FromPosition:   sim.Position{X: 3, Y: 4},
+		TargetPosition: sim.Position{X: 5, Y: 4},
+		Path: []sim.GridPoint{
+			{X: 3, Y: 4}, {X: 4, Y: 4}, {X: 5, Y: 4},
+		},
 		DestinationKind:   sim.MoveDestinationStructureEnter,
 		StructureID:       "tavern",
 		MovementAttemptID: 7,
@@ -25,12 +29,12 @@ func TestTranslateEvent_MoveStarted(t *testing.T) {
 	if !isType {
 		t.Fatalf("data type = %T, want walkWireDTO", frame.Data)
 	}
-	want := walkWireDTO{
-		ID: "hannah", FromX: 3, FromY: 4, TargetX: 10, TargetY: 12,
-		DestKind: "structure_enter", StructureID: "tavern", AttemptID: 7,
+	if d.ID != "hannah" || d.DestKind != "structure_enter" || d.StructureID != "tavern" || d.AttemptID != 7 {
+		t.Errorf("walk payload scalar fields = %+v", d)
 	}
-	if d != want {
-		t.Errorf("walk payload = %+v, want %+v", d, want)
+	wantPath := []tilePointDTO{{X: 3, Y: 4}, {X: 4, Y: 4}, {X: 5, Y: 4}}
+	if !reflect.DeepEqual(d.Path, wantPath) {
+		t.Errorf("walk path = %+v, want %+v", d.Path, wantPath)
 	}
 }
 
