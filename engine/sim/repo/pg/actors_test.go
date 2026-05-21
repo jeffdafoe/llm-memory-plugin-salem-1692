@@ -100,7 +100,7 @@ func actorParentColumns() []string {
 		"last_agent_tick_at", "break_until", "next_self_tick_at",
 		"next_self_tick_reason", "sleeping_until",
 		"move_attempt_counter", "sim_state", "sim_state_entered_at",
-		"sprite_id", "facing",
+		"sprite_id", "facing", "admin",
 	}
 }
 
@@ -152,7 +152,7 @@ func oneBareActorRows() *pgxmock.Rows {
 		(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
 		(*string)(nil), (*time.Time)(nil),
 		int64(0), "idle", tsEntered,
-		(*string)(nil), "south",
+		(*string)(nil), "south", false,
 	)
 }
 
@@ -312,7 +312,7 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 				&startMin, &endMin,
 				&tsTickedAt, &tsBreak, &tsNextSelf, ptrStr(reason), &tsSleep,
 				int64(7), "working", tsEntered,
-				ptrStr("00000000-0000-0000-0000-5555eeeeeeee"), "east",
+				ptrStr("00000000-0000-0000-0000-5555eeeeeeee"), "east", true,
 			).
 			AddRow(
 				actB, "Bare", 0, 0,
@@ -323,7 +323,7 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 				(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
 				(*string)(nil), (*time.Time)(nil),
 				int64(0), "idle", tsEntered,
-				(*string)(nil), "south",
+				(*string)(nil), "south", false,
 			))
 
 	mock.ExpectQuery(`FROM actor_need\b`).
@@ -414,6 +414,9 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 	if a.Facing != "east" {
 		t.Errorf("Facing = %q want east", a.Facing)
 	}
+	if !a.IsAdmin {
+		t.Errorf("IsAdmin = false, want true (admin column loaded)")
+	}
 	if len(a.Needs) != 2 || a.Needs["hunger"] != 4 || a.Needs["tiredness"] != 18 {
 		t.Errorf("Needs = %v", a.Needs)
 	}
@@ -450,6 +453,9 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 	}
 	if b.Facing != "south" {
 		t.Errorf("actB Facing = %q, want south", b.Facing)
+	}
+	if b.IsAdmin {
+		t.Errorf("actB IsAdmin = true, want false")
 	}
 	if int64(b.MoveAttemptCounter) != 0 {
 		t.Errorf("actB MoveAttemptCounter = %d", b.MoveAttemptCounter)
@@ -1065,7 +1071,7 @@ func TestActorsRepo_LoadAll_Continuity(t *testing.T) {
 				(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
 				(*string)(nil), (*time.Time)(nil),
 				int64(0), "idle", tsEntered,
-				(*string)(nil), "south",
+				(*string)(nil), "south", false,
 			))
 	mock.ExpectQuery(`FROM actor_need\b`).WillReturnRows(emptyNeedRows())
 	mock.ExpectQuery(`FROM actor_inventory\b`).WillReturnRows(emptyInvRows())
