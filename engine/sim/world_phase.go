@@ -223,9 +223,10 @@ func ApplyPhaseTransition(newPhase Phase) Command {
 			// immediately — the world goroutine is free to handle the
 			// next command.
 			//
-			// TODO(rewrite): when Hub/WS layer ports, broadcast
-			// world_phase_changed here so clients start the canvas tween
-			// at the boundary.
+			// The PhaseApplied event emitted below is translated to the
+			// world_phase_changed client frame by the httpapi hub (it
+			// subscribes to the bus), so connected clients flip the canvas
+			// lighting without any explicit broadcast here.
 			//
 			// TODO(rewrite): when occupancy ports, refresh night-only
 			// structure states here so taverns/inns light up at dusk even

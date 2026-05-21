@@ -349,6 +349,123 @@ func hasInvalidControlChar(text string) bool {
 	return false
 }
 
+// maxAdminBodyBytes caps admin write request bodies. Admin payloads are tiny
+// (force-phase is a single phase tag); 64 KiB is generous headroom.
+const maxAdminBodyBytes = 64 << 10
+
+// errAdminForbidden is the sentinel an admin-gated command returns when the
+// caller is not an admin — the handler maps it to 403 by identity. A single
+// error for both "no actor matches this login" and "matched but not admin" so
+// the response never reveals whether a given login maps to a real actor.
+var errAdminForbidden = errors.New("admin privileges required")
+
+// findAdminByLogin returns the id of an admin actor bound to loginUsername.
+// Runs on the world goroutine (called from a command Fn), so the map read is
+// safe. Admin is an actor-row flag (sim.Actor.IsAdmin), set out-of-band in the
+// DB for the human operators — see migration ZBBS-WORK-271.
+func findAdminByLogin(world *sim.World, loginUsername string) (sim.ActorID, bool) {
+	if loginUsername == "" {
+		return "", false
+	}
+	for id, a := range world.Actors {
+		if a.LoginUsername == loginUsername && a.IsAdmin {
+			return id, true
+		}
+	}
+	return "", false
+}
+
+// adminCommand wraps an admin-gated world mutation. It resolves the caller's
+// actor by login_username and requires IsAdmin (on the world goroutine, so the
+// check reads authoritative live state with no TOCTOU) BEFORE running action; a
+// non-admin caller — or one with no matching actor — gets errAdminForbidden →
+// 403, and action never runs. This is the reusable gate for every admin route
+// (force-phase today; object reposition/delete next).
+func adminCommand(username string, action func(*sim.World) (any, error)) sim.Command {
+	return sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			if _, ok := findAdminByLogin(world, username); !ok {
+				return nil, errAdminForbidden
+			}
+			return action(world)
+		},
+	}
+}
+
+// adminPhaseRequest is the POST /api/village/admin/phase body: the phase to
+// force the world into. Forcing to the current phase is allowed (idempotent —
+// sim.ApplyPhaseTransition still emits PhaseApplied with From == To).
+type adminPhaseRequest struct {
+	Phase string `json:"phase"` // day | night
+}
+
+// adminPhaseResponse reports the transition that applied. The visible canvas
+// update (lighting flip) reaches all clients via the world_phase_changed WS
+// broadcast PhaseApplied triggers, so the HTTP body is just the bracketing
+// phases + how many objects the bulk pass flipped.
+type adminPhaseResponse struct {
+	From            string `json:"from"`
+	To              string `json:"to"`
+	ObjectsAffected int    `json:"objects_affected"`
+}
+
+// handleAdminPhase forces the world's day/night phase. Admin-only: wrapped in
+// requireAuth (valid salem session) and gated again by adminCommand (the
+// caller's actor must have admin = true). Delegates to sim.ApplyPhaseTransition,
+// which flips the day/night object states and emits PhaseApplied → the
+// world_phase_changed broadcast.
+func (s *Server) handleAdminPhase(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	if user == nil {
+		writeAuthError(w, "invalid")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxAdminBodyBytes)
+	dec := json.NewDecoder(r.Body)
+	var req adminPhaseRequest
+	if err := dec.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	phase := sim.Phase(req.Phase)
+	if phase != sim.PhaseDay && phase != sim.PhaseNight {
+		writeError(w, http.StatusBadRequest, `phase must be "day" or "night"`)
+		return
+	}
+
+	res, err := s.world.SendContext(r.Context(), adminCommand(user.Username, func(world *sim.World) (any, error) {
+		return sim.ApplyPhaseTransition(phase).Fn(world)
+	}))
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
+		if errors.Is(err, errAdminForbidden) {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+
+	out, ok := res.(sim.PhaseTransitionResult)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "unexpected phase result")
+		return
+	}
+	writeJSON(w, adminPhaseResponse{
+		From:            string(out.From),
+		To:              string(out.To),
+		ObjectsAffected: out.ObjectsAffected,
+	})
+}
+
 // writeError writes a JSON {error} body with the given status.
 func writeError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
