@@ -37,6 +37,7 @@ func seededWorld(t *testing.T) *sim.World {
 			ID: "hannah", DisplayName: "Hannah", Kind: sim.KindNPCShared,
 			State: sim.StateIdle, Role: "innkeeper", CurrentX: 3, CurrentY: 4,
 			InsideStructureID: "tavern",
+			SpriteID:          "sprite-1", Facing: "east",
 		}
 		world.Actors["bram"] = &sim.Actor{
 			ID: "bram", DisplayName: "Bram", Kind: sim.KindPC,
@@ -164,6 +165,40 @@ func TestHandleAgents(t *testing.T) {
 	}
 	if hannah.Role != "innkeeper" || hannah.X != 3 || hannah.Y != 4 || hannah.InsideStructureID != "tavern" {
 		t.Errorf("hannah fields wrong: %+v", hannah)
+	}
+	// hannah has a sprite_id that resolves against the seeded catalog: the
+	// inline sprite carries the render subset (no pack) and the animation rows.
+	if hannah.Facing != "east" {
+		t.Errorf("hannah.facing = %q, want east", hannah.Facing)
+	}
+	if hannah.Sprite == nil {
+		t.Fatal("hannah.sprite should be resolved")
+	}
+	if hannah.Sprite.ID != "sprite-1" || hannah.Sprite.Sheet != "npc/woman_A_v00.png" || hannah.Sprite.FrameWidth != 64 {
+		t.Errorf("hannah sprite fields wrong: %+v", hannah.Sprite)
+	}
+	if len(hannah.Sprite.Animations) != 2 || hannah.Sprite.Animations[0].Animation != "idle" {
+		t.Errorf("hannah sprite animations wrong: %+v", hannah.Sprite.Animations)
+	}
+	// bram has no sprite_id → Sprite omitted, no facing set.
+	if bram.Sprite != nil {
+		t.Errorf("bram.sprite should be nil, got %+v", bram.Sprite)
+	}
+	var raw []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode raw: %v", err)
+	}
+	// raw[0] is bram (sorted): sprite + facing keys omitted entirely.
+	if _, present := raw[0]["sprite"]; present {
+		t.Errorf("bram sprite should be omitted, got present")
+	}
+	if _, present := raw[0]["facing"]; present {
+		t.Errorf("bram facing should be omitted (empty), got present")
+	}
+	// inline sprite must NOT carry pack (that's only on the raw catalog).
+	hannahRaw := raw[1]["sprite"].(map[string]any)
+	if _, present := hannahRaw["pack"]; present {
+		t.Errorf("inline agent sprite should not carry pack, got present")
 	}
 }
 

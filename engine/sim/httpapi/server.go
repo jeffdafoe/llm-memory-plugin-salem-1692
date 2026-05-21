@@ -49,7 +49,7 @@ func (s *Server) handleWorld(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) handleAgents(w http.ResponseWriter, _ *http.Request) {
 	snap := s.world.Published()
-	writeJSON(w, agentsFromSnapshot(snap))
+	writeJSON(w, agentsFromSnapshot(snap, s.world.Sprites))
 }
 
 func (s *Server) handleObjects(w http.ResponseWriter, _ *http.Request) {
@@ -99,8 +99,11 @@ func worldStateFromSnapshot(s *sim.Snapshot) WorldStateDTO {
 }
 
 // agentsFromSnapshot maps every actor to an AgentDTO, sorted by ID so the
-// response is deterministic (stable client diffs + testable).
-func agentsFromSnapshot(s *sim.Snapshot) []AgentDTO {
+// response is deterministic (stable client diffs + testable). The sprite
+// catalog (reference state off *sim.World) is passed in so each agent's
+// SpriteID can be resolved + inlined; a nil/absent catalog or a dangling
+// SpriteID simply leaves Sprite unset (the client renders a placeholder).
+func agentsFromSnapshot(s *sim.Snapshot, sprites map[sim.SpriteID]*sim.Sprite) []AgentDTO {
 	out := make([]AgentDTO, 0, len(s.Actors))
 	for id, a := range s.Actors {
 		out = append(out, AgentDTO{
@@ -111,12 +114,36 @@ func agentsFromSnapshot(s *sim.Snapshot) []AgentDTO {
 			Role:              a.Role,
 			X:                 a.CurrentX,
 			Y:                 a.CurrentY,
+			Facing:            a.Facing,
 			InsideStructureID: string(a.InsideStructureID),
 			CurrentHuddleID:   string(a.CurrentHuddleID),
+			Sprite:            resolveAgentSprite(a.SpriteID, sprites),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
+}
+
+// resolveAgentSprite looks up spriteID in the catalog and maps it to the
+// inline render DTO. Returns nil when the actor has no sprite (empty ID) or
+// the ID doesn't resolve (dangling ref) — Sprite is omitempty, so the field
+// is simply absent on the wire and the client falls back to a placeholder.
+func resolveAgentSprite(spriteID sim.SpriteID, sprites map[sim.SpriteID]*sim.Sprite) *AgentSpriteDTO {
+	if spriteID == "" || sprites == nil {
+		return nil
+	}
+	sp := sprites[spriteID]
+	if sp == nil {
+		return nil
+	}
+	return &AgentSpriteDTO{
+		ID:          string(sp.ID),
+		Name:        sp.Name,
+		Sheet:       sp.Sheet,
+		FrameWidth:  sp.FrameWidth,
+		FrameHeight: sp.FrameHeight,
+		Animations:  spriteAnimationsDTO(sp.Animations),
+	}
 }
 
 // objectsFromSnapshot maps every village object to an ObjectDTO, sorted by ID.
