@@ -1,8 +1,11 @@
 // Package httpapi is the v2 engine's client-facing read surface. Handlers
-// close over a *sim.World and read the lock-free published snapshot
-// (world.Published()); no command channel is on the read path. The wire DTOs
-// here are v2-native — shaped by sim.Snapshot, not v1's DB-era JSON — and are
-// the single source of truth documented in the shared contract note
+// close over a *sim.World and read lock-free, with no command channel on the
+// read path. Per-tick state (world / agents / objects) is read from the
+// published snapshot (world.Published()); reference state loaded once at
+// startup (assets / terrain catalog) is read directly off *sim.World, which is
+// immutable post-load. The wire DTOs here are v2-native — shaped by
+// sim.Snapshot + the reference catalogs, not v1's DB-era JSON — and are the
+// single source of truth documented in the shared contract note
 // shared/notes/codebase/salem-engine-v2/client-contract (consumed by the
 // Godot client).
 package httpapi
@@ -60,6 +63,102 @@ type ObjectDTO struct {
 	CurrentState string   `json:"current_state,omitempty"`
 	DisplayName  string   `json:"display_name,omitempty"`
 	Tags         []string `json:"tags,omitempty"`
+}
+
+// TerrainDTO is the GET /api/village/terrain response. The terrain grid is a
+// fixed-size row-major byte array (one byte per tile, one of the frozen 6
+// terrain-type values 1..6) base64-encoded into Data. The client decodes Data
+// into a PackedByteArray and indexes it as data[y*map_w + x]. The byte->visual
+// mapping is 100% client-side (a wang-corner blend renderer), so the server
+// ships only the grid + the metadata needed to place it; no legend.
+type TerrainDTO struct {
+	ContractVersion int    `json:"contract_version"`
+	MapW            int    `json:"map_w"` // grid width in tiles (row stride)
+	MapH            int    `json:"map_h"` // grid height in tiles
+	PadX            int    `json:"pad_x"` // world (0,0) maps to internal tile (pad_x, pad_y)
+	PadY            int    `json:"pad_y"`
+	TileSize        int    `json:"tile_size"` // world pixels per tile
+	Data            string `json:"data"`      // base64 of the flat map_w*map_h byte grid
+}
+
+// AssetDTO is one catalog entry in the GET /api/village/assets response — the
+// definition of a placeable thing (a tree, a market stall, a building). It is
+// the render graph the client needs to draw + animate an object instance;
+// engine-only behavior fields (rotation_algo, transition_spread_seconds,
+// occupied_*, is_obstacle, is_passage) are intentionally absent. This is the
+// object/terrain catalog only — character sprites live in a separate catalog
+// (not yet on the wire; tracked as the agent-sprite gap, contract note V3).
+type AssetDTO struct {
+	ID                string          `json:"id"` // asset.id UUID; ObjectDTO.asset_id references it
+	Name              string          `json:"name"`
+	Category          string          `json:"category"` // tree | nature | structure | prop
+	DefaultState      string          `json:"default_state"`
+	AnchorX           float64         `json:"anchor_x"`
+	AnchorY           float64         `json:"anchor_y"`
+	Layer             string          `json:"layer"`   // objects | above
+	ZIndex            int             `json:"z_index"` // Godot CanvasItem z; <0 renders below NPCs
+	VisibleWhenInside bool            `json:"visible_when_inside"`
+	StandOffsetX      *int            `json:"stand_offset_x,omitempty"`
+	StandOffsetY      *int            `json:"stand_offset_y,omitempty"`
+	DoorOffsetX       *int            `json:"door_offset_x,omitempty"`
+	DoorOffsetY       *int            `json:"door_offset_y,omitempty"`
+	Footprint         FootprintDTO    `json:"footprint"`
+	FitsSlot          *string         `json:"fits_slot,omitempty"` // overlay assets: which slot they snap into
+	Pack              *TilesetPackDTO `json:"pack,omitempty"`
+	States            []AssetStateDTO `json:"states"`
+	Slots             []AssetSlotDTO  `json:"slots,omitempty"`
+}
+
+// FootprintDTO is the per-side tile footprint (counts from the anchor tile in
+// each cardinal direction; the anchor tile is always included).
+type FootprintDTO struct {
+	Left   int `json:"left"`
+	Right  int `json:"right"`
+	Top    int `json:"top"`
+	Bottom int `json:"bottom"`
+}
+
+// TilesetPackDTO is the source tileset an asset's sheets came from.
+type TilesetPackDTO struct {
+	ID   string  `json:"id"`
+	Name string  `json:"name"`
+	URL  *string `json:"url,omitempty"`
+}
+
+// AssetStateDTO is one visual variant of an asset (e.g. "open"/"closed",
+// "lit"/"unlit"). Animated states have frame_count > 1 (frames are consecutive
+// horizontally in the sheet starting at src_x/src_y).
+type AssetStateDTO struct {
+	State      string         `json:"state"`
+	Sheet      string         `json:"sheet"`
+	SrcX       int            `json:"src_x"`
+	SrcY       int            `json:"src_y"`
+	SrcW       int            `json:"src_w"`
+	SrcH       int            `json:"src_h"`
+	FrameCount int            `json:"frame_count"`
+	FrameRate  float64        `json:"frame_rate"`
+	Tags       []string       `json:"tags,omitempty"`
+	Light      *AssetLightDTO `json:"light,omitempty"` // present only on light-emitting states
+}
+
+// AssetLightDTO are the PointLight2D parameters for a light-emitting state.
+type AssetLightDTO struct {
+	Color            string  `json:"color"`  // hex #RRGGBB
+	Radius           int     `json:"radius"` // world pixels
+	Energy           float64 `json:"energy"`
+	OffsetX          int     `json:"offset_x"`
+	OffsetY          int     `json:"offset_y"`
+	FlickerAmplitude float64 `json:"flicker_amplitude"` // 0 = steady
+	FlickerPeriodMs  int     `json:"flicker_period_ms"`
+}
+
+// AssetSlotDTO is a named attachment point on an asset (e.g. a campfire's "top"
+// slot where a pot can be placed). Overlay assets declare which slot they fit
+// via AssetDTO.FitsSlot.
+type AssetSlotDTO struct {
+	SlotName string `json:"slot_name"`
+	OffsetX  int    `json:"offset_x"`
+	OffsetY  int    `json:"offset_y"`
 }
 
 // actorKindString maps the internal ActorKind enum to its stable wire form.
