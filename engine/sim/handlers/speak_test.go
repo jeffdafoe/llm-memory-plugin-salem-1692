@@ -238,6 +238,8 @@ func TestIndexInvalidControlChar(t *testing.T) {
 		{"null_mid", "abc\x00def", 3},
 		{"del", "abc\x7F", 3},
 		{"escape", "\x1B[", 0},
+		{"replacement_char", "huh�?", -1},
+		{"invalid_utf8", "abc\xff", 0},
 		{"c1_nel", "abc", 3},
 	}
 	for _, tc := range cases {

@@ -165,12 +165,17 @@ func HandleSpeak(in HandlerInput) (sim.Command, error) {
 // indexInvalidControlChar returns the byte offset of the first
 // disallowed control character in text, or -1 if none. \n (0x0A),
 // \r (0x0D), \t (0x09) are allowed; everything else in 0x00..0x1F plus
-// 0x7F (DEL) and the C1 control range (0x80..0x9F, only meaningful when
-// the byte sits at a single-byte rune-start) is rejected.
+// 0x7F (DEL) and the C1 control range (0x80..0x9F) is rejected.
 //
-// Unicode-safe: scans rune-by-rune so a stray byte in a multi-byte UTF-8
-// sequence reports as utf8.RuneError → caught by the C1-range check.
+// Invalid UTF-8 is rejected up front via utf8.ValidString (returning
+// offset 0); the per-rune loop does NOT special-case utf8.RuneError,
+// because ranging a string yields RuneError for BOTH a decode error AND
+// the legitimate replacement character U+FFFD ("�") — guarding on it
+// would wrongly reject valid text containing that printable code point.
 func indexInvalidControlChar(text string) int {
+	if !utf8.ValidString(text) {
+		return 0
+	}
 	for i, r := range text {
 		switch {
 		case r == '\n' || r == '\r' || r == '\t':
@@ -180,8 +185,6 @@ func indexInvalidControlChar(text string) int {
 		case r == 0x7F:
 			return i
 		case r < 0x20:
-			return i
-		case r == utf8.RuneError:
 			return i
 		case r >= 0x80 && r <= 0x9F:
 			return i
