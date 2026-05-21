@@ -171,6 +171,117 @@ func TestHandlePCMove_TrailingJSON(t *testing.T) {
 	}
 }
 
+func TestHandlePCSpeak_Accepted(t *testing.T) {
+	w := seededWorld(t)
+	seedPC(t, w, "pc-tester", "tester", 10, 10)
+	srv := NewServer(w, okAuth{})
+
+	// PC has no huddle → speaks to no one, which is a valid v2 state (200).
+	rec := post(t, srv, "/api/village/pc/speak", `{"text":"hello there"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandlePCSpeak_PCNotFound(t *testing.T) {
+	srv := NewServer(seededWorld(t), okAuth{})
+	rec := post(t, srv, "/api/village/pc/speak", `{"text":"hello"}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandlePCSpeak_EmptyText(t *testing.T) {
+	srv := NewServer(seededWorld(t), okAuth{})
+	rec := post(t, srv, "/api/village/pc/speak", `{"text":"   "}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandlePCSpeak_TooLong(t *testing.T) {
+	srv := NewServer(seededWorld(t), okAuth{})
+	long := `{"text":"` + strings.Repeat("a", 1001) + `"}`
+	rec := post(t, srv, "/api/village/pc/speak", long)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// validateSpeakText is unit-tested directly for the control-char rule: building
+// the NUL at runtime (string(rune(0))) keeps an actual control byte out of this
+// source file, and bypasses the JSON decoder (which would reject a raw control
+// char in a string itself) so the test exercises validateSpeakText's own scan.
+func TestValidateSpeakText_RejectsControlChar(t *testing.T) {
+	if _, msg := validateSpeakText("hi" + string(rune(0)) + "there"); msg == "" {
+		t.Error("validateSpeakText accepted a NUL control char, want rejection")
+	}
+	if _, msg := validateSpeakText("hi" + string(rune(0x7f)) + "there"); msg == "" {
+		t.Error("validateSpeakText accepted DEL (0x7F), want rejection")
+	}
+	// Invalid UTF-8 (a lone continuation byte) is rejected by the ValidString guard.
+	if _, msg := validateSpeakText("hi" + string([]byte{0xff}) + "there"); msg == "" {
+		t.Error("validateSpeakText accepted invalid UTF-8, want rejection")
+	}
+	// The VALID replacement character U+FFFD ("�") is a printable code point
+	// and must be accepted — the scan must not conflate it with a decode error.
+	if clean, msg := validateSpeakText("hi" + string(rune(0xFFFD)) + "there"); msg != "" || clean == "" {
+		t.Errorf("validateSpeakText rejected valid U+FFFD: msg=%q", msg)
+	}
+	// Allowed whitespace controls must pass.
+	if clean, msg := validateSpeakText("line one\nline two\ttabbed"); msg != "" || clean == "" {
+		t.Errorf("validateSpeakText rejected allowed \\n/\\t: msg=%q", msg)
+	}
+}
+
+// TestHandlePCSpeak_JSONEscapedControlChar covers the realistic attack/bug path:
+// a client sends a JSON escape for U+0000 (valid JSON — the decoder accepts it
+// and produces a NUL rune), which validateSpeakText's scan must then reject (→ 400).
+// The escape is split across two string literals so this source file never
+// contains the literal control byte.
+func TestHandlePCSpeak_JSONEscapedControlChar(t *testing.T) {
+	srv := NewServer(seededWorld(t), okAuth{})
+	body := `{"text":"hi\u00` + `00there"}`
+	rec := post(t, srv, "/api/village/pc/speak", body)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandlePCSpeak_MissingToken(t *testing.T) {
+	srv := NewServer(seededWorld(t), okAuth{})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/village/pc/speak",
+		strings.NewReader(`{"text":"hello"}`))
+	// No Authorization header → requireAuth rejects before the handler runs.
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandlePCSpeak_VocativeStaleRejected(t *testing.T) {
+	// pc-tester has no huddle, so the seeded NPC "Hannah" is a non-peer.
+	// Addressing her by name in vocative position trips sim.Speak's
+	// stale-addressee gate → 422 (a world-state rejection, not a 400).
+	w := seededWorld(t)
+	seedPC(t, w, "pc-tester", "tester", 10, 10)
+	srv := NewServer(w, okAuth{})
+
+	rec := post(t, srv, "/api/village/pc/speak", `{"text":"Hannah, are you there?"}`)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandlePCSpeak_TrailingJSON(t *testing.T) {
+	srv := NewServer(seededWorld(t), okAuth{})
+	rec := post(t, srv, "/api/village/pc/speak", `{"text":"hi"} garbage`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestHandlePCMove_MissingToken(t *testing.T) {
 	srv := NewServer(seededWorld(t), okAuth{})
 	rec := httptest.NewRecorder()

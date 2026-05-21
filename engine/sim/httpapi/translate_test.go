@@ -1,8 +1,11 @@
 package httpapi
 
 import (
+	"bytes"
+	"encoding/json"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
@@ -75,6 +78,63 @@ func TestTranslateEvent_MoveStopped(t *testing.T) {
 	want := moveStoppedWireDTO{ID: "hannah", X: 5, Y: 6, Reason: "blocked", AttemptID: 7}
 	if d != want {
 		t.Errorf("stopped payload = %+v, want %+v", d, want)
+	}
+}
+
+func TestTranslateEvent_Spoke(t *testing.T) {
+	at := time.Date(1692, 5, 14, 12, 30, 0, 0, time.FixedZone("local", -4*3600))
+	frame, ok := TranslateEvent(&sim.Spoke{
+		SpeakerID:    "hannah",
+		HuddleID:     "huddle-1",
+		RecipientIDs: []sim.ActorID{"bram", "ezekiel"},
+		Text:         "Good evening.",
+		At:           at,
+	})
+	if !ok {
+		t.Fatal("Spoke should translate")
+	}
+	if frame.Type != "npc_spoke" {
+		t.Fatalf("type = %q, want npc_spoke", frame.Type)
+	}
+	d, isType := frame.Data.(spokeWireDTO)
+	if !isType {
+		t.Fatalf("data type = %T, want spokeWireDTO", frame.Data)
+	}
+	if d.ID != "hannah" || d.HuddleID != "huddle-1" || d.Text != "Good evening." {
+		t.Errorf("spoke scalar fields = %+v", d)
+	}
+	if !reflect.DeepEqual(d.RecipientIDs, []string{"bram", "ezekiel"}) {
+		t.Errorf("recipients = %+v, want [bram ezekiel]", d.RecipientIDs)
+	}
+	if d.At != at.UTC().Format(time.RFC3339) {
+		t.Errorf("at = %q, want %q", d.At, at.UTC().Format(time.RFC3339))
+	}
+	// SpeechID aliases the event's EventID, which is 0 until World.emit stamps
+	// it. This event was constructed directly (never emitted), so 0 is expected
+	// here; the live path stamps it via emit. Asserted so a mapping change is caught.
+	if d.SpeechID != 0 {
+		t.Errorf("speech_id = %d, want 0 for an un-emitted event", d.SpeechID)
+	}
+}
+
+// TestTranslateEvent_SpokeEmptyHuddle: speaking to no one still translates (a
+// valid v2 state). Asserts the WIRE shape (marshal-level), since omitempty only
+// applies during marshaling — checking the typed DTO wouldn't catch a contract
+// regression: huddle_id must be absent, recipient_ids must be [] (not null).
+func TestTranslateEvent_SpokeEmptyHuddle(t *testing.T) {
+	frame, ok := TranslateEvent(&sim.Spoke{SpeakerID: "bram", Text: "Anyone here?"})
+	if !ok {
+		t.Fatal("Spoke with empty huddle should still translate")
+	}
+	b, err := json.Marshal(frame.Data)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if bytes.Contains(b, []byte(`"huddle_id"`)) {
+		t.Errorf("huddle_id should be omitted for empty huddle: %s", b)
+	}
+	if !bytes.Contains(b, []byte(`"recipient_ids":[]`)) {
+		t.Errorf("recipient_ids should marshal as [], got: %s", b)
 	}
 }
 

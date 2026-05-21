@@ -1,22 +1,26 @@
 package httpapi
 
-import "github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
+import (
+	"time"
+
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
+)
 
 // translate.go — the production EventTranslator: it maps the v2 sim event bus
 // to client wire frames ({type, data}, matching the client's _handle_message
 // dispatch). Pass TranslateEvent to NewHub.
 //
-// This slice maps MOVEMENT only — the headline live signal: the engine
-// announces a walk with the full cost-weighted tile path it computed
-// (npc_walking) and is authoritative on the outcome (npc_arrived /
-// npc_move_stopped); the client follows the path tile by tile and snaps to the
-// engine's arrival. Broadcasting the path (vs only the destination) keeps the
-// engine's road-preferring / building-avoiding routing on the screen without
-// the client re-implementing the cost model. Per-tile ActorMoved is
-// deliberately NOT mapped — it stays internal to the engine. Phase / speech /
-// object events are an additive follow-on: an unmapped event returns ok=false
-// and is dropped, so adding cases later needs no change here or in the hub.
-// Wire shapes are documented in shared/notes/codebase/salem-engine-v2/client-contract.
+// Mapped so far: MOVEMENT (the engine announces a walk with the full
+// cost-weighted tile path it computed — npc_walking — and is authoritative on
+// the outcome via npc_arrived / npc_move_stopped; the client follows the path
+// tile by tile and snaps to the engine's arrival; broadcasting the path vs only
+// the destination keeps road-preferring / building-avoiding routing on screen
+// without the client re-implementing the cost model) and SPEECH (Spoke →
+// npc_spoke, the huddle-scoped utterance the player's pc/speak and NPC speak
+// both produce). Per-tile ActorMoved is deliberately NOT mapped — it stays
+// internal. Phase / object events remain an additive follow-on: an unmapped
+// event returns ok=false and is dropped, so adding cases later needs no change
+// here or in the hub. Wire shapes: shared/notes/codebase/salem-engine-v2/client-contract.
 
 // TranslateEvent maps a sim.Event to a client WireFrame. ok=false drops the
 // event (the common case — most bus events are engine-internal). Pure and
@@ -50,6 +54,19 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			Y:         e.Position.Y,
 			Reason:    string(e.Reason),
 			AttemptID: uint64(e.MovementAttemptID),
+		}}, true
+	case *sim.Spoke:
+		recipients := make([]string, len(e.RecipientIDs))
+		for i, id := range e.RecipientIDs {
+			recipients[i] = string(id)
+		}
+		return WireFrame{Type: "npc_spoke", Data: spokeWireDTO{
+			ID:           string(e.SpeakerID),
+			HuddleID:     string(e.HuddleID),
+			RecipientIDs: recipients,
+			Text:         e.Text,
+			SpeechID:     uint64(e.EventID()),
+			At:           e.At.UTC().Format(time.RFC3339),
 		}}, true
 	default:
 		return WireFrame{}, false
@@ -102,4 +119,20 @@ type moveStoppedWireDTO struct {
 	Y         int    `json:"y"`
 	Reason    string `json:"reason"`
 	AttemptID uint64 `json:"attempt_id"`
+}
+
+// spokeWireDTO is the npc_spoke payload — one utterance the client renders as a
+// speech bubble over the speaker. id is the speaker's actor id (the client
+// resolves the display name + position from its agent roster). huddle_id scopes
+// the conversation; recipient_ids is the huddle audience at commit time (empty
+// when speaking to no one — a valid v2 state). speech_id (= the event id) lets a
+// client correlate its own optimistic bubble with this authoritative event and
+// dedupe. No x/y — v2 speech is huddle-scoped, not proximity-based (unlike v1).
+type spokeWireDTO struct {
+	ID           string   `json:"id"`
+	HuddleID     string   `json:"huddle_id,omitempty"`
+	RecipientIDs []string `json:"recipient_ids"`
+	Text         string   `json:"text"`
+	SpeechID     uint64   `json:"speech_id"`
+	At           string   `json:"at"`
 }
