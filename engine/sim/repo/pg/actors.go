@@ -115,7 +115,8 @@ SELECT
     sim_state,
     sim_state_entered_at,
     sprite_id::text,
-    facing
+    facing,
+    admin
   FROM actor`
 
 // loadAllNeedsSQLA selects every actor_need row. Joined to actors in
@@ -133,6 +134,13 @@ SELECT actor_id::text, item_kind, quantity
 // v1-only columns are untouched on UPDATE (ON CONFLICT preserves them)
 // and fall back to schema defaults on INSERT. snapshot_gen carries the
 // new checkpoint gen so the trailing DELETE can prune absent rows.
+//
+// `admin` is deliberately ABSENT here. It is externally-managed
+// authorization state (set directly in the DB for village operators),
+// not sim state — LoadWorld reads it, the checkpoint never writes it.
+// ON CONFLICT touches only the listed columns, so an operator-set admin
+// value survives every checkpoint. Do NOT add admin here. See migration
+// ZBBS-WORK-271 + sim.Actor.IsAdmin.
 const upsertSQLA = `
 INSERT INTO actor (
     id, display_name, current_x, current_y,
@@ -501,6 +509,7 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			simStateEnteredAt   time.Time
 			spriteID            *string
 			facing              string
+			isAdmin             bool
 		)
 		if err := rows.Scan(
 			&id, &displayName, &currentX, &currentY,
@@ -511,7 +520,7 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			&lastAgentTickAt, &breakUntil, &nextSelfTickAt,
 			&nextSelfTickReason, &sleepingUntil,
 			&moveAttemptCounter, &simState, &simStateEnteredAt,
-			&spriteID, &facing,
+			&spriteID, &facing, &isAdmin,
 		); err != nil {
 			return nil, fmt.Errorf("pg actors LoadAll scan: %w", err)
 		}
@@ -547,6 +556,7 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			StateEnteredAt:     simStateEnteredAt,
 			SpriteID:           sim.SpriteID(deref(spriteID)),
 			Facing:             facing,
+			IsAdmin:            isAdmin,
 			Needs:              make(map[sim.NeedKey]int),
 			Inventory:          make(map[sim.ItemKind]int),
 			Relationships:      make(map[sim.ActorID]*sim.Relationship),

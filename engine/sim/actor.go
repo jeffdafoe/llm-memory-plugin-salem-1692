@@ -339,6 +339,14 @@ type Actor struct {
 	VisitorState       *VisitorState
 	BusinessownerState *BusinessownerState
 
+	// IsAdmin gates the admin/editor write routes on the HTTP surface
+	// (force-phase, object reposition/delete). Externally managed — set
+	// directly in the DB for the human operators who administer the
+	// village; the sim never writes it, and the checkpoint UPSERT
+	// deliberately omits it so a save can't clobber the operator-set value
+	// (LoadWorld reads it, SaveWorld leaves it). See migration ZBBS-WORK-271.
+	IsAdmin bool
+
 	// Spatial — current location.
 	InsideStructureID StructureID
 	InsideRoomID      RoomID // 0 when not in a room
