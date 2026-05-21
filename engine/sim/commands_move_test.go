@@ -39,6 +39,32 @@ func (r *eventRec) countEvents(match func(sim.Event) bool) int {
 	return n
 }
 
+// snapshot returns a copy of the recorded events under the lock. Safe to call
+// from the test goroutine after a synchronous Send round-trip.
+func (r *eventRec) snapshot() []sim.Event {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]sim.Event(nil), r.events...)
+}
+
+// findMoveStarted asserts exactly one ActorMoveStarted was recorded and returns
+// it.
+func findMoveStarted(t *testing.T, rec *eventRec) *sim.ActorMoveStarted {
+	t.Helper()
+	var found *sim.ActorMoveStarted
+	n := 0
+	for _, e := range rec.snapshot() {
+		if ms, ok := e.(*sim.ActorMoveStarted); ok {
+			found = ms
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("got %d ActorMoveStarted events, want exactly 1", n)
+	}
+	return found
+}
+
 // buildMoveTestWorld seeds a running world for MoveActor tests:
 //
 //   - all-grass terrain
@@ -119,6 +145,79 @@ func huddleIDOf(t *testing.T, w *sim.World, id sim.ActorID) sim.HuddleID {
 		t.Fatalf("huddleIDOf: %v", err)
 	}
 	return res.(sim.HuddleID)
+}
+
+// TestMoveActor_EmitsMoveStarted asserts an accepted MoveActor emits an
+// ActorMoveStarted carrying the resolved goal tile + destination metadata, so
+// the client read surface can begin animating the walk.
+func TestMoveActor_EmitsMoveStarted(t *testing.T) {
+	now := time.Now().UTC()
+
+	t.Run("position carries the exact resolved tile", func(t *testing.T) {
+		w, cancel, rec := buildMoveTestWorld(t)
+		defer cancel()
+		dest := sim.NewPositionDestination(sim.Position{X: sim.PadX + 5, Y: sim.PadY + 5})
+		if _, err := w.Send(sim.MoveActor("walker", dest, false, now)); err != nil {
+			t.Fatalf("MoveActor rejected: %v", err)
+		}
+		ev := findMoveStarted(t, rec)
+		if ev.ActorID != "walker" {
+			t.Errorf("ActorID = %q, want walker", ev.ActorID)
+		}
+		if ev.DestinationKind != sim.MoveDestinationPosition {
+			t.Errorf("DestinationKind = %q, want position", ev.DestinationKind)
+		}
+		if want := (sim.Position{X: sim.PadX + 5, Y: sim.PadY + 5}); ev.TargetPosition != want {
+			t.Errorf("TargetPosition = %+v, want %+v", ev.TargetPosition, want)
+		}
+		if want := (sim.Position{X: sim.PadX, Y: sim.PadY}); ev.FromPosition != want {
+			t.Errorf("FromPosition = %+v, want %+v (the walk start)", ev.FromPosition, want)
+		}
+		if ev.StructureID != "" {
+			t.Errorf("StructureID = %q, want empty for a position destination", ev.StructureID)
+		}
+		if ev.MovementAttemptID != 1 {
+			t.Errorf("MovementAttemptID = %d, want 1 (matches the stamped intent)", ev.MovementAttemptID)
+		}
+	})
+
+	t.Run("structure enter carries the structure id + kind", func(t *testing.T) {
+		w, cancel, rec := buildMoveTestWorld(t)
+		defer cancel()
+		if _, err := w.Send(sim.MoveActor("walker", sim.NewStructureEnterDestination("inn"), false, now)); err != nil {
+			t.Fatalf("MoveActor rejected: %v", err)
+		}
+		ev := findMoveStarted(t, rec)
+		if ev.DestinationKind != sim.MoveDestinationStructureEnter {
+			t.Errorf("DestinationKind = %q, want structure_enter", ev.DestinationKind)
+		}
+		if ev.StructureID != "inn" {
+			t.Errorf("StructureID = %q, want inn", ev.StructureID)
+		}
+		// TargetPosition is the resolved door tile — not the actor's start.
+		if want := (sim.Position{X: sim.PadX, Y: sim.PadY}); ev.TargetPosition == want {
+			t.Errorf("TargetPosition unexpectedly equals the start origin %+v (no real goal resolved)", want)
+		}
+	})
+}
+
+// TestMoveActor_RejectionEmitsNoMoveStarted asserts a rejected MoveActor stamps
+// no intent and emits no ActorMoveStarted.
+func TestMoveActor_RejectionEmitsNoMoveStarted(t *testing.T) {
+	now := time.Now().UTC()
+	w, cancel, rec := buildMoveTestWorld(t)
+	defer cancel()
+	// Entering a closed structure ("well") is rejected at validation.
+	if _, err := w.Send(sim.MoveActor("walker", sim.NewStructureEnterDestination("well"), false, now)); err == nil {
+		t.Fatal("expected MoveActor to reject entering a closed structure")
+	}
+	n := rec.countEvents(func(e sim.Event) bool {
+		_, ok := e.(*sim.ActorMoveStarted)
+		return ok
+	})
+	if n != 0 {
+		t.Errorf("got %d ActorMoveStarted on a rejected move, want 0", n)
+	}
 }
 
 // TestMoveActor_HappyPathPerKind covers acceptance for each destination

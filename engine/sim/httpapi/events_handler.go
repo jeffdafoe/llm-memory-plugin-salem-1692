@@ -35,13 +35,19 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
-// handleEvents upgrades the connection to a WebSocket and registers it with the
-// hub. The auth token rides in the ?token= query param (browsers and Godot
-// cannot set custom WS handshake headers); it is read and stored but not yet
-// enforced — reads are unauthenticated this slice, matching the REST read
-// surface. On connect the client is queued a hello frame (contract version),
-// then receives the live event stream until it disconnects.
+// handleEvents authenticates, upgrades the connection to a WebSocket, and
+// registers it with the hub. The token rides in the ?token= query param
+// (browsers and Godot can't set WS handshake headers) and is verified BEFORE
+// the upgrade — an unauthenticated client gets a plain HTTP auth error and is
+// never upgraded, registered, or sent the hello frame. On connect the client is
+// queued a hello frame (contract version), then receives the live event stream
+// until it disconnects.
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	token := r.URL.Query().Get("token")
+	if res := s.auth.Verify(token); !res.Valid {
+		writeAuthError(w, res.Reason)
+		return
+	}
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		// Upgrade has already written an error response to w.
@@ -62,7 +68,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		hub:   s.hub,
 		conn:  conn,
 		send:  make(chan []byte, clientSendBuffer),
-		token: r.URL.Query().Get("token"),
+		token: token, // already verified above
 	}
 	// Queue the hello frame before registering so it is the first thing the
 	// write pump sends (the channel is FIFO and has room). Any broadcast that

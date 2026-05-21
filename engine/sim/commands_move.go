@@ -65,10 +65,13 @@ type MoveActorResult struct {
 //  6. Any existing MoveIntent is silently superseded.
 //  7. A fresh per-actor MovementAttemptID is generated and a new
 //     MoveIntent stamped.
+//  8. An ActorMoveStarted is emitted carrying the resolved goal tile, so
+//     the client read surface can begin animating the walk.
 //
-// MoveActor does not move the actor or emit movement events — that is
-// the locomotion ticker's job. The only events it can emit are the
-// huddle-leave events from step 5.
+// MoveActor does not MOVE the actor — that is the locomotion ticker's job
+// (it advances tile by tile against the stamped MoveIntent). The events it
+// emits are the huddle-leave events from step 5 and the ActorMoveStarted
+// from step 8.
 func MoveActor(actorID ActorID, dest MoveDestination, leaveHuddleFirst bool, now time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
@@ -196,6 +199,25 @@ func MoveActor(actorID ActorID, dest MoveDestination, leaveHuddleFirst bool, now
 				Destination: cloneMoveDestination(dest),
 				AttemptID:   attemptID,
 			}
+
+			// Step 8 - announce the walk to the client read surface. Carries
+			// the resolved goal tile (target, from step 4) so a viewer can path
+			// to it locally; the actor hasn't moved yet, so its current tile is
+			// the walk's start. dest.StructureID is non-nil for the enter/visit
+			// kinds and nil for position (empty StructureID).
+			destStructureID := StructureID("")
+			if dest.StructureID != nil {
+				destStructureID = *dest.StructureID
+			}
+			w.emit(&ActorMoveStarted{
+				ActorID:           actorID,
+				FromPosition:      Position{X: actor.CurrentX, Y: actor.CurrentY},
+				TargetPosition:    target,
+				DestinationKind:   dest.Kind,
+				StructureID:       destStructureID,
+				MovementAttemptID: attemptID,
+				At:                now,
+			})
 
 			return MoveActorResult{
 				MovementAttemptID:   attemptID,

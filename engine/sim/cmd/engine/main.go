@@ -3,10 +3,9 @@
 // pipeline, the periodic checkpointer), runs the world's command loop, and on
 // SIGINT/SIGTERM takes a final checkpoint before exiting.
 //
-// Slice 1 is HEADLESS — there is no HTTP/WS surface yet. It proves the
-// LoadWorld → Run → SaveWorld lifecycle end to end against real pg with the
-// full reactive runtime attached. The client-facing HTTP/WS layer is a later
-// slice.
+// The client-facing surface is served when PORT (→ HTTPAddr) is set: the REST
+// read endpoints plus the WS /events push channel (movement events today). An
+// empty HTTPAddr runs headless (used by the lifecycle test).
 package main
 
 import (
@@ -46,13 +45,16 @@ const httpShutdownTimeout = 5 * time.Second
 // main, and tests can supply a mem-backed world). Save adapts the durable
 // checkpoint writer. TickSink may be nil — the worker pool null-checks it.
 // HTTPAddr is the read-surface listen address (e.g. ":8080"); empty disables
-// the HTTP server (headless-only, used by the lifecycle test).
+// the HTTP server (headless-only, used by the lifecycle test). Auth verifies
+// session tokens for the read surface — required when HTTPAddr is set, may be
+// nil when headless.
 type runtime struct {
 	World     *sim.World
 	LLMClient llm.Client
 	Save      sim.CheckpointFunc
 	TickSink  sim.TickTelemetrySink
 	HTTPAddr  string
+	Auth      httpapi.Authenticator
 }
 
 func main() {
@@ -93,6 +95,9 @@ func main() {
 		// sink later is a drop-in.
 		TickSink: repo.TickTelemetry,
 		HTTPAddr: ":" + port,
+		// Read-surface auth: verifies session tokens against llm-memory-api's
+		// /v1/auth/verify + the salem-realm gate, caching positive results.
+		Auth: httpapi.NewTokenVerifier(llmMemoryURL, 0),
 	}
 
 	// Shutdown on SIGINT/SIGTERM.
@@ -154,6 +159,16 @@ func run(rt runtime, stop <-chan struct{}) error {
 	sim.RegisterAcquaintanceSubscriber(rt.World)
 	cascade.RegisterProductionCascades(worldCtx, rt.World, rt.LLMClient)
 
+	// WebSocket event hub (Slice 2 WS /events). Subscribed before world.Run,
+	// like every other subscriber; its Run goroutine owns the client fan-out.
+	// Only wired when the HTTP surface is enabled (it serves the /events route).
+	var eventsHub *httpapi.Hub
+	if rt.HTTPAddr != "" {
+		eventsHub = httpapi.NewHub(httpapi.TranslateEvent)
+		rt.World.Subscribe(eventsHub)
+		go eventsHub.Run(worldCtx)
+	}
+
 	// Start the world command loop. This stamps world.LifecycleContext, which
 	// the sweep goroutines' AfterFunc re-arm chains key off. worldDone closes
 	// when Run returns — shutdown waits on it so the process doesn't tear down
@@ -184,9 +199,11 @@ func run(rt runtime, stop <-chan struct{}) error {
 	// unwinds). Skipped when HTTPAddr is empty (headless-only).
 	var httpServer *http.Server
 	if rt.HTTPAddr != "" {
+		server := httpapi.NewServer(rt.World, rt.Auth)
+		server.SetEventsHub(eventsHub)
 		httpServer = &http.Server{
 			Addr:    rt.HTTPAddr,
-			Handler: httpapi.NewServer(rt.World).Handler(),
+			Handler: server.Handler(),
 		}
 		go func() {
 			if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {

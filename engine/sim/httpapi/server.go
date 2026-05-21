@@ -13,18 +13,25 @@ import (
 // Server serves the read surface for one world. It holds the *sim.World and
 // reads world.Published() per request — lock-free, no command channel. Safe
 // for concurrent requests: every handler only reads the immutable snapshot.
-// An optional event hub (SetEventsHub) adds the WS /events push channel.
+// Every route requires a valid salem-realm session token (auth); an optional
+// event hub (SetEventsHub) adds the authenticated WS /events push channel.
 type Server struct {
 	world *sim.World
+	auth  Authenticator
 	hub   *Hub
 }
 
-// NewServer builds a Server for w. Panics on nil w — a wiring bug.
-func NewServer(w *sim.World) *Server {
+// NewServer builds a Server for w, authenticating every route via auth. Panics
+// on a nil world or nil Authenticator — both are wiring bugs, and a nil auth
+// would silently leave the read surface open.
+func NewServer(w *sim.World, auth Authenticator) *Server {
 	if w == nil {
 		panic("httpapi: NewServer requires a non-nil world")
 	}
-	return &Server{world: w}
+	if auth == nil {
+		panic("httpapi: NewServer requires a non-nil Authenticator")
+	}
+	return &Server{world: w, auth: auth}
 }
 
 // SetEventsHub attaches the WS event hub. When set, Handler exposes the
@@ -43,17 +50,20 @@ func (s *Server) SetEventsHub(h *Hub) {
 // Handler returns the read-surface routes: the static-render read set
 // (world / agents / objects off the published snapshot; terrain / assets /
 // sprites off *sim.World reference state), plus the WS /events push channel
-// when an event hub is attached via SetEventsHub. Write routes land in a later
-// phase. Reads (REST and WS) are unauthenticated during the validation phase;
-// auth middleware ports with the write routes.
+// when an event hub is attached via SetEventsHub. Every route requires a valid
+// salem-realm session token — REST via requireAuth (Bearer header), WS via its
+// own ?token= verify. Write routes land in a later phase.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/village/world", s.handleWorld)
-	mux.HandleFunc("GET /api/village/agents", s.handleAgents)
-	mux.HandleFunc("GET /api/village/objects", s.handleObjects)
-	mux.HandleFunc("GET /api/village/terrain", s.handleTerrain)
-	mux.HandleFunc("GET /api/village/assets", s.handleAssets)
-	mux.HandleFunc("GET /api/village/sprites", s.handleSprites)
+	// Every REST read is wrapped in requireAuth (Bearer token → verify →
+	// salem-realm gate). The WS /events handler does its own ?token= verify
+	// (browsers can't set WS handshake headers), before the upgrade.
+	mux.HandleFunc("GET /api/village/world", s.requireAuth(s.handleWorld))
+	mux.HandleFunc("GET /api/village/agents", s.requireAuth(s.handleAgents))
+	mux.HandleFunc("GET /api/village/objects", s.requireAuth(s.handleObjects))
+	mux.HandleFunc("GET /api/village/terrain", s.requireAuth(s.handleTerrain))
+	mux.HandleFunc("GET /api/village/assets", s.requireAuth(s.handleAssets))
+	mux.HandleFunc("GET /api/village/sprites", s.requireAuth(s.handleSprites))
 	if s.hub != nil {
 		mux.HandleFunc("GET /api/village/events", s.handleEvents)
 	}
