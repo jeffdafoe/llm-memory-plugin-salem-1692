@@ -51,7 +51,8 @@ type AgentDTO struct {
 	Kind              string          `json:"kind"`  // npc_stateful | npc_shared | pc | decorative
 	State             string          `json:"state"` // idle | walking | conversing | ...
 	Role              string          `json:"role,omitempty"`
-	X                 int             `json:"x"` // tile coordinate (actors move on the integer grid)
+	LLMAgent          string          `json:"llm_memory_agent,omitempty"` // backing VA; editor agent-picker keys on it (absent for actors with no VA)
+	X                 int             `json:"x"`                          // tile coordinate (actors move on the integer grid)
 	Y                 int             `json:"y"`
 	Facing            string          `json:"facing"` // north | south | east | west (spawn facing; "south" when unset)
 	InsideStructureID string          `json:"inside_structure_id,omitempty"`

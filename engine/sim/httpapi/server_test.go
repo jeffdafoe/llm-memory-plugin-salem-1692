@@ -37,6 +37,7 @@ func seededWorld(t *testing.T) *sim.World {
 			ID: "hannah", DisplayName: "Hannah", Kind: sim.KindNPCShared,
 			State: sim.StateIdle, Role: "innkeeper", CurrentX: 3, CurrentY: 4,
 			InsideStructureID: "tavern",
+			LLMAgent:          "hannah-va",
 			SpriteID:          "sprite-1", Facing: "east",
 		}
 		world.Actors["bram"] = &sim.Actor{
@@ -181,6 +182,13 @@ func TestHandleAgents(t *testing.T) {
 	}
 	if hannah.Role != "innkeeper" || hannah.X != 3 || hannah.Y != 4 || hannah.InsideStructureID != "tavern" {
 		t.Errorf("hannah fields wrong: %+v", hannah)
+	}
+	if hannah.LLMAgent != "hannah-va" {
+		t.Errorf("hannah.llm_memory_agent = %q, want hannah-va", hannah.LLMAgent)
+	}
+	// bram has no LLMAgent → omitted from the wire (editor picker skips it).
+	if bram.LLMAgent != "" {
+		t.Errorf("bram.llm_memory_agent = %q, want empty", bram.LLMAgent)
 	}
 	// hannah has a sprite_id that resolves against the seeded catalog: the
 	// inline sprite carries the render subset (no pack) and the animation rows.
