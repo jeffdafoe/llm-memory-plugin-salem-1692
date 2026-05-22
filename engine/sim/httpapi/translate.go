@@ -100,10 +100,15 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			DisplayName: e.DisplayName,
 		}}, true
 	case *sim.VillageObjectTagsUpdated:
-		// The wire contract is "always an array, never null" — a JSON null would
-		// make the client's tag handler choke. The sim event already carries a
-		// fresh copy; coerce a nil set to an empty slice so it marshals as [].
-		tags := e.Tags
+		// Copy the set rather than alias e.Tags. The production emitters already
+		// pass a fresh slice, but the translator is a serialization boundary and
+		// the hub may encode this frame asynchronously after the world goroutine
+		// moves on — a future/test producer that hands us a live world slice must
+		// not see it mutate out from under a queued frame (code_review,
+		// ZBBS-HOME-283). The copy also satisfies the wire contract "always an
+		// array, never null": a nil set copies to nil, which we then coerce to []
+		// so it marshals as [] rather than a JSON null the client would choke on.
+		tags := append([]string(nil), e.Tags...)
 		if tags == nil {
 			tags = []string{}
 		}
