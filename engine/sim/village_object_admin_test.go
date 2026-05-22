@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"strings"
 	"sync"
 	"testing"
 
@@ -340,4 +341,206 @@ func countDeleted(events []sim.Event) int {
 		}
 	}
 	return n
+}
+
+// countDisplayNameChanged / countTagsUpdated count the ZBBS-HOME-283 metadata
+// events in the captured slice.
+func countDisplayNameChanged(events []sim.Event) int {
+	n := 0
+	for _, evt := range events {
+		if _, ok := evt.(*sim.VillageObjectDisplayNameChanged); ok {
+			n++
+		}
+	}
+	return n
+}
+
+func countTagsUpdated(events []sim.Event) int {
+	n := 0
+	for _, evt := range events {
+		if _, ok := evt.(*sim.VillageObjectTagsUpdated); ok {
+			n++
+		}
+	}
+	return n
+}
+
+// --- SetVillageObjectDisplayName (ZBBS-HOME-283) ----------------------
+
+func TestSetVillageObjectDisplayName_Applied(t *testing.T) {
+	w, cap := buildObjectAdminWorld(t)
+	res, err := w.Send(sim.SetVillageObjectDisplayName("prop-1", "  Cozy Bench  "))
+	if err != nil {
+		t.Fatalf("set display name: %v", err)
+	}
+	// The command trims; the stored + echoed name is the trimmed value.
+	if r := res.(sim.SetDisplayNameResult); r.DisplayName != "Cozy Bench" {
+		t.Errorf("result = %+v, want display name 'Cozy Bench'", r)
+	}
+	if got := w.Published().VillageObjects["prop-1"].DisplayName; got != "Cozy Bench" {
+		t.Errorf("display name = %q, want 'Cozy Bench'", got)
+	}
+	if n := countDisplayNameChanged(cap.snapshot()); n != 1 {
+		t.Errorf("VillageObjectDisplayNameChanged count = %d, want 1", n)
+	}
+}
+
+func TestSetVillageObjectDisplayName_ClearEmitsEmpty(t *testing.T) {
+	w, cap := buildObjectAdminWorld(t)
+	if _, err := w.Send(sim.SetVillageObjectDisplayName("prop-1", "Named")); err != nil {
+		t.Fatalf("set display name: %v", err)
+	}
+	// Clearing with an empty string is valid and emits the empty name.
+	res, err := w.Send(sim.SetVillageObjectDisplayName("prop-1", ""))
+	if err != nil {
+		t.Fatalf("clear display name: %v", err)
+	}
+	if r := res.(sim.SetDisplayNameResult); r.DisplayName != "" {
+		t.Errorf("result = %+v, want cleared name", r)
+	}
+	if got := w.Published().VillageObjects["prop-1"].DisplayName; got != "" {
+		t.Errorf("display name = %q, want cleared", got)
+	}
+	// Two real changes (set then clear) → two events.
+	if n := countDisplayNameChanged(cap.snapshot()); n != 2 {
+		t.Errorf("VillageObjectDisplayNameChanged count = %d, want 2", n)
+	}
+}
+
+func TestSetVillageObjectDisplayName_NoOpNoEmit(t *testing.T) {
+	w, cap := buildObjectAdminWorld(t)
+	// prop-1 starts with an empty DisplayName; setting it to "" is a no-op.
+	if _, err := w.Send(sim.SetVillageObjectDisplayName("prop-1", "")); err != nil {
+		t.Fatalf("no-op set display name: %v", err)
+	}
+	if n := countDisplayNameChanged(cap.snapshot()); n != 0 {
+		t.Errorf("VillageObjectDisplayNameChanged count = %d, want 0 (no-op must not emit)", n)
+	}
+}
+
+func TestSetVillageObjectDisplayName_Invalid(t *testing.T) {
+	w, cap := buildObjectAdminWorld(t)
+	cases := map[string]string{
+		"control char": "bad\x07name",
+		"over cap":     strings.Repeat("z", sim.MaxVillageObjectDisplayNameLen+1),
+	}
+	for name, val := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := w.Send(sim.SetVillageObjectDisplayName("prop-1", val)); !errors.Is(err, sim.ErrInvalidDisplayName) {
+				t.Errorf("err = %v, want ErrInvalidDisplayName", err)
+			}
+		})
+	}
+	if n := countDisplayNameChanged(cap.snapshot()); n != 0 {
+		t.Errorf("rejected display names emitted %d events; want 0", n)
+	}
+}
+
+func TestSetVillageObjectDisplayName_NotFound(t *testing.T) {
+	w, _ := buildObjectAdminWorld(t)
+	_, err := w.Send(sim.SetVillageObjectDisplayName("ghost", "X"))
+	if !errors.Is(err, sim.ErrVillageObjectNotFound) {
+		t.Errorf("err = %v, want ErrVillageObjectNotFound", err)
+	}
+}
+
+// --- Add/RemoveVillageObjectTag (ZBBS-HOME-283) -----------------------
+
+func TestAddVillageObjectTag_Applied(t *testing.T) {
+	w, cap := buildObjectAdminWorld(t)
+	res, err := w.Send(sim.AddVillageObjectTag("prop-1", " vendor "))
+	if err != nil {
+		t.Fatalf("add tag: %v", err)
+	}
+	r := res.(sim.SetTagsResult)
+	if len(r.Tags) != 1 || r.Tags[0] != "vendor" {
+		t.Errorf("result tags = %v, want [vendor] (trimmed)", r.Tags)
+	}
+	if got := w.Published().VillageObjects["prop-1"].Tags; len(got) != 1 || got[0] != "vendor" {
+		t.Errorf("stored tags = %v, want [vendor]", got)
+	}
+	if n := countTagsUpdated(cap.snapshot()); n != 1 {
+		t.Errorf("VillageObjectTagsUpdated count = %d, want 1", n)
+	}
+}
+
+func TestAddVillageObjectTag_DuplicateNoOp(t *testing.T) {
+	w, cap := buildObjectAdminWorld(t)
+	if _, err := w.Send(sim.AddVillageObjectTag("prop-1", "vendor")); err != nil {
+		t.Fatalf("first add: %v", err)
+	}
+	res, err := w.Send(sim.AddVillageObjectTag("prop-1", "vendor"))
+	if err != nil {
+		t.Fatalf("duplicate add: %v", err)
+	}
+	// Set stays deduplicated; the duplicate add emits nothing.
+	if r := res.(sim.SetTagsResult); len(r.Tags) != 1 {
+		t.Errorf("tags = %v, want a single 'vendor' (no duplicate)", r.Tags)
+	}
+	if n := countTagsUpdated(cap.snapshot()); n != 1 {
+		t.Errorf("VillageObjectTagsUpdated count = %d, want 1 (duplicate add must not emit)", n)
+	}
+}
+
+func TestAddVillageObjectTag_Invalid(t *testing.T) {
+	w, _ := buildObjectAdminWorld(t)
+	for _, val := range []string{"   ", "bad\x00tag", strings.Repeat("z", sim.MaxVillageObjectTagLen+1)} {
+		if _, err := w.Send(sim.AddVillageObjectTag("prop-1", val)); !errors.Is(err, sim.ErrInvalidTag) {
+			t.Errorf("add %q: err = %v, want ErrInvalidTag", val, err)
+		}
+	}
+}
+
+func TestAddVillageObjectTag_NotFound(t *testing.T) {
+	w, _ := buildObjectAdminWorld(t)
+	_, err := w.Send(sim.AddVillageObjectTag("ghost", "vendor"))
+	if !errors.Is(err, sim.ErrVillageObjectNotFound) {
+		t.Errorf("err = %v, want ErrVillageObjectNotFound", err)
+	}
+}
+
+func TestRemoveVillageObjectTag_Applied(t *testing.T) {
+	w, cap := buildObjectAdminWorld(t)
+	if _, err := w.Send(sim.AddVillageObjectTag("prop-1", "vendor")); err != nil {
+		t.Fatalf("seed add: %v", err)
+	}
+	if _, err := w.Send(sim.AddVillageObjectTag("prop-1", "innkeeper")); err != nil {
+		t.Fatalf("seed add 2: %v", err)
+	}
+	res, err := w.Send(sim.RemoveVillageObjectTag("prop-1", "vendor"))
+	if err != nil {
+		t.Fatalf("remove tag: %v", err)
+	}
+	if r := res.(sim.SetTagsResult); len(r.Tags) != 1 || r.Tags[0] != "innkeeper" {
+		t.Errorf("result tags = %v, want [innkeeper]", r.Tags)
+	}
+	if got := w.Published().VillageObjects["prop-1"].Tags; len(got) != 1 || got[0] != "innkeeper" {
+		t.Errorf("stored tags = %v, want [innkeeper]", got)
+	}
+	// Two adds + one remove = three tag-set changes.
+	if n := countTagsUpdated(cap.snapshot()); n != 3 {
+		t.Errorf("VillageObjectTagsUpdated count = %d, want 3", n)
+	}
+}
+
+func TestRemoveVillageObjectTag_AbsentNoOp(t *testing.T) {
+	w, cap := buildObjectAdminWorld(t)
+	res, err := w.Send(sim.RemoveVillageObjectTag("prop-1", "never-had-it"))
+	if err != nil {
+		t.Fatalf("remove absent tag: %v", err)
+	}
+	if r := res.(sim.SetTagsResult); len(r.Tags) != 0 {
+		t.Errorf("tags = %v, want empty", r.Tags)
+	}
+	if n := countTagsUpdated(cap.snapshot()); n != 0 {
+		t.Errorf("VillageObjectTagsUpdated count = %d, want 0 (removing an absent tag must not emit)", n)
+	}
+}
+
+func TestRemoveVillageObjectTag_NotFound(t *testing.T) {
+	w, _ := buildObjectAdminWorld(t)
+	_, err := w.Send(sim.RemoveVillageObjectTag("ghost", "vendor"))
+	if !errors.Is(err, sim.ErrVillageObjectNotFound) {
+		t.Errorf("err = %v, want ErrVillageObjectNotFound", err)
+	}
 }

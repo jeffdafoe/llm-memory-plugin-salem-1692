@@ -94,6 +94,23 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 		return WireFrame{Type: "object_deleted", Data: objectDeletedWireDTO{
 			ID: string(e.ObjectID),
 		}}, true
+	case *sim.VillageObjectDisplayNameChanged:
+		return WireFrame{Type: "object_display_name_changed", Data: objectDisplayNameChangedWireDTO{
+			ID:          string(e.ObjectID),
+			DisplayName: e.DisplayName,
+		}}, true
+	case *sim.VillageObjectTagsUpdated:
+		// The wire contract is "always an array, never null" — a JSON null would
+		// make the client's tag handler choke. The sim event already carries a
+		// fresh copy; coerce a nil set to an empty slice so it marshals as [].
+		tags := e.Tags
+		if tags == nil {
+			tags = []string{}
+		}
+		return WireFrame{Type: "village_object_tags_updated", Data: objectTagsUpdatedWireDTO{
+			ID:   string(e.ObjectID),
+			Tags: tags,
+		}}, true
 	default:
 		return WireFrame{}, false
 	}
@@ -203,4 +220,24 @@ type objectMovedWireDTO struct {
 // for an object the client doesn't know is ignored client-side.
 type objectDeletedWireDTO struct {
 	ID string `json:"id"`
+}
+
+// objectDisplayNameChangedWireDTO is the object_display_name_changed payload — a
+// placed object's display-name override edited by an admin. id is the village
+// object id (keyed on id, matching ObjectDTO and the rest of the object_* frames);
+// display_name is the new name, or "" when the override was cleared (the client
+// falls back to the catalog name). ZBBS-HOME-283.
+type objectDisplayNameChangedWireDTO struct {
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name"`
+}
+
+// objectTagsUpdatedWireDTO is the village_object_tags_updated payload — a placed
+// object's per-instance tag set after an admin add/remove. id is the village
+// object id; tags is the AUTHORITATIVE full set (not a delta), always a JSON
+// array (never null — see TranslateEvent). The client replaces its local tag set
+// outright. ZBBS-HOME-283.
+type objectTagsUpdatedWireDTO struct {
+	ID   string   `json:"id"`
+	Tags []string `json:"tags"`
 }
