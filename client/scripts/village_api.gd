@@ -94,13 +94,17 @@ func check_contract_version(server_version: int) -> bool:
 ##   - sprite / display_name / facing / llm_memory_agent / kind / state / role
 ##     pass through unchanged (sprite is already inlined in the render subset).
 ##
-## Fields v2 doesn't carry (attributes, schedule, social, needs, home/work
-## bindings) are simply omitted; the renderer falls back to its own defaults for
-## them. Those drive editor/HUD panels that aren't wired to v2 yet, so their
-## absence degrades gracefully rather than breaking core rendering.
+## The editor/HUD config fields (attributes, home/work bindings, schedule and
+## social windows) are now carried by AgentDTO (ZBBS-HOME-290) and passed
+## through here so the existing _place_npc meta-setters + editor panels pick
+## them up. The schedule/social *_minute fields are forwarded RAW (null
+## preserved, not coerced) because _place_npc gates "set vs inherit dawn/dusk"
+## on null. Fields v2 still doesn't carry (needs: hunger/thirst/tiredness,
+## lateness_window_minutes) remain omitted and degrade to the panel's defaults.
 func normalize_agent(dto: Dictionary) -> Dictionary:
     var inside_structure_id: String = str(dto.get("inside_structure_id", ""))
     var world_pos := tile_to_world(int(dto.get("x", 0)), int(dto.get("y", 0)))
+    var attributes = dto.get("attributes", [])
     var out := {
         "id": str(dto.get("id", "")),
         "display_name": str(dto.get("display_name", "")),
@@ -114,6 +118,15 @@ func normalize_agent(dto: Dictionary) -> Dictionary:
         "inside": inside_structure_id != "",
         "inside_structure_id": inside_structure_id,
         "current_huddle_id": str(dto.get("current_huddle_id", "")),
+        "attributes": attributes if attributes is Array else [],
+        "home_structure_id": str(dto.get("home_structure_id", "")),
+        "work_structure_id": str(dto.get("work_structure_id", "")),
+        # Raw / null-preserving: _place_npc reads null as "inherit dawn/dusk".
+        "schedule_start_minute": dto.get("schedule_start_minute", null),
+        "schedule_end_minute": dto.get("schedule_end_minute", null),
+        "social_tag": dto.get("social_tag", null),
+        "social_start_minute": dto.get("social_start_minute", null),
+        "social_end_minute": dto.get("social_end_minute", null),
     }
     # Sprite is already inlined on the v2 DTO in the exact render subset the
     # renderer expects (sheet / frame_width / frame_height / id / name /

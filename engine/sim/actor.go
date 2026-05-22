@@ -735,6 +735,29 @@ type ActorSnapshot struct {
 	SpriteID SpriteID
 	Facing   string
 
+	// Editor read-path config — mirrors the live Actor's anchors + schedules
+	// at snapshot time so the client read surface (httpapi AgentDTO) can show
+	// current state without a world-goroutine round trip, the same posture as
+	// SpriteID/Facing above. The engine never branches on these snapshot copies
+	// — it reads the live Actor; these exist only for the editor/HUD read API.
+	// AttributeSlugs is the SORTED set of the actor's attribute keys (the live
+	// Actor.Attributes map's keys); the editor renders them as chips and only
+	// needs the slugs, so the opaque param payloads are deliberately NOT carried
+	// here. HomeStructureID/WorkStructureID are the actor's home/work anchors
+	// (empty when unset). ScheduleStartMin/EndMin + SocialTag/SocialStartMin/
+	// SocialEndMin are the work-shift and social-gathering windows (nil/empty =
+	// unset → the editor shows "inherit dawn/dusk"); the *int fields are copied
+	// into fresh pointers by snapshotActor so the published snapshot never
+	// aliases the live Actor's pointers.
+	AttributeSlugs   []string
+	HomeStructureID  StructureID
+	WorkStructureID  StructureID
+	ScheduleStartMin *int
+	ScheduleEndMin   *int
+	SocialTag        string
+	SocialStartMin   *int
+	SocialEndMin     *int
+
 	// Per-actor knowledge state — read by perception build:
 	//   - Acquaintances gates "Around you" name-vs-descriptor rendering
 	//     (all NPC kinds — stateful and shared).
@@ -816,6 +839,13 @@ func CloneActorSnapshot(s *ActorSnapshot) *ActorSnapshot {
 	if s.DwellCredits != nil {
 		cp.DwellCredits = cloneDwellCredits(s.DwellCredits)
 	}
+	if s.AttributeSlugs != nil {
+		cp.AttributeSlugs = append([]string(nil), s.AttributeSlugs...)
+	}
+	cp.ScheduleStartMin = copyIntPtr(s.ScheduleStartMin)
+	cp.ScheduleEndMin = copyIntPtr(s.ScheduleEndMin)
+	cp.SocialStartMin = copyIntPtr(s.SocialStartMin)
+	cp.SocialEndMin = copyIntPtr(s.SocialEndMin)
 	return &cp
 }
 
