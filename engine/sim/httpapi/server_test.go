@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/repo/mem"
@@ -60,6 +61,11 @@ func seededWorld(t *testing.T) *sim.World {
 		world.VillageObjects["obj1"] = &sim.VillageObject{
 			ID: "obj1", AssetID: "asset-x", X: 5.5, Y: 6.5,
 			CurrentState: "lit", DisplayName: "Tavern", Tags: []string{"vendor"},
+		}
+		// Noticeboard content for obj1 (ZBBS-HOME-291). AtState is engine-internal
+		// (stale-guard) and must NOT reach the wire.
+		world.NoticeboardContent = map[sim.VillageObjectID]*sim.NoticeboardContent{
+			"obj1": {Text: "Town meeting at dusk.", PostedAt: time.Date(2026, 5, 22, 18, 0, 0, 0, time.UTC), AtState: "lit"},
 		}
 		// Reference state — read by the terrain/assets handlers directly off
 		// *sim.World (not the published snapshot). Set here so the post-Send
@@ -311,6 +317,60 @@ func TestHandleObjects(t *testing.T) {
 	}
 	if o.Owner != "" || o.PlacedBy != "" || o.EntryPolicy != "" {
 		t.Errorf("owner/placed_by/entry_policy = %q/%q/%q, want all empty", o.Owner, o.PlacedBy, o.EntryPolicy)
+	}
+	// obj1 is a noticeboard with authored content (ZBBS-HOME-291): text +
+	// posted-at surface; AtState ("lit") does NOT.
+	if o.ContentText != "Town meeting at dusk." {
+		t.Errorf("content_text = %q, want %q", o.ContentText, "Town meeting at dusk.")
+	}
+	if o.ContentPostedAt == nil || !o.ContentPostedAt.Equal(time.Date(2026, 5, 22, 18, 0, 0, 0, time.UTC)) {
+		t.Errorf("content_posted_at = %v, want 2026-05-22T18:00:00Z", o.ContentPostedAt)
+	}
+}
+
+// TestHandleObjects_NoticeboardContentOmitted: an object with no entry in the
+// snapshot's NoticeboardContent map omits both content fields on the wire
+// (ZBBS-HOME-291). Pairs with TestHandleObjects, which covers the present case.
+func TestHandleObjects_NoticeboardContentOmitted(t *testing.T) {
+	w := seededWorld(t)
+	_, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		// A second placed object with no NoticeboardContent entry.
+		world.VillageObjects["plain"] = &sim.VillageObject{
+			ID: "plain", AssetID: "asset-x", X: 1, Y: 1,
+		}
+		return nil, nil
+	}})
+	if err != nil {
+		t.Fatalf("seed object: %v", err)
+	}
+	srv := NewServer(w, okAuth{})
+	rec := get(t, srv, "/api/village/objects")
+
+	var raw []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode raw: %v", err)
+	}
+	// Sorted by id: "obj1" < "plain". obj1 carries content; plain omits both keys.
+	var obj1, plain map[string]any
+	for _, r := range raw {
+		switch r["id"] {
+		case "obj1":
+			obj1 = r
+		case "plain":
+			plain = r
+		}
+	}
+	if obj1 == nil || plain == nil {
+		t.Fatalf("expected obj1 + plain in response, got %d objects", len(raw))
+	}
+	if _, present := obj1["content_text"]; !present {
+		t.Error("obj1 should carry content_text")
+	}
+	if _, present := plain["content_text"]; present {
+		t.Error("plain (no content) should omit content_text")
+	}
+	if _, present := plain["content_posted_at"]; present {
+		t.Error("plain (no content) should omit content_posted_at")
 	}
 }
 

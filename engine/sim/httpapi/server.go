@@ -230,7 +230,7 @@ func objectsFromSnapshot(s *sim.Snapshot, assets map[sim.AssetID]*sim.Asset) []O
 			continue
 		}
 		effX, effY := sim.EffectiveLoiterOffset(o, assets[o.AssetID])
-		out = append(out, ObjectDTO{
+		dto := ObjectDTO{
 			ID:                     string(id),
 			AssetID:                string(o.AssetID),
 			X:                      o.X,
@@ -245,7 +245,15 @@ func objectsFromSnapshot(s *sim.Snapshot, assets map[sim.AssetID]*sim.Asset) []O
 			LoiterOffsetY:          o.LoiterOffsetY,
 			EffectiveLoiterOffsetX: effX,
 			EffectiveLoiterOffsetY: effY,
-		})
+		}
+		// Noticeboard content (ZBBS-HOME-291): a board with authored prose
+		// carries its current text + posted-at; everything else omits both.
+		if nc := s.NoticeboardContent[id]; nc != nil {
+			dto.ContentText = nc.Text
+			postedAt := nc.PostedAt
+			dto.ContentPostedAt = &postedAt
+		}
+		out = append(out, dto)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
