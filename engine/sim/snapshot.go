@@ -21,6 +21,16 @@ type Snapshot struct {
 	Orders         map[OrderID]*Order
 	VillageObjects map[VillageObjectID]*VillageObject
 
+	// NoticeboardContent is the published snapshot of World.NoticeboardContent —
+	// per-board authored prose, keyed by the board's village_object id. Cascade-
+	// authored (mutable on the world goroutine via SaveNoticeboardContent), so
+	// unlike the immutable reference catalogs it MUST ride the snapshot to be
+	// read lock-free; the client read surface (ObjectDTO content_text /
+	// content_posted_at, ZBBS-HOME-291) reads it here. Value-copied per entry by
+	// republish (the struct is flat). nil/absent for boards with no authored
+	// content yet.
+	NoticeboardContent map[VillageObjectID]*NoticeboardContent
+
 	// Quotes is the published snapshot of World.Quotes — every scene
 	// quote in the world (active and terminal), deep-cloned via
 	// CloneSceneQuote so snapshot readers can't reach back into world

@@ -121,6 +121,15 @@ type ObjectDTO struct {
 	LoiterOffsetY          *int   `json:"loiter_offset_y"`
 	EffectiveLoiterOffsetX int    `json:"effective_loiter_offset_x"`
 	EffectiveLoiterOffsetY int    `json:"effective_loiter_offset_y"`
+
+	// Noticeboard content (ZBBS-HOME-291) — the cascade-authored prose for a
+	// notice board, surfaced for the editor's content modal. Both omitempty so a
+	// non-noticeboard (or a board with no authored content yet) carries neither.
+	// Sourced from the snapshot's NoticeboardContent map by object id; the
+	// engine-internal AtState (the SaveNoticeboardContent stale-guard) is NOT on
+	// the wire — the client just renders the current text. Additive, no version bump.
+	ContentText     string     `json:"content_text,omitempty"`
+	ContentPostedAt *time.Time `json:"content_posted_at,omitempty"`
 }
 
 // TerrainDTO is the GET /api/village/terrain response. The terrain grid is a
