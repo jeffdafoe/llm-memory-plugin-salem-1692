@@ -163,6 +163,32 @@ func TestMoveToStructure_RejectsUnknownStructure(t *testing.T) {
 	}
 }
 
+func TestMoveToStructure_RejectsStructureWithoutPlacement(t *testing.T) {
+	w, cancel := buildMoveToOwnerTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	// Simulate a desynced world: a structure record whose backing
+	// village-object placement is gone. move_to must reject crisply rather
+	// than derive a visit that MoveActor can't resolve to a tile.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		delete(world.VillageObjects, sim.VillageObjectID("manor"))
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("drop placement: %v", err)
+	}
+	_, err := w.Send(sim.MoveToStructure("lord", "manor", now))
+	if err == nil {
+		t.Fatal("want error for a structure with no village-object placement, got nil")
+	}
+	if !strings.Contains(err.Error(), "no placement") {
+		t.Errorf("error lacks 'no placement': %v", err)
+	}
+	if mi := moveIntentOf(t, w, "lord"); mi != nil {
+		t.Error("rejected move stamped a MoveIntent; want none")
+	}
+}
+
 func TestMoveToStructure_RejectsAlreadyInside(t *testing.T) {
 	w, cancel, _ := buildMoveTestWorld(t)
 	defer cancel()
