@@ -226,3 +226,95 @@ func TestRecoverTirednessDisabled(t *testing.T) {
 		t.Errorf("tiredness = %d, want 20 (recovery disabled)", got)
 	}
 }
+
+// TestRecoverTirednessExpiredWindowClearsCursor: a window whose end is in the
+// past still credits the final unit up to its end, then drops the cursor so a
+// later window can't be credited from the stale boundary.
+func TestRecoverTirednessExpiredWindowClearsCursor(t *testing.T) {
+	now := time.Now().UTC()
+	a := restingActor("woken", 20)
+	endedAgo := now.Add(-1 * time.Minute) // window ended 1 min ago
+	a.SleepingUntil = &endedAgo
+	w, cancel := buildRecoveryTestWorld(t, 10, a)
+	defer cancel()
+
+	cursorStart := now.Add(-11 * time.Minute) // 10 min of rest up to end
+	setCursor(t, w, "woken", &cursorStart)
+
+	res, _ := w.Send(sim.RecoverTiredness(now))
+	if n := res.(int); n != 1 {
+		t.Fatalf("recovered = %d, want 1 (final unit up to window end)", n)
+	}
+	if got := getTiredness(t, w, "woken"); got != 19 {
+		t.Errorf("tiredness = %d, want 19 (20 - 1 final unit)", got)
+	}
+	if c := getCursor(t, w, "woken"); c != nil {
+		t.Errorf("cursor = %v, want nil (cleared after expired window)", c)
+	}
+}
+
+// TestRecoverTirednessNoOverCreditOnReopen is the regression for the review
+// finding: an expired window must not let a later window credit the whole gap.
+// After the cursor is cleared by the expired window, reopening a window without
+// re-stamping the cursor lazy-inits from `now` and credits nothing.
+func TestRecoverTirednessNoOverCreditOnReopen(t *testing.T) {
+	now := time.Now().UTC()
+	a := restingActor("relapse", 20)
+	oldEnd := now.Add(-5 * time.Minute)
+	a.SleepingUntil = &oldEnd
+	w, cancel := buildRecoveryTestWorld(t, 10, a)
+	defer cancel()
+
+	// Cursor already at the old window's end (fully credited), window still set.
+	setCursor(t, w, "relapse", &oldEnd)
+
+	// Pass 1: expired window, nothing left to credit, cursor cleared.
+	w.Send(sim.RecoverTiredness(now))
+	if c := getCursor(t, w, "relapse"); c != nil {
+		t.Fatalf("cursor = %v, want nil after expired window", c)
+	}
+
+	// Reopen a fresh window WITHOUT stamping the cursor (the dangerous case).
+	newEnd := now.Add(time.Hour)
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["relapse"].SleepingUntil = &newEnd
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("reopen window: %v", err)
+	}
+
+	// Pass 2: lazy-init only — must NOT credit the hours since oldEnd.
+	res, _ := w.Send(sim.RecoverTiredness(now))
+	if n := res.(int); n != 0 {
+		t.Fatalf("recovered = %d, want 0 (lazy-init, no catch-up)", n)
+	}
+	if got := getTiredness(t, w, "relapse"); got != 20 {
+		t.Errorf("tiredness = %d, want 20 (no over-credit on reopen)", got)
+	}
+}
+
+// TestRecoverTirednessAlreadyZeroNotCounted: an already-rested actor advances
+// its cursor but is NOT counted as recovered (the count means "tiredness
+// dropped", matching the doc + log).
+func TestRecoverTirednessAlreadyZeroNotCounted(t *testing.T) {
+	now := time.Now().UTC()
+	a := restingActor("fresh", 0)
+	end := now.Add(time.Hour)
+	a.SleepingUntil = &end
+	w, cancel := buildRecoveryTestWorld(t, 10, a)
+	defer cancel()
+
+	cursorStart := now.Add(-60 * time.Minute) // 6 units would accrue
+	setCursor(t, w, "fresh", &cursorStart)
+
+	res, _ := w.Send(sim.RecoverTiredness(now))
+	if n := res.(int); n != 0 {
+		t.Fatalf("recovered = %d, want 0 (already at 0, nothing dropped)", n)
+	}
+	if got := getTiredness(t, w, "fresh"); got != 0 {
+		t.Errorf("tiredness = %d, want 0", got)
+	}
+	if c := getCursor(t, w, "fresh"); c == nil || !c.Equal(now) {
+		t.Errorf("cursor = %v, want %v (advanced even when already rested)", c, now)
+	}
+}
