@@ -112,6 +112,23 @@ func ApplyMovementFatigue(actorID ActorID, fromX, fromY, toX, toY int) Command {
 	}
 }
 
+// NeedThresholdWarrantReason is the WarrantReason stamped when a need climbs
+// past its red threshold (ZBBS-WORK-277, tick-driver producer #1). Need is the
+// need whose upward crossing triggered the warrant — carried for telemetry /
+// admin replay; the deliberation reads the full need set from perception, not
+// this field. DedupDiscriminator returns 0: a stat crossing is not event-
+// sourced, so it bypasses the substrate's source-key dedup paths (the
+// per-actor WarrantedSince gate in the producer is what prevents double-stamp).
+// Mirrors IdleBackstopWarrantReason — the other condition-driven, zero-sourced
+// reason.
+type NeedThresholdWarrantReason struct {
+	Need NeedKey
+}
+
+func (NeedThresholdWarrantReason) isWarrantReason()           {}
+func (NeedThresholdWarrantReason) Kind() WarrantKind          { return WarrantKindNeedThreshold }
+func (NeedThresholdWarrantReason) DedupDiscriminator() uint64 { return 0 }
+
 // IncrementNeedsTick returns a Command that applies the hourly needs
 // increment across all eligible actors.
 //
@@ -142,6 +159,7 @@ func IncrementNeedsTick(cappedHours int) Command {
 			}
 			bump := amount * cappedHours
 			now := time.Now().UTC()
+			nowMinute := localMinuteOfDay(w, now)
 
 			touched := 0
 			for _, a := range w.Actors {
@@ -154,8 +172,55 @@ func IncrementNeedsTick(cappedHours int) Command {
 				if a.Needs == nil {
 					a.Needs = make(map[NeedKey]int)
 				}
+
+				// ZBBS-WORK-277 — #1 need-threshold producer. Only agent-backed
+				// NPCs warrant: PCs accrue needs but don't reactor-tick, and
+				// transient visitors run their own ExpiresAt lifecycle. The
+				// WarrantedSince/TickInFlight gate leaves an actor already pending
+				// or mid-tick alone (that tick's perception already sees the need)
+				// — decision A, 2026-05-22. One-warrant-per-actor-per-tick comes
+				// from the `crossed` flag below: only the first crossing in the
+				// need loop is recorded, and a single stamp happens after all the
+				// need increments are applied.
+				warrantEligible := (a.Kind == KindNPCStateful || a.Kind == KindNPCShared) &&
+					a.VisitorState == nil && a.WarrantedSince == nil && !a.TickInFlight
+				var crossedNeed NeedKey
+				crossed := false
+
 				for _, n := range Needs {
-					a.Needs[n.Key] = ClampNeed(a.Needs[n.Key] + bump)
+					before := a.Needs[n.Key]
+					after := ClampNeed(before + bump)
+					a.Needs[n.Key] = after
+
+					// Detect an UPWARD crossing of the red threshold (need climbs
+					// past it). The crossing is the edge: it fires once on the way
+					// up and can't re-fire until the need is brought back below
+					// threshold (consume / recovery) and climbs again, so no
+					// separate armed-state is needed. Tiredness is excluded
+					// off-shift — overnight tiredness is the deterministic sleep
+					// loop's job, not an LLM deliberation; on-shift tiredness
+					// routes the warrant to take_break.
+					if !crossed && warrantEligible {
+						threshold := w.Settings.NeedThresholds.Get(n.Key)
+						if before < threshold && after >= threshold {
+							if n.Key != "tiredness" || isActorOnShift(a, nowMinute) {
+								crossedNeed = n.Key
+								crossed = true
+							}
+						}
+					}
+				}
+
+				// Stamp once per actor per tick. Zero-sourced (a stat crossing is
+				// not an event) — SourceEventID stays 0, like the idle-backstop
+				// producer; the warrant's perception surfaces the full need set,
+				// so the deliberation resolves whatever is most pressing, not just
+				// crossedNeed.
+				if crossed {
+					tryStampWarrant(w, a, WarrantMeta{
+						TriggerActorID: a.ID,
+						Reason:         NeedThresholdWarrantReason{Need: crossedNeed},
+					}, now)
 				}
 				touched++
 			}
