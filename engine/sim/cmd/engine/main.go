@@ -309,6 +309,8 @@ func startTickers(ctx context.Context, w *sim.World) {
 	go sim.RunNeedsTicker(ctx, w)
 	go sim.RunTirednessRecoveryTicker(ctx, w)
 	go sim.RunSleepTicker(ctx, w)
+	go sim.RunShiftTicker(ctx, w) // ZBBS-WORK-278: shift/duty producer
+
 	go sim.RunDwellTicker(ctx, w)
 	go sim.RunProduceTicker(ctx, w)
 	go sim.RunObjectRefreshRegen(ctx, w)

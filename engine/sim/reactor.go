@@ -52,6 +52,7 @@ const (
 	WarrantKindHuddleConcluded    WarrantKind = "huddle_concluded"   // evicted members
 	WarrantKindArrived            WarrantKind = "arrived"
 	WarrantKindNeedThreshold      WarrantKind = "need_threshold"
+	WarrantKindShiftDuty          WarrantKind = "shift_duty"
 	WarrantKindIdleBackstop       WarrantKind = "idle_backstop"
 	WarrantKindPaid               WarrantKind = "paid"
 	WarrantKindSceneQuoteTargeted WarrantKind = "scene_quote_targeted"
