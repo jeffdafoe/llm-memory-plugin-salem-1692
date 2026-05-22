@@ -116,6 +116,10 @@ SELECT
     sim_state_entered_at,
     sprite_id::text,
     facing,
+    social_tag,
+    social_start_minute,
+    social_end_minute,
+    social_last_boundary_at,
     admin
   FROM actor`
 
@@ -152,6 +156,7 @@ INSERT INTO actor (
     next_self_tick_reason, sleeping_until,
     move_attempt_counter, sim_state, sim_state_entered_at,
     sprite_id, facing,
+    social_tag, social_start_minute, social_end_minute, social_last_boundary_at,
     snapshot_gen
 ) VALUES (
     $1, $2, $3, $4,
@@ -163,7 +168,8 @@ INSERT INTO actor (
     $19, $20,
     $21, $22, $23,
     $24, $25,
-    $26
+    $26, $27, $28, $29,
+    $30
 )
 ON CONFLICT (id) DO UPDATE SET
     display_name           = EXCLUDED.display_name,
@@ -190,6 +196,10 @@ ON CONFLICT (id) DO UPDATE SET
     sim_state_entered_at   = EXCLUDED.sim_state_entered_at,
     sprite_id              = EXCLUDED.sprite_id,
     facing                 = EXCLUDED.facing,
+    social_tag             = EXCLUDED.social_tag,
+    social_start_minute    = EXCLUDED.social_start_minute,
+    social_end_minute      = EXCLUDED.social_end_minute,
+    social_last_boundary_at = EXCLUDED.social_last_boundary_at,
     snapshot_gen           = EXCLUDED.snapshot_gen`
 
 // upsertNeedSQLA writes one actor_need row. PK is (actor_id, key)
@@ -485,31 +495,35 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 	out := make(map[sim.ActorID]*sim.Actor)
 	for rows.Next() {
 		var (
-			id                  string
-			displayName         string
-			currentX, currentY  int
-			insideStructureID   *string
-			currentHuddleID     *string
-			insideRoomID        *int64
-			homeStructureID     *string
-			workStructureID     *string
-			coins               int
-			llmMemoryAgent      *string
-			role                *string
-			loginUsername       *string
-			scheduleStartMinute *int16
-			scheduleEndMinute   *int16
-			lastAgentTickAt     *time.Time
-			breakUntil          *time.Time
-			nextSelfTickAt      *time.Time
-			nextSelfTickReason  *string
-			sleepingUntil       *time.Time
-			moveAttemptCounter  int64
-			simState            string
-			simStateEnteredAt   time.Time
-			spriteID            *string
-			facing              string
-			isAdmin             bool
+			id                   string
+			displayName          string
+			currentX, currentY   int
+			insideStructureID    *string
+			currentHuddleID      *string
+			insideRoomID         *int64
+			homeStructureID      *string
+			workStructureID      *string
+			coins                int
+			llmMemoryAgent       *string
+			role                 *string
+			loginUsername        *string
+			scheduleStartMinute  *int16
+			scheduleEndMinute    *int16
+			lastAgentTickAt      *time.Time
+			breakUntil           *time.Time
+			nextSelfTickAt       *time.Time
+			nextSelfTickReason   *string
+			sleepingUntil        *time.Time
+			moveAttemptCounter   int64
+			simState             string
+			simStateEnteredAt    time.Time
+			spriteID             *string
+			facing               string
+			socialTag            *string
+			socialStartMinute    *int16
+			socialEndMinute      *int16
+			socialLastBoundaryAt *time.Time
+			isAdmin              bool
 		)
 		if err := rows.Scan(
 			&id, &displayName, &currentX, &currentY,
@@ -520,7 +534,9 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			&lastAgentTickAt, &breakUntil, &nextSelfTickAt,
 			&nextSelfTickReason, &sleepingUntil,
 			&moveAttemptCounter, &simState, &simStateEnteredAt,
-			&spriteID, &facing, &isAdmin,
+			&spriteID, &facing,
+			&socialTag, &socialStartMinute, &socialEndMinute, &socialLastBoundaryAt,
+			&isAdmin,
 		); err != nil {
 			return nil, fmt.Errorf("pg actors LoadAll scan: %w", err)
 		}
@@ -531,40 +547,44 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 		}
 
 		a := &sim.Actor{
-			ID:                 sim.ActorID(id),
-			DisplayName:        displayName,
-			CurrentX:           currentX,
-			CurrentY:           currentY,
-			InsideStructureID:  sim.StructureID(deref(insideStructureID)),
-			CurrentHuddleID:    sim.HuddleID(deref(currentHuddleID)),
-			InsideRoomID:       roomID,
-			HomeStructureID:    sim.StructureID(deref(homeStructureID)),
-			WorkStructureID:    sim.StructureID(deref(workStructureID)),
-			Coins:              coins,
-			LLMAgent:           deref(llmMemoryAgent),
-			Role:               deref(role),
-			LoginUsername:      deref(loginUsername),
-			ScheduleStartMin:   derefInt16(scheduleStartMinute),
-			ScheduleEndMin:     derefInt16(scheduleEndMinute),
-			LastTickedAt:       lastAgentTickAt,
-			BreakUntil:         breakUntil,
-			NextSelfTickAt:     nextSelfTickAt,
-			NextSelfTickReason: deref(nextSelfTickReason),
-			SleepingUntil:      sleepingUntil,
-			MoveAttemptCounter: sim.MovementAttemptID(moveAttemptCounter),
-			State:              sim.ActorState(simState),
-			StateEnteredAt:     simStateEnteredAt,
-			SpriteID:           sim.SpriteID(deref(spriteID)),
-			Facing:             facing,
-			IsAdmin:            isAdmin,
-			Needs:              make(map[sim.NeedKey]int),
-			Inventory:          make(map[sim.ItemKind]int),
-			Relationships:      make(map[sim.ActorID]*sim.Relationship),
-			Acquaintances:      make(map[string]sim.Acquaintance),
-			DwellCredits:       make(map[sim.DwellCreditKey]*sim.DwellCredit),
-			ProduceState:       make(map[sim.ItemKind]*sim.ProduceState),
-			RoomAccess:         make(map[sim.RoomAccessKey]*sim.RoomAccess),
-			Attributes:         make(map[string][]byte),
+			ID:                   sim.ActorID(id),
+			DisplayName:          displayName,
+			CurrentX:             currentX,
+			CurrentY:             currentY,
+			InsideStructureID:    sim.StructureID(deref(insideStructureID)),
+			CurrentHuddleID:      sim.HuddleID(deref(currentHuddleID)),
+			InsideRoomID:         roomID,
+			HomeStructureID:      sim.StructureID(deref(homeStructureID)),
+			WorkStructureID:      sim.StructureID(deref(workStructureID)),
+			Coins:                coins,
+			LLMAgent:             deref(llmMemoryAgent),
+			Role:                 deref(role),
+			LoginUsername:        deref(loginUsername),
+			ScheduleStartMin:     derefInt16(scheduleStartMinute),
+			ScheduleEndMin:       derefInt16(scheduleEndMinute),
+			LastTickedAt:         lastAgentTickAt,
+			BreakUntil:           breakUntil,
+			NextSelfTickAt:       nextSelfTickAt,
+			NextSelfTickReason:   deref(nextSelfTickReason),
+			SleepingUntil:        sleepingUntil,
+			MoveAttemptCounter:   sim.MovementAttemptID(moveAttemptCounter),
+			State:                sim.ActorState(simState),
+			StateEnteredAt:       simStateEnteredAt,
+			SpriteID:             sim.SpriteID(deref(spriteID)),
+			Facing:               facing,
+			SocialTag:            deref(socialTag),
+			SocialStartMin:       derefInt16(socialStartMinute),
+			SocialEndMin:         derefInt16(socialEndMinute),
+			SocialLastBoundaryAt: socialLastBoundaryAt,
+			IsAdmin:              isAdmin,
+			Needs:                make(map[sim.NeedKey]int),
+			Inventory:            make(map[sim.ItemKind]int),
+			Relationships:        make(map[sim.ActorID]*sim.Relationship),
+			Acquaintances:        make(map[string]sim.Acquaintance),
+			DwellCredits:         make(map[sim.DwellCreditKey]*sim.DwellCredit),
+			ProduceState:         make(map[sim.ItemKind]*sim.ProduceState),
+			RoomAccess:           make(map[sim.RoomAccessKey]*sim.RoomAccess),
+			Attributes:           make(map[string][]byte),
 		}
 		out[a.ID] = a
 	}
@@ -1154,6 +1174,31 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 		if a.ScheduleEndMin != nil && (*a.ScheduleEndMin < 0 || *a.ScheduleEndMin > 1439) {
 			return fmt.Errorf("pg actors SaveSnapshot: id=%s ScheduleEndMin=%d out of range [0,1439]", a.ID, *a.ScheduleEndMin)
 		}
+		// Social config (tag/start/end) is all-or-none on the DB side
+		// (actor_social_all_or_none CHECK). SocialTag "" maps to SQL NULL
+		// (nilOnEmpty), so the empty-string check matches the column's NULL.
+		// SocialLastBoundaryAt is an independent idempotency stamp, not part of
+		// the all-or-none group.
+		socialConfigSet := a.SocialTag != "" || a.SocialStartMin != nil || a.SocialEndMin != nil
+		socialConfigComplete := a.SocialTag != "" && a.SocialStartMin != nil && a.SocialEndMin != nil
+		if socialConfigSet && !socialConfigComplete {
+			return fmt.Errorf("pg actors SaveSnapshot: id=%s has half-set social schedule (tag=%q start=%v end=%v) — tag/start/end must be all set or all unset",
+				a.ID, a.SocialTag, a.SocialStartMin, a.SocialEndMin)
+		}
+		// Social range: minute-of-day [0, 1439]. Guards intPtrToSQL's int16 narrowing.
+		if a.SocialStartMin != nil && (*a.SocialStartMin < 0 || *a.SocialStartMin > 1439) {
+			return fmt.Errorf("pg actors SaveSnapshot: id=%s SocialStartMin=%d out of range [0,1439]", a.ID, *a.SocialStartMin)
+		}
+		if a.SocialEndMin != nil && (*a.SocialEndMin < 0 || *a.SocialEndMin > 1439) {
+			return fmt.Errorf("pg actors SaveSnapshot: id=%s SocialEndMin=%d out of range [0,1439]", a.ID, *a.SocialEndMin)
+		}
+		// social_tag is character varying(64); rune-count guard so an
+		// over-long tag fails clean here instead of tripping the VARCHAR limit
+		// mid-Tx and rolling back the whole checkpoint (same pre-pass posture as
+		// the other varchar columns in this aggregate).
+		if n := utf8.RuneCountInString(a.SocialTag); n > 64 {
+			return fmt.Errorf("pg actors SaveSnapshot: id=%s SocialTag length %d exceeds VARCHAR(64)", a.ID, n)
+		}
 		// Need values must fit the CHECK 0-24 range (Slice 121). Key
 		// validation guards against whitespace-only keys that would
 		// pass Go-side empty checks and trip a btrim CHECK mid-Tx.
@@ -1344,7 +1389,11 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 			a.StateEnteredAt,                        // $23 sim_state_entered_at
 			nilOnEmpty(string(a.SpriteID)),          // $24 sprite_id (nullable uuid)
 			facing,                                  // $25 facing (validated above)
-			actorGen,                                // $26 snapshot_gen
+			nilOnEmpty(a.SocialTag),                 // $26 social_tag
+			intPtrToSQL(a.SocialStartMin),           // $27 social_start_minute
+			intPtrToSQL(a.SocialEndMin),             // $28 social_end_minute
+			a.SocialLastBoundaryAt,                  // $29 social_last_boundary_at
+			actorGen,                                // $30 snapshot_gen
 		); err != nil {
 			return fmt.Errorf("pg actors SaveSnapshot: upsert actor id=%s: %w", a.ID, err)
 		}

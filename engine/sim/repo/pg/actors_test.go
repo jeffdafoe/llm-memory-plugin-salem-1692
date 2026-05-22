@@ -100,7 +100,9 @@ func actorParentColumns() []string {
 		"last_agent_tick_at", "break_until", "next_self_tick_at",
 		"next_self_tick_reason", "sleeping_until",
 		"move_attempt_counter", "sim_state", "sim_state_entered_at",
-		"sprite_id", "facing", "admin",
+		"sprite_id", "facing",
+		"social_tag", "social_start_minute", "social_end_minute", "social_last_boundary_at",
+		"admin",
 	}
 }
 
@@ -152,7 +154,9 @@ func oneBareActorRows() *pgxmock.Rows {
 		(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
 		(*string)(nil), (*time.Time)(nil),
 		int64(0), "idle", tsEntered,
-		(*string)(nil), "south", false,
+		(*string)(nil), "south",
+		(*string)(nil), (*int16)(nil), (*int16)(nil), (*time.Time)(nil),
+		false,
 	)
 }
 
@@ -301,6 +305,9 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 	startMin := int16(540) // 09:00
 	endMin := int16(1020)  // 17:00
 	reason := "low_tiredness"
+	socialTag := "tavern_evening"
+	socialStartM := int16(1080) // 18:00
+	socialEndM := int16(1320)   // 22:00
 
 	mock.ExpectQuery(`FROM actor\b`).
 		WillReturnRows(pgxmock.NewRows(actorParentColumns()).
@@ -312,7 +319,9 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 				&startMin, &endMin,
 				&tsTickedAt, &tsBreak, &tsNextSelf, ptrStr(reason), &tsSleep,
 				int64(7), "working", tsEntered,
-				ptrStr("00000000-0000-0000-0000-5555eeeeeeee"), "east", true,
+				ptrStr("00000000-0000-0000-0000-5555eeeeeeee"), "east",
+				&socialTag, &socialStartM, &socialEndM, &tsBreak,
+				true,
 			).
 			AddRow(
 				actB, "Bare", 0, 0,
@@ -323,7 +332,9 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 				(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
 				(*string)(nil), (*time.Time)(nil),
 				int64(0), "idle", tsEntered,
-				(*string)(nil), "south", false,
+				(*string)(nil), "south",
+				(*string)(nil), (*int16)(nil), (*int16)(nil), (*time.Time)(nil),
+				false,
 			))
 
 	mock.ExpectQuery(`FROM actor_need\b`).
@@ -414,6 +425,18 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 	if a.Facing != "east" {
 		t.Errorf("Facing = %q want east", a.Facing)
 	}
+	if a.SocialTag != socialTag {
+		t.Errorf("SocialTag = %q want %q", a.SocialTag, socialTag)
+	}
+	if a.SocialStartMin == nil || *a.SocialStartMin != int(socialStartM) {
+		t.Errorf("SocialStartMin = %v want %d", a.SocialStartMin, socialStartM)
+	}
+	if a.SocialEndMin == nil || *a.SocialEndMin != int(socialEndM) {
+		t.Errorf("SocialEndMin = %v want %d", a.SocialEndMin, socialEndM)
+	}
+	if a.SocialLastBoundaryAt == nil || !a.SocialLastBoundaryAt.Equal(tsBreak) {
+		t.Errorf("SocialLastBoundaryAt = %v want %v", a.SocialLastBoundaryAt, tsBreak)
+	}
 	if !a.IsAdmin {
 		t.Errorf("IsAdmin = false, want true (admin column loaded)")
 	}
@@ -441,6 +464,10 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 	}
 	if b.ScheduleStartMin != nil || b.ScheduleEndMin != nil {
 		t.Errorf("actB schedule not nil: %v/%v", b.ScheduleStartMin, b.ScheduleEndMin)
+	}
+	if b.SocialTag != "" || b.SocialStartMin != nil || b.SocialEndMin != nil || b.SocialLastBoundaryAt != nil {
+		t.Errorf("actB social not empty/nil: tag=%q start=%v end=%v boundary=%v",
+			b.SocialTag, b.SocialStartMin, b.SocialEndMin, b.SocialLastBoundaryAt)
 	}
 	if b.LastTickedAt != nil || b.BreakUntil != nil || b.NextSelfTickAt != nil || b.SleepingUntil != nil {
 		t.Errorf("actB time ptrs not nil")
@@ -545,6 +572,8 @@ func TestActorsRepo_SaveSnapshot_FullActor(t *testing.T) {
 
 	startMin := 540
 	endMin := 1020
+	socialStart := 1080
+	socialEnd := 1320
 
 	mock.ExpectExec(`INSERT INTO actor `).
 		WithArgs(
@@ -559,6 +588,7 @@ func TestActorsRepo_SaveSnapshot_FullActor(t *testing.T) {
 			&tsTickedAt, &tsBreak, &tsNextSelf, "low_tiredness", &tsSleep,
 			int64(7), "working", tsEntered,
 			"00000000-0000-0000-0000-5555eeeeeeee", "east",
+			"tavern_evening", int16(1080), int16(1320), &tsBreak,
 			int64(101),
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
@@ -590,33 +620,37 @@ func TestActorsRepo_SaveSnapshot_FullActor(t *testing.T) {
 
 	actors := map[sim.ActorID]*sim.Actor{
 		actA: {
-			ID:                 actA,
-			DisplayName:        "Mira",
-			CurrentX:           5,
-			CurrentY:           10,
-			InsideStructureID:  "00000000-0000-0000-0000-1111aaaaaaaa",
-			CurrentHuddleID:    "00000000-0000-0000-0000-2222bbbbbbbb",
-			InsideRoomID:       42,
-			HomeStructureID:    "00000000-0000-0000-0000-3333cccccccc",
-			WorkStructureID:    "00000000-0000-0000-0000-4444dddddddd",
-			Coins:              20,
-			LLMAgent:           "mira-agent",
-			Role:               "tavernkeeper",
-			LoginUsername:      "",
-			ScheduleStartMin:   &startMin,
-			ScheduleEndMin:     &endMin,
-			LastTickedAt:       &tsTickedAt,
-			BreakUntil:         &tsBreak,
-			NextSelfTickAt:     &tsNextSelf,
-			NextSelfTickReason: "low_tiredness",
-			SleepingUntil:      &tsSleep,
-			MoveAttemptCounter: 7,
-			State:              "working",
-			StateEnteredAt:     tsEntered,
-			SpriteID:           "00000000-0000-0000-0000-5555eeeeeeee",
-			Facing:             "east",
-			Needs:              map[sim.NeedKey]int{"hunger": 4},
-			Inventory:          map[sim.ItemKind]int{"ale": 3},
+			ID:                   actA,
+			DisplayName:          "Mira",
+			CurrentX:             5,
+			CurrentY:             10,
+			InsideStructureID:    "00000000-0000-0000-0000-1111aaaaaaaa",
+			CurrentHuddleID:      "00000000-0000-0000-0000-2222bbbbbbbb",
+			InsideRoomID:         42,
+			HomeStructureID:      "00000000-0000-0000-0000-3333cccccccc",
+			WorkStructureID:      "00000000-0000-0000-0000-4444dddddddd",
+			Coins:                20,
+			LLMAgent:             "mira-agent",
+			Role:                 "tavernkeeper",
+			LoginUsername:        "",
+			ScheduleStartMin:     &startMin,
+			ScheduleEndMin:       &endMin,
+			LastTickedAt:         &tsTickedAt,
+			BreakUntil:           &tsBreak,
+			NextSelfTickAt:       &tsNextSelf,
+			NextSelfTickReason:   "low_tiredness",
+			SleepingUntil:        &tsSleep,
+			MoveAttemptCounter:   7,
+			State:                "working",
+			StateEnteredAt:       tsEntered,
+			SpriteID:             "00000000-0000-0000-0000-5555eeeeeeee",
+			Facing:               "east",
+			SocialTag:            "tavern_evening",
+			SocialStartMin:       &socialStart,
+			SocialEndMin:         &socialEnd,
+			SocialLastBoundaryAt: &tsBreak,
+			Needs:                map[sim.NeedKey]int{"hunger": 4},
+			Inventory:            map[sim.ItemKind]int{"ale": 3},
 		},
 	}
 
@@ -647,6 +681,7 @@ func TestActorsRepo_SaveSnapshot_BareActor(t *testing.T) {
 			nil, (*time.Time)(nil), // NextSelfTickReason, SleepingUntil
 			int64(0), "idle", tsEntered, // counter, state, entered
 			nil, "south", // sprite_id (empty→NULL), facing (empty→default 'south')
+			nil, nil, nil, (*time.Time)(nil), // social (all NULL)
 			int64(102),
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
@@ -756,6 +791,7 @@ func TestActorsRepo_SaveSnapshot_ZeroQtyInventoryDropped(t *testing.T) {
 			nil, (*time.Time)(nil),
 			int64(0), "idle", tsEntered,
 			nil, "south",
+			nil, nil, nil, (*time.Time)(nil), // social (all NULL)
 			int64(105),
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
@@ -933,6 +969,58 @@ func TestActorsRepo_SaveSnapshot_ScheduleOutOfRange(t *testing.T) {
 	}
 }
 
+func TestActorsRepo_SaveSnapshot_HalfSetSocial(t *testing.T) {
+	mock, repo := newMockPoolA(t)
+	actors := map[sim.ActorID]*sim.Actor{
+		actA: {
+			ID: actA, DisplayName: "X", State: "idle", StateEnteredAt: tsEntered,
+			SocialTag: "tavern", // SocialStartMin/EndMin: nil — half-set
+		},
+	}
+	err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, actors)
+	assertValidationOnly(t, mock, err, "half-set social schedule")
+}
+
+// TestActorsRepo_SaveSnapshot_SocialInvalid — social minute range (guards
+// intPtrToSQL's int16 narrowing, like the schedule case) + the social_tag
+// VARCHAR(64) length cap (fails clean in the pre-pass, not mid-Tx).
+func TestActorsRepo_SaveSnapshot_SocialInvalid(t *testing.T) {
+	cases := []struct {
+		name string
+		mut  func(*sim.Actor)
+		want string
+	}{
+		{
+			name: "start_above",
+			mut: func(a *sim.Actor) {
+				s := 40000
+				e := 100
+				a.SocialTag, a.SocialStartMin, a.SocialEndMin = "tavern", &s, &e
+			},
+			want: "SocialStartMin=40000",
+		},
+		{
+			name: "tag_too_long",
+			mut: func(a *sim.Actor) {
+				s := 100
+				e := 200
+				a.SocialTag = strings.Repeat("z", 65)
+				a.SocialStartMin, a.SocialEndMin = &s, &e
+			},
+			want: "exceeds VARCHAR(64)",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mock, repo := newMockPoolA(t)
+			a := &sim.Actor{ID: actA, DisplayName: "X", State: "idle", StateEnteredAt: tsEntered}
+			tc.mut(a)
+			err := repo.SaveSnapshot(context.Background(), fakeTx{mock: mock}, map[sim.ActorID]*sim.Actor{actA: a})
+			assertValidationOnly(t, mock, err, tc.want)
+		})
+	}
+}
+
 func TestActorsRepo_SaveSnapshot_NeedOutOfRange(t *testing.T) {
 	mock, repo := newMockPoolA(t)
 	actors := map[sim.ActorID]*sim.Actor{
@@ -1071,7 +1159,9 @@ func TestActorsRepo_LoadAll_Continuity(t *testing.T) {
 				(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
 				(*string)(nil), (*time.Time)(nil),
 				int64(0), "idle", tsEntered,
-				(*string)(nil), "south", false,
+				(*string)(nil), "south",
+				(*string)(nil), (*int16)(nil), (*int16)(nil), (*time.Time)(nil),
+				false,
 			))
 	mock.ExpectQuery(`FROM actor_need\b`).WillReturnRows(emptyNeedRows())
 	mock.ExpectQuery(`FROM actor_inventory\b`).WillReturnRows(emptyInvRows())
@@ -1269,6 +1359,7 @@ func TestActorsRepo_SaveSnapshot_Continuity(t *testing.T) {
 			nil, (*time.Time)(nil),
 			int64(0), "idle", tsEntered,
 			nil, "south",
+			nil, nil, nil, (*time.Time)(nil), // social (all NULL)
 			int64(701),
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
@@ -1370,6 +1461,7 @@ func TestActorsRepo_SaveSnapshot_EmptySalientFacts(t *testing.T) {
 			nil, (*time.Time)(nil),
 			int64(0), "idle", tsEntered,
 			nil, "south",
+			nil, nil, nil, (*time.Time)(nil), // social (all NULL)
 			int64(702),
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
@@ -1512,6 +1604,7 @@ func TestActorsRepo_SaveSnapshot_AcquaintanceMultibyteWithinLimit(t *testing.T) 
 			nil, (*time.Time)(nil),
 			int64(0), "idle", tsEntered,
 			nil, "south",
+			nil, nil, nil, (*time.Time)(nil), // social (all NULL)
 			int64(706),
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
@@ -1781,6 +1874,7 @@ func TestActorsRepo_SaveSnapshot_Slice3(t *testing.T) {
 			nil, (*time.Time)(nil),
 			int64(0), "idle", tsEntered,
 			nil, "south",
+			nil, nil, nil, (*time.Time)(nil), // social (all NULL)
 			int64(710),
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))

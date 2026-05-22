@@ -376,6 +376,21 @@ type Actor struct {
 	ScheduleStartMin *int
 	ScheduleEndMin   *int
 
+	// Social schedule (decorative-NPC mover, #4 — persistence here; the
+	// RunSocialTicker mover is a follow-up slice). SocialTag / SocialStartMin /
+	// SocialEndMin are config that travels together — all-or-none, enforced by
+	// the DB's actor_social_all_or_none CHECK and mirrored by the SaveSnapshot
+	// pre-pass. When set on a decorative NPC they drive a daily walk to the
+	// nearest village_object carrying SocialTag and back home.
+	// SocialLastBoundaryAt is the edge-trigger idempotency stamp (the last
+	// processed social boundary), kept separate from any shift stamp so the
+	// two schedulers can't collide. These are pre-existing v1 columns; empty/
+	// nil round-trips through SQL NULL.
+	SocialTag            string     // "" = unset
+	SocialStartMin       *int       // minute-of-day [0,1439]; nil = unset
+	SocialEndMin         *int       // minute-of-day [0,1439]; nil = unset
+	SocialLastBoundaryAt *time.Time // last processed boundary; nil = none
+
 	// Mutable state.
 	Needs     map[NeedKey]int
 	Inventory map[ItemKind]int
@@ -523,7 +538,8 @@ type Actor struct {
 // serialization boundary. Mutated containers (Needs, Inventory,
 // DwellCredits, RoomAccess, ProduceState, Acquaintances, Relationships)
 // and pointer fields commands rebind (BreakUntil, SleepingUntil,
-// LastTickedAt, NextSelfTickAt, Narrative) are cloned. Attributes is
+// LastTickedAt, NextSelfTickAt, SocialLastBoundaryAt, Narrative) are cloned.
+// Attributes is
 // deep-cloned including each []byte payload. The two RingBuffers are
 // cloned via RingBuffer.Clone. MoveIntent is deep-cloned via
 // cloneMoveIntent (its MoveDestination carries StructureID / Position
@@ -568,6 +584,14 @@ func CloneActor(a *Actor) *Actor {
 	if a.LastTirednessRecoveryAt != nil {
 		t := *a.LastTirednessRecoveryAt
 		cp.LastTirednessRecoveryAt = &t
+	}
+	if a.SocialLastBoundaryAt != nil {
+		// Deep-cloned (the social mover stamps it each boundary), like the
+		// other mutated *time.Time cursors. SocialStartMin/EndMin are config
+		// pointers rebound on edit, not mutated through, so they follow the
+		// schedule-pointer convention and stay shallow-aliased via `cp := *a`.
+		t := *a.SocialLastBoundaryAt
+		cp.SocialLastBoundaryAt = &t
 	}
 	if a.LastTickedAt != nil {
 		t := *a.LastTickedAt
