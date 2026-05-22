@@ -10,9 +10,9 @@ import (
 )
 
 // action_log.go — append-only in-memory action log substrate driver.
-// Wires five event subscribers (Spoke / Paid / ItemConsumed /
-// OrderDelivered / ActorArrived) to translate engine events into
-// sim.ActionLogEntry rows, and spawns a sweep goroutine that
+// Wires six event subscribers (Spoke / Paid / ItemConsumed /
+// OrderDelivered / ActorArrived / TookBreak) to translate engine events
+// into sim.ActionLogEntry rows, and spawns a sweep goroutine that
 // periodically compacts the log via sim.CompactActionLog.
 //
 // Subscribers run inline on the world goroutine via emit dispatch;
@@ -28,6 +28,7 @@ import (
 //   ├─> w.Subscribe(handleConsumedActionLog)
 //   ├─> w.Subscribe(handleOrderDeliveredActionLog)
 //   ├─> w.Subscribe(handleActorArrivedActionLog)
+//   ├─> w.Subscribe(handleTookBreakActionLog)
 //   └─> go runActionLogSweep(ctx, w)
 //        ├─> immediate first compaction
 //        └─> time.Ticker @ ActionLogSweepInterval until ctx.Done
@@ -73,6 +74,7 @@ func RegisterActionLog(ctx context.Context, w *sim.World) {
 	w.Subscribe(sim.SubscriberFunc(handleConsumedActionLog))
 	w.Subscribe(sim.SubscriberFunc(handleOrderDeliveredActionLog))
 	w.Subscribe(sim.SubscriberFunc(handleActorArrivedActionLog))
+	w.Subscribe(sim.SubscriberFunc(handleTookBreakActionLog))
 	go runActionLogSweep(ctx, w)
 }
 
@@ -202,6 +204,32 @@ func handleActorArrivedActionLog(w *sim.World, evt sim.Event) {
 	if _, err := sim.AppendActionLogEntry(entry).Fn(w); err != nil {
 		log.Printf("cascade/action_log: append walked (actor %q event %d): %v",
 			arrived.ActorID, arrived.EventID(), err)
+	}
+}
+
+// handleTookBreakActionLog appends a row when a take_break tool call
+// commits (ZBBS-HOME-284 #4). ActorID is the actor that stepped away;
+// Text is the model-supplied reason; HuddleID is the actor's huddle at
+// append time (a break closes the post, so usually empty).
+func handleTookBreakActionLog(w *sim.World, evt sim.Event) {
+	broke, ok := evt.(*sim.TookBreak)
+	if !ok {
+		return
+	}
+	huddleID := sim.HuddleID("")
+	if actor, ok := w.Actors[broke.ActorID]; ok {
+		huddleID = actor.CurrentHuddleID
+	}
+	entry := sim.ActionLogEntry{
+		ActorID:    broke.ActorID,
+		OccurredAt: broke.At,
+		ActionType: sim.ActionTypeTookBreak,
+		Text:       broke.Reason,
+		HuddleID:   huddleID,
+	}
+	if _, err := sim.AppendActionLogEntry(entry).Fn(w); err != nil {
+		log.Printf("cascade/action_log: append took_break (actor %q event %d): %v",
+			broke.ActorID, broke.EventID(), err)
 	}
 }
 

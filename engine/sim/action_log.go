@@ -73,6 +73,12 @@ const (
 	// (arrival precedes any encounter-cascade huddle join that may
 	// follow).
 	ActionTypeWalked ActionType = "walked"
+
+	// ActionTypeTookBreak — committed take_break tool call
+	// (ZBBS-HOME-284 #4). ActorID is the actor that stepped away; Text
+	// is the model-supplied reason; HuddleID is the actor's huddle at
+	// append time (usually empty — a break closes the post).
+	ActionTypeTookBreak ActionType = "took_break"
 )
 
 // ActionLogEntry is one row in the in-memory action log. Carries the
