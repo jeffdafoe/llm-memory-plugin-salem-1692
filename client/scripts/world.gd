@@ -2106,7 +2106,7 @@ func apply_object_content_changed(data: Dictionary) -> void:
     object_content_changed.emit(object_id, content_text, content_posted_at)
 
 func apply_object_tags_updated(data: Dictionary) -> void:
-    var object_id: String = str(data.get("object_id", ""))
+    var object_id: String = str(data.get("id", ""))
     if object_id == "" or not placed_objects.has(object_id):
         return
     var tags_raw = data.get("tags", [])
