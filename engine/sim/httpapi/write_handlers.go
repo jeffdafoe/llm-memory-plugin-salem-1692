@@ -1177,6 +1177,139 @@ func (s *Server) handleAdminObjectTagMutation(w http.ResponseWriter, r *http.Req
 	writeJSON(w, adminObjectTagResponse{ID: string(out.ID), Tags: tags})
 }
 
+// adminObjectRefreshRow is one refresh policy on the .../set-refresh wire. It
+// maps 1:1 to the persisted sim.ObjectRefresh fields; last_refresh_at is omitted
+// because it is engine-managed (the regen tick anchors it). amount and
+// dwell_delta are NEGATIVE — they are the decrement applied to an actor on
+// arrival, matching the object_refresh CHECK constraints (amount < 0) and the
+// sim/DB representation. available_quantity and max_quantity are both-or-neither
+// (an infinite supply omits both); an infinite row must also omit refresh_mode
+// and refresh_period_hours, since regen only applies to a finite supply.
+type adminObjectRefreshRow struct {
+	Attribute          string `json:"attribute"`
+	Amount             int    `json:"amount"`
+	AvailableQuantity  *int   `json:"available_quantity"`
+	MaxQuantity        *int   `json:"max_quantity"`
+	RefreshMode        string `json:"refresh_mode"`
+	RefreshPeriodHours *int   `json:"refresh_period_hours"`
+	DwellDelta         *int   `json:"dwell_delta"`
+	DwellPeriodMinutes *int   `json:"dwell_period_minutes"`
+}
+
+// adminObjectRefreshRequest is the POST .../set-refresh body: the target object
+// id + the full refresh set to apply. The set replaces the object's existing
+// refresh policies wholesale; an empty or omitted rows clears them all.
+type adminObjectRefreshRequest struct {
+	ObjectID string                  `json:"object_id"`
+	Rows     []adminObjectRefreshRow `json:"rows"`
+}
+
+// adminObjectRefreshResponse echoes the applied set. There's no WS broadcast —
+// refresh config is not in ObjectDTO — so the body is the editor's confirmation
+// and authoritative read-back. Rows is always an array (a cleared set is []).
+type adminObjectRefreshResponse struct {
+	ID   string                  `json:"id"`
+	Rows []adminObjectRefreshRow `json:"rows"`
+}
+
+// handleAdminObjectSetRefresh replaces a placed object's refresh-policy set.
+// Admin-only: requireAuth + adminCommand. Delegates to
+// sim.SetVillageObjectRefreshes, which validates the set (mirroring the
+// object_refresh CHECK constraints) before mutating. 400 malformed / missing id
+// / invalid refresh row; 403 not admin; 404 object not found; 200 ok. Emits no
+// event (refresh is not client-visible) — the response is the editor's read-back.
+func (s *Server) handleAdminObjectSetRefresh(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	if user == nil {
+		writeAuthError(w, "invalid")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxAdminBodyBytes)
+	dec := json.NewDecoder(r.Body)
+	var req adminObjectRefreshRequest
+	if err := dec.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.ObjectID == "" {
+		writeError(w, http.StatusBadRequest, "object_id is required")
+		return
+	}
+
+	// Map the wire rows to sim.ObjectRefresh. The command deep-copies these
+	// before storing, so passing the request's pointers straight through is safe.
+	rows := make([]*sim.ObjectRefresh, 0, len(req.Rows))
+	for _, row := range req.Rows {
+		rows = append(rows, &sim.ObjectRefresh{
+			Attribute:          sim.NeedKey(row.Attribute),
+			Amount:             row.Amount,
+			AvailableQuantity:  row.AvailableQuantity,
+			MaxQuantity:        row.MaxQuantity,
+			RefreshMode:        sim.RefreshMode(row.RefreshMode),
+			RefreshPeriodHours: row.RefreshPeriodHours,
+			DwellDelta:         row.DwellDelta,
+			DwellPeriodMinutes: row.DwellPeriodMinutes,
+		})
+	}
+
+	res, err := s.world.SendContext(r.Context(), adminCommand(user.Username, func(world *sim.World) (any, error) {
+		return sim.SetVillageObjectRefreshes(sim.VillageObjectID(req.ObjectID), rows).Fn(world)
+	}))
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
+		if errors.Is(err, errAdminForbidden) {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
+		if errors.Is(err, sim.ErrVillageObjectNotFound) {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		// sim.ErrInvalidRefresh is bad input (mirrors the pg CHECK constraints) —
+		// the command is the validation authority, so map its sentinel to 400.
+		if errors.Is(err, sim.ErrInvalidRefresh) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+
+	out, ok := res.(sim.SetRefreshesResult)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "unexpected set-refresh result")
+		return
+	}
+	writeJSON(w, adminObjectRefreshResponse{ID: string(out.ID), Rows: refreshRowsToWire(out.Refreshes)})
+}
+
+// refreshRowsToWire maps the applied sim refresh set back to the wire shape
+// (last_refresh_at is engine-internal and omitted). Always returns a non-nil
+// slice so a cleared set serializes as [] rather than null.
+func refreshRowsToWire(rows []*sim.ObjectRefresh) []adminObjectRefreshRow {
+	out := make([]adminObjectRefreshRow, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, adminObjectRefreshRow{
+			Attribute:          string(r.Attribute),
+			Amount:             r.Amount,
+			AvailableQuantity:  r.AvailableQuantity,
+			MaxQuantity:        r.MaxQuantity,
+			RefreshMode:        string(r.RefreshMode),
+			RefreshPeriodHours: r.RefreshPeriodHours,
+			DwellDelta:         r.DwellDelta,
+			DwellPeriodMinutes: r.DwellPeriodMinutes,
+		})
+	}
+	return out
+}
+
 // writeError writes a JSON {error} body with the given status.
 func writeError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")

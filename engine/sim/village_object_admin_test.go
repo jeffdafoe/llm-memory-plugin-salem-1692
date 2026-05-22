@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/repo/mem"
@@ -542,5 +543,228 @@ func TestRemoveVillageObjectTag_NotFound(t *testing.T) {
 	_, err := w.Send(sim.RemoveVillageObjectTag("ghost", "vendor"))
 	if !errors.Is(err, sim.ErrVillageObjectNotFound) {
 		t.Errorf("err = %v, want ErrVillageObjectNotFound", err)
+	}
+}
+
+// seedRefreshes sets prop-1's refresh set via an inline command — used to plant
+// a known starting set (including a non-nil LastRefreshAt anchor) before testing
+// SetVillageObjectRefreshes' anchor-preservation behavior.
+func seedRefreshes(t *testing.T, w *sim.World, rows []*sim.ObjectRefresh) {
+	t.Helper()
+	_, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.VillageObjects["prop-1"].Refreshes = rows
+		return nil, nil
+	}})
+	if err != nil {
+		t.Fatalf("seed refreshes: %v", err)
+	}
+}
+
+// readRefreshes returns a snapshot of prop-1's live refresh rows, read on the
+// world goroutine.
+func readRefreshes(t *testing.T, w *sim.World) []*sim.ObjectRefresh {
+	t.Helper()
+	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return world.VillageObjects["prop-1"].Refreshes, nil
+	}})
+	if err != nil {
+		t.Fatalf("read refreshes: %v", err)
+	}
+	return res.([]*sim.ObjectRefresh)
+}
+
+func TestSetVillageObjectRefreshes_Applied(t *testing.T) {
+	w, cap := buildObjectAdminWorld(t)
+
+	rows := []*sim.ObjectRefresh{
+		// Finite continuous supply.
+		{Attribute: "thirst", Amount: -12, AvailableQuantity: ip(3), MaxQuantity: ip(10),
+			RefreshMode: sim.RefreshModeContinuous, RefreshPeriodHours: ip(2)},
+		// Infinite + dwell (no supply, no regen config).
+		{Attribute: "tiredness", Amount: -4, DwellDelta: ip(-2), DwellPeriodMinutes: ip(30)},
+	}
+	res, err := w.Send(sim.SetVillageObjectRefreshes("prop-1", rows))
+	if err != nil {
+		t.Fatalf("set refreshes: %v", err)
+	}
+	out := res.(sim.SetRefreshesResult)
+	if out.ID != "prop-1" || len(out.Refreshes) != 2 {
+		t.Fatalf("result = %+v, want prop-1 with 2 rows", out)
+	}
+
+	live := readRefreshes(t, w)
+	if len(live) != 2 {
+		t.Fatalf("world has %d refresh rows, want 2", len(live))
+	}
+	if live[0].Attribute != "thirst" || live[0].Amount != -12 || !live[0].IsFinite() ||
+		*live[0].AvailableQuantity != 3 || *live[0].MaxQuantity != 10 ||
+		live[0].RefreshMode != sim.RefreshModeContinuous || *live[0].RefreshPeriodHours != 2 {
+		t.Errorf("row 0 = %+v, want finite thirst", live[0])
+	}
+	if live[1].Attribute != "tiredness" || live[1].IsFinite() || !live[1].HasDwell() ||
+		*live[1].DwellDelta != -2 || *live[1].DwellPeriodMinutes != 30 {
+		t.Errorf("row 1 = %+v, want infinite tiredness+dwell", live[1])
+	}
+
+	// Stored rows must not alias the caller's pointers — mutating the source
+	// after the command must not change world state.
+	*rows[0].AvailableQuantity = 99
+	if got := *readRefreshes(t, w)[0].AvailableQuantity; got != 3 {
+		t.Errorf("available_quantity = %d after mutating source, want 3 (must be copied)", got)
+	}
+
+	// No event — refresh is not in ObjectDTO.
+	for _, evt := range cap.snapshot() {
+		switch evt.(type) {
+		case *sim.VillageObjectDisplayNameChanged, *sim.VillageObjectTagsUpdated, *sim.VillageObjectStateChanged:
+			t.Errorf("unexpected client-visible event emitted on set-refresh: %T", evt)
+		}
+	}
+}
+
+func TestSetVillageObjectRefreshes_PreservesAnchorOnUnchangedSchedule(t *testing.T) {
+	w, _ := buildObjectAdminWorld(t)
+	anchor := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	seedRefreshes(t, w, []*sim.ObjectRefresh{
+		{Attribute: "thirst", Amount: -5, AvailableQuantity: ip(3), MaxQuantity: ip(10),
+			RefreshMode: sim.RefreshModeContinuous, RefreshPeriodHours: ip(2), LastRefreshAt: &anchor},
+	})
+
+	// Same mode + period, changed amount/supply → anchor preserved (an unrelated
+	// edit shouldn't restart the regen schedule).
+	if _, err := w.Send(sim.SetVillageObjectRefreshes("prop-1", []*sim.ObjectRefresh{
+		{Attribute: "thirst", Amount: -8, AvailableQuantity: ip(10), MaxQuantity: ip(10),
+			RefreshMode: sim.RefreshModeContinuous, RefreshPeriodHours: ip(2)},
+	})); err != nil {
+		t.Fatalf("set refreshes (unchanged schedule): %v", err)
+	}
+	live := readRefreshes(t, w)
+	if live[0].LastRefreshAt == nil || !live[0].LastRefreshAt.Equal(anchor) {
+		t.Errorf("anchor = %v, want preserved %v", live[0].LastRefreshAt, anchor)
+	}
+
+	// Changed period → anchor cleared so the regen tick re-anchors.
+	if _, err := w.Send(sim.SetVillageObjectRefreshes("prop-1", []*sim.ObjectRefresh{
+		{Attribute: "thirst", Amount: -8, AvailableQuantity: ip(10), MaxQuantity: ip(10),
+			RefreshMode: sim.RefreshModeContinuous, RefreshPeriodHours: ip(5)},
+	})); err != nil {
+		t.Fatalf("set refreshes (changed period): %v", err)
+	}
+	if got := readRefreshes(t, w)[0].LastRefreshAt; got != nil {
+		t.Errorf("anchor = %v after period change, want nil", got)
+	}
+}
+
+// TestSetVillageObjectRefreshes_NoPreserveForNonRefilling: a finite row with no
+// regen period (depletes and never refills) doesn't carry its anchor forward —
+// the regen tick ignores it, so a preserved anchor would just be dead state.
+func TestSetVillageObjectRefreshes_NoPreserveForNonRefilling(t *testing.T) {
+	w, _ := buildObjectAdminWorld(t)
+	anchor := time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC)
+	seedRefreshes(t, w, []*sim.ObjectRefresh{
+		{Attribute: "thirst", Amount: -5, AvailableQuantity: ip(3), MaxQuantity: ip(10),
+			RefreshMode: sim.RefreshModeContinuous, LastRefreshAt: &anchor},
+	})
+	if _, err := w.Send(sim.SetVillageObjectRefreshes("prop-1", []*sim.ObjectRefresh{
+		{Attribute: "thirst", Amount: -8, AvailableQuantity: ip(10), MaxQuantity: ip(10),
+			RefreshMode: sim.RefreshModeContinuous},
+	})); err != nil {
+		t.Fatalf("set refreshes: %v", err)
+	}
+	if got := readRefreshes(t, w)[0].LastRefreshAt; got != nil {
+		t.Errorf("anchor = %v for a non-refilling (nil-period) row, want nil", got)
+	}
+}
+
+// TestSetVillageObjectRefreshes_NilExistingRowSkipped: a nil row in persisted
+// world state must not panic the existing-row index pass on an admin edit.
+func TestSetVillageObjectRefreshes_NilExistingRowSkipped(t *testing.T) {
+	w, _ := buildObjectAdminWorld(t)
+	seedRefreshes(t, w, []*sim.ObjectRefresh{
+		nil,
+		{Attribute: "thirst", Amount: -5, AvailableQuantity: ip(3), MaxQuantity: ip(10),
+			RefreshMode: sim.RefreshModeContinuous, RefreshPeriodHours: ip(2)},
+	})
+	if _, err := w.Send(sim.SetVillageObjectRefreshes("prop-1", []*sim.ObjectRefresh{
+		{Attribute: "thirst", Amount: -8, AvailableQuantity: ip(10), MaxQuantity: ip(10),
+			RefreshMode: sim.RefreshModeContinuous, RefreshPeriodHours: ip(2)},
+	})); err != nil {
+		t.Fatalf("set refreshes with nil existing row: %v", err)
+	}
+	if got := readRefreshes(t, w); len(got) != 1 || got[0].Attribute != "thirst" {
+		t.Errorf("result = %+v, want single thirst row", got)
+	}
+}
+
+func TestSetVillageObjectRefreshes_ClearsAll(t *testing.T) {
+	w, _ := buildObjectAdminWorld(t)
+	if _, err := w.Send(sim.SetVillageObjectRefreshes("prop-1", []*sim.ObjectRefresh{
+		{Attribute: "thirst", Amount: -5, AvailableQuantity: ip(3), MaxQuantity: ip(10),
+			RefreshMode: sim.RefreshModeContinuous},
+	})); err != nil {
+		t.Fatalf("set refreshes: %v", err)
+	}
+	if _, err := w.Send(sim.SetVillageObjectRefreshes("prop-1", nil)); err != nil {
+		t.Fatalf("clear refreshes: %v", err)
+	}
+	if got := readRefreshes(t, w); len(got) != 0 {
+		t.Errorf("refresh rows = %d after clear, want 0", len(got))
+	}
+}
+
+func TestSetVillageObjectRefreshes_NotFound(t *testing.T) {
+	w, _ := buildObjectAdminWorld(t)
+	_, err := w.Send(sim.SetVillageObjectRefreshes("ghost", []*sim.ObjectRefresh{
+		{Attribute: "thirst", Amount: -1, AvailableQuantity: ip(1), MaxQuantity: ip(1),
+			RefreshMode: sim.RefreshModeContinuous},
+	}))
+	if !errors.Is(err, sim.ErrVillageObjectNotFound) {
+		t.Errorf("err = %v, want ErrVillageObjectNotFound", err)
+	}
+}
+
+func TestSetVillageObjectRefreshes_InvalidRejected(t *testing.T) {
+	cases := []struct {
+		name string
+		rows []*sim.ObjectRefresh
+	}{
+		{"positive amount", []*sim.ObjectRefresh{{Attribute: "thirst", Amount: 5}}},
+		{"unknown attribute", []*sim.ObjectRefresh{{Attribute: "vibes", Amount: -1}}},
+		{"empty attribute", []*sim.ObjectRefresh{{Attribute: "", Amount: -1}}},
+		{"duplicate attribute", []*sim.ObjectRefresh{
+			{Attribute: "thirst", Amount: -1}, {Attribute: "thirst", Amount: -2}}},
+		{"finite pair half-set", []*sim.ObjectRefresh{
+			{Attribute: "thirst", Amount: -1, AvailableQuantity: ip(3)}}},
+		{"available exceeds max", []*sim.ObjectRefresh{
+			{Attribute: "thirst", Amount: -1, AvailableQuantity: ip(11), MaxQuantity: ip(10),
+				RefreshMode: sim.RefreshModeContinuous}}},
+		{"infinite with mode", []*sim.ObjectRefresh{
+			{Attribute: "thirst", Amount: -1, RefreshMode: sim.RefreshModeContinuous}}},
+		{"infinite with period", []*sim.ObjectRefresh{
+			{Attribute: "thirst", Amount: -1, RefreshPeriodHours: ip(2)}}},
+		{"finite bad mode", []*sim.ObjectRefresh{
+			{Attribute: "thirst", Amount: -1, AvailableQuantity: ip(3), MaxQuantity: ip(10),
+				RefreshMode: "hourly"}}},
+		{"dwell half-set", []*sim.ObjectRefresh{
+			{Attribute: "thirst", Amount: -1, DwellDelta: ip(-2)}}},
+		{"dwell positive delta", []*sim.ObjectRefresh{
+			{Attribute: "thirst", Amount: -1, DwellDelta: ip(2), DwellPeriodMinutes: ip(30)}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w, _ := buildObjectAdminWorld(t)
+			// Plant a valid set first so we can prove an invalid call leaves it intact.
+			seedRefreshes(t, w, []*sim.ObjectRefresh{
+				{Attribute: "hunger", Amount: -3, RefreshMode: ""},
+			})
+			_, err := w.Send(sim.SetVillageObjectRefreshes("prop-1", tc.rows))
+			if !errors.Is(err, sim.ErrInvalidRefresh) {
+				t.Fatalf("err = %v, want ErrInvalidRefresh", err)
+			}
+			live := readRefreshes(t, w)
+			if len(live) != 1 || live[0].Attribute != "hunger" {
+				t.Errorf("refresh set mutated on invalid input: %+v", live)
+			}
+		})
 	}
 }

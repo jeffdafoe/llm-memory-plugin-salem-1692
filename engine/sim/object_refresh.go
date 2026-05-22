@@ -2,10 +2,12 @@ package sim
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"math"
 	"time"
+	"unicode/utf8"
 )
 
 // Object-refresh — in-memory port of engine/object_refresh.go and
@@ -79,6 +81,145 @@ type ObjectRefresh struct {
 // IsFinite reports whether this refresh row has a tracked supply.
 func (r *ObjectRefresh) IsFinite() bool {
 	return r.AvailableQuantity != nil
+}
+
+// MaxRefreshAttributeLen caps a refresh row's attribute name, matching the
+// object_refresh.attribute varchar(32) column in the prod baseline.
+const MaxRefreshAttributeLen = 32
+
+// ErrInvalidRefresh is returned by ValidateObjectRefreshes when a proposed
+// refresh row set fails validation (→ 400 at the HTTP layer). The detail is
+// wrapped via fmt.Errorf("%w: ...") so callers map it by errors.Is while still
+// surfacing which row/field was wrong.
+var ErrInvalidRefresh = errors.New("invalid object refresh")
+
+// ValidateObjectRefreshes checks a proposed refresh row set against the
+// object_refresh CHECK constraints (migrations/schema.sql) and the sim's
+// finite/regen/dwell invariants, so the editor's set-refresh route returns a
+// clean 400 rather than a generic 500 from a Postgres constraint violation at
+// the next checkpoint. Returns ErrInvalidRefresh on the first violation.
+//
+// Rules:
+//   - attribute: non-empty, <= MaxRefreshAttributeLen runes, a known need
+//     (FindNeed — mirrors the refresh_attribute FK), and unique within the set
+//     (the (object_id, attribute) primary key).
+//   - amount: < 0 (object_refresh_amount_negative) — it is the decrement
+//     applied to the actor on arrival, not a restoration.
+//   - finite pair: available_quantity and max_quantity are both set or both nil
+//     (quantity_pair). When set: available >= 0 (quantity_nonneg), max > 0
+//     (max_positive), available <= max (available_le_max).
+//   - regen only when finite: an infinite row (available_quantity nil) carries
+//     no supply to replenish, so it must omit refresh_mode and
+//     refresh_period_hours. A finite row's mode must be "continuous" or
+//     "periodic" (mode_check); its period, when set, must be > 0
+//     (period_positive) — a finite row may legitimately omit the period to mean
+//     "depletes and never refills".
+//   - dwell pair: dwell_delta and dwell_period_minutes are both set or both nil
+//     (dwell_pair). When set: dwell_delta < 0 (dwell_amount_negative),
+//     dwell_period_minutes > 0 (dwell_period_positive).
+func ValidateObjectRefreshes(rows []*ObjectRefresh) error {
+	seen := make(map[NeedKey]bool, len(rows))
+	for _, r := range rows {
+		if r == nil {
+			return fmt.Errorf("%w: nil refresh row", ErrInvalidRefresh)
+		}
+		if r.Attribute == "" {
+			return fmt.Errorf("%w: attribute is required", ErrInvalidRefresh)
+		}
+		if utf8.RuneCountInString(string(r.Attribute)) > MaxRefreshAttributeLen {
+			return fmt.Errorf("%w: attribute %q exceeds %d characters", ErrInvalidRefresh, r.Attribute, MaxRefreshAttributeLen)
+		}
+		if _, known := FindNeed(r.Attribute); !known {
+			return fmt.Errorf("%w: unknown attribute %q", ErrInvalidRefresh, r.Attribute)
+		}
+		if seen[r.Attribute] {
+			return fmt.Errorf("%w: duplicate attribute %q", ErrInvalidRefresh, r.Attribute)
+		}
+		seen[r.Attribute] = true
+
+		if r.Amount >= 0 {
+			return fmt.Errorf("%w: amount for %q must be negative", ErrInvalidRefresh, r.Attribute)
+		}
+
+		if (r.AvailableQuantity == nil) != (r.MaxQuantity == nil) {
+			return fmt.Errorf("%w: available_quantity and max_quantity for %q must both be set or both omitted", ErrInvalidRefresh, r.Attribute)
+		}
+		if r.AvailableQuantity != nil {
+			if *r.AvailableQuantity < 0 {
+				return fmt.Errorf("%w: available_quantity for %q must be >= 0", ErrInvalidRefresh, r.Attribute)
+			}
+			if *r.MaxQuantity <= 0 {
+				return fmt.Errorf("%w: max_quantity for %q must be > 0", ErrInvalidRefresh, r.Attribute)
+			}
+			if *r.AvailableQuantity > *r.MaxQuantity {
+				return fmt.Errorf("%w: available_quantity for %q cannot exceed max_quantity", ErrInvalidRefresh, r.Attribute)
+			}
+		}
+
+		if r.IsFinite() {
+			switch r.RefreshMode {
+			case RefreshModeContinuous, RefreshModePeriodic:
+			default:
+				return fmt.Errorf(`%w: refresh_mode for %q must be "continuous" or "periodic"`, ErrInvalidRefresh, r.Attribute)
+			}
+			if r.RefreshPeriodHours != nil && *r.RefreshPeriodHours <= 0 {
+				return fmt.Errorf("%w: refresh_period_hours for %q must be > 0", ErrInvalidRefresh, r.Attribute)
+			}
+		} else {
+			if r.RefreshMode != "" {
+				return fmt.Errorf("%w: refresh_mode for %q is only valid on a finite (available/max) row", ErrInvalidRefresh, r.Attribute)
+			}
+			if r.RefreshPeriodHours != nil {
+				return fmt.Errorf("%w: refresh_period_hours for %q is only valid on a finite (available/max) row", ErrInvalidRefresh, r.Attribute)
+			}
+		}
+
+		if (r.DwellDelta == nil) != (r.DwellPeriodMinutes == nil) {
+			return fmt.Errorf("%w: dwell_delta and dwell_period_minutes for %q must both be set or both omitted", ErrInvalidRefresh, r.Attribute)
+		}
+		if r.DwellDelta != nil {
+			if *r.DwellDelta >= 0 {
+				return fmt.Errorf("%w: dwell_delta for %q must be negative", ErrInvalidRefresh, r.Attribute)
+			}
+			if *r.DwellPeriodMinutes <= 0 {
+				return fmt.Errorf("%w: dwell_period_minutes for %q must be > 0", ErrInvalidRefresh, r.Attribute)
+			}
+		}
+	}
+	return nil
+}
+
+// cloneObjectRefresh returns a deep copy of r so stored world state never
+// aliases a caller-owned ObjectRefresh or its pointer fields, and so a result
+// snapshot read off the world goroutine can't race the regen tick mutating a
+// live row's AvailableQuantity.
+func cloneObjectRefresh(r *ObjectRefresh) *ObjectRefresh {
+	c := *r // value fields: Attribute, Amount, RefreshMode
+	c.AvailableQuantity = copyIntPtr(r.AvailableQuantity)
+	c.MaxQuantity = copyIntPtr(r.MaxQuantity)
+	c.RefreshPeriodHours = copyIntPtr(r.RefreshPeriodHours)
+	c.LastRefreshAt = copyTimePtr(r.LastRefreshAt)
+	c.DwellDelta = copyIntPtr(r.DwellDelta)
+	c.DwellPeriodMinutes = copyIntPtr(r.DwellPeriodMinutes)
+	return &c
+}
+
+// copyTimePtr returns a fresh pointer to a copy of *p, or nil when p is nil.
+func copyTimePtr(p *time.Time) *time.Time {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
+}
+
+// intPtrEqual reports whether two *int hold the same value (both nil counts as
+// equal). Used to decide whether a refresh row's regen schedule is unchanged.
+func intPtrEqual(a, b *int) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 // HasDwell reports whether this row also credits per-minute dwell.
