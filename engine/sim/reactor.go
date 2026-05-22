@@ -721,13 +721,15 @@ func actorCanReactNow(w *World, a *Actor) (eligible bool, stale bool) {
 		return false, false
 	}
 	now := time.Now().UTC()
-	// ZBBS-HOME-284 #2: the sleep/break lifecycle drives the SleepingUntil /
-	// BreakUntil timestamps, NOT the State enum (nothing transitions State at
-	// runtime yet — see actor.go). Gate on the timestamps too, so a warrant
-	// already in flight when an NPC beds down doesn't fire an LLM tick against
-	// a sleeping or on-break actor. Same posture as the State check above:
-	// eligible=false / stale=false → the warrant stays OPEN, the evaluator
-	// backs off, and the next scan after wake / break-end resumes it.
+	// ZBBS-HOME-284 #2/#4: SleepingUntil / BreakUntil are the AUTHORITATIVE
+	// rest signal — the sleep/break lifecycle drives these timestamps directly,
+	// and the State enum above is a soft-set companion (executeNPCSleep sets
+	// StateSleeping, executeTakeBreak sets StateResting) that the macro-state
+	// can lag behind. Gate on the timestamps so a warrant already in flight when
+	// an NPC beds down doesn't fire an LLM tick against a sleeping or on-break
+	// actor even if its enum hasn't been re-set. Same posture as the State check
+	// above: eligible=false / stale=false → the warrant stays OPEN, the
+	// evaluator backs off, and the next scan after wake / break-end resumes it.
 	if a.SleepingUntil != nil && a.SleepingUntil.After(now) {
 		return false, false
 	}
