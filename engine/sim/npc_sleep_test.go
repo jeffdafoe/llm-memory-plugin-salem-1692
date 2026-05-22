@@ -77,6 +77,9 @@ func TestExecuteNPCSleep(t *testing.T) {
 	if a.LastTirednessRecoveryAt == nil || !a.LastTirednessRecoveryAt.Equal(now) {
 		t.Errorf("recovery cursor = %v, want %v (stamped at window open)", a.LastTirednessRecoveryAt, now)
 	}
+	if a.State != StateSleeping {
+		t.Errorf("State = %q, want %q (soft-set on bed-down)", a.State, StateSleeping)
+	}
 
 	// Idempotent: already sleeping → no-op.
 	prev := *a.SleepingUntil
@@ -244,6 +247,9 @@ func TestWakeExpiredNPCSleepers(t *testing.T) {
 	}
 	if capped.SleepingUntil != nil || capped.LastTirednessRecoveryAt != nil {
 		t.Error("capped NPC should wake and clear its recovery cursor")
+	}
+	if capped.State != StateIdle {
+		t.Errorf("woken NPC State = %q, want %q", capped.State, StateIdle)
 	}
 	if onShift.SleepingUntil != nil {
 		t.Error("on-shift NPC should wake at shift start")

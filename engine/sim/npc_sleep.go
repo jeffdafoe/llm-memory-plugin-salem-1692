@@ -31,6 +31,21 @@ import (
 // shift-start wakes them sooner. Matches v1's npc_sleep_max_duration_hours.
 const DefaultNPCSleepMaxDurationHours = 12
 
+// actorIsResting reports whether the actor is currently asleep or on break —
+// its rest window is still ahead of now. Uses .After(now) (not just non-nil) so
+// a lingering expired window between cap-expiry and the next wake sweep doesn't
+// wrongly count as resting. Consumed by occupancy (drop "not open for business"
+// keepers from active-presence headcounts) and the reactor rest gate.
+func actorIsResting(a *Actor, now time.Time) bool {
+	if a.SleepingUntil != nil && a.SleepingUntil.After(now) {
+		return true
+	}
+	if a.BreakUntil != nil && a.BreakUntil.After(now) {
+		return true
+	}
+	return false
+}
+
 // isAgentNPC reports whether the actor is an agent-backed NPC (stateful or
 // shared-VA) — the populations the sleep machine drives. PCs and decoratives
 // are excluded; transient visitors (KindNPCShared) fall out of the auto-sleep
@@ -48,6 +63,9 @@ func isActorOnShift(a *Actor, nowMinute int) bool {
 		return false
 	}
 	start, end := *a.ScheduleStartMin, *a.ScheduleEndMin
+	// Half-open window [start, end): start inclusive, end exclusive. start==end
+	// is an empty (always-off) shift, NOT a 24h shift — matches v1's CASE,
+	// which never encoded "always on" as equal endpoints.
 	if start <= end {
 		return nowMinute >= start && nowMinute < end
 	}
@@ -65,16 +83,13 @@ func localMinuteOfDay(w *World, at time.Time) int {
 	return local.Hour()*60 + local.Minute()
 }
 
-// executeNPCSleep beds an NPC: sets SleepingUntil = now + the configured cap
-// and stamps the tiredness-recovery cursor at the window's open so the recovery
-// sweep (#1) counts from bed-down rather than its next lazy-init pass.
-// Idempotent — a no-op (returns false) if already sleeping.
-//
-// OCCUPANCY (deferred, see file note below): v1 also refreshed the structure's
-// occupied/unoccupied visual here. v2 doesn't yet, because excluding sleeping
-// actors from the occupancy headcount conflicts with the night-only inn (which
-// is meant to be LIT precisely because guests are sleeping in it). That's an
-// open question for work, who owns occupancy.go — see ZBBS-HOME-284 design note.
+// executeNPCSleep beds an NPC: sets SleepingUntil = now + the configured cap,
+// stamps the tiredness-recovery cursor at the window's open so the recovery
+// sweep (#1) counts from bed-down rather than its next lazy-init pass, soft-sets
+// the State enum to StateSleeping (so the macro-state stops lying — the
+// timestamp stays authoritative for eligibility), and refreshes occupancy on
+// the structure (a home==work tavern darkens when its keeper sleeps; option (b),
+// non-night-only only). Idempotent — a no-op (returns false) if already sleeping.
 //
 // Runs on the world goroutine (called inline from a subscriber or a Command).
 func executeNPCSleep(w *World, a *Actor, now time.Time) bool {
@@ -89,13 +104,24 @@ func executeNPCSleep(w *World, a *Actor, now time.Time) bool {
 	a.SleepingUntil = &wakeAt
 	stamp := now
 	a.LastTirednessRecoveryAt = &stamp
+	a.State = StateSleeping
+	if a.InsideStructureID != "" {
+		refreshStructureOccupancyState(w, a.InsideStructureID)
+	}
 	return true
 }
 
-// wakeNPC clears an NPC's sleep and drops the recovery cursor (window closed).
-func wakeNPC(a *Actor) {
+// wakeNPC clears an NPC's sleep, drops the recovery cursor (window closed),
+// resets the macro-state to idle (no prior-state restore — the next thing the
+// NPC does re-sets it), and refreshes occupancy (a darkened home==work tavern
+// re-lights when its keeper wakes).
+func wakeNPC(w *World, a *Actor) {
 	a.SleepingUntil = nil
 	a.LastTirednessRecoveryAt = nil
+	a.State = StateIdle
+	if a.InsideStructureID != "" {
+		refreshStructureOccupancyState(w, a.InsideStructureID)
+	}
 }
 
 // handleAutoSleepOnArrival beds an NPC that arrives at its home off-shift. The
@@ -203,7 +229,7 @@ func WakeExpiredNPCSleepers(now time.Time) Command {
 				if !capReached && !isActorOnShift(a, nowMinute) {
 					continue
 				}
-				wakeNPC(a)
+				wakeNPC(w, a)
 				woken++
 			}
 			return woken, nil

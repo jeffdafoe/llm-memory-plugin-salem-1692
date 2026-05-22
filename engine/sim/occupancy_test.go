@@ -160,20 +160,77 @@ func TestOccupancy_InnNightOnly(t *testing.T) {
 	}
 }
 
-// TestOccupancy_CountsBreakSleepingForNow documents the accepted v2 behavior:
-// because v2 has no take_break/sleep lifecycle yet (nothing transitions
-// BreakUntil/SleepingUntil at runtime), occupancy counts every present actor
-// regardless of those fields. The v1-style exclusion — plus a recompute trigger
-// on the wake/end-break transition — lands when that lifecycle is ported, so
-// the count never goes stale waiting on a timer with no setter to fire from.
-func TestOccupancy_CountsBreakSleepingForNow(t *testing.T) {
+// TestOccupancy_RestingExcludedNonNightOnly verifies option (b) (ZBBS-HOME-284 #2):
+// in a non-night-only structure (tavern = open-for-business), a sleeping or
+// on-break keeper does NOT count, so the structure darkens — the home==work
+// vendor case. In a night-only structure (inn = guests lodging) everyone counts,
+// so a sleeping guest keeps it lit at night.
+func TestOccupancy_RestingExcludedNonNightOnly(t *testing.T) {
 	w, _ := buildOccupancyWorld(t)
 	future := time.Now().Add(time.Hour)
 
-	// An actor flagged on-break is still physically present, so it counts (min 1).
-	seedActorInside(t, w, "on-break", "tavern", &future, nil)
+	// Tavern (non-night-only, min 1): a sleeping keeper doesn't count → dark.
+	seedActorInside(t, w, "keeper", "tavern", nil, &future)
+	if got := objState(w, "tavern"); got != "unoccupied" {
+		t.Fatalf("sleeping keeper should not count: tavern = %q, want unoccupied", got)
+	}
+
+	// On-break also excluded for a non-night-only structure.
+	seedActorInside(t, w, "breaker", "workshop", &future, nil)
+	if got := objState(w, "workshop"); got != "unoccupied" {
+		t.Fatalf("on-break actor should not count: workshop = %q, want unoccupied", got)
+	}
+
+	// Inn (night-only): a sleeping guest DOES count. Lit at night.
+	seedActorInside(t, w, "guest", "inn", nil, &future)
+	if _, err := w.Send(sim.ApplyPhaseTransition(sim.PhaseNight)); err != nil {
+		t.Fatalf("transition night: %v", err)
+	}
+	if got := objState(w, "inn"); got != "occupied" {
+		t.Fatalf("sleeping guest in night-only inn should count: inn = %q, want occupied", got)
+	}
+}
+
+// TestOccupancy_HomeWorkKeeperDarkensOnSleep is the end-to-end recompute-trigger
+// check: a home==work tavern keeper bedded by the sleep backstop darkens the
+// tavern (executeNPCSleep → refresh), and waking re-lights it (wakeNPC → refresh).
+func TestOccupancy_HomeWorkKeeperDarkensOnSleep(t *testing.T) {
+	w, _ := buildOccupancyWorld(t)
+
+	// Awake home==work keeper inside the tavern (unscheduled → always off-shift).
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := &sim.Actor{ID: "keeper", DisplayName: "Keeper", Kind: sim.KindNPCStateful, State: sim.StateIdle, HomeStructureID: "tavern"}
+		world.Actors["keeper"] = a
+		sim.SetActorInsideStructure(world, a, "tavern")
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed keeper: %v", err)
+	}
 	if got := objState(w, "tavern"); got != "occupied" {
-		t.Fatalf("present actor (on break) should count: tavern = %q, want occupied", got)
+		t.Fatalf("awake keeper present: tavern = %q, want occupied", got)
+	}
+
+	// Backstop beds the off-shift at-home keeper → tavern darkens.
+	if _, err := w.Send(sim.AutoBedAtHomeNPCs(time.Now().UTC())); err != nil {
+		t.Fatalf("auto-bed: %v", err)
+	}
+	if got := objState(w, "tavern"); got != "unoccupied" {
+		t.Fatalf("keeper asleep: tavern = %q, want unoccupied", got)
+	}
+
+	// Expire the sleep cap, run the wake sweep → tavern re-lights.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		past := time.Now().Add(-time.Minute)
+		world.Actors["keeper"].SleepingUntil = &past
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("expire sleep: %v", err)
+	}
+	if _, err := w.Send(sim.WakeExpiredNPCSleepers(time.Now().UTC())); err != nil {
+		t.Fatalf("wake: %v", err)
+	}
+	if got := objState(w, "tavern"); got != "occupied" {
+		t.Fatalf("keeper awake again: tavern = %q, want occupied", got)
 	}
 }
 
