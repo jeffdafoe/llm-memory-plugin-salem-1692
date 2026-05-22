@@ -69,6 +69,7 @@ func (s *Server) Handler() http.Handler {
 	// world command channel (see write_handlers.go).
 	mux.HandleFunc("POST /api/village/pc/move", s.requireAuth(s.handlePCMove))
 	mux.HandleFunc("POST /api/village/pc/speak", s.requireAuth(s.handlePCSpeak))
+	mux.HandleFunc("POST /api/village/pc/pay", s.requireAuth(s.handlePCPay))
 	// Admin write routes — requireAuth PLUS an in-command admin gate (the
 	// caller's actor must have admin = true; see adminCommand in
 	// write_handlers.go). Distinct from pc/* whose ownership is structural.
