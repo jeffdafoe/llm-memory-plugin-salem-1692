@@ -92,7 +92,12 @@ func resolveBreakUntil(loc *time.Location, untilHour int, at time.Time) (time.Ti
 	if maxUntil := now.Add(24 * time.Hour); breakUntil.After(maxUntil) {
 		breakUntil = maxUntil
 	}
-	return breakUntil, nil
+	// Normalize to UTC for storage consistency with SleepingUntil (set via
+	// now.Add, UTC) and the recovery cursor. The instant is unchanged —
+	// .After/.Equal are zone-agnostic — but it keeps a future direct .Format()
+	// on BreakUntil from surprising someone with a world-tz string (both
+	// reviewers flagged this, ZBBS-HOME-284 #4).
+	return breakUntil.UTC(), nil
 }
 
 // executeTakeBreak applies the break to an actor: sets BreakUntil, stamps the
