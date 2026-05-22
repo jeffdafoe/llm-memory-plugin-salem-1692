@@ -66,6 +66,18 @@ func MoveToStructure(actorID ActorID, structureID StructureID, now time.Time) Co
 				return MoveActorResult{}, fmt.Errorf(
 					"there is no structure %q to walk to — use a structure_id you can see in your perception", structureID)
 			}
+			// A structure record with no backing VillageObject placement can't
+			// be walked to: moveToCanEnter would silently fall back to a visit
+			// and MoveActor's visitor-slot resolve (pickVisitorSlot reads the
+			// placement's loiter pin) would then fail with a generic
+			// "destination cannot be resolved". Catch the missing placement here
+			// so the model gets a crisp, retry-anchored error instead. The
+			// shared-identity bridge keeps these in lockstep in practice; this
+			// guards partial/desynced world state (code_review, ZBBS-HOME-285).
+			if _, _, ok := villageObjectForStructure(w, structureID); !ok {
+				return MoveActorResult{}, fmt.Errorf(
+					"structure %q has no placement in the village to walk to — pick a different structure_id from your perception", structureID)
+			}
 			if a.InsideStructureID == structureID {
 				return MoveActorResult{}, fmt.Errorf(
 					"you are already at %q — no need to move there; pick a different action this turn", structureID)
