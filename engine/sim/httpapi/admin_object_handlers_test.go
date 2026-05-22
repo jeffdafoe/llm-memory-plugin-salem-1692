@@ -642,3 +642,107 @@ func TestValidateObjectPosition(t *testing.T) {
 		t.Errorf("off-map x: status=%d, want 422", status)
 	}
 }
+
+func TestHandleAdminObjectSetRefresh_Accepted(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+
+	body := `{"object_id":"obj1","rows":[` +
+		`{"attribute":"thirst","amount":-12,"available_quantity":3,"max_quantity":10,"refresh_mode":"continuous","refresh_period_hours":2},` +
+		`{"attribute":"tiredness","amount":-4,"dwell_delta":-2,"dwell_period_minutes":30}` +
+		`]}`
+	rec := post(t, srv, "/api/village/admin/object/set-refresh", body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var res adminObjectRefreshResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if res.ID != "obj1" || len(res.Rows) != 2 {
+		t.Fatalf("response = %+v, want obj1 with 2 rows", res)
+	}
+	if res.Rows[0].Attribute != "thirst" || res.Rows[0].Amount != -12 ||
+		res.Rows[0].AvailableQuantity == nil || *res.Rows[0].AvailableQuantity != 3 ||
+		res.Rows[0].RefreshMode != "continuous" {
+		t.Errorf("row 0 = %+v, want finite thirst", res.Rows[0])
+	}
+	if res.Rows[1].Attribute != "tiredness" || res.Rows[1].AvailableQuantity != nil ||
+		res.Rows[1].RefreshMode != "" || res.Rows[1].DwellDelta == nil || *res.Rows[1].DwellDelta != -2 {
+		t.Errorf("row 1 = %+v, want infinite tiredness+dwell", res.Rows[1])
+	}
+}
+
+// TestHandleAdminObjectSetRefresh_ClearsToEmptyArray: an empty rows clears the
+// set and the response body carries [] (not null) per the always-an-array rule.
+func TestHandleAdminObjectSetRefresh_ClearsToEmptyArray(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+
+	rec := post(t, srv, "/api/village/admin/object/set-refresh", `{"object_id":"obj1","rows":[]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	// The body must contain "rows":[] — a null would break the editor's array read.
+	if !strings.Contains(rec.Body.String(), `"rows":[]`) {
+		t.Errorf("body = %s, want rows:[]", rec.Body.String())
+	}
+}
+
+func TestHandleAdminObjectSetRefresh_Invalid(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+
+	// Positive amount violates the amount_negative CHECK → 400.
+	rec := post(t, srv, "/api/village/admin/object/set-refresh",
+		`{"object_id":"obj1","rows":[{"attribute":"thirst","amount":5}]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleAdminObjectSetRefresh_NotFound(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+
+	rec := post(t, srv, "/api/village/admin/object/set-refresh",
+		`{"object_id":"ghost","rows":[{"attribute":"thirst","amount":-1}]}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleAdminObjectSetRefresh_MissingObjectID(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+
+	rec := post(t, srv, "/api/village/admin/object/set-refresh", `{"rows":[]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleAdminObjectSetRefresh_Forbidden(t *testing.T) {
+	srv := NewServer(seededWorld(t), okAuth{})
+	rec := post(t, srv, "/api/village/admin/object/set-refresh",
+		`{"object_id":"obj1","rows":[]}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleAdminObjectSetRefresh_TrailingJSON(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+	rec := post(t, srv, "/api/village/admin/object/set-refresh",
+		`{"object_id":"obj1","rows":[]} garbage`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}

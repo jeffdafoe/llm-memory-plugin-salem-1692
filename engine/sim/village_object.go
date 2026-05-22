@@ -661,3 +661,79 @@ func RemoveVillageObjectTag(id VillageObjectID, tag string) Command {
 		},
 	}
 }
+
+// SetRefreshesResult echoes the applied refresh set back to the HTTP layer. The
+// rows are a fresh deep copy (never the live world slice), so the handler can
+// serialize them off the world goroutine without racing the regen tick.
+type SetRefreshesResult struct {
+	ID        VillageObjectID
+	Refreshes []*ObjectRefresh
+}
+
+// SetVillageObjectRefreshes replaces a village object's entire refresh-policy
+// set. The incoming rows are validated by ValidateObjectRefreshes (which mirrors
+// the object_refresh CHECK constraints) BEFORE any mutation, so an invalid set
+// returns ErrInvalidRefresh and leaves the object untouched. An empty set clears
+// all refresh policies.
+//
+// last_refresh_at is engine-managed, not caller-supplied: for an incoming row
+// whose attribute matches an existing row with the SAME refresh_mode and
+// refresh_period_hours, the existing regen anchor is preserved — an unrelated
+// edit (amount, supply) shouldn't restart the regen schedule. Any other row
+// (new, or with a changed mode/period) starts with a nil anchor so the regen
+// tick re-anchors it on its next pass. This mirrors the v1 PUT .../refresh
+// handler (engine/object_refresh_api.go).
+//
+// Returns ErrVillageObjectNotFound if the object is absent. Emits no event —
+// refresh config is not in ObjectDTO, so the change is invisible to a connected
+// client and needs no broadcast (the editor re-reads). Same restart-loss-until-
+// checkpoint persistence as the other admin object commands.
+func SetVillageObjectRefreshes(id VillageObjectID, rows []*ObjectRefresh) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			if err := ValidateObjectRefreshes(rows); err != nil {
+				return nil, err
+			}
+			obj, ok := w.VillageObjects[id]
+			if !ok {
+				return nil, ErrVillageObjectNotFound
+			}
+			// Index existing rows by attribute so an unchanged regen schedule
+			// (mode + period) carries its anchor forward instead of resetting.
+			// Guard against a nil persisted row (trusts world state, not the
+			// already-validated input) so an admin edit can't panic on bad data.
+			existing := make(map[NeedKey]*ObjectRefresh, len(obj.Refreshes))
+			for _, r := range obj.Refreshes {
+				if r == nil {
+					continue
+				}
+				existing[r.Attribute] = r
+			}
+			next := make([]*ObjectRefresh, 0, len(rows))
+			for _, r := range rows {
+				clone := cloneObjectRefresh(r)
+				// Only carry the anchor forward for a row that actually regens
+				// (finite + a period): the regen tick ignores any other row, so
+				// preserving its anchor would just leave dead state attached.
+				prior, ok := existing[clone.Attribute]
+				if ok && clone.IsFinite() && clone.RefreshPeriodHours != nil &&
+					prior.RefreshMode == clone.RefreshMode &&
+					intPtrEqual(prior.RefreshPeriodHours, clone.RefreshPeriodHours) {
+					clone.LastRefreshAt = copyTimePtr(prior.LastRefreshAt)
+				} else {
+					clone.LastRefreshAt = nil
+				}
+				next = append(next, clone)
+			}
+			obj.Refreshes = next
+
+			// Return a deep copy so the result, read off the world goroutine by
+			// the HTTP handler, never aliases the live rows the regen tick mutates.
+			snapshot := make([]*ObjectRefresh, len(next))
+			for i, r := range next {
+				snapshot[i] = cloneObjectRefresh(r)
+			}
+			return SetRefreshesResult{ID: id, Refreshes: snapshot}, nil
+		},
+	}
+}
