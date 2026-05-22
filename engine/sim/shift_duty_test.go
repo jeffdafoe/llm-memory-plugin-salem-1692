@@ -260,8 +260,44 @@ func TestShiftTick_AgentStampsDutyWarrant(t *testing.T) {
 		t.Fatalf("expected a shift_duty warrant; kinds = %v", warrantKinds(a))
 	}
 	for _, m := range a.Warrants {
-		if r, ok := m.Reason.(ShiftDutyWarrantReason); ok && !r.ToWork {
-			t.Error("ToWork = false, want true (on-shift, heading to work)")
+		if r, ok := m.Reason.(ShiftDutyWarrantReason); ok {
+			if !r.ToWork {
+				t.Error("ToWork = false, want true (on-shift, heading to work)")
+			}
+			// 2b: the warrant must carry the target structure id (the value the
+			// agent passes to move_to) — WorkStructureID when heading to work.
+			if r.TargetStructureID != "shop" {
+				t.Errorf("TargetStructureID = %q, want shop (WorkStructureID)", r.TargetStructureID)
+			}
+		}
+	}
+}
+
+// TestShiftTick_AgentToHomeWarrantCarriesHomeID is the to-home companion of the
+// to-work case above: an off-shift agent away from home gets a shift_duty
+// warrant whose TargetStructureID is its HomeStructureID, so 2b's cue surfaces
+// the right structure for move_to(home).
+func TestShiftTick_AgentToHomeWarrantCarriesHomeID(t *testing.T) {
+	a := shiftNPC("n", KindNPCStateful, "shop", "home", "shop") // at work, off shift
+	a.ScheduleStartMin = intptr(420)
+	a.ScheduleEndMin = intptr(960)
+	w := sleepTestWorld(a)
+	now := time.Date(2026, 5, 22, 21, 40, 0, 0, time.UTC) // 21:40 UTC, minute 1300, off shift
+
+	if _, err := ShiftTick(now).Fn(w); err != nil {
+		t.Fatalf("ShiftTick: %v", err)
+	}
+	if a.WarrantedSince == nil || !hasWarrantKind(a, WarrantKindShiftDuty) {
+		t.Fatalf("expected a shift_duty warrant; kinds = %v", warrantKinds(a))
+	}
+	for _, m := range a.Warrants {
+		if r, ok := m.Reason.(ShiftDutyWarrantReason); ok {
+			if r.ToWork {
+				t.Error("ToWork = true, want false (off-shift, heading home)")
+			}
+			if r.TargetStructureID != "home" {
+				t.Errorf("TargetStructureID = %q, want home (HomeStructureID)", r.TargetStructureID)
+			}
 		}
 	}
 }

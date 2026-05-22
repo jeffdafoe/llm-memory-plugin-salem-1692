@@ -338,6 +338,58 @@ func idleBackstopWarrant(quiet time.Duration) sim.WarrantMeta {
 	}
 }
 
+func shiftDutyWarrant(toWork bool, target sim.StructureID) sim.WarrantMeta {
+	return sim.WarrantMeta{
+		Reason: sim.ShiftDutyWarrantReason{ToWork: toWork, TargetStructureID: target},
+	}
+}
+
+// TestRender_ShiftDutyWarrantLine pins the 2b shift-duty cue: direction prose
+// keyed on ToWork, and the target structure_id surfaced verbatim (the value the
+// model passes back to move_to). An empty target drops the parenthetical. The
+// single warrant always renders as ordinal "1.", and asserting the full line
+// (ordinal through trailing newline) pins line termination — so a future change
+// that appends junk after the cue, or drops the parenthetical incorrectly,
+// fails (code_review, 2026-05-22).
+func TestRender_ShiftDutyWarrantLine(t *testing.T) {
+	cases := []struct {
+		name     string
+		toWork   bool
+		target   sim.StructureID
+		wantLine string
+	}{
+		{
+			"to_work",
+			true, "smithy",
+			"1. [shift_duty] your shift has started — head to your workplace (structure_id: smithy)\n",
+		},
+		{
+			"to_home",
+			false, "cottage",
+			"1. [shift_duty] your shift has ended — head home (structure_id: cottage)\n",
+		},
+		{
+			"empty_target_drops_parenthetical",
+			true, "",
+			"1. [shift_duty] your shift has started — head to your workplace\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := Payload{
+				ActorID:  "moses",
+				Actor:    ActorView{State: sim.StateIdle},
+				Warrants: []sim.WarrantMeta{shiftDutyWarrant(tc.toWork, tc.target)},
+				Baseline: BaselinePresent,
+			}
+			out := Render(p, DefaultRenderConfig())
+			if !strings.Contains(out.Text, tc.wantLine) {
+				t.Errorf("Render output missing exact line %q\nOutput:\n%s", tc.wantLine, out.Text)
+			}
+		})
+	}
+}
+
 // TestRender_IdleBackstopWarrantLine pins the idle-backstop warrant line
 // shape — kind tag, duration rounded to whole seconds, the "consider
 // what to do next" prompt-shape that nudges the LLM without prescribing
