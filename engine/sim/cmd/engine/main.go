@@ -305,6 +305,7 @@ func startTickers(ctx context.Context, w *sim.World) {
 	go sim.RunLocomotionTicker(ctx, w)
 	go sim.RunPhaseTicker(ctx, w)
 	go sim.RunNeedsTicker(ctx, w)
+	go sim.RunTirednessRecoveryTicker(ctx, w)
 	go sim.RunDwellTicker(ctx, w)
 	go sim.RunProduceTicker(ctx, w)
 	go sim.RunObjectRefreshRegen(ctx, w)

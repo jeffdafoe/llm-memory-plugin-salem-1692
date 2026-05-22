@@ -70,6 +70,11 @@ type WorldSettings struct {
 	TirednessCriticalThreshold int
 	MovementFatiguePerTileX100 int
 
+	// TirednessRecoveryPerMinuteX100 is how fast tiredness drops per
+	// wall-clock minute while an actor is asleep or on break, stored ×100
+	// (10 → 0.1/min). 0 disables recovery. Consumed by RunTirednessRecoveryTicker.
+	TirednessRecoveryPerMinuteX100 int
+
 	// Reactor evaluator tunables (Phase 2 PR 2). Settings-driven gross
 	// gates — no per-call cost calculation; llm-memory-api's per-VA dollar
 	// budgets (MEM-052) own the hard $ ceiling.
