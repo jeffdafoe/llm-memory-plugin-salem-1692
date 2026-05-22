@@ -141,6 +141,14 @@ func handleAutoSleepOnArrival(w *World, evt Event) {
 	if a == nil || !isAgentNPC(a) || a.SleepingUntil != nil {
 		return
 	}
+	// On break → awake by choice; don't also bed them (ZBBS-HOME-284 #4 review,
+	// work). Mirrors the same skip in AutoBedAtHomeNPCs: enforcing "an actor
+	// never holds both BreakUntil and SleepingUntil at once" at BOTH auto-sleep
+	// entry points keeps endBreak's SleepingUntil guard purely defensive and
+	// avoids wakeNPC clearing a still-open break's cursor/state on shift-start.
+	if a.BreakUntil != nil && a.BreakUntil.After(arr.At) {
+		return
+	}
 	// Event-freshness: only act if the actor's current structure still matches
 	// the arrival event (a later move could have superseded it).
 	if a.InsideStructureID != arr.FinalStructureID {

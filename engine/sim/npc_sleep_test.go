@@ -91,6 +91,26 @@ func TestExecuteNPCSleep(t *testing.T) {
 	}
 }
 
+// TestAutoSleepOnArrival_SkipsOnBreak guards the no-both-windows invariant
+// (ZBBS-HOME-284 #4 review): an on-break NPC arriving home off-shift — which
+// would otherwise be bedded — must NOT also get a SleepingUntil window.
+func TestAutoSleepOnArrival_SkipsOnBreak(t *testing.T) {
+	offShift := time.Date(2026, 5, 22, 22, 0, 0, 0, time.UTC)
+	a := npc("k", KindNPCStateful) // unscheduled + home → would normally bed
+	bu := offShift.Add(2 * time.Hour)
+	a.BreakUntil = &bu
+	w := sleepTestWorld(a)
+
+	handleAutoSleepOnArrival(w, &ActorArrived{ActorID: a.ID, FinalStructureID: "home", At: offShift})
+
+	if a.SleepingUntil != nil {
+		t.Errorf("on-break NPC was bedded on arrival: SleepingUntil = %v", a.SleepingUntil)
+	}
+	if a.BreakUntil == nil || !a.BreakUntil.Equal(bu) {
+		t.Errorf("BreakUntil disturbed: %v", a.BreakUntil)
+	}
+}
+
 func TestAutoSleepOnArrival(t *testing.T) {
 	offShift := time.Date(2026, 5, 22, 22, 0, 0, 0, time.UTC) // 22:00 → minute 1320
 	onShift := time.Date(2026, 5, 22, 10, 0, 0, 0, time.UTC)  // 10:00 → minute 600
