@@ -363,3 +363,36 @@ type VillageObjectDeleted struct {
 }
 
 func (VillageObjectDeleted) isSimEvent() {}
+
+// VillageObjectDisplayNameChanged is emitted by SetVillageObjectDisplayName when
+// an object's DisplayName actually changes (the no-op short-circuit suppresses a
+// same-name emit, mirroring setVillageObjectStateInline). DisplayName is the new
+// post-mutation name; "" means the override was cleared (the client falls back
+// to the catalog name). display_name IS in ObjectDTO, so this change is
+// client-visible — the httpapi hub translates it to the object_display_name_changed
+// frame (ZBBS-HOME-283; WS seam settled with work, mail 6aad4f26).
+type VillageObjectDisplayNameChanged struct {
+	EventBase
+	ObjectID    VillageObjectID
+	DisplayName string
+	At          time.Time
+}
+
+func (VillageObjectDisplayNameChanged) isSimEvent() {}
+
+// VillageObjectTagsUpdated is emitted by AddVillageObjectTag /
+// RemoveVillageObjectTag when the tag set actually changes (an add of a tag
+// already present, or a remove of an absent tag, is a no-op and emits nothing).
+// Tags carries the AUTHORITATIVE full tag set AFTER the mutation — not a delta —
+// so a subscriber and the client read surface converge on one source of truth
+// regardless of which mutation produced it. tags IS in ObjectDTO; the httpapi
+// hub translates this to the village_object_tags_updated frame, always as a JSON
+// array (never null). (ZBBS-HOME-283; WS seam settled with work, mail 6aad4f26.)
+type VillageObjectTagsUpdated struct {
+	EventBase
+	ObjectID VillageObjectID
+	Tags     []string
+	At       time.Time
+}
+
+func (VillageObjectTagsUpdated) isSimEvent() {}

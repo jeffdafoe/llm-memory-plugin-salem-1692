@@ -417,6 +417,142 @@ func TestHandleAdminObjectSetLoiterOffset_NotFound(t *testing.T) {
 	}
 }
 
+// --- set-display-name (ZBBS-HOME-283) ---------------------------------
+
+func TestHandleAdminObjectSetDisplayName_Accepted(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+
+	rec := post(t, srv, "/api/village/admin/object/set-display-name", `{"object_id":"obj1","display_name":"The Crow's Nest"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var res adminObjectDisplayNameResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if res.ID != "obj1" || res.DisplayName != "The Crow's Nest" {
+		t.Errorf("response = %+v, want obj1 / The Crow's Nest", res)
+	}
+	if got := w.Published().VillageObjects["obj1"].DisplayName; got != "The Crow's Nest" {
+		t.Errorf("stored display name = %q, want The Crow's Nest", got)
+	}
+}
+
+func TestHandleAdminObjectSetDisplayName_InvalidName(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+
+	// An over-cap display name is invalid input → 400 (sim.ErrInvalidDisplayName).
+	body := `{"object_id":"obj1","display_name":"` + strings.Repeat("z", sim.MaxVillageObjectDisplayNameLen+1) + `"}`
+	rec := post(t, srv, "/api/village/admin/object/set-display-name", body)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleAdminObjectSetDisplayName_MissingObjectID(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+
+	rec := post(t, srv, "/api/village/admin/object/set-display-name", `{"display_name":"X"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleAdminObjectSetDisplayName_NotFound(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+
+	rec := post(t, srv, "/api/village/admin/object/set-display-name", `{"object_id":"ghost","display_name":"X"}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleAdminObjectSetDisplayName_Forbidden(t *testing.T) {
+	srv := NewServer(seededWorld(t), okAuth{})
+	rec := post(t, srv, "/api/village/admin/object/set-display-name", `{"object_id":"obj1","display_name":"X"}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// --- add-tag / remove-tag (ZBBS-HOME-283) -----------------------------
+
+func TestHandleAdminObjectAddTag_Accepted(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+
+	rec := post(t, srv, "/api/village/admin/object/add-tag", `{"object_id":"obj1","tag":"vendor"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var res adminObjectTagResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if res.ID != "obj1" || len(res.Tags) != 1 || res.Tags[0] != "vendor" {
+		t.Errorf("response = %+v, want obj1 / [vendor]", res)
+	}
+}
+
+func TestHandleAdminObjectAddTag_InvalidTag(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+
+	// A blank tag is invalid input → 400 (sim.ErrInvalidTag).
+	rec := post(t, srv, "/api/village/admin/object/add-tag", `{"object_id":"obj1","tag":"   "}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleAdminObjectAddTag_NotFound(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+
+	rec := post(t, srv, "/api/village/admin/object/add-tag", `{"object_id":"ghost","tag":"vendor"}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestHandleAdminObjectRemoveTag_LastTagEmptyArray pins the "always an array"
+// response contract: removing the last tag returns tags as [] (not null).
+func TestHandleAdminObjectRemoveTag_LastTagEmptyArray(t *testing.T) {
+	w := seededWorld(t)
+	seedAdmin(t, w, "admin-tester", "tester")
+	srv := NewServer(w, okAuth{})
+
+	if rec := post(t, srv, "/api/village/admin/object/add-tag", `{"object_id":"obj1","tag":"vendor"}`); rec.Code != http.StatusOK {
+		t.Fatalf("seed add status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	rec := post(t, srv, "/api/village/admin/object/remove-tag", `{"object_id":"obj1","tag":"vendor"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"tags":[]`) {
+		t.Errorf("body = %s, want tags as []", rec.Body.String())
+	}
+}
+
+func TestHandleAdminObjectRemoveTag_Forbidden(t *testing.T) {
+	srv := NewServer(seededWorld(t), okAuth{})
+	rec := post(t, srv, "/api/village/admin/object/remove-tag", `{"object_id":"obj1","tag":"vendor"}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestHandleAdminObjectSetLoiterOffset_Forbidden(t *testing.T) {
 	srv := NewServer(seededWorld(t), okAuth{})
 	rec := post(t, srv, "/api/village/admin/object/set-loiter-offset", `{"object_id":"obj1","x":1,"y":1}`)

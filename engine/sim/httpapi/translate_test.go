@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -219,6 +220,67 @@ func TestTranslateEvent_VillageObjectStateChanged(t *testing.T) {
 	}
 	if d.ID != "lamp-3" || d.State != "lit" {
 		t.Errorf("object state fields = %+v, want {lamp-3 lit}", d)
+	}
+}
+
+func TestTranslateEvent_VillageObjectDisplayNameChanged(t *testing.T) {
+	frame, ok := TranslateEvent(&sim.VillageObjectDisplayNameChanged{
+		ObjectID:    "tavern",
+		DisplayName: "The Crow's Nest",
+	})
+	if !ok {
+		t.Fatal("VillageObjectDisplayNameChanged should translate")
+	}
+	if frame.Type != "object_display_name_changed" {
+		t.Fatalf("type = %q, want object_display_name_changed", frame.Type)
+	}
+	d, isType := frame.Data.(objectDisplayNameChangedWireDTO)
+	if !isType {
+		t.Fatalf("data type = %T, want objectDisplayNameChangedWireDTO", frame.Data)
+	}
+	if d.ID != "tavern" || d.DisplayName != "The Crow's Nest" {
+		t.Errorf("display-name fields = %+v, want {tavern The Crow's Nest}", d)
+	}
+}
+
+func TestTranslateEvent_VillageObjectTagsUpdated(t *testing.T) {
+	frame, ok := TranslateEvent(&sim.VillageObjectTagsUpdated{
+		ObjectID: "tavern",
+		Tags:     []string{"vendor", "innkeeper"},
+	})
+	if !ok {
+		t.Fatal("VillageObjectTagsUpdated should translate")
+	}
+	if frame.Type != "village_object_tags_updated" {
+		t.Fatalf("type = %q, want village_object_tags_updated", frame.Type)
+	}
+	d, isType := frame.Data.(objectTagsUpdatedWireDTO)
+	if !isType {
+		t.Fatalf("data type = %T, want objectTagsUpdatedWireDTO", frame.Data)
+	}
+	if d.ID != "tavern" || len(d.Tags) != 2 || d.Tags[0] != "vendor" || d.Tags[1] != "innkeeper" {
+		t.Errorf("tags fields = %+v, want {tavern [vendor innkeeper]}", d)
+	}
+}
+
+// TestTranslateEvent_VillageObjectTagsUpdated_NilIsEmptyArray pins the
+// "always an array, never null" wire contract: a nil tag set (last tag removed)
+// must marshal as [] so the client tag handler doesn't choke on a JSON null.
+func TestTranslateEvent_VillageObjectTagsUpdated_NilIsEmptyArray(t *testing.T) {
+	frame, ok := TranslateEvent(&sim.VillageObjectTagsUpdated{ObjectID: "tavern", Tags: nil})
+	if !ok {
+		t.Fatal("VillageObjectTagsUpdated should translate")
+	}
+	d := frame.Data.(objectTagsUpdatedWireDTO)
+	if d.Tags == nil {
+		t.Fatal("Tags is nil; want a non-nil empty slice so it marshals as []")
+	}
+	b, err := json.Marshal(d)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(b), `"tags":[]`) {
+		t.Errorf("marshaled = %s, want tags as []", b)
 	}
 }
 

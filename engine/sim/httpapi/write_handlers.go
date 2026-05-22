@@ -1000,6 +1000,183 @@ func validEntryPolicy(s string) bool {
 	}
 }
 
+// adminObjectDisplayNameRequest is the POST .../set-display-name body: the
+// target object id + the new display name. An empty display_name clears the
+// override (the client falls back to the catalog name).
+type adminObjectDisplayNameRequest struct {
+	ObjectID    string `json:"object_id"`
+	DisplayName string `json:"display_name"`
+}
+
+// adminObjectDisplayNameResponse echoes the applied (trimmed) display name.
+type adminObjectDisplayNameResponse struct {
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name"`
+}
+
+// handleAdminObjectSetDisplayName sets (or clears) a placed object's display-name
+// override. Admin-only: requireAuth + adminCommand. Delegates to
+// sim.SetVillageObjectDisplayName, which trims + validates the name and emits
+// VillageObjectDisplayNameChanged on an actual change (→ object_display_name_changed
+// WS frame). 400 malformed / missing id / invalid name; 403 not admin; 404 object
+// not found; 200 ok.
+func (s *Server) handleAdminObjectSetDisplayName(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	if user == nil {
+		writeAuthError(w, "invalid")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxAdminBodyBytes)
+	dec := json.NewDecoder(r.Body)
+	var req adminObjectDisplayNameRequest
+	if err := dec.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.ObjectID == "" {
+		writeError(w, http.StatusBadRequest, "object_id is required")
+		return
+	}
+
+	res, err := s.world.SendContext(r.Context(), adminCommand(user.Username, func(world *sim.World) (any, error) {
+		return sim.SetVillageObjectDisplayName(sim.VillageObjectID(req.ObjectID), req.DisplayName).Fn(world)
+	}))
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
+		if errors.Is(err, errAdminForbidden) {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
+		if errors.Is(err, sim.ErrVillageObjectNotFound) {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		// sim.ErrInvalidDisplayName is bad input (over-cap / control char) — the
+		// command is the validation authority, so map its sentinel to 400 rather
+		// than the 422 default.
+		if errors.Is(err, sim.ErrInvalidDisplayName) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+
+	out, ok := res.(sim.SetDisplayNameResult)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "unexpected set-display-name result")
+		return
+	}
+	writeJSON(w, adminObjectDisplayNameResponse{ID: string(out.ID), DisplayName: out.DisplayName})
+}
+
+// adminObjectTagRequest is the POST .../add-tag and .../remove-tag body: the
+// target object id + the single tag to add or remove.
+type adminObjectTagRequest struct {
+	ObjectID string `json:"object_id"`
+	Tag      string `json:"tag"`
+}
+
+// adminObjectTagResponse echoes the authoritative full tag set after the
+// mutation (always an array; an object with no tags serializes as []).
+type adminObjectTagResponse struct {
+	ID   string   `json:"id"`
+	Tags []string `json:"tags"`
+}
+
+// handleAdminObjectAddTag adds a per-instance tag to a placed object. Admin-only:
+// requireAuth + adminCommand. Delegates to sim.AddVillageObjectTag (idempotent —
+// a tag already present is a no-op that emits nothing). On an actual add the
+// command emits VillageObjectTagsUpdated (→ village_object_tags_updated WS frame).
+// 400 malformed / missing id / invalid tag; 403 not admin; 404 object not found;
+// 200 ok.
+func (s *Server) handleAdminObjectAddTag(w http.ResponseWriter, r *http.Request) {
+	s.handleAdminObjectTagMutation(w, r, true)
+}
+
+// handleAdminObjectRemoveTag removes a per-instance tag from a placed object.
+// Admin-only; delegates to sim.RemoveVillageObjectTag (idempotent — removing an
+// absent tag is a no-op). Same status mapping as add-tag.
+func (s *Server) handleAdminObjectRemoveTag(w http.ResponseWriter, r *http.Request) {
+	s.handleAdminObjectTagMutation(w, r, false)
+}
+
+// handleAdminObjectTagMutation is the shared add/remove-tag handler — the two
+// routes differ only in which sim command they dispatch, so the auth gate, body
+// decode, validation, status mapping, and response shape live here once. add
+// selects AddVillageObjectTag (true) or RemoveVillageObjectTag (false).
+func (s *Server) handleAdminObjectTagMutation(w http.ResponseWriter, r *http.Request, add bool) {
+	user := userFromContext(r.Context())
+	if user == nil {
+		writeAuthError(w, "invalid")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxAdminBodyBytes)
+	dec := json.NewDecoder(r.Body)
+	var req adminObjectTagRequest
+	if err := dec.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.ObjectID == "" {
+		writeError(w, http.StatusBadRequest, "object_id is required")
+		return
+	}
+
+	res, err := s.world.SendContext(r.Context(), adminCommand(user.Username, func(world *sim.World) (any, error) {
+		if add {
+			return sim.AddVillageObjectTag(sim.VillageObjectID(req.ObjectID), req.Tag).Fn(world)
+		}
+		return sim.RemoveVillageObjectTag(sim.VillageObjectID(req.ObjectID), req.Tag).Fn(world)
+	}))
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
+		if errors.Is(err, errAdminForbidden) {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
+		if errors.Is(err, sim.ErrVillageObjectNotFound) {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		// sim.ErrInvalidTag is bad input (empty / over-cap / control char) — the
+		// command is the validation authority, so map its sentinel to 400.
+		if errors.Is(err, sim.ErrInvalidTag) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+
+	out, ok := res.(sim.SetTagsResult)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "unexpected tag-mutation result")
+		return
+	}
+	// Coerce nil → [] so the response body is a JSON array even when the last
+	// tag was just removed (mirrors the WS frame's "always an array" contract).
+	tags := out.Tags
+	if tags == nil {
+		tags = []string{}
+	}
+	writeJSON(w, adminObjectTagResponse{ID: string(out.ID), Tags: tags})
+}
+
 // writeError writes a JSON {error} body with the given status.
 func writeError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")

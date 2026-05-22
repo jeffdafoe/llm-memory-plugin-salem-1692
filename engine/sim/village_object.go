@@ -4,7 +4,9 @@ import (
 	"errors"
 	"math"
 	"sort"
+	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // VillageObject — per-placement instance of an Asset on the village map.
@@ -496,6 +498,166 @@ func SetVillageObjectEntryPolicy(id VillageObjectID, policy EntryPolicy) Command
 			}
 			obj.EntryPolicy = policy
 			return SetEntryPolicyResult{ID: id, EntryPolicy: policy}, nil
+		},
+	}
+}
+
+// Client-visible metadata commands (SetVillageObjectDisplayName / AddVillageObjectTag
+// / RemoveVillageObjectTag) back the editor's display-name + tag write routes.
+// Unlike the owner/loiter/entry-policy trio above, display_name and tags ARE in
+// ObjectDTO, so a change is visible to connected clients and emits a per-field
+// bus event the httpapi hub broadcasts (object_display_name_changed /
+// village_object_tags_updated — WS seam settled with work, mail 6aad4f26). Same
+// restart-loss-until-checkpoint persistence as the other admin object commands.
+// Each follows setVillageObjectStateInline's discipline: a no-op (same name, or
+// add/remove that doesn't change the set) mutates nothing and emits nothing.
+
+// MaxVillageObjectDisplayNameLen caps a display name's rune length. A display
+// name is a short label rendered in the client; 100 runes is generous for a
+// place name without letting a pathological value bloat the DTO / WS frame.
+const MaxVillageObjectDisplayNameLen = 100
+
+// MaxVillageObjectTagLen caps a single tag's rune length. Tags are short
+// identifier-like labels ("vendor", "lamplighter-stop"); 64 runes is ample.
+const MaxVillageObjectTagLen = 64
+
+// ErrInvalidDisplayName is returned by SetVillageObjectDisplayName when the
+// (trimmed) name exceeds MaxVillageObjectDisplayNameLen or carries a control
+// character (→ 400 at the HTTP layer). An empty name is valid — it clears the
+// override.
+var ErrInvalidDisplayName = errors.New("invalid display name")
+
+// ErrInvalidTag is returned by AddVillageObjectTag / RemoveVillageObjectTag when
+// the (trimmed) tag is empty, exceeds MaxVillageObjectTagLen, or carries a
+// control character (→ 400 at the HTTP layer).
+var ErrInvalidTag = errors.New("invalid tag")
+
+// SetDisplayNameResult / SetTagsResult echo the post-mutation value back to the
+// HTTP layer. SetTagsResult.Tags is the authoritative full set (a fresh copy,
+// never the live world slice), matching the VillageObjectTagsUpdated payload.
+type SetDisplayNameResult struct {
+	ID          VillageObjectID
+	DisplayName string
+}
+
+type SetTagsResult struct {
+	ID   VillageObjectID
+	Tags []string
+}
+
+// containsControlChar reports whether s carries any C0 control character or DEL.
+// Display names and tags are client-visible persisted text; a control byte would
+// be a typo at best and corrupt the DTO/WS frame at worst. Space (0x20) and
+// printable runes pass; this is intentionally stricter than the speak/reason
+// freeform fields (no \n\r\t exemption — a label is single-line).
+func containsControlChar(s string) bool {
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
+// SetVillageObjectDisplayName sets (or clears) a village object's display-name
+// override. The name is trimmed; an empty result clears the override (the client
+// falls back to the catalog name via EffectiveDisplayName). A non-empty name must
+// be within MaxVillageObjectDisplayNameLen and free of control characters, else
+// ErrInvalidDisplayName. Returns ErrVillageObjectNotFound if the object is
+// absent. Emits VillageObjectDisplayNameChanged ONLY when the name actually
+// changes — a same-name call is a no-op that emits nothing.
+func SetVillageObjectDisplayName(id VillageObjectID, name string) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			trimmed := strings.TrimSpace(name)
+			if utf8.RuneCountInString(trimmed) > MaxVillageObjectDisplayNameLen || containsControlChar(trimmed) {
+				return nil, ErrInvalidDisplayName
+			}
+			obj, ok := w.VillageObjects[id]
+			if !ok {
+				return nil, ErrVillageObjectNotFound
+			}
+			if obj.DisplayName == trimmed {
+				return SetDisplayNameResult{ID: id, DisplayName: trimmed}, nil
+			}
+			obj.DisplayName = trimmed
+			w.emit(&VillageObjectDisplayNameChanged{
+				ObjectID:    id,
+				DisplayName: trimmed,
+				At:          time.Now().UTC(),
+			})
+			return SetDisplayNameResult{ID: id, DisplayName: trimmed}, nil
+		},
+	}
+}
+
+// AddVillageObjectTag adds tag to a village object's per-instance tag set. The
+// tag is trimmed and validated (non-empty, within MaxVillageObjectTagLen, no
+// control characters; else ErrInvalidTag). Adding a tag already present is a
+// no-op — the set stays deduplicated and no event fires. Returns
+// ErrVillageObjectNotFound if the object is absent. On an actual add it emits
+// VillageObjectTagsUpdated carrying the full post-mutation set.
+func AddVillageObjectTag(id VillageObjectID, tag string) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			trimmed := strings.TrimSpace(tag)
+			if trimmed == "" || utf8.RuneCountInString(trimmed) > MaxVillageObjectTagLen || containsControlChar(trimmed) {
+				return nil, ErrInvalidTag
+			}
+			obj, ok := w.VillageObjects[id]
+			if !ok {
+				return nil, ErrVillageObjectNotFound
+			}
+			if obj.HasTag(trimmed) {
+				return SetTagsResult{ID: id, Tags: append([]string(nil), obj.Tags...)}, nil
+			}
+			obj.Tags = append(obj.Tags, trimmed)
+			tagsCopy := append([]string(nil), obj.Tags...)
+			w.emit(&VillageObjectTagsUpdated{
+				ObjectID: id,
+				Tags:     tagsCopy,
+				At:       time.Now().UTC(),
+			})
+			return SetTagsResult{ID: id, Tags: tagsCopy}, nil
+		},
+	}
+}
+
+// RemoveVillageObjectTag removes tag from a village object's tag set. The tag is
+// trimmed and validated identically to AddVillageObjectTag (ErrInvalidTag on a
+// bad value — so a malformed tag is a 400 whether you're adding or removing it).
+// Removing a tag that isn't present is a no-op — no event fires. Returns
+// ErrVillageObjectNotFound if the object is absent. On an actual removal it emits
+// VillageObjectTagsUpdated carrying the full post-mutation set (an empty slice
+// when the last tag was removed).
+func RemoveVillageObjectTag(id VillageObjectID, tag string) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			trimmed := strings.TrimSpace(tag)
+			if trimmed == "" || utf8.RuneCountInString(trimmed) > MaxVillageObjectTagLen || containsControlChar(trimmed) {
+				return nil, ErrInvalidTag
+			}
+			obj, ok := w.VillageObjects[id]
+			if !ok {
+				return nil, ErrVillageObjectNotFound
+			}
+			if !obj.HasTag(trimmed) {
+				return SetTagsResult{ID: id, Tags: append([]string(nil), obj.Tags...)}, nil
+			}
+			kept := make([]string, 0, len(obj.Tags))
+			for _, t := range obj.Tags {
+				if t != trimmed {
+					kept = append(kept, t)
+				}
+			}
+			obj.Tags = kept
+			tagsCopy := append([]string(nil), kept...)
+			w.emit(&VillageObjectTagsUpdated{
+				ObjectID: id,
+				Tags:     tagsCopy,
+				At:       time.Now().UTC(),
+			})
+			return SetTagsResult{ID: id, Tags: tagsCopy}, nil
 		},
 	}
 }
