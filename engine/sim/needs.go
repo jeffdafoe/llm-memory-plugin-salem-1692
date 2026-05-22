@@ -47,6 +47,13 @@ const (
 	// stored ×100 to avoid float settings. 12 → +0.12 tiredness per tile.
 	DefaultMovementFatiguePerTileX100 = 12
 
+	// DefaultTirednessRecoveryPerMinuteX100 is how fast tiredness drops per
+	// wall-clock minute while an actor is asleep or on break, stored ×100 to
+	// avoid float settings. 10 → 0.1 tiredness/min (≈1 point per 10 min),
+	// matching legacy take_break.tiredness_recovery_per_minute. 0 disables
+	// recovery entirely (operator off-switch).
+	DefaultTirednessRecoveryPerMinuteX100 = 10
+
 	// needSilentFloor — values below this are not surfaced in perception.
 	needSilentFloor = 8
 )

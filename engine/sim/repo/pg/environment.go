@@ -200,6 +200,7 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	s.TirednessCriticalThreshold = parseIntSetting(values, "tiredness_critical_threshold",
 		(sim.NeedMax*sim.DefaultTirednessCriticalThresholdPct+99)/100)
 	s.MovementFatiguePerTileX100 = parseIntSetting(values, "movement_fatigue_per_tile_x100", sim.DefaultMovementFatiguePerTileX100)
+	s.TirednessRecoveryPerMinuteX100 = parseIntSetting(values, "tiredness_recovery_per_minute_x100", sim.DefaultTirednessRecoveryPerMinuteX100)
 
 	// Reactor evaluator tunables.
 	s.ReactorJitterMin = parseDurationSetting(values, "reactor_jitter_min_ms", 1*time.Second)

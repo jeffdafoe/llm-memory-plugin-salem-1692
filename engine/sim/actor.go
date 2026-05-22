@@ -385,6 +385,18 @@ type Actor struct {
 	BreakUntil    *time.Time
 	SleepingUntil *time.Time
 
+	// LastTirednessRecoveryAt is the cursor the tiredness-recovery sweep
+	// advances as it credits recovery while BreakUntil/SleepingUntil are
+	// open. It doubles as the fractional carry: the sweep advances it by
+	// exactly the time represented by whole recovered units, so sub-unit
+	// minutes stay in the next pass's window. TRANSIENT — deliberately not
+	// persisted (no repo round-trip). On restart it re-inits to "now" on
+	// the first sweep that sees the actor resting, costing at most a
+	// sub-unit fraction of recovery; in-process cadence state doesn't earn
+	// a Postgres column. Cleared the moment the actor stops resting so a
+	// fresh window can't be credited against a stale cursor.
+	LastTirednessRecoveryAt *time.Time
+
 	// Tick scheduling.
 	LastTickedAt       *time.Time
 	NextSelfTickAt     *time.Time
@@ -544,6 +556,10 @@ func CloneActor(a *Actor) *Actor {
 	if a.SleepingUntil != nil {
 		t := *a.SleepingUntil
 		cp.SleepingUntil = &t
+	}
+	if a.LastTirednessRecoveryAt != nil {
+		t := *a.LastTirednessRecoveryAt
+		cp.LastTirednessRecoveryAt = &t
 	}
 	if a.LastTickedAt != nil {
 		t := *a.LastTickedAt
