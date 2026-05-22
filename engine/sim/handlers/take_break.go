@@ -28,11 +28,14 @@ import (
 // TakeBreakArgs is the decoded shape of the take_break tool's arguments.
 //
 //   - reason:     required, minLength 1, maxLength MaxTakeBreakReasonChars.
-//   - until_hour: optional integer 1..23. Absent decodes to 0, which the
-//     Command reads as "use the default break length".
+//   - until_hour: optional integer 1..23. A POINTER so decode can tell
+//     "omitted" (nil → default break length) apart from an explicit value.
+//     A plain int would alias omitted with an explicit 0, letting
+//     {"until_hour":0} silently take the default instead of failing the
+//     advertised 1..23 contract.
 type TakeBreakArgs struct {
 	Reason    string `json:"reason"`
-	UntilHour int    `json:"until_hour"`
+	UntilHour *int   `json:"until_hour,omitempty"`
 }
 
 // MaxTakeBreakReasonChars caps the reason length on the model-facing schema.
@@ -77,7 +80,7 @@ const takeBreakDescription = "Step away from your post to rest for a while — y
 //
 //   - JSON parses, no trailing data, no unknown fields
 //   - reason present and within the character cap
-//   - until_hour in [0, 23] (0 = omitted → default; 1..23 = a target hour)
+//   - until_hour, when present, in [1, 23] (omitted → default break length)
 //
 // What DecodeTakeBreakArgs does NOT check (handled in HandleTakeBreak /
 // TakeBreak Command):
@@ -118,13 +121,16 @@ func DecodeTakeBreakArgs(raw json.RawMessage) (any, error) {
 			MaxTakeBreakReasonChars, n,
 		)
 	}
-	// until_hour is optional; absent decodes to 0 (→ default break length). The
-	// schema bounds a present value to 1..23, but a non-handler caller (tests,
-	// future in-engine paths) could pass out of range, so defend here too.
-	if args.UntilHour < 0 || args.UntilHour > 23 {
+	// until_hour is optional. Absent → nil pointer (HandleTakeBreak normalizes
+	// to the 0 the Command reads as "default length"). A PRESENT value must be
+	// 1..23 — an explicit 0 (or any out-of-range hour) is a contract violation,
+	// not a default request, so reject it rather than silently defaulting. The
+	// schema also bounds this, but Decode is the self-contained enforcement
+	// layer.
+	if args.UntilHour != nil && (*args.UntilHour < 1 || *args.UntilHour > 23) {
 		return nil, fmt.Errorf(
 			"take_break: until_hour must be between 1 and 23 (got %d); omit it for a default-length break",
-			args.UntilHour,
+			*args.UntilHour,
 		)
 	}
 	return args, nil
@@ -151,8 +157,15 @@ func HandleTakeBreak(in HandlerInput) (sim.Command, error) {
 		return sim.Command{}, fmt.Errorf(
 			"take_break: reason contains a disallowed control character at byte offset %d", i)
 	}
+	// Normalize the optional pointer: omitted (nil) → 0, which sim.TakeBreak
+	// reads as "default break length". A present value is already validated to
+	// 1..23 by DecodeTakeBreakArgs.
+	untilHour := 0
+	if args.UntilHour != nil {
+		untilHour = *args.UntilHour
+	}
 	// until_hour resolution (timezone-anchored, past-hour reject, default + cap)
 	// happens inside sim.TakeBreak on the world goroutine, where the commit
 	// clock + WorldSettings.Location are available.
-	return sim.TakeBreak(in.ActorID, reason, args.UntilHour, time.Now().UTC()), nil
+	return sim.TakeBreak(in.ActorID, reason, untilHour, time.Now().UTC()), nil
 }
