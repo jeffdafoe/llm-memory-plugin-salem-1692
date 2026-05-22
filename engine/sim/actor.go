@@ -389,12 +389,20 @@ type Actor struct {
 	// advances as it credits recovery while BreakUntil/SleepingUntil are
 	// open. It doubles as the fractional carry: the sweep advances it by
 	// exactly the time represented by whole recovered units, so sub-unit
-	// minutes stay in the next pass's window. TRANSIENT — deliberately not
-	// persisted (no repo round-trip). On restart it re-inits to "now" on
-	// the first sweep that sees the actor resting, costing at most a
-	// sub-unit fraction of recovery; in-process cadence state doesn't earn
-	// a Postgres column. Cleared the moment the actor stops resting so a
-	// fresh window can't be credited against a stale cursor.
+	// minutes stay in the next pass's window. Cleared the moment the actor
+	// stops resting (or its window ends) so a fresh window can't be credited
+	// against a stale cursor.
+	//
+	// TRANSIENT — deliberately not persisted (no repo round-trip), unlike
+	// BreakUntil/SleepingUntil which ARE checkpointed. So on a LoadWorld
+	// where an actor was mid-sleep, the window is restored but the cursor is
+	// nil and re-inits to "now" — forfeiting all recovery accrued since
+	// bed-down, which can be many units, not just a sub-unit fraction. That
+	// loss is bounded and practically nil: a full night over-recovers past
+	// NeedMax, and HOME-282 wakes NPCs on shift-start regardless of
+	// tiredness, so a restored-mid-sleep NPC still wakes fully rested.
+	// Re-persisting the cursor would reintroduce a durable cadence field we
+	// deliberately avoid (Postgres is durable storage, not a cadence store).
 	LastTirednessRecoveryAt *time.Time
 
 	// Tick scheduling.
