@@ -680,7 +680,10 @@ func actorReactorDue(a *Actor, now time.Time) bool {
 //     actor transitions out of sleeping/resting (e.g. wakes up via the
 //     dwell substrate or a state-flip command), the next scan picks the
 //     warrant up. Lazy clear — no state-transition pass walks the
-//     warrant list.
+//     warrant list. Checked two ways: the StateSleeping/StateResting enum
+//     AND the SleepingUntil/BreakUntil timestamps the ZBBS-HOME-284 sleep
+//     lifecycle drives (the enum isn't transitioned at runtime yet, so the
+//     timestamp gate is what actually fires for an auto-bedded NPC).
 //   - Businessowner engine-speech suppression: if the actor engine-spoke
 //     a hospitality line within businessownerEngineSpeechSuppressionTTL
 //     (5s), their LLM tick on the same triggering event is skipped so
@@ -717,7 +720,21 @@ func actorCanReactNow(w *World, a *Actor) (eligible bool, stale bool) {
 	if a.State == StateSleeping || a.State == StateResting {
 		return false, false
 	}
-	if businessownerEngineSpeechRecent(w, a.ID, time.Now().UTC()) {
+	now := time.Now().UTC()
+	// ZBBS-HOME-284 #2: the sleep/break lifecycle drives the SleepingUntil /
+	// BreakUntil timestamps, NOT the State enum (nothing transitions State at
+	// runtime yet — see actor.go). Gate on the timestamps too, so a warrant
+	// already in flight when an NPC beds down doesn't fire an LLM tick against
+	// a sleeping or on-break actor. Same posture as the State check above:
+	// eligible=false / stale=false → the warrant stays OPEN, the evaluator
+	// backs off, and the next scan after wake / break-end resumes it.
+	if a.SleepingUntil != nil && a.SleepingUntil.After(now) {
+		return false, false
+	}
+	if a.BreakUntil != nil && a.BreakUntil.After(now) {
+		return false, false
+	}
+	if businessownerEngineSpeechRecent(w, a.ID, now) {
 		return false, false
 	}
 	return true, false

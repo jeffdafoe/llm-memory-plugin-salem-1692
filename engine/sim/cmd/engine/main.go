@@ -157,6 +157,7 @@ func run(rt runtime, stop <-chan struct{}) error {
 	handlers.RegisterSceneQuoteHandlers(rt.World)
 	handlers.RegisterPayWithItemHandlers(rt.World)
 	sim.RegisterAcquaintanceSubscriber(rt.World)
+	sim.RegisterSleepSubscriber(rt.World) // ZBBS-HOME-284 #2: auto-sleep NPCs on arrival home
 	cascade.RegisterProductionCascades(worldCtx, rt.World, rt.LLMClient)
 
 	// WebSocket event hub (Slice 2 WS /events). Subscribed before world.Run,
@@ -306,6 +307,7 @@ func startTickers(ctx context.Context, w *sim.World) {
 	go sim.RunPhaseTicker(ctx, w)
 	go sim.RunNeedsTicker(ctx, w)
 	go sim.RunTirednessRecoveryTicker(ctx, w)
+	go sim.RunSleepTicker(ctx, w)
 	go sim.RunDwellTicker(ctx, w)
 	go sim.RunProduceTicker(ctx, w)
 	go sim.RunObjectRefreshRegen(ctx, w)

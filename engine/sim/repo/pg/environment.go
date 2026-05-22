@@ -194,6 +194,7 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 
 	s.LodgingCheckInHour = parseIntSetting(values, "lodging_check_in_hour", 15)
 	s.LodgingCheckOutHour = parseIntSetting(values, "lodging_check_out_hour", 11)
+	s.NPCSleepMaxDurationHours = parseIntSetting(values, "npc_sleep_max_duration_hours", sim.DefaultNPCSleepMaxDurationHours)
 
 	s.NeedsTickAmount = parseIntSetting(values, "attribute_tick_amount", sim.DefaultNeedsTickAmount)
 	s.NeedThresholds = loadNeedThresholds(values)
