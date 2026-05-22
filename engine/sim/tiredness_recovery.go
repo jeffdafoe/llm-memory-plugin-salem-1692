@@ -69,8 +69,9 @@ func RecoverTiredness(now time.Time) Command {
 			for _, a := range w.Actors {
 				end := laterTime(a.BreakUntil, a.SleepingUntil)
 				if end == nil {
-					// Not resting. Drop the cursor so a fresh window can't be
-					// credited against a stale (possibly hours-old) timestamp.
+					// No rest window at all. Drop the cursor so a fresh window
+					// can't be credited against a stale (possibly hours-old)
+					// timestamp.
 					a.LastTirednessRecoveryAt = nil
 					continue
 				}
@@ -78,16 +79,27 @@ func RecoverTiredness(now time.Time) Command {
 					continue // malformed actor — nothing to recover
 				}
 
+				// A window pointer can linger after its end (nothing nils
+				// SleepingUntil/BreakUntil until wake/break-expiry runs). Treat
+				// "resting" as a window whose end is still ahead of now; an
+				// already-ended window credits at most its final unit, then the
+				// cursor is cleared below so a later window starts clean rather
+				// than crediting the whole gap from a stale cursor.
+				expired := !end.After(now)
+
 				// First time we observe this actor resting: start the cursor
 				// here and credit nothing this pass (we don't know how long it
 				// has been resting; counting begins now). The sleep/break
 				// commands (ZBBS-HOME-284 #2/#4) also stamp the cursor at
 				// window-open so the very first minute counts — this is the
 				// belt-and-suspenders init for any window that appeared without
-				// a stamp (e.g. loaded from a checkpoint).
+				// a stamp (e.g. loaded from a checkpoint). A nil cursor against
+				// an already-expired window is left nil: nothing to credit.
 				if a.LastTirednessRecoveryAt == nil {
-					t := now
-					a.LastTirednessRecoveryAt = &t
+					if !expired {
+						t := now
+						a.LastTirednessRecoveryAt = &t
+					}
 					continue
 				}
 
@@ -98,23 +110,34 @@ func RecoverTiredness(now time.Time) Command {
 					recoveryTo = now
 				}
 				elapsedMin := recoveryTo.Sub(*a.LastTirednessRecoveryAt).Minutes()
-				if elapsedMin <= 0 {
-					continue // cursor already at/after the window end
+				units := 0
+				if elapsedMin > 0 {
+					units = int(math.Floor(elapsedMin*rate + recoveryEpsilon))
 				}
+				if units > 0 {
+					before := a.Needs["tiredness"]
+					after := ClampNeed(before - units)
+					a.Needs["tiredness"] = after
 
-				units := int(math.Floor(elapsedMin*rate + recoveryEpsilon))
-				if units <= 0 {
-					continue // <1 unit accrued; fraction carries (cursor unchanged)
+					// Advance the cursor by exactly the time the whole units
+					// cover; the remaining fraction stays in the next pass's
+					// window. Integer math off rateX100 avoids a binary-float
+					// round-trip (units/rate as float64).
+					advance := time.Duration(int64(units) * 100 * int64(time.Minute) / int64(rateX100))
+					nc := a.LastTirednessRecoveryAt.Add(advance)
+					a.LastTirednessRecoveryAt = &nc
+
+					if after < before {
+						recovered++ // count only when tiredness actually dropped
+					}
 				}
-
-				a.Needs["tiredness"] = ClampNeed(a.Needs["tiredness"] - units)
-
-				// Advance the cursor by exactly the time the whole units cover;
-				// the remaining fraction stays in the next pass's window.
-				advance := time.Duration(float64(units) / rate * float64(time.Minute))
-				nc := a.LastTirednessRecoveryAt.Add(advance)
-				a.LastTirednessRecoveryAt = &nc
-				recovered++
+				// Sub-unit fraction (units == 0) carries forward via the
+				// unchanged cursor — UNLESS the window has ended, in which case
+				// drop the cursor (and the sub-unit remainder, v1 parity) so the
+				// next window can't be credited from this expired one.
+				if expired {
+					a.LastTirednessRecoveryAt = nil
+				}
 			}
 			return recovered, nil
 		},
