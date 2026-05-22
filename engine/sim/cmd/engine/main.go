@@ -288,6 +288,7 @@ func registerTools(r *handlers.Registry) error {
 		{"scene_quote", handlers.RegisterSceneQuote},
 		{"deliver_order", handlers.RegisterDeliverOrder},
 		{"pay_with_item_family", handlers.RegisterPayWithItemFamily},
+		{"take_break", handlers.RegisterTakeBreak}, // ZBBS-HOME-284 #4
 	}
 	for _, t := range register {
 		if err := t.fn(r); err != nil {

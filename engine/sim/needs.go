@@ -49,10 +49,17 @@ const (
 
 	// DefaultTirednessRecoveryPerMinuteX100 is how fast tiredness drops per
 	// wall-clock minute while an actor is asleep or on break, stored ×100 to
-	// avoid float settings. 10 → 0.1 tiredness/min (≈1 point per 10 min),
-	// matching legacy take_break.tiredness_recovery_per_minute. 0 disables
-	// recovery entirely (operator off-switch).
-	DefaultTirednessRecoveryPerMinuteX100 = 10
+	// avoid float settings. 4 → 0.04 tiredness/min, matching the legacy
+	// PRODUCTION value of take_break.tiredness_recovery_per_minute (the v1 code
+	// default was 0.1 but the operator setting overrode it to 0.04; v2 adopts
+	// the tuned production value as its baseline — decided with work + Jeff
+	// 2026-05-22, ZBBS-HOME-284). One shared rate feeds both sleep and break
+	// recovery (mode-blind sweep, v1 parity). At 0.04: a 12h night recovers
+	// ~28.8 units (full recovery from NeedMax=24), a 30-min daytime break ~1.2
+	// units (a top-up, not a full reset). 0 disables recovery entirely
+	// (operator off-switch). Override per-world via the
+	// tiredness_recovery_per_minute_x100 setting.
+	DefaultTirednessRecoveryPerMinuteX100 = 4
 
 	// needSilentFloor — values below this are not surfaced in perception.
 	needSilentFloor = 8

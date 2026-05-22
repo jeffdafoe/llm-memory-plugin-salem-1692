@@ -267,6 +267,15 @@ func runSleepTickIteration(ctx context.Context, w *World) {
 		}
 		return
 	}
+	// Expire ended breaks before the auto-bed pass (ZBBS-HOME-284 #4): a break
+	// that just ended frees the actor to be auto-bedded the same tick if they
+	// are home and off-shift, and re-lights a shop the keeper had closed.
+	if _, err := w.SendContext(ctx, ExpireEndedBreaks(now)); err != nil {
+		if ctx.Err() == nil {
+			log.Printf("sim/npc_sleep: break-expiry sweep failed: %v", err)
+		}
+		return
+	}
 	if _, err := w.SendContext(ctx, AutoBedAtHomeNPCs(now)); err != nil {
 		if ctx.Err() == nil {
 			log.Printf("sim/npc_sleep: auto-bed sweep failed: %v", err)
