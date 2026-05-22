@@ -60,6 +60,11 @@ type WorldSettings struct {
 	LodgingCheckInHour  int
 	LodgingCheckOutHour int
 
+	// NPCSleepMaxDurationHours is the safety cap on an auto-bedded NPC's
+	// sleep — wakeExpiredNPCSleepers clears SleepingUntil at this cap or at
+	// shift-start, whichever comes first. Default 12.
+	NPCSleepMaxDurationHours int
+
 	// Needs tunables. NeedsTickAmount is the per-hour increment magnitude
 	// applied to every eligible actor. NeedThresholds carries the per-need
 	// "red" boundary; TirednessCriticalThreshold is the absolute (not pct)
