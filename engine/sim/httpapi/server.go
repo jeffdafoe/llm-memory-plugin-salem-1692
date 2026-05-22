@@ -101,7 +101,7 @@ func (s *Server) handleAgents(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) handleObjects(w http.ResponseWriter, _ *http.Request) {
 	snap := s.world.Published()
-	writeJSON(w, objectsFromSnapshot(snap))
+	writeJSON(w, objectsFromSnapshot(snap, s.world.Assets))
 }
 
 // handleTerrain serves the terrain grid. Unlike the per-tick handlers above it
@@ -209,20 +209,33 @@ func resolveAgentSprite(spriteID sim.SpriteID, sprites map[sim.SpriteID]*sim.Spr
 }
 
 // objectsFromSnapshot maps every village object to an ObjectDTO, sorted by ID.
-func objectsFromSnapshot(s *sim.Snapshot) []ObjectDTO {
+// The asset catalog (immutable reference state off *sim.World, same posture as
+// agentsFromSnapshot's sprite map) is passed in to resolve each object's
+// effective loiter offset; sim.EffectiveLoiterOffset is nil-asset-safe, so a
+// dangling asset_id falls back to the raw override (or zero) without breaking
+// the build (ZBBS-HOME-289).
+func objectsFromSnapshot(s *sim.Snapshot, assets map[sim.AssetID]*sim.Asset) []ObjectDTO {
 	out := make([]ObjectDTO, 0, len(s.VillageObjects))
 	for id, o := range s.VillageObjects {
 		if o == nil {
 			continue
 		}
+		effX, effY := sim.EffectiveLoiterOffset(o, assets[o.AssetID])
 		out = append(out, ObjectDTO{
-			ID:           string(id),
-			AssetID:      string(o.AssetID),
-			X:            o.X,
-			Y:            o.Y,
-			CurrentState: o.CurrentState,
-			DisplayName:  o.DisplayName,
-			Tags:         o.Tags,
+			ID:                     string(id),
+			AssetID:                string(o.AssetID),
+			X:                      o.X,
+			Y:                      o.Y,
+			CurrentState:           o.CurrentState,
+			DisplayName:            o.DisplayName,
+			Tags:                   o.Tags,
+			Owner:                  string(o.OwnerActorID),
+			PlacedBy:               o.PlacedBy,
+			EntryPolicy:            string(o.EntryPolicy),
+			LoiterOffsetX:          o.LoiterOffsetX,
+			LoiterOffsetY:          o.LoiterOffsetY,
+			EffectiveLoiterOffsetX: effX,
+			EffectiveLoiterOffsetY: effY,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })

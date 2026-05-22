@@ -85,6 +85,38 @@ func computeLoiterTile(vobj *VillageObject, asset *Asset) Position {
 	}
 }
 
+// EffectiveLoiterOffset returns the resolved loiter offset in TILE units
+// relative to the object's anchor tile, applying the same per-instance →
+// door-offset → footprint fallback as computeLoiterTile. This is the offset the
+// object read DTO ships (effective_loiter_offset_x/y) and the
+// object_loiter_offset_changed event carries, so the editor renders its loiter
+// pin exactly where the engine parks visitors — single source of truth, no
+// client-side reimplementation of the fallback formula (ZBBS-HOME-289).
+//
+// asset may be nil (a dangling asset_id): the full door/footprint fallback can't
+// run, so it returns the per-instance override if present, else (0, 0). One bad
+// asset reference must not break the objects read or the event.
+//
+// The nil-asset branch deliberately mirrors computeLoiterTile's BOTH-or-nothing
+// gate (case 1 requires both axes set): a one-axis-only override is treated as
+// "no override" — the same way the real resolver treats it — and resolves to the
+// (0, 0) best-effort here rather than a per-axis blend. Honoring a partial
+// override would diverge from where the engine actually parks visitors and break
+// the single-source-of-truth invariant. (A partial override isn't reachable via
+// the set-loiter-offset route, which enforces both-or-neither; it only arises
+// from direct/loaded world state.)
+func EffectiveLoiterOffset(vobj *VillageObject, asset *Asset) (int, int) {
+	if asset == nil {
+		if vobj.LoiterOffsetX != nil && vobj.LoiterOffsetY != nil {
+			return *vobj.LoiterOffsetX, *vobj.LoiterOffsetY
+		}
+		return 0, 0
+	}
+	pin := computeLoiterTile(vobj, asset)
+	anchor := WorldToTile(vobj.X, vobj.Y)
+	return pin.X - anchor.X, pin.Y - anchor.Y
+}
+
 // effectiveLoiterTile resolves the loiter pin for a building by its
 // StructureID, crossing the shared-identity bridge. ok=false when the
 // structure has no VillageObject placement (see villageObjectForStructure).

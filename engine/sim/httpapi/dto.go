@@ -85,6 +85,22 @@ type ObjectDTO struct {
 	CurrentState string   `json:"current_state,omitempty"`
 	DisplayName  string   `json:"display_name,omitempty"`
 	Tags         []string `json:"tags,omitempty"`
+
+	// Editor metadata (ZBBS-HOME-289). Owner / PlacedBy / EntryPolicy are
+	// admin-only labels — the editor sets them via the admin routes and reads
+	// current state here. LoiterOffsetX/Y are the raw per-instance override
+	// (null = no override; emitted as null, not omitted, so the editor can tell
+	// "cleared" from absent). EffectiveLoiterOffsetX/Y are the SERVER-computed
+	// resolved offset (tile units relative to the anchor) the editor renders the
+	// loiter pin at — single source of truth with the engine's walk resolver, so
+	// the pin lands where visitors actually park (see sim.EffectiveLoiterOffset).
+	Owner                  string `json:"owner,omitempty"`
+	PlacedBy               string `json:"placed_by,omitempty"`
+	EntryPolicy            string `json:"entry_policy,omitempty"`
+	LoiterOffsetX          *int   `json:"loiter_offset_x"`
+	LoiterOffsetY          *int   `json:"loiter_offset_y"`
+	EffectiveLoiterOffsetX int    `json:"effective_loiter_offset_x"`
+	EffectiveLoiterOffsetY int    `json:"effective_loiter_offset_y"`
 }
 
 // TerrainDTO is the GET /api/village/terrain response. The terrain grid is a
