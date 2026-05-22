@@ -116,6 +116,14 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			ID:   string(e.ObjectID),
 			Tags: tags,
 		}}, true
+	case *sim.VillageObjectLoiterOffsetChanged:
+		return WireFrame{Type: "object_loiter_offset_changed", Data: objectLoiterOffsetChangedWireDTO{
+			ID:                     string(e.ObjectID),
+			LoiterOffsetX:          e.LoiterOffsetX,
+			LoiterOffsetY:          e.LoiterOffsetY,
+			EffectiveLoiterOffsetX: e.EffectiveLoiterOffsetX,
+			EffectiveLoiterOffsetY: e.EffectiveLoiterOffsetY,
+		}}, true
 	default:
 		return WireFrame{}, false
 	}
@@ -245,4 +253,19 @@ type objectDisplayNameChangedWireDTO struct {
 type objectTagsUpdatedWireDTO struct {
 	ID   string   `json:"id"`
 	Tags []string `json:"tags"`
+}
+
+// objectLoiterOffsetChangedWireDTO is the object_loiter_offset_changed payload —
+// a placed object's loiter pin edited by an admin. id is the village object id;
+// loiter_offset_x/y are the raw per-instance override (null when cleared);
+// effective_loiter_offset_x/y are the SERVER-resolved offset (tile units relative
+// to the anchor) the editor renders the pin at, so it lands exactly where the
+// engine parks visitors. The client updates the pin on receipt. ZBBS-HOME-289
+// (matches v1's object_loiter_offset_changed; both raw + effective carried).
+type objectLoiterOffsetChangedWireDTO struct {
+	ID                     string `json:"id"`
+	LoiterOffsetX          *int   `json:"loiter_offset_x"`
+	LoiterOffsetY          *int   `json:"loiter_offset_y"`
+	EffectiveLoiterOffsetX int    `json:"effective_loiter_offset_x"`
+	EffectiveLoiterOffsetY int    `json:"effective_loiter_offset_y"`
 }

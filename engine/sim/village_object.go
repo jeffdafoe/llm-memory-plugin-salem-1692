@@ -388,11 +388,12 @@ func deleteObjectCascade(w *World, root VillageObjectID) []VillageObjectID {
 // Admin metadata commands (SetVillageObjectOwner / SetVillageObjectLoiterOffset
 // / SetVillageObjectEntryPolicy) back the editor's object-metadata write routes.
 // Each runs on the world goroutine via a Command and mutates one VillageObject
-// field. Unlike Move/Delete/SetState these emit NO bus event: owner, loiter
-// offset, and entry policy are not part of ObjectDTO, so a change is invisible
-// to a connected client and needs no broadcast (the editing client re-reads).
-// Same restart-loss-until-checkpoint persistence as the other admin object
-// commands — the next gen-marker SaveSnapshot converges the durable store.
+// field. owner and entry policy emit NO bus event: they're admin-only labels the
+// editing client re-reads from the save response, so a change needs no broadcast.
+// Loiter offset DOES emit (VillageObjectLoiterOffsetChanged) since ZBBS-HOME-289
+// put it in ObjectDTO — the loiter pin is editor-visible, so a live editor needs
+// the change. Same restart-loss-until-checkpoint persistence as the other admin
+// object commands — the next gen-marker SaveSnapshot converges the durable store.
 
 // ErrOwnerActorNotFound is returned by SetVillageObjectOwner when a non-empty
 // owner actor id does not resolve to a live actor (→ 422 at the HTTP layer).
@@ -453,7 +454,14 @@ func SetVillageObjectOwner(id VillageObjectID, ownerActorID ActorID) Command {
 // faithfully applies whatever pointers it's given, because an axis-independent
 // override is a legal world state. The pointed-to ints are copied so world
 // state never aliases a caller-owned pointer. Returns ErrVillageObjectNotFound
-// if the object is absent. Emits no event — loiter offset is not in ObjectDTO.
+// if the object is absent.
+//
+// Emits VillageObjectLoiterOffsetChanged (→ object_loiter_offset_changed) once
+// loiter is in ObjectDTO (ZBBS-HOME-289) — the loiter pin is editor-visible, so
+// a live editor updates on the change (unlike owner/entry-policy, which stay
+// re-read-on-save). The event carries both the raw override and the resolved
+// effective offset, computed via EffectiveLoiterOffset against the object's
+// asset (nil-asset-safe).
 func SetVillageObjectLoiterOffset(id VillageObjectID, x, y *int) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
@@ -463,6 +471,15 @@ func SetVillageObjectLoiterOffset(id VillageObjectID, x, y *int) Command {
 			}
 			obj.LoiterOffsetX = copyIntPtr(x)
 			obj.LoiterOffsetY = copyIntPtr(y)
+			effX, effY := EffectiveLoiterOffset(obj, w.Assets[obj.AssetID])
+			w.emit(&VillageObjectLoiterOffsetChanged{
+				ObjectID:               id,
+				LoiterOffsetX:          obj.LoiterOffsetX,
+				LoiterOffsetY:          obj.LoiterOffsetY,
+				EffectiveLoiterOffsetX: effX,
+				EffectiveLoiterOffsetY: effY,
+				At:                     time.Now().UTC(),
+			})
 			return SetLoiterOffsetResult{ID: id, X: obj.LoiterOffsetX, Y: obj.LoiterOffsetY}, nil
 		},
 	}

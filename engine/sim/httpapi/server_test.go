@@ -248,6 +248,91 @@ func TestHandleObjects(t *testing.T) {
 	if o.CurrentState != "lit" || o.DisplayName != "Tavern" || len(o.Tags) != 1 || o.Tags[0] != "vendor" {
 		t.Errorf("object fields wrong: %+v", o)
 	}
+	// obj1 has no loiter override and asset-x has door_offset (1,2) +
+	// footprint_bottom 2, so the effective offset is the door fallback: door +
+	// 1 tile south = (1, 3). Raw override stays null; owner/placed_by/entry are
+	// unset on the seed (ZBBS-HOME-289).
+	if o.LoiterOffsetX != nil || o.LoiterOffsetY != nil {
+		t.Errorf("raw loiter offset = (%v,%v), want null (no override)", o.LoiterOffsetX, o.LoiterOffsetY)
+	}
+	if o.EffectiveLoiterOffsetX != 1 || o.EffectiveLoiterOffsetY != 3 {
+		t.Errorf("effective loiter offset = (%d,%d), want (1,3) door fallback", o.EffectiveLoiterOffsetX, o.EffectiveLoiterOffsetY)
+	}
+	if o.Owner != "" || o.PlacedBy != "" || o.EntryPolicy != "" {
+		t.Errorf("owner/placed_by/entry_policy = %q/%q/%q, want all empty", o.Owner, o.PlacedBy, o.EntryPolicy)
+	}
+}
+
+// TestHandleObjects_LoiterOverrideAndDanglingAsset covers the metadata-read
+// paths beyond the seeded obj1: a per-instance loiter override (effective ==
+// override), a dangling asset_id with an override (falls back to the override,
+// no panic), and a dangling asset_id with no override (effective zero). Also
+// checks owner/entry_policy surface. ZBBS-HOME-289.
+func TestHandleObjects_LoiterOverrideAndDanglingAsset(t *testing.T) {
+	w := seededWorld(t)
+	_, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		// Override + owner + entry policy, real asset.
+		world.VillageObjects["obj2"] = &sim.VillageObject{
+			ID: "obj2", AssetID: "asset-x", X: 5.5, Y: 6.5,
+			LoiterOffsetX: intPtr(4), LoiterOffsetY: intPtr(-3),
+			OwnerActorID: "hannah", EntryPolicy: sim.EntryPolicyOwner, PlacedBy: "home",
+		}
+		// Dangling asset_id + override → effective falls back to the override.
+		world.VillageObjects["obj3"] = &sim.VillageObject{
+			ID: "obj3", AssetID: "ghost-asset", X: 0, Y: 0,
+			LoiterOffsetX: intPtr(2), LoiterOffsetY: intPtr(2),
+		}
+		// Dangling asset_id, no override → effective zero, no panic.
+		world.VillageObjects["obj4"] = &sim.VillageObject{
+			ID: "obj4", AssetID: "ghost-asset", X: 0, Y: 0,
+		}
+		// Dangling asset_id + ONE-AXIS-ONLY override → treated as no override
+		// (mirrors computeLoiterTile's both-or-nothing gate), so effective is
+		// (0,0), NOT a per-axis blend. Not reachable via the route (both-or-
+		// neither), only via direct world state.
+		world.VillageObjects["obj5"] = &sim.VillageObject{
+			ID: "obj5", AssetID: "ghost-asset", X: 0, Y: 0,
+			LoiterOffsetX: intPtr(7),
+		}
+		return nil, nil
+	}})
+	if err != nil {
+		t.Fatalf("seed objects: %v", err)
+	}
+
+	srv := NewServer(w, okAuth{})
+	rec := get(t, srv, "/api/village/objects")
+	var objs []ObjectDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &objs); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	byID := map[string]ObjectDTO{}
+	for _, o := range objs {
+		byID[o.ID] = o
+	}
+
+	o2 := byID["obj2"]
+	if o2.LoiterOffsetX == nil || *o2.LoiterOffsetX != 4 || o2.EffectiveLoiterOffsetX != 4 || o2.EffectiveLoiterOffsetY != -3 {
+		t.Errorf("obj2 loiter = raw(%v,%v) eff(%d,%d), want raw(4,-3) eff(4,-3)", o2.LoiterOffsetX, o2.LoiterOffsetY, o2.EffectiveLoiterOffsetX, o2.EffectiveLoiterOffsetY)
+	}
+	if o2.Owner != "hannah" || o2.EntryPolicy != "owner-only" || o2.PlacedBy != "home" {
+		t.Errorf("obj2 owner/entry/placed = %q/%q/%q, want hannah/owner-only/home", o2.Owner, o2.EntryPolicy, o2.PlacedBy)
+	}
+
+	o3 := byID["obj3"]
+	if o3.EffectiveLoiterOffsetX != 2 || o3.EffectiveLoiterOffsetY != 2 {
+		t.Errorf("obj3 (dangling asset + override) effective = (%d,%d), want (2,2)", o3.EffectiveLoiterOffsetX, o3.EffectiveLoiterOffsetY)
+	}
+
+	o4 := byID["obj4"]
+	if o4.EffectiveLoiterOffsetX != 0 || o4.EffectiveLoiterOffsetY != 0 {
+		t.Errorf("obj4 (dangling asset, no override) effective = (%d,%d), want (0,0)", o4.EffectiveLoiterOffsetX, o4.EffectiveLoiterOffsetY)
+	}
+
+	o5 := byID["obj5"]
+	if o5.EffectiveLoiterOffsetX != 0 || o5.EffectiveLoiterOffsetY != 0 {
+		t.Errorf("obj5 (dangling asset, one-axis override) effective = (%d,%d), want (0,0) — partial override is not honored", o5.EffectiveLoiterOffsetX, o5.EffectiveLoiterOffsetY)
+	}
 }
 
 func TestHandleTerrain(t *testing.T) {

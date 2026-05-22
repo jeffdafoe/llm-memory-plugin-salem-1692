@@ -364,6 +364,28 @@ type VillageObjectDeleted struct {
 
 func (VillageObjectDeleted) isSimEvent() {}
 
+// VillageObjectLoiterOffsetChanged is emitted by SetVillageObjectLoiterOffset
+// when an admin edits where visiting actors stand at a placed object (the
+// editor's draggable loiter pin). LoiterOffsetX/Y are the raw per-instance
+// override (nil when cleared back to the asset/footprint default);
+// EffectiveLoiterOffsetX/Y are the resolved offset (tile units relative to the
+// object anchor) the editor renders the pin at — both carried so a live editor
+// updates the pin without recomputing the fallback. Unlike owner / entry-policy
+// (admin-only labels the editor re-reads on save), the loiter pin is a visible
+// position other editing admins care about, so it broadcasts (ZBBS-HOME-289;
+// matches v1's object_loiter_offset_changed).
+type VillageObjectLoiterOffsetChanged struct {
+	EventBase
+	ObjectID               VillageObjectID
+	LoiterOffsetX          *int
+	LoiterOffsetY          *int
+	EffectiveLoiterOffsetX int
+	EffectiveLoiterOffsetY int
+	At                     time.Time
+}
+
+func (VillageObjectLoiterOffsetChanged) isSimEvent() {}
+
 // VillageObjectDisplayNameChanged is emitted by SetVillageObjectDisplayName when
 // an object's DisplayName actually changes (the no-op short-circuit suppresses a
 // same-name emit, mirroring setVillageObjectStateInline). DisplayName is the new

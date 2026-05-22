@@ -284,6 +284,55 @@ func TestTranslateEvent_VillageObjectTagsUpdated_NilIsEmptyArray(t *testing.T) {
 	}
 }
 
+func TestTranslateEvent_VillageObjectLoiterOffsetChanged(t *testing.T) {
+	x, y := 4, -3
+	frame, ok := TranslateEvent(&sim.VillageObjectLoiterOffsetChanged{
+		ObjectID:               "bench-1",
+		LoiterOffsetX:          &x,
+		LoiterOffsetY:          &y,
+		EffectiveLoiterOffsetX: 4,
+		EffectiveLoiterOffsetY: -3,
+	})
+	if !ok {
+		t.Fatal("VillageObjectLoiterOffsetChanged should translate")
+	}
+	if frame.Type != "object_loiter_offset_changed" {
+		t.Fatalf("type = %q, want object_loiter_offset_changed", frame.Type)
+	}
+	d, isType := frame.Data.(objectLoiterOffsetChangedWireDTO)
+	if !isType {
+		t.Fatalf("data type = %T, want objectLoiterOffsetChangedWireDTO", frame.Data)
+	}
+	if d.ID != "bench-1" || d.LoiterOffsetX == nil || *d.LoiterOffsetX != 4 ||
+		d.EffectiveLoiterOffsetX != 4 || d.EffectiveLoiterOffsetY != -3 {
+		t.Errorf("loiter payload = %+v, want bench-1 raw(4,-3) eff(4,-3)", d)
+	}
+}
+
+// TestTranslateEvent_VillageObjectLoiterOffsetChanged_ClearedIsNull pins that a
+// cleared override (nil raw) marshals loiter_offset_x/y as JSON null (so the
+// editor can tell "cleared" from absent) while effective still carries the
+// fallback value.
+func TestTranslateEvent_VillageObjectLoiterOffsetChanged_ClearedIsNull(t *testing.T) {
+	frame, ok := TranslateEvent(&sim.VillageObjectLoiterOffsetChanged{
+		ObjectID:               "bench-1",
+		LoiterOffsetX:          nil,
+		LoiterOffsetY:          nil,
+		EffectiveLoiterOffsetX: 0,
+		EffectiveLoiterOffsetY: 2,
+	})
+	if !ok {
+		t.Fatal("VillageObjectLoiterOffsetChanged should translate")
+	}
+	b, err := json.Marshal(frame.Data)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(b), `"loiter_offset_x":null`) || !strings.Contains(string(b), `"effective_loiter_offset_y":2`) {
+		t.Errorf("marshaled = %s, want loiter_offset_x null + effective_loiter_offset_y 2", b)
+	}
+}
+
 // TestTranslateEvent_UnmappedDropped covers the default case: per-tile
 // ActorMoved is engine-internal and must not reach the client.
 func TestTranslateEvent_UnmappedDropped(t *testing.T) {

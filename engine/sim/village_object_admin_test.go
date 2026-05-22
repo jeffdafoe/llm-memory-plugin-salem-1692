@@ -294,6 +294,48 @@ func TestSetVillageObjectLoiterOffset_NotFound(t *testing.T) {
 	}
 }
 
+// TestSetVillageObjectLoiterOffset_EmitsEvent: since ZBBS-HOME-289 put loiter in
+// ObjectDTO, the command emits VillageObjectLoiterOffsetChanged carrying both the
+// raw override and the server-resolved effective offset. prop-1's asset ("prop")
+// has no door offset and footprint 0, so a cleared override resolves to the
+// footprint default (0, 2); a set override resolves to itself.
+func TestSetVillageObjectLoiterOffset_EmitsEvent(t *testing.T) {
+	w, cap := buildObjectAdminWorld(t)
+
+	x, y := 2, -3
+	if _, err := w.Send(sim.SetVillageObjectLoiterOffset("prop-1", &x, &y)); err != nil {
+		t.Fatalf("set offset: %v", err)
+	}
+	evt := latestLoiterEvent(cap)
+	if evt == nil {
+		t.Fatal("no VillageObjectLoiterOffsetChanged emitted on set")
+	}
+	if evt.ObjectID != "prop-1" || evt.LoiterOffsetX == nil || *evt.LoiterOffsetX != 2 ||
+		evt.EffectiveLoiterOffsetX != 2 || evt.EffectiveLoiterOffsetY != -3 {
+		t.Errorf("set event = %+v, want prop-1 raw(2,-3) eff(2,-3)", evt)
+	}
+
+	if _, err := w.Send(sim.SetVillageObjectLoiterOffset("prop-1", nil, nil)); err != nil {
+		t.Fatalf("clear offset: %v", err)
+	}
+	evt = latestLoiterEvent(cap)
+	if evt == nil || evt.LoiterOffsetX != nil || evt.EffectiveLoiterOffsetX != 0 || evt.EffectiveLoiterOffsetY != 2 {
+		t.Errorf("clear event = %+v, want raw nil + eff(0,2) footprint fallback", evt)
+	}
+}
+
+// latestLoiterEvent returns the most recently captured loiter-offset event, or
+// nil if none.
+func latestLoiterEvent(cap *objEventCapture) *sim.VillageObjectLoiterOffsetChanged {
+	var found *sim.VillageObjectLoiterOffsetChanged
+	for _, evt := range cap.snapshot() {
+		if e, ok := evt.(*sim.VillageObjectLoiterOffsetChanged); ok {
+			found = e
+		}
+	}
+	return found
+}
+
 func TestSetVillageObjectEntryPolicy_Applied(t *testing.T) {
 	w, _ := buildObjectAdminWorld(t)
 	res, err := w.Send(sim.SetVillageObjectEntryPolicy("prop-1", sim.EntryPolicyOwner))
