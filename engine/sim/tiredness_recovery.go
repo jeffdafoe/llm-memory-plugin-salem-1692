@@ -76,7 +76,11 @@ func RecoverTiredness(now time.Time) Command {
 					continue
 				}
 				if a.Needs == nil {
-					continue // malformed actor — nothing to recover
+					// Shouldn't happen — every actor is seeded with the three
+					// needs. Init rather than skip so cursor management still
+					// runs for a resting actor, matching the nil-map handling
+					// in ApplyConsumption / IncrementNeedsTick.
+					a.Needs = make(map[NeedKey]int)
 				}
 
 				// A window pointer can linger after its end (nothing nils
