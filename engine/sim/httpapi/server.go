@@ -166,6 +166,14 @@ func agentsFromSnapshot(s *sim.Snapshot, sprites map[sim.SpriteID]*sim.Sprite) [
 			InsideStructureID: string(a.InsideStructureID),
 			CurrentHuddleID:   string(a.CurrentHuddleID),
 			Sprite:            resolveAgentSprite(a.SpriteID, sprites),
+			Attributes:        a.AttributeSlugs,
+			HomeStructureID:   string(a.HomeStructureID),
+			WorkStructureID:   string(a.WorkStructureID),
+			ScheduleStartMin:  a.ScheduleStartMin,
+			ScheduleEndMin:    a.ScheduleEndMin,
+			SocialTag:         a.SocialTag,
+			SocialStartMin:    a.SocialStartMin,
+			SocialEndMin:      a.SocialEndMin,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })

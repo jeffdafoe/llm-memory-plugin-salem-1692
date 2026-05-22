@@ -39,6 +39,19 @@ func seededWorld(t *testing.T) *sim.World {
 			InsideStructureID: "tavern",
 			LLMAgent:          "hannah-va",
 			SpriteID:          "sprite-1", Facing: "east",
+			// Editor metadata (ZBBS-HOME-290). Two attributes (assert sorted on
+			// the wire), home/work anchors, and both schedule windows set.
+			Attributes: map[string][]byte{
+				"tavernkeeper":  []byte("{}"),
+				"businessowner": []byte(`{"flavor":"warm"}`),
+			},
+			HomeStructureID:  "cottage-3",
+			WorkStructureID:  "tavern",
+			ScheduleStartMin: intPtr(480),
+			ScheduleEndMin:   intPtr(1080),
+			SocialTag:        "tavern",
+			SocialStartMin:   intPtr(1140),
+			SocialEndMin:     intPtr(1320),
 		}
 		world.Actors["bram"] = &sim.Actor{
 			ID: "bram", DisplayName: "Bram", Kind: sim.KindPC,
@@ -227,6 +240,44 @@ func TestHandleAgents(t *testing.T) {
 	hannahRaw := raw[1]["sprite"].(map[string]any)
 	if _, present := hannahRaw["pack"]; present {
 		t.Errorf("inline agent sprite should not carry pack, got present")
+	}
+
+	// Editor metadata (ZBBS-HOME-290). hannah carries all fields; attributes
+	// arrive sorted regardless of the source map's iteration order.
+	if len(hannah.Attributes) != 2 || hannah.Attributes[0] != "businessowner" || hannah.Attributes[1] != "tavernkeeper" {
+		t.Errorf("hannah.attributes = %v, want sorted [businessowner tavernkeeper]", hannah.Attributes)
+	}
+	if hannah.HomeStructureID != "cottage-3" || hannah.WorkStructureID != "tavern" {
+		t.Errorf("hannah home/work = %q/%q, want cottage-3/tavern", hannah.HomeStructureID, hannah.WorkStructureID)
+	}
+	if hannah.ScheduleStartMin == nil || *hannah.ScheduleStartMin != 480 || hannah.ScheduleEndMin == nil || *hannah.ScheduleEndMin != 1080 {
+		t.Errorf("hannah schedule = %v/%v, want 480/1080", hannah.ScheduleStartMin, hannah.ScheduleEndMin)
+	}
+	if hannah.SocialTag != "tavern" || hannah.SocialStartMin == nil || *hannah.SocialStartMin != 1140 || hannah.SocialEndMin == nil || *hannah.SocialEndMin != 1320 {
+		t.Errorf("hannah social = %q %v/%v, want tavern 1140/1320", hannah.SocialTag, hannah.SocialStartMin, hannah.SocialEndMin)
+	}
+
+	// bram is bare: omitempty fields absent, but the schedule/social *minute
+	// fields emit as explicit null (editor reads null = "inherit dawn/dusk").
+	if bram.Attributes != nil || bram.HomeStructureID != "" || bram.WorkStructureID != "" || bram.SocialTag != "" {
+		t.Errorf("bram editor fields should be empty: %+v", bram)
+	}
+	if bram.ScheduleStartMin != nil || bram.SocialEndMin != nil {
+		t.Errorf("bram schedule/social pointers should be nil, got %v/%v", bram.ScheduleStartMin, bram.SocialEndMin)
+	}
+	bramRaw := raw[0]
+	// omitempty keys absent for the bare PC.
+	for _, k := range []string{"attributes", "home_structure_id", "work_structure_id", "social_tag"} {
+		if _, present := bramRaw[k]; present {
+			t.Errorf("bram raw[%q] should be omitted, got present", k)
+		}
+	}
+	// non-omitempty pointer keys present and null.
+	for _, k := range []string{"schedule_start_minute", "schedule_end_minute", "social_start_minute", "social_end_minute"} {
+		v, present := bramRaw[k]
+		if !present || v != nil {
+			t.Errorf("bram raw[%q] = (present=%v, val=%v), want present and null", k, present, v)
+		}
 	}
 }
 

@@ -3,6 +3,7 @@ package sim
 import (
 	"context"
 	"log"
+	"sort"
 	"sync/atomic"
 	"time"
 )
@@ -1280,6 +1281,16 @@ func snapshotActor(a *Actor, atTick uint64) *ActorSnapshot {
 	for k, v := range a.Needs {
 		needsCopy[k] = v
 	}
+	// Attribute slugs for the editor chip list — sorted keys only, the param
+	// payloads stay on the live Actor (the read surface never needs them).
+	var attributeSlugs []string
+	if len(a.Attributes) > 0 {
+		attributeSlugs = make([]string, 0, len(a.Attributes))
+		for slug := range a.Attributes {
+			attributeSlugs = append(attributeSlugs, slug)
+		}
+		sort.Strings(attributeSlugs)
+	}
 	return &ActorSnapshot{
 		AtTick:             atTick,
 		DisplayName:        a.DisplayName,
@@ -1293,6 +1304,14 @@ func snapshotActor(a *Actor, atTick uint64) *ActorSnapshot {
 		CurrentHuddleID:    a.CurrentHuddleID,
 		SpriteID:           a.SpriteID,
 		Facing:             a.Facing,
+		AttributeSlugs:     attributeSlugs,
+		HomeStructureID:    a.HomeStructureID,
+		WorkStructureID:    a.WorkStructureID,
+		ScheduleStartMin:   copyIntPtr(a.ScheduleStartMin),
+		ScheduleEndMin:     copyIntPtr(a.ScheduleEndMin),
+		SocialTag:          a.SocialTag,
+		SocialStartMin:     copyIntPtr(a.SocialStartMin),
+		SocialEndMin:       copyIntPtr(a.SocialEndMin),
 		Needs:              needsCopy,
 		InventoryHash:      hash,
 		Coins:              a.Coins,

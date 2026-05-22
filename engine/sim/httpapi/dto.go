@@ -58,6 +58,26 @@ type AgentDTO struct {
 	InsideStructureID string          `json:"inside_structure_id,omitempty"`
 	CurrentHuddleID   string          `json:"current_huddle_id,omitempty"`
 	Sprite            *AgentSpriteDTO `json:"sprite,omitempty"`
+
+	// Editor metadata (ZBBS-HOME-290) — the NPC config the Godot editor/HUD
+	// shows + edits, ported from v1. Additive, no contract_version bump.
+	// Attributes is the sorted slug set the editor renders as behavior chips
+	// (display names resolved client-side from /api/village/npc-behaviors);
+	// omitempty so an attribute-less NPC just omits the key. Home/WorkStructureID
+	// are the "Lives at / Works at" anchors (omitempty when unset). Schedule +
+	// Social*Minute are work-shift / social-gathering windows in minute-of-day;
+	// emitted as explicit null (NOT omitempty) when unset so the editor can tell
+	// "inherit dawn/dusk" (null) from a real value — matching the loiter-offset
+	// pointer convention on ObjectDTO. SocialTag is the gathering-structure tag
+	// ("" / absent = no social schedule); the three social fields are all-or-none.
+	Attributes       []string `json:"attributes,omitempty"`
+	HomeStructureID  string   `json:"home_structure_id,omitempty"`
+	WorkStructureID  string   `json:"work_structure_id,omitempty"`
+	ScheduleStartMin *int     `json:"schedule_start_minute"`
+	ScheduleEndMin   *int     `json:"schedule_end_minute"`
+	SocialTag        string   `json:"social_tag,omitempty"`
+	SocialStartMin   *int     `json:"social_start_minute"`
+	SocialEndMin     *int     `json:"social_end_minute"`
 }
 
 // AgentSpriteDTO is the resolved character sprite inlined onto an AgentDTO.
