@@ -529,6 +529,8 @@ func renderWarrantLine(n int, w sim.WarrantMeta, maxTextBytes int) (string, bool
 		return renderPaidWarrantLine(n, w, kind, scope, r.Buyer, r.Amount, r.ForText, maxTextBytes)
 	case sim.IdleBackstopWarrantReason:
 		return renderIdleBackstopWarrantLine(n, kind, scope, r.QuietDuration), false
+	case sim.ShiftDutyWarrantReason:
+		return renderShiftDutyWarrantLine(n, kind, scope, r.ToWork, r.TargetStructureID), false
 	default:
 		if w.TriggerActorID != "" {
 			return fmt.Sprintf("%d. [%s]%s involving %s\n", n, kind, scope, w.TriggerActorID), false
@@ -606,6 +608,33 @@ func renderIdleBackstopWarrantLine(n int, kind, scope string, quiet time.Duratio
 	}
 	return fmt.Sprintf("%d. [%s]%s you've been quiet for %s — consider what to do next\n",
 		n, kind, scope, quiet.Round(time.Second))
+}
+
+// renderShiftDutyWarrantLine renders the warrant line for a
+// ShiftDutyWarrantReason — the shift/duty producer's nudge to walk to your
+// workplace (shift started) or home (shift ended). It surfaces the target
+// structure's id so the model can pass it straight back to the move_to tool
+// (move_to(structure_id)); the engine derives enter-vs-visit, so the model only
+// needs the id. ToWork picks the direction prose.
+//
+// Form (to work): `N. [shift_duty] your shift has started — head to your workplace (structure_id: <id>)`
+// Form (to home): `N. [shift_duty] your shift has ended — head home (structure_id: <id>)`
+//
+// An empty target (defensive — the producer only stamps with a real
+// Work/HomeStructureID) drops the parenthetical so the line never renders a
+// dangling "(structure_id: )".
+//
+// Rendered without truncation: there is no untrusted free-text payload — the
+// id is an engine-controlled world key, not model- or user-supplied text.
+func renderShiftDutyWarrantLine(n int, kind, scope string, toWork bool, target sim.StructureID) string {
+	dir := "your shift has ended — head home"
+	if toWork {
+		dir = "your shift has started — head to your workplace"
+	}
+	if target == "" {
+		return fmt.Sprintf("%d. [%s]%s %s\n", n, kind, scope, dir)
+	}
+	return fmt.Sprintf("%d. [%s]%s %s (structure_id: %s)\n", n, kind, scope, dir, target)
 }
 
 // renderNeeds renders a need map as a deterministic "key=value" list,

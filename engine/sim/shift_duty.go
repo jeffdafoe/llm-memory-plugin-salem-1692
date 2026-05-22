@@ -36,21 +36,30 @@ import (
 // home is how it rests). Decoratives carry no real needs (the needs tick skips
 // them; their need rows are inert seed values), so they are never need-suppressed.
 //
+// The 2b perception cue ("your shift has started/ended — head to your
+// workplace/home (structure_id: <id>)") that tells a warranted agent why it
+// ticked and what to do is rendered from the ShiftDutyWarrantReason payload —
+// see renderShiftDutyWarrantLine in engine/sim/perception/render.go. The cue +
+// home's move_to tool (ZBBS-HOME-285) together make the agent half work.
+//
 // DEFERRED from this slice:
 //   - Per-NPC lateness offset that staggers arrivals (v1 lateness_window_minutes)
 //     — a feel refinement; without it all due NPCs head out on the same minute.
-//   - The "your shift started / ended; head to your workplace" PERCEPTION CUE
-//     that tells a warranted agent why it ticked and what to do — slice 2b,
-//     converges with home's move_to (cue + tool together make the agent half work).
 
 // ShiftDutyWarrantReason is the WarrantReason stamped when an agent NPC is on
 // the wrong side of its shift boundary (on-shift away from work, or off-shift
 // still at work). ToWork distinguishes the two so the 2b perception cue can
-// render the right line. Zero-sourced (a wall-clock boundary is not an event);
-// the per-actor WarrantedSince gate prevents double-stamp. Mirrors
+// render the right line. TargetStructureID is the structure the NPC should walk
+// to (its WorkStructureID when ToWork, else its HomeStructureID) — the 2b cue
+// surfaces it so the model passes it straight back to move_to(structure_id),
+// the same way #1's need cue surfaces the satisfier. It is a w.Structures key
+// (the shared structure/village-object identity), which is exactly what
+// MoveToStructure looks up. Zero-sourced (a wall-clock boundary is not an
+// event); the per-actor WarrantedSince gate prevents double-stamp. Mirrors
 // IdleBackstopWarrantReason / NeedThresholdWarrantReason.
 type ShiftDutyWarrantReason struct {
-	ToWork bool
+	ToWork            bool
+	TargetStructureID StructureID
 }
 
 func (ShiftDutyWarrantReason) isWarrantReason()           {}
@@ -203,7 +212,7 @@ func ShiftTick(now time.Time) Command {
 				}
 				tryStampWarrant(w, a, WarrantMeta{
 					TriggerActorID: a.ID,
-					Reason:         ShiftDutyWarrantReason{ToWork: toWork},
+					Reason:         ShiftDutyWarrantReason{ToWork: toWork, TargetStructureID: target},
 				}, now)
 			}
 			return nil, nil
