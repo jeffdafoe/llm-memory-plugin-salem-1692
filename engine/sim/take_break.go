@@ -45,26 +45,35 @@ import (
 // enough to reopen the same working day.
 const DefaultTakeBreakHours = 4
 
-// resolveBreakUntil computes the break-window end from an optional target hour.
+// resolveBreakUntil computes the break-window end from a target hour.
 //
+//   - untilHour == 0: no target — default to now + DefaultTakeBreakHours. This
+//     is how the handler signals "omitted" (it normalizes a nil pointer to 0).
 //   - untilHour in [1, 23]: resolve to that hour TODAY in the world timezone.
 //     Reject if it is already past (take_break is "back later today", not an
 //     overnight closure — that's the sleep cycle). The error returns the
 //     current time so the model has the anchor it needs to retry.
-//   - untilHour <= 0 or >= 24 (omitted / out of range): default to now +
-//     DefaultTakeBreakHours.
+//   - untilHour < 0 or > 23: rejected. TakeBreak is exported and callable
+//     directly (tests, future in-engine paths), so an out-of-range hour must
+//     fail loudly rather than silently become a default break.
 //
 // The result is clamped to now + 24h as a defensive invariant. `loc` anchors
 // the wall-clock hour comparison to the timezone the perception header
 // advertised; nil falls back to UTC (matches localMinuteOfDay). `at` is the
 // commit instant (UTC from the handler).
 func resolveBreakUntil(loc *time.Location, untilHour int, at time.Time) (time.Time, error) {
+	if untilHour < 0 || untilHour > 23 {
+		return time.Time{}, fmt.Errorf(
+			"until_hour=%d is out of range — use 1..23 for a target hour, or 0 for a %d-hour default break",
+			untilHour, DefaultTakeBreakHours,
+		)
+	}
 	if loc == nil {
 		loc = time.UTC
 	}
 	now := at.In(loc)
 	var breakUntil time.Time
-	if untilHour > 0 && untilHour < 24 {
+	if untilHour > 0 {
 		y, mo, d := now.Date()
 		candidate := time.Date(y, mo, d, untilHour, 0, 0, 0, loc)
 		if !candidate.After(now) {

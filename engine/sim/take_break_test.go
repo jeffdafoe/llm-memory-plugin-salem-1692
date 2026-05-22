@@ -69,6 +69,14 @@ func TestResolveBreakUntil(t *testing.T) {
 			t.Errorf("breakUntil = %v, want default off UTC", got)
 		}
 	})
+
+	t.Run("out-of-range hour rejected (direct caller guard)", func(t *testing.T) {
+		for _, h := range []int{-1, 24, 99} {
+			if _, err := resolveBreakUntil(time.UTC, h, at); err == nil {
+				t.Errorf("untilHour=%d: want error, got nil", h)
+			}
+		}
+	})
 }
 
 func TestTakeBreakCommand_Success(t *testing.T) {
@@ -156,6 +164,20 @@ func TestTakeBreakCommand_MissingActor(t *testing.T) {
 	w := sleepTestWorld()
 	if _, err := TakeBreak("ghost", "nobody", 0, at).Fn(w); err == nil {
 		t.Fatal("expected error for an actor not in world, got nil")
+	}
+}
+
+func TestTakeBreakCommand_OutOfRangeHourRejected(t *testing.T) {
+	at := time.Date(2026, 5, 22, 10, 0, 0, 0, time.UTC)
+	a := npc("k", KindNPCStateful)
+	w := sleepTestWorld(a)
+	// Direct caller passes a nonsense hour — must fail loudly, not silently
+	// become a 4-hour default break.
+	if _, err := TakeBreak("k", "bad hour", 99, at).Fn(w); err == nil {
+		t.Fatal("expected rejection for out-of-range until_hour, got nil")
+	}
+	if a.BreakUntil != nil {
+		t.Errorf("BreakUntil set despite rejection: %v", a.BreakUntil)
 	}
 }
 

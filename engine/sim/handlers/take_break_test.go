@@ -25,19 +25,29 @@ func TestDecodeTakeBreakArgs_Valid(t *testing.T) {
 	if got.Reason != "feeling unwell" {
 		t.Errorf("Reason = %q, want 'feeling unwell'", got.Reason)
 	}
-	if got.UntilHour != 13 {
-		t.Errorf("UntilHour = %d, want 13", got.UntilHour)
+	if got.UntilHour == nil || *got.UntilHour != 13 {
+		t.Errorf("UntilHour = %v, want 13", got.UntilHour)
 	}
 }
 
 func TestDecodeTakeBreakArgs_UntilHourOptional(t *testing.T) {
-	// until_hour omitted decodes to 0 (→ default break length), not an error.
+	// until_hour omitted decodes to a nil pointer (→ default break length),
+	// not an error and not an explicit 0.
 	args, err := DecodeTakeBreakArgs(json.RawMessage(`{"reason":"need a rest"}`))
 	if err != nil {
 		t.Fatalf("DecodeTakeBreakArgs without until_hour: %v", err)
 	}
-	if got := args.(TakeBreakArgs); got.UntilHour != 0 {
-		t.Errorf("UntilHour = %d, want 0 (omitted)", got.UntilHour)
+	if got := args.(TakeBreakArgs); got.UntilHour != nil {
+		t.Errorf("UntilHour = %v, want nil (omitted)", got.UntilHour)
+	}
+}
+
+func TestDecodeTakeBreakArgs_ExplicitZeroRejected(t *testing.T) {
+	// An EXPLICIT until_hour:0 is a contract violation (valid present range is
+	// 1..23; omit for the default), distinct from an omitted field.
+	_, err := DecodeTakeBreakArgs(json.RawMessage(`{"reason":"resting","until_hour":0}`))
+	if err == nil {
+		t.Fatal("want error for explicit until_hour:0, got nil")
 	}
 }
 
@@ -99,9 +109,10 @@ func TestDecodeTakeBreakArgs_NonObject(t *testing.T) {
 // --- HandleTakeBreak --------------------------------------------------
 
 func TestHandleTakeBreak_BuildsCommand(t *testing.T) {
+	until := 13
 	cmd, err := HandleTakeBreak(HandlerInput{
 		ActorID: "k",
-		Args:    TakeBreakArgs{Reason: "feeling unwell", UntilHour: 13},
+		Args:    TakeBreakArgs{Reason: "feeling unwell", UntilHour: &until},
 	})
 	if err != nil {
 		t.Fatalf("HandleTakeBreak: %v", err)
