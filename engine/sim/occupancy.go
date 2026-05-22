@@ -32,6 +32,8 @@ package sim
 // A real flip emits VillageObjectStateChanged → object_state_changed, so the
 // client re-renders the new state.
 
+import "time"
+
 // Asset-state tags marking the occupied / unoccupied visual variants.
 const (
 	TagOccupied   = "occupied"
@@ -62,17 +64,27 @@ func refreshStructureOccupancyState(w *World, structureID StructureID) {
 		return // not occupancy-tracked
 	}
 
-	// Headcount = the raw count of actors attributed to this structure.
-	//
-	// Unlike v1, break/asleep actors are NOT excluded: v2 has no
-	// take_break/sleep lifecycle yet — nothing sets or clears
-	// Actor.BreakUntil/SleepingUntil at runtime, so a time-based exclusion
-	// here would (a) almost never fire and (b) go stale, since no transition
-	// would re-trigger this recompute when a break expired. When that
-	// lifecycle is ported, add the exclusion TOGETHER with a recompute trigger
-	// on the wake / end-break transition (v1's end_break → refresh) so the
-	// count stays consistent with current truth.
-	count := len(w.actorsByStructure[structureID])
+	// Headcount (ZBBS-HOME-284 #2). For "active presence" structures (NOT
+	// night-only — shops, taverns where occupied == open for business),
+	// sleeping / on-break actors don't count, so a home==work keeper going to
+	// bed darkens the structure. For night-only structures (inns where occupied
+	// == guests lodging) everyone counts — the inn is lit precisely because
+	// guests are (sleeping) inside. Safe to exclude now that the sleep lifecycle
+	// re-triggers this recompute on the bed-down (executeNPCSleep) and wake
+	// (wakeNPC) transitions, so the count can't go stale when a rest window
+	// opens or closes.
+	now := time.Now().UTC()
+	count := 0
+	for id := range w.actorsByStructure[structureID] {
+		a := w.Actors[id]
+		if a == nil {
+			continue
+		}
+		if !asset.OccupiedNightOnly && actorIsResting(a, now) {
+			continue
+		}
+		count++
+	}
 	occupied := count >= asset.OccupiedMinCount &&
 		(!asset.OccupiedNightOnly || w.Phase == PhaseNight)
 
