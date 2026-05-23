@@ -88,6 +88,16 @@ func (notImplAssets) LoadAll(_ context.Context) (map[sim.AssetID]*sim.Asset, err
 	return nil, errNotImpl
 }
 
+// notImplSprites is not wired by NewRepository (ZBBS-WORK-256 ships
+// SpritesRepo), but load_world_test.go's notImpl-tolerance test exercises
+// LoadWorld with this stub. Kept here so the test compiles; remove when the
+// notImpl-tolerance test is retired.
+type notImplSprites struct{}
+
+func (notImplSprites) LoadAll(_ context.Context) (map[sim.SpriteID]*sim.Sprite, error) {
+	return nil, errNotImpl
+}
+
 type notImplRecipes struct{}
 
 func (notImplRecipes) LoadAll(_ context.Context) (map[sim.ItemKind]*sim.ItemRecipe, error) {
