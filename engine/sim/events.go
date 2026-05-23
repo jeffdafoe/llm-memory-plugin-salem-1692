@@ -341,8 +341,10 @@ func (VillageObjectStateChanged) isSimEvent() {}
 // Applied=true path — a noticeboard's authored prose was (re)written for its
 // current state. Text is the trimmed/capped content just stored; PostedAt is
 // the instant it landed (== the content's persisted PostedAt, also surfaced on
-// ObjectDTO.content_posted_at). At is the wall-clock instant the command ran.
-// The skip paths (empty_after_trim / not_found / stale_state) emit nothing.
+// ObjectDTO.content_posted_at). At is the same command time (== PostedAt) —
+// one mutation, one clock, so replay/tests/causal ordering can't diverge
+// (the EventBase At convention; code_review #2). The skip paths
+// (empty_after_trim / not_found / stale_state) emit nothing.
 //
 // Translates to the additive noticeboard_content_changed WS frame so an open
 // content modal live-updates; until this, the client only saw new prose on the

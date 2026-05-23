@@ -2088,13 +2088,14 @@ signal world_environment_added(data: Dictionary)
 func apply_world_environment_added(data: Dictionary) -> void:
     world_environment_added.emit(data)
 
-## Generated content was posted (or cleared) on a placement (ZBBS-112 in v1).
-## Fed by the v2 `noticeboard_content_changed` WS frame (ZBBS-HOME-293) via
-## apply_object_content_changed. Carries object_id, content_text (string or
-## null), content_posted_at (RFC3339 string or null). The notice panel
-## subscribes to keep an open panel live as the crier rotates the board
-## mid-read. (Internal signal name stays generic; the wire frame is
-## noticeboard_content_changed.)
+## Generated content was posted on a placement (ZBBS-112 in v1). Fed by the v2
+## `noticeboard_content_changed` WS frame (ZBBS-HOME-293) via
+## apply_object_content_changed. The frame carries `id`, `content_text`, and
+## `content_posted_at` (RFC3339) — all populated: the engine emits only on a
+## successful post (empty-after-trim / stale / not-found emit nothing), so this
+## path has no clear/null case. This signal re-emits those values as
+## (object_id, content_text, content_posted_at) for the notice panel, which
+## subscribes to keep an open panel live as the crier rotates the board mid-read.
 signal object_content_changed(object_id: String, content_text, content_posted_at)
 
 func apply_object_content_changed(data: Dictionary) -> void:

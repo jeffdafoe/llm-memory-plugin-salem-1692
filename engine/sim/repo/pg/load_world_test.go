@@ -335,6 +335,43 @@ func TestLoadWorld_NotImpl_Required_HardFails(t *testing.T) {
 	}
 }
 
+// TestLoadWorld_NilRefCatalog_Tolerated (ZBBS-HOME-295, code_review #1): a NIL
+// reference-catalog sub-repo (an unset field in a partial repo construction) is
+// treated as notImpl, not a panic — loadOptionalCatalog nil-guards before the
+// LoadAll call. With requireAllImpl=false the load succeeds and the catalog
+// stays at its NewWorld-empty default.
+func TestLoadWorld_NilRefCatalog_Tolerated(t *testing.T) {
+	repo := fakeRepoOpts{}.build()
+	repo.AttributeDefinitions = nil // unset field — pre-fix this panicked
+
+	w, err := LoadWorld(context.Background(), repo, false /*requireAllImpl*/)
+	if err != nil {
+		t.Fatalf("LoadWorld with nil AttributeDefinitions should tolerate: %v", err)
+	}
+	if len(w.AttributeDefinitions) != 0 {
+		t.Errorf("AttributeDefinitions should stay empty when nil; got len=%d", len(w.AttributeDefinitions))
+	}
+}
+
+// TestLoadWorld_NilRefCatalog_RequiredHardFails: with requireAllImpl=true a nil
+// reference catalog hard-errors (naming the sub-repo + wrapping errNotImpl)
+// rather than panicking.
+func TestLoadWorld_NilRefCatalog_RequiredHardFails(t *testing.T) {
+	repo := fakeRepoOpts{}.build()
+	repo.Assets = nil
+
+	_, err := LoadWorld(context.Background(), repo, true /*requireAllImpl*/)
+	if err == nil {
+		t.Fatal("expected error for nil Assets with requireAllImpl=true")
+	}
+	if !strings.Contains(err.Error(), "Assets") {
+		t.Errorf("error should name Assets: %v", err)
+	}
+	if !errors.Is(err, errNotImpl) {
+		t.Errorf("error should wrap errNotImpl: %v", err)
+	}
+}
+
 // TestLoadWorld_MissingHuddleRef_HardFails — a Scene.Huddles set
 // references a HuddleID that's not in the loaded Huddles map.
 func TestLoadWorld_MissingHuddleRef_HardFails(t *testing.T) {
