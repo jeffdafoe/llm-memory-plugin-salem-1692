@@ -20,8 +20,11 @@ import (
 // periodic write overlapping the final one would race.
 //
 // Mem-backed (sim.LoadWorld) with a fake LLM client + a capturing save, so no
-// pg or network is involved. A quiet empty world fires no ticks/cascades, so
-// the fake client is never actually called.
+// pg or network is involved. A quiet empty world fires no ticks/agent cascades;
+// the atmosphere cascade does fire one immediate off-world sweep on boot, which
+// calls the fake client and gets a harmless script-exhausted error (logged +
+// ignored per atmosphere's failure semantics) — it doesn't touch the checkpoint
+// lifecycle this test asserts.
 
 // TestRun_LifecycleAndFinalCheckpoint boots run() against a mem world with a
 // fast checkpoint cadence, lets it tick, signals shutdown, and asserts a
@@ -49,7 +52,7 @@ func TestRun_LifecycleAndFinalCheckpoint(t *testing.T) {
 
 	rt := runtime{
 		World:     world,
-		LLMClient: llm.NewFakeClient(), // no scripted turns — never called in a quiet world
+		LLMClient: llm.NewFakeClient(), // atmosphere's boot sweep calls this once → harmless script-exhausted error
 		Save:      save,
 		TickSink:  nil, // worker pool null-checks the sink
 	}
@@ -96,5 +99,65 @@ func TestRun_LifecycleAndFinalCheckpoint(t *testing.T) {
 	}
 	if saves <= periodicSaves {
 		t.Errorf("expected a final checkpoint after shutdown (saves=%d, periodic=%d)", saves, periodicSaves)
+	}
+}
+
+// TestRun_WiresOffWorldCascades proves run() actually wires the off-world LLM
+// cascade subscribers (RegisterActionLog / RegisterAtmosphere /
+// RegisterConsolidation) into the live runtime — the seam build-checking can't
+// catch. Atmosphere is the witness: it fires an immediate first sweep on
+// register that calls the LLM unconditionally (world-level, not candidate-gated
+// like consolidation, which makes no call on an empty world). So if
+// RegisterAtmosphere weren't reached, Environment.Atmosphere would stay empty.
+// We script one atmosphere line and assert it gets installed after boot.
+func TestRun_WiresOffWorldCascades(t *testing.T) {
+	repo, _ := mem.NewRepository()
+	world, err := sim.LoadWorld(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	world.Settings.CheckpointInterval = 20 * time.Millisecond
+
+	const wantAtmosphere = "The village lies still beneath a watchful sky."
+	rt := runtime{
+		World:     world,
+		LLMClient: llm.NewFakeClient(llm.ScriptedTurn{Response: llm.Response{Content: wantAtmosphere}}),
+		Save:      func(context.Context, *sim.CheckpointSnapshot) error { return nil },
+		TickSink:  nil,
+	}
+
+	stop := make(chan struct{})
+	done := make(chan error, 1)
+	go func() { done <- run(rt, stop) }()
+
+	// The immediate atmosphere sweep applies async (via SendContext) once Run
+	// starts, so poll the world for the installed prose rather than racing it.
+	var got string
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		res, sendErr := world.SendContext(context.Background(), sim.Command{Fn: func(w *sim.World) (any, error) {
+			return w.Environment.Atmosphere, nil
+		}})
+		if sendErr == nil {
+			if s, _ := res.(string); s != "" {
+				got = s
+				break
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	close(stop)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("run did not return within 5s of shutdown signal")
+	}
+
+	if got != wantAtmosphere {
+		t.Errorf("Environment.Atmosphere = %q, want %q (RegisterAtmosphere not wired into run()?)", got, wantAtmosphere)
 	}
 }
