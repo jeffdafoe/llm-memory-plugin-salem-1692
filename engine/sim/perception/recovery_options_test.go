@@ -68,7 +68,12 @@ func TestBuildRecoveryOptions_TiredWithHomeFires(t *testing.T) {
 // --- free rest spots ---
 
 func TestBuildRecoveryOptions_FreeRestSpot(t *testing.T) {
-	subj := &sim.ActorSnapshot{CurrentX: 0, CurrentY: 0, Needs: map[sim.NeedKey]int{"tiredness": 22}, HomeStructureID: "cottage"}
+	// Actor coords are padded internal-grid tiles, so express the actor's
+	// position through WorldToTile too (world origin) — the object at pixel
+	// (96,0) is then 3 tiles due east in the SAME space. Subtracting raw
+	// pixels from tiles would be the HOME-297 unit bug.
+	origin := sim.WorldToTile(0, 0)
+	subj := &sim.ActorSnapshot{CurrentX: origin.X, CurrentY: origin.Y, Needs: map[sim.NeedKey]int{"tiredness": 22}, HomeStructureID: "cottage"}
 	snap := &sim.Snapshot{
 		Actors:         map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj},
 		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{"oak": tirednessObject("oak", "the old oak", 96, 0, -12)},
@@ -81,8 +86,10 @@ func TestBuildRecoveryOptions_FreeRestSpot(t *testing.T) {
 	if o.Kind != "rest" || o.Label != "the old oak" || o.Magnitude != 12 || o.CostText != "free" {
 		t.Errorf("unexpected rest option: %+v", o)
 	}
-	if o.Distance == "" || o.Direction == "" {
-		t.Errorf("free rest spot should carry distance+direction (pixel space), got dist=%q dir=%q", o.Distance, o.Direction)
+	// 96px = 3 tiles east → "a short walk" (3–8 tiles), bearing east. Wrong
+	// units would land in a different bucket / direction.
+	if o.Distance != "a short walk" || o.Direction != "east" {
+		t.Errorf("want 3-tiles-east (a short walk / east), got dist=%q dir=%q", o.Distance, o.Direction)
 	}
 }
 
@@ -103,9 +110,10 @@ func TestBuildRecoveryOptions_SkipsNonTirednessAndDepleted(t *testing.T) {
 }
 
 func TestBuildRecoveryOptions_NearestRestFirst(t *testing.T) {
-	subj := &sim.ActorSnapshot{CurrentX: 0, CurrentY: 0, Needs: map[sim.NeedKey]int{"tiredness": 22}, HomeStructureID: "cottage"}
-	near := tirednessObject("near", "near oak", 64, 0, -10) // 2 tiles
-	far := tirednessObject("far", "far oak", 640, 0, -10)   // 20 tiles
+	origin := sim.WorldToTile(0, 0)
+	subj := &sim.ActorSnapshot{CurrentX: origin.X, CurrentY: origin.Y, Needs: map[sim.NeedKey]int{"tiredness": 22}, HomeStructureID: "cottage"}
+	near := tirednessObject("near", "near oak", 64, 0, -10) // 2 tiles east
+	far := tirednessObject("far", "far oak", 640, 0, -10)   // 20 tiles east
 	snap := &sim.Snapshot{
 		Actors:         map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj},
 		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{"far": far, "near": near},
