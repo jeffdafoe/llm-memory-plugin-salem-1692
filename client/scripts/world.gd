@@ -1999,6 +1999,53 @@ func apply_npc_spoke(data: Dictionary) -> void:
     npc_spoke.emit(npc_id, name, text, kind, at, structure_id, mentions, speaker_x, speaker_y, room_id, addressee_id, addressee_name, mention_prices)
 
 
+## Pay-with-item lifecycle frames (ZBBS-WORK-296). The PC drives a buyer
+## offer via pc/pay and observes it resolve; the engine broadcasts the
+## offer, an optional seller counter, and the terminal outcome. The wire
+## frames carry actor ids only (like the movement frames), so we resolve
+## buyer/seller ids to display names from the rendered roster HERE, inject
+## them into the payload, and re-emit as a signal the talk panel narrates
+## into its conversation log. No world-render side effect — pay is
+## narration, not a placed entity. Scope/"You" framing is the panel's job
+## (it knows the PC's actor id), so these handlers stay presentation-free.
+signal pay_offer(data: Dictionary)
+signal pay_countered(data: Dictionary)
+signal pay_resolved(data: Dictionary)
+
+
+## Resolve an actor id to its display name from the rendered roster
+## (placed_npcs holds NPCs and PCs alike). Falls back to the id itself
+## when the actor isn't placed (off-village, not yet bootstrapped) so a
+## narration line still reads rather than going blank.
+func display_name_for(actor_id: String) -> String:
+    if actor_id == "":
+        return ""
+    var container: Node2D = placed_npcs.get(actor_id, null)
+    if container != null:
+        var dn = container.get_meta("display_name", "")
+        if typeof(dn) == TYPE_STRING and dn != "":
+            return dn
+    return actor_id
+
+
+func apply_pay_offer(data: Dictionary) -> void:
+    data["buyer_name"] = display_name_for(str(data.get("buyer_id", "")))
+    data["seller_name"] = display_name_for(str(data.get("seller_id", "")))
+    pay_offer.emit(data)
+
+
+func apply_pay_countered(data: Dictionary) -> void:
+    data["buyer_name"] = display_name_for(str(data.get("buyer_id", "")))
+    data["seller_name"] = display_name_for(str(data.get("seller_id", "")))
+    pay_countered.emit(data)
+
+
+func apply_pay_resolved(data: Dictionary) -> void:
+    data["buyer_name"] = display_name_for(str(data.get("buyer_id", "")))
+    data["seller_name"] = display_name_for(str(data.get("seller_id", "")))
+    pay_resolved.emit(data)
+
+
 ## Spawn a SpeechBubble child on the speaker's container (NPC or PC).
 ## Replaces an existing bubble on the same speaker — same NPC speaking
 ## twice in quick succession should show the latest line, not stack.

@@ -1030,6 +1030,15 @@ func _connect_world_signal() -> void:
         world.room_event.connect(_on_room_event)
     if world.has_signal("village_event_added"):
         world.village_event_added.connect(_on_village_event_added)
+    # Pay-with-item lifecycle narration (ZBBS-WORK-296). world resolves the
+    # buyer/seller display names; we scope to the PC's own transactions and
+    # render "You"-framed narration lines into the log.
+    if world.has_signal("pay_offer"):
+        world.pay_offer.connect(_on_pay_offer)
+    if world.has_signal("pay_countered"):
+        world.pay_countered.connect(_on_pay_countered)
+    if world.has_signal("pay_resolved"):
+        world.pay_resolved.connect(_on_pay_resolved)
 
 
 # talk_sheet is the actual visible chat panel (the bottom-right rounded
@@ -2143,13 +2152,131 @@ func _on_room_event(data: Dictionary) -> void:
 ## at the moment of a knock; bumps the unread counter and surfaces a
 ## brief banner so the player notices the response even when the sheet
 ## is closed.
-func append_local_narration(text: String) -> void:
+func append_local_narration(text: String, at: String = "") -> void:
     if text.is_empty():
         return
-    _append_log_line("", text, "act")
+    _append_log_line("", text, "act", false, at)
     if not is_open:
         unread_count += 1
         _update_launcher_text()
+
+
+## --- Pay-with-item lifecycle narration (ZBBS-WORK-296) ---
+##
+## The engine broadcasts pay_offer / pay_countered / pay_resolved to every
+## connected client; world resolves the buyer/seller display names and
+## re-emits. We render only the PC's OWN transactions (PC is buyer or
+## seller) — the precise filter for the documented use case (the player
+## drives an offer via pc/pay and watches it resolve) and the source of
+## the "You" framing. Overheard NPC-NPC haggling already arrives via
+## npc_spoke counter/decline broadcasts, so this isn't the channel for it.
+
+## True when the PC is a party to the transaction. pc_actor_id is empty
+## until the first /pc/me returns — render nothing rather than mis-attribute.
+func _pc_is_party(buyer_id: String, seller_id: String) -> bool:
+    if pc_actor_id.is_empty():
+        return false
+    return pc_actor_id == buyer_id or pc_actor_id == seller_id
+
+
+## "stew" / "3 stew". The wire carries the raw item kind, not a display
+## label; good enough for a narration line.
+func _item_phrase(item: String, qty: int) -> String:
+    if item.is_empty():
+        return "an item"
+    if qty > 1:
+        return "%d %s" % [qty, item]
+    return item
+
+
+func _coins_phrase(n: int) -> String:
+    if n == 1:
+        return "1 coin"
+    return "%d coins" % n
+
+
+func _on_pay_offer(data: Dictionary) -> void:
+    var buyer_id := str(data.get("buyer_id", ""))
+    var seller_id := str(data.get("seller_id", ""))
+    if not _pc_is_party(buyer_id, seller_id):
+        return
+    var item_phrase := _item_phrase(str(data.get("item", "")), int(data.get("qty", 1)))
+    var coins := _coins_phrase(int(data.get("amount", 0)))
+    var at := str(data.get("at", ""))
+    var text: String
+    if buyer_id == pc_actor_id:
+        text = "You offered %s %s for %s." % [str(data.get("seller_name", "")), coins, item_phrase]
+    else:
+        text = "%s offered you %s for %s." % [str(data.get("buyer_name", "")), coins, item_phrase]
+    append_local_narration(text, at)
+
+
+func _on_pay_countered(data: Dictionary) -> void:
+    var buyer_id := str(data.get("buyer_id", ""))
+    var seller_id := str(data.get("seller_id", ""))
+    if not _pc_is_party(buyer_id, seller_id):
+        return
+    var counter := _coins_phrase(int(data.get("counter_amount", 0)))
+    var original := _coins_phrase(int(data.get("original_amount", 0)))
+    var msg := str(data.get("message", ""))
+    var at := str(data.get("at", ""))
+    var text: String
+    if buyer_id == pc_actor_id:
+        text = "%s countered: %s (you offered %s)." % [str(data.get("seller_name", "")), counter, original]
+    else:
+        text = "You countered %s: %s." % [str(data.get("buyer_name", "")), counter]
+    if not msg.is_empty():
+        text += " \"%s\"" % msg
+    append_local_narration(text, at)
+
+
+func _on_pay_resolved(data: Dictionary) -> void:
+    var buyer_id := str(data.get("buyer_id", ""))
+    var seller_id := str(data.get("seller_id", ""))
+    if not _pc_is_party(buyer_id, seller_id):
+        return
+    var pc_is_buyer := buyer_id == pc_actor_id
+    var seller_name := str(data.get("seller_name", ""))
+    var buyer_name := str(data.get("buyer_name", ""))
+    var item_phrase := _item_phrase(str(data.get("item", "")), int(data.get("qty", 1)))
+    var coins := _coins_phrase(int(data.get("amount", 0)))
+    var state := str(data.get("terminal_state", ""))
+    var msg := str(data.get("message", ""))
+    var at := str(data.get("at", ""))
+    var text := ""
+    match state:
+        "accepted":
+            if pc_is_buyer:
+                text = "%s accepted your offer — %s for %s." % [seller_name, coins, item_phrase]
+            else:
+                text = "You accepted %s's offer — %s for %s." % [buyer_name, coins, item_phrase]
+        "declined":
+            if pc_is_buyer:
+                text = "%s declined your offer." % seller_name
+            else:
+                text = "You declined %s's offer." % buyer_name
+        "withdrawn_by_buyer":
+            if pc_is_buyer:
+                text = "You withdrew your offer to %s." % seller_name
+            else:
+                text = "%s withdrew their offer." % buyer_name
+        "expired":
+            if pc_is_buyer:
+                text = "Your offer to %s expired." % seller_name
+            else:
+                text = "%s's offer expired." % buyer_name
+        "failed_insufficient_funds":
+            text = "The offer failed — not enough coins."
+        "failed_insufficient_stock":
+            text = "The offer failed — %s is out of stock." % seller_name
+        "failed_unavailable":
+            text = "The offer failed — %s is unavailable." % item_phrase
+        _:
+            text = "The offer ended (%s)." % state
+    # Seller's decline note / buyer's withdraw note rides the resolved frame.
+    if not msg.is_empty() and (state == "declined" or state == "withdrawn_by_buyer"):
+        text += " \"%s\"" % msg
+    append_local_narration(text, at)
 
 
 func _append_log_line(speaker: String, text: String, kind: String = "", is_backload: bool = false, at: String = "") -> void:
