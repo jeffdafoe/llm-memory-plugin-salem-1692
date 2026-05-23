@@ -265,6 +265,40 @@ func TestPayWithItem_SlowPath_HappyPath(t *testing.T) {
 	}
 }
 
+// TestPayWithItem_SlowPath_InsufficientFunds_FastFail covers the
+// ZBBS-WORK-231 offer-time funds fast-fail: a buyer who can't cover the
+// offer is rejected at mint with a tool error, so no pending entry is
+// minted and the seller's warrant never fires (no PayOfferReceived).
+// This is the optimization half — AcceptPay's gate 11 remains the
+// authoritative funds check and is exercised separately.
+func TestPayWithItem_SlowPath_InsufficientFunds_FastFail(t *testing.T) {
+	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
+		{id: "alice", displayName: "Alice", kind: sim.KindNPCShared, huddleID: "h1", coins: 3},
+		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1", inventory: map[sim.ItemKind]int{"stew": 5}},
+	})
+	defer stop()
+
+	events := capturePayWithItemEvents(t, w)
+
+	_, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, 0, 0, "", time.Now().UTC()))
+	if err == nil || !strings.Contains(err.Error(), "insufficient coins") {
+		t.Fatalf("want insufficient-coins error, got %v", err)
+	}
+
+	// No pending entry minted — the fast-fail rejects before nextLedgerSeq.
+	if ledger := readPayLedger(t, w); len(ledger) != 0 {
+		t.Errorf("ledger should be empty after fast-fail, got %d entries", len(ledger))
+	}
+	// Seller's warrant never fires.
+	if len(events.Offer) != 0 {
+		t.Errorf("PayOfferReceived emitted on fast-fail: %v", events.Offer)
+	}
+	// Buyer's coins untouched.
+	if got := w.Published().Actors["alice"].Coins; got != 3 {
+		t.Errorf("alice.Coins = %d, want 3 (no movement on fast-fail)", got)
+	}
+}
+
 func TestPayWithItem_SlowPath_NumericGates(t *testing.T) {
 	cases := []struct {
 		name   string
