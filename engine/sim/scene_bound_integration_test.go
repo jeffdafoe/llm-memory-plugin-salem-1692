@@ -22,17 +22,17 @@ func TestCreateScene_AreaBound_CapturesOutdoorActors(t *testing.T) {
 	})
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
 		"outdoor-near": {
-			ID:       "outdoor-near",
-			CurrentX: 11, CurrentY: 10,
+			ID:  "outdoor-near",
+			Pos: sim.TilePos{X: 11, Y: 10},
 		},
 		"outdoor-far": {
-			ID:       "outdoor-far",
-			CurrentX: 50, CurrentY: 50,
+			ID:  "outdoor-far",
+			Pos: sim.TilePos{X: 50, Y: 50},
 		},
 		"indoor-at-anchor": {
 			ID:                "indoor-at-anchor",
 			InsideStructureID: "tavern",
-			CurrentX:          10, CurrentY: 10,
+			Pos:               sim.TilePos{X: 10, Y: 10},
 		},
 	})
 	w, err := sim.LoadWorld(context.Background(), repo)
@@ -196,7 +196,7 @@ func TestConcludeHuddle_AutoConcludesAreaScene(t *testing.T) {
 		"plaza": {ID: "plaza", DisplayName: "Plaza"},
 	})
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
-		"alice": {ID: "alice", CurrentX: 10, CurrentY: 10},
+		"alice": {ID: "alice", Pos: sim.TilePos{X: 10, Y: 10}},
 	})
 	w, err := sim.LoadWorld(context.Background(), repo)
 	if err != nil {
@@ -350,7 +350,7 @@ func TestJoinHuddle_RejectsUnboundedSceneID(t *testing.T) {
 func TestAttachHuddleToScene_RejectsAreaSceneSecondHuddle(t *testing.T) {
 	repo, handles := mem.NewRepository()
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
-		"alice": {ID: "alice", CurrentX: 10, CurrentY: 10},
+		"alice": {ID: "alice", Pos: sim.TilePos{X: 10, Y: 10}},
 	})
 	w, _ := sim.LoadWorld(context.Background(), repo)
 	ctx, cancel := context.WithCancel(context.Background())

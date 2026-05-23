@@ -25,8 +25,7 @@ func buildDwellTestWorld(t *testing.T, lastCreditedAt time.Time, actorX, actorY 
 		"hannah": {
 			ID:       "hannah",
 			LLMAgent: "hannah-innkeeper",
-			CurrentX: actorX,
-			CurrentY: actorY,
+			Pos:      sim.TilePos{X: actorX, Y: actorY},
 			Needs:    map[sim.NeedKey]int{"hunger": 5, "thirst": 5, "tiredness": 12},
 			DwellCredits: map[sim.DwellCreditKey]*sim.DwellCredit{
 				{ObjectID: "shade_tree", Attribute: "tiredness", Source: sim.DwellSourceObject}: {
@@ -139,8 +138,8 @@ func TestApplyDwellTickItemCountdown(t *testing.T) {
 		"hannah": {
 			ID:       "hannah",
 			LLMAgent: "hannah-innkeeper",
-			CurrentX: 110, CurrentY: 110,
-			Needs: map[sim.NeedKey]int{"hunger": 15, "thirst": 5, "tiredness": 5},
+			Pos:      sim.TilePos{X: 110, Y: 110},
+			Needs:    map[sim.NeedKey]int{"hunger": 15, "thirst": 5, "tiredness": 5},
 			DwellCredits: map[sim.DwellCreditKey]*sim.DwellCredit{
 				{ObjectID: "inn", Attribute: "hunger", Source: sim.DwellSourceItem}: {
 					ObjectID:           "inn",
@@ -196,8 +195,8 @@ func TestApplyDwellTickItemExhaustedDeletes(t *testing.T) {
 		"player": {
 			ID:            "player",
 			LoginUsername: "alice",
-			CurrentX:      105, CurrentY: 100,
-			Needs: map[sim.NeedKey]int{"hunger": 8, "thirst": 5, "tiredness": 5},
+			Pos:           sim.TilePos{X: 105, Y: 100},
+			Needs:         map[sim.NeedKey]int{"hunger": 8, "thirst": 5, "tiredness": 5},
 			DwellCredits: map[sim.DwellCreditKey]*sim.DwellCredit{
 				{ObjectID: "inn", Attribute: "hunger", Source: sim.DwellSourceItem}: {
 					ObjectID:           "inn",
@@ -261,8 +260,8 @@ func TestApplyDwellTickFloorHitTerminatesCredit(t *testing.T) {
 		"player": {
 			ID:            "player",
 			LoginUsername: "alice",
-			CurrentX:      0, CurrentY: 0,
-			Needs: map[sim.NeedKey]int{"hunger": 1},
+			Pos:           sim.TilePos{X: 0, Y: 0},
+			Needs:         map[sim.NeedKey]int{"hunger": 1},
 			DwellCredits: map[sim.DwellCreditKey]*sim.DwellCredit{
 				{ObjectID: "bush", Attribute: "hunger", Source: sim.DwellSourceObject}: {
 					ObjectID:           "bush",

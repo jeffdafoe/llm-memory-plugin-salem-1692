@@ -99,13 +99,13 @@ func handleMovedEncounter(w *sim.World, evt sim.Event) {
 	// event against an actor now standing on the same tile but indoor
 	// because a structure footprint was reconciled in between, which
 	// would otherwise mint an outdoor huddle from an indoor-now event.
-	if mover.CurrentX != moved.ToPosition.X ||
-		mover.CurrentY != moved.ToPosition.Y ||
+	if mover.Pos.X != moved.ToPosition.X ||
+		mover.Pos.Y != moved.ToPosition.Y ||
 		mover.InsideStructureID != moved.ToStructureID {
 		log.Printf(
 			"sim/cascade: moved-encounter skipped — mover %q state (%d,%d,%q) != event to (%d,%d,%q)",
 			mover.ID,
-			mover.CurrentX, mover.CurrentY, mover.InsideStructureID,
+			mover.Pos.X, mover.Pos.Y, mover.InsideStructureID,
 			moved.ToPosition.X, moved.ToPosition.Y, moved.ToStructureID,
 		)
 		return

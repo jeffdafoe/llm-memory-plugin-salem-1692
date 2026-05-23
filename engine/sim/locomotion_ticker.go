@@ -194,7 +194,7 @@ func advanceActorLocomotion(w *World, actor *Actor, grid *WalkGrid, now time.Tim
 		return
 	}
 
-	path := FindPath(grid, GridPoint{X: actor.CurrentX, Y: actor.CurrentY}, GridPoint{X: target.X, Y: target.Y})
+	path := FindPath(grid, actor.Pos, GridPoint{X: target.X, Y: target.Y})
 	if path == nil {
 		emitMoveStopped(w, actor, dest, MoveStoppedUnreachable, attemptID, now)
 		actor.MoveIntent = nil
@@ -222,10 +222,9 @@ func advanceActorLocomotion(w *World, actor *Actor, grid *WalkGrid, now time.Tim
 	}
 
 	// Advance one tile.
-	from := Position{X: actor.CurrentX, Y: actor.CurrentY}
+	from := actor.Pos
 	fromStructure := actor.InsideStructureID
-	actor.CurrentX = nextTile.X
-	actor.CurrentY = nextTile.Y
+	actor.Pos = nextTile
 	updateInsideStructureIDFromTileOwnership(w, actor)
 
 	w.emit(&ActorMoved{
@@ -281,15 +280,15 @@ func arrivedAtDestination(w *World, actor *Actor, dest MoveDestination) bool {
 			return false
 		}
 		for _, off := range visitorSlotOffsets {
-			if actor.CurrentX == pin.X+off.X && actor.CurrentY == pin.Y+off.Y {
+			if actor.Pos.X == pin.X+off.X && actor.Pos.Y == pin.Y+off.Y {
 				return true
 			}
 		}
 		return false
 	case MoveDestinationPosition:
 		return dest.Position != nil &&
-			actor.CurrentX == dest.Position.X &&
-			actor.CurrentY == dest.Position.Y
+			actor.Pos.X == dest.Position.X &&
+			actor.Pos.Y == dest.Position.Y
 	default:
 		return false
 	}
@@ -305,7 +304,7 @@ func arrivedAtDestination(w *World, actor *Actor, dest MoveDestination) bool {
 // with zero lineage that bypasses source-aware dedup.
 func finishArrival(w *World, actor *Actor, dest MoveDestination, attemptID MovementAttemptID, now time.Time) {
 	actor.MoveIntent = nil
-	finalPos := Position{X: actor.CurrentX, Y: actor.CurrentY}
+	finalPos := actor.Pos
 	finalStructure := actor.InsideStructureID
 
 	arrivedEvt := &ActorArrived{
@@ -336,7 +335,7 @@ func finishArrival(w *World, actor *Actor, dest MoveDestination, attemptID Movem
 func emitMoveStopped(w *World, actor *Actor, dest MoveDestination, reason MoveStoppedReason, attemptID MovementAttemptID, now time.Time) {
 	w.emit(&ActorMoveStopped{
 		ActorID:           actor.ID,
-		Position:          Position{X: actor.CurrentX, Y: actor.CurrentY},
+		Position:          actor.Pos,
 		StructureID:       actor.InsideStructureID,
 		Destination:       cloneMoveDestination(dest),
 		Reason:            reason,
@@ -364,7 +363,7 @@ func actorInActiveHuddle(w *World, actor *Actor) bool {
 //
 // MUST be called from inside a Command.Fn.
 func updateInsideStructureIDFromTileOwnership(w *World, actor *Actor) {
-	pos := Position{X: actor.CurrentX, Y: actor.CurrentY}
+	pos := actor.Pos
 	if sid, ok := structureContainingTile(w, pos); ok {
 		setActorInsideStructure(w, actor, sid)
 		return

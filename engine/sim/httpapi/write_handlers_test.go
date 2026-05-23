@@ -17,7 +17,7 @@ func seedPC(t *testing.T, w *sim.World, id, loginUsername string, x, y int) {
 	_, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		world.Actors[sim.ActorID(id)] = &sim.Actor{
 			ID: sim.ActorID(id), DisplayName: id, Kind: sim.KindPC,
-			State: sim.StateIdle, CurrentX: x, CurrentY: y,
+			State: sim.StateIdle, Pos: sim.TilePos{X: x, Y: y},
 			LoginUsername: loginUsername,
 		}
 		return nil, nil
@@ -142,7 +142,7 @@ func TestHandlePCMove_NPCWithLoginNotMoved(t *testing.T) {
 	_, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		world.Actors["npc-tester"] = &sim.Actor{
 			ID: "npc-tester", DisplayName: "npc-tester", Kind: sim.KindNPCShared,
-			State: sim.StateIdle, CurrentX: 10, CurrentY: 10, LoginUsername: "tester",
+			State: sim.StateIdle, Pos: sim.TilePos{X: 10, Y: 10}, LoginUsername: "tester",
 		}
 		return nil, nil
 	}})

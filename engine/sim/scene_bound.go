@@ -106,7 +106,7 @@ func (b SceneBound) Contains(_ *World, actor *Actor) bool {
 		if actor.InsideStructureID != "" {
 			return false
 		}
-		return chebyshevDistance(Position{X: actor.CurrentX, Y: actor.CurrentY}, *b.Anchor) <= *b.Radius
+		return chebyshevDistance(actor.Pos, *b.Anchor) <= *b.Radius
 	case SceneBoundUnbounded:
 		return true
 	}

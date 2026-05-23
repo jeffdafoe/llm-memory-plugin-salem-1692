@@ -278,7 +278,7 @@ func tileOccupiedByOtherActor(w *World, pos Position, exceptID ActorID) bool {
 		if id == exceptID {
 			continue
 		}
-		if a.CurrentX == pos.X && a.CurrentY == pos.Y {
+		if a.Pos.Equal(pos) {
 			return true
 		}
 	}

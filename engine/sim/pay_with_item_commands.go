@@ -1373,7 +1373,7 @@ func commitPayTransfer(
 				}
 			}
 			applied := applyConsumeSatisfactions(consumer, def, entry.Qty)
-			structureID := findNearestVillageObject(w, float64(consumer.CurrentX), float64(consumer.CurrentY))
+			structureID := findNearestVillageObject(w, float64(consumer.Pos.X), float64(consumer.Pos.Y))
 			var stamped []DwellCreditSnapshot
 			if structureID != "" && def != nil {
 				stamped = UpsertItemDwellCredits(consumer, entry.ItemKind, def.Satisfies, structureID, at)

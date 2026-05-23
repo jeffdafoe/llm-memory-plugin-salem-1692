@@ -36,7 +36,7 @@ func emitMovedFor(t *testing.T, w *sim.World, actorID sim.ActorID, now time.Time
 		}
 		sim.EmitForTest(world, &sim.ActorMoved{
 			ActorID:       actorID,
-			ToPosition:    sim.Position{X: actor.CurrentX, Y: actor.CurrentY},
+			ToPosition:    sim.Position{X: actor.Pos.X, Y: actor.Pos.Y},
 			ToStructureID: actor.InsideStructureID,
 			At:            now,
 		})
@@ -371,12 +371,12 @@ func TestMovedEncounter_SameTickArrivalRace(t *testing.T) {
 	}
 
 	// Same-tick: both events emitted from inside one Command (mirrors
-	// the ticker's actor.CurrentX advance → emit(ActorMoved) → emit(
+	// the ticker's actor.Pos.X advance → emit(ActorMoved) → emit(
 	// ActorArrived) sequence).
 	now := time.Now().UTC()
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		actor := world.Actors["ann"]
-		pos := sim.Position{X: actor.CurrentX, Y: actor.CurrentY}
+		pos := sim.Position{X: actor.Pos.X, Y: actor.Pos.Y}
 		sim.EmitForTest(world, &sim.ActorMoved{
 			ActorID:    "ann",
 			ToPosition: pos,

@@ -347,11 +347,12 @@ type Actor struct {
 	// (LoadWorld reads it, SaveWorld leaves it). See migration ZBBS-WORK-271.
 	IsAdmin bool
 
-	// Spatial — current location.
+	// Spatial — current location. Pos is the actor's tile (padded grid
+	// coords); see geom.go. Was a CurrentX/CurrentY int pair — folded into
+	// TilePos so it can never be mixed with a world-pixel coordinate.
 	InsideStructureID StructureID
 	InsideRoomID      RoomID // 0 when not in a room
-	CurrentX          int
-	CurrentY          int
+	Pos               TilePos
 	CurrentHuddleID   HuddleID
 
 	// Render identity — client-facing only, the engine never branches on
@@ -707,8 +708,7 @@ type ActorSnapshot struct {
 	LLMAgent string
 
 	InsideStructureID StructureID
-	CurrentX          int
-	CurrentY          int
+	Pos               TilePos // padded grid tile; was CurrentX/CurrentY (see geom.go)
 	CurrentHuddleID   HuddleID
 	Needs             map[NeedKey]int
 	InventoryHash     uint64 // fast-compare; computed at snapshot time

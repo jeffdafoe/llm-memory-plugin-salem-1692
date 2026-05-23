@@ -53,8 +53,7 @@ func buildConsumeTestWorld(t *testing.T, actors []consumeActorSpec, objects []co
 			StateEnteredAt:   now,
 			Inventory:        s.inventory,
 			Needs:            s.needs,
-			CurrentX:         s.x,
-			CurrentY:         s.y,
+			Pos:              sim.TilePos{X: s.x, Y: s.y},
 			RecentActions:    sim.NewRingBuffer[sim.Action](4),
 			RecentStateTrans: sim.NewRingBuffer[sim.StateTransition](4),
 		}

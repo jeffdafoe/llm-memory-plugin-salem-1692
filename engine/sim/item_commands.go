@@ -259,7 +259,7 @@ func Consume(actorID ActorID, itemName string, qty int, at time.Time) Command {
 			// ("this stew looks really good — you'll need some time to
 			// enjoy it properly"). No event when nothing landed (skipped
 			// item, eat-while-walking, no dwell triples on satisfactions).
-			structureID := findNearestVillageObject(w, float64(actor.CurrentX), float64(actor.CurrentY))
+			structureID := findNearestVillageObject(w, float64(actor.Pos.X), float64(actor.Pos.Y))
 			var stamped []DwellCreditSnapshot
 			if structureID != "" {
 				stamped = UpsertItemDwellCredits(actor, kind, def.Satisfies, structureID, at)

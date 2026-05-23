@@ -30,12 +30,12 @@ func payWorld(t *testing.T) *sim.World {
 		"pc-buyer": {
 			ID: "pc-buyer", DisplayName: "Buyer", Kind: sim.KindPC,
 			State: sim.StateIdle, LoginUsername: "tester",
-			CurrentX: 3, CurrentY: 4, CurrentHuddleID: "h1", Coins: 100,
+			Pos: sim.TilePos{X: 3, Y: 4}, CurrentHuddleID: "h1", Coins: 100,
 		},
 		"hannah": {
 			ID: "hannah", DisplayName: "Hannah", Kind: sim.KindNPCShared,
 			State: sim.StateIdle, Role: "innkeeper", LLMAgent: "hannah-va",
-			CurrentX: 3, CurrentY: 4, CurrentHuddleID: "h1",
+			Pos: sim.TilePos{X: 3, Y: 4}, CurrentHuddleID: "h1",
 			Inventory: map[sim.ItemKind]int{"stew": 5},
 		},
 	})

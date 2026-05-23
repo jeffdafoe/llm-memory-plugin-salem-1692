@@ -31,10 +31,10 @@ func buildConsumeDwellWorld(t *testing.T) (*sim.World, *capturedDwellEvents, con
 	})
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
 		"hannah": {
-			ID:       "hannah",
-			LLMAgent: "hannah-innkeeper",
-			Kind:     sim.KindNPCStateful,
-			CurrentX: 105, CurrentY: 100,
+			ID:        "hannah",
+			LLMAgent:  "hannah-innkeeper",
+			Kind:      sim.KindNPCStateful,
+			Pos:       sim.TilePos{X: 105, Y: 100},
 			Needs:     map[sim.NeedKey]int{"hunger": 20, "thirst": 5, "tiredness": 5},
 			Inventory: map[sim.ItemKind]int{"stew": 2, "water": 1},
 		},
@@ -135,8 +135,8 @@ func TestConsumeSkipsDwellStartedWhenWalking(t *testing.T) {
 	// since there's no public sim.MoveActor in this fixture and the
 	// dwell pin lookup uses CurrentX/Y.
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		world.Actors["hannah"].CurrentX = 9999
-		world.Actors["hannah"].CurrentY = 9999
+		world.Actors["hannah"].Pos.X = 9999
+		world.Actors["hannah"].Pos.Y = 9999
 		return nil, nil
 	}}); err != nil {
 		t.Fatalf("move: %v", err)
@@ -244,8 +244,8 @@ func TestApplyDwellTickWalkedAwayEmitsEnded(t *testing.T) {
 				DwellPeriodMinutes: 2,
 			},
 		}
-		world.Actors["hannah"].CurrentX = 9999 // walked off
-		world.Actors["hannah"].CurrentY = 9999
+		world.Actors["hannah"].Pos.X = 9999 // walked off
+		world.Actors["hannah"].Pos.Y = 9999
 		return nil, nil
 	}}); err != nil {
 		t.Fatalf("seed: %v", err)
