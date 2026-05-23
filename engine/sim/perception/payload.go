@@ -157,6 +157,22 @@ type Payload struct {
 	// homeless arm fires every tick — the lodging bootstrap cue). ZBBS-HOME-297.
 	RecoveryOptions *RecoveryOptionsView
 
+	// Lodging surfaces the subject's own active lodging — the inn their room
+	// is at and when the grant expires — so a lodger NPC can renew before it
+	// lapses. nil when the actor holds no active ledger RoomAccess (not a
+	// lodger). Sourced from the soonest-expiring active ledger grant.
+	// ZBBS-HOME-296 PR2 (lodger view). The affordability cue lands in a
+	// follow-on slice with the rent-rate setting.
+	Lodging *LodgingView
+
+	// KeeperLodging surfaces room availability to an actor who keeps a
+	// lodging structure (works at a structure with private bedrooms), so the
+	// keeper LLM can answer "do you have a room?" from real occupancy. nil
+	// when the subject doesn't work at a lodging structure. ZBBS-HOME-296
+	// PR2. The salem-vendor identity/persona preface lands in a follow-on
+	// (it needs a typed vendor_persona projection + the keeper data seed).
+	KeeperLodging *KeeperLodgingView
+
 	// SelectionReason is a human-readable explanation of how Primary was
 	// chosen (or why it wasn't) — debug/test output only, never prompt
 	// content.

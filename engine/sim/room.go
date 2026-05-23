@@ -141,6 +141,23 @@ func canEnterRoom(w *World, actor *Actor, roomID RoomID, now time.Time) bool {
 	}
 }
 
+// IsActiveLedgerGrant reports whether ra is an active, unexpired *ledger*
+// grant at now — i.e. a paid lodging grant still in effect. This is the
+// single definition of "is a current lodging grant", shared by the live-world
+// consumers (the engine-auto rebook sweep and lodger-sleep target resolution,
+// landing in later slices) and the snapshot-pure perception lodging views,
+// which scan ActorSnapshot.RoomAccess. A lodging grant always carries a future
+// ExpiresAt by construction (AssignBedroomForLodger), so a ledger row with
+// nil/past ExpiresAt does not count — fail closed. Staff grants (Source !=
+// ledger) never count. Exported so the perception package (a different
+// package) can key its lodger/keeper views off the same predicate.
+func IsActiveLedgerGrant(ra *RoomAccess, now time.Time) bool {
+	if ra == nil || !ra.Active || ra.Source != AccessSourceLedger {
+		return false
+	}
+	return ra.ExpiresAt != nil && ra.ExpiresAt.After(now)
+}
+
 // findRoom walks all structures looking for a room with the given ID.
 // Linear in total room count — fine for Salem's scale (~20 structures,
 // ~80 rooms). When room counts grow, a World.Rooms secondary index
