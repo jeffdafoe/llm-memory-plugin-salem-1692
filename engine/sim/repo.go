@@ -10,18 +10,19 @@ import (
 // logic (e.g. pay between actors) lives as in-memory mutations in command
 // handlers; persistence happens at checkpoint time via SaveSnapshot calls.
 type Repository struct {
-	Actors         ActorsRepo
-	Structures     StructuresRepo
-	Huddles        HuddlesRepo
-	Scenes         ScenesRepo
-	Orders         OrdersRepo
-	Environment    EnvironmentRepo
-	Assets         AssetsRepo
-	Sprites        SpritesRepo
-	Recipes        RecipesRepo
-	ItemKinds      ItemKindsRepo
-	Terrain        TerrainRepo
-	VillageObjects VillageObjectsRepo
+	Actors               ActorsRepo
+	Structures           StructuresRepo
+	Huddles              HuddlesRepo
+	Scenes               ScenesRepo
+	Orders               OrdersRepo
+	Environment          EnvironmentRepo
+	Assets               AssetsRepo
+	Sprites              SpritesRepo
+	AttributeDefinitions AttributeDefinitionsRepo
+	Recipes              RecipesRepo
+	ItemKinds            ItemKindsRepo
+	Terrain              TerrainRepo
+	VillageObjects       VillageObjectsRepo
 
 	// Event sinks — write-through per-event, NOT part of the checkpoint tx.
 	// agent-action-log is an audit trail appended outside the checkpoint.
@@ -108,6 +109,17 @@ type AssetsRepo interface {
 // write directly to the npc_sprite tables through the editor port).
 type SpritesRepo interface {
 	LoadAll(ctx context.Context) (map[SpriteID]*Sprite, error)
+}
+
+// AttributeDefinitionsRepo loads the actor-assignable attribute-definition
+// catalog (attribute_definition rows with scope IN ('actor','both')) into
+// AttributeDefinition aggregates keyed by slug. Reference state — same
+// lifecycle as AssetsRepo / SpritesRepo (load at startup, hot-reload on
+// SIGHUP). NOT part of the checkpoint cycle: admin edits write directly to
+// the attribute_definition table and the world rebuilds the map wholesale via
+// this LoadAll.
+type AttributeDefinitionsRepo interface {
+	LoadAll(ctx context.Context) (map[string]*AttributeDefinition, error)
 }
 
 // RecipesRepo loads the item_recipe catalog. Reference state — same

@@ -65,6 +65,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/village/terrain", s.requireAuth(s.handleTerrain))
 	mux.HandleFunc("GET /api/village/assets", s.requireAuth(s.handleAssets))
 	mux.HandleFunc("GET /api/village/sprites", s.requireAuth(s.handleSprites))
+	mux.HandleFunc("GET /api/village/npc-behaviors", s.requireAuth(s.handleNPCBehaviors))
+	// Static editor allowlists (vocabulary the editor's tag dropdowns render).
+	// Hardcoded reference data — no World map, no DB; see catalog_tags.go.
+	mux.HandleFunc("GET /api/village/object-tags", s.requireAuth(s.handleObjectTags))
+	mux.HandleFunc("GET /api/assets/state-tags", s.requireAuth(s.handleStateTags))
 	// Write routes — same requireAuth gate; the mutation runs through the
 	// world command channel (see write_handlers.go).
 	mux.HandleFunc("POST /api/village/pc/move", s.requireAuth(s.handlePCMove))
@@ -132,6 +137,14 @@ func (s *Server) handleAssets(w http.ResponseWriter, _ *http.Request) {
 // state posture and same SIGHUP invariant as handleTerrain/handleAssets.
 func (s *Server) handleSprites(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, spritesFromCatalog(s.world.Sprites))
+}
+
+// handleNPCBehaviors serves the actor-assignable attribute catalog (the
+// editor's "add attribute" dropdown source). Reads world.AttributeDefinitions
+// directly — same lock-free reference-state posture and same SIGHUP invariant
+// as handleSprites/handleAssets.
+func (s *Server) handleNPCBehaviors(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, npcBehaviorsFromCatalog(s.world.AttributeDefinitions))
 }
 
 // worldStateFromSnapshot maps the snapshot's world-level state to the wire DTO.
@@ -392,6 +405,27 @@ func spritesFromCatalog(sprites map[sim.SpriteID]*sim.Sprite) []SpriteDTO {
 		out = append(out, spriteDTO(id, sp))
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+// npcBehaviorsFromCatalog maps the attribute-definition catalog to a DTO slice,
+// sorted by display name so the editor dropdown is predictable (mirrors v1's
+// ORDER BY display_name) and the response is deterministic for tests. Ties on
+// display name fall back to slug for a total order.
+func npcBehaviorsFromCatalog(defs map[string]*sim.AttributeDefinition) []NPCBehaviorDTO {
+	out := make([]NPCBehaviorDTO, 0, len(defs))
+	for _, d := range defs {
+		if d == nil {
+			continue
+		}
+		out = append(out, NPCBehaviorDTO{Slug: d.Slug, DisplayName: d.DisplayName})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].DisplayName != out[j].DisplayName {
+			return out[i].DisplayName < out[j].DisplayName
+		}
+		return out[i].Slug < out[j].Slug
+	})
 	return out
 }
 
