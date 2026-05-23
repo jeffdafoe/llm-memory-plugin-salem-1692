@@ -106,6 +106,8 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderPendingDeliveriesFromMe(&b, p.PendingDeliveriesFromMe)
 	renderPendingDeliveriesToMe(&b, p.PendingDeliveriesToMe)
 	renderRecoveryOptions(&b, p.RecoveryOptions)
+	renderLodging(&b, p.Lodging)
+	renderKeeperLodging(&b, p.KeeperLodging)
 	renderScene(&b, p)
 	renderSecondary(&b, p.Secondary)
 	renderWarrants(&b, p.Warrants, cfg, &out)
