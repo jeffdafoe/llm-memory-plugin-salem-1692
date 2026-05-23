@@ -266,6 +266,20 @@ func _handle_message(data: String) -> void:
                 str(event_data.get("actor_id", "")),
                 str(event_data.get("reason", ""))
             )
+        "pay_offer":
+            # pay-with-item lifecycle (ZBBS-WORK-296). Routed through world
+            # like npc_spoke: world resolves buyer/seller ids -> display
+            # names from the roster, then re-emits a signal the talk panel
+            # narrates. The wire frame carries ids only (same as the
+            # movement frames), so name resolution is client-side.
+            if world != null:
+                world.apply_pay_offer(event_data)
+        "pay_countered":
+            if world != null:
+                world.apply_pay_countered(event_data)
+        "pay_resolved":
+            if world != null:
+                world.apply_pay_resolved(event_data)
 
 ## Apply a server-broadcast footprint change to the local catalog and
 ## redraw the selection border if the affected asset is the one currently
