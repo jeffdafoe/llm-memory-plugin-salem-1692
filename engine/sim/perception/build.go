@@ -47,6 +47,8 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 	p.Relationships = buildRelationships(actorSnap, p.Surroundings.HuddleMembers)
 	p.PendingDeliveriesFromMe, p.PendingDeliveriesToMe = buildPendingOrderViews(snap, actorID)
 	p.RecoveryOptions = buildRecoveryOptions(snap, actorID, actorSnap)
+	p.Lodging = buildLodgingView(snap, actorSnap)
+	p.KeeperLodging = buildKeeperLodgingView(snap, actorSnap)
 
 	// Group the consumed warrants by the scene they reference. Only event-
 	// sourced warrants carry a scene (the zero-lineage invariant: full

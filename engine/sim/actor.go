@@ -668,20 +668,7 @@ func CloneActor(a *Actor) *Actor {
 			cp.ProduceState[k] = &vc
 		}
 	}
-	if a.RoomAccess != nil {
-		cp.RoomAccess = make(map[RoomAccessKey]*RoomAccess, len(a.RoomAccess))
-		for k, v := range a.RoomAccess {
-			if v == nil {
-				continue
-			}
-			vc := *v
-			if v.ExpiresAt != nil {
-				t := *v.ExpiresAt
-				vc.ExpiresAt = &t
-			}
-			cp.RoomAccess[k] = &vc
-		}
-	}
+	cp.RoomAccess = cloneRoomAccess(a.RoomAccess)
 	if a.Attributes != nil {
 		cp.Attributes = make(map[string][]byte, len(a.Attributes))
 		for k, v := range a.Attributes {
@@ -793,6 +780,15 @@ type ActorSnapshot struct {
 	// the world's mutable credit map.
 	DwellCredits map[DwellCreditKey]*DwellCredit
 
+	// RoomAccess mirrors the live Actor's private/staff-room grants at
+	// snapshot time so perception build can surface the lodger view ("your
+	// room at the inn is paid through <day>") and compute keeper-side room
+	// occupancy off the snapshot — both pure over the published Snapshot,
+	// never the live Actor. Deep-cloned by snapshotActor (via
+	// cloneRoomAccess) so published snapshots don't alias the world's
+	// mutable grant map. Keyed by (RoomID, Source) like Actor.RoomAccess.
+	RoomAccess map[RoomAccessKey]*RoomAccess
+
 	// TickInFlight + TickAttemptID mirror the live Actor fields so PR 3d's
 	// harness can do a cheap pre-LLM stale-check by reading the snapshot
 	// alone (no world-goroutine round trip). A worker that observes its
@@ -865,6 +861,30 @@ func cloneDwellCredits(src map[DwellCreditKey]*DwellCredit) map[DwellCreditKey]*
 		if v.RemainingTicks != nil {
 			rt := *v.RemainingTicks
 			vc.RemainingTicks = &rt
+		}
+		dst[k] = &vc
+	}
+	return dst
+}
+
+// cloneRoomAccess deep-copies a RoomAccess map. ExpiresAt is a pointer so
+// it must be cloned separately; the other fields are value types and a
+// per-entry struct copy is enough. Shared by CloneActor (the repo
+// serialization boundary) and snapshotActor (the published read view) so
+// neither aliases the world's mutable grant map.
+func cloneRoomAccess(src map[RoomAccessKey]*RoomAccess) map[RoomAccessKey]*RoomAccess {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[RoomAccessKey]*RoomAccess, len(src))
+	for k, v := range src {
+		if v == nil {
+			continue
+		}
+		vc := *v
+		if v.ExpiresAt != nil {
+			t := *v.ExpiresAt
+			vc.ExpiresAt = &t
 		}
 		dst[k] = &vc
 	}
