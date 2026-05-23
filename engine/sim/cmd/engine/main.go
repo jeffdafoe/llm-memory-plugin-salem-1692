@@ -160,18 +160,6 @@ func run(rt runtime, stop <-chan struct{}) error {
 	sim.RegisterSleepSubscriber(rt.World) // ZBBS-HOME-284 #2: auto-sleep NPCs on arrival home
 	cascade.RegisterProductionCascades(worldCtx, rt.World, rt.LLMClient)
 
-	// Off-world LLM cascade subscribers. ActionLog is the in-memory audit
-	// trail (Spoke / Paid / ItemConsumed / OrderDelivered / ActorArrived
-	// subscribers + a compaction sweep). It MUST register before atmosphere +
-	// consolidation: their periodic sweeps read World.ActionLog to build the
-	// activity digests in their LLM prompts, so an unpopulated log yields empty
-	// digests. Atmosphere (world mood) and consolidation (per-actor narrative)
-	// route their off-world calls through rt.LLMClient (salem-generic);
-	// ActionLog itself makes no LLM call.
-	cascade.RegisterActionLog(worldCtx, rt.World)
-	cascade.RegisterAtmosphere(worldCtx, rt.World, rt.LLMClient)
-	cascade.RegisterConsolidation(worldCtx, rt.World, rt.LLMClient)
-
 	// WebSocket event hub (Slice 2 WS /events). Subscribed before world.Run,
 	// like every other subscriber; its Run goroutine owns the client fan-out.
 	// Only wired when the HTTP surface is enabled (it serves the /events route).
