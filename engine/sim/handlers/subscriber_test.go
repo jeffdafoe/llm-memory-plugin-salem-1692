@@ -21,7 +21,7 @@ func TestHandleEventEnqueuesJob(t *testing.T) {
 		AttemptID: "A1",
 		Warrants:  []sim.WarrantMeta{{TriggerActorID: "bob"}},
 	}
-	p.handleEvent(nil, due)
+	p.handleEvent(w, due)
 
 	select {
 	case job := <-p.jobs:
@@ -41,7 +41,7 @@ func TestHandleEventIgnoresOtherEvents(t *testing.T) {
 	defer cancel()
 	p := NewTickWorkerPool(w, tel)
 
-	p.handleEvent(nil, &sim.ActorArrived{ActorID: "alice"})
+	p.handleEvent(w, &sim.ActorArrived{ActorID: "alice"})
 
 	if len(p.jobs) != 0 {
 		t.Fatal("handleEvent enqueued a job for a non-ReactorTickDue event")
@@ -61,7 +61,7 @@ func TestHandleEventPanicsWhenBufferFull(t *testing.T) {
 	p.jobs <- tickJob{}
 
 	assertPanics(t, "enqueue against a full buffer", func() {
-		p.handleEvent(nil, &sim.ReactorTickDue{ActorID: "alice", AttemptID: "A1"})
+		p.handleEvent(w, &sim.ReactorTickDue{ActorID: "alice", AttemptID: "A1"})
 	})
 }
 

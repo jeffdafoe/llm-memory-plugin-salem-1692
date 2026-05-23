@@ -207,6 +207,34 @@ func TestHarness_Preflight_AttemptIDMismatch(t *testing.T) {
 	}
 }
 
+// TestHarness_Preflight_FreshnessWaitIsBounded guards the dispatch→republish
+// freshness wait in RunTick's preflight (the fix for the
+// TestHarnessPool_LLMErrorPath flake — a worker reading a pre-dispatch
+// snapshot would false-classify a live tick Stale). The wait re-reads the
+// published snapshot while AtTick <= job.dispatchTick. Here dispatchTick is
+// max uint64 and nothing will republish to advance AtTick, so the wait can
+// never be satisfied — it MUST bound out at maxPreflightSnapshotSpins and
+// fall through to the normal check rather than spin forever. With alice
+// genuinely in-flight under the job's attempt, falling through means the tick
+// proceeds and the scripted transport error classifies it FailedBeforeRender.
+//
+// If the spin's bound is ever removed, this test hangs (caught by the test
+// timeout) instead of passing — that is the regression it guards.
+func TestHarness_Preflight_FreshnessWaitIsBounded(t *testing.T) {
+	w, cancel := newHarnessWorld(t, "attempt-A")
+	defer cancel()
+
+	client := llm.NewFakeClient(llm.ScriptedTurn{Err: &llm.Error{Class: llm.ErrorTransport, Message: "boom"}})
+	h, _ := newTestHarness(t, client, 0, 0)
+
+	job := tickJob{actorID: "alice", attemptID: "attempt-A", rootEventID: 42, dispatchTick: ^uint64(0)}
+
+	result := h.RunTick(context.Background(), w, job)
+	if result.TerminalStatus != sim.TickStatusFailedBeforeRender {
+		t.Errorf("bounded wait must fall through to the live check: got %v, want FailedBeforeRender", result.TerminalStatus)
+	}
+}
+
 // --- successful tick paths ----------------------------------------------
 
 func TestHarness_Done_TerminatesAsDone(t *testing.T) {
