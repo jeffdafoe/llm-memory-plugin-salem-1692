@@ -26,11 +26,12 @@ func NewItemKindsRepo(pool Pool) *ItemKindsRepo {
 	return &ItemKindsRepo{pool: pool}
 }
 
-// loadAllItemKindsSQL reads the catalog definitions. capabilities and
-// hours_per_unit are intentionally unselected — neither is modeled on
-// sim.ItemKindDef.
+// loadAllItemKindsSQL reads the catalog definitions. capabilities (TEXT[])
+// is now modeled on sim.ItemKindDef (ZBBS-HOME-296 — service/lodging gating
+// for the lodging fulfillment path); hours_per_unit remains intentionally
+// unselected (not modeled in v2).
 const loadAllItemKindsSQL = `
-SELECT name, display_label, category, sort_order, consume_dwell_narration
+SELECT name, display_label, category, sort_order, capabilities, consume_dwell_narration
   FROM item_kind
  ORDER BY sort_order, name`
 
@@ -78,9 +79,10 @@ func (r *ItemKindsRepo) loadDefs(ctx context.Context) (map[sim.ItemKind]*sim.Ite
 		var (
 			name, displayLabel, category string
 			sortOrder                    int
+			capabilities                 []string
 			narration                    *string
 		)
-		if err := rows.Scan(&name, &displayLabel, &category, &sortOrder, &narration); err != nil {
+		if err := rows.Scan(&name, &displayLabel, &category, &sortOrder, &capabilities, &narration); err != nil {
 			return nil, fmt.Errorf("pg item_kinds LoadAll: item_kind scan: %w", err)
 		}
 		def := &sim.ItemKindDef{
@@ -88,6 +90,7 @@ func (r *ItemKindsRepo) loadDefs(ctx context.Context) (map[sim.ItemKind]*sim.Ite
 			DisplayLabel: displayLabel,
 			Category:     sim.ItemCategory(category),
 			SortOrder:    sortOrder,
+			Capabilities: capabilities,
 		}
 		if narration != nil {
 			def.ConsumeDwellNarration = *narration
