@@ -55,9 +55,10 @@ import (
 //  3. Huddles — needed by the Scene.Huddles existence check.
 //  4. Scenes — depends on Structures + Huddles.
 //  5. Orders — independent; loaded last for symmetry with sim.LoadWorld.
-//  6. notImpl loaders (Actors / Environment / Assets / Recipes /
-//     ItemKinds / Terrain) — order doesn't matter, they all either
-//     no-op-with-warning or hard-fail uniformly.
+//  6. notImpl-tolerant loaders (Actors / Environment / Assets /
+//     AttributeDefinitions / Recipes / ItemKinds / Terrain) — order
+//     doesn't matter, they all either load, no-op-with-warning, or
+//     hard-fail uniformly via handleNotImpl.
 //
 // # Cross-aggregate consistency checks
 //
@@ -202,6 +203,15 @@ func LoadWorld(ctx context.Context, repo sim.Repository, requireAllImpl bool) (*
 	}
 	if loaded {
 		w.Assets = assets
+	}
+
+	attributeDefinitions, attributeDefinitionsErr := repo.AttributeDefinitions.LoadAll(ctx)
+	loaded, err = handleNotImpl("AttributeDefinitions", attributeDefinitionsErr, requireAllImpl)
+	if err != nil {
+		return nil, err
+	}
+	if loaded {
+		w.AttributeDefinitions = attributeDefinitions
 	}
 
 	recipes, recipesErr := repo.Recipes.LoadAll(ctx)

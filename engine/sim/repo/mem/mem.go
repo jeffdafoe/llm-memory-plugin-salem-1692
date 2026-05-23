@@ -20,40 +20,43 @@ func NewRepository() (sim.Repository, *Handles) {
 	env := NewEnvironmentRepo()
 	assets := NewAssetsRepo()
 	sprites := NewSpritesRepo()
+	attributeDefinitions := NewAttributeDefinitionsRepo()
 	recipes := NewRecipesRepo()
 	itemKinds := NewItemKindsRepo()
 	terrain := NewTerrainRepo()
 	structures := NewStructuresRepo()
 	villageObjects := NewVillageObjectsRepo()
 	h := &Handles{
-		Actors:         actors,
-		Huddles:        huddles,
-		Scenes:         scenes,
-		Orders:         orders,
-		Environment:    env,
-		Assets:         assets,
-		Sprites:        sprites,
-		Recipes:        recipes,
-		ItemKinds:      itemKinds,
-		Terrain:        terrain,
-		Structures:     structures,
-		VillageObjects: villageObjects,
+		Actors:               actors,
+		Huddles:              huddles,
+		Scenes:               scenes,
+		Orders:               orders,
+		Environment:          env,
+		Assets:               assets,
+		Sprites:              sprites,
+		AttributeDefinitions: attributeDefinitions,
+		Recipes:              recipes,
+		ItemKinds:            itemKinds,
+		Terrain:              terrain,
+		Structures:           structures,
+		VillageObjects:       villageObjects,
 	}
 	return sim.Repository{
-		Actors:         actors,
-		Huddles:        huddles,
-		Scenes:         scenes,
-		Orders:         orders,
-		Environment:    env,
-		Assets:         assets,
-		Sprites:        sprites,
-		Recipes:        recipes,
-		ItemKinds:      itemKinds,
-		Terrain:        terrain,
-		Structures:     structures,
-		VillageObjects: villageObjects,
-		ActionLog:      noopActionLog{},
-		TickTelemetry:  noopTickTelemetry{},
+		Actors:               actors,
+		Huddles:              huddles,
+		Scenes:               scenes,
+		Orders:               orders,
+		Environment:          env,
+		Assets:               assets,
+		Sprites:              sprites,
+		AttributeDefinitions: attributeDefinitions,
+		Recipes:              recipes,
+		ItemKinds:            itemKinds,
+		Terrain:              terrain,
+		Structures:           structures,
+		VillageObjects:       villageObjects,
+		ActionLog:            noopActionLog{},
+		TickTelemetry:        noopTickTelemetry{},
 		Begin: func(_ context.Context) (sim.Tx, error) {
 			return noopTx{}, nil
 		},
@@ -65,18 +68,19 @@ func NewRepository() (sim.Repository, *Handles) {
 // the returned sim.Repository delegates to — mutations via either path
 // are visible to the other.
 type Handles struct {
-	Actors         *ActorsRepo
-	Huddles        *HuddlesRepo
-	Scenes         *ScenesRepo
-	Orders         *OrdersRepo
-	Environment    *EnvironmentRepo
-	Assets         *AssetsRepo
-	Sprites        *SpritesRepo
-	Recipes        *RecipesRepo
-	ItemKinds      *ItemKindsRepo
-	Terrain        *TerrainRepo
-	Structures     *StructuresRepo
-	VillageObjects *VillageObjectsRepo
+	Actors               *ActorsRepo
+	Huddles              *HuddlesRepo
+	Scenes               *ScenesRepo
+	Orders               *OrdersRepo
+	Environment          *EnvironmentRepo
+	Assets               *AssetsRepo
+	Sprites              *SpritesRepo
+	AttributeDefinitions *AttributeDefinitionsRepo
+	Recipes              *RecipesRepo
+	ItemKinds            *ItemKindsRepo
+	Terrain              *TerrainRepo
+	Structures           *StructuresRepo
+	VillageObjects       *VillageObjectsRepo
 }
 
 // noopActionLog accepts appends silently; tests don't need to assert
