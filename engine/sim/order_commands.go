@@ -155,15 +155,20 @@ func DeliverOrder(sellerID ActorID, orderID OrderID, at time.Time) Command {
 					orderID, o.Qty, len(o.ConsumerIDs))
 			}
 
-			// Gate 5: seller exists + stock.
+			// Gate 5: seller exists + stock. The stock check is skipped for
+			// "service"-capability items (e.g. nights_stay) — they carry no
+			// inventory (ZBBS-HOME-296; mirrors the pay_with_item gate-10
+			// skip). The seller-existence check always runs.
 			seller, ok := w.Actors[sellerID]
 			if !ok || seller == nil {
 				return nil, fmt.Errorf("deliver_order: seller %q not found", sellerID)
 			}
-			requiredQty := o.Qty * len(o.ConsumerIDs)
-			if seller.Inventory[o.Item] < requiredQty {
-				return nil, fmt.Errorf("deliver_order: seller %q has %d %s, need %d for order %d",
-					sellerID, seller.Inventory[o.Item], o.Item, requiredQty, orderID)
+			if !itemHasCapability(w, o.Item, "service") {
+				requiredQty := o.Qty * len(o.ConsumerIDs)
+				if seller.Inventory[o.Item] < requiredQty {
+					return nil, fmt.Errorf("deliver_order: seller %q has %d %s, need %d for order %d",
+						sellerID, seller.Inventory[o.Item], o.Item, requiredQty, orderID)
+				}
 			}
 
 			// Gate 6: co-presence per consumer. Also resolve each
@@ -189,28 +194,74 @@ func DeliverOrder(sellerID ActorID, orderID OrderID, at time.Time) Command {
 				return nil, fmt.Errorf("deliver_order: item %q no longer in catalog", o.Item)
 			}
 
-			// All gates pass. The atomic-commit contract requires every
-			// per-consumer transfer to succeed or none of them to mutate
-			// state. transferItem can fail on three modes (qty <= 0,
-			// missing actor, insufficient stock) — gates above already
-			// ruled out all three for the live world state. Preflight
-			// each prospective transfer in a dry-run loop so any
-			// surprise failure (future transferItem mode, or a corrupt
-			// loaded Order) is caught BEFORE any mutation lands.
-			for _, consumer := range consumers {
-				if consumer == nil {
-					return nil, fmt.Errorf("deliver_order: nil consumer in preflight")
-				}
+			// Fulfillment. A "lodging"-capability item (e.g. nights_stay)
+			// grants/extends a private bedroom (ZBBS-HOME-296) instead of
+			// transferring a good — this is what wires the otherwise-dead
+			// AssignBedroomForLodger. Everything else moves goods to each
+			// consumer. Co-presence (gate 6), catalog (gate 7), the shared
+			// RecordInteraction, and finalizeOrderTerminal run for both.
+			//
+			// Capability contract: lodging IMPLIES service (no inventory).
+			// The gate-5 stock skip keys on "service" while fulfillment keys
+			// on "lodging"; a lodging-but-not-service item would pass gate 5
+			// only if it held stock, then consume none here. Reject that
+			// misconfiguration loudly rather than let it behave as an
+			// unconsumed physical good.
+			isLodging := itemHasCapability(w, o.Item, "lodging")
+			if isLodging && !itemHasCapability(w, o.Item, "service") {
+				return nil, fmt.Errorf("deliver_order: item %q has the lodging capability without service (order %d) — misconfigured catalog", o.Item, orderID)
 			}
-			// All preflights passed — commit per-consumer transfers.
-			// gate-5 + gate-6 + preflight together guarantee these
-			// cannot fail; the residual error path is defensive.
-			for _, consumer := range consumers {
-				if err := transferItem(w, seller, consumer, o.Item, o.Qty); err != nil {
-					// Reaching here is a substrate invariant
-					// violation, not a domain failure. The earlier
-					// gates + preflight should have caught it.
-					return nil, fmt.Errorf("deliver_order: transferItem to %q: %w", consumer.ID, err)
+			if isLodging {
+				// Lodging grants the room — and physically beds the lodger via
+				// InsideRoomID — to the BUYER. Gate 6 validated co-presence of
+				// the CONSUMERS, so enforce the single-self-consumer scope:
+				// without this, a buyer-not-in-consumers (or multi-consumer)
+				// order would grant + teleport an actor whose co-presence was
+				// never checked and strand the listed consumers. Booking a room
+				// on another's behalf is out of scope; reject it rather than
+				// misbehave silently.
+				if len(o.ConsumerIDs) != 1 || o.ConsumerIDs[0] != o.BuyerID {
+					return nil, fmt.Errorf("deliver_order: lodging order %d must have the buyer as its sole consumer (buyer=%q consumers=%v)", orderID, o.BuyerID, o.ConsumerIDs)
+				}
+				if seller.WorkStructureID == "" {
+					return nil, fmt.Errorf("deliver_order: keeper %q has no work structure to lodge in (order %d)", sellerID, orderID)
+				}
+				expiresAt := ComputeLodgerUntil(o.CreatedAt, o.Qty, w.Settings.LodgingCheckOutHour, w.Settings.Location)
+				res, err := AssignBedroomForLodger(StructureID(seller.WorkStructureID), o.BuyerID, int64(o.LedgerID), expiresAt).Fn(w)
+				if err != nil {
+					if err == ErrNoPrivateRooms {
+						return nil, fmt.Errorf("deliver_order: %s has no bedrooms — not set up for lodging (order %d)", seller.DisplayName, orderID)
+					}
+					return nil, fmt.Errorf("deliver_order: assign bedroom for order %d: %w", orderID, err)
+				}
+				abr, _ := res.(AssignBedroomResult)
+				if abr.RoomID == 0 {
+					return nil, fmt.Errorf("deliver_order: all bedrooms at %s are occupied — try again shortly (order %d)", seller.DisplayName, orderID)
+				}
+			} else {
+				// All gates pass. The atomic-commit contract requires every
+				// per-consumer transfer to succeed or none of them to mutate
+				// state. transferItem can fail on three modes (qty <= 0,
+				// missing actor, insufficient stock) — gates above already
+				// ruled out all three for the live world state. Preflight
+				// each prospective transfer in a dry-run loop so any
+				// surprise failure (future transferItem mode, or a corrupt
+				// loaded Order) is caught BEFORE any mutation lands.
+				for _, consumer := range consumers {
+					if consumer == nil {
+						return nil, fmt.Errorf("deliver_order: nil consumer in preflight")
+					}
+				}
+				// All preflights passed — commit per-consumer transfers.
+				// gate-5 + gate-6 + preflight together guarantee these
+				// cannot fail; the residual error path is defensive.
+				for _, consumer := range consumers {
+					if err := transferItem(w, seller, consumer, o.Item, o.Qty); err != nil {
+						// Reaching here is a substrate invariant
+						// violation, not a domain failure. The earlier
+						// gates + preflight should have caught it.
+						return nil, fmt.Errorf("deliver_order: transferItem to %q: %w", consumer.ID, err)
+					}
 				}
 			}
 

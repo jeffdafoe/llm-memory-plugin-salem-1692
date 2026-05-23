@@ -30,6 +30,17 @@ type ItemKindDef struct {
 	// SortOrder is the UI sort hint (low → high). v1's item_kind.sort_order.
 	SortOrder int
 
+	// Capabilities is the soft-typed capability set from item_kind.capabilities
+	// (TEXT[]). Tokens gate non-default item behavior:
+	//   - "service" — no physical good: no inventory backing, so the stock
+	//     gates (accept_pay gate 10, deliver_order gate 5 + transfer) are
+	//     skipped. nights_stay carries this.
+	//   - "lodging" — a service that grants a private bedroom on delivery
+	//     (deliver_order routes to AssignBedroomForLodger instead of transfer).
+	//   - "portable" — take-home eligible (v1 token; not consumed in v2 yet).
+	// v1 read these via hasCapability(); v2 models the column on the def.
+	Capabilities []string
+
 	// Satisfies is the per-need effect of consuming one unit of this item.
 	// Port of v1's item_satisfies table (PK (item_kind, attribute), one row
 	// per attribute), embedded here because the v2 single-goroutine substrate
@@ -85,4 +96,27 @@ const (
 // rather than rejecting (matches v1 behavior).
 func (d *ItemKindDef) Consumable() bool {
 	return len(d.Satisfies) > 0
+}
+
+// HasCapability reports whether this item kind carries the given capability
+// token (e.g. "service", "lodging", "portable"). Linear over the small
+// Capabilities slice — capability sets are tiny (a handful of tokens).
+func (d *ItemKindDef) HasCapability(token string) bool {
+	for _, c := range d.Capabilities {
+		if c == token {
+			return true
+		}
+	}
+	return false
+}
+
+// itemHasCapability is the world-level capability check used by the commerce
+// paths (pay-with-item stock gates, deliver_order fulfillment): does the
+// catalog entry for kind carry token? A kind absent from the catalog (or a
+// nil ItemKinds map) returns false — callers run their own catalog-presence
+// gate separately. Assumes a live world: every caller invokes it from inside
+// a Command.Fn, where w is non-nil by construction.
+func itemHasCapability(w *World, kind ItemKind, token string) bool {
+	def := w.ItemKinds[kind]
+	return def != nil && def.HasCapability(token)
 }
