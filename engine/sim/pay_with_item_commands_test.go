@@ -1494,6 +1494,72 @@ func TestCounterPay_Gates(t *testing.T) {
 	}
 }
 
+// TestCounterPay_NonIncreasingCoercesToAccept covers the v1 LLM-behavior
+// scar: a seller "countering" at or below the buyer's offered amount is
+// agreeing, not negotiating, so it resolves as an accept at the OFFERED
+// amount rather than recording a counter. Both the equal case (counter ==
+// offer) and the below case (volunteered discount) coerce.
+func TestCounterPay_NonIncreasingCoercesToAccept(t *testing.T) {
+	cases := []struct {
+		name          string
+		counterAmount int
+	}{
+		{"equal_to_offer", 4},
+		{"below_offer", 3},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
+				{id: "alice", displayName: "Alice", kind: sim.KindNPCShared, huddleID: "h1", coins: 50},
+				{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1", inventory: map[sim.ItemKind]int{"stew": 5}},
+			})
+			defer stop()
+			at := time.Now().UTC()
+			seedLedgerEntry(t, w, sim.PayLedgerEntry{
+				ID: 1, BuyerID: "alice", SellerID: "bob",
+				ItemKind: "stew", Qty: 1, Amount: 4,
+				State: sim.PayLedgerStatePending, ExpiresAt: at.Add(3 * time.Minute),
+				SceneID: "sc1", HuddleID: "h1",
+			})
+			events := capturePayWithItemEvents(t, w)
+
+			res, err := w.Send(sim.CounterPay("bob", 1, tc.counterAmount, "i'll do it for that", at))
+			if err != nil {
+				t.Fatalf("CounterPay (coerce): %v", err)
+			}
+			if got := res.(sim.PayLedgerState); got != sim.PayLedgerStateAccepted {
+				t.Errorf("returned state = %q, want accepted", got)
+			}
+			entry := readPayLedger(t, w)[1]
+			if entry.State != sim.PayLedgerStateAccepted {
+				t.Errorf("entry.State = %q, want accepted (non-increasing counter coerced)", entry.State)
+			}
+			// Transfer at the OFFERED amount; the counter is dropped.
+			if entry.Amount != 4 {
+				t.Errorf("entry.Amount = %d, want 4 (offered amount preserved)", entry.Amount)
+			}
+			if entry.CounterAmount != 0 {
+				t.Errorf("CounterAmount = %d, want 0 (coerced to accept, no counter recorded)", entry.CounterAmount)
+			}
+			// PayWithItemResolved{Accepted}, NOT PayCountered.
+			if len(events.Counter) != 0 {
+				t.Errorf("PayCountered emitted on coerced accept: %v", events.Counter)
+			}
+			if len(events.Resolved) != 1 || events.Resolved[0].TerminalState != sim.PayTerminalStateAccepted {
+				t.Fatalf("want 1 PayWithItemResolved{Accepted}, got %+v", events.Resolved)
+			}
+			// Coins moved at the offered amount (4), not the counter.
+			snap := w.Published()
+			if got := snap.Actors["alice"].Coins; got != 46 {
+				t.Errorf("alice.Coins = %d, want 46", got)
+			}
+			if got := snap.Actors["bob"].Coins; got != 4 {
+				t.Errorf("bob.Coins = %d, want 4", got)
+			}
+		})
+	}
+}
+
 // ============================================================
 // WithdrawPay
 // ============================================================

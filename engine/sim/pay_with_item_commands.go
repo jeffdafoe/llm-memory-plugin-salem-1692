@@ -662,100 +662,128 @@ func AcceptPay(callerID ActorID, ledgerID LedgerID, at time.Time) Command {
 				)
 			}
 
-			// Gate 5: TTL. From here on, gate failures DRIVE terminal
-			// transitions rather than idempotent rejects.
-			if !entry.ExpiresAt.IsZero() && !at.Before(entry.ExpiresAt) {
-				return finalizePayLedgerTerminal(w, entry, PayTerminalStateExpired, "", at), nil
-			}
-
-			// Gate 6: co-presence. Both buyer and seller must still be
-			// in entry.HuddleID. (Architecture § 3 — accept requires
-			// co-presence; offer creation captured HuddleID and we
-			// re-check it here.)
-			buyer, buyerOK := w.Actors[entry.BuyerID]
-			if !buyerOK ||
-				buyer.CurrentHuddleID != entry.HuddleID ||
-				caller.CurrentHuddleID != entry.HuddleID ||
-				entry.HuddleID == "" {
-				return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedUnavailable, "", at), nil
-			}
-
-			// Gate 7: seller break (simple-strict, ledger-substrate § 11).
-			if caller.BreakUntil != nil && caller.BreakUntil.After(at) {
-				return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedUnavailable, "", at), nil
-			}
-
-			// Gate 8: ItemKind catalog still has this kind.
-			if _, ok := w.ItemKinds[entry.ItemKind]; !ok {
-				return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedUnavailable, "", at), nil
-			}
-
-			// Gate 9: consumer departure. Only relevant when a non-
-			// empty consumer set was specified (buyer-as-implicit-
-			// consumer is covered by gate 6's co-presence check).
-			if len(entry.ConsumerIDs) > 0 {
-				if !allConsumersInHuddle(w, entry.HuddleID, entry.ConsumerIDs) {
-					return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedUnavailable, "", at), nil
-				}
-			}
-
-			// Gate 10: stock.
-			effectiveConsumers := effectivePayConsumerCount(entry.ConsumerIDs)
-			// Defensive overflow guard — entry.Qty was capped at intake,
-			// but a future repo could load entries with whatever shape;
-			// re-check before the multiplication.
-			if effectiveConsumers > 0 && entry.Qty > math.MaxInt/effectiveConsumers {
-				return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedUnavailable, "", at), nil
-			}
-			needed := entry.Qty * effectiveConsumers
-			// Stock reservation accounting (PR S6 R1 code_review fix):
-			// subtract Ready-Order obligations on this seller+item so
-			// two pending offers against the same physical stock cannot
-			// both accept. See outstandingReadyOrderQty in order.go.
-			reserved := outstandingReadyOrderQty(w, caller.ID, entry.ItemKind)
-			if caller.Inventory[entry.ItemKind]-reserved < needed {
-				return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedInsufficientStock, "", at), nil
-			}
-
-			// Gate 11: funds. buyerCanAfford is the shared predicate; the
-			// failure ACTION here is a terminal flip (an entry already
-			// exists), not the tool-error reject the offer-time sites use.
-			if !buyerCanAfford(buyer, entry.Amount) {
-				return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedInsufficientFunds, "", at), nil
-			}
-			// Seller balance overflow guard — symmetric with PR B's Pay
-			// and the fast-path predicate 6.
-			if caller.Coins > math.MaxInt-entry.Amount {
-				return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedUnavailable, "", at), nil
-			}
-
-			// All gates pass. Atomic transfer + state flip + emit.
-			if err := commitPayTransfer(w, buyer, caller, entry, at, ""); err != nil {
-				// Theoretically unreachable — gates covered every path.
-				return nil, fmt.Errorf("AcceptPay: transfer for ledger %d: %w", ledgerID, err)
-			}
-			entry.State = PayLedgerStateAccepted
-			entry.ResolvedAt = at
-
-			evt := &PayWithItemResolved{
-				LedgerID:       entry.ID,
-				BuyerID:        entry.BuyerID,
-				SellerID:       entry.SellerID,
-				ItemKind:       entry.ItemKind,
-				QtyPerConsumer: entry.Qty,
-				ConsumeNow:     entry.ConsumeNow,
-				ConsumerIDs:    cloneActorIDs(entry.ConsumerIDs),
-				Amount:         entry.Amount,
-				TerminalState:  PayTerminalStateAccepted,
-				SceneID:        entry.SceneID,
-				HuddleID:       entry.HuddleID,
-				At:             at,
-			}
-			w.emit(evt)
-
-			return entry.State, nil
+			// Gates 5-11 + the atomic transfer / flip / emit live in
+			// acceptPendingOffer, shared with CounterPay's
+			// non-increasing-counter coercion (a seller counter at or
+			// below the offered amount is "yes, deal" and resolves as an
+			// accept). Gates 1-4 above are AcceptPay-specific (auth +
+			// state idempotent rejects) and stay inline.
+			state, err := acceptPendingOffer(w, caller, entry, at)
+			return state, err
 		},
 	}
+}
+
+// acceptPendingOffer runs AcceptPay gates 5-11 (TTL, co-presence, seller
+// break, ItemKind catalog, consumer departure, stock, funds) on an
+// already-pending entry, first-failure-wins, then on all-pass commits
+// the atomic transfer, flips the entry to Accepted, and emits
+// PayWithItemResolved{Accepted}. On a gate 5-11 failure it flips the
+// entry to the matching terminal and emits PayWithItemResolved with that
+// state — NOT a tool error; the gate failure IS the resolution. Returns
+// the entry's resulting state.
+//
+// The caller guarantees gates 1-4 (caller exists, entry exists,
+// seller == entry.SellerID, entry.State == Pending). seller is the
+// accepting party (== entry.SellerID).
+//
+// Shared by AcceptPay (the seller's explicit accept) and CounterPay's
+// non-increasing-counter coercion. Both reach this point having already
+// verified the same four preconditions, and both want identical
+// accept-time semantics, so the gate matrix lives here once.
+func acceptPendingOffer(w *World, seller *Actor, entry *PayLedgerEntry, at time.Time) (PayLedgerState, error) {
+	// Gate 5: TTL. From here on, gate failures DRIVE terminal
+	// transitions rather than idempotent rejects.
+	if !entry.ExpiresAt.IsZero() && !at.Before(entry.ExpiresAt) {
+		return finalizePayLedgerTerminal(w, entry, PayTerminalStateExpired, "", at), nil
+	}
+
+	// Gate 6: co-presence. Both buyer and seller must still be
+	// in entry.HuddleID. (Architecture § 3 — accept requires
+	// co-presence; offer creation captured HuddleID and we
+	// re-check it here.)
+	buyer, buyerOK := w.Actors[entry.BuyerID]
+	if !buyerOK ||
+		buyer.CurrentHuddleID != entry.HuddleID ||
+		seller.CurrentHuddleID != entry.HuddleID ||
+		entry.HuddleID == "" {
+		return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedUnavailable, "", at), nil
+	}
+
+	// Gate 7: seller break (simple-strict, ledger-substrate § 11).
+	if seller.BreakUntil != nil && seller.BreakUntil.After(at) {
+		return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedUnavailable, "", at), nil
+	}
+
+	// Gate 8: ItemKind catalog still has this kind.
+	if _, ok := w.ItemKinds[entry.ItemKind]; !ok {
+		return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedUnavailable, "", at), nil
+	}
+
+	// Gate 9: consumer departure. Only relevant when a non-
+	// empty consumer set was specified (buyer-as-implicit-
+	// consumer is covered by gate 6's co-presence check).
+	if len(entry.ConsumerIDs) > 0 {
+		if !allConsumersInHuddle(w, entry.HuddleID, entry.ConsumerIDs) {
+			return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedUnavailable, "", at), nil
+		}
+	}
+
+	// Gate 10: stock.
+	effectiveConsumers := effectivePayConsumerCount(entry.ConsumerIDs)
+	// Defensive overflow guard — entry.Qty was capped at intake,
+	// but a future repo could load entries with whatever shape;
+	// re-check before the multiplication.
+	if effectiveConsumers > 0 && entry.Qty > math.MaxInt/effectiveConsumers {
+		return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedUnavailable, "", at), nil
+	}
+	needed := entry.Qty * effectiveConsumers
+	// Stock reservation accounting (PR S6 R1 code_review fix):
+	// subtract Ready-Order obligations on this seller+item so
+	// two pending offers against the same physical stock cannot
+	// both accept. See outstandingReadyOrderQty in order.go.
+	reserved := outstandingReadyOrderQty(w, seller.ID, entry.ItemKind)
+	if seller.Inventory[entry.ItemKind]-reserved < needed {
+		return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedInsufficientStock, "", at), nil
+	}
+
+	// Gate 11: funds. buyerCanAfford is the shared predicate; the
+	// failure ACTION here is a terminal flip (an entry already
+	// exists), not the tool-error reject the offer-time sites use.
+	if !buyerCanAfford(buyer, entry.Amount) {
+		return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedInsufficientFunds, "", at), nil
+	}
+	// Seller balance overflow guard — symmetric with PR B's Pay
+	// and the fast-path predicate 6.
+	if seller.Coins > math.MaxInt-entry.Amount {
+		return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedUnavailable, "", at), nil
+	}
+
+	// All gates pass. Atomic transfer + state flip + emit.
+	if err := commitPayTransfer(w, buyer, seller, entry, at, ""); err != nil {
+		// Theoretically unreachable — gates covered every path.
+		return entry.State, fmt.Errorf("acceptPendingOffer: transfer for ledger %d: %w", entry.ID, err)
+	}
+	entry.State = PayLedgerStateAccepted
+	entry.ResolvedAt = at
+
+	evt := &PayWithItemResolved{
+		LedgerID:       entry.ID,
+		BuyerID:        entry.BuyerID,
+		SellerID:       entry.SellerID,
+		ItemKind:       entry.ItemKind,
+		QtyPerConsumer: entry.Qty,
+		ConsumeNow:     entry.ConsumeNow,
+		ConsumerIDs:    cloneActorIDs(entry.ConsumerIDs),
+		Amount:         entry.Amount,
+		TerminalState:  PayTerminalStateAccepted,
+		SceneID:        entry.SceneID,
+		HuddleID:       entry.HuddleID,
+		At:             at,
+	}
+	w.emit(evt)
+
+	return entry.State, nil
 }
 
 // DeclinePay returns the Command for the seller's pending-decline path.
@@ -833,7 +861,8 @@ func DeclinePay(callerID ActorID, ledgerID LedgerID, reason string, at time.Time
 func CounterPay(callerID ActorID, ledgerID LedgerID, counterAmount int, message string, at time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
-			if _, ok := w.Actors[callerID]; !ok {
+			caller, ok := w.Actors[callerID]
+			if !ok {
 				return nil, fmt.Errorf("CounterPay: caller %q not in world", callerID)
 			}
 			entry, ok := w.PayLedger[ledgerID]
@@ -863,6 +892,22 @@ func CounterPay(callerID ActorID, ledgerID LedgerID, counterAmount int, message 
 					"CounterPay: counter amount exceeds maximum (got %d, max %d)",
 					counterAmount, MaxPayWithItemAmount,
 				)
+			}
+
+			// Non-increasing-counter coercion (v1 LLM-behavior scar,
+			// observed 2026-05-08). A seller "countering" at or below the
+			// buyer's offered amount isn't proposing a new price — it's
+			// agreeing ("I can let you have it for 1 coin" at the offered
+			// price, or volunteering a discount). Treat it as an accept at
+			// the buyer's offered amount rather than recording a pointless
+			// counter the buyer then has to re-accept. The counter message
+			// is dropped — no undermining counter-speak on what is really a
+			// yes. Gates 1-4 are already satisfied above (caller exists,
+			// entry exists, caller == seller, state == pending), so the
+			// shared accept path takes it from gate 5.
+			if counterAmount <= entry.Amount {
+				state, err := acceptPendingOffer(w, caller, entry, at)
+				return state, err
 			}
 
 			normalizedMessage := truncatePayMessage(message)
