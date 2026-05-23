@@ -49,12 +49,13 @@ const (
 )
 
 var (
-	epgOnce     sync.Once
-	epgErr      error
-	epg         *embeddedpostgres.EmbeddedPostgres
-	adminDSN    string // points at the server's default "postgres" db
-	templateDB  string // pre-migrated template cloned per test
-	epgDataPath string // fresh per-process cluster dir (removed at teardown)
+	epgOnce        sync.Once
+	epgErr         error
+	epg            *embeddedpostgres.EmbeddedPostgres
+	adminDSN       string // points at the server's default "postgres" db
+	templateDB     string // pre-migrated template cloned per test
+	epgDataPath    string // fresh per-process cluster dir (removed at teardown)
+	epgRuntimePath string // fresh per-process binary-extraction dir (removed at teardown)
 )
 
 // requireIntegration skips under `go test -short`, otherwise lazily boots
@@ -82,6 +83,9 @@ func TestMain(m *testing.M) {
 	if epgDataPath != "" {
 		_ = os.RemoveAll(epgDataPath)
 	}
+	if epgRuntimePath != "" {
+		_ = os.RemoveAll(epgRuntimePath)
+	}
 	os.Exit(code)
 }
 
@@ -93,11 +97,33 @@ func startEmbeddedPostgres() {
 	}
 
 	// Fresh per-process cluster dir so initdb actually re-runs with our
-	// encoding/locale (a reused data dir would keep its original
-	// encoding). Binaries stay cached at the default BinariesPath.
+	// encoding/locale (a reused data dir would keep its original encoding).
 	epgDataPath, err = os.MkdirTemp("", "salem-smoke-pgdata-")
 	if err != nil {
 		epgErr = fmt.Errorf("temp data dir: %w", err)
+		return
+	}
+
+	// Fresh per-process binary-extraction dir (RuntimePath). embedded-postgres
+	// extracts the cached archive here and, on Start, FIRST does
+	// os.RemoveAll(runtimePath) (embedded_postgres.go:95). The default
+	// RuntimePath is the SHARED ~/.embedded-postgres-go/extracted — so if a
+	// prior test-binary process exited abnormally (panic, Ctrl-C, -timeout
+	// kill, or a hard kill) before TestMain's epg.Stop() ran, its orphaned
+	// postgres.exe keeps a DLL open in that shared dir and the RemoveAll fails
+	// ("Access is denied"), wedging EVERY subsequent integration run on the
+	// machine until someone manually kills the orphan. Isolating RuntimePath
+	// per-process means a stale orphan lives in a different dir and can never
+	// block a fresh run. The download cache (CachePath) is computed
+	// independently of RuntimePath (embedded_postgres.go:85, before the
+	// RuntimePath defaulting at :87), so it stays at its shared default and the
+	// archive is NOT re-downloaded — only re-extracted, once per process.
+	// Tradeoff: an abnormal exit now also leaks this temp dir (benign — OS temp
+	// cleanup reclaims it; a blind startup sweep was rejected because it could
+	// delete a concurrent run's live RuntimePath).
+	epgRuntimePath, err = os.MkdirTemp("", "salem-smoke-pgruntime-")
+	if err != nil {
+		epgErr = fmt.Errorf("temp runtime dir: %w", err)
 		return
 	}
 
@@ -115,7 +141,8 @@ func startEmbeddedPostgres() {
 		Port(uint32(port)).
 		Encoding("UTF8").
 		Locale("C").
-		DataPath(epgDataPath)
+		DataPath(epgDataPath).
+		RuntimePath(epgRuntimePath)
 	epg = embeddedpostgres.NewDatabase(cfg)
 	if err := epg.Start(); err != nil {
 		epgErr = fmt.Errorf("embedded-postgres start: %w", err)
