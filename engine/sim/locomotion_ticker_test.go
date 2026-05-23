@@ -38,7 +38,7 @@ func buildLocomotionTestWorld(t *testing.T) (*sim.World, context.CancelFunc, *ev
 		"cottage": {ID: "cottage", DisplayName: "Cottage"},
 	})
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
-		"walker": {ID: "walker", DisplayName: "Walker", CurrentX: sim.PadX + 5, CurrentY: sim.PadY + 5},
+		"walker": {ID: "walker", DisplayName: "Walker", Pos: sim.TilePos{X: sim.PadX + 5, Y: sim.PadY + 5}},
 	})
 	w, err := sim.LoadWorld(context.Background(), repo)
 	if err != nil {
@@ -61,7 +61,7 @@ func actorSpatial(t *testing.T, w *sim.World, id sim.ActorID) (sim.Position, sim
 	res, err := w.Send(sim.Command{
 		Fn: func(world *sim.World) (any, error) {
 			a := world.Actors[id]
-			return st{pos: sim.Position{X: a.CurrentX, Y: a.CurrentY}, inside: a.InsideStructureID}, nil
+			return st{pos: sim.Position{X: a.Pos.X, Y: a.Pos.Y}, inside: a.InsideStructureID}, nil
 		},
 	})
 	if err != nil {
@@ -272,7 +272,7 @@ func TestLocomotion_SoftBlockerRetries(t *testing.T) {
 	if _, err := w.Send(sim.Command{
 		Fn: func(world *sim.World) (any, error) {
 			world.Actors["blocker"] = &sim.Actor{
-				ID: "blocker", CurrentX: sim.PadX + 5, CurrentY: sim.PadY + 4,
+				ID: "blocker", Pos: sim.TilePos{X: sim.PadX + 5, Y: sim.PadY + 4},
 			}
 			return nil, nil
 		},
@@ -302,7 +302,7 @@ func TestLocomotion_SoftBlockerRetries(t *testing.T) {
 	// Clear the blocker; the walker advances next tick.
 	if _, err := w.Send(sim.Command{
 		Fn: func(world *sim.World) (any, error) {
-			world.Actors["blocker"].CurrentX = sim.PadX + 50
+			world.Actors["blocker"].Pos.X = sim.PadX + 50
 			return nil, nil
 		},
 	}); err != nil {
@@ -367,8 +367,8 @@ func TestArrivedAtDestination_StructureVisitRingMembership(t *testing.T) {
 	arrivedAt := func(pos sim.Position) bool {
 		res, err := w.Send(sim.Command{
 			Fn: func(world *sim.World) (any, error) {
-				world.Actors["walker"].CurrentX = pos.X
-				world.Actors["walker"].CurrentY = pos.Y
+				world.Actors["walker"].Pos.X = pos.X
+				world.Actors["walker"].Pos.Y = pos.Y
 				return sim.ArrivedAtDestination(world, world.Actors["walker"], dest), nil
 			},
 		})
@@ -410,8 +410,8 @@ func TestEvaluateLocomotion_DeterministicContention(t *testing.T) {
 	contended := sim.Position{X: sim.PadX + 20, Y: sim.PadY + 4}
 	if _, err := w.Send(sim.Command{
 		Fn: func(world *sim.World) (any, error) {
-			world.Actors["aaa"] = &sim.Actor{ID: "aaa", CurrentX: sim.PadX + 20, CurrentY: sim.PadY + 5}
-			world.Actors["zzz"] = &sim.Actor{ID: "zzz", CurrentX: sim.PadX + 20, CurrentY: sim.PadY + 3}
+			world.Actors["aaa"] = &sim.Actor{ID: "aaa", Pos: sim.TilePos{X: sim.PadX + 20, Y: sim.PadY + 5}}
+			world.Actors["zzz"] = &sim.Actor{ID: "zzz", Pos: sim.TilePos{X: sim.PadX + 20, Y: sim.PadY + 3}}
 			return nil, nil
 		},
 	}); err != nil {
@@ -454,7 +454,7 @@ func TestClassifyTileBlocker(t *testing.T) {
 	if _, err := w.Send(sim.Command{
 		Fn: func(world *sim.World) (any, error) {
 			world.Terrain.Data[waterTile.Y*sim.MapW+waterTile.X] = sim.TerrainDeepWater
-			world.Actors["sitter"] = &sim.Actor{ID: "sitter", CurrentX: sim.PadX + 7, CurrentY: sim.PadY + 7}
+			world.Actors["sitter"] = &sim.Actor{ID: "sitter", Pos: sim.TilePos{X: sim.PadX + 7, Y: sim.PadY + 7}}
 			return nil, nil
 		},
 	}); err != nil {

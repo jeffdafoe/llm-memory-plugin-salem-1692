@@ -109,8 +109,8 @@ func buildRecoveryOptions(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *si
 // conversion pathfinding and the structure anchors use) before measuring.
 // This also drives the §8 nearest-object selection.
 func gatherFreeRestSpots(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) []RecoveryOption {
-	ax := float64(actorSnap.CurrentX)
-	ay := float64(actorSnap.CurrentY)
+	ax := float64(actorSnap.Pos.X)
+	ay := float64(actorSnap.Pos.Y)
 	var out []RecoveryOption
 	for _, obj := range snap.VillageObjects {
 		if obj == nil {

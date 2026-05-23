@@ -100,7 +100,7 @@ func buildMoveTestWorld(t *testing.T) (*sim.World, context.CancelFunc, *eventRec
 		"gazebo": {ID: "gazebo", DisplayName: "Gazebo"},
 	})
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
-		"walker": {ID: "walker", DisplayName: "Walker", CurrentX: sim.PadX, CurrentY: sim.PadY},
+		"walker": {ID: "walker", DisplayName: "Walker", Pos: sim.TilePos{X: sim.PadX, Y: sim.PadY}},
 	})
 	w, err := sim.LoadWorld(context.Background(), repo)
 	if err != nil {
@@ -365,7 +365,7 @@ func TestMoveActor_NoPath(t *testing.T) {
 	repo, handles := mem.NewRepository()
 	handles.Terrain.Seed(terrain)
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
-		"walker": {ID: "walker", CurrentX: sim.PadX, CurrentY: sim.PadY},
+		"walker": {ID: "walker", Pos: sim.TilePos{X: sim.PadX, Y: sim.PadY}},
 	})
 	w, err := sim.LoadWorld(context.Background(), repo)
 	if err != nil {
@@ -554,18 +554,18 @@ func buildMembershipTestWorld(t *testing.T) (*sim.World, context.CancelFunc) {
 		},
 	})
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
-		"homeowner": {ID: "homeowner", CurrentX: sim.PadX, CurrentY: sim.PadY},
-		"spouse":    {ID: "spouse", CurrentX: sim.PadX + 1, CurrentY: sim.PadY, HomeStructureID: "cottage"},
-		"servant":   {ID: "servant", CurrentX: sim.PadX + 2, CurrentY: sim.PadY, WorkStructureID: "cottage"},
+		"homeowner": {ID: "homeowner", Pos: sim.TilePos{X: sim.PadX, Y: sim.PadY}},
+		"spouse":    {ID: "spouse", Pos: sim.TilePos{X: sim.PadX + 1, Y: sim.PadY}, HomeStructureID: "cottage"},
+		"servant":   {ID: "servant", Pos: sim.TilePos{X: sim.PadX + 2, Y: sim.PadY}, WorkStructureID: "cottage"},
 		"boarder": {
-			ID: "boarder", CurrentX: sim.PadX + 3, CurrentY: sim.PadY,
+			ID: "boarder", Pos: sim.TilePos{X: sim.PadX + 3, Y: sim.PadY},
 			RoomAccess: map[sim.RoomAccessKey]*sim.RoomAccess{
 				{RoomID: 1, Source: sim.AccessSourceLedger}: {
 					RoomID: 1, Source: sim.AccessSourceLedger, Active: true,
 				},
 			},
 		},
-		"stranger": {ID: "stranger", CurrentX: sim.PadX + 4, CurrentY: sim.PadY},
+		"stranger": {ID: "stranger", Pos: sim.TilePos{X: sim.PadX + 4, Y: sim.PadY}},
 	})
 	w, err := sim.LoadWorld(context.Background(), repo)
 	if err != nil {
@@ -659,12 +659,12 @@ func buildOutdoorTestWorld(t *testing.T) (*sim.World, context.CancelFunc, *event
 		"hut": {ID: "hut", DisplayName: "Hut"},
 	})
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
-		"ann": {ID: "ann", CurrentX: sim.PadX + 10, CurrentY: sim.PadY + 10},
-		"ben": {ID: "ben", CurrentX: sim.PadX + 11, CurrentY: sim.PadY + 10},
-		"cal": {ID: "cal", CurrentX: sim.PadX + 10, CurrentY: sim.PadY + 11},
-		"far": {ID: "far", CurrentX: sim.PadX + 50, CurrentY: sim.PadY + 50},
+		"ann": {ID: "ann", Pos: sim.TilePos{X: sim.PadX + 10, Y: sim.PadY + 10}},
+		"ben": {ID: "ben", Pos: sim.TilePos{X: sim.PadX + 11, Y: sim.PadY + 10}},
+		"cal": {ID: "cal", Pos: sim.TilePos{X: sim.PadX + 10, Y: sim.PadY + 11}},
+		"far": {ID: "far", Pos: sim.TilePos{X: sim.PadX + 50, Y: sim.PadY + 50}},
 		"indoorsy": {
-			ID: "indoorsy", CurrentX: sim.PadX + 10, CurrentY: sim.PadY + 10,
+			ID: "indoorsy", Pos: sim.TilePos{X: sim.PadX + 10, Y: sim.PadY + 10},
 			InsideStructureID: "hut",
 		},
 	})

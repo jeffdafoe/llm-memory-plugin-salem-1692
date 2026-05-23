@@ -46,8 +46,7 @@ func buildEncounterWorld(t *testing.T, actors []encounterActor, register bool) (
 		actorMap[a.id] = &sim.Actor{
 			ID:                a.id,
 			DisplayName:       string(a.id),
-			CurrentX:          a.x,
-			CurrentY:          a.y,
+			Pos:               sim.TilePos{X: a.x, Y: a.y},
 			InsideStructureID: a.insideStructureID,
 			CurrentHuddleID:   a.currentHuddleID,
 		}
@@ -111,7 +110,7 @@ func emitArrivalFor(t *testing.T, w *sim.World, actorID sim.ActorID, now time.Ti
 		}
 		sim.EmitForTest(world, &sim.ActorArrived{
 			ActorID:          actorID,
-			FinalPosition:    sim.Position{X: actor.CurrentX, Y: actor.CurrentY},
+			FinalPosition:    sim.Position{X: actor.Pos.X, Y: actor.Pos.Y},
 			FinalStructureID: actor.InsideStructureID,
 			At:               now,
 		})

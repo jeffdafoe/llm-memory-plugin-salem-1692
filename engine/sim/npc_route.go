@@ -198,7 +198,7 @@ func StartNPCRoute(actorID ActorID, label string, homeDest MoveDestination, cand
 			if err != nil {
 				return StartNPCRouteResult{}, fmt.Errorf("build walk grid: %w", err)
 			}
-			stops := buildRouteStops(grid, actor.CurrentX, actor.CurrentY, candidates)
+			stops := buildRouteStops(grid, actor.Pos.X, actor.Pos.Y, candidates)
 
 			// Whether or not we have any stops, an in-flight prior route
 			// is superseded. The supersede signal is the route start
@@ -370,14 +370,14 @@ func advanceActiveRoute(w *World, route *NPCRoute) (AdvanceNPCRouteResult, error
 		return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "stale_stop"}, nil
 	}
 	// Locomotion contract dependency: this guard assumes
-	// actor.CurrentX/CurrentY already reflect the arrival tile when
+	// actor.Pos already reflects the arrival tile when
 	// ActorArrived's subscribers run. The locomotion ticker's
-	// finishArrival commits actor.CurrentX/Y in advanceActorLocomotion
+	// finishArrival commits actor.Pos in advanceActorLocomotion
 	// (one tile per tick) BEFORE emitting ActorArrived. Reversing
 	// that ordering would make valid arrivals look stale.
-	if actor.CurrentX != stop.WalkTo.X || actor.CurrentY != stop.WalkTo.Y {
+	if actor.Pos.X != stop.WalkTo.X || actor.Pos.Y != stop.WalkTo.Y {
 		log.Printf("sim/npc_route: %q stale arrival at (%d,%d), expected stop %d at (%d,%d) — skipping flip",
-			route.NPCID, actor.CurrentX, actor.CurrentY, route.StopIdx, stop.WalkTo.X, stop.WalkTo.Y)
+			route.NPCID, actor.Pos.X, actor.Pos.Y, route.StopIdx, stop.WalkTo.X, stop.WalkTo.Y)
 		return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "stale_stop"}, nil
 	}
 

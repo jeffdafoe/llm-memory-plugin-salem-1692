@@ -57,8 +57,7 @@ func buildRouteTestWorld(t *testing.T) (*sim.World, func()) {
 			ID:              "lamp",
 			DisplayName:     "Lamplighter",
 			Kind:            sim.KindNPCShared,
-			CurrentX:        sim.PadX + 10,
-			CurrentY:        sim.PadY + 10,
+			Pos:             sim.TilePos{X: sim.PadX + 10, Y: sim.PadY + 10},
 			HomeStructureID: "home",
 			Attributes: map[string][]byte{
 				sim.AttrLamplighter: {},
@@ -450,8 +449,8 @@ func teleportToCurrentStop(t *testing.T, w *sim.World, id sim.ActorID) {
 		}
 		stop := route.Stops[route.StopIdx]
 		actor := world.Actors[id]
-		actor.CurrentX = stop.WalkTo.X
-		actor.CurrentY = stop.WalkTo.Y
+		actor.Pos.X = stop.WalkTo.X
+		actor.Pos.Y = stop.WalkTo.Y
 		return nil, nil
 	}}); err != nil {
 		t.Fatalf("teleportToCurrentStop: %v", err)

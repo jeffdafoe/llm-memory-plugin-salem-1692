@@ -79,13 +79,13 @@ func handleArrivalEncounter(w *sim.World, evt sim.Event) {
 	// stamped "arrived indoors at (X,Y)" against an actor now
 	// outdoors at (X,Y), which would otherwise mint an outdoor huddle
 	// from an indoor-arrival event. Reject any mismatch.
-	if arriver.CurrentX != arrived.FinalPosition.X ||
-		arriver.CurrentY != arrived.FinalPosition.Y ||
+	if arriver.Pos.X != arrived.FinalPosition.X ||
+		arriver.Pos.Y != arrived.FinalPosition.Y ||
 		arriver.InsideStructureID != arrived.FinalStructureID {
 		log.Printf(
 			"sim/cascade: arrival-encounter skipped — arriver %q state (%d,%d,%q) != event final (%d,%d,%q)",
 			arriver.ID,
-			arriver.CurrentX, arriver.CurrentY, arriver.InsideStructureID,
+			arriver.Pos.X, arriver.Pos.Y, arriver.InsideStructureID,
 			arrived.FinalPosition.X, arrived.FinalPosition.Y, arrived.FinalStructureID,
 		)
 		return

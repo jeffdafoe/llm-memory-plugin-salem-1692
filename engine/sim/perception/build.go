@@ -282,7 +282,7 @@ func representativeHuddle(group []sim.WarrantMeta) sim.HuddleID {
 func computeDiff(origin, current *sim.ActorSnapshot) *Diff {
 	d := &Diff{
 		StateChanged:     origin.State != current.State,
-		PositionChanged:  origin.CurrentX != current.CurrentX || origin.CurrentY != current.CurrentY,
+		PositionChanged:  origin.Pos.X != current.Pos.X || origin.Pos.Y != current.Pos.Y,
 		StructureChanged: origin.InsideStructureID != current.InsideStructureID,
 		HuddleChanged:    origin.CurrentHuddleID != current.CurrentHuddleID,
 		CoinsChanged:     origin.Coins != current.Coins,
@@ -329,7 +329,7 @@ func buildActorView(snap *sim.Snapshot, a *sim.ActorSnapshot) ActorView {
 	return ActorView{
 		State:              a.State,
 		InsideStructureID:  a.InsideStructureID,
-		Position:           sim.Position{X: a.CurrentX, Y: a.CurrentY},
+		Position:           sim.Position{X: a.Pos.X, Y: a.Pos.Y},
 		CurrentHuddleID:    a.CurrentHuddleID,
 		Coins:              a.Coins,
 		Needs:              needs,

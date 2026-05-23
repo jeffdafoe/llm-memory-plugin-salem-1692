@@ -165,11 +165,11 @@ func MoveActor(actorID ActorID, dest MoveDestination, leaveHuddleFirst bool, now
 			if !ok {
 				return MoveActorResult{}, fmt.Errorf("destination cannot be resolved to a reachable tile")
 			}
-			start := GridPoint{X: actor.CurrentX, Y: actor.CurrentY}
+			start := actor.Pos
 			path := FindPath(grid, start, GridPoint{X: target.X, Y: target.Y})
 			if path == nil {
 				return MoveActorResult{}, fmt.Errorf("no path from (%d,%d) to target (%d,%d)",
-					actor.CurrentX, actor.CurrentY, target.X, target.Y)
+					actor.Pos.X, actor.Pos.Y, target.X, target.Y)
 			}
 
 			// Step 5 — apply the huddle transition decided in step 3.
@@ -215,7 +215,7 @@ func MoveActor(actorID ActorID, dest MoveDestination, leaveHuddleFirst bool, now
 			}
 			w.emit(&ActorMoveStarted{
 				ActorID:           actorID,
-				FromPosition:      Position{X: actor.CurrentX, Y: actor.CurrentY},
+				FromPosition:      actor.Pos,
 				TargetPosition:    target,
 				Path:              path,
 				DestinationKind:   dest.Kind,

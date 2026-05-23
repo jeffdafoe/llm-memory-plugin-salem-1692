@@ -129,8 +129,8 @@ func findNearestSocialStructure(w *World, a *Actor, tag string) (StructureID, bo
 	var best StructureID
 	var bestDist2 float64
 	found := false
-	ax := float64(a.CurrentX)
-	ay := float64(a.CurrentY)
+	ax := float64(a.Pos.X)
+	ay := float64(a.Pos.Y)
 	for id, obj := range w.VillageObjects {
 		if !obj.HasTag(tag) {
 			continue

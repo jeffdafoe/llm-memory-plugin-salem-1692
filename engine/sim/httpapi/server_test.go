@@ -36,7 +36,7 @@ func seededWorld(t *testing.T) *sim.World {
 		world.Environment.Atmosphere = "a hush over the square"
 		world.Actors["hannah"] = &sim.Actor{
 			ID: "hannah", DisplayName: "Hannah", Kind: sim.KindNPCShared,
-			State: sim.StateIdle, Role: "innkeeper", CurrentX: 3, CurrentY: 4,
+			State: sim.StateIdle, Role: "innkeeper", Pos: sim.TilePos{X: 3, Y: 4},
 			InsideStructureID: "tavern",
 			LLMAgent:          "hannah-va",
 			SpriteID:          "sprite-1", Facing: "east",
@@ -56,7 +56,7 @@ func seededWorld(t *testing.T) *sim.World {
 		}
 		world.Actors["bram"] = &sim.Actor{
 			ID: "bram", DisplayName: "Bram", Kind: sim.KindPC,
-			State: sim.StateWalking, CurrentX: 1, CurrentY: 1,
+			State: sim.StateWalking, Pos: sim.TilePos{X: 1, Y: 1},
 		}
 		world.VillageObjects["obj1"] = &sim.VillageObject{
 			ID: "obj1", AssetID: "asset-x", X: 5.5, Y: 6.5,

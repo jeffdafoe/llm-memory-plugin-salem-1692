@@ -73,7 +73,7 @@ func TestBuildRecoveryOptions_FreeRestSpot(t *testing.T) {
 	// (96,0) is then 3 tiles due east in the SAME space. Subtracting raw
 	// pixels from tiles would be the HOME-297 unit bug.
 	origin := sim.WorldToTile(0, 0)
-	subj := &sim.ActorSnapshot{CurrentX: origin.X, CurrentY: origin.Y, Needs: map[sim.NeedKey]int{"tiredness": 22}, HomeStructureID: "cottage"}
+	subj := &sim.ActorSnapshot{Pos: origin, Needs: map[sim.NeedKey]int{"tiredness": 22}, HomeStructureID: "cottage"}
 	snap := &sim.Snapshot{
 		Actors:         map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj},
 		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{"oak": tirednessObject("oak", "the old oak", 96, 0, -12)},
@@ -111,7 +111,7 @@ func TestBuildRecoveryOptions_SkipsNonTirednessAndDepleted(t *testing.T) {
 
 func TestBuildRecoveryOptions_NearestRestFirst(t *testing.T) {
 	origin := sim.WorldToTile(0, 0)
-	subj := &sim.ActorSnapshot{CurrentX: origin.X, CurrentY: origin.Y, Needs: map[sim.NeedKey]int{"tiredness": 22}, HomeStructureID: "cottage"}
+	subj := &sim.ActorSnapshot{Pos: origin, Needs: map[sim.NeedKey]int{"tiredness": 22}, HomeStructureID: "cottage"}
 	near := tirednessObject("near", "near oak", 64, 0, -10) // 2 tiles east
 	far := tirednessObject("far", "far oak", 640, 0, -10)   // 20 tiles east
 	snap := &sim.Snapshot{

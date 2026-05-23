@@ -256,7 +256,7 @@ func slotOffsetIndex(pin, slot sim.Position) int {
 // the eight ring tiles.
 func TestPickVisitorSlotDeterministic(t *testing.T) {
 	w, cancel, pin := seedSlotWorld(t, map[sim.ActorID]*sim.Actor{
-		"actor-a": {ID: "actor-a", CurrentX: sim.PadX, CurrentY: sim.PadY},
+		"actor-a": {ID: "actor-a", Pos: sim.TilePos{X: sim.PadX, Y: sim.PadY}},
 	})
 	defer cancel()
 
@@ -281,7 +281,7 @@ func TestPickVisitorSlotDeterministic(t *testing.T) {
 func TestPickVisitorSlotFirstFree(t *testing.T) {
 	// First resolve actor-a's slot with nothing blocked.
 	w, cancel, pin := seedSlotWorld(t, map[sim.ActorID]*sim.Actor{
-		"actor-a": {ID: "actor-a", CurrentX: sim.PadX, CurrentY: sim.PadY},
+		"actor-a": {ID: "actor-a", Pos: sim.TilePos{X: sim.PadX, Y: sim.PadY}},
 	})
 	start, ok := pickSlot(t, w, "actor-a")
 	if !ok {
@@ -299,8 +299,8 @@ func TestPickVisitorSlotFirstFree(t *testing.T) {
 	want := sim.Position{X: pin.X + wantOff.X, Y: pin.Y + wantOff.Y}
 
 	w2, cancel2, _ := seedSlotWorld(t, map[sim.ActorID]*sim.Actor{
-		"actor-a": {ID: "actor-a", CurrentX: sim.PadX, CurrentY: sim.PadY},
-		"blocker": {ID: "blocker", CurrentX: start.X, CurrentY: start.Y},
+		"actor-a": {ID: "actor-a", Pos: sim.TilePos{X: sim.PadX, Y: sim.PadY}},
+		"blocker": {ID: "blocker", Pos: sim.TilePos{X: start.X, Y: start.Y}},
 	})
 	defer cancel2()
 
@@ -319,11 +319,11 @@ func TestPickVisitorSlotFirstFree(t *testing.T) {
 func TestPickVisitorSlotAllBlocked(t *testing.T) {
 	pin := sim.Position{X: anchorTile.X, Y: anchorTile.Y + 5}
 	actors := map[sim.ActorID]*sim.Actor{
-		"actor-a": {ID: "actor-a", CurrentX: sim.PadX, CurrentY: sim.PadY},
+		"actor-a": {ID: "actor-a", Pos: sim.TilePos{X: sim.PadX, Y: sim.PadY}},
 	}
 	for i, off := range sim.VisitorSlotOffsets {
 		id := sim.ActorID("blocker-" + string(rune('0'+i)))
-		actors[id] = &sim.Actor{ID: id, CurrentX: pin.X + off.X, CurrentY: pin.Y + off.Y}
+		actors[id] = &sim.Actor{ID: id, Pos: sim.TilePos{X: pin.X + off.X, Y: pin.Y + off.Y}}
 	}
 	w, cancel, _ := seedSlotWorld(t, actors)
 	defer cancel()
@@ -345,13 +345,13 @@ func TestPickVisitorSlotAllBlocked(t *testing.T) {
 func TestPickVisitorSlotPinAlsoBlocked(t *testing.T) {
 	pin := sim.Position{X: anchorTile.X, Y: anchorTile.Y + 5}
 	actors := map[sim.ActorID]*sim.Actor{
-		"actor-a": {ID: "actor-a", CurrentX: sim.PadX, CurrentY: sim.PadY},
+		"actor-a": {ID: "actor-a", Pos: sim.TilePos{X: sim.PadX, Y: sim.PadY}},
 		// A blocker standing on the loiter pin itself.
-		"pin-sitter": {ID: "pin-sitter", CurrentX: pin.X, CurrentY: pin.Y},
+		"pin-sitter": {ID: "pin-sitter", Pos: sim.TilePos{X: pin.X, Y: pin.Y}},
 	}
 	for i, off := range sim.VisitorSlotOffsets {
 		id := sim.ActorID("blocker-" + string(rune('0'+i)))
-		actors[id] = &sim.Actor{ID: id, CurrentX: pin.X + off.X, CurrentY: pin.Y + off.Y}
+		actors[id] = &sim.Actor{ID: id, Pos: sim.TilePos{X: pin.X + off.X, Y: pin.Y + off.Y}}
 	}
 	w, cancel, _ := seedSlotWorld(t, actors)
 	defer cancel()
@@ -391,7 +391,7 @@ func TestPickVisitorSlotNoPlacement(t *testing.T) {
 		"ghost": {ID: "ghost", DisplayName: "No Placement"},
 	})
 	aw.handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
-		"actor-a": {ID: "actor-a", CurrentX: sim.PadX, CurrentY: sim.PadY},
+		"actor-a": {ID: "actor-a", Pos: sim.TilePos{X: sim.PadX, Y: sim.PadY}},
 	})
 	w, cancel := aw.load(t)
 	defer cancel()
@@ -420,8 +420,8 @@ func TestPickVisitorSlotNoPlacement(t *testing.T) {
 func TestTileOccupiedByOtherActor(t *testing.T) {
 	aw := newAnchorWorld()
 	aw.handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
-		"a": {ID: "a", CurrentX: sim.PadX + 1, CurrentY: sim.PadY + 1},
-		"b": {ID: "b", CurrentX: sim.PadX + 2, CurrentY: sim.PadY + 2},
+		"a": {ID: "a", Pos: sim.TilePos{X: sim.PadX + 1, Y: sim.PadY + 1}},
+		"b": {ID: "b", Pos: sim.TilePos{X: sim.PadX + 2, Y: sim.PadY + 2}},
 	})
 	w, cancel := aw.load(t)
 	defer cancel()

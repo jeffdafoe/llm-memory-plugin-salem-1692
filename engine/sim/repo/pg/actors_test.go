@@ -365,8 +365,8 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 	if a.DisplayName != "Mira" {
 		t.Errorf("actA DisplayName = %q", a.DisplayName)
 	}
-	if a.CurrentX != 5 || a.CurrentY != 10 {
-		t.Errorf("actA pos = (%d,%d)", a.CurrentX, a.CurrentY)
+	if a.Pos.X != 5 || a.Pos.Y != 10 {
+		t.Errorf("actA pos = (%d,%d)", a.Pos.X, a.Pos.Y)
 	}
 	if string(a.InsideStructureID) != insideStr {
 		t.Errorf("InsideStructureID = %q want %q", a.InsideStructureID, insideStr)
@@ -622,8 +622,7 @@ func TestActorsRepo_SaveSnapshot_FullActor(t *testing.T) {
 		actA: {
 			ID:                   actA,
 			DisplayName:          "Mira",
-			CurrentX:             5,
-			CurrentY:             10,
+			Pos:                  sim.TilePos{X: 5, Y: 10},
 			InsideStructureID:    "00000000-0000-0000-0000-1111aaaaaaaa",
 			CurrentHuddleID:      "00000000-0000-0000-0000-2222bbbbbbbb",
 			InsideRoomID:         42,

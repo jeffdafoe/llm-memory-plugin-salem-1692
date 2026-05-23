@@ -182,7 +182,7 @@ func handleActorArrivedAdvanceRoute(w *sim.World, evt sim.Event) {
 		route.StopIdx < len(route.Stops) {
 		stop := route.Stops[route.StopIdx]
 		actor, ok := w.Actors[arrived.ActorID]
-		atExpected := ok && actor.CurrentX == stop.WalkTo.X && actor.CurrentY == stop.WalkTo.Y
+		atExpected := ok && actor.Pos.X == stop.WalkTo.X && actor.Pos.Y == stop.WalkTo.Y
 		if atExpected && w.NoticeboardContent != nil {
 			content, present := w.NoticeboardContent[stop.ObjectID]
 			obj, hasObj := w.VillageObjects[stop.ObjectID]
@@ -415,7 +415,7 @@ func sortCandidatesByID(cs []sim.RouteCandidate) []sim.RouteCandidate {
 // clears the route gracefully.
 func homeDestinationFor(actor *sim.Actor) sim.MoveDestination {
 	if actor.HomeStructureID == "" {
-		return sim.NewPositionDestination(sim.Position{X: actor.CurrentX, Y: actor.CurrentY})
+		return sim.NewPositionDestination(actor.Pos)
 	}
 	return sim.NewStructureEnterDestination(actor.HomeStructureID)
 }

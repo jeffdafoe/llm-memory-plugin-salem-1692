@@ -342,7 +342,7 @@ func dispatchVisitorCleanup(w *World, now time.Time, t *VisitorCascadeTelemetry)
 			ActorID:               id,
 			DisplayName:           actor.DisplayName,
 			LastInsideStructureID: actor.InsideStructureID,
-			LastPosition:          Position{X: actor.CurrentX, Y: actor.CurrentY},
+			LastPosition:          actor.Pos,
 			VisitorContext:        cloneVisitorState(actor.VisitorState),
 			At:                    now,
 		}
@@ -505,8 +505,7 @@ func dispatchVisitorSpawn(w *World, inputs VisitorTickInputs, t *VisitorCascadeT
 		DisplayName:       displayName,
 		Kind:              KindNPCShared,
 		LLMAgent:          VisitorAgentName,
-		CurrentX:          edgeTile.X,
-		CurrentY:          edgeTile.Y,
+		Pos:               edgeTile,
 		InsideStructureID: "",
 		Needs:             seedVisitorNeeds(),
 		Inventory:         map[ItemKind]int{},

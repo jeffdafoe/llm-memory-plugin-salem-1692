@@ -150,7 +150,7 @@ func TestFindNearestSocialStructure(t *testing.T) {
 	// An untagged structure — must be ignored.
 	addTaggedStructure(w, "untagged", 2, 2)
 
-	a := &Actor{ID: "d", CurrentX: 0, CurrentY: 0}
+	a := &Actor{ID: "d", Pos: TilePos{X: 0, Y: 0}}
 	got, ok := findNearestSocialStructure(w, a, "social")
 	if !ok || got != "near" {
 		t.Errorf("got (%q, %v), want (near, true)", got, ok)

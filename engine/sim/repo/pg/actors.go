@@ -549,8 +549,7 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 		a := &sim.Actor{
 			ID:                   sim.ActorID(id),
 			DisplayName:          displayName,
-			CurrentX:             currentX,
-			CurrentY:             currentY,
+			Pos:                  sim.TilePos{X: currentX, Y: currentY},
 			InsideStructureID:    sim.StructureID(deref(insideStructureID)),
 			CurrentHuddleID:      sim.HuddleID(deref(currentHuddleID)),
 			InsideRoomID:         roomID,
@@ -1366,8 +1365,8 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 		if _, err := tx.Exec(ctx, upsertSQLA,
 			string(a.ID),                            // $1 id
 			a.DisplayName,                           // $2 display_name
-			a.CurrentX,                              // $3 current_x
-			a.CurrentY,                              // $4 current_y
+			a.Pos.X,                                 // $3 current_x
+			a.Pos.Y,                                 // $4 current_y
 			nilOnEmpty(string(a.InsideStructureID)), // $5 inside_structure_id
 			nilOnEmpty(string(a.CurrentHuddleID)),   // $6 current_huddle_id
 			nilOnZero(int64(a.InsideRoomID)),        // $7 inside_room_id

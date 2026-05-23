@@ -104,9 +104,9 @@ func buildMoveToOwnerTestWorld(t *testing.T) (*sim.World, context.CancelFunc) {
 		"manor": {ID: "manor", DisplayName: "Manor"},
 	})
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
-		"lord":     {ID: "lord", DisplayName: "Lord", CurrentX: sim.PadX, CurrentY: sim.PadY},
-		"resident": {ID: "resident", DisplayName: "Resident", CurrentX: sim.PadX, CurrentY: sim.PadY, HomeStructureID: "manor"},
-		"stranger": {ID: "stranger", DisplayName: "Stranger", CurrentX: sim.PadX, CurrentY: sim.PadY},
+		"lord":     {ID: "lord", DisplayName: "Lord", Pos: sim.TilePos{X: sim.PadX, Y: sim.PadY}},
+		"resident": {ID: "resident", DisplayName: "Resident", Pos: sim.TilePos{X: sim.PadX, Y: sim.PadY}, HomeStructureID: "manor"},
+		"stranger": {ID: "stranger", DisplayName: "Stranger", Pos: sim.TilePos{X: sim.PadX, Y: sim.PadY}},
 	})
 	w, err := sim.LoadWorld(context.Background(), repo)
 	if err != nil {

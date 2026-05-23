@@ -64,8 +64,8 @@ func TestHuddleDrift_AreaBoundLeaveOnDriftPastRadius(t *testing.T) {
 
 	_, _ = w.Send(sim.Command{
 		Fn: func(world *sim.World) (any, error) {
-			world.Actors["alice"].CurrentX = 10
-			world.Actors["alice"].CurrentY = 10
+			world.Actors["alice"].Pos.X = 10
+			world.Actors["alice"].Pos.Y = 10
 			sim.SetActorInsideStructure(world, world.Actors["alice"], "")
 
 			world.Huddles[huddleID] = &sim.Huddle{
@@ -81,8 +81,8 @@ func TestHuddleDrift_AreaBoundLeaveOnDriftPastRadius(t *testing.T) {
 
 	_, err := w.Send(sim.Command{
 		Fn: func(world *sim.World) (any, error) {
-			world.Actors["alice"].CurrentX = 50
-			world.Actors["alice"].CurrentY = 50
+			world.Actors["alice"].Pos.X = 50
+			world.Actors["alice"].Pos.Y = 50
 			return sim.CheckHuddleDriftAfterPositionMutation(world, "alice", now.Add(time.Second)), nil
 		},
 	})
@@ -112,8 +112,8 @@ func TestHuddleDrift_NoDriftWhenStillContained(t *testing.T) {
 
 	_, _ = w.Send(sim.Command{
 		Fn: func(world *sim.World) (any, error) {
-			world.Actors["alice"].CurrentX = 10
-			world.Actors["alice"].CurrentY = 10
+			world.Actors["alice"].Pos.X = 10
+			world.Actors["alice"].Pos.Y = 10
 			sim.SetActorInsideStructure(world, world.Actors["alice"], "")
 
 			world.Huddles[huddleID] = &sim.Huddle{
@@ -129,8 +129,8 @@ func TestHuddleDrift_NoDriftWhenStillContained(t *testing.T) {
 
 	_, _ = w.Send(sim.Command{
 		Fn: func(world *sim.World) (any, error) {
-			world.Actors["alice"].CurrentX = 12
-			world.Actors["alice"].CurrentY = 13
+			world.Actors["alice"].Pos.X = 12
+			world.Actors["alice"].Pos.Y = 13
 			return sim.CheckHuddleDriftAfterPositionMutation(world, "alice", now.Add(time.Second)), nil
 		},
 	})

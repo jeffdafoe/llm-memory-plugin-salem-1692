@@ -22,8 +22,7 @@ func actorSnap(state sim.ActorState, structID sim.StructureID, x, y int, huddle 
 	return &sim.ActorSnapshot{
 		State:             state,
 		InsideStructureID: structID,
-		CurrentX:          x,
-		CurrentY:          y,
+		Pos:               sim.TilePos{X: x, Y: y},
 		CurrentHuddleID:   huddle,
 		Coins:             coins,
 		Needs:             map[sim.NeedKey]int{},

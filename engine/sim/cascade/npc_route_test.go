@@ -66,8 +66,7 @@ func buildRouteCascadeWorld(t *testing.T) (*sim.World, func()) {
 			ID:              "runner",
 			DisplayName:     "Route Runner",
 			Kind:            sim.KindNPCShared,
-			CurrentX:        sim.PadX + 10,
-			CurrentY:        sim.PadY + 10,
+			Pos:             sim.TilePos{X: sim.PadX + 10, Y: sim.PadY + 10},
 			HomeStructureID: "home",
 			Attributes:      map[string][]byte{},
 		},
@@ -280,8 +279,8 @@ func TestTownCrierReadsBoardContentBeforeFlip(t *testing.T) {
 	}
 	// Position the actor at the stop's WalkTo so the active-phase
 	// stale-arrival guard accepts the arrival.
-	w.Actors["runner"].CurrentX = noticeStop.WalkTo.X
-	w.Actors["runner"].CurrentY = noticeStop.WalkTo.Y
+	w.Actors["runner"].Pos.X = noticeStop.WalkTo.X
+	w.Actors["runner"].Pos.Y = noticeStop.WalkTo.Y
 	// Pre-stamp the board with content the crier should read.
 	w.NoticeboardContent = map[sim.VillageObjectID]*sim.NoticeboardContent{
 		"notice": {Text: "A travelling cobbler lodges at the Ordinary.", PostedAt: time.Now(), AtState: "blank"},
@@ -354,8 +353,8 @@ func TestTownCrierSilentOnStaleAtState(t *testing.T) {
 		Phase:           sim.RoutePhaseActive,
 		HomeDestination: sim.NewPositionDestination(sim.Position{X: sim.PadX + 10, Y: sim.PadY + 10}),
 	}
-	w.Actors["runner"].CurrentX = sim.PadX + 30
-	w.Actors["runner"].CurrentY = sim.PadY + 21
+	w.Actors["runner"].Pos.X = sim.PadX + 30
+	w.Actors["runner"].Pos.Y = sim.PadY + 21
 	// Stale content: AtState=blank but the board's CurrentState is now "posted".
 	w.NoticeboardContent = map[sim.VillageObjectID]*sim.NoticeboardContent{
 		"notice": {Text: "Yesterday's news.", PostedAt: time.Now(), AtState: "blank"},
@@ -404,8 +403,8 @@ func TestTownCrierSilentWhenBoardEmpty(t *testing.T) {
 		Phase:           sim.RoutePhaseActive,
 		HomeDestination: sim.NewPositionDestination(sim.Position{X: sim.PadX + 10, Y: sim.PadY + 10}),
 	}
-	w.Actors["runner"].CurrentX = sim.PadX + 30
-	w.Actors["runner"].CurrentY = sim.PadY + 21
+	w.Actors["runner"].Pos.X = sim.PadX + 30
+	w.Actors["runner"].Pos.Y = sim.PadY + 21
 	// NO NoticeboardContent stamped.
 
 	spokeRec := &cascadeSpokeRecorder{}
@@ -483,8 +482,8 @@ func teleportActorToCurrentStop(w *sim.World) error {
 		actor := world.Actors["runner"]
 		if route.Phase == sim.RoutePhaseActive && route.StopIdx < len(route.Stops) {
 			stop := route.Stops[route.StopIdx]
-			actor.CurrentX = stop.WalkTo.X
-			actor.CurrentY = stop.WalkTo.Y
+			actor.Pos.X = stop.WalkTo.X
+			actor.Pos.Y = stop.WalkTo.Y
 		}
 		return nil, nil
 	}})

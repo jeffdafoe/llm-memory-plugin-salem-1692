@@ -341,8 +341,7 @@ func TestTickVisitorCascade_DespawnDispatches(t *testing.T) {
 			DisplayName: "Test Visitor",
 			Kind:        sim.KindNPCShared,
 			LLMAgent:    sim.VisitorAgentName,
-			CurrentX:    sim.PadX + 10,
-			CurrentY:    sim.PadY + 10,
+			Pos:         sim.TilePos{X: sim.PadX + 10, Y: sim.PadY + 10},
 			Needs:       sim.SeedVisitorNeedsForTest(),
 			Inventory:   map[sim.ItemKind]int{},
 			VisitorState: &sim.VisitorState{
@@ -396,8 +395,7 @@ func TestTickVisitorCascade_CleanupRemovesAndEmits(t *testing.T) {
 			DisplayName: "Elias Drum the peddler",
 			Kind:        sim.KindNPCShared,
 			LLMAgent:    sim.VisitorAgentName,
-			CurrentX:    sim.PadX + 5,
-			CurrentY:    sim.PadY + 5,
+			Pos:         sim.TilePos{X: sim.PadX + 5, Y: sim.PadY + 5},
 			Needs:       sim.SeedVisitorNeedsForTest(),
 			VisitorState: &sim.VisitorState{
 				Archetype:       "peddler",

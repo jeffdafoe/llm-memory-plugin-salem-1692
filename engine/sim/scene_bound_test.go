@@ -47,12 +47,12 @@ func TestSceneBound_AreaBound_Contains(t *testing.T) {
 		actor *sim.Actor
 		want  bool
 	}{
-		{"outdoor at anchor", &sim.Actor{CurrentX: 10, CurrentY: 10}, true},
-		{"outdoor within radius (king's move)", &sim.Actor{CurrentX: 12, CurrentY: 13}, true},
-		{"outdoor at exact radius", &sim.Actor{CurrentX: 13, CurrentY: 10}, true},
-		{"outdoor just past radius", &sim.Actor{CurrentX: 14, CurrentY: 10}, false},
-		{"outdoor diagonal past radius", &sim.Actor{CurrentX: 14, CurrentY: 14}, false},
-		{"indoor actor within radius", &sim.Actor{InsideStructureID: "tavern", CurrentX: 10, CurrentY: 10}, false},
+		{"outdoor at anchor", &sim.Actor{Pos: sim.TilePos{X: 10, Y: 10}}, true},
+		{"outdoor within radius (king's move)", &sim.Actor{Pos: sim.TilePos{X: 12, Y: 13}}, true},
+		{"outdoor at exact radius", &sim.Actor{Pos: sim.TilePos{X: 13, Y: 10}}, true},
+		{"outdoor just past radius", &sim.Actor{Pos: sim.TilePos{X: 14, Y: 10}}, false},
+		{"outdoor diagonal past radius", &sim.Actor{Pos: sim.TilePos{X: 14, Y: 14}}, false},
+		{"indoor actor within radius", &sim.Actor{InsideStructureID: "tavern", Pos: sim.TilePos{X: 10, Y: 10}}, false},
 		{"nil actor", nil, false},
 	}
 	for _, tc := range cases {
@@ -78,7 +78,7 @@ func TestSceneBound_UnboundedBound_Contains(t *testing.T) {
 		want  bool
 	}{
 		{"indoor actor", &sim.Actor{InsideStructureID: "tavern"}, true},
-		{"outdoor actor far away", &sim.Actor{CurrentX: 999, CurrentY: 999}, true},
+		{"outdoor actor far away", &sim.Actor{Pos: sim.TilePos{X: 999, Y: 999}}, true},
 		{"zero-state actor", &sim.Actor{}, true},
 		{"nil actor", nil, false},
 	}
@@ -99,8 +99,8 @@ func TestSceneBound_AreaBound_RadiusClamping(t *testing.T) {
 	anchor := sim.Position{X: 5, Y: 5}
 	bound := sim.NewAreaBound(anchor, -7)
 
-	atAnchor := &sim.Actor{CurrentX: 5, CurrentY: 5}
-	oneAway := &sim.Actor{CurrentX: 6, CurrentY: 5}
+	atAnchor := &sim.Actor{Pos: sim.TilePos{X: 5, Y: 5}}
+	oneAway := &sim.Actor{Pos: sim.TilePos{X: 6, Y: 5}}
 
 	if !bound.Contains(nil, atAnchor) {
 		t.Error("radius-clamped-to-0 bound should contain actor exactly at anchor")
