@@ -289,12 +289,30 @@ func PayWithItem(
 
 			// Slow path: mint pending entry + emit PayOfferReceived.
 			//
-			// No stock / coins / break check here — pending entries
-			// don't reserve (architecture § 2); accept_pay revalidates
-			// everything at acceptance time. The break gate fires there
-			// too — letting a pending offer be staked against a seller
-			// on break is harmless (it'll fail at accept time with
-			// failed_unavailable, or be withdrawn / expire first).
+			// Offer-time funds fast-fail (ZBBS-WORK-231) — an
+			// OPTIMIZATION, not a correctness gate. Pending entries
+			// reserve nothing and AcceptPay's gate 11 stays the
+			// authoritative funds check at acceptance time. But minting a
+			// pending offer the buyer demonstrably can't cover wastes a
+			// seller deliberation tick: the offer stamps the seller's
+			// warrant, the seller's reactor burns an LLM round-trip, and
+			// accept_pay then resolves to failed_insufficient_funds.
+			// Rejecting here spares that tick. This is a point-in-time
+			// snapshot — the buyer's balance can still change before
+			// accept — so it neither replaces nor weakens gate 11.
+			//
+			// Stock and seller-break are deliberately NOT fast-failed
+			// here: stock is contended (reservation accounting lives at
+			// accept) and break is transient, so both stay deferred to
+			// acceptance. A pending offer staked against an on-break or
+			// out-of-stock seller is harmless — it resolves at accept
+			// time, or is withdrawn / expires first.
+			if !buyerCanAfford(buyer, amount) {
+				return nil, fmt.Errorf(
+					"insufficient coins (have %d, need %d) — quote a smaller offer.",
+					buyer.Coins, amount,
+				)
+			}
 
 			id := w.nextLedgerSeq()
 			ttl := effectivePayLedgerTTL(w.Settings)
@@ -484,7 +502,7 @@ func runPayWithItemFastPath(
 			seller.DisplayName, kind, seller.Inventory[kind], reserved, needed,
 		)
 	}
-	if buyer.Coins < amount {
+	if !buyerCanAfford(buyer, amount) {
 		return nil, fmt.Errorf(
 			"insufficient coins (have %d, need %d) — quote a smaller offer.",
 			buyer.Coins, amount,
@@ -699,8 +717,10 @@ func AcceptPay(callerID ActorID, ledgerID LedgerID, at time.Time) Command {
 				return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedInsufficientStock, "", at), nil
 			}
 
-			// Gate 11: funds.
-			if buyer.Coins < entry.Amount {
+			// Gate 11: funds. buyerCanAfford is the shared predicate; the
+			// failure ACTION here is a terminal flip (an entry already
+			// exists), not the tool-error reject the offer-time sites use.
+			if !buyerCanAfford(buyer, entry.Amount) {
 				return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedInsufficientFunds, "", at), nil
 			}
 			// Seller balance overflow guard — symmetric with PR B's Pay
@@ -935,6 +955,23 @@ func WithdrawPay(callerID ActorID, ledgerID LedgerID, message string, at time.Ti
 }
 
 // ---- shared helpers --------------------------------------------------
+
+// buyerCanAfford reports whether buyer holds at least amount coins. It
+// is the single definition of the funds comparison, shared by all three
+// sites that ask it: the offer-time fast-fail in PayWithItem's slow
+// path, the fast-path predicate 6, and AcceptPay's gate 11. Centralizing
+// the predicate keeps those three from drifting on what "can afford"
+// means (e.g. if a future escrow/reserved-coins concept lands).
+//
+// The ACTION taken when this returns false is intentionally NOT shared,
+// because it differs by lifecycle stage: the two offer-time sites reject
+// with a tool error (no ledger entry is minted, or a would-be fast-path
+// accept is aborted), while AcceptPay flips an already-pending entry to
+// the failed_insufficient_funds terminal. Sharing the action would force
+// one of those behaviors onto the other.
+func buyerCanAfford(buyer *Actor, amount int) bool {
+	return buyer.Coins >= amount
+}
 
 // effectivePayConsumerCount returns max(1, len(consumerIDs)). Empty
 // consumer set = buyer is implicit single consumer.
