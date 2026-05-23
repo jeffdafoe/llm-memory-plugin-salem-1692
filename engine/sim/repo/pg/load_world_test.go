@@ -104,6 +104,15 @@ func (f fakeAssets) LoadAll(_ context.Context) (map[sim.AssetID]*sim.Asset, erro
 	return f.out, f.err
 }
 
+type fakeSprites struct {
+	out map[sim.SpriteID]*sim.Sprite
+	err error
+}
+
+func (f fakeSprites) LoadAll(_ context.Context) (map[sim.SpriteID]*sim.Sprite, error) {
+	return f.out, f.err
+}
+
 type fakeRecipes struct {
 	out map[sim.ItemKind]*sim.ItemRecipe
 	err error
@@ -170,6 +179,7 @@ type fakeRepoOpts struct {
 	orders         sim.OrdersRepo
 	environment    sim.EnvironmentRepo
 	assets         sim.AssetsRepo
+	sprites        sim.SpritesRepo
 	attributeDefs  sim.AttributeDefinitionsRepo
 	recipes        sim.RecipesRepo
 	itemKinds      sim.ItemKindsRepo
@@ -192,6 +202,7 @@ func (o fakeRepoOpts) build() sim.Repository {
 		Orders:               pick(o.orders, fakeOrders{out: map[sim.OrderID]*sim.Order{}}).(sim.OrdersRepo),
 		Environment:          pick(o.environment, fakeEnvironment{}).(sim.EnvironmentRepo),
 		Assets:               pick(o.assets, fakeAssets{out: map[sim.AssetID]*sim.Asset{}}).(sim.AssetsRepo),
+		Sprites:              pick(o.sprites, fakeSprites{out: map[sim.SpriteID]*sim.Sprite{}}).(sim.SpritesRepo),
 		AttributeDefinitions: pick(o.attributeDefs, fakeAttributeDefinitions{out: map[string]*sim.AttributeDefinition{}}).(sim.AttributeDefinitionsRepo),
 		Recipes:              pick(o.recipes, fakeRecipes{out: map[sim.ItemKind]*sim.ItemRecipe{}}).(sim.RecipesRepo),
 		ItemKinds:            pick(o.itemKinds, fakeItemKinds{out: map[sim.ItemKind]*sim.ItemKindDef{}}).(sim.ItemKindsRepo),
@@ -269,6 +280,7 @@ func TestLoadWorld_NotImpl_Tolerated(t *testing.T) {
 		Orders:               fakeOrders{out: map[sim.OrderID]*sim.Order{}},
 		Environment:          fakeEnvironment{err: errNotImpl},
 		Assets:               notImplAssets{},
+		Sprites:              notImplSprites{},
 		AttributeDefinitions: notImplAttributeDefinitions{},
 		Recipes:              notImplRecipes{},
 		ItemKinds:            notImplItemKinds{},
@@ -301,6 +313,7 @@ func TestLoadWorld_NotImpl_Required_HardFails(t *testing.T) {
 		Orders:               fakeOrders{out: map[sim.OrderID]*sim.Order{}},
 		Environment:          fakeEnvironment{},
 		Assets:               fakeAssets{out: map[sim.AssetID]*sim.Asset{}},
+		Sprites:              fakeSprites{out: map[sim.SpriteID]*sim.Sprite{}},
 		AttributeDefinitions: fakeAttributeDefinitions{out: map[string]*sim.AttributeDefinition{}},
 		Recipes:              fakeRecipes{out: map[sim.ItemKind]*sim.ItemRecipe{}},
 		ItemKinds:            fakeItemKinds{out: map[sim.ItemKind]*sim.ItemKindDef{}},
@@ -858,6 +871,7 @@ func TestLoadWorld_ActorHuddleReconciliation_SkippedWhenHuddlesNotImpl(t *testin
 		Orders:               fakeOrders{out: map[sim.OrderID]*sim.Order{}},
 		Environment:          fakeEnvironment{},
 		Assets:               fakeAssets{out: map[sim.AssetID]*sim.Asset{}},
+		Sprites:              fakeSprites{out: map[sim.SpriteID]*sim.Sprite{}},
 		AttributeDefinitions: fakeAttributeDefinitions{out: map[string]*sim.AttributeDefinition{}},
 		Recipes:              fakeRecipes{out: map[sim.ItemKind]*sim.ItemRecipe{}},
 		ItemKinds:            fakeItemKinds{out: map[sim.ItemKind]*sim.ItemKindDef{}},
@@ -897,6 +911,7 @@ func TestLoadWorld_ActorStructureRefs_SkippedWhenStructuresNotImpl(t *testing.T)
 		Orders:               fakeOrders{out: map[sim.OrderID]*sim.Order{}},
 		Environment:          fakeEnvironment{},
 		Assets:               fakeAssets{out: map[sim.AssetID]*sim.Asset{}},
+		Sprites:              fakeSprites{out: map[sim.SpriteID]*sim.Sprite{}},
 		AttributeDefinitions: fakeAttributeDefinitions{out: map[string]*sim.AttributeDefinition{}},
 		Recipes:              fakeRecipes{out: map[sim.ItemKind]*sim.ItemRecipe{}},
 		ItemKinds:            fakeItemKinds{out: map[sim.ItemKind]*sim.ItemKindDef{}},
@@ -927,6 +942,7 @@ func TestLoadWorld_ActorReconciliation_SkippedWhenActorsNotImpl(t *testing.T) {
 		Orders:               fakeOrders{out: map[sim.OrderID]*sim.Order{}},
 		Environment:          fakeEnvironment{},
 		Assets:               fakeAssets{out: map[sim.AssetID]*sim.Asset{}},
+		Sprites:              fakeSprites{out: map[sim.SpriteID]*sim.Sprite{}},
 		AttributeDefinitions: fakeAttributeDefinitions{out: map[string]*sim.AttributeDefinition{}},
 		Recipes:              fakeRecipes{out: map[sim.ItemKind]*sim.ItemRecipe{}},
 		ItemKinds:            fakeItemKinds{out: map[sim.ItemKind]*sim.ItemKindDef{}},
