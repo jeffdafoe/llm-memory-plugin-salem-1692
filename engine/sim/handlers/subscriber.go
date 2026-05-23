@@ -18,7 +18,7 @@ import (
 // fixed at the source. "Log and continue" here would be worse than a
 // crash: it would drop the job AFTER its warrants were consumed, recreating
 // the exact consumed-but-never-ran state Option A exists to eliminate.
-func (p *TickWorkerPool) handleEvent(_ *sim.World, evt sim.Event) {
+func (p *TickWorkerPool) handleEvent(w *sim.World, evt sim.Event) {
 	due, ok := evt.(*sim.ReactorTickDue)
 	if !ok {
 		return
@@ -34,6 +34,12 @@ func (p *TickWorkerPool) handleEvent(_ *sim.World, evt sim.Event) {
 		warrantedSince: due.WarrantedSince,
 		dueAt:          due.DueAt,
 		emittedAt:      due.EmittedAt,
+		// Captured on the world goroutine (this subscriber runs inline during
+		// the dispatching command's emit, before its post-Fn TickCounter++ /
+		// republish). The worker's preflight uses it to wait out the
+		// enqueue→republish lag instead of false-classifying the tick Stale
+		// against a pre-dispatch snapshot. See tickJob.dispatchTick + RunTick.
+		dispatchTick: w.TickCounter,
 	}
 	select {
 	case p.jobs <- job:

@@ -5,12 +5,24 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"runtime"
 	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/llm"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/perception"
 )
+
+// maxPreflightSnapshotSpins bounds the busy-wait in RunTick's preflight that
+// waits for the published snapshot to catch up to this job's dispatch (the
+// enqueue→republish lag — see RunTick). Each spin is a runtime.Gosched +
+// re-read; the wait normally resolves in a handful of spins because the
+// dispatching command's republish is microseconds away on the world
+// goroutine (which Gosched yields to). The cap is a safety ceiling for a
+// wedged/lagging world goroutine, after which the preflight falls through to
+// the check against whatever snapshot it has (degrading to the prior, racy
+// behavior rather than spinning forever).
+const maxPreflightSnapshotSpins = 1000
 
 // Per-tick default budgets. Settle exact values empirically during PR 3d
 // integration; the defaults are conservative.
@@ -146,6 +158,26 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 	// --- preflight: snapshot read + stale check ---
 	// Cheap: no world goroutine round-trip, no LLM tokens spent.
 	snap := w.Published()
+	// Wait out the dispatch→republish lag. This job was enqueued from inside
+	// the dispatching command's synchronous emit (subscriber.go's handleEvent
+	// runs inline on the world goroutine), but the snapshot reflecting our
+	// TickInFlight dispatch is not republished until that command returns
+	// (world.go command loop: Fn → TickCounter++ → republish). A fast worker
+	// can read the published snapshot in that enqueue→republish window and see
+	// a pre-dispatch view (TickInFlight=false) — not because the tick was
+	// superseded, but because the snapshot hasn't caught up. The stale check
+	// below would then false-classify a perfectly live tick as Stale.
+	//
+	// job.dispatchTick is World.TickCounter at enqueue; the dispatching
+	// command's republish stamps Snapshot.AtTick = dispatchTick+1. So while
+	// AtTick <= dispatchTick the snapshot predates our dispatch — re-read
+	// until it catches up (bounded; the republish is unconditional and
+	// imminent). dispatchTick == 0 means a hand-built test job (no real
+	// dispatch) — skip the wait so unit tests don't spin.
+	for spins := 0; job.dispatchTick > 0 && snap != nil && snap.AtTick <= job.dispatchTick && spins < maxPreflightSnapshotSpins; spins++ {
+		runtime.Gosched()
+		snap = w.Published()
+	}
 	if snap == nil {
 		// Defensive: a missing published snapshot means the world has not
 		// been initialized for snapshots, which is a wiring bug. Carry the

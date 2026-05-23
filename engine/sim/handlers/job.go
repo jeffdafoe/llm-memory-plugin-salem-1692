@@ -27,4 +27,16 @@ type tickJob struct {
 	warrantedSince time.Time
 	dueAt          time.Time
 	emittedAt      time.Time
+
+	// dispatchTick is World.TickCounter at the moment this job was enqueued
+	// (captured by the subscriber, which runs inline on the world goroutine
+	// during the dispatching command's emit). The dispatching command's
+	// post-Fn republish stamps Snapshot.AtTick = dispatchTick+1, so the
+	// worker's preflight can tell a snapshot that already reflects this
+	// dispatch (AtTick > dispatchTick) from one that simply hasn't caught up
+	// yet (AtTick <= dispatchTick). Without it, a worker that reads the
+	// published snapshot in the enqueue→republish window sees a pre-dispatch
+	// view (TickInFlight=false) and false-classifies the tick Stale. See
+	// RunTick's preflight.
+	dispatchTick uint64
 }
