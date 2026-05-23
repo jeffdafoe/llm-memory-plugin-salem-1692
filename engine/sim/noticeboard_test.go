@@ -154,6 +154,11 @@ func TestSaveNoticeboardContent_EmitsContentChanged(t *testing.T) {
 		t.Errorf("event = {ObjectID:%q Text:%q PostedAt:%v}, want {board, trimmed, %v}",
 			ev.ObjectID, ev.Text, ev.PostedAt, now)
 	}
+	// At must equal PostedAt (== the command time) — one mutation, one clock
+	// (code_review #2), not a fresh time.Now() read.
+	if !ev.At.Equal(ev.PostedAt) {
+		t.Errorf("At = %v, want == PostedAt %v (single command clock)", ev.At, ev.PostedAt)
+	}
 }
 
 // TestSaveNoticeboardContent_NoContentEventOnSkip: the skip paths

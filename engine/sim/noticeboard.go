@@ -124,7 +124,7 @@ func SaveNoticeboardContent(id VillageObjectID, text, atState string, at time.Ti
 				ObjectID: id,
 				Text:     trimmed,
 				PostedAt: at,
-				At:       time.Now().UTC(),
+				At:       at,
 			})
 			return SaveNoticeboardContentResult{Applied: true}, nil
 		},
