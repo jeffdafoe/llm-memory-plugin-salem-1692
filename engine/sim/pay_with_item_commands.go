@@ -203,6 +203,18 @@ func PayWithItem(
 					len(consumerNames), MaxPayWithItemConsumers,
 				)
 			}
+			// Conflicting offer-mode guard. quote_id selects the fast-path
+			// quote accept; in_response_to links this offer into a counter
+			// chain. They express different lifecycle intents and the fast
+			// path returns before any counter-chain handling, so it would
+			// silently win — reject the ambiguous combination outright. The
+			// pc/pay handler rejects this earlier (400); enforced here too
+			// because NPC / tool callers reach the substrate directly.
+			if quoteID != 0 && parentID != 0 {
+				return nil, errors.New(
+					"an offer can either accept a quote (quote_id) or respond to a counter (in_response_to), not both — drop one.",
+				)
+			}
 
 			buyer, ok := w.Actors[buyerID]
 			if !ok {

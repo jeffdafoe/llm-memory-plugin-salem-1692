@@ -646,6 +646,82 @@ func TestPayWithItem_InResponseTo_Gates(t *testing.T) {
 	}
 }
 
+// TestPayWithItem_QuoteAndInResponseTo_Rejected — the substrate guard for
+// the conflicting offer-mode bug (code_review round 1): a quote_id fast-path
+// accept and an in_response_to counter-chain response are mutually exclusive
+// lifecycle intents. The pc/pay handler rejects this at 400, but NPC/tool
+// callers reach PayWithItem directly, so the command enforces it too. The
+// guard fires before any world-state lookup, so no huddle/scene/quote/ledger
+// seeding is needed.
+func TestPayWithItem_QuoteAndInResponseTo_Rejected(t *testing.T) {
+	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
+		{id: "alice", displayName: "Alice", kind: sim.KindNPCShared, huddleID: "h1", coins: 100},
+		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1", inventory: map[sim.ItemKind]int{"stew": 5}},
+	})
+	defer stop()
+
+	_, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, 7, 42, "", time.Now().UTC()))
+	if err == nil || !strings.Contains(err.Error(), "not both") {
+		t.Fatalf("want conflicting-mode rejection, got %v", err)
+	}
+}
+
+// TestPayWithItem_InResponseTo_DepthIncrementReachesCap proves the PRODUCTION
+// increment path actually reaches and stops at the cap (code_review round 1 —
+// the depth_cap case in TestPayWithItem_InResponseTo_Gates only seeds a parent
+// already at the cap, which doesn't exercise child.Depth = parent.Depth+1). A
+// real PayWithItem response to a depth-(cap-1) parent mints a child at exactly
+// the cap; responding to THAT child then fails the depth gate.
+func TestPayWithItem_InResponseTo_DepthIncrementReachesCap(t *testing.T) {
+	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
+		{id: "alice", displayName: "Alice", kind: sim.KindNPCShared, huddleID: "h1", coins: 100},
+		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1", inventory: map[sim.ItemKind]int{"stew": 5}},
+	})
+	defer stop()
+
+	at := time.Now().UTC()
+	capDepth := sim.MaxPayCounterChainDepth
+
+	// Parent one below the cap, countered and answerable.
+	seedLedgerEntry(t, w, sim.PayLedgerEntry{
+		ID: 50, BuyerID: "alice", SellerID: "bob",
+		ItemKind: "stew", Qty: 1, Amount: 4,
+		State:         sim.PayLedgerStateCountered,
+		CounterAmount: 6,
+		ResolvedAt:    at.Add(-time.Minute),
+		SceneID:       "sc1", HuddleID: "h1",
+		Depth: capDepth - 1,
+	})
+
+	// Real response → child minted at exactly the cap (parent.Depth + 1).
+	res, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 6, false, nil, 0, 50, "", at))
+	if err != nil {
+		t.Fatalf("PayWithItem in_response_to (depth %d): %v", capDepth-1, err)
+	}
+	childID := res.(sim.PayWithItemResult).LedgerID
+	child := readPayLedger(t, w)[childID]
+	if child.Depth != capDepth {
+		t.Fatalf("child Depth = %d, want %d (cap)", child.Depth, capDepth)
+	}
+
+	// Flip the freshly-minted child to a countered, answerable parent at the
+	// cap depth — then a response to it must trip the depth gate.
+	seedLedgerEntry(t, w, sim.PayLedgerEntry{
+		ID: childID, BuyerID: "alice", SellerID: "bob",
+		ItemKind: "stew", Qty: 1, Amount: 6,
+		State:         sim.PayLedgerStateCountered,
+		CounterAmount: 8,
+		ResolvedAt:    at.Add(-time.Minute),
+		SceneID:       "sc1", HuddleID: "h1",
+		Depth: capDepth,
+	})
+
+	_, err = w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 8, false, nil, 0, childID, "", at))
+	if err == nil || !strings.Contains(err.Error(), "depth limit") {
+		t.Fatalf("want depth-limit rejection at cap depth %d, got %v", capDepth, err)
+	}
+}
+
 // ============================================================
 // PayWithItem — fast path
 // ============================================================

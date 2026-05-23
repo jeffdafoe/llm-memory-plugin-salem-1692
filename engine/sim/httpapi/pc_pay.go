@@ -161,6 +161,15 @@ func (s *Server) handlePCPay(w http.ResponseWriter, r *http.Request) {
 // surfaced from the command. The numeric maxima reuse the exported sim.*
 // constants (the command's own authority); the char caps mirror the tool schema.
 func validatePayFields(req pcPayRequest) (seller, item string, consumers []string, forText, msg string) {
+	// Conflicting offer-mode guard. quote_id (fast-path quote accept) and
+	// in_response_to (counter-chain response) are mutually exclusive lifecycle
+	// intents — allowing both lets the fast path silently win. Reject up front
+	// so the ambiguity is a clean 400. sim.PayWithItem enforces the same rule
+	// for the NPC/tool callers that bypass this handler.
+	if req.QuoteID != 0 && req.InResponseTo != 0 {
+		return "", "", nil, "", "quote_id and in_response_to cannot both be set"
+	}
+
 	seller = strings.TrimSpace(req.Seller)
 	if seller == "" {
 		return "", "", nil, "", "seller is required"

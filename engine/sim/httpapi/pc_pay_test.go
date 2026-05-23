@@ -134,11 +134,12 @@ func TestHandlePCPay_TrailingContent(t *testing.T) {
 func TestHandlePCPay_FieldValidation(t *testing.T) {
 	srv := NewServer(seededWorld(t), okAuth{})
 	cases := map[string]string{
-		"missing seller": `{"seller":"  ","item":"stew","qty":1,"amount":2}`,
-		"missing item":   `{"seller":"Hannah","item":"","qty":1,"amount":2}`,
-		"amount below 1": `{"seller":"Hannah","item":"stew","qty":1,"amount":0}`,
-		"qty below 1":    `{"seller":"Hannah","item":"stew","qty":0,"amount":2}`,
-		"dup consumer":   `{"seller":"Hannah","item":"stew","qty":1,"amount":2,"consume_now":true,"consumers":["Ann","ann"]}`,
+		"missing seller":                    `{"seller":"  ","item":"stew","qty":1,"amount":2}`,
+		"missing item":                      `{"seller":"Hannah","item":"","qty":1,"amount":2}`,
+		"amount below 1":                    `{"seller":"Hannah","item":"stew","qty":1,"amount":0}`,
+		"qty below 1":                       `{"seller":"Hannah","item":"stew","qty":0,"amount":2}`,
+		"dup consumer":                      `{"seller":"Hannah","item":"stew","qty":1,"amount":2,"consume_now":true,"consumers":["Ann","ann"]}`,
+		"quote and in_response_to both set": `{"seller":"Hannah","item":"stew","qty":1,"amount":2,"quote_id":7,"in_response_to":42}`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
