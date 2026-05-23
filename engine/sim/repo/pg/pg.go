@@ -34,20 +34,21 @@ type Pool interface {
 // pattern other aggregates follow.
 func NewRepository(pool Pool) sim.Repository {
 	return sim.Repository{
-		Actors:         &ActorsRepo{pool: pool},
-		Structures:     &StructuresRepo{pool: pool},
-		Huddles:        &HuddlesRepo{pool: pool},
-		Scenes:         &ScenesRepo{pool: pool},
-		Orders:         &OrdersRepo{pool: pool},
-		Environment:    &EnvironmentRepo{pool: pool},
-		Assets:         &AssetsRepo{pool: pool},
-		Sprites:        &SpritesRepo{pool: pool},
-		Recipes:        &RecipesRepo{pool: pool},
-		ItemKinds:      &ItemKindsRepo{pool: pool},
-		Terrain:        &TerrainRepo{pool: pool},
-		VillageObjects: &VillageObjectsRepo{pool: pool},
-		ActionLog:      notImplActionLog{},
-		TickTelemetry:  notImplTickTelemetry{},
+		Actors:               &ActorsRepo{pool: pool},
+		Structures:           &StructuresRepo{pool: pool},
+		Huddles:              &HuddlesRepo{pool: pool},
+		Scenes:               &ScenesRepo{pool: pool},
+		Orders:               &OrdersRepo{pool: pool},
+		Environment:          &EnvironmentRepo{pool: pool},
+		Assets:               &AssetsRepo{pool: pool},
+		Sprites:              &SpritesRepo{pool: pool},
+		AttributeDefinitions: &AttributeDefinitionsRepo{pool: pool},
+		Recipes:              &RecipesRepo{pool: pool},
+		ItemKinds:            &ItemKindsRepo{pool: pool},
+		Terrain:              &TerrainRepo{pool: pool},
+		VillageObjects:       &VillageObjectsRepo{pool: pool},
+		ActionLog:            notImplActionLog{},
+		TickTelemetry:        notImplTickTelemetry{},
 		Begin: func(ctx context.Context) (sim.Tx, error) {
 			tx, err := pool.Begin(ctx)
 			if err != nil {
@@ -90,6 +91,16 @@ func (notImplAssets) LoadAll(_ context.Context) (map[sim.AssetID]*sim.Asset, err
 type notImplRecipes struct{}
 
 func (notImplRecipes) LoadAll(_ context.Context) (map[sim.ItemKind]*sim.ItemRecipe, error) {
+	return nil, errNotImpl
+}
+
+// notImplAttributeDefinitions is not wired by NewRepository (ZBBS-HOME-292
+// ships AttributeDefinitionsRepo), but load_world_test.go's notImpl-tolerance
+// test exercises LoadWorld with this stub. Kept here so the test compiles;
+// remove when the notImpl-tolerance test is retired.
+type notImplAttributeDefinitions struct{}
+
+func (notImplAttributeDefinitions) LoadAll(_ context.Context) (map[string]*sim.AttributeDefinition, error) {
 	return nil, errNotImpl
 }
 

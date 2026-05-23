@@ -513,6 +513,15 @@ type World struct {
 	// land. See sprite.go.
 	Sprites map[SpriteID]*Sprite
 
+	// Attribute-definition catalog — reference state, loaded at startup. The
+	// actor-assignable attribute vocabulary (scope actor/both), keyed by slug.
+	// Surfaced to the editor's attribute-add dropdown via the npc-behaviors
+	// read endpoint. Distinct from the actor_attribute rows on each Actor
+	// (those are assignments; this is the catalog of what can be assigned).
+	// Hot-reload on SIGHUP, same lifecycle as Assets/Sprites. See
+	// attribute_definition.go.
+	AttributeDefinitions map[string]*AttributeDefinition
+
 	// Recipe catalog — reference state. Keyed by OutputItem. Used by
 	// produce_tick (rate + inputs + output_qty) and pay-deliberation
 	// (wholesale/retail prices).
@@ -682,25 +691,26 @@ func (w *World) withRoot(root EventID, fn func()) {
 // producers; the world goroutine drains it.
 func NewWorld(repo Repository) *World {
 	w := &World{
-		Actors:            make(map[ActorID]*Actor),
-		Structures:        make(map[StructureID]*Structure),
-		Huddles:           make(map[HuddleID]*Huddle),
-		Scenes:            make(map[SceneID]*Scene),
-		Orders:            make(map[OrderID]*Order),
-		VillageObjects:    make(map[VillageObjectID]*VillageObject),
-		Quotes:            make(map[QuoteID]*SceneQuote),
-		PayLedger:         make(map[LedgerID]*PayLedgerEntry),
-		Assets:            make(map[AssetID]*Asset),
-		Sprites:           make(map[SpriteID]*Sprite),
-		Recipes:           make(map[ItemKind]*ItemRecipe),
-		ItemKinds:         make(map[ItemKind]*ItemKindDef),
-		actorsByStructure: make(map[StructureID]map[ActorID]struct{}),
-		actorsByHuddle:    make(map[HuddleID]map[ActorID]struct{}),
-		outdoorActors:     make(map[ActorID]struct{}),
-		Speech:            &SpeechHelper{},
-		cmds:              make(chan Command, 256),
-		tickAdmission:     alwaysAdmit{},
-		repo:              repo,
+		Actors:               make(map[ActorID]*Actor),
+		Structures:           make(map[StructureID]*Structure),
+		Huddles:              make(map[HuddleID]*Huddle),
+		Scenes:               make(map[SceneID]*Scene),
+		Orders:               make(map[OrderID]*Order),
+		VillageObjects:       make(map[VillageObjectID]*VillageObject),
+		Quotes:               make(map[QuoteID]*SceneQuote),
+		PayLedger:            make(map[LedgerID]*PayLedgerEntry),
+		Assets:               make(map[AssetID]*Asset),
+		Sprites:              make(map[SpriteID]*Sprite),
+		AttributeDefinitions: make(map[string]*AttributeDefinition),
+		Recipes:              make(map[ItemKind]*ItemRecipe),
+		ItemKinds:            make(map[ItemKind]*ItemKindDef),
+		actorsByStructure:    make(map[StructureID]map[ActorID]struct{}),
+		actorsByHuddle:       make(map[HuddleID]map[ActorID]struct{}),
+		outdoorActors:        make(map[ActorID]struct{}),
+		Speech:               &SpeechHelper{},
+		cmds:                 make(chan Command, 256),
+		tickAdmission:        alwaysAdmit{},
+		repo:                 repo,
 	}
 	w.republish()
 	return w
@@ -783,6 +793,12 @@ func LoadWorld(ctx context.Context, repo Repository) (*World, error) {
 		return nil, err
 	}
 	w.Sprites = sprites
+
+	attributeDefinitions, err := repo.AttributeDefinitions.LoadAll(ctx)
+	if err != nil {
+		return nil, err
+	}
+	w.AttributeDefinitions = attributeDefinitions
 
 	recipes, err := repo.Recipes.LoadAll(ctx)
 	if err != nil {

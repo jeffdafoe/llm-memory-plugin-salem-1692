@@ -118,6 +118,14 @@ func seededWorld(t *testing.T) *sim.World {
 				FrameWidth: 64, FrameHeight: 64,
 			},
 		}
+		// Attribute-definition catalog (ZBBS-HOME-292). Map insertion order is
+		// deliberately not display-name order, so the test proves the handler
+		// sorts. Display names sort: Blacksmith < Business Owner < Tavern Keeper.
+		world.AttributeDefinitions = map[string]*sim.AttributeDefinition{
+			"tavernkeeper":  {Slug: "tavernkeeper", DisplayName: "Tavern Keeper"},
+			"businessowner": {Slug: "businessowner", DisplayName: "Business Owner"},
+			"blacksmith":    {Slug: "blacksmith", DisplayName: "Blacksmith"},
+		}
 		return nil, nil
 	}})
 	if err != nil {
@@ -620,6 +628,86 @@ func TestHandleSprites(t *testing.T) {
 	}
 	if len(anims) != 0 {
 		t.Errorf("empty animations should serialize as [], got %v", anims)
+	}
+}
+
+func TestHandleNPCBehaviors(t *testing.T) {
+	srv := NewServer(seededWorld(t), okAuth{})
+	rec := get(t, srv, "/api/village/npc-behaviors")
+
+	var behaviors []NPCBehaviorDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &behaviors); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(behaviors) != 3 {
+		t.Fatalf("len(behaviors) = %d, want 3", len(behaviors))
+	}
+	// Sorted by display name: Blacksmith < Business Owner < Tavern Keeper.
+	wantSlugs := []string{"blacksmith", "businessowner", "tavernkeeper"}
+	wantNames := []string{"Blacksmith", "Business Owner", "Tavern Keeper"}
+	for i, b := range behaviors {
+		if b.Slug != wantSlugs[i] || b.DisplayName != wantNames[i] {
+			t.Errorf("behaviors[%d] = {%s, %q}, want {%s, %q}", i, b.Slug, b.DisplayName, wantSlugs[i], wantNames[i])
+		}
+	}
+}
+
+func TestHandleNPCBehaviors_Empty(t *testing.T) {
+	// An empty catalog must serialize as [] (non-nil slice), not null — the
+	// Godot client parses the body as a JSON Array and a null would break it.
+	repo, _ := mem.NewRepository()
+	w, err := sim.LoadWorld(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	srv := NewServer(w, okAuth{})
+	rec := get(t, srv, "/api/village/npc-behaviors")
+	if got := rec.Body.String(); got != "[]\n" {
+		t.Errorf("empty catalog body = %q, want \"[]\\n\"", got)
+	}
+}
+
+func TestHandleObjectTags(t *testing.T) {
+	srv := NewServer(seededWorld(t), okAuth{})
+	rec := get(t, srv, "/api/village/object-tags")
+
+	var tags []string
+	if err := json.Unmarshal(rec.Body.Bytes(), &tags); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	want := []string{
+		"business", "lodging", "meeting-house", "noticeboard_content",
+		"outhouse", "shop", "smithy", "summon_point", "tavern", "well",
+	}
+	if len(tags) != len(want) {
+		t.Fatalf("object-tags = %v (len %d), want len %d", tags, len(tags), len(want))
+	}
+	for i, tag := range tags {
+		if tag != want[i] {
+			t.Errorf("object-tags[%d] = %q, want %q (full: %v)", i, tag, want[i], tags)
+		}
+	}
+}
+
+func TestHandleStateTags(t *testing.T) {
+	srv := NewServer(seededWorld(t), okAuth{})
+	rec := get(t, srv, "/api/assets/state-tags")
+
+	var tags []string
+	if err := json.Unmarshal(rec.Body.Bytes(), &tags); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	want := []string{
+		"day-active", "lamplighter-target", "laundry", "night-active",
+		"notice-board", "occupied", "rotatable", "unoccupied",
+	}
+	if len(tags) != len(want) {
+		t.Fatalf("state-tags = %v (len %d), want len %d", tags, len(tags), len(want))
+	}
+	for i, tag := range tags {
+		if tag != want[i] {
+			t.Errorf("state-tags[%d] = %q, want %q (full: %v)", i, tag, want[i], tags)
+		}
 	}
 }
 

@@ -257,6 +257,17 @@ type SpriteAnimationDTO struct {
 	FrameRate  float64 `json:"frame_rate"`
 }
 
+// NPCBehaviorDTO is one entry in the GET /api/village/npc-behaviors response —
+// the actor-assignable attribute catalog the editor's "add attribute" dropdown
+// renders. The endpoint and DTO keep the historical "behavior" label for
+// URL/wire-format stability (the legacy npc_behavior allowlist table was
+// retired in ZBBS-113); the data is sourced from attribute_definition (scope
+// actor/both) via World.AttributeDefinitions.
+type NPCBehaviorDTO struct {
+	Slug        string `json:"slug"`
+	DisplayName string `json:"display_name"`
+}
+
 // actorKindString maps the internal ActorKind enum to its stable wire form.
 // A new enum value renders as "unknown" rather than leaking the int.
 func actorKindString(k sim.ActorKind) string {

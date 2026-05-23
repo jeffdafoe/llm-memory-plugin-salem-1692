@@ -122,6 +122,15 @@ func (f fakeItemKinds) LoadAll(_ context.Context) (map[sim.ItemKind]*sim.ItemKin
 	return f.out, f.err
 }
 
+type fakeAttributeDefinitions struct {
+	out map[string]*sim.AttributeDefinition
+	err error
+}
+
+func (f fakeAttributeDefinitions) LoadAll(_ context.Context) (map[string]*sim.AttributeDefinition, error) {
+	return f.out, f.err
+}
+
 type fakeTerrain struct {
 	out *sim.Terrain
 	err error
@@ -161,6 +170,7 @@ type fakeRepoOpts struct {
 	orders         sim.OrdersRepo
 	environment    sim.EnvironmentRepo
 	assets         sim.AssetsRepo
+	attributeDefs  sim.AttributeDefinitionsRepo
 	recipes        sim.RecipesRepo
 	itemKinds      sim.ItemKindsRepo
 	terrain        sim.TerrainRepo
@@ -175,19 +185,20 @@ func (o fakeRepoOpts) build() sim.Repository {
 		return actual
 	}
 	return sim.Repository{
-		Actors:         pick(o.actors, fakeActors{out: map[sim.ActorID]*sim.Actor{}}).(sim.ActorsRepo),
-		Structures:     pick(o.structures, fakeStructures{out: map[sim.StructureID]*sim.Structure{}}).(sim.StructuresRepo),
-		Huddles:        pick(o.huddles, fakeHuddles{out: map[sim.HuddleID]*sim.Huddle{}}).(sim.HuddlesRepo),
-		Scenes:         pick(o.scenes, fakeScenes{out: map[sim.SceneID]*sim.Scene{}}).(sim.ScenesRepo),
-		Orders:         pick(o.orders, fakeOrders{out: map[sim.OrderID]*sim.Order{}}).(sim.OrdersRepo),
-		Environment:    pick(o.environment, fakeEnvironment{}).(sim.EnvironmentRepo),
-		Assets:         pick(o.assets, fakeAssets{out: map[sim.AssetID]*sim.Asset{}}).(sim.AssetsRepo),
-		Recipes:        pick(o.recipes, fakeRecipes{out: map[sim.ItemKind]*sim.ItemRecipe{}}).(sim.RecipesRepo),
-		ItemKinds:      pick(o.itemKinds, fakeItemKinds{out: map[sim.ItemKind]*sim.ItemKindDef{}}).(sim.ItemKindsRepo),
-		Terrain:        pick(o.terrain, fakeTerrain{out: &sim.Terrain{}}).(sim.TerrainRepo),
-		VillageObjects: pick(o.villageObjects, fakeVillageObjects{out: map[sim.VillageObjectID]*sim.VillageObject{}}).(sim.VillageObjectsRepo),
-		ActionLog:      fakeActionLog{},
-		TickTelemetry:  fakeTickTelemetry{},
+		Actors:               pick(o.actors, fakeActors{out: map[sim.ActorID]*sim.Actor{}}).(sim.ActorsRepo),
+		Structures:           pick(o.structures, fakeStructures{out: map[sim.StructureID]*sim.Structure{}}).(sim.StructuresRepo),
+		Huddles:              pick(o.huddles, fakeHuddles{out: map[sim.HuddleID]*sim.Huddle{}}).(sim.HuddlesRepo),
+		Scenes:               pick(o.scenes, fakeScenes{out: map[sim.SceneID]*sim.Scene{}}).(sim.ScenesRepo),
+		Orders:               pick(o.orders, fakeOrders{out: map[sim.OrderID]*sim.Order{}}).(sim.OrdersRepo),
+		Environment:          pick(o.environment, fakeEnvironment{}).(sim.EnvironmentRepo),
+		Assets:               pick(o.assets, fakeAssets{out: map[sim.AssetID]*sim.Asset{}}).(sim.AssetsRepo),
+		AttributeDefinitions: pick(o.attributeDefs, fakeAttributeDefinitions{out: map[string]*sim.AttributeDefinition{}}).(sim.AttributeDefinitionsRepo),
+		Recipes:              pick(o.recipes, fakeRecipes{out: map[sim.ItemKind]*sim.ItemRecipe{}}).(sim.RecipesRepo),
+		ItemKinds:            pick(o.itemKinds, fakeItemKinds{out: map[sim.ItemKind]*sim.ItemKindDef{}}).(sim.ItemKindsRepo),
+		Terrain:              pick(o.terrain, fakeTerrain{out: &sim.Terrain{}}).(sim.TerrainRepo),
+		VillageObjects:       pick(o.villageObjects, fakeVillageObjects{out: map[sim.VillageObjectID]*sim.VillageObject{}}).(sim.VillageObjectsRepo),
+		ActionLog:            fakeActionLog{},
+		TickTelemetry:        fakeTickTelemetry{},
 	}
 }
 
@@ -251,19 +262,20 @@ func TestLoadWorld_HappyPath(t *testing.T) {
 // repo's error is swallowed, World keeps NewWorld-empty defaults.
 func TestLoadWorld_NotImpl_Tolerated(t *testing.T) {
 	repo := sim.Repository{
-		Actors:         notImplActors{},
-		Structures:     fakeStructures{out: map[sim.StructureID]*sim.Structure{}},
-		Huddles:        fakeHuddles{out: map[sim.HuddleID]*sim.Huddle{}},
-		Scenes:         fakeScenes{out: map[sim.SceneID]*sim.Scene{}},
-		Orders:         fakeOrders{out: map[sim.OrderID]*sim.Order{}},
-		Environment:    fakeEnvironment{err: errNotImpl},
-		Assets:         notImplAssets{},
-		Recipes:        notImplRecipes{},
-		ItemKinds:      notImplItemKinds{},
-		Terrain:        notImplTerrain{},
-		VillageObjects: fakeVillageObjects{out: map[sim.VillageObjectID]*sim.VillageObject{}},
-		ActionLog:      notImplActionLog{},
-		TickTelemetry:  notImplTickTelemetry{},
+		Actors:               notImplActors{},
+		Structures:           fakeStructures{out: map[sim.StructureID]*sim.Structure{}},
+		Huddles:              fakeHuddles{out: map[sim.HuddleID]*sim.Huddle{}},
+		Scenes:               fakeScenes{out: map[sim.SceneID]*sim.Scene{}},
+		Orders:               fakeOrders{out: map[sim.OrderID]*sim.Order{}},
+		Environment:          fakeEnvironment{err: errNotImpl},
+		Assets:               notImplAssets{},
+		AttributeDefinitions: notImplAttributeDefinitions{},
+		Recipes:              notImplRecipes{},
+		ItemKinds:            notImplItemKinds{},
+		Terrain:              notImplTerrain{},
+		VillageObjects:       fakeVillageObjects{out: map[sim.VillageObjectID]*sim.VillageObject{}},
+		ActionLog:            notImplActionLog{},
+		TickTelemetry:        notImplTickTelemetry{},
 	}
 
 	w, err := LoadWorld(context.Background(), repo, false /*requireAllImpl*/)
@@ -282,19 +294,20 @@ func TestLoadWorld_NotImpl_Tolerated(t *testing.T) {
 // any notImpl repo trips a hard error naming the sub-repo.
 func TestLoadWorld_NotImpl_Required_HardFails(t *testing.T) {
 	repo := sim.Repository{
-		Actors:         notImplActors{},
-		Structures:     fakeStructures{out: map[sim.StructureID]*sim.Structure{}},
-		Huddles:        fakeHuddles{out: map[sim.HuddleID]*sim.Huddle{}},
-		Scenes:         fakeScenes{out: map[sim.SceneID]*sim.Scene{}},
-		Orders:         fakeOrders{out: map[sim.OrderID]*sim.Order{}},
-		Environment:    fakeEnvironment{},
-		Assets:         fakeAssets{out: map[sim.AssetID]*sim.Asset{}},
-		Recipes:        fakeRecipes{out: map[sim.ItemKind]*sim.ItemRecipe{}},
-		ItemKinds:      fakeItemKinds{out: map[sim.ItemKind]*sim.ItemKindDef{}},
-		Terrain:        fakeTerrain{out: &sim.Terrain{}},
-		VillageObjects: fakeVillageObjects{out: map[sim.VillageObjectID]*sim.VillageObject{}},
-		ActionLog:      fakeActionLog{},
-		TickTelemetry:  fakeTickTelemetry{},
+		Actors:               notImplActors{},
+		Structures:           fakeStructures{out: map[sim.StructureID]*sim.Structure{}},
+		Huddles:              fakeHuddles{out: map[sim.HuddleID]*sim.Huddle{}},
+		Scenes:               fakeScenes{out: map[sim.SceneID]*sim.Scene{}},
+		Orders:               fakeOrders{out: map[sim.OrderID]*sim.Order{}},
+		Environment:          fakeEnvironment{},
+		Assets:               fakeAssets{out: map[sim.AssetID]*sim.Asset{}},
+		AttributeDefinitions: fakeAttributeDefinitions{out: map[string]*sim.AttributeDefinition{}},
+		Recipes:              fakeRecipes{out: map[sim.ItemKind]*sim.ItemRecipe{}},
+		ItemKinds:            fakeItemKinds{out: map[sim.ItemKind]*sim.ItemKindDef{}},
+		Terrain:              fakeTerrain{out: &sim.Terrain{}},
+		VillageObjects:       fakeVillageObjects{out: map[sim.VillageObjectID]*sim.VillageObject{}},
+		ActionLog:            fakeActionLog{},
+		TickTelemetry:        fakeTickTelemetry{},
 	}
 
 	_, err := LoadWorld(context.Background(), repo, true /*requireAllImpl*/)
@@ -838,19 +851,20 @@ func TestLoadWorld_ActorHuddleReconciliation_SkippedWhenHuddlesNotImpl(t *testin
 		CurrentHuddleID: "h-prev", // cached from previous run; Huddles can't be loaded
 	}
 	repo := sim.Repository{
-		Actors:         fakeActors{out: map[sim.ActorID]*sim.Actor{"act-1": actor}},
-		Structures:     fakeStructures{out: map[sim.StructureID]*sim.Structure{}},
-		Huddles:        fakeHuddles{err: errNotImpl}, // <-- notImpl
-		Scenes:         fakeScenes{out: map[sim.SceneID]*sim.Scene{}},
-		Orders:         fakeOrders{out: map[sim.OrderID]*sim.Order{}},
-		Environment:    fakeEnvironment{},
-		Assets:         fakeAssets{out: map[sim.AssetID]*sim.Asset{}},
-		Recipes:        fakeRecipes{out: map[sim.ItemKind]*sim.ItemRecipe{}},
-		ItemKinds:      fakeItemKinds{out: map[sim.ItemKind]*sim.ItemKindDef{}},
-		Terrain:        fakeTerrain{out: &sim.Terrain{}},
-		VillageObjects: fakeVillageObjects{out: map[sim.VillageObjectID]*sim.VillageObject{}},
-		ActionLog:      fakeActionLog{},
-		TickTelemetry:  fakeTickTelemetry{},
+		Actors:               fakeActors{out: map[sim.ActorID]*sim.Actor{"act-1": actor}},
+		Structures:           fakeStructures{out: map[sim.StructureID]*sim.Structure{}},
+		Huddles:              fakeHuddles{err: errNotImpl}, // <-- notImpl
+		Scenes:               fakeScenes{out: map[sim.SceneID]*sim.Scene{}},
+		Orders:               fakeOrders{out: map[sim.OrderID]*sim.Order{}},
+		Environment:          fakeEnvironment{},
+		Assets:               fakeAssets{out: map[sim.AssetID]*sim.Asset{}},
+		AttributeDefinitions: fakeAttributeDefinitions{out: map[string]*sim.AttributeDefinition{}},
+		Recipes:              fakeRecipes{out: map[sim.ItemKind]*sim.ItemRecipe{}},
+		ItemKinds:            fakeItemKinds{out: map[sim.ItemKind]*sim.ItemKindDef{}},
+		Terrain:              fakeTerrain{out: &sim.Terrain{}},
+		VillageObjects:       fakeVillageObjects{out: map[sim.VillageObjectID]*sim.VillageObject{}},
+		ActionLog:            fakeActionLog{},
+		TickTelemetry:        fakeTickTelemetry{},
 	}
 	w, err := LoadWorld(context.Background(), repo, false /*requireAllImpl*/)
 	if err != nil {
@@ -876,19 +890,20 @@ func TestLoadWorld_ActorStructureRefs_SkippedWhenStructuresNotImpl(t *testing.T)
 		InsideRoomID:      42,
 	}
 	repo := sim.Repository{
-		Actors:         fakeActors{out: map[sim.ActorID]*sim.Actor{"act-1": actor}},
-		Structures:     fakeStructures{err: errNotImpl}, // <-- notImpl
-		Huddles:        fakeHuddles{out: map[sim.HuddleID]*sim.Huddle{}},
-		Scenes:         fakeScenes{out: map[sim.SceneID]*sim.Scene{}},
-		Orders:         fakeOrders{out: map[sim.OrderID]*sim.Order{}},
-		Environment:    fakeEnvironment{},
-		Assets:         fakeAssets{out: map[sim.AssetID]*sim.Asset{}},
-		Recipes:        fakeRecipes{out: map[sim.ItemKind]*sim.ItemRecipe{}},
-		ItemKinds:      fakeItemKinds{out: map[sim.ItemKind]*sim.ItemKindDef{}},
-		Terrain:        fakeTerrain{out: &sim.Terrain{}},
-		VillageObjects: fakeVillageObjects{out: map[sim.VillageObjectID]*sim.VillageObject{}},
-		ActionLog:      fakeActionLog{},
-		TickTelemetry:  fakeTickTelemetry{},
+		Actors:               fakeActors{out: map[sim.ActorID]*sim.Actor{"act-1": actor}},
+		Structures:           fakeStructures{err: errNotImpl}, // <-- notImpl
+		Huddles:              fakeHuddles{out: map[sim.HuddleID]*sim.Huddle{}},
+		Scenes:               fakeScenes{out: map[sim.SceneID]*sim.Scene{}},
+		Orders:               fakeOrders{out: map[sim.OrderID]*sim.Order{}},
+		Environment:          fakeEnvironment{},
+		Assets:               fakeAssets{out: map[sim.AssetID]*sim.Asset{}},
+		AttributeDefinitions: fakeAttributeDefinitions{out: map[string]*sim.AttributeDefinition{}},
+		Recipes:              fakeRecipes{out: map[sim.ItemKind]*sim.ItemRecipe{}},
+		ItemKinds:            fakeItemKinds{out: map[sim.ItemKind]*sim.ItemKindDef{}},
+		Terrain:              fakeTerrain{out: &sim.Terrain{}},
+		VillageObjects:       fakeVillageObjects{out: map[sim.VillageObjectID]*sim.VillageObject{}},
+		ActionLog:            fakeActionLog{},
+		TickTelemetry:        fakeTickTelemetry{},
 	}
 	if _, err := LoadWorld(context.Background(), repo, false /*requireAllImpl*/); err != nil {
 		t.Errorf("LoadWorld should tolerate actor structure refs when Structures notImpl: %v", err)
@@ -905,19 +920,20 @@ func TestLoadWorld_ActorReconciliation_SkippedWhenActorsNotImpl(t *testing.T) {
 		ID: "h-a", Members: map[sim.ActorID]struct{}{"act-ghost": {}}, StartedAt: startedAt,
 	}
 	repo := sim.Repository{
-		Actors:         notImplActors{}, // <-- notImpl, reconciliation must skip
-		Structures:     fakeStructures{out: map[sim.StructureID]*sim.Structure{}},
-		Huddles:        fakeHuddles{out: map[sim.HuddleID]*sim.Huddle{"h-a": huddle}},
-		Scenes:         fakeScenes{out: map[sim.SceneID]*sim.Scene{}},
-		Orders:         fakeOrders{out: map[sim.OrderID]*sim.Order{}},
-		Environment:    fakeEnvironment{},
-		Assets:         fakeAssets{out: map[sim.AssetID]*sim.Asset{}},
-		Recipes:        fakeRecipes{out: map[sim.ItemKind]*sim.ItemRecipe{}},
-		ItemKinds:      fakeItemKinds{out: map[sim.ItemKind]*sim.ItemKindDef{}},
-		Terrain:        fakeTerrain{out: &sim.Terrain{}},
-		VillageObjects: fakeVillageObjects{out: map[sim.VillageObjectID]*sim.VillageObject{}},
-		ActionLog:      fakeActionLog{},
-		TickTelemetry:  fakeTickTelemetry{},
+		Actors:               notImplActors{}, // <-- notImpl, reconciliation must skip
+		Structures:           fakeStructures{out: map[sim.StructureID]*sim.Structure{}},
+		Huddles:              fakeHuddles{out: map[sim.HuddleID]*sim.Huddle{"h-a": huddle}},
+		Scenes:               fakeScenes{out: map[sim.SceneID]*sim.Scene{}},
+		Orders:               fakeOrders{out: map[sim.OrderID]*sim.Order{}},
+		Environment:          fakeEnvironment{},
+		Assets:               fakeAssets{out: map[sim.AssetID]*sim.Asset{}},
+		AttributeDefinitions: fakeAttributeDefinitions{out: map[string]*sim.AttributeDefinition{}},
+		Recipes:              fakeRecipes{out: map[sim.ItemKind]*sim.ItemRecipe{}},
+		ItemKinds:            fakeItemKinds{out: map[sim.ItemKind]*sim.ItemKindDef{}},
+		Terrain:              fakeTerrain{out: &sim.Terrain{}},
+		VillageObjects:       fakeVillageObjects{out: map[sim.VillageObjectID]*sim.VillageObject{}},
+		ActionLog:            fakeActionLog{},
+		TickTelemetry:        fakeTickTelemetry{},
 	}
 
 	if _, err := LoadWorld(context.Background(), repo, false); err != nil {
