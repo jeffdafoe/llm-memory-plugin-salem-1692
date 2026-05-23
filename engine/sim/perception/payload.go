@@ -151,6 +151,12 @@ type Payload struct {
 	// Ordering: sorted by Order.ID for determinism.
 	PendingDeliveriesToMe []OrderView
 
+	// RecoveryOptions surfaces how a tired-or-homeless actor could rest —
+	// free tiredness-bearing objects (shade trees) and inns to rent a room.
+	// nil when the actor isn't tired/homeless or no options exist (the
+	// homeless arm fires every tick — the lodging bootstrap cue). ZBBS-HOME-297.
+	RecoveryOptions *RecoveryOptionsView
+
 	// SelectionReason is a human-readable explanation of how Primary was
 	// chosen (or why it wasn't) — debug/test output only, never prompt
 	// content.
