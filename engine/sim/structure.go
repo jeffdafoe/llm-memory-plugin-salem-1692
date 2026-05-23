@@ -3,11 +3,10 @@ package sim
 // StructureID identifies a building or named location in the world.
 type StructureID string
 
-// Position is an X/Y grid coordinate on the village terrain.
-type Position struct {
-	X int
-	Y int
-}
+// Position is an X/Y grid (tile) coordinate on the village terrain. Alias of
+// the canonical TilePos (geom.go) — retained as a name during the
+// coordinate-type migration so existing call sites compile unchanged.
+type Position = TilePos
 
 // Structure is a building or named location. Loiter slots and asset
 // placement details are ported when those subsystems land.
