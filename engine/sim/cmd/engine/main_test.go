@@ -102,14 +102,15 @@ func TestRun_LifecycleAndFinalCheckpoint(t *testing.T) {
 	}
 }
 
-// TestRun_WiresOffWorldCascades proves run() actually wires the off-world LLM
-// cascade subscribers (RegisterActionLog / RegisterAtmosphere /
-// RegisterConsolidation) into the live runtime — the seam build-checking can't
-// catch. Atmosphere is the witness: it fires an immediate first sweep on
-// register that calls the LLM unconditionally (world-level, not candidate-gated
-// like consolidation, which makes no call on an empty world). So if
-// RegisterAtmosphere weren't reached, Environment.Atmosphere would stay empty.
-// We script one atmosphere line and assert it gets installed after boot.
+// TestRun_WiresOffWorldCascades proves run() reaches the off-world LLM cascade
+// set (RegisterProductionCascades wires atmosphere / consolidation / narrative
+// consolidation / noticeboard + the ActionLog substrate) into the live runtime
+// — the seam build-checking can't catch. Atmosphere is the witness: its
+// immediate first sweep calls the LLM unconditionally (world-level, not
+// candidate-gated like the consolidations, which make no call on an empty
+// world). So if RegisterProductionCascades weren't reached, Environment.
+// Atmosphere would stay empty. We script one atmosphere line and assert it gets
+// installed after boot.
 func TestRun_WiresOffWorldCascades(t *testing.T) {
 	repo, _ := mem.NewRepository()
 	world, err := sim.LoadWorld(context.Background(), repo)
