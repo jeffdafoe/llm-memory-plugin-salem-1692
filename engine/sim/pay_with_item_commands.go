@@ -522,13 +522,20 @@ func runPayWithItemFastPath(
 	// so we subtract outstandingReadyOrderQty before comparing against
 	// `needed` — otherwise two concurrent fast-path accepts against the
 	// same physical stew could both pass and only one could deliver.
-	reserved := outstandingReadyOrderQty(w, seller.ID, kind)
-	available := seller.Inventory[kind] - reserved
-	if available < needed {
-		return nil, fmt.Errorf(
-			"%s doesn't have enough %s (have %d, reserved %d, need %d)",
-			seller.DisplayName, kind, seller.Inventory[kind], reserved, needed,
-		)
+	//
+	// "service"-capability items (e.g. nights_stay) carry no inventory —
+	// they're infinite-stock, so the stock check is skipped (ZBBS-HOME-296).
+	// Must match the slow-path skip in acceptPendingOffer's gate 10 so a
+	// service item that fast-paths can't later hit a stock reject there.
+	if !itemHasCapability(w, kind, "service") {
+		reserved := outstandingReadyOrderQty(w, seller.ID, kind)
+		available := seller.Inventory[kind] - reserved
+		if available < needed {
+			return nil, fmt.Errorf(
+				"%s doesn't have enough %s (have %d, reserved %d, need %d)",
+				seller.DisplayName, kind, seller.Inventory[kind], reserved, needed,
+			)
+		}
 	}
 	if !buyerCanAfford(buyer, amount) {
 		return nil, fmt.Errorf(
@@ -757,22 +764,29 @@ func acceptPendingOffer(w *World, seller *Actor, entry *PayLedgerEntry, at time.
 		}
 	}
 
-	// Gate 10: stock.
-	effectiveConsumers := effectivePayConsumerCount(entry.ConsumerIDs)
-	// Defensive overflow guard — entry.Qty was capped at intake,
-	// but a future repo could load entries with whatever shape;
-	// re-check before the multiplication.
-	if effectiveConsumers > 0 && entry.Qty > math.MaxInt/effectiveConsumers {
-		return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedUnavailable, "", at), nil
-	}
-	needed := entry.Qty * effectiveConsumers
-	// Stock reservation accounting (PR S6 R1 code_review fix):
-	// subtract Ready-Order obligations on this seller+item so
-	// two pending offers against the same physical stock cannot
-	// both accept. See outstandingReadyOrderQty in order.go.
-	reserved := outstandingReadyOrderQty(w, seller.ID, entry.ItemKind)
-	if seller.Inventory[entry.ItemKind]-reserved < needed {
-		return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedInsufficientStock, "", at), nil
+	// Gate 10: stock. Skipped for "service"-capability items (e.g.
+	// nights_stay), which carry no inventory — infinite-stock
+	// (ZBBS-HOME-296). Must mirror the fast-path skip in
+	// runPayWithItemFastPath so the two paths agree. Funds (gate 11),
+	// co-presence, catalog, TTL, and counter-chain gates all still run
+	// for service items — only the stock/inventory check is bypassed.
+	if !itemHasCapability(w, entry.ItemKind, "service") {
+		effectiveConsumers := effectivePayConsumerCount(entry.ConsumerIDs)
+		// Defensive overflow guard — entry.Qty was capped at intake,
+		// but a future repo could load entries with whatever shape;
+		// re-check before the multiplication.
+		if effectiveConsumers > 0 && entry.Qty > math.MaxInt/effectiveConsumers {
+			return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedUnavailable, "", at), nil
+		}
+		needed := entry.Qty * effectiveConsumers
+		// Stock reservation accounting (PR S6 R1 code_review fix):
+		// subtract Ready-Order obligations on this seller+item so
+		// two pending offers against the same physical stock cannot
+		// both accept. See outstandingReadyOrderQty in order.go.
+		reserved := outstandingReadyOrderQty(w, seller.ID, entry.ItemKind)
+		if seller.Inventory[entry.ItemKind]-reserved < needed {
+			return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedInsufficientStock, "", at), nil
+		}
 	}
 
 	// Gate 11: funds. buyerCanAfford is the shared predicate; the
@@ -1338,16 +1352,25 @@ func commitPayTransfer(
 				// in the huddle. Conservative skip.
 				continue
 			}
-			have := seller.Inventory[entry.ItemKind]
-			if have < entry.Qty {
-				// Defensive — gate 10 ensured `seller.Inventory[kind]
-				// >= Qty * effectiveConsumers`. If a subscriber fired
-				// mid-loop somehow drained inventory, abort transfer.
-				return fmt.Errorf("commitPayTransfer: seller %q inventory drained mid-commit", seller.ID)
-			}
-			seller.Inventory[entry.ItemKind] = have - entry.Qty
-			if seller.Inventory[entry.ItemKind] == 0 {
-				delete(seller.Inventory, entry.ItemKind)
+			// "service"-capability items (e.g. nights_stay) carry no
+			// inventory — infinite-stock, so there's nothing to deplete
+			// (ZBBS-HOME-296; mirrors the gate-10 stock skip). Without this
+			// guard a consume_now service offer would trip the drained-
+			// inventory error below. Lodging is always ConsumeNow=false (it
+			// mints an Order), so this guard is defensive for the unusual
+			// consume_now+service combo, not a lodging path.
+			if !itemHasCapability(w, entry.ItemKind, "service") {
+				have := seller.Inventory[entry.ItemKind]
+				if have < entry.Qty {
+					// Defensive — gate 10 ensured `seller.Inventory[kind]
+					// >= Qty * effectiveConsumers`. If a subscriber fired
+					// mid-loop somehow drained inventory, abort transfer.
+					return fmt.Errorf("commitPayTransfer: seller %q inventory drained mid-commit", seller.ID)
+				}
+				seller.Inventory[entry.ItemKind] = have - entry.Qty
+				if seller.Inventory[entry.ItemKind] == 0 {
+					delete(seller.Inventory, entry.ItemKind)
+				}
 			}
 			applied := applyConsumeSatisfactions(consumer, def, entry.Qty)
 			structureID := findNearestVillageObject(w, float64(consumer.CurrentX), float64(consumer.CurrentY))
