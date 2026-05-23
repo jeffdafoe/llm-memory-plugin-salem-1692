@@ -102,6 +102,22 @@ const MaxPayMessageRunes = 220
 // turnover.
 const PayLedgerInResponseToWindow = 1 * time.Hour
 
+// MaxPayCounterChainDepth bounds how deep a buyer↔seller counter chain
+// may go. The initial offer is depth 0; each buyer in_response_to
+// response increments depth (parent.Depth + 1). A parent already at this
+// depth can't be responded to, so the chain tops out at 3 rounds of
+// countering — matching v1's cap (bound escalation so an LLM buyer and
+// seller can't haggle unboundedly).
+//
+// v1 also dropped counter_pay from the seller's toolset once the chain
+// reached the cap. That seller-side prompt gating belongs to the v2
+// deliberation-prompt surface, which isn't built yet — so this
+// buyer-side gate in validateInResponseTo is what actually bounds the
+// chain today. (Without toolset gating a seller can still emit one final
+// counter on a depth-cap offer, but the buyer can't respond to it, so the
+// chain still terminates.)
+const MaxPayCounterChainDepth = 3
+
 // PayWithItemResult is the value returned by the PayWithItem Command Fn.
 // The handler narrates LedgerID + State back to the LLM so the model has
 // a stable identifier to reference in a follow-up tool call (acceptance
@@ -1147,6 +1163,15 @@ func validateInResponseTo(w *World, parentID LedgerID, buyerID, sellerID ActorID
 		return fmt.Errorf(
 			"in_response_to: ledger %d's counter is too old (older than %s) — make a fresh offer instead.",
 			parentID, PayLedgerInResponseToWindow,
+		)
+	}
+	// Depth cap. The response this validates would be at parent.Depth+1;
+	// a parent already at MaxPayCounterChainDepth can't be answered, which
+	// bounds the haggle chain. See MaxPayCounterChainDepth.
+	if parent.Depth >= MaxPayCounterChainDepth {
+		return fmt.Errorf(
+			"in_response_to: ledger %d is at the counter-chain depth limit (%d rounds) — make a fresh offer instead of haggling further.",
+			parentID, MaxPayCounterChainDepth,
 		)
 	}
 	// Parent-uniqueness scan (ledger-substrate § 6 — O(N) over

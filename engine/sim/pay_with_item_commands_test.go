@@ -613,6 +613,22 @@ func TestPayWithItem_InResponseTo_Gates(t *testing.T) {
 			},
 			want: "already been answered",
 		},
+		{
+			name: "depth_cap",
+			setup: func(t *testing.T, w *sim.World) {
+				// Parent already at the chain depth limit — a response
+				// would push past MaxPayCounterChainDepth.
+				seedLedgerEntry(t, w, sim.PayLedgerEntry{
+					ID: 99, BuyerID: "alice", SellerID: "bob",
+					ItemKind: "stew", Qty: 1, Amount: 4,
+					State:      sim.PayLedgerStateCountered,
+					ResolvedAt: at.Add(-time.Minute),
+					Depth:      sim.MaxPayCounterChainDepth,
+					SceneID:    "sc1", HuddleID: "h1",
+				})
+			},
+			want: "depth limit",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
