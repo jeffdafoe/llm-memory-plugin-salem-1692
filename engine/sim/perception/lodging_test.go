@@ -1,6 +1,7 @@
 package perception
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -30,7 +31,7 @@ func ledgerAccess(roomID sim.RoomID, d time.Duration) *sim.RoomAccess {
 func lodgingSnap(subj *sim.ActorSnapshot, structures map[sim.StructureID]*sim.Structure, others ...*sim.ActorSnapshot) *sim.Snapshot {
 	actors := map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj}
 	for i, o := range others {
-		actors[sim.ActorID("other"+string(rune('a'+i)))] = o
+		actors[sim.ActorID(fmt.Sprintf("other%d", i))] = o
 	}
 	return &sim.Snapshot{
 		PublishedAt: lodgingNow,
