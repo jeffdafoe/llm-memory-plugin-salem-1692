@@ -1,7 +1,5 @@
 package sim
 
-import "math"
-
 // Terrain — in-memory port of village_terrain.go data shape.
 //
 // The terrain is a fixed-size grid of bytes (one byte per tile) loaded
@@ -42,33 +40,26 @@ type Terrain struct {
 	Data []byte // length MapW * MapH; one tile per byte
 }
 
-// GridPoint is an internal-grid tile coordinate (NOT world-pixel).
-type GridPoint struct {
-	X int
-	Y int
-}
+// GridPoint is an internal-grid tile coordinate (NOT world-pixel). Alias of
+// the canonical TilePos (geom.go) — kept as a name during the coordinate-type
+// migration so existing pathfinding call sites compile unchanged.
+type GridPoint = TilePos
 
-// PathPoint is a world-pixel waypoint along a broadcast path.
-type PathPoint struct {
-	X float64 `json:"x"`
-	Y float64 `json:"y"`
-}
+// PathPoint is a world-pixel waypoint along a broadcast path. Alias of the
+// canonical WorldPos (geom.go).
+type PathPoint = WorldPos
 
-// WorldToTile converts a world-pixel (wx, wy) to internal-grid tile
-// coords. Uses floor so any point within a tile's footprint maps to
-// that tile.
+// WorldToTile converts a world-pixel (wx, wy) to internal-grid tile coords.
+// Thin wrapper over WorldPos.Tile() (geom.go) — single source of the floor
+// formula. Retained for the existing positional callers; new code can use the
+// method directly.
 func WorldToTile(wx, wy float64) GridPoint {
-	return GridPoint{
-		X: PadX + int(math.Floor(wx/TileSize)),
-		Y: PadY + int(math.Floor(wy/TileSize)),
-	}
+	return WorldPos{X: wx, Y: wy}.Tile()
 }
 
-// TileToWorld returns the CENTER of a tile in world-pixel coords. The
-// center is what NPCs walk toward — keeps them visually on the tile.
+// TileToWorld returns the CENTER of a tile in world-pixel coords. The center
+// is what NPCs walk toward — keeps them visually on the tile. Thin wrapper
+// over TilePos.Center() (geom.go).
 func TileToWorld(g GridPoint) PathPoint {
-	return PathPoint{
-		X: float64(g.X-PadX)*TileSize + TileSize/2,
-		Y: float64(g.Y-PadY)*TileSize + TileSize/2,
-	}
+	return g.Center()
 }
