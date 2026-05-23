@@ -196,8 +196,13 @@ func LoadWorld(ctx context.Context, repo sim.Repository, requireAllImpl bool) (*
 		w.Settings = settings
 	}
 
-	assets, assetsErr := repo.Assets.LoadAll(ctx)
-	loaded, err = handleNotImpl("Assets", assetsErr, requireAllImpl)
+	// Reference catalogs go through loadOptionalCatalog, which nil-guards the
+	// sub-repo before calling LoadAll (a nil field in a partial repo
+	// construction is treated as notImpl rather than panicking — the failure
+	// class behind ZBBS-HOME-294; code_review #1). The gated core aggregates
+	// above (Actors/Structures/Huddles) keep their inline form because their
+	// `loaded` bool drives the carry-forward reconciliations.
+	assets, loaded, err := loadOptionalCatalog[sim.AssetID, sim.Asset](ctx, "Assets", repo.Assets, requireAllImpl)
 	if err != nil {
 		return nil, err
 	}
@@ -205,8 +210,7 @@ func LoadWorld(ctx context.Context, repo sim.Repository, requireAllImpl bool) (*
 		w.Assets = assets
 	}
 
-	sprites, spritesErr := repo.Sprites.LoadAll(ctx)
-	loaded, err = handleNotImpl("Sprites", spritesErr, requireAllImpl)
+	sprites, loaded, err := loadOptionalCatalog[sim.SpriteID, sim.Sprite](ctx, "Sprites", repo.Sprites, requireAllImpl)
 	if err != nil {
 		return nil, err
 	}
@@ -214,8 +218,7 @@ func LoadWorld(ctx context.Context, repo sim.Repository, requireAllImpl bool) (*
 		w.Sprites = sprites
 	}
 
-	attributeDefinitions, attributeDefinitionsErr := repo.AttributeDefinitions.LoadAll(ctx)
-	loaded, err = handleNotImpl("AttributeDefinitions", attributeDefinitionsErr, requireAllImpl)
+	attributeDefinitions, loaded, err := loadOptionalCatalog[string, sim.AttributeDefinition](ctx, "AttributeDefinitions", repo.AttributeDefinitions, requireAllImpl)
 	if err != nil {
 		return nil, err
 	}
@@ -223,8 +226,7 @@ func LoadWorld(ctx context.Context, repo sim.Repository, requireAllImpl bool) (*
 		w.AttributeDefinitions = attributeDefinitions
 	}
 
-	recipes, recipesErr := repo.Recipes.LoadAll(ctx)
-	loaded, err = handleNotImpl("Recipes", recipesErr, requireAllImpl)
+	recipes, loaded, err := loadOptionalCatalog[sim.ItemKind, sim.ItemRecipe](ctx, "Recipes", repo.Recipes, requireAllImpl)
 	if err != nil {
 		return nil, err
 	}
@@ -232,8 +234,7 @@ func LoadWorld(ctx context.Context, repo sim.Repository, requireAllImpl bool) (*
 		w.Recipes = recipes
 	}
 
-	itemKinds, itemKindsErr := repo.ItemKinds.LoadAll(ctx)
-	loaded, err = handleNotImpl("ItemKinds", itemKindsErr, requireAllImpl)
+	itemKinds, loaded, err := loadOptionalCatalog[sim.ItemKind, sim.ItemKindDef](ctx, "ItemKinds", repo.ItemKinds, requireAllImpl)
 	if err != nil {
 		return nil, err
 	}
@@ -241,7 +242,15 @@ func LoadWorld(ctx context.Context, repo sim.Repository, requireAllImpl bool) (*
 		w.ItemKinds = itemKinds
 	}
 
-	terrain, terrainErr := repo.Terrain.Load(ctx)
+	// Terrain is a reference loader too but uses Load (single row), not the
+	// map-returning LoadAll, so it gets the same nil-guard inline.
+	var terrain *sim.Terrain
+	var terrainErr error
+	if repo.Terrain == nil {
+		terrainErr = errNotImpl
+	} else {
+		terrain, terrainErr = repo.Terrain.Load(ctx)
+	}
 	loaded, err = handleNotImpl("Terrain", terrainErr, requireAllImpl)
 	if err != nil {
 		return nil, err
@@ -336,6 +345,39 @@ func handleNotImpl(repoName string, err error, requireAllImpl bool) (bool, error
 		return false, nil
 	}
 	return false, fmt.Errorf("pg LoadWorld: %s sub-repo load: %w", repoName, err)
+}
+
+// loadOptionalCatalog loads a map-returning reference catalog through the
+// notImpl-tolerance contract, nil-guarding the sub-repo first. A nil repo —
+// an unset field in a partial sim.Repository construction, e.g. a test that
+// doesn't wire every catalog — is treated as notImpl rather than panicking on
+// the LoadAll call before handleNotImpl can tolerate it. That raw nil panic is
+// the failure class that orphaned an embedded-postgres cluster behind
+// ZBBS-HOME-294 (a test repo missing the then-new AttributeDefinitions field);
+// code_review #1 flagged the call site as adding another instance of it. The
+// nil interface check suffices here: every constructor leaves an unwired
+// sub-repo as a nil interface (no constructor stores a typed-nil concrete).
+//
+// Returns the loaded map (nil when not loaded) plus the handleNotImpl
+// (loaded, err) pair, so the caller keeps the existing `if loaded { w.X = ... }`
+// shape. Used for the ungated reference catalogs (Assets / Sprites /
+// AttributeDefinitions / Recipes / ItemKinds); the gated core aggregates keep
+// their inline form because their loaded bool drives carry-forwards.
+func loadOptionalCatalog[K comparable, V any](
+	ctx context.Context,
+	name string,
+	repo interface {
+		LoadAll(context.Context) (map[K]*V, error)
+	},
+	requireAllImpl bool,
+) (map[K]*V, bool, error) {
+	if repo == nil {
+		loaded, err := handleNotImpl(name, errNotImpl, requireAllImpl)
+		return nil, loaded, err
+	}
+	out, loadErr := repo.LoadAll(ctx)
+	loaded, err := handleNotImpl(name, loadErr, requireAllImpl)
+	return out, loaded, err
 }
 
 // checkBridgeInvariant verifies Slice 12's shared-identity bridge: every

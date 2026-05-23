@@ -123,6 +123,11 @@ func startEmbeddedPostgres() {
 	// delete a concurrent run's live RuntimePath).
 	epgRuntimePath, err = os.MkdirTemp("", "salem-smoke-pgruntime-")
 	if err != nil {
+		// Don't leak the data dir created just above on this early return
+		// (TestMain cleanup only runs on a normal m.Run() return; this is
+		// startEmbeddedPostgres's own failure path). code_review #6.
+		_ = os.RemoveAll(epgDataPath)
+		epgDataPath = ""
 		epgErr = fmt.Errorf("temp runtime dir: %w", err)
 		return
 	}
@@ -145,6 +150,14 @@ func startEmbeddedPostgres() {
 		RuntimePath(epgRuntimePath)
 	epg = embeddedpostgres.NewDatabase(cfg)
 	if err := epg.Start(); err != nil {
+		// Remove both temp dirs now so repeated failed starts don't
+		// accumulate junk (TestMain won't reach them via epg.Stop — epg is
+		// nilled — and the dir vars are cleared so its os.RemoveAll guards
+		// no-op). code_review #6.
+		_ = os.RemoveAll(epgDataPath)
+		_ = os.RemoveAll(epgRuntimePath)
+		epgDataPath = ""
+		epgRuntimePath = ""
 		epgErr = fmt.Errorf("embedded-postgres start: %w", err)
 		epg = nil
 		return

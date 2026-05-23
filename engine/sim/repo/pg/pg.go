@@ -24,14 +24,13 @@ type Pool interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
-// NewRepository wires a sim.Repository where Orders is the pg impl and
-// every other sub-repo is notImpl. Slice 5 ships Orders only; other
-// aggregates land as their pg-impl slices arrive. Begin returns a
-// pgx.Tx wrapped as sim.Tx.
-//
-// Future slices replace notImpl stubs in-place (or via a richer
-// constructor that accepts opts) — the shape established here is the
-// pattern other aggregates follow.
+// NewRepository wires a sim.Repository with the pg implementation of every
+// load/checkpoint sub-repo (all aggregate slices have landed). Begin returns a
+// pgx.Tx wrapped as sim.Tx. The only remaining stubs are the write-only event
+// sinks ActionLog + TickTelemetry — notImpl until the cutover wires their
+// durable projections; LoadWorld never reads them, so the requireAllImpl gate
+// passes. The notImplXxx types kept in this file back load_world_test.go's
+// notImpl-tolerance tests, not production wiring.
 func NewRepository(pool Pool) sim.Repository {
 	return sim.Repository{
 		Actors:               &ActorsRepo{pool: pool},
