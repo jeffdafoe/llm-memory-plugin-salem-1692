@@ -23,11 +23,16 @@ import (
 // flip — e.g. a lamp lighting at dusk), OBJECT REPOSITION/DELETE
 // (VillageObjectMoved → object_moved and VillageObjectDeleted → object_deleted,
 // the admin object write routes — a deleted object's cascade-removed overlays
-// each emit their own object_deleted). Per-tile ActorMoved is deliberately NOT
-// mapped — it stays internal; nor are spawn/despawn or object create (no sim
-// bus source until those write routes exist). An unmapped event returns
-// ok=false and is dropped, so adding cases later needs no change here or in the
-// hub. Wire shapes: shared/notes/codebase/salem-engine-v2/client-contract.
+// each emit their own object_deleted), and PAY-WITH-ITEM COMMERCE
+// (PayOfferReceived → pay_offer, PayCountered → pay_countered,
+// PayWithItemResolved → pay_resolved — the buyer-initiated offer lifecycle a PC
+// buyer drives via pc/pay and observes resolve; scoped client-side off huddle_id
+// like npc_spoke, since the hub broadcasts every frame to every viewer).
+// Per-tile ActorMoved is deliberately NOT mapped — it stays internal; nor are
+// spawn/despawn or object create (no sim bus source until those write routes
+// exist). An unmapped event returns ok=false and is dropped, so adding cases
+// later needs no change here or in the hub. Wire shapes:
+// shared/notes/codebase/salem-engine-v2/client-contract.
 
 // TranslateEvent maps a sim.Event to a client WireFrame. ok=false drops the
 // event (the common case — most bus events are engine-internal). Pure and
@@ -129,6 +134,47 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			LoiterOffsetY:          e.LoiterOffsetY,
 			EffectiveLoiterOffsetX: e.EffectiveLoiterOffsetX,
 			EffectiveLoiterOffsetY: e.EffectiveLoiterOffsetY,
+		}}, true
+	case *sim.PayOfferReceived:
+		return WireFrame{Type: "pay_offer", Data: payOfferWireDTO{
+			LedgerID:   uint64(e.LedgerID),
+			BuyerID:    string(e.BuyerID),
+			SellerID:   string(e.SellerID),
+			Item:       string(e.ItemKind),
+			Qty:        e.QtyPerConsumer,
+			Amount:     e.Amount,
+			ConsumeNow: e.ConsumeNow,
+			HuddleID:   string(e.HuddleID),
+			SceneID:    string(e.SceneID),
+			At:         e.At.UTC().Format(time.RFC3339),
+		}}, true
+	case *sim.PayCountered:
+		return WireFrame{Type: "pay_countered", Data: payCounteredWireDTO{
+			LedgerID:       uint64(e.ParentID),
+			BuyerID:        string(e.BuyerID),
+			SellerID:       string(e.SellerID),
+			Item:           string(e.ItemKind),
+			Qty:            e.QtyPerConsumer,
+			OriginalAmount: e.OriginalAmount,
+			CounterAmount:  e.CounterAmount,
+			Message:        e.Message,
+			HuddleID:       string(e.HuddleID),
+			SceneID:        string(e.SceneID),
+			At:             e.At.UTC().Format(time.RFC3339),
+		}}, true
+	case *sim.PayWithItemResolved:
+		return WireFrame{Type: "pay_resolved", Data: payResolvedWireDTO{
+			LedgerID:      uint64(e.LedgerID),
+			BuyerID:       string(e.BuyerID),
+			SellerID:      string(e.SellerID),
+			Item:          string(e.ItemKind),
+			Qty:           e.QtyPerConsumer,
+			Amount:        e.Amount,
+			TerminalState: string(e.TerminalState),
+			Message:       e.Message,
+			HuddleID:      string(e.HuddleID),
+			SceneID:       string(e.SceneID),
+			At:            e.At.UTC().Format(time.RFC3339),
 		}}, true
 	default:
 		return WireFrame{}, false
@@ -288,4 +334,72 @@ type objectLoiterOffsetChangedWireDTO struct {
 	LoiterOffsetY          *int   `json:"loiter_offset_y"`
 	EffectiveLoiterOffsetX int    `json:"effective_loiter_offset_x"`
 	EffectiveLoiterOffsetY int    `json:"effective_loiter_offset_y"`
+}
+
+// payOfferWireDTO is the pay_offer payload — a buyer (PC or NPC) has
+// staked a pending pay-with-item offer on a seller. The client renders it
+// as an offer notice scoped to huddle_id (same client-side scoping model
+// as npc_spoke; the hub broadcasts to every viewer and the client decides
+// what to surface). buyer_id / seller_id are actor ids the client
+// resolves to display names from its roster. ledger_id correlates this
+// offer with the later pay_countered / pay_resolved frame. amount is the
+// offered coin total; qty is per-consumer item count; consume_now
+// distinguishes eat-now from a take-home order. Only the slow path emits
+// this — a quote fast-path match resolves instantly and emits pay_resolved
+// directly. No coins move on a pay_offer (pending reserves nothing).
+type payOfferWireDTO struct {
+	LedgerID   uint64 `json:"ledger_id"`
+	BuyerID    string `json:"buyer_id"`
+	SellerID   string `json:"seller_id"`
+	Item       string `json:"item"`
+	Qty        int    `json:"qty"`
+	Amount     int    `json:"amount"`
+	ConsumeNow bool   `json:"consume_now"`
+	HuddleID   string `json:"huddle_id,omitempty"`
+	SceneID    string `json:"scene_id,omitempty"`
+	At         string `json:"at"`
+}
+
+// payCounteredWireDTO is the pay_countered payload — the seller proposed
+// counter terms on a pending offer (the commerce is NOT ended; the buyer
+// may respond with a fresh in_response_to offer). ledger_id is the parent
+// (countered) entry's id. original_amount is the buyer's offer;
+// counter_amount is the seller's proposed price. message is the seller's
+// optional counter note. Item terms (item, qty) don't change across a
+// counter — only the price. Client scopes by huddle_id like npc_spoke.
+type payCounteredWireDTO struct {
+	LedgerID       uint64 `json:"ledger_id"`
+	BuyerID        string `json:"buyer_id"`
+	SellerID       string `json:"seller_id"`
+	Item           string `json:"item"`
+	Qty            int    `json:"qty"`
+	OriginalAmount int    `json:"original_amount"`
+	CounterAmount  int    `json:"counter_amount"`
+	Message        string `json:"message,omitempty"`
+	HuddleID       string `json:"huddle_id,omitempty"`
+	SceneID        string `json:"scene_id,omitempty"`
+	At             string `json:"at"`
+}
+
+// payResolvedWireDTO is the pay_resolved payload — a pay-with-item offer
+// reached a non-counter terminal. terminal_state is the outcome token
+// (accepted | declined | withdrawn_by_buyer | expired |
+// failed_unavailable | failed_insufficient_stock |
+// failed_insufficient_funds), which the client maps to its outcome UI.
+// message carries the seller's decline reason or the buyer's withdraw
+// note (empty otherwise). On accepted, this is the frame that confirms the
+// transfer; the goods themselves move at deliver_order time for a
+// take-home order. ledger_id correlates with the originating pay_offer.
+type payResolvedWireDTO struct {
+	LedgerID      uint64 `json:"ledger_id"`
+	BuyerID       string `json:"buyer_id"`
+	SellerID      string `json:"seller_id"`
+	Item          string `json:"item"`
+	Qty           int    `json:"qty"`
+	Amount        int    `json:"amount"`
+	TerminalState string `json:"terminal_state"`
+	Message       string `json:"message,omitempty"`
+	HuddleID      string `json:"huddle_id,omitempty"`
+	SceneID       string `json:"scene_id,omitempty"`
+	At            string `json:"at"`
 }
