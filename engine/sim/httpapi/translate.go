@@ -84,6 +84,12 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			ID:    string(e.ObjectID),
 			State: e.ToState,
 		}}, true
+	case *sim.NoticeboardContentChanged:
+		return WireFrame{Type: "noticeboard_content_changed", Data: noticeboardContentChangedWireDTO{
+			ID:              string(e.ObjectID),
+			ContentText:     e.Text,
+			ContentPostedAt: e.PostedAt,
+		}}, true
 	case *sim.VillageObjectMoved:
 		return WireFrame{Type: "object_moved", Data: objectMovedWireDTO{
 			ID: string(e.ObjectID),
@@ -214,6 +220,20 @@ type phaseChangedWireDTO struct {
 type objectStateChangedWireDTO struct {
 	ID    string `json:"id"`
 	State string `json:"state"`
+}
+
+// noticeboardContentChangedWireDTO is the noticeboard_content_changed payload —
+// a board's authored prose was (re)written (ZBBS-HOME-293, the live-update
+// fast-follow to HOME-291's ObjectDTO read fields). id is the village object id;
+// content_text is the new line; content_posted_at is when it landed (RFC3339).
+// The client patches the object's content meta and refreshes an open content
+// modal in place instead of waiting for the next full objects fetch. The fields
+// mirror ObjectDTO.content_text / content_posted_at so the client reuses one
+// apply path. Additive — no contract_version bump.
+type noticeboardContentChangedWireDTO struct {
+	ID              string    `json:"id"`
+	ContentText     string    `json:"content_text"`
+	ContentPostedAt time.Time `json:"content_posted_at"`
 }
 
 // objectMovedWireDTO is the object_moved payload — a placed object repositioned

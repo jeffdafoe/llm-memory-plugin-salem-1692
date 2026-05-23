@@ -129,6 +129,51 @@ func TestSaveNoticeboardContent_HappyPath(t *testing.T) {
 	}
 }
 
+// TestSaveNoticeboardContent_EmitsContentChanged (ZBBS-HOME-293): the
+// Applied=true path emits NoticeboardContentChanged carrying the stored
+// (trimmed) text + posted-at, so the WS layer can live-update an open modal.
+func TestSaveNoticeboardContent_EmitsContentChanged(t *testing.T) {
+	w, rec, _, stop := buildNoticeboardTestWorld(t)
+	defer stop()
+
+	now := time.Now().UTC()
+	res, err := w.Send(sim.SaveNoticeboardContent("board", "  Town meeting at dusk.  ", "blank", now))
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if !res.(sim.SaveNoticeboardContentResult).Applied {
+		t.Fatal("Applied = false, want true")
+	}
+
+	got := rec.collectContent()
+	if len(got) != 1 {
+		t.Fatalf("emitted %d NoticeboardContentChanged, want 1", len(got))
+	}
+	ev := got[0]
+	if ev.ObjectID != "board" || ev.Text != "Town meeting at dusk." || !ev.PostedAt.Equal(now) {
+		t.Errorf("event = {ObjectID:%q Text:%q PostedAt:%v}, want {board, trimmed, %v}",
+			ev.ObjectID, ev.Text, ev.PostedAt, now)
+	}
+}
+
+// TestSaveNoticeboardContent_NoContentEventOnSkip: the skip paths
+// (stale_state / not_found / empty_after_trim) emit NO NoticeboardContentChanged.
+func TestSaveNoticeboardContent_NoContentEventOnSkip(t *testing.T) {
+	w, rec, _, stop := buildNoticeboardTestWorld(t)
+	defer stop()
+
+	// stale_state (board is "blank", author for "posted").
+	w.Send(sim.SaveNoticeboardContent("board", "stale", "posted", time.Now()))
+	// not_found.
+	w.Send(sim.SaveNoticeboardContent("ghost", "nope", "blank", time.Now()))
+	// empty_after_trim.
+	w.Send(sim.SaveNoticeboardContent("board", "   ", "blank", time.Now()))
+
+	if got := rec.collectContent(); len(got) != 0 {
+		t.Errorf("emitted %d NoticeboardContentChanged on skip paths, want 0", len(got))
+	}
+}
+
 // TestSaveNoticeboardContent_StaleState: atState doesn't match current
 // state → skip with stale_state.
 func TestSaveNoticeboardContent_StaleState(t *testing.T) {
@@ -293,14 +338,20 @@ func TestEmitTownCrierAnnouncement_SpeakerNotTownCrier(t *testing.T) {
 // --- helpers ---
 
 type eventRecorder struct {
-	mu     sync.Mutex
-	events []sim.VillageObjectStateChanged
+	mu      sync.Mutex
+	events  []sim.VillageObjectStateChanged
+	content []sim.NoticeboardContentChanged
 }
 
 func (r *eventRecorder) handle(_ *sim.World, evt sim.Event) {
-	if e, ok := evt.(*sim.VillageObjectStateChanged); ok {
+	switch e := evt.(type) {
+	case *sim.VillageObjectStateChanged:
 		r.mu.Lock()
 		r.events = append(r.events, *e)
+		r.mu.Unlock()
+	case *sim.NoticeboardContentChanged:
+		r.mu.Lock()
+		r.content = append(r.content, *e)
 		r.mu.Unlock()
 	}
 }
@@ -309,6 +360,12 @@ func (r *eventRecorder) collect() []sim.VillageObjectStateChanged {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]sim.VillageObjectStateChanged(nil), r.events...)
+}
+
+func (r *eventRecorder) collectContent() []sim.NoticeboardContentChanged {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]sim.NoticeboardContentChanged(nil), r.content...)
 }
 
 type spokeRecorder struct {
