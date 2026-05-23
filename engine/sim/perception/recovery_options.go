@@ -103,9 +103,11 @@ func buildRecoveryOptions(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *si
 // gatherFreeRestSpots returns a "rest" option for each village object that
 // eases tiredness on arrival (e.g. a shade tree's negative-tiredness
 // refresh), skipping objects whose finite supply is exhausted. Distance and
-// direction are computed in pixel space — actor CurrentX/Y and
-// VillageObject X/Y are both world pixels — which also drives the §8
-// nearest-object selection.
+// direction are computed in INTERNAL-GRID TILE space: actor CurrentX/Y are
+// already padded tile indices, while VillageObject X/Y are world pixels, so
+// the object is converted to the same tile space via WorldToTile (the
+// conversion pathfinding and the structure anchors use) before measuring.
+// This also drives the §8 nearest-object selection.
 func gatherFreeRestSpots(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) []RecoveryOption {
 	ax := float64(actorSnap.CurrentX)
 	ay := float64(actorSnap.CurrentY)
@@ -118,16 +120,24 @@ func gatherFreeRestSpots(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) []Rec
 		if mag <= 0 {
 			continue
 		}
-		dx := obj.X - ax
-		dy := obj.Y - ay
-		distTiles := math.Sqrt(dx*dx+dy*dy) / sim.TileSize
+		// Actor coords are padded internal-grid tiles; object coords are world
+		// pixels. Convert the object to the same tile space before measuring —
+		// subtracting pixels from tiles is off by ~TileSize (the HOME-297 unit
+		// bug ZBBS-WORK flagged 2026-05-23). WorldToTile applies the same Pad
+		// offset CurrentX already carries, so the two are directly comparable.
+		objTile := sim.WorldToTile(obj.X, obj.Y)
+		tx := float64(objTile.X)
+		ty := float64(objTile.Y)
+		dx := tx - ax
+		dy := ty - ay
+		distTiles := math.Sqrt(dx*dx + dy*dy)
 		out = append(out, RecoveryOption{
 			Kind:      "rest",
 			Label:     objectLabel(obj),
 			Magnitude: mag,
 			CostText:  "free",
 			Distance:  qualitativeDistance(distTiles),
-			Direction: cardinalDirection(ax, ay, obj.X, obj.Y),
+			Direction: cardinalDirection(ax, ay, tx, ty),
 			sortKey:   distTiles,
 			sourceKey: string(obj.ID),
 		})
@@ -265,7 +275,9 @@ func qualitativeDistance(tiles float64) string {
 }
 
 // cardinalDirection returns an 8-point compass bearing from (fromX,fromY) to
-// (toX,toY) in world-pixel space (+x east, +y south). Empty when coincident.
+// (toX,toY) in a single consistent coordinate space — callers pass tile coords
+// (+x east, +y south, the same axis orientation as world pixels). The bearing
+// is scale-free, so only the from/to consistency matters. Empty when coincident.
 func cardinalDirection(fromX, fromY, toX, toY float64) string {
 	dx := toX - fromX
 	dy := toY - fromY
