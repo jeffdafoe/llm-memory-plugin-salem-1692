@@ -16,8 +16,8 @@ import (
 // resolves the inn name via Snapshot.Structures.
 //
 // The grant the section describes IS the lodger relationship: an active
-// ledger RoomAccess with a future ExpiresAt (see sim.hasActiveLedgerAccess,
-// the canonical "is a lodger" predicate). The keeper-side occupancy section
+// ledger RoomAccess with a future ExpiresAt (see sim.IsActiveLedgerGrant,
+// the canonical per-grant lodging predicate). The keeper-side occupancy section
 // and the affordability cue (which needs the rent-rate setting) land in
 // later slices on this same file.
 
@@ -36,9 +36,9 @@ type LodgingView struct {
 
 // buildLodgingView returns the lodging view for actorSnap, or nil when the
 // actor holds no active ledger RoomAccess (i.e. isn't a lodger). Pure over
-// the snapshot. The gate mirrors sim.hasActiveLedgerAccess (active, ledger
-// source, future ExpiresAt) but also selects the soonest-expiring grant so
-// the rendered cue points at the most urgent renewal. ZBBS-HOME-296 PR2.
+// the snapshot. The gate is sim.IsActiveLedgerGrant (active, ledger source,
+// future ExpiresAt); it also selects the soonest-expiring grant so the
+// rendered cue points at the most urgent renewal. ZBBS-HOME-296 PR2.
 func buildLodgingView(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) *LodgingView {
 	if snap == nil || actorSnap == nil {
 		return nil
@@ -122,6 +122,9 @@ func buildKeeperLodgingView(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) *K
 // structureForRoom returns the structure that contains roomID, or nil when
 // no structure declares it. Linear over the snapshot's structures/rooms —
 // fine at Salem's scale (mirrors sim.findRoom, which works on the live world).
+// RoomID is a globally unique per-instance id (legacy BIGSERIAL — see
+// sim.RoomID), so at most one structure declares a given room and the
+// first match is unambiguous despite the map-iteration order.
 func structureForRoom(snap *sim.Snapshot, roomID sim.RoomID) *sim.Structure {
 	for _, s := range snap.Structures {
 		if s == nil {
