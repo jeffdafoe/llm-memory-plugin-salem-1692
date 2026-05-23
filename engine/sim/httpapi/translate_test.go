@@ -354,6 +354,111 @@ func TestTranslateEvent_VillageObjectLoiterOffsetChanged_ClearedIsNull(t *testin
 	}
 }
 
+func TestTranslateEvent_PayOffer(t *testing.T) {
+	at := time.Date(1692, 5, 14, 12, 30, 0, 0, time.FixedZone("local", -4*3600))
+	frame, ok := TranslateEvent(&sim.PayOfferReceived{
+		LedgerID:       42,
+		BuyerID:        "alice",
+		SellerID:       "bob",
+		ItemKind:       "stew",
+		QtyPerConsumer: 2,
+		Amount:         5,
+		ConsumeNow:     true,
+		HuddleID:       "huddle-1",
+		SceneID:        "sc1",
+		At:             at,
+	})
+	if !ok {
+		t.Fatal("PayOfferReceived should translate")
+	}
+	if frame.Type != "pay_offer" {
+		t.Fatalf("type = %q, want pay_offer", frame.Type)
+	}
+	d, isType := frame.Data.(payOfferWireDTO)
+	if !isType {
+		t.Fatalf("data type = %T, want payOfferWireDTO", frame.Data)
+	}
+	want := payOfferWireDTO{
+		LedgerID: 42, BuyerID: "alice", SellerID: "bob", Item: "stew",
+		Qty: 2, Amount: 5, ConsumeNow: true, HuddleID: "huddle-1", SceneID: "sc1",
+		At: at.UTC().Format(time.RFC3339),
+	}
+	if d != want {
+		t.Errorf("pay_offer payload = %+v, want %+v", d, want)
+	}
+}
+
+func TestTranslateEvent_PayCountered(t *testing.T) {
+	at := time.Date(1692, 5, 14, 12, 30, 0, 0, time.FixedZone("local", -4*3600))
+	frame, ok := TranslateEvent(&sim.PayCountered{
+		ParentID:       42,
+		BuyerID:        "alice",
+		SellerID:       "bob",
+		ItemKind:       "stew",
+		QtyPerConsumer: 1,
+		OriginalAmount: 4,
+		CounterAmount:  7,
+		Message:        "how about seven",
+		HuddleID:       "huddle-1",
+		SceneID:        "sc1",
+		At:             at,
+	})
+	if !ok {
+		t.Fatal("PayCountered should translate")
+	}
+	if frame.Type != "pay_countered" {
+		t.Fatalf("type = %q, want pay_countered", frame.Type)
+	}
+	d, isType := frame.Data.(payCounteredWireDTO)
+	if !isType {
+		t.Fatalf("data type = %T, want payCounteredWireDTO", frame.Data)
+	}
+	// ledger_id carries the PARENT (countered) entry's id.
+	want := payCounteredWireDTO{
+		LedgerID: 42, BuyerID: "alice", SellerID: "bob", Item: "stew", Qty: 1,
+		OriginalAmount: 4, CounterAmount: 7, Message: "how about seven",
+		HuddleID: "huddle-1", SceneID: "sc1", At: at.UTC().Format(time.RFC3339),
+	}
+	if d != want {
+		t.Errorf("pay_countered payload = %+v, want %+v", d, want)
+	}
+}
+
+func TestTranslateEvent_PayResolved(t *testing.T) {
+	at := time.Date(1692, 5, 14, 12, 30, 0, 0, time.FixedZone("local", -4*3600))
+	frame, ok := TranslateEvent(&sim.PayWithItemResolved{
+		LedgerID:       42,
+		BuyerID:        "alice",
+		SellerID:       "bob",
+		ItemKind:       "stew",
+		QtyPerConsumer: 1,
+		Amount:         4,
+		TerminalState:  sim.PayTerminalStateDeclined,
+		Message:        "not today",
+		HuddleID:       "huddle-1",
+		SceneID:        "sc1",
+		At:             at,
+	})
+	if !ok {
+		t.Fatal("PayWithItemResolved should translate")
+	}
+	if frame.Type != "pay_resolved" {
+		t.Fatalf("type = %q, want pay_resolved", frame.Type)
+	}
+	d, isType := frame.Data.(payResolvedWireDTO)
+	if !isType {
+		t.Fatalf("data type = %T, want payResolvedWireDTO", frame.Data)
+	}
+	want := payResolvedWireDTO{
+		LedgerID: 42, BuyerID: "alice", SellerID: "bob", Item: "stew", Qty: 1, Amount: 4,
+		TerminalState: string(sim.PayTerminalStateDeclined), Message: "not today",
+		HuddleID: "huddle-1", SceneID: "sc1", At: at.UTC().Format(time.RFC3339),
+	}
+	if d != want {
+		t.Errorf("pay_resolved payload = %+v, want %+v", d, want)
+	}
+}
+
 // TestTranslateEvent_UnmappedDropped covers the default case: per-tile
 // ActorMoved is engine-internal and must not reach the client.
 func TestTranslateEvent_UnmappedDropped(t *testing.T) {
