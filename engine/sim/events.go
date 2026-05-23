@@ -337,6 +337,26 @@ type VillageObjectStateChanged struct {
 
 func (VillageObjectStateChanged) isSimEvent() {}
 
+// NoticeboardContentChanged is emitted by SaveNoticeboardContent on the
+// Applied=true path — a noticeboard's authored prose was (re)written for its
+// current state. Text is the trimmed/capped content just stored; PostedAt is
+// the instant it landed (== the content's persisted PostedAt, also surfaced on
+// ObjectDTO.content_posted_at). At is the wall-clock instant the command ran.
+// The skip paths (empty_after_trim / not_found / stale_state) emit nothing.
+//
+// Translates to the additive noticeboard_content_changed WS frame so an open
+// content modal live-updates; until this, the client only saw new prose on the
+// next full objects fetch (ZBBS-HOME-291 left this as a deferred fast-follow).
+type NoticeboardContentChanged struct {
+	EventBase
+	ObjectID VillageObjectID
+	Text     string
+	PostedAt time.Time
+	At       time.Time
+}
+
+func (NoticeboardContentChanged) isSimEvent() {}
+
 // VillageObjectMoved is emitted by MoveVillageObject when an admin repositions
 // a placed object. X / Y are the new absolute world-pixel anchor coordinates
 // (the same space ObjectDTO emits). The client moves the rendered object on

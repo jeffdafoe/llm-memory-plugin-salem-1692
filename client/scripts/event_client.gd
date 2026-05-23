@@ -211,7 +211,7 @@ func _handle_message(data: String) -> void:
         "village_object_tags_updated":
             if world != null:
                 world.apply_object_tags_updated(event_data)
-        "object_content_changed":
+        "noticeboard_content_changed":
             if world != null:
                 world.apply_object_content_changed(event_data)
         "object_loiter_offset_changed":

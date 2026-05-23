@@ -61,6 +61,27 @@ func TestTranslateEvent_ObjectMoved(t *testing.T) {
 	}
 }
 
+func TestTranslateEvent_NoticeboardContentChanged(t *testing.T) {
+	postedAt := time.Date(2026, 5, 22, 18, 0, 0, 0, time.UTC)
+	frame, ok := TranslateEvent(&sim.NoticeboardContentChanged{
+		ObjectID: "board-1",
+		Text:     "Town meeting at dusk.",
+		PostedAt: postedAt,
+		At:       time.Now().UTC(),
+	})
+	if !ok {
+		t.Fatal("NoticeboardContentChanged should translate")
+	}
+	if frame.Type != "noticeboard_content_changed" {
+		t.Fatalf("type = %q, want noticeboard_content_changed", frame.Type)
+	}
+	d := frame.Data.(noticeboardContentChangedWireDTO)
+	want := noticeboardContentChangedWireDTO{ID: "board-1", ContentText: "Town meeting at dusk.", ContentPostedAt: postedAt}
+	if d != want {
+		t.Errorf("payload = %+v, want %+v", d, want)
+	}
+}
+
 func TestTranslateEvent_ObjectDeleted(t *testing.T) {
 	frame, ok := TranslateEvent(&sim.VillageObjectDeleted{ObjectID: "bench-1"})
 	if !ok {
