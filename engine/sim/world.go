@@ -61,6 +61,16 @@ type WorldSettings struct {
 	LodgingCheckInHour  int
 	LodgingCheckOutHour int
 
+	// LodgingDefaultWeeklyRate is the operator-set rent for a private room,
+	// stored weekly (the booking/cadence unit) but billed and quoted per
+	// night as LodgingNightlyRate(rate) = rate/7 — "4 a night" reads better
+	// in a haggle than "28 a week", and the per-night figure is what the
+	// keeper advertises. Consumed by the keeper/lodger perception rate hints,
+	// the lodger affordability cue, and the engine-auto rebook sweep. 0 (or
+	// any value < 7, which floors the nightly rate to 0) disables the rate
+	// surfaces and the auto-rebook. Default 28 (4/night).
+	LodgingDefaultWeeklyRate int
+
 	// NPCSleepMaxDurationHours is the safety cap on an auto-bedded NPC's
 	// sleep — wakeExpiredNPCSleepers clears SleepingUntil at this cap or at
 	// shift-start, whichever comes first. Default 12.
@@ -1239,22 +1249,23 @@ func (w *World) ForEachOutdoorActor(fn func(*Actor) bool) {
 // allocation pressure.
 func (w *World) republish() {
 	snap := &Snapshot{
-		AtTick:             w.TickCounter,
-		PublishedAt:        time.Now(),
-		Actors:             make(map[ActorID]*ActorSnapshot, len(w.Actors)),
-		Huddles:            make(map[HuddleID]*Huddle, len(w.Huddles)),
-		Scenes:             make(map[SceneID]*Scene, len(w.Scenes)),
-		Structures:         make(map[StructureID]*Structure, len(w.Structures)),
-		Orders:             make(map[OrderID]*Order, len(w.Orders)),
-		VillageObjects:     make(map[VillageObjectID]*VillageObject, len(w.VillageObjects)),
-		Quotes:             make(map[QuoteID]*SceneQuote, len(w.Quotes)),
-		PayLedger:          make(map[LedgerID]*PayLedgerEntry, len(w.PayLedger)),
-		ActionLog:          CloneActionLog(w.ActionLog),
-		NoticeboardContent: make(map[VillageObjectID]*NoticeboardContent, len(w.NoticeboardContent)),
-		PriceBook:          ClonePriceBook(w.PriceBook),
-		Environment:        w.Environment,
-		Phase:              w.Phase,
-		NeedThresholds:     w.Settings.NeedThresholds.Clone(),
+		AtTick:                   w.TickCounter,
+		PublishedAt:              time.Now(),
+		Actors:                   make(map[ActorID]*ActorSnapshot, len(w.Actors)),
+		Huddles:                  make(map[HuddleID]*Huddle, len(w.Huddles)),
+		Scenes:                   make(map[SceneID]*Scene, len(w.Scenes)),
+		Structures:               make(map[StructureID]*Structure, len(w.Structures)),
+		Orders:                   make(map[OrderID]*Order, len(w.Orders)),
+		VillageObjects:           make(map[VillageObjectID]*VillageObject, len(w.VillageObjects)),
+		Quotes:                   make(map[QuoteID]*SceneQuote, len(w.Quotes)),
+		PayLedger:                make(map[LedgerID]*PayLedgerEntry, len(w.PayLedger)),
+		ActionLog:                CloneActionLog(w.ActionLog),
+		NoticeboardContent:       make(map[VillageObjectID]*NoticeboardContent, len(w.NoticeboardContent)),
+		PriceBook:                ClonePriceBook(w.PriceBook),
+		Environment:              w.Environment,
+		Phase:                    w.Phase,
+		NeedThresholds:           w.Settings.NeedThresholds.Clone(),
+		LodgingDefaultWeeklyRate: w.Settings.LodgingDefaultWeeklyRate,
 	}
 	for id, a := range w.Actors {
 		snap.Actors[id] = snapshotActor(a, w.TickCounter)

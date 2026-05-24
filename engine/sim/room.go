@@ -187,6 +187,21 @@ func ComputeLodgerUntil(readyBy time.Time, qty int, checkOutHour int, loc *time.
 	return time.Date(d.Year(), d.Month(), d.Day(), checkOutHour, 0, 0, 0, loc)
 }
 
+// LodgingNightlyRate derives the per-night rent from the operator-set weekly
+// rate: weeklyRate / 7. Operators keep the rate divisible by 7 so this floors
+// cleanly (a weekly rate of 29 charges 4/night = 28/week, losing 1 to integer
+// truncation). Returns 0 when weeklyRate < 7 — integer coins can't bill less
+// than 1/night, so a sub-7 weekly rate is treated as "lodging rate disabled"
+// (the rate surfaces and the auto-rebook both go silent), matching v1. The
+// single derivation point shared by perception (off the snapshot) and the
+// engine-auto rebook sweep (off live WorldSettings).
+func LodgingNightlyRate(weeklyRate int) int {
+	if weeklyRate < 7 {
+		return 0
+	}
+	return weeklyRate / 7
+}
+
 // ComputeEarliestCheckIn returns the earliest wall-clock instant a
 // nights_stay can be checked in: ready_by at check-in hour, in the
 // world timezone. Pure helper, matches legacy computeEarliestCheckIn.

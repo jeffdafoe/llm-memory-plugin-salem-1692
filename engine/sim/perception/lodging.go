@@ -17,9 +17,10 @@ import (
 //
 // The grant the section describes IS the lodger relationship: an active
 // ledger RoomAccess with a future ExpiresAt (see sim.IsActiveLedgerGrant,
-// the canonical per-grant lodging predicate). The keeper-side occupancy section
-// and the affordability cue (which needs the rent-rate setting) land in
-// later slices on this same file.
+// the canonical per-grant lodging predicate). This file also carries the
+// keeper-side occupancy section and, near renewal, the affordability cue —
+// the lever (HOME-296 §6) that makes a broke lodger perceive a rent shortfall
+// in time to act, before the engine-auto rebook backstop fires at 6h.
 
 // LodgingView is the content-gated "## Your lodging" section. nil means the
 // actor holds no active lodging grant and render omits the section.
@@ -32,6 +33,17 @@ type LodgingView struct {
 	// When an actor somehow holds more than one active lodging grant, the
 	// nearest expiry is surfaced — that's the one the lodger must act on first.
 	ExpiresAt time.Time
+
+	// NightlyRate is the per-night rent the keeper advertises
+	// (sim.LodgingNightlyRate of the world's weekly rate); 0 when the lodging
+	// rate is unset/disabled, which suppresses both the rate hint and the
+	// affordability cue.
+	NightlyRate int
+
+	// Coins is the lodger's coin balance at snapshot time — the affordability
+	// cue compares it against NightlyRate to decide whether to warn of a
+	// shortfall.
+	Coins int
 }
 
 // buildLodgingView returns the lodging view for actorSnap, or nil when the
@@ -62,7 +74,12 @@ func buildLodgingView(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) *Lodging
 	if s := structureForRoom(snap, best.RoomID); s != nil {
 		innName = innLabel(s) // shared with the recovery-options inn finder
 	}
-	return &LodgingView{InnName: innName, ExpiresAt: *best.ExpiresAt}
+	return &LodgingView{
+		InnName:     innName,
+		ExpiresAt:   *best.ExpiresAt,
+		NightlyRate: sim.LodgingNightlyRate(snap.LodgingDefaultWeeklyRate),
+		Coins:       actorSnap.Coins,
+	}
 }
 
 // KeeperLodgingView is the content-gated "## Your inn" section shown to an
@@ -72,6 +89,10 @@ type KeeperLodgingView struct {
 	InnName        string
 	RoomsAvailable int
 	RoomsTotal     int
+
+	// NightlyRate is the per-night rent the keeper quotes; surfaced only when
+	// a room is free to sell. 0 when the lodging rate is unset/disabled.
+	NightlyRate int
 }
 
 // buildKeeperLodgingView returns the keeper occupancy view when actorSnap
@@ -116,7 +137,12 @@ func buildKeeperLodgingView(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) *K
 	if available < 0 {
 		available = 0
 	}
-	return &KeeperLodgingView{InnName: innLabel(s), RoomsAvailable: available, RoomsTotal: total}
+	return &KeeperLodgingView{
+		InnName:        innLabel(s),
+		RoomsAvailable: available,
+		RoomsTotal:     total,
+		NightlyRate:    sim.LodgingNightlyRate(snap.LodgingDefaultWeeklyRate),
+	}
 }
 
 // structureForRoom returns the structure that contains roomID, or nil when
@@ -157,26 +183,67 @@ func lodgingStatusLine(innName string, expiresAt, now time.Time) string {
 	}
 }
 
+// lodgingAffordabilityCue returns the rent-shortfall warning, or "" when it
+// shouldn't fire. The lever of HOME-296 §6: it only fires inside the renewal
+// window (<= 48h to expiry, while there's still runway to earn before the 6h
+// engine-auto backstop) and only when the lodger can't cover a night
+// (Coins < NightlyRate). Suppressed entirely when the rate is disabled. Pure;
+// `now` is a parameter for tests.
+func lodgingAffordabilityCue(v *LodgingView, now time.Time) string {
+	if v.NightlyRate <= 0 {
+		return ""
+	}
+	remaining := v.ExpiresAt.Sub(now)
+	// Fire only inside the renewal window: > 0 (an expired-but-unswept grant
+	// has negative remaining — don't warn "before your room lapses" after it
+	// already lapsed) and within 48h (runway before the 6h backstop). The <=0
+	// guard matters because render uses time.Now() while the build gate used
+	// the snapshot clock — staleness can briefly push remaining negative.
+	if remaining <= 0 || remaining > 48*time.Hour {
+		return ""
+	}
+	if v.Coins >= v.NightlyRate {
+		return ""
+	}
+	return fmt.Sprintf("You have only %d coins — short of the %d for another night. Earn or sell something before your room lapses.",
+		v.Coins, v.NightlyRate)
+}
+
 // renderLodging writes the "## Your lodging" section. Content-gated: a nil
-// view writes nothing. The renewal tier is computed against time.Now() — the
-// same wall-clock posture renderPendingDeliveriesToMe uses for order expiry
-// (Render has no snapshot, so it can't read Snapshot.PublishedAt here).
+// view writes nothing. The renewal tier and affordability cue are computed
+// against time.Now() — the same wall-clock posture renderPendingDeliveriesToMe
+// uses for order expiry (Render has no snapshot, so it can't read
+// Snapshot.PublishedAt here).
 func renderLodging(b *strings.Builder, v *LodgingView) {
 	if v == nil {
 		return
 	}
+	now := time.Now()
 	b.WriteString("## Your lodging\n")
-	b.WriteString(lodgingStatusLine(v.InnName, v.ExpiresAt, time.Now()))
-	b.WriteString("\n\n")
+	b.WriteString(lodgingStatusLine(v.InnName, v.ExpiresAt, now))
+	if v.NightlyRate > 0 {
+		fmt.Fprintf(b, " Renewing is %d coins a night.", v.NightlyRate)
+	}
+	b.WriteString("\n")
+	if cue := lodgingAffordabilityCue(v, now); cue != "" {
+		b.WriteString(cue)
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
 }
 
 // renderKeeperLodging writes the "## Your inn" section for an inn-keeper.
-// Content-gated: a nil view writes nothing.
+// Content-gated: a nil view writes nothing. The nightly rate is appended only
+// when a room is free to sell and the rate is set.
 func renderKeeperLodging(b *strings.Builder, v *KeeperLodgingView) {
 	if v == nil {
 		return
 	}
 	b.WriteString("## Your inn\n")
-	fmt.Fprintf(b, "%d of %d rooms available tonight at %s.\n\n",
+	fmt.Fprintf(b, "%d of %d rooms available tonight at %s",
 		v.RoomsAvailable, v.RoomsTotal, sanitizeInline(v.InnName))
+	if v.RoomsAvailable > 0 && v.NightlyRate > 0 {
+		fmt.Fprintf(b, ", %d coins a night", v.NightlyRate)
+	}
+	b.WriteString(".\n\n")
 }
