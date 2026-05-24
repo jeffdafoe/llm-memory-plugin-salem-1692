@@ -74,4 +74,11 @@ type Snapshot struct {
 	// off-world (perception, noop-skip preflight) read thresholds here
 	// rather than racing on w.Settings directly.
 	NeedThresholds NeedThresholds
+
+	// LodgingDefaultWeeklyRate mirrors WorldSettings.LodgingDefaultWeeklyRate
+	// (the operator-set weekly rent) so perception — pure over the snapshot —
+	// can surface the keeper/lodger nightly-rate hints and the affordability
+	// cue without racing on w.Settings. Derive the per-night figure via
+	// sim.LodgingNightlyRate. Plain int, copied at publish.
+	LodgingDefaultWeeklyRate int
 }

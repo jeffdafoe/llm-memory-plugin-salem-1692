@@ -252,10 +252,12 @@ func EvictExpiredOccupants() Command {
 const RoomSweepInterval = time.Minute
 
 // RunRoomSweep owns the room-access sweep goroutine. Wakes every
-// RoomSweepInterval and submits ExpireRoomAccess + EvictExpiredOccupants
-// in order (expire flag first, then teleport).
+// RoomSweepInterval and submits, in order: RebookLodgersDue (renew grants in
+// their 6h-pre-expiry window — must run before they're expired), then
+// ExpireRoomAccess (flag truly-lapsed grants), then EvictExpiredOccupants
+// (teleport PCs out of lapsed private rooms).
 //
-// Uses SendContext so shutdown unblocks both commands cleanly even if the
+// Uses SendContext so shutdown unblocks the commands cleanly even if the
 // world goroutine has already exited.
 func RunRoomSweep(ctx context.Context, w *World) {
 	t := time.NewTicker(RoomSweepInterval)
@@ -265,7 +267,17 @@ func RunRoomSweep(ctx context.Context, w *World) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if _, err := w.SendContext(ctx, ExpireRoomAccess(time.Now().UTC())); err != nil && ctx.Err() == nil {
+			// One instant for the whole sweep: renew grants in their pre-
+			// expiry window, then expire against the SAME now, so a grant
+			// can't slip from "not yet due for rebook" to "expired" between
+			// two separate clock reads (code_review).
+			now := time.Now().UTC()
+			if _, err := w.SendContext(ctx, RebookLodgersDue(now)); err != nil && ctx.Err() == nil {
+				log.Printf("sim/room_sweep: rebook failed: %v", err)
+				// Non-fatal — fall through to expire/evict so a rebook
+				// hiccup doesn't strand lapsed grants un-swept.
+			}
+			if _, err := w.SendContext(ctx, ExpireRoomAccess(now)); err != nil && ctx.Err() == nil {
 				log.Printf("sim/room_sweep: expire failed: %v", err)
 				continue
 			}
