@@ -79,6 +79,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/village/pc/speak", s.requireAuth(s.handlePCSpeak))
 	mux.HandleFunc("POST /api/village/pc/pay", s.requireAuth(s.handlePCPay))
 	mux.HandleFunc("POST /api/village/pc/sprite", s.requireAuth(s.handlePCSprite))
+	mux.HandleFunc("POST /api/village/pc/create", s.requireAuth(s.handlePCCreate))
 	// Admin write routes — requireAuth PLUS an in-command admin gate (the
 	// caller's actor must have admin = true; see adminCommand in
 	// write_handlers.go). Distinct from pc/* whose ownership is structural.
