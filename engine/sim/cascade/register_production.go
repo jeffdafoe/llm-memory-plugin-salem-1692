@@ -71,6 +71,7 @@ func RegisterProductionCascades(ctx context.Context, w *sim.World, client llm.Cl
 	// per-actor reactive primitives.
 	RegisterActionLog(ctx, w)
 	RegisterEncounter(w)
+	RegisterObjectRefreshArrival(w)
 	RegisterIdleBackstop(ctx, w)
 	RegisterPriceBook(w)
 	RegisterNPCRoutes(ctx, w)

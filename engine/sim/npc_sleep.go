@@ -348,5 +348,14 @@ func runSleepTickIteration(ctx context.Context, w *World) {
 		if ctx.Err() == nil {
 			log.Printf("sim/npc_sleep: auto-bed sweep failed: %v", err)
 		}
+		return
+	}
+	// Homeless rest floor (ZBBS-HOME-300): after the homed/lodger arms have run,
+	// walk any still-exhausted, bed-less, off-shift NPC to a free rest object so
+	// it can dwell and recover. Last because auto-bed and lodging take priority.
+	if _, err := w.SendContext(ctx, RouteHomelessToRest(now)); err != nil {
+		if ctx.Err() == nil {
+			log.Printf("sim/npc_sleep: homeless rest-route sweep failed: %v", err)
+		}
 	}
 }
