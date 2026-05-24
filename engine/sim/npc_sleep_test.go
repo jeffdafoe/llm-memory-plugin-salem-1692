@@ -91,6 +91,146 @@ func TestExecuteNPCSleep(t *testing.T) {
 	}
 }
 
+// spokeRecorder captures Spoke events emitted on a bare test world.
+type spokeRecorder struct{ spokes []Spoke }
+
+func (r *spokeRecorder) Handle(_ *World, evt Event) {
+	if s, ok := evt.(*Spoke); ok {
+		r.spokes = append(r.spokes, *s)
+	}
+}
+
+// TestExecuteNPCSleep_LeavesHuddleWithFarewell: an NPC bedded while in an
+// active huddle speaks a deterministic retire line to its partners, then
+// leaves the huddle (the partner remains; the huddle is not concluded). The
+// stationary AutoBedAtHomeNPCs path is what reaches this — a lodger bedding
+// mid-conversation in the inn common room.
+func TestExecuteNPCSleep_LeavesHuddleWithFarewell(t *testing.T) {
+	now := time.Date(2026, 5, 22, 22, 0, 0, 0, time.UTC)
+	sleeper := npc("sleeper", KindNPCShared)
+	partner := npc("partner", KindNPCShared)
+	sleeper.CurrentHuddleID = "h1"
+	partner.CurrentHuddleID = "h1"
+	w := sleepTestWorld(sleeper, partner)
+	w.Huddles = map[HuddleID]*Huddle{
+		"h1": {ID: "h1", Members: map[ActorID]struct{}{"sleeper": {}, "partner": {}}, StartedAt: now},
+	}
+	w.actorsByHuddle = map[HuddleID]map[ActorID]struct{}{
+		"h1": {"sleeper": {}, "partner": {}},
+	}
+	rec := &spokeRecorder{}
+	w.Subscribe(rec)
+
+	if !executeNPCSleep(w, sleeper, now) {
+		t.Fatal("executeNPCSleep should bed the awake NPC")
+	}
+	if len(rec.spokes) != 1 {
+		t.Fatalf("emitted %d Spoke events, want 1 (the farewell)", len(rec.spokes))
+	}
+	got := rec.spokes[0]
+	if got.SpeakerID != "sleeper" {
+		t.Errorf("farewell SpeakerID = %q, want sleeper", got.SpeakerID)
+	}
+	if got.Text != renderRetireLine("sleeper", now) {
+		t.Errorf("farewell Text = %q, want the deterministic retire line %q", got.Text, renderRetireLine("sleeper", now))
+	}
+	if len(got.RecipientIDs) != 1 || got.RecipientIDs[0] != "partner" {
+		t.Errorf("farewell RecipientIDs = %v, want [partner]", got.RecipientIDs)
+	}
+	if sleeper.CurrentHuddleID != "" {
+		t.Errorf("sleeper still in huddle %q after bed-down", sleeper.CurrentHuddleID)
+	}
+	if partner.CurrentHuddleID != "h1" {
+		t.Errorf("partner left the huddle too: %q", partner.CurrentHuddleID)
+	}
+	if w.Huddles["h1"].ConcludedAt != nil {
+		t.Error("huddle was concluded though the partner remains")
+	}
+	if sleeper.SleepingUntil == nil {
+		t.Error("sleeper not bedded")
+	}
+}
+
+// TestExecuteNPCSleep_SilentWhenNotHuddled: an NPC bedding with no active
+// huddle (alone, or via the arrival path that already dropped its huddle on
+// the walk) beds silently — no farewell Spoke.
+func TestExecuteNPCSleep_SilentWhenNotHuddled(t *testing.T) {
+	now := time.Date(2026, 5, 22, 22, 0, 0, 0, time.UTC)
+	a := npc("solo", KindNPCShared)
+	w := sleepTestWorld(a)
+	rec := &spokeRecorder{}
+	w.Subscribe(rec)
+
+	if !executeNPCSleep(w, a, now) {
+		t.Fatal("executeNPCSleep should bed the awake NPC")
+	}
+	if len(rec.spokes) != 0 {
+		t.Errorf("emitted %d Spoke events bedding alone, want 0", len(rec.spokes))
+	}
+	if a.SleepingUntil == nil {
+		t.Error("solo NPC not bedded")
+	}
+}
+
+// TestExecuteNPCSleep_SilentWhenHuddleConcluded: a stale CurrentHuddleID
+// pointing at an already-concluded huddle is not "active" — no farewell, and
+// the actor still beds.
+func TestExecuteNPCSleep_SilentWhenHuddleConcluded(t *testing.T) {
+	now := time.Date(2026, 5, 22, 22, 0, 0, 0, time.UTC)
+	a := npc("stale", KindNPCShared)
+	a.CurrentHuddleID = "gone"
+	w := sleepTestWorld(a)
+	concluded := now.Add(-time.Hour)
+	w.Huddles = map[HuddleID]*Huddle{
+		"gone": {ID: "gone", Members: map[ActorID]struct{}{}, ConcludedAt: &concluded},
+	}
+	rec := &spokeRecorder{}
+	w.Subscribe(rec)
+
+	if !executeNPCSleep(w, a, now) {
+		t.Fatal("executeNPCSleep should bed the awake NPC")
+	}
+	if len(rec.spokes) != 0 {
+		t.Errorf("emitted %d Spoke events for a concluded huddle, want 0", len(rec.spokes))
+	}
+	if a.SleepingUntil == nil {
+		t.Error("NPC not bedded")
+	}
+}
+
+// TestExecuteNPCSleep_SilentWhenSoleHuddleMember: a huddle can transiently
+// hold only the bedding actor (everyone else already left; conclusion fires at
+// zero members). The active-huddle gate is true, but there's no one to excuse
+// to — emit no farewell, still leave (which concludes the now-empty huddle).
+func TestExecuteNPCSleep_SilentWhenSoleHuddleMember(t *testing.T) {
+	now := time.Date(2026, 5, 22, 22, 0, 0, 0, time.UTC)
+	a := npc("lonely", KindNPCShared)
+	a.CurrentHuddleID = "h1"
+	w := sleepTestWorld(a)
+	w.Huddles = map[HuddleID]*Huddle{
+		"h1": {ID: "h1", Members: map[ActorID]struct{}{"lonely": {}}, StartedAt: now},
+	}
+	w.actorsByHuddle = map[HuddleID]map[ActorID]struct{}{"h1": {"lonely": {}}}
+	rec := &spokeRecorder{}
+	w.Subscribe(rec)
+
+	if !executeNPCSleep(w, a, now) {
+		t.Fatal("executeNPCSleep should bed the awake NPC")
+	}
+	if len(rec.spokes) != 0 {
+		t.Errorf("emitted %d Spoke events to an empty room, want 0", len(rec.spokes))
+	}
+	if a.CurrentHuddleID != "" {
+		t.Errorf("sole member did not leave the huddle: %q", a.CurrentHuddleID)
+	}
+	if w.Huddles["h1"].ConcludedAt == nil {
+		t.Error("emptied huddle was not concluded after the sole member left")
+	}
+	if a.SleepingUntil == nil {
+		t.Error("NPC not bedded")
+	}
+}
+
 // TestAutoSleepOnArrival_SkipsOnBreak guards the no-both-windows invariant
 // (ZBBS-HOME-284 #4 review): an on-break NPC arriving home off-shift — which
 // would otherwise be bedded — must NOT also get a SleepingUntil window.
