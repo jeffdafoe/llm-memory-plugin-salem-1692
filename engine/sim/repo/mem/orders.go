@@ -64,6 +64,20 @@ func (r *OrdersRepo) SaveSnapshot(_ context.Context, _ sim.Tx, orders map[sim.Or
 	return nil
 }
 
+// WriteTerminal persists a single Order at its terminal state — the
+// write-through half of the Slice 6 write-through-then-prune the World
+// drives through its TerminalOrderSink. The mem equivalent of the pg
+// row write is an upsert into the backing map (deep-cloned, same as
+// Seed/SaveSnapshot), so a test that wires this repo as the sink sees
+// the terminal order persisted and survives a subsequent LoadAll.
+func (r *OrdersRepo) WriteTerminal(_ context.Context, o *sim.Order) error {
+	if o == nil {
+		return fmt.Errorf("mem orders WriteTerminal: nil order")
+	}
+	r.orders[o.ID] = sim.CloneOrder(o)
+	return nil
+}
+
 // LoadRecentPrices filters the seeded slice by `since` (At >= since),
 // then per-(seller, item) caps at perKeyCap most-recent entries, and
 // returns the result in chronological (oldest-first) order per key —

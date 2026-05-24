@@ -136,6 +136,57 @@ func TestRoundTrip_OrderClonesBreakAliasing(t *testing.T) {
 	}
 }
 
+// TestWriteTerminal_UpsertsAndClones verifies the sink-side write: a
+// terminal Order is persisted (survives a subsequent LoadAll), upserts
+// over an existing id, and is deep-cloned so the caller's pointer can't
+// alias the repo's stored copy. nil orders error rather than panic.
+func TestWriteTerminal_UpsertsAndClones(t *testing.T) {
+	ctx := context.Background()
+	_, h := mem.NewRepository()
+
+	now := time.Now().UTC()
+	delivered := now.Add(30 * time.Second)
+	o := &sim.Order{
+		ID:          7,
+		State:       sim.OrderStateDelivered,
+		BuyerID:     "alice",
+		SellerID:    "bob",
+		Item:        "stew",
+		Qty:         1,
+		Amount:      3,
+		ConsumerIDs: []sim.ActorID{"alice"},
+		LedgerID:    7,
+		CreatedAt:   now,
+		DeliveredAt: &delivered,
+	}
+	if err := h.Orders.WriteTerminal(ctx, o); err != nil {
+		t.Fatalf("WriteTerminal: %v", err)
+	}
+
+	// Mutate the caller's order post-write — the stored copy must not alias it.
+	o.State = sim.OrderStateExpired
+	o.ConsumerIDs[0] = "tampered"
+
+	loaded, err := h.Orders.LoadAll(ctx)
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+	got, ok := loaded[7]
+	if !ok {
+		t.Fatal("order 7 not persisted by WriteTerminal")
+	}
+	if got.State != sim.OrderStateDelivered {
+		t.Errorf("stored State = %q, want delivered (caller pointer aliased!)", got.State)
+	}
+	if got.ConsumerIDs[0] != "alice" {
+		t.Errorf("stored ConsumerIDs[0] = %q, want alice (consumer slice aliased!)", got.ConsumerIDs[0])
+	}
+
+	if err := h.Orders.WriteTerminal(ctx, nil); err == nil {
+		t.Error("WriteTerminal(nil) should error, got nil")
+	}
+}
+
 // TestLoadRecentPrices_FiltersBySinceAndCaps verifies that mem's
 // LoadRecentPrices implementation matches the pg contract: rows
 // older than `since` are filtered out, per-(seller, item) bucket
