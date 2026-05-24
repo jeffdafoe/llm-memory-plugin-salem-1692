@@ -70,6 +70,9 @@ func (s *Server) Handler() http.Handler {
 	// Hardcoded reference data — no World map, no DB; see catalog_tags.go.
 	mux.HandleFunc("GET /api/village/object-tags", s.requireAuth(s.handleObjectTags))
 	mux.HandleFunc("GET /api/assets/state-tags", s.requireAuth(s.handleStateTags))
+	// PC bootstrap read. POST to match the v1 verb + the client, but it's a
+	// pure snapshot read (no command channel) — see pc_me.go.
+	mux.HandleFunc("POST /api/village/pc/me", s.requireAuth(s.handlePCMe))
 	// Write routes — same requireAuth gate; the mutation runs through the
 	// world command channel (see write_handlers.go).
 	mux.HandleFunc("POST /api/village/pc/move", s.requireAuth(s.handlePCMove))

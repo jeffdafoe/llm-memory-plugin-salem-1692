@@ -1309,8 +1309,13 @@ func (w *World) republish() {
 // type.
 func snapshotActor(a *Actor, atTick uint64) *ActorSnapshot {
 	var hash uint64
-	for _, q := range a.Inventory {
+	var inventoryCopy map[ItemKind]int
+	if len(a.Inventory) > 0 {
+		inventoryCopy = make(map[ItemKind]int, len(a.Inventory))
+	}
+	for k, q := range a.Inventory {
 		hash += uint64(q)
+		inventoryCopy[k] = q
 	}
 	needsCopy := make(map[NeedKey]int, len(a.Needs))
 	for k, v := range a.Needs {
@@ -1333,7 +1338,9 @@ func snapshotActor(a *Actor, atTick uint64) *ActorSnapshot {
 		State:              a.State,
 		Role:               a.Role,
 		LLMAgent:           a.LLMAgent,
+		LoginUsername:      a.LoginUsername,
 		InsideStructureID:  a.InsideStructureID,
+		InsideRoomID:       a.InsideRoomID,
 		Pos:                a.Pos,
 		CurrentHuddleID:    a.CurrentHuddleID,
 		SpriteID:           a.SpriteID,
@@ -1348,6 +1355,7 @@ func snapshotActor(a *Actor, atTick uint64) *ActorSnapshot {
 		SocialEndMin:       copyIntPtr(a.SocialEndMin),
 		Needs:              needsCopy,
 		InventoryHash:      hash,
+		Inventory:          inventoryCopy,
 		Coins:              a.Coins,
 		Acquaintances:      cloneAcquaintances(a.Acquaintances),
 		Relationships:      cloneRelationships(a.Relationships),
