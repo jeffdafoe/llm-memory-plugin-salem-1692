@@ -10,6 +10,14 @@ godot_bin: /usr/local/bin/godot
 # Engine
 engine_port: 8090
 
+# Umbilical debug/control surface (operator-gated on plugins/administer).
+# umbilical_enabled arms the read surface (telemetry + state); control adds the
+# world-mutating routes (nudge + force-phase). Both render into /etc/salem-1692/env
+# (see templates/salem-env.j2); the engine fails closed (disabled) if either is
+# absent. Set false to take the surface off the wire entirely.
+umbilical_enabled: "true"
+umbilical_control_enabled: "true"
+
 # Project
 project_name: llm-memory-salem-1692
 repo_root: /opt/llm-memory-salem-1692
