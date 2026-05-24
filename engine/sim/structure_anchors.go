@@ -130,6 +130,73 @@ func effectiveLoiterTile(w *World, structureID StructureID) (Position, bool) {
 	return computeLoiterTile(vobj, asset), true
 }
 
+// Loiter-attribution tolerances, in king's-move (Chebyshev) tiles. Ported
+// from v1's two reverse-lookup callers, which shared the loiter-pin formula
+// but used different radii:
+//   - LoiterAttributionTiles (1): v1 resolveLoiteringStructure — "standing
+//     AT" a pin (object-refresh arrival, dwell still-here, the NPC "you are
+//     at X" perception line). Chebyshev <= 1 = the pin tile or its 8
+//     king's-move visitor slots — the exact inverse of pickVisitorSlot.
+//   - AudienceScopeTiles (2): v1 actorStructureScope outdoor audience scope —
+//     its 64px ring (= 2 tiles) for the conversational/talk-panel scope a
+//     loitering PC hears.
+const (
+	LoiterAttributionTiles = 1
+	AudienceScopeTiles     = 2
+)
+
+// ResolveLoiteringObject returns the id of the NAMED village object whose
+// loiter pin (computeLoiterTile) is closest to actorTile within maxCheb
+// king's-move tiles, or ("", false) when none qualifies. This is the v2 port
+// of v1's resolveLoiteringStructure (engine/village_objects.go:184) — the
+// inverse of pickVisitorSlot: given the tile an actor occupies, identify which
+// loiter pin owns it.
+//
+// "Named" (DisplayName != "") mirrors v1's `display_name IS NOT NULL` filter,
+// so it matches any named building OR prop a visitor can stand at (a well, a
+// shade oak) — NOT only Structure-bridged buildings. An object whose asset_id
+// doesn't resolve in the catalog is skipped (v1 JOINed asset, so an
+// unresolvable asset never matched).
+//
+// Ties (equal Chebyshev distance) break by the smallest VillageObjectID so the
+// result is deterministic regardless of the map's random iteration order (v1's
+// `ORDER BY chebyshev_dist LIMIT 1` left exact ties to Postgres; v2 pins it).
+//
+// Pure over its inputs so both the live world (pass w.VillageObjects, w.Assets
+// from inside a Command.Fn) and the published snapshot (snap.VillageObjects +
+// the reference asset catalog) can call it — the read surface (pc/me audience
+// scope) reads the snapshot; the in-engine consumers (object-refresh, dwell,
+// NPC-route arrival) read the live world.
+func ResolveLoiteringObject(objects map[VillageObjectID]*VillageObject, assets map[AssetID]*Asset, actorTile TilePos, maxCheb int) (VillageObjectID, bool) {
+	var bestID VillageObjectID
+	bestDist := 0
+	found := false
+	for id, vobj := range objects {
+		if vobj == nil || vobj.DisplayName == "" {
+			continue
+		}
+		asset, ok := assets[vobj.AssetID]
+		if !ok || asset == nil {
+			continue
+		}
+		d := computeLoiterTile(vobj, asset).Chebyshev(actorTile)
+		if d > maxCheb {
+			continue
+		}
+		if !found || d < bestDist || (d == bestDist && id < bestID) {
+			bestID, bestDist, found = id, d, true
+		}
+	}
+	return bestID, found
+}
+
+// resolveLoiteringObject is the live-world convenience wrapper over
+// ResolveLoiteringObject. MUST be called from inside a Command.Fn (reads
+// w.VillageObjects / w.Assets).
+func resolveLoiteringObject(w *World, actorTile TilePos, maxCheb int) (VillageObjectID, bool) {
+	return ResolveLoiteringObject(w.VillageObjects, w.Assets, actorTile, maxCheb)
+}
+
 // structureEntryTile returns the tile an actor must reach to count as
 // "inside" structureID for a StructureEnter move: the structure's door
 // tile (placement anchor + the asset's door offset).
