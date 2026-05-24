@@ -23,9 +23,13 @@ import (
 // machine. "Mid-deliberation" is the reactor's concern (WarrantedSince /
 // admission), not a rest field.
 //
-// LODGER PATH (#3) is deferred: an NPC boarder rests at a granted room_access
-// bedroom (Ezekiel at the inn), which has no HomeStructureID. This slice beds
-// only at HomeStructureID; the lodger branch lands with ZBBS-WORK-204.
+// LODGER PATH (ZBBS-HOME-296 2c): an NPC boarder has no HomeStructureID but
+// holds an active ledger RoomAccess at the inn it rents (Ezekiel). It auto-beds
+// there the same way a homed NPC beds at home — see npcSleepHere — with one
+// difference: the inn is a public venue (the tavern also serves food + drink),
+// so a lodger is bedded only at bedtime (off the dawn/dusk-fallback shift
+// window), not the moment it walks in for a midday meal. A homed NPC keeps the
+// classic always-off-when-unscheduled rule; the bedtime window is lodger-only.
 
 // DefaultNPCSleepMaxDurationHours caps an auto-bedded NPC's sleep when no
 // shift-start wakes them sooner. Matches v1's npc_sleep_max_duration_hours.
@@ -81,6 +85,41 @@ func localMinuteOfDay(w *World, at time.Time) int {
 	}
 	local := at.In(loc)
 	return local.Hour()*60 + local.Minute()
+}
+
+// npcSleepHere reports whether agent NPC a may auto-bed in the structure it is
+// currently inside, at now — the unified sleep-target gate for the home and
+// lodger resting relationships (ZBBS-HOME-296 2c). Both require off-shift; the
+// difference is which shift notion governs:
+//
+//   - Home: a is inside its HomeStructureID. Off-shift via isActorOnShift, where
+//     an unscheduled NPC is always off-shift — home is the default resting state
+//     (HOME-204), so a homed NPC beds on any off-shift arrival. Unchanged.
+//   - Lodger: a is not home-matched but holds an active ledger RoomAccess for
+//     its current structure (actorIsLodgerAt). Off the dawn/dusk-FALLBACK shift
+//     window (effectiveShiftWindow + minuteInShiftWindow): an unscheduled lodger
+//     beds only at night (its bedtime window), NOT the moment it steps into the
+//     inn for a midday meal — the inn doubles as the tavern. Scheduled lodgers
+//     are identical under both notions, so the window change is inn-stayer-only.
+//
+// Caller still enforces "not already sleeping" and "not on break". MUST be
+// called from inside a Command.Fn (actorIsLodgerAt reads w.Structures).
+func npcSleepHere(w *World, a *Actor, now time.Time) bool {
+	if a.InsideStructureID == "" {
+		return false
+	}
+	nowMinute := localMinuteOfDay(w, now)
+	if a.HomeStructureID != "" && a.InsideStructureID == a.HomeStructureID {
+		return !isActorOnShift(a, nowMinute)
+	}
+	if actorIsLodgerAt(w, a, a.InsideStructureID, now) {
+		start, end, ok := effectiveShiftWindow(w, a)
+		if !ok {
+			return false
+		}
+		return !minuteInShiftWindow(start, end, nowMinute)
+	}
+	return false
 }
 
 // executeNPCSleep beds an NPC: sets SleepingUntil = now + the configured cap,
@@ -154,11 +193,10 @@ func handleAutoSleepOnArrival(w *World, evt Event) {
 	if a.InsideStructureID != arr.FinalStructureID {
 		return
 	}
-	// At home. (Lodger-at-inn path is #3, deferred to ZBBS-WORK-204.)
-	if a.HomeStructureID == "" || a.InsideStructureID != a.HomeStructureID {
-		return
-	}
-	if isActorOnShift(a, localMinuteOfDay(w, arr.At)) {
+	// At home, or a lodger arriving at the inn it rents (ZBBS-HOME-296 2c).
+	// npcSleepHere applies the right off-shift / bedtime-window gate per
+	// relationship.
+	if !npcSleepHere(w, a, arr.At) {
 		return
 	}
 	executeNPCSleep(w, a, arr.At)
@@ -178,9 +216,14 @@ func RegisterSleepSubscriber(w *World) {
 // AutoBedAtHomeNPCs is the periodic backstop for NPCs that never fire an
 // arrival event — home==work vendors (the farmers, a future live-in
 // tavernkeeper) who are already standing at home and so never "arrive." Beds
-// every agent NPC that is at home, off-shift, awake, and not on break. The
-// arrival subscriber handles the normal walk-home case; this catches the
-// stationary ones.
+// every agent NPC that npcSleepHere clears (at home OR a lodger at its rented
+// inn), off-shift/off-window, awake, and not on break. The arrival subscriber
+// handles the normal walk-home case; this catches the stationary ones.
+//
+// For lodgers this backstop is load-bearing, not just defense-in-depth: a
+// lodger who walks into the inn DURING the day is not bedded on arrival (it's
+// the bedtime window that gates them), and no fresh arrival event fires at dusk
+// — so this sweep is what beds a lodger once its bedtime window opens.
 //
 // On-break actors are skipped (BreakUntil > now) — a vendor on break is awake
 // off-shift by choice and recovers via the tiredness sweep without being
@@ -188,7 +231,6 @@ func RegisterSleepSubscriber(w *World) {
 func AutoBedAtHomeNPCs(now time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
-			nowMinute := localMinuteOfDay(w, now)
 			bedded := 0
 			for _, a := range w.Actors {
 				if !isAgentNPC(a) || a.SleepingUntil != nil {
@@ -197,10 +239,7 @@ func AutoBedAtHomeNPCs(now time.Time) Command {
 				if a.BreakUntil != nil && a.BreakUntil.After(now) {
 					continue // on break — awake by choice
 				}
-				if a.HomeStructureID == "" || a.InsideStructureID != a.HomeStructureID {
-					continue
-				}
-				if isActorOnShift(a, nowMinute) {
+				if !npcSleepHere(w, a, now) {
 					continue
 				}
 				if executeNPCSleep(w, a, now) {
@@ -233,8 +272,29 @@ func WakeExpiredNPCSleepers(now time.Time) Command {
 				if !isAgentNPC(a) || a.SleepingUntil == nil {
 					continue
 				}
-				capReached := !a.SleepingUntil.After(now)
-				if !capReached && !isActorOnShift(a, nowMinute) {
+				if !a.SleepingUntil.After(now) {
+					// Safety cap reached — wake regardless of relationship.
+					wakeNPC(w, a)
+					woken++
+					continue
+				}
+				// Morning wake at the shift boundary. A current lodger (no
+				// HomeStructureID AND an active ledger grant at its structure)
+				// wakes on the dawn/dusk-fallback window — symmetric with the
+				// bedtime gate it was bedded by (npcSleepHere) — rather than
+				// isActorOnShift's always-off-when-unscheduled, which would
+				// strand it asleep until the 12h cap. The lodger relationship is
+				// checked EXPLICITLY rather than inferred from no-home: any other
+				// no-home sleeper (debug tooling, a future HOME-300 shade-tree
+				// rester, a backfill) keeps the default cap-only wake, so the
+				// wake condition never outruns the bed condition. Homed NPCs are
+				// unchanged (the window is inn-stayer-only, ZBBS-HOME-296 2c).
+				onShift := isActorOnShift(a, nowMinute)
+				if a.HomeStructureID == "" && actorIsLodgerAt(w, a, a.InsideStructureID, now) {
+					start, end, ok := effectiveShiftWindow(w, a)
+					onShift = ok && minuteInShiftWindow(start, end, nowMinute)
+				}
+				if !onShift {
 					continue
 				}
 				wakeNPC(w, a)

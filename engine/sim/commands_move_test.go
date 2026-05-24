@@ -560,8 +560,15 @@ func buildMembershipTestWorld(t *testing.T) (*sim.World, context.CancelFunc) {
 		"boarder": {
 			ID: "boarder", Pos: sim.TilePos{X: sim.PadX + 3, Y: sim.PadY},
 			RoomAccess: map[sim.RoomAccessKey]*sim.RoomAccess{
+				// A real lodger grant always carries a future ExpiresAt
+				// (AssignBedroomForLodger sets it = lodger_until); the lodger
+				// leg gates on IsActiveLedgerGrant, which fails closed on a
+				// nil/past expiry.
 				{RoomID: 1, Source: sim.AccessSourceLedger}: {
 					RoomID: 1, Source: sim.AccessSourceLedger, Active: true,
+					// Fixed far-future instant — always after the test's
+					// time.Now() `now`, with no wall-clock dependence.
+					ExpiresAt: func() *time.Time { t := time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC); return &t }(),
 				},
 			},
 		},
