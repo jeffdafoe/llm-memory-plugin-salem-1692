@@ -566,7 +566,9 @@ func buildMembershipTestWorld(t *testing.T) (*sim.World, context.CancelFunc) {
 				// nil/past expiry.
 				{RoomID: 1, Source: sim.AccessSourceLedger}: {
 					RoomID: 1, Source: sim.AccessSourceLedger, Active: true,
-					ExpiresAt: func() *time.Time { t := time.Now().Add(72 * time.Hour); return &t }(),
+					// Fixed far-future instant — always after the test's
+					// time.Now() `now`, with no wall-clock dependence.
+					ExpiresAt: func() *time.Time { t := time.Date(2100, 1, 1, 0, 0, 0, 0, time.UTC); return &t }(),
 				},
 			},
 		},

@@ -187,4 +187,20 @@ func TestLodgerWakeAtDawn(t *testing.T) {
 			t.Error("homed unscheduled NPC should wake only on the 12h cap, not the day window")
 		}
 	})
+	t.Run("homeless non-lodger sleeper does NOT wake on the day window", func(t *testing.T) {
+		// No home and NO active grant — the wake-side lodger predicate must be
+		// false, so this sleeper keeps the cap-only wake. Guards against the
+		// wake condition outrunning the bed condition (code_review, HOME-296 2c).
+		a := npc("x", KindNPCStateful)
+		a.HomeStructureID = ""
+		a.InsideStructureID = "inn"
+		a.RoomAccess = nil // not a lodger
+		capAt := dawn.Add(6 * time.Hour)
+		a.SleepingUntil = &capAt
+		w := lodgerSleepWorld(a)
+		WakeExpiredNPCSleepers(dawn).Fn(w)
+		if a.SleepingUntil == nil {
+			t.Error("homeless non-lodger sleeper should stay asleep until the cap, not wake on the day window")
+		}
+	})
 }

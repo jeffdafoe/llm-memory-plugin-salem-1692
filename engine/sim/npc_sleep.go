@@ -278,16 +278,19 @@ func WakeExpiredNPCSleepers(now time.Time) Command {
 					woken++
 					continue
 				}
-				// Morning wake at the shift boundary. A bedded NPC with no
-				// HomeStructureID was bedded via the lodger arm (executeNPCSleep
-				// fires only from the home/lodger auto-bed paths), so it wakes on
-				// the dawn/dusk-fallback window — symmetric with its bedtime-
-				// window gate (npcSleepHere) — rather than isActorOnShift's
-				// always-off-when-unscheduled, which would strand a lodger asleep
-				// until the 12h cap. Homed NPCs keep isActorOnShift unchanged
-				// (ZBBS-HOME-296 2c scopes the window to inn-stayers).
+				// Morning wake at the shift boundary. A current lodger (no
+				// HomeStructureID AND an active ledger grant at its structure)
+				// wakes on the dawn/dusk-fallback window — symmetric with the
+				// bedtime gate it was bedded by (npcSleepHere) — rather than
+				// isActorOnShift's always-off-when-unscheduled, which would
+				// strand it asleep until the 12h cap. The lodger relationship is
+				// checked EXPLICITLY rather than inferred from no-home: any other
+				// no-home sleeper (debug tooling, a future HOME-300 shade-tree
+				// rester, a backfill) keeps the default cap-only wake, so the
+				// wake condition never outruns the bed condition. Homed NPCs are
+				// unchanged (the window is inn-stayer-only, ZBBS-HOME-296 2c).
 				onShift := isActorOnShift(a, nowMinute)
-				if a.HomeStructureID == "" {
+				if a.HomeStructureID == "" && actorIsLodgerAt(w, a, a.InsideStructureID, now) {
 					start, end, ok := effectiveShiftWindow(w, a)
 					onShift = ok && minuteInShiftWindow(start, end, nowMinute)
 				}
