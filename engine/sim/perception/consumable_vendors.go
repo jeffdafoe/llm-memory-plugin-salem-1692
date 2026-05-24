@@ -1,7 +1,9 @@
 package perception
 
 import (
+	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
@@ -87,6 +89,60 @@ func findVendorConsumables(snap *sim.Snapshot, buyerID sim.ActorID, need sim.Nee
 		return out[i].ItemKind < out[j].ItemKind
 	})
 	return out
+}
+
+// OwnStockItem is one satisfier the actor already carries — the consume-first
+// half of both the satiation section (hunger/thirst) and the recovery-options
+// tiredness own-stock line. Shared so "you carry X — consume" reads identically
+// across needs.
+type OwnStockItem struct {
+	Label     string // "coca tea"
+	Magnitude int    // immediate need eased per unit
+
+	// kind is the final sort tie-break so two item kinds that share a display
+	// label AND magnitude order deterministically (Inventory is a map).
+	// Unexported — never rendered.
+	kind sim.ItemKind
+}
+
+// gatherOwnStock returns the actor's own inventory items that ease `need` on the
+// immediate hit, strongest-first (ties by label, then ItemKind for determinism
+// — Inventory is a map). Empty when the actor carries no satisfier.
+func gatherOwnStock(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, need sim.NeedKey) []OwnStockItem {
+	if snap == nil || actorSnap == nil {
+		return nil
+	}
+	var out []OwnStockItem
+	for kind, qty := range actorSnap.Inventory {
+		if qty <= 0 {
+			continue
+		}
+		mag := itemNeedMagnitude(snap, kind, need)
+		if mag <= 0 {
+			continue
+		}
+		out = append(out, OwnStockItem{Label: itemDisplayLabel(snap, kind), Magnitude: mag, kind: kind})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Magnitude != out[j].Magnitude {
+			return out[i].Magnitude > out[j].Magnitude
+		}
+		if out[i].Label != out[j].Label {
+			return out[i].Label < out[j].Label
+		}
+		return out[i].kind < out[j].kind
+	})
+	return out
+}
+
+// renderOwnStockLine renders "<item> (~N), <item> (~N)" for an own-stock list.
+// Shared by the satiation section and the recovery-options tiredness line.
+func renderOwnStockLine(items []OwnStockItem) string {
+	parts := make([]string, len(items))
+	for i, it := range items {
+		parts[i] = fmt.Sprintf("%s (~%d)", sanitizeInline(it.Label), it.Magnitude)
+	}
+	return strings.Join(parts, ", ")
 }
 
 // itemNeedMagnitude returns the immediate `need` a unit of kind eases per the

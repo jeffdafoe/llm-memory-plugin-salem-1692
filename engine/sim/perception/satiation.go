@@ -2,7 +2,6 @@ package perception
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
@@ -38,21 +37,10 @@ type SatiationView struct {
 
 // SatiationNeedView is one pressing consumable need's resolution surface.
 type SatiationNeedView struct {
-	Need     sim.NeedKey         // "hunger" | "thirst"
-	Verb     string              // "eat" | "drink"
-	OwnStock []SatiationItem     // satisfiers the actor already carries
-	Vendors  []SatiationVendor   // nearby places selling a satisfier
-}
-
-// SatiationItem is one satisfying item (own-stock or a vendor's stock).
-type SatiationItem struct {
-	Label     string // "berries"
-	Magnitude int    // immediate need eased per unit
-
-	// kind is the final sort tie-break so two item kinds that share a display
-	// label AND magnitude order deterministically (actorSnap.Inventory is a
-	// map). Unexported — never rendered. Mirrors RecoveryOption.sourceKey.
-	kind sim.ItemKind
+	Need     sim.NeedKey     // "hunger" | "thirst"
+	Verb     string          // "eat" | "drink"
+	OwnStock []OwnStockItem  // satisfiers the actor already carries (shared shape)
+	Vendors  []SatiationVendor // nearby places selling a satisfier
 }
 
 // SatiationVendor is one (workplace, item) buy opportunity.
@@ -77,7 +65,7 @@ func buildSatiation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Acto
 		if actorSnap.Needs[need] < snap.NeedThresholds.Get(need) {
 			continue
 		}
-		own := gatherOwnStockSatisfiers(snap, actorSnap, need)
+		own := gatherOwnStock(snap, actorSnap, need)
 		vendors := gatherSatiationVendors(snap, actorID, need)
 		if len(own) == 0 && len(vendors) == 0 {
 			continue
@@ -93,32 +81,6 @@ func buildSatiation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Acto
 		return nil
 	}
 	return &SatiationView{Needs: needs}
-}
-
-// gatherOwnStockSatisfiers returns the actor's own inventory items that ease
-// `need`, strongest first (ties broken by label) for deterministic output.
-func gatherOwnStockSatisfiers(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, need sim.NeedKey) []SatiationItem {
-	var out []SatiationItem
-	for kind, qty := range actorSnap.Inventory {
-		if qty <= 0 {
-			continue
-		}
-		mag := itemNeedMagnitude(snap, kind, need)
-		if mag <= 0 {
-			continue
-		}
-		out = append(out, SatiationItem{Label: itemDisplayLabel(snap, kind), Magnitude: mag, kind: kind})
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Magnitude != out[j].Magnitude {
-			return out[i].Magnitude > out[j].Magnitude
-		}
-		if out[i].Label != out[j].Label {
-			return out[i].Label < out[j].Label
-		}
-		return out[i].kind < out[j].kind
-	})
-	return out
 }
 
 // gatherSatiationVendors maps the shared vendor-consumable finder into the
@@ -155,7 +117,7 @@ func renderSatiation(b *strings.Builder, v *SatiationView) {
 	b.WriteString("## What you can eat or drink\n")
 	for _, n := range v.Needs {
 		if len(n.OwnStock) > 0 {
-			fmt.Fprintf(b, "You have %s on hand — consume to %s.\n", renderSatiationItems(n.OwnStock), n.Verb)
+			fmt.Fprintf(b, "You have %s on hand — consume to %s.\n", renderOwnStockLine(n.OwnStock), n.Verb)
 		}
 		if len(n.Vendors) > 0 {
 			fmt.Fprintf(b, "Nearby to buy (%s):\n", string(n.Need))
@@ -174,14 +136,4 @@ func renderSatiation(b *strings.Builder, v *SatiationView) {
 		}
 	}
 	b.WriteString("\n")
-}
-
-// renderSatiationItems renders a comma-joined own-stock list with numeric
-// magnitudes: "bread (~6), berries (~4)".
-func renderSatiationItems(items []SatiationItem) string {
-	parts := make([]string, len(items))
-	for i, it := range items {
-		parts[i] = fmt.Sprintf("%s (~%d)", sanitizeInline(it.Label), it.Magnitude)
-	}
-	return strings.Join(parts, ", ")
 }

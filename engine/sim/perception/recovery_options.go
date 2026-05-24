@@ -26,15 +26,22 @@ const recoveryTirednessNeed = sim.NeedKey("tiredness")
 const nightsStayItem = sim.ItemKind("nights_stay")
 
 // RecoveryOptionsView is the content-gated "## How you can rest" section.
-// A nil view (or empty Options) means render omits the section.
+// A nil view (or empty Options AND empty OwnStock) means render omits the
+// section.
 type RecoveryOptionsView struct {
 	Options []RecoveryOption
+
+	// OwnStock is the tiredness consume-first line — satisfiers the actor
+	// already carries (e.g. coca tea), the tiredness counterpart to the
+	// satiation own-stock line. Tiredness-gated (maintenance, not shelter),
+	// so empty for a homeless-but-rested actor. ZBBS-HOME-305.
+	OwnStock []OwnStockItem
 }
 
 // RecoveryOption is one rest-affordance bullet.
 type RecoveryOption struct {
-	Kind      string // "rest" (free object) | "inn" | "remedy" (vendor consumable)
-	Label     string // "the old oak" | "Hannah's Inn" | the vendor's workplace
+	Kind      string // "rest" (free object) | "inn" | "remedy" (vendor consumable) | "home" (own bed)
+	Label     string // "the old oak" | "Hannah's Inn" | the vendor's workplace | the actor's home
 	ItemLabel string // remedy only: the consumable's display label ("coca tea"); "" otherwise
 	Magnitude int    // tiredness eased (positive); 0/unused for inns
 	CostText  string // "free" | "~28 coins" | "ask the keeper"
@@ -83,19 +90,26 @@ func buildRecoveryOptions(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *si
 	var opts []RecoveryOption
 	opts = append(opts, gatherFreeRestSpots(snap, actorSnap)...)
 	opts = append(opts, gatherInnRestSpots(snap, actorID)...)
-	// Consumable remedies are tiredness-gated, NOT homeless-gated: a not-yet-
-	// tired homeless actor surveying where to shelter doesn't need stimulant-
-	// brew prompts. Mirrors v1's "brews stay tiredness-gated since they're
-	// maintenance, not shelter."
+	// Consumable remedies, the own-bed option, and the own-stock line are all
+	// tiredness-gated, NOT homeless-gated: a not-yet-tired homeless actor
+	// surveying where to shelter doesn't need stimulant-brew prompts or a
+	// "drink your tea" nudge. Mirrors v1's "brews and own-stock stay tiredness-
+	// gated since they're maintenance, not shelter." (A homed actor only reaches
+	// here when tired anyway — the homeless arm is the only every-tick path.)
+	var ownStock []OwnStockItem
 	if tired {
 		opts = append(opts, gatherConsumableRemedies(snap, actorID)...)
+		if home := gatherHomeRestSpot(snap, actorSnap); home != nil {
+			opts = append(opts, *home)
+		}
+		ownStock = gatherOwnStock(snap, actorSnap, recoveryTirednessNeed)
 	}
-	if len(opts) == 0 {
+	if len(opts) == 0 && len(ownStock) == 0 {
 		return nil
 	}
 
-	// Nearest first; ties (and the no-distance inns) broken by label for
-	// deterministic output.
+	// Nearest first; ties (and the no-distance inns/remedies/home) broken by
+	// label for deterministic output.
 	sort.SliceStable(opts, func(i, j int) bool {
 		if opts[i].sortKey != opts[j].sortKey {
 			return opts[i].sortKey < opts[j].sortKey
@@ -105,7 +119,35 @@ func buildRecoveryOptions(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *si
 		}
 		return opts[i].sourceKey < opts[j].sourceKey
 	})
-	return &RecoveryOptionsView{Options: opts}
+	return &RecoveryOptionsView{Options: opts, OwnStock: ownStock}
+}
+
+// gatherHomeRestSpot returns the actor's own home as a "sleep in your own bed"
+// rest option, or nil when the actor has no home or it doesn't resolve to a
+// structure in the snapshot. Un-shift-gated, consistent with the inn arm — the
+// shift-duty producer separately issues the directive "head home, your shift
+// ended" warrant; this is the affordance-menu entry. No distance (a Structure's
+// position is grid space, not the actor's tile space), so it parks after the
+// distance-bearing free rest spots like inns and remedies.
+func gatherHomeRestSpot(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) *RecoveryOption {
+	if snap == nil || actorSnap == nil || actorSnap.HomeStructureID == "" {
+		return nil
+	}
+	st := snap.Structures[actorSnap.HomeStructureID]
+	if st == nil {
+		return nil
+	}
+	label := "your home"
+	if st.DisplayName != "" {
+		label = st.DisplayName
+	}
+	return &RecoveryOption{
+		Kind:      "home",
+		Label:     label,
+		CostText:  "free",
+		sortKey:   innSortKey,
+		sourceKey: string(actorSnap.HomeStructureID),
+	}
 }
 
 // gatherFreeRestSpots returns a "rest" option for each village object that
@@ -337,7 +379,7 @@ func cardinalDirection(fromX, fromY, toX, toY float64) string {
 // renderRecoveryOptions writes the "## How you can rest" section. Content-
 // gated: nil/empty view writes nothing. Benefit-first bullets.
 func renderRecoveryOptions(b *strings.Builder, v *RecoveryOptionsView) {
-	if v == nil || len(v.Options) == 0 {
+	if v == nil || (len(v.Options) == 0 && len(v.OwnStock) == 0) {
 		return
 	}
 	b.WriteString("## How you can rest\n")
@@ -347,6 +389,8 @@ func renderRecoveryOptions(b *strings.Builder, v *RecoveryOptionsView) {
 		switch o.Kind {
 		case "inn":
 			b.WriteString(" — rent a room")
+		case "home":
+			b.WriteString(" — sleep in your own bed")
 		case "remedy":
 			fmt.Fprintf(b, " — buy %s", sanitizeInline(o.ItemLabel))
 			if o.Magnitude > 0 {
@@ -367,6 +411,9 @@ func renderRecoveryOptions(b *strings.Builder, v *RecoveryOptionsView) {
 			}
 		}
 		b.WriteString("\n")
+	}
+	if len(v.OwnStock) > 0 {
+		fmt.Fprintf(b, "You have %s on hand — consume to drink.\n", renderOwnStockLine(v.OwnStock))
 	}
 	b.WriteString("\n")
 }
