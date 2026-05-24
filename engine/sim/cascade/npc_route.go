@@ -278,7 +278,7 @@ func buildLamplighterCandidates(w *sim.World, targetTag string) []sim.RouteCandi
 		out = append(out, sim.RouteCandidate{
 			ObjectID: id,
 			NewState: target.State,
-			WorldX:   obj.X, WorldY: obj.Y,
+			WorldX:   obj.Pos.X, WorldY: obj.Pos.Y,
 		})
 	}
 	return sortCandidatesByID(out)
@@ -338,7 +338,7 @@ func buildRotationCandidates(w *sim.World, domainTag string) []sim.RouteCandidat
 		out = append(out, sim.RouteCandidate{
 			ObjectID: id,
 			NewState: next,
-			WorldX:   obj.X, WorldY: obj.Y,
+			WorldX:   obj.Pos.X, WorldY: obj.Pos.Y,
 		})
 	}
 	return sortCandidatesByID(out)

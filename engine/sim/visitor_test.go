@@ -87,8 +87,7 @@ func (vw *visitorWorld) seedTavern(t *testing.T) sim.StructureID {
 		id: {
 			ID:          id,
 			AssetID:     "tavern-asset",
-			X:           320,
-			Y:           320,
+			Pos:         sim.WorldPos{X: 320, Y: 320},
 			EntryPolicy: sim.EntryPolicyOpen,
 			Tags:        []string{sim.VisitorTagTavern},
 		},
@@ -120,8 +119,8 @@ func TestPickVisitorDestination_TavernPreferred(t *testing.T) {
 		"a": {ID: "a", Category: "structure"},
 	})
 	vw.handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
-		"other":  {ID: "other", AssetID: "a", X: 100, Y: 100, Tags: []string{"smith"}},
-		"tavern": {ID: "tavern", AssetID: "a", X: 320, Y: 320, Tags: []string{sim.VisitorTagTavern}},
+		"other":  {ID: "other", AssetID: "a", Pos: sim.WorldPos{X: 100, Y: 100}, Tags: []string{"smith"}},
+		"tavern": {ID: "tavern", AssetID: "a", Pos: sim.WorldPos{X: 320, Y: 320}, Tags: []string{sim.VisitorTagTavern}},
 	})
 	vw.handles.Structures.Seed(map[sim.StructureID]*sim.Structure{
 		"other":  {ID: "other"},
@@ -151,7 +150,7 @@ func TestPickVisitorDestination_FallbackAnyTagged(t *testing.T) {
 		"a": {ID: "a", Category: "structure"},
 	})
 	vw.handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
-		"smith": {ID: "smith", AssetID: "a", X: 100, Y: 100, Tags: []string{"smith"}},
+		"smith": {ID: "smith", AssetID: "a", Pos: sim.WorldPos{X: 100, Y: 100}, Tags: []string{"smith"}},
 	})
 	vw.handles.Structures.Seed(map[sim.StructureID]*sim.Structure{
 		"smith": {ID: "smith"},

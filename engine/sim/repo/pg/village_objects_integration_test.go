@@ -213,8 +213,7 @@ func TestIntegration_VillageObjects_SaveSnapshotRoundTrip(t *testing.T) {
 			ID:                sim.VillageObjectID(uuidObj1),
 			AssetID:           sim.AssetID(uuidAssetWell),
 			CurrentState:      "default",
-			X:                 640,
-			Y:                 320,
+			Pos:               sim.WorldPos{X: 640, Y: 320},
 			PlacedBy:          "system",
 			DisplayName:       "Well",
 			EntryPolicy:       sim.EntryPolicyOpen,
@@ -228,8 +227,7 @@ func TestIntegration_VillageObjects_SaveSnapshotRoundTrip(t *testing.T) {
 			ID:           sim.VillageObjectID(uuidObj2),
 			AssetID:      sim.AssetID(uuidAssetLamp),
 			CurrentState: "lit",
-			X:            10,
-			Y:            20,
+			Pos:          sim.WorldPos{X: 10, Y: 20},
 			EntryPolicy:  sim.EntryPolicyClosed,
 			Tags:         []string{},
 		},
@@ -251,7 +249,7 @@ func TestIntegration_VillageObjects_SaveSnapshotRoundTrip(t *testing.T) {
 		t.Fatal("obj1 missing after round-trip")
 	}
 	if g1.AssetID != sim.AssetID(uuidAssetWell) || g1.CurrentState != "default" ||
-		g1.X != 640 || g1.Y != 320 || g1.PlacedBy != "system" ||
+		g1.Pos.X != 640 || g1.Pos.Y != 320 || g1.PlacedBy != "system" ||
 		g1.DisplayName != "Well" || g1.EntryPolicy != sim.EntryPolicyOpen ||
 		g1.OwnerActorID != "actor-7" || g1.AvailableQuantity != 5 {
 		t.Errorf("obj1 round-trip mismatch: %+v", g1)

@@ -638,7 +638,7 @@ func pickVisitorDestination(w *World) (StructureID, GridPoint, bool) {
 		}
 	}
 	if tavern != "" {
-		anchor := WorldToTile(w.VillageObjects[tavern].X, w.VillageObjects[tavern].Y)
+		anchor := w.VillageObjects[tavern].Pos.Tile()
 		return StructureID(tavern), anchor, true
 	}
 	// Pass 2: smallest-ID VillageObject backed by a Structure. Untagged
@@ -657,7 +657,7 @@ func pickVisitorDestination(w *World) (StructureID, GridPoint, bool) {
 		}
 	}
 	if fallback != "" {
-		anchor := WorldToTile(w.VillageObjects[fallback].X, w.VillageObjects[fallback].Y)
+		anchor := w.VillageObjects[fallback].Pos.Tile()
 		return StructureID(fallback), anchor, true
 	}
 	return "", GridPoint{}, false

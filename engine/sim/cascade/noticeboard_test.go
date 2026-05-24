@@ -43,8 +43,8 @@ func buildNoticeboardCascadeWorld(t *testing.T) (*sim.World, func()) {
 		},
 	})
 	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
-		"board":     {ID: "board", AssetID: "notice-board", CurrentState: "blank", X: 320, Y: 320},
-		"non-board": {ID: "non-board", AssetID: "plain-thing", CurrentState: "default", X: 640, Y: 320},
+		"board":     {ID: "board", AssetID: "notice-board", CurrentState: "blank", Pos: sim.WorldPos{X: 320, Y: 320}},
+		"non-board": {ID: "non-board", AssetID: "plain-thing", CurrentState: "default", Pos: sim.WorldPos{X: 640, Y: 320}},
 	})
 	w, err := sim.LoadWorld(context.Background(), repo)
 	if err != nil {

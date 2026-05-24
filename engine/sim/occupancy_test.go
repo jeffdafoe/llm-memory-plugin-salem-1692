@@ -40,10 +40,10 @@ func buildOccupancyWorld(t *testing.T) (*sim.World, *objEventCapture) {
 		},
 	})
 	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
-		"tavern":   {ID: "tavern", AssetID: "tavern-a", CurrentState: "unoccupied", X: 100, Y: 100},
-		"workshop": {ID: "workshop", AssetID: "workshop-a", CurrentState: "unoccupied", X: 200, Y: 200},
-		"inn":      {ID: "inn", AssetID: "inn-a", CurrentState: "unoccupied", X: 300, Y: 300},
-		"barn":     {ID: "barn", AssetID: "barn-a", CurrentState: "default", X: 400, Y: 400},
+		"tavern":   {ID: "tavern", AssetID: "tavern-a", CurrentState: "unoccupied", Pos: sim.WorldPos{X: 100, Y: 100}},
+		"workshop": {ID: "workshop", AssetID: "workshop-a", CurrentState: "unoccupied", Pos: sim.WorldPos{X: 200, Y: 200}},
+		"inn":      {ID: "inn", AssetID: "inn-a", CurrentState: "unoccupied", Pos: sim.WorldPos{X: 300, Y: 300}},
+		"barn":     {ID: "barn", AssetID: "barn-a", CurrentState: "default", Pos: sim.WorldPos{X: 400, Y: 400}},
 	})
 	handles.Structures.Seed(map[sim.StructureID]*sim.Structure{
 		"tavern":   {ID: "tavern", DisplayName: "Tavern"},

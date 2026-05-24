@@ -68,9 +68,8 @@ func buildConsumeTestWorld(t *testing.T, actors []consumeActorSpec, objects []co
 		objSeed := make(map[sim.VillageObjectID]*sim.VillageObject, len(objects))
 		for _, o := range objects {
 			objSeed[o.id] = &sim.VillageObject{
-				ID: o.id,
-				X:  o.x,
-				Y:  o.y,
+				ID:  o.id,
+				Pos: sim.WorldPos{X: o.x, Y: o.y},
 			}
 		}
 		handles.VillageObjects.Seed(objSeed)

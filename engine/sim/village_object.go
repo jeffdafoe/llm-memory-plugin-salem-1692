@@ -41,10 +41,10 @@ type VillageObject struct {
 	AssetID      AssetID
 	CurrentState string
 
-	// World coordinates (pixels) of the anchor point. tileSize=32; tile
-	// coords are derived via X/tileSize floor.
-	X float64
-	Y float64
+	// World-pixel coordinates of the anchor point. WorldPos (geom.go); tile
+	// coords via Pos.Tile(). Was an X/Y float64 pair — folded into WorldPos so
+	// an object's pixel position can never be mixed with a tile coordinate.
+	Pos WorldPos
 
 	// Admin metadata.
 	PlacedBy    string // llm-memory agent slug; "" if seeded by system
@@ -300,8 +300,7 @@ func MoveVillageObject(id VillageObjectID, x, y float64) Command {
 			if !ok {
 				return nil, ErrVillageObjectNotFound
 			}
-			obj.X = x
-			obj.Y = y
+			obj.Pos = WorldPos{X: x, Y: y}
 			w.emit(&VillageObjectMoved{
 				ObjectID: id,
 				X:        x,

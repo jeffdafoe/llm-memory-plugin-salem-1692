@@ -32,7 +32,7 @@ func buildNoticeboardTestWorld(t *testing.T) (*sim.World, *eventRecorder, *spoke
 		},
 	})
 	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
-		"board": {ID: "board", AssetID: "notice-board", CurrentState: "blank", X: 320, Y: 320},
+		"board": {ID: "board", AssetID: "notice-board", CurrentState: "blank", Pos: sim.WorldPos{X: 320, Y: 320}},
 	})
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
 		"crier": {

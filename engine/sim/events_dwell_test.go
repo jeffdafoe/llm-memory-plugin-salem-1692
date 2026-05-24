@@ -26,7 +26,7 @@ func buildConsumeDwellWorld(t *testing.T) (*sim.World, *capturedDwellEvents, con
 		"tavern": {
 			ID: "tavern", AssetID: "inn-thatched",
 			DisplayName: "The Drunken Hare",
-			X:           100, Y: 100,
+			Pos:         sim.WorldPos{X: 100, Y: 100},
 		},
 	})
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{

@@ -120,8 +120,8 @@ func TestLoadWorldAssetsAndObjects(t *testing.T) {
 		},
 	})
 	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
-		"obj-A": {ID: "obj-A", AssetID: "tree-maple", CurrentState: "default", X: 320, Y: 240},
-		"obj-B": {ID: "obj-B", AssetID: "lamp-iron", CurrentState: "unlit", X: 100, Y: 100, Tags: []string{"lamplighter-stop"}},
+		"obj-A": {ID: "obj-A", AssetID: "tree-maple", CurrentState: "default", Pos: sim.WorldPos{X: 320, Y: 240}},
+		"obj-B": {ID: "obj-B", AssetID: "lamp-iron", CurrentState: "unlit", Pos: sim.WorldPos{X: 100, Y: 100}, Tags: []string{"lamplighter-stop"}},
 	})
 
 	w, err := sim.LoadWorld(context.Background(), repo)

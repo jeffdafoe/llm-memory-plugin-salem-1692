@@ -345,8 +345,8 @@ func findRefreshObjectNear(w *World, x, y float64) (VillageObjectID, *VillageObj
 		if len(obj.Refreshes) == 0 {
 			continue
 		}
-		dx := obj.X - x
-		dy := obj.Y - y
+		dx := obj.Pos.X - x
+		dy := obj.Pos.Y - y
 		d2 := dx*dx + dy*dy
 		if d2 > bestDist2 {
 			continue

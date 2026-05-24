@@ -45,9 +45,9 @@ func buildRouteTestWorld(t *testing.T) (*sim.World, func()) {
 	})
 
 	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
-		"home":   {ID: "home", AssetID: "house", X: 320, Y: 320},
-		"lamp-A": {ID: "lamp-A", AssetID: "lamp", CurrentState: "lit", X: 640, Y: 320},
-		"lamp-B": {ID: "lamp-B", AssetID: "lamp", CurrentState: "lit", X: 960, Y: 320},
+		"home":   {ID: "home", AssetID: "house", Pos: sim.WorldPos{X: 320, Y: 320}},
+		"lamp-A": {ID: "lamp-A", AssetID: "lamp", CurrentState: "lit", Pos: sim.WorldPos{X: 640, Y: 320}},
+		"lamp-B": {ID: "lamp-B", AssetID: "lamp", CurrentState: "lit", Pos: sim.WorldPos{X: 960, Y: 320}},
 	})
 	handles.Structures.Seed(map[sim.StructureID]*sim.Structure{
 		"home": {ID: "home", DisplayName: "Home"},

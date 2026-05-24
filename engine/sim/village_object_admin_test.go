@@ -48,11 +48,11 @@ func buildObjectAdminWorld(t *testing.T) (*sim.World, *objEventCapture) {
 		"bldg": {ID: "bldg", Name: "Tavern", Category: "structure", DefaultState: "default", States: []sim.AssetState{{ID: 2, State: "default"}}},
 	})
 	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
-		"prop-1":  {ID: "prop-1", AssetID: "prop", CurrentState: "default", X: 100, Y: 100},
-		"tavern":  {ID: "tavern", AssetID: "bldg", CurrentState: "default", X: 200, Y: 200},
-		"post":    {ID: "post", AssetID: "prop", CurrentState: "default", X: 300, Y: 300},
-		"sign":    {ID: "sign", AssetID: "prop", CurrentState: "default", X: 305, Y: 295, AttachedTo: "post"},
-		"lantern": {ID: "lantern", AssetID: "prop", CurrentState: "default", X: 306, Y: 290, AttachedTo: "sign"},
+		"prop-1":  {ID: "prop-1", AssetID: "prop", CurrentState: "default", Pos: sim.WorldPos{X: 100, Y: 100}},
+		"tavern":  {ID: "tavern", AssetID: "bldg", CurrentState: "default", Pos: sim.WorldPos{X: 200, Y: 200}},
+		"post":    {ID: "post", AssetID: "prop", CurrentState: "default", Pos: sim.WorldPos{X: 300, Y: 300}},
+		"sign":    {ID: "sign", AssetID: "prop", CurrentState: "default", Pos: sim.WorldPos{X: 305, Y: 295}, AttachedTo: "post"},
+		"lantern": {ID: "lantern", AssetID: "prop", CurrentState: "default", Pos: sim.WorldPos{X: 306, Y: 290}, AttachedTo: "sign"},
 	})
 	handles.Structures.Seed(map[sim.StructureID]*sim.Structure{
 		"tavern": {ID: "tavern", DisplayName: "Tavern"},
@@ -82,8 +82,8 @@ func TestMoveVillageObject_Applied(t *testing.T) {
 		t.Errorf("result = %+v, want prop-1 (150.5, 175.25)", mr)
 	}
 	obj := w.Published().VillageObjects["prop-1"]
-	if obj.X != 150.5 || obj.Y != 175.25 {
-		t.Errorf("position = (%v, %v), want (150.5, 175.25)", obj.X, obj.Y)
+	if obj.Pos.X != 150.5 || obj.Pos.Y != 175.25 {
+		t.Errorf("position = (%v, %v), want (150.5, 175.25)", obj.Pos.X, obj.Pos.Y)
 	}
 
 	var moved *sim.VillageObjectMoved
@@ -124,8 +124,8 @@ func TestMoveVillageObject_RejectsNonFinite(t *testing.T) {
 		}
 	}
 	obj := w.Published().VillageObjects["prop-1"]
-	if obj.X != 100 || obj.Y != 100 {
-		t.Errorf("position mutated to (%v,%v), want unchanged (100,100)", obj.X, obj.Y)
+	if obj.Pos.X != 100 || obj.Pos.Y != 100 {
+		t.Errorf("position mutated to (%v,%v), want unchanged (100,100)", obj.Pos.X, obj.Pos.Y)
 	}
 }
 

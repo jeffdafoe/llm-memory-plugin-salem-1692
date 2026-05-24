@@ -283,7 +283,7 @@ func TestVillageObjectsRepo_SaveSnapshot_HappyPath(t *testing.T) {
 			ID:           sim.VillageObjectID(uuidObj1),
 			AssetID:      sim.AssetID(uuidAssetWell),
 			CurrentState: "default",
-			X:            640, Y: 320,
+			Pos:          sim.WorldPos{X: 640, Y: 320},
 			PlacedBy:     "admin",
 			DisplayName:  "Old Well",
 			EntryPolicy:  sim.EntryPolicyClosed,
@@ -294,8 +294,8 @@ func TestVillageObjectsRepo_SaveSnapshot_HappyPath(t *testing.T) {
 			ID:           sim.VillageObjectID(uuidObj2),
 			AssetID:      sim.AssetID(uuidAssetBench),
 			CurrentState: "variant-1",
-			X:            1000, Y: 500,
-			EntryPolicy: sim.EntryPolicyOpen,
+			Pos:          sim.WorldPos{X: 1000, Y: 500},
+			EntryPolicy:  sim.EntryPolicyOpen,
 			// nil tags → empty slice; nil owner → SQL NULL.
 		},
 	}
@@ -487,7 +487,7 @@ func TestVillageObjectsRepo_SaveSnapshot_OwnerNullVsValue(t *testing.T) {
 	objects := map[sim.VillageObjectID]*sim.VillageObject{
 		sim.VillageObjectID(uuidOverlay): {
 			ID: sim.VillageObjectID(uuidOverlay), AssetID: sim.AssetID(uuidAssetLamp), CurrentState: "lit",
-			X: 100, Y: 100,
+			Pos:          sim.WorldPos{X: 100, Y: 100},
 			EntryPolicy:  sim.EntryPolicyOpen,
 			OwnerActorID: "alice",
 			AttachedTo:   sim.VillageObjectID(uuidObj1),

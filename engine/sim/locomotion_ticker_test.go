@@ -30,7 +30,7 @@ func buildLocomotionTestWorld(t *testing.T) (*sim.World, context.CancelFunc, *ev
 	})
 	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
 		"cottage": {
-			ID: "cottage", AssetID: "cottage-asset", X: 320, Y: 320,
+			ID: "cottage", AssetID: "cottage-asset", Pos: sim.WorldPos{X: 320, Y: 320},
 			LoiterOffsetX: intp(0), LoiterOffsetY: intp(5),
 		},
 	})
