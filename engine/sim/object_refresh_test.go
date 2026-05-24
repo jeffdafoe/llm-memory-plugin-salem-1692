@@ -2,6 +2,7 @@ package sim_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -24,9 +25,21 @@ func buildRefreshTestWorld(t *testing.T) (*sim.World, context.CancelFunc) {
 	t.Helper()
 	repo, handles := mem.NewRepository()
 	wellLastRefresh := time.Now().UTC().Add(-2 * time.Hour) // 2h ago
+	// resolveLoiteringObject (the arrival resolver) only considers NAMED
+	// objects with a resolvable asset, and measures Chebyshev tiles to the
+	// loiter pin. Seed the assets, name each refresh object, and give it a
+	// zero loiter offset so its pin lands on its anchor tile — a test then
+	// places the actor there with placeAtObjectPin.
+	handles.Assets.Seed(map[sim.AssetID]*sim.Asset{
+		"well-stone":   {ID: "well-stone"},
+		"tree-oak":     {ID: "tree-oak"},
+		"bush-berries": {ID: "bush-berries"},
+	})
+	zero := 0
 	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
 		"well": {
-			ID: "well", AssetID: "well-stone", CurrentState: "default",
+			ID: "well", DisplayName: "Well", AssetID: "well-stone", CurrentState: "default",
+			LoiterOffsetX: &zero, LoiterOffsetY: &zero,
 			Pos: sim.WorldPos{X: 100, Y: 100},
 			Refreshes: []*sim.ObjectRefresh{
 				{
@@ -43,7 +56,8 @@ func buildRefreshTestWorld(t *testing.T) (*sim.World, context.CancelFunc) {
 			},
 		},
 		"oak": {
-			ID: "oak", AssetID: "tree-oak", CurrentState: "default",
+			ID: "oak", DisplayName: "Oak", AssetID: "tree-oak", CurrentState: "default",
+			LoiterOffsetX: &zero, LoiterOffsetY: &zero,
 			Pos: sim.WorldPos{X: 500, Y: 500},
 			Refreshes: []*sim.ObjectRefresh{
 				{Attribute: "tiredness", Amount: -8},
@@ -51,7 +65,8 @@ func buildRefreshTestWorld(t *testing.T) (*sim.World, context.CancelFunc) {
 			},
 		},
 		"dry_bush": {
-			ID: "dry_bush", AssetID: "bush-berries", CurrentState: "default",
+			ID: "dry_bush", DisplayName: "Berry Bush", AssetID: "bush-berries", CurrentState: "default",
+			LoiterOffsetX: &zero, LoiterOffsetY: &zero,
 			Pos: sim.WorldPos{X: 1000, Y: 1000},
 			Refreshes: []*sim.ObjectRefresh{
 				{
@@ -84,13 +99,37 @@ func buildRefreshTestWorld(t *testing.T) (*sim.World, context.CancelFunc) {
 	return w, cancel
 }
 
+// placeAtObjectPin moves the actor onto objID's loiter pin so an arrival
+// resolves to it. The fixture gives each object a zero loiter offset, so the
+// pin is the object's anchor tile (obj.Pos.Tile()); standing there puts the
+// actor at Chebyshev 0 from the pin, inside LoiterAttributionTiles.
+func placeAtObjectPin(t *testing.T, w *sim.World, actorID sim.ActorID, objID sim.VillageObjectID) {
+	t.Helper()
+	_, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		obj := world.VillageObjects[objID]
+		if obj == nil {
+			return nil, fmt.Errorf("placeAtObjectPin: no object %q", objID)
+		}
+		actor := world.Actors[actorID]
+		if actor == nil {
+			return nil, fmt.Errorf("placeAtObjectPin: no actor %q", actorID)
+		}
+		actor.Pos = obj.Pos.Tile()
+		return nil, nil
+	}})
+	if err != nil {
+		t.Fatalf("placeAtObjectPin: %v", err)
+	}
+}
+
 // TestApplyObjectRefreshAtArrivalWell covers the happy path: actor arrives
 // at well, thirst drops, supply decrements by one, dwell credit stamped.
 func TestApplyObjectRefreshAtArrivalWell(t *testing.T) {
 	w, cancel := buildRefreshTestWorld(t)
 	defer cancel()
 
-	res, err := w.Send(sim.ApplyObjectRefreshAtArrival("hannah", 110, 110))
+	placeAtObjectPin(t, w, "hannah", "well")
+	res, err := w.Send(sim.ApplyObjectRefreshAtArrival("hannah"))
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
@@ -150,7 +189,8 @@ func TestApplyObjectRefreshAtArrivalMultiAttribute(t *testing.T) {
 	w, cancel := buildRefreshTestWorld(t)
 	defer cancel()
 
-	res, _ := w.Send(sim.ApplyObjectRefreshAtArrival("hannah", 510, 510))
+	placeAtObjectPin(t, w, "hannah", "oak")
+	res, _ := w.Send(sim.ApplyObjectRefreshAtArrival("hannah"))
 	r := res.(sim.ArrivalRefreshResult)
 	if r.ObjectID != "oak" {
 		t.Errorf("resolved object = %q, want oak", r.ObjectID)
@@ -173,7 +213,8 @@ func TestApplyObjectRefreshAtArrivalDepletedSkipped(t *testing.T) {
 	w, cancel := buildRefreshTestWorld(t)
 	defer cancel()
 
-	res, _ := w.Send(sim.ApplyObjectRefreshAtArrival("hannah", 1010, 1010))
+	placeAtObjectPin(t, w, "hannah", "dry_bush")
+	res, _ := w.Send(sim.ApplyObjectRefreshAtArrival("hannah"))
 	r := res.(sim.ArrivalRefreshResult)
 	if len(r.Hits) != 0 {
 		t.Errorf("dry bush produced hits: %+v, want empty", r.Hits)
@@ -190,7 +231,9 @@ func TestApplyObjectRefreshAtArrivalOutOfRange(t *testing.T) {
 	w, cancel := buildRefreshTestWorld(t)
 	defer cancel()
 
-	res, _ := w.Send(sim.ApplyObjectRefreshAtArrival("hannah", 5000, 5000))
+	// Actor stays at the tile origin (0,0) — far outside every object's
+	// attribution radius — so nothing resolves.
+	res, _ := w.Send(sim.ApplyObjectRefreshAtArrival("hannah"))
 	r := res.(sim.ArrivalRefreshResult)
 	if r.ObjectID != "" || len(r.Hits) != 0 {
 		t.Errorf("out-of-range hit something: %+v", r)
@@ -202,21 +245,22 @@ func TestApplyObjectRefreshAtArrivalUnknownActor(t *testing.T) {
 	w, cancel := buildRefreshTestWorld(t)
 	defer cancel()
 
-	_, err := w.Send(sim.ApplyObjectRefreshAtArrival("ghost", 100, 100))
+	_, err := w.Send(sim.ApplyObjectRefreshAtArrival("ghost"))
 	if err == nil {
 		t.Fatal("expected error for unknown actor")
 	}
 }
 
-// TestApplyObjectRefreshAtArrivalIgnoresBareObjects covers the "bench
-// has no refresh rows" pass-through — even though it's at the same
-// position as the well, the well wins because the bench has empty
-// Refreshes. (The bench would be invisible to refresh either way.)
+// TestApplyObjectRefreshAtArrivalIgnoresBareObjects covers the decorative-
+// object pass-through: the bench sits at the same tile as the well, but it
+// is unnamed (and assetless), so resolveLoiteringObject never considers it —
+// the well resolves and applies. (The bench has no refresh rows anyway.)
 func TestApplyObjectRefreshAtArrivalIgnoresBareObjects(t *testing.T) {
 	w, cancel := buildRefreshTestWorld(t)
 	defer cancel()
 
-	res, _ := w.Send(sim.ApplyObjectRefreshAtArrival("hannah", 100, 100))
+	placeAtObjectPin(t, w, "hannah", "well")
+	res, _ := w.Send(sim.ApplyObjectRefreshAtArrival("hannah"))
 	r := res.(sim.ArrivalRefreshResult)
 	if r.ObjectID != "well" {
 		t.Errorf("resolved object = %q, want well (bench has no refreshes)", r.ObjectID)

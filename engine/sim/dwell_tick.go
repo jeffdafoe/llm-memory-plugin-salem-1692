@@ -34,9 +34,10 @@ import (
 //        the result for ALL actor kinds (NPCs included — perception
 //        gating happens at subscriber layer, not at emit).
 //
-// LOITER LOOKUP STUB. Same as ApplyObjectRefreshAtArrival: legacy
-// resolveLoiteringStructure isn't ported yet. Using Euclidean distance
-// against ObjectRefreshArrivalTolerance until loitering lands.
+// LOITER LOOKUP. actorAtCreditObject resolves the actor's tile through
+// resolveLoiteringObject (the v2 port of v1 resolveLoiteringStructure) and
+// checks it still owns the credit's pinned object — walking off the loiter
+// pin ends the dwell, matching v1.
 //
 // HUB BROADCAST STUB. The DwellTickResult.Completions slice carries the
 // pre-rendered narration lines for callers/tests that want to observe
@@ -289,17 +290,15 @@ func stampDwellEnd(w *World, actor *Actor, credit *DwellCredit, reason DwellEndR
 	})
 }
 
-// actorAtCreditObject returns whether actor's current position is
-// within ObjectRefreshArrivalTolerance of the credit's pinned object.
-// Returns false if the object no longer exists.
+// actorAtCreditObject returns whether the actor is still standing at the
+// credit's pinned object — i.e. resolveLoiteringObject attributes the
+// actor's current tile (Chebyshev <= 1) to that exact object. This is the
+// faithful v1 dwell check (resolveLoiteringStructure(actorPos) ==
+// credit.ObjectID): walking off the pin ends the dwell. Returns false if no
+// object owns the actor's tile, or a different one does.
 func actorAtCreditObject(w *World, actor *Actor, credit *DwellCredit) bool {
-	obj, ok := w.VillageObjects[credit.ObjectID]
-	if !ok {
-		return false
-	}
-	dx := obj.Pos.X - float64(actor.Pos.X)
-	dy := obj.Pos.Y - float64(actor.Pos.Y)
-	return dx*dx+dy*dy <= ObjectRefreshArrivalTolerance*ObjectRefreshArrivalTolerance
+	id, ok := resolveLoiteringObject(w, actor.Pos, LoiterAttributionTiles)
+	return ok && id == credit.ObjectID
 }
 
 // DwellTickerInterval is how often RunDwellTicker wakes. Matches

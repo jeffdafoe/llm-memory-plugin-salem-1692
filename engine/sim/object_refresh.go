@@ -28,19 +28,12 @@ import (
 //     mode rows jump to max_quantity once period_hours have elapsed since
 //     the anchor. Both clamp at max_quantity.
 //
-// SPATIAL LOOKUP STUB. Legacy applyObjectRefreshAtArrival uses
-// resolveLoiteringStructure (loiter-pin reverse lookup with king's-move
-// slots). The full loiter-pin model isn't in sim yet (it depends on
-// structure/room geometry that's not ported). For now, this uses a
-// simple Euclidean-distance match within ObjectRefreshArrivalTolerance
-// pixels. When loitering ports, swap the helper without changing the
-// command signature.
-
-// ObjectRefreshArrivalTolerance is the pixel radius around a village
-// object that counts as "arrived at" for refresh purposes. Two tiles
-// (64 px) matches the legacy bounding-box pre-filter; the loiter-pin
-// version will replace this with the proper geometry.
-const ObjectRefreshArrivalTolerance = 64.0
+// SPATIAL LOOKUP. ApplyObjectRefreshAtArrival resolves the loitering
+// object via resolveLoiteringObject (the v2 port of v1
+// resolveLoiteringStructure: nearest named object whose loiter pin is
+// within LoiterAttributionTiles king's-move tiles of the actor), then
+// checks that object for refresh rows. This is the faithful v1 reverse
+// lookup; the earlier Euclidean-tolerance stub is gone.
 
 // RefreshMode controls how a finite-supply refresh row replenishes.
 type RefreshMode string
@@ -244,17 +237,20 @@ type ArrivalRefreshResult struct {
 	Hits     []RefreshHit
 }
 
-// ApplyObjectRefreshAtArrival returns a Command that resolves the nearest
-// refresh-tagged village object to (x, y), applies its refresh rows to
-// the actor's needs, decrements finite supplies, and upserts dwell credits
-// for any rows with dwell config.
+// ApplyObjectRefreshAtArrival returns a Command that resolves the village
+// object the actor is loitering at (resolveLoiteringObject, Chebyshev <= 1
+// tile to the loiter pin), and — if that object carries refresh rows —
+// applies them to the actor's needs, decrements finite supplies, and
+// upserts dwell credits for any rows with dwell config.
 //
-// Returns ArrivalRefreshResult with empty Hits if no refresh-tagged object
-// is within tolerance, or if every row was depleted / unknown attribute.
+// Resolves off actor.Pos directly: arrival is "this actor is now standing
+// here," so the actor's own tile is the query point (no external x,y).
+//
+// Returns ArrivalRefreshResult with empty Hits if no named object owns the
+// actor's tile, if the resolved object has no refresh rows (resolve-then-
+// check, faithful to v1: loitering at a bench next to a well gets you the
+// bench, not the well), or if every row was depleted / unknown attribute.
 // Errors on missing actor.
-//
-// TODO(rewrite): replace the simple-tolerance lookup with the loiter-pin
-// resolver once the loitering geometry is ported.
 //
 // TODO(rewrite): the Hub/WS layer now exists (state flips ride
 // object_state_changed), but a finite-supply DECREMENT here does not yet
@@ -263,7 +259,7 @@ type ArrivalRefreshResult struct {
 //
 // TODO(rewrite): when agent_action_log sink is wired in, append an
 // 'engine'-source log row capturing the hits.
-func ApplyObjectRefreshAtArrival(actorID ActorID, x, y float64) Command {
+func ApplyObjectRefreshAtArrival(actorID ActorID) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
 			actor, ok := w.Actors[actorID]
@@ -271,7 +267,7 @@ func ApplyObjectRefreshAtArrival(actorID ActorID, x, y float64) Command {
 				return nil, fmt.Errorf("actor %q not found", actorID)
 			}
 
-			objID, obj := findRefreshObjectNear(w, x, y)
+			objID, obj := findRefreshObjectNear(w, actor.Pos)
 			if obj == nil {
 				return ArrivalRefreshResult{}, nil
 			}
@@ -334,28 +330,23 @@ func ApplyObjectRefreshAtArrival(actorID ActorID, x, y float64) Command {
 	}
 }
 
-// findRefreshObjectNear returns the nearest refresh-tagged village object
-// within ObjectRefreshArrivalTolerance pixels of (x, y), or nil if none.
-// Linear scan — fine for v1; spatial index lands with the loiter-pin port.
-func findRefreshObjectNear(w *World, x, y float64) (VillageObjectID, *VillageObject) {
-	var bestID VillageObjectID
-	var bestObj *VillageObject
-	bestDist2 := ObjectRefreshArrivalTolerance * ObjectRefreshArrivalTolerance
-	for id, obj := range w.VillageObjects {
-		if len(obj.Refreshes) == 0 {
-			continue
-		}
-		dx := obj.Pos.X - x
-		dy := obj.Pos.Y - y
-		d2 := dx*dx + dy*dy
-		if d2 > bestDist2 {
-			continue
-		}
-		bestDist2 = d2
-		bestID = id
-		bestObj = obj
+// findRefreshObjectNear resolves the named village object the actor is
+// loitering at (resolveLoiteringObject, attribution radius) and returns it
+// only if it carries refresh rows. Resolve-then-check, faithful to v1's
+// object_refresh: a single loitering object owns the tile; if it has no
+// refresh rows the actor gets nothing (the resolver does NOT skip past a
+// refresh-less object to a refresh-bearing one farther away). Returns
+// ("", nil) when no object owns the tile or the resolved one has no rows.
+func findRefreshObjectNear(w *World, actorTile TilePos) (VillageObjectID, *VillageObject) {
+	id, ok := resolveLoiteringObject(w, actorTile, LoiterAttributionTiles)
+	if !ok {
+		return "", nil
 	}
-	return bestID, bestObj
+	obj := w.VillageObjects[id]
+	if obj == nil || len(obj.Refreshes) == 0 {
+		return "", nil
+	}
+	return id, obj
 }
 
 // regenObjectRefresh applies one regen step to all refresh rows in the
