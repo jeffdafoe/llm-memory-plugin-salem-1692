@@ -388,6 +388,84 @@ func TestBuildRecoveryOptions_RemedyIgnoresNonTirednessAndEmptyStock(t *testing.
 	}
 }
 
+// --- home-bed option + tiredness own-stock (ZBBS-HOME-305) ---
+
+func TestBuildRecoveryOptions_HomeBedSurfaced(t *testing.T) {
+	subj := &sim.ActorSnapshot{Needs: map[sim.NeedKey]int{"tiredness": sim.DefaultTirednessRedThreshold}, HomeStructureID: "cottage"}
+	snap := &sim.Snapshot{
+		Actors:     map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj},
+		Structures: map[sim.StructureID]*sim.Structure{"cottage": plainStructure("cottage", "Thorne Cottage")},
+	}
+	v := buildRecoveryOptions(snap, "ezekiel", subj)
+	if v == nil {
+		t.Fatal("tired homed actor must get a home rest option")
+	}
+	var home *RecoveryOption
+	for i := range v.Options {
+		if v.Options[i].Kind == "home" {
+			home = &v.Options[i]
+		}
+	}
+	if home == nil {
+		t.Fatalf("want a 'home' option, got %+v", v.Options)
+	}
+	if home.Label != "Thorne Cottage" || home.CostText != "free" {
+		t.Errorf("unexpected home option: %+v", home)
+	}
+}
+
+// A home structure that doesn't resolve in the snapshot is skipped — the "sleep
+// in your own bed" cue would name an unactionable destination.
+func TestBuildRecoveryOptions_HomeBedUnresolvedSkipped(t *testing.T) {
+	subj := &sim.ActorSnapshot{Needs: map[sim.NeedKey]int{"tiredness": sim.DefaultTirednessRedThreshold}, HomeStructureID: "ghost"}
+	snap := &sim.Snapshot{Actors: map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj}}
+	// No structures, no rest spots, no inns, no stock → nothing to surface.
+	if v := buildRecoveryOptions(snap, "ezekiel", subj); v != nil {
+		t.Errorf("an unresolved home + no other options must yield nil, got %+v", v)
+	}
+}
+
+func TestBuildRecoveryOptions_TirednessOwnStock(t *testing.T) {
+	subj := &sim.ActorSnapshot{
+		Needs:           map[sim.NeedKey]int{"tiredness": sim.DefaultTirednessRedThreshold},
+		HomeStructureID: "cottage",
+		Inventory:       map[sim.ItemKind]int{"coca_tea": 2, "bread": 4}, // bread is hunger — must not appear
+	}
+	snap := &sim.Snapshot{
+		Actors:     map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj},
+		Structures: map[sim.StructureID]*sim.Structure{"cottage": plainStructure("cottage", "Thorne Cottage")},
+		ItemKinds:  foodDrinkCatalog(), // coca_tea (tiredness 12) + bread (hunger) etc.
+	}
+	v := buildRecoveryOptions(snap, "ezekiel", subj)
+	if v == nil {
+		t.Fatal("want a view")
+	}
+	if len(v.OwnStock) != 1 {
+		t.Fatalf("want 1 tiredness own-stock item (coca tea; bread excluded), got %+v", v.OwnStock)
+	}
+	if v.OwnStock[0].Label != "coca tea" || v.OwnStock[0].Magnitude != 12 {
+		t.Errorf("unexpected own-stock item: %+v", v.OwnStock[0])
+	}
+}
+
+// Tiredness own-stock is maintenance-gated like remedies: a homeless-but-rested
+// actor carrying tea (section fires via the homeless arm) gets no own-stock line.
+func TestBuildRecoveryOptions_OwnStockTirednessGatedOff(t *testing.T) {
+	subj := &sim.ActorSnapshot{
+		Needs:           map[sim.NeedKey]int{"tiredness": 1},
+		HomeStructureID: "", // homeless → section fires every tick
+		Inventory:       map[sim.ItemKind]int{"coca_tea": 2},
+	}
+	snap := &sim.Snapshot{
+		Actors:    map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj},
+		ItemKinds: foodDrinkCatalog(),
+	}
+	// Homeless fires, but rested → own-stock gated off, and no spots/inns → nil.
+	if v := buildRecoveryOptions(snap, "ezekiel", subj); v != nil {
+		t.Errorf("tiredness own-stock must stay tiredness-gated for a rested actor, got %+v", v)
+	}
+}
+
 // --- render ---
 
 func TestRenderRecoveryOptions_NilAndEmpty(t *testing.T) {
@@ -414,6 +492,21 @@ func TestRenderRecoveryOptions_Bullets(t *testing.T) {
 	}
 	if !strings.Contains(out, "Hannah's Inn — rent a room, ask the keeper") {
 		t.Errorf("inn bullet wrong: %q", out)
+	}
+}
+
+func TestRenderRecoveryOptions_HomeAndOwnStock(t *testing.T) {
+	var b strings.Builder
+	renderRecoveryOptions(&b, &RecoveryOptionsView{
+		Options:  []RecoveryOption{{Kind: "home", Label: "Thorne Cottage", CostText: "free"}},
+		OwnStock: []OwnStockItem{{Label: "coca tea", Magnitude: 12}},
+	})
+	out := b.String()
+	if !strings.Contains(out, "Thorne Cottage — sleep in your own bed, free") {
+		t.Errorf("home bullet wrong: %q", out)
+	}
+	if !strings.Contains(out, "You have coca tea (~12) on hand — consume to drink.") {
+		t.Errorf("own-stock line wrong: %q", out)
 	}
 }
 
