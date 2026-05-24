@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
@@ -161,4 +162,100 @@ func telemetryStatsDTO(st telemetry.Stats) TelemetryStatsDTO {
 		Written:  st.Written,
 		Dropped:  st.Dropped,
 	}
+}
+
+// Action-log view bounds. The action log is retention-bounded in the world
+// (hours of history); the umbilical returns a tail of it, capped so a careless
+// request can't serialize the whole thing.
+const (
+	defaultActionsLimit = 200
+	maxActionsLimit     = 1000
+)
+
+// ActionLogEntryDTO is one committed agent/engine action on the wire. Unlike
+// the tick telemetry (which is redacted to mechanics), this is the
+// what-actually-happened trail — ActionType + the engine-authored Text + the
+// HuddleID context. That content is the point: it's what surfaces an NPC that's
+// ticking fine but behaving nonsensically (double-talking, speaking after
+// leaving — `HuddleID` empty on a `spoke` is the tell — or oscillating between
+// anchors, visible as a repeated `walked` pattern for one actor).
+type ActionLogEntryDTO struct {
+	ActorID    string    `json:"actor_id"`
+	OccurredAt time.Time `json:"occurred_at"`
+	ActionType string    `json:"action_type"`
+	Text       string    `json:"text,omitempty"`
+	HuddleID   string    `json:"huddle_id,omitempty"`
+}
+
+// UmbilicalActionsDTO is the GET /api/village/umbilical/actions response: a tail
+// of the committed-action log (chronological, oldest-first within the window).
+// Total is the full log size before filtering; Returned is how many entries
+// this response carries after the optional actor filter + limit.
+type UmbilicalActionsDTO struct {
+	ContractVersion int                 `json:"contract_version"`
+	Total           int                 `json:"total"`
+	Returned        int                 `json:"returned"`
+	Actions         []ActionLogEntryDTO `json:"actions"`
+}
+
+// handleUmbilicalActions serves a tail of the world's committed action log off
+// the published snapshot. Query params: `actor` (optional — filter to one
+// ActorID, e.g. to inspect a single NPC's recent behavior for an oscillation
+// pattern), `limit` (optional — max entries, default 200, capped at 1000).
+// Read-only and lock-free over the snapshot, like the other read routes.
+func (s *Server) handleUmbilicalActions(w http.ResponseWriter, r *http.Request) {
+	var log []sim.ActionLogEntry
+	if snap := s.world.Published(); snap != nil {
+		log = snap.ActionLog
+	}
+	total := len(log)
+
+	q := r.URL.Query()
+	if actor := q.Get("actor"); actor != "" {
+		filtered := make([]sim.ActionLogEntry, 0, len(log))
+		for _, e := range log {
+			if string(e.ActorID) == actor {
+				filtered = append(filtered, e)
+			}
+		}
+		log = filtered
+	}
+
+	limit := parseActionsLimit(q.Get("limit"))
+	// Tail: keep the most recent `limit`, preserving chronological order so a
+	// per-actor scan reads left-to-right in time (the way an A→B→A oscillation
+	// or a leave-then-speak sequence is easiest to spot).
+	if len(log) > limit {
+		log = log[len(log)-limit:]
+	}
+
+	out := UmbilicalActionsDTO{
+		ContractVersion: ContractVersion,
+		Total:           total,
+		Returned:        len(log),
+		Actions:         make([]ActionLogEntryDTO, 0, len(log)),
+	}
+	for _, e := range log {
+		out.Actions = append(out.Actions, ActionLogEntryDTO{
+			ActorID:    string(e.ActorID),
+			OccurredAt: e.OccurredAt,
+			ActionType: string(e.ActionType),
+			Text:       e.Text,
+			HuddleID:   string(e.HuddleID),
+		})
+	}
+	writeJSON(w, out)
+}
+
+// parseActionsLimit reads the `limit` query value, clamping to (0, maxActionsLimit]
+// and falling back to defaultActionsLimit when absent, unparseable, or <= 0.
+func parseActionsLimit(raw string) int {
+	n, err := strconv.Atoi(raw)
+	if err != nil || n <= 0 {
+		return defaultActionsLimit
+	}
+	if n > maxActionsLimit {
+		return maxActionsLimit
+	}
+	return n
 }
