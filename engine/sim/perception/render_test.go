@@ -25,6 +25,50 @@ func paidWarrant(eventID sim.EventID, buyer sim.ActorID, amount int, forText str
 	}
 }
 
+// TestRender_NarrationWarrants covers the felt-language self-perception lines
+// (HOME-302): the consume self-line and the dwell started/ended beats render
+// their pre-rendered NarrationText, while the per-tick dwell beat is
+// deliberately NOT surfaced (stays a bare default line to avoid prompt spam),
+// and an empty-narration warrant falls back to the generic involvement line.
+func TestRender_NarrationWarrants(t *testing.T) {
+	render := func(reason sim.WarrantReason) string {
+		p := Payload{
+			ActorID:  "alice",
+			Actor:    ActorView{State: sim.StateIdle},
+			Warrants: []sim.WarrantMeta{{TriggerActorID: "alice", Reason: reason}},
+			Baseline: BaselinePresent,
+		}
+		return Render(p, DefaultRenderConfig()).Text
+	}
+
+	// §A consume self-line renders.
+	if out := render(sim.ConsumedWarrantReason{ItemKind: "bread", NarrationText: "You eat the bread; the gnawing ebbs."}); !strings.Contains(out, "You eat the bread; the gnawing ebbs.") {
+		t.Errorf("consume narration not rendered\n%s", out)
+	}
+	// §B dwell started renders its felt line.
+	if out := render(sim.DwellStartedWarrantReason{ItemKind: "stew", NarrationText: "This stew looks really good."}); !strings.Contains(out, "This stew looks really good.") {
+		t.Errorf("dwell-started narration not rendered\n%s", out)
+	}
+	// §B dwell ended renders its felt line.
+	if out := render(sim.DwellEndedWarrantReason{Attribute: "hunger", NarrationText: "You feel full."}); !strings.Contains(out, "You feel full.") {
+		t.Errorf("dwell-ended narration not rendered\n%s", out)
+	}
+	// Per-tick dwell beat is intentionally NOT surfaced — its NarrationText must
+	// not appear; the bare [dwell_tick_applied] line stands instead.
+	tickOut := render(sim.DwellTickAppliedWarrantReason{Attribute: "hunger", NarrationText: "You take another bite, the gnawing ebbs."})
+	if strings.Contains(tickOut, "You take another bite, the gnawing ebbs.") {
+		t.Errorf("per-tick dwell narration leaked into the prompt (should be suppressed)\n%s", tickOut)
+	}
+	if !strings.Contains(tickOut, "dwell_tick_applied") {
+		t.Errorf("per-tick dwell warrant missing its bare default line\n%s", tickOut)
+	}
+	// Empty narration (catalog-unknown dwell end) falls back to the generic line.
+	emptyOut := render(sim.DwellEndedWarrantReason{Attribute: "hunger", NarrationText: ""})
+	if !strings.Contains(emptyOut, "dwell_ended") || !strings.Contains(emptyOut, "involving alice") {
+		t.Errorf("empty-narration dwell-ended did not fall back to the generic line\n%s", emptyOut)
+	}
+}
+
 // TestRender_PaidWarrantSingularPlural pins the singular/plural agreement on
 // the paid warrant line — amount=1 must render "1 coin" not "1 coins".
 func TestRender_PaidWarrantSingularPlural(t *testing.T) {

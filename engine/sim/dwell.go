@@ -190,3 +190,85 @@ func DwellTickNarration(attribute NeedKey, source DwellCreditSource) string {
 	}
 	return ""
 }
+
+// itemNeedEaseFragment is the shared felt-language clause for a need easing
+// from an item-sourced beat ("the gnawing ebbs"). Single source for the
+// immediate consume line (ConsumeNarration) so it reads consistently with the
+// item branch of DwellTickNarration above (which uses the same phrasing).
+// Returns "" for an unhandled attribute.
+func itemNeedEaseFragment(attribute NeedKey) string {
+	switch attribute {
+	case "hunger":
+		return "the gnawing ebbs"
+	case "thirst":
+		return "the dryness fades"
+	case "tiredness":
+		return "the weariness eases"
+	}
+	return ""
+}
+
+// consumeVerb picks the second-person verb for the consume beat by the need
+// the item primarily eased: eat for hunger, drink for thirst, take for
+// anything else (a tiredness remedy like coca tea, or an unhandled need).
+func consumeVerb(attribute NeedKey) string {
+	switch attribute {
+	case "hunger":
+		return "eat"
+	case "thirst":
+		return "drink"
+	default:
+		return "take"
+	}
+}
+
+// consumeNeedOrder is the stable tiebreak order when several needs moved on one
+// consume — the canonical need ordering, so primaryEasedNeed is deterministic
+// regardless of the Applied map's iteration order.
+var consumeNeedOrder = []NeedKey{"hunger", "thirst", "tiredness"}
+
+// primaryEasedNeed returns the need a consume eased most (largest Applied
+// magnitude; ties broken by consumeNeedOrder). applied carries POSITIVE
+// reduction magnitudes (pre-post) for needs that actually moved. Returns "" on
+// an empty map.
+func primaryEasedNeed(applied map[NeedKey]int) NeedKey {
+	best := NeedKey("")
+	bestVal := 0
+	bestRank := len(consumeNeedOrder) + 1
+	for attr, v := range applied {
+		if v <= 0 {
+			continue
+		}
+		rank := len(consumeNeedOrder)
+		for i, k := range consumeNeedOrder {
+			if k == attr {
+				rank = i
+				break
+			}
+		}
+		if v > bestVal || (v == bestVal && rank < bestRank) {
+			best, bestVal, bestRank = attr, v, rank
+		}
+	}
+	return best
+}
+
+// ConsumeNarration returns the immediate second-person felt-language beat for
+// an actor consuming an item that actually moved a need ("You eat the bread;
+// the gnawing ebbs."). The v2 port of v1's narrateConsumeSelf. Composed from
+// the item Kind and the primary need that dropped, reusing the dwell ease-
+// fragment vocab so the immediate beat and the per-tick dwell payoff read
+// consistently. Returns "" when no handled need moved (the caller gates on
+// len(applied) > 0; an unhandled need still yields "" → no beat).
+func ConsumeNarration(kind ItemKind, applied map[NeedKey]int) string {
+	attr := primaryEasedNeed(applied)
+	frag := itemNeedEaseFragment(attr)
+	if frag == "" {
+		return ""
+	}
+	verb := consumeVerb(attr)
+	if kind == "" {
+		return "You " + verb + "; " + frag + "."
+	}
+	return "You " + verb + " the " + string(kind) + "; " + frag + "."
+}
