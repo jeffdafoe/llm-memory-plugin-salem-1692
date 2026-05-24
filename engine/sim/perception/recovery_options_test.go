@@ -14,7 +14,7 @@ import (
 
 func tirednessObject(id sim.VillageObjectID, name string, x, y float64, amount int) *sim.VillageObject {
 	return &sim.VillageObject{
-		ID: id, DisplayName: name, X: x, Y: y,
+		ID: id, DisplayName: name, Pos: sim.WorldPos{X: x, Y: y},
 		Refreshes: []*sim.ObjectRefresh{{Attribute: "tiredness", Amount: amount}},
 	}
 }
@@ -95,10 +95,10 @@ func TestBuildRecoveryOptions_FreeRestSpot(t *testing.T) {
 
 func TestBuildRecoveryOptions_SkipsNonTirednessAndDepleted(t *testing.T) {
 	subj := &sim.ActorSnapshot{Needs: map[sim.NeedKey]int{"tiredness": 22}, HomeStructureID: "cottage"}
-	well := &sim.VillageObject{ID: "well", DisplayName: "the well", X: 50, Y: 0,
+	well := &sim.VillageObject{ID: "well", DisplayName: "the well", Pos: sim.WorldPos{X: 50, Y: 0},
 		Refreshes: []*sim.ObjectRefresh{{Attribute: "thirst", Amount: -10}}}
 	zero := 0
-	depleted := &sim.VillageObject{ID: "spring", DisplayName: "dry spring", X: 60, Y: 0,
+	depleted := &sim.VillageObject{ID: "spring", DisplayName: "dry spring", Pos: sim.WorldPos{X: 60, Y: 0},
 		Refreshes: []*sim.ObjectRefresh{{Attribute: "tiredness", Amount: -8, AvailableQuantity: &zero}}}
 	snap := &sim.Snapshot{
 		Actors:         map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj},

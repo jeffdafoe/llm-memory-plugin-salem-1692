@@ -125,7 +125,7 @@ func gatherFreeRestSpots(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) []Rec
 		// subtracting pixels from tiles is off by ~TileSize (the HOME-297 unit
 		// bug ZBBS-WORK flagged 2026-05-23). WorldToTile applies the same Pad
 		// offset CurrentX already carries, so the two are directly comparable.
-		objTile := sim.WorldToTile(obj.X, obj.Y)
+		objTile := obj.Pos.Tile()
 		tx := float64(objTile.X)
 		ty := float64(objTile.Y)
 		dx := tx - ax

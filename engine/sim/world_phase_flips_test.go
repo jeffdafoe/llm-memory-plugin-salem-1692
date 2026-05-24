@@ -62,11 +62,11 @@ func buildPhaseTestWorld(t *testing.T) (*sim.World, context.CancelFunc) {
 		},
 	})
 	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
-		"lamp-A": {ID: "lamp-A", AssetID: "lamp-iron", CurrentState: "lit", X: 100, Y: 100},    // night state, day transition needs flip
-		"lamp-B": {ID: "lamp-B", AssetID: "lamp-iron", CurrentState: "unlit", X: 200, Y: 200},  // already at day state, no flip
-		"tree":   {ID: "tree", AssetID: "tree-maple", CurrentState: "default", X: 300, Y: 300}, // not phase-sensitive
-		"torch":  {ID: "torch", AssetID: "torch-lamplighter", CurrentState: "lit", X: 400, Y: 400},
-		"orphan": {ID: "orphan", AssetID: "missing-asset", CurrentState: "default", X: 500, Y: 500},
+		"lamp-A": {ID: "lamp-A", AssetID: "lamp-iron", CurrentState: "lit", Pos: sim.WorldPos{X: 100, Y: 100}},    // night state, day transition needs flip
+		"lamp-B": {ID: "lamp-B", AssetID: "lamp-iron", CurrentState: "unlit", Pos: sim.WorldPos{X: 200, Y: 200}},  // already at day state, no flip
+		"tree":   {ID: "tree", AssetID: "tree-maple", CurrentState: "default", Pos: sim.WorldPos{X: 300, Y: 300}}, // not phase-sensitive
+		"torch":  {ID: "torch", AssetID: "torch-lamplighter", CurrentState: "lit", Pos: sim.WorldPos{X: 400, Y: 400}},
+		"orphan": {ID: "orphan", AssetID: "missing-asset", CurrentState: "default", Pos: sim.WorldPos{X: 500, Y: 500}},
 	})
 
 	w, err := sim.LoadWorld(context.Background(), repo)

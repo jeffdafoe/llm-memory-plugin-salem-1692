@@ -129,7 +129,7 @@ func buildWalkGrid(w *World) (*WalkGrid, error) {
 			if !isPassage && !asset.IsObstacle {
 				continue
 			}
-			anchor := WorldToTile(obj.X, obj.Y)
+			anchor := obj.Pos.Tile()
 			var stamp uint8 = 0
 			if isPassage {
 				stamp = 1

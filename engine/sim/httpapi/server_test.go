@@ -59,7 +59,7 @@ func seededWorld(t *testing.T) *sim.World {
 			State: sim.StateWalking, Pos: sim.TilePos{X: 1, Y: 1},
 		}
 		world.VillageObjects["obj1"] = &sim.VillageObject{
-			ID: "obj1", AssetID: "asset-x", X: 5.5, Y: 6.5,
+			ID: "obj1", AssetID: "asset-x", Pos: sim.WorldPos{X: 5.5, Y: 6.5},
 			CurrentState: "lit", DisplayName: "Tavern", Tags: []string{"vendor"},
 		}
 		// Noticeboard content for obj1 (ZBBS-HOME-291). AtState is engine-internal
@@ -344,7 +344,7 @@ func TestHandleObjects_NoticeboardContentOmitted(t *testing.T) {
 	_, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		// A second placed object with no NoticeboardContent entry.
 		world.VillageObjects["plain"] = &sim.VillageObject{
-			ID: "plain", AssetID: "asset-x", X: 1, Y: 1,
+			ID: "plain", AssetID: "asset-x", Pos: sim.WorldPos{X: 1, Y: 1},
 		}
 		return nil, nil
 	}})
@@ -392,25 +392,25 @@ func TestHandleObjects_LoiterOverrideAndDanglingAsset(t *testing.T) {
 	_, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		// Override + owner + entry policy, real asset.
 		world.VillageObjects["obj2"] = &sim.VillageObject{
-			ID: "obj2", AssetID: "asset-x", X: 5.5, Y: 6.5,
+			ID: "obj2", AssetID: "asset-x", Pos: sim.WorldPos{X: 5.5, Y: 6.5},
 			LoiterOffsetX: intPtr(4), LoiterOffsetY: intPtr(-3),
 			OwnerActorID: "hannah", EntryPolicy: sim.EntryPolicyOwner, PlacedBy: "home",
 		}
 		// Dangling asset_id + override → effective falls back to the override.
 		world.VillageObjects["obj3"] = &sim.VillageObject{
-			ID: "obj3", AssetID: "ghost-asset", X: 0, Y: 0,
+			ID: "obj3", AssetID: "ghost-asset", Pos: sim.WorldPos{X: 0, Y: 0},
 			LoiterOffsetX: intPtr(2), LoiterOffsetY: intPtr(2),
 		}
 		// Dangling asset_id, no override → effective zero, no panic.
 		world.VillageObjects["obj4"] = &sim.VillageObject{
-			ID: "obj4", AssetID: "ghost-asset", X: 0, Y: 0,
+			ID: "obj4", AssetID: "ghost-asset", Pos: sim.WorldPos{X: 0, Y: 0},
 		}
 		// Dangling asset_id + ONE-AXIS-ONLY override → treated as no override
 		// (mirrors computeLoiterTile's both-or-nothing gate), so effective is
 		// (0,0), NOT a per-axis blend. Not reachable via the route (both-or-
 		// neither), only via direct world state.
 		world.VillageObjects["obj5"] = &sim.VillageObject{
-			ID: "obj5", AssetID: "ghost-asset", X: 0, Y: 0,
+			ID: "obj5", AssetID: "ghost-asset", Pos: sim.WorldPos{X: 0, Y: 0},
 			LoiterOffsetX: intPtr(7),
 		}
 		return nil, nil

@@ -76,13 +76,13 @@ func rotationFixture(t *testing.T) (*sim.World, context.CancelFunc) {
 		},
 	})
 	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
-		"laundry-A": {ID: "laundry-A", AssetID: "laundry-line", CurrentState: "dirty", X: 10, Y: 10},
-		"laundry-B": {ID: "laundry-B", AssetID: "laundry-line", CurrentState: "wet", X: 20, Y: 20},
-		"laundry-C": {ID: "laundry-C", AssetID: "laundry-line", CurrentState: "clean", X: 30, Y: 30},
-		"notice-A":  {ID: "notice-A", AssetID: "notice-board", CurrentState: "variant-1", X: 40, Y: 40},
-		"notice-B":  {ID: "notice-B", AssetID: "notice-board", CurrentState: "variant-1", X: 50, Y: 50},
-		"det-X":     {ID: "det-X", AssetID: "deterministic-x", CurrentState: "a", X: 60, Y: 60},
-		"lamp":      {ID: "lamp", AssetID: "lamp-iron", CurrentState: "lit", X: 70, Y: 70},
+		"laundry-A": {ID: "laundry-A", AssetID: "laundry-line", CurrentState: "dirty", Pos: sim.WorldPos{X: 10, Y: 10}},
+		"laundry-B": {ID: "laundry-B", AssetID: "laundry-line", CurrentState: "wet", Pos: sim.WorldPos{X: 20, Y: 20}},
+		"laundry-C": {ID: "laundry-C", AssetID: "laundry-line", CurrentState: "clean", Pos: sim.WorldPos{X: 30, Y: 30}},
+		"notice-A":  {ID: "notice-A", AssetID: "notice-board", CurrentState: "variant-1", Pos: sim.WorldPos{X: 40, Y: 40}},
+		"notice-B":  {ID: "notice-B", AssetID: "notice-board", CurrentState: "variant-1", Pos: sim.WorldPos{X: 50, Y: 50}},
+		"det-X":     {ID: "det-X", AssetID: "deterministic-x", CurrentState: "a", Pos: sim.WorldPos{X: 60, Y: 60}},
+		"lamp":      {ID: "lamp", AssetID: "lamp-iron", CurrentState: "lit", Pos: sim.WorldPos{X: 70, Y: 70}},
 	})
 
 	w, err := sim.LoadWorld(context.Background(), repo)
@@ -467,7 +467,7 @@ func TestApplyDailyRotation_IdempotentAfterConverge(t *testing.T) {
 		},
 	})
 	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
-		"prop-A": {ID: "prop-A", AssetID: "single-state-prop", CurrentState: "only", X: 1, Y: 1},
+		"prop-A": {ID: "prop-A", AssetID: "single-state-prop", CurrentState: "only", Pos: sim.WorldPos{X: 1, Y: 1}},
 	})
 	w, err := sim.LoadWorld(context.Background(), repo)
 	if err != nil {
@@ -549,8 +549,8 @@ func TestDetermineRotationFlips_RandomPerAssetConverges(t *testing.T) {
 		},
 	})
 	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
-		"notice-A": {ID: "notice-A", AssetID: "notice-board", CurrentState: "variant-1", X: 10, Y: 10},
-		"notice-B": {ID: "notice-B", AssetID: "notice-board", CurrentState: "variant-2", X: 20, Y: 20},
+		"notice-A": {ID: "notice-A", AssetID: "notice-board", CurrentState: "variant-1", Pos: sim.WorldPos{X: 10, Y: 10}},
+		"notice-B": {ID: "notice-B", AssetID: "notice-board", CurrentState: "variant-2", Pos: sim.WorldPos{X: 20, Y: 20}},
 	})
 	w, err := sim.LoadWorld(context.Background(), repo)
 	if err != nil {

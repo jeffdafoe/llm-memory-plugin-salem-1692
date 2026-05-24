@@ -297,8 +297,8 @@ func actorAtCreditObject(w *World, actor *Actor, credit *DwellCredit) bool {
 	if !ok {
 		return false
 	}
-	dx := obj.X - float64(actor.Pos.X)
-	dy := obj.Y - float64(actor.Pos.Y)
+	dx := obj.Pos.X - float64(actor.Pos.X)
+	dy := obj.Pos.Y - float64(actor.Pos.Y)
 	return dx*dx+dy*dy <= ObjectRefreshArrivalTolerance*ObjectRefreshArrivalTolerance
 }
 

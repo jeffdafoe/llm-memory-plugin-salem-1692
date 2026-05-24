@@ -139,8 +139,8 @@ func findNearestSocialStructure(w *World, a *Actor, tag string) (StructureID, bo
 		if _, isStructure := w.Structures[sid]; !isStructure {
 			continue
 		}
-		dx := obj.X - ax
-		dy := obj.Y - ay
+		dx := obj.Pos.X - ax
+		dy := obj.Pos.Y - ay
 		d2 := dx*dx + dy*dy
 		if !found || d2 < bestDist2 {
 			bestDist2 = d2

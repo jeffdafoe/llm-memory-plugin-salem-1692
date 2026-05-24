@@ -27,7 +27,7 @@ func buildRefreshTestWorld(t *testing.T) (*sim.World, context.CancelFunc) {
 	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
 		"well": {
 			ID: "well", AssetID: "well-stone", CurrentState: "default",
-			X: 100, Y: 100,
+			Pos: sim.WorldPos{X: 100, Y: 100},
 			Refreshes: []*sim.ObjectRefresh{
 				{
 					Attribute:          "thirst",
@@ -44,7 +44,7 @@ func buildRefreshTestWorld(t *testing.T) (*sim.World, context.CancelFunc) {
 		},
 		"oak": {
 			ID: "oak", AssetID: "tree-oak", CurrentState: "default",
-			X: 500, Y: 500,
+			Pos: sim.WorldPos{X: 500, Y: 500},
 			Refreshes: []*sim.ObjectRefresh{
 				{Attribute: "tiredness", Amount: -8},
 				{Attribute: "hunger", Amount: -4}, // acorns; infinite (no AvailableQuantity)
@@ -52,7 +52,7 @@ func buildRefreshTestWorld(t *testing.T) (*sim.World, context.CancelFunc) {
 		},
 		"dry_bush": {
 			ID: "dry_bush", AssetID: "bush-berries", CurrentState: "default",
-			X: 1000, Y: 1000,
+			Pos: sim.WorldPos{X: 1000, Y: 1000},
 			Refreshes: []*sim.ObjectRefresh{
 				{
 					Attribute:          "hunger",
@@ -65,7 +65,7 @@ func buildRefreshTestWorld(t *testing.T) (*sim.World, context.CancelFunc) {
 			},
 		},
 		// Decorative object — no refreshes, never targeted.
-		"bench": {ID: "bench", AssetID: "bench-wood", CurrentState: "default", X: 100, Y: 100},
+		"bench": {ID: "bench", AssetID: "bench-wood", CurrentState: "default", Pos: sim.WorldPos{X: 100, Y: 100}},
 	})
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
 		"hannah": {
@@ -269,7 +269,7 @@ func TestRegenObjectRefreshPeriodic(t *testing.T) {
 	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
 		"field": {
 			ID: "field", AssetID: "field-wheat", CurrentState: "default",
-			X: 0, Y: 0,
+			Pos: sim.WorldPos{X: 0, Y: 0},
 			Refreshes: []*sim.ObjectRefresh{
 				{
 					Attribute:          "hunger",
@@ -316,7 +316,7 @@ func TestRegenObjectRefreshFirstPassStampsAnchor(t *testing.T) {
 	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
 		"new_well": {
 			ID: "new_well", AssetID: "well-stone", CurrentState: "default",
-			X: 0, Y: 0,
+			Pos: sim.WorldPos{X: 0, Y: 0},
 			Refreshes: []*sim.ObjectRefresh{
 				{
 					Attribute:          "thirst",

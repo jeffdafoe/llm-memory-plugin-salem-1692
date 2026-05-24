@@ -90,9 +90,9 @@ func buildMoveTestWorld(t *testing.T) (*sim.World, context.CancelFunc, *eventRec
 		"gazebo": {ID: "gazebo", Category: "structure"}, // no door offset
 	})
 	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
-		"inn":    {ID: "inn", AssetID: "house", X: 320, Y: 320},
-		"well":   {ID: "well", AssetID: "well", X: 640, Y: 320, EntryPolicy: sim.EntryPolicyClosed},
-		"gazebo": {ID: "gazebo", AssetID: "gazebo", X: 960, Y: 320, EntryPolicy: sim.EntryPolicyOpen},
+		"inn":    {ID: "inn", AssetID: "house", Pos: sim.WorldPos{X: 320, Y: 320}},
+		"well":   {ID: "well", AssetID: "well", Pos: sim.WorldPos{X: 640, Y: 320}, EntryPolicy: sim.EntryPolicyClosed},
+		"gazebo": {ID: "gazebo", AssetID: "gazebo", Pos: sim.WorldPos{X: 960, Y: 320}, EntryPolicy: sim.EntryPolicyOpen},
 	})
 	handles.Structures.Seed(map[sim.StructureID]*sim.Structure{
 		"inn":    {ID: "inn", DisplayName: "Inn"},
@@ -541,7 +541,7 @@ func buildMembershipTestWorld(t *testing.T) (*sim.World, context.CancelFunc) {
 	})
 	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
 		"cottage": {
-			ID: "cottage", AssetID: "cottage-asset", X: 320, Y: 320,
+			ID: "cottage", AssetID: "cottage-asset", Pos: sim.WorldPos{X: 320, Y: 320},
 			EntryPolicy: sim.EntryPolicyOwner, OwnerActorID: "homeowner",
 		},
 	})

@@ -18,7 +18,7 @@ func buildDwellTestWorld(t *testing.T, lastCreditedAt time.Time, actorX, actorY 
 	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
 		"shade_tree": {
 			ID: "shade_tree", AssetID: "tree-oak", CurrentState: "default",
-			X: 200, Y: 200,
+			Pos: sim.WorldPos{X: 200, Y: 200},
 		},
 	})
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
@@ -131,7 +131,7 @@ func TestApplyDwellTickItemCountdown(t *testing.T) {
 	anchor := now.Add(-11 * time.Minute)
 	repo, handles := mem.NewRepository()
 	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
-		"inn": {ID: "inn", AssetID: "inn-thatched", X: 100, Y: 100},
+		"inn": {ID: "inn", AssetID: "inn-thatched", Pos: sim.WorldPos{X: 100, Y: 100}},
 	})
 	remaining := 3
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
@@ -188,7 +188,7 @@ func TestApplyDwellTickItemExhaustedDeletes(t *testing.T) {
 	anchor := now.Add(-11 * time.Minute)
 	repo, handles := mem.NewRepository()
 	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
-		"inn": {ID: "inn", AssetID: "inn-thatched", X: 100, Y: 100},
+		"inn": {ID: "inn", AssetID: "inn-thatched", Pos: sim.WorldPos{X: 100, Y: 100}},
 	})
 	remaining := 1
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
@@ -254,7 +254,7 @@ func TestApplyDwellTickFloorHitTerminatesCredit(t *testing.T) {
 	anchor := now.Add(-11 * time.Minute)
 	repo, handles := mem.NewRepository()
 	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
-		"bush": {ID: "bush", AssetID: "bush-berries", X: 0, Y: 0},
+		"bush": {ID: "bush", AssetID: "bush-berries", Pos: sim.WorldPos{X: 0, Y: 0}},
 	})
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
 		"player": {

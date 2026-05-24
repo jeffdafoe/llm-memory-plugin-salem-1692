@@ -352,8 +352,7 @@ func (r *VillageObjectsRepo) LoadAll(ctx context.Context) (map[sim.VillageObject
 			ID:                sim.VillageObjectID(id),
 			AssetID:           sim.AssetID(*assetID),
 			CurrentState:      currentState,
-			X:                 x,
-			Y:                 y,
+			Pos:               sim.WorldPos{X: x, Y: y},
 			PlacedBy:          *placedBy,
 			DisplayName:       *displayName,
 			EntryPolicy:       sim.EntryPolicy(entryPolicy),
@@ -538,8 +537,8 @@ func (r *VillageObjectsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, object
 			string(obj.ID),          // $1 id (UUID)
 			string(obj.AssetID),     // $2 asset_id (UUID)
 			obj.CurrentState,        // $3 current_state
-			obj.X,                   // $4 x
-			obj.Y,                   // $5 y
+			obj.Pos.X,               // $4 x
+			obj.Pos.Y,               // $5 y
 			obj.PlacedBy,            // $6 placed_by
 			obj.DisplayName,         // $7 display_name
 			string(obj.EntryPolicy), // $8 entry_policy

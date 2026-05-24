@@ -74,7 +74,7 @@ func villageObjectForStructure(w *World, structureID StructureID) (*VillageObjec
 // fallback would hide it). Production callers reach it through
 // villageObjectForStructure, which guarantees both are non-nil.
 func computeLoiterTile(vobj *VillageObject, asset *Asset) Position {
-	anchor := WorldToTile(vobj.X, vobj.Y)
+	anchor := vobj.Pos.Tile()
 	switch {
 	case vobj.LoiterOffsetX != nil && vobj.LoiterOffsetY != nil:
 		return Position{X: anchor.X + *vobj.LoiterOffsetX, Y: anchor.Y + *vobj.LoiterOffsetY}
@@ -113,7 +113,7 @@ func EffectiveLoiterOffset(vobj *VillageObject, asset *Asset) (int, int) {
 		return 0, 0
 	}
 	pin := computeLoiterTile(vobj, asset)
-	anchor := WorldToTile(vobj.X, vobj.Y)
+	anchor := vobj.Pos.Tile()
 	return pin.X - anchor.X, pin.Y - anchor.Y
 }
 
@@ -158,7 +158,7 @@ func structureEntryTile(w *World, structureID StructureID) (Position, bool) {
 	if asset.DoorOffsetX == nil || asset.DoorOffsetY == nil {
 		return Position{}, false
 	}
-	anchor := WorldToTile(vobj.X, vobj.Y)
+	anchor := vobj.Pos.Tile()
 	return Position{X: anchor.X + *asset.DoorOffsetX, Y: anchor.Y + *asset.DoorOffsetY}, true
 }
 
@@ -185,7 +185,7 @@ func structureContainingTile(w *World, pos Position) (StructureID, bool) {
 		if !ok {
 			continue
 		}
-		anchor := WorldToTile(vobj.X, vobj.Y)
+		anchor := vobj.Pos.Tile()
 		if pos.X >= anchor.X-asset.FootprintLeft && pos.X <= anchor.X+asset.FootprintRight &&
 			pos.Y >= anchor.Y-asset.FootprintTop && pos.Y <= anchor.Y+asset.FootprintBottom {
 			return sid, true

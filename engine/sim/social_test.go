@@ -30,7 +30,7 @@ func socialTestWorld(actors ...*Actor) *World {
 // Structures and VillageObjects) at world coords (x,y) carrying tags.
 func addTaggedStructure(w *World, id string, x, y float64, tags ...string) {
 	w.Structures[StructureID(id)] = &Structure{ID: StructureID(id)}
-	w.VillageObjects[VillageObjectID(id)] = &VillageObject{ID: VillageObjectID(id), X: x, Y: y, Tags: tags}
+	w.VillageObjects[VillageObjectID(id)] = &VillageObject{ID: VillageObjectID(id), Pos: WorldPos{X: x, Y: y}, Tags: tags}
 }
 
 // socialNPC builds a decorative NPC with a fully-set social window.
@@ -146,7 +146,7 @@ func TestFindNearestSocialStructure(t *testing.T) {
 	addTaggedStructure(w, "near", 30, 40, "social") // dist 50
 	addTaggedStructure(w, "far", 300, 400, "social")
 	// A tagged village_object that is NOT a structure — must be ignored.
-	w.VillageObjects["bare"] = &VillageObject{ID: "bare", X: 1, Y: 1, Tags: []string{"social"}}
+	w.VillageObjects["bare"] = &VillageObject{ID: "bare", Pos: WorldPos{X: 1, Y: 1}, Tags: []string{"social"}}
 	// An untagged structure — must be ignored.
 	addTaggedStructure(w, "untagged", 2, 2)
 

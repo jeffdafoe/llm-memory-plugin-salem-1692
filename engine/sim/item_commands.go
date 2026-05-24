@@ -306,8 +306,8 @@ func findNearestVillageObject(w *World, x, y float64) VillageObjectID {
 	var bestID VillageObjectID
 	bestDist2 := ObjectRefreshArrivalTolerance * ObjectRefreshArrivalTolerance
 	for id, obj := range w.VillageObjects {
-		dx := obj.X - x
-		dy := obj.Y - y
+		dx := obj.Pos.X - x
+		dy := obj.Pos.Y - y
 		d2 := dx*dx + dy*dy
 		if d2 > bestDist2 {
 			continue

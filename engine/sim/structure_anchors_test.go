@@ -28,7 +28,7 @@ func TestComputeLoiterTile(t *testing.T) {
 		{
 			name: "per-instance loiter offset wins over door offset",
 			vobj: &sim.VillageObject{
-				X: 320, Y: 320,
+				Pos:           sim.WorldPos{X: 320, Y: 320},
 				LoiterOffsetX: intp(2), LoiterOffsetY: intp(-3),
 			},
 			asset: &sim.Asset{
@@ -39,7 +39,7 @@ func TestComputeLoiterTile(t *testing.T) {
 		},
 		{
 			name: "door offset, one tile south of the door",
-			vobj: &sim.VillageObject{X: 320, Y: 320},
+			vobj: &sim.VillageObject{Pos: sim.WorldPos{X: 320, Y: 320}},
 			asset: &sim.Asset{
 				DoorOffsetX: intp(1), DoorOffsetY: intp(4),
 				FootprintBottom: 3,
@@ -48,13 +48,13 @@ func TestComputeLoiterTile(t *testing.T) {
 		},
 		{
 			name:  "footprint-bottom + 2 fallback",
-			vobj:  &sim.VillageObject{X: 320, Y: 320},
+			vobj:  &sim.VillageObject{Pos: sim.WorldPos{X: 320, Y: 320}},
 			asset: &sim.Asset{FootprintBottom: 3},
 			want:  sim.Position{X: anchorTile.X, Y: anchorTile.Y + 3 + 2},
 		},
 		{
 			name:  "only one loiter axis set falls through to door offset",
-			vobj:  &sim.VillageObject{X: 320, Y: 320, LoiterOffsetX: intp(2)},
+			vobj:  &sim.VillageObject{Pos: sim.WorldPos{X: 320, Y: 320}, LoiterOffsetX: intp(2)},
 			asset: &sim.Asset{DoorOffsetX: intp(1), DoorOffsetY: intp(4)},
 			want:  sim.Position{X: anchorTile.X + 1, Y: anchorTile.Y + 4 + 1},
 		},
@@ -108,8 +108,8 @@ func TestVillageObjectForStructure(t *testing.T) {
 	aw := newAnchorWorld()
 	aw.handles.Assets.Seed(map[sim.AssetID]*sim.Asset{"house": houseAsset()})
 	aw.handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
-		"with-asset":    {ID: "with-asset", AssetID: "house", X: 320, Y: 320},
-		"missing-asset": {ID: "missing-asset", AssetID: "no-such-asset", X: 320, Y: 320},
+		"with-asset":    {ID: "with-asset", AssetID: "house", Pos: sim.WorldPos{X: 320, Y: 320}},
+		"missing-asset": {ID: "missing-asset", AssetID: "no-such-asset", Pos: sim.WorldPos{X: 320, Y: 320}},
 	})
 	aw.handles.Structures.Seed(map[sim.StructureID]*sim.Structure{
 		"with-asset":    {ID: "with-asset", DisplayName: "Has Placement"},
@@ -158,7 +158,7 @@ func TestEffectiveLoiterTile(t *testing.T) {
 	aw := newAnchorWorld()
 	aw.handles.Assets.Seed(map[sim.AssetID]*sim.Asset{"house": houseAsset()})
 	aw.handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
-		"inn": {ID: "inn", AssetID: "house", X: 320, Y: 320,
+		"inn": {ID: "inn", AssetID: "house", Pos: sim.WorldPos{X: 320, Y: 320},
 			LoiterOffsetX: intp(0), LoiterOffsetY: intp(5)},
 	})
 	aw.handles.Structures.Seed(map[sim.StructureID]*sim.Structure{
@@ -199,7 +199,7 @@ func seedSlotWorld(t *testing.T, actors map[sim.ActorID]*sim.Actor) (*sim.World,
 	aw := newAnchorWorld()
 	aw.handles.Assets.Seed(map[sim.AssetID]*sim.Asset{"house": houseAsset()})
 	aw.handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
-		"inn": {ID: "inn", AssetID: "house", X: 320, Y: 320,
+		"inn": {ID: "inn", AssetID: "house", Pos: sim.WorldPos{X: 320, Y: 320},
 			LoiterOffsetX: intp(0), LoiterOffsetY: intp(5)},
 	})
 	aw.handles.Structures.Seed(map[sim.StructureID]*sim.Structure{

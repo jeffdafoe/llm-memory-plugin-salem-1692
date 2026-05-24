@@ -98,7 +98,7 @@ func buildMoveToOwnerTestWorld(t *testing.T) (*sim.World, context.CancelFunc) {
 		"house": {ID: "house", Category: "structure", DoorOffsetX: intp(0), DoorOffsetY: intp(2)},
 	})
 	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
-		"manor": {ID: "manor", AssetID: "house", X: 320, Y: 320, EntryPolicy: sim.EntryPolicyOwner, OwnerActorID: "lord"},
+		"manor": {ID: "manor", AssetID: "house", Pos: sim.WorldPos{X: 320, Y: 320}, EntryPolicy: sim.EntryPolicyOwner, OwnerActorID: "lord"},
 	})
 	handles.Structures.Seed(map[sim.StructureID]*sim.Structure{
 		"manor": {ID: "manor", DisplayName: "Manor"},

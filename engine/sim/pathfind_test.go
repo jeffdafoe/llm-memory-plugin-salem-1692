@@ -113,7 +113,7 @@ func TestBuildWalkGridObstacle(t *testing.T) {
 	})
 	// Place a tree at world (320, 320) = tile (PadX+10, PadY+10).
 	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
-		"tree-1": {ID: "tree-1", AssetID: "tree-maple", X: 320, Y: 320},
+		"tree-1": {ID: "tree-1", AssetID: "tree-maple", Pos: sim.WorldPos{X: 320, Y: 320}},
 	})
 
 	w, err := sim.LoadWorld(context.Background(), repo)
@@ -165,7 +165,7 @@ func TestBuildWalkGridPassageOverridesWater(t *testing.T) {
 	// Place a bridge at the middle water tile: tile (PadX+9, PadY+5) = world (288, 160).
 	bridgeWorld := sim.TileToWorld(sim.GridPoint{X: sim.PadX + 9, Y: sim.PadY + 5})
 	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
-		"bridge-1": {ID: "bridge-1", AssetID: "bridge", X: bridgeWorld.X, Y: bridgeWorld.Y},
+		"bridge-1": {ID: "bridge-1", AssetID: "bridge", Pos: sim.WorldPos{X: bridgeWorld.X, Y: bridgeWorld.Y}},
 	})
 
 	w, _ := sim.LoadWorld(context.Background(), repo)
@@ -264,7 +264,7 @@ func TestFindPathRouteAroundObstacle(t *testing.T) {
 		coord := sim.TileToWorld(sim.GridPoint{X: sim.PadX + 3, Y: y})
 		objects[sim.VillageObjectID(string(rune('a'+y-sim.PadY)))] = &sim.VillageObject{
 			ID:      sim.VillageObjectID(string(rune('a' + y - sim.PadY))),
-			AssetID: "wall", X: coord.X, Y: coord.Y,
+			AssetID: "wall", Pos: sim.WorldPos{X: coord.X, Y: coord.Y},
 		}
 	}
 	handles.VillageObjects.Seed(objects)
@@ -345,7 +345,7 @@ func TestFindPathToAdjacent(t *testing.T) {
 	goalTile := sim.GridPoint{X: sim.PadX + 5, Y: sim.PadY + 5}
 	goalWorld := sim.TileToWorld(goalTile)
 	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
-		"well-1": {ID: "well-1", AssetID: "well", X: goalWorld.X, Y: goalWorld.Y},
+		"well-1": {ID: "well-1", AssetID: "well", Pos: sim.WorldPos{X: goalWorld.X, Y: goalWorld.Y}},
 	})
 
 	w, _ := sim.LoadWorld(context.Background(), repo)

@@ -246,8 +246,8 @@ func objectsFromSnapshot(s *sim.Snapshot, assets map[sim.AssetID]*sim.Asset) []O
 		dto := ObjectDTO{
 			ID:                     string(id),
 			AssetID:                string(o.AssetID),
-			X:                      o.X,
-			Y:                      o.Y,
+			X:                      o.Pos.X,
+			Y:                      o.Pos.Y,
 			CurrentState:           o.CurrentState,
 			DisplayName:            o.DisplayName,
 			Tags:                   o.Tags,
