@@ -13,8 +13,9 @@ import (
 
 // item_commands_test.go — sim-level coverage of the Consume Command's world-
 // state validation, inventory decrement, need apply, dwell-credit stamp, and
-// ItemConsumed event emission, plus direct unit tests on transferItem,
-// resolveItemKind, and findNearestVillageObject (all exposed via export_test).
+// ItemConsumed event emission, plus direct unit tests on transferItem and
+// resolveItemKind (exposed via export_test). The dwell-pin resolution is
+// covered by loiter_resolve_test.go (ResolveLoiteringObject).
 //
 // Handler-level static validation (decode + control-char + trim) lives in
 // handlers/consume_test.go.
@@ -31,10 +32,12 @@ type consumeActorSpec struct {
 	moveInFlight bool
 }
 
-// consumeObjectSpec — VillageObject seed used as a dwell pin.
+// consumeObjectSpec — VillageObject seed used as a dwell pin. Position is in
+// TILE coords (same frame as consumeActorSpec): the object's loiter pin lands
+// exactly on this tile, so an actor standing on it (Chebyshev <= 1) pins.
 type consumeObjectSpec struct {
 	id   sim.VillageObjectID
-	x, y float64
+	x, y int
 }
 
 func buildConsumeTestWorld(t *testing.T, actors []consumeActorSpec, objects []consumeObjectSpec) (*sim.World, func()) {
@@ -65,11 +68,22 @@ func buildConsumeTestWorld(t *testing.T, actors []consumeActorSpec, objects []co
 	handles.Actors.Seed(actorSeed)
 
 	if len(objects) > 0 {
+		// resolveLoiteringObject (the dwell-pin resolver) only considers NAMED
+		// objects with a resolvable asset, and measures Chebyshev tiles to the
+		// loiter pin. Seed a shared asset and give each object a name + a zero
+		// loiter offset, so its pin lands on its anchor tile (TileToWorld
+		// round-trips through WorldToTile). The actor pins by standing there.
+		handles.Assets.Seed(map[sim.AssetID]*sim.Asset{"consume-pin": {ID: "consume-pin"}})
+		zero := 0
 		objSeed := make(map[sim.VillageObjectID]*sim.VillageObject, len(objects))
 		for _, o := range objects {
 			objSeed[o.id] = &sim.VillageObject{
-				ID:  o.id,
-				Pos: sim.WorldPos{X: o.x, Y: o.y},
+				ID:            o.id,
+				DisplayName:   string(o.id),
+				AssetID:       "consume-pin",
+				Pos:           sim.TileToWorld(sim.GridPoint{X: o.x, Y: o.y}),
+				LoiterOffsetX: &zero,
+				LoiterOffsetY: &zero,
 			}
 		}
 		handles.VillageObjects.Seed(objSeed)
@@ -295,9 +309,9 @@ func TestConsume_CaseInsensitiveResolve(t *testing.T) {
 	}
 }
 
-// TestConsume_DwellPin_NearbyObject: actor consumes stew with a village
-// object within ObjectRefreshArrivalTolerance. Dwell credit stamps pinned
-// to that object, source=item, RemainingTicks=8.
+// TestConsume_DwellPin_NearbyObject: actor consumes stew while standing at a
+// named village object's loiter pin. Dwell credit stamps pinned to that
+// object, source=item, RemainingTicks=8.
 func TestConsume_DwellPin_NearbyObject(t *testing.T) {
 	w, stop := buildConsumeTestWorld(t,
 		[]consumeActorSpec{{
@@ -308,7 +322,7 @@ func TestConsume_DwellPin_NearbyObject(t *testing.T) {
 			x:           100, y: 100,
 		}},
 		[]consumeObjectSpec{{
-			id: "tavern", x: 110, y: 100, // within 64 px tolerance
+			id: "tavern", x: 100, y: 100, // pin on the actor's tile → attributed
 		}},
 	)
 	defer stop()
@@ -362,7 +376,7 @@ func TestConsume_DwellPin_NoNearbyObject(t *testing.T) {
 			x:           100, y: 100,
 		}},
 		[]consumeObjectSpec{{
-			id: "far_tavern", x: 1000, y: 1000, // far outside 64 px tolerance
+			id: "far_tavern", x: 1000, y: 1000, // far outside the attribution radius
 		}},
 	)
 	defer stop()
@@ -759,33 +773,6 @@ func TestResolveItemKind_Cases(t *testing.T) {
 	}
 }
 
-// ---- findNearestVillageObject direct tests ----
-
-func TestFindNearestVillageObject_Cases(t *testing.T) {
-	w, stop := buildConsumeTestWorld(t, nil, []consumeObjectSpec{
-		{id: "near", x: 100, y: 100},
-		{id: "alsoclose", x: 130, y: 100}, // within tolerance from a query at (110, 100): dist=20
-		{id: "far", x: 1000, y: 1000},
-	})
-	defer stop()
-
-	cases := []struct {
-		name   string
-		x, y   float64
-		wantID sim.VillageObjectID
-	}{
-		{name: "exact on near", x: 100, y: 100, wantID: "near"},
-		{name: "between near and alsoclose, closer to near", x: 110, y: 100, wantID: "near"},
-		{name: "between, closer to alsoclose", x: 125, y: 100, wantID: "alsoclose"},
-		{name: "way off → empty", x: 5000, y: 5000, wantID: ""},
-		{name: "just outside tolerance → empty", x: 200, y: 100, wantID: ""}, // dist=70 from near, 100 px → beyond 64
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			got := sim.FindNearestVillageObject(w, c.x, c.y)
-			if got != c.wantID {
-				t.Errorf("findNearestVillageObject = %q, want %q", got, c.wantID)
-			}
-		})
-	}
-}
+// The dwell-pin lookup (formerly findNearestVillageObject) is now
+// resolveLoiteringObject, covered directly by loiter_resolve_test.go. Its
+// end-to-end use in Consume is covered by TestConsume_DwellPin_* above.

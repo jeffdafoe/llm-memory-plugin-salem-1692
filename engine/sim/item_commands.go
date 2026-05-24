@@ -146,11 +146,11 @@ func resolveItemKind(w *World, name string) (ItemKind, bool) {
 //     against the clamp). Per-need actual decrement is recorded in
 //     Applied for the event.
 //   - dwell credits stamped via UpsertItemDwellCredits for any
-//     satisfaction entries with HasDwell() — pinned to the nearest
-//     VillageObject within ObjectRefreshArrivalTolerance of the actor's
-//     position. If no nearby object (eating-while-walking far from any
-//     pin-able structure), dwell upsert is silent-skipped: actor gets
-//     the immediate hit but no per-tick payoff. Matches v1 behavior.
+//     satisfaction entries with HasDwell() — pinned to the named village
+//     object the actor is loitering at (resolveLoiteringObject). If no
+//     such object (eating-while-walking far from any pin-able structure),
+//     dwell upsert is silent-skipped: actor gets the immediate hit but no
+//     per-tick payoff. Matches v1 behavior.
 //   - emits ItemConsumed{ActorID, Kind, Qty, Applied, At}.
 //
 // NOT done here (deferred to later PRs alongside their substrate):
@@ -246,20 +246,21 @@ func Consume(actorID ActorID, itemName string, qty int, at time.Time) Command {
 			}
 
 			// Stamp item-source dwell credits for satisfactions with a
-			// complete dwell triple. Pin to the nearest VillageObject within
-			// ObjectRefreshArrivalTolerance — matches the existing
-			// object_refresh.go spatial-stub pattern pending the loiter-pin
-			// port. If no nearby object (eating-while-walking far from any
-			// structure anchor), structureID="" and UpsertItemDwellCredits
-			// silent-skips — matches v1 behavior where eat-while-walking
-			// gets only the immediate hit, not the per-tick payoff.
+			// complete dwell triple. Pin to the named village object whose
+			// loiter pin the actor stands at (Chebyshev <= 1 tile) via
+			// resolveLoiteringObject — the v1 resolveLoiteringStructure
+			// attribution every reverse-lookup now shares. If no qualifying
+			// object (eating-while-walking far from any pin), structureID=""
+			// and UpsertItemDwellCredits silent-skips — matches v1 behavior
+			// where eat-while-walking gets only the immediate hit, not the
+			// per-tick payoff.
 			//
 			// When at least one credit lands, emit DwellStarted so dwell-
 			// reactor subscribers can stamp the next-tick perception cue
 			// ("this stew looks really good — you'll need some time to
 			// enjoy it properly"). No event when nothing landed (skipped
 			// item, eat-while-walking, no dwell triples on satisfactions).
-			structureID := findNearestVillageObject(w, float64(actor.Pos.X), float64(actor.Pos.Y))
+			structureID, _ := resolveLoiteringObject(w, actor.Pos, LoiterAttributionTiles)
 			var stamped []DwellCreditSnapshot
 			if structureID != "" {
 				stamped = UpsertItemDwellCredits(actor, kind, def.Satisfies, structureID, at)
@@ -285,35 +286,4 @@ func Consume(actorID ActorID, itemName string, qty int, at time.Time) Command {
 			return nil, nil
 		},
 	}
-}
-
-// findNearestVillageObject returns the ID of the nearest village object
-// within ObjectRefreshArrivalTolerance of (x, y), or "" if none. Used by
-// Consume to pick the item-source dwell pin: a meal is pinned to the
-// place you ate it, walked-away meals abandon the dwell.
-//
-// Mirrors v1's resolveLoiteringStructure under the Euclidean-tolerance
-// stub the rest of v2 uses (see object_refresh.go) pending the loiter-pin
-// port. Doesn't filter by EntryPolicy or refresh-tag — any nearby object
-// is a valid dwell pin (an actor eating under a tree gets the tree as
-// the pin; walking off it ends the dwell, which is the right behavior
-// regardless of whether the pin is a tavern or a tree). When the
-// loiter-pin model lands, swap this helper without changing Consume.
-//
-// Linear scan over all VillageObjects — fine at village scale (~50);
-// spatial index lands with the loiter-pin port.
-func findNearestVillageObject(w *World, x, y float64) VillageObjectID {
-	var bestID VillageObjectID
-	bestDist2 := ObjectRefreshArrivalTolerance * ObjectRefreshArrivalTolerance
-	for id, obj := range w.VillageObjects {
-		dx := obj.Pos.X - x
-		dy := obj.Pos.Y - y
-		d2 := dx*dx + dy*dy
-		if d2 > bestDist2 {
-			continue
-		}
-		bestDist2 = d2
-		bestID = id
-	}
-	return bestID
 }
