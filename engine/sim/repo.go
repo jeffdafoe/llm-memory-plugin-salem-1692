@@ -81,6 +81,14 @@ type OrdersRepo interface {
 	LoadAll(ctx context.Context) (map[OrderID]*Order, error)
 	SaveSnapshot(ctx context.Context, tx Tx, orders map[OrderID]*Order) error
 
+	// WriteTerminal durably persists a single Order at its terminal state —
+	// the write-through half of the Slice 6 write-through-then-prune. It is
+	// the one OrdersRepo method that also satisfies the narrow TerminalOrderSink
+	// interface, so production wires `repo.Orders` directly as the World's sink
+	// (World still depends only on TerminalOrderSink, not on this repo). See
+	// finalizeOrderTerminal + SetTerminalOrderSink.
+	WriteTerminal(ctx context.Context, o *Order) error
+
 	// LoadRecentPrices returns up to perKeyCap most-recent accepted
 	// PayLedger rows per (seller, item) tuple within the time window
 	// (created_at >= since), packaged as PriceBookSeedRecord values for

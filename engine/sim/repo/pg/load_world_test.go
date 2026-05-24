@@ -80,6 +80,9 @@ func (fakeOrders) SaveSnapshot(_ context.Context, _ sim.Tx, _ map[sim.OrderID]*s
 func (fakeOrders) LoadRecentPrices(_ context.Context, _ time.Time, _ int) ([]sim.PriceBookSeedRecord, error) {
 	return nil, nil
 }
+func (fakeOrders) WriteTerminal(_ context.Context, _ *sim.Order) error {
+	return nil
+}
 
 type fakeEnvironment struct {
 	env      sim.WorldEnvironment

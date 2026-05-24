@@ -116,6 +116,15 @@ func main() {
 		log.Fatalf("engine: load world: %v", err)
 	}
 
+	// Install the durable terminal-order sink. Without it, finalizeOrderTerminal
+	// runs its legacy no-prune path: terminal Orders are never written through to
+	// pg at transition time NOR pruned from w.Orders, so they accumulate in memory
+	// and in every published snapshot for the life of the process (checkpoint still
+	// reconciles pg, so it's bloat, not data loss). repo.Orders satisfies the narrow
+	// TerminalOrderSink via its WriteTerminal method. pg.LoadWorld doesn't run the
+	// restartExpirePendingOrders pass, so there's no before-load ordering to honor.
+	world.SetTerminalOrderSink(repo.Orders)
+
 	rt := runtime{
 		World:     world,
 		LLMClient: memapi.NewClient(llmMemoryURL, engineKey),
