@@ -73,6 +73,7 @@ var (
 	ComputeLoiterTile         = computeLoiterTile
 	EffectiveLoiterTile       = effectiveLoiterTile
 	PickVisitorSlot           = pickVisitorSlot
+	PickObjectVisitorSlot     = pickObjectVisitorSlot
 	TileOccupiedByOtherActor  = tileOccupiedByOtherActor
 )
 

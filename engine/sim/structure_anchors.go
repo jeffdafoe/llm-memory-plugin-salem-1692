@@ -295,6 +295,83 @@ func pickVisitorSlot(w *World, structureID StructureID, actor *Actor, grid *Walk
 	if !ok {
 		return Position{}, false
 	}
+	return pickVisitorSlotAtPin(w, pin, actor, grid, nil, string(structureID))
+}
+
+// pickObjectVisitorSlot is the object-keyed sibling of pickVisitorSlot: it
+// picks a walkable, unoccupied stand-on tile around a village object's loiter
+// pin so an actor can be routed TO that object. pickVisitorSlot resolves its
+// pin through the structure bridge (effectiveLoiterTile); a bare named prop
+// (a shade tree, a well) has no Structure entry, so this resolves the pin
+// directly via computeLoiterTile instead.
+//
+// The returned tile sits within LoiterAttributionTiles of the pin (a king's-
+// move slot is Chebyshev 1; the pin fallback is Chebyshev 0), so on arrival
+// ApplyObjectRefreshAtArrival resolves back to this same object.
+//
+// ok=false when the object or its asset is missing from the world, or when
+// every one of the eight slots AND the pin are blocked.
+//
+// MUST be called from inside a Command.Fn. Unexported by design.
+func pickObjectVisitorSlot(w *World, objID VillageObjectID, actor *Actor, grid *WalkGrid) (Position, bool) {
+	if actor == nil {
+		return Position{}, false
+	}
+	vobj, ok := w.VillageObjects[objID]
+	if !ok || vobj == nil {
+		return Position{}, false
+	}
+	asset, ok := w.Assets[vobj.AssetID]
+	if !ok || asset == nil {
+		return Position{}, false
+	}
+	return pickObjectVisitorSlotAvoiding(w, objID, actor, grid, nil)
+}
+
+// pickObjectVisitorSlotAvoiding is pickObjectVisitorSlot with an additional
+// reserved set: any slot already in reserved is rejected as if occupied. A
+// caller resolving slots for MANY actors in one pass — before any of them has
+// physically moved — uses this to keep two actors from being assigned the same
+// tile (tileOccupiedByOtherActor only sees current positions, not the in-flight
+// MoveIntents the pass has just issued). reserved may be nil (no reservations).
+//
+// MUST be called from inside a Command.Fn. Unexported by design.
+func pickObjectVisitorSlotAvoiding(w *World, objID VillageObjectID, actor *Actor, grid *WalkGrid, reserved map[Position]struct{}) (Position, bool) {
+	if actor == nil {
+		return Position{}, false
+	}
+	vobj, ok := w.VillageObjects[objID]
+	if !ok || vobj == nil {
+		return Position{}, false
+	}
+	asset, ok := w.Assets[vobj.AssetID]
+	if !ok || asset == nil {
+		return Position{}, false
+	}
+	pin := computeLoiterTile(vobj, asset)
+	return pickVisitorSlotAtPin(w, pin, actor, grid, reserved, string(objID))
+}
+
+// pickVisitorSlotAtPin is the shared ring-scan core behind pickVisitorSlot
+// (structure-keyed) and pickObjectVisitorSlot (object-keyed). Given a resolved
+// loiter pin, it scans the eight visitorSlotOffsets from a per-actor
+// hash-derived start (so a re-resolving actor doesn't thrash between slots)
+// and returns the first slot that is both traversable and unoccupied. When all
+// eight are blocked, the pin tile itself is the last resort — but only if the
+// pin is itself stand-able, since returning an unwalkable or occupied tile
+// would have resolvePathTarget report success on a destination the mover can
+// never finish at.
+//
+// label identifies the anchor (a structure or object id) in the all-blocked
+// log lines. ok=false when every slot AND the pin are blocked.
+//
+// reserved, when non-nil, rejects any candidate already in the set — for a
+// caller resolving slots for many actors in one pass before any has moved (see
+// pickObjectVisitorSlotAvoiding). nil means no reservations (the per-tick
+// single-actor callers).
+//
+// MUST be called from inside a Command.Fn. Unexported by design.
+func pickVisitorSlotAtPin(w *World, pin Position, actor *Actor, grid *WalkGrid, reserved map[Position]struct{}, label string) (Position, bool) {
 	n := len(visitorSlotOffsets)
 	start := int(hashActorID(actor.ID) % uint32(n))
 	for i := 0; i < n; i++ {
@@ -306,6 +383,9 @@ func pickVisitorSlot(w *World, structureID StructureID, actor *Actor, grid *Walk
 		if tileOccupiedByOtherActor(w, slot, actor.ID) {
 			continue
 		}
+		if _, taken := reserved[slot]; taken {
+			continue
+		}
 		return slot, true
 	}
 	// All eight ring slots are blocked. Fall back to the loiter pin
@@ -313,13 +393,14 @@ func pickVisitorSlot(w *World, structureID StructureID, actor *Actor, grid *Walk
 	// occupied pin returned here would be accepted by resolvePathTarget
 	// and then soft-block forever at the final step; failing resolution
 	// instead lets MoveActor reject cleanly.
-	if grid.CanWalk(pin.X, pin.Y) && !tileOccupiedByOtherActor(w, pin, actor.ID) {
-		log.Printf("pickVisitorSlot: all 8 visitor slots blocked for structure %s; "+
-			"falling back to loiter pin %+v (admin should relocate the pin)", structureID, pin)
+	if _, pinTaken := reserved[pin]; !pinTaken &&
+		grid.CanWalk(pin.X, pin.Y) && !tileOccupiedByOtherActor(w, pin, actor.ID) {
+		log.Printf("pickVisitorSlotAtPin: all 8 visitor slots blocked for %s; "+
+			"falling back to loiter pin %+v (admin should relocate the pin)", label, pin)
 		return pin, true
 	}
-	log.Printf("pickVisitorSlot: all 8 visitor slots AND the loiter pin %+v are blocked "+
-		"for structure %s; no visitor tile available (admin should relocate the pin)", pin, structureID)
+	log.Printf("pickVisitorSlotAtPin: all 8 visitor slots AND the loiter pin %+v are blocked "+
+		"for %s; no visitor tile available (admin should relocate the pin)", pin, label)
 	return Position{}, false
 }
 
