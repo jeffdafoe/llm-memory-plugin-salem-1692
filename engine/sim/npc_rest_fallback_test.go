@@ -13,7 +13,7 @@ import (
 // tiredness-easing oak (named, asset-backed, infinite supply) ten tiles east
 // of where the test actors sit, plus the supplied actor. The oak's slot is far
 // from the actor so an eligible actor is never already standing on it.
-func buildRestFloorWorld(t *testing.T, actor *sim.Actor) (*sim.World, context.CancelFunc) {
+func buildRestFloorWorld(t *testing.T, actors ...*sim.Actor) (*sim.World, context.CancelFunc) {
 	t.Helper()
 	repo, handles := mem.NewRepository()
 	handles.Terrain.Seed(makeAllGrassTerrain())
@@ -27,7 +27,11 @@ func buildRestFloorWorld(t *testing.T, actor *sim.Actor) (*sim.World, context.Ca
 				{Attribute: "tiredness", Amount: -8},
 			}},
 	})
-	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{actor.ID: actor})
+	seed := make(map[sim.ActorID]*sim.Actor, len(actors))
+	for _, a := range actors {
+		seed[a.ID] = a
+	}
+	handles.Actors.Seed(seed)
 
 	w, err := sim.LoadWorld(context.Background(), repo)
 	if err != nil {
@@ -149,6 +153,54 @@ func TestRouteHomelessToRest_SkipsHuddled(t *testing.T) {
 
 	if n := routeRest(t, w, time.Now().UTC()); n != 0 {
 		t.Errorf("routed = %d, want 0 (huddled actor must be skipped)", n)
+	}
+}
+
+// moveTarget returns the position an actor's in-flight MoveIntent targets.
+func moveTarget(t *testing.T, w *sim.World, id sim.ActorID) (sim.Position, bool) {
+	t.Helper()
+	type result struct {
+		pos sim.Position
+		ok  bool
+	}
+	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		mi := world.Actors[id].MoveIntent
+		if mi == nil || mi.Destination.Position == nil {
+			return result{ok: false}, nil
+		}
+		return result{pos: *mi.Destination.Position, ok: true}, nil
+	}})
+	if err != nil {
+		t.Fatalf("moveTarget: %v", err)
+	}
+	r := res.(result)
+	return r.pos, r.ok
+}
+
+// TestRouteHomelessToRest_NoTwoActorsSameSlot: two eligible actors that resolve
+// the same nearest rest object are routed to DISTINCT slots in one sweep.
+// Regression for the reservation bug — without per-sweep reservation, both
+// would be sent to the same tile because neither has physically moved yet
+// (tileOccupiedByOtherActor reads current positions, not the just-issued
+// MoveIntents).
+func TestRouteHomelessToRest_NoTwoActorsSameSlot(t *testing.T) {
+	a := eligibleVagrant()
+	b := eligibleVagrant()
+	b.ID = "vagrant-b"
+	b.Pos = sim.TilePos{X: sim.PadX + 11, Y: sim.PadY + 10} // beside the first
+	w, cancel := buildRestFloorWorld(t, a, b)
+	defer cancel()
+
+	if n := routeRest(t, w, time.Now().UTC()); n != 2 {
+		t.Fatalf("routed = %d, want 2 (both vagrants)", n)
+	}
+	ta, oka := moveTarget(t, w, "vagrant")
+	tb, okb := moveTarget(t, w, "vagrant-b")
+	if !oka || !okb {
+		t.Fatalf("missing MoveIntent: a=%v b=%v", oka, okb)
+	}
+	if ta == tb {
+		t.Errorf("both vagrants routed to the same slot %+v — reservation failed", ta)
 	}
 }
 

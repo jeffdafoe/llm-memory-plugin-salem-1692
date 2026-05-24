@@ -39,6 +39,12 @@ func RouteHomelessToRest(now time.Time) Command {
 			nowMinute := localMinuteOfDay(w, now)
 			redThreshold := w.Settings.NeedThresholds.Get(restFallbackTirednessNeed)
 			var grid *WalkGrid
+			// Targets assigned earlier in this same sweep. MoveActor installs an
+			// intent without moving the actor, so without this a later actor would
+			// see an already-assigned slot as still free (tileOccupiedByOtherActor
+			// reads current positions, not in-flight intents) and be routed onto
+			// the same tile.
+			reserved := make(map[Position]struct{})
 			routed := 0
 			for _, a := range w.Actors {
 				if !needsRestFallback(w, a, now, nowMinute, redThreshold) {
@@ -52,17 +58,22 @@ func RouteHomelessToRest(now time.Time) Command {
 					}
 					grid = g
 				}
-				target, ok := nearestFreeRestSlot(w, a, grid)
+				target, ok := nearestFreeRestSlot(w, a, grid, reserved)
 				if !ok {
 					continue
 				}
+				// Claim the slot whether the actor is already there, already en
+				// route, or about to be routed — so no other actor this sweep is
+				// sent to the same tile.
 				if a.Pos == target || alreadyHeadedToRest(a, target) {
+					reserved[target] = struct{}{}
 					continue
 				}
 				if _, err := MoveActor(a.ID, NewPositionDestination(target), false, now).Fn(w); err != nil {
 					log.Printf("sim/npc_rest_fallback: route %s -> rest %v: %v", a.ID, target, err)
 					continue
 				}
+				reserved[target] = struct{}{}
 				routed++
 			}
 			return routed, nil
@@ -120,17 +131,20 @@ func needsRestFallback(w *World, a *Actor, now time.Time, nowMinute, redThreshol
 // of the pin, so on arrival ApplyObjectRefreshAtArrival resolves back to this
 // same object and applies its refresh.
 //
+// reserved carries the slots already claimed earlier in the same routing
+// sweep so two actors are never sent to the same tile (see RouteHomelessToRest).
+//
 // ok=false when no tiredness object exists, or the nearest one's eight slots
-// AND its pin are all blocked. A blocked nearest object skips the actor this
-// tick rather than falling through to a farther object — at Salem scale rest
-// objects sit in open ground and all-blocked is a degenerate case; the next
-// tick retries.
-func nearestFreeRestSlot(w *World, actor *Actor, grid *WalkGrid) (Position, bool) {
+// AND its pin are all blocked (or reserved). A blocked nearest object skips the
+// actor this tick rather than falling through to a farther object — at Salem
+// scale rest objects sit in open ground and all-blocked is a degenerate case;
+// the next tick retries.
+func nearestFreeRestSlot(w *World, actor *Actor, grid *WalkGrid, reserved map[Position]struct{}) (Position, bool) {
 	objID, ok := nearestFreeTirednessObject(w, actor.Pos)
 	if !ok {
 		return Position{}, false
 	}
-	return pickObjectVisitorSlot(w, objID, actor, grid)
+	return pickObjectVisitorSlotAvoiding(w, objID, actor, grid, reserved)
 }
 
 // nearestFreeTirednessObject returns the id of the closest village object that
