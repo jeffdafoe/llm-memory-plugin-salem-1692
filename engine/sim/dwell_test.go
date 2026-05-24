@@ -15,10 +15,18 @@ import (
 func buildDwellTestWorld(t *testing.T, lastCreditedAt time.Time, actorX, actorY int) (*sim.World, context.CancelFunc) {
 	t.Helper()
 	repo, handles := mem.NewRepository()
+	// The dwell "still here?" check resolves via resolveLoiteringObject, which
+	// only considers NAMED objects with a resolvable asset and measures
+	// Chebyshev tiles to the loiter pin. Name the tree, seed its asset, and
+	// give it a zero loiter offset anchored at tile (200,200) so an actor on
+	// tile (200,200) is exactly at the pin.
+	handles.Assets.Seed(map[sim.AssetID]*sim.Asset{"tree-oak": {ID: "tree-oak"}})
+	zero := 0
 	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
 		"shade_tree": {
-			ID: "shade_tree", AssetID: "tree-oak", CurrentState: "default",
-			Pos: sim.WorldPos{X: 200, Y: 200},
+			ID: "shade_tree", DisplayName: "Shade Tree", AssetID: "tree-oak", CurrentState: "default",
+			LoiterOffsetX: &zero, LoiterOffsetY: &zero,
+			Pos: sim.TileToWorld(sim.GridPoint{X: 200, Y: 200}),
 		},
 	})
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
@@ -53,8 +61,8 @@ func buildDwellTestWorld(t *testing.T, lastCreditedAt time.Time, actorX, actorY 
 // the period.
 func TestApplyDwellTickRipeObjectCredit(t *testing.T) {
 	now := time.Now().UTC()
-	anchor := now.Add(-11 * time.Minute) // ripe (period 10 min)
-	w, cancel := buildDwellTestWorld(t, anchor, 210, 210)
+	anchor := now.Add(-11 * time.Minute)                  // ripe (period 10 min)
+	w, cancel := buildDwellTestWorld(t, anchor, 200, 200) // on the tree's pin
 	defer cancel()
 
 	res, err := w.Send(sim.ApplyDwellTick(now))
@@ -89,7 +97,7 @@ func TestApplyDwellTickRipeObjectCredit(t *testing.T) {
 func TestApplyDwellTickUnripeSkipped(t *testing.T) {
 	now := time.Now().UTC()
 	anchor := now.Add(-5 * time.Minute) // not yet ripe
-	w, cancel := buildDwellTestWorld(t, anchor, 210, 210)
+	w, cancel := buildDwellTestWorld(t, anchor, 200, 200)
 	defer cancel()
 
 	res, _ := w.Send(sim.ApplyDwellTick(now))
@@ -130,8 +138,14 @@ func TestApplyDwellTickItemCountdown(t *testing.T) {
 	now := time.Now().UTC()
 	anchor := now.Add(-11 * time.Minute)
 	repo, handles := mem.NewRepository()
+	handles.Assets.Seed(map[sim.AssetID]*sim.Asset{"inn-thatched": {ID: "inn-thatched"}})
+	zero := 0
 	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
-		"inn": {ID: "inn", AssetID: "inn-thatched", Pos: sim.WorldPos{X: 100, Y: 100}},
+		"inn": {
+			ID: "inn", DisplayName: "Inn", AssetID: "inn-thatched",
+			LoiterOffsetX: &zero, LoiterOffsetY: &zero,
+			Pos: sim.TileToWorld(sim.GridPoint{X: 110, Y: 110}), // pin on the actor's tile
+		},
 	})
 	remaining := 3
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
@@ -187,8 +201,14 @@ func TestApplyDwellTickItemExhaustedDeletes(t *testing.T) {
 	now := time.Now().UTC()
 	anchor := now.Add(-11 * time.Minute)
 	repo, handles := mem.NewRepository()
+	handles.Assets.Seed(map[sim.AssetID]*sim.Asset{"inn-thatched": {ID: "inn-thatched"}})
+	zero := 0
 	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
-		"inn": {ID: "inn", AssetID: "inn-thatched", Pos: sim.WorldPos{X: 100, Y: 100}},
+		"inn": {
+			ID: "inn", DisplayName: "Inn", AssetID: "inn-thatched",
+			LoiterOffsetX: &zero, LoiterOffsetY: &zero,
+			Pos: sim.TileToWorld(sim.GridPoint{X: 105, Y: 100}), // pin on the player's tile
+		},
 	})
 	remaining := 1
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
@@ -253,8 +273,14 @@ func TestApplyDwellTickFloorHitTerminatesCredit(t *testing.T) {
 	now := time.Now().UTC()
 	anchor := now.Add(-11 * time.Minute)
 	repo, handles := mem.NewRepository()
+	handles.Assets.Seed(map[sim.AssetID]*sim.Asset{"bush-berries": {ID: "bush-berries"}})
+	zero := 0
 	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
-		"bush": {ID: "bush", AssetID: "bush-berries", Pos: sim.WorldPos{X: 0, Y: 0}},
+		"bush": {
+			ID: "bush", DisplayName: "Berry Bush", AssetID: "bush-berries",
+			LoiterOffsetX: &zero, LoiterOffsetY: &zero,
+			Pos: sim.TileToWorld(sim.GridPoint{X: 0, Y: 0}), // pin on the player's tile
+		},
 	})
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
 		"player": {

@@ -24,11 +24,17 @@ func buildDwellReactorWorld(t *testing.T) (*sim.World, func()) {
 	t.Helper()
 	repo, handles := mem.NewRepository()
 	handles.ItemKinds.Seed(mem.SeedItemKinds())
+	// The dwell-pin resolver (resolveLoiteringObject) needs a resolvable asset
+	// and measures Chebyshev tiles to the loiter pin; a zero loiter offset
+	// anchored at the actor's tile (105,100) puts hannah exactly on the pin.
+	handles.Assets.Seed(map[sim.AssetID]*sim.Asset{"inn-thatched": {ID: "inn-thatched"}})
+	zero := 0
 	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
 		"tavern": {
 			ID: "tavern", AssetID: "inn-thatched",
-			DisplayName: "The Drunken Hare",
-			Pos:         sim.WorldPos{X: 100, Y: 100},
+			DisplayName:   "The Drunken Hare",
+			LoiterOffsetX: &zero, LoiterOffsetY: &zero,
+			Pos: sim.TileToWorld(sim.GridPoint{X: 105, Y: 100}),
 		},
 	})
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
