@@ -214,100 +214,25 @@ func gatherInnRestSpots(snap *sim.Snapshot, actorID sim.ActorID) []RecoveryOptio
 }
 
 // gatherConsumableRemedies returns a "remedy" option per (vendor, item) for
-// NPCs who hold a tiredness-easing consumable and have a workplace to buy it
-// at. v2 has no standing "vendor" capability — v1's serve-tool attribute is
-// gone, and sales run through the buyer's pay_with_item against a co-present
-// seller — so vendorship is inferred structurally here: an NPC stationed at a
-// WorkStructureID who carries a tiredness item is treated as selling it there.
-//
-// The cue is surfaced at the vendor's WORKPLACE, not their current location
-// (ZBBS-HOME-299 decision): a stable "this is where tea is sold" signal rather
-// than a momentary-presence claim. It therefore carries NO transient
-// break/sleep/shift gate — the buyer walks to the workplace and availability is
-// resolved on arrival by the transaction layer (pay_with_item co-presence +
-// AcceptPay's seller-break gate). Distance/direction are omitted for the same
-// reason inns omit them (Structure.Position is grid space, not the actor's tile
-// space), so remedies park after the distance-bearing free rest spots.
-//
-// PCs are excluded as vendors — they don't sell through the NPC commerce path.
-// A vendor whose WorkStructureID doesn't resolve to a structure in the snapshot
-// is skipped: the "buy at X" cue would name an unactionable destination.
+// NPCs selling a tiredness-easing consumable. Thin adapter over the shared
+// findVendorConsumables finder (see consumable_vendors.go) into the
+// RecoveryOption shape — the satiation section reuses the same finder for
+// hunger/thirst seller cues. Remedies carry no distance (Structure.Position is
+// grid space) so they park after the distance-bearing free rest spots.
 func gatherConsumableRemedies(snap *sim.Snapshot, actorID sim.ActorID) []RecoveryOption {
-	if len(snap.ItemKinds) == 0 {
-		return nil
-	}
 	var out []RecoveryOption
-	for vendorID, vendor := range snap.Actors {
-		if vendor == nil || vendorID == actorID || vendor.Kind == sim.KindPC {
-			continue
-		}
-		if vendor.WorkStructureID == "" {
-			continue
-		}
-		st := snap.Structures[vendor.WorkStructureID]
-		if st == nil {
-			continue
-		}
-		for kind, qty := range vendor.Inventory {
-			if qty <= 0 {
-				continue
-			}
-			mag := tirednessRemedyMagnitude(snap, kind)
-			if mag <= 0 {
-				continue
-			}
-			out = append(out, RecoveryOption{
-				Kind:      "remedy",
-				Label:     remedyStructureLabel(st),
-				ItemLabel: itemDisplayLabel(snap, kind),
-				Magnitude: mag,
-				CostText:  buyerLastPaidText(snap, actorID, vendorID, kind, "ask the seller"),
-				sortKey:   innSortKey,
-				sourceKey: string(vendorID) + ":" + string(kind),
-			})
-		}
+	for _, vc := range findVendorConsumables(snap, actorID, recoveryTirednessNeed, "ask the seller") {
+		out = append(out, RecoveryOption{
+			Kind:      "remedy",
+			Label:     vc.StructureLabel,
+			ItemLabel: vc.ItemLabel,
+			Magnitude: vc.Magnitude,
+			CostText:  vc.CostText,
+			sortKey:   innSortKey,
+			sourceKey: string(vc.VendorID) + ":" + string(vc.ItemKind),
+		})
 	}
 	return out
-}
-
-// tirednessRemedyMagnitude returns the immediate tiredness a unit of kind eases
-// per the item catalog, or 0 when the kind is unknown or eases no tiredness on
-// the immediate hit. Pure slow-burn items (Immediate==0, dwell-only) are not
-// surfaced as "buy and drink now" remedies in the MVP.
-//
-// First-match is correct: ItemKindDef.Satisfies holds at most one entry per
-// attribute (the v1 item_satisfies PK is (item_kind, attribute), enforced at
-// load — see ItemKindDef.Satisfies), so there is no second tiredness entry to
-// stack or out-rank.
-func tirednessRemedyMagnitude(snap *sim.Snapshot, kind sim.ItemKind) int {
-	def := snap.ItemKinds[kind]
-	if def == nil {
-		return 0
-	}
-	for _, s := range def.Satisfies {
-		if s.Attribute == recoveryTirednessNeed {
-			return s.Immediate
-		}
-	}
-	return 0
-}
-
-// itemDisplayLabel resolves a consumable's human label from the catalog,
-// falling back to the raw kind when unknown or unlabeled.
-func itemDisplayLabel(snap *sim.Snapshot, kind sim.ItemKind) string {
-	if def := snap.ItemKinds[kind]; def != nil && def.DisplayLabel != "" {
-		return def.DisplayLabel
-	}
-	return string(kind)
-}
-
-// remedyStructureLabel names the workplace where a remedy is bought, with a
-// generic fallback when the structure has no display name.
-func remedyStructureLabel(s *sim.Structure) string {
-	if s.DisplayName != "" {
-		return s.DisplayName
-	}
-	return "the shop"
 }
 
 func hasPrivateRoom(s *sim.Structure) bool {
