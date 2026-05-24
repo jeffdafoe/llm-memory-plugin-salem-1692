@@ -61,7 +61,8 @@ const (
 	WarrantKindDwellStarted       WarrantKind = "dwell_started"
 	WarrantKindDwellTickApplied   WarrantKind = "dwell_tick_applied"
 	WarrantKindDwellEnded         WarrantKind = "dwell_ended"
-	WarrantKindAdmin              WarrantKind = "admin" // operator forced a tick
+	WarrantKindConsumed           WarrantKind = "consumed" // immediate consume self-narration beat
+	WarrantKindAdmin              WarrantKind = "admin"    // operator forced a tick
 )
 
 // WarrantReason is the marker interface for kind-specific warrant payloads.
