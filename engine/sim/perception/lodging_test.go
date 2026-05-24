@@ -175,6 +175,78 @@ func TestRenderLodging_GatedAndSectioned(t *testing.T) {
 	}
 }
 
+// --- rate hint + affordability cue ---
+
+func TestBuildLodgingView_CarriesRateAndCoins(t *testing.T) {
+	subj := &sim.ActorSnapshot{
+		Coins: 11,
+		RoomAccess: map[sim.RoomAccessKey]*sim.RoomAccess{
+			{RoomID: 2, Source: sim.AccessSourceLedger}: ledgerAccess(2, 30*time.Hour),
+		},
+	}
+	structs := map[sim.StructureID]*sim.Structure{"inn": innStructure("inn", "Hannah's Inn")}
+	snap := lodgingSnap(subj, structs)
+	snap.LodgingDefaultWeeklyRate = 28 // nightly 4
+	v := buildLodgingView(snap, subj)
+	if v == nil || v.NightlyRate != 4 || v.Coins != 11 {
+		t.Fatalf("want NightlyRate=4 Coins=11, got %+v", v)
+	}
+}
+
+func TestLodgingAffordabilityCue(t *testing.T) {
+	near := &LodgingView{InnName: "Hannah's Inn", ExpiresAt: lodgingNow.Add(30 * time.Hour), NightlyRate: 4, Coins: 1}
+	if cue := lodgingAffordabilityCue(near, lodgingNow); cue == "" {
+		t.Error("near-expiry + broke must produce the affordability cue")
+	}
+	// affordable → no cue
+	flush := &LodgingView{InnName: "Hannah's Inn", ExpiresAt: lodgingNow.Add(30 * time.Hour), NightlyRate: 4, Coins: 10}
+	if cue := lodgingAffordabilityCue(flush, lodgingNow); cue != "" {
+		t.Errorf("affordable lodger must get no cue, got %q", cue)
+	}
+	// calm (>48h) → no cue even when broke
+	calm := &LodgingView{InnName: "Hannah's Inn", ExpiresAt: lodgingNow.Add(120 * time.Hour), NightlyRate: 4, Coins: 1}
+	if cue := lodgingAffordabilityCue(calm, lodgingNow); cue != "" {
+		t.Errorf("calm window must suppress the cue, got %q", cue)
+	}
+	// rate disabled → no cue
+	off := &LodgingView{InnName: "Hannah's Inn", ExpiresAt: lodgingNow.Add(30 * time.Hour), NightlyRate: 0, Coins: 0}
+	if cue := lodgingAffordabilityCue(off, lodgingNow); cue != "" {
+		t.Errorf("disabled rate must suppress the cue, got %q", cue)
+	}
+	// already expired (negative remaining) → no cue ("before your room lapses"
+	// would be wrong after it already lapsed)
+	expired := &LodgingView{InnName: "Hannah's Inn", ExpiresAt: lodgingNow.Add(-time.Hour), NightlyRate: 4, Coins: 1}
+	if cue := lodgingAffordabilityCue(expired, lodgingNow); cue != "" {
+		t.Errorf("expired grant must suppress the cue, got %q", cue)
+	}
+}
+
+func TestRenderLodging_RateHintAndCue(t *testing.T) {
+	var b strings.Builder
+	renderLodging(&b, &LodgingView{InnName: "Hannah's Inn", ExpiresAt: time.Now().Add(30 * time.Hour), NightlyRate: 4, Coins: 1})
+	out := b.String()
+	if !strings.Contains(out, "4 coins a night") {
+		t.Errorf("want nightly-rate hint, got %q", out)
+	}
+	if !strings.Contains(out, "only 1 coins") {
+		t.Errorf("want affordability cue, got %q", out)
+	}
+}
+
+func TestRenderKeeperLodging_RateWhenAvailable(t *testing.T) {
+	var b strings.Builder
+	renderKeeperLodging(&b, &KeeperLodgingView{InnName: "Hannah's Inn", RoomsAvailable: 2, RoomsTotal: 3, NightlyRate: 4})
+	if !strings.Contains(b.String(), "4 coins a night") {
+		t.Errorf("keeper with a free room must quote the rate, got %q", b.String())
+	}
+	// no rate when full
+	b.Reset()
+	renderKeeperLodging(&b, &KeeperLodgingView{InnName: "Hannah's Inn", RoomsAvailable: 0, RoomsTotal: 3, NightlyRate: 4})
+	if strings.Contains(b.String(), "coins a night") {
+		t.Errorf("full inn must not quote a rate, got %q", b.String())
+	}
+}
+
 // --- keeper occupancy ---
 
 // innStructureN builds an inn with n private bedrooms (room IDs 2..n+1) plus a
