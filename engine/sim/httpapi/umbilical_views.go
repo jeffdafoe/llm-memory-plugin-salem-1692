@@ -1,0 +1,347 @@
+package httpapi
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"sort"
+	"strconv"
+	"time"
+
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
+)
+
+// umbilical_views.go — the richer operator read views, built on top of the
+// core read routes (telemetry / state / actions in umbilical.go). All
+// operator-gated + registered with the read surface. Two of the three
+// (agent, reactor) read LIVE world state via a command (SendContext): they
+// surface the reactor-evaluator fields (WarrantedSince/WarrantDueAt/Warrants)
+// and the rest windows (BreakUntil/SleepingUntil) that are deliberately NOT on
+// the published snapshot. The command closure extracts plain values into a DTO
+// on the world goroutine and returns them — it never hands an *Actor pointer
+// back to the HTTP goroutine, so there's no shared-state race. These are pure
+// reads: they mutate nothing.
+
+// ---- Telemetry summary (ring rollup) ------------------------------------
+
+// TelemetrySummaryDTO rolls the raw tick-telemetry ring up into rates, so an
+// operator can answer "is the failure rate climbing / are ticks slowing down"
+// without scrolling the event log. Computed over the ring snapshot — no new
+// plumbing.
+type TelemetrySummaryDTO struct {
+	ContractVersion  int               `json:"contract_version"`
+	Stats            TelemetryStatsDTO `json:"stats"`
+	ByKind           map[string]int    `json:"by_kind"`            // deferred/started/completed/failed/stale
+	ByTerminalStatus map[string]int    `json:"by_terminal_status"` // success/done/budget_forced/failed_*/...
+	ByLLMErrorClass  map[string]int    `json:"by_llm_error_class"` // error classes seen among failures
+	DurationMsMean   int               `json:"duration_ms_mean"`
+	DurationMsP95    int               `json:"duration_ms_p95"`
+	DurationSamples  int               `json:"duration_samples"` // records that carried a parseable duration_ms
+}
+
+// handleUmbilicalTelemetrySummary aggregates the telemetry ring.
+func (s *Server) handleUmbilicalTelemetrySummary(w http.ResponseWriter, _ *http.Request) {
+	recs := s.telemetry.Snapshot()
+	out := TelemetrySummaryDTO{
+		ContractVersion:  ContractVersion,
+		Stats:            telemetryStatsDTO(s.telemetry.Stats()),
+		ByKind:           map[string]int{},
+		ByTerminalStatus: map[string]int{},
+		ByLLMErrorClass:  map[string]int{},
+	}
+	durations := make([]int, 0, len(recs))
+	for _, r := range recs {
+		out.ByKind[r.Kind]++
+		if r.Detail == nil {
+			continue
+		}
+		if ts := r.Detail["terminal_status"]; ts != "" {
+			out.ByTerminalStatus[ts]++
+		}
+		if ec := r.Detail["llm_error_class"]; ec != "" {
+			out.ByLLMErrorClass[ec]++
+		}
+		if ms, err := strconv.Atoi(r.Detail["duration_ms"]); err == nil && ms >= 0 {
+			durations = append(durations, ms)
+		}
+	}
+	out.DurationSamples = len(durations)
+	if len(durations) > 0 {
+		sort.Ints(durations)
+		sum := 0
+		for _, d := range durations {
+			sum += d
+		}
+		out.DurationMsMean = sum / len(durations)
+		// p95 index, clamped to the last element.
+		idx := (len(durations) * 95) / 100
+		if idx >= len(durations) {
+			idx = len(durations) - 1
+		}
+		out.DurationMsP95 = durations[idx]
+	}
+	writeJSON(w, out)
+}
+
+// ---- Per-agent deep view ------------------------------------------------
+
+// UmbilicalAgentDTO is the full operator picture of one actor: identity +
+// spatial + needs/inventory + the rest windows + the reactor-evaluator state,
+// plus its recent tick records (from the ring) and recent actions (from the
+// action log). The live fields come from a command read; the histories are
+// filtered off the ring / published snapshot.
+type UmbilicalAgentDTO struct {
+	ContractVersion int    `json:"contract_version"`
+	ID              string `json:"id"`
+	DisplayName     string `json:"display_name"`
+	Role            string `json:"role,omitempty"`
+	Kind            string `json:"kind"`
+	LLMAgent        string `json:"llm_memory_agent,omitempty"`
+	LoginUsername   string `json:"login_username,omitempty"`
+	IsAdmin         bool   `json:"is_admin"`
+
+	TileX             int    `json:"tile_x"`
+	TileY             int    `json:"tile_y"`
+	State             string `json:"state"`
+	InsideStructureID string `json:"inside_structure_id,omitempty"`
+	InsideRoomID      int64  `json:"inside_room_id,omitempty"`
+	CurrentHuddleID   string `json:"current_huddle_id,omitempty"`
+	HomeStructureID   string `json:"home_structure_id,omitempty"`
+	WorkStructureID   string `json:"work_structure_id,omitempty"`
+
+	Needs     map[string]int `json:"needs,omitempty"`
+	Inventory map[string]int `json:"inventory,omitempty"`
+	Coins     int            `json:"coins"`
+
+	// Rest windows (nil = not resting).
+	BreakUntil    *time.Time `json:"break_until,omitempty"`
+	SleepingUntil *time.Time `json:"sleeping_until,omitempty"`
+
+	// Tick scheduling + reactor-evaluator state — the "is this agent queued /
+	// mid-tick / idle" picture that's NOT on the published snapshot.
+	LastTickedAt       *time.Time `json:"last_ticked_at,omitempty"`
+	NextSelfTickAt     *time.Time `json:"next_self_tick_at,omitempty"`
+	NextSelfTickReason string     `json:"next_self_tick_reason,omitempty"`
+	WarrantedSince     *time.Time `json:"warranted_since,omitempty"`
+	WarrantDueAt       *time.Time `json:"warrant_due_at,omitempty"`
+	WarrantCount       int        `json:"warrant_count"`
+	TickInFlight       bool       `json:"tick_in_flight"`
+	TickAttemptID      string     `json:"tick_attempt_id,omitempty"`
+
+	RecentTicks   []TelemetryRecordDTO `json:"recent_ticks"`
+	RecentActions []ActionLogEntryDTO  `json:"recent_actions"`
+}
+
+// errAgentNotFound is returned by the agent-view command when the id is unknown.
+var errAgentNotFound = errors.New("actor not found")
+
+// handleUmbilicalAgent serves the full operator view of one actor. Query param
+// `id` (required) is the ActorID. 400 missing id, 404 unknown actor, 200 ok.
+func (s *Server) handleUmbilicalAgent(w http.ResponseWriter, r *http.Request) {
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "id is required")
+		return
+	}
+
+	// Live read on the world goroutine: copy the actor's fields into the DTO
+	// (no *Actor escapes the closure). Histories are added after, off the ring
+	// and published snapshot.
+	res, err := s.world.SendContext(r.Context(), sim.Command{Fn: func(world *sim.World) (any, error) {
+		a, ok := world.Actors[sim.ActorID(id)]
+		if !ok {
+			return nil, errAgentNotFound
+		}
+		dto := UmbilicalAgentDTO{
+			ContractVersion:    ContractVersion,
+			ID:                 string(a.ID),
+			DisplayName:        a.DisplayName,
+			Role:               a.Role,
+			Kind:               actorKindString(a.Kind),
+			LLMAgent:           a.LLMAgent,
+			LoginUsername:      a.LoginUsername,
+			IsAdmin:            a.IsAdmin,
+			TileX:              a.Pos.X,
+			TileY:              a.Pos.Y,
+			State:              string(a.State),
+			InsideStructureID:  string(a.InsideStructureID),
+			InsideRoomID:       int64(a.InsideRoomID),
+			CurrentHuddleID:    string(a.CurrentHuddleID),
+			HomeStructureID:    string(a.HomeStructureID),
+			WorkStructureID:    string(a.WorkStructureID),
+			Coins:              a.Coins,
+			BreakUntil:         clonePtrTime(a.BreakUntil),
+			SleepingUntil:      clonePtrTime(a.SleepingUntil),
+			LastTickedAt:       clonePtrTime(a.LastTickedAt),
+			NextSelfTickAt:     clonePtrTime(a.NextSelfTickAt),
+			NextSelfTickReason: a.NextSelfTickReason,
+			WarrantedSince:     clonePtrTime(a.WarrantedSince),
+			WarrantDueAt:       clonePtrTime(a.WarrantDueAt),
+			WarrantCount:       len(a.Warrants),
+			TickInFlight:       a.TickInFlight,
+			TickAttemptID:      string(a.TickAttemptID),
+		}
+		if len(a.Needs) > 0 {
+			dto.Needs = make(map[string]int, len(a.Needs))
+			for k, v := range a.Needs {
+				dto.Needs[string(k)] = v
+			}
+		}
+		if len(a.Inventory) > 0 {
+			dto.Inventory = make(map[string]int, len(a.Inventory))
+			for k, v := range a.Inventory {
+				dto.Inventory[string(k)] = v
+			}
+		}
+		return dto, nil
+	}})
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
+		if errors.Is(err, errAgentNotFound) {
+			writeError(w, http.StatusNotFound, "actor not found")
+			return
+		}
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	dto, ok := res.(UmbilicalAgentDTO)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "unexpected agent result")
+		return
+	}
+
+	// Recent tick records for this actor (filter the ring, chronological).
+	dto.RecentTicks = make([]TelemetryRecordDTO, 0)
+	for _, rec := range s.telemetry.Snapshot() {
+		if string(rec.ActorID) != id {
+			continue
+		}
+		dto.RecentTicks = append(dto.RecentTicks, TelemetryRecordDTO{
+			At:        rec.At,
+			ActorID:   string(rec.ActorID),
+			AttemptID: string(rec.AttemptID),
+			Kind:      rec.Kind,
+			Detail:    rec.Detail,
+		})
+	}
+	// Recent actions for this actor (filter the published action log).
+	dto.RecentActions = make([]ActionLogEntryDTO, 0)
+	if snap := s.world.Published(); snap != nil {
+		for _, e := range snap.ActionLog {
+			if string(e.ActorID) != id {
+				continue
+			}
+			dto.RecentActions = append(dto.RecentActions, ActionLogEntryDTO{
+				ActorID:    string(e.ActorID),
+				OccurredAt: e.OccurredAt,
+				ActionType: string(e.ActionType),
+				Text:       e.Text,
+				HuddleID:   string(e.HuddleID),
+			})
+		}
+	}
+	writeJSON(w, dto)
+}
+
+// ---- Reactor / queue view ----------------------------------------------
+
+// UmbilicalReactorDTO summarizes the reactor's tick-eligibility state across
+// all actors — the backlog the umbilical couldn't see before (only in-flight
+// count was on the snapshot). Warranted = a pending signal cycle; DueNow =
+// warranted and past its due time (the evaluator should be emitting it);
+// InFlight = mid-LLM-tick; Idle = none of the above.
+type UmbilicalReactorDTO struct {
+	ContractVersion int               `json:"contract_version"`
+	Now             time.Time         `json:"now"`
+	TotalActors     int               `json:"total_actors"`
+	Warranted       int               `json:"warranted"`
+	DueNow          int               `json:"due_now"`
+	InFlight        int               `json:"in_flight"`
+	Idle            int               `json:"idle"`
+	WarrantedActors []ReactorActorDTO `json:"warranted_actors"`
+}
+
+// ReactorActorDTO is one currently-warranted (or in-flight) actor in the
+// reactor view, so an operator can see exactly who's queued and for how long.
+type ReactorActorDTO struct {
+	ActorID        string     `json:"actor_id"`
+	WarrantedSince *time.Time `json:"warranted_since,omitempty"`
+	WarrantDueAt   *time.Time `json:"warrant_due_at,omitempty"`
+	WarrantCount   int        `json:"warrant_count"`
+	TickInFlight   bool       `json:"tick_in_flight"`
+}
+
+// handleUmbilicalReactor serves the reactor tick-eligibility summary.
+func (s *Server) handleUmbilicalReactor(w http.ResponseWriter, r *http.Request) {
+	res, err := s.world.SendContext(r.Context(), sim.Command{Fn: func(world *sim.World) (any, error) {
+		now := time.Now()
+		dto := UmbilicalReactorDTO{
+			ContractVersion: ContractVersion,
+			Now:             now,
+			TotalActors:     len(world.Actors),
+			WarrantedActors: []ReactorActorDTO{},
+		}
+		for _, a := range world.Actors {
+			warranted := a.WarrantedSince != nil
+			switch {
+			case a.TickInFlight:
+				dto.InFlight++
+			case warranted:
+				dto.Warranted++
+				if a.WarrantDueAt != nil && !a.WarrantDueAt.After(now) {
+					dto.DueNow++
+				}
+			default:
+				dto.Idle++
+			}
+			if warranted || a.TickInFlight {
+				dto.WarrantedActors = append(dto.WarrantedActors, ReactorActorDTO{
+					ActorID:        string(a.ID),
+					WarrantedSince: clonePtrTime(a.WarrantedSince),
+					WarrantDueAt:   clonePtrTime(a.WarrantDueAt),
+					WarrantCount:   len(a.Warrants),
+					TickInFlight:   a.TickInFlight,
+				})
+			}
+		}
+		// Deterministic order: soonest due first, then by id.
+		sort.Slice(dto.WarrantedActors, func(i, j int) bool {
+			di, dj := dto.WarrantedActors[i].WarrantDueAt, dto.WarrantedActors[j].WarrantDueAt
+			switch {
+			case di != nil && dj != nil && !di.Equal(*dj):
+				return di.Before(*dj)
+			case (di == nil) != (dj == nil):
+				return di != nil // non-nil due times sort ahead of nil
+			default:
+				return dto.WarrantedActors[i].ActorID < dto.WarrantedActors[j].ActorID
+			}
+		})
+		return dto, nil
+	}})
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	dto, ok := res.(UmbilicalReactorDTO)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "unexpected reactor result")
+		return
+	}
+	writeJSON(w, dto)
+}
+
+// clonePtrTime copies a *time.Time so the returned DTO never aliases a live
+// Actor's pointer (the command closure runs on the world goroutine; the DTO
+// crosses back to the HTTP goroutine).
+func clonePtrTime(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	c := *t
+	return &c
+}

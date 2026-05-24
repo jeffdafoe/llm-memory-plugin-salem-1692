@@ -172,6 +172,121 @@ func TestUmbilical_Actions(t *testing.T) {
 	}
 }
 
+func TestUmbilical_TelemetrySummary(t *testing.T) {
+	ring := telemetry.New(16)
+	ring.WriteTickTelemetry(sim.TickTelemetryRecord{ActorID: "hannah", Kind: "deferred", Detail: map[string]string{"gate": "admission"}})
+	ring.WriteTickTelemetry(sim.TickTelemetryRecord{ActorID: "hannah", Kind: "completed", Detail: map[string]string{"terminal_status": "success", "duration_ms": "100"}})
+	ring.WriteTickTelemetry(sim.TickTelemetryRecord{ActorID: "bram", Kind: "failed", Detail: map[string]string{"terminal_status": "failed_before_render", "llm_error_class": "timeout", "duration_ms": "50"}})
+	h := umbilicalServer(t, operatorPerms, ring)
+
+	rec := req(t, h, "/api/village/umbilical/telemetry/summary", "tok")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("summary = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var out TelemetrySummaryDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.ByKind["completed"] != 1 || out.ByKind["failed"] != 1 || out.ByKind["deferred"] != 1 {
+		t.Errorf("by_kind = %v, want completed/failed/deferred each 1", out.ByKind)
+	}
+	if out.ByLLMErrorClass["timeout"] != 1 {
+		t.Errorf("by_llm_error_class = %v, want timeout:1", out.ByLLMErrorClass)
+	}
+	if out.DurationSamples != 2 || out.DurationMsMean != 75 {
+		t.Errorf("durations: samples=%d mean=%d, want 2 / 75", out.DurationSamples, out.DurationMsMean)
+	}
+}
+
+func TestUmbilical_Agent(t *testing.T) {
+	ring := telemetry.New(8)
+	ring.WriteTickTelemetry(sim.TickTelemetryRecord{ActorID: "hannah", Kind: "started"})
+	w := seededWorld(t)
+	srv := NewServer(w, permAuth{operatorPerms})
+	srv.SetTelemetry(ring)
+	h := srv.Handler()
+
+	// Known actor.
+	rec := req(t, h, "/api/village/umbilical/agent?id=hannah", "tok")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("agent = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var out UmbilicalAgentDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.ID != "hannah" || out.DisplayName != "Hannah" || out.WorkStructureID != "tavern" {
+		t.Errorf("agent = %+v, want hannah/Hannah/tavern", out)
+	}
+	if out.TileX != 3 || out.TileY != 4 {
+		t.Errorf("tile = %d,%d, want 3,4", out.TileX, out.TileY)
+	}
+
+	// Missing id → 400; unknown actor → 404.
+	if rec := req(t, h, "/api/village/umbilical/agent", "tok"); rec.Code != http.StatusBadRequest {
+		t.Errorf("missing id = %d, want 400", rec.Code)
+	}
+	if rec := req(t, h, "/api/village/umbilical/agent?id=nobody", "tok"); rec.Code != http.StatusNotFound {
+		t.Errorf("unknown actor = %d, want 404", rec.Code)
+	}
+}
+
+func TestUmbilical_Reactor(t *testing.T) {
+	w := seededWorld(t)
+	due := time.Now().Add(-time.Second) // past → due now
+	_, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		since := time.Now().Add(-time.Minute)
+		world.Actors["hannah"].WarrantedSince = &since
+		world.Actors["hannah"].WarrantDueAt = &due
+		world.Actors["bram"].TickInFlight = true
+		return nil, nil
+	}})
+	if err != nil {
+		t.Fatalf("seed reactor state: %v", err)
+	}
+	srv := NewServer(w, permAuth{operatorPerms})
+	srv.SetTelemetry(telemetry.New(8))
+	h := srv.Handler()
+
+	rec := req(t, h, "/api/village/umbilical/reactor", "tok")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reactor = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var out UmbilicalReactorDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Warranted != 1 || out.DueNow != 1 || out.InFlight != 1 {
+		t.Errorf("reactor counts: warranted=%d due_now=%d in_flight=%d, want 1/1/1", out.Warranted, out.DueNow, out.InFlight)
+	}
+	// hannah (warranted) + bram (in-flight) both listed.
+	if len(out.WarrantedActors) != 2 {
+		t.Fatalf("warranted_actors = %d, want 2 (hannah + bram)", len(out.WarrantedActors))
+	}
+}
+
+func TestUmbilical_ViewsGated(t *testing.T) {
+	paths := []string{
+		"/api/village/umbilical/telemetry/summary",
+		"/api/village/umbilical/agent?id=hannah",
+		"/api/village/umbilical/reactor",
+	}
+	// Off by default (no telemetry attached) → 404.
+	off := NewServer(seededWorld(t), permAuth{operatorPerms}).Handler()
+	for _, p := range paths {
+		if rec := req(t, off, p, "tok"); rec.Code != http.StatusNotFound {
+			t.Errorf("%s disabled = %d, want 404", p, rec.Code)
+		}
+	}
+	// Enabled but non-operator → 403.
+	nonOp := umbilicalServer(t, nil, telemetry.New(4))
+	for _, p := range paths {
+		if rec := req(t, nonOp, p, "tok"); rec.Code != http.StatusForbidden {
+			t.Errorf("%s non-operator = %d, want 403", p, rec.Code)
+		}
+	}
+}
+
 func TestUmbilical_State(t *testing.T) {
 	h := umbilicalServer(t, operatorPerms, telemetry.New(8))
 	rec := req(t, h, "/api/village/umbilical/state", "tok")
