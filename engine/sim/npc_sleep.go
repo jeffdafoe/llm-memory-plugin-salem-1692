@@ -178,7 +178,8 @@ var retireLines = []string{
 // every night yet a given (actor, time) is stable for tests — the same
 // no-rand-threaded approach pickVisitorSlot uses for slot selection.
 func renderRetireLine(actorID ActorID, now time.Time) string {
-	idx := (hashActorID(actorID) + uint32(now.Unix())) % uint32(len(retireLines))
+	minute := uint32(now.Unix() / 60)
+	idx := (hashActorID(actorID) + minute) % uint32(len(retireLines))
 	return retireLines[idx]
 }
 
@@ -204,13 +205,20 @@ func speakRetireFarewell(w *World, a *Actor, now time.Time) {
 		}
 	}
 	sort.Slice(recipients, func(i, j int) bool { return recipients[i] < recipients[j] })
-	w.emit(&Spoke{
-		SpeakerID:    a.ID,
-		HuddleID:     a.CurrentHuddleID,
-		RecipientIDs: recipients,
-		Text:         renderRetireLine(a.ID, now),
-		At:           now,
-	})
+	// Only speak when there's actually a partner to excuse oneself to. A huddle
+	// can transiently hold just this actor (everyone else left; conclusion only
+	// fires at zero members), so an active-huddle gate alone isn't enough to
+	// guarantee an audience — don't emit a farewell to an empty room. Leave the
+	// huddle regardless (LeaveHuddle then concludes the now-empty huddle).
+	if len(recipients) > 0 {
+		w.emit(&Spoke{
+			SpeakerID:    a.ID,
+			HuddleID:     a.CurrentHuddleID,
+			RecipientIDs: recipients,
+			Text:         renderRetireLine(a.ID, now),
+			At:           now,
+		})
+	}
 	LeaveHuddle(a.ID, now).Fn(w)
 }
 

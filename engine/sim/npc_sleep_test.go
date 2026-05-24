@@ -198,6 +198,39 @@ func TestExecuteNPCSleep_SilentWhenHuddleConcluded(t *testing.T) {
 	}
 }
 
+// TestExecuteNPCSleep_SilentWhenSoleHuddleMember: a huddle can transiently
+// hold only the bedding actor (everyone else already left; conclusion fires at
+// zero members). The active-huddle gate is true, but there's no one to excuse
+// to — emit no farewell, still leave (which concludes the now-empty huddle).
+func TestExecuteNPCSleep_SilentWhenSoleHuddleMember(t *testing.T) {
+	now := time.Date(2026, 5, 22, 22, 0, 0, 0, time.UTC)
+	a := npc("lonely", KindNPCShared)
+	a.CurrentHuddleID = "h1"
+	w := sleepTestWorld(a)
+	w.Huddles = map[HuddleID]*Huddle{
+		"h1": {ID: "h1", Members: map[ActorID]struct{}{"lonely": {}}, StartedAt: now},
+	}
+	w.actorsByHuddle = map[HuddleID]map[ActorID]struct{}{"h1": {"lonely": {}}}
+	rec := &spokeRecorder{}
+	w.Subscribe(rec)
+
+	if !executeNPCSleep(w, a, now) {
+		t.Fatal("executeNPCSleep should bed the awake NPC")
+	}
+	if len(rec.spokes) != 0 {
+		t.Errorf("emitted %d Spoke events to an empty room, want 0", len(rec.spokes))
+	}
+	if a.CurrentHuddleID != "" {
+		t.Errorf("sole member did not leave the huddle: %q", a.CurrentHuddleID)
+	}
+	if w.Huddles["h1"].ConcludedAt == nil {
+		t.Error("emptied huddle was not concluded after the sole member left")
+	}
+	if a.SleepingUntil == nil {
+		t.Error("NPC not bedded")
+	}
+}
+
 // TestAutoSleepOnArrival_SkipsOnBreak guards the no-both-windows invariant
 // (ZBBS-HOME-284 #4 review): an on-break NPC arriving home off-shift — which
 // would otherwise be bedded — must NOT also get a SleepingUntil window.
