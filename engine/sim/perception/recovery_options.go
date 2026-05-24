@@ -111,11 +111,11 @@ func buildRecoveryOptions(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *si
 // gatherFreeRestSpots returns a "rest" option for each village object that
 // eases tiredness on arrival (e.g. a shade tree's negative-tiredness
 // refresh), skipping objects whose finite supply is exhausted. Distance and
-// direction are computed in INTERNAL-GRID TILE space: actor CurrentX/Y are
-// already padded tile indices, while VillageObject X/Y are world pixels, so
-// the object is converted to the same tile space via WorldToTile (the
-// conversion pathfinding and the structure anchors use) before measuring.
-// This also drives the §8 nearest-object selection.
+// direction are computed in INTERNAL-GRID TILE space: actorSnap.Pos is a
+// TilePos (padded tile indices), while a VillageObject's Pos is a WorldPos
+// (world pixels), so the object is converted to the same tile space via
+// obj.Pos.Tile() (the same conversion pathfinding and structure anchors use)
+// before measuring. This also drives the nearest-object selection.
 func gatherFreeRestSpots(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) []RecoveryOption {
 	ax := float64(actorSnap.Pos.X)
 	ay := float64(actorSnap.Pos.Y)
@@ -131,8 +131,8 @@ func gatherFreeRestSpots(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) []Rec
 		// Actor coords are padded internal-grid tiles; object coords are world
 		// pixels. Convert the object to the same tile space before measuring —
 		// subtracting pixels from tiles is off by ~TileSize (the HOME-297 unit
-		// bug ZBBS-WORK flagged 2026-05-23). WorldToTile applies the same Pad
-		// offset CurrentX already carries, so the two are directly comparable.
+		// bug ZBBS-WORK flagged 2026-05-23). obj.Pos.Tile() applies the same Pad
+		// offset the actor tile already carries, so the two are directly comparable.
 		objTile := obj.Pos.Tile()
 		tx := float64(objTile.X)
 		ty := float64(objTile.Y)
