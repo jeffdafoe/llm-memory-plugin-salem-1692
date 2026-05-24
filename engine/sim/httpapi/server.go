@@ -8,6 +8,7 @@ import (
 	"sort"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/telemetry"
 )
 
 // Server serves the read surface for one world. It holds the *sim.World and
@@ -16,9 +17,10 @@ import (
 // Every route requires a valid salem-realm session token (auth); an optional
 // event hub (SetEventsHub) adds the authenticated WS /events push channel.
 type Server struct {
-	world *sim.World
-	auth  Authenticator
-	hub   *Hub
+	world     *sim.World
+	auth      Authenticator
+	hub       *Hub
+	telemetry *telemetry.RingSink
 }
 
 // NewServer builds a Server for w, authenticating every route via auth. Panics
@@ -45,6 +47,24 @@ func NewServer(w *sim.World, auth Authenticator) *Server {
 // handler races. The intended wiring sets it once during startup.
 func (s *Server) SetEventsHub(h *Hub) {
 	s.hub = h
+}
+
+// SetTelemetry attaches the tick-telemetry ring buffer and, by doing so, ENABLES
+// the umbilical debug/control surface. When set (non-nil), Handler registers the
+// operator-gated umbilical routes (/api/village/umbilical/*). When NOT set, those
+// routes are never registered — the surface does not exist on the wire at all.
+// This is the off-by-default posture: cmd/engine only calls SetTelemetry when
+// UMBILICAL_ENABLED is on, so a default deployment exposes no umbilical surface
+// even to a caller holding plugins/administer.
+//
+// The same RingSink must also be wired as repo.TickTelemetry so the engine's
+// writers feed the buffer this surface reads (see cmd/engine/main.go).
+//
+// MUST be called before Handler and before serving requests — it mutates s
+// without synchronization, identical to SetEventsHub. The intended wiring sets
+// it once during startup.
+func (s *Server) SetTelemetry(ring *telemetry.RingSink) {
+	s.telemetry = ring
 }
 
 // Handler returns the read-surface routes: the static-render read set
@@ -96,6 +116,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/village/admin/object/set-refresh", s.requireAuth(s.handleAdminObjectSetRefresh))
 	if s.hub != nil {
 		mux.HandleFunc("GET /api/village/events", s.handleEvents)
+	}
+	// Umbilical debug/control surface — operator-gated (requireOperator =
+	// requireAuth + plugins/administer). Registered ONLY when a telemetry ring
+	// is attached (SetTelemetry), which cmd/engine does only under
+	// UMBILICAL_ENABLED. Off by default → the routes don't exist. See umbilical.go.
+	if s.telemetry != nil {
+		mux.HandleFunc("GET /api/village/umbilical/telemetry", s.requireOperator(s.handleUmbilicalTelemetry))
+		mux.HandleFunc("GET /api/village/umbilical/state", s.requireOperator(s.handleUmbilicalState))
 	}
 	return mux
 }

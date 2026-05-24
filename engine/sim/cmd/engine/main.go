@@ -15,6 +15,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -27,6 +29,7 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/llm"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/llm/memapi"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/repo/pg"
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/telemetry"
 )
 
 // finalCheckpointTimeout bounds the shutdown checkpoint so a wedged DB can't
@@ -48,6 +51,11 @@ const httpShutdownTimeout = 5 * time.Second
 // the HTTP server (headless-only, used by the lifecycle test). Auth verifies
 // session tokens for the read surface — required when HTTPAddr is set, may be
 // nil when headless.
+//
+// Umbilical, when non-nil, is the tick-telemetry ring buffer that both backs
+// the TickSink AND enables the operator-gated umbilical debug surface (run
+// hands it to the Server via SetTelemetry). Nil = umbilical disabled (the
+// default): no surface, and TickSink falls back to the notImpl drop sink.
 type runtime struct {
 	World     *sim.World
 	LLMClient llm.Client
@@ -55,6 +63,7 @@ type runtime struct {
 	TickSink  sim.TickTelemetrySink
 	HTTPAddr  string
 	Auth      httpapi.Authenticator
+	Umbilical *telemetry.RingSink
 }
 
 func main() {
@@ -76,6 +85,21 @@ func main() {
 
 	repo := pg.NewRepository(pool)
 
+	// Umbilical (off by default). When UMBILICAL_ENABLED is set, build the
+	// tick-telemetry ring and install it as repo.TickTelemetry BEFORE LoadWorld
+	// — the loaded world copies the repo by value, so the ring must be in place
+	// first to reach BOTH telemetry writers: the reactor evaluator (w.repo.
+	// TickTelemetry) and the worker pool (rt.TickSink, read from repo.TickTelemetry
+	// below). The same ring is handed to the HTTP server (run → SetTelemetry),
+	// which is what registers the umbilical routes. When disabled, TickTelemetry
+	// stays the notImpl drop sink and no umbilical surface exists.
+	var umbilical *telemetry.RingSink
+	if envBool("UMBILICAL_ENABLED") {
+		umbilical = telemetry.New(getEnvInt("UMBILICAL_TELEMETRY_BUFFER", telemetry.DefaultCapacity))
+		repo.TickTelemetry = umbilical
+		log.Printf("engine: umbilical ENABLED (telemetry buffer=%d)", umbilical.Stats().Capacity)
+	}
+
 	// requireAllImpl=true is the production gate: LoadWorld hard-fails if any
 	// LOAD sub-repo is still a notImpl stub. ActionLog + TickTelemetry remain
 	// notImpl, but they're write-only sinks LoadWorld never reads, so the gate
@@ -91,13 +115,14 @@ func main() {
 		Save: func(ctx context.Context, cp *sim.CheckpointSnapshot) error {
 			return pg.SaveWorld(ctx, repo, cp)
 		},
-		// notImpl sink today (silently drops); the slot is occupied so a real
-		// sink later is a drop-in.
+		// TickSink is the ring when the umbilical is enabled (set on repo above),
+		// otherwise the notImpl drop sink. The slot is always occupied.
 		TickSink: repo.TickTelemetry,
 		HTTPAddr: ":" + port,
 		// Read-surface auth: verifies session tokens against llm-memory-api's
 		// /v1/auth/verify + the salem-realm gate, caching positive results.
-		Auth: httpapi.NewTokenVerifier(llmMemoryURL, 0),
+		Auth:      httpapi.NewTokenVerifier(llmMemoryURL, 0),
+		Umbilical: umbilical,
 	}
 
 	// Shutdown on SIGINT/SIGTERM.
@@ -203,6 +228,11 @@ func run(rt runtime, stop <-chan struct{}) error {
 	if rt.HTTPAddr != "" {
 		server := httpapi.NewServer(rt.World, rt.Auth)
 		server.SetEventsHub(eventsHub)
+		// Enables the operator-gated umbilical routes. Nil when UMBILICAL_ENABLED
+		// is unset → SetTelemetry not called → routes never registered.
+		if rt.Umbilical != nil {
+			server.SetTelemetry(rt.Umbilical)
+		}
 		httpServer = &http.Server{
 			Addr:    rt.HTTPAddr,
 			Handler: server.Handler(),
@@ -337,6 +367,27 @@ func requireEnv(key string) string {
 func getEnv(key, fallback string) string {
 	if val := os.Getenv(key); val != "" {
 		return val
+	}
+	return fallback
+}
+
+// envBool reports whether key is set to a truthy value (1/t/true/yes/on, any
+// case). Unset or any other value is false — so the umbilical fails closed
+// (disabled) on a missing or malformed flag.
+func envBool(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "t", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+// getEnvInt reads key as an int, falling back to fallback when unset or
+// unparseable (or non-positive — the buffer size must be positive).
+func getEnvInt(key string, fallback int) int {
+	if v, err := strconv.Atoi(strings.TrimSpace(os.Getenv(key))); err == nil && v > 0 {
+		return v
 	}
 	return fallback
 }
