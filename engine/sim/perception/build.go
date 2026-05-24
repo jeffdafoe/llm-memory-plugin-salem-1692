@@ -47,6 +47,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 	p.Relationships = buildRelationships(actorSnap, p.Surroundings.HuddleMembers)
 	p.PendingDeliveriesFromMe, p.PendingDeliveriesToMe = buildPendingOrderViews(snap, actorID)
 	p.RecoveryOptions = buildRecoveryOptions(snap, actorID, actorSnap)
+	p.Satiation = buildSatiation(snap, actorID, actorSnap)
 	p.Lodging = buildLodgingView(snap, actorSnap)
 	p.KeeperLodging = buildKeeperLodgingView(snap, actorSnap)
 

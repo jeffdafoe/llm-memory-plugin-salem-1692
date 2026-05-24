@@ -157,6 +157,13 @@ type Payload struct {
 	// homeless arm fires every tick — the lodging bootstrap cue). ZBBS-HOME-297.
 	RecoveryOptions *RecoveryOptionsView
 
+	// Satiation surfaces how a hungry-or-thirsty actor could eat/drink — the
+	// items the actor already carries (consume-first) and nearby vendors selling
+	// a satisfier. nil when neither hunger nor thirst is at its red threshold, or
+	// no satisfier exists anywhere. The consume-first own-stock line is the core:
+	// it connects the pressing need to the consume tool. ZBBS-HOME-304.
+	Satiation *SatiationView
+
 	// Lodging surfaces the subject's own active lodging — the inn their room
 	// is at and when the grant expires — so a lodger NPC can renew before it
 	// lapses. nil when the actor holds no active ledger RoomAccess (not a
