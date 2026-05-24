@@ -542,6 +542,14 @@ type World struct {
 	// price, sort order, and per-need satisfies entries (port of v1's
 	// item_kind + item_satisfies tables). Loaded at startup; hot-reloaded
 	// on SIGHUP when admin edits land. See item_kind.go.
+	//
+	// IMMUTABILITY CONTRACT: the published Snapshot ALIASES this map (not a
+	// clone — see Snapshot.ItemKinds). Two rules keep that race-free, and the
+	// future SIGHUP hot-reload MUST preserve both: (1) never mutate the map or
+	// a *ItemKindDef in place after LoadWorld — rebuild wholesale via LoadAll
+	// and reassign the field (an already-published snapshot then keeps its old,
+	// still-immutable map); (2) do that reassignment on the world goroutine
+	// (e.g. via a Command), so it can't race a republish reading this field.
 	ItemKinds map[ItemKind]*ItemKindDef
 
 	// Terrain — reference state, loaded once at startup. MapW * MapH
@@ -1266,6 +1274,8 @@ func (w *World) republish() {
 		Phase:                    w.Phase,
 		NeedThresholds:           w.Settings.NeedThresholds.Clone(),
 		LodgingDefaultWeeklyRate: w.Settings.LodgingDefaultWeeklyRate,
+		// Aliased, not cloned — immutable post-startup catalog. See Snapshot.ItemKinds.
+		ItemKinds: w.ItemKinds,
 	}
 	for id, a := range w.Actors {
 		snap.Actors[id] = snapshotActor(a, w.TickCounter)
