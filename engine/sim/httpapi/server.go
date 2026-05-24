@@ -150,6 +150,9 @@ func (s *Server) Handler() http.Handler {
 		if s.controlEnabled {
 			mux.HandleFunc("POST /api/village/umbilical/nudge", s.requireOperator(s.handleUmbilicalNudge))
 			mux.HandleFunc("POST /api/village/umbilical/phase", s.requireOperator(s.handleUmbilicalPhase))
+			mux.HandleFunc("POST /api/village/umbilical/settle", s.requireOperator(s.handleUmbilicalSettle))
+			mux.HandleFunc("POST /api/village/umbilical/rotate", s.requireOperator(s.handleUmbilicalRotate))
+			mux.HandleFunc("POST /api/village/umbilical/settings/need-threshold", s.requireOperator(s.handleUmbilicalNeedThreshold))
 		}
 	}
 	return mux
