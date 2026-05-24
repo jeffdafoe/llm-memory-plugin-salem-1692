@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/telemetry"
@@ -91,6 +92,83 @@ func TestUmbilical_Telemetry(t *testing.T) {
 	}
 	if out.Records[1].Detail["ms"] != "42" {
 		t.Errorf("detail not carried: %+v", out.Records[1].Detail)
+	}
+}
+
+func TestUmbilical_Actions(t *testing.T) {
+	w := seededWorld(t)
+	t0 := time.Date(2026, 5, 24, 9, 0, 0, 0, time.UTC)
+	// Seed a committed-action trail with the three v1 nonsense shapes in mind:
+	// bram oscillating (walked farm → walked home) and hannah speaking in a huddle.
+	_, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.ActionLog = []sim.ActionLogEntry{
+			{ActorID: "bram", OccurredAt: t0, ActionType: sim.ActionTypeWalked, Text: "walked to the farm"},
+			{ActorID: "bram", OccurredAt: t0.Add(time.Minute), ActionType: sim.ActionTypeWalked, Text: "walked back home"},
+			{ActorID: "hannah", OccurredAt: t0.Add(2 * time.Minute), ActionType: sim.ActionTypeSpoke, Text: "good morning", HuddleID: "h1"},
+		}
+		return nil, nil
+	}})
+	if err != nil {
+		t.Fatalf("seed action log: %v", err)
+	}
+
+	srv := NewServer(w, permAuth{operatorPerms})
+	srv.SetTelemetry(telemetry.New(8))
+	h := srv.Handler()
+
+	// Full tail.
+	var all UmbilicalActionsDTO
+	rec := req(t, h, "/api/village/umbilical/actions", "tok")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("actions = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &all); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if all.Total != 3 || all.Returned != 3 {
+		t.Errorf("total/returned = %d/%d, want 3/3", all.Total, all.Returned)
+	}
+	// Chronological (oldest first) + content carried through.
+	if all.Actions[0].ActorID != "bram" || all.Actions[0].ActionType != "walked" {
+		t.Errorf("first action = %+v, want bram/walked", all.Actions[0])
+	}
+	if all.Actions[2].ActionType != "spoke" || all.Actions[2].HuddleID != "h1" {
+		t.Errorf("last action = %+v, want spoke in huddle h1", all.Actions[2])
+	}
+
+	// Actor filter isolates one NPC's recent behavior (the oscillation view).
+	var bram UmbilicalActionsDTO
+	rec = req(t, h, "/api/village/umbilical/actions?actor=bram", "tok")
+	if err := json.Unmarshal(rec.Body.Bytes(), &bram); err != nil {
+		t.Fatalf("decode bram: %v", err)
+	}
+	if bram.Total != 3 || bram.Returned != 2 {
+		t.Errorf("bram total/returned = %d/%d, want 3/2", bram.Total, bram.Returned)
+	}
+	for _, a := range bram.Actions {
+		if a.ActorID != "bram" {
+			t.Errorf("actor filter leaked %q", a.ActorID)
+		}
+	}
+
+	// Limit keeps the most-recent N (chronological tail).
+	var lim UmbilicalActionsDTO
+	rec = req(t, h, "/api/village/umbilical/actions?limit=1", "tok")
+	if err := json.Unmarshal(rec.Body.Bytes(), &lim); err != nil {
+		t.Fatalf("decode limit: %v", err)
+	}
+	if lim.Returned != 1 || lim.Actions[0].ActorID != "hannah" {
+		t.Errorf("limit=1 → %d entries, first=%v; want 1 entry (hannah, the latest)", lim.Returned, lim.Actions)
+	}
+
+	// Gate: registered with the read surface, so off-by-default 404 and
+	// non-operator 403 hold (mirrors the other umbilical read routes).
+	srvNoTel := NewServer(seededWorld(t), permAuth{operatorPerms})
+	if rec := req(t, srvNoTel.Handler(), "/api/village/umbilical/actions", "tok"); rec.Code != http.StatusNotFound {
+		t.Errorf("actions with umbilical disabled = %d, want 404", rec.Code)
+	}
+	if rec := req(t, umbilicalServer(t, nil, telemetry.New(4)), "/api/village/umbilical/actions", "tok"); rec.Code != http.StatusForbidden {
+		t.Errorf("actions as non-operator = %d, want 403", rec.Code)
 	}
 }
 

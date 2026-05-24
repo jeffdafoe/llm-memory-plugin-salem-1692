@@ -140,6 +140,7 @@ func (s *Server) Handler() http.Handler {
 	if s.telemetry != nil {
 		mux.HandleFunc("GET /api/village/umbilical/telemetry", s.requireOperator(s.handleUmbilicalTelemetry))
 		mux.HandleFunc("GET /api/village/umbilical/state", s.requireOperator(s.handleUmbilicalState))
+		mux.HandleFunc("GET /api/village/umbilical/actions", s.requireOperator(s.handleUmbilicalActions))
 		// Control (world-mutating) routes — armed only when control is ALSO
 		// enabled (UMBILICAL_CONTROL_ENABLED). Read-only is the default even with
 		// the umbilical on. requireOperator-gated + audited. See umbilical_control.go.
