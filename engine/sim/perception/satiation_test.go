@@ -184,7 +184,7 @@ func TestRenderSatiation_Bullets(t *testing.T) {
 	renderSatiation(&b, &SatiationView{Needs: []SatiationNeedView{
 		{
 			Need: "hunger", Verb: "eat",
-			OwnStock: []SatiationItem{{Label: "stew", Magnitude: 12}, {Label: "bread", Magnitude: 6}},
+			OwnStock: []OwnStockItem{{Label: "stew", Magnitude: 12}, {Label: "bread", Magnitude: 6}},
 			Vendors:  []SatiationVendor{{StructureLabel: "The Tavern", ItemLabel: "ale", Magnitude: 4, CostText: "~2 coins"}},
 		},
 	}})
