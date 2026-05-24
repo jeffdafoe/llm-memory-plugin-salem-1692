@@ -23,6 +23,11 @@ type AuthUser struct {
 	Username    string
 	Realms      []string
 	SessionKind string // "web" (admin login) | "api" (agent login)
+	// Permissions is the principal's admin-permission map from llm-memory
+	// ({resource: [actions]}), surfaced by /v1/auth/verify. Used by
+	// requireOperator to gate the umbilical on plugins/administer. Nil/empty
+	// for principals with no admin permissions (the common case).
+	Permissions map[string][]string
 }
 
 // VerifyResult is the outcome of token verification. Reason is set when Valid
@@ -119,10 +124,11 @@ func (v *TokenVerifier) Verify(token string) VerifyResult {
 	}
 
 	var out struct {
-		Valid       bool     `json:"valid"`
-		Agent       string   `json:"agent"`
-		Realms      []string `json:"realms"`
-		SessionKind string   `json:"session_kind"`
+		Valid       bool                `json:"valid"`
+		Agent       string              `json:"agent"`
+		Realms      []string            `json:"realms"`
+		SessionKind string              `json:"session_kind"`
+		Permissions map[string][]string `json:"permissions"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return VerifyResult{Reason: "service"}
@@ -134,7 +140,7 @@ func (v *TokenVerifier) Verify(token string) VerifyResult {
 		return VerifyResult{Reason: "realm"}
 	}
 
-	user := &AuthUser{Username: out.Agent, Realms: out.Realms, SessionKind: out.SessionKind}
+	user := &AuthUser{Username: out.Agent, Realms: out.Realms, SessionKind: out.SessionKind, Permissions: out.Permissions}
 	v.store(token, user)
 	return VerifyResult{Valid: true, User: user}
 }
@@ -172,6 +178,12 @@ func cloneAuthUser(u *AuthUser) *AuthUser {
 	}
 	c := *u
 	c.Realms = append([]string(nil), u.Realms...)
+	if u.Permissions != nil {
+		c.Permissions = make(map[string][]string, len(u.Permissions))
+		for k, v := range u.Permissions {
+			c.Permissions[k] = append([]string(nil), v...)
+		}
+	}
 	return &c
 }
 
@@ -209,6 +221,66 @@ func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 		}
 		next(w, r.WithContext(context.WithValue(r.Context(), userCtxKey, res.User)))
 	}
+}
+
+// Operator gate — the umbilical debug/control surface authorizes on the
+// llm-memory "plugins/administer" admin-permission, NOT salem-realm membership
+// (every player is salem-realm) and NOT an in-world admin actor (the operators
+// — work/home — have no salem actor row). The capability is identity-level and
+// out-of-world, which is the whole point.
+const (
+	permResourcePlugins  = "plugins"
+	permActionAdminister = "administer"
+	permWildcard         = "*"
+)
+
+// actionRank mirrors llm-memory's admin-permissions hierarchy (read < write <
+// delete): a higher grant satisfies a lower required action. Non-hierarchical
+// actions (e.g. "administer") aren't ranked and match only exactly or via "*".
+var actionRank = map[string]int{"read": 1, "write": 2, "delete": 3}
+
+// hasPermission reports whether the principal holds (resource, action),
+// mirroring llm-memory's admin-permissions.hasPermission semantics: a "*"
+// action on the resource (or on the "*" resource) grants anything; a ranked
+// grant >= the required rank grants it; otherwise an exact action match.
+// nil user / nil map → false (fail closed).
+func hasPermission(u *AuthUser, resource, action string) bool {
+	if u == nil {
+		return false
+	}
+	required := actionRank[action]
+	match := func(actions []string) bool {
+		for _, a := range actions {
+			if a == permWildcard {
+				return true
+			}
+			if required != 0 && actionRank[a] >= required {
+				return true
+			}
+			if a == action {
+				return true
+			}
+		}
+		return false
+	}
+	// The resource's own grants, plus any "*"-resource (cross-resource) grants —
+	// the latter covers the */* superadmin (a "*" action under the "*" resource).
+	return match(u.Permissions[resource]) || match(u.Permissions[permWildcard])
+}
+
+// requireOperator wraps a handler in requireAuth (valid salem-realm token) PLUS
+// the plugins/administer capability check. Everything in the umbilical route
+// group is wrapped in this. Fails closed to 403 for an authenticated principal
+// lacking the capability.
+func (s *Server) requireOperator(next http.HandlerFunc) http.HandlerFunc {
+	return s.requireAuth(func(w http.ResponseWriter, r *http.Request) {
+		user := userFromContext(r.Context())
+		if !hasPermission(user, permResourcePlugins, permActionAdminister) {
+			writeError(w, http.StatusForbidden, "operator permission required (plugins/administer)")
+			return
+		}
+		next(w, r)
+	})
 }
 
 // bearerToken pulls the token from an Authorization: Bearer header. Tolerant of
