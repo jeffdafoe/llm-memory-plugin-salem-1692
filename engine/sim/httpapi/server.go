@@ -17,10 +17,11 @@ import (
 // Every route requires a valid salem-realm session token (auth); an optional
 // event hub (SetEventsHub) adds the authenticated WS /events push channel.
 type Server struct {
-	world     *sim.World
-	auth      Authenticator
-	hub       *Hub
-	telemetry *telemetry.RingSink
+	world          *sim.World
+	auth           Authenticator
+	hub            *Hub
+	telemetry      *telemetry.RingSink
+	controlEnabled bool
 }
 
 // NewServer builds a Server for w, authenticating every route via auth. Panics
@@ -65,6 +66,21 @@ func (s *Server) SetEventsHub(h *Hub) {
 // it once during startup.
 func (s *Server) SetTelemetry(ring *telemetry.RingSink) {
 	s.telemetry = ring
+}
+
+// SetControlEnabled arms the world-MUTATING umbilical control routes
+// (/umbilical/nudge, /umbilical/phase). This is a second, independent opt-in on
+// top of SetTelemetry: an operator can run the read-only introspection surface
+// (telemetry + state) without exposing any route that can mutate the running
+// world. cmd/engine calls this only under UMBILICAL_CONTROL_ENABLED, and only
+// when the umbilical itself is enabled — control routes register only when BOTH
+// a telemetry ring is attached AND control is enabled. The routes are still
+// requireOperator-gated and every invocation is audited (see umbilical_control.go).
+//
+// Same wiring-time-only contract as SetTelemetry/SetEventsHub: call before
+// Handler, never concurrently with serving.
+func (s *Server) SetControlEnabled(enabled bool) {
+	s.controlEnabled = enabled
 }
 
 // Handler returns the read-surface routes: the static-render read set
@@ -124,6 +140,13 @@ func (s *Server) Handler() http.Handler {
 	if s.telemetry != nil {
 		mux.HandleFunc("GET /api/village/umbilical/telemetry", s.requireOperator(s.handleUmbilicalTelemetry))
 		mux.HandleFunc("GET /api/village/umbilical/state", s.requireOperator(s.handleUmbilicalState))
+		// Control (world-mutating) routes — armed only when control is ALSO
+		// enabled (UMBILICAL_CONTROL_ENABLED). Read-only is the default even with
+		// the umbilical on. requireOperator-gated + audited. See umbilical_control.go.
+		if s.controlEnabled {
+			mux.HandleFunc("POST /api/village/umbilical/nudge", s.requireOperator(s.handleUmbilicalNudge))
+			mux.HandleFunc("POST /api/village/umbilical/phase", s.requireOperator(s.handleUmbilicalPhase))
+		}
 	}
 	return mux
 }

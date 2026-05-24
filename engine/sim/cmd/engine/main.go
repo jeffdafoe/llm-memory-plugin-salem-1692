@@ -64,6 +64,9 @@ type runtime struct {
 	HTTPAddr  string
 	Auth      httpapi.Authenticator
 	Umbilical *telemetry.RingSink
+	// UmbilicalControl arms the world-mutating umbilical control routes. Only
+	// meaningful when Umbilical is non-nil; run wires it via SetControlEnabled.
+	UmbilicalControl bool
 }
 
 func main() {
@@ -94,10 +97,14 @@ func main() {
 	// which is what registers the umbilical routes. When disabled, TickTelemetry
 	// stays the notImpl drop sink and no umbilical surface exists.
 	var umbilical *telemetry.RingSink
+	umbilicalControl := false
 	if envBool("UMBILICAL_ENABLED") {
 		umbilical = telemetry.New(getEnvInt("UMBILICAL_TELEMETRY_BUFFER", telemetry.DefaultCapacity))
 		repo.TickTelemetry = umbilical
-		log.Printf("engine: umbilical ENABLED (telemetry buffer=%d)", umbilical.Stats().Capacity)
+		// Control (world-mutating) routes are a second, independent opt-in — only
+		// honored when the umbilical itself is on, so read-only is the default.
+		umbilicalControl = envBool("UMBILICAL_CONTROL_ENABLED")
+		log.Printf("engine: umbilical ENABLED (telemetry buffer=%d, control=%v)", umbilical.Stats().Capacity, umbilicalControl)
 	}
 
 	// requireAllImpl=true is the production gate: LoadWorld hard-fails if any
@@ -121,8 +128,9 @@ func main() {
 		HTTPAddr: ":" + port,
 		// Read-surface auth: verifies session tokens against llm-memory-api's
 		// /v1/auth/verify + the salem-realm gate, caching positive results.
-		Auth:      httpapi.NewTokenVerifier(llmMemoryURL, 0),
-		Umbilical: umbilical,
+		Auth:             httpapi.NewTokenVerifier(llmMemoryURL, 0),
+		Umbilical:        umbilical,
+		UmbilicalControl: umbilicalControl,
 	}
 
 	// Shutdown on SIGINT/SIGTERM.
@@ -232,6 +240,9 @@ func run(rt runtime, stop <-chan struct{}) error {
 		// is unset → SetTelemetry not called → routes never registered.
 		if rt.Umbilical != nil {
 			server.SetTelemetry(rt.Umbilical)
+			if rt.UmbilicalControl {
+				server.SetControlEnabled(true)
+			}
 		}
 		httpServer = &http.Server{
 			Addr:    rt.HTTPAddr,
