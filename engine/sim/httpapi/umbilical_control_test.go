@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/telemetry"
@@ -103,6 +104,116 @@ func TestUmbilicalNudge_BadInput(t *testing.T) {
 	// Unknown actor → the command rejects → 422.
 	if rec := postReq(t, h, "/api/village/umbilical/nudge", "tok", `{"actor_id":"nobody"}`); rec.Code != http.StatusUnprocessableEntity {
 		t.Errorf("unknown actor = %d, want 422", rec.Code)
+	}
+}
+
+func TestUmbilicalSettle(t *testing.T) {
+	srv, h := controlServer(t, operatorPerms)
+	// Warrant hannah so there's something to settle.
+	_, err := srv.world.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		now := time.Now()
+		world.Actors["hannah"].WarrantedSince = &now
+		world.Actors["hannah"].WarrantDueAt = &now
+		return nil, nil
+	}})
+	if err != nil {
+		t.Fatalf("warrant hannah: %v", err)
+	}
+
+	rec := postReq(t, h, "/api/village/umbilical/settle", "tok", `{"actor_id":"hannah"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("settle = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var out umbilicalSettleResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !out.WasWarranted {
+		t.Errorf("was_warranted = false, want true")
+	}
+	// Confirm the warrant is actually cleared on the live actor.
+	res, _ := srv.world.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return world.Actors["hannah"].WarrantedSince == nil, nil
+	}})
+	if cleared, _ := res.(bool); !cleared {
+		t.Error("hannah still warranted after settle")
+	}
+
+	if rec := postReq(t, h, "/api/village/umbilical/settle", "tok", `{"actor_id":"nobody"}`); rec.Code != http.StatusNotFound {
+		t.Errorf("settle unknown actor = %d, want 404", rec.Code)
+	}
+}
+
+func TestUmbilicalRotate(t *testing.T) {
+	_, h := controlServer(t, operatorPerms)
+	rec := postReq(t, h, "/api/village/umbilical/rotate", "tok", `{}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("rotate = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var out umbilicalRotateResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// seededWorld has no rotation-tagged objects → 0 flips, but a valid result.
+	if out.ObjectsAffected != 0 {
+		t.Errorf("objects_affected = %d, want 0 (no rotation objects seeded)", out.ObjectsAffected)
+	}
+}
+
+func TestUmbilicalNeedThreshold(t *testing.T) {
+	srv, h := controlServer(t, operatorPerms)
+	// Configure a threshold so there's a tunable key (mem-loaded world may have none).
+	_, err := srv.world.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Settings.NeedThresholds = sim.NeedThresholds{"tiredness": 20}
+		return nil, nil
+	}})
+	if err != nil {
+		t.Fatalf("seed threshold: %v", err)
+	}
+
+	// Valid tune.
+	rec := postReq(t, h, "/api/village/umbilical/settings/need-threshold", "tok", `{"need":"tiredness","value":15}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("tune = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	res, _ := srv.world.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return world.Settings.NeedThresholds["tiredness"], nil
+	}})
+	if v, _ := res.(int); v != 15 {
+		t.Errorf("threshold after tune = %d, want 15", v)
+	}
+
+	// Out of range → 400.
+	if rec := postReq(t, h, "/api/village/umbilical/settings/need-threshold", "tok", `{"need":"tiredness","value":99}`); rec.Code != http.StatusBadRequest {
+		t.Errorf("out-of-range = %d, want 400", rec.Code)
+	}
+	// Unknown (unconfigured) need → 400.
+	if rec := postReq(t, h, "/api/village/umbilical/settings/need-threshold", "tok", `{"need":"ennui","value":10}`); rec.Code != http.StatusBadRequest {
+		t.Errorf("unknown need = %d, want 400", rec.Code)
+	}
+}
+
+func TestUmbilicalControl_NewRoutesGated(t *testing.T) {
+	paths := []string{
+		"/api/village/umbilical/settle",
+		"/api/village/umbilical/rotate",
+		"/api/village/umbilical/settings/need-threshold",
+	}
+	// Umbilical on but control NOT enabled → 404.
+	srv := NewServer(seededWorld(t), permAuth{operatorPerms})
+	srv.SetTelemetry(telemetry.New(4))
+	off := srv.Handler()
+	for _, p := range paths {
+		if rec := postReq(t, off, p, "tok", `{}`); rec.Code != http.StatusNotFound {
+			t.Errorf("%s control-disabled = %d, want 404", p, rec.Code)
+		}
+	}
+	// Control on but non-operator → 403.
+	_, nonOp := controlServer(t, nil)
+	for _, p := range paths {
+		if rec := postReq(t, nonOp, p, "tok", `{}`); rec.Code != http.StatusForbidden {
+			t.Errorf("%s non-operator = %d, want 403", p, rec.Code)
+		}
 	}
 }
 
