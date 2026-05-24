@@ -959,7 +959,9 @@ func _on_pc_me_completed(result: int, code: int, _headers: PackedStringArray, bo
     # without this the player has to find their own PC on the map after
     # logging in. center_on tweens 0.3s — feels intentional, not jarring.
     if _pc_exists and not _pc_initial_camera_centered:
-        camera.center_on(Vector2(float(data.get("x", 0.0)), float(data.get("y", 0.0))))
+        # pc/me x/y are TILE coords (the v2 wire contract); convert to a
+        # world-pixel position via the one tile->pixel home before centering.
+        camera.center_on(VillageApi.tile_to_world(int(data.get("x", 0)), int(data.get("y", 0))))
         _pc_initial_camera_centered = true
     var current_sprite_id := str(data.get("sprite_id", ""))
     if current_sprite_id != "":
