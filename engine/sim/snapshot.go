@@ -81,4 +81,16 @@ type Snapshot struct {
 	// cue without racing on w.Settings. Derive the per-night figure via
 	// sim.LodgingNightlyRate. Plain int, copied at publish.
 	LodgingDefaultWeeklyRate int
+
+	// ItemKinds is an ALIASED reference to World.ItemKinds — the item→satisfies
+	// reference catalog loaded once at startup (LoadWorld) and never mutated
+	// afterward (ItemKindDef is documented read-only). Unlike the mutable
+	// aggregates above it is NOT cloned at publish: the map and its *ItemKindDef
+	// values are immutable, so sharing the reference is race-free and avoids
+	// re-cloning the whole catalog on every command's republish. Perception —
+	// pure over the snapshot — reads it to answer "what does this item ease, and
+	// by how much?" for the recovery-options consumable arm and the seller-side
+	// satiation cues. nil only before the first LoadWorld (hand-built test
+	// snapshots that don't exercise item perception leave it nil).
+	ItemKinds map[ItemKind]*ItemKindDef
 }

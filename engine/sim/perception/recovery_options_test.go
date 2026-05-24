@@ -230,6 +230,164 @@ func TestBuildRecoveryOptions_NonLodgingStructureNotAnInn(t *testing.T) {
 	}
 }
 
+// --- consumable remedies (ZBBS-HOME-299) ---
+
+// tirednessCatalog returns an item catalog where coca_tea eases tiredness +12
+// immediate and bread eases hunger (a non-tiredness control).
+func tirednessCatalog() map[sim.ItemKind]*sim.ItemKindDef {
+	return map[sim.ItemKind]*sim.ItemKindDef{
+		"coca_tea": {
+			Name: "coca_tea", DisplayLabel: "coca tea", Category: sim.ItemCategoryDrink,
+			Satisfies: []sim.ItemSatisfaction{{Attribute: "tiredness", Immediate: 12}},
+		},
+		"bread": {
+			Name: "bread", DisplayLabel: "bread", Category: sim.ItemCategoryFood,
+			Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 8}},
+		},
+	}
+}
+
+// plainStructure is a structure with no private bedroom — a workplace that is
+// NOT an inn, so it isolates the remedy arm from the inn arm.
+func plainStructure(id sim.StructureID, name string) *sim.Structure {
+	return &sim.Structure{ID: id, DisplayName: name,
+		Rooms: []*sim.Room{{ID: 1, StructureID: id, Kind: sim.RoomKindCommon, Name: "common"}}}
+}
+
+func TestBuildRecoveryOptions_RemedyVendorSurfaced(t *testing.T) {
+	subj := &sim.ActorSnapshot{Needs: map[sim.NeedKey]int{"tiredness": sim.DefaultTirednessRedThreshold}, HomeStructureID: "cottage"}
+	prudence := &sim.ActorSnapshot{WorkStructureID: "apothecary", Inventory: map[sim.ItemKind]int{"coca_tea": 13}}
+	snap := &sim.Snapshot{
+		Actors:     map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj, "prudence": prudence},
+		Structures: map[sim.StructureID]*sim.Structure{"apothecary": plainStructure("apothecary", "PW Apothecary")},
+		ItemKinds:  tirednessCatalog(),
+	}
+	v := buildRecoveryOptions(snap, "ezekiel", subj)
+	if v == nil || len(v.Options) != 1 {
+		t.Fatalf("want 1 remedy option, got %+v", v)
+	}
+	o := v.Options[0]
+	if o.Kind != "remedy" || o.Label != "PW Apothecary" || o.ItemLabel != "coca tea" || o.Magnitude != 12 || o.CostText != "ask the seller" {
+		t.Errorf("unexpected remedy option (no price history → ask the seller): %+v", o)
+	}
+}
+
+// Two tiredness items at the same workplace share the parked sortKey AND the
+// Label, so determinism rests entirely on the sourceKey ("vendorID:itemKind")
+// tie-break. Exercise it directly (prior inn code had map-iteration
+// nondeterminism, so this is worth pinning down). (code_review)
+func TestBuildRecoveryOptions_RemedyDeterministicTieBreak(t *testing.T) {
+	subj := &sim.ActorSnapshot{Needs: map[sim.NeedKey]int{"tiredness": sim.DefaultTirednessRedThreshold}, HomeStructureID: "cottage"}
+	prudence := &sim.ActorSnapshot{WorkStructureID: "apothecary", Inventory: map[sim.ItemKind]int{"coca_tea": 5, "willow_bark": 3}}
+	cat := tirednessCatalog()
+	cat["willow_bark"] = &sim.ItemKindDef{Name: "willow_bark", DisplayLabel: "willow bark", Category: sim.ItemCategoryDrink,
+		Satisfies: []sim.ItemSatisfaction{{Attribute: "tiredness", Immediate: 6}}}
+	snap := &sim.Snapshot{
+		Actors:     map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj, "prudence": prudence},
+		Structures: map[sim.StructureID]*sim.Structure{"apothecary": plainStructure("apothecary", "PW Apothecary")},
+		ItemKinds:  cat,
+	}
+	// Build repeatedly; order must be stable across runs (map iteration is not).
+	var first []string
+	for i := 0; i < 25; i++ {
+		v := buildRecoveryOptions(snap, "ezekiel", subj)
+		if v == nil || len(v.Options) != 2 {
+			t.Fatalf("want 2 remedy options, got %+v", v)
+		}
+		got := []string{v.Options[0].ItemLabel, v.Options[1].ItemLabel}
+		if first == nil {
+			first = got
+			continue
+		}
+		if got[0] != first[0] || got[1] != first[1] {
+			t.Fatalf("nondeterministic remedy order: first=%v now=%v", first, got)
+		}
+	}
+	// sourceKey is "prudence:coca_tea" < "prudence:willow_bark", so coca tea first.
+	if first[0] != "coca tea" || first[1] != "willow bark" {
+		t.Errorf("tie-break order = %v, want [coca tea, willow bark] (sourceKey ascending)", first)
+	}
+}
+
+func TestBuildRecoveryOptions_RemedyPriceFromPriceBook(t *testing.T) {
+	subj := &sim.ActorSnapshot{Needs: map[sim.NeedKey]int{"tiredness": sim.DefaultTirednessRedThreshold}, HomeStructureID: "cottage"}
+	prudence := &sim.ActorSnapshot{WorkStructureID: "apothecary", Inventory: map[sim.ItemKind]int{"coca_tea": 13}}
+	pb := sim.NewRingBuffer[sim.PriceObservation](4)
+	pb.Push(sim.PriceObservation{BuyerID: "ezekiel", Amount: 2, Qty: 1, Consumers: 1, At: time.Now().UTC()})
+	snap := &sim.Snapshot{
+		Actors:     map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj, "prudence": prudence},
+		Structures: map[sim.StructureID]*sim.Structure{"apothecary": plainStructure("apothecary", "PW Apothecary")},
+		ItemKinds:  tirednessCatalog(),
+		PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
+			{SellerID: "prudence", Item: "coca_tea"}: pb,
+		},
+	}
+	v := buildRecoveryOptions(snap, "ezekiel", subj)
+	if v == nil || len(v.Options) != 1 {
+		t.Fatalf("want 1 remedy option, got %+v", v)
+	}
+	if v.Options[0].CostText != "~2 coins" {
+		t.Errorf("CostText = %q, want '~2 coins' (last-paid from the price book)", v.Options[0].CostText)
+	}
+}
+
+// The consumable arm is tiredness-gated, not homeless-gated: a homeless actor
+// who is not yet tired sees shelter cues but NOT remedy-vendor prompts.
+func TestBuildRecoveryOptions_RemedyTirednessGatedOff(t *testing.T) {
+	subj := &sim.ActorSnapshot{Needs: map[sim.NeedKey]int{"tiredness": 1}, HomeStructureID: ""} // homeless → fires, but rested
+	prudence := &sim.ActorSnapshot{WorkStructureID: "apothecary", Inventory: map[sim.ItemKind]int{"coca_tea": 13}}
+	snap := &sim.Snapshot{
+		Actors:     map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj, "prudence": prudence},
+		Structures: map[sim.StructureID]*sim.Structure{"apothecary": plainStructure("apothecary", "PW Apothecary")},
+		ItemKinds:  tirednessCatalog(),
+	}
+	// Homeless fires the section, but with no shelter options and remedies
+	// gated off by low tiredness, there's nothing to surface.
+	if v := buildRecoveryOptions(snap, "ezekiel", subj); v != nil {
+		t.Errorf("remedies must stay tiredness-gated for a rested homeless actor; got %+v", v)
+	}
+}
+
+func TestBuildRecoveryOptions_RemedyExcludesPCVendor(t *testing.T) {
+	subj := &sim.ActorSnapshot{Needs: map[sim.NeedKey]int{"tiredness": sim.DefaultTirednessRedThreshold}, HomeStructureID: "cottage"}
+	pcHolder := &sim.ActorSnapshot{Kind: sim.KindPC, WorkStructureID: "apothecary", Inventory: map[sim.ItemKind]int{"coca_tea": 1}}
+	snap := &sim.Snapshot{
+		Actors:     map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj, "wendy": pcHolder},
+		Structures: map[sim.StructureID]*sim.Structure{"apothecary": plainStructure("apothecary", "PW Apothecary")},
+		ItemKinds:  tirednessCatalog(),
+	}
+	if v := buildRecoveryOptions(snap, "ezekiel", subj); v != nil {
+		t.Errorf("a PC holding tea is not a vendor; want nil, got %+v", v)
+	}
+}
+
+func TestBuildRecoveryOptions_RemedyExcludesNoWorkplaceAndUnresolvedStructure(t *testing.T) {
+	subj := &sim.ActorSnapshot{Needs: map[sim.NeedKey]int{"tiredness": sim.DefaultTirednessRedThreshold}, HomeStructureID: "cottage"}
+	noWork := &sim.ActorSnapshot{Inventory: map[sim.ItemKind]int{"coca_tea": 5}}                         // holds tea, no workplace
+	ghostWork := &sim.ActorSnapshot{WorkStructureID: "missing", Inventory: map[sim.ItemKind]int{"coca_tea": 5}} // workplace not in snapshot
+	snap := &sim.Snapshot{
+		Actors:    map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj, "wanderer": noWork, "ghost": ghostWork},
+		ItemKinds: tirednessCatalog(),
+	}
+	if v := buildRecoveryOptions(snap, "ezekiel", subj); v != nil {
+		t.Errorf("a tea-holder with no resolvable workplace must not surface a remedy; got %+v", v)
+	}
+}
+
+func TestBuildRecoveryOptions_RemedyIgnoresNonTirednessAndEmptyStock(t *testing.T) {
+	subj := &sim.ActorSnapshot{Needs: map[sim.NeedKey]int{"tiredness": sim.DefaultTirednessRedThreshold}, HomeStructureID: "cottage"}
+	// Holds bread (hunger, not tiredness) and zero-qty tea and an unknown kind.
+	baker := &sim.ActorSnapshot{WorkStructureID: "bakery", Inventory: map[sim.ItemKind]int{"bread": 9, "coca_tea": 0, "mystery": 3}}
+	snap := &sim.Snapshot{
+		Actors:     map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj, "baker": baker},
+		Structures: map[sim.StructureID]*sim.Structure{"bakery": plainStructure("bakery", "The Bakery")},
+		ItemKinds:  tirednessCatalog(),
+	}
+	if v := buildRecoveryOptions(snap, "ezekiel", subj); v != nil {
+		t.Errorf("non-tiredness items, zero-qty stock, and unknown kinds must not surface a remedy; got %+v", v)
+	}
+}
+
 // --- render ---
 
 func TestRenderRecoveryOptions_NilAndEmpty(t *testing.T) {
@@ -256,5 +414,16 @@ func TestRenderRecoveryOptions_Bullets(t *testing.T) {
 	}
 	if !strings.Contains(out, "Hannah's Inn — rent a room, ask the keeper") {
 		t.Errorf("inn bullet wrong: %q", out)
+	}
+}
+
+func TestRenderRecoveryOptions_RemedyBullet(t *testing.T) {
+	var b strings.Builder
+	renderRecoveryOptions(&b, &RecoveryOptionsView{Options: []RecoveryOption{
+		{Kind: "remedy", Label: "PW Apothecary", ItemLabel: "coca tea", Magnitude: 12, CostText: "~2 coins"},
+	}})
+	out := b.String()
+	if !strings.Contains(out, "PW Apothecary — buy coca tea, eases tiredness (~12), ~2 coins") {
+		t.Errorf("remedy bullet wrong: %q", out)
 	}
 }

@@ -33,12 +33,13 @@ type RecoveryOptionsView struct {
 
 // RecoveryOption is one rest-affordance bullet.
 type RecoveryOption struct {
-	Kind      string // "rest" (free object) | "inn"
-	Label     string // "the old oak" | "Hannah's Inn"
+	Kind      string // "rest" (free object) | "inn" | "remedy" (vendor consumable)
+	Label     string // "the old oak" | "Hannah's Inn" | the vendor's workplace
+	ItemLabel string // remedy only: the consumable's display label ("coca tea"); "" otherwise
 	Magnitude int    // tiredness eased (positive); 0/unused for inns
 	CostText  string // "free" | "~28 coins" | "ask the keeper"
-	Distance  string // qualitative ("a short walk"); "" when unknown (inns)
-	Direction string // cardinal ("northeast"); "" when unknown (inns)
+	Distance  string // qualitative ("a short walk"); "" when unknown (inns, remedies)
+	Direction string // cardinal ("northeast"); "" when unknown (inns, remedies)
 
 	// sortKey is the actor→option tile distance used to order bullets
 	// (nearest first). Unexported — never rendered. Inns have no reliable
@@ -82,6 +83,13 @@ func buildRecoveryOptions(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *si
 	var opts []RecoveryOption
 	opts = append(opts, gatherFreeRestSpots(snap, actorSnap)...)
 	opts = append(opts, gatherInnRestSpots(snap, actorID)...)
+	// Consumable remedies are tiredness-gated, NOT homeless-gated: a not-yet-
+	// tired homeless actor surveying where to shelter doesn't need stimulant-
+	// brew prompts. Mirrors v1's "brews stay tiredness-gated since they're
+	// maintenance, not shelter."
+	if tired {
+		opts = append(opts, gatherConsumableRemedies(snap, actorID)...)
+	}
 	if len(opts) == 0 {
 		return nil
 	}
@@ -205,6 +213,103 @@ func gatherInnRestSpots(snap *sim.Snapshot, actorID sim.ActorID) []RecoveryOptio
 	return out
 }
 
+// gatherConsumableRemedies returns a "remedy" option per (vendor, item) for
+// NPCs who hold a tiredness-easing consumable and have a workplace to buy it
+// at. v2 has no standing "vendor" capability — v1's serve-tool attribute is
+// gone, and sales run through the buyer's pay_with_item against a co-present
+// seller — so vendorship is inferred structurally here: an NPC stationed at a
+// WorkStructureID who carries a tiredness item is treated as selling it there.
+//
+// The cue is surfaced at the vendor's WORKPLACE, not their current location
+// (ZBBS-HOME-299 decision): a stable "this is where tea is sold" signal rather
+// than a momentary-presence claim. It therefore carries NO transient
+// break/sleep/shift gate — the buyer walks to the workplace and availability is
+// resolved on arrival by the transaction layer (pay_with_item co-presence +
+// AcceptPay's seller-break gate). Distance/direction are omitted for the same
+// reason inns omit them (Structure.Position is grid space, not the actor's tile
+// space), so remedies park after the distance-bearing free rest spots.
+//
+// PCs are excluded as vendors — they don't sell through the NPC commerce path.
+// A vendor whose WorkStructureID doesn't resolve to a structure in the snapshot
+// is skipped: the "buy at X" cue would name an unactionable destination.
+func gatherConsumableRemedies(snap *sim.Snapshot, actorID sim.ActorID) []RecoveryOption {
+	if len(snap.ItemKinds) == 0 {
+		return nil
+	}
+	var out []RecoveryOption
+	for vendorID, vendor := range snap.Actors {
+		if vendor == nil || vendorID == actorID || vendor.Kind == sim.KindPC {
+			continue
+		}
+		if vendor.WorkStructureID == "" {
+			continue
+		}
+		st := snap.Structures[vendor.WorkStructureID]
+		if st == nil {
+			continue
+		}
+		for kind, qty := range vendor.Inventory {
+			if qty <= 0 {
+				continue
+			}
+			mag := tirednessRemedyMagnitude(snap, kind)
+			if mag <= 0 {
+				continue
+			}
+			out = append(out, RecoveryOption{
+				Kind:      "remedy",
+				Label:     remedyStructureLabel(st),
+				ItemLabel: itemDisplayLabel(snap, kind),
+				Magnitude: mag,
+				CostText:  buyerLastPaidText(snap, actorID, vendorID, kind, "ask the seller"),
+				sortKey:   innSortKey,
+				sourceKey: string(vendorID) + ":" + string(kind),
+			})
+		}
+	}
+	return out
+}
+
+// tirednessRemedyMagnitude returns the immediate tiredness a unit of kind eases
+// per the item catalog, or 0 when the kind is unknown or eases no tiredness on
+// the immediate hit. Pure slow-burn items (Immediate==0, dwell-only) are not
+// surfaced as "buy and drink now" remedies in the MVP.
+//
+// First-match is correct: ItemKindDef.Satisfies holds at most one entry per
+// attribute (the v1 item_satisfies PK is (item_kind, attribute), enforced at
+// load — see ItemKindDef.Satisfies), so there is no second tiredness entry to
+// stack or out-rank.
+func tirednessRemedyMagnitude(snap *sim.Snapshot, kind sim.ItemKind) int {
+	def := snap.ItemKinds[kind]
+	if def == nil {
+		return 0
+	}
+	for _, s := range def.Satisfies {
+		if s.Attribute == recoveryTirednessNeed {
+			return s.Immediate
+		}
+	}
+	return 0
+}
+
+// itemDisplayLabel resolves a consumable's human label from the catalog,
+// falling back to the raw kind when unknown or unlabeled.
+func itemDisplayLabel(snap *sim.Snapshot, kind sim.ItemKind) string {
+	if def := snap.ItemKinds[kind]; def != nil && def.DisplayLabel != "" {
+		return def.DisplayLabel
+	}
+	return string(kind)
+}
+
+// remedyStructureLabel names the workplace where a remedy is bought, with a
+// generic fallback when the structure has no display name.
+func remedyStructureLabel(s *sim.Structure) string {
+	if s.DisplayName != "" {
+		return s.DisplayName
+	}
+	return "the shop"
+}
+
 func hasPrivateRoom(s *sim.Structure) bool {
 	for _, r := range s.Rooms {
 		if r != nil && r.Kind == sim.RoomKindPrivate {
@@ -240,24 +345,33 @@ func keeperOf(snap *sim.Snapshot, structureID sim.StructureID) sim.ActorID {
 }
 
 // innCostText renders the actor's last-paid nights_stay price with this
-// keeper, else "ask the keeper". Replicates World.LookupBuyerLastPaid against
-// the snapshot's PriceBook (perception runs off the world goroutine, so it
-// must read Snapshot.PriceBook, not the live accessor).
+// keeper, else "ask the keeper".
 func innCostText(snap *sim.Snapshot, actorID, keeperID sim.ActorID) string {
-	if keeperID == "" || snap.PriceBook == nil {
-		return "ask the keeper"
+	return buyerLastPaidText(snap, actorID, keeperID, nightsStayItem, "ask the keeper")
+}
+
+// buyerLastPaidText renders "~N coins" from the buyer's most-recent accepted
+// price for (seller, item) in the snapshot's PriceBook, else fallback.
+// Replicates World.LookupBuyerLastPaid against the snapshot (perception runs
+// off the world goroutine, so it must read Snapshot.PriceBook, not the live
+// accessor). Price knowledge is per-buyer: a buyer who has never bought this
+// item from this seller gets the fallback — patronage earns the number, the
+// same convention v1 used for both inns and remedy vendors.
+func buyerLastPaidText(snap *sim.Snapshot, buyerID, sellerID sim.ActorID, item sim.ItemKind, fallback string) string {
+	if sellerID == "" || snap.PriceBook == nil {
+		return fallback
 	}
-	buf, ok := snap.PriceBook[sim.PriceBookKey{SellerID: keeperID, Item: nightsStayItem}]
+	buf, ok := snap.PriceBook[sim.PriceBookKey{SellerID: sellerID, Item: item}]
 	if !ok || buf == nil || buf.Len() == 0 {
-		return "ask the keeper"
+		return fallback
 	}
 	entries := buf.Snapshot() // oldest-first; scan from the end for newest-first
 	for i := len(entries) - 1; i >= 0; i-- {
-		if entries[i].BuyerID == actorID {
+		if entries[i].BuyerID == buyerID {
 			return fmt.Sprintf("~%d coins", entries[i].Amount)
 		}
 	}
-	return "ask the keeper"
+	return fallback
 }
 
 // qualitativeDistance maps a tile distance to a benefit-first walk phrase.
@@ -305,10 +419,18 @@ func renderRecoveryOptions(b *strings.Builder, v *RecoveryOptionsView) {
 	for _, o := range v.Options {
 		b.WriteString("- ")
 		b.WriteString(sanitizeInline(o.Label))
-		if o.Kind == "inn" {
+		switch o.Kind {
+		case "inn":
 			b.WriteString(" — rent a room")
-		} else if o.Magnitude > 0 {
-			fmt.Fprintf(b, " — eases tiredness (~%d)", o.Magnitude)
+		case "remedy":
+			fmt.Fprintf(b, " — buy %s", sanitizeInline(o.ItemLabel))
+			if o.Magnitude > 0 {
+				fmt.Fprintf(b, ", eases tiredness (~%d)", o.Magnitude)
+			}
+		default:
+			if o.Magnitude > 0 {
+				fmt.Fprintf(b, " — eases tiredness (~%d)", o.Magnitude)
+			}
 		}
 		if o.CostText != "" {
 			fmt.Fprintf(b, ", %s", o.CostText)
