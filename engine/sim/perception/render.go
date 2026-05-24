@@ -534,12 +534,41 @@ func renderWarrantLine(n int, w sim.WarrantMeta, maxTextBytes int) (string, bool
 		return renderIdleBackstopWarrantLine(n, kind, scope, r.QuietDuration), false
 	case sim.ShiftDutyWarrantReason:
 		return renderShiftDutyWarrantLine(n, kind, scope, r.ToWork, r.TargetStructureID), false
+	case sim.ConsumedWarrantReason:
+		return renderNarrationWarrantLine(n, kind, scope, r.NarrationText, w.TriggerActorID, maxTextBytes)
+	case sim.DwellStartedWarrantReason:
+		return renderNarrationWarrantLine(n, kind, scope, r.NarrationText, w.TriggerActorID, maxTextBytes)
+	case sim.DwellEndedWarrantReason:
+		return renderNarrationWarrantLine(n, kind, scope, r.NarrationText, w.TriggerActorID, maxTextBytes)
 	default:
 		if w.TriggerActorID != "" {
 			return fmt.Sprintf("%d. [%s]%s involving %s\n", n, kind, scope, w.TriggerActorID), false
 		}
 		return fmt.Sprintf("%d. [%s]%s\n", n, kind, scope), false
 	}
+}
+
+// renderNarrationWarrantLine renders a felt-language self-perception beat
+// (ZBBS-HOME-302): the consume self-line and the dwell started/ended lines all
+// carry a pre-rendered second-person NarrationText. Surfaces it as the warrant
+// line, sanitized + capped like the speech excerpt to bound prompt cost.
+//
+// DwellTickApplied is deliberately NOT routed here — the per-tick "another
+// bite" beat would be prompt spam, and the sustained state is already conveyed
+// by the ActiveDwellCredits projection ("currently: eating stew"); the per-tick
+// warrant keeps its bare default line.
+//
+// Empty narration (e.g. a catalog-unknown dwell end) falls back to the generic
+// involvement line so the warrant still registers rather than vanishing.
+func renderNarrationWarrantLine(n int, kind, scope, narration string, trigger sim.ActorID, maxTextBytes int) (string, bool) {
+	if narration == "" {
+		if trigger != "" {
+			return fmt.Sprintf("%d. [%s]%s involving %s\n", n, kind, scope, trigger), false
+		}
+		return fmt.Sprintf("%d. [%s]%s\n", n, kind, scope), false
+	}
+	sanitized, truncated := sanitizeText(narration, maxTextBytes)
+	return fmt.Sprintf("%d. [%s]%s %s\n", n, kind, scope, sanitized), truncated
 }
 
 // renderSpeechWarrantLine renders the warrant line for both PC- and NPC-

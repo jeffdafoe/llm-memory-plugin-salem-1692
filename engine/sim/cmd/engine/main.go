@@ -154,6 +154,7 @@ func run(rt runtime, stop <-chan struct{}) error {
 	handlers.RegisterSpeechHandlers(rt.World)
 	handlers.RegisterPayHandlers(rt.World)
 	handlers.RegisterDwellHandlers(rt.World)
+	handlers.RegisterConsumeHandlers(rt.World)
 	handlers.RegisterSceneQuoteHandlers(rt.World)
 	handlers.RegisterPayWithItemHandlers(rt.World)
 	sim.RegisterAcquaintanceSubscriber(rt.World)
