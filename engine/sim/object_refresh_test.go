@@ -267,6 +267,64 @@ func TestApplyObjectRefreshAtArrivalIgnoresBareObjects(t *testing.T) {
 	}
 }
 
+// TestApplyObjectRefreshAtArrivalNamedBareObjectBlocks locks in the
+// resolve-then-check semantics: when a NAMED, asset-backed object with NO
+// refresh rows is the nearest loitering object, the arrival is a no-op even
+// though a refresh-bearing well sits one tile away, still inside the
+// attribution radius. v1 resolves the single loitering object first, then
+// checks it for refresh rows — it does NOT skip past a refresh-less object to
+// a farther refresh-bearing one. (Distinct from IgnoresBareObjects, where the
+// bench is unnamed and thus invisible to the resolver entirely.)
+func TestApplyObjectRefreshAtArrivalNamedBareObjectBlocks(t *testing.T) {
+	repo, handles := mem.NewRepository()
+	handles.Assets.Seed(map[sim.AssetID]*sim.Asset{
+		"bench-wood": {ID: "bench-wood"},
+		"well-stone": {ID: "well-stone"},
+	})
+	zero := 0
+	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
+		// Named, asset-backed, NO refreshes — pin on the actor's tile (dist 0).
+		"bench": {
+			ID: "bench", DisplayName: "Bench", AssetID: "bench-wood", CurrentState: "default",
+			LoiterOffsetX: &zero, LoiterOffsetY: &zero,
+			Pos: sim.TileToWorld(sim.GridPoint{X: 100, Y: 100}),
+		},
+		// Named, asset-backed, HAS a refresh — pin one tile away (Chebyshev 1,
+		// inside LoiterAttributionTiles), so it would apply if the nearer
+		// bench didn't win the resolve.
+		"well": {
+			ID: "well", DisplayName: "Well", AssetID: "well-stone", CurrentState: "default",
+			LoiterOffsetX: &zero, LoiterOffsetY: &zero,
+			Pos:       sim.TileToWorld(sim.GridPoint{X: 101, Y: 100}),
+			Refreshes: []*sim.ObjectRefresh{{Attribute: "thirst", Amount: -12}},
+		},
+	})
+	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
+		"hannah": {
+			ID:    "hannah",
+			Needs: map[sim.NeedKey]int{"thirst": 18},
+			Pos:   sim.TilePos{X: 100, Y: 100}, // on the bench pin; the well is 1 tile away
+		},
+	})
+	w, err := sim.LoadWorld(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go w.Run(ctx)
+
+	res, _ := w.Send(sim.ApplyObjectRefreshAtArrival("hannah"))
+	r := res.(sim.ArrivalRefreshResult)
+	if r.ObjectID != "" || len(r.Hits) != 0 {
+		t.Errorf("resolve-then-check failed: nearest object is the refresh-less bench, want no-op; got %+v", r)
+	}
+	// The farther well's refresh must NOT have applied through the bench.
+	if got := w.Published().Actors["hannah"].Needs["thirst"]; got != 18 {
+		t.Errorf("well refresh applied through the bench: thirst = %d, want 18 (unchanged)", got)
+	}
+}
+
 // TestRegenObjectRefreshContinuous covers a continuous-mode regen step.
 // Well: max=5, available=3, period=24h, last_refresh=2h ago. With unit
 // time = 24/5 = 4.8h per unit, 2h elapsed → 0 units accrued. Run again
