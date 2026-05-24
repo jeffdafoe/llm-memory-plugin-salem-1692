@@ -184,6 +184,29 @@ func actorIsLodgerAt(w *World, actor *Actor, structureID StructureID, now time.T
 	return false
 }
 
+// actorHoldsActiveLodging reports whether actor holds ANY active, unexpired
+// ledger RoomAccess at now — the structure-agnostic counterpart to
+// actorIsLodgerAt. The homeless rest-fallback floor (npc_rest_fallback.go)
+// uses it to exclude a paying lodger, who beds at their rented inn via the
+// lodger-sleep arm rather than being routed to a free outdoor rest object.
+// Per-grant gate is the same IsActiveLedgerGrant predicate; no structure
+// match is needed because the floor only asks "is this actor lodging
+// anywhere", not "lodging here".
+//
+// Pure over actor.RoomAccess (no world reads) — safe to call from inside a
+// Command.Fn or any context that already holds an actor reference.
+func actorHoldsActiveLodging(actor *Actor, now time.Time) bool {
+	if actor == nil {
+		return false
+	}
+	for _, ra := range actor.RoomAccess {
+		if IsActiveLedgerGrant(ra, now) {
+			return true
+		}
+	}
+	return false
+}
+
 // findRoom walks all structures looking for a room with the given ID.
 // Linear in total room count — fine for Salem's scale (~20 structures,
 // ~80 rooms). When room counts grow, a World.Rooms secondary index
