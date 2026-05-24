@@ -707,12 +707,25 @@ type ActorSnapshot struct {
 	// decorative NPCs).
 	LLMAgent string
 
+	// LoginUsername mirrors the live Actor's PC login (the PC counterpart to
+	// LLMAgent — empty for NPCs). Carried so the read surface (httpapi pc/me)
+	// can resolve the caller's own PC from the authenticated session by
+	// scanning the published snapshot, instead of a command-channel round trip
+	// into live world state for a pure read.
+	LoginUsername string
+
 	InsideStructureID StructureID
-	Pos               TilePos // padded grid tile; was CurrentX/CurrentY (see geom.go)
-	CurrentHuddleID   HuddleID
-	Needs             map[NeedKey]int
-	InventoryHash     uint64 // fast-compare; computed at snapshot time
-	Coins             int
+	// InsideRoomID mirrors the live Actor's current room (0 when not in a
+	// room). Carried so the read surface (httpapi pc/me) can compute the
+	// private-room audience scope — the v2 port of v1 actorPrivateRoomScope —
+	// purely over the snapshot: look the id up in the actor's
+	// InsideStructureID Rooms and scope speech when its Kind is private/staff.
+	InsideRoomID    RoomID
+	Pos             TilePos // padded grid tile; was CurrentX/CurrentY (see geom.go)
+	CurrentHuddleID HuddleID
+	Needs           map[NeedKey]int
+	InventoryHash   uint64 // fast-compare; computed at snapshot time
+	Coins           int
 
 	// SpriteID + Facing mirror the live Actor's render identity at snapshot
 	// time so the client read surface (httpapi) can resolve + inline the
@@ -788,6 +801,15 @@ type ActorSnapshot struct {
 	// cloneRoomAccess) so published snapshots don't alias the world's
 	// mutable grant map. Keyed by (RoomID, Source) like Actor.RoomAccess.
 	RoomAccess map[RoomAccessKey]*RoomAccess
+
+	// Inventory mirrors the live Actor's item-kind→quantity map at snapshot
+	// time so the read surface (httpapi pc/me) can serve a player's held
+	// items without a world-goroutine round trip. InventoryHash above stays
+	// the fast-compare digest; this is the full contents. Value-typed map,
+	// so snapshotActor copies it with a plain per-entry copy (no pointer
+	// cloning needed), the same posture as Needs. Empty/nil for actors with
+	// no items.
+	Inventory map[ItemKind]int
 
 	// TickInFlight + TickAttemptID mirror the live Actor fields so PR 3d's
 	// harness can do a cheap pre-LLM stale-check by reading the snapshot

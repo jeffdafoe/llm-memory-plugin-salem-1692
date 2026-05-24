@@ -1,0 +1,406 @@
+package httpapi
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"testing"
+	"time"
+
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/repo/mem"
+)
+
+// pcMeWorld stands up a running mem-backed world seeded for the pc/me read: a
+// login-bound PC ("tester") inside an inn, in a huddle with an NPC and a second
+// PC, carrying inventory + needs + a sprite, with an action log scoped across
+// two huddles and a stale entry. insideRoomID selects which inn room the PC
+// occupies (2 = private bedroom → scoped audience room; 1 = common → public).
+func pcMeWorld(t *testing.T, insideRoomID sim.RoomID) *sim.World {
+	t.Helper()
+	repo, _ := mem.NewRepository()
+	w, err := sim.LoadWorld(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go w.Run(ctx)
+
+	now := time.Now().UTC()
+	_, err = w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Settings.NeedThresholds = sim.NeedThresholds{"hunger": 6}
+
+		world.Actors["p1"] = &sim.Actor{
+			ID: "p1", DisplayName: "Tester", Kind: sim.KindPC,
+			State: sim.StateIdle, LoginUsername: "tester",
+			Pos: sim.TilePos{X: 10, Y: 10}, Coins: 42,
+			InsideStructureID: "inn", InsideRoomID: insideRoomID,
+			HomeStructureID: "cottage", CurrentHuddleID: "h1",
+			SpriteID:  "sprite-1",
+			Needs:     map[sim.NeedKey]int{"hunger": 5, "thirst": 3},
+			Inventory: map[sim.ItemKind]int{"bread": 2, "ale": 1, "mystery": 1},
+			DwellCredits: map[sim.DwellCreditKey]*sim.DwellCredit{
+				{ObjectID: "inn", Attribute: "hunger", Source: sim.DwellSourceObject}: {
+					ObjectID: "inn", Attribute: "hunger", Source: sim.DwellSourceObject,
+					LastCreditedAt: now, DwellPeriodMinutes: 10,
+				},
+				{ObjectID: "inn", Attribute: "thirst", Source: sim.DwellSourceObject}: {
+					ObjectID: "inn", Attribute: "thirst", Source: sim.DwellSourceObject,
+					LastCreditedAt: now.Add(-time.Hour), DwellPeriodMinutes: 10,
+				},
+			},
+		}
+		world.Actors["hannah"] = &sim.Actor{
+			ID: "hannah", DisplayName: "Hannah", Kind: sim.KindNPCShared,
+			State: sim.StateIdle, Role: "innkeeper", LLMAgent: "hannah-va",
+			Pos: sim.TilePos{X: 10, Y: 10}, InsideStructureID: "inn",
+			CurrentHuddleID: "h1",
+		}
+		world.Actors["p2"] = &sim.Actor{
+			ID: "p2", DisplayName: "Otherguy", Kind: sim.KindPC,
+			State: sim.StateIdle, LoginUsername: "other",
+			Pos: sim.TilePos{X: 10, Y: 10}, InsideStructureID: "inn",
+			CurrentHuddleID: "h1",
+		}
+
+		world.Structures["inn"] = &sim.Structure{
+			ID: "inn", DisplayName: "The Inn",
+			Rooms: []*sim.Room{
+				{ID: 1, StructureID: "inn", Kind: sim.RoomKindCommon, Name: "common"},
+				{ID: 2, StructureID: "inn", Kind: sim.RoomKindPrivate, Name: "bedroom_1"},
+			},
+		}
+		world.VillageObjects["inn"] = &sim.VillageObject{
+			ID: "inn", AssetID: "inn-asset", DisplayName: "The Inn",
+		}
+		world.VillageObjects["cottage"] = &sim.VillageObject{
+			ID: "cottage", AssetID: "cottage-asset", DisplayName: "Tester's Cottage",
+		}
+
+		world.Huddles["h1"] = &sim.Huddle{
+			ID: "h1", StructureID: "inn",
+			Members: map[sim.ActorID]struct{}{"p1": {}, "hannah": {}, "p2": {}},
+		}
+
+		world.Sprites = map[sim.SpriteID]*sim.Sprite{
+			"sprite-1": {
+				ID: "sprite-1", Name: "Woman A", Sheet: "npc/woman_A.png",
+				FrameWidth: 64, FrameHeight: 64,
+				Animations: []sim.SpriteAnimation{
+					{Direction: "south", Animation: "idle", RowIndex: 0, FrameCount: 1, FrameRate: 6},
+				},
+			},
+		}
+		world.ItemKinds = map[sim.ItemKind]*sim.ItemKindDef{
+			"bread": {Name: "bread", DisplayLabel: "Bread", Category: sim.ItemCategoryFood, Capabilities: []string{"portable"}},
+			"ale":   {Name: "ale", DisplayLabel: "Ale", Category: sim.ItemCategoryDrink},
+		}
+
+		world.ActionLog = []sim.ActionLogEntry{
+			// Stale (beyond the 24h cutoff) — excluded even though in h1.
+			{ActorID: "hannah", OccurredAt: now.Add(-48 * time.Hour), ActionType: sim.ActionTypeSpoke, Text: "old chatter", HuddleID: "h1"},
+			// Different huddle — excluded.
+			{ActorID: "hannah", OccurredAt: now, ActionType: sim.ActionTypeSpoke, Text: "elsewhere", HuddleID: "h2"},
+			// In-scope, oldest→newest.
+			{ActorID: "hannah", OccurredAt: now.Add(-3 * time.Minute), ActionType: sim.ActionTypeSpoke, Text: "Welcome traveler", HuddleID: "h1"},
+			{ActorID: "p1", OccurredAt: now.Add(-2 * time.Minute), ActionType: sim.ActionTypeSpoke, Text: "Hello", HuddleID: "h1"},
+			{ActorID: "p1", OccurredAt: now.Add(-1 * time.Minute), ActionType: sim.ActionTypeConsumed, Text: "stew", HuddleID: "h1"},
+			{ActorID: "p1", OccurredAt: now, ActionType: sim.ActionTypePaid, Text: "a round", HuddleID: "h1"},
+		}
+		return nil, nil
+	}})
+	if err != nil {
+		t.Fatalf("seed pc/me world: %v", err)
+	}
+	return w
+}
+
+// pcMe issues an authenticated POST /api/village/pc/me and decodes the response.
+func pcMe(t *testing.T, srv *Server) pcMeResponse {
+	t.Helper()
+	rec := post(t, srv, "/api/village/pc/me", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var resp pcMeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	return resp
+}
+
+func TestHandlePCMe_NoPC(t *testing.T) {
+	// Base seeded world: bram is a PC but has no LoginUsername, so "tester"
+	// resolves to no PC → exists=false at 200.
+	srv := NewServer(seededWorld(t), okAuth{})
+	resp := pcMe(t, srv)
+	if resp.Exists {
+		t.Fatalf("exists = true, want false for a session with no PC")
+	}
+	if resp.LoginUsername != "tester" {
+		t.Errorf("login_username = %q, want tester", resp.LoginUsername)
+	}
+	// Stable empty shapes even with no PC.
+	if resp.HuddleMembers == nil {
+		t.Errorf("huddle_members = nil, want [] for the no-PC shape")
+	}
+}
+
+func TestHandlePCMe_FullIndoor(t *testing.T) {
+	srv := NewServer(pcMeWorld(t, 2), okAuth{})
+	resp := pcMe(t, srv)
+
+	if !resp.Exists {
+		t.Fatal("exists = false, want true")
+	}
+	if resp.ActorID != "p1" {
+		t.Errorf("actor_id = %q, want p1", resp.ActorID)
+	}
+	if resp.CharacterName != "Tester" {
+		t.Errorf("character_name = %q, want Tester", resp.CharacterName)
+	}
+	if resp.X != 10 || resp.Y != 10 {
+		t.Errorf("x,y = %d,%d, want 10,10 (tile coords)", resp.X, resp.Y)
+	}
+	if resp.Coins != 42 {
+		t.Errorf("coins = %d, want 42", resp.Coins)
+	}
+	if resp.InsideStructureID == nil || *resp.InsideStructureID != "inn" {
+		t.Errorf("inside_structure_id = %v, want inn", resp.InsideStructureID)
+	}
+	if resp.StructureName != "The Inn" {
+		t.Errorf("structure_name = %q, want The Inn", resp.StructureName)
+	}
+	if resp.HomeStructureID == nil || *resp.HomeStructureID != "cottage" {
+		t.Errorf("home_structure_id = %v, want cottage", resp.HomeStructureID)
+	}
+	if resp.HomeName != "Tester's Cottage" {
+		t.Errorf("home_name = %q, want Tester's Cottage", resp.HomeName)
+	}
+	if resp.CurrentHuddleID == nil || *resp.CurrentHuddleID != "h1" {
+		t.Errorf("current_huddle_id = %v, want h1", resp.CurrentHuddleID)
+	}
+	// Indoors → audience structure is the literal inside structure.
+	if resp.AudienceStructureID == nil || *resp.AudienceStructureID != "inn" {
+		t.Errorf("audience_structure_id = %v, want inn", resp.AudienceStructureID)
+	}
+	// Private bedroom → scoped audience room.
+	if resp.AudienceRoomID == nil || *resp.AudienceRoomID != "2" {
+		t.Errorf("audience_room_id = %v, want \"2\"", resp.AudienceRoomID)
+	}
+
+	// Needs is a non-nil map carrying the PC's snapshot; thresholds present.
+	if resp.Needs["hunger"] != 5 || resp.Needs["thirst"] != 3 {
+		t.Errorf("needs = %v, want hunger:5 thirst:3", resp.Needs)
+	}
+	if resp.NeedThresholds["hunger"] != 6 {
+		t.Errorf("need_thresholds = %v, want hunger:6", resp.NeedThresholds)
+	}
+
+	// Only the fresh dwell credit's attribute surfaces (thirst is stale).
+	if len(resp.DwellingAttributes) != 1 || resp.DwellingAttributes[0] != "hunger" {
+		t.Errorf("dwelling_attributes = %v, want [hunger]", resp.DwellingAttributes)
+	}
+
+	// Sprite resolved + inlined.
+	if resp.SpriteID == nil || *resp.SpriteID != "sprite-1" {
+		t.Fatalf("sprite_id = %v, want sprite-1", resp.SpriteID)
+	}
+	if resp.Sprite == nil || resp.Sprite.Name != "Woman A" {
+		t.Errorf("sprite = %v, want inlined Woman A", resp.Sprite)
+	}
+
+	// Inventory: enriched + sorted by item_kind; unknown kind keeps raw kind.
+	if len(resp.Inventory) != 3 {
+		t.Fatalf("len(inventory) = %d, want 3", len(resp.Inventory))
+	}
+	wantInv := []pcInventoryEntry{
+		{ItemKind: "ale", DisplayLabel: "Ale", Quantity: 1, Category: "drink"},
+		{ItemKind: "bread", DisplayLabel: "Bread", Quantity: 2, Category: "food", Capabilities: []string{"portable"}},
+		{ItemKind: "mystery", Quantity: 1},
+	}
+	for i, want := range wantInv {
+		got := resp.Inventory[i]
+		if got.ItemKind != want.ItemKind || got.DisplayLabel != want.DisplayLabel ||
+			got.Quantity != want.Quantity || got.Category != want.Category {
+			t.Errorf("inventory[%d] = %+v, want %+v", i, got, want)
+		}
+	}
+
+	// Huddle roster: hannah + p2 (self p1 excluded), sorted by name.
+	if len(resp.HuddleMembers) != 2 {
+		t.Fatalf("len(huddle_members) = %d, want 2", len(resp.HuddleMembers))
+	}
+	h := resp.HuddleMembers[0]
+	if h.Kind != "npc" || h.Name != "Hannah" || h.Role == nil || *h.Role != "innkeeper" ||
+		h.TargetAgent == nil || *h.TargetAgent != "hannah-va" {
+		t.Errorf("huddle_members[0] = %+v, want NPC Hannah innkeeper/hannah-va", h)
+	}
+	o := resp.HuddleMembers[1]
+	if o.Kind != "pc" || o.Name != "Otherguy" || o.TargetAgent != nil {
+		t.Errorf("huddle_members[1] = %+v, want PC Otherguy with no target_agent", o)
+	}
+
+	// Recent speech: huddle-scoped, oldest→newest, stale + other-huddle excluded.
+	wantSpeech := []pcRecentSpeech{
+		{SpeakerName: "Hannah", Text: "Welcome traveler", Kind: "speech_npc"},
+		{SpeakerName: "Tester", Text: "Hello", Kind: "speech_player"},
+		{SpeakerName: "Tester", Text: "Tester consumes stew.", Kind: "act"},
+		{SpeakerName: "Tester", Text: "Tester pays for a round.", Kind: "act"},
+	}
+	if len(resp.RecentSpeech) != len(wantSpeech) {
+		t.Fatalf("len(recent_speech) = %d, want %d; got %+v", len(resp.RecentSpeech), len(wantSpeech), resp.RecentSpeech)
+	}
+	for i, want := range wantSpeech {
+		got := resp.RecentSpeech[i]
+		if got.SpeakerName != want.SpeakerName || got.Text != want.Text || got.Kind != want.Kind {
+			t.Errorf("recent_speech[%d] = %+v, want %+v", i, got, want)
+		}
+	}
+}
+
+func TestHandlePCMe_CommonRoomPublicScope(t *testing.T) {
+	// PC in the inn's common room (id 1) → public scope, no audience room.
+	srv := NewServer(pcMeWorld(t, 1), okAuth{})
+	resp := pcMe(t, srv)
+	if resp.AudienceRoomID != nil {
+		t.Errorf("audience_room_id = %v, want nil for a common-room PC", *resp.AudienceRoomID)
+	}
+	// Still scoped to the structure.
+	if resp.AudienceStructureID == nil || *resp.AudienceStructureID != "inn" {
+		t.Errorf("audience_structure_id = %v, want inn", resp.AudienceStructureID)
+	}
+}
+
+func TestHandlePCMe_StaleRoomPublicScope(t *testing.T) {
+	// InsideRoomID points at a room not in the PC's structure (stale ref after
+	// a transition) → fails closed to public scope, no audience room.
+	srv := NewServer(pcMeWorld(t, 999), okAuth{})
+	resp := pcMe(t, srv)
+	if resp.AudienceRoomID != nil {
+		t.Errorf("audience_room_id = %v, want nil for a stale room ref", *resp.AudienceRoomID)
+	}
+}
+
+func TestHandlePCMe_OutdoorAudienceScopeAndRoster(t *testing.T) {
+	w := outdoorPCMeWorld(t)
+	srv := NewServer(w, okAuth{})
+	resp := pcMe(t, srv)
+
+	if resp.InsideStructureID != nil {
+		t.Errorf("inside_structure_id = %v, want nil outdoors", resp.InsideStructureID)
+	}
+	// Loiter pin of the well sits on the PC's tile → audience scope is the well.
+	if resp.AudienceStructureID == nil || *resp.AudienceStructureID != "well" {
+		t.Errorf("audience_structure_id = %v, want well", resp.AudienceStructureID)
+	}
+	if resp.AudienceRoomID != nil {
+		t.Errorf("audience_room_id = %v, want nil outdoors", *resp.AudienceRoomID)
+	}
+	// Outdoor proximity roster: the nearby PC, not the far one.
+	if len(resp.HuddleMembers) != 1 || resp.HuddleMembers[0].Name != "Nearby" {
+		t.Errorf("huddle_members = %+v, want just [Nearby]", resp.HuddleMembers)
+	}
+	// No huddle → no backload.
+	if resp.RecentSpeech != nil {
+		t.Errorf("recent_speech = %+v, want nil for a huddle-less PC", resp.RecentSpeech)
+	}
+}
+
+func TestHandlePCMe_InTransit(t *testing.T) {
+	// PC outdoors with no loiter object in range → no audience structure.
+	w := seededWorld(t)
+	seedPC(t, w, "p1", "tester", 200, 200)
+	srv := NewServer(w, okAuth{})
+	resp := pcMe(t, srv)
+	if resp.AudienceStructureID != nil {
+		t.Errorf("audience_structure_id = %v, want nil in transit", *resp.AudienceStructureID)
+	}
+}
+
+// outdoorPCMeWorld seeds an outdoor PC standing on a well's loiter pin, with one
+// nearby PC (within the roster radius) and one far PC (outside it).
+func outdoorPCMeWorld(t *testing.T) *sim.World {
+	t.Helper()
+	repo, _ := mem.NewRepository()
+	w, err := sim.LoadWorld(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go w.Run(ctx)
+
+	pin := sim.TilePos{X: 20, Y: 20}
+	_, err = w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["p1"] = &sim.Actor{
+			ID: "p1", DisplayName: "Tester", Kind: sim.KindPC,
+			State: sim.StateIdle, LoginUsername: "tester", Pos: pin,
+		}
+		world.Actors["near"] = &sim.Actor{
+			ID: "near", DisplayName: "Nearby", Kind: sim.KindPC,
+			State: sim.StateIdle, LoginUsername: "near",
+			Pos: sim.TilePos{X: 23, Y: 22}, // Chebyshev 3 <= 6
+		}
+		world.Actors["far"] = &sim.Actor{
+			ID: "far", DisplayName: "Faraway", Kind: sim.KindPC,
+			State: sim.StateIdle, LoginUsername: "far",
+			Pos: sim.TilePos{X: 40, Y: 40}, // Chebyshev 20 > 6
+		}
+		// Well with both loiter offsets zero → pin == anchor tile (20,20).
+		zero := 0
+		world.VillageObjects["well"] = &sim.VillageObject{
+			ID: "well", AssetID: "well-asset", DisplayName: "Old Well",
+			Pos:           pin.Center(),
+			LoiterOffsetX: &zero, LoiterOffsetY: &zero,
+		}
+		world.Assets = map[sim.AssetID]*sim.Asset{
+			"well-asset": {ID: "well-asset", Name: "Well", Category: "nature"},
+		}
+		return nil, nil
+	}})
+	if err != nil {
+		t.Fatalf("seed outdoor pc/me world: %v", err)
+	}
+	return w
+}
+
+func TestRenderActionLogEntry(t *testing.T) {
+	snap := &sim.Snapshot{
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			"npc": {DisplayName: "Hannah"},
+			"pc":  {DisplayName: "Tester", LoginUsername: "tester"},
+		},
+	}
+	cases := []struct {
+		name        string
+		entry       sim.ActionLogEntry
+		wantSpeaker string
+		wantText    string
+		wantKind    string
+		wantOK      bool
+	}{
+		{"npc speech", sim.ActionLogEntry{ActorID: "npc", ActionType: sim.ActionTypeSpoke, Text: "Hi"}, "Hannah", "Hi", "speech_npc", true},
+		{"pc speech", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeSpoke, Text: "Yo"}, "Tester", "Yo", "speech_player", true},
+		{"empty speech skipped", sim.ActionLogEntry{ActorID: "npc", ActionType: sim.ActionTypeSpoke, Text: ""}, "", "", "", false},
+		{"paid with for", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypePaid, Text: "a round"}, "Tester", "Tester pays for a round.", "act", true},
+		{"paid no for", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypePaid, Text: ""}, "Tester", "Tester makes a payment.", "act", true},
+		{"consumed", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeConsumed, Text: "stew"}, "Tester", "Tester consumes stew.", "act", true},
+		{"consumed empty skipped", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeConsumed, Text: ""}, "", "", "", false},
+		{"delivered", sim.ActionLogEntry{ActorID: "npc", ActionType: sim.ActionTypeDelivered, Text: "ale"}, "Hannah", "Hannah delivers ale.", "act", true},
+		{"walked to dest", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeWalked, Text: "The Inn"}, "Tester", "Tester arrives at The Inn.", "act", true},
+		{"walked no dest", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeWalked, Text: ""}, "Tester", "Tester arrives.", "act", true},
+		{"took break", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeTookBreak, Text: "tired"}, "Tester", "Tester steps away.", "act", true},
+		{"unknown actor skipped", sim.ActionLogEntry{ActorID: "ghost", ActionType: sim.ActionTypeSpoke, Text: "boo"}, "", "", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			speaker, text, kind, ok := renderActionLogEntry(snap, tc.entry)
+			if speaker != tc.wantSpeaker || text != tc.wantText || kind != tc.wantKind || ok != tc.wantOK {
+				t.Errorf("got (%q,%q,%q,%v), want (%q,%q,%q,%v)",
+					speaker, text, kind, ok, tc.wantSpeaker, tc.wantText, tc.wantKind, tc.wantOK)
+			}
+		})
+	}
+}
