@@ -89,6 +89,37 @@ func TestConsumeSubscriberStampsWarrant(t *testing.T) {
 	}
 }
 
+// TestConsumeSubscriberDoesNotDedup — two consumes before the warrant list is
+// drained stamp two distinct ConsumedWarrantReasons. Locks the dedup-bypass
+// posture: ConsumedWarrantReason.DedupDiscriminator()==0 makes
+// WarrantMeta.eventSourced() false, so tryStampWarrant skips its source-aware
+// dedup entirely — without that, both would collapse under (WarrantKindConsumed, 0).
+func TestConsumeSubscriberDoesNotDedup(t *testing.T) {
+	w, stop := buildConsumeReactorWorld(t, sim.NeedMax) // hunger high so both consumes move it
+	defer stop()
+
+	for i := 0; i < 2; i++ {
+		if _, err := w.Send(sim.Consume("hannah", "stew", 1, time.Now().UTC())); err != nil {
+			t.Fatalf("Consume %d: %v", i, err)
+		}
+	}
+	v, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return append([]sim.WarrantMeta(nil), world.Actors["hannah"].Warrants...), nil
+	}})
+	if err != nil {
+		t.Fatalf("peek warrants: %v", err)
+	}
+	count := 0
+	for _, m := range v.([]sim.WarrantMeta) {
+		if _, ok := m.Reason.(sim.ConsumedWarrantReason); ok {
+			count++
+		}
+	}
+	if count != 2 {
+		t.Errorf("ConsumedWarrantReason count = %d, want 2 (no dedup collapse)", count)
+	}
+}
+
 // TestConsumeSubscriberSilentOnNoOp — consuming while already sated (hunger 0)
 // moves no need (Applied empty), so the audit ItemConsumed still fires but NO
 // consume narration warrant is stamped.
