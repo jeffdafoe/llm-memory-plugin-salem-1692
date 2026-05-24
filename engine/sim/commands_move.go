@@ -305,8 +305,8 @@ func resolvePathTarget(w *World, actor *Actor, dest MoveDestination, grid *WalkG
 //   - Staff    — the actor's WorkStructureID is this structure (the hired
 //     employee who works here but neither owns nor lives here).
 //   - Owner    — the structure's OwnerActorID is this actor.
-//   - Lodger   — the actor holds an active, unexpired RoomAccess grant
-//     for a room inside this structure.
+//   - Lodger   — the actor holds an active, unexpired ledger RoomAccess
+//     grant for a room inside this structure (actorIsLodgerAt).
 //
 // now is the expiry clock for the lodger leg — caller-controlled to keep
 // the check deterministic in tests, matching canEnterRoom's pattern.
@@ -330,18 +330,7 @@ func structureMembershipAllows(w *World, actor *Actor, structureID StructureID, 
 			return true
 		}
 	}
-	for key, ra := range actor.RoomAccess {
-		if ra == nil || !ra.Active {
-			continue
-		}
-		if ra.ExpiresAt != nil && !ra.ExpiresAt.After(now) {
-			continue
-		}
-		if room := findRoom(w, key.RoomID); room != nil && room.StructureID == structureID {
-			return true
-		}
-	}
-	return false
+	return actorIsLodgerAt(w, actor, structureID, now)
 }
 
 // outdoorEncounterOriginKind is the Scene.OriginKind stamped on the

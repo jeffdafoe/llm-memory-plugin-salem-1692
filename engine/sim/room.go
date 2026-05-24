@@ -158,6 +158,32 @@ func IsActiveLedgerGrant(ra *RoomAccess, now time.Time) bool {
 	return ra.ExpiresAt != nil && ra.ExpiresAt.After(now)
 }
 
+// actorIsLodgerAt reports whether actor holds an active, unexpired ledger
+// RoomAccess for a room inside structureID at now — i.e. is a paying lodger of
+// that structure. The canonical "does this actor lodge here" predicate, shared
+// by the lodger leg of structureMembershipAllows (may-enter-as-lodger) and the
+// lodger branch of the NPC auto-sleep machine (may-bed-down-as-lodger, see
+// npc_sleep.go) so the two can never diverge. Per-grant gate is
+// IsActiveLedgerGrant (ledger source, Active, future ExpiresAt); each grant's
+// room resolves to its structure via findRoom. Staff grants never qualify —
+// staff presence is a WorkStructureID concern, not lodging.
+//
+// MUST be called from inside a Command.Fn (reads w.Structures via findRoom).
+func actorIsLodgerAt(w *World, actor *Actor, structureID StructureID, now time.Time) bool {
+	if actor == nil || structureID == "" {
+		return false
+	}
+	for key, ra := range actor.RoomAccess {
+		if !IsActiveLedgerGrant(ra, now) {
+			continue
+		}
+		if room := findRoom(w, key.RoomID); room != nil && room.StructureID == structureID {
+			return true
+		}
+	}
+	return false
+}
+
 // findRoom walks all structures looking for a room with the given ID.
 // Linear in total room count — fine for Salem's scale (~20 structures,
 // ~80 rooms). When room counts grow, a World.Rooms secondary index
