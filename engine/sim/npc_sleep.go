@@ -3,6 +3,7 @@ package sim
 import (
 	"context"
 	"log"
+	"sort"
 	"time"
 )
 
@@ -135,6 +136,16 @@ func executeNPCSleep(w *World, a *Actor, now time.Time) bool {
 	if a.SleepingUntil != nil {
 		return false
 	}
+	// Excuse out of any active huddle BEFORE bedding down: speak a
+	// deterministic retire line (so the huddle partners perceive the farewell)
+	// then leave the huddle. Gated on an ACTIVE huddle — an NPC bedding alone
+	// has no one to excuse itself to and beds silently. The arrival auto-bed
+	// path already dropped its huddle during the walk, so this is a no-op
+	// there; it matters for the stationary AutoBedAtHomeNPCs path (a lodger
+	// bedding mid-conversation in the inn's common room).
+	if actorInActiveHuddle(w, a) {
+		speakRetireFarewell(w, a, now)
+	}
 	maxHours := w.Settings.NPCSleepMaxDurationHours
 	if maxHours <= 0 || maxHours > 24 {
 		maxHours = DefaultNPCSleepMaxDurationHours
@@ -148,6 +159,59 @@ func executeNPCSleep(w *World, a *Actor, now time.Time) bool {
 		refreshStructureOccupancyState(w, a.InsideStructureID)
 	}
 	return true
+}
+
+// retireLines is the deterministic vocab pool for the auto-sleep farewell —
+// the engine-authored "I'm turning in" beat an NPC speaks when bedtime ends
+// its presence in a huddle. Period-appropriate, no LLM cognition (same class
+// as the businessowner hospitality phrase pools).
+var retireLines = []string{
+	"I'm for bed — goodnight to you.",
+	"I'll turn in now. Rest well.",
+	"The hour's late; I'm off to my bed.",
+	"Goodnight — I can keep my eyes open no longer.",
+	"I'll bid you goodnight and find my rest.",
+}
+
+// renderRetireLine picks a retire line deterministically from the pool. Hashed
+// on the actor plus the bed-down minute so the same NPC doesn't repeat one line
+// every night yet a given (actor, time) is stable for tests — the same
+// no-rand-threaded approach pickVisitorSlot uses for slot selection.
+func renderRetireLine(actorID ActorID, now time.Time) string {
+	idx := (hashActorID(actorID) + uint32(now.Unix())) % uint32(len(retireLines))
+	return retireLines[idx]
+}
+
+// speakRetireFarewell emits a deterministic farewell Spoke to the bedding
+// actor's huddle partners, then leaves the huddle. Mirrors the businessowner
+// Spoke path: emit directly (so the standard speech subscribers fan it out and
+// stamp recipient warrants) and deliberately skip RecordInteraction — an
+// engine-authored goodnight shouldn't pollute salient-fact trails. Caller has
+// already confirmed an active huddle.
+//
+// Speak BEFORE leaving so the Spoke carries the live HuddleID and the partners
+// are still members when it fires; LeaveHuddle then emits HuddleLeft (and
+// HuddleConcluded if the bedding actor was the last one).
+func speakRetireFarewell(w *World, a *Actor, now time.Time) {
+	huddle, ok := w.Huddles[a.CurrentHuddleID]
+	if !ok || huddle.ConcludedAt != nil {
+		return
+	}
+	recipients := make([]ActorID, 0, len(huddle.Members))
+	for id := range huddle.Members {
+		if id != a.ID {
+			recipients = append(recipients, id)
+		}
+	}
+	sort.Slice(recipients, func(i, j int) bool { return recipients[i] < recipients[j] })
+	w.emit(&Spoke{
+		SpeakerID:    a.ID,
+		HuddleID:     a.CurrentHuddleID,
+		RecipientIDs: recipients,
+		Text:         renderRetireLine(a.ID, now),
+		At:           now,
+	})
+	LeaveHuddle(a.ID, now).Fn(w)
 }
 
 // wakeNPC clears an NPC's sleep, drops the recovery cursor (window closed),
