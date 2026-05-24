@@ -175,14 +175,14 @@ func PickVisitorDestinationForTest() Command {
 // PR S2 inventory primitives — unexported helpers exposed for direct unit
 // tests. TransferItem is called from inside larger transactions (the future
 // S4 accept_pay commit path will be its first production caller);
-// ResolveItemKind and FindNearestVillageObject are also command-only
-// internals to Consume but worth direct tests so failure modes (ambiguity,
-// case, trim, empty needle, out-of-tolerance distance) can be exercised
-// without driving a full Consume round trip.
+// ResolveItemKind is a command-only internal to Consume but worth direct
+// tests so failure modes (ambiguity, case, trim, empty needle) can be
+// exercised without driving a full Consume round trip. The dwell-pin
+// lookup it used to expose (findNearestVillageObject) was replaced by
+// resolveLoiteringObject, covered by loiter_resolve_test.go.
 var (
-	TransferItem             = transferItem
-	ResolveItemKind          = resolveItemKind
-	FindNearestVillageObject = findNearestVillageObject
+	TransferItem    = transferItem
+	ResolveItemKind = resolveItemKind
 )
 
 // ActorsInStructure returns the actor IDs the actorsByStructure secondary

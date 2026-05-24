@@ -129,8 +129,15 @@ func findNearestSocialStructure(w *World, a *Actor, tag string) (StructureID, bo
 	var best StructureID
 	var bestDist2 float64
 	found := false
-	ax := float64(a.Pos.X)
-	ay := float64(a.Pos.Y)
+	// Compare in world pixels: the actor's position is a tile index, the
+	// object's is world pixels, so project the actor to the tile centre in
+	// pixel space before measuring. (Without this the two operands are on
+	// different scales — 1 tile = TileSize px — and "nearest" picks the
+	// wrong structure once more than one carries the tag.) This is a
+	// destination search, not an at-a-pin attribution, so it stays a plain
+	// nearest-tagged scan rather than ResolveLoiteringObject (which is
+	// bounded by a Chebyshev radius and filters by DisplayName, not tag).
+	ac := a.Pos.Center()
 	for id, obj := range w.VillageObjects {
 		if !obj.HasTag(tag) {
 			continue
@@ -139,8 +146,8 @@ func findNearestSocialStructure(w *World, a *Actor, tag string) (StructureID, bo
 		if _, isStructure := w.Structures[sid]; !isStructure {
 			continue
 		}
-		dx := obj.Pos.X - ax
-		dy := obj.Pos.Y - ay
+		dx := obj.Pos.X - ac.X
+		dy := obj.Pos.Y - ac.Y
 		d2 := dx*dx + dy*dy
 		if !found || d2 < bestDist2 {
 			bestDist2 = d2
