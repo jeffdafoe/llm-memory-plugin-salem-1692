@@ -86,7 +86,6 @@ func TestEnvironmentRepo_Load_HappyPath(t *testing.T) {
 		"world_zoom_min_admin":              "0.05",
 		"world_zoom_min_regular":            "0.25",
 		"agent_ticks_paused":                "true",
-		"lodging_check_in_hour":             "15",
 		"hunger_red_threshold":              "18",
 		"thirst_red_threshold":              "12",
 		"tiredness_red_threshold":           "20",

@@ -56,9 +56,13 @@ type WorldSettings struct {
 	// agent activity mid-session when a bad loop is being investigated.
 	AgentTicksPaused bool
 
-	// Lodging hour-of-day tunables (legacy lodging_check_in_hour /
-	// lodging_check_out_hour). Interpreted in WorldSettings.Location.
-	LodgingCheckInHour  int
+	// LodgingCheckOutHour is the wall-clock hour (in WorldSettings.Location)
+	// a lodging grant expires on its final day. v1's companion
+	// lodging_check_in_hour gate ("room not ready until 3pm") was deliberately
+	// NOT ported (ZBBS-HOME-312 #4): it modeled real-hotel housekeeping
+	// turnaround, which Salem has no analog for — actual room availability is
+	// already enforced by AssignBedroomForLodger's occupancy check, so the hour
+	// gate only added friction + a dead checkout→checkin window.
 	LodgingCheckOutHour int
 
 	// LodgingDefaultWeeklyRate is the operator-set rent for a private room,
