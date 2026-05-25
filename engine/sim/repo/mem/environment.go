@@ -39,7 +39,6 @@ func NewEnvironmentRepo() *EnvironmentRepo {
 			TirednessCriticalThreshold: (sim.NeedMax*sim.DefaultTirednessCriticalThresholdPct + 99) / 100,
 			MovementFatiguePerTileX100: sim.DefaultMovementFatiguePerTileX100,
 			RestockReorderPct:          sim.DefaultRestockReorderPct,
-			LodgingCheckInHour:         15,
 			LodgingCheckOutHour:        11,
 			ShiftLatenessWindowMinutes: sim.DefaultShiftLatenessWindowMinutes,
 		},
