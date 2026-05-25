@@ -71,6 +71,16 @@ type WorldSettings struct {
 	// surfaces and the auto-rebook. Default 28 (4/night).
 	LodgingDefaultWeeklyRate int
 
+	// ShiftLatenessWindowMinutes staggers NPC arrivals at work so the whole
+	// village doesn't head out on the same minute when shifts begin (the v2 port
+	// of v1's per-NPC lateness_window_minutes, reshaped to one global tunable —
+	// ZBBS-HOME-309). Each NPC's to-work duty is delayed by a deterministic
+	// offset in [0, window) seeded by (actor id, shift-start) — see
+	// shiftLatenessOffset in shift_duty.go. 0 disables (all due NPCs leave on the
+	// same minute, the pre-HOME-309 behavior). Settings key:
+	// shift_lateness_window_minutes. DB-configured only; no editor UI.
+	ShiftLatenessWindowMinutes int
+
 	// NPCSleepMaxDurationHours is the safety cap on an auto-bedded NPC's
 	// sleep — wakeExpiredNPCSleepers clears SleepingUntil at this cap or at
 	// shift-start, whichever comes first. Default 12.

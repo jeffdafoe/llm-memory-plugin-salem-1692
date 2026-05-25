@@ -67,12 +67,6 @@ var _footprint_resize_start_world: Vector2 = Vector2.ZERO
 # when the selected object is a structure. The marker is a child of the
 # structure node; _door_marker_asset_id pins which asset it belongs to so
 # a mid-drag asset broadcast doesn't repaint over our in-flight change.
-# NPC-selected left-click-to-walk is deferred until release so the user
-# can left-drag the map to pan. Press sets _npc_walk_pending; motion past
-# the drag threshold cancels it (it was a pan, not a walk); release with
-# the flag still set fires the walk to the original click position.
-var _npc_walk_pending: bool = false
-var _npc_walk_start_screen: Vector2 = Vector2.ZERO
 
 var _door_marker: Node2D = null
 var _door_marker_asset_id: String = ""
@@ -290,12 +284,6 @@ func _input(event: InputEvent) -> void:
             _on_left_press(event.position)
         if event.button_index == MOUSE_BUTTON_LEFT and not event.pressed:
             left_click_used = false
-            # A still-pending walk means the mouse didn't move far enough
-            # during the press to be considered a pan — fire the walk now.
-            if _npc_walk_pending:
-                _walk_selected_npc(_npc_walk_start_screen)
-                _npc_walk_pending = false
-                get_viewport().set_input_as_handled()
 
         if event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
             if current_mode == Mode.PLACE:
@@ -311,12 +299,6 @@ func _input(event: InputEvent) -> void:
                 get_viewport().set_input_as_handled()
 
     if event is InputEventMouseMotion:
-        # If an NPC is selected and the mouse moves past the drag threshold
-        # before release, treat the gesture as a pan rather than a walk —
-        # cancel the pending walk so release is a no-op.
-        if _npc_walk_pending:
-            if event.position.distance_to(_npc_walk_start_screen) >= _drag_threshold:
-                _npc_walk_pending = false
         if current_mode == Mode.PLACE and ghost_sprite.visible:
             ghost_sprite.global_position = _screen_to_world(event.position)
             _apply_ghost_offset()
@@ -376,20 +358,12 @@ func _on_left_press(screen_pos: Vector2) -> void:
                     left_click_used = true
                     get_viewport().set_input_as_handled()
                     return
-                # With an NPC selected, ALL non-NPC clicks on the map are
-                # walk-to commands — including clicks that overlap a
-                # structure footprint. This avoids the "I clicked near the
-                # house to send them over and got the house selected
-                # instead" trap. To switch to object selection, first
-                # deselect the NPC (Esc, right-click, re-click the NPC,
-                # or press the Select tool button).
-                # Defer the walk-to until release so click-vs-drag can be
-                # distinguished: if the mouse moves past the drag threshold
-                # before release, the gesture is a pan (cancels the walk);
-                # otherwise release fires the walk-to. Leave left_click_used
-                # false so camera starts pan speculatively.
-                _npc_walk_pending = true
-                _npc_walk_start_screen = screen_pos
+                # With an NPC selected, non-NPC map clicks are swallowed so a
+                # click near a building doesn't steal selection to the object.
+                # (ZBBS-HOME-309 removed the v1 admin walk-to that used to fire
+                # here — NPC movement is autonomous in v2.) Deselect first (Esc,
+                # right-click, re-click the NPC, or the Select tool) to pick
+                # objects. left_click_used stays false so the camera can pan.
                 return
 
             # If the selected object has a door marker and the click lands on
@@ -650,7 +624,7 @@ func _place_npc_at_mouse(screen_pos: Vector2) -> void:
         Auth.check_response(c)
     )
     var headers := Auth.auth_headers()
-    http.request(Auth.api_base + "/api/village/npcs", headers,
+    http.request(Auth.api_base + "/api/village/admin/npc/create", headers,
         HTTPClient.METHOD_POST, payload)
     set_mode(Mode.SELECT)
 
@@ -844,28 +818,6 @@ func _remove_npc_selection_border() -> void:
         _npc_selection_border.queue_free()
         _npc_selection_border = null
 
-## Command the currently-selected NPC to walk to the clicked world point.
-## The server handles pathfinding, obstacle avoidance, and walk-to-adjacent
-## for obstacle targets (findPathToAdjacent). 400 on unreachable is
-## silently ignored — the NPC just doesn't move.
-func _walk_selected_npc(screen_pos: Vector2) -> void:
-    if selected_npc == null:
-        return
-    var npc_id: String = selected_npc.get_meta("npc_id", "")
-    if npc_id == "":
-        return
-    var target: Vector2 = _screen_to_world(screen_pos)
-    var http = HTTPRequest.new()
-    http.accept_gzip = false
-    add_child(http)
-    http.request_completed.connect(func(_r, c, _h, _b):
-        http.queue_free()
-        Auth.check_response(c)
-    )
-    var payload = JSON.stringify({"x": target.x, "y": target.y})
-    var headers := Auth.auth_headers()
-    http.request(Auth.api_base + "/api/village/npcs/" + npc_id + "/walk-to",
-        headers, HTTPClient.METHOD_POST, payload)
 
 ## Draw the selected object's footprint as a tile-aligned rectangle. Each
 ## edge is grabbable (see _hit_test_footprint_edge) so the user can drag
@@ -1647,9 +1599,10 @@ func _delete_selected_npc() -> void:
     _pending_delete = "npc"
     _delete_dialog.popup_centered()
 
-## DELETE /api/village/npcs/{id}. The npc_deleted WS event handles the
-## actual removal from placed_npcs + node cleanup on every client including
+## POST /api/village/admin/npc/delete {npc_id}. The npc_deleted WS event handles
+## the actual removal from placed_npcs + node cleanup on every client including
 ## this one, so we just fire the request and clear our local selection.
+## (ZBBS-HOME-309 rewired this off the dead v1 DELETE /api/village/npcs/{id}.)
 func _do_delete_selected_npc() -> void:
     if selected_npc == null:
         return
@@ -1663,9 +1616,10 @@ func _do_delete_selected_npc() -> void:
         http.queue_free()
         Auth.check_response(c)
     )
-    var headers: PackedStringArray = Auth.auth_headers(false)
-    http.request(Auth.api_base + "/api/village/npcs/" + npc_id,
-        headers, HTTPClient.METHOD_DELETE)
+    var headers: PackedStringArray = Auth.auth_headers()
+    var body: String = JSON.stringify({"npc_id": npc_id})
+    http.request(Auth.api_base + "/api/village/admin/npc/delete",
+        headers, HTTPClient.METHOD_POST, body)
     _deselect_npc()
 
 ## Dispatch the staged NPC delete after the confirmation dialog is OK'd.

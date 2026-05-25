@@ -135,6 +135,93 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			EffectiveLoiterOffsetX: e.EffectiveLoiterOffsetX,
 			EffectiveLoiterOffsetY: e.EffectiveLoiterOffsetY,
 		}}, true
+	case *sim.NPCCreated:
+		// Reuse AgentDTO so the frame is byte-identical to a per-NPC entry from
+		// the /api/village/agents load the client already renders. A fresh NPC
+		// has no editor metadata yet (agent/schedule/social/anchors/attributes all
+		// zero), so only the render fields are populated; the sprite is resolved
+		// from the *Sprite the event carried (no catalog lookup needed here).
+		return WireFrame{Type: "npc_created", Data: AgentDTO{
+			ID:          string(e.ActorID),
+			DisplayName: e.DisplayName,
+			Kind:        actorKindString(e.Kind),
+			State:       string(sim.StateIdle),
+			X:           e.X,
+			Y:           e.Y,
+			Facing:      normalizeFacing(e.Facing),
+			Sprite:      agentSpriteDTOFromSprite(e.Sprite),
+		}}, true
+	case *sim.ActorDeparted:
+		// An actor left World.Actors — admin delete (DeleteActor) or visitor
+		// cleanup both emit this. The client's remove_npc_by_id handler is
+		// idempotent (a no-op if the sprite is already gone), so emitting for
+		// both paths is safe and also closes the latent visitor-despawn gap
+		// where the client sprite was never told to disappear.
+		//
+		// INVARIANT this relies on: every ActorDeparted emitter today removes a
+		// client-rendered actor (NPC or visitor, both drawn via placed_npcs) that
+		// remove_npc_by_id is the correct cleanup for. PCs also live in
+		// placed_npcs, but no PC-departure path emits ActorDeparted today (see the
+		// event doc — VisitorContext-nil is "reserved for future"). If a
+		// non-rendered or PC departure path is ever added, this must gain a
+		// kind/reason discriminator (or admin delete must emit a distinct
+		// NPCDeleted event) so it doesn't broadcast their ids as npc_deleted.
+		return WireFrame{Type: "npc_deleted", Data: npcDeletedWireDTO{ID: string(e.ActorID)}}, true
+	case *sim.NPCDisplayNameChanged:
+		return WireFrame{Type: "npc_display_name_changed", Data: npcDisplayNameChangedWireDTO{
+			ID:          string(e.ActorID),
+			DisplayName: e.DisplayName,
+		}}, true
+	case *sim.NPCAgentChanged:
+		// "" unlinks — the client treats a null llm_memory_agent as remove-meta,
+		// so an empty link marshals as JSON null (not "").
+		return WireFrame{Type: "npc_agent_changed", Data: npcAgentChangedWireDTO{
+			ID:       string(e.ActorID),
+			LLMAgent: strPtrOrNil(e.LLMAgent),
+		}}, true
+	case *sim.NPCHomeStructureChanged:
+		return WireFrame{Type: "npc_home_structure_changed", Data: npcHomeStructureChangedWireDTO{
+			ID:              string(e.ActorID),
+			HomeStructureID: strPtrOrNil(e.StructureID),
+		}}, true
+	case *sim.NPCWorkStructureChanged:
+		return WireFrame{Type: "npc_work_structure_changed", Data: npcWorkStructureChangedWireDTO{
+			ID:              string(e.ActorID),
+			WorkStructureID: strPtrOrNil(e.StructureID),
+		}}, true
+	case *sim.NPCScheduleChanged:
+		// Nil bounds marshal as null — the client reads that as "inherit
+		// dawn/dusk". lateness_window_minutes is intentionally absent (ZBBS-HOME-309
+		// moved staggering to the global shift_lateness_window_minutes setting); the
+		// client defaults the field to 0 when missing.
+		return WireFrame{Type: "npc_schedule_changed", Data: npcScheduleChangedWireDTO{
+			ID:               string(e.ActorID),
+			ScheduleStartMin: e.ScheduleStartMin,
+			ScheduleEndMin:   e.ScheduleEndMin,
+		}}, true
+	case *sim.NPCSocialUpdated:
+		return WireFrame{Type: "npc_social_updated", Data: npcSocialUpdatedWireDTO{
+			ID:             string(e.ActorID),
+			SocialTag:      strPtrOrNil(e.SocialTag),
+			SocialStartMin: e.SocialStartMin,
+			SocialEndMin:   e.SocialEndMin,
+		}}, true
+	case *sim.NPCSpriteChanged:
+		return WireFrame{Type: "npc_sprite_changed", Data: npcSpriteChangedWireDTO{
+			ID:     string(e.ActorID),
+			Sprite: agentSpriteDTOFromSprite(e.Sprite),
+		}}, true
+	case *sim.NPCAttributesChanged:
+		// Copy + coerce nil→[] so the frame is always a JSON array, never null
+		// (same boundary discipline as village_object_tags_updated above).
+		attrs := append([]string(nil), e.Attributes...)
+		if attrs == nil {
+			attrs = []string{}
+		}
+		return WireFrame{Type: "npc_attributes_changed", Data: npcAttributesChangedWireDTO{
+			ID:         string(e.ActorID),
+			Attributes: attrs,
+		}}, true
 	case *sim.PayOfferReceived:
 		return WireFrame{Type: "pay_offer", Data: payOfferWireDTO{
 			LedgerID:   uint64(e.LedgerID),
@@ -319,6 +406,67 @@ type objectDisplayNameChangedWireDTO struct {
 type objectTagsUpdatedWireDTO struct {
 	ID   string   `json:"id"`
 	Tags []string `json:"tags"`
+}
+
+// NPC editor write frames (ZBBS-HOME-309). Each mirrors the field set the Godot
+// editor's apply_npc_* handler reads (world.gd) — all keyed on `id`. Nullable
+// fields (agent link, home/work anchors, schedule + social bounds) use pointers
+// so an unset value marshals as JSON null, which the client reads as
+// "unlinked / inherit" rather than the zero value.
+type npcDisplayNameChangedWireDTO struct {
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name"`
+}
+
+type npcDeletedWireDTO struct {
+	ID string `json:"id"`
+}
+
+type npcAgentChangedWireDTO struct {
+	ID       string  `json:"id"`
+	LLMAgent *string `json:"llm_memory_agent"`
+}
+
+type npcHomeStructureChangedWireDTO struct {
+	ID              string  `json:"id"`
+	HomeStructureID *string `json:"home_structure_id"`
+}
+
+type npcWorkStructureChangedWireDTO struct {
+	ID              string  `json:"id"`
+	WorkStructureID *string `json:"work_structure_id"`
+}
+
+type npcScheduleChangedWireDTO struct {
+	ID               string `json:"id"`
+	ScheduleStartMin *int   `json:"schedule_start_minute"`
+	ScheduleEndMin   *int   `json:"schedule_end_minute"`
+}
+
+type npcSocialUpdatedWireDTO struct {
+	ID             string  `json:"id"`
+	SocialTag      *string `json:"social_tag"`
+	SocialStartMin *int    `json:"social_start_minute"`
+	SocialEndMin   *int    `json:"social_end_minute"`
+}
+
+type npcAttributesChangedWireDTO struct {
+	ID         string   `json:"id"`
+	Attributes []string `json:"attributes"`
+}
+
+type npcSpriteChangedWireDTO struct {
+	ID     string          `json:"id"`
+	Sprite *AgentSpriteDTO `json:"sprite"`
+}
+
+// strPtrOrNil returns nil for an empty string, else a pointer to it — so a
+// cleared link/anchor marshals as JSON null instead of "".
+func strPtrOrNil(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 // objectLoiterOffsetChangedWireDTO is the object_loiter_offset_changed payload —

@@ -130,6 +130,21 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/village/admin/object/add-tag", s.requireAuth(s.handleAdminObjectAddTag))
 	mux.HandleFunc("POST /api/village/admin/object/remove-tag", s.requireAuth(s.handleAdminObjectRemoveTag))
 	mux.HandleFunc("POST /api/village/admin/object/set-refresh", s.requireAuth(s.handleAdminObjectSetRefresh))
+	// NPC editor write routes (ZBBS-HOME-309) — author/edit NPC metadata; the
+	// write half of AgentDTO's read surface. Same admin gate as object/*.
+	mux.HandleFunc("POST /api/village/admin/npc/set-display-name", s.requireAuth(s.handleAdminNPCSetDisplayName))
+	mux.HandleFunc("POST /api/village/admin/npc/set-agent", s.requireAuth(s.handleAdminNPCSetAgent))
+	mux.HandleFunc("POST /api/village/admin/npc/set-home-structure", s.requireAuth(s.handleAdminNPCSetHomeStructure))
+	mux.HandleFunc("POST /api/village/admin/npc/set-work-structure", s.requireAuth(s.handleAdminNPCSetWorkStructure))
+	mux.HandleFunc("POST /api/village/admin/npc/set-schedule", s.requireAuth(s.handleAdminNPCSetSchedule))
+	mux.HandleFunc("POST /api/village/admin/npc/set-social", s.requireAuth(s.handleAdminNPCSetSocial))
+	mux.HandleFunc("POST /api/village/admin/npc/add-attribute", s.requireAuth(s.handleAdminNPCAddAttribute))
+	mux.HandleFunc("POST /api/village/admin/npc/remove-attribute", s.requireAuth(s.handleAdminNPCRemoveAttribute))
+	mux.HandleFunc("POST /api/village/admin/npc/create", s.requireAuth(s.handleAdminNPCCreate))
+	mux.HandleFunc("POST /api/village/admin/npc/delete", s.requireAuth(s.handleAdminNPCDelete))
+	mux.HandleFunc("POST /api/village/admin/npc/set-sprite", s.requireAuth(s.handleAdminNPCSetSprite))
+	mux.HandleFunc("POST /api/village/admin/npc/inventory", s.requireAuth(s.handleAdminNPCInventory))
+	mux.HandleFunc("POST /api/village/admin/npc/set-inventory", s.requireAuth(s.handleAdminNPCSetInventory))
 	if s.hub != nil {
 		mux.HandleFunc("GET /api/village/events", s.handleEvents)
 	}
@@ -279,7 +294,14 @@ func resolveAgentSprite(spriteID sim.SpriteID, sprites map[sim.SpriteID]*sim.Spr
 	if spriteID == "" || sprites == nil {
 		return nil
 	}
-	sp := sprites[spriteID]
+	return agentSpriteDTOFromSprite(sprites[spriteID])
+}
+
+// agentSpriteDTOFromSprite maps a resolved catalog sprite to the inline render
+// DTO. Returns nil for a nil sprite. Split out from resolveAgentSprite so the
+// npc_created translate path (which carries the *sim.Sprite on the event) can
+// build the same DTO without a catalog map.
+func agentSpriteDTOFromSprite(sp *sim.Sprite) *AgentSpriteDTO {
 	if sp == nil {
 		return nil
 	}
