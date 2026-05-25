@@ -1350,6 +1350,12 @@ func _place_object(data: Dictionary) -> void:
     # Drives the editor's structure detail dropdown and the PC click
     # handler's enter-vs-knock decision (server-side, this duplicates).
     container.set_meta("entry_policy", str(data.get("entry_policy", "none")))
+    # Per-instance object_refresh policies. In v2 these ride the ObjectDTO
+    # (there is no standalone GET); the editor reads them off this meta on
+    # selection rather than fetching. Server omits the field for objects with
+    # no refreshes, so normalize a missing/non-array value to [].
+    var refreshes_raw = data.get("refreshes", [])
+    container.set_meta("refreshes", refreshes_raw if refreshes_raw is Array else [])
     # Per-instance loiter offset (ZBBS-075). Tile-unit ints, both nullable.
     # Stored as variants so the editor can distinguish "not set" (null)
     # from "set to (0, 0)" (legitimate origin offset). The fill state of
