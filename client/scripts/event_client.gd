@@ -232,9 +232,6 @@ func _handle_message(data: String) -> void:
         "room_event":
             if world != null:
                 world.apply_room_event(event_data)
-        "village_event_added":
-            if world != null:
-                world.apply_village_event_added(event_data)
         "world_environment_added":
             if world != null:
                 world.apply_world_environment_added(event_data)
