@@ -208,7 +208,8 @@ func run(rt runtime, stop <-chan struct{}) error {
 	handlers.RegisterSceneQuoteHandlers(rt.World)
 	handlers.RegisterPayWithItemHandlers(rt.World)
 	sim.RegisterAcquaintanceSubscriber(rt.World)
-	sim.RegisterSleepSubscriber(rt.World)                  // ZBBS-HOME-284 #2: auto-sleep NPCs on arrival home
+	sim.RegisterSummonSubscriber(rt.World)                // ZBBS-HOME-311: advance summon errands on arrival + arrival-warrant suppression hook
+	sim.RegisterSleepSubscriber(rt.World)                 // ZBBS-HOME-284 #2: auto-sleep NPCs on arrival home
 	sim.RegisterLodgingMorningDescentSubscriber(rt.World) // ZBBS-HOME-312 #2: walk a naturally-woken lodger PC down to the common room
 	cascade.RegisterProductionCascades(worldCtx, rt.World, rt.LLMClient)
 
@@ -350,6 +351,7 @@ func registerTools(r *handlers.Registry, searcher llm.MemorySearcher) error {
 		{"pay_with_item_family", handlers.RegisterPayWithItemFamily},
 		{"take_break", handlers.RegisterTakeBreak}, // ZBBS-HOME-284 #4
 		{"move_to", handlers.RegisterMoveTo},       // ZBBS-HOME-285
+		{"summon", handlers.RegisterSummon},        // ZBBS-HOME-311
 	}
 	for _, t := range register {
 		if err := t.fn(r); err != nil {

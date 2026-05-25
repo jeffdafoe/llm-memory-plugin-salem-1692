@@ -315,18 +315,25 @@ func finishArrival(w *World, actor *Actor, dest MoveDestination, attemptID Movem
 		At:                now,
 	}
 	w.emit(arrivedEvt)
-	tryStampWarrant(w, actor, WarrantMeta{
-		TriggerActorID: actor.ID,
-		SourceEventID:  arrivedEvt.EventID(),
-		RootEventID:    arrivedEvt.RootEventID(),
-		SourceActorID:  actor.ID,
-		OccurredAt:     now,
-		Reason: ArrivalWarrantReason{
-			AttemptID:     attemptID,
-			AtStructureID: finalStructure,
-			AtPosition:    finalPos,
-		},
-	}, now)
+	// Arrival-warrant suppression hook (ZBBS-HOME-311). An active summon-
+	// errand participant (notably the summoner, a VA NPC) must not LLM-tick
+	// on arrival and wander off mid-errand. The hook is the only summon-
+	// domain seam in the locomotion ticker — the predicate itself lives in
+	// summon.go. nil hook (the default) preserves the unconditional stamp.
+	if w.suppressArrivalWarrant == nil || !w.suppressArrivalWarrant(actor) {
+		tryStampWarrant(w, actor, WarrantMeta{
+			TriggerActorID: actor.ID,
+			SourceEventID:  arrivedEvt.EventID(),
+			RootEventID:    arrivedEvt.RootEventID(),
+			SourceActorID:  actor.ID,
+			OccurredAt:     now,
+			Reason: ArrivalWarrantReason{
+				AttemptID:     attemptID,
+				AtStructureID: finalStructure,
+				AtPosition:    finalPos,
+			},
+		}, now)
+	}
 }
 
 // emitMoveStopped emits ActorMoveStopped for an accepted-but-failed
