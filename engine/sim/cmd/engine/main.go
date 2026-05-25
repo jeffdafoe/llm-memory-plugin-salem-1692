@@ -208,7 +208,8 @@ func run(rt runtime, stop <-chan struct{}) error {
 	handlers.RegisterSceneQuoteHandlers(rt.World)
 	handlers.RegisterPayWithItemHandlers(rt.World)
 	sim.RegisterAcquaintanceSubscriber(rt.World)
-	sim.RegisterSleepSubscriber(rt.World) // ZBBS-HOME-284 #2: auto-sleep NPCs on arrival home
+	sim.RegisterSleepSubscriber(rt.World)                  // ZBBS-HOME-284 #2: auto-sleep NPCs on arrival home
+	sim.RegisterLodgingMorningDescentSubscriber(rt.World) // ZBBS-HOME-312 #2: walk a naturally-woken lodger PC down to the common room
 	cascade.RegisterProductionCascades(worldCtx, rt.World, rt.LLMClient)
 
 	// WebSocket event hub (Slice 2 WS /events). Subscribed before world.Run,
