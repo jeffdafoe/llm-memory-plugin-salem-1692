@@ -3,9 +3,21 @@ package cascade
 import (
 	"log"
 	"sort"
+	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
+
+// outdoorEncounterExcludesActor reports whether an actor must be left out of an
+// outdoor encounter — as the INITIATOR or as a nearby participant. Centralizing
+// the rule keeps the two checks from drifting (the exact divergence code_review
+// caught: the participant scan skipped stale PCs but the initiator path didn't).
+// Today the sole rule: a stale (ghost) PC — a closed-tab player whose /pc/me
+// presence stamp has gone stale — must neither greet nor be greeted, so
+// co-located NPCs don't burn ticks on an absent player (ZBBS-WORK-326).
+func outdoorEncounterExcludesActor(a *sim.Actor, now time.Time, staleAfter time.Duration) bool {
+	return a.Kind == sim.KindPC && sim.PCPresenceStale(a.LastPCSeenAt, now, staleAfter)
+}
 
 // arrival_encounter.go — arrival-encounter detection.
 //
@@ -94,12 +106,20 @@ func handleArrivalEncounter(w *sim.World, evt sim.Event) {
 		return
 	}
 
+	staleAfter := sim.PCPresenceStaleAfter(w)
+	// A stale (ghost) PC must not INITIATE an outdoor encounter either, not just
+	// be skipped as a nearby participant — otherwise a ghost arriving (e.g. an
+	// in-flight move that completes after the tab closed) would still pull nearby
+	// NPCs into a greeting huddle (ZBBS-WORK-326, code_review R1).
+	if outdoorEncounterExcludesActor(arriver, arrived.At, staleAfter) {
+		return
+	}
+
 	radius := w.Settings.DefaultOutdoorSceneRadius
 	if radius <= 0 {
 		radius = sim.DefaultOutdoorSceneRadiusValue
 	}
 	bound := sim.NewAreaBound(arrived.FinalPosition, radius)
-	staleAfter := sim.PCPresenceStaleAfter(w)
 
 	// Outdoor-set scan via World.ForEachOutdoorActor — iterates only
 	// actors with InsideStructureID == "" (the outdoorActors secondary
@@ -115,10 +135,7 @@ func handleArrivalEncounter(w *sim.World, evt sim.Event) {
 		if a.CurrentHuddleID != "" {
 			return true
 		}
-		// Skip a ghost PC (closed-tab player with a stale presence stamp):
-		// pulling it into a greeting huddle is exactly the wasted-tick cost
-		// the presence sweep reclaims (ZBBS-WORK-326).
-		if a.Kind == sim.KindPC && sim.PCPresenceStale(a.LastPCSeenAt, arrived.At, staleAfter) {
+		if outdoorEncounterExcludesActor(a, arrived.At, staleAfter) {
 			return true
 		}
 		if !bound.Contains(w, a) {
