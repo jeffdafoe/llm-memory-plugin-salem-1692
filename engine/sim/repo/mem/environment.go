@@ -41,6 +41,7 @@ func NewEnvironmentRepo() *EnvironmentRepo {
 			RestockReorderPct:          sim.DefaultRestockReorderPct,
 			LodgingCheckInHour:         15,
 			LodgingCheckOutHour:        11,
+			ShiftLatenessWindowMinutes: sim.DefaultShiftLatenessWindowMinutes,
 		},
 		phase: sim.PhaseDay,
 	}

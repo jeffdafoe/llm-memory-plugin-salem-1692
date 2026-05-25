@@ -553,11 +553,6 @@ func _build_ui() -> void:
     editor_panel.npc_social_changed.connect(_on_npc_social_changed)
     editor_panel.npc_home_assign_requested.connect(_on_npc_home_assign_requested)
     editor_panel.npc_work_assign_requested.connect(_on_npc_work_assign_requested)
-    editor_panel.npc_run_cycle_requested.connect(_on_npc_run_cycle_requested)
-    editor_panel.npc_reset_needs_requested.connect(_on_npc_reset_needs_requested)
-    editor_panel.npc_heal_requested.connect(_on_npc_heal_requested)
-    editor_panel.npc_go_home_requested.connect(_on_npc_go_home_requested)
-    editor_panel.npc_go_to_work_requested.connect(_on_npc_go_to_work_requested)
     editor_panel.npc_select_requested.connect(_on_npc_select_requested)
     editor_panel.npc_sprite_change_requested.connect(_on_npc_sprite_change_requested)
     editor_panel.entry_policy_changed.connect(_on_entry_policy_changed)
@@ -776,64 +771,6 @@ func _on_npc_home_assign_requested() -> void:
 func _on_npc_work_assign_requested() -> void:
     editor.begin_assign_work()
 
-## Admin clicked "Run Cycle" on the selected villager. Fires the behavior
-## route on demand, bypassing the time-of-day schedule. The server decides
-## what a "cycle" means per behavior (lamplighter uses current world phase;
-## washerwoman/town_crier trigger their rotation walk).
-func _on_npc_run_cycle_requested() -> void:
-    if editor.selected_npc == null:
-        return
-    var npc_id: String = editor.selected_npc.get_meta("npc_id", "")
-    if npc_id == "":
-        return
-    var http := HTTPRequest.new()
-    http.accept_gzip = false
-    add_child(http)
-    http.request_completed.connect(func(_r, c, _h, _b):
-        http.queue_free()
-        Auth.check_response(c)
-    )
-    var headers := Auth.auth_headers()
-    http.request(Auth.api_base + "/api/village/npcs/" + npc_id + "/run-cycle",
-        headers, HTTPClient.METHOD_POST, "{}")
-    # Once a cycle is kicked off, the admin is typically done with this
-    # villager for a while — deselect so the map / structures are clickable
-    # again without right-clicking first.
-    editor._deselect_npc()
-
-## Admin pressed "Top up needs" on the selected NPC. Zeroes hunger,
-## thirst, tiredness via the engine's reset-needs route. The server
-## broadcasts npc_needs_changed which world.apply_npc_needs_changed
-## picks up, refreshing the panel readout — no need to refresh here.
-## Selection is preserved so the admin can verify the values dropped.
-func _on_npc_reset_needs_requested() -> void:
-    if editor.selected_npc == null:
-        return
-    var npc_id: String = editor.selected_npc.get_meta("npc_id", "")
-    if npc_id == "":
-        return
-    _post_reset_needs(npc_id)
-
-## Per-row heal click from the villager browser. Same endpoint as the
-## selection panel's "Top up needs" button — kept separate so the row
-## click can carry its own npc_id without touching selection state.
-func _on_npc_heal_requested(npc_id: String) -> void:
-    if npc_id == "":
-        return
-    _post_reset_needs(npc_id)
-
-func _post_reset_needs(npc_id: String) -> void:
-    var http := HTTPRequest.new()
-    http.accept_gzip = false
-    add_child(http)
-    http.request_completed.connect(func(_r, c, _h, _b):
-        http.queue_free()
-        Auth.check_response(c)
-    )
-    var headers := Auth.auth_headers()
-    http.request(Auth.api_base + "/api/village/npcs/" + npc_id + "/reset-needs",
-        headers, HTTPClient.METHOD_POST, "{}")
-
 ## Admin chose a new entry policy for the selected placement (ZBBS-101).
 ## PATCH /api/village/objects/{id}/entry-policy → server validates and
 ## broadcasts object_entry_policy_changed back to every connected client.
@@ -902,9 +839,10 @@ func _on_npc_sprite_change_requested(npc_id: String, current_sprite_id: String) 
     _set_modal_blocker("sprite_picker", true)
     editor.popup_open = true
 
-## Picker emitted a selection. PATCH the NPC's sprite_id and let the WS
+## Picker emitted a selection. POST the new sprite_id and let the WS
 ## broadcast (npc_sprite_changed) drive the visual swap on every client,
 ## including this one. No need to update local state imperatively.
+## (ZBBS-HOME-309 rewired this off the dead v1 PATCH /api/village/npcs/{id}/sprite.)
 func _on_npc_sprite_picker_selected(npc_id: String, sprite_id: String) -> void:
     if npc_id == "" or sprite_id == "":
         return
@@ -916,9 +854,9 @@ func _on_npc_sprite_picker_selected(npc_id: String, sprite_id: String) -> void:
         Auth.check_response(c)
     )
     var headers := Auth.auth_headers()
-    var payload: String = JSON.stringify({"sprite_id": sprite_id})
-    http.request(Auth.api_base + "/api/village/npcs/" + npc_id + "/sprite",
-        headers, HTTPClient.METHOD_PATCH, payload)
+    var payload: String = JSON.stringify({"npc_id": npc_id, "sprite_id": sprite_id})
+    http.request(Auth.api_base + "/api/village/admin/npc/set-sprite",
+        headers, HTTPClient.METHOD_POST, payload)
 
 ## PC bootstrap (M6.7): kick off /pc/me. The response either tells us
 ## the PC has a sprite (nothing to do) or that they need to pick one
@@ -1239,31 +1177,6 @@ func _on_event_npc_arrived(npc_id: String, _x: float, _y: float, _facing: String
     if notice_panel_layer != null and notice_panel_layer.has_method("show_for_object"):
         notice_panel_layer.show_for_object(target_id, display_name, content, posted_at)
 
-func _on_npc_go_home_requested() -> void:
-    _post_npc_action("go-home")
-
-func _on_npc_go_to_work_requested() -> void:
-    _post_npc_action("go-to-work")
-
-## Shared POST body for the three selected-NPC action buttons (go-home,
-## go-to-work, run-cycle). Reads the selected NPC's id, fires a fire-and-
-## forget POST to /api/village/npcs/{id}/{action}.
-func _post_npc_action(action: String) -> void:
-    if editor.selected_npc == null:
-        return
-    var npc_id: String = editor.selected_npc.get_meta("npc_id", "")
-    if npc_id == "":
-        return
-    var http := HTTPRequest.new()
-    http.accept_gzip = false
-    add_child(http)
-    http.request_completed.connect(func(_r, c, _h, _b):
-        http.queue_free()
-        Auth.check_response(c)
-    )
-    var headers := Auth.auth_headers()
-    http.request(Auth.api_base + "/api/village/npcs/" + npc_id + "/" + action,
-        headers, HTTPClient.METHOD_POST, "{}")
 
 # Refresh the selection panel if the changed NPC is the one we have selected.
 # Handles the cross-admin case: another admin edits the NPC while we have it

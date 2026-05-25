@@ -440,3 +440,126 @@ type VillageObjectTagsUpdated struct {
 }
 
 func (VillageObjectTagsUpdated) isSimEvent() {}
+
+// NPC editor write events (ZBBS-HOME-309). Each is emitted by the matching
+// SetActor* / {Add,Remove}ActorAttribute command in actor_admin.go ONLY on an
+// actual change, and the httpapi hub translates it to the npc_* WS frame the
+// Godot editor already consumes (event_client.gd) so a second client editing the
+// same NPC refreshes live. All carry the full post-mutation value (not a delta).
+
+// NPCDisplayNameChanged — new DisplayName (always non-empty; an NPC has no
+// catalog-name fallback). Frame: npc_display_name_changed.
+type NPCDisplayNameChanged struct {
+	EventBase
+	ActorID     ActorID
+	DisplayName string
+	At          time.Time
+}
+
+func (NPCDisplayNameChanged) isSimEvent() {}
+
+// NPCAgentChanged — the new llm_memory_agent link; "" means unlinked (the frame
+// carries null). Frame: npc_agent_changed.
+type NPCAgentChanged struct {
+	EventBase
+	ActorID  ActorID
+	LLMAgent string
+	At       time.Time
+}
+
+func (NPCAgentChanged) isSimEvent() {}
+
+// NPCHomeStructureChanged / NPCWorkStructureChanged — the new anchor structure
+// id; "" means cleared (the frame carries null). Frames:
+// npc_home_structure_changed / npc_work_structure_changed.
+type NPCHomeStructureChanged struct {
+	EventBase
+	ActorID     ActorID
+	StructureID string
+	At          time.Time
+}
+
+func (NPCHomeStructureChanged) isSimEvent() {}
+
+type NPCWorkStructureChanged struct {
+	EventBase
+	ActorID     ActorID
+	StructureID string
+	At          time.Time
+}
+
+func (NPCWorkStructureChanged) isSimEvent() {}
+
+// NPCScheduleChanged — the new shift window. Both pointers nil means "inherit
+// dawn/dusk" (the frame carries null for each). Frame: npc_schedule_changed.
+type NPCScheduleChanged struct {
+	EventBase
+	ActorID          ActorID
+	ScheduleStartMin *int
+	ScheduleEndMin   *int
+	At               time.Time
+}
+
+func (NPCScheduleChanged) isSimEvent() {}
+
+// NPCSocialUpdated — the new social-hour overlay. Empty tag + nil minutes means
+// cleared (the frame carries null for each). Frame: npc_social_updated.
+type NPCSocialUpdated struct {
+	EventBase
+	ActorID        ActorID
+	SocialTag      string
+	SocialStartMin *int
+	SocialEndMin   *int
+	At             time.Time
+}
+
+func (NPCSocialUpdated) isSimEvent() {}
+
+// NPCAttributesChanged — the AUTHORITATIVE full sorted slug set after an add or
+// remove (never a delta), so the client converges on one source of truth
+// regardless of which mutation produced it. Frame: npc_attributes_changed
+// (Attributes always marshals as an array, never null).
+type NPCAttributesChanged struct {
+	EventBase
+	ActorID    ActorID
+	Attributes []string
+	At         time.Time
+}
+
+func (NPCAttributesChanged) isSimEvent() {}
+
+// NPCSpriteChanged is emitted by SetActorSprite when an NPC's sprite actually
+// changes. Carries the resolved *Sprite inline (same posture as NPCCreated) so
+// the hub builds an npc_sprite_changed frame with the full render data the
+// client's apply_npc_sprite_change rebuilds the AnimatedSprite2D from — no
+// catalog round-trip. Frame: npc_sprite_changed.
+type NPCSpriteChanged struct {
+	EventBase
+	ActorID ActorID
+	Sprite  *Sprite
+	At      time.Time
+}
+
+func (NPCSpriteChanged) isSimEvent() {}
+
+// NPCCreated is emitted by CreateNPC when a new villager is materialized. It
+// carries the full render identity inline — including the resolved *Sprite (a
+// pointer into the immutable, lock-free sprite catalog, safe to read after the
+// world goroutine moves on) — so the httpapi hub can build a complete
+// npc_created frame (an AgentDTO) without a sprite-catalog round-trip, matching
+// the per-NPC shape the initial /api/village/agents load delivers. Editor
+// metadata (agent link, schedule, social, anchors, attributes) is all unset at
+// creation, so the frame carries only the render fields. Frame: npc_created.
+type NPCCreated struct {
+	EventBase
+	ActorID     ActorID
+	DisplayName string
+	Kind        ActorKind
+	X           int
+	Y           int
+	Facing      string
+	Sprite      *Sprite
+	At          time.Time
+}
+
+func (NPCCreated) isSimEvent() {}

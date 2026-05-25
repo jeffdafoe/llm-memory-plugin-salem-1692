@@ -1,7 +1,7 @@
 extends Control
 ## Modal sprite picker — two modes:
 ##   - NPC mode (admin): swap an existing villager's sprite from the
-##     editor. Caller PATCHes /api/village/npcs/{id}/sprite, WS broadcast
+##     editor. Caller POSTs /api/village/admin/npc/set-sprite, WS broadcast
 ##     handles the visual swap.
 ##   - PC mode (player): pick the player's own sprite at first login or
 ##     change it later. Caller POSTs /api/village/pc/create (first time)
