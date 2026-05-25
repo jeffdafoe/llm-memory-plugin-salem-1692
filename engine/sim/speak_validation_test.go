@@ -185,6 +185,61 @@ func TestValidateStateClaims_Booking(t *testing.T) {
 	}
 }
 
+// TestValidateStateClaims_StaleHuddleMembership: a peer present in the
+// actorsByHuddle index but whose CurrentHuddleID no longer matches must NOT back
+// a claim — the gate scopes "you" to current listeners. (code_review)
+func TestValidateStateClaims_StaleHuddleMembership(t *testing.T) {
+	now := time.Now().UTC()
+	future := now.Add(24 * time.Hour)
+	keeper := &Actor{ID: "john", Kind: KindNPCShared, CurrentHuddleID: "h1", WorkStructureID: "inn"}
+	// guest holds a real lodging grant but has DRIFTED to another huddle.
+	guest := &Actor{
+		ID: "jeff", Kind: KindPC, CurrentHuddleID: "h2",
+		RoomAccess: map[RoomAccessKey]*RoomAccess{
+			{RoomID: 1, Source: AccessSourceLedger}: {RoomID: 1, Source: AccessSourceLedger, Active: true, ExpiresAt: &future},
+		},
+	}
+	w := &World{
+		Actors:    map[ActorID]*Actor{"john": keeper, "jeff": guest},
+		ItemKinds: gateCatalog(),
+		Structures: map[StructureID]*Structure{
+			"inn": {ID: "inn", Rooms: []*Room{{ID: 1, StructureID: "inn", Kind: RoomKindPrivate}}},
+		},
+		PayLedger: map[LedgerID]*PayLedgerEntry{
+			// a fresh accepted payment too — but from the drifted guest.
+			1: {ID: 1, SellerID: "john", BuyerID: "jeff", State: PayLedgerStateAccepted, ResolvedAt: now.Add(-1 * time.Minute)},
+		},
+		actorsByHuddle: map[HuddleID]map[ActorID]struct{}{
+			"h1": {"john": {}, "jeff": {}}, // stale: jeff is really in h2
+		},
+	}
+	if msg := validateStateClaims(w, keeper, "Yes, you are booked for tonight.", now); msg == "" {
+		t.Error("booking should reject — the lodging guest has left this huddle (stale index)")
+	}
+	if msg := validateStateClaims(w, keeper, "Thank you, you've paid me in full.", now); msg == "" {
+		t.Error("payment should reject — the payer has left this huddle (stale index)")
+	}
+}
+
+// TestValidateStateClaims_FuturePayment: a payment resolved in the future (clock
+// skew / non-wall-clock test time) must not back "you've paid me". (code_review)
+func TestValidateStateClaims_FuturePayment(t *testing.T) {
+	now := time.Now().UTC()
+	seller := &Actor{ID: "john", Kind: KindNPCShared, CurrentHuddleID: "h1"}
+	buyer := &Actor{ID: "jeff", Kind: KindPC, CurrentHuddleID: "h1"}
+	w := &World{
+		Actors:    map[ActorID]*Actor{"john": seller, "jeff": buyer},
+		ItemKinds: gateCatalog(),
+		PayLedger: map[LedgerID]*PayLedgerEntry{
+			1: {ID: 1, SellerID: "john", BuyerID: "jeff", State: PayLedgerStateAccepted, ResolvedAt: now.Add(1 * time.Minute)},
+		},
+		actorsByHuddle: map[HuddleID]map[ActorID]struct{}{"h1": {"john": {}, "jeff": {}}},
+	}
+	if msg := validateStateClaims(w, seller, "you've paid me", now); msg == "" {
+		t.Error("future-dated payment should not back the claim")
+	}
+}
+
 func TestValidateStateClaims_Huddleless(t *testing.T) {
 	now := time.Now().UTC()
 	a := &Actor{ID: "john", Kind: KindNPCShared, CurrentHuddleID: ""} // no listener

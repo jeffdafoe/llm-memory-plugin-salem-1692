@@ -221,10 +221,15 @@ func validateStateClaims(w *World, speaker *Actor, text string, now time.Time) s
 			// equivalent post-payment truth.)
 			backed := false
 			for pid := range members {
-				if pid == speaker.ID {
+				peer := w.Actors[pid]
+				// Re-verify the peer is still actually in this huddle —
+				// actorsByHuddle is the index, but a stale entry shouldn't let a
+				// non-listener back the claim (the gate scopes "you" to current
+				// peers). (code_review)
+				if peer == nil || peer.ID == speaker.ID || peer.CurrentHuddleID != huddleID {
 					continue
 				}
-				if peer := w.Actors[pid]; peer != nil && actorIsLodgerAt(w, peer, speaker.WorkStructureID, now) {
+				if actorIsLodgerAt(w, peer, speaker.WorkStructureID, now) {
 					backed = true
 					break
 				}
@@ -247,10 +252,19 @@ func validateStateClaims(w *World, speaker *Actor, text string, now time.Time) s
 				if e.SellerID != speaker.ID {
 					continue
 				}
-				if now.Sub(e.ResolvedAt) > recentPaymentWindow {
+				// Reject both too-old AND future-dated resolutions: a negative
+				// age (ResolvedAt after now) must not back "you've paid me".
+				// (code_review)
+				age := now.Sub(e.ResolvedAt)
+				if age < 0 || age > recentPaymentWindow {
 					continue
 				}
-				if _, isPeer := members[e.BuyerID]; isPeer && e.BuyerID != speaker.ID {
+				if _, isPeer := members[e.BuyerID]; !isPeer || e.BuyerID == speaker.ID {
+					continue
+				}
+				// Re-verify the buyer is still in this huddle (index may be
+				// stale — same scoping concern as the booking arm). (code_review)
+				if buyer := w.Actors[e.BuyerID]; buyer != nil && buyer.CurrentHuddleID == huddleID {
 					backed = true
 					break
 				}
