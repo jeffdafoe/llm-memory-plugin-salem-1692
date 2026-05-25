@@ -173,8 +173,9 @@ func (s *Server) handlePCMe(w http.ResponseWriter, r *http.Request) {
 	// "present" — when the tab closes the polls stop and the presence sweep
 	// reclaims the ghost. Best-effort: a stamp failure must not fail the read
 	// (worst case the PC looks stale a beat longer). The id came off the snapshot;
-	// StampPCSeen no-ops if the live actor is gone/non-PC.
-	if _, err := s.world.SendContext(r.Context(), sim.StampPCSeen(pcID, time.Now().UTC())); err != nil {
+	// StampPCSeen no-ops if the live actor is gone/non-PC, and stamps the
+	// execution-time instant (not now) so a backed-up channel can't backdate it.
+	if _, err := s.world.SendContext(r.Context(), sim.StampPCSeen(pcID)); err != nil {
 		log.Printf("httpapi: pc/me presence stamp for %s failed: %v", pcID, err)
 	}
 

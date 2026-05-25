@@ -122,7 +122,7 @@ func TestSweepStalePCPresence_KeepsFreshPC(t *testing.T) {
 	now := time.Now().UTC()
 	huddleID := huddlePlayerAndNora(t, w, now)
 
-	sendPresence(t, w, sim.StampPCSeen("player", now))
+	sendPresence(t, w, sim.StampPCSeen("player"))
 	ejected := sendPresence(t, w, sim.SweepStalePCPresence(now)).(int)
 	if ejected != 0 {
 		t.Fatalf("ejected = %d, want 0 (PC was just seen)", ejected)
@@ -154,7 +154,7 @@ func TestStampPCSeen_NPCUnaffectedBySweep(t *testing.T) {
 
 	// Stamp the player fresh so only nora could be a candidate; the NPC must
 	// still never be swept (sweep is PC-only).
-	sendPresence(t, w, sim.StampPCSeen("player", now))
+	sendPresence(t, w, sim.StampPCSeen("player"))
 	sendPresence(t, w, sim.SweepStalePCPresence(now.Add(time.Hour)))
 	if got := w.Published().Actors["nora"].CurrentHuddleID; got != huddleID {
 		t.Errorf("NPC nora was ejected (%q), sweep must be PC-only", got)
@@ -177,6 +177,28 @@ func TestArrivalEncounter_SkipsStaleGhostPC(t *testing.T) {
 	snap := w.Published()
 	if got := snap.Actors["nora"].CurrentHuddleID; got != "" {
 		t.Errorf("nora formed a huddle (%q) with a stale ghost PC — should have skipped it", got)
+	}
+}
+
+// A STALE PC must not INITIATE an encounter either: when a ghost PC is itself
+// the arriver, no huddle forms with nearby NPCs (code_review R1 — the guard has
+// to cover the initiator, not just nearby participants).
+func TestArrivalEncounter_StalePCInitiatorFormsNoHuddle(t *testing.T) {
+	now := time.Now().UTC()
+	w, cancel := buildEncounterWorld(t, []encounterActor{
+		{id: "ghost", x: 100, y: 100, kind: sim.KindPC}, // arriving ghost PC, nil seen → stale
+		{id: "nora", x: 101, y: 100},                    // nearby NPC
+	}, true)
+	defer cancel()
+
+	emitArrivalFor(t, w, "ghost", now)
+
+	snap := w.Published()
+	if got := snap.Actors["ghost"].CurrentHuddleID; got != "" {
+		t.Errorf("stale PC initiator formed a huddle (%q) — should have been skipped", got)
+	}
+	if got := snap.Actors["nora"].CurrentHuddleID; got != "" {
+		t.Errorf("nora was pulled into a huddle (%q) by a stale PC initiator", got)
 	}
 }
 

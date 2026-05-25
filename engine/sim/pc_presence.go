@@ -57,18 +57,21 @@ func PCPresenceStale(lastSeenAt *time.Time, now time.Time, staleAfter time.Durat
 	return now.Sub(*lastSeenAt) > staleAfter
 }
 
-// StampPCSeen records a /pc/me poll: sets the caller's PC LastPCSeenAt = now.
-// A no-op for a missing actor or a non-PC id, so a stray caller can't stamp an
-// NPC. MUST run on the world goroutine (mutates the actor) — sent as a command
-// from the pc/me handler.
-func StampPCSeen(actorID ActorID, now time.Time) Command {
+// StampPCSeen records a /pc/me poll: sets the caller's PC LastPCSeenAt to the
+// instant the command EXECUTES on the world goroutine (not request-receipt
+// time) — so a backed-up command channel can't stamp an already-old time and
+// make a live client look stale earlier than it is (code_review R1). A no-op
+// for a missing actor or a non-PC id, so a stray caller can't stamp an NPC.
+// MUST run on the world goroutine (mutates the actor) — sent as a command from
+// the pc/me handler.
+func StampPCSeen(actorID ActorID) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
 			a := w.Actors[actorID]
 			if a == nil || a.Kind != KindPC {
 				return nil, nil
 			}
-			t := now
+			t := time.Now().UTC()
 			a.LastPCSeenAt = &t
 			return nil, nil
 		},

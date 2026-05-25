@@ -114,12 +114,18 @@ func handleMovedEncounter(w *sim.World, evt sim.Event) {
 		return
 	}
 
+	staleAfter := sim.PCPresenceStaleAfter(w)
+	// A stale (ghost) PC must not INITIATE an encounter either, not just be
+	// skipped as a nearby participant (ZBBS-WORK-326, code_review R1).
+	if outdoorEncounterExcludesActor(mover, moved.At, staleAfter) {
+		return
+	}
+
 	radius := w.Settings.DefaultOutdoorSceneRadius
 	if radius <= 0 {
 		radius = sim.DefaultOutdoorSceneRadiusValue
 	}
 	bound := sim.NewAreaBound(moved.ToPosition, radius)
-	staleAfter := sim.PCPresenceStaleAfter(w)
 
 	var nearby []sim.ActorID
 	w.ForEachOutdoorActor(func(a *sim.Actor) bool {
@@ -129,10 +135,7 @@ func handleMovedEncounter(w *sim.World, evt sim.Event) {
 		if a.CurrentHuddleID != "" {
 			return true
 		}
-		// Skip a ghost PC (closed-tab player with a stale presence stamp):
-		// pulling it into a greeting huddle is exactly the wasted-tick cost
-		// the presence sweep reclaims (ZBBS-WORK-326).
-		if a.Kind == sim.KindPC && sim.PCPresenceStale(a.LastPCSeenAt, moved.At, staleAfter) {
+		if outdoorEncounterExcludesActor(a, moved.At, staleAfter) {
 			return true
 		}
 		if !bound.Contains(w, a) {
