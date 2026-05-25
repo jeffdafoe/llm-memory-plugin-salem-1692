@@ -164,6 +164,14 @@ type Payload struct {
 	// it connects the pressing need to the consume tool. ZBBS-HOME-304.
 	Satiation *SatiationView
 
+	// Restocking surfaces how a reseller could replenish its low `buy` stock —
+	// each item below the reorder threshold (current/cap) and the suppliers
+	// selling it (workplace + structure_id + per-buyer price hint). nil when the
+	// actor holds no `buy` entries below threshold, or restock is disabled
+	// (RestockReorderPct == 0). The reseller's LLM decides whether/what/how-much
+	// and acts via move_to + pay_with_item. ZBBS-WORK-322.
+	Restocking *RestockingView
+
 	// Lodging surfaces the subject's own active lodging — the inn their room
 	// is at and when the grant expires — so a lodger NPC can renew before it
 	// lapses. nil when the actor holds no active ledger RoomAccess (not a

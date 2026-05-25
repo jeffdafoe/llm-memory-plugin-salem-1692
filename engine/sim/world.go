@@ -91,6 +91,17 @@ type WorldSettings struct {
 	// (10 → 0.1/min). 0 disables recovery. Consumed by RunTirednessRecoveryTicker.
 	TirednessRecoveryPerMinuteX100 int
 
+	// RestockReorderPct is the reorder threshold for the buy-side restock
+	// producer (ZBBS-WORK-322), expressed as a whole percent of an entry's
+	// personal-carry cap: a reseller's `buy` RestockEntry is "low" — and
+	// warrants a restock tick — when its on-hand quantity is strictly below
+	// cap * pct / 100. Default 25 (a quarter). 0 disables the producer (no
+	// restock warrant ever fires), the same off-switch posture as the other
+	// per-feature tunables. Integer-percent storage, not a float, matching
+	// the project's _x100 / permille / pct convention. Consumed by the
+	// restock producer and the "## Restocking" perception gate.
+	RestockReorderPct int
+
 	// Reactor evaluator tunables (Phase 2 PR 2). Settings-driven gross
 	// gates — no per-call cost calculation; llm-memory-api's per-VA dollar
 	// budgets (MEM-052) own the hard $ ceiling.
@@ -1274,6 +1285,7 @@ func (w *World) republish() {
 		Phase:                    w.Phase,
 		NeedThresholds:           w.Settings.NeedThresholds.Clone(),
 		LodgingDefaultWeeklyRate: w.Settings.LodgingDefaultWeeklyRate,
+		RestockReorderPct:        w.Settings.RestockReorderPct,
 		// Aliased, not cloned — immutable post-startup catalog. See Snapshot.ItemKinds.
 		ItemKinds: w.ItemKinds,
 	}
@@ -1374,6 +1386,7 @@ func snapshotActor(a *Actor, atTick uint64) *ActorSnapshot {
 		BusinessownerState: cloneBusinessownerState(a.BusinessownerState),
 		DwellCredits:       cloneDwellCredits(a.DwellCredits),
 		RoomAccess:         cloneRoomAccess(a.RoomAccess),
+		RestockPolicy:      a.RestockPolicy,
 		TickInFlight:       a.TickInFlight,
 		TickAttemptID:      a.TickAttemptID,
 	}

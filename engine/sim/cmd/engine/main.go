@@ -379,6 +379,7 @@ func startTickers(ctx context.Context, w *sim.World) {
 
 	go sim.RunDwellTicker(ctx, w)
 	go sim.RunProduceTicker(ctx, w)
+	go sim.RunRestockTicker(ctx, w) // ZBBS-WORK-322: buy-side restock producer
 	go sim.RunObjectRefreshRegen(ctx, w)
 	go sim.RunOrderSweep(ctx, w)
 	go sim.RunPayLedgerSweep(ctx, w)

@@ -82,6 +82,13 @@ type Snapshot struct {
 	// sim.LodgingNightlyRate. Plain int, copied at publish.
 	LodgingDefaultWeeklyRate int
 
+	// RestockReorderPct mirrors WorldSettings.RestockReorderPct — the reorder
+	// threshold (whole percent of cap) for buy-side restock. Carried so the
+	// "## Restocking" perception section can gate on the same boundary the
+	// restock producer warrants on, pure over the snapshot rather than racing
+	// on w.Settings. Plain int, copied at publish. 0 = restock disabled.
+	RestockReorderPct int
+
 	// ItemKinds is an ALIASED reference to World.ItemKinds — the item→satisfies
 	// reference catalog loaded once at startup (LoadWorld) and never mutated
 	// afterward (ItemKindDef is documented read-only). Unlike the mutable
