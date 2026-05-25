@@ -27,6 +27,8 @@ type encounterActor struct {
 	x, y              int
 	insideStructureID sim.StructureID // empty = outdoors
 	currentHuddleID   sim.HuddleID    // empty = not in a huddle
+	kind              sim.ActorKind   // zero value = default (NPC); set KindPC for PC tests
+	lastPCSeenAt      *time.Time      // PC presence stamp (ZBBS-WORK-326); nil = never polled
 }
 
 // buildEncounterWorld seeds a running world for arrival-encounter
@@ -49,6 +51,8 @@ func buildEncounterWorld(t *testing.T, actors []encounterActor, register bool) (
 			Pos:               sim.TilePos{X: a.x, Y: a.y},
 			InsideStructureID: a.insideStructureID,
 			CurrentHuddleID:   a.currentHuddleID,
+			Kind:              a.kind,
+			LastPCSeenAt:      a.lastPCSeenAt,
 		}
 		if a.insideStructureID != "" {
 			if _, exists := structures[a.insideStructureID]; !exists {

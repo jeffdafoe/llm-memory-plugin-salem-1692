@@ -99,6 +99,7 @@ func handleArrivalEncounter(w *sim.World, evt sim.Event) {
 		radius = sim.DefaultOutdoorSceneRadiusValue
 	}
 	bound := sim.NewAreaBound(arrived.FinalPosition, radius)
+	staleAfter := sim.PCPresenceStaleAfter(w)
 
 	// Outdoor-set scan via World.ForEachOutdoorActor — iterates only
 	// actors with InsideStructureID == "" (the outdoorActors secondary
@@ -112,6 +113,12 @@ func handleArrivalEncounter(w *sim.World, evt sim.Event) {
 			return true
 		}
 		if a.CurrentHuddleID != "" {
+			return true
+		}
+		// Skip a ghost PC (closed-tab player with a stale presence stamp):
+		// pulling it into a greeting huddle is exactly the wasted-tick cost
+		// the presence sweep reclaims (ZBBS-WORK-326).
+		if a.Kind == sim.KindPC && sim.PCPresenceStale(a.LastPCSeenAt, arrived.At, staleAfter) {
 			return true
 		}
 		if !bound.Contains(w, a) {

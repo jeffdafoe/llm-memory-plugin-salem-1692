@@ -256,6 +256,9 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	s.OrderTTL = parseDurationSetting(values, "order_ttl_minutes", 10*time.Minute)
 	s.OrderSweepCadence = parseDurationSetting(values, "order_sweep_cadence_seconds", 60*time.Second)
 
+	// PC presence staleness (ZBBS-WORK-326).
+	s.PCPresenceStaleAfter = parseDurationSetting(values, "pc_presence_stale_seconds", sim.DefaultPCPresenceStaleAfter)
+
 	return s
 }
 

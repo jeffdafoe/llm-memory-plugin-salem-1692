@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"log"
 	"net/http"
 	"sort"
 	"strconv"
@@ -16,10 +17,13 @@ import (
 // so a human player could never bootstrap into v2 — this closes the keystone
 // PC-surface parity gap.
 //
-// This is a pure read over s.world.Published() — no command channel, no world
-// mutation. The v1 handler (engine/pc_handlers.go handlePCMe) queried the live
-// DB directly; v2's read idiom is a snapshot aggregate + a DTO mapper, exactly
-// like agentsFromSnapshot in server.go. Three pieces of v1's response are
+// The response is built as a read over s.world.Published() (snapshot aggregate
+// + DTO mapper, like agentsFromSnapshot). The one world mutation is a fire-and-
+// forget presence stamp (StampPCSeen, ZBBS-WORK-326): this poll IS the PC's
+// "still here" heartbeat, so the handler sends a tiny command to record it. The
+// stamp is best-effort and never affects the response. The v1 handler
+// (engine/pc_handlers.go handlePCMe) queried the live DB directly. Three pieces
+// of v1's response are
 // re-expressed in the v2-native shape rather than ported literally:
 //
 //   - Audience structure scope uses sim.ResolveLoiteringObject (the exported
@@ -162,6 +166,16 @@ func (s *Server) handlePCMe(w http.ResponseWriter, r *http.Request) {
 		resp.Exists = false
 		writeJSON(w, resp)
 		return
+	}
+
+	// Record this poll as a presence heartbeat (ZBBS-WORK-326): the client
+	// polls /pc/me every 10s, so stamping LastPCSeenAt here is what keeps the PC
+	// "present" — when the tab closes the polls stop and the presence sweep
+	// reclaims the ghost. Best-effort: a stamp failure must not fail the read
+	// (worst case the PC looks stale a beat longer). The id came off the snapshot;
+	// StampPCSeen no-ops if the live actor is gone/non-PC.
+	if _, err := s.world.SendContext(r.Context(), sim.StampPCSeen(pcID, time.Now().UTC())); err != nil {
+		log.Printf("httpapi: pc/me presence stamp for %s failed: %v", pcID, err)
 	}
 
 	resp.Exists = true
