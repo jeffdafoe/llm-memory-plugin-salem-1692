@@ -130,6 +130,14 @@ type ObjectDTO struct {
 	// the wire — the client just renders the current text. Additive, no version bump.
 	ContentText     string     `json:"content_text,omitempty"`
 	ContentPostedAt *time.Time `json:"content_posted_at,omitempty"`
+
+	// Refreshes — the object's per-attribute need-decrement-on-arrival policies,
+	// surfaced for the editor's refresh panel (it has no standalone GET; the v2
+	// read path is here). Same wire shape the admin/object/set-refresh route
+	// accepts and echoes (adminObjectRefreshRow), incl. the dwell-recovery fields.
+	// Omitted for the common case of an object with no refreshes. Additive read
+	// field, no contract-version bump (same posture as the HOME-289/291 fields).
+	Refreshes []adminObjectRefreshRow `json:"refreshes,omitempty"`
 }
 
 // TerrainDTO is the GET /api/village/terrain response. The terrain grid is a
@@ -266,6 +274,16 @@ type SpriteAnimationDTO struct {
 type NPCBehaviorDTO struct {
 	Slug        string `json:"slug"`
 	DisplayName string `json:"display_name"`
+}
+
+// RefreshAttributeDTO is one entry in the GET /api/village/refresh-attributes
+// response — the need catalog the refresh editor's attribute dropdown renders.
+// Sourced from the frozen sim.Needs registry; Name is the NeedKey the
+// set-refresh route validates against (sim.FindNeed). The v2 replacement for
+// v1's /api/refresh-attributes.
+type RefreshAttributeDTO struct {
+	Name         string `json:"name"`
+	DisplayLabel string `json:"display_label"`
 }
 
 // actorKindString maps the internal ActorKind enum to its stable wire form.

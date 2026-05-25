@@ -162,6 +162,15 @@ var _refresh_attributes_loaded: bool = false
 # encodes them as null.
 var _refresh_rows_state: Array = []
 
+# Per-row edit dialog (modal). One reusable ConfirmationDialog (OK = Save,
+# Cancel = discard) following editor.gd's _delete_dialog convention. The row
+# being edited is _refresh_dialog_idx; its live form controls are held in _rd
+# so _on_refresh_dialog_confirmed can read them back on OK.
+var _refresh_dialog: ConfirmationDialog = null
+var _refresh_dialog_content: VBoxContainer = null
+var _refresh_dialog_idx: int = -1
+var _rd: Dictionary = {}
+
 # INVENTORY section (ZBBS-091) — per-NPC item rows in the NPC selection
 # panel. Mirrors the Refreshes pattern: lookup-table list cached for
 # the editor session, per-selection row state, whole-set save.
@@ -2594,8 +2603,11 @@ func show_selection(info: Dictionary) -> void:
     _obj_tags_current_list = tags_raw if tags_raw is Array else []
     _refresh_obj_tags_ui()
 
-    # Per-instance refresh rows (ZBBS-090) — fetch on selection.
-    _show_refreshes_for_object(info.get("object_id", ""))
+    # Per-instance refresh rows (ZBBS-090). v2 has no standalone GET — the
+    # rows ride the ObjectDTO (set on the object node's "refreshes" meta), so
+    # read them straight off the selection info rather than fetching.
+    var refreshes_raw = info.get("refreshes", [])
+    _show_refreshes_for_object(info.get("object_id", ""), refreshes_raw if refreshes_raw is Array else [])
 
 ## Called by editor when an NPC is selected/deselected. Reuses the selection
 ## panel but swaps to NPC-only fields (no owner, no attachments, no delete
@@ -3009,37 +3021,74 @@ func _make_refreshes_button(text: String) -> Button:
     btn.add_theme_stylebox_override("normal", s)
     return btn
 
-## Show the Refreshes section for the given object_id. Lazy-loads the
-## attribute lookup list on first call; refetches the row set on every
-## selection so a backend-side broadcast (object_refresh_updated) doesn't
-## have to be wired up in this client.
-func _show_refreshes_for_object(object_id: String) -> void:
+## Show the Refreshes section for the given object_id. The rows come straight
+## from the ObjectDTO (passed in by show_selection); v2 has no standalone GET.
+## The attribute catalog (dropdown labels for the edit dialog) is lazy-loaded
+## once on first selection.
+func _show_refreshes_for_object(object_id: String, refreshes: Array) -> void:
     _refreshes_current_id = object_id
-    _refresh_rows_state.clear()
+    _load_refresh_rows_from(refreshes)
     _set_refreshes_status("", false)
     _render_refresh_rows()
     if object_id == "":
         return
     if not _refresh_attributes_loaded:
-        _fetch_refresh_attributes(object_id)
-    else:
-        _fetch_refreshes_for_object(object_id)
+        _fetch_refresh_attributes()
+
+## Parse a refresh set (the ObjectDTO's "refreshes" array, or the echo from a
+## set-refresh save) into _refresh_rows_state. dwell_delta/dwell_period_minutes
+## travel together — both null means "no dwell recovery"; available/max travel
+## together — null means infinite supply.
+func _load_refresh_rows_from(refreshes: Array) -> void:
+    _refresh_rows_state.clear()
+    for entry in refreshes:
+        if not (entry is Dictionary):
+            continue
+        var available_q = entry.get("available_quantity", null)
+        var max_q = entry.get("max_quantity", null)
+        var period = entry.get("refresh_period_hours", null)
+        var infinite := available_q == null
+        var dwell_delta = entry.get("dwell_delta", null)
+        var dwell_period = entry.get("dwell_period_minutes", null)
+        var has_dwell := dwell_delta != null
+        _refresh_rows_state.append({
+            "attribute":    str(entry.get("attribute", "")),
+            "amount":       int(entry.get("amount", 1)),
+            "infinite":     infinite,
+            "available":    (int(available_q) if not infinite else 1),
+            "max":          (int(max_q) if not infinite else 10),
+            "mode":         str(entry.get("refresh_mode", "continuous")),
+            "period":       (int(period) if period != null else 24),
+            "has_dwell":    has_dwell,
+            "dwell_delta":  (int(dwell_delta) if has_dwell else -1),
+            "dwell_period": (int(dwell_period) if (has_dwell and dwell_period != null) else 10),
+        })
 
 func _clear_refreshes_panel() -> void:
+    _reset_refresh_dialog()
     _refreshes_current_id = ""
     _refresh_rows_state.clear()
     _set_refreshes_status("", false)
     _render_refresh_rows()
 
-func _fetch_refresh_attributes(then_load_object_id: String) -> void:
+## Close + reset the reusable edit dialog. Call whenever _refresh_rows_state is
+## replaced out from under an open dialog (deselect, save-echo reload) so a
+## later confirm can't write stale cached controls onto a fresh row.
+func _reset_refresh_dialog() -> void:
+    if _refresh_dialog != null and _refresh_dialog.visible:
+        _refresh_dialog.hide()
+    _refresh_dialog_idx = -1
+    _rd = {}
+
+func _fetch_refresh_attributes() -> void:
     var http := HTTPRequest.new()
     http.accept_gzip = false
     add_child(http)
-    http.request_completed.connect(_on_refresh_attributes_response.bind(http, then_load_object_id))
+    http.request_completed.connect(_on_refresh_attributes_response.bind(http))
     var headers := Auth.auth_headers(false)
-    http.request(Auth.api_base + "/api/refresh-attributes", headers)
+    http.request(Auth.api_base + "/api/village/refresh-attributes", headers)
 
-func _on_refresh_attributes_response(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest, then_load_object_id: String) -> void:
+func _on_refresh_attributes_response(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest) -> void:
     http.queue_free()
     if not Auth.check_response(response_code):
         return
@@ -3052,54 +3101,6 @@ func _on_refresh_attributes_response(result: int, response_code: int, _headers: 
         return
     _refresh_attributes = json
     _refresh_attributes_loaded = true
-    if then_load_object_id != "" and then_load_object_id == _refreshes_current_id:
-        _fetch_refreshes_for_object(then_load_object_id)
-
-func _fetch_refreshes_for_object(object_id: String) -> void:
-    var http := HTTPRequest.new()
-    http.accept_gzip = false
-    add_child(http)
-    http.request_completed.connect(_on_refreshes_response.bind(http, object_id))
-    var headers := Auth.auth_headers(false)
-    http.request(Auth.api_base + "/api/village/objects/" + object_id + "/refresh", headers)
-
-func _on_refreshes_response(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest, fetched_id: String) -> void:
-    http.queue_free()
-    # If the operator clicked another object while this fetch was in flight,
-    # discard the response — _refreshes_current_id already reflects the new
-    # selection, and a separate fetch is on its way.
-    if fetched_id != _refreshes_current_id:
-        return
-    if not Auth.check_response(response_code):
-        return
-    if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
-        _set_refreshes_status("Failed to load refreshes (" + str(response_code) + ")", true)
-        return
-    var json = JSON.parse_string(body.get_string_from_utf8())
-    if not (json is Array):
-        _set_refreshes_status("Malformed refresh response", true)
-        return
-    _refresh_rows_state.clear()
-    for entry in json:
-        if not (entry is Dictionary):
-            continue
-        var available_q = entry.get("available_quantity", null)
-        var max_q = entry.get("max_quantity", null)
-        var period = entry.get("refresh_period_hours", null)
-        # Available/max travel together — null means infinite. The picker UI
-        # tracks them as numbers when finite, so map nulls to defaults that
-        # will be ignored unless the operator unchecks "Infinite supply."
-        var infinite := available_q == null
-        _refresh_rows_state.append({
-            "attribute": str(entry.get("attribute", "")),
-            "amount":    int(entry.get("amount", 1)),
-            "infinite":  infinite,
-            "available": (int(available_q) if not infinite else 1),
-            "max":       (int(max_q) if not infinite else 10),
-            "mode":      str(entry.get("refresh_mode", "continuous")),
-            "period":    (int(period) if period != null else 24),
-        })
-    _render_refresh_rows()
 
 ## Rebuild the row stack from _refresh_rows_state. O(n) in row count which
 ## is small (one to a few). Disconnects all child signals by virtue of
@@ -3116,6 +3117,10 @@ func _render_refresh_rows() -> void:
 ## Build the UI for one refresh row. Reads from _refresh_rows_state[idx]
 ## so the layout reflects current state (e.g. the supply controls hide
 ## when "Infinite supply" is checked).
+## A refresh row in the sidebar is now a single compact summary line that
+## opens the per-row edit dialog on click, plus a remove button. The deep
+## tuning (supply, refill, dwell recovery) lives in the modal so the sidebar
+## stays readable as rows and fields grow.
 func _make_refresh_row_ui(idx: int) -> Control:
     var row: Dictionary = _refresh_rows_state[idx]
 
@@ -3133,113 +3138,50 @@ func _make_refresh_row_ui(idx: int) -> Control:
     panel_style.content_margin_bottom = 4.0
     panel.add_theme_stylebox_override("panel", panel_style)
 
-    var content := VBoxContainer.new()
-    content.add_theme_constant_override("separation", 3)
-    panel.add_child(content)
+    var hbox := HBoxContainer.new()
+    hbox.add_theme_constant_override("separation", 6)
+    panel.add_child(hbox)
 
-    # Row 1: attribute dropdown + remove button
-    var hdr_row := HBoxContainer.new()
-    hdr_row.add_theme_constant_override("separation", 6)
-    content.add_child(hdr_row)
-
-    var attr_dropdown := OptionButton.new()
-    attr_dropdown.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    attr_dropdown.add_theme_color_override("font_color", COLOR_TEXT)
-    attr_dropdown.add_theme_font_override("font", _font)
-    attr_dropdown.add_theme_font_size_override("font_size", 12)
-    var selected_attr_idx := -1
-    for ai in range(_refresh_attributes.size()):
-        var a: Dictionary = _refresh_attributes[ai]
-        attr_dropdown.add_item(str(a.get("display_label", a.get("name", ""))), ai)
-        attr_dropdown.set_item_metadata(ai, str(a.get("name", "")))
-        if str(a.get("name", "")) == str(row.get("attribute", "")):
-            selected_attr_idx = ai
-    if selected_attr_idx >= 0:
-        attr_dropdown.selected = selected_attr_idx
-    elif _refresh_attributes.size() > 0:
-        attr_dropdown.selected = 0
-        # Sync state if loaded data referenced a name that no longer exists
-        # in the lookup. Falls back to the first available attribute.
-        _refresh_rows_state[idx]["attribute"] = str(_refresh_attributes[0].get("name", ""))
-    attr_dropdown.item_selected.connect(_on_refresh_attribute_changed.bind(idx, attr_dropdown))
-    hdr_row.add_child(attr_dropdown)
+    # The whole summary line is the click target that opens the edit dialog.
+    var summary_btn := Button.new()
+    summary_btn.text = _refresh_summary_text(row)
+    summary_btn.tooltip_text = "Edit this refresh"
+    summary_btn.flat = true
+    summary_btn.alignment = HORIZONTAL_ALIGNMENT_LEFT
+    summary_btn.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    summary_btn.add_theme_color_override("font_color", COLOR_TEXT)
+    summary_btn.add_theme_font_override("font", _font)
+    summary_btn.add_theme_font_size_override("font_size", 12)
+    summary_btn.pressed.connect(_open_refresh_dialog.bind(idx))
+    hbox.add_child(summary_btn)
 
     # Close X comes from Lucide — IMFellEnglish doesn't ship the U+2715
     # multiplication-X this used to use. Override the font on the
-    # already-built button rather than threading an icon-font path
-    # through _make_refreshes_button (which is shared with text buttons
-    # like "+ Add refresh" and "Save").
+    # already-built button rather than threading an icon-font path through
+    # _make_refreshes_button (shared with text buttons like "+ Add refresh").
     var remove_btn := _make_refreshes_button(String.chr(ICON_CODEPOINT_X))
     remove_btn.add_theme_font_override("font", _icon_font)
     remove_btn.tooltip_text = "Remove this refresh row"
     remove_btn.pressed.connect(_on_refresh_remove_pressed.bind(idx))
-    hdr_row.add_child(remove_btn)
-
-    # Row 2: restores-per-use spinner
-    var amt_row := HBoxContainer.new()
-    amt_row.add_theme_constant_override("separation", 6)
-    content.add_child(amt_row)
-    amt_row.add_child(_make_refresh_label("Restores per use:"))
-    var amt_spin := _make_refresh_spinbox(int(row.get("amount", 1)), 1, 24)
-    amt_spin.value_changed.connect(_on_refresh_amount_changed.bind(idx))
-    amt_row.add_child(amt_spin)
-
-    # Row 3: infinite-supply checkbox
-    var inf_check := CheckBox.new()
-    inf_check.text = "Infinite supply"
-    inf_check.add_theme_color_override("font_color", COLOR_TEXT)
-    inf_check.add_theme_font_override("font", _font)
-    inf_check.add_theme_font_size_override("font_size", 12)
-    inf_check.button_pressed = bool(row.get("infinite", false))
-    inf_check.toggled.connect(_on_refresh_infinite_toggled.bind(idx))
-    content.add_child(inf_check)
-
-    # Rows 4-6: supply controls — only visible when not infinite. Hidden by
-    # toggling visibility rather than conditionally building so toggling
-    # back doesn't lose typed values.
-    var supply_block := VBoxContainer.new()
-    supply_block.add_theme_constant_override("separation", 3)
-    supply_block.visible = not bool(row.get("infinite", false))
-    content.add_child(supply_block)
-
-    var avail_row := HBoxContainer.new()
-    avail_row.add_theme_constant_override("separation", 6)
-    supply_block.add_child(avail_row)
-    avail_row.add_child(_make_refresh_label("Available:"))
-    var avail_spin := _make_refresh_spinbox(int(row.get("available", 1)), 0, 32000)
-    avail_spin.value_changed.connect(_on_refresh_available_changed.bind(idx))
-    avail_row.add_child(avail_spin)
-    avail_row.add_child(_make_refresh_label("Max:"))
-    var max_spin := _make_refresh_spinbox(int(row.get("max", 10)), 1, 32000)
-    max_spin.value_changed.connect(_on_refresh_max_changed.bind(idx))
-    avail_row.add_child(max_spin)
-
-    var mode_row := HBoxContainer.new()
-    mode_row.add_theme_constant_override("separation", 6)
-    supply_block.add_child(mode_row)
-    mode_row.add_child(_make_refresh_label("Refill:"))
-    var mode_dropdown := OptionButton.new()
-    mode_dropdown.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    mode_dropdown.add_theme_color_override("font_color", COLOR_TEXT)
-    mode_dropdown.add_theme_font_override("font", _font)
-    mode_dropdown.add_theme_font_size_override("font_size", 12)
-    mode_dropdown.add_item("Continuous (gradual)", 0)
-    mode_dropdown.set_item_metadata(0, "continuous")
-    mode_dropdown.add_item("Periodic (one-shot)", 1)
-    mode_dropdown.set_item_metadata(1, "periodic")
-    mode_dropdown.selected = (1 if str(row.get("mode", "continuous")) == "periodic" else 0)
-    mode_dropdown.item_selected.connect(_on_refresh_mode_changed.bind(idx, mode_dropdown))
-    mode_row.add_child(mode_dropdown)
-
-    var period_row := HBoxContainer.new()
-    period_row.add_theme_constant_override("separation", 6)
-    supply_block.add_child(period_row)
-    period_row.add_child(_make_refresh_label("Period (hours):"))
-    var period_spin := _make_refresh_spinbox(int(row.get("period", 24)), 1, 100000)
-    period_spin.value_changed.connect(_on_refresh_period_changed.bind(idx))
-    period_row.add_child(period_spin)
+    hbox.add_child(remove_btn)
 
     return panel
+
+## One-line summary of a refresh row for the compact sidebar list, e.g.
+## "tiredness · -1/use · dwell -1/10min · 10/10 continuous".
+func _refresh_summary_text(row: Dictionary) -> String:
+    var attr := str(row.get("attribute", ""))
+    if attr == "":
+        attr = "(no attribute)"
+    var parts: Array = [attr, str(int(row.get("amount", 1))) + "/use"]
+    if bool(row.get("has_dwell", false)):
+        parts.append("dwell " + str(int(row.get("dwell_delta", -1))) + "/" + str(int(row.get("dwell_period", 10))) + "min")
+    if bool(row.get("infinite", false)):
+        parts.append("unlimited supply")
+    else:
+        var mode_label := "periodic" if str(row.get("mode", "continuous")) == "periodic" else "continuous"
+        parts.append(str(int(row.get("available", 0))) + "/" + str(int(row.get("max", 0))) + " " + mode_label)
+    return " · ".join(parts)
 
 func _make_refresh_label(text: String) -> Label:
     var l := Label.new()
@@ -3259,45 +3201,188 @@ func _make_refresh_spinbox(value: int, min_val: int, max_val: int) -> SpinBox:
 
 # --- per-row state mutators ---
 
-func _on_refresh_attribute_changed(_dropdown_idx: int, idx: int, dropdown: OptionButton) -> void:
-    if idx < 0 or idx >= _refresh_rows_state.size():
-        return
-    var meta = dropdown.get_item_metadata(dropdown.selected)
-    _refresh_rows_state[idx]["attribute"] = str(meta) if meta != null else ""
+# --- per-row edit dialog ---
 
-func _on_refresh_amount_changed(value: float, idx: int) -> void:
-    if idx < 0 or idx >= _refresh_rows_state.size():
+## Lazily create the single reusable edit dialog (mirrors editor.gd's
+## _delete_dialog). The form controls are rebuilt per-open inside _content.
+func _ensure_refresh_dialog() -> void:
+    if _refresh_dialog != null:
         return
-    _refresh_rows_state[idx]["amount"] = int(value)
+    _refresh_dialog = ConfirmationDialog.new()
+    _refresh_dialog.title = "Edit refresh"
+    _refresh_dialog.ok_button_text = "Save"
+    _refresh_dialog.min_size = Vector2i(360, 0)
+    _refresh_dialog_content = VBoxContainer.new()
+    _refresh_dialog_content.add_theme_constant_override("separation", 6)
+    _refresh_dialog.add_child(_refresh_dialog_content)
+    _refresh_dialog.confirmed.connect(_on_refresh_dialog_confirmed)
+    add_child(_refresh_dialog)
 
-func _on_refresh_infinite_toggled(pressed: bool, idx: int) -> void:
+## Open the edit dialog for one refresh row, building its controls from the
+## row's current state. Reads are committed to _refresh_rows_state only on OK
+## (Cancel discards), so the spinboxes can hold transient values freely.
+func _open_refresh_dialog(idx: int) -> void:
     if idx < 0 or idx >= _refresh_rows_state.size():
         return
-    _refresh_rows_state[idx]["infinite"] = pressed
-    # Re-render this row only — easier than tracking individual visibility
-    # and keeps the "supply block hidden" state consistent with fresh adds.
+    # The dialog's attribute dropdown is built from _refresh_attributes; if the
+    # catalog fetch hasn't returned yet the dropdown would be empty and OK would
+    # commit a blank attribute. Refuse to open until it's loaded.
+    if not _refresh_attributes_loaded:
+        _set_refreshes_status("Loading refresh attributes...", false)
+        return
+    _ensure_refresh_dialog()
+    _refresh_dialog_idx = idx
+    var row: Dictionary = _refresh_rows_state[idx]
+
+    for c in _refresh_dialog_content.get_children():
+        _refresh_dialog_content.remove_child(c)
+        c.queue_free()
+    _rd = {}
+
+    # Attribute dropdown
+    var attr_row := HBoxContainer.new()
+    attr_row.add_theme_constant_override("separation", 6)
+    attr_row.add_child(_make_refresh_label("Attribute:"))
+    var attr_dropdown := OptionButton.new()
+    attr_dropdown.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    var selected_attr_idx := -1
+    for ai in range(_refresh_attributes.size()):
+        var a: Dictionary = _refresh_attributes[ai]
+        attr_dropdown.add_item(str(a.get("display_label", a.get("name", ""))), ai)
+        attr_dropdown.set_item_metadata(ai, str(a.get("name", "")))
+        if str(a.get("name", "")) == str(row.get("attribute", "")):
+            selected_attr_idx = ai
+    if selected_attr_idx >= 0:
+        attr_dropdown.selected = selected_attr_idx
+    elif _refresh_attributes.size() > 0:
+        attr_dropdown.selected = 0
+    attr_row.add_child(attr_dropdown)
+    _refresh_dialog_content.add_child(attr_row)
+    _rd["attr"] = attr_dropdown
+
+    # Restores-per-use
+    var amt_row := HBoxContainer.new()
+    amt_row.add_theme_constant_override("separation", 6)
+    amt_row.add_child(_make_refresh_label("Restores per use:"))
+    var amt_spin := _make_refresh_spinbox(int(row.get("amount", 1)), 1, 24)
+    amt_row.add_child(amt_spin)
+    _refresh_dialog_content.add_child(amt_row)
+    _rd["amount"] = amt_spin
+
+    # Infinite-supply toggle + supply block
+    var inf_check := CheckBox.new()
+    inf_check.text = "Infinite supply"
+    inf_check.button_pressed = bool(row.get("infinite", false))
+    inf_check.toggled.connect(_on_refresh_dialog_infinite_toggled)
+    _refresh_dialog_content.add_child(inf_check)
+    _rd["infinite"] = inf_check
+
+    var supply_block := VBoxContainer.new()
+    supply_block.add_theme_constant_override("separation", 4)
+    supply_block.visible = not bool(row.get("infinite", false))
+    _refresh_dialog_content.add_child(supply_block)
+    _rd["supply_block"] = supply_block
+
+    var avail_row := HBoxContainer.new()
+    avail_row.add_theme_constant_override("separation", 6)
+    avail_row.add_child(_make_refresh_label("Available:"))
+    var avail_spin := _make_refresh_spinbox(int(row.get("available", 1)), 0, 32000)
+    avail_row.add_child(avail_spin)
+    avail_row.add_child(_make_refresh_label("Max:"))
+    var max_spin := _make_refresh_spinbox(int(row.get("max", 10)), 1, 32000)
+    avail_row.add_child(max_spin)
+    supply_block.add_child(avail_row)
+    _rd["available"] = avail_spin
+    _rd["max"] = max_spin
+
+    var mode_row := HBoxContainer.new()
+    mode_row.add_theme_constant_override("separation", 6)
+    mode_row.add_child(_make_refresh_label("Refill:"))
+    var mode_dropdown := OptionButton.new()
+    mode_dropdown.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    mode_dropdown.add_item("Continuous (gradual)", 0)
+    mode_dropdown.set_item_metadata(0, "continuous")
+    mode_dropdown.add_item("Periodic (one-shot)", 1)
+    mode_dropdown.set_item_metadata(1, "periodic")
+    mode_dropdown.selected = (1 if str(row.get("mode", "continuous")) == "periodic" else 0)
+    mode_row.add_child(mode_dropdown)
+    supply_block.add_child(mode_row)
+    _rd["mode"] = mode_dropdown
+
+    var period_row := HBoxContainer.new()
+    period_row.add_theme_constant_override("separation", 6)
+    period_row.add_child(_make_refresh_label("Period (hours):"))
+    var period_spin := _make_refresh_spinbox(int(row.get("period", 24)), 1, 100000)
+    period_row.add_child(period_spin)
+    supply_block.add_child(period_row)
+    _rd["period"] = period_spin
+
+    # Dwell recovery toggle + block. dwell_delta is the per-period DECREMENT
+    # applied while the actor dwells (negative — needs fall toward 0/sated),
+    # so the spinbox range is negative-only to keep it server-valid.
+    var dwell_check := CheckBox.new()
+    dwell_check.text = "Has dwell recovery"
+    dwell_check.button_pressed = bool(row.get("has_dwell", false))
+    dwell_check.toggled.connect(_on_refresh_dialog_dwell_toggled)
+    _refresh_dialog_content.add_child(dwell_check)
+    _rd["dwell_check"] = dwell_check
+
+    var dwell_block := VBoxContainer.new()
+    dwell_block.add_theme_constant_override("separation", 4)
+    dwell_block.visible = bool(row.get("has_dwell", false))
+    _refresh_dialog_content.add_child(dwell_block)
+    _rd["dwell_block"] = dwell_block
+
+    var dwell_amt_row := HBoxContainer.new()
+    dwell_amt_row.add_theme_constant_override("separation", 6)
+    dwell_amt_row.add_child(_make_refresh_label("Dwell amount (per period):"))
+    var dwell_delta_spin := _make_refresh_spinbox(int(row.get("dwell_delta", -1)), -100, -1)
+    dwell_amt_row.add_child(dwell_delta_spin)
+    dwell_block.add_child(dwell_amt_row)
+    _rd["dwell_delta"] = dwell_delta_spin
+
+    var dwell_period_row := HBoxContainer.new()
+    dwell_period_row.add_theme_constant_override("separation", 6)
+    dwell_period_row.add_child(_make_refresh_label("Dwell period (minutes):"))
+    var dwell_period_spin := _make_refresh_spinbox(int(row.get("dwell_period", 10)), 1, 1440)
+    dwell_period_row.add_child(dwell_period_spin)
+    dwell_block.add_child(dwell_period_row)
+    _rd["dwell_period"] = dwell_period_spin
+
+    _refresh_dialog.reset_size()
+    _refresh_dialog.popup_centered()
+
+func _on_refresh_dialog_infinite_toggled(pressed: bool) -> void:
+    if _rd.has("supply_block") and is_instance_valid(_rd["supply_block"]):
+        _rd["supply_block"].visible = not pressed
+        _refresh_dialog.reset_size()
+
+func _on_refresh_dialog_dwell_toggled(pressed: bool) -> void:
+    if _rd.has("dwell_block") and is_instance_valid(_rd["dwell_block"]):
+        _rd["dwell_block"].visible = pressed
+        _refresh_dialog.reset_size()
+
+## Commit the dialog's controls back to the row state on Save (OK), then
+## re-render the summary list.
+func _on_refresh_dialog_confirmed() -> void:
+    var idx := _refresh_dialog_idx
+    if idx < 0 or idx >= _refresh_rows_state.size():
+        return
+    var attr_meta = _rd["attr"].get_item_metadata(_rd["attr"].selected) if _rd.has("attr") and _rd["attr"].selected >= 0 else null
+    var row := {
+        "attribute":    str(attr_meta) if attr_meta != null else "",
+        "amount":       int(_rd["amount"].value),
+        "infinite":     bool(_rd["infinite"].button_pressed),
+        "available":    int(_rd["available"].value),
+        "max":          int(_rd["max"].value),
+        "mode":         str(_rd["mode"].get_item_metadata(_rd["mode"].selected)),
+        "period":       int(_rd["period"].value),
+        "has_dwell":    bool(_rd["dwell_check"].button_pressed),
+        "dwell_delta":  int(_rd["dwell_delta"].value),
+        "dwell_period": int(_rd["dwell_period"].value),
+    }
+    _refresh_rows_state[idx] = row
     _render_refresh_rows()
-
-func _on_refresh_available_changed(value: float, idx: int) -> void:
-    if idx < 0 or idx >= _refresh_rows_state.size():
-        return
-    _refresh_rows_state[idx]["available"] = int(value)
-
-func _on_refresh_max_changed(value: float, idx: int) -> void:
-    if idx < 0 or idx >= _refresh_rows_state.size():
-        return
-    _refresh_rows_state[idx]["max"] = int(value)
-
-func _on_refresh_mode_changed(_dropdown_idx: int, idx: int, dropdown: OptionButton) -> void:
-    if idx < 0 or idx >= _refresh_rows_state.size():
-        return
-    var meta = dropdown.get_item_metadata(dropdown.selected)
-    _refresh_rows_state[idx]["mode"] = str(meta) if meta != null else "continuous"
-
-func _on_refresh_period_changed(value: float, idx: int) -> void:
-    if idx < 0 or idx >= _refresh_rows_state.size():
-        return
-    _refresh_rows_state[idx]["period"] = int(value)
 
 ## Add a new row with sensible defaults. First-available attribute,
 ## restores-per-use 1, infinite supply off, capped supply 10/10,
@@ -3306,19 +3391,30 @@ func _on_refresh_period_changed(value: float, idx: int) -> void:
 func _on_refresh_add_pressed() -> void:
     if _refreshes_current_id == "":
         return
+    # Don't add until the attribute catalog is loaded — a new row immediately
+    # opens its edit dialog, which needs the dropdown populated.
+    if not _refresh_attributes_loaded:
+        _set_refreshes_status("Loading refresh attributes...", false)
+        return
     var default_attr := ""
     if _refresh_attributes.size() > 0:
         default_attr = str(_refresh_attributes[0].get("name", ""))
     _refresh_rows_state.append({
-        "attribute": default_attr,
-        "amount":    1,
-        "infinite":  false,
-        "available": 10,
-        "max":       10,
-        "mode":      "continuous",
-        "period":    24,
+        "attribute":    default_attr,
+        "amount":       1,
+        "infinite":     false,
+        "available":    10,
+        "max":          10,
+        "mode":         "continuous",
+        "period":       24,
+        "has_dwell":    false,
+        "dwell_delta":  -1,
+        "dwell_period": 10,
     })
     _render_refresh_rows()
+    # Open the new row straight into its edit dialog so the operator can pick
+    # the attribute and tune it rather than hunting for the summary line.
+    _open_refresh_dialog(_refresh_rows_state.size() - 1)
 
 func _on_refresh_remove_pressed(idx: int) -> void:
     if idx < 0 or idx >= _refresh_rows_state.size():
@@ -3368,6 +3464,22 @@ func _on_refreshes_save_pressed() -> void:
             avail_value = avail
             max_value = max_q
             period_value = period
+        # Dwell recovery (optional). dwell_delta + dwell_period_minutes travel
+        # together — null for both when off. Mirrors the server CHECKs
+        # (dwell_delta < 0, dwell_period_minutes > 0) for immediate feedback.
+        var dwell_delta_value: Variant = null
+        var dwell_period_value: Variant = null
+        if bool(state.get("has_dwell", false)):
+            var dd := int(state.get("dwell_delta", -1))
+            var dp := int(state.get("dwell_period", 10))
+            if dd >= 0:
+                _set_refreshes_status("Dwell amount must be negative (" + attr + ")", true)
+                return
+            if dp <= 0:
+                _set_refreshes_status("Dwell period must be > 0 (" + attr + ")", true)
+                return
+            dwell_delta_value = dd
+            dwell_period_value = dp
         rows.append({
             "attribute":            attr,
             "amount":               amount,
@@ -3375,27 +3487,52 @@ func _on_refreshes_save_pressed() -> void:
             "max_quantity":         max_value,
             "refresh_mode":         mode,
             "refresh_period_hours": period_value,
+            "dwell_delta":          dwell_delta_value,
+            "dwell_period_minutes": dwell_period_value,
         })
 
-    var payload := JSON.stringify({"rows": rows})
+    # v2 set-refresh: POST the whole set with the object id in the body
+    # (replaces the v1 PUT /objects/{id}/refresh, which the v2 server doesn't
+    # serve). The admin gate is enforced server-side in the command handler.
+    var payload := JSON.stringify({"object_id": _refreshes_current_id, "rows": rows})
     var http := HTTPRequest.new()
     http.accept_gzip = false
     add_child(http)
     http.request_completed.connect(_on_refreshes_save_response.bind(http, _refreshes_current_id))
     var headers := Auth.auth_headers()
-    http.request(Auth.api_base + "/api/village/objects/" + _refreshes_current_id + "/refresh",
-        headers, HTTPClient.METHOD_PUT, payload)
+    http.request(Auth.api_base + "/api/village/admin/object/set-refresh",
+        headers, HTTPClient.METHOD_POST, payload)
     _set_refreshes_status("Saving...", false)
 
 func _on_refreshes_save_response(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest, saved_id: String) -> void:
     http.queue_free()
     if not Auth.check_response(response_code):
         return
+    # The operator may have selected a different object while the save was in
+    # flight. Node meta (that object's data) is still safe to update, but UI
+    # status / visible rows must only change if we're still on saved_id.
+    var still_selected := saved_id == _refreshes_current_id
+    if response_code == 200:
+        # set-refresh echoes the canonical applied set ({id, rows}). Persist it
+        # onto the object node's meta so a later reselection reads the saved
+        # state (v2 has no refresh GET).
+        var json = JSON.parse_string(body.get_string_from_utf8())
+        var echoed: Array = []
+        if json is Dictionary and json.get("rows", null) is Array:
+            echoed = json["rows"]
+        if world != null and world.placed_objects.has(saved_id):
+            world.placed_objects[saved_id].set_meta("refreshes", echoed)
+        if still_selected:
+            # An external reload invalidates any open dialog's cached row refs.
+            _reset_refresh_dialog()
+            _load_refresh_rows_from(echoed)
+            _render_refresh_rows()
+            _set_refreshes_status("Saved", false)
+        return
+    if not still_selected:
+        return
     if result != HTTPRequest.RESULT_SUCCESS:
         _set_refreshes_status("Network error", true)
-        return
-    if response_code == 204:
-        _set_refreshes_status("Saved", false)
         return
     if response_code == 403:
         _set_refreshes_status("Admin access required", true)
@@ -3403,16 +3540,13 @@ func _on_refreshes_save_response(result: int, response_code: int, _headers: Pack
     # 400 from server includes the validation message in the body's "error"
     # field — surface it directly instead of a generic "save failed."
     var detail := ""
-    var json = JSON.parse_string(body.get_string_from_utf8())
-    if json is Dictionary:
-        detail = str(json.get("error", ""))
+    var ejson = JSON.parse_string(body.get_string_from_utf8())
+    if ejson is Dictionary:
+        detail = str(ejson.get("error", ""))
     var label := "Save failed (" + str(response_code) + ")"
     if detail != "":
         label += ": " + detail
     _set_refreshes_status(label, true)
-    # Discard if a different object is now selected — the operator moved on.
-    if saved_id != _refreshes_current_id:
-        return
 
 func _set_refreshes_status(text: String, is_error: bool) -> void:
     if _refreshes_status == null:

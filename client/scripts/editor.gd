@@ -703,6 +703,7 @@ func _select_object(node: Node2D) -> void:
         "display_name": node.get_meta("display_name", ""),
         "tags": node.get_meta("tags", []),
         "entry_policy": node.get_meta("entry_policy", "none"),
+        "refreshes": node.get_meta("refreshes", []),
     })
 
 func _deselect() -> void:
