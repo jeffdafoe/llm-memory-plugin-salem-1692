@@ -421,6 +421,20 @@ type Actor struct {
 	// deliberately avoid (Postgres is durable storage, not a cadence store).
 	LastTirednessRecoveryAt *time.Time
 
+	// LastPCInputAt is the wall-clock instant of this PC's last deliberate
+	// action (move / speak / pay), stamped by touchPCInput. It drives two PC
+	// sleep behaviors (pc_sleep.go): the idle-auto-bed sweep beds a lodger PC
+	// once this is older than the idle threshold, and any action that stamps it
+	// also input-wakes a sleeping PC. nil for NPCs and for a PC that hasn't
+	// acted since load. v1 parity: actor.last_pc_input_at.
+	//
+	// TRANSIENT — not persisted (like LastTirednessRecoveryAt). On a LoadWorld
+	// a restored PC starts with a nil cursor, so the idle sweep won't bed them
+	// until they next act; harmless (an idle-but-never-acted PC simply isn't
+	// auto-bedded until its first stamped action) and keeps cadence state out
+	// of durable storage.
+	LastPCInputAt *time.Time
+
 	// Tick scheduling.
 	LastTickedAt       *time.Time
 	NextSelfTickAt     *time.Time
@@ -585,6 +599,10 @@ func CloneActor(a *Actor) *Actor {
 	if a.LastTirednessRecoveryAt != nil {
 		t := *a.LastTirednessRecoveryAt
 		cp.LastTirednessRecoveryAt = &t
+	}
+	if a.LastPCInputAt != nil {
+		t := *a.LastPCInputAt
+		cp.LastPCInputAt = &t
 	}
 	if a.SocialLastBoundaryAt != nil {
 		// Deep-cloned (the social mover stamps it each boundary), like the

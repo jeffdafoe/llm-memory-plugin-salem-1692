@@ -264,9 +264,13 @@ func payWithItemPCCommand(
 			if !ok {
 				return nil, errPCNotFound
 			}
+			// Deliberate PC action: stamp the input cursor + input-wake an asleep
+			// PC (ZBBS-WORK-324) before the offer. One clock for both.
+			now := time.Now().UTC()
+			sim.TouchPCInput(world, actorID, now)
 			return sim.PayWithItem(
 				actorID, seller, item, qty, amount, consumeNow,
-				consumers, quoteID, parentID, forText, time.Now().UTC(),
+				consumers, quoteID, parentID, forText, now,
 			).Fn(world)
 		},
 	}

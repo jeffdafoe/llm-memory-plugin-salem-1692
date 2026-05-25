@@ -430,4 +430,8 @@ func runSleepTickIteration(ctx context.Context, w *World) {
 			log.Printf("sim/npc_sleep: homeless rest-route sweep failed: %v", err)
 		}
 	}
+	// PC sleep arm (ZBBS-WORK-324): wake rested/capped PCs, then auto-bed idle
+	// lodger PCs. The player-driven counterpart to the NPC arms above — same
+	// per-minute cadence, own wake/bed semantics (rest-until-restored, no shift).
+	runPCSleepTick(ctx, w, now)
 }

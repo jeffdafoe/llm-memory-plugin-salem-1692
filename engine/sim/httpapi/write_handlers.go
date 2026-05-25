@@ -198,6 +198,12 @@ func movePCCommand(username string, dest sim.MoveDestination, leaveHuddleFirst b
 			if !ok {
 				return sim.MoveActorResult{}, errPCNotFound
 			}
+			// A deliberate PC action: stamp the input cursor and input-wake the
+			// PC if it was asleep (ZBBS-WORK-324). Before the move so the wake's
+			// pc_sleep_ended precedes any movement frames. One clock for the wake
+			// and the move so their timestamps/event order can't skew.
+			now := time.Now().UTC()
+			sim.TouchPCInput(world, actorID, now)
 			// Map a missing structure to our sentinel (→ 404) before MoveActor
 			// rejects it with a generic message; MoveActor's own checks still
 			// cover the rest (closed/owner/door/path → 422).
@@ -206,7 +212,7 @@ func movePCCommand(username string, dest sim.MoveDestination, leaveHuddleFirst b
 					return sim.MoveActorResult{}, errStructureNotFound
 				}
 			}
-			return sim.MoveActor(actorID, dest, leaveHuddleFirst, time.Now().UTC()).Fn(world)
+			return sim.MoveActor(actorID, dest, leaveHuddleFirst, now).Fn(world)
 		},
 	}
 }
@@ -298,7 +304,11 @@ func speakPCCommand(username, text string) sim.Command {
 			if !ok {
 				return nil, errPCNotFound
 			}
-			return sim.Speak(actorID, text, time.Now().UTC()).Fn(world)
+			// Deliberate PC action: stamp the input cursor + input-wake an asleep
+			// PC (ZBBS-WORK-324) before the speak. One clock for both.
+			now := time.Now().UTC()
+			sim.TouchPCInput(world, actorID, now)
+			return sim.Speak(actorID, text, now).Fn(world)
 		},
 	}
 }
