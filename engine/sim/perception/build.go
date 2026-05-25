@@ -419,6 +419,7 @@ func buildSurroundings(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnap
 	s := SurroundingsView{
 		InsideStructureID: a.InsideStructureID,
 		HuddleID:          a.CurrentHuddleID,
+		Atmosphere:        snap.Environment.Atmosphere,
 	}
 	if a.InsideStructureID != "" {
 		if st := snap.Structures[a.InsideStructureID]; st != nil {

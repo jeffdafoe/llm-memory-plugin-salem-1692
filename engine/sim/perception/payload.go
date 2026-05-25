@@ -300,6 +300,15 @@ type SurroundingsView struct {
 	// Each carries acquaintance info so Render can pick name vs.
 	// descriptor without re-reading the snapshot.
 	HuddleMembers []HuddleMember
+
+	// Atmosphere is the village-wide ambient line authored by the atmosphere
+	// cascade (Environment.Atmosphere — LLM-phrased by the cheap salem-generic
+	// VA ~every 4h on phase transitions, NOT the v1 chronicler). Surfaced into
+	// every NPC's perception so the ambient mood colors deliberation; it reuses
+	// the already-generated string, so it adds no LLM call (ZBBS-WORK-327, the
+	// v1 atmosphere perception line restored). Empty until the cascade first
+	// fires (restart-lossy by design) → the render omits the line.
+	Atmosphere string
 }
 
 // HuddleMember is one co-huddle peer's identity slice for the
