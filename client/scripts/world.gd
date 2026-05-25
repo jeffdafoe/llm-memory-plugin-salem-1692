@@ -1720,7 +1720,7 @@ func set_npc_display_name(container: Node2D, display_name: String) -> void:
     if npc_id == null:
         return
     container.set_meta("display_name", display_name)
-    _patch_npc(npc_id, "display-name", {"display_name": display_name})
+    _post_npc_admin(npc_id, "set-display-name", {"display_name": display_name})
 
 ## Link or unlink the llm_memory_agent for an NPC. Empty string unlinks.
 func set_npc_agent(container: Node2D, agent: String) -> void:
@@ -1733,15 +1733,15 @@ func set_npc_agent(container: Node2D, agent: String) -> void:
         container.set_meta("llm_memory_agent", agent)
     else:
         container.remove_meta("llm_memory_agent")
-    _patch_npc(npc_id, "agent", {"llm_memory_agent": value})
+    _post_npc_admin(npc_id, "set-agent", {"llm_memory_agent": value})
 
 ## Link or unlink the home structure for an NPC. Empty string unlinks.
 func set_npc_home_structure(container: Node2D, structure_id: String) -> void:
-    _set_npc_structure(container, "home-structure", "home_structure_id", structure_id)
+    _set_npc_structure(container, "set-home-structure", "home_structure_id", structure_id)
 
 ## Link or unlink the work structure for an NPC. Empty string unlinks.
 func set_npc_work_structure(container: Node2D, structure_id: String) -> void:
-    _set_npc_structure(container, "work-structure", "work_structure_id", structure_id)
+    _set_npc_structure(container, "set-work-structure", "work_structure_id", structure_id)
 
 ## Update the NPC's schedule in one atomic PATCH. start_min/end_min are
 ## sent as null when -1 (worker inherits dawn/dusk); otherwise as
@@ -1769,7 +1769,7 @@ func set_npc_schedule(container: Node2D, start_min: int, end_min: int, lateness:
     else:
         container.remove_meta("schedule_start_minute")
         container.remove_meta("schedule_end_minute")
-    _patch_npc(npc_id, "schedule", payload)
+    _post_npc_admin(npc_id, "set-schedule", payload)
 
 ## Update the NPC's social-hour overlay (ZBBS-068, minute-precision since
 ## ZBBS-071). Empty tag clears the schedule server-side (payload sends
@@ -1794,7 +1794,7 @@ func set_npc_social(container: Node2D, tag: String, start_min: int, end_min: int
         container.set_meta("social_tag", tag)
         container.set_meta("social_start_minute", start_min)
         container.set_meta("social_end_minute", end_min)
-    _patch_npc(npc_id, "social", payload)
+    _post_npc_admin(npc_id, "set-social", payload)
 
 ## POST /api/village/objects/{id}/tags — add a per-instance tag. The WS
 ## event village_object_tags_updated comes back with the authoritative set
@@ -1813,10 +1813,11 @@ func add_object_tag(object_id: String, tag: String) -> void:
     var body: String = JSON.stringify({"tag": tag})
     http.request(url, headers, HTTPClient.METHOD_POST, body)
 
-## POST /api/village/npcs/{id}/attributes — add an attribute slug to the
+## POST /api/village/admin/npc/add-attribute — add an attribute slug to the
 ## NPC's actor_attribute set. The WS event npc_attributes_changed comes
 ## back with the authoritative list and refreshes the editor panel chips
-## if this NPC is the current selection. Idempotent server-side.
+## if this NPC is the current selection. Idempotent server-side. (ZBBS-HOME-309
+## rewired this off the dead v1 POST /api/village/npcs/{id}/attributes.)
 func add_npc_attribute(npc_id: String, slug: String) -> void:
     var http = HTTPRequest.new()
     http.accept_gzip = false
@@ -1827,11 +1828,12 @@ func add_npc_attribute(npc_id: String, slug: String) -> void:
             push_error("Add npc attribute failed: " + str(code))
     )
     var headers: PackedStringArray = Auth.auth_headers()
-    var url: String = Auth.api_base + "/api/village/npcs/" + npc_id + "/attributes"
-    var body: String = JSON.stringify({"slug": slug})
+    var url: String = Auth.api_base + "/api/village/admin/npc/add-attribute"
+    var body: String = JSON.stringify({"npc_id": npc_id, "slug": slug})
     http.request(url, headers, HTTPClient.METHOD_POST, body)
 
-## DELETE /api/village/npcs/{id}/attributes/{slug}.
+## POST /api/village/admin/npc/remove-attribute. (ZBBS-HOME-309 rewired this
+## off the dead v1 DELETE /api/village/npcs/{id}/attributes/{slug}.)
 func remove_npc_attribute(npc_id: String, slug: String) -> void:
     var http = HTTPRequest.new()
     http.accept_gzip = false
@@ -1841,9 +1843,10 @@ func remove_npc_attribute(npc_id: String, slug: String) -> void:
         if code >= 300:
             push_error("Remove npc attribute failed: " + str(code))
     )
-    var headers: PackedStringArray = Auth.auth_headers(false)
-    var url: String = Auth.api_base + "/api/village/npcs/" + npc_id + "/attributes/" + slug
-    http.request(url, headers, HTTPClient.METHOD_DELETE)
+    var headers: PackedStringArray = Auth.auth_headers()
+    var url: String = Auth.api_base + "/api/village/admin/npc/remove-attribute"
+    var body: String = JSON.stringify({"npc_id": npc_id, "slug": slug})
+    http.request(url, headers, HTTPClient.METHOD_POST, body)
 
 ## DELETE /api/village/objects/{id}/tags/{tag}.
 func remove_object_tag(object_id: String, tag: String) -> void:
@@ -2182,10 +2185,10 @@ func apply_npc_attributes_changed(data: Dictionary) -> void:
         node.set_meta("attributes", attrs)
     npc_attributes_changed.emit(npc_id, attrs)
 
-## WS event — admin reset-needs (or the future well mechanic) changed
-## an NPC's hunger/thirst/tiredness. Patch the container metas and emit
-## npc_metadata_changed so the editor panel refreshes its readout if
-## this NPC is the current selection.
+## WS event — an NPC's hunger/thirst/tiredness changed (engine needs tick,
+## consumption, or a future well mechanic). Patch the container metas and emit
+## npc_metadata_changed so the editor panel refreshes its readout if this NPC
+## is the current selection.
 func apply_npc_needs_changed(data: Dictionary) -> void:
     var npc_id: String = data.get("id", "")
     if npc_id == "":
@@ -2223,7 +2226,10 @@ func apply_npc_social_updated(data: Dictionary) -> void:
         container.set_meta("social_end_minute", int(end_min))
     npc_metadata_changed.emit(npc_id)
 
-func _set_npc_structure(container: Node2D, suffix: String, field: String, structure_id: String) -> void:
+## route is the admin/npc action ("set-home-structure" / "set-work-structure");
+## field is the local container meta key (home_structure_id / work_structure_id).
+## The route body keys the value as structure_id (null clears the anchor).
+func _set_npc_structure(container: Node2D, route: String, field: String, structure_id: String) -> void:
     var npc_id = container.get_meta("npc_id", null)
     if npc_id == null:
         return
@@ -2231,7 +2237,7 @@ func _set_npc_structure(container: Node2D, suffix: String, field: String, struct
     if structure_id != "":
         value = structure_id
     container.set_meta(field, structure_id)
-    _patch_npc(npc_id, suffix, {field: value})
+    _post_npc_admin(npc_id, route, {"structure_id": value})
 
 ## Returns all placed objects in the 'structure' asset category as
 ## [{id, label}] dicts, sorted by label. Used to populate the editor's
@@ -2257,7 +2263,12 @@ func get_structure_objects() -> Array:
     out.sort_custom(func(a, b): return a.label < b.label)
     return out
 
-func _patch_npc(npc_id, suffix: String, payload_dict: Dictionary) -> void:
+## POST an NPC edit to the v2 admin surface (ZBBS-HOME-309). route is the
+## admin/npc action (e.g. "set-display-name"); the target id rides in the body
+## as npc_id, matching the admin/object/* convention. Replaces the dead v1
+## PATCH /api/village/npcs/{id}/{field}. State stays via optimistic local apply
+## + the per-field npc_* WS echo the routes broadcast.
+func _post_npc_admin(npc_id, route: String, payload_dict: Dictionary) -> void:
     var http = HTTPRequest.new()
     http.accept_gzip = false
     add_child(http)
@@ -2267,11 +2278,13 @@ func _patch_npc(npc_id, suffix: String, payload_dict: Dictionary) -> void:
         http.queue_free()
         Auth.check_response(c)
     )
+    var body: Dictionary = payload_dict.duplicate()
+    body["npc_id"] = str(npc_id)
     http.request(
-        api_base + "/api/village/npcs/" + str(npc_id) + "/" + suffix,
+        api_base + "/api/village/admin/npc/" + route,
         headers_arr,
-        HTTPClient.METHOD_PATCH,
-        JSON.stringify(payload_dict)
+        HTTPClient.METHOD_POST,
+        JSON.stringify(body)
     )
 
 ## Resolve an owner identifier to a display name.

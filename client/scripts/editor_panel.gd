@@ -28,14 +28,6 @@ signal npc_schedule_changed(start_min: int, end_min: int, lateness: int)
 signal npc_social_changed(tag: String, start_min: int, end_min: int)
 signal npc_home_assign_requested
 signal npc_work_assign_requested
-signal npc_run_cycle_requested
-signal npc_reset_needs_requested
-# Per-row "make them feel better" icon on the villager browser. Carries
-# its own npc_id rather than relying on selected_npc — the user clicks
-# without selecting first.
-signal npc_heal_requested(npc_id: String)
-signal npc_go_home_requested
-signal npc_go_to_work_requested
 signal npc_sprite_change_requested(npc_id: String, current_sprite_id: String)
 signal npc_select_requested(npc_id: String)
 signal entry_policy_changed(object_id: String, policy: String)
@@ -217,18 +209,11 @@ var _npc_home_pick_button: Button = null
 var _npc_home_clear_button: Button = null
 var _npc_work_pick_button: Button = null
 var _npc_work_clear_button: Button = null
-var _npc_run_cycle_button: Button = null
-var _npc_go_home_button: Button = null
-var _npc_go_to_work_button: Button = null
 # Needs readout (ZBBS-082) — three labels showing current value / max
-# (hunger, thirst, tiredness) and a "Top up" button. The button calls
-# reset-needs which the engine routes through applyConsumption so the
-# chronicler gets a needs_resolved nudge if any need crossed below the
-# red threshold.
+# (hunger, thirst, tiredness).
 var _npc_hunger_label: Label = null
 var _npc_thirst_label: Label = null
 var _npc_tiredness_label: Label = null
-var _npc_reset_needs_button: Button = null
 # Schedule section — absolute work-window pair (HH:MM start / HH:MM end)
 # + lateness + cadence triple. The start/end pair is nullable: when both
 # server values are NULL the worker inherits the global dawn/dusk window,
@@ -901,44 +886,7 @@ func _ready() -> void:
     _npc_work_clear_button.pressed.connect(func(): npc_work_structure_changed.emit(""))
     work_row.add_child(_npc_work_clear_button)
 
-    # Go Home / Go to Work — direct "walk to that building's door and go
-    # inside" commands, independent of any behavior. Disabled when the
-    # respective structure isn't linked.
-    _npc_go_home_button = Button.new()
-    _npc_go_home_button.text = "Go Home"
-    _npc_go_home_button.add_theme_font_override("font", _font)
-    _npc_go_home_button.add_theme_font_size_override("font_size", 13)
-    _npc_go_home_button.add_theme_color_override("font_color", COLOR_TEXT)
-    _npc_go_home_button.add_theme_stylebox_override("normal", behavior_style)
-    _npc_go_home_button.pressed.connect(func(): npc_go_home_requested.emit())
-    _npc_fields_section.add_child(_npc_go_home_button)
-
-    _npc_go_to_work_button = Button.new()
-    _npc_go_to_work_button.text = "Go to Work"
-    _npc_go_to_work_button.add_theme_font_override("font", _font)
-    _npc_go_to_work_button.add_theme_font_size_override("font_size", 13)
-    _npc_go_to_work_button.add_theme_color_override("font_color", COLOR_TEXT)
-    _npc_go_to_work_button.add_theme_stylebox_override("normal", behavior_style)
-    _npc_go_to_work_button.pressed.connect(func(): npc_go_to_work_requested.emit())
-    _npc_fields_section.add_child(_npc_go_to_work_button)
-
-    # Trigger the NPC's behavior cycle on demand — lamplighter rounds,
-    # laundry rotation, etc. Enabled only when a behavior is assigned.
-    _npc_run_cycle_button = Button.new()
-    _npc_run_cycle_button.text = "Run Cycle"
-    _npc_run_cycle_button.add_theme_font_override("font", _font)
-    _npc_run_cycle_button.add_theme_font_size_override("font_size", 13)
-    _npc_run_cycle_button.add_theme_color_override("font_color", COLOR_TEXT)
-    _npc_run_cycle_button.add_theme_stylebox_override("normal", behavior_style)
-    _npc_run_cycle_button.pressed.connect(func(): npc_run_cycle_requested.emit())
-    _npc_fields_section.add_child(_npc_run_cycle_button)
-
-    # Needs readout (ZBBS-082) — current hunger/thirst/tiredness in
-    # [0, 24] with a single "Top up" button that zeroes all three. The
-    # engine routes the reset through applyConsumption so the chronicler
-    # gets a needs_resolved event for any need that crossed below the
-    # red threshold (and can attend_to the NPC if they were away from
-    # work). Same path the future well mechanic will use.
+    # Needs readout (ZBBS-082) — current hunger/thirst/tiredness in [0, 24].
     var npc_needs_header = Label.new()
     npc_needs_header.text = "NEEDS"
     npc_needs_header.add_theme_color_override("font_color", COLOR_LABEL)
@@ -962,15 +910,6 @@ func _ready() -> void:
     _npc_tiredness_label.add_theme_font_size_override("font_size", 12)
     _npc_tiredness_label.add_theme_color_override("font_color", COLOR_TEXT)
     _npc_fields_section.add_child(_npc_tiredness_label)
-
-    _npc_reset_needs_button = Button.new()
-    _npc_reset_needs_button.text = "Top up needs"
-    _npc_reset_needs_button.add_theme_font_override("font", _font)
-    _npc_reset_needs_button.add_theme_font_size_override("font_size", 13)
-    _npc_reset_needs_button.add_theme_color_override("font_color", COLOR_TEXT)
-    _npc_reset_needs_button.add_theme_stylebox_override("normal", behavior_style)
-    _npc_reset_needs_button.pressed.connect(func(): npc_reset_needs_requested.emit())
-    _npc_fields_section.add_child(_npc_reset_needs_button)
 
     # INVENTORY section (ZBBS-091). Per-actor item rows with quantity
     # spinners. Empty by default; admin adds rows from the item picker.
@@ -2099,28 +2038,6 @@ func _on_owner_selected(index: int) -> void:
     else:
         _owner_label.visible = false
 
-## Returns true if the villager is currently INSIDE the given structure.
-## The inside flag alone isn't sufficient (could be inside their work
-## instead of home), so we additionally check that their persisted
-## position is near the structure's door tile. Both conditions: greyed
-## out only when they're genuinely there.
-func _is_npc_at_structure_door(npc_container: Node2D, structure_id: String) -> bool:
-    if npc_container == null or structure_id == "" or world == null:
-        return false
-    if not bool(npc_container.get_meta("inside", false)):
-        return false
-    var structure: Node2D = world.placed_objects.get(structure_id, null)
-    if structure == null:
-        return false
-    var asset_id: String = structure.get_meta("asset_id", "")
-    var asset: Dictionary = Catalog.assets.get(asset_id, {})
-    var door_world: Vector2 = structure.position
-    var dox = asset.get("door_offset_x", null)
-    var doy = asset.get("door_offset_y", null)
-    if dox != null and doy != null:
-        door_world += Vector2(float(dox) * 32.0, float(doy) * 32.0)
-    return npc_container.position.distance_to(door_world) < 48.0
-
 func _on_entry_policy_selected(index: int) -> void:
     if _ignoring_policy_dropdowns or _entry_policy_object_id == "":
         return
@@ -2360,33 +2277,6 @@ func _make_villager_row(npc_id: String, display_name: String, container: Node2D)
     needs_tiredness_label.add_theme_font_size_override("font_size", 12)
     needs_tiredness_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
     needs_row.add_child(needs_tiredness_label)
-
-    # "Make them feel better" heart inline at the end of the needs row.
-    # Plain Label (no button chrome) so it reads at the same size and
-    # weight as the need labels next to it. Click → reset-needs for
-    # this row's NPC, which routes through applyConsumption →
-    # needs_resolved chronicler dispatch so the NPC ticks if any need
-    # crossed below the red threshold. mouse_filter=STOP keeps the
-    # click off the row's gui_input (no select-and-pan side effect).
-    var heal_icon := Label.new()
-    heal_icon.text = String.chr(ICON_CODEPOINT_HEART)
-    heal_icon.tooltip_text = "Reset needs (and tick if distressed)"
-    heal_icon.add_theme_font_override("font", _icon_font)
-    heal_icon.add_theme_font_size_override("font_size", 13)
-    heal_icon.add_theme_color_override("font_color", Color(0.75, 0.40, 0.40, 0.85))
-    heal_icon.mouse_filter = Control.MOUSE_FILTER_STOP
-    heal_icon.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
-    heal_icon.gui_input.connect(func(ev):
-        if ev is InputEventMouseButton and ev.pressed and ev.button_index == MOUSE_BUTTON_LEFT:
-            npc_heal_requested.emit(npc_id)
-    )
-    heal_icon.mouse_entered.connect(func():
-        heal_icon.add_theme_color_override("font_color", Color(0.95, 0.55, 0.55, 1.0))
-    )
-    heal_icon.mouse_exited.connect(func():
-        heal_icon.add_theme_color_override("font_color", Color(0.75, 0.40, 0.40, 0.85))
-    )
-    needs_row.add_child(heal_icon)
 
     row.set_meta("name_label", name_label)
     row.set_meta("behavior_inline_label", behavior_inline_label)
@@ -2787,25 +2677,6 @@ func show_npc_selection(info: Dictionary) -> void:
     _refresh_home_button_label()
     _refresh_work_button_label()
 
-    # Run Cycle is only meaningful when at least one attribute is assigned —
-    # the per-NPC behavior dispatcher walks attribute_definition.behaviors
-    # for each slug, so an attribute-less NPC has nothing to dispatch.
-    if _npc_run_cycle_button != null:
-        _npc_run_cycle_button.disabled = _npc_attributes_current_list.size() == 0
-    # Go Home / Go to Work disabled when (a) no such structure linked, or
-    # (b) the villager is already standing at that structure's door tile.
-    # Position-based check rather than the inside flag, because inside can
-    # be true for work too.
-    var npc_container: Node2D = null
-    if world != null and npc_id != "" and world.placed_npcs.has(npc_id):
-        npc_container = world.placed_npcs[npc_id]
-    if _npc_go_home_button != null:
-        var at_home: bool = _is_npc_at_structure_door(npc_container, _npc_home_current_id)
-        _npc_go_home_button.disabled = _npc_home_current_id == "" or at_home
-    if _npc_go_to_work_button != null:
-        var at_work: bool = _is_npc_at_structure_door(npc_container, _npc_work_current_id)
-        _npc_go_to_work_button.disabled = _npc_work_current_id == "" or at_work
-
     # Schedule window — both NULL means "inherit dawn/dusk", in which case
     # we prepopulate the spinners from the global defaults so the admin
     # can see what the NPC is actually doing. The is-null flag stays true
@@ -2879,10 +2750,6 @@ func show_npc_selection(info: Dictionary) -> void:
         _format_need_label(_npc_thirst_label, "Thirst", thirst_val, 12)
     if _npc_tiredness_label != null:
         _format_need_label(_npc_tiredness_label, "Tiredness", tiredness_val, 20)
-    if _npc_reset_needs_button != null:
-        # Disable when already topped off so the admin doesn't churn the
-        # chronicler with no-op resets.
-        _npc_reset_needs_button.disabled = (hunger_val == 0 and thirst_val == 0 and tiredness_val == 0)
 
     _ignoring_npc_inputs = false
 
@@ -3610,8 +3477,13 @@ func _fetch_inventory_for_actor(actor_id: String) -> void:
     http.accept_gzip = false
     add_child(http)
     http.request_completed.connect(_on_inventory_response.bind(http, actor_id))
-    var headers := Auth.auth_headers(false)
-    http.request(Auth.api_base + "/api/village/npcs/" + actor_id + "/inventory", headers)
+    # ZBBS-HOME-309: rewired off the dead v1 GET /api/village/npcs/{id}/inventory
+    # to the v2 admin read route (POST, id in body). Response is still a bare
+    # array of {item_kind, quantity}, so the parse below is unchanged.
+    var headers := Auth.auth_headers()
+    var body: String = JSON.stringify({"npc_id": actor_id})
+    http.request(Auth.api_base + "/api/village/admin/npc/inventory",
+        headers, HTTPClient.METHOD_POST, body)
 
 func _on_inventory_response(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest, fetched_id: String) -> void:
     http.queue_free()
@@ -3736,14 +3608,17 @@ func _on_inventory_save_pressed() -> void:
             return
         rows.append({"item_kind": item, "quantity": qty})
 
-    var payload := JSON.stringify({"rows": rows})
+    # ZBBS-HOME-309: rewired off the dead v1 PUT /api/village/npcs/{id}/inventory
+    # to the v2 admin whole-set write (POST, id in body). Still responds 204 on
+    # success, so _on_inventory_save_response is unchanged.
+    var payload := JSON.stringify({"npc_id": _inventory_current_id, "rows": rows})
     var http := HTTPRequest.new()
     http.accept_gzip = false
     add_child(http)
     http.request_completed.connect(_on_inventory_save_response.bind(http, _inventory_current_id))
     var headers := Auth.auth_headers()
-    http.request(Auth.api_base + "/api/village/npcs/" + _inventory_current_id + "/inventory",
-        headers, HTTPClient.METHOD_PUT, payload)
+    http.request(Auth.api_base + "/api/village/admin/npc/set-inventory",
+        headers, HTTPClient.METHOD_POST, payload)
     _set_inventory_status("Saving...", false)
 
 func _on_inventory_save_response(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest, _saved_id: String) -> void:

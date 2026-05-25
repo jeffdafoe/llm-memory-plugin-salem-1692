@@ -2,6 +2,8 @@ package sim
 
 import (
 	"context"
+	"encoding/binary"
+	"hash/fnv"
 	"log"
 	"time"
 )
@@ -69,6 +71,34 @@ func (ShiftDutyWarrantReason) DedupDiscriminator() uint64 { return 0 }
 // ShiftTickerInterval — once a minute, matching RunNeedsTicker / RunSleepTicker
 // / RunPhaseTicker. ~60s duty-retry granularity, easily tuned later.
 const ShiftTickerInterval = time.Minute
+
+// DefaultShiftLatenessWindowMinutes is the default arrival-stagger window when
+// shift_lateness_window_minutes isn't set in the DB. A 30-minute spread breaks
+// up the synchronized "everyone leaves at shift start" departure that the
+// WORK-278 slice deferred; 0 would disable it. See ShiftLatenessWindowMinutes.
+const DefaultShiftLatenessWindowMinutes = 30
+
+// shiftLatenessOffset returns an NPC's to-work arrival delay (minutes after
+// shift start) before its duty becomes eligible — a deterministic value in
+// [0, window) seeded by (actor id, shift-start minute). The hash spreads NPCs
+// across the window so they don't all leave on the same minute, and folding in
+// the shift-start minute lets two NPCs sharing a start still differ. It is NOT
+// per-day: a given NPC on a given shift-start gets the same offset every day
+// (deterministic + restart-stable) — which is exactly what keeps the offset
+// constant across a shift's minute-ticks so the level-triggered retry stays
+// sound. (Fold a day counter into the seed if per-day variation is ever wanted.)
+// window <= 0 disables (returns 0 → no stagger). FNV-1a, matching hashActorID.
+func shiftLatenessOffset(id ActorID, shiftStartMinute, window int) int {
+	if window <= 0 {
+		return 0
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(id))
+	var buf [2]byte
+	binary.LittleEndian.PutUint16(buf[:], uint16(shiftStartMinute))
+	_, _ = h.Write(buf[:])
+	return int(h.Sum32() % uint32(window))
+}
 
 // minuteInShiftWindow reports whether nowMinute (0..1439) falls in [start, end),
 // handling wrap-midnight windows (start > end, e.g. a 16:00–03:00 tavern shift).
@@ -161,6 +191,21 @@ func shiftDutyTarget(w *World, a *Actor, nowMinute int, now time.Time) (target S
 		// it first; decoratives have no real needs, so they always go).
 		if isAgent && anyNeedMildOrWorse(w, a) {
 			return "", false, false
+		}
+		// Arrival stagger (ZBBS-HOME-309): delay the to-work duty's INITIAL
+		// eligibility by a per-NPC offset so the village doesn't all leave on the
+		// same minute. Gated as "minutes since shift start >= offset" (not an
+		// exact-minute match) so once eligible it stays eligible — preserving the
+		// once-a-minute level-triggered retry. The delta is wrap-aware (the
+		// (x+1440)%1440 form) for night shifts that cross midnight. Applied here
+		// in the shared target so it covers both agents and decoratives. Only the
+		// to-work arm is staggered; going-home (below) is never delayed.
+		offset := shiftLatenessOffset(a.ID, start, w.Settings.ShiftLatenessWindowMinutes)
+		if offset > 0 {
+			minutesSinceShiftStart := (nowMinute - start + 1440) % 1440
+			if minutesSinceShiftStart < offset {
+				return "", false, false
+			}
 		}
 		return a.WorkStructureID, true, true
 	case !onShift && a.HomeStructureID != "" && !atHome:
