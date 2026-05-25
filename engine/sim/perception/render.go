@@ -110,6 +110,8 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderRestocking(&b, p.Restocking)
 	renderLodging(&b, p.Lodging)
 	renderKeeperLodging(&b, p.KeeperLodging)
+	renderSummonsForYou(&b, p.SummonsForYou)
+	renderSummonRefusal(&b, p.SummonRefusal)
 	renderScene(&b, p)
 	renderSecondary(&b, p.Secondary)
 

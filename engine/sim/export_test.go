@@ -376,3 +376,84 @@ func EmitForTest(w *World, evt Event) { w.emit(evt) }
 // helpers for sim_test.
 func SourceKey(m WarrantMeta) WarrantSourceKey { return m.sourceKey() }
 func EventSourced(m WarrantMeta) bool          { return m.eventSourced() }
+
+// --- summon errand test accessors (ZBBS-HOME-311) -------------------------
+// The errand map + struct are unexported; sim_test drives the machine
+// through these read accessors and the chat-pause driver.
+
+// SummonErrandCount returns the number of active errands in the world.
+// Used by the bounded-membership assertions ("map empty after every
+// terminal path").
+func SummonErrandCount(w *World) int { return len(w.SummonErrands) }
+
+// SummonErrandStateByID returns the string state of the errand with the
+// given id and ok=false when no such errand exists. ErrandID is exported,
+// so sim_test holds the id returned by DispatchSummon.
+func SummonErrandStateByID(w *World, id ErrandID) (string, bool) {
+	e, ok := w.SummonErrands[id]
+	if !ok || e == nil {
+		return "", false
+	}
+	return string(e.State), true
+}
+
+// SummonErrandMessengerByID returns the messenger actor selected for the
+// errand (so a test can position it for the next leg's arrival).
+func SummonErrandMessengerByID(w *World, id ErrandID) (ActorID, bool) {
+	e, ok := w.SummonErrands[id]
+	if !ok || e == nil {
+		return "", false
+	}
+	return e.MessengerID, true
+}
+
+// SummonErrandLegAttemptByID returns the MovementAttemptID of the walk leg
+// the errand is currently waiting on — the value a synthetic ActorArrived
+// must carry to advance the machine.
+func SummonErrandLegAttemptByID(w *World, id ErrandID) (MovementAttemptID, bool) {
+	e, ok := w.SummonErrands[id]
+	if !ok || e == nil {
+		return 0, false
+	}
+	return e.LegAttemptID, true
+}
+
+// RunSummonCommissionForTest fires the commissioning chat-pause beat
+// synchronously (the AfterFunc body) so tests drive the messenger-at-point
+// → messenger-to-target/refusal transition without a real-time wait.
+func RunSummonCommissionForTest(w *World, id ErrandID, now time.Time) {
+	runSummonChatPause(id, summonCommission, now).Fn(w)
+}
+
+// RunSummonDeliverForTest fires the delivery chat-pause beat synchronously
+// so tests drive the messenger-at-target → messenger-returning/refusal
+// transition without a real-time wait.
+func RunSummonDeliverForTest(w *World, id ErrandID, now time.Time) {
+	runSummonChatPause(id, summonDeliver, now).Fn(w)
+}
+
+// ClearSummonCuesForTest exposes the cue-clear helper so sim_test can assert
+// the nil-safe / both-fields-cleared behavior directly.
+func ClearSummonCuesForTest(a *Actor) { clearSummonCues(a) }
+
+// RunSummonErrandTTLForTest fires the bounded-lifetime TTL body synchronously
+// so a test can assert a stuck/superseded errand (one whose tracked leg never
+// produced a matching ActorArrived) is swept from the map — the guarantee that
+// a leaked errand can't suppress the summoner's arrival warrants forever.
+func RunSummonErrandTTLForTest(w *World, id ErrandID) { expireSummonErrand(id).Fn(w) }
+
+// SuppressArrivalWarrantForTest invokes the world's installed
+// suppressArrivalWarrant hook for actorID (the work-domain seam consulted by
+// finishArrival). Returns false when no hook is installed (the default) or
+// the actor is unknown — matching finishArrival's "stamp unless suppressed"
+// gate.
+func SuppressArrivalWarrantForTest(w *World, actorID ActorID) bool {
+	if w.suppressArrivalWarrant == nil {
+		return false
+	}
+	a, ok := w.Actors[actorID]
+	if !ok {
+		return false
+	}
+	return w.suppressArrivalWarrant(a)
+}

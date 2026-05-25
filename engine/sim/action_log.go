@@ -79,6 +79,14 @@ const (
 	// is the model-supplied reason; HuddleID is the actor's huddle at
 	// append time (usually empty — a break closes the post).
 	ActionTypeTookBreak ActionType = "took_break"
+
+	// ActionTypeSummoned — a summon messenger delivered a summons to the
+	// target (ZBBS-HOME-311). ActorID is the TARGET (the summons is the
+	// event that happened to them, not an action they took); Text is the
+	// engine-authored delivery line; HuddleID is the target's huddle at
+	// delivery time. Engine-sourced, not a tool call — the messenger is a
+	// non-VA NPC.
+	ActionTypeSummoned ActionType = "summoned"
 )
 
 // ActionLogEntry is one row in the in-memory action log. Carries the
