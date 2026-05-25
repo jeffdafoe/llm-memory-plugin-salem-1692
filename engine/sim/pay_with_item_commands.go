@@ -383,6 +383,7 @@ func PayWithItem(
 				Amount:         amount,
 				QuoteID:        0,
 				ParentID:       parentRefForLineage,
+				Depth:          depth,
 				SceneID:        sceneID,
 				HuddleID:       buyer.CurrentHuddleID,
 				ExpiresAt:      expiresAt,

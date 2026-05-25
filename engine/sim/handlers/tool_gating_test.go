@@ -42,6 +42,21 @@ func payOfferPayload(ledgers ...sim.LedgerID) perception.Payload {
 	return perception.Payload{ActorID: "seller", Warrants: warrants}
 }
 
+// payOfferPayloadDepths builds a payload with one pending offer per supplied
+// depth (ledger ids assigned 1..n). Used by the scar-#4 counter-cap tests.
+func payOfferPayloadDepths(depths ...int) perception.Payload {
+	var warrants []sim.WarrantMeta
+	for i, d := range depths {
+		warrants = append(warrants, sim.WarrantMeta{
+			TriggerActorID: "bob",
+			Reason: sim.PayOfferWarrantReason{
+				LedgerID: sim.LedgerID(i + 1), Buyer: "bob", Item: "stew", Qty: 1, Amount: 5, Depth: d,
+			},
+		})
+	}
+	return perception.Payload{ActorID: "seller", Warrants: warrants}
+}
+
 // TestGateTools_NoOffer_DropsSellerResponseTools — with no pending offer in
 // the payload, the seller-response tools (accept/decline/counter) are not
 // advertised; everything else (incl. buyer-side withdraw_pay) still is.
@@ -126,6 +141,66 @@ func TestGateTools_NoOffer_PreservesOrderOfRemaining(t *testing.T) {
 	for i := range got {
 		if got[i].Name != want[i] {
 			t.Errorf("order mismatch at %d: %q vs %q", i, got[i].Name, want[i])
+		}
+	}
+}
+
+// TestGateTools_OfferAtDepthCap_DropsCounterPay — an offer already at the
+// counter-chain depth cap can't be usefully countered (the buyer's response
+// would be rejected by validateInResponseTo, parent.Depth >= cap), so
+// counter_pay is dropped; accept_pay / decline_pay stay advertised (an offer
+// at the cap is still acceptable / declinable). ZBBS-WORK-320 scar #4.
+func TestGateTools_OfferAtDepthCap_DropsCounterPay(t *testing.T) {
+	r := gatingTestRegistry(t)
+	specs := gateTools(r, payOfferPayloadDepths(sim.MaxPayCounterChainDepth), nil)
+	names := specNameSet(specs)
+	if names[counterPayToolName] != 0 {
+		t.Errorf("counter_pay advertised for an offer at the depth cap; count %d", names[counterPayToolName])
+	}
+	for _, want := range []string{"accept_pay", "decline_pay"} {
+		if names[want] != 1 {
+			t.Errorf("%q should stay advertised at the depth cap; count %d", want, names[want])
+		}
+	}
+}
+
+// TestGateTools_OfferJustBelowCap_KeepsCounterPay — boundary: an offer at
+// cap-1 can still be countered (the buyer's response at depth==cap is allowed,
+// since validateInResponseTo rejects only parent.Depth >= cap), so counter_pay
+// stays.
+func TestGateTools_OfferJustBelowCap_KeepsCounterPay(t *testing.T) {
+	r := gatingTestRegistry(t)
+	specs := gateTools(r, payOfferPayloadDepths(sim.MaxPayCounterChainDepth-1), nil)
+	names := specNameSet(specs)
+	if names[counterPayToolName] != 1 {
+		t.Errorf("counter_pay should stay advertised at depth cap-1; count %d", names[counterPayToolName])
+	}
+}
+
+// TestGateTools_MixedDepth_KeepsCounterPayWhenAnyCounterable — with one offer
+// at the cap and one below it, counter_pay stays advertised: the seller can
+// still counter the below-cap offer by ledger_id.
+func TestGateTools_MixedDepth_KeepsCounterPayWhenAnyCounterable(t *testing.T) {
+	r := gatingTestRegistry(t)
+	specs := gateTools(r, payOfferPayloadDepths(sim.MaxPayCounterChainDepth, 0), nil)
+	names := specNameSet(specs)
+	if names[counterPayToolName] != 1 {
+		t.Errorf("counter_pay should stay advertised when at least one offer is counterable; count %d", names[counterPayToolName])
+	}
+}
+
+// TestGateTools_AllOffersAtCap_DropsCounterPay — every pending offer at the
+// cap drops counter_pay; accept/decline remain.
+func TestGateTools_AllOffersAtCap_DropsCounterPay(t *testing.T) {
+	r := gatingTestRegistry(t)
+	specs := gateTools(r, payOfferPayloadDepths(sim.MaxPayCounterChainDepth, sim.MaxPayCounterChainDepth), nil)
+	names := specNameSet(specs)
+	if names[counterPayToolName] != 0 {
+		t.Errorf("counter_pay advertised when all offers at the cap; count %d", names[counterPayToolName])
+	}
+	for _, want := range []string{"accept_pay", "decline_pay"} {
+		if names[want] != 1 {
+			t.Errorf("%q should stay advertised; count %d", want, names[want])
 		}
 	}
 }
