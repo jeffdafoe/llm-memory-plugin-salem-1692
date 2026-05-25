@@ -224,8 +224,7 @@ func _on_repeat_timeout() -> void:
     _start_scroll()
 
 
-# Click anywhere on the ticker → emit clicked. main.gd routes this to
-# the talk_panel's force_open_to_village_tab().
+# Click anywhere on the ticker → emit clicked.
 func _gui_input(event: InputEvent) -> void:
     if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
         clicked.emit()
