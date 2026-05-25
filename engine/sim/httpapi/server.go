@@ -122,6 +122,7 @@ func (s *Server) Handler() http.Handler {
 	// caller's actor must have admin = true; see adminCommand in
 	// write_handlers.go). Distinct from pc/* whose ownership is structural.
 	mux.HandleFunc("POST /api/village/admin/phase", s.requireAuth(s.handleAdminPhase))
+	mux.HandleFunc("POST /api/village/admin/object/create", s.requireAuth(s.handleAdminObjectCreate))
 	mux.HandleFunc("POST /api/village/admin/object/move", s.requireAuth(s.handleAdminObjectMove))
 	mux.HandleFunc("POST /api/village/admin/object/delete", s.requireAuth(s.handleAdminObjectDelete))
 	mux.HandleFunc("POST /api/village/admin/object/set-state", s.requireAuth(s.handleAdminObjectSetState))

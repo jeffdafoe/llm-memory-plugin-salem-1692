@@ -105,6 +105,17 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 		return WireFrame{Type: "object_deleted", Data: objectDeletedWireDTO{
 			ID: string(e.ObjectID),
 		}}, true
+	case *sim.VillageObjectCreated:
+		return WireFrame{Type: "object_created", Data: objectCreatedWireDTO{
+			ID:           string(e.ObjectID),
+			AssetID:      string(e.AssetID),
+			CurrentState: e.CurrentState,
+			X:            e.X,
+			Y:            e.Y,
+			PlacedBy:     e.PlacedBy,
+			EntryPolicy:  string(e.EntryPolicy),
+			AttachedTo:   string(e.AttachedTo),
+		}}, true
 	case *sim.VillageObjectDisplayNameChanged:
 		return WireFrame{Type: "object_display_name_changed", Data: objectDisplayNameChangedWireDTO{
 			ID:          string(e.ObjectID),
@@ -299,6 +310,22 @@ type objectMovedWireDTO struct {
 // for an object the client doesn't know is ignored client-side.
 type objectDeletedWireDTO struct {
 	ID string `json:"id"`
+}
+
+// objectCreatedWireDTO is the object_created payload — a placed object created
+// by an admin via the editor. Carries the fields the client's _place_object
+// reads to render the new object; absent metadata (owner, display_name, tags)
+// defaults client-side. attached_to is omitted (→ client null) for a root
+// placement. The placing client dedupes this against its optimistic node by id.
+type objectCreatedWireDTO struct {
+	ID           string  `json:"id"`
+	AssetID      string  `json:"asset_id"`
+	CurrentState string  `json:"current_state"`
+	X            float64 `json:"x"`
+	Y            float64 `json:"y"`
+	PlacedBy     string  `json:"placed_by,omitempty"`
+	EntryPolicy  string  `json:"entry_policy,omitempty"`
+	AttachedTo   string  `json:"attached_to,omitempty"`
 }
 
 // objectDisplayNameChangedWireDTO is the object_display_name_changed payload — a

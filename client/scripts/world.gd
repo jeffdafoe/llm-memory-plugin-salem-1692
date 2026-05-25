@@ -1491,7 +1491,7 @@ func _save_attachment(asset_id: String, pos: Vector2, parent_id: String, node: N
 
     http.request_completed.connect(_on_object_saved.bind(http, node))
     var headers_arr = Auth.auth_headers()
-    http.request(api_base + "/api/village/objects", headers_arr, HTTPClient.METHOD_POST, payload)
+    http.request(api_base + "/api/village/admin/object/create", headers_arr, HTTPClient.METHOD_POST, payload)
 
 ## Add a new object to the world (from the editor).
 ## Returns the created container node so the editor can auto-select it.
@@ -1540,7 +1540,7 @@ func _save_object(asset_id: String, state: String, pos: Vector2, node: Node2D) -
 
     http.request_completed.connect(_on_object_saved.bind(http, node))
     var headers_arr = Auth.auth_headers()
-    http.request(api_base + "/api/village/objects", headers_arr, HTTPClient.METHOD_POST, payload)
+    http.request(api_base + "/api/village/admin/object/create", headers_arr, HTTPClient.METHOD_POST, payload)
 
 func _on_object_saved(result: int, response_code: int, headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest, node: Node2D) -> void:
     http.queue_free()
@@ -1563,6 +1563,10 @@ func _on_object_saved(result: int, response_code: int, headers: PackedStringArra
         node.set_meta("placed_by", json.get("placed_by", ""))
         node.set_meta("owner", json.get("owner", ""))
         node.set_meta("display_name", json.get("display_name", ""))
+        # Adopt attached_to so an overlay placement's optimistic node carries
+        # its parent link (the WS echo is deduped away for the placing client).
+        # Root placements omit it server-side → "".
+        node.set_meta("attached_to", json.get("attached_to", ""))
         placed_objects[obj_id] = node
         # Mark as locally created so any late WS echo is ignored
         if event_client != null:
@@ -1609,6 +1613,7 @@ func _update_object_position(obj_id, pos: Vector2) -> void:
     add_child(http)
 
     var payload = JSON.stringify({
+        "object_id": str(obj_id),
         "x": pos.x,
         "y": pos.y
     })
@@ -1618,18 +1623,19 @@ func _update_object_position(obj_id, pos: Vector2) -> void:
         http.queue_free()
         Auth.check_response(c)
     )
-    http.request(api_base + "/api/village/objects/" + str(obj_id) + "/position", headers_arr, HTTPClient.METHOD_PATCH, payload)
+    http.request(api_base + "/api/village/admin/object/move", headers_arr, HTTPClient.METHOD_POST, payload)
 
 func _delete_object(obj_id) -> void:
     var http = HTTPRequest.new()
     http.accept_gzip = false
     add_child(http)
-    var headers: PackedStringArray = Auth.auth_headers(false)
+    var headers: PackedStringArray = Auth.auth_headers()
+    var payload = JSON.stringify({"object_id": str(obj_id)})
     http.request_completed.connect(func(r, c, h, b):
         http.queue_free()
         Auth.check_response(c)
     )
-    http.request(api_base + "/api/village/objects/" + str(obj_id), headers, HTTPClient.METHOD_DELETE)
+    http.request(api_base + "/api/village/admin/object/delete", headers, HTTPClient.METHOD_POST, payload)
 
 ## Fetch village agents to build the owner display name lookup.
 func _load_agents() -> void:
@@ -1681,17 +1687,15 @@ func _update_object_owner(obj_id, owner: String) -> void:
     http.accept_gzip = false
     add_child(http)
 
-    var owner_value = null
-    if owner != "":
-        owner_value = owner
-    var payload = JSON.stringify({"owner": owner_value})
+    # v2 set-owner takes owner_actor_id as a plain string; empty = clear owner.
+    var payload = JSON.stringify({"object_id": str(obj_id), "owner_actor_id": owner})
 
     var headers_arr = Auth.auth_headers()
     http.request_completed.connect(func(r, c, h, b):
         http.queue_free()
         Auth.check_response(c)
     )
-    http.request(api_base + "/api/village/objects/" + str(obj_id) + "/owner", headers_arr, HTTPClient.METHOD_PATCH, payload)
+    http.request(api_base + "/api/village/admin/object/set-owner", headers_arr, HTTPClient.METHOD_POST, payload)
 
 ## Set the display name of an object and persist to the server.
 func set_object_display_name(node: Node2D, display_name: String) -> void:
@@ -1706,17 +1710,15 @@ func _update_object_display_name(obj_id, display_name: String) -> void:
     http.accept_gzip = false
     add_child(http)
 
-    var name_value = null
-    if display_name != "":
-        name_value = display_name
-    var payload = JSON.stringify({"display_name": name_value})
+    # v2 set-display-name takes display_name as a plain string; empty clears it.
+    var payload = JSON.stringify({"object_id": str(obj_id), "display_name": display_name})
 
     var headers_arr = Auth.auth_headers()
     http.request_completed.connect(func(r, c, h, b):
         http.queue_free()
         Auth.check_response(c)
     )
-    http.request(api_base + "/api/village/objects/" + str(obj_id) + "/name", headers_arr, HTTPClient.METHOD_PATCH, payload)
+    http.request(api_base + "/api/village/admin/object/set-display-name", headers_arr, HTTPClient.METHOD_POST, payload)
 
 ## Set the display name of an NPC and persist to the server.
 ## Stashes the name on the container immediately for optimistic UI; the
@@ -1815,8 +1817,8 @@ func add_object_tag(object_id: String, tag: String) -> void:
             push_error("Add object tag failed: " + str(code))
     )
     var headers: PackedStringArray = Auth.auth_headers()
-    var url: String = Auth.api_base + "/api/village/objects/" + object_id + "/tags"
-    var body: String = JSON.stringify({"tag": tag})
+    var url: String = Auth.api_base + "/api/village/admin/object/add-tag"
+    var body: String = JSON.stringify({"object_id": object_id, "tag": tag})
     http.request(url, headers, HTTPClient.METHOD_POST, body)
 
 ## POST /api/village/npcs/{id}/attributes — add an attribute slug to the
@@ -1861,9 +1863,10 @@ func remove_object_tag(object_id: String, tag: String) -> void:
         if code >= 300:
             push_error("Remove object tag failed: " + str(code))
     )
-    var headers: PackedStringArray = Auth.auth_headers(false)
-    var url: String = Auth.api_base + "/api/village/objects/" + object_id + "/tags/" + tag
-    http.request(url, headers, HTTPClient.METHOD_DELETE)
+    var headers: PackedStringArray = Auth.auth_headers()
+    var url: String = Auth.api_base + "/api/village/admin/object/remove-tag"
+    var body: String = JSON.stringify({"object_id": object_id, "tag": tag})
+    http.request(url, headers, HTTPClient.METHOD_POST, body)
 
 ## PATCH /api/village/objects/{id}/loiter-offset — set the per-instance
 ## loiter offset where visiting NPCs stand. Both values are tile-unit ints,
@@ -1878,12 +1881,14 @@ func set_object_loiter_offset(object_id: String, ox, oy) -> void:
             push_error("Set loiter offset failed: " + str(code))
     )
     var headers: PackedStringArray = Auth.auth_headers()
-    var url: String = Auth.api_base + "/api/village/objects/" + object_id + "/loiter-offset"
+    var url: String = Auth.api_base + "/api/village/admin/object/set-loiter-offset"
+    # v2 set-loiter-offset keys the offset as x/y (nullable tile ints; both null clears).
     var body_dict: Dictionary = {
-        "loiter_offset_x": ox,
-        "loiter_offset_y": oy,
+        "object_id": object_id,
+        "x": ox,
+        "y": oy,
     }
-    http.request(url, headers, HTTPClient.METHOD_PATCH, JSON.stringify(body_dict))
+    http.request(url, headers, HTTPClient.METHOD_POST, JSON.stringify(body_dict))
 
 ## WS event — loiter offset changed (us or another admin). Update meta
 ## and emit a signal so the marker can repaint if this object is selected.
