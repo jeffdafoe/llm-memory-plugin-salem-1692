@@ -77,3 +77,20 @@ func (p *RestockPolicy) ProduceEntries() []RestockEntry {
 	}
 	return out
 }
+
+// BuyEntries filters the policy to just the buy-source entries — the items
+// a reseller restocks by purchasing from another actor rather than making
+// itself. Mirror of ProduceEntries; consumed by the restock producer
+// (restock_tick.go) and the "## Restocking" perception section.
+func (p *RestockPolicy) BuyEntries() []RestockEntry {
+	if p == nil {
+		return nil
+	}
+	out := make([]RestockEntry, 0, len(p.Restock))
+	for _, e := range p.Restock {
+		if e.Source == RestockSourceBuy {
+			out = append(out, e)
+		}
+	}
+	return out
+}

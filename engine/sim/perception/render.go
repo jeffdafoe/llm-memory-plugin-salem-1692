@@ -107,6 +107,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderPendingDeliveriesToMe(&b, p.PendingDeliveriesToMe)
 	renderRecoveryOptions(&b, p.RecoveryOptions)
 	renderSatiation(&b, p.Satiation)
+	renderRestocking(&b, p.Restocking)
 	renderLodging(&b, p.Lodging)
 	renderKeeperLodging(&b, p.KeeperLodging)
 	renderScene(&b, p)
@@ -630,6 +631,8 @@ func renderWarrantLine(n int, w sim.WarrantMeta, maxTextBytes int) (string, bool
 		return renderIdleBackstopWarrantLine(n, kind, scope, r.QuietDuration), false
 	case sim.ShiftDutyWarrantReason:
 		return renderShiftDutyWarrantLine(n, kind, scope, r.ToWork, r.TargetStructureID), false
+	case sim.RestockWarrantReason:
+		return renderRestockWarrantLine(n, kind, scope, r.Item), false
 	case sim.ConsumedWarrantReason:
 		return renderNarrationWarrantLine(n, kind, scope, r.NarrationText, w.TriggerActorID, maxTextBytes)
 	case sim.DwellStartedWarrantReason:
@@ -763,6 +766,24 @@ func renderShiftDutyWarrantLine(n int, kind, scope string, toWork bool, target s
 		return fmt.Sprintf("%d. [%s]%s %s\n", n, kind, scope, dir)
 	}
 	return fmt.Sprintf("%d. [%s]%s %s (structure_id: %s)\n", n, kind, scope, dir, target)
+}
+
+// renderRestockWarrantLine renders the warrant line for a RestockWarrantReason —
+// the buy-side restock producer's nudge to a reseller whose bought-in stock has
+// dropped below the reorder threshold. It names the representative low item; the
+// actionable detail (current/cap, suppliers, structure_ids) is in the
+// "## Restocking" section, so the line stays a short pointer to it.
+//
+// Form: `N. [restock] your stock of <item> is running low — see Restocking`
+// Form (no item): `N. [restock] your shop stock is running low — see Restocking`
+//
+// Rendered without truncation: the item is an engine-controlled catalog key,
+// not model- or user-supplied text.
+func renderRestockWarrantLine(n int, kind, scope string, item sim.ItemKind) string {
+	if item == "" {
+		return fmt.Sprintf("%d. [%s]%s your shop stock is running low — see Restocking\n", n, kind, scope)
+	}
+	return fmt.Sprintf("%d. [%s]%s your stock of %s is running low — see Restocking\n", n, kind, scope, item)
 }
 
 // renderNeeds renders a need map as a deterministic "key=value" list,

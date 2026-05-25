@@ -811,6 +811,14 @@ type ActorSnapshot struct {
 	// no items.
 	Inventory map[ItemKind]int
 
+	// RestockPolicy mirrors the live Actor's RestockPolicy at snapshot time so
+	// the "## Restocking" perception section can surface a reseller's low
+	// `buy` stock + caps without a world-goroutine round trip. ALIASED, not
+	// cloned — RestockPolicy is read-only post-load (same posture as
+	// CloneActor; see the TODO there) and perception only reads it. nil for
+	// actors with no restock-bearing attribute.
+	RestockPolicy *RestockPolicy
+
 	// TickInFlight + TickAttemptID mirror the live Actor fields so PR 3d's
 	// harness can do a cheap pre-LLM stale-check by reading the snapshot
 	// alone (no world-goroutine round trip). A worker that observes its

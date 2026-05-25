@@ -53,6 +53,7 @@ const (
 	WarrantKindArrived            WarrantKind = "arrived"
 	WarrantKindNeedThreshold      WarrantKind = "need_threshold"
 	WarrantKindShiftDuty          WarrantKind = "shift_duty"
+	WarrantKindRestock            WarrantKind = "restock"
 	WarrantKindIdleBackstop       WarrantKind = "idle_backstop"
 	WarrantKindPaid               WarrantKind = "paid"
 	WarrantKindSceneQuoteTargeted WarrantKind = "scene_quote_targeted"
