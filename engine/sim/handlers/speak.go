@@ -48,12 +48,13 @@ type SpeakArgs struct {
 const MaxSpeakTextChars = 1000
 
 // speakSchema is the JSON Schema bytes shipped to the LLM provider via
-// llm.ToolSpec.Schema. Narrow on purpose — PR A advertises only `text`
-// while mentions/price/state-claim subsystems are deferred. Adding
-// `mentions` later (when inventory subsystem ports) will cache-bust the
-// system prompt; the alternative — advertising fields the engine
-// silently ignores — is worse because it pollutes the model's
-// understanding of what the tool does.
+// llm.ToolSpec.Schema. Narrow on purpose — advertises only `text`. The
+// WORK-323 item/transfer/state-claim validation gates (sim/speak_validation.go)
+// operate on an IMPLICIT scan of `text`, so they need no schema field and don't
+// cache-bust the system prompt. A structured `mentions[]` field stays deferred
+// (its only remaining consumers are the PC sellable-items dropdown + price-
+// quoting, ZBBS-124); advertising fields the engine ignores would pollute the
+// model's understanding of the tool, so it's omitted until those land.
 var speakSchema = json.RawMessage(`{
     "type": "object",
     "properties": {

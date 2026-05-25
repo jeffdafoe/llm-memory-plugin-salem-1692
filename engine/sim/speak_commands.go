@@ -15,12 +15,14 @@ import (
 // commit arm from agent_tick.go to the v2 in-memory substrate.
 //
 // Scope: the structural shape of v1 — empty-text reject, walk-in-flight
-// reject, vocative stale-addressee reject (in-memory), event emit, paired
+// reject, vocative stale-addressee reject (in-memory), the WORK-323 prose-
+// validation gates (item-presence + transfer-verb + state-claim, see
+// validateSpeechClaims in speak_validation.go), event emit, paired
 // RecordInteraction writes per huddle peer (KindNPCShared-gated inside
-// RecordInteraction). Deferred to follow-up PRs (port of dependent
-// subsystems): mentions validation (ZBBS-WORK-223/227/230, needs
-// inventory), state-claim gate (ZBBS-HOME-270, needs pay_ledger), price-
-// quoting (ZBBS-124, needs scene_quote).
+// RecordInteraction). Still deferred: the structured `mentions[]` schema field
+// (ZBBS-WORK-223 — only needed for the PC sellable dropdown + price-quoting; the
+// WORK-323 item gates use an implicit text scan instead, so no prompt cache-bust)
+// and price-quoting (ZBBS-124, needs scene_quote).
 //
 // Pre-conditions the caller (the speak handlers.CommitFn) is responsible
 // for, NOT re-checked here:
@@ -36,6 +38,9 @@ import (
 //   - actor.MoveIntent == nil (not walk-in-flight)
 //   - no vocative-position name in text matches a non-peer actor's
 //     first-name (vocative stale-addressee gate; see findVocativeAbsentees)
+//   - (NPC speakers only) the WORK-323 prose gates pass: no item mentioned that
+//     the speaker doesn't hold, no transfer-verb-narrated handover, no unbacked
+//     booking/payment state-claim (see validateSpeechClaims)
 //
 // On success:
 //
@@ -84,6 +89,17 @@ func Speak(speakerID ActorID, text string, at time.Time) Command {
 						"Re-check who is present before speaking.",
 					strings.Join(absent, " and "),
 				)
+			}
+
+			// Prose-validation gates (ZBBS-WORK-323): item-presence, transfer-verb,
+			// and transactional state-claim — the defense against speaking a
+			// service/transaction into apparent existence that no tool performed.
+			// PC speech is exempt (players may roleplay assertions); only NPC LLM
+			// hallucination is gated. See speak_validation.go.
+			if actor.Kind != KindPC {
+				if reject := validateSpeechClaims(w, actor, text, at); reject != "" {
+					return nil, errors.New(reject)
+				}
 			}
 
 			// Emit the Spoke event. World.emit stamps EventID + RootEventID
