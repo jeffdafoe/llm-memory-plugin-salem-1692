@@ -386,6 +386,26 @@ type VillageObjectDeleted struct {
 
 func (VillageObjectDeleted) isSimEvent() {}
 
+// VillageObjectCreated is emitted by CreateVillageObject when an admin places a
+// new object via the editor. It carries the placement fields the client needs
+// to render the new object (the same shape the v1 object_created broadcast
+// carried). The client adds the rendered object on receipt (object_created);
+// the placing client deduplicates against its own optimistic node via the id.
+type VillageObjectCreated struct {
+	EventBase
+	ObjectID     VillageObjectID
+	AssetID      AssetID
+	CurrentState string
+	X            float64
+	Y            float64
+	PlacedBy     string
+	EntryPolicy  EntryPolicy
+	AttachedTo   VillageObjectID
+	At           time.Time
+}
+
+func (VillageObjectCreated) isSimEvent() {}
+
 // VillageObjectLoiterOffsetChanged is emitted by SetVillageObjectLoiterOffset
 // when an admin edits where visiting actors stand at a placed object (the
 // editor's draggable loiter pin). LoiterOffsetX/Y are the raw per-instance

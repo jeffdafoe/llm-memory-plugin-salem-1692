@@ -312,6 +312,72 @@ func MoveVillageObject(id VillageObjectID, x, y float64) Command {
 	}
 }
 
+// ErrUnknownAsset is returned by CreateVillageObject when asset_id does not
+// resolve in the loaded asset catalog (→ 400 at the HTTP layer).
+var ErrUnknownAsset = errors.New("unknown asset")
+
+// CreateObjectResult is the outcome of a CreateVillageObject command — the
+// newly placed object (with its freshly minted id).
+type CreateObjectResult struct {
+	Object *VillageObject
+}
+
+// CreateVillageObject returns a Command that places a new village object of the
+// given asset at (x, y) in absolute world-pixel space. Mirrors v1
+// handleCreateVillageObject: the id is a fresh UUID, current_state comes from
+// the asset's default state, and entry_policy defaults to open when the asset
+// has a configured doorway (the placement is enterable) else closed (decorative
+// — the editor can override per instance afterward). A non-empty attachedTo
+// hangs the placement off an existing object as an overlay. Emits
+// VillageObjectCreated → object_created so every client renders the new object.
+// Returns ErrUnknownAsset (bad asset_id), ErrVillageObjectNotFound (bad
+// attached_to), or ErrInvalidObjectPosition (non-finite coords).
+func CreateVillageObject(assetID AssetID, x, y float64, attachedTo VillageObjectID, placedBy string) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			if math.IsNaN(x) || math.IsNaN(y) || math.IsInf(x, 0) || math.IsInf(y, 0) {
+				return nil, ErrInvalidObjectPosition
+			}
+			asset, ok := w.Assets[assetID]
+			if !ok || asset == nil {
+				return nil, ErrUnknownAsset
+			}
+			if attachedTo != "" {
+				if _, ok := w.VillageObjects[attachedTo]; !ok {
+					return nil, ErrVillageObjectNotFound
+				}
+			}
+			entryPolicy := EntryPolicyClosed
+			if asset.DoorOffsetX != nil && asset.DoorOffsetY != nil {
+				entryPolicy = EntryPolicyOpen
+			}
+			obj := &VillageObject{
+				ID:           VillageObjectID(newUUIDv4()),
+				AssetID:      assetID,
+				CurrentState: asset.DefaultState,
+				Pos:          WorldPos{X: x, Y: y},
+				PlacedBy:     placedBy,
+				EntryPolicy:  entryPolicy,
+				AttachedTo:   attachedTo,
+				Tags:         []string{},
+			}
+			w.VillageObjects[obj.ID] = obj
+			w.emit(&VillageObjectCreated{
+				ObjectID:     obj.ID,
+				AssetID:      assetID,
+				CurrentState: obj.CurrentState,
+				X:            x,
+				Y:            y,
+				PlacedBy:     placedBy,
+				EntryPolicy:  entryPolicy,
+				AttachedTo:   attachedTo,
+				At:           time.Now().UTC(),
+			})
+			return CreateObjectResult{Object: obj}, nil
+		},
+	}
+}
+
 // DeleteObjectResult is the outcome of a DeleteVillageObject command.
 // DeletedIDs lists every object removed — the target plus any overlay objects
 // transitively attached to it — with children before the parent they hung off.
