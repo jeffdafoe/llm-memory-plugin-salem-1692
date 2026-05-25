@@ -88,6 +88,12 @@ type PayOfferReceived struct {
 	// the parent's counter.
 	ParentID LedgerID
 
+	// Depth is the entry's counter-chain depth (0 for a root offer,
+	// parent.Depth+1 for an in_response_to response). Carried so the
+	// seller's pay-offer warrant can gate counter_pay at the chain cap
+	// without a ledger lookup. ZBBS-WORK-320.
+	Depth int
+
 	SceneID   SceneID
 	HuddleID  HuddleID
 	ExpiresAt time.Time

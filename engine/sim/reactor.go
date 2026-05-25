@@ -295,6 +295,14 @@ type PayOfferWarrantReason struct {
 	ConsumeNow  bool
 	ConsumerIDs []ActorID
 	ExpiresAt   time.Time
+	// Depth is the offer's counter-chain depth (the source ledger entry's
+	// Depth — 0 for a root offer, parent.Depth+1 for an in_response_to
+	// response). Carried on the warrant so the seller-side tool gate can
+	// drop counter_pay for an offer already at MaxPayCounterChainDepth (the
+	// buyer can no longer answer a counter — validateInResponseTo rejects
+	// parent.Depth >= cap), without a live ledger lookup at gate time.
+	// ZBBS-WORK-320 (pc/pay scar #4 seller-side gating).
+	Depth int
 }
 
 func (PayOfferWarrantReason) isWarrantReason()             {}

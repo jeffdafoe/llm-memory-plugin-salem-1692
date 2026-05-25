@@ -489,6 +489,7 @@ func restartReStampPayOfferWarrants(w *World, now time.Time) {
 				ConsumeNow:  e.ConsumeNow,
 				ConsumerIDs: append([]ActorID(nil), e.ConsumerIDs...),
 				ExpiresAt:   e.ExpiresAt,
+				Depth:       e.Depth,
 			},
 			// SourceEventID/RootEventID intentionally zero — the
 			// original PayOfferReceived event no longer exists.

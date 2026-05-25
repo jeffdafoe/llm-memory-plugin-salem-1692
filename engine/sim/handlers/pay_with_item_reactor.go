@@ -83,6 +83,7 @@ func handlePayOfferReceivedWarrants(w *sim.World, evt sim.Event) {
 			ConsumeNow:  offer.ConsumeNow,
 			ConsumerIDs: cloneActorIDs(offer.ConsumerIDs),
 			ExpiresAt:   offer.ExpiresAt,
+			Depth:       offer.Depth,
 		},
 		SourceEventID: offer.EventID(),
 		RootEventID:   offer.RootEventID(),

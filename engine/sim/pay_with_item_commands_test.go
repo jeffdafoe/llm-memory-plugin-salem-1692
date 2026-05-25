@@ -506,6 +506,8 @@ func TestPayWithItem_InResponseTo_HappyPath(t *testing.T) {
 		Depth:         0,
 	})
 
+	events := capturePayWithItemEvents(t, w)
+
 	res, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 6, false, nil, 0, 42, "", at))
 	if err != nil {
 		t.Fatalf("PayWithItem in_response_to: %v", err)
@@ -521,6 +523,15 @@ func TestPayWithItem_InResponseTo_HappyPath(t *testing.T) {
 	}
 	if child.Depth != 1 {
 		t.Errorf("Depth = %d, want 1", child.Depth)
+	}
+	// ZBBS-WORK-320: the chain depth must propagate onto the emitted
+	// PayOfferReceived so the seller's pay-offer warrant (and thus gateTools'
+	// counter_pay depth gate) sees it without a ledger lookup.
+	if len(events.Offer) != 1 {
+		t.Fatalf("PayOfferReceived count = %d, want 1", len(events.Offer))
+	}
+	if events.Offer[0].Depth != 1 {
+		t.Errorf("PayOfferReceived.Depth = %d, want 1 (must mirror child entry depth)", events.Offer[0].Depth)
 	}
 }
 
