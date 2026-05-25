@@ -37,6 +37,15 @@ const (
 	// budget — without it a single 500-call response is a runaway commit
 	// path (multi-call invariant 2 in the design note §5).
 	DefaultMaxToolCallsPerResponse = 8
+
+	// DefaultMaxObservationRounds is how many observation-only LLM rounds
+	// (e.g. the model spends a whole round just calling recall to gather
+	// context) are allowed PER TICK on top of the action budget. Such rounds
+	// do NOT consume IterationBudget — thinking isn't penalized as acting
+	// (ZBBS-WORK-321) — but they're still bounded so a model that only ever
+	// recalls can't loop forever: the hard per-tick ceiling is
+	// IterationBudget + MaxObservationRounds total LLM rounds.
+	DefaultMaxObservationRounds = 3
 )
 
 // HarnessConfig is the wiring + budgets the Harness needs. Client and
@@ -55,8 +64,16 @@ type HarnessConfig struct {
 	// NewValidator(Registry).
 	Validator *Validator
 
-	// IterationBudget caps per-tick iterations. Zero → DefaultIterationBudget.
+	// IterationBudget caps per-tick ACTION iterations (rounds that dispatch
+	// a commit or end the tick). Zero → DefaultIterationBudget.
 	IterationBudget int
+
+	// MaxObservationRounds caps per-tick observation-only rounds (e.g. a
+	// round the model spends only calling recall). These do NOT count
+	// against IterationBudget — thinking isn't penalized as acting — but
+	// the per-tick hard ceiling is IterationBudget + MaxObservationRounds
+	// total LLM rounds. Zero → DefaultMaxObservationRounds.
+	MaxObservationRounds int
 
 	// MaxToolCallsPerResponse caps the number of tool calls processed
 	// per LLM response. Zero → DefaultMaxToolCallsPerResponse.
@@ -90,6 +107,7 @@ type Harness struct {
 	validator *Validator
 
 	iterationBudget         int
+	maxObservationRounds    int
 	maxToolCallsPerResponse int
 	renderConfig            perception.RenderConfig
 	toolDispatchTimeout     time.Duration
@@ -114,6 +132,9 @@ func NewHarness(cfg HarnessConfig) (*Harness, error) {
 	if cfg.IterationBudget <= 0 {
 		cfg.IterationBudget = DefaultIterationBudget
 	}
+	if cfg.MaxObservationRounds <= 0 {
+		cfg.MaxObservationRounds = DefaultMaxObservationRounds
+	}
 	if cfg.MaxToolCallsPerResponse <= 0 {
 		cfg.MaxToolCallsPerResponse = DefaultMaxToolCallsPerResponse
 	}
@@ -126,6 +147,7 @@ func NewHarness(cfg HarnessConfig) (*Harness, error) {
 		registry:                cfg.Registry,
 		validator:               v,
 		iterationBudget:         cfg.IterationBudget,
+		maxObservationRounds:    cfg.MaxObservationRounds,
 		maxToolCallsPerResponse: cfg.MaxToolCallsPerResponse,
 		renderConfig:            cfg.PerceptionRenderConfig,
 		toolDispatchTimeout:     cfg.ToolDispatchTimeout,
@@ -258,8 +280,15 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 	}()
 
 	// --- iteration loop ---
-	for iter := 0; iter < h.iterationBudget; iter++ {
-		result.IterationCount = iter + 1
+	// IterationBudget bounds ACTION rounds (a round that dispatches a commit
+	// or ends the tick). Observation-only rounds — the model spends a whole
+	// LLM round just gathering context (recall) — do NOT consume it
+	// (ZBBS-WORK-321: thinking isn't penalized as acting). maxTotalRounds is
+	// the hard ceiling so a model that only ever recalls can't loop forever.
+	maxTotalRounds := h.iterationBudget + h.maxObservationRounds
+	actionRounds := 0
+	for round := 0; round < maxTotalRounds; round++ {
+		result.IterationCount = round + 1
 
 		if err := ctx.Err(); err != nil {
 			result.TerminalStatus = sim.TickStatusShutdown
@@ -276,7 +305,7 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 		if err != nil {
 			cls := llm.Classify(err)
 			result.LLMErrorClass = cls.String()
-			result.TerminalStatus = llmErrorToStatus(cls, iter)
+			result.TerminalStatus = llmErrorToStatus(cls, round)
 			return result
 		}
 
@@ -305,6 +334,15 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 			calls = calls[:h.maxToolCallsPerResponse]
 		}
 
+		// observationOnly tracks whether this round was pure thinking (every
+		// call a successfully-dispatched observation). Dropped (truncated)
+		// calls mean the model tried to act beyond the cap — not a clean
+		// think — so the round counts against the action budget.
+		observationOnly := true
+		if len(truncated) > 0 {
+			observationOnly = false
+		}
+
 		// Walk in-budget calls in order. A terminal call ends the batch.
 		batchEnded := false
 		var endedAt int
@@ -316,13 +354,17 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 			// Validate.
 			vc, verr := h.validator.Validate(call)
 			if verr != nil {
+				observationOnly = false // a malformed action attempt isn't a clean think
 				result.ToolsFailedRejected = append(result.ToolsFailedRejected, call.Name)
 				transcript = append(transcript, toolResultMsg(call.ID, formatValidationError(verr)))
 				continue // invariant 4: validation failure is non-terminal
 			}
+			if vc.Entry.Class != ClassObservation {
+				observationOnly = false
+			}
 
 			// Dispatch by class.
-			content, outcome := h.dispatch(ctx, w, job, vc)
+			content, outcome := h.dispatch(ctx, w, job, vc, actor.LLMAgent)
 			transcript = append(transcript, toolResultMsg(call.ID, content))
 
 			if outcome.stale {
@@ -382,9 +424,24 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 			result.TerminalStatus = endedStatus
 			return result
 		}
+
+		// Round complete, tick continues. An observation-only round (recall
+		// to gather context) is "thinking" — it does NOT consume the action
+		// budget (ZBBS-WORK-321); it's bounded only by maxTotalRounds. Any
+		// other round (a commit, a validation failure, dropped calls) is an
+		// action round and counts.
+		if !observationOnly {
+			actionRounds++
+			if actionRounds >= h.iterationBudget {
+				result.TerminalStatus = sim.TickStatusBudgetForced
+				result.BudgetHit = true
+				return result
+			}
+		}
 	}
 
-	// Iteration budget exhausted.
+	// Per-tick hard ceiling hit (IterationBudget + MaxObservationRounds) —
+	// e.g. a model that only ever recalls and never commits.
 	result.TerminalStatus = sim.TickStatusBudgetForced
 	result.BudgetHit = true
 	return result
@@ -410,12 +467,13 @@ type dispatchOutcome struct {
 //     World.SendContext. A successful submission with
 //     TerminalPolicy=TerminalOnSuccess ends the tick.
 //   - ClassTerminal → no handler; the tick ends.
-func (h *Harness) dispatch(ctx context.Context, w *sim.World, job tickJob, vc *ValidatedCall) (string, dispatchOutcome) {
+func (h *Harness) dispatch(ctx context.Context, w *sim.World, job tickJob, vc *ValidatedCall, llmMemoryAgent string) (string, dispatchOutcome) {
 	in := HandlerInput{
-		ActorID:     job.actorID,
-		AttemptID:   job.attemptID,
-		RootEventID: job.rootEventID,
-		Args:        vc.DecodedArgs,
+		ActorID:        job.actorID,
+		AttemptID:      job.attemptID,
+		RootEventID:    job.rootEventID,
+		LLMMemoryAgent: llmMemoryAgent,
+		Args:           vc.DecodedArgs,
 	}
 
 	switch vc.Entry.Class {

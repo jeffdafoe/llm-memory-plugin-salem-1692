@@ -175,7 +175,15 @@ func run(rt runtime, stop <-chan struct{}) error {
 	// Agent-tick execution pipeline: tool registry → harness → worker pool.
 	// The registry is the set of tools an NPC's LLM may call during a tick.
 	registry := handlers.NewRegistry()
-	if err := registerTools(registry); err != nil {
+	// recall (observation) reaches llm-memory-api for memory search; the
+	// production LLM client (memapi) implements llm.MemorySearcher. Assert it
+	// here so a client that can't search fails loudly at startup rather than
+	// at the first recall call.
+	searcher, ok := rt.LLMClient.(llm.MemorySearcher)
+	if !ok {
+		return fmt.Errorf("engine: LLM client %T does not implement llm.MemorySearcher (recall needs it)", rt.LLMClient)
+	}
+	if err := registerTools(registry, searcher); err != nil {
 		return err
 	}
 	harness, err := handlers.NewHarness(handlers.HarnessConfig{
@@ -328,7 +336,7 @@ func run(rt runtime, stop <-chan struct{}) error {
 // is deliberately no handlers.RegisterAllProductionTools helper — the tool
 // surface is a composition choice the entrypoint owns. A registration failure
 // is a wiring bug, surfaced to the caller to fail loudly at startup.
-func registerTools(r *handlers.Registry) error {
+func registerTools(r *handlers.Registry, searcher llm.MemorySearcher) error {
 	register := []struct {
 		name string
 		fn   func(*handlers.Registry) error
@@ -346,6 +354,11 @@ func registerTools(r *handlers.Registry) error {
 		if err := t.fn(r); err != nil {
 			return fmt.Errorf("register tool %s: %w", t.name, err)
 		}
+	}
+	// recall (ZBBS-WORK-321) — observation tool; registered separately
+	// because it needs the memory searcher (the others take only *Registry).
+	if err := handlers.RegisterRecall(r, searcher); err != nil {
+		return fmt.Errorf("register tool recall: %w", err)
 	}
 	return nil
 }
