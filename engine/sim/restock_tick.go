@@ -69,12 +69,14 @@ func (RestockWarrantReason) DedupDiscriminator() uint64 { return 0 }
 // "## Restocking" section can never disagree on what counts as "low". A
 // non-positive cap or pct yields false (nothing to reorder against / producer
 // disabled). The comparison is done in integer cross-multiplied form
-// (currentQty*100 < cap*pct) to avoid any float rounding at the boundary.
+// (currentQty*100 < cap*pct) to avoid any float rounding at the boundary; the
+// multiplications widen to int64 so a pathological cap/pct from a corrupt config
+// or import can't overflow int and flip the comparison (code_review).
 func RestockReorderThresholdMet(currentQty, cap, pct int) bool {
 	if cap <= 0 || pct <= 0 {
 		return false
 	}
-	return currentQty*100 < cap*pct
+	return int64(currentQty)*100 < int64(cap)*int64(pct)
 }
 
 // firstLowBuyEntry returns the first `buy` RestockEntry on the policy whose
@@ -83,6 +85,9 @@ func RestockReorderThresholdMet(currentQty, cap, pct int) bool {
 // deterministic. Used by the producer to pick the warrant's representative
 // Item; perception surfaces the full set.
 func firstLowBuyEntry(policy *RestockPolicy, inventory map[ItemKind]int, pct int) (RestockEntry, bool) {
+	if policy == nil {
+		return RestockEntry{}, false
+	}
 	for _, e := range policy.BuyEntries() {
 		if RestockReorderThresholdMet(inventory[e.Item], e.Cap(), pct) {
 			return e, true
@@ -137,6 +142,11 @@ func EvaluateRestock(now time.Time) Command {
 				if !ok {
 					continue
 				}
+				// tryStampWarrant is void, but restockEligible already guaranteed
+				// WarrantedSince == nil and the reason is zero-sourced (dedup
+				// bypassed), so this call always opens a fresh warrant cycle —
+				// the count is an accurate stamped-this-pass total, not just
+				// "eligible" (code_review).
 				tryStampWarrant(w, a, WarrantMeta{
 					TriggerActorID: a.ID,
 					Reason:         RestockWarrantReason{Item: low.Item},

@@ -43,6 +43,12 @@ type RestockItemView struct {
 	CurrentQty int
 	Cap        int
 	Vendors    []RestockVendor
+
+	// kind is the final sort tie-break so two item kinds sharing a display label
+	// order deterministically (BuyEntries order is stable, but the sort makes the
+	// section robust to policy reordering too). Unexported — never rendered.
+	// Same posture as OwnStockItem.kind (consumable_vendors.go).
+	kind sim.ItemKind
 }
 
 // RestockVendor is one (workplace, supplier) buy opportunity for a low item.
@@ -78,6 +84,7 @@ func buildRestocking(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 			CurrentQty: current,
 			Cap:        cap,
 			Vendors:    findItemVendors(snap, actorID, e.Item),
+			kind:       e.Item,
 		})
 	}
 	if len(items) == 0 {
@@ -85,42 +92,52 @@ func buildRestocking(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 	}
 	// Deterministic section order — by item label, then the underlying kind as
 	// a tie-break for two kinds sharing a display label (BuyEntries order is
-	// stable, but a sort makes the section robust to policy reordering too).
+	// stable, but the sort makes the section robust to policy reordering too).
 	sort.Slice(items, func(i, j int) bool {
-		return items[i].ItemLabel < items[j].ItemLabel
+		if items[i].ItemLabel != items[j].ItemLabel {
+			return items[i].ItemLabel < items[j].ItemLabel
+		}
+		return items[i].kind < items[j].kind
 	})
 	return &RestockingView{Items: items}
 }
 
-// findItemVendors scans for suppliers selling itemKind and returns one entry per
-// (workplace, supplier), sorted deterministically by (StructureLabel,
-// StructureID). Structural vendorship + workplace surface mirror
-// findVendorConsumables: a supplier is a non-PC actor (excluding the reseller
-// itself) stationed at a resolvable WorkStructureID who holds qty>0 of itemKind.
-// The cue names the WORKPLACE, carrying no transient break/sleep/shift gate —
-// availability is resolved on arrival by the transaction layer (pay_with_item
-// co-presence + AcceptPay's seller-break gate), the same posture as the
-// satiation vendor cues.
+// findItemVendors resolves the suppliers selling itemKind, ONE cue per workplace
+// structure, sorted deterministically by (StructureLabel, StructureID). Runs over
+// the shared structural-vendorship scan (eachVendorOffer, consumable_vendors.go),
+// the same supplier-resolution path the satiation/recovery consumable cues use.
+//
+// Dedupe-by-structure: the LLM only needs a destination — move_to(structure_id)
+// then pay_with_item resolves which co-present seller actually transacts — so two
+// NPCs working the same structure and both holding the item collapse to one cue
+// (which also kills the duplicate-line + map-order nondeterminism, code_review).
+// The representative seller is the lowest VendorID at that structure, picked
+// deterministically so the per-buyer CostText (last-paid from that seller) is
+// stable across snapshots regardless of map iteration order.
 func findItemVendors(snap *sim.Snapshot, buyerID sim.ActorID, itemKind sim.ItemKind) []RestockVendor {
-	var out []RestockVendor
-	for vendorID, vendor := range snap.Actors {
-		if vendor == nil || vendorID == buyerID || vendor.Kind == sim.KindPC {
-			continue
+	type pick struct {
+		vendorID  sim.ActorID
+		structure *sim.Structure
+	}
+	best := map[sim.StructureID]pick{}
+	eachVendorOffer(snap, buyerID, func(o vendorOffer) {
+		if o.Kind != itemKind {
+			return
 		}
-		if vendor.WorkStructureID == "" {
-			continue
+		if cur, ok := best[o.StructureID]; ok && cur.vendorID <= o.VendorID {
+			return // keep the lowest VendorID at this structure
 		}
-		st := snap.Structures[vendor.WorkStructureID]
-		if st == nil {
-			continue
-		}
-		if vendor.Inventory[itemKind] <= 0 {
-			continue
-		}
+		best[o.StructureID] = pick{vendorID: o.VendorID, structure: o.Structure}
+	})
+	if len(best) == 0 {
+		return nil
+	}
+	out := make([]RestockVendor, 0, len(best))
+	for structureID, p := range best {
 		out = append(out, RestockVendor{
-			StructureLabel: vendorStructureLabel(st),
-			StructureID:    vendor.WorkStructureID,
-			CostText:       buyerLastPaidText(snap, buyerID, vendorID, itemKind, "ask the supplier"),
+			StructureLabel: vendorStructureLabel(p.structure),
+			StructureID:    structureID,
+			CostText:       buyerLastPaidText(snap, buyerID, p.vendorID, itemKind, "ask the supplier"),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {

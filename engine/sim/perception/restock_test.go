@@ -152,6 +152,41 @@ func TestBuildRestocking_ProduceEntriesIgnored(t *testing.T) {
 	}
 }
 
+// TestFindItemVendors_DedupeByStructure: two suppliers at the same structure
+// both holding the item collapse to ONE cue, deterministically attributed to the
+// lowest VendorID (so the per-buyer price hint is stable). Runs many times to
+// catch map-order nondeterminism.
+func TestFindItemVendors_DedupeByStructure(t *testing.T) {
+	subj := &sim.ActorSnapshot{Inventory: map[sim.ItemKind]int{"ale": 1}, RestockPolicy: buyPolicy("ale", 20)}
+	// Two brewers at the same structure; "anders" (< "bramble") is the rep.
+	anders := &sim.ActorSnapshot{WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}}
+	bramble := &sim.ActorSnapshot{WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}}
+	pbAnders := sim.NewRingBuffer[sim.PriceObservation](4)
+	pbAnders.Push(sim.PriceObservation{BuyerID: "merchant", Amount: 2, Qty: 1, Consumers: 1, At: time.Now().UTC()})
+	pbBramble := sim.NewRingBuffer[sim.PriceObservation](4)
+	pbBramble.Push(sim.PriceObservation{BuyerID: "merchant", Amount: 9, Qty: 1, Consumers: 1, At: time.Now().UTC()})
+	snap := &sim.Snapshot{
+		Actors:     map[sim.ActorID]*sim.ActorSnapshot{"merchant": subj, "anders": anders, "bramble": bramble},
+		Structures: map[sim.StructureID]*sim.Structure{"brewery": {ID: "brewery", DisplayName: "The Brewery"}},
+		ItemKinds:  restockCatalog(),
+		PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
+			{SellerID: "anders", Item: "ale"}:  pbAnders,
+			{SellerID: "bramble", Item: "ale"}: pbBramble,
+		},
+		RestockReorderPct: 25,
+	}
+	for i := 0; i < 30; i++ {
+		v := buildRestocking(snap, "merchant", subj)
+		if v == nil || len(v.Items) != 1 || len(v.Items[0].Vendors) != 1 {
+			t.Fatalf("want exactly 1 deduped vendor cue, got %+v", v)
+		}
+		// Lowest VendorID is "anders" → its price (~2), never bramble's (~9).
+		if got := v.Items[0].Vendors[0].CostText; got != "~2 coins" {
+			t.Fatalf("CostText = %q, want '~2 coins' (lowest-VendorID rep, deterministic)", got)
+		}
+	}
+}
+
 func TestBuildRestocking_PriceFromPriceBook(t *testing.T) {
 	subj := &sim.ActorSnapshot{Inventory: map[sim.ItemKind]int{"ale": 1}, RestockPolicy: buyPolicy("ale", 20)}
 	supplier := &sim.ActorSnapshot{WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}}

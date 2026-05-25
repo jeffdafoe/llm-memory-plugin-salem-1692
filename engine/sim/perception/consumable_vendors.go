@@ -14,6 +14,63 @@ import (
 // ZBBS-HOME-304). Both surfaces frame the result differently, but the scan is
 // identical, so it lives here rather than being duplicated.
 
+// vendorOffer is one (vendor, item) sale opportunity surfaced by the shared
+// structural-vendorship scan (eachVendorOffer) — the neutral tuple every
+// consuming finder maps into its own bullet shape. Structure is the resolved
+// (non-nil) workplace; StructureID is its key (what a buyer's move_to needs).
+type vendorOffer struct {
+	VendorID    sim.ActorID
+	Structure   *sim.Structure
+	StructureID sim.StructureID
+	Kind        sim.ItemKind
+	Qty         int
+}
+
+// eachVendorOffer is the shared structural-vendorship scan behind every "who
+// sells X" perception surface: the need-keyed consumable finder
+// (findVendorConsumables) and the item-keyed restock supplier finder
+// (findItemVendors, restock.go). It calls fn once for every (vendor, item) where
+// a non-PC actor OTHER than buyerID, stationed at a resolvable WorkStructureID,
+// holds qty>0 of the item. Each caller applies its own match predicate + mapping
+// inside fn. Iteration order is snap.Actors / Inventory map order — callers that
+// need stable output sort their own result (this scan promises no order).
+//
+// Vendorship is inferred STRUCTURALLY — v2 has no standing "vendor" capability
+// (v1's serve-tool attribute is gone; sales run through the buyer's
+// pay_with_item against a co-present seller). The cue names the WORKPLACE, not
+// the vendor's current location, and carries NO transient break/sleep/shift gate
+// — availability is resolved on arrival by the transaction layer (pay_with_item
+// co-presence + AcceptPay's seller-break gate).
+func eachVendorOffer(snap *sim.Snapshot, buyerID sim.ActorID, fn func(vendorOffer)) {
+	if snap == nil {
+		return
+	}
+	for vendorID, vendor := range snap.Actors {
+		if vendor == nil || vendorID == buyerID || vendor.Kind == sim.KindPC {
+			continue
+		}
+		if vendor.WorkStructureID == "" {
+			continue
+		}
+		st := snap.Structures[vendor.WorkStructureID]
+		if st == nil {
+			continue
+		}
+		for kind, qty := range vendor.Inventory {
+			if qty <= 0 {
+				continue
+			}
+			fn(vendorOffer{
+				VendorID:    vendorID,
+				Structure:   st,
+				StructureID: vendor.WorkStructureID,
+				Kind:        kind,
+				Qty:         qty,
+			})
+		}
+	}
+}
+
 // vendorConsumable is one (vendor, item) sale opportunity for a given need —
 // the neutral shape the two consuming surfaces map into their own bullets.
 type vendorConsumable struct {
@@ -50,35 +107,20 @@ func findVendorConsumables(snap *sim.Snapshot, buyerID sim.ActorID, need sim.Nee
 		return nil
 	}
 	var out []vendorConsumable
-	for vendorID, vendor := range snap.Actors {
-		if vendor == nil || vendorID == buyerID || vendor.Kind == sim.KindPC {
-			continue
+	eachVendorOffer(snap, buyerID, func(o vendorOffer) {
+		mag := itemNeedMagnitude(snap, o.Kind, need)
+		if mag <= 0 {
+			return
 		}
-		if vendor.WorkStructureID == "" {
-			continue
-		}
-		st := snap.Structures[vendor.WorkStructureID]
-		if st == nil {
-			continue
-		}
-		for kind, qty := range vendor.Inventory {
-			if qty <= 0 {
-				continue
-			}
-			mag := itemNeedMagnitude(snap, kind, need)
-			if mag <= 0 {
-				continue
-			}
-			out = append(out, vendorConsumable{
-				StructureLabel: vendorStructureLabel(st),
-				ItemLabel:      itemDisplayLabel(snap, kind),
-				Magnitude:      mag,
-				CostText:       buyerLastPaidText(snap, buyerID, vendorID, kind, costFallback),
-				VendorID:       vendorID,
-				ItemKind:       kind,
-			})
-		}
-	}
+		out = append(out, vendorConsumable{
+			StructureLabel: vendorStructureLabel(o.Structure),
+			ItemLabel:      itemDisplayLabel(snap, o.Kind),
+			Magnitude:      mag,
+			CostText:       buyerLastPaidText(snap, buyerID, o.VendorID, o.Kind, costFallback),
+			VendorID:       o.VendorID,
+			ItemKind:       o.Kind,
+		})
+	})
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].StructureLabel != out[j].StructureLabel {
 			return out[i].StructureLabel < out[j].StructureLabel
