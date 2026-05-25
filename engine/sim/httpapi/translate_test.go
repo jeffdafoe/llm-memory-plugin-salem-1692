@@ -459,6 +459,64 @@ func TestTranslateEvent_PayResolved(t *testing.T) {
 	}
 }
 
+func TestTranslateEvent_PCSleepStarted(t *testing.T) {
+	at := time.Date(2026, 5, 25, 22, 0, 0, 0, time.UTC)
+	wakeAt := at.Add(12 * time.Hour)
+	frame, ok := TranslateEvent(&sim.PCSleepStarted{ActorID: "player-1", WakeAt: wakeAt, At: at})
+	if !ok {
+		t.Fatal("PCSleepStarted should translate")
+	}
+	if frame.Type != "pc_sleep_started" {
+		t.Fatalf("type = %q, want pc_sleep_started", frame.Type)
+	}
+	d := frame.Data.(pcSleepStartedWireDTO)
+	want := pcSleepStartedWireDTO{
+		ActorID: "player-1",
+		WakeAt:  wakeAt.UTC().Format(time.RFC3339),
+		At:      at.UTC().Format(time.RFC3339),
+	}
+	if d != want {
+		t.Errorf("pc_sleep_started payload = %+v, want %+v", d, want)
+	}
+	// The client reads actor_id + wake_at (event_client.gd) — assert the json
+	// keys, not just the struct fields.
+	b, err := json.Marshal(d)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, key := range []string{`"actor_id"`, `"wake_at"`, `"at"`} {
+		if !strings.Contains(string(b), key) {
+			t.Errorf("pc_sleep_started json missing %s: %s", key, b)
+		}
+	}
+}
+
+func TestTranslateEvent_PCSleepEnded(t *testing.T) {
+	at := time.Date(2026, 5, 25, 23, 0, 0, 0, time.UTC)
+	frame, ok := TranslateEvent(&sim.PCSleepEnded{ActorID: "player-1", Reason: "manual", At: at})
+	if !ok {
+		t.Fatal("PCSleepEnded should translate")
+	}
+	if frame.Type != "pc_sleep_ended" {
+		t.Fatalf("type = %q, want pc_sleep_ended", frame.Type)
+	}
+	d := frame.Data.(pcSleepEndedWireDTO)
+	want := pcSleepEndedWireDTO{ActorID: "player-1", Reason: "manual", At: at.UTC().Format(time.RFC3339)}
+	if d != want {
+		t.Errorf("pc_sleep_ended payload = %+v, want %+v", d, want)
+	}
+	// The client reads actor_id + reason (event_client.gd).
+	b, err := json.Marshal(d)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, key := range []string{`"actor_id"`, `"reason"`, `"at"`} {
+		if !strings.Contains(string(b), key) {
+			t.Errorf("pc_sleep_ended json missing %s: %s", key, b)
+		}
+	}
+}
+
 // TestTranslateEvent_UnmappedDropped covers the default case: per-tile
 // ActorMoved is engine-internal and must not reach the client.
 func TestTranslateEvent_UnmappedDropped(t *testing.T) {

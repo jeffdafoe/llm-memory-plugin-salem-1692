@@ -27,7 +27,11 @@ import (
 // (PayOfferReceived → pay_offer, PayCountered → pay_countered,
 // PayWithItemResolved → pay_resolved — the buyer-initiated offer lifecycle a PC
 // buyer drives via pc/pay and observes resolve; scoped client-side off huddle_id
-// like npc_spoke, since the hub broadcasts every frame to every viewer).
+// like npc_spoke, since the hub broadcasts every frame to every viewer), and PC
+// SLEEP (PCSleepStarted → pc_sleep_started, PCSleepEnded → pc_sleep_ended — the
+// player-facing bed-down / wake transitions driven by idle auto-bed + the
+// pc/sleep + pc/wake routes; the client filters to its own PC and raises/clears
+// the sleep-fade overlay + top-bar chip).
 // Per-tile ActorMoved is deliberately NOT mapped — it stays internal; nor are
 // spawn/despawn or object create (no sim bus source until those write routes
 // exist). An unmapped event returns ok=false and is dropped, so adding cases
@@ -262,6 +266,18 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			HuddleID:      string(e.HuddleID),
 			SceneID:       string(e.SceneID),
 			At:            e.At.UTC().Format(time.RFC3339),
+		}}, true
+	case *sim.PCSleepStarted:
+		return WireFrame{Type: "pc_sleep_started", Data: pcSleepStartedWireDTO{
+			ActorID: string(e.ActorID),
+			WakeAt:  e.WakeAt.UTC().Format(time.RFC3339),
+			At:      e.At.UTC().Format(time.RFC3339),
+		}}, true
+	case *sim.PCSleepEnded:
+		return WireFrame{Type: "pc_sleep_ended", Data: pcSleepEndedWireDTO{
+			ActorID: string(e.ActorID),
+			Reason:  e.Reason,
+			At:      e.At.UTC().Format(time.RFC3339),
 		}}, true
 	default:
 		return WireFrame{}, false
@@ -550,4 +566,29 @@ type payResolvedWireDTO struct {
 	HuddleID      string `json:"huddle_id,omitempty"`
 	SceneID       string `json:"scene_id,omitempty"`
 	At            string `json:"at"`
+}
+
+// pcSleepStartedWireDTO is the pc_sleep_started payload — a PC bedded down
+// (idle auto-bed or the /pc/sleep route). actor_id is the sleeping PC; the
+// client filters to its own PC and raises the sleep-fade overlay + the
+// "Sleeping — wake HH:MM" top-bar chip (event_client.gd → main.gd
+// _on_pc_sleep_started). wake_at is the safety-cap instant (RFC3339) the chip
+// renders as the wake time (the PC usually wakes earlier, when rested). at is
+// the bed-down instant. Broadcast to all viewers; the client scopes by
+// actor_id, like the other PC frames.
+type pcSleepStartedWireDTO struct {
+	ActorID string `json:"actor_id"`
+	WakeAt  string `json:"wake_at"`
+	At      string `json:"at"`
+}
+
+// pcSleepEndedWireDTO is the pc_sleep_ended payload — a PC woke. actor_id is the
+// PC; the client clears the overlay + chip (main.gd _on_pc_sleep_ended). reason
+// is "manual" (Wake button), "auto" (rested or the cap), or "input" (acted
+// while asleep) — currently informational on the client (plumbed for a future
+// "you woke because X" surface). at is the wake instant.
+type pcSleepEndedWireDTO struct {
+	ActorID string `json:"actor_id"`
+	Reason  string `json:"reason"`
+	At      string `json:"at"`
 }
