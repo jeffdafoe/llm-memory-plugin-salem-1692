@@ -564,6 +564,61 @@ type Actor struct {
 
 	// Free-form behavior specs (typed lazily per subsystem during port).
 	Attributes map[string][]byte
+
+	// Summon errand perception cues (ZBBS-HOME-311). Both transient,
+	// in-memory only (restart-lossy like the errand machine itself), and
+	// consumed-on-next-act:
+	//
+	//   - PendingSummon is set on the TARGET when a messenger delivers a
+	//     summons ("come to <place>"), driving them to move_to the summon
+	//     point. Non-nil drives the "## You have been summoned" perception
+	//     section.
+	//   - SummonRefusal is set on the SUMMONER when their messenger returns
+	//     unable to find the target. Non-nil drives the "## Your messenger
+	//     returned" perception section.
+	//
+	// Each fades after the actor next acts (ConsumeSummonCuesOnTick clears
+	// them on the actor's reactor tick), mirroring v1's drop-once-consumed
+	// behavior. Deep-cloned by CloneActor + mirrored into ActorSnapshot so
+	// perception (which runs purely off the snapshot) can read them.
+	PendingSummon *PendingSummon
+	SummonRefusal *SummonRefusal
+}
+
+// PendingSummon is the target-side perception cue: a messenger delivered a
+// summons asking this actor to come to a place. Value-cloned (no inner
+// pointers).
+type PendingSummon struct {
+	SummonerName string
+	Place        string
+	Reason       string // "" when the summoner gave none
+	At           time.Time
+}
+
+// SummonRefusal is the summoner-side perception cue: the messenger returned
+// unable to locate the target. Value-cloned (no inner pointers).
+type SummonRefusal struct {
+	TargetName string
+	At         time.Time
+}
+
+// clonePendingSummon / cloneSummonRefusal deep-copy the cue structs. They
+// carry no inner pointers, so a dereference suffices; named helpers keep the
+// clone idiom uniform with the other CloneActor helpers.
+func clonePendingSummon(p *PendingSummon) *PendingSummon {
+	if p == nil {
+		return nil
+	}
+	cp := *p
+	return &cp
+}
+
+func cloneSummonRefusal(r *SummonRefusal) *SummonRefusal {
+	if r == nil {
+		return nil
+	}
+	cp := *r
+	return &cp
 }
 
 // CloneActor returns a deep copy of an Actor suitable for the mem-repo
@@ -718,6 +773,12 @@ func CloneActor(a *Actor) *Actor {
 	if a.MoveIntent != nil {
 		cp.MoveIntent = cloneMoveIntent(a.MoveIntent)
 	}
+	if a.PendingSummon != nil {
+		cp.PendingSummon = clonePendingSummon(a.PendingSummon)
+	}
+	if a.SummonRefusal != nil {
+		cp.SummonRefusal = cloneSummonRefusal(a.SummonRefusal)
+	}
 	return &cp
 }
 
@@ -869,6 +930,15 @@ type ActorSnapshot struct {
 	// they appear here only for the snapshot-time view the harness needs.
 	TickInFlight  bool
 	TickAttemptID TickAttemptID
+
+	// PendingSummon / SummonRefusal mirror the live Actor's summon cues at
+	// snapshot time so perception build (which reads only the snapshot) can
+	// surface the target-side "you have been summoned" and summoner-side
+	// "your messenger returned" sections (ZBBS-HOME-311). Deep-cloned by
+	// snapshotActor. nil for the overwhelming majority of actors with no
+	// summon in flight.
+	PendingSummon *PendingSummon
+	SummonRefusal *SummonRefusal
 }
 
 // CloneActorSnapshot returns a deep copy of an ActorSnapshot. Needed by
@@ -911,6 +981,8 @@ func CloneActorSnapshot(s *ActorSnapshot) *ActorSnapshot {
 	cp.ScheduleEndMin = copyIntPtr(s.ScheduleEndMin)
 	cp.SocialStartMin = copyIntPtr(s.SocialStartMin)
 	cp.SocialEndMin = copyIntPtr(s.SocialEndMin)
+	cp.PendingSummon = clonePendingSummon(s.PendingSummon)
+	cp.SummonRefusal = cloneSummonRefusal(s.SummonRefusal)
 	return &cp
 }
 

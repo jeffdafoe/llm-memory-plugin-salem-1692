@@ -486,6 +486,18 @@ type World struct {
 	// guards against is itself lost on restart).
 	BusinessownerSpeechAt map[ActorID]time.Time
 
+	// SummonErrands holds the in-flight summon messenger-errand state
+	// machines (ZBBS-HOME-311). Keyed by ErrandID; nil-readable as empty
+	// (lazy-allocated on first DispatchSummon). The ActorArrived subscriber
+	// (handleSummonArrival) advances an arrived participant's errand; the
+	// suppressArrivalWarrant hook reads it to keep an errand participant
+	// from LLM-ticking mid-errand. World-goroutine-only; restart-loss is
+	// accepted — matches v1's transient ticker, same posture as
+	// BusinessownerCooldowns / ActiveRoutes. EVERY terminal path removes the
+	// entry (see finishErrand) so a leaked errand can't suppress the
+	// summoner's warrants forever.
+	SummonErrands map[ErrandID]*summonErrand
+
 	// ActiveRoutes holds the in-flight per-NPC scheduled-route state
 	// machines (lamplighter / washerwoman / town_crier). Keyed by the
 	// running NPC's ActorID; nil-readable as empty (lazy-allocated on
@@ -648,6 +660,23 @@ type World struct {
 	// minted OrderID is 1 (OrderID(0) reserved as the unset sentinel).
 	// World-goroutine-only (touched exclusively from inside Command.Fn).
 	orderSeq uint64
+
+	// errandSeq is the monotonic per-run ErrandID counter (ZBBS-HOME-311) —
+	// same shape and rules as orderSeq. Incremented before assignment; first
+	// minted ErrandID is 1 (ErrandID(0) reserved as the unset sentinel).
+	// World-goroutine-only. Restart-lossy by design (errands are in-memory),
+	// so there is no LoadWorld safety-floor pass — it always starts at 0.
+	errandSeq uint64
+
+	// suppressArrivalWarrant, when non-nil, is consulted by the locomotion
+	// ticker's finishArrival immediately before it stamps an
+	// ArrivalWarrantReason: the warrant is stamped only when the hook is nil
+	// or returns false. Installed by RegisterSummonSubscriber to keep an
+	// active summon-errand participant (notably the summoner, a VA NPC) from
+	// LLM-ticking and wandering off mid-errand. nil = no suppression (the
+	// default, e.g. in tests that don't register the subscriber).
+	// World-goroutine-only (read inside finishArrival, set at registration).
+	suppressArrivalWarrant func(*Actor) bool
 
 	// terminalOrderSink is the synchronous durable-write target for Order
 	// terminal transitions (Slice 6 write-through-then-prune). Nil by
@@ -1412,5 +1441,7 @@ func snapshotActor(a *Actor, atTick uint64) *ActorSnapshot {
 		RestockPolicy:      a.RestockPolicy,
 		TickInFlight:       a.TickInFlight,
 		TickAttemptID:      a.TickAttemptID,
+		PendingSummon:      clonePendingSummon(a.PendingSummon),
+		SummonRefusal:      cloneSummonRefusal(a.SummonRefusal),
 	}
 }

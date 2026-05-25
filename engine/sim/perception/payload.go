@@ -188,6 +188,17 @@ type Payload struct {
 	// (it needs a typed vendor_persona projection + the keeper data seed).
 	KeeperLodging *KeeperLodgingView
 
+	// SummonsForYou surfaces a pending summons delivered to the subject by a
+	// messenger — "<summoner> asks you to come to <place>" — driving them to
+	// move_to. nil when the actor has no pending summons. Fades after the
+	// actor next acts (the cue is cleared on the reactor tick). ZBBS-HOME-311.
+	SummonsForYou *SummonsForYouView
+
+	// SummonRefusal surfaces, to a summoner whose messenger returned unable
+	// to locate the target, "<target> could not be found." nil otherwise.
+	// Fades after the actor next acts. ZBBS-HOME-311.
+	SummonRefusal *SummonRefusalView
+
 	// SelectionReason is a human-readable explanation of how Primary was
 	// chosen (or why it wasn't) — debug/test output only, never prompt
 	// content.
