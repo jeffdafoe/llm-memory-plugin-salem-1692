@@ -498,15 +498,13 @@ func _build_ui() -> void:
 
     # Village ticker — thin marquee band below the top bar, scrolling
     # chronicler atmosphere prose. Lives on the editor CanvasLayer
-    # alongside top_bar so it inherits the same z-order. Click → opens
-    # the talk panel to its Village tab. attach_world() must run after
-    # event_client.world is set so the ticker can hook the
+    # alongside top_bar so it inherits the same z-order. attach_world()
+    # must run after event_client.world is set so the ticker can hook the
     # world_environment_added signal that event_client emits via world.
     village_ticker = PanelContainer.new()
     village_ticker.set_script(VillageTickerScript)
     editor.add_child(village_ticker)
     village_ticker.attach_world(world)
-    village_ticker.clicked.connect(_on_village_ticker_clicked)
     camera.register_ui_panel(village_ticker)
 
     # Sleep-fade overlay (ZBBS-WORK-204 Stage B). Lives on its own
@@ -579,13 +577,6 @@ func _on_config_pressed() -> void:
     if config_panel != null:
         config_panel.visible = not config_panel.visible
         _set_modal_blocker("config", config_panel.visible)
-
-# Click on the village ticker → open the talk panel to its Village tab.
-# Bypasses the room-huddle gate the talk_launcher uses since the Village
-# tab is universally available.
-func _on_village_ticker_clicked() -> void:
-    if talk_panel_layer != null and talk_panel_layer.has_method("force_open_to_village_tab"):
-        talk_panel_layer.force_open_to_village_tab()
 
 
 ## Forward purse updates from the talk panel to the top bar's coin
