@@ -435,6 +435,23 @@ type Actor struct {
 	// of durable storage.
 	LastPCInputAt *time.Time
 
+	// LastPCSeenAt is the wall-clock instant of this PC's last client poll,
+	// stamped by StampPCSeen on every /pc/me hit (ZBBS-WORK-326). The v2 client
+	// polls /pc/me every 10s while the game is open, so a fresh LastPCSeenAt means
+	// "a live client is driving this PC"; once the player closes the tab the polls
+	// stop and it goes stale. The presence sweep (pc_presence.go) ejects a stale PC
+	// from its huddle, and the encounter cascades skip stale PCs, so co-located
+	// NPCs stop burning ticks greeting an absent player (v1 parity: the
+	// last_pc_seen_at presence-cleanup sweep; the prod ghost-PC cost bug). nil for
+	// NPCs and for a PC no client has polled this session.
+	//
+	// TRANSIENT — not persisted (like LastPCInputAt / LastTirednessRecoveryAt).
+	// Presence is live-session state, not durable: a restored PC starts nil (=
+	// treated as absent until its first poll), which is correct — after a restart
+	// the client must re-attach to be "present". Keeps ephemeral cadence state out
+	// of durable storage.
+	LastPCSeenAt *time.Time
+
 	// Tick scheduling.
 	LastTickedAt       *time.Time
 	NextSelfTickAt     *time.Time
@@ -603,6 +620,10 @@ func CloneActor(a *Actor) *Actor {
 	if a.LastPCInputAt != nil {
 		t := *a.LastPCInputAt
 		cp.LastPCInputAt = &t
+	}
+	if a.LastPCSeenAt != nil {
+		t := *a.LastPCSeenAt
+		cp.LastPCSeenAt = &t
 	}
 	if a.SocialLastBoundaryAt != nil {
 		// Deep-cloned (the social mover stamps it each boundary), like the

@@ -384,6 +384,7 @@ func startTickers(ctx context.Context, w *sim.World) {
 	go sim.RunOrderSweep(ctx, w)
 	go sim.RunPayLedgerSweep(ctx, w)
 	go sim.RunRoomSweep(ctx, w)
+	go sim.RunPCPresenceSweep(ctx, w) // ZBBS-WORK-326: reclaim ghost (closed-tab) PCs
 	go sim.RunSceneQuoteSweep(ctx, w)
 	go sim.RunRotationTicker(ctx, w, sim.RotationScope{}) // empty scope = bulk-rotate everything
 }
