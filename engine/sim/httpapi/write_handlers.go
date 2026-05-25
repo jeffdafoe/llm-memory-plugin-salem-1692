@@ -504,6 +504,109 @@ type adminObjectMoveRequest struct {
 	Y        float64 `json:"y"`
 }
 
+// adminObjectCreateRequest is the POST /api/village/admin/object/create body —
+// place a new object of asset_id at (x, y) in world-pixel space. attached_to is
+// optional: when set, the placement hangs off an existing object as an overlay.
+type adminObjectCreateRequest struct {
+	AssetID    string  `json:"asset_id"`
+	X          float64 `json:"x"`
+	Y          float64 `json:"y"`
+	AttachedTo *string `json:"attached_to"`
+}
+
+// adminObjectCreateResponse reports the created object's minted id + placement.
+// The placing client reads id (to adopt its optimistic node) and placed_by;
+// every client renders the new object via the object_created WS broadcast.
+type adminObjectCreateResponse struct {
+	ID           string  `json:"id"`
+	AssetID      string  `json:"asset_id"`
+	CurrentState string  `json:"current_state"`
+	X            float64 `json:"x"`
+	Y            float64 `json:"y"`
+	PlacedBy     string  `json:"placed_by"`
+	EntryPolicy  string  `json:"entry_policy"`
+	AttachedTo   string  `json:"attached_to,omitempty"`
+}
+
+func (s *Server) handleAdminObjectCreate(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	if user == nil {
+		writeAuthError(w, "invalid")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxAdminBodyBytes)
+	dec := json.NewDecoder(r.Body)
+	var req adminObjectCreateRequest
+	if err := dec.Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.AssetID == "" {
+		writeError(w, http.StatusBadRequest, "asset_id is required")
+		return
+	}
+	// attached_to is optional (omitted = root placement); but an explicitly
+	// present empty string is malformed — reject it rather than silently
+	// treating it as a root create (the pointer lets us tell omitted from "").
+	if req.AttachedTo != nil && *req.AttachedTo == "" {
+		writeError(w, http.StatusBadRequest, "attached_to must be non-empty when provided")
+		return
+	}
+	if status, msg := validateObjectPosition(req.X, req.Y); msg != "" {
+		writeError(w, status, msg)
+		return
+	}
+	var attachedTo sim.VillageObjectID
+	if req.AttachedTo != nil {
+		attachedTo = sim.VillageObjectID(*req.AttachedTo)
+	}
+
+	res, err := s.world.SendContext(r.Context(), adminCommand(user.Username, func(world *sim.World) (any, error) {
+		return sim.CreateVillageObject(sim.AssetID(req.AssetID), req.X, req.Y, attachedTo, user.Username).Fn(world)
+	}))
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
+		if errors.Is(err, errAdminForbidden) {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
+		// Unknown asset / bad attached_to / non-finite position are bad input.
+		if errors.Is(err, sim.ErrUnknownAsset) || errors.Is(err, sim.ErrInvalidObjectPosition) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if errors.Is(err, sim.ErrVillageObjectNotFound) {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+
+	out, ok := res.(sim.CreateObjectResult)
+	if !ok || out.Object == nil {
+		writeError(w, http.StatusInternalServerError, "unexpected create result")
+		return
+	}
+	writeJSON(w, adminObjectCreateResponse{
+		ID:           string(out.Object.ID),
+		AssetID:      string(out.Object.AssetID),
+		CurrentState: out.Object.CurrentState,
+		X:            out.Object.Pos.X,
+		Y:            out.Object.Pos.Y,
+		PlacedBy:     out.Object.PlacedBy,
+		EntryPolicy:  string(out.Object.EntryPolicy),
+		AttachedTo:   string(out.Object.AttachedTo),
+	})
+}
+
 // adminObjectMoveResponse reports the applied position. The visible canvas
 // update reaches all clients via the object_moved WS broadcast the
 // VillageObjectMoved event triggers, so the HTTP body is just the new anchor.
