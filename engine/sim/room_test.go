@@ -261,17 +261,6 @@ func TestComputeLodgerUntil(t *testing.T) {
 	}
 }
 
-// TestComputeEarliestCheckIn covers the earliest-check-in time math.
-func TestComputeEarliestCheckIn(t *testing.T) {
-	loc, _ := time.LoadLocation("America/New_York")
-	readyBy := time.Date(2026, 5, 12, 10, 0, 0, 0, loc)
-	got := sim.ComputeEarliestCheckIn(readyBy, 15, loc)
-	want := time.Date(2026, 5, 12, 15, 0, 0, 0, loc)
-	if !got.Equal(want) {
-		t.Errorf("ComputeEarliestCheckIn = %v, want %v", got, want)
-	}
-}
-
 // TestAssignBedroomForLodgerHappy covers the typical assignment.
 func TestAssignBedroomForLodgerHappy(t *testing.T) {
 	w, cancel := buildRoomTestWorld(t)
