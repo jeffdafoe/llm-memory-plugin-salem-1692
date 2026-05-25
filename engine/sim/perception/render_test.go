@@ -30,6 +30,29 @@ func paidWarrant(eventID sim.EventID, buyer sim.ActorID, amount int, forText str
 // their pre-rendered NarrationText, while the per-tick dwell beat is
 // deliberately NOT surfaced (stays a bare default line to avoid prompt spam),
 // and an empty-narration warrant falls back to the generic involvement line.
+// The village atmosphere line (ZBBS-WORK-327) renders inside "## Around you"
+// when set, is omitted when empty/whitespace, and is collapsed to one inline.
+func TestRenderSurroundings_AtmosphereLine(t *testing.T) {
+	render := func(atmosphere string) string {
+		var b strings.Builder
+		renderSurroundings(&b, SurroundingsView{Atmosphere: atmosphere})
+		return b.String()
+	}
+
+	if got := render("A grey drizzle settles over the square."); !strings.Contains(got, "atmosphere: A grey drizzle settles over the square.") {
+		t.Errorf("atmosphere line missing:\n%s", got)
+	}
+	if got := render(""); strings.Contains(got, "atmosphere:") {
+		t.Errorf("empty atmosphere should render no line:\n%s", got)
+	}
+	if got := render("   \n\t  "); strings.Contains(got, "atmosphere:") {
+		t.Errorf("whitespace-only atmosphere should render no line:\n%s", got)
+	}
+	if got := render("dusk falls\nlanterns flicker"); strings.Count(got, "atmosphere:") != 1 || strings.Contains(got, "atmosphere: dusk falls\nlanterns") {
+		t.Errorf("multi-line atmosphere should collapse to one inline line:\n%s", got)
+	}
+}
+
 func TestRender_NarrationWarrants(t *testing.T) {
 	render := func(reason sim.WarrantReason) string {
 		p := Payload{

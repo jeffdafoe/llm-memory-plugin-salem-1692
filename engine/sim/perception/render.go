@@ -243,6 +243,9 @@ func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 	} else {
 		b.WriteString("huddle: not in a huddle\n")
 	}
+	if atmosphere := strings.TrimSpace(sanitizeInline(s.Atmosphere)); atmosphere != "" {
+		fmt.Fprintf(b, "atmosphere: %s\n", atmosphere)
+	}
 	b.WriteString("\n")
 }
 
