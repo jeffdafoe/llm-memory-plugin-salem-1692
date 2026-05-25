@@ -778,7 +778,7 @@ func _on_npc_work_assign_requested() -> void:
 ## actor) is surfaced as an alert and the dropdown reverts on the next
 ## show_selection.
 func _on_entry_policy_changed(object_id: String, policy: String) -> void:
-    var payload = JSON.stringify({"entry_policy": policy})
+    var payload = JSON.stringify({"object_id": object_id, "entry_policy": policy})
     var http := HTTPRequest.new()
     http.accept_gzip = false
     add_child(http)
@@ -796,8 +796,8 @@ func _on_entry_policy_changed(object_id: String, policy: String) -> void:
         OS.alert(msg, "Entry policy")
     )
     var headers := Auth.auth_headers()
-    http.request(Auth.api_base + "/api/village/objects/" + object_id + "/entry-policy",
-        headers, HTTPClient.METHOD_PATCH, payload)
+    http.request(Auth.api_base + "/api/village/admin/object/set-entry-policy",
+        headers, HTTPClient.METHOD_POST, payload)
 
 ## Admin toggled the "Visible when inside" dropdown — controls whether
 ## an NPC's sprite hides on inside=true or stays rendered at the door.
