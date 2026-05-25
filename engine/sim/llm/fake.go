@@ -109,6 +109,24 @@ func (f *FakeClient) CallCount() int {
 	return len(f.requests)
 }
 
+// SearchMemory implements MemorySearcher — the capability the recall tool needs
+// (ZBBS-WORK-321), which cmd/engine's run() type-asserts on the LLM client at
+// startup. The fake returns no hits (an empty result is not an error, per the
+// interface), which is enough to satisfy the assertion so boot-wiring tests like
+// TestRun_WiresOffWorldCascades reach world.Run instead of erroring out before
+// it. Tests that exercise recall itself use a dedicated searcher mock, not this.
+// Ctx-cancel handling mirrors Complete/PersistToolResults for consistency.
+func (f *FakeClient) SearchMemory(ctx context.Context, namespace, query string, limit int) ([]MemoryHit, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, &Error{
+			Class:   ErrorContextCancelled,
+			Message: "ctx cancelled before fake SearchMemory",
+			Cause:   err,
+		}
+	}
+	return nil, nil
+}
+
 // PersistToolResults implements ToolResultPersister. Records the request
 // for inspection via PersistRequests(). Returns the configured persistErr
 // when set (use SetPersistError to script a failure); otherwise nil.
