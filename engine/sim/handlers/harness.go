@@ -234,7 +234,7 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 	transcript := []llm.Message{
 		{Role: llm.RoleUser, Content: rendered.Text},
 	}
-	tools := h.registry.AdvertisedSpecs()
+	tools := gateTools(h.registry, payload, snap)
 
 	// Scene + VA-routing context for every Complete + persist call this
 	// tick. SceneID is minted once and reused so the API's per-scene

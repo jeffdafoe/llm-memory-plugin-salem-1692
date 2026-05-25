@@ -1,0 +1,131 @@
+package handlers
+
+import (
+	"testing"
+
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/llm"
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/perception"
+)
+
+func gatingTestRegistry(t *testing.T) *Registry {
+	t.Helper()
+	r := NewRegistry()
+	if err := RegisterSpeak(r); err != nil {
+		t.Fatalf("RegisterSpeak: %v", err)
+	}
+	if err := RegisterPayWithItemFamily(r); err != nil {
+		t.Fatalf("RegisterPayWithItemFamily: %v", err)
+	}
+	if err := r.RegisterTerminal("done"); err != nil {
+		t.Fatalf("RegisterTerminal: %v", err)
+	}
+	return r
+}
+
+func specNameSet(specs []llm.ToolSpec) map[string]int {
+	counts := make(map[string]int, len(specs))
+	for _, s := range specs {
+		counts[s.Name]++
+	}
+	return counts
+}
+
+func payOfferPayload(ledgers ...sim.LedgerID) perception.Payload {
+	var warrants []sim.WarrantMeta
+	for _, id := range ledgers {
+		warrants = append(warrants, sim.WarrantMeta{
+			TriggerActorID: "bob",
+			Reason:         sim.PayOfferWarrantReason{LedgerID: id, Buyer: "bob", Item: "stew", Qty: 1, Amount: 5},
+		})
+	}
+	return perception.Payload{ActorID: "seller", Warrants: warrants}
+}
+
+// TestGateTools_NoOffer_DropsSellerResponseTools — with no pending offer in
+// the payload, the seller-response tools (accept/decline/counter) are not
+// advertised; everything else (incl. buyer-side withdraw_pay) still is.
+func TestGateTools_NoOffer_DropsSellerResponseTools(t *testing.T) {
+	r := gatingTestRegistry(t)
+	specs := gateTools(r, perception.Payload{ActorID: "seller"}, nil)
+	names := specNameSet(specs)
+
+	for _, gated := range []string{"accept_pay", "decline_pay", "counter_pay"} {
+		if names[gated] != 0 {
+			t.Errorf("%q advertised with no pending offer (count %d)", gated, names[gated])
+		}
+	}
+	for _, always := range []string{"speak", "pay_with_item", "withdraw_pay", "done"} {
+		if names[always] != 1 {
+			t.Errorf("%q should always be advertised; count %d", always, names[always])
+		}
+	}
+}
+
+// TestGateTools_PendingOffer_AddsSellerResponseTools — a pending offer in the
+// payload re-adds the seller-response tools.
+func TestGateTools_PendingOffer_AddsSellerResponseTools(t *testing.T) {
+	r := gatingTestRegistry(t)
+	specs := gateTools(r, payOfferPayload(17), nil)
+	names := specNameSet(specs)
+
+	for _, want := range []string{"accept_pay", "decline_pay", "counter_pay", "withdraw_pay", "speak", "pay_with_item", "done"} {
+		if names[want] != 1 {
+			t.Errorf("%q should be advertised when an offer is pending; count %d", want, names[want])
+		}
+	}
+}
+
+// TestGateTools_MultipleOffers_NoDuplicateTools — multiple pending offers
+// still advertise each response tool exactly once (the tools take ledger_id
+// as a param; the offers are enumerated in the prompt, not in the tool list).
+func TestGateTools_MultipleOffers_NoDuplicateTools(t *testing.T) {
+	r := gatingTestRegistry(t)
+	specs := gateTools(r, payOfferPayload(1, 2, 3), nil)
+	names := specNameSet(specs)
+	for _, tool := range []string{"accept_pay", "decline_pay", "counter_pay"} {
+		if names[tool] != 1 {
+			t.Errorf("%q advertised %d times across multiple offers, want 1", tool, names[tool])
+		}
+	}
+}
+
+// TestGateTools_PendingOffer_MatchesAdvertisedSpecs — when an offer is
+// present the gate returns exactly the registry's full Available set, in
+// registration order (prompt-cache stability).
+func TestGateTools_PendingOffer_MatchesAdvertisedSpecs(t *testing.T) {
+	r := gatingTestRegistry(t)
+	got := gateTools(r, payOfferPayload(1), nil)
+	want := r.AdvertisedSpecs()
+	if len(got) != len(want) {
+		t.Fatalf("len(gated)=%d, len(advertised)=%d", len(got), len(want))
+	}
+	for i := range got {
+		if got[i].Name != want[i].Name {
+			t.Errorf("order mismatch at %d: %q vs %q", i, got[i].Name, want[i].Name)
+		}
+	}
+}
+
+// TestGateTools_NoOffer_PreservesOrderOfRemaining — dropping the gated tools
+// leaves the remaining tools in their registration order.
+func TestGateTools_NoOffer_PreservesOrderOfRemaining(t *testing.T) {
+	r := gatingTestRegistry(t)
+	got := gateTools(r, perception.Payload{ActorID: "seller"}, nil)
+
+	var want []string
+	for _, s := range r.AdvertisedSpecs() {
+		if _, gated := payOfferResponseTools[s.Name]; gated {
+			continue
+		}
+		want = append(want, s.Name)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("len(gated)=%d, want %d", len(got), len(want))
+	}
+	for i := range got {
+		if got[i].Name != want[i] {
+			t.Errorf("order mismatch at %d: %q vs %q", i, got[i].Name, want[i])
+		}
+	}
+}

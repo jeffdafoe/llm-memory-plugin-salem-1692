@@ -111,7 +111,28 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderKeeperLodging(&b, p.KeeperLodging)
 	renderScene(&b, p)
 	renderSecondary(&b, p.Secondary)
-	renderWarrants(&b, p.Warrants, cfg, &out)
+
+	// Pay offers are pulled out of the generic warrant list and rendered as
+	// an actionable decision section (renderPayOffers) so the seller gets the
+	// ledger_id it must echo into accept_pay/decline_pay/counter_pay. The same
+	// PayOfferWarrants(p) predicate drives the handlers tool-gate (gateTools),
+	// so the rendered offer and the advertised response tools cannot drift.
+	// Rendering them in a dedicated, uncapped section (rather than as a capped
+	// warrant line) guarantees the ledger_id is present whenever the tools are
+	// advertised.
+	payOffers := PayOfferWarrants(p)
+	renderPayOffers(&b, payOffers)
+
+	warrants := p.Warrants
+	if len(payOffers) > 0 {
+		warrants = nonPayOfferWarrants(p.Warrants)
+	}
+	// Skip the generic "what just happened" block only when the pay-offer
+	// section already covered the whole batch; otherwise render it (this also
+	// preserves the routine-check-in line for the genuinely-empty case).
+	if len(warrants) > 0 || len(payOffers) == 0 {
+		renderWarrants(&b, warrants, cfg, &out)
+	}
 
 	out.Text = b.String()
 	return out
@@ -466,6 +487,80 @@ func renderSecondary(b *strings.Builder, secondary []SceneSignal) {
 // RenderedPrompt accounting. Warrants arrive already ordered by
 // SourceEventID (Build's job); the caps are applied here, after ordering,
 // and any warrant past a cap is moved to DroppedWarrants for carry-forward.
+// PayOfferWarrants returns the pending pay-offer warrants in the payload's
+// consumed batch (the PayOfferWarrantReason entries). It is the single
+// source of truth shared by the perception offer-decision section
+// (renderPayOffers, below) and the handlers tool-gate (gateTools): the
+// rendered offer and the advertised accept_pay/decline_pay/counter_pay tools
+// both key off this one predicate so they cannot drift.
+//
+// Pay offers warrant the SELLER only (the PayOfferReceived subscriber stamps
+// the seller, never the buyer), so a non-empty result means "this actor is
+// the seller of one or more pending offers awaiting their decision".
+func PayOfferWarrants(p Payload) []sim.PayOfferWarrantReason {
+	var offers []sim.PayOfferWarrantReason
+	for _, w := range p.Warrants {
+		if r, ok := w.Reason.(sim.PayOfferWarrantReason); ok {
+			offers = append(offers, r)
+		}
+	}
+	return offers
+}
+
+// nonPayOfferWarrants returns the consumed batch with pay-offer warrants
+// removed — they render in the dedicated decision section (renderPayOffers)
+// instead of the generic "what just happened" list, so they must not also
+// appear there, nor consume the warrant-section cap / carry-forward budget
+// (a rendered offer is addressed).
+func nonPayOfferWarrants(warrants []sim.WarrantMeta) []sim.WarrantMeta {
+	out := make([]sim.WarrantMeta, 0, len(warrants))
+	for _, w := range warrants {
+		if _, ok := w.Reason.(sim.PayOfferWarrantReason); ok {
+			continue
+		}
+		out = append(out, w)
+	}
+	return out
+}
+
+// renderPayOffers renders the pending-pay-offer decision section: one line
+// per offer carrying the ledger_id (the load-bearing field — the model must
+// echo it back into accept_pay/decline_pay/counter_pay), the buyer, the goods
+// (qty x item), the amount, and whether the buyer wants it consumed now or
+// kept. There is no untrusted free-text payload, so nothing is truncated;
+// buyer and item are structurally sanitized like other inline fields.
+//
+// Uncapped by design: pay offers are inherently few (bounded by co-present
+// buyers), and the section must always carry the ledger_id whenever gateTools
+// advertises the response tools.
+func renderPayOffers(b *strings.Builder, offers []sim.PayOfferWarrantReason) {
+	if len(offers) == 0 {
+		return
+	}
+	b.WriteString("## Offers awaiting your decision\n")
+	for i, o := range offers {
+		unit := "coins"
+		if o.Amount == 1 {
+			unit = "coin"
+		}
+		disposition := "to keep"
+		if o.ConsumeNow {
+			disposition = "to consume now"
+		}
+		buyer := sanitizeInline(string(o.Buyer))
+		if buyer == "" {
+			buyer = "someone"
+		}
+		item := sanitizeInline(string(o.Item))
+		if item == "" {
+			item = "item"
+		}
+		fmt.Fprintf(b, "%d. %s offers %d %s for %d %s %s (offer id %d)\n",
+			i+1, buyer, o.Amount, unit, o.Qty, item, disposition, o.LedgerID)
+	}
+	b.WriteString("Respond with accept_pay, decline_pay, or counter_pay, passing the offer id as ledger_id.\n")
+}
+
 func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, cfg RenderConfig, out *RenderedPrompt) {
 	b.WriteString("## What just happened — address these\n")
 	if len(warrants) == 0 {
