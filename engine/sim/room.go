@@ -251,12 +251,3 @@ func LodgingNightlyRate(weeklyRate int) int {
 	return weeklyRate / 7
 }
 
-// ComputeEarliestCheckIn returns the earliest wall-clock instant a
-// nights_stay can be checked in: ready_by at check-in hour, in the
-// world timezone. Pure helper, matches legacy computeEarliestCheckIn.
-func ComputeEarliestCheckIn(readyBy time.Time, checkInHour int, loc *time.Location) time.Time {
-	if loc == nil {
-		loc = time.UTC
-	}
-	return time.Date(readyBy.Year(), readyBy.Month(), readyBy.Day(), checkInHour, 0, 0, 0, loc)
-}

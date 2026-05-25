@@ -194,10 +194,6 @@ type EvictExpiredOccupantsResult struct {
 	Evicted []EvictedOccupant
 }
 
-// EvictedNarration is the brown-box narration shown to a PC on
-// checkout. Mirrors legacy text.
-const EvictedNarration = "Your stay has ended — you head down to the common area."
-
 // EvictExpiredOccupants returns a Command that moves PCs whose private-
 // room access has lapsed back to the common room of the same structure.
 //
@@ -209,9 +205,14 @@ const EvictedNarration = "Your stay has ended — you head down to the common ar
 // access. NPCs aren't affected — staff hold permanent access via
 // WorkStructureID, owners via a different mechanism.
 //
-// Each evictee carries a pre-rendered narration line for the Hub to
-// broadcast as a private room_event.
-func EvictExpiredOccupants() Command {
+// Each evictee is surfaced to its client via a PCRelocatedToCommon event
+// (translated to a private room_event narration frame), since v2 otherwise
+// leaves the client's room scope stale until the next /pc/me poll. The
+// narration line is drawn from the lodging-checkout phrase pool
+// (pickLodgingNarration), not a single frozen string, and the same line rides
+// the returned result so callers and tests see what the PC was shown. now
+// stamps the emitted event.
+func EvictExpiredOccupants(now time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
 			var evicted []EvictedOccupant
@@ -233,14 +234,24 @@ func EvictExpiredOccupants() Command {
 				common := commonRoomForStructure(w, room.StructureID)
 				fromRoom := actor.InsideRoomID
 				actor.InsideRoomID = common
+				text := pickLodgingNarration(LodgingReasonCheckout)
 				evicted = append(evicted, EvictedOccupant{
 					ActorID:     actorID,
 					ActorName:   actor.DisplayName,
 					StructureID: room.StructureID,
 					FromRoomID:  fromRoom,
 					ToRoomID:    common,
-					Text:        EvictedNarration,
+					Text:        text,
 				})
+				if text != "" {
+					w.emit(&PCRelocatedToCommon{
+						ActorID:     actorID,
+						StructureID: room.StructureID,
+						Reason:      LodgingReasonCheckout,
+						Text:        text,
+						At:          now,
+					})
+				}
 			}
 			return EvictExpiredOccupantsResult{Evicted: evicted}, nil
 		},
@@ -281,7 +292,7 @@ func RunRoomSweep(ctx context.Context, w *World) {
 				log.Printf("sim/room_sweep: expire failed: %v", err)
 				continue
 			}
-			if _, err := w.SendContext(ctx, EvictExpiredOccupants()); err != nil && ctx.Err() == nil {
+			if _, err := w.SendContext(ctx, EvictExpiredOccupants(now)); err != nil && ctx.Err() == nil {
 				log.Printf("sim/room_sweep: evict failed: %v", err)
 			}
 		}

@@ -261,17 +261,6 @@ func TestComputeLodgerUntil(t *testing.T) {
 	}
 }
 
-// TestComputeEarliestCheckIn covers the earliest-check-in time math.
-func TestComputeEarliestCheckIn(t *testing.T) {
-	loc, _ := time.LoadLocation("America/New_York")
-	readyBy := time.Date(2026, 5, 12, 10, 0, 0, 0, loc)
-	got := sim.ComputeEarliestCheckIn(readyBy, 15, loc)
-	want := time.Date(2026, 5, 12, 15, 0, 0, 0, loc)
-	if !got.Equal(want) {
-		t.Errorf("ComputeEarliestCheckIn = %v, want %v", got, want)
-	}
-}
-
 // TestAssignBedroomForLodgerHappy covers the typical assignment.
 func TestAssignBedroomForLodgerHappy(t *testing.T) {
 	w, cancel := buildRoomTestWorld(t)
@@ -444,8 +433,9 @@ func TestEvictExpiredOccupants(t *testing.T) {
 	defer cancel()
 
 	// Set up: Alice in bedroom_1 (room 2), her access is Active=false.
-	past := time.Now().UTC().Add(-1 * time.Hour)
-	_, _ = w.Send(sim.Command{
+	now := time.Now().UTC()
+	past := now.Add(-1 * time.Hour)
+	if _, err := w.Send(sim.Command{
 		Fn: func(world *sim.World) (any, error) {
 			a := world.Actors["alice"]
 			a.InsideRoomID = 2
@@ -456,9 +446,14 @@ func TestEvictExpiredOccupants(t *testing.T) {
 			}
 			return nil, nil
 		},
-	})
+	}); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
 
-	res, _ := w.Send(sim.EvictExpiredOccupants())
+	res, err := w.Send(sim.EvictExpiredOccupants(now))
+	if err != nil {
+		t.Fatalf("evict: %v", err)
+	}
 	r := res.(sim.EvictExpiredOccupantsResult)
 	if len(r.Evicted) != 1 {
 		t.Fatalf("Evicted count = %d, want 1", len(r.Evicted))
@@ -470,16 +465,26 @@ func TestEvictExpiredOccupants(t *testing.T) {
 	if e.FromRoomID != 2 || e.ToRoomID != 1 {
 		t.Errorf("Evicted From=%d To=%d, want From=2 To=1", e.FromRoomID, e.ToRoomID)
 	}
-	if e.Text != sim.EvictedNarration {
-		t.Errorf("Text = %q, want %q", e.Text, sim.EvictedNarration)
+	foundText := false
+	for _, p := range sim.LodgingNarrationPool(sim.LodgingReasonCheckout) {
+		if e.Text == p {
+			foundText = true
+			break
+		}
+	}
+	if !foundText {
+		t.Errorf("Text = %q, want a lodging-checkout pool phrase", e.Text)
 	}
 
 	// Actor moved.
-	got, _ := w.Send(sim.Command{
+	got, err := w.Send(sim.Command{
 		Fn: func(world *sim.World) (any, error) {
 			return world.Actors["alice"].InsideRoomID, nil
 		},
 	})
+	if err != nil {
+		t.Fatalf("read room: %v", err)
+	}
 	if got.(sim.RoomID) != 1 {
 		t.Errorf("Alice InsideRoomID after evict = %d, want 1 (common)", got.(sim.RoomID))
 	}
@@ -492,16 +497,82 @@ func TestEvictExpiredOccupantsSpareNPCs(t *testing.T) {
 
 	// Hannah (NPC) is in a private room with no access — should NOT
 	// be evicted (NPCs use different access mechanisms).
-	_, _ = w.Send(sim.Command{
+	if _, err := w.Send(sim.Command{
 		Fn: func(world *sim.World) (any, error) {
 			world.Actors["hannah"].InsideRoomID = 2
 			world.Actors["hannah"].RoomAccess = nil
 			return nil, nil
 		},
-	})
+	}); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
 
-	res, _ := w.Send(sim.EvictExpiredOccupants())
+	res, err := w.Send(sim.EvictExpiredOccupants(time.Now().UTC()))
+	if err != nil {
+		t.Fatalf("evict: %v", err)
+	}
 	if len(res.(sim.EvictExpiredOccupantsResult).Evicted) != 0 {
 		t.Errorf("NPC was evicted: %+v", res.(sim.EvictExpiredOccupantsResult).Evicted)
+	}
+}
+
+// TestEvictExpiredOccupantsEmitsRelocation covers the WS-surfacing half: an
+// eviction emits a PCRelocatedToCommon event (which the hub translates to the
+// private room_event the client renders), carrying the checkout reason and a
+// pooled narration line.
+func TestEvictExpiredOccupantsEmitsRelocation(t *testing.T) {
+	w, cancel := buildRoomTestWorld(t)
+	defer cancel()
+
+	// got is mutated by the subscriber and read by the reader command — both
+	// run on the world goroutine, so this is race-free without a mutex.
+	var got []*sim.PCRelocatedToCommon
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Subscribe(sim.SubscriberFunc(func(_ *sim.World, evt sim.Event) {
+			if e, ok := evt.(*sim.PCRelocatedToCommon); ok {
+				got = append(got, e)
+			}
+		}))
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+
+	now := time.Now().UTC()
+	past := now.Add(-1 * time.Hour)
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := world.Actors["alice"]
+		a.InsideRoomID = 2
+		a.RoomAccess = map[sim.RoomAccessKey]*sim.RoomAccess{
+			{RoomID: 2, Source: sim.AccessSourceLedger}: {RoomID: 2, ExpiresAt: &past, Active: false},
+		}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	if _, err := w.Send(sim.EvictExpiredOccupants(now)); err != nil {
+		t.Fatalf("evict: %v", err)
+	}
+
+	read, err := w.Send(sim.Command{Fn: func(_ *sim.World) (any, error) {
+		return append([]*sim.PCRelocatedToCommon(nil), got...), nil
+	}})
+	if err != nil {
+		t.Fatalf("read events: %v", err)
+	}
+	events := read.([]*sim.PCRelocatedToCommon)
+	if len(events) != 1 {
+		t.Fatalf("PCRelocatedToCommon emitted %d times, want 1", len(events))
+	}
+	e := events[0]
+	if e.ActorID != "alice" {
+		t.Errorf("event ActorID = %q, want alice", e.ActorID)
+	}
+	if e.Reason != sim.LodgingReasonCheckout {
+		t.Errorf("event Reason = %q, want %q", e.Reason, sim.LodgingReasonCheckout)
+	}
+	if e.StructureID == "" || e.Text == "" {
+		t.Errorf("event StructureID/Text empty: %+v", e)
 	}
 }

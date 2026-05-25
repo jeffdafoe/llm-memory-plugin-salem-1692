@@ -31,7 +31,10 @@ import (
 // SLEEP (PCSleepStarted → pc_sleep_started, PCSleepEnded → pc_sleep_ended — the
 // player-facing bed-down / wake transitions driven by idle auto-bed + the
 // pc/sleep + pc/wake routes; the client filters to its own PC and raises/clears
-// the sleep-fade overlay + top-bar chip).
+// the sleep-fade overlay + top-bar chip), and PC LODGING RELOCATION
+// (PCRelocatedToCommon → room_event — the private brown-panel narration shown
+// when the lodging day-cycle moves a PC from a private room to the common room,
+// on checkout eviction or morning descent).
 // Per-tile ActorMoved is deliberately NOT mapped — it stays internal; nor are
 // spawn/despawn or object create (no sim bus source until those write routes
 // exist). An unmapped event returns ok=false and is dropped, so adding cases
@@ -289,6 +292,31 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			ActorID: string(e.ActorID),
 			Reason:  e.Reason,
 			At:      e.At.UTC().Format(time.RFC3339),
+		}}, true
+	case *sim.PCRelocatedToCommon:
+		if e.Text == "" {
+			// No narration line (empty pool) — drop rather than send a room_event
+			// the client would discard for empty text. Emitters also skip emit on
+			// empty text; this is the belt-and-suspenders so a blank frame can
+			// never reach the client regardless of emit site.
+			return WireFrame{}, false
+		}
+		// A PC was moved from a private room to its structure's common room by
+		// the lodging day-cycle (checkout eviction or morning descent). Surfaced
+		// as a private room_event narration — the client's _on_room_event matches
+		// it to its own PC by actor_id and renders the brown-panel line. actor_name
+		// is "" (the engine convention for second-person felt narration: there is
+		// no speaker, just a line addressed to the PC); kind is the relocation
+		// reason. private=true makes the client bypass room-scope filtering, so the
+		// line lands even though the PC's loaded scope is mid-change.
+		return WireFrame{Type: "room_event", Data: roomEventWireDTO{
+			ActorID:     string(e.ActorID),
+			ActorName:   "",
+			Kind:        e.Reason,
+			Text:        e.Text,
+			Private:     true,
+			StructureID: string(e.StructureID),
+			At:          e.At.UTC().Format(time.RFC3339),
 		}}, true
 	default:
 		return WireFrame{}, false
@@ -618,4 +646,23 @@ type pcSleepEndedWireDTO struct {
 	ActorID string `json:"actor_id"`
 	Reason  string `json:"reason"`
 	At      string `json:"at"`
+}
+
+// roomEventWireDTO is the room_event payload — a private, second-person
+// brown-panel narration line addressed to one PC (the v1 room_event shape the
+// Godot client's _on_room_event already renders; see world.gd apply_room_event).
+// private=true + actor_id scope it to the one PC client-side and bypass the
+// talk-panel room-scope filter, so the line surfaces even while the PC's loaded
+// scope is mid-change (e.g. just relocated). actor_name is "" by convention for
+// these speaker-less felt lines. kind is informational (the relocation reason).
+// structure_id is where the relocation happened. No room_id: private events skip
+// the subspace filter, so it is not needed.
+type roomEventWireDTO struct {
+	ActorID     string `json:"actor_id"`
+	ActorName   string `json:"actor_name"`
+	Kind        string `json:"kind"`
+	Text        string `json:"text"`
+	Private     bool   `json:"private"`
+	StructureID string `json:"structure_id"`
+	At          string `json:"at"`
 }

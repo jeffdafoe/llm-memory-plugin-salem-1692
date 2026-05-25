@@ -517,6 +517,67 @@ func TestTranslateEvent_PCSleepEnded(t *testing.T) {
 	}
 }
 
+func TestTranslateEvent_PCRelocatedToCommon(t *testing.T) {
+	at := time.Date(2026, 5, 25, 11, 0, 0, 0, time.UTC)
+	frame, ok := TranslateEvent(&sim.PCRelocatedToCommon{
+		ActorID:     "player-1",
+		StructureID: "inn",
+		Reason:      sim.LodgingReasonCheckout,
+		Text:        "Your stay has ended — you head down to the common area.",
+		At:          at,
+	})
+	if !ok {
+		t.Fatal("PCRelocatedToCommon should translate")
+	}
+	if frame.Type != "room_event" {
+		t.Fatalf("type = %q, want room_event", frame.Type)
+	}
+	d, isType := frame.Data.(roomEventWireDTO)
+	if !isType {
+		t.Fatalf("data type = %T, want roomEventWireDTO", frame.Data)
+	}
+	want := roomEventWireDTO{
+		ActorID:     "player-1",
+		ActorName:   "",
+		Kind:        sim.LodgingReasonCheckout,
+		Text:        "Your stay has ended — you head down to the common area.",
+		Private:     true,
+		StructureID: "inn",
+		At:          at.UTC().Format(time.RFC3339),
+	}
+	if d != want {
+		t.Errorf("room_event payload = %+v, want %+v", d, want)
+	}
+	// The client's _on_room_event matches private events by actor_id and reads
+	// text/structure_id (world.gd / talk_panel.gd) — assert the exact keys + that
+	// private marshals true (a missing/false private would drop the narration).
+	b, err := json.Marshal(d)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, key := range []string{`"actor_id"`, `"actor_name"`, `"kind"`, `"text"`, `"private":true`, `"structure_id"`, `"at"`} {
+		if !strings.Contains(string(b), key) {
+			t.Errorf("room_event json missing %s: %s", key, b)
+		}
+	}
+}
+
+// TestTranslateEvent_PCRelocatedToCommonEmptyTextDropped covers the empty-text
+// guard: a relocation with no narration line is dropped, never sent as a blank
+// room_event the client would discard anyway.
+func TestTranslateEvent_PCRelocatedToCommonEmptyTextDropped(t *testing.T) {
+	_, ok := TranslateEvent(&sim.PCRelocatedToCommon{
+		ActorID:     "player-1",
+		StructureID: "inn",
+		Reason:      sim.LodgingReasonCheckout,
+		Text:        "",
+		At:          time.Now().UTC(),
+	})
+	if ok {
+		t.Error("PCRelocatedToCommon with empty Text should be dropped, not translated")
+	}
+}
+
 // TestTranslateEvent_UnmappedDropped covers the default case: per-tile
 // ActorMoved is engine-internal and must not reach the client.
 func TestTranslateEvent_UnmappedDropped(t *testing.T) {
