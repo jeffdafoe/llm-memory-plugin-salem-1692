@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"sort"
+	"strings"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/telemetry"
@@ -102,6 +103,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/village/assets", s.requireAuth(s.handleAssets))
 	mux.HandleFunc("GET /api/village/sprites", s.requireAuth(s.handleSprites))
 	mux.HandleFunc("GET /api/village/npc-behaviors", s.requireAuth(s.handleNPCBehaviors))
+	mux.HandleFunc("GET /api/village/refresh-attributes", s.requireAuth(s.handleRefreshAttributes))
 	// Static editor allowlists (vocabulary the editor's tag dropdowns render).
 	// Hardcoded reference data — no World map, no DB; see catalog_tags.go.
 	mux.HandleFunc("GET /api/village/object-tags", s.requireAuth(s.handleObjectTags))
@@ -225,6 +227,15 @@ func (s *Server) handleSprites(w http.ResponseWriter, _ *http.Request) {
 // as handleSprites/handleAssets.
 func (s *Server) handleNPCBehaviors(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, npcBehaviorsFromCatalog(s.world.AttributeDefinitions))
+}
+
+// handleRefreshAttributes serves the need catalog (the refresh editor's
+// attribute dropdown source) — the v2 replacement for v1's /api/refresh-attributes.
+// Reads the frozen sim.Needs registry (reference state, no World map / DB),
+// same lock-free posture as handleObjectTags. The set-refresh route validates a
+// row's attribute against this same registry via sim.FindNeed.
+func (s *Server) handleRefreshAttributes(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, refreshAttributesFromNeeds())
 }
 
 // worldStateFromSnapshot maps the snapshot's world-level state to the wire DTO.
@@ -352,6 +363,12 @@ func objectsFromSnapshot(s *sim.Snapshot, assets map[sim.AssetID]*sim.Asset) []O
 			dto.ContentText = nc.Text
 			postedAt := nc.PostedAt
 			dto.ContentPostedAt = &postedAt
+		}
+		// Refresh policies for the editor panel (no standalone GET in v2).
+		// refreshRowsToWire returns a non-nil empty slice for no refreshes,
+		// which `omitempty` then drops from the wire.
+		if len(o.Refreshes) > 0 {
+			dto.Refreshes = refreshRowsToWire(o.Refreshes)
 		}
 		out = append(out, dto)
 	}
@@ -513,6 +530,24 @@ func npcBehaviorsFromCatalog(defs map[string]*sim.AttributeDefinition) []NPCBeha
 		}
 		return out[i].Slug < out[j].Slug
 	})
+	return out
+}
+
+// refreshAttributesFromNeeds maps the canonical sim.Needs registry to the
+// refresh-attribute DTO slice for the editor dropdown. Registry order is stable
+// (hunger/thirst/tiredness), so no sort is needed; the DisplayLabel is the key
+// with an upper-cased first rune ("hunger" -> "Hunger") since needs carry no
+// dedicated label field.
+func refreshAttributesFromNeeds() []RefreshAttributeDTO {
+	out := make([]RefreshAttributeDTO, 0, len(sim.Needs))
+	for _, n := range sim.Needs {
+		key := string(n.Key)
+		label := key
+		if key != "" {
+			label = strings.ToUpper(key[:1]) + key[1:]
+		}
+		out = append(out, RefreshAttributeDTO{Name: key, DisplayLabel: label})
+	}
 	return out
 }
 
