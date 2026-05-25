@@ -154,19 +154,21 @@ func TestHarness_Persist_OnBudgetForced(t *testing.T) {
 	w, cancel := newHarnessWorldWithAgent(t, "attempt-A", "zbbs-josiah")
 	defer cancel()
 
-	// Iter 1: emit a recall (non-terminal observation). Iter 2: emit
-	// another recall. With iterationBudget=2, the loop exhausts before a
-	// terminal, leaving the iter-2 tool result trailing in the
-	// transcript.
-	client := llm.NewFakeClient(
-		llm.ScriptedTurn{Response: llm.Response{
-			ToolCalls: []llm.RawToolCall{newToolCall("c1", 0, "recall", `{}`)},
-		}},
-		llm.ScriptedTurn{Response: llm.Response{
-			ToolCalls: []llm.RawToolCall{newToolCall("c2", 0, "recall", `{}`)},
-		}},
-	)
-	h, _ := newTestHarness(t, client, 2, 0)
+	// recall is a non-terminal OBSERVATION, so recall-only rounds don't
+	// consume the action budget (ZBBS-WORK-321) — the loop exhausts at the
+	// hard per-tick ceiling (IterationBudget + MaxObservationRounds) instead.
+	// At exhaustion the LAST round's recall tool-result trails in the
+	// transcript and must be persisted.
+	const iterBudget = 2
+	rounds := iterBudget + DefaultMaxObservationRounds
+	turns := make([]llm.ScriptedTurn, rounds)
+	for i := range turns {
+		turns[i] = llm.ScriptedTurn{Response: llm.Response{
+			ToolCalls: []llm.RawToolCall{newToolCall("c"+string(rune('a'+i)), 0, "recall", `{}`)},
+		}}
+	}
+	client := llm.NewFakeClient(turns...)
+	h, _ := newTestHarness(t, client, iterBudget, 0)
 
 	result := h.RunTick(context.Background(), w, newTestJob("attempt-A", nil))
 	if result.TerminalStatus != sim.TickStatusBudgetForced {
@@ -177,8 +179,9 @@ func TestHarness_Persist_OnBudgetForced(t *testing.T) {
 	if len(persists) != 1 {
 		t.Fatalf("PersistRequests len = %d, want 1", len(persists))
 	}
-	if persists[0].Results[0].ID != "c2" {
-		t.Errorf("Results[0].ID = %q, want c2 (last iter's call)", persists[0].Results[0].ID)
+	wantID := "c" + string(rune('a'+rounds-1))
+	if persists[0].Results[0].ID != wantID {
+		t.Errorf("Results[0].ID = %q, want %q (last round's call)", persists[0].Results[0].ID, wantID)
 	}
 }
 

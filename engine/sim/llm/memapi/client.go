@@ -215,7 +215,7 @@ func (c *Client) Complete(ctx context.Context, req llm.Request) (llm.Response, e
 		}
 	}
 
-	respBytes, err := c.post(ctx, body)
+	respBytes, err := c.post(ctx, "/v1/chat/send", body)
 	if err != nil {
 		return llm.Response{}, toLLMError(err)
 	}
@@ -270,7 +270,7 @@ func (c *Client) PersistToolResults(ctx context.Context, req llm.PersistRequest)
 				return ctxErr(ctx)
 			}
 		}
-		_, err := c.post(ctx, body)
+		_, err := c.post(ctx, "/v1/chat/send", body)
 		if err == nil {
 			return nil
 		}
@@ -284,15 +284,80 @@ func (c *Client) PersistToolResults(ctx context.Context, req llm.PersistRequest)
 	return toLLMError(lastErr)
 }
 
+// --- SearchMemory ---------------------------------------------------------
+
+// searchMemoryRequest is the /v1/memory/search body. namespace scopes the
+// search to a single agent's memory — recall passes the acting NPC's own
+// namespace, never "*".
+type searchMemoryRequest struct {
+	Query     string `json:"query"`
+	Namespace string `json:"namespace"`
+	Limit     int    `json:"limit"`
+}
+
+// searchMemoryHitWire is one note-grouped result on the wire. Mirrors v1's
+// searchMemoryHit (engine/agent_client.go). Decoded into llm.MemoryHit.
+type searchMemoryHitWire struct {
+	SourceFile string  `json:"source_file"`
+	Heading    string  `json:"heading"`
+	ChunkText  string  `json:"chunk_text"`
+	Namespace  string  `json:"namespace"`
+	Similarity float64 `json:"similarity"`
+	ChunkCount int     `json:"chunk_count"`
+}
+
+type searchMemoryResponse struct {
+	Results []searchMemoryHitWire `json:"results"`
+}
+
+// SearchMemory implements llm.MemorySearcher. POSTs /v1/memory/search scoped
+// to a single namespace with the salem-engine API key — the port of v1's
+// npcChatClient.searchMemory. The recall observation tool is the only caller
+// today. An empty result set is returned as an empty slice, not an error.
+//
+// Errors carry no llm.Error classification (unlike Complete): recall's
+// ObservationFn turns any error into an in-character "the memory wouldn't
+// come" tool result, so the caller only needs to know success-vs-failure.
+func (c *Client) SearchMemory(ctx context.Context, namespace, query string, limit int) ([]llm.MemoryHit, error) {
+	body, err := json.Marshal(searchMemoryRequest{Query: query, Namespace: namespace, Limit: limit})
+	if err != nil {
+		return nil, fmt.Errorf("memapi: marshal search request: %w", err)
+	}
+	respBytes, err := c.post(ctx, "/v1/memory/search", body)
+	if err != nil {
+		return nil, fmt.Errorf("memapi: search: %w", err)
+	}
+	var resp searchMemoryResponse
+	if err := json.Unmarshal(respBytes, &resp); err != nil {
+		return nil, fmt.Errorf("memapi: parse search response: %w", err)
+	}
+	hits := make([]llm.MemoryHit, 0, len(resp.Results))
+	for _, h := range resp.Results {
+		hits = append(hits, llm.MemoryHit{
+			SourceFile: h.SourceFile,
+			Heading:    h.Heading,
+			ChunkText:  h.ChunkText,
+			Namespace:  h.Namespace,
+			Similarity: h.Similarity,
+			ChunkCount: h.ChunkCount,
+		})
+	}
+	return hits, nil
+}
+
 // --- HTTP plumbing --------------------------------------------------------
 
-// post issues a POST to /v1/chat/send with the given JSON body. Returns
+// post issues a POST to baseURL+path with the given JSON body. Returns
 // the response body on 2xx; an error otherwise. Errors are typed:
 // statusError for non-2xx, context errors for ctx cancellation, or raw
 // errors for transport failures. The caller wraps via toLLMError.
-func (c *Client) post(ctx context.Context, body []byte) ([]byte, error) {
+//
+// path is parameterized so the chat endpoints (/v1/chat/send) and the
+// memory-search endpoint (/v1/memory/search, ZBBS-WORK-321) share the same
+// auth + status + transport handling.
+func (c *Client) post(ctx context.Context, path string, body []byte) ([]byte, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		c.baseURL+"/v1/chat/send", bytes.NewReader(body))
+		c.baseURL+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}

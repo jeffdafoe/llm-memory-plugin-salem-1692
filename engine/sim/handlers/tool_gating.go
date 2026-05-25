@@ -45,6 +45,27 @@ var payOfferResponseTools = map[string]struct{}{
 // the rest of the seller-response group (see gateTools / scar #4).
 const counterPayToolName = "counter_pay"
 
+// recallToolName is the recall observation tool — advertised ONLY to agents
+// with a dedicated VA / own memory namespace (ZBBS-WORK-321). A shared-VA NPC
+// (vendor/visitor-backed) has no personal memory to recall.
+const recallToolName = "recall"
+
+// actorHasDedicatedVA reports whether the acting actor is a stateful NPC
+// (KindNPCStateful = "own VA with memory", per actor.go). Shared-VA NPCs have
+// no personal memory, so recall is not advertised to them. Returns false when
+// the actor can't be resolved (nil snapshot / missing actor) — conservative:
+// don't advertise a memory tool to an actor we can't confirm has memory.
+func actorHasDedicatedVA(actorID sim.ActorID, snap *sim.Snapshot) bool {
+	if snap == nil {
+		return false
+	}
+	a, ok := snap.Actors[actorID]
+	if !ok || a == nil {
+		return false
+	}
+	return a.Kind == sim.KindNPCStateful
+}
+
 // gateTools computes the per-tick advertised tool set from the registry's
 // Available tools, conditioned on the actor's perception.
 //
@@ -70,23 +91,32 @@ const counterPayToolName = "counter_pay"
 // Registration order is preserved (the gated tools, when included, stay in
 // their registered positions) for provider prompt-cache stability.
 //
-// snap is part of the general signature for future consumers that need world
-// state the warrant batch does not carry (e.g. shift state for speak gating);
-// the pay consumer reads only the payload.
+// recall (ZBBS-WORK-321) is the first consumer to use snap: it advertises
+// recall only to dedicated-VA agents (`snap.Actors[id].Kind == KindNPCStateful`)
+// — a shared-VA NPC has no own memory namespace to search. snap remains the
+// channel for future consumers needing world state the warrant batch doesn't
+// carry (e.g. shift state for speak gating); the pay consumer reads only the
+// payload.
 func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []llm.ToolSpec {
 	all := r.AdvertisedSpecs()
 	offers := perception.PayOfferWarrants(payload)
 	hasPayOffer := len(offers) > 0
 	canCounter := anyOfferCounterable(offers)
+	dedicatedVA := actorHasDedicatedVA(payload.ActorID, snap)
 
 	// Single pass over the Available set so each gated group is evaluated
 	// against its OWN condition. We deliberately avoid a "pending offer →
 	// return all" fast path: that would re-enable every future gated tool
 	// whenever a pay offer happened to be present, silently bypassing that
-	// tool's own gate. Today only the pay-response group is gated; this shape
-	// keeps the general seam composable as more groups are added.
+	// tool's own gate. The shape keeps the general seam composable as more
+	// consumers are added (pay-response group, recall, …).
 	out := make([]llm.ToolSpec, 0, len(all))
 	for _, spec := range all {
+		// recall consumer (ZBBS-WORK-321): advertise only to dedicated-VA
+		// agents — a shared-VA NPC has no personal memory to search.
+		if spec.Name == recallToolName && !dedicatedVA {
+			continue
+		}
 		if _, gated := payOfferResponseTools[spec.Name]; gated {
 			if !hasPayOffer {
 				// Seller-response tool with no pending offer: drop it (noise +

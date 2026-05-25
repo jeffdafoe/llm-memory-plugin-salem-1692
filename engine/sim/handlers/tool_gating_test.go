@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
@@ -202,5 +204,49 @@ func TestGateTools_AllOffersAtCap_DropsCounterPay(t *testing.T) {
 		if names[want] != 1 {
 			t.Errorf("%q should stay advertised; count %d", want, names[want])
 		}
+	}
+}
+
+// gatingRegistryWithRecall extends the gating test registry with a recall
+// observation tool, for the dedicated-VA gate tests (ZBBS-WORK-321).
+func gatingRegistryWithRecall(t *testing.T) *Registry {
+	t.Helper()
+	r := gatingTestRegistry(t)
+	if err := r.RegisterObservation(
+		"recall",
+		json.RawMessage(`{"type":"object"}`),
+		func(json.RawMessage) (any, error) { return nil, nil },
+		func(_ context.Context, _ HandlerInput) (string, error) { return "", nil },
+	); err != nil {
+		t.Fatalf("RegisterObservation recall: %v", err)
+	}
+	return r
+}
+
+func snapWithActorKind(id sim.ActorID, kind sim.ActorKind) *sim.Snapshot {
+	return &sim.Snapshot{Actors: map[sim.ActorID]*sim.ActorSnapshot{id: {Kind: kind}}}
+}
+
+// TestGateTools_Recall_AdvertisedOnlyToDedicatedVA — recall is offered to a
+// KindNPCStateful (own VA + memory) actor, dropped for a KindNPCShared actor
+// (no personal memory), and dropped conservatively when the actor can't be
+// resolved (nil snapshot). ZBBS-WORK-321.
+func TestGateTools_Recall_AdvertisedOnlyToDedicatedVA(t *testing.T) {
+	r := gatingRegistryWithRecall(t)
+	payload := perception.Payload{ActorID: "npc"}
+
+	stateful := specNameSet(gateTools(r, payload, snapWithActorKind("npc", sim.KindNPCStateful)))
+	if stateful["recall"] != 1 {
+		t.Errorf("recall should be advertised to a KindNPCStateful actor; count %d", stateful["recall"])
+	}
+
+	shared := specNameSet(gateTools(r, payload, snapWithActorKind("npc", sim.KindNPCShared)))
+	if shared["recall"] != 0 {
+		t.Errorf("recall must NOT be advertised to a KindNPCShared actor; count %d", shared["recall"])
+	}
+
+	nilSnap := specNameSet(gateTools(r, payload, nil))
+	if nilSnap["recall"] != 0 {
+		t.Errorf("recall must be dropped when the actor can't be resolved (nil snapshot); count %d", nilSnap["recall"])
 	}
 }

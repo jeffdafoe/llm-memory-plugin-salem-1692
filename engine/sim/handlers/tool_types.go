@@ -127,6 +127,16 @@ type HandlerInput struct {
 	AttemptID   sim.TickAttemptID
 	RootEventID sim.EventID
 
+	// LLMMemoryAgent is the acting actor's llm-memory namespace slug
+	// (ActorSnapshot.LLMAgent), resolved by the harness from the tick's
+	// snapshot. Empty for actors with no VA backing. Carried for
+	// observation tools that read the actor's own memory — recall is the
+	// first (ZBBS-WORK-321). Commit handlers that need actor state read it
+	// on the world goroutine inside their sim.Command; this field exists
+	// because observation handlers run OFF the world goroutine with no
+	// world access, so "who am I" must be threaded in.
+	LLMMemoryAgent string
+
 	// Args is the typed value produced by RegistryEntry.Decode — already
 	// validated, ready to consume. The handler should type-assert to its
 	// per-tool args struct.

@@ -481,12 +481,47 @@ func TestHarness_LLMError_AfterFirstIter_IsFailedAfterRender(t *testing.T) {
 
 // --- budget exhaustion --------------------------------------------------
 
-func TestHarness_BudgetExhausted(t *testing.T) {
+// TestHarness_BudgetExhausted_CommitRounds — a model that keeps issuing
+// NON-terminal commits exhausts the ACTION budget at IterationBudget. Commit
+// rounds count (unlike observation-only rounds; ZBBS-WORK-321).
+func TestHarness_BudgetExhausted_CommitRounds(t *testing.T) {
 	w, cancel := newHarnessWorld(t, "attempt-A")
 	defer cancel()
 
-	// Script enough recall-only turns to exceed budget=3.
+	// "note" is a non-terminal commit in the test registry — each round is an
+	// action round, so budget=3 forces after 3 rounds.
 	turns := make([]llm.ScriptedTurn, 5)
+	for i := range turns {
+		turns[i] = llm.ScriptedTurn{Response: llm.Response{
+			ToolCalls: []llm.RawToolCall{newToolCall("c"+string(rune('a'+i)), 0, "note", `{}`)},
+		}}
+	}
+	client := llm.NewFakeClient(turns...)
+	h, _ := newTestHarness(t, client, 3, 0)
+	result := h.RunTick(context.Background(), w, newTestJob("attempt-A", nil))
+
+	if result.TerminalStatus != sim.TickStatusBudgetForced {
+		t.Errorf("status: got %v, want BudgetForced", result.TerminalStatus)
+	}
+	if !result.BudgetHit {
+		t.Errorf("BudgetHit: got false, want true")
+	}
+	if result.IterationCount != 3 {
+		t.Errorf("IterationCount: got %d, want 3 (action budget)", result.IterationCount)
+	}
+}
+
+// TestHarness_ObservationRoundsBoundedByCeiling — a model that ONLY ever
+// recalls (observation) never consumes the action budget, but is still
+// bounded: it forces at the hard per-tick ceiling = IterationBudget +
+// MaxObservationRounds (ZBBS-WORK-321). With budget=3 + the default 3
+// observation rounds, that's 6 LLM rounds.
+func TestHarness_ObservationRoundsBoundedByCeiling(t *testing.T) {
+	w, cancel := newHarnessWorld(t, "attempt-A")
+	defer cancel()
+
+	wantRounds := 3 + DefaultMaxObservationRounds
+	turns := make([]llm.ScriptedTurn, wantRounds+2) // a couple extra so the ceiling, not the script, terminates
 	for i := range turns {
 		turns[i] = llm.ScriptedTurn{Response: llm.Response{
 			ToolCalls: []llm.RawToolCall{newToolCall("c"+string(rune('a'+i)), 0, "recall", `{}`)},
@@ -502,8 +537,42 @@ func TestHarness_BudgetExhausted(t *testing.T) {
 	if !result.BudgetHit {
 		t.Errorf("BudgetHit: got false, want true")
 	}
-	if result.IterationCount != 3 {
-		t.Errorf("IterationCount: got %d, want 3", result.IterationCount)
+	if result.IterationCount != wantRounds {
+		t.Errorf("IterationCount: got %d, want %d (IterationBudget + MaxObservationRounds)", result.IterationCount, wantRounds)
+	}
+}
+
+// TestHarness_ObservationRoundsDoNotConsumeActionBudget — the actual feature:
+// the model spends several rounds recalling (thinking), THEN commits — and
+// the commit lands even though total rounds already exceeded IterationBudget.
+// Under the old "every round counts" rule the budget would have forced before
+// the commit ever ran.
+func TestHarness_ObservationRoundsDoNotConsumeActionBudget(t *testing.T) {
+	w, cancel := newHarnessWorld(t, "attempt-A")
+	defer cancel()
+
+	// budget=2: 3 recall rounds (free thinking) then a terminal `done`. 4
+	// total rounds > budget 2 — old behavior would have budget-forced at
+	// round 2, never reaching the terminator. (`done` is ClassTerminal — it
+	// ends the tick without a world command, so it's reliable in the bare
+	// test world where commit dispatches can't resolve a root event.)
+	client := llm.NewFakeClient(
+		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c1", 0, "recall", `{}`)}}},
+		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c2", 0, "recall", `{}`)}}},
+		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c3", 0, "recall", `{}`)}}},
+		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c4", 0, "done", `{}`)}}},
+	)
+	h, _ := newTestHarness(t, client, 2, 0)
+	result := h.RunTick(context.Background(), w, newTestJob("attempt-A", nil))
+
+	if result.TerminalStatus == sim.TickStatusBudgetForced {
+		t.Errorf("status: got BudgetForced — thinking rounds wrongly consumed the action budget")
+	}
+	if result.BudgetHit {
+		t.Errorf("BudgetHit: got true, want false (the tick ended cleanly)")
+	}
+	if result.IterationCount != 4 {
+		t.Errorf("IterationCount: got %d, want 4 (3 recall + 1 done)", result.IterationCount)
 	}
 }
 
