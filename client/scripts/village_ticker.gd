@@ -1,20 +1,22 @@
 extends PanelContainer
-## Village ticker (ZBBS-087) — thin band below the top bar that scrolls
-## chronicler atmosphere prose right-to-left in marquee fashion.
+## Village ticker — thin band below the top bar that scrolls the village's
+## current atmosphere prose right-to-left in marquee fashion.
 ##
-## Subscribes to world.world_environment_added for live chronicler
-## fires; backloads the single latest row on init via
-## POST /api/village/environment/recent. Click → opens the talk panel
-## to the Village tab (mechanical events live there; the ticker is
-## chronicler-curated atmosphere only — they don't repeat content).
+## v2 sourcing: the atmosphere is a single world-level string the engine's
+## atmosphere cascade (engine/sim/cascade/atmosphere.go) refreshes every few
+## hours. It rides the WorldStateDTO `atmosphere` field of
+## GET /api/village/world (engine/sim/httpapi/dto.go). v1's per-fire feed
+## (POST /api/village/environment/recent) and its world_environment_added WS
+## broadcast were not ported, so there is nothing to subscribe to — the ticker
+## fetches the world DTO on start and re-polls on a slow interval so a
+## long-lived session still picks up the periodic refresh.
 ##
-## Always-latest model: at most one active line. A new chronicler fire
-## replaces it (politely — the current scroll, if any, finishes first
-## so the player isn't yanked mid-read). After each scroll the line
-## re-scrolls on a schedule: a 5-scroll burst at 3-minute intervals,
+## Always-latest model: at most one active line. A fetched atmosphere that
+## differs from the active line replaces it (politely — the current scroll, if
+## any, finishes first so the player isn't yanked mid-read); an identical line
+## is a no-op and the existing re-scroll schedule continues. After each scroll
+## the line re-scrolls on a schedule: a 5-scroll burst at 3-minute intervals,
 ## then a 15-minute heartbeat. A new line resets the burst counter.
-
-signal clicked
 
 const SCROLL_SPEED: float = 40.0
 const TICKER_HEIGHT: float = 24.0
@@ -22,6 +24,10 @@ const SIDE_PADDING: float = 12.0
 const BURST_COUNT: int = 5
 const BURST_INTERVAL_SEC: float = 180.0
 const HEARTBEAT_INTERVAL_SEC: float = 900.0
+## How often to re-fetch GET /api/village/world to pick up a server-side
+## atmosphere refresh. The cascade refreshes on the order of hours, so a slow
+## poll is plenty; identical prose is deduped by push().
+const WORLD_POLL_INTERVAL_SEC: float = 600.0
 
 var _label: Label = null
 var _clip: Control = null
@@ -33,9 +39,7 @@ var _label_width: float = 0.0
 var _label_x: float = 0.0
 var _http: HTTPRequest = null
 var _repeat_timer: Timer = null
-# Dedupe by world_environment.id so a row that's in both the backload
-# response and a near-simultaneous WS broadcast only scrolls once.
-var _seen_ids: Dictionary = {}
+var _poll_timer: Timer = null
 
 
 func _ready() -> void:
@@ -77,75 +81,61 @@ func _ready() -> void:
 
     _http = HTTPRequest.new()
     add_child(_http)
-    _http.request_completed.connect(_on_environment_recent_completed)
+    _http.request_completed.connect(_on_world_state_completed)
 
     _repeat_timer = Timer.new()
     _repeat_timer.one_shot = true
     _repeat_timer.timeout.connect(_on_repeat_timeout)
     add_child(_repeat_timer)
 
-
-# Wired by main.gd after the world is ready. Subscribes to the live
-# chronicler-atmosphere signal and kicks off the initial backload so
-# the ticker has something to display before the next chronicler fire.
-func attach_world(world: Node) -> void:
-    if world == null:
-        return
-    if world.has_signal("world_environment_added"):
-        world.world_environment_added.connect(_on_world_environment_added)
-    _load_recent()
+    # Slow poll for atmosphere refreshes (no WS frame in v2 — see header).
+    _poll_timer = Timer.new()
+    _poll_timer.one_shot = false
+    _poll_timer.wait_time = WORLD_POLL_INTERVAL_SEC
+    _poll_timer.timeout.connect(_fetch_world_state)
+    add_child(_poll_timer)
 
 
-func _load_recent() -> void:
+# Wired by main.gd once the client is authenticated. Kicks off the first
+# world-state fetch so the ticker has atmosphere to display, then starts the
+# slow refresh poll.
+func begin() -> void:
+    _fetch_world_state()
+    # Guard against begin() being called before _ready() built the timer (the
+    # current call site adds the node first, but don't crash if that changes).
+    if _poll_timer != null:
+        _poll_timer.start()
+
+
+func _fetch_world_state() -> void:
     if _http == null:
         return
     if not Auth.is_authenticated():
         return
-    var url: String = Auth.api_base + "/api/village/environment/recent"
-    var headers: PackedStringArray = Auth.auth_headers()
-    # Just the latest atmosphere line — older prose feels stale once
-    # the world clock has moved on (morning prose at evening was the
-    # specific complaint that motivated this).
-    var body := JSON.stringify({"limit": 1})
-    var err := _http.request(url, headers, HTTPClient.METHOD_POST, body)
+    var headers: PackedStringArray = Auth.auth_headers(false)
+    var err := _http.request(Auth.api_base + "/api/village/world", headers)
     if err != OK:
+        # ERR_BUSY just means the previous slow poll is still in flight;
+        # atmosphere changes rarely, so skipping this cycle is harmless.
         return
 
 
-func _on_environment_recent_completed(_result: int, code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
+func _on_world_state_completed(_result: int, code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
     if code != 200:
         return
     var json = JSON.parse_string(body.get_string_from_utf8())
     if typeof(json) != TYPE_DICTIONARY:
         return
-    var rows = json.get("rows", [])
-    if typeof(rows) != TYPE_ARRAY or rows.is_empty():
+    # WorldStateDTO.atmosphere — a single world-level string, or "" before the
+    # cascade's first sweep populates it. Type-check defends the contract path
+    # (a JSON null would make str() scroll "<null>"); push() dedupes an
+    # unchanged line, so re-polling the same prose is a no-op.
+    var raw = json.get("atmosphere", "")
+    if typeof(raw) != TYPE_STRING:
         return
-    # Backload comes newest-first; push in array order so the marquee
-    # surfaces the most recent prose first as the user starts watching.
-    for entry in rows:
-        if typeof(entry) == TYPE_DICTIONARY:
-            push_row(entry)
-
-
-func _on_world_environment_added(data: Dictionary) -> void:
-    push_row(data)
-
-
-# Add one world_environment row to the marquee, deduping by id so the
-# backload-WS race window can't queue the same prose twice. Falls back
-# to a plain text push if the row has no id (defensive — backend always
-# stamps id from RETURNING, but be lenient in case a future caller
-# constructs a row without one).
-func push_row(row: Dictionary) -> void:
-    var text: String = str(row.get("text", ""))
+    var text: String = raw.strip_edges()
     if text == "":
         return
-    var id_val := int(row.get("id", 0))
-    if id_val > 0:
-        if _seen_ids.has(id_val):
-            return
-        _seen_ids[id_val] = true
     push(text)
 
 
@@ -222,10 +212,3 @@ func _on_repeat_timeout() -> void:
     if _active_line == "":
         return
     _start_scroll()
-
-
-# Click anywhere on the ticker → emit clicked.
-func _gui_input(event: InputEvent) -> void:
-    if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
-        clicked.emit()
-        accept_event()

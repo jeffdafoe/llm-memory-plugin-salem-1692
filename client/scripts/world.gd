@@ -2137,12 +2137,6 @@ func spawn_structure_bubble(structure_id: String, text: String) -> void:
     container.add_child(bubble)
     bubble.setup(text)
 
-## ZBBS-087 — chronicler atmosphere prose for the top-bar marquee ticker.
-signal world_environment_added(data: Dictionary)
-
-func apply_world_environment_added(data: Dictionary) -> void:
-    world_environment_added.emit(data)
-
 ## Generated content was posted on a placement (ZBBS-112 in v1). Fed by the v2
 ## `noticeboard_content_changed` WS frame (ZBBS-HOME-293) via
 ## apply_object_content_changed. The frame carries `id`, `content_text`, and

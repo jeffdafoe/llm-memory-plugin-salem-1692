@@ -496,15 +496,15 @@ func _build_ui() -> void:
     if talk_panel_layer.has_signal("inventory_changed"):
         talk_panel_layer.inventory_changed.connect(inventory_panel.set_inventory)
 
-    # Village ticker — thin marquee band below the top bar, scrolling
-    # chronicler atmosphere prose. Lives on the editor CanvasLayer
-    # alongside top_bar so it inherits the same z-order. attach_world()
-    # must run after event_client.world is set so the ticker can hook the
-    # world_environment_added signal that event_client emits via world.
+    # Village ticker — thin marquee band below the top bar, scrolling the
+    # village's current atmosphere prose. Lives on the editor CanvasLayer
+    # alongside top_bar so it inherits the same z-order. begin() fetches the
+    # world-state DTO (which carries the atmosphere string) and starts the
+    # slow refresh poll; Auth is already set by this point.
     village_ticker = PanelContainer.new()
     village_ticker.set_script(VillageTickerScript)
     editor.add_child(village_ticker)
-    village_ticker.attach_world(world)
+    village_ticker.begin()
     camera.register_ui_panel(village_ticker)
 
     # Sleep-fade overlay (ZBBS-WORK-204 Stage B). Lives on its own
