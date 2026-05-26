@@ -106,9 +106,11 @@ func CloneVillageObject(v *VillageObject) *VillageObject {
 		return nil
 	}
 	cp := *v
-	if v.Tags != nil {
-		cp.Tags = append([]string(nil), v.Tags...)
-	}
+	// append([]string(nil), empty...) returns nil, which pgx encodes as SQL
+	// NULL and the tags TEXT[] NOT NULL column rejects — aborting the whole
+	// checkpoint. make([]string, 0, len) keeps the clone non-nil for an
+	// empty source, matching the repo's "tags is always non-nil" invariant.
+	cp.Tags = append(make([]string, 0, len(v.Tags)), v.Tags...)
 	if v.Refreshes != nil {
 		cp.Refreshes = make([]*ObjectRefresh, len(v.Refreshes))
 		for i, r := range v.Refreshes {
