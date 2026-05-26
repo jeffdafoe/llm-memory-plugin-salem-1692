@@ -37,9 +37,12 @@ func CloneStructure(s *Structure) *Structure {
 		return nil
 	}
 	cp := *s
-	if s.Tags != nil {
-		cp.Tags = append([]string(nil), s.Tags...)
-	}
+	// append([]string(nil), empty...) returns nil, which pgx encodes as SQL
+	// NULL and the tags TEXT[] NOT NULL column rejects — aborting the whole
+	// checkpoint. make([]string, 0, len) keeps the clone non-nil for an
+	// empty source, matching the load-side coercion (repo/pg/structures.go)
+	// and the repo's "tags is always non-nil" invariant.
+	cp.Tags = append(make([]string, 0, len(s.Tags)), s.Tags...)
 	if s.Rooms != nil {
 		cp.Rooms = make([]*Room, len(s.Rooms))
 		for i, r := range s.Rooms {

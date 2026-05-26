@@ -243,3 +243,49 @@ func TestSnapshotHuddleScene_PointerIdentity(t *testing.T) {
 		t.Error("Huddle.Members leaked across snapshots (alice gone from s2)")
 	}
 }
+
+// TestCloneTags_NeverNil locks in the "cloned Tags is always non-nil"
+// invariant. Regression for ZBBS-HOME-315: CloneStructure / CloneVillageObject
+// previously used append([]string(nil), src...), which returns nil for an
+// empty source. The checkpoint clones every structure/object (checkpoint.go),
+// so an empty-tags entry produced a nil slice that pgx encoded as SQL NULL —
+// rejected by tags TEXT[] NOT NULL, aborting the entire SaveWorld transaction
+// and breaking all checkpointing. Both empty and nil sources must clone to a
+// non-nil empty slice.
+func TestCloneTags_NeverNil(t *testing.T) {
+	t.Run("structure empty tags", func(t *testing.T) {
+		got := sim.CloneStructure(&sim.Structure{ID: "s1", DisplayName: "X", Tags: []string{}})
+		if got.Tags == nil {
+			t.Fatal("CloneStructure nilled an empty Tags slice (would write SQL NULL)")
+		}
+	})
+	t.Run("structure nil tags", func(t *testing.T) {
+		got := sim.CloneStructure(&sim.Structure{ID: "s1", DisplayName: "X", Tags: nil})
+		if got.Tags == nil {
+			t.Fatal("CloneStructure left Tags nil (would write SQL NULL)")
+		}
+	})
+	t.Run("structure populated tags copied and isolated", func(t *testing.T) {
+		src := &sim.Structure{ID: "s1", DisplayName: "X", Tags: []string{"tavern", "lodging"}}
+		got := sim.CloneStructure(src)
+		if len(got.Tags) != 2 || got.Tags[0] != "tavern" || got.Tags[1] != "lodging" {
+			t.Fatalf("Tags not copied: %v", got.Tags)
+		}
+		got.Tags[0] = "MUTATED"
+		if src.Tags[0] != "tavern" {
+			t.Error("clone Tags aliased the source slice")
+		}
+	})
+	t.Run("village object empty tags", func(t *testing.T) {
+		got := sim.CloneVillageObject(&sim.VillageObject{ID: "o1", Tags: []string{}})
+		if got.Tags == nil {
+			t.Fatal("CloneVillageObject nilled an empty Tags slice (would write SQL NULL)")
+		}
+	})
+	t.Run("village object nil tags", func(t *testing.T) {
+		got := sim.CloneVillageObject(&sim.VillageObject{ID: "o1", Tags: nil})
+		if got.Tags == nil {
+			t.Fatal("CloneVillageObject left Tags nil (would write SQL NULL)")
+		}
+	})
+}
