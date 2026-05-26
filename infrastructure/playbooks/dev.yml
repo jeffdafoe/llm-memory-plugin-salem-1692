@@ -34,7 +34,7 @@
 
     - name: Build Go engine
       shell: |
-        cd {{ project_root }}/engine && go build -o salem .
+        cd {{ project_root }}/engine && go build -o salem ./sim/cmd/engine
       environment:
         GOPATH: /root/go
         PATH: "/usr/local/go/bin:/root/go/bin:{{ ansible_env.PATH }}"
