@@ -288,4 +288,15 @@ func TestCloneTags_NeverNil(t *testing.T) {
 			t.Fatal("CloneVillageObject left Tags nil (would write SQL NULL)")
 		}
 	})
+	t.Run("village object populated tags copied and isolated", func(t *testing.T) {
+		src := &sim.VillageObject{ID: "o1", Tags: []string{"shade", "harvest"}}
+		got := sim.CloneVillageObject(src)
+		if len(got.Tags) != 2 || got.Tags[0] != "shade" || got.Tags[1] != "harvest" {
+			t.Fatalf("Tags not copied: %v", got.Tags)
+		}
+		got.Tags[0] = "MUTATED"
+		if src.Tags[0] != "shade" {
+			t.Error("clone Tags aliased the source slice")
+		}
+	})
 }
