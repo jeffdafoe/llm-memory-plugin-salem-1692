@@ -95,7 +95,7 @@ func emptyRefreshRows() *pgxmock.Rows {
 		"object_id", "attribute", "amount",
 		"max_quantity", "available_quantity",
 		"refresh_mode", "refresh_period_hours", "last_refresh_at",
-		"dwell_delta", "dwell_period_minutes",
+		"dwell_delta", "dwell_period_minutes", "gather_item",
 	})
 }
 
@@ -538,18 +538,18 @@ func TestVillageObjectsRepo_LoadAll_WithRefreshes(t *testing.T) {
 		"object_id", "attribute", "amount",
 		"max_quantity", "available_quantity",
 		"refresh_mode", "refresh_period_hours", "last_refresh_at",
-		"dwell_delta", "dwell_period_minutes",
+		"dwell_delta", "dwell_period_minutes", "gather_item",
 	}).
-		// Well: thirst -8, 7/10 finite, continuous, no dwell.
+		// Well: thirst -8, 7/10 finite, continuous, no dwell, harvestable (water).
 		AddRow(uuidObj1, "thirst", -8,
 			&max10, &avail7,
 			&continuousMode, &period12, &wellAnchor,
-			(*int)(nil), (*int)(nil)).
-		// Oak (row 1): hunger -3, 0/20 finite, periodic, no dwell.
+			(*int)(nil), (*int)(nil), sp("water")).
+		// Oak (row 1): hunger -3, 0/20 finite, periodic, no dwell, not harvestable.
 		AddRow(uuidObj2, "hunger", -3,
 			&max20, &avail0,
 			&periodicMode, &period24, &oakAnchor,
-			(*int)(nil), (*int)(nil)).
+			(*int)(nil), (*int)(nil), (*string)(nil)).
 		// Oak (row 2): tiredness -1, infinite supply, dwell enabled. prod's
 		// refresh_mode is NOT NULL DEFAULT 'continuous', so an infinite row
 		// carries 'continuous' even though mode is irrelevant when
@@ -557,7 +557,7 @@ func TestVillageObjectsRepo_LoadAll_WithRefreshes(t *testing.T) {
 		AddRow(uuidObj2, "tiredness", -1,
 			(*int)(nil), (*int)(nil),
 			&continuousMode, (*int)(nil), (*time.Time)(nil),
-			&dwellDelta, &dwellPeriod)
+			&dwellDelta, &dwellPeriod, (*string)(nil))
 	mock.ExpectQuery(`SELECT[\s\S]+FROM object_refresh`).WillReturnRows(refreshRows)
 
 	got, err := repo.LoadAll(context.Background())
@@ -590,6 +590,9 @@ func TestVillageObjectsRepo_LoadAll_WithRefreshes(t *testing.T) {
 	}
 	if wr.HasDwell() {
 		t.Error("well refresh should not have dwell")
+	}
+	if !wr.IsGatherable() || wr.GatherItem != "water" {
+		t.Errorf("well refresh GatherItem=%q (gatherable=%v), want water/true", wr.GatherItem, wr.IsGatherable())
 	}
 
 	oak := got[sim.VillageObjectID(uuidObj2)]
@@ -645,16 +648,16 @@ func TestVillageObjectsRepo_LoadAll_RefreshOrphanSkipped(t *testing.T) {
 		"object_id", "attribute", "amount",
 		"max_quantity", "available_quantity",
 		"refresh_mode", "refresh_period_hours", "last_refresh_at",
-		"dwell_delta", "dwell_period_minutes",
+		"dwell_delta", "dwell_period_minutes", "gather_item",
 	}).
 		AddRow(uuidObj1, "thirst", -4,
 			(*int)(nil), (*int)(nil),
 			(*string)(nil), (*int)(nil), (*time.Time)(nil),
-						(*int)(nil), (*int)(nil)).
+						(*int)(nil), (*int)(nil), (*string)(nil)).
 		AddRow(uuidObj3, "hunger", -3, // uuidObj3 isn't in parent set
 			(*int)(nil), (*int)(nil),
 			(*string)(nil), (*int)(nil), (*time.Time)(nil),
-			(*int)(nil), (*int)(nil))
+			(*int)(nil), (*int)(nil), (*string)(nil))
 	mock.ExpectQuery(`SELECT[\s\S]+FROM object_refresh`).WillReturnRows(refreshRows)
 
 	got, err := repo.LoadAll(context.Background())
@@ -743,6 +746,7 @@ func TestVillageObjectsRepo_SaveSnapshot_WithRefreshes(t *testing.T) {
 			&max10, &avail3,
 			"continuous", &period12, &anchor,
 			(*int)(nil), (*int)(nil),
+			"water", // gather_item — well is harvestable
 			int64(90),
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
@@ -757,6 +761,7 @@ func TestVillageObjectsRepo_SaveSnapshot_WithRefreshes(t *testing.T) {
 			(*int)(nil), (*int)(nil),
 			"continuous", (*int)(nil), (*time.Time)(nil),
 			&dwellDelta, &dwellPeriod,
+			nil, // gather_item — not harvestable → NULL
 			int64(90),
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
@@ -783,6 +788,7 @@ func TestVillageObjectsRepo_SaveSnapshot_WithRefreshes(t *testing.T) {
 					RefreshMode:        sim.RefreshModeContinuous,
 					RefreshPeriodHours: &period12,
 					LastRefreshAt:      &anchor,
+					GatherItem:         "water", // well is harvestable (ZBBS-WORK-328)
 				},
 				{
 					Attribute:          "tiredness",

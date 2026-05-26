@@ -50,6 +50,15 @@ const counterPayToolName = "counter_pay"
 // (vendor/visitor-backed) has no personal memory to recall.
 const recallToolName = "recall"
 
+// gatherToolName is the gather tool — advertised ONLY when the actor is
+// loitering at a gatherable source (ZBBS-WORK-328). The signal is the
+// perception payload's SurroundingsView.GatherableItem, computed once in
+// perception build (findGatherableCue); reading the SAME field the "gatherable"
+// perception line renders from means the cue and the offered tool can't drift.
+// Advertising-only: the tool stays AvailabilityAvailable so a call that arrives
+// is still dispatchable, and sim.Gather is the authoritative resolver.
+const gatherToolName = "gather"
+
 // actorHasDedicatedVA reports whether the acting actor is a stateful NPC
 // (KindNPCStateful = "own VA with memory", per actor.go). Shared-VA NPCs have
 // no personal memory, so recall is not advertised to them. Returns false when
@@ -103,6 +112,7 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 	hasPayOffer := len(offers) > 0
 	canCounter := anyOfferCounterable(offers)
 	dedicatedVA := actorHasDedicatedVA(payload.ActorID, snap)
+	atGatherableSource := payload.Surroundings.GatherableItem != ""
 
 	// Single pass over the Available set so each gated group is evaluated
 	// against its OWN condition. We deliberately avoid a "pending offer →
@@ -115,6 +125,11 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 		// recall consumer (ZBBS-WORK-321): advertise only to dedicated-VA
 		// agents — a shared-VA NPC has no personal memory to search.
 		if spec.Name == recallToolName && !dedicatedVA {
+			continue
+		}
+		// gather consumer (ZBBS-WORK-328): advertise only when loitering at a
+		// gatherable source — keeps the tool out of the prompt everywhere else.
+		if spec.Name == gatherToolName && !atGatherableSource {
 			continue
 		}
 		if _, gated := payOfferResponseTools[spec.Name]; gated {

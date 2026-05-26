@@ -190,7 +190,7 @@ SELECT
     object_id, attribute, amount,
     max_quantity, available_quantity,
     refresh_mode, refresh_period_hours, last_refresh_at,
-    dwell_amount, dwell_period_minutes
+    dwell_amount, dwell_period_minutes, gather_item
 FROM object_refresh`
 
 // upsertSQLOR writes one object_refresh row. Composite PK
@@ -219,14 +219,14 @@ INSERT INTO object_refresh (
     object_id, attribute, amount,
     max_quantity, available_quantity,
     refresh_mode, refresh_period_hours, last_refresh_at,
-    dwell_amount, dwell_period_minutes,
+    dwell_amount, dwell_period_minutes, gather_item,
     snapshot_gen
 ) VALUES (
     $1::uuid, $2, $3,
     $4, $5,
     $6, $7, $8,
-    $9, $10,
-    $11
+    $9, $10, $11,
+    $12
 )
 ON CONFLICT (object_id, attribute) DO UPDATE SET
     amount               = EXCLUDED.amount,
@@ -237,6 +237,7 @@ ON CONFLICT (object_id, attribute) DO UPDATE SET
     last_refresh_at      = EXCLUDED.last_refresh_at,
     dwell_amount         = EXCLUDED.dwell_amount,
     dwell_period_minutes = EXCLUDED.dwell_period_minutes,
+    gather_item          = EXCLUDED.gather_item,
     snapshot_gen         = EXCLUDED.snapshot_gen`
 
 // deleteStaleSQLOR prunes object_refresh rows whose snapshot_gen is
@@ -398,12 +399,13 @@ func (r *VillageObjectsRepo) loadAllRefreshes(ctx context.Context, objects map[s
 			lastRefreshAt  *time.Time
 			dwellDelta     *int
 			dwellPeriodMin *int
+			gatherItem     *string
 		)
 		if err := rows.Scan(
 			&objectID, &attribute, &amount,
 			&maxQty, &availableQty,
 			&refreshMode, &periodHours, &lastRefreshAt,
-			&dwellDelta, &dwellPeriodMin,
+			&dwellDelta, &dwellPeriodMin, &gatherItem,
 		); err != nil {
 			return fmt.Errorf("pg village_objects LoadAll refreshes scan: %w", err)
 		}
@@ -423,9 +425,14 @@ func (r *VillageObjectsRepo) loadAllRefreshes(ctx context.Context, objects map[s
 		if refreshMode != nil {
 			mode = *refreshMode
 		}
+		gather := ""
+		if gatherItem != nil {
+			gather = *gatherItem
+		}
 		parent.Refreshes = append(parent.Refreshes, &sim.ObjectRefresh{
 			Attribute:          sim.NeedKey(attribute),
 			Amount:             amount,
+			GatherItem:         sim.ItemKind(gather),
 			AvailableQuantity:  availableQty,
 			MaxQuantity:        maxQty,
 			RefreshMode:        sim.RefreshMode(mode),
@@ -605,6 +612,12 @@ func (r *VillageObjectsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, object
 			if modeArg == "" {
 				modeArg = string(sim.RefreshModeContinuous)
 			}
+			// gather_item: "" (not gatherable) → NULL so the common
+			// consume-in-place row carries no value. ZBBS-WORK-328.
+			var gatherArg any
+			if ref.GatherItem != "" {
+				gatherArg = string(ref.GatherItem)
+			}
 			if _, err := tx.Exec(ctx, upsertSQLOR,
 				string(obj.ID),         // $1 object_id (UUID)
 				string(ref.Attribute),  // $2 attribute
@@ -616,7 +629,8 @@ func (r *VillageObjectsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, object
 				ref.LastRefreshAt,      // $8 last_refresh_at (nullable)
 				ref.DwellDelta,         // $9 dwell_amount (nullable; prod col name)
 				ref.DwellPeriodMinutes, // $10 dwell_period_minutes (nullable)
-				refreshGen,             // $11 snapshot_gen
+				gatherArg,              // $11 gather_item (nullable)
+				refreshGen,             // $12 snapshot_gen
 			); err != nil {
 				return fmt.Errorf("pg village_objects SaveSnapshot: upsert refresh oid=%s attr=%s: %w",
 					obj.ID, ref.Attribute, err)

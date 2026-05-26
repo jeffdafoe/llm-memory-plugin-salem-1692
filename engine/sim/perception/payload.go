@@ -320,6 +320,18 @@ type SurroundingsView struct {
 	// v1 atmosphere perception line restored). Empty until the cascade first
 	// fires (restart-lossy by design) → the render omits the line.
 	Atmosphere string
+
+	// GatherableItem / GatherableSource carry the harvest affordance cue
+	// (ZBBS-WORK-328): when the actor is loitering at a gatherable source (a
+	// well, a berry bush), GatherableItem is the item the source yields and
+	// GatherableSource is its display name. Both empty when not at a source.
+	// Render emits a "you can gather X here" line from these; gateTools reads
+	// the SAME fields to advertise the `gather` tool — so the cue and the tool
+	// can't drift (the pay-offer-warrant pattern). Computed by an asset-free
+	// snapshot scan (findGatherableCue) — a permissive advertising heuristic;
+	// the sim.Gather Command is the authoritative resolver at gather time.
+	GatherableItem   sim.ItemKind
+	GatherableSource string
 }
 
 // HuddleMember is one co-huddle peer's identity slice for the

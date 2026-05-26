@@ -248,6 +248,18 @@ func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 	if atmosphere := strings.TrimSpace(sanitizeInline(s.Atmosphere)); atmosphere != "" {
 		fmt.Fprintf(b, "atmosphere: %s\n", atmosphere)
 	}
+	// Harvest affordance (ZBBS-WORK-328): the model often stands at a well/bush
+	// without connecting "I'm here" to "I can gather." This line makes the
+	// affordance explicit. Same SurroundingsView fields drive gateTools'
+	// gather advertising, so the cue and the offered tool can't drift.
+	if s.GatherableItem != "" {
+		source := strings.TrimSpace(sanitizeInline(s.GatherableSource))
+		if source == "" {
+			source = "this spot"
+		}
+		fmt.Fprintf(b, "gatherable: you're at %s — you can gather %s here\n",
+			source, sanitizeInline(string(s.GatherableItem)))
+	}
 	b.WriteString("\n")
 }
 

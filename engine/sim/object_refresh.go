@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"strings"
 	"time"
 	"unicode/utf8"
 )
@@ -69,6 +70,31 @@ type ObjectRefresh struct {
 	// the actor while they stay at the object.
 	DwellDelta         *int // negative
 	DwellPeriodMinutes *int
+
+	// GatherItem, when non-empty, marks this refresh row's source object as
+	// HARVESTABLE (ZBBS-WORK-328): an actor loitering at the owning village
+	// object can mint GatherItem into their inventory — an NPC via the
+	// `gather` tool, a PC via POST /api/village/pc/gather. Both actor kinds
+	// draw down the SAME AvailableQuantity counter (one shared stock per
+	// source) and the regen tick refills it. Empty = not gatherable (the
+	// common case; most refresh rows are consume-in-place only).
+	//
+	// The yield rides on the arrival-need-drop row by design: a well or a
+	// bush is one shared stock — drinking in place and filling a pail both
+	// deplete it. Limitation: because the yield lives on a refresh row, a
+	// gatherable source must also be a need-bearing source (well=thirst,
+	// bush=hunger). A pure-material gatherable with no consume-in-place need
+	// (e.g. a wheat field) doesn't fit this row cleanly — revisit if wanted.
+	GatherItem ItemKind
+}
+
+// IsGatherable reports whether an actor can harvest a portable item from
+// this refresh row's source (the `gather` tool / pc/gather). ZBBS-WORK-328.
+// Trim-aware: a whitespace-only gather_item (hand/admin-edited) is NOT
+// gatherable, so it never advertises the tool or renders a cue only to be
+// rejected at command time by resolveItemKind.
+func (r *ObjectRefresh) IsGatherable() bool {
+	return strings.TrimSpace(string(r.GatherItem)) != ""
 }
 
 // IsFinite reports whether this refresh row has a tracked supply.
@@ -79,6 +105,13 @@ func (r *ObjectRefresh) IsFinite() bool {
 // MaxRefreshAttributeLen caps a refresh row's attribute name, matching the
 // object_refresh.attribute varchar(32) column in the prod baseline.
 const MaxRefreshAttributeLen = 32
+
+// MaxGatherItemLen caps a refresh row's gather_item name, matching the
+// object_refresh.gather_item varchar(32) column (ZBBS-WORK-328). The item is
+// validated against the live catalog at gather time, not here — this is just
+// the column-width guard so the editor's set-refresh route returns a clean 400
+// rather than a Postgres truncation error at the next checkpoint.
+const MaxGatherItemLen = 32
 
 // ErrInvalidRefresh is returned by ValidateObjectRefreshes when a proposed
 // refresh row set fails validation (→ 400 at the HTTP layer). The detail is
@@ -178,6 +211,10 @@ func ValidateObjectRefreshes(rows []*ObjectRefresh) error {
 				return fmt.Errorf("%w: dwell_period_minutes for %q must be > 0", ErrInvalidRefresh, r.Attribute)
 			}
 		}
+
+		if utf8.RuneCountInString(string(r.GatherItem)) > MaxGatherItemLen {
+			return fmt.Errorf("%w: gather_item %q for %q exceeds %d characters", ErrInvalidRefresh, r.GatherItem, r.Attribute, MaxGatherItemLen)
+		}
 	}
 	return nil
 }
@@ -187,7 +224,7 @@ func ValidateObjectRefreshes(rows []*ObjectRefresh) error {
 // snapshot read off the world goroutine can't race the regen tick mutating a
 // live row's AvailableQuantity.
 func cloneObjectRefresh(r *ObjectRefresh) *ObjectRefresh {
-	c := *r // value fields: Attribute, Amount, RefreshMode
+	c := *r // value fields: Attribute, Amount, RefreshMode, GatherItem
 	c.AvailableQuantity = copyIntPtr(r.AvailableQuantity)
 	c.MaxQuantity = copyIntPtr(r.MaxQuantity)
 	c.RefreshPeriodHours = copyIntPtr(r.RefreshPeriodHours)
