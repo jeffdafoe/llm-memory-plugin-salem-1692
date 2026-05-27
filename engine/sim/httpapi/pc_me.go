@@ -61,7 +61,13 @@ const (
 // VillageApi.tile_to_world), NOT v1's pixel floats.
 type pcMeResponse struct {
 	LoginUsername string `json:"login_username"`
-	Exists        bool   `json:"exists"`
+	// CanEdit gates the client's editor + config tools. It mirrors the
+	// operator capability (plugins/administer) — the same gate requireOperator
+	// uses for the umbilical. The Godot client reads this on token-verify
+	// (auth.gd) to show/hide the edit UI; it is identity-level, so it's set
+	// whether or not the caller has a PC yet.
+	CanEdit bool `json:"can_edit"`
+	Exists  bool `json:"exists"`
 	// ActorID is the PC's actor id, surfaced so the client can recognize its
 	// own PC in WS broadcasts (npc_arrived etc., which carry actor id, not
 	// login). Empty when the PC hasn't been created yet.
@@ -154,6 +160,7 @@ func (s *Server) handlePCMe(w http.ResponseWriter, r *http.Request) {
 	snap := s.world.Published()
 	resp := pcMeResponse{
 		LoginUsername: user.Username,
+		CanEdit:       hasPermission(user, permResourcePlugins, permActionAdminister),
 		HuddleMembers: []pcHuddleMember{},
 		Inventory:     []pcInventoryEntry{},
 		Needs:         map[string]int{},
