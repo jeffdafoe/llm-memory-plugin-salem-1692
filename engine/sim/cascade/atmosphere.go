@@ -111,6 +111,7 @@ func runAtmosphereSweep(ctx context.Context, w *sim.World, client llm.Client) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			w.BeatTicker("atmosphere")
 			runOneAtmosphereSweep(ctx, w, client)
 		}
 	}
