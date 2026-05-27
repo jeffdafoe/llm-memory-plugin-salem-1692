@@ -383,3 +383,94 @@ func (s *Server) handleUmbilicalNeedThreshold(w http.ResponseWriter, r *http.Req
 // errUnknownNeed is returned by the need-threshold tune command for a key that
 // isn't already configured in WorldSettings.NeedThresholds.
 var errUnknownNeed = errors.New("unknown need")
+
+// umbilicalGrantItem is one signed inventory delta on the /grant wire: a positive
+// qty gives, a negative qty claws back.
+type umbilicalGrantItem struct {
+	ItemKind string `json:"item_kind"`
+	Qty      int    `json:"qty"`
+}
+
+// umbilicalGrantRequest is the POST /api/village/umbilical/grant body: a signed
+// give-or-take of coins and/or inventory items to/from ANY actor (PC or NPC) —
+// the economic-adjustment lever for remote village management. Coins is a signed
+// delta (omitted / 0 = no coin change); Items is a list of signed per-kind
+// deltas. At least one of the two must be non-empty (an all-zero grant is a 400 —
+// almost certainly an operator mistake).
+type umbilicalGrantRequest struct {
+	ActorID string               `json:"actor_id"`
+	Coins   int                  `json:"coins,omitempty"`
+	Items   []umbilicalGrantItem `json:"items,omitempty"`
+}
+
+// umbilicalGrantResponse echoes the actor's authoritative post-mutation holdings
+// (new coin balance + full inventory, sorted), so the operator sees the applied
+// result without a separate read.
+type umbilicalGrantResponse struct {
+	ActorID string               `json:"actor_id"`
+	Coins   int                  `json:"coins"`
+	Items   []umbilicalGrantItem `json:"items"`
+}
+
+// handleUmbilicalGrant gives or claws back coins + inventory items to/from any
+// actor via sim.AdjustActorHoldings — the only holdings path that accepts a PC
+// (the editor's SetActorInventory rejects PCs and is whole-set-replace, not an
+// additive signed delta; and no coins-adjust command exists otherwise). The
+// adjustment is atomic: a single bad row (unknown item, underflow) rejects the
+// whole call and applies nothing. 400 missing actor_id / empty grant / duplicate
+// item_kind; 404 unknown actor; 422 unknown item_kind / underflow / overflow; 200
+// with the post-mutation holdings.
+func (s *Server) handleUmbilicalGrant(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	if user == nil {
+		writeAuthError(w, "invalid")
+		return
+	}
+	var req umbilicalGrantRequest
+	if !decodeUmbilicalBody(w, r, &req) {
+		return
+	}
+	if req.ActorID == "" {
+		writeError(w, http.StatusBadRequest, "actor_id is required")
+		return
+	}
+	if req.Coins == 0 && len(req.Items) == 0 {
+		writeError(w, http.StatusBadRequest, "specify a coins delta and/or items to grant")
+		return
+	}
+
+	deltas := make([]sim.ActorInventoryRow, 0, len(req.Items))
+	for _, it := range req.Items {
+		deltas = append(deltas, sim.ActorInventoryRow{ItemKind: it.ItemKind, Quantity: it.Qty})
+	}
+
+	// Audit the attempt up front so a later rejection is still on the record.
+	auditUmbilical(user.Username, "grant", fmt.Sprintf("actor=%s coins=%+d items=%d", req.ActorID, req.Coins, len(req.Items)))
+
+	res, err := s.world.SendContext(r.Context(), sim.AdjustActorHoldings(sim.ActorID(req.ActorID), req.Coins, deltas))
+	if err != nil {
+		switch {
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+			return
+		case errors.Is(err, sim.ErrActorNotFound):
+			writeError(w, http.StatusNotFound, "actor not found")
+		case errors.Is(err, sim.ErrInvalidInventory):
+			writeError(w, http.StatusBadRequest, "duplicate item_kind in items")
+		default:
+			// Unknown item kind, underflow, overflow — all client-correctable; the
+			// command's error message names the specific failure.
+			writeError(w, http.StatusUnprocessableEntity, err.Error())
+		}
+		return
+	}
+	out, ok := res.(sim.ActorHoldingsResult)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "unexpected grant result")
+		return
+	}
+	items := make([]umbilicalGrantItem, 0, len(out.Rows))
+	for _, row := range out.Rows {
+		items = append(items, umbilicalGrantItem{ItemKind: row.ItemKind, Qty: row.Quantity})
+	}
+	writeJSON(w, umbilicalGrantResponse{ActorID: req.ActorID, Coins: out.Coins, Items: items})
+}
