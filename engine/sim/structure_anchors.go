@@ -130,6 +130,46 @@ func effectiveLoiterTile(w *World, structureID StructureID) (Position, bool) {
 	return computeLoiterTile(vobj, asset), true
 }
 
+// ResolveMoveTargetTile returns the goal tile an actor's current MoveIntent
+// is walking toward, resolved grid-free for operator introspection (the
+// umbilical /agent view). Best-effort by destination kind:
+//
+//   - Position       → the exact target tile.
+//   - StructureEnter → the door tile (structureEntryTile).
+//   - StructureVisit → the loiter pin (effectiveLoiterTile) — the CENTRE the
+//     eight visitor slots ring. The exact slot needs a live WalkGrid; the pin
+//     is enough to show where the actor is headed and whether the target is
+//     off-grid (the locomotion-debug use case this exists for).
+//
+// ok=false when the actor has no MoveIntent, or a structure target has no
+// resolvable placement / door. MUST be called from inside a Command.Fn (the
+// structure resolvers read w.VillageObjects / w.Assets).
+func ResolveMoveTargetTile(w *World, a *Actor) (TilePos, bool) {
+	if a == nil || a.MoveIntent == nil {
+		return TilePos{}, false
+	}
+	dest := a.MoveIntent.Destination
+	switch dest.Kind {
+	case MoveDestinationPosition:
+		if dest.Position == nil {
+			return TilePos{}, false
+		}
+		return *dest.Position, true
+	case MoveDestinationStructureEnter:
+		if dest.StructureID == nil {
+			return TilePos{}, false
+		}
+		return structureEntryTile(w, *dest.StructureID)
+	case MoveDestinationStructureVisit:
+		if dest.StructureID == nil {
+			return TilePos{}, false
+		}
+		return effectiveLoiterTile(w, *dest.StructureID)
+	default:
+		return TilePos{}, false
+	}
+}
+
 // Loiter-attribution tolerances, in king's-move (Chebyshev) tiles. Ported
 // from v1's two reverse-lookup callers, which shared the loiter-pin formula
 // but used different radii:
