@@ -429,6 +429,7 @@ SELECT seller_id, item_kind, buyer_id, offered_amount, qty,
           FROM pay_ledger
          WHERE state = 'accepted'
            AND created_at >= $1
+           AND item_kind IS NOT NULL
        ) t
  WHERE rn <= $2
  ORDER BY seller_id, item_kind, created_at ASC`
@@ -453,6 +454,14 @@ SELECT seller_id, item_kind, buyer_id, offered_amount, qty,
 // yields cardinality=NULL, which Go scans into 0; the cascade-side
 // `consumers < 1 ? 1` normalization in SeedPriceBook's caller floors
 // it back to 1. Solo orders therefore round-trip cleanly.
+//
+// item_kind IS NOT NULL is enforced in the query: a legacy pay_ledger
+// row with NULL item_kind can't form a valid PriceBookKey (Item is the
+// partition key), and itemKind below scans into a non-nullable string,
+// so a NULL would fail the whole scan and abort the price-book seed at
+// LoadWorld — leaving every merchant with an empty price history. The
+// row is meaningless to the price book, so we exclude it at the source
+// rather than scanning into a sql.NullString and discarding it in Go.
 func (r *OrdersRepo) LoadRecentPrices(ctx context.Context, since time.Time, perKeyCap int) ([]sim.PriceBookSeedRecord, error) {
 	if perKeyCap <= 0 {
 		return nil, fmt.Errorf("pg orders LoadRecentPrices: perKeyCap must be > 0, got %d", perKeyCap)
