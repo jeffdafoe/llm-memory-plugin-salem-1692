@@ -147,6 +147,56 @@ func TestUmbilicalNudge_BadInput(t *testing.T) {
 	}
 }
 
+// TestUmbilicalGrant covers the /grant route's coin path + status mappings
+// against the seeded world (hannah = NPC, bram = PC). The full item-delta matrix
+// (add/remove/delete-on-zero/floor/dup) lives at the command level in
+// sim/holdings_commands_test.go; here we pin the HTTP contract.
+func TestUmbilicalGrant(t *testing.T) {
+	srv, h := controlServer(t, operatorPerms)
+
+	// Coin credit to an NPC, echoed back as the post-mutation balance.
+	rec := postReq(t, h, "/api/village/umbilical/grant", "tok", `{"actor_id":"hannah","coins":25}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("grant coins = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var out umbilicalGrantResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Coins != 25 {
+		t.Errorf("response coins=%d, want 25", out.Coins)
+	}
+	// Confirm it landed on the live actor.
+	res, _ := srv.world.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return world.Actors["hannah"].Coins, nil
+	}})
+	if coins, _ := res.(int); coins != 25 {
+		t.Errorf("live hannah coins=%d after grant, want 25", coins)
+	}
+
+	// PC target works — the thing the editor's SetActorInventory can't do.
+	if rec := postReq(t, h, "/api/village/umbilical/grant", "tok", `{"actor_id":"bram","coins":10}`); rec.Code != http.StatusOK {
+		t.Errorf("grant to PC = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+
+	// Empty grant (no coins, no items) → 400.
+	if rec := postReq(t, h, "/api/village/umbilical/grant", "tok", `{"actor_id":"hannah"}`); rec.Code != http.StatusBadRequest {
+		t.Errorf("empty grant = %d, want 400", rec.Code)
+	}
+	// Missing actor_id → 400.
+	if rec := postReq(t, h, "/api/village/umbilical/grant", "tok", `{"coins":5}`); rec.Code != http.StatusBadRequest {
+		t.Errorf("missing actor_id = %d, want 400", rec.Code)
+	}
+	// Unknown actor → 404.
+	if rec := postReq(t, h, "/api/village/umbilical/grant", "tok", `{"actor_id":"ghost","coins":5}`); rec.Code != http.StatusNotFound {
+		t.Errorf("unknown actor = %d, want 404", rec.Code)
+	}
+	// Unknown item kind → 422 (fails resolution regardless of catalog state).
+	if rec := postReq(t, h, "/api/village/umbilical/grant", "tok", `{"actor_id":"hannah","items":[{"item_kind":"dragon-egg","qty":1}]}`); rec.Code != http.StatusUnprocessableEntity {
+		t.Errorf("unknown item = %d, want 422", rec.Code)
+	}
+}
+
 func TestUmbilicalSettle(t *testing.T) {
 	srv, h := controlServer(t, operatorPerms)
 	// Warrant hannah so there's something to settle.

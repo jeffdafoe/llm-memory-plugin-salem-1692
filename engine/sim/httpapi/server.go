@@ -192,6 +192,7 @@ func (s *Server) Handler() http.Handler {
 			mux.HandleFunc("POST /api/village/umbilical/settle", s.requireOperator(s.handleUmbilicalSettle))
 			mux.HandleFunc("POST /api/village/umbilical/rotate", s.requireOperator(s.handleUmbilicalRotate))
 			mux.HandleFunc("POST /api/village/umbilical/settings/need-threshold", s.requireOperator(s.handleUmbilicalNeedThreshold))
+			mux.HandleFunc("POST /api/village/umbilical/grant", s.requireOperator(s.handleUmbilicalGrant))
 		}
 	}
 	// Wrap the whole mux so every non-2xx response (incl. no-route 404s and auth
