@@ -66,22 +66,39 @@ func decodeUmbilicalBody(w http.ResponseWriter, r *http.Request, dst any) bool {
 }
 
 // umbilicalNudgeRequest is the POST /api/village/umbilical/nudge body: which
-// actor to force a deliberation tick for.
+// actor to force a deliberation tick for, and an optional operator directive to
+// inject into that tick.
+//
+// Message is the optional in-world directive (ZBBS-WORK-329). Empty = today's
+// bare forced tick (the actor deliberates with its normal perception, no
+// operator content). Non-empty = the forced tick additionally perceives the
+// directive as an in-world felt impulse (see sim.AdminDirectiveWarrantReason /
+// perception.renderImpulseWarrantLine). The directive is one-shot: it lives only
+// for that single warranted tick.
 type umbilicalNudgeRequest struct {
 	ActorID string `json:"actor_id"`
+	Message string `json:"message,omitempty"`
 }
 
-// umbilicalNudgeResponse echoes the target + whether the stamp opened a fresh
-// warrant cycle (false = appended to one already in flight).
+// umbilicalNudgeResponse echoes the target, whether the stamp opened a fresh
+// warrant cycle (false = appended to one already in flight), and whether an
+// operator directive was attached (so the caller can confirm the directive path
+// fired rather than silently falling back to a bare nudge on a mistyped field).
 type umbilicalNudgeResponse struct {
-	ActorID string `json:"actor_id"`
-	Stamped bool   `json:"stamped"`
+	ActorID   string `json:"actor_id"`
+	Stamped   bool   `json:"stamped"`
+	Directive bool   `json:"directive"`
 }
 
-// handleUmbilicalNudge forces a reactor tick for a named actor by stamping an
-// admin warrant (the "gently nudge an NPC to take a turn" primitive). Issues
-// sim.StampWarrant with WarrantKindAdmin + Force. 400 missing actor_id; 422 when
-// the actor is unknown (the command rejects it); 200 with the stamp result.
+// handleUmbilicalNudge forces a reactor tick for a named actor by stamping a
+// forced warrant (the "gently nudge an NPC to take a turn" primitive). With no
+// message it stamps a bare WarrantKindAdmin warrant; with a message it stamps an
+// AdminDirectiveWarrantReason (WarrantKindImpulse) so the directive surfaces in
+// the forced tick's perception as an in-world felt impulse. Force is set either
+// way. The directive is inert on actors that do not deliberate (PCs, decorative
+// NPCs) — same as a bare nudge: the warrant is stamped but never rendered into a
+// deliberation prompt. 400 missing actor_id; 422 when the actor is unknown (the
+// command rejects it); 200 with the stamp result.
 func (s *Server) handleUmbilicalNudge(w http.ResponseWriter, r *http.Request) {
 	user := userFromContext(r.Context())
 	if user == nil {
@@ -97,10 +114,20 @@ func (s *Server) handleUmbilicalNudge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Audit the attempt up front so a later rejection is still on the record.
-	auditUmbilical(user.Username, "nudge", "actor="+req.ActorID)
+	// Build the warrant reason: a bare admin force-tick by default, or a
+	// directive-bearing impulse reason when the operator supplied a message.
+	detail := "actor=" + req.ActorID
+	reason := sim.WarrantReason(sim.BasicWarrantReason{K: sim.WarrantKindAdmin})
+	directive := req.Message != ""
+	if directive {
+		reason = sim.AdminDirectiveWarrantReason{Message: req.Message}
+		detail += fmt.Sprintf(" directive=%q", req.Message)
+	}
 
-	meta := sim.WarrantMeta{Force: true, Reason: sim.BasicWarrantReason{K: sim.WarrantKindAdmin}}
+	// Audit the attempt up front so a later rejection is still on the record.
+	auditUmbilical(user.Username, "nudge", detail)
+
+	meta := sim.WarrantMeta{Force: true, Reason: reason}
 	res, err := s.world.SendContext(r.Context(), sim.StampWarrant(sim.ActorID(req.ActorID), meta, time.Now()))
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -114,7 +141,7 @@ func (s *Server) handleUmbilicalNudge(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "unexpected nudge result")
 		return
 	}
-	writeJSON(w, umbilicalNudgeResponse{ActorID: req.ActorID, Stamped: out.Stamped})
+	writeJSON(w, umbilicalNudgeResponse{ActorID: req.ActorID, Stamped: out.Stamped, Directive: directive})
 }
 
 // umbilicalPhaseRequest is the POST /api/village/umbilical/phase body.

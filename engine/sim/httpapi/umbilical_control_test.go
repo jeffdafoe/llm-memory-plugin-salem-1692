@@ -82,6 +82,9 @@ func TestUmbilicalNudge_StampsWarrant(t *testing.T) {
 	if out.ActorID != "hannah" || !out.Stamped {
 		t.Errorf("response = %+v, want actor=hannah stamped=true", out)
 	}
+	if out.Directive {
+		t.Errorf("bare nudge (no message) reported directive=true, want false")
+	}
 
 	// Confirm the warrant actually landed on the live actor.
 	res, err := srv.world.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
@@ -92,6 +95,43 @@ func TestUmbilicalNudge_StampsWarrant(t *testing.T) {
 	}
 	if warranted, _ := res.(bool); !warranted {
 		t.Error("hannah has no warrant after nudge — StampWarrant did not take effect")
+	}
+}
+
+// TestUmbilicalNudge_Directive: a nudge carrying a message stamps an
+// AdminDirectiveWarrantReason (WarrantKindImpulse) on the target — the operator
+// directive that surfaces in the forced tick's perception as an in-world felt
+// impulse (ZBBS-WORK-329). Verified by reading the live actor's warrant reason
+// back through the world command channel.
+func TestUmbilicalNudge_Directive(t *testing.T) {
+	srv, h := controlServer(t, operatorPerms)
+
+	rec := postReq(t, h, "/api/village/umbilical/nudge", "tok", `{"actor_id":"hannah","message":"return home and rest"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("directive nudge = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var out umbilicalNudgeResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !out.Directive || !out.Stamped {
+		t.Errorf("response = %+v, want stamped=true directive=true", out)
+	}
+
+	// Confirm the directive reason (with the message) landed on the live actor.
+	res, err := srv.world.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		for _, m := range world.Actors["hannah"].Warrants {
+			if r, ok := m.Reason.(sim.AdminDirectiveWarrantReason); ok {
+				return r.Message, nil
+			}
+		}
+		return "", nil
+	}})
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+	if msg, _ := res.(string); msg != "return home and rest" {
+		t.Errorf("warrant directive message = %q, want %q", msg, "return home and rest")
 	}
 }
 

@@ -63,7 +63,8 @@ const (
 	WarrantKindDwellTickApplied   WarrantKind = "dwell_tick_applied"
 	WarrantKindDwellEnded         WarrantKind = "dwell_ended"
 	WarrantKindConsumed           WarrantKind = "consumed" // immediate consume self-narration beat
-	WarrantKindAdmin              WarrantKind = "admin"    // operator forced a tick
+	WarrantKindAdmin              WarrantKind = "admin"    // operator forced a bare tick
+	WarrantKindImpulse            WarrantKind = "impulse"  // operator-injected in-world felt impulse (umbilical directive nudge)
 )
 
 // WarrantReason is the marker interface for kind-specific warrant payloads.
@@ -394,6 +395,31 @@ type IdleBackstopWarrantReason struct {
 func (IdleBackstopWarrantReason) isWarrantReason()           {}
 func (IdleBackstopWarrantReason) Kind() WarrantKind          { return WarrantKindIdleBackstop }
 func (IdleBackstopWarrantReason) DedupDiscriminator() uint64 { return 0 }
+
+// AdminDirectiveWarrantReason carries an operator-authored directive injected
+// via the umbilical /nudge route (ZBBS-WORK-329 — the "if you see an NPC stuck,
+// prompt it home" capability). It rides the same warrant-reason → perception
+// render rail as the autonomous producers (shift-duty, restock): the operator's
+// Message surfaces in the forced tick's "## What just happened" section, framed
+// as an in-world felt impulse rather than an out-of-world meta-instruction (see
+// perception.renderImpulseWarrantLine). Kind is WarrantKindImpulse — a distinct,
+// in-world-neutral tag so the rendered line reads as a feeling, not the bare
+// admin force-tick (WarrantKindAdmin) the message-less nudge still uses.
+//
+// Message is untrusted operator free text; the renderer sanitizes + caps it.
+//
+// One-shot: the directive lives only for the single forced tick it is stamped
+// on and clears when that warrant cycle completes — it is not a sticky standing
+// order. Not event-sourced (the operator's manual invocation is the sole
+// trigger), so DedupDiscriminator returns 0, matching the other zero-sourced
+// reasons; a second /nudge is a deliberate re-stamp, not an accidental dup.
+type AdminDirectiveWarrantReason struct {
+	Message string
+}
+
+func (AdminDirectiveWarrantReason) isWarrantReason()           {}
+func (AdminDirectiveWarrantReason) Kind() WarrantKind          { return WarrantKindImpulse }
+func (AdminDirectiveWarrantReason) DedupDiscriminator() uint64 { return 0 }
 
 // WarrantMeta is one entry in an actor's Warrants list — a signal that
 // fired during the actor's warranted window. The evaluator carries the
