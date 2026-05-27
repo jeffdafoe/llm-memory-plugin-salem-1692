@@ -16,6 +16,7 @@ config/features=PackedStringArray("4.6")
 Auth="*res://scripts/auth.gd"
 Catalog="*res://scripts/catalog.gd"
 VillageApi="*res://scripts/village_api.gd"
+ErrorBeacon="*res://scripts/error_beacon.gd"
 
 [display]
 

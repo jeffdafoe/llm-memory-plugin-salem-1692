@@ -87,6 +87,12 @@ var login_layer: CanvasLayer = null
 # _pc_bootstrap_done flips after the first /pc/me lands.
 var _pc_bootstrap_done: bool = false
 var _pc_exists: bool = false
+# world_ready watchdog (ZBBS-WORK-333). If world_ready doesn't fire within the
+# timeout after auth, the boot stalled (a load-chain fetch or sheet wedged a
+# latch); the watchdog beacons the latch summary so the stall surfaces via the
+# umbilical instead of a silently-frozen curtain. _world_ready_fired guards it.
+const _WORLD_READY_WATCHDOG_SECONDS: float = 20.0
+var _world_ready_fired: bool = false
 # PC's actor.id from /pc/me — used to recognize the player's own PC in
 # WS broadcasts like npc_arrived. Empty until the first /pc/me response.
 var _pc_actor_id: String = ""
@@ -197,6 +203,9 @@ func _on_authenticated() -> void:
 
     if world != null and not world.world_ready.is_connected(_on_world_ready):
         world.world_ready.connect(_on_world_ready)
+        # Arm the stall watchdog once, alongside the (idempotent) world_ready
+        # connect, so it starts exactly once per session.
+        get_tree().create_timer(_WORLD_READY_WATCHDOG_SECONDS).timeout.connect(_on_world_ready_watchdog)
 
     # Connect for future login events (in case token was saved)
     if not Auth.logged_in.is_connected(_on_authenticated):
@@ -1268,6 +1277,7 @@ func _on_editor_mode_changed(mode) -> void:
 ## release the input lock. ZBBS-HOME-210.
 const _WORLD_READY_FADE_DURATION: float = 0.4
 func _on_world_ready() -> void:
+    _world_ready_fired = true
     _set_modal_blocker("world_loading", false)
     if login_screen == null:
         return
@@ -1282,6 +1292,17 @@ func _on_world_ready() -> void:
             # belt-and-suspenders.
             login_screen.modulate = Color(1, 1, 1, 1)
     )
+
+## Fired _WORLD_READY_WATCHDOG_SECONDS after auth. If world_ready never came,
+## the boot stalled behind the curtain — beacon the latch summary so it shows up
+## in the umbilical client-error feed instead of being an invisible hang.
+func _on_world_ready_watchdog() -> void:
+    if _world_ready_fired:
+        return
+    var summary: String = ""
+    if world != null and world.has_method("world_ready_pending_summary"):
+        summary = world.world_ready_pending_summary()
+    ErrorBeacon.report("world_ready_stalled", summary)
 
 
 ## ZBBS-WORK-204 Stage B — local PC entered sleep. Engine broadcasts

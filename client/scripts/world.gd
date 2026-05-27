@@ -189,6 +189,16 @@ func _check_world_ready() -> void:
     _world_ready_emitted = true
     world_ready.emit()
 
+## Human-readable summary of why world_ready hasn't fired yet — the load-latch
+## states + pending counts. main.gd's watchdog beacons this on a stalled boot so
+## the stuck stage is visible (which fetch/sheet wedged the latch) instead of a
+## silently-frozen curtain.
+func world_ready_pending_summary() -> String:
+    return "village_loaded=%s npcs_response=%s npcs_render_complete=%s pending=%d failed_sheets=%d emitted=%s" % [
+        _village_loaded, _npcs_response_received, _npcs_render_complete,
+        _pending_npcs.size(), _failed_sheets.size(), _world_ready_emitted
+    ]
+
 # NPC rendering — static for milestone 1a, no movement or animation.
 # Sprite sheets are cached per path so multiple NPCs sharing a sheet share
 # one texture.
@@ -599,6 +609,7 @@ func _on_npc_sheet_downloaded(result: int, response_code: int, _headers: PackedS
     http.queue_free()
     if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
         push_warning("NPC sheet download failed: " + sheet_path + " code=" + str(response_code))
+        ErrorBeacon.report("npc_sheet_download_failed", sheet_path + " code=" + str(response_code))
         # Mark the sheet failed and re-drain. Without this the NPCs waiting on
         # this sheet stay in _pending_npcs forever → _npcs_render_complete never
         # flips → world_ready never emits → the login curtain never lifts. One
@@ -610,6 +621,10 @@ func _on_npc_sheet_downloaded(result: int, response_code: int, _headers: PackedS
     var image = Image.new()
     if image.load_png_from_buffer(body) != OK:
         push_warning("NPC sheet decode failed: " + sheet_path)
+        # A missing sheet that nginx answers with the SPA index.html fallback
+        # lands here (200 body, not a PNG) — invisible to nginx (logs 200) and
+        # the engine, so the beacon is the only signal.
+        ErrorBeacon.report("npc_sheet_decode_failed", sheet_path)
         _failed_sheets[sheet_path] = true
         _render_pending_npcs()
         return
