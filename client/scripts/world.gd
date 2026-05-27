@@ -84,6 +84,10 @@ var _world_ready_emitted: bool = false
 
 # Agent lookup: llm_memory_agent name → display name
 var agent_names: Dictionary = {}
+# Owner lookup: actor GUID → display name. Structure/object owner refs are
+# stored as owner_actor_id (a GUID), so owner-name resolution keys on id, not
+# the llm_memory_agent slug (which is absent for non-VA owners).
+var actor_names: Dictionary = {}
 # Ordered list of agent keys for dropdowns
 var agent_list: Array = []
 
@@ -1699,11 +1703,19 @@ func _on_agents_loaded(result: int, response_code: int, headers: PackedStringArr
     # editor panel's agent dropdown.
     agent_list.clear()
     agent_names.clear()
+    actor_names.clear()
     for agent in json:
+        var actor_id: String = agent.get("id", "")
         var llm_name: String = agent.get("llm_memory_agent", "")
         # v2 AgentDTO carries display_name (v1 used "name").
         var display_name: String = agent.get("display_name", "")
-        if llm_name != "" and display_name != "":
+        if display_name == "":
+            continue
+        # Every actor has an id; owner refs resolve against this map.
+        if actor_id != "":
+            actor_names[actor_id] = display_name
+        # The agent dropdown only lists VA-backed actors (keyed by slug).
+        if llm_name != "":
             agent_names[llm_name] = display_name
             agent_list.append(llm_name)
     agent_list.sort()
@@ -2325,4 +2337,6 @@ func _post_npc_admin(npc_id, route: String, payload_dict: Dictionary) -> void:
 func get_owner_display_name(owner: String) -> String:
     if owner == "":
         return ""
-    return agent_names.get(owner, owner)
+    # owner is an actor GUID (owner_actor_id) — resolve against the id-keyed
+    # map, not agent_names (which keys on the llm_memory_agent slug).
+    return actor_names.get(owner, owner)
