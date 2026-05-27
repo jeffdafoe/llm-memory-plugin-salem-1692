@@ -386,6 +386,9 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 	if a.LLMAgent != "mira-agent" || a.Role != "tavernkeeper" {
 		t.Errorf("LLMAgent=%q Role=%q", a.LLMAgent, a.Role)
 	}
+	if a.Kind != sim.KindNPCStateful {
+		t.Errorf("actA Kind = %d, want KindNPCStateful (own VA)", a.Kind)
+	}
 	if a.LoginUsername != "" {
 		t.Errorf("LoginUsername = %q want empty", a.LoginUsername)
 	}
@@ -461,6 +464,12 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 	}
 	if b.LLMAgent != "" || b.Role != "" || b.LoginUsername != "" {
 		t.Errorf("actB strings not empty")
+	}
+	// Regression lock for ZBBS-HOME-317: a driver-less actor must classify as
+	// KindDecorative. Before the fix LoadAll left Kind at its zero value
+	// (KindNPCStateful), so this row would have come back as a stateful NPC.
+	if b.Kind != sim.KindDecorative {
+		t.Errorf("actB Kind = %d, want KindDecorative (no login, no agent)", b.Kind)
 	}
 	if b.ScheduleStartMin != nil || b.ScheduleEndMin != nil {
 		t.Errorf("actB schedule not nil: %v/%v", b.ScheduleStartMin, b.ScheduleEndMin)

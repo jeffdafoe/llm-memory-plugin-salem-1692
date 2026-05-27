@@ -1,6 +1,9 @@
 package sim
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // ActorID identifies an actor uniquely within the world.
 type ActorID string
@@ -16,6 +19,52 @@ const (
 	KindPC
 	KindDecorative
 )
+
+// Shared-VA agent slugs. An actor whose llm_memory_agent points at one of
+// these is KindNPCShared: the VA is a stateless switchboard with no private
+// memory, not the actor's own persistent VA. VisitorAgentName lives with the
+// visitor lifecycle code (visitor.go). salem-generic backs the
+// atmosphere/noticeboard cascades rather than any actor, but it is included
+// here so an actor that ever points at it is never mistaken for stateful.
+const (
+	VendorAgentName  = "salem-vendor"
+	GenericAgentName = "salem-generic"
+)
+
+// isSharedVAAgent reports whether an llm_memory_agent slug is one of the
+// shared switchboard VAs rather than an actor's own private VA.
+func isSharedVAAgent(agent string) bool {
+	switch agent {
+	case VendorAgentName, VisitorAgentName, GenericAgentName:
+		return true
+	default:
+		return false
+	}
+}
+
+// ClassifyActorKind derives an actor's Kind from its persisted driver columns.
+// There is no actor_kind column, so Kind is reconstructed on every DB load
+// from login_username + llm_memory_agent (a CHECK constraint keeps the two
+// mutually exclusive). This mirrors the Kind that create_pc / create_npc set
+// in memory at creation time:
+//   - login_username present        -> KindPC (human player)
+//   - llm_memory_agent is a shared VA -> KindNPCShared (vendor / visitor)
+//   - llm_memory_agent present        -> KindNPCStateful (own persistent VA)
+//   - neither                         -> KindDecorative (sprite-only, never ticked)
+func ClassifyActorKind(loginUsername, llmAgent string) ActorKind {
+	loginUsername = strings.TrimSpace(loginUsername)
+	llmAgent = strings.TrimSpace(llmAgent)
+	if loginUsername != "" {
+		return KindPC
+	}
+	if isSharedVAAgent(llmAgent) {
+		return KindNPCShared
+	}
+	if llmAgent != "" {
+		return KindNPCStateful
+	}
+	return KindDecorative
+}
 
 // ActorState is the macro-state of an actor: what it is doing right now at
 // a coarse level. Set softly by engine handlers when they observe a change;
