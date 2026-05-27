@@ -81,7 +81,10 @@ func _verify_token() -> void:
 
     http.request_completed.connect(_on_verify_response.bind(http))
     var headers = ["Authorization: Bearer " + session_token]
-    http.request(api_base + "/api/me", headers)
+    # v2 has no GET /api/me; the PC bootstrap read POST /api/village/pc/me is
+    # the authenticated identity check. A 200 means the token is valid and in
+    # the salem realm; the body carries login_username + can_edit.
+    http.request(api_base + "/api/village/pc/me", headers, HTTPClient.METHOD_POST, "")
 
 func _on_verify_response(result: int, response_code: int, headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest) -> void:
     http.queue_free()
@@ -101,7 +104,7 @@ func _on_verify_response(result: int, response_code: int, headers: PackedStringA
         return
 
     authenticated = true
-    username = json.get("agent", "")
+    username = json.get("login_username", "")
     can_edit = json.get("can_edit", false)
     auth_ready.emit()
     logged_in.emit()

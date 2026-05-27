@@ -147,6 +147,23 @@ func TestHandlePCMe_NoPC(t *testing.T) {
 	}
 }
 
+// TestHandlePCMe_CanEdit locks the can_edit gate (ZBBS-HOME-316): it mirrors the
+// operator capability (plugins/administer) and drives the Godot client's editor
+// visibility, which the client reads on token-verify. Set regardless of whether
+// the session has a PC.
+func TestHandlePCMe_CanEdit(t *testing.T) {
+	// Non-operator session → can_edit false.
+	plain := pcMe(t, NewServer(seededWorld(t), okAuth{}))
+	if plain.CanEdit {
+		t.Error("can_edit = true for a non-operator session, want false")
+	}
+	// Operator (plugins/administer) → can_edit true.
+	op := pcMe(t, NewServer(seededWorld(t), permAuth{map[string][]string{"plugins": {"administer"}}}))
+	if !op.CanEdit {
+		t.Error("can_edit = false for an operator session, want true")
+	}
+}
+
 func TestHandlePCMe_FullIndoor(t *testing.T) {
 	srv := NewServer(pcMeWorld(t, 2), okAuth{})
 	resp := pcMe(t, srv)
