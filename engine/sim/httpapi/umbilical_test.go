@@ -324,6 +324,106 @@ func TestUmbilical_ViewsGated(t *testing.T) {
 	}
 }
 
+// manifestRouteKeys indexes a manifest's routes by "METHOD path" so presence
+// checks assert the real route identity (method + path), not just the path.
+func manifestRouteKeys(m UmbilicalManifestDTO) map[string]bool {
+	out := make(map[string]bool, len(m.Routes))
+	for _, r := range m.Routes {
+		out[r.Method+" "+r.Path] = true
+	}
+	return out
+}
+
+func TestUmbilical_Manifest(t *testing.T) {
+	// Read-only: umbilical on, control off.
+	h := umbilicalServer(t, operatorPerms, telemetry.New(8))
+	rec := req(t, h, "/api/village/umbilical", "tok")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("manifest = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var ro UmbilicalManifestDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &ro); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if ro.ContractVersion != ContractVersion {
+		t.Errorf("contract_version = %d, want %d", ro.ContractVersion, ContractVersion)
+	}
+	if !ro.Enabled || ro.ControlEnabled {
+		t.Errorf("enabled=%v control_enabled=%v, want true/false", ro.Enabled, ro.ControlEnabled)
+	}
+	roRoutes := manifestRouteKeys(ro)
+	if !roRoutes["GET /api/village/umbilical"] {
+		t.Error("manifest must list itself")
+	}
+	if !roRoutes["GET /api/village/umbilical/telemetry"] {
+		t.Error("manifest must list the telemetry read route")
+	}
+	for _, r := range ro.Routes {
+		if r.Control {
+			t.Errorf("control route %q listed while control disabled", r.Path)
+		}
+	}
+	// The gating invariant the refactor must preserve: a control route is not
+	// just absent from the manifest — it isn't registered at all (404). Guards
+	// against manifest filtering and registration drifting apart.
+	if rec := postReq(t, h, "/api/village/umbilical/nudge", "tok", `{}`); rec.Code != http.StatusNotFound {
+		t.Errorf("control route registered with control disabled = %d, want 404", rec.Code)
+	}
+
+	// Control enabled: the whitelist appears and control_enabled flips.
+	_, hc := controlServer(t, operatorPerms)
+	rec = req(t, hc, "/api/village/umbilical", "tok")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("manifest (control) = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var co UmbilicalManifestDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &co); err != nil {
+		t.Fatalf("decode control: %v", err)
+	}
+	if !co.ControlEnabled {
+		t.Error("control_enabled = false, want true")
+	}
+	coRoutes := manifestRouteKeys(co)
+	if !coRoutes["POST /api/village/umbilical/nudge"] || !coRoutes["POST /api/village/umbilical/grant"] {
+		t.Errorf("control manifest missing control routes: %v", coRoutes)
+	}
+	if len(co.Routes) <= len(ro.Routes) {
+		t.Errorf("control manifest (%d routes) should exceed read-only (%d)", len(co.Routes), len(ro.Routes))
+	}
+
+	// The manifest can't lie: every route it advertises is actually registered
+	// on the live mux (a non-404 response). GET routes are probed with GET, POST
+	// (control) routes with POST so the method matches the registration.
+	for _, r := range co.Routes {
+		var probe *httptest.ResponseRecorder
+		switch r.Method {
+		case http.MethodGet:
+			probe = req(t, hc, r.Path, "tok")
+		case http.MethodPost:
+			probe = postReq(t, hc, r.Path, "tok", `{}`)
+		default:
+			t.Fatalf("unexpected manifest method %q for route %q", r.Method, r.Path)
+		}
+		if probe.Code == http.StatusNotFound {
+			t.Errorf("manifest advertises %s %s but it is not registered (404)", r.Method, r.Path)
+		}
+	}
+
+	// Off by default (no telemetry) → 404, like every umbilical route.
+	off := NewServer(seededWorld(t), permAuth{operatorPerms}).Handler()
+	if rec := req(t, off, "/api/village/umbilical", "tok"); rec.Code != http.StatusNotFound {
+		t.Errorf("manifest with umbilical off = %d, want 404", rec.Code)
+	}
+	// Enabled but non-operator → 403; no token → 401.
+	nonOp := umbilicalServer(t, nil, telemetry.New(8))
+	if rec := req(t, nonOp, "/api/village/umbilical", "tok"); rec.Code != http.StatusForbidden {
+		t.Errorf("manifest non-operator = %d, want 403", rec.Code)
+	}
+	if rec := req(t, nonOp, "/api/village/umbilical", ""); rec.Code != http.StatusUnauthorized {
+		t.Errorf("manifest no token = %d, want 401", rec.Code)
+	}
+}
+
 func TestUmbilical_State(t *testing.T) {
 	h := umbilicalServer(t, operatorPerms, telemetry.New(8))
 	rec := req(t, h, "/api/village/umbilical/state", "tok")
