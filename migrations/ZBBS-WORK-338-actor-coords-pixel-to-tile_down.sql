@@ -1,27 +1,29 @@
 -- ZBBS-WORK-338 (down): convert actor positions back from v2 tiles to v1 world-pixels.
 --
--- Inverse of the up-migration, using v2's geom.go TilePos.Center():
---     pixel = (tile - Pad) * TileSize + TileSize/2
--- with PadX=60, PadY=112, TileSize=32. The +16 (TileSize/2) places the pixel at
--- the tile CENTRE, which is where v2 positions actors anyway, so it round-trips
--- the up-migration exactly for tile-centred values (the up-migration's floor()
+-- Inverse of up, using v2's geom.go TilePos.Center():
+--     pixel = (tile - Pad) * TileSize + TileSize/2     PadX=60, PadY=112, TileSize=32
+-- The +16 (TileSize/2) places the pixel at the tile CENTRE — where v2 positions
+-- actors — so it round-trips up exactly for tile-centred values. (up's floor()
 -- already discarded any sub-tile offset, so this is a faithful inverse of what
--- up produced — not necessarily the byte-identical original v1 pixel if that
--- pixel was off-centre).
+-- up produced, not necessarily the byte-identical pre-up pixel if that pixel was
+-- off-centre. Lossy unit reverse, by nature.)
 --
--- GUARD — only convert rows in the valid tile range (current_x < 260 AND
--- current_y < 292), i.e. the rows that look like tiles. This mirrors the up
--- guard's threshold so a row left untouched by up is left untouched here, and a
--- value already in pixel range is not mangled. As with any data down-migration
--- on a lossy unit change this is best-effort reverse; it is exact for the
--- tile-centred positions v2 produces.
+-- Symmetric unit detection with up: convert only when the table looks like
+-- TILES — i.e. NO row sits outside the tile grid [0,199]x[0,179]. After up ran,
+-- every row is a valid tile, so NOT EXISTS(out-of-range) is true and all rows
+-- reverse to pixels. If the table is still pixels (up never ran / already rolled
+-- back), an out-of-range row exists, NOT EXISTS is false, and nothing is
+-- touched — no double-reverse.
 
 BEGIN;
 
 UPDATE public.actor
    SET current_x = (current_x - 60)  * 32 + 16,   -- (tile_x - PadX) * TileSize + TileSize/2
        current_y = (current_y - 112) * 32 + 16    -- (tile_y - PadY) * TileSize + TileSize/2
- WHERE current_x < 260    -- only tile-range rows (what up produced)
-   AND current_y < 292;
+ WHERE NOT EXISTS (
+     SELECT 1 FROM public.actor a2
+      WHERE a2.current_x < 0 OR a2.current_x > 199
+         OR a2.current_y < 0 OR a2.current_y > 179
+ );
 
 COMMIT;
