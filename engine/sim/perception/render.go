@@ -656,6 +656,8 @@ func renderWarrantLine(n int, w sim.WarrantMeta, maxTextBytes int) (string, bool
 		return renderNarrationWarrantLine(n, kind, scope, r.NarrationText, w.TriggerActorID, maxTextBytes)
 	case sim.DwellEndedWarrantReason:
 		return renderNarrationWarrantLine(n, kind, scope, r.NarrationText, w.TriggerActorID, maxTextBytes)
+	case sim.AdminDirectiveWarrantReason:
+		return renderImpulseWarrantLine(n, kind, scope, r.Message, maxTextBytes)
 	default:
 		if w.TriggerActorID != "" {
 			return fmt.Sprintf("%d. [%s]%s involving %s\n", n, kind, scope, w.TriggerActorID), false
@@ -801,6 +803,33 @@ func renderRestockWarrantLine(n int, kind, scope string, item sim.ItemKind) stri
 		return fmt.Sprintf("%d. [%s]%s your shop stock is running low — see Restocking\n", n, kind, scope)
 	}
 	return fmt.Sprintf("%d. [%s]%s your stock of %s is running low — see Restocking\n", n, kind, scope, item)
+}
+
+// renderImpulseWarrantLine renders the warrant line for an
+// AdminDirectiveWarrantReason — an operator-authored directive injected via the
+// umbilical /nudge route (ZBBS-WORK-329). The operator's message is wrapped in
+// an in-world felt-impulse frame so the NPC reads it as a spontaneous internal
+// urge, NOT an out-of-world instruction — the same in-world-voice discipline the
+// atmosphere + noticeboard prompts keep. The [impulse] kind tag
+// (WarrantKindImpulse) reinforces the framing: it reads as a feeling, not an
+// admin action. The colon form keeps the line grammatical regardless of how the
+// operator phrases the directive (it does not assume the message completes a
+// "pull to …" clause).
+//
+// Form: `N. [impulse] you feel a strong, insistent pull: <message>`
+//
+// The message is untrusted operator free text, so it is sanitized + capped like
+// the speech excerpt; the returned bool reports truncation. An empty message
+// does not reach here in practice — the handler stamps this reason only for a
+// non-empty directive (an empty nudge stamps the bare admin reason) — but it is
+// handled defensively so a stray empty directive renders a bare impulse rather
+// than a dangling colon.
+func renderImpulseWarrantLine(n int, kind, scope, message string, maxTextBytes int) (string, bool) {
+	sanitized, truncated := sanitizeText(message, maxTextBytes)
+	if sanitized == "" {
+		return fmt.Sprintf("%d. [%s]%s you feel a strong, insistent pull to act\n", n, kind, scope), false
+	}
+	return fmt.Sprintf("%d. [%s]%s you feel a strong, insistent pull: %s\n", n, kind, scope, sanitized), truncated
 }
 
 // renderNeeds renders a need map as a deterministic "key=value" list,
