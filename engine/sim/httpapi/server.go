@@ -23,6 +23,7 @@ type Server struct {
 	hub            *Hub
 	telemetry      *telemetry.RingSink
 	controlEnabled bool
+	errorLog       *errorRing
 }
 
 // NewServer builds a Server for w, authenticating every route via auth. Panics
@@ -35,7 +36,7 @@ func NewServer(w *sim.World, auth Authenticator) *Server {
 	if auth == nil {
 		panic("httpapi: NewServer requires a non-nil Authenticator")
 	}
-	return &Server{world: w, auth: auth}
+	return &Server{world: w, auth: auth, errorLog: newErrorRing(0)}
 }
 
 // SetEventsHub attaches the WS event hub. When set, Handler exposes the
@@ -165,6 +166,9 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("GET /api/village/umbilical/actions", s.requireOperator(s.handleUmbilicalActions))
 		mux.HandleFunc("GET /api/village/umbilical/agent", s.requireOperator(s.handleUmbilicalAgent))
 		mux.HandleFunc("GET /api/village/umbilical/reactor", s.requireOperator(s.handleUmbilicalReactor))
+		// Recent non-2xx responses the engine returned (errorlog.go) — remote
+		// visibility into client-facing failures without SSH to the box.
+		mux.HandleFunc("GET /api/village/umbilical/errors", s.requireOperator(s.handleUmbilicalErrors))
 		// Control (world-mutating) routes — armed only when control is ALSO
 		// enabled (UMBILICAL_CONTROL_ENABLED). Read-only is the default even with
 		// the umbilical on. requireOperator-gated + audited. See umbilical_control.go.
@@ -176,7 +180,10 @@ func (s *Server) Handler() http.Handler {
 			mux.HandleFunc("POST /api/village/umbilical/settings/need-threshold", s.requireOperator(s.handleUmbilicalNeedThreshold))
 		}
 	}
-	return mux
+	// Wrap the whole mux so every non-2xx response (incl. no-route 404s and auth
+	// rejections, which sit outside requireAuth) is recorded + logged. See
+	// errorlog.go.
+	return s.withErrorCapture(mux)
 }
 
 func (s *Server) handleWorld(w http.ResponseWriter, _ *http.Request) {
