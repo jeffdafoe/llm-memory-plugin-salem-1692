@@ -81,6 +81,7 @@ func fireScheduledSceneQuoteSweep(w *World) {
 		// NewWorld, so a post-shutdown stale flag has no effect.
 		return
 	}
+	w.beatTicker("scene_quote_sweep")
 	_, err := w.SendContext(ctx, evaluateSceneQuotesAndRearm(time.Now()))
 	if err != nil && ctx.Err() == nil {
 		log.Printf("sim/scene_quote: scheduled sweep failed: %v", err)

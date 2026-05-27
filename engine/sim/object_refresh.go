@@ -480,6 +480,7 @@ func RunObjectRefreshRegen(ctx context.Context, w *World) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			w.beatTicker("object_refresh_regen")
 			_, err := w.SendContext(ctx, Command{
 				Fn: func(world *World) (any, error) {
 					return regenObjectRefresh(world, time.Now().UTC()), nil

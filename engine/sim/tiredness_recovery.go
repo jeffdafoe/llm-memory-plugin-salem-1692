@@ -176,6 +176,7 @@ func RunTirednessRecoveryTicker(ctx context.Context, w *World) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			w.beatTicker("tiredness_recovery")
 			runTirednessRecoveryIteration(ctx, w)
 		}
 	}

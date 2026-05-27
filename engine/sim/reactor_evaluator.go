@@ -102,6 +102,7 @@ func fireScheduledEvaluation(w *World) {
 		// post-shutdown stale flag has no effect anyway.
 		return
 	}
+	w.beatTicker("reactor")
 	_, err := w.SendContext(ctx, evaluateAndRearm(time.Now()))
 	if err != nil && ctx.Err() == nil {
 		log.Printf("sim/reactor: scheduled evaluation failed: %v", err)
