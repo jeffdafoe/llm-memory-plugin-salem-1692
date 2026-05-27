@@ -1,6 +1,13 @@
 [Unit]
 Description=Salem 1692 Engine
 After=network.target postgresql.service
+# Crash-loop guard: if the engine fails StartLimitBurst times within
+# StartLimitIntervalSec, systemd stops retrying and leaves it `failed` instead
+# of restarting every RestartSec forever. A deterministic boot failure (e.g.
+# bad data failing LoadWorld) should halt visibly within ~25s, not loop for an
+# hour. Transient failures recover well within the burst.
+StartLimitIntervalSec=120
+StartLimitBurst=5
 
 [Service]
 Type=simple
