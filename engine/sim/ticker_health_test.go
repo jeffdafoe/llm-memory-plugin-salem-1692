@@ -71,9 +71,18 @@ func TestTickerHealth_ConcurrentBeats(t *testing.T) {
 
 func TestWorld_BeatTickerRoutesToRegistry(t *testing.T) {
 	w := NewWorld(Repository{})
-	w.beatTicker("phase")
-	got := w.TickerHealthSnapshot()
-	if len(got) != 1 || got[0].Name != "phase" || got[0].Count != 1 {
-		t.Errorf("TickerHealthSnapshot after beatTicker = %+v, want one phase/count=1", got)
+	w.beatTicker("phase")           // in-package sim ticker path
+	w.BeatTicker("atmosphere")      // exported path (cascade-package tickers)
+	w.BeatTicker("atmosphere")      //
+	got := w.TickerHealthSnapshot() //
+	if len(got) != 2 {
+		t.Fatalf("snapshot len=%d, want 2 (phase + atmosphere)", len(got))
+	}
+	// Sorted by name: atmosphere before phase.
+	if got[0].Name != "atmosphere" || got[0].Count != 2 {
+		t.Errorf("atmosphere entry = %+v, want count=2 (exported BeatTicker)", got[0])
+	}
+	if got[1].Name != "phase" || got[1].Count != 1 {
+		t.Errorf("phase entry = %+v, want count=1 (unexported beatTicker)", got[1])
 	}
 }

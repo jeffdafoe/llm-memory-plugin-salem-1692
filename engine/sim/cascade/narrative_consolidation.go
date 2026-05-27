@@ -81,6 +81,7 @@ func runNarrativeConsolidationSweep(ctx context.Context, w *sim.World, client ll
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			w.BeatTicker("narrative_consolidation")
 			runOneNarrativeSweep(ctx, w, client)
 		}
 	}

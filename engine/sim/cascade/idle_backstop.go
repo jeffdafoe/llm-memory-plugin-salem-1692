@@ -69,6 +69,7 @@ func runIdleBackstopSweep(ctx context.Context, w *sim.World) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			w.BeatTicker("idle_backstop")
 			runOneIdleBackstopSweep(ctx, w)
 		}
 	}

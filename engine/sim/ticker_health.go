@@ -95,6 +95,17 @@ func (w *World) beatTicker(name string) {
 	w.tickerHealth.beat(name)
 }
 
+// BeatTicker is the exported beat entry for ticker goroutines defined OUTSIDE
+// package sim — specifically the ticker-driven cascades in package cascade
+// (atmosphere, consolidation, narrative_consolidation, idle_backstop, visitor,
+// action_log), which fold their cadence liveness into this same registry. They
+// can't reach the unexported beatTicker; both land in the one TickerHealth
+// registry so the umbilical ticker-health view is a single unified list across
+// the sim-package tickers and the cascade-package ones. Nil-safe via beat.
+func (w *World) BeatTicker(name string) {
+	w.tickerHealth.beat(name)
+}
+
 // TickerHealthSnapshot returns the current per-ticker liveness view. Read by the
 // umbilical ticker-health route; safe to call from any goroutine.
 func (w *World) TickerHealthSnapshot() []TickerHealthEntry {
