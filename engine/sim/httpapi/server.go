@@ -18,12 +18,14 @@ import (
 // Every route requires a valid salem-realm session token (auth); an optional
 // event hub (SetEventsHub) adds the authenticated WS /events push channel.
 type Server struct {
-	world          *sim.World
-	auth           Authenticator
-	hub            *Hub
-	telemetry      *telemetry.RingSink
-	controlEnabled bool
-	errorLog       *errorRing
+	world            *sim.World
+	auth             Authenticator
+	hub              *Hub
+	telemetry        *telemetry.RingSink
+	controlEnabled   bool
+	errorLog         *errorRing
+	clientLog        *clientErrorRing
+	clientLogLimiter *clientLogRateLimiter
 }
 
 // NewServer builds a Server for w, authenticating every route via auth. Panics
@@ -36,7 +38,13 @@ func NewServer(w *sim.World, auth Authenticator) *Server {
 	if auth == nil {
 		panic("httpapi: NewServer requires a non-nil Authenticator")
 	}
-	return &Server{world: w, auth: auth, errorLog: newErrorRing(0)}
+	return &Server{
+		world:            w,
+		auth:             auth,
+		errorLog:         newErrorRing(0),
+		clientLog:        newClientErrorRing(0),
+		clientLogLimiter: newClientLogRateLimiter(clientLogRateMax, clientLogRateWindow),
+	}
 }
 
 // SetEventsHub attaches the WS event hub. When set, Handler exposes the
@@ -109,6 +117,10 @@ func (s *Server) Handler() http.Handler {
 	// Hardcoded reference data — no World map, no DB; see catalog_tags.go.
 	mux.HandleFunc("GET /api/village/object-tags", s.requireAuth(s.handleObjectTags))
 	mux.HandleFunc("GET /api/assets/state-tags", s.requireAuth(s.handleStateTags))
+	// Client-reported error feed (clientlog.go). Authed write; records browser-
+	// runtime failures the engine/nginx can't see into a pull-only ring surfaced
+	// via the umbilical. Untrusted — kept separate from the server-observed ring.
+	mux.HandleFunc("POST /api/village/client-log", s.requireAuth(s.handleClientLog))
 	// PC bootstrap read. POST to match the v1 verb + the client, but it's a
 	// pure snapshot read (no command channel) — see pc_me.go.
 	mux.HandleFunc("POST /api/village/pc/me", s.requireAuth(s.handlePCMe))
@@ -169,6 +181,8 @@ func (s *Server) Handler() http.Handler {
 		// Recent non-2xx responses the engine returned (errorlog.go) — remote
 		// visibility into client-facing failures without SSH to the box.
 		mux.HandleFunc("GET /api/village/umbilical/errors", s.requireOperator(s.handleUmbilicalErrors))
+		// Client-reported (untrusted) error feed — pull-only, surfaces here only.
+		mux.HandleFunc("GET /api/village/umbilical/client-errors", s.requireOperator(s.handleUmbilicalClientErrors))
 		// Control (world-mutating) routes — armed only when control is ALSO
 		// enabled (UMBILICAL_CONTROL_ENABLED). Read-only is the default even with
 		// the umbilical on. requireOperator-gated + audited. See umbilical_control.go.
