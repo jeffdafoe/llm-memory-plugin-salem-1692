@@ -96,6 +96,7 @@ func fireScheduledOrderSweep(w *World) {
 		// NewWorld, so a post-shutdown stale flag has no effect.
 		return
 	}
+	w.beatTicker("order_sweep")
 	_, err := w.SendContext(ctx, evaluateOrdersAndRearm(time.Now()))
 	if err != nil && ctx.Err() == nil {
 		log.Printf("sim/order: scheduled sweep failed: %v", err)

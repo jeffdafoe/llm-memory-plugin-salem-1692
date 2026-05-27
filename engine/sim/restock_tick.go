@@ -173,6 +173,7 @@ func RunRestockTicker(ctx context.Context, w *World) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			w.beatTicker("restock")
 			if _, err := w.SendContext(ctx, EvaluateRestock(time.Now().UTC())); err != nil {
 				if ctx.Err() == nil {
 					log.Printf("sim/restock: tick failed: %v", err)

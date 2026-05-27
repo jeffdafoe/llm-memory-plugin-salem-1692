@@ -270,6 +270,7 @@ func RunSocialTicker(ctx context.Context, w *World) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			w.beatTicker("social")
 			if _, err := w.SendContext(ctx, SocialTick(time.Now().UTC())); err != nil {
 				if ctx.Err() == nil {
 					log.Printf("sim/social: tick failed: %v", err)

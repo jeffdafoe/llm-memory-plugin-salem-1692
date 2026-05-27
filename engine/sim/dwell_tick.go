@@ -315,6 +315,7 @@ func RunDwellTicker(ctx context.Context, w *World) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			w.beatTicker("dwell")
 			_, err := w.SendContext(ctx, ApplyDwellTick(time.Now().UTC()))
 			if err != nil && ctx.Err() == nil {
 				log.Printf("sim/dwell_ticker: %v", err)

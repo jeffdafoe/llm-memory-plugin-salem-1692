@@ -92,6 +92,7 @@ func fireScheduledLocomotionTick(w *World) {
 		// post-shutdown stale flag has no effect anyway.
 		return
 	}
+	w.beatTicker("locomotion")
 	_, err := w.SendContext(ctx, evaluateLocomotionAndRearm(time.Now()))
 	if err != nil && ctx.Err() == nil {
 		log.Printf("sim/locomotion: scheduled tick failed: %v", err)

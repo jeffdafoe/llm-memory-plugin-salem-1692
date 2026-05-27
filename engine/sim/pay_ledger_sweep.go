@@ -95,6 +95,7 @@ func fireScheduledPayLedgerSweep(w *World) {
 		// so a post-shutdown stale flag has no effect.
 		return
 	}
+	w.beatTicker("pay_ledger_sweep")
 	_, err := w.SendContext(ctx, evaluatePayLedgerAndRearm(time.Now()))
 	if err != nil && ctx.Err() == nil {
 		log.Printf("sim/pay_ledger: scheduled sweep failed: %v", err)

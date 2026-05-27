@@ -178,6 +178,9 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("GET /api/village/umbilical/actions", s.requireOperator(s.handleUmbilicalActions))
 		mux.HandleFunc("GET /api/village/umbilical/agent", s.requireOperator(s.handleUmbilicalAgent))
 		mux.HandleFunc("GET /api/village/umbilical/reactor", s.requireOperator(s.handleUmbilicalReactor))
+		// Liveness of the engine's interval goroutines (ticker_health.go) — is
+		// each cadence driver still firing, or did one silently die/wedge?
+		mux.HandleFunc("GET /api/village/umbilical/ticker-health", s.requireOperator(s.handleUmbilicalTickerHealth))
 		// Recent non-2xx responses the engine returned (errorlog.go) — remote
 		// visibility into client-facing failures without SSH to the box.
 		mux.HandleFunc("GET /api/village/umbilical/errors", s.requireOperator(s.handleUmbilicalErrors))

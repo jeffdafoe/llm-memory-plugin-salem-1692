@@ -259,3 +259,47 @@ func parseActionsLimit(raw string) int {
 	}
 	return n
 }
+
+// TickerHealthEntryDTO is one interval goroutine's liveness on the wire.
+type TickerHealthEntryDTO struct {
+	Name     string    `json:"name"`
+	Count    uint64    `json:"count"`
+	LastFire time.Time `json:"last_fire"`
+}
+
+// UmbilicalTickerHealthDTO is the GET /api/village/umbilical/ticker-health
+// response: per-interval-goroutine last-fire + cumulative fire count, sorted by
+// name. The signal: a ticker goroutine that died or wedged stops beating, so a
+// LastFire that's stale relative to that ticker's known cadence (or a Count that
+// stops advancing across two polls) flags a silently-stopped cadence driver.
+// `now` is the server's wall-clock at response time so the operator computes
+// staleness without assuming clock alignment. The reactor evaluator is included
+// for a complete view even though its liveness is also inferable from the
+// telemetry-ring flow; the cascade-package internal tickers (atmosphere,
+// consolidation, …) are NOT here — they fold into the separate cascade-health
+// work.
+type UmbilicalTickerHealthDTO struct {
+	ContractVersion int                    `json:"contract_version"`
+	Now             time.Time              `json:"now"`
+	Tickers         []TickerHealthEntryDTO `json:"tickers"`
+}
+
+// handleUmbilicalTickerHealth serves the per-ticker liveness view off the
+// world's TickerHealth registry (its own mutex — safe to read off the world
+// goroutine). Read-only, like the other umbilical read routes.
+func (s *Server) handleUmbilicalTickerHealth(w http.ResponseWriter, _ *http.Request) {
+	entries := s.world.TickerHealthSnapshot()
+	out := UmbilicalTickerHealthDTO{
+		ContractVersion: ContractVersion,
+		Now:             time.Now().UTC(),
+		Tickers:         make([]TickerHealthEntryDTO, 0, len(entries)),
+	}
+	for _, e := range entries {
+		out.Tickers = append(out.Tickers, TickerHealthEntryDTO{
+			Name:     e.Name,
+			Count:    e.Count,
+			LastFire: e.LastFire,
+		})
+	}
+	writeJSON(w, out)
+}
