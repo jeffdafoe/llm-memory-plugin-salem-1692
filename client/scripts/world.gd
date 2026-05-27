@@ -165,6 +165,7 @@ func reset_world_state() -> void:
             container.queue_free()
     placed_npcs.clear()
     _pending_npcs.clear()
+    _failed_sheets.clear()
     _objects_loaded = false
     # ZBBS-HOME-210: clear the world_ready latches so the curtain
     # re-engages on the resync rebuild and fades when objects are
@@ -193,6 +194,10 @@ func _check_world_ready() -> void:
 # one texture.
 var placed_npcs: Dictionary = {}    # id -> Node2D (sprite container)
 var _npc_sheets: Dictionary = {}    # sheet_path -> ImageTexture
+var _failed_sheets: Dictionary = {} # sheet_path -> true; downloads/decodes that
+                                    # permanently failed. _render_pending_npcs
+                                    # treats these as resolved so one bad sheet
+                                    # can't wedge the pending list (and world_ready).
 var _pending_npcs: Array = []       # NPC dicts whose sheet is still downloading
 
 func _load_npcs() -> void:
@@ -594,10 +599,19 @@ func _on_npc_sheet_downloaded(result: int, response_code: int, _headers: PackedS
     http.queue_free()
     if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
         push_warning("NPC sheet download failed: " + sheet_path + " code=" + str(response_code))
+        # Mark the sheet failed and re-drain. Without this the NPCs waiting on
+        # this sheet stay in _pending_npcs forever → _npcs_render_complete never
+        # flips → world_ready never emits → the login curtain never lifts. One
+        # 404 must not wedge the whole client; the affected NPCs just render
+        # without a sprite.
+        _failed_sheets[sheet_path] = true
+        _render_pending_npcs()
         return
     var image = Image.new()
     if image.load_png_from_buffer(body) != OK:
         push_warning("NPC sheet decode failed: " + sheet_path)
+        _failed_sheets[sheet_path] = true
+        _render_pending_npcs()
         return
     _npc_sheets[sheet_path] = ImageTexture.create_from_image(image)
     # Render everyone whose sheet is now ready.
@@ -613,7 +627,12 @@ func _render_pending_npcs() -> void:
             continue
         var sheet_path: String = sprite.get("sheet", "")
         if not _npc_sheets.has(sheet_path):
-            still_pending.append(npc)
+            # Keep waiting only while the sheet is still in flight. A sheet in
+            # _failed_sheets resolved (badly) — drop the NPC from pending so the
+            # list can drain and world_ready can fire; _render_npc no-ops on a
+            # missing sheet, so the NPC simply renders without a sprite.
+            if not _failed_sheets.has(sheet_path):
+                still_pending.append(npc)
             continue
         _render_npc(npc)
     _pending_npcs = still_pending
