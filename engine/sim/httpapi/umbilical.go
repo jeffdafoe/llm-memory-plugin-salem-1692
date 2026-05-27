@@ -336,7 +336,7 @@ func (s *Server) umbilicalRoutes() []umbilicalRoute {
 		{http.MethodGet, umbilicalBasePath + "/telemetry/summary", "Rolled-up telemetry rates: counts by kind / terminal status / LLM error class, plus mean and p95 tick duration.", false, s.handleUmbilicalTelemetrySummary},
 		{http.MethodGet, umbilicalBasePath + "/state", "Coarse engine introspection: phase/tick, in-flight tick count, and per-table entity counts off the published snapshot.", false, s.handleUmbilicalState},
 		{http.MethodGet, umbilicalBasePath + "/actions", "Tail of the committed action log (behavioral trail). Query params: actor, limit.", false, s.handleUmbilicalActions},
-		{http.MethodGet, umbilicalBasePath + "/agent", "One actor's full live picture: needs, position, inventory, rest windows, reactor/warrant state, recent ticks and actions. Query param: id (required).", false, s.handleUmbilicalAgent},
+		{http.MethodGet, umbilicalBasePath + "/agent", "One actor's full live picture: needs, position, inventory, rest windows, reactor/warrant state, in-flight move target, recent ticks and actions. Query param: id (required).", false, s.handleUmbilicalAgent},
 		{http.MethodGet, umbilicalBasePath + "/reactor", "Tick-eligibility across all actors: warranted / due-now / in-flight / idle counts plus the queued-actor list.", false, s.handleUmbilicalReactor},
 		{http.MethodGet, umbilicalBasePath + "/ticker-health", "Per-interval-goroutine liveness: last-fire time and cumulative fire count for each cadence driver.", false, s.handleUmbilicalTickerHealth},
 		{http.MethodGet, umbilicalBasePath + "/errors", "Recent non-2xx responses the engine returned (server-observed) for remote visibility into client-facing failures.", false, s.handleUmbilicalErrors},

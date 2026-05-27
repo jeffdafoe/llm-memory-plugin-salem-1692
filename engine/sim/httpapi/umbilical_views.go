@@ -128,6 +128,18 @@ type UmbilicalAgentDTO struct {
 	TickInFlight       bool       `json:"tick_in_flight"`
 	TickAttemptID      string     `json:"tick_attempt_id,omitempty"`
 
+	// In-flight movement target — empty/false when the actor isn't moving. For
+	// diagnosing stuck or off-grid walks: MoveTargetTile is the resolved goal
+	// tile (grid-free — door tile for structure_enter, loiter pin for
+	// structure_visit, exact tile for position), so an actor pathing to an
+	// off-grid tile shows up directly here.
+	Moving              bool   `json:"moving"`
+	MoveDestKind        string `json:"move_dest_kind,omitempty"`
+	MoveDestStructureID string `json:"move_dest_structure_id,omitempty"`
+	MoveTargetTileX     *int   `json:"move_target_tile_x,omitempty"`
+	MoveTargetTileY     *int   `json:"move_target_tile_y,omitempty"`
+	MoveAttemptID       uint64 `json:"move_attempt_id,omitempty"`
+
 	RecentTicks   []TelemetryRecordDTO `json:"recent_ticks"`
 	RecentActions []ActionLogEntryDTO  `json:"recent_actions"`
 }
@@ -191,6 +203,19 @@ func (s *Server) handleUmbilicalAgent(w http.ResponseWriter, r *http.Request) {
 			dto.Inventory = make(map[string]int, len(a.Inventory))
 			for k, v := range a.Inventory {
 				dto.Inventory[string(k)] = v
+			}
+		}
+		if a.MoveIntent != nil {
+			dto.Moving = true
+			dto.MoveDestKind = string(a.MoveIntent.Destination.Kind)
+			if a.MoveIntent.Destination.StructureID != nil {
+				dto.MoveDestStructureID = string(*a.MoveIntent.Destination.StructureID)
+			}
+			dto.MoveAttemptID = uint64(a.MoveIntent.AttemptID)
+			if tgt, ok := sim.ResolveMoveTargetTile(world, a); ok {
+				tx, ty := tgt.X, tgt.Y
+				dto.MoveTargetTileX = &tx
+				dto.MoveTargetTileY = &ty
 			}
 		}
 		return dto, nil

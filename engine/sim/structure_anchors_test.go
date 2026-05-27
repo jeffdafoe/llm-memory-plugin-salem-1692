@@ -191,6 +191,74 @@ func TestEffectiveLoiterTile(t *testing.T) {
 	}
 }
 
+// TestResolveMoveTargetTile covers the grid-free move-target resolver behind
+// the umbilical /agent view: a position destination resolves to the exact
+// tile, structure_visit to the loiter pin, structure_enter to the door tile,
+// and a non-moving (or nil) actor resolves to ok=false.
+func TestResolveMoveTargetTile(t *testing.T) {
+	aw := newAnchorWorld()
+	aw.handles.Assets.Seed(map[sim.AssetID]*sim.Asset{
+		"house":  houseAsset(),
+		"doored": {ID: "doored", Category: "structure", DoorOffsetX: intp(1), DoorOffsetY: intp(4)},
+	})
+	aw.handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
+		"inn":  {ID: "inn", AssetID: "house", Pos: sim.WorldPos{X: 320, Y: 320}, LoiterOffsetX: intp(0), LoiterOffsetY: intp(5)},
+		"hall": {ID: "hall", AssetID: "doored", Pos: sim.WorldPos{X: 320, Y: 320}},
+	})
+	aw.handles.Structures.Seed(map[sim.StructureID]*sim.Structure{
+		"inn":  {ID: "inn", DisplayName: "Inn"},
+		"hall": {ID: "hall", DisplayName: "Hall"},
+	})
+	aw.handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
+		"walker": {ID: "walker", DisplayName: "Walker", Pos: sim.TilePos{X: sim.PadX, Y: sim.PadY}},
+	})
+	w, cancel := aw.load(t)
+	defer cancel()
+
+	type result struct {
+		pos sim.TilePos
+		ok  bool
+	}
+	// resolve sets the walker's MoveIntent (nil clears it) then resolves the
+	// target on the world goroutine.
+	resolve := func(mi *sim.MoveIntent) result {
+		res, _ := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+			a := world.Actors["walker"]
+			a.MoveIntent = mi
+			pos, ok := sim.ResolveMoveTargetTile(world, a)
+			return result{pos: pos, ok: ok}, nil
+		}})
+		return res.(result)
+	}
+
+	if r := resolve(nil); r.ok {
+		t.Errorf("no MoveIntent: got ok=true (%+v), want ok=false", r.pos)
+	}
+
+	posTarget := sim.TilePos{X: sim.PadX + 3, Y: sim.PadY + 7}
+	if r := resolve(&sim.MoveIntent{Destination: sim.NewPositionDestination(posTarget)}); !r.ok || r.pos != posTarget {
+		t.Errorf("position dest: got %+v ok=%v, want %+v ok=true", r.pos, r.ok, posTarget)
+	}
+
+	wantVisit := sim.TilePos{X: anchorTile.X, Y: anchorTile.Y + 5}
+	if r := resolve(&sim.MoveIntent{Destination: sim.NewStructureVisitDestination("inn")}); !r.ok || r.pos != wantVisit {
+		t.Errorf("structure_visit: got %+v ok=%v, want %+v ok=true", r.pos, r.ok, wantVisit)
+	}
+
+	wantEnter := sim.TilePos{X: anchorTile.X + 1, Y: anchorTile.Y + 4}
+	if r := resolve(&sim.MoveIntent{Destination: sim.NewStructureEnterDestination("hall")}); !r.ok || r.pos != wantEnter {
+		t.Errorf("structure_enter: got %+v ok=%v, want %+v ok=true", r.pos, r.ok, wantEnter)
+	}
+
+	res, _ := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		pos, ok := sim.ResolveMoveTargetTile(world, nil)
+		return result{pos: pos, ok: ok}, nil
+	}})
+	if res.(result).ok {
+		t.Error("nil actor: got ok=true, want ok=false")
+	}
+}
+
 // seedSlotWorld seeds a world with one structure ("inn") whose loiter pin
 // sits at anchorTile + (0, 5), plus the supplied actors. Returns the
 // running world and the resolved pin position.
