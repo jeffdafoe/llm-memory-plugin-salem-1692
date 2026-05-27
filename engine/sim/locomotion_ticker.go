@@ -412,6 +412,19 @@ func setActorInsideStructure(w *World, actor *Actor, structureID StructureID) {
 		w.outdoorActors[actor.ID] = struct{}{}
 	}
 
+	// A room belongs to exactly one structure, so an InsideRoomID set while the
+	// actor was in the structure it just left is now dangling. Clear it unless
+	// the room belongs to the structure being entered; a stale cross-structure
+	// room ref is the room/structure mismatch that validateActorStructureRefs
+	// treats as substrate corruption and hard-fails the next load on.
+	if actor.InsideRoomID != 0 {
+		if structureID == "" {
+			actor.InsideRoomID = 0
+		} else if room := findRoom(w, actor.InsideRoomID); room == nil || room.StructureID != structureID {
+			actor.InsideRoomID = 0
+		}
+	}
+
 	// Occupancy: the headcount of both the structure left and the one entered
 	// just changed, so recompute their derived occupied/unoccupied visual
 	// state. Outdoors ("") has no occupancy. No-op for structures whose asset
