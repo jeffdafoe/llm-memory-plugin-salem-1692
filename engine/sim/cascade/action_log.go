@@ -262,6 +262,7 @@ func runActionLogSweep(ctx context.Context, w *sim.World) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			w.BeatTicker("action_log")
 			runOneActionLogSweep(ctx, w, retention)
 		}
 	}

@@ -79,6 +79,7 @@ func runVisitorTicker(ctx context.Context, w *sim.World) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			w.BeatTicker("visitor")
 			runOneVisitorTick(ctx, w, r)
 		}
 	}
