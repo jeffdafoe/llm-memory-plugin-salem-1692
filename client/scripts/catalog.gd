@@ -79,14 +79,20 @@ func _load_catalog() -> void:
 
     http.request_completed.connect(_on_catalog_loaded.bind(http))
     # v2 serves the asset catalog at /api/village/assets (v1 used /api/assets).
+    # v1's /api/assets was unauthenticated; the v2 route sits behind requireAuth,
+    # so the Bearer header is mandatory here just like the sibling catalog loads.
     # The AssetDTO is snake_case; _parse_catalog already reads snake_case (with
     # camelCase fallbacks) so no field changes are needed here.
-    var error = http.request(api_base + "/api/village/assets")
+    var headers: PackedStringArray = Auth.auth_headers(false)
+    var error = http.request(api_base + "/api/village/assets", headers)
     if error != OK:
         push_error("Failed to request asset catalog: " + str(error))
 
 func _on_catalog_loaded(result: int, response_code: int, headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest) -> void:
     http.queue_free()
+
+    if not Auth.check_response(response_code):
+        return
 
     if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
         push_error("Catalog request failed: result=" + str(result) + " code=" + str(response_code))
