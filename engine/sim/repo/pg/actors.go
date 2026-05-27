@@ -549,6 +549,7 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 		a := &sim.Actor{
 			ID:                   sim.ActorID(id),
 			DisplayName:          displayName,
+			Kind:                 sim.ClassifyActorKind(deref(loginUsername), deref(llmMemoryAgent)),
 			Pos:                  sim.TilePos{X: currentX, Y: currentY},
 			InsideStructureID:    sim.StructureID(deref(insideStructureID)),
 			CurrentHuddleID:      sim.HuddleID(deref(currentHuddleID)),
