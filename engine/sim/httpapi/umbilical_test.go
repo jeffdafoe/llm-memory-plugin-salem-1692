@@ -95,6 +95,43 @@ func TestUmbilical_Telemetry(t *testing.T) {
 	}
 }
 
+func TestUmbilical_TickerHealth(t *testing.T) {
+	h := umbilicalServer(t, operatorPerms, telemetry.New(8))
+
+	rec := req(t, h, "/api/village/umbilical/ticker-health", "tok")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("ticker-health = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var out UmbilicalTickerHealthDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.ContractVersion != ContractVersion {
+		t.Errorf("contract_version = %d, want %d", out.ContractVersion, ContractVersion)
+	}
+	if out.Now.IsZero() {
+		t.Error("now is zero, want server wall-clock")
+	}
+	// The seeded world doesn't run tickers, so Tickers is an empty-but-present
+	// array (the registry-beat→entry path is covered in sim/ticker_health_test.go).
+	if out.Tickers == nil {
+		t.Error("tickers is nil, want a (possibly empty) array")
+	}
+
+	// Gating: non-operator 403, no token 401, and 404 when the umbilical is off.
+	hNonOp := umbilicalServer(t, nil, telemetry.New(8))
+	if rec := req(t, hNonOp, "/api/village/umbilical/ticker-health", "tok"); rec.Code != http.StatusForbidden {
+		t.Errorf("non-operator = %d, want 403", rec.Code)
+	}
+	if rec := req(t, hNonOp, "/api/village/umbilical/ticker-health", ""); rec.Code != http.StatusUnauthorized {
+		t.Errorf("no token = %d, want 401", rec.Code)
+	}
+	hOff := NewServer(seededWorld(t), permAuth{operatorPerms}).Handler() // no SetTelemetry
+	if rec := req(t, hOff, "/api/village/umbilical/ticker-health", "tok"); rec.Code != http.StatusNotFound {
+		t.Errorf("umbilical off = %d, want 404", rec.Code)
+	}
+}
+
 func TestUmbilical_Actions(t *testing.T) {
 	w := seededWorld(t)
 	t0 := time.Date(2026, 5, 24, 9, 0, 0, 0, time.UTC)

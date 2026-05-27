@@ -446,6 +446,7 @@ func RunRotationTicker(ctx context.Context, w *World, scope RotationScope) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			w.beatTicker("rotation")
 			checkAndRotate(ctx, w, r, scope)
 		}
 	}

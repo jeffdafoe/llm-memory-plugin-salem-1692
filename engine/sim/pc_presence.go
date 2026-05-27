@@ -116,6 +116,7 @@ func RunPCPresenceSweep(ctx context.Context, w *World) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			w.beatTicker("pc_presence")
 			now := time.Now().UTC()
 			if _, err := w.SendContext(ctx, SweepStalePCPresence(now)); err != nil && ctx.Err() == nil {
 				log.Printf("sim/pc_presence: stale-PC sweep failed: %v", err)

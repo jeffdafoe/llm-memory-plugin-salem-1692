@@ -394,6 +394,7 @@ func RunSleepTicker(ctx context.Context, w *World) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			w.beatTicker("sleep")
 			runSleepTickIteration(ctx, w)
 		}
 	}

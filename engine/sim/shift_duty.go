@@ -276,6 +276,7 @@ func RunShiftTicker(ctx context.Context, w *World) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			w.beatTicker("shift")
 			if _, err := w.SendContext(ctx, ShiftTick(time.Now().UTC())); err != nil {
 				if ctx.Err() == nil {
 					log.Printf("sim/shift_duty: tick failed: %v", err)

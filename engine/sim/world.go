@@ -721,6 +721,14 @@ type World struct {
 	// world goroutine. See events.go for the contract.
 	subscribers []EventSubscriber
 
+	// tickerHealth records last-fire + count for each interval goroutine
+	// started by startTickers (the umbilical's "are the cadence drivers
+	// alive" view). Written from the ticker goroutines (not the world
+	// goroutine), so the registry carries its own mutex. Always non-nil for
+	// a NewWorld-built world; beatTicker is nil-safe regardless. See
+	// ticker_health.go.
+	tickerHealth *TickerHealth
+
 	// eventSeq is the monotonic per-run event counter. emit increments it
 	// and assigns the value as the new event's EventID. World-goroutine-
 	// only — emit runs exclusively inside Command.Fn, so no atomic is
@@ -792,6 +800,7 @@ func NewWorld(repo Repository) *World {
 		cmds:                 make(chan Command, 256),
 		tickAdmission:        alwaysAdmit{},
 		repo:                 repo,
+		tickerHealth:         newTickerHealth(),
 	}
 	w.republish()
 	return w

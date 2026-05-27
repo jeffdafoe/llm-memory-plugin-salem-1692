@@ -278,6 +278,7 @@ func RunRoomSweep(ctx context.Context, w *World) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+			w.beatTicker("room_sweep")
 			// One instant for the whole sweep: renew grants in their pre-
 			// expiry window, then expire against the SAME now, so a grant
 			// can't slip from "not yet due for rebook" to "expired" between
