@@ -170,32 +170,21 @@ func (s *Server) Handler() http.Handler {
 	// Umbilical debug/control surface — operator-gated (requireOperator =
 	// requireAuth + plugins/administer). Registered ONLY when a telemetry ring
 	// is attached (SetTelemetry), which cmd/engine does only under
-	// UMBILICAL_ENABLED. Off by default → the routes don't exist. See umbilical.go.
+	// UMBILICAL_ENABLED. Off by default → the routes don't exist.
+	//
+	// Registration is driven by the umbilicalRoutes() descriptor table (the
+	// single source of truth that also backs the self-describing manifest at
+	// GET /api/village/umbilical — see umbilical.go). Read routes are always
+	// armed when the umbilical is on; control (world-mutating) routes only when
+	// control is ALSO enabled (UMBILICAL_CONTROL_ENABLED), so read-only is the
+	// default even with the umbilical on. Every route is requireOperator-gated;
+	// the control routes are additionally audited (see umbilical_control.go).
 	if s.telemetry != nil {
-		mux.HandleFunc("GET /api/village/umbilical/telemetry", s.requireOperator(s.handleUmbilicalTelemetry))
-		mux.HandleFunc("GET /api/village/umbilical/telemetry/summary", s.requireOperator(s.handleUmbilicalTelemetrySummary))
-		mux.HandleFunc("GET /api/village/umbilical/state", s.requireOperator(s.handleUmbilicalState))
-		mux.HandleFunc("GET /api/village/umbilical/actions", s.requireOperator(s.handleUmbilicalActions))
-		mux.HandleFunc("GET /api/village/umbilical/agent", s.requireOperator(s.handleUmbilicalAgent))
-		mux.HandleFunc("GET /api/village/umbilical/reactor", s.requireOperator(s.handleUmbilicalReactor))
-		// Liveness of the engine's interval goroutines (ticker_health.go) — is
-		// each cadence driver still firing, or did one silently die/wedge?
-		mux.HandleFunc("GET /api/village/umbilical/ticker-health", s.requireOperator(s.handleUmbilicalTickerHealth))
-		// Recent non-2xx responses the engine returned (errorlog.go) — remote
-		// visibility into client-facing failures without SSH to the box.
-		mux.HandleFunc("GET /api/village/umbilical/errors", s.requireOperator(s.handleUmbilicalErrors))
-		// Client-reported (untrusted) error feed — pull-only, surfaces here only.
-		mux.HandleFunc("GET /api/village/umbilical/client-errors", s.requireOperator(s.handleUmbilicalClientErrors))
-		// Control (world-mutating) routes — armed only when control is ALSO
-		// enabled (UMBILICAL_CONTROL_ENABLED). Read-only is the default even with
-		// the umbilical on. requireOperator-gated + audited. See umbilical_control.go.
-		if s.controlEnabled {
-			mux.HandleFunc("POST /api/village/umbilical/nudge", s.requireOperator(s.handleUmbilicalNudge))
-			mux.HandleFunc("POST /api/village/umbilical/phase", s.requireOperator(s.handleUmbilicalPhase))
-			mux.HandleFunc("POST /api/village/umbilical/settle", s.requireOperator(s.handleUmbilicalSettle))
-			mux.HandleFunc("POST /api/village/umbilical/rotate", s.requireOperator(s.handleUmbilicalRotate))
-			mux.HandleFunc("POST /api/village/umbilical/settings/need-threshold", s.requireOperator(s.handleUmbilicalNeedThreshold))
-			mux.HandleFunc("POST /api/village/umbilical/grant", s.requireOperator(s.handleUmbilicalGrant))
+		for _, rt := range s.umbilicalRoutes() {
+			if rt.control && !s.controlEnabled {
+				continue
+			}
+			mux.HandleFunc(rt.method+" "+rt.path, s.requireOperator(rt.handler))
 		}
 	}
 	// Wrap the whole mux so every non-2xx response (incl. no-route 404s and auth

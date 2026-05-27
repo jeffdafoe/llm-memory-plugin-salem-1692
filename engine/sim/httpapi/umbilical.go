@@ -303,3 +303,99 @@ func (s *Server) handleUmbilicalTickerHealth(w http.ResponseWriter, _ *http.Requ
 	}
 	writeJSON(w, out)
 }
+
+// umbilicalBasePath is the umbilical route prefix. The manifest lives at exactly
+// this path; every other umbilical route hangs off it (basePath + "/telemetry"
+// etc.).
+const umbilicalBasePath = "/api/village/umbilical"
+
+// umbilicalRoute describes one umbilical route. It is the single source of truth
+// for the surface: Server.Handler iterates the table to register handlers, and
+// handleUmbilicalManifest renders the same table — so a route cannot be added
+// without it appearing in the manifest, and the manifest cannot claim a route
+// that isn't registered. (This is deliberately unlike the old hand-written help
+// blobs — e.g. the WarrantKind const list — which silently drifted.)
+type umbilicalRoute struct {
+	method  string
+	path    string
+	summary string
+	control bool // true = world-mutating; armed only when controlEnabled
+	handler http.HandlerFunc
+}
+
+// umbilicalRoutes returns the umbilical route table. The handler fields are bound
+// method values on s, so this must be called on the live Server. Order here is
+// the order routes register and the order the manifest lists them: the manifest
+// itself first, then the read surface, then the control whitelist.
+func (s *Server) umbilicalRoutes() []umbilicalRoute {
+	return []umbilicalRoute{
+		{http.MethodGet, umbilicalBasePath, "Self-describing manifest of the currently-armed umbilical routes (this endpoint).", false, s.handleUmbilicalManifest},
+
+		// Read surface — always armed when the umbilical is enabled.
+		{http.MethodGet, umbilicalBasePath + "/telemetry", "Dump the tick-telemetry ring buffer (redacted per-tick lifecycle records, oldest first) with retention accounting.", false, s.handleUmbilicalTelemetry},
+		{http.MethodGet, umbilicalBasePath + "/telemetry/summary", "Rolled-up telemetry rates: counts by kind / terminal status / LLM error class, plus mean and p95 tick duration.", false, s.handleUmbilicalTelemetrySummary},
+		{http.MethodGet, umbilicalBasePath + "/state", "Coarse engine introspection: phase/tick, in-flight tick count, and per-table entity counts off the published snapshot.", false, s.handleUmbilicalState},
+		{http.MethodGet, umbilicalBasePath + "/actions", "Tail of the committed action log (behavioral trail). Query params: actor, limit.", false, s.handleUmbilicalActions},
+		{http.MethodGet, umbilicalBasePath + "/agent", "One actor's full live picture: needs, position, inventory, rest windows, reactor/warrant state, recent ticks and actions. Query param: id (required).", false, s.handleUmbilicalAgent},
+		{http.MethodGet, umbilicalBasePath + "/reactor", "Tick-eligibility across all actors: warranted / due-now / in-flight / idle counts plus the queued-actor list.", false, s.handleUmbilicalReactor},
+		{http.MethodGet, umbilicalBasePath + "/ticker-health", "Per-interval-goroutine liveness: last-fire time and cumulative fire count for each cadence driver.", false, s.handleUmbilicalTickerHealth},
+		{http.MethodGet, umbilicalBasePath + "/errors", "Recent non-2xx responses the engine returned (server-observed) for remote visibility into client-facing failures.", false, s.handleUmbilicalErrors},
+		{http.MethodGet, umbilicalBasePath + "/client-errors", "Client-reported (untrusted) runtime-error feed beaconed by the Godot client.", false, s.handleUmbilicalClientErrors},
+
+		// Control whitelist — world-mutating; armed only when control is also enabled.
+		{http.MethodPost, umbilicalBasePath + "/nudge", "Force a reactor tick for one actor, optionally injecting an in-world felt-impulse directive. Body: {actor_id, message?}.", true, s.handleUmbilicalNudge},
+		{http.MethodPost, umbilicalBasePath + "/phase", "Force a day/night phase transition. Body: {phase}.", true, s.handleUmbilicalPhase},
+		{http.MethodPost, umbilicalBasePath + "/settle", "Clear one actor's pending warrant cycle (stop a spiraling NPC). Body: {actor_id}.", true, s.handleUmbilicalSettle},
+		{http.MethodPost, umbilicalBasePath + "/rotate", "Force a daily-rotation pass. Body: {tag?}.", true, s.handleUmbilicalRotate},
+		{http.MethodPost, umbilicalBasePath + "/settings/need-threshold", "Live-tune one need's red-line threshold (ephemeral; resets on restart). Body: {need, value}.", true, s.handleUmbilicalNeedThreshold},
+		{http.MethodPost, umbilicalBasePath + "/grant", "Give or claw back coins/items to/from any actor. Body: {actor_id, coins?, items?}.", true, s.handleUmbilicalGrant},
+	}
+}
+
+// UmbilicalRouteDTO is one route on the manifest wire.
+type UmbilicalRouteDTO struct {
+	Path    string `json:"path"`
+	Method  string `json:"method"`
+	Summary string `json:"summary"`
+	Control bool   `json:"control"`
+}
+
+// UmbilicalManifestDTO is the GET /api/village/umbilical response: the in-band,
+// runtime-aware description of the surface. The thing a static codebase note
+// can't report is exactly what this carries — whether control is armed on THIS
+// deploy and which routes are therefore actually live. `enabled` is always true
+// in a served response (the route only registers when the umbilical is on; when
+// off the operator gets a 404, which is itself the answer).
+type UmbilicalManifestDTO struct {
+	ContractVersion int                 `json:"contract_version"`
+	Enabled         bool                `json:"enabled"`
+	ControlEnabled  bool                `json:"control_enabled"`
+	Routes          []UmbilicalRouteDTO `json:"routes"`
+}
+
+// handleUmbilicalManifest renders the route table, filtered to what is actually
+// armed right now: read routes always (the umbilical is on or this handler
+// wouldn't be registered), control routes only when controlEnabled — the same
+// filter Server.Handler applies at registration, so the manifest matches the
+// live mux exactly.
+func (s *Server) handleUmbilicalManifest(w http.ResponseWriter, _ *http.Request) {
+	routes := s.umbilicalRoutes()
+	out := UmbilicalManifestDTO{
+		ContractVersion: ContractVersion,
+		Enabled:         true,
+		ControlEnabled:  s.controlEnabled,
+		Routes:          make([]UmbilicalRouteDTO, 0, len(routes)),
+	}
+	for _, rt := range routes {
+		if rt.control && !s.controlEnabled {
+			continue
+		}
+		out.Routes = append(out.Routes, UmbilicalRouteDTO{
+			Path:    rt.path,
+			Method:  rt.method,
+			Summary: rt.summary,
+			Control: rt.control,
+		})
+	}
+	writeJSON(w, out)
+}
