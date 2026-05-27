@@ -429,6 +429,7 @@ SELECT seller_id, item_kind, buyer_id, offered_amount, qty,
           FROM pay_ledger
          WHERE state = 'accepted'
            AND created_at >= $1
+           AND item_kind IS NOT NULL
        ) t
  WHERE rn <= $2
  ORDER BY seller_id, item_kind, created_at ASC`
@@ -453,6 +454,19 @@ SELECT seller_id, item_kind, buyer_id, offered_amount, qty,
 // yields cardinality=NULL, which Go scans into 0; the cascade-side
 // `consumers < 1 ? 1` normalization in SeedPriceBook's caller floors
 // it back to 1. Solo orders therefore round-trip cleanly.
+//
+// item_kind IS NOT NULL is enforced in the query. A NULL item_kind is
+// NOT corruption — it's a legitimate coin-only pay (tip / gift / pure
+// coin transfer); the column is nullable by design (ZBBS-HOME-260) and
+// v1 logged such payments with no item. A coin-only pay has no item, so
+// it can't form a valid PriceBookKey (Item is the partition key) and was
+// never meant to seed a price. We exclude these rows at the source
+// rather than "cleaning" them (they're valid transaction history) or
+// scanning into a sql.NullString and discarding them in Go. The bug this
+// fixes: itemKind below scans into a non-nullable string, so one NULL
+// row failed the whole scan and aborted the price-book seed at LoadWorld
+// — leaving EVERY merchant with empty price history, not just skipping
+// that row.
 func (r *OrdersRepo) LoadRecentPrices(ctx context.Context, since time.Time, perKeyCap int) ([]sim.PriceBookSeedRecord, error) {
 	if perKeyCap <= 0 {
 		return nil, fmt.Errorf("pg orders LoadRecentPrices: perKeyCap must be > 0, got %d", perKeyCap)
