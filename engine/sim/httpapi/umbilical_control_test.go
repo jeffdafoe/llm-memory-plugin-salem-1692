@@ -283,11 +283,83 @@ func TestUmbilicalNeedThreshold(t *testing.T) {
 	}
 }
 
+// TestUmbilicalResetNeeds covers the /reset-needs control route against the
+// seeded world (hannah = NPC, bram = PC): single-actor reset, all-reset, and the
+// status mappings. Setting needs to 0 is the "pump everyone back to healthy"
+// lever; this pins the HTTP contract + that the mutation lands on the live actor.
+func TestUmbilicalResetNeeds(t *testing.T) {
+	srv, h := controlServer(t, operatorPerms)
+	// Seed maxed needs on both actors so a reset is observable.
+	_, err := srv.world.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["hannah"].Needs = map[sim.NeedKey]int{"hunger": sim.NeedMax, "thirst": sim.NeedMax, "tiredness": sim.NeedMax}
+		world.Actors["bram"].Needs = map[sim.NeedKey]int{"hunger": 10}
+		return nil, nil
+	}})
+	if err != nil {
+		t.Fatalf("seed needs: %v", err)
+	}
+
+	// Single-actor reset: hannah zeroed, bram untouched.
+	rec := postReq(t, h, "/api/village/umbilical/reset-needs", "tok", `{"actor_id":"hannah"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reset hannah = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var out umbilicalResetNeedsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Reset != 1 || len(out.Actors) != 1 || out.Actors[0].ID != "hannah" {
+		t.Fatalf("response = %+v, want 1 actor (hannah)", out)
+	}
+	for k, v := range out.Actors[0].Needs {
+		if v != 0 {
+			t.Errorf("hannah need %q = %d after reset, want 0", k, v)
+		}
+	}
+	// Confirm on the live actor, and that bram is untouched by a single reset.
+	res, _ := srv.world.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return [2]int{world.Actors["hannah"].Needs["hunger"], world.Actors["bram"].Needs["hunger"]}, nil
+	}})
+	if v, _ := res.([2]int); v[0] != 0 || v[1] != 10 {
+		t.Errorf("live needs after hannah-only reset = hannah.hunger=%d bram.hunger=%d, want 0/10", v[0], v[1])
+	}
+
+	// All-reset: bram zeroed too.
+	rec = postReq(t, h, "/api/village/umbilical/reset-needs", "tok", `{"all":true}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reset all = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode all: %v", err)
+	}
+	if out.Reset != 2 {
+		t.Errorf("reset all = %d actors, want 2", out.Reset)
+	}
+	res, _ = srv.world.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return world.Actors["bram"].Needs["hunger"], nil
+	}})
+	if b, _ := res.(int); b != 0 {
+		t.Errorf("bram hunger = %d after all-reset, want 0", b)
+	}
+
+	// Bad input: no target → 400; both targets → 400; unknown actor → 404.
+	if rec := postReq(t, h, "/api/village/umbilical/reset-needs", "tok", `{}`); rec.Code != http.StatusBadRequest {
+		t.Errorf("no target = %d, want 400", rec.Code)
+	}
+	if rec := postReq(t, h, "/api/village/umbilical/reset-needs", "tok", `{"actor_id":"hannah","all":true}`); rec.Code != http.StatusBadRequest {
+		t.Errorf("conflicting target = %d, want 400", rec.Code)
+	}
+	if rec := postReq(t, h, "/api/village/umbilical/reset-needs", "tok", `{"actor_id":"nobody"}`); rec.Code != http.StatusNotFound {
+		t.Errorf("unknown actor = %d, want 404", rec.Code)
+	}
+}
+
 func TestUmbilicalControl_NewRoutesGated(t *testing.T) {
 	paths := []string{
 		"/api/village/umbilical/settle",
 		"/api/village/umbilical/rotate",
 		"/api/village/umbilical/settings/need-threshold",
+		"/api/village/umbilical/reset-needs",
 	}
 	// Umbilical on but control NOT enabled → 404.
 	srv := NewServer(seededWorld(t), permAuth{operatorPerms})

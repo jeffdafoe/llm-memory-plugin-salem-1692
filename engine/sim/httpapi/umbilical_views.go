@@ -360,6 +360,89 @@ func (s *Server) handleUmbilicalReactor(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, dto)
 }
 
+// ---- Actor roster -------------------------------------------------------
+
+// UmbilicalActorRowDTO is one actor on the roster / reset views: just enough to
+// triage village health at a glance (who's starving/exhausted) and pick a
+// reset/nudge/settle target. Needs are read LIVE — they are deliberately NOT on
+// the published snapshot's client AgentDTO, so this is the only one-shot
+// "everyone's needs" view. Shared by /actors (list) and /reset-needs
+// (post-mutation echo).
+type UmbilicalActorRowDTO struct {
+	ID          string         `json:"id"`
+	DisplayName string         `json:"display_name"`
+	Kind        string         `json:"kind"`
+	State       string         `json:"state"`
+	Needs       map[string]int `json:"needs,omitempty"`
+	Coins       int            `json:"coins"`
+	TileX       int            `json:"tile_x"`
+	TileY       int            `json:"tile_y"`
+}
+
+// UmbilicalActorsDTO is the GET /api/village/umbilical/actors response: the full
+// actor roster (every actor, sorted by id) each with its live needs — the "who
+// needs a reset" companion to the /reset-needs control route.
+type UmbilicalActorsDTO struct {
+	ContractVersion int                    `json:"contract_version"`
+	Now             time.Time              `json:"now"`
+	Total           int                    `json:"total"`
+	Actors          []UmbilicalActorRowDTO `json:"actors"`
+}
+
+// actorRowDTO copies one live actor's roster fields into a value DTO. Must run on
+// the world goroutine (it reads an *Actor); no pointer escapes the closure. A
+// nil/empty Needs map yields an omitted needs field (the actor tracks no needs).
+func actorRowDTO(a *sim.Actor) UmbilicalActorRowDTO {
+	row := UmbilicalActorRowDTO{
+		ID:          string(a.ID),
+		DisplayName: a.DisplayName,
+		Kind:        actorKindString(a.Kind),
+		State:       string(a.State),
+		Coins:       a.Coins,
+		TileX:       a.Pos.X,
+		TileY:       a.Pos.Y,
+	}
+	if len(a.Needs) > 0 {
+		row.Needs = make(map[string]int, len(a.Needs))
+		for k, v := range a.Needs {
+			row.Needs[string(k)] = v
+		}
+	}
+	return row
+}
+
+// handleUmbilicalActors serves the full actor roster with live needs. Read via a
+// world command (needs aren't on the published snapshot), sorted by id for a
+// stable read. Pure read — mutates nothing.
+func (s *Server) handleUmbilicalActors(w http.ResponseWriter, r *http.Request) {
+	res, err := s.world.SendContext(r.Context(), sim.Command{Fn: func(world *sim.World) (any, error) {
+		dto := UmbilicalActorsDTO{
+			ContractVersion: ContractVersion,
+			Now:             time.Now().UTC(),
+			Actors:          make([]UmbilicalActorRowDTO, 0, len(world.Actors)),
+		}
+		for _, a := range world.Actors {
+			dto.Actors = append(dto.Actors, actorRowDTO(a))
+		}
+		dto.Total = len(dto.Actors)
+		sort.Slice(dto.Actors, func(i, j int) bool { return dto.Actors[i].ID < dto.Actors[j].ID })
+		return dto, nil
+	}})
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	dto, ok := res.(UmbilicalActorsDTO)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "unexpected actors result")
+		return
+	}
+	writeJSON(w, dto)
+}
+
 // clonePtrTime copies a *time.Time so the returned DTO never aliases a live
 // Actor's pointer (the command closure runs on the world goroutine; the DTO
 // crosses back to the HTTP goroutine).
