@@ -805,8 +805,9 @@ func TestLocomotionTicker_GoroutineDrivesMovement(t *testing.T) {
 		t.Fatalf("MoveActor: %v", err)
 	}
 
-	// Three tiles at a 200ms cadence — give it generous headroom.
-	deadline := time.After(3 * time.Second)
+	// Three tiles at the LocomotionTickInterval cadence — give it generous
+	// headroom (5s covers v1's 2/3-sec/tile + arming + scheduler jitter).
+	deadline := time.After(5 * time.Second)
 	for {
 		select {
 		case <-deadline:

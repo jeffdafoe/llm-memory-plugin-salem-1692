@@ -13,9 +13,9 @@ import (
 // RunLocomotionTicker advances every actor that has a MoveIntent one
 // tile per tick, on the same coalesced AfterFunc self-rearm shape as the
 // PR 2 reactor evaluator (see reactor_evaluator.go). Coalescing matters
-// at a 200ms cadence: a plain time.Ticker would backlog commands if the
-// world goroutine stalls; the self-rearm only schedules the next tick
-// after the current one's Fn returns.
+// at the sub-second cadence: a plain time.Ticker would backlog commands
+// if the world goroutine stalls; the self-rearm only schedules the next
+// tick after the current one's Fn returns.
 //
 // Per tick, for each actor with a MoveIntent that is NOT in an active
 // huddle (bilateral pause), the ticker RE-PLANS a path from the actor's
@@ -32,11 +32,31 @@ import (
 //                  └─> SendContext(evaluateLocomotionAndRearm(now))
 //                       └─> Fn: clear flag, run scan, re-arm
 
-// LocomotionTickInterval is the locomotion ticker cadence. 200ms gives
-// smooth visible movement at a modest per-actor cost. The PR 4 design
-// leaves it a const; moving it to WorldSettings is deferred until perf
-// tuning surfaces a reason.
-const LocomotionTickInterval = 200 * time.Millisecond
+// LocomotionTickInterval is the locomotion ticker cadence — and, because
+// the ticker advances ONE tile per tick at TileSize=32px, also fixes the
+// visible walk speed at TileSize/Interval. 2/3 of a second per tile = 1.5
+// tiles/sec = 48 world-pixels/sec, restoring v1's defaultNPCSpeed (v1
+// engine/npc_movement.go: defaultNPCSpeed = 48.0 px/s).
+//
+// PR 4 originally picked 200ms (160 px/s, ~3.33x v1) on architectural
+// symmetry with the reactor evaluator without back-checking against v1's
+// effective speed — the rewrite swapped from v1's "server emits a one-
+// shot path, client interpolates at server-set speed" model to v2's
+// "server ticks and emits one ActorMoved per tile" model, which ties
+// speed to cadence mechanically. The change went unnoticed because no
+// player was at the keyboard until first live boot tonight (2026-05-27),
+// when both PC and NPC walks read as much too fast (ZBBS-WORK-341). The
+// fix is to slow the cadence back to v1's effective pace; the client's
+// LOCOMOTION_TICK_SECONDS moves in lockstep so visual interpolation
+// stays aligned with engine arrival.
+//
+// Future: lifting per-actor speed into an Actor field (so children walk
+// faster than elders, mounted characters faster than walkers, etc.)
+// would require decoupling visible speed from tick cadence — either
+// fractional-tile-per-tick accumulators or a return to v1's emit-path-
+// once model. Out of scope for ZBBS-WORK-341; the const stays the
+// single tunable.
+const LocomotionTickInterval = 2 * time.Second / 3
 
 // DeadlockStuckThreshold is the per-MoveIntent stuck-tick budget
 // (ZBBS-WORK-340). Each tick that the mover soft-blocks AND the re-plan
@@ -47,12 +67,13 @@ const LocomotionTickInterval = 200 * time.Millisecond
 // umbilical /deadlocks view. The counter resets to 0 on any successful
 // one-tile step (whether direct or via re-plan).
 //
-// 5 ticks at LocomotionTickInterval = ~1s of wedge before the engine
-// reports it. Tight enough that a true deadlock (sleeping occupant in a
-// doorway, mutual block with no detour) surfaces fast to NPC behavior
-// trees and the operator surface; loose enough that a momentarily-
-// transient occupant gets the benefit of the doubt. Tune via live
-// /umbilical/deadlocks data if it turns out wrong.
+// 5 ticks at LocomotionTickInterval = ~3.3s of wedge before the engine
+// reports it (ZBBS-WORK-341 slowed the tick from 200ms to 666.67ms).
+// 3.3s is longer than ideal — players visibly watch the NPC stand
+// still — but tightening below ~2 ticks risks false-positives on
+// genuinely transient passers-by (someone walking through a corridor
+// for one tick). Reconsider once /umbilical/deadlocks data names the
+// shape of the real failures.
 const DeadlockStuckThreshold = 5
 
 // RunLocomotionTicker owns the locomotion ticker's periodic schedule.
