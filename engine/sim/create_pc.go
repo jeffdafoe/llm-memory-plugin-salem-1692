@@ -105,8 +105,24 @@ func CreatePC(loginUsername, characterName, spriteID string, now time.Time) Comm
 			// PC is still created — just outdoors and unlodged (they can rent via
 			// the normal flow). Mirrors v1's soft-fail starter seeding.
 			if lodgingID, ok := findLodgingStructure(w); ok {
-				if st := w.Structures[lodgingID]; st != nil {
-					actor.Pos = st.Position
+				// villageObjectForStructureOnly is the live anchor source —
+				// the Shared-Identity Bridge guarantees a lodging Structure's
+				// backing VillageObject exists, and vobj.Pos.Tile() reflects
+				// any editor structure-moves since load (which the dropped
+				// Structure.Position field could not, see ZBBS-WORK-342).
+				// Asset existence is irrelevant here — we only need the pixel
+				// anchor — so the asset-aware variant would over-couple a
+				// catalog gap into "PC spawned outdoors."
+				vobj, ok := villageObjectForStructureOnly(w, lodgingID)
+				if !ok {
+					// Bridge violation: a lodging Structure with no backing
+					// VillageObject. The bridge is supposed to be verified at
+					// deploy / load time; surface a loud signal so substrate
+					// drift doesn't silently degrade to "PC always outdoors."
+					log.Printf("sim: CreatePC: %s lodging structure %s has no backing VillageObject (Shared-Identity Bridge violation)", id, lodgingID)
+				}
+				if ok {
+					actor.Pos = vobj.Pos.Tile()
 					setActorInsideStructure(w, actor, lodgingID)
 					loc := w.Settings.Location
 					if loc == nil {

@@ -54,6 +54,28 @@ func villageObjectForStructure(w *World, structureID StructureID) (*VillageObjec
 	return vobj, asset, true
 }
 
+// villageObjectForStructureOnly resolves the backing VillageObject for a
+// structure WITHOUT validating the asset (ZBBS-WORK-342). Callers that
+// only need the pixel anchor — e.g. derive the padded-tile origin via
+// vobj.Pos.Tile() for lodging placement (create_pc.go) or SceneBound
+// origin (huddle_commands.go) — should use this rather than
+// villageObjectForStructure, so an asset-catalog gap does not cascade
+// into "PC spawned outdoors" or a wrong "no backing village object"
+// error. Shared-Identity Bridge guarantees the VillageObject side, not
+// the Asset side, so the asset gap is a meaningfully distinct substrate
+// failure that the few asset-needing callers (footprint stamping, door
+// resolution) should diagnose for themselves.
+//
+// MUST be called from inside a Command.Fn (reads w.VillageObjects).
+// Unexported by design.
+func villageObjectForStructureOnly(w *World, structureID StructureID) (*VillageObject, bool) {
+	vobj, ok := w.VillageObjects[VillageObjectID(structureID)]
+	if !ok {
+		return nil, false
+	}
+	return vobj, true
+}
+
 // computeLoiterTile resolves a structure's loiter pin — the gathering
 // CENTRE tile, not a stand-on tile. Resolution order matches v1's
 // effectiveLoiterTile (engine/village_objects.go):

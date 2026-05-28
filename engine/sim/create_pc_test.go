@@ -30,14 +30,24 @@ func newCreatePCWorld(t *testing.T, withLodging bool) *sim.World {
 		wd.Sprites = map[sim.SpriteID]*sim.Sprite{"sprite-1": {ID: "sprite-1", Name: "Woman A"}}
 		if withLodging {
 			wd.Structures["inn"] = &sim.Structure{
-				ID: "inn", DisplayName: "The Inn", Position: sim.TilePos{X: 8, Y: 8},
+				ID: "inn", DisplayName: "The Inn",
 				Rooms: []*sim.Room{
 					{ID: 1, StructureID: "inn", Kind: sim.RoomKindCommon, Name: "common"},
 					{ID: 2, StructureID: "inn", Kind: sim.RoomKindPrivate, Name: "bedroom_1"},
 				},
 			}
+			// The inn's pixel anchor is what CreatePC reads (via
+			// villageObjectForStructure → vobj.Pos.Tile()), since ZBBS-WORK-342
+			// dropped the redundant Structure.Position field. World pixel
+			// (256, 256) → padded tile (PadX+8, PadY+8) — far enough from the
+			// origin that any future arrived-at-loiter-pin assertion can
+			// distinguish "actor at the inn" from a zero-value default.
+			// "inn-asset" is also seeded so villageObjectForStructure's asset
+			// lookup succeeds.
+			wd.Assets["inn-asset"] = &sim.Asset{ID: "inn-asset", Category: "structure"}
 			wd.VillageObjects["inn"] = &sim.VillageObject{
 				ID: "inn", AssetID: "inn-asset", DisplayName: "The Inn", Tags: []string{"lodging"},
+				Pos: sim.WorldPos{X: 256, Y: 256},
 			}
 		}
 		return nil, nil

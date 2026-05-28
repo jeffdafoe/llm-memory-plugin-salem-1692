@@ -73,9 +73,9 @@ func TestStructuresRepo_LoadAll_HappyPath(t *testing.T) {
 	mock.MatchExpectationsInOrder(false)
 
 	mock.ExpectQuery(`FROM structure\b`).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "display_name", "position_x", "position_y", "tags", "leads_to_realm"}).
-			AddRow(strA, "The Crow's Foot", 5, 10, []string{"tavern", "lodging"}, "").
-			AddRow(strB, "Smithy", 8, 12, []string{}, ""))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "display_name", "tags", "leads_to_realm"}).
+			AddRow(strA, "The Crow's Foot", []string{"tavern", "lodging"}, "").
+			AddRow(strB, "Smithy", []string{}, ""))
 
 	mock.ExpectQuery(`FROM structure_room\b`).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "structure_id", "kind", "name"}).
@@ -95,9 +95,6 @@ func TestStructuresRepo_LoadAll_HappyPath(t *testing.T) {
 	}
 	if a.DisplayName != "The Crow's Foot" {
 		t.Errorf("strA DisplayName = %q", a.DisplayName)
-	}
-	if a.Position.X != 5 || a.Position.Y != 10 {
-		t.Errorf("strA Position = %v", a.Position)
 	}
 	if len(a.Tags) != 2 || a.Tags[0] != "tavern" || a.Tags[1] != "lodging" {
 		t.Errorf("strA Tags = %v", a.Tags)
@@ -126,7 +123,7 @@ func TestStructuresRepo_LoadAll_Empty(t *testing.T) {
 	mock, repo := newMockPoolS(t)
 
 	mock.ExpectQuery(`FROM structure\b`).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "display_name", "position_x", "position_y", "tags", "leads_to_realm"}))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "display_name", "tags", "leads_to_realm"}))
 	mock.ExpectQuery(`FROM structure_room\b`).
 		WillReturnRows(emptyRoomRows())
 
@@ -149,8 +146,8 @@ func TestStructuresRepo_LoadAll_OrphanRoomRejected(t *testing.T) {
 	mock, repo := newMockPoolS(t)
 
 	mock.ExpectQuery(`FROM structure\b`).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "display_name", "position_x", "position_y", "tags", "leads_to_realm"}).
-			AddRow(strA, "Tavern", 5, 10, []string{}, ""))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "display_name", "tags", "leads_to_realm"}).
+			AddRow(strA, "Tavern", []string{}, ""))
 	mock.ExpectQuery(`FROM structure_room\b`).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "structure_id", "kind", "name"}).
 			AddRow(int64(1), strB, "common", "common")) // strB not loaded
@@ -178,8 +175,8 @@ func TestStructuresRepo_LoadAll_RoomQueryError(t *testing.T) {
 	mock, repo := newMockPoolS(t)
 
 	mock.ExpectQuery(`FROM structure\b`).
-		WillReturnRows(pgxmock.NewRows([]string{"id", "display_name", "position_x", "position_y", "tags", "leads_to_realm"}).
-			AddRow(strA, "Tavern", 5, 10, []string{}, ""))
+		WillReturnRows(pgxmock.NewRows([]string{"id", "display_name", "tags", "leads_to_realm"}).
+			AddRow(strA, "Tavern", []string{}, ""))
 	mock.ExpectQuery(`FROM structure_room\b`).WillReturnError(errors.New("connection lost"))
 
 	_, err := repo.LoadAll(context.Background())
@@ -201,10 +198,10 @@ func TestStructuresRepo_SaveSnapshot_HappyPath(t *testing.T) {
 	expectStructureSaveSnapshotPrelude(mock, 7)
 
 	mock.ExpectExec(`INSERT INTO structure\b`).
-		WithArgs(strA, "Tavern", 5, 10, []string{"tavern"}, "", int64(7)).
+		WithArgs(strA, "Tavern", []string{"tavern"}, "", int64(7)).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`INSERT INTO structure\b`).
-		WithArgs(strB, "Smithy", 8, 12, []string{}, "", int64(7)).
+		WithArgs(strB, "Smithy", []string{}, "", int64(7)).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 
 	mock.ExpectExec(`DELETE FROM structure WHERE snapshot_gen < \$1`).
@@ -230,7 +227,6 @@ func TestStructuresRepo_SaveSnapshot_HappyPath(t *testing.T) {
 			ID:          sim.StructureID(strA),
 			DisplayName: "Tavern",
 			Tags:        []string{"tavern"},
-			Position:    sim.Position{X: 5, Y: 10},
 			Rooms: []*sim.Room{
 				{ID: 1, StructureID: sim.StructureID(strA), Kind: sim.RoomKindCommon, Name: "common"},
 				{ID: 2, StructureID: sim.StructureID(strA), Kind: sim.RoomKindPrivate, Name: "bedroom_1"},
@@ -240,7 +236,6 @@ func TestStructuresRepo_SaveSnapshot_HappyPath(t *testing.T) {
 			ID:          sim.StructureID(strB),
 			DisplayName: "Smithy",
 			Tags:        []string{},
-			Position:    sim.Position{X: 8, Y: 12},
 		},
 	}
 
@@ -567,7 +562,7 @@ func TestStructuresRepo_SaveSnapshot_LeadsToRealmEmpty(t *testing.T) {
 
 	expectStructureSaveSnapshotPrelude(mock, 1)
 	mock.ExpectExec(`INSERT INTO structure\b`).
-		WithArgs(strA, "Tavern", 5, 10, []string{}, "", int64(1)).
+		WithArgs(strA, "Tavern", []string{}, "", int64(1)).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM structure WHERE snapshot_gen < \$1`).
 		WithArgs(int64(1)).
@@ -579,7 +574,6 @@ func TestStructuresRepo_SaveSnapshot_LeadsToRealmEmpty(t *testing.T) {
 			ID:           sim.StructureID(strA),
 			DisplayName:  "Tavern",
 			Tags:         []string{},
-			Position:     sim.Position{X: 5, Y: 10},
 			LeadsToRealm: "", // intentionally empty
 		},
 	}

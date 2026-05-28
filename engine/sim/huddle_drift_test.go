@@ -215,6 +215,13 @@ func newDriftTestWorld(t *testing.T) (*sim.World, context.CancelFunc) {
 	handles.Structures.Seed(map[sim.StructureID]*sim.Structure{
 		"tavern": {ID: "tavern", DisplayName: "Tavern"},
 	})
+	// Shared-Identity Bridge for SceneBoundStructure (ZBBS-WORK-342).
+	handles.Assets.Seed(map[sim.AssetID]*sim.Asset{
+		"bldg-asset": {ID: "bldg-asset", Category: "structure"},
+	})
+	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
+		"tavern": {ID: "tavern", AssetID: "bldg-asset", Pos: sim.WorldPos{X: 160, Y: 160}},
+	})
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
 		"alice": {ID: "alice", DisplayName: "Alice", InsideStructureID: "tavern"},
 		"bob":   {ID: "bob", DisplayName: "Bob", InsideStructureID: "tavern"},
