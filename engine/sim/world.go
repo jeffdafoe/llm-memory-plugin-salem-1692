@@ -729,6 +729,14 @@ type World struct {
 	// ticker_health.go.
 	tickerHealth *TickerHealth
 
+	// deadlockLog records recent MoveStoppedDeadlocked events (ZBBS-WORK-340)
+	// for the umbilical /deadlocks read route. Recorded from the world
+	// goroutine inside advanceActorLocomotion when a mover's per-MoveIntent
+	// stuck counter trips; read from HTTP request goroutines, so the ring
+	// carries its own mutex. Always non-nil for a NewWorld-built world;
+	// RecordDeadlock is nil-safe regardless. See deadlock_log.go.
+	deadlockLog *DeadlockLog
+
 	// eventSeq is the monotonic per-run event counter. emit increments it
 	// and assigns the value as the new event's EventID. World-goroutine-
 	// only — emit runs exclusively inside Command.Fn, so no atomic is
@@ -801,6 +809,7 @@ func NewWorld(repo Repository) *World {
 		tickAdmission:        alwaysAdmit{},
 		repo:                 repo,
 		tickerHealth:         newTickerHealth(),
+		deadlockLog:          newDeadlockLog(0),
 	}
 	w.republish()
 	return w

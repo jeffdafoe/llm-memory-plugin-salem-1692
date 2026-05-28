@@ -38,6 +38,23 @@ import (
 // tuning surfaces a reason.
 const LocomotionTickInterval = 200 * time.Millisecond
 
+// DeadlockStuckThreshold is the per-MoveIntent stuck-tick budget
+// (ZBBS-WORK-340). Each tick that the mover soft-blocks AND the re-plan
+// with the occupant tile masked off also fails to find an advanceable
+// next tile, MoveIntent.StuckTicks is incremented. When it reaches this
+// many consecutive ticks, advanceActorLocomotion hard-stops the mover
+// with MoveStoppedDeadlocked and records a DeadlockEntry for the
+// umbilical /deadlocks view. The counter resets to 0 on any successful
+// one-tile step (whether direct or via re-plan).
+//
+// 5 ticks at LocomotionTickInterval = ~1s of wedge before the engine
+// reports it. Tight enough that a true deadlock (sleeping occupant in a
+// doorway, mutual block with no detour) surfaces fast to NPC behavior
+// trees and the operator surface; loose enough that a momentarily-
+// transient occupant gets the benefit of the doubt. Tune via live
+// /umbilical/deadlocks data if it turns out wrong.
+const DeadlockStuckThreshold = 5
+
 // RunLocomotionTicker owns the locomotion ticker's periodic schedule.
 // Caller starts this in a goroutine alongside World.Run; it returns when
 // ctx is cancelled. Kicks off the first tick immediately so a MoveIntent
@@ -218,7 +235,17 @@ func advanceActorLocomotion(w *World, actor *Actor, grid *WalkGrid, now time.Tim
 		return
 	}
 	if soft {
-		// Transient occupant — keep the MoveIntent and retry next tick.
+		// Another actor is on the next tile. The naive "retry next tick"
+		// posture stalls forever when the occupant is sleeping (no path
+		// past) or when two movers face each other on adjacent tiles
+		// (each is the other's next tile), so we first try to plan AROUND
+		// the occupant — most layouts have a detour, which breaks the
+		// mutual-block case in one tick. When even the re-plan can't
+		// advance, count toward the per-MoveIntent stuck-tick cap; at
+		// DeadlockStuckThreshold consecutive ticks we hard-stop with
+		// MoveStoppedDeadlocked and record the entry for the umbilical
+		// /deadlocks view. See ZBBS-WORK-340.
+		advanceActorViaReroute(w, actor, dest, attemptID, grid, path[1], target, now)
 		return
 	}
 
@@ -227,6 +254,7 @@ func advanceActorLocomotion(w *World, actor *Actor, grid *WalkGrid, now time.Tim
 	fromStructure := actor.InsideStructureID
 	actor.Pos = nextTile
 	updateInsideStructureIDFromTileOwnership(w, actor)
+	actor.MoveIntent.StuckTicks = 0
 
 	w.emit(&ActorMoved{
 		ActorID:           actor.ID,
@@ -248,6 +276,151 @@ func advanceActorLocomotion(w *World, actor *Actor, grid *WalkGrid, now time.Tim
 	if arrivedAtDestination(w, actor, dest) {
 		finishArrival(w, actor, dest, attemptID, now)
 	}
+}
+
+// maxReroutePathsPerTick bounds the iterative widening of the masked-tile
+// set in advanceActorViaReroute. Each pass adds at most one tile to the
+// mask, so 4 attempts handles a fully-saturated 4-neighborhood — the
+// degenerate case where every cardinal neighbor of the mover is occupied
+// by a separate actor. Bigger is wasted work: the mover physically
+// cannot move if all four neighbors are blocked.
+const maxReroutePathsPerTick = 4
+
+// advanceActorViaReroute is the soft-block branch of advanceActorLocomotion
+// (ZBBS-WORK-340). It iteratively re-plans with a growing set of masked
+// tiles — first the immediate occupant, then any further soft-blocked
+// alt-path next tiles A* offers — until either a detour with a clear next
+// step is found (mover advances, stuck counter resets) or the mask is
+// exhausted (no detour exists at all, OR every detour is itself
+// occupied). On exhaustion the mover's per-MoveIntent stuck counter
+// increments and at DeadlockStuckThreshold consecutive ticks the mover
+// hard-stops with MoveStoppedDeadlocked + a DeadlockEntry on
+// World.DeadlockSnapshot for the umbilical /deadlocks view.
+//
+// The iterative mask is load-bearing: FindPath is deterministic, so if
+// the first re-plan returns a detour with a soft-blocked next tile, the
+// NEXT tick's re-plan (with only the original occupant masked) returns
+// the same detour and gets stuck on the same secondary blocker. Widening
+// the mask within one tick lets the planner offer a different detour
+// when one exists.
+//
+// Two failure modes are recorded separately via the ReplanFailed flag on
+// the entry: no detour exists at all (the sleeping-Abraham-in-the-only-
+// doorway shape; the very first FindPathBlocking — with just the original
+// occupant masked — returned nil) vs. detours exist but their first
+// tiles are repeatedly occupied (mutual block or clogged corridor; the
+// mask widened across multiple passes, each yielding an altSoft, until
+// the planner had nothing left to offer). NPC behavior trees and the
+// operator surface use the distinction.
+//
+// occupiedNext is path[1] from the just-rejected straight-line plan — the
+// tile classifyTileBlocker soft-blocked on. target is the goal grid point
+// resolvePathTarget already produced. Caller guarantees actor.MoveIntent
+// is non-nil.
+//
+// MUST be called from inside a Command.Fn.
+func advanceActorViaReroute(w *World, actor *Actor, dest MoveDestination, attemptID MovementAttemptID, grid *WalkGrid, occupiedNext Position, target Position, now time.Time) {
+	masked := make([]GridPoint, 0, maxReroutePathsPerTick)
+	masked = append(masked, GridPoint{X: occupiedNext.X, Y: occupiedNext.Y})
+
+	replanFailed := false
+	for attempt := 0; attempt < maxReroutePathsPerTick; attempt++ {
+		altPath := FindPathBlocking(grid, actor.Pos, GridPoint{X: target.X, Y: target.Y}, masked)
+		if altPath == nil || len(altPath) < 2 {
+			// No path exists given the current mask. The interpretation
+			// depends on whether the mask widened past the original
+			// occupant: a nil on attempt 0 means no detour exists at all
+			// (sleeping-Abraham-in-the-only-doorway), but a nil on a later
+			// pass means every detour the planner could offer had its
+			// first step occupied, until the mask saturated the cardinal
+			// neighborhood (mutual block / clogged corridor). The two
+			// shapes are operationally different — only the first is
+			// terminal until the occupant moves.
+			replanFailed = attempt == 0
+			break
+		}
+
+		altNext := Position{X: altPath[1].X, Y: altPath[1].Y}
+		altHard, altSoft := classifyTileBlocker(grid, w, altNext, actor.ID)
+		if altHard {
+			// A non-actor blocker on the alt path's first tile (e.g. a
+			// building footprint exposed by the mask widening). Treat as
+			// "no usable detour this tick".
+			break
+		}
+		if !altSoft {
+			// Detour exists and its first step is clear — advance one tile
+			// onto altNext. Mirrors the straight-line success path in
+			// advanceActorLocomotion.
+			from := actor.Pos
+			fromStructure := actor.InsideStructureID
+			actor.Pos = altNext
+			updateInsideStructureIDFromTileOwnership(w, actor)
+			actor.MoveIntent.StuckTicks = 0
+
+			w.emit(&ActorMoved{
+				ActorID:           actor.ID,
+				FromPosition:      from,
+				ToPosition:        altNext,
+				FromStructureID:   fromStructure,
+				ToStructureID:     actor.InsideStructureID,
+				MovementAttemptID: attemptID,
+				At:                now,
+			})
+
+			checkHuddleDriftAfterPositionMutation(w, actor.ID, now)
+
+			if arrivedAtDestination(w, actor, dest) {
+				finishArrival(w, actor, dest, attemptID, now)
+			}
+			return
+		}
+
+		// altNext is soft-blocked too. Widen the mask and try again.
+		masked = append(masked, GridPoint{X: altNext.X, Y: altNext.Y})
+	}
+
+	// No advanceable next-tile this tick. Count toward the stuck-tick cap;
+	// the MoveIntent is preserved so the next tick re-plans afresh — an
+	// occupant moving off the tile in the meantime resolves it.
+	actor.MoveIntent.StuckTicks++
+	if actor.MoveIntent.StuckTicks < DeadlockStuckThreshold {
+		return
+	}
+
+	// Stuck for the full window. Identify the occupant at record time
+	// (best-effort — they may have moved off the tile between the soft-
+	// block classification and the cap trip; an empty OccupantID/Name on
+	// the entry just means "we couldn't name them," which is fine for the
+	// diagnostic view).
+	var occupantID ActorID
+	var occupantName string
+	for id, a := range w.Actors {
+		if id == actor.ID {
+			continue
+		}
+		if a.Pos.Equal(occupiedNext) {
+			occupantID = id
+			occupantName = a.DisplayName
+			break
+		}
+	}
+	kind, destSID, destPos := destToView(dest)
+	w.RecordDeadlock(DeadlockEntry{
+		Time:            now,
+		MoverID:         actor.ID,
+		MoverName:       actor.DisplayName,
+		MoverPos:        actor.Pos,
+		DestinationKind: kind,
+		DestStructureID: destSID,
+		DestPosition:    destPos,
+		OccupantID:      occupantID,
+		OccupantName:    occupantName,
+		OccupantTile:    occupiedNext,
+		ReplanFailed:    replanFailed,
+	})
+	emitMoveStopped(w, actor, dest, MoveStoppedDeadlocked, attemptID, now)
+	actor.MoveIntent = nil
 }
 
 // arrivedAtDestination reports whether the actor has reached dest.
