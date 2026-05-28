@@ -357,6 +357,19 @@ func objectsFromSnapshot(s *sim.Snapshot, assets map[sim.AssetID]*sim.Asset) []O
 			continue
 		}
 		effX, effY := sim.EffectiveLoiterOffset(o, assets[o.AssetID])
+		// has_interior == "this placement is also a Structure" via the
+		// shared-identity bridge: any building (or legacy shell-backed prop
+		// like a noticeboard) has a Structure row whose id matches the
+		// VillageObject's. Bare placements (wells, lamps, gather piles)
+		// don't. Drives client dispatch between structure_enter (walk inside)
+		// and object_visit (walk to loiter slot) — ZBBS-WORK-351.
+		//
+		// Tombstoned entries (key present, value nil) don't count as a real
+		// shell — match MoveActor's `!ok || vobj == nil` shape so a stale
+		// nil row can't mark a bare placement as has_interior=true and
+		// route a click into a structure_enter 404 (code_review round 1).
+		shell, hasInterior := s.Structures[sim.StructureID(id)]
+		hasInterior = hasInterior && shell != nil
 		dto := ObjectDTO{
 			ID:                     string(id),
 			AssetID:                string(o.AssetID),
@@ -372,6 +385,7 @@ func objectsFromSnapshot(s *sim.Snapshot, assets map[sim.AssetID]*sim.Asset) []O
 			LoiterOffsetY:          o.LoiterOffsetY,
 			EffectiveLoiterOffsetX: effX,
 			EffectiveLoiterOffsetY: effY,
+			HasInterior:            hasInterior,
 		}
 		// Noticeboard content (ZBBS-HOME-291): a board with authored prose
 		// carries its current text + posted-at; everything else omits both.

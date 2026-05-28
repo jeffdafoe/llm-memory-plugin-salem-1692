@@ -165,8 +165,14 @@ func TestHandlePCMove_AmbiguousPayload(t *testing.T) {
 		body string
 	}{
 		{"position with structure_id", `{"destination":{"kind":"position","position":{"x":12,"y":10},"structure_id":"inn"}}`},
+		{"position with object_id", `{"destination":{"kind":"position","position":{"x":12,"y":10},"object_id":"obj1"}}`},
 		{"structure_enter with position", `{"destination":{"kind":"structure_enter","structure_id":"inn","position":{"x":12,"y":10}}}`},
+		{"structure_enter with object_id", `{"destination":{"kind":"structure_enter","structure_id":"inn","object_id":"obj1"}}`},
 		{"structure_visit with position", `{"destination":{"kind":"structure_visit","structure_id":"inn","position":{"x":12,"y":10}}}`},
+		{"structure_visit with object_id", `{"destination":{"kind":"structure_visit","structure_id":"inn","object_id":"obj1"}}`},
+		{"object_visit with position", `{"destination":{"kind":"object_visit","object_id":"obj1","position":{"x":12,"y":10}}}`},
+		{"object_visit with structure_id", `{"destination":{"kind":"object_visit","object_id":"obj1","structure_id":"inn"}}`},
+		{"object_visit missing object_id", `{"destination":{"kind":"object_visit"}}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -175,6 +181,48 @@ func TestHandlePCMove_AmbiguousPayload(t *testing.T) {
 				t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
 			}
 		})
+	}
+}
+
+// TestHandlePCMove_ObjectNotFound covers the object_visit 404 sentinel
+// (errObjectNotFound) — a well-formed object_visit naming an object that
+// doesn't exist maps to 404, matching structure_enter's 404 contract.
+// ZBBS-WORK-351.
+func TestHandlePCMove_ObjectNotFound(t *testing.T) {
+	w := seededWorld(t)
+	seedPC(t, w, "pc-tester", "tester", 10, 10)
+	srv := NewServer(w, okAuth{})
+
+	rec := post(t, srv, "/api/village/pc/move",
+		`{"destination":{"kind":"object_visit","object_id":"does-not-exist"}}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestHandlePCMove_ObjectVisitAccepted covers the object_visit happy path:
+// a known village object with no Structure shell (obj1) resolves to a
+// loiter slot and stamps a movement attempt. ZBBS-WORK-351.
+func TestHandlePCMove_ObjectVisitAccepted(t *testing.T) {
+	w := seededWorld(t)
+	// Park the PC near obj1's loiter ring. obj1 sits at world-pixel (5.5,
+	// 6.5); WorldPos.Tile() pads by (PadX, PadY) then floors after dividing
+	// by TileSize, so the anchor tile is (PadX, PadY). A PC two tiles
+	// southeast has a clear walk to the visitor ring.
+	seedPC(t, w, "pc-tester", "tester", sim.PadX+2, sim.PadY+2)
+	srv := NewServer(w, okAuth{})
+
+	rec := post(t, srv, "/api/village/pc/move",
+		`{"destination":{"kind":"object_visit","object_id":"obj1"}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var res pcMoveResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if res.MovementAttemptID == 0 {
+		t.Errorf("movement_attempt_id = 0, want a stamped attempt")
 	}
 }
 

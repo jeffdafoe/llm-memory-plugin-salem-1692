@@ -38,14 +38,15 @@ const maxSpeakTextChars = 1000
 // pc/move is the first write route. Design + the registry of deferred v1
 // behaviors lives in work note tasks/engine-http-api/pc-move-design.
 
-// errPCNotFound / errStructureNotFound are sentinels the move command returns so
-// the handler maps them to 404 by identity (errors.Is), not by string-matching
-// the message. Every other sim rejection (no path, closed, members-only, in an
-// active huddle) is a 422 — the request named a real entity but the move isn't
-// valid in the current world state.
+// errPCNotFound / errStructureNotFound / errObjectNotFound are sentinels the
+// move command returns so the handler maps them to 404 by identity (errors.Is),
+// not by string-matching the message. Every other sim rejection (no path,
+// closed, members-only, in an active huddle) is a 422 — the request named a
+// real entity but the move isn't valid in the current world state.
 var (
 	errPCNotFound        = errors.New("pc not found for session")
 	errStructureNotFound = errors.New("structure not found")
+	errObjectNotFound    = errors.New("village object not found")
 )
 
 // pcMoveRequest is the POST /api/village/pc/move body. There is deliberately no
@@ -62,9 +63,10 @@ type pcMoveRequest struct {
 // pad — the same space the read surface emits for agent x/y, so the client
 // echoes back what it received with no conversion.
 type moveDestinationRequest struct {
-	Kind        string           `json:"kind"` // position | structure_enter | structure_visit
+	Kind        string           `json:"kind"` // position | structure_enter | structure_visit | object_visit
 	Position    *positionRequest `json:"position,omitempty"`
 	StructureID string           `json:"structure_id,omitempty"`
+	ObjectID    string           `json:"object_id,omitempty"`
 }
 
 type positionRequest struct {
@@ -119,7 +121,7 @@ func (s *Server) handlePCMove(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return
 		}
-		if errors.Is(err, errPCNotFound) || errors.Is(err, errStructureNotFound) {
+		if errors.Is(err, errPCNotFound) || errors.Is(err, errStructureNotFound) || errors.Is(err, errObjectNotFound) {
 			writeError(w, http.StatusNotFound, err.Error())
 			return
 		}
@@ -156,6 +158,9 @@ func buildMoveDestination(d moveDestinationRequest) (sim.MoveDestination, int, s
 		if d.StructureID != "" {
 			return sim.MoveDestination{}, http.StatusBadRequest, "position destination must not include structure_id"
 		}
+		if d.ObjectID != "" {
+			return sim.MoveDestination{}, http.StatusBadRequest, "position destination must not include object_id"
+		}
 		if d.Position.X < 0 || d.Position.X >= sim.MapW || d.Position.Y < 0 || d.Position.Y >= sim.MapH {
 			return sim.MoveDestination{}, http.StatusUnprocessableEntity, "position is outside the map"
 		}
@@ -167,6 +172,9 @@ func buildMoveDestination(d moveDestinationRequest) (sim.MoveDestination, int, s
 		if d.Position != nil {
 			return sim.MoveDestination{}, http.StatusBadRequest, "structure_enter destination must not include position"
 		}
+		if d.ObjectID != "" {
+			return sim.MoveDestination{}, http.StatusBadRequest, "structure_enter destination must not include object_id"
+		}
 		return sim.NewStructureEnterDestination(sim.StructureID(d.StructureID)), 0, ""
 	case sim.MoveDestinationStructureVisit:
 		if d.StructureID == "" {
@@ -175,7 +183,21 @@ func buildMoveDestination(d moveDestinationRequest) (sim.MoveDestination, int, s
 		if d.Position != nil {
 			return sim.MoveDestination{}, http.StatusBadRequest, "structure_visit destination must not include position"
 		}
+		if d.ObjectID != "" {
+			return sim.MoveDestination{}, http.StatusBadRequest, "structure_visit destination must not include object_id"
+		}
 		return sim.NewStructureVisitDestination(sim.StructureID(d.StructureID)), 0, ""
+	case sim.MoveDestinationObjectVisit:
+		if d.ObjectID == "" {
+			return sim.MoveDestination{}, http.StatusBadRequest, "object_visit destination requires an object_id"
+		}
+		if d.Position != nil {
+			return sim.MoveDestination{}, http.StatusBadRequest, "object_visit destination must not include position"
+		}
+		if d.StructureID != "" {
+			return sim.MoveDestination{}, http.StatusBadRequest, "object_visit destination must not include structure_id"
+		}
+		return sim.NewObjectVisitDestination(sim.VillageObjectID(d.ObjectID)), 0, ""
 	default:
 		return sim.MoveDestination{}, http.StatusBadRequest, "unknown destination kind"
 	}
@@ -204,12 +226,23 @@ func movePCCommand(username string, dest sim.MoveDestination, leaveHuddleFirst b
 			// and the move so their timestamps/event order can't skew.
 			now := time.Now().UTC()
 			sim.TouchPCInput(world, actorID, now)
-			// Map a missing structure to our sentinel (→ 404) before MoveActor
-			// rejects it with a generic message; MoveActor's own checks still
-			// cover the rest (closed/owner/door/path → 422).
+			// Map a missing structure / village object to our sentinels (→ 404)
+			// before MoveActor rejects them with a generic message; MoveActor's
+			// own checks still cover the rest (closed/owner/door/path → 422).
 			if dest.StructureID != nil {
 				if _, ok := world.Structures[*dest.StructureID]; !ok {
 					return sim.MoveActorResult{}, errStructureNotFound
+				}
+			}
+			if dest.ObjectID != nil {
+				// Tombstoned entries (a key present in the map with a nil
+				// value) are not a valid placement either — MoveActor's own
+				// guard treats `!ok || vobj == nil` as not-found, so the
+				// sentinel mapping has to match or the nil case 422s
+				// instead of 404ing (code_review round 1).
+				vobj, ok := world.VillageObjects[*dest.ObjectID]
+				if !ok || vobj == nil {
+					return sim.MoveActorResult{}, errObjectNotFound
 				}
 			}
 			return sim.MoveActor(actorID, dest, leaveHuddleFirst, now).Fn(world)

@@ -334,6 +334,60 @@ func TestHandleObjects(t *testing.T) {
 	if o.ContentPostedAt == nil || !o.ContentPostedAt.Equal(time.Date(2026, 5, 22, 18, 0, 0, 0, time.UTC)) {
 		t.Errorf("content_posted_at = %v, want 2026-05-22T18:00:00Z", o.ContentPostedAt)
 	}
+	// seededWorld does not seed any Structure rows, so obj1 is a bare
+	// placement and has_interior=false. The matching "shared-identity"
+	// case is covered by TestHandleObjects_HasInteriorFlag below.
+	if o.HasInterior {
+		t.Errorf("has_interior = true, want false (no paired Structure for obj1 in seededWorld)")
+	}
+}
+
+// TestHandleObjects_HasInteriorFlag verifies the ObjectDTO.has_interior
+// bool tracks the shared-identity bridge (ZBBS-WORK-351): a VillageObject
+// whose id matches a Structure row is has_interior=true (building / legacy
+// shelled prop); a bare placement is false. The client uses this to
+// dispatch click→structure_enter vs click→object_visit.
+func TestHandleObjects_HasInteriorFlag(t *testing.T) {
+	w := seededWorld(t)
+	_, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		// "obj1" is the bare placement seeded by seededWorld. Add a paired
+		// structure-shelled placement sharing its id with a Structure row.
+		world.VillageObjects["shelled"] = &sim.VillageObject{
+			ID: "shelled", AssetID: "asset-x", Pos: sim.WorldPos{X: 1, Y: 1},
+		}
+		world.Structures = map[sim.StructureID]*sim.Structure{
+			"shelled": {ID: "shelled", DisplayName: "Shelled"},
+		}
+		return nil, nil
+	}})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	srv := NewServer(w, okAuth{})
+	rec := get(t, srv, "/api/village/objects")
+
+	var objs []ObjectDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &objs); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	byID := map[string]ObjectDTO{}
+	for _, o := range objs {
+		byID[o.ID] = o
+	}
+	bare, ok := byID["obj1"]
+	if !ok {
+		t.Fatal("expected obj1 in response")
+	}
+	if bare.HasInterior {
+		t.Errorf("obj1 has_interior = true, want false (no paired Structure)")
+	}
+	shelled, ok := byID["shelled"]
+	if !ok {
+		t.Fatal("expected shelled in response")
+	}
+	if !shelled.HasInterior {
+		t.Errorf("shelled has_interior = false, want true (paired Structure)")
+	}
 }
 
 // TestHandleObjects_NoticeboardContentOmitted: an object with no entry in the

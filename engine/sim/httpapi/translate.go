@@ -56,6 +56,7 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			Path:        path,
 			DestKind:    string(e.DestinationKind),
 			StructureID: string(e.StructureID),
+			ObjectID:    string(e.ObjectID),
 			AttemptID:   uint64(e.MovementAttemptID),
 		}}, true
 	case *sim.ActorArrived:
@@ -328,15 +329,17 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 // tile. Path is in TILE coordinates (matching AgentDTO's tile x/y convention);
 // the client converts to world-pixels with the pad/tile_size it already gets
 // from the terrain DTO. Path[0] is the walk start, Path[len-1] the resolved
-// goal. dest_kind is structure_enter | structure_visit | position; structure_id
-// is present for the structure kinds. attempt_id correlates with the
-// npc_arrived / npc_move_stopped that conclude this walk; a fresh attempt_id for
-// the same actor supersedes any earlier in-flight walk.
+// goal. dest_kind is structure_enter | structure_visit | object_visit | position.
+// structure_id is present for the structure kinds; object_id is present for
+// object_visit (ZBBS-WORK-351). attempt_id correlates with the npc_arrived /
+// npc_move_stopped that conclude this walk; a fresh attempt_id for the same
+// actor supersedes any earlier in-flight walk.
 type walkWireDTO struct {
 	ID          string         `json:"id"`
 	Path        []tilePointDTO `json:"path"`
 	DestKind    string         `json:"dest_kind"`
 	StructureID string         `json:"structure_id,omitempty"`
+	ObjectID    string         `json:"object_id,omitempty"`
 	AttemptID   uint64         `json:"attempt_id"`
 }
 

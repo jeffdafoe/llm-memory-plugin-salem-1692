@@ -11,7 +11,7 @@ package sim
 // movement events — lands in commands_move.go, locomotion_ticker.go and
 // events_move.go. This file carries only the shared types.
 
-// MoveDestinationKind enumerates the three arrival cases, derived from
+// MoveDestinationKind enumerates the four arrival cases, derived from
 // v1's EnterOnArrival semantics. See
 // shared/notes/codebase/salem/structure-lookups for the v1 model.
 type MoveDestinationKind string
@@ -31,6 +31,16 @@ const (
 	// Entry policy is NOT checked — an actor can always stand near a well.
 	MoveDestinationStructureVisit MoveDestinationKind = "structure_visit"
 
+	// MoveDestinationObjectVisit — walk to one of the village object's
+	// eight visitor slots and stop next to it (ZBBS-WORK-351). Arrival
+	// fires when the actor stands on the chosen slot. The object-keyed
+	// sibling of StructureVisit: targets a bare placement (well, lamp,
+	// gather pile, future props) that has no Structure shell. Resolves via
+	// pickObjectVisitorSlot — same king's-move ring scan as the structure
+	// path, sharing pickVisitorSlotAtPin. Used by the client click path
+	// for any ObjectDTO with has_interior=false.
+	MoveDestinationObjectVisit MoveDestinationKind = "object_visit"
+
 	// MoveDestinationPosition — walk to an exact tile. Arrival fires when
 	// the actor's position equals the destination tile. Patrol
 	// coordinates, custom anchors, outdoor loiter points not tied to a
@@ -38,11 +48,12 @@ const (
 	MoveDestinationPosition MoveDestinationKind = "position"
 )
 
-// MoveDestination is a closed tagged union over the three arrival cases.
+// MoveDestination is a closed tagged union over the four arrival cases.
 // Exactly one payload field is set, selected by Kind:
 //
-//   - StructureEnter / StructureVisit → StructureID set, Position nil
-//   - Position                        → Position set, StructureID nil
+//   - StructureEnter / StructureVisit → StructureID set, others nil
+//   - ObjectVisit                     → ObjectID set, others nil
+//   - Position                        → Position set, others nil
 //
 // It is a tagged struct rather than a Go interface for the same reason as
 // SceneBound: MoveIntent rides on Actor, which is published in Snapshot,
@@ -51,8 +62,9 @@ const (
 // tagged unions do.
 type MoveDestination struct {
 	Kind        MoveDestinationKind
-	StructureID *StructureID // set iff Kind is StructureEnter or StructureVisit
-	Position    *Position    // set iff Kind is Position
+	StructureID *StructureID     // set iff Kind is StructureEnter or StructureVisit
+	ObjectID    *VillageObjectID // set iff Kind is ObjectVisit
+	Position    *Position        // set iff Kind is Position
 }
 
 // NewStructureEnterDestination returns a MoveDestination that walks the
@@ -69,6 +81,16 @@ func NewStructureVisitDestination(structureID StructureID) MoveDestination {
 	return MoveDestination{Kind: MoveDestinationStructureVisit, StructureID: &id}
 }
 
+// NewObjectVisitDestination returns a MoveDestination that walks the
+// actor to a visitor slot beside the village object's loiter pin
+// (ZBBS-WORK-351). Used for bare placements with no Structure shell —
+// wells, lamps, gather piles. For buildings (placements that DO back a
+// Structure), the client uses NewStructureEnterDestination instead.
+func NewObjectVisitDestination(objectID VillageObjectID) MoveDestination {
+	id := objectID
+	return MoveDestination{Kind: MoveDestinationObjectVisit, ObjectID: &id}
+}
+
 // NewPositionDestination returns a MoveDestination that walks the actor
 // to an exact tile.
 func NewPositionDestination(pos Position) MoveDestination {
@@ -76,8 +98,8 @@ func NewPositionDestination(pos Position) MoveDestination {
 	return MoveDestination{Kind: MoveDestinationPosition, Position: &p}
 }
 
-// cloneMoveDestination deep-copies a MoveDestination. Its StructureID and
-// Position pointer fields would otherwise alias across the
+// cloneMoveDestination deep-copies a MoveDestination. Its StructureID,
+// ObjectID and Position pointer fields would otherwise alias across the
 // published-Snapshot and mem-repo boundary once MoveIntent rides on
 // Actor. Mirrors cloneSceneBound.
 func cloneMoveDestination(d MoveDestination) MoveDestination {
@@ -85,6 +107,10 @@ func cloneMoveDestination(d MoveDestination) MoveDestination {
 	if d.StructureID != nil {
 		id := *d.StructureID
 		cp.StructureID = &id
+	}
+	if d.ObjectID != nil {
+		id := *d.ObjectID
+		cp.ObjectID = &id
 	}
 	if d.Position != nil {
 		p := *d.Position
