@@ -122,6 +122,17 @@ type ObjectDTO struct {
 	EffectiveLoiterOffsetX int    `json:"effective_loiter_offset_x"`
 	EffectiveLoiterOffsetY int    `json:"effective_loiter_offset_y"`
 
+	// HasInterior reports whether this placement also has a paired Structure
+	// (the shared-identity bridge — engine/sim/structure_anchors.go). True for
+	// buildings (inns, houses, taverns, anything with rooms / actors that
+	// bind via Inside/Home/WorkStructureID) and for legacy props that today
+	// carry a Structure shell to make structure_enter resolve (noticeboards).
+	// False for bare placements (wells, lamps, gather piles, future props
+	// with no interior). The client uses this to dispatch the right /pc/move
+	// destination kind on a click: true → structure_enter (walk inside),
+	// false → object_visit (walk to the object's loiter slot, ZBBS-WORK-351).
+	HasInterior bool `json:"has_interior"`
+
 	// Noticeboard content (ZBBS-HOME-291) — the cascade-authored prose for a
 	// notice board, surfaced for the editor's content modal. Both omitempty so a
 	// non-noticeboard (or a board with no authored content yet) carries neither.

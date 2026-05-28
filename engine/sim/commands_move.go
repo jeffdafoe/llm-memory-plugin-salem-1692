@@ -124,6 +124,19 @@ func MoveActor(actorID ActorID, dest MoveDestination, leaveHuddleFirst bool, now
 				}
 				// No entry-policy check — standing at a visitor slot is
 				// always allowed, even for closed structures (a well).
+			case MoveDestinationObjectVisit:
+				if dest.ObjectID == nil {
+					return MoveActorResult{}, fmt.Errorf("object_visit destination missing ObjectID")
+				}
+				vobj, ok := w.VillageObjects[*dest.ObjectID]
+				if !ok || vobj == nil {
+					return MoveActorResult{}, fmt.Errorf("village object %q not found", *dest.ObjectID)
+				}
+				if _, ok := w.Assets[vobj.AssetID]; !ok {
+					return MoveActorResult{}, fmt.Errorf("village object %q has no usable placement", *dest.ObjectID)
+				}
+				// No entry-policy check — standing at a visitor slot beside an
+				// object is always allowed (the slot is outside any footprint).
 			case MoveDestinationPosition:
 				if dest.Position == nil {
 					return MoveActorResult{}, fmt.Errorf("position destination missing Position")
@@ -206,12 +219,16 @@ func MoveActor(actorID ActorID, dest MoveDestination, leaveHuddleFirst bool, now
 			// reachability check, reused here) so the viewer renders the
 			// engine's road-preferring, building-avoiding route rather than a
 			// locally re-derived one. path[0] is the actor's current tile (the
-			// walk start); path[len-1] is the resolved goal. dest.StructureID is
-			// non-nil for the enter/visit kinds and nil for position (empty
-			// StructureID).
+			// walk start); path[len-1] is the resolved goal. dest.StructureID
+			// is non-nil for the enter/visit kinds, dest.ObjectID for
+			// object_visit, and both nil for position (empty ids).
 			destStructureID := StructureID("")
 			if dest.StructureID != nil {
 				destStructureID = *dest.StructureID
+			}
+			destObjectID := VillageObjectID("")
+			if dest.ObjectID != nil {
+				destObjectID = *dest.ObjectID
 			}
 			w.emit(&ActorMoveStarted{
 				ActorID:           actorID,
@@ -220,6 +237,7 @@ func MoveActor(actorID ActorID, dest MoveDestination, leaveHuddleFirst bool, now
 				Path:              path,
 				DestinationKind:   dest.Kind,
 				StructureID:       destStructureID,
+				ObjectID:          destObjectID,
 				MovementAttemptID: attemptID,
 				At:                now,
 			})
@@ -282,6 +300,16 @@ func resolvePathTarget(w *World, actor *Actor, dest MoveDestination, grid *WalkG
 			return Position{}, false
 		}
 		return pickVisitorSlot(w, *dest.StructureID, actor, grid)
+	case MoveDestinationObjectVisit:
+		if dest.ObjectID == nil {
+			return Position{}, false
+		}
+		// pickObjectVisitorSlot internally validates the object + asset
+		// exist; a missing object or all-blocked slot ring returns ok=false
+		// and the caller treats it as an invalidated destination (mover
+		// hard-stops with MoveStoppedInvalidated, matching the structure
+		// path's behavior when its structure is removed mid-walk).
+		return pickObjectVisitorSlot(w, *dest.ObjectID, actor, grid)
 	case MoveDestinationPosition:
 		if dest.Position == nil {
 			return Position{}, false
