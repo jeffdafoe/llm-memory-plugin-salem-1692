@@ -424,6 +424,53 @@ func TestUmbilical_Manifest(t *testing.T) {
 	}
 }
 
+func TestUmbilical_Actors(t *testing.T) {
+	w := seededWorld(t)
+	// Seed live needs on hannah (the NPC); bram (the PC) stays needs-less to
+	// prove a nil Needs map serializes as an omitted field, not a panic.
+	_, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["hannah"].Needs = map[sim.NeedKey]int{"hunger": sim.NeedMax, "thirst": 12, "tiredness": 0}
+		return nil, nil
+	}})
+	if err != nil {
+		t.Fatalf("seed needs: %v", err)
+	}
+	srv := NewServer(w, permAuth{operatorPerms})
+	srv.SetTelemetry(telemetry.New(8))
+	h := srv.Handler()
+
+	rec := req(t, h, "/api/village/umbilical/actors", "tok")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("actors = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var out UmbilicalActorsDTO
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Total != 2 || len(out.Actors) != 2 {
+		t.Fatalf("total/len = %d/%d, want 2/2", out.Total, len(out.Actors))
+	}
+	// Sorted by id: bram (PC, no needs) then hannah (NPC, needs present).
+	if out.Actors[0].ID != "bram" || out.Actors[1].ID != "hannah" {
+		t.Errorf("order = %s,%s, want bram,hannah", out.Actors[0].ID, out.Actors[1].ID)
+	}
+	if out.Actors[0].Needs != nil {
+		t.Errorf("bram needs = %v, want nil (needs-less PC omits the field)", out.Actors[0].Needs)
+	}
+	if out.Actors[1].Needs["hunger"] != sim.NeedMax || out.Actors[1].Needs["thirst"] != 12 {
+		t.Errorf("hannah needs = %v, want hunger=%d thirst=12", out.Actors[1].Needs, sim.NeedMax)
+	}
+
+	// Gating mirrors the read surface: 404 when the umbilical is off, 403 for a
+	// non-operator.
+	if rec := req(t, NewServer(seededWorld(t), permAuth{operatorPerms}).Handler(), "/api/village/umbilical/actors", "tok"); rec.Code != http.StatusNotFound {
+		t.Errorf("actors umbilical-off = %d, want 404", rec.Code)
+	}
+	if rec := req(t, umbilicalServer(t, nil, telemetry.New(4)), "/api/village/umbilical/actors", "tok"); rec.Code != http.StatusForbidden {
+		t.Errorf("actors non-operator = %d, want 403", rec.Code)
+	}
+}
+
 func TestUmbilical_State(t *testing.T) {
 	h := umbilicalServer(t, operatorPerms, telemetry.New(8))
 	rec := req(t, h, "/api/village/umbilical/state", "tok")
