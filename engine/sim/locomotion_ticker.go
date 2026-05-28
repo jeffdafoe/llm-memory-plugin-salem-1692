@@ -429,7 +429,7 @@ func advanceActorViaReroute(w *World, actor *Actor, dest MoveDestination, attemp
 			break
 		}
 	}
-	kind, destSID, destPos := destToView(dest)
+	kind, destSID, destOID, destPos := destToView(dest)
 	w.RecordDeadlock(DeadlockEntry{
 		Time:            now,
 		MoverID:         actor.ID,
@@ -437,6 +437,7 @@ func advanceActorViaReroute(w *World, actor *Actor, dest MoveDestination, attemp
 		MoverPos:        actor.Pos,
 		DestinationKind: kind,
 		DestStructureID: destSID,
+		DestObjectID:    destOID,
 		DestPosition:    destPos,
 		OccupantID:      occupantID,
 		OccupantName:    occupantName,

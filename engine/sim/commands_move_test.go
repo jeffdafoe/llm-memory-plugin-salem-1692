@@ -88,16 +88,21 @@ func buildMoveTestWorld(t *testing.T) (*sim.World, context.CancelFunc, *eventRec
 		"house":  {ID: "house", Category: "structure", DoorOffsetX: intp(0), DoorOffsetY: intp(2)},
 		"well":   {ID: "well", Category: "prop"},        // no door offset
 		"gazebo": {ID: "gazebo", Category: "structure"}, // no door offset
+		"lamp":   {ID: "lamp", Category: "prop"},        // bare prop — no Structure shell
 	})
 	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
 		"inn":    {ID: "inn", AssetID: "house", Pos: sim.WorldPos{X: 320, Y: 320}},
 		"well":   {ID: "well", AssetID: "well", Pos: sim.WorldPos{X: 640, Y: 320}, EntryPolicy: sim.EntryPolicyClosed},
 		"gazebo": {ID: "gazebo", AssetID: "gazebo", Pos: sim.WorldPos{X: 960, Y: 320}, EntryPolicy: sim.EntryPolicyOpen},
+		// "lamp" is a bare prop placement with NO paired Structure row — the
+		// has_interior=false case. Used by object_visit tests (ZBBS-WORK-351).
+		"lamp": {ID: "lamp", AssetID: "lamp", Pos: sim.WorldPos{X: 1280, Y: 320}},
 	})
 	handles.Structures.Seed(map[sim.StructureID]*sim.Structure{
 		"inn":    {ID: "inn", DisplayName: "Inn"},
 		"well":   {ID: "well", DisplayName: "Well"},
 		"gazebo": {ID: "gazebo", DisplayName: "Gazebo"},
+		// NB: "lamp" deliberately absent — bare placement.
 	})
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
 		"walker": {ID: "walker", DisplayName: "Walker", Pos: sim.TilePos{X: sim.PadX, Y: sim.PadY}},
@@ -246,6 +251,7 @@ func TestMoveActor_HappyPathPerKind(t *testing.T) {
 	}{
 		{"structure enter", sim.NewStructureEnterDestination("inn"), sim.MoveDestinationStructureEnter},
 		{"structure visit", sim.NewStructureVisitDestination("inn"), sim.MoveDestinationStructureVisit},
+		{"object visit (bare prop)", sim.NewObjectVisitDestination("lamp"), sim.MoveDestinationObjectVisit},
 		{"position", sim.NewPositionDestination(sim.Position{X: sim.PadX + 5, Y: sim.PadY + 5}), sim.MoveDestinationPosition},
 	}
 	for _, c := range cases {
@@ -292,6 +298,13 @@ func TestMoveActor_Rejections(t *testing.T) {
 		{"structure not found", "walker", sim.NewStructureEnterDestination("nowhere")},
 		{"entry policy closed", "walker", sim.NewStructureEnterDestination("well")},
 		{"doorless structure (open policy)", "walker", sim.NewStructureEnterDestination("gazebo")},
+		// Regression guard for ZBBS-WORK-351: a bare VillageObject without a
+		// Structure shell must NOT silently fall through structure_enter to
+		// object_visit — the dispatch is the client's responsibility. The
+		// engine rejects structure_enter on "lamp" because no Structure row
+		// shares its id.
+		{"structure_enter on bare object 404s (no silent fallthrough)", "walker", sim.NewStructureEnterDestination("lamp")},
+		{"object_visit object not found", "walker", sim.NewObjectVisitDestination("nowhere-object")},
 		{"untraversable position", "walker", sim.NewPositionDestination(sim.Position{X: -5, Y: -5})},
 	}
 	for _, c := range cases {

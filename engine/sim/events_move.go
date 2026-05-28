@@ -52,8 +52,9 @@ type ActorMoveStarted struct {
 	FromPosition      Position            // actor's tile at move start (== Path[0])
 	TargetPosition    Position            // resolved goal tile (== Path[len-1])
 	Path              []GridPoint         // full cost-weighted tile path, start→goal inclusive
-	DestinationKind   MoveDestinationKind // structure_enter | structure_visit | position
-	StructureID       StructureID         // destination structure for enter/visit; empty for position
+	DestinationKind   MoveDestinationKind // structure_enter | structure_visit | object_visit | position
+	StructureID       StructureID         // destination structure for enter/visit; empty otherwise
+	ObjectID          VillageObjectID     // destination village object for object_visit; empty otherwise
 	MovementAttemptID MovementAttemptID
 	At                time.Time
 }

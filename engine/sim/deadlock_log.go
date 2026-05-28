@@ -28,9 +28,10 @@ const defaultDeadlockRingSize = 256
 // DeadlockEntry is one MoveStoppedDeadlocked event recorded for operator
 // visibility. Flattened from MoveDestination's tagged union so the wire
 // payload is plain values — Position-kind moves carry a non-zero
-// DestPosition and an empty DestStructureID; structure-kind moves carry a
-// non-empty DestStructureID and a zero-value DestPosition (the convention
-// used by the rest of the v2 wire surface).
+// DestPosition and empty ids; structure-kind moves carry a non-empty
+// DestStructureID; object_visit moves carry a non-empty DestObjectID. The
+// other fields are zero-valued (the convention used by the rest of the v2
+// wire surface).
 type DeadlockEntry struct {
 	Time time.Time `json:"time"`
 
@@ -40,6 +41,7 @@ type DeadlockEntry struct {
 
 	DestinationKind MoveDestinationKind `json:"destination_kind"`
 	DestStructureID StructureID         `json:"destination_structure_id,omitempty"`
+	DestObjectID    VillageObjectID     `json:"destination_object_id,omitempty"`
 	DestPosition    Position            `json:"destination_position,omitempty"`
 
 	// OccupantID/OccupantName identify the actor whose tile was the
@@ -136,19 +138,23 @@ func (w *World) DeadlockSnapshot() []DeadlockEntry {
 
 // destToView flattens a MoveDestination's tagged-union pointers into the
 // plain-value subset DeadlockEntry carries (kind, optional structure id,
-// optional position). The kind disambiguates which sibling field is the
-// "real" destination: structure_enter/structure_visit means the structure
-// id is set and the position is zero; position means the position is set
-// and the structure id is empty. Matches the empty-string-StructureID
-// convention used everywhere else on the v2 wire surface.
-func destToView(d MoveDestination) (MoveDestinationKind, StructureID, Position) {
+// optional object id, optional position). The kind disambiguates which
+// sibling field is the "real" destination: structure_enter/structure_visit
+// means the structure id is set; object_visit means the object id is set;
+// position means the position is set. Sibling fields are zero-valued —
+// the empty-id convention used everywhere else on the v2 wire surface.
+func destToView(d MoveDestination) (MoveDestinationKind, StructureID, VillageObjectID, Position) {
 	var sid StructureID
+	var oid VillageObjectID
 	var pos Position
 	if d.StructureID != nil {
 		sid = *d.StructureID
 	}
+	if d.ObjectID != nil {
+		oid = *d.ObjectID
+	}
 	if d.Position != nil {
 		pos = *d.Position
 	}
-	return d.Kind, sid, pos
+	return d.Kind, sid, oid, pos
 }
