@@ -282,6 +282,68 @@ func PayWithItem(
 				return nil, err
 			}
 
+			// Lodging-shape intake gates (ZBBS-WORK-343 + WORK-344). Both
+			// reject upfront rather than commit coin into an Order that
+			// deliver_order will refuse forever (failure mode: Order stays
+			// Ready, keeper LLM burns ticks retrying).
+			//
+			// Keyed on the "lodging" capability rather than hardcoded
+			// "nights_stay" so a future operator-defined lodging kind
+			// inherits both guards. Matches deliver_order's own capability
+			// check at order_commands.go.
+			if itemHasCapability(w, kind, "lodging") {
+				// WORK-343 — operator-data guard. A keeper whose
+				// work_structure has zero private bedrooms (or no work
+				// structure at all) is structurally unable to fulfill any
+				// lodging Order. Distinct from "all rooms occupied" — that
+				// case is transient and stays at delivery time
+				// (AssignBedroomForLodger returns RoomID=0 → "try again
+				// shortly"). Zero-rooms is the deliberate v1 scope.
+				if seller.WorkStructureID == "" {
+					return nil, fmt.Errorf(
+						"%s has no work structure set up for lodging — ask an operator to fix.",
+						seller.DisplayName,
+					)
+				}
+				sellerStructure, ok := w.Structures[seller.WorkStructureID]
+				if !ok {
+					return nil, fmt.Errorf(
+						"%s's work structure %q not found — ask an operator to fix.",
+						seller.DisplayName, seller.WorkStructureID,
+					)
+				}
+				privateRoomCount := 0
+				for _, r := range sellerStructure.Rooms {
+					if r != nil && r.Kind == RoomKindPrivate {
+						privateRoomCount++
+					}
+				}
+				if privateRoomCount == 0 {
+					return nil, fmt.Errorf(
+						"%s isn't set up for boarding — no bedrooms in their establishment for %s. Ask an operator to add rooms before booking here.",
+						seller.DisplayName, kind,
+					)
+				}
+
+				// WORK-344 — lodging take-home with non-buyer consumers
+				// is a guaranteed-impossible Order: deliver_order's
+				// lodging branch (order_commands.go) enforces single-self
+				// consumer. The redundant consumerNames=[buyer] case is
+				// permitted; only non-buyer consumers are rejected.
+				// consume_now is incoherent for lodging service items but
+				// not a fulfillment-impossibility, so left alone.
+				if !consumeNow {
+					for _, cid := range consumerIDs {
+						if cid != buyerID {
+							return nil, fmt.Errorf(
+								"%s can't be booked for someone else — only the buyer can take the room (drop the consumers list).",
+								kind,
+							)
+						}
+					}
+				}
+			}
+
 			// Overflow guard on qty * effectiveConsumers — Inventory[kind]
 			// is plain int, so a wrapped product could silently pass the
 			// stock check.
