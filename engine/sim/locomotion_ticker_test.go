@@ -2,12 +2,31 @@ package sim_test
 
 import (
 	"context"
+	"math"
 	"testing"
 	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/repo/mem"
 )
+
+// TestLocomotionPace_MatchesV1Speed pins the engine's visible walk speed at
+// v1's 48 world-pixels/sec (the v1 const `defaultNPCSpeed = 48.0` in the
+// deleted-but-still-in-tree engine/npc_movement.go). v2's pacing model
+// ties speed to cadence — speed = TileSize / LocomotionTickInterval — so
+// changing either constant changes the speed; PR-4 (the rewrite) silently
+// did exactly that, picking 200ms on architectural symmetry without
+// back-checking v1's effective pace, and the 3.33x speed-up went unnoticed
+// for months because no player was at the keyboard. ZBBS-WORK-341 reset
+// the constant; this regression guard catches a future re-introduction.
+func TestLocomotionPace_MatchesV1Speed(t *testing.T) {
+	const v1NPCSpeedPxPerSec = 48.0
+	got := float64(sim.TileSize) / sim.LocomotionTickInterval.Seconds()
+	if math.Abs(got-v1NPCSpeedPxPerSec) > 0.001 {
+		t.Fatalf("visible walk speed = %.4f px/s (TileSize=%v, LocomotionTickInterval=%v), want %.1f px/s — v1's defaultNPCSpeed (engine/npc_movement.go). If this is intentional, update the constants in lockstep with the client's village_api.gd LOCOMOTION_TICK_SECONDS.",
+			got, sim.TileSize, sim.LocomotionTickInterval, v1NPCSpeedPxPerSec)
+	}
+}
 
 // buildLocomotionTestWorld seeds a running world for ticker tests:
 //
@@ -805,8 +824,9 @@ func TestLocomotionTicker_GoroutineDrivesMovement(t *testing.T) {
 		t.Fatalf("MoveActor: %v", err)
 	}
 
-	// Three tiles at a 200ms cadence — give it generous headroom.
-	deadline := time.After(3 * time.Second)
+	// Three tiles at the LocomotionTickInterval cadence — give it generous
+	// headroom (5s covers v1's 2/3-sec/tile + arming + scheduler jitter).
+	deadline := time.After(5 * time.Second)
 	for {
 		select {
 		case <-deadline:

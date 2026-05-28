@@ -23,12 +23,17 @@ const CONTRACT_VERSION: int = 1
 
 ## The engine's locomotion tick interval in seconds — the authoritative actor
 ## advances one tile per this interval (engine sim.LocomotionTickInterval =
-## 200ms). The client paces its walk animation at the same rate so visual
-## arrival lines up with the authoritative npc_arrived.
-const LOCOMOTION_TICK_SECONDS: float = 0.2
+## 2/3 sec, i.e. 1.5 tiles/sec, restoring v1's defaultNPCSpeed of 48 px/s at
+## tile_size=32). The client paces its walk animation at the same rate so
+## visual arrival lines up with the authoritative npc_arrived. Must stay in
+## lockstep with the engine const; the contract is documented at both ends
+## (ZBBS-WORK-341).
+const LOCOMOTION_TICK_SECONDS: float = 2.0 / 3.0
 
 ## World-pixel walk speed (px/sec) that matches the engine's 1-tile-per-tick
-## rate. Used to drive the per-frame walk interpolation.
+## rate. Used to drive the per-frame walk interpolation. Derives from
+## LOCOMOTION_TICK_SECONDS so any future cadence change updates here in one
+## place.
 func walk_speed_px_per_s() -> float:
     return float(tile_size) / LOCOMOTION_TICK_SECONDS
 
