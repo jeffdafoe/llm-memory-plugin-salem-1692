@@ -25,6 +25,59 @@ func paidWarrant(eventID sim.EventID, buyer sim.ActorID, amount int, forText str
 	}
 }
 
+// TestRenderSurroundings_InsideHuddleLinesOmitIDs pins the ZBBS-WORK-348
+// cleanup: the StructureID bracket on the inside: line and the HuddleID
+// on the huddle: line are dropped from the rendered prompt. They were
+// dev-time debug crumbs from PR 3c — the LLM never referenced either.
+// Regression-guard so a future render edit doesn't re-leak them.
+func TestRenderSurroundings_InsideHuddleLinesOmitIDs(t *testing.T) {
+	render := func(v SurroundingsView) string {
+		var b strings.Builder
+		renderSurroundings(&b, v)
+		return b.String()
+	}
+
+	// inside: bracket gone.
+	insideOut := render(SurroundingsView{
+		InsideStructureID: "tavern", StructureName: "Tavern",
+	})
+	if !strings.Contains(insideOut, "inside: Tavern\n") {
+		t.Errorf("inside line should be 'inside: Tavern' without [tavern] bracket:\n%s", insideOut)
+	}
+	if strings.Contains(insideOut, "[tavern]") {
+		t.Errorf("inside line still leaks the StructureID bracket:\n%s", insideOut)
+	}
+
+	// huddle: id gone, "with" keyword kept as the names-follow marker.
+	withMembersOut := render(SurroundingsView{
+		HuddleID: "h1",
+		HuddleMembers: []HuddleMember{
+			{DisplayName: "Prudence Ward", Acquainted: true},
+		},
+	})
+	if !strings.Contains(withMembersOut, "huddle: with Prudence Ward\n") {
+		t.Errorf("huddle line should be 'huddle: with Prudence Ward' without h1:\n%s", withMembersOut)
+	}
+	if strings.Contains(withMembersOut, "h1") {
+		t.Errorf("huddle line still leaks the HuddleID:\n%s", withMembersOut)
+	}
+
+	// Solo huddle: id gone from the (you alone) line.
+	soloOut := render(SurroundingsView{HuddleID: "h1"})
+	if !strings.Contains(soloOut, "huddle: (you are the only member)\n") {
+		t.Errorf("solo huddle line should be 'huddle: (you are the only member)' without h1:\n%s", soloOut)
+	}
+	if strings.Contains(soloOut, "h1") {
+		t.Errorf("solo huddle line still leaks the HuddleID:\n%s", soloOut)
+	}
+
+	// No huddle: unchanged.
+	noHuddleOut := render(SurroundingsView{})
+	if !strings.Contains(noHuddleOut, "huddle: not in a huddle\n") {
+		t.Errorf("no-huddle line should be 'huddle: not in a huddle':\n%s", noHuddleOut)
+	}
+}
+
 // TestRender_NarrationWarrants covers the felt-language self-perception lines
 // (HOME-302): the consume self-line and the dwell started/ended beats render
 // their pre-rendered NarrationText, while the per-tick dwell beat is
