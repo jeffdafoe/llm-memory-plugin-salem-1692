@@ -336,20 +336,29 @@ func FindPath(g *WalkGrid, start, goal GridPoint) []GridPoint {
 // no concurrent path query can observe the masked-off cells. defer-
 // restore covers a FindPath panic.
 //
-// Out-of-grid tiles in blocked are silently skipped. If blocked includes
-// goal, FindPath returns nil (goal is impassable), which is the correct
-// answer for "is there a detour given THESE tiles are taken".
+// Out-of-grid tiles in blocked are silently skipped. Duplicate tiles are
+// deduped before the mutate — without that, a tile appearing twice would
+// save its current (already-zeroed) cost on the second pass and the
+// restore loop would re-zero it, leaving the tile permanently masked. If
+// blocked includes goal, FindPath returns nil (goal is impassable), which
+// is the correct answer for "is there a detour given THESE tiles are
+// taken".
 func FindPathBlocking(g *WalkGrid, start, goal GridPoint, blocked []GridPoint) []GridPoint {
 	type savedTile struct {
 		idx  int
 		cost uint8
 	}
 	saved := make([]savedTile, 0, len(blocked))
+	seen := make(map[int]struct{}, len(blocked))
 	for _, b := range blocked {
 		if b.X < 0 || b.X >= MapW || b.Y < 0 || b.Y >= MapH {
 			continue
 		}
 		idx := b.Y*MapW + b.X
+		if _, dup := seen[idx]; dup {
+			continue
+		}
+		seen[idx] = struct{}{}
 		saved = append(saved, savedTile{idx: idx, cost: g.cost[idx]})
 		g.cost[idx] = 0
 	}

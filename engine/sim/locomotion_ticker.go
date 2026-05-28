@@ -306,10 +306,12 @@ const maxReroutePathsPerTick = 4
 //
 // Two failure modes are recorded separately via the ReplanFailed flag on
 // the entry: no detour exists at all (the sleeping-Abraham-in-the-only-
-// doorway shape; final FindPathBlocking returned nil) vs. detours exist
-// but their first tiles are repeatedly occupied (mutual block or clogged
-// corridor; the mask widened but each pass got an altSoft). NPC behavior
-// trees and the operator surface use the distinction.
+// doorway shape; the very first FindPathBlocking — with just the original
+// occupant masked — returned nil) vs. detours exist but their first
+// tiles are repeatedly occupied (mutual block or clogged corridor; the
+// mask widened across multiple passes, each yielding an altSoft, until
+// the planner had nothing left to offer). NPC behavior trees and the
+// operator surface use the distinction.
 //
 // occupiedNext is path[1] from the just-rejected straight-line plan — the
 // tile classifyTileBlocker soft-blocked on. target is the goal grid point
@@ -325,9 +327,16 @@ func advanceActorViaReroute(w *World, actor *Actor, dest MoveDestination, attemp
 	for attempt := 0; attempt < maxReroutePathsPerTick; attempt++ {
 		altPath := FindPathBlocking(grid, actor.Pos, GridPoint{X: target.X, Y: target.Y}, masked)
 		if altPath == nil || len(altPath) < 2 {
-			// No detour exists given the current mask. Sleeping-Abraham
-			// shape — terminal until the occupant moves.
-			replanFailed = true
+			// No path exists given the current mask. The interpretation
+			// depends on whether the mask widened past the original
+			// occupant: a nil on attempt 0 means no detour exists at all
+			// (sleeping-Abraham-in-the-only-doorway), but a nil on a later
+			// pass means every detour the planner could offer had its
+			// first step occupied, until the mask saturated the cardinal
+			// neighborhood (mutual block / clogged corridor). The two
+			// shapes are operationally different — only the first is
+			// terminal until the occupant moves.
+			replanFailed = attempt == 0
 			break
 		}
 
