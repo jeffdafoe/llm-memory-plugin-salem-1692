@@ -1159,6 +1159,7 @@ func find_object_at(screen_pos: Vector2) -> Dictionary:
 
     var best_id: String = ""
     var best_asset_id: String = ""
+    var best_has_interior: bool = false
     var best_dist: float = INF
 
     for obj_id in placed_objects:
@@ -1183,10 +1184,11 @@ func find_object_at(screen_pos: Vector2) -> Dictionary:
             best_dist = dist
             best_id = obj_id
             best_asset_id = str(node.get_meta("asset_id", ""))
+            best_has_interior = bool(node.get_meta("has_interior", false))
 
     if best_id == "":
         return {}
-    return {"id": best_id, "asset_id": best_asset_id}
+    return {"id": best_id, "asset_id": best_asset_id, "has_interior": best_has_interior}
 
 ## Texture size from either Sprite2D or AnimatedSprite2D — same logic
 ## the editor / tooltip helpers use for click hit-testing.
@@ -1388,6 +1390,12 @@ func _place_object(data: Dictionary) -> void:
     # Drives the editor's structure detail dropdown and the PC click
     # handler's enter-vs-knock decision (server-side, this duplicates).
     container.set_meta("entry_policy", str(data.get("entry_policy", "none")))
+    # Shared-identity bridge flag (ZBBS-WORK-351). True iff a Structure row
+    # shares this placement's id — a building, or a legacy-shelled prop like a
+    # noticeboard. The PC click handler reads this to pick the /pc/move kind:
+    # has_interior -> structure_enter (walk inside); bare prop -> object_visit
+    # (walk to its loiter slot). Always emitted by the server; default false.
+    container.set_meta("has_interior", bool(data.get("has_interior", false)))
     # Per-instance object_refresh policies. In v2 these ride the ObjectDTO
     # (there is no standalone GET); the editor reads them off this meta on
     # selection rather than fetching. Server omits the field for objects with

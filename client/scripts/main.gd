@@ -1107,12 +1107,22 @@ func _post_pc_move_to_screen(screen_pos: Vector2) -> void:
         _pc_move_purpose = ""
 
     if hit_id != "":
-        # Building/object click → enter the structure. A building is a
-        # village_object that also has a structure row, so the clicked object's
-        # id IS a valid structure_id for the engine's structure_enter resolution.
-        payload = JSON.stringify({
-            "destination": {"kind": "structure_enter", "structure_id": hit_id},
-        })
+        # Building/object click. has_interior (ZBBS-WORK-351) discriminates a
+        # placement that has a Structure row — a building, or a legacy-shelled
+        # prop like a noticeboard — from a bare placement (well, lamp, gather
+        # pile). A building's id is a valid structure_id for structure_enter
+        # (walk inside, today's behavior); a bare prop has no interior, so we
+        # walk to its loiter slot via object_visit. The engine does NOT fall
+        # through structure_enter → object_visit; misdispatching on a bare
+        # object 404s, so the client must pick the right kind here.
+        if bool(hit.get("has_interior", false)):
+            payload = JSON.stringify({
+                "destination": {"kind": "structure_enter", "structure_id": hit_id},
+            })
+        else:
+            payload = JSON.stringify({
+                "destination": {"kind": "object_visit", "object_id": hit_id},
+            })
     else:
         # Empty-ground click → walk to that tile. Convert the world-pixel click
         # to a PADDED internal-grid tile (the canonical wire unit) via the single
