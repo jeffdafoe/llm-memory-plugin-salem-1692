@@ -235,7 +235,13 @@ func movePCCommand(username string, dest sim.MoveDestination, leaveHuddleFirst b
 				}
 			}
 			if dest.ObjectID != nil {
-				if _, ok := world.VillageObjects[*dest.ObjectID]; !ok {
+				// Tombstoned entries (a key present in the map with a nil
+				// value) are not a valid placement either — MoveActor's own
+				// guard treats `!ok || vobj == nil` as not-found, so the
+				// sentinel mapping has to match or the nil case 422s
+				// instead of 404ing (code_review round 1).
+				vobj, ok := world.VillageObjects[*dest.ObjectID]
+				if !ok || vobj == nil {
 					return sim.MoveActorResult{}, errObjectNotFound
 				}
 			}

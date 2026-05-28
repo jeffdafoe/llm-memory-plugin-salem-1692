@@ -363,7 +363,13 @@ func objectsFromSnapshot(s *sim.Snapshot, assets map[sim.AssetID]*sim.Asset) []O
 		// VillageObject's. Bare placements (wells, lamps, gather piles)
 		// don't. Drives client dispatch between structure_enter (walk inside)
 		// and object_visit (walk to loiter slot) — ZBBS-WORK-351.
-		_, hasInterior := s.Structures[sim.StructureID(id)]
+		//
+		// Tombstoned entries (key present, value nil) don't count as a real
+		// shell — match MoveActor's `!ok || vobj == nil` shape so a stale
+		// nil row can't mark a bare placement as has_interior=true and
+		// route a click into a structure_enter 404 (code_review round 1).
+		shell, hasInterior := s.Structures[sim.StructureID(id)]
+		hasInterior = hasInterior && shell != nil
 		dto := ObjectDTO{
 			ID:                     string(id),
 			AssetID:                string(o.AssetID),
