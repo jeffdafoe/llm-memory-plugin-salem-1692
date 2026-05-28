@@ -259,20 +259,26 @@ func TestLocomotion_BilateralPauseInHuddle(t *testing.T) {
 	}
 }
 
-// TestLocomotion_SoftBlockerRetries covers soft blocking: another actor
-// standing on the mover's next tile stalls the step without consuming the
-// MoveIntent; once the occupant clears, the mover advances.
-func TestLocomotion_SoftBlockerRetries(t *testing.T) {
+// TestLocomotion_SoftBlocker_ReroutesAroundOccupant covers the
+// re-plan-on-soft-block path (ZBBS-WORK-340): when another actor stands on
+// the mover's straight-line next tile but a lateral detour is open, the
+// mover takes the detour on the SAME tick instead of stalling.
+// MoveIntent.StuckTicks stays at 0.
+func TestLocomotion_SoftBlocker_ReroutesAroundOccupant(t *testing.T) {
 	w, cancel, rec := buildLocomotionTestWorld(t)
 	defer cancel()
 	now := time.Now().UTC()
 
-	// walker at (PadX+5,PadY+5) heading straight north — next tile is
-	// (PadX+5,PadY+4). Park a blocker there.
+	// walker at (PadX+5,PadY+5) heading straight north — direct next tile
+	// would be (PadX+5,PadY+4). Park a blocker there; the lateral tiles
+	// (PadX+4|PadX+6, PadY+5) are open grass, so re-planning with the
+	// direct tile masked off yields a viable detour.
 	if _, err := w.Send(sim.Command{
 		Fn: func(world *sim.World) (any, error) {
 			world.Actors["blocker"] = &sim.Actor{
-				ID: "blocker", Pos: sim.TilePos{X: sim.PadX + 5, Y: sim.PadY + 4},
+				ID:          "blocker",
+				DisplayName: "Abraham",
+				Pos:         sim.TilePos{X: sim.PadX + 5, Y: sim.PadY + 4},
 			}
 			return nil, nil
 		},
@@ -285,33 +291,280 @@ func TestLocomotion_SoftBlockerRetries(t *testing.T) {
 	}
 
 	tickLoco(t, w, now)
+
 	pos, _ := actorSpatial(t, w, "walker")
-	if pos != (sim.Position{X: sim.PadX + 5, Y: sim.PadY + 5}) {
-		t.Errorf("walker advanced past a soft blocker: now at %+v", pos)
+	if pos == (sim.Position{X: sim.PadX + 5, Y: sim.PadY + 5}) {
+		t.Errorf("walker stalled on a soft blocker instead of re-routing; at %+v", pos)
 	}
-	if moveIntentOf(t, w, "walker") == nil {
-		t.Error("soft block cleared the MoveIntent — it must be preserved for retry")
+	if pos == (sim.Position{X: sim.PadX + 5, Y: sim.PadY + 4}) {
+		t.Errorf("walker stepped onto the occupied tile %+v", pos)
+	}
+	dx, dy := pos.X-(sim.PadX+5), pos.Y-(sim.PadY+5)
+	if !((dx == -1 && dy == 0) || (dx == 1 && dy == 0)) {
+		t.Errorf("walker took an unexpected detour: at %+v (expected one tile east or west of origin)", pos)
+	}
+	intent := moveIntentOf(t, w, "walker")
+	if intent == nil {
+		t.Fatal("MoveIntent was cleared on a re-route step")
+	}
+	if intent.StuckTicks != 0 {
+		t.Errorf("StuckTicks = %d after a successful re-route, want 0", intent.StuckTicks)
 	}
 	if n := rec.countEvents(func(e sim.Event) bool {
 		m, ok := e.(*sim.ActorMoved)
 		return ok && m.ActorID == "walker"
-	}); n != 0 {
-		t.Errorf("walker emitted %d ActorMoved while soft-blocked, want 0", n)
+	}); n != 1 {
+		t.Errorf("ActorMoved count = %d on the re-route tick, want 1", n)
 	}
+	if n := rec.countEvents(func(e sim.Event) bool {
+		s, ok := e.(*sim.ActorMoveStopped)
+		return ok && s.ActorID == "walker"
+	}); n != 0 {
+		t.Errorf("ActorMoveStopped fired on a successful re-route: %d", n)
+	}
+}
 
-	// Clear the blocker; the walker advances next tick.
+// TestLocomotion_SoftBlocker_HardStopsAfterStuckThreshold covers the
+// deadlock hard-stop (ZBBS-WORK-340): when a mover soft-blocks AND the
+// re-plan with the occupant tile masked off also finds no detour, the
+// stuck counter accumulates and after DeadlockStuckThreshold consecutive
+// ticks the mover emits MoveStoppedDeadlocked, the MoveIntent clears, and
+// a DeadlockEntry lands on World.DeadlockSnapshot with replan_failed=true
+// (the no-detour-exists branch).
+func TestLocomotion_SoftBlocker_HardStopsAfterStuckThreshold(t *testing.T) {
+	w, cancel, rec := buildLocomotionTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	// Destination IS the blocker's tile. The original FindPath returns a
+	// 2-tile path [start, goal]; path[1] equals the goal, which is the
+	// occupied tile. Re-planning with that tile masked off makes the goal
+	// itself impassable so FindPath returns nil — exactly the
+	// sleeping-Abraham-in-the-only-doorway shape.
 	if _, err := w.Send(sim.Command{
 		Fn: func(world *sim.World) (any, error) {
-			world.Actors["blocker"].Pos.X = sim.PadX + 50
+			world.Actors["blocker"] = &sim.Actor{
+				ID:          "blocker",
+				DisplayName: "Abraham",
+				Pos:         sim.TilePos{X: sim.PadX + 5, Y: sim.PadY + 4},
+			}
 			return nil, nil
 		},
 	}); err != nil {
-		t.Fatalf("move blocker: %v", err)
+		t.Fatalf("seed blocker: %v", err)
 	}
+	dest := sim.Position{X: sim.PadX + 5, Y: sim.PadY + 4}
+	if _, err := w.Send(sim.MoveActor("walker",
+		sim.NewPositionDestination(dest), false, now)); err != nil {
+		t.Fatalf("MoveActor: %v", err)
+	}
+
+	// Tick up to (threshold - 1) times: the counter should accumulate but no
+	// Deadlocked event fires yet.
+	for i := 1; i < sim.DeadlockStuckThreshold; i++ {
+		tickLoco(t, w, now)
+		intent := moveIntentOf(t, w, "walker")
+		if intent == nil {
+			t.Fatalf("MoveIntent cleared on tick %d (before threshold)", i)
+		}
+		if intent.StuckTicks != i {
+			t.Errorf("StuckTicks after tick %d = %d, want %d", i, intent.StuckTicks, i)
+		}
+		if n := rec.countEvents(func(e sim.Event) bool {
+			s, ok := e.(*sim.ActorMoveStopped)
+			return ok && s.ActorID == "walker"
+		}); n != 0 {
+			t.Errorf("ActorMoveStopped fired before threshold (after tick %d): %d", i, n)
+		}
+		if got := w.DeadlockSnapshot(); len(got) != 0 {
+			t.Errorf("DeadlockSnapshot non-empty before threshold (after tick %d): %d", i, len(got))
+		}
+	}
+
+	// One more tick trips the threshold: Deadlocked event + ring entry.
 	tickLoco(t, w, now)
-	pos, _ = actorSpatial(t, w, "walker")
-	if pos != (sim.Position{X: sim.PadX + 5, Y: sim.PadY + 4}) {
-		t.Errorf("walker did not advance after the blocker cleared: at %+v", pos)
+
+	if intent := moveIntentOf(t, w, "walker"); intent != nil {
+		t.Errorf("MoveIntent survived the deadlock hard-stop: %+v", intent)
+	}
+	stopped := rec.countEvents(func(e sim.Event) bool {
+		s, ok := e.(*sim.ActorMoveStopped)
+		return ok && s.ActorID == "walker" && s.Reason == sim.MoveStoppedDeadlocked
+	})
+	if stopped != 1 {
+		t.Errorf("ActorMoveStopped{deadlocked} count = %d, want 1", stopped)
+	}
+
+	entries := w.DeadlockSnapshot()
+	if len(entries) != 1 {
+		t.Fatalf("DeadlockSnapshot length = %d, want 1", len(entries))
+	}
+	got := entries[0]
+	if got.MoverID != "walker" {
+		t.Errorf("MoverID = %q, want walker", got.MoverID)
+	}
+	if got.OccupantID != "blocker" {
+		t.Errorf("OccupantID = %q, want blocker", got.OccupantID)
+	}
+	if got.OccupantName != "Abraham" {
+		t.Errorf("OccupantName = %q, want Abraham", got.OccupantName)
+	}
+	if got.OccupantTile != (sim.Position{X: sim.PadX + 5, Y: sim.PadY + 4}) {
+		t.Errorf("OccupantTile = %+v, want %+v", got.OccupantTile, sim.Position{X: sim.PadX + 5, Y: sim.PadY + 4})
+	}
+	if !got.ReplanFailed {
+		t.Error("ReplanFailed = false, want true (the goal itself is blocked — no detour exists)")
+	}
+	if got.DestinationKind != sim.MoveDestinationPosition {
+		t.Errorf("DestinationKind = %q, want position", got.DestinationKind)
+	}
+	if got.DestPosition != dest {
+		t.Errorf("DestPosition = %+v, want %+v", got.DestPosition, dest)
+	}
+}
+
+// TestLocomotion_SoftBlocker_StuckCounterResetsOnSuccessfulStep covers the
+// reset rule (ZBBS-WORK-340): once a mover takes a successful one-tile
+// step (whether direct or via re-plan), MoveIntent.StuckTicks resets to 0.
+// Without the reset, a mover stuck N-1 ticks → advances → restuck-N-1
+// would deadlock-stop in 2 ticks instead of N; we accumulate ticks and
+// then verify a successful step zeroes the counter directly.
+func TestLocomotion_SoftBlocker_StuckCounterResetsOnSuccessfulStep(t *testing.T) {
+	w, cancel, _ := buildLocomotionTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	// Walker at (PadX+5,PadY+5), destination two tiles north (PadX+5,PadY+3).
+	// Four actor blockers fence off every cardinal neighbor of the walker
+	// — the iterative-mask re-plan widens up to all four and still finds
+	// every first-step soft-blocked, so the stuck counter ticks up.
+	if _, err := w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			world.Actors["north_blocker"] = &sim.Actor{
+				ID: "north_blocker", DisplayName: "North",
+				Pos: sim.TilePos{X: sim.PadX + 5, Y: sim.PadY + 4},
+			}
+			world.Actors["west_blocker"] = &sim.Actor{
+				ID: "west_blocker", DisplayName: "West",
+				Pos: sim.TilePos{X: sim.PadX + 4, Y: sim.PadY + 5},
+			}
+			world.Actors["east_blocker"] = &sim.Actor{
+				ID: "east_blocker", DisplayName: "East",
+				Pos: sim.TilePos{X: sim.PadX + 6, Y: sim.PadY + 5},
+			}
+			world.Actors["south_blocker"] = &sim.Actor{
+				ID: "south_blocker", DisplayName: "South",
+				Pos: sim.TilePos{X: sim.PadX + 5, Y: sim.PadY + 6},
+			}
+			return nil, nil
+		},
+	}); err != nil {
+		t.Fatalf("seed blockers: %v", err)
+	}
+	if _, err := w.Send(sim.MoveActor("walker",
+		sim.NewPositionDestination(sim.Position{X: sim.PadX + 5, Y: sim.PadY + 3}), false, now)); err != nil {
+		t.Fatalf("MoveActor: %v", err)
+	}
+
+	// Accumulate three ticks of stuck. (Stay under DeadlockStuckThreshold
+	// so the walker hasn't hard-stopped yet.)
+	for i := 1; i <= 3; i++ {
+		tickLoco(t, w, now)
+		intent := moveIntentOf(t, w, "walker")
+		if intent == nil {
+			t.Fatalf("MoveIntent cleared on tick %d", i)
+		}
+		if intent.StuckTicks != i {
+			t.Fatalf("StuckTicks after tick %d = %d, want %d", i, intent.StuckTicks, i)
+		}
+	}
+
+	// Move east_blocker off the lateral detour. Next tick, the re-plan
+	// finds a step via (PadX+6,PadY+5).
+	if _, err := w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			world.Actors["east_blocker"].Pos.X = sim.PadX + 50
+			return nil, nil
+		},
+	}); err != nil {
+		t.Fatalf("move east_blocker: %v", err)
+	}
+
+	tickLoco(t, w, now)
+
+	pos, _ := actorSpatial(t, w, "walker")
+	if pos != (sim.Position{X: sim.PadX + 6, Y: sim.PadY + 5}) {
+		t.Errorf("walker did not take the freed lateral detour: at %+v, want %+v", pos, sim.Position{X: sim.PadX + 6, Y: sim.PadY + 5})
+	}
+	intent := moveIntentOf(t, w, "walker")
+	if intent == nil {
+		t.Fatal("MoveIntent cleared on the reset step (walker has not arrived yet)")
+	}
+	if intent.StuckTicks != 0 {
+		t.Errorf("StuckTicks after a successful step = %d, want 0", intent.StuckTicks)
+	}
+}
+
+// TestLocomotion_SoftBlocker_DeadlockEntryReplanFailedFalse_OnMutualBlockShape
+// covers the ReplanFailed classification on the mutual-block / clogged-
+// corridor flavor (ZBBS-WORK-340). When every cardinal neighbor is
+// soft-blocked by a separate actor, the iterative-mask re-plan finds
+// detours on early passes (each with a soft-blocked first step) and
+// only returns nil once the mask saturates the neighborhood — that nil
+// is "no detour after also masking everywhere else," NOT "no detour
+// exists at all." The recorded entry must read replan_failed=false so
+// operators can distinguish "relocate a sleeper" from "the corridor's
+// just clogged."
+func TestLocomotion_SoftBlocker_DeadlockEntryReplanFailedFalse_OnMutualBlockShape(t *testing.T) {
+	w, cancel, _ := buildLocomotionTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	// Walker at (PadX+5,PadY+5), destination two tiles north (PadX+5,PadY+3).
+	// All four cardinal neighbors occupied by distinct actors — the goal
+	// itself is OPEN grass, so on attempt 0 FindPathBlocking (with just
+	// north masked) returns a valid path via a lateral. The first-step
+	// soft-block then widens the mask through all four neighbors before
+	// the planner runs out.
+	if _, err := w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			world.Actors["north_blocker"] = &sim.Actor{
+				ID: "north_blocker", DisplayName: "North",
+				Pos: sim.TilePos{X: sim.PadX + 5, Y: sim.PadY + 4},
+			}
+			world.Actors["west_blocker"] = &sim.Actor{
+				ID: "west_blocker", DisplayName: "West",
+				Pos: sim.TilePos{X: sim.PadX + 4, Y: sim.PadY + 5},
+			}
+			world.Actors["east_blocker"] = &sim.Actor{
+				ID: "east_blocker", DisplayName: "East",
+				Pos: sim.TilePos{X: sim.PadX + 6, Y: sim.PadY + 5},
+			}
+			world.Actors["south_blocker"] = &sim.Actor{
+				ID: "south_blocker", DisplayName: "South",
+				Pos: sim.TilePos{X: sim.PadX + 5, Y: sim.PadY + 6},
+			}
+			return nil, nil
+		},
+	}); err != nil {
+		t.Fatalf("seed blockers: %v", err)
+	}
+	if _, err := w.Send(sim.MoveActor("walker",
+		sim.NewPositionDestination(sim.Position{X: sim.PadX + 5, Y: sim.PadY + 3}), false, now)); err != nil {
+		t.Fatalf("MoveActor: %v", err)
+	}
+
+	// Drive past the threshold.
+	for i := 0; i < sim.DeadlockStuckThreshold; i++ {
+		tickLoco(t, w, now)
+	}
+
+	entries := w.DeadlockSnapshot()
+	if len(entries) != 1 {
+		t.Fatalf("DeadlockSnapshot length = %d, want 1", len(entries))
+	}
+	if entries[0].ReplanFailed {
+		t.Error("ReplanFailed = true, want false — detours existed (first FindPathBlocking returned a non-nil path), they just all had occupied first steps")
 	}
 }
 
