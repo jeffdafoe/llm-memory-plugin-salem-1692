@@ -88,9 +88,11 @@ func CreateScene(originKind string, bound SceneBound, now time.Time) Command {
 				// Live anchor via the Shared-Identity Bridge — vobj.Pos.Tile()
 				// reflects editor structure-moves since load, where the
 				// dropped Structure.Position field could not (ZBBS-WORK-342).
-				vobj, _, ok := villageObjectForStructure(w, *bound.StructureID)
+				// Use the vobj-only helper so an asset-catalog gap can't
+				// masquerade as a missing VillageObject in the error.
+				vobj, ok := villageObjectForStructureOnly(w, *bound.StructureID)
 				if !ok {
-					return SceneID(""), fmt.Errorf("structure %q has no backing village object", *bound.StructureID)
+					return SceneID(""), fmt.Errorf("structure %q has no backing village object (Shared-Identity Bridge violation)", *bound.StructureID)
 				}
 				originPos = vobj.Pos.Tile()
 			case SceneBoundArea:
