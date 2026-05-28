@@ -63,13 +63,30 @@ func tile_to_world(tile_x: int, tile_y: int) -> Vector2:
         float(tile_y - pad_y) * tile_size + tile_size / 2.0,
     )
 
+## Inverse of tile_to_world: the engine internal-grid (PADDED) tile whose cell
+## contains a world-pixel position. Outbound wire payloads (pc/move) and the
+## inbound tile_to_world both live here so the two directions can never disagree.
+## floor(px/tile_size) is the unpadded cell; + pad lifts it into the engine's
+## padded grid-index space — the canonical wire unit. Do NOT use world.gd's
+## world_to_tile (unpadded) to build wire coords.
+func world_to_tile_padded(world_pos: Vector2) -> Vector2i:
+    return Vector2i(
+        int(floor(world_pos.x / float(tile_size))) + pad_x,
+        int(floor(world_pos.y / float(tile_size))) + pad_y,
+    )
+
 ## Re-seed the grid geometry from the terrain DTO header (which carries pad_x /
 ## pad_y / tile_size). Safe to call as part of the terrain load; until then the
 ## engine-matching defaults above are used.
 func refresh_geometry(terrain_meta: Dictionary) -> void:
     pad_x = int(terrain_meta.get("pad_x", pad_x))
     pad_y = int(terrain_meta.get("pad_y", pad_y))
-    tile_size = int(terrain_meta.get("tile_size", tile_size))
+    # Guard tile_size > 0: a zero/garbage value from a malformed DTO would
+    # divide-by-zero in world_to_tile_padded and collapse tile_to_world. Keep
+    # the prior (engine-matching) value rather than poison the grid.
+    var ts: int = int(terrain_meta.get("tile_size", tile_size))
+    if ts > 0:
+        tile_size = ts
 
 ## Compare a server-reported contract_version against this client build. Returns
 ## true when compatible; on a mismatch logs loudly and returns false so the
