@@ -1107,12 +1107,20 @@ func _post_pc_move_to_screen(screen_pos: Vector2) -> void:
         _pc_move_purpose = ""
 
     if hit_id != "":
-        payload = JSON.stringify({"target_structure_id": hit_id})
-    else:
-        var world_pos: Vector2 = world.get_global_mouse_position()
+        # Building/object click → enter the structure. A building is a
+        # village_object that also has a structure row, so the clicked object's
+        # id IS a valid structure_id for the engine's structure_enter resolution.
         payload = JSON.stringify({
-            "target_x": world_pos.x,
-            "target_y": world_pos.y,
+            "destination": {"kind": "structure_enter", "structure_id": hit_id},
+        })
+    else:
+        # Empty-ground click → walk to that tile. Convert the world-pixel click
+        # to a PADDED internal-grid tile (the canonical wire unit) via the single
+        # inverse seam; never use world.world_to_tile (unpadded) for wire coords.
+        var world_pos: Vector2 = world.get_global_mouse_position()
+        var tile: Vector2i = VillageApi.world_to_tile_padded(world_pos)
+        payload = JSON.stringify({
+            "destination": {"kind": "position", "position": {"x": tile.x, "y": tile.y}},
         })
     var err := _pc_http_move.request(Auth.api_base + "/api/village/pc/move",
         headers, HTTPClient.METHOD_POST, payload)
