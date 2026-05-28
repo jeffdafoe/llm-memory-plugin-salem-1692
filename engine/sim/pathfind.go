@@ -321,6 +321,46 @@ func FindPath(g *WalkGrid, start, goal GridPoint) []GridPoint {
 	return nil
 }
 
+// FindPathBlocking is FindPath with extra tiles treated as impassable for
+// the duration of the call (ZBBS-WORK-340). Used by the locomotion
+// ticker's soft-block re-plan branch: when classifyTileBlocker reports a
+// soft block, the ticker re-runs the planner with the occupant's tile
+// masked off to see if a detour exists; if the detour's first step is
+// ALSO occupied, the ticker adds that tile and re-runs, etc. — A* is
+// deterministic, so we have to widen the mask rather than expecting the
+// next-tick re-plan to magically choose a different route.
+//
+// In-place mutate + defer-restore: temporarily set each blocked tile's
+// cost to 0 (impassable) and restore on return. Safe because
+// EvaluateLocomotion processes movers serially on the world goroutine —
+// no concurrent path query can observe the masked-off cells. defer-
+// restore covers a FindPath panic.
+//
+// Out-of-grid tiles in blocked are silently skipped. If blocked includes
+// goal, FindPath returns nil (goal is impassable), which is the correct
+// answer for "is there a detour given THESE tiles are taken".
+func FindPathBlocking(g *WalkGrid, start, goal GridPoint, blocked []GridPoint) []GridPoint {
+	type savedTile struct {
+		idx  int
+		cost uint8
+	}
+	saved := make([]savedTile, 0, len(blocked))
+	for _, b := range blocked {
+		if b.X < 0 || b.X >= MapW || b.Y < 0 || b.Y >= MapH {
+			continue
+		}
+		idx := b.Y*MapW + b.X
+		saved = append(saved, savedTile{idx: idx, cost: g.cost[idx]})
+		g.cost[idx] = 0
+	}
+	defer func() {
+		for _, s := range saved {
+			g.cost[s.idx] = s.cost
+		}
+	}()
+	return FindPath(g, start, goal)
+}
+
 // FindPathToAdjacent finds the shortest path from start to any walkable
 // cardinal neighbor of goal. Returns (path, neighbor) — the chosen
 // neighbor, or (nil, zero) if no neighbor is both walkable and

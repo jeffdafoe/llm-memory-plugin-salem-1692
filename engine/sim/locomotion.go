@@ -110,6 +110,15 @@ type MovementAttemptID uint64
 type MoveIntent struct {
 	Destination MoveDestination
 	AttemptID   MovementAttemptID
+
+	// StuckTicks counts consecutive locomotion ticks during which the mover
+	// soft-blocked AND the re-plan with the occupant tile masked off found
+	// no advanceable next tile. Reset to 0 on any successful one-tile step.
+	// When it reaches DeadlockStuckThreshold, advanceActorLocomotion hard-
+	// stops the mover with MoveStoppedDeadlocked and records a DeadlockEntry
+	// for the umbilical /deadlocks view. See locomotion_ticker.go and
+	// ZBBS-WORK-340 for the design.
+	StuckTicks int
 }
 
 // cloneMoveIntent deep-copies a MoveIntent (nil-safe). Wired into

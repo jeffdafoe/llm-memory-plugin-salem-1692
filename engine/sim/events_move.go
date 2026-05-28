@@ -114,6 +114,17 @@ const (
 	// (e.g. the target structure was removed) while the actor was en
 	// route.
 	MoveStoppedInvalidated MoveStoppedReason = "invalidated"
+
+	// MoveStoppedDeadlocked — the mover soft-blocked for
+	// DeadlockStuckThreshold consecutive ticks with no advanceable re-plan
+	// (ZBBS-WORK-340). Distinct from Blocked because the obstruction was
+	// another actor (transient by nature), not a wall — NPC behavior trees
+	// can treat it as "retry later" rather than "the destination is
+	// fundamentally unreachable, pick a new goal". The umbilical
+	// /deadlocks view records the event with mover + occupant + a
+	// replan-failed flag so operators can see deadlock frequency in live
+	// play.
+	MoveStoppedDeadlocked MoveStoppedReason = "deadlocked"
 )
 
 // ActorMoveStopped fires when an ACCEPTED movement attempt fails to reach
