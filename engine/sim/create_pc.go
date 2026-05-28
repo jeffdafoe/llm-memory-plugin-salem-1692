@@ -105,8 +105,13 @@ func CreatePC(loginUsername, characterName, spriteID string, now time.Time) Comm
 			// PC is still created — just outdoors and unlodged (they can rent via
 			// the normal flow). Mirrors v1's soft-fail starter seeding.
 			if lodgingID, ok := findLodgingStructure(w); ok {
-				if st := w.Structures[lodgingID]; st != nil {
-					actor.Pos = st.Position
+				// villageObjectForStructure is the live anchor source — the
+				// Shared-Identity Bridge guarantees a lodging Structure's
+				// backing VillageObject exists, and vobj.Pos.Tile() reflects
+				// any editor structure-moves since load (which the dropped
+				// Structure.Position field could not, see ZBBS-WORK-342).
+				if vobj, _, ok := villageObjectForStructure(w, lodgingID); ok {
+					actor.Pos = vobj.Pos.Tile()
 					setActorInsideStructure(w, actor, lodgingID)
 					loc := w.Settings.Location
 					if loc == nil {

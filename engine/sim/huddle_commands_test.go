@@ -20,6 +20,20 @@ func buildHuddleTestWorld(t *testing.T) (*sim.World, context.CancelFunc) {
 		"tavern": {ID: "tavern", DisplayName: "Tavern"},
 		"smithy": {ID: "smithy", DisplayName: "Smithy"},
 	})
+	// Shared-Identity Bridge — every Structure.ID needs a backing
+	// VillageObject.ID for villageObjectForStructure to resolve. Origin
+	// position for SceneBoundStructure now comes from vobj.Pos.Tile()
+	// (ZBBS-WORK-342 dropped the redundant Structure.Position field), so
+	// these tests must seed a corresponding VillageObject + Asset entry.
+	// Anchor pixels are chosen to land on a non-zero padded tile that is
+	// distinct between tavern and smithy.
+	handles.Assets.Seed(map[sim.AssetID]*sim.Asset{
+		"bldg-asset": {ID: "bldg-asset", Category: "structure"},
+	})
+	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
+		"tavern": {ID: "tavern", AssetID: "bldg-asset", Pos: sim.WorldPos{X: 160, Y: 160}},
+		"smithy": {ID: "smithy", AssetID: "bldg-asset", Pos: sim.WorldPos{X: 320, Y: 320}},
+	})
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
 		"alice":   {ID: "alice", DisplayName: "Alice"},
 		"bob":     {ID: "bob", DisplayName: "Bob"},
@@ -357,6 +371,14 @@ func TestCreateScene_CapturesParticipantsAtOriginStructure(t *testing.T) {
 	repo, handles := mem.NewRepository()
 	handles.Structures.Seed(map[sim.StructureID]*sim.Structure{
 		"tavern": {ID: "tavern", DisplayName: "Tavern"},
+	})
+	// Shared-Identity Bridge — SceneBoundStructure now derives origin via
+	// villageObjectForStructure (ZBBS-WORK-342).
+	handles.Assets.Seed(map[sim.AssetID]*sim.Asset{
+		"bldg-asset": {ID: "bldg-asset", Category: "structure"},
+	})
+	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
+		"tavern": {ID: "tavern", AssetID: "bldg-asset", Pos: sim.WorldPos{X: 160, Y: 160}},
 	})
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
 		"alice": {

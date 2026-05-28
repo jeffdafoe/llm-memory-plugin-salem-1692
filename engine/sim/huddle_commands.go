@@ -82,11 +82,17 @@ func CreateScene(originKind string, bound SceneBound, now time.Time) Command {
 				if bound.StructureID == nil {
 					return SceneID(""), fmt.Errorf("structure bound missing StructureID")
 				}
-				structure, ok := w.Structures[*bound.StructureID]
-				if !ok {
+				if _, ok := w.Structures[*bound.StructureID]; !ok {
 					return SceneID(""), fmt.Errorf("structure %q not found", *bound.StructureID)
 				}
-				originPos = structure.Position
+				// Live anchor via the Shared-Identity Bridge — vobj.Pos.Tile()
+				// reflects editor structure-moves since load, where the
+				// dropped Structure.Position field could not (ZBBS-WORK-342).
+				vobj, _, ok := villageObjectForStructure(w, *bound.StructureID)
+				if !ok {
+					return SceneID(""), fmt.Errorf("structure %q has no backing village object", *bound.StructureID)
+				}
+				originPos = vobj.Pos.Tile()
 			case SceneBoundArea:
 				if bound.Anchor == nil || bound.Radius == nil {
 					return SceneID(""), fmt.Errorf("area bound missing Anchor or Radius")
