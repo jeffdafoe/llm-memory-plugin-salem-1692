@@ -28,12 +28,11 @@ import (
 //       Tiredness bump proportional to walked distance. Short walks floor
 //       to zero — popping next door is free, by design.
 //
-// PER-NEED-PER-ACTOR DWELL-CREDIT SKIP (legacy needs_tick carve-out) is
-// STUBBED: actor.DwellCredits is in the model but DwellCredit struct is
-// still a placeholder until the dwell subsystem ports. When dwell lands,
-// the tick adds a "skip this need for this actor if a fresh dwell credit
-// exists for the matching effect category" branch — straightforward
-// addition once DwellCredit gets its LastCreditedAt field.
+// PER-NEED-PER-ACTOR DWELL-CREDIT SKIP — see hasFreshDwellCreditForAttribute
+// below. Ported from v1 ZBBS-HOME-214 (ZBBS-WORK-346): a need increment
+// is suppressed for the hour when the actor has a fresh dwell-credit row
+// on that need, so dwelling at a Shade Tree doesn't see same-hour needs-
+// tick accrual cancel out the per-minute dwell recovery delta.
 
 // NeedDelta is the per-need change vector consumption submits. Negative
 // values reduce, positive increase, zero leaves alone. Sparse map: keys
@@ -129,6 +128,40 @@ func (NeedThresholdWarrantReason) isWarrantReason()           {}
 func (NeedThresholdWarrantReason) Kind() WarrantKind          { return WarrantKindNeedThreshold }
 func (NeedThresholdWarrantReason) DedupDiscriminator() uint64 { return 0 }
 
+// NeedsTickDwellSkipWindow is the freshness cutoff for the per-attribute
+// dwell-credit skip in IncrementNeedsTick — mirrors v1's INTERVAL '1 hour'
+// in the legacy needs_tick NOT EXISTS predicate (ZBBS-HOME-214). Matched
+// to the hourly tick cadence: if the actor was dwelling at any point
+// during this tick's hour, skip the increment for that attribute. Binary
+// skip — partial-hour accuracy isn't the goal; the per-minute dwell sweep
+// handles real-time recovery.
+const NeedsTickDwellSkipWindow = time.Hour
+
+// hasFreshDwellCreditForAttribute reports whether actor has any DwellCredit
+// whose Attribute matches the given need key and was credited within the
+// freshness window. Source-agnostic: both object-source (resting at a Shade
+// Tree) and item-source (still digesting stew) credits suppress the same-
+// tick accrual on that attribute. Mirrors v1 ZBBS-HOME-214's
+// actor_dwell_credit NOT EXISTS predicate (ZBBS-WORK-346).
+func hasFreshDwellCreditForAttribute(a *Actor, attr NeedKey, now time.Time, freshness time.Duration) bool {
+	if a == nil || len(a.DwellCredits) == 0 {
+		return false
+	}
+	cutoff := now.Add(-freshness)
+	for _, c := range a.DwellCredits {
+		if c == nil {
+			continue
+		}
+		if c.Attribute != attr {
+			continue
+		}
+		if c.LastCreditedAt.After(cutoff) {
+			return true
+		}
+	}
+	return false
+}
+
 // IncrementNeedsTick returns a Command that applies the hourly needs
 // increment across all eligible actors.
 //
@@ -139,14 +172,15 @@ func (NeedThresholdWarrantReason) DedupDiscriminator() uint64 { return 0 }
 //   - on-break actors STILL tick (vendor on break is awake, just off-shift,
 //     and should still get hungry per legacy comment)
 //
+// Within an eligible actor, per-attribute the increment is skipped if a
+// fresh DwellCredit exists for that need (see hasFreshDwellCreditForAttribute)
+// — closes v1's "rest under a tree but stat still climbs" wash.
+//
 // The caller supplies how many capped hours of increment to apply — the
 // ticker computes this from the elapsed window. Magnitude per hour comes
 // from WorldSettings.NeedsTickAmount.
 //
 // Returns the count of actors touched.
-//
-// TODO(rewrite): per-need-per-actor dwell-credit skip when dwell subsystem
-// ports. Currently the increment applies regardless of dwell state.
 func IncrementNeedsTick(cappedHours int) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
@@ -188,6 +222,16 @@ func IncrementNeedsTick(cappedHours int) Command {
 				crossed := false
 
 				for _, n := range Needs {
+					// ZBBS-WORK-346 — port of v1 ZBBS-HOME-214: skip this need
+					// for this actor if a fresh dwell-credit exists on the
+					// matching attribute. Closes the "rest under a tree but
+					// stat still climbs" wash on slow recoverers. A skipped
+					// need also can't cross its red threshold this tick — the
+					// v1 SQL UPDATE skipped the row entirely, same effect.
+					if hasFreshDwellCreditForAttribute(a, n.Key, now, NeedsTickDwellSkipWindow) {
+						continue
+					}
+
 					before := a.Needs[n.Key]
 					after := ClampNeed(before + bump)
 					a.Needs[n.Key] = after
