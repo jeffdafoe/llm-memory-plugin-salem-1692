@@ -34,7 +34,7 @@ func NewStructuresRepo(pool Pool) *StructuresRepo {
 }
 
 const loadAllSQLS = `
-SELECT id, display_name, position_x, position_y, tags, leads_to_realm
+SELECT id, display_name, tags, leads_to_realm
   FROM structure`
 
 const loadAllRoomsSQLS = `
@@ -43,14 +43,12 @@ SELECT id, structure_id, kind, name
 
 const upsertSQLS = `
 INSERT INTO structure (
-    id, display_name, position_x, position_y, tags, leads_to_realm, snapshot_gen
+    id, display_name, tags, leads_to_realm, snapshot_gen
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7
+    $1, $2, $3, $4, $5
 )
 ON CONFLICT (id) DO UPDATE SET
     display_name   = EXCLUDED.display_name,
-    position_x     = EXCLUDED.position_x,
-    position_y     = EXCLUDED.position_y,
     tags           = EXCLUDED.tags,
     leads_to_realm = EXCLUDED.leads_to_realm,
     snapshot_gen   = EXCLUDED.snapshot_gen`
@@ -104,12 +102,10 @@ func (r *StructuresRepo) LoadAll(ctx context.Context) (map[sim.StructureID]*sim.
 		var (
 			id           string
 			displayName  string
-			positionX    int
-			positionY    int
 			tags         []string
 			leadsToRealm string
 		)
-		if err := rows.Scan(&id, &displayName, &positionX, &positionY, &tags, &leadsToRealm); err != nil {
+		if err := rows.Scan(&id, &displayName, &tags, &leadsToRealm); err != nil {
 			return nil, fmt.Errorf("pg structures LoadAll scan: %w", err)
 		}
 		// Defensive: pgx may scan an empty array as nil depending on
@@ -123,7 +119,6 @@ func (r *StructuresRepo) LoadAll(ctx context.Context) (map[sim.StructureID]*sim.
 			ID:           sim.StructureID(id),
 			DisplayName:  displayName,
 			Tags:         tags,
-			Position:     sim.Position{X: positionX, Y: positionY},
 			LeadsToRealm: leadsToRealm,
 		}
 	}
@@ -280,11 +275,9 @@ func (r *StructuresRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, structures
 		if _, err := tx.Exec(ctx, upsertSQLS,
 			string(s.ID),   // $1 id
 			s.DisplayName,  // $2 display_name
-			s.Position.X,   // $3 position_x
-			s.Position.Y,   // $4 position_y
-			s.Tags,         // $5 tags (TEXT[])
-			s.LeadsToRealm, // $6 leads_to_realm
-			structGen,      // $7 snapshot_gen
+			s.Tags,         // $3 tags (TEXT[])
+			s.LeadsToRealm, // $4 leads_to_realm
+			structGen,      // $5 snapshot_gen
 		); err != nil {
 			return fmt.Errorf("pg structures SaveSnapshot: upsert structure id=%s: %w", s.ID, err)
 		}

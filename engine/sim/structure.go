@@ -10,11 +10,22 @@ type Position = TilePos
 
 // Structure is a building or named location. Loiter slots and asset
 // placement details are ported when those subsystems land.
+//
+// A Structure has NO position field. The Shared-Identity Bridge (see
+// engine/sim/structure_anchors.go) guarantees every Structure.ID matches
+// a VillageObject.ID, and VillageObject.Pos (world-pixels) is the single
+// source of truth for "where is this building." Code that needs the
+// structure's tile anchor calls villageObjectForStructure(w, id) and
+// reads vobj.Pos.Tile() (canonical padded-tile wire unit; see
+// shared/notes/codebase/salem/coordinate-frames). ZBBS-WORK-342 removed
+// the redundant Structure.Position field + the corresponding pg
+// structure.position_x / position_y columns — they had been seeded
+// unpadded from v1 and never updated by any runtime move, so every
+// editor structure-move silently left them stale.
 type Structure struct {
 	ID          StructureID
 	DisplayName string
 	Tags        []string
-	Position    Position
 
 	// Rooms — first-class per-instance rooms within this structure
 	// (ZBBS-149). Common room is always present; private bedrooms +

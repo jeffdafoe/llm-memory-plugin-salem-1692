@@ -156,6 +156,14 @@ func TestJoinHuddle_RejectsSceneStructureMismatch(t *testing.T) {
 		"tavern":     {ID: "tavern", DisplayName: "Tavern"},
 		"blacksmith": {ID: "blacksmith", DisplayName: "Blacksmith"},
 	})
+	// Shared-Identity Bridge for SceneBoundStructure (ZBBS-WORK-342).
+	handles.Assets.Seed(map[sim.AssetID]*sim.Asset{
+		"bldg-asset": {ID: "bldg-asset", Category: "structure"},
+	})
+	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
+		"tavern":     {ID: "tavern", AssetID: "bldg-asset", Pos: sim.WorldPos{X: 160, Y: 160}},
+		"blacksmith": {ID: "blacksmith", AssetID: "bldg-asset", Pos: sim.WorldPos{X: 320, Y: 320}},
+	})
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
 		"alice": {ID: "alice", InsideStructureID: "blacksmith"},
 	})
@@ -254,6 +262,13 @@ func TestConcludeHuddle_DoesNotAutoConcludeStructureScene(t *testing.T) {
 	repo, handles := mem.NewRepository()
 	handles.Structures.Seed(map[sim.StructureID]*sim.Structure{
 		"tavern": {ID: "tavern", DisplayName: "Tavern"},
+	})
+	// Shared-Identity Bridge for SceneBoundStructure (ZBBS-WORK-342).
+	handles.Assets.Seed(map[sim.AssetID]*sim.Asset{
+		"bldg-asset": {ID: "bldg-asset", Category: "structure"},
+	})
+	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
+		"tavern": {ID: "tavern", AssetID: "bldg-asset", Pos: sim.WorldPos{X: 160, Y: 160}},
 	})
 	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
 		"alice": {ID: "alice", InsideStructureID: "tavern"},

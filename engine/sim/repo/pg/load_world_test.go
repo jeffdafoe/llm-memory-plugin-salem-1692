@@ -228,7 +228,7 @@ const (
 func TestLoadWorld_HappyPath(t *testing.T) {
 	startedAt := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
 	huddleA := &sim.Huddle{ID: "h-a", Members: map[sim.ActorID]struct{}{"act-1": {}}, StructureID: bldgA, StartedAt: startedAt}
-	structA := &sim.Structure{ID: bldgA, DisplayName: "Tavern", Position: sim.Position{X: 5, Y: 5}, Tags: []string{}}
+	structA := &sim.Structure{ID: bldgA, DisplayName: "Tavern", Tags: []string{}}
 	voA := &sim.VillageObject{ID: bldgA}
 	sceA := &sim.Scene{
 		ID:         "sc-a",
@@ -405,7 +405,7 @@ func TestLoadWorld_MissingHuddleRef_HardFails(t *testing.T) {
 // map is dropped (NOT hard error). Verify the orphan scene is absent
 // from w.Scenes and a sibling (non-orphan) scene survives.
 func TestLoadWorld_OrphanStructureBoundScene_WarnsAndDrops(t *testing.T) {
-	structA := &sim.Structure{ID: bldgA, DisplayName: "Tavern", Position: sim.Position{X: 1, Y: 1}, Tags: []string{}}
+	structA := &sim.Structure{ID: bldgA, DisplayName: "Tavern", Tags: []string{}}
 	voA := &sim.VillageObject{ID: bldgA}
 	sceLive := &sim.Scene{
 		ID:         "sc-live",
@@ -467,7 +467,7 @@ func TestLoadWorld_OrphanAreaBoundScene_NotDropped(t *testing.T) {
 // TestLoadWorld_BridgeMismatch_HardFails — a Structure exists with no
 // matching VillageObject (Slice 12 shared-identity bridge violation).
 func TestLoadWorld_BridgeMismatch_HardFails(t *testing.T) {
-	structA := &sim.Structure{ID: bldgA, DisplayName: "Tavern", Position: sim.Position{X: 1, Y: 1}, Tags: []string{}}
+	structA := &sim.Structure{ID: bldgA, DisplayName: "Tavern", Tags: []string{}}
 	// No matching VillageObject for bldgA.
 	repo := fakeRepoOpts{
 		structures:     fakeStructures{out: map[sim.StructureID]*sim.Structure{bldgA: structA}},
@@ -493,7 +493,7 @@ func TestLoadWorld_BridgeMismatch_HardFails(t *testing.T) {
 // loaders building maps inconsistently.
 func TestLoadWorld_BridgeCheck_MapKeyMismatch_HardFails(t *testing.T) {
 	// Map key is bldgA but the Structure carries ID=bldgB.
-	struMismatch := &sim.Structure{ID: bldgB, DisplayName: "Tavern", Position: sim.Position{}, Tags: []string{}}
+	struMismatch := &sim.Structure{ID: bldgB, DisplayName: "Tavern", Tags: []string{}}
 	voA := &sim.VillageObject{ID: bldgA}
 	voB := &sim.VillageObject{ID: bldgB}
 	repo := fakeRepoOpts{
@@ -710,7 +710,7 @@ func TestLoadWorld_ActorHuddleReconciliation_DoubleMembership_HardFails(t *testi
 func TestLoadWorld_ActorStructureRefs_HappyPath(t *testing.T) {
 	startedAt := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
 	structA := &sim.Structure{
-		ID: bldgA, DisplayName: "Tavern", Position: sim.Position{},
+		ID: bldgA, DisplayName: "Tavern",
 		Tags: []string{},
 		Rooms: []*sim.Room{
 			{ID: 42, StructureID: bldgA, Kind: "common", Name: "common"},
@@ -743,7 +743,7 @@ func TestLoadWorld_ActorStructureRefs_MissingStructure(t *testing.T) {
 	startedAt := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
 	bogusStr := sim.StructureID("11111111-1111-1111-1111-deadbeefdead")
 	structA := &sim.Structure{
-		ID: bldgA, DisplayName: "Tavern", Position: sim.Position{}, Tags: []string{},
+		ID: bldgA, DisplayName: "Tavern", Tags: []string{},
 	}
 	voA := &sim.VillageObject{ID: bldgA}
 
@@ -803,13 +803,13 @@ func TestLoadWorld_ActorStructureRefs_MissingStructure(t *testing.T) {
 func TestLoadWorld_ActorStructureRefs_RoomStructureMismatch(t *testing.T) {
 	startedAt := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
 	structA := &sim.Structure{
-		ID: bldgA, DisplayName: "Tavern", Position: sim.Position{}, Tags: []string{},
+		ID: bldgA, DisplayName: "Tavern", Tags: []string{},
 		Rooms: []*sim.Room{
 			{ID: 42, StructureID: bldgA, Kind: "common", Name: "common"},
 		},
 	}
 	structB := &sim.Structure{
-		ID: bldgB, DisplayName: "Smithy", Position: sim.Position{}, Tags: []string{},
+		ID: bldgB, DisplayName: "Smithy", Tags: []string{},
 	}
 	voA := &sim.VillageObject{ID: bldgA}
 	voB := &sim.VillageObject{ID: bldgB}
@@ -839,11 +839,11 @@ func TestLoadWorld_ActorStructureRefs_RoomStructureMismatch(t *testing.T) {
 func TestLoadWorld_ActorStructureRefs_DuplicateRoomID(t *testing.T) {
 	startedAt := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
 	structA := &sim.Structure{
-		ID: bldgA, DisplayName: "Tavern", Position: sim.Position{}, Tags: []string{},
+		ID: bldgA, DisplayName: "Tavern", Tags: []string{},
 		Rooms: []*sim.Room{{ID: 42, StructureID: bldgA, Kind: "common", Name: "common"}},
 	}
 	structB := &sim.Structure{
-		ID: bldgB, DisplayName: "Smithy", Position: sim.Position{}, Tags: []string{},
+		ID: bldgB, DisplayName: "Smithy", Tags: []string{},
 		Rooms: []*sim.Room{{ID: 42, StructureID: bldgB, Kind: "common", Name: "common"}}, // dup
 	}
 	voA := &sim.VillageObject{ID: bldgA}
@@ -872,7 +872,7 @@ func TestLoadWorld_ActorStructureRefs_DuplicateRoomID(t *testing.T) {
 func TestLoadWorld_ActorStructureRefs_RoomNestingMismatch(t *testing.T) {
 	startedAt := time.Date(2026, 5, 19, 12, 0, 0, 0, time.UTC)
 	structA := &sim.Structure{
-		ID: bldgA, DisplayName: "Tavern", Position: sim.Position{}, Tags: []string{},
+		ID: bldgA, DisplayName: "Tavern", Tags: []string{},
 		// Room claims to belong to bldgB but is nested under bldgA in the map.
 		Rooms: []*sim.Room{{ID: 7, StructureID: bldgB, Kind: "common", Name: "weird"}},
 	}
