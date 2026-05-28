@@ -59,20 +59,32 @@ func _ready() -> void:
     else:
         api_base = "http://zbbs.local"
 
-    _load_catalog()
-
-    # npc-behaviors is an authed endpoint. Defer until login completes —
-    # autoload _ready() runs before the user has a session token.
+    # Every one of these is an authed endpoint (the v2 routes sit behind
+    # requireAuth), and autoload _ready() runs before the user has a session
+    # token. Defer all of them until login completes. _load_catalog used to
+    # fire here unconditionally — ZBBS-HOME-318 gave it a Bearer header but not
+    # an auth gate, so on a cold start / deploy restart it would 401 before
+    # auth, never retry, and strand the world on the loading curtain
+    # (catalog_loaded never emits, and load_objects() is gated on it). Gating it
+    # alongside its siblings closes that race (ZBBS-HOME-324).
     if Auth.authenticated:
+        _load_catalog()
         _load_npc_behaviors()
         _load_state_tags()
         _load_object_tags()
     else:
+        Auth.logged_in.connect(_load_catalog)
         Auth.logged_in.connect(_load_npc_behaviors)
         Auth.logged_in.connect(_load_state_tags)
         Auth.logged_in.connect(_load_object_tags)
 
 func _load_catalog() -> void:
+    # Now gated on Auth.logged_in, which can fire again on a re-login. The
+    # catalog download is heavy (every spritesheet), so skip if it already
+    # succeeded. A failed load leaves `loaded` false, so a later login still
+    # retries — exactly the retry the old unconditional call never had.
+    if loaded:
+        return
     var http = HTTPRequest.new()
     http.accept_gzip = false
     add_child(http)
