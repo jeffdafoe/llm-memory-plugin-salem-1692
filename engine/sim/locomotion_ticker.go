@@ -33,10 +33,13 @@ import (
 //                       └─> Fn: clear flag, run scan, re-arm
 
 // LocomotionTickInterval is the locomotion ticker cadence — and, because
-// the ticker advances ONE tile per tick at TileSize=32px, also fixes the
-// visible walk speed at TileSize/Interval. 2/3 of a second per tile = 1.5
-// tiles/sec = 48 world-pixels/sec, restoring v1's defaultNPCSpeed (v1
-// engine/npc_movement.go: defaultNPCSpeed = 48.0 px/s).
+// the ticker advances ONE tile per tick, also fixes the visible walk
+// speed at TileSize/Interval. 2/3 of a second per tile = 1.5 tiles/sec;
+// at today's TileSize=32px that is 48 world-pixels/sec, restoring v1's
+// defaultNPCSpeed (v1 engine/npc_movement.go: defaultNPCSpeed = 48.0
+// px/s). TestLocomotionPace_MatchesV1Speed pins the relationship so a
+// future tile-size or cadence change can't silently re-introduce the
+// 3.33x speed-up.
 //
 // PR 4 originally picked 200ms (160 px/s, ~3.33x v1) on architectural
 // symmetry with the reactor evaluator without back-checking against v1's
