@@ -232,15 +232,23 @@ func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 		if name == "" {
 			name = string(s.InsideStructureID)
 		}
-		fmt.Fprintf(b, "inside: %s [%s]\n", sanitizeInline(name), s.InsideStructureID)
+		// StructureID is intentionally omitted from the rendered line — the
+		// LLM never references it (no tool takes a structure_id arg by hand;
+		// the engine binds structures by position). The bracketed id was a
+		// dev-time debug crumb leftover from PR 3c that just cost tokens.
+		fmt.Fprintf(b, "inside: %s\n", sanitizeInline(name))
 	} else {
 		b.WriteString("inside: outdoors\n")
 	}
 	if s.HuddleID != "" {
+		// HuddleID is intentionally omitted — runtime-generated, opaque, and
+		// never referenced by the LLM (speech is addressed by person name).
+		// Same dev-crumb provenance as the inside: id. The "with" keyword
+		// stays as the structural marker that names follow (vs solo).
 		if len(s.HuddleMembers) > 0 {
-			fmt.Fprintf(b, "huddle: %s with %s\n", s.HuddleID, joinHuddleMembers(s.HuddleMembers))
+			fmt.Fprintf(b, "huddle: with %s\n", joinHuddleMembers(s.HuddleMembers))
 		} else {
-			fmt.Fprintf(b, "huddle: %s (you are the only member)\n", s.HuddleID)
+			b.WriteString("huddle: (you are the only member)\n")
 		}
 	} else {
 		b.WriteString("huddle: not in a huddle\n")
