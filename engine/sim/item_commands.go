@@ -155,14 +155,8 @@ func resolveItemKind(w *World, name string) (ItemKind, bool) {
 //
 // NOT done here (deferred to later PRs alongside their substrate):
 //
-//   - Group-feed: consume.consumers in v1 — multi-recipient atomic
-//     consume from one stock. Substrate question (atomic-vs-best-effort,
-//     fact-emission shape, perception text) is non-trivial.
-//   - Eating macro-state transition: v1 set ActorState=StateEating during
-//     dwell. Adding the state machine transitions is a separate
-//     subsystem (state-model PR territory).
 //   - One-shot dwell hint narration ("This stew looks really good,
-//     going to take some time to enjoy properly..."): a v1 PC-only HUD
+//     going to take some time to enjoy properly..."): a PC-only HUD
 //     beat the LLM-perception layer will surface from dwell credits when
 //     the dwell narration substrate lands.
 //
