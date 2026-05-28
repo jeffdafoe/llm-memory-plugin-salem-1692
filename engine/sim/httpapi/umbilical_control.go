@@ -9,6 +9,7 @@ import (
 	"log"
 	mathrand "math/rand"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
@@ -473,4 +474,105 @@ func (s *Server) handleUmbilicalGrant(w http.ResponseWriter, r *http.Request) {
 		items = append(items, umbilicalGrantItem{ItemKind: row.ItemKind, Qty: row.Quantity})
 	}
 	writeJSON(w, umbilicalGrantResponse{ActorID: req.ActorID, Coins: out.Coins, Items: items})
+}
+
+// umbilicalResetNeedsRequest is the POST /api/village/umbilical/reset-needs body.
+// Target exactly one of: a single ActorID, or All (every actor). Resetting an
+// actor sets every tracked need (hunger/thirst/tiredness) back to 0 — fully
+// satisfied — the operator-surface port of v1's editor "reset needs" action
+// (engine/npcs.go handleResetNPCNeeds).
+type umbilicalResetNeedsRequest struct {
+	ActorID string `json:"actor_id,omitempty"`
+	All     bool   `json:"all,omitempty"`
+}
+
+// umbilicalResetNeedsResponse reports how many actors were reset and their
+// post-reset roster rows (so the operator sees the applied result without a
+// follow-up /actors read).
+type umbilicalResetNeedsResponse struct {
+	Reset  int                    `json:"reset"`
+	Actors []UmbilicalActorRowDTO `json:"actors"`
+}
+
+// handleUmbilicalResetNeeds sets an actor's needs back to 0 (fully satisfied) —
+// the operator-surface port of v1's editor "reset needs" action. The body targets
+// either one actor_id or all:true; the two are mutually exclusive (a body with
+// both is a 400, so an operator who means "this one" can't silently reset the
+// whole village). Unlike v1's NPC-only editor guard, this deliberately applies to
+// ANY actor (PC or NPC), mirroring the /grant route's any-actor philosophy — a
+// PC's HUD just re-reads the new values on its next /pc/me poll. Setting needs to
+// 0 also drains the hunger/thirst/tiredness pressure that drives need-warrants, so
+// this is the lever for a village that booted into mass starvation. 400 missing /
+// conflicting target; 404 unknown actor; 200 with the post-reset rows.
+func (s *Server) handleUmbilicalResetNeeds(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	if user == nil {
+		writeAuthError(w, "invalid")
+		return
+	}
+	var req umbilicalResetNeedsRequest
+	if !decodeUmbilicalBody(w, r, &req) {
+		return
+	}
+	if req.All && req.ActorID != "" {
+		writeError(w, http.StatusBadRequest, "specify either actor_id or all:true, not both")
+		return
+	}
+	if !req.All && req.ActorID == "" {
+		writeError(w, http.StatusBadRequest, "specify actor_id or all:true")
+		return
+	}
+
+	target := "actor=" + req.ActorID
+	if req.All {
+		target = "all"
+	}
+	// Audit the attempt up front so a later rejection is still on the record.
+	auditUmbilical(user.Username, "reset-needs", target)
+
+	res, err := s.world.SendContext(r.Context(), sim.Command{Fn: func(world *sim.World) (any, error) {
+		out := umbilicalResetNeedsResponse{Actors: []UmbilicalActorRowDTO{}}
+		if req.All {
+			for _, a := range world.Actors {
+				resetActorNeeds(a)
+				out.Actors = append(out.Actors, actorRowDTO(a))
+			}
+		} else {
+			a, ok := world.Actors[sim.ActorID(req.ActorID)]
+			if !ok {
+				return nil, errAgentNotFound
+			}
+			resetActorNeeds(a)
+			out.Actors = append(out.Actors, actorRowDTO(a))
+		}
+		out.Reset = len(out.Actors)
+		sort.Slice(out.Actors, func(i, j int) bool { return out.Actors[i].ID < out.Actors[j].ID })
+		return out, nil
+	}})
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
+		}
+		if errors.Is(err, errAgentNotFound) {
+			writeError(w, http.StatusNotFound, "actor not found")
+			return
+		}
+		writeError(w, http.StatusUnprocessableEntity, err.Error())
+		return
+	}
+	out, ok := res.(umbilicalResetNeedsResponse)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "unexpected reset-needs result")
+		return
+	}
+	writeJSON(w, out)
+}
+
+// resetActorNeeds sets every tracked need on the actor back to 0 (fully
+// satisfied). A nil/empty Needs map means the actor tracks no needs, so this is a
+// no-op for it. Must run on the world goroutine (it mutates the live *Actor).
+func resetActorNeeds(a *sim.Actor) {
+	for k := range a.Needs {
+		a.Needs[k] = 0
+	}
 }
