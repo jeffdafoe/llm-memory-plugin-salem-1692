@@ -160,7 +160,28 @@ func renderActor(b *strings.Builder, a ActorView) {
 	for _, c := range a.ActiveDwellCredits {
 		fmt.Fprintf(b, "currently: %s\n", renderActiveDwellCredit(c))
 	}
+	if a.InFlightMove != nil {
+		fmt.Fprintf(b, "currently: %s\n", renderInFlightMove(*a.InFlightMove))
+	}
 	b.WriteString("\n")
+}
+
+// renderInFlightMove produces the felt-language self-perception line for an
+// actor mid-walk ("walking to enter the Tavern"). The movement analogue of
+// renderActiveDwellCredit: present on every perception build while the walk is
+// live, so a reactor tick triggered mid-journey (by heard speech, a need,
+// anything) shows the LLM it already has a destination and shouldn't re-pick
+// one from scratch — the fix for the senseless goal-flipping that the
+// dwell-credit line already prevents for meals. ZBBS-HOME-336.
+func renderInFlightMove(m InFlightMoveView) string {
+	dest := m.DestinationLabel
+	if dest == "" {
+		return "walking to your destination"
+	}
+	if m.Kind == sim.MoveDestinationStructureEnter {
+		return fmt.Sprintf("walking to enter %s", sanitizeInline(dest))
+	}
+	return fmt.Sprintf("walking to %s", sanitizeInline(dest))
 }
 
 // renderActiveDwellCredit produces the felt-language self-perception

@@ -269,6 +269,23 @@ type ActorView struct {
 	// Sort order is deterministic: by (Source, Attribute, ObjectID) so
 	// golden tests + admin replay see stable ordering.
 	ActiveDwellCredits []DwellCreditView
+
+	// InFlightMove is the subject's current walk, nil when not moving.
+	// Rendered as "currently: walking to <label>" so a reactor tick firing
+	// mid-walk reminds the LLM it already has a destination — the movement
+	// analogue of ActiveDwellCredits. ZBBS-HOME-336.
+	InFlightMove *InFlightMoveView
+}
+
+// InFlightMoveView is the perception-side projection of the subject's
+// in-flight MoveIntent. DestinationLabel is resolved at build time (structure
+// / object DisplayName, or a tile coordinate for a bare position move); empty
+// when the destination can't be resolved. Kind drives the render phrasing
+// ("walking to enter X" for a structure-enter vs "walking to X" for a visit).
+// ZBBS-HOME-336.
+type InFlightMoveView struct {
+	Kind             sim.MoveDestinationKind
+	DestinationLabel string
 }
 
 // DwellCreditView is the perception-side projection of one
