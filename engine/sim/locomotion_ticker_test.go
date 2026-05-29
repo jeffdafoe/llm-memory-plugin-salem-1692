@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/cascade"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/repo/mem"
 )
 
@@ -232,10 +233,15 @@ func TestLocomotion_StructureVisitArrival(t *testing.T) {
 	}
 }
 
-// TestLocomotion_BilateralPauseInHuddle covers the bilateral pause: an
-// actor that holds a MoveIntent but is also in an active huddle does not
-// advance — and resumes once it leaves the huddle.
-func TestLocomotion_BilateralPauseInHuddle(t *testing.T) {
+// TestLocomotion_MoverInHuddleStillAdvances pins the post-ZBBS-HOME-340
+// invariant: the old "bilateral pause" is gone, so an actor that holds a
+// MoveIntent keeps advancing even if it is also in an active huddle. The
+// pause used to freeze such an actor until it left the huddle, which
+// permanently wedged a player (who never re-ticks to re-decide) once a
+// passerby was pulled into a huddle mid-walk. Encounters no longer pull a
+// mover into a huddle at all; this test guards the locomotion side of the
+// same invariant — a mover is never suspended.
+func TestLocomotion_MoverInHuddleStillAdvances(t *testing.T) {
 	w, cancel, rec := buildLocomotionTestWorld(t)
 	defer cancel()
 	now := time.Now().UTC()
@@ -244,37 +250,79 @@ func TestLocomotion_BilateralPauseInHuddle(t *testing.T) {
 		sim.NewPositionDestination(sim.Position{X: sim.PadX + 5, Y: sim.PadY + 1}), false, now)); err != nil {
 		t.Fatalf("MoveActor: %v", err)
 	}
-	// Pull the walker into a huddle while it has an in-flight MoveIntent.
+	// Force the walker into a huddle while it has an in-flight MoveIntent —
+	// the residual moving-while-huddled state the old pause used to freeze.
 	if _, err := w.Send(sim.JoinHuddle("walker", "cottage", "", now)); err != nil {
 		t.Fatalf("JoinHuddle: %v", err)
 	}
 	startPos, _ := actorSpatial(t, w, "walker")
 
-	for i := 0; i < 5; i++ {
-		tickLoco(t, w, now)
-	}
-	pausedPos, _ := actorSpatial(t, w, "walker")
-	if pausedPos != startPos {
-		t.Errorf("walker moved while in a huddle: %+v -> %+v", startPos, pausedPos)
-	}
-	if moveIntentOf(t, w, "walker") == nil {
-		t.Error("MoveIntent was cleared during the bilateral pause")
+	tickLoco(t, w, now)
+
+	movedPos, _ := actorSpatial(t, w, "walker")
+	if movedPos == startPos {
+		t.Errorf("walker did not advance while in a huddle: still at %+v (bilateral pause should be gone)", startPos)
 	}
 	if n := rec.countEvents(func(e sim.Event) bool {
 		_, ok := e.(*sim.ActorMoved)
 		return ok
-	}); n != 0 {
-		t.Errorf("ActorMoved fired %d times during the pause, want 0", n)
+	}); n == 0 {
+		t.Error("ActorMoved did not fire — the mover was suspended instead of advancing")
+	}
+	// The ticker leaves the huddle unconditionally before advancing a mover,
+	// so the walker is no longer huddled.
+	if huddleID := huddleIDOf(t, w, "walker"); huddleID != "" {
+		t.Errorf("walker should have left the huddle on the advancing tick, still in %q", huddleID)
+	}
+}
+
+// TestArrivalEncounter_RealWalkToArrivalFormsHuddle drives a real walk to
+// arrival next to a stationary actor and asserts the arrival encounter
+// huddle forms. It locks the ordering invariant ZBBS-HOME-340 depends on:
+// finishArrival clears the arriver's MoveIntent BEFORE emitting
+// ActorArrived. If that order ever flips, the arriver would still hold a
+// MoveIntent when handleArrivalEncounter runs, outdoorEncounterExcludesActor
+// would drop it as the initiator, and the greeting would silently never
+// form. (The other arrival-encounter tests synthesize ActorArrived and so
+// cannot catch this.)
+func TestArrivalEncounter_RealWalkToArrivalFormsHuddle(t *testing.T) {
+	repo, handles := mem.NewRepository()
+	handles.Terrain.Seed(makeAllGrassTerrain())
+	handles.Actors.Seed(map[sim.ActorID]*sim.Actor{
+		// walker arrives one tile north of the stationary witness.
+		"walker":  {ID: "walker", DisplayName: "Walker", Pos: sim.TilePos{X: sim.PadX + 5, Y: sim.PadY + 5}},
+		"witness": {ID: "witness", DisplayName: "Witness", Pos: sim.TilePos{X: sim.PadX + 5, Y: sim.PadY + 9}},
+	})
+	w, err := sim.LoadWorld(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go w.Run(ctx)
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		cascade.RegisterEncounter(world)
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("RegisterEncounter: %v", err)
 	}
 
-	// Leave the huddle — locomotion resumes on the next tick.
-	if _, err := w.Send(sim.LeaveHuddle("walker", now)); err != nil {
-		t.Fatalf("LeaveHuddle: %v", err)
+	now := time.Now().UTC()
+	if _, err := w.Send(sim.MoveActor("walker",
+		sim.NewPositionDestination(sim.Position{X: sim.PadX + 5, Y: sim.PadY + 8}), false, now)); err != nil {
+		t.Fatalf("MoveActor: %v", err)
 	}
-	tickLoco(t, w, now)
-	resumedPos, _ := actorSpatial(t, w, "walker")
-	if resumedPos == startPos {
-		t.Error("walker did not resume moving after leaving the huddle")
+	driveToArrival(t, w, "walker", now, 10)
+
+	st := readEncounterHuddleState(t, w)
+	if st.activeHuddleCount != 1 {
+		t.Fatalf("expected the arrival to form 1 huddle with the stationary witness, got %d "+
+			"(a zero count means the arriver still held a MoveIntent when ActorArrived fired)",
+			st.activeHuddleCount)
+	}
+	if h := st.memberToHuddleIDs["walker"]; h == "" || h != st.memberToHuddleIDs["witness"] {
+		t.Errorf("walker and witness should share the arrival huddle, got walker=%q witness=%q",
+			st.memberToHuddleIDs["walker"], st.memberToHuddleIDs["witness"])
 	}
 }
 

@@ -12,10 +12,24 @@ import (
 // outdoor encounter — as the INITIATOR or as a nearby participant. Centralizing
 // the rule keeps the two checks from drifting (the exact divergence code_review
 // caught: the participant scan skipped stale PCs but the initiator path didn't).
-// Today the sole rule: a stale (ghost) PC — a closed-tab player whose /pc/me
-// presence stamp has gone stale — must neither greet nor be greeted, so
-// co-located NPCs don't burn ticks on an absent player (ZBBS-WORK-326).
+//
+// Rules:
+//   - A stale (ghost) PC — a closed-tab player whose /pc/me presence stamp has
+//     gone stale — must neither greet nor be greeted, so co-located NPCs don't
+//     burn ticks on an absent player (ZBBS-WORK-326).
+//   - A moving actor (one holding a MoveIntent) is mid-task and not available
+//     to be pulled into a conversation (ZBBS-HOME-340). Encounters form only
+//     among actors who are actually standing somewhere: the arriver has just
+//     stopped (its MoveIntent was cleared on arrival), and any bystander still
+//     walking is left alone rather than warranted into a greeting it can't act
+//     on without abandoning its walk. This is what lets villagers walk past a
+//     stationary NPC in silence instead of being yelled at, and is the
+//     replacement for the removed locomotion "bilateral pause" — a mover is
+//     never joined to a huddle in the first place, so a walk is never frozen.
 func outdoorEncounterExcludesActor(a *sim.Actor, now time.Time, staleAfter time.Duration) bool {
+	if a.MoveIntent != nil {
+		return true
+	}
 	return a.Kind == sim.KindPC && sim.PCPresenceStale(a.LastPCSeenAt, now, staleAfter)
 }
 
@@ -27,10 +41,12 @@ func outdoorEncounterExcludesActor(a *sim.Actor, now time.Time, staleAfter time.
 // them via StartOutdoorHuddle (PR 4 — already mints its own area-bound
 // scene atomically).
 //
-// Pairs with handleMovedEncounter (moved_encounter.go) which covers the
-// mid-route case (two NPCs walking past each other within encounter
-// radius without either arriving). LOS-proper (terrain occlusion, sight
-// lines) is still future work; both subscribers use bounded radius.
+// Arrival is the ONLY outdoor-encounter trigger: a huddle forms when an
+// actor stops somewhere, never while walking past (the mid-route
+// "moved encounter" was removed in ZBBS-HOME-340 — it pulled stationary
+// villagers into greetings with every passerby and froze the walker via
+// the locomotion bilateral pause). LOS-proper (terrain occlusion, sight
+// lines) is still future work; the radius scan is bounded.
 
 // handleArrivalEncounter is the ActorArrived subscriber that detects
 // outdoor encounters and forms huddles. Registered via
@@ -161,26 +177,23 @@ func handleArrivalEncounter(w *sim.World, evt sim.Event) {
 	}
 }
 
-// RegisterEncounter wires both encounter subscribers
-// (arrival-driven + mid-route-move-driven) into the world. Separate
-// from the tick-handler registrations because the two groups are
-// independent — a world that wants encounter detection without the
-// agent-tick pipeline (or vice versa) can opt in piecewise.
+// RegisterEncounter wires the arrival-encounter subscriber into the
+// world. Separate from the tick-handler registrations because the two
+// groups are independent — a world that wants encounter detection
+// without the agent-tick pipeline (or vice versa) can opt in piecewise.
 //
 // Must run on the world goroutine (call before World.Run or from inside
 // a Command.Fn).
 //
-// Idempotency: registering twice would dispatch each subscriber twice
+// Idempotency: registering twice would dispatch the subscriber twice
 // per event. The second invocation always observes the trigger actor
 // already in the huddle the first invocation just minted, so its
 // pre-filter (`CurrentHuddleID != "" → return`) short-circuits before
 // any StartOutdoorHuddle call — a no-op, not an error. Tests pin this
-// in TestArrivalEncounter_DoubleRegistrationProducesOneHuddle for the
-// arrival subscriber; the moved subscriber inherits the same shape.
+// in TestArrivalEncounter_DoubleRegistrationProducesOneHuddle.
 func RegisterEncounter(w *sim.World) {
 	if w == nil {
 		panic("cascade: RegisterEncounter requires a non-nil world")
 	}
 	w.Subscribe(sim.SubscriberFunc(handleArrivalEncounter))
-	w.Subscribe(sim.SubscriberFunc(handleMovedEncounter))
 }

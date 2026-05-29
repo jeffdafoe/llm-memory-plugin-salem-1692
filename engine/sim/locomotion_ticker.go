@@ -17,11 +17,20 @@ import (
 // if the world goroutine stalls; the self-rearm only schedules the next
 // tick after the current one's Fn returns.
 //
-// Per tick, for each actor with a MoveIntent that is NOT in an active
-// huddle (bilateral pause), the ticker RE-PLANS a path from the actor's
-// current tile and advances one step. No path is cached on MoveIntent —
-// resume-after-huddle, dynamic blockers, and displacement all fall out
-// of the per-tick replan.
+// Per tick, for each actor with a MoveIntent, the ticker RE-PLANS a path
+// from the actor's current tile and advances one step. No path is cached
+// on MoveIntent — dynamic blockers and displacement all fall out of the
+// per-tick replan.
+//
+// A mover is never in an active huddle. Encounter huddles only form among
+// stationary actors (ZBBS-HOME-340 removed the mid-route encounter that
+// used to pull a walker into a conversation), and MoveActor leaves any
+// huddle before stamping a MoveIntent — but as a belt-and-suspenders the
+// ticker also leaves any active huddle before advancing a mover, so the
+// invariant holds even if some other path left a walker huddled. The
+// earlier "bilateral pause" that instead SKIPPED huddled movers here is
+// gone: it could permanently freeze a player (who never re-ticks to
+// re-decide) once a passerby was pulled into a huddle mid-walk.
 //
 // Lifecycle (mirrors RunReactorEvaluator):
 //
@@ -199,8 +208,31 @@ func EvaluateLocomotion(now time.Time) Command {
 				if actor == nil || actor.MoveIntent == nil {
 					continue
 				}
+				// A committed mover never stays in an active huddle. This is
+				// the "walking away ends the conversation" rule MoveActor
+				// already applies on its leaveHuddleFirst path; enforcing it
+				// here too closes the residual case where some other path
+				// (e.g. a direct StartOutdoorHuddle) left a walker huddled.
+				// It must be an explicit leave, not a reliance on
+				// checkHuddleDriftAfterPositionMutation below: drift only
+				// detaches when a step carries the actor OUT of the huddle's
+				// scene bound, so a large-radius or unbounded huddle would
+				// otherwise keep the mover huddled-while-walking — still
+				// "busy" to the rest/sleep fallbacks and the huddle gate, and
+				// able to arrive still in the huddle. (ZBBS-HOME-340, replaces
+				// the old bilateral-pause skip that froze such a mover.)
 				if actorInActiveHuddle(w, actor) {
-					continue // bilateral pause — see actorInActiveHuddle
+					leaveCurrentHuddle(w, actor, now)
+					// leaveCurrentHuddle emits HuddleLeft, whose subscribers run
+					// synchronously and could (like any emit in this loop — see
+					// the top-of-iteration re-fetch) clear/supersede the
+					// MoveIntent or remove the actor. Re-validate before
+					// advancing so advanceActorLocomotion's non-nil-MoveIntent
+					// contract still holds.
+					actor = w.Actors[id]
+					if actor == nil || actor.MoveIntent == nil {
+						continue
+					}
 				}
 				advanceActorLocomotion(w, actor, grid, now)
 			}
@@ -290,11 +322,12 @@ func advanceActorLocomotion(w *World, actor *Actor, grid *WalkGrid, now time.Tim
 		At:                now,
 	})
 
-	// Drift auto-leave: a ticker-moved actor is never in an active huddle
-	// (the bilateral-pause skip above guarantees it), so this is a no-op
-	// today — but it is the designated locomotion drift callsite the PR 4a
-	// helper was built for, and it keeps the invariant enforced if a
-	// future path lets a moving actor also hold a huddle.
+	// Drift auto-leave for stationary displacement: detaches an actor from
+	// a huddle when its scene's bound no longer contains it. For a ticker
+	// mover this is a no-op — the explicit leave above already cleared any
+	// active huddle before we advanced — but it stays as the designated
+	// locomotion drift callsite for the invariant the PR 4a helper enforces
+	// (e.g. a future displacement that mutates position without a leave).
 	checkHuddleDriftAfterPositionMutation(w, actor.ID, now)
 
 	if arrivedAtDestination(w, actor, dest) {
@@ -570,9 +603,10 @@ func emitMoveStopped(w *World, actor *Actor, dest MoveDestination, reason MoveSt
 }
 
 // actorInActiveHuddle reports whether the actor is currently in a huddle
-// that has not concluded. The locomotion ticker skips these actors —
-// bilateral pause: a walking actor pulled into a huddle suspends, and
-// resumes (next tick) once they leave.
+// that has not concluded. Used by the rest/sleep fallbacks and the
+// StartOutdoorHuddle participant gate to avoid acting on an actor who is
+// mid-conversation. (The locomotion ticker no longer consults it — the
+// old bilateral pause was removed in ZBBS-HOME-340.)
 func actorInActiveHuddle(w *World, actor *Actor) bool {
 	if actor.CurrentHuddleID == "" {
 		return false

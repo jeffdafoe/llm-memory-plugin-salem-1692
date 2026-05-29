@@ -607,9 +607,9 @@ type World struct {
 	actorsByStructure map[StructureID]map[ActorID]struct{}
 	actorsByHuddle    map[HuddleID]map[ActorID]struct{}
 	// outdoorActors tracks every actor with InsideStructureID == "". Hot-
-	// path optimization for the encounter subscribers (handleArrival-
-	// Encounter, handleMovedEncounter): at 200+ actors, scanning w.Actors
-	// linearly on every ActorMoved is the wrong shape. Most actors are
+	// path optimization for the arrival-encounter subscriber
+	// (handleArrivalEncounter): at 200+ actors, scanning w.Actors
+	// linearly on every ActorArrived is the wrong shape. Most actors are
 	// indoor at any moment (sleeping, working, dining), so the outdoor set
 	// is a small fraction of the population and the scan stays bounded by
 	// outdoor density rather than total population.

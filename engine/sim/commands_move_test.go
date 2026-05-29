@@ -864,10 +864,13 @@ func TestStartOutdoorHuddle_RadiusDefault(t *testing.T) {
 	}
 }
 
-// TestStartOutdoorHuddle_BilateralPauseAfterJoin covers the encounter →
-// pause integration: an actor mid-walk that gets pulled into an outdoor
-// huddle stops advancing until it leaves.
-func TestStartOutdoorHuddle_BilateralPauseAfterJoin(t *testing.T) {
+// TestStartOutdoorHuddle_MoverLeavesHuddleAndKeepsWalking covers the
+// post-ZBBS-HOME-340 invariant: an actor mid-walk that is somehow in an
+// outdoor huddle is NOT paused (the old bilateral pause is gone) — on the
+// very next tick the ticker leaves the huddle and advances it. The leave
+// is unconditional (not dependent on the step crossing the scene bound),
+// so this holds regardless of the huddle's radius.
+func TestStartOutdoorHuddle_MoverLeavesHuddleAndKeepsWalking(t *testing.T) {
 	w, cancel, _ := buildOutdoorTestWorld(t)
 	defer cancel()
 	now := time.Now().UTC()
@@ -882,15 +885,14 @@ func TestStartOutdoorHuddle_BilateralPauseAfterJoin(t *testing.T) {
 	}
 
 	before, _ := actorSpatial(t, w, "ann")
-	for i := 0; i < 5; i++ {
-		tickLoco(t, w, now)
+	tickLoco(t, w, now)
+
+	if huddleID := huddleIDOf(t, w, "ann"); huddleID != "" {
+		t.Errorf("ann should have left the huddle on the first tick, still in %q", huddleID)
 	}
-	paused, _ := actorSpatial(t, w, "ann")
-	if paused != before {
-		t.Errorf("ann moved while in the outdoor huddle: %+v -> %+v", before, paused)
-	}
-	if moveIntentOf(t, w, "ann") == nil {
-		t.Error("ann's MoveIntent was cleared by the bilateral pause — it must be preserved")
+	after, _ := actorSpatial(t, w, "ann")
+	if after == before {
+		t.Errorf("ann did not advance after leaving the huddle: still at %+v (pause should be gone)", before)
 	}
 }
 

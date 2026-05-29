@@ -509,12 +509,14 @@ func TestArrivalEncounter_DoubleRegistrationProducesOneHuddle(t *testing.T) {
 	}
 }
 
-// TestArrivalEncounter_WalkingActorPulledIn covers the "do not filter on
-// MoveIntent" decision: a nearby outdoor actor who is mid-route (still
-// has a MoveIntent) is eligible for the encounter and joins the huddle.
-// PR 4's bilateral-pause then freezes their locomotion next tick,
-// preserving MovementAttemptID for resume.
-func TestArrivalEncounter_WalkingActorPulledIn(t *testing.T) {
+// TestArrivalEncounter_WalkingActorNotPulledIn covers the ZBBS-HOME-340
+// decision (reversing the prior "do not filter on MoveIntent"): a nearby
+// outdoor actor who is mid-route (still holds a MoveIntent) is NOT
+// eligible for an arrival encounter — encounters form only among
+// stationary actors. The walker is left alone (no huddle membership, its
+// walk untouched) rather than being pulled into a greeting and frozen.
+// Here the walker is the only nearby actor, so no huddle forms at all.
+func TestArrivalEncounter_WalkingActorNotPulledIn(t *testing.T) {
 	w, cancel := buildEncounterWorld(t, []encounterActor{
 		{id: "ann", x: 100, y: 100},
 		{id: "walker", x: 101, y: 100},
@@ -537,15 +539,14 @@ func TestArrivalEncounter_WalkingActorPulledIn(t *testing.T) {
 	emitArrivalFor(t, w, "ann", time.Now().UTC())
 
 	st := readEncounterHuddleState(t, w)
-	if st.activeHuddleCount != 1 {
-		t.Fatalf("expected 1 huddle (walker pulled in), got %d", st.activeHuddleCount)
+	if st.activeHuddleCount != 0 {
+		t.Fatalf("expected no huddle (only nearby actor is mid-walk), got %d", st.activeHuddleCount)
 	}
-	if st.memberToHuddleIDs["walker"] != st.memberToHuddleIDs["ann"] {
-		t.Errorf("walker should share ann's huddle, got walker=%q ann=%q",
-			st.memberToHuddleIDs["walker"], st.memberToHuddleIDs["ann"])
+	if st.memberToHuddleIDs["walker"] != "" {
+		t.Errorf("walker should not be in any huddle, got %q", st.memberToHuddleIDs["walker"])
 	}
 
-	// MoveIntent + MovementAttemptID preserved for resume.
+	// The walk is left completely undisturbed.
 	v, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		walker := world.Actors["walker"]
 		if walker.MoveIntent == nil {
@@ -558,11 +559,10 @@ func TestArrivalEncounter_WalkingActorPulledIn(t *testing.T) {
 	}
 	got := v.([2]sim.MovementAttemptID)
 	if got[0] != walkerAttemptID {
-		t.Errorf("walker MoveIntent.AttemptID = %d, want %d (preserved across huddle pull-in)",
-			got[0], walkerAttemptID)
+		t.Errorf("walker MoveIntent.AttemptID = %d, want %d (walk untouched)", got[0], walkerAttemptID)
 	}
 	if got[1] != walkerAttemptID {
-		t.Errorf("walker MoveAttemptCounter = %d, want %d (preserved)", got[1], walkerAttemptID)
+		t.Errorf("walker MoveAttemptCounter = %d, want %d (walk untouched)", got[1], walkerAttemptID)
 	}
 }
 
