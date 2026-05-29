@@ -126,6 +126,13 @@ const (
 	// replan-failed flag so operators can see deadlock frequency in live
 	// play.
 	MoveStoppedDeadlocked MoveStoppedReason = "deadlocked"
+
+	// MoveStoppedCancelled — the actor voluntarily halted its own walk via
+	// the `stop` tool (ZBBS-HOME-338). Not a failure: distinct from the
+	// reasons above so the client / any subscriber can tell a deliberate halt
+	// apart from a blocked / unreachable / invalidated / deadlocked stop. The
+	// reactor stamps no warrant on any move-stop, so a cancel is benign there.
+	MoveStoppedCancelled MoveStoppedReason = "cancelled"
 )
 
 // ActorMoveStopped fires when an ACCEPTED movement attempt fails to reach

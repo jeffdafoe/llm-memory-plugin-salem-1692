@@ -366,6 +366,7 @@ func registerTools(r *handlers.Registry, searcher llm.MemorySearcher) error {
 		{"move_to", handlers.RegisterMoveTo},       // ZBBS-HOME-285
 		{"summon", handlers.RegisterSummon},        // ZBBS-HOME-311
 		{"gather", handlers.RegisterGather},        // ZBBS-WORK-328
+		{"stop", handlers.RegisterStop},            // ZBBS-HOME-338
 	}
 	for _, t := range register {
 		if err := t.fn(r); err != nil {
