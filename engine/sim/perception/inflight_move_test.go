@@ -157,7 +157,7 @@ func TestRenderActor_IncludesInFlightMoveLine(t *testing.T) {
 
 	var b strings.Builder
 	renderActor(&b, av)
-	if !strings.Contains(b.String(), "currently: walking to enter Tavern") {
+	if !strings.Contains(b.String(), "You are walking to enter Tavern.") {
 		t.Errorf("renderActor output missing in-flight move line:\n%s", b.String())
 	}
 }

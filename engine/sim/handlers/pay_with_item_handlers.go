@@ -366,7 +366,7 @@ var acceptPaySchema = json.RawMessage(`{
 }`)
 
 const acceptPayDescription = "Accept a pending offer from a buyer in your current conversation. " +
-	"At acceptance time the engine verifies you both share a huddle, you have stock, the buyer has coins, " +
+	"At acceptance time the engine verifies you are both still in the same conversation, you have stock, the buyer has coins, " +
 	"and you are not on a break — if any check fails, the offer flips to a terminal failed state and the " +
 	"transfer does not happen. On success: coins move to you, items leave your inventory, and (for eat-here " +
 	"deals) the consumers' needs are satisfied immediately."

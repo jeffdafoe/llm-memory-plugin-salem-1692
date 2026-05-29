@@ -2,7 +2,6 @@ package perception
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -113,7 +112,27 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderSummonsForYou(&b, p.SummonsForYou)
 	renderSummonRefusal(&b, p.SummonRefusal)
 	renderScene(&b, p)
-	renderSecondary(&b, p.Secondary)
+	// "## Other scenes in play" (renderSecondary) was dropped — it surfaced raw
+	// scene/huddle UUIDs and a "N signal(s)" count the LLM can't act on
+	// (ZBBS-HOME-339). Secondary-scene warrants still render in the flat
+	// "what just happened" list; only the machine telemetry block is gone.
+
+	// nameOf resolves an actor UUID to the subject's name for them — "you" for
+	// self, the acquaintance-gated label (Build's WarrantActorNames) for
+	// others, "someone" when unresolvable. The fix for warrant lines leaking
+	// raw UUIDs ("[arrived] involving 019da6af…"). ZBBS-HOME-339.
+	nameOf := func(id sim.ActorID) string {
+		if id == "" {
+			return "someone"
+		}
+		if id == p.ActorID {
+			return "you"
+		}
+		if label, ok := p.WarrantActorNames[id]; ok && label != "" {
+			return sanitizeInline(label)
+		}
+		return "someone"
+	}
 
 	// Pay offers are pulled out of the generic warrant list and rendered as
 	// an actionable decision section (renderPayOffers) so the seller gets the
@@ -124,7 +143,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// warrant line) guarantees the ledger_id is present whenever the tools are
 	// advertised.
 	payOffers := PayOfferWarrants(p)
-	renderPayOffers(&b, payOffers)
+	renderPayOffers(&b, payOffers, nameOf)
 
 	warrants := p.Warrants
 	if len(payOffers) > 0 {
@@ -134,7 +153,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// section already covered the whole batch; otherwise render it (this also
 	// preserves the routine-check-in line for the genuinely-empty case).
 	if len(warrants) > 0 || len(payOffers) == 0 {
-		renderWarrants(&b, warrants, cfg, &out)
+		renderWarrants(&b, warrants, nameOf, cfg, &out)
 	}
 
 	out.Text = b.String()
@@ -143,27 +162,98 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 
 func renderActor(b *strings.Builder, a ActorView) {
 	b.WriteString("## You\n")
-	state := string(a.State)
-	if state == "" {
-		state = "unknown"
+	if line := renderFeltNeeds(a.Needs, a.NeedThresholds); line != "" {
+		b.WriteString(line)
+		b.WriteString("\n")
 	}
-	fmt.Fprintf(b, "state: %s\n", state)
-	if a.InsideStructureID != "" {
-		fmt.Fprintf(b, "position: (%d, %d)\n", a.Position.X, a.Position.Y)
-	} else {
-		fmt.Fprintf(b, "position: (%d, %d) outdoors\n", a.Position.X, a.Position.Y)
-	}
-	fmt.Fprintf(b, "coins: %d\n", a.Coins)
-	if len(a.Needs) > 0 {
-		fmt.Fprintf(b, "needs: %s\n", renderNeeds(a.Needs))
-	}
+	fmt.Fprintf(b, "Coins in your purse: %d.\n", a.Coins)
+	// In-progress activity reads as felt self-state. A meal/rest/walk already
+	// under way is surfaced so a tick firing mid-activity doesn't re-pick a
+	// goal from scratch (the dwell-credit/in-flight-move parking fix). These
+	// also cover the resting/walking macro-states, so the bare state line only
+	// fires when nothing else already conveys what the actor is doing.
+	activity := false
 	for _, c := range a.ActiveDwellCredits {
-		fmt.Fprintf(b, "currently: %s\n", renderActiveDwellCredit(c))
+		fmt.Fprintf(b, "You are %s.\n", renderActiveDwellCredit(c))
+		activity = true
 	}
 	if a.InFlightMove != nil {
-		fmt.Fprintf(b, "currently: %s\n", renderInFlightMove(*a.InFlightMove))
+		fmt.Fprintf(b, "You are %s.\n", renderInFlightMove(*a.InFlightMove))
+		activity = true
+	}
+	if !activity {
+		if line := renderFeltState(a.State); line != "" {
+			b.WriteString(line)
+			b.WriteString("\n")
+		}
 	}
 	b.WriteString("\n")
+}
+
+// renderFeltNeeds turns the raw need values into felt language in the fixed
+// hunger→thirst→tiredness order. Needs below the awareness floor stay silent.
+// Red/peak needs lead with an "Address now:" imperative — v1's 2026-05-02 fix
+// that made NPCs act on distress instead of reading a flat integer they
+// couldn't calibrate (the original "needs: hunger=24" dump gave the model no
+// sense that 24 is peak starvation). Returns "" when nothing is surfaced.
+// ZBBS-HOME-339.
+func renderFeltNeeds(needs map[sim.NeedKey]int, thresholds sim.NeedThresholds) string {
+	if len(needs) == 0 {
+		return ""
+	}
+	var felt, pressing []string
+	for _, key := range []sim.NeedKey{"hunger", "thirst", "tiredness"} {
+		value, ok := needs[key]
+		if !ok {
+			continue
+		}
+		n, ok := sim.FindNeed(key)
+		if !ok {
+			continue
+		}
+		tier := n.Tier(value, thresholds.Get(key))
+		label := n.Label(tier)
+		if label == "" {
+			continue // NeedSilent — below the awareness floor
+		}
+		felt = append(felt, label)
+		if tier >= sim.NeedRed {
+			pressing = append(pressing, string(key))
+		}
+	}
+	if len(felt) == 0 {
+		return ""
+	}
+	if len(pressing) > 0 {
+		return fmt.Sprintf("Address now: %s. You feel %s.",
+			strings.Join(pressing, ", "), strings.Join(felt, ", "))
+	}
+	return fmt.Sprintf("You feel %s.", strings.Join(felt, ", "))
+}
+
+// renderFeltState renders a macro-state as a felt line, or "" for states that
+// carry no standalone meaning (idle) or are already conveyed by the dwell/move
+// lines (walking). Only reached when renderActor surfaced no in-progress
+// activity. ZBBS-HOME-339.
+func renderFeltState(state sim.ActorState) string {
+	switch state {
+	case sim.StateResting:
+		return "You are taking a rest."
+	case sim.StateSleeping:
+		return "You are asleep."
+	case sim.StateWorking:
+		return "You are at work."
+	case sim.StateConversing:
+		return "You are in conversation."
+	case sim.StateShopping:
+		return "You are out shopping."
+	case sim.StateInTransaction:
+		return "You are in the middle of a transaction."
+	case sim.StateEating:
+		return "You are eating."
+	default: // idle, walking, unknown — nothing standalone to add
+		return ""
+	}
 }
 
 // renderInFlightMove produces the felt-language self-perception line for an
@@ -248,34 +338,38 @@ func dwellActivityVerb(c DwellCreditView) string {
 
 func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 	b.WriteString("## Around you\n")
-	if s.InsideStructureID != "" {
+
+	// Location + company in one felt sentence. The struct-field form ("inside:
+	// outdoors" / "huddle: not in a huddle") was a raw dump and engine jargon —
+	// "huddle" is a word the LLM was never taught. ZBBS-HOME-339.
+	var location string
+	switch {
+	case s.InsideStructureID != "":
 		name := s.StructureName
 		if name == "" {
-			name = string(s.InsideStructureID)
+			name = "a building"
 		}
-		// StructureID is intentionally omitted from the rendered line — the
-		// LLM never references it (no tool takes a structure_id arg by hand;
-		// the engine binds structures by position). The bracketed id was a
-		// dev-time debug crumb leftover from PR 3c that just cost tokens.
-		fmt.Fprintf(b, "inside: %s\n", sanitizeInline(name))
-	} else {
-		b.WriteString("inside: outdoors\n")
+		location = "inside " + sanitizeInline(name)
+	case s.NearbyStructureName != "":
+		// Standing at a structure's loiter slot while outdoors — a keeper at
+		// their own stall, a customer outside a shop. Names where they are so
+		// the model doesn't read raw coordinates and re-walk to a place it is
+		// already standing at.
+		location = "outdoors by " + sanitizeInline(s.NearbyStructureName)
+	default:
+		location = "outdoors"
 	}
-	if s.HuddleID != "" {
-		// HuddleID is intentionally omitted — runtime-generated, opaque, and
-		// never referenced by the LLM (speech is addressed by person name).
-		// Same dev-crumb provenance as the inside: id. The "with" keyword
-		// stays as the structural marker that names follow (vs solo).
-		if len(s.HuddleMembers) > 0 {
-			fmt.Fprintf(b, "huddle: with %s\n", joinHuddleMembers(s.HuddleMembers))
-		} else {
-			b.WriteString("huddle: (you are the only member)\n")
-		}
+	if len(s.HuddleMembers) > 0 {
+		// A huddle is a conversational cluster, so "with" names who the actor
+		// is gathered with — the speak tool reaches exactly these people.
+		fmt.Fprintf(b, "You are %s, with %s.\n", location, joinHuddleMembers(s.HuddleMembers))
 	} else {
-		b.WriteString("huddle: not in a huddle\n")
+		fmt.Fprintf(b, "You are %s.\n", location)
 	}
+
 	if atmosphere := strings.TrimSpace(sanitizeInline(s.Atmosphere)); atmosphere != "" {
-		fmt.Fprintf(b, "atmosphere: %s\n", atmosphere)
+		b.WriteString(atmosphere)
+		b.WriteString("\n")
 	}
 	// Harvest affordance (ZBBS-WORK-328): the model often stands at a well/bush
 	// without connecting "I'm here" to "I can gather." This line makes the
@@ -286,7 +380,7 @@ func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 		if source == "" {
 			source = "this spot"
 		}
-		fmt.Fprintf(b, "gatherable: you're at %s — you can gather %s here\n",
+		fmt.Fprintf(b, "You're at %s — you can gather %s here.\n",
 			source, sanitizeInline(string(s.GatherableItem)))
 	}
 	b.WriteString("\n")
@@ -306,13 +400,7 @@ func joinHuddleMembers(members []HuddleMember) string {
 }
 
 func renderHuddleMember(m HuddleMember) string {
-	if m.Acquainted && m.DisplayName != "" {
-		return sanitizeInline(m.DisplayName)
-	}
-	if m.Role != "" {
-		return "the " + sanitizeInline(m.Role)
-	}
-	return "a stranger"
+	return sanitizeInline(descriptorLabel(m.DisplayName, m.Role, m.Acquainted))
 }
 
 // renderNarrativeState writes the "Who you are:" section for shared-VA
@@ -448,86 +536,61 @@ func humanizeDurationUntil(deadline, now time.Time) string {
 	return fmt.Sprintf("%d minutes", mins)
 }
 
+// renderScene renders the loop-detection cue — "what's changed since you got
+// here" — when a scene baseline is established. The raw "scene: <uuid> — origin
+// <kind>" header and the "(missing_no_scene)" baseline enum it used to print
+// were engine jargon the LLM can't use, so they're gone; the no-scene case now
+// renders nothing at all rather than an empty diagnostic. ZBBS-HOME-339.
 func renderScene(b *strings.Builder, p Payload) {
-	b.WriteString("## This scene\n")
 	if p.Primary == nil {
-		fmt.Fprintf(b, "no active scene — perceiving from current state only (%s)\n\n", p.Baseline)
 		return
 	}
-	kind := p.Primary.OriginKind
-	if kind == "" {
-		kind = "unknown"
-	}
-	fmt.Fprintf(b, "scene: %s — origin %s\n", p.Primary.SceneID, sanitizeInline(kind))
-
+	b.WriteString("## Since you got here\n")
 	switch p.Baseline {
 	case BaselinePresent:
-		b.WriteString("since the scene started: ")
 		b.WriteString(renderDiff(p.Primary.Diff))
-		b.WriteString("\n")
-	case BaselineMissingNoOriginSnapshot:
-		b.WriteString("baseline: unavailable — this scene captured no participant baseline; " +
-			"treat your situation since it started as undetermined\n")
-	case BaselineMissingJoinedAfterOrigin:
-		b.WriteString("baseline: unavailable — you joined after this scene started; " +
-			"loop detection inconclusive, treat your situation since it started as undetermined\n")
 	default:
-		b.WriteString("baseline: unavailable\n")
+		// A scene resolved but no usable baseline (no origin snapshot, or you
+		// joined after it started) — can't claim anything changed or didn't.
+		b.WriteString("You can't yet tell whether anything has changed.")
 	}
-	b.WriteString("\n")
+	b.WriteString("\n\n")
 }
 
-// renderDiff renders the loop-detection line. When nothing changed it says
-// so explicitly — that is the "you may be looping" signal — but it never
-// asserts "no change" unless the Diff is real (Build only attaches a Diff
-// for BaselinePresent).
+// renderDiff renders the loop-detection line as felt prose. When nothing
+// changed it says so explicitly — the "you may be looping" signal — but it
+// never asserts "no change" unless the Diff is real (Build only attaches a
+// Diff for BaselinePresent).
 func renderDiff(d *Diff) string {
 	if d == nil {
-		return "unknown"
+		return "You can't yet tell whether anything has changed."
 	}
 	if !d.AnyChange {
-		return "no observable change in your state — if this persists you may be repeating yourself"
+		return "Nothing about your situation has changed — if this keeps up, you may be repeating yourself."
 	}
 	var parts []string
 	if d.StateChanged {
-		parts = append(parts, "your state")
+		parts = append(parts, "what you're doing")
 	}
 	if d.PositionChanged {
-		parts = append(parts, "your position")
+		parts = append(parts, "where you stand")
 	}
 	if d.StructureChanged {
-		parts = append(parts, "your location")
+		parts = append(parts, "where you are")
 	}
 	if d.HuddleChanged {
-		parts = append(parts, "your huddle")
+		parts = append(parts, "who you're with")
 	}
 	if d.CoinsChanged {
 		parts = append(parts, "your coins")
 	}
 	if d.InventoryChanged {
-		parts = append(parts, "your inventory")
+		parts = append(parts, "what you're carrying")
 	}
 	if d.NeedsChanged {
-		parts = append(parts, "your needs")
+		parts = append(parts, "how you feel")
 	}
-	return "changed: " + strings.Join(parts, ", ")
-}
-
-func renderSecondary(b *strings.Builder, secondary []SceneSignal) {
-	if len(secondary) == 0 {
-		return
-	}
-	b.WriteString("## Other scenes in play\n")
-	b.WriteString("signals from scenes other than the one above — treat each on its own terms; " +
-		"the diff above does not apply to them\n")
-	for _, s := range secondary {
-		if s.HuddleID != "" {
-			fmt.Fprintf(b, "- scene %s (huddle %s): %d signal(s)\n", s.SceneID, s.HuddleID, len(s.Warrants))
-		} else {
-			fmt.Fprintf(b, "- scene %s: %d signal(s)\n", s.SceneID, len(s.Warrants))
-		}
-	}
-	b.WriteString("\n")
+	return "What's changed: " + strings.Join(parts, ", ") + "."
 }
 
 // renderWarrants renders the "what just happened" section and fills in the
@@ -580,7 +643,7 @@ func nonPayOfferWarrants(warrants []sim.WarrantMeta) []sim.WarrantMeta {
 // Uncapped by design: pay offers are inherently few (bounded by co-present
 // buyers), and the section must always carry the ledger_id whenever gateTools
 // advertises the response tools.
-func renderPayOffers(b *strings.Builder, offers []sim.PayOfferWarrantReason) {
+func renderPayOffers(b *strings.Builder, offers []sim.PayOfferWarrantReason, nameOf func(sim.ActorID) string) {
 	if len(offers) == 0 {
 		return
 	}
@@ -594,10 +657,7 @@ func renderPayOffers(b *strings.Builder, offers []sim.PayOfferWarrantReason) {
 		if o.ConsumeNow {
 			disposition = "to consume now"
 		}
-		buyer := sanitizeInline(string(o.Buyer))
-		if buyer == "" {
-			buyer = "someone"
-		}
+		buyer := nameOf(o.Buyer)
 		item := sanitizeInline(string(o.Item))
 		if item == "" {
 			item = "item"
@@ -608,7 +668,7 @@ func renderPayOffers(b *strings.Builder, offers []sim.PayOfferWarrantReason) {
 	b.WriteString("Respond with accept_pay, decline_pay, or counter_pay, passing the offer id as ledger_id.\n")
 }
 
-func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, cfg RenderConfig, out *RenderedPrompt) {
+func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(sim.ActorID) string, cfg RenderConfig, out *RenderedPrompt) {
 	b.WriteString("## What just happened — address these\n")
 	if len(warrants) == 0 {
 		b.WriteString("(nothing specific — this is a routine check-in)\n")
@@ -626,7 +686,7 @@ func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, cfg RenderCo
 			cutoff = i
 			break
 		}
-		line, truncated := renderWarrantLine(i+1, w, cfg.MaxBytesPerWarrant)
+		line, truncated := renderWarrantLine(i+1, w, nameOf, cfg.MaxBytesPerWarrant)
 		if sectionBytes+len(line) > cfg.MaxSectionBytes && i > 0 {
 			// At least one warrant already rendered; this one would
 			// overflow the section cap — stop here and carry the rest.
@@ -652,46 +712,126 @@ func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, cfg RenderCo
 	}
 }
 
-// renderWarrantLine renders one warrant as a single numbered line. The
-// untrusted free-text payload (a speech excerpt) is sanitized and capped;
-// the returned bool reports whether that text was truncated.
-func renderWarrantLine(n int, w sim.WarrantMeta, maxTextBytes int) (string, bool) {
-	kind := string(w.Kind())
-	if kind == "" {
-		kind = "unknown"
-	}
-
-	scope := ""
-	if w.SceneID != "" {
-		scope = fmt.Sprintf(" (scene %s)", w.SceneID)
-	}
-
+// renderWarrantLine renders one warrant as a single numbered prose line. Every
+// actor reference is resolved to a name via nameOf (never a raw UUID), and the
+// old "[kind] (scene <uuid>)" machine prefix is gone — each kind reads as a
+// sentence. The untrusted free-text payload (a speech excerpt) is sanitized and
+// capped; the returned bool reports whether that text was truncated.
+// ZBBS-HOME-339.
+func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string, maxTextBytes int) (string, bool) {
 	switch r := w.Reason.(type) {
 	case sim.PCSpeechWarrantReason:
-		return renderSpeechWarrantLine(n, w, kind, scope, r.Speaker, r.Excerpt, maxTextBytes)
+		return renderSpeechWarrantLine(n, nameOf(r.Speaker), r.Excerpt, maxTextBytes)
 	case sim.NPCSpeechWarrantReason:
-		return renderSpeechWarrantLine(n, w, kind, scope, r.Speaker, r.Excerpt, maxTextBytes)
+		return renderSpeechWarrantLine(n, nameOf(r.Speaker), r.Excerpt, maxTextBytes)
 	case sim.PaidWarrantReason:
-		return renderPaidWarrantLine(n, w, kind, scope, r.Buyer, r.Amount, r.ForText, maxTextBytes)
+		return renderPaidWarrantLine(n, nameOf(r.Buyer), r.Amount, r.ForText, maxTextBytes)
 	case sim.IdleBackstopWarrantReason:
-		return renderIdleBackstopWarrantLine(n, kind, scope, r.QuietDuration), false
+		return renderIdleBackstopWarrantLine(n, r.QuietDuration), false
 	case sim.ShiftDutyWarrantReason:
-		return renderShiftDutyWarrantLine(n, kind, scope, r.ToWork, r.TargetStructureID), false
+		return renderShiftDutyWarrantLine(n, r.ToWork, r.TargetStructureID), false
 	case sim.RestockWarrantReason:
-		return renderRestockWarrantLine(n, kind, scope, r.Item), false
+		return renderRestockWarrantLine(n, r.Item), false
 	case sim.ConsumedWarrantReason:
-		return renderNarrationWarrantLine(n, kind, scope, r.NarrationText, w.TriggerActorID, maxTextBytes)
+		return renderNarrationWarrantLine(n, w.Kind(), r.NarrationText, nameOf(w.TriggerActorID), maxTextBytes)
 	case sim.DwellStartedWarrantReason:
-		return renderNarrationWarrantLine(n, kind, scope, r.NarrationText, w.TriggerActorID, maxTextBytes)
+		return renderNarrationWarrantLine(n, w.Kind(), r.NarrationText, nameOf(w.TriggerActorID), maxTextBytes)
 	case sim.DwellEndedWarrantReason:
-		return renderNarrationWarrantLine(n, kind, scope, r.NarrationText, w.TriggerActorID, maxTextBytes)
+		return renderNarrationWarrantLine(n, w.Kind(), r.NarrationText, nameOf(w.TriggerActorID), maxTextBytes)
 	case sim.AdminDirectiveWarrantReason:
-		return renderImpulseWarrantLine(n, kind, scope, r.Message, maxTextBytes)
+		return renderImpulseWarrantLine(n, r.Message, maxTextBytes)
+	case sim.ArrivalWarrantReason:
+		return fmt.Sprintf("%d. %s arrived nearby.\n", n, nameOf(w.TriggerActorID)), false
+	case sim.NeedThresholdWarrantReason:
+		return renderNeedNudgeLine(n, r.Need), false
+	case sim.SceneQuoteTargetedWarrantReason:
+		return renderQuoteWarrantLine(n, nameOf(r.SellerID), r), false
+	case sim.PayResolvedWarrantReason:
+		return renderPayResolvedWarrantLine(n, nameOf(r.Seller), r, maxTextBytes), false
 	default:
-		if w.TriggerActorID != "" {
-			return fmt.Sprintf("%d. [%s]%s involving %s\n", n, kind, scope, w.TriggerActorID), false
+		return renderBasicWarrantLine(n, w.Kind(), nameOf(w.TriggerActorID)), false
+	}
+}
+
+// renderBasicWarrantLine renders the kinds carried by BasicWarrantReason (the
+// huddle lifecycle events) plus any future kind without a dedicated case. The
+// huddle events get felt prose; "joined"/"left" are stamped on the actor
+// themselves (so the subject is "you"), the "peer_" variants on the others (so
+// the trigger is the peer who came or went). An unrecognized kind falls back to
+// a quiet, name-resolved line rather than a raw "[kind] involving <uuid>".
+func renderBasicWarrantLine(n int, kind sim.WarrantKind, who string) string {
+	switch kind {
+	case sim.WarrantKindHuddleJoined:
+		return fmt.Sprintf("%d. You joined a conversation.\n", n)
+	case sim.WarrantKindHuddleLeft:
+		return fmt.Sprintf("%d. You left the conversation.\n", n)
+	case sim.WarrantKindHuddlePeerJoined:
+		return fmt.Sprintf("%d. %s joined your conversation.\n", n, who)
+	case sim.WarrantKindHuddlePeerLeft:
+		return fmt.Sprintf("%d. %s stepped away from your conversation.\n", n, who)
+	case sim.WarrantKindHuddleConcluded:
+		return fmt.Sprintf("%d. Your conversation has broken up.\n", n)
+	default:
+		// A kind with no felt template and a real other actor — name them;
+		// otherwise (self-triggered, or unresolvable) keep it vague.
+		if who != "" && who != "someone" && who != "you" {
+			return fmt.Sprintf("%d. Something happened involving %s.\n", n, who)
 		}
-		return fmt.Sprintf("%d. [%s]%s\n", n, kind, scope), false
+		return fmt.Sprintf("%d. Something happened nearby.\n", n)
+	}
+}
+
+// renderNeedNudgeLine renders a need-threshold warrant as a felt pang. The
+// "## You" needs line carries the real urgency (Address now: …); this is the
+// in-the-moment beat that the need just crossed into distress. Falls back to a
+// generic pang for an unrecognized need key.
+func renderNeedNudgeLine(n int, need sim.NeedKey) string {
+	switch need {
+	case "hunger":
+		return fmt.Sprintf("%d. Your hunger is pressing on you.\n", n)
+	case "thirst":
+		return fmt.Sprintf("%d. Your thirst is pressing on you.\n", n)
+	case "tiredness":
+		return fmt.Sprintf("%d. Weariness is settling over you.\n", n)
+	default:
+		return fmt.Sprintf("%d. A need is pressing on you.\n", n)
+	}
+}
+
+// renderQuoteWarrantLine renders a vendor's scene quote aimed directly at this
+// actor — a standing offer they can take by paying. Names the seller; the
+// terms come straight off the warrant payload.
+func renderQuoteWarrantLine(n int, seller string, r sim.SceneQuoteTargetedWarrantReason) string {
+	unit := "coins"
+	if r.Amount == 1 {
+		unit = "coin"
+	}
+	item := sanitizeInline(string(r.ItemKind))
+	if r.Qty > 1 {
+		return fmt.Sprintf("%d. %s offers you %d %s for %d %s.\n", n, seller, r.Qty, item, r.Amount, unit)
+	}
+	return fmt.Sprintf("%d. %s offers you %s for %d %s.\n", n, seller, item, r.Amount, unit)
+}
+
+// renderPayResolvedWarrantLine renders, to the buyer, how the seller resolved
+// their pay-with-item offer. Only the buyer-meaningful terminal states get a
+// bespoke line; the rest collapse to a neutral "fell through" so the buyer
+// stops waiting without the engine narrating internal ledger states.
+func renderPayResolvedWarrantLine(n int, seller string, r sim.PayResolvedWarrantReason, maxTextBytes int) string {
+	item := sanitizeInline(string(r.ItemKind))
+	qty := item
+	if r.Qty > 1 {
+		qty = fmt.Sprintf("%d %s", r.Qty, item)
+	}
+	switch r.TerminalState {
+	case sim.PayTerminalStateAccepted:
+		return fmt.Sprintf("%d. %s accepted your offer of %d for %s.\n", n, seller, r.Amount, qty)
+	case sim.PayTerminalStateDeclined:
+		return fmt.Sprintf("%d. %s declined your offer for %s.\n", n, seller, qty)
+	case sim.PayTerminalStateCountered:
+		return fmt.Sprintf("%d. %s countered: %d for %s.\n", n, seller, r.CounterAmount, qty)
+	default:
+		return fmt.Sprintf("%d. Your offer to %s for %s fell through.\n", n, seller, qty)
 	}
 }
 
@@ -702,66 +842,57 @@ func renderWarrantLine(n int, w sim.WarrantMeta, maxTextBytes int) (string, bool
 //
 // DwellTickApplied is deliberately NOT routed here — the per-tick "another
 // bite" beat would be prompt spam, and the sustained state is already conveyed
-// by the ActiveDwellCredits projection ("currently: eating stew"); the per-tick
-// warrant keeps its bare default line.
+// by the ActiveDwellCredits projection; the per-tick warrant keeps its bare
+// fallback line.
 //
 // Empty narration (e.g. a catalog-unknown dwell end) falls back to the generic
-// involvement line so the warrant still registers rather than vanishing.
-func renderNarrationWarrantLine(n int, kind, scope, narration string, trigger sim.ActorID, maxTextBytes int) (string, bool) {
+// kind line so the warrant still registers rather than vanishing.
+func renderNarrationWarrantLine(n int, kind sim.WarrantKind, narration, who string, maxTextBytes int) (string, bool) {
 	if narration == "" {
-		if trigger != "" {
-			return fmt.Sprintf("%d. [%s]%s involving %s\n", n, kind, scope, trigger), false
-		}
-		return fmt.Sprintf("%d. [%s]%s\n", n, kind, scope), false
+		return renderBasicWarrantLine(n, kind, who), false
 	}
 	sanitized, truncated := sanitizeText(narration, maxTextBytes)
-	return fmt.Sprintf("%d. [%s]%s %s\n", n, kind, scope, sanitized), truncated
+	return fmt.Sprintf("%d. %s\n", n, sanitized), truncated
 }
 
-// renderSpeechWarrantLine renders the warrant line for both PC- and NPC-
-// speech warrant reasons. The two reason types are structurally identical
-// (SpeechID / Speaker / Excerpt) and the rendered line differs only in the
-// kind tag the caller already extracted via WarrantMeta.Kind(); so the
-// switch above hands the fields to this single body rather than
-// duplicating the format calls.
-func renderSpeechWarrantLine(n int, w sim.WarrantMeta, kind, scope string, speaker sim.ActorID, excerpt string, maxTextBytes int) (string, bool) {
+// renderSpeechWarrantLine renders the warrant line for both PC- and NPC-speech
+// warrant reasons (structurally identical — SpeechID / Speaker / Excerpt). The
+// speaker is already name-resolved by the caller. An empty excerpt renders "X
+// spoke to you" rather than a dangling `said: ""`.
+func renderSpeechWarrantLine(n int, speaker, excerpt string, maxTextBytes int) (string, bool) {
 	if speaker == "" {
-		speaker = w.TriggerActorID
+		speaker = "someone"
 	}
 	sanitized, truncated := sanitizeText(excerpt, maxTextBytes)
-	if speaker != "" {
-		return fmt.Sprintf("%d. [%s]%s %s said: \"%s\"\n", n, kind, scope, speaker, sanitized), truncated
+	if strings.TrimSpace(sanitized) == "" {
+		return fmt.Sprintf("%d. %s spoke to you.\n", n, speaker), truncated
 	}
-	return fmt.Sprintf("%d. [%s]%s someone said: \"%s\"\n", n, kind, scope, sanitized), truncated
+	return fmt.Sprintf("%d. %s said: \"%s\"\n", n, speaker, sanitized), truncated
 }
 
 // renderPaidWarrantLine renders the warrant line for a PaidWarrantReason.
-// Surfaces the buyer, amount, and (optional) flavor text to the seller's
-// perception prompt — the seller's next reactor tick reads this and decides
-// what to do (speak thanks, walk over, ignore).
+// Surfaces the (name-resolved) buyer, amount, and optional flavor text to the
+// seller's perception prompt — the seller's next reactor tick reads this and
+// decides what to do (speak thanks, walk over, ignore).
 //
-// Without ForText: `N. [paid] (scene X) <buyer> paid you N coins`.
-// With ForText:    `N. [paid] (scene X) <buyer> paid you N coins — "<for>"`.
+// Without ForText: `N. <buyer> paid you N coins.`
+// With ForText:    `N. <buyer> paid you N coins — "<for>"`.
 //
 // The ForText excerpt is sanitized + capped like the speech excerpt to keep
 // the per-tick prompt cost bounded. Returned bool reports truncation.
-func renderPaidWarrantLine(n int, w sim.WarrantMeta, kind, scope string, buyer sim.ActorID, amount int, forText string, maxTextBytes int) (string, bool) {
+func renderPaidWarrantLine(n int, buyer string, amount int, forText string, maxTextBytes int) (string, bool) {
 	if buyer == "" {
-		buyer = w.TriggerActorID
-	}
-	buyerLabel := string(buyer)
-	if buyerLabel == "" {
-		buyerLabel = "someone"
+		buyer = "someone"
 	}
 	unit := "coins"
 	if amount == 1 {
 		unit = "coin"
 	}
 	if strings.TrimSpace(forText) == "" {
-		return fmt.Sprintf("%d. [%s]%s %s paid you %d %s\n", n, kind, scope, buyerLabel, amount, unit), false
+		return fmt.Sprintf("%d. %s paid you %d %s.\n", n, buyer, amount, unit), false
 	}
 	sanitized, truncated := sanitizeText(forText, maxTextBytes)
-	return fmt.Sprintf("%d. [%s]%s %s paid you %d %s — \"%s\"\n", n, kind, scope, buyerLabel, amount, unit, sanitized), truncated
+	return fmt.Sprintf("%d. %s paid you %d %s — \"%s\"\n", n, buyer, amount, unit, sanitized), truncated
 }
 
 // renderIdleBackstopWarrantLine renders the warrant line for an
@@ -774,19 +905,19 @@ func renderPaidWarrantLine(n int, w sim.WarrantMeta, kind, scope string, buyer s
 // chronicler decide who to engage, v2 lets the actor's own tick decide
 // what to do given that they've been quiet.
 //
-// Form: `N. [idle_backstop] you've been quiet for <duration> — consider
-// what to do next`. The duration is rounded to whole seconds (sub-second
-// resolution is noise at the minute-scale this warrant fires at).
+// Form: `N. You've been quiet for <duration> — consider what to do next.`
+// The duration is rounded to whole seconds (sub-second resolution is noise at
+// the minute-scale this warrant fires at).
 //
 // Returned without truncation since there's no untrusted free-text
 // payload — the line is composed of fixed prose and an engine-computed
 // duration.
-func renderIdleBackstopWarrantLine(n int, kind, scope string, quiet time.Duration) string {
+func renderIdleBackstopWarrantLine(n int, quiet time.Duration) string {
 	if quiet <= 0 {
-		return fmt.Sprintf("%d. [%s]%s you've been quiet — consider what to do next\n", n, kind, scope)
+		return fmt.Sprintf("%d. You've been quiet — consider what to do next.\n", n)
 	}
-	return fmt.Sprintf("%d. [%s]%s you've been quiet for %s — consider what to do next\n",
-		n, kind, scope, quiet.Round(time.Second))
+	return fmt.Sprintf("%d. You've been quiet for %s — consider what to do next.\n",
+		n, quiet.Round(time.Second))
 }
 
 // renderShiftDutyWarrantLine renders the warrant line for a
@@ -796,8 +927,8 @@ func renderIdleBackstopWarrantLine(n int, kind, scope string, quiet time.Duratio
 // (move_to(structure_id)); the engine derives enter-vs-visit, so the model only
 // needs the id. ToWork picks the direction prose.
 //
-// Form (to work): `N. [shift_duty] your shift has started — head to your workplace (structure_id: <id>)`
-// Form (to home): `N. [shift_duty] your shift has ended — head home (structure_id: <id>)`
+// Form (to work): `N. Your shift has started — head to your workplace (structure_id: <id>).`
+// Form (to home): `N. Your shift has ended — head home (structure_id: <id>).`
 //
 // An empty target (defensive — the producer only stamps with a real
 // Work/HomeStructureID) drops the parenthetical so the line never renders a
@@ -805,15 +936,15 @@ func renderIdleBackstopWarrantLine(n int, kind, scope string, quiet time.Duratio
 //
 // Rendered without truncation: there is no untrusted free-text payload — the
 // id is an engine-controlled world key, not model- or user-supplied text.
-func renderShiftDutyWarrantLine(n int, kind, scope string, toWork bool, target sim.StructureID) string {
-	dir := "your shift has ended — head home"
+func renderShiftDutyWarrantLine(n int, toWork bool, target sim.StructureID) string {
+	dir := "Your shift has ended — head home"
 	if toWork {
-		dir = "your shift has started — head to your workplace"
+		dir = "Your shift has started — head to your workplace"
 	}
 	if target == "" {
-		return fmt.Sprintf("%d. [%s]%s %s\n", n, kind, scope, dir)
+		return fmt.Sprintf("%d. %s.\n", n, dir)
 	}
-	return fmt.Sprintf("%d. [%s]%s %s (structure_id: %s)\n", n, kind, scope, dir, target)
+	return fmt.Sprintf("%d. %s (structure_id: %s).\n", n, dir, target)
 }
 
 // renderRestockWarrantLine renders the warrant line for a RestockWarrantReason —
@@ -822,16 +953,16 @@ func renderShiftDutyWarrantLine(n int, kind, scope string, toWork bool, target s
 // actionable detail (current/cap, suppliers, structure_ids) is in the
 // "## Restocking" section, so the line stays a short pointer to it.
 //
-// Form: `N. [restock] your stock of <item> is running low — see Restocking`
-// Form (no item): `N. [restock] your shop stock is running low — see Restocking`
+// Form: `N. Your stock of <item> is running low — see Restocking.`
+// Form (no item): `N. Your shop stock is running low — see Restocking.`
 //
 // Rendered without truncation: the item is an engine-controlled catalog key,
 // not model- or user-supplied text.
-func renderRestockWarrantLine(n int, kind, scope string, item sim.ItemKind) string {
+func renderRestockWarrantLine(n int, item sim.ItemKind) string {
 	if item == "" {
-		return fmt.Sprintf("%d. [%s]%s your shop stock is running low — see Restocking\n", n, kind, scope)
+		return fmt.Sprintf("%d. Your shop stock is running low — see Restocking.\n", n)
 	}
-	return fmt.Sprintf("%d. [%s]%s your stock of %s is running low — see Restocking\n", n, kind, scope, item)
+	return fmt.Sprintf("%d. Your stock of %s is running low — see Restocking.\n", n, item)
 }
 
 // renderImpulseWarrantLine renders the warrant line for an
@@ -839,13 +970,11 @@ func renderRestockWarrantLine(n int, kind, scope string, item sim.ItemKind) stri
 // umbilical /nudge route (ZBBS-WORK-329). The operator's message is wrapped in
 // an in-world felt-impulse frame so the NPC reads it as a spontaneous internal
 // urge, NOT an out-of-world instruction — the same in-world-voice discipline the
-// atmosphere + noticeboard prompts keep. The [impulse] kind tag
-// (WarrantKindImpulse) reinforces the framing: it reads as a feeling, not an
-// admin action. The colon form keeps the line grammatical regardless of how the
-// operator phrases the directive (it does not assume the message completes a
-// "pull to …" clause).
+// atmosphere + noticeboard prompts keep. The colon form keeps the line
+// grammatical regardless of how the operator phrases the directive (it does not
+// assume the message completes a "pull to …" clause).
 //
-// Form: `N. [impulse] you feel a strong, insistent pull: <message>`
+// Form: `N. You feel a strong, insistent pull: <message>`
 //
 // The message is untrusted operator free text, so it is sanitized + capped like
 // the speech excerpt; the returned bool reports truncation. An empty message
@@ -853,27 +982,12 @@ func renderRestockWarrantLine(n int, kind, scope string, item sim.ItemKind) stri
 // non-empty directive (an empty nudge stamps the bare admin reason) — but it is
 // handled defensively so a stray empty directive renders a bare impulse rather
 // than a dangling colon.
-func renderImpulseWarrantLine(n int, kind, scope, message string, maxTextBytes int) (string, bool) {
+func renderImpulseWarrantLine(n int, message string, maxTextBytes int) (string, bool) {
 	sanitized, truncated := sanitizeText(message, maxTextBytes)
 	if sanitized == "" {
-		return fmt.Sprintf("%d. [%s]%s you feel a strong, insistent pull to act\n", n, kind, scope), false
+		return fmt.Sprintf("%d. You feel a strong, insistent pull to act.\n", n), false
 	}
-	return fmt.Sprintf("%d. [%s]%s you feel a strong, insistent pull: %s\n", n, kind, scope, sanitized), truncated
-}
-
-// renderNeeds renders a need map as a deterministic "key=value" list,
-// sorted by key.
-func renderNeeds(needs map[sim.NeedKey]int) string {
-	keys := make([]string, 0, len(needs))
-	for k := range needs {
-		keys = append(keys, string(k))
-	}
-	sort.Strings(keys)
-	parts := make([]string, 0, len(keys))
-	for _, k := range keys {
-		parts = append(parts, fmt.Sprintf("%s=%d", k, needs[sim.NeedKey(k)]))
-	}
-	return strings.Join(parts, ", ")
+	return fmt.Sprintf("%d. You feel a strong, insistent pull: %s\n", n, sanitized), truncated
 }
 
 // sanitizeText neutralizes untrusted free text for inclusion in the prompt

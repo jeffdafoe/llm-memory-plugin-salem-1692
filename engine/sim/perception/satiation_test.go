@@ -186,19 +186,23 @@ func TestRenderSatiation_Bullets(t *testing.T) {
 	var b strings.Builder
 	renderSatiation(&b, &SatiationView{Needs: []SatiationNeedView{
 		{
+			// Magnitudes match the live item catalog (item_satisfies) so the
+			// expected felt phrases stay consistent with itemFeltAmount's
+			// documented bands: cheese 8 → "a good meal", bread 4 → "a small
+			// bite", meat 10 → "a hearty meal".
 			Need: "hunger", Verb: "eat",
-			OwnStock: []OwnStockItem{{Label: "stew", Magnitude: 12}, {Label: "bread", Magnitude: 6}},
-			Vendors:  []SatiationVendor{{StructureLabel: "The Tavern", ItemLabel: "ale", Magnitude: 4, CostText: "~2 coins"}},
+			OwnStock: []OwnStockItem{{Label: "cheese", Magnitude: 8}, {Label: "bread", Magnitude: 4}},
+			Vendors:  []SatiationVendor{{StructureLabel: "The Tavern", ItemLabel: "meat", Magnitude: 10, CostText: "~2 coins"}},
 		},
 	}})
 	out := b.String()
 	if !strings.Contains(out, "## What you can eat or drink") {
 		t.Errorf("missing header: %q", out)
 	}
-	if !strings.Contains(out, "You have stew (~12), bread (~6) on hand — consume to eat.") {
+	if !strings.Contains(out, "You have cheese (a good meal), bread (a small bite) on hand — consume to eat.") {
 		t.Errorf("own-stock line wrong: %q", out)
 	}
-	if !strings.Contains(out, "The Tavern — buy ale, eases hunger (~4), ~2 coins") {
+	if !strings.Contains(out, "The Tavern — buy meat (a hearty meal), ~2 coins") {
 		t.Errorf("vendor bullet wrong: %q", out)
 	}
 }
@@ -230,7 +234,7 @@ func TestRenderSatiation_StructureIDRendered(t *testing.T) {
 		}
 		return false
 	}
-	if !hasLine("- The Tavern — buy ale, eases hunger (~4), ~2 coins (structure_id: tavern)") {
+	if !hasLine("- The Tavern — buy ale (a small bite), ~2 coins (structure_id: tavern)") {
 		t.Errorf("vendor bullet missing/!exact structure_id in:\n%s", out)
 	}
 	// A vendor whose workplace didn't resolve carries no id — no dangling suffix

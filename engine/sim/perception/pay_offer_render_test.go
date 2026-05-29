@@ -56,10 +56,11 @@ func TestPayOfferWarrants_FiltersBatch(t *testing.T) {
 // as a generic "what just happened" warrant line.
 func TestRender_PayOfferDecisionSection(t *testing.T) {
 	p := Payload{
-		ActorID:  "seller",
-		Actor:    ActorView{State: sim.StateIdle},
-		Warrants: []sim.WarrantMeta{payOfferWarrant(17, "bob", "stew", 2, 12, true)},
-		Baseline: BaselinePresent,
+		ActorID:           "seller",
+		Actor:             ActorView{State: sim.StateIdle},
+		Warrants:          []sim.WarrantMeta{payOfferWarrant(17, "bob", "stew", 2, 12, true)},
+		WarrantActorNames: map[sim.ActorID]string{"bob": "bob"},
+		Baseline:          BaselinePresent,
 	}
 	out := Render(p, DefaultRenderConfig()).Text
 

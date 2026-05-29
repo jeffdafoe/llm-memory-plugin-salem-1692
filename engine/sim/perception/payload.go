@@ -203,6 +203,17 @@ type Payload struct {
 	// chosen (or why it wasn't) — debug/test output only, never prompt
 	// content.
 	SelectionReason string
+
+	// WarrantActorNames maps every actor referenced by a warrant (or pay
+	// offer) in this payload to its acquaintance-gated display label —
+	// DisplayName when the subject knows them, else "the <role>", else "a
+	// stranger". The same name-vs-descriptor gating SurroundingsView's
+	// HuddleMembers use. Render consults this so a "## What just happened"
+	// line reads "Goodwife Ellis arrived nearby" instead of leaking the raw
+	// actor UUID (ZBBS-HOME-339). The subject's own ID is deliberately
+	// absent — Render resolves self to "you". Empty when no warrant
+	// references another actor.
+	WarrantActorNames map[sim.ActorID]string
 }
 
 // OrderView is the perception-side projection of one sim.Order.
@@ -254,6 +265,12 @@ type ActorView struct {
 	CurrentHuddleID   sim.HuddleID
 	Coins             int
 	Needs             map[sim.NeedKey]int
+
+	// NeedThresholds is the red-tier boundary per need, copied from the
+	// snapshot so Render can classify each need value into its felt tier
+	// (peckish/hungry/starving) without re-reading world state. ZBBS-HOME-339
+	// — replaces the raw "needs: hunger=24" dump with felt language.
+	NeedThresholds sim.NeedThresholds
 
 	// ActiveDwellCredits is the actor's in-progress dwell credits at
 	// snapshot time — meals being eaten, rests being taken. Renders as
@@ -319,6 +336,14 @@ type SurroundingsView struct {
 	// StructureName is the structure's DisplayName, or empty when the
 	// actor is outdoors or the structure is absent from the snapshot.
 	StructureName string
+
+	// NearbyStructureName is the DisplayName of the structure the actor is
+	// standing at the loiter slot of while OUTDOORS (within
+	// sim.LoiterAttributionTiles) — e.g. a shopkeeper at their own stall, a
+	// customer outside a shop. Empty when inside a structure or not at any
+	// structure's loiter slot. Lets Render say "outdoors by the General
+	// Store" instead of dumping raw "(94, 126)" coordinates (ZBBS-HOME-339).
+	NearbyStructureName string
 
 	// HuddleID is the actor's current huddle, empty when not huddled.
 	HuddleID sim.HuddleID

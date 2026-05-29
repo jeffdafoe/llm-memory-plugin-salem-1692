@@ -508,7 +508,7 @@ func TestRenderRecoveryOptions_HomeAndOwnStock(t *testing.T) {
 	if !strings.Contains(out, "Thorne Cottage — sleep in your own bed, free") {
 		t.Errorf("home bullet wrong: %q", out)
 	}
-	if !strings.Contains(out, "You have coca tea (~12) on hand — consume to drink.") {
+	if !strings.Contains(out, "You have coca tea (a thorough waking) on hand — consume to recover.") {
 		t.Errorf("own-stock line wrong: %q", out)
 	}
 }

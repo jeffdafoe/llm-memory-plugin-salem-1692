@@ -43,6 +43,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 	}
 
 	p.Actor = buildActorView(snap, actorSnap)
+	p.WarrantActorNames = buildWarrantActorNames(snap, actorSnap, actorID, p.Warrants)
 	p.Surroundings = buildSurroundings(snap, actorID, actorSnap)
 	p.NarrativeState = buildNarrativeState(actorSnap)
 	p.Relationships = buildRelationships(actorSnap, p.Surroundings.HuddleMembers)
@@ -338,6 +339,7 @@ func buildActorView(snap *sim.Snapshot, a *sim.ActorSnapshot) ActorView {
 		CurrentHuddleID:    a.CurrentHuddleID,
 		Coins:              a.Coins,
 		Needs:              needs,
+		NeedThresholds:     snap.NeedThresholds,
 		ActiveDwellCredits: buildActiveDwellCredits(snap, a),
 		InFlightMove:       buildInFlightMove(snap, a),
 	}
@@ -461,6 +463,11 @@ func buildSurroundings(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnap
 		if st := snap.Structures[a.InsideStructureID]; st != nil {
 			s.StructureName = st.DisplayName
 		}
+	} else {
+		// Outdoors: name the structure whose loiter slot the actor is standing
+		// at (a keeper at their own stall, a customer outside a shop), so Render
+		// can say "outdoors by the General Store" rather than dumping coords.
+		s.NearbyStructureName = findLoiterStructure(snap, a)
 	}
 	if a.CurrentHuddleID != "" {
 		if h := snap.Huddles[a.CurrentHuddleID]; h != nil {
@@ -547,6 +554,112 @@ func findGatherableCue(snap *sim.Snapshot, a *sim.ActorSnapshot) (sim.ItemKind, 
 		}
 	}
 	return "", "", false
+}
+
+// findLoiterStructure returns the DisplayName of the structure whose loiter
+// slot the subject is standing at (nearest within sim.LoiterAttributionTiles,
+// Chebyshev), or "" when none. A structure shares its id with a VillageObject
+// (the placement), so the loiter pin is that object's tile anchor plus its
+// loiter offset — the same asset-free derivation findGatherableCue uses for
+// gatherable props. Used only for the OUTDOORS position phrasing; when the
+// actor is genuinely inside a structure the caller reads InsideStructureID
+// instead. Ties break by lowest structure id for determinism.
+func findLoiterStructure(snap *sim.Snapshot, a *sim.ActorSnapshot) string {
+	bestCheb := -1
+	var bestName string
+	var bestID sim.StructureID
+	for stID, st := range snap.Structures {
+		if st == nil || st.DisplayName == "" {
+			continue
+		}
+		vobj := snap.VillageObjects[sim.VillageObjectID(stID)]
+		if vobj == nil {
+			continue
+		}
+		pin := vobj.Pos.Tile()
+		off := sim.TileOffset{}
+		if vobj.LoiterOffsetX != nil {
+			off.DX = *vobj.LoiterOffsetX
+		}
+		if vobj.LoiterOffsetY != nil {
+			off.DY = *vobj.LoiterOffsetY
+		}
+		pin = pin.Add(off)
+		cheb := a.Pos.Chebyshev(pin)
+		if cheb > sim.LoiterAttributionTiles {
+			continue
+		}
+		if bestCheb == -1 || cheb < bestCheb || (cheb == bestCheb && stID < bestID) {
+			bestCheb = cheb
+			bestName = st.DisplayName
+			bestID = stID
+		}
+	}
+	return bestName
+}
+
+// descriptorLabel renders an actor reference as the subject would name them:
+// their DisplayName when acquainted, else "the <role>" (e.g. "the blacksmith")
+// for a known trade, else "a stranger". The single source of truth for the
+// name-vs-descriptor swap shared by HuddleMembers (renderHuddleMember) and the
+// warrant actor-name map (buildWarrantActorNames) — ZBBS-HOME-339.
+func descriptorLabel(displayName, role string, acquainted bool) string {
+	if acquainted && displayName != "" {
+		return displayName
+	}
+	if role != "" {
+		return "the " + role
+	}
+	return "a stranger"
+}
+
+// buildWarrantActorNames resolves every OTHER actor referenced by a warrant in
+// the batch to its acquaintance-gated label, so Render never leaks a raw actor
+// UUID into the "## What just happened" lines (ZBBS-HOME-339). The subject's
+// own ID is excluded — Render resolves self to "you". Returns nil when no
+// warrant references another actor (the common single-actor tick).
+func buildWarrantActorNames(snap *sim.Snapshot, subject *sim.ActorSnapshot, subjectID sim.ActorID, warrants []sim.WarrantMeta) map[sim.ActorID]string {
+	var names map[sim.ActorID]string
+	add := func(id sim.ActorID) {
+		if id == "" || id == subjectID {
+			return
+		}
+		if names == nil {
+			names = make(map[sim.ActorID]string)
+		}
+		if _, done := names[id]; done {
+			return
+		}
+		peer := snap.Actors[id]
+		if peer == nil {
+			// Actor gone from the snapshot (e.g. deleted between event and
+			// publish). Leave it out; Render falls back to a neutral label.
+			return
+		}
+		acquainted := false
+		if peer.DisplayName != "" {
+			_, acquainted = subject.Acquaintances[peer.DisplayName]
+		}
+		names[id] = descriptorLabel(peer.DisplayName, peer.Role, acquainted)
+	}
+	for _, w := range warrants {
+		add(w.TriggerActorID)
+		switch r := w.Reason.(type) {
+		case sim.PCSpeechWarrantReason:
+			add(r.Speaker)
+		case sim.NPCSpeechWarrantReason:
+			add(r.Speaker)
+		case sim.PaidWarrantReason:
+			add(r.Buyer)
+		case sim.PayOfferWarrantReason:
+			add(r.Buyer)
+		case sim.SceneQuoteTargetedWarrantReason:
+			add(r.SellerID)
+		case sim.PayResolvedWarrantReason:
+			add(r.Seller)
+		}
+	}
+	return names
 }
 
 // buildNarrativeState returns the kind-aware "Who you are:" content
