@@ -517,6 +517,22 @@ func (h *Harness) dispatch(ctx context.Context, w *sim.World, job tickJob, vc *V
 			if errors.Is(err, sim.ErrTickAttemptStale) {
 				return "[error: stale] tick attempt superseded", dispatchOutcome{stale: true}
 			}
+			// Echo the command validator's rejection reason to the model so it can
+			// correct its next call ("no one named X in this conversation", "use a
+			// structure_id you can see in your perception"). These reasons are
+			// authored to be model-facing and reach us tagged as ModelFacingError
+			// (see RunTickToolCommand). Returning a generic "command_failed" here
+			// previously severed self-correction — the model never learned WHY a
+			// call failed and retried the same bad call indefinitely (e.g. paying a
+			// structure name as if it were a person, or move_to'ing a name instead
+			// of a structure_id). Only ModelFacingError is echoed; every other
+			// dispatch error (actor-not-found race, nil command, invalid root,
+			// context deadline) stays generic so internal detail never leaks.
+			var modelErr sim.ModelFacingError
+			if errors.As(err, &modelErr) {
+				log.Printf("handlers: dispatch %q: command rejected: %v", vc.Name, err)
+				return fmt.Sprintf("[error] %s", modelErr.Error()), dispatchOutcome{}
+			}
 			log.Printf("handlers: dispatch %q: command send failed: %v", vc.Name, err)
 			return "[error: command_failed] world command rejected the tool", dispatchOutcome{}
 		}
