@@ -413,11 +413,11 @@ func renderRecoveryOptions(b *strings.Builder, v *RecoveryOptionsView) {
 		case "remedy":
 			fmt.Fprintf(b, " — buy %s", sanitizeInline(o.ItemLabel))
 			if o.Magnitude > 0 {
-				fmt.Fprintf(b, ", eases tiredness (~%d)", o.Magnitude)
+				fmt.Fprintf(b, " (%s)", itemFeltAmount(o.Magnitude, "tiredness"))
 			}
 		default:
 			if o.Magnitude > 0 {
-				fmt.Fprintf(b, " — eases tiredness (~%d)", o.Magnitude)
+				fmt.Fprintf(b, " — %s", itemFeltAmount(o.Magnitude, "tiredness"))
 			}
 		}
 		if o.CostText != "" {
