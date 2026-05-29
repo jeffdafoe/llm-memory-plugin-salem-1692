@@ -152,3 +152,44 @@ func TestRunTickToolCommandUnknownActor(t *testing.T) {
 		t.Fatal("an unknown actor should be a plain error, not ErrTickAttemptStale")
 	}
 }
+
+func TestRunTickToolCommandTagsToolErrorAsModelFacing(t *testing.T) {
+	w, cancel, root := buildToolCmdWorld(t, "A1")
+	defer cancel()
+
+	// A command validator's rejection is the model-facing reason the LLM needs
+	// to correct its next call. It must reach the harness tagged ModelFacingError
+	// so the harness echoes it (see harness.go's errors.As gate). Returning a
+	// generic label instead is the bug that trapped NPCs retrying forever.
+	wantMsg := `no one named "Ellis Farm" in this conversation`
+	tool := sim.Command{Fn: func(*sim.World) (any, error) {
+		return nil, errors.New(wantMsg)
+	}}
+
+	_, err := w.Send(sim.RunTickToolCommand("alice", "A1", root, tool))
+	var modelErr sim.ModelFacingError
+	if !errors.As(err, &modelErr) {
+		t.Fatalf("tool.Fn error should be tagged ModelFacingError, got %T: %v", err, err)
+	}
+	if modelErr.Error() != wantMsg {
+		t.Fatalf("ModelFacingError message = %q, want %q", modelErr.Error(), wantMsg)
+	}
+}
+
+func TestRunTickToolCommandWrapperErrorsNotModelFacing(t *testing.T) {
+	w, cancel, root := buildToolCmdWorld(t, "A1")
+	defer cancel()
+
+	// Wrapper/internal dispatch errors (here: unknown actor) are NOT model-facing
+	// reasons — they must not be echoed into the prompt, so they must not carry
+	// ModelFacingError (the harness falls back to a generic label for them).
+	tool := sim.Command{Fn: func(*sim.World) (any, error) { return nil, nil }}
+	_, err := w.Send(sim.RunTickToolCommand("ghost", "A1", root, tool))
+	if err == nil {
+		t.Fatal("expected an error for an unknown actor")
+	}
+	var modelErr sim.ModelFacingError
+	if errors.As(err, &modelErr) {
+		t.Fatalf("unknown-actor dispatch error must NOT be ModelFacingError, got %v", err)
+	}
+}
