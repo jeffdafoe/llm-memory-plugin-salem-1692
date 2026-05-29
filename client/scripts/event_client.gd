@@ -656,6 +656,20 @@ func _on_npc_arrived(data: Dictionary) -> void:
             facing = "south"
 
     container.position = Vector2(final_x, final_y)
+    # The walk path snaps to the door tile the actor pathed to, but the
+    # inside-dependent render state (sprite visibility + stand-offset
+    # reposition) is NOT re-applied here — only the /api/village/npcs refresh
+    # (world build) and the inside-flip broadcast do that. Without this an actor
+    # who WALKS inside sticks at the door until some unrelated refresh fires: a
+    # see-through stall keeper never moves behind the counter (stand_offset), and
+    # an opaque-building arrival stays visible in the doorway. Re-apply from the
+    # container's inside / inside_structure_id meta (the same source those paths
+    # set) so arrival matches a refresh. The helpers are visible_when_inside-aware,
+    # so the tavern hides and the stall repositions without special-casing here.
+    var inside: bool = bool(container.get_meta("inside", false))
+    var inside_structure_id: String = str(container.get_meta("inside_structure_id", ""))
+    container.visible = world._compute_npc_visible(inside, inside_structure_id)
+    world._apply_stand_offset_if_applicable(container, inside, inside_structure_id)
     container.set_meta("facing", facing)
     container.remove_meta("walking")
     world.play_npc_animation(container, facing, "idle")
