@@ -2069,9 +2069,15 @@ func apply_npc_spoke(data: Dictionary) -> void:
     #   2. Indoor speech: structure_id must match AND room_id must match.
     #      Common-room (room_id="") only spawns to common/outdoor PCs;
     #      private-room (room_id="bed1") only spawns to same-room PCs.
+    # KEY PRESENCE — not empty value — distinguishes a v2 frame (no
+    # structure_id/room_id key at all; huddle-scoped, the engine already chose
+    # the audience) from a v1 frame that explicitly set an empty (public/
+    # outdoor) scope. Gating on presence keeps v1's outdoor-suppression intact
+    # rather than leaking old public speech indoors (code_review).
+    var has_structure_scope := data.has("structure_id") or data.has("room_id")
     var bubble_in_scope := false
-    if structure_id == "" and room_id == "":
-        # v2 (huddle-scoped, no geometry) or v1 fully-public outdoor speech.
+    if not has_structure_scope:
+        # v2 huddle-scoped frame — spawn over the placed speaker.
         bubble_in_scope = true
     elif structure_id == "":
         bubble_in_scope = (_audience_structure_id == "" and _audience_room_id == "" and room_id == "")
