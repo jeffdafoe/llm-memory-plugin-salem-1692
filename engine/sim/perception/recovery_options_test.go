@@ -270,6 +270,9 @@ func TestBuildRecoveryOptions_RemedyVendorSurfaced(t *testing.T) {
 	if o.Kind != "remedy" || o.Label != "PW Apothecary" || o.ItemLabel != "coca tea" || o.Magnitude != 12 || o.CostText != "ask the seller" {
 		t.Errorf("unexpected remedy option (no price history → ask the seller): %+v", o)
 	}
+	if o.StructureID != "apothecary" {
+		t.Errorf("remedy StructureID = %q, want 'apothecary' (the move_to target)", o.StructureID)
+	}
 }
 
 // Two tiredness items at the same workplace share the parked sortKey AND the
@@ -363,7 +366,7 @@ func TestBuildRecoveryOptions_RemedyExcludesPCVendor(t *testing.T) {
 
 func TestBuildRecoveryOptions_RemedyExcludesNoWorkplaceAndUnresolvedStructure(t *testing.T) {
 	subj := &sim.ActorSnapshot{Needs: map[sim.NeedKey]int{"tiredness": sim.DefaultTirednessRedThreshold}, HomeStructureID: "cottage"}
-	noWork := &sim.ActorSnapshot{Inventory: map[sim.ItemKind]int{"coca_tea": 5}}                         // holds tea, no workplace
+	noWork := &sim.ActorSnapshot{Inventory: map[sim.ItemKind]int{"coca_tea": 5}}                                // holds tea, no workplace
 	ghostWork := &sim.ActorSnapshot{WorkStructureID: "missing", Inventory: map[sim.ItemKind]int{"coca_tea": 5}} // workplace not in snapshot
 	snap := &sim.Snapshot{
 		Actors:    map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj, "wanderer": noWork, "ghost": ghostWork},
@@ -518,5 +521,51 @@ func TestRenderRecoveryOptions_RemedyBullet(t *testing.T) {
 	out := b.String()
 	if !strings.Contains(out, "PW Apothecary — buy coca tea, eases tiredness (~12), ~2 coins") {
 		t.Errorf("remedy bullet wrong: %q", out)
+	}
+}
+
+// TestRenderRecoveryOptions_StructureIDRendered pins the move_to contract: the
+// structure-backed kinds (inn / home / remedy) render a trailing
+// (structure_id: …) the model passes straight to move_to — the tool rejects a
+// bare name, so without this the rest cue is unactionable. The free-object
+// "rest" kind is reached via object_visit, not move_to, so it must NOT carry a
+// structure_id. Regression guard for the perception gap that left NPCs unable
+// to walk to anything they could see.
+func TestRenderRecoveryOptions_StructureIDRendered(t *testing.T) {
+	var b strings.Builder
+	renderRecoveryOptions(&b, &RecoveryOptionsView{Options: []RecoveryOption{
+		{Kind: "rest", Label: "the old oak", Magnitude: 12, CostText: "free", Distance: "a short walk", Direction: "east"},
+		{Kind: "inn", Label: "Hannah's Inn", CostText: "ask the keeper", StructureID: "inn"},
+		{Kind: "home", Label: "Thorne Cottage", CostText: "free", StructureID: "cottage"},
+		{Kind: "remedy", Label: "PW Apothecary", ItemLabel: "coca tea", Magnitude: 12, CostText: "~2 coins", StructureID: "apothecary"},
+	}})
+	out := b.String()
+	// Exact full-bullet lines — pinning a tool contract, so guard against
+	// suffix/shape drift (a strings.Contains check would miss a duplicated id or
+	// trailing junk).
+	hasLine := func(want string) bool {
+		for _, line := range strings.Split(out, "\n") {
+			if strings.TrimSpace(line) == want {
+				return true
+			}
+		}
+		return false
+	}
+	for _, want := range []string{
+		"- Hannah's Inn — rent a room, ask the keeper (structure_id: inn)",
+		"- Thorne Cottage — sleep in your own bed, free (structure_id: cottage)",
+		"- PW Apothecary — buy coca tea, eases tiredness (~12), ~2 coins (structure_id: apothecary)",
+		// The free-object rest kind is reached via object_visit, not move_to, so
+		// its bullet carries NO structure_id — pinned as an exact line.
+		"- the old oak — eases tiredness (~12), free, a short walk east",
+	} {
+		if !hasLine(want) {
+			t.Errorf("missing exact bullet %q in:\n%s", want, out)
+		}
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "- the old oak") && strings.Contains(line, "structure_id") {
+			t.Errorf("free-object rest bullet must not render a structure_id: %q", line)
+		}
 	}
 }

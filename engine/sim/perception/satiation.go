@@ -37,16 +37,17 @@ type SatiationView struct {
 
 // SatiationNeedView is one pressing consumable need's resolution surface.
 type SatiationNeedView struct {
-	Need     sim.NeedKey     // "hunger" | "thirst"
-	Verb     string          // "eat" | "drink"
-	OwnStock []OwnStockItem  // satisfiers the actor already carries (shared shape)
+	Need     sim.NeedKey       // "hunger" | "thirst"
+	Verb     string            // "eat" | "drink"
+	OwnStock []OwnStockItem    // satisfiers the actor already carries (shared shape)
 	Vendors  []SatiationVendor // nearby places selling a satisfier
 }
 
 // SatiationVendor is one (workplace, item) buy opportunity.
 type SatiationVendor struct {
-	StructureLabel string // "PW Apothecary" — where the buyer walks to
-	ItemLabel      string // "stew"
+	StructureLabel string          // "PW Apothecary" — where the buyer walks to
+	StructureID    sim.StructureID // the workplace's key — passed to move_to to walk there
+	ItemLabel      string          // "stew"
 	Magnitude      int
 	CostText       string // "~3 coins" | "ask the seller"
 }
@@ -89,8 +90,17 @@ func buildSatiation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Acto
 func gatherSatiationVendors(snap *sim.Snapshot, actorID sim.ActorID, need sim.NeedKey) []SatiationVendor {
 	var out []SatiationVendor
 	for _, vc := range findVendorConsumables(snap, actorID, need, "ask the seller") {
+		if vc.StructureID == "" {
+			// No resolvable workplace → no structure_id for move_to, so the cue
+			// is unactionable and would only tempt a name-based move_to the tool
+			// rejects. findVendorConsumables already excludes vendors whose
+			// workplace doesn't resolve, so this is a defensive guard, not a
+			// live path.
+			continue
+		}
 		out = append(out, SatiationVendor{
 			StructureLabel: vc.StructureLabel,
+			StructureID:    vc.StructureID,
 			ItemLabel:      vc.ItemLabel,
 			Magnitude:      vc.Magnitude,
 			CostText:       vc.CostText,
@@ -130,6 +140,12 @@ func renderSatiation(b *strings.Builder, v *SatiationView) {
 				}
 				if vd.CostText != "" {
 					fmt.Fprintf(b, ", %s", vd.CostText)
+				}
+				// The structure_id is the load-bearing field: move_to(structure_id)
+				// is how the buyer actually walks here, and the tool rejects a bare
+				// name. Same id-in-perception contract restock + shift_duty use.
+				if vd.StructureID != "" {
+					fmt.Fprintf(b, " (structure_id: %s)", vd.StructureID)
 				}
 				b.WriteString("\n")
 			}
