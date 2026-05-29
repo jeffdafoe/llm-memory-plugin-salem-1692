@@ -1423,6 +1423,29 @@ func snapshotActor(a *Actor, atTick uint64) *ActorSnapshot {
 		}
 		sort.Strings(attributeSlugs)
 	}
+	// In-flight movement read-path projection (ZBBS-HOME-336). Value-typed
+	// destination fields lifted from the live MoveIntent so perception can
+	// remind the subject of its own walk; moveDestKind stays "" when the actor
+	// is not moving. Not the live *MoveIntent (that crosses the checkpoint
+	// boundary on the full Actor — see the ActorSnapshot doc-comment); this is
+	// the read-path view, the same posture as SpriteID / Facing.
+	var moveDestKind MoveDestinationKind
+	var moveDestStructureID StructureID
+	var moveDestObjectID VillageObjectID
+	var moveDestPos TilePos
+	if a.MoveIntent != nil {
+		d := a.MoveIntent.Destination
+		moveDestKind = d.Kind
+		if d.StructureID != nil {
+			moveDestStructureID = *d.StructureID
+		}
+		if d.ObjectID != nil {
+			moveDestObjectID = *d.ObjectID
+		}
+		if d.Position != nil {
+			moveDestPos = *d.Position
+		}
+	}
 	return &ActorSnapshot{
 		AtTick:             atTick,
 		DisplayName:        a.DisplayName,
@@ -1437,6 +1460,10 @@ func snapshotActor(a *Actor, atTick uint64) *ActorSnapshot {
 		CurrentHuddleID:    a.CurrentHuddleID,
 		SpriteID:           a.SpriteID,
 		Facing:             a.Facing,
+		MoveDestKind:        moveDestKind,
+		MoveDestStructureID: moveDestStructureID,
+		MoveDestObjectID:    moveDestObjectID,
+		MoveDestPos:         moveDestPos,
 		AttributeSlugs:     attributeSlugs,
 		HomeStructureID:    a.HomeStructureID,
 		WorkStructureID:    a.WorkStructureID,
