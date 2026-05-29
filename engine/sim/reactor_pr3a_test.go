@@ -479,6 +479,50 @@ func TestEvaluateReactors_DefaultAlwaysAdmit(t *testing.T) {
 	}
 }
 
+// TestEvaluateReactors_NeedInterruptsBreakAndStamps covers the ZBBS-HOME-329
+// #3/#6 emit-path behavior: an actor on a still-running scheduled break with a
+// due red-need warrant has the break ENDED (endBreak) when the tick is emitted,
+// and LastTickedAt is stamped to the evaluator's now. The eligibility unit
+// tests cover the gate; this pins the actual state mutation at the chokepoint.
+func TestEvaluateReactors_NeedInterruptsBreakAndStamps(t *testing.T) {
+	w, cancel, _ := buildPR3aWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+	future := now.Add(time.Hour)
+
+	// Put alice on a scheduled break that still has time to run.
+	_, _ = w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := world.Actors["alice"]
+		a.State = sim.StateResting
+		a.BreakUntil = &future
+		return nil, nil
+	}})
+	// A due red-need warrant — the thing that should cut the break short.
+	seedDueWarrant(t, w, "alice", []sim.WarrantMeta{
+		{Reason: sim.NeedThresholdWarrantReason{Need: "hunger"}},
+	}, now)
+	emitted := subscribeReactorTicks(t, w)
+
+	_, _ = w.Send(sim.EvaluateReactors(now))
+	if len(*emitted) != 1 {
+		t.Fatalf("need warrant on a break should fire a tick; emit count = %d, want 1", len(*emitted))
+	}
+	inspectActor(t, w, "alice", func(a *sim.Actor) {
+		if !a.TickInFlight {
+			t.Error("TickInFlight = false, want true (tick emitted)")
+		}
+		if a.State == sim.StateResting {
+			t.Error("State still StateResting; endBreak should have reset it to idle")
+		}
+		if a.BreakUntil != nil {
+			t.Errorf("BreakUntil = %v, want nil (break ended on interrupt)", a.BreakUntil)
+		}
+		if a.LastTickedAt == nil || !a.LastTickedAt.Equal(now) {
+			t.Errorf("LastTickedAt = %v, want %v (stamped at emit)", a.LastTickedAt, now)
+		}
+	})
+}
+
 // ---- in-flight key recording at emit ----------------------------------
 
 // TestEvaluateReactors_RecordsInFlightSourceKeys covers that the consumed

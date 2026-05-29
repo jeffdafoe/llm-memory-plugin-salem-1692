@@ -7,7 +7,8 @@ import (
 
 // needs_threshold_test.go — ZBBS-WORK-277, tick-driver producer #1. Covers the
 // need-threshold warrant stamping folded into IncrementNeedsTick: who warrants,
-// the edge-trigger, the tiredness-on-shift carve-out, and the one-per-tick gate.
+// the level re-pressure (ZBBS-HOME-329), the tiredness-on-shift carve-out, and
+// the one-per-tick gate.
 // Reuses the sleepTestWorld / npc / intptr helpers from npc_sleep_test.go (same
 // package).
 
@@ -77,17 +78,26 @@ func TestNeedThreshold_HungerCrossingStamps(t *testing.T) {
 	}
 }
 
-// TestNeedThreshold_NoCrossingNoStamp: a need already above its threshold that
-// climbs further is NOT a fresh crossing → no warrant (edge-triggered).
-func TestNeedThreshold_NoCrossingNoStamp(t *testing.T) {
-	a := agentNPCWithNeeds("n", 19, 5, 5) // hunger already past 18
+// TestNeedThreshold_AlreadyRedRePressures: ZBBS-HOME-329 made need warrants
+// LEVEL-triggered. A need already at/over its red threshold — including one
+// pegged at the max (the stuck-maxed case that could never recover under the
+// old edge trigger) — re-stamps a need_threshold warrant each tick while it
+// stays red, so the actor keeps getting goal pressure to resolve it.
+func TestNeedThreshold_AlreadyRedRePressures(t *testing.T) {
+	a := agentNPCWithNeeds("n", 24, 5, 5) // hunger pegged at the max, well past 18
 	w := needsTickWorld(1, a)
 
 	if _, err := IncrementNeedsTick(1).Fn(w); err != nil {
 		t.Fatalf("IncrementNeedsTick: %v", err)
 	}
-	if a.WarrantedSince != nil || hasNeedThresholdWarrant(a) {
-		t.Errorf("warrant stamped for a need already past threshold (no crossing); kinds = %v", warrantKinds(a))
+	if a.Needs["hunger"] != 24 {
+		t.Fatalf("hunger = %d, want 24 (already clamped at max)", a.Needs["hunger"])
+	}
+	if a.WarrantedSince == nil {
+		t.Error("WarrantedSince not stamped for a maxed-out need (level re-pressure)")
+	}
+	if !hasNeedThresholdWarrant(a) {
+		t.Errorf("no need_threshold warrant for a need still at its red line; kinds = %v", warrantKinds(a))
 	}
 }
 

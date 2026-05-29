@@ -402,7 +402,7 @@ func EvaluateReactors(now time.Time) Command {
 					continue
 				}
 
-				eligible, stale := actorCanReactNow(w, actor)
+				eligible, stale := actorCanReactNow(w, actor, now)
 				if stale {
 					clearWarrant(actor)
 					continue
@@ -482,6 +482,16 @@ func EvaluateReactors(now time.Time) Command {
 				warrantedSince := *actor.WarrantedSince
 				dueAt := *actor.WarrantDueAt
 
+				// ZBBS-HOME-329 #3/#4: a red-need or operator-force warrant is the
+				// only thing that lets an on-break actor reach this emit point
+				// (actorCanReactNow shelves resters otherwise; sleepers never reach
+				// here at all). We're committing to its tick, so end the break now —
+				// the actor leaves rest to act instead of deliberating while still
+				// flagged StateResting, which would re-shelve it on the next scan.
+				if actor.State == StateResting || (actor.BreakUntil != nil && actor.BreakUntil.After(now)) {
+					endBreak(w, actor)
+				}
+
 				clearWarrant(actor)
 				actor.TickInFlight = true
 				actor.TickAttemptID = newTickAttemptID()
@@ -490,6 +500,15 @@ func EvaluateReactors(now time.Time) Command {
 				// resolves it under the terminal-status policy.
 				actor.inFlightSourceKeys = sourceKeySet(warrantsCopy)
 				recordReactorTick(actor, now, rateCap)
+				// ZBBS-HOME-329 (#6): stamp the human-facing "last ticked"
+				// marker at the single tick-emit chokepoint, so the umbilical /
+				// admin last_agent_tick_at reflects reality instead of freezing
+				// at the value loaded from the last checkpoint. Distinct from
+				// RecentReactorTicks (the rate-gate ring) — this is the durable
+				// column, persisted on the next checkpoint. Fresh per-iteration
+				// copy avoids aliasing the loop-shared `now` across actors.
+				tickedAt := now
+				actor.LastTickedAt = &tickedAt
 
 				w.emit(&ReactorTickDue{
 					ActorID:        actor.ID,
@@ -534,6 +553,37 @@ func nextRateAllowedAt(a *Actor, now time.Time, cap int, window time.Duration) t
 	}
 	idx := len(inWindow) - cap
 	return inWindow[idx].Add(window).Add(rateBackoffJitter())
+}
+
+// hasNeedWarrant reports whether any meta in the list is a need-threshold
+// warrant — a red-tier need pressing the actor to act. ZBBS-HOME-329 #3 uses it
+// to let a critical need interrupt a scheduled break (never sleep).
+func hasNeedWarrant(list []WarrantMeta) bool {
+	for _, m := range list {
+		if m.Reason != nil && m.Reason.Kind() == WarrantKindNeedThreshold {
+			return true
+		}
+	}
+	return false
+}
+
+// hasOperatorNudgeWarrant reports whether any meta is an operator-injected
+// nudge — a bare admin force-tick (WarrantKindAdmin) or a directive impulse
+// (WarrantKindImpulse), both stamped only by the umbilical /nudge route.
+// ZBBS-HOME-329 #4 uses it to let an operator interrupt a scheduled break
+// (never sleep). Deliberately narrower than hasForcedWarrant: matching the
+// nudge KINDS rather than the broad Force flag keeps a future non-operator
+// forced warrant from silently gaining the power to wake a rester.
+func hasOperatorNudgeWarrant(list []WarrantMeta) bool {
+	for _, m := range list {
+		if m.Reason == nil {
+			continue
+		}
+		if k := m.Reason.Kind(); k == WarrantKindAdmin || k == WarrantKindImpulse {
+			return true
+		}
+	}
+	return false
 }
 
 // hasForcedWarrant returns true if any meta in the list has Force=true.
