@@ -22,6 +22,7 @@ type Server struct {
 	auth             Authenticator
 	hub              *Hub
 	telemetry        *telemetry.RingSink
+	checkpointHealth *sim.CheckpointHealth
 	controlEnabled   bool
 	errorLog         *errorRing
 	clientLog        *clientErrorRing
@@ -76,6 +77,16 @@ func (s *Server) SetEventsHub(h *Hub) {
 // it once during startup.
 func (s *Server) SetTelemetry(ring *telemetry.RingSink) {
 	s.telemetry = ring
+}
+
+// SetCheckpointHealth attaches the durable-checkpoint health recorder so the
+// umbilical /checkpoint-health route (and the checkpoint summary in /state) can
+// surface it. Optional: when nil, those views report the zero value (the
+// CheckpointHealth methods are nil-safe). cmd/engine wires the same recorder
+// the periodic checkpointer writes to. Same wiring-time-only contract as
+// SetTelemetry — call before Handler, never concurrently with serving.
+func (s *Server) SetCheckpointHealth(h *sim.CheckpointHealth) {
+	s.checkpointHealth = h
 }
 
 // SetControlEnabled arms the world-MUTATING umbilical control routes

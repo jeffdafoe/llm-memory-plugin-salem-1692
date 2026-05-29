@@ -68,6 +68,10 @@ type UmbilicalStateDTO struct {
 	TicksInFlight   int                `json:"ticks_in_flight"`
 	Counts          UmbilicalCountsDTO `json:"counts"`
 	Telemetry       TelemetryStatsDTO  `json:"telemetry"`
+	// Checkpoint is the durable-checkpoint health summary — surfaced here too
+	// (not just on /checkpoint-health) because /state is the daily check-in
+	// route, and consecutive_failures is the at-a-glance durability signal.
+	Checkpoint sim.CheckpointHealthSnapshot `json:"checkpoint"`
 }
 
 // UmbilicalCountsDTO is the size of each published entity table — a cheap
@@ -111,7 +115,9 @@ func (s *Server) handleUmbilicalTelemetry(w http.ResponseWriter, _ *http.Request
 // handleUmbilicalState serves a coarse introspection of the running engine off
 // the published snapshot plus the telemetry ring's accounting.
 func (s *Server) handleUmbilicalState(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, umbilicalStateFromSnapshot(s.world.Published(), s.telemetry.Stats()))
+	out := umbilicalStateFromSnapshot(s.world.Published(), s.telemetry.Stats())
+	out.Checkpoint = s.checkpointHealth.Snapshot()
+	writeJSON(w, out)
 }
 
 // umbilicalStateFromSnapshot maps the published snapshot + ring stats to the
@@ -304,6 +310,24 @@ func (s *Server) handleUmbilicalTickerHealth(w http.ResponseWriter, _ *http.Requ
 	writeJSON(w, out)
 }
 
+// UmbilicalCheckpointHealthDTO is the GET /api/village/umbilical/checkpoint-health
+// response: the durable-checkpoint health snapshot plus the contract version.
+type UmbilicalCheckpointHealthDTO struct {
+	ContractVersion int                          `json:"contract_version"`
+	Health          sim.CheckpointHealthSnapshot `json:"health"`
+}
+
+// handleUmbilicalCheckpointHealth serves the durable-checkpoint health view.
+// Read-only, like the other umbilical read routes. s.checkpointHealth may be
+// nil if the recorder wasn't wired (Snapshot is nil-safe and returns the zero
+// value), so the route never panics.
+func (s *Server) handleUmbilicalCheckpointHealth(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, UmbilicalCheckpointHealthDTO{
+		ContractVersion: ContractVersion,
+		Health:          s.checkpointHealth.Snapshot(),
+	})
+}
+
 // umbilicalBasePath is the umbilical route prefix. The manifest lives at exactly
 // this path; every other umbilical route hangs off it (basePath + "/telemetry"
 // etc.).
@@ -339,6 +363,7 @@ func (s *Server) umbilicalRoutes() []umbilicalRoute {
 		{http.MethodGet, umbilicalBasePath + "/agent", "One actor's full live picture: needs, position, inventory, rest windows, reactor/warrant state, in-flight move target, recent ticks and actions. Query param: id (required).", false, s.handleUmbilicalAgent},
 		{http.MethodGet, umbilicalBasePath + "/reactor", "Tick-eligibility across all actors: warranted / due-now / in-flight / idle counts plus the queued-actor list.", false, s.handleUmbilicalReactor},
 		{http.MethodGet, umbilicalBasePath + "/ticker-health", "Per-interval-goroutine liveness: last-fire time and cumulative fire count for each cadence driver.", false, s.handleUmbilicalTickerHealth},
+		{http.MethodGet, umbilicalBasePath + "/checkpoint-health", "Durable-checkpoint health: last success/failure/attempt times, consecutive-failure streak, totals, and last error. A non-zero consecutive_failures or a stale last_success_at means durability is broken.", false, s.handleUmbilicalCheckpointHealth},
 		{http.MethodGet, umbilicalBasePath + "/errors", "Recent non-2xx responses the engine returned (server-observed) for remote visibility into client-facing failures.", false, s.handleUmbilicalErrors},
 		{http.MethodGet, umbilicalBasePath + "/client-errors", "Client-reported (untrusted) runtime-error feed beaconed by the Godot client.", false, s.handleUmbilicalClientErrors},
 		{http.MethodGet, umbilicalBasePath + "/deadlocks", "Recent locomotion soft-block deadlock hard-stops (mover + occupant + whether re-plan found no detour) for remote visibility into live freeze frequency.", false, s.handleUmbilicalDeadlocks},
