@@ -54,8 +54,7 @@ var (
 // actor whose LoginUsername matches), so a caller can only ever move their own
 // PC — ownership is structural, not a checked field.
 type pcMoveRequest struct {
-	Destination      moveDestinationRequest `json:"destination"`
-	LeaveHuddleFirst bool                   `json:"leave_huddle_first"`
+	Destination moveDestinationRequest `json:"destination"`
 }
 
 // moveDestinationRequest mirrors sim.MoveDestination on the wire: a kind tag
@@ -75,10 +74,17 @@ type positionRequest struct {
 }
 
 // pcMoveResponse is the accepted-move outcome (sim.MoveActorResult on the wire).
+// The knock fields are populated only for a structure_enter that resolved to a
+// loiter-slot knock (an owner-only structure the PC isn't a member of) — see
+// sim.EnterOrKnock. The client reads them to open the talk panel on a service
+// huddle, or render the knock narration when no one answers.
 type pcMoveResponse struct {
 	MovementAttemptID   uint64 `json:"movement_attempt_id"`
 	SupersededAttemptID uint64 `json:"superseded_attempt_id"`
 	LeftHuddleID        string `json:"left_huddle_id,omitempty"`
+	Knocked             bool   `json:"knocked,omitempty"`
+	HuddleJoined        bool   `json:"huddle_joined,omitempty"`
+	KnockNarration      string `json:"knock_narration,omitempty"`
 }
 
 // handlePCMove walks the caller's PC to a destination. The route is wrapped in
@@ -114,7 +120,25 @@ func (s *Server) handlePCMove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := s.world.SendContext(r.Context(), movePCCommand(user.Username, dest, req.LeaveHuddleFirst))
+	// PC click-moves always leave the current huddle: a deliberate navigation
+	// ends the current conversation (v1's service-huddle cleanup), and without
+	// it a PC already in a huddle could not move at all — MoveActor rejects a
+	// bare move out of an active huddle. The wire field is no longer consulted.
+	const leaveHuddleFirst = true
+
+	// A structure_enter routes through EnterOrKnock so an owner-only structure
+	// the PC isn't a member of resolves to a loiter-slot knock (joining the
+	// keeper's huddle) rather than a 422 — v1 ZBBS-101 parity. dest.StructureID
+	// is non-nil here: buildMoveDestination rejects an empty structure_enter.
+	// Every other destination kind keeps the plain move path.
+	var cmd sim.Command
+	if dest.Kind == sim.MoveDestinationStructureEnter {
+		cmd = enterOrKnockPCCommand(user.Username, *dest.StructureID, leaveHuddleFirst)
+	} else {
+		cmd = movePCCommand(user.Username, dest, leaveHuddleFirst)
+	}
+
+	res, err := s.world.SendContext(r.Context(), cmd)
 	if err != nil {
 		// The client disconnected (or the deadline lapsed) before the world
 		// accepted the command or replied — there's nothing useful to write back.
@@ -131,18 +155,61 @@ func (s *Server) handlePCMove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	out, ok := res.(sim.MoveActorResult)
+	resp, ok := pcMoveResponseFromResult(res)
 	if !ok {
-		// movePCCommand always returns a MoveActorResult on success; a mismatch
-		// is a wiring bug, not a client error.
+		// The PC move commands always return MoveActorResult / EnterOrKnockResult
+		// on success; any other type is a wiring bug, not a client error.
 		writeError(w, http.StatusInternalServerError, "unexpected move result")
 		return
 	}
-	writeJSON(w, pcMoveResponse{
-		MovementAttemptID:   uint64(out.MovementAttemptID),
-		SupersededAttemptID: uint64(out.SupersededAttemptID),
-		LeftHuddleID:        string(out.LeftHuddleID),
-	})
+	writeJSON(w, resp)
+}
+
+// pcMoveResponseFromResult maps either PC-move command result onto the wire
+// response. EnterOrKnockResult embeds MoveActorResult, so the movement fields
+// promote; only the structure_enter (knock) path carries the knock fields.
+func pcMoveResponseFromResult(res any) (pcMoveResponse, bool) {
+	switch out := res.(type) {
+	case sim.EnterOrKnockResult:
+		return pcMoveResponse{
+			MovementAttemptID:   uint64(out.MovementAttemptID),
+			SupersededAttemptID: uint64(out.SupersededAttemptID),
+			LeftHuddleID:        string(out.LeftHuddleID),
+			Knocked:             out.Knocked,
+			HuddleJoined:        out.HuddleJoined,
+			KnockNarration:      out.KnockNarration,
+		}, true
+	case sim.MoveActorResult:
+		return pcMoveResponse{
+			MovementAttemptID:   uint64(out.MovementAttemptID),
+			SupersededAttemptID: uint64(out.SupersededAttemptID),
+			LeftHuddleID:        string(out.LeftHuddleID),
+		}, true
+	default:
+		return pcMoveResponse{}, false
+	}
+}
+
+// enterOrKnockPCCommand resolves the session username to the caller's PC, then
+// delegates to sim.EnterOrKnock for a structure_enter. Mirrors movePCCommand's
+// posture: PC identity resolves inside the Fn (on the world goroutine, no
+// TOCTOU), the move clock is captured at execution time, and a missing
+// structure maps to the 404 sentinel before EnterOrKnock's generic message.
+func enterOrKnockPCCommand(username string, structureID sim.StructureID, leaveHuddleFirst bool) sim.Command {
+	return sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			actorID, ok := findPCByLogin(world, username)
+			if !ok {
+				return sim.EnterOrKnockResult{}, errPCNotFound
+			}
+			now := time.Now().UTC()
+			sim.TouchPCInput(world, actorID, now)
+			if _, ok := world.Structures[structureID]; !ok {
+				return sim.EnterOrKnockResult{}, errStructureNotFound
+			}
+			return sim.EnterOrKnock(actorID, structureID, leaveHuddleFirst, now).Fn(world)
+		},
+	}
 }
 
 // buildMoveDestination validates the wire destination and converts it to a
