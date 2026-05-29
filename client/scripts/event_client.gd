@@ -591,32 +591,41 @@ func _on_npc_walking(data: Dictionary) -> void:
 
     var engine_start: Vector2 = world_path[0]
 
-    # Interpolation origin (ZBBS-HOME-335). A FRESH walk — the actor wasn't
-    # already walking (idle, or just un-hidden from indoors) — begins at the
-    # engine's authoritative start tile, so a body that inside=true had kept
-    # frozen elsewhere is placed on the path before animating. A SUPERSEDE —
-    # a new walk replacing one still in flight — instead continues from where
-    # the sprite is currently drawn. The engine emits no cancel frame for the
-    # superseded attempt and re-plans frequently, so hard-snapping to the
-    # engine start tile on every re-issue teleports a long-route walker
-    # between its interpolated render position and engine truth — the
-    # "disappearing / reappearing" NPC. Easing from the current position
-    # renders a re-plan as a course change, not a jump; the authoritative
+    # Interpolation origin. The engine emits npc_walking only when a
+    # destination is first set or CHANGED, and maps NO per-tile event to the
+    # client — so between npc_walking and npc_arrived the client interpolates
+    # the preview path off its OWN clock at a nominal constant speed, with no
+    # tile-by-tile truth correction. The engine paces variably (and stalls
+    # under tile contention), so over a route the sprite drifts AHEAD of the
+    # engine's real tile.
+    #
+    # On a SUPERSEDE (a new npc_walking while one is still in flight),
+    # world_path[0] is the engine's REAL current tile — which is BEHIND the
+    # drifted-ahead render position. ZBBS-HOME-335 eased the new leg from the
+    # drifted container.position into a path whose head is that earlier real
+    # tile, so the first leg ran BACKWARD: the visible snap-back / teleport.
+    # We restore the pre-335 behavior of snapping to the engine-authoritative
+    # tile (world_path[0]) at supersede and walking FORWARD from there. There
+    # are no per-tile events to clamp against, so snapping to truth here is the
+    # only correction point between start and arrival; the authoritative
     # npc_arrived still snaps to the true endpoint, so drift can't accumulate
-    # past a single walk.
-    var was_walking: bool = container.has_meta("walking")
-    var origin: Vector2 = container.position if was_walking else engine_start
-    # On supersede keep the engine's full path (origin → start tile → goal) so
-    # the sprite rejoins the authoritative route at its head; a fresh walk
-    # drops index 0 (the actor already stands on it).
-    var waypoints: Array = world_path if was_walking else world_path.slice(1)
+    # past a single walk. A FRESH walk (no prior "walking" meta — idle, or just
+    # un-hidden from indoors) also begins at engine_start, placing a body that
+    # inside=true had kept frozen elsewhere onto the path before animating.
+    var origin: Vector2 = engine_start
+    # The actor stands on world_path[0] (== origin), so the waypoints to walk
+    # through are the remainder of the path in both the fresh and supersede
+    # cases.
+    var waypoints: Array = world_path.slice(1)
 
     # If the NPC was indoors when the walk started, the inside_changed
     # broadcast should have un-hidden them — but defensively ensure it here so a
     # reordered / missed event doesn't leave them invisible during the walk.
     container.set_meta("inside", false)
     container.visible = true
-    container.position = origin
+    # Discontinuous snap to the engine-authoritative tile (see _snap_npc_to for
+    # the y-sort ghost workaround this routes through).
+    _snap_npc_to(container, origin)
 
     if waypoints.is_empty():
         # No-op move (already on the goal tile). Nothing to animate; the
@@ -671,7 +680,10 @@ func _on_npc_arrived(data: Dictionary) -> void:
         if facing == "":
             facing = "south"
 
-    container.position = Vector2(final_x, final_y)
+    # Discontinuous snap to the authoritative endpoint (see _snap_npc_to). The
+    # final visibility is set authoritatively just below from inside/structure,
+    # so the toggle's transient visible state only governs the position-write frame.
+    _snap_npc_to(container, Vector2(final_x, final_y))
     # npc_arrived carries `structure_id` — the structure the actor ended inside,
     # empty when it arrived outdoors (arrivedWireDTO.StructureID, from the
     # engine's ActorArrived.FinalStructureID). This is the ONLY post-load signal
@@ -710,9 +722,30 @@ func _on_npc_move_stopped(data: Dictionary) -> void:
         return
     var container: Node2D = world.placed_npcs[npc_id]
     var stop_pos: Vector2 = VillageApi.tile_to_world(int(data.get("x", 0)), int(data.get("y", 0)))
-    container.position = stop_pos
+    # Same discontinuous-snap class as arrival/supersede: the render position can
+    # have drifted a tile+ from where the engine halted, so route through the
+    # y-sort ghost workaround (see _snap_npc_to) instead of a bare write.
+    _snap_npc_to(container, stop_pos)
     container.remove_meta("walking")
     var facing: String = String(container.get_meta("facing", "south"))
     if facing == "":
         facing = "south"
     world.play_npc_animation(container, facing, "idle")
+
+## Snap an NPC container to an authoritative position, wrapping the write in the
+## HTML5/WebGL y-sort ghost workaround (visible=false; move; visible=true — the
+## same fix _on_object_moved uses) ONLY when the jump exceeds one grid step. A
+## large discontinuous move re-sorts the y-sorted $Objects tree and can drop this
+## sprite (and its neighbors) for a frame; a small re-seat doesn't. Chebyshev
+## (per-axis max) so a one-tile diagonal counts as one tile, not √2·tile. The
+## per-frame lerp in _tick_npc_walk must NOT route through here — toggling every
+## frame would itself flicker.
+func _snap_npc_to(container: Node2D, pos: Vector2) -> void:
+    var dx: float = abs(pos.x - container.position.x)
+    var dy: float = abs(pos.y - container.position.y)
+    if max(dx, dy) > float(VillageApi.tile_size):
+        container.visible = false
+        container.position = pos
+        container.visible = true
+    else:
+        container.position = pos
