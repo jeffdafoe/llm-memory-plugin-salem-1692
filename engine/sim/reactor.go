@@ -711,16 +711,20 @@ func actorReactorDue(a *Actor, now time.Time) bool {
 //   - Concluded-huddle stale: if CurrentHuddleID points at a huddle that
 //     has been concluded, the warrant's conversational context no longer
 //     exists. Return stale=true; caller clears the warrant.
-//   - Sleeping or Resting (the "do-not-disturb" macro-states): return
-//     eligible=false, stale=false. The warrant stays OPEN and the
-//     evaluator pushes WarrantDueAt out by unavailableBackoff. When the
-//     actor transitions out of sleeping/resting (e.g. wakes up via the
-//     dwell substrate or a state-flip command), the next scan picks the
-//     warrant up. Lazy clear — no state-transition pass walks the
-//     warrant list. Checked two ways: the StateSleeping/StateResting enum
-//     AND the SleepingUntil/BreakUntil timestamps the ZBBS-HOME-284 sleep
-//     lifecycle drives (the enum isn't transitioned at runtime yet, so the
-//     timestamp gate is what actually fires for an auto-bedded NPC).
+//   - Sleeping (StateSleeping enum OR SleepingUntil timestamp): return
+//     eligible=false, stale=false — sleep is sacrosanct and is never
+//     interrupted (v1 decision). The warrant stays OPEN; the evaluator backs
+//     off and resumes it on the next scan after wake.
+//   - Resting / on-break (StateResting enum OR BreakUntil timestamp): also
+//     eligible=false BY DEFAULT, same back-off posture — EXCEPT a red-tier
+//     need warrant (ZBBS-HOME-329 #3) or an operator nudge — admin force-tick
+//     or directive impulse (#4) — makes the break interruptible (eligible=true,
+//     matched by KIND, not the broad Force flag). The interrupting
+//     tick's emit path (EvaluateReactors) calls endBreak so the actor actually
+//     leaves rest. Without the exception an actor that beds down while already
+//     starving never wakes to eat, and the operator /nudge couldn't rescue it.
+//     The ZBBS-HOME-284 sleep lifecycle drives both enum and timestamp; the
+//     enum can lag an auto-bedded NPC, so both are checked.
 //   - Businessowner engine-speech suppression: if the actor engine-spoke
 //     a hospitality line within businessownerEngineSpeechSuppressionTTL
 //     (5s), their LLM tick on the same triggering event is skipped so
@@ -731,9 +735,10 @@ func actorReactorDue(a *Actor, now time.Time) bool {
 //
 // Note on StateResting: per actor.go's State enum comment, Resting is
 // the take_break / dwell-credit-accumulating posture (in-bed/recovering),
-// NOT "sitting in tavern, can respond." Gating Resting alongside
-// Sleeping is correct for the same reason — both signal the actor has
-// withdrawn from the conversational/active surface.
+// NOT "sitting in tavern, can respond." It is gated like Sleeping for the
+// same reason — the actor has withdrawn from the active surface — but
+// UNLIKE sleep, a break yields to a pressing need or an operator nudge
+// (ZBBS-HOME-329 #3/#4): a vendor should not starve on a coffee break.
 //
 // What's NOT checked here (deferred):
 //   - Off-stage / deceased actors (subsystems haven't ported).
@@ -745,7 +750,7 @@ func actorReactorDue(a *Actor, now time.Time) bool {
 // Returns (eligible, stale). When stale=true, caller clears the warrant
 // (it was for a context that no longer exists). When eligible=false but
 // stale=false, caller backs off (temporarily unavailable; warrant stays).
-func actorCanReactNow(w *World, a *Actor) (eligible bool, stale bool) {
+func actorCanReactNow(w *World, a *Actor, now time.Time) (eligible bool, stale bool) {
 	if a == nil {
 		return false, true
 	}
@@ -754,23 +759,33 @@ func actorCanReactNow(w *World, a *Actor) (eligible bool, stale bool) {
 			return false, true
 		}
 	}
-	if a.State == StateSleeping || a.State == StateResting {
+	// now is the evaluator's scan time, threaded in (not a fresh wall clock) so
+	// the break/sleep decision agrees with the rest of the EvaluateReactors pass
+	// and with sim-time / delayed-command callers (code_review, ZBBS-HOME-329).
+	// Sleep is sacrosanct — never interrupt a sleeper, via either the enum or
+	// the authoritative SleepingUntil timestamp (v1 decision, reaffirmed by Jeff
+	// 2026-05-29). The sleep/break lifecycle drives these timestamps directly;
+	// the State enum is a soft-set companion (executeNPCSleep sets StateSleeping)
+	// that can lag, so gate on both.
+	if a.State == StateSleeping {
 		return false, false
 	}
-	now := time.Now().UTC()
-	// ZBBS-HOME-284 #2/#4: SleepingUntil / BreakUntil are the AUTHORITATIVE
-	// rest signal — the sleep/break lifecycle drives these timestamps directly,
-	// and the State enum above is a soft-set companion (executeNPCSleep sets
-	// StateSleeping, executeTakeBreak sets StateResting) that the macro-state
-	// can lag behind. Gate on the timestamps so a warrant already in flight when
-	// an NPC beds down doesn't fire an LLM tick against a sleeping or on-break
-	// actor even if its enum hasn't been re-set. Same posture as the State check
-	// above: eligible=false / stale=false → the warrant stays OPEN, the
-	// evaluator backs off, and the next scan after wake / break-end resumes it.
 	if a.SleepingUntil != nil && a.SleepingUntil.After(now) {
 		return false, false
 	}
-	if a.BreakUntil != nil && a.BreakUntil.After(now) {
+	// A scheduled break (StateResting / BreakUntil) shelves the tick too — EXCEPT
+	// a red-tier need warrant (ZBBS-HOME-329 #3) or an operator nudge — a bare
+	// admin force-tick or a directive impulse (#4) — cuts the break short.
+	// Without this, an actor that beds down for a break while already hungry/
+	// thirsty starves locked in rest: the reactor defers its need warrant for the
+	// whole break and nothing wakes it, and even an operator /nudge couldn't
+	// rescue it (this gate runs before the pacing Force-bypass). The interrupting
+	// tick's emit path (EvaluateReactors) calls endBreak so the actor actually
+	// leaves rest. We match operator-nudge KINDS rather than the broad Force flag
+	// so a future non-operator forced warrant can't silently gain the power to
+	// wake resters. Sleep (above) yields to neither — only a break is interruptible.
+	onBreak := a.State == StateResting || (a.BreakUntil != nil && a.BreakUntil.After(now))
+	if onBreak && !hasNeedWarrant(a.Warrants) && !hasOperatorNudgeWarrant(a.Warrants) {
 		return false, false
 	}
 	if businessownerEngineSpeechRecent(w, a.ID, now) {

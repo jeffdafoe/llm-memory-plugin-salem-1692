@@ -356,6 +356,25 @@ func TestActorCanReactNowGatesRestWindows(t *testing.T) {
 		{"sleeping", func(a *Actor) { a.SleepingUntil = &future }, false},
 		{"on break", func(a *Actor) { a.BreakUntil = &future }, false},
 		{"sleep window expired", func(a *Actor) { a.SleepingUntil = &past }, true},
+		// ZBBS-HOME-329 #3/#4 — timestamp-driven (enum left Idle) interrupt
+		// matrix. Sleep is sacrosanct even under a red need or operator nudge;
+		// a break yields to either.
+		{"sleeping + need (sacrosanct)", func(a *Actor) {
+			a.SleepingUntil = &future
+			a.Warrants = []WarrantMeta{{Reason: NeedThresholdWarrantReason{Need: "hunger"}}}
+		}, false},
+		{"sleeping + operator nudge (sacrosanct)", func(a *Actor) {
+			a.SleepingUntil = &future
+			a.Warrants = []WarrantMeta{{Force: true, Reason: BasicWarrantReason{K: WarrantKindAdmin}}}
+		}, false},
+		{"on break + need interrupts", func(a *Actor) {
+			a.BreakUntil = &future
+			a.Warrants = []WarrantMeta{{Reason: NeedThresholdWarrantReason{Need: "hunger"}}}
+		}, true},
+		{"on break + operator nudge interrupts", func(a *Actor) {
+			a.BreakUntil = &future
+			a.Warrants = []WarrantMeta{{Force: true, Reason: BasicWarrantReason{K: WarrantKindAdmin}}}
+		}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -363,7 +382,7 @@ func TestActorCanReactNowGatesRestWindows(t *testing.T) {
 			a.State = StateIdle
 			tc.mutate(a)
 			w := sleepTestWorld(a)
-			eligible, stale := actorCanReactNow(w, a)
+			eligible, stale := actorCanReactNow(w, a, now)
 			if eligible != tc.wantEligible || stale {
 				t.Errorf("got (eligible=%v, stale=%v), want (eligible=%v, stale=false)", eligible, stale, tc.wantEligible)
 			}
