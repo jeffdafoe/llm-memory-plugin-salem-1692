@@ -74,11 +74,12 @@ func eachVendorOffer(snap *sim.Snapshot, buyerID sim.ActorID, fn func(vendorOffe
 // vendorConsumable is one (vendor, item) sale opportunity for a given need —
 // the neutral shape the two consuming surfaces map into their own bullets.
 type vendorConsumable struct {
-	StructureLabel string      // the vendor's workplace, where the buyer walks to
-	ItemLabel      string      // the consumable's display label
-	Magnitude      int         // immediate need eased per unit (positive)
-	CostText       string      // per-buyer last-paid, or the caller's fallback
-	VendorID       sim.ActorID // for the caller's deterministic sourceKey
+	StructureLabel string          // the vendor's workplace, where the buyer walks to
+	StructureID    sim.StructureID // the workplace's key — what the buyer passes to move_to
+	ItemLabel      string          // the consumable's display label
+	Magnitude      int             // immediate need eased per unit (positive)
+	CostText       string          // per-buyer last-paid, or the caller's fallback
+	VendorID       sim.ActorID     // for the caller's deterministic sourceKey
 	ItemKind       sim.ItemKind
 }
 
@@ -114,6 +115,7 @@ func findVendorConsumables(snap *sim.Snapshot, buyerID sim.ActorID, need sim.Nee
 		}
 		out = append(out, vendorConsumable{
 			StructureLabel: vendorStructureLabel(o.Structure),
+			StructureID:    o.StructureID,
 			ItemLabel:      itemDisplayLabel(snap, o.Kind),
 			Magnitude:      mag,
 			CostText:       buyerLastPaidText(snap, buyerID, o.VendorID, o.Kind, costFallback),

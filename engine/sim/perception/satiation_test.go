@@ -128,6 +128,9 @@ func TestBuildSatiation_VendorCueThirst(t *testing.T) {
 	if vd.StructureLabel != "Well House" || vd.ItemLabel != "water" || vd.Magnitude != 5 || vd.CostText != "ask the seller" {
 		t.Errorf("vendor cue wrong (no price history → ask the seller): %+v", vd)
 	}
+	if vd.StructureID != "well_house" {
+		t.Errorf("vendor StructureID = %q, want 'well_house' (the move_to target)", vd.StructureID)
+	}
 }
 
 func TestBuildSatiation_VendorPriceFromPriceBook(t *testing.T) {
@@ -197,5 +200,34 @@ func TestRenderSatiation_Bullets(t *testing.T) {
 	}
 	if !strings.Contains(out, "The Tavern — buy ale, eases hunger (~4), ~2 coins") {
 		t.Errorf("vendor bullet wrong: %q", out)
+	}
+}
+
+// TestRenderSatiation_StructureIDRendered pins the move_to contract for the
+// eat/drink vendor bullets: a vendor whose workplace resolved renders a
+// trailing (structure_id: …) the buyer passes straight to move_to (the tool
+// rejects a bare name); an empty StructureID renders no suffix (no dangling
+// "(structure_id: )"). Regression guard for the perception gap that starved
+// NPCs by naming shops they could never walk to.
+func TestRenderSatiation_StructureIDRendered(t *testing.T) {
+	var b strings.Builder
+	renderSatiation(&b, &SatiationView{Needs: []SatiationNeedView{
+		{
+			Need: "hunger", Verb: "eat",
+			Vendors: []SatiationVendor{
+				{StructureLabel: "The Tavern", StructureID: "tavern", ItemLabel: "ale", Magnitude: 4, CostText: "~2 coins"},
+				{StructureLabel: "Roadside Stall", ItemLabel: "apple", Magnitude: 3, CostText: "ask the seller"},
+			},
+		},
+	}})
+	out := b.String()
+	if !strings.Contains(out, "The Tavern — buy ale, eases hunger (~4), ~2 coins (structure_id: tavern)") {
+		t.Errorf("vendor bullet missing structure_id: %q", out)
+	}
+	// A vendor whose workplace didn't resolve carries no id — no dangling suffix.
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "- Roadside Stall") && strings.Contains(line, "structure_id") {
+			t.Errorf("vendor with empty StructureID must not render a structure_id: %q", line)
+		}
 	}
 }

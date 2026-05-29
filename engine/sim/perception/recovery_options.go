@@ -48,6 +48,14 @@ type RecoveryOption struct {
 	Distance  string // qualitative ("a short walk"); "" when unknown (inns, remedies)
 	Direction string // cardinal ("northeast"); "" when unknown (inns, remedies)
 
+	// StructureID is the move_to target for the structure-backed kinds (inn,
+	// home, remedy vendor's workplace). It is what the model passes to
+	// move_to(structure_id) to actually walk here — the tool rejects a bare
+	// name, so without this the rest cue is unactionable. Empty for the
+	// free-object "rest" kind, which is reached by object_visit, not move_to;
+	// rendered only when set, so a "rest" bullet carries no structure_id.
+	StructureID sim.StructureID
+
 	// sortKey is the actor→option tile distance used to order bullets
 	// (nearest first). Unexported — never rendered. Inns have no reliable
 	// distance (grid vs pixel space) so they sort last via a large key.
@@ -142,11 +150,12 @@ func gatherHomeRestSpot(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) *Recov
 		label = st.DisplayName
 	}
 	return &RecoveryOption{
-		Kind:      "home",
-		Label:     label,
-		CostText:  "free",
-		sortKey:   innSortKey,
-		sourceKey: string(actorSnap.HomeStructureID),
+		Kind:        "home",
+		Label:       label,
+		CostText:    "free",
+		StructureID: actorSnap.HomeStructureID,
+		sortKey:     innSortKey,
+		sourceKey:   string(actorSnap.HomeStructureID),
 	}
 }
 
@@ -245,11 +254,12 @@ func gatherInnRestSpots(snap *sim.Snapshot, actorID sim.ActorID) []RecoveryOptio
 			continue
 		}
 		out = append(out, RecoveryOption{
-			Kind:      "inn",
-			Label:     innLabel(s),
-			CostText:  innCostText(snap, actorID, keeperID),
-			sortKey:   innSortKey,
-			sourceKey: string(id),
+			Kind:        "inn",
+			Label:       innLabel(s),
+			CostText:    innCostText(snap, actorID, keeperID),
+			StructureID: id,
+			sortKey:     innSortKey,
+			sourceKey:   string(id),
 		})
 	}
 	return out
@@ -265,13 +275,14 @@ func gatherConsumableRemedies(snap *sim.Snapshot, actorID sim.ActorID) []Recover
 	var out []RecoveryOption
 	for _, vc := range findVendorConsumables(snap, actorID, recoveryTirednessNeed, "ask the seller") {
 		out = append(out, RecoveryOption{
-			Kind:      "remedy",
-			Label:     vc.StructureLabel,
-			ItemLabel: vc.ItemLabel,
-			Magnitude: vc.Magnitude,
-			CostText:  vc.CostText,
-			sortKey:   innSortKey,
-			sourceKey: string(vc.VendorID) + ":" + string(vc.ItemKind),
+			Kind:        "remedy",
+			Label:       vc.StructureLabel,
+			ItemLabel:   vc.ItemLabel,
+			Magnitude:   vc.Magnitude,
+			CostText:    vc.CostText,
+			StructureID: vc.StructureID,
+			sortKey:     innSortKey,
+			sourceKey:   string(vc.VendorID) + ":" + string(vc.ItemKind),
 		})
 	}
 	return out
@@ -409,6 +420,13 @@ func renderRecoveryOptions(b *strings.Builder, v *RecoveryOptionsView) {
 			if o.Direction != "" {
 				fmt.Fprintf(b, " %s", o.Direction)
 			}
+		}
+		// The structure_id is what makes the cue actionable: move_to(structure_id)
+		// walks the actor here, and the tool rejects a bare name. Only the
+		// structure-backed kinds carry one — a free-object "rest" spot is reached
+		// via object_visit, so it renders no structure_id.
+		if o.StructureID != "" {
+			fmt.Fprintf(b, " (structure_id: %s)", o.StructureID)
 		}
 		b.WriteString("\n")
 	}
