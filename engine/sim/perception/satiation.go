@@ -127,7 +127,7 @@ func renderSatiation(b *strings.Builder, v *SatiationView) {
 	b.WriteString("## What you can eat or drink\n")
 	for _, n := range v.Needs {
 		if len(n.OwnStock) > 0 {
-			fmt.Fprintf(b, "You have %s on hand — consume to %s.\n", renderOwnStockLine(n.OwnStock), n.Verb)
+			fmt.Fprintf(b, "You have %s on hand — consume to %s.\n", renderOwnStockLine(n.OwnStock, n.Need), n.Verb)
 		}
 		if len(n.Vendors) > 0 {
 			fmt.Fprintf(b, "Nearby to buy (%s):\n", string(n.Need))
@@ -136,7 +136,7 @@ func renderSatiation(b *strings.Builder, v *SatiationView) {
 				b.WriteString(sanitizeInline(vd.StructureLabel))
 				fmt.Fprintf(b, " — buy %s", sanitizeInline(vd.ItemLabel))
 				if vd.Magnitude > 0 {
-					fmt.Fprintf(b, ", eases %s (~%d)", string(n.Need), vd.Magnitude)
+					fmt.Fprintf(b, " (%s)", itemFeltAmount(vd.Magnitude, n.Need))
 				}
 				if vd.CostText != "" {
 					fmt.Fprintf(b, ", %s", vd.CostText)

@@ -444,7 +444,7 @@ func renderRecoveryOptions(b *strings.Builder, v *RecoveryOptionsView) {
 		b.WriteString("\n")
 	}
 	if len(v.OwnStock) > 0 {
-		fmt.Fprintf(b, "You have %s on hand — consume to drink.\n", renderOwnStockLine(v.OwnStock))
+		fmt.Fprintf(b, "You have %s on hand — consume to recover.\n", renderOwnStockLine(v.OwnStock, "tiredness"))
 	}
 	b.WriteString("\n")
 }
