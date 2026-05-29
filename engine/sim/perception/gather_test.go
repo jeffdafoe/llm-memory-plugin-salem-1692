@@ -103,13 +103,13 @@ func TestRenderSurroundings_GatherableLine(t *testing.T) {
 	var b strings.Builder
 	renderSurroundings(&b, SurroundingsView{GatherableItem: "water", GatherableSource: "Old Well"})
 	out := b.String()
-	if !strings.Contains(out, "gatherable:") || !strings.Contains(out, "gather water here") {
+	if !strings.Contains(out, "You're at Old Well — you can gather water here.") {
 		t.Errorf("render missing gatherable line:\n%s", out)
 	}
 
 	var b2 strings.Builder
 	renderSurroundings(&b2, SurroundingsView{})
-	if strings.Contains(b2.String(), "gatherable:") {
+	if strings.Contains(b2.String(), "you can gather") {
 		t.Errorf("render emitted a gatherable line with no cue:\n%s", b2.String())
 	}
 }

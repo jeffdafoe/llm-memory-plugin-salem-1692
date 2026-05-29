@@ -179,14 +179,64 @@ func gatherOwnStock(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, need sim.N
 	return out
 }
 
-// renderOwnStockLine renders "<item> (~N), <item> (~N)" for an own-stock list.
-// Shared by the satiation section and the recovery-options tiredness line.
-func renderOwnStockLine(items []OwnStockItem) string {
+// renderOwnStockLine renders "<item> (<felt amount>), <item> (<felt amount>)"
+// for an own-stock list — e.g. "cheese (a good meal), bread (a small bite)".
+// Shared by the satiation section (need = hunger/thirst) and the
+// recovery-options tiredness line (need = tiredness). The felt phrase replaces
+// the raw "(~N)" magnitude the LLM couldn't calibrate against (ZBBS-HOME-339).
+func renderOwnStockLine(items []OwnStockItem, need sim.NeedKey) string {
 	parts := make([]string, len(items))
 	for i, it := range items {
-		parts[i] = fmt.Sprintf("%s (~%d)", sanitizeInline(it.Label), it.Magnitude)
+		parts[i] = fmt.Sprintf("%s (%s)", sanitizeInline(it.Label), itemFeltAmount(it.Magnitude, need))
 	}
 	return strings.Join(parts, ", ")
+}
+
+// itemFeltAmount maps an item's immediate need-satisfaction magnitude to a
+// felt-language phrase, per need — the v1 vocabulary restored (the v2 rewrite
+// regressed to raw "(~N)"). Bands are calibrated against the live v2 item
+// catalog (item_satisfies) so each catalogued satisfier lands in a distinct
+// phrase:
+//
+//	hunger:    ale/berries 2, carrots 3, bread/stew 4, cheese 8, meat 10
+//	thirst:    ale 4, milk 6, water 8
+//	tiredness: coca tea 12
+//
+// ZBBS-HOME-339.
+func itemFeltAmount(amount int, need sim.NeedKey) string {
+	switch need {
+	case "thirst":
+		switch {
+		case amount <= 4:
+			return "a sip"
+		case amount <= 7:
+			return "a drink"
+		default:
+			return "a deep drink"
+		}
+	case "tiredness":
+		switch {
+		case amount <= 4:
+			return "a small revival"
+		case amount <= 7:
+			return "a fair revival"
+		case amount <= 11:
+			return "a strong revival"
+		default:
+			return "a thorough waking"
+		}
+	default: // hunger
+		switch {
+		case amount <= 2:
+			return "a nibble"
+		case amount <= 4:
+			return "a small bite"
+		case amount <= 8:
+			return "a good meal"
+		default:
+			return "a hearty meal"
+		}
+	}
 }
 
 // itemNeedMagnitude returns the immediate `need` a unit of kind eases per the
