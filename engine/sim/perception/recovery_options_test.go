@@ -490,7 +490,7 @@ func TestRenderRecoveryOptions_Bullets(t *testing.T) {
 	if !strings.Contains(out, "## How you can rest") {
 		t.Errorf("missing section header: %q", out)
 	}
-	if !strings.Contains(out, "the old oak — eases tiredness (~12), free, a short walk east") {
+	if !strings.Contains(out, "the old oak — a thorough waking, free, a short walk east") {
 		t.Errorf("rest bullet wrong: %q", out)
 	}
 	if !strings.Contains(out, "Hannah's Inn — rent a room, ask the keeper") {
@@ -519,7 +519,7 @@ func TestRenderRecoveryOptions_RemedyBullet(t *testing.T) {
 		{Kind: "remedy", Label: "PW Apothecary", ItemLabel: "coca tea", Magnitude: 12, CostText: "~2 coins"},
 	}})
 	out := b.String()
-	if !strings.Contains(out, "PW Apothecary — buy coca tea, eases tiredness (~12), ~2 coins") {
+	if !strings.Contains(out, "PW Apothecary — buy coca tea (a thorough waking), ~2 coins") {
 		t.Errorf("remedy bullet wrong: %q", out)
 	}
 }
@@ -554,10 +554,10 @@ func TestRenderRecoveryOptions_StructureIDRendered(t *testing.T) {
 	for _, want := range []string{
 		"- Hannah's Inn — rent a room, ask the keeper (structure_id: inn)",
 		"- Thorne Cottage — sleep in your own bed, free (structure_id: cottage)",
-		"- PW Apothecary — buy coca tea, eases tiredness (~12), ~2 coins (structure_id: apothecary)",
+		"- PW Apothecary — buy coca tea (a thorough waking), ~2 coins (structure_id: apothecary)",
 		// The free-object rest kind is reached via object_visit, not move_to, so
 		// its bullet carries NO structure_id — pinned as an exact line.
-		"- the old oak — eases tiredness (~12), free, a short walk east",
+		"- the old oak — a thorough waking, free, a short walk east",
 	} {
 		if !hasLine(want) {
 			t.Errorf("missing exact bullet %q in:\n%s", want, out)
