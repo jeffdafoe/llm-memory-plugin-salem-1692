@@ -669,6 +669,7 @@ func resetReactorStateOnLoad(a *Actor) {
 	a.RecentReactorTicks = nil
 	a.inFlightSourceKeys = nil
 	a.recentlyConsumedSourceKeys = nil
+	a.heardSpeechMisses = nil
 }
 
 // actorReactorDue is the cheap pre-check the evaluator runs against every

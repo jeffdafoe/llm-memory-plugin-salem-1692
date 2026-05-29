@@ -71,6 +71,19 @@ func handleSpokeWarrants(w *sim.World, evt sim.Event) {
 		if peer.MoveIntent != nil {
 			continue
 		}
+		// ZBBS-HOME-331: heard-speech loop terminator. Record this utterance
+		// against the per-(speaker, listener) breaker and skip if the circuit is
+		// open — the speaker has warranted this listener heardSpeechMissThreshold
+		// times with no productive reply, and the pair hasn't gone quiet long
+		// enough to recover. NoteHeardSpeech is called for EVERY heard utterance
+		// (including the suppressed ones it reports) so the recovery clock
+		// measures real silence, not the last admitted warrant. Closes the
+		// stationary-listener half HOME-330 left open (it gated only mid-walk
+		// listeners). Resets when the listener speaks into the huddle (sim.Speak)
+		// or after the recovery window. See engine/sim/heard_speech_circuit.go.
+		if peer.NoteHeardSpeech(spoke.SpeakerID, now) {
+			continue
+		}
 		meta := sim.WarrantMeta{
 			TriggerActorID: spoke.SpeakerID,
 			Force:          false,
