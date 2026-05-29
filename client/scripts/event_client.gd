@@ -589,18 +589,34 @@ func _on_npc_walking(data: Dictionary) -> void:
     if world_path.is_empty():
         return
 
-    var start_pos: Vector2 = world_path[0]
-    # Waypoints to actually walk through (index 0 is where the actor already is).
-    var waypoints: Array = world_path.slice(1)
+    var engine_start: Vector2 = world_path[0]
+
+    # Interpolation origin (ZBBS-HOME-335). A FRESH walk — the actor wasn't
+    # already walking (idle, or just un-hidden from indoors) — begins at the
+    # engine's authoritative start tile, so a body that inside=true had kept
+    # frozen elsewhere is placed on the path before animating. A SUPERSEDE —
+    # a new walk replacing one still in flight — instead continues from where
+    # the sprite is currently drawn. The engine emits no cancel frame for the
+    # superseded attempt and re-plans frequently, so hard-snapping to the
+    # engine start tile on every re-issue teleports a long-route walker
+    # between its interpolated render position and engine truth — the
+    # "disappearing / reappearing" NPC. Easing from the current position
+    # renders a re-plan as a course change, not a jump; the authoritative
+    # npc_arrived still snaps to the true endpoint, so drift can't accumulate
+    # past a single walk.
+    var was_walking: bool = container.has_meta("walking")
+    var origin: Vector2 = container.position if was_walking else engine_start
+    # On supersede keep the engine's full path (origin → start tile → goal) so
+    # the sprite rejoins the authoritative route at its head; a fresh walk
+    # drops index 0 (the actor already stands on it).
+    var waypoints: Array = world_path if was_walking else world_path.slice(1)
 
     # If the NPC was indoors when the walk started, the inside_changed
     # broadcast should have un-hidden them — but defensively ensure it here so a
     # reordered / missed event doesn't leave them invisible during the walk.
     container.set_meta("inside", false)
     container.visible = true
-    # Snap to the start so interpolation begins from the right spot rather than
-    # jumping mid-path (e.g. if inside=true had kept them frozen elsewhere).
-    container.position = start_pos
+    container.position = origin
 
     if waypoints.is_empty():
         # No-op move (already on the goal tile). Nothing to animate; the
@@ -609,7 +625,7 @@ func _on_npc_walking(data: Dictionary) -> void:
         return
 
     var walk := {
-        "start_pos": start_pos,
+        "start_pos": origin,
         "path": waypoints,
         "speed": VillageApi.walk_speed_px_per_s(),
         "started_at_s": Time.get_ticks_msec() / 1000.0,
@@ -618,7 +634,7 @@ func _on_npc_walking(data: Dictionary) -> void:
     container.set_meta("walking", walk)
 
     # Kick off walk animation in the first leg's direction.
-    var first_dir: Vector2 = waypoints[0] - start_pos
+    var first_dir: Vector2 = waypoints[0] - origin
     var facing: String = world.facing_from_vec(first_dir)
     container.set_meta("facing", facing)
     world.play_npc_animation(container, facing, "walk")
