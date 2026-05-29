@@ -563,8 +563,11 @@ func TestHuddlesRepo_SaveSnapshot_MemberNextvalError(t *testing.T) {
 }
 
 // TestHuddlesRepo_SaveSnapshot_MemberUpsertError — child upsert fails.
-// Verifies the canonical failure mode for the UNIQUE(actor_id)
-// invariant (real-pg would surface here as a unique-violation).
+// Verifies any DB error during the member upsert propagates out of
+// SaveSnapshot (and thus aborts the checkpoint Tx) rather than being
+// swallowed. Note: post-ZBBS-HOME-333 a moved actor no longer produces a
+// unique-violation here — the upsert repoints on ON CONFLICT (actor_id) —
+// so this exercises generic error propagation, not an expected-in-prod path.
 func TestHuddlesRepo_SaveSnapshot_MemberUpsertError(t *testing.T) {
 	mock, repo := newMockPoolH(t)
 	tx := fakeTx{mock: mock}

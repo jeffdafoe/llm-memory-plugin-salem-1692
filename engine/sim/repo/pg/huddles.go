@@ -3,6 +3,7 @@ package pg
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
@@ -92,18 +93,28 @@ const nextGenSQLH = `SELECT nextval('huddle_snapshot_gen_seq')`
 // realms land. Today single-realm so the global lock is correct.
 const advisoryLockSQLH = `SELECT pg_advisory_xact_lock(hashtext('huddle_snapshot'), 0)`
 
-// upsertSQLM writes one huddle_member row. UNIQUE(actor_id) enforces
-// the single-active-huddle-per-actor invariant; a duplicate-actor
-// UPSERT would violate this constraint (which is the correct failure
-// mode — it surfaces a world-side bug rather than silently
-// reassigning the actor's huddle).
+// upsertSQLM writes one huddle_member row. The conflict arbiter is the
+// uniq_huddle_member_actor index (UNIQUE(actor_id)) — the one-active-huddle-
+// per-actor invariant — so an actor who moved huddles between checkpoints has
+// their existing row REPOINTED to the new huddle in place. huddle_id is part of
+// the PK, so the UPDATE rewrites it; that is valid in PG because actor_id is
+// unique, so the resulting (huddle_id, actor_id) cannot collide.
+//
+// An earlier `ON CONFLICT (huddle_id, actor_id)` clause matched only the
+// same-huddle case: a moved actor then INSERTed, collided with their stale row
+// on uniq_huddle_member_actor (SQLSTATE 23505), and — firing in step 5 before
+// the step-6 prune that clears that stale row — aborted the whole SaveWorld Tx
+// every cycle (ZBBS-HOME-333). Repointing on actor_id is the correct upsert
+// here; a genuine two-huddles-at-once world-side bug is detected + logged in
+// the step-5 loop instead of failing the Tx.
 const upsertSQLM = `
 INSERT INTO huddle_member (
     huddle_id, actor_id, snapshot_gen
 ) VALUES (
     $1, $2, $3
 )
-ON CONFLICT (huddle_id, actor_id) DO UPDATE SET
+ON CONFLICT (actor_id) DO UPDATE SET
+    huddle_id    = EXCLUDED.huddle_id,
     snapshot_gen = EXCLUDED.snapshot_gen`
 
 // deleteStaleSQLM prunes huddle_member rows absent from the snapshot.
@@ -299,11 +310,25 @@ func (r *HuddlesRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, huddles map[s
 	// Concluded huddles have empty Members in memory (ConcludeHuddle
 	// wipes the map) so no upserts run for them. Iterating all huddles
 	// is correct — empty-Members loops are no-ops.
+	//
+	// seenHuddleByActor surfaces a genuine world-side invariant violation (the
+	// same actor listed as a live member of two huddles in one snapshot)
+	// without failing the checkpoint: the first huddle iterated wins, any later
+	// duplicate is logged and skipped (one write per actor, no flip-flopping
+	// upsert). This is the loud signal the old fail-the-Tx clause reached for,
+	// minus the durability outage.
+	seenHuddleByActor := make(map[sim.ActorID]sim.HuddleID)
 	for _, h := range huddles {
 		if h == nil {
 			continue
 		}
 		for actorID := range h.Members {
+			if prev, dup := seenHuddleByActor[actorID]; dup {
+				log.Printf("pg huddles SaveSnapshot: actor %s already in huddle %s, also listed in %s — keeping first; world-side membership bug",
+					actorID, prev, h.ID)
+				continue
+			}
+			seenHuddleByActor[actorID] = h.ID
 			if _, err := tx.Exec(ctx, upsertSQLM,
 				string(h.ID),    // $1 huddle_id
 				string(actorID), // $2 actor_id
