@@ -901,6 +901,20 @@ type ActorSnapshot struct {
 	SpriteID SpriteID
 	Facing   string
 
+	// In-flight movement read-path projection (ZBBS-HOME-336). The
+	// value-typed destination of the actor's MoveIntent at snapshot time —
+	// MoveDestKind is "" when the actor is not moving. This is NOT the live
+	// MoveIntent (deliberately excluded, per the doc-comment above); it is the
+	// read-path view perception uses to remind the subject of its own
+	// in-progress walk ("currently: walking to the Tavern"), the movement
+	// analogue of the ActiveDwellCredits cue that keeps an NPC from abandoning
+	// an in-progress meal. Resolved to a label in perception.buildActorView
+	// against snap.Structures / snap.VillageObjects.
+	MoveDestKind        MoveDestinationKind
+	MoveDestStructureID StructureID
+	MoveDestObjectID    VillageObjectID
+	MoveDestPos         TilePos
+
 	// Editor read-path config — mirrors the live Actor's anchors + schedules
 	// at snapshot time so the client read surface (httpapi AgentDTO) can show
 	// current state without a world-goroutine round trip, the same posture as

@@ -339,7 +339,30 @@ func buildActorView(snap *sim.Snapshot, a *sim.ActorSnapshot) ActorView {
 		Coins:              a.Coins,
 		Needs:              needs,
 		ActiveDwellCredits: buildActiveDwellCredits(snap, a),
+		InFlightMove:       buildInFlightMove(snap, a),
 	}
+}
+
+// buildInFlightMove projects the subject's in-flight MoveIntent (the
+// read-path destination fields on the snapshot) into a render-ready view, or
+// nil when the actor isn't moving. The label resolves the same way dwell-pin
+// labels do — structure DisplayName first, then village-object DisplayName —
+// except a bare Position move has no pin to name, so it renders its tile
+// coordinate. ZBBS-HOME-336.
+func buildInFlightMove(snap *sim.Snapshot, a *sim.ActorSnapshot) *InFlightMoveView {
+	if a.MoveDestKind == "" {
+		return nil
+	}
+	var label string
+	switch a.MoveDestKind {
+	case sim.MoveDestinationStructureEnter, sim.MoveDestinationStructureVisit:
+		label = resolveDwellPinLabel(snap, sim.VillageObjectID(a.MoveDestStructureID))
+	case sim.MoveDestinationObjectVisit:
+		label = resolveDwellPinLabel(snap, a.MoveDestObjectID)
+	case sim.MoveDestinationPosition:
+		label = fmt.Sprintf("(%d, %d)", a.MoveDestPos.X, a.MoveDestPos.Y)
+	}
+	return &InFlightMoveView{Kind: a.MoveDestKind, DestinationLabel: label}
 }
 
 // buildActiveDwellCredits projects the actor's DwellCredits map into a
