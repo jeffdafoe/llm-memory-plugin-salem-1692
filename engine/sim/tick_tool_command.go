@@ -53,6 +53,31 @@ func RunTickToolCommand(actorID ActorID, attemptID TickAttemptID, rootEventID Ev
 		if tool.Fn == nil {
 			return nil, fmt.Errorf("sim: RunTickToolCommand: nil tool command for actor %q", actorID)
 		}
-		return tool.Fn(w)
+		res, err := tool.Fn(w)
+		if err != nil {
+			// The tool command's own Fn error is the command validator's
+			// model-facing rejection reason — written for the model to read and
+			// correct its NEXT call ("no one named X in this conversation", "use a
+			// structure_id you can see in your perception"). Tag it as
+			// ModelFacingError so the harness echoes it to the LLM. The wrapper's
+			// own errors above (actor-not-found, nil command, stale) and
+			// newRootedCommand's root-validation error stay UNtagged, so internal
+			// dispatch detail never leaks into the prompt — those surface to the
+			// model as a generic label instead.
+			return res, ModelFacingError{Msg: err.Error()}
+		}
+		return res, nil
 	})
 }
+
+// ModelFacingError marks an error whose message is safe and intended to be
+// shown to the LLM in the tool-result transcript. Command validators reach the
+// model through RunTickToolCommand, which tags their Fn errors with this type;
+// the tick harness echoes a ModelFacingError's message to the model (so it can
+// correct its next call) and renders every other dispatch error as a generic
+// label (so stale/actor-not-found/nil-command/invalid-root/context errors never
+// leak into the prompt). Compared on type via errors.As, so it survives %w
+// wrapping.
+type ModelFacingError struct{ Msg string }
+
+func (e ModelFacingError) Error() string { return e.Msg }
