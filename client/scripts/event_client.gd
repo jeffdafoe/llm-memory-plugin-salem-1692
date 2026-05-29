@@ -656,6 +656,26 @@ func _on_npc_arrived(data: Dictionary) -> void:
             facing = "south"
 
     container.position = Vector2(final_x, final_y)
+    # npc_arrived carries `structure_id` — the structure the actor ended inside,
+    # empty when it arrived outdoors (arrivedWireDTO.StructureID, from the
+    # engine's ActorArrived.FinalStructureID). This is the ONLY post-load signal
+    # the client gets for an inside change: v2 emits no npc_inside_changed and the
+    # /api/village/npcs list isn't polled. So update the container's inside meta
+    # from it and re-apply the inside-dependent render — sprite visibility + the
+    # stand-offset reposition — that the walk path otherwise skips. Without this a
+    # keeper who walks into a see-through stall sticks in the doorway instead of
+    # moving behind the counter (stand_offset), and an actor who walks into an
+    # opaque building stays visible at the door. The helpers are
+    # visible_when_inside-aware, so this is correct for every structure type
+    # (stall repositions, tavern/inn/house hides) and for walking back OUT (empty
+    # structure_id → outside → visible, no reposition) without special-casing.
+    var inside_structure_id_val = data.get("structure_id", null)
+    var inside_structure_id: String = str(inside_structure_id_val) if inside_structure_id_val != null else ""
+    var inside: bool = inside_structure_id != ""
+    container.set_meta("inside", inside)
+    container.set_meta("inside_structure_id", inside_structure_id)
+    container.visible = world._compute_npc_visible(inside, inside_structure_id)
+    world._apply_stand_offset_if_applicable(container, inside, inside_structure_id)
     container.set_meta("facing", facing)
     container.remove_meta("walking")
     world.play_npc_animation(container, facing, "idle")

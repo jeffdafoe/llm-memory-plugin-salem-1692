@@ -719,9 +719,13 @@ func _render_npc(npc: Dictionary) -> void:
     container.set_meta("hunger", int(npc.get("hunger", 0)))
     container.set_meta("thirst", int(npc.get("thirst", 0)))
     container.set_meta("tiredness", int(npc.get("tiredness", 0)))
-    var inside: bool = bool(npc.get("inside", false))
     var inside_structure_id_val = npc.get("inside_structure_id", null)
     var inside_structure_id: String = str(inside_structure_id_val) if inside_structure_id_val != null else ""
+    # The AgentDTO publishes inside_structure_id but no `inside` bool — derive it
+    # (an actor is inside iff it has an inside structure). Reading a missing
+    # `inside` key would default to false and leave already-inside NPCs rendered
+    # at their raw door tile instead of hidden / behind the counter.
+    var inside: bool = inside_structure_id != ""
     container.set_meta("inside", inside)
     container.set_meta("inside_structure_id", inside_structure_id)
     container.visible = _compute_npc_visible(inside, inside_structure_id)
