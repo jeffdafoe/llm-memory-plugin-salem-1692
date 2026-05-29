@@ -253,10 +253,11 @@ func TestRunCheckpointer_PeriodicAndStop(t *testing.T) {
 		return nil
 	}
 
+	health := &sim.CheckpointHealth{}
 	cpCtx, cancelCP := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
-		sim.RunCheckpointer(cpCtx, w, save)
+		sim.RunCheckpointer(cpCtx, w, save, health)
 		close(done)
 	}()
 
@@ -271,5 +272,86 @@ func TestRunCheckpointer_PeriodicAndStop(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("RunCheckpointer did not return after context cancel")
+	}
+
+	// The periodic loop recorded at least one successful checkpoint and no
+	// failures (the save func always succeeds).
+	snap := health.Snapshot()
+	if snap.TotalSuccesses == 0 {
+		t.Errorf("CheckpointHealth recorded no successes; want >= 1")
+	}
+	if snap.TotalFailures != 0 {
+		t.Errorf("CheckpointHealth recorded %d failures; want 0", snap.TotalFailures)
+	}
+	if snap.ConsecutiveFailures != 0 {
+		t.Errorf("ConsecutiveFailures = %d; want 0", snap.ConsecutiveFailures)
+	}
+}
+
+// TestCheckpointHealth_NilSafe locks the nil-receiver contract: a nil
+// *CheckpointHealth must accept Record* calls and Snapshot without panicking,
+// so callers (and RunCheckpointer) can pass nil when they don't track health.
+func TestCheckpointHealth_NilSafe(t *testing.T) {
+	var h *sim.CheckpointHealth
+	h.RecordSuccess(time.Now())
+	h.RecordFailure(time.Now(), errors.New("x"))
+	snap := h.Snapshot()
+	if snap.TotalSuccesses != 0 || snap.TotalFailures != 0 || snap.ConsecutiveFailures != 0 {
+		t.Errorf("nil health Snapshot = %+v; want zero value", snap)
+	}
+
+	repo, _ := mem.NewRepository()
+	w, err := sim.LoadWorld(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	w.Settings.CheckpointInterval = 20 * time.Millisecond
+	worldCtx, cancelWorld := context.WithCancel(context.Background())
+	go w.Run(worldCtx)
+	defer cancelWorld()
+
+	saved := make(chan struct{}, 1)
+	save := func(_ context.Context, _ *sim.CheckpointSnapshot) error {
+		select {
+		case saved <- struct{}{}:
+		default:
+		}
+		return nil
+	}
+	cpCtx, cancelCP := context.WithCancel(context.Background())
+	defer cancelCP()
+	// nil health must not panic the loop.
+	go sim.RunCheckpointer(cpCtx, w, save, nil)
+	select {
+	case <-saved:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no checkpoint fired with nil health")
+	}
+}
+
+// TestCheckpointHealth_RecordsFailureThenRecovery verifies the failure streak
+// advances on RecordFailure and resets (with the last-error cleared) on the
+// next RecordSuccess.
+func TestCheckpointHealth_RecordsFailureThenRecovery(t *testing.T) {
+	h := &sim.CheckpointHealth{}
+	h.RecordFailure(time.Now(), errors.New("boom"))
+	h.RecordFailure(time.Now(), errors.New("boom again"))
+	snap := h.Snapshot()
+	if snap.ConsecutiveFailures != 2 || snap.TotalFailures != 2 {
+		t.Fatalf("after 2 failures: consecutive=%d total=%d; want 2/2", snap.ConsecutiveFailures, snap.TotalFailures)
+	}
+	if snap.LastError != "boom again" {
+		t.Errorf("LastError = %q; want last error message", snap.LastError)
+	}
+	h.RecordSuccess(time.Now())
+	snap = h.Snapshot()
+	if snap.ConsecutiveFailures != 0 {
+		t.Errorf("ConsecutiveFailures after success = %d; want 0", snap.ConsecutiveFailures)
+	}
+	if snap.TotalFailures != 2 || snap.TotalSuccesses != 1 {
+		t.Errorf("totals after recovery: failures=%d successes=%d; want 2/1", snap.TotalFailures, snap.TotalSuccesses)
+	}
+	if snap.LastError != "" {
+		t.Errorf("LastError after success = %q; want cleared", snap.LastError)
 	}
 }

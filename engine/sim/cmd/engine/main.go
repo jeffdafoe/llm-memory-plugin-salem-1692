@@ -240,10 +240,13 @@ func run(rt runtime, stop <-chan struct{}) error {
 
 	// Periodic checkpointer. checkpointerDone closes when the loop has fully
 	// stopped — the shutdown path waits on it before forcing the final
-	// checkpoint, so the two never overlap.
+	// checkpoint, so the two never overlap. checkpointHealth records each
+	// attempt's outcome so the umbilical can surface checkpoint health
+	// remotely (ZBBS-HOME-334) — wired to the HTTP server below.
+	checkpointHealth := &sim.CheckpointHealth{}
 	checkpointerDone := make(chan struct{})
 	go func() {
-		sim.RunCheckpointer(checkpointerCtx, rt.World, rt.Save)
+		sim.RunCheckpointer(checkpointerCtx, rt.World, rt.Save, checkpointHealth)
 		close(checkpointerDone)
 	}()
 
@@ -259,6 +262,7 @@ func run(rt runtime, stop <-chan struct{}) error {
 		// is unset → SetTelemetry not called → routes never registered.
 		if rt.Umbilical != nil {
 			server.SetTelemetry(rt.Umbilical)
+			server.SetCheckpointHealth(checkpointHealth)
 			if rt.UmbilicalControl {
 				server.SetControlEnabled(true)
 			}
@@ -312,8 +316,17 @@ func run(rt runtime, stop <-chan struct{}) error {
 	if err := sim.CheckpointNow(finalCtx, rt.World, rt.Save); err != nil {
 		// Don't fail the whole shutdown on a final-checkpoint error — the
 		// prior checkpoint is still intact. Log and proceed to stop the world.
+		//
+		// Unlike the periodic loop (which skips recording a checkpoint the
+		// SHUTDOWN cancelled — that's a race, not a failure), finalCtx is a
+		// fresh Background-derived timeout, never the shutdown context. An
+		// error here means the final write genuinely failed or exceeded
+		// finalCheckpointTimeout — a real durability failure worth surfacing to
+		// the operator, so it is recorded unconditionally.
+		checkpointHealth.RecordFailure(time.Now(), err)
 		log.Printf("engine: final checkpoint failed: %v", err)
 	} else {
+		checkpointHealth.RecordSuccess(time.Now())
 		log.Println("engine: final checkpoint written")
 	}
 	cancelFinal()

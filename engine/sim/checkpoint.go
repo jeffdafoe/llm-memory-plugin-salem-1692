@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 )
 
@@ -109,19 +110,110 @@ type CheckpointFunc func(ctx context.Context, cp *CheckpointSnapshot) error
 // setting that EnvironmentRepo loads.
 const defaultCheckpointInterval = 60 * time.Second
 
+// CheckpointHealth is the operator-visible health of the durable checkpoint
+// loop. The checkpointer records every periodic attempt's outcome here; the
+// umbilical reads a Snapshot. In-memory and lossy-on-restart — transient
+// diagnostics, no durability need (see shared GUIDELINES) — and safe for
+// concurrent use: the checkpointer writes, umbilical request goroutines read.
+//
+// Why this exists (ZBBS-HOME-334): a failed checkpoint was previously
+// log-and-continue with NO operator-visible signal. A duplicate-key abort
+// (ZBBS-HOME-333) wedged every world checkpoint for ~an hour, observable only
+// by SSHing in and grepping the journal — the umbilical's /errors ring is
+// HTTP-response-only and the checkpointer isn't a tracked /ticker-health
+// driver, so nothing surfaced it. A non-zero ConsecutiveFailures or a stale
+// LastSuccessAt is the at-a-glance "durability is broken" signal that was
+// missing. A nil *CheckpointHealth is a no-op on every method, so callers
+// (and tests) that don't care can pass nil.
+type CheckpointHealth struct {
+	mu                  sync.Mutex
+	lastAttemptAt       time.Time
+	lastSuccessAt       time.Time
+	lastFailureAt       time.Time
+	consecutiveFailures int
+	totalSuccesses      uint64
+	totalFailures       uint64
+	lastError           string
+}
+
+// CheckpointHealthSnapshot is an immutable point-in-time copy of a
+// CheckpointHealth, suitable for serialization to the umbilical.
+type CheckpointHealthSnapshot struct {
+	LastAttemptAt       time.Time `json:"last_attempt_at"`
+	LastSuccessAt       time.Time `json:"last_success_at"`
+	LastFailureAt       time.Time `json:"last_failure_at"`
+	ConsecutiveFailures int       `json:"consecutive_failures"`
+	TotalSuccesses      uint64    `json:"total_successes"`
+	TotalFailures       uint64    `json:"total_failures"`
+	LastError           string    `json:"last_error"`
+}
+
+// RecordSuccess marks a successful checkpoint at now: clears the consecutive-
+// failure streak and the last-error string. Nil-safe.
+func (h *CheckpointHealth) RecordSuccess(now time.Time) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.lastAttemptAt = now
+	h.lastSuccessAt = now
+	h.consecutiveFailures = 0
+	h.totalSuccesses++
+	h.lastError = ""
+}
+
+// RecordFailure marks a failed checkpoint at now, advancing the consecutive-
+// failure streak and stashing the error string for the operator. Nil-safe.
+func (h *CheckpointHealth) RecordFailure(now time.Time, err error) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.lastAttemptAt = now
+	h.lastFailureAt = now
+	h.consecutiveFailures++
+	h.totalFailures++
+	if err != nil {
+		h.lastError = err.Error()
+	}
+}
+
+// Snapshot returns an immutable copy of the current health. Nil-safe (returns
+// the zero value), so the umbilical handler works even before any wiring.
+func (h *CheckpointHealth) Snapshot() CheckpointHealthSnapshot {
+	if h == nil {
+		return CheckpointHealthSnapshot{}
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return CheckpointHealthSnapshot{
+		LastAttemptAt:       h.lastAttemptAt,
+		LastSuccessAt:       h.lastSuccessAt,
+		LastFailureAt:       h.lastFailureAt,
+		ConsecutiveFailures: h.consecutiveFailures,
+		TotalSuccesses:      h.totalSuccesses,
+		TotalFailures:       h.totalFailures,
+		LastError:           h.lastError,
+	}
+}
+
 // RunCheckpointer drives periodic durable checkpoints. The caller starts it
 // in a goroutine alongside World.Run; it returns when ctx is cancelled.
 //
 // Each tick performs one CheckpointNow: a deep-clone on the world goroutine
 // (fast) followed by the durable write off the world goroutine (slow). The
 // loop is sequential — at most one checkpoint write is in flight at a time.
+// Each completed attempt's outcome is recorded on health (nil-safe) so the
+// umbilical can surface checkpoint health remotely (ZBBS-HOME-334).
 //
 // There is NO immediate first checkpoint: a freshly-loaded world is identical
 // to what is already on disk, so the first write waits a full interval. The
 // final, authoritative checkpoint at shutdown is the caller's responsibility
 // (cancel ctx, wait for this to return, then call CheckpointNow with a fresh
 // context while the world goroutine is still alive).
-func RunCheckpointer(ctx context.Context, w *World, save CheckpointFunc) {
+func RunCheckpointer(ctx context.Context, w *World, save CheckpointFunc, health *CheckpointHealth) {
 	interval := readCheckpointInterval(ctx, w)
 	if ctx.Err() != nil {
 		return
@@ -134,8 +226,18 @@ func RunCheckpointer(ctx context.Context, w *World, save CheckpointFunc) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := CheckpointNow(ctx, w, save); err != nil && ctx.Err() == nil {
+			err := CheckpointNow(ctx, w, save)
+			// A shutdown racing this tick cancels the in-flight write; that's
+			// not a real failure, so don't record or log it — the <-ctx.Done()
+			// case returns on the next loop iteration.
+			if ctx.Err() != nil {
+				continue
+			}
+			if err != nil {
+				health.RecordFailure(time.Now(), err)
 				log.Printf("sim/checkpoint: %v", err)
+			} else {
+				health.RecordSuccess(time.Now())
 			}
 		}
 	}
