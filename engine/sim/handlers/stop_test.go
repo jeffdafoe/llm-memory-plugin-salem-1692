@@ -17,7 +17,7 @@ func TestDecodeStopArgs_AcceptsEmpty(t *testing.T) {
 }
 
 func TestDecodeStopArgs_RejectsUnknownAndNonObject(t *testing.T) {
-	for _, raw := range []string{`{"qty":1}`, `{"dest":"inn"}`, `5`, `"halt"`, `[]`} {
+	for _, raw := range []string{`{"qty":1}`, `{"dest":"inn"}`, `5`, `"halt"`, `[]`, `{} {}`, `{} 5`} {
 		if _, err := DecodeStopArgs(json.RawMessage(raw)); err == nil {
 			t.Errorf("DecodeStopArgs(%q) = ok, want error", raw)
 		}

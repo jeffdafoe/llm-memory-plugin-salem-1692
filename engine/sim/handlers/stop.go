@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
@@ -46,8 +47,16 @@ func DecodeStopArgs(raw json.RawMessage) (any, error) {
 	if err := dec.Decode(&a); err != nil {
 		return nil, fmt.Errorf("stop: %w", err)
 	}
-	if dec.More() {
-		return nil, fmt.Errorf("stop: trailing data after JSON object")
+	// Require EOF after the object. dec.More() only reports another element in
+	// the current array/object — it does NOT catch a trailing top-level value
+	// (e.g. `{} {}` or `{} 5`), so a second decode that must hit io.EOF is the
+	// correct trailing-data check.
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("stop: trailing data after JSON object")
+		}
+		return nil, fmt.Errorf("stop: trailing data after JSON object: %w", err)
 	}
 	return a, nil
 }
