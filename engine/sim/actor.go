@@ -554,6 +554,17 @@ type Actor struct {
 	// Unexported; ephemeral — wiped on LoadWorld.
 	recentlyConsumedSourceKeys map[WarrantSourceKey]time.Time
 
+	// heardSpeechMisses is the per-(speaker) heard-speech circuit-breaker state
+	// for THIS actor as a listener: how many consecutive heard-speech warrants a
+	// given speaker has minted on it since it last spoke, plus the timestamp of
+	// the most recent one. Drives the ZBBS-HOME-331 loop terminator — once a
+	// speaker crosses heardSpeechMissThreshold with no productive reply, further
+	// heard-speech warrants from that speaker are dropped until this actor speaks
+	// again or the pair goes quiet for heardSpeechRecoveryWindow. Keyed by
+	// speaker ActorID. See heard_speech_circuit.go. Unexported; ephemeral —
+	// wiped on LoadWorld.
+	heardSpeechMisses map[ActorID]heardSpeechMiss
+
 	// Locomotion — Phase 2 PR 4.
 	//
 	// MoveIntent is the actor's in-flight movement state, nil when the
@@ -776,6 +787,12 @@ func CloneActor(a *Actor) *Actor {
 		cp.recentlyConsumedSourceKeys = make(map[WarrantSourceKey]time.Time, len(a.recentlyConsumedSourceKeys))
 		for k, v := range a.recentlyConsumedSourceKeys {
 			cp.recentlyConsumedSourceKeys[k] = v
+		}
+	}
+	if a.heardSpeechMisses != nil {
+		cp.heardSpeechMisses = make(map[ActorID]heardSpeechMiss, len(a.heardSpeechMisses))
+		for k, v := range a.heardSpeechMisses {
+			cp.heardSpeechMisses[k] = v
 		}
 	}
 	if a.Acquaintances != nil {
