@@ -279,6 +279,23 @@ func _parse_catalog(data: Array) -> void:
         var asset_id: String = item["id"]
         assets[asset_id] = item
 
+        # The v2 /api/village/assets endpoint ships the footprint nested as
+        # {"footprint": {"left":N,"right":N,"top":N,"bottom":N}}, but the editor
+        # draws the boundary box by reading flat keys (footprint_left/right/top/
+        # bottom). Normalize them here, mirroring event_client._on_asset_footprint_updated,
+        # so the border draws on first load instead of only after a drag-resize.
+        var footprint = item.get("footprint", null)
+        if footprint != null and footprint is Dictionary:
+            item["footprint_left"]   = int(footprint.get("left",   0))
+            item["footprint_right"]  = int(footprint.get("right",  0))
+            item["footprint_top"]    = int(footprint.get("top",    0))
+            item["footprint_bottom"] = int(footprint.get("bottom", 0))
+        else:
+            item["footprint_left"]   = 0
+            item["footprint_right"]  = 0
+            item["footprint_top"]    = 0
+            item["footprint_bottom"] = 0
+
         # Group by category
         var cat: String = item.get("category", "uncategorized")
         if not categories.has(cat):
