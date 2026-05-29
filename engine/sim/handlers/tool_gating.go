@@ -59,6 +59,45 @@ const recallToolName = "recall"
 // is still dispatchable, and sim.Gather is the authoritative resolver.
 const gatherToolName = "gather"
 
+// walkIncompatibleTools are the action tools the substrate rejects while the
+// actor has an in-flight MoveIntent ("you are walking — finish your move
+// before …"). gateTools drops them from the advertised set while the actor is
+// moving (ZBBS-HOME-337): the model can't use them mid-walk, so advertising
+// them only burns within-tick iterations and floods the reject log. They
+// reappear once the actor is stationary (arrived, or halted via the stop
+// tool). Kept in sync with the command-side gates — consume
+// (item_commands.go), speak (speak_commands.go), gather (gather_commands.go),
+// pay (pay_commands.go), pay_with_item (pay_with_item_commands.go).
+var walkIncompatibleTools = map[string]struct{}{
+	"consume":       {},
+	"speak":         {},
+	"gather":        {},
+	"pay":           {},
+	"pay_with_item": {},
+}
+
+// stopToolName — the voluntary-halt tool (ZBBS-HOME-338). The inverse of the
+// walking gate: advertised ONLY while the actor is moving (a stationary actor
+// has nothing to stop). It is the escape hatch that lets a walking NPC abandon
+// a route so the walkIncompatibleTools become usable next tick.
+const stopToolName = "stop"
+
+// actorIsMoving reports whether the subject has an in-flight move at snapshot
+// time, read from the ZBBS-HOME-336 read-path projection (MoveDestKind is
+// empty when the actor is not moving). False when the actor can't be resolved
+// — conservative: don't hide the action tools for an actor we can't confirm is
+// walking.
+func actorIsMoving(actorID sim.ActorID, snap *sim.Snapshot) bool {
+	if snap == nil {
+		return false
+	}
+	a, ok := snap.Actors[actorID]
+	if !ok || a == nil {
+		return false
+	}
+	return a.MoveDestKind != ""
+}
+
 // actorHasDedicatedVA reports whether the acting actor is a stateful NPC
 // (KindNPCStateful = "own VA with memory", per actor.go). Shared-VA NPCs have
 // no personal memory, so recall is not advertised to them. Returns false when
@@ -113,6 +152,7 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 	canCounter := anyOfferCounterable(offers)
 	dedicatedVA := actorHasDedicatedVA(payload.ActorID, snap)
 	atGatherableSource := payload.Surroundings.GatherableItem != ""
+	moving := actorIsMoving(payload.ActorID, snap)
 
 	// Single pass over the Available set so each gated group is evaluated
 	// against its OWN condition. We deliberately avoid a "pending offer →
@@ -122,6 +162,20 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 	// consumers are added (pay-response group, recall, …).
 	out := make([]llm.ToolSpec, 0, len(all))
 	for _, spec := range all {
+		// walking gate (ZBBS-HOME-337): while the actor is mid-walk, drop the
+		// action tools the substrate rejects on MoveIntent != nil — the model
+		// can't use them until it arrives or stops, so advertising them only
+		// wastes iterations and floods rejects.
+		if moving {
+			if _, gated := walkIncompatibleTools[spec.Name]; gated {
+				continue
+			}
+		}
+		// stop consumer (ZBBS-HOME-338): the inverse — advertise the voluntary
+		// halt tool ONLY while moving (a stationary actor has nothing to stop).
+		if spec.Name == stopToolName && !moving {
+			continue
+		}
 		// recall consumer (ZBBS-WORK-321): advertise only to dedicated-VA
 		// agents — a shared-VA NPC has no personal memory to search.
 		if spec.Name == recallToolName && !dedicatedVA {
