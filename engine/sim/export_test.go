@@ -28,7 +28,6 @@ var (
 	// a full Command round trip.
 	TryStampWarrant         = tryStampWarrant
 	ActorReactorDue         = actorReactorDue
-	ActorCanReactNow        = actorCanReactNow
 	ClearWarrant            = clearWarrant
 	NewTickAttemptID        = newTickAttemptID
 	ResetReactorStateOnLoad = resetReactorStateOnLoad
@@ -76,6 +75,19 @@ var (
 	PickObjectVisitorSlot     = pickObjectVisitorSlot
 	TileOccupiedByOtherActor  = tileOccupiedByOtherActor
 )
+
+// ActorCanReactNow / ActorCanReactNowAt expose the eligibility gate for
+// sim_test. The bare form uses wall-clock now (back-compat with existing call
+// sites); the -At form injects a fixed now so timestamp-driven sleep/break
+// cases can be pinned deterministically (ZBBS-HOME-329 threaded now through
+// actorCanReactNow).
+func ActorCanReactNow(w *World, a *Actor) (bool, bool) {
+	return actorCanReactNow(w, a, time.Now().UTC())
+}
+
+func ActorCanReactNowAt(w *World, a *Actor, now time.Time) (bool, bool) {
+	return actorCanReactNow(w, a, now)
+}
 
 // VisitorSlotOffsets exposes a copy of the visitor-slot ring so tests can
 // assert pickVisitorSlot's scan order without re-declaring the offsets.

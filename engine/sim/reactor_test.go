@@ -349,6 +349,70 @@ func TestActorCanReactNow_RestingNotEligible(t *testing.T) {
 	})
 }
 
+// TestActorCanReactNow_RestingInterruptedByNeed: ZBBS-HOME-329 #3 — a red-tier
+// need warrant makes an otherwise do-not-disturb resting actor eligible, so a
+// starving NPC isn't locked in rest. The break itself is ended on the emit path
+// (EvaluateReactors), not here.
+func TestActorCanReactNow_RestingInterruptedByNeed(t *testing.T) {
+	w, cancel := buildReactorTestWorld(t)
+	defer cancel()
+	_, _ = w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			a := world.Actors["alice"]
+			a.State = sim.StateResting
+			a.Warrants = []sim.WarrantMeta{{Reason: sim.NeedThresholdWarrantReason{Need: "hunger"}}}
+			eligible, stale := sim.ActorCanReactNow(world, a)
+			if !eligible || stale {
+				t.Errorf("resting + need warrant: eligible=%v stale=%v; want true,false", eligible, stale)
+			}
+			return nil, nil
+		},
+	})
+}
+
+// TestActorCanReactNow_RestingInterruptedByForce: ZBBS-HOME-329 #4 — an operator
+// force / admin warrant also breaks a rester out, so /nudge can rescue a stuck
+// on-break actor (the eligibility gate used to run before the pacing Force-
+// bypass, leaving the operator powerless against the most common wedge).
+func TestActorCanReactNow_RestingInterruptedByForce(t *testing.T) {
+	w, cancel := buildReactorTestWorld(t)
+	defer cancel()
+	_, _ = w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			a := world.Actors["alice"]
+			a.State = sim.StateResting
+			a.Warrants = []sim.WarrantMeta{{Force: true, Reason: sim.BasicWarrantReason{K: sim.WarrantKindAdmin}}}
+			eligible, stale := sim.ActorCanReactNow(world, a)
+			if !eligible || stale {
+				t.Errorf("resting + force warrant: eligible=%v stale=%v; want true,false", eligible, stale)
+			}
+			return nil, nil
+		},
+	})
+}
+
+// TestActorCanReactNow_SleepingNotInterruptedByNeed: sleep stays sacrosanct —
+// even a red-tier need does NOT wake a sleeper (contrast a break, above).
+func TestActorCanReactNow_SleepingNotInterruptedByNeed(t *testing.T) {
+	w, cancel := buildReactorTestWorld(t)
+	defer cancel()
+	_, _ = w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			a := world.Actors["alice"]
+			a.State = sim.StateSleeping
+			a.Warrants = []sim.WarrantMeta{{Reason: sim.NeedThresholdWarrantReason{Need: "hunger"}}}
+			eligible, stale := sim.ActorCanReactNow(world, a)
+			if eligible {
+				t.Errorf("sleeping + need warrant: eligible=true, want false (sleep sacrosanct)")
+			}
+			if stale {
+				t.Errorf("sleeping + need warrant: stale=true, want false (warrant stays open)")
+			}
+			return nil, nil
+		},
+	})
+}
+
 // TestActorCanReactNow_OtherStatesEligible — table-drives every other
 // macro-state to confirm the gate only fires on sleeping/resting.
 // Pinning the negative cases prevents an over-eager future addition
