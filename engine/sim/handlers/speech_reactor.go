@@ -11,9 +11,10 @@ import (
 // speech_reactor.go — Spoke event subscriber. Phase 3 PR A.
 //
 // Mints one NPCSpeechWarrantReason warrant per recipient on every Spoke
-// event. The Spoke event carries the authoritative recipient set
-// (computed once on the world goroutine by sim.Speak); the subscriber
-// does not re-derive membership.
+// event — EXCEPT recipients who are mid-walk (MoveIntent != nil), which are
+// skipped (ZBBS-HOME-330; see the motion gate in the loop). The Spoke event
+// carries the authoritative recipient set (computed once on the world
+// goroutine by sim.Speak); the subscriber does not re-derive membership.
 //
 // Warrant policy choices (locked at the PR A design walkthrough):
 //
@@ -54,7 +55,20 @@ func handleSpokeWarrants(w *sim.World, evt sim.Event) {
 			// Defensive — sim.Speak filters speaker out of RecipientIDs.
 			continue
 		}
-		if _, ok := w.Actors[peerID]; !ok {
+		peer, ok := w.Actors[peerID]
+		if !ok {
+			continue
+		}
+		// ZBBS-HOME-330: don't warrant a listener who is mid-walk. A walking
+		// actor can't speak (the speak handler rejects with "you are walking")
+		// or re-move, so a heard-speech warrant only produces a wasted tick
+		// that command-fails — this is the Josiah<->Elizabeth ping-pong from
+		// the play-test. Drop, don't defer: an actor walking away from an
+		// exchange isn't engaging with it, and once it stops the next utterance
+		// warrants it normally. Stationary listeners are unaffected, so
+		// discussion at a stall or in the tavern flows at full speed — the
+		// motion gate is deliberately the only thing this suppresses.
+		if peer.MoveIntent != nil {
 			continue
 		}
 		meta := sim.WarrantMeta{

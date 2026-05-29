@@ -224,6 +224,81 @@ func TestSpeechReactor_StatefulVAPeerGetsWarrant(t *testing.T) {
 	}
 }
 
+// --- TestSpeechReactor_MovingListenerSkipped -------------------------
+// ZBBS-HOME-330: a recipient who is mid-walk (MoveIntent != nil) is NOT
+// warranted by heard speech — a walking actor can't act on it, so the warrant
+// would only yield a command-failing tick (the Josiah<->Elizabeth ping-pong).
+// A stationary peer in the same huddle is still warranted, so standing
+// discussion (at a stall, in the tavern) is unaffected.
+func TestSpeechReactor_MovingListenerSkipped(t *testing.T) {
+	w, stop := buildSpeechReactorWorld(t,
+		speakActor{id: "hannah", displayName: "Hannah", kind: sim.KindNPCShared, huddleID: "h1"},
+		speakActor{id: "walker", displayName: "Walker", kind: sim.KindNPCShared, huddleID: "h1"},
+		speakActor{id: "stander", displayName: "Stander", kind: sim.KindNPCShared, huddleID: "h1"},
+	)
+	defer stop()
+
+	// Put "walker" mid-walk; leave "stander" idle.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["walker"].MoveIntent = &sim.MoveIntent{}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed MoveIntent: %v", err)
+	}
+
+	if _, err := w.Send(sim.Speak("hannah", "Good morrow to you both.", time.Now().UTC())); err != nil {
+		t.Fatalf("Speak: %v", err)
+	}
+
+	if got := peekWarrants(t, w, "walker"); len(got) != 0 {
+		t.Errorf("moving listener warrants = %d, want 0 (motion gate)", len(got))
+	}
+	if got := peekWarrants(t, w, "stander"); len(got) != 1 {
+		t.Errorf("stationary listener warrants = %d, want 1 (discussion unaffected)", len(got))
+	}
+}
+
+// --- TestSpeechReactor_ClearedMoveIntentReWarrants -------------------
+// ZBBS-HOME-330 "drop, don't defer": a listener skipped while walking is
+// warranted normally by the NEXT utterance once it has stopped (MoveIntent
+// cleared). Locks in that the motion gate suppresses only the in-motion tick,
+// not the actor's future eligibility (code_review optional-coverage ask).
+func TestSpeechReactor_ClearedMoveIntentReWarrants(t *testing.T) {
+	w, stop := buildSpeechReactorWorld(t,
+		speakActor{id: "hannah", displayName: "Hannah", kind: sim.KindNPCShared, huddleID: "h1"},
+		speakActor{id: "walker", displayName: "Walker", kind: sim.KindNPCShared, huddleID: "h1"},
+	)
+	defer stop()
+
+	// Walking → first utterance is dropped for walker.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["walker"].MoveIntent = &sim.MoveIntent{}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed MoveIntent: %v", err)
+	}
+	if _, err := w.Send(sim.Speak("hannah", "First call, while you walk.", time.Now().UTC())); err != nil {
+		t.Fatalf("Speak (walking): %v", err)
+	}
+	if got := peekWarrants(t, w, "walker"); len(got) != 0 {
+		t.Fatalf("walker warrants while moving = %d, want 0", len(got))
+	}
+
+	// Stop walking → the next utterance warrants normally.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["walker"].MoveIntent = nil
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("clear MoveIntent: %v", err)
+	}
+	if _, err := w.Send(sim.Speak("hannah", "Second call, now you have stopped.", time.Now().UTC())); err != nil {
+		t.Fatalf("Speak (stopped): %v", err)
+	}
+	if got := peekWarrants(t, w, "walker"); len(got) != 1 {
+		t.Errorf("walker warrants after stopping = %d, want 1 (drop, not defer)", len(got))
+	}
+}
+
 // --- TestRegisterSpeechHandlers_NilWorldPanics ------------------------
 func TestRegisterSpeechHandlers_NilWorldPanics(t *testing.T) {
 	defer func() {
