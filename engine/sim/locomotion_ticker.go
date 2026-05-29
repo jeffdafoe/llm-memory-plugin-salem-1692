@@ -461,6 +461,16 @@ func advanceActorViaReroute(w *World, actor *Actor, dest MoveDestination, attemp
 //     re-picking here would un-arrive an actor the instant an
 //     earlier-hash-order slot frees up — it would walk off a perfectly
 //     good slot to chase the preferred one. Ring membership is stable.
+//   - ObjectVisit — the actor stands within LoiterAttributionTiles
+//     (Chebyshev) of the object's loiter pin. Unlike StructureVisit this
+//     checks the attribution RADIUS, not ring membership, because
+//     pickObjectVisitorSlot can park the actor on the pin tile itself
+//     (Chebyshev 0) as a last resort when all eight ring slots are blocked.
+//     It is the same radius resolveLoiteringObject uses for
+//     object-refresh-on-arrival, so a tile accepted here is eligible for
+//     refresh attribution — but when several objects overlap in range,
+//     attribution follows resolveLoiteringObject's tie-break and may credit
+//     a different in-range object than the destination.
 //   - Position — the actor stands on the exact tile.
 //
 // MUST be called from inside a Command.Fn.
@@ -484,6 +494,15 @@ func arrivedAtDestination(w *World, actor *Actor, dest MoveDestination) bool {
 			}
 		}
 		return false
+	case MoveDestinationObjectVisit:
+		if dest.ObjectID == nil {
+			return false
+		}
+		pin, ok := effectiveObjectLoiterTile(w, *dest.ObjectID)
+		if !ok {
+			return false
+		}
+		return pin.Chebyshev(actor.Pos) <= LoiterAttributionTiles
 	case MoveDestinationPosition:
 		return dest.Position != nil &&
 			actor.Pos.X == dest.Position.X &&
