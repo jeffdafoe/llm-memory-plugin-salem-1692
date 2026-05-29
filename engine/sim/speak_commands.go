@@ -133,6 +133,16 @@ func Speak(speakerID ActorID, text string, at time.Time) Command {
 					log.Printf("sim.Speak: RecordInteraction peer→speaker %q→%q: %v", peerID, speakerID, err)
 				}
 			}
+
+			// ZBBS-HOME-331: speaking INTO the huddle is the productive signal the
+			// heard-speech circuit breaker keys on — clear this actor's "ignoring
+			// a speaker" suppression against the peers it just addressed, so a
+			// stalled exchange resumes the moment one side says something.
+			// Per-recipient (not a blanket clear) so a solo / no-one utterance
+			// (empty peerIDs) doesn't wrongly reopen an unrelated suppressed pair.
+			// Only successful speaks reach here; a rejected speak returns above,
+			// before emit, and does not reset.
+			actor.resetHeardSpeechMissesAgainst(peerIDs)
 			return nil, nil
 		},
 	}
