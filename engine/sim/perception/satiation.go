@@ -151,9 +151,10 @@ func gatherSatiationVendors(snap *sim.Snapshot, actorID sim.ActorID, need sim.Ne
 //
 // Excluded: the subject themselves, PCs (they don't sell through the NPC
 // commerce path — same exclusion the vendor scan applies), and any actor not in
-// the subject's huddle. Output is sorted deterministically by (peerID, magnitude
-// desc, ItemLabel, ItemKind), mirroring the tie-break discipline the vendor /
-// own-stock finders use (huddle membership is a map). Empty when not huddled or
+// the subject's huddle. Output is sorted strongest-offer-first (magnitude desc,
+// then PeerLabel, ItemLabel, peerID, ItemKind), mirroring the own-stock / vendor
+// finders' "usefulness before identity" ordering with fully deterministic
+// tie-breaks (huddle membership + Inventory are maps). Empty when not huddled or
 // no co-present peer carries a satisfier.
 func gatherCoPresentPeerOffers(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSnapshot, need sim.NeedKey) []SatiationPeerOffer {
 	if snap == nil || actorSnap == nil || actorSnap.CurrentHuddleID == "" {
@@ -196,15 +197,24 @@ func gatherCoPresentPeerOffers(snap *sim.Snapshot, actorID sim.ActorID, actorSna
 			})
 		}
 	}
+	// Strongest offer first — matches the own-stock / vendor finders' "usefulness
+	// before identity" ordering, so the most-satisfying buy reads at the top of
+	// the prompt. PeerLabel then ItemLabel give a stable human-meaningful order
+	// within a magnitude tier; peerID + itemKind are the final deterministic
+	// tie-breaks (huddle membership + Inventory are maps, so the comparator must
+	// fully order equal-magnitude/label entries).
 	sort.Slice(out, func(i, j int) bool {
-		if out[i].peerID != out[j].peerID {
-			return out[i].peerID < out[j].peerID
-		}
 		if out[i].Magnitude != out[j].Magnitude {
 			return out[i].Magnitude > out[j].Magnitude
 		}
+		if out[i].PeerLabel != out[j].PeerLabel {
+			return out[i].PeerLabel < out[j].PeerLabel
+		}
 		if out[i].ItemLabel != out[j].ItemLabel {
 			return out[i].ItemLabel < out[j].ItemLabel
+		}
+		if out[i].peerID != out[j].peerID {
+			return out[i].peerID < out[j].peerID
 		}
 		return out[i].itemKind < out[j].itemKind
 	})
