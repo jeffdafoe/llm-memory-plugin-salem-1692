@@ -206,9 +206,10 @@ func TestRenderSatiation_Bullets(t *testing.T) {
 // TestRenderSatiation_StructureIDRendered pins the move_to contract for the
 // eat/drink vendor bullets: a vendor whose workplace resolved renders a
 // trailing (structure_id: …) the buyer passes straight to move_to (the tool
-// rejects a bare name); an empty StructureID renders no suffix (no dangling
-// "(structure_id: )"). Regression guard for the perception gap that starved
-// NPCs by naming shops they could never walk to.
+// rejects a bare name). An empty StructureID renders no suffix — and is only
+// reachable via a malformed/manually-built view, since gatherSatiationVendors
+// drops unactionable (no-workplace) vendors at build. Regression guard for the
+// perception gap that starved NPCs by naming shops they could never walk to.
 func TestRenderSatiation_StructureIDRendered(t *testing.T) {
 	var b strings.Builder
 	renderSatiation(&b, &SatiationView{Needs: []SatiationNeedView{
@@ -221,12 +222,21 @@ func TestRenderSatiation_StructureIDRendered(t *testing.T) {
 		},
 	}})
 	out := b.String()
-	if !strings.Contains(out, "The Tavern — buy ale, eases hunger (~4), ~2 coins (structure_id: tavern)") {
-		t.Errorf("vendor bullet missing structure_id: %q", out)
+	hasLine := func(want string) bool {
+		for _, line := range strings.Split(out, "\n") {
+			if strings.TrimSpace(line) == want {
+				return true
+			}
+		}
+		return false
 	}
-	// A vendor whose workplace didn't resolve carries no id — no dangling suffix.
+	if !hasLine("- The Tavern — buy ale, eases hunger (~4), ~2 coins (structure_id: tavern)") {
+		t.Errorf("vendor bullet missing/!exact structure_id in:\n%s", out)
+	}
+	// A vendor whose workplace didn't resolve carries no id — no dangling suffix
+	// (this empty-id row only reaches render via a manual view; build filters it).
 	for _, line := range strings.Split(out, "\n") {
-		if strings.HasPrefix(line, "- Roadside Stall") && strings.Contains(line, "structure_id") {
+		if strings.HasPrefix(strings.TrimSpace(line), "- Roadside Stall") && strings.Contains(line, "structure_id") {
 			t.Errorf("vendor with empty StructureID must not render a structure_id: %q", line)
 		}
 	}

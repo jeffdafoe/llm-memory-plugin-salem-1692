@@ -274,6 +274,14 @@ func gatherInnRestSpots(snap *sim.Snapshot, actorID sim.ActorID) []RecoveryOptio
 func gatherConsumableRemedies(snap *sim.Snapshot, actorID sim.ActorID) []RecoveryOption {
 	var out []RecoveryOption
 	for _, vc := range findVendorConsumables(snap, actorID, recoveryTirednessNeed, "ask the seller") {
+		if vc.StructureID == "" {
+			// No resolvable workplace → no structure_id for move_to, so the cue
+			// is unactionable and would only tempt a name-based move_to the tool
+			// rejects. findVendorConsumables already excludes vendors whose
+			// workplace doesn't resolve, so this is a defensive guard, not a
+			// live path.
+			continue
+		}
 		out = append(out, RecoveryOption{
 			Kind:        "remedy",
 			Label:       vc.StructureLabel,
@@ -422,11 +430,16 @@ func renderRecoveryOptions(b *strings.Builder, v *RecoveryOptionsView) {
 			}
 		}
 		// The structure_id is what makes the cue actionable: move_to(structure_id)
-		// walks the actor here, and the tool rejects a bare name. Only the
-		// structure-backed kinds carry one — a free-object "rest" spot is reached
-		// via object_visit, so it renders no structure_id.
-		if o.StructureID != "" {
-			fmt.Fprintf(b, " (structure_id: %s)", o.StructureID)
+		// walks the actor here, and the tool rejects a bare name. Keyed on Kind,
+		// not "whatever field is set": only the structure-backed kinds advertise a
+		// move_to route, so a free-object "rest" spot (reached via object_visit)
+		// never renders one even if an id somehow leaked onto it. The non-empty
+		// guard is defensive — the gatherers always populate these three.
+		switch o.Kind {
+		case "inn", "home", "remedy":
+			if o.StructureID != "" {
+				fmt.Fprintf(b, " (structure_id: %s)", o.StructureID)
+			}
 		}
 		b.WriteString("\n")
 	}

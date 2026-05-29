@@ -540,18 +540,31 @@ func TestRenderRecoveryOptions_StructureIDRendered(t *testing.T) {
 		{Kind: "remedy", Label: "PW Apothecary", ItemLabel: "coca tea", Magnitude: 12, CostText: "~2 coins", StructureID: "apothecary"},
 	}})
 	out := b.String()
-	if !strings.Contains(out, "Hannah's Inn — rent a room, ask the keeper (structure_id: inn)") {
-		t.Errorf("inn bullet missing structure_id: %q", out)
+	// Exact full-bullet lines — pinning a tool contract, so guard against
+	// suffix/shape drift (a strings.Contains check would miss a duplicated id or
+	// trailing junk).
+	hasLine := func(want string) bool {
+		for _, line := range strings.Split(out, "\n") {
+			if strings.TrimSpace(line) == want {
+				return true
+			}
+		}
+		return false
 	}
-	if !strings.Contains(out, "Thorne Cottage — sleep in your own bed, free (structure_id: cottage)") {
-		t.Errorf("home bullet missing structure_id: %q", out)
+	for _, want := range []string{
+		"- Hannah's Inn — rent a room, ask the keeper (structure_id: inn)",
+		"- Thorne Cottage — sleep in your own bed, free (structure_id: cottage)",
+		"- PW Apothecary — buy coca tea, eases tiredness (~12), ~2 coins (structure_id: apothecary)",
+		// The free-object rest kind is reached via object_visit, not move_to, so
+		// its bullet carries NO structure_id — pinned as an exact line.
+		"- the old oak — eases tiredness (~12), free, a short walk east",
+	} {
+		if !hasLine(want) {
+			t.Errorf("missing exact bullet %q in:\n%s", want, out)
+		}
 	}
-	if !strings.Contains(out, "PW Apothecary — buy coca tea, eases tiredness (~12), ~2 coins (structure_id: apothecary)") {
-		t.Errorf("remedy bullet missing structure_id: %q", out)
-	}
-	// The free-object rest kind has no structure_id — it must not render one.
 	for _, line := range strings.Split(out, "\n") {
-		if strings.HasPrefix(line, "- the old oak") && strings.Contains(line, "structure_id") {
+		if strings.HasPrefix(strings.TrimSpace(line), "- the old oak") && strings.Contains(line, "structure_id") {
 			t.Errorf("free-object rest bullet must not render a structure_id: %q", line)
 		}
 	}

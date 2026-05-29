@@ -90,6 +90,14 @@ func buildSatiation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Acto
 func gatherSatiationVendors(snap *sim.Snapshot, actorID sim.ActorID, need sim.NeedKey) []SatiationVendor {
 	var out []SatiationVendor
 	for _, vc := range findVendorConsumables(snap, actorID, need, "ask the seller") {
+		if vc.StructureID == "" {
+			// No resolvable workplace → no structure_id for move_to, so the cue
+			// is unactionable and would only tempt a name-based move_to the tool
+			// rejects. findVendorConsumables already excludes vendors whose
+			// workplace doesn't resolve, so this is a defensive guard, not a
+			// live path.
+			continue
+		}
 		out = append(out, SatiationVendor{
 			StructureLabel: vc.StructureLabel,
 			StructureID:    vc.StructureID,
