@@ -361,6 +361,12 @@ func buildInFlightMove(snap *sim.Snapshot, a *sim.ActorSnapshot) *InFlightMoveVi
 		label = resolveDwellPinLabel(snap, a.MoveDestObjectID)
 	case sim.MoveDestinationPosition:
 		label = fmt.Sprintf("(%d, %d)", a.MoveDestPos.X, a.MoveDestPos.Y)
+	default:
+		// Unrecognized kind — a corrupt snapshot or a destination kind added
+		// to the engine but not yet wired into perception. Don't render a
+		// vague "walking to your destination" that masks the gap; surface it
+		// as not-moving so the omission is visible rather than papered over.
+		return nil
 	}
 	return &InFlightMoveView{Kind: a.MoveDestKind, DestinationLabel: label}
 }
