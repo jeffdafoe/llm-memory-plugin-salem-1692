@@ -152,6 +152,25 @@ func effectiveLoiterTile(w *World, structureID StructureID) (Position, bool) {
 	return computeLoiterTile(vobj, asset), true
 }
 
+// effectiveObjectLoiterTile resolves the loiter pin for a bare village object
+// by its VillageObjectID — the object-keyed sibling of effectiveLoiterTile. A
+// bare named prop (a well, a shade tree) has no Structure entry, so it resolves
+// the pin directly via computeLoiterTile rather than crossing the structure
+// bridge. ok=false when the object or its asset is missing from the world.
+//
+// MUST be called from inside a Command.Fn. Unexported by design.
+func effectiveObjectLoiterTile(w *World, objID VillageObjectID) (Position, bool) {
+	vobj, ok := w.VillageObjects[objID]
+	if !ok || vobj == nil {
+		return Position{}, false
+	}
+	asset, ok := w.Assets[vobj.AssetID]
+	if !ok || asset == nil {
+		return Position{}, false
+	}
+	return computeLoiterTile(vobj, asset), true
+}
+
 // ResolveMoveTargetTile returns the goal tile an actor's current MoveIntent
 // is walking toward, resolved grid-free for operator introspection (the
 // umbilical /agent view). Best-effort by destination kind:
@@ -162,6 +181,8 @@ func effectiveLoiterTile(w *World, structureID StructureID) (Position, bool) {
 //     eight visitor slots ring. The exact slot needs a live WalkGrid; the pin
 //     is enough to show where the actor is headed and whether the target is
 //     off-grid (the locomotion-debug use case this exists for).
+//   - ObjectVisit → the object's loiter pin (effectiveObjectLoiterTile) — the
+//     object-keyed analogue of the StructureVisit case for a bare prop.
 //
 // ok=false when the actor has no MoveIntent, or a structure target has no
 // resolvable placement / door. MUST be called from inside a Command.Fn (the
@@ -187,6 +208,11 @@ func ResolveMoveTargetTile(w *World, a *Actor) (TilePos, bool) {
 			return TilePos{}, false
 		}
 		return effectiveLoiterTile(w, *dest.StructureID)
+	case MoveDestinationObjectVisit:
+		if dest.ObjectID == nil {
+			return TilePos{}, false
+		}
+		return effectiveObjectLoiterTile(w, *dest.ObjectID)
 	default:
 		return TilePos{}, false
 	}
