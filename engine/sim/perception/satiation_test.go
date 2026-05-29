@@ -173,6 +173,184 @@ func TestBuildSatiation_BothNeeds_HungerFirst(t *testing.T) {
 	}
 }
 
+// huddleWith wires a subject + peers into a single huddle and returns the snapshot
+// pieces a co-present-peer test needs: the subject's CurrentHuddleID is stamped
+// and the Huddle.Members set lists everyone (subject self-excluded by the gather).
+func huddleWith(members ...sim.ActorID) (sim.HuddleID, *sim.Huddle) {
+	m := make(map[sim.ActorID]struct{}, len(members))
+	for _, id := range members {
+		m[id] = struct{}{}
+	}
+	return "huddle-1", &sim.Huddle{ID: "huddle-1", Members: m}
+}
+
+// TestBuildSatiation_CoPresentPeer_Acquainted: a huddle peer carrying a satisfier
+// for a pressing need surfaces as a co-present offer with the felt amount and the
+// peer's name (acquainted), and NO structure_id appears on the rendered line.
+func TestBuildSatiation_CoPresentPeer_Acquainted(t *testing.T) {
+	hid, h := huddleWith("ezekiel", "hannah")
+	subj := &sim.ActorSnapshot{
+		Needs:           map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold},
+		CurrentHuddleID: hid,
+		Acquaintances:   map[string]sim.Acquaintance{"Hannah": {}},
+	}
+	peer := &sim.ActorSnapshot{
+		DisplayName: "Hannah", Role: "baker",
+		Inventory: map[sim.ItemKind]int{"stew": 2, "coca_tea": 1}, // coca_tea is tiredness — must not appear
+	}
+	snap := &sim.Snapshot{
+		Actors:    map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj, "hannah": peer},
+		Huddles:   map[sim.HuddleID]*sim.Huddle{hid: h},
+		ItemKinds: foodDrinkCatalog(),
+	}
+	v := buildSatiation(snap, "ezekiel", subj)
+	if v == nil || len(v.Needs) != 1 {
+		t.Fatalf("want 1 pressing need (hunger), got %+v", v)
+	}
+	n := v.Needs[0]
+	if len(n.CoPresentPeers) != 1 {
+		t.Fatalf("want 1 co-present peer offer (stew; coca tea excluded), got %+v", n.CoPresentPeers)
+	}
+	pr := n.CoPresentPeers[0]
+	if pr.PeerLabel != "Hannah" {
+		t.Errorf("peer label = %q, want acquaintance name 'Hannah'", pr.PeerLabel)
+	}
+	if pr.ItemLabel != "stew" || pr.Magnitude != 12 {
+		t.Errorf("peer offer item/mag = %q/%d, want stew/12", pr.ItemLabel, pr.Magnitude)
+	}
+
+	var b strings.Builder
+	renderSatiation(&b, v)
+	out := b.String()
+	want := "Hannah is here with you, carrying stew (a hearty meal) — you could offer to buy it from them now with pay_with_item. No need to walk anywhere."
+	if !strings.Contains(out, want) {
+		t.Errorf("co-present line missing/!exact:\nwant: %s\ngot:\n%s", want, out)
+	}
+	if strings.Contains(out, "structure_id") {
+		t.Errorf("co-present peer line must carry NO structure_id, got:\n%s", out)
+	}
+}
+
+// TestBuildSatiation_CoPresentPeer_Unacquainted: an unacquainted peer is named by
+// the acquaintance-gated descriptor ("the <role>"), never their DisplayName.
+func TestBuildSatiation_CoPresentPeer_Unacquainted(t *testing.T) {
+	hid, h := huddleWith("ezekiel", "stranger")
+	subj := &sim.ActorSnapshot{
+		Needs:           map[sim.NeedKey]int{"thirst": sim.DefaultThirstRedThreshold},
+		CurrentHuddleID: hid,
+		// No Acquaintances — subject does not know the peer.
+	}
+	peer := &sim.ActorSnapshot{
+		DisplayName: "Goodwife Mercy", Role: "herbalist",
+		Inventory: map[sim.ItemKind]int{"water": 4},
+	}
+	snap := &sim.Snapshot{
+		Actors:    map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj, "stranger": peer},
+		Huddles:   map[sim.HuddleID]*sim.Huddle{hid: h},
+		ItemKinds: foodDrinkCatalog(),
+	}
+	v := buildSatiation(snap, "ezekiel", subj)
+	if v == nil || len(v.Needs) != 1 || len(v.Needs[0].CoPresentPeers) != 1 {
+		t.Fatalf("want 1 co-present peer offer, got %+v", v)
+	}
+	pr := v.Needs[0].CoPresentPeers[0]
+	if pr.PeerLabel != "the herbalist" {
+		t.Errorf("unacquainted peer label = %q, want descriptor 'the herbalist'", pr.PeerLabel)
+	}
+	if strings.Contains(pr.PeerLabel, "Mercy") {
+		t.Errorf("unacquainted peer must NOT be named by DisplayName, got %q", pr.PeerLabel)
+	}
+}
+
+// TestBuildSatiation_CoPresentPeer_NoOfferWhenNoSatisfierOrNotPressing: a peer
+// carrying only a non-satisfier yields no co-present offer; and the whole
+// co-present scan is gated by the SAME pressing-need threshold as the rest of the
+// section (a peer carrying a satisfier for a NON-pressing need surfaces nothing).
+func TestBuildSatiation_CoPresentPeer_NoOfferWhenNoSatisfierOrNotPressing(t *testing.T) {
+	// (a) Peer carries no satisfier for the pressing need → no offer (but the
+	// need still presses via own-stock so the section can exist).
+	hid, h := huddleWith("ezekiel", "hannah")
+	subj := &sim.ActorSnapshot{
+		Needs:           map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold},
+		CurrentHuddleID: hid,
+		Inventory:       map[sim.ItemKind]int{"bread": 1},
+		Acquaintances:   map[string]sim.Acquaintance{"Hannah": {}},
+	}
+	peer := &sim.ActorSnapshot{DisplayName: "Hannah", Inventory: map[sim.ItemKind]int{"coca_tea": 3}} // tiredness only
+	snap := &sim.Snapshot{
+		Actors:    map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj, "hannah": peer},
+		Huddles:   map[sim.HuddleID]*sim.Huddle{hid: h},
+		ItemKinds: foodDrinkCatalog(),
+	}
+	v := buildSatiation(snap, "ezekiel", subj)
+	if v == nil || len(v.Needs) != 1 {
+		t.Fatalf("want hunger section (own stock), got %+v", v)
+	}
+	if len(v.Needs[0].CoPresentPeers) != 0 {
+		t.Errorf("peer carries no hunger satisfier → want no co-present offer, got %+v", v.Needs[0].CoPresentPeers)
+	}
+
+	// (b) Need not pressing → whole section nil even though the peer carries a
+	// satisfier.
+	subj2 := &sim.ActorSnapshot{
+		Needs:           map[sim.NeedKey]int{"hunger": 1},
+		CurrentHuddleID: hid,
+		Acquaintances:   map[string]sim.Acquaintance{"Hannah": {}},
+	}
+	peer2 := &sim.ActorSnapshot{DisplayName: "Hannah", Inventory: map[sim.ItemKind]int{"stew": 5}}
+	snap2 := &sim.Snapshot{
+		Actors:    map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj2, "hannah": peer2},
+		Huddles:   map[sim.HuddleID]*sim.Huddle{hid: h},
+		ItemKinds: foodDrinkCatalog(),
+	}
+	if v := buildSatiation(snap2, "ezekiel", subj2); v != nil {
+		t.Errorf("hunger not pressing → want nil section, got %+v", v)
+	}
+}
+
+// TestBuildSatiation_PeerAlsoVendor_BothAffordances: a peer who is ALSO a
+// structural vendor (huddle peer + WorkStructureID + stock) surfaces in BOTH the
+// co-present list AND the walk-to vendor list — they're different affordances —
+// and the existing vendor cue is byte-for-byte unchanged by the new peer scan.
+func TestBuildSatiation_PeerAlsoVendor_BothAffordances(t *testing.T) {
+	hid, h := huddleWith("ezekiel", "wally")
+	subj := &sim.ActorSnapshot{
+		Needs:           map[sim.NeedKey]int{"thirst": sim.DefaultThirstRedThreshold},
+		CurrentHuddleID: hid,
+		Acquaintances:   map[string]sim.Acquaintance{"Wally": {}},
+	}
+	// Wally is co-present in the huddle AND stationed at a resolvable workplace
+	// holding water — both a peer and a structural vendor.
+	wally := &sim.ActorSnapshot{
+		DisplayName: "Wally", WorkStructureID: "well_house",
+		Inventory: map[sim.ItemKind]int{"water": 9},
+	}
+	snap := &sim.Snapshot{
+		Actors:     map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj, "wally": wally},
+		Huddles:    map[sim.HuddleID]*sim.Huddle{hid: h},
+		Structures: map[sim.StructureID]*sim.Structure{"well_house": {ID: "well_house", DisplayName: "Well House"}},
+		ItemKinds:  foodDrinkCatalog(),
+	}
+	v := buildSatiation(snap, "ezekiel", subj)
+	if v == nil || len(v.Needs) != 1 {
+		t.Fatalf("want 1 pressing need (thirst), got %+v", v)
+	}
+	n := v.Needs[0]
+	if len(n.CoPresentPeers) != 1 || n.CoPresentPeers[0].PeerLabel != "Wally" || n.CoPresentPeers[0].ItemLabel != "water" {
+		t.Errorf("want co-present offer from Wally for water, got %+v", n.CoPresentPeers)
+	}
+	// The existing workplace-vendor cue is UNCHANGED — same assertions as
+	// TestBuildSatiation_VendorCueThirst.
+	if len(n.Vendors) != 1 {
+		t.Fatalf("want the existing vendor cue intact (1), got %+v", n.Vendors)
+	}
+	vd := n.Vendors[0]
+	if vd.StructureLabel != "Well House" || vd.ItemLabel != "water" || vd.Magnitude != 5 ||
+		vd.CostText != "ask the seller" || vd.StructureID != "well_house" {
+		t.Errorf("existing vendor cue changed by the peer scan: %+v", vd)
+	}
+}
+
 func TestRenderSatiation_NilAndEmpty(t *testing.T) {
 	var b strings.Builder
 	renderSatiation(&b, nil)

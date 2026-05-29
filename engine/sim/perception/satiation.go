@@ -2,6 +2,7 @@ package perception
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
@@ -37,10 +38,33 @@ type SatiationView struct {
 
 // SatiationNeedView is one pressing consumable need's resolution surface.
 type SatiationNeedView struct {
-	Need     sim.NeedKey       // "hunger" | "thirst"
-	Verb     string            // "eat" | "drink"
-	OwnStock []OwnStockItem    // satisfiers the actor already carries (shared shape)
-	Vendors  []SatiationVendor // nearby places selling a satisfier
+	Need sim.NeedKey // "hunger" | "thirst"
+	Verb string      // "eat" | "drink"
+
+	OwnStock []OwnStockItem // satisfiers the actor already carries (shared shape)
+
+	// CoPresentPeers are huddle peers standing with the subject RIGHT NOW who
+	// carry an item that eases this need — the immediately-actionable
+	// buy-from-the-person-beside-you affordance (ZBBS-HOME-342). pay_with_item
+	// resolves the seller as any co-present huddle peer holding the goods (it is
+	// NOT vendor-gated), so the transaction substrate already supports this; the
+	// only gap was that perception never named the co-present holder. Rendered
+	// AHEAD of Vendors and carries NO structure_id — they're already here, so
+	// nothing should tempt a move_to.
+	CoPresentPeers []SatiationPeerOffer
+
+	Vendors []SatiationVendor // nearby places selling a satisfier (walk to)
+}
+
+// SatiationPeerOffer is one co-present huddle peer who carries a satisfier for
+// the need — a buy-it-now-from-them affordance with no walk. PeerLabel is the
+// acquaintance-gated name (descriptorLabel), never a raw UUID.
+type SatiationPeerOffer struct {
+	PeerLabel string       // "Hannah" | "the herbalist" | "a stranger"
+	ItemLabel string       // "stew"
+	Magnitude int          // immediate need eased per unit (positive)
+	peerID    sim.ActorID  // sort key only — never rendered (huddle order is by ID)
+	itemKind  sim.ItemKind // sort tie-break only — never rendered
 }
 
 // SatiationVendor is one (workplace, item) buy opportunity.
@@ -67,15 +91,17 @@ func buildSatiation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Acto
 			continue
 		}
 		own := gatherOwnStock(snap, actorSnap, need)
+		peers := gatherCoPresentPeerOffers(snap, actorID, actorSnap, need)
 		vendors := gatherSatiationVendors(snap, actorID, need)
-		if len(own) == 0 && len(vendors) == 0 {
+		if len(own) == 0 && len(peers) == 0 && len(vendors) == 0 {
 			continue
 		}
 		needs = append(needs, SatiationNeedView{
-			Need:     need,
-			Verb:     satiationVerb(need),
-			OwnStock: own,
-			Vendors:  vendors,
+			Need:           need,
+			Verb:           satiationVerb(need),
+			OwnStock:       own,
+			CoPresentPeers: peers,
+			Vendors:        vendors,
 		})
 	}
 	if len(needs) == 0 {
@@ -109,6 +135,82 @@ func gatherSatiationVendors(snap *sim.Snapshot, actorID sim.ActorID, need sim.Ne
 	return out
 }
 
+// gatherCoPresentPeerOffers scans the subject's CURRENT HUDDLE PEERS for any who
+// carry an item that eases `need` on the immediate hit, returning one entry per
+// (peer, item). This is the buy-from-the-person-beside-you affordance: the
+// peers are co-present, so pay_with_item can resolve them as the seller right
+// now with no walk (it resolves any co-present huddle peer holding the goods —
+// it is NOT vendor-gated). Distinct from the workplace-vendor scan: this is a
+// peer-INVENTORY read over the huddle set, not a structural-vendorship scan, so
+// a peer surfaces here whether or not they're also a structural vendor (they're
+// different affordances — the same peer can appear in both lists).
+//
+// The peer name is acquaintance-gated via descriptorLabel — the same name-vs-
+// descriptor treatment huddle members get in "Around you" — so an unacquainted
+// peer reads as "the <role>" / "a stranger", never their DisplayName.
+//
+// Excluded: the subject themselves, PCs (they don't sell through the NPC
+// commerce path — same exclusion the vendor scan applies), and any actor not in
+// the subject's huddle. Output is sorted deterministically by (peerID, magnitude
+// desc, ItemLabel, ItemKind), mirroring the tie-break discipline the vendor /
+// own-stock finders use (huddle membership is a map). Empty when not huddled or
+// no co-present peer carries a satisfier.
+func gatherCoPresentPeerOffers(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSnapshot, need sim.NeedKey) []SatiationPeerOffer {
+	if snap == nil || actorSnap == nil || actorSnap.CurrentHuddleID == "" {
+		return nil
+	}
+	h := snap.Huddles[actorSnap.CurrentHuddleID]
+	if h == nil {
+		return nil
+	}
+	var out []SatiationPeerOffer
+	for peerID := range h.Members {
+		if peerID == actorID {
+			continue
+		}
+		peer := snap.Actors[peerID]
+		if peer == nil || peer.Kind == sim.KindPC {
+			continue
+		}
+		// Acquaintance gating mirrors buildSurroundings: the subject knows the
+		// peer iff their DisplayName is in the subject's Acquaintances map.
+		acquainted := false
+		if peer.DisplayName != "" {
+			_, acquainted = actorSnap.Acquaintances[peer.DisplayName]
+		}
+		label := descriptorLabel(peer.DisplayName, peer.Role, acquainted)
+		for kind, qty := range peer.Inventory {
+			if qty <= 0 {
+				continue
+			}
+			mag := itemNeedMagnitude(snap, kind, need)
+			if mag <= 0 {
+				continue
+			}
+			out = append(out, SatiationPeerOffer{
+				PeerLabel: label,
+				ItemLabel: itemDisplayLabel(snap, kind),
+				Magnitude: mag,
+				peerID:    peerID,
+				itemKind:  kind,
+			})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].peerID != out[j].peerID {
+			return out[i].peerID < out[j].peerID
+		}
+		if out[i].Magnitude != out[j].Magnitude {
+			return out[i].Magnitude > out[j].Magnitude
+		}
+		if out[i].ItemLabel != out[j].ItemLabel {
+			return out[i].ItemLabel < out[j].ItemLabel
+		}
+		return out[i].itemKind < out[j].itemKind
+	})
+	return out
+}
+
 // satiationVerb is the consume verb for the need's dominant modality.
 func satiationVerb(need sim.NeedKey) string {
 	if need == "thirst" {
@@ -128,6 +230,15 @@ func renderSatiation(b *strings.Builder, v *SatiationView) {
 	for _, n := range v.Needs {
 		if len(n.OwnStock) > 0 {
 			fmt.Fprintf(b, "You have %s on hand — consume to %s.\n", renderOwnStockLine(n.OwnStock, n.Need), n.Verb)
+		}
+		// Co-present peers come BEFORE the walk-to-vendor list: a peer standing
+		// with you is immediately actionable (pay_with_item resolves them as the
+		// seller now), so it shouldn't be buried under shops you'd have to walk
+		// to. NO structure_id on these lines — they're already here, and a
+		// structure_id would only tempt a needless move_to (ZBBS-HOME-342).
+		for _, pr := range n.CoPresentPeers {
+			fmt.Fprintf(b, "%s is here with you, carrying %s (%s) — you could offer to buy it from them now with pay_with_item. No need to walk anywhere.\n",
+				sanitizeInline(pr.PeerLabel), sanitizeInline(pr.ItemLabel), itemFeltAmount(pr.Magnitude, n.Need))
 		}
 		if len(n.Vendors) > 0 {
 			fmt.Fprintf(b, "Nearby to buy (%s):\n", string(n.Need))
