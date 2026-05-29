@@ -623,19 +623,9 @@ func _on_npc_walking(data: Dictionary) -> void:
     # reordered / missed event doesn't leave them invisible during the walk.
     container.set_meta("inside", false)
     container.visible = true
-    # Discontinuous snap to the engine-authoritative tile. Wrap the position
-    # write in the HTML5/WebGL y-sort ghost workaround (visible=false; move;
-    # visible=true) used by _on_object_moved — a big jump re-sorts the y-sorted
-    # $Objects tree and can drop this sprite (and neighbors) for a frame. Only
-    # toggle when the jump exceeds ~1 tile (a real snap, not a tiny re-seat);
-    # the per-frame lerp in _tick_npc_walk must NOT toggle or it would flicker.
-    var snap_delta: float = container.position.distance_to(origin)
-    if snap_delta > float(VillageApi.tile_size):
-        container.visible = false
-        container.position = origin
-        container.visible = true
-    else:
-        container.position = origin
+    # Discontinuous snap to the engine-authoritative tile (see _snap_npc_to for
+    # the y-sort ghost workaround this routes through).
+    _snap_npc_to(container, origin)
 
     if waypoints.is_empty():
         # No-op move (already on the goal tile). Nothing to animate; the
@@ -690,22 +680,10 @@ func _on_npc_arrived(data: Dictionary) -> void:
         if facing == "":
             facing = "south"
 
-    # Discontinuous snap to the authoritative endpoint. Wrap the position write
-    # in the HTML5/WebGL y-sort ghost workaround (visible=false; move;
-    # visible=true) used by _on_object_moved — the client interpolates the walk
-    # off its own clock with no per-tile correction, so the render position can
-    # sit a tile or more from the true endpoint at arrival; a big snap re-sorts
-    # the y-sorted $Objects tree and can drop this sprite for a frame. Gate on a
-    # >~1-tile delta so a near-exact arrival doesn't toggle needlessly. The
+    # Discontinuous snap to the authoritative endpoint (see _snap_npc_to). The
     # final visibility is set authoritatively just below from inside/structure,
-    # so this toggle only governs the position-write frame.
-    var arrival_pos: Vector2 = Vector2(final_x, final_y)
-    if container.position.distance_to(arrival_pos) > float(VillageApi.tile_size):
-        container.visible = false
-        container.position = arrival_pos
-        container.visible = true
-    else:
-        container.position = arrival_pos
+    # so the toggle's transient visible state only governs the position-write frame.
+    _snap_npc_to(container, Vector2(final_x, final_y))
     # npc_arrived carries `structure_id` — the structure the actor ended inside,
     # empty when it arrived outdoors (arrivedWireDTO.StructureID, from the
     # engine's ActorArrived.FinalStructureID). This is the ONLY post-load signal
@@ -744,9 +722,30 @@ func _on_npc_move_stopped(data: Dictionary) -> void:
         return
     var container: Node2D = world.placed_npcs[npc_id]
     var stop_pos: Vector2 = VillageApi.tile_to_world(int(data.get("x", 0)), int(data.get("y", 0)))
-    container.position = stop_pos
+    # Same discontinuous-snap class as arrival/supersede: the render position can
+    # have drifted a tile+ from where the engine halted, so route through the
+    # y-sort ghost workaround (see _snap_npc_to) instead of a bare write.
+    _snap_npc_to(container, stop_pos)
     container.remove_meta("walking")
     var facing: String = String(container.get_meta("facing", "south"))
     if facing == "":
         facing = "south"
     world.play_npc_animation(container, facing, "idle")
+
+## Snap an NPC container to an authoritative position, wrapping the write in the
+## HTML5/WebGL y-sort ghost workaround (visible=false; move; visible=true — the
+## same fix _on_object_moved uses) ONLY when the jump exceeds one grid step. A
+## large discontinuous move re-sorts the y-sorted $Objects tree and can drop this
+## sprite (and its neighbors) for a frame; a small re-seat doesn't. Chebyshev
+## (per-axis max) so a one-tile diagonal counts as one tile, not √2·tile. The
+## per-frame lerp in _tick_npc_walk must NOT route through here — toggling every
+## frame would itself flicker.
+func _snap_npc_to(container: Node2D, pos: Vector2) -> void:
+    var dx: float = abs(pos.x - container.position.x)
+    var dy: float = abs(pos.y - container.position.y)
+    if max(dx, dy) > float(VillageApi.tile_size):
+        container.visible = false
+        container.position = pos
+        container.visible = true
+    else:
+        container.position = pos
