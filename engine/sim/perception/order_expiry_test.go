@@ -29,8 +29,8 @@ func TestExpiryClause(t *testing.T) {
 		{"real ttl renders", now.Add(5 * time.Minute), true, "expires in 5 minutes"},
 		{"zero omitted", time.Time{}, false, ""},
 		{"far-future sentinel omitted", theSentinel, false, ""},
-		{"just past horizon omitted", now.Add(maxRenderableExpiryHorizon + time.Minute), false, ""},
-		{"at horizon renders", now.Add(maxRenderableExpiryHorizon - time.Minute), true, "expires in"},
+		{"at horizon renders", now.Add(maxRenderableExpiryHorizon), true, "expires in"},
+		{"just past horizon omitted", now.Add(maxRenderableExpiryHorizon + time.Nanosecond), false, ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -41,9 +41,11 @@ func TestExpiryClause(t *testing.T) {
 			if c.wantSub != "" && !strings.Contains(clause, c.wantSub) {
 				t.Errorf("clause = %q, want substring %q", clause, c.wantSub)
 			}
-			// The garbage value must NEVER appear, regardless of branch.
-			if strings.Contains(clause, "153722867") || strings.Contains(clause, "minutes") && !c.wantOK {
-				t.Errorf("unexpected duration leaked: %q", clause)
+			if strings.Contains(clause, "153722867") {
+				t.Errorf("garbage duration leaked: %q", clause)
+			}
+			if !c.wantOK && clause != "" {
+				t.Errorf("omitted expiry returned non-empty clause: %q", clause)
 			}
 		})
 	}
