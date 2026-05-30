@@ -200,6 +200,137 @@ func TestLocomotion_StructureEnterArrival(t *testing.T) {
 	}
 }
 
+// TestLocomotion_StructureEnter_WalkThroughOccupiedDoor covers the
+// last-resort door walk-through (ZBBS-HOME-348). A member entering a
+// structure whose single door tile is occupied by another actor — the
+// household-lockout shape, a resident parked or sleeping on the one
+// reachable interior tile — steps onto the door anyway after the reroute
+// exhausts, arrives (InsideStructureID flips), and records NO deadlock.
+// This recovers v1's overlap-on-the-door behavior that v2's soft-block
+// collision (ZBBS-WORK-340) regressed, scoped to StructureEnter only.
+func TestLocomotion_StructureEnter_WalkThroughOccupiedDoor(t *testing.T) {
+	w, cancel, rec := buildLocomotionTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	// Park a blocker ON the cottage door tile (PadX+10,PadY+10) — the single
+	// reachable interior tile. Without the walk-through the entering walker
+	// would deadlock against it forever.
+	doorTile := sim.Position{X: sim.PadX + 10, Y: sim.PadY + 10}
+	if _, err := w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			// Make the walker a RESIDENT of the cottage — the walk-through is
+			// gated on membership (structureMembershipAllows), so a non-member
+			// would (correctly) deadlock instead. See the negative test below.
+			world.Actors["walker"].HomeStructureID = "cottage"
+			world.Actors["blocker"] = &sim.Actor{
+				ID:          "blocker",
+				DisplayName: "Hope",
+				Pos:         sim.TilePos{X: doorTile.X, Y: doorTile.Y},
+			}
+			return nil, nil
+		},
+	}); err != nil {
+		t.Fatalf("seed blocker: %v", err)
+	}
+
+	if _, err := w.Send(sim.MoveActor("walker", sim.NewStructureEnterDestination("cottage"), false, now)); err != nil {
+		t.Fatalf("MoveActor: %v", err)
+	}
+	driveToArrival(t, w, "walker", now, 60)
+
+	pos, inside := actorSpatial(t, w, "walker")
+	if pos != doorTile {
+		t.Errorf("final position = %+v, want door tile %+v (walked through onto it)", pos, doorTile)
+	}
+	if inside != "cottage" {
+		t.Errorf("InsideStructureID = %q, want cottage (arrived via walk-through)", inside)
+	}
+
+	// The overlap is intentional: the blocker stays put on the door and both
+	// actors now share that tile (recovering v1's actors-may-overlap behavior).
+	blockerPos, _ := actorSpatial(t, w, "blocker")
+	if blockerPos != doorTile {
+		t.Errorf("blocker moved off the door tile: at %+v, want %+v", blockerPos, doorTile)
+	}
+	if pos != blockerPos {
+		t.Errorf("walker (%+v) and blocker (%+v) should share the door tile", pos, blockerPos)
+	}
+
+	// A walk-through is a successful entry, not a wedge: no deadlock entry,
+	// no Deadlocked stop event.
+	if got := w.DeadlockSnapshot(); len(got) != 0 {
+		t.Errorf("DeadlockSnapshot = %d entries, want 0 (walk-through is not a deadlock)", len(got))
+	}
+	if n := rec.countEvents(func(e sim.Event) bool {
+		s, ok := e.(*sim.ActorMoveStopped)
+		return ok && s.ActorID == "walker" && s.Reason == sim.MoveStoppedDeadlocked
+	}); n != 0 {
+		t.Errorf("ActorMoveStopped{deadlocked} fired on a walk-through entry: %d", n)
+	}
+	arrived := rec.countEvents(func(e sim.Event) bool {
+		a, ok := e.(*sim.ActorArrived)
+		return ok && a.ActorID == "walker" && a.FinalStructureID == "cottage"
+	})
+	if arrived != 1 {
+		t.Errorf("ActorArrived{cottage} count = %d, want 1", arrived)
+	}
+}
+
+// TestLocomotion_StructureEnter_NonMemberDoesNotWalkThroughOccupiedDoor is the
+// negative of the case above (ZBBS-HOME-348): the walk-through is gated on
+// structureMembershipAllows, so a NON-member targeting a StructureEnter whose
+// single door tile is occupied must NOT overlap onto it — it deadlocks like any
+// other contested goal. Guards against the low-level fallback bypassing entry
+// policy (e.g. dropping a non-member inside a home through an occupied door).
+func TestLocomotion_StructureEnter_NonMemberDoesNotWalkThroughOccupiedDoor(t *testing.T) {
+	w, cancel, rec := buildLocomotionTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	// Walker is left a NON-member (no HomeStructureID/WorkStructureID/ownership
+	// for "cottage"). The cottage is open, so resolvePathTarget still hands out
+	// the door tile as the goal — the membership gate is what must stop the
+	// walk-through, not the upstream resolve.
+	doorTile := sim.Position{X: sim.PadX + 10, Y: sim.PadY + 10}
+	if _, err := w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			world.Actors["blocker"] = &sim.Actor{
+				ID:          "blocker",
+				DisplayName: "Hope",
+				Pos:         sim.TilePos{X: doorTile.X, Y: doorTile.Y},
+			}
+			return nil, nil
+		},
+	}); err != nil {
+		t.Fatalf("seed blocker: %v", err)
+	}
+
+	if _, err := w.Send(sim.MoveActor("walker", sim.NewStructureEnterDestination("cottage"), false, now)); err != nil {
+		t.Fatalf("MoveActor: %v", err)
+	}
+	driveToArrival(t, w, "walker", now, 60)
+
+	pos, inside := actorSpatial(t, w, "walker")
+	if inside == "cottage" {
+		t.Errorf("non-member ended up inside cottage via walk-through (InsideStructureID=%q)", inside)
+	}
+	if pos == doorTile {
+		t.Errorf("non-member stepped onto the occupied door tile %+v", pos)
+	}
+	// It must have taken the deadlock path instead of the walk-through.
+	stopped := rec.countEvents(func(e sim.Event) bool {
+		s, ok := e.(*sim.ActorMoveStopped)
+		return ok && s.ActorID == "walker" && s.Reason == sim.MoveStoppedDeadlocked
+	})
+	if stopped != 1 {
+		t.Errorf("ActorMoveStopped{deadlocked} count = %d, want 1 (non-member must deadlock, not walk through)", stopped)
+	}
+	if got := w.DeadlockSnapshot(); len(got) == 0 {
+		t.Error("expected a DeadlockSnapshot entry for the non-member door block")
+	}
+}
+
 // TestLocomotion_StructureVisitArrival covers a StructureVisit move: the
 // actor stops at a visitor slot around the loiter pin, outside the
 // structure's footprint — so FinalStructureID is empty.
