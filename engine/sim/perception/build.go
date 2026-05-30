@@ -344,7 +344,36 @@ func buildActorView(snap *sim.Snapshot, a *sim.ActorSnapshot) ActorView {
 		NeedThresholds:     snap.NeedThresholds,
 		ActiveDwellCredits: buildActiveDwellCredits(snap, a),
 		InFlightMove:       buildInFlightMove(snap, a),
+		Inventory:          buildInventoryView(snap, a),
 	}
+}
+
+// buildInventoryView resolves the actor's carried goods (positive quantities)
+// into the standing inventory readout — display labels via itemDisplayLabel,
+// sorted by label then ItemKind so the line is deterministic (Inventory is a
+// map). Returns nil for an empty inventory so Render omits the line.
+// ZBBS-HOME-361.
+func buildInventoryView(snap *sim.Snapshot, a *sim.ActorSnapshot) []InventoryItem {
+	if len(a.Inventory) == 0 {
+		return nil
+	}
+	out := make([]InventoryItem, 0, len(a.Inventory))
+	for kind, qty := range a.Inventory {
+		if qty <= 0 {
+			continue
+		}
+		out = append(out, InventoryItem{Label: itemDisplayLabel(snap, kind), Qty: qty, kind: kind})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Label != out[j].Label {
+			return out[i].Label < out[j].Label
+		}
+		return out[i].kind < out[j].kind
+	})
+	return out
 }
 
 // buildInFlightMove projects the subject's in-flight MoveIntent (the
