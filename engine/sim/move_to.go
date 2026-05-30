@@ -2,6 +2,7 @@ package sim
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -33,6 +34,115 @@ import (
 // move_to to end the turn — the speak-then-move ordering v1 enforced
 // (ZBBS-HOME-237), which avoids a post-move speak landing at the room the
 // actor just left. Confirmed with work for the duty-warrant seam.
+
+// MoveToStructureByName returns a Command that resolves a place NAME to a
+// structure_id the actor could plausibly know, then walks there exactly as
+// MoveToStructure does. It exists because prose perception (ZBBS-HOME-351..355)
+// makes the model answer in prose-shaped calls — move_to("the Tavern") — which
+// the id-only form rejected, punishing the model's correct instinct (the live
+// John Ellis case: he had the closed farm's id from a cue but no id for his own
+// Tavern, so move_to by name bounced). ZBBS-HOME-356.
+//
+// Resolution scope is what the actor can plausibly know (NOT every structure in
+// the village — a villager doesn't know a place exists just because the engine
+// does): its own home/work anchors (always, any distance) PLUS any named
+// structure within its scene radius (DefaultOutdoorSceneRadius — the same "what
+// is around me" radius perception uses). Matches are case-insensitive.
+//
+// DUPLICATE NAMES resolve to the NEAREST match (Chebyshev), not an ambiguity
+// reject — unlike the pay path's findHuddlePeerByDisplayName. Places legitimately
+// share names ("the well"), and "walk to the well" means the closest one; a
+// money transfer to an ambiguous person does not have a safe default, but a walk
+// does. Ties beyond distance break by structure_id for determinism.
+//
+// Far structures named only in a distant vendor/restock cue don't resolve by
+// name (they're outside scene radius) — but those cues already carry the
+// structure_id inline, so the model can still walk there by id. The by-name path
+// rescues the intimate cases (own home/work, a landmark in front of you), which
+// is where the model actually drops into naming.
+func MoveToStructureByName(actorID ActorID, name string, now time.Time) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			a, ok := w.Actors[actorID]
+			if !ok {
+				return MoveActorResult{}, fmt.Errorf("MoveToStructureByName: actor %q not in world", actorID)
+			}
+			target := strings.TrimSpace(name)
+			if target == "" {
+				return MoveActorResult{}, fmt.Errorf("move_to: structure_name is required")
+			}
+			structureID, ok := resolveStructureByPerceivableName(w, a, target)
+			if !ok {
+				return MoveActorResult{}, fmt.Errorf(
+					"there is no place called %q that you can see from here — use a structure_id shown in your perception, or name a place closer to you", target)
+			}
+			return MoveToStructure(actorID, structureID, now).Fn(w)
+		},
+	}
+}
+
+// resolveStructureByPerceivableName resolves a place name to a structure_id the
+// actor a could plausibly know — its home/work anchors (any distance) plus named
+// structures within DefaultOutdoorSceneRadius — case-insensitively, nearest-wins
+// on duplicate names (Chebyshev to the actor; ties break by structure_id for
+// determinism). ok=false when no perceivable structure matches. MUST be called
+// from inside a Command.Fn. ZBBS-HOME-356.
+func resolveStructureByPerceivableName(w *World, a *Actor, name string) (StructureID, bool) {
+	radius := w.Settings.DefaultOutdoorSceneRadius
+	if radius <= 0 {
+		radius = DefaultOutdoorSceneRadiusValue
+	}
+
+	// nameMatches reports whether structureID resolves to a structure whose
+	// DisplayName equals name (case-insensitive). Returns the placement tile too
+	// (for the distance tie-break) when it resolves.
+	bestID := StructureID("")
+	bestDist := -1
+	consider := func(structureID StructureID) {
+		st := w.Structures[structureID]
+		if st == nil || !strings.EqualFold(strings.TrimSpace(st.DisplayName), name) {
+			return
+		}
+		vobj, ok := villageObjectForStructureOnly(w, structureID)
+		if !ok {
+			return // no placement → can't walk there (and can't measure distance)
+		}
+		dist := a.Pos.Chebyshev(vobj.Pos.Tile())
+		// Closer wins; equal distance breaks by lower structure_id for a stable
+		// result (map iteration + duplicate names would otherwise be nondeterministic).
+		if bestDist == -1 || dist < bestDist || (dist == bestDist && structureID < bestID) {
+			bestID, bestDist = structureID, dist
+		}
+	}
+
+	// Anchors are always perceivable regardless of distance (the actor knows its
+	// own home and workplace), so consider them unconditionally.
+	if a.HomeStructureID != "" {
+		consider(a.HomeStructureID)
+	}
+	if a.WorkStructureID != "" {
+		consider(a.WorkStructureID)
+	}
+	// Plus any named structure within scene radius — "what is around me."
+	for structureID, st := range w.Structures {
+		if st == nil {
+			continue
+		}
+		vobj, ok := villageObjectForStructureOnly(w, structureID)
+		if !ok {
+			continue
+		}
+		if a.Pos.Chebyshev(vobj.Pos.Tile()) > radius {
+			continue
+		}
+		consider(structureID)
+	}
+
+	if bestDist == -1 {
+		return "", false
+	}
+	return bestID, true
+}
 
 // MoveToStructure returns a Command that walks actorID to structureID, derives
 // enter-vs-visit from the structure's entry policy, and dispatches MoveActor.
