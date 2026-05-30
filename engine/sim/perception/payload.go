@@ -80,7 +80,7 @@ type Payload struct {
 	// (when set) as standing move_to targets with their structure_ids — so a
 	// wandering NPC can always head home or to work, not only when a need-cue
 	// happens to point somewhere. nil for an actor with neither anchor (e.g. a
-	// PC, or an unanchored NPC). ZBBS-HOME-348.
+	// PC, or an unanchored NPC). ZBBS-HOME-349.
 	Anchors *AnchorsView
 
 	// Warrants is every consumed warrant, ordered by SourceEventID

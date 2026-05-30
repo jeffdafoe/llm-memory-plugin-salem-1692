@@ -394,7 +394,7 @@ func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 // Ellis cycle to a closed farm with no id for his own tavern to head back to).
 // The "(structure_id: …)" form matches the satiation / restock / shift-duty
 // cues — it's the load-bearing token the model echoes into move_to.
-// ZBBS-HOME-348.
+// ZBBS-HOME-349.
 func renderAnchors(b *strings.Builder, v *AnchorsView) {
 	if v == nil {
 		return
