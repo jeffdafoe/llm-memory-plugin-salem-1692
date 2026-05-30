@@ -206,25 +206,11 @@ func gatherFreeRestSpots(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) []Rec
 
 // tirednessRefreshMagnitude returns the positive tiredness eased by arriving
 // at obj — the negated arrival decrement plus any dwell delta — or 0 if the
-// object doesn't ease tiredness or its finite supply is exhausted.
+// object doesn't ease tiredness or its finite supply is exhausted. Thin wrapper
+// over the shared objectRefreshMagnitude (satiation.go), which the satiation
+// free-source scan also uses (ZBBS-HOME-359).
 func tirednessRefreshMagnitude(obj *sim.VillageObject) int {
-	for _, r := range obj.Refreshes {
-		if r == nil || r.Attribute != recoveryTirednessNeed {
-			continue
-		}
-		if r.IsFinite() && r.AvailableQuantity != nil && *r.AvailableQuantity <= 0 {
-			continue
-		}
-		mag := -r.Amount // Amount is the negative arrival decrement
-		if r.DwellDelta != nil {
-			mag += -*r.DwellDelta
-		}
-		if mag < 0 {
-			mag = 0
-		}
-		return mag
-	}
-	return 0
+	return objectRefreshMagnitude(obj, recoveryTirednessNeed)
 }
 
 func objectLabel(obj *sim.VillageObject) string {

@@ -54,13 +54,13 @@ var moveToSchema = json.RawMessage(`{
             "type": "string",
             "minLength": 1,
             "maxLength": 128,
-            "description": "The id of the structure to walk to, taken from your perception (your home or workplace, or a place nearby). Preferred when you have it. The engine handles pathfinding and decides whether you go inside or stand just outside."
+            "description": "The id of the place to walk to, taken from your perception (your home or workplace, a shop, or another place nearby such as a well or fruit tree). Preferred when you have it. The engine handles pathfinding and decides whether you go inside or stand just outside."
         },
         "structure_name": {
             "type": "string",
             "minLength": 1,
             "maxLength": 128,
-            "description": "Alternative to structure_id: the NAME of a place you can see in your perception (e.g. \"the Tavern\", your home). Use this when you know the place by name but not its id. The engine resolves it to the nearest matching place you could reach. Provide structure_id OR structure_name, not both."
+            "description": "Alternative to structure_id: the NAME of a place you can see in your perception (e.g. \"the Tavern\", \"the Well\", your home). Use this when you know the place by name but not its id. The engine resolves it to the nearest matching place you could reach. Provide structure_id OR structure_name, not both."
         }
     },
     "oneOf": [
@@ -74,7 +74,7 @@ var moveToSchema = json.RawMessage(`{
 // schema's per-field description carries the arg guidance; this frames when to
 // reach for the tool and the two things the model must understand about it:
 // walking ends the turn, and it leaves any conversation.
-const moveToDescription = "Walk to a structure you can see in your perception — your home, your workplace, a shop, the meeting house, or another place nearby. Give its structure_id if you have it, or its name (structure_name) — e.g. \"the Tavern\" — if you only know what it's called. The engine handles pathfinding and decides whether you go inside (your own home or work, an open shop) or stand just outside (a well, a closed building). Walking ENDS your turn, so say anything you want the people around you to hear BEFORE you call move_to. If you are in a conversation, choosing to walk away leaves it."
+const moveToDescription = "Walk to a place you can see in your perception — your home, your workplace, a shop, the meeting house, or a free source nearby like a well or fruit tree. Give its structure_id if you have it, or its name (structure_name) — e.g. \"the Tavern\", \"the Well\" — if you only know what it's called. The engine handles pathfinding and decides whether you go inside (your own home or work, an open shop) or stand just outside (a well, a closed building). Walking ENDS your turn, so say anything you want the people around you to hear BEFORE you call move_to. If you are in a conversation, choosing to walk away leaves it."
 
 // DecodeMoveToArgs parses the raw tool-call arguments into a MoveToArgs.
 // Errors are typed validation failures the harness surfaces to the model as

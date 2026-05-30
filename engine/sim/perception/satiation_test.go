@@ -351,6 +351,119 @@ func TestBuildSatiation_PeerAlsoVendor_BothAffordances(t *testing.T) {
 	}
 }
 
+// thirstWell builds a free public water source — a VillageObject carrying a
+// thirst arrival-refresh, no Structure shell — for the free-source tests.
+// ZBBS-HOME-359.
+func thirstWell(id sim.VillageObjectID, name string, x, y float64, amount int) *sim.VillageObject {
+	return &sim.VillageObject{
+		ID: id, DisplayName: name, Pos: sim.WorldPos{X: x, Y: y},
+		Refreshes: []*sim.ObjectRefresh{{Attribute: "thirst", Amount: amount}},
+	}
+}
+
+// TestBuildSatiation_FreeSourceThirst: a thirsty actor with a nearby well sees
+// it as a free source carrying the object id (the move_to handle), with
+// distance/direction in tile space — the gap this fixes (a thirsty NPC could
+// never see the well unless already standing on it).
+func TestBuildSatiation_FreeSourceThirst(t *testing.T) {
+	origin := sim.WorldToTile(0, 0)
+	subj := &sim.ActorSnapshot{Pos: origin, Needs: map[sim.NeedKey]int{"thirst": sim.DefaultThirstRedThreshold}}
+	snap := &sim.Snapshot{
+		Actors:         map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{"well": thirstWell("well", "Well", 96, 0, -8)},
+		ItemKinds:      foodDrinkCatalog(),
+	}
+	v := buildSatiation(snap, "ezekiel", subj)
+	if v == nil || len(v.Needs) != 1 {
+		t.Fatalf("want 1 pressing need (thirst), got %+v", v)
+	}
+	n := v.Needs[0]
+	if len(n.FreeSources) != 1 {
+		t.Fatalf("want 1 free source (the well), got %+v", n.FreeSources)
+	}
+	fs := n.FreeSources[0]
+	if fs.Label != "Well" || fs.ObjectID != "well" || fs.Magnitude != 8 {
+		t.Errorf("free source = %+v, want Well/well/8", fs)
+	}
+	// 96px = 3 tiles east → "a short walk" (3–8 tiles), bearing east. Wrong units
+	// would land in a different bucket / direction (the HOME-297 unit bug).
+	if fs.Distance != "a short walk" || fs.Direction != "east" {
+		t.Errorf("want 3-tiles-east (a short walk / east), got dist=%q dir=%q", fs.Distance, fs.Direction)
+	}
+	// Render carries the object id as a structure_id so move_to can reach it.
+	var b strings.Builder
+	renderSatiation(&b, v)
+	out := b.String()
+	if !strings.Contains(out, "Free to drink nearby:") {
+		t.Errorf("missing free-source header:\n%s", out)
+	}
+	if !strings.Contains(out, "- Well — a deep drink, free, a short walk east (structure_id: well)") {
+		t.Errorf("free-source bullet missing/!exact:\n%s", out)
+	}
+}
+
+// TestBuildSatiation_FreeSource_SkipsNonNeedAndDepleted: a hunger source must
+// not surface for thirst, and a depleted (dry) thirst source is skipped — so a
+// thirst-only actor near just those two gets no satiation section at all.
+func TestBuildSatiation_FreeSource_SkipsNonNeedAndDepleted(t *testing.T) {
+	subj := &sim.ActorSnapshot{Needs: map[sim.NeedKey]int{"thirst": sim.DefaultThirstRedThreshold}}
+	tree := &sim.VillageObject{ID: "tree", DisplayName: "fruit tree", Pos: sim.WorldPos{X: 32, Y: 0},
+		Refreshes: []*sim.ObjectRefresh{{Attribute: "hunger", Amount: -6}}}
+	zero, max := 0, 4
+	dryWell := &sim.VillageObject{ID: "dry", DisplayName: "dry well", Pos: sim.WorldPos{X: 64, Y: 0},
+		Refreshes: []*sim.ObjectRefresh{{Attribute: "thirst", Amount: -8, AvailableQuantity: &zero, MaxQuantity: &max}}}
+	snap := &sim.Snapshot{
+		Actors:         map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{"tree": tree, "dry": dryWell},
+		ItemKinds:      foodDrinkCatalog(),
+	}
+	if v := buildSatiation(snap, "ezekiel", subj); v != nil {
+		t.Errorf("thirst: a hunger source + a depleted well should yield no satiation section, got %+v", v)
+	}
+}
+
+// TestBuildSatiation_FreeSourceNearestFirst: multiple free sources order
+// nearest-first, matching the rest-spot ordering.
+func TestBuildSatiation_FreeSourceNearestFirst(t *testing.T) {
+	origin := sim.WorldToTile(0, 0)
+	subj := &sim.ActorSnapshot{Pos: origin, Needs: map[sim.NeedKey]int{"thirst": sim.DefaultThirstRedThreshold}}
+	snap := &sim.Snapshot{
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"far":  thirstWell("far", "far well", 640, 0, -8),  // 20 tiles east
+			"near": thirstWell("near", "near well", 64, 0, -8), // 2 tiles east
+		},
+		ItemKinds: foodDrinkCatalog(),
+	}
+	v := buildSatiation(snap, "ezekiel", subj)
+	if v == nil || len(v.Needs) != 1 || len(v.Needs[0].FreeSources) != 2 {
+		t.Fatalf("want 2 free sources, got %+v", v)
+	}
+	if v.Needs[0].FreeSources[0].ObjectID != "near" {
+		t.Errorf("nearest free source must come first, got %+v", v.Needs[0].FreeSources)
+	}
+}
+
+// TestRenderSatiation_FreeSourceBeforeVendor: a free public source renders
+// AHEAD of paid vendors (free beats paid).
+func TestRenderSatiation_FreeSourceBeforeVendor(t *testing.T) {
+	var b strings.Builder
+	renderSatiation(&b, &SatiationView{Needs: []SatiationNeedView{{
+		Need: "thirst", Verb: "drink",
+		FreeSources: []SatiationFreeSource{{Label: "Well", ObjectID: "well", Magnitude: 8, Distance: "right nearby", Direction: "north"}},
+		Vendors:     []SatiationVendor{{StructureLabel: "The Tavern", StructureID: "tavern", ItemLabel: "ale", Magnitude: 4, CostText: "~2 coins"}},
+	}}})
+	out := b.String()
+	freeIdx := strings.Index(out, "Free to drink nearby:")
+	vendIdx := strings.Index(out, "Nearby to buy (thirst):")
+	if freeIdx < 0 || vendIdx < 0 || freeIdx > vendIdx {
+		t.Errorf("free sources must render before vendors:\n%s", out)
+	}
+	if !strings.Contains(out, "- Well — a deep drink, free, right nearby north (structure_id: well)") {
+		t.Errorf("free-source bullet wrong:\n%s", out)
+	}
+}
+
 func TestRenderSatiation_NilAndEmpty(t *testing.T) {
 	var b strings.Builder
 	renderSatiation(&b, nil)

@@ -2,6 +2,7 @@ package perception
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 
@@ -10,11 +11,20 @@ import (
 
 // satiation.go — ZBBS-HOME-304. The "## What you can eat or drink" perception
 // section: surfaces, to a hungry or thirsty NPC, how to resolve the pressing
-// need — the satisfying items it ALREADY CARRIES (consume-first) and nearby
-// vendors selling a satisfier. Port of v1's engine/satiation.go, adapted to v2:
-// vendor cues run through the shared findVendorConsumables finder (see
-// consumable_vendors.go), the same structural-vendorship + workplace surface
-// the recovery-options remedy arm uses.
+// need — the satisfying items it ALREADY CARRIES (consume-first), free public
+// sources it can walk to (a well, a fruit tree), and nearby vendors selling a
+// satisfier. Port of v1's engine/satiation.go, adapted to v2: vendor cues run
+// through the shared findVendorConsumables finder (see consumable_vendors.go),
+// the same structural-vendorship + workplace surface the recovery-options
+// remedy arm uses.
+//
+// Free-source arm (ZBBS-HOME-359): hunger/thirst had no analogue to the
+// recovery section's free rest spots (gatherFreeRestSpots), so a thirsty NPC
+// away from the well never saw it — the only path was the gather cue, which
+// fires only once already standing at the source. This scans VillageObjects
+// for free need-easing placements the same way rest spots are surfaced, and
+// carries each source's object id so move_to can walk there (the id / name
+// paths now resolve a bare refresh source to an object visit — sim/move_to.go).
 //
 // Why the own-stock line is the load-bearing half (v1's ZBBS-123 diagnosis): a
 // herbalist hungry on shift while holding 50 berries walked to a store instead
@@ -53,7 +63,37 @@ type SatiationNeedView struct {
 	// nothing should tempt a move_to.
 	CoPresentPeers []SatiationPeerOffer
 
+	// FreeSources are free, public refresh placements the actor can walk to and
+	// consume in place at no cost — a well (thirst), a fruit tree (hunger). The
+	// hunger/thirst analogue of the recovery section's free rest spots. Rendered
+	// AHEAD of Vendors (free beats paid) and AFTER CoPresentPeers (a walk is more
+	// than buying from someone already beside you). ZBBS-HOME-359.
+	FreeSources []SatiationFreeSource
+
 	Vendors []SatiationVendor // nearby places selling a satisfier (walk to)
+}
+
+// SatiationFreeSource is one free, public refresh source for the need — a well
+// (thirst), a fruit tree (hunger) — the actor can walk to and consume at in
+// place. The object-keyed analogue of the recovery section's free rest spots
+// (RecoveryOption Kind "rest"). ObjectID is the move_to handle: a bare refresh
+// source resolves by id or name to an object visit (sim/move_to.go), so the cue
+// surfaces it as a structure_id the same way every other actionable cue does.
+// ZBBS-HOME-359.
+type SatiationFreeSource struct {
+	Label     string              // "Well" — the source's display name
+	ObjectID  sim.VillageObjectID // move_to handle (rendered as structure_id)
+	Magnitude int                 // immediate need eased on arrival (positive)
+	Distance  string              // qualitative ("a short walk"); "" when unknown
+	Direction string              // cardinal ("northeast"); "" when coincident
+
+	// sortKey is the actor→source tile distance used to order bullets (nearest
+	// first). Unexported — never rendered.
+	sortKey float64
+	// sourceKey is the object id — a stable final tie-break so equal-distance,
+	// equal-label sources order deterministically (VillageObjects is a map).
+	// Unexported — never rendered.
+	sourceKey string
 }
 
 // SatiationPeerOffer is one co-present huddle peer who carries a satisfier for
@@ -97,8 +137,9 @@ func buildSatiation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Acto
 		}
 		own := gatherOwnStock(snap, actorSnap, need)
 		peers := gatherCoPresentPeerOffers(snap, actorID, actorSnap, need)
+		free := gatherFreeSatiationSources(snap, actorSnap, need)
 		vendors := gatherSatiationVendors(snap, actorID, actorSnap, need)
-		if len(own) == 0 && len(peers) == 0 && len(vendors) == 0 {
+		if len(own) == 0 && len(peers) == 0 && len(free) == 0 && len(vendors) == 0 {
 			continue
 		}
 		needs = append(needs, SatiationNeedView{
@@ -106,6 +147,7 @@ func buildSatiation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Acto
 			Verb:           satiationVerb(need),
 			OwnStock:       own,
 			CoPresentPeers: peers,
+			FreeSources:    free,
 			Vendors:        vendors,
 		})
 	}
@@ -139,6 +181,89 @@ func gatherSatiationVendors(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *
 		})
 	}
 	return out
+}
+
+// gatherFreeSatiationSources returns a free-source bullet for each village
+// object that eases `need` on arrival (a well's thirst refresh, a fruit tree's
+// hunger refresh), skipping objects whose finite supply is exhausted. The
+// hunger/thirst analogue of recovery_options' gatherFreeRestSpots — same
+// distance/direction derivation in INTERNAL-GRID TILE space (actor Pos is a
+// padded tile; an object's Pos is world pixels, converted via obj.Pos.Tile()
+// before measuring) and same nearest-first ordering. Each source carries its
+// object id so the rendered cue is actionable through move_to. ZBBS-HOME-359.
+func gatherFreeSatiationSources(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, need sim.NeedKey) []SatiationFreeSource {
+	if snap == nil || actorSnap == nil {
+		return nil
+	}
+	ax := float64(actorSnap.Pos.X)
+	ay := float64(actorSnap.Pos.Y)
+	var out []SatiationFreeSource
+	for id, obj := range snap.VillageObjects {
+		if obj == nil {
+			continue
+		}
+		mag := objectRefreshMagnitude(obj, need)
+		if mag <= 0 {
+			continue
+		}
+		objTile := obj.Pos.Tile()
+		tx := float64(objTile.X)
+		ty := float64(objTile.Y)
+		dx := tx - ax
+		dy := ty - ay
+		distTiles := math.Sqrt(dx*dx + dy*dy)
+		label := obj.DisplayName
+		if label == "" {
+			label = "a nearby source"
+		}
+		out = append(out, SatiationFreeSource{
+			Label:     label,
+			ObjectID:  id,
+			Magnitude: mag,
+			Distance:  qualitativeDistance(distTiles),
+			Direction: cardinalDirection(ax, ay, tx, ty),
+			sortKey:   distTiles,
+			sourceKey: string(id),
+		})
+	}
+	// Nearest first; ties broken by label then object id for deterministic output
+	// (VillageObjects is a map). Mirrors gatherFreeRestSpots' ordering.
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].sortKey != out[j].sortKey {
+			return out[i].sortKey < out[j].sortKey
+		}
+		if out[i].Label != out[j].Label {
+			return out[i].Label < out[j].Label
+		}
+		return out[i].sourceKey < out[j].sourceKey
+	})
+	return out
+}
+
+// objectRefreshMagnitude returns the positive amount of `need` eased by
+// arriving at obj — the negated arrival decrement plus any dwell delta — or 0
+// if obj doesn't ease `need` or its finite supply is exhausted. The shared core
+// of the satiation free-source scan and recovery_options' tirednessRefreshMagnitude,
+// generalised over the need key so a well (thirst) and a shade tree (tiredness)
+// read the same way. ZBBS-HOME-359.
+func objectRefreshMagnitude(obj *sim.VillageObject, need sim.NeedKey) int {
+	for _, r := range obj.Refreshes {
+		if r == nil || r.Attribute != need {
+			continue
+		}
+		if r.IsFinite() && r.AvailableQuantity != nil && *r.AvailableQuantity <= 0 {
+			continue
+		}
+		mag := -r.Amount // Amount is the negative arrival decrement
+		if r.DwellDelta != nil {
+			mag += -*r.DwellDelta
+		}
+		if mag < 0 {
+			mag = 0
+		}
+		return mag
+	}
+	return 0
 }
 
 // gatherCoPresentPeerOffers scans the subject's CURRENT HUDDLE PEERS for any who
@@ -255,6 +380,31 @@ func renderSatiation(b *strings.Builder, v *SatiationView) {
 		for _, pr := range n.CoPresentPeers {
 			fmt.Fprintf(b, "%s is here with you, carrying %s (%s) — you could offer to buy it from them now with pay_with_item. No need to walk anywhere.\n",
 				sanitizeInline(pr.PeerLabel), sanitizeInline(pr.ItemLabel), itemFeltAmount(pr.Magnitude, n.Need))
+		}
+		// Free public sources come BEFORE the walk-to-vendor list: water at a
+		// well costs nothing, so it shouldn't read as second to a shop you'd pay
+		// at. The object id rides the structure_id field — move_to resolves a
+		// bare refresh source by id (or name) to an object visit (ZBBS-HOME-359).
+		if len(n.FreeSources) > 0 {
+			fmt.Fprintf(b, "Free to %s nearby:\n", n.Verb)
+			for _, fs := range n.FreeSources {
+				b.WriteString("- ")
+				b.WriteString(sanitizeInline(fs.Label))
+				if fs.Magnitude > 0 {
+					fmt.Fprintf(b, " — %s", itemFeltAmount(fs.Magnitude, n.Need))
+				}
+				b.WriteString(", free")
+				if fs.Distance != "" {
+					fmt.Fprintf(b, ", %s", fs.Distance)
+					if fs.Direction != "" {
+						fmt.Fprintf(b, " %s", fs.Direction)
+					}
+				}
+				if fs.ObjectID != "" {
+					fmt.Fprintf(b, " (structure_id: %s)", fs.ObjectID)
+				}
+				b.WriteString("\n")
+			}
 		}
 		if len(n.Vendors) > 0 {
 			fmt.Fprintf(b, "Nearby to buy (%s):\n", string(n.Need))
