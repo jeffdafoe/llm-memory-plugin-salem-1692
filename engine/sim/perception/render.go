@@ -102,6 +102,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderActor(&b, p.Actor)
 	renderSurroundings(&b, p.Surroundings)
 	renderAnchors(&b, p.Anchors)
+	renderDutySteer(&b, p.DutySteer)
 	renderRelationships(&b, p.Relationships)
 	renderPendingDeliveriesFromMe(&b, p.PendingDeliveriesFromMe)
 	renderPendingDeliveriesToMe(&b, p.PendingDeliveriesToMe)
@@ -146,9 +147,14 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	payOffers := PayOfferWarrants(p)
 	renderPayOffers(&b, payOffers, nameOf)
 
-	warrants := p.Warrants
+	// Shift-duty warrants drive the wake tick but are NOT rendered — the standing
+	// DutySteer cue (renderDutySteer, above) is the single voice for
+	// return-to-post (ZBBS-HOME-352). Filtering here also keeps them out of the
+	// cap / carry-forward budget; consuming them unrendered is fine since their
+	// job is to wake the actor, which the tick already did.
+	warrants := nonShiftDutyWarrants(p.Warrants)
 	if len(payOffers) > 0 {
-		warrants = nonPayOfferWarrants(p.Warrants)
+		warrants = nonPayOfferWarrants(warrants)
 	}
 	// Skip the generic "what just happened" block only when the pay-offer
 	// section already covered the whole batch; otherwise render it (this also
@@ -463,6 +469,26 @@ func anchorPlace(label, fallback string) string {
 	return sanitizeInline(label)
 }
 
+// renderDutySteer writes the standing return-to-post cue (ZBBS-HOME-352) — the
+// single voice for shift duty (the engine's ShiftDutyWarrant line is filtered
+// out in Render). It names the destination by label; the structure_id is in the
+// adjacent "## Where you belong" anchors block, which always renders alongside.
+func renderDutySteer(b *strings.Builder, v *DutySteerView) {
+	if v == nil {
+		return
+	}
+	if v.ToWork {
+		fmt.Fprintf(b, "It is your working hours, yet you are away from your post — make your way to %s now.\n\n",
+			anchorPlace(v.TargetLabel, "your workplace"))
+		return
+	}
+	if l := sanitizeInline(v.TargetLabel); l != "" {
+		fmt.Fprintf(b, "Your working hours are over and you are not yet home — head home to %s now.\n\n", l)
+	} else {
+		b.WriteString("Your working hours are over and you are not yet home — head home now.\n\n")
+	}
+}
+
 // joinHuddleMembers renders co-huddle peers with name-vs-descriptor
 // gating per Acquaintance. Acquainted → DisplayName; unacquainted with
 // a Role → "the <role>"; otherwise → "a stranger". Mirrors v1's
@@ -710,6 +736,23 @@ func nonPayOfferWarrants(warrants []sim.WarrantMeta) []sim.WarrantMeta {
 	return out
 }
 
+// nonShiftDutyWarrants returns the consumed batch with shift-duty warrants
+// removed. The shift/duty producer's warrant still drives the wake tick, but its
+// line is not rendered — the standing DutySteer cue (renderDutySteer) is the
+// single voice for return-to-post (ZBBS-HOME-352). Dropping them here also keeps
+// them out of the warrant-section cap / carry-forward budget; consuming them
+// unrendered is correct since their purpose (waking the actor) is already done.
+func nonShiftDutyWarrants(warrants []sim.WarrantMeta) []sim.WarrantMeta {
+	out := make([]sim.WarrantMeta, 0, len(warrants))
+	for _, w := range warrants {
+		if _, ok := w.Reason.(sim.ShiftDutyWarrantReason); ok {
+			continue
+		}
+		out = append(out, w)
+	}
+	return out
+}
+
 // renderPayOffers renders the pending-pay-offer decision section: one line
 // per offer carrying the ledger_id (the load-bearing field — the model must
 // echo it back into accept_pay/decline_pay/counter_pay), the buyer, the goods
@@ -805,8 +848,6 @@ func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string
 		return renderPaidWarrantLine(n, nameOf(r.Buyer), r.Amount, r.ForText, maxTextBytes)
 	case sim.IdleBackstopWarrantReason:
 		return renderIdleBackstopWarrantLine(n, r.QuietDuration), false
-	case sim.ShiftDutyWarrantReason:
-		return renderShiftDutyWarrantLine(n, r.ToWork, r.TargetStructureID), false
 	case sim.RestockWarrantReason:
 		return renderRestockWarrantLine(n, r.Item), false
 	case sim.ConsumedWarrantReason:
@@ -995,33 +1036,6 @@ func renderIdleBackstopWarrantLine(n int, quiet time.Duration) string {
 	}
 	return fmt.Sprintf("%d. You've been quiet for %s — consider what to do next.\n",
 		n, quiet.Round(time.Second))
-}
-
-// renderShiftDutyWarrantLine renders the warrant line for a
-// ShiftDutyWarrantReason — the shift/duty producer's nudge to walk to your
-// workplace (shift started) or home (shift ended). It surfaces the target
-// structure's id so the model can pass it straight back to the move_to tool
-// (move_to(structure_id)); the engine derives enter-vs-visit, so the model only
-// needs the id. ToWork picks the direction prose.
-//
-// Form (to work): `N. Your shift has started — head to your workplace (structure_id: <id>).`
-// Form (to home): `N. Your shift has ended — head home (structure_id: <id>).`
-//
-// An empty target (defensive — the producer only stamps with a real
-// Work/HomeStructureID) drops the parenthetical so the line never renders a
-// dangling "(structure_id: )".
-//
-// Rendered without truncation: there is no untrusted free-text payload — the
-// id is an engine-controlled world key, not model- or user-supplied text.
-func renderShiftDutyWarrantLine(n int, toWork bool, target sim.StructureID) string {
-	dir := "Your shift has ended — head home"
-	if toWork {
-		dir = "Your shift has started — head to your workplace"
-	}
-	if target == "" {
-		return fmt.Sprintf("%d. %s.\n", n, dir)
-	}
-	return fmt.Sprintf("%d. %s (structure_id: %s).\n", n, dir, target)
 }
 
 // renderRestockWarrantLine renders the warrant line for a RestockWarrantReason —

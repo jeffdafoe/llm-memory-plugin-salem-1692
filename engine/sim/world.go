@@ -1346,6 +1346,16 @@ func (w *World) republish() {
 	// (a second time.Now() could straddle a minute/day boundary).
 	now := time.Now()
 	localMin := localMinuteOfDay(w, now)
+	// Day-active window (dawn/dusk) as minute-of-day — the shift fallback for an
+	// NPC with no explicit schedule (ZBBS-HOME-352). Parse errors leave 0, which
+	// perception treats as "window unknown" so steering doesn't fire.
+	dawnMin, duskMin := 0, 0
+	if h, m, err := ParseHM(w.Settings.DawnTime); err == nil {
+		dawnMin = h*60 + m
+	}
+	if h, m, err := ParseHM(w.Settings.DuskTime); err == nil {
+		duskMin = h*60 + m
+	}
 	snap := &Snapshot{
 		AtTick:                   w.TickCounter,
 		PublishedAt:              now,
@@ -1363,6 +1373,8 @@ func (w *World) republish() {
 		Environment:              w.Environment,
 		Phase:                    w.Phase,
 		LocalMinuteOfDay:         &localMin,
+		DawnMinute:               dawnMin,
+		DuskMinute:               duskMin,
 		NeedThresholds:           w.Settings.NeedThresholds.Clone(),
 		LodgingDefaultWeeklyRate: w.Settings.LodgingDefaultWeeklyRate,
 		RestockReorderPct:        w.Settings.RestockReorderPct,
@@ -1457,46 +1469,46 @@ func snapshotActor(a *Actor, atTick uint64) *ActorSnapshot {
 		}
 	}
 	return &ActorSnapshot{
-		AtTick:             atTick,
-		DisplayName:        a.DisplayName,
-		Kind:               a.Kind,
-		State:              a.State,
-		Role:               a.Role,
-		LLMAgent:           a.LLMAgent,
-		LoginUsername:      a.LoginUsername,
-		InsideStructureID:  a.InsideStructureID,
-		InsideRoomID:       a.InsideRoomID,
-		Pos:                a.Pos,
-		CurrentHuddleID:    a.CurrentHuddleID,
-		SpriteID:           a.SpriteID,
-		Facing:             a.Facing,
+		AtTick:              atTick,
+		DisplayName:         a.DisplayName,
+		Kind:                a.Kind,
+		State:               a.State,
+		Role:                a.Role,
+		LLMAgent:            a.LLMAgent,
+		LoginUsername:       a.LoginUsername,
+		InsideStructureID:   a.InsideStructureID,
+		InsideRoomID:        a.InsideRoomID,
+		Pos:                 a.Pos,
+		CurrentHuddleID:     a.CurrentHuddleID,
+		SpriteID:            a.SpriteID,
+		Facing:              a.Facing,
 		MoveDestKind:        moveDestKind,
 		MoveDestStructureID: moveDestStructureID,
 		MoveDestObjectID:    moveDestObjectID,
 		MoveDestPos:         moveDestPos,
-		AttributeSlugs:     attributeSlugs,
-		HomeStructureID:    a.HomeStructureID,
-		WorkStructureID:    a.WorkStructureID,
-		ScheduleStartMin:   copyIntPtr(a.ScheduleStartMin),
-		ScheduleEndMin:     copyIntPtr(a.ScheduleEndMin),
-		SocialTag:          a.SocialTag,
-		SocialStartMin:     copyIntPtr(a.SocialStartMin),
-		SocialEndMin:       copyIntPtr(a.SocialEndMin),
-		Needs:              needsCopy,
-		InventoryHash:      hash,
-		Inventory:          inventoryCopy,
-		Coins:              a.Coins,
-		Acquaintances:      cloneAcquaintances(a.Acquaintances),
-		Relationships:      cloneRelationships(a.Relationships),
-		Narrative:          cloneNarrativeState(a.Narrative),
-		VisitorState:       cloneVisitorState(a.VisitorState),
-		BusinessownerState: cloneBusinessownerState(a.BusinessownerState),
-		DwellCredits:       cloneDwellCredits(a.DwellCredits),
-		RoomAccess:         cloneRoomAccess(a.RoomAccess),
-		RestockPolicy:      a.RestockPolicy,
-		TickInFlight:       a.TickInFlight,
-		TickAttemptID:      a.TickAttemptID,
-		PendingSummon:      clonePendingSummon(a.PendingSummon),
-		SummonRefusal:      cloneSummonRefusal(a.SummonRefusal),
+		AttributeSlugs:      attributeSlugs,
+		HomeStructureID:     a.HomeStructureID,
+		WorkStructureID:     a.WorkStructureID,
+		ScheduleStartMin:    copyIntPtr(a.ScheduleStartMin),
+		ScheduleEndMin:      copyIntPtr(a.ScheduleEndMin),
+		SocialTag:           a.SocialTag,
+		SocialStartMin:      copyIntPtr(a.SocialStartMin),
+		SocialEndMin:        copyIntPtr(a.SocialEndMin),
+		Needs:               needsCopy,
+		InventoryHash:       hash,
+		Inventory:           inventoryCopy,
+		Coins:               a.Coins,
+		Acquaintances:       cloneAcquaintances(a.Acquaintances),
+		Relationships:       cloneRelationships(a.Relationships),
+		Narrative:           cloneNarrativeState(a.Narrative),
+		VisitorState:        cloneVisitorState(a.VisitorState),
+		BusinessownerState:  cloneBusinessownerState(a.BusinessownerState),
+		DwellCredits:        cloneDwellCredits(a.DwellCredits),
+		RoomAccess:          cloneRoomAccess(a.RoomAccess),
+		RestockPolicy:       a.RestockPolicy,
+		TickInFlight:        a.TickInFlight,
+		TickAttemptID:       a.TickAttemptID,
+		PendingSummon:       clonePendingSummon(a.PendingSummon),
+		SummonRefusal:       cloneSummonRefusal(a.SummonRefusal),
 	}
 }
