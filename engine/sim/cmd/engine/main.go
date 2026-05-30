@@ -217,6 +217,7 @@ func run(rt runtime, stop <-chan struct{}) error {
 	sim.RegisterAcquaintanceSubscriber(rt.World)
 	sim.RegisterSummonSubscriber(rt.World)                // ZBBS-HOME-311: advance summon errands on arrival + arrival-warrant suppression hook
 	sim.RegisterSleepSubscriber(rt.World)                 // ZBBS-HOME-284 #2: auto-sleep NPCs on arrival home
+	sim.RegisterClosedBusinessSubscriber(rt.World)        // ZBBS-HOME-353: remember a business found shut on arrival
 	sim.RegisterLodgingMorningDescentSubscriber(rt.World) // ZBBS-HOME-312 #2: walk a naturally-woken lodger PC down to the common room
 	cascade.RegisterProductionCascades(worldCtx, rt.World, rt.LLMClient)
 
