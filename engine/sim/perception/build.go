@@ -45,6 +45,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 	p.Actor = buildActorView(snap, actorSnap)
 	p.WarrantActorNames = buildWarrantActorNames(snap, actorSnap, actorID, p.Warrants)
 	p.Surroundings = buildSurroundings(snap, actorID, actorSnap)
+	p.Anchors = buildAnchors(snap, actorSnap)
 	p.NarrativeState = buildNarrativeState(actorSnap)
 	p.Relationships = buildRelationships(actorSnap, p.Surroundings.HuddleMembers)
 	p.PendingDeliveriesFromMe, p.PendingDeliveriesToMe = buildPendingOrderViews(snap, actorID)
@@ -442,6 +443,53 @@ func resolveDwellPinLabel(snap *sim.Snapshot, objID sim.VillageObjectID) string 
 		return obj.DisplayName
 	}
 	return ""
+}
+
+// buildAnchors projects the actor's own home and work structures into the
+// always-on move-target view. Returns nil when the actor has neither anchor (a
+// PC, or an unanchored NPC) so Render omits the line. The structure_ids are
+// surfaced verbatim — they're what the model passes to move_to; the labels are
+// best-effort (a structure with no DisplayName yields an empty label, which
+// Render replaces with a generic phrase while still carrying the id).
+func buildAnchors(snap *sim.Snapshot, a *sim.ActorSnapshot) *AnchorsView {
+	v := &AnchorsView{}
+	// Only surface an anchor whose id actually RESOLVES to a structure in the
+	// snapshot. Surfacing an id that isn't in the world would render an
+	// actionable-looking move_to target the engine then rejects — the exact
+	// "bouncing target" failure this change exists to remove. A resolved
+	// structure with no DisplayName still surfaces (the id is what move_to
+	// needs; render uses a generic phrase for the empty label).
+	if label, ok := resolveStructureLabel(snap, a.WorkStructureID); ok {
+		v.WorkID = a.WorkStructureID
+		v.WorkLabel = label
+	}
+	if label, ok := resolveStructureLabel(snap, a.HomeStructureID); ok {
+		v.HomeID = a.HomeStructureID
+		v.HomeLabel = label
+	}
+	if v.WorkID == "" && v.HomeID == "" {
+		return nil
+	}
+	v.SamePlace = v.WorkID != "" && v.WorkID == v.HomeID
+	return v
+}
+
+// resolveStructureLabel resolves a StructureID to its human label. ok is true
+// when the id names a structure (or shared village_object — structures share
+// ids with village_objects) PRESENT in the snapshot, false when the id is empty
+// or absent. A present structure with no DisplayName returns ("", true): the
+// caller still surfaces the actionable id and renders a generic phrase.
+func resolveStructureLabel(snap *sim.Snapshot, sid sim.StructureID) (string, bool) {
+	if sid == "" {
+		return "", false
+	}
+	if st := snap.Structures[sid]; st != nil {
+		return st.DisplayName, true
+	}
+	if obj := snap.VillageObjects[sim.VillageObjectID(sid)]; obj != nil {
+		return obj.DisplayName, true
+	}
+	return "", false
 }
 
 // buildSurroundings assembles the actor's immediate context — the
