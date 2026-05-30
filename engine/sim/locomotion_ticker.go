@@ -648,12 +648,13 @@ func arrivedAtDestination(w *World, actor *Actor, dest MoveDestination) bool {
 		if !ok {
 			return false
 		}
-		for _, off := range visitorSlotOffsets {
-			if actor.Pos.X == pin.X+off.X && actor.Pos.Y == pin.Y+off.Y {
-				return true
-			}
-		}
-		return false
+		// Chebyshev radius, NOT ring-membership: pickVisitorSlotAtPin can park a
+		// visitor on the pin tile itself (Chebyshev 0) as a last resort when all
+		// eight ring slots are blocked. A ring-only check would never register
+		// that arrival → finishArrival never runs → the mover loops on the pin
+		// forever. LoiterAttributionTiles (1) covers the pin (0) and all eight
+		// ring slots (1), matching the ObjectVisit arm below. ZBBS-HOME-329.
+		return pin.Chebyshev(actor.Pos) <= LoiterAttributionTiles
 	case MoveDestinationObjectVisit:
 		if dest.ObjectID == nil {
 			return false
