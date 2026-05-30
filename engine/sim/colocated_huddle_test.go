@@ -261,7 +261,7 @@ func TestEnsureColocatedHuddle_ExcludesSleeperAndDecorative(t *testing.T) {
 	// seed set, so create her directly).
 	sendT(t, w, sim.Command{Fn: func(world *sim.World) (any, error) {
 		world.Actors["daisy"] = &sim.Actor{
-			ID: "daisy", DisplayName: "Daisy", Kind: sim.KindNPCDecorative,
+			ID: "daisy", DisplayName: "Daisy", Kind: sim.KindDecorative,
 			State: sim.StateIdle, InsideStructureID: "tavern",
 		}
 		return nil, nil
