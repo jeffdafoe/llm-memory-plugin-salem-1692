@@ -502,6 +502,7 @@ func buildSurroundings(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnap
 		InsideStructureID: a.InsideStructureID,
 		HuddleID:          a.CurrentHuddleID,
 		Atmosphere:        snap.Environment.Atmosphere,
+		LocalMinuteOfDay:  snap.LocalMinuteOfDay,
 	}
 	if item, source, ok := findGatherableCue(snap, a); ok {
 		s.GatherableItem = item

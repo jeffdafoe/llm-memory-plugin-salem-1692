@@ -69,6 +69,16 @@ type Snapshot struct {
 	Environment WorldEnvironment
 	Phase       Phase
 
+	// LocalMinuteOfDay is the wall-clock minute-of-day (0–1439) in the village
+	// timezone at publish time, or nil when the clock can't be established
+	// (hand-built snapshots, or before settings load a Location). Computed once
+	// at publish via localMinuteOfDay so consumers read the local clock without
+	// the village *time.Location, which is not on the snapshot. Perception
+	// renders it as time-of-day prose (ZBBS-HOME-351); schedule-aware steering
+	// compares it to schedule_start/end_minute (ZBBS-HOME-352). Pointer so a
+	// hand-built snapshot (nil) is distinguishable from real midnight (0).
+	LocalMinuteOfDay *int
+
 	// NeedThresholds is a cloned view of WorldSettings.NeedThresholds —
 	// the per-need red-tier boundary. Consumers reading the snapshot
 	// off-world (perception, noop-skip preflight) read thresholds here
