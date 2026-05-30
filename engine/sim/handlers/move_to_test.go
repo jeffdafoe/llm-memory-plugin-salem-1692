@@ -94,6 +94,30 @@ func TestDecodeMoveToArgs_BothRejected(t *testing.T) {
 	}
 }
 
+func TestDecodeMoveToArgs_WhitespaceOnlyNameRejected(t *testing.T) {
+	// A whitespace-only name must read as ABSENT at decode (not present-but-empty),
+	// so it falls into the "provide structure_id or structure_name" branch.
+	_, err := DecodeMoveToArgs(json.RawMessage(`{"structure_name":"   "}`))
+	if err == nil || !strings.Contains(err.Error(), "provide structure_id") {
+		t.Fatalf("want 'provide' error for whitespace-only name, got %v", err)
+	}
+}
+
+func TestDecodeMoveToArgs_NameControlCharRejectedAtDecode(t *testing.T) {
+	// Build the payload from a Go value carrying a real NUL (a \x00 Go escape),
+	// so json.Marshal emits a valid JSON unicode escape — the decode-time
+	// control-char scan must then reject the decoded NUL. Constructing it this
+	// way avoids embedding a raw NUL in the source.
+	raw, err := json.Marshal(map[string]string{"structure_name": "bad\x00name"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	_, err = DecodeMoveToArgs(json.RawMessage(raw))
+	if err == nil || !strings.Contains(err.Error(), "control character") {
+		t.Fatalf("want control-char rejection at decode, got %v", err)
+	}
+}
+
 func TestDecodeMoveToArgs_NameOverCap(t *testing.T) {
 	long := strings.Repeat("z", MaxMoveToStructureIDChars+1)
 	_, err := DecodeMoveToArgs(json.RawMessage(`{"structure_name":"` + long + `"}`))

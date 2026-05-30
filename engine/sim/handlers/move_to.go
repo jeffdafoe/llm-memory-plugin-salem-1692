@@ -27,12 +27,12 @@ import (
 //   - structure_id: required, minLength 1, maxLength MaxMoveToStructureIDChars.
 //     The id of a structure the NPC can see in its perception (its own
 //     home/work, a shop, a place nearby).
-//   - structure_name: optional ALTERNATIVE to structure_id — a place name the
-//     NPC can see in its perception (its own home/work, a landmark nearby). The
-//     engine resolves the name to a structure it could plausibly reach
-//     (anchors + structures within scene radius, nearest-wins on duplicates,
-//     ZBBS-HOME-356). Exactly one of structure_id / structure_name is required;
-//     structure_id wins if both are somehow provided (the precise form).
+//   - structure_name: ALTERNATIVE to structure_id — a place name the NPC can see
+//     in its perception (its own home/work, a landmark nearby). The engine
+//     resolves the name to a structure it could plausibly reach (anchors +
+//     structures within scene radius, nearest-wins on duplicates, ZBBS-HOME-356).
+//     Exactly one of structure_id / structure_name is required (decode rejects
+//     both).
 type MoveToArgs struct {
 	StructureID   string `json:"structure_id"`
 	StructureName string `json:"structure_name"`
@@ -63,6 +63,10 @@ var moveToSchema = json.RawMessage(`{
             "description": "Alternative to structure_id: the NAME of a place you can see in your perception (e.g. \"the Tavern\", your home). Use this when you know the place by name but not its id. The engine resolves it to the nearest matching place you could reach. Provide structure_id OR structure_name, not both."
         }
     },
+    "oneOf": [
+        { "required": ["structure_id"], "not": { "required": ["structure_name"] } },
+        { "required": ["structure_name"], "not": { "required": ["structure_id"] } }
+    ],
     "additionalProperties": false
 }`)
 
@@ -110,9 +114,14 @@ func DecodeMoveToArgs(raw json.RawMessage) (any, error) {
 		}
 		return nil, fmt.Errorf("move_to: malformed trailing data: %w", err)
 	}
+	// Trim both up front so a whitespace-only value reads as absent (not as a
+	// present-but-empty destination the handler would later have to reject).
+	args.StructureID = strings.TrimSpace(args.StructureID)
+	args.StructureName = strings.TrimSpace(args.StructureName)
+
 	// Exactly one of structure_id / structure_name. Neither → the model gave no
-	// destination; both → ambiguous intent (rather than silently preferring one,
-	// reject so the model picks the precise form). ZBBS-HOME-356.
+	// destination; both → ambiguous intent (reject so the model picks the
+	// precise form). ZBBS-HOME-356.
 	hasID := args.StructureID != ""
 	hasName := args.StructureName != ""
 	switch {
@@ -133,6 +142,15 @@ func DecodeMoveToArgs(raw json.RawMessage) (any, error) {
 			MaxMoveToStructureIDChars, n,
 		)
 	}
+	// Control-char scan for BOTH (an identifier / a name never contains C0
+	// controls). Done here at decode so an invalid value is rejected regardless
+	// of which handler consumes the args; HandleMoveTo keeps a defensive re-check.
+	if i := indexInvalidControlChar(args.StructureID); i >= 0 {
+		return nil, fmt.Errorf("move_to: structure_id contains a disallowed control character at byte offset %d", i)
+	}
+	if i := indexInvalidControlChar(args.StructureName); i >= 0 {
+		return nil, fmt.Errorf("move_to: structure_name contains a disallowed control character at byte offset %d", i)
+	}
 	return args, nil
 }
 
@@ -148,8 +166,7 @@ func HandleMoveTo(in HandlerInput) (sim.Command, error) {
 	}
 
 	// Name path (ZBBS-HOME-356): resolve a perceivable place name engine-side.
-	// Decode guarantees not-both; structure_id still wins when present (the
-	// precise form) so this only runs for a name-only call.
+	// Decode guarantees exactly-one, so this runs only for a name-only call.
 	if args.StructureID == "" && args.StructureName != "" {
 		name := strings.TrimSpace(args.StructureName)
 		if name == "" {
