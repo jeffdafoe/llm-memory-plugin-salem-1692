@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/promptlog"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/telemetry"
 )
 
@@ -22,6 +23,7 @@ type Server struct {
 	auth             Authenticator
 	hub              *Hub
 	telemetry        *telemetry.RingSink
+	prompts          *promptlog.RingSink
 	checkpointHealth *sim.CheckpointHealth
 	controlEnabled   bool
 	errorLog         *errorRing
@@ -77,6 +79,17 @@ func (s *Server) SetEventsHub(h *Hub) {
 // it once during startup.
 func (s *Server) SetTelemetry(ring *telemetry.RingSink) {
 	s.telemetry = ring
+}
+
+// SetPrompts attaches the per-actor rendered-prompt ring (ZBBS-HOME-360),
+// backing the operator-gated GET /umbilical/agent/prompts route. Optional and
+// independent of SetTelemetry: when nil, that route still registers (it's in
+// the umbilical table, gated on SetTelemetry like the rest) but reports no
+// prompts. cmd/engine wires the same ring it passes to the harness as the
+// PromptSink. Same wiring-time-only contract as SetTelemetry — call before
+// Handler, never concurrently with serving.
+func (s *Server) SetPrompts(ring *promptlog.RingSink) {
+	s.prompts = ring
 }
 
 // SetCheckpointHealth attaches the durable-checkpoint health recorder so the

@@ -36,6 +36,7 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/llm"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/llm/memapi"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/repo/pg"
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/promptlog"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/telemetry"
 )
 
@@ -74,6 +75,11 @@ type runtime struct {
 	// UmbilicalControl arms the world-mutating umbilical control routes. Only
 	// meaningful when Umbilical is non-nil; run wires it via SetControlEnabled.
 	UmbilicalControl bool
+	// PromptRing captures rendered deliberation prompts for the umbilical's
+	// /agent/prompts route (ZBBS-HOME-360). Non-nil only when the umbilical is
+	// enabled; run wires it to BOTH the harness (PromptSink) and the server
+	// (SetPrompts). Nil = no prompt capture.
+	PromptRing *promptlog.RingSink
 }
 
 func main() {
@@ -104,14 +110,20 @@ func main() {
 	// which is what registers the umbilical routes. When disabled, TickTelemetry
 	// stays the notImpl drop sink and no umbilical surface exists.
 	var umbilical *telemetry.RingSink
+	var promptRing *promptlog.RingSink
 	umbilicalControl := false
 	if envBool("UMBILICAL_ENABLED") {
 		umbilical = telemetry.New(getEnvInt("UMBILICAL_TELEMETRY_BUFFER", telemetry.DefaultCapacity))
 		repo.TickTelemetry = umbilical
+		// Per-actor rendered-prompt ring for the /agent/prompts debug route
+		// (ZBBS-HOME-360). Separate from the telemetry ring because it carries raw
+		// prompts the telemetry contract forbids. Wired to the harness + server in run().
+		promptRing = promptlog.New(getEnvInt("UMBILICAL_PROMPT_BUFFER", promptlog.DefaultPerActorCapacity))
 		// Control (world-mutating) routes are a second, independent opt-in — only
 		// honored when the umbilical itself is on, so read-only is the default.
 		umbilicalControl = envBool("UMBILICAL_CONTROL_ENABLED")
-		log.Printf("engine: umbilical ENABLED (telemetry buffer=%d, control=%v)", umbilical.Stats().Capacity, umbilicalControl)
+		log.Printf("engine: umbilical ENABLED (telemetry buffer=%d, prompt buffer=%d/actor, control=%v)",
+			umbilical.Stats().Capacity, promptRing.Stats().PerActorCapacity, umbilicalControl)
 	}
 
 	// requireAllImpl=true is the production gate: LoadWorld hard-fails if any
@@ -147,6 +159,7 @@ func main() {
 		Auth:             httpapi.NewTokenVerifier(llmMemoryURL, 0),
 		Umbilical:        umbilical,
 		UmbilicalControl: umbilicalControl,
+		PromptRing:       promptRing,
 	}
 
 	// Shutdown on SIGINT/SIGTERM.
@@ -193,10 +206,17 @@ func run(rt runtime, stop <-chan struct{}) error {
 	if err := registerTools(registry, searcher); err != nil {
 		return err
 	}
-	harness, err := handlers.NewHarness(handlers.HarnessConfig{
+	harnessCfg := handlers.HarnessConfig{
 		Client:   rt.LLMClient,
 		Registry: registry,
-	})
+	}
+	// Capture rendered prompts only when the umbilical (and its ring) is wired —
+	// leaving PromptSink as a nil interface otherwise, so the harness skips the
+	// capture entirely rather than calling a typed-nil sink each tick.
+	if rt.PromptRing != nil {
+		harnessCfg.PromptSink = rt.PromptRing
+	}
+	harness, err := handlers.NewHarness(harnessCfg)
 	if err != nil {
 		return fmt.Errorf("build tick harness: %w", err)
 	}
@@ -270,6 +290,7 @@ func run(rt runtime, stop <-chan struct{}) error {
 		// is unset → SetTelemetry not called → routes never registered.
 		if rt.Umbilical != nil {
 			server.SetTelemetry(rt.Umbilical)
+			server.SetPrompts(rt.PromptRing) // backs /umbilical/agent/prompts (ZBBS-HOME-360)
 			server.SetCheckpointHealth(checkpointHealth)
 			if rt.UmbilicalControl {
 				server.SetControlEnabled(true)
