@@ -476,49 +476,38 @@ func shiftDutyWarrant(toWork bool, target sim.StructureID) sim.WarrantMeta {
 	}
 }
 
-// TestRender_ShiftDutyWarrantLine pins the 2b shift-duty cue: direction prose
-// keyed on ToWork, and the target structure_id surfaced verbatim (the value the
-// model passes back to move_to). An empty target drops the parenthetical. The
-// single warrant always renders as ordinal "1.", and asserting the full line
-// (ordinal through trailing newline) pins line termination — so a future change
-// that appends junk after the cue, or drops the parenthetical incorrectly,
-// fails (code_review, 2026-05-22).
-func TestRender_ShiftDutyWarrantLine(t *testing.T) {
-	cases := []struct {
-		name     string
-		toWork   bool
-		target   sim.StructureID
-		wantLine string
-	}{
-		{
-			"to_work",
-			true, "smithy",
-			"1. Your shift has started — head to your workplace (structure_id: smithy).\n",
-		},
-		{
-			"to_home",
-			false, "cottage",
-			"1. Your shift has ended — head home (structure_id: cottage).\n",
-		},
-		{
-			"empty_target_drops_parenthetical",
-			true, "",
-			"1. Your shift has started — head to your workplace.\n",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			p := Payload{
-				ActorID:  "moses",
-				Actor:    ActorView{State: sim.StateIdle},
-				Warrants: []sim.WarrantMeta{shiftDutyWarrant(tc.toWork, tc.target)},
-				Baseline: BaselinePresent,
+// TestRender_ShiftDutyWarrantFiltered confirms shift-duty warrants are NOT
+// rendered as warrant lines — the standing DutySteer cue (renderDutySteer) is
+// the single voice for return-to-post (ZBBS-HOME-352). The warrant still drives
+// the wake tick; it just no longer prints, and it doesn't consume a rendered
+// warrant slot or carry-forward budget. A lone shift-duty warrant therefore
+// renders the "routine check-in" placeholder, not a "head to your workplace"
+// line.
+func TestRender_ShiftDutyWarrantFiltered(t *testing.T) {
+	for _, toWork := range []bool{true, false} {
+		p := Payload{
+			ActorID:  "moses",
+			Actor:    ActorView{State: sim.StateIdle},
+			Warrants: []sim.WarrantMeta{shiftDutyWarrant(toWork, "smithy")},
+			Baseline: BaselinePresent,
+		}
+		out := Render(p, DefaultRenderConfig())
+		for _, banned := range []string{
+			"Your shift has started",
+			"Your shift has ended",
+			"head to your workplace",
+			"structure_id: smithy",
+		} {
+			if strings.Contains(out.Text, banned) {
+				t.Errorf("toWork=%v: shift-duty warrant should not render; found %q in:\n%s", toWork, banned, out.Text)
 			}
-			out := Render(p, DefaultRenderConfig())
-			if !strings.Contains(out.Text, tc.wantLine) {
-				t.Errorf("Render output missing exact line %q\nOutput:\n%s", tc.wantLine, out.Text)
-			}
-		})
+		}
+		if out.RenderedWarrantCount != 0 {
+			t.Errorf("toWork=%v: RenderedWarrantCount = %d, want 0 (shift-duty filtered)", toWork, out.RenderedWarrantCount)
+		}
+		if len(out.DroppedWarrants) != 0 {
+			t.Errorf("toWork=%v: DroppedWarrants = %d, want 0 (filtered, not carried forward)", toWork, len(out.DroppedWarrants))
+		}
 	}
 }
 

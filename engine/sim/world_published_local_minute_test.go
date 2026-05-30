@@ -23,4 +23,16 @@ func TestPublishedSnapshot_LocalMinuteOfDay(t *testing.T) {
 	if m := *snap.LocalMinuteOfDay; m < 0 || m > 1439 {
 		t.Errorf("LocalMinuteOfDay = %d, want a valid minute-of-day (0..1439)", m)
 	}
+
+	// republish must also stamp the dawn/dusk window (ZBBS-HOME-352). The test
+	// world loads default settings (dawn 07:00 / dusk 19:00), so both parse and
+	// DawnDuskMinuteOK is true. Guards the green-but-broken gap where republish
+	// drops the field and unscheduled-NPC return-to-post steering silently never
+	// fires.
+	if !snap.DawnDuskMinuteOK {
+		t.Error("DawnDuskMinuteOK should be true on a published snapshot with default dawn/dusk")
+	}
+	if snap.DawnMinute != 420 || snap.DuskMinute != 1140 {
+		t.Errorf("dawn/dusk = %d/%d, want 420/1140 (07:00/19:00 defaults)", snap.DawnMinute, snap.DuskMinute)
+	}
 }

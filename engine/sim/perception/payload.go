@@ -83,6 +83,16 @@ type Payload struct {
 	// PC, or an unanchored NPC). ZBBS-HOME-349.
 	Anchors *AnchorsView
 
+	// DutySteer is the standing return-to-post cue (ZBBS-HOME-352): non-nil when
+	// the subject is an agent NPC that, by its schedule (or the dawn/dusk
+	// fallback) and current position, is on-shift away from work or off-shift
+	// away from home. The always-present, level-triggered perception voice for
+	// shift duty — the engine's edge-stamped ShiftDutyWarrant drives the wake
+	// tick but its rendered line is filtered, so this is the single voice. NOT
+	// need-suppressed (the model weighs duty against need). nil when at-post, off
+	// scope, or the clock/anchors are unknown. See buildDutySteer.
+	DutySteer *DutySteerView
+
 	// Warrants is every consumed warrant, ordered by SourceEventID
 	// ascending — PR 3a's monotonic EventID is the authoritative causal
 	// order. Zero-lineage warrants (SourceEventID == 0, legacy/non-event-
@@ -415,6 +425,16 @@ type AnchorsView struct {
 	HomeLabel string
 	HomeID    sim.StructureID
 	SamePlace bool
+}
+
+// DutySteerView is the standing return-to-post cue (ZBBS-HOME-352). ToWork
+// distinguishes the two directions; TargetID/TargetLabel name the destination
+// (reused from the actor's AnchorsView, so the structure_id the model needs is
+// already in the adjacent "## Where you belong" section). See buildDutySteer.
+type DutySteerView struct {
+	ToWork      bool // true = on-shift, head to work; false = off-shift, head home
+	TargetID    sim.StructureID
+	TargetLabel string // resolved DisplayName; may be empty (render falls back)
 }
 
 // SceneView describes the primary scene and, when a baseline could be
