@@ -137,7 +137,7 @@ func colocatedConversational(a *Actor, now time.Time, staleAfter time.Duration) 
 	case KindNPCStateful, KindNPCShared:
 		// conversational NPC kinds
 	case KindPC:
-		if PCPresenceStale(a, now, staleAfter) {
+		if PCPresenceStale(a.LastPCSeenAt, now, staleAfter) {
 			return false // absent player — do not pull into a huddle
 		}
 	default:
