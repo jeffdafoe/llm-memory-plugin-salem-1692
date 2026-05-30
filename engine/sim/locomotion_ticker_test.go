@@ -277,21 +277,24 @@ func TestLocomotion_StructureEnter_WalkThroughOccupiedDoor(t *testing.T) {
 	}
 }
 
-// TestLocomotion_StructureEnter_NonMemberDoesNotWalkThroughOccupiedDoor is the
-// negative of the case above (ZBBS-HOME-348): the walk-through is gated on
-// structureMembershipAllows, so a NON-member targeting a StructureEnter whose
-// single door tile is occupied must NOT overlap onto it — it deadlocks like any
-// other contested goal. Guards against the low-level fallback bypassing entry
-// policy (e.g. dropping a non-member inside a home through an occupied door).
-func TestLocomotion_StructureEnter_NonMemberDoesNotWalkThroughOccupiedDoor(t *testing.T) {
+// TestLocomotion_StructureEnter_NonMemberWalksThroughOpenDoorAfterWindow covers
+// the generalized walk-through (ZBBS-HOME-327): a NON-member entering an OPEN
+// structure whose single door tile is occupied no longer deadlocks. HOME-348's
+// immediate walk-through is still member-gated and does not fire, so the
+// non-member instead waits out the stuck window and then forces through the
+// blocker onto the door — arriving inside. This is the live Josiah→Tavern
+// shape: a customer (non-member) at an open business whose keeper sleeps across
+// the door. Entry policy is NOT bypassed: the cottage is open, so the entrant is
+// authorized (see TestLocomotion_StructureEnter_NonMemberCannotWalkThroughOwnerOnly
+// for the owner-only guard).
+func TestLocomotion_StructureEnter_NonMemberWalksThroughOpenDoorAfterWindow(t *testing.T) {
 	w, cancel, rec := buildLocomotionTestWorld(t)
 	defer cancel()
 	now := time.Now().UTC()
 
 	// Walker is left a NON-member (no HomeStructureID/WorkStructureID/ownership
-	// for "cottage"). The cottage is open, so resolvePathTarget still hands out
-	// the door tile as the goal — the membership gate is what must stop the
-	// walk-through, not the upstream resolve.
+	// for "cottage"). The cottage is open, so resolvePathTarget hands out the
+	// door tile as the goal and the entrant is authorized to be there.
 	doorTile := sim.Position{X: sim.PadX + 10, Y: sim.PadY + 10}
 	if _, err := w.Send(sim.Command{
 		Fn: func(world *sim.World) (any, error) {
@@ -312,22 +315,78 @@ func TestLocomotion_StructureEnter_NonMemberDoesNotWalkThroughOccupiedDoor(t *te
 	driveToArrival(t, w, "walker", now, 60)
 
 	pos, inside := actorSpatial(t, w, "walker")
-	if inside == "cottage" {
-		t.Errorf("non-member ended up inside cottage via walk-through (InsideStructureID=%q)", inside)
+	if inside != "cottage" {
+		t.Errorf("non-member did not walk through into the open cottage (InsideStructureID=%q, want cottage)", inside)
 	}
-	if pos == doorTile {
-		t.Errorf("non-member stepped onto the occupied door tile %+v", pos)
+	if pos != doorTile {
+		t.Errorf("non-member final position = %+v, want the door tile %+v (stepped through the blocker)", pos, doorTile)
 	}
-	// It must have taken the deadlock path instead of the walk-through.
+	// Walk-through, not give-up: arrival fires, no deadlock stop event.
+	arrived := rec.countEvents(func(e sim.Event) bool {
+		a, ok := e.(*sim.ActorArrived)
+		return ok && a.ActorID == "walker" && a.FinalStructureID == "cottage"
+	})
+	if arrived != 1 {
+		t.Errorf("ActorArrived{cottage} count = %d, want 1", arrived)
+	}
 	stopped := rec.countEvents(func(e sim.Event) bool {
 		s, ok := e.(*sim.ActorMoveStopped)
 		return ok && s.ActorID == "walker" && s.Reason == sim.MoveStoppedDeadlocked
 	})
-	if stopped != 1 {
-		t.Errorf("ActorMoveStopped{deadlocked} count = %d, want 1 (non-member must deadlock, not walk through)", stopped)
+	if stopped != 0 {
+		t.Errorf("ActorMoveStopped{deadlocked} count = %d, want 0 (walks through, does not give up)", stopped)
 	}
+	// The stable block was recorded as the contention canary before the walk-through.
 	if got := w.DeadlockSnapshot(); len(got) == 0 {
-		t.Error("expected a DeadlockSnapshot entry for the non-member door block")
+		t.Error("expected a DeadlockSnapshot canary entry for the stable door block")
+	}
+}
+
+// TestLocomotion_StructureEnter_NonMemberCannotWalkThroughOwnerOnly is the
+// entry-policy guard that survives ZBBS-HOME-327: the walk-through can only fire
+// for an actor that already holds a valid MoveIntent toward an authorized
+// target, and a non-member NEVER gets one for an owner-only structure —
+// MoveActor rejects the StructureEnter at command time (resolvePathTarget also
+// rejects it independently). So there is no MoveIntent for the locomotion ticker
+// to walk through, and the non-member can never be dropped inside a private home
+// via the occupied-door fallback.
+func TestLocomotion_StructureEnter_NonMemberCannotWalkThroughOwnerOnly(t *testing.T) {
+	w, cancel, _ := buildLocomotionTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	// Make the cottage owner-only and park a blocker on its door. The walker
+	// remains a non-member.
+	doorTile := sim.Position{X: sim.PadX + 10, Y: sim.PadY + 10}
+	if _, err := w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			world.VillageObjects["cottage"].EntryPolicy = sim.EntryPolicyOwner
+			world.Actors["blocker"] = &sim.Actor{
+				ID:          "blocker",
+				DisplayName: "Hope",
+				Pos:         sim.TilePos{X: doorTile.X, Y: doorTile.Y},
+			}
+			return nil, nil
+		},
+	}); err != nil {
+		t.Fatalf("seed owner-only cottage + blocker: %v", err)
+	}
+
+	// MoveActor must reject the non-member's StructureEnter outright.
+	if _, err := w.Send(sim.MoveActor("walker", sim.NewStructureEnterDestination("cottage"), false, now)); err == nil {
+		t.Fatal("MoveActor accepted a non-member StructureEnter into an owner-only structure; want rejection")
+	}
+
+	// No MoveIntent was stamped, so nothing for the ticker to walk through.
+	if intent := moveIntentOf(t, w, "walker"); intent != nil {
+		t.Errorf("MoveIntent stamped despite rejected owner-only entry: %+v", intent)
+	}
+	// Tick a few times anyway — the walker must never end up inside the cottage.
+	for i := 0; i < sim.DeadlockStuckThreshold+2; i++ {
+		tickLoco(t, w, now)
+	}
+	if _, inside := actorSpatial(t, w, "walker"); inside == "cottage" {
+		t.Errorf("non-member ended up inside owner-only cottage (InsideStructureID=%q)", inside)
 	}
 }
 
@@ -522,14 +581,17 @@ func TestLocomotion_SoftBlocker_ReroutesAroundOccupant(t *testing.T) {
 	}
 }
 
-// TestLocomotion_SoftBlocker_HardStopsAfterStuckThreshold covers the
-// deadlock hard-stop (ZBBS-WORK-340): when a mover soft-blocks AND the
-// re-plan with the occupant tile masked off also finds no detour, the
-// stuck counter accumulates and after DeadlockStuckThreshold consecutive
-// ticks the mover emits MoveStoppedDeadlocked, the MoveIntent clears, and
-// a DeadlockEntry lands on World.DeadlockSnapshot with replan_failed=true
-// (the no-detour-exists branch).
-func TestLocomotion_SoftBlocker_HardStopsAfterStuckThreshold(t *testing.T) {
+// TestLocomotion_SoftBlocker_WalksThroughAfterStuckThreshold covers the
+// last-resort walk-through (ZBBS-HOME-327, replacing the ZBBS-WORK-340 hard-
+// stop): when a mover soft-blocks AND the re-plan with the occupant tile
+// masked off also finds no detour, the stuck counter accumulates; after
+// DeadlockStuckThreshold consecutive ticks the mover records a DeadlockEntry
+// (replan_failed=true — the no-detour-exists branch, kept as the contention
+// canary) and then steps THROUGH the blocker onto the goal tile rather than
+// freezing. Here the destination IS the blocker's tile, so the walk-through
+// step also completes arrival: ActorArrived fires, MoveIntent clears via
+// arrival (not a hard-stop), and NO MoveStoppedDeadlocked is emitted.
+func TestLocomotion_SoftBlocker_WalksThroughAfterStuckThreshold(t *testing.T) {
 	w, cancel, rec := buildLocomotionTestWorld(t)
 	defer cancel()
 	now := time.Now().UTC()
@@ -579,20 +641,38 @@ func TestLocomotion_SoftBlocker_HardStopsAfterStuckThreshold(t *testing.T) {
 		}
 	}
 
-	// One more tick trips the threshold: Deadlocked event + ring entry.
+	// One more tick trips the threshold: the canary entry is recorded and the
+	// mover walks through the blocker. Since the blocker's tile IS the goal,
+	// the walk-through step lands the mover on the destination and arrival
+	// fires in the same tick.
 	tickLoco(t, w, now)
 
+	// The mover reached the goal — it did NOT freeze. MoveIntent clears via
+	// arrival, not a hard-stop.
 	if intent := moveIntentOf(t, w, "walker"); intent != nil {
-		t.Errorf("MoveIntent survived the deadlock hard-stop: %+v", intent)
+		t.Errorf("MoveIntent survived arrival via walk-through: %+v", intent)
 	}
+	pos, _ := actorSpatial(t, w, "walker")
+	if pos != dest {
+		t.Errorf("walker did not walk through onto the goal: at %+v, want %+v", pos, dest)
+	}
+	arrived := rec.countEvents(func(e sim.Event) bool {
+		a, ok := e.(*sim.ActorArrived)
+		return ok && a.ActorID == "walker" && a.FinalPosition == dest
+	})
+	if arrived != 1 {
+		t.Errorf("ActorArrived count = %d, want 1 (walk-through completed arrival)", arrived)
+	}
+	// No deadlock hard-stop event — the walk-through replaced it.
 	stopped := rec.countEvents(func(e sim.Event) bool {
 		s, ok := e.(*sim.ActorMoveStopped)
 		return ok && s.ActorID == "walker" && s.Reason == sim.MoveStoppedDeadlocked
 	})
-	if stopped != 1 {
-		t.Errorf("ActorMoveStopped{deadlocked} count = %d, want 1", stopped)
+	if stopped != 0 {
+		t.Errorf("ActorMoveStopped{deadlocked} count = %d, want 0 (walk-through, not give-up)", stopped)
 	}
 
+	// The deadlock entry is still recorded as the contention canary.
 	entries := w.DeadlockSnapshot()
 	if len(entries) != 1 {
 		t.Fatalf("DeadlockSnapshot length = %d, want 1", len(entries))
@@ -763,6 +843,33 @@ func TestLocomotion_SoftBlocker_DeadlockEntryReplanFailedFalse_OnMutualBlockShap
 	}
 	if entries[0].ReplanFailed {
 		t.Error("ReplanFailed = true, want false — detours existed (first FindPathBlocking returned a non-nil path), they just all had occupied first steps")
+	}
+
+	// ZBBS-HOME-327: the boxed-in mover did not freeze. At the threshold it
+	// walked THROUGH the straight-line blocker (north, the path[1] toward the
+	// goal) and kept its MoveIntent — the goal (two tiles north) is not yet
+	// reached, so the walk continues next tick.
+	pos, _ := actorSpatial(t, w, "walker")
+	overlapTile := sim.Position{X: sim.PadX + 5, Y: sim.PadY + 4}
+	if pos != overlapTile {
+		t.Errorf("walker did not walk through onto the north blocker tile: at %+v, want %+v", pos, overlapTile)
+	}
+	if moveIntentOf(t, w, "walker") == nil {
+		t.Error("MoveIntent cleared — the walk-through must preserve it (goal not yet reached)")
+	}
+
+	// One more tick: the mover must step OFF the overlapped tile and continue
+	// toward the goal — not stay stacked on the blocker or oscillate. The goal
+	// tile (one north of the overlap) is clear, so it advances straight onto it
+	// and arrives. This is the next-tick recovery from a forced overlap.
+	tickLoco(t, w, now)
+	goal := sim.Position{X: sim.PadX + 5, Y: sim.PadY + 3}
+	pos, _ = actorSpatial(t, w, "walker")
+	if pos != goal {
+		t.Errorf("walker did not continue off the overlap to the goal: at %+v, want %+v", pos, goal)
+	}
+	if moveIntentOf(t, w, "walker") != nil {
+		t.Error("MoveIntent should clear on arrival at the goal after the walk-through")
 	}
 }
 
