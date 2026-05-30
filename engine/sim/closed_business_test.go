@@ -164,3 +164,30 @@ func TestClosedBusiness_VisitPathResolvesViaLoiter(t *testing.T) {
 		t.Fatalf("visit to the keeperless farm (via loiter resolution) must record shut, got %v", john.ClosedBusinessObs)
 	}
 }
+
+// TestClosedBusiness_StaleVisitArrivalIgnored covers the visit-path event-
+// freshness guard: a superseded StructureVisit arrival (empty FinalStructureID)
+// must not record when the actor has since moved away from the arrival position.
+func TestClosedBusiness_StaleVisitArrivalIgnored(t *testing.T) {
+	w := cbWorld()
+	now := time.Now()
+	at := WorldToTile(0, 0)
+	x, y := 0, 0
+	w.VillageObjects["farm"] = &VillageObject{
+		ID: "farm", DisplayName: "Ellis Farm", AssetID: "a",
+		Pos: WorldPos{X: 0, Y: 0}, LoiterOffsetX: &x, LoiterOffsetY: &y,
+	}
+	w.Structures["farm"] = &Structure{ID: "farm", DisplayName: "Ellis Farm"}
+	w.Actors["dairyer"] = cbAgent("dairyer", "farm", "general_store")
+	// John has moved on: he's now at a different tile, not the farm loiter slot.
+	john := cbAgent("john", "tavern", "")
+	john.Pos = WorldToTile(500, 500)
+	w.Actors["john"] = john
+
+	// The stale event still carries the old farm-slot position.
+	handleClosedBusinessOnArrival(w, &ActorArrived{ActorID: "john", FinalPosition: at, At: now})
+
+	if len(john.ClosedBusinessObs) != 0 {
+		t.Fatalf("a superseded visit arrival (actor moved away) must not record, got %v", john.ClosedBusinessObs)
+	}
+}

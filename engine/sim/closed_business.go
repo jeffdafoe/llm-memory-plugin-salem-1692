@@ -78,9 +78,20 @@ func businessArrivedAt(w *World, a *Actor, arr *ActorArrived) (StructureID, bool
 	}
 	// Visited (stood at the loiter slot, outside) → resolve the structure from
 	// the loiter pin. Structures share their id with their village_object
-	// placement, so the resolved object id IS the structure id.
-	if objID, ok := resolveLoiteringObject(w, arr.FinalPosition, LoiterAttributionTiles); ok {
-		return validBusiness(w, a, StructureID(objID))
+	// placement, so the resolved object id IS the structure id (validBusiness
+	// requires w.Structures[id] != nil, so a resolved object that is NOT a
+	// structure is rejected rather than mis-recorded).
+	//
+	// Event-freshness for the visit path: a StructureVisit arrival has an empty
+	// FinalStructureID, so the inside-path's structure-match guard can't apply.
+	// Instead require the actor to still be outdoors (InsideStructureID == "")
+	// at the arrival position — a later move that entered a structure or walked
+	// elsewhere fails this, so a superseded visit-arrival can't record off a
+	// stale FinalPosition.
+	if arr.FinalStructureID == "" && a.InsideStructureID == "" && a.Pos == arr.FinalPosition {
+		if objID, ok := resolveLoiteringObject(w, arr.FinalPosition, LoiterAttributionTiles); ok {
+			return validBusiness(w, a, StructureID(objID))
+		}
 	}
 	return "", false
 }

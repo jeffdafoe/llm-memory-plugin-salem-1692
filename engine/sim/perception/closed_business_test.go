@@ -34,6 +34,14 @@ func TestBusinessRememberedShut_Decay(t *testing.T) {
 	if businessRememberedShut(snap, &sim.ActorSnapshot{}, "fresh") {
 		t.Error("an actor with no memory map should not be remembered")
 	}
+
+	// A future-stamped observation (clock skew) must NOT read as fresh-forever.
+	future := &sim.ActorSnapshot{
+		ClosedBusinessObs: map[sim.StructureID]time.Time{"skew": now.Add(time.Hour)},
+	}
+	if businessRememberedShut(snap, future, "skew") {
+		t.Error("a future-stamped observation must not be treated as a live shut memory")
+	}
 }
 
 // TestRenderRestocking_ShutAnnotation: a remembered-shut supplier gets the

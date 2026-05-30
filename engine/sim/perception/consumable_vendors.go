@@ -303,5 +303,8 @@ func businessRememberedShut(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, st
 	if !ok {
 		return false
 	}
-	return snap.PublishedAt.Sub(observedAt) < sim.ClosedBusinessMemoryTTL
+	// age >= 0 guards a future-stamped observation (clock skew / test setup):
+	// a negative age would otherwise read as "< TTL" → fresh forever.
+	age := snap.PublishedAt.Sub(observedAt)
+	return age >= 0 && age < sim.ClosedBusinessMemoryTTL
 }
