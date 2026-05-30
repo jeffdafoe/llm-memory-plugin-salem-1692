@@ -257,6 +257,15 @@ func TestEnsureColocatedHuddle_ExcludesSleeperAndDecorative(t *testing.T) {
 		a.InsideStructureID = "tavern"
 		a.State = sim.StateSleeping
 	})
+	// daisy is a decorative NPC co-located inside the tavern (not in the base
+	// seed set, so create her directly).
+	sendT(t, w, sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["daisy"] = &sim.Actor{
+			ID: "daisy", DisplayName: "Daisy", Kind: sim.KindNPCDecorative,
+			State: sim.StateIdle, InsideStructureID: "tavern",
+		}
+		return nil, nil
+	}})
 
 	ensureColocated(t, w, "alice")
 
@@ -269,5 +278,8 @@ func TestEnsureColocatedHuddle_ExcludesSleeperAndDecorative(t *testing.T) {
 	}
 	if huddleOf(t, w, "charlie") != "" {
 		t.Error("sleeping actor should not be pulled into the huddle")
+	}
+	if huddleOf(t, w, "daisy") != "" {
+		t.Error("decorative actor should not be pulled into the huddle")
 	}
 }
