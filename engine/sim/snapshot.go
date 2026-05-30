@@ -79,6 +79,19 @@ type Snapshot struct {
 	// hand-built snapshot (nil) is distinguishable from real midnight (0).
 	LocalMinuteOfDay *int
 
+	// DawnMinute / DuskMinute are the world's dawn/dusk boundary times as
+	// minute-of-day (e.g. 420 = 07:00, 1140 = 19:00), parsed once at publish
+	// from WorldSettings.DawnTime/DuskTime. They are the day-active window used
+	// as the shift fallback for an NPC with no explicit schedule (mirrors
+	// effectiveShiftWindow), so schedule-aware return-to-post steering
+	// (ZBBS-HOME-352) can resolve the same window perception-side without
+	// w.Settings. DawnDuskMinuteOK is true only when BOTH boundaries parsed —
+	// perception uses the window only then, so a partial/failed parse can't
+	// derive a bogus window from one good + one zero bound (code_review).
+	DawnMinute       int
+	DuskMinute       int
+	DawnDuskMinuteOK bool
+
 	// NeedThresholds is a cloned view of WorldSettings.NeedThresholds —
 	// the per-need red-tier boundary. Consumers reading the snapshot
 	// off-world (perception, noop-skip preflight) read thresholds here

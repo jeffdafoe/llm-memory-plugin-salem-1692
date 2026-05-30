@@ -46,6 +46,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 	p.WarrantActorNames = buildWarrantActorNames(snap, actorSnap, actorID, p.Warrants)
 	p.Surroundings = buildSurroundings(snap, actorID, actorSnap)
 	p.Anchors = buildAnchors(snap, actorSnap)
+	p.DutySteer = buildDutySteer(snap, actorSnap, p.Anchors)
 	p.NarrativeState = buildNarrativeState(actorSnap)
 	p.Relationships = buildRelationships(actorSnap, p.Surroundings.HuddleMembers)
 	p.PendingDeliveriesFromMe, p.PendingDeliveriesToMe = buildPendingOrderViews(snap, actorID)
@@ -709,6 +710,78 @@ func buildWarrantActorNames(snap *sim.Snapshot, subject *sim.ActorSnapshot, subj
 		}
 	}
 	return names
+}
+
+// minuteInWindow reports whether now (0..1439) falls in [start, end), handling
+// wrap-midnight windows (start > end, e.g. a 16:00–03:00 tavern shift). Mirrors
+// sim.minuteInShiftWindow / isActorOnShift — kept consistent on purpose:
+// start == end is an EMPTY window (never on shift), not all-day. Replicated
+// here (rather than calling into sim) so perception stays a pure reader of the
+// snapshot and doesn't couple to the work-domain shift producer. ZBBS-HOME-352.
+func minuteInWindow(start, end, now int) bool {
+	if start == end {
+		// Empty window — never on shift. Kept explicit (not folded into the
+		// start<=end arm) so a later "simplify" can't turn it into an all-day
+		// window; matches sim.minuteInShiftWindow's start==end rule.
+		return false
+	}
+	if start < end {
+		return now >= start && now < end
+	}
+	return now >= start || now < end
+}
+
+// buildDutySteer computes the standing return-to-post cue: an agent NPC that is
+// on-shift away from its workplace, or off-shift away from home. The shift
+// window is the actor's own schedule when both bounds are set, else the world
+// day-active (dawn/dusk) window from the snapshot — mirroring sim's
+// effectiveShiftWindow. Position uses InsideStructureID (matching the engine's
+// shiftDutyTarget notion of "at post"). Unlike the engine warrant it is NOT
+// need-suppressed: it surfaces the duty and lets the model weigh it against any
+// pressing need (the model-prioritizes design). Returns nil when at-post, out
+// of scope, or the clock/anchors/window can't be resolved. ZBBS-HOME-352.
+//
+// a is guaranteed non-nil by Build's early return on a missing actor snapshot —
+// the same invariant buildAnchors and the other sub-builders rely on.
+func buildDutySteer(snap *sim.Snapshot, a *sim.ActorSnapshot, anchors *AnchorsView) *DutySteerView {
+	// Agent NPCs only — PCs are player-driven; decoratives are walked directly
+	// by the shift ticker and never get a perception prompt.
+	if a.Kind != sim.KindNPCStateful && a.Kind != sim.KindNPCShared {
+		return nil
+	}
+	// No anchors → no work/home to steer toward; no clock → can't tell the hour.
+	if anchors == nil || snap.LocalMinuteOfDay == nil {
+		return nil
+	}
+	nowMin := *snap.LocalMinuteOfDay
+
+	var start, end int
+	switch {
+	case a.ScheduleStartMin != nil && a.ScheduleEndMin != nil:
+		start, end = *a.ScheduleStartMin, *a.ScheduleEndMin
+	case snap.DawnDuskMinuteOK && snap.DawnMinute != snap.DuskMinute:
+		// World day-active fallback for an NPC with no explicit schedule.
+		// DawnDuskMinuteOK rejects a partial/failed parse (which would otherwise
+		// derive a bogus window from one good + one zero bound); the inequality
+		// rejects a degenerate dawn==dusk empty window that reads as off-shift all
+		// day and would emit a perpetual "head home" cue (code_review).
+		start, end = snap.DawnMinute, snap.DuskMinute
+	default:
+		return nil // unscheduled and no usable day-active window
+	}
+
+	onShift := minuteInWindow(start, end, nowMin)
+	atWork := anchors.WorkID != "" && a.InsideStructureID == anchors.WorkID
+	atHome := anchors.HomeID != "" && a.InsideStructureID == anchors.HomeID
+
+	switch {
+	case onShift && anchors.WorkID != "" && !atWork:
+		return &DutySteerView{ToWork: true, TargetID: anchors.WorkID, TargetLabel: anchors.WorkLabel}
+	case !onShift && anchors.HomeID != "" && !atHome:
+		return &DutySteerView{ToWork: false, TargetID: anchors.HomeID, TargetLabel: anchors.HomeLabel}
+	default:
+		return nil
+	}
 }
 
 // buildNarrativeState returns the kind-aware "Who you are:" content
