@@ -20,6 +20,13 @@ import (
 	"syscall"
 	"time"
 
+	// Embed the timezone database so America/New_York always resolves, even on a
+	// stripped image with no system zoneinfo. Without it, localMinuteOfDay and
+	// the phase ticker silently fall back to UTC, shifting the whole village
+	// clock — wrong day phases and wrong schedule-aware steering (ZBBS-HOME-351,
+	// HOME-352). ~450KB in the binary; correctness over size here.
+	_ "time/tzdata"
+
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"

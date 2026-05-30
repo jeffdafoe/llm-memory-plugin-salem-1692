@@ -337,6 +337,34 @@ func dwellActivityVerb(c DwellCreditView) string {
 	return "lingering"
 }
 
+// timeOfDayProse maps a village wall-clock minute-of-day (0–1439) to a felt
+// ambient sentence — the deterministic, in-world time-of-day analogue of the
+// LLM-authored atmosphere line. The engine itself tracks only a binary
+// day/night Phase (dawn/dusk flips); these finer narration bands are a
+// presentation detail derived from the clock minute, so the NPC gets a sense of
+// the hour without the engine modelling more than it needs. ZBBS-HOME-351.
+func timeOfDayProse(minute int) string {
+	if minute < 0 || minute > 1439 {
+		return "" // out of range — fail closed rather than render a misleading band
+	}
+	switch {
+	case minute < 300: // before 05:00
+		return "It is the dead of night."
+	case minute < 420: // 05:00–07:00
+		return "Dawn is breaking over the village."
+	case minute < 720: // 07:00–12:00
+		return "It is morning in the village."
+	case minute < 840: // 12:00–14:00
+		return "It is midday."
+	case minute < 1080: // 14:00–18:00
+		return "The afternoon wears on."
+	case minute < 1260: // 18:00–21:00
+		return "Evening settles over the village."
+	default: // 21:00–24:00
+		return "Night lies over the village."
+	}
+}
+
 func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 	b.WriteString("## Around you\n")
 
@@ -366,6 +394,18 @@ func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 		fmt.Fprintf(b, "You are %s, with %s.\n", location, joinHuddleMembers(s.HuddleMembers))
 	} else {
 		fmt.Fprintf(b, "You are %s.\n", location)
+	}
+
+	// Time of day as ambient prose (ZBBS-HOME-351). v2 rendered no clock at all,
+	// so an NPC couldn't tell its working hours from the dead of night — the
+	// missing context HOME-352 (return-to-post) builds on. nil only for a
+	// hand-built snapshot with no clock established; in a running engine the
+	// publish path always sets it, so the line is always present there.
+	if s.LocalMinuteOfDay != nil {
+		if prose := timeOfDayProse(*s.LocalMinuteOfDay); prose != "" {
+			b.WriteString(prose)
+			b.WriteString("\n")
+		}
 	}
 
 	if atmosphere := strings.TrimSpace(sanitizeInline(s.Atmosphere)); atmosphere != "" {
