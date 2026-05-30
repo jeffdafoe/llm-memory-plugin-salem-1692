@@ -370,6 +370,13 @@ type SurroundingsView struct {
 	// fires (restart-lossy by design) → the render omits the line.
 	Atmosphere string
 
+	// LocalMinuteOfDay is the village wall-clock minute (0–1439), copied from
+	// Snapshot.LocalMinuteOfDay, or nil when the clock isn't established.
+	// renderSurroundings turns it into a time-of-day prose line (timeOfDayProse).
+	// v2 rendered no time at all, so an NPC couldn't tell its working hours from
+	// the dead of night — the missing context HOME-352 builds on. ZBBS-HOME-351.
+	LocalMinuteOfDay *int
+
 	// GatherableItem / GatherableSource carry the harvest affordance cue
 	// (ZBBS-WORK-328): when the actor is loitering at a gatherable source (a
 	// well, a berry bush), GatherableItem is the item the source yields and

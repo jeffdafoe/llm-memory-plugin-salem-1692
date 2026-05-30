@@ -1337,9 +1337,18 @@ func (w *World) ForEachOutdoorActor(fn func(*Actor) bool) {
 // copy-on-write per-entity scheme — same external Snapshot type, lower
 // allocation pressure.
 func (w *World) republish() {
+	// Local wall-clock minute-of-day in the village timezone, for time-of-day
+	// perception (ZBBS-HOME-351) and schedule-aware steering (ZBBS-HOME-352).
+	// Computed once here so the snapshot carries it without the village
+	// *time.Location (which isn't on the snapshot). Taken as &localMin so a
+	// hand-built snapshot (nil) is distinguishable from real midnight (0).
+	// Sampled once so PublishedAt and LocalMinuteOfDay describe the same instant
+	// (a second time.Now() could straddle a minute/day boundary).
+	now := time.Now()
+	localMin := localMinuteOfDay(w, now)
 	snap := &Snapshot{
 		AtTick:                   w.TickCounter,
-		PublishedAt:              time.Now(),
+		PublishedAt:              now,
 		Actors:                   make(map[ActorID]*ActorSnapshot, len(w.Actors)),
 		Huddles:                  make(map[HuddleID]*Huddle, len(w.Huddles)),
 		Scenes:                   make(map[SceneID]*Scene, len(w.Scenes)),
@@ -1353,6 +1362,7 @@ func (w *World) republish() {
 		PriceBook:                ClonePriceBook(w.PriceBook),
 		Environment:              w.Environment,
 		Phase:                    w.Phase,
+		LocalMinuteOfDay:         &localMin,
 		NeedThresholds:           w.Settings.NeedThresholds.Clone(),
 		LodgingDefaultWeeklyRate: w.Settings.LodgingDefaultWeeklyRate,
 		RestockReorderPct:        w.Settings.RestockReorderPct,
