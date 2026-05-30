@@ -45,6 +45,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 	p.Actor = buildActorView(snap, actorSnap)
 	p.WarrantActorNames = buildWarrantActorNames(snap, actorSnap, actorID, p.Warrants)
 	p.Surroundings = buildSurroundings(snap, actorID, actorSnap)
+	p.Anchors = buildAnchors(snap, actorSnap)
 	p.NarrativeState = buildNarrativeState(actorSnap)
 	p.Relationships = buildRelationships(actorSnap, p.Surroundings.HuddleMembers)
 	p.PendingDeliveriesFromMe, p.PendingDeliveriesToMe = buildPendingOrderViews(snap, actorID)
@@ -439,6 +440,45 @@ func resolveDwellPinLabel(snap *sim.Snapshot, objID sim.VillageObjectID) string 
 		return st.DisplayName
 	}
 	if obj := snap.VillageObjects[objID]; obj != nil && obj.DisplayName != "" {
+		return obj.DisplayName
+	}
+	return ""
+}
+
+// buildAnchors projects the actor's own home and work structures into the
+// always-on move-target view. Returns nil when the actor has neither anchor (a
+// PC, or an unanchored NPC) so Render omits the line. The structure_ids are
+// surfaced verbatim — they're what the model passes to move_to; the labels are
+// best-effort (a structure with no DisplayName yields an empty label, which
+// Render replaces with a generic phrase while still carrying the id).
+func buildAnchors(snap *sim.Snapshot, a *sim.ActorSnapshot) *AnchorsView {
+	if a.WorkStructureID == "" && a.HomeStructureID == "" {
+		return nil
+	}
+	v := &AnchorsView{}
+	if a.WorkStructureID != "" {
+		v.WorkID = a.WorkStructureID
+		v.WorkLabel = resolveStructureLabel(snap, a.WorkStructureID)
+	}
+	if a.HomeStructureID != "" {
+		v.HomeID = a.HomeStructureID
+		v.HomeLabel = resolveStructureLabel(snap, a.HomeStructureID)
+	}
+	v.SamePlace = a.WorkStructureID != "" && a.WorkStructureID == a.HomeStructureID
+	return v
+}
+
+// resolveStructureLabel resolves a StructureID to its human label — structure
+// DisplayName first, then the shared village_object DisplayName (structures
+// share ids with village_objects), empty when neither has one.
+func resolveStructureLabel(snap *sim.Snapshot, sid sim.StructureID) string {
+	if sid == "" {
+		return ""
+	}
+	if st := snap.Structures[sid]; st != nil && st.DisplayName != "" {
+		return st.DisplayName
+	}
+	if obj := snap.VillageObjects[sim.VillageObjectID(sid)]; obj != nil && obj.DisplayName != "" {
 		return obj.DisplayName
 	}
 	return ""
