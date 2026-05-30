@@ -5,13 +5,22 @@ import (
 	"time"
 )
 
-// deadlock_log.go — bounded in-memory ring of recent soft-block deadlock
-// stops (ZBBS-WORK-340). The locomotion ticker calls World.RecordDeadlock
-// each time advanceActorLocomotion hits the per-MoveIntent stuck-tick cap
-// and hard-stops a mover with MoveStoppedDeadlocked; the umbilical
-// /api/village/umbilical/deadlocks read route dumps the ring so operators
-// can see how often live play is deadlocking and which actors keep wedging
-// each other — the signal the engine couldn't get from a count-only counter.
+// deadlock_log.go — bounded in-memory ring of recent stable soft-block
+// events (ZBBS-WORK-340). The locomotion ticker calls World.RecordDeadlock
+// each time advanceActorLocomotion hits the per-MoveIntent stuck-tick cap;
+// the umbilical /api/village/umbilical/deadlocks read route dumps the ring
+// so operators can see how often live play is contending and which actors
+// keep wedging each other — the signal the engine couldn't get from a
+// count-only counter.
+//
+// As of ZBBS-HOME-327 the recorded mover is NOT frozen: it records the entry
+// (the contention canary) and then walks THROUGH the blocking actor and
+// continues. The ring is therefore a "stable block resolved by walk-through"
+// log, not a "mover is stuck forever" log — a non-empty ring means contention
+// happened and was forced past, not that anyone is wedged. (Member-own-door
+// blocks resolve earlier via ZBBS-HOME-348's immediate walk-through and never
+// reach this record, so the ring skews toward corridor / mutual-block /
+// non-member-door contention.)
 //
 // In-memory + lossy-on-restart: transient diagnostics, no durability need,
 // so no Postgres (see shared GUIDELINES). Same shape as the server-observed
@@ -25,8 +34,9 @@ import (
 // a runaway never bloats memory.
 const defaultDeadlockRingSize = 256
 
-// DeadlockEntry is one MoveStoppedDeadlocked event recorded for operator
-// visibility. Flattened from MoveDestination's tagged union so the wire
+// DeadlockEntry is one stable-soft-block event recorded for operator
+// visibility (the mover walks through and continues — ZBBS-HOME-327).
+// Flattened from MoveDestination's tagged union so the wire
 // payload is plain values — Position-kind moves carry a non-zero
 // DestPosition and empty ids; structure-kind moves carry a non-empty
 // DestStructureID; object_visit moves carry a non-empty DestObjectID. The
@@ -45,23 +55,24 @@ type DeadlockEntry struct {
 	DestPosition    Position            `json:"destination_position,omitempty"`
 
 	// OccupantID/OccupantName identify the actor whose tile was the
-	// immediate next-tile blocker at the moment the stuck counter tripped.
-	// May be empty if the occupant left the tile between the soft-block
-	// classification and the hard-stop record (race-safe — empty fields
-	// just mean "we couldn't identify the occupant at record time").
+	// immediate next-tile blocker at the moment the stuck counter tripped —
+	// the actor the mover then walks through. May be empty if the occupant
+	// left the tile between the soft-block classification and the record
+	// (race-safe — empty fields just mean "we couldn't identify the occupant
+	// at record time").
 	OccupantID   ActorID  `json:"occupant_id,omitempty"`
 	OccupantName string   `json:"occupant_name,omitempty"`
 	OccupantTile Position `json:"occupant_tile"`
 
-	// ReplanFailed distinguishes the two flavors of deadlock the operator
-	// cares about:
+	// ReplanFailed distinguishes the two flavors of stable block the operator
+	// cares about (the mover walks through either way — ZBBS-HOME-327 — but
+	// the cause differs):
 	//   - true  → re-plan with the occupant tile blocked returned no path.
-	//             The mover is wedged because no alternative route exists
-	//             (sleeping-Abraham-in-the-doorway pattern). Terminal.
+	//             No alternative route exists (sleeping-Abraham-in-the-doorway
+	//             pattern); the mover had to force straight through.
 	//   - false → re-plan found an alt path but its first tile was ALSO
 	//             occupied, repeatedly, for the full stuck-tick window.
-	//             Usually a mutual block or a clogged corridor. May resolve
-	//             on its own if the mover retries later.
+	//             Usually a mutual block or a clogged corridor.
 	ReplanFailed bool `json:"replan_failed"`
 }
 
