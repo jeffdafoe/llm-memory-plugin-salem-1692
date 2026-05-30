@@ -192,6 +192,20 @@ func renderActor(b *strings.Builder, a ActorView) {
 		b.WriteString("\n")
 	}
 	fmt.Fprintf(b, "Coins in your purse: %d.\n", a.Coins)
+	// Standing inventory readout (ZBBS-HOME-361): neutral statement of what the
+	// actor holds, so it's aware of its own goods (to eat, to sell, to give)
+	// without being pushed to act — the "consume to eat" nudge stays in the
+	// need-gated satiation own-stock line. Omitted when carrying nothing.
+	if len(a.Inventory) > 0 {
+		b.WriteString("You are carrying: ")
+		for i, it := range a.Inventory {
+			if i > 0 {
+				b.WriteString(", ")
+			}
+			fmt.Fprintf(b, "%s (x%d)", sanitizeInline(it.Label), it.Qty)
+		}
+		b.WriteString(".\n")
+	}
 	// In-progress activity reads as felt self-state. A meal/rest/walk already
 	// under way is surfaced so a tick firing mid-activity doesn't re-pick a
 	// goal from scratch (the dwell-credit/in-flight-move parking fix). These
