@@ -46,12 +46,22 @@ func TestBuildAnchors_Neither_nil(t *testing.T) {
 	}
 }
 
-func TestBuildAnchors_UnlabeledStructure_keepsId(t *testing.T) {
-	// A work structure absent from the snapshot (or with no DisplayName) still
-	// surfaces its id — the model needs the id for move_to even unlabeled.
+func TestBuildAnchors_PresentButUnlabeled_keepsId(t *testing.T) {
+	// A structure PRESENT in the snapshot but with no DisplayName still surfaces
+	// its id — the model needs the id for move_to; render uses a generic phrase.
+	snap := &sim.Snapshot{Structures: map[sim.StructureID]*sim.Structure{"nolabel": {}}}
+	v := buildAnchors(snap, &sim.ActorSnapshot{WorkStructureID: "nolabel"})
+	if v == nil || v.WorkID != "nolabel" || v.WorkLabel != "" {
+		t.Fatalf("got %+v, want WorkID=nolabel with empty label", v)
+	}
+}
+
+func TestBuildAnchors_MissingStructure_dropped(t *testing.T) {
+	// An anchor id ABSENT from the snapshot must NOT be surfaced — move_to would
+	// reject it, recreating the bouncing-target failure this change removes.
 	v := buildAnchors(anchorTestSnap(), &sim.ActorSnapshot{WorkStructureID: "ghost"})
-	if v == nil || v.WorkID != "ghost" || v.WorkLabel != "" {
-		t.Fatalf("got %+v, want WorkID=ghost with empty label", v)
+	if v != nil {
+		t.Fatalf("expected nil (unresolvable anchor dropped), got %+v", v)
 	}
 }
 
