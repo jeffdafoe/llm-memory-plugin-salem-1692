@@ -437,6 +437,66 @@ func advanceActorViaReroute(w *World, actor *Actor, dest MoveDestination, attemp
 		masked = append(masked, GridPoint{X: altNext.X, Y: altNext.Y})
 	}
 
+	// Last-resort door walk-through (ZBBS-HOME-348). The reroute has
+	// exhausted with no advanceable detour. If the tile we're blocked on is
+	// the StructureEnter goal ITSELF (the door), step onto it anyway even
+	// though another actor occupies it.
+	//
+	// Why this case and no other: structureEntryTile resolves a
+	// StructureEnter to exactly one tile — the single reachable interior
+	// tile under the shared-identity bridge (the door). A whole household
+	// shares one HomeStructureID and funnels through that one tile, so a
+	// resident parked or sleeping ON the door locks every other family
+	// member out of their own home permanently (replanFailed: masking the
+	// sole goal tile leaves no path). v1 never hit this — it had no
+	// actor-actor collision at all, so actors freely overlapped on the door.
+	// v2's soft-block collision (ZBBS-WORK-340) regressed exactly this
+	// interaction. We recover the v1 invariant narrowly: overlap is allowed,
+	// but only on the door tile, only for a member's own StructureEnter, and
+	// only as a true last resort after the reroute fails. Corridor /
+	// visitor-slot / Position deadlocks keep v2's collision untouched.
+	//
+	// Three conjuncts gate it:
+	//   - occupiedNext.Equal(target): occupiedNext is the soft-blocked next
+	//     tile, target is the resolved goal. Equality means the mover is
+	//     adjacent to the door and the door itself is what's occupied — a
+	//     single legal step onto walkable terrain (the soft classification
+	//     already proved it's an actor block, not a wall/footprint).
+	//   - structureMembershipAllows: the SAME predicate behind the owner-only
+	//     gate in resolvePathTarget. Re-checking it here keeps the "member's
+	//     own door" scope LOCAL and self-evident instead of leaning on an
+	//     upstream resolve 150 lines away — defense-in-depth against a future
+	//     routing change that hands a non-member a StructureEnter target. A
+	//     non-member targeting an OPEN structure whose single door is occupied
+	//     still deadlocks; that's out of scope (the bug is household lockout,
+	//     not public-building contention).
+	if dest.Kind == MoveDestinationStructureEnter && dest.StructureID != nil &&
+		occupiedNext.Equal(target) &&
+		structureMembershipAllows(w, actor, *dest.StructureID, now) {
+		from := actor.Pos
+		fromStructure := actor.InsideStructureID
+		actor.Pos = target
+		updateInsideStructureIDFromTileOwnership(w, actor)
+		actor.MoveIntent.StuckTicks = 0
+
+		w.emit(&ActorMoved{
+			ActorID:           actor.ID,
+			FromPosition:      from,
+			ToPosition:        target,
+			FromStructureID:   fromStructure,
+			ToStructureID:     actor.InsideStructureID,
+			MovementAttemptID: attemptID,
+			At:                now,
+		})
+
+		checkHuddleDriftAfterPositionMutation(w, actor.ID, now)
+
+		if arrivedAtDestination(w, actor, dest) {
+			finishArrival(w, actor, dest, attemptID, now)
+		}
+		return
+	}
+
 	// No advanceable next-tile this tick. Count toward the stuck-tick cap;
 	// the MoveIntent is preserved so the next tick re-plans afresh — an
 	// occupant moving off the tile in the meantime resolves it.
