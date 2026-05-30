@@ -258,6 +258,64 @@ func TestHarness_Done_TerminatesAsDone(t *testing.T) {
 	}
 }
 
+// capturingPromptSink records every prompt the harness writes (ZBBS-HOME-360).
+// RunTick is called synchronously in these tests, so no locking is needed.
+type capturingPromptSink struct{ recs []sim.PromptRecord }
+
+func (c *capturingPromptSink) WritePrompt(r sim.PromptRecord) { c.recs = append(c.recs, r) }
+
+// A rendered tick captures its prompt to the PromptSink with the actor/attempt
+// ids and the non-empty rendered text — the umbilical debug surface's feed.
+func TestHarness_CapturesRenderedPrompt(t *testing.T) {
+	w, cancel := newHarnessWorld(t, "attempt-A")
+	defer cancel()
+
+	client := llm.NewFakeClient(llm.ScriptedTurn{Response: llm.Response{
+		ToolCalls: []llm.RawToolCall{newToolCall("c1", 0, "done", `{}`)},
+	}})
+	tr := newTestRegistry(t)
+	sink := &capturingPromptSink{}
+	h, err := NewHarness(HarnessConfig{Client: client, Registry: tr.r, PromptSink: sink})
+	if err != nil {
+		t.Fatalf("NewHarness: %v", err)
+	}
+	job := newTestJob("attempt-A", nil)
+	h.RunTick(context.Background(), w, job)
+
+	if len(sink.recs) != 1 {
+		t.Fatalf("want exactly 1 captured prompt, got %d", len(sink.recs))
+	}
+	rec := sink.recs[0]
+	if rec.ActorID != job.actorID {
+		t.Errorf("captured ActorID = %q, want %q", rec.ActorID, job.actorID)
+	}
+	if rec.AttemptID != job.attemptID {
+		t.Errorf("captured AttemptID = %q, want %q", rec.AttemptID, job.attemptID)
+	}
+	if rec.Prompt == "" {
+		t.Error("captured prompt text is empty; want the rendered deliberation prompt")
+	}
+}
+
+// A nil PromptSink (umbilical disabled) is the default and must not panic or
+// capture.
+func TestHarness_NilPromptSink_NoCapture(t *testing.T) {
+	w, cancel := newHarnessWorld(t, "attempt-A")
+	defer cancel()
+
+	client := llm.NewFakeClient(llm.ScriptedTurn{Response: llm.Response{
+		ToolCalls: []llm.RawToolCall{newToolCall("c1", 0, "done", `{}`)},
+	}})
+	h, _ := newTestHarness(t, client, 0, 0) // no PromptSink
+	if h.promptSink != nil {
+		t.Fatal("expected nil promptSink by default")
+	}
+	// Must run cleanly with no sink wired.
+	if res := h.RunTick(context.Background(), w, newTestJob("attempt-A", nil)); res.TerminalStatus != sim.TickStatusDone {
+		t.Errorf("tick status = %v, want Done", res.TerminalStatus)
+	}
+}
+
 func TestHarness_Observation_RunsInlineThenLoops(t *testing.T) {
 	w, cancel := newHarnessWorld(t, "attempt-A")
 	defer cancel()

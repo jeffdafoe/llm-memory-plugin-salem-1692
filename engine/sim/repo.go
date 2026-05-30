@@ -207,6 +207,33 @@ type TickTelemetrySink interface {
 	WriteTickTelemetry(TickTelemetryRecord)
 }
 
+// PromptRecord is one actor tick's RENDERED DELIBERATION PROMPT — the full
+// user-message text the harness built from perception and sent to the model.
+// ZBBS-HOME-360.
+//
+// This is the deliberate counterpart to TickTelemetryRecord and breaks the
+// SAME redaction rule on purpose: unlike telemetry (structured + redacted, "no
+// raw prompts ever"), a PromptRecord carries the raw prompt text so an operator
+// can see exactly what an NPC perceived when it made a decision. It is a
+// debug-only surface and MUST reach ONLY the operator-gated umbilical — never
+// telemetry, the action log, a player-facing path, or durable storage. It is
+// in-memory and lost on restart by design.
+type PromptRecord struct {
+	At        time.Time
+	ActorID   ActorID
+	AttemptID TickAttemptID
+	Prompt    string // the full rendered deliberation prompt (user message)
+}
+
+// PromptSink receives PromptRecords. Like TickTelemetrySink, implementations
+// MUST be non-blocking — WritePrompt runs on the tick-worker goroutines and
+// must never stall a worker; on overflow the impl drops the oldest rather than
+// waiting. Fire-and-forget: no context, no error. A nil sink means "don't
+// capture" (the umbilical-disabled default), so callers null-check before use.
+type PromptSink interface {
+	WritePrompt(PromptRecord)
+}
+
 // Tx is a transaction handle exposing the pgx-style query surface our
 // repos need. Production wires a real *pgx.Tx; mem fakes wire a no-op.
 // Same repo code runs in both.
