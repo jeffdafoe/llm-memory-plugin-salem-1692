@@ -60,6 +60,13 @@ import (
 // structure_id inline, so the model can still walk there by id. The by-name path
 // rescues the intimate cases (own home/work, a landmark in front of you), which
 // is where the model actually drops into naming.
+//
+// A name that matches no structure falls through to a bare refresh source — a
+// well, a fruit tree the actor saw in a "free to drink/eat nearby" cue — via
+// resolveObjectByPerceivableName, so "walk to the well" reaches a placement that
+// has no Structure shell (ZBBS-HOME-359). Structures win on a name collision:
+// the structure resolver runs first, so "the Tavern" still enters rather than
+// stops outside its placement.
 func MoveToStructureByName(actorID ActorID, name string, now time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
@@ -71,12 +78,16 @@ func MoveToStructureByName(actorID ActorID, name string, now time.Time) Command 
 			if target == "" {
 				return MoveActorResult{}, fmt.Errorf("move_to: structure_name is required")
 			}
-			structureID, ok := resolveStructureByPerceivableName(w, a, target)
-			if !ok {
-				return MoveActorResult{}, fmt.Errorf(
-					"there is no place called %q that you can see from here — use a structure_id shown in your perception, or name a place closer to you", target)
+			if structureID, ok := resolveStructureByPerceivableName(w, a, target); ok {
+				return MoveToStructure(actorID, structureID, now).Fn(w)
 			}
-			return MoveToStructure(actorID, structureID, now).Fn(w)
+			// No structure by that name — try a bare refresh source (a well, a
+			// fruit tree). ZBBS-HOME-359.
+			if objID, ok := resolveObjectByPerceivableName(w, a, target); ok {
+				return MoveToObject(actorID, objID, now).Fn(w)
+			}
+			return MoveActorResult{}, fmt.Errorf(
+				"there is no place called %q that you can see from here — use a structure_id shown in your perception, or name a place closer to you", target)
 		},
 	}
 }
@@ -144,6 +155,133 @@ func resolveStructureByPerceivableName(w *World, a *Actor, name string) (Structu
 	return bestID, true
 }
 
+// resolveObjectByPerceivableName resolves a place name to a bare refresh-source
+// VillageObject the actor could plausibly reach — a free public source (a well,
+// a fruit tree) within DefaultOutdoorSceneRadius — case-insensitively,
+// nearest-wins on duplicate names (Chebyshev to the actor; ties break by object
+// id for determinism). The object-keyed sibling of
+// resolveStructureByPerceivableName and the move_to name path's fallthrough when
+// no structure matches. ZBBS-HOME-359.
+//
+// Structure-backed placements are excluded: those resolve through the structure
+// path, so a name shared with a building never routes to an object visit that
+// would skip enter logic. ok=false when no perceivable free source matches. MUST
+// be called from inside a Command.Fn.
+func resolveObjectByPerceivableName(w *World, a *Actor, name string) (VillageObjectID, bool) {
+	radius := w.Settings.DefaultOutdoorSceneRadius
+	if radius <= 0 {
+		radius = DefaultOutdoorSceneRadiusValue
+	}
+	bestID := VillageObjectID("")
+	bestDist := -1
+	for id, obj := range w.VillageObjects {
+		if obj == nil || !objectIsRefreshSource(obj) {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(obj.DisplayName), name) {
+			continue
+		}
+		// A placement that backs a structure resolves via the structure path —
+		// skip it here so a name shared with a building doesn't route to an
+		// object visit that bypasses the enter-vs-visit derivation.
+		if _, isStructure := w.Structures[StructureID(id)]; isStructure {
+			continue
+		}
+		dist := a.Pos.Chebyshev(obj.Pos.Tile())
+		if dist > radius {
+			continue
+		}
+		if bestDist == -1 || dist < bestDist || (dist == bestDist && id < bestID) {
+			bestID, bestDist = id, dist
+		}
+	}
+	if bestDist == -1 {
+		return "", false
+	}
+	return bestID, true
+}
+
+// objectIsRefreshSource reports whether obj carries at least one still-usable
+// refresh row that NET EASES a need — a free, public need-easing placement (a
+// well, a fruit tree, a shade oak) move_to can walk an actor to via an object
+// visit. A row whose finite supply is exhausted, or whose arrival + dwell delta
+// nets to zero-or-worse (a row that doesn't actually help, or worsens the need),
+// does not count — so move_to never routes to a non-helpful prop. The easing
+// magnitude mirrors perception's objectRefreshMagnitude (kept here rather than
+// shared because that lives in the perception package). ZBBS-HOME-359.
+func objectIsRefreshSource(obj *VillageObject) bool {
+	if obj == nil {
+		return false
+	}
+	for _, r := range obj.Refreshes {
+		if r == nil {
+			continue
+		}
+		if r.IsFinite() && r.AvailableQuantity != nil && *r.AvailableQuantity <= 0 {
+			continue
+		}
+		mag := -r.Amount // Amount is the negative arrival decrement (easing > 0)
+		if r.DwellDelta != nil {
+			mag += -*r.DwellDelta
+		}
+		if mag > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// MoveToObject returns a Command that walks actorID to a bare village object's
+// visitor slot — the object-keyed sibling of MoveToStructure for a placement
+// with no Structure shell (a well, a fruit tree, a shade oak). It is how the
+// move_to tool reaches a free refresh source the actor saw in a "free to
+// drink/eat nearby" cue: the satiation free-source bullet carries the object id,
+// and both the id and name paths funnel a non-structure placement here.
+// ZBBS-HOME-359.
+//
+// Always an ObjectVisit — a bare prop has no interior to enter; the actor
+// stands beside it and the arrival-refresh / gather machinery does the rest.
+// Rejections mirror MoveToStructure's, object-keyed (so the model gets a crisp,
+// retry-anchored error rather than MoveActor's generic resolve failure):
+//   - actor not in world.
+//   - no such object — the id doesn't name a village object placement.
+//   - already at the object — standing within LoiterAttributionTiles of its
+//     loiter pin makes the walk a no-op (it can act on the source in place).
+//   - already walking to the SAME object — re-issuing an in-flight object
+//     destination is a no-op; a different destination supersedes silently.
+//   - destination unreachable — surfaced by MoveActor's path check.
+//
+// Runs on the world goroutine.
+func MoveToObject(actorID ActorID, objID VillageObjectID, now time.Time) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			a, ok := w.Actors[actorID]
+			if !ok {
+				return MoveActorResult{}, fmt.Errorf("MoveToObject: actor %q not in world", actorID)
+			}
+			if objID == "" {
+				return MoveActorResult{}, fmt.Errorf("move_to: object id is required")
+			}
+			if _, ok := w.VillageObjects[objID]; !ok {
+				return MoveActorResult{}, fmt.Errorf(
+					"there is no place %q to walk to — use a structure_id or name you can see in your perception", objID)
+			}
+			if pin, ok := effectiveObjectLoiterTile(w, objID); ok && a.Pos.Chebyshev(pin) <= LoiterAttributionTiles {
+				return MoveActorResult{}, fmt.Errorf(
+					"you are already at %q — no need to move there; pick a different action this turn", objID)
+			}
+			if a.MoveIntent != nil && a.MoveIntent.Destination.ObjectID != nil &&
+				*a.MoveIntent.Destination.ObjectID == objID {
+				return MoveActorResult{}, fmt.Errorf(
+					"you are already on your way to %q — keep walking; pick a different action this turn", objID)
+			}
+			// leaveHuddleFirst=true mirrors MoveToStructure: choosing to walk
+			// somewhere ends any conversation the actor is in.
+			return MoveActor(actorID, NewObjectVisitDestination(objID), true, now).Fn(w)
+		},
+	}
+}
+
 // MoveToStructure returns a Command that walks actorID to structureID, derives
 // enter-vs-visit from the structure's entry policy, and dispatches MoveActor.
 // Runs on the world goroutine.
@@ -173,6 +311,13 @@ func MoveToStructure(actorID ActorID, structureID StructureID, now time.Time) Co
 				return MoveActorResult{}, fmt.Errorf("move_to: structure_id is required")
 			}
 			if _, ok := w.Structures[structureID]; !ok {
+				// Not a structure — it may be a bare refresh-bearing placement (a
+				// well, a fruit tree) the actor saw in a free-source cue, whose id
+				// rides the same structure_id field. Fall through to an object visit
+				// so move_to(structure_id=<well>) reaches it. ZBBS-HOME-359.
+				if obj := w.VillageObjects[VillageObjectID(structureID)]; obj != nil && objectIsRefreshSource(obj) {
+					return MoveToObject(actorID, VillageObjectID(structureID), now).Fn(w)
+				}
 				return MoveActorResult{}, fmt.Errorf(
 					"there is no structure %q to walk to — use a structure_id you can see in your perception", structureID)
 			}
