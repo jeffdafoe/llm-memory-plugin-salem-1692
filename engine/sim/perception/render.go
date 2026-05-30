@@ -604,8 +604,8 @@ func renderPendingDeliveriesFromMe(b *strings.Builder, orders []OrderView) {
 		if len(o.ConsumerNames) > 0 {
 			fmt.Fprintf(b, " (to deliver to: %s)", sanitizeInline(strings.Join(o.ConsumerNames, ", ")))
 		}
-		if !o.ExpiresAt.IsZero() {
-			fmt.Fprintf(b, " — expires in %s", humanizeDurationUntil(o.ExpiresAt, time.Now()))
+		if clause, ok := expiryClause(o.ExpiresAt, time.Now()); ok {
+			b.WriteString(clause)
 		}
 		b.WriteString("\n")
 	}
@@ -632,12 +632,37 @@ func renderPendingDeliveriesToMe(b *strings.Builder, orders []OrderView) {
 		}
 		seller := sanitizeInline(o.SellerName)
 		fmt.Fprintf(b, "- #%d: %s from %s", uint64(o.ID), itemDesc, seller)
-		if !o.ExpiresAt.IsZero() {
-			fmt.Fprintf(b, " — expires in %s", humanizeDurationUntil(o.ExpiresAt, time.Now()))
+		if clause, ok := expiryClause(o.ExpiresAt, time.Now()); ok {
+			b.WriteString(clause)
 		}
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
+}
+
+// maxRenderableExpiryHorizon bounds how far out an order deadline can be and
+// still render a literal "expires in X" clause. An order's real TTL is minutes
+// (OrderTTLDefault is 10m), so anything beyond a generous day is not a real
+// deadline — it is the NULL-expires_at sentinel the PG loader substitutes for
+// legacy v1 rows (9999-12-31, orders.go), or an overflow. Feeding that to
+// humanizeDurationUntil produced "expires in 153722867 minutes" (~292 years —
+// time.Time.Sub saturating at MaxInt64 ns) in a live NPC's prompt (ZBBS-HOME-357).
+const maxRenderableExpiryHorizon = 24 * time.Hour
+
+// expiryClause returns the " — expires in X" suffix for an order deadline, and
+// ok=false (render nothing) when there is no meaningful expiry: a zero deadline
+// (never set) OR an implausibly-far one (the legacy NULL sentinel / an overflow
+// — see maxRenderableExpiryHorizon). Gating on the horizon here, at the render
+// boundary, fixes the garbage duration regardless of which upstream sentinel or
+// overflow produced the far-future time. ZBBS-HOME-357.
+func expiryClause(deadline, now time.Time) (string, bool) {
+	if deadline.IsZero() {
+		return "", false
+	}
+	if deadline.Sub(now) > maxRenderableExpiryHorizon {
+		return "", false
+	}
+	return " — expires in " + humanizeDurationUntil(deadline, now), true
 }
 
 // humanizeDurationUntil renders a coarse "X minute(s)" string for a
