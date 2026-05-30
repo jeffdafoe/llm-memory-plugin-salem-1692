@@ -163,8 +163,26 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 		renderWarrants(&b, warrants, nameOf, cfg, &out)
 	}
 
+	renderTriage(&b)
+
 	out.Text = b.String()
 	return out
+}
+
+// renderTriage writes the closing prioritization instruction — the synthesis
+// keystone (ZBBS-HOME-355). The per-tick prompt is a set of equal-weight context
+// sections (felt needs, return-to-post, owed orders, vendor cues, what-just-
+// happened), several of which can carry an imperative at once (e.g. "Address
+// now: hunger" AND "head to your post"). Nothing told the model how to choose
+// between them, so it acted on whatever was most salient and drifted. This line
+// does NOT impose an engine-computed ranking (the model is capable — the
+// prioritization stays in the model); it just instructs the model to weigh the
+// context and commit to ONE action, nudging the KIND of triage that the live
+// wandering exposed: obligations to others and pressing needs over idle drift.
+// Rendered unconditionally — Render is only called on the NPC reactor-tick path
+// (handlers.Harness.RunTick), never for a PC.
+func renderTriage(b *strings.Builder) {
+	b.WriteString("Weigh everything above and act on what matters most right now — obligations to others and pressing needs come before idle matters. Choose one thing and do it.\n")
 }
 
 func renderActor(b *strings.Builder, a ActorView) {
