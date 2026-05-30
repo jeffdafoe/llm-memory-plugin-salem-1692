@@ -734,6 +734,9 @@ func minuteInWindow(start, end, now int) bool {
 // need-suppressed: it surfaces the duty and lets the model weigh it against any
 // pressing need (the model-prioritizes design). Returns nil when at-post, out
 // of scope, or the clock/anchors/window can't be resolved. ZBBS-HOME-352.
+//
+// a is guaranteed non-nil by Build's early return on a missing actor snapshot —
+// the same invariant buildAnchors and the other sub-builders rely on.
 func buildDutySteer(snap *sim.Snapshot, a *sim.ActorSnapshot, anchors *AnchorsView) *DutySteerView {
 	// Agent NPCs only — PCs are player-driven; decoratives are walked directly
 	// by the shift ticker and never get a perception prompt.
