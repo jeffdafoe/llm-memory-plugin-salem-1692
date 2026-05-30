@@ -74,6 +74,58 @@ func TestDecodeMoveToArgs_NonObject(t *testing.T) {
 	}
 }
 
+// --- structure_name path (ZBBS-HOME-356) -------------------------------
+
+func TestDecodeMoveToArgs_NameOnlyValid(t *testing.T) {
+	args, err := DecodeMoveToArgs(json.RawMessage(`{"structure_name":"the Tavern"}`))
+	if err != nil {
+		t.Fatalf("DecodeMoveToArgs: %v", err)
+	}
+	got := args.(MoveToArgs)
+	if got.StructureName != "the Tavern" || got.StructureID != "" {
+		t.Errorf("got %+v, want name-only {StructureName:'the Tavern'}", got)
+	}
+}
+
+func TestDecodeMoveToArgs_BothRejected(t *testing.T) {
+	_, err := DecodeMoveToArgs(json.RawMessage(`{"structure_id":"inn","structure_name":"the Inn"}`))
+	if err == nil || !strings.Contains(err.Error(), "not both") {
+		t.Fatalf("want 'not both' error for id+name, got %v", err)
+	}
+}
+
+func TestDecodeMoveToArgs_WhitespaceOnlyNameRejected(t *testing.T) {
+	// A whitespace-only name must read as ABSENT at decode (not present-but-empty),
+	// so it falls into the "provide structure_id or structure_name" branch.
+	_, err := DecodeMoveToArgs(json.RawMessage(`{"structure_name":"   "}`))
+	if err == nil || !strings.Contains(err.Error(), "provide structure_id") {
+		t.Fatalf("want 'provide' error for whitespace-only name, got %v", err)
+	}
+}
+
+func TestDecodeMoveToArgs_NameControlCharRejectedAtDecode(t *testing.T) {
+	// Build the payload from a Go value carrying a real NUL (a \x00 Go escape),
+	// so json.Marshal emits a valid JSON unicode escape — the decode-time
+	// control-char scan must then reject the decoded NUL. Constructing it this
+	// way avoids embedding a raw NUL in the source.
+	raw, err := json.Marshal(map[string]string{"structure_name": "bad\x00name"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	_, err = DecodeMoveToArgs(json.RawMessage(raw))
+	if err == nil || !strings.Contains(err.Error(), "control character") {
+		t.Fatalf("want control-char rejection at decode, got %v", err)
+	}
+}
+
+func TestDecodeMoveToArgs_NameOverCap(t *testing.T) {
+	long := strings.Repeat("z", MaxMoveToStructureIDChars+1)
+	_, err := DecodeMoveToArgs(json.RawMessage(`{"structure_name":"` + long + `"}`))
+	if err == nil || !strings.Contains(err.Error(), "structure_name") {
+		t.Fatalf("want structure_name over-cap error, got %v", err)
+	}
+}
+
 // --- HandleMoveTo ------------------------------------------------------
 
 func TestHandleMoveTo_BuildsCommand(t *testing.T) {
@@ -86,6 +138,29 @@ func TestHandleMoveTo_BuildsCommand(t *testing.T) {
 	}
 	if cmd.Fn == nil {
 		t.Error("HandleMoveTo returned a Command with a nil Fn")
+	}
+}
+
+func TestHandleMoveTo_NameBuildsCommand(t *testing.T) {
+	cmd, err := HandleMoveTo(HandlerInput{
+		ActorID: "walker",
+		Args:    MoveToArgs{StructureName: "the Tavern"},
+	})
+	if err != nil {
+		t.Fatalf("HandleMoveTo (name): %v", err)
+	}
+	if cmd.Fn == nil {
+		t.Error("HandleMoveTo (name) returned a Command with a nil Fn")
+	}
+}
+
+func TestHandleMoveTo_NameControlCharRejected(t *testing.T) {
+	_, err := HandleMoveTo(HandlerInput{
+		ActorID: "walker",
+		Args:    MoveToArgs{StructureName: "bad\x00name"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "control character") {
+		t.Fatalf("want control-char rejection, got %v", err)
 	}
 }
 
