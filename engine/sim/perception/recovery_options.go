@@ -26,8 +26,8 @@ const recoveryTirednessNeed = sim.NeedKey("tiredness")
 const nightsStayItem = sim.ItemKind("nights_stay")
 
 // RecoveryOptionsView is the content-gated "## How you can rest" section.
-// A nil view (or empty Options AND empty OwnStock) means render omits the
-// section.
+// A nil view (or empty Options AND empty OwnStock AND no RestInPlace) means
+// render omits the section.
 type RecoveryOptionsView struct {
 	Options []RecoveryOption
 
@@ -36,6 +36,13 @@ type RecoveryOptionsView struct {
 	// satiation own-stock line. Tiredness-gated (maintenance, not shelter),
 	// so empty for a homeless-but-rested actor. ZBBS-HOME-305.
 	OwnStock []OwnStockItem
+
+	// RestInPlace is set when the actor is tired AND standing at its own work
+	// structure: it can close up and recover via take_break without leaving its
+	// post, instead of walking off to a bed and abandoning the (often infinite-
+	// supply) stall. Rendered as the lead bullet so the at-post option is the
+	// first thing weighed. ZBBS-HOME-362.
+	RestInPlace bool
 }
 
 // RecoveryOption is one rest-affordance bullet.
@@ -112,7 +119,18 @@ func buildRecoveryOptions(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *si
 		}
 		ownStock = gatherOwnStock(snap, actorSnap, recoveryTirednessNeed)
 	}
-	if len(opts) == 0 && len(ownStock) == 0 {
+
+	// A tired keeper standing at its own work structure can recover in place via
+	// take_break rather than walking off to a bed — which, for a stall, leaves
+	// the post (and its supply) unmanned. take_break is unconditionally
+	// advertised (no location/shift gate; see handlers/tool_gating.go), so this
+	// is purely the perceptual cue that surfaces the option. Gated on tired so
+	// it doesn't appear to a homeless-but-rested actor scoping shelter.
+	// ZBBS-HOME-362.
+	restInPlace := tired && actorSnap.WorkStructureID != "" &&
+		actorSnap.InsideStructureID == actorSnap.WorkStructureID
+
+	if len(opts) == 0 && len(ownStock) == 0 && !restInPlace {
 		return nil
 	}
 
@@ -127,7 +145,7 @@ func buildRecoveryOptions(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *si
 		}
 		return opts[i].sourceKey < opts[j].sourceKey
 	})
-	return &RecoveryOptionsView{Options: opts, OwnStock: ownStock}
+	return &RecoveryOptionsView{Options: opts, OwnStock: ownStock, RestInPlace: restInPlace}
 }
 
 // gatherHomeRestSpot returns the actor's own home as a "sleep in your own bed"
@@ -384,10 +402,15 @@ func cardinalDirection(fromX, fromY, toX, toY float64) string {
 // renderRecoveryOptions writes the "## How you can rest" section. Content-
 // gated: nil/empty view writes nothing. Benefit-first bullets.
 func renderRecoveryOptions(b *strings.Builder, v *RecoveryOptionsView) {
-	if v == nil || (len(v.Options) == 0 && len(v.OwnStock) == 0) {
+	if v == nil || (len(v.Options) == 0 && len(v.OwnStock) == 0 && !v.RestInPlace) {
 		return
 	}
 	b.WriteString("## How you can rest\n")
+	// At-post rest leads: closing up where you stand keeps the post manned, so
+	// it is the option to weigh before walking off to a bed. ZBBS-HOME-362.
+	if v.RestInPlace {
+		b.WriteString("- Close up and rest where you are — call take_break to recover without leaving your post.\n")
+	}
 	for _, o := range v.Options {
 		b.WriteString("- ")
 		b.WriteString(sanitizeInline(o.Label))

@@ -779,7 +779,20 @@ func buildDutySteer(snap *sim.Snapshot, a *sim.ActorSnapshot, anchors *AnchorsVi
 		return nil
 	}
 	// No anchors → no work/home to steer toward; no clock → can't tell the hour.
-	if anchors == nil || snap.LocalMinuteOfDay == nil {
+	// snap/a guarded too so the hasRedNeed/clock dereferences below are safe.
+	if anchors == nil || snap == nil || a == nil || snap.LocalMinuteOfDay == nil {
+		return nil
+	}
+	// A pressing (red) need outranks duty: don't march an exhausted/starving NPC
+	// to its post (or home) before it has addressed the need. Without this an
+	// on-shift vendor with maxed tiredness deadlocks — at the stall the only rest
+	// cue points elsewhere so it walks home to sleep, then this steer drags it
+	// back before it ever rests, and the need never clears. Suppressing the steer
+	// lets the recovery/satiation cues win this turn; once the need clears the
+	// steer resumes next tick. The complementary "rest at your post" cue
+	// (recovery_options.go) keeps an at-post vendor from leaving in the first
+	// place, so the post stays manned. ZBBS-HOME-362.
+	if hasRedNeed(a, snap) {
 		return nil
 	}
 	nowMin := *snap.LocalMinuteOfDay
@@ -811,6 +824,25 @@ func buildDutySteer(snap *sim.Snapshot, a *sim.ActorSnapshot, anchors *AnchorsVi
 	default:
 		return nil
 	}
+}
+
+// hasRedNeed reports whether any of the actor's tracked needs is at or over its
+// configured red-tier threshold. Iterates the canonical need registry (sim.Needs)
+// and reads the same per-need boundary the recovery/satiation cues and the
+// need-threshold warrant use (snap.NeedThresholds.Get, which falls back to the
+// registry default when unset) so "red" means one thing across the prompt.
+// Nil-safe (perception builders elsewhere have hit nil-snapshot edges).
+// ZBBS-HOME-362.
+func hasRedNeed(a *sim.ActorSnapshot, snap *sim.Snapshot) bool {
+	if a == nil || snap == nil {
+		return false
+	}
+	for _, n := range sim.Needs {
+		if a.Needs[n.Key] >= snap.NeedThresholds.Get(n.Key) {
+			return true
+		}
+	}
+	return false
 }
 
 // buildNarrativeState returns the kind-aware "Who you are:" content
