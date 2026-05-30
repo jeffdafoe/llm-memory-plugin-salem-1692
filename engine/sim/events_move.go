@@ -118,13 +118,12 @@ const (
 
 	// MoveStoppedDeadlocked — the mover soft-blocked for
 	// DeadlockStuckThreshold consecutive ticks with no advanceable re-plan
-	// (ZBBS-WORK-340). Distinct from Blocked because the obstruction was
-	// another actor (transient by nature), not a wall — NPC behavior trees
-	// can treat it as "retry later" rather than "the destination is
-	// fundamentally unreachable, pick a new goal". The umbilical
-	// /deadlocks view records the event with mover + occupant + a
-	// replan-failed flag so operators can see deadlock frequency in live
-	// play.
+	// (ZBBS-WORK-340). RETAINED for wire compatibility but NO LONGER EMITTED
+	// as of ZBBS-HOME-327: a stably-blocked mover now walks THROUGH the
+	// blocking actor and continues (see advanceActorViaReroute) instead of
+	// stopping, so the only remaining trace of the event is the umbilical
+	// /deadlocks ring (still recorded as a contention canary). Kept defined so
+	// the wire enum and any historical consumer stay valid.
 	MoveStoppedDeadlocked MoveStoppedReason = "deadlocked"
 
 	// MoveStoppedCancelled — the actor voluntarily halted its own walk via

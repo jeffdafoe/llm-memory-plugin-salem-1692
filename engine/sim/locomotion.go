@@ -140,10 +140,11 @@ type MoveIntent struct {
 	// StuckTicks counts consecutive locomotion ticks during which the mover
 	// soft-blocked AND the re-plan with the occupant tile masked off found
 	// no advanceable next tile. Reset to 0 on any successful one-tile step.
-	// When it reaches DeadlockStuckThreshold, advanceActorLocomotion hard-
-	// stops the mover with MoveStoppedDeadlocked and records a DeadlockEntry
-	// for the umbilical /deadlocks view. See locomotion_ticker.go and
-	// ZBBS-WORK-340 for the design.
+	// When it reaches DeadlockStuckThreshold, advanceActorLocomotion records a
+	// DeadlockEntry for the umbilical /deadlocks view and then walks the mover
+	// THROUGH the blocking actor (ZBBS-HOME-327) — keeping the MoveIntent —
+	// rather than hard-stopping it. See locomotion_ticker.go, ZBBS-WORK-340,
+	// and ZBBS-HOME-327 for the design.
 	StuckTicks int
 }
 

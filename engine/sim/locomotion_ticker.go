@@ -74,18 +74,21 @@ const LocomotionTickInterval = 2 * time.Second / 3
 // (ZBBS-WORK-340). Each tick that the mover soft-blocks AND the re-plan
 // with the occupant tile masked off also fails to find an advanceable
 // next tile, MoveIntent.StuckTicks is incremented. When it reaches this
-// many consecutive ticks, advanceActorLocomotion hard-stops the mover
-// with MoveStoppedDeadlocked and records a DeadlockEntry for the
-// umbilical /deadlocks view. The counter resets to 0 on any successful
-// one-tile step (whether direct or via re-plan).
+// many consecutive ticks, advanceActorLocomotion records a DeadlockEntry
+// for the umbilical /deadlocks view and then (ZBBS-HOME-327) walks the
+// mover THROUGH the blocking actor — keeping the MoveIntent — rather than
+// hard-stopping it. The counter resets to 0 on any successful one-tile
+// step (whether direct, via re-plan, or via the walk-through).
 //
-// 5 ticks at LocomotionTickInterval = ~3.3s of wedge before the engine
-// reports it (ZBBS-WORK-341 slowed the tick from 200ms to 666.67ms).
-// 3.3s is longer than ideal — players visibly watch the NPC stand
-// still — but tightening below ~2 ticks risks false-positives on
-// genuinely transient passers-by (someone walking through a corridor
-// for one tick). Reconsider once /umbilical/deadlocks data names the
-// shape of the real failures.
+// The window is still the transient filter it always was — it just gates
+// the walk-through now instead of a give-up. 5 ticks at
+// LocomotionTickInterval = ~3.3s of standing still before the mover forces
+// past (ZBBS-WORK-341 slowed the tick from 200ms to 666.67ms). 3.3s is
+// longer than ideal — players visibly watch the NPC pause — but tightening
+// below ~2 ticks risks forcing through a genuinely transient passer-by
+// (someone walking through a corridor for one tick) who would have cleared
+// on their own. Reconsider once /umbilical/deadlocks data names the shape
+// of the real failures.
 const DeadlockStuckThreshold = 5
 
 // RunLocomotionTicker owns the locomotion ticker's periodic schedule.
@@ -350,9 +353,12 @@ const maxReroutePathsPerTick = 4
 // step is found (mover advances, stuck counter resets) or the mask is
 // exhausted (no detour exists at all, OR every detour is itself
 // occupied). On exhaustion the mover's per-MoveIntent stuck counter
-// increments and at DeadlockStuckThreshold consecutive ticks the mover
-// hard-stops with MoveStoppedDeadlocked + a DeadlockEntry on
-// World.DeadlockSnapshot for the umbilical /deadlocks view.
+// increments and at DeadlockStuckThreshold consecutive ticks it records a
+// DeadlockEntry on World.DeadlockSnapshot for the umbilical /deadlocks view
+// and then walks THROUGH the blocking actor (ZBBS-HOME-327) rather than
+// hard-stopping — a stably-blocked mover squeezes past instead of freezing.
+// A member's own occupied door short-circuits to an immediate walk-through
+// earlier (ZBBS-HOME-348), skipping the stuck window.
 //
 // The iterative mask is load-bearing: FindPath is deterministic, so if
 // the first re-plan returns a detour with a soft-blocked next tile, the
@@ -435,6 +441,17 @@ func advanceActorViaReroute(w *World, actor *Actor, dest MoveDestination, attemp
 
 		// altNext is soft-blocked too. Widen the mask and try again.
 		masked = append(masked, GridPoint{X: altNext.X, Y: altNext.Y})
+	}
+
+	// Defensive: every tail path below (HOME-348's immediate door step, the
+	// stuck-tick increment, and HOME-327's walk-through) dereferences
+	// actor.MoveIntent. The caller guarantees it non-nil and nothing between
+	// here and function entry clears it — the only nil-set is finishArrival in
+	// the reroute-success branch, which returns. The guard makes that invariant
+	// explicit at this recovery path so a future emit-before-threshold can't
+	// turn a stale nil into a ticker panic (code_review, ZBBS-HOME-327).
+	if actor.MoveIntent == nil {
+		return
 	}
 
 	// Last-resort door walk-through (ZBBS-HOME-348). The reroute has
@@ -537,8 +554,58 @@ func advanceActorViaReroute(w *World, actor *Actor, dest MoveDestination, attemp
 		OccupantTile:    occupiedNext,
 		ReplanFailed:    replanFailed,
 	})
-	emitMoveStopped(w, actor, dest, MoveStoppedDeadlocked, attemptID, now)
-	actor.MoveIntent = nil
+
+	// Walk-through, not give-up (ZBBS-HOME-327). The mover has been stably
+	// soft-blocked for the full window — an actor that isn't going to yield (a
+	// sleeping occupant on the route, a head-on mutual block, a non-member at an
+	// open structure's busy door). The pre-HOME-327 behavior hard-stopped here
+	// (MoveStoppedDeadlocked + cleared MoveIntent), which froze the mover: it
+	// abandoned the walk, its needs climbed, and the agent layer just re-decided
+	// the same blocked move next tick — the "village looks dead" loop (the live
+	// Josiah→Tavern case: ten approaches to a tavern whose keeper slept across
+	// the only door). Instead, step THROUGH the blocker — onto occupiedNext, the
+	// one-tile-toward-goal step the reroute kept rejecting — and KEEP the
+	// MoveIntent so the walk continues. Jeff's directive (2026-05-29): actors are
+	// never a permanent obstacle to each other; "two people jamming past each
+	// other in a doorway." The deadlock entry above stays as the contention
+	// canary (the umbilical /deadlocks view + the ReplanFailed sleeper-vs-clog
+	// distinction); only the OUTCOME changed from frozen to squeezed-past.
+	//
+	// Safe by construction:
+	//   - occupiedNext was soft-classified by advanceActorLocomotion
+	//     (classifyTileBlocker): walkable terrain with an actor on it, NEVER a
+	//     wall, water, footprint, or closed-structure tile (those classify HARD
+	//     and stop the move earlier). The step is one legal terrain tile — the
+	//     mover never clips into a building.
+	//   - Entry policy is already enforced upstream: resolvePathTarget refuses a
+	//     StructureEnter target for a closed / non-member-owner-only structure,
+	//     so a mover walking toward `target` is authorized to be there. Stepping
+	//     through the blocker bypasses no access rule. (HOME-348's member-only
+	//     immediate door walk-through still fires earlier for a member's own
+	//     door; this is the general last resort for everyone else.)
+	//   - Last resort: the reroute-around loop ran first, and the stuck window
+	//     confirmed the block is stable rather than a one-tick brush-past.
+	from := actor.Pos
+	fromStructure := actor.InsideStructureID
+	actor.Pos = occupiedNext
+	updateInsideStructureIDFromTileOwnership(w, actor)
+	actor.MoveIntent.StuckTicks = 0
+
+	w.emit(&ActorMoved{
+		ActorID:           actor.ID,
+		FromPosition:      from,
+		ToPosition:        occupiedNext,
+		FromStructureID:   fromStructure,
+		ToStructureID:     actor.InsideStructureID,
+		MovementAttemptID: attemptID,
+		At:                now,
+	})
+
+	checkHuddleDriftAfterPositionMutation(w, actor.ID, now)
+
+	if arrivedAtDestination(w, actor, dest) {
+		finishArrival(w, actor, dest, attemptID, now)
+	}
 }
 
 // arrivedAtDestination reports whether the actor has reached dest.
