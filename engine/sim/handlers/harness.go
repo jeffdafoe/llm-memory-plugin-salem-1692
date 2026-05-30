@@ -88,6 +88,11 @@ type HarnessConfig struct {
 	// Zero → no harness-imposed timeout beyond the parent ctx.
 	ToolDispatchTimeout time.Duration
 
+	// PromptSink, when set, receives each tick's rendered deliberation prompt
+	// for the operator-gated umbilical debug surface (ZBBS-HOME-360). Nil (the
+	// umbilical-disabled default) means prompts are not captured — zero cost.
+	PromptSink sim.PromptSink
+
 	// Clock is injectable for tests. Zero → time.Now.
 	Clock func() time.Time
 }
@@ -111,6 +116,10 @@ type Harness struct {
 	maxToolCallsPerResponse int
 	renderConfig            perception.RenderConfig
 	toolDispatchTimeout     time.Duration
+
+	// promptSink captures rendered deliberation prompts for the umbilical
+	// (ZBBS-HOME-360); nil when the umbilical is disabled.
+	promptSink sim.PromptSink
 
 	clock func() time.Time
 }
@@ -151,6 +160,7 @@ func NewHarness(cfg HarnessConfig) (*Harness, error) {
 		maxToolCallsPerResponse: cfg.MaxToolCallsPerResponse,
 		renderConfig:            cfg.PerceptionRenderConfig,
 		toolDispatchTimeout:     cfg.ToolDispatchTimeout,
+		promptSink:              cfg.PromptSink,
 		clock:                   clk,
 	}, nil
 }
@@ -242,6 +252,19 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 
 	// --- render (allocates the prompt) ---
 	rendered := perception.Render(payload, h.renderConfig)
+	// Capture the rendered prompt for the umbilical debug surface (ZBBS-HOME-360),
+	// before the transcript continuation appends tool results — this is the
+	// perception the model deliberated from. Nil sink (umbilical off) → skipped.
+	// Placed after the noop-skip gate so only actually-rendered prompts are
+	// captured, never a tick that never built one.
+	if h.promptSink != nil {
+		h.promptSink.WritePrompt(sim.PromptRecord{
+			At:        h.clock().UTC(),
+			ActorID:   job.actorID,
+			AttemptID: job.attemptID,
+			Prompt:    rendered.Text,
+		})
+	}
 	// Render-time drops are the "consumed but not addressed" set the
 	// harness must carry forward. Subsequent paths append to this set on
 	// failures (e.g. mid-tick LLM error).
