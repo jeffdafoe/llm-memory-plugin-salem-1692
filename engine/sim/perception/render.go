@@ -101,6 +101,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderNarrativeState(&b, p.NarrativeState)
 	renderActor(&b, p.Actor)
 	renderSurroundings(&b, p.Surroundings)
+	renderAnchors(&b, p.Anchors)
 	renderRelationships(&b, p.Relationships)
 	renderPendingDeliveriesFromMe(&b, p.PendingDeliveriesFromMe)
 	renderPendingDeliveriesToMe(&b, p.PendingDeliveriesToMe)
@@ -384,6 +385,42 @@ func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 			source, sanitizeInline(string(s.GatherableItem)))
 	}
 	b.WriteString("\n")
+}
+
+// renderAnchors writes the actor's standing home/work move targets as a prose
+// line carrying each structure_id. Always emitted when the view is non-nil, so
+// a wandering NPC always has its own home and work as reachable destinations —
+// not only when a need-cue happens to point somewhere (the gap that let John
+// Ellis cycle to a closed farm with no id for his own tavern to head back to).
+// The "(structure_id: …)" form matches the satiation / restock / shift-duty
+// cues — it's the load-bearing token the model echoes into move_to.
+// ZBBS-HOME-349.
+func renderAnchors(b *strings.Builder, v *AnchorsView) {
+	if v == nil {
+		return
+	}
+	work := anchorPlace(v.WorkLabel, "your workplace")
+	home := anchorPlace(v.HomeLabel, "your home")
+	switch {
+	case v.SamePlace:
+		fmt.Fprintf(b, "Your home and your trade are both at %s (structure_id: %s) — you can head back there whenever you wish.\n\n", work, v.WorkID)
+	case v.WorkID != "" && v.HomeID != "":
+		fmt.Fprintf(b, "You keep your trade at %s (structure_id: %s), and your home is at %s (structure_id: %s) — you can head to either whenever you wish.\n\n", work, v.WorkID, home, v.HomeID)
+	case v.WorkID != "":
+		fmt.Fprintf(b, "You keep your trade at %s (structure_id: %s) — you can head back there whenever you wish.\n\n", work, v.WorkID)
+	case v.HomeID != "":
+		fmt.Fprintf(b, "Your home is at %s (structure_id: %s) — you can head back there whenever you wish.\n\n", home, v.HomeID)
+	}
+}
+
+// anchorPlace returns the sanitized structure label, or a generic fallback
+// phrase when the structure has no DisplayName (the id still rides in the
+// caller's line, so the target stays actionable even unlabeled).
+func anchorPlace(label, fallback string) string {
+	if label == "" {
+		return fallback
+	}
+	return sanitizeInline(label)
 }
 
 // joinHuddleMembers renders co-huddle peers with name-vs-descriptor

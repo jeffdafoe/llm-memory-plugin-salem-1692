@@ -76,6 +76,13 @@ type Payload struct {
 	// and co-present actors.
 	Surroundings SurroundingsView
 
+	// Anchors are the actor's OWN home and work structures, always surfaced
+	// (when set) as standing move_to targets with their structure_ids — so a
+	// wandering NPC can always head home or to work, not only when a need-cue
+	// happens to point somewhere. nil for an actor with neither anchor (e.g. a
+	// PC, or an unanchored NPC). ZBBS-HOME-349.
+	Anchors *AnchorsView
+
 	// Warrants is every consumed warrant, ordered by SourceEventID
 	// ascending — PR 3a's monotonic EventID is the authoritative causal
 	// order. Zero-lineage warrants (SourceEventID == 0, legacy/non-event-
@@ -386,6 +393,21 @@ type HuddleMember struct {
 	DisplayName string
 	Role        string
 	Acquainted  bool
+}
+
+// AnchorsView carries the actor's own home and work structures as standing
+// move_to targets. Label is the structure's DisplayName (may be empty — render
+// falls back to a generic phrase but always keeps the id); the id is the
+// load-bearing field the model passes to move_to. SamePlace is true when home
+// and work resolve to the same structure (a keeper who lives at their own
+// establishment), so render says it once rather than naming the same place
+// twice. A zero-value field (empty id) means that anchor isn't set.
+type AnchorsView struct {
+	WorkLabel string
+	WorkID    sim.StructureID
+	HomeLabel string
+	HomeID    sim.StructureID
+	SamePlace bool
 }
 
 // SceneView describes the primary scene and, when a baseline could be
