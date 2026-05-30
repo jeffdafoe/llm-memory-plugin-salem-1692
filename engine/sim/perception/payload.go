@@ -309,6 +309,28 @@ type ActorView struct {
 	// mid-walk reminds the LLM it already has a destination — the movement
 	// analogue of ActiveDwellCredits. ZBBS-HOME-336.
 	InFlightMove *InFlightMoveView
+
+	// Inventory is the actor's carried goods — the STANDING "what you're
+	// carrying" readout (ZBBS-HOME-361), restored after the v2 rewrite dropped
+	// v1's inventory line and left NPCs blind to their own pockets (a hungry
+	// NPC holding cheese walked to a shop because nothing in perception told it
+	// what it held). Deliberately NEUTRAL and UNGATED: it states possession, not
+	// need-resolution. The "consume to eat / drink" push stays in the
+	// need-gated satiation own-stock line — so a not-yet-pressing actor sees it
+	// has cheese without being nudged to eat, and a vendor (e.g. an innkeeper)
+	// sees its sellable stock regardless of its own needs. Resolved + sorted at
+	// build time; empty (render omits the line) when carrying nothing.
+	Inventory []InventoryItem
+}
+
+// InventoryItem is one carried item kind in the standing inventory readout —
+// its display label + quantity. kind is the unexported sort tie-break so two
+// kinds sharing a label order deterministically (Inventory is a map).
+// ZBBS-HOME-361.
+type InventoryItem struct {
+	Label string
+	Qty   int
+	kind  sim.ItemKind
 }
 
 // InFlightMoveView is the perception-side projection of the subject's
