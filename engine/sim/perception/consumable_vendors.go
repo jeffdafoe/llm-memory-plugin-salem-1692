@@ -278,3 +278,33 @@ func vendorStructureLabel(s *sim.Structure) string {
 	}
 	return "the shop"
 }
+
+// closedBusinessAnnotation is the in-world suffix appended to a supplier cue
+// pointing at a business the subject remembers finding shut (ZBBS-HOME-353).
+// Phrased as recalled experience, not a live status read, so it reads as the
+// NPC's own knowledge — and it deprioritizes rather than forbids (the memory
+// decays, so a flat "it's closed" would be wrong once a keeper returns).
+const closedBusinessAnnotation = " — though you went there not long ago and found it shut up, no one tending it"
+
+// businessRememberedShut reports whether the subject has an experiential memory
+// (ZBBS-HOME-353) of arriving at structureID and finding it shut, still within
+// sim.ClosedBusinessMemoryTTL of the snapshot clock. Perception uses it to
+// annotate a supplier cue pointing at a remembered-shut business so the model
+// deprioritizes the trip. The memory is stamped + self-cleared by the arrival
+// subscriber (sim/closed_business.go); the TTL decay is applied HERE at read
+// time so a stale "shut" naturally fades (the NPC retries) without the world
+// goroutine sweeping the map. False when the subject has no such memory, the
+// snapshot has no clock baseline, or the memory has expired.
+func businessRememberedShut(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, structureID sim.StructureID) bool {
+	if snap == nil || actorSnap == nil || len(actorSnap.ClosedBusinessObs) == 0 {
+		return false
+	}
+	observedAt, ok := actorSnap.ClosedBusinessObs[structureID]
+	if !ok {
+		return false
+	}
+	// age >= 0 guards a future-stamped observation (clock skew / test setup):
+	// a negative age would otherwise read as "< TTL" → fresh forever.
+	age := snap.PublishedAt.Sub(observedAt)
+	return age >= 0 && age < sim.ClosedBusinessMemoryTTL
+}

@@ -74,6 +74,11 @@ type SatiationVendor struct {
 	ItemLabel      string          // "stew"
 	Magnitude      int
 	CostText       string // "~3 coins" | "ask the seller"
+
+	// Shut is true when the subject has a live experiential memory of finding
+	// this business shut (no keeper) within the decay window — render annotates
+	// the line so the model deprioritizes the trip. ZBBS-HOME-353.
+	Shut bool
 }
 
 // buildSatiation builds the eat/drink view for actorSnap, or nil when no
@@ -92,7 +97,7 @@ func buildSatiation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Acto
 		}
 		own := gatherOwnStock(snap, actorSnap, need)
 		peers := gatherCoPresentPeerOffers(snap, actorID, actorSnap, need)
-		vendors := gatherSatiationVendors(snap, actorID, need)
+		vendors := gatherSatiationVendors(snap, actorID, actorSnap, need)
 		if len(own) == 0 && len(peers) == 0 && len(vendors) == 0 {
 			continue
 		}
@@ -113,7 +118,7 @@ func buildSatiation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Acto
 // gatherSatiationVendors maps the shared vendor-consumable finder into the
 // satiation bullet shape. findVendorConsumables already returns a deterministic
 // order, so no re-sort here.
-func gatherSatiationVendors(snap *sim.Snapshot, actorID sim.ActorID, need sim.NeedKey) []SatiationVendor {
+func gatherSatiationVendors(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSnapshot, need sim.NeedKey) []SatiationVendor {
 	var out []SatiationVendor
 	for _, vc := range findVendorConsumables(snap, actorID, need, "ask the seller") {
 		if vc.StructureID == "" {
@@ -130,6 +135,7 @@ func gatherSatiationVendors(snap *sim.Snapshot, actorID sim.ActorID, need sim.Ne
 			ItemLabel:      vc.ItemLabel,
 			Magnitude:      vc.Magnitude,
 			CostText:       vc.CostText,
+			Shut:           businessRememberedShut(snap, actorSnap, vc.StructureID),
 		})
 	}
 	return out
@@ -267,6 +273,9 @@ func renderSatiation(b *strings.Builder, v *SatiationView) {
 				// name. Same id-in-perception contract restock + shift_duty use.
 				if vd.StructureID != "" {
 					fmt.Fprintf(b, " (structure_id: %s)", vd.StructureID)
+				}
+				if vd.Shut {
+					b.WriteString(closedBusinessAnnotation)
 				}
 				b.WriteString("\n")
 			}

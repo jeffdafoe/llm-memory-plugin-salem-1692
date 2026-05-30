@@ -604,6 +604,21 @@ type Actor struct {
 
 	DwellCredits map[DwellCreditKey]*DwellCredit
 
+	// ClosedBusinessObs is this actor's experiential memory of businesses it
+	// arrived at and found shut (no keeper present), keyed by the business's
+	// structure_id and stamped with the wall-clock time of the observation. It
+	// is how a wandering NPC learns NOT to keep walking to an unattended shop —
+	// perception annotates a restock/vendor cue pointing at a remembered-shut
+	// business so the model deprioritizes it. The memory is experiential (only
+	// learned by going there, never map-wide omniscience), self-clears when the
+	// actor later finds the business attended, and DECAYS: perception ignores an
+	// entry older than ClosedBusinessMemoryTTL (4h) so the NPC retries rather
+	// than believing it shut forever. In-memory + restart-lossy by design
+	// (transient knowledge, not durable state). Populated by the ActorArrived
+	// subscriber in closed_business.go. nil until the actor's first shut
+	// observation. ZBBS-HOME-353.
+	ClosedBusinessObs map[StructureID]time.Time
+
 	// RestockPolicy carries this actor's produce/buy entries, unioned
 	// across their role attributes (tavernkeeper + worker, etc.). Read
 	// from actor_attribute.params.restock in legacy; nil for actors
@@ -819,6 +834,9 @@ func CloneActor(a *Actor) *Actor {
 	if a.DwellCredits != nil {
 		cp.DwellCredits = cloneDwellCredits(a.DwellCredits)
 	}
+	if a.ClosedBusinessObs != nil {
+		cp.ClosedBusinessObs = cloneClosedBusinessObs(a.ClosedBusinessObs)
+	}
 	if a.ProduceState != nil {
 		cp.ProduceState = make(map[ItemKind]*ProduceState, len(a.ProduceState))
 		for k, v := range a.ProduceState {
@@ -973,6 +991,14 @@ type ActorSnapshot struct {
 	// the world's mutable credit map.
 	DwellCredits map[DwellCreditKey]*DwellCredit
 
+	// ClosedBusinessObs mirrors the live Actor's experiential shut-business
+	// memory at snapshot time (structure_id -> observed-shut wall-clock), so
+	// perception can annotate a restock/vendor cue pointing at a
+	// remembered-shut business. Deep-cloned by snapshotActor so published
+	// snapshots don't alias the world's mutable map. nil until the actor's
+	// first shut observation. See Actor.ClosedBusinessObs. ZBBS-HOME-353.
+	ClosedBusinessObs map[StructureID]time.Time
+
 	// RoomAccess mirrors the live Actor's private/staff-room grants at
 	// snapshot time so perception build can surface the lodger view ("your
 	// room at the inn is paid through <day>") and compute keeper-side room
@@ -1054,6 +1080,9 @@ func CloneActorSnapshot(s *ActorSnapshot) *ActorSnapshot {
 	if s.DwellCredits != nil {
 		cp.DwellCredits = cloneDwellCredits(s.DwellCredits)
 	}
+	if s.ClosedBusinessObs != nil {
+		cp.ClosedBusinessObs = cloneClosedBusinessObs(s.ClosedBusinessObs)
+	}
 	if s.AttributeSlugs != nil {
 		cp.AttributeSlugs = append([]string(nil), s.AttributeSlugs...)
 	}
@@ -1064,6 +1093,20 @@ func CloneActorSnapshot(s *ActorSnapshot) *ActorSnapshot {
 	cp.PendingSummon = clonePendingSummon(s.PendingSummon)
 	cp.SummonRefusal = cloneSummonRefusal(s.SummonRefusal)
 	return &cp
+}
+
+// cloneClosedBusinessObs copies a ClosedBusinessObs map (structure_id ->
+// observed-shut time). time.Time is a value type, so a shallow per-entry copy
+// is a full clone. Returns nil for a nil source. ZBBS-HOME-353.
+func cloneClosedBusinessObs(src map[StructureID]time.Time) map[StructureID]time.Time {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[StructureID]time.Time, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
 }
 
 // cloneDwellCredits deep-copies a DwellCredits map. RemainingTicks is a
