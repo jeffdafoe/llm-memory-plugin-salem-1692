@@ -58,6 +58,11 @@ type RestockVendor struct {
 	StructureLabel string // "Thorne's General Store" — where the reseller walks to
 	StructureID    sim.StructureID
 	CostText       string // per-buyer last-paid "~3 coins", or "ask the supplier"
+
+	// Shut is true when the reseller has a live experiential memory of finding
+	// this supplier shut (no keeper) within the decay window — render annotates
+	// the line so the model deprioritizes the trip. ZBBS-HOME-353.
+	Shut bool
 }
 
 // buildRestocking builds the restock view for actorSnap, or nil when the actor
@@ -83,7 +88,7 @@ func buildRestocking(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 			ItemLabel:  itemDisplayLabel(snap, e.Item),
 			CurrentQty: current,
 			Cap:        cap,
-			Vendors:    findItemVendors(snap, actorID, e.Item),
+			Vendors:    findItemVendors(snap, actorID, actorSnap, e.Item),
 			kind:       e.Item,
 		})
 	}
@@ -114,7 +119,7 @@ func buildRestocking(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 // The representative seller is the lowest VendorID at that structure, picked
 // deterministically so the per-buyer CostText (last-paid from that seller) is
 // stable across snapshots regardless of map iteration order.
-func findItemVendors(snap *sim.Snapshot, buyerID sim.ActorID, itemKind sim.ItemKind) []RestockVendor {
+func findItemVendors(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *sim.ActorSnapshot, itemKind sim.ItemKind) []RestockVendor {
 	type pick struct {
 		vendorID  sim.ActorID
 		structure *sim.Structure
@@ -138,6 +143,7 @@ func findItemVendors(snap *sim.Snapshot, buyerID sim.ActorID, itemKind sim.ItemK
 			StructureLabel: vendorStructureLabel(p.structure),
 			StructureID:    structureID,
 			CostText:       buyerLastPaidText(snap, buyerID, p.vendorID, itemKind, "ask the supplier"),
+			Shut:           businessRememberedShut(snap, buyerSnap, structureID),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -179,6 +185,9 @@ func renderRestocking(b *strings.Builder, v *RestockingView) {
 			}
 			if vd.CostText != "" {
 				fmt.Fprintf(b, ", %s", vd.CostText)
+			}
+			if vd.Shut {
+				b.WriteString(closedBusinessAnnotation)
 			}
 			b.WriteString("\n")
 		}

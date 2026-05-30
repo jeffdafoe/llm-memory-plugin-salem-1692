@@ -1,0 +1,143 @@
+package sim
+
+import "time"
+
+// closed_business.go — ZBBS-HOME-353. Experiential "this business was shut"
+// memory. A wandering NPC kept walking to an unattended shop/farm (the live
+// John Ellis case: six trips in eight minutes to the keeperless Ellis Farm)
+// because the restock/vendor perception cues name a supplier's WORKPLACE with no
+// presence gate. The fix is experiential, not omniscient: when an NPC ARRIVES at
+// a business and finds no keeper present, it remembers that — and perception
+// annotates a later cue pointing there so the model deprioritizes it. The memory
+// self-clears when the NPC next finds the business attended, and DECAYS after
+// ClosedBusinessMemoryTTL so it retries rather than believing it shut forever.
+//
+// This is the CAPTURE half (an ActorArrived subscriber, additive — it does not
+// touch the locomotion ticker). The SURFACE half lives in perception
+// (build/render) and reads Snapshot actor ClosedBusinessObs.
+
+// ClosedBusinessMemoryTTL is how long a "found it shut" observation stays
+// actionable before perception ignores it (ZBBS-HOME-353). After this the NPC
+// re-checks the business rather than treating it as permanently closed. 4 game-
+// hours (Jeff, 2026-05-30) — long enough to stop the same-session loop, short
+// enough that a keeper returning within the day clears the avoidance.
+const ClosedBusinessMemoryTTL = 4 * time.Hour
+
+// handleClosedBusinessOnArrival is the ActorArrived subscriber that records (or
+// clears) the arriving NPC's memory of a business being shut. It fires once per
+// arrival and is a no-op for non-agent arrivals or arrivals that don't resolve
+// to a worked structure other than the arriver's own workplace.
+//
+// "At a business" = the arrival resolved to a structure that is someone's
+// workplace (has >=1 worker), reached either by entering it (FinalStructureID)
+// or by standing at its loiter slot (a StructureVisit to an owner-only shop,
+// where FinalStructureID is empty — the John Ellis path). "Keeper present" = at
+// least one worker of that structure is at it right now (inside it, or loitering
+// at it); presence is location-only and deliberately NOT gated on break/sleep/
+// shift — a keeper briefly on break inside the shop still counts as open.
+func handleClosedBusinessOnArrival(w *World, evt Event) {
+	arr, ok := evt.(*ActorArrived)
+	if !ok {
+		return
+	}
+	a := w.Actors[arr.ActorID]
+	if a == nil || !isAgentNPC(a) {
+		return
+	}
+
+	structureID, ok := businessArrivedAt(w, a, arr)
+	if !ok {
+		return
+	}
+
+	if keeperPresentAt(w, structureID) {
+		// Found it attended — clear any stale "shut" memory for this business.
+		delete(a.ClosedBusinessObs, structureID)
+		return
+	}
+
+	// Found it shut — remember it (stamped with the arrival time so perception
+	// can decay the memory). Allocate lazily; nil until the first observation.
+	if a.ClosedBusinessObs == nil {
+		a.ClosedBusinessObs = make(map[StructureID]time.Time)
+	}
+	a.ClosedBusinessObs[structureID] = arr.At
+}
+
+// businessArrivedAt resolves the worked structure the actor just arrived at, or
+// ok=false when the arrival isn't at a business worth remembering. A structure
+// counts only when it is someone ELSE's workplace: the arriver's own workplace
+// is excluded (you don't observe your own shop as "shut" — you are its keeper),
+// and a structure with no workers at all (a pure residence) is not a business.
+func businessArrivedAt(w *World, a *Actor, arr *ActorArrived) (StructureID, bool) {
+	// Entered the interior → FinalStructureID names it directly. Event-freshness:
+	// only trust it when the actor's current structure still matches (a later
+	// move could have superseded the arrival).
+	if arr.FinalStructureID != "" && a.InsideStructureID == arr.FinalStructureID {
+		return validBusiness(w, a, arr.FinalStructureID)
+	}
+	// Visited (stood at the loiter slot, outside) → resolve the structure from
+	// the loiter pin. Structures share their id with their village_object
+	// placement, so the resolved object id IS the structure id.
+	if objID, ok := resolveLoiteringObject(w, arr.FinalPosition, LoiterAttributionTiles); ok {
+		return validBusiness(w, a, StructureID(objID))
+	}
+	return "", false
+}
+
+// validBusiness returns structureID when it resolves to a real structure that is
+// a business (>=1 worker) and is NOT the arriver's own workplace; ok=false
+// otherwise.
+func validBusiness(w *World, a *Actor, structureID StructureID) (StructureID, bool) {
+	if structureID == "" || structureID == a.WorkStructureID {
+		return "", false
+	}
+	if w.Structures[structureID] == nil {
+		return "", false
+	}
+	if !structureHasWorker(w, structureID) {
+		return "", false // not a business — no one works here
+	}
+	return structureID, true
+}
+
+// structureHasWorker reports whether any actor has structureID as its workplace.
+func structureHasWorker(w *World, structureID StructureID) bool {
+	for _, worker := range w.Actors {
+		if worker != nil && worker.WorkStructureID == structureID {
+			return true
+		}
+	}
+	return false
+}
+
+// keeperPresentAt reports whether any worker of structureID is currently AT it —
+// inside its interior, or loitering at its slot. Location-only: it does NOT gate
+// on break/sleep/shift, so a keeper briefly on break inside the shop still reads
+// as present (the business is open, just quiet). A worker who has wandered off
+// (the drifted Ellis Farm dairyer) is not present, so the business reads shut.
+func keeperPresentAt(w *World, structureID StructureID) bool {
+	for _, worker := range w.Actors {
+		if worker == nil || worker.WorkStructureID != structureID {
+			continue
+		}
+		if worker.InsideStructureID == structureID {
+			return true
+		}
+		if objID, ok := resolveLoiteringObject(w, worker.Pos, LoiterAttributionTiles); ok &&
+			StructureID(objID) == structureID {
+			return true
+		}
+	}
+	return false
+}
+
+// RegisterClosedBusinessSubscriber wires the shut-business-memory subscriber.
+// Call before World.Run or from inside a Command (world-goroutine-safe). Mirrors
+// RegisterSleepSubscriber — another ActorArrived subscriber. ZBBS-HOME-353.
+func RegisterClosedBusinessSubscriber(w *World) {
+	if w == nil {
+		panic("sim: RegisterClosedBusinessSubscriber requires a non-nil world")
+	}
+	w.Subscribe(SubscriberFunc(handleClosedBusinessOnArrival))
+}

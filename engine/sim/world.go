@@ -1507,6 +1507,7 @@ func snapshotActor(a *Actor, atTick uint64) *ActorSnapshot {
 		VisitorState:        cloneVisitorState(a.VisitorState),
 		BusinessownerState:  cloneBusinessownerState(a.BusinessownerState),
 		DwellCredits:        cloneDwellCredits(a.DwellCredits),
+		ClosedBusinessObs:   cloneClosedBusinessObs(a.ClosedBusinessObs),
 		RoomAccess:          cloneRoomAccess(a.RoomAccess),
 		RestockPolicy:       a.RestockPolicy,
 		TickInFlight:        a.TickInFlight,
