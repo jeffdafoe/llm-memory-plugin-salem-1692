@@ -74,6 +74,34 @@ func TestDecodeMoveToArgs_NonObject(t *testing.T) {
 	}
 }
 
+// --- structure_name path (ZBBS-HOME-356) -------------------------------
+
+func TestDecodeMoveToArgs_NameOnlyValid(t *testing.T) {
+	args, err := DecodeMoveToArgs(json.RawMessage(`{"structure_name":"the Tavern"}`))
+	if err != nil {
+		t.Fatalf("DecodeMoveToArgs: %v", err)
+	}
+	got := args.(MoveToArgs)
+	if got.StructureName != "the Tavern" || got.StructureID != "" {
+		t.Errorf("got %+v, want name-only {StructureName:'the Tavern'}", got)
+	}
+}
+
+func TestDecodeMoveToArgs_BothRejected(t *testing.T) {
+	_, err := DecodeMoveToArgs(json.RawMessage(`{"structure_id":"inn","structure_name":"the Inn"}`))
+	if err == nil || !strings.Contains(err.Error(), "not both") {
+		t.Fatalf("want 'not both' error for id+name, got %v", err)
+	}
+}
+
+func TestDecodeMoveToArgs_NameOverCap(t *testing.T) {
+	long := strings.Repeat("z", MaxMoveToStructureIDChars+1)
+	_, err := DecodeMoveToArgs(json.RawMessage(`{"structure_name":"` + long + `"}`))
+	if err == nil || !strings.Contains(err.Error(), "structure_name") {
+		t.Fatalf("want structure_name over-cap error, got %v", err)
+	}
+}
+
 // --- HandleMoveTo ------------------------------------------------------
 
 func TestHandleMoveTo_BuildsCommand(t *testing.T) {
@@ -86,6 +114,29 @@ func TestHandleMoveTo_BuildsCommand(t *testing.T) {
 	}
 	if cmd.Fn == nil {
 		t.Error("HandleMoveTo returned a Command with a nil Fn")
+	}
+}
+
+func TestHandleMoveTo_NameBuildsCommand(t *testing.T) {
+	cmd, err := HandleMoveTo(HandlerInput{
+		ActorID: "walker",
+		Args:    MoveToArgs{StructureName: "the Tavern"},
+	})
+	if err != nil {
+		t.Fatalf("HandleMoveTo (name): %v", err)
+	}
+	if cmd.Fn == nil {
+		t.Error("HandleMoveTo (name) returned a Command with a nil Fn")
+	}
+}
+
+func TestHandleMoveTo_NameControlCharRejected(t *testing.T) {
+	_, err := HandleMoveTo(HandlerInput{
+		ActorID: "walker",
+		Args:    MoveToArgs{StructureName: "bad\x00name"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "control character") {
+		t.Fatalf("want control-char rejection, got %v", err)
 	}
 }
 

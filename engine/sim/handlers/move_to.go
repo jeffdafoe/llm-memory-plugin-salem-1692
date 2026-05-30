@@ -27,8 +27,15 @@ import (
 //   - structure_id: required, minLength 1, maxLength MaxMoveToStructureIDChars.
 //     The id of a structure the NPC can see in its perception (its own
 //     home/work, a shop, a place nearby).
+//   - structure_name: optional ALTERNATIVE to structure_id — a place name the
+//     NPC can see in its perception (its own home/work, a landmark nearby). The
+//     engine resolves the name to a structure it could plausibly reach
+//     (anchors + structures within scene radius, nearest-wins on duplicates,
+//     ZBBS-HOME-356). Exactly one of structure_id / structure_name is required;
+//     structure_id wins if both are somehow provided (the precise form).
 type MoveToArgs struct {
-	StructureID string `json:"structure_id"`
+	StructureID   string `json:"structure_id"`
+	StructureName string `json:"structure_name"`
 }
 
 // MaxMoveToStructureIDChars caps the structure_id length on the model-facing
@@ -47,10 +54,15 @@ var moveToSchema = json.RawMessage(`{
             "type": "string",
             "minLength": 1,
             "maxLength": 128,
-            "description": "The id of the structure to walk to. Use a structure_id shown in your perception — for example your own home or workplace, or a place nearby — not a name you make up. The engine handles pathfinding and decides whether you go inside or stand just outside."
+            "description": "The id of the structure to walk to, taken from your perception (your home or workplace, or a place nearby). Preferred when you have it. The engine handles pathfinding and decides whether you go inside or stand just outside."
+        },
+        "structure_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "description": "Alternative to structure_id: the NAME of a place you can see in your perception (e.g. \"the Tavern\", your home). Use this when you know the place by name but not its id. The engine resolves it to the nearest matching place you could reach. Provide structure_id OR structure_name, not both."
         }
     },
-    "required": ["structure_id"],
     "additionalProperties": false
 }`)
 
@@ -58,7 +70,7 @@ var moveToSchema = json.RawMessage(`{
 // schema's per-field description carries the arg guidance; this frames when to
 // reach for the tool and the two things the model must understand about it:
 // walking ends the turn, and it leaves any conversation.
-const moveToDescription = "Walk to a structure you can see in your perception — your home, your workplace, a shop, the meeting house, or another place nearby. The engine handles pathfinding and decides whether you go inside (your own home or work, an open shop) or stand just outside (a well, a closed building). Walking ENDS your turn, so say anything you want the people around you to hear BEFORE you call move_to. If you are in a conversation, choosing to walk away leaves it."
+const moveToDescription = "Walk to a structure you can see in your perception — your home, your workplace, a shop, the meeting house, or another place nearby. Give its structure_id if you have it, or its name (structure_name) — e.g. \"the Tavern\" — if you only know what it's called. The engine handles pathfinding and decides whether you go inside (your own home or work, an open shop) or stand just outside (a well, a closed building). Walking ENDS your turn, so say anything you want the people around you to hear BEFORE you call move_to. If you are in a conversation, choosing to walk away leaves it."
 
 // DecodeMoveToArgs parses the raw tool-call arguments into a MoveToArgs.
 // Errors are typed validation failures the harness surfaces to the model as
@@ -98,12 +110,26 @@ func DecodeMoveToArgs(raw json.RawMessage) (any, error) {
 		}
 		return nil, fmt.Errorf("move_to: malformed trailing data: %w", err)
 	}
-	if args.StructureID == "" {
-		return nil, errors.New("move_to: structure_id is required")
+	// Exactly one of structure_id / structure_name. Neither → the model gave no
+	// destination; both → ambiguous intent (rather than silently preferring one,
+	// reject so the model picks the precise form). ZBBS-HOME-356.
+	hasID := args.StructureID != ""
+	hasName := args.StructureName != ""
+	switch {
+	case !hasID && !hasName:
+		return nil, errors.New("move_to: provide structure_id or structure_name")
+	case hasID && hasName:
+		return nil, errors.New("move_to: provide structure_id OR structure_name, not both")
 	}
 	if n := utf8.RuneCountInString(args.StructureID); n > MaxMoveToStructureIDChars {
 		return nil, fmt.Errorf(
 			"move_to: structure_id exceeds %d-character cap (got %d characters)",
+			MaxMoveToStructureIDChars, n,
+		)
+	}
+	if n := utf8.RuneCountInString(args.StructureName); n > MaxMoveToStructureIDChars {
+		return nil, fmt.Errorf(
+			"move_to: structure_name exceeds %d-character cap (got %d characters)",
 			MaxMoveToStructureIDChars, n,
 		)
 	}
@@ -120,6 +146,22 @@ func HandleMoveTo(in HandlerInput) (sim.Command, error) {
 	if !ok {
 		return sim.Command{}, fmt.Errorf("move_to: handler received unexpected args type %T", in.Args)
 	}
+
+	// Name path (ZBBS-HOME-356): resolve a perceivable place name engine-side.
+	// Decode guarantees not-both; structure_id still wins when present (the
+	// precise form) so this only runs for a name-only call.
+	if args.StructureID == "" && args.StructureName != "" {
+		name := strings.TrimSpace(args.StructureName)
+		if name == "" {
+			return sim.Command{}, errors.New("move_to: structure_name is empty after trim")
+		}
+		if i := indexInvalidControlChar(name); i >= 0 {
+			return sim.Command{}, fmt.Errorf(
+				"move_to: structure_name contains a disallowed control character at byte offset %d", i)
+		}
+		return sim.MoveToStructureByName(in.ActorID, name, time.Now().UTC()), nil
+	}
+
 	structureID := strings.TrimSpace(args.StructureID)
 	if structureID == "" {
 		return sim.Command{}, errors.New("move_to: structure_id is empty after trim")

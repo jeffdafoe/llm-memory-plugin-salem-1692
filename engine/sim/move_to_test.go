@@ -144,6 +144,27 @@ func TestMoveToStructure_OwnerPolicyEntersForMemberVisitsForStranger(t *testing.
 	}
 }
 
+// TestMoveToStructureByName_RejectsUnresolvableName is the end-to-end wiring
+// check for the ZBBS-HOME-356 by-name command on a running world: a name no
+// perceivable structure matches is rejected (with a retry-anchored message) and
+// stamps no MoveIntent. (Resolution correctness — anchors, scene radius,
+// nearest-wins — is covered white-box in move_to_byname_test.go.)
+func TestMoveToStructureByName_RejectsUnresolvableName(t *testing.T) {
+	w, cancel, _ := buildMoveTestWorld(t)
+	defer cancel()
+
+	_, err := w.Send(sim.MoveToStructureByName("walker", "The Nonexistent Place", time.Now().UTC()))
+	if err == nil {
+		t.Fatal("want error for an unresolvable place name, got nil")
+	}
+	if !strings.Contains(err.Error(), "no place called") {
+		t.Errorf("error lacks 'no place called': %v", err)
+	}
+	if mi := moveIntentOf(t, w, "walker"); mi != nil {
+		t.Error("rejected by-name move stamped a MoveIntent; want none")
+	}
+}
+
 // --- rejects ----------------------------------------------------------
 
 func TestMoveToStructure_RejectsUnknownStructure(t *testing.T) {
