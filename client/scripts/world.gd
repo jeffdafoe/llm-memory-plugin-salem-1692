@@ -2008,8 +2008,15 @@ func set_audience_scope(structure_id: String, room_id: String) -> void:
     _audience_room_id = room_id
 
 func apply_npc_spoke(data: Dictionary) -> void:
-    var npc_id: String = str(data.get("npc_id", ""))
+    # v2 npc_spoke frame keys the speaker as `id` (spokeWireDTO in
+    # engine/sim/httpapi/translate.go); the legacy v1 `npc_id` is kept as a
+    # fallback for old frames. v2 sends no `name` — resolve it from the
+    # rendered roster instead (same id->name pattern as the movement/pay
+    # handlers), falling back to the id when the speaker isn't placed.
+    var npc_id: String = str(data.get("id", data.get("npc_id", "")))
     var name: String = str(data.get("name", ""))
+    if name == "":
+        name = display_name_for(npc_id)
     var text: String = str(data.get("text", ""))
     var kind: String = str(data.get("kind", "npc"))
     var at: String = str(data.get("at", ""))
@@ -2048,21 +2055,31 @@ func apply_npc_spoke(data: Dictionary) -> void:
     # one specific listener.
     var addressee_id: String = str(data.get("addressee_id", ""))
     var addressee_name: String = str(data.get("addressee_name", ""))
-    if name == "" or text == "":
+    if npc_id == "" or text == "":
         return
     # Bubble suppression for out-of-scope speech. Mirrors the talk-panel
     # predicate so the world view doesn't show bubbles the panel filters.
-    # Two checks:
+    # The v2 npc_spoke frame is huddle-scoped (huddle_id/recipient_ids) and
+    # carries NO structure_id/room_id, so there's no geometric scope to
+    # filter on — spawn the bubble over the placed speaker unconditionally.
+    # The legacy v1 structure/room suppression below only engages when a
+    # frame actually carries a structure_id (old frames):
     #   1. Outdoor speech (event structure_id empty): only spawn when the
-    #      PC is also outdoors (audience_structure_id empty) — without
-    #      this an outdoor speaker would bubble to a PC inside a building.
+    #      PC is also outdoors (audience_structure_id empty).
     #   2. Indoor speech: structure_id must match AND room_id must match.
     #      Common-room (room_id="") only spawns to common/outdoor PCs;
     #      private-room (room_id="bed1") only spawns to same-room PCs.
-    # Pre-fix the check was room-only, so a public outdoor event would
-    # bubble to a common-room PC across structures.
+    # KEY PRESENCE — not empty value — distinguishes a v2 frame (no
+    # structure_id/room_id key at all; huddle-scoped, the engine already chose
+    # the audience) from a v1 frame that explicitly set an empty (public/
+    # outdoor) scope. Gating on presence keeps v1's outdoor-suppression intact
+    # rather than leaking old public speech indoors (code_review).
+    var has_structure_scope := data.has("structure_id") or data.has("room_id")
     var bubble_in_scope := false
-    if structure_id == "":
+    if not has_structure_scope:
+        # v2 huddle-scoped frame — spawn over the placed speaker.
+        bubble_in_scope = true
+    elif structure_id == "":
         bubble_in_scope = (_audience_structure_id == "" and _audience_room_id == "" and room_id == "")
     else:
         bubble_in_scope = (structure_id == _audience_structure_id and room_id == _audience_room_id)
