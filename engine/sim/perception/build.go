@@ -719,7 +719,13 @@ func buildWarrantActorNames(snap *sim.Snapshot, subject *sim.ActorSnapshot, subj
 // here (rather than calling into sim) so perception stays a pure reader of the
 // snapshot and doesn't couple to the work-domain shift producer. ZBBS-HOME-352.
 func minuteInWindow(start, end, now int) bool {
-	if start <= end {
+	if start == end {
+		// Empty window — never on shift. Kept explicit (not folded into the
+		// start<=end arm) so a later "simplify" can't turn it into an all-day
+		// window; matches sim.minuteInShiftWindow's start==end rule.
+		return false
+	}
+	if start < end {
 		return now >= start && now < end
 	}
 	return now >= start || now < end
@@ -753,11 +759,12 @@ func buildDutySteer(snap *sim.Snapshot, a *sim.ActorSnapshot, anchors *AnchorsVi
 	switch {
 	case a.ScheduleStartMin != nil && a.ScheduleEndMin != nil:
 		start, end = *a.ScheduleStartMin, *a.ScheduleEndMin
-	case snap.DawnMinute != snap.DuskMinute:
-		// World day-active fallback for an NPC with no explicit schedule. The
-		// inequality guard rejects both the 0,0 "boundaries unparsed" case and a
-		// degenerate dawn==dusk config: an empty window reads as off-shift all
-		// day, which would emit a perpetual "head home" cue (code_review).
+	case snap.DawnDuskMinuteOK && snap.DawnMinute != snap.DuskMinute:
+		// World day-active fallback for an NPC with no explicit schedule.
+		// DawnDuskMinuteOK rejects a partial/failed parse (which would otherwise
+		// derive a bogus window from one good + one zero bound); the inequality
+		// rejects a degenerate dawn==dusk empty window that reads as off-shift all
+		// day and would emit a perpetual "head home" cue (code_review).
 		start, end = snap.DawnMinute, snap.DuskMinute
 	default:
 		return nil // unscheduled and no usable day-active window

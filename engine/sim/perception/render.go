@@ -471,21 +471,23 @@ func anchorPlace(label, fallback string) string {
 
 // renderDutySteer writes the standing return-to-post cue (ZBBS-HOME-352) — the
 // single voice for shift duty (the engine's ShiftDutyWarrant line is filtered
-// out in Render). It names the destination by label; the structure_id is in the
-// adjacent "## Where you belong" anchors block, which always renders alongside.
+// out in Render). It carries the destination's structure_id inline — the
+// load-bearing token the model echoes into move_to, matching the anchors /
+// satiation / restock cues — so the cue is self-sufficient and does not depend
+// on another section rendering the id (code_review).
 func renderDutySteer(b *strings.Builder, v *DutySteerView) {
 	if v == nil {
 		return
 	}
 	if v.ToWork {
-		fmt.Fprintf(b, "It is your working hours, yet you are away from your post — make your way to %s now.\n\n",
-			anchorPlace(v.TargetLabel, "your workplace"))
+		fmt.Fprintf(b, "It is your working hours, yet you are away from your post — make your way to %s (structure_id: %s) now.\n\n",
+			anchorPlace(v.TargetLabel, "your workplace"), v.TargetID)
 		return
 	}
 	if l := sanitizeInline(v.TargetLabel); l != "" {
-		fmt.Fprintf(b, "Your working hours are over and you are not yet home — head home to %s now.\n\n", l)
+		fmt.Fprintf(b, "Your working hours are over and you are not yet home — head home to %s (structure_id: %s) now.\n\n", l, v.TargetID)
 	} else {
-		b.WriteString("Your working hours are over and you are not yet home — head home now.\n\n")
+		fmt.Fprintf(b, "Your working hours are over and you are not yet home — head home (structure_id: %s) now.\n\n", v.TargetID)
 	}
 }
 

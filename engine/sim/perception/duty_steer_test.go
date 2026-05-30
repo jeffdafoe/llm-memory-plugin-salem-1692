@@ -13,7 +13,7 @@ func dutyMinPtr(n int) *int { return &n }
 // window the duty-steer cue reads.
 func dutySnap(nowMin, dawn, dusk int) *sim.Snapshot {
 	m := nowMin
-	return &sim.Snapshot{LocalMinuteOfDay: &m, DawnMinute: dawn, DuskMinute: dusk}
+	return &sim.Snapshot{LocalMinuteOfDay: &m, DawnMinute: dawn, DuskMinute: dusk, DawnDuskMinuteOK: true}
 }
 
 var dutyAnchors = &AnchorsView{
@@ -98,6 +98,15 @@ func TestBuildDutySteer(t *testing.T) {
 			t.Fatalf("want nil (empty dawn==dusk window), got %+v", v)
 		}
 	})
+	t.Run("partial dawn/dusk parse (OK=false) -> nil", func(t *testing.T) {
+		a := &sim.ActorSnapshot{Kind: sim.KindNPCShared, InsideStructureID: "general_store"}
+		m := 600
+		// dawn parsed, dusk failed → OK=false → must not derive a bogus window.
+		snap := &sim.Snapshot{LocalMinuteOfDay: &m, DawnMinute: 420, DuskMinute: 0, DawnDuskMinuteOK: false}
+		if v := buildDutySteer(snap, a, dutyAnchors); v != nil {
+			t.Fatalf("want nil (partial parse, OK=false), got %+v", v)
+		}
+	})
 	t.Run("partial schedule (end nil) falls back to dawn/dusk", func(t *testing.T) {
 		// Only ScheduleStartMin set → not "both bounds" → uses the dawn/dusk
 		// window [07:00,19:00); now=10:00 is on-shift → toWork.
@@ -140,17 +149,32 @@ func TestRenderDutySteer(t *testing.T) {
 	}
 
 	work := render(&DutySteerView{ToWork: true, TargetID: "tavern", TargetLabel: "the Tavern"})
-	if !strings.Contains(work, "working hours") || !strings.Contains(work, "the Tavern") {
+	if !strings.Contains(work, "working hours") || !strings.Contains(work, "the Tavern") || !strings.Contains(work, "structure_id: tavern") {
 		t.Errorf("toWork prose missing pieces, got %q", work)
 	}
 
 	home := render(&DutySteerView{ToWork: false, TargetID: "cottage", TargetLabel: "Ellis Cottage"})
-	if !strings.Contains(home, "head home to Ellis Cottage") {
-		t.Errorf("home prose missing label, got %q", home)
+	if !strings.Contains(home, "head home to Ellis Cottage") || !strings.Contains(home, "structure_id: cottage") {
+		t.Errorf("home prose missing pieces, got %q", home)
 	}
 
 	homeNoLabel := render(&DutySteerView{ToWork: false, TargetID: "cottage"})
-	if !strings.Contains(homeNoLabel, "head home now") {
-		t.Errorf("home no-label fallback missing, got %q", homeNoLabel)
+	if !strings.Contains(homeNoLabel, "head home (structure_id: cottage)") {
+		t.Errorf("home no-label fallback missing id, got %q", homeNoLabel)
+	}
+}
+
+// TestRender_DutySteerCarriesStructureID is the load-bearing contract test: the
+// full rendered prompt must carry the duty target's structure_id so the model
+// can act via move_to without depending on another section being present
+// (code_review). ZBBS-HOME-352.
+func TestRender_DutySteerCarriesStructureID(t *testing.T) {
+	p := Payload{
+		ActorID:   "moses",
+		DutySteer: &DutySteerView{ToWork: true, TargetID: "tavern", TargetLabel: "the Tavern"},
+	}
+	out := Render(p, DefaultRenderConfig())
+	if !strings.Contains(out.Text, "structure_id: tavern") {
+		t.Errorf("rendered prompt must carry the duty target structure_id, got:\n%s", out.Text)
 	}
 }

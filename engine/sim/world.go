@@ -1347,14 +1347,16 @@ func (w *World) republish() {
 	now := time.Now()
 	localMin := localMinuteOfDay(w, now)
 	// Day-active window (dawn/dusk) as minute-of-day — the shift fallback for an
-	// NPC with no explicit schedule (ZBBS-HOME-352). Parse errors leave 0, which
-	// perception treats as "window unknown" so steering doesn't fire.
+	// NPC with no explicit schedule (ZBBS-HOME-352). DawnDuskMinuteOK is true
+	// only when BOTH boundaries parse, so perception never derives a window from
+	// a partial parse (one good + one zero bound).
 	dawnMin, duskMin := 0, 0
+	dawnOK, duskOK := false, false
 	if h, m, err := ParseHM(w.Settings.DawnTime); err == nil {
-		dawnMin = h*60 + m
+		dawnMin, dawnOK = h*60+m, true
 	}
 	if h, m, err := ParseHM(w.Settings.DuskTime); err == nil {
-		duskMin = h*60 + m
+		duskMin, duskOK = h*60+m, true
 	}
 	snap := &Snapshot{
 		AtTick:                   w.TickCounter,
@@ -1375,6 +1377,7 @@ func (w *World) republish() {
 		LocalMinuteOfDay:         &localMin,
 		DawnMinute:               dawnMin,
 		DuskMinute:               duskMin,
+		DawnDuskMinuteOK:         dawnOK && duskOK,
 		NeedThresholds:           w.Settings.NeedThresholds.Clone(),
 		LodgingDefaultWeeklyRate: w.Settings.LodgingDefaultWeeklyRate,
 		RestockReorderPct:        w.Settings.RestockReorderPct,
