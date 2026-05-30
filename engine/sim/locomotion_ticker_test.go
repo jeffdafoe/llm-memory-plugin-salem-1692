@@ -910,11 +910,19 @@ func TestLocomotion_InvalidatedWhenStructureRemoved(t *testing.T) {
 	}
 }
 
-// TestArrivedAtDestination_StructureVisitRingMembership covers the
-// arrival semantics for StructureVisit: ANY of the eight visitor-slot
-// ring tiles counts as arrived, not just the one pickVisitorSlot
-// currently prefers. The pin tile itself and a non-ring tile do not.
-func TestArrivedAtDestination_StructureVisitRingMembership(t *testing.T) {
+// TestArrivedAtDestination_StructureVisit covers the arrival semantics for
+// StructureVisit: a visitor is arrived when within LoiterAttributionTiles
+// (Chebyshev <= 1) of the loiter pin — the pin tile itself (Chebyshev 0) and
+// all eight visitor-slot ring tiles (Chebyshev 1). A tile beyond the ring is
+// not arrived.
+//
+// ZBBS-HOME-329: this arm previously checked ring membership ONLY and rejected
+// the pin tile, but pickVisitorSlotAtPin returns the pin tile as the
+// all-slots-blocked last resort. A visitor parked there never registered
+// arrival → finishArrival never ran → the mover looped on the pin forever. The
+// arm now mirrors the ObjectVisit arm (Chebyshev <= LoiterAttributionTiles), so
+// the pin-tile case below = arrived (this is the assertion that flipped).
+func TestArrivedAtDestination_StructureVisit(t *testing.T) {
 	w, cancel, _ := buildLocomotionTestWorld(t)
 	defer cancel()
 
@@ -936,20 +944,21 @@ func TestArrivedAtDestination_StructureVisitRingMembership(t *testing.T) {
 		return res.(bool)
 	}
 
-	// All eight ring tiles count as arrived.
+	// All eight ring tiles (Chebyshev 1) count as arrived.
 	for _, off := range sim.VisitorSlotOffsets {
 		ring := sim.Position{X: pin.X + off.X, Y: pin.Y + off.Y}
 		if !arrivedAt(ring) {
 			t.Errorf("ring tile %+v should count as arrived", ring)
 		}
 	}
-	// The pin tile itself is the gathering centre, not a slot.
-	if arrivedAt(pin) {
-		t.Error("the loiter pin tile should NOT count as arrived")
+	// The pin tile itself (Chebyshev 0) — the all-slots-blocked last-resort slot
+	// pickVisitorSlotAtPin can return — now counts as arrived. ZBBS-HOME-329.
+	if !arrivedAt(pin) {
+		t.Error("the loiter pin tile (Chebyshev 0) should count as arrived (329 fix)")
 	}
-	// A tile well clear of the ring is not arrived.
-	if arrivedAt(sim.Position{X: pin.X + 5, Y: pin.Y + 5}) {
-		t.Error("a tile off the ring should not count as arrived")
+	// A tile beyond the ring (Chebyshev 2) is not arrived.
+	if arrivedAt(sim.Position{X: pin.X + 2, Y: pin.Y}) {
+		t.Error("a tile beyond the ring (Chebyshev 2) should not count as arrived")
 	}
 }
 
