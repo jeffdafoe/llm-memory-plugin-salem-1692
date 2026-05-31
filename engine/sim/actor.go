@@ -898,6 +898,14 @@ type ActorSnapshot struct {
 	// into live world state for a pure read.
 	LoginUsername string
 
+	// LastPCSeenAt mirrors the live Actor's last /pc/me poll stamp (nil for
+	// NPCs and for a PC that hasn't polled this session). Carried so read-path
+	// consumers can apply the same presence-staleness gate as the sim side
+	// (PCPresenceStale) — notably the pc/me indoor co-located roster, which
+	// must not advertise a stale (logged-out) PC the speak path's
+	// EnsureColocatedHuddle would exclude (ZBBS-HOME-371).
+	LastPCSeenAt *time.Time
+
 	InsideStructureID StructureID
 	// InsideRoomID mirrors the live Actor's current room (0 when not in a
 	// room). Carried so the read surface (httpapi pc/me) can compute the
