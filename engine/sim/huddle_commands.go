@@ -593,6 +593,55 @@ func leaveCurrentHuddle(w *World, actor *Actor, now time.Time) LeaveHuddleResult
 		}
 	}
 
+	// ZBBS-HOME-363: dissolve a degenerate huddle left with a single RESTING
+	// member. A 1-member huddle is normally a fine transient state — the lone
+	// member ticks (the HuddlePeerLeft warrant stamped above) and decides for
+	// themselves whether to stay or go. But a lone member who is ASLEEP or
+	// ON-BREAK won't tick to process that departure (the reactor rest gate
+	// shelves the warrant until they wake), so the huddle lingers stale. The
+	// live case was hud-ce173: the others left the on-break keeper John alone
+	// in it for the rest of his ~4h break, which also hid him from the PC talk
+	// roster. So we evict ONLY a resting lone member (actorIsResting) — an
+	// active lone member keeps the transient huddle and handles it on their
+	// next tick. No new warrant for the evicted member: they're resting and
+	// the leaver already stamped them a (shelved) HuddlePeerLeft; a fresh
+	// huddle forms when someone next speaks here (#2's bootstrap).
+	if len(huddle.Members) == 1 {
+		var loneID ActorID
+		for id := range huddle.Members {
+			loneID = id
+		}
+		lone, ok := w.Actors[loneID]
+		// Evict a lone member that won't tick to leave on its own: a RESTING
+		// one (asleep/on-break, warrant shelved), OR a stale/missing actor ref
+		// (in Members but already deleted from w.Actors — it can never tick
+		// either, the same stale-degenerate-huddle class; code_review). An
+		// ACTIVE, present member keeps the transient huddle and handles it.
+		if !ok || lone == nil || actorIsResting(lone, now) {
+			delete(huddle.Members, loneID)
+			if lone != nil {
+				lone.CurrentHuddleID = ""
+			}
+			if members, ok := w.actorsByHuddle[huddleID]; ok {
+				delete(members, loneID)
+				if len(members) == 0 {
+					delete(w.actorsByHuddle, huddleID)
+				}
+			}
+			remaining = remaining[:0]
+			// HuddleLeft keeps membership accounting consistent for subscribers
+			// (the member count goes 1 → 0 via a Left, then Concluded), matching
+			// the ordering the normal multi-member path emits.
+			w.emit(&HuddleLeft{
+				ActorID:          loneID,
+				HuddleID:         huddleID,
+				StructureID:      huddle.StructureID,
+				RemainingMembers: nil,
+				At:               now,
+			})
+		}
+	}
+
 	concluded := false
 	if len(huddle.Members) == 0 {
 		t := now

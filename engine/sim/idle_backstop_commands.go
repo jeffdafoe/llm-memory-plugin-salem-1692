@@ -149,15 +149,16 @@ func EvaluateIdleBackstop(now time.Time) Command {
 					t.SkippedRecentlyTicked++
 					continue
 				}
-				// tryStampWarrant has no return value but is guaranteed
-				// to stamp given the pre-conditions enforced above:
-				// non-nil actor, non-nil Reason, no open WarrantedSince
-				// (open-cycle path checks SourceEventID != 0 and bails
-				// on zero-source like ours), no in-flight markers, no
-				// recently-consumed dedup (same SourceEventID == 0
-				// bypass). MaxWarrantsPerActor cap caps the list size
-				// via drop-oldest, which is still a stamp. So
-				// t.Stamped++ is accurate.
+				// tryStampWarrant is guaranteed to stamp (return true)
+				// given the pre-conditions enforced above: non-nil actor,
+				// non-nil Reason, no open WarrantedSince (open-cycle path
+				// checks SourceEventID != 0 and bails on zero-source like
+				// ours), no in-flight markers, no recently-consumed dedup
+				// (same SourceEventID == 0 bypass). MaxWarrantsPerActor cap
+				// caps the list size via drop-oldest, which is still a
+				// stamp. So t.Stamped++ is accurate; the return is ignored
+				// here (the red-need backstop is the consumer that checks
+				// it — ZBBS-HOME-363).
 				tryStampWarrant(w, a, WarrantMeta{
 					TriggerActorID: a.ID,
 					Force:          false,

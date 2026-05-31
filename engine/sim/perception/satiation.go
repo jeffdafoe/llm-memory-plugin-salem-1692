@@ -119,6 +119,12 @@ type SatiationVendor struct {
 	// this business shut (no keeper) within the decay window — render annotates
 	// the line so the model deprioritizes the trip. ZBBS-HOME-353.
 	Shut bool
+
+	// OutOfStock is true when the subject has a live experiential memory of
+	// trying to buy THIS item here and finding it out of stock within the decay
+	// window — render annotates the line so the model deprioritizes the trip.
+	// ZBBS-HOME-363.
+	OutOfStock bool
 }
 
 // buildSatiation builds the eat/drink view for actorSnap, or nil when no
@@ -157,30 +163,115 @@ func buildSatiation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Acto
 	return &SatiationView{Needs: needs}
 }
 
+// maxSatiationVendors caps the buy menu to the N nearest vendor structures per
+// need (ZBBS-HOME-363 altitude). The live prompt had ~20 undifferentiated
+// options — the Tavern repeated once per item it sells, no distance bound — so a
+// hungry NPC re-sampled a sprawling menu each tick instead of picking the
+// closest place to eat. The cap + dedup-by-structure + nearest-first sort below
+// turn that into a short, ordered list.
+const maxSatiationVendors = 4
+
+// satiationVendorCandidate is one structure's chosen representative offer plus
+// the keys the altitude pass orders + dedups on.
+type satiationVendorCandidate struct {
+	sv         SatiationVendor
+	distTiles  float64
+	outOfStock bool
+	magnitude  int
+	itemKind   sim.ItemKind
+}
+
 // gatherSatiationVendors maps the shared vendor-consumable finder into the
-// satiation bullet shape. findVendorConsumables already returns a deterministic
-// order, so no re-sort here.
+// satiation bullet shape and applies ALTITUDE (ZBBS-HOME-363): exclude the
+// buyer's own workplace, DEDUP to one representative item per vendor structure
+// (so the Tavern stops repeating per item), order the structures NEAREST-FIRST,
+// and cap to maxSatiationVendors. The per-structure representative prefers an
+// item NOT remembered out of stock, then the strongest satisfier — so the menu
+// shows something the NPC can actually buy when possible.
 func gatherSatiationVendors(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSnapshot, need sim.NeedKey) []SatiationVendor {
-	var out []SatiationVendor
+	byStructure := make(map[sim.StructureID]satiationVendorCandidate)
 	for _, vc := range findVendorConsumables(snap, actorID, need, "ask the seller") {
-		if vc.StructureID == "" {
-			// No resolvable workplace → no structure_id for move_to, so the cue
-			// is unactionable and would only tempt a name-based move_to the tool
-			// rejects. findVendorConsumables already excludes vendors whose
-			// workplace doesn't resolve, so this is a defensive guard, not a
-			// live path.
+		// No resolvable workplace → no structure_id for move_to (unactionable);
+		// own workplace excluded so a hungry vendor doesn't get steered to buy
+		// from itself (the Josiah-buys-at-his-own-General-Store case).
+		if vc.StructureID == "" || vc.StructureID == actorSnap.WorkStructureID {
 			continue
 		}
-		out = append(out, SatiationVendor{
-			StructureLabel: vc.StructureLabel,
-			StructureID:    vc.StructureID,
-			ItemLabel:      vc.ItemLabel,
-			Magnitude:      vc.Magnitude,
-			CostText:       vc.CostText,
-			Shut:           businessRememberedShut(snap, actorSnap, vc.StructureID),
-		})
+		outOfStock := businessRememberedOutOfStock(snap, actorSnap, vc.StructureID, vc.ItemKind)
+		cand := satiationVendorCandidate{
+			sv: SatiationVendor{
+				StructureLabel: vc.StructureLabel,
+				StructureID:    vc.StructureID,
+				ItemLabel:      vc.ItemLabel,
+				Magnitude:      vc.Magnitude,
+				CostText:       vc.CostText,
+				Shut:           businessRememberedShut(snap, actorSnap, vc.StructureID),
+				OutOfStock:     outOfStock,
+			},
+			distTiles:  vendorStructureDistanceTiles(snap, actorSnap, vc.StructureID),
+			outOfStock: outOfStock,
+			magnitude:  vc.Magnitude,
+			itemKind:   vc.ItemKind,
+		}
+		if existing, ok := byStructure[vc.StructureID]; !ok || betterSatiationRepresentative(cand, existing) {
+			byStructure[vc.StructureID] = cand
+		}
+	}
+	if len(byStructure) == 0 {
+		return nil
+	}
+	cands := make([]satiationVendorCandidate, 0, len(byStructure))
+	for _, c := range byStructure {
+		cands = append(cands, c)
+	}
+	// Nearest first; ties by label then structure_id for deterministic output.
+	sort.Slice(cands, func(i, j int) bool {
+		if cands[i].distTiles != cands[j].distTiles {
+			return cands[i].distTiles < cands[j].distTiles
+		}
+		if cands[i].sv.StructureLabel != cands[j].sv.StructureLabel {
+			return cands[i].sv.StructureLabel < cands[j].sv.StructureLabel
+		}
+		return cands[i].sv.StructureID < cands[j].sv.StructureID
+	})
+	if len(cands) > maxSatiationVendors {
+		cands = cands[:maxSatiationVendors]
+	}
+	out := make([]SatiationVendor, len(cands))
+	for i, c := range cands {
+		out[i] = c.sv
 	}
 	return out
+}
+
+// betterSatiationRepresentative reports whether candidate a should replace b as
+// a structure's single buy-menu entry: prefer an item NOT remembered out of
+// stock (show something buyable), then the stronger satisfier, then a stable
+// ItemKind tie-break (Inventory iteration is unordered).
+func betterSatiationRepresentative(a, b satiationVendorCandidate) bool {
+	if a.outOfStock != b.outOfStock {
+		return !a.outOfStock
+	}
+	if a.magnitude != b.magnitude {
+		return a.magnitude > b.magnitude
+	}
+	return a.itemKind < b.itemKind
+}
+
+// vendorStructureDistanceTiles is the actor→vendor-workplace distance in
+// internal-grid tiles, for nearest-first ordering. Structures share their id
+// with their village_object placement, so the structure tile comes from
+// snap.VillageObjects[id].Pos.Tile() (world pixels → tile), same conversion the
+// free-source scan uses. An unplaced structure sorts last (+Inf).
+func vendorStructureDistanceTiles(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, structureID sim.StructureID) float64 {
+	obj := snap.VillageObjects[sim.VillageObjectID(structureID)]
+	if obj == nil {
+		return math.Inf(1)
+	}
+	t := obj.Pos.Tile()
+	dx := float64(t.X - actorSnap.Pos.X)
+	dy := float64(t.Y - actorSnap.Pos.Y)
+	return math.Sqrt(dx*dx + dy*dy)
 }
 
 // gatherFreeSatiationSources returns a free-source bullet for each village
@@ -426,6 +517,9 @@ func renderSatiation(b *strings.Builder, v *SatiationView) {
 				}
 				if vd.Shut {
 					b.WriteString(closedBusinessAnnotation)
+				}
+				if vd.OutOfStock {
+					b.WriteString(outOfStockAnnotation)
 				}
 				b.WriteString("\n")
 			}

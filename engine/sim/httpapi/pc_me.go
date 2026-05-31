@@ -355,8 +355,20 @@ func pcHuddleRoster(snap *sim.Snapshot, pc *sim.ActorSnapshot, selfID sim.ActorI
 			if a.InsideStructureID != pc.InsideStructureID {
 				continue
 			}
+			// ZBBS-HOME-363 reversal of HOME-371's already-huddled exclusion:
+			// the PC's speak JOINS this structure's active huddle
+			// (EnsureColocatedHuddle find-or-creates it), so a co-located NPC
+			// already in THIS structure's huddle IS talkable and must show (the
+			// live bug: on-break keeper John, in the tavern huddle, was invisible
+			// to the roster though the player stood right there). Only an actor
+			// conversing in a DIFFERENT structure (a stale cross-structure
+			// back-ref, or a nil/missing huddle) is excluded; the PC's join will
+			// not pull them in.
 			if a.CurrentHuddleID != "" {
-				continue // already conversing — not pulled into the PC's new huddle
+				h := snap.Huddles[a.CurrentHuddleID]
+				if h == nil || h.StructureID != pc.InsideStructureID {
+					continue
+				}
 			}
 			if !snapshotConversational(a) {
 				continue

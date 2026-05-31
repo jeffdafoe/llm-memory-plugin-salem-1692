@@ -73,6 +73,7 @@ func RegisterProductionCascades(ctx context.Context, w *sim.World, client llm.Cl
 	RegisterEncounter(w)
 	RegisterObjectRefreshArrival(w)
 	RegisterIdleBackstop(ctx, w)
+	RegisterRedNeedBackstop(ctx, w)
 	RegisterPriceBook(w)
 	RegisterNPCRoutes(ctx, w)
 
