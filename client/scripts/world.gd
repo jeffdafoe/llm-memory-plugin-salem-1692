@@ -1993,7 +1993,7 @@ signal object_tags_updated(object_id: String, tags: Array)
 ## panel side (two PCs walking the road can talk if they're within ~6
 ## tiles of each other). Indoor speech ignores them — structure_id is
 ## already enough to scope the audience.
-signal npc_spoke(npc_id: String, name: String, text: String, kind: String, at: String, structure_id: String, mentions: Array, speaker_x: float, speaker_y: float, room_id: String, addressee_id: String, addressee_name: String, mention_prices: Dictionary)
+signal npc_spoke(npc_id: String, name: String, text: String, kind: String, at: String, structure_id: String, mentions: Array, speaker_x: float, speaker_y: float, room_id: String, addressee_id: String, addressee_name: String, mention_prices: Dictionary, huddle_scoped: bool, recipient_ids: Array)
 
 # PC's current audibility scope — mirrors talk_panel's loaded_structure_id
 # / loaded_room_id, kept here so apply_npc_spoke can suppress speech
@@ -2055,6 +2055,20 @@ func apply_npc_spoke(data: Dictionary) -> void:
     # one specific listener.
     var addressee_id: String = str(data.get("addressee_id", ""))
     var addressee_name: String = str(data.get("addressee_name", ""))
+    # Huddle audience (ZBBS-HOME-372): v2 frames carry recipient_ids (the
+    # huddle members the engine chose as the audience). Forwarded so the talk
+    # panel can scope its log by huddle membership rather than the v1
+    # structure/room geometry these frames don't carry. has_huddle_scope keys
+    # on POSITIVE huddle evidence (a huddle_id/recipient_ids key present), not
+    # merely "no geometry" — so an old/malformed geometry-less frame still
+    # routes to the panel's legacy range filter instead of being dropped by an
+    # empty recipient set (code_review).
+    var recipient_ids: Array = []
+    var raw_recipients = data.get("recipient_ids", null)
+    if typeof(raw_recipients) == TYPE_ARRAY:
+        for r in raw_recipients:
+            recipient_ids.append(str(r))
+    var has_huddle_scope := data.has("huddle_id") or data.has("recipient_ids")
     if npc_id == "" or text == "":
         return
     # Bubble suppression for out-of-scope speech. Mirrors the talk-panel
@@ -2085,7 +2099,7 @@ func apply_npc_spoke(data: Dictionary) -> void:
         bubble_in_scope = (structure_id == _audience_structure_id and room_id == _audience_room_id)
     if bubble_in_scope:
         _spawn_speech_bubble(npc_id, text)
-    npc_spoke.emit(npc_id, name, text, kind, at, structure_id, mentions, speaker_x, speaker_y, room_id, addressee_id, addressee_name, mention_prices)
+    npc_spoke.emit(npc_id, name, text, kind, at, structure_id, mentions, speaker_x, speaker_y, room_id, addressee_id, addressee_name, mention_prices, has_huddle_scope, recipient_ids)
 
 
 ## Pay-with-item lifecycle frames (ZBBS-WORK-296). The PC drives a buyer
