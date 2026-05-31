@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/handlers"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/llm"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/repo/mem"
 )
@@ -99,6 +100,51 @@ func TestRun_LifecycleAndFinalCheckpoint(t *testing.T) {
 	}
 	if saves <= periodicSaves {
 		t.Errorf("expected a final checkpoint after shutdown (saves=%d, periodic=%d)", saves, periodicSaves)
+	}
+}
+
+// stubSearcher is a minimal llm.MemorySearcher for registration tests.
+// registerTools only needs the searcher to wire the recall tool; it never
+// calls SearchMemory during registration, so a no-op satisfies the contract
+// without coupling the test to the full llm.Client surface.
+type stubSearcher struct{}
+
+func (stubSearcher) SearchMemory(context.Context, string, string, int) ([]llm.MemoryHit, error) {
+	return nil, nil
+}
+
+// TestRegisterTools_RegistersDoneTerminal guards ZBBS-HOME-369: production
+// registerTools must register the universal `done` terminal tool. The NPC's
+// instructions tell it to end its turn with done, and the harness ends a tick
+// on a ClassTerminal dispatch (sim.TickStatusDone) — but production
+// registration originally omitted done, so a `done` call errored with
+// unknown_tool and the NPC was forced into another tool (typically a walk-off),
+// manufacturing goal-thrash. Only the test harnesses registered done, so
+// nothing caught the production gap. Assert done is both registered as a
+// terminal AND advertised to the model.
+func TestRegisterTools_RegistersDoneTerminal(t *testing.T) {
+	r := handlers.NewRegistry()
+	if err := registerTools(r, stubSearcher{}); err != nil {
+		t.Fatalf("registerTools: %v", err)
+	}
+
+	entry, ok := r.Lookup("done")
+	if !ok {
+		t.Fatal("registerTools did not register the `done` tool")
+	}
+	if entry.Class != handlers.ClassTerminal {
+		t.Errorf("`done` Class = %s, want terminal", entry.Class)
+	}
+
+	var advertised bool
+	for _, spec := range r.AdvertisedSpecs() {
+		if spec.Name == "done" {
+			advertised = true
+			break
+		}
+	}
+	if !advertised {
+		t.Error("`done` registered but not advertised to the model (AdvertisedSpecs omits it)")
 	}
 }
 
