@@ -214,7 +214,7 @@ func (s *Server) handlePCMe(w http.ResponseWriter, r *http.Request) {
 		resp.AudienceRoomID = &room
 	}
 
-	resp.HuddleMembers = pcHuddleRoster(snap, pc, pcID)
+	resp.HuddleMembers = pcHuddleRoster(snap, pc, pcID, snap.PublishedAt, sim.PCPresenceStaleAfter(s.world))
 	resp.RecentSpeech = pcRecentSpeechBackload(snap, pc)
 	resp.Inventory = pcInventoryEntries(pc.Inventory, s.world.ItemKinds)
 
@@ -317,7 +317,7 @@ func pcAudienceRoom(snap *sim.Snapshot, pc *sim.ActorSnapshot) (string, bool) {
 // Huddle.Members). When the PC is outdoors with no huddle, it's the nearby PCs
 // within pcOutdoorRosterTiles, so the talk-panel launcher still has a roster to
 // populate its chip strip. Sorted by name for a deterministic, stable response.
-func pcHuddleRoster(snap *sim.Snapshot, pc *sim.ActorSnapshot, selfID sim.ActorID) []pcHuddleMember {
+func pcHuddleRoster(snap *sim.Snapshot, pc *sim.ActorSnapshot, selfID sim.ActorID, now time.Time, staleAfter time.Duration) []pcHuddleMember {
 	out := []pcHuddleMember{}
 
 	if pc.CurrentHuddleID != "" {
@@ -332,10 +332,47 @@ func pcHuddleRoster(snap *sim.Snapshot, pc *sim.ActorSnapshot, selfID sim.ActorI
 				}
 			}
 		}
-	} else if pc.InsideStructureID == "" {
+	} else if pc.InsideStructureID != "" {
+		// Indoor proximity roster: conversational actors sharing the PC's
+		// structure, when the PC has no huddle yet. Without this branch a PC
+		// standing in (say) the Tavern with NPCs gets an empty roster, so the
+		// talk-panel launcher stays hidden (talk_panel.gd gates it on
+		// huddle_members) and the player can never speak — yet HOME-358's
+		// EnsureColocatedHuddle forms the real huddle only ON the PC's first
+		// speak. That is the chicken-and-egg this branch breaks (HOME-371):
+		// surface who's here so the launcher shows; the actual conversational
+		// huddle still forms when the player speaks. Eligibility mirrors the
+		// set EnsureColocatedHuddle / colocatedConversationalActors would pull
+		// in, so the roster doesn't advertise a target the speak path won't
+		// include: same structure, NOT already in a huddle (HOME-358 leaves
+		// existing conversations intact rather than absorbing them), a
+		// conversational kind (stateful/shared NPC or PC) that is not asleep,
+		// and — for a PC — not presence-stale.
+		for id, a := range snap.Actors {
+			if a == nil || id == selfID {
+				continue
+			}
+			if a.InsideStructureID != pc.InsideStructureID {
+				continue
+			}
+			if a.CurrentHuddleID != "" {
+				continue // already conversing — not pulled into the PC's new huddle
+			}
+			if !snapshotConversational(a) {
+				continue
+			}
+			if a.Kind == sim.KindPC && sim.PCPresenceStale(a.LastPCSeenAt, now, staleAfter) {
+				continue // absent player — the speak path excludes stale PCs too
+			}
+			out = append(out, pcHuddleMemberOf(a))
+		}
+	} else {
 		// Outdoor proximity roster: nearby PCs, no last-seen filter (a
 		// logged-out PC will phantom in until presence-staleness is its own
-		// feature — v1 accepts the same).
+		// feature — v1 accepts the same). NPCs are intentionally NOT listed
+		// here: HOME-358's co-located speak bootstrap is indoor-only, so an
+		// outdoor talk box would offer a conversation the speak path can't yet
+		// form (the symmetric outdoor follow-on is unbuilt).
 		for id, a := range snap.Actors {
 			if a == nil || id == selfID {
 				continue
@@ -352,6 +389,21 @@ func pcHuddleRoster(snap *sim.Snapshot, pc *sim.ActorSnapshot, selfID sim.ActorI
 
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
+}
+
+// snapshotConversational mirrors the non-presence part of
+// sim.colocatedConversational against a read-path ActorSnapshot: a
+// conversational kind (stateful/shared NPC or PC) that is not asleep;
+// decorative NPCs and sleepers are excluded. PC presence-staleness is applied
+// separately by callers (the indoor roster) that need parity with
+// EnsureColocatedHuddle — see pcHuddleRoster.
+func snapshotConversational(a *sim.ActorSnapshot) bool {
+	switch a.Kind {
+	case sim.KindNPCStateful, sim.KindNPCShared, sim.KindPC:
+		return a.State != sim.StateSleeping
+	default:
+		return false // decorative / unknown
+	}
 }
 
 // pcHuddleMemberOf maps an actor snapshot to a roster member. An actor with a

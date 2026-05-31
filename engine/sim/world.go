@@ -1471,6 +1471,13 @@ func snapshotActor(a *Actor, atTick uint64) *ActorSnapshot {
 			moveDestPos = *d.Position
 		}
 	}
+	// Deep-copy the presence stamp (no-alias invariant — like CloneActor):
+	// the published snapshot must not share the live Actor's *time.Time.
+	var lastPCSeenAt *time.Time
+	if a.LastPCSeenAt != nil {
+		t := *a.LastPCSeenAt
+		lastPCSeenAt = &t
+	}
 	return &ActorSnapshot{
 		AtTick:              atTick,
 		DisplayName:         a.DisplayName,
@@ -1479,6 +1486,7 @@ func snapshotActor(a *Actor, atTick uint64) *ActorSnapshot {
 		Role:                a.Role,
 		LLMAgent:            a.LLMAgent,
 		LoginUsername:       a.LoginUsername,
+		LastPCSeenAt:        lastPCSeenAt,
 		InsideStructureID:   a.InsideStructureID,
 		InsideRoomID:        a.InsideRoomID,
 		Pos:                 a.Pos,

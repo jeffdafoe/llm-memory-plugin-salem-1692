@@ -325,6 +325,114 @@ func TestHandlePCMe_OutdoorAudienceScopeAndRoster(t *testing.T) {
 	}
 }
 
+// indoorNoHuddlePCMeWorld stands up a PC inside the inn with NO huddle, plus
+// co-located/nearby actors exercising every indoor-roster eligibility rule:
+// a conversational NPC and a fresh PC (included); a decorative NPC, a sleeping
+// NPC, an already-huddled NPC, and a presence-stale PC (excluded); and a
+// conversational NPC in a different structure (excluded).
+func indoorNoHuddlePCMeWorld(t *testing.T) *sim.World {
+	t.Helper()
+	repo, _ := mem.NewRepository()
+	w, err := sim.LoadWorld(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go w.Run(ctx)
+
+	now := time.Now().UTC()
+	_, err = w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		// PC indoors in the inn, CurrentHuddleID unset (no huddle yet).
+		world.Actors["p1"] = &sim.Actor{
+			ID: "p1", DisplayName: "Tester", Kind: sim.KindPC,
+			State: sim.StateIdle, LoginUsername: "tester",
+			Pos: sim.TilePos{X: 10, Y: 10}, InsideStructureID: "inn",
+		}
+		// Co-located conversational NPC → surfaces in the roster.
+		world.Actors["hannah"] = &sim.Actor{
+			ID: "hannah", DisplayName: "Hannah", Kind: sim.KindNPCShared,
+			State: sim.StateIdle, Role: "innkeeper", LLMAgent: "hannah-va",
+			Pos: sim.TilePos{X: 10, Y: 10}, InsideStructureID: "inn",
+		}
+		// Co-located fresh PC → surfaces (PCs are conversational too).
+		world.Actors["wanderer"] = &sim.Actor{
+			ID: "wanderer", DisplayName: "Wanderer", Kind: sim.KindPC,
+			State: sim.StateIdle, LoginUsername: "wanderer",
+			InsideStructureID: "inn", LastPCSeenAt: &now,
+		}
+		// Decorative → excluded.
+		world.Actors["deco"] = &sim.Actor{
+			ID: "deco", DisplayName: "Statue", Kind: sim.KindDecorative,
+			State: sim.StateIdle, InsideStructureID: "inn",
+		}
+		// Asleep → excluded even though conversational + co-located.
+		world.Actors["sleeper"] = &sim.Actor{
+			ID: "sleeper", DisplayName: "Dozer", Kind: sim.KindNPCStateful,
+			State: sim.StateSleeping, InsideStructureID: "inn",
+		}
+		// Already in a huddle → excluded (HOME-358 leaves existing
+		// conversations intact; the speak path won't pull them into the PC's
+		// new huddle, so the roster must not advertise them).
+		world.Actors["busy"] = &sim.Actor{
+			ID: "busy", DisplayName: "Busy", Kind: sim.KindNPCShared,
+			State: sim.StateIdle, LLMAgent: "busy-va",
+			InsideStructureID: "inn", CurrentHuddleID: "h1",
+		}
+		world.Huddles["h1"] = &sim.Huddle{
+			ID: "h1", StructureID: "inn",
+			Members: map[sim.ActorID]struct{}{"busy": {}},
+		}
+		// Presence-stale PC (never polled → nil stamp is stale) → excluded,
+		// mirroring the speak path's stale-PC exclusion.
+		world.Actors["ghost"] = &sim.Actor{
+			ID: "ghost", DisplayName: "Ghost", Kind: sim.KindPC,
+			State: sim.StateIdle, LoginUsername: "ghost",
+			InsideStructureID: "inn", LastPCSeenAt: nil,
+		}
+		// Conversational NPC in a DIFFERENT structure → excluded.
+		world.Actors["faraway"] = &sim.Actor{
+			ID: "faraway", DisplayName: "Distant", Kind: sim.KindNPCShared,
+			State: sim.StateIdle, InsideStructureID: "barn",
+		}
+		world.Structures["inn"] = &sim.Structure{ID: "inn", DisplayName: "The Inn"}
+		return nil, nil
+	}})
+	if err != nil {
+		t.Fatalf("seed indoor-no-huddle world: %v", err)
+	}
+	return w
+}
+
+// TestHandlePCMe_IndoorNoHuddleRoster covers ZBBS-HOME-371: a PC standing inside
+// a structure with NPCs but not yet in a huddle must still get a non-empty
+// roster, or the talk-panel launcher stays hidden and the player can never
+// speak to form the huddle (HOME-358 forms it on speak). Only the co-located
+// conversational NPC surfaces; decorative, sleeping, and other-structure actors
+// are excluded.
+func TestHandlePCMe_IndoorNoHuddleRoster(t *testing.T) {
+	srv := NewServer(indoorNoHuddlePCMeWorld(t), okAuth{})
+	resp := pcMe(t, srv)
+
+	if resp.CurrentHuddleID != nil {
+		t.Errorf("current_huddle_id = %v, want nil (PC has no huddle)", *resp.CurrentHuddleID)
+	}
+	// Eligible co-located: Hannah (NPC) + Wanderer (fresh PC), sorted by name.
+	// Excluded: Statue (decorative), Dozer (asleep), Busy (already huddled),
+	// Ghost (presence-stale PC), Distant (other structure).
+	if len(resp.HuddleMembers) != 2 {
+		t.Fatalf("len(huddle_members) = %d, want 2; got %+v", len(resp.HuddleMembers), resp.HuddleMembers)
+	}
+	h := resp.HuddleMembers[0]
+	if h.Kind != "npc" || h.Name != "Hannah" || h.TargetAgent == nil || *h.TargetAgent != "hannah-va" {
+		t.Errorf("huddle_members[0] = %+v, want NPC Hannah/hannah-va", h)
+	}
+	p := resp.HuddleMembers[1]
+	if p.Kind != "pc" || p.Name != "Wanderer" || p.TargetAgent != nil {
+		t.Errorf("huddle_members[1] = %+v, want PC Wanderer with no target_agent", p)
+	}
+}
+
 func TestHandlePCMe_InTransit(t *testing.T) {
 	// PC outdoors with no loiter object in range → no audience structure.
 	w := seededWorld(t)
