@@ -85,27 +85,48 @@ func transferItem(_ *World, from, to *Actor, kind ItemKind, qty int) error {
 }
 
 // resolveItemKind looks up the canonical ItemKind for a free-text name from
-// an LLM tool call. Case-insensitive + leading/trailing whitespace trim;
-// exact match against the canonical key. Returns ("", false) on no match.
+// an LLM tool call. Case-insensitive + leading/trailing whitespace trim.
+// Returns ("", false) on no match.
 //
-// Canonical IDs in w.ItemKinds are lowercase by convention (mem.SeedItemKinds
-// and v1's ZBBS-091/125 seed both lowercase). If two kinds ever differed
-// only by case the lookup would become ambiguous (same trap as
-// findHuddlePeerByDisplayName), but the convention prevents it.
+// Two-pass match, canonical key first then DisplayLabel:
 //
-// Matches against the canonical key, NOT DisplayLabel — labels are
-// presentation and may drift; tool calls shouldn't break when "Ale" is
-// reworded to "House Ale" in admin UI.
+//  1. Canonical key (authoritative, drift-proof). Canonical IDs in
+//     w.ItemKinds are lowercase by convention (mem.SeedItemKinds and v1's
+//     ZBBS-091/125 seed both lowercase). If two kinds ever differed only by
+//     case the lookup would be ambiguous (same trap as
+//     findHuddlePeerByDisplayName), but the convention prevents it.
+//
+//  2. DisplayLabel fallback. The deliberation prompt renders items by
+//     DisplayLabel ("Coca Tea" for key "coca_tea"; HOME-361's inventory line,
+//     the satiation buy menu), so the model passes the LABEL back in its tool
+//     call. Without this pass, consume/pay/etc. fail ErrUnknownItemKind for
+//     any item whose label differs from its key — "coca tea" != "coca_tea"
+//     (space vs underscore) is the live case (ZBBS-HOME-370). Single-word
+//     items happen to work key-only because label-lowercased == key.
+//
+// Key match wins over label match so a (free-form, possibly colliding) label
+// can never shadow a different kind's canonical id. A label reworded in admin
+// UI still resolves by key, so the drift concern that originally motivated
+// key-only matching is preserved.
 //
 // Linear scan over ~10 catalog entries per call. No precomputed lookup
 // map needed at this scale.
 func resolveItemKind(w *World, name string) (ItemKind, bool) {
-	needle := strings.ToLower(strings.TrimSpace(name))
+	// Normalize both sides identically — trim + lowercase. The label pass in
+	// particular must trim the catalog DisplayLabel too: a seeded/admin-edited
+	// label with stray surrounding whitespace should still match (code_review).
+	normalize := func(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
+	needle := normalize(name)
 	if needle == "" {
 		return "", false
 	}
 	for kind := range w.ItemKinds {
-		if strings.ToLower(string(kind)) == needle {
+		if normalize(string(kind)) == needle {
+			return kind, true
+		}
+	}
+	for kind, def := range w.ItemKinds {
+		if def != nil && normalize(def.DisplayLabel) == needle {
 			return kind, true
 		}
 	}

@@ -773,6 +773,69 @@ func TestResolveItemKind_Cases(t *testing.T) {
 	}
 }
 
+// TestResolveItemKind_DisplayLabel covers ZBBS-HOME-370: the deliberation
+// prompt renders items by DisplayLabel ("Coca Tea" for key "coca_tea"), so the
+// model passes the label back in its tool call. resolveItemKind must accept the
+// label, not only the canonical key — otherwise consume/pay fail
+// ErrUnknownItemKind on any item whose label differs from its key (spaces vs
+// underscores being the live case). The canonical key still wins so a label
+// can't shadow a different kind's id. resolveItemKind reads only w.ItemKinds,
+// so a zero World with that field set exercises it without a running loop.
+func TestResolveItemKind_DisplayLabel(t *testing.T) {
+	w := &sim.World{
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"coca_tea": {Name: "coca_tea", DisplayLabel: "Coca Tea"},
+			"ale":      {Name: "ale", DisplayLabel: "Ale"},
+		},
+	}
+
+	cases := []struct {
+		name    string
+		input   string
+		wantOK  bool
+		wantKey sim.ItemKind
+	}{
+		{name: "label as rendered", input: "Coca Tea", wantOK: true, wantKey: "coca_tea"},
+		{name: "label lowercased", input: "coca tea", wantOK: true, wantKey: "coca_tea"},
+		{name: "label whitespace-padded", input: "  Coca Tea  ", wantOK: true, wantKey: "coca_tea"},
+		{name: "canonical key still resolves", input: "coca_tea", wantOK: true, wantKey: "coca_tea"},
+		{name: "single-word key path unaffected", input: "ale", wantOK: true, wantKey: "ale"},
+		{name: "single-word label path", input: "Ale", wantOK: true, wantKey: "ale"},
+		{name: "unknown still misses", input: "moonbeam", wantOK: false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, ok := sim.ResolveItemKind(w, c.input)
+			if ok != c.wantOK {
+				t.Fatalf("ok = %v, want %v (got key %q)", ok, c.wantOK, got)
+			}
+			if ok && got != c.wantKey {
+				t.Errorf("key = %q, want %q", got, c.wantKey)
+			}
+		})
+	}
+}
+
+// TestResolveItemKind_KeyBeatsLabel pins the two-pass precedence: when an input
+// equals one kind's canonical key AND another kind's DisplayLabel, the key match
+// must win regardless of Go map iteration order. Guards against a future
+// refactor back to single-pass (key-or-label per entry) matching.
+func TestResolveItemKind_KeyBeatsLabel(t *testing.T) {
+	w := &sim.World{
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"coca_tea": {Name: "coca_tea", DisplayLabel: "Coca Tea"},
+			"coca tea": {Name: "coca tea", DisplayLabel: "Other"},
+		},
+	}
+	got, ok := sim.ResolveItemKind(w, "coca tea")
+	if !ok {
+		t.Fatal("expected a match for \"coca tea\"")
+	}
+	if got != "coca tea" {
+		t.Errorf("key = %q, want %q (canonical key must beat another kind's label)", got, "coca tea")
+	}
+}
+
 // The dwell-pin lookup (formerly findNearestVillageObject) is now
 // resolveLoiteringObject, covered directly by loiter_resolve_test.go. Its
 // end-to-end use in Consume is covered by TestConsume_DwellPin_* above.
