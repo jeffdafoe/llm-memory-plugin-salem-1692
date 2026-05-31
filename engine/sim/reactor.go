@@ -569,9 +569,16 @@ func (m WarrantMeta) Kind() WarrantKind {
 //
 // Unexported by design — warrant stamping is the privilege of mutation
 // commands inside Command.Fn. External callers reach it through Commands.
-func tryStampWarrant(w *World, actor *Actor, meta WarrantMeta, now time.Time) {
+//
+// Returns true when the warrant was recorded (a fresh cycle opened, or the
+// meta appended to an open cycle), false when the funnel declined it (nil
+// args, or a source-dedup hit). Most callers ignore the result — they stamp
+// and move on. The red-need backstop (ZBBS-HOME-363) consults it because it
+// advances real per-actor backoff pacing on a stamp, and must not pace an
+// actor for a deliberation that the funnel never produced.
+func tryStampWarrant(w *World, actor *Actor, meta WarrantMeta, now time.Time) bool {
 	if actor == nil || meta.Reason == nil {
-		return
+		return false
 	}
 
 	// Source-aware dedup. Only event-sourced warrants participate; reads
@@ -581,31 +588,32 @@ func tryStampWarrant(w *World, actor *Actor, meta WarrantMeta, now time.Time) {
 		// 1. Open-cycle: same source already pending this cycle.
 		for _, pending := range actor.Warrants {
 			if pending.eventSourced() && pending.sourceKey() == key {
-				return
+				return false
 			}
 		}
 		// 2. In-flight: same source consumed into the attempt mid-LLM-call.
 		if _, ok := actor.inFlightSourceKeys[key]; ok {
-			return
+			return false
 		}
 		// 3. Recently-consumed: a completed attempt addressed this exact
 		//    source within the TTL window. Expired entries are ignored
 		//    here and swept on the next insert (rememberConsumedSourceKey).
 		if ts, ok := actor.recentlyConsumedSourceKeys[key]; ok &&
 			now.Sub(ts) < recentlyConsumedTTL {
-			return
+			return false
 		}
 	}
 
 	if actor.WarrantedSince != nil {
 		actor.Warrants = appendCappedWarrant(actor.Warrants, meta, w.Settings.MaxWarrantsPerActor)
-		return
+		return true
 	}
 	t := now
 	actor.WarrantedSince = &t
 	due := now.Add(pickWarrantJitter(w.Settings, now))
 	actor.WarrantDueAt = &due
 	actor.Warrants = []WarrantMeta{meta}
+	return true
 }
 
 // pickWarrantJitter returns a duration in [ReactorJitterMin,
@@ -670,6 +678,11 @@ func resetReactorStateOnLoad(a *Actor) {
 	a.inFlightSourceKeys = nil
 	a.recentlyConsumedSourceKeys = nil
 	a.heardSpeechMisses = nil
+	// Red-need backstop pacing (ZBBS-HOME-363) — ephemeral, like the
+	// rate-gate history above. A fresh-loaded actor starts un-paced so a
+	// red need re-engages promptly after restart rather than inheriting a
+	// stale backoff timer.
+	clearRedNeedBackstop(a)
 }
 
 // actorReactorDue is the cheap pre-check the evaluator runs against every
@@ -930,6 +943,15 @@ const (
 	// (engine/sim/cascade/idle_backstop.go) since cascade owns the
 	// goroutine driver; sim only knows the per-actor criterion.
 	defaultIdleBackstopThreshold = 30 * time.Minute
+
+	// Red-need backstop defaults (ZBBS-HOME-363). Base is the first/floor
+	// re-warrant gap for a red-need idle actor; the per-actor backoff
+	// doubles it each no-progress sweep, capped at max. Max == the idle-
+	// backstop default so a permanently-stuck actor's steady-state
+	// re-warrant cost never exceeds the idle-backstop rate. The companion
+	// sweep-cadence default lives in cascade/red_need_backstop.go.
+	defaultRedNeedBackstopBaseDelay = 90 * time.Second
+	defaultRedNeedBackstopMaxDelay  = 30 * time.Minute
 
 	// recentlyConsumedTTL / recentlyConsumedCap bound the per-actor
 	// recently-consumed source-key set — tryStampWarrant's third dedup

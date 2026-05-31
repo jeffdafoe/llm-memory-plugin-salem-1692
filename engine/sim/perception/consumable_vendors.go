@@ -308,3 +308,27 @@ func businessRememberedShut(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, st
 	age := snap.PublishedAt.Sub(observedAt)
 	return age >= 0 && age < sim.ClosedBusinessMemoryTTL
 }
+
+// outOfStockAnnotation is the in-world suffix appended to a buy cue for a
+// (vendor, item) the subject remembers finding out of stock (ZBBS-HOME-363).
+// Recalled experience, not a live read — it deprioritizes rather than forbids
+// (the memory decays, and the vendor may have restocked since).
+const outOfStockAnnotation = " — though you went there for it not long ago and found them out"
+
+// businessRememberedOutOfStock reports whether the subject has a live
+// experiential memory (ZBBS-HOME-363, within sim.OutOfStockMemoryTTL of the
+// snapshot clock) of trying to buy itemKind at structureID and finding it out of
+// stock. The per-(structure,item) sibling of businessRememberedShut: stamped +
+// self-cleared by the PayWithItemResolved subscriber (sim/out_of_stock.go), TTL
+// decay applied HERE at read time so a stale "dry" fades (the NPC retries).
+func businessRememberedOutOfStock(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, structureID sim.StructureID, itemKind sim.ItemKind) bool {
+	if snap == nil || actorSnap == nil || len(actorSnap.OutOfStockObs) == 0 {
+		return false
+	}
+	observedAt, ok := actorSnap.OutOfStockObs[sim.OutOfStockKey{StructureID: structureID, ItemKind: itemKind}]
+	if !ok {
+		return false
+	}
+	age := snap.PublishedAt.Sub(observedAt)
+	return age >= 0 && age < sim.OutOfStockMemoryTTL
+}

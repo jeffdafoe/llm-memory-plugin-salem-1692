@@ -220,6 +220,14 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	s.IdleBackstopThreshold = parseDurationSetting(values, "idle_backstop_threshold_minutes", 30*time.Minute)
 	s.IdleBackstopSweepInterval = parseDurationSetting(values, "idle_backstop_sweep_interval_minutes", 5*time.Minute)
 
+	// Red-need backstop (ZBBS-HOME-363). Base is the floor re-warrant gap
+	// for a red-need idle actor; the per-actor backoff doubles it each
+	// no-progress sweep up to the max (= idle-backstop rate, bounding stuck
+	// cost). Sweep interval sets detection latency for a newly-red actor.
+	s.RedNeedBackstopBaseDelay = parseDurationSetting(values, "red_need_backstop_base_delay_seconds", 90*time.Second)
+	s.RedNeedBackstopMaxDelay = parseDurationSetting(values, "red_need_backstop_max_delay_minutes", 30*time.Minute)
+	s.RedNeedBackstopSweepInterval = parseDurationSetting(values, "red_need_backstop_sweep_interval_seconds", 30*time.Second)
+
 	// Atmosphere refresh cascade.
 	s.AtmosphereRefreshInterval = parseDurationSetting(values, "atmosphere_refresh_interval_hours", 4*time.Hour)
 

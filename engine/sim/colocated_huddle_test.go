@@ -152,14 +152,74 @@ func TestEnsureColocatedHuddle_DoesNotYankAlreadyHuddled(t *testing.T) {
 	}
 }
 
-// TestEnsureColocatedHuddle_NonPCCallerNoOp: the bootstrap is PC-only. An NPC
-// "speaker" never forms an indoor huddle through this path (NPC conversation
-// forms via the cascade/reactor). ZBBS-HOME-358 (code_review #3).
-func TestEnsureColocatedHuddle_NonPCCallerNoOp(t *testing.T) {
+// TestEnsureColocatedHuddle_NPCSpeakerForms: ZBBS-HOME-363 widened the bootstrap
+// to conversational NPCs. A stateful NPC speaking indoors with a co-located
+// conversational NPC now forms/joins the structure huddle (the live Tavern buy
+// bug: an NPC with no huddle could never transact). Both end up huddled together.
+func TestEnsureColocatedHuddle_NPCSpeakerForms(t *testing.T) {
 	w, cancel := buildHuddleTestWorld(t)
 	defer cancel()
 	setActor(t, w, "alice", func(a *sim.Actor) {
-		a.Kind = sim.KindNPCStateful // NOT a PC
+		a.Kind = sim.KindNPCStateful
+		a.InsideStructureID = "tavern"
+	})
+	setActor(t, w, "bob", func(a *sim.Actor) {
+		a.Kind = sim.KindNPCStateful
+		a.InsideStructureID = "tavern"
+	})
+
+	ensureColocated(t, w, "alice")
+
+	ah := huddleOf(t, w, "alice")
+	if ah == "" {
+		t.Fatal("NPC speaker should have formed an indoor huddle")
+	}
+	if huddleOf(t, w, "bob") != ah {
+		t.Errorf("co-located NPC bob should have joined the speaker's huddle %q, got %q", ah, huddleOf(t, w, "bob"))
+	}
+}
+
+// TestEnsureColocatedHuddle_NPCJoinsExistingStructureHuddle: the exact live
+// bug (ZBBS-HOME-363). The structure already has an active huddle (bob+charlie,
+// e.g. a keeper already conversing); a starving NPC (alice) walks in to buy and
+// speaks. find-or-create returns the EXISTING huddle, so alice JOINS it rather
+// than minting a second — and can now transact with the keeper.
+func TestEnsureColocatedHuddle_NPCJoinsExistingStructureHuddle(t *testing.T) {
+	w, cancel := buildHuddleTestWorld(t)
+	defer cancel()
+	for _, id := range []sim.ActorID{"alice", "bob", "charlie"} {
+		setActor(t, w, id, func(a *sim.Actor) {
+			a.Kind = sim.KindNPCStateful
+			a.InsideStructureID = "tavern"
+		})
+	}
+	// bob + charlie are already conversing in the tavern's active huddle.
+	sendT(t, w, sim.JoinHuddle("bob", "tavern", "", time.Unix(0, 0).UTC()))
+	sendT(t, w, sim.JoinHuddle("charlie", "tavern", "", time.Unix(0, 0).UTC()))
+	existing := huddleOf(t, w, "bob")
+	if existing == "" || huddleOf(t, w, "charlie") != existing {
+		t.Fatalf("setup: bob/charlie not co-huddled (bob=%q charlie=%q)", existing, huddleOf(t, w, "charlie"))
+	}
+
+	ensureColocated(t, w, "alice")
+
+	if got := huddleOf(t, w, "alice"); got != existing {
+		t.Errorf("alice should JOIN the existing structure huddle %q, got %q", existing, got)
+	}
+	// bob + charlie are undisturbed — same huddle, no second huddle minted.
+	if huddleOf(t, w, "bob") != existing || huddleOf(t, w, "charlie") != existing {
+		t.Error("existing members were disturbed by the join")
+	}
+}
+
+// TestEnsureColocatedHuddle_DecorativeCallerNoOp: a decorative actor (sprite-
+// only, never ticks) speaking is not a real conversation and must not mint a
+// huddle — the kind boundary the widened bootstrap still enforces.
+func TestEnsureColocatedHuddle_DecorativeCallerNoOp(t *testing.T) {
+	w, cancel := buildHuddleTestWorld(t)
+	defer cancel()
+	setActor(t, w, "alice", func(a *sim.Actor) {
+		a.Kind = sim.KindDecorative
 		a.InsideStructureID = "tavern"
 	})
 	setActor(t, w, "bob", func(a *sim.Actor) {
@@ -170,7 +230,7 @@ func TestEnsureColocatedHuddle_NonPCCallerNoOp(t *testing.T) {
 	ensureColocated(t, w, "alice")
 
 	if h := huddleOf(t, w, "alice"); h != "" {
-		t.Errorf("non-PC caller should be a no-op, got huddle %q", h)
+		t.Errorf("decorative caller should be a no-op, got huddle %q", h)
 	}
 }
 
