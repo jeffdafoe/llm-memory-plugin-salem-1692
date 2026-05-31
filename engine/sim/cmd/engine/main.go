@@ -396,6 +396,14 @@ func registerTools(r *handlers.Registry, searcher llm.MemorySearcher) error {
 		{"summon", handlers.RegisterSummon},        // ZBBS-HOME-311
 		{"gather", handlers.RegisterGather},        // ZBBS-WORK-328
 		{"stop", handlers.RegisterStop},            // ZBBS-HOME-338
+		// `done` — the universal terminal tool. The NPC's instructions tell it
+		// to end its turn with done, and the v2 harness ends the tick on a
+		// ClassTerminal dispatch (sim.TickStatusDone, see sim/reactor_commands.go).
+		// Every handler test and the register_*.go composition docs wire this,
+		// but production registration omitted it — so a `done` call errored with
+		// unknown_tool and the NPC was forced into another tool (typically a
+		// walk-off), manufacturing goal-thrash. ZBBS-HOME-369.
+		{"done", func(r *handlers.Registry) error { return r.RegisterTerminal("done") }},
 	}
 	for _, t := range register {
 		if err := t.fn(r); err != nil {
