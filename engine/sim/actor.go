@@ -647,6 +647,20 @@ type Actor struct {
 	// observation. ZBBS-HOME-353.
 	ClosedBusinessObs map[StructureID]time.Time
 
+	// OutOfStockObs is this actor's experiential memory of a (business, item) it
+	// tried to buy and found out of stock, keyed by (structure_id, item_kind) and
+	// stamped with the observation time. The out-of-stock sibling of
+	// ClosedBusinessObs (ZBBS-HOME-363): vendors are allowed to run dry (a farm
+	// off-post regenerates nothing; advertised water is finite seed stock), so a
+	// buy that fails on stock is remembered, and perception deprioritizes that
+	// vendor-item in the buy menu so the NPC stops re-walking to a dry vendor.
+	// Experiential (learned only by trying), self-clears on a later successful
+	// buy of the same (structure, item), and DECAYS after OutOfStockMemoryTTL so
+	// the NPC retries. In-memory + restart-lossy by design. Populated by the
+	// PayWithItemResolved subscriber in out_of_stock.go. nil until the first
+	// out-of-stock observation.
+	OutOfStockObs map[OutOfStockKey]time.Time
+
 	// RestockPolicy carries this actor's produce/buy entries, unioned
 	// across their role attributes (tavernkeeper + worker, etc.). Read
 	// from actor_attribute.params.restock in legacy; nil for actors
@@ -865,6 +879,9 @@ func CloneActor(a *Actor) *Actor {
 	if a.ClosedBusinessObs != nil {
 		cp.ClosedBusinessObs = cloneClosedBusinessObs(a.ClosedBusinessObs)
 	}
+	if a.OutOfStockObs != nil {
+		cp.OutOfStockObs = cloneOutOfStockObs(a.OutOfStockObs)
+	}
 	if a.ProduceState != nil {
 		cp.ProduceState = make(map[ItemKind]*ProduceState, len(a.ProduceState))
 		for k, v := range a.ProduceState {
@@ -1035,6 +1052,14 @@ type ActorSnapshot struct {
 	// first shut observation. See Actor.ClosedBusinessObs. ZBBS-HOME-353.
 	ClosedBusinessObs map[StructureID]time.Time
 
+	// OutOfStockObs mirrors the live Actor's experiential out-of-stock memory at
+	// snapshot time ((structure_id, item_kind) -> observed wall-clock), so
+	// perception can deprioritize a remembered-dry vendor-item in the buy menu.
+	// Deep-cloned by snapshotActor so published snapshots don't alias the world's
+	// mutable map. nil until the first out-of-stock observation. See
+	// Actor.OutOfStockObs. ZBBS-HOME-363.
+	OutOfStockObs map[OutOfStockKey]time.Time
+
 	// RoomAccess mirrors the live Actor's private/staff-room grants at
 	// snapshot time so perception build can surface the lodger view ("your
 	// room at the inn is paid through <day>") and compute keeper-side room
@@ -1119,6 +1144,9 @@ func CloneActorSnapshot(s *ActorSnapshot) *ActorSnapshot {
 	if s.ClosedBusinessObs != nil {
 		cp.ClosedBusinessObs = cloneClosedBusinessObs(s.ClosedBusinessObs)
 	}
+	if s.OutOfStockObs != nil {
+		cp.OutOfStockObs = cloneOutOfStockObs(s.OutOfStockObs)
+	}
 	if s.AttributeSlugs != nil {
 		cp.AttributeSlugs = append([]string(nil), s.AttributeSlugs...)
 	}
@@ -1139,6 +1167,21 @@ func cloneClosedBusinessObs(src map[StructureID]time.Time) map[StructureID]time.
 		return nil
 	}
 	dst := make(map[StructureID]time.Time, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+// cloneOutOfStockObs copies an OutOfStockObs map ((structure_id, item_kind) ->
+// observed time). The key is a value struct and time.Time is a value, so a
+// shallow per-entry copy is a full clone. Returns nil for a nil source.
+// ZBBS-HOME-363.
+func cloneOutOfStockObs(src map[OutOfStockKey]time.Time) map[OutOfStockKey]time.Time {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[OutOfStockKey]time.Time, len(src))
 	for k, v := range src {
 		dst[k] = v
 	}
