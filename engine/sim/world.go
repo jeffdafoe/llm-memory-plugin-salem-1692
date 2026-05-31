@@ -191,6 +191,34 @@ type WorldSettings struct {
 	IdleBackstopThreshold     time.Duration
 	IdleBackstopSweepInterval time.Duration
 
+	// Red-need backstop tunables (ZBBS-HOME-363 —
+	// engine/sim/red_need_backstop_commands.go +
+	// engine/sim/cascade/red_need_backstop.go). The fast, cost-paced
+	// companion to the hourly needs-tick re-warrant: it re-engages an
+	// actor sitting on an unresolved red need that has gone idle, without
+	// waiting the full hour (needs tick) or 30 min (idle backstop). All
+	// fall back to defaults when zero.
+	//
+	//   - RedNeedBackstopBaseDelay: the first/floor re-warrant gap for a
+	//     red-need idle actor. Default 90 s (defaultRedNeedBackstopBaseDelay
+	//     in reactor.go) — snappy enough that a transiently-stuck actor (a
+	//     keeper just returned, stock replenished) retries quickly. Doubles
+	//     each sweep the need makes no progress.
+	//   - RedNeedBackstopMaxDelay: the cap the exponential backoff
+	//     converges to for a genuinely-unresolvable red need. Default
+	//     30 min (defaultRedNeedBackstopMaxDelay) — i.e. no worse than the
+	//     idle-backstop rate, bounding the steady-state LLM cost of a stuck
+	//     actor.
+	//   - RedNeedBackstopSweepInterval: how often the sweep walks the actor
+	//     list. Default 30 s (defaultRedNeedBackstopSweepInterval in
+	//     engine/sim/cascade/red_need_backstop.go — owned by cascade since
+	//     cascade owns the goroutine driver). Sets the detection latency for
+	//     a newly-red actor; cheap (per-actor field reads on the world
+	//     goroutine, no allocations).
+	RedNeedBackstopBaseDelay     time.Duration
+	RedNeedBackstopMaxDelay      time.Duration
+	RedNeedBackstopSweepInterval time.Duration
+
 	// AtmosphereRefreshInterval is the cadence at which the atmosphere
 	// refresh cascade slice fires a salem-generic LLM call to rewrite
 	// World.Environment.Atmosphere. Default 4h

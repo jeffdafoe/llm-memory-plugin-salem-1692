@@ -538,6 +538,34 @@ type Actor struct {
 	// (MaxReactorTicksPerActorPerMinute). Lazily allocated on first emit.
 	RecentReactorTicks *RingBuffer[time.Time]
 
+	// Red-need backstop pacing (ZBBS-HOME-363). Per-actor exponential
+	// backoff for the red-need re-warrant sweep
+	// (engine/sim/red_need_backstop_commands.go). The hourly needs-tick
+	// re-warrant (needs_tick.go, HOME-329 level-trigger) is too slow to
+	// re-engage an actor that burned a tick failing to resolve a red need
+	// and then went idle — it sits frozen until the next hour boundary or
+	// the 30-min idle backstop. The backstop sweep re-warrants such an
+	// actor promptly, but a genuinely-unresolvable red need must NOT
+	// re-warrant on a tight loop: every warrant is an LLM deliberation, so
+	// a stuck actor would burn tokens indefinitely. The cadence therefore
+	// backs off exponentially toward the idle-backstop floor and resets to
+	// base only when the need actually drops (real progress).
+	//
+	//   - RedNeedNextWarrantAt: earliest wall-clock the sweep may stamp the
+	//     next red-need warrant. Nil = eligible immediately (never paced).
+	//   - RedNeedBackoffLevel: escalation level; the delay is
+	//     base << level, capped at RedNeedBackstopMaxDelay.
+	//   - RedNeedLastKey / RedNeedLastValue: the need + its value recorded
+	//     at the last stamp, so the next sweep detects progress (value
+	//     dropped → reset to base) vs. stall (unchanged → escalate).
+	//
+	// All ephemeral — wiped on LoadWorld with the rest of the reactor
+	// pacing state, so a fresh-loaded actor starts un-paced.
+	RedNeedNextWarrantAt *time.Time
+	RedNeedBackoffLevel  int
+	RedNeedLastKey       NeedKey
+	RedNeedLastValue     int
+
 	// inFlightSourceKeys is the set of WarrantSourceKeys consumed into the
 	// actor's current in-flight tick attempt — recorded at ReactorTickDue
 	// emit, consulted by tryStampWarrant's in-flight dedup path, and

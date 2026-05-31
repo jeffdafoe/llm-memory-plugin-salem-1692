@@ -164,6 +164,38 @@ func hasFreshDwellCreditForAttribute(a *Actor, attr NeedKey, now time.Time, fres
 	return false
 }
 
+// actorActionableRedNeed returns the first need (in canonical Needs order)
+// that should drive an LLM deliberation right now: it sits at or past its
+// red threshold, has no fresh dwell-credit suppressing it (the actor is
+// already recovering it by dwelling), and — for tiredness — the actor is
+// on shift (overnight tiredness is the deterministic sleep loop's job, not
+// a deliberation). ok=false when nothing qualifies.
+//
+// Single source of truth for "what red need presses this actor": shared by
+// the hourly needs-tick warrant producer (IncrementNeedsTick) and the
+// red-need backstop sweep (ZBBS-HOME-363, EvaluateRedNeedBackstop) so the
+// two stay consistent — a change to the threshold / dwell / on-shift logic
+// updates both at once.
+func actorActionableRedNeed(w *World, a *Actor, now time.Time, nowMinute int) (NeedKey, bool) {
+	if a.Needs == nil {
+		return "", false
+	}
+	for _, n := range Needs {
+		if hasFreshDwellCreditForAttribute(a, n.Key, now, NeedsTickDwellSkipWindow) {
+			continue
+		}
+		threshold := w.Settings.NeedThresholds.Get(n.Key)
+		if a.Needs[n.Key] < threshold {
+			continue
+		}
+		if n.Key == "tiredness" && !isActorOnShift(a, nowMinute) {
+			continue
+		}
+		return n.Key, true
+	}
+	return "", false
+}
+
 // IncrementNeedsTick returns a Command that applies the hourly needs
 // increment across all eligible actors.
 //
@@ -220,8 +252,6 @@ func IncrementNeedsTick(cappedHours int) Command {
 				// need increments are applied.
 				warrantEligible := (a.Kind == KindNPCStateful || a.Kind == KindNPCShared) &&
 					a.VisitorState == nil && a.WarrantedSince == nil && !a.TickInFlight
-				var redNeed NeedKey
-				redFound := false
 
 				for _, n := range Needs {
 					// ZBBS-WORK-346 — port of v1 ZBBS-HOME-214: skip this need
@@ -229,49 +259,39 @@ func IncrementNeedsTick(cappedHours int) Command {
 					// matching attribute. Closes the "rest under a tree but
 					// stat still climbs" wash on slow recoverers. A skipped
 					// need also can't cross its red threshold this tick — the
-					// v1 SQL UPDATE skipped the row entirely, same effect.
+					// v1 SQL UPDATE skipped the row entirely, same effect (and
+					// actorActionableRedNeed below applies the same skip, so a
+					// dwell-credited red need is not warranted either).
 					if hasFreshDwellCreditForAttribute(a, n.Key, now, NeedsTickDwellSkipWindow) {
 						continue
 					}
-
-					before := a.Needs[n.Key]
-					after := ClampNeed(before + bump)
-					a.Needs[n.Key] = after
-
-					// LEVEL check (ZBBS-HOME-329 #1): warrant whenever the need
-					// sits AT OR PAST its red threshold — not only on the upward
-					// crossing. The old edge test (before < threshold) fired once
-					// on the way up and then went silent; a need pegged at max
-					// never re-crosses, so a stuck-maxed actor lost all need-
-					// driven goal pressure and could never recover organically.
-					// Re-stamping each tick while the need stays red restores the
-					// standing "go resolve this" goal. The warrantEligible gate
-					// above (no open cycle, not mid-tick) bounds this to the
-					// hourly needs cadence and prevents re-stamp spam. Tiredness
-					// is excluded off-shift — overnight tiredness is the
-					// deterministic sleep loop's job, not an LLM deliberation;
-					// on-shift tiredness routes the warrant to take_break.
-					if !redFound && warrantEligible {
-						threshold := w.Settings.NeedThresholds.Get(n.Key)
-						if after >= threshold {
-							if n.Key != "tiredness" || isActorOnShift(a, nowMinute) {
-								redNeed = n.Key
-								redFound = true
-							}
-						}
-					}
+					a.Needs[n.Key] = ClampNeed(a.Needs[n.Key] + bump)
 				}
 
-				// Stamp once per actor per tick. Zero-sourced (a stat sitting at
-				// its red line is not a discrete event) — SourceEventID stays 0,
-				// like the idle-backstop producer; the warrant's perception
-				// surfaces the full need set, so the deliberation resolves
-				// whatever is most pressing, not just redNeed.
-				if redFound {
-					tryStampWarrant(w, a, WarrantMeta{
-						TriggerActorID: a.ID,
-						Reason:         NeedThresholdWarrantReason{Need: redNeed},
-					}, now)
+				// LEVEL check (ZBBS-HOME-329 #1): warrant whenever a need sits
+				// AT OR PAST its red threshold after the increment — not only on
+				// the upward crossing. The old edge test fired once on the way
+				// up and went silent; a need pegged at max never re-crosses, so
+				// a stuck-maxed actor lost all need-driven goal pressure and
+				// could never recover organically. Re-stamping each tick while
+				// the need stays red restores the standing "go resolve this"
+				// goal. The warrantEligible gate (no open cycle, not mid-tick)
+				// bounds this to the hourly needs cadence and prevents re-stamp
+				// spam; the faster red-need backstop sweep (ZBBS-HOME-363) is
+				// what re-engages a red-need actor between hourly ticks. The
+				// shared actorActionableRedNeed picks the first red, on-shift
+				// (tiredness off-shift is the sleep loop's job), non-dwell need.
+				if warrantEligible {
+					if redNeed, ok := actorActionableRedNeed(w, a, now, nowMinute); ok {
+						// Zero-sourced (a stat at its red line is not a discrete
+						// event) — SourceEventID stays 0, like the idle-backstop
+						// producer; perception surfaces the full need set, so the
+						// deliberation resolves whatever is most pressing.
+						tryStampWarrant(w, a, WarrantMeta{
+							TriggerActorID: a.ID,
+							Reason:         NeedThresholdWarrantReason{Need: redNeed},
+						}, now)
+					}
 				}
 				touched++
 			}
