@@ -371,9 +371,9 @@ func indoorNoHuddlePCMeWorld(t *testing.T) *sim.World {
 			ID: "sleeper", DisplayName: "Dozer", Kind: sim.KindNPCStateful,
 			State: sim.StateSleeping, InsideStructureID: "inn",
 		}
-		// Already in a huddle → excluded (HOME-358 leaves existing
-		// conversations intact; the speak path won't pull them into the PC's
-		// new huddle, so the roster must not advertise them).
+		// Already in THIS structure's active huddle → INCLUDED (ZBBS-HOME-363):
+		// the PC's speak joins h1 (find-or-create at the inn), so busy is a peer
+		// the player can talk to and must surface in the roster.
 		world.Actors["busy"] = &sim.Actor{
 			ID: "busy", DisplayName: "Busy", Kind: sim.KindNPCShared,
 			State: sim.StateIdle, LLMAgent: "busy-va",
@@ -382,6 +382,18 @@ func indoorNoHuddlePCMeWorld(t *testing.T) *sim.World {
 		world.Huddles["h1"] = &sim.Huddle{
 			ID: "h1", StructureID: "inn",
 			Members: map[sim.ActorID]struct{}{"busy": {}},
+		}
+		// Co-located in the inn but huddled in a DIFFERENT structure's
+		// conversation → excluded (ZBBS-HOME-363): the PC's join at the inn
+		// won't pull them out of the barn's huddle, so they're not talkable.
+		world.Actors["crossstruct"] = &sim.Actor{
+			ID: "crossstruct", DisplayName: "Crosser", Kind: sim.KindNPCShared,
+			State: sim.StateIdle, LLMAgent: "cross-va",
+			InsideStructureID: "inn", CurrentHuddleID: "h2",
+		}
+		world.Huddles["h2"] = &sim.Huddle{
+			ID: "h2", StructureID: "barn",
+			Members: map[sim.ActorID]struct{}{"crossstruct": {}},
 		}
 		// Presence-stale PC (never polled → nil stamp is stale) → excluded,
 		// mirroring the speak path's stale-PC exclusion.
@@ -417,19 +429,21 @@ func TestHandlePCMe_IndoorNoHuddleRoster(t *testing.T) {
 	if resp.CurrentHuddleID != nil {
 		t.Errorf("current_huddle_id = %v, want nil (PC has no huddle)", *resp.CurrentHuddleID)
 	}
-	// Eligible co-located: Hannah (NPC) + Wanderer (fresh PC), sorted by name.
-	// Excluded: Statue (decorative), Dozer (asleep), Busy (already huddled),
-	// Ghost (presence-stale PC), Distant (other structure).
-	if len(resp.HuddleMembers) != 2 {
-		t.Fatalf("len(huddle_members) = %d, want 2; got %+v", len(resp.HuddleMembers), resp.HuddleMembers)
+	// Eligible co-located, sorted by name: Busy (in THIS structure's huddle —
+	// ZBBS-HOME-363 includes it), Hannah (NPC), Wanderer (fresh PC).
+	// Excluded: Statue (decorative), Dozer (asleep), Crosser (huddled in a
+	// different structure), Ghost (presence-stale PC), Distant (other structure).
+	if len(resp.HuddleMembers) != 3 {
+		t.Fatalf("len(huddle_members) = %d, want 3; got %+v", len(resp.HuddleMembers), resp.HuddleMembers)
 	}
-	h := resp.HuddleMembers[0]
-	if h.Kind != "npc" || h.Name != "Hannah" || h.TargetAgent == nil || *h.TargetAgent != "hannah-va" {
-		t.Errorf("huddle_members[0] = %+v, want NPC Hannah/hannah-va", h)
+	if b := resp.HuddleMembers[0]; b.Kind != "npc" || b.Name != "Busy" || b.TargetAgent == nil || *b.TargetAgent != "busy-va" {
+		t.Errorf("huddle_members[0] = %+v, want NPC Busy/busy-va (in this structure's huddle)", b)
 	}
-	p := resp.HuddleMembers[1]
-	if p.Kind != "pc" || p.Name != "Wanderer" || p.TargetAgent != nil {
-		t.Errorf("huddle_members[1] = %+v, want PC Wanderer with no target_agent", p)
+	if h := resp.HuddleMembers[1]; h.Kind != "npc" || h.Name != "Hannah" || h.TargetAgent == nil || *h.TargetAgent != "hannah-va" {
+		t.Errorf("huddle_members[1] = %+v, want NPC Hannah/hannah-va", h)
+	}
+	if p := resp.HuddleMembers[2]; p.Kind != "pc" || p.Name != "Wanderer" || p.TargetAgent != nil {
+		t.Errorf("huddle_members[2] = %+v, want PC Wanderer with no target_agent", p)
 	}
 }
 

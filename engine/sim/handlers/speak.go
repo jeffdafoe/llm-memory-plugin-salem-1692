@@ -160,7 +160,22 @@ func HandleSpeak(in HandlerInput) (sim.Command, error) {
 			"speak: text contains a disallowed control character at byte offset %d "+
 				"(only \\n, \\r, \\t allowed)", i)
 	}
-	return sim.Speak(in.ActorID, text, time.Now().UTC()), nil
+	actorID := in.ActorID
+	return sim.Command{Fn: func(w *sim.World) (any, error) {
+		// ZBBS-HOME-363: form the conversation on the explicit talk action,
+		// mirroring the PC path (httpapi.speakPCCommand). An NPC that walked
+		// into an open structure to transact (e.g. a starving villager buying
+		// from the Tavern keeper) has no huddle — the indoor encounter path
+		// never formed one — so without this every pay/speak dies with "you're
+		// not in a conversation." EnsureColocatedHuddle joins/forms the indoor
+		// huddle with co-located actors; it is a no-op when already huddled,
+		// alone, or outdoors, and swallows per-actor join errors internally.
+		now := time.Now().UTC()
+		if _, err := sim.EnsureColocatedHuddle(actorID, now).Fn(w); err != nil {
+			return nil, err
+		}
+		return sim.Speak(actorID, text, now).Fn(w)
+	}}, nil
 }
 
 // indexInvalidControlChar returns the byte offset of the first
