@@ -408,6 +408,17 @@ func speakPCCommand(username, text string) sim.Command {
 			// PC (ZBBS-WORK-324) before the speak. One clock for both.
 			now := time.Now().UTC()
 			sim.TouchPCInput(world, actorID, now)
+			// ZBBS-HOME-358: form the conversation on the explicit talk action.
+			// A PC who walked into an open structure has no huddle (the arrival-
+			// encounter cascade is outdoor-only and a plain walk-in mints none),
+			// so without this sim.Speak would reject a name-address (422) or emit
+			// to no one. EnsureColocatedHuddle joins/forms the indoor huddle with
+			// co-located actors; it is a no-op when the PC already has a huddle or
+			// is alone, so it never disturbs an existing conversation. It logs and
+			// swallows per-actor join errors internally, so it returns nil here.
+			if _, err := sim.EnsureColocatedHuddle(actorID, now).Fn(world); err != nil {
+				return nil, err
+			}
 			return sim.Speak(actorID, text, now).Fn(world)
 		},
 	}
