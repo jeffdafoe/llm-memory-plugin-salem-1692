@@ -611,9 +611,17 @@ func leaveCurrentHuddle(w *World, actor *Actor, now time.Time) LeaveHuddleResult
 		for id := range huddle.Members {
 			loneID = id
 		}
-		if lone, ok := w.Actors[loneID]; ok && actorIsResting(lone, now) {
+		lone, ok := w.Actors[loneID]
+		// Evict a lone member that won't tick to leave on its own: a RESTING
+		// one (asleep/on-break, warrant shelved), OR a stale/missing actor ref
+		// (in Members but already deleted from w.Actors — it can never tick
+		// either, the same stale-degenerate-huddle class; code_review). An
+		// ACTIVE, present member keeps the transient huddle and handles it.
+		if !ok || lone == nil || actorIsResting(lone, now) {
 			delete(huddle.Members, loneID)
-			lone.CurrentHuddleID = ""
+			if lone != nil {
+				lone.CurrentHuddleID = ""
+			}
 			if members, ok := w.actorsByHuddle[huddleID]; ok {
 				delete(members, loneID)
 				if len(members) == 0 {

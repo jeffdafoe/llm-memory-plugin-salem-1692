@@ -39,6 +39,31 @@ func TestHuddleDissolve_RestingLoneMemberEvicted(t *testing.T) {
 	}
 }
 
+// TestHuddleDissolve_MissingLoneMemberEvicted: a lone remaining member that is
+// a stale ref (in the huddle but already deleted from the world) can never tick
+// to leave, so it's the same stale-degenerate-huddle class as a resting member
+// and must be evicted too (code_review). We delete bob from w.Actors while
+// leaving him in the huddle, then alice leaves.
+func TestHuddleDissolve_MissingLoneMemberEvicted(t *testing.T) {
+	w, cancel := buildHuddleTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+	setActor(t, w, "alice", func(a *sim.Actor) { a.Kind = sim.KindNPCStateful })
+	setActor(t, w, "bob", func(a *sim.Actor) { a.Kind = sim.KindNPCStateful })
+	sendT(t, w, sim.JoinHuddle("alice", "tavern", "", now))
+	sendT(t, w, sim.JoinHuddle("bob", "tavern", "", now))
+	// Delete bob from the world but leave his membership ref in the huddle.
+	sendT(t, w, sim.Command{Fn: func(world *sim.World) (any, error) {
+		delete(world.Actors, "bob")
+		return nil, nil
+	}})
+
+	res := sendT(t, w, sim.LeaveHuddle("alice", now)).(sim.LeaveHuddleResult)
+	if !res.Concluded {
+		t.Error("huddle should conclude — the lone remaining member is a stale/missing ref")
+	}
+}
+
 // TestHuddleDissolve_ActiveLoneMemberPersists: the control. bob is active;
 // alice leaves; bob remains in the (now 1-member) huddle and it does NOT
 // conclude — preserving the transient model the rest of the system relies on.
