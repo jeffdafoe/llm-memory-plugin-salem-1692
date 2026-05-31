@@ -1605,35 +1605,40 @@ func _on_speak_completed(result: int, response_code: int, _headers: PackedString
         ])
 
 
-func _on_npc_spoke(_npc_id: String, speaker_name: String, text: String, kind: String = "", at: String = "", structure_id: String = "", mentions: Array = [], speaker_x: float = 0.0, speaker_y: float = 0.0, room_id: String = "", addressee_id: String = "", addressee_name: String = "", mention_prices: Dictionary = {}) -> void:
+func _on_npc_spoke(speaker_id: String, speaker_name: String, text: String, kind: String = "", at: String = "", structure_id: String = "", mentions: Array = [], speaker_x: float = 0.0, speaker_y: float = 0.0, room_id: String = "", addressee_id: String = "", addressee_name: String = "", mention_prices: Dictionary = {}, huddle_scoped: bool = false, recipient_ids: Array = []) -> void:
     # WS speech kinds are "npc" | "player"; normalize to the panel's
     # speech_npc / speech_player kinds so render logic is uniform with
-    # the backload entries. npc_id is unused here — speech bubbles
-    # consume it instead. `at` is an ISO timestamp from the broadcast;
+    # the backload entries. speaker_id scopes the v2 huddle-audience check
+    # below (world.gd's bubble path consumes it too). `at` is an ISO timestamp from the broadcast;
     # _format_timestamp converts to a short clock-time prefix.
     #
-    # Structure filter mirrors _on_room_event: speech that happened in
-    # a different room than the player's current conversational scope
-    # gets dropped. Empty structure_id is outdoor speech — accept only
-    # when we're also outside (loaded_structure_id empty) AND the speaker
-    # is within OUTDOOR_SPEECH_RANGE tiles of us (Chebyshev). The range
-    # filter is what makes "two PCs walking the road can talk" feel like
-    # proximity rather than a global outdoor megaphone.
-    if structure_id != loaded_structure_id:
-        return
-    # Subspace filter (post-ZBBS-149): event room_id must match the PC's
-    # loaded_room_id. Both empty = public scope (common room or outdoor).
-    # Either set = private/staff scope; only same-room listeners receive.
-    # A PC in Tavern→bedroom_1 has loaded_room_id="bed1"; tavern-common
-    # speech has room_id="" → mismatch → drop. Without this, common-room
-    # speech leaked into private bedrooms (observed 2026-05-08).
-    if room_id != loaded_room_id:
-        return
-    if structure_id.is_empty():
-        var dx: float = abs(speaker_x - pc_x)
-        var dy: float = abs(speaker_y - pc_y)
-        if max(dx, dy) > OUTDOOR_SPEECH_RANGE:
+    # Scope filter. v2 npc_spoke frames are HUDDLE-scoped: the engine already
+    # chose the audience (recipient_ids) and the frame carries no structure/room
+    # geometry, so scope the panel log by huddle membership — accept our own
+    # line (we are the speaker, so it echoes) or any utterance we were an
+    # audience member of. Without this the v1 filter below dropped every indoor
+    # v2 frame (empty structure_id != the PC's loaded_structure_id), so live
+    # speech never appeared in the panel even though the backload did
+    # (ZBBS-HOME-372).
+    if huddle_scoped:
+        if speaker_id != pc_actor_id and not recipient_ids.has(pc_actor_id):
             return
+    else:
+        # Legacy v1 frame carries explicit structure/room scope. Structure
+        # filter mirrors _on_room_event; empty structure_id is outdoor speech,
+        # accepted only when we are also outside AND the speaker is within
+        # OUTDOOR_SPEECH_RANGE (Chebyshev). The subspace room_id must also match
+        # the PC's loaded_room_id (post-ZBBS-149) so common-room speech does not
+        # leak into private bedrooms.
+        if structure_id != loaded_structure_id:
+            return
+        if room_id != loaded_room_id:
+            return
+        if structure_id.is_empty():
+            var dx: float = abs(speaker_x - pc_x)
+            var dy: float = abs(speaker_y - pc_y)
+            if max(dx, dy) > OUTDOOR_SPEECH_RANGE:
+                return
     var panel_kind := "speech_player" if kind == "player" else "speech_npc"
     var rendered_speaker := speaker_name
     # Addressee disambiguation for deliberation speech (counter / decline).
