@@ -16,10 +16,14 @@ import "time"
 // SUCCESSFUL buy of the same (structure, item), and DECAYS after
 // OutOfStockMemoryTTL so the NPC retries rather than believing it dry forever.
 //
-// This is the CAPTURE half (a PayWithItemResolved subscriber — the canonical
-// "this commerce ended" event, covering the accepted + failed_* terminals). The
-// SURFACE half lives in perception (consumable_vendors.go / satiation.go) and
-// reads Snapshot actor OutOfStockObs.
+// This is the CAPTURE half. Most stock failures arrive as a PayWithItemResolved
+// event (the canonical "this commerce ended" signal — the ledger-acceptance
+// path), but the quote-payment FAST PATH rejects insufficient stock with a bare
+// error and no event (no ledger entry exists to resolve). So capture has two
+// entry points that funnel through the same noteOutOfStock recorder: the event
+// subscriber here, and an inline call at the fast-path stock reject
+// (pay_with_item_commands.go). The SURFACE half lives in perception
+// (consumable_vendors.go / satiation.go) and reads Snapshot actor OutOfStockObs.
 
 // OutOfStockKey identifies a remembered (business, item) the buyer found dry.
 // Keyed by the vendor's WORKPLACE structure (what the buy-menu cue names and the
@@ -58,21 +62,38 @@ func handleOutOfStockOnResolved(w *World, evt Event) {
 	if seller == nil || seller.WorkStructureID == "" {
 		return
 	}
-	key := OutOfStockKey{StructureID: seller.WorkStructureID, ItemKind: res.ItemKind}
-
 	switch res.TerminalState {
 	case PayTerminalStateFailedInsufficientStock:
-		// Found them dry (or short) — remember it, stamped with the resolution
-		// time so perception can decay the memory. Allocate lazily.
-		if buyer.OutOfStockObs == nil {
-			buyer.OutOfStockObs = make(map[OutOfStockKey]time.Time)
-		}
-		buyer.OutOfStockObs[key] = res.At
+		noteOutOfStock(w, res.BuyerID, res.SellerID, res.ItemKind, res.At)
 	case PayTerminalStateAccepted:
 		// Bought it successfully — they have it after all; clear any stale "dry"
 		// memory for this exact (structure, item).
-		delete(buyer.OutOfStockObs, key)
+		delete(buyer.OutOfStockObs, OutOfStockKey{StructureID: seller.WorkStructureID, ItemKind: res.ItemKind})
 	}
+}
+
+// noteOutOfStock records the buyer's experiential memory that it tried to buy
+// itemKind from sellerID and found it out of stock. Shared by the
+// PayWithItemResolved subscriber (ledger path) and the quote-payment fast-path
+// reject (pay_with_item_commands.go), so both buyer-initiated stock-failure
+// routes funnel through one recorder. No-op for a non-agent buyer (PCs get no
+// experiential memory) or a seller with no workplace (a co-present peer — there
+// is nothing to remember-and-avoid walking to). Keyed by the seller's WORKPLACE
+// (what the buy-menu cue names and move_to walks to). MUST run on the world
+// goroutine.
+func noteOutOfStock(w *World, buyerID, sellerID ActorID, itemKind ItemKind, at time.Time) {
+	buyer := w.Actors[buyerID]
+	if buyer == nil || !isAgentNPC(buyer) {
+		return
+	}
+	seller := w.Actors[sellerID]
+	if seller == nil || seller.WorkStructureID == "" {
+		return
+	}
+	if buyer.OutOfStockObs == nil {
+		buyer.OutOfStockObs = make(map[OutOfStockKey]time.Time)
+	}
+	buyer.OutOfStockObs[OutOfStockKey{StructureID: seller.WorkStructureID, ItemKind: itemKind}] = at
 }
 
 // RegisterOutOfStockSubscriber wires the out-of-stock-memory subscriber. Call

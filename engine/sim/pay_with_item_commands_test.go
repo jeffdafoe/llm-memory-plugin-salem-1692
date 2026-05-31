@@ -762,6 +762,34 @@ func buildFastPathFixture(t *testing.T, quoteID sim.QuoteID) (*sim.World, func()
 	return w, stop, at
 }
 
+// TestPayWithItem_FastPath_InsufficientStock_RecordsOutOfStock is the
+// integration test (ZBBS-HOME-363, code_review): the quote-payment fast-path
+// rejects insufficient stock with a bare error and NO PayWithItemResolved, so
+// the out-of-stock memory is captured INLINE there (not via the event
+// subscriber). Drive a real buyer-initiated buy against a zero-stock seller and
+// assert the buyer remembers (seller-workplace, item) out of stock.
+func TestPayWithItem_FastPath_InsufficientStock_RecordsOutOfStock(t *testing.T) {
+	w, stop, at := buildFastPathFixture(t, 7)
+	defer stop()
+	// Seller has a workplace (the structure the buyer walked to) and zero stock.
+	mustSend(t, w, func(world *sim.World) {
+		world.Actors["bob"].WorkStructureID = "tavern"
+		delete(world.Actors["bob"].Inventory, "stew")
+	})
+
+	if _, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, 7, 0, "", at)); err == nil {
+		t.Fatal("expected an insufficient-stock error from the fast path")
+	}
+
+	var recorded bool
+	mustSend(t, w, func(world *sim.World) {
+		_, recorded = world.Actors["alice"].OutOfStockObs[sim.OutOfStockKey{StructureID: "tavern", ItemKind: "stew"}]
+	})
+	if !recorded {
+		t.Fatal("fast-path insufficient stock should record OutOfStockObs on the buyer")
+	}
+}
+
 func TestPayWithItem_FastPath_HappyPath_Takeaway(t *testing.T) {
 	w, stop, at := buildFastPathFixture(t, 7)
 	defer stop()

@@ -594,6 +594,12 @@ func runPayWithItemFastPath(
 		reserved := outstandingReadyOrderQty(w, seller.ID, kind)
 		available := seller.Inventory[kind] - reserved
 		if available < needed {
+			// ZBBS-HOME-363: the buyer walked here and found the seller dry on
+			// this item. This quote-payment fast-path rejects with a bare error
+			// and emits NO PayWithItemResolved (no ledger entry), so the
+			// out-of-stock subscriber would miss it — record the experiential
+			// memory inline through the shared recorder.
+			noteOutOfStock(w, buyer.ID, seller.ID, kind, at)
 			return nil, fmt.Errorf(
 				"%s doesn't have enough %s (have %d, reserved %d, need %d)",
 				seller.DisplayName, kind, seller.Inventory[kind], reserved, needed,
