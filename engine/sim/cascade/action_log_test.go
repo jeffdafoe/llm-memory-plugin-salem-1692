@@ -47,6 +47,9 @@ func buildActionLogCascadeWorld(t *testing.T) (*sim.World, func()) {
 	handles.Structures.Seed(map[sim.StructureID]*sim.Structure{
 		"tavern": {ID: "tavern", DisplayName: "the tavern"},
 	})
+	handles.VillageObjects.Seed(map[sim.VillageObjectID]*sim.VillageObject{
+		"well": {ID: "well", DisplayName: "the well"},
+	})
 
 	w, err := sim.LoadWorld(context.Background(), repo)
 	if err != nil {
@@ -340,6 +343,55 @@ func TestHandleActorArrivedActionLog_UnknownStructureEmptyText(t *testing.T) {
 	}
 	if got[0].Text != "" {
 		t.Errorf("Text = %q, want empty for unknown structure", got[0].Text)
+	}
+}
+
+// --- TestHandleActorArrivedActionLog_VisitNamesShop ---------------
+// StructureVisit/knock arrival: the actor stops at a loiter slot OUTSIDE the
+// shop (FinalStructureID empty) but DestStructureID names the shop. Text must
+// name the destination, not go blank — this is the core ZBBS-WORK-359 fix.
+func TestHandleActorArrivedActionLog_VisitNamesShop(t *testing.T) {
+	w, stop := buildActionLogCascadeWorld(t)
+	defer stop()
+
+	invokeOnWorld(t, w, func(world *sim.World) {
+		handleActorArrivedActionLog(world, &sim.ActorArrived{
+			ActorID:         "hannah",
+			DestStructureID: "tavern",
+			At:              time.Now().UTC(),
+		})
+	})
+
+	got := readActionLog(t, w)
+	if len(got) != 1 {
+		t.Fatalf("len(ActionLog) = %d, want 1", len(got))
+	}
+	if got[0].Text != "the tavern" {
+		t.Errorf("Text = %q, want %q (destination shop, FinalStructureID empty)", got[0].Text, "the tavern")
+	}
+}
+
+// --- TestHandleActorArrivedActionLog_ObjectVisitNamesObject -------
+// ObjectVisit arrival (well/tree/pile): DestObjectID names a village object,
+// not a structure. Text resolves the object's DisplayName.
+func TestHandleActorArrivedActionLog_ObjectVisitNamesObject(t *testing.T) {
+	w, stop := buildActionLogCascadeWorld(t)
+	defer stop()
+
+	invokeOnWorld(t, w, func(world *sim.World) {
+		handleActorArrivedActionLog(world, &sim.ActorArrived{
+			ActorID:      "hannah",
+			DestObjectID: "well",
+			At:           time.Now().UTC(),
+		})
+	})
+
+	got := readActionLog(t, w)
+	if len(got) != 1 {
+		t.Fatalf("len(ActionLog) = %d, want 1", len(got))
+	}
+	if got[0].Text != "the well" {
+		t.Errorf("Text = %q, want %q (destination object)", got[0].Text, "the well")
 	}
 }
 

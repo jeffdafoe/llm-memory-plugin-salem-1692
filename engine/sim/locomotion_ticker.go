@@ -686,10 +686,28 @@ func finishArrival(w *World, actor *Actor, dest MoveDestination, attemptID Movem
 	finalPos := actor.Pos
 	finalStructure := actor.InsideStructureID
 
+	// Resolve the DESTINATION the mover walked to, not the structure it is
+	// physically inside: a StructureVisit/knock arrives at a loiter slot
+	// OUTSIDE the shop (InsideStructureID == ""), and an ObjectVisit at a
+	// well/tree is not a structure at all. dest carries the real target.
+	// Carried on both the ActorArrived event (so the action-log walked entry
+	// names the place, ZBBS-WORK-359) and the arrival warrant (so perception
+	// renders "You arrived at <the shop / the well>", ZBBS-WORK-358).
+	var destStructure StructureID
+	if dest.StructureID != nil {
+		destStructure = *dest.StructureID
+	}
+	var destObject VillageObjectID
+	if dest.ObjectID != nil {
+		destObject = *dest.ObjectID
+	}
+
 	arrivedEvt := &ActorArrived{
 		ActorID:           actor.ID,
 		FinalPosition:     finalPos,
 		FinalStructureID:  finalStructure,
+		DestStructureID:   destStructure,
+		DestObjectID:      destObject,
 		MovementAttemptID: attemptID,
 		At:                now,
 	}
@@ -700,20 +718,6 @@ func finishArrival(w *World, actor *Actor, dest MoveDestination, attemptID Movem
 	// domain seam in the locomotion ticker — the predicate itself lives in
 	// summon.go. nil hook (the default) preserves the unconditional stamp.
 	if w.suppressArrivalWarrant == nil || !w.suppressArrivalWarrant(actor) {
-		// Name the DESTINATION the mover walked to, not the structure it is
-		// physically inside: a StructureVisit/knock arrives at a loiter slot
-		// OUTSIDE the shop (InsideStructureID == ""), and an ObjectVisit at a
-		// well/tree is not a structure at all. dest carries the real target, so
-		// perception can render "You arrived at <the shop / the well>" instead
-		// of the vacuous "arrived nearby" (ZBBS-WORK-358).
-		var destStructure StructureID
-		if dest.StructureID != nil {
-			destStructure = *dest.StructureID
-		}
-		var destObject VillageObjectID
-		if dest.ObjectID != nil {
-			destObject = *dest.ObjectID
-		}
 		tryStampWarrant(w, actor, WarrantMeta{
 			TriggerActorID: actor.ID,
 			SourceEventID:  arrivedEvt.EventID(),
