@@ -73,11 +73,13 @@ func outdoorEncounterExcludesActor(a *sim.Actor, now time.Time, staleAfter time.
 //     anchored at the event coordinates would be wrong.
 //   - Eligible nearby actors exist. Nearby = outdoor + within radius
 //     (the same SceneBound.Contains rule StartOutdoorHuddle uses
-//     internally) + not in any active huddle + not the arriver. We
-//     do NOT filter on MoveIntent: pulling a walking actor into the
-//     huddle is a legitimate interrupt (PR 4 bilateral-pause then
-//     freezes their locomotion next tick, preserving MovementAttemptID
-//     so they resume after leaving the huddle).
+//     internally) + not in any active huddle + not the arriver + not
+//     mid-move. Since ZBBS-HOME-340 a moving actor IS excluded
+//     (outdoorEncounterExcludesActor returns true for MoveIntent != nil):
+//     the old "bilateral pause" that froze a walker after pulling it into
+//     a huddle is gone, so a mover is simply never joined in the first
+//     place — it walks past a stationary actor in silence rather than
+//     being grabbed into a greeting it cannot act on.
 //
 // Participant ordering: [arriver, ...nearby sorted by ActorID]. The
 // arriver is the causal trigger and goes first so StartOutdoorHuddle's
