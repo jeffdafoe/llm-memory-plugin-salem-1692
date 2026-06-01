@@ -392,3 +392,29 @@ func TestBuild_SurroundingsHuddleMembersSortedAndSelfExcluded(t *testing.T) {
 		t.Errorf("HuddleMembers = %v, want %v (sorted by ID, self excluded)", p.Surroundings.HuddleMembers, want)
 	}
 }
+
+// --- arrival-warrant place names (ZBBS-WORK-358) --------------------------
+
+func TestBuild_WarrantPlaceNames(t *testing.T) {
+	snap := &sim.Snapshot{
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{"alice": actorSnap(sim.StateIdle, "", 0, 0, "", 0)},
+		Structures: map[sim.StructureID]*sim.Structure{
+			"tavern": {ID: "tavern", DisplayName: "The Prancing Pony"},
+		},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{
+			"well1": {DisplayName: "the Village Well"},
+		},
+	}
+	warrants := []sim.WarrantMeta{
+		{TriggerActorID: "alice", Reason: sim.ArrivalWarrantReason{AttemptID: 1, AtStructureID: "tavern"}},
+		{TriggerActorID: "alice", Reason: sim.ArrivalWarrantReason{AttemptID: 2, AtObjectID: "well1"}},
+	}
+	p := Build(snap, "alice", warrants)
+
+	if got := p.WarrantPlaceNames["tavern"]; got != "The Prancing Pony" {
+		t.Errorf("place name for tavern = %q, want The Prancing Pony", got)
+	}
+	if got := p.WarrantPlaceNames["well1"]; got != "the Village Well" {
+		t.Errorf("place name for well1 = %q, want the Village Well", got)
+	}
+}

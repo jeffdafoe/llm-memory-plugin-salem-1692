@@ -44,6 +44,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 
 	p.Actor = buildActorView(snap, actorSnap)
 	p.WarrantActorNames = buildWarrantActorNames(snap, actorSnap, actorID, p.Warrants)
+	p.WarrantPlaceNames = buildWarrantPlaceNames(snap, p.Warrants)
 	p.Surroundings = buildSurroundings(snap, actorID, actorSnap)
 	p.Anchors = buildAnchors(snap, actorSnap)
 	p.DutySteer = buildDutySteer(snap, actorSnap, p.Anchors)
@@ -690,6 +691,43 @@ func descriptorLabel(displayName, role string, acquainted bool) string {
 		return "the " + role
 	}
 	return "a stranger"
+}
+
+// buildWarrantPlaceNames resolves the destination named by each
+// ArrivalWarrantReason in the batch — a structure (StructureEnter/Visit) or a
+// village object (ObjectVisit) — to its display name, so Render can say "You
+// arrived at <place>" without the vacuous "arrived nearby" (ZBBS-WORK-358).
+// Keyed by the raw id string (structure + object ids share one space under the
+// shared-identity bridge). Returns nil when no arrival warrant names a place
+// (the common non-arrival tick).
+func buildWarrantPlaceNames(snap *sim.Snapshot, warrants []sim.WarrantMeta) map[string]string {
+	var names map[string]string
+	put := func(id, name string) {
+		if id == "" || name == "" {
+			return
+		}
+		if names == nil {
+			names = make(map[string]string)
+		}
+		names[id] = name
+	}
+	for _, w := range warrants {
+		r, ok := w.Reason.(sim.ArrivalWarrantReason)
+		if !ok {
+			continue
+		}
+		if r.AtStructureID != "" {
+			if st := snap.Structures[r.AtStructureID]; st != nil {
+				put(string(r.AtStructureID), st.DisplayName)
+			}
+		}
+		if r.AtObjectID != "" {
+			if o := snap.VillageObjects[r.AtObjectID]; o != nil {
+				put(string(r.AtObjectID), o.DisplayName)
+			}
+		}
+	}
+	return names
 }
 
 // buildWarrantActorNames resolves every OTHER actor referenced by a warrant in

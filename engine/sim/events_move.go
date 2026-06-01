@@ -159,17 +159,24 @@ func (ActorMoveStopped) isSimEvent() {}
 
 // ArrivalWarrantReason is the WarrantReason stamped on a mover when it
 // reaches its MoveDestination. Kind is the pre-existing WarrantKindArrived
-// (declared in reactor.go's catalog). PR 3's prompt builder type-switches
-// on this reason to render "you have arrived at X" for the agent.
+// (declared in reactor.go's catalog). The prompt builder type-switches on
+// this reason to render "You arrived at <place>" for the agent.
 //
-// AtStructureID follows the v2 empty-string convention — empty means the
-// actor arrived at a bare position or a visitor slot, not inside a
-// structure. The reason therefore carries no inner pointer, so
-// CloneActor's existing shallow Warrants copy stays correct (see the
-// CloneActor doc-comment).
+// AtStructureID / AtObjectID name the DESTINATION the mover walked to — not
+// necessarily the structure it is physically inside: AtStructureID is the
+// target of a StructureEnter or StructureVisit (a StructureVisit/knock
+// arrives at a loiter slot OUTSIDE the shop, so InsideStructureID is empty
+// there), AtObjectID the target of an ObjectVisit (a well, tree, gather
+// pile). Both follow the v2 empty-string convention; both empty means the
+// actor arrived at a bare Position with no nameable place ("You arrived.").
+// Perception resolves whichever is set to a display name
+// (build.buildWarrantPlaceNames). Both are value types with no inner
+// pointer, so CloneActor's existing shallow Warrants copy stays correct
+// (see the CloneActor doc-comment).
 type ArrivalWarrantReason struct {
 	AttemptID     MovementAttemptID
-	AtStructureID StructureID
+	AtStructureID StructureID     // destination structure (StructureEnter/StructureVisit), else ""
+	AtObjectID    VillageObjectID // destination object (ObjectVisit), else ""
 	AtPosition    Position
 }
 

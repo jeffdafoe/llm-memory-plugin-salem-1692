@@ -206,6 +206,37 @@ func TestRender_Deterministic(t *testing.T) {
 	}
 }
 
+// --- arrival warrant names the destination (ZBBS-WORK-358) ----------------
+
+func TestRender_ArrivalWarrant_NamesDestination(t *testing.T) {
+	cases := []struct {
+		name   string
+		reason sim.ArrivalWarrantReason
+		places map[string]string
+		want   string
+	}{
+		{"structure", sim.ArrivalWarrantReason{AttemptID: 1, AtStructureID: "tavern"}, map[string]string{"tavern": "The Prancing Pony"}, "You arrived at The Prancing Pony."},
+		{"object", sim.ArrivalWarrantReason{AttemptID: 2, AtObjectID: "well1"}, map[string]string{"well1": "the Village Well"}, "You arrived at the Village Well."},
+		{"bare position", sim.ArrivalWarrantReason{AttemptID: 3}, nil, "You arrived."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := Payload{
+				ActorID:           "alice",
+				Warrants:          []sim.WarrantMeta{{TriggerActorID: "alice", Reason: tc.reason}},
+				WarrantPlaceNames: tc.places,
+			}
+			out := Render(p, DefaultRenderConfig())
+			if !strings.Contains(out.Text, tc.want) {
+				t.Errorf("render missing %q\n--- got ---\n%s", tc.want, out.Text)
+			}
+			if strings.Contains(out.Text, "arrived nearby") {
+				t.Errorf("render still says the old 'arrived nearby':\n%s", out.Text)
+			}
+		})
+	}
+}
+
 // --- warrant cap → drop & carry-forward ----------------------------------
 
 func TestRender_MaxWarrantsCap_DropsTailAndCarriesForward(t *testing.T) {
