@@ -1104,9 +1104,13 @@ func _send_current_text() -> void:
         return
 
     speech_input.text = ""
-    # No local echo — /pc/speak writes an audit_log row that fans out via the
-    # npc_spoke WS event, which _on_npc_spoke renders. Local echo here would
-    # duplicate the line as "You" and then the player's character name.
+    # Local echo (ZBBS-WORK-360): render the player's own line immediately as
+    # "You" instead of waiting for /pc/speak to round-trip and fan back via the
+    # npc_spoke WS event — that delay read as "I typed and it vanished."
+    # _on_npc_spoke drops the echoed self-line (speaker_id == pc_actor_id) so it
+    # isn't double-rendered. Client-stamped UTC time → same [h:mma] prefix as
+    # server-sourced lines.
+    _append_log_line("You", text, "speech_player", false, Time.get_datetime_string_from_system(true))
     _post_speak(text)
     _refocus_if_open()
 
@@ -1607,10 +1611,14 @@ func _on_speak_completed(result: int, response_code: int, _headers: PackedString
     speak_button.disabled = false
 
     if result != HTTPRequest.RESULT_SUCCESS or response_code < 200 or response_code >= 300:
-        push_warning("TalkPanel speak failed: code=%s body=%s" % [
-            response_code,
-            body.get_string_from_utf8()
-        ])
+        var raw := body.get_string_from_utf8().strip_edges()
+        push_warning("TalkPanel speak failed: code=%s body=%s" % [response_code, raw])
+        # ZBBS-WORK-360: the engine exempts PCs from sim.Speak's gates, so a
+        # rejected PC speak is a malfunction, not a normal condition. Show a
+        # generic, benign line — never the raw engine reason (internal jargon /
+        # a false claim) — and beacon the real code+reason for diagnosis.
+        _append_system_warning("Your words go unheard.")
+        ErrorBeacon.report("pc_speak_rejected", "code=%d body=%s" % [response_code, raw])
 
 
 func _on_npc_spoke(speaker_id: String, speaker_name: String, text: String, kind: String = "", at: String = "", structure_id: String = "", mentions: Array = [], speaker_x: float = 0.0, speaker_y: float = 0.0, room_id: String = "", addressee_id: String = "", addressee_name: String = "", mention_prices: Dictionary = {}, huddle_scoped: bool = false, recipient_ids: Array = []) -> void:
@@ -1628,6 +1636,13 @@ func _on_npc_spoke(speaker_id: String, speaker_name: String, text: String, kind:
     # v2 frame (empty structure_id != the PC's loaded_structure_id), so live
     # speech never appeared in the panel even though the backload did
     # (ZBBS-HOME-372).
+    # ZBBS-WORK-360: our own speak is echoed locally on send (shown immediately
+    # as "You"), so drop the WS echo of it to avoid a duplicate line. Skip the
+    # guard until pc_actor_id is known (first /pc/me not yet back) — the WS echo
+    # is the only render then, so there is nothing to double.
+    if pc_actor_id != "" and speaker_id == pc_actor_id:
+        return
+
     if huddle_scoped:
         if speaker_id != pc_actor_id and not recipient_ids.has(pc_actor_id):
             return
@@ -1961,7 +1976,24 @@ func _append_log_line(speaker: String, text: String, kind: String = "", is_backl
     var is_narration := not is_speech
 
     var entry: Node
-    if is_narration:
+    if kind == "system_warning":
+        # ZBBS-WORK-360: rejected-action feedback — its own warning-amber
+        # dialect, distinct from speech (quote styling) and world narration
+        # (muted tan). No glyph; the tint carries it. Timestamp dim like the
+        # others.
+        var rich := RichTextLabel.new()
+        rich.bbcode_enabled = true
+        rich.fit_content = true
+        rich.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+        rich.scroll_active = false
+        rich.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+        rich.add_theme_font_size_override("normal_font_size", 13)
+        var prefix := ""
+        if time_prefix != "":
+            prefix = "[color=#7a6f59]%s[/color] " % time_prefix
+        rich.text = "%s[color=#d6ad7a]%s[/color]" % [prefix, _bbcode_escape(text)]
+        entry = rich
+    elif is_narration:
         # Narration uses RichTextLabel so the time prefix can carry its
         # own color span (slightly dimmer than the narration text itself).
         var rich := RichTextLabel.new()
@@ -2022,6 +2054,15 @@ func _append_log_line(speaker: String, text: String, kind: String = "", is_backl
         # launcher's "N new" badge as if they just happened.
         unread_count += 1
         _update_launcher_text()
+
+
+## ZBBS-WORK-360: append a warning-amber system line — feedback about the
+## player's own rejected action. A rejected PC speak is a malfunction (the
+## engine exempts PCs from speak rejection), so this is rare; the copy stays
+## generic and benign, never the raw engine reason. Client-stamped time so the
+## line carries the same [h:mma] prefix as the rest of the log.
+func _append_system_warning(text: String) -> void:
+    _append_log_line("", text, "system_warning", false, Time.get_datetime_string_from_system(true))
 
 
 ## Escape any opening square brackets in a user-supplied string so they
