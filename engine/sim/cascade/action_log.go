@@ -178,18 +178,35 @@ func handleOrderDeliveredActionLog(w *sim.World, evt sim.Event) {
 	}
 }
 
-// handleActorArrivedActionLog appends a row when an actor completes
-// a movement at a destination. Text is the destination structure's
-// DisplayName (empty for outdoor / visitor-slot arrivals); HuddleID
-// is empty — arrival precedes any encounter-cascade huddle join that
-// may follow.
+// handleActorArrivedActionLog appends a row when an actor completes a
+// movement at a destination. Text is the DESTINATION's DisplayName — the
+// place the mover walked TO (ZBBS-WORK-359): the destination structure
+// (StructureEnter/StructureVisit/knock — names the shop even when the actor
+// stopped at a loiter slot OUTSIDE it, so InsideStructureID is empty) or, for
+// an ObjectVisit, the destination village object (well/tree/gather pile).
+// Falls back to FinalStructureID for a bare Position arrival that still landed
+// inside a footprint. Empty only for an outdoor Position arrival with no
+// nameable place. HuddleID is empty — arrival precedes any encounter-cascade
+// huddle join that may follow.
 func handleActorArrivedActionLog(w *sim.World, evt sim.Event) {
 	arrived, ok := evt.(*sim.ActorArrived)
 	if !ok {
 		return
 	}
 	text := ""
-	if arrived.FinalStructureID != "" {
+	switch {
+	case arrived.DestStructureID != "":
+		if s, ok := w.Structures[arrived.DestStructureID]; ok {
+			text = s.DisplayName
+		}
+	case arrived.DestObjectID != "":
+		if o, ok := w.VillageObjects[arrived.DestObjectID]; ok {
+			text = o.DisplayName
+		}
+	}
+	// Bare Position arrival that nonetheless ended inside a structure footprint:
+	// name that structure (the destination union named no place).
+	if text == "" && arrived.FinalStructureID != "" {
 		if s, ok := w.Structures[arrived.FinalStructureID]; ok {
 			text = s.DisplayName
 		}

@@ -87,11 +87,25 @@ func (ActorMoved) isSimEvent() {}
 // FinalStructureID is empty for Position destinations that aren't inside
 // a structure and for StructureVisit destinations (the actor stands at a
 // visitor slot, outside).
+//
+// DestStructureID / DestObjectID name the DESTINATION the mover walked to —
+// the target of the MoveDestination, not necessarily where the actor ended
+// up physically inside (mirrors ArrivalWarrantReason). A StructureVisit/knock
+// arrives at a loiter slot OUTSIDE the shop, so FinalStructureID is empty
+// there while DestStructureID names the shop; an ObjectVisit (well/tree/
+// gather pile) sets DestObjectID and leaves both structure fields empty;
+// both empty = a bare Position arrival with no nameable place. Carried so a
+// subscriber that labels the destination (the action-log walked entry,
+// ZBBS-WORK-359) resolves the same name the arrival warrant renders, without
+// re-deriving it from the now-cleared MoveIntent. Both are value types with
+// no inner pointer.
 type ActorArrived struct {
 	EventBase
 	ActorID           ActorID
 	FinalPosition     Position
-	FinalStructureID  StructureID // empty = arrived outdoors / at a visitor slot
+	FinalStructureID  StructureID     // empty = arrived outdoors / at a visitor slot
+	DestStructureID   StructureID     // destination target (StructureEnter/StructureVisit), else ""
+	DestObjectID      VillageObjectID // destination target (ObjectVisit), else ""
 	MovementAttemptID MovementAttemptID
 	At                time.Time
 }
