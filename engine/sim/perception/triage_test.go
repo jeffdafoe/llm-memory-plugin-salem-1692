@@ -56,3 +56,50 @@ func TestRender_TriageInstructionIsLast(t *testing.T) {
 		t.Errorf("triage line should come AFTER the context sections, got:\n%s", got)
 	}
 }
+
+const restFirstMarker = "rest before tending to other needs"
+
+// TestRender_RestFirstSteer_PeakFatigue: when tiredness is at Peak (exhausted/
+// maxed) AND another need is also pressing, the triage closes with a steer to
+// resolve rest first — the dual-distress flip-flop fix (ZBBS-WORK-354). Gated on
+// Peak, not Red: while only mildly/moderately tired the model chooses freely.
+func TestRender_RestFirstSteer_PeakFatigue(t *testing.T) {
+	t.Run("exhausted + starving → steer present", func(t *testing.T) {
+		p := Payload{
+			ActorID: "moses",
+			Actor: ActorView{
+				State: sim.StateIdle,
+				Needs: map[sim.NeedKey]int{"tiredness": sim.NeedMax, "hunger": sim.NeedMax},
+			},
+		}
+		if got := Render(p, DefaultRenderConfig()).Text; !strings.Contains(got, restFirstMarker) {
+			t.Errorf("expected rest-first steer when exhausted + starving:\n%s", got)
+		}
+	})
+
+	t.Run("exhausted but nothing else pressing → no steer", func(t *testing.T) {
+		p := Payload{
+			ActorID: "moses",
+			Actor: ActorView{
+				State: sim.StateIdle,
+				Needs: map[sim.NeedKey]int{"tiredness": sim.NeedMax, "hunger": 0, "thirst": 0},
+			},
+		}
+		if got := Render(p, DefaultRenderConfig()).Text; strings.Contains(got, restFirstMarker) {
+			t.Errorf("rest-first steer must not fire without a competing pressing need:\n%s", got)
+		}
+	})
+
+	t.Run("only moderately tired → no steer (free choice)", func(t *testing.T) {
+		p := Payload{
+			ActorID: "moses",
+			Actor: ActorView{
+				State: sim.StateIdle,
+				Needs: map[sim.NeedKey]int{"tiredness": 12, "hunger": sim.NeedMax},
+			},
+		}
+		if got := Render(p, DefaultRenderConfig()).Text; strings.Contains(got, restFirstMarker) {
+			t.Errorf("rest-first steer must not fire below peak fatigue:\n%s", got)
+		}
+	})
+}

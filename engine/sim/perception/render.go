@@ -163,7 +163,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 		renderWarrants(&b, warrants, nameOf, cfg, &out)
 	}
 
-	renderTriage(&b)
+	renderTriage(&b, p.Actor.Needs, p.Actor.NeedThresholds)
 
 	out.Text = b.String()
 	return out
@@ -181,8 +181,46 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 // wandering exposed: obligations to others and pressing needs over idle drift.
 // Rendered unconditionally — Render is only called on the NPC reactor-tick path
 // (handlers.Harness.RunTick), never for a PC.
-func renderTriage(b *strings.Builder) {
+func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.NeedThresholds) {
 	b.WriteString("Weigh everything above and act on what matters most right now — obligations to others and pressing needs come before idle matters. Choose one thing and do it.\n")
+	// Rest-first steer (ZBBS-WORK-354). When the actor is deeply fatigued AND
+	// another need is also pressing, the model otherwise flip-flops between "buy
+	// food" and "I need rest" and resolves neither. Steer it to rest first: an
+	// actor that sleeps both clears tiredness and pauses all other need growth
+	// (IncrementNeedsTick skips a sleeping actor), so resolving rest first is
+	// unambiguously the better ordering. Gated on Peak fatigue only — while
+	// merely mild/moderately tired the model is free to choose food-vs-rest
+	// itself (Jeff: "early on they can make a choice").
+	if deepFatigueDominatesNeeds(needs, thresholds) {
+		b.WriteString("You are exhausted — rest before tending to other needs; you will handle them better once you have recovered.\n")
+	}
+}
+
+// deepFatigueDominatesNeeds reports whether the rest-first triage steer should
+// fire: tiredness is at NeedPeak (maxed — "exhausted") AND at least one other
+// need (hunger or thirst) is also pressing (NeedRed or worse). This is the
+// dual-distress case the steer targets. Returns false below Peak fatigue (the
+// model chooses freely) or when tiredness alone is pressing (nothing to order
+// against). nil thresholds is safe — NeedThresholds.Get falls back to registry
+// defaults. ZBBS-WORK-354.
+func deepFatigueDominatesNeeds(needs map[sim.NeedKey]int, thresholds sim.NeedThresholds) bool {
+	tiredValue, ok := needs["tiredness"]
+	if !ok {
+		return false
+	}
+	if sim.NeedLabelTier(tiredValue, thresholds.Get("tiredness")) < sim.NeedPeak {
+		return false
+	}
+	for _, key := range []sim.NeedKey{"hunger", "thirst"} {
+		value, ok := needs[key]
+		if !ok {
+			continue
+		}
+		if sim.NeedLabelTier(value, thresholds.Get(key)) >= sim.NeedRed {
+			return true
+		}
+	}
+	return false
 }
 
 func renderActor(b *strings.Builder, a ActorView) {
