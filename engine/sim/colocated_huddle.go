@@ -88,14 +88,31 @@ func EnsureColocatedHuddle(actorID ActorID, now time.Time) Command {
 				return nil, nil // genuinely alone inside — speak-to-no-one stays valid
 			}
 
+			// ZBBS-HOME-375: anchor the indoor huddle to a structure-bound
+			// scene so the transaction tools (scene_quote / pay_with_item)
+			// can resolve one — they reject "isn't anchored to a scene"
+			// otherwise, which killed indoor commerce even with a keeper
+			// present in the huddle (the scene check runs before seller
+			// resolution). The outdoor path (StartOutdoorHuddle) already
+			// mints+attaches an area scene; the indoor explicit-talk huddle
+			// previously joined with an empty sceneID and stayed scene-less.
+			// find-or-create yields a single durable structure scene per
+			// structure, reused across conversations — matching the
+			// pay-ledger's model of the scene as context that outlives any
+			// one huddle (pay_ledger.go).
+			sceneID, sceneErr := findOrCreateStructureScene(w, structureID, now)
+			if sceneErr != nil {
+				log.Printf("sim: EnsureColocatedHuddle scene for %q: %v", structureID, sceneErr)
+				return nil, nil
+			}
+
 			// Join the SPEAKER first and bail on failure (code_review): the
 			// speaker's join is load-bearing, and joining the others when the
 			// speaker stayed out would pollute conversation state among NPCs while
 			// the speaker still falls back to speak-to-no-one — worse than not
 			// bootstrapping at all. JoinHuddle find-or-creates the structure's
-			// active huddle; empty sceneID matches EnterOrKnock's knock-huddle join
-			// (no scene minted for an explicit-talk huddle).
-			if _, err := JoinHuddle(actor.ID, structureID, "", now).Fn(w); err != nil {
+			// active huddle and attaches it to the structure scene resolved above.
+			if _, err := JoinHuddle(actor.ID, structureID, sceneID, now).Fn(w); err != nil {
 				log.Printf("sim: EnsureColocatedHuddle join speaker %q at %q: %v", actor.ID, structureID, err)
 				return nil, nil
 			}
@@ -168,4 +185,43 @@ func colocatedConversational(a *Actor, now time.Time, staleAfter time.Duration) 
 		return false // decorative / unknown
 	}
 	return a.State != StateSleeping
+}
+
+// colocatedHuddleSceneOrigin is the Scene.OriginKind stamped on the
+// structure-bound scene that anchors an indoor explicit-talk huddle
+// (ZBBS-HOME-375). The outdoor counterpart is outdoorEncounterOriginKind.
+const colocatedHuddleSceneOrigin = "colocated_talk"
+
+// findOrCreateStructureScene returns the SceneID of the structure-bound
+// scene for structureID, minting one (origin colocatedHuddleSceneOrigin)
+// when none exists yet. This is the only minter of indoor structure scenes
+// and it never re-mints when one is found, so a structure accrues at most
+// one durable commerce-context scene, reused across conversations — the
+// bounded-accumulation property the persist (vs conclude-on-orphan)
+// lifecycle choice rests on, and a match for the pay-ledger's "scene
+// persists across huddle churn" model (pay_ledger.go). The lexicographically
+// smallest match is returned for determinism in the not-expected event of
+// stale duplicates, mirroring resolveSellerScene. MUST run on the world
+// goroutine.
+func findOrCreateStructureScene(w *World, structureID StructureID, now time.Time) (SceneID, error) {
+	var found SceneID
+	for id, scene := range w.Scenes {
+		if scene == nil || scene.Bound.Kind != SceneBoundStructure {
+			continue
+		}
+		if scene.Bound.StructureID == nil || *scene.Bound.StructureID != structureID {
+			continue
+		}
+		if found == "" || id < found {
+			found = id
+		}
+	}
+	if found != "" {
+		return found, nil
+	}
+	sceneAny, err := CreateScene(colocatedHuddleSceneOrigin, NewStructureBound(structureID), now).Fn(w)
+	if err != nil {
+		return "", err
+	}
+	return sceneAny.(SceneID), nil
 }
