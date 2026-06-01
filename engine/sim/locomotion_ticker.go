@@ -700,6 +700,20 @@ func finishArrival(w *World, actor *Actor, dest MoveDestination, attemptID Movem
 	// domain seam in the locomotion ticker — the predicate itself lives in
 	// summon.go. nil hook (the default) preserves the unconditional stamp.
 	if w.suppressArrivalWarrant == nil || !w.suppressArrivalWarrant(actor) {
+		// Name the DESTINATION the mover walked to, not the structure it is
+		// physically inside: a StructureVisit/knock arrives at a loiter slot
+		// OUTSIDE the shop (InsideStructureID == ""), and an ObjectVisit at a
+		// well/tree is not a structure at all. dest carries the real target, so
+		// perception can render "You arrived at <the shop / the well>" instead
+		// of the vacuous "arrived nearby" (ZBBS-WORK-358).
+		var destStructure StructureID
+		if dest.StructureID != nil {
+			destStructure = *dest.StructureID
+		}
+		var destObject VillageObjectID
+		if dest.ObjectID != nil {
+			destObject = *dest.ObjectID
+		}
 		tryStampWarrant(w, actor, WarrantMeta{
 			TriggerActorID: actor.ID,
 			SourceEventID:  arrivedEvt.EventID(),
@@ -708,7 +722,8 @@ func finishArrival(w *World, actor *Actor, dest MoveDestination, attemptID Movem
 			OccurredAt:     now,
 			Reason: ArrivalWarrantReason{
 				AttemptID:     attemptID,
-				AtStructureID: finalStructure,
+				AtStructureID: destStructure,
+				AtObjectID:    destObject,
 				AtPosition:    finalPos,
 			},
 		}, now)
