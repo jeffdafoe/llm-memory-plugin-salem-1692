@@ -231,6 +231,14 @@ type Payload struct {
 	// absent — Render resolves self to "you". Empty when no warrant
 	// references another actor.
 	WarrantActorNames map[sim.ActorID]string
+
+	// WarrantPlaceNames maps a destination id (structure or village object)
+	// named by an ArrivalWarrantReason in this payload to its display name, so
+	// Render can say "You arrived at the General Store" instead of the vacuous
+	// "arrived nearby" (ZBBS-WORK-358). Keyed by the raw id string because
+	// structure and object ids share one space (the shared-identity bridge).
+	// Empty when no arrival warrant names a place.
+	WarrantPlaceNames map[string]string
 }
 
 // OrderView is the perception-side projection of one sim.Order.

@@ -136,6 +136,16 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 		return "someone"
 	}
 
+	// placeNameOf resolves a destination id (structure or village object) named
+	// by an arrival warrant to its display name, "" when unresolvable — the
+	// counterpart to nameOf for the "You arrived at <place>" line (ZBBS-WORK-358).
+	placeNameOf := func(id string) string {
+		if id == "" {
+			return ""
+		}
+		return sanitizeInline(p.WarrantPlaceNames[id])
+	}
+
 	// Pay offers are pulled out of the generic warrant list and rendered as
 	// an actionable decision section (renderPayOffers) so the seller gets the
 	// ledger_id it must echo into accept_pay/decline_pay/counter_pay. The same
@@ -160,7 +170,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// section already covered the whole batch; otherwise render it (this also
 	// preserves the routine-check-in line for the genuinely-empty case).
 	if len(warrants) > 0 || len(payOffers) == 0 {
-		renderWarrants(&b, warrants, nameOf, cfg, &out)
+		renderWarrants(&b, warrants, nameOf, placeNameOf, cfg, &out)
 	}
 
 	renderTriage(&b, p.Actor.Needs, p.Actor.NeedThresholds)
@@ -885,7 +895,7 @@ func renderPayOffers(b *strings.Builder, offers []sim.PayOfferWarrantReason, nam
 	b.WriteString("Respond with accept_pay, decline_pay, or counter_pay, passing the offer id as ledger_id.\n")
 }
 
-func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(sim.ActorID) string, cfg RenderConfig, out *RenderedPrompt) {
+func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(sim.ActorID) string, placeNameOf func(string) string, cfg RenderConfig, out *RenderedPrompt) {
 	b.WriteString("## What just happened — address these\n")
 	if len(warrants) == 0 {
 		b.WriteString("(nothing specific — this is a routine check-in)\n")
@@ -903,7 +913,7 @@ func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(
 			cutoff = i
 			break
 		}
-		line, truncated := renderWarrantLine(i+1, w, nameOf, cfg.MaxBytesPerWarrant)
+		line, truncated := renderWarrantLine(i+1, w, nameOf, placeNameOf, cfg.MaxBytesPerWarrant)
 		if sectionBytes+len(line) > cfg.MaxSectionBytes && i > 0 {
 			// At least one warrant already rendered; this one would
 			// overflow the section cap — stop here and carry the rest.
@@ -935,7 +945,7 @@ func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(
 // sentence. The untrusted free-text payload (a speech excerpt) is sanitized and
 // capped; the returned bool reports whether that text was truncated.
 // ZBBS-HOME-339.
-func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string, maxTextBytes int) (string, bool) {
+func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string, placeNameOf func(string) string, maxTextBytes int) (string, bool) {
 	switch r := w.Reason.(type) {
 	case sim.PCSpeechWarrantReason:
 		return renderSpeechWarrantLine(n, nameOf(r.Speaker), r.Excerpt, maxTextBytes)
@@ -956,7 +966,7 @@ func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string
 	case sim.AdminDirectiveWarrantReason:
 		return renderImpulseWarrantLine(n, r.Message, maxTextBytes)
 	case sim.ArrivalWarrantReason:
-		return fmt.Sprintf("%d. %s arrived nearby.\n", n, nameOf(w.TriggerActorID)), false
+		return renderArrivalWarrantLine(n, nameOf(w.TriggerActorID), r, placeNameOf), false
 	case sim.NeedThresholdWarrantReason:
 		return renderNeedNudgeLine(n, r.Need), false
 	case sim.SceneQuoteTargetedWarrantReason:
@@ -966,6 +976,29 @@ func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string
 	default:
 		return renderBasicWarrantLine(n, w.Kind(), nameOf(w.TriggerActorID)), false
 	}
+}
+
+// renderArrivalWarrantLine renders an arrival as "<who> arrived at <place>."
+// naming the destination the mover walked to (ZBBS-WORK-358) — decision-useful
+// ("you reached the General Store, do what you came for") rather than the old
+// vacuous "arrived nearby". Falls back to "<who> arrived." when the destination
+// was a bare position with no nameable place. who is the pre-resolved subject
+// ("you" for self), capitalized to match the huddle self-lines.
+func renderArrivalWarrantLine(n int, who string, r sim.ArrivalWarrantReason, placeNameOf func(string) string) string {
+	subject := who
+	if subject == "you" {
+		subject = "You"
+	}
+	// A valid MoveDestination names exactly one kind, so at most one of these
+	// is set; if a malformed reason ever set both, structure wins by design.
+	place := placeNameOf(string(r.AtStructureID))
+	if place == "" {
+		place = placeNameOf(string(r.AtObjectID))
+	}
+	if place == "" {
+		return fmt.Sprintf("%d. %s arrived.\n", n, subject)
+	}
+	return fmt.Sprintf("%d. %s arrived at %s.\n", n, subject, place)
 }
 
 // renderBasicWarrantLine renders the kinds carried by BasicWarrantReason (the
