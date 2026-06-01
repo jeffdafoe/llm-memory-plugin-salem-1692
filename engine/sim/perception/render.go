@@ -989,6 +989,8 @@ func renderArrivalWarrantLine(n int, who string, r sim.ArrivalWarrantReason, pla
 	if subject == "you" {
 		subject = "You"
 	}
+	// A valid MoveDestination names exactly one kind, so at most one of these
+	// is set; if a malformed reason ever set both, structure wins by design.
 	place := placeNameOf(string(r.AtStructureID))
 	if place == "" {
 		place = placeNameOf(string(r.AtObjectID))

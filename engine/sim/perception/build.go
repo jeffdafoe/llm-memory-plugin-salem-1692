@@ -701,6 +701,11 @@ func descriptorLabel(displayName, role string, acquainted bool) string {
 // shared-identity bridge). Returns nil when no arrival warrant names a place
 // (the common non-arrival tick).
 func buildWarrantPlaceNames(snap *sim.Snapshot, warrants []sim.WarrantMeta) map[string]string {
+	// Build already returns early on a nil snapshot before reaching here, but
+	// keep the helper independently safe for direct callers/tests (code_review).
+	if snap == nil {
+		return nil
+	}
 	var names map[string]string
 	put := func(id, name string) {
 		if id == "" || name == "" {
