@@ -67,11 +67,13 @@ const (
 	// seller's huddle at append time.
 	ActionTypeDelivered ActionType = "delivered"
 
-	// ActionTypeWalked — arrival at a movement destination. ActorID
-	// is the mover; Text is the destination structure's DisplayName
-	// (empty for outdoor / visitor-slot arrivals); HuddleID is empty
-	// (arrival precedes any encounter-cascade huddle join that may
-	// follow).
+	// ActionTypeWalked — arrival at a movement destination. ActorID is
+	// the mover; Text is the DESTINATION's DisplayName — the structure or
+	// village object the mover walked TO (names a visited shop even when the
+	// actor stopped at a loiter slot outside it, and an ObjectVisit well/
+	// tree/pile). Empty only for a bare outdoor Position arrival with no
+	// nameable place. HuddleID is empty (arrival precedes any encounter-
+	// cascade huddle join that may follow).
 	ActionTypeWalked ActionType = "walked"
 
 	// ActionTypeTookBreak — committed take_break tool call
