@@ -158,6 +158,12 @@ type pcHuddleMember struct {
 	Name        string  `json:"name"` // display_name (NPC) or character_name (PC)
 	Role        *string `json:"role,omitempty"`
 	TargetAgent *string `json:"target_agent,omitempty"` // llm_memory_agent for NPCs (chat_send recipient)
+	// Status surfaces a co-located NPC's rest state to the talk panel so the
+	// player knows why a keeper is slow or unresponsive instead of typing
+	// into silence: "on_break" (resting — still reacts, just winding down)
+	// or "asleep" (sleeping — dropped from reactive ticks entirely). Empty/
+	// omitted = available.
+	Status *string `json:"status,omitempty"`
 }
 
 // pcRecentSpeech is one historical conversational/narrative event at the
@@ -352,7 +358,7 @@ func (app *App) handlePCMe(w http.ResponseWriter, r *http.Request) {
 		}
 		rows, err := app.DB.Query(r.Context(),
 			`SELECT CASE WHEN login_username IS NOT NULL THEN 'pc' ELSE 'npc' END AS kind,
-			        display_name, role, llm_memory_agent
+			        display_name, role, llm_memory_agent, break_until, sleeping_until
 			   FROM actor
 			  WHERE current_huddle_id::text = $1
 			    AND (login_username IS NULL OR login_username != $2)
@@ -361,10 +367,12 @@ func (app *App) handlePCMe(w http.ResponseWriter, r *http.Request) {
 			huddleID.String, user.Username, pcInsideID)
 		if err == nil {
 			defer rows.Close()
+			now := time.Now()
 			for rows.Next() {
 				var kind, name string
 				var role, llmAgent sql.NullString
-				if err := rows.Scan(&kind, &name, &role, &llmAgent); err != nil {
+				var breakUntil, sleepingUntil sql.NullTime
+				if err := rows.Scan(&kind, &name, &role, &llmAgent, &breakUntil, &sleepingUntil); err != nil {
 					continue
 				}
 				m := pcHuddleMember{Kind: kind, Name: name}
@@ -375,6 +383,19 @@ func (app *App) handlePCMe(w http.ResponseWriter, r *http.Request) {
 				if llmAgent.Valid {
 					la := llmAgent.String
 					m.TargetAgent = &la
+				}
+				// Rest state for the chip. Sleep takes precedence over break:
+				// a sleeping NPC is dropped from reactive ticks entirely (the
+				// agent_tick sleep gate), whereas a resting one still reacts.
+				// A sleeper normally isn't huddle-eligible, but if one retains
+				// huddle membership the tag explains the silence rather than
+				// leaving the player typing into a void.
+				if sleepingUntil.Valid && sleepingUntil.Time.After(now) {
+					s := "asleep"
+					m.Status = &s
+				} else if breakUntil.Valid && breakUntil.Time.After(now) {
+					s := "on_break"
+					m.Status = &s
 				}
 				resp.HuddleMembers = append(resp.HuddleMembers, m)
 			}

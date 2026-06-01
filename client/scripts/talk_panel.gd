@@ -1031,6 +1031,14 @@ func _update_nearby_chips() -> void:
         var chip_text := member_name
         if not role.is_empty():
             chip_text = "%s · %s" % [member_name, role]
+        # Rest-state suffix so the player can see a keeper is winding down
+        # (on break — still answers) or has turned in (asleep) instead of
+        # typing into silence. Server sends status on pc/me huddle members.
+        var status := str(member.get("status", ""))
+        if status == "on_break":
+            chip_text = "%s (on break)" % chip_text
+        elif status == "asleep":
+            chip_text = "%s (asleep)" % chip_text
         nearby_flow.add_child(_make_chip(chip_text))
 
 
