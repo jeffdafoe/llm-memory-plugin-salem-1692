@@ -38,6 +38,14 @@ import (
 // home is how it rests). Decoratives carry no real needs (the needs tick skips
 // them; their need rows are inert seed values), so they are never need-suppressed.
 //
+// LAST-RESORT REST FLOOR (ZBBS-WORK-355): the agent half above leans on the LLM
+// acting on the go-home duty cue. When it doesn't and tiredness reaches NeedPeak
+// ("exhausted"), ShiftTick stops warranting and MECHANICALLY marches the agent
+// home — the deterministic catch a homed NPC otherwise lacks (npc_rest_fallback's
+// RouteHomelessToRest only covers home-LESS NPCs). Off-shift only; an exhausted
+// on-shift agent is already need-suppressed out of the to-work nudge and keeps
+// its post. See classifyAgentDuty.
+//
 // The 2b perception cue ("your shift has started/ended — head to your
 // workplace/home (structure_id: <id>)") that tells a warranted agent why it
 // ticked and what to do is rendered from the ShiftDutyWarrantReason payload —
@@ -150,6 +158,73 @@ func anyNeedMildOrWorse(w *World, a *Actor) bool {
 	return false
 }
 
+// atPeakTiredness reports whether the actor's tiredness is at NeedPeak (maxed —
+// "exhausted"). The trigger for the last-resort home march: at peak there is no
+// rest decision left worth an LLM turn, so a homed agent off-shift is walked home
+// deterministically. Mirrors the peak gate deepFatigueDominatesNeeds uses in
+// perception/render.go (NeedLabelTier vs NeedPeak on the tiredness need). A missing
+// tiredness entry (nil Needs map or absent key) reads as 0 → below peak, so this
+// never fires spuriously.
+func atPeakTiredness(w *World, a *Actor) bool {
+	return NeedLabelTier(a.Needs["tiredness"], w.Settings.NeedThresholds.Get("tiredness")) >= NeedPeak
+}
+
+// agentDutyAction is what ShiftTick should do for an agent NPC that has a
+// standing duty (target/toWork already resolved by shiftDutyTarget).
+type agentDutyAction int
+
+const (
+	// agentDutySkip — leave the actor alone this pass (mid-tick, an open warrant
+	// cycle, or already en route to the rest-floor home target).
+	agentDutySkip agentDutyAction = iota
+	// agentDutyMarchHome — mechanically walk the actor home (the last-resort rest
+	// floor): no warrant, no LLM turn.
+	agentDutyMarchHome
+	// agentDutyWarrant — stamp a shift-duty warrant for the actor to deliberate.
+	agentDutyWarrant
+)
+
+// classifyAgentDuty decides ShiftTick's dispatch for an agent NPC (ZBBS-WORK-355).
+//
+// The last-resort rest floor: a peak-exhausted agent on a standing GO-HOME duty
+// (toWork == false) is marched home mechanically rather than left to the LLM —
+// the deterministic catch a homed NPC otherwise lacks (npc_rest_fallback's
+// RouteHomelessToRest only covers home-LESS NPCs). The duty cue + recovery_options
+// remain the path while merely red, so this fires only once those have failed to
+// land the NPC home. On arrival handleAutoSleepOnArrival beds it and the tiredness
+// recovery sweep restores it.
+//
+// HOME-ONLY, enforced locally (target == HomeStructureID) rather than trusting the
+// caller, so the helper can't be reused to mechanically move an exhausted actor to
+// a non-home target. To-work duties are never marched — an exhausted on-shift agent
+// is already need-suppressed out of the to-work nudge in shiftDutyTarget anyway.
+//
+// The march is DEFERRED while a tick is pending or in flight (WarrantedSince /
+// TickInFlight) so it never races the reactor over this actor's move, and the peak
+// branch never stamps a fresh warrant. Liveness therefore depends on the reactor
+// eventually clearing those flags — which it does: actorCanReactNow clears a stale
+// warrant, a consumed tick clears both, and resetReactorStateOnLoad wipes in-flight
+// state on restart. The gate is deliberately identical to the #1/#2 producers', so
+// the floor inherits no new starvation risk. In the target case (the LLM ticked but
+// didn't head home) the warrant is CONSUMED by that tick, so the floor fires the
+// next minute — it never needs to override an open warrant. Idempotent via
+// alreadyEnRouteTo.
+func classifyAgentDuty(w *World, a *Actor, target StructureID, toWork bool) agentDutyAction {
+	if !toWork && target == a.HomeStructureID && atPeakTiredness(w, a) {
+		if a.WarrantedSince != nil || a.TickInFlight {
+			return agentDutySkip
+		}
+		if alreadyEnRouteTo(a, target) {
+			return agentDutySkip
+		}
+		return agentDutyMarchHome
+	}
+	if a.WarrantedSince != nil || a.TickInFlight {
+		return agentDutySkip
+	}
+	return agentDutyWarrant
+}
+
 // shiftDutyTarget computes the actor's standing shift duty as of nowMinute:
 // where it should be and isn't. Returns ok=false when there's no duty (already
 // where it belongs, out of scope, resting, or a to-work nudge suppressed by an
@@ -248,17 +323,28 @@ func ShiftTick(now time.Time) Command {
 					}
 					continue
 				}
-				// Agent NPC: stamp a duty warrant (gated like #1 — leave an
-				// already-pending / mid-tick actor alone; the level check
-				// re-fires next minute if the duty still stands). The NPC
-				// self-walks via move_to once that tool lands.
-				if a.WarrantedSince != nil || a.TickInFlight {
-					continue
+				// Agent NPC — dispatch decided by classifyAgentDuty:
+				//   - MarchHome: a peak-exhausted agent off-shift and not yet
+				//     home is walked home mechanically (the last-resort rest
+				//     floor), same as a decorative — no warrant, no LLM turn.
+				//   - Warrant: otherwise stamp a duty warrant (gated like #1 —
+				//     leave an already-pending / mid-tick actor alone; the level
+				//     check re-fires next minute if the duty still stands). The
+				//     NPC self-walks via move_to.
+				switch classifyAgentDuty(w, a, target, toWork) {
+				case agentDutyMarchHome:
+					if _, err := MoveActor(a.ID, NewStructureEnterDestination(target), false, now).Fn(w); err != nil {
+						log.Printf("sim/shift_duty: rest-floor march %s -> home %s: %v", a.ID, target, err)
+					}
+				case agentDutyWarrant:
+					tryStampWarrant(w, a, WarrantMeta{
+						TriggerActorID: a.ID,
+						Reason:         ShiftDutyWarrantReason{ToWork: toWork, TargetStructureID: target},
+					}, now)
+				case agentDutySkip:
+					// Mid-tick, an open warrant cycle, or already en route home —
+					// nothing to do this pass.
 				}
-				tryStampWarrant(w, a, WarrantMeta{
-					TriggerActorID: a.ID,
-					Reason:         ShiftDutyWarrantReason{ToWork: toWork, TargetStructureID: target},
-				}, now)
 			}
 			return nil, nil
 		},
