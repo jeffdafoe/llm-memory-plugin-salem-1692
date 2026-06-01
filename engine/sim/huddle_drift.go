@@ -31,12 +31,22 @@ import "time"
 //     helper runs and emits HuddleLeft (the leave is caused by the new
 //     position).
 //
-// PR 4 locomotion command handlers call this helper after every
-// successful position mutation, before returning from the command Fn,
-// so the auto-leave is part of the same transaction as the mutation.
-// PR 4a defines the helper for PR 4 to wire in; no PR 4a command
-// currently mutates position, so the helper has no in-tree callsites
-// in PR 4a but is unit-tested directly.
+// The locomotion ticker calls this helper after every successful
+// position mutation (advanceActorLocomotion and its reroute / door-step
+// / walk-through tails), so the auto-leave is part of the same
+// transaction as the mutation.
+//
+// In current code this is a deliberate NO-OP for an ordinary mover:
+// since ZBBS-HOME-340 a walking actor is never in a huddle (MoveActor
+// leaves any active huddle before stamping a MoveIntent, and the ticker
+// re-enforces the leave before advancing), so the early
+// CurrentHuddleID == "" return fires. It still earns its keep two ways:
+// it repairs a stale huddle back-ref on a mover whose huddle concluded
+// out from under them, and it is the designated invariant guard for any
+// FUTURE position-mutation path that displaces an actor WITHOUT a prior
+// leave (admin teleport, scripted move) — such a path needs no extra
+// drift wiring as long as it routes through here. It is also exercised
+// directly by huddle_drift_test.go.
 //
 // Returns the ID of the huddle the actor was auto-removed from, or an
 // empty slice when no drift was detected. The helper removes the actor
