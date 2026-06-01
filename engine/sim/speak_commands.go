@@ -65,7 +65,13 @@ func Speak(speakerID ActorID, text string, at time.Time) Command {
 			if !ok {
 				return nil, fmt.Errorf("Speak: speaker %q not in world", speakerID)
 			}
-			if actor.MoveIntent != nil {
+			// The walk-in-flight gate disciplines an NPC LLM that would "speak"
+			// mid-move; it does not apply to a human player, who may legitimately
+			// type while their avatar walks (ZBBS-WORK-360). Same PC exemption the
+			// prose gates below already carry — every PC-speak rejection is a
+			// client-visible malfunction, so PCs are held to none of the
+			// NPC-discipline gates.
+			if actor.Kind != KindPC && actor.MoveIntent != nil {
 				return nil, errors.New(
 					"you are walking — finish your move before speaking. " +
 						"Either say what you need to say BEFORE the move_to, " +
@@ -83,12 +89,20 @@ func Speak(speakerID ActorID, text string, at time.Time) Command {
 			// vocative names (e.g. "Ezekiel, ...") that match a non-peer
 			// actor — i.e. the model addressed someone who is NOT currently
 			// in the speaker's huddle. Returns absent-actor display names.
-			if absent := findVocativeAbsentees(text, w, speakerID, peerSet); len(absent) > 0 {
-				return nil, fmt.Errorf(
-					"%s is no longer in your conversation — don't address them by name. "+
-						"Re-check who is present before speaking.",
-					strings.Join(absent, " and "),
-				)
+			// Vocative stale-addressee gate — also NPC-LLM discipline (stop a
+			// model addressing someone who isn't present). A human player may
+			// legitimately call out to someone they can see even if that actor
+			// isn't a huddle peer (e.g. an asleep keeper), so PCs are exempt
+			// (ZBBS-WORK-360); the utterance simply reaches whoever is actually
+			// in the huddle, possibly no one.
+			if actor.Kind != KindPC {
+				if absent := findVocativeAbsentees(text, w, speakerID, peerSet); len(absent) > 0 {
+					return nil, fmt.Errorf(
+						"%s is no longer in your conversation — don't address them by name. "+
+							"Re-check who is present before speaking.",
+						strings.Join(absent, " and "),
+					)
+				}
 			}
 
 			// Prose-validation gates (ZBBS-WORK-323): item-presence, transfer-verb,

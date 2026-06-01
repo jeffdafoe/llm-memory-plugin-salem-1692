@@ -354,6 +354,52 @@ func TestSpeak_VocativeStale_Rejected(t *testing.T) {
 	}
 }
 
+// --- TestSpeak_PCWalkInFlight_NotRejected: a PC is EXEMPT from the
+// walk-in-flight gate (ZBBS-WORK-360). The gate disciplines an NPC LLM;
+// a human player may type while their avatar walks. Same setup as
+// TestSpeak_WalkInFlight_Rejected but with a PC speaker — the speak
+// commits and reaches the huddle instead of 422'ing.
+func TestSpeak_PCWalkInFlight_NotRejected(t *testing.T) {
+	w, stop := buildSpeakTestWorld(t,
+		actorSpec{id: "jeff", displayName: "Jeff", kind: sim.KindPC, huddleID: "h1", moveInFlight: true},
+		actorSpec{id: "ezekiel", displayName: "Ezekiel Crane", kind: sim.KindNPCShared, huddleID: "h1"},
+	)
+	defer stop()
+
+	captured := captureSpoke(t, w)
+	if _, err := w.Send(sim.Speak("jeff", "On my way — wait there.", time.Now().UTC())); err != nil {
+		t.Fatalf("Speak: %v (PC must be exempt from the walk-in-flight gate)", err)
+	}
+	if len(*captured) != 1 {
+		t.Fatalf("Spoke events = %d, want 1", len(*captured))
+	}
+	if got := (*captured)[0]; len(got.RecipientIDs) != 1 || got.RecipientIDs[0] != "ezekiel" {
+		t.Errorf("RecipientIDs = %v, want [ezekiel]", got.RecipientIDs)
+	}
+}
+
+// --- TestSpeak_PCVocativeStale_NotRejected: a PC is EXEMPT from the
+// vocative stale-addressee gate (ZBBS-WORK-360). A player may call out to
+// someone they can see even if that actor isn't a huddle peer (e.g. an
+// asleep keeper). Same setup as TestSpeak_VocativeStale_Rejected but with
+// a PC speaker — the speak commits, reaching whoever IS in the huddle.
+func TestSpeak_PCVocativeStale_NotRejected(t *testing.T) {
+	w, stop := buildSpeakTestWorld(t,
+		actorSpec{id: "jeff", displayName: "Jeff", kind: sim.KindPC, huddleID: "h1"},
+		actorSpec{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1"},
+		actorSpec{id: "ezekiel", displayName: "Ezekiel Crane", kind: sim.KindNPCShared}, // NOT in huddle
+	)
+	defer stop()
+
+	captured := captureSpoke(t, w)
+	if _, err := w.Send(sim.Speak("jeff", "Ezekiel, are you awake?", time.Now().UTC())); err != nil {
+		t.Fatalf("Speak: %v (PC must be exempt from the vocative gate)", err)
+	}
+	if len(*captured) != 1 {
+		t.Errorf("Spoke events = %d, want 1", len(*captured))
+	}
+}
+
 // --- TestSpeak_VocativeNonStale_PeerInHuddle: addressing a peer who IS
 // in the huddle is fine.
 func TestSpeak_VocativeNonStale_PeerInHuddle(t *testing.T) {
