@@ -343,3 +343,104 @@ func TestEnsureColocatedHuddle_ExcludesSleeperAndDecorative(t *testing.T) {
 		t.Error("decorative actor should not be pulled into the huddle")
 	}
 }
+
+// structureScenesFor returns the SceneIDs of every structure-bound scene
+// anchored to structureID. Reads world state on the world goroutine.
+func structureScenesFor(t *testing.T, w *sim.World, structureID sim.StructureID) []sim.SceneID {
+	t.Helper()
+	res := sendT(t, w, sim.Command{Fn: func(world *sim.World) (any, error) {
+		var out []sim.SceneID
+		for id, scene := range world.Scenes {
+			if scene == nil || scene.Bound.Kind != sim.SceneBoundStructure {
+				continue
+			}
+			if scene.Bound.StructureID == nil || *scene.Bound.StructureID != structureID {
+				continue
+			}
+			out = append(out, id)
+		}
+		return out, nil
+	}})
+	return res.([]sim.SceneID)
+}
+
+// huddleAnchoredToScene reports whether the actor's current huddle is observed
+// by sceneID — i.e. resolveSellerScene (and so scene_quote / pay_with_item)
+// would resolve a scene for it.
+func huddleAnchoredToScene(t *testing.T, w *sim.World, id sim.ActorID, sceneID sim.SceneID) bool {
+	t.Helper()
+	res := sendT(t, w, sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := world.Actors[id]
+		if a == nil || a.CurrentHuddleID == "" {
+			return false, nil
+		}
+		scene := world.Scenes[sceneID]
+		if scene == nil {
+			return false, nil
+		}
+		_, ok := scene.Huddles[a.CurrentHuddleID]
+		return ok, nil
+	}})
+	return res.(bool)
+}
+
+// TestEnsureColocatedHuddle_AnchorsStructureScene: ZBBS-HOME-375. The indoor
+// huddle must be anchored to a structure-bound scene, or scene_quote /
+// pay_with_item reject "isn't anchored to a scene" — indoor commerce dies even
+// with a keeper present. Exactly one structure scene is minted for the
+// structure, and it observes the huddle. Two co-located NPCs = the live buy-bug
+// shape (an NPC buyer walking up to an NPC keeper).
+func TestEnsureColocatedHuddle_AnchorsStructureScene(t *testing.T) {
+	w, cancel := buildHuddleTestWorld(t)
+	defer cancel()
+	setActor(t, w, "alice", func(a *sim.Actor) {
+		a.Kind = sim.KindNPCStateful
+		a.InsideStructureID = "tavern"
+	})
+	setActor(t, w, "bob", func(a *sim.Actor) {
+		a.Kind = sim.KindNPCStateful
+		a.InsideStructureID = "tavern"
+	})
+
+	ensureColocated(t, w, "alice")
+
+	if huddleOf(t, w, "alice") == "" {
+		t.Fatal("no huddle formed")
+	}
+	scenes := structureScenesFor(t, w, "tavern")
+	if len(scenes) != 1 {
+		t.Fatalf("want exactly 1 structure scene for tavern, got %d (%v)", len(scenes), scenes)
+	}
+	if !huddleAnchoredToScene(t, w, "alice", scenes[0]) {
+		t.Error("huddle not anchored to the tavern structure scene — scene_quote/pay_with_item would reject")
+	}
+}
+
+// TestEnsureColocatedHuddle_ReusesExistingStructureScene: ZBBS-HOME-375. A
+// structure that already has a structure scene (from a prior conversation) must
+// REUSE it — find-or-create never mints a second, keeping accumulation bounded
+// at one scene per structure (the basis for choosing persist over
+// conclude-on-orphan). The new huddle attaches to the pre-existing scene.
+func TestEnsureColocatedHuddle_ReusesExistingStructureScene(t *testing.T) {
+	w, cancel := buildHuddleTestWorld(t)
+	defer cancel()
+	pre := sendT(t, w, sim.CreateScene("colocated_talk", sim.NewStructureBound("tavern"), time.Unix(0, 0).UTC())).(sim.SceneID)
+	setActor(t, w, "alice", func(a *sim.Actor) {
+		a.Kind = sim.KindNPCStateful
+		a.InsideStructureID = "tavern"
+	})
+	setActor(t, w, "bob", func(a *sim.Actor) {
+		a.Kind = sim.KindNPCStateful
+		a.InsideStructureID = "tavern"
+	})
+
+	ensureColocated(t, w, "alice")
+
+	scenes := structureScenesFor(t, w, "tavern")
+	if len(scenes) != 1 || scenes[0] != pre {
+		t.Fatalf("want the single pre-existing scene %q reused, got %v", pre, scenes)
+	}
+	if !huddleAnchoredToScene(t, w, "alice", pre) {
+		t.Error("huddle did not attach to the pre-existing structure scene")
+	}
+}
