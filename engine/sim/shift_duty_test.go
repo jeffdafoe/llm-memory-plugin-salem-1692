@@ -334,3 +334,97 @@ func TestAlreadyEnRouteTo(t *testing.T) {
 		t.Error("MoveIntent toward shop should not count as en route to home")
 	}
 }
+
+// ZBBS-WORK-355 — the last-resort rest floor. classifyAgentDuty is the pure
+// decision (march home vs warrant vs skip); these drive it directly on the light
+// sleepTestWorld. The mechanical MoveActor march itself (which needs a fully
+// placed structure + terrain) is left to live observation, the same way the
+// decorative shift-walk dispatch is. tiredness == 24 is NeedPeak unconditionally;
+// 23 is the just-below-peak boundary (Red, never Peak).
+
+func TestClassifyAgentDuty_PeakOffShiftMarchesHome(t *testing.T) {
+	a := shiftNPC("n", KindNPCStateful, "shop", "home", "shop") // off shift, away from home
+	a.Needs["tiredness"] = 24                                   // peak — exhausted
+	w := sleepTestWorld(a)
+	if got := classifyAgentDuty(w, a, "home", false); got != agentDutyMarchHome {
+		t.Errorf("peak off-shift agent: got %v, want agentDutyMarchHome", got)
+	}
+}
+
+func TestClassifyAgentDuty_BelowPeakWarrants(t *testing.T) {
+	a := shiftNPC("n", KindNPCStateful, "shop", "home", "shop")
+	a.Needs["tiredness"] = 23 // Red, one below peak — must still deliberate, not march
+	w := sleepTestWorld(a)
+	if got := classifyAgentDuty(w, a, "home", false); got != agentDutyWarrant {
+		t.Errorf("below-peak off-shift agent: got %v, want agentDutyWarrant", got)
+	}
+}
+
+func TestClassifyAgentDuty_PeakButWarrantedDefers(t *testing.T) {
+	a := shiftNPC("n", KindNPCStateful, "shop", "home", "shop")
+	a.Needs["tiredness"] = 24
+	since := time.Now().Add(-time.Minute)
+	a.WarrantedSince = &since // a tick is pending — don't race the reactor
+	w := sleepTestWorld(a)
+	if got := classifyAgentDuty(w, a, "home", false); got != agentDutySkip {
+		t.Errorf("peak but warranted: got %v, want agentDutySkip (deferred)", got)
+	}
+}
+
+func TestClassifyAgentDuty_PeakButTickInFlightDefers(t *testing.T) {
+	a := shiftNPC("n", KindNPCStateful, "shop", "home", "shop")
+	a.Needs["tiredness"] = 24
+	a.TickInFlight = true
+	w := sleepTestWorld(a)
+	if got := classifyAgentDuty(w, a, "home", false); got != agentDutySkip {
+		t.Errorf("peak but tick-in-flight: got %v, want agentDutySkip (deferred)", got)
+	}
+}
+
+func TestClassifyAgentDuty_PeakAlreadyEnRouteHomeSkips(t *testing.T) {
+	a := shiftNPC("n", KindNPCStateful, "shop", "home", "shop")
+	a.Needs["tiredness"] = 24
+	a.MoveIntent = &MoveIntent{Destination: NewStructureEnterDestination("home")}
+	w := sleepTestWorld(a)
+	if got := classifyAgentDuty(w, a, "home", false); got != agentDutySkip {
+		t.Errorf("peak already en route home: got %v, want agentDutySkip (idempotent)", got)
+	}
+}
+
+func TestClassifyAgentDuty_PeakToWorkNeverMarched(t *testing.T) {
+	// A to-work duty is never marched, even at peak — the march is home-only. (In
+	// practice shiftDutyTarget need-suppresses an exhausted agent out of the
+	// to-work nudge before this is reached, so this is the defensive guard.)
+	a := shiftNPC("n", KindNPCStateful, "shop", "home", "home")
+	a.Needs["tiredness"] = 24
+	w := sleepTestWorld(a)
+	if got := classifyAgentDuty(w, a, "shop", true); got != agentDutyWarrant {
+		t.Errorf("peak to-work duty: got %v, want agentDutyWarrant (never marched home)", got)
+	}
+}
+
+func TestClassifyAgentDuty_PeakNonHomeTargetNotMarched(t *testing.T) {
+	// The march is home-only, enforced in classifyAgentDuty itself: a peak,
+	// off-shift agent whose duty target is NOT its home structure falls through to
+	// the warrant path, so the helper can't be misused to mechanically relocate an
+	// exhausted actor somewhere other than home.
+	a := shiftNPC("n", KindNPCStateful, "shop", "home", "shop")
+	a.Needs["tiredness"] = 24
+	w := sleepTestWorld(a)
+	if got := classifyAgentDuty(w, a, "tavern", false); got != agentDutyWarrant {
+		t.Errorf("peak non-home target: got %v, want agentDutyWarrant (home-only march)", got)
+	}
+}
+
+func TestClassifyAgentDuty_MissingTirednessNotMarched(t *testing.T) {
+	// Missing need keys read as zero in this codebase, so an actor with no
+	// tiredness entry is below peak and is NOT marched — it deliberates via the
+	// warrant like any non-exhausted agent. (Pins the "missing reads below peak"
+	// claim in atPeakTiredness's comment.)
+	a := shiftNPC("n", KindNPCStateful, "shop", "home", "shop")
+	delete(a.Needs, "tiredness")
+	w := sleepTestWorld(a)
+	if got := classifyAgentDuty(w, a, "home", false); got != agentDutyWarrant {
+		t.Errorf("missing tiredness: got %v, want agentDutyWarrant (below peak)", got)
+	}
+}
