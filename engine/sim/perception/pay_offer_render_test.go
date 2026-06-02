@@ -62,7 +62,7 @@ func TestRender_PayOfferDecisionSection(t *testing.T) {
 		WarrantActorNames: map[sim.ActorID]string{"bob": "bob"},
 		Baseline:          BaselinePresent,
 	}
-	out := Render(p, DefaultRenderConfig()).Text
+	out := combinedPrompt(Render(p, DefaultRenderConfig()))
 
 	if !strings.Contains(out, "## Offers awaiting your decision") {
 		t.Errorf("offer decision section header missing\n%s", out)
@@ -95,7 +95,7 @@ func TestRender_PayOfferSingularCoin(t *testing.T) {
 		ActorID:  "seller",
 		Warrants: []sim.WarrantMeta{payOfferWarrant(5, "bob", "ale", 1, 1, false)},
 	}
-	out := Render(p, DefaultRenderConfig()).Text
+	out := combinedPrompt(Render(p, DefaultRenderConfig()))
 	if !strings.Contains(out, "1 coin for") {
 		t.Errorf("singular coin not rendered\n%s", out)
 	}
@@ -116,7 +116,7 @@ func TestRender_PayOfferPlusOtherWarrant(t *testing.T) {
 		},
 		Baseline: BaselinePresent,
 	}
-	out := Render(p, DefaultRenderConfig()).Text
+	out := combinedPrompt(Render(p, DefaultRenderConfig()))
 
 	if !strings.Contains(out, "## Offers awaiting your decision") || !strings.Contains(out, "offer id 17") {
 		t.Errorf("offer section missing\n%s", out)

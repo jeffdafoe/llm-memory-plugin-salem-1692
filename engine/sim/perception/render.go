@@ -61,8 +61,18 @@ func (c RenderConfig) normalized() RenderConfig {
 // RenderedPrompt is the output of Render: the prompt text plus the
 // accounting the harness loop needs.
 type RenderedPrompt struct {
-	// Text is the rendered prompt.
+	// Text is the DURABLE turn — felt-state (## You) + the "what just
+	// happened" events. This is what the chat adapter persists and replays as
+	// conversation history (lean sim-history, ZBBS-WORK-364).
 	Text string
+
+	// EphemeralText is per-tick decision-support that must NOT persist into
+	// history: identity, surroundings, affordances (rest/food/lodging), owed
+	// orders, pay offers, and the act-now coda. The adapter attaches it to the
+	// CURRENT turn only (memory-api: /chat/send ephemeral_context). Splitting
+	// it out keeps replayed history lean — the static furniture can't pile up
+	// once per historical tick.
+	EphemeralText string
 
 	// RenderedWarrantCount is how many warrants made it into the prompt.
 	RenderedWarrantCount int
@@ -95,25 +105,38 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	cfg = cfg.normalized()
 
 	var out RenderedPrompt
-	var b strings.Builder
+	// Two streams (lean sim-history, ZBBS-WORK-364). `durable` is the felt-
+	// state (## You) + the "what just happened" events — what the NPC should
+	// REMEMBER; the chat adapter persists and replays it as conversation
+	// history. `ephemeral` is per-tick decision-support (identity, surroundings,
+	// affordances, owed orders, pay offers, the act-now coda) the adapter
+	// attaches to the CURRENT turn only and never persists, so the static
+	// furniture can't accumulate once per historical tick. The split is by
+	// SECTION — each renderer below is routed to one stream.
+	var durable strings.Builder
+	var ephemeral strings.Builder
 
-	b.WriteString("# Your turn\n\n")
-	renderNarrativeState(&b, p.NarrativeState)
-	renderActor(&b, p.Actor)
-	renderSurroundings(&b, p.Surroundings)
-	renderAnchors(&b, p.Anchors)
-	renderDutySteer(&b, p.DutySteer)
-	renderRelationships(&b, p.Relationships)
-	renderPendingDeliveriesFromMe(&b, p.PendingDeliveriesFromMe)
-	renderPendingDeliveriesToMe(&b, p.PendingDeliveriesToMe)
-	renderRecoveryOptions(&b, p.RecoveryOptions)
-	renderSatiation(&b, p.Satiation)
-	renderRestocking(&b, p.Restocking)
-	renderLodging(&b, p.Lodging)
-	renderKeeperLodging(&b, p.KeeperLodging)
-	renderSummonsForYou(&b, p.SummonsForYou)
-	renderSummonRefusal(&b, p.SummonRefusal)
-	renderScene(&b, p)
+	// Durable: felt-state.
+	durable.WriteString("# Your turn\n\n")
+	renderActor(&durable, p.Actor)
+
+	// Ephemeral: identity, surroundings, anchors, steers, relationships, owed
+	// orders, recovery/satiation/restock/lodging affordances, summons, scene.
+	renderNarrativeState(&ephemeral, p.NarrativeState)
+	renderSurroundings(&ephemeral, p.Surroundings)
+	renderAnchors(&ephemeral, p.Anchors)
+	renderDutySteer(&ephemeral, p.DutySteer)
+	renderRelationships(&ephemeral, p.Relationships)
+	renderPendingDeliveriesFromMe(&ephemeral, p.PendingDeliveriesFromMe)
+	renderPendingDeliveriesToMe(&ephemeral, p.PendingDeliveriesToMe)
+	renderRecoveryOptions(&ephemeral, p.RecoveryOptions)
+	renderSatiation(&ephemeral, p.Satiation)
+	renderRestocking(&ephemeral, p.Restocking)
+	renderLodging(&ephemeral, p.Lodging)
+	renderKeeperLodging(&ephemeral, p.KeeperLodging)
+	renderSummonsForYou(&ephemeral, p.SummonsForYou)
+	renderSummonRefusal(&ephemeral, p.SummonRefusal)
+	renderScene(&ephemeral, p)
 	// "## Other scenes in play" (renderSecondary) was dropped — it surfaced raw
 	// scene/huddle UUIDs and a "N signal(s)" count the LLM can't act on
 	// (ZBBS-HOME-339). Secondary-scene warrants still render in the flat
@@ -155,7 +178,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// warrant line) guarantees the ledger_id is present whenever the tools are
 	// advertised.
 	payOffers := PayOfferWarrants(p)
-	renderPayOffers(&b, payOffers, nameOf)
+	renderPayOffers(&ephemeral, payOffers, nameOf)
 
 	// Shift-duty warrants drive the wake tick but are NOT rendered — the standing
 	// DutySteer cue (renderDutySteer, above) is the single voice for
@@ -166,16 +189,21 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	if len(payOffers) > 0 {
 		warrants = nonPayOfferWarrants(warrants)
 	}
-	// Skip the generic "what just happened" block only when the pay-offer
-	// section already covered the whole batch; otherwise render it (this also
-	// preserves the routine-check-in line for the genuinely-empty case).
+	// Durable: the "what just happened" events are the NPC's memory of the
+	// scene. Skip the generic block only when the pay-offer section already
+	// covered the whole batch; otherwise render it (this also preserves the
+	// routine-check-in line for the genuinely-empty case). Warrant caps +
+	// carry-forward accounting land in `out` as before.
 	if len(warrants) > 0 || len(payOffers) == 0 {
-		renderWarrants(&b, warrants, nameOf, placeNameOf, cfg, &out)
+		renderWarrants(&durable, warrants, nameOf, placeNameOf, cfg, &out)
 	}
 
-	renderTriage(&b, p.Actor.Needs, p.Actor.NeedThresholds)
+	// Ephemeral: the act-now coda + rest-first steer are instructions for THIS
+	// tick, not facts to remember.
+	renderTriage(&ephemeral, p.Actor.Needs, p.Actor.NeedThresholds)
 
-	out.Text = b.String()
+	out.Text = durable.String()
+	out.EphemeralText = ephemeral.String()
 	return out
 }
 

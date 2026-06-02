@@ -129,7 +129,11 @@ type chatRequest struct {
 	ToolCallResults []toolResult `json:"tool_call_results,omitempty"`
 	PersistOnly     bool         `json:"persist_only,omitempty"`
 	SceneID         string       `json:"scene_id,omitempty"`
-	Wait            bool         `json:"wait"`
+	// EphemeralContext (lean sim-history): per-tick affordances / world-state
+	// the API attaches to the current turn but never persists. Sent on every
+	// Complete; absent on persist-only calls (no perception).
+	EphemeralContext string `json:"ephemeral_context,omitempty"`
+	Wait             bool   `json:"wait"`
 }
 
 // apiTool is the neutral tool spec sent in tools_offered. parameters is
@@ -200,12 +204,13 @@ func (c *Client) Complete(ctx context.Context, req llm.Request) (llm.Response, e
 	}
 
 	body, err := json.Marshal(chatRequest{
-		ToAgents:        []string{req.Model},
-		Message:         message,
-		ToolsOffered:    toAPITools(req.Tools),
-		ToolCallResults: results,
-		SceneID:         req.SceneID,
-		Wait:            true,
+		ToAgents:         []string{req.Model},
+		Message:          message,
+		ToolsOffered:     toAPITools(req.Tools),
+		ToolCallResults:  results,
+		SceneID:          req.SceneID,
+		EphemeralContext: req.EphemeralContext,
+		Wait:             true,
 	})
 	if err != nil {
 		return llm.Response{}, &llm.Error{
