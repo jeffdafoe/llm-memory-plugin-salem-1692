@@ -525,16 +525,18 @@ func TestRenderRecoveryOptions_RemedyBullet(t *testing.T) {
 }
 
 // TestRenderRecoveryOptions_StructureIDRendered pins the move_to contract: the
-// structure-backed kinds (inn / home / remedy) render a trailing
-// (structure_id: …) the model passes straight to move_to — the tool rejects a
-// bare name, so without this the rest cue is unactionable. The free-object
-// "rest" kind is reached via object_visit, not move_to, so it must NOT carry a
-// structure_id. Regression guard for the perception gap that left NPCs unable
-// to walk to anything they could see.
+// Every rest-cue kind renders a trailing (structure_id: …) handle the model
+// passes straight to move_to — the tool rejects a bare name, so without it the
+// cue is unactionable. The structure-backed kinds (inn / home / remedy) emit
+// StructureID; the free-object "rest" kind emits its VillageObjectID, which
+// move_to resolves to an object visit (ZBBS-HOME-359). Regression guard for the
+// perception gap that left NPCs unable to walk to anything they could see —
+// fixed for the structure kinds (HOME-326) + satiation free sources (HOME-359),
+// extended to rest free objects here (ZBBS-WORK-365).
 func TestRenderRecoveryOptions_StructureIDRendered(t *testing.T) {
 	var b strings.Builder
 	renderRecoveryOptions(&b, &RecoveryOptionsView{Options: []RecoveryOption{
-		{Kind: "rest", Label: "the old oak", Magnitude: 12, CostText: "free", Distance: "a short walk", Direction: "east"},
+		{Kind: "rest", ObjectID: "oak", Label: "the old oak", Magnitude: 12, CostText: "free", Distance: "a short walk", Direction: "east"},
 		{Kind: "inn", Label: "Hannah's Inn", CostText: "ask the keeper", StructureID: "inn"},
 		{Kind: "home", Label: "Thorne Cottage", CostText: "free", StructureID: "cottage"},
 		{Kind: "remedy", Label: "PW Apothecary", ItemLabel: "coca tea", Magnitude: 12, CostText: "~2 coins", StructureID: "apothecary"},
@@ -555,17 +557,23 @@ func TestRenderRecoveryOptions_StructureIDRendered(t *testing.T) {
 		"- Hannah's Inn — rent a room, ask the keeper (structure_id: inn)",
 		"- Thorne Cottage — sleep in your own bed, free (structure_id: cottage)",
 		"- PW Apothecary — buy coca tea (a thorough waking), ~2 coins (structure_id: apothecary)",
-		// The free-object rest kind is reached via object_visit, not move_to, so
-		// its bullet carries NO structure_id — pinned as an exact line.
-		"- the old oak — a thorough waking, free, a short walk east",
+		// The free-object rest kind renders its VillageObjectID on the same
+		// structure_id field — move_to falls through to an object visit (HOME-359).
+		"- the old oak — a thorough waking, free, a short walk east (structure_id: oak)",
 	} {
 		if !hasLine(want) {
 			t.Errorf("missing exact bullet %q in:\n%s", want, out)
 		}
 	}
-	for _, line := range strings.Split(out, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "- the old oak") && strings.Contains(line, "structure_id") {
-			t.Errorf("free-object rest bullet must not render a structure_id: %q", line)
+	// A rest option with no resolvable object id renders no handle (defensive —
+	// the non-empty guard in renderRecoveryOptions), mirroring the structure kinds.
+	var b2 strings.Builder
+	renderRecoveryOptions(&b2, &RecoveryOptionsView{Options: []RecoveryOption{
+		{Kind: "rest", Label: "a nameless spot", Magnitude: 12, CostText: "free", Distance: "a short walk", Direction: "east"},
+	}})
+	for _, line := range strings.Split(b2.String(), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "- a nameless spot") && strings.Contains(line, "structure_id") {
+			t.Errorf("rest bullet with empty ObjectID must not render a structure_id: %q", line)
 		}
 	}
 }
