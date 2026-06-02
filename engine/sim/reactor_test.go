@@ -574,10 +574,13 @@ func TestEvaluateReactors_ShelvedStaleCycleEvicted(t *testing.T) {
 	})
 }
 
-// TestEvaluateReactors_ShelvedStaleCycleForceExempt — ZBBS-WORK-361. A stale
-// cycle carrying a Force warrant (an operator nudge) is NOT evicted — the
-// operator's signal persists until the actor can act on it.
-func TestEvaluateReactors_ShelvedStaleCycleForceExempt(t *testing.T) {
+// TestEvaluateReactors_ShelvedStaleCyclePrunesToForced — ZBBS-WORK-361
+// (code_review R1). A stale cycle that holds a Force warrant (operator nudge)
+// alongside ordinary ones is pruned to ONLY the Force warrant — the operator
+// signal survives shelving, but the stale ordinary pile is dropped rather than
+// re-protected by the presence of the Force warrant. The cycle clock is
+// re-anchored so the kept warrant gets a fresh TTL window.
+func TestEvaluateReactors_ShelvedStaleCyclePrunesToForced(t *testing.T) {
 	w, cancel := buildReactorTestWorld(t)
 	defer cancel()
 
@@ -593,7 +596,9 @@ func TestEvaluateReactors_ShelvedStaleCycleForceExempt(t *testing.T) {
 			a.WarrantedSince = &stale
 			a.WarrantDueAt = &due
 			a.Warrants = []sim.WarrantMeta{
-				{TriggerActorID: "bob", Force: true, Reason: sim.BasicWarrantReason{K: sim.WarrantKindAdmin}},
+				{TriggerActorID: "bob", Reason: sim.NPCSpeechWarrantReason{SpeechID: 1, Speaker: "bob"}},
+				{TriggerActorID: "carol", Reason: sim.BasicWarrantReason{K: sim.WarrantKindHuddlePeerJoined}},
+				{TriggerActorID: "op", Force: true, Reason: sim.BasicWarrantReason{K: sim.WarrantKindAdmin}},
 			}
 			return nil, nil
 		},
@@ -603,10 +608,18 @@ func TestEvaluateReactors_ShelvedStaleCycleForceExempt(t *testing.T) {
 
 	inspectActor(t, w, "alice", func(a *sim.Actor) {
 		if a.WarrantedSince == nil {
-			t.Error("WarrantedSince cleared; a Force warrant must survive TTL eviction")
+			t.Fatal("WarrantedSince cleared; a cycle with a Force warrant must be re-anchored, not cleared")
 		}
 		if len(a.Warrants) != 1 {
-			t.Errorf("Warrants len = %d, want 1 (Force warrant preserved)", len(a.Warrants))
+			t.Fatalf("Warrants len = %d, want 1 (stale ordinary warrants pruned, Force kept)", len(a.Warrants))
+		}
+		if !a.Warrants[0].Force {
+			t.Errorf("surviving warrant is not the Force warrant: %+v", a.Warrants[0])
+		}
+		// Cycle clock re-anchored to ~now (>= the original stale stamp) so the
+		// kept Force warrant gets a fresh TTL window, not an immediate re-evict.
+		if a.WarrantedSince.Before(now) {
+			t.Errorf("WarrantedSince = %v, want re-anchored to >= now (%v)", a.WarrantedSince, now)
 		}
 	})
 }

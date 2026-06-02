@@ -408,21 +408,27 @@ func EvaluateReactors(now time.Time) Command {
 					continue
 				}
 				if !eligible {
-					// Shelved (asleep, or on break with no interrupting
-					// warrant). A shelved actor never consumes its warrants,
-					// so a cycle aged past MaxWarrantAge is stale — drop it
-					// so the actor wakes to current state rather than a
-					// transcript of everything it slept through
-					// (ZBBS-WORK-361). The freshest signals re-stamp a new
-					// cycle while the actor stays shelved, bounding the pile
-					// to ~MaxWarrantAge of accumulation. A Force warrant (an
-					// operator nudge) is exempt — it persists until the actor
-					// can act on it.
-					if !hasForcedWarrant(actor.Warrants) && warrantCycleStale(actor, now, w.Settings) {
-						clearWarrant(actor)
+					// Temporarily unavailable / shelved: asleep, on break with
+					// no interrupting warrant, or suppressed just after engine
+					// speech. A shelved actor never consumes its warrant cycle,
+					// so a cycle aged past MaxWarrantAge is stale — evict it so
+					// the actor wakes to current state rather than a transcript
+					// of everything it slept through (ZBBS-WORK-361). Force
+					// warrants (operator nudges) MUST survive shelving, so a
+					// stale cycle is pruned down to its Force warrants rather
+					// than kept whole — keeping the whole cycle just because one
+					// warrant is forced would re-protect exactly the stale pile
+					// we're dropping (code_review). The freshest signals re-stamp
+					// a new cycle while the actor stays shelved.
+					if warrantCycleStale(actor, now, w.Settings) {
+						if hasForcedWarrant(actor.Warrants) {
+							retainForcedWarrants(actor, now, w.Settings)
+						} else {
+							clearWarrant(actor)
+						}
 						continue
 					}
-					// Otherwise push WarrantDueAt out by a backoff so we
+					// Not yet stale — push WarrantDueAt out by a backoff so we
 					// don't reconsider this actor on every 250ms scan.
 					next := now.Add(unavailableBackoff)
 					actor.WarrantDueAt = &next
