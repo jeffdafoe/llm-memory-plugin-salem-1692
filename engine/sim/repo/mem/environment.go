@@ -64,3 +64,10 @@ func (r *EnvironmentRepo) SaveSnapshot(_ context.Context, _ sim.Tx, env sim.Worl
 	r.phase = phase
 	return nil
 }
+
+func (r *EnvironmentRepo) SaveMutableSettings(_ context.Context, _ sim.Tx, ms sim.MutableWorldSettings) error {
+	r.settings.ZoomMinAdmin = ms.ZoomMinAdmin
+	r.settings.ZoomMinRegular = ms.ZoomMinRegular
+	r.settings.AgentTicksPaused = ms.AgentTicksPaused
+	return nil
+}

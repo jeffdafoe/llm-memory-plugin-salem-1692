@@ -97,6 +97,9 @@ func (f fakeEnvironment) Load(_ context.Context) (sim.WorldEnvironment, sim.Phas
 func (fakeEnvironment) SaveSnapshot(_ context.Context, _ sim.Tx, _ sim.WorldEnvironment, _ sim.Phase) error {
 	return nil
 }
+func (fakeEnvironment) SaveMutableSettings(_ context.Context, _ sim.Tx, _ sim.MutableWorldSettings) error {
+	return nil
+}
 
 type fakeAssets struct {
 	out map[sim.AssetID]*sim.Asset

@@ -154,6 +154,17 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			EffectiveLoiterOffsetX: e.EffectiveLoiterOffsetX,
 			EffectiveLoiterOffsetY: e.EffectiveLoiterOffsetY,
 		}}, true
+	case *sim.ZoomSettingsChanged:
+		// Keys match what the client's apply_zoom_floor_from_config reads
+		// (world.gd) — the same shape the public /world DTO carries.
+		return WireFrame{Type: "zoom_settings_changed", Data: zoomSettingsChangedWireDTO{
+			ZoomMinAdmin:   e.ZoomMinAdmin,
+			ZoomMinRegular: e.ZoomMinRegular,
+		}}, true
+	case *sim.AgentTicksPausedChanged:
+		return WireFrame{Type: "agent_ticks_paused_changed", Data: agentTicksPausedChangedWireDTO{
+			AgentTicksPaused: e.Paused,
+		}}, true
 	case *sim.NPCCreated:
 		// Reuse AgentDTO so the frame is byte-identical to a per-NPC entry from
 		// the /api/village/agents load the client already renders. A fresh NPC
@@ -470,6 +481,22 @@ type objectCreatedWireDTO struct {
 type objectDisplayNameChangedWireDTO struct {
 	ID          string `json:"id"`
 	DisplayName string `json:"display_name"`
+}
+
+// zoomSettingsChangedWireDTO is the zoom_settings_changed payload — the
+// post-change camera floors after an admin saves them (ZBBS-WORK-363). Keys
+// match the public /world DTO + what the client's apply_zoom_floor_from_config
+// reads, so the client reloads whichever floor applies to its role live.
+type zoomSettingsChangedWireDTO struct {
+	ZoomMinAdmin   float64 `json:"zoom_min_admin"`
+	ZoomMinRegular float64 `json:"zoom_min_regular"`
+}
+
+// agentTicksPausedChangedWireDTO is the agent_ticks_paused_changed payload — the
+// new global LLM-agent pause state (ZBBS-WORK-363), so the config panel's
+// checkbox reflects an admin toggle without waiting for its next poll.
+type agentTicksPausedChangedWireDTO struct {
+	AgentTicksPaused bool `json:"agent_ticks_paused"`
 }
 
 // objectTagsUpdatedWireDTO is the village_object_tags_updated payload — a placed

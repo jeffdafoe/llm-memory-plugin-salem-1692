@@ -1,8 +1,9 @@
 extends Control
 ## Config panel — admin controls for world-level settings.
-## Currently: day/night phase display + force-toggle buttons.
-## Fetches state from GET /api/village/world; force-phase via
-## POST /api/village/world/force-phase (admin only).
+## Reads phase + the world clock from GET /api/village/world and the admin
+## config (timezone, transitions, rotations, dawn/dusk, agent-ticks, zoom) from
+## GET /api/village/config. Writes via the admin routes (all admin-gated):
+## POST /api/village/admin/{phase,zoom-settings,force-rotate,agent-ticks}.
 
 signal closed
 
@@ -389,35 +390,65 @@ func _on_visibility_changed() -> void:
         _refetch_timer.stop()
         _set_status("", false)
 
-## Fetch current world state from the server and refresh the UI.
+## Fetch current world state + admin config and refresh the UI. The admin
+## config fields (timezone, transitions, rotations, dawn/dusk, agent-ticks,
+## zoom) live on /api/village/config — kept off the hot public /world poll;
+## phase + the world clock (now) come from /api/village/world.
 func fetch_state() -> void:
-    var http = HTTPRequest.new()
-    http.accept_gzip = false
-    add_child(http)
-    http.request_completed.connect(_on_state_response.bind(http))
     var headers := Auth.auth_headers(false)
-    http.request(Auth.api_base + "/api/village/world", headers)
 
-func _on_state_response(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest) -> void:
+    var world_http = HTTPRequest.new()
+    world_http.accept_gzip = false
+    add_child(world_http)
+    world_http.request_completed.connect(_on_world_response.bind(world_http))
+    world_http.request(Auth.api_base + "/api/village/world", headers)
+
+    var cfg_http = HTTPRequest.new()
+    cfg_http.accept_gzip = false
+    add_child(cfg_http)
+    cfg_http.request_completed.connect(_on_config_response.bind(cfg_http))
+    cfg_http.request(Auth.api_base + "/api/village/config", headers)
+
+## /api/village/world is the public world state — the panel uses phase (the
+## phase row) and now (the World clock: real server time, UTC; localized for
+## display). The admin config fields come from _on_config_response below.
+func _on_world_response(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest) -> void:
     http.queue_free()
     if not Auth.check_response(response_code):
         return
     if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
+        # Surface the failure rather than silently leaving stale phase/clock
+        # while the /config half refreshes the rest of the panel.
         _set_status("Failed to load world state (" + str(response_code) + ")", true)
         return
     var json = JSON.parse_string(body.get_string_from_utf8())
     if typeof(json) != TYPE_DICTIONARY:
         _set_status("Malformed world state response", true)
         return
-
     _phase = json.get("phase", "")
+    _server_time = json.get("now", "")
+    _refresh_labels()
+
+func _on_config_response(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest) -> void:
+    http.queue_free()
+    if not Auth.check_response(response_code):
+        return
+    if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
+        _set_status("Failed to load config (" + str(response_code) + ")", true)
+        return
+    var json = JSON.parse_string(body.get_string_from_utf8())
+    if typeof(json) != TYPE_DICTIONARY:
+        _set_status("Malformed config response", true)
+        return
+
+    # phase + the world clock (now) come from _on_world_response; everything
+    # below is the admin config surface from /api/village/config.
     _last_transition_at = json.get("last_transition_at", "")
     _next_transition_at = json.get("next_transition_at", "")
     _next_transition_phase = json.get("next_transition_phase", "")
     _dawn_time = json.get("dawn_time", "")
     _dusk_time = json.get("dusk_time", "")
     _timezone = json.get("timezone", "")
-    _server_time = json.get("server_time", "")
     _rotation_time = json.get("rotation_time", "")
     _last_rotation_at = json.get("last_rotation_at", "")
     _next_rotation_at = json.get("next_rotation_at", "")
@@ -451,7 +482,7 @@ func _format_zoom(value) -> String:
         return ""
     return str(float(value))
 
-## POST /api/village/world/zoom-settings with both current edit values.
+## POST /api/village/admin/zoom-settings with both current edit values.
 ## Parse failures surface in the status label rather than silently sending
 ## garbage.
 func _send_zoom_save() -> void:
@@ -469,14 +500,14 @@ func _send_zoom_save() -> void:
     add_child(http)
     http.request_completed.connect(func(_r, c, _h, _b):
         http.queue_free()
-        if c == 204:
+        if c == 200:
             _set_status("Zoom floors saved", false)
         else:
             _set_status("Zoom save failed (" + str(c) + ")", true)
         Auth.check_response(c)
     )
     var headers := Auth.auth_headers()
-    http.request(Auth.api_base + "/api/village/world/zoom-settings",
+    http.request(Auth.api_base + "/api/village/admin/zoom-settings",
         headers, HTTPClient.METHOD_POST, payload)
 
 func _refresh_labels() -> void:
@@ -553,7 +584,7 @@ func _send_force(phase: String) -> void:
     http.request_completed.connect(_on_force_response.bind(http, phase))
     var headers := Auth.auth_headers()
     var payload = JSON.stringify({"phase": phase})
-    http.request(Auth.api_base + "/api/village/world/force-phase", headers, HTTPClient.METHOD_POST, payload)
+    http.request(Auth.api_base + "/api/village/admin/phase", headers, HTTPClient.METHOD_POST, payload)
     _set_status("Forcing " + phase + "...", false)
 
 func _on_force_response(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest, requested: String) -> void:
@@ -578,7 +609,7 @@ func _on_force_response(result: int, response_code: int, _headers: PackedStringA
     _set_status("Forced " + applied.to_upper() + " — " + str(affected) + " objects updated", false)
     fetch_state()
 
-## POST /api/village/world/force-rotate — kicks the daily rotation pass
+## POST /api/village/admin/force-rotate — kicks the daily rotation pass
 ## immediately. Affected objects flip over each asset's transition_spread_seconds
 ## window so updates trickle in rather than all landing at once.
 func _send_force_rotate() -> void:
@@ -587,7 +618,7 @@ func _send_force_rotate() -> void:
     add_child(http)
     http.request_completed.connect(_on_force_rotate_response.bind(http))
     var headers := Auth.auth_headers()
-    http.request(Auth.api_base + "/api/village/world/force-rotate", headers, HTTPClient.METHOD_POST, "{}")
+    http.request(Auth.api_base + "/api/village/admin/force-rotate", headers, HTTPClient.METHOD_POST, "{}")
     _set_status("Forcing rotation...", false)
 
 func _on_force_rotate_response(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest) -> void:
@@ -616,7 +647,7 @@ func _set_status(text: String, is_error: bool) -> void:
     _status_label.text = text
     _status_label.add_theme_color_override("font_color", COLOR_STATUS_ERR if is_error else COLOR_STATUS_OK)
 
-## POST /api/village/world/agent-ticks {paused: bool} when the admin toggles
+## POST /api/village/admin/agent-ticks {paused: bool} when the admin toggles
 ## the checkbox. Status reflects success/failure; the next poll cycle echoes
 ## the server value back into the checkbox.
 func _on_agent_ticks_toggled(pressed: bool) -> void:
@@ -640,7 +671,7 @@ func _on_agent_ticks_toggled(pressed: bool) -> void:
         Auth.check_response(c)
     )
     var headers := Auth.auth_headers()
-    http.request(Auth.api_base + "/api/village/world/agent-ticks",
+    http.request(Auth.api_base + "/api/village/admin/agent-ticks",
         headers, HTTPClient.METHOD_POST, payload)
 
 ## GET /api/items — fetch the read-only catalog of every item_kind in

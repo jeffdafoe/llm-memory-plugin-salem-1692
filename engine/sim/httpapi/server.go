@@ -158,10 +158,21 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/village/pc/sleep", s.requireAuth(s.handlePCSleep))
 	mux.HandleFunc("POST /api/village/pc/wake", s.requireAuth(s.handlePCWake))
 	mux.HandleFunc("POST /api/village/pc/gather", s.requireAuth(s.handlePCGather)) // ZBBS-WORK-328
+	// Admin world-config read (ZBBS-WORK-363) — the config panel's populate
+	// fetch. Admin-only despite being a GET: requireAuth + an in-command
+	// IsAdmin gate (adminCommand inside handleConfig), so it stays off the
+	// public /world poll and reads live settings. See config_handlers.go.
+	mux.HandleFunc("GET /api/village/config", s.requireAuth(s.handleConfig))
 	// Admin write routes — requireAuth PLUS an in-command admin gate (the
 	// caller's actor must have admin = true; see adminCommand in
 	// write_handlers.go). Distinct from pc/* whose ownership is structural.
 	mux.HandleFunc("POST /api/village/admin/phase", s.requireAuth(s.handleAdminPhase))
+	// World-config write routes (ZBBS-WORK-363) — the config panel's saves.
+	// Mutate the runtime-tunable WorldSettings subset; durability rides the
+	// checkpoint, live updates ride the WS hub. See config_handlers.go.
+	mux.HandleFunc("POST /api/village/admin/zoom-settings", s.requireAuth(s.handleAdminZoomSettings))
+	mux.HandleFunc("POST /api/village/admin/agent-ticks", s.requireAuth(s.handleAdminAgentTicks))
+	mux.HandleFunc("POST /api/village/admin/force-rotate", s.requireAuth(s.handleAdminForceRotate))
 	mux.HandleFunc("POST /api/village/admin/object/create", s.requireAuth(s.handleAdminObjectCreate))
 	mux.HandleFunc("POST /api/village/admin/object/move", s.requireAuth(s.handleAdminObjectMove))
 	mux.HandleFunc("POST /api/village/admin/object/delete", s.requireAuth(s.handleAdminObjectDelete))
@@ -284,9 +295,13 @@ func worldStateFromSnapshot(s *sim.Snapshot) WorldStateDTO {
 		ContractVersion: ContractVersion,
 		Phase:           string(s.Phase),
 		Tick:            s.AtTick,
-		Now:             s.Environment.Now,
-		Weather:         s.Environment.Weather,
-		Atmosphere:      s.Environment.Atmosphere,
+		// Real world clock: the snapshot's publish wall-time, normalized to UTC
+		// for an unambiguous wire instant (was the never-assigned Environment.Now).
+		Now:            s.PublishedAt.UTC(),
+		Weather:        s.Environment.Weather,
+		Atmosphere:     s.Environment.Atmosphere,
+		ZoomMinAdmin:   s.ZoomMinAdmin,
+		ZoomMinRegular: s.ZoomMinRegular,
 	}
 }
 

@@ -11,7 +11,9 @@ import (
 // sim.CheckpointSnapshot — the write-side mirror of LoadWorld. It opens one
 // transaction via repo.Begin,
 // calls every checkpointed aggregate's SaveSnapshot inside that single Tx,
-// and commits atomically. Any sub-repo error aborts the whole checkpoint:
+// plus SaveMutableSettings for the runtime-tunable settings subset
+// (ZBBS-WORK-363 — zoom floors + agent-ticks pause, the only setting rows the
+// checkpoint writes), and commits atomically. Any sub-repo error aborts the whole checkpoint:
 // the deferred Rollback discards every write, so a crash or failure mid-
 // checkpoint can never leave persistent state half-updated (the GUIDELINES
 // consistency line — transient state may be lossy on crash, persistent
@@ -116,6 +118,11 @@ func SaveWorld(ctx context.Context, repo sim.Repository, cp *sim.CheckpointSnaps
 	}
 	if err := repo.Environment.SaveSnapshot(ctx, tx, cp.Environment, cp.Phase); err != nil {
 		return fmt.Errorf("pg SaveWorld: Environment.SaveSnapshot: %w", err)
+	}
+	// Runtime-tunable settings (ZBBS-WORK-363) — the 3-key mutable subset, in the
+	// same Tx so a crash can't split a config save from the rest of the checkpoint.
+	if err := repo.Environment.SaveMutableSettings(ctx, tx, cp.MutableSettings); err != nil {
+		return fmt.Errorf("pg SaveWorld: Environment.SaveMutableSettings: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {

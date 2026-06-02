@@ -100,6 +100,20 @@ func MostRecentRotationBoundary(now time.Time, h, m int) time.Time {
 	return today
 }
 
+// NextRotationBoundary returns the next daily-rotation boundary after now —
+// today's rotation time if it's still ahead, else tomorrow's. The countdown
+// counterpart to MostRecentRotationBoundary, used by the admin config read
+// (GET /api/village/config) for the "next rotation" readout.
+func NextRotationBoundary(now time.Time, h, m int) time.Time {
+	loc := now.Location()
+	y, mo, d := now.Date()
+	today := time.Date(y, mo, d, h, m, 0, 0, loc)
+	if today.After(now) {
+		return today
+	}
+	return time.Date(y, mo, d+1, h, m, 0, 0, loc)
+}
+
 // RotationScope narrows the candidate set for a rotation pass. Tag
 // matches v1's per-domain narrowing (washerwoman scopes to "laundry",
 // town_crier scopes to "notice-board"). ExcludeTags is the parallel —
