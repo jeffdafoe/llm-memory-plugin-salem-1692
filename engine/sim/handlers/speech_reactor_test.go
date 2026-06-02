@@ -2,6 +2,7 @@ package handlers_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -296,6 +297,155 @@ func TestSpeechReactor_ClearedMoveIntentReWarrants(t *testing.T) {
 	}
 	if got := peekWarrants(t, w, "walker"); len(got) != 1 {
 		t.Errorf("walker warrants after stopping = %d, want 1 (drop, not defer)", len(got))
+	}
+}
+
+// --- TestSpeechReactor_PCSpeakerStampsPCSpeechReason ------------------
+// ZBBS-HOME-377: when the speaker is a PC (the player), the subscriber stamps
+// PCSpeechWarrantReason (Kind WarrantKindPCSpoke) instead of NPCSpeechWarrantReason.
+// The kind split is what lets actorCanReactNow treat a player's address as a
+// break-interrupter while NPC<->NPC chatter stays gated behind the break.
+func TestSpeechReactor_PCSpeakerStampsPCSpeechReason(t *testing.T) {
+	w, stop := buildSpeechReactorWorld(t,
+		speakActor{id: "player", displayName: "Jefferey", kind: sim.KindPC, huddleID: "h1"},
+		speakActor{id: "bob", displayName: "Bob", kind: sim.KindNPCStateful, huddleID: "h1"},
+	)
+	defer stop()
+
+	if _, err := w.Send(sim.Speak("player", "John, what do you have available?", time.Now().UTC())); err != nil {
+		t.Fatalf("Speak: %v", err)
+	}
+
+	bobWarrants := peekWarrants(t, w, "bob")
+	if len(bobWarrants) != 1 {
+		t.Fatalf("bob warrants = %d, want 1", len(bobWarrants))
+	}
+	m := bobWarrants[0]
+	if m.Kind() != sim.WarrantKindPCSpoke {
+		t.Errorf("Kind = %q, want pc_spoke", m.Kind())
+	}
+	reason, ok := m.Reason.(sim.PCSpeechWarrantReason)
+	if !ok {
+		t.Fatalf("Reason concrete type = %T, want PCSpeechWarrantReason", m.Reason)
+	}
+	if reason.Speaker != "player" {
+		t.Errorf("Reason.Speaker = %q, want player", reason.Speaker)
+	}
+	if reason.Excerpt != "John, what do you have available?" {
+		t.Errorf("Reason.Excerpt = %q", reason.Excerpt)
+	}
+}
+
+// --- TestSpeechReactor_PCSpeakerStillSkipsMovingListener --------------
+// ZBBS-HOME-377: the PC carve-out is for the heard-speech circuit breaker only;
+// the HOME-330 mid-walk gate still applies to a PC speaker, because a walking
+// NPC can't act on the warrant either way (the speak handler would reject it).
+// A stationary peer is warranted as normal.
+func TestSpeechReactor_PCSpeakerStillSkipsMovingListener(t *testing.T) {
+	w, stop := buildSpeechReactorWorld(t,
+		speakActor{id: "player", displayName: "Jefferey", kind: sim.KindPC, huddleID: "h1"},
+		speakActor{id: "walker", displayName: "Walker", kind: sim.KindNPCShared, huddleID: "h1"},
+		speakActor{id: "stander", displayName: "Stander", kind: sim.KindNPCShared, huddleID: "h1"},
+	)
+	defer stop()
+
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["walker"].MoveIntent = &sim.MoveIntent{}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed MoveIntent: %v", err)
+	}
+
+	if _, err := w.Send(sim.Speak("player", "Hello to you both.", time.Now().UTC())); err != nil {
+		t.Fatalf("Speak: %v", err)
+	}
+
+	if got := peekWarrants(t, w, "walker"); len(got) != 0 {
+		t.Errorf("moving listener warrants (PC speaker) = %d, want 0 (motion gate still applies)", len(got))
+	}
+	if got := peekWarrants(t, w, "stander"); len(got) != 1 {
+		t.Errorf("stationary listener warrants (PC speaker) = %d, want 1", len(got))
+	}
+}
+
+// --- TestSpeechReactor_PCSpeakerBypassesTrippedCircuitBreaker ---------
+// ZBBS-HOME-377 code_review #3: even with the HOME-331 heard-speech circuit
+// breaker already OPEN against "player", a PC utterance still warrants the
+// listener. In production the breaker can only ever trip against an NPC speaker
+// (the PC path never calls NoteHeardSpeech), so we trip it artificially here to
+// pin the guarantee directly: a player's address is never damped as a chatter
+// loop, regardless of breaker state.
+func TestSpeechReactor_PCSpeakerBypassesTrippedCircuitBreaker(t *testing.T) {
+	w, stop := buildSpeechReactorWorld(t,
+		speakActor{id: "player", displayName: "Jefferey", kind: sim.KindPC, huddleID: "h1"},
+		speakActor{id: "bob", displayName: "Bob", kind: sim.KindNPCStateful, huddleID: "h1"},
+	)
+	defer stop()
+
+	now := time.Now().UTC()
+	// Drive bob's breaker for "player" until it suppresses (bounded loop so the
+	// test doesn't depend on the exact private threshold const).
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		bob := world.Actors["bob"]
+		tripped := false
+		for n := 0; n < 8 && !tripped; n++ {
+			tripped = bob.NoteHeardSpeech("player", now)
+		}
+		if !tripped {
+			// Return the failure so the outer t.Fatalf aborts the test, rather
+			// than t.Error-ing from inside the command (which wouldn't abort).
+			return nil, fmt.Errorf("precondition failed: breaker never tripped against player")
+		}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("trip breaker: %v", err)
+	}
+
+	if _, err := w.Send(sim.Speak("player", "John, are you there?", now)); err != nil {
+		t.Fatalf("Speak: %v", err)
+	}
+
+	bobWarrants := peekWarrants(t, w, "bob")
+	if len(bobWarrants) != 1 {
+		t.Fatalf("bob warrants with tripped breaker = %d, want 1 (PC bypasses the breaker)", len(bobWarrants))
+	}
+	if bobWarrants[0].Kind() != sim.WarrantKindPCSpoke {
+		t.Errorf("Kind = %q, want pc_spoke", bobWarrants[0].Kind())
+	}
+}
+
+// --- TestSpeechReactor_PCSpeechNeverSuppressedUnderRepetition ---------
+// ZBBS-HOME-377 code_review #3 (second half): PC speech does not pass through
+// the heard-speech breaker at all, so it can never accrue misses and suppress
+// itself. Five PC utterances (well past the threshold-3 breaker) each warrant
+// the listener — if the PC path went through the breaker, the 4th and 5th would
+// be dropped and bob would cap at 3.
+func TestSpeechReactor_PCSpeechNeverSuppressedUnderRepetition(t *testing.T) {
+	w, stop := buildSpeechReactorWorld(t,
+		speakActor{id: "player", displayName: "Jefferey", kind: sim.KindPC, huddleID: "h1"},
+		speakActor{id: "bob", displayName: "Bob", kind: sim.KindNPCStateful, huddleID: "h1"},
+	)
+	defer stop()
+
+	base := time.Now().UTC()
+	const utterances = 5
+	for i := 0; i < utterances; i++ {
+		// Distinct timestamps → distinct Spoke events → distinct warrants (no
+		// source-dedup collapse).
+		at := base.Add(time.Duration(i) * time.Second)
+		if _, err := w.Send(sim.Speak("player", "Still here, keeper?", at)); err != nil {
+			t.Fatalf("Speak #%d: %v", i, err)
+		}
+	}
+
+	bobWarrants := peekWarrants(t, w, "bob")
+	if len(bobWarrants) != utterances {
+		t.Fatalf("bob warrants after %d PC utterances = %d, want %d (breaker must not suppress the player)", utterances, len(bobWarrants), utterances)
+	}
+	for i, m := range bobWarrants {
+		if m.Kind() != sim.WarrantKindPCSpoke {
+			t.Errorf("warrant[%d] Kind = %q, want pc_spoke", i, m.Kind())
+		}
 	}
 }
 

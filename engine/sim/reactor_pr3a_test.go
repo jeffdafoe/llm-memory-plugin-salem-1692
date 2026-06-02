@@ -523,6 +523,56 @@ func TestEvaluateReactors_NeedInterruptsBreakAndStamps(t *testing.T) {
 	})
 }
 
+// TestEvaluateReactors_PCSpeechInterruptsBreakAndStamps is the ZBBS-HOME-377
+// emit-path counterpart of the need case above: an actor on a still-running
+// scheduled break with a due PC-speech warrant has the break actually ENDED
+// (endBreak) when the tick emits — so the keeper a player is addressing leaves
+// rest and answers, not merely passes the eligibility gate. The unit tests
+// (reactor_test.go) cover the gate; this pins the state mutation at the
+// chokepoint (code_review #2 — the highest-value addition).
+func TestEvaluateReactors_PCSpeechInterruptsBreakAndStamps(t *testing.T) {
+	w, cancel, _ := buildPR3aWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+	future := now.Add(time.Hour)
+
+	// Put alice on a scheduled break that still has time to run.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := world.Actors["alice"]
+		a.State = sim.StateResting
+		a.BreakUntil = &future
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed break: %v", err)
+	}
+	// A due PC-speech warrant — a player addressing alice in person.
+	seedDueWarrant(t, w, "alice", []sim.WarrantMeta{
+		{Reason: sim.PCSpeechWarrantReason{SpeechID: 1, Speaker: "player"}},
+	}, now)
+	emitted := subscribeReactorTicks(t, w)
+
+	if _, err := w.Send(sim.EvaluateReactors(now)); err != nil {
+		t.Fatalf("EvaluateReactors: %v", err)
+	}
+	if len(*emitted) != 1 {
+		t.Fatalf("PC-speech warrant on a break should fire a tick; emit count = %d, want 1", len(*emitted))
+	}
+	inspectActor(t, w, "alice", func(a *sim.Actor) {
+		if !a.TickInFlight {
+			t.Error("TickInFlight = false, want true (tick emitted)")
+		}
+		if a.State == sim.StateResting {
+			t.Error("State still StateResting; endBreak should have reset it to idle")
+		}
+		if a.BreakUntil != nil {
+			t.Errorf("BreakUntil = %v, want nil (break ended on PC-speech interrupt)", a.BreakUntil)
+		}
+		if a.LastTickedAt == nil || !a.LastTickedAt.Equal(now) {
+			t.Errorf("LastTickedAt = %v, want %v (stamped at emit)", a.LastTickedAt, now)
+		}
+	})
+}
+
 // ---- in-flight key recording at emit ----------------------------------
 
 // TestEvaluateReactors_RecordsInFlightSourceKeys covers that the consumed
