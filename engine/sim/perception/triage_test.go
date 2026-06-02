@@ -22,13 +22,13 @@ func TestRender_TriageInstructionAlwaysPresent(t *testing.T) {
 				{Reason: sim.ArrivalWarrantReason{}, TriggerActorID: "x"},
 			},
 		}
-		if got := Render(p, DefaultRenderConfig()).Text; !strings.Contains(got, triageMarker) {
+		if got := combinedPrompt(Render(p, DefaultRenderConfig())); !strings.Contains(got, triageMarker) {
 			t.Errorf("triage line missing from rich payload:\n%s", got)
 		}
 	})
 
 	t.Run("empty payload (routine check-in)", func(t *testing.T) {
-		got := Render(Payload{ActorID: "moses"}, DefaultRenderConfig()).Text
+		got := combinedPrompt(Render(Payload{ActorID: "moses"}, DefaultRenderConfig()))
 		if !strings.Contains(got, triageMarker) {
 			t.Errorf("triage line missing from empty payload:\n%s", got)
 		}
@@ -46,7 +46,7 @@ func TestRender_TriageInstructionIsLast(t *testing.T) {
 			speechWarrant(1, "s1", "bob", "good morrow"),
 		},
 	}
-	got := Render(p, DefaultRenderConfig()).Text
+	got := combinedPrompt(Render(p, DefaultRenderConfig()))
 	triageIdx := strings.Index(got, triageMarker)
 	warrantIdx := strings.Index(got, "What just happened")
 	if triageIdx < 0 || warrantIdx < 0 {
@@ -72,7 +72,7 @@ func TestRender_RestFirstSteer_PeakFatigue(t *testing.T) {
 				Needs: map[sim.NeedKey]int{"tiredness": sim.NeedMax, "hunger": sim.NeedMax},
 			},
 		}
-		if got := Render(p, DefaultRenderConfig()).Text; !strings.Contains(got, restFirstMarker) {
+		if got := combinedPrompt(Render(p, DefaultRenderConfig())); !strings.Contains(got, restFirstMarker) {
 			t.Errorf("expected rest-first steer when exhausted + starving:\n%s", got)
 		}
 	})
@@ -85,7 +85,7 @@ func TestRender_RestFirstSteer_PeakFatigue(t *testing.T) {
 				Needs: map[sim.NeedKey]int{"tiredness": sim.NeedMax, "hunger": 0, "thirst": 0},
 			},
 		}
-		if got := Render(p, DefaultRenderConfig()).Text; strings.Contains(got, restFirstMarker) {
+		if got := combinedPrompt(Render(p, DefaultRenderConfig())); strings.Contains(got, restFirstMarker) {
 			t.Errorf("rest-first steer must not fire without a competing pressing need:\n%s", got)
 		}
 	})
@@ -98,7 +98,7 @@ func TestRender_RestFirstSteer_PeakFatigue(t *testing.T) {
 				Needs: map[sim.NeedKey]int{"tiredness": 12, "hunger": sim.NeedMax},
 			},
 		}
-		if got := Render(p, DefaultRenderConfig()).Text; strings.Contains(got, restFirstMarker) {
+		if got := combinedPrompt(Render(p, DefaultRenderConfig())); strings.Contains(got, restFirstMarker) {
 			t.Errorf("rest-first steer must not fire below peak fatigue:\n%s", got)
 		}
 	})

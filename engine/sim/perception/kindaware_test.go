@@ -249,13 +249,13 @@ func TestRender_WhoYouAreSectionForShared(t *testing.T) {
 	snap := &sim.Snapshot{Actors: map[sim.ActorID]*sim.ActorSnapshot{"hannah": a}}
 
 	rendered := Render(Build(snap, "hannah", nil), DefaultRenderConfig())
-	if !strings.Contains(rendered.Text, "## Who you are") {
+	if !strings.Contains(combinedPrompt(rendered), "## Who you are") {
 		t.Error("missing '## Who you are' section")
 	}
-	if !strings.Contains(rendered.Text, "You are Hannah.") {
+	if !strings.Contains(combinedPrompt(rendered), "You are Hannah.") {
 		t.Error("missing SeedText in rendered prompt")
 	}
-	if !strings.Contains(rendered.Text, "Currently anxious about the storm.") {
+	if !strings.Contains(combinedPrompt(rendered), "Currently anxious about the storm.") {
 		t.Error("missing EvolvingSummary in rendered prompt")
 	}
 }
@@ -267,10 +267,10 @@ func TestRender_WhoYouAreOmittedForStateful(t *testing.T) {
 	snap := &sim.Snapshot{Actors: map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": a}}
 
 	rendered := Render(Build(snap, "ezekiel", nil), DefaultRenderConfig())
-	if strings.Contains(rendered.Text, "## Who you are") {
+	if strings.Contains(combinedPrompt(rendered), "## Who you are") {
 		t.Error("'## Who you are' should not appear for stateful actor")
 	}
-	if strings.Contains(rendered.Text, "should not appear") {
+	if strings.Contains(combinedPrompt(rendered), "should not appear") {
 		t.Error("stateful actor's NarrativeState leaked into prompt")
 	}
 }
@@ -296,16 +296,16 @@ func TestRender_WhatYouRememberSection(t *testing.T) {
 	}
 
 	rendered := Render(Build(snap, "hannah", nil), DefaultRenderConfig())
-	if !strings.Contains(rendered.Text, "## What you remember of those here") {
+	if !strings.Contains(combinedPrompt(rendered), "## What you remember of those here") {
 		t.Error("missing 'What you remember' section")
 	}
-	if !strings.Contains(rendered.Text, "Ezekiel Crane:") {
+	if !strings.Contains(combinedPrompt(rendered), "Ezekiel Crane:") {
 		t.Error("missing peer name in 'What you remember'")
 	}
-	if !strings.Contains(rendered.Text, "Often buys ale.") {
+	if !strings.Contains(combinedPrompt(rendered), "Often buys ale.") {
 		t.Error("missing summary in 'What you remember'")
 	}
-	if !strings.Contains(rendered.Text, "[paid_by] Paid 4 coins for ale.") {
+	if !strings.Contains(combinedPrompt(rendered), "[paid_by] Paid 4 coins for ale.") {
 		t.Error("missing salient fact in 'What you remember'")
 	}
 }
@@ -327,13 +327,13 @@ func TestRender_AcquaintanceGatesNameInSurroundings(t *testing.T) {
 	}
 
 	rendered := Render(Build(snap, "hannah", nil), DefaultRenderConfig())
-	if !strings.Contains(rendered.Text, "Ezekiel Crane") {
+	if !strings.Contains(combinedPrompt(rendered), "Ezekiel Crane") {
 		t.Error("acquainted peer should be named")
 	}
-	if strings.Contains(rendered.Text, "John Doe") {
+	if strings.Contains(combinedPrompt(rendered), "John Doe") {
 		t.Error("unacquainted peer should NOT be named; got John Doe in prompt")
 	}
-	if !strings.Contains(rendered.Text, "the farmer") {
+	if !strings.Contains(combinedPrompt(rendered), "the farmer") {
 		t.Error("unacquainted peer should be rendered as 'the <role>'")
 	}
 }
@@ -351,10 +351,10 @@ func TestRender_AcquaintanceUnknownRoleFallsBackToStranger(t *testing.T) {
 	}
 
 	rendered := Render(Build(snap, "hannah", nil), DefaultRenderConfig())
-	if !strings.Contains(rendered.Text, "a stranger") {
+	if !strings.Contains(combinedPrompt(rendered), "a stranger") {
 		t.Error("peer with no role + unacquainted should render as 'a stranger'")
 	}
-	if strings.Contains(rendered.Text, "Anon") {
+	if strings.Contains(combinedPrompt(rendered), "Anon") {
 		t.Error("unacquainted peer's DisplayName should not leak")
 	}
 }

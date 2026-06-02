@@ -8,6 +8,19 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
 
+// combinedPrompt returns the durable turn + the ephemeral current-tick context
+// as the model sees them on the current turn. The lean-history split
+// (ZBBS-WORK-364) routes affordances, identity, the "Since you got here"
+// baseline, pay-offers, and the act-now coda to EphemeralText; .Text is now
+// just the durable felt-state (## You) + the "what just happened" events. Tests
+// that assert on a moved section use this.
+func combinedPrompt(r RenderedPrompt) string {
+	if r.EphemeralText == "" {
+		return r.Text
+	}
+	return r.Text + "\n\n" + r.EphemeralText
+}
+
 func speechWarrant(eventID sim.EventID, scene sim.SceneID, speaker sim.ActorID, excerpt string) sim.WarrantMeta {
 	return sim.WarrantMeta{
 		TriggerActorID: speaker,
@@ -386,7 +399,7 @@ func TestRender_MissingBaseline_NeverClaimsNoChange(t *testing.T) {
 			Baseline: status,
 		}
 		out := Render(p, DefaultRenderConfig())
-		lower := strings.ToLower(out.Text)
+		lower := strings.ToLower(combinedPrompt(out))
 		if strings.Contains(lower, "no observable change") || strings.Contains(lower, "nothing about your situation has changed") {
 			t.Errorf("status %v: prompt must not claim no-change without a baseline:\n%s", status, out.Text)
 		}
@@ -403,8 +416,48 @@ func TestRender_BaselinePresentNoChange_SaysSo(t *testing.T) {
 		Baseline: BaselinePresent,
 	}
 	out := Render(p, DefaultRenderConfig())
-	if !strings.Contains(out.Text, "may be repeating yourself") {
+	if !strings.Contains(combinedPrompt(out), "may be repeating yourself") {
 		t.Error("BaselinePresent with AnyChange=false should surface the loop-detection signal")
+	}
+}
+
+// --- lean-history durable/ephemeral split --------------------------------
+
+// TestRender_DurableEphemeralSplit pins the lean-history split (ZBBS-WORK-364):
+// the felt-state (## You) and the "what just happened" events land in the
+// durable Text (persisted + replayed as history), while the act-now coda (and
+// the rest of the per-tick furniture) lands in EphemeralText (attached to the
+// current turn, never persisted). A future render edit that put furniture back
+// in Text — or events into Ephemeral — would re-introduce the history bloat
+// this split removes, so both directions are guarded.
+func TestRender_DurableEphemeralSplit(t *testing.T) {
+	p := Payload{
+		ActorID:           "moses",
+		Actor:             ActorView{State: sim.StateIdle, Needs: map[sim.NeedKey]int{"hunger": sim.NeedMax}},
+		Warrants:          []sim.WarrantMeta{speechWarrant(1, "s1", "bob", "good morrow")},
+		WarrantActorNames: map[sim.ActorID]string{"bob": "bob"},
+	}
+	out := Render(p, DefaultRenderConfig())
+
+	// Durable carries the felt-state + the events.
+	if !strings.Contains(out.Text, "## You") {
+		t.Errorf("durable Text must carry the ## You felt-state, got:\n%s", out.Text)
+	}
+	if !strings.Contains(out.Text, "## What just happened") || !strings.Contains(out.Text, "good morrow") {
+		t.Errorf("durable Text must carry the what-just-happened events, got:\n%s", out.Text)
+	}
+	// ...and NOT the act-now coda (a per-tick instruction, not memory).
+	if strings.Contains(out.Text, triageMarker) {
+		t.Errorf("durable Text must NOT carry the act-now coda (it would persist into history), got:\n%s", out.Text)
+	}
+
+	// Ephemeral carries the act-now coda...
+	if !strings.Contains(out.EphemeralText, triageMarker) {
+		t.Errorf("ephemeral must carry the act-now coda, got:\n%s", out.EphemeralText)
+	}
+	// ...and NOT the events (durable memory, not per-tick furniture).
+	if strings.Contains(out.EphemeralText, "## What just happened") {
+		t.Errorf("ephemeral must NOT carry the what-just-happened events, got:\n%s", out.EphemeralText)
 	}
 }
 

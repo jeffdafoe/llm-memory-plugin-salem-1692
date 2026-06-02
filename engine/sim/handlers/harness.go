@@ -262,7 +262,7 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 			At:        h.clock().UTC(),
 			ActorID:   job.actorID,
 			AttemptID: job.attemptID,
-			Prompt:    rendered.Text,
+			Prompt:    fullPerceptionPrompt(rendered),
 		})
 	}
 	// Render-time drops are the "consumed but not addressed" set the
@@ -320,10 +320,11 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 		}
 
 		resp, err := h.client.Complete(ctx, llm.Request{
-			Model:    model,
-			SceneID:  sceneID,
-			Messages: transcript,
-			Tools:    tools,
+			Model:            model,
+			SceneID:          sceneID,
+			Messages:         transcript,
+			Tools:            tools,
+			EphemeralContext: rendered.EphemeralText,
 		})
 		if err != nil {
 			cls := llm.Classify(err)
@@ -581,6 +582,18 @@ func (h *Harness) dispatch(ctx context.Context, w *sim.World, job tickJob, vc *V
 }
 
 // --- helpers --------------------------------------------------------------
+
+// fullPerceptionPrompt joins the durable turn and the ephemeral current-tick
+// context into the single prompt the model effectively saw, for the umbilical
+// debug surface (ZBBS-WORK-364). The two travel separately on the wire (durable
+// = persisted message; ephemeral = /chat/send ephemeral_context attached to the
+// current turn), but the operator wants to read the whole perception.
+func fullPerceptionPrompt(r perception.RenderedPrompt) string {
+	if r.EphemeralText == "" {
+		return r.Text
+	}
+	return r.Text + "\n\n" + r.EphemeralText
+}
 
 // failBeforeRender stages a "couldn't even render perception" exit:
 // nothing addressed, the whole consumed batch carries forward.
