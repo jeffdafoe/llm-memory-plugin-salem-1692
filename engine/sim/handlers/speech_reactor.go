@@ -18,11 +18,15 @@ import (
 //
 // Warrant policy choices (locked at the PR A design walkthrough):
 //
-//   - Always NPCSpeechWarrantReason. PR A's speak handler is NPC-only —
-//     PCs commit speech through a different path (the existing
-//     /api/village/pc/speak endpoint, not yet ported). When PC speech
-//     ports, the cutover will route PC commits through a different
-//     event/subscriber that mints PCSpeechWarrantReason instead.
+//   - Reason kind follows the speaker (ZBBS-HOME-377). An NPC speaker
+//     mints NPCSpeechWarrantReason; a PC speaker (the player, now routed
+//     through sim.Speak via the colocated huddle since ZBBS-HOME-358)
+//     mints PCSpeechWarrantReason. The split matters downstream:
+//     actorCanReactNow lets a PC-speech warrant interrupt a listener's
+//     break (a player addressing you in person outranks your nap) while
+//     NPC-speech stays gated, and a PC speaker bypasses the heard-speech
+//     circuit breaker (the player is never damped as a chatter loop). The
+//     mid-walk gate still applies to all speakers (see the loop).
 //   - Force: false. v2's MinReactorTickGap default is 5s, 60x looser
 //     than v1's 5-minute floor that motivated v1's force=true. Force is
 //     reserved for the Admin warrant kind.
@@ -50,6 +54,17 @@ func handleSpokeWarrants(w *sim.World, evt sim.Event) {
 	}
 	now := time.Now().UTC()
 	excerpt := truncateRunes(spoke.Text, sim.MaxSalientFactTextLen)
+	// ZBBS-HOME-377: is the speaker a PC (the player)? A player's words are a
+	// deliberate, in-person address — they must reach recipients even when a
+	// recipient is on a break (PCSpeechWarrantReason interrupts a break in
+	// actorCanReactNow) and must not be damped by the NPC<->NPC loop gates (the
+	// mid-walk skip and the heard-speech circuit breaker exist to stop NPC
+	// chatter ping-pong, not to silence the player). NPC speech keeps both gates
+	// and stamps the parallel NPCSpeechWarrantReason.
+	speakerIsPC := false
+	if sp, ok := w.Actors[spoke.SpeakerID]; ok && sp.Kind == sim.KindPC {
+		speakerIsPC = true
+	}
 	for _, peerID := range spoke.RecipientIDs {
 		if peerID == spoke.SpeakerID {
 			// Defensive — sim.Speak filters speaker out of RecipientIDs.
@@ -67,7 +82,10 @@ func handleSpokeWarrants(w *sim.World, evt sim.Event) {
 		// exchange isn't engaging with it, and once it stops the next utterance
 		// warrants it normally. Stationary listeners are unaffected, so
 		// discussion at a stall or in the tavern flows at full speed — the
-		// motion gate is deliberately the only thing this suppresses.
+		// motion gate is deliberately the only thing this suppresses. Applies to
+		// PC speech too (ZBBS-HOME-377): a player can't reach an NPC mid-stride
+		// either, since the warranted tick would just fail the same way — the
+		// listeners a player actually talks to are stationary.
 		if peer.MoveIntent != nil {
 			continue
 		}
@@ -81,22 +99,37 @@ func handleSpokeWarrants(w *sim.World, evt sim.Event) {
 		// stationary-listener half HOME-330 left open (it gated only mid-walk
 		// listeners). Resets when the listener speaks into the huddle (sim.Speak)
 		// or after the recovery window. See engine/sim/heard_speech_circuit.go.
-		if peer.NoteHeardSpeech(spoke.SpeakerID, now) {
+		//
+		// ZBBS-HOME-377: NPC speakers only. A PC's address must never be damped
+		// as a chatter loop, and PC utterances must not count toward the per-pair
+		// breaker — so a PC speaker skips it entirely (neither checked nor
+		// recorded).
+		if !speakerIsPC && peer.NoteHeardSpeech(spoke.SpeakerID, now) {
 			continue
+		}
+		var reason sim.WarrantReason
+		if speakerIsPC {
+			reason = sim.PCSpeechWarrantReason{
+				SpeechID: sim.SpeechID(spoke.EventID()),
+				Speaker:  spoke.SpeakerID,
+				Excerpt:  excerpt,
+			}
+		} else {
+			reason = sim.NPCSpeechWarrantReason{
+				SpeechID: sim.SpeechID(spoke.EventID()),
+				Speaker:  spoke.SpeakerID,
+				Excerpt:  excerpt,
+			}
 		}
 		meta := sim.WarrantMeta{
 			TriggerActorID: spoke.SpeakerID,
 			Force:          false,
-			Reason: sim.NPCSpeechWarrantReason{
-				SpeechID: sim.SpeechID(spoke.EventID()),
-				Speaker:  spoke.SpeakerID,
-				Excerpt:  excerpt,
-			},
-			SourceEventID: spoke.EventID(),
-			RootEventID:   spoke.RootEventID(),
-			SourceActorID: spoke.SpeakerID,
-			HuddleID:      spoke.HuddleID,
-			OccurredAt:    spoke.At,
+			Reason:         reason,
+			SourceEventID:  spoke.EventID(),
+			RootEventID:    spoke.RootEventID(),
+			SourceActorID:  spoke.SpeakerID,
+			HuddleID:       spoke.HuddleID,
+			OccurredAt:     spoke.At,
 		}
 		// StampWarrant returns an error only on caller bugs (nil Reason,
 		// unknown actor). Both are pre-conditions we just satisfied:

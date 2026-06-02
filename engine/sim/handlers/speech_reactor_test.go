@@ -299,6 +299,74 @@ func TestSpeechReactor_ClearedMoveIntentReWarrants(t *testing.T) {
 	}
 }
 
+// --- TestSpeechReactor_PCSpeakerStampsPCSpeechReason ------------------
+// ZBBS-HOME-377: when the speaker is a PC (the player), the subscriber stamps
+// PCSpeechWarrantReason (Kind WarrantKindPCSpoke) instead of NPCSpeechWarrantReason.
+// The kind split is what lets actorCanReactNow treat a player's address as a
+// break-interrupter while NPC<->NPC chatter stays gated behind the break.
+func TestSpeechReactor_PCSpeakerStampsPCSpeechReason(t *testing.T) {
+	w, stop := buildSpeechReactorWorld(t,
+		speakActor{id: "player", displayName: "Jefferey", kind: sim.KindPC, huddleID: "h1"},
+		speakActor{id: "bob", displayName: "Bob", kind: sim.KindNPCStateful, huddleID: "h1"},
+	)
+	defer stop()
+
+	if _, err := w.Send(sim.Speak("player", "John, what do you have available?", time.Now().UTC())); err != nil {
+		t.Fatalf("Speak: %v", err)
+	}
+
+	bobWarrants := peekWarrants(t, w, "bob")
+	if len(bobWarrants) != 1 {
+		t.Fatalf("bob warrants = %d, want 1", len(bobWarrants))
+	}
+	m := bobWarrants[0]
+	if m.Kind() != sim.WarrantKindPCSpoke {
+		t.Errorf("Kind = %q, want pc_spoke", m.Kind())
+	}
+	reason, ok := m.Reason.(sim.PCSpeechWarrantReason)
+	if !ok {
+		t.Fatalf("Reason concrete type = %T, want PCSpeechWarrantReason", m.Reason)
+	}
+	if reason.Speaker != "player" {
+		t.Errorf("Reason.Speaker = %q, want player", reason.Speaker)
+	}
+	if reason.Excerpt != "John, what do you have available?" {
+		t.Errorf("Reason.Excerpt = %q", reason.Excerpt)
+	}
+}
+
+// --- TestSpeechReactor_PCSpeakerStillSkipsMovingListener --------------
+// ZBBS-HOME-377: the PC carve-out is for the heard-speech circuit breaker only;
+// the HOME-330 mid-walk gate still applies to a PC speaker, because a walking
+// NPC can't act on the warrant either way (the speak handler would reject it).
+// A stationary peer is warranted as normal.
+func TestSpeechReactor_PCSpeakerStillSkipsMovingListener(t *testing.T) {
+	w, stop := buildSpeechReactorWorld(t,
+		speakActor{id: "player", displayName: "Jefferey", kind: sim.KindPC, huddleID: "h1"},
+		speakActor{id: "walker", displayName: "Walker", kind: sim.KindNPCShared, huddleID: "h1"},
+		speakActor{id: "stander", displayName: "Stander", kind: sim.KindNPCShared, huddleID: "h1"},
+	)
+	defer stop()
+
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["walker"].MoveIntent = &sim.MoveIntent{}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed MoveIntent: %v", err)
+	}
+
+	if _, err := w.Send(sim.Speak("player", "Hello to you both.", time.Now().UTC())); err != nil {
+		t.Fatalf("Speak: %v", err)
+	}
+
+	if got := peekWarrants(t, w, "walker"); len(got) != 0 {
+		t.Errorf("moving listener warrants (PC speaker) = %d, want 0 (motion gate still applies)", len(got))
+	}
+	if got := peekWarrants(t, w, "stander"); len(got) != 1 {
+		t.Errorf("stationary listener warrants (PC speaker) = %d, want 1", len(got))
+	}
+}
+
 // --- TestRegisterSpeechHandlers_NilWorldPanics ------------------------
 func TestRegisterSpeechHandlers_NilWorldPanics(t *testing.T) {
 	defer func() {

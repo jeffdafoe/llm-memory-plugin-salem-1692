@@ -844,18 +844,25 @@ func actorCanReactNow(w *World, a *Actor, now time.Time) (eligible bool, stale b
 		return false, false
 	}
 	// A scheduled break (StateResting / BreakUntil) shelves the tick too — EXCEPT
-	// a red-tier need warrant (ZBBS-HOME-329 #3) or an operator nudge — a bare
-	// admin force-tick or a directive impulse (#4) — cuts the break short.
-	// Without this, an actor that beds down for a break while already hungry/
-	// thirsty starves locked in rest: the reactor defers its need warrant for the
-	// whole break and nothing wakes it, and even an operator /nudge couldn't
-	// rescue it (this gate runs before the pacing Force-bypass). The interrupting
-	// tick's emit path (EvaluateReactors) calls endBreak so the actor actually
-	// leaves rest. We match operator-nudge KINDS rather than the broad Force flag
-	// so a future non-operator forced warrant can't silently gain the power to
-	// wake resters. Sleep (above) yields to neither — only a break is interruptible.
+	// a red-tier need warrant (ZBBS-HOME-329 #3), an operator nudge — a bare
+	// admin force-tick or a directive impulse (#4) — or a PC speaking directly to
+	// the actor (ZBBS-HOME-377): any of these cuts the break short. The PC case
+	// is the conversational counterpart of the need case — a player addressing an
+	// NPC in person outranks that NPC's nap, so the keeper a customer is talking
+	// to actually answers instead of resting through the conversation. Without
+	// this, an actor that beds down for a break while already hungry/thirsty (or
+	// while a player is trying to talk to it) sits locked in rest: the reactor
+	// defers the warrant for the whole break and nothing wakes it, and even an
+	// operator /nudge couldn't rescue it (this gate runs before the pacing
+	// Force-bypass). The interrupting tick's emit path (EvaluateReactors) calls
+	// endBreak so the actor actually leaves rest. We match specific warrant KINDS
+	// (need / operator-nudge / PC-speech) rather than the broad Force flag so a
+	// future non-operator forced warrant can't silently gain the power to wake
+	// resters — and so NPC-to-NPC speech (NPCSpeechWarrantReason) stays gated,
+	// keeping village chatter from yanking a rester out. Sleep (above) yields to
+	// none of these — only a break is interruptible.
 	onBreak := a.State == StateResting || (a.BreakUntil != nil && a.BreakUntil.After(now))
-	if onBreak && !hasNeedWarrant(a.Warrants) && !hasOperatorNudgeWarrant(a.Warrants) {
+	if onBreak && !hasNeedWarrant(a.Warrants) && !hasOperatorNudgeWarrant(a.Warrants) && !hasPCSpeechWarrant(a.Warrants) {
 		return false, false
 	}
 	if businessownerEngineSpeechRecent(w, a.ID, now) {

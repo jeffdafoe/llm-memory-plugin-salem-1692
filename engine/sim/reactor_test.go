@@ -413,6 +413,75 @@ func TestActorCanReactNow_SleepingNotInterruptedByNeed(t *testing.T) {
 	})
 }
 
+// TestActorCanReactNow_RestingInterruptedByPCSpeech: ZBBS-HOME-377 — a player
+// speaking directly to a resting NPC breaks it out of the break the same way a
+// red need does, so the keeper a customer is talking to actually answers instead
+// of resting through the conversation. The break is ended on the emit path
+// (EvaluateReactors), not here.
+func TestActorCanReactNow_RestingInterruptedByPCSpeech(t *testing.T) {
+	w, cancel := buildReactorTestWorld(t)
+	defer cancel()
+	_, _ = w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			a := world.Actors["alice"]
+			a.State = sim.StateResting
+			a.Warrants = []sim.WarrantMeta{{Reason: sim.PCSpeechWarrantReason{SpeechID: 1, Speaker: "player"}}}
+			eligible, stale := sim.ActorCanReactNow(world, a)
+			if !eligible || stale {
+				t.Errorf("resting + PC-speech warrant: eligible=%v stale=%v; want true,false", eligible, stale)
+			}
+			return nil, nil
+		},
+	})
+}
+
+// TestActorCanReactNow_RestingNotInterruptedByNPCSpeech: the discrimination that
+// makes ZBBS-HOME-377 safe — an NPC's heard-speech does NOT wake a rester, so
+// the village's own chatter can't yank an on-break NPC out (only a PC address, a
+// red need, or an operator nudge can). Contrast RestingInterruptedByPCSpeech.
+func TestActorCanReactNow_RestingNotInterruptedByNPCSpeech(t *testing.T) {
+	w, cancel := buildReactorTestWorld(t)
+	defer cancel()
+	_, _ = w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			a := world.Actors["alice"]
+			a.State = sim.StateResting
+			a.Warrants = []sim.WarrantMeta{{Reason: sim.NPCSpeechWarrantReason{SpeechID: 1, Speaker: "bob"}}}
+			eligible, stale := sim.ActorCanReactNow(world, a)
+			if eligible {
+				t.Errorf("resting + NPC-speech warrant: eligible=true, want false (NPC chatter must not wake a rester)")
+			}
+			if stale {
+				t.Errorf("resting + NPC-speech warrant: stale=true, want false (warrant stays open)")
+			}
+			return nil, nil
+		},
+	})
+}
+
+// TestActorCanReactNow_SleepingNotInterruptedByPCSpeech: sleep stays sacrosanct —
+// even a player's direct address does NOT wake a sleeper (contrast a break,
+// above). ZBBS-HOME-377 only makes a break interruptible, never sleep.
+func TestActorCanReactNow_SleepingNotInterruptedByPCSpeech(t *testing.T) {
+	w, cancel := buildReactorTestWorld(t)
+	defer cancel()
+	_, _ = w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			a := world.Actors["alice"]
+			a.State = sim.StateSleeping
+			a.Warrants = []sim.WarrantMeta{{Reason: sim.PCSpeechWarrantReason{SpeechID: 1, Speaker: "player"}}}
+			eligible, stale := sim.ActorCanReactNow(world, a)
+			if eligible {
+				t.Errorf("sleeping + PC-speech warrant: eligible=true, want false (sleep sacrosanct)")
+			}
+			if stale {
+				t.Errorf("sleeping + PC-speech warrant: stale=true, want false (warrant stays open)")
+			}
+			return nil, nil
+		},
+	})
+}
+
 // TestActorCanReactNow_OtherStatesEligible — table-drives every other
 // macro-state to confirm the gate only fires on sleeping/resting.
 // Pinning the negative cases prevents an over-eager future addition
