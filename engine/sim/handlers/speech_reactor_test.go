@@ -2,6 +2,7 @@ package handlers_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -391,7 +392,9 @@ func TestSpeechReactor_PCSpeakerBypassesTrippedCircuitBreaker(t *testing.T) {
 			tripped = bob.NoteHeardSpeech("player", now)
 		}
 		if !tripped {
-			t.Error("precondition failed: breaker never tripped against player")
+			// Return the failure so the outer t.Fatalf aborts the test, rather
+			// than t.Error-ing from inside the command (which wouldn't abort).
+			return nil, fmt.Errorf("precondition failed: breaker never tripped against player")
 		}
 		return nil, nil
 	}}); err != nil {

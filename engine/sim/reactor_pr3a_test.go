@@ -537,19 +537,23 @@ func TestEvaluateReactors_PCSpeechInterruptsBreakAndStamps(t *testing.T) {
 	future := now.Add(time.Hour)
 
 	// Put alice on a scheduled break that still has time to run.
-	_, _ = w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		a := world.Actors["alice"]
 		a.State = sim.StateResting
 		a.BreakUntil = &future
 		return nil, nil
-	}})
+	}}); err != nil {
+		t.Fatalf("seed break: %v", err)
+	}
 	// A due PC-speech warrant — a player addressing alice in person.
 	seedDueWarrant(t, w, "alice", []sim.WarrantMeta{
 		{Reason: sim.PCSpeechWarrantReason{SpeechID: 1, Speaker: "player"}},
 	}, now)
 	emitted := subscribeReactorTicks(t, w)
 
-	_, _ = w.Send(sim.EvaluateReactors(now))
+	if _, err := w.Send(sim.EvaluateReactors(now)); err != nil {
+		t.Fatalf("EvaluateReactors: %v", err)
+	}
 	if len(*emitted) != 1 {
 		t.Fatalf("PC-speech warrant on a break should fire a tick; emit count = %d, want 1", len(*emitted))
 	}

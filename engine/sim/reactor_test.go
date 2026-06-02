@@ -414,7 +414,7 @@ func TestActorCanReactNow_SleepingNotInterruptedByNeed(t *testing.T) {
 }
 
 // TestActorCanReactNow_RestingInterruptedByPCSpeech: ZBBS-HOME-377 — a player
-// speaking directly to a resting NPC breaks it out of the break the same way a
+// speaking into a resting NPC's huddle breaks it out of the break the same way a
 // red need does, so the keeper a customer is talking to actually answers instead
 // of resting through the conversation. The break is ended on the emit path
 // (EvaluateReactors), not here.
