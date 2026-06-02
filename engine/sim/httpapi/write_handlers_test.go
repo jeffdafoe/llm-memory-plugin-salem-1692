@@ -324,17 +324,20 @@ func TestHandlePCSpeak_MissingToken(t *testing.T) {
 	}
 }
 
-func TestHandlePCSpeak_VocativeStaleRejected(t *testing.T) {
+func TestHandlePCSpeak_VocativeToNonPeerAllowed(t *testing.T) {
 	// pc-tester has no huddle, so the seeded NPC "Hannah" is a non-peer.
-	// Addressing her by name in vocative position trips sim.Speak's
-	// stale-addressee gate → 422 (a world-state rejection, not a 400).
+	// Pre-WORK-360 this tripped sim.Speak's vocative stale-addressee gate (422,
+	// the "no longer in your conversation" reject). WORK-360 exempts PCs from
+	// that gate so a player can call out to an NPC who isn't a current peer, so
+	// the speak is now accepted (200). Regression guard for the exemption.
 	w := seededWorld(t)
 	seedPC(t, w, "pc-tester", "tester", 10, 10)
 	srv := NewServer(w, okAuth{})
 
 	rec := post(t, srv, "/api/village/pc/speak", `{"text":"Hannah, are you there?"}`)
-	if rec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (PC exempt from vocative gate, WORK-360); body=%s",
+			rec.Code, rec.Body.String())
 	}
 }
 
