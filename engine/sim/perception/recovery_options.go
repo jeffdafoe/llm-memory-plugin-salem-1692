@@ -59,9 +59,20 @@ type RecoveryOption struct {
 	// home, remedy vendor's workplace). It is what the model passes to
 	// move_to(structure_id) to actually walk here — the tool rejects a bare
 	// name, so without this the rest cue is unactionable. Empty for the
-	// free-object "rest" kind, which is reached by object_visit, not move_to;
-	// rendered only when set, so a "rest" bullet carries no structure_id.
+	// free-object "rest" kind, which carries its handle in ObjectID instead.
 	StructureID sim.StructureID
+
+	// ObjectID is the move_to handle for the free-object "rest" kind (a shade
+	// tree / resting spot — a bare placement with no structure record). move_to
+	// accepts it on the same structure_id field: move_to(structure_id=<objID>)
+	// falls through to an object visit when the id resolves to a refresh-source
+	// VillageObject (ZBBS-HOME-359, move_to.go), and that arrival finalizes +
+	// recovers tiredness (ZBBS-HOME-325 + object-refresh-arrival). Rendered as
+	// "(structure_id: …)" exactly like the satiation free-source cue
+	// (SatiationFreeSource.ObjectID) so a distant rest spot is reachable by id —
+	// the by-NAME path is radius-limited and 404s a tree the actor can't
+	// currently see. Empty for the structure-backed kinds, which use StructureID.
+	ObjectID sim.VillageObjectID
 
 	// sortKey is the actor→option tile distance used to order bullets
 	// (nearest first). Unexported — never rendered. Inns have no reliable
@@ -210,6 +221,7 @@ func gatherFreeRestSpots(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) []Rec
 		distTiles := math.Sqrt(dx*dx + dy*dy)
 		out = append(out, RecoveryOption{
 			Kind:      "rest",
+			ObjectID:  obj.ID,
 			Label:     objectLabel(obj),
 			Magnitude: mag,
 			CostText:  "free",
@@ -438,16 +450,24 @@ func renderRecoveryOptions(b *strings.Builder, v *RecoveryOptionsView) {
 				fmt.Fprintf(b, " %s", o.Direction)
 			}
 		}
-		// The structure_id is what makes the cue actionable: move_to(structure_id)
-		// walks the actor here, and the tool rejects a bare name. Keyed on Kind,
-		// not "whatever field is set": only the structure-backed kinds advertise a
-		// move_to route, so a free-object "rest" spot (reached via object_visit)
-		// never renders one even if an id somehow leaked onto it. The non-empty
-		// guard is defensive — the gatherers always populate these three.
+		// The id is what makes the cue actionable: move_to(structure_id) walks the
+		// actor here, and the tool rejects a bare name. Keyed on Kind so each kind
+		// renders the right handle — the structure-backed kinds emit StructureID;
+		// the free-object "rest" kind emits ObjectID, which move_to accepts on the
+		// SAME structure_id field (it falls through to an object visit for a
+		// refresh-source object — ZBBS-HOME-359). The "rest" handle is load-bearing:
+		// without it the model falls back to the bare name, and the by-name path is
+		// radius-limited so a distant rest spot 404s. Mirrors the satiation
+		// free-source cue. Non-empty guards are defensive — the gatherers populate
+		// the handle for every option of these kinds.
 		switch o.Kind {
 		case "inn", "home", "remedy":
 			if o.StructureID != "" {
 				fmt.Fprintf(b, " (structure_id: %s)", o.StructureID)
+			}
+		case "rest":
+			if o.ObjectID != "" {
+				fmt.Fprintf(b, " (structure_id: %s)", o.ObjectID)
 			}
 		}
 		b.WriteString("\n")
