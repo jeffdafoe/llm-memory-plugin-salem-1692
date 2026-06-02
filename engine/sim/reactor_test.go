@@ -516,6 +516,101 @@ func TestEvaluateReactors_SleepingActorWarrantStaysOpen(t *testing.T) {
 	})
 }
 
+// TestEvaluateReactors_ShelvedStaleCycleEvicted — ZBBS-WORK-361. A shelved
+// (sleeping) actor whose warrant cycle began longer ago than MaxWarrantAge
+// has the cycle dropped instead of pushed forward, so it wakes to current
+// state rather than a transcript of everything it slept through. Sleep stays
+// sacrosanct — no tick is emitted; the cycle is simply expired.
+func TestEvaluateReactors_ShelvedStaleCycleEvicted(t *testing.T) {
+	w, cancel := buildReactorTestWorld(t)
+	defer cancel()
+
+	now := time.Now().UTC()
+	due := now.Add(-time.Millisecond)
+
+	var emitted int
+	var mu sync.Mutex
+	_, _ = w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			world.Settings.MaxWarrantAge = 10 * time.Millisecond
+			world.Subscribe(sim.SubscriberFunc(func(_ *sim.World, evt sim.Event) {
+				if _, ok := evt.(*sim.ReactorTickDue); ok {
+					mu.Lock()
+					emitted++
+					mu.Unlock()
+				}
+			}))
+			a := world.Actors["alice"]
+			a.State = sim.StateSleeping
+			stale := now.Add(-time.Second) // far older than MaxWarrantAge
+			a.WarrantedSince = &stale
+			a.WarrantDueAt = &due
+			a.Warrants = []sim.WarrantMeta{
+				{TriggerActorID: "bob", Reason: sim.BasicWarrantReason{K: sim.WarrantKindHuddlePeerJoined}},
+			}
+			return nil, nil
+		},
+	})
+
+	_, _ = w.Send(sim.EvaluateReactors(now))
+
+	mu.Lock()
+	if emitted != 0 {
+		mu.Unlock()
+		t.Fatalf("ReactorTickDue events = %d, want 0 (sleeping actor must not tick)", emitted)
+	}
+	mu.Unlock()
+
+	inspectActor(t, w, "alice", func(a *sim.Actor) {
+		if a.WarrantedSince != nil {
+			t.Errorf("WarrantedSince = %v, want nil (stale cycle evicted)", a.WarrantedSince)
+		}
+		if len(a.Warrants) != 0 {
+			t.Errorf("Warrants len = %d, want 0 (stale cycle evicted)", len(a.Warrants))
+		}
+		if a.TickInFlight {
+			t.Error("TickInFlight set; sleeping actor must not be marked mid-tick")
+		}
+	})
+}
+
+// TestEvaluateReactors_ShelvedStaleCycleForceExempt — ZBBS-WORK-361. A stale
+// cycle carrying a Force warrant (an operator nudge) is NOT evicted — the
+// operator's signal persists until the actor can act on it.
+func TestEvaluateReactors_ShelvedStaleCycleForceExempt(t *testing.T) {
+	w, cancel := buildReactorTestWorld(t)
+	defer cancel()
+
+	now := time.Now().UTC()
+	due := now.Add(-time.Millisecond)
+
+	_, _ = w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			world.Settings.MaxWarrantAge = 10 * time.Millisecond
+			a := world.Actors["alice"]
+			a.State = sim.StateSleeping
+			stale := now.Add(-time.Second)
+			a.WarrantedSince = &stale
+			a.WarrantDueAt = &due
+			a.Warrants = []sim.WarrantMeta{
+				{TriggerActorID: "bob", Force: true, Reason: sim.BasicWarrantReason{K: sim.WarrantKindAdmin}},
+			}
+			return nil, nil
+		},
+	})
+
+	_, _ = w.Send(sim.EvaluateReactors(now))
+
+	inspectActor(t, w, "alice", func(a *sim.Actor) {
+		if a.WarrantedSince == nil {
+			t.Error("WarrantedSince cleared; a Force warrant must survive TTL eviction")
+		}
+		if len(a.Warrants) != 1 {
+			t.Errorf("Warrants len = %d, want 1 (Force warrant preserved)", len(a.Warrants))
+		}
+	})
+}
+
 // TestEvaluateReactors_WakingActorFiresWarrant — state-transition
 // liveness. A sleeping actor's warrant survives the gate; flipping the
 // actor's State back out of sleeping makes the next EvaluateReactors

@@ -655,6 +655,34 @@ func clearWarrant(a *Actor) {
 	a.Warrants = nil
 }
 
+// warrantCycleStale reports whether the actor's open warrant cycle began
+// longer ago than MaxWarrantAge. The evaluator uses it to expire the queue
+// of a shelved actor (asleep, or on break with no interrupting warrant) that
+// is therefore never consuming its warrants — without this a gated actor
+// banks signals up to MaxWarrantsPerActor and wakes to a stale transcript
+// instead of current state (ZBBS-WORK-361).
+//
+// Cycle-level (keyed on the always-set WarrantedSince) rather than
+// per-warrant: an awake actor consumes its whole cycle within seconds of
+// WarrantDueAt, so it never accumulates a mixed-age pile — the shelved actor
+// is the only real staleness site, and there every warrant in the cycle is
+// equally unaddressable. WarrantedSince is reliable for every warrant kind,
+// whereas the per-warrant WarrantMeta.OccurredAt is zero for the lifecycle
+// (huddle-churn) stamps that are the bulk of the noise.
+//
+// Falls back to defaultMaxWarrantAge when the setting is unset / non-positive,
+// matching the parse-time posture in repo/pg/environment.go.
+func warrantCycleStale(a *Actor, now time.Time, s WorldSettings) bool {
+	if a == nil || a.WarrantedSince == nil {
+		return false
+	}
+	maxAge := s.MaxWarrantAge
+	if maxAge <= 0 {
+		maxAge = defaultMaxWarrantAge
+	}
+	return now.Sub(*a.WarrantedSince) > maxAge
+}
+
 // resetReactorStateOnLoad wipes ephemeral reactor state on LoadWorld so a
 // checkpoint with TickInFlight=true doesn't wedge the actor after restart
 // and stale rate-gate history doesn't delay fresh post-restart warrants.

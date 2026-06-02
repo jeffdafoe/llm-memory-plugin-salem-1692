@@ -408,12 +408,22 @@ func EvaluateReactors(now time.Time) Command {
 					continue
 				}
 				if !eligible {
-					// Temporarily unavailable (asleep, etc. — none of these
-					// land in PR 2 but the hook exists). Push WarrantDueAt
-					// out by a backoff so we don't reconsider this actor on
-					// every 250ms scan. The actor's caller-of-record (whatever
-					// subsystem set the unavailability) is responsible for
-					// clearing the warrant if it stays unavailable indefinitely.
+					// Shelved (asleep, or on break with no interrupting
+					// warrant). A shelved actor never consumes its warrants,
+					// so a cycle aged past MaxWarrantAge is stale — drop it
+					// so the actor wakes to current state rather than a
+					// transcript of everything it slept through
+					// (ZBBS-WORK-361). The freshest signals re-stamp a new
+					// cycle while the actor stays shelved, bounding the pile
+					// to ~MaxWarrantAge of accumulation. A Force warrant (an
+					// operator nudge) is exempt — it persists until the actor
+					// can act on it.
+					if !hasForcedWarrant(actor.Warrants) && warrantCycleStale(actor, now, w.Settings) {
+						clearWarrant(actor)
+						continue
+					}
+					// Otherwise push WarrantDueAt out by a backoff so we
+					// don't reconsider this actor on every 250ms scan.
 					next := now.Add(unavailableBackoff)
 					actor.WarrantDueAt = &next
 					continue
