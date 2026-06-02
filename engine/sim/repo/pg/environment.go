@@ -65,6 +65,13 @@ SELECT phase, last_transition_at, last_rotation_at, weather, atmosphere, last_ne
 // production seed).
 const loadSettingsSQL = `SELECT key, value FROM setting WHERE value IS NOT NULL`
 
+// upsertSettingSQL writes one kv setting row. Used by SaveMutableSettings for
+// the runtime-tunable subset only (NOT a full settings replace). value is text;
+// callers format floats/bools to the same string shape the loader parses.
+const upsertSettingSQL = `
+INSERT INTO setting (key, value) VALUES ($1, $2)
+ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`
+
 // upsertWorldStateSQL writes the singleton. Plain UPSERT — no gen
 // counter, the row is one-of-one by CHECK constraint.
 const upsertWorldStateSQL = `
@@ -449,6 +456,31 @@ func (r *EnvironmentRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, env sim.W
 		lastNeedsArg,         // $6 last_needs_tick_at (nullable)
 	); err != nil {
 		return fmt.Errorf("pg environment SaveSnapshot: upsert: %w", err)
+	}
+	return nil
+}
+
+// SaveMutableSettings upserts the runtime-tunable settings the admin config
+// write routes own (ZBBS-WORK-363) into the setting kv table, inside the
+// checkpoint Tx. ONLY these three keys are written — the rest of the setting
+// table is load-once, operator-tuned out of band, so a full settings replace
+// would clobber a direct DB edit with the startup-loaded value. Values are
+// stored as strings (the load path parses them via parseFloatSetting /
+// parseBoolSetting), so they're formatted to match: floats with the minimal
+// round-trippable form, bool as "true"/"false".
+func (r *EnvironmentRepo) SaveMutableSettings(ctx context.Context, tx sim.Tx, ms sim.MutableWorldSettings) error {
+	rows := [...]struct {
+		key string
+		val string
+	}{
+		{"world_zoom_min_admin", strconv.FormatFloat(ms.ZoomMinAdmin, 'f', -1, 64)},
+		{"world_zoom_min_regular", strconv.FormatFloat(ms.ZoomMinRegular, 'f', -1, 64)},
+		{"agent_ticks_paused", strconv.FormatBool(ms.AgentTicksPaused)},
+	}
+	for _, row := range rows {
+		if _, err := tx.Exec(ctx, upsertSettingSQL, row.key, row.val); err != nil {
+			return fmt.Errorf("pg environment SaveMutableSettings: upsert %s: %w", row.key, err)
+		}
 	}
 	return nil
 }

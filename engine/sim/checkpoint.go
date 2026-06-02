@@ -33,14 +33,28 @@ import (
 // the durable write can run off the world goroutine without racing world
 // mutations. Built by World.BuildCheckpointSnapshot on the world goroutine.
 type CheckpointSnapshot struct {
-	Actors         map[ActorID]*Actor
-	Structures     map[StructureID]*Structure
-	Huddles        map[HuddleID]*Huddle
-	Scenes         map[SceneID]*Scene
-	Orders         map[OrderID]*Order
-	VillageObjects map[VillageObjectID]*VillageObject
-	Environment    WorldEnvironment
-	Phase          Phase
+	Actors          map[ActorID]*Actor
+	Structures      map[StructureID]*Structure
+	Huddles         map[HuddleID]*Huddle
+	Scenes          map[SceneID]*Scene
+	Orders          map[OrderID]*Order
+	VillageObjects  map[VillageObjectID]*VillageObject
+	Environment     WorldEnvironment
+	Phase           Phase
+	MutableSettings MutableWorldSettings
+}
+
+// MutableWorldSettings is the runtime-tunable subset of WorldSettings the admin
+// config write routes mutate (ZBBS-WORK-363) — the ONLY settings the checkpoint
+// persists. The full settings table holds ~20 operator-tuned-out-of-band keys
+// that are load-once by design; writing the whole map back at every checkpoint
+// would clobber any direct DB edit with the startup-loaded value. So the
+// checkpoint carries (and SaveWorld upserts) only these three keys. Value type —
+// plain-copied into the CheckpointSnapshot, no clone needed.
+type MutableWorldSettings struct {
+	ZoomMinAdmin     float64
+	ZoomMinRegular   float64
+	AgentTicksPaused bool
 }
 
 // BuildCheckpointSnapshot deep-clones the seven checkpoint aggregates into an
@@ -63,6 +77,11 @@ func (w *World) BuildCheckpointSnapshot() *CheckpointSnapshot {
 		VillageObjects: make(map[VillageObjectID]*VillageObject, len(w.VillageObjects)),
 		Environment:    w.Environment,
 		Phase:          w.Phase,
+		MutableSettings: MutableWorldSettings{
+			ZoomMinAdmin:     w.Settings.ZoomMinAdmin,
+			ZoomMinRegular:   w.Settings.ZoomMinRegular,
+			AgentTicksPaused: w.Settings.AgentTicksPaused,
+		},
 	}
 	for id, a := range w.Actors {
 		cp.Actors[id] = CloneActor(a)

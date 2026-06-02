@@ -112,6 +112,18 @@ type Snapshot struct {
 	// on w.Settings. Plain int, copied at publish. 0 = restock disabled.
 	RestockReorderPct int
 
+	// ZoomMinAdmin / ZoomMinRegular mirror WorldSettings.ZoomMin* — the
+	// client-side camera zoom floors (admin vs regular user). Carried on the
+	// snapshot because the public GET /api/village/world read (handleWorld) is
+	// lock-free off the snapshot and every client reads its zoom floor from
+	// there; the admin config write routes mutate w.Settings on the world
+	// goroutine, so a republish surfaces a saved change. Floats, copied at
+	// publish. (The rest of the admin-tunable config — timezone, rotation time,
+	// agent-ticks — is NOT mirrored here: the admin-only GET /api/village/config
+	// read runs through the command channel and reads live w.Settings directly.)
+	ZoomMinAdmin   float64
+	ZoomMinRegular float64
+
 	// ItemKinds is an ALIASED reference to World.ItemKinds — the item→satisfies
 	// reference catalog loaded once at startup (LoadWorld) and never mutated
 	// afterward (ItemKindDef is documented read-only). Unlike the mutable
