@@ -602,6 +602,23 @@ func hasOperatorNudgeWarrant(list []WarrantMeta) bool {
 	return false
 }
 
+// hasPCSpeechWarrant reports whether any meta is a PC-speech warrant — a player
+// character speaking into this actor's huddle (this actor is a recipient of the
+// player's utterance, not necessarily a parsed vocative addressee; ZBBS-HOME-377).
+// actorCanReactNow uses it to let a player's in-person address interrupt a
+// scheduled break, the same posture as a red-tier need (never sleep). A player
+// talking to your group outranks your nap; an NPC's chatter does not — NPC-speech
+// warrants stay gated behind the break so the village's own conversations can't
+// yank a rester out.
+func hasPCSpeechWarrant(list []WarrantMeta) bool {
+	for _, m := range list {
+		if m.Reason != nil && m.Reason.Kind() == WarrantKindPCSpoke {
+			return true
+		}
+	}
+	return false
+}
+
 // hasForcedWarrant returns true if any meta in the list has Force=true.
 // Linear scan; the list is bounded by Settings.MaxWarrantsPerActor
 // (default 16) so this is cheap.
