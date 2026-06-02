@@ -683,6 +683,34 @@ func warrantCycleStale(a *Actor, now time.Time, s WorldSettings) bool {
 	return now.Sub(*a.WarrantedSince) > maxAge
 }
 
+// retainForcedWarrants prunes a stale warrant cycle down to only its Force
+// warrants (operator nudges, which must survive shelving) and re-anchors the
+// cycle clock to now, so the kept warrants get a fresh MaxWarrantAge window
+// instead of being re-pruned on the next scan. The caller has already
+// established the cycle is stale; this is the path taken when it ALSO holds at
+// least one Force warrant. Keeping the whole cycle just because one warrant is
+// forced would re-protect exactly the stale pile TTL eviction exists to drop
+// (ZBBS-WORK-361 code_review), so the non-Force warrants are dropped here while
+// the operator signal is preserved. Defensive: if no Force warrant actually
+// survives the filter, the cycle is cleared (matches the no-force path).
+func retainForcedWarrants(a *Actor, now time.Time, s WorldSettings) {
+	kept := make([]WarrantMeta, 0, len(a.Warrants))
+	for _, wm := range a.Warrants {
+		if wm.Force {
+			kept = append(kept, wm)
+		}
+	}
+	if len(kept) == 0 {
+		clearWarrant(a)
+		return
+	}
+	a.Warrants = kept
+	t := now
+	a.WarrantedSince = &t
+	due := now.Add(pickWarrantJitter(s, now))
+	a.WarrantDueAt = &due
+}
+
 // resetReactorStateOnLoad wipes ephemeral reactor state on LoadWorld so a
 // checkpoint with TickInFlight=true doesn't wedge the actor after restart
 // and stale rate-gate history doesn't delay fresh post-restart warrants.
