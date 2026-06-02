@@ -55,6 +55,16 @@ type Request struct {
 	// tick start and reuse across iterations so tool_call → tool_result
 	// pairs thread within the same scene.
 	SceneID string
+
+	// EphemeralContext, when set, is per-call scratch context (the current
+	// tick's affordances / world-state) the adapter attaches to the model's
+	// CURRENT turn but does NOT persist into history. It lets the harness keep
+	// the durable replayed message lean (felt-state + events) while still
+	// giving the model full decision-support every call. Adapters that don't
+	// support it ignore it. (memory-api: maps to /chat/send ephemeral_context.)
+	// Re-sent on every iteration within a tick so each follow-up call still
+	// carries the current options.
+	EphemeralContext string
 }
 
 // ToolResult is one engine-side answer to a tool call the model emitted

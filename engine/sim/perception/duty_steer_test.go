@@ -174,7 +174,7 @@ func TestRender_DutySteerCarriesStructureID(t *testing.T) {
 		DutySteer: &DutySteerView{ToWork: true, TargetID: "tavern", TargetLabel: "the Tavern"},
 	}
 	out := Render(p, DefaultRenderConfig())
-	if !strings.Contains(out.Text, "structure_id: tavern") {
-		t.Errorf("rendered prompt must carry the duty target structure_id, got:\n%s", out.Text)
+	if !strings.Contains(combinedPrompt(out), "structure_id: tavern") {
+		t.Errorf("rendered prompt must carry the duty target structure_id, got:\n%s", combinedPrompt(out))
 	}
 }
