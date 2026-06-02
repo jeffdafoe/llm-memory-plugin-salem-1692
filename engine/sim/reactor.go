@@ -845,11 +845,13 @@ func actorCanReactNow(w *World, a *Actor, now time.Time) (eligible bool, stale b
 	}
 	// A scheduled break (StateResting / BreakUntil) shelves the tick too — EXCEPT
 	// a red-tier need warrant (ZBBS-HOME-329 #3), an operator nudge — a bare
-	// admin force-tick or a directive impulse (#4) — or a PC speaking directly to
-	// the actor (ZBBS-HOME-377): any of these cuts the break short. The PC case
-	// is the conversational counterpart of the need case — a player addressing an
-	// NPC in person outranks that NPC's nap, so the keeper a customer is talking
-	// to actually answers instead of resting through the conversation. Without
+	// admin force-tick or a directive impulse (#4) — or a PC speaking into this
+	// actor's huddle (ZBBS-HOME-377): any of these cuts the break short. The PC
+	// case warrants every recipient of the player's utterance, not just a parsed
+	// vocative addressee — narrowing to the named person is the deferred fix B.
+	// It is the conversational counterpart of the need case — a player addressing
+	// the room an NPC is in outranks that NPC's nap, so the keeper a customer is
+	// talking to actually answers instead of resting through the conversation. Without
 	// this, an actor that beds down for a break while already hungry/thirsty (or
 	// while a player is trying to talk to it) sits locked in rest: the reactor
 	// defers the warrant for the whole break and nothing wakes it, and even an

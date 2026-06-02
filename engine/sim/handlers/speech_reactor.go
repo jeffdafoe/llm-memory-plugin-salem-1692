@@ -61,6 +61,16 @@ func handleSpokeWarrants(w *sim.World, evt sim.Event) {
 	// mid-walk skip and the heard-speech circuit breaker exist to stop NPC
 	// chatter ping-pong, not to silence the player). NPC speech keeps both gates
 	// and stamps the parallel NPCSpeechWarrantReason.
+	//
+	// Fail-closed to NPC if the speaker isn't a known PC. sim.Speak (the
+	// /pc/speak path since ZBBS-HOME-358) is the only Spoke producer that can
+	// carry a PC speaker; the other emitters — businessowner hospitality, town
+	// crier (noticeboard), the npc_sleep retire line, and summon — all carry an
+	// NPC/system speaker and so correctly classify here. A missing/unknown
+	// SpeakerID therefore can only be a malformed NPC-system event, and treating
+	// it as NPC speech (gated behind a break, never waking) is the safe default:
+	// the only thing the fail-closed branch forgoes is break-interruption, which
+	// must never fire on an unattributable utterance anyway.
 	speakerIsPC := false
 	if sp, ok := w.Actors[spoke.SpeakerID]; ok && sp.Kind == sim.KindPC {
 		speakerIsPC = true

@@ -421,7 +421,10 @@ func TestActorCanReactNow_SleepingNotInterruptedByNeed(t *testing.T) {
 func TestActorCanReactNow_RestingInterruptedByPCSpeech(t *testing.T) {
 	w, cancel := buildReactorTestWorld(t)
 	defer cancel()
-	_, _ = w.Send(sim.Command{
+	// Error-check the Send: the assertions live inside Fn, so a command-level
+	// error would otherwise skip them and the test would pass hollow (ZBBS-HOME-377
+	// code_review #1).
+	if _, err := w.Send(sim.Command{
 		Fn: func(world *sim.World) (any, error) {
 			a := world.Actors["alice"]
 			a.State = sim.StateResting
@@ -432,7 +435,9 @@ func TestActorCanReactNow_RestingInterruptedByPCSpeech(t *testing.T) {
 			}
 			return nil, nil
 		},
-	})
+	}); err != nil {
+		t.Fatalf("send command: %v", err)
+	}
 }
 
 // TestActorCanReactNow_RestingNotInterruptedByNPCSpeech: the discrimination that
@@ -442,7 +447,7 @@ func TestActorCanReactNow_RestingInterruptedByPCSpeech(t *testing.T) {
 func TestActorCanReactNow_RestingNotInterruptedByNPCSpeech(t *testing.T) {
 	w, cancel := buildReactorTestWorld(t)
 	defer cancel()
-	_, _ = w.Send(sim.Command{
+	if _, err := w.Send(sim.Command{
 		Fn: func(world *sim.World) (any, error) {
 			a := world.Actors["alice"]
 			a.State = sim.StateResting
@@ -456,7 +461,9 @@ func TestActorCanReactNow_RestingNotInterruptedByNPCSpeech(t *testing.T) {
 			}
 			return nil, nil
 		},
-	})
+	}); err != nil {
+		t.Fatalf("send command: %v", err)
+	}
 }
 
 // TestActorCanReactNow_SleepingNotInterruptedByPCSpeech: sleep stays sacrosanct —
@@ -465,7 +472,7 @@ func TestActorCanReactNow_RestingNotInterruptedByNPCSpeech(t *testing.T) {
 func TestActorCanReactNow_SleepingNotInterruptedByPCSpeech(t *testing.T) {
 	w, cancel := buildReactorTestWorld(t)
 	defer cancel()
-	_, _ = w.Send(sim.Command{
+	if _, err := w.Send(sim.Command{
 		Fn: func(world *sim.World) (any, error) {
 			a := world.Actors["alice"]
 			a.State = sim.StateSleeping
@@ -479,7 +486,9 @@ func TestActorCanReactNow_SleepingNotInterruptedByPCSpeech(t *testing.T) {
 			}
 			return nil, nil
 		},
-	})
+	}); err != nil {
+		t.Fatalf("send command: %v", err)
+	}
 }
 
 // TestActorCanReactNow_OtherStatesEligible — table-drives every other
