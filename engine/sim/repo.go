@@ -170,6 +170,11 @@ type VillageObjectsRepo interface {
 type EnvironmentRepo interface {
 	Load(ctx context.Context) (WorldEnvironment, Phase, WorldSettings, error)
 	SaveSnapshot(ctx context.Context, tx Tx, env WorldEnvironment, phase Phase) error
+	// SaveMutableSettings upserts the runtime-tunable settings the admin config
+	// write routes own (ZBBS-WORK-363) inside the checkpoint Tx. ONLY those keys
+	// are written — the rest of the setting table is load-once / operator-tuned
+	// out of band and must not be clobbered by the checkpoint.
+	SaveMutableSettings(ctx context.Context, tx Tx, settings MutableWorldSettings) error
 }
 
 // ActionLogSink appends action log rows per-event. v2 MVP wires a noop

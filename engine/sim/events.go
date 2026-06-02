@@ -406,6 +406,33 @@ type VillageObjectCreated struct {
 
 func (VillageObjectCreated) isSimEvent() {}
 
+// ZoomSettingsChanged is emitted by SetZoomSettings when an admin saves new
+// camera zoom floors via the config panel. The hub translates it to the
+// zoom_settings_changed frame so connected clients reload their floor without a
+// restart (client handler: event_client.gd). Only the fields that changed are
+// meaningful, but both are always carried (the post-change values) — the client
+// just re-reads whichever applies to its role.
+type ZoomSettingsChanged struct {
+	EventBase
+	ZoomMinAdmin   float64
+	ZoomMinRegular float64
+	At             time.Time
+}
+
+func (ZoomSettingsChanged) isSimEvent() {}
+
+// AgentTicksPausedChanged is emitted by SetAgentTicksPaused when an admin
+// toggles the global LLM-agent-activity pause from the config panel. The hub
+// translates it to the agent_ticks_paused_changed frame so the config panel's
+// checkbox reflects the new state across connected admins.
+type AgentTicksPausedChanged struct {
+	EventBase
+	Paused bool
+	At     time.Time
+}
+
+func (AgentTicksPausedChanged) isSimEvent() {}
+
 // VillageObjectLoiterOffsetChanged is emitted by SetVillageObjectLoiterOffset
 // when an admin edits where visiting actors stand at a placed object (the
 // editor's draggable loiter pin). LoiterOffsetX/Y are the raw per-instance

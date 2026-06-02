@@ -20,17 +20,62 @@ import (
 // client embeds the version it was built against and fails loudly on a
 // mismatch. Bump ONLY on a breaking change (rename/remove/retype a field,
 // change the WS envelope); additive new optional fields do not bump it.
+//
+// ZBBS-WORK-363 kept this at 1: WorldStateDTO.Now was re-sourced from the dead
+// WorldEnvironment.Now (never assigned → always zero) to the real
+// Snapshot.PublishedAt — a value change, not a shape change — and the camera
+// zoom floors are additive. Old clients keep decoding, so no bump.
 const ContractVersion = 1
 
 // WorldStateDTO is the GET /api/village/world response — coarse world state
-// for the client's top bar / lighting. The carrier of ContractVersion.
+// for the client's top bar / lighting + the per-player camera zoom floor.
+// The carrier of ContractVersion.
 type WorldStateDTO struct {
-	ContractVersion int       `json:"contract_version"`
-	Phase           string    `json:"phase"` // "day" | "night"
-	Tick            uint64    `json:"tick"`
-	Now             time.Time `json:"now"`
-	Weather         string    `json:"weather"`
-	Atmosphere      string    `json:"atmosphere"`
+	ContractVersion int    `json:"contract_version"`
+	Phase           string `json:"phase"` // "day" | "night"
+	Tick            uint64 `json:"tick"`
+	// Now is the engine's wall clock (UTC) at snapshot-publish time — the
+	// authoritative world clock every client reads off the public world poll.
+	// Sourced from Snapshot.PublishedAt (real time.Now()); the sim runs its
+	// day/night + time-of-day off the same clock in WorldSettings.Timezone
+	// (default America/New_York). Serialized UTC; the client localizes for
+	// display. (Was previously wired to the never-assigned WorldEnvironment.Now,
+	// which always serialized as the 0001-01-01 zero time.)
+	Now        time.Time `json:"now"`
+	Weather    string    `json:"weather"`
+	Atmosphere string    `json:"atmosphere"`
+	// Camera zoom floors (min zoom-out) — different for admins vs regular
+	// users. Every client reads its floor from here; the admin config panel
+	// reads+writes them via GET/POST /api/village/config + /admin/zoom-settings.
+	ZoomMinAdmin   float64 `json:"zoom_min_admin"`
+	ZoomMinRegular float64 `json:"zoom_min_regular"`
+}
+
+// WorldConfigDTO is the GET /api/village/config response — the admin-only
+// world-config read surface the config panel renders. Distinct from
+// WorldStateDTO (the public, hot-path world poll) so admin/operator config
+// stays off every client's per-frame fetch. The read is admin-gated
+// (Actor.IsAdmin, resolved on the world goroutine) and runs through the command
+// channel so it reads live w.Settings / w.Environment with no snapshot lag.
+//
+// The "World clock" readout comes from WorldStateDTO.Now on the public /world
+// poll (not duplicated here). Last/NextTransitionAt bracket the day↔night cycle;
+// Last/NextRotationAt bracket the daily asset rotation. DawnTime/DuskTime/
+// RotationTime are the configured HH:MM boundaries (in Timezone). ZoomMin* are
+// echoed so the panel's edit fields prepopulate without a second fetch.
+type WorldConfigDTO struct {
+	Timezone            string    `json:"timezone"`
+	LastTransitionAt    time.Time `json:"last_transition_at"`
+	NextTransitionAt    time.Time `json:"next_transition_at"`
+	NextTransitionPhase string    `json:"next_transition_phase"`
+	DawnTime            string    `json:"dawn_time"`
+	DuskTime            string    `json:"dusk_time"`
+	RotationTime        string    `json:"rotation_time"`
+	LastRotationAt      time.Time `json:"last_rotation_at"`
+	NextRotationAt      time.Time `json:"next_rotation_at"`
+	AgentTicksPaused    bool      `json:"agent_ticks_paused"`
+	ZoomMinAdmin        float64   `json:"zoom_min_admin"`
+	ZoomMinRegular      float64   `json:"zoom_min_regular"`
 }
 
 // AgentDTO is one actor in the GET /api/village/agents response.

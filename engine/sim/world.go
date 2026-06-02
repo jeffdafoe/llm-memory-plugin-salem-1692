@@ -1409,6 +1409,8 @@ func (w *World) republish() {
 		NeedThresholds:           w.Settings.NeedThresholds.Clone(),
 		LodgingDefaultWeeklyRate: w.Settings.LodgingDefaultWeeklyRate,
 		RestockReorderPct:        w.Settings.RestockReorderPct,
+		ZoomMinAdmin:             w.Settings.ZoomMinAdmin,
+		ZoomMinRegular:           w.Settings.ZoomMinRegular,
 		// Aliased, not cloned — immutable post-startup catalog. See Snapshot.ItemKinds.
 		ItemKinds: w.ItemKinds,
 	}
