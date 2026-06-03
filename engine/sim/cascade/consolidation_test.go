@@ -408,6 +408,53 @@ func TestBuildConsolidationPrompt_NoPriorSummary(t *testing.T) {
 	}
 }
 
+// TestBuildConsolidationPrompt_AttributesSpeaker pins the fix for the
+// cross-attribution corruption: spoke facts (the actor's own words) and heard
+// facts (the peer's words) render with distinct speaker attribution, so the
+// consolidating model cannot fold the actor's own utterances into its
+// impression of the peer. Transactional facts (self-describing text) pass
+// through unchanged, and identical utterances from different speakers do NOT
+// dedup against each other.
+func TestBuildConsolidationPrompt_AttributesSpeaker(t *testing.T) {
+	c := sim.ConsolidationCandidate{
+		ActorName: "Hannah",
+		PeerName:  "Jefferey",
+		Facts: []sim.SalientFact{
+			{Kind: sim.InteractionHeard, Text: "Hello Hannah"},
+			{Kind: sim.InteractionSpoke, Text: "I have bread available."},
+			{Kind: sim.InteractionSpoke, Text: "I have bread available."}, // dup of own line — must dedup
+			{Kind: sim.InteractionHeard, Text: "I have bread available."}, // same text, peer said it — must survive
+			{Kind: sim.InteractionPaidBy, Text: "Jefferey paid me 5 coins for bread."},
+		},
+	}
+	prompt := buildConsolidationPrompt(c)
+
+	for _, must := range []string{
+		"- Jefferey said: Hello Hannah",
+		"- I said: I have bread available.",
+		"- Jefferey said: I have bread available.",
+		"- Jefferey paid me 5 coins for bread.", // transactional fact passes through
+	} {
+		if !strings.Contains(prompt, must) {
+			t.Errorf("prompt missing %q\n--- prompt ---\n%s", must, prompt)
+		}
+	}
+
+	// The actor's own pitch must never render as a bare bullet that could read
+	// back as the peer's words — that was the corruption.
+	if strings.Contains(prompt, "- I have bread available.") {
+		t.Errorf("own utterance rendered without speaker attribution\n--- prompt ---\n%s", prompt)
+	}
+	// Dedup keys on the rendered line: the repeated "I said:" pitch collapses to
+	// one, but the peer's identical-text line is a distinct fact and survives.
+	if got := strings.Count(prompt, "- I said: I have bread available."); got != 1 {
+		t.Errorf("'I said: I have bread available.' occurs %d times, want 1 (dedup)", got)
+	}
+	if got := strings.Count(prompt, "- Jefferey said: I have bread available."); got != 1 {
+		t.Errorf("'Jefferey said: I have bread available.' occurs %d times, want 1", got)
+	}
+}
+
 // TestRegisterConsolidation_PanicsOnNilWorld pins the wiring-time guard.
 func TestRegisterConsolidation_PanicsOnNilWorld(t *testing.T) {
 	defer func() {
