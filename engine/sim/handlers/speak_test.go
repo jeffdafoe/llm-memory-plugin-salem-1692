@@ -29,6 +29,37 @@ func TestDecodeSpeakArgs_Valid(t *testing.T) {
 	}
 }
 
+// TestDecodeSpeakArgs_WithTo — the optional ZBBS-WORK-369 addressee decodes
+// alongside text.
+func TestDecodeSpeakArgs_WithTo(t *testing.T) {
+	args, err := DecodeSpeakArgs(json.RawMessage(`{"text":"Good morrow.","to":"Ezekiel"}`))
+	if err != nil {
+		t.Fatalf("DecodeSpeakArgs: %v", err)
+	}
+	got, ok := args.(SpeakArgs)
+	if !ok {
+		t.Fatalf("Decoded type = %T, want SpeakArgs", args)
+	}
+	if got.Text != "Good morrow." {
+		t.Errorf("Text = %q, want %q", got.Text, "Good morrow.")
+	}
+	if got.To != "Ezekiel" {
+		t.Errorf("To = %q, want %q", got.To, "Ezekiel")
+	}
+}
+
+// TestDecodeSpeakArgs_ToOmittedIsEmpty — an omitted `to` decodes to empty
+// (the whole-huddle / addressee-less path).
+func TestDecodeSpeakArgs_ToOmittedIsEmpty(t *testing.T) {
+	args, err := DecodeSpeakArgs(json.RawMessage(`{"text":"Good morrow."}`))
+	if err != nil {
+		t.Fatalf("DecodeSpeakArgs: %v", err)
+	}
+	if got := args.(SpeakArgs); got.To != "" {
+		t.Errorf("To = %q, want empty", got.To)
+	}
+}
+
 func TestDecodeSpeakArgs_MissingText(t *testing.T) {
 	_, err := DecodeSpeakArgs(json.RawMessage(`{}`))
 	if err == nil {

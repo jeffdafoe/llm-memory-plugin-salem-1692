@@ -10,9 +10,19 @@ import (
 	"time"
 )
 
-// Speak returns a Command that commits a speech utterance from speakerID
-// against the world. Phase 3 PR A — the port of v1's `case "speak":`
-// commit arm from agent_tick.go to the v2 in-memory substrate.
+// SpeakTo returns a Command that commits a speech utterance from speakerID
+// against the world, directed at the addressee named by `to` (empty = no
+// explicit addressee; the to-less Speak wrapper passes ""). Phase 3 PR A —
+// the port of v1's `case "speak":` commit arm from agent_tick.go to the v2
+// in-memory substrate; the `to` addressee channel is ZBBS-WORK-369.
+//
+// `to` is the speaker's declared addressee — an actor name (full display
+// name or first name), matched case-insensitively against present huddle
+// peers. It seeds the WORK-369 addressee-resolution chain `to` →
+// sentence-position vocative in text → whole-huddle; the resolved peer (or
+// empty for whole-huddle) rides on Spoke.AddressedID for the turn-state
+// core (WORK-370) to consume. A `to` that names no present peer falls
+// through to the vocative / whole-huddle steps rather than rejecting.
 //
 // Scope: the structural shape of v1 — empty-text reject, walk-in-flight
 // reject, vocative stale-addressee reject (in-memory), the WORK-323 prose-
@@ -44,7 +54,7 @@ import (
 //
 // On success:
 //
-//   - emits Spoke{SpeakerID, HuddleID, RecipientIDs (sorted), Text, At}
+//   - emits Spoke{SpeakerID, HuddleID, RecipientIDs (sorted), AddressedID, Text, At}
 //   - for each peer in RecipientIDs: RecordInteraction(speaker, peer,
 //     InteractionSpoke) AND RecordInteraction(peer, speaker,
 //     InteractionHeard); the KindNPCShared gate inside RecordInteraction
@@ -58,7 +68,7 @@ import (
 // RecordInteraction calls fire, the subscriber stamps no warrants. By
 // design (per the PR A design walkthrough): "speaking to no one" is a
 // legitimate narrative beat we don't punish.
-func Speak(speakerID ActorID, text string, at time.Time) Command {
+func SpeakTo(speakerID ActorID, text, to string, at time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
 			actor, ok := w.Actors[speakerID]
@@ -116,6 +126,13 @@ func Speak(speakerID ActorID, text string, at time.Time) Command {
 				}
 			}
 
+			// Resolve the single addressee (ZBBS-WORK-369): explicit `to` →
+			// vocative in text → whole-huddle (empty). Computed here, after the
+			// gates, against the committed peer set; carried on the event for
+			// the turn-state core (WORK-370). No-huddle / no-peer speaks resolve
+			// to empty (whole-huddle).
+			addressedID := resolveAddressee(to, text, w, peerIDs)
+
 			// Emit the Spoke event. World.emit stamps EventID + RootEventID
 			// and dispatches subscribers synchronously inside the world
 			// goroutine.
@@ -123,6 +140,7 @@ func Speak(speakerID ActorID, text string, at time.Time) Command {
 				SpeakerID:    speakerID,
 				HuddleID:     huddleID,
 				RecipientIDs: peerIDs,
+				AddressedID:  addressedID,
 				Text:         text,
 				At:           at,
 			})
@@ -160,6 +178,92 @@ func Speak(speakerID ActorID, text string, at time.Time) Command {
 			return nil, nil
 		},
 	}
+}
+
+// Speak is the addressee-less form of SpeakTo: it commits a speech utterance
+// with no explicit `to`, so the addressee resolves from a sentence-position
+// vocative in the text or, failing that, the whole huddle. Every pre-WORK-369
+// caller (the PC speak path, tests) reaches speech through this wrapper
+// unchanged; only the NPC speak tool passes an explicit `to` via SpeakTo.
+func Speak(speakerID ActorID, text string, at time.Time) Command {
+	return SpeakTo(speakerID, text, "", at)
+}
+
+// resolveAddressee picks the single huddle peer a speak is directed at,
+// following the WORK-369 chain: explicit `to` (the NPC model's declared
+// addressee; empty for the PC / to-less path) → sentence-position vocative
+// in text → no one specific (whole-huddle). Returns "" for the whole-huddle
+// case. peerIDs is the sorted peer slice, so a result is deterministic when
+// more than one peer could match.
+//
+// Only a PRESENT peer resolves: a `to` (or vocative) naming someone not in
+// the huddle falls through rather than resolving to an absentee. The
+// separate vocative-absentee gate already rejects an NPC addressing an
+// absent actor by name in the text; a `to` naming an absentee is simply
+// ignored here, leaving the utterance addressed to the whole huddle.
+func resolveAddressee(to, text string, w *World, peerIDs []ActorID) ActorID {
+	if len(peerIDs) == 0 {
+		return ""
+	}
+	// 1. Explicit `to` — match against each peer's full display name or
+	//    leading (first) name, case-insensitively. The model addresses by
+	//    the name it sees in perception, which may be either form.
+	if to = strings.TrimSpace(to); to != "" {
+		want := strings.ToLower(to)
+		for _, pid := range peerIDs {
+			a := w.Actors[pid]
+			if a == nil || a.DisplayName == "" {
+				continue
+			}
+			if strings.ToLower(a.DisplayName) == want {
+				return pid
+			}
+			if fields := strings.Fields(a.DisplayName); len(fields) > 0 && strings.ToLower(fields[0]) == want {
+				return pid
+			}
+		}
+	}
+	// 2. Sentence-position vocative in the text — the present-peer
+	//    counterpart of the absentee gate (same candidate extraction,
+	//    opposite membership test).
+	if id := vocativePeer(text, w, peerIDs); id != "" {
+		return id
+	}
+	// 3. No one specific → whole huddle.
+	return ""
+}
+
+// vocativePeer returns the first huddle peer (in sorted peerIDs order)
+// whose first name appears in sentence-position vocative in text, or ""
+// if none. Reuses vocativeCandidateRegex; the first-name match is
+// case-sensitive (the regex already requires a capital initial), matching
+// findVocativeAbsentees.
+func vocativePeer(text string, w *World, peerIDs []ActorID) ActorID {
+	if text == "" {
+		return ""
+	}
+	matches := vocativeCandidateRegex.FindAllStringSubmatch(text, -1)
+	if len(matches) == 0 {
+		return ""
+	}
+	candidates := make(map[string]struct{}, len(matches))
+	for _, m := range matches {
+		candidates[m[1]] = struct{}{}
+	}
+	for _, pid := range peerIDs {
+		a := w.Actors[pid]
+		if a == nil || a.DisplayName == "" {
+			continue
+		}
+		fields := strings.Fields(a.DisplayName)
+		if len(fields) == 0 {
+			continue
+		}
+		if _, ok := candidates[fields[0]]; ok {
+			return pid
+		}
+	}
+	return ""
 }
 
 // buildHuddlePeerSet returns the set of peer ActorIDs in huddleID
