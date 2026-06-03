@@ -731,6 +731,12 @@ func renderRelationships(b *strings.Builder, peers []RelationshipPeerView) {
 // is the load-bearing perception mechanism (no warrant kind for
 // Order state; the seller relies on baseline perception to remember
 // to call deliver_order).
+//
+// ZBBS-WORK-372 — the section closes with an explicit actionable
+// instruction naming the deliver_order tool + order_id arg, mirroring
+// the pay-offer section. Before this, a bare list of order ids read as
+// data, not an action: keepers spoke a delivery promise and never fired
+// the tool, so orders sat open forever (boot-collapse Finding 1).
 func renderPendingDeliveriesFromMe(b *strings.Builder, orders []OrderView) {
 	if len(orders) == 0 {
 		return
@@ -751,6 +757,7 @@ func renderPendingDeliveriesFromMe(b *strings.Builder, orders []OrderView) {
 		}
 		b.WriteString("\n")
 	}
+	b.WriteString("To hand one of these over, call deliver_order with the order's number as order_id (the recipient must be here with you).\n")
 	b.WriteString("\n")
 }
 
