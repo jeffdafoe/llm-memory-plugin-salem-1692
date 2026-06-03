@@ -5,7 +5,7 @@ go 1.25.0
 require (
 	github.com/fergusstrange/embedded-postgres v1.34.0
 	github.com/gorilla/websocket v1.5.3
-	github.com/jackc/pgx/v5 v5.9.2
+	github.com/jackc/pgx/v5 v5.10.0
 	github.com/pashagolub/pgxmock/v4 v4.9.0
 	golang.org/x/crypto v0.52.0
 )
