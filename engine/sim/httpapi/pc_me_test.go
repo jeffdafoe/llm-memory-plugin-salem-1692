@@ -325,6 +325,80 @@ func TestHandlePCMe_OutdoorAudienceScopeAndRoster(t *testing.T) {
 	}
 }
 
+// TestHandlePCMe_LoiterStallRosterShowsOwner: ZBBS-HOME-378 — a PC standing at an
+// owner-only stall's loiter point (outdoors, no huddle) sees the OWNER working
+// inside the stall in its talk roster, plus any nearby player. Before the fix the
+// outdoor roster listed only players, so a customer could never address the
+// keeper of a market stall they were standing at.
+func TestHandlePCMe_LoiterStallRosterShowsOwner(t *testing.T) {
+	repo, _ := mem.NewRepository()
+	w, err := sim.LoadWorld(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go w.Run(ctx)
+
+	pin := sim.TilePos{X: 70, Y: 120}
+	_, err = w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		// Customer loitering at the stall's pin — outdoors (no InsideStructureID).
+		world.Actors["p1"] = &sim.Actor{
+			ID: "p1", DisplayName: "Tester", Kind: sim.KindPC,
+			State: sim.StateIdle, LoginUsername: "tester", Pos: pin,
+		}
+		// The stall owner, working INSIDE the stall.
+		world.Actors["smith"] = &sim.Actor{
+			ID: "smith", DisplayName: "Smith", Kind: sim.KindNPCStateful,
+			State: sim.StateIdle, InsideStructureID: "stall",
+		}
+		// A nearby player — must still appear alongside the owner.
+		world.Actors["near"] = &sim.Actor{
+			ID: "near", DisplayName: "Nearby", Kind: sim.KindPC,
+			State: sim.StateIdle, LoginUsername: "near",
+			Pos: sim.TilePos{X: 72, Y: 121}, // Chebyshev 2 <= 6
+		}
+		// An asleep NPC inside the stall must NOT show (snapshotConversational).
+		world.Actors["sleeper"] = &sim.Actor{
+			ID: "sleeper", DisplayName: "Dozer", Kind: sim.KindNPCStateful,
+			State: sim.StateSleeping, InsideStructureID: "stall",
+		}
+		zero := 0
+		world.VillageObjects["stall"] = &sim.VillageObject{
+			ID: "stall", AssetID: "stall-asset", DisplayName: "Blacksmith",
+			Pos:           pin.Center(), // loiter pin == anchor == PC tile
+			LoiterOffsetX: &zero, LoiterOffsetY: &zero,
+		}
+		world.Assets = map[sim.AssetID]*sim.Asset{
+			"stall-asset": {ID: "stall-asset", Name: "Stall", Category: "structure"},
+		}
+		return nil, nil
+	}})
+	if err != nil {
+		t.Fatalf("seed stall pc/me world: %v", err)
+	}
+
+	srv := NewServer(w, okAuth{})
+	resp := pcMe(t, srv)
+
+	if resp.AudienceStructureID == nil || *resp.AudienceStructureID != "stall" {
+		t.Errorf("audience_structure_id = %v, want stall", resp.AudienceStructureID)
+	}
+	names := map[string]bool{}
+	for _, m := range resp.HuddleMembers {
+		names[m.Name] = true
+	}
+	if !names["Smith"] {
+		t.Errorf("roster missing the stall owner Smith: %+v", resp.HuddleMembers)
+	}
+	if !names["Nearby"] {
+		t.Errorf("roster dropped the nearby player Nearby: %+v", resp.HuddleMembers)
+	}
+	if names["Dozer"] {
+		t.Errorf("roster included the asleep NPC Dozer: %+v", resp.HuddleMembers)
+	}
+}
+
 // indoorNoHuddlePCMeWorld stands up a PC inside the inn with NO huddle, plus
 // co-located/nearby actors exercising every indoor-roster eligibility rule:
 // a conversational NPC and a fresh PC (included); a decorative NPC, a sleeping
