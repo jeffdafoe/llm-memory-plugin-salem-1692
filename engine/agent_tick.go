@@ -362,6 +362,9 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 		// persist will close them out.
 		pendingResults = nil
 		pendingPersisted = false
+		// ZBBS-HOME-379: tracks a successful speak this iteration so the
+		// one-speak-per-tick cap (after the terminal block) can end the turn.
+		spokeOK := false
 
 		// Process non-terminals in priority order. Each branch executes the
 		// tool, formats a result message, and appends to pendingResults.
@@ -500,7 +503,12 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 			app.drainDeferredBroadcasts(r)
 			var content string
 			if result == "ok" {
-				content = "[OK] You spoke. Continue your turn — you may move or run a chore now, or call done if you're staying put."
+				// ZBBS-HOME-379: a successful speak ends the turn (the cap after
+				// the terminal block) unless the model ALSO issued a terminal this
+				// same iteration — so an actor says ONE thing per round instead of
+				// looping back and re-asking with no new input.
+				spokeOK = true
+				content = "[OK] You spoke."
 			} else {
 				// Surface the rejection verbatim — guards like the
 				// walk-in-flight gate and the vocative stale-addressee
@@ -626,6 +634,23 @@ func (app *App) runAgentTick(ctx context.Context, r *agentNPCRow, hourStart time
 		if len(pendingResults) == 0 {
 			commitCall = &agentToolCall{
 				ID:    fmt.Sprintf("synthetic-unknown-%d", iter),
+				Name:  "done",
+				Input: map[string]interface{}{},
+			}
+			break
+		}
+
+		// ZBBS-HOME-379: cap speech at one utterance per tick. A successful speak
+		// with no terminal this iteration would otherwise loop back to the model,
+		// which — with no new input — re-asks the same thing (the observed
+		// speak,speak,done double-reply). End the turn after the actor's say; it
+		// speaks again next tick when something new warrants a reaction. A speak
+		// alongside a terminal (move_to/chore/done) already broke above; a
+		// REJECTED speak leaves spokeOK false so the model still gets to correct a
+		// bounced utterance.
+		if spokeOK {
+			commitCall = &agentToolCall{
+				ID:    fmt.Sprintf("synthetic-speak-done-%d", iter),
 				Name:  "done",
 				Input: map[string]interface{}{},
 			}
