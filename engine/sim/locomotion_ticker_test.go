@@ -200,6 +200,52 @@ func TestLocomotion_StructureEnterArrival(t *testing.T) {
 	}
 }
 
+// TestLocomotion_InsideChangeEmitsBroadcast covers the ZBBS-WORK-373 inside-state
+// push end to end: entering the cottage emits ActorInsideChanged{cottage}, and
+// walking back out to open ground emits ActorInsideChanged{} (empty). The leave
+// case is the Finding-6 fix — the client needs this frame to un-stick a keeper
+// from "inside the structure" the instant they walk away, since the v2 engine
+// otherwise pushes no inside flip between the walk-start and arrival brackets.
+func TestLocomotion_InsideChangeEmitsBroadcast(t *testing.T) {
+	w, cancel, rec := buildLocomotionTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	// Enter the cottage: the ""→cottage flip emits exactly one inside-change.
+	if _, err := w.Send(sim.MoveActor("walker", sim.NewStructureEnterDestination("cottage"), false, now)); err != nil {
+		t.Fatalf("MoveActor enter: %v", err)
+	}
+	driveToArrival(t, w, "walker", now, 40)
+	if _, inside := actorSpatial(t, w, "walker"); inside != "cottage" {
+		t.Fatalf("after enter: InsideStructureID = %q, want cottage", inside)
+	}
+	enteredCottage := rec.countEvents(func(e sim.Event) bool {
+		c, ok := e.(*sim.ActorInsideChanged)
+		return ok && c.ActorID == "walker" && c.InsideStructureID == "cottage"
+	})
+	if enteredCottage != 1 {
+		t.Errorf("ActorInsideChanged{cottage} count = %d, want 1", enteredCottage)
+	}
+
+	// Walk back out to open ground: the cottage→"" flip is the leave the client
+	// must hear to render the keeper walking away rather than stuck inside.
+	out := sim.Position{X: sim.PadX + 5, Y: sim.PadY + 5}
+	if _, err := w.Send(sim.MoveActor("walker", sim.NewPositionDestination(out), false, now)); err != nil {
+		t.Fatalf("MoveActor leave: %v", err)
+	}
+	driveToArrival(t, w, "walker", now, 40)
+	if _, inside := actorSpatial(t, w, "walker"); inside != "" {
+		t.Fatalf("after leave: InsideStructureID = %q, want empty", inside)
+	}
+	leftStructure := rec.countEvents(func(e sim.Event) bool {
+		c, ok := e.(*sim.ActorInsideChanged)
+		return ok && c.ActorID == "walker" && c.InsideStructureID == ""
+	})
+	if leftStructure != 1 {
+		t.Errorf("ActorInsideChanged{} (leave) count = %d, want 1", leftStructure)
+	}
+}
+
 // TestLocomotion_StructureEnter_WalkThroughOccupiedDoor covers the
 // last-resort door walk-through (ZBBS-HOME-348). A member entering a
 // structure whose single door tile is occupied by another actor — the
