@@ -36,11 +36,22 @@ import "time"
 // At is wall-clock; it carries the same instant the per-peer
 // RecordInteraction calls use for SalientFact timestamps so the engine
 // log and the relationship facts line up exactly.
+//
+// AddressedID is the single huddle peer this utterance is directed at, or
+// empty when it is addressed to the whole huddle / no one in particular
+// (ZBBS-WORK-369). It is resolved at commit time via the chain: the
+// speaker's explicit `to` (the NPC model's declared addressee) →
+// sentence-position vocative in Text → whole-huddle. Only a PRESENT peer
+// resolves; it is always a member of RecipientIDs (or empty). The
+// turn-state core (ZBBS-WORK-370) reads this to set the directed
+// addressed/awaiting-reply edge; in WORK-369 it is computed + carried only,
+// with no consumer yet.
 type Spoke struct {
 	EventBase
 	SpeakerID    ActorID
 	HuddleID     HuddleID
 	RecipientIDs []ActorID
+	AddressedID  ActorID
 	Text         string
 	At           time.Time
 }
