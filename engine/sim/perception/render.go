@@ -737,11 +737,18 @@ func renderRelationships(b *strings.Builder, peers []RelationshipPeerView) {
 // the pay-offer section. Before this, a bare list of order ids read as
 // data, not an action: keepers spoke a delivery promise and never fired
 // the tool, so orders sat open forever (boot-collapse Finding 1).
+//
+// ZBBS-WORK-373 — co-presence gate. DeliverOrder's gate 6 rejects a handover to
+// any recipient not sharing the seller's huddle, so an order whose recipient has
+// stepped away renders passively ("waiting for X to return"), and the actionable
+// instruction is suppressed unless at least one order is deliverable now — the
+// keeper isn't cued to chase an absent buyer (boot-collapse Finding 6 bundle).
 func renderPendingDeliveriesFromMe(b *strings.Builder, orders []OrderView) {
 	if len(orders) == 0 {
 		return
 	}
 	b.WriteString("## Orders to deliver\n")
+	anyDeliverable := false
 	for _, o := range orders {
 		itemDesc := string(o.Item)
 		if o.Qty > 1 {
@@ -752,12 +759,32 @@ func renderPendingDeliveriesFromMe(b *strings.Builder, orders []OrderView) {
 		if len(o.ConsumerNames) > 0 {
 			fmt.Fprintf(b, " (to deliver to: %s)", sanitizeInline(strings.Join(o.ConsumerNames, ", ")))
 		}
+		// Co-presence gate (ZBBS-WORK-373): an order whose recipient isn't in
+		// the seller's huddle can't be delivered now — DeliverOrder gate 6
+		// would reject it — so render it passively rather than as an action,
+		// and never name the absent buyer as a chase target.
+		if len(o.AbsentRecipientNames) > 0 {
+			fmt.Fprintf(b, " — waiting for %s to return", sanitizeInline(strings.Join(o.AbsentRecipientNames, ", ")))
+		} else {
+			anyDeliverable = true
+		}
 		if clause, ok := expiryClause(o.ExpiresAt, time.Now()); ok {
 			b.WriteString(clause)
 		}
 		b.WriteString("\n")
 	}
-	b.WriteString("To hand one of these over, call deliver_order with the order's number as order_id (the recipient must be here with you).\n")
+	// Only surface the actionable instruction when at least one order is
+	// deliverable now. Telling the keeper to "call deliver_order — the recipient
+	// must be here" while nobody is present is the exact absent-recipient chase
+	// the gate guards against.
+	if anyDeliverable {
+		// ZBBS-WORK-373 handover-line nudge: deliver_order is silent (it moves the
+		// goods + writes the interaction fact, no speech) and non-terminal, so the
+		// keeper can chain deliver_order(N) -> speak in the same tick. Ask for the
+		// line so a delivery reads as "here's your bread, Ezekiel" rather than items
+		// silently appearing — the "actions are socially expressed" convention.
+		b.WriteString("To hand one of these over, call deliver_order with the order's number as order_id (the recipient must be here with you). The handover itself is silent, so say a word to them as you pass it across.\n")
+	}
 	b.WriteString("\n")
 }
 

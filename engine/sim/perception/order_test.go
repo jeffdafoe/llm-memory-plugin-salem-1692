@@ -241,3 +241,119 @@ func TestHumanizeDurationUntil(t *testing.T) {
 		}
 	}
 }
+
+// --- ZBBS-WORK-373: co-presence deliver-cue gate (boot-collapse Finding 6) ---
+
+// TestBuildPendingOrderViews_CoPresentRecipient — a consumer sharing the
+// seller's huddle leaves AbsentRecipientNames empty: deliverable now.
+func TestBuildPendingOrderViews_CoPresentRecipient(t *testing.T) {
+	snap := orderSnap(map[sim.OrderID]*sim.Order{
+		1: orderOf(1, "hannah", "jefferey", "stew", 1, []sim.ActorID{"jefferey"}, time.Hour),
+	})
+	snap.Actors["hannah"].CurrentHuddleID = "hud1"
+	snap.Actors["jefferey"].CurrentHuddleID = "hud1"
+	fromMe, _ := buildPendingOrderViews(snap, "hannah")
+	if len(fromMe) != 1 {
+		t.Fatalf("fromMe = %v, want one order", fromMe)
+	}
+	if got := strings.Join(fromMe[0].AbsentRecipientNames, ","); got != "" {
+		t.Errorf("AbsentRecipientNames = %q, want empty (recipient co-present)", got)
+	}
+}
+
+// TestBuildPendingOrderViews_AbsentRecipient — a consumer not in the seller's
+// huddle lands in AbsentRecipientNames: not deliverable.
+func TestBuildPendingOrderViews_AbsentRecipient(t *testing.T) {
+	snap := orderSnap(map[sim.OrderID]*sim.Order{
+		1: orderOf(1, "hannah", "jefferey", "stew", 1, []sim.ActorID{"jefferey"}, time.Hour),
+	})
+	snap.Actors["hannah"].CurrentHuddleID = "hud1" // jefferey has no huddle (stepped away)
+	fromMe, _ := buildPendingOrderViews(snap, "hannah")
+	if got := strings.Join(fromMe[0].AbsentRecipientNames, ","); got != "Jefferey" {
+		t.Errorf("AbsentRecipientNames = %q, want \"Jefferey\"", got)
+	}
+}
+
+// TestBuildPendingOrderViews_SellerNoHuddle — a keeper in no conversation can
+// deliver to no one; every consumer is absent (mirrors DeliverOrder gate 6).
+func TestBuildPendingOrderViews_SellerNoHuddle(t *testing.T) {
+	snap := orderSnap(map[sim.OrderID]*sim.Order{
+		1: orderOf(1, "hannah", "jefferey", "stew", 1, []sim.ActorID{"jefferey", "mary"}, time.Hour),
+	})
+	// hannah (seller) has no huddle; the consumers' huddles are irrelevant.
+	snap.Actors["jefferey"].CurrentHuddleID = "hud9"
+	snap.Actors["mary"].CurrentHuddleID = "hud9"
+	fromMe, _ := buildPendingOrderViews(snap, "hannah")
+	if got := strings.Join(fromMe[0].AbsentRecipientNames, ","); got != "Jefferey,Mary" {
+		t.Errorf("AbsentRecipientNames = %q, want \"Jefferey,Mary\" (seller in no huddle)", got)
+	}
+}
+
+// TestBuildPendingOrderViews_GroupPartialPresence — a group order with one
+// recipient present and one away lists only the absent one (sorted).
+func TestBuildPendingOrderViews_GroupPartialPresence(t *testing.T) {
+	snap := orderSnap(map[sim.OrderID]*sim.Order{
+		1: orderOf(1, "hannah", "jefferey", "stew", 1, []sim.ActorID{"jefferey", "mary"}, time.Hour),
+	})
+	snap.Actors["hannah"].CurrentHuddleID = "hud1"
+	snap.Actors["jefferey"].CurrentHuddleID = "hud1" // present; mary stepped away
+	fromMe, _ := buildPendingOrderViews(snap, "hannah")
+	if got := strings.Join(fromMe[0].AbsentRecipientNames, ","); got != "Mary" {
+		t.Errorf("AbsentRecipientNames = %q, want \"Mary\" (only Mary away)", got)
+	}
+}
+
+// TestRenderPendingDeliveriesFromMe_DeliverableShowsInstruction — an order with
+// no absent recipients renders the actionable deliver_order instruction and no
+// waiting clause.
+func TestRenderPendingDeliveriesFromMe_DeliverableShowsInstruction(t *testing.T) {
+	var b strings.Builder
+	renderPendingDeliveriesFromMe(&b, []OrderView{
+		{ID: 1, Item: "stew", Qty: 1, BuyerName: "Jefferey", ExpiresAt: time.Now().Add(time.Hour)},
+	})
+	out := b.String()
+	if !strings.Contains(out, "call deliver_order") {
+		t.Errorf("deliverable order should surface the instruction; got:\n%s", out)
+	}
+	if !strings.Contains(out, "say a word to them as you pass it across") {
+		t.Errorf("deliverable instruction should nudge a handover line (ZBBS-WORK-373 piece 3); got:\n%s", out)
+	}
+	if strings.Contains(out, "waiting for") {
+		t.Errorf("deliverable order should not render a waiting clause; got:\n%s", out)
+	}
+}
+
+// TestRenderPendingDeliveriesFromMe_AbsentRendersPassive — an order whose
+// recipient has stepped away renders "waiting for X to return" and suppresses
+// the actionable instruction (nothing is deliverable now).
+func TestRenderPendingDeliveriesFromMe_AbsentRendersPassive(t *testing.T) {
+	var b strings.Builder
+	renderPendingDeliveriesFromMe(&b, []OrderView{
+		{ID: 1, Item: "stew", Qty: 1, BuyerName: "Jefferey", AbsentRecipientNames: []string{"Jefferey"}, ExpiresAt: time.Now().Add(time.Hour)},
+	})
+	out := b.String()
+	if !strings.Contains(out, "waiting for Jefferey to return") {
+		t.Errorf("absent recipient should render a waiting clause; got:\n%s", out)
+	}
+	if strings.Contains(out, "call deliver_order") {
+		t.Errorf("no order is deliverable; instruction must be suppressed; got:\n%s", out)
+	}
+}
+
+// TestRenderPendingDeliveriesFromMe_MixedSurfacesInstruction — with one
+// deliverable and one waiting order, the waiting line renders passively AND the
+// instruction surfaces (there is something to deliver).
+func TestRenderPendingDeliveriesFromMe_MixedSurfacesInstruction(t *testing.T) {
+	var b strings.Builder
+	renderPendingDeliveriesFromMe(&b, []OrderView{
+		{ID: 1, Item: "stew", Qty: 1, BuyerName: "Jefferey", ExpiresAt: time.Now().Add(time.Hour)},
+		{ID: 2, Item: "bread", Qty: 1, BuyerName: "Mary", AbsentRecipientNames: []string{"Mary"}, ExpiresAt: time.Now().Add(time.Hour)},
+	})
+	out := b.String()
+	if !strings.Contains(out, "call deliver_order") {
+		t.Errorf("a deliverable order exists; instruction must surface; got:\n%s", out)
+	}
+	if !strings.Contains(out, "waiting for Mary to return") {
+		t.Errorf("the absent order should still render its waiting clause; got:\n%s", out)
+	}
+}
