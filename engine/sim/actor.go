@@ -593,6 +593,21 @@ type Actor struct {
 	// wiped on LoadWorld.
 	heardSpeechMisses map[ActorID]heardSpeechMiss
 
+	// awaitingReplyFrom is this actor's turn-state as a SPEAKER: for each
+	// peer it has addressed and is awaiting a reply from, the wall-clock
+	// time it last addressed them. The single authoritative directed edge
+	// — "is it my turn / am I owed a reply" is DERIVED from peers' maps
+	// (some peer holds awaitingReplyFrom[me]), never stored separately, so
+	// the two views can't drift. Set when this actor speaks to a resolved
+	// addressee (sim.Speak / Spoke.AddressedID); cleared when the awaited
+	// party speaks (any utterance by them IS the reply) or on huddle
+	// leave/conclude. Keyed by addressee ActorID. Drives the ZBBS-WORK-370
+	// turn-taking gate (the gate + lazy time-window expiry land in a later
+	// slice; this slice only maintains the edge). Generalizes
+	// heardSpeechMisses (HOME-331). Unexported; ephemeral — wiped on
+	// LoadWorld, copied in CloneActor so the published snapshot sees it.
+	awaitingReplyFrom map[ActorID]time.Time
+
 	// Locomotion — Phase 2 PR 4.
 	//
 	// MoveIntent is the actor's in-flight movement state, nil when the
@@ -850,6 +865,12 @@ func CloneActor(a *Actor) *Actor {
 		cp.heardSpeechMisses = make(map[ActorID]heardSpeechMiss, len(a.heardSpeechMisses))
 		for k, v := range a.heardSpeechMisses {
 			cp.heardSpeechMisses[k] = v
+		}
+	}
+	if a.awaitingReplyFrom != nil {
+		cp.awaitingReplyFrom = make(map[ActorID]time.Time, len(a.awaitingReplyFrom))
+		for k, v := range a.awaitingReplyFrom {
+			cp.awaitingReplyFrom[k] = v
 		}
 	}
 	if a.Acquaintances != nil {
