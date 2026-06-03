@@ -273,6 +273,10 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	// PC presence staleness (ZBBS-WORK-326).
 	s.PCPresenceStaleAfter = parseDurationSetting(values, "pc_presence_stale_seconds", sim.DefaultPCPresenceStaleAfter)
 
+	// Conversation turn-state liveness windows (ZBBS-WORK-370).
+	s.PCAwaitReplyWindow = parseDurationSetting(values, "pc_await_reply_window_seconds", sim.DefaultPCAwaitReplyWindow)
+	s.NPCAwaitReplyWindow = parseDurationSetting(values, "npc_await_reply_window_seconds", sim.DefaultNPCAwaitReplyWindow)
+
 	return s
 }
 

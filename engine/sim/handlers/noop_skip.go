@@ -90,6 +90,23 @@ func shouldSkipNoop(payload perception.Payload, thresholds sim.NeedThresholds, w
 	return true
 }
 
+// batchHasNewNews reports whether the consumed warrant batch carries any
+// fresh stimulus — a Force warrant or any high-information kind. It is the
+// turn-state gate's new-news signal (ZBBS-WORK-370): the speak backstop
+// (sim.SpeakTo) exempts a tick that carries new news so a legitimate
+// event-driven follow-up commits while only idle re-pitches are suppressed.
+// The inverse of the noop-skip gate's low-info-only test: a batch that is NOT
+// new news is exactly a batch of only low-info kinds with no Force. An empty
+// batch carries no news (false) — the safe default (no exemption granted).
+func batchHasNewNews(warrants []sim.WarrantMeta) bool {
+	for _, m := range warrants {
+		if m.Force || !isLowInfoWarrantKind(m.Kind()) {
+			return true
+		}
+	}
+	return false
+}
+
 // isLowInfoWarrantKind reports whether a warrant kind carries no fresh
 // external stimulus on its own — so a batch consisting solely of these
 // kinds, with no other perception signal, has nothing for the LLM to

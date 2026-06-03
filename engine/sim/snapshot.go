@@ -124,6 +124,17 @@ type Snapshot struct {
 	ZoomMinAdmin   float64
 	ZoomMinRegular float64
 
+	// PCAwaitReplyWindow / NPCAwaitReplyWindow are the resolved conversation
+	// turn-state liveness windows (ZBBS-WORK-370), copied from WorldSettings at
+	// publish with the Default*AwaitReplyWindow fallback already applied (via
+	// World.awaitReplyWindow). Perception build uses them — with PublishedAt as
+	// the clock — to decide whether an awaiting-reply edge is still live when
+	// rendering the turn-line, so the perception nudge and the sim.Speak backstop
+	// apply the same expiry. Keyed on the ADDRESSEE's kind: an edge addressed at a
+	// PC uses PCAwaitReplyWindow, at an NPC uses NPCAwaitReplyWindow.
+	PCAwaitReplyWindow  time.Duration
+	NPCAwaitReplyWindow time.Duration
+
 	// ItemKinds is an ALIASED reference to World.ItemKinds — the item→satisfies
 	// reference catalog loaded once at startup (LoadWorld) and never mutated
 	// afterward (ItemKindDef is documented read-only). Unlike the mutable

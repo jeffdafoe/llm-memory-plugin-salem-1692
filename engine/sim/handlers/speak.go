@@ -175,6 +175,9 @@ func HandleSpeak(in HandlerInput) (sim.Command, error) {
 	}
 	actorID := in.ActorID
 	to := args.To
+	// Captured outside the closure (the harness may reuse `in` across iterations):
+	// the turn-state new-news exemption for this tick (ZBBS-WORK-370).
+	hasNewNews := in.HasNewNews
 	return sim.Command{Fn: func(w *sim.World) (any, error) {
 		// ZBBS-HOME-363: form the conversation on the explicit talk action,
 		// mirroring the PC path (httpapi.speakPCCommand). An NPC that walked
@@ -188,7 +191,7 @@ func HandleSpeak(in HandlerInput) (sim.Command, error) {
 		if _, err := sim.EnsureColocatedHuddle(actorID, now).Fn(w); err != nil {
 			return nil, err
 		}
-		return sim.SpeakTo(actorID, text, to, now).Fn(w)
+		return sim.SpeakTo(actorID, text, to, hasNewNews, now).Fn(w)
 	}}, nil
 }
 
