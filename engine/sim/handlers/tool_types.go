@@ -141,6 +141,16 @@ type HandlerInput struct {
 	// validated, ready to consume. The handler should type-assert to its
 	// per-tool args struct.
 	Args any
+
+	// HasNewNews is the turn-state gate's new-news signal (ZBBS-WORK-370): true
+	// when the tick's consumed warrant batch carries any fresh stimulus (a Force
+	// warrant or any high-information kind), false when it is only low-info
+	// liveness/idle warrants. The speak commit (sim.SpeakTo) reads it to exempt a
+	// legitimate event-driven follow-up from the "you already spoke and are
+	// awaiting a reply" backstop, suppressing only idle re-pitches. The harness
+	// computes it once per tick from job.warrants via batchHasNewNews; non-speak
+	// handlers ignore it.
+	HasNewNews bool
 }
 
 // ObservationFn is the handler signature for ClassObservation tools. It

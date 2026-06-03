@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
@@ -46,6 +47,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 	p.WarrantActorNames = buildWarrantActorNames(snap, actorSnap, actorID, p.Warrants)
 	p.WarrantPlaceNames = buildWarrantPlaceNames(snap, p.Warrants)
 	p.Surroundings = buildSurroundings(snap, actorID, actorSnap)
+	p.TurnState = buildTurnState(snap, actorID, actorSnap, p.Surroundings.HuddleMembers)
 	p.Anchors = buildAnchors(snap, actorSnap)
 	p.DutySteer = buildDutySteer(snap, actorSnap, p.Anchors)
 	p.NarrativeState = buildNarrativeState(actorSnap)
@@ -571,6 +573,78 @@ func buildSurroundings(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnap
 		}
 	}
 	return s
+}
+
+// buildTurnState derives the subject's conversation turn-state (ZBBS-WORK-370)
+// from the directed awaiting-reply edges among its present huddle peers. For
+// each peer it answers two questions off the snapshot maps, applying the
+// addressee-kind liveness window (snap.PublishedAt as the clock) so a lapsed
+// edge is ignored — keeping the rendered nudge in lockstep with the sim.Speak
+// backstop's expiry:
+//
+//   - does the SUBJECT await a live reply FROM this peer?  (subject's own edge,
+//     window keyed on the peer = the addressee) -> AwaitingReplyFrom: "you spoke
+//     to them, wait."
+//   - does this PEER await a live reply from the SUBJECT? (peer's edge to me,
+//     window keyed on the subject = the addressee) -> OwedReplyTo: "they are
+//     waiting for your reply."
+//
+// Names are the same acquaintance-gated labels the huddle roster renders
+// (descriptorLabel). members is already sorted by ID (buildSurroundings), so the
+// output slices are deterministic. Returns the zero value (no lines) when the
+// actor has no present peers or no live edges.
+func buildTurnState(snap *sim.Snapshot, actorID sim.ActorID, subj *sim.ActorSnapshot, members []HuddleMember) TurnStateView {
+	var ts TurnStateView
+	if snap == nil || subj == nil || len(members) == 0 {
+		return ts
+	}
+	now := snap.PublishedAt
+	subjWindow := awaitWindowForKind(snap, subj.Kind)
+	for _, m := range members {
+		peer := snap.Actors[m.ID]
+		if peer == nil {
+			continue
+		}
+		label := descriptorLabel(m.DisplayName, m.Role, m.Acquainted)
+		// Subject addressed this peer and awaits their reply — the addressee is
+		// the peer, so the window is keyed on the peer's kind.
+		if awaitEdgeLive(subj.AwaitingReplyFrom, m.ID, now, awaitWindowForKind(snap, peer.Kind)) {
+			ts.AwaitingReplyFrom = append(ts.AwaitingReplyFrom, label)
+		}
+		// This peer addressed the subject and awaits the subject's reply — the
+		// addressee is the subject, so the window is keyed on the subject's kind.
+		if awaitEdgeLive(peer.AwaitingReplyFrom, actorID, now, subjWindow) {
+			ts.OwedReplyTo = append(ts.OwedReplyTo, label)
+		}
+	}
+	return ts
+}
+
+// awaitWindowForKind picks the turn-state liveness window for an edge whose
+// ADDRESSEE is of the given kind, off the resolved snapshot windows (the
+// Default*AwaitReplyWindow fallback is already applied at publish). PC addressee
+// → the long window; every NPC kind → the short one.
+func awaitWindowForKind(snap *sim.Snapshot, addresseeKind sim.ActorKind) time.Duration {
+	if addresseeKind == sim.KindPC {
+		return snap.PCAwaitReplyWindow
+	}
+	return snap.NPCAwaitReplyWindow
+}
+
+// awaitEdgeLive reports whether `edges` holds an entry for `key` that is still
+// live at `now` under `window`. A missing entry, or one older than the window,
+// is not live. window <= 0 means "no expiry configured" → an existing entry
+// counts as live (the hand-built-snapshot posture; a published snapshot always
+// carries a positive resolved window).
+func awaitEdgeLive(edges map[sim.ActorID]time.Time, key sim.ActorID, now time.Time, window time.Duration) bool {
+	stamp, ok := edges[key]
+	if !ok {
+		return false
+	}
+	if window <= 0 {
+		return true
+	}
+	return now.Sub(stamp) < window
 }
 
 // findGatherableCue resolves the nearest refresh-bearing VillageObject the

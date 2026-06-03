@@ -42,6 +42,13 @@ import (
 //   - len(text) <= 1000 bytes
 //   - text contains no control characters outside \n \r \t
 //
+// hasNewNews is the turn-state gate's new-news signal (ZBBS-WORK-370): true
+// when the reactor tick driving this speak consumed a fresh-stimulus warrant
+// (Force, or any high-information kind). It exempts a legitimate event-driven
+// follow-up from the idle-re-pitch backstop below. The harness computes it per
+// tick (batchHasNewNews); the to-less Speak wrapper passes true so the PC path
+// and every internal caller ride the exemption unconditionally.
+//
 // World-state pre-conditions checked here:
 //
 //   - speakerID resolves to a real actor in w.Actors
@@ -51,6 +58,8 @@ import (
 //   - (NPC speakers only) the WORK-323 prose gates pass: no item mentioned that
 //     the speaker doesn't hold, no transfer-verb-narrated handover, no unbacked
 //     booking/payment state-claim (see validateSpeechClaims)
+//   - (NPC speakers only) the turn-state backstop passes: not an idle re-pitch
+//     of a peer already addressed and not yet replied (see below)
 //
 // On success:
 //
@@ -68,7 +77,7 @@ import (
 // RecordInteraction calls fire, the subscriber stamps no warrants. By
 // design (per the PR A design walkthrough): "speaking to no one" is a
 // legitimate narrative beat we don't punish.
-func SpeakTo(speakerID ActorID, text, to string, at time.Time) Command {
+func SpeakTo(speakerID ActorID, text, to string, hasNewNews bool, at time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
 			actor, ok := w.Actors[speakerID]
@@ -132,6 +141,55 @@ func SpeakTo(speakerID ActorID, text, to string, at time.Time) Command {
 			// the turn-state core (WORK-370). No-huddle / no-peer speaks resolve
 			// to empty (whole-huddle).
 			addressedID := resolveAddressee(to, text, w, peerIDs)
+
+			// ZBBS-WORK-370 (2/2) turn-state backstop. Suppress an NPC's idle
+			// re-pitch: a speaker with a still-live, unanswered outgoing edge to
+			// the addressee it is initiating to — on a tick with no fresh event
+			// behind it — is talking over a peer who hasn't answered yet (the
+			// "welcome, then two more pitches" cadence the live trace caught).
+			// Reject it model-facing, like the vocative gate. Carve-outs:
+			//   - PC speakers are never gated (they reach Speak with
+			//     hasNewNews=true anyway; a human may say whatever, whenever —
+			//     same posture as the walk / vocative / prose gates above).
+			//   - hasNewNews exempts a tick driven by a real event (paid, order
+			//     ready, arrival, a distinct utterance heard) so a legitimate
+			//     follow-up ("here is your bread") still commits.
+			//   - a whole-huddle utterance (addressedID == "") opens no edge, so
+			//     it is never gated.
+			//   - the outgoing edge must still be LIVE within the addressee-kind
+			//     window; once it lapses the conversation may re-open (anti-lockup).
+			//
+			// No explicit "responding" carve-out is needed. The gate fires only
+			// when the speaker holds a LIVE outgoing edge to the addressee, and the
+			// per-pair edge invariant makes the two directions mutually exclusive:
+			// any speak clears every INCOMING edge against the speaker
+			// (satisfyAwaitedReplyFrom below), so if the addressee were awaiting the
+			// speaker — i.e. the speaker were RESPONDING to it — the speaker's
+			// outgoing edge to that addressee would already have been cleared and
+			// this check could not fire. A genuine reply is therefore always
+			// allowed implicitly. (An earlier draft exempted "any peer awaits me",
+			// which wrongly let an idle re-pitch of X through whenever an unrelated
+			// peer Y was owed a reply — code_review caught it.)
+			//
+			// Runs BEFORE emit + before the edge mutations below, so it reads the
+			// pre-speak turn-state.
+			if actor.Kind != KindPC && !hasNewNews && addressedID != "" {
+				if addressee := w.Actors[addressedID]; addressee != nil {
+					window := w.awaitReplyWindow(addressee.Kind)
+					if actor.hasLiveAwaitEdge(addressedID, at, window) {
+						name := addressee.DisplayName
+						if name == "" {
+							name = "them"
+						}
+						return nil, fmt.Errorf(
+							"you already spoke to %s and are awaiting their reply — do not "+
+								"repeat yourself or address them again; attend to your own work, "+
+								"or wait until they answer.",
+							name,
+						)
+					}
+				}
+			}
 
 			// Emit the Spoke event. World.emit stamps EventID + RootEventID
 			// and dispatches subscribers synchronously inside the world
@@ -200,7 +258,12 @@ func SpeakTo(speakerID ActorID, text, to string, at time.Time) Command {
 // caller (the PC speak path, tests) reaches speech through this wrapper
 // unchanged; only the NPC speak tool passes an explicit `to` via SpeakTo.
 func Speak(speakerID ActorID, text string, at time.Time) Command {
-	return SpeakTo(speakerID, text, "", at)
+	// hasNewNews=true: the to-less wrapper is the PC speak path plus every
+	// pre-WORK-369 caller. None should ever be turn-gated — PCs are exempt via
+	// the Kind check anyway, and internal/test callers declare "fresh news"
+	// unconditionally so the backstop only ever fires for an NPC speak tool call
+	// that threads the harness-computed flag through SpeakTo.
+	return SpeakTo(speakerID, text, "", true, at)
 }
 
 // resolveAddressee picks the single huddle peer a speak is directed at,

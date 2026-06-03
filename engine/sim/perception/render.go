@@ -198,13 +198,54 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 		renderWarrants(&durable, warrants, nameOf, placeNameOf, cfg, &out)
 	}
 
-	// Ephemeral: the act-now coda + rest-first steer are instructions for THIS
-	// tick, not facts to remember.
-	renderTriage(&ephemeral, p.Actor.Needs, p.Actor.NeedThresholds)
+	// Ephemeral: the turn-state nudge, the act-now coda, and the rest-first steer
+	// are instructions for THIS tick, not facts to remember. The turn-line lands
+	// before the coda so the coda's "weigh everything above" sees it; the coda
+	// itself swaps to a wait-framing when the actor is awaiting a reply.
+	renderTurnState(&ephemeral, p.TurnState)
+	renderTriage(&ephemeral, p.Actor.Needs, p.Actor.NeedThresholds, p.TurnState.AwaitingReply())
 
 	out.Text = durable.String()
 	out.EphemeralText = ephemeral.String()
 	return out
+}
+
+// renderTurnState writes the conversation turn-state lines (ZBBS-WORK-370): who
+// the actor owes a reply to, and who it is awaiting a reply from. The awaiting
+// line is the cadence fix — it tells the model it has already spoken and must
+// not re-pitch a peer who hasn't answered; renderTriage's coda swap reinforces
+// it. Both lists are acquaintance-gated labels resolved at build time. Emits
+// nothing when there is no pending turn (the common case).
+func renderTurnState(b *strings.Builder, ts TurnStateView) {
+	for _, name := range ts.OwedReplyTo {
+		fmt.Fprintf(b, "%s is waiting for your reply.\n", sanitizeInline(name))
+	}
+	if len(ts.AwaitingReplyFrom) > 0 {
+		fmt.Fprintf(b,
+			"You already spoke to %s and are waiting for their reply. Do not repeat "+
+				"yourself or address them again — attend to your own work, or simply wait.\n",
+			joinNames(ts.AwaitingReplyFrom))
+	}
+}
+
+// joinNames renders a name list as readable prose: "A", "A and B", or
+// "A, B, and C". Each name is sanitized inline (the build-time labels are
+// already acquaintance-gated). Returns "" for an empty list.
+func joinNames(names []string) string {
+	clean := make([]string, 0, len(names))
+	for _, n := range names {
+		clean = append(clean, sanitizeInline(n))
+	}
+	switch len(clean) {
+	case 0:
+		return ""
+	case 1:
+		return clean[0]
+	case 2:
+		return clean[0] + " and " + clean[1]
+	default:
+		return strings.Join(clean[:len(clean)-1], ", ") + ", and " + clean[len(clean)-1]
+	}
 }
 
 // renderTriage writes the closing prioritization instruction — the synthesis
@@ -219,8 +260,19 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 // wandering exposed: obligations to others and pressing needs over idle drift.
 // Rendered unconditionally — Render is only called on the NPC reactor-tick path
 // (handlers.Harness.RunTick), never for a PC.
-func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.NeedThresholds) {
-	b.WriteString("Weigh everything above and act on what matters most right now — obligations to others and pressing needs come before idle matters. Choose one thing and do it.\n")
+func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.NeedThresholds, awaitingReply bool) {
+	if awaitingReply {
+		// Turn-state coda (ZBBS-WORK-370): the actor has spoken and is awaiting a
+		// reply. The default "choose one thing and do it" imperative is exactly
+		// what drove the re-pitch loop (live-trace finding #2) — it commands an
+		// action every tick even when the right move is to wait. Swap it for a
+		// wait-permitting framing: real needs/obligations above still license an
+		// action, but "nothing new to add" now resolves to done() instead of a
+		// repeated pitch.
+		b.WriteString("Weigh everything above. If the most pressing matter is simply awaiting someone's reply, do not repeat yourself — wait and call done(). Otherwise act on what matters most: obligations to others and pressing needs come before idle matters.\n")
+	} else {
+		b.WriteString("Weigh everything above and act on what matters most right now — obligations to others and pressing needs come before idle matters. Choose one thing and do it.\n")
+	}
 	// Rest-first steer (ZBBS-WORK-354). When the actor is deeply fatigued AND
 	// another need is also pressing, the model otherwise flip-flops between "buy
 	// food" and "I need rest" and resolves neither. Steer it to rest first: an

@@ -224,6 +224,42 @@ func TestIsLowInfoWarrantKind(t *testing.T) {
 	}
 }
 
+// --- batchHasNewNews unit tests -------------------------------------------
+
+// TestBatchHasNewNews — the turn-state gate's new-news signal (ZBBS-WORK-370):
+// true when any warrant is Force or a high-info kind, false for a low-info-only
+// batch or an empty batch.
+func TestBatchHasNewNews(t *testing.T) {
+	lowInfoOnly := []sim.WarrantMeta{
+		idleBackstopWarrant(),
+		{Reason: sim.BasicWarrantReason{K: sim.WarrantKindHuddlePeerLeft}},
+	}
+	if batchHasNewNews(lowInfoOnly) {
+		t.Error("low-info-only batch should NOT be new news")
+	}
+	if batchHasNewNews(nil) {
+		t.Error("empty batch should NOT be new news")
+	}
+
+	// A high-info kind anywhere in the batch is new news.
+	withSpeech := []sim.WarrantMeta{
+		idleBackstopWarrant(),
+		{TriggerActorID: "bob", Reason: sim.BasicWarrantReason{K: sim.WarrantKindNPCSpoke}},
+	}
+	if !batchHasNewNews(withSpeech) {
+		t.Error("batch with a speech warrant should be new news")
+	}
+
+	// A Force warrant is new news even when its kind is low-info.
+	forced := []sim.WarrantMeta{{
+		Force:  true,
+		Reason: sim.IdleBackstopWarrantReason{QuietDuration: time.Hour},
+	}}
+	if !batchHasNewNews(forced) {
+		t.Error("a Force warrant should be new news regardless of kind")
+	}
+}
+
 // --- Harness.RunTick integration ------------------------------------------
 
 // TestHarness_NoopSkip_NoLLMCallEmitted exercises the full RunTick gate

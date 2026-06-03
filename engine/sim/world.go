@@ -171,6 +171,18 @@ type WorldSettings struct {
 	AdmissionBackoff                 time.Duration
 	TickWorkerCount                  int
 
+	// Conversation turn-state liveness windows (ZBBS-WORK-370). How long an
+	// actor's outgoing "I addressed X, awaiting their reply" edge stays live
+	// before the turn-taking backstop stops suppressing a re-initiation and
+	// perception drops the "wait for their reply" line — so a conversation with
+	// an unresponsive party re-opens rather than locking up. Keyed on the
+	// ADDRESSEE's kind (Fork 3): a human player is slow, an NPC answers at tick
+	// speed. Both fall back to Default{PC,NPC}AwaitReplyWindow when zero (see
+	// World.awaitReplyWindow). Settings keys: pc_await_reply_window_seconds /
+	// npc_await_reply_window_seconds.
+	PCAwaitReplyWindow  time.Duration
+	NPCAwaitReplyWindow time.Duration
+
 	// Idle-backstop tunables (engine/sim/cascade/idle_backstop.go). Both
 	// fall back to defaults when zero, so tests that bypass the
 	// environment loader get sensible behavior without seeding them.
@@ -1411,6 +1423,10 @@ func (w *World) republish() {
 		RestockReorderPct:        w.Settings.RestockReorderPct,
 		ZoomMinAdmin:             w.Settings.ZoomMinAdmin,
 		ZoomMinRegular:           w.Settings.ZoomMinRegular,
+		// Resolved (default-applied) conversation turn-state windows, so
+		// perception build reads the same expiry the sim.Speak backstop uses.
+		PCAwaitReplyWindow:  w.awaitReplyWindow(KindPC),
+		NPCAwaitReplyWindow: w.awaitReplyWindow(KindNPCShared),
 		// Aliased, not cloned — immutable post-startup catalog. See Snapshot.ItemKinds.
 		ItemKinds: w.ItemKinds,
 	}
@@ -1542,6 +1558,7 @@ func snapshotActor(a *Actor, atTick uint64) *ActorSnapshot {
 		Acquaintances:       cloneAcquaintances(a.Acquaintances),
 		Relationships:       cloneRelationships(a.Relationships),
 		Narrative:           cloneNarrativeState(a.Narrative),
+		AwaitingReplyFrom:   cloneAwaitingReplyFrom(a.awaitingReplyFrom),
 		VisitorState:        cloneVisitorState(a.VisitorState),
 		BusinessownerState:  cloneBusinessownerState(a.BusinessownerState),
 		DwellCredits:        cloneDwellCredits(a.DwellCredits),

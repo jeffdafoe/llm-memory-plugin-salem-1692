@@ -76,6 +76,13 @@ type Payload struct {
 	// and co-present actors.
 	Surroundings SurroundingsView
 
+	// TurnState is the subject's conversation turn-state for this tick
+	// (ZBBS-WORK-370): which present huddle peers it is awaiting a reply from,
+	// and which are awaiting a reply from it. Drives the turn-line and the
+	// act-now coda swap that stop an NPC re-pitching a peer who hasn't answered.
+	// Zero value (both slices empty) when the actor has no pending turn.
+	TurnState TurnStateView
+
 	// Anchors are the actor's OWN home and work structures, always surfaced
 	// (when set) as standing move_to targets with their structure_ids — so a
 	// wandering NPC can always head home or to work, not only when a need-cue
@@ -429,6 +436,33 @@ type SurroundingsView struct {
 	GatherableItem   sim.ItemKind
 	GatherableSource string
 }
+
+// TurnStateView is the subject actor's conversation turn-state, derived in
+// Build from the directed awaiting-reply edges (ActorSnapshot.AwaitingReplyFrom)
+// among its present huddle peers (ZBBS-WORK-370). Names are the acquaintance-
+// gated labels (descriptorLabel), resolved at build time like OrderView's, so a
+// line never leaks a name a shared-VA NPC shouldn't know.
+//
+// Only LIVE edges are surfaced: an edge older than the addressee-kind window
+// (Snapshot.{PC,NPC}AwaitReplyWindow, measured against PublishedAt) is dropped,
+// matching the sim.Speak backstop's expiry so the nudge and the gate agree on
+// when a turn has lapsed.
+type TurnStateView struct {
+	// AwaitingReplyFrom names the present peers this actor has addressed and is
+	// still awaiting a live reply from. Non-empty → render "you spoke to them,
+	// wait for their reply, don't re-address them" AND swap the act-now coda for
+	// a wait-framing (the cadence fix — stops the re-pitch loop).
+	AwaitingReplyFrom []string
+
+	// OwedReplyTo names the present peers awaiting a live reply FROM this actor —
+	// it is this actor's turn to answer them. Rendered as a "they are waiting for
+	// your reply" nudge so an addressed NPC takes its turn.
+	OwedReplyTo []string
+}
+
+// AwaitingReply reports whether the subject is awaiting at least one live reply
+// — the condition that swaps the act-now coda for a wait-framing.
+func (t TurnStateView) AwaitingReply() bool { return len(t.AwaitingReplyFrom) > 0 }
 
 // HuddleMember is one co-huddle peer's identity slice for the
 // SurroundingsView. Render emits DisplayName when Acquainted is true,
