@@ -175,6 +175,20 @@ func SpeakTo(speakerID ActorID, text, to string, at time.Time) Command {
 			// Only successful speaks reach here; a rejected speak returns above,
 			// before emit, and does not reset.
 			actor.resetHeardSpeechMissesAgainst(peerIDs)
+
+			// ZBBS-WORK-370 turn-state edges. The speaker now awaits a reply
+			// from its resolved addressee (no-op when it addressed the whole
+			// huddle, addressedID == ""), AND its utterance satisfies any peer
+			// that was awaiting a reply from it — any speak by the awaited party
+			// IS the reply that takes the turn. Mirror of
+			// resetHeardSpeechMissesAgainst one layer up; the gate that reads
+			// these edges lands in the follow-up slice.
+			actor.awaitReply(addressedID, at)
+			for _, peerID := range peerIDs {
+				if peer, ok := w.Actors[peerID]; ok {
+					peer.satisfyAwaitedReplyFrom(speakerID)
+				}
+			}
 			return nil, nil
 		},
 	}

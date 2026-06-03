@@ -254,6 +254,14 @@ func SetActorRecentlyConsumedSourceKeys(a *Actor, m map[WarrantSourceKey]time.Ti
 	a.recentlyConsumedSourceKeys = m
 }
 
+// ActorAwaitingReplyFrom exposes the unexported ZBBS-WORK-370 turn-state map on
+// Actor so sim_test can assert which directed awaiting-reply edges an actor
+// holds (addressee -> when last addressed) without that field being part of the
+// public Actor contract.
+func ActorAwaitingReplyFrom(a *Actor) map[ActorID]time.Time {
+	return a.awaitingReplyFrom
+}
+
 // WorldEventSeq exposes the per-run event counter so sim_test can assert
 // EventID monotonicity / "counter starts at 1" without an exported field.
 func WorldEventSeq(w *World) uint64 { return w.eventSeq }

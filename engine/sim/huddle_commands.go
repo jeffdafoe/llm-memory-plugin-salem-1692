@@ -483,6 +483,9 @@ func ConcludeHuddle(huddleID HuddleID, now time.Time) Command {
 			for _, actorID := range members {
 				if actor, ok := w.Actors[actorID]; ok {
 					actor.CurrentHuddleID = ""
+					// ZBBS-WORK-370: dissolving the conversation makes every
+					// member's pending turn edges moot.
+					actor.dropAwaitingReplies()
 				}
 			}
 			huddle.Members = make(map[ActorID]struct{})
@@ -540,11 +543,14 @@ func leaveCurrentHuddle(w *World, actor *Actor, now time.Time) LeaveHuddleResult
 	huddle, ok := w.Huddles[huddleID]
 	if !ok {
 		actor.CurrentHuddleID = ""
+		actor.dropAwaitingReplies()
 		return LeaveHuddleResult{}
 	}
 
 	delete(huddle.Members, actor.ID)
 	actor.CurrentHuddleID = ""
+	// ZBBS-WORK-370: the leaver's pending turn edges are moot once it exits.
+	actor.dropAwaitingReplies()
 	if members, ok := w.actorsByHuddle[huddleID]; ok {
 		delete(members, actor.ID)
 		if len(members) == 0 {
@@ -590,6 +596,9 @@ func leaveCurrentHuddle(w *World, actor *Actor, now time.Time) LeaveHuddleResult
 				OccurredAt:     now,
 				Reason:         BasicWarrantReason{K: WarrantKindHuddlePeerLeft},
 			}, now)
+			// ZBBS-WORK-370: a member that was awaiting a reply from the
+			// leaver is no longer owed one — the leaver is gone.
+			other.satisfyAwaitedReplyFrom(actor.ID)
 		}
 	}
 
