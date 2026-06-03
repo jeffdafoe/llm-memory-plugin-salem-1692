@@ -207,14 +207,19 @@ func (s *Server) handlePCMe(w http.ResponseWriter, r *http.Request) {
 		resp.CurrentHuddleID = &id
 	}
 
-	if scope, ok := pcAudienceStructure(snap, pc, s.world.Assets); ok {
-		resp.AudienceStructureID = &scope
+	// Resolve the conversational scope once and feed BOTH the talk-panel scope
+	// field and the roster (ZBBS-HOME-378): a customer at an owner-only stall's
+	// loiter point is scoped to that stall, so the roster must list the owner
+	// working inside it — not fall through to the players-only outdoor roster.
+	audienceStructureID, hasAudience := pcAudienceStructure(snap, pc, s.world.Assets)
+	if hasAudience {
+		resp.AudienceStructureID = &audienceStructureID
 	}
 	if room, ok := pcAudienceRoom(snap, pc); ok {
 		resp.AudienceRoomID = &room
 	}
 
-	resp.HuddleMembers = pcHuddleRoster(snap, pc, pcID, snap.PublishedAt, sim.PCPresenceStaleAfter(s.world))
+	resp.HuddleMembers = pcHuddleRoster(snap, pc, pcID, audienceStructureID, snap.PublishedAt, sim.PCPresenceStaleAfter(s.world))
 	resp.RecentSpeech = pcRecentSpeechBackload(snap, pc)
 	resp.Inventory = pcInventoryEntries(pc.Inventory, s.world.ItemKinds)
 
@@ -314,13 +319,17 @@ func pcAudienceRoom(snap *sim.Snapshot, pc *sim.ActorSnapshot) (string, bool) {
 // pcHuddleRoster lists the actors conversationally co-present with the PC,
 // excluding the PC itself. When the PC is in a huddle, that's the huddle's
 // members (the huddle IS the conversational pocket — membership is canonical on
-// Huddle.Members). When the PC is outdoors with no huddle, it's the nearby PCs
-// within pcOutdoorRosterTiles, so the talk-panel launcher still has a roster to
-// populate its chip strip. Sorted by name for a deterministic, stable response.
-func pcHuddleRoster(snap *sim.Snapshot, pc *sim.ActorSnapshot, selfID sim.ActorID, now time.Time, staleAfter time.Duration) []pcHuddleMember {
+// Huddle.Members). With no huddle and standing INSIDE a structure, it's that
+// structure's conversational occupants. Outdoors with no huddle it's the nearby
+// PCs within pcOutdoorRosterTiles — PLUS (ZBBS-HOME-378) the conversational
+// occupants of an owner-only stall the PC is loitering at, so a customer outside
+// a market stall sees the owner working within while still seeing nearby players.
+// Sorted by name for a deterministic, stable response.
+func pcHuddleRoster(snap *sim.Snapshot, pc *sim.ActorSnapshot, selfID sim.ActorID, audienceStructureID string, now time.Time, staleAfter time.Duration) []pcHuddleMember {
 	out := []pcHuddleMember{}
 
-	if pc.CurrentHuddleID != "" {
+	switch {
+	case pc.CurrentHuddleID != "":
 		hud := snap.Huddles[pc.CurrentHuddleID]
 		if hud != nil {
 			for mid := range hud.Members {
@@ -332,59 +341,18 @@ func pcHuddleRoster(snap *sim.Snapshot, pc *sim.ActorSnapshot, selfID sim.ActorI
 				}
 			}
 		}
-	} else if pc.InsideStructureID != "" {
-		// Indoor proximity roster: conversational actors sharing the PC's
-		// structure, when the PC has no huddle yet. Without this branch a PC
-		// standing in (say) the Tavern with NPCs gets an empty roster, so the
-		// talk-panel launcher stays hidden (talk_panel.gd gates it on
-		// huddle_members) and the player can never speak — yet HOME-358's
-		// EnsureColocatedHuddle forms the real huddle only ON the PC's first
-		// speak. That is the chicken-and-egg this branch breaks (HOME-371):
-		// surface who's here so the launcher shows; the actual conversational
-		// huddle still forms when the player speaks. Eligibility mirrors the
-		// set EnsureColocatedHuddle / colocatedConversationalActors would pull
-		// in, so the roster doesn't advertise a target the speak path won't
-		// include: same structure, NOT already in a huddle (HOME-358 leaves
-		// existing conversations intact rather than absorbing them), a
-		// conversational kind (stateful/shared NPC or PC) that is not asleep,
-		// and — for a PC — not presence-stale.
-		for id, a := range snap.Actors {
-			if a == nil || id == selfID {
-				continue
-			}
-			if a.InsideStructureID != pc.InsideStructureID {
-				continue
-			}
-			// ZBBS-HOME-363 reversal of HOME-371's already-huddled exclusion:
-			// the PC's speak JOINS this structure's active huddle
-			// (EnsureColocatedHuddle find-or-creates it), so a co-located NPC
-			// already in THIS structure's huddle IS talkable and must show (the
-			// live bug: on-break keeper John, in the tavern huddle, was invisible
-			// to the roster though the player stood right there). Only an actor
-			// conversing in a DIFFERENT structure (a stale cross-structure
-			// back-ref, or a nil/missing huddle) is excluded; the PC's join will
-			// not pull them in.
-			if a.CurrentHuddleID != "" {
-				h := snap.Huddles[a.CurrentHuddleID]
-				if h == nil || h.StructureID != pc.InsideStructureID {
-					continue
-				}
-			}
-			if !snapshotConversational(a) {
-				continue
-			}
-			if a.Kind == sim.KindPC && sim.PCPresenceStale(a.LastPCSeenAt, now, staleAfter) {
-				continue // absent player — the speak path excludes stale PCs too
-			}
-			out = append(out, pcHuddleMemberOf(a))
-		}
-	} else {
-		// Outdoor proximity roster: nearby PCs, no last-seen filter (a
-		// logged-out PC will phantom in until presence-staleness is its own
-		// feature — v1 accepts the same). NPCs are intentionally NOT listed
-		// here: HOME-358's co-located speak bootstrap is indoor-only, so an
-		// outdoor talk box would offer a conversation the speak path can't yet
-		// form (the symmetric outdoor follow-on is unbuilt).
+	case pc.InsideStructureID != "":
+		// Indoor roster: the conversational occupants of the structure the PC
+		// stands in. Without this a PC standing in (say) the Tavern with NPCs
+		// gets an empty roster, so the talk-panel launcher stays hidden
+		// (talk_panel.gd gates it on huddle_members) and the player can never
+		// speak — yet HOME-358's EnsureColocatedHuddle forms the real huddle only
+		// ON the PC's first speak (the HOME-371 chicken-and-egg).
+		out = append(out, structureConversationalOccupants(snap, string(pc.InsideStructureID), selfID, now, staleAfter)...)
+	default:
+		// Outdoor roster: nearby PCs, no last-seen filter (a logged-out PC
+		// phantoms in until presence-staleness is its own feature — v1 accepts
+		// the same).
 		for id, a := range snap.Actors {
 			if a == nil || id == selfID {
 				continue
@@ -397,9 +365,55 @@ func pcHuddleRoster(snap *sim.Snapshot, pc *sim.ActorSnapshot, selfID sim.ActorI
 			}
 			out = append(out, pcHuddleMember{Kind: "pc", Name: a.DisplayName})
 		}
+		// ZBBS-HOME-378: a customer loitering at an owner-only stall's loiter
+		// point ALSO sees the owner working inside it. audienceStructureID is the
+		// loiter-resolved stall (pcAudienceStructure); add its conversational
+		// occupants — the read-path mirror of conversationalScopeStructure, whose
+		// speak path forms the customer↔owner huddle on first address. A loitered
+		// object with no occupants (a well, a sign) adds nothing, leaving the
+		// nearby-PC roster intact. (Inside-occupants and outdoor PCs are disjoint
+		// — InsideStructureID is set for one and empty for the other — so no dup.)
+		if audienceStructureID != "" {
+			out = append(out, structureConversationalOccupants(snap, audienceStructureID, selfID, now, staleAfter)...)
+		}
 	}
 
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// structureConversationalOccupants returns talk-roster entries for the
+// conversational actors INSIDE structureID (excluding selfID): a stateful/shared
+// NPC or non-stale PC that is awake, and either unhuddled or already in THIS
+// structure's huddle. An actor conversing in a DIFFERENT structure (a stale
+// cross-structure back-ref, or a nil/missing huddle) is excluded — the speaker's
+// join won't pull it in (ZBBS-HOME-363). Eligibility mirrors EnsureColocatedHuddle
+// / colocatedConversationalActors so the roster never advertises a target the
+// speak path won't include. Shared by the indoor roster and the HOME-378
+// loiter-stall roster.
+func structureConversationalOccupants(snap *sim.Snapshot, structureID string, selfID sim.ActorID, now time.Time, staleAfter time.Duration) []pcHuddleMember {
+	var out []pcHuddleMember
+	for id, a := range snap.Actors {
+		if a == nil || id == selfID {
+			continue
+		}
+		if string(a.InsideStructureID) != structureID {
+			continue
+		}
+		if a.CurrentHuddleID != "" {
+			h := snap.Huddles[a.CurrentHuddleID]
+			if h == nil || string(h.StructureID) != structureID {
+				continue
+			}
+		}
+		if !snapshotConversational(a) {
+			continue
+		}
+		if a.Kind == sim.KindPC && sim.PCPresenceStale(a.LastPCSeenAt, now, staleAfter) {
+			continue // absent player — the speak path excludes stale PCs too
+		}
+		out = append(out, pcHuddleMemberOf(a))
+	}
 	return out
 }
 

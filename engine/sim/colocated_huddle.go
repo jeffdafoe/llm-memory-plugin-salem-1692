@@ -28,9 +28,17 @@ import (
 // sceneID) — so an actor whose structure already has an active huddle JOINS it
 // rather than minting a second.
 //
-// Scope: INDOOR only (the actor must be inside a structure). Outdoor speech
-// among co-located actors would mirror the cascade's StartOutdoorHuddle with a
-// speak radius; not handled here.
+// Scope: the actor must be inside a structure OR standing at a stall's loiter
+// point — ZBBS-HOME-378. An owner-only shop (the Blacksmith, etc.) is never
+// entered by customers; the owner works inside and customers conduct commerce
+// from the loiter point outside, conversing across the threshold. So the
+// conversational scope is conversationalScopeStructure: the structure the actor
+// is inside, or the stall whose loiter pin it stands within AudienceScopeTiles
+// of. A loitering customer joins the owner's structure huddle WITHOUT entering
+// (JoinHuddle only sets CurrentHuddleID — it never moves the actor inside).
+// General open-ground speech among two outdoor actors with no structure nearby
+// would mirror the cascade's StartOutdoorHuddle with a speak radius; that is
+// still not handled here.
 //
 // ZBBS-HOME-363 widened the original PC-only restriction to conversational NPCs
 // (stateful + shared). The live Tavern bug: a starving NPC walked in to buy from
@@ -67,9 +75,14 @@ func EnsureColocatedHuddle(actorID ActorID, now time.Time) Command {
 			if actor.CurrentHuddleID != "" {
 				return nil, nil // already conversing — leave the existing huddle intact
 			}
-			structureID := actor.InsideStructureID
+			// ZBBS-HOME-378: scope is the structure the actor stands inside, OR —
+			// for a customer at an owner-only stall's loiter point — that stall, so
+			// the loitering customer forms/joins the owner's huddle and can transact
+			// without ever entering. "" only when neither holds (open ground, no
+			// structure within the loiter ring).
+			structureID := conversationalScopeStructure(w, actor)
 			if structureID == "" {
-				return nil, nil // outdoor — out of scope (see file doc)
+				return nil, nil
 			}
 			others := colocatedConversationalActors(w, actor, structureID, now)
 			// ZBBS-HOME-363: the speaker must also join an ALREADY-ACTIVE
@@ -128,6 +141,27 @@ func EnsureColocatedHuddle(actorID ActorID, now time.Time) Command {
 			return nil, nil
 		},
 	}
+}
+
+// conversationalScopeStructure returns the structure an actor is conversationally
+// scoped to: the structure it stands inside, or — when it is standing at a stall's
+// loiter point (the commerce position for an owner-only shop, where the customer
+// stays outside) — that stall, so a loitering customer is scoped to the owner
+// working within. Empty when the actor is neither inside a structure nor within
+// AudienceScopeTiles of a named object's loiter pin.
+//
+// ZBBS-HOME-378: the engine-side mirror of httpapi.pcAudienceStructure, so the
+// speak/huddle WRITE path and the talk-roster READ path agree on who a loitering
+// customer can address. (StructureID and VillageObjectID share an id under the
+// WORK-342 shared-identity bridge, so the cast is exact.)
+func conversationalScopeStructure(w *World, a *Actor) StructureID {
+	if a.InsideStructureID != "" {
+		return a.InsideStructureID
+	}
+	if id, ok := ResolveLoiteringObject(w.VillageObjects, w.Assets, a.Pos, AudienceScopeTiles); ok {
+		return StructureID(string(id))
+	}
+	return ""
 }
 
 // colocatedConversationalActors returns the ids (sorted) of conversational,

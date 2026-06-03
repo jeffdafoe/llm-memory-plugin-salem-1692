@@ -344,6 +344,55 @@ func TestEnsureColocatedHuddle_ExcludesSleeperAndDecorative(t *testing.T) {
 	}
 }
 
+// TestEnsureColocatedHuddle_LoiterStallJoinsOwner: ZBBS-HOME-378 — a customer
+// standing OUTSIDE at an owner-only stall's loiter point (InsideStructureID == "")
+// forms/joins the owner's structure huddle on speak, WITHOUT entering the stall.
+// This is the write-path half of the loiter-commerce fix: the customer stays
+// outside (InsideStructureID unchanged) but gains the huddle, so speak/pay/order
+// reach the owner working within.
+func TestEnsureColocatedHuddle_LoiterStallJoinsOwner(t *testing.T) {
+	w, cancel := buildHuddleTestWorld(t)
+	defer cancel()
+	// Make the tavern resolvable as a loiter object: a named vobj with zero
+	// loiter offsets so its loiter pin == its anchor tile (160px/32 + pad).
+	sendT(t, w, sim.Command{Fn: func(world *sim.World) (any, error) {
+		v := world.VillageObjects["tavern"]
+		v.DisplayName = "Tavern"
+		z := 0
+		v.LoiterOffsetX, v.LoiterOffsetY = &z, &z
+		return nil, nil
+	}})
+	loiterPin := sim.WorldPos{X: 160, Y: 160}.Tile()
+	setActor(t, w, "alice", func(a *sim.Actor) {
+		a.Kind = sim.KindPC
+		a.LoginUsername = "tester"
+		a.InsideStructureID = "" // OUTSIDE — standing at the stall's loiter point
+		a.Pos = loiterPin
+	})
+	setActor(t, w, "bob", func(a *sim.Actor) {
+		a.Kind = sim.KindNPCStateful
+		a.InsideStructureID = "tavern" // owner working inside
+	})
+
+	ensureColocated(t, w, "alice")
+
+	ah, bh := huddleOf(t, w, "alice"), huddleOf(t, w, "bob")
+	if ah == "" {
+		t.Fatal("loitering customer formed no huddle with the stall owner")
+	}
+	if ah != bh {
+		t.Errorf("customer not co-huddled with owner: alice=%q bob=%q", ah, bh)
+	}
+	// The customer must NOT have been moved inside — commerce is conducted from
+	// the loiter point, across the threshold.
+	inside := sendT(t, w, sim.Command{Fn: func(world *sim.World) (any, error) {
+		return world.Actors["alice"].InsideStructureID, nil
+	}}).(sim.StructureID)
+	if inside != "" {
+		t.Errorf("loitering customer was moved inside the stall (InsideStructureID=%q); should stay outside", inside)
+	}
+}
+
 // structureScenesFor returns the SceneIDs of every structure-bound scene
 // anchored to structureID. Reads world state on the world goroutine.
 func structureScenesFor(t *testing.T, w *sim.World, structureID sim.StructureID) []sim.SceneID {
