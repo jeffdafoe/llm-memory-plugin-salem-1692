@@ -34,12 +34,17 @@ import (
 //     - WarrantKindHuddleConcluded: the actor's conversation just
 //     ended; there's no peer left to
 //     respond to (also caught by 2).
-//     - WarrantKindHuddleLeft:     the actor's own past departure; no
+//     - WarrantKindHuddleLeft:      the actor's own past departure; no
 //     external stimulus.
+//     - WarrantKindHuddlePeerLeft:  a peer left the actor's conversation.
+//     When a peer still remains, check 2 keeps the gate open so the
+//     actor can react to the changed group; when none remain (the
+//     alone case) there's nothing to respond to — same shape as
+//     HuddleConcluded. (ZBBS-WORK-367)
 //
-//     Any other warrant kind in the batch — speech, pay, arrival, peer-
-//     joined / peer-left, need-threshold, scene-quote, admin — counts as
-//     fresh news worth one LLM call, and the gate steps aside.
+//     Any other warrant kind in the batch — speech, pay, arrival,
+//     peer-joined, need-threshold, scene-quote, admin — counts as fresh
+//     news worth one LLM call, and the gate steps aside.
 //
 // Replaces v1's salem-vendor-only skip in engine/agent_tick.go (lines
 // 211-221, ZBBS-WORK-235). v1 narrowed by agent slug because the
@@ -95,7 +100,8 @@ func isLowInfoWarrantKind(k sim.WarrantKind) bool {
 	switch k {
 	case sim.WarrantKindIdleBackstop,
 		sim.WarrantKindHuddleConcluded,
-		sim.WarrantKindHuddleLeft:
+		sim.WarrantKindHuddleLeft,
+		sim.WarrantKindHuddlePeerLeft:
 		return true
 	default:
 		return false

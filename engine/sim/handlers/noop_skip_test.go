@@ -62,6 +62,38 @@ func TestShouldSkipNoop_HuddleLeftAlone_NoPeerNoNeeds_Skips(t *testing.T) {
 	}
 }
 
+func TestShouldSkipNoop_HuddlePeerLeftAlone_NoPeerNoNeeds_Skips(t *testing.T) {
+	// ZBBS-WORK-367: a peer leaving that leaves the actor alone is a
+	// do-nothing tick — nothing left to respond to (same shape as
+	// HuddleConcluded). Without this the lone "X stepped away" tick burned
+	// an LLM call and the weak 70B coughed up out-of-character boilerplate.
+	w := sim.WarrantMeta{
+		TriggerActorID: "bob",
+		Reason:         sim.BasicWarrantReason{K: sim.WarrantKindHuddlePeerLeft},
+	}
+	if !shouldSkipNoop(quietPayload(), defaultThresholds(), []sim.WarrantMeta{w}) {
+		t.Fatalf("expected skip=true for huddle-peer-left-only + no peer + no needs")
+	}
+}
+
+func TestShouldSkipNoop_HuddlePeerLeft_PeerRemains_DoesNotSkip(t *testing.T) {
+	// Safety property: a peer leaving a 3+-party huddle still leaves someone
+	// present, so the actor should still tick and react to the changed group.
+	// The no-co-present-peer gate (check 2) keeps the gate open here even
+	// though HuddlePeerLeft is now classed low-info (ZBBS-WORK-367).
+	pl := quietPayload()
+	pl.Surroundings.HuddleMembers = []perception.HuddleMember{
+		{ID: "carol", DisplayName: "Carol", Acquainted: true},
+	}
+	w := sim.WarrantMeta{
+		TriggerActorID: "bob",
+		Reason:         sim.BasicWarrantReason{K: sim.WarrantKindHuddlePeerLeft},
+	}
+	if shouldSkipNoop(pl, defaultThresholds(), []sim.WarrantMeta{w}) {
+		t.Fatalf("expected skip=false when a peer remains after another peer left")
+	}
+}
+
 func TestShouldSkipNoop_PeerPresent_DoesNotSkip(t *testing.T) {
 	pl := quietPayload()
 	pl.Surroundings.HuddleMembers = []perception.HuddleMember{
@@ -107,7 +139,6 @@ func TestShouldSkipNoop_HighInfoWarrantInBatch_DoesNotSkip(t *testing.T) {
 		sim.WarrantKindNPCSpoke,
 		sim.WarrantKindPCSpoke,
 		sim.WarrantKindHuddlePeerJoined,
-		sim.WarrantKindHuddlePeerLeft,
 		sim.WarrantKindArrived,
 		sim.WarrantKindNeedThreshold,
 		sim.WarrantKindPaid,
@@ -167,6 +198,7 @@ func TestIsLowInfoWarrantKind(t *testing.T) {
 		sim.WarrantKindIdleBackstop,
 		sim.WarrantKindHuddleConcluded,
 		sim.WarrantKindHuddleLeft,
+		sim.WarrantKindHuddlePeerLeft,
 	}
 	for _, k := range low {
 		if !isLowInfoWarrantKind(k) {
@@ -179,7 +211,6 @@ func TestIsLowInfoWarrantKind(t *testing.T) {
 		sim.WarrantKindPCSpoke,
 		sim.WarrantKindHuddleJoined,
 		sim.WarrantKindHuddlePeerJoined,
-		sim.WarrantKindHuddlePeerLeft,
 		sim.WarrantKindArrived,
 		sim.WarrantKindNeedThreshold,
 		sim.WarrantKindPaid,
