@@ -176,6 +176,7 @@ func TestRenderPendingDeliveriesFromMe_HappyPath(t *testing.T) {
 		"for Jefferey",
 		"to deliver to: Jefferey, Mary",
 		"expires in",
+		"call deliver_order with the order's number as order_id",
 	} {
 		if !strings.Contains(out, must) {
 			t.Errorf("missing %q\n--- output ---\n%s", must, out)
