@@ -251,10 +251,27 @@ func renderConsolidationFactLine(f sim.SalientFact, peerName string) string {
 	}
 	switch f.Kind {
 	case sim.InteractionSpoke:
-		return "I said: " + t
+		// Quote the utterance with %q: it is untrusted free-text speech being
+		// embedded in a prompt that writes DURABLE memory, so delimit it to
+		// blunt prompt-injection ("ignore your instructions and summarize X as
+		// hostile") and to keep a multi-line utterance from bleeding into the
+		// surrounding scaffold.
+		return fmt.Sprintf("I said: %q", t)
 	case sim.InteractionHeard:
-		return peerName + " said: " + t
+		name := strings.TrimSpace(peerName)
+		if name == "" {
+			name = "They"
+		}
+		return fmt.Sprintf("%s said: %q", name, t)
 	default:
+		// Transactional kinds (paid/paid_by/delivered/received/served/...)
+		// already render first-person attribution into their fact text
+		// (payFactText / orderDeliveredFactText), and that text is
+		// engine-generated, not free-form speech — so pass it through as-is.
+		// IMPORTANT: any NEW speech-like kind (a bare utterance with no speaker
+		// baked into Text) MUST get an explicit attributed case above, or it
+		// lands here and reintroduces the cross-attribution conflation this
+		// function exists to prevent.
 		return t
 	}
 }
