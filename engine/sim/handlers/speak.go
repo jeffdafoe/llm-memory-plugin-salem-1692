@@ -35,6 +35,13 @@ import (
 // provider that ignores the schema can't smuggle oversized text past us).
 type SpeakArgs struct {
 	Text string `json:"text"`
+	// To is the optional addressee (ZBBS-WORK-369): the name of the one
+	// actor in the speaker's conversation this line is directed at. Drives
+	// the addressee-resolution chain in sim.SpeakTo (to → vocative →
+	// whole-huddle); omitted / unmatched falls back to vocative / whole-
+	// huddle. Optional — the model may address the whole huddle by omitting
+	// it. omitempty so a to-less call serializes without the field.
+	To string `json:"to,omitempty"`
 }
 
 // MaxSpeakTextChars is the rune (character) length cap for raw speak
@@ -63,6 +70,12 @@ var speakSchema = json.RawMessage(`{
             "minLength": 1,
             "maxLength": 1000,
             "description": "Say one message to the actors currently in your conversation."
+        },
+        "to": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 100,
+            "description": "Optional. The name of the one person in your conversation you are speaking to. Omit it to address everyone present."
         }
     },
     "required": ["text"],
@@ -161,6 +174,7 @@ func HandleSpeak(in HandlerInput) (sim.Command, error) {
 				"(only \\n, \\r, \\t allowed)", i)
 	}
 	actorID := in.ActorID
+	to := args.To
 	return sim.Command{Fn: func(w *sim.World) (any, error) {
 		// ZBBS-HOME-363: form the conversation on the explicit talk action,
 		// mirroring the PC path (httpapi.speakPCCommand). An NPC that walked
@@ -174,7 +188,7 @@ func HandleSpeak(in HandlerInput) (sim.Command, error) {
 		if _, err := sim.EnsureColocatedHuddle(actorID, now).Fn(w); err != nil {
 			return nil, err
 		}
-		return sim.Speak(actorID, text, now).Fn(w)
+		return sim.SpeakTo(actorID, text, to, now).Fn(w)
 	}}, nil
 }
 
