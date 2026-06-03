@@ -408,6 +408,82 @@ func TestBuildConsolidationPrompt_NoPriorSummary(t *testing.T) {
 	}
 }
 
+// TestBuildConsolidationPrompt_AttributesSpeaker pins the fix for the
+// cross-attribution corruption: spoke facts (the actor's own words) and heard
+// facts (the peer's words) render with distinct speaker attribution, so the
+// consolidating model cannot fold the actor's own utterances into its
+// impression of the peer. Transactional facts (self-describing text) pass
+// through unchanged, and identical utterances from different speakers do NOT
+// dedup against each other.
+func TestBuildConsolidationPrompt_AttributesSpeaker(t *testing.T) {
+	c := sim.ConsolidationCandidate{
+		ActorName: "Hannah",
+		PeerName:  "Jefferey",
+		Facts: []sim.SalientFact{
+			{Kind: sim.InteractionHeard, Text: "Hello Hannah"},
+			{Kind: sim.InteractionSpoke, Text: "I have bread available."},
+			{Kind: sim.InteractionSpoke, Text: "I have bread available."}, // dup of own line — must dedup
+			{Kind: sim.InteractionHeard, Text: "I have bread available."}, // same text, peer said it — must survive
+			{Kind: sim.InteractionPaidBy, Text: "Jefferey paid me 5 coins for bread."},
+		},
+	}
+	prompt := buildConsolidationPrompt(c)
+
+	for _, must := range []string{
+		`- Jefferey said: "Hello Hannah"`,
+		`- I said: "I have bread available."`,
+		`- Jefferey said: "I have bread available."`,
+		"- Jefferey paid me 5 coins for bread.", // transactional fact passes through
+	} {
+		if !strings.Contains(prompt, must) {
+			t.Errorf("prompt missing %q\n--- prompt ---\n%s", must, prompt)
+		}
+	}
+
+	// The actor's own pitch must never render as a bare bullet that could read
+	// back as the peer's words — that was the corruption.
+	if strings.Contains(prompt, "- I have bread available.") {
+		t.Errorf("own utterance rendered without speaker attribution\n--- prompt ---\n%s", prompt)
+	}
+	// Dedup keys on the rendered line: the repeated "I said:" pitch collapses to
+	// one, but the peer's identical-text line is a distinct fact and survives.
+	if got := strings.Count(prompt, `- I said: "I have bread available."`); got != 1 {
+		t.Errorf("'I said: \"I have bread available.\"' occurs %d times, want 1 (dedup)", got)
+	}
+	if got := strings.Count(prompt, `- Jefferey said: "I have bread available."`); got != 1 {
+		t.Errorf("'Jefferey said: \"I have bread available.\"' occurs %d times, want 1", got)
+	}
+}
+
+// TestRenderConsolidationFactLine_Attribution locks the per-kind attribution
+// invariant: spoke/heard get quoted speaker attribution (with a fallback when
+// the peer name is blank), and the transactional kinds — whose text already
+// bakes in attribution — pass through unquoted and unchanged. A new bare-speech
+// kind added without an explicit case here would surface as a failing/ missing
+// row, the guard code_review asked for against silent re-conflation.
+func TestRenderConsolidationFactLine_Attribution(t *testing.T) {
+	cases := []struct {
+		name string
+		f    sim.SalientFact
+		peer string
+		want string
+	}{
+		{"spoke", sim.SalientFact{Kind: sim.InteractionSpoke, Text: "Hello"}, "Ezekiel", `I said: "Hello"`},
+		{"heard", sim.SalientFact{Kind: sim.InteractionHeard, Text: "Hello"}, "Ezekiel", `Ezekiel said: "Hello"`},
+		{"heard blank peer falls back", sim.SalientFact{Kind: sim.InteractionHeard, Text: "Hello"}, "   ", `They said: "Hello"`},
+		{"paid passthrough", sim.SalientFact{Kind: sim.InteractionPaid, Text: "I paid Ezekiel 5 coins."}, "Ezekiel", "I paid Ezekiel 5 coins."},
+		{"paid_by passthrough", sim.SalientFact{Kind: sim.InteractionPaidBy, Text: "Ezekiel paid me 5 coins."}, "Ezekiel", "Ezekiel paid me 5 coins."},
+		{"delivered passthrough", sim.SalientFact{Kind: sim.InteractionDelivered, Text: "I delivered bread to Ezekiel."}, "Ezekiel", "I delivered bread to Ezekiel."},
+		{"received passthrough", sim.SalientFact{Kind: sim.InteractionReceived, Text: "Ezekiel delivered bread to me."}, "Ezekiel", "Ezekiel delivered bread to me."},
+		{"empty text drops", sim.SalientFact{Kind: sim.InteractionSpoke, Text: "   "}, "Ezekiel", ""},
+	}
+	for _, c := range cases {
+		if got := renderConsolidationFactLine(c.f, c.peer); got != c.want {
+			t.Errorf("%s: renderConsolidationFactLine = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
 // TestRegisterConsolidation_PanicsOnNilWorld pins the wiring-time guard.
 func TestRegisterConsolidation_PanicsOnNilWorld(t *testing.T) {
 	defer func() {
