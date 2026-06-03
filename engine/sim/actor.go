@@ -602,10 +602,11 @@ type Actor struct {
 	// addressee (sim.Speak / Spoke.AddressedID); cleared when the awaited
 	// party speaks (any utterance by them IS the reply) or on huddle
 	// leave/conclude. Keyed by addressee ActorID. Drives the ZBBS-WORK-370
-	// turn-taking gate (the gate + lazy time-window expiry land in a later
-	// slice; this slice only maintains the edge). Generalizes
-	// heardSpeechMisses (HOME-331). Unexported; ephemeral — wiped on
-	// LoadWorld, copied in CloneActor so the published snapshot sees it.
+	// turn-taking gate: the sim.Speak backstop reads it to reject an idle
+	// re-pitch (turn_state.go), and perception renders a turn-line off the
+	// snapshot copy. Generalizes heardSpeechMisses (HOME-331). Unexported;
+	// ephemeral — wiped on LoadWorld, copied in CloneActor so the published
+	// snapshot sees it.
 	awaitingReplyFrom map[ActorID]time.Time
 
 	// Locomotion — Phase 2 PR 4.
@@ -1041,6 +1042,17 @@ type ActorSnapshot struct {
 	Acquaintances map[string]Acquaintance
 	Relationships map[ActorID]*Relationship
 	Narrative     *NarrativeState
+
+	// AwaitingReplyFrom mirrors the live Actor's turn-state edge
+	// (Actor.awaitingReplyFrom) at snapshot time: addressee -> when this actor
+	// last addressed them and is awaiting a reply. Deep-cloned by snapshotActor so
+	// the published snapshot doesn't alias the world's mutable map. Perception
+	// build (ZBBS-WORK-370) reads the subject's OWN edges AND its present peers'
+	// edges to derive the turn-line ("you spoke to X, wait for their reply" / "X
+	// is waiting for your reply") and the act-now coda swap. nil until the actor
+	// first addresses someone. Ephemeral on the live Actor (wiped on load); this
+	// snapshot copy is the read-path view.
+	AwaitingReplyFrom map[ActorID]time.Time
 
 	// VisitorState mirrors the live Actor's transient-visitor state at
 	// snapshot time. Non-nil marks the actor as a salem-visitor; the

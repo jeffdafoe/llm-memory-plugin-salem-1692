@@ -9,17 +9,15 @@ import (
 
 // turn_state_test.go — ZBBS-WORK-370 turn-state edge maintenance: sim.Speak
 // opens the speaker->addressee awaiting-reply edge and clears any edge the
-// speaker was awaited on; huddle leave/conclude drop the edges. (The gate that
-// reads these edges + the lazy time-window expiry land in the follow-up slice.)
-//
-// Reading the edges through w.Published() also exercises the CloneActor copy:
-// if the snapshot didn't carry awaitingReplyFrom, every "edge set" assertion
-// here would fail.
+// speaker was awaited on; huddle leave/conclude drop the edges. The gate that
+// READS these edges (the sim.Speak backstop + perception turn-line) is covered
+// separately in turn_state_gate_test.go; this file pins only the edge
+// bookkeeping the gate relies on.
 
 // awaitingReplies reads the speaker's live turn-state map on the world
 // goroutine (via a Command) and returns a copy — the edge lives on the live
-// Actor, not the published snapshot DTO (exposing it on the snapshot is the
-// follow-up gate slice's concern).
+// Actor; the published snapshot carries a deep-cloned copy (ActorSnapshot.
+// AwaitingReplyFrom) that perception build reads.
 func awaitingReplies(t *testing.T, w *sim.World, speaker sim.ActorID) map[sim.ActorID]time.Time {
 	t.Helper()
 	v := sendT(t, w, sim.Command{Fn: func(world *sim.World) (any, error) {
@@ -58,7 +56,7 @@ func TestTurnState_SpeakToAddresseeSetsEdge(t *testing.T) {
 	defer stop()
 
 	at := time.Now().UTC()
-	if _, err := w.Send(sim.SpeakTo("hannah", "Good morrow.", "Ezekiel", at)); err != nil {
+	if _, err := w.Send(sim.SpeakTo("hannah", "Good morrow.", "Ezekiel", true, at)); err != nil {
 		t.Fatalf("SpeakTo: %v", err)
 	}
 	ts, ok := awaitingReplyAt(t, w, "hannah", "ezekiel")
@@ -100,7 +98,7 @@ func TestTurnState_AwaitedPartySpeakingClearsEdge(t *testing.T) {
 	defer stop()
 
 	t1 := time.Now().UTC()
-	if _, err := w.Send(sim.SpeakTo("hannah", "Good morrow.", "Ezekiel", t1)); err != nil {
+	if _, err := w.Send(sim.SpeakTo("hannah", "Good morrow.", "Ezekiel", true, t1)); err != nil {
 		t.Fatalf("SpeakTo: %v", err)
 	}
 	if _, ok := awaitingReplyAt(t, w, "hannah", "ezekiel"); !ok {
@@ -126,7 +124,7 @@ func TestTurnState_ConcludeHuddleDropsEdges(t *testing.T) {
 	now := time.Now().UTC()
 	sendT(t, w, sim.JoinHuddle("alice", "tavern", "", now))
 	sendT(t, w, sim.JoinHuddle("bob", "tavern", "", now))
-	sendT(t, w, sim.SpeakTo("alice", "Good morrow.", "Bob", now.Add(time.Second)))
+	sendT(t, w, sim.SpeakTo("alice", "Good morrow.", "Bob", true, now.Add(time.Second)))
 	if _, ok := awaitingReplyAt(t, w, "alice", "bob"); !ok {
 		t.Fatal("precondition: alice should await bob")
 	}
@@ -149,7 +147,7 @@ func TestTurnState_LeaveByAwaitedPeerClearsRemainingEdge(t *testing.T) {
 	now := time.Now().UTC()
 	sendT(t, w, sim.JoinHuddle("alice", "tavern", "", now))
 	sendT(t, w, sim.JoinHuddle("bob", "tavern", "", now))
-	sendT(t, w, sim.SpeakTo("alice", "Good morrow.", "Bob", now.Add(time.Second)))
+	sendT(t, w, sim.SpeakTo("alice", "Good morrow.", "Bob", true, now.Add(time.Second)))
 	if _, ok := awaitingReplyAt(t, w, "alice", "bob"); !ok {
 		t.Fatal("precondition: alice should await bob")
 	}
@@ -169,7 +167,7 @@ func TestTurnState_LeaveByAwaiterDropsOwnEdge(t *testing.T) {
 	now := time.Now().UTC()
 	sendT(t, w, sim.JoinHuddle("alice", "tavern", "", now))
 	sendT(t, w, sim.JoinHuddle("bob", "tavern", "", now))
-	sendT(t, w, sim.SpeakTo("alice", "Good morrow.", "Bob", now.Add(time.Second)))
+	sendT(t, w, sim.SpeakTo("alice", "Good morrow.", "Bob", true, now.Add(time.Second)))
 	if _, ok := awaitingReplyAt(t, w, "alice", "bob"); !ok {
 		t.Fatal("precondition: alice should await bob")
 	}

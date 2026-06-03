@@ -499,6 +499,9 @@ func (h *Harness) dispatch(ctx context.Context, w *sim.World, job tickJob, vc *V
 		RootEventID:    job.rootEventID,
 		LLMMemoryAgent: llmMemoryAgent,
 		Args:           vc.DecodedArgs,
+		// New-news signal for the turn-state gate (ZBBS-WORK-370). Computed from
+		// the tick's consumed warrant batch; only the speak commit consumes it.
+		HasNewNews: batchHasNewNews(job.warrants),
 	}
 
 	switch vc.Entry.Class {
