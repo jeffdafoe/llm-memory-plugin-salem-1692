@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
@@ -566,7 +567,7 @@ func (h *Harness) dispatch(ctx context.Context, w *sim.World, job tickJob, vc *V
 		if ended {
 			out.terminalStatus = sim.TickStatusSuccess
 		}
-		return "[ok]", out
+		return commitResultContent(vc), out
 
 	case ClassTerminal:
 		return "[done]", dispatchOutcome{
@@ -582,6 +583,40 @@ func (h *Harness) dispatch(ctx context.Context, w *sim.World, job tickJob, vc *V
 }
 
 // --- helpers --------------------------------------------------------------
+
+// commitResultContent builds the "tool" message content a successful commit
+// returns to the model. Every commit returns the generic "[ok]" EXCEPT speak,
+// which echoes the line it just said back plus a soft done() nudge.
+//
+// Why (ZBBS-WORK-368, Track B within-tick salience): Llama-3.3 emits an EMPTY
+// assistant content string when it makes a tool call, so a spoken line lives
+// ONLY inside the speak call's arguments JSON — weak salience. Within a single
+// tick the model then can't saliently see that it just spoke, and re-emits the
+// same line (the observed verbatim speak,speak,done repeat). Echoing the
+// utterance back as the tool result puts it in plain language on the next
+// within-tick Complete, killing the repeat WITHOUT a hard one-speak cap — a
+// genuine follow-up ("here is your bread") can still go through. The cross-tick
+// replay path already does the equivalent (memapi paraphrases speak into
+// `(I said aloud: "...")`); this closes the engine's within-tick gap.
+//
+// The text is re-trimmed to match what was actually spoken (sim.Speak trims);
+// the success branch is only reached after the speak command committed, so the
+// utterance is non-empty and control-char-clean by then. %q quotes + escapes
+// it, so an utterance containing a quote can't break the echo's framing.
+func commitResultContent(vc *ValidatedCall) string {
+	if vc.Name == "speak" {
+		if args, ok := vc.DecodedArgs.(SpeakArgs); ok {
+			text := strings.TrimSpace(args.Text)
+			if text != "" {
+				return fmt.Sprintf(
+					"[ok] You said: %q. If you have nothing new to add, call done().",
+					text,
+				)
+			}
+		}
+	}
+	return "[ok]"
+}
 
 // fullPerceptionPrompt joins the durable turn and the ephemeral current-tick
 // context into the single prompt the model effectively saw, for the umbilical
