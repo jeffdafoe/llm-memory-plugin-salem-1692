@@ -112,6 +112,30 @@ type ActorArrived struct {
 
 func (ActorArrived) isSimEvent() {}
 
+// ActorInsideChanged fires when an actor's InsideStructureID actually
+// changes (setActorInsideStructure no-ops an unchanged value, so every emit
+// is a real flip). It is the authoritative inside-state push the client uses
+// to re-render sprite visibility + the see-through-structure stand offset the
+// moment the flip happens — not only at the walk-start / arrival brackets it
+// otherwise reconstructs inside from. This restores the v1 npc_inside_changed
+// broadcast the v2 rewrite never ported: the client's apply_npc_inside_change
+// handler has been live the whole time, dead-lettered against an event the
+// engine stopped sending. Emitting from the setActorInsideStructure chokepoint
+// means it also catches inside flips that have no walk to bracket them (a
+// structure removed out from under a standing actor, an admin move) and
+// backstops a dropped npc_walking. ZBBS-WORK-373.
+//
+// Empty InsideStructureID = the actor is now outdoors. No At field: the wire
+// frame carries only id + inside + inside_structure_id, so no wall-clock is
+// needed and the emit needs no `now` threaded through its callers.
+type ActorInsideChanged struct {
+	EventBase
+	ActorID           ActorID
+	InsideStructureID StructureID // empty = now outdoors
+}
+
+func (ActorInsideChanged) isSimEvent() {}
+
 // MoveStoppedReason discriminates why an accepted movement attempt failed
 // to reach its destination.
 type MoveStoppedReason string

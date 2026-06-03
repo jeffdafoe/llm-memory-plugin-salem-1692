@@ -116,6 +116,73 @@ func TestTranslateEvent_Arrived(t *testing.T) {
 	}
 }
 
+// TestTranslateEvent_InsideChanged covers the ZBBS-WORK-373 inside-state push:
+// an actor inside a structure maps to npc_inside_changed with inside=true and
+// the structure id, the exact frame the client's apply_npc_inside_change handler
+// consumes to render sprite visibility + the see-through-structure stand offset.
+func TestTranslateEvent_InsideChanged(t *testing.T) {
+	frame, ok := TranslateEvent(&sim.ActorInsideChanged{
+		ActorID:           "john",
+		InsideStructureID: "tavern",
+	})
+	if !ok {
+		t.Fatal("ActorInsideChanged should translate")
+	}
+	if frame.Type != "npc_inside_changed" {
+		t.Fatalf("type = %q, want npc_inside_changed", frame.Type)
+	}
+	d := frame.Data.(insideChangedWireDTO)
+	want := insideChangedWireDTO{ID: "john", Inside: true, InsideStructureID: "tavern"}
+	if d != want {
+		t.Errorf("inside_changed payload = %+v, want %+v", d, want)
+	}
+}
+
+// TestTranslateEvent_InsideChangedOutdoors covers the leave case (the Finding-6
+// fix): an empty InsideStructureID maps to inside=false — the bool the client
+// reads to un-hide / drop the stand offset and let the sprite walk away — with
+// the structure id omitted from the wire (the client reads a missing value as "").
+func TestTranslateEvent_InsideChangedOutdoors(t *testing.T) {
+	frame, ok := TranslateEvent(&sim.ActorInsideChanged{
+		ActorID:           "john",
+		InsideStructureID: "",
+	})
+	if !ok {
+		t.Fatal("ActorInsideChanged should translate")
+	}
+	d := frame.Data.(insideChangedWireDTO)
+	want := insideChangedWireDTO{ID: "john", Inside: false, InsideStructureID: ""}
+	if d != want {
+		t.Errorf("inside_changed payload = %+v, want %+v", d, want)
+	}
+}
+
+// TestTranslateEvent_InsideChangedWireOmitsStructureOutdoors verifies the
+// MARSHALED npc_inside_changed frame: inside is always present, and
+// inside_structure_id is omitted when outdoors (the contract relies on the
+// omitempty tag — a struct type-assertion wouldn't catch a tag/remarshal
+// regression). code_review follow-up.
+func TestTranslateEvent_InsideChangedWireOmitsStructureOutdoors(t *testing.T) {
+	// Outdoors: inside:false present, inside_structure_id absent.
+	outFrame, _ := TranslateEvent(&sim.ActorInsideChanged{ActorID: "john", InsideStructureID: ""})
+	out, err := json.Marshal(outFrame.Data)
+	if err != nil {
+		t.Fatalf("marshal outdoors: %v", err)
+	}
+	if got := string(out); !strings.Contains(got, `"inside":false`) || strings.Contains(got, "inside_structure_id") {
+		t.Errorf("outdoors frame should carry \"inside\":false and omit inside_structure_id; got %s", got)
+	}
+	// Inside: inside:true + the structure id present.
+	inFrame, _ := TranslateEvent(&sim.ActorInsideChanged{ActorID: "john", InsideStructureID: "tavern"})
+	in, err := json.Marshal(inFrame.Data)
+	if err != nil {
+		t.Fatalf("marshal inside: %v", err)
+	}
+	if got := string(in); !strings.Contains(got, `"inside":true`) || !strings.Contains(got, `"inside_structure_id":"tavern"`) {
+		t.Errorf("inside frame should carry \"inside\":true + structure id; got %s", got)
+	}
+}
+
 func TestTranslateEvent_MoveStopped(t *testing.T) {
 	frame, ok := TranslateEvent(&sim.ActorMoveStopped{
 		ActorID:           "hannah",

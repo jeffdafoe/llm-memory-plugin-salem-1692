@@ -836,4 +836,11 @@ func setActorInsideStructure(w *World, actor *Actor, structureID StructureID) {
 	if structureID != "" {
 		refreshStructureOccupancyState(w, structureID)
 	}
+
+	// Authoritative inside-state push for the client (ZBBS-WORK-373): the v2
+	// analog of v1's setNPCInside broadcast, restoring the npc_inside_changed
+	// frame the client's apply_npc_inside_change handler still consumes. The
+	// unchanged-value early return above guarantees this fires only on a real
+	// flip; emitted last, after indices + room + occupancy are consistent.
+	w.emit(&ActorInsideChanged{ActorID: actor.ID, InsideStructureID: structureID})
 }

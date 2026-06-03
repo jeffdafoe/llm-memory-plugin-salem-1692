@@ -1039,6 +1039,11 @@ func buildRelationships(a *sim.ActorSnapshot, members []HuddleMember) []Relation
 // empty so render skips the "and others" embellishment.
 //
 // Ordering: by Order.ID ascending. Deterministic across runs.
+//
+// AbsentRecipientNames is populated for the fromMe bucket only: the consumers
+// not currently sharing the seller's huddle, whom DeliverOrder's gate-6
+// co-presence check would reject. Empty => deliverable now. The toMe bucket
+// leaves it nil (not meaningful buyer-side). ZBBS-WORK-373.
 func buildPendingOrderViews(snap *sim.Snapshot, subject sim.ActorID) (fromMe, toMe []OrderView) {
 	if snap == nil || len(snap.Orders) == 0 {
 		return nil, nil
@@ -1096,9 +1101,13 @@ func buildPendingOrderViews(snap *sim.Snapshot, subject sim.ActorID) (fromMe, to
 		return v
 	}
 	if len(fromIDs) > 0 {
+		seller := snap.Actors[subject]
 		fromMe = make([]OrderView, 0, len(fromIDs))
 		for _, id := range fromIDs {
-			fromMe = append(fromMe, toView(snap.Orders[id]))
+			o := snap.Orders[id]
+			v := toView(o)
+			v.AbsentRecipientNames = absentRecipientNames(snap, seller, o, resolveName)
+			fromMe = append(fromMe, v)
 		}
 	}
 	if len(toIDs) > 0 {
@@ -1108,6 +1117,34 @@ func buildPendingOrderViews(snap *sim.Snapshot, subject sim.ActorID) (fromMe, to
 		}
 	}
 	return fromMe, toMe
+}
+
+// absentRecipientNames returns the display names (sorted) of an order's
+// consumers who do NOT currently share the seller's huddle — the recipients
+// DeliverOrder's gate-6 co-presence check (order_commands.go) would reject a
+// handover to. An empty result means every recipient is here and the order is
+// deliverable now. A nil seller or a seller in no huddle makes every consumer
+// absent: a keeper in no conversation can hand nothing over. Seller-relative,
+// so it is meaningful only for the seller-side PendingDeliveriesFromMe bucket.
+// ZBBS-WORK-373 (boot-collapse Finding 6 bundle).
+func absentRecipientNames(snap *sim.Snapshot, seller *sim.ActorSnapshot, o *sim.Order, resolveName func(sim.ActorID) string) []string {
+	var sellerHuddle sim.HuddleID
+	if seller != nil {
+		sellerHuddle = seller.CurrentHuddleID
+	}
+	var absent []string
+	for _, cid := range o.ConsumerIDs {
+		coPresent := sellerHuddle != ""
+		if coPresent {
+			c := snap.Actors[cid]
+			coPresent = c != nil && c.CurrentHuddleID == sellerHuddle
+		}
+		if !coPresent {
+			absent = append(absent, resolveName(cid))
+		}
+	}
+	sort.Strings(absent)
+	return absent
 }
 
 // recentFactsMostRecentFirst returns up to n facts from the tail of

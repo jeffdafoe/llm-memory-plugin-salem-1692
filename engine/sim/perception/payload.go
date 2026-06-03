@@ -264,8 +264,14 @@ type OrderView struct {
 	BuyerName     string
 	SellerName    string
 	ConsumerNames []string // empty when ConsumerIDs == [BuyerID] (implicit buyer-is-consumer)
-	CreatedAt     time.Time
-	ExpiresAt     time.Time
+	// AbsentRecipientNames lists the consumers NOT co-present with the seller —
+	// the recipients DeliverOrder's gate-6 co-presence check would reject a
+	// handover to. Populated only for the seller-side PendingDeliveriesFromMe
+	// bucket; empty => every recipient is here and the order is deliverable now.
+	// ZBBS-WORK-373 (boot-collapse Finding 6 bundle).
+	AbsentRecipientNames []string
+	CreatedAt            time.Time
+	ExpiresAt            time.Time
 }
 
 // NarrativeStateView is the kind-aware "Who you are:" content. Slim by

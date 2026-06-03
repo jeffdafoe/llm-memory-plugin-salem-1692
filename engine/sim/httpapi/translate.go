@@ -34,7 +34,10 @@ import (
 // the sleep-fade overlay + top-bar chip), and PC LODGING RELOCATION
 // (PCRelocatedToCommon → room_event — the private brown-panel narration shown
 // when the lodging day-cycle moves a PC from a private room to the common room,
-// on checkout eviction or morning descent).
+// on checkout eviction or morning descent), and INSIDE STATE
+// (ActorInsideChanged → npc_inside_changed — the sprite visibility +
+// see-through-structure stand-offset flip when an actor enters or leaves a
+// structure, restoring the v1 broadcast the rewrite dropped, ZBBS-WORK-373).
 // Per-tile ActorMoved is deliberately NOT mapped — it stays internal; nor are
 // spawn/despawn or object create (no sim bus source until those write routes
 // exist). An unmapped event returns ok=false and is dropped, so adding cases
@@ -74,6 +77,12 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			Y:         e.Position.Y,
 			Reason:    string(e.Reason),
 			AttemptID: uint64(e.MovementAttemptID),
+		}}, true
+	case *sim.ActorInsideChanged:
+		return WireFrame{Type: "npc_inside_changed", Data: insideChangedWireDTO{
+			ID:                string(e.ActorID),
+			Inside:            e.InsideStructureID != "",
+			InsideStructureID: string(e.InsideStructureID),
 		}}, true
 	case *sim.Spoke:
 		recipients := make([]string, len(e.RecipientIDs))
@@ -383,6 +392,19 @@ type moveStoppedWireDTO struct {
 	Y         int    `json:"y"`
 	Reason    string `json:"reason"`
 	AttemptID uint64 `json:"attempt_id"`
+}
+
+// insideChangedWireDTO is the npc_inside_changed payload — an actor's
+// inside-a-structure state flipped. The client (apply_npc_inside_change)
+// re-derives sprite visibility (plain houses hide; see-through stalls stay
+// visible) and the behind-the-counter stand offset from it. inside is sent
+// explicitly; inside_structure_id is omitted when outdoors (the client reads a
+// missing value as ""). Restores the v1 broadcast the rewrite dropped
+// (ZBBS-WORK-373).
+type insideChangedWireDTO struct {
+	ID                string `json:"id"`
+	Inside            bool   `json:"inside"`
+	InsideStructureID string `json:"inside_structure_id,omitempty"`
 }
 
 // spokeWireDTO is the npc_spoke payload — one utterance the client renders as a
