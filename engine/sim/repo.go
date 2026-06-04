@@ -221,6 +221,15 @@ type SimDayEvent struct {
 	Speaker string         // agent_action_log.speaker_name — acting actor's display name; labels the distilled line
 }
 
+// AgentActor pairs an actor's id with the llm-memory agent slug backing it.
+// The daily sim-conversation push (ZBBS-WORK-376) enumerates these to know
+// which actors to build a day-note for and under which agent namespace to POST
+// it. Only actors with a non-empty llm_memory_agent qualify.
+type AgentActor struct {
+	ID    ActorID
+	Agent string
+}
+
 // ActionLogSink durably persists committed action-log rows to the
 // agent_action_log audit table — write-through per-event, OUTSIDE the
 // checkpoint tx (see the Repository doc). The production impl (repo/pg)

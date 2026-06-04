@@ -275,7 +275,15 @@ SELECT al.occurred_at, al.action_type, al.payload, al.speaker_name
 // Empty (non-nil) slice on no rows: a caller marshaling to JSON emits "[]" not
 // "null", which the conversation-day endpoint requires.
 func (r *ActionLogRepo) LoadDayEvents(ctx context.Context, actorID sim.ActorID, dayStart, dayEnd time.Time) ([]sim.SimDayEvent, error) {
-	rows, err := r.pool.Query(ctx, loadDayEventsSQL, string(actorID), dayStart, dayEnd)
+	return queryDayEvents(ctx, r.pool, actorID, dayStart, dayEnd)
+}
+
+// queryDayEvents runs loadDayEventsSQL against pool and decodes the rows into
+// sim.SimDayEvent values. Shared by ActionLogRepo.LoadDayEvents and the
+// daily-push SimPushStore (sim_push.go) so the cross-actor "heard" pull lives in
+// exactly one place.
+func queryDayEvents(ctx context.Context, pool Pool, actorID sim.ActorID, dayStart, dayEnd time.Time) ([]sim.SimDayEvent, error) {
+	rows, err := pool.Query(ctx, loadDayEventsSQL, string(actorID), dayStart, dayEnd)
 	if err != nil {
 		return nil, fmt.Errorf("query day events for actor %q: %w", actorID, err)
 	}

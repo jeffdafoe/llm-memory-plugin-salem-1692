@@ -37,6 +37,7 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/llm/memapi"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/promptlog"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/repo/pg"
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/simpush"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/telemetry"
 )
 
@@ -86,6 +87,12 @@ type runtime struct {
 	// AFTER the world goroutine stops (no more Appends) and BEFORE main closes
 	// the pool. Nil in the headless lifecycle test (mem-backed, no pg).
 	ActionLog *pg.ActionLogRepo
+	// SimPush is the daily sim-conversation push (ZBBS-WORK-376 piece 3): once
+	// per UTC day it POSTs each agentized actor's completed-day action rows to
+	// llm-memory-api so the stateful NPCs' dream cron has input. run owns its
+	// goroutine (bound to worldCtx, waited at shutdown before the pool closes).
+	// Nil in the headless lifecycle test (mem-backed, no pg).
+	SimPush *simpush.Dispatcher
 }
 
 func main() {
@@ -158,6 +165,16 @@ func main() {
 	actionLogSink := pg.NewActionLogRepo(pool)
 	world.SetActionLogSink(actionLogSink)
 
+	// Daily sim-conversation push (ZBBS-WORK-376 piece 3). Reads the durable
+	// agent_action_log the sink above writes, plus the actor roster + push
+	// cursor, and POSTs each agentized actor's completed-day rows to
+	// llm-memory-api's /v1/sim/conversation-day. Authenticated as salem-engine
+	// with the same key the LLM client uses.
+	simPush := simpush.NewDispatcher(
+		pg.NewSimPushStore(pool),
+		simpush.NewHTTPPoster(llmMemoryURL, engineKey),
+	)
+
 	rt := runtime{
 		World:     world,
 		LLMClient: memapi.NewClient(llmMemoryURL, engineKey),
@@ -175,6 +192,7 @@ func main() {
 		UmbilicalControl: umbilicalControl,
 		PromptRing:       promptRing,
 		ActionLog:        actionLogSink,
+		SimPush:          simPush,
 	}
 
 	// Shutdown on SIGINT/SIGTERM.
@@ -301,6 +319,21 @@ func run(rt runtime, stop <-chan struct{}) error {
 	tickPool.Start(worldCtx)
 	startTickers(worldCtx, rt.World)
 
+	// Daily sim-conversation push (ZBBS-WORK-376 piece 3). Bound to worldCtx so
+	// it stops with the world; it reads pg + POSTs to the API, independent of
+	// the world goroutine. Nil in the headless lifecycle test (no pg). Waited at
+	// shutdown (below) before main closes the pool, so an in-flight query/POST
+	// isn't cut mid-flight.
+	simPushDone := make(chan struct{})
+	if rt.SimPush != nil {
+		go func() {
+			rt.SimPush.Run(worldCtx)
+			close(simPushDone)
+		}()
+	} else {
+		close(simPushDone)
+	}
+
 	// Periodic checkpointer. checkpointerDone closes when the loop has fully
 	// stopped — the shutdown path waits on it before forcing the final
 	// checkpoint, so the two never overlap. checkpointHealth records each
@@ -413,6 +446,13 @@ func run(rt runtime, stop <-chan struct{}) error {
 	// day's tail of audit rows lands rather than being lost on exit.
 	cancelActionLogWriter()
 	<-actionLogWriterDone
+
+	// The daily push is bound to worldCtx (cancelled above). Wait for it to
+	// return before the caller closes the pool, so an in-flight cursor write or
+	// day-events query isn't racing pool teardown. A partial catch-up is safe —
+	// the cursor only advances per fully-pushed day and the API upsert is
+	// idempotent, so the next run resumes cleanly (ZBBS-WORK-376 piece 3).
+	<-simPushDone
 
 	return nil
 }
