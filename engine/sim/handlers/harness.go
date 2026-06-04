@@ -311,12 +311,17 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 	// the hard ceiling so a model that only ever recalls can't loop forever.
 	maxTotalRounds := h.iterationBudget + h.maxObservationRounds
 	actionRounds := 0
-	// utteredThisTick records whether a OneUtterancePerTick tool (speak) has
-	// already committed this tick (ZBBS-HOME-381). It (a) drops a second such
-	// call inside the same response batch and (b) ends the tick after the round
-	// that first committed one, so the actor says its piece once and waits for
-	// new input instead of re-prompting itself into a repeat ramble.
-	utteredThisTick := false
+	// spokenThisTick holds the normalized text of every utterance this actor has
+	// successfully spoken this tick (ZBBS-WORK-375 same-tick repetition guard).
+	// A normalized-exact repeat — within the same response batch or on a later
+	// round — is rejected model-facing so the model self-corrects or calls
+	// done(), instead of re-pitching the identical line every round to the
+	// iteration budget (the observed speak×6 budget_forced storm). This replaces
+	// HOME-381's hard one-utterance cap: a DISTINCT follow-up (greet THEN a
+	// separate answer) is allowed through; only verbatim repeats are blocked.
+	// After a speak the loop continues — the model ends the tick by calling
+	// done() (steered there by the post-speak nudge in commitResultContent).
+	spokenThisTick := map[string]struct{}{}
 	for round := 0; round < maxTotalRounds; round++ {
 		result.IterationCount = round + 1
 
@@ -394,16 +399,25 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 				observationOnly = false
 			}
 
-			// ZBBS-HOME-381: a OneUtterancePerTick tool (speak) that already
-			// committed this tick is capped — reject any further such call in
-			// this batch as a typed error rather than emitting a second
-			// utterance. (The cross-round repeat is stopped by the end-of-round
-			// check below; this guards the within-batch [speak, speak] case.)
-			if vc.Entry.OneUtterancePerTick && utteredThisTick {
-				observationOnly = false
-				result.ToolsFailedRejected = append(result.ToolsFailedRejected, call.Name)
-				transcript = append(transcript, toolResultMsg(call.ID, "[error: already_spoke_this_tick] only one utterance is allowed per tick"))
-				continue
+			// ZBBS-WORK-375: same-tick repetition guard. Reject a normalized-
+			// exact repeat of something this actor already said THIS tick,
+			// before dispatch, as a model-facing typed error so the model can
+			// say something new or call done(). Catches both the within-batch
+			// [speak X, speak X] case and the cross-round re-pitch that drove
+			// the budget_forced storm. Recipient-agnostic on purpose: an exact
+			// same-tick repeat reads as a defect regardless of who it is aimed
+			// at, and keying on the model's DECLARED `to` would MISS repeats
+			// when the model sets `to` inconsistently across rounds (the worse
+			// error). Refine toward resolved-addressee / semantic similarity
+			// only if a false-positive shows up live (design fork 3:
+			// normalized-exact first).
+			if norm, isSpeak := speakUtteranceKey(vc); isSpeak {
+				if _, dup := spokenThisTick[norm]; dup {
+					observationOnly = false
+					result.ToolsFailedRejected = append(result.ToolsFailedRejected, call.Name)
+					transcript = append(transcript, toolResultMsg(call.ID, "[error: already_said_that] you already said that this turn — say something new, or call done()."))
+					continue
+				}
 			}
 
 			// Dispatch by class.
@@ -434,8 +448,14 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 
 			if outcome.success {
 				result.ToolsSucceeded = append(result.ToolsSucceeded, call.Name)
-				if vc.Entry.OneUtterancePerTick {
-					utteredThisTick = true
+				// ZBBS-WORK-375: record the committed utterance so a later
+				// round (or a later call in this same batch) that repeats it
+				// verbatim is rejected by the dedup guard above. Only a
+				// SUCCESSFUL speak is recorded — a bounced/rejected speak never
+				// reached the transcript, so it is not a repeat to guard
+				// against, and the model still gets to retry the bounced line.
+				if norm, isSpeak := speakUtteranceKey(vc); isSpeak {
+					spokenThisTick[norm] = struct{}{}
 				}
 			} else {
 				result.ToolsFailedRejected = append(result.ToolsFailedRejected, call.Name)
@@ -471,18 +491,12 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 			return result
 		}
 
-		// ZBBS-HOME-381: one-utterance-per-tick cap. A speak committed this
-		// round without a terminal ending the batch — end the tick now instead
-		// of re-prompting. With no new input the model would otherwise re-ask
-		// the same thing, producing the observed speak,speak,…,budget_forced
-		// ramble. The actor speaks again next tick when something new warrants
-		// a reaction. A speak ALONGSIDE a terminal already returned above via
-		// batchEnded; a REJECTED speak leaves utteredThisTick false so the model
-		// still gets to correct a bounced line within budget.
-		if utteredThisTick {
-			result.TerminalStatus = sim.TickStatusSuccess
-			return result
-		}
+		// ZBBS-WORK-375: a speak no longer ends the tick (HOME-381's cap is
+		// gone). The loop continues so the model can follow a greeting with a
+		// distinct answer in a later round; the post-speak nudge in
+		// commitResultContent steers it to call done() once it has nothing new,
+		// the same-tick dedup guard blocks verbatim repeats, and the iteration
+		// budget below remains the hard ceiling on a runaway loop.
 
 		// Round complete, tick continues. An observation-only round (recall
 		// to gather context) is "thinking" — it does NOT consume the action
@@ -623,18 +637,25 @@ func (h *Harness) dispatch(ctx context.Context, w *sim.World, job tickJob, vc *V
 
 // commitResultContent builds the "tool" message content a successful commit
 // returns to the model. Every commit returns the generic "[ok]" EXCEPT speak,
-// which echoes the line it just said back plus a soft done() nudge.
+// which echoes the line it just said back plus a post-speak continuation steer.
 //
-// Why (ZBBS-WORK-368, Track B within-tick salience): Llama-3.3 emits an EMPTY
-// assistant content string when it makes a tool call, so a spoken line lives
-// ONLY inside the speak call's arguments JSON — weak salience. Within a single
-// tick the model then can't saliently see that it just spoke, and re-emits the
-// same line (the observed verbatim speak,speak,done repeat). Echoing the
-// utterance back as the tool result puts it in plain language on the next
-// within-tick Complete, killing the repeat WITHOUT a hard one-speak cap — a
-// genuine follow-up ("here is your bread") can still go through. The cross-tick
-// replay path already does the equivalent (memapi paraphrases speak into
-// `(I said aloud: "...")`); this closes the engine's within-tick gap.
+// Why echo the line (ZBBS-WORK-368, Track B within-tick salience): Llama-3.3
+// emits an EMPTY assistant content string when it makes a tool call, so a spoken
+// line lives ONLY inside the speak call's arguments JSON — weak salience. Within
+// a single tick the model then can't saliently see that it just spoke, and
+// re-emits the same line. Echoing the utterance back as the tool result puts it
+// in plain language on the next within-tick Complete. The cross-tick replay path
+// already does the equivalent (memapi paraphrases speak into `(I said aloud:
+// "...")`); this closes the engine's within-tick gap.
+//
+// Why the continuation steer (ZBBS-WORK-375, Variant-B continuation prompt):
+// with HOME-381's hard one-speak cap removed, the model itself must call done()
+// to end a turn after speaking. This tool result is the recency-dominant message
+// it reads before its next decision, so the stop-rule lives HERE, at the
+// decision point — biased to done() and explicitly forbidding the re-greet /
+// re-pitch / rephrase the storm was made of. The same-tick dedup guard
+// (harness.go RunTick) is the hard floor behind this soft steer; a genuine
+// distinct follow-up ("here is your bread") still goes through.
 //
 // The text is re-trimmed to match what was actually spoken (sim.Speak trims);
 // the success branch is only reached after the speak command committed, so the
@@ -646,13 +667,41 @@ func commitResultContent(vc *ValidatedCall) string {
 			text := strings.TrimSpace(args.Text)
 			if text != "" {
 				return fmt.Sprintf(
-					"[ok] You said: %q. If you have nothing new to add, call done().",
+					"[ok] You said: %q. You have spoken — call done() now unless a new "+
+						"event has arrived or someone asked you something distinct you "+
+						"have not yet answered. Do not greet again, re-pitch, or rephrase "+
+						"what you just said.",
 					text,
 				)
 			}
 		}
 	}
 	return "[ok]"
+}
+
+// speakUtteranceKey returns the normalized dedup key for a speak call and true,
+// or ("", false) for any non-speak tool or a speak whose text is empty after
+// normalization (which the decode/handler layer rejects anyway). The key is the
+// utterance text lowercased, trimmed, and inner-whitespace-collapsed, so trivial
+// spacing/case differences in an otherwise identical repeat still match. Mirrors
+// commitResultContent's speak-by-name special-casing (the harness knows the
+// speak tool's arg shape; the registry stays free of tool-cadence markers since
+// HOME-381's was removed). Normalization is intentionally simple — ZBBS-WORK-375
+// fork 3: normalized-exact first, semantic similarity only if paraphrased
+// repeats show up live.
+func speakUtteranceKey(vc *ValidatedCall) (string, bool) {
+	if vc == nil || vc.Name != "speak" {
+		return "", false
+	}
+	args, ok := vc.DecodedArgs.(SpeakArgs)
+	if !ok {
+		return "", false
+	}
+	norm := strings.ToLower(strings.Join(strings.Fields(args.Text), " "))
+	if norm == "" {
+		return "", false
+	}
+	return norm, true
 }
 
 // fullPerceptionPrompt joins the durable turn and the ephemeral current-tick
