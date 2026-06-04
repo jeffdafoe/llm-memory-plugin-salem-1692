@@ -727,6 +727,15 @@ type World struct {
 	// w.Orders. See TerminalOrderSink doc for the contract.
 	terminalOrderSink TerminalOrderSink
 
+	// actionLogSink is the async durable-write target for the agent_action_log
+	// audit table (ZBBS-WORK-376). Nil by default; SetActionLogSink installs the
+	// pg impl at production startup. When nil, AppendActionLogDurable is a no-op,
+	// so tests and the in-memory consumers (atmosphere / C2, which read
+	// World.ActionLog directly) are unaffected. Unlike terminalOrderSink the
+	// write is async: Append enqueues here on the world goroutine and a writer
+	// goroutine drains to pg off-goroutine. See the ActionLogSink doc.
+	actionLogSink ActionLogSink
+
 	cmds      chan Command
 	published atomic.Pointer[Snapshot]
 
@@ -868,6 +877,32 @@ func NewWorld(repo Repository) *World {
 // the next checkpoint reconciles them.
 func (w *World) SetTerminalOrderSink(s TerminalOrderSink) {
 	w.terminalOrderSink = s
+}
+
+// SetActionLogSink installs the durable agent_action_log sink the world
+// forwards committed action rows to via AppendActionLogDurable (ZBBS-WORK-376).
+// Passing nil clears it (the default — AppendActionLogDurable becomes a no-op).
+// Safe to call before Run, or from inside a Command.Fn. The production impl is
+// async (see ActionLogSink), so this only stores the reference; the caller owns
+// starting and draining the sink's writer goroutine.
+func (w *World) SetActionLogSink(s ActionLogSink) {
+	w.actionLogSink = s
+}
+
+// AppendActionLogDurable forwards a structured action row to the durable
+// agent_action_log sink when one is installed; a no-op otherwise (tests,
+// headless). The production sink's Append is a non-blocking enqueue, so this
+// does not block the world goroutine on PG, and a write error is the sink's own
+// concern (logged on its writer goroutine), never surfaced here. Called by the
+// cascade action-log subscribers, which run inline on the world goroutine —
+// hence the exported method, since those subscribers live in package cascade
+// and can't reach the unexported field.
+func (w *World) AppendActionLogDurable(row DurableActionLogRow) {
+	sink := w.actionLogSink
+	if sink == nil {
+		return
+	}
+	_ = sink.Append(w.LifecycleContext(), row)
 }
 
 // SetTickAdmissionController installs the controller the reactor evaluator

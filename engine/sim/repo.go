@@ -177,13 +177,41 @@ type EnvironmentRepo interface {
 	SaveMutableSettings(ctx context.Context, tx Tx, settings MutableWorldSettings) error
 }
 
-// ActionLogSink appends action log rows per-event. v2 MVP wires a noop
-// implementation (mem.noopActionLog) — the in-engine consumers
-// (atmosphere digest, C2 consolidation) read from World.ActionLog
-// directly; durable pg projection lands at cutover. See
-// engine/sim/action_log.go for the entry shape.
+// DurableActionLogRow is the structured audit row the production
+// ActionLogSink persists to the agent_action_log pg table. Unlike the
+// lean in-memory ActionLogEntry (action_log.go) — which flattens every
+// action to a single Text field for the in-engine atmosphere / C2
+// consumers — this carries the full column set the API-side dream
+// distiller (sim-conversation-distiller.js narrateEvent) renders from:
+// a structured Payload plus the denormalized speaker name and source.
+//
+// Built at the cascade action-log subscribers (cascade/action_log.go),
+// where the originating event still carries the structured fields
+// (Paid.SellerID/Amount, OrderDelivered.Item/Qty, ActorArrived.Dest…)
+// that the lean ring drops. The ring is appended separately and stays
+// lean. Result is implicitly "ok": v2 logs committed actions only.
+type DurableActionLogRow struct {
+	ActorID     ActorID
+	OccurredAt  time.Time
+	ActionType  ActionType
+	Payload     map[string]any // structured: recipient/amount/for, destination, item/qty, text, reason
+	SpeakerName string         // actor DisplayName, re-denormalized for the distiller
+	HuddleID    HuddleID       // "" for outdoor / pre-huddle / non-huddle actions
+	Source      string         // "agent" | "player" | "engine"
+}
+
+// ActionLogSink durably persists committed action-log rows to the
+// agent_action_log audit table — write-through per-event, OUTSIDE the
+// checkpoint tx (see the Repository doc). The production impl (repo/pg)
+// is ASYNC: Append enqueues on the world goroutine and a writer
+// goroutine performs the INSERT off-goroutine, mirroring the checkpoint
+// flow's "clone on-goroutine, write off-goroutine" posture
+// (checkpoint.go) so the hot action-emit path never blocks on PG. The
+// in-engine consumers (atmosphere digest, C2 consolidation) read
+// World.ActionLog directly and do NOT depend on this sink. v2 MVP
+// before this wiring used mem.noopActionLog. ZBBS-WORK-376.
 type ActionLogSink interface {
-	Append(ctx context.Context, entry ActionLogEntry) error
+	Append(ctx context.Context, row DurableActionLogRow) error
 }
 
 // TickTelemetryRecord is one entry in the per-tick lifecycle telemetry
