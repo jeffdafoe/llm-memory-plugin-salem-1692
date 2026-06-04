@@ -106,7 +106,7 @@ func pcMeWorld(t *testing.T, insideRoomID sim.RoomID) *sim.World {
 			{ActorID: "hannah", OccurredAt: now.Add(-3 * time.Minute), ActionType: sim.ActionTypeSpoke, Text: "Welcome traveler", HuddleID: "h1"},
 			{ActorID: "p1", OccurredAt: now.Add(-2 * time.Minute), ActionType: sim.ActionTypeSpoke, Text: "Hello", HuddleID: "h1"},
 			{ActorID: "p1", OccurredAt: now.Add(-1 * time.Minute), ActionType: sim.ActionTypeConsumed, Text: "stew", HuddleID: "h1"},
-			{ActorID: "p1", OccurredAt: now, ActionType: sim.ActionTypePaid, Text: "a round", HuddleID: "h1"},
+			{ActorID: "p1", OccurredAt: now, ActionType: sim.ActionTypePaid, Text: "a round", HuddleID: "h1", CounterpartyName: "Hannah", Amount: 3},
 		}
 		return nil, nil
 	}})
@@ -264,7 +264,7 @@ func TestHandlePCMe_FullIndoor(t *testing.T) {
 		{SpeakerName: "Hannah", Text: "Welcome traveler", Kind: "speech_npc"},
 		{SpeakerName: "Tester", Text: "Hello", Kind: "speech_player"},
 		{SpeakerName: "Tester", Text: "Tester consumes stew.", Kind: "act"},
-		{SpeakerName: "Tester", Text: "Tester pays for a round.", Kind: "act"},
+		{SpeakerName: "Tester", Text: "Tester pays Hannah 3 coins for a round.", Kind: "act"},
 	}
 	if len(resp.RecentSpeech) != len(wantSpeech) {
 		t.Fatalf("len(recent_speech) = %d, want %d; got %+v", len(resp.RecentSpeech), len(wantSpeech), resp.RecentSpeech)
@@ -597,11 +597,15 @@ func TestRenderActionLogEntry(t *testing.T) {
 		{"npc speech", sim.ActionLogEntry{ActorID: "npc", ActionType: sim.ActionTypeSpoke, Text: "Hi"}, "Hannah", "Hi", "speech_npc", true},
 		{"pc speech", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeSpoke, Text: "Yo"}, "Tester", "Yo", "speech_player", true},
 		{"empty speech skipped", sim.ActionLogEntry{ActorID: "npc", ActionType: sim.ActionTypeSpoke, Text: ""}, "", "", "", false},
-		{"paid with for", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypePaid, Text: "a round"}, "Tester", "Tester pays for a round.", "act", true},
-		{"paid no for", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypePaid, Text: ""}, "Tester", "Tester makes a payment.", "act", true},
+		{"paid recipient amount for", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypePaid, CounterpartyName: "Hannah", Amount: 3, Text: "a round"}, "Tester", "Tester pays Hannah 3 coins for a round.", "act", true},
+		{"paid recipient amount no for", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypePaid, CounterpartyName: "Hannah", Amount: 3, Text: ""}, "Tester", "Tester pays Hannah 3 coins.", "act", true},
+		{"paid recipient one coin", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypePaid, CounterpartyName: "Hannah", Amount: 1, Text: "bread"}, "Tester", "Tester pays Hannah 1 coin for bread.", "act", true},
+		{"paid recipient no amount", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypePaid, CounterpartyName: "Hannah", Amount: 0, Text: ""}, "Tester", "Tester pays Hannah.", "act", true},
+		{"paid no recipient", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypePaid, CounterpartyName: "", Amount: 5, Text: "a round"}, "Tester", "Tester makes a payment.", "act", true},
 		{"consumed", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeConsumed, Text: "stew"}, "Tester", "Tester consumes stew.", "act", true},
 		{"consumed empty skipped", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeConsumed, Text: ""}, "", "", "", false},
-		{"delivered", sim.ActionLogEntry{ActorID: "npc", ActionType: sim.ActionTypeDelivered, Text: "ale"}, "Hannah", "Hannah delivers ale.", "act", true},
+		{"delivered with recipient", sim.ActionLogEntry{ActorID: "npc", ActionType: sim.ActionTypeDelivered, Text: "ale", CounterpartyName: "Tester"}, "Hannah", "Hannah delivers ale to Tester.", "act", true},
+		{"delivered no recipient", sim.ActionLogEntry{ActorID: "npc", ActionType: sim.ActionTypeDelivered, Text: "ale"}, "Hannah", "Hannah delivers ale.", "act", true},
 		{"walked to dest", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeWalked, Text: "The Inn"}, "Tester", "Tester arrives at The Inn.", "act", true},
 		{"walked no dest", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeWalked, Text: ""}, "Tester", "Tester arrives.", "act", true},
 		{"took break", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeTookBreak, Text: "tired"}, "Tester", "Tester steps away.", "act", true},
