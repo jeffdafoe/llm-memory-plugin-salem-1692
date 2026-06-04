@@ -123,6 +123,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// Ephemeral: identity, surroundings, anchors, steers, relationships, owed
 	// orders, recovery/satiation/restock/lodging affordances, summons, scene.
 	renderNarrativeState(&ephemeral, p.NarrativeState)
+	renderVendorOperating(&ephemeral, p.Businessowner)
 	renderSurroundings(&ephemeral, p.Surroundings)
 	renderAnchors(&ephemeral, p.Anchors)
 	renderDutySteer(&ephemeral, p.DutySteer)
@@ -271,7 +272,16 @@ func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.
 		// repeated pitch.
 		b.WriteString("Weigh everything above. If the most pressing matter is simply awaiting someone's reply, do not repeat yourself — wait and call done(). Otherwise act on what matters most: obligations to others and pressing needs come before idle matters.\n")
 	} else {
-		b.WriteString("Weigh everything above and act on what matters most right now — obligations to others and pressing needs come before idle matters. Choose one thing and do it.\n")
+		// Universal decision section (ZBBS-WORK-374), replacing the bare HOME-355
+		// "choose one thing and do it" coda. Same intent — weigh the context, act
+		// on what matters — but it now carries the turn-discipline at the decision
+		// point: after one utterance, default to done() and let others answer,
+		// speaking again only on genuinely new input. The live storm (Hannah's six
+		// room-pitches in one tick) read the old action-command coda every round
+		// and re-pitched; this makes "say your piece, then yield" the recency-
+		// dominant instruction. (The hard within-tick stop is WORK-375; this is the
+		// prompt half.)
+		b.WriteString("Weigh what's in front of you — obligations and pressing needs come before idle matters. Choose one action. After you speak, call done() and let others respond; speak again only if something new happens or someone asks you for more — never repeat or rephrase what you've already said.\n")
 	}
 	// Rest-first steer (ZBBS-WORK-354). When the actor is deeply fatigued AND
 	// another need is also pressing, the model otherwise flip-flops between "buy
@@ -574,10 +584,14 @@ func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 		}
 	}
 
-	if atmosphere := strings.TrimSpace(sanitizeInline(s.Atmosphere)); atmosphere != "" {
-		b.WriteString(atmosphere)
-		b.WriteString("\n")
-	}
+	// ZBBS-WORK-374: the LLM-authored literary atmosphere line (ZBBS-WORK-327,
+	// "The night abideth over the village in a sober hush…") is NOT rendered into
+	// the decision prompt — ~45 words of restart-lossy scene prose irrelevant to
+	// the action at hand, part of the low-signal bulk that buried the actual
+	// stimulus. The deterministic time-of-day line above is kept (it's the clock
+	// context HOME-352 relies on). SurroundingsView.Atmosphere stays populated for
+	// any other consumer; we just don't spend prompt budget on it here.
+
 	// Harvest affordance (ZBBS-WORK-328): the model often stands at a well/bush
 	// without connecting "I'm here" to "I can gather." This line makes the
 	// affordance explicit. Same SurroundingsView fields drive gateTools'
@@ -673,6 +687,14 @@ func renderHuddleMember(m HuddleMember) string {
 // stateful and PC actors don't see an empty block. The contract
 // matches the perception note — Render is kind-agnostic; Build is the
 // one that gates on Kind.
+//
+// ZBBS-WORK-374: EvolvingSummary is NOT rendered into the live decision prompt.
+// The per-actor narrative consolidation that would rewrite it is not ported to
+// v2 (see the perception note "Not in this package yet"), so it is frozen seed
+// data — and that frozen prose is the first-person rumination ("the same
+// greetings, the same offers of rooms…") that primed the repeat-pitch loop. The
+// field stays on the view + snapshot for when consolidation lands; we just keep
+// model-generated diary prose out of the prompt the model decides from.
 func renderNarrativeState(b *strings.Builder, n *NarrativeStateView) {
 	if n == nil {
 		return
@@ -682,11 +704,26 @@ func renderNarrativeState(b *strings.Builder, n *NarrativeStateView) {
 		b.WriteString(sanitizeInline(n.SeedText))
 		b.WriteString("\n")
 	}
-	if n.EvolvingSummary != "" {
-		b.WriteString(sanitizeInline(n.EvolvingSummary))
-		b.WriteString("\n")
-	}
 	b.WriteString("\n")
+}
+
+// renderVendorOperating writes the businessowner trade-conduct block — the
+// operating rules that used to live in salem-vendor's startup_instructions (the
+// memory-api <Instructions> system block) and drove the "instant room pitch on a
+// bare Hello" sell-pressure. Moved engine-side (ZBBS-WORK-374) so the whole
+// decision prompt is code-owned and the rules sit near the decision point rather
+// than in a detached, far-away system preamble. Gated on Businessowner (the
+// Actor.BusinessownerState != nil keeper predicate), so it reaches vendors
+// (innkeeper, farmers, shopkeepers) but not visitors or stateful NPCs. The
+// scoped wording replaces "always be closing" with "a greeting is not a sale".
+func renderVendorOperating(b *strings.Builder, businessowner bool) {
+	if !businessowner {
+		return
+	}
+	b.WriteString("How you trade:\n")
+	b.WriteString("- If someone only greets you, greet them and let them state their business — don't quote prices or pitch your goods or rooms unless they ask or show interest.\n")
+	b.WriteString("- When trade is slow, make a reasonable deal rather than hold the line on price; decline plainly if a stranger's purse is short.\n")
+	b.WriteString("Plain 1692 New England speech; no modern idioms.\n\n")
 }
 
 // renderRelationships writes the "What you remember of those here:"
@@ -866,18 +903,17 @@ func humanizeDurationUntil(deadline, now time.Time) string {
 // were engine jargon the LLM can't use, so they're gone; the no-scene case now
 // renders nothing at all rather than an empty diagnostic. ZBBS-HOME-339.
 func renderScene(b *strings.Builder, p Payload) {
-	if p.Primary == nil {
+	// ZBBS-WORK-374: render the loop-detection cue only when a real baseline diff
+	// exists. The missing-baseline branch used to print "You can't yet tell
+	// whether anything has changed." — pure filler that carries no loop signal
+	// (the actual stuck-loop signal is the BaselinePresent + AnyChange==false case
+	// in renderDiff, unaffected here). Dropping it removes a noise section from
+	// conversational and freshly-joined ticks without weakening loop detection.
+	if p.Primary == nil || p.Baseline != BaselinePresent {
 		return
 	}
 	b.WriteString("## Since you got here\n")
-	switch p.Baseline {
-	case BaselinePresent:
-		b.WriteString(renderDiff(p.Primary.Diff))
-	default:
-		// A scene resolved but no usable baseline (no origin snapshot, or you
-		// joined after it started) — can't claim anything changed or didn't.
-		b.WriteString("You can't yet tell whether anything has changed.")
-	}
+	b.WriteString(renderDiff(p.Primary.Diff))
 	b.WriteString("\n\n")
 }
 
