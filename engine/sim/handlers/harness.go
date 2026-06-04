@@ -311,6 +311,12 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 	// the hard ceiling so a model that only ever recalls can't loop forever.
 	maxTotalRounds := h.iterationBudget + h.maxObservationRounds
 	actionRounds := 0
+	// utteredThisTick records whether a OneUtterancePerTick tool (speak) has
+	// already committed this tick (ZBBS-HOME-381). It (a) drops a second such
+	// call inside the same response batch and (b) ends the tick after the round
+	// that first committed one, so the actor says its piece once and waits for
+	// new input instead of re-prompting itself into a repeat ramble.
+	utteredThisTick := false
 	for round := 0; round < maxTotalRounds; round++ {
 		result.IterationCount = round + 1
 
@@ -388,6 +394,18 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 				observationOnly = false
 			}
 
+			// ZBBS-HOME-381: a OneUtterancePerTick tool (speak) that already
+			// committed this tick is capped — reject any further such call in
+			// this batch as a typed error rather than emitting a second
+			// utterance. (The cross-round repeat is stopped by the end-of-round
+			// check below; this guards the within-batch [speak, speak] case.)
+			if vc.Entry.OneUtterancePerTick && utteredThisTick {
+				observationOnly = false
+				result.ToolsFailedRejected = append(result.ToolsFailedRejected, call.Name)
+				transcript = append(transcript, toolResultMsg(call.ID, "[error: already_spoke_this_tick] only one utterance is allowed per tick"))
+				continue
+			}
+
 			// Dispatch by class.
 			content, outcome := h.dispatch(ctx, w, job, vc, actor.LLMAgent)
 			transcript = append(transcript, toolResultMsg(call.ID, content))
@@ -416,6 +434,9 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 
 			if outcome.success {
 				result.ToolsSucceeded = append(result.ToolsSucceeded, call.Name)
+				if vc.Entry.OneUtterancePerTick {
+					utteredThisTick = true
+				}
 			} else {
 				result.ToolsFailedRejected = append(result.ToolsFailedRejected, call.Name)
 			}
@@ -447,6 +468,19 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 		_ = endedAt
 		if batchEnded {
 			result.TerminalStatus = endedStatus
+			return result
+		}
+
+		// ZBBS-HOME-381: one-utterance-per-tick cap. A speak committed this
+		// round without a terminal ending the batch — end the tick now instead
+		// of re-prompting. With no new input the model would otherwise re-ask
+		// the same thing, producing the observed speak,speak,…,budget_forced
+		// ramble. The actor speaks again next tick when something new warrants
+		// a reaction. A speak ALONGSIDE a terminal already returned above via
+		// batchEnded; a REJECTED speak leaves utteredThisTick false so the model
+		// still gets to correct a bounced line within budget.
+		if utteredThisTick {
+			result.TerminalStatus = sim.TickStatusSuccess
 			return result
 		}
 
