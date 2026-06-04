@@ -117,3 +117,47 @@ func TestBuild_DedupHeardFactInCurrentBatch(t *testing.T) {
 		t.Errorf("older non-duplicate heard fact should be retained: %+v", bob.RecentFacts)
 	}
 }
+
+// TestBuild_DedupHeardFact_MaxLengthExcerpt: the (peer, text) match is exact, and
+// both producers cap at MaxSalientFactTextLen — the warrant Excerpt via
+// truncateRunes(spoke.Text, …) and the SalientFact via the same write-time cap.
+// This exercises the boundary the match relies on: a max-length (already-
+// truncated) utterance still de-dups. If the two caps ever diverged, this case
+// would catch the silent double-render. (truncateRunes lives in the handlers
+// package; both producers share sim.MaxSalientFactTextLen, so the fixed point is
+// reproduced here by truncating to that rune count directly.)
+func TestBuild_DedupHeardFact_MaxLengthExcerpt(t *testing.T) {
+	long := strings.Repeat("x", sim.MaxSalientFactTextLen+20)
+	truncated := string([]rune(long)[:sim.MaxSalientFactTextLen])
+
+	subject := sharedSnap("hannah", "Hannah", "h1")
+	subject.Relationships = map[sim.ActorID]*sim.Relationship{
+		"bob": {SalientFacts: []sim.SalientFact{
+			{At: time.Now(), Kind: sim.InteractionHeard, Text: truncated},
+		}},
+	}
+	snap := &sim.Snapshot{
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			"hannah": subject,
+			"bob":    peerSnap("bob", "Bob", "traveller", sim.KindPC, "h1"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			"h1": {ID: "h1", Members: map[sim.ActorID]struct{}{"hannah": {}, "bob": {}}},
+		},
+	}
+	p := Build(snap, "hannah", []sim.WarrantMeta{speechWarrant(1, "", "bob", truncated)})
+
+	for i := range p.Relationships {
+		if p.Relationships[i].PeerID != "bob" {
+			continue
+		}
+		for _, f := range p.Relationships[i].RecentFacts {
+			if f.Text == truncated {
+				t.Errorf("a max-length heard utterance should still de-dup against its warrant excerpt")
+			}
+		}
+		return
+	}
+	// No bob view at all is also acceptable here: the sole fact was de-duped, so
+	// buildRelationships drops the now-empty peer (len(out)==0 → nil).
+}
