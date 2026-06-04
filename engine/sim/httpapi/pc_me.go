@@ -517,10 +517,20 @@ func renderActionLogEntry(snap *sim.Snapshot, e sim.ActionLogEntry) (speaker, te
 		}
 		return name, e.Text, k, true
 	case sim.ActionTypePaid:
-		if e.Text != "" {
-			return name, name + " pays for " + e.Text + ".", "act", true
+		// ZBBS-WORK-377: narrate recipient + amount, degrading gracefully —
+		// "X pays Y N coins for Z." → "X pays Y N coins." → "X pays Y." →
+		// "X makes a payment." (counterparty unknown).
+		if e.CounterpartyName == "" {
+			return name, name + " makes a payment.", "act", true
 		}
-		return name, name + " makes a payment.", "act", true
+		line := name + " pays " + e.CounterpartyName
+		if e.Amount > 0 {
+			line += " " + formatCoins(e.Amount)
+		}
+		if e.Text != "" {
+			line += " for " + e.Text
+		}
+		return name, line + ".", "act", true
 	case sim.ActionTypeConsumed:
 		if e.Text == "" {
 			return "", "", "", false
@@ -530,7 +540,12 @@ func renderActionLogEntry(snap *sim.Snapshot, e sim.ActionLogEntry) (speaker, te
 		if e.Text == "" {
 			return "", "", "", false
 		}
-		return name, name + " delivers " + e.Text + ".", "act", true
+		// ZBBS-WORK-377: name the recipient when known.
+		line := name + " delivers " + e.Text
+		if e.CounterpartyName != "" {
+			line += " to " + e.CounterpartyName
+		}
+		return name, line + ".", "act", true
 	case sim.ActionTypeWalked:
 		if e.Text != "" {
 			return name, name + " arrives at " + e.Text + ".", "act", true
@@ -541,6 +556,15 @@ func renderActionLogEntry(snap *sim.Snapshot, e sim.ActionLogEntry) (speaker, te
 	default:
 		return "", "", "", false
 	}
+}
+
+// formatCoins renders a whole-coin amount for talk-panel narration, singularizing
+// "1 coin". Caller gates on amount > 0 (zero means "no amount to show").
+func formatCoins(n int) string {
+	if n == 1 {
+		return "1 coin"
+	}
+	return strconv.Itoa(n) + " coins"
 }
 
 // pcInventoryEntries maps the PC's item-kind→quantity map to enriched DTO
