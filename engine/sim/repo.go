@@ -200,6 +200,27 @@ type DurableActionLogRow struct {
 	Source      string         // "agent" | "player" | "engine"
 }
 
+// SimDayEvent is one agent_action_log row pulled for the daily sim-conversation
+// push (ZBBS-WORK-376). It is the engine-side shape of the {at, kind, payload,
+// speaker} event the API's POST /v1/sim/conversation-day distiller
+// (sim-conversation-distiller.js narrateEvent) renders into a per-day narrative
+// note feeding the four stateful NPCs' dream memory.
+//
+// One actor's day is that actor's own committed action rows PLUS the speech it
+// overheard from huddle-mates while co-present — see
+// (*pg.ActionLogRepo).LoadDayEvents for the presence-interval scoping. The
+// cross-actor speech is what makes a keeper's day read as a conversation rather
+// than a monologue.
+//
+// Wire serialization (JSON field tags, the {agent, day, events} POST envelope)
+// is the push ticker's concern, so this domain type carries none.
+type SimDayEvent struct {
+	At      time.Time
+	Kind    ActionType     // persisted v2-native action_type: spoke / paid / walked / delivered / consumed / took_break
+	Payload map[string]any // structured row payload as stored (text / recipient+amount / destination / item+qty / reason)
+	Speaker string         // agent_action_log.speaker_name — acting actor's display name; labels the distilled line
+}
+
 // ActionLogSink durably persists committed action-log rows to the
 // agent_action_log audit table — write-through per-event, OUTSIDE the
 // checkpoint tx (see the Repository doc). The production impl (repo/pg)

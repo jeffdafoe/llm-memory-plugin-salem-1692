@@ -3,6 +3,7 @@ package pg
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"sync/atomic"
 	"time"
@@ -156,4 +157,160 @@ func (r *ActionLogRepo) writeOne(row sim.DurableActionLogRow) {
 	); err != nil {
 		log.Printf("pg action_log: insert actor %q action %q: %v", row.ActorID, row.ActionType, err)
 	}
+}
+
+// loadDayEventsSQL pulls one actor's day of agent_action_log rows for the daily
+// sim-conversation push — the actor's own committed actions PLUS the speech it
+// overheard from huddle-mates while co-present. See LoadDayEvents for the CTE
+// walkthrough and the v2-vs-v1 differences.
+const loadDayEventsSQL = `
+WITH actor_seed AS (
+    SELECT huddle_id
+      FROM agent_action_log
+     WHERE actor_id = $1
+       AND occurred_at < $2
+       AND result = 'ok'
+     ORDER BY occurred_at DESC, id DESC
+     LIMIT 1
+),
+actor_raw AS (
+    SELECT huddle_id, $2::timestamptz AS occurred_at, 0::bigint AS id
+      FROM actor_seed
+    UNION ALL
+    SELECT huddle_id, occurred_at, id
+      FROM agent_action_log
+     WHERE actor_id = $1
+       AND occurred_at >= $2
+       AND occurred_at < $3
+       AND result = 'ok'
+),
+actor_rows AS (
+    SELECT huddle_id,
+           occurred_at,
+           LEAD(occurred_at) OVER (ORDER BY occurred_at, id) AS next_at
+      FROM actor_raw
+),
+my_intervals AS (
+    SELECT huddle_id,
+           occurred_at AS start_at,
+           COALESCE(next_at, $3::timestamptz) AS end_at
+      FROM actor_rows
+     WHERE huddle_id IS NOT NULL
+)
+SELECT al.occurred_at, al.action_type, al.payload, al.speaker_name
+  FROM agent_action_log al
+ WHERE al.occurred_at >= $2
+   AND al.occurred_at < $3
+   AND al.result = 'ok'
+   AND (
+       al.actor_id = $1
+       OR (
+           al.action_type = 'spoke'
+           AND al.huddle_id IS NOT NULL
+           AND EXISTS (
+               SELECT 1 FROM my_intervals mi
+                WHERE mi.huddle_id = al.huddle_id
+                  AND al.occurred_at >= mi.start_at
+                  AND al.occurred_at <  mi.end_at
+           )
+       )
+   )
+ ORDER BY al.occurred_at ASC, al.id ASC`
+
+// LoadDayEvents returns one actor's agent_action_log rows for the [dayStart,
+// dayEnd) window: the actor's own committed actions, PLUS speech it overheard
+// from huddle-mates while it was co-present. The cross-actor speech is what
+// makes the distilled note usable as dream input — a tavernkeeper's day
+// reduces to a monologue without the customers' lines, and the model needs the
+// full back-and-forth to reflect on the scene (ZBBS-WORK-376, ported from v1's
+// engine/sim_conversation_push.go loadDayEvents).
+//
+// Cross-actor inclusion is bounded by per-huddle presence intervals, not "any
+// huddle they touched today" — otherwise an actor who entered a tavern at 23:00
+// would have their note flooded with that huddle's speech back to 00:00, from
+// before they arrived. Three CTEs build the actor's presence intervals:
+//
+//   - actor_seed: the actor's most recent row from BEFORE the window (LIMIT 1,
+//     DESC). Carries the huddle state at midnight when the actor sits silently
+//     in a huddle that spans the day boundary — without it, a keeper who
+//     entered at 22:00 yesterday and doesn't act until 09:00 today has no
+//     in-window row to anchor an interval, and cross-actor speech from
+//     00:00–09:00 is wrongly excluded.
+//
+//   - actor_raw / actor_rows: a virtual seed row stamped at $2 (day-start,
+//     id 0 so it sorts first on a midnight tie — real ids are positive
+//     BIGSERIAL) UNIONed with the in-window rows, with LEAD(occurred_at) over
+//     the whole set. LEAD spans EVERY row, including NULL-huddle ones, so a
+//     transition to elsewhere correctly bounds the preceding huddle's interval.
+//
+//   - my_intervals: the non-NULL-huddle rows, each [occurred_at, next_at)
+//     (next_at falling back to dayEnd for the actor's last row of the day).
+//
+// The cross-actor predicate then includes another actor's `spoke` row when its
+// occurred_at falls inside any such interval for the same huddle.
+//
+// NULL-huddle invariant: the durable sink stamps huddle_id from the originating
+// event's huddle (cascade/action_log.go) — spoke from spoke.HuddleID; paid /
+// consumed / delivered / took_break from the actor's CurrentHuddleID; walked
+// always "" (arrival precedes any huddle join). DurableActionLogRow.HuddleID ""
+// becomes SQL NULL. So huddle_id IS NULL means and only means "actor was not in
+// a huddle at insert time," and such rows correctly act as interval boundaries
+// rather than presence.
+//
+// v2 differences from v1:
+//   - The cross-actor predicate keys on `spoke` only. v1 also matched `act`
+//     (model-narrated physical actions); v2 dropped `act` entirely — the social
+//     beat now rides on a real `spoke` row alongside the committed action — so
+//     `spoke` is the sole overhearable cross-actor kind.
+//   - huddle_id is TEXT here (`hud-<hex>` ids), not v1's uuid — ZBBS-WORK-239
+//     dropped its scene_huddle FK and retyped it. The interval logic is
+//     type-agnostic; the equality + IS NOT NULL checks port unchanged.
+//
+// Known limitation (carried from v1): a walk's prior huddle interval extends to
+// the actor's arrival row rather than to the moment they actually left (no
+// leave-huddle row is logged), so cross-actor speech at the FROM huddle during
+// a walk can be attributed to the actor's day. Minor — the walk is short and
+// the actor was adjacent to that scene moments earlier.
+//
+// Empty (non-nil) slice on no rows: a caller marshaling to JSON emits "[]" not
+// "null", which the conversation-day endpoint requires.
+func (r *ActionLogRepo) LoadDayEvents(ctx context.Context, actorID sim.ActorID, dayStart, dayEnd time.Time) ([]sim.SimDayEvent, error) {
+	rows, err := r.pool.Query(ctx, loadDayEventsSQL, string(actorID), dayStart, dayEnd)
+	if err != nil {
+		return nil, fmt.Errorf("query day events for actor %q: %w", actorID, err)
+	}
+	defer rows.Close()
+
+	events := []sim.SimDayEvent{}
+	for rows.Next() {
+		var (
+			occurredAt time.Time
+			actionType string
+			payloadRaw []byte
+			speaker    string
+		)
+		if err := rows.Scan(&occurredAt, &actionType, &payloadRaw, &speaker); err != nil {
+			return nil, fmt.Errorf("scan day event for actor %q: %w", actorID, err)
+		}
+		payload := map[string]any{}
+		if len(payloadRaw) > 0 {
+			if err := json.Unmarshal(payloadRaw, &payload); err != nil {
+				// One malformed payload shouldn't sink the whole day — emit the
+				// event with an empty payload so the kind + timestamp + speaker
+				// still reach the distiller.
+				log.Printf("pg action_log: malformed payload on action_type=%s actor=%q: %v", actionType, actorID, err)
+				payload = map[string]any{}
+			}
+		}
+		events = append(events, sim.SimDayEvent{
+			At:      occurredAt,
+			Kind:    sim.ActionType(actionType),
+			Payload: payload,
+			Speaker: speaker,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate day events for actor %q: %w", actorID, err)
+	}
+	return events, nil
 }
