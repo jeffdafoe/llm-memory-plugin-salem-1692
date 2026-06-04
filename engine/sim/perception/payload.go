@@ -149,6 +149,14 @@ type Payload struct {
 	// Ordering: sorted by PeerID for determinism.
 	Relationships []RelationshipPeerView
 
+	// Businessowner reports whether the subject actor runs a business
+	// (Actor.BusinessownerState != nil — the existing keeper predicate).
+	// Drives the engine-side vendor operating-block (renderVendorOperating):
+	// the trade conduct rules that used to live in salem-vendor's
+	// startup_instructions, moved engine-side so the whole decision prompt is
+	// code-owned and the rules sit at the decision point. ZBBS-WORK-374.
+	Businessowner bool
+
 	// PendingDeliveriesFromMe lists open Orders where the subject is
 	// the seller — items they owe to a buyer/consumers from a previously
 	// accepted pay-with-item offer that hasn't been delivered yet.

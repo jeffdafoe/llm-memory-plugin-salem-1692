@@ -101,24 +101,16 @@ func TestRenderSurroundings_InsideHuddleLinesOmitIDs(t *testing.T) {
 // and an empty-narration warrant falls back to the generic involvement line.
 // The village atmosphere line (ZBBS-WORK-327) renders inside "## Around you"
 // when set, is omitted when empty/whitespace, and is collapsed to one inline.
+// TestRenderSurroundings_AtmosphereLine: ZBBS-WORK-374 stopped rendering the
+// LLM-authored literary atmosphere line (ZBBS-WORK-327) into the decision prompt
+// — it was low-signal scene prose that buried the actual stimulus. The field
+// stays populated on the view; it just isn't spent on prompt budget. This guards
+// against re-introduction.
 func TestRenderSurroundings_AtmosphereLine(t *testing.T) {
-	render := func(atmosphere string) string {
-		var b strings.Builder
-		renderSurroundings(&b, SurroundingsView{Atmosphere: atmosphere})
-		return b.String()
-	}
-
-	if got := render("A grey drizzle settles over the square."); !strings.Contains(got, "A grey drizzle settles over the square.\n") {
-		t.Errorf("atmosphere line missing:\n%s", got)
-	}
-	if got := render(""); strings.Contains(got, "drizzle") || strings.Count(got, "\n") > 3 {
-		t.Errorf("empty atmosphere should render no extra line:\n%s", got)
-	}
-	if got := render("   \n\t  "); strings.Count(got, "\n") > 3 {
-		t.Errorf("whitespace-only atmosphere should render no extra line:\n%s", got)
-	}
-	if got := render("dusk falls\nlanterns flicker"); !strings.Contains(got, "dusk falls lanterns flicker\n") || strings.Contains(got, "dusk falls\nlanterns") {
-		t.Errorf("multi-line atmosphere should collapse to one inline line:\n%s", got)
+	var b strings.Builder
+	renderSurroundings(&b, SurroundingsView{Atmosphere: "A grey drizzle settles over the square."})
+	if got := b.String(); strings.Contains(got, "drizzle") {
+		t.Errorf("atmosphere line should no longer render into the decision prompt (ZBBS-WORK-374):\n%s", got)
 	}
 }
 
@@ -403,8 +395,14 @@ func TestRender_MissingBaseline_NeverClaimsNoChange(t *testing.T) {
 		if strings.Contains(lower, "no observable change") || strings.Contains(lower, "nothing about your situation has changed") {
 			t.Errorf("status %v: prompt must not claim no-change without a baseline:\n%s", status, out.Text)
 		}
-		if !strings.Contains(lower, "can't yet tell whether anything has changed") {
-			t.Errorf("status %v: prompt should mark the baseline undetermined", status)
+		// ZBBS-WORK-374: the missing-baseline case now omits the "## Since you got
+		// here" section entirely rather than printing "can't yet tell whether
+		// anything has changed." filler. Omission still honors the contract — it
+		// makes no no-change claim — and removes a noise line that carried no loop
+		// signal. The signal lives in the BaselinePresent path
+		// (TestRender_BaselinePresentNoChange_SaysSo).
+		if strings.Contains(lower, "since you got here") || strings.Contains(lower, "can't yet tell") {
+			t.Errorf("status %v: missing baseline should omit the loop-detection section, got:\n%s", status, combinedPrompt(out))
 		}
 	}
 }

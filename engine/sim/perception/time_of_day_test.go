@@ -77,20 +77,10 @@ func TestRenderSurroundings_TimeOfDay(t *testing.T) {
 		}
 	})
 
-	t.Run("time line precedes the atmosphere line", func(t *testing.T) {
-		got := render(SurroundingsView{
-			LocalMinuteOfDay: &evening,
-			Atmosphere:       "A cold fog clings to the lanes.",
-		})
-		timeIdx := strings.Index(got, "Evening settles over the village.")
-		atmoIdx := strings.Index(got, "A cold fog clings to the lanes.")
-		if timeIdx < 0 || atmoIdx < 0 {
-			t.Fatalf("expected both lines present, got: %q", got)
-		}
-		if timeIdx > atmoIdx {
-			t.Errorf("time-of-day line should precede atmosphere, got: %q", got)
-		}
-	})
+	// (The former "time line precedes the atmosphere line" subtest was removed in
+	// ZBBS-WORK-374 — the literary atmosphere line is no longer rendered into the
+	// decision prompt, so there is no longer an ordering relationship to assert.
+	// TestRenderSurroundings_AtmosphereLine guards that atmosphere stays out.)
 }
 
 // TestBuildSurroundings_TimeOfDay confirms Build copies the snapshot clock into
