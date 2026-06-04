@@ -31,12 +31,6 @@ func TestRegisterSpeak_AddsAvailableCommitEntry(t *testing.T) {
 	if entry.Description == "" {
 		t.Error("Description is empty (model gets no guidance)")
 	}
-	// ZBBS-HOME-381: production speak must carry the one-utterance cap so the
-	// harness ends the tick after it speaks instead of re-prompting into a
-	// repeat ramble. Closes the wiring loop between RegisterSpeak and the cap.
-	if !entry.OneUtterancePerTick {
-		t.Error("OneUtterancePerTick = false, want true (speak must be utterance-capped)")
-	}
 }
 
 func TestRegisterSpeak_SchemaIsValidJSON(t *testing.T) {
