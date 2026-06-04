@@ -166,6 +166,13 @@ func TestHandlePaidActionLog_AppendsEntryAndDerivesHuddle(t *testing.T) {
 	if e.Text != "the ale" {
 		t.Errorf("Text = %q, want %q", e.Text, "the ale")
 	}
+	// ZBBS-WORK-377: recipient (seller display name) + amount on the lean ring.
+	if e.CounterpartyName != "Bob" {
+		t.Errorf("CounterpartyName = %q, want Bob (seller)", e.CounterpartyName)
+	}
+	if e.Amount != 5 {
+		t.Errorf("Amount = %d, want 5", e.Amount)
+	}
 }
 
 // --- TestHandlePaidActionLog_UnknownBuyerHuddleEmpty ----------------
@@ -267,6 +274,13 @@ func TestHandleOrderDeliveredActionLog_AppendsSellerSide(t *testing.T) {
 	}
 	if got[0].HuddleID != "h1" {
 		t.Errorf("HuddleID = %q, want h1 (derived from seller's huddle)", got[0].HuddleID)
+	}
+	// ZBBS-WORK-377: recipient (buyer display name) on the lean ring; no amount.
+	if got[0].CounterpartyName != "Hannah" {
+		t.Errorf("CounterpartyName = %q, want Hannah (buyer)", got[0].CounterpartyName)
+	}
+	if got[0].Amount != 0 {
+		t.Errorf("Amount = %d, want 0 (delivered carries no amount)", got[0].Amount)
 	}
 }
 

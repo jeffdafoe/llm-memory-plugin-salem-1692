@@ -135,6 +135,11 @@ func handlePaidActionLog(w *sim.World, evt sim.Event) {
 		ActionType: sim.ActionTypePaid,
 		Text:       paid.ForText,
 		HuddleID:   huddleID,
+		// ZBBS-WORK-377: recipient (seller) + amount for the PC talk-panel
+		// narration ("X pays Y N coins for Z."). Empty name → renderer drops
+		// the recipient; the lean ring keeps only ForText otherwise.
+		CounterpartyName: actorDisplayNameOrEmpty(w, paid.SellerID),
+		Amount:           paid.Amount,
 	}
 	if _, err := sim.AppendActionLogEntry(entry).Fn(w); err != nil {
 		log.Printf("cascade/action_log: append paid (buyer %q event %d): %v",
@@ -218,6 +223,10 @@ func handleOrderDeliveredActionLog(w *sim.World, evt sim.Event) {
 		ActionType: sim.ActionTypeDelivered,
 		Text:       formatItemQty(delivered.Item, delivered.Qty),
 		HuddleID:   huddleID,
+		// ZBBS-WORK-377: recipient (buyer) for the PC talk-panel narration
+		// ("X delivers <item> to Y."). Amount intentionally omitted — the buyer
+		// already paid at order time, so a price on delivery reads oddly.
+		CounterpartyName: actorDisplayNameOrEmpty(w, delivered.BuyerID),
 	}
 	if _, err := sim.AppendActionLogEntry(entry).Fn(w); err != nil {
 		log.Printf("cascade/action_log: append delivered (seller %q event %d): %v",
@@ -388,6 +397,19 @@ func actorDisplayName(w *sim.World, id sim.ActorID) string {
 		return a.DisplayName
 	}
 	return string(id)
+}
+
+// actorDisplayNameOrEmpty resolves a counterparty's display name for the lean
+// ring's CounterpartyName (ZBBS-WORK-377), returning "" when there's no display
+// name. Unlike actorDisplayName (durable sink, speaker_name NOT NULL → id
+// fallback), the PC talk-panel renderer is human-facing: a raw actor id reads
+// worse than dropping the recipient, so the empty triggers the renderer's
+// counterparty-less phrasing.
+func actorDisplayNameOrEmpty(w *sim.World, id sim.ActorID) string {
+	if a, ok := w.Actors[id]; ok {
+		return a.DisplayName
+	}
+	return ""
 }
 
 // runActionLogSweep is the goroutine body. Immediate first compaction

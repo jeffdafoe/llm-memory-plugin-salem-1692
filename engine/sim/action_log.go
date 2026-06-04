@@ -95,12 +95,35 @@ const (
 // minimum the in-engine consumers (atmosphere digest + C2
 // consolidation) need; see the package doc for what's dropped vs v1's
 // pg schema and why.
+//
+// CounterpartyName + Amount are NOT consumed by the in-engine readers
+// (atmosphere counts by ActionType; C2 reads only Text). They exist
+// solely for the PC talk-panel renderer (ZBBS-WORK-377,
+// httpapi.renderActionLogEntry), which narrates paid/delivered beats to
+// the human player and needs the recipient + coin amount — neither of
+// which is recoverable from the snapshot at render time (the snapshot
+// holds the acting actor, not the counterparty, and the amount is a
+// transaction fact that lives nowhere else). Both are scalar, so the
+// snapshot clone (CloneActionLogEntry) stays a plain value copy and the
+// ring stays cheap. Text is left structurally unchanged so the C2
+// consolidation prompt the NPCs' memory is built from is unaffected.
 type ActionLogEntry struct {
 	ActorID    ActorID
 	OccurredAt time.Time
 	ActionType ActionType
 	Text       string   // freeform, rune-bounded at write time
 	HuddleID   HuddleID // "" for outdoor / pre-huddle / non-huddle actions
+
+	// CounterpartyName is the other party in a two-sided action: the
+	// seller for ActionTypePaid, the buyer for ActionTypeDelivered. Empty
+	// when the counterparty has no display name (the renderer falls back
+	// to a counterparty-less phrasing rather than show a raw id). Unset
+	// for all other ActionTypes.
+	CounterpartyName string
+	// Amount is the coin total for ActionTypePaid (whole coins, > 0).
+	// Zero means "no amount to show" — the renderer omits it. Unset for
+	// all other ActionTypes.
+	Amount int
 }
 
 // MaxActionLogTextLen bounds the Text field at write time. Same value
