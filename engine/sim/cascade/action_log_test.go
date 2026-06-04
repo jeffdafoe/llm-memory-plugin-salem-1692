@@ -2,6 +2,7 @@ package cascade
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -542,5 +543,136 @@ func TestFormatItemQty(t *testing.T) {
 		if got := formatItemQty(c.kind, c.qty); got != c.want {
 			t.Errorf("formatItemQty(%q, %d) = %q, want %q", c.kind, c.qty, got, c.want)
 		}
+	}
+}
+
+// recordingActionLogSink captures DurableActionLogRows for assertion in
+// the subscriber-emission test. Append fires on the world goroutine, so
+// the mutex guards the cross-goroutine read from the test.
+type recordingActionLogSink struct {
+	mu   sync.Mutex
+	rows []sim.DurableActionLogRow
+}
+
+func (r *recordingActionLogSink) Append(_ context.Context, row sim.DurableActionLogRow) error {
+	r.mu.Lock()
+	r.rows = append(r.rows, row)
+	r.mu.Unlock()
+	return nil
+}
+
+func (r *recordingActionLogSink) snapshot() []sim.DurableActionLogRow {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]sim.DurableActionLogRow, len(r.rows))
+	copy(out, r.rows)
+	return out
+}
+
+// --- TestSubscribers_EmitDurableRows -------------------------------
+// ZBBS-WORK-376: each subscriber, after the lean in-memory append,
+// mirrors a structured DurableActionLogRow to the installed sink. This
+// asserts the per-kind payload shape, the speaker-name denormalization,
+// and the PC-vs-NPC source derivation. (The existing handler tests run
+// with no sink installed, so the durable mirror is a no-op there.)
+func TestSubscribers_EmitDurableRows(t *testing.T) {
+	w, stop := buildActionLogCascadeWorld(t)
+	defer stop()
+
+	rec := &recordingActionLogSink{}
+	invokeOnWorld(t, w, func(world *sim.World) {
+		world.SetActionLogSink(rec)
+		// A PC (LoginUsername set) to exercise source="player". The source
+		// derivation keys on LoginUsername, not Kind.
+		world.Actors["jeff"] = &sim.Actor{
+			ID:               "jeff",
+			DisplayName:      "Jefferey",
+			LoginUsername:    "jeff",
+			Kind:             sim.KindNPCShared,
+			State:            sim.StateIdle,
+			CurrentHuddleID:  "h1",
+			RecentActions:    sim.NewRingBuffer[sim.Action](4),
+			RecentStateTrans: sim.NewRingBuffer[sim.StateTransition](4),
+		}
+	})
+
+	at := time.Now().UTC()
+	invokeOnWorld(t, w, func(world *sim.World) {
+		handleSpokeActionLog(world, &sim.Spoke{SpeakerID: "hannah", HuddleID: "h1", Text: "Good morrow, Bob.", At: at})
+		handlePaidActionLog(world, &sim.Paid{BuyerID: "hannah", SellerID: "bob", Amount: 5, ForText: "the ale", At: at})
+		handleConsumedActionLog(world, &sim.ItemConsumed{ActorID: "hannah", Kind: "ale", Qty: 2, At: at})
+		handleOrderDeliveredActionLog(world, &sim.OrderDelivered{BuyerID: "hannah", SellerID: "bob", Item: "bread", Qty: 3, Amount: 9, At: at})
+		handleActorArrivedActionLog(world, &sim.ActorArrived{ActorID: "hannah", FinalStructureID: "tavern", At: at})
+		handleTookBreakActionLog(world, &sim.TookBreak{ActorID: "hannah", Reason: "weary", At: at})
+		handleSpokeActionLog(world, &sim.Spoke{SpeakerID: "jeff", HuddleID: "h1", Text: "Aye.", At: at})
+	})
+
+	rows := rec.snapshot()
+	if len(rows) != 7 {
+		t.Fatalf("recorded %d durable rows, want 7", len(rows))
+	}
+
+	wantStr := func(i int, p map[string]any, key, want string) {
+		t.Helper()
+		got, _ := p[key].(string)
+		if got != want {
+			t.Errorf("row %d payload[%q] = %q, want %q", i, key, got, want)
+		}
+	}
+	wantInt := func(i int, p map[string]any, key string, want int) {
+		t.Helper()
+		got, _ := p[key].(int)
+		if got != want {
+			t.Errorf("row %d payload[%q] = %v, want %d", i, key, p[key], want)
+		}
+	}
+
+	// 0: spoke (NPC) — text payload, agent source, denormalized speaker.
+	if rows[0].ActorID != "hannah" || rows[0].ActionType != sim.ActionTypeSpoke ||
+		rows[0].Source != "agent" || rows[0].SpeakerName != "Hannah" || rows[0].HuddleID != "h1" {
+		t.Errorf("row 0 spoke header = %+v", rows[0])
+	}
+	wantStr(0, rows[0].Payload, "text", "Good morrow, Bob.")
+
+	// 1: paid — recipient is the seller's display name; amount + for.
+	if rows[1].ActorID != "hannah" || rows[1].ActionType != sim.ActionTypePaid ||
+		rows[1].SpeakerName != "Hannah" || rows[1].HuddleID != "h1" {
+		t.Errorf("row 1 paid header = %+v", rows[1])
+	}
+	wantStr(1, rows[1].Payload, "recipient", "Bob")
+	wantStr(1, rows[1].Payload, "for", "the ale")
+	wantInt(1, rows[1].Payload, "amount", 5)
+
+	// 2: consumed — item + qty.
+	if rows[2].ActorID != "hannah" || rows[2].ActionType != sim.ActionTypeConsumed {
+		t.Errorf("row 2 consumed header = %+v", rows[2])
+	}
+	wantStr(2, rows[2].Payload, "item", "ale")
+	wantInt(2, rows[2].Payload, "qty", 2)
+
+	// 3: delivered — seller acts; recipient is the buyer.
+	if rows[3].ActorID != "bob" || rows[3].ActionType != sim.ActionTypeDelivered || rows[3].SpeakerName != "Bob" {
+		t.Errorf("row 3 delivered header = %+v", rows[3])
+	}
+	wantStr(3, rows[3].Payload, "recipient", "Hannah")
+	wantStr(3, rows[3].Payload, "item", "bread")
+	wantInt(3, rows[3].Payload, "qty", 3)
+	wantInt(3, rows[3].Payload, "amount", 9)
+
+	// 4: walked — destination name; huddle empty (arrival precedes join).
+	if rows[4].ActorID != "hannah" || rows[4].ActionType != sim.ActionTypeWalked || rows[4].HuddleID != "" {
+		t.Errorf("row 4 walked header = %+v", rows[4])
+	}
+	wantStr(4, rows[4].Payload, "destination", "the tavern")
+
+	// 5: took_break — reason.
+	if rows[5].ActorID != "hannah" || rows[5].ActionType != sim.ActionTypeTookBreak {
+		t.Errorf("row 5 took_break header = %+v", rows[5])
+	}
+	wantStr(5, rows[5].Payload, "reason", "weary")
+
+	// 6: spoke by a PC → source="player".
+	if rows[6].Source != "player" || rows[6].SpeakerName != "Jefferey" {
+		t.Errorf("row 6 PC spoke source/speaker = %q/%q, want player/Jefferey", rows[6].Source, rows[6].SpeakerName)
 	}
 }

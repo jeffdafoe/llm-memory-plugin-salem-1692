@@ -177,13 +177,71 @@ type EnvironmentRepo interface {
 	SaveMutableSettings(ctx context.Context, tx Tx, settings MutableWorldSettings) error
 }
 
-// ActionLogSink appends action log rows per-event. v2 MVP wires a noop
-// implementation (mem.noopActionLog) — the in-engine consumers
-// (atmosphere digest, C2 consolidation) read from World.ActionLog
-// directly; durable pg projection lands at cutover. See
-// engine/sim/action_log.go for the entry shape.
+// DurableActionLogRow is the structured audit row the production
+// ActionLogSink persists to the agent_action_log pg table. Unlike the
+// lean in-memory ActionLogEntry (action_log.go) — which flattens every
+// action to a single Text field for the in-engine atmosphere / C2
+// consumers — this carries the full column set the API-side dream
+// distiller (sim-conversation-distiller.js narrateEvent) renders from:
+// a structured Payload plus the denormalized speaker name and source.
+//
+// Built at the cascade action-log subscribers (cascade/action_log.go),
+// where the originating event still carries the structured fields
+// (Paid.SellerID/Amount, OrderDelivered.Item/Qty, ActorArrived.Dest…)
+// that the lean ring drops. The ring is appended separately and stays
+// lean. Result is implicitly "ok": v2 logs committed actions only.
+type DurableActionLogRow struct {
+	ActorID     ActorID
+	OccurredAt  time.Time
+	ActionType  ActionType
+	Payload     map[string]any // structured: recipient/amount/for, destination, item/qty, text, reason
+	SpeakerName string         // actor DisplayName, re-denormalized for the distiller
+	HuddleID    HuddleID       // "" for outdoor / pre-huddle / non-huddle actions
+	Source      string         // "agent" | "player" | "engine"
+}
+
+// SimDayEvent is one agent_action_log row pulled for the daily sim-conversation
+// push (ZBBS-WORK-376). It is the engine-side shape of the {at, kind, payload,
+// speaker} event the API's POST /v1/sim/conversation-day distiller
+// (sim-conversation-distiller.js narrateEvent) renders into a per-day narrative
+// note feeding the four stateful NPCs' dream memory.
+//
+// One actor's day is that actor's own committed action rows PLUS the speech it
+// overheard from huddle-mates while co-present — see
+// (*pg.ActionLogRepo).LoadDayEvents for the presence-interval scoping. The
+// cross-actor speech is what makes a keeper's day read as a conversation rather
+// than a monologue.
+//
+// Wire serialization (JSON field tags, the {agent, day, events} POST envelope)
+// is the push ticker's concern, so this domain type carries none.
+type SimDayEvent struct {
+	At      time.Time
+	Kind    ActionType     // persisted v2-native action_type: spoke / paid / walked / delivered / consumed / took_break
+	Payload map[string]any // structured row payload as stored (text / recipient+amount / destination / item+qty / reason)
+	Speaker string         // agent_action_log.speaker_name — acting actor's display name; labels the distilled line
+}
+
+// AgentActor pairs an actor's id with the llm-memory agent slug backing it.
+// The daily sim-conversation push (ZBBS-WORK-376) enumerates these to know
+// which actors to build a day-note for and under which agent namespace to POST
+// it. Only actors with a non-empty llm_memory_agent qualify.
+type AgentActor struct {
+	ID    ActorID
+	Agent string
+}
+
+// ActionLogSink durably persists committed action-log rows to the
+// agent_action_log audit table — write-through per-event, OUTSIDE the
+// checkpoint tx (see the Repository doc). The production impl (repo/pg)
+// is ASYNC: Append enqueues on the world goroutine and a writer
+// goroutine performs the INSERT off-goroutine, mirroring the checkpoint
+// flow's "clone on-goroutine, write off-goroutine" posture
+// (checkpoint.go) so the hot action-emit path never blocks on PG. The
+// in-engine consumers (atmosphere digest, C2 consolidation) read
+// World.ActionLog directly and do NOT depend on this sink. v2 MVP
+// before this wiring used mem.noopActionLog. ZBBS-WORK-376.
 type ActionLogSink interface {
-	Append(ctx context.Context, entry ActionLogEntry) error
+	Append(ctx context.Context, row DurableActionLogRow) error
 }
 
 // TickTelemetryRecord is one entry in the per-tick lifecycle telemetry

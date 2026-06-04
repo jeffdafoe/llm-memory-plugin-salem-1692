@@ -89,7 +89,7 @@ type Handles struct {
 // pending entries are intentionally restart-lossy.)
 type noopActionLog struct{}
 
-func (noopActionLog) Append(_ context.Context, _ sim.ActionLogEntry) error { return nil }
+func (noopActionLog) Append(_ context.Context, _ sim.DurableActionLogRow) error { return nil }
 
 // noopTickTelemetry discards tick telemetry records — tests that care
 // about telemetry use a recording fake instead; the skeleton just needs

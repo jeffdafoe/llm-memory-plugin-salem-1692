@@ -169,7 +169,7 @@ func (fakeVillageObjects) SaveSnapshot(_ context.Context, _ sim.Tx, _ map[sim.Vi
 
 type fakeActionLog struct{}
 
-func (fakeActionLog) Append(_ context.Context, _ sim.ActionLogEntry) error { return nil }
+func (fakeActionLog) Append(_ context.Context, _ sim.DurableActionLogRow) error { return nil }
 
 type fakeTickTelemetry struct{}
 
