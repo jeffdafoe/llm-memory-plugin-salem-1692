@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -55,6 +56,36 @@ func newSpeakDedupHarness(t *testing.T, client llm.Client) (*Harness, *[]string)
 		t.Fatalf("NewHarness: %v", err)
 	}
 	return h, &spokeLog
+}
+
+// speakUtteranceKey is correctness-critical and special-cased on BOTH the tool
+// name and the decoded-args type, so pin it directly against the PRODUCTION
+// decoder (DecodeSpeakArgs). If a future decoder refactor changes the decoded
+// shape (e.g. to *SpeakArgs), the dedup guard would silently disable for the
+// real speak tool and the storm could return — this test fails loudly instead.
+// Also covers normalization and the non-speak / empty-text / nil fall-throughs.
+func TestSpeakUtteranceKey_ProductionDecoderShapeAndFallthroughs(t *testing.T) {
+	decoded, err := DecodeSpeakArgs(json.RawMessage(`{"text":"  Four   Coins. "}`))
+	if err != nil {
+		t.Fatalf("DecodeSpeakArgs: %v", err)
+	}
+	norm, ok := speakUtteranceKey(&ValidatedCall{Name: "speak", DecodedArgs: decoded})
+	if !ok {
+		t.Fatal("speakUtteranceKey ok=false for a production-decoded speak — dedup would be silently disabled in production")
+	}
+	if norm != "four coins." {
+		t.Errorf("normalized key = %q, want %q", norm, "four coins.")
+	}
+
+	if _, ok := speakUtteranceKey(&ValidatedCall{Name: "move_to", DecodedArgs: decoded}); ok {
+		t.Error("non-speak tool: want ok=false")
+	}
+	if _, ok := speakUtteranceKey(&ValidatedCall{Name: "speak", DecodedArgs: SpeakArgs{Text: "   "}}); ok {
+		t.Error("whitespace-only text: want ok=false")
+	}
+	if _, ok := speakUtteranceKey(nil); ok {
+		t.Error("nil call: want ok=false")
+	}
 }
 
 // A verbatim repeat on a LATER round is rejected; the model then ends with
