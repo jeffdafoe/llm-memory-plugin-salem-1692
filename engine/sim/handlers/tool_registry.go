@@ -37,6 +37,16 @@ type RegistryEntry struct {
 	TerminalPolicy TerminalPolicy
 	Availability   ToolAvailability
 
+	// OneUtterancePerTick caps this tool to a single successful dispatch
+	// per tick AND ends the tick after the round it commits in (ZBBS-HOME-381).
+	// It is orthogonal to TerminalPolicy: the tool stays non-terminal WITHIN
+	// a batch (so the model can pair `speak` with a `move_to` in the same
+	// response and have both run), but it does not get re-prompted for
+	// another round. Without this, a non-terminal `speak` loops back to the
+	// model every round; with no new input the model re-asks the same thing,
+	// producing the speak,speak,…,budget_forced ramble. Set on `speak` only.
+	OneUtterancePerTick bool
+
 	// Schema is the JSON schema bytes shipped to the provider in
 	// llm.ToolSpec.Schema. Opaque to the Client; validation lives in
 	// Decode. Non-nil after registration.
@@ -118,6 +128,13 @@ func WithAvailability(a ToolAvailability) RegisterOption {
 // in llm.ToolSpec.Description). Empty by default.
 func WithDescription(d string) RegisterOption {
 	return func(e *RegistryEntry) { e.Description = d }
+}
+
+// WithOneUtterancePerTick marks the tool so the harness caps it to one
+// successful dispatch per tick and ends the tick after the round it commits
+// in (ZBBS-HOME-381). See RegistryEntry.OneUtterancePerTick. Used by `speak`.
+func WithOneUtterancePerTick() RegisterOption {
+	return func(e *RegistryEntry) { e.OneUtterancePerTick = true }
 }
 
 // RegisterObservation adds a ClassObservation tool. TerminalPolicy is
