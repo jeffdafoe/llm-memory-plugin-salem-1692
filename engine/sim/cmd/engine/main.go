@@ -35,8 +35,9 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/httpapi"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/llm"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/llm/memapi"
-	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/repo/pg"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/promptlog"
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/repo/pg"
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/simpush"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/telemetry"
 )
 
@@ -80,6 +81,18 @@ type runtime struct {
 	// enabled; run wires it to BOTH the harness (PromptSink) and the server
 	// (SetPrompts). Nil = no prompt capture.
 	PromptRing *promptlog.RingSink
+	// ActionLog is the durable agent_action_log writer (ZBBS-WORK-376). Its
+	// Append is already installed on the World (SetActionLogSink in main); run
+	// owns the writer-goroutine lifecycle — started before world.Run, drained
+	// AFTER the world goroutine stops (no more Appends) and BEFORE main closes
+	// the pool. Nil in the headless lifecycle test (mem-backed, no pg).
+	ActionLog *pg.ActionLogRepo
+	// SimPush is the daily sim-conversation push (ZBBS-WORK-376 piece 3): once
+	// per UTC day it POSTs each agentized actor's completed-day action rows to
+	// llm-memory-api so the stateful NPCs' dream cron has input. run owns its
+	// goroutine (bound to worldCtx, waited at shutdown before the pool closes).
+	// Nil in the headless lifecycle test (mem-backed, no pg).
+	SimPush *simpush.Dispatcher
 }
 
 func main() {
@@ -144,6 +157,24 @@ func main() {
 	// restartExpirePendingOrders pass, so there's no before-load ordering to honor.
 	world.SetTerminalOrderSink(repo.Orders)
 
+	// Install the durable agent_action_log sink (ZBBS-WORK-376). It feeds the
+	// four stateful NPCs' nightly dream memory via llm-memory-api's daily sim
+	// push. Async: Append enqueues on the world goroutine; the writer goroutine
+	// (started in run, drained at shutdown before pool.Close) does the INSERT
+	// off the world goroutine.
+	actionLogSink := pg.NewActionLogRepo(pool)
+	world.SetActionLogSink(actionLogSink)
+
+	// Daily sim-conversation push (ZBBS-WORK-376 piece 3). Reads the durable
+	// agent_action_log the sink above writes, plus the actor roster + push
+	// cursor, and POSTs each agentized actor's completed-day rows to
+	// llm-memory-api's /v1/sim/conversation-day. Authenticated as salem-engine
+	// with the same key the LLM client uses.
+	simPush := simpush.NewDispatcher(
+		pg.NewSimPushStore(pool),
+		simpush.NewHTTPPoster(llmMemoryURL, engineKey),
+	)
+
 	rt := runtime{
 		World:     world,
 		LLMClient: memapi.NewClient(llmMemoryURL, engineKey),
@@ -160,6 +191,8 @@ func main() {
 		Umbilical:        umbilical,
 		UmbilicalControl: umbilicalControl,
 		PromptRing:       promptRing,
+		ActionLog:        actionLogSink,
+		SimPush:          simPush,
 	}
 
 	// Shutdown on SIGINT/SIGTERM.
@@ -191,6 +224,12 @@ func run(rt runtime, stop <-chan struct{}) error {
 	defer cancelWorld()
 	checkpointerCtx, cancelCheckpointer := context.WithCancel(context.Background())
 	defer cancelCheckpointer()
+	// actionLogWriterCtx drives the durable action-log writer goroutine
+	// (ZBBS-WORK-376). Separate from worldCtx so shutdown can drain it AFTER the
+	// world goroutine has stopped emitting (no more Appends) and BEFORE main
+	// closes the pool.
+	actionLogWriterCtx, cancelActionLogWriter := context.WithCancel(context.Background())
+	defer cancelActionLogWriter()
 
 	// Agent-tick execution pipeline: tool registry → harness → worker pool.
 	// The registry is the set of tools an NPC's LLM may call during a tick.
@@ -262,10 +301,38 @@ func run(rt runtime, stop <-chan struct{}) error {
 		close(worldDone)
 	}()
 
+	// Durable action-log writer (ZBBS-WORK-376): drains the agent_action_log
+	// queue to pg off the world goroutine. Nil sink in the headless lifecycle
+	// test, so guard. Drained in the shutdown sequence below, after worldDone.
+	actionLogWriterDone := make(chan struct{})
+	if rt.ActionLog != nil {
+		go func() {
+			rt.ActionLog.Run(actionLogWriterCtx)
+			close(actionLogWriterDone)
+		}()
+	} else {
+		close(actionLogWriterDone)
+	}
+
 	// Launch the worker pool (workers complete ticks via SendContext to world)
 	// and every periodic ticker/sweep, all bound to worldCtx.
 	tickPool.Start(worldCtx)
 	startTickers(worldCtx, rt.World)
+
+	// Daily sim-conversation push (ZBBS-WORK-376 piece 3). Bound to worldCtx so
+	// it stops with the world; it reads pg + POSTs to the API, independent of
+	// the world goroutine. Nil in the headless lifecycle test (no pg). Waited at
+	// shutdown (below) before main closes the pool, so an in-flight query/POST
+	// isn't cut mid-flight.
+	simPushDone := make(chan struct{})
+	if rt.SimPush != nil {
+		go func() {
+			rt.SimPush.Run(worldCtx)
+			close(simPushDone)
+		}()
+	} else {
+		close(simPushDone)
+	}
 
 	// Periodic checkpointer. checkpointerDone closes when the loop has fully
 	// stopped — the shutdown path waits on it before forcing the final
@@ -373,6 +440,19 @@ func run(rt runtime, stop <-chan struct{}) error {
 	case <-time.After(worldStopTimeout):
 		return fmt.Errorf("world did not stop within %s of cancellation", worldStopTimeout)
 	}
+
+	// World is stopped — no more action-log Appends will arrive. Drain the
+	// durable writer (ZBBS-WORK-376) before the caller closes the pool, so the
+	// day's tail of audit rows lands rather than being lost on exit.
+	cancelActionLogWriter()
+	<-actionLogWriterDone
+
+	// The daily push is bound to worldCtx (cancelled above). Wait for it to
+	// return before the caller closes the pool, so an in-flight cursor write or
+	// day-events query isn't racing pool teardown. A partial catch-up is safe —
+	// the cursor only advances per fully-pushed day and the API upsert is
+	// idempotent, so the next run resumes cleanly (ZBBS-WORK-376 piece 3).
+	<-simPushDone
 
 	return nil
 }

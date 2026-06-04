@@ -125,7 +125,7 @@ func (notImplTerrain) Load(_ context.Context) (*sim.Terrain, error) { return nil
 
 type notImplActionLog struct{}
 
-func (notImplActionLog) Append(_ context.Context, _ sim.ActionLogEntry) error { return errNotImpl }
+func (notImplActionLog) Append(_ context.Context, _ sim.DurableActionLogRow) error { return errNotImpl }
 
 type notImplTickTelemetry struct{}
 

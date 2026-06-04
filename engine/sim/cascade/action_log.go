@@ -97,7 +97,21 @@ func handleSpokeActionLog(w *sim.World, evt sim.Event) {
 	if _, err := sim.AppendActionLogEntry(entry).Fn(w); err != nil {
 		log.Printf("cascade/action_log: append spoke (speaker %q event %d): %v",
 			spoke.SpeakerID, spoke.EventID(), err)
+		return
 	}
+	// Durable mirror (ZBBS-WORK-376): structured row for the agent_action_log
+	// audit table that feeds the stateful NPCs' dream memory. payload.text is
+	// the verbatim utterance — the distiller renders it as quoted dialogue.
+	display, source := actorDisplayAndSource(w, spoke.SpeakerID)
+	w.AppendActionLogDurable(sim.DurableActionLogRow{
+		ActorID:     spoke.SpeakerID,
+		OccurredAt:  spoke.At,
+		ActionType:  sim.ActionTypeSpoke,
+		Payload:     map[string]any{"text": spoke.Text},
+		SpeakerName: display,
+		HuddleID:    spoke.HuddleID,
+		Source:      source,
+	})
 }
 
 // handlePaidActionLog appends a row when a pay tool call commits.
@@ -125,7 +139,28 @@ func handlePaidActionLog(w *sim.World, evt sim.Event) {
 	if _, err := sim.AppendActionLogEntry(entry).Fn(w); err != nil {
 		log.Printf("cascade/action_log: append paid (buyer %q event %d): %v",
 			paid.BuyerID, paid.EventID(), err)
+		return
 	}
+	// Durable mirror (ZBBS-WORK-376). Buyer side: recipient is the seller's
+	// display name; amount + for-text carry the transaction detail the lean
+	// ring drops (ring keeps only ForText).
+	display, source := actorDisplayAndSource(w, paid.BuyerID)
+	payload := map[string]any{
+		"recipient": actorDisplayName(w, paid.SellerID),
+		"amount":    paid.Amount,
+	}
+	if paid.ForText != "" {
+		payload["for"] = paid.ForText
+	}
+	w.AppendActionLogDurable(sim.DurableActionLogRow{
+		ActorID:     paid.BuyerID,
+		OccurredAt:  paid.At,
+		ActionType:  sim.ActionTypePaid,
+		Payload:     payload,
+		SpeakerName: display,
+		HuddleID:    huddleID,
+		Source:      source,
+	})
 }
 
 // handleConsumedActionLog appends a row when a consume tool call
@@ -150,7 +185,19 @@ func handleConsumedActionLog(w *sim.World, evt sim.Event) {
 	if _, err := sim.AppendActionLogEntry(entry).Fn(w); err != nil {
 		log.Printf("cascade/action_log: append consumed (actor %q event %d): %v",
 			consumed.ActorID, consumed.EventID(), err)
+		return
 	}
+	// Durable mirror (ZBBS-WORK-376): item + qty as structured fields.
+	display, source := actorDisplayAndSource(w, consumed.ActorID)
+	w.AppendActionLogDurable(sim.DurableActionLogRow{
+		ActorID:     consumed.ActorID,
+		OccurredAt:  consumed.At,
+		ActionType:  sim.ActionTypeConsumed,
+		Payload:     map[string]any{"item": string(consumed.Kind), "qty": consumed.Qty},
+		SpeakerName: display,
+		HuddleID:    huddleID,
+		Source:      source,
+	})
 }
 
 // handleOrderDeliveredActionLog appends a row when a deliver_order
@@ -175,7 +222,25 @@ func handleOrderDeliveredActionLog(w *sim.World, evt sim.Event) {
 	if _, err := sim.AppendActionLogEntry(entry).Fn(w); err != nil {
 		log.Printf("cascade/action_log: append delivered (seller %q event %d): %v",
 			delivered.SellerID, delivered.EventID(), err)
+		return
 	}
+	// Durable mirror (ZBBS-WORK-376). Seller side: recipient is the buyer's
+	// display name; item + qty + amount carry the fulfillment detail.
+	display, source := actorDisplayAndSource(w, delivered.SellerID)
+	w.AppendActionLogDurable(sim.DurableActionLogRow{
+		ActorID:    delivered.SellerID,
+		OccurredAt: delivered.At,
+		ActionType: sim.ActionTypeDelivered,
+		Payload: map[string]any{
+			"recipient": actorDisplayName(w, delivered.BuyerID),
+			"item":      string(delivered.Item),
+			"qty":       delivered.Qty,
+			"amount":    delivered.Amount,
+		},
+		SpeakerName: display,
+		HuddleID:    huddleID,
+		Source:      source,
+	})
 }
 
 // handleActorArrivedActionLog appends a row when an actor completes a
@@ -221,7 +286,26 @@ func handleActorArrivedActionLog(w *sim.World, evt sim.Event) {
 	if _, err := sim.AppendActionLogEntry(entry).Fn(w); err != nil {
 		log.Printf("cascade/action_log: append walked (actor %q event %d): %v",
 			arrived.ActorID, arrived.EventID(), err)
+		return
 	}
+	// Durable mirror (ZBBS-WORK-376): destination name (the resolved structure /
+	// object display name) as a structured field. Omitted for a bare outdoor
+	// arrival with no nameable place. HuddleID empty — arrival precedes any
+	// encounter-cascade huddle join.
+	display, source := actorDisplayAndSource(w, arrived.ActorID)
+	payload := map[string]any{}
+	if text != "" {
+		payload["destination"] = text
+	}
+	w.AppendActionLogDurable(sim.DurableActionLogRow{
+		ActorID:     arrived.ActorID,
+		OccurredAt:  arrived.At,
+		ActionType:  sim.ActionTypeWalked,
+		Payload:     payload,
+		SpeakerName: display,
+		HuddleID:    sim.HuddleID(""),
+		Source:      source,
+	})
 }
 
 // handleTookBreakActionLog appends a row when a take_break tool call
@@ -247,7 +331,24 @@ func handleTookBreakActionLog(w *sim.World, evt sim.Event) {
 	if _, err := sim.AppendActionLogEntry(entry).Fn(w); err != nil {
 		log.Printf("cascade/action_log: append took_break (actor %q event %d): %v",
 			broke.ActorID, broke.EventID(), err)
+		return
 	}
+	// Durable mirror (ZBBS-WORK-376): the model-supplied reason as a structured
+	// field (omitted when empty).
+	display, source := actorDisplayAndSource(w, broke.ActorID)
+	payload := map[string]any{}
+	if broke.Reason != "" {
+		payload["reason"] = broke.Reason
+	}
+	w.AppendActionLogDurable(sim.DurableActionLogRow{
+		ActorID:     broke.ActorID,
+		OccurredAt:  broke.At,
+		ActionType:  sim.ActionTypeTookBreak,
+		Payload:     payload,
+		SpeakerName: display,
+		HuddleID:    huddleID,
+		Source:      source,
+	})
 }
 
 // formatItemQty renders an item kind for the action log's Text field.
@@ -259,6 +360,34 @@ func formatItemQty(kind sim.ItemKind, qty int) string {
 		return string(kind)
 	}
 	return fmt.Sprintf("%dx %s", qty, kind)
+}
+
+// actorDisplayAndSource resolves the acting actor's display name and the
+// agent_action_log `source` value for a DurableActionLogRow: "player" for a PC
+// (LoginUsername set), "agent" otherwise. An unknown actor (or one with no
+// display name) falls back to the actor-id string — speaker_name is NOT NULL
+// and labels the distilled transcript line, so a stable id beats a blank.
+func actorDisplayAndSource(w *sim.World, id sim.ActorID) (display, source string) {
+	source = "agent"
+	display = string(id)
+	if a, ok := w.Actors[id]; ok {
+		if a.DisplayName != "" {
+			display = a.DisplayName
+		}
+		if a.LoginUsername != "" {
+			source = "player"
+		}
+	}
+	return display, source
+}
+
+// actorDisplayName resolves just an actor's display name (for a counterparty —
+// a pay recipient / delivery buyer), falling back to the id string.
+func actorDisplayName(w *sim.World, id sim.ActorID) string {
+	if a, ok := w.Actors[id]; ok && a.DisplayName != "" {
+		return a.DisplayName
+	}
+	return string(id)
 }
 
 // runActionLogSweep is the goroutine body. Immediate first compaction
