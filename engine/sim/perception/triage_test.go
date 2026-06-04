@@ -7,7 +7,10 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
 
-const triageMarker = "Weigh everything above and act on what matters most right now"
+// The non-awaiting universal decision section (ZBBS-WORK-374) opens with this
+// phrase; it replaced the bare HOME-355 "Weigh everything above … Choose one
+// thing and do it." coda.
+const triageMarker = "Weigh what's in front of you"
 
 // TestRender_TriageInstructionAlwaysPresent: the closing prioritization line
 // (ZBBS-HOME-355) renders on every NPC tick — both a content-rich payload and

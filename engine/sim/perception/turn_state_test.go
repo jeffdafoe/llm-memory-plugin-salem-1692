@@ -134,16 +134,19 @@ func TestRenderTriage_CodaSwap(t *testing.T) {
 	var awaiting strings.Builder
 	renderTriage(&awaiting, needs, thresholds, true)
 	got := awaiting.String()
-	if strings.Contains(got, "Choose one thing and do it") {
+	if strings.Contains(got, "Choose one action") {
 		t.Errorf("awaiting coda must not command an action:\n%s", got)
 	}
 	if !strings.Contains(got, "call done()") {
 		t.Errorf("awaiting coda should permit waiting via done():\n%s", got)
 	}
 
+	// Non-awaiting: the universal decision section (ZBBS-WORK-374) keeps an act-now
+	// command ("Choose one action") — but now pairs it with the yield-after-speak
+	// turn discipline.
 	var normal strings.Builder
 	renderTriage(&normal, needs, thresholds, false)
-	if !strings.Contains(normal.String(), "Choose one thing and do it") {
+	if !strings.Contains(normal.String(), "Choose one action") {
 		t.Errorf("non-awaiting coda should keep the act-now imperative:\n%s", normal.String())
 	}
 }

@@ -255,8 +255,11 @@ func TestRender_WhoYouAreSectionForShared(t *testing.T) {
 	if !strings.Contains(combinedPrompt(rendered), "You are Hannah.") {
 		t.Error("missing SeedText in rendered prompt")
 	}
-	if !strings.Contains(combinedPrompt(rendered), "Currently anxious about the storm.") {
-		t.Error("missing EvolvingSummary in rendered prompt")
+	// ZBBS-WORK-374: EvolvingSummary is no longer rendered into the decision
+	// prompt — it's frozen, unconsolidated diary prose that primed the repeat
+	// loop. SeedText (the factual identity) stays.
+	if strings.Contains(combinedPrompt(rendered), "Currently anxious about the storm.") {
+		t.Error("EvolvingSummary should no longer appear in the decision prompt (ZBBS-WORK-374)")
 	}
 }
 

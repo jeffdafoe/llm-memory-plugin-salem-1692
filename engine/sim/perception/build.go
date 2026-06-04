@@ -51,7 +51,8 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 	p.Anchors = buildAnchors(snap, actorSnap)
 	p.DutySteer = buildDutySteer(snap, actorSnap, p.Anchors)
 	p.NarrativeState = buildNarrativeState(actorSnap)
-	p.Relationships = buildRelationships(actorSnap, p.Surroundings.HuddleMembers)
+	p.Businessowner = actorSnap.BusinessownerState != nil
+	p.Relationships = buildRelationships(actorSnap, p.Surroundings.HuddleMembers, currentHeardExcerpts(p.Warrants))
 	p.PendingDeliveriesFromMe, p.PendingDeliveriesToMe = buildPendingOrderViews(snap, actorID)
 	p.RecoveryOptions = buildRecoveryOptions(snap, actorID, actorSnap)
 	p.Satiation = buildSatiation(snap, actorID, actorSnap)
@@ -997,7 +998,17 @@ const recentSalientFactsPerPeer = 3
 //
 // Ordering: by PeerID, matching SurroundingsView.HuddleMembers'
 // sort order, so a reader of both blocks sees the same peer order.
-func buildRelationships(a *sim.ActorSnapshot, members []HuddleMember) []RelationshipPeerView {
+//
+// Same-tick de-dup (ZBBS-WORK-374): a just-heard utterance is recorded as a
+// `heard` SalientFact on the listener AND surfaced as a speech warrant in this
+// tick's "## What just happened". Rendering it in both places shows the model
+// the same line twice (the live "Hello" duplication) and reinforces it. heardNow
+// maps speaker → the utterances they spoke in THIS batch; we drop a peer's fact
+// whose text matches before taking the recent-N, so the most-recent slot
+// backfills with genuinely-older context instead of a duplicate. Done here (not
+// in Render) per the package contract: Build decides content, Render is content-
+// agnostic.
+func buildRelationships(a *sim.ActorSnapshot, members []HuddleMember, heardNow map[sim.ActorID]map[string]bool) []RelationshipPeerView {
 	if a.Kind != sim.KindNPCShared || len(a.Relationships) == 0 || len(members) == 0 {
 		return nil
 	}
@@ -1007,17 +1018,59 @@ func buildRelationships(a *sim.ActorSnapshot, members []HuddleMember) []Relation
 		if rel == nil {
 			continue
 		}
+		facts := rel.SalientFacts
+		if dups := heardNow[m.ID]; len(dups) > 0 {
+			kept := make([]sim.SalientFact, 0, len(facts))
+			for _, f := range facts {
+				if f.Kind == sim.InteractionHeard && dups[f.Text] {
+					continue // already in "## What just happened" this tick
+				}
+				kept = append(kept, f)
+			}
+			facts = kept
+		}
 		out = append(out, RelationshipPeerView{
 			PeerID:      m.ID,
 			PeerName:    m.DisplayName,
 			SummaryText: rel.SummaryText,
-			RecentFacts: recentFactsMostRecentFirst(rel.SalientFacts, recentSalientFactsPerPeer),
+			RecentFacts: recentFactsMostRecentFirst(facts, recentSalientFactsPerPeer),
 		})
 	}
 	if len(out) == 0 {
 		return nil
 	}
 	return out
+}
+
+// currentHeardExcerpts indexes the speech utterances in this tick's consumed
+// warrant batch by speaker, so buildRelationships can drop a `heard` SalientFact
+// that the "## What just happened" section already renders (ZBBS-WORK-374). The
+// warrant Excerpt and the heard-fact Text are both truncateRunes(spoke.Text,
+// MaxSalientFactTextLen), so an exact string match is reliable. Returns nil when
+// the batch carries no speech (the common non-conversational tick).
+func currentHeardExcerpts(warrants []sim.WarrantMeta) map[sim.ActorID]map[string]bool {
+	var bySpeaker map[sim.ActorID]map[string]bool
+	add := func(speaker sim.ActorID, excerpt string) {
+		if speaker == "" || excerpt == "" {
+			return
+		}
+		if bySpeaker == nil {
+			bySpeaker = make(map[sim.ActorID]map[string]bool)
+		}
+		if bySpeaker[speaker] == nil {
+			bySpeaker[speaker] = make(map[string]bool)
+		}
+		bySpeaker[speaker][excerpt] = true
+	}
+	for _, w := range warrants {
+		switch r := w.Reason.(type) {
+		case sim.PCSpeechWarrantReason:
+			add(r.Speaker, r.Excerpt)
+		case sim.NPCSpeechWarrantReason:
+			add(r.Speaker, r.Excerpt)
+		}
+	}
+	return bySpeaker
 }
 
 // buildPendingOrderViews scans snap.Orders for open Orders touching
