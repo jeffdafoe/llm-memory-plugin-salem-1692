@@ -28,16 +28,12 @@ package handlers
 // terminalOnSuccess is FALSE: speak is non-terminal so the model can
 // follow through with a move/chore inside the same tick (the iteration-
 // loop behavior v1's executeAgentCommit already had — see the harness
-// doc on Multi-tool turns at handlers/harness.go).
-//
-// WithOneUtterancePerTick caps speech at a single utterance per tick and
-// ends the tick after the round it commits in (ZBBS-HOME-381). This is the
-// live-path home for HOME-379's one-speak cap, which only ever landed in the
-// dead v1 agent_tick.go. Without it, a non-terminal speak loops back to the
-// model each round and — with no new input — re-pitches the same line until
-// the iteration budget force-ends the tick (the observed speak×6 ramble).
-// Speak alongside a terminal (move_to/done) in the SAME response still ends
-// the tick via that terminal; the cap only stops the cross-round re-speak.
+// doc on Multi-tool turns at handlers/harness.go). A speak does NOT end
+// the tick: the model ends the turn by calling done() after it has nothing
+// new to say. The within-tick repeat that this freedom risks is held by the
+// ZBBS-WORK-375 same-tick dedup guard + post-speak continuation steer in the
+// harness, NOT by a per-tool cap (HOME-381's cap was removed in WORK-375
+// because it also cut legitimate two-beat turns, e.g. greet THEN answer).
 //
 // Returns an error on registration failure (duplicate name, malformed
 // schema bytes — both startup bugs the caller should panic/exit on).
@@ -49,6 +45,5 @@ func RegisterSpeak(r *Registry) error {
 		HandleSpeak,
 		false, // non-terminal: speak is a within-tick step, not a tick-ender
 		WithDescription(speakDescription),
-		WithOneUtterancePerTick(),
 	)
 }
