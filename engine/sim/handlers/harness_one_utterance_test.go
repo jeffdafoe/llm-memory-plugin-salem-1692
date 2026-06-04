@@ -3,6 +3,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
@@ -111,6 +112,64 @@ func TestHarness_OneUtterancePerTick_DropsSecondUtteranceInSameBatch(t *testing.
 	}
 	if result.IterationCount != 1 {
 		t.Errorf("IterationCount: got %d, want 1", result.IterationCount)
+	}
+}
+
+// A bounced (failed-dispatch) utterance does NOT burn the cap: utteredThisTick
+// is only set on success, so the model gets another round to correct itself,
+// and the tick ends only once an utterance actually lands. Models the
+// production case of a speak rejected by world-state (success=false) via an
+// observation handler that errors on its first call and succeeds on its second.
+func TestHarness_OneUtterancePerTick_RejectedUtteranceDoesNotBurnCap(t *testing.T) {
+	w, cancel := newHarnessWorld(t, "attempt-A")
+	defer cancel()
+
+	r := NewRegistry()
+	calls := 0
+	sayFn := func(_ context.Context, _ HandlerInput) (string, error) {
+		calls++
+		if calls == 1 {
+			return "", errors.New("bounced: nobody to address")
+		}
+		return "[say: ok]", nil
+	}
+	if err := r.RegisterObservation("say", json.RawMessage(`{"type":"object"}`), passthroughDecode, sayFn, WithOneUtterancePerTick()); err != nil {
+		t.Fatalf("register say: %v", err)
+	}
+	if err := r.RegisterTerminal("done"); err != nil {
+		t.Fatalf("register done: %v", err)
+	}
+	// Round 1: [say] bounces. Round 2: [say] lands and ends the tick. If a
+	// bounced speak wrongly burned the cap, round 1 would end the tick and this
+	// second turn would never be consumed.
+	client := llm.NewFakeClient(
+		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c1", 0, "say", `{}`)}}},
+		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c2", 0, "say", `{}`)}}},
+	)
+	h, err := NewHarness(HarnessConfig{Client: client, Registry: r})
+	if err != nil {
+		t.Fatalf("NewHarness: %v", err)
+	}
+
+	result := h.RunTick(context.Background(), w, newTestJob("attempt-A", nil))
+
+	if result.TerminalStatus != sim.TickStatusSuccess {
+		t.Errorf("status: got %v, want Success", result.TerminalStatus)
+	}
+	if result.IterationCount != 2 {
+		t.Errorf("IterationCount: got %d, want 2 (bounced speak must not end the tick)", result.IterationCount)
+	}
+	if calls != 2 {
+		t.Errorf("say handler calls: got %d, want 2 (model retried after the bounce)", calls)
+	}
+	if n := len(client.Requests()); n != 2 {
+		t.Errorf("LLM calls: got %d, want 2 (model re-prompted after the bounced utterance)", n)
+	}
+	if !contains(result.ToolsFailedRejected, "say") {
+		t.Errorf("ToolsFailedRejected should include the bounced say, got %v", result.ToolsFailedRejected)
+	}
+	if !contains(result.ToolsSucceeded, "say") {
+		t.Errorf("ToolsSucceeded should include the landed say, got %v", result.ToolsSucceeded)
 	}
 }
 
