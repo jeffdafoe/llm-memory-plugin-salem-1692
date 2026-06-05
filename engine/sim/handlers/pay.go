@@ -202,5 +202,9 @@ func HandlePay(in HandlerInput) (sim.Command, error) {
 				"pay: 'for' contains a disallowed control character at byte offset %d", i)
 		}
 	}
-	return sim.Pay(in.ActorID, recipient, args.Amount, forText, time.Now().UTC()), nil
+	// ZBBS-HOME-400: form/join the co-located huddle on the pay call itself so
+	// a buyer can pay someone present without a separate prior speak. No-op when
+	// already huddled, alone, or out of scope.
+	now := time.Now().UTC()
+	return withHuddleBootstrap(in.ActorID, now, sim.Pay(in.ActorID, recipient, args.Amount, forText, now)), nil
 }
