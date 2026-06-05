@@ -49,7 +49,6 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 	p.Surroundings = buildSurroundings(snap, actorID, actorSnap)
 	p.TurnState = buildTurnState(snap, actorID, actorSnap, p.Surroundings.HuddleMembers)
 	p.Anchors = buildAnchors(snap, actorSnap)
-	p.DutySteer = buildDutySteer(snap, actorSnap, p.Anchors)
 	p.NarrativeState = buildNarrativeState(actorSnap)
 	p.Businessowner = actorSnap.BusinessownerState != nil
 	p.Relationships = buildRelationships(actorSnap, p.Surroundings.HuddleMembers, currentHeardExcerpts(p.Warrants))
@@ -57,6 +56,10 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 	p.RecoveryOptions = buildRecoveryOptions(snap, actorID, actorSnap)
 	p.Satiation = buildSatiation(snap, actorID, actorSnap)
 	p.Restocking = buildRestocking(snap, actorID, actorSnap)
+	// DutySteer is built AFTER Restocking (ZBBS-HOME-400 Option B) because the
+	// return-to-post cue is now suppressed while a restock errand is active —
+	// p.Restocking != nil is exactly that signal.
+	p.DutySteer = buildDutySteer(snap, actorID, actorSnap, p.Anchors, p.Restocking != nil)
 	p.Lodging = buildLodgingView(snap, actorSnap)
 	p.KeeperLodging = buildKeeperLodgingView(snap, actorSnap)
 	p.SummonsForYou = buildSummonsForYou(actorSnap)
@@ -890,7 +893,7 @@ func minuteInWindow(start, end, now int) bool {
 //
 // a is guaranteed non-nil by Build's early return on a missing actor snapshot —
 // the same invariant buildAnchors and the other sub-builders rely on.
-func buildDutySteer(snap *sim.Snapshot, a *sim.ActorSnapshot, anchors *AnchorsView) *DutySteerView {
+func buildDutySteer(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapshot, anchors *AnchorsView, hasRestockErrand bool) *DutySteerView {
 	// Agent NPCs only — PCs are player-driven; decoratives are walked directly
 	// by the shift ticker and never get a perception prompt.
 	if a.Kind != sim.KindNPCStateful && a.Kind != sim.KindNPCShared {
@@ -909,7 +912,9 @@ func buildDutySteer(snap *sim.Snapshot, a *sim.ActorSnapshot, anchors *AnchorsVi
 	// lets the recovery/satiation cues win this turn; once the need clears the
 	// steer resumes next tick. The complementary "rest at your post" cue
 	// (recovery_options.go) keeps an at-post vendor from leaving in the first
-	// place, so the post stays manned. ZBBS-HOME-362.
+	// place, so the post stays manned. ZBBS-HOME-362. (The TO-WORK arm carries an
+	// ADDITIONAL, softer mild-or-worse gate — ZBBS-HOME-400 Option B — in the
+	// switch below; this red gate is the stronger one that also defers go-home.)
 	if hasRedNeed(a, snap) {
 		return nil
 	}
@@ -936,6 +941,19 @@ func buildDutySteer(snap *sim.Snapshot, a *sim.ActorSnapshot, anchors *AnchorsVi
 
 	switch {
 	case onShift && anchors.WorkID != "" && !atWork:
+		// ZBBS-HOME-400 Option B: don't yank an agent back to its post while it's
+		// mid-business — a pressing (mild-or-worse) need, an active restock errand,
+		// or a pending outgoing offer awaiting the seller's accept_pay. This brings
+		// the perception cue into line with the shift-duty WARRANT, which already
+		// need-suppresses the to-work nudge; the cue deliberately did NOT (the
+		// HOME-352 "let the model prioritize" choice), which let the weak stateful
+		// model thrash between an errand and its post (the live Josiah restock loop).
+		// Scope: the to-work arm ONLY — the go-home arm stays unsuppressed (going
+		// home is how an NPC rests), and a RED need already suppresses BOTH arms
+		// above (HOME-362), so this softer gate only adds the mild-but-not-red case.
+		if anyNeedMildOrWorse(a, snap) || hasRestockErrand || hasPendingOutgoingOffer(snap, actorID) {
+			return nil
+		}
 		return &DutySteerView{ToWork: true, TargetID: anchors.WorkID, TargetLabel: anchors.WorkLabel}
 	case !onShift && anchors.HomeID != "" && !atHome:
 		return &DutySteerView{ToWork: false, TargetID: anchors.HomeID, TargetLabel: anchors.HomeLabel}
@@ -957,6 +975,47 @@ func hasRedNeed(a *sim.ActorSnapshot, snap *sim.Snapshot) bool {
 	}
 	for _, n := range sim.Needs {
 		if a.Needs[n.Key] >= snap.NeedThresholds.Get(n.Key) {
+			return true
+		}
+	}
+	return false
+}
+
+// anyNeedMildOrWorse reports whether the actor has any tracked need at the mild
+// tier or above. Mirrors sim.anyNeedMildOrWorse (the shift-duty WARRANT's
+// to-work suppressor) so the return-to-post perception cue and the warrant agree
+// on when an agent is too busy with its needs to be sent to work (ZBBS-HOME-400
+// Option B). This is a SOFTER gate than hasRedNeed (which suppresses BOTH duty
+// arms at red, HOME-362); this one gates only the to-work arm. snap.NeedThresholds.Get
+// falls back to the registry default when unset. Nil-safe.
+func anyNeedMildOrWorse(a *sim.ActorSnapshot, snap *sim.Snapshot) bool {
+	if a == nil || snap == nil {
+		return false
+	}
+	for _, n := range sim.Needs {
+		value, ok := a.Needs[n.Key]
+		if !ok {
+			continue // a missing need is not an unmet need
+		}
+		if sim.NeedLabelTier(value, snap.NeedThresholds.Get(n.Key)) >= sim.NeedMild {
+			return true
+		}
+	}
+	return false
+}
+
+// hasPendingOutgoingOffer reports whether actorID has a pay-with-item offer it
+// made (as buyer) still awaiting the seller's response. While one is pending, the
+// return-to-post cue is suppressed so the buyer isn't pulled out of the
+// conversation before the seller can accept_pay — acceptance re-checks that both
+// parties are still co-present, so walking away fails the trade (ZBBS-HOME-400
+// Option B). Scans the published pay ledger (small — only live entries). Nil-safe.
+func hasPendingOutgoingOffer(snap *sim.Snapshot, actorID sim.ActorID) bool {
+	if snap == nil {
+		return false
+	}
+	for _, e := range snap.PayLedger {
+		if e != nil && e.BuyerID == actorID && e.State == sim.PayLedgerStatePending {
 			return true
 		}
 	}
