@@ -89,6 +89,16 @@ type OrdersRepo interface {
 	// finalizeOrderTerminal + SetTerminalOrderSink.
 	WriteTerminal(ctx context.Context, o *Order) error
 
+	// MaxLedgerID returns the largest id present in pay_ledger (0 when the
+	// table is empty). FinalizeLoad seeds the LedgerID allocator
+	// (World.payLedgerSeq) from this so a mint after restart never reuses an
+	// id that already exists durably — the in-memory PayLedger map holds only
+	// restart-lossy pending entries and World.Orders only the in-flight subset,
+	// so neither sees terminal-row ids. Without this floor a reused id would
+	// make the checkpoint upsert clobber an unrelated historical row.
+	// ZBBS-HOME-394.
+	MaxLedgerID(ctx context.Context) (int64, error)
+
 	// LoadRecentPrices returns up to perKeyCap most-recent accepted
 	// PayLedger rows per (seller, item) tuple within the time window
 	// (created_at >= since), packaged as PriceBookSeedRecord values for

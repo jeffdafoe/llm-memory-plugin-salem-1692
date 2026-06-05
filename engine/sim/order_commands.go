@@ -41,7 +41,13 @@ func createOrderForPayWithItem(w *World, entry *PayLedgerEntry, at time.Time) Or
 		consumers = []ActorID{entry.BuyerID}
 	}
 	ttl := effectiveOrderTTL(w.Settings)
-	id := w.nextOrderSeq()
+	// Order.ID IS the pay_ledger row id (== LedgerID): an Order is its
+	// durable pay_ledger row, 1:1. Adopt entry.ID rather than a separate
+	// per-run counter so Order.ID == LedgerID — the domain invariant the
+	// checkpoint enforces (pg orders SaveSnapshot) and the same id the load
+	// path keys on — which makes every persistence write target the correct
+	// row. ZBBS-HOME-394.
+	id := OrderID(entry.ID)
 	o := &Order{
 		ID:          id,
 		State:       OrderStateReady,

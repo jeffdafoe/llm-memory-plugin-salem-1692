@@ -314,7 +314,9 @@ func LoadWorld(ctx context.Context, repo sim.Repository, requireAllImpl bool) (*
 	// seed, snapshot publish). Runs last on purpose: rebuildIndices inside
 	// FinalizeLoad reads actor.CurrentHuddleID, which the carry-forwards
 	// above have just reconciled from canonical Huddle.Members.
-	w.FinalizeLoad(ctx)
+	if err := w.FinalizeLoad(ctx); err != nil {
+		return nil, fmt.Errorf("pg LoadWorld: %w", err)
+	}
 
 	return w, nil
 }

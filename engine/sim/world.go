@@ -2,6 +2,7 @@ package sim
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sort"
 	"sync/atomic"
@@ -695,14 +696,8 @@ type World struct {
 	// World-goroutine-only (touched exclusively from inside Command.Fn).
 	payLedgerSeq uint64
 
-	// orderSeq is the monotonic per-run OrderID counter — same shape
-	// and rules as payLedgerSeq. Incremented before assignment; first
-	// minted OrderID is 1 (OrderID(0) reserved as the unset sentinel).
-	// World-goroutine-only (touched exclusively from inside Command.Fn).
-	orderSeq uint64
-
 	// errandSeq is the monotonic per-run ErrandID counter (ZBBS-HOME-311) —
-	// same shape and rules as orderSeq. Incremented before assignment; first
+	// same shape and rules as payLedgerSeq. Incremented before assignment; first
 	// minted ErrandID is 1 (ErrandID(0) reserved as the unset sentinel).
 	// World-goroutine-only. Restart-lossy by design (errands are in-memory),
 	// so there is no LoadWorld safety-floor pass — it always starts at 0.
@@ -1004,7 +999,9 @@ func LoadWorld(ctx context.Context, repo Repository) (*World, error) {
 	}
 	w.VillageObjects = villageObjects
 
-	w.FinalizeLoad(ctx)
+	if err := w.FinalizeLoad(ctx); err != nil {
+		return nil, err
+	}
 	return w, nil
 }
 
@@ -1024,7 +1021,7 @@ func LoadWorld(ctx context.Context, repo Repository) (*World, error) {
 // for pg.LoadWorld, after the cross-aggregate consistency checks and the
 // actor carry-forwards (reconcileActorHuddleMembership in particular,
 // since rebuildIndices reads actor.CurrentHuddleID).
-func (w *World) FinalizeLoad(ctx context.Context) {
+func (w *World) FinalizeLoad(ctx context.Context) error {
 	normalizeOutdoorSceneRadius(&w.Settings)
 
 	w.rebuildIndices()
@@ -1089,7 +1086,28 @@ func (w *World) FinalizeLoad(ctx context.Context) {
 	// with ResolvedAt stamped, no event emitted (the original
 	// PayOfferReceived event is gone, so the flip has no causal anchor).
 	restartExpirePendingEntries(w, time.Now())
-	// Ledger sequence counter safety floor: same posture as quoteSeq.
+	// LedgerID sequence-counter safety floor. payLedgerSeq is the sole
+	// allocator for pay_ledger ids — Orders adopt their LedgerID
+	// (ZBBS-HOME-394), so there is no separate order counter. It MUST start
+	// above every id ever persisted, or a post-restart mint would reuse an
+	// existing pay_ledger id and the checkpoint upsert would clobber that
+	// historical row. The authoritative high-water mark is the DB max(id):
+	// the in-memory PayLedger map holds only restart-lossy pending entries
+	// (empty here) and w.Orders only the in-flight subset, so neither sees
+	// terminal-row ids. This is persistence safety, not optional enrichment:
+	// fail the load on a query error rather than start in a state where a mint
+	// could reuse an id and the checkpoint upsert corrupt a historical row
+	// (code_review). maxID>0 guards the (unreachable) negative before uint64.
+	maxID, err := w.repo.Orders.MaxLedgerID(ctx)
+	if err != nil {
+		return fmt.Errorf("sim: FinalizeLoad: seed pay-ledger id allocator from MaxLedgerID: %w", err)
+	}
+	if maxID > 0 && uint64(maxID) > w.payLedgerSeq {
+		w.payLedgerSeq = uint64(maxID)
+	}
+	// Belt-and-suspenders: also floor from any in-memory pending entries
+	// (a no-op today since pending entries are restart-lossy, but correct
+	// if that ever changes).
 	for id := range w.PayLedger {
 		if uint64(id) > w.payLedgerSeq {
 			w.payLedgerSeq = uint64(id)
@@ -1120,13 +1138,9 @@ func (w *World) FinalizeLoad(ctx context.Context) {
 	// orders survive the load with absolute ExpiresAt intact; the
 	// aging sweep picks them up on its first pass.
 	restartExpirePendingOrders(w, time.Now())
-	// Order sequence counter safety floor: same posture as quoteSeq /
-	// payLedgerSeq.
-	for id := range w.Orders {
-		if uint64(id) > w.orderSeq {
-			w.orderSeq = uint64(id)
-		}
-	}
+	// No separate order sequence-counter floor: Orders adopt their LedgerID
+	// (ZBBS-HOME-394), so the payLedgerSeq floor above — seeded from the DB
+	// max — already covers every order id.
 
 	// Price-book seed (Phase 4 Slice 7). Pulls the top-K most recent
 	// accepted pay_ledger rows per (seller, item) within
@@ -1151,6 +1165,7 @@ func (w *World) FinalizeLoad(ctx context.Context) {
 	}
 
 	w.republish()
+	return nil
 }
 
 // Run owns the world goroutine. Processes commands until ctx is cancelled
