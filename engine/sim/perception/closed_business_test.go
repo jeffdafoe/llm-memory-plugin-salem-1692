@@ -113,3 +113,59 @@ func TestRenderSatiation_ShutAnnotation(t *testing.T) {
 		t.Errorf("expected shut annotation in satiation cue, got:\n%s", out)
 	}
 }
+
+// TestRenderSatiation_KeeperAsleepAnnotation: a vendor whose keeper is asleep at
+// snapshot time gets the live present-tense "no one tending it" annotation
+// (ZBBS-HOME-387) — distinct from the experiential Shut memory, and taking
+// precedence over it when both point at the same shop.
+func TestRenderSatiation_KeeperAsleepAnnotation(t *testing.T) {
+	now := time.Date(2026, 5, 30, 12, 0, 0, 0, time.UTC)
+	subj := &sim.ActorSnapshot{
+		Needs: map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold},
+	}
+	cook := &sim.ActorSnapshot{
+		State:           sim.StateSleeping,
+		WorkStructureID: "tavern",
+		Inventory:       map[sim.ItemKind]int{"stew": 5},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt: now,
+		Actors:      map[sim.ActorID]*sim.ActorSnapshot{"diner": subj, "cook": cook},
+		Structures:  map[sim.StructureID]*sim.Structure{"tavern": {ID: "tavern", DisplayName: "The Tavern"}},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"stew": {Name: "stew", DisplayLabel: "stew", Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 4}}},
+		},
+	}
+	render := func() string {
+		v := buildSatiation(snap, "diner", subj)
+		if v == nil {
+			t.Fatal("expected a satiation view")
+		}
+		var b strings.Builder
+		renderSatiation(&b, v)
+		return b.String()
+	}
+
+	// Sleeping keeper → live closed-now annotation.
+	if out := render(); !strings.Contains(out, "no one is tending it just now") {
+		t.Errorf("expected the live closed-now annotation for a sleeping keeper, got:\n%s", out)
+	}
+
+	// Awake keeper → no annotation.
+	cook.State = sim.StateIdle
+	if out := render(); strings.Contains(out, "no one is tending it just now") {
+		t.Errorf("did not expect the closed-now annotation for an awake keeper, got:\n%s", out)
+	}
+
+	// Live closed-now wins over the stale experiential Shut memory: only the
+	// present-tense line shows, not "found it shut up".
+	cook.State = sim.StateSleeping
+	subj.ClosedBusinessObs = map[sim.StructureID]time.Time{"tavern": now.Add(-time.Hour)}
+	out := render()
+	if !strings.Contains(out, "no one is tending it just now") {
+		t.Errorf("expected closed-now annotation to win, got:\n%s", out)
+	}
+	if strings.Contains(out, "found it shut up") {
+		t.Errorf("experiential Shut annotation should be suppressed when live closed-now applies, got:\n%s", out)
+	}
+}
