@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/llm"
@@ -94,6 +95,11 @@ type HarnessConfig struct {
 	// umbilical-disabled default) means prompts are not captured — zero cost.
 	PromptSink sim.PromptSink
 
+	// ChatSink, when set, receives the engine<->model chat exchange (the
+	// rendered perception tx + each round's response rx) keyed by scene for the
+	// operator-gated umbilical (ZBBS-HOME-382). Nil = not captured, zero cost.
+	ChatSink sim.ChatSink
+
 	// Clock is injectable for tests. Zero → time.Now.
 	Clock func() time.Time
 }
@@ -121,6 +127,10 @@ type Harness struct {
 	// promptSink captures rendered deliberation prompts for the umbilical
 	// (ZBBS-HOME-360); nil when the umbilical is disabled.
 	promptSink sim.PromptSink
+
+	// chatSink captures the engine<->model chat exchange per scene for the
+	// umbilical (ZBBS-HOME-382); nil when the umbilical is disabled.
+	chatSink sim.ChatSink
 
 	clock func() time.Time
 }
@@ -162,6 +172,7 @@ func NewHarness(cfg HarnessConfig) (*Harness, error) {
 		renderConfig:            cfg.PerceptionRenderConfig,
 		toolDispatchTimeout:     cfg.ToolDispatchTimeout,
 		promptSink:              cfg.PromptSink,
+		chatSink:                cfg.ChatSink,
 		clock:                   clk,
 	}, nil
 }
@@ -289,6 +300,22 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 	sceneID := llm.NewSceneID()
 	model := actor.LLMAgent
 
+	// ZBBS-HOME-382: capture the rendered perception (tx) into the per-scene
+	// chat ring so the umbilical /chat route shows what the model was sent
+	// alongside its responses (rx, captured per round below). Keyed by the same
+	// sceneID stamped on the llm-memory chat rows. Nil sink -> skipped (zero cost).
+	if h.chatSink != nil {
+		h.chatSink.WriteChat(sim.ChatRecord{
+			At:        h.clock().UTC(),
+			SceneID:   sceneID,
+			ActorID:   job.actorID,
+			AttemptID: job.attemptID,
+			Model:     model,
+			Direction: "perception",
+			Content:   fullPerceptionPrompt(rendered),
+		})
+	}
+
 	// Defer persist-on-exit for the orphan-tool_use case. v1's bug: a
 	// terminal-class tool (done() / TerminalOnSuccess commit) ends the
 	// tick without firing another Complete to deliver tool_result rows
@@ -343,6 +370,22 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 			result.LLMErrorClass = cls.String()
 			result.TerminalStatus = llmErrorToStatus(cls, round)
 			return result
+		}
+
+		// ZBBS-HOME-382: capture the model's response (rx) into the per-scene
+		// chat ring — content + a compact tool-call summary — so the umbilical
+		// /chat route shows the full exchange for this scene. Nil sink -> skipped.
+		if h.chatSink != nil {
+			h.chatSink.WriteChat(sim.ChatRecord{
+				At:        h.clock().UTC(),
+				SceneID:   sceneID,
+				ActorID:   job.actorID,
+				AttemptID: job.attemptID,
+				Model:     model,
+				Direction: "response",
+				Content:   resp.Content,
+				ToolCalls: summarizeToolCalls(resp.ToolCalls),
+			})
 		}
 
 		// No tool calls = content-only response = the model is done
@@ -806,6 +849,41 @@ func copyWarrants(src []sim.WarrantMeta) []sim.WarrantMeta {
 // and the worker's CompleteReactorTick contract is the harness's
 // authoritative exit. A persist failure leaves orphans in history —
 // surfaced via logs for monitoring.
+// maxToolCallArgSummaryLen bounds each tool call's argument blob in the chat-ring
+// summary (ZBBS-HOME-382) so a large argument can't bloat a debug record.
+const maxToolCallArgSummaryLen = 200
+
+// summarizeToolCalls renders a response's tool calls into a compact one-line
+// summary for the umbilical chat ring (ZBBS-HOME-382): "name(args); name(args)",
+// each argument blob truncated on a rune boundary. Debug-surface display only —
+// never parsed. strings.Builder keeps this cheap on the tick-worker path.
+func summarizeToolCalls(calls []llm.RawToolCall) string {
+	var b strings.Builder
+	for i, c := range calls {
+		if i > 0 {
+			b.WriteString("; ")
+		}
+		b.WriteString(c.Name)
+		b.WriteByte('(')
+		b.WriteString(truncateUTF8(string(c.Arguments), maxToolCallArgSummaryLen))
+		b.WriteByte(')')
+	}
+	return b.String()
+}
+
+// truncateUTF8 caps s at max bytes without splitting a UTF-8 rune (a tool-arg
+// blob can carry multibyte runes), appending "..." when it truncates.
+func truncateUTF8(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	s = s[:max]
+	for len(s) > 0 && !utf8.ValidString(s) {
+		s = s[:len(s)-1]
+	}
+	return s + "..."
+}
+
 func (h *Harness) persistTickToolResults(
 	ctx context.Context,
 	model, sceneID string,

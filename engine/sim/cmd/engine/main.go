@@ -31,6 +31,7 @@ import (
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/cascade"
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/chatlog"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/handlers"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/httpapi"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/llm"
@@ -81,6 +82,11 @@ type runtime struct {
 	// enabled; run wires it to BOTH the harness (PromptSink) and the server
 	// (SetPrompts). Nil = no prompt capture.
 	PromptRing *promptlog.RingSink
+	// ChatRing captures the engine<->model chat exchange per scene for the
+	// umbilical's /chat route (ZBBS-HOME-382). Non-nil only when the umbilical is
+	// enabled; run wires it to BOTH the harness (ChatSink) and the server
+	// (SetChat). Nil = no chat capture.
+	ChatRing *chatlog.RingSink
 	// ActionLog is the durable agent_action_log writer (ZBBS-WORK-376). Its
 	// Append is already installed on the World (SetActionLogSink in main); run
 	// owns the writer-goroutine lifecycle — started before world.Run, drained
@@ -124,6 +130,7 @@ func main() {
 	// stays the notImpl drop sink and no umbilical surface exists.
 	var umbilical *telemetry.RingSink
 	var promptRing *promptlog.RingSink
+	var chatRing *chatlog.RingSink
 	umbilicalControl := false
 	if envBool("UMBILICAL_ENABLED") {
 		umbilical = telemetry.New(getEnvInt("UMBILICAL_TELEMETRY_BUFFER", telemetry.DefaultCapacity))
@@ -132,11 +139,16 @@ func main() {
 		// (ZBBS-HOME-360). Separate from the telemetry ring because it carries raw
 		// prompts the telemetry contract forbids. Wired to the harness + server in run().
 		promptRing = promptlog.New(getEnvInt("UMBILICAL_PROMPT_BUFFER", promptlog.DefaultPerActorCapacity))
+		// Per-scene chat-exchange ring for the /chat debug route (ZBBS-HOME-382):
+		// the rendered perception (tx) + the model's responses (rx) per scene, so
+		// an operator can read an NPC's conversation off the umbilical without an
+		// llm-memory login. Wired to the harness (ChatSink) + server (SetChat) in run().
+		chatRing = chatlog.New(getEnvInt("UMBILICAL_CHAT_BUFFER", chatlog.DefaultPerSceneCapacity))
 		// Control (world-mutating) routes are a second, independent opt-in — only
 		// honored when the umbilical itself is on, so read-only is the default.
 		umbilicalControl = envBool("UMBILICAL_CONTROL_ENABLED")
-		log.Printf("engine: umbilical ENABLED (telemetry buffer=%d, prompt buffer=%d/actor, control=%v)",
-			umbilical.Stats().Capacity, promptRing.Stats().PerActorCapacity, umbilicalControl)
+		log.Printf("engine: umbilical ENABLED (telemetry buffer=%d, prompt buffer=%d/actor, chat buffer=%d/scene x %d scenes, control=%v)",
+			umbilical.Stats().Capacity, promptRing.Stats().PerActorCapacity, chatRing.Stats().PerSceneCapacity, chatRing.Stats().MaxScenes, umbilicalControl)
 	}
 
 	// requireAllImpl=true is the production gate: LoadWorld hard-fails if any
@@ -191,6 +203,7 @@ func main() {
 		Umbilical:        umbilical,
 		UmbilicalControl: umbilicalControl,
 		PromptRing:       promptRing,
+		ChatRing:         chatRing,
 		ActionLog:        actionLogSink,
 		SimPush:          simPush,
 	}
@@ -254,6 +267,11 @@ func run(rt runtime, stop <-chan struct{}) error {
 	// capture entirely rather than calling a typed-nil sink each tick.
 	if rt.PromptRing != nil {
 		harnessCfg.PromptSink = rt.PromptRing
+	}
+	// Capture the chat exchange only when the umbilical (and its ring) is wired,
+	// leaving ChatSink a nil interface otherwise (ZBBS-HOME-382).
+	if rt.ChatRing != nil {
+		harnessCfg.ChatSink = rt.ChatRing
 	}
 	harness, err := handlers.NewHarness(harnessCfg)
 	if err != nil {
@@ -359,6 +377,7 @@ func run(rt runtime, stop <-chan struct{}) error {
 		if rt.Umbilical != nil {
 			server.SetTelemetry(rt.Umbilical)
 			server.SetPrompts(rt.PromptRing) // backs /umbilical/agent/prompts (ZBBS-HOME-360)
+			server.SetChat(rt.ChatRing)      // backs /umbilical/chat (ZBBS-HOME-382)
 			server.SetCheckpointHealth(checkpointHealth)
 			if rt.UmbilicalControl {
 				server.SetControlEnabled(true)

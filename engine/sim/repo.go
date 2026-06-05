@@ -297,6 +297,36 @@ type PromptSink interface {
 	WritePrompt(PromptRecord)
 }
 
+// ChatRecord is one entry in the engine<->model chat exchange for a scene:
+// either the rendered perception the engine SENT (Direction "perception", tx) or
+// a model RESPONSE it got back (Direction "response", rx — carrying Content plus
+// a compact ToolCalls summary). Keyed by SceneID (llm.NewSceneID — the same id
+// stamped on chat_message_texts.scene_id in llm-memory), so the umbilical can
+// return one scene's full conversation. ZBBS-HOME-382.
+//
+// SAME redaction rule as PromptRecord: it carries raw prompt/response text and
+// MUST reach ONLY the operator-gated umbilical — never telemetry, the action
+// log, a player-facing path, or durable storage. In-memory, lost on restart.
+type ChatRecord struct {
+	At        time.Time
+	SceneID   string
+	ActorID   ActorID
+	AttemptID TickAttemptID
+	Model     string
+	Direction string // "perception" (engine->model, tx) or "response" (model->engine, rx)
+	Content   string // rendered perception (tx) or model response content (rx)
+	ToolCalls string // compact summary of the response's tool calls (rx only; empty for tx)
+}
+
+// ChatSink receives ChatRecords. Like PromptSink, implementations MUST be
+// non-blocking — WriteChat runs on the tick-worker goroutines and must never
+// stall a worker; on overflow the impl drops the oldest rather than waiting.
+// Fire-and-forget: no context, no error. A nil sink means "don't capture" (the
+// umbilical-disabled default), so callers null-check before use.
+type ChatSink interface {
+	WriteChat(ChatRecord)
+}
+
 // Tx is a transaction handle exposing the pgx-style query surface our
 // repos need. Production wires a real *pgx.Tx; mem fakes wire a no-op.
 // Same repo code runs in both.
