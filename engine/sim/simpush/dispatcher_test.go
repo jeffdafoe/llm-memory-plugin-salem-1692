@@ -185,6 +185,28 @@ func TestDispatch_PosterFailureHaltsCursor(t *testing.T) {
 	}
 }
 
+// TestDispatch_SkippedAgentsDontFailDay: a poster returning the contract-expected
+// non-sim / unknown sentinels is NOT a failure — the day still counts (cursor
+// advances) and the other actors still post.
+func TestDispatch_SkippedAgentsDontFailDay(t *testing.T) {
+	a1 := sim.ActorID("act-1")
+	a2 := sim.ActorID("act-2")
+	store := &fakeStore{
+		cursor: "2026-06-02", // one day behind → pushes 06-03 only
+		actors: []sim.AgentActor{{ID: a1, Agent: "salem-vendor"}, {ID: a2, Agent: "salem-john"}},
+		events: map[sim.ActorID][]sim.SimDayEvent{},
+	}
+	poster := &fakePoster{errFor: map[string]error{"salem-vendor": errSkippedNonSim}}
+	newDispatcher(store, poster).dispatchOnce(context.Background())
+
+	if store.cursor != yesterday {
+		t.Errorf("cursor = %q, want advanced to %q despite a skipped agent", store.cursor, yesterday)
+	}
+	if len(poster.calls) != 2 {
+		t.Errorf("posted %d batches, want 2 (both actors attempted)", len(poster.calls))
+	}
+}
+
 // TestDispatch_DayEventsErrorStillAttemptsOthers: a per-actor DayEvents failure
 // is logged and skipped, the other actors still post, and the day is not
 // counted (so it retries).
