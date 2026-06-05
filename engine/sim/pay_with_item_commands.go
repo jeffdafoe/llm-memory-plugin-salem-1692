@@ -1621,17 +1621,34 @@ func commitPayTransfer(
 		buyerPostQty  int // >= 0, validated
 		sellerPostQty int // overflow-checked
 	}
-	moves := make([]payItemMove, 0, len(entry.PayItems))
+	// Aggregate by kind FIRST. resolvePayItems rejects duplicate canonical
+	// kinds at intake, but commitPayTransfer is the atomicity boundary and
+	// takes ledger data directly (seeded entries, future persisted reloads),
+	// so it must not assume uniqueness: without aggregation two lines of the
+	// same kind would each compute their post-quantity from the ORIGINAL
+	// inventory and the second apply would clobber the first (lost quantity).
+	totals := make(map[ItemKind]int, len(entry.PayItems))
 	for _, pi := range entry.PayItems {
-		have := buyer.Inventory[pi.Kind]
-		if have < pi.Qty {
-			return fmt.Errorf("commitPayTransfer: buyer %q lacks %d %s mid-commit (have %d)", buyer.ID, pi.Qty, pi.Kind, have)
+		if pi.Qty < 1 {
+			return fmt.Errorf("commitPayTransfer: invalid pay_item qty %d for %s", pi.Qty, pi.Kind)
 		}
-		sellerPost, err := addChecked(seller.Inventory[pi.Kind], pi.Qty)
+		next, err := addChecked(totals[pi.Kind], pi.Qty)
 		if err != nil {
-			return fmt.Errorf("commitPayTransfer: seller %q %s balance would overflow", seller.ID, pi.Kind)
+			return fmt.Errorf("commitPayTransfer: pay_item total for %s would overflow", pi.Kind)
 		}
-		moves = append(moves, payItemMove{kind: pi.Kind, buyerPostQty: have - pi.Qty, sellerPostQty: sellerPost})
+		totals[pi.Kind] = next
+	}
+	moves := make([]payItemMove, 0, len(totals))
+	for kind, qty := range totals {
+		have := buyer.Inventory[kind]
+		if have < qty {
+			return fmt.Errorf("commitPayTransfer: buyer %q lacks %d %s mid-commit (have %d)", buyer.ID, qty, kind, have)
+		}
+		sellerPost, err := addChecked(seller.Inventory[kind], qty)
+		if err != nil {
+			return fmt.Errorf("commitPayTransfer: seller %q %s balance would overflow", seller.ID, kind)
+		}
+		moves = append(moves, payItemMove{kind: kind, buyerPostQty: have - qty, sellerPostQty: sellerPost})
 	}
 
 	// All legs validated — apply coins + goods together. Coin overflow

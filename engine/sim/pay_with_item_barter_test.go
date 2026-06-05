@@ -229,6 +229,40 @@ func TestAcceptPay_Barter_InsufficientGoodsFlipsTerminal(t *testing.T) {
 	}
 }
 
+// TestAcceptPay_Barter_DuplicateKindsAggregate — resolvePayItems dedups
+// canonical kinds at intake, but commitPayTransfer is the atomicity
+// boundary and takes ledger data directly (seeded / future persisted
+// entries). Duplicate kinds must AGGREGATE, not last-write-win: a seeded
+// entry paying [{bread,3},{bread,4}] moves a total of 7 bread, leaving the
+// buyer 3 and the seller 7 (not buyer 6 / seller 4).
+func TestAcceptPay_Barter_DuplicateKindsAggregate(t *testing.T) {
+	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
+		{id: "alice", displayName: "Alice", kind: sim.KindNPCShared, huddleID: "h1", coins: 0, inventory: map[sim.ItemKind]int{"bread": 10}},
+		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1", inventory: map[sim.ItemKind]int{"stew": 5}},
+	})
+	defer stop()
+	at := time.Now().UTC()
+	seedLedgerEntry(t, w, sim.PayLedgerEntry{
+		ID: 1, BuyerID: "alice", SellerID: "bob",
+		ItemKind: "stew", Qty: 1, Amount: 0,
+		PayItems:  []sim.ItemKindQty{{Kind: "bread", Qty: 3}, {Kind: "bread", Qty: 4}},
+		State:     sim.PayLedgerStatePending,
+		CreatedAt: at, ExpiresAt: at.Add(3 * time.Minute),
+		SceneID: "sc1", HuddleID: "h1",
+	})
+	if _, err := w.Send(sim.AcceptPay("bob", 1, at)); err != nil {
+		t.Fatalf("AcceptPay: %v", err)
+	}
+	a := readHoldings(t, w, "alice")
+	b := readHoldings(t, w, "bob")
+	if a.inv["bread"] != 3 {
+		t.Errorf("alice.bread = %d, want 3 (10-7 aggregated)", a.inv["bread"])
+	}
+	if b.inv["bread"] != 7 {
+		t.Errorf("bob.bread = %d, want 7 (3+4 aggregated)", b.inv["bread"])
+	}
+}
+
 // ---- symmetric counter (option 1) -----------------------------------
 
 // TestCounterPay_Barter_CounterWithGoods — the seller counters with goods
