@@ -283,82 +283,103 @@ func TestUmbilicalNeedThreshold(t *testing.T) {
 	}
 }
 
-// TestUmbilicalResetNeeds covers the /reset-needs control route against the
-// seeded world (hannah = NPC, bram = PC): single-actor reset, all-reset, and the
-// status mappings. Setting needs to 0 is the "pump everyone back to healthy"
-// lever; this pins the HTTP contract + that the mutation lands on the live actor.
-func TestUmbilicalResetNeeds(t *testing.T) {
+// TestUmbilicalSetNeeds covers the /set-needs control route (ZBBS-HOME-384)
+// against the seeded world (hannah = NPC, bram = PC): absolute per-need values
+// with unlisted needs untouched, the omitted-needs zero-all shortcut, the status
+// mappings, and the need/value validation.
+func TestUmbilicalSetNeeds(t *testing.T) {
 	srv, h := controlServer(t, operatorPerms)
-	// Seed maxed needs on both actors so a reset is observable.
-	_, err := srv.world.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		world.Actors["hannah"].Needs = map[sim.NeedKey]int{"hunger": sim.NeedMax, "thirst": sim.NeedMax, "tiredness": sim.NeedMax}
-		world.Actors["bram"].Needs = map[sim.NeedKey]int{"hunger": 10}
-		return nil, nil
-	}})
-	if err != nil {
-		t.Fatalf("seed needs: %v", err)
+	seed := func() {
+		_, err := srv.world.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+			world.Actors["hannah"].Needs = map[sim.NeedKey]int{"hunger": sim.NeedMax, "thirst": sim.NeedMax, "tiredness": sim.NeedMax}
+			world.Actors["bram"].Needs = map[sim.NeedKey]int{"hunger": 10, "thirst": 10, "tiredness": 10}
+			return nil, nil
+		}})
+		if err != nil {
+			t.Fatalf("seed needs: %v", err)
+		}
 	}
+	seed()
 
-	// Single-actor reset: hannah zeroed, bram untouched.
-	rec := postReq(t, h, "/api/village/umbilical/reset-needs", "tok", `{"actor_id":"hannah"}`)
+	// Absolute set on one actor: hunger→20, thirst→5; tiredness untouched; bram untouched.
+	rec := postReq(t, h, "/api/village/umbilical/set-needs", "tok", `{"actor_id":"hannah","needs":{"hunger":20,"thirst":5}}`)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("reset hannah = %d, want 200; body=%s", rec.Code, rec.Body.String())
+		t.Fatalf("set hannah = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
-	var out umbilicalResetNeedsResponse
+	var out umbilicalSetNeedsResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if out.Reset != 1 || len(out.Actors) != 1 || out.Actors[0].ID != "hannah" {
+	if out.Set != 1 || len(out.Actors) != 1 || out.Actors[0].ID != "hannah" {
 		t.Fatalf("response = %+v, want 1 actor (hannah)", out)
 	}
-	for k, v := range out.Actors[0].Needs {
-		if v != 0 {
-			t.Errorf("hannah need %q = %d after reset, want 0", k, v)
-		}
-	}
-	// Confirm on the live actor, and that bram is untouched by a single reset.
 	res, _ := srv.world.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		return [2]int{world.Actors["hannah"].Needs["hunger"], world.Actors["bram"].Needs["hunger"]}, nil
+		hn := world.Actors["hannah"].Needs
+		return []int{hn["hunger"], hn["thirst"], hn["tiredness"], world.Actors["bram"].Needs["hunger"]}, nil
 	}})
-	if v, _ := res.([2]int); v[0] != 0 || v[1] != 10 {
-		t.Errorf("live needs after hannah-only reset = hannah.hunger=%d bram.hunger=%d, want 0/10", v[0], v[1])
+	v, _ := res.([]int)
+	if v[0] != 20 || v[1] != 5 || v[2] != sim.NeedMax || v[3] != 10 {
+		t.Errorf("after set = hannah h/t/z=%d/%d/%d bram.hunger=%d, want 20/5/%d/10", v[0], v[1], v[2], v[3], sim.NeedMax)
 	}
 
-	// All-reset: bram zeroed too.
-	rec = postReq(t, h, "/api/village/umbilical/reset-needs", "tok", `{"all":true}`)
+	// Zero-all shortcut (omitted needs): every actor's needs → 0.
+	seed()
+	rec = postReq(t, h, "/api/village/umbilical/set-needs", "tok", `{"all":true}`)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("reset all = %d, want 200; body=%s", rec.Code, rec.Body.String())
+		t.Fatalf("zero-all = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatalf("decode all: %v", err)
 	}
-	if out.Reset != 2 {
-		t.Errorf("reset all = %d actors, want 2", out.Reset)
+	if out.Set != 2 {
+		t.Errorf("zero-all = %d actors, want 2", out.Set)
 	}
 	res, _ = srv.world.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		return world.Actors["bram"].Needs["hunger"], nil
+		return []int{world.Actors["hannah"].Needs["tiredness"], world.Actors["bram"].Needs["hunger"]}, nil
 	}})
-	if b, _ := res.(int); b != 0 {
-		t.Errorf("bram hunger = %d after all-reset, want 0", b)
+	v, _ = res.([]int)
+	if v[0] != 0 || v[1] != 0 {
+		t.Errorf("after zero-all = hannah.tiredness=%d bram.hunger=%d, want 0/0", v[0], v[1])
 	}
 
-	// Bad input: no target → 400; both targets → 400; unknown actor → 404.
-	if rec := postReq(t, h, "/api/village/umbilical/reset-needs", "tok", `{}`); rec.Code != http.StatusBadRequest {
-		t.Errorf("no target = %d, want 400", rec.Code)
+	// Explicit empty needs map behaves as the zero-all shortcut (differs from
+	// omitted only at the JSON shape; both decode to an empty map).
+	seed()
+	if rec := postReq(t, h, "/api/village/umbilical/set-needs", "tok", `{"actor_id":"hannah","needs":{}}`); rec.Code != http.StatusOK {
+		t.Fatalf("explicit empty needs = %d, want 200", rec.Code)
 	}
-	if rec := postReq(t, h, "/api/village/umbilical/reset-needs", "tok", `{"actor_id":"hannah","all":true}`); rec.Code != http.StatusBadRequest {
-		t.Errorf("conflicting target = %d, want 400", rec.Code)
+	res, _ = srv.world.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return []int{world.Actors["hannah"].Needs["hunger"]}, nil
+	}})
+	if v, _ := res.([]int); v[0] != 0 {
+		t.Errorf("explicit empty needs: hannah.hunger=%d, want 0", v[0])
 	}
-	if rec := postReq(t, h, "/api/village/umbilical/reset-needs", "tok", `{"actor_id":"nobody"}`); rec.Code != http.StatusNotFound {
-		t.Errorf("unknown actor = %d, want 404", rec.Code)
+
+	// Validation: no target → 400; both targets → 400; unknown actor → 404;
+	// unknown need → 400; out-of-range values → 400; non-integer value → 400.
+	for _, tc := range []struct {
+		body string
+		want int
+	}{
+		{`{}`, http.StatusBadRequest},
+		{`{"actor_id":"hannah","all":true}`, http.StatusBadRequest},
+		{`{"actor_id":"nobody"}`, http.StatusNotFound},
+		{`{"actor_id":"hannah","needs":{"sleepiness":1}}`, http.StatusBadRequest},
+		{`{"actor_id":"hannah","needs":{"hunger":99}}`, http.StatusBadRequest},
+		{`{"actor_id":"hannah","needs":{"hunger":-1}}`, http.StatusBadRequest},
+		{`{"actor_id":"hannah","needs":{"hunger":20.5}}`, http.StatusBadRequest},
+	} {
+		if rec := postReq(t, h, "/api/village/umbilical/set-needs", "tok", tc.body); rec.Code != tc.want {
+			t.Errorf("set-needs %s = %d, want %d", tc.body, rec.Code, tc.want)
+		}
 	}
 }
 
-// TestUmbilicalResetNeeds_PerNeedAndRestWindow covers ZBBS-HOME-383: the
-// optional needs filter (drop tiredness, keep hunger/thirst), the rest-window
-// clearing coupled to a tiredness reset, that a non-tiredness reset leaves the
-// rest window alone, and the unknown-need 400.
-func TestUmbilicalResetNeeds_PerNeedAndRestWindow(t *testing.T) {
+// TestUmbilicalSetNeeds_RestWindow covers the tiredness/rest-window coupling
+// (carried from HOME-383 into HOME-384): setting tiredness to 0 clears
+// BreakUntil/SleepingUntil, while setting a non-zero tiredness leaves the rest
+// window alone.
+func TestUmbilicalSetNeeds_RestWindow(t *testing.T) {
 	srv, h := controlServer(t, operatorPerms)
 	// Seed maxed needs + an active break window on hannah.
 	seed := func() {
@@ -375,44 +396,32 @@ func TestUmbilicalResetNeeds_PerNeedAndRestWindow(t *testing.T) {
 		}
 	}
 
-	// Tiredness-only reset: tiredness → 0, hunger/thirst untouched, rest windows cleared.
+	// tiredness → 0 clears the rest windows; hunger left untouched.
 	seed()
-	rec := postReq(t, h, "/api/village/umbilical/reset-needs", "tok", `{"actor_id":"hannah","needs":["tiredness"]}`)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("tiredness-only reset = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	if rec := postReq(t, h, "/api/village/umbilical/set-needs", "tok", `{"actor_id":"hannah","needs":{"tiredness":0}}`); rec.Code != http.StatusOK {
+		t.Fatalf("set tiredness 0 = %d, want 200", rec.Code)
 	}
 	res, _ := srv.world.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		a := world.Actors["hannah"]
-		return []any{a.Needs["tiredness"], a.Needs["hunger"], a.Needs["thirst"], a.BreakUntil == nil, a.SleepingUntil == nil}, nil
+		return []any{a.Needs["tiredness"], a.Needs["hunger"], a.BreakUntil == nil, a.SleepingUntil == nil}, nil
 	}})
 	v, _ := res.([]any)
-	if v[0].(int) != 0 {
-		t.Errorf("tiredness = %v after reset, want 0", v[0])
-	}
-	if v[1].(int) != sim.NeedMax || v[2].(int) != sim.NeedMax {
-		t.Errorf("hunger/thirst = %v/%v after tiredness-only reset, want both %d (untouched)", v[1], v[2], sim.NeedMax)
-	}
-	if v[3] != true || v[4] != true {
-		t.Errorf("rest windows not cleared after tiredness reset: breakNil=%v sleepNil=%v", v[3], v[4])
+	if v[0].(int) != 0 || v[1].(int) != sim.NeedMax || v[2] != true || v[3] != true {
+		t.Errorf("set tiredness 0: tiredness=%v hunger=%v breakNil=%v sleepNil=%v, want 0/%d/true/true", v[0], v[1], v[2], v[3], sim.NeedMax)
 	}
 
-	// Non-tiredness reset leaves the rest window alone.
+	// Non-zero tiredness leaves the rest window alone.
 	seed()
-	if rec := postReq(t, h, "/api/village/umbilical/reset-needs", "tok", `{"actor_id":"hannah","needs":["hunger"]}`); rec.Code != http.StatusOK {
-		t.Fatalf("hunger-only reset = %d, want 200", rec.Code)
+	if rec := postReq(t, h, "/api/village/umbilical/set-needs", "tok", `{"actor_id":"hannah","needs":{"tiredness":5}}`); rec.Code != http.StatusOK {
+		t.Fatalf("set tiredness 5 = %d, want 200", rec.Code)
 	}
 	res, _ = srv.world.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		a := world.Actors["hannah"]
-		return []any{a.Needs["hunger"], a.Needs["tiredness"], a.BreakUntil != nil}, nil
+		return []any{a.Needs["tiredness"], a.BreakUntil != nil}, nil
 	}})
 	v, _ = res.([]any)
-	if v[0].(int) != 0 || v[1].(int) != sim.NeedMax || v[2] != true {
-		t.Errorf("hunger-only reset: hunger=%v tiredness=%v breakStillSet=%v, want 0/%d/true", v[0], v[1], v[2], sim.NeedMax)
-	}
-
-	// Unknown need → 400.
-	if rec := postReq(t, h, "/api/village/umbilical/reset-needs", "tok", `{"actor_id":"hannah","needs":["sleepiness"]}`); rec.Code != http.StatusBadRequest {
-		t.Errorf("unknown need = %d, want 400", rec.Code)
+	if v[0].(int) != 5 || v[1] != true {
+		t.Errorf("set tiredness 5: tiredness=%v breakStillSet=%v, want 5/true", v[0], v[1])
 	}
 }
 
@@ -421,7 +430,7 @@ func TestUmbilicalControl_NewRoutesGated(t *testing.T) {
 		"/api/village/umbilical/settle",
 		"/api/village/umbilical/rotate",
 		"/api/village/umbilical/settings/need-threshold",
-		"/api/village/umbilical/reset-needs",
+		"/api/village/umbilical/set-needs",
 	}
 	// Umbilical on but control NOT enabled → 404.
 	srv := NewServer(seededWorld(t), permAuth{operatorPerms})
