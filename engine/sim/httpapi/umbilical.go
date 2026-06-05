@@ -371,6 +371,7 @@ func (s *Server) umbilicalRoutes() []umbilicalRoute {
 		{http.MethodGet, umbilicalBasePath + "/deadlocks", "Recent locomotion soft-block deadlock hard-stops (mover + occupant + whether re-plan found no detour) for remote visibility into live freeze frequency.", false, s.handleUmbilicalDeadlocks},
 		{http.MethodGet, umbilicalBasePath + "/actors", "Full actor roster with live needs (who's starving/exhausted) — the companion read for picking set-needs targets.", false, s.handleUmbilicalActors},
 		{http.MethodGet, umbilicalBasePath + "/pay-ledger", "Live pay-ledger off the published snapshot (most-recent first): per-entry buyer/seller/CONSUMER split, item, qty, coins offered, consume_now, state, timestamps. Reads in-memory state the checkpointed DB lags. Query param: limit (optional).", false, s.handleUmbilicalPayLedger},
+		{http.MethodGet, umbilicalBasePath + "/turns", "Raw LLM turn(s) for an NPC straight off memory-api: the composed system_prompt, the perception sent, the model's response, token counts, cost, and provider status/error. Proxied with the operator's own token (the full turn lives only in memory-api, never in the engine). Query params: scene, agent, since, status, limit (all optional).", false, s.handleUmbilicalTurns},
 
 		// Control whitelist — world-mutating; armed only when control is also enabled.
 		{http.MethodPost, umbilicalBasePath + "/nudge", "Force a reactor tick for one actor, optionally injecting an in-world felt-impulse directive. Body: {actor_id, message?}.", true, s.handleUmbilicalNudge},

@@ -31,6 +31,18 @@ type Server struct {
 	errorLog         *errorRing
 	clientLog        *clientErrorRing
 	clientLogLimiter *clientLogRateLimiter
+	// memoryAPIBaseURL is the llm-memory-api root the /umbilical/turns route
+	// proxies raw-LLM-turn queries to (the full turn — system_prompt, token
+	// counts, cost, provider status — lives only in memory-api's
+	// virtual_agent_calls; the engine never sees the composed system prompt). It
+	// forwards the operator's own bearer token there. Empty when unset → the
+	// /turns route answers 503. Wired by SetMemoryAPIBaseURL under
+	// UMBILICAL_ENABLED, same posture as the rings.
+	memoryAPIBaseURL string
+	// turnsClient is the HTTP client the /umbilical/turns proxy uses to reach
+	// memory-api. Owned by the Server (initialized in NewServer) so it has a
+	// bounded timeout and tests can reach an httptest upstream via the same path.
+	turnsClient *http.Client
 }
 
 // NewServer builds a Server for w, authenticating every route via auth. Panics
@@ -49,6 +61,7 @@ func NewServer(w *sim.World, auth Authenticator) *Server {
 		errorLog:         newErrorRing(0),
 		clientLog:        newClientErrorRing(0),
 		clientLogLimiter: newClientLogRateLimiter(clientLogRateMax, clientLogRateWindow),
+		turnsClient:      &http.Client{Timeout: turnsUpstreamTimeout},
 	}
 }
 
@@ -102,6 +115,20 @@ func (s *Server) SetPrompts(ring *promptlog.RingSink) {
 // without synchronization.
 func (s *Server) SetChat(ring *chatlog.RingSink) {
 	s.chat = ring
+}
+
+// SetMemoryAPIBaseURL configures the upstream llm-memory-api root for the
+// operator-gated GET /umbilical/turns route, which proxies raw-LLM-turn queries
+// (forwarding the operator's bearer token) to memory-api — the only place the
+// full turn (system_prompt, token counts, cost, provider status) is logged. The
+// engine never sees the composed system prompt, so this route can't read a local
+// ring like the others. Optional and independent of SetTelemetry: when unset,
+// the /turns route still registers (it's in the umbilical table, gated on
+// SetTelemetry like the rest) but answers 503. cmd/engine wires the same
+// LLM_MEMORY_URL the LLM client uses. Same wiring-time-only contract as
+// SetTelemetry — call before Handler, never concurrently with serving.
+func (s *Server) SetMemoryAPIBaseURL(baseURL string) {
+	s.memoryAPIBaseURL = strings.TrimRight(baseURL, "/")
 }
 
 // SetCheckpointHealth attaches the durable-checkpoint health recorder so the
