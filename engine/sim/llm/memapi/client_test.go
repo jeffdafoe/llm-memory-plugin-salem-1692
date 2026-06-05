@@ -147,9 +147,10 @@ func TestComplete_IterZeroMessageExtraction(t *testing.T) {
 	c := newTestClient(t, ts)
 
 	resp, err := c.Complete(context.Background(), llm.Request{
-		Model:    "salem-generic",
-		Messages: []llm.Message{{Role: llm.RoleUser, Content: "perception text"}},
-		SceneID:  "scene-uuid",
+		Model:          "salem-generic",
+		Messages:       []llm.Message{{Role: llm.RoleUser, Content: "perception text"}},
+		SceneID:        "scene-uuid",
+		ConversationID: "sc-conv-1",
 	})
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
@@ -177,6 +178,9 @@ func TestComplete_IterZeroMessageExtraction(t *testing.T) {
 	}
 	if r.Body.SceneID != "scene-uuid" {
 		t.Errorf("scene_id = %q, want scene-uuid", r.Body.SceneID)
+	}
+	if r.Body.ConversationID != "sc-conv-1" {
+		t.Errorf("conversation_id = %q, want sc-conv-1", r.Body.ConversationID)
 	}
 	if !r.Body.Wait {
 		t.Error("wait = false, want true")
@@ -446,8 +450,9 @@ func TestPersist_HappyPath(t *testing.T) {
 	c := newTestClient(t, ts)
 
 	err := c.PersistToolResults(context.Background(), llm.PersistRequest{
-		Model:   "zbbs-josiah",
-		SceneID: "scene-x",
+		Model:          "zbbs-josiah",
+		SceneID:        "scene-x",
+		ConversationID: "sc-conv-x",
 		Results: []llm.ToolResult{
 			{ID: "call_1", Content: "[done]"},
 		},
@@ -468,6 +473,9 @@ func TestPersist_HappyPath(t *testing.T) {
 	}
 	if rec.Body.SceneID != "scene-x" {
 		t.Errorf("scene_id = %q", rec.Body.SceneID)
+	}
+	if rec.Body.ConversationID != "sc-conv-x" {
+		t.Errorf("conversation_id = %q, want sc-conv-x", rec.Body.ConversationID)
 	}
 }
 

@@ -129,6 +129,10 @@ type chatRequest struct {
 	ToolCallResults []toolResult `json:"tool_call_results,omitempty"`
 	PersistOnly     bool         `json:"persist_only,omitempty"`
 	SceneID         string       `json:"scene_id,omitempty"`
+	// ConversationID is the engine's narrative-beat scene id — the stable
+	// grouping key the admin chat viewer collapses a whole exchange under
+	// (distinct from the per-tick scene_id). Omitted when empty. ZBBS-HOME-397.
+	ConversationID string `json:"conversation_id,omitempty"`
 	// EphemeralContext (lean sim-history): per-tick affordances / world-state
 	// the API attaches to the current turn but never persists. Sent on every
 	// Complete; absent on persist-only calls (no perception).
@@ -209,6 +213,7 @@ func (c *Client) Complete(ctx context.Context, req llm.Request) (llm.Response, e
 		ToolsOffered:     toAPITools(req.Tools),
 		ToolCallResults:  results,
 		SceneID:          req.SceneID,
+		ConversationID:   req.ConversationID,
 		EphemeralContext: req.EphemeralContext,
 		Wait:             true,
 	})
@@ -256,6 +261,7 @@ func (c *Client) PersistToolResults(ctx context.Context, req llm.PersistRequest)
 		ToolCallResults: toWireResults(req.Results),
 		PersistOnly:     true,
 		SceneID:         req.SceneID,
+		ConversationID:  req.ConversationID,
 		Wait:            false,
 	})
 	if err != nil {
