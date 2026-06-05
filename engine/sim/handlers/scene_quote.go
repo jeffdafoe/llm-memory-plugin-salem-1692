@@ -302,7 +302,11 @@ func HandleSceneQuote(in HandlerInput) (sim.Command, error) {
 		}
 	}
 
-	return sim.SceneQuoteCreate(
+	// ZBBS-HOME-400: form/join the co-located huddle on the quote itself so a
+	// seller can post a quote to a customer present at the stall without a
+	// separate prior speak. No-op when already huddled, alone, or out of scope.
+	now := time.Now().UTC()
+	return withHuddleBootstrap(in.ActorID, now, sim.SceneQuoteCreate(
 		in.ActorID,
 		itemKind,
 		args.Qty,
@@ -310,6 +314,6 @@ func HandleSceneQuote(in HandlerInput) (sim.Command, error) {
 		args.ConsumeNow,
 		targetBuyer,
 		consumers,
-		time.Now().UTC(),
-	), nil
+		now,
+	)), nil
 }
