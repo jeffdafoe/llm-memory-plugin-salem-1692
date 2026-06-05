@@ -109,13 +109,12 @@ func buildIntegrationWorld(t *testing.T) (*sim.World, func()) {
 //  1. Alice calls pay_with_item (slow path → Pending).
 //  2. PayOfferReceived subscriber stamps PayOfferWarrantReason on Bob.
 //  3. Bob calls accept_pay.
-//  4. At accept, coins move (4 alice→bob) and an Order is minted
-//     (Phase 3 PR S6 — goods STAY in bob's inventory until
-//     deliver_order). Pre-S6 this asserted goods moved at accept;
-//     the architecture lock moved goods movement to deliver_order
-//     so the seller has narrative agency in the handover.
+//  4. At accept, coins move (4 alice→bob) AND the physical takeaway is
+//     delivered immediately (ZBBS-HOME-398): bob's stew drops 5→4 and alice
+//     receives 1. The Order is minted then flipped straight to Delivered (no
+//     deferred deliver_order beat for physical goods — that's lodging-only).
 //  5. PayWithItemResolved subscriber stamps PayResolvedWarrantReason
-//     on Alice. OrderCreated event fires under the same root.
+//     on Alice. OrderCreated + OrderDelivered both fire under the same root.
 func TestIntegration_SlowPathAcceptedHappyPath(t *testing.T) {
 	w, stop := buildIntegrationWorld(t)
 	defer stop()
@@ -159,26 +158,35 @@ func TestIntegration_SlowPathAcceptedHappyPath(t *testing.T) {
 	if got := snap.Actors["bob"].Coins; got != 4 {
 		t.Errorf("bob.Coins = %d, want 4", got)
 	}
-	// Post-S6: goods stay in bob's inventory until deliver_order
-	// fires. Alice's inventory is unchanged at accept time; bob's
-	// stew count is still 5. An Order should be present in the
-	// snapshot at OrderStateReady against bob.
-	if got := snap.Actors["alice"].InventoryHash; got != 0 {
-		t.Errorf("alice.InventoryHash = %d, want 0 (goods deferred to deliver_order)", got)
+	// ZBBS-HOME-398: physical takeaway is delivered to alice at accept —
+	// bob's stew drops 5→4 and alice receives 1.
+	var aliceStew, bobStew int
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		aliceStew = world.Actors["alice"].Inventory["stew"]
+		bobStew = world.Actors["bob"].Inventory["stew"]
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("read inventory: %v", err)
 	}
-	if got := snap.Actors["bob"].InventoryHash; got != 5 {
-		t.Errorf("bob.InventoryHash = %d, want 5 (stock retained until deliver_order)", got)
+	if aliceStew != 1 {
+		t.Errorf("alice stew = %d, want 1 (delivered at accept)", aliceStew)
 	}
-	// Verify the Order was minted at AcceptPay.
+	if bobStew != 4 {
+		t.Errorf("bob stew = %d, want 4 (delivered at accept)", bobStew)
+	}
+	// The Order was minted then immediately delivered (never left Ready).
 	var foundOrder *sim.Order
 	for _, o := range snap.Orders {
-		if o != nil && o.SellerID == "bob" && o.BuyerID == "alice" && o.State == sim.OrderStateReady {
+		if o != nil && o.SellerID == "bob" && o.BuyerID == "alice" {
 			foundOrder = o
 			break
 		}
 	}
 	if foundOrder == nil {
-		t.Fatalf("no Ready Order minted at accept; snapshot.Orders = %+v", snap.Orders)
+		t.Fatalf("no Order recorded at accept; snapshot.Orders = %+v", snap.Orders)
+	}
+	if foundOrder.State != sim.OrderStateDelivered {
+		t.Errorf("order State = %q, want delivered (immediate handover)", foundOrder.State)
 	}
 	if foundOrder.Item != "stew" || foundOrder.Qty != 1 {
 		t.Errorf("Order item/qty = %s/%d, want stew/1", foundOrder.Item, foundOrder.Qty)

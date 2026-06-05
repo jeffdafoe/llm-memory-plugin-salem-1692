@@ -122,8 +122,9 @@ func TestPayWithItem_Barter_QuoteWithGoodsRejects(t *testing.T) {
 
 // TestAcceptPay_Barter_TwoWaySwap — accepting a mixed coins+goods offer
 // moves coins AND each pay_item buyer→seller atomically. The bought good
-// (takeaway) stays with the seller until deliver_order (S6), so the swap
-// is exactly: buyer loses coins+bread, seller gains coins+bread.
+// (physical takeaway) is delivered to the buyer at accept (ZBBS-HOME-398
+// immediate handover), so the swap is: buyer loses coins+bread and gains the
+// stew, seller gains coins+bread and loses the stew.
 func TestAcceptPay_Barter_TwoWaySwap(t *testing.T) {
 	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
 		{id: "alice", displayName: "Alice", kind: sim.KindNPCShared, huddleID: "h1", coins: 10, inventory: map[sim.ItemKind]int{"bread": 8}},
@@ -161,8 +162,11 @@ func TestAcceptPay_Barter_TwoWaySwap(t *testing.T) {
 	if b.inv["bread"] != 5 {
 		t.Errorf("bob.bread = %d, want 5 (received)", b.inv["bread"])
 	}
-	if b.inv["stew"] != 5 {
-		t.Errorf("bob.stew = %d, want 5 (takeaway: stays until deliver_order)", b.inv["stew"])
+	if b.inv["stew"] != 4 {
+		t.Errorf("bob.stew = %d, want 4 (physical takeaway delivered at accept)", b.inv["stew"])
+	}
+	if a.inv["stew"] != 1 {
+		t.Errorf("alice.stew = %d, want 1 (physical takeaway delivered at accept)", a.inv["stew"])
 	}
 }
 
