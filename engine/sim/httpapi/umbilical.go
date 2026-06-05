@@ -370,6 +370,7 @@ func (s *Server) umbilicalRoutes() []umbilicalRoute {
 		{http.MethodGet, umbilicalBasePath + "/client-errors", "Client-reported (untrusted) runtime-error feed beaconed by the Godot client.", false, s.handleUmbilicalClientErrors},
 		{http.MethodGet, umbilicalBasePath + "/deadlocks", "Recent locomotion soft-block deadlock hard-stops (mover + occupant + whether re-plan found no detour) for remote visibility into live freeze frequency.", false, s.handleUmbilicalDeadlocks},
 		{http.MethodGet, umbilicalBasePath + "/actors", "Full actor roster with live needs (who's starving/exhausted) — the companion read for picking set-needs targets.", false, s.handleUmbilicalActors},
+		{http.MethodGet, umbilicalBasePath + "/pay-ledger", "Live pay-ledger off the published snapshot (most-recent first): per-entry buyer/seller/CONSUMER split, item, qty, coins offered, consume_now, state, timestamps. Reads in-memory state the checkpointed DB lags. Query param: limit (optional).", false, s.handleUmbilicalPayLedger},
 
 		// Control whitelist — world-mutating; armed only when control is also enabled.
 		{http.MethodPost, umbilicalBasePath + "/nudge", "Force a reactor tick for one actor, optionally injecting an in-world felt-impulse directive. Body: {actor_id, message?}.", true, s.handleUmbilicalNudge},
