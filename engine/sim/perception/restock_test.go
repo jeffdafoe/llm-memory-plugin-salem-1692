@@ -101,7 +101,10 @@ func TestBuildRestocking_VendorResolved(t *testing.T) {
 		t.Fatalf("want 1 vendor cue, got %+v", v)
 	}
 	vd := v.Items[0].Vendors[0]
-	if vd.StructureLabel != "The Brewery" || vd.StructureID != "brewery" || vd.CostText != "ask the supplier" {
+	// No PriceBook entry → CostText is the empty fallback (ZBBS-HOME-386 dropped
+	// the old "ask the supplier", which invited a spoken price question instead
+	// of a pay_with_item call); render omits the cost clause entirely.
+	if vd.StructureLabel != "The Brewery" || vd.StructureID != "brewery" || vd.CostText != "" {
 		t.Errorf("vendor cue wrong: %+v", vd)
 	}
 }
@@ -244,5 +247,37 @@ func TestRenderRestocking_Shape(t *testing.T) {
 	}
 	if !strings.Contains(out, "No supplier nearby is currently holding stock.") {
 		t.Errorf("missing no-supplier line:\n%s", out)
+	}
+	// ZBBS-HOME-386: the section names the action (move_to + pay_with_item) as a
+	// two-step sequence and carries neither "ask" nor "price" — negated ask/price
+	// wording still primes the speak-loop on a weak model (code_review). (Test
+	// inputs control the labels, so a whole-render substring check is safe here.)
+	if !strings.Contains(out, "move_to") || !strings.Contains(out, "pay_with_item") {
+		t.Errorf("section should name the move_to + pay_with_item action:\n%s", out)
+	}
+	if strings.Contains(out, "ask") || strings.Contains(out, "price") {
+		t.Errorf("cue should not contain 'ask'/'price' (primes the speak-loop):\n%s", out)
+	}
+}
+
+// TestRenderRestocking_NoPriceOmitsCost: a vendor with no price on record
+// (CostText == "") renders just the destination, with no trailing ", ..." cost
+// clause — the ZBBS-HOME-386 replacement for the old "ask the supplier" hint.
+func TestRenderRestocking_NoPriceOmitsCost(t *testing.T) {
+	v := &RestockingView{Items: []RestockItemView{
+		{
+			ItemLabel: "milk", CurrentQty: 0, Cap: 20,
+			Vendors: []RestockVendor{{StructureLabel: "Ellis Farm", StructureID: "ellis", CostText: ""}},
+		},
+	}}
+	var b strings.Builder
+	renderRestocking(&b, v)
+	out := b.String()
+	if !strings.Contains(out, "buy from Ellis Farm (structure_id: ellis)") {
+		t.Errorf("missing vendor destination line:\n%s", out)
+	}
+	// Empty CostText must not render a trailing ", <cost>" clause after the id.
+	if strings.Contains(out, "(structure_id: ellis),") {
+		t.Errorf("empty CostText should not render a trailing cost clause:\n%s", out)
 	}
 }

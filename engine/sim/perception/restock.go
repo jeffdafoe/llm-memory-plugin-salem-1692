@@ -57,7 +57,7 @@ type RestockItemView struct {
 type RestockVendor struct {
 	StructureLabel string // "Thorne's General Store" — where the reseller walks to
 	StructureID    sim.StructureID
-	CostText       string // per-buyer last-paid "~3 coins", or "ask the supplier"
+	CostText       string // per-buyer last-paid "~3 coins", or "" when no price is on record
 
 	// Shut is true when the reseller has a live experiential memory of finding
 	// this supplier shut (no keeper) within the decay window — render annotates
@@ -142,7 +142,11 @@ func findItemVendors(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *sim.Act
 		out = append(out, RestockVendor{
 			StructureLabel: vendorStructureLabel(p.structure),
 			StructureID:    structureID,
-			CostText:       buyerLastPaidText(snap, buyerID, p.vendorID, itemKind, "ask the supplier"),
+			// Empty fallback when no price is on record (was "ask the supplier",
+			// which invited the reseller to SPEAK a price question instead of
+			// calling pay_with_item — ZBBS-HOME-386). With "", renderRestocking
+			// omits the cost clause entirely; the header carries the action.
+			CostText:       buyerLastPaidText(snap, buyerID, p.vendorID, itemKind, ""),
 			Shut:           businessRememberedShut(snap, buyerSnap, structureID),
 		})
 	}
@@ -158,13 +162,20 @@ func findItemVendors(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *sim.Act
 // renderRestocking writes the "## Restocking" section. Content-gated: a
 // nil/empty view writes nothing. Each low item leads with its on-hand/cap so the
 // reseller can size the buy (it picks its own quantity — the line hints the
-// headroom), then lists where to buy with the structure_id for move_to.
+// headroom), then lists where to buy (structure_id for move_to). The header
+// names the move_to + pay_with_item path as an explicit two-step sequence and
+// deliberately carries neither the word "ask" nor "price" — ZBBS-HOME-386: the
+// old prose ("walk to a supplier and pay") plus an "ask the supplier" price hint
+// drew the stateful model into SPEAKING price questions on a loop instead of
+// calling pay_with_item, and even a negated "do not ask the price" still primes
+// that on a weak model (code_review), so the wording avoids both tokens. Same
+// actionable-cue treatment WORK-372 gave deliver_order.
 func renderRestocking(b *strings.Builder, v *RestockingView) {
 	if v == nil || len(v.Items) == 0 {
 		return
 	}
 	b.WriteString("## Restocking\n")
-	b.WriteString("Your shop stock of these bought-in goods is running low. You may restock by walking to a supplier and paying for more (you choose how much, up to your cap).\n")
+	b.WriteString("Your shop stock of these bought-in goods is running low. Restock in two steps: first use move_to for one listed supplier, then when you arrive use pay_with_item to buy more, up to your cap. The supplier is listed below; go there and pay when you arrive.\n")
 	for _, it := range v.Items {
 		headroom := it.Cap - it.CurrentQty
 		if headroom < 0 {
