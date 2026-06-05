@@ -11,13 +11,18 @@ import (
 // npc_route.go — Phase 3 Group A scheduled-route cascade driver.
 //
 // Three event subscribers wire the lamplighter / washerwoman /
-// town_crier behaviors onto their respective triggers, and one shared
-// subscriber on ActorArrived advances any active route by one stop.
+// town_crier behaviors onto their respective triggers; one shared
+// subscriber on ActorArrived advances any active route by one stop, and
+// one on ActorMoveStopped abandons a route whose walk failed.
 //
-//   - PhaseApplied   → start lamplighter route over carved-out lamps
-//   - RotationApplied → start washerwoman route over laundry tiles
-//   - RotationApplied → start town_crier route over notice boards
-//   - ActorArrived   → advance the arrived actor's route (no-op if none)
+//   - PhaseApplied     → start lamplighter route over carved-out lamps
+//   - RotationApplied   → start washerwoman route over laundry tiles
+//   - RotationApplied   → start town_crier route over notice boards
+//   - ActorArrived     → advance the arrived actor's route (no-op if none)
+//   - ActorMoveStopped → abandon the actor's route if its walk failed
+//                        (no-op if none) — otherwise a stopped walk leaves
+//                        the route parked forever, which now also strands
+//                        the actor's shift-duty (see handler doc)
 //
 // Per-behavior eligibility comes from Actor.Attributes membership
 // (AttrLamplighter / AttrWasherwoman / AttrTownCrier). At-most-one
@@ -41,7 +46,7 @@ import (
 // hook lives in npc_route.go's AdvanceNPCRoute and is currently empty
 // — Slice 3 wires the LLM-authored saying broadcast there.
 
-// RegisterNPCRoutes wires all four subscribers needed for the Slice 2
+// RegisterNPCRoutes wires the subscribers needed for the Slice 2
 // scheduled-route slice. Must run on the world goroutine — call before
 // World.Run, or from inside a Command.Fn.
 //
@@ -65,6 +70,7 @@ func RegisterNPCRoutes(_ context.Context, w *sim.World) {
 	w.Subscribe(sim.SubscriberFunc(handleRotationAppliedWasherwoman))
 	w.Subscribe(sim.SubscriberFunc(handleRotationAppliedTownCrier))
 	w.Subscribe(sim.SubscriberFunc(handleActorArrivedAdvanceRoute))
+	w.Subscribe(sim.SubscriberFunc(handleActorMoveStoppedAdvanceRoute))
 }
 
 // handlePhaseAppliedLamplighter starts the lamplighter route on each
@@ -201,6 +207,42 @@ func handleActorArrivedAdvanceRoute(w *sim.World, evt sim.Event) {
 		log.Printf("cascade/npc_route: advance (actor %q event %d): %v",
 			arrived.ActorID, arrived.EventID(), err)
 	}
+}
+
+// handleActorMoveStoppedAdvanceRoute abandons a route whose walk could not
+// complete. A route MoveActor that is blocked / unreachable / deadlocked /
+// invalidated / cancelled emits ActorMoveStopped instead of ActorArrived, so
+// the ActorArrived advance hook never fires for it. Without this the route would
+// sit in ActiveRoutes forever — and since an in-flight route now suppresses the
+// shift-duty producer (see shiftDutyTarget), it would keep the actor home-exempt
+// indefinitely. Clearing the route frees the actor; the next phase / rotation
+// boundary re-triggers a fresh route over whatever is still un-flipped.
+//
+// We ABANDON rather than re-walk (the AdvanceNPCRoute stale path's recovery)
+// because the locomotion ticker clears actor.MoveIntent AFTER emitting
+// ActorMoveStopped (unlike finishArrival, which clears it BEFORE emitting
+// ActorArrived). A MoveActor dispatched from this synchronously-run subscriber
+// would therefore be nil'd by the ticker the instant we returned. A map delete
+// touches only ActiveRoutes, which the ticker never reads, so it is safe here.
+// A MoveStopped also means the path genuinely failed, so an immediate re-walk
+// to the same stop would just re-fail — letting the next boundary rebuild from
+// real object state is both safer and simpler. A superseded attempt dies
+// silently (no ActorMoveStopped), so this only fires for the route's own
+// terminal failure.
+func handleActorMoveStoppedAdvanceRoute(w *sim.World, evt sim.Event) {
+	stopped, ok := evt.(*sim.ActorMoveStopped)
+	if !ok {
+		return
+	}
+	if w.ActiveRoutes == nil {
+		return
+	}
+	if route, has := w.ActiveRoutes[stopped.ActorID]; !has || route == nil {
+		return
+	}
+	delete(w.ActiveRoutes, stopped.ActorID)
+	log.Printf("cascade/npc_route: %q route walk stopped (%s) — abandoning route",
+		stopped.ActorID, stopped.Reason)
 }
 
 // dispatchRotationRoute is the shared body for washerwoman / town_crier

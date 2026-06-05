@@ -412,6 +412,13 @@ func advanceActiveRoute(w *World, route *NPCRoute) (AdvanceNPCRouteResult, error
 			delete(w.ActiveRoutes, route.NPCID)
 			return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "stale_abandoned"}, nil
 		}
+		// Re-walk to the current stop. Setting a fresh MoveIntent here is safe
+		// because this path runs from the ActorArrived emit, and finishArrival
+		// clears MoveIntent BEFORE emitting ActorArrived — so nothing nils the
+		// intent out from under us afterward. (A failed walk is the opposite: the
+		// ticker clears MoveIntent AFTER emitting ActorMoveStopped, so that case
+		// is handled by abandoning the route in the cascade rather than re-walking
+		// here — see handleActorMoveStoppedAdvanceRoute.)
 		route.StaleRetries++
 		reWalk := MoveActor(route.NPCID, NewPositionDestination(stop.WalkTo), false, time.Now())
 		if _, err := reWalk.Fn(w); err != nil {

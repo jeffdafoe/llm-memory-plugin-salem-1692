@@ -287,12 +287,32 @@ func TestAdvanceNPCRoute_StaleArrivalAbandonsAfterRetries(t *testing.T) {
 	firstStopID := firstStopObjectID(t, w, "lamp")
 	beforeState := w.Published().VillageObjects[firstStopID].CurrentState
 
-	// Never teleport to the stop → every advance is stale. Drive advances until
-	// the route stops retrying; it must abandon, not loop forever, not park. The
-	// generous cap guards against an infinite-retry regression (the test fails
-	// with the loop's last "stale_retry" rather than hanging).
+	// Capture the actor's start tile (the route start, which is NOT the first
+	// stop's WalkTo). We re-assert it before every advance so each arrival is
+	// provably stale — making the condition explicit rather than relying on the
+	// test world leaving the actor in place across the re-walk dispatches.
+	var startX, startY int
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := world.Actors["lamp"]
+		startX, startY = a.Pos.X, a.Pos.Y
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("read start pos: %v", err)
+	}
+
+	// Drive advances until the route stops retrying; it must abandon, not loop
+	// forever, not park. The generous cap guards against an infinite-retry
+	// regression (the test fails with the loop's last "stale_retry" rather than
+	// hanging).
 	var lastReason string
 	for i := 0; i < 25; i++ {
+		if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+			a := world.Actors["lamp"]
+			a.Pos.X, a.Pos.Y = startX, startY
+			return nil, nil
+		}}); err != nil {
+			t.Fatalf("reset pos %d: %v", i, err)
+		}
 		res, err := w.Send(sim.AdvanceNPCRoute("lamp"))
 		if err != nil {
 			t.Fatalf("advance %d: %v", i, err)
