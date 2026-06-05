@@ -79,6 +79,12 @@ func TestRender_PayOfferDecisionSection(t *testing.T) {
 	if !strings.Contains(out, "accept_pay") || !strings.Contains(out, "ledger_id") {
 		t.Errorf("respond instruction missing\n%s", out)
 	}
+	// ZBBS-HOME-388: order the pay response before speech and name the speak TOOL
+	// explicitly, so an NPC-to-NPC trade is visible as a bubble (bubbles spawn only
+	// from speak; the pay_* frames render only for the PC's own transactions).
+	if !strings.Contains(out, "Respond first with accept_pay") || !strings.Contains(out, "use speak") {
+		t.Errorf("pay offer response should order pay response before speech\n%s", out)
+	}
 	// A solo pay offer covers the whole batch → the generic warrant block is
 	// suppressed (no contradictory "nothing specific" line).
 	if strings.Contains(out, "## What just happened") {
