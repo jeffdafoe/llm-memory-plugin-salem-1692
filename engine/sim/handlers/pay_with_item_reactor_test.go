@@ -131,7 +131,7 @@ func TestSubscriber_PayOfferReceived_StampsSeller(t *testing.T) {
 		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1", inventory: map[sim.ItemKind]int{"stew": 5}},
 	})
 	defer stop()
-	res, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, 0, 0, "", time.Now().UTC()))
+	res, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, nil, 0, 0, "", time.Now().UTC()))
 	if err != nil {
 		t.Fatalf("PayWithItem: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestSubscriber_PayOfferReceived_SkipsPCSeller(t *testing.T) {
 		{id: "pc-bob", displayName: "PC Bob", kind: sim.KindPC, huddleID: "h1", inventory: map[sim.ItemKind]int{"stew": 5}},
 	})
 	defer stop()
-	if _, err := w.Send(sim.PayWithItem("alice", "PC Bob", "stew", 1, 4, false, nil, 0, 0, "", time.Now().UTC())); err != nil {
+	if _, err := w.Send(sim.PayWithItem("alice", "PC Bob", "stew", 1, 4, false, nil, nil, 0, 0, "", time.Now().UTC())); err != nil {
 		t.Fatalf("PayWithItem: %v", err)
 	}
 	if got := readWarrants(t, w, "pc-bob"); len(got) != 0 {
@@ -185,7 +185,7 @@ func TestSubscriber_PayWithItemResolved_StampsBuyerOnAccept(t *testing.T) {
 		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1", inventory: map[sim.ItemKind]int{"stew": 5}},
 	})
 	defer stop()
-	res, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, 0, 0, "", time.Now().UTC()))
+	res, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, nil, 0, 0, "", time.Now().UTC()))
 	if err != nil {
 		t.Fatalf("PayWithItem: %v", err)
 	}
@@ -210,7 +210,7 @@ func TestSubscriber_PayWithItemResolved_StampsBuyerOnDecline(t *testing.T) {
 		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1", inventory: map[sim.ItemKind]int{"stew": 5}},
 	})
 	defer stop()
-	res, _ := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, 0, 0, "", time.Now().UTC()))
+	res, _ := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, nil, 0, 0, "", time.Now().UTC()))
 	ledgerID := res.(sim.PayWithItemResult).LedgerID
 	if _, err := w.Send(sim.DeclinePay("bob", ledgerID, "too low", time.Now().UTC())); err != nil {
 		t.Fatalf("DeclinePay: %v", err)
@@ -235,7 +235,7 @@ func TestSubscriber_PayWithItemResolved_SkipsWithdrawnByBuyer(t *testing.T) {
 		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1", inventory: map[sim.ItemKind]int{"stew": 5}},
 	})
 	defer stop()
-	res, _ := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, 0, 0, "", time.Now().UTC()))
+	res, _ := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, nil, 0, 0, "", time.Now().UTC()))
 	ledgerID := res.(sim.PayWithItemResult).LedgerID
 	if _, err := w.Send(sim.WithdrawPay("alice", ledgerID, "", time.Now().UTC())); err != nil {
 		t.Fatalf("WithdrawPay: %v", err)
@@ -256,9 +256,9 @@ func TestSubscriber_PayCountered_StampsBuyerWithCounterTerms(t *testing.T) {
 		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1", inventory: map[sim.ItemKind]int{"stew": 5}},
 	})
 	defer stop()
-	res, _ := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, 0, 0, "", time.Now().UTC()))
+	res, _ := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, nil, 0, 0, "", time.Now().UTC()))
 	ledgerID := res.(sim.PayWithItemResult).LedgerID
-	if _, err := w.Send(sim.CounterPay("bob", ledgerID, 6, "how about six", time.Now().UTC())); err != nil {
+	if _, err := w.Send(sim.CounterPay("bob", ledgerID, 6, nil, "how about six", time.Now().UTC())); err != nil {
 		t.Fatalf("CounterPay: %v", err)
 	}
 	warrants := readWarrants(t, w, "alice")

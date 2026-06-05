@@ -1025,16 +1025,45 @@ func nonShiftDutyWarrants(warrants []sim.WarrantMeta) []sim.WarrantMeta {
 // Uncapped by design: pay offers are inherently few (bounded by co-present
 // buyers), and the section must always carry the ledger_id whenever gateTools
 // advertises the response tools.
+// formatOfferPayment renders a barter offer's payment terms for a
+// perception line: coins, goods, or both ("5 coins", "5 nails", "5 nails
+// and 3 coins", "5 nails, 2 hammers and 3 coins"). Item kinds are
+// sanitized inline (they reach the prompt). Returns "nothing" only for an
+// all-empty payment, a state the intake gates reject. ZBBS-HOME-393.
+func formatOfferPayment(amount int, payItems []sim.ItemKindQty) string {
+	parts := make([]string, 0, len(payItems)+1)
+	for _, pi := range payItems {
+		name := sanitizeInline(string(pi.Kind))
+		if name == "" {
+			name = "item"
+		}
+		parts = append(parts, fmt.Sprintf("%d %s", pi.Qty, name))
+	}
+	if amount > 0 {
+		unit := "coins"
+		if amount == 1 {
+			unit = "coin"
+		}
+		parts = append(parts, fmt.Sprintf("%d %s", amount, unit))
+	}
+	switch len(parts) {
+	case 0:
+		return "nothing"
+	case 1:
+		return parts[0]
+	case 2:
+		return parts[0] + " and " + parts[1]
+	default:
+		return strings.Join(parts[:len(parts)-1], ", ") + " and " + parts[len(parts)-1]
+	}
+}
+
 func renderPayOffers(b *strings.Builder, offers []sim.PayOfferWarrantReason, nameOf func(sim.ActorID) string) {
 	if len(offers) == 0 {
 		return
 	}
 	b.WriteString("## Offers awaiting your decision\n")
 	for i, o := range offers {
-		unit := "coins"
-		if o.Amount == 1 {
-			unit = "coin"
-		}
 		disposition := "to keep"
 		if o.ConsumeNow {
 			disposition = "to consume now"
@@ -1044,8 +1073,12 @@ func renderPayOffers(b *strings.Builder, offers []sim.PayOfferWarrantReason, nam
 		if item == "" {
 			item = "item"
 		}
-		fmt.Fprintf(b, "%d. %s offers %d %s for %d %s %s (offer id %d)\n",
-			i+1, buyer, o.Amount, unit, o.Qty, item, disposition, o.LedgerID)
+		// Payment may be coins, goods (barter), or both (ZBBS-HOME-393) —
+		// render whatever the buyer offered so the seller judges the goods
+		// the same way they judge coins.
+		payment := formatOfferPayment(o.Amount, o.PayItems)
+		fmt.Fprintf(b, "%d. %s offers %s for %d %s %s (offer id %d)\n",
+			i+1, buyer, payment, o.Qty, item, disposition, o.LedgerID)
 	}
 	// Action first, then an explicit speak: accept/decline/counter pass in silence,
 	// so prompt the speak TOOL alongside the response — same "say a word as you pass
@@ -1239,7 +1272,8 @@ func renderPayResolvedWarrantLine(n int, seller string, r sim.PayResolvedWarrant
 	case sim.PayTerminalStateDeclined:
 		return fmt.Sprintf("%d. %s declined your offer for %s.\n", n, seller, qty)
 	case sim.PayTerminalStateCountered:
-		return fmt.Sprintf("%d. %s countered: %d for %s.\n", n, seller, r.CounterAmount, qty)
+		// Counter terms may be coins, goods (barter), or both (ZBBS-HOME-393).
+		return fmt.Sprintf("%d. %s countered: %s for %s.\n", n, seller, formatOfferPayment(r.CounterAmount, r.CounterPayItems), qty)
 	default:
 		return fmt.Sprintf("%d. Your offer to %s for %s fell through.\n", n, seller, qty)
 	}

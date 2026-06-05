@@ -179,6 +179,7 @@ func TestPayTerminalState_StringValuesMatchPayLedgerState(t *testing.T) {
 		{sim.PayLedgerStateExpired, sim.PayTerminalStateExpired},
 		{sim.PayLedgerStateFailedInsufficientFunds, sim.PayTerminalStateFailedInsufficientFunds},
 		{sim.PayLedgerStateFailedInsufficientStock, sim.PayTerminalStateFailedInsufficientStock},
+		{sim.PayLedgerStateFailedInsufficientGoods, sim.PayTerminalStateFailedInsufficientGoods},
 		{sim.PayLedgerStateFailedUnavailable, sim.PayTerminalStateFailedUnavailable},
 	}
 	for _, p := range pairs {

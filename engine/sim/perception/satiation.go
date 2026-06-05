@@ -478,7 +478,7 @@ func renderSatiation(b *strings.Builder, v *SatiationView) {
 		// to. NO structure_id on these lines — they're already here, and a
 		// structure_id would only tempt a needless move_to (ZBBS-HOME-342).
 		for _, pr := range n.CoPresentPeers {
-			fmt.Fprintf(b, "%s is here with you, carrying %s (%s) — you could offer to buy it from them now with pay_with_item. No need to walk anywhere.\n",
+			fmt.Fprintf(b, "%s is here with you, carrying %s (%s) — you could offer to buy it from them now with pay_with_item, paying with coins or goods you carry (pay_items). No need to walk anywhere.\n",
 				sanitizeInline(pr.PeerLabel), sanitizeInline(pr.ItemLabel), itemFeltAmount(pr.Magnitude, n.Need))
 		}
 		// Free public sources come BEFORE the walk-to-vendor list: water at a

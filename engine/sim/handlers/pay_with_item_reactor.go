@@ -80,6 +80,7 @@ func handlePayOfferReceivedWarrants(w *sim.World, evt sim.Event) {
 			Item:        offer.ItemKind,
 			Qty:         offer.QtyPerConsumer,
 			Amount:      offer.Amount,
+			PayItems:    cloneItemKindQtys(offer.PayItems),
 			ConsumeNow:  offer.ConsumeNow,
 			ConsumerIDs: cloneActorIDs(offer.ConsumerIDs),
 			ExpiresAt:   offer.ExpiresAt,
@@ -193,6 +194,7 @@ func handlePayCounteredWarrants(w *sim.World, evt sim.Event) {
 			TerminalState:   sim.PayTerminalStateCountered,
 			Message:         countered.Message,
 			CounterAmount:   countered.CounterAmount,
+			CounterPayItems: cloneItemKindQtys(countered.CounterPayItems),
 			ResolvedEventID: countered.EventID(),
 		},
 		SourceEventID: countered.EventID(),
@@ -243,5 +245,17 @@ func cloneActorIDs(ids []sim.ActorID) []sim.ActorID {
 	}
 	out := make([]sim.ActorID, len(ids))
 	copy(out, ids)
+	return out
+}
+
+// cloneItemKindQtys returns an independent copy of the barter goods-line
+// slice (ZBBS-HOME-393), so the warrant stamp holds value semantics over
+// the event's PayItems / CounterPayItems rather than aliasing them.
+func cloneItemKindQtys(in []sim.ItemKindQty) []sim.ItemKindQty {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]sim.ItemKindQty, len(in))
+	copy(out, in)
 	return out
 }
