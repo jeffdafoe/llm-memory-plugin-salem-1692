@@ -289,11 +289,16 @@ func (r SceneQuoteTargetedWarrantReason) DedupDiscriminator() uint64 { return ui
 // PR S4 ships NPC-seller-only; PC-as-seller lands at the cutover-layer
 // PC commit path.
 type PayOfferWarrantReason struct {
-	LedgerID    LedgerID
-	Buyer       ActorID
-	Item        ItemKind
-	Qty         int
-	Amount      int
+	LedgerID LedgerID
+	Buyer    ActorID
+	Item     ItemKind
+	Qty      int
+	Amount   int
+	// PayItems are the goods the buyer offered to pay WITH (barter leg,
+	// ZBBS-HOME-393). Empty for a pure-coin offer. Carried on the warrant
+	// so the seller's offer-decision section (renderPayOffers) can show
+	// the goods terms the seller is judging, without a live ledger lookup.
+	PayItems    []ItemKindQty
 	ConsumeNow  bool
 	ConsumerIDs []ActorID
 	ExpiresAt   time.Time
@@ -346,14 +351,20 @@ func (r PayOfferWarrantReason) DedupDiscriminator() uint64 { return uint64(r.Led
 // buyer resolution surfaces via the client's perception against
 // Snapshot.PayLedger, not via warrant.
 type PayResolvedWarrantReason struct {
-	LedgerID        LedgerID
-	Seller          ActorID
-	ItemKind        ItemKind
-	Qty             int
-	Amount          int
-	TerminalState   PayTerminalState
-	Message         string
-	CounterAmount   int
+	LedgerID      LedgerID
+	Seller        ActorID
+	ItemKind      ItemKind
+	Qty           int
+	Amount        int
+	TerminalState PayTerminalState
+	Message       string
+	CounterAmount int
+	// CounterPayItems are the goods the seller demands in a counter
+	// (symmetric-barter counter, ZBBS-HOME-393). Populated only when
+	// TerminalState == Countered and the seller countered with goods
+	// terms. Lets the buyer's perception render the counter's goods
+	// without a ledger lookup.
+	CounterPayItems []ItemKindQty
 	ResolvedEventID EventID
 }
 

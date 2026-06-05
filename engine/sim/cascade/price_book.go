@@ -70,6 +70,14 @@ func handlePayWithItemResolvedPriceBook(w *sim.World, evt sim.Event) {
 	if resolved.TerminalState != sim.PayTerminalStateAccepted {
 		return
 	}
+	// Pure barter (no coins, goods-only) records no price observation —
+	// there is no single coin price to remember for the (seller, item)
+	// pair, and an Amount of 0 would poison the price book with a free
+	// reading. Mixed coin+goods accepts still record the coin leg.
+	// ZBBS-HOME-393.
+	if resolved.Amount <= 0 {
+		return
+	}
 	consumers := len(resolved.ConsumerIDs)
 	if consumers < 1 {
 		consumers = 1

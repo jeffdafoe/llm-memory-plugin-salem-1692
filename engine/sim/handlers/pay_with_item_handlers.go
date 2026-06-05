@@ -72,6 +72,40 @@ const MaxPayWithItemConsumersHandler = 8
 // with the substrate constant.
 const MaxPayMessageHandlerRunes = 220
 
+// MaxPayWithItemPayItemsHandler caps len(pay_items[]) in the
+// pay_with_item / counter_pay schemas (the barter goods-payment lines,
+// ZBBS-HOME-393). Re-enforced by sim.PayWithItem / sim.CounterPay against
+// sim.MaxPayWithItemPayItems; the two MUST stay in sync.
+const MaxPayWithItemPayItemsHandler = 8
+
+// payItemArg is one barter goods-payment line as decoded from a tool call:
+// a free-text item name + a positive quantity. Shared by pay_with_item
+// (the buyer's pay_items) and counter_pay (the seller's counter goods).
+// ZBBS-HOME-393.
+type payItemArg struct {
+	Item string `json:"item"`
+	Qty  int    `json:"qty"`
+}
+
+// payItemsSchemaFragment is the shared JSON-schema fragment for a
+// pay_items array — embedded into both the pay_with_item and counter_pay
+// schemas so the two stay identical. maxItems mirrors
+// MaxPayWithItemPayItemsHandler; qty max mirrors MaxPayWithItemQty.
+const payItemsSchemaFragment = `{
+        "type": "array",
+        "maxItems": 8,
+        "items": {
+            "type": "object",
+            "properties": {
+                "item": {"type": "string", "minLength": 1, "maxLength": 64, "description": "Canonical item kind you carry and offer as payment (e.g. 'nail', 'hammer')."},
+                "qty": {"type": "integer", "minimum": 1, "maximum": 2147483647, "description": "How many of this item you offer."}
+            },
+            "required": ["item", "qty"],
+            "additionalProperties": false
+        },
+        "description": "Optional goods you offer as payment (barter). Each line is an item you carry and a quantity. You must offer coins, goods, or both."
+    }`
+
 // ====================================================================
 // pay_with_item — buyer-side offer creation
 // ====================================================================
@@ -94,15 +128,16 @@ const MaxPayMessageHandlerRunes = 220
 //   - in_response_to: integer (optional), minimum 1
 //   - for:            string (optional), maxLength MaxPayWithItemForChars
 type PayWithItemArgs struct {
-	Seller       string   `json:"seller"`
-	Item         string   `json:"item"`
-	Qty          int      `json:"qty"`
-	Amount       int      `json:"amount"`
-	ConsumeNow   bool     `json:"consume_now"`
-	Consumers    []string `json:"consumers"`
-	QuoteID      uint64   `json:"quote_id"`
-	InResponseTo uint64   `json:"in_response_to"`
-	For          string   `json:"for"`
+	Seller       string       `json:"seller"`
+	Item         string       `json:"item"`
+	Qty          int          `json:"qty"`
+	Amount       int          `json:"amount"`
+	ConsumeNow   bool         `json:"consume_now"`
+	Consumers    []string     `json:"consumers"`
+	PayItems     []payItemArg `json:"pay_items"`
+	QuoteID      uint64       `json:"quote_id"`
+	InResponseTo uint64       `json:"in_response_to"`
+	For          string       `json:"for"`
 }
 
 var payWithItemSchema = json.RawMessage(`{
@@ -128,9 +163,9 @@ var payWithItemSchema = json.RawMessage(`{
         },
         "amount": {
             "type": "integer",
-            "minimum": 1,
+            "minimum": 0,
             "maximum": 2147483647,
-            "description": "Total coins offered for the bundle. If quote_id is set, must be at least the quote's amount."
+            "description": "Coins offered for the bundle (optional; defaults to 0). You must offer coins, goods (pay_items), or both. If quote_id is set, must be at least the quote's amount."
         },
         "consume_now": {
             "type": "boolean",
@@ -146,10 +181,11 @@ var payWithItemSchema = json.RawMessage(`{
             },
             "description": "Optional list of display names for a group order. Empty means you (the buyer) are the sole consumer."
         },
+        "pay_items": ` + payItemsSchemaFragment + `,
         "quote_id": {
             "type": "integer",
             "minimum": 1,
-            "description": "Optional. Take a posted quote by ID. All terms (item, qty, consume_now, consumers) must match the quote exactly; amount must be at least the quote's amount. Strict-reject on any mismatch."
+            "description": "Optional. Take a posted quote by ID. All terms (item, qty, consume_now, consumers) must match the quote exactly; amount must be at least the quote's amount. Strict-reject on any mismatch. Cannot be combined with pay_items (a quote is a coin price)."
         },
         "in_response_to": {
             "type": "integer",
@@ -162,12 +198,13 @@ var payWithItemSchema = json.RawMessage(`{
             "description": "Optional brief note describing what the purchase is for."
         }
     },
-    "required": ["seller", "item", "qty", "amount", "consume_now"],
+    "required": ["seller", "item", "qty", "consume_now"],
     "additionalProperties": false
 }`)
 
 const payWithItemDescription = "Offer to buy items from another villager in your current conversation. " +
-	"You set the item, qty (per consumer), total coins offered, and whether it's eat-here or takeaway. " +
+	"You set the item, qty (per consumer), and the payment — coins (amount), goods you carry (pay_items), or both — and whether it's eat-here or takeaway. " +
+	"Paying with goods is barter: the seller weighs your goods just like a coin offer. " +
 	"By default this creates a pending offer the seller must accept, decline, or counter. " +
 	"If you pass quote_id, the deal closes instantly when terms match (strict reject on any mismatch — no silent fall-through). " +
 	"If you pass in_response_to, you're following up on a counter the seller made on a previous offer of yours."
@@ -231,11 +268,20 @@ func DecodePayWithItemArgs(raw json.RawMessage) (any, error) {
 	if args.Qty > sim.MaxPayWithItemQty {
 		return nil, fmt.Errorf("pay_with_item: qty exceeds maximum (got %d, max %d)", args.Qty, sim.MaxPayWithItemQty)
 	}
-	if args.Amount < 1 {
-		return nil, fmt.Errorf("pay_with_item: amount must be at least 1 (got %d)", args.Amount)
+	// Coins are optional (>= 0) — an offer may pay with coins, goods
+	// (pay_items), or both, but must carry at least one. The "must offer
+	// something" rule is checked after pay_items decode below.
+	if args.Amount < 0 {
+		return nil, fmt.Errorf("pay_with_item: amount cannot be negative (got %d)", args.Amount)
 	}
 	if args.Amount > sim.MaxPayWithItemAmount {
 		return nil, fmt.Errorf("pay_with_item: amount exceeds maximum (got %d, max %d)", args.Amount, sim.MaxPayWithItemAmount)
+	}
+	if err := validatePayItemsDecode("pay_with_item", args.PayItems); err != nil {
+		return nil, err
+	}
+	if args.Amount == 0 && len(args.PayItems) == 0 {
+		return nil, errors.New("pay_with_item: offer must include coins or goods (set amount, add pay_items, or both)")
 	}
 	if len(args.Consumers) > MaxPayWithItemConsumersHandler {
 		return nil, fmt.Errorf(
@@ -328,6 +374,11 @@ func HandlePayWithItem(in HandlerInput) (sim.Command, error) {
 		}
 	}
 
+	payItems, err := buildPayItemInputs("pay_with_item", args.PayItems)
+	if err != nil {
+		return sim.Command{}, err
+	}
+
 	return sim.PayWithItem(
 		in.ActorID,
 		seller,
@@ -336,6 +387,7 @@ func HandlePayWithItem(in HandlerInput) (sim.Command, error) {
 		args.Amount,
 		args.ConsumeNow,
 		consumers,
+		payItems,
 		sim.QuoteID(args.QuoteID),
 		sim.LedgerID(args.InResponseTo),
 		forText,
@@ -473,9 +525,10 @@ func HandleDeclinePay(in HandlerInput) (sim.Command, error) {
 
 // CounterPayArgs is the decoded shape of the counter_pay tool's arguments.
 type CounterPayArgs struct {
-	LedgerID uint64 `json:"ledger_id"`
-	Amount   int    `json:"amount"`
-	Message  string `json:"message"`
+	LedgerID uint64       `json:"ledger_id"`
+	Amount   int          `json:"amount"`
+	PayItems []payItemArg `json:"pay_items"`
+	Message  string       `json:"message"`
 }
 
 var counterPaySchema = json.RawMessage(`{
@@ -488,22 +541,23 @@ var counterPaySchema = json.RawMessage(`{
         },
         "amount": {
             "type": "integer",
-            "minimum": 1,
+            "minimum": 0,
             "maximum": 2147483647,
-            "description": "Your counter-proposal amount in coins. The buyer can respond by making a fresh pay_with_item with in_response_to set to this offer's ledger_id."
+            "description": "Your counter-proposal in coins (optional; defaults to 0). You must counter with coins, goods (pay_items), or both. The buyer can respond with a fresh pay_with_item using in_response_to set to this offer's ledger_id."
         },
+        "pay_items": ` + payItemsSchemaFragment + `,
         "message": {
             "type": "string",
             "maxLength": 220,
             "description": "Optional short note explaining your counter. The buyer sees this in their perception."
         }
     },
-    "required": ["ledger_id", "amount"],
+    "required": ["ledger_id"],
     "additionalProperties": false
 }`)
 
 const counterPayDescription = "Counter a pending offer with different terms. No coins or goods move. " +
-	"You propose a new amount; the buyer can respond by calling pay_with_item with in_response_to set to this ledger's ID."
+	"You propose new payment — coins (amount), goods you want instead (pay_items), or both — and the buyer can respond by calling pay_with_item with in_response_to set to this ledger's ID."
 
 // DecodeCounterPayArgs parses raw args into a CounterPayArgs.
 func DecodeCounterPayArgs(raw json.RawMessage) (any, error) {
@@ -527,11 +581,19 @@ func DecodeCounterPayArgs(raw json.RawMessage) (any, error) {
 	if args.LedgerID < 1 {
 		return nil, fmt.Errorf("counter_pay: ledger_id must be at least 1 (got %d)", args.LedgerID)
 	}
-	if args.Amount < 1 {
-		return nil, fmt.Errorf("counter_pay: amount must be at least 1 (got %d)", args.Amount)
+	// Coins are optional (>= 0) — a counter may propose coins, goods
+	// (pay_items), or both, but must propose at least one.
+	if args.Amount < 0 {
+		return nil, fmt.Errorf("counter_pay: amount cannot be negative (got %d)", args.Amount)
 	}
 	if args.Amount > sim.MaxPayWithItemAmount {
 		return nil, fmt.Errorf("counter_pay: amount exceeds maximum (got %d, max %d)", args.Amount, sim.MaxPayWithItemAmount)
+	}
+	if err := validatePayItemsDecode("counter_pay", args.PayItems); err != nil {
+		return nil, err
+	}
+	if args.Amount == 0 && len(args.PayItems) == 0 {
+		return nil, errors.New("counter_pay: counter must propose coins or goods (set amount, add pay_items, or both)")
 	}
 	if n := utf8.RuneCountInString(args.Message); n > MaxPayMessageHandlerRunes {
 		return nil, fmt.Errorf(
@@ -555,7 +617,11 @@ func HandleCounterPay(in HandlerInput) (sim.Command, error) {
 				"counter_pay: message contains a disallowed control character at byte offset %d", i)
 		}
 	}
-	return sim.CounterPay(in.ActorID, sim.LedgerID(args.LedgerID), args.Amount, message, time.Now().UTC()), nil
+	payItems, err := buildPayItemInputs("counter_pay", args.PayItems)
+	if err != nil {
+		return sim.Command{}, err
+	}
+	return sim.CounterPay(in.ActorID, sim.LedgerID(args.LedgerID), args.Amount, payItems, message, time.Now().UTC()), nil
 }
 
 // ====================================================================
@@ -682,4 +748,65 @@ func decodeLedgerOnly(raw json.RawMessage, toolName string) (ledgerOnlyArgs, err
 // literal newline would split the warrant line.
 func normalizeShortMessage(s string) string {
 	return strings.Join(strings.Fields(s), " ")
+}
+
+// validatePayItemsDecode runs the decode-stage checks on a barter
+// pay_items array (ZBBS-HOME-393): count cap, per-item rune cap, and qty
+// bounds. Trim-emptiness, control-char scans, dup-kind reject, and item
+// resolution are deferred to buildPayItemInputs / the Command Fn (the
+// same split pay_with_item's other fields use). toolName scopes the
+// error messages.
+func validatePayItemsDecode(toolName string, items []payItemArg) error {
+	if len(items) > MaxPayWithItemPayItemsHandler {
+		return fmt.Errorf(
+			"%s: pay_items exceeds %d-entry cap (got %d)",
+			toolName, MaxPayWithItemPayItemsHandler, len(items),
+		)
+	}
+	for i, pi := range items {
+		if n := utf8.RuneCountInString(pi.Item); n > MaxPayWithItemItemChars {
+			return fmt.Errorf(
+				"%s: pay_items[%d].item exceeds %d-character cap (got %d characters)",
+				toolName, i, MaxPayWithItemItemChars, n,
+			)
+		}
+		if pi.Qty < 1 {
+			return fmt.Errorf("%s: pay_items[%d].qty must be at least 1 (got %d)", toolName, i, pi.Qty)
+		}
+		if pi.Qty > sim.MaxPayWithItemQty {
+			return fmt.Errorf("%s: pay_items[%d].qty exceeds maximum (got %d, max %d)", toolName, i, pi.Qty, sim.MaxPayWithItemQty)
+		}
+	}
+	return nil
+}
+
+// buildPayItemInputs is the pure-builder counterpart to
+// validatePayItemsDecode: it trims each item name, rejects control chars,
+// catches obvious duplicate names statically (the Command Fn does the
+// canonical-kind dedup after resolution), and returns the []sim.PayItemInput
+// the Command consumes. ZBBS-HOME-393.
+func buildPayItemInputs(toolName string, items []payItemArg) ([]sim.PayItemInput, error) {
+	if len(items) == 0 {
+		return nil, nil
+	}
+	out := make([]sim.PayItemInput, 0, len(items))
+	seen := make(map[string]struct{}, len(items))
+	for i, pi := range items {
+		item := strings.TrimSpace(pi.Item)
+		if item == "" {
+			return nil, fmt.Errorf("%s: pay_items[%d].item is empty after trim", toolName, i)
+		}
+		if idx := indexStrictControlChar(item); idx >= 0 {
+			return nil, fmt.Errorf(
+				"%s: pay_items[%d].item contains a disallowed control character at byte offset %d", toolName, i, idx)
+		}
+		key := strings.ToLower(item)
+		if _, dup := seen[key]; dup {
+			return nil, fmt.Errorf(
+				"%s: %q appears more than once in pay_items — combine it into a single line.", toolName, item)
+		}
+		seen[key] = struct{}{}
+		out = append(out, sim.PayItemInput{Item: item, Qty: pi.Qty})
+	}
+	return out, nil
 }

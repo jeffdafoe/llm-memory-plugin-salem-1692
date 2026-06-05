@@ -215,7 +215,7 @@ func TestPayWithItem_SlowPath_HappyPath(t *testing.T) {
 	events := capturePayWithItemEvents(t, w)
 	at := time.Now().UTC()
 
-	res, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, 0, 0, "", at))
+	res, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, nil, 0, 0, "", at))
 	if err != nil {
 		t.Fatalf("PayWithItem: %v", err)
 	}
@@ -280,7 +280,7 @@ func TestPayWithItem_SlowPath_InsufficientFunds_FastFail(t *testing.T) {
 
 	events := capturePayWithItemEvents(t, w)
 
-	_, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, 0, 0, "", time.Now().UTC()))
+	_, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, nil, 0, 0, "", time.Now().UTC()))
 	if err == nil || !strings.Contains(err.Error(), "insufficient coins") {
 		t.Fatalf("want insufficient-coins error, got %v", err)
 	}
@@ -306,8 +306,8 @@ func TestPayWithItem_SlowPath_NumericGates(t *testing.T) {
 		qty    int
 		want   string
 	}{
-		{"zero_amount", 0, 1, "at least 1"},
-		{"negative_amount", -5, 1, "at least 1"},
+		{"zero_amount", 0, 1, "must include coins or goods"},
+		{"negative_amount", -5, 1, "cannot be negative"},
 		{"over_max_amount", sim.MaxPayWithItemAmount + 1, 1, "exceeds maximum"},
 		{"zero_qty", 1, 0, "at least 1"},
 		{"negative_qty", 1, -3, "at least 1"},
@@ -320,7 +320,7 @@ func TestPayWithItem_SlowPath_NumericGates(t *testing.T) {
 				{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1", inventory: map[sim.ItemKind]int{"stew": 5}},
 			})
 			defer stop()
-			_, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", tc.qty, tc.amount, false, nil, 0, 0, "", time.Now().UTC()))
+			_, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", tc.qty, tc.amount, false, nil, nil, 0, 0, "", time.Now().UTC()))
 			if err == nil {
 				t.Fatalf("want error, got nil")
 			}
@@ -337,7 +337,7 @@ func TestPayWithItem_SlowPath_BuyerWalkInFlight(t *testing.T) {
 		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1", inventory: map[sim.ItemKind]int{"stew": 5}},
 	})
 	defer stop()
-	_, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, 0, 0, "", time.Now().UTC()))
+	_, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, nil, 0, 0, "", time.Now().UTC()))
 	if err == nil || !strings.Contains(err.Error(), "walking") {
 		t.Fatalf("want walking error, got %v", err)
 	}
@@ -349,7 +349,7 @@ func TestPayWithItem_SlowPath_BuyerNoHuddle(t *testing.T) {
 		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1", inventory: map[sim.ItemKind]int{"stew": 5}},
 	})
 	defer stop()
-	_, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, 0, 0, "", time.Now().UTC()))
+	_, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, nil, 0, 0, "", time.Now().UTC()))
 	if err == nil || !strings.Contains(err.Error(), "not in a conversation") {
 		t.Fatalf("want no-huddle error, got %v", err)
 	}
@@ -362,7 +362,7 @@ func TestPayWithItem_SlowPath_SellerNotInHuddle(t *testing.T) {
 		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, inventory: map[sim.ItemKind]int{"stew": 5}},
 	})
 	defer stop()
-	_, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, 0, 0, "", time.Now().UTC()))
+	_, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, nil, 0, 0, "", time.Now().UTC()))
 	if err == nil || !strings.Contains(err.Error(), "no one named") {
 		t.Fatalf("want no-such-peer error, got %v", err)
 	}
@@ -375,7 +375,7 @@ func TestPayWithItem_SlowPath_SelfReject(t *testing.T) {
 	})
 	defer stop()
 	// Buyer's own DisplayName is excluded from peer scan → "no one named" framing.
-	_, err := w.Send(sim.PayWithItem("alice", "Alice", "stew", 1, 4, false, nil, 0, 0, "", time.Now().UTC()))
+	_, err := w.Send(sim.PayWithItem("alice", "Alice", "stew", 1, 4, false, nil, nil, 0, 0, "", time.Now().UTC()))
 	if err == nil || !strings.Contains(err.Error(), "no one named") {
 		t.Fatalf("want self-reject (no-one-named) error, got %v", err)
 	}
@@ -388,7 +388,7 @@ func TestPayWithItem_SlowPath_AmbiguousSeller(t *testing.T) {
 		{id: "bob2", displayName: "bob", kind: sim.KindNPCShared, huddleID: "h1"}, // case-insensitive duplicate
 	})
 	defer stop()
-	_, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, 0, 0, "", time.Now().UTC()))
+	_, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, nil, 0, 0, "", time.Now().UTC()))
 	if err == nil || !strings.Contains(err.Error(), "more than one") {
 		t.Fatalf("want ambiguous error, got %v", err)
 	}
@@ -400,7 +400,7 @@ func TestPayWithItem_SlowPath_UnknownItem(t *testing.T) {
 		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1"},
 	})
 	defer stop()
-	_, err := w.Send(sim.PayWithItem("alice", "Bob", "fizzbuzz", 1, 4, false, nil, 0, 0, "", time.Now().UTC()))
+	_, err := w.Send(sim.PayWithItem("alice", "Bob", "fizzbuzz", 1, 4, false, nil, nil, 0, 0, "", time.Now().UTC()))
 	if err == nil || !strings.Contains(err.Error(), "unknown item kind") {
 		t.Fatalf("want unknown-item error, got %v", err)
 	}
@@ -416,7 +416,7 @@ func TestPayWithItem_SlowPath_TooManyConsumers(t *testing.T) {
 	for i := range too {
 		too[i] = "Alice"
 	}
-	_, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, too, 0, 0, "", time.Now().UTC()))
+	_, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, too, nil, 0, 0, "", time.Now().UTC()))
 	if err == nil || !strings.Contains(err.Error(), "too many consumers") {
 		t.Fatalf("want too-many-consumers error, got %v", err)
 	}
@@ -442,7 +442,7 @@ func TestPayWithItem_SlowPath_ConsumerRules(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, tc.consumers, 0, 0, "", time.Now().UTC()))
+			_, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, tc.consumers, nil, 0, 0, "", time.Now().UTC()))
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("want %q, got %v", tc.want, err)
 			}
@@ -458,7 +458,7 @@ func TestPayWithItem_SlowPath_GroupOrder(t *testing.T) {
 	})
 	defer stop()
 	events := capturePayWithItemEvents(t, w)
-	res, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 6, false, []string{"Alice", "Carol"}, 0, 0, "", time.Now().UTC()))
+	res, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 6, false, []string{"Alice", "Carol"}, nil, 0, 0, "", time.Now().UTC()))
 	if err != nil {
 		t.Fatalf("PayWithItem: %v", err)
 	}
@@ -508,7 +508,7 @@ func TestPayWithItem_InResponseTo_HappyPath(t *testing.T) {
 
 	events := capturePayWithItemEvents(t, w)
 
-	res, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 6, false, nil, 0, 42, "", at))
+	res, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 6, false, nil, nil, 0, 42, "", at))
 	if err != nil {
 		t.Fatalf("PayWithItem in_response_to: %v", err)
 	}
@@ -649,7 +649,7 @@ func TestPayWithItem_InResponseTo_Gates(t *testing.T) {
 			})
 			defer stop()
 			tc.setup(t, w)
-			_, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 5, false, nil, 0, 99, "", at))
+			_, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 5, false, nil, nil, 0, 99, "", at))
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("want %q, got %v", tc.want, err)
 			}
@@ -671,7 +671,7 @@ func TestPayWithItem_QuoteAndInResponseTo_Rejected(t *testing.T) {
 	})
 	defer stop()
 
-	_, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, 7, 42, "", time.Now().UTC()))
+	_, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, nil, 7, 42, "", time.Now().UTC()))
 	if err == nil || !strings.Contains(err.Error(), "not both") {
 		t.Fatalf("want conflicting-mode rejection, got %v", err)
 	}
@@ -705,7 +705,7 @@ func TestPayWithItem_InResponseTo_DepthIncrementReachesCap(t *testing.T) {
 	})
 
 	// Real response → child minted at exactly the cap (parent.Depth + 1).
-	res, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 6, false, nil, 0, 50, "", at))
+	res, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 6, false, nil, nil, 0, 50, "", at))
 	if err != nil {
 		t.Fatalf("PayWithItem in_response_to (depth %d): %v", capDepth-1, err)
 	}
@@ -727,7 +727,7 @@ func TestPayWithItem_InResponseTo_DepthIncrementReachesCap(t *testing.T) {
 		Depth: capDepth,
 	})
 
-	_, err = w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 8, false, nil, 0, childID, "", at))
+	_, err = w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 8, false, nil, nil, 0, childID, "", at))
 	if err == nil || !strings.Contains(err.Error(), "depth limit") {
 		t.Fatalf("want depth-limit rejection at cap depth %d, got %v", capDepth, err)
 	}
@@ -777,7 +777,7 @@ func TestPayWithItem_FastPath_InsufficientStock_RecordsOutOfStock(t *testing.T) 
 		delete(world.Actors["bob"].Inventory, "stew")
 	})
 
-	if _, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, 7, 0, "", at)); err == nil {
+	if _, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, nil, 7, 0, "", at)); err == nil {
 		t.Fatal("expected an insufficient-stock error from the fast path")
 	}
 
@@ -795,7 +795,7 @@ func TestPayWithItem_FastPath_HappyPath_Takeaway(t *testing.T) {
 	defer stop()
 	events := capturePayWithItemEvents(t, w)
 
-	res, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, 7, 0, "", at))
+	res, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, nil, 7, 0, "", at))
 	if err != nil {
 		t.Fatalf("PayWithItem fast-path: %v", err)
 	}
@@ -860,7 +860,7 @@ func TestPayWithItem_FastPath_HappyPath_ConsumeNow(t *testing.T) {
 		t.Fatalf("update quote: %v", err)
 	}
 	events := capturePayWithItemEvents(t, w)
-	res, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, true, nil, 7, 0, "", at))
+	res, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, true, nil, nil, 7, 0, "", at))
 	if err != nil {
 		t.Fatalf("PayWithItem fast-path consume_now: %v", err)
 	}
@@ -1008,7 +1008,7 @@ func TestPayWithItem_FastPath_StrictRejectPredicates(t *testing.T) {
 			before := w.Published()
 			beforeCoins := before.Actors["alice"].Coins
 			events := capturePayWithItemEvents(t, w)
-			_, err := w.Send(sim.PayWithItem("alice", "Bob", item, qty, amount, tc.argConsumeNow, tc.argConsumers, quoteID, 0, "", at))
+			_, err := w.Send(sim.PayWithItem("alice", "Bob", item, qty, amount, tc.argConsumeNow, tc.argConsumers, nil, quoteID, 0, "", at))
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("want %q, got %v", tc.want, err)
 			}
@@ -1551,7 +1551,7 @@ func TestCounterPay_HappyPath(t *testing.T) {
 	})
 	events := capturePayWithItemEvents(t, w)
 
-	if _, err := w.Send(sim.CounterPay("bob", 1, 6, "how about six", at)); err != nil {
+	if _, err := w.Send(sim.CounterPay("bob", 1, 6, nil, "how about six", at)); err != nil {
 		t.Fatalf("CounterPay: %v", err)
 	}
 	ledger := readPayLedger(t, w)
@@ -1596,8 +1596,8 @@ func TestCounterPay_Gates(t *testing.T) {
 		{name: "non_pending", counterAmount: 6, caller: "bob",
 			preMutate: func(w *sim.World) { w.PayLedger[1].State = sim.PayLedgerStateExpired },
 			want:      "no longer pending"},
-		{name: "zero_amount", counterAmount: 0, caller: "bob", want: "at least 1"},
-		{name: "negative_amount", counterAmount: -5, caller: "bob", want: "at least 1"},
+		{name: "zero_amount", counterAmount: 0, caller: "bob", want: "must propose coins or goods"},
+		{name: "negative_amount", counterAmount: -5, caller: "bob", want: "cannot be negative"},
 		{name: "over_max", counterAmount: sim.MaxPayWithItemAmount + 1, caller: "bob", want: "exceeds maximum"},
 	}
 	for _, tc := range cases {
@@ -1617,7 +1617,7 @@ func TestCounterPay_Gates(t *testing.T) {
 			if tc.preMutate != nil {
 				mustSend(t, w, tc.preMutate)
 			}
-			_, err := w.Send(sim.CounterPay(tc.caller, 1, tc.counterAmount, "", at))
+			_, err := w.Send(sim.CounterPay(tc.caller, 1, tc.counterAmount, nil, "", at))
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("want %q, got %v", tc.want, err)
 			}
@@ -1654,7 +1654,7 @@ func TestCounterPay_NonIncreasingCoercesToAccept(t *testing.T) {
 			})
 			events := capturePayWithItemEvents(t, w)
 
-			res, err := w.Send(sim.CounterPay("bob", 1, tc.counterAmount, "i'll do it for that", at))
+			res, err := w.Send(sim.CounterPay("bob", 1, tc.counterAmount, nil, "i'll do it for that", at))
 			if err != nil {
 				t.Fatalf("CounterPay (coerce): %v", err)
 			}
