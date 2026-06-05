@@ -142,6 +142,16 @@ type HandlerInput struct {
 	// per-tool args struct.
 	Args any
 
+	// PerceivedStructureIDs / PerceivedObjectIDs are the move targets this tick's
+	// perception surfaced to the actor (ZBBS-HOME-389) — every structure_id /
+	// object_id a vendor / rest / restock / anchor cue named. The move_to commit
+	// resolves a structure_name against these (in addition to anchors + scene
+	// radius) so the model can walk by NAME to any place it was actually shown,
+	// distant or not. Empty for a tick with no move-target cues. Threaded from the
+	// harness (off-world); the move_to Command consults them on the world goroutine.
+	PerceivedStructureIDs []sim.StructureID
+	PerceivedObjectIDs    []sim.VillageObjectID
+
 	// HasNewNews is the turn-state gate's new-news signal (ZBBS-WORK-370): true
 	// when the tick's consumed warrant batch carries any fresh stimulus (a Force
 	// warrant or any high-information kind), false when it is only low-info

@@ -28,11 +28,12 @@ import (
 //     The id of a structure the NPC can see in its perception (its own
 //     home/work, a shop, a place nearby).
 //   - structure_name: ALTERNATIVE to structure_id — a place name the NPC can see
-//     in its perception (its own home/work, a landmark nearby). The engine
-//     resolves the name to a structure it could plausibly reach (anchors +
-//     structures within scene radius, nearest-wins on duplicates, ZBBS-HOME-356).
-//     Exactly one of structure_id / structure_name is required (decode rejects
-//     both).
+//     in its perception (its own home/work, a landmark nearby, or any place a cue
+//     named this tick). The engine resolves the name to a structure it could
+//     plausibly reach — anchors + structures within scene radius + the move
+//     targets this tick's perception surfaced (PerceivedStructureIDs/ObjectIDs,
+//     ZBBS-HOME-389), nearest-wins on duplicates (ZBBS-HOME-356). Exactly one of
+//     structure_id / structure_name is required (decode rejects both).
 type MoveToArgs struct {
 	StructureID   string `json:"structure_id"`
 	StructureName string `json:"structure_name"`
@@ -176,7 +177,7 @@ func HandleMoveTo(in HandlerInput) (sim.Command, error) {
 			return sim.Command{}, fmt.Errorf(
 				"move_to: structure_name contains a disallowed control character at byte offset %d", i)
 		}
-		return sim.MoveToStructureByName(in.ActorID, name, time.Now().UTC()), nil
+		return sim.MoveToStructureByName(in.ActorID, name, in.PerceivedStructureIDs, in.PerceivedObjectIDs, time.Now().UTC()), nil
 	}
 
 	structureID := strings.TrimSpace(args.StructureID)
