@@ -209,26 +209,40 @@ func handleActorArrivedAdvanceRoute(w *sim.World, evt sim.Event) {
 	}
 }
 
-// handleActorMoveStoppedAdvanceRoute abandons a route whose walk could not
-// complete. A route MoveActor that is blocked / unreachable / deadlocked /
-// invalidated / cancelled emits ActorMoveStopped instead of ActorArrived, so
-// the ActorArrived advance hook never fires for it. Without this the route would
-// sit in ActiveRoutes forever — and since an in-flight route now suppresses the
-// shift-duty producer (see shiftDutyTarget), it would keep the actor home-exempt
-// indefinitely. Clearing the route frees the actor; the next phase / rotation
-// boundary re-triggers a fresh route over whatever is still un-flipped.
+// handleActorMoveStoppedAdvanceRoute abandons a route when the routed actor's
+// current move fails to complete. The locomotion ticker emits ActorMoveStopped
+// (blocked / unreachable / deadlocked / invalidated / cancelled) instead of
+// ActorArrived for an accepted move that can't reach its destination, then
+// clears MoveIntent. The route's only advance hook is ActorArrived, so without
+// this the route sits in ActiveRoutes forever — and since an in-flight route now
+// suppresses the shift-duty producer (shiftDutyTarget), that strands the actor's
+// shift-duty too. Clearing frees the actor; the next phase / rotation boundary
+// rebuilds a fresh route from real object state.
 //
-// We ABANDON rather than re-walk (the AdvanceNPCRoute stale path's recovery)
-// because the locomotion ticker clears actor.MoveIntent AFTER emitting
-// ActorMoveStopped (unlike finishArrival, which clears it BEFORE emitting
-// ActorArrived). A MoveActor dispatched from this synchronously-run subscriber
-// would therefore be nil'd by the ticker the instant we returned. A map delete
-// touches only ActiveRoutes, which the ticker never reads, so it is safe here.
-// A MoveStopped also means the path genuinely failed, so an immediate re-walk
-// to the same stop would just re-fail — letting the next boundary rebuild from
-// real object state is both safer and simpler. A superseded attempt dies
-// silently (no ActorMoveStopped), so this only fires for the route's own
-// terminal failure.
+// We abandon on ANY ActorMoveStopped for an actor that holds an active route,
+// not only the route's own walk. That breadth is deliberate and is the safe
+// choice for the "a routed actor's route must always eventually clear" invariant:
+//
+//   - If the stopped move IS the route's walk, abandoning is plainly right.
+//   - If a competing move superseded the route's walk (supersede is SILENT — the
+//     dead route walk emits nothing) and that competing move then stops, the
+//     actor has no pending move and the route would never receive another
+//     ActorArrived / ActorMoveStopped — permanently stuck. The competing move's
+//     stop is the only signal that reaches us, so we must act on it. (A competing
+//     move that SUCCEEDS instead emits ActorArrived, and the stale-arrival path
+//     re-walks the route — recovery, not abandon.)
+//
+// Correlating on MovementAttemptID to ignore non-route stops would REINTRODUCE
+// the stuck-route gap for exactly that supersede-then-fail case, so we don't.
+// Note there is only ever one MoveIntent per actor, so a non-route stop can't
+// coexist with a still-pending route walk — abandoning never discards a route
+// that could otherwise have kept progressing.
+//
+// We abandon rather than re-walk because emitMoveStopped clears MoveIntent AFTER
+// the emit (finishArrival clears it BEFORE emitting ActorArrived), so a MoveActor
+// dispatched from this synchronously-run subscriber would be nil'd by the ticker
+// the instant we return. A map delete touches only ActiveRoutes, which the ticker
+// never reads — safe.
 func handleActorMoveStoppedAdvanceRoute(w *sim.World, evt sim.Event) {
 	stopped, ok := evt.(*sim.ActorMoveStopped)
 	if !ok {

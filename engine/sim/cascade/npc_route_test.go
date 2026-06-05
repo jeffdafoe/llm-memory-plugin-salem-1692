@@ -189,10 +189,13 @@ func TestLamplighterNoActor(t *testing.T) {
 	}
 }
 
-// TestRouteAbandonedOnMoveStopped: a route whose walk fails (the locomotion
-// ticker emits ActorMoveStopped instead of ActorArrived) is abandoned — cleared
-// from ActiveRoutes — so it can't sit parked forever and keep the actor
-// shift-duty-exempt. A no-route actor is a no-op.
+// TestRouteAbandonedOnMoveStopped: any ActorMoveStopped for an actor holding an
+// active route abandons that route — cleared from ActiveRoutes — so it can't sit
+// parked forever and keep the actor shift-duty-exempt. The synthesized event is
+// NOT tied to the route's own walk, so this also exercises the deliberate
+// "a competing move superseded the route walk and then stopped" case (abandon is
+// the only signal that reaches us; ignoring it would re-strand the route). A
+// no-route actor is a no-op.
 func TestRouteAbandonedOnMoveStopped(t *testing.T) {
 	w, _ := buildRouteCascadeWorld(t)
 	seedActorAttribute(w, sim.AttrLamplighter)
