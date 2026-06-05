@@ -11,13 +11,18 @@ import (
 // npc_route.go — Phase 3 Group A scheduled-route cascade driver.
 //
 // Three event subscribers wire the lamplighter / washerwoman /
-// town_crier behaviors onto their respective triggers, and one shared
-// subscriber on ActorArrived advances any active route by one stop.
+// town_crier behaviors onto their respective triggers; one shared
+// subscriber on ActorArrived advances any active route by one stop, and
+// one on ActorMoveStopped abandons a route whose walk failed.
 //
-//   - PhaseApplied   → start lamplighter route over carved-out lamps
-//   - RotationApplied → start washerwoman route over laundry tiles
-//   - RotationApplied → start town_crier route over notice boards
-//   - ActorArrived   → advance the arrived actor's route (no-op if none)
+//   - PhaseApplied     → start lamplighter route over carved-out lamps
+//   - RotationApplied   → start washerwoman route over laundry tiles
+//   - RotationApplied   → start town_crier route over notice boards
+//   - ActorArrived     → advance the arrived actor's route (no-op if none)
+//   - ActorMoveStopped → abandon the actor's route if its walk failed
+//                        (no-op if none) — otherwise a stopped walk leaves
+//                        the route parked forever, which now also strands
+//                        the actor's shift-duty (see handler doc)
 //
 // Per-behavior eligibility comes from Actor.Attributes membership
 // (AttrLamplighter / AttrWasherwoman / AttrTownCrier). At-most-one
@@ -41,7 +46,7 @@ import (
 // hook lives in npc_route.go's AdvanceNPCRoute and is currently empty
 // — Slice 3 wires the LLM-authored saying broadcast there.
 
-// RegisterNPCRoutes wires all four subscribers needed for the Slice 2
+// RegisterNPCRoutes wires the subscribers needed for the Slice 2
 // scheduled-route slice. Must run on the world goroutine — call before
 // World.Run, or from inside a Command.Fn.
 //
@@ -65,6 +70,7 @@ func RegisterNPCRoutes(_ context.Context, w *sim.World) {
 	w.Subscribe(sim.SubscriberFunc(handleRotationAppliedWasherwoman))
 	w.Subscribe(sim.SubscriberFunc(handleRotationAppliedTownCrier))
 	w.Subscribe(sim.SubscriberFunc(handleActorArrivedAdvanceRoute))
+	w.Subscribe(sim.SubscriberFunc(handleActorMoveStoppedAdvanceRoute))
 }
 
 // handlePhaseAppliedLamplighter starts the lamplighter route on each
@@ -201,6 +207,62 @@ func handleActorArrivedAdvanceRoute(w *sim.World, evt sim.Event) {
 		log.Printf("cascade/npc_route: advance (actor %q event %d): %v",
 			arrived.ActorID, arrived.EventID(), err)
 	}
+}
+
+// handleActorMoveStoppedAdvanceRoute abandons a route when the routed actor's
+// current move fails to complete. The locomotion ticker emits ActorMoveStopped
+// (blocked / unreachable / deadlocked / invalidated / cancelled) instead of
+// ActorArrived for an accepted move that can't reach its destination, then
+// clears MoveIntent. The route's only advance hook is ActorArrived, so without
+// this the route sits in ActiveRoutes forever — and since an in-flight route now
+// suppresses the shift-duty producer (shiftDutyTarget), that strands the actor's
+// shift-duty too. Clearing frees the actor; the next phase / rotation boundary
+// rebuilds a fresh route from real object state.
+//
+// We abandon on ANY ActorMoveStopped for an actor that holds an active route,
+// not only the route's own walk. That breadth is deliberate and is the safe
+// choice for the "a routed actor's route must always eventually clear" invariant:
+//
+//   - If the stopped move IS the route's walk, abandoning is plainly right.
+//   - If a competing move superseded the route's walk (supersede is SILENT — the
+//     dead route walk emits nothing) and that competing move then stops, the
+//     actor has no pending move and the route would never receive another
+//     ActorArrived / ActorMoveStopped — permanently stuck. The competing move's
+//     stop is the only signal that reaches us, so we must act on it. (A competing
+//     move that SUCCEEDS instead emits ActorArrived, and the stale-arrival path
+//     re-walks the route — recovery, not abandon.)
+//
+// Correlating on MovementAttemptID to ignore non-route stops would REINTRODUCE
+// the stuck-route gap for exactly that supersede-then-fail case, so we don't.
+// Note there is only ever one MoveIntent per actor, so a non-route stop can't
+// coexist with a still-pending route walk — abandoning never discards a route
+// that could otherwise have kept progressing.
+//
+// MAINTAINER NOTE: this broad abandon is load-bearing on the engine-wide
+// single-MoveIntent invariant. Do NOT narrow it to MovementAttemptID correlation
+// unless route dispatch also gains an independent expiry/watchdog — otherwise the
+// supersede-then-fail case strands the route (and, via shiftDutyTarget, the
+// actor's shift-duty) again.
+//
+// We abandon rather than re-walk because emitMoveStopped clears MoveIntent AFTER
+// the emit (finishArrival clears it BEFORE emitting ActorArrived), so a MoveActor
+// dispatched from this synchronously-run subscriber would be nil'd by the ticker
+// the instant we return. A map delete touches only ActiveRoutes, which the ticker
+// never reads — safe.
+func handleActorMoveStoppedAdvanceRoute(w *sim.World, evt sim.Event) {
+	stopped, ok := evt.(*sim.ActorMoveStopped)
+	if !ok {
+		return
+	}
+	if w.ActiveRoutes == nil {
+		return
+	}
+	if route, has := w.ActiveRoutes[stopped.ActorID]; !has || route == nil {
+		return
+	}
+	delete(w.ActiveRoutes, stopped.ActorID)
+	log.Printf("cascade/npc_route: %q route walk stopped (%s) — abandoning route",
+		stopped.ActorID, stopped.Reason)
 }
 
 // dispatchRotationRoute is the shared body for washerwoman / town_crier

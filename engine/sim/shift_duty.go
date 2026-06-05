@@ -250,6 +250,20 @@ func shiftDutyTarget(w *World, a *Actor, nowMinute int, now time.Time) (target S
 	if a.BreakUntil != nil && a.BreakUntil.After(now) {
 		return "", false, false
 	}
+	// An actor mid scheduled-route (lamplighter / washerwoman / town_crier) is
+	// owned by that route until it walks home and clears itself — same
+	// "busy, leave it alone" class as the rest suppressors above. A route NPC is
+	// unscheduled, so effectiveShiftWindow falls it back to the dawn/dusk day
+	// window: at night it reads off-shift with a standing "head home" duty. Left
+	// un-suppressed, the once-a-minute go-home nudge supersedes the route's walk
+	// to a far stop — stranding that stop (never lit) and, for a homed route NPC,
+	// marching it into its (sprite-hiding) house mid-round so the client never
+	// shows it doing the round. ActiveRoutes[a.ID] is non-nil only while a route
+	// is in flight (StartNPCRoute installs it, AdvanceNPCRoute clears it on the
+	// home leg); the nil-map read is safe.
+	if w.ActiveRoutes[a.ID] != nil {
+		return "", false, false
+	}
 
 	start, end, winOK := effectiveShiftWindow(w, a)
 	if !winOK {

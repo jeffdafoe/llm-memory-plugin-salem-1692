@@ -189,6 +189,56 @@ func TestLamplighterNoActor(t *testing.T) {
 	}
 }
 
+// TestRouteAbandonedOnMoveStopped: any ActorMoveStopped for an actor holding an
+// active route abandons that route — cleared from ActiveRoutes — so it can't sit
+// parked forever and keep the actor shift-duty-exempt. The synthesized event is
+// NOT tied to the route's own walk, so this also exercises the deliberate
+// "a competing move superseded the route walk and then stopped" case (abandon is
+// the only signal that reaches us; ignoring it would re-strand the route). A
+// no-route actor is a no-op.
+func TestRouteAbandonedOnMoveStopped(t *testing.T) {
+	w, _ := buildRouteCascadeWorld(t)
+	seedActorAttribute(w, sim.AttrLamplighter)
+
+	// Install a synthetic active route for the runner (direct mutation is safe
+	// before Run starts).
+	if w.ActiveRoutes == nil {
+		w.ActiveRoutes = map[sim.ActorID]*sim.NPCRoute{}
+	}
+	w.ActiveRoutes["runner"] = &sim.NPCRoute{
+		NPCID:           "runner",
+		Label:           sim.AttrLamplighter,
+		Stops:           []sim.RouteStop{{ObjectID: "lamp-A", WalkTo: sim.Position{X: sim.PadX + 20, Y: sim.PadY + 10}, NewState: "lit"}},
+		Phase:           sim.RoutePhaseActive,
+		HomeDestination: sim.NewPositionDestination(sim.Position{X: sim.PadX + 10, Y: sim.PadY + 10}),
+	}
+
+	RegisterNPCRoutes(context.Background(), w)
+	cancel := runRouteCascadeWorld(t, w)
+	defer cancel()
+
+	// The route's walk fails to reach the stop — unreachable.
+	stoppedEvt := &sim.ActorMoveStopped{ActorID: "runner", Reason: sim.MoveStoppedUnreachable, At: time.Now()}
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		handleActorMoveStoppedAdvanceRoute(world, stoppedEvt)
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("invoke handler: %v", err)
+	}
+	if hasActiveRoute(t, w) {
+		t.Error("route not abandoned after ActorMoveStopped")
+	}
+
+	// No-op for an actor with no route (must not panic).
+	ghostEvt := &sim.ActorMoveStopped{ActorID: "ghost", Reason: sim.MoveStoppedBlocked, At: time.Now()}
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		handleActorMoveStoppedAdvanceRoute(world, ghostEvt)
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("invoke handler (ghost): %v", err)
+	}
+}
+
 // TestWasherwomanDispatchesOnRotationApplied: ApplyDailyRotation with
 // TagLaundry in ExcludeTags fires the washerwoman.
 func TestWasherwomanDispatchesOnRotationApplied(t *testing.T) {
