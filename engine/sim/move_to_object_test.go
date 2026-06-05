@@ -96,7 +96,7 @@ func TestMoveToStructureByName_NameFallthroughToObject(t *testing.T) {
 	w, cancel := buildMoveToObjectTestWorld(t)
 	defer cancel()
 
-	if _, err := w.Send(sim.MoveToStructureByName("walker", "Village Well", time.Now().UTC())); err != nil {
+	if _, err := w.Send(sim.MoveToStructureByName("walker", "Village Well", nil, nil, time.Now().UTC())); err != nil {
 		t.Fatalf("MoveToStructureByName(Village Well) fallthrough: %v", err)
 	}
 	kind, oid := objDestOf(t, w, "walker")

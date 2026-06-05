@@ -35,7 +35,7 @@ func bnActor(home, work StructureID) *Actor {
 func TestResolveStructureByName_InRangeMatch(t *testing.T) {
 	w := bnWorld(3)
 	bnPlace(w, "tavern", "The Tavern", 2) // within radius 3
-	got, ok := resolveStructureByPerceivableName(w, bnActor("", ""), "the tavern")
+	got, ok := resolveStructureByPerceivableName(w, bnActor("", ""), "the tavern", nil)
 	if !ok || got != "tavern" {
 		t.Fatalf("case-insensitive in-range match: got %q ok=%v, want tavern", got, ok)
 	}
@@ -44,7 +44,7 @@ func TestResolveStructureByName_InRangeMatch(t *testing.T) {
 func TestResolveStructureByName_OutOfRangeMiss(t *testing.T) {
 	w := bnWorld(3)
 	bnPlace(w, "tavern", "The Tavern", 9) // beyond radius 3, NOT an anchor
-	if got, ok := resolveStructureByPerceivableName(w, bnActor("", ""), "the tavern"); ok {
+	if got, ok := resolveStructureByPerceivableName(w, bnActor("", ""), "the tavern", nil); ok {
 		t.Fatalf("a far non-anchor structure must not resolve by name, got %q", got)
 	}
 }
@@ -53,7 +53,7 @@ func TestResolveStructureByName_AnchorAnyDistance(t *testing.T) {
 	w := bnWorld(3)
 	bnPlace(w, "tavern", "The Tavern", 50) // far away...
 	// ...but it's the actor's work anchor → always perceivable by name.
-	got, ok := resolveStructureByPerceivableName(w, bnActor("", "tavern"), "the tavern")
+	got, ok := resolveStructureByPerceivableName(w, bnActor("", "tavern"), "the tavern", nil)
 	if !ok || got != "tavern" {
 		t.Fatalf("a far anchor must resolve by name, got %q ok=%v", got, ok)
 	}
@@ -63,7 +63,7 @@ func TestResolveStructureByName_NearestWinsOnDuplicate(t *testing.T) {
 	w := bnWorld(5)
 	bnPlace(w, "well_far", "The Well", 4)
 	bnPlace(w, "well_near", "The Well", 1)
-	got, ok := resolveStructureByPerceivableName(w, bnActor("", ""), "the well")
+	got, ok := resolveStructureByPerceivableName(w, bnActor("", ""), "the well", nil)
 	if !ok || got != "well_near" {
 		t.Fatalf("duplicate names must resolve to the NEAREST, got %q ok=%v", got, ok)
 	}
@@ -72,7 +72,7 @@ func TestResolveStructureByName_NearestWinsOnDuplicate(t *testing.T) {
 func TestResolveStructureByName_NoMatch(t *testing.T) {
 	w := bnWorld(5)
 	bnPlace(w, "tavern", "The Tavern", 1)
-	if got, ok := resolveStructureByPerceivableName(w, bnActor("", ""), "the smithy"); ok {
+	if got, ok := resolveStructureByPerceivableName(w, bnActor("", ""), "the smithy", nil); ok {
 		t.Fatalf("a name no structure has must not resolve, got %q", got)
 	}
 }
@@ -82,7 +82,7 @@ func TestResolveStructureByName_TieBreaksByID(t *testing.T) {
 	bnPlace(w, "well_bbb", "The Well", 2)
 	bnPlace(w, "well_aaa", "The Well", 2) // same distance
 	for i := 0; i < 25; i++ {
-		got, ok := resolveStructureByPerceivableName(w, bnActor("", ""), "the well")
+		got, ok := resolveStructureByPerceivableName(w, bnActor("", ""), "the well", nil)
 		if !ok || got != "well_aaa" {
 			t.Fatalf("equal-distance tie must break to the lowest id, got %q", got)
 		}

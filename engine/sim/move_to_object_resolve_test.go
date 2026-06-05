@@ -20,7 +20,7 @@ func bnObject(w *World, id VillageObjectID, name string, tilesEast int, attr Nee
 func TestResolveObjectByName_InRangeRefreshSource(t *testing.T) {
 	w := bnWorld(3)
 	bnObject(w, "well", "Village Well", 2, "thirst", -8) // within radius 3
-	got, ok := resolveObjectByPerceivableName(w, bnActor("", ""), "village well")
+	got, ok := resolveObjectByPerceivableName(w, bnActor("", ""), "village well", nil)
 	if !ok || got != "well" {
 		t.Fatalf("case-insensitive in-range refresh source: got %q ok=%v, want well", got, ok)
 	}
@@ -29,7 +29,7 @@ func TestResolveObjectByName_InRangeRefreshSource(t *testing.T) {
 func TestResolveObjectByName_OutOfRangeMiss(t *testing.T) {
 	w := bnWorld(3)
 	bnObject(w, "well", "Village Well", 9, "thirst", -8) // beyond radius 3
-	if got, ok := resolveObjectByPerceivableName(w, bnActor("", ""), "village well"); ok {
+	if got, ok := resolveObjectByPerceivableName(w, bnActor("", ""), "village well", nil); ok {
 		t.Fatalf("a far free source must not resolve by name, got %q", got)
 	}
 }
@@ -42,7 +42,7 @@ func TestResolveObjectByName_SkipsNonRefreshDecor(t *testing.T) {
 	w.VillageObjects["lamp"] = &VillageObject{
 		ID: "lamp", AssetID: "a", DisplayName: "Lamp Post", Pos: WorldPos{X: TileSize, Y: 0},
 	}
-	if got, ok := resolveObjectByPerceivableName(w, bnActor("", ""), "lamp post"); ok {
+	if got, ok := resolveObjectByPerceivableName(w, bnActor("", ""), "lamp post", nil); ok {
 		t.Fatalf("a non-refresh décor object must not resolve by name, got %q", got)
 	}
 }
@@ -54,7 +54,7 @@ func TestResolveObjectByName_ExcludesStructureBacked(t *testing.T) {
 	bnPlace(w, "springhouse", "Spring", 2) // structure + placement
 	// Give that placement a refresh row — it must STILL be excluded here.
 	w.VillageObjects["springhouse"].Refreshes = []*ObjectRefresh{{Attribute: "thirst", Amount: -8}}
-	if got, ok := resolveObjectByPerceivableName(w, bnActor("", ""), "spring"); ok {
+	if got, ok := resolveObjectByPerceivableName(w, bnActor("", ""), "spring", nil); ok {
 		t.Fatalf("a structure-backed placement must resolve via the structure path, not as an object, got %q", got)
 	}
 }
@@ -63,7 +63,7 @@ func TestResolveObjectByName_NearestWinsOnDuplicate(t *testing.T) {
 	w := bnWorld(5)
 	bnObject(w, "well_far", "The Well", 4, "thirst", -8)
 	bnObject(w, "well_near", "The Well", 1, "thirst", -8)
-	got, ok := resolveObjectByPerceivableName(w, bnActor("", ""), "the well")
+	got, ok := resolveObjectByPerceivableName(w, bnActor("", ""), "the well", nil)
 	if !ok || got != "well_near" {
 		t.Fatalf("duplicate names must resolve to the NEAREST, got %q ok=%v", got, ok)
 	}
@@ -74,7 +74,7 @@ func TestResolveObjectByName_TieBreaksByID(t *testing.T) {
 	bnObject(w, "well_bbb", "The Well", 2, "thirst", -8)
 	bnObject(w, "well_aaa", "The Well", 2, "thirst", -8) // same distance
 	for i := 0; i < 25; i++ {
-		got, ok := resolveObjectByPerceivableName(w, bnActor("", ""), "the well")
+		got, ok := resolveObjectByPerceivableName(w, bnActor("", ""), "the well", nil)
 		if !ok || got != "well_aaa" {
 			t.Fatalf("equal-distance tie must break to the lowest id, got %q", got)
 		}

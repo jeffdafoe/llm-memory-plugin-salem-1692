@@ -293,6 +293,12 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 	}
 	tools := gateTools(h.registry, payload, snap)
 
+	// Move targets this tick's perception surfaced — collected once and threaded
+	// into every tool dispatch so move_to can resolve a place NAME to any id the
+	// actor was shown (a distant vendor / rest cue), not just anchors + scene
+	// radius. ZBBS-HOME-389.
+	perceivedPlaces := perception.CollectPerceivedPlaces(payload)
+
 	// Scene + VA-routing context for every Complete + persist call this
 	// tick. SceneID is minted once and reused so the API's per-scene
 	// history loader (chat_messages.scene_id filter) sees a coherent
@@ -464,7 +470,7 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 			}
 
 			// Dispatch by class.
-			content, outcome := h.dispatch(ctx, w, job, vc, actor.LLMAgent)
+			content, outcome := h.dispatch(ctx, w, job, vc, actor.LLMAgent, perceivedPlaces)
 			transcript = append(transcript, toolResultMsg(call.ID, content))
 
 			if outcome.stale {
@@ -583,13 +589,17 @@ type dispatchOutcome struct {
 //     World.SendContext. A successful submission with
 //     TerminalPolicy=TerminalOnSuccess ends the tick.
 //   - ClassTerminal → no handler; the tick ends.
-func (h *Harness) dispatch(ctx context.Context, w *sim.World, job tickJob, vc *ValidatedCall, llmMemoryAgent string) (string, dispatchOutcome) {
+func (h *Harness) dispatch(ctx context.Context, w *sim.World, job tickJob, vc *ValidatedCall, llmMemoryAgent string, perceivedPlaces perception.PerceivedPlaces) (string, dispatchOutcome) {
 	in := HandlerInput{
 		ActorID:        job.actorID,
 		AttemptID:      job.attemptID,
 		RootEventID:    job.rootEventID,
 		LLMMemoryAgent: llmMemoryAgent,
 		Args:           vc.DecodedArgs,
+		// Move targets this tick's perception surfaced (ZBBS-HOME-389) — the move_to
+		// commit resolves a structure_name against these. Empty for non-move ticks.
+		PerceivedStructureIDs: perceivedPlaces.StructureIDs,
+		PerceivedObjectIDs:    perceivedPlaces.ObjectIDs,
 		// New-news signal for the turn-state gate (ZBBS-WORK-370). Computed from
 		// the tick's consumed warrant batch; only the speak commit consumes it.
 		HasNewNews: batchHasNewNews(job.warrants),
