@@ -379,7 +379,13 @@ func HandlePayWithItem(in HandlerInput) (sim.Command, error) {
 		return sim.Command{}, err
 	}
 
-	return sim.PayWithItem(
+	// ZBBS-HOME-400: form/join the co-located huddle on the offer itself so a
+	// buyer who walked up to a stall can make the offer on arrival without a
+	// separate prior speak (the live restock-thrash). No-op when already
+	// huddled, alone, or out of stall scope, so an offer to an absent seller
+	// still rejects at the gate exactly as before.
+	now := time.Now().UTC()
+	return withHuddleBootstrap(in.ActorID, now, sim.PayWithItem(
 		in.ActorID,
 		seller,
 		item,
@@ -391,8 +397,8 @@ func HandlePayWithItem(in HandlerInput) (sim.Command, error) {
 		sim.QuoteID(args.QuoteID),
 		sim.LedgerID(args.InResponseTo),
 		forText,
-		time.Now().UTC(),
-	), nil
+		now,
+	)), nil
 }
 
 // ====================================================================
