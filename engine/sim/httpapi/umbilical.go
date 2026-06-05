@@ -378,7 +378,7 @@ func (s *Server) umbilicalRoutes() []umbilicalRoute {
 		{http.MethodPost, umbilicalBasePath + "/rotate", "Force a daily-rotation pass. Body: {tag?}.", true, s.handleUmbilicalRotate},
 		{http.MethodPost, umbilicalBasePath + "/settings/need-threshold", "Live-tune one need's red-line threshold (ephemeral; resets on restart). Body: {need, value}.", true, s.handleUmbilicalNeedThreshold},
 		{http.MethodPost, umbilicalBasePath + "/grant", "Give or claw back coins/items to/from any actor. Body: {actor_id, coins?, items?}.", true, s.handleUmbilicalGrant},
-		{http.MethodPost, umbilicalBasePath + "/reset-needs", "Reset an actor's needs (hunger/thirst/tiredness) to 0 — fully satisfied. Body: {actor_id} for one, or {all:true} for every actor.", true, s.handleUmbilicalResetNeeds},
+		{http.MethodPost, umbilicalBasePath + "/reset-needs", "Reset an actor's needs to 0 — fully satisfied. Body: {actor_id} for one, or {all:true} for every actor; optional {needs:[\"tiredness\",...]} restricts to specific needs (default all). Resetting tiredness also clears the actor's rest window.", true, s.handleUmbilicalResetNeeds},
 	}
 }
 
