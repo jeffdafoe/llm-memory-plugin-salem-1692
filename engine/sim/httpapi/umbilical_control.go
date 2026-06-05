@@ -10,6 +10,7 @@ import (
 	mathrand "math/rand"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
@@ -484,6 +485,13 @@ func (s *Server) handleUmbilicalGrant(w http.ResponseWriter, r *http.Request) {
 type umbilicalResetNeedsRequest struct {
 	ActorID string `json:"actor_id,omitempty"`
 	All     bool   `json:"all,omitempty"`
+	// Needs optionally restricts the reset to specific need keys (e.g.
+	// ["tiredness"]) so an operator can drop ONE need while leaving the others
+	// in place — the lever for "kill tiredness but leave hunger/thirst to keep
+	// driving food/water seeking" (ZBBS-HOME-383). An array of need keys, not
+	// per-need flags. Omitted/empty → every tracked need (the original
+	// whole-actor reset). Unknown keys are rejected (400), not silently ignored.
+	Needs []string `json:"needs,omitempty"`
 }
 
 // umbilicalResetNeedsResponse reports how many actors were reset and their
@@ -502,8 +510,12 @@ type umbilicalResetNeedsResponse struct {
 // ANY actor (PC or NPC), mirroring the /grant route's any-actor philosophy — a
 // PC's HUD just re-reads the new values on its next /pc/me poll. Setting needs to
 // 0 also drains the hunger/thirst/tiredness pressure that drives need-warrants, so
-// this is the lever for a village that booted into mass starvation. 400 missing /
-// conflicting target; 404 unknown actor; 200 with the post-reset rows.
+// this is the lever for a village that booted into mass starvation. An optional
+// `needs` array restricts the reset to specific needs (e.g. ["tiredness"]),
+// leaving the others to keep driving behavior (ZBBS-HOME-383); omitted/empty
+// resets every need. Resetting tiredness also clears any active rest window so
+// the actor isn't left parked (see resetActorNeeds). 400 missing / conflicting
+// target / unknown need; 404 unknown actor; 200 with the post-reset rows.
 func (s *Server) handleUmbilicalResetNeeds(w http.ResponseWriter, r *http.Request) {
 	user := userFromContext(r.Context())
 	if user == nil {
@@ -522,10 +534,28 @@ func (s *Server) handleUmbilicalResetNeeds(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, "specify actor_id or all:true")
 		return
 	}
+	// Resolve the optional need filter up front (handler-side — the canonical
+	// registry doesn't need the world goroutine). An unknown key is a 400 here
+	// so a typo can't silently no-op into "reset nothing".
+	needKeys, err := validateNeedKeys(req.Needs)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	target := "actor=" + req.ActorID
 	if req.All {
 		target = "all"
+	}
+	if len(needKeys) > 0 {
+		// Audit the validated/canonical keys, not the raw request strings, so the
+		// trail reflects what actually ran even if validateNeedKeys ever
+		// normalizes its input (alias/case) in the future (HOME-383 review).
+		parts := make([]string, 0, len(needKeys))
+		for _, k := range needKeys {
+			parts = append(parts, string(k))
+		}
+		target += " needs=" + strings.Join(parts, ",")
 	}
 	// Audit the attempt up front so a later rejection is still on the record.
 	auditUmbilical(user.Username, "reset-needs", target)
@@ -534,7 +564,7 @@ func (s *Server) handleUmbilicalResetNeeds(w http.ResponseWriter, r *http.Reques
 		out := umbilicalResetNeedsResponse{Actors: []UmbilicalActorRowDTO{}}
 		if req.All {
 			for _, a := range world.Actors {
-				resetActorNeeds(a)
+				resetActorNeeds(a, needKeys)
 				out.Actors = append(out.Actors, actorRowDTO(a))
 			}
 		} else {
@@ -542,7 +572,7 @@ func (s *Server) handleUmbilicalResetNeeds(w http.ResponseWriter, r *http.Reques
 			if !ok {
 				return nil, errAgentNotFound
 			}
-			resetActorNeeds(a)
+			resetActorNeeds(a, needKeys)
 			out.Actors = append(out.Actors, actorRowDTO(a))
 		}
 		out.Reset = len(out.Actors)
@@ -568,11 +598,60 @@ func (s *Server) handleUmbilicalResetNeeds(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, out)
 }
 
-// resetActorNeeds sets every tracked need on the actor back to 0 (fully
-// satisfied). A nil/empty Needs map means the actor tracks no needs, so this is a
-// no-op for it. Must run on the world goroutine (it mutates the live *Actor).
-func resetActorNeeds(a *sim.Actor) {
-	for k := range a.Needs {
-		a.Needs[k] = 0
+// needKeyTiredness is the canonical tiredness need key. Resetting tiredness is
+// special: it also clears the actor's rest windows (see resetActorNeeds).
+const needKeyTiredness = sim.NeedKey("tiredness")
+
+// resetActorNeeds sets the actor's needs back to 0 (fully satisfied). When keys
+// is empty it resets EVERY tracked need (the original whole-actor reset);
+// otherwise only the named needs that the actor actually tracks are zeroed,
+// leaving the rest to keep driving behavior (ZBBS-HOME-383). A nil/empty Needs
+// map means the actor tracks no needs, so the zeroing is a no-op for it.
+//
+// Resetting tiredness ALSO clears any active rest window (BreakUntil /
+// SleepingUntil): those windows are tiredness-recovery state, so at 0 tiredness
+// the actor has no reason to stay parked. Without this, an actor mid-break stays
+// `resting` despite the reset (the live Elizabeth Ellis case — pinned on a
+// break_until that the old reset couldn't touch), which would defeat a
+// food/water-seeking test. Must run on the world goroutine (it mutates the live
+// *Actor).
+func resetActorNeeds(a *sim.Actor, keys []sim.NeedKey) {
+	resetTiredness := len(keys) == 0 // a full reset always includes tiredness
+	if len(keys) == 0 {
+		for k := range a.Needs {
+			a.Needs[k] = 0
+		}
+	} else {
+		for _, k := range keys {
+			if _, ok := a.Needs[k]; ok {
+				a.Needs[k] = 0
+			}
+			if k == needKeyTiredness {
+				resetTiredness = true
+			}
+		}
 	}
+	if resetTiredness {
+		a.BreakUntil = nil
+		a.SleepingUntil = nil
+	}
+}
+
+// validateNeedKeys converts the optional request need names into NeedKeys,
+// rejecting any name not in the canonical needs registry so a typo surfaces as a
+// 400 rather than silently no-op'ing into "reset nothing". An empty input
+// returns a nil slice, which resetActorNeeds reads as "every need".
+func validateNeedKeys(names []string) ([]sim.NeedKey, error) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+	keys := make([]sim.NeedKey, 0, len(names))
+	for _, n := range names {
+		key := sim.NeedKey(n)
+		if _, ok := sim.FindNeed(key); !ok {
+			return nil, fmt.Errorf("unknown need %q", n)
+		}
+		keys = append(keys, key)
+	}
+	return keys, nil
 }
