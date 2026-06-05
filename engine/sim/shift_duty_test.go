@@ -100,6 +100,33 @@ func TestShiftDutyTarget_OffShiftAtWork(t *testing.T) {
 	}
 }
 
+// TestShiftDutyTarget_SuppressedDuringActiveRoute: an off-shift NPC with a
+// standing go-home duty is left alone while it has an in-flight scheduled route
+// (lamplighter / washerwoman / town_crier). The route owns the actor until it
+// walks home and clears itself; without this the once-a-minute go-home nudge
+// supersedes the route's walk to a far stop (stranding it) and marches a homed
+// route NPC into its sprite-hiding house mid-round.
+func TestShiftDutyTarget_SuppressedDuringActiveRoute(t *testing.T) {
+	a := shiftNPC("lamp", KindDecorative, "", "home", "") // off-shift, not at home
+	w := sleepTestWorld(a)
+	w.Settings.DawnTime = "07:00"
+	w.Settings.DuskTime = "19:00"
+
+	// Precondition: at night (21:40) the unscheduled NPC has a go-home duty.
+	if _, _, ok := shiftDutyTarget(w, a, 1300, time.Now()); !ok {
+		t.Fatal("precondition: expected a go-home duty off-shift with no route")
+	}
+
+	// With an in-flight route the duty is suppressed.
+	if w.ActiveRoutes == nil {
+		w.ActiveRoutes = map[ActorID]*NPCRoute{}
+	}
+	w.ActiveRoutes["lamp"] = &NPCRoute{NPCID: "lamp", Label: AttrLamplighter, Phase: RoutePhaseActive}
+	if _, _, ok := shiftDutyTarget(w, a, 1300, time.Now()); ok {
+		t.Error("shiftDutyTarget returned a duty while a route was active; want suppressed")
+	}
+}
+
 func TestShiftDutyTarget_NoDutyWhenWhereItBelongs(t *testing.T) {
 	w := sleepTestWorld()
 	// On shift, already at work → no duty.

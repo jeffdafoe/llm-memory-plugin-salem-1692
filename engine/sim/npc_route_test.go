@@ -232,11 +232,12 @@ func TestAdvanceNPCRoute_StopAdvancesFlipsAndWalks(t *testing.T) {
 	}
 }
 
-// TestAdvanceNPCRoute_StaleArrivalSkipsFlip: an Advance triggered when
-// the actor is NOT at the current stop's WalkTo (e.g. an out-of-band
-// MoveActor or admin teleport landed them elsewhere) returns
-// "stale_stop" without flipping the object or advancing StopIdx.
-func TestAdvanceNPCRoute_StaleArrivalSkipsFlip(t *testing.T) {
+// TestAdvanceNPCRoute_StaleArrivalReWalks: an Advance triggered when the actor
+// is NOT at the current stop's WalkTo (an out-of-band MoveActor or admin
+// teleport landed them elsewhere) does NOT flip the object or advance StopIdx;
+// it re-walks to the stop and reports "stale_retry" so a single bump no longer
+// strands the stop.
+func TestAdvanceNPCRoute_StaleArrivalReWalks(t *testing.T) {
 	w, cancel := buildRouteTestWorld(t)
 	defer cancel()
 
@@ -245,8 +246,8 @@ func TestAdvanceNPCRoute_StaleArrivalSkipsFlip(t *testing.T) {
 		t.Fatalf("start: %v", err)
 	}
 
-	// Don't teleport — actor remains at the route start tile, which
-	// is NOT the first stop's WalkTo. The guard should reject.
+	// Don't teleport — actor remains at the route start tile, which is NOT the
+	// first stop's WalkTo. The guard rejects the flip and re-walks.
 	firstStopID := firstStopObjectID(t, w, "lamp")
 	beforeState := w.Published().VillageObjects[firstStopID].CurrentState
 
@@ -255,12 +256,80 @@ func TestAdvanceNPCRoute_StaleArrivalSkipsFlip(t *testing.T) {
 		t.Fatalf("AdvanceNPCRoute: %v", err)
 	}
 	r := res.(sim.AdvanceNPCRouteResult)
-	if r.Reason != "stale_stop" {
-		t.Errorf("Reason = %q, want stale_stop", r.Reason)
+	if r.Reason != "stale_retry" {
+		t.Errorf("Reason = %q, want stale_retry", r.Reason)
 	}
-	afterState := w.Published().VillageObjects[firstStopID].CurrentState
-	if afterState != beforeState {
+	if afterState := w.Published().VillageObjects[firstStopID].CurrentState; afterState != beforeState {
 		t.Errorf("stale-arrival flipped object: %q → %q", beforeState, afterState)
+	}
+	// A re-walk to the stop was dispatched, and StopIdx did not advance.
+	if mi := moveIntentOf(t, w, "lamp"); mi == nil {
+		t.Error("MoveIntent nil after stale_retry — re-walk not dispatched")
+	}
+	if route := activeRouteOf(t, w, "lamp"); route == nil || route.StopIdx != 0 {
+		t.Errorf("StopIdx advanced on stale_retry: %+v", route)
+	}
+}
+
+// TestAdvanceNPCRoute_StaleArrivalAbandonsAfterRetries: repeated stale arrivals
+// at the same stop exhaust the per-stop retry budget, after which the route is
+// abandoned (cleared) rather than parked forever — the object is never flipped.
+// A parked route would be fatal once an in-flight route suppresses the
+// shift-duty producer (the actor would stay home-exempt indefinitely).
+func TestAdvanceNPCRoute_StaleArrivalAbandonsAfterRetries(t *testing.T) {
+	w, cancel := buildRouteTestWorld(t)
+	defer cancel()
+
+	homeDest := sim.NewStructureEnterDestination("home")
+	if _, err := w.Send(sim.StartNPCRoute("lamp", sim.AttrLamplighter, homeDest, sampleLampCandidates(), time.Now().UTC())); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	firstStopID := firstStopObjectID(t, w, "lamp")
+	beforeState := w.Published().VillageObjects[firstStopID].CurrentState
+
+	// Capture the actor's start tile (the route start, which is NOT the first
+	// stop's WalkTo). We re-assert it before every advance so each arrival is
+	// provably stale — making the condition explicit rather than relying on the
+	// test world leaving the actor in place across the re-walk dispatches.
+	var startX, startY int
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := world.Actors["lamp"]
+		startX, startY = a.Pos.X, a.Pos.Y
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("read start pos: %v", err)
+	}
+
+	// Drive advances until the route stops retrying; it must abandon, not loop
+	// forever, not park. The generous cap guards against an infinite-retry
+	// regression (the test fails with the loop's last "stale_retry" rather than
+	// hanging).
+	var lastReason string
+	for i := 0; i < 25; i++ {
+		if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+			a := world.Actors["lamp"]
+			a.Pos.X, a.Pos.Y = startX, startY
+			return nil, nil
+		}}); err != nil {
+			t.Fatalf("reset pos %d: %v", i, err)
+		}
+		res, err := w.Send(sim.AdvanceNPCRoute("lamp"))
+		if err != nil {
+			t.Fatalf("advance %d: %v", i, err)
+		}
+		lastReason = res.(sim.AdvanceNPCRouteResult).Reason
+		if lastReason != "stale_retry" {
+			break
+		}
+	}
+	if lastReason != "stale_abandoned" {
+		t.Errorf("terminal Reason = %q, want stale_abandoned", lastReason)
+	}
+	if route := activeRouteOf(t, w, "lamp"); route != nil {
+		t.Errorf("ActiveRoutes[lamp] not cleared after abandon: %+v", route)
+	}
+	if afterState := w.Published().VillageObjects[firstStopID].CurrentState; afterState != beforeState {
+		t.Errorf("abandoned route flipped object: %q → %q", beforeState, afterState)
 	}
 }
 
