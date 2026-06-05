@@ -67,8 +67,9 @@ func (fakeScenes) SaveSnapshot(_ context.Context, _ sim.Tx, _ map[sim.SceneID]*s
 }
 
 type fakeOrders struct {
-	out map[sim.OrderID]*sim.Order
-	err error
+	out   map[sim.OrderID]*sim.Order
+	err   error
+	maxID int64
 }
 
 func (f fakeOrders) LoadAll(_ context.Context) (map[sim.OrderID]*sim.Order, error) {
@@ -82,6 +83,9 @@ func (fakeOrders) LoadRecentPrices(_ context.Context, _ time.Time, _ int) ([]sim
 }
 func (fakeOrders) WriteTerminal(_ context.Context, _ *sim.Order) error {
 	return nil
+}
+func (f fakeOrders) MaxLedgerID(_ context.Context) (int64, error) {
+	return f.maxID, nil
 }
 
 type fakeEnvironment struct {

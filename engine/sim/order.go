@@ -175,16 +175,6 @@ func effectiveOrderSweepCadence(s WorldSettings) time.Duration {
 	return OrderSweepCadenceDefault
 }
 
-// nextOrderSeq increments the per-run order counter and returns the
-// new OrderID. World-goroutine-only (called from inside Command.Fn
-// when minting a new Order in commitPayTransfer's !ConsumeNow
-// branch). Counter starts at 0; first minted OrderID is 1, leaving
-// OrderID(0) as the unset sentinel.
-func (w *World) nextOrderSeq() OrderID {
-	w.orderSeq++
-	return OrderID(w.orderSeq)
-}
-
 // finalizeOrderTerminal flips an Order to a terminal state, stamps the
 // terminal timestamps, emits the matching event, and (when a sink is
 // installed) write-through-prunes the entry from World.Orders. Shared

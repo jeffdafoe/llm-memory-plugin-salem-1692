@@ -146,19 +146,6 @@ func TestEffectiveOrderSweepCadence_DefaultFallback(t *testing.T) {
 	}
 }
 
-// TestNextOrderSeq_StartsAtOne — first mint after NewWorld returns
-// OrderID(1); OrderID(0) reserved as the unset sentinel.
-func TestNextOrderSeq_StartsAtOne(t *testing.T) {
-	repo, _ := mem.NewRepository()
-	w := sim.NewWorld(repo)
-	if got := sim.NextOrderSeq(w); got != 1 {
-		t.Errorf("first NextOrderSeq = %d, want 1", got)
-	}
-	if got := sim.NextOrderSeq(w); got != 2 {
-		t.Errorf("second NextOrderSeq = %d, want 2", got)
-	}
-}
-
 // TestCloneOrder_DeepCopiesConsumerIDsAndDeliveredAt — mutating the
 // original's slice/pointer must not leak to the clone.
 func TestCloneOrder_DeepCopiesConsumerIDsAndDeliveredAt(t *testing.T) {

@@ -78,6 +78,20 @@ func (r *OrdersRepo) WriteTerminal(_ context.Context, o *sim.Order) error {
 	return nil
 }
 
+// MaxLedgerID returns the largest id in the in-memory orders map (0 when
+// empty). The mem backend has no separate pay_ledger history — its orders
+// map IS the durable set — so the map max is the high-water mark, mirroring
+// the pg impl's role for FinalizeLoad's payLedgerSeq floor. ZBBS-HOME-394.
+func (r *OrdersRepo) MaxLedgerID(_ context.Context) (int64, error) {
+	var maxID int64
+	for id := range r.orders {
+		if int64(id) > maxID {
+			maxID = int64(id)
+		}
+	}
+	return maxID, nil
+}
+
 // LoadRecentPrices filters the seeded slice by `since` (At >= since),
 // then per-(seller, item) caps at perKeyCap most-recent entries, and
 // returns the result in chronological (oldest-first) order per key —

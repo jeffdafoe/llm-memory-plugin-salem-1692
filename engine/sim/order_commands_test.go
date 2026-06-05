@@ -102,13 +102,20 @@ func buildOrderTestWorld(t *testing.T) (*sim.World, func()) {
 	}
 }
 
+// mintReadyOrderSeq hands each mintReadyOrder call a distinct pay_ledger
+// id. Order.ID == LedgerID (ZBBS-HOME-394), so minting two orders with the
+// same entry.ID would collide in World.Orders; production draws distinct ids
+// from World.payLedgerSeq and the helper mirrors that with this counter.
+var mintReadyOrderSeq sim.LedgerID
+
 // mintReadyOrder creates a Ready Order via createOrderForPayWithItem
 // for hannah→jefferey with the given consumer set and qty. Returns
 // the OrderID so callers can DeliverOrder against it.
 func mintReadyOrder(t *testing.T, w *sim.World, consumers []sim.ActorID, qty int, at time.Time) sim.OrderID {
 	t.Helper()
+	mintReadyOrderSeq++
 	entry := &sim.PayLedgerEntry{
-		ID:          7,
+		ID:          mintReadyOrderSeq,
 		BuyerID:     "jefferey",
 		SellerID:    "hannah",
 		ItemKind:    "stew",
@@ -191,8 +198,41 @@ func TestCreateOrderForPayWithItem_PopulatesFields(t *testing.T) {
 	if !o.ExpiresAt.Equal(expectedExpiry) {
 		t.Errorf("ExpiresAt = %v, want %v (CreatedAt + OrderTTLDefault)", o.ExpiresAt, expectedExpiry)
 	}
-	if o.LedgerID != 7 {
-		t.Errorf("LedgerID = %d, want 7 (back-ref)", o.LedgerID)
+	// ZBBS-HOME-394: an Order IS its pay_ledger row — Order.ID == LedgerID
+	// == the originating entry's id (also the snapshot key `id`). This is the
+	// invariant the checkpoint enforces (pg orders SaveSnapshot).
+	if sim.OrderID(o.LedgerID) != o.ID {
+		t.Errorf("Order.ID/LedgerID = %d/%d, want equal (pay_ledger row identity)", o.ID, o.LedgerID)
+	}
+	if o.LedgerID != sim.LedgerID(id) {
+		t.Errorf("LedgerID = %d, want %d (the minted id)", o.LedgerID, id)
+	}
+}
+
+// TestFinalizeLoad_SeedsLedgerSeqFromMaxLedgerID — ZBBS-HOME-394. The
+// LedgerID allocator must start above every id ever persisted, or a
+// post-restart mint would reuse an id and the checkpoint upsert would clobber
+// an unrelated historical row. FinalizeLoad seeds payLedgerSeq from
+// repo.Orders.MaxLedgerID — NOT from w.Orders (which holds only the in-flight
+// subset and is empty on the mem load path), so a high terminal-row id is
+// still covered. Seed a Delivered (terminal) order at id 50 and assert the
+// counter floors to it.
+func TestFinalizeLoad_SeedsLedgerSeqFromMaxLedgerID(t *testing.T) {
+	repo, handles := mem.NewRepository()
+	at := time.Now().UTC()
+	handles.Orders.Seed(map[sim.OrderID]*sim.Order{
+		50: {
+			ID: 50, LedgerID: 50, State: sim.OrderStateDelivered,
+			BuyerID: "b", SellerID: "s", Item: "stew", Qty: 1,
+			ConsumerIDs: []sim.ActorID{"b"}, CreatedAt: at, ExpiresAt: at.Add(time.Hour),
+		},
+	})
+	w, err := sim.LoadWorld(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	if got := sim.PayLedgerSeqForTest(w); got != 50 {
+		t.Errorf("payLedgerSeq = %d, want 50 (floored from repo MaxLedgerID so the next mint can't reuse id 50)", got)
 	}
 }
 

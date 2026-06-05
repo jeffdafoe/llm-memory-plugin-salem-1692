@@ -29,6 +29,27 @@ func newMockPool(t *testing.T) (pgxmock.PgxPoolIface, *OrdersRepo) {
 	return mock, NewOrdersRepo(mock)
 }
 
+// --- MaxLedgerID ----------------------------------------------------------
+
+// TestOrdersRepo_MaxLedgerID reports the largest pay_ledger id (ZBBS-HOME-394).
+// FinalizeLoad seeds the LedgerID allocator from it so a post-restart mint
+// can't reuse an id and clobber a historical row.
+func TestOrdersRepo_MaxLedgerID(t *testing.T) {
+	mock, repo := newMockPool(t)
+	mock.ExpectQuery(`SELECT COALESCE\(max\(id\), 0\) FROM pay_ledger`).
+		WillReturnRows(pgxmock.NewRows([]string{"max"}).AddRow(int64(187)))
+	got, err := repo.MaxLedgerID(context.Background())
+	if err != nil {
+		t.Fatalf("MaxLedgerID: %v", err)
+	}
+	if got != 187 {
+		t.Errorf("MaxLedgerID = %d, want 187", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
 // --- LoadAll happy path ---------------------------------------------------
 
 func TestOrdersRepo_LoadAll_HappyPath(t *testing.T) {
