@@ -355,6 +355,18 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 	// After a speak the loop continues — the model ends the tick by calling
 	// done() (steered there by the post-speak nudge in commitResultContent).
 	spokenThisTick := map[string]struct{}{}
+	// offeredThisTick holds the dedup key of every pay_with_item OFFER this actor
+	// has successfully placed this tick (ZBBS-HOME-395 same-tick repeat-offer
+	// guard — the pay analogue of spokenThisTick). Pre-395 a placed offer came
+	// back as a bare [ok] with no "now pending, await their answer" signal, so the
+	// model had no within-tick reason to stop and re-offered the same item to the
+	// same seller every round to the iteration budget (the Josiah×Moses carrot
+	// storm). Each offer also spawned its own ledger row that later rendered a
+	// separate "fell through" line, so the storm multiplied the NEXT tick's
+	// perception too. One offer per (seller, item, disposition) per tick: after
+	// that the buyer awaits the seller's accept/decline/counter. See payOfferKey
+	// for the keying rationale (price deliberately excluded).
+	offeredThisTick := map[string]struct{}{}
 	for round := 0; round < maxTotalRounds; round++ {
 		result.IterationCount = round + 1
 
@@ -469,6 +481,26 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 				}
 			}
 
+			// ZBBS-HOME-395: same-tick repeat-offer guard — the pay analogue of
+			// the speak guard above. A buyer that placed an offer and got a bare
+			// [ok] back (no "now pending" signal pre-395) re-offered the same item
+			// to the same seller every round to the iteration budget, each offer
+			// spawning a ledger row that later rendered its own "fell through"
+			// line (the observed Josiah×Moses carrot storm). Reject a second offer
+			// for the same (seller, item, disposition) this tick model-facing so
+			// the buyer awaits the seller's answer or calls done(). Keyed WITHOUT
+			// price so a re-offer at a drifting amount (5 coins, then 10, then 10…)
+			// still matches — that drift WAS the storm. Quote-take and
+			// counter-response paths are exempt (see payOfferKey).
+			if key, isOffer := payOfferKey(vc); isOffer {
+				if _, dup := offeredThisTick[key]; dup {
+					observationOnly = false
+					result.ToolsFailedRejected = append(result.ToolsFailedRejected, call.Name)
+					transcript = append(transcript, toolResultMsg(call.ID, "[error: already_offered] you already made that offer this turn — wait for their answer, or call done()."))
+					continue
+				}
+			}
+
 			// Dispatch by class.
 			content, outcome := h.dispatch(ctx, w, job, vc, actor.LLMAgent, perceivedPlaces)
 			transcript = append(transcript, toolResultMsg(call.ID, content))
@@ -505,6 +537,15 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 				// against, and the model still gets to retry the bounced line.
 				if norm, isSpeak := speakUtteranceKey(vc); isSpeak {
 					spokenThisTick[norm] = struct{}{}
+				}
+				// ZBBS-HOME-395: record a placed offer so a later round (or a
+				// later call in this same batch) re-offering the same (seller,
+				// item, disposition) is rejected by the guard above. Only a
+				// SUCCESSFUL offer is recorded — a bounced offer never created a
+				// ledger row, so it is not a repeat to guard against and the model
+				// may retry the bounced offer.
+				if key, isOffer := payOfferKey(vc); isOffer {
+					offeredThisTick[key] = struct{}{}
 				}
 			} else {
 				result.ToolsFailedRejected = append(result.ToolsFailedRejected, call.Name)
@@ -689,8 +730,12 @@ func (h *Harness) dispatch(ctx context.Context, w *sim.World, job tickJob, vc *V
 // --- helpers --------------------------------------------------------------
 
 // commitResultContent builds the "tool" message content a successful commit
-// returns to the model. Every commit returns the generic "[ok]" EXCEPT speak,
-// which echoes the line it just said back plus a post-speak continuation steer.
+// returns to the model. Most commits return the generic "[ok]"; speak and a
+// newly-placed pay_with_item offer are the exceptions. speak echoes the line it
+// just said back plus a post-speak continuation steer; a placed offer
+// (ZBBS-HOME-395) echoes the pending offer plus an await-the-seller / done()
+// steer. Both replace a bare "[ok]" that read as "nothing happened, try again"
+// and drove a same-tick repeat storm (speak×6 / pay_with_item×6 to the budget).
 //
 // Why echo the line (ZBBS-WORK-368, Track B within-tick salience): Llama-3.3
 // emits an EMPTY assistant content string when it makes a tool call, so a spoken
@@ -729,6 +774,35 @@ func commitResultContent(vc *ValidatedCall) string {
 			}
 		}
 	}
+	if vc.Name == "pay_with_item" {
+		if args, ok := vc.DecodedArgs.(PayWithItemArgs); ok {
+			// A plain new offer (no quote_id / in_response_to) is now a pending
+			// ledger entry the seller must accept, decline, or counter — the
+			// buyer's move this tick is finished. Pre-395 this returned a bare
+			// "[ok]", which read as "nothing happened, try again" and drove the
+			// re-offer storm. Echo what was offered for salience (Llama-3.3 emits
+			// empty assistant content on a tool call — the same weak-salience gap
+			// the speak echo above closes) and steer to done(), forbidding the
+			// re-offer. Quote-take (instant close) and counter-response are
+			// distinct flows that don't storm, so they keep the generic "[ok]".
+			if args.QuoteID == 0 && args.InResponseTo == 0 {
+				item := strings.ToLower(strings.Join(strings.Fields(args.Item), " "))
+				if item == "" {
+					item = "those goods"
+				}
+				seller := strings.TrimSpace(args.Seller)
+				if seller == "" {
+					seller = "the seller"
+				}
+				return fmt.Sprintf(
+					"[ok] Your offer to buy %d %s from %s is now before them, awaiting "+
+						"their answer. Do not offer again — call done() and let them accept, "+
+						"decline, or counter. Offer again only after they have responded.",
+					args.Qty, item, seller,
+				)
+			}
+		}
+	}
 	return "[ok]"
 }
 
@@ -755,6 +829,46 @@ func speakUtteranceKey(vc *ValidatedCall) (string, bool) {
 		return "", false
 	}
 	return norm, true
+}
+
+// payOfferKey returns the normalized same-tick dedup key for a pay_with_item
+// call and true, or ("", false) for any other tool or a pay call that is NOT a
+// plain new offer. The key is (seller, item, disposition) — deliberately WITHOUT
+// amount or qty, because the observed storm re-offered the SAME item to the SAME
+// seller at a drifting price (5 coins, then 10, then 10…) every round; keying on
+// price would let that exact storm straight through. One offer per (seller,
+// item, disposition) per tick is the intent: once an offer is before the seller,
+// the buyer awaits their accept/decline/counter rather than piling on more
+// offers the seller has not yet seen.
+//
+// Scoped to the default pending-offer path: a quote take (quote_id) closes the
+// deal instantly and a counter-response (in_response_to) is a deliberate,
+// distinct move, so neither storms — both pass through untouched, matching the
+// commitResultContent steer's scope. Mirrors speakUtteranceKey; seller and item
+// are lowercased + whitespace-collapsed the same way so trivial spacing/case
+// drift in a repeat still matches. The disposition byte (keep vs consume-now)
+// keeps a genuine "buy one to keep AND one to eat now" pair distinct.
+func payOfferKey(vc *ValidatedCall) (string, bool) {
+	if vc == nil || vc.Name != "pay_with_item" {
+		return "", false
+	}
+	args, ok := vc.DecodedArgs.(PayWithItemArgs)
+	if !ok {
+		return "", false
+	}
+	if args.QuoteID != 0 || args.InResponseTo != 0 {
+		return "", false
+	}
+	seller := strings.ToLower(strings.Join(strings.Fields(args.Seller), " "))
+	item := strings.ToLower(strings.Join(strings.Fields(args.Item), " "))
+	if seller == "" || item == "" {
+		return "", false
+	}
+	disposition := "keep"
+	if args.ConsumeNow {
+		disposition = "consume"
+	}
+	return seller + "\x00" + item + "\x00" + disposition, true
 }
 
 // fullPerceptionPrompt joins the durable turn and the ephemeral current-tick

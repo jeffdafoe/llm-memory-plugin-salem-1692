@@ -62,3 +62,115 @@ func TestCommitResultContent_SpeakEchoesLine(t *testing.T) {
 		})
 	}
 }
+
+// TestCommitResultContent_PayWithItemSteer pins the pay_with_item tool result
+// (ZBBS-HOME-395): a placed plain offer echoes the pending offer back to the
+// model plus an await-the-seller / done() steer, instead of the bare "[ok]"
+// that pre-395 read as "nothing happened" and drove the re-offer storm. The
+// quote-take and counter-response paths keep the generic "[ok]" (they don't
+// storm), and any non-offer or wrong-typed call degrades to "[ok]".
+func TestCommitResultContent_PayWithItemSteer(t *testing.T) {
+	const steer = "[ok] Your offer to buy 20 carrots from Moses James is now before them, awaiting their answer. Do not offer again — call done() and let them accept, decline, or counter. Offer again only after they have responded."
+	cases := []struct {
+		name string
+		vc   ValidatedCall
+		want string
+	}{
+		{
+			name: "plain offer echoes pending offer + steer",
+			vc:   ValidatedCall{Name: "pay_with_item", DecodedArgs: PayWithItemArgs{Seller: "Moses James", Item: "carrots", Qty: 20, Amount: 10}},
+			want: steer,
+		},
+		{
+			// Item is lowercased + whitespace-collapsed, seller is trimmed, so
+			// trivial drift renders the same steer the dedup key matches on.
+			name: "item normalized, seller trimmed",
+			vc:   ValidatedCall{Name: "pay_with_item", DecodedArgs: PayWithItemArgs{Seller: "  Moses James  ", Item: "  Carrots  ", Qty: 20, Amount: 10}},
+			want: steer,
+		},
+		{
+			// A quote take closes instantly — not a pending offer — so it keeps
+			// the generic ok and is exempt from the dedup key.
+			name: "quote take returns generic ok",
+			vc:   ValidatedCall{Name: "pay_with_item", DecodedArgs: PayWithItemArgs{Seller: "Moses James", Item: "carrots", Qty: 20, Amount: 10, QuoteID: 7}},
+			want: "[ok]",
+		},
+		{
+			// A counter-response is a deliberate distinct move — generic ok.
+			name: "counter-response returns generic ok",
+			vc:   ValidatedCall{Name: "pay_with_item", DecodedArgs: PayWithItemArgs{Seller: "Moses James", Item: "carrots", Qty: 20, Amount: 10, InResponseTo: 12}},
+			want: "[ok]",
+		},
+		{
+			// Defensive: empty item can't reach the success path (decode rejects
+			// it), but the steer must not render "buy 1 " with a gap.
+			name: "empty item falls back to those goods",
+			vc:   ValidatedCall{Name: "pay_with_item", DecodedArgs: PayWithItemArgs{Seller: "Moses James", Item: "", Qty: 1}},
+			want: "[ok] Your offer to buy 1 those goods from Moses James is now before them, awaiting their answer. Do not offer again — call done() and let them accept, decline, or counter. Offer again only after they have responded.",
+		},
+		{
+			name: "wrong args type falls back to generic ok",
+			vc:   ValidatedCall{Name: "pay_with_item", DecodedArgs: struct{ X int }{X: 1}},
+			want: "[ok]",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := commitResultContent(&tc.vc)
+			if got != tc.want {
+				t.Errorf("commitResultContent\n got:  %q\n want: %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPayOfferKey pins the same-tick repeat-offer dedup key (ZBBS-HOME-395):
+// keyed on (seller, item, disposition) with price EXCLUDED so a re-offer at a
+// drifting amount still matches, normalized so spacing/case drift matches, and
+// returning (_, false) for the quote-take / counter-response / non-offer paths
+// that are exempt from the guard.
+func TestPayOfferKey(t *testing.T) {
+	keyOf := func(args PayWithItemArgs) (string, bool) {
+		return payOfferKey(&ValidatedCall{Name: "pay_with_item", DecodedArgs: args})
+	}
+
+	base := PayWithItemArgs{Seller: "Moses James", Item: "carrots", Qty: 20, Amount: 5}
+	k1, ok1 := keyOf(base)
+	if !ok1 {
+		t.Fatal("plain offer should produce a key")
+	}
+
+	// Price drift (the actual storm: 5 → 10) must collide with the first offer.
+	k2, ok2 := keyOf(PayWithItemArgs{Seller: "Moses James", Item: "carrots", Qty: 20, Amount: 10})
+	if !ok2 || k2 != k1 {
+		t.Errorf("price/qty drift should collide: k1=%q k2=%q", k1, k2)
+	}
+
+	// Spacing/case drift normalizes to the same key.
+	k3, ok3 := keyOf(PayWithItemArgs{Seller: "  moses  james ", Item: "CARROTS", Qty: 1, Amount: 1})
+	if !ok3 || k3 != k1 {
+		t.Errorf("case/space drift should collide: k1=%q k3=%q", k1, k3)
+	}
+
+	// A different item to the same seller is a distinct, allowed offer.
+	if k4, _ := keyOf(PayWithItemArgs{Seller: "Moses James", Item: "wheat", Qty: 1, Amount: 1}); k4 == k1 {
+		t.Error("different item should not collide")
+	}
+
+	// consume-now vs keep are kept distinct (buy one to eat, one to stock).
+	if k5, _ := keyOf(PayWithItemArgs{Seller: "Moses James", Item: "carrots", Qty: 1, Amount: 1, ConsumeNow: true}); k5 == k1 {
+		t.Error("disposition should keep keep/consume distinct")
+	}
+
+	// Exempt paths: quote take, counter-response, and any non-pay tool.
+	if _, ok := keyOf(PayWithItemArgs{Seller: "Moses James", Item: "carrots", Qty: 1, Amount: 1, QuoteID: 7}); ok {
+		t.Error("quote take must be exempt")
+	}
+	if _, ok := keyOf(PayWithItemArgs{Seller: "Moses James", Item: "carrots", Qty: 1, Amount: 1, InResponseTo: 9}); ok {
+		t.Error("counter-response must be exempt")
+	}
+	if _, ok := payOfferKey(&ValidatedCall{Name: "speak", DecodedArgs: SpeakArgs{Text: "hi"}}); ok {
+		t.Error("non-pay tool must return false")
+	}
+}
