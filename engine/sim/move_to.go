@@ -55,11 +55,15 @@ import (
 // money transfer to an ambiguous person does not have a safe default, but a walk
 // does. Ties beyond distance break by structure_id for determinism.
 //
-// Far structures named only in a distant vendor/restock cue don't resolve by
-// name (they're outside scene radius) — but those cues already carry the
-// structure_id inline, so the model can still walk there by id. The by-name path
-// rescues the intimate cases (own home/work, a landmark in front of you), which
-// is where the model actually drops into naming.
+// PLUS — ZBBS-HOME-389 — any structure the tick's PERCEPTION surfaced as a move
+// target (a vendor / rest / restock cue named it, with its id), at any distance.
+// The cue showed it to the actor, so it is perceivable for this tick — the same
+// "things you were just told about" justification as anchors. This closes the
+// recurring "model emits the distant cue's NAME, move_to rejects it, the NPC
+// starves in place" hole: those cues always carried the structure_id inline, but
+// name-resolution never consulted them — only anchors + scene radius — so a far
+// shop named by the model bounced. The shown id set is threaded in by the
+// harness (perception.CollectPerceivedPlaces) through the move_to handler.
 //
 // A name that matches no structure falls through to a bare refresh source — a
 // well, a fruit tree the actor saw in a "free to drink/eat nearby" cue — via
@@ -67,7 +71,7 @@ import (
 // has no Structure shell (ZBBS-HOME-359). Structures win on a name collision:
 // the structure resolver runs first, so "the Tavern" still enters rather than
 // stops outside its placement.
-func MoveToStructureByName(actorID ActorID, name string, now time.Time) Command {
+func MoveToStructureByName(actorID ActorID, name string, shownStructures []StructureID, shownObjects []VillageObjectID, now time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
 			a, ok := w.Actors[actorID]
@@ -78,12 +82,12 @@ func MoveToStructureByName(actorID ActorID, name string, now time.Time) Command 
 			if target == "" {
 				return MoveActorResult{}, fmt.Errorf("move_to: structure_name is required")
 			}
-			if structureID, ok := resolveStructureByPerceivableName(w, a, target); ok {
+			if structureID, ok := resolveStructureByPerceivableName(w, a, target, shownStructures); ok {
 				return MoveToStructure(actorID, structureID, now).Fn(w)
 			}
 			// No structure by that name — try a bare refresh source (a well, a
 			// fruit tree). ZBBS-HOME-359.
-			if objID, ok := resolveObjectByPerceivableName(w, a, target); ok {
+			if objID, ok := resolveObjectByPerceivableName(w, a, target, shownObjects); ok {
 				return MoveToObject(actorID, objID, now).Fn(w)
 			}
 			return MoveActorResult{}, fmt.Errorf(
@@ -93,12 +97,13 @@ func MoveToStructureByName(actorID ActorID, name string, now time.Time) Command 
 }
 
 // resolveStructureByPerceivableName resolves a place name to a structure_id the
-// actor a could plausibly know — its home/work anchors (any distance) plus named
-// structures within DefaultOutdoorSceneRadius — case-insensitively, nearest-wins
-// on duplicate names (Chebyshev to the actor; ties break by structure_id for
-// determinism). ok=false when no perceivable structure matches. MUST be called
-// from inside a Command.Fn. ZBBS-HOME-356.
-func resolveStructureByPerceivableName(w *World, a *Actor, name string) (StructureID, bool) {
+// actor a could plausibly know — its home/work anchors (any distance), named
+// structures within DefaultOutdoorSceneRadius, AND any id in `shown` (the move
+// targets this tick's perception surfaced, ZBBS-HOME-389; any distance) —
+// case-insensitively, nearest-wins on duplicate names (Chebyshev to the actor;
+// ties break by structure_id for determinism). ok=false when no perceivable
+// structure matches. MUST be called from inside a Command.Fn. ZBBS-HOME-356.
+func resolveStructureByPerceivableName(w *World, a *Actor, name string, shown []StructureID) (StructureID, bool) {
 	radius := w.Settings.DefaultOutdoorSceneRadius
 	if radius <= 0 {
 		radius = DefaultOutdoorSceneRadiusValue
@@ -148,6 +153,11 @@ func resolveStructureByPerceivableName(w *World, a *Actor, name string) (Structu
 		}
 		consider(structureID)
 	}
+	// Plus any structure the actor was SHOWN this tick (a vendor/rest/restock cue
+	// named it with its id) — at any distance, like an anchor. ZBBS-HOME-389.
+	for _, id := range shown {
+		consider(id)
+	}
 
 	if bestDist == -1 {
 		return "", false
@@ -167,33 +177,48 @@ func resolveStructureByPerceivableName(w *World, a *Actor, name string) (Structu
 // path, so a name shared with a building never routes to an object visit that
 // would skip enter logic. ok=false when no perceivable free source matches. MUST
 // be called from inside a Command.Fn.
-func resolveObjectByPerceivableName(w *World, a *Actor, name string) (VillageObjectID, bool) {
+func resolveObjectByPerceivableName(w *World, a *Actor, name string, shown []VillageObjectID) (VillageObjectID, bool) {
 	radius := w.Settings.DefaultOutdoorSceneRadius
 	if radius <= 0 {
 		radius = DefaultOutdoorSceneRadiusValue
 	}
 	bestID := VillageObjectID("")
 	bestDist := -1
-	for id, obj := range w.VillageObjects {
+	// consider folds one candidate object into the nearest-match running best: it
+	// must be a usable refresh source, name-match (case-insensitive), and NOT back
+	// a structure (those route via the structure path so a shared name never skips
+	// the enter-vs-visit derivation). No radius gate here — the CALLER chooses the
+	// scope (the scene-radius scan vs an at-any-distance shown id).
+	consider := func(id VillageObjectID) {
+		obj := w.VillageObjects[id]
 		if obj == nil || !objectIsRefreshSource(obj) {
-			continue
+			return
 		}
 		if !strings.EqualFold(strings.TrimSpace(obj.DisplayName), name) {
-			continue
+			return
 		}
-		// A placement that backs a structure resolves via the structure path —
-		// skip it here so a name shared with a building doesn't route to an
-		// object visit that bypasses the enter-vs-visit derivation.
 		if _, isStructure := w.Structures[StructureID(id)]; isStructure {
-			continue
+			return
 		}
 		dist := a.Pos.Chebyshev(obj.Pos.Tile())
-		if dist > radius {
-			continue
-		}
 		if bestDist == -1 || dist < bestDist || (dist == bestDist && id < bestID) {
 			bestID, bestDist = id, dist
 		}
+	}
+	// Free sources within scene radius — "what is around me."
+	for id, obj := range w.VillageObjects {
+		if obj == nil {
+			continue
+		}
+		if a.Pos.Chebyshev(obj.Pos.Tile()) > radius {
+			continue
+		}
+		consider(id)
+	}
+	// Plus any object the actor was SHOWN this tick (a free source / rest spot a
+	// cue named) — at any distance. ZBBS-HOME-389.
+	for _, id := range shown {
+		consider(id)
 	}
 	if bestDist == -1 {
 		return "", false
