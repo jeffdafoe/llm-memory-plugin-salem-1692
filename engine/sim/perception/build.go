@@ -894,14 +894,16 @@ func minuteInWindow(start, end, now int) bool {
 // a is guaranteed non-nil by Build's early return on a missing actor snapshot —
 // the same invariant buildAnchors and the other sub-builders rely on.
 func buildDutySteer(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapshot, anchors *AnchorsView, hasRestockErrand bool) *DutySteerView {
+	// Nil guard FIRST, so the a.Kind / clock dereferences below are safe even
+	// when buildDutySteer is called directly (Build never passes a nil actor
+	// snapshot, but the unit tests do). No anchors → no work/home to steer
+	// toward; no clock → can't tell the hour. (code_review, HOME-400 Option B.)
+	if snap == nil || a == nil || anchors == nil || snap.LocalMinuteOfDay == nil {
+		return nil
+	}
 	// Agent NPCs only — PCs are player-driven; decoratives are walked directly
 	// by the shift ticker and never get a perception prompt.
 	if a.Kind != sim.KindNPCStateful && a.Kind != sim.KindNPCShared {
-		return nil
-	}
-	// No anchors → no work/home to steer toward; no clock → can't tell the hour.
-	// snap/a guarded too so the hasRedNeed/clock dereferences below are safe.
-	if anchors == nil || snap == nil || a == nil || snap.LocalMinuteOfDay == nil {
 		return nil
 	}
 	// A pressing (red) need outranks duty: don't march an exhausted/starving NPC
@@ -1009,7 +1011,9 @@ func anyNeedMildOrWorse(a *sim.ActorSnapshot, snap *sim.Snapshot) bool {
 // return-to-post cue is suppressed so the buyer isn't pulled out of the
 // conversation before the seller can accept_pay — acceptance re-checks that both
 // parties are still co-present, so walking away fails the trade (ZBBS-HOME-400
-// Option B). Scans the published pay ledger (small — only live entries). Nil-safe.
+// Option B). Scans the published pay ledger, which is bounded by the TTL sweep
+// (RunPayLedgerSweep); if terminal entries are ever found to accumulate, index
+// pending outgoing offers at snapshot build time instead (code_review). Nil-safe.
 func hasPendingOutgoingOffer(snap *sim.Snapshot, actorID sim.ActorID) bool {
 	if snap == nil {
 		return false

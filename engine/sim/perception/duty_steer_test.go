@@ -135,6 +135,18 @@ func TestBuildDutySteer(t *testing.T) {
 			t.Fatalf("want nil (clock unknown), got %+v", v)
 		}
 	})
+	t.Run("nil actor -> nil (no panic)", func(t *testing.T) {
+		// Pins the guard-ordering fix: the a.Kind deref must not run before the
+		// nil check (code_review, HOME-400 Option B).
+		if v := dutySteer(dutySnap(1100, 420, 1140), nil, dutyAnchors); v != nil {
+			t.Fatalf("want nil (nil actor), got %+v", v)
+		}
+	})
+	t.Run("nil snapshot -> nil", func(t *testing.T) {
+		if v := dutySteer(nil, agentSched("general_store"), dutyAnchors); v != nil {
+			t.Fatalf("want nil (nil snapshot), got %+v", v)
+		}
+	})
 	t.Run("nil anchors -> nil", func(t *testing.T) {
 		if v := dutySteer(dutySnap(1100, 420, 1140), agentSched("general_store"), nil); v != nil {
 			t.Fatalf("want nil (no anchors), got %+v", v)
@@ -196,6 +208,26 @@ func TestBuildDutySteer_OptionBSuppression(t *testing.T) {
 		}
 		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false); v == nil || !v.ToWork {
 			t.Fatalf("want toWork (another actor's offer is irrelevant), got %+v", v)
+		}
+	})
+	t.Run("own NON-pending (accepted) offer does not suppress", func(t *testing.T) {
+		// Only a Pending offer signals "waiting for the seller's accept_pay"; a
+		// terminal entry must not keep suppressing the cue (code_review).
+		snap, a := onShiftAway()
+		snap.PayLedger = map[sim.LedgerID]*sim.PayLedgerEntry{
+			1: {BuyerID: "moses", State: sim.PayLedgerStateAccepted},
+		}
+		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false); v == nil || !v.ToWork {
+			t.Fatalf("want toWork (own terminal offer is irrelevant), got %+v", v)
+		}
+	})
+	t.Run("a silent (sub-mild) need does not suppress", func(t *testing.T) {
+		// hunger 5 is below the silent floor (8), so it tiers below mild and must
+		// NOT suppress — pins the lower boundary of anyNeedMildOrWorse (code_review).
+		snap, a := onShiftAway()
+		a.Needs = map[sim.NeedKey]int{"hunger": 5}
+		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false); v == nil || !v.ToWork {
+			t.Fatalf("want toWork (sub-mild need does not suppress), got %+v", v)
 		}
 	})
 	t.Run("go-home arm is NOT suppressed by these signals", func(t *testing.T) {
