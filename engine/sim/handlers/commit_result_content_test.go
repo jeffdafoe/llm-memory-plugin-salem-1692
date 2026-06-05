@@ -141,15 +141,23 @@ func TestPayOfferKey(t *testing.T) {
 		t.Fatal("plain offer should produce a key")
 	}
 
-	// Price drift (the actual storm: 5 → 10) must collide with the first offer.
-	k2, ok2 := keyOf(PayWithItemArgs{Seller: "Moses James", Item: "carrots", Qty: 20, Amount: 10})
-	if !ok2 || k2 != k1 {
-		t.Errorf("price/qty drift should collide: k1=%q k2=%q", k1, k2)
+	// Price drift (the actual storm: 5 → 10, qty held) must collide — amount is
+	// excluded from the key.
+	if k2, ok2 := keyOf(PayWithItemArgs{Seller: "Moses James", Item: "carrots", Qty: 20, Amount: 10}); !ok2 || k2 != k1 {
+		t.Errorf("price drift should collide: k1=%q k2=%q", k1, k2)
 	}
 
-	// Spacing/case drift normalizes to the same key.
-	k3, ok3 := keyOf(PayWithItemArgs{Seller: "  moses  james ", Item: "CARROTS", Qty: 1, Amount: 1})
-	if !ok3 || k3 != k1 {
+	// Qty drift (20 → 5, price held) must ALSO collide — qty is excluded too, by
+	// design: one pending offer per (seller, item, disposition) per tick, the
+	// buyer reconsiders quantity next tick after the seller responds (not by
+	// stacking a second pending offer the seller has not yet seen).
+	if kq, okq := keyOf(PayWithItemArgs{Seller: "Moses James", Item: "carrots", Qty: 5, Amount: 5}); !okq || kq != k1 {
+		t.Errorf("qty drift should collide: k1=%q kq=%q", k1, kq)
+	}
+
+	// Spacing/case drift normalizes to the same key — qty/price held constant
+	// here to isolate normalization from the term-exclusion above.
+	if k3, ok3 := keyOf(PayWithItemArgs{Seller: "  moses  james ", Item: "CARROTS", Qty: 20, Amount: 5}); !ok3 || k3 != k1 {
 		t.Errorf("case/space drift should collide: k1=%q k3=%q", k1, k3)
 	}
 

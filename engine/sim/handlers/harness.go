@@ -364,8 +364,9 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 	// storm). Each offer also spawned its own ledger row that later rendered a
 	// separate "fell through" line, so the storm multiplied the NEXT tick's
 	// perception too. One offer per (seller, item, disposition) per tick: after
-	// that the buyer awaits the seller's accept/decline/counter. See payOfferKey
-	// for the keying rationale (price deliberately excluded).
+	// that the buyer awaits the seller's accept/decline/counter — at any terms.
+	// See payOfferKey for the keying rationale (price AND qty deliberately
+	// excluded).
 	offeredThisTick := map[string]struct{}{}
 	for round := 0; round < maxTotalRounds; round++ {
 		result.IterationCount = round + 1
@@ -488,15 +489,17 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 			// spawning a ledger row that later rendered its own "fell through"
 			// line (the observed Josiah×Moses carrot storm). Reject a second offer
 			// for the same (seller, item, disposition) this tick model-facing so
-			// the buyer awaits the seller's answer or calls done(). Keyed WITHOUT
-			// price so a re-offer at a drifting amount (5 coins, then 10, then 10…)
-			// still matches — that drift WAS the storm. Quote-take and
-			// counter-response paths are exempt (see payOfferKey).
+			// the buyer awaits the seller's answer or calls done(). One offer per
+			// (seller, item, disposition) per tick: the key excludes BOTH price
+			// and qty (see payOfferKey), so a re-offer at drifting terms (5 coins,
+			// then 10; or a changed quantity) still matches — the buyer reconsiders
+			// next tick, after the seller responds. Quote-take and counter-response
+			// paths are exempt (see payOfferKey).
 			if key, isOffer := payOfferKey(vc); isOffer {
 				if _, dup := offeredThisTick[key]; dup {
 					observationOnly = false
 					result.ToolsFailedRejected = append(result.ToolsFailedRejected, call.Name)
-					transcript = append(transcript, toolResultMsg(call.ID, "[error: already_offered] you already made that offer this turn — wait for their answer, or call done()."))
+					transcript = append(transcript, toolResultMsg(call.ID, "[error: already_offered] you already made an offer for that item to that seller this turn — wait for their answer, or call done()."))
 					continue
 				}
 			}
@@ -833,13 +836,16 @@ func speakUtteranceKey(vc *ValidatedCall) (string, bool) {
 
 // payOfferKey returns the normalized same-tick dedup key for a pay_with_item
 // call and true, or ("", false) for any other tool or a pay call that is NOT a
-// plain new offer. The key is (seller, item, disposition) — deliberately WITHOUT
-// amount or qty, because the observed storm re-offered the SAME item to the SAME
-// seller at a drifting price (5 coins, then 10, then 10…) every round; keying on
-// price would let that exact storm straight through. One offer per (seller,
-// item, disposition) per tick is the intent: once an offer is before the seller,
-// the buyer awaits their accept/decline/counter rather than piling on more
-// offers the seller has not yet seen.
+// plain new offer. The key is (seller, item, disposition) — the offer's identity
+// MINUS its terms. Both price (amount) AND quantity (qty) are excluded by
+// design: the rule is one pending offer per (seller, item, disposition) per
+// tick. Once an offer is before the seller, the buyer awaits their
+// accept/decline/counter rather than placing a second offer the seller has not
+// yet seen — at ANY terms; a genuine change of price or quantity belongs in the
+// NEXT tick, after the response. Excluding the terms is also what makes the
+// guard robust to the observed storm, which re-offered the same item at a
+// drifting price (5 coins, then 10, then 10…) every round — a key that included
+// the terms would let each drifted re-offer straight through.
 //
 // Scoped to the default pending-offer path: a quote take (quote_id) closes the
 // deal instantly and a counter-response (in_response_to) is a deliberate,

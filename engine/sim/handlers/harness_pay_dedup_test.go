@@ -78,8 +78,8 @@ func TestPayOfferKey_ProductionDecoderShape(t *testing.T) {
 
 // The storm itself: a buyer re-offers the SAME item to the SAME seller on a later
 // round at a DRIFTING price (5 coins, then 10). The second offer is rejected
-// before dispatch (price is not in the key), the model ends with done(), and
-// exactly one ledger offer lands instead of one-per-round.
+// before dispatch (terms are excluded from the key), the model ends with done(),
+// and exactly one ledger offer lands instead of one-per-round.
 func TestHarness_PayDedup_RejectsRepeatOfferAcrossRoundsDespitePriceDrift(t *testing.T) {
 	w, cancel := newHarnessWorld(t, "attempt-A")
 	defer cancel()
