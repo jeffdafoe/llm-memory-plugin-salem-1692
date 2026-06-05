@@ -309,6 +309,32 @@ func businessRememberedShut(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, st
 	return age >= 0 && age < sim.ClosedBusinessMemoryTTL
 }
 
+// closedNowAnnotation is the in-world suffix appended to a buy cue whose backing
+// vendor is asleep right now — the live off-shift-night-shift-keeper-abed case
+// (ZBBS-HOME-387). Unlike closedBusinessAnnotation (the buyer's DECAYING memory
+// of once finding a shop shut), this is a LIVE read off the published snapshot,
+// so it is stated present-tense and definitively: the shop is unstaffed at this
+// instant. Render prefers it over the experiential Shut suffix when both apply —
+// live state beats stale memory.
+const closedNowAnnotation = " — but no one is tending it just now"
+
+// vendorKeeperAsleep reports whether the actor backing a vendor offer is asleep
+// at snapshot time — i.e. not open for business, so the cue should read closed.
+// The snapshot-side proxy for sim.actorIsResting (the predicate occupancy uses
+// to darken a tavern when its keeper beds down): the rest WINDOWS
+// (SleepingUntil/BreakUntil) are deliberately off the published snapshot, but
+// State is on it and executeNPCSleep stamps State=StateSleeping on bed-down.
+// Gated on sleeping ONLY — StateResting is overloaded (take_break AND
+// dwell-credit/eating-at-post), so a resting keeper is left alone to avoid
+// false-closing a shop whose keeper is merely dwelling at the counter.
+func vendorKeeperAsleep(snap *sim.Snapshot, vendorID sim.ActorID) bool {
+	if snap == nil {
+		return false
+	}
+	v := snap.Actors[vendorID]
+	return v != nil && v.State == sim.StateSleeping
+}
+
 // outOfStockAnnotation is the in-world suffix appended to a buy cue for a
 // (vendor, item) the subject remembers finding out of stock (ZBBS-HOME-363).
 // Recalled experience, not a live read — it deprioritizes rather than forbids
