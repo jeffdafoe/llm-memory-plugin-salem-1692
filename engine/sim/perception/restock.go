@@ -44,6 +44,18 @@ type RestockItemView struct {
 	Cap        int
 	Vendors    []RestockVendor
 
+	// CoPresentSeller is the display name of a seller of this item who shares the
+	// reseller's CURRENT huddle right now — so a pay_with_item(seller: …) for this
+	// item resolves this very tick (ZBBS-HOME-388). When set, render swaps the
+	// generic "walk to a supplier" vendor list for a concrete "buy it here now"
+	// imperative naming this seller: live evidence showed that, even standing at
+	// the seller with pay_with_item available and named in the cue, the weak
+	// stateful model narrated its need ("I am in need of milk…") and walked off
+	// without ever calling the tool. The arrived-at-the-seller moment is exactly
+	// when the imperative must become concrete. Empty when no seller of the item
+	// is co-present (then the walk-to list renders as before).
+	CoPresentSeller string
+
 	// kind is the final sort tie-break so two item kinds sharing a display label
 	// order deterministically (BuyEntries order is stable, but the sort makes the
 	// section robust to policy reordering too). Unexported — never rendered.
@@ -85,11 +97,12 @@ func buildRestocking(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 			continue
 		}
 		items = append(items, RestockItemView{
-			ItemLabel:  itemDisplayLabel(snap, e.Item),
-			CurrentQty: current,
-			Cap:        cap,
-			Vendors:    findItemVendors(snap, actorID, actorSnap, e.Item),
-			kind:       e.Item,
+			ItemLabel:       itemDisplayLabel(snap, e.Item),
+			CurrentQty:      current,
+			Cap:             cap,
+			Vendors:         findItemVendors(snap, actorID, actorSnap, e.Item),
+			CoPresentSeller: coPresentSellerForItem(snap, actorID, actorSnap, e.Item),
+			kind:            e.Item,
 		})
 	}
 	if len(items) == 0 {
@@ -159,23 +172,63 @@ func findItemVendors(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *sim.Act
 	return out
 }
 
+// coPresentSellerForItem returns the display name of a seller holding itemKind
+// who shares the reseller's CURRENT huddle — i.e. a pay_with_item(seller: …) for
+// this item resolves this very tick. pay_with_item requires the seller to be "in
+// your conversation", and a shared huddle IS that conversation, so this is the
+// exact precondition for the buy-here imperative (and the same co-presence test
+// deliver_order's gate uses — see absentRecipientNames in build.go). Runs over
+// the shared structural-vendorship scan (eachVendorOffer), like findItemVendors.
+// Returns "" when the reseller is in no huddle, or no co-present seller of
+// itemKind has a usable display name. Deterministic: lowest VendorID among the
+// co-present sellers, so the named seller is stable across snapshots. ZBBS-HOME-388.
+func coPresentSellerForItem(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *sim.ActorSnapshot, itemKind sim.ItemKind) string {
+	huddle := buyerSnap.CurrentHuddleID
+	if huddle == "" {
+		return ""
+	}
+	var bestID sim.ActorID
+	var bestName string
+	eachVendorOffer(snap, buyerID, func(o vendorOffer) {
+		if o.Kind != itemKind {
+			return
+		}
+		seller := snap.Actors[o.VendorID]
+		if seller == nil || seller.DisplayName == "" || seller.CurrentHuddleID != huddle {
+			return
+		}
+		if bestID == "" || o.VendorID < bestID {
+			bestID = o.VendorID
+			bestName = seller.DisplayName
+		}
+	})
+	return bestName
+}
+
 // renderRestocking writes the "## Restocking" section. Content-gated: a
 // nil/empty view writes nothing. Each low item leads with its on-hand/cap so the
 // reseller can size the buy (it picks its own quantity — the line hints the
-// headroom), then lists where to buy (structure_id for move_to). The header
-// names the move_to + pay_with_item path as an explicit two-step sequence and
-// deliberately carries neither the word "ask" nor "price" — ZBBS-HOME-386: the
-// old prose ("walk to a supplier and pay") plus an "ask the supplier" price hint
-// drew the stateful model into SPEAKING price questions on a loop instead of
-// calling pay_with_item, and even a negated "do not ask the price" still primes
-// that on a weak model (code_review), so the wording avoids both tokens. Same
-// actionable-cue treatment WORK-372 gave deliver_order.
+// headroom), then EITHER a "buy it here now" imperative when a seller of that
+// item shares the reseller's huddle (CoPresentSeller set), OR the generic list
+// of where to walk to buy (structure_id for move_to). The header covers both
+// cases — pay now if a seller is here, else walk then pay — without ordering
+// movement first (ZBBS-HOME-388), and deliberately carries neither the word
+// "ask" nor "price" — ZBBS-HOME-386: the old prose
+// ("walk to a supplier and pay") plus an "ask the supplier" price hint drew the
+// stateful model into SPEAKING price questions on a loop instead of calling
+// pay_with_item, and even a negated "do not ask the price" still primes that on a
+// weak model (code_review), so the wording avoids both tokens. Same actionable-
+// cue treatment WORK-372 gave deliver_order. ZBBS-HOME-388 added the co-present
+// imperative because the generic cue alone failed live: at the seller, with
+// pay_with_item available and named, the model still narrated and walked off — so
+// at the moment a seller is co-present the cue gives a complete, copyable
+// pay_with_item call and drops the now-redundant walk-to list for that item.
 func renderRestocking(b *strings.Builder, v *RestockingView) {
 	if v == nil || len(v.Items) == 0 {
 		return
 	}
 	b.WriteString("## Restocking\n")
-	b.WriteString("Your shop stock of these bought-in goods is running low. Restock in two steps: first use move_to for one listed supplier, then when you arrive use pay_with_item to buy more, up to your cap. The supplier is listed below; go there and pay when you arrive.\n")
+	b.WriteString("Your shop stock of these bought-in goods is running low. If a seller is here with you, use pay_with_item now to buy from them. Otherwise use move_to to reach a listed supplier, then use pay_with_item when you arrive. You choose how much, up to your cap.\n")
 	for _, it := range v.Items {
 		headroom := it.Cap - it.CurrentQty
 		if headroom < 0 {
@@ -183,6 +236,14 @@ func renderRestocking(b *strings.Builder, v *RestockingView) {
 		}
 		fmt.Fprintf(b, "- %s: %d on hand of %d cap (room for %d more).",
 			sanitizeInline(it.ItemLabel), it.CurrentQty, it.Cap, headroom)
+		// A seller of this item is in the conversation right now: give the exact
+		// pay_with_item call and skip the walk-to list — he is already there.
+		if it.CoPresentSeller != "" {
+			seller := sanitizeInline(it.CoPresentSeller)
+			fmt.Fprintf(b, "\n  - %s is here with you and sells %s. Buy it now — call pay_with_item with seller \"%s\", item \"%s\", a qty up to %d, an amount of coins to offer, and consume_now false. They will accept or counter your offer.\n",
+				seller, sanitizeInline(it.ItemLabel), seller, sanitizeInline(string(it.kind)), headroom)
+			continue
+		}
 		if len(it.Vendors) == 0 {
 			b.WriteString(" No supplier nearby is currently holding stock.\n")
 			continue
