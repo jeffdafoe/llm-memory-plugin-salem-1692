@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/chatlog"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/promptlog"
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/telemetry"
 )
@@ -24,6 +25,7 @@ type Server struct {
 	hub              *Hub
 	telemetry        *telemetry.RingSink
 	prompts          *promptlog.RingSink
+	chat             *chatlog.RingSink
 	checkpointHealth *sim.CheckpointHealth
 	controlEnabled   bool
 	errorLog         *errorRing
@@ -90,6 +92,16 @@ func (s *Server) SetTelemetry(ring *telemetry.RingSink) {
 // Handler, never concurrently with serving.
 func (s *Server) SetPrompts(ring *promptlog.RingSink) {
 	s.prompts = ring
+}
+
+// SetChat attaches the per-scene chat-exchange ring (ZBBS-HOME-382), backing the
+// operator-gated GET /umbilical/chat route. Optional and independent of
+// SetTelemetry: when nil, that route still registers (it's in the umbilical
+// table, gated on SetTelemetry like the rest) but reports an empty list. Like
+// SetPrompts, MUST be called before Handler and before serving — it mutates s
+// without synchronization.
+func (s *Server) SetChat(ring *chatlog.RingSink) {
+	s.chat = ring
 }
 
 // SetCheckpointHealth attaches the durable-checkpoint health recorder so the
