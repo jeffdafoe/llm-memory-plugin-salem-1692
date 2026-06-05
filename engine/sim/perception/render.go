@@ -716,11 +716,16 @@ func renderNarrativeState(b *strings.Builder, n *NarrativeStateView) {
 // Actor.BusinessownerState != nil keeper predicate), so it reaches vendors
 // (innkeeper, farmers, shopkeepers) but not visitors or stateful NPCs. The
 // scoped wording replaces "always be closing" with "a greeting is not a sale".
+// ZBBS-HOME-385 restores the "tend to your trade" working framing that the
+// WORK-374 port dropped (the producers were drifting off-post with nothing to
+// do); kept generic ("your trade", not "your stall") since a vendor may keep a
+// stall or a building.
 func renderVendorOperating(b *strings.Builder, businessowner bool) {
 	if !businessowner {
 		return
 	}
 	b.WriteString("How you trade:\n")
+	b.WriteString("- Tend to your trade — your living depends on it. Look after your goods and your custom; what goes unsold earns nothing, so see to the day's business rather than let it pass idle.\n")
 	b.WriteString("- If someone only greets you, greet them and let them state their business — don't quote prices or pitch your goods or rooms unless they ask or show interest.\n")
 	b.WriteString("- When trade is slow, make a reasonable deal rather than hold the line on price; decline plainly if a stranger's purse is short.\n")
 	b.WriteString("Plain 1692 New England speech; no modern idioms.\n\n")

@@ -29,6 +29,11 @@ func TestRenderVendorOperating_Gate(t *testing.T) {
 	if !strings.Contains(got, "don't quote prices or pitch your goods or rooms unless they ask") {
 		t.Errorf("operating block missing the greet-is-not-a-sale rule, got: %q", got)
 	}
+	// ZBBS-HOME-385: the "tend to your trade" working framing keeps vendors at
+	// their business instead of drifting off-post with nothing to do.
+	if !strings.Contains(got, "- Tend to your trade — your living depends on it.") {
+		t.Errorf("operating block missing the tend-to-your-trade framing, got: %q", got)
+	}
 
 	var off strings.Builder
 	renderVendorOperating(&off, false)
