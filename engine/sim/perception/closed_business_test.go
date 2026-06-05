@@ -168,4 +168,20 @@ func TestRenderSatiation_KeeperAsleepAnnotation(t *testing.T) {
 	if strings.Contains(out, "found it shut up") {
 		t.Errorf("experiential Shut annotation should be suppressed when live closed-now applies, got:\n%s", out)
 	}
+
+	// ClosedNow and OutOfStock are independent suffixes and both render when
+	// both apply — closed-now first (it shares the Shut slot), then out-of-stock.
+	subj.ClosedBusinessObs = nil
+	subj.OutOfStockObs = map[sim.OutOfStockKey]time.Time{
+		{StructureID: "tavern", ItemKind: "stew"}: now.Add(-time.Hour),
+	}
+	out = render()
+	closedIdx := strings.Index(out, "no one is tending it just now")
+	stockIdx := strings.Index(out, "found them out")
+	if closedIdx < 0 || stockIdx < 0 {
+		t.Errorf("expected BOTH closed-now and out-of-stock suffixes, got:\n%s", out)
+	}
+	if closedIdx >= 0 && stockIdx >= 0 && closedIdx > stockIdx {
+		t.Errorf("closed-now suffix should precede out-of-stock suffix, got:\n%s", out)
+	}
 }
