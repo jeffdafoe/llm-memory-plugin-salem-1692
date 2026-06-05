@@ -305,6 +305,10 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 	// conversation across iterations. Model is the actor's VA slug.
 	sceneID := llm.NewSceneID()
 	model := actor.LLMAgent
+	// ZBBS-HOME-397: the conversation_id grouping key, threaded alongside the
+	// per-tick sceneID so memory-api can group the whole exchange under one
+	// conversation in the admin chat viewer (see conversationIDFromPayload).
+	conversationID := conversationIDFromPayload(payload)
 
 	// ZBBS-HOME-382: capture the rendered perception (tx) into the per-scene
 	// chat ring so the umbilical /chat route shows what the model was sent
@@ -333,7 +337,7 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 	// presence of trailing tool messages, so spurious exits skip the
 	// call. See engine/sim/llm/memapi package doc.
 	defer func() {
-		h.persistTickToolResults(ctx, model, sceneID, transcript, result.TerminalStatus)
+		h.persistTickToolResults(ctx, model, sceneID, conversationID, transcript, result.TerminalStatus)
 	}()
 
 	// --- iteration loop ---
@@ -380,6 +384,7 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 		resp, err := h.client.Complete(ctx, llm.Request{
 			Model:            model,
 			SceneID:          sceneID,
+			ConversationID:   conversationID,
 			Messages:         transcript,
 			Tools:            tools,
 			EphemeralContext: rendered.EphemeralText,
@@ -877,6 +882,21 @@ func payOfferKey(vc *ValidatedCall) (string, bool) {
 	return seller + "\x00" + item + "\x00" + disposition, true
 }
 
+// conversationIDFromPayload returns the narrative-beat scene id the perception
+// was built within (sim.Scene.ID, via the primary SceneView) — the cross-tick,
+// cross-participant conversation_id (ZBBS-HOME-397). All ticks of one
+// conversation beat, by every participant, resolve to the same primary scene, so
+// stamping it on the chat rows lets memory-api collapse the whole exchange into
+// one conversation in the admin viewer. Empty when no primary scene resolved (a
+// solo tick with no active huddle) so the row stays ungrouped, like
+// companion-mode chat.
+func conversationIDFromPayload(p perception.Payload) string {
+	if p.Primary == nil {
+		return ""
+	}
+	return string(p.Primary.SceneID)
+}
+
 // fullPerceptionPrompt joins the durable turn and the ephemeral current-tick
 // context into the single prompt the model effectively saw, for the umbilical
 // debug surface (ZBBS-WORK-364). The two travel separately on the wire (durable
@@ -1016,7 +1036,7 @@ func truncateUTF8(s string, max int) string {
 
 func (h *Harness) persistTickToolResults(
 	ctx context.Context,
-	model, sceneID string,
+	model, sceneID, conversationID string,
 	transcript []llm.Message,
 	status sim.TickTerminalStatus,
 ) {
@@ -1050,9 +1070,10 @@ func (h *Harness) persistTickToolResults(
 	persistCtx, cancel := context.WithTimeout(context.Background(), persistTimeout)
 	defer cancel()
 	err := persister.PersistToolResults(persistCtx, llm.PersistRequest{
-		Model:   model,
-		SceneID: sceneID,
-		Results: results,
+		Model:          model,
+		SceneID:        sceneID,
+		ConversationID: conversationID,
+		Results:        results,
 	})
 	if err != nil {
 		log.Printf("handlers: persist tick tool results (model=%q scene=%q n=%d): %v",

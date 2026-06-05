@@ -87,7 +87,7 @@ func TestHarness_PersistTickToolResults_OnSuccess(t *testing.T) {
 		{Role: llm.RoleAssistant, ToolCalls: []llm.RawToolCall{{ID: "c-move", Name: "move_to"}}},
 		{Role: llm.RoleTool, ToolCallID: "c-move", Content: "[ok]"},
 	}
-	h.persistTickToolResults(context.Background(), "zbbs-josiah", "scene-x",
+	h.persistTickToolResults(context.Background(), "zbbs-josiah", "scene-x", "sc-conv-x",
 		transcript, sim.TickStatusSuccess)
 
 	persists := client.PersistRequests()
@@ -99,6 +99,9 @@ func TestHarness_PersistTickToolResults_OnSuccess(t *testing.T) {
 	}
 	if persists[0].SceneID != "scene-x" {
 		t.Errorf("SceneID = %q", persists[0].SceneID)
+	}
+	if persists[0].ConversationID != "sc-conv-x" {
+		t.Errorf("ConversationID = %q, want sc-conv-x", persists[0].ConversationID)
 	}
 	if len(persists[0].Results) != 1 || persists[0].Results[0].ID != "c-move" {
 		t.Errorf("Results = %+v", persists[0].Results)
@@ -133,7 +136,7 @@ func TestHarness_PersistTickToolResults_GateMatrix(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			client := llm.NewFakeClient()
 			h, _ := newTestHarness(t, client, 0, 0)
-			h.persistTickToolResults(context.Background(), "zbbs-josiah", "scene-x",
+			h.persistTickToolResults(context.Background(), "zbbs-josiah", "scene-x", "sc-conv-x",
 				transcript, tc.status)
 			got := len(client.PersistRequests())
 			want := 0

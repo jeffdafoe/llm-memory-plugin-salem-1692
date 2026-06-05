@@ -56,6 +56,17 @@ type Request struct {
 	// pairs thread within the same scene.
 	SceneID string
 
+	// ConversationID, when set, is the engine's narrative-beat scene id
+	// (sim.Scene.ID — the cascade/encounter the tick belongs to), distinct
+	// from the per-tick SceneID above. It is STABLE across the ticks and the
+	// participants of one conversation beat, so adapters that thread it
+	// (memory-api: stamps it on the chat rows) let the admin chat viewer
+	// group a whole exchange into one collapsible conversation instead of
+	// one group per tick. Empty when the tick resolved no scene (a solo
+	// deliberation with no active huddle), in which case the row stays
+	// ungrouped like companion-mode. ZBBS-HOME-397.
+	ConversationID string
+
 	// EphemeralContext, when set, is per-call scratch context (the current
 	// tick's affordances / world-state) the adapter attaches to the model's
 	// CURRENT turn but does NOT persist into history. It lets the harness keep
@@ -96,6 +107,12 @@ type PersistRequest struct {
 	// scopes Complete. Should match the SceneID used on the prior
 	// Complete that produced the tool_calls being persisted.
 	SceneID string
+
+	// ConversationID is the narrative-beat scene id, threaded through to the
+	// persisted rows so a tick's trailing tool-result rows group under the
+	// same conversation as its Complete rows. Should match the
+	// ConversationID used on that prior Complete. ZBBS-HOME-397.
+	ConversationID string
 
 	// Results is the per-call list, ordered to match the model's emit
 	// order. Must be non-empty.
