@@ -366,7 +366,7 @@ func (s *Server) handleUmbilicalReactor(w http.ResponseWriter, r *http.Request) 
 // triage village health at a glance (who's starving/exhausted) and pick a
 // reset/nudge/settle target. Needs are read LIVE — they are deliberately NOT on
 // the published snapshot's client AgentDTO, so this is the only one-shot
-// "everyone's needs" view. Shared by /actors (list) and /reset-needs
+// "everyone's needs" view. Shared by /actors (list) and /set-needs
 // (post-mutation echo).
 type UmbilicalActorRowDTO struct {
 	ID          string         `json:"id"`
@@ -381,7 +381,7 @@ type UmbilicalActorRowDTO struct {
 
 // UmbilicalActorsDTO is the GET /api/village/umbilical/actors response: the full
 // actor roster (every actor, sorted by id) each with its live needs — the "who
-// needs a reset" companion to the /reset-needs control route.
+// needs a reset" companion to the /set-needs control route.
 type UmbilicalActorsDTO struct {
 	ContractVersion int                    `json:"contract_version"`
 	Now             time.Time              `json:"now"`
