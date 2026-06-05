@@ -332,10 +332,6 @@ func ApplyPayLedgerCounterSafetyFloor(w *World) {
 // behavior in isolation.
 func PayLedgerSeqForTest(w *World) uint64 { return w.payLedgerSeq }
 
-// NextOrderSeq is the world-goroutine-only OrderID minter for tests
-// (callers MUST be inside a Command.Fn). Phase 3 PR S6.
-func NextOrderSeq(w *World) OrderID { return w.nextOrderSeq() }
-
 // EffectiveOrderTTL exposes the WorldSettings → default fallback for
 // table tests. Phase 3 PR S6.
 func EffectiveOrderTTL(s WorldSettings) time.Duration { return effectiveOrderTTL(s) }
@@ -347,11 +343,6 @@ func EffectiveOrderSweepCadence(s WorldSettings) time.Duration { return effectiv
 // RestartExpirePendingOrders is the LoadWorld-time order expiry pass.
 // Test hook for the PR S6 restart contract.
 func RestartExpirePendingOrders(w *World, now time.Time) { restartExpirePendingOrders(w, now) }
-
-// OrderSeqForTest exposes the per-run OrderID counter so PR S6
-// sim_test can assert "counter starts at 0" and restart safety-floor
-// behavior in isolation.
-func OrderSeqForTest(w *World) uint64 { return w.orderSeq }
 
 // CreateOrderForPayWithItem exposes the internal helper that mints
 // an Order from a PayLedgerEntry at AcceptPay time. Test hook so

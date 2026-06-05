@@ -137,9 +137,9 @@ ON CONFLICT (id) DO UPDATE SET
 // / non-fulfillment-tracking). Both surface as a substrate-level error.
 const writeTerminalSQL = `
 UPDATE pay_ledger
-SET fulfillment_status = $2,
+SET fulfillment_status = $2::text,
     delivered_on       = $3,
-    expires_at         = CASE WHEN $2 = 'expired' THEN NOW() ELSE expires_at END
+    expires_at         = CASE WHEN $2::text = 'expired' THEN NOW() ELSE expires_at END
 WHERE id = $1
   AND state = 'accepted'
   AND fulfillment_status IN ('ready', 'pending', 'delivered', 'expired')`
@@ -389,6 +389,22 @@ func (r *OrdersRepo) WriteTerminal(ctx context.Context, o *sim.Order) error {
 		return fmt.Errorf("pg orders WriteTerminal: order %d not found or not a writable v2 accepted order row", o.ID)
 	}
 	return nil
+}
+
+// maxLedgerIDSQL reads the largest id in pay_ledger (0 when empty) — the
+// durable high-water mark the LedgerID allocator must start above so a
+// post-restart mint can't reuse an id. ZBBS-HOME-394.
+const maxLedgerIDSQL = `SELECT COALESCE(max(id), 0) FROM pay_ledger`
+
+// MaxLedgerID reports the largest pay_ledger id (0 when empty). See the
+// OrdersRepo interface doc: FinalizeLoad seeds payLedgerSeq from it so a
+// mint after restart never reuses an id and clobbers a historical row.
+func (r *OrdersRepo) MaxLedgerID(ctx context.Context) (int64, error) {
+	var maxID int64
+	if err := r.pool.QueryRow(ctx, maxLedgerIDSQL).Scan(&maxID); err != nil {
+		return 0, fmt.Errorf("pg orders MaxLedgerID: %w", err)
+	}
+	return maxID, nil
 }
 
 // loadRecentPricesSQL pulls the top-N most recent accepted rows per
