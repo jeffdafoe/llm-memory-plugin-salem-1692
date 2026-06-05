@@ -125,6 +125,14 @@ type SatiationVendor struct {
 	// window — render annotates the line so the model deprioritizes the trip.
 	// ZBBS-HOME-363.
 	OutOfStock bool
+
+	// ClosedNow is true when the vendor backing this offer is asleep at snapshot
+	// time (an off-shift night-shift keeper abed at the counter) — render
+	// annotates the line present-tense so the buyer redirects to an open source
+	// instead of petitioning a sleeping keeper who can't transact. Distinct from
+	// the experiential Shut memory: this is a LIVE state read, so it takes
+	// precedence over Shut in render. ZBBS-HOME-387.
+	ClosedNow bool
 }
 
 // buildSatiation builds the eat/drink view for actorSnap, or nil when no
@@ -207,6 +215,7 @@ func gatherSatiationVendors(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *
 				CostText:       vc.CostText,
 				Shut:           businessRememberedShut(snap, actorSnap, vc.StructureID),
 				OutOfStock:     outOfStock,
+				ClosedNow:      vendorKeeperAsleep(snap, vc.VendorID),
 			},
 			distTiles:  vendorStructureDistanceTiles(snap, actorSnap, vc.StructureID),
 			outOfStock: outOfStock,
@@ -515,7 +524,12 @@ func renderSatiation(b *strings.Builder, v *SatiationView) {
 				if vd.StructureID != "" {
 					fmt.Fprintf(b, " (structure_id: %s)", vd.StructureID)
 				}
-				if vd.Shut {
+				// Live "closed now" (keeper asleep) takes precedence over the
+				// stale experiential Shut memory — a present-tense read beats a
+				// decaying recollection when both point at the same shop.
+				if vd.ClosedNow {
+					b.WriteString(closedNowAnnotation)
+				} else if vd.Shut {
 					b.WriteString(closedBusinessAnnotation)
 				}
 				if vd.OutOfStock {
