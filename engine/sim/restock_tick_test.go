@@ -225,6 +225,41 @@ func TestEvaluateRestock_RestingAndOpenCycleSkipped(t *testing.T) {
 	}
 }
 
+// TestEvaluateRestock_WalkingSkipped: a reseller below the reorder threshold but
+// already en route somewhere (a live MoveIntent) is NOT re-warranted — the
+// per-minute, level-triggered producer would otherwise thrash the multi-minute
+// supplier trip, waking the reseller mid-walk to re-decide and reverse course
+// (the Josiah-Thorne oscillation, ZBBS-HOME-386). Once it arrives and stops, the
+// standing low-stock condition re-stamps it at the supplier.
+func TestEvaluateRestock_WalkingSkipped(t *testing.T) {
+	now := time.Now().UTC()
+
+	walking := reseller("walker", KindNPCStateful, "ale", 20, 0) // empty shelf — would warrant if stationary
+	walking.MoveIntent = &MoveIntent{
+		Destination: NewStructureEnterDestination("ellis-farm"),
+		AttemptID:   1,
+	}
+
+	w := restockWorld(walking)
+	if res, _ := EvaluateRestock(now).Fn(w); res.(int) != 0 {
+		t.Errorf("stamped = %d, want 0 (walking reseller left to arrive)", res.(int))
+	}
+	if hasWarrantKind(walking, WarrantKindRestock) {
+		t.Error("a reseller mid-walk should not be re-warranted for restock")
+	}
+
+	// Arrived (MoveIntent cleared): the same standing low shelf now re-stamps,
+	// so the trip-then-restock cycle still completes — the gate only defers, it
+	// doesn't drop the restock.
+	walking.MoveIntent = nil
+	if res, _ := EvaluateRestock(now).Fn(w); res.(int) != 1 {
+		t.Errorf("stamped = %d after arrival, want 1", res.(int))
+	}
+	if !hasWarrantKind(walking, WarrantKindRestock) {
+		t.Error("a stationary low-stock reseller should warrant after arriving")
+	}
+}
+
 // TestFirstLowBuyEntry_DeterministicOrder: the first low buy entry in policy
 // order is the one chosen, and entries above threshold are passed over.
 func TestFirstLowBuyEntry_DeterministicOrder(t *testing.T) {

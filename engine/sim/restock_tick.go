@@ -37,7 +37,11 @@ import (
 // of scope (PCs are player-driven; visitors run their own ExpiresAt lifecycle),
 // decoratives carry no real restock intent (they're not agent-backed), and
 // sleeping / on-break resellers are left alone (the same rest suppressor the
-// reactor and the #1/#2 producers use).
+// reactor and the #1/#2 producers use). A reseller already walking (a live
+// MoveIntent) is also left to arrive rather than re-warranted mid-walk — unlike
+// the other producers, restock sends the actor on a multi-minute trip to a
+// remote supplier, so a per-minute re-stamp would thrash that trip
+// (see restockEligible, ZBBS-HOME-386).
 
 // DefaultRestockReorderPct is the reorder threshold as a whole percent of an
 // entry's cap. A `buy` entry below this fraction of its cap warrants a restock
@@ -98,8 +102,9 @@ func firstLowBuyEntry(policy *RestockPolicy, inventory map[ItemKind]int, pct int
 
 // restockEligible reports whether an actor is a candidate for a restock warrant
 // this scan: an agent-backed NPC (stateful or shared VA), not a transient
-// visitor, not already pending / mid-tick, and not resting (asleep / on break).
-// Pure read of actor state. The low-stock check is separate (firstLowBuyEntry).
+// visitor, not already pending / mid-tick, not already walking somewhere, and
+// not resting (asleep / on break). Pure read of actor state. The low-stock check
+// is separate (firstLowBuyEntry).
 func restockEligible(a *Actor, now time.Time) bool {
 	if a.Kind != KindNPCStateful && a.Kind != KindNPCShared {
 		return false
@@ -108,6 +113,20 @@ func restockEligible(a *Actor, now time.Time) bool {
 		return false
 	}
 	if a.WarrantedSince != nil || a.TickInFlight {
+		return false
+	}
+	// Already walking: leave the reseller alone until it arrives. This producer
+	// is level-triggered (re-fires every minute while stock is low), but the
+	// trip to a supplier takes longer than the tick interval — so without this
+	// gate a fresh restock warrant re-stamps the reseller mid-walk every minute,
+	// waking it to re-decide and (on the weaker stateful model) abandon and
+	// reverse the very supplier trip the cue asked for: the live Josiah-Thorne
+	// oscillation — store → set off toward farm → stop mid-walk on the next
+	// 60s re-stamp → head back to store → pitch the restock at no one → repeat
+	// (ZBBS-HOME-386). The standing low-stock condition still holds on arrival,
+	// so the next stationary scan re-stamps and the reseller ticks at the
+	// supplier, where it can pay_with_item.
+	if a.MoveIntent != nil {
 		return false
 	}
 	if a.SleepingUntil != nil && a.SleepingUntil.After(now) {
