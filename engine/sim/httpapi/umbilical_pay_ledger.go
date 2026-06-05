@@ -36,9 +36,9 @@ type PayLedgerEntryDTO struct {
 	Depth         int       `json:"depth,omitempty"`
 	CounterAmount int       `json:"counter_amount,omitempty"`
 	Message       string    `json:"message,omitempty"`
-	CreatedAt     time.Time `json:"created_at"`
-	ResolvedAt    time.Time `json:"resolved_at"`
-	ExpiresAt     time.Time `json:"expires_at"`
+	CreatedAt     time.Time  `json:"created_at"`
+	ResolvedAt    *time.Time `json:"resolved_at,omitempty"` // nil while pending (zero time → null, not 0001-…)
+	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
 }
 
 // UmbilicalPayLedgerDTO is the GET /pay-ledger response.
@@ -78,7 +78,7 @@ func umbilicalPayLedgerFromSnapshot(snap *sim.Snapshot, limit int) UmbilicalPayL
 	out.Total = len(entries)
 
 	// Most-recent first — the debugging entry point is "what just happened".
-	// Ids are unique, so an id-desc sort is total + stable.
+	// IDs are unique, so id-desc gives a deterministic total order.
 	sort.Slice(entries, func(i, j int) bool { return entries[i].ID > entries[j].ID })
 
 	if limit > 0 && len(entries) > limit {
@@ -109,8 +109,16 @@ func payLedgerEntryDTO(e *sim.PayLedgerEntry) PayLedgerEntryDTO {
 		CounterAmount: e.CounterAmount,
 		Message:       e.Message,
 		CreatedAt:     e.CreatedAt,
-		ResolvedAt:    e.ResolvedAt,
-		ExpiresAt:     e.ExpiresAt,
+	}
+	// Resolved/expires are optional — surface nil (→ omitted) rather than a
+	// zero "0001-…" timestamp for a still-pending / non-expiring entry.
+	if !e.ResolvedAt.IsZero() {
+		resolved := e.ResolvedAt
+		dto.ResolvedAt = &resolved
+	}
+	if !e.ExpiresAt.IsZero() {
+		expires := e.ExpiresAt
+		dto.ExpiresAt = &expires
 	}
 	for _, c := range e.ConsumerIDs {
 		dto.ConsumerIDs = append(dto.ConsumerIDs, string(c))
