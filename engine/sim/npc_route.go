@@ -93,6 +93,15 @@ const (
 	RoutePhaseReturning RoutePhase = "returning"
 )
 
+// maxStaleRouteRetries bounds how many times a single stop is re-walked after a
+// stale arrival (the actor finished a move to somewhere other than the stop's
+// WalkTo — an external MoveActor superseded the route's walk) before the route
+// gives up on the stop and abandons. Without a re-walk a single bump stranded
+// the stop forever; without a bound, a producer that persistently bumps the
+// actor would re-walk it indefinitely. Per-stop budget, reset on each clean
+// visit (see advanceActiveRoute).
+const maxStaleRouteRetries = 3
+
 // RouteStop is one object the route visits with a pre-decided target
 // state. WalkTo is the grid-tile destination the actor moves to —
 // typically the adjacent walkable tile next to the object's anchor.
@@ -126,6 +135,13 @@ type NPCRoute struct {
 	StopIdx         int
 	Phase           RoutePhase
 	HomeDestination MoveDestination
+	// StaleRetries counts consecutive stale arrivals at the current stop (Stops
+	// [StopIdx]) — re-walk attempts since the last clean visit. Reset to 0 each
+	// time a stop is cleanly visited and the cursor advances. Once it reaches
+	// maxStaleRouteRetries the route abandons. In-memory only; routes are
+	// transient (re-triggered at the next phase/rotation boundary), so this is
+	// never persisted.
+	StaleRetries int
 }
 
 // RouteCandidate is one input to StartNPCRoute's route builder: an
@@ -282,7 +298,7 @@ func StartNPCRoute(actorID ActorID, label string, homeDest MoveDestination, cand
 // returned-home vs no-route-found.
 type AdvanceNPCRouteResult struct {
 	NPCID  ActorID
-	Reason string // "stop_advanced" | "returning_home" | "arrived_home" | "no_route" | "stale_stop"
+	Reason string // "stop_advanced" | "returning_home" | "arrived_home" | "no_route" | "stale_stop" | "stale_retry" | "stale_abandoned"
 }
 
 // AdvanceNPCRoute returns a Command that advances the named actor's
@@ -342,15 +358,15 @@ func AdvanceNPCRoute(actorID ActorID) Command {
 // current stop's state, advances StopIdx, dispatches next walk OR
 // transitions to returning + dispatches home walk.
 //
-// Stale-arrival guard: the cascade subscriber dispatches us on every
+// Stale-arrival handling: the cascade subscriber dispatches us on every
 // ActorArrived for an actor with an active route. If something other
 // than the route's MoveActor brought the actor to this tile (admin
 // force-move, an externally-issued MoveActor between supersede and
 // arrival, a still-in-flight prior cascade emit), the actor's tile
-// won't match the route's expected WalkTo. Skip the flip in that case
-// — the route is in an inconsistent state we shouldn't compound by
-// flipping a stop the actor may not have visited. The next legitimate
-// arrival will land us at the expected WalkTo.
+// won't match the route's expected WalkTo. We don't flip a stop the
+// actor isn't at; instead we re-walk to the current stop (bounded by
+// maxStaleRouteRetries) so a single bump no longer strands the stop, and
+// abandon the route once the budget is spent. See the stale branch below.
 func advanceActiveRoute(w *World, route *NPCRoute) (AdvanceNPCRouteResult, error) {
 	if route.StopIdx >= len(route.Stops) {
 		// Defensive — StopIdx should never exceed len(Stops) in active
@@ -376,9 +392,37 @@ func advanceActiveRoute(w *World, route *NPCRoute) (AdvanceNPCRouteResult, error
 	// (one tile per tick) BEFORE emitting ActorArrived. Reversing
 	// that ordering would make valid arrivals look stale.
 	if actor.Pos.X != stop.WalkTo.X || actor.Pos.Y != stop.WalkTo.Y {
-		log.Printf("sim/npc_route: %q stale arrival at (%d,%d), expected stop %d at (%d,%d) — skipping flip",
-			route.NPCID, actor.Pos.X, actor.Pos.Y, route.StopIdx, stop.WalkTo.X, stop.WalkTo.Y)
-		return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "stale_stop"}, nil
+		// Stale arrival: this ActorArrived was for some other destination — an
+		// external MoveActor (admin force-move, a competing producer's nudge)
+		// superseded the route's walk between dispatch and arrival, so the actor
+		// is not standing at the stop we expected. Don't flip a stop the actor
+		// isn't at.
+		//
+		// The old behavior returned here with no pending move, parking the route
+		// — one bump stranded the stop forever (the never-lit far lamp). Worse
+		// now that an in-flight route suppresses the shift-duty producer: a parked
+		// route would never clear, leaving the actor home-exempt indefinitely.
+		// Instead re-walk to the current stop so the route self-heals, bounded so
+		// a producer that keeps bumping the actor can't loop us. On exhaustion,
+		// abandon the route (clearing frees the actor; the next phase boundary
+		// re-triggers a fresh route over whatever is still un-flipped).
+		if route.StaleRetries >= maxStaleRouteRetries {
+			log.Printf("sim/npc_route: %q stale arrival at (%d,%d), expected stop %d at (%d,%d) — abandoning route after %d retries",
+				route.NPCID, actor.Pos.X, actor.Pos.Y, route.StopIdx, stop.WalkTo.X, stop.WalkTo.Y, maxStaleRouteRetries)
+			delete(w.ActiveRoutes, route.NPCID)
+			return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "stale_abandoned"}, nil
+		}
+		route.StaleRetries++
+		reWalk := MoveActor(route.NPCID, NewPositionDestination(stop.WalkTo), false, time.Now())
+		if _, err := reWalk.Fn(w); err != nil {
+			log.Printf("sim/npc_route: %q stale arrival; re-walk dispatch to stop %d failed: %v — clearing route",
+				route.NPCID, route.StopIdx, err)
+			delete(w.ActiveRoutes, route.NPCID)
+			return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "stale_stop"}, nil
+		}
+		log.Printf("sim/npc_route: %q stale arrival at (%d,%d), expected stop %d at (%d,%d) — re-walking to stop (retry %d/%d)",
+			route.NPCID, actor.Pos.X, actor.Pos.Y, route.StopIdx, stop.WalkTo.X, stop.WalkTo.Y, route.StaleRetries, maxStaleRouteRetries)
+		return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "stale_retry"}, nil
 	}
 
 	// Per-stop flip. guardGen=0 disables the gen check — a fresher
@@ -393,6 +437,9 @@ func advanceActiveRoute(w *World, route *NPCRoute) (AdvanceNPCRouteResult, error
 		// next walk should still dispatch.
 	}
 
+	// Clean visit — clear the per-stop stale budget so the next stop starts
+	// fresh.
+	route.StaleRetries = 0
 	route.StopIdx++
 
 	if route.StopIdx < len(route.Stops) {
