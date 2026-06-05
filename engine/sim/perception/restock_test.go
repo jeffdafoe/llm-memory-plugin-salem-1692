@@ -196,6 +196,12 @@ func TestRenderRestocking_BuyHereImperative(t *testing.T) {
 	if !strings.Contains(out, "consume_now false") {
 		t.Errorf("example must spell out consume_now:\n%s", out)
 	}
+	// ZBBS-HOME-388: order pay before speech and name the speak TOOL explicitly
+	// (bubbles spawn only from speak; "say a word" alone may be satisfied as plain
+	// text), so the trade both happens and is visible as a bubble.
+	if !strings.Contains(out, "first call pay_with_item") || !strings.Contains(out, "use speak") {
+		t.Errorf("buy-here imperative should order pay before speech:\n%s", out)
+	}
 	if strings.Contains(out, "buy from Ellis Farm") {
 		t.Errorf("co-present item should suppress the walk-to line:\n%s", out)
 	}

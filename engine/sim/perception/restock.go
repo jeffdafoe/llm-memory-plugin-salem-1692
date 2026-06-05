@@ -240,7 +240,7 @@ func renderRestocking(b *strings.Builder, v *RestockingView) {
 		// pay_with_item call and skip the walk-to list — he is already there.
 		if it.CoPresentSeller != "" {
 			seller := sanitizeInline(it.CoPresentSeller)
-			fmt.Fprintf(b, "\n  - %s is here with you and sells %s. Buy it now — call pay_with_item with seller \"%s\", item \"%s\", a qty up to %d, an amount of coins to offer, and consume_now false. They will accept or counter your offer.\n",
+			fmt.Fprintf(b, "\n  - %s is here with you and sells %s. Buy it now — first call pay_with_item with seller \"%s\", item \"%s\", a qty up to %d, an amount of coins to offer, and consume_now false. Then also use speak for a brief handoff line as you make the offer. They will accept or counter your offer.\n",
 				seller, sanitizeInline(it.ItemLabel), seller, sanitizeInline(string(it.kind)), headroom)
 			continue
 		}

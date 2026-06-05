@@ -1047,7 +1047,14 @@ func renderPayOffers(b *strings.Builder, offers []sim.PayOfferWarrantReason, nam
 		fmt.Fprintf(b, "%d. %s offers %d %s for %d %s %s (offer id %d)\n",
 			i+1, buyer, o.Amount, unit, o.Qty, item, disposition, o.LedgerID)
 	}
-	b.WriteString("Respond with accept_pay, decline_pay, or counter_pay, passing the offer id as ledger_id.\n")
+	// Action first, then an explicit speak: accept/decline/counter pass in silence,
+	// so prompt the speak TOOL alongside the response — same "say a word as you pass
+	// it across" pattern deliver_order uses — so an NPC-to-NPC trade is visible as a
+	// speech bubble (the pay_* lifecycle frames render only for the PC's own
+	// transactions; bubbles spawn only from the speak tool, so the cue must name it
+	// rather than just "say a word", which a weak model may satisfy as plain text).
+	// ZBBS-HOME-388.
+	b.WriteString("Respond first with accept_pay, decline_pay, or counter_pay, passing the offer id as ledger_id. Then also use speak for a brief reply, because the pay response itself passes in silence.\n")
 }
 
 func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(sim.ActorID) string, placeNameOf func(string) string, cfg RenderConfig, out *RenderedPrompt) {
