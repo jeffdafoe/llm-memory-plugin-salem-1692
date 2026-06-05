@@ -109,6 +109,138 @@ func TestBuildRestocking_VendorResolved(t *testing.T) {
 	}
 }
 
+// TestBuildRestocking_CoPresentSeller: a seller of the low item who shares the
+// reseller's current huddle is surfaced as CoPresentSeller (so render can emit
+// the buy-here imperative). ZBBS-HOME-388.
+func TestBuildRestocking_CoPresentSeller(t *testing.T) {
+	subj := &sim.ActorSnapshot{
+		Inventory:       map[sim.ItemKind]int{"ale": 1},
+		RestockPolicy:   buyPolicy("ale", 20),
+		CurrentHuddleID: "h1",
+	}
+	supplier := &sim.ActorSnapshot{
+		DisplayName:     "Anders Brewer",
+		WorkStructureID: "brewery",
+		Inventory:       map[sim.ItemKind]int{"ale": 40},
+		CurrentHuddleID: "h1", // same huddle as the buyer → pay_with_item resolves now
+	}
+	snap := &sim.Snapshot{
+		Actors:            map[sim.ActorID]*sim.ActorSnapshot{"merchant": subj, "brewer": supplier},
+		Structures:        map[sim.StructureID]*sim.Structure{"brewery": {ID: "brewery", DisplayName: "The Brewery"}},
+		ItemKinds:         restockCatalog(),
+		RestockReorderPct: 25,
+	}
+	v := buildRestocking(snap, "merchant", subj)
+	if v == nil || len(v.Items) != 1 {
+		t.Fatalf("want 1 item, got %+v", v)
+	}
+	if v.Items[0].CoPresentSeller != "Anders Brewer" {
+		t.Errorf("CoPresentSeller = %q, want 'Anders Brewer'", v.Items[0].CoPresentSeller)
+	}
+}
+
+// TestBuildRestocking_SellerNotCoPresent: a seller in a DIFFERENT huddle (or the
+// buyer in none) is not co-present — CoPresentSeller is empty, and the generic
+// walk-to vendor cue still resolves. ZBBS-HOME-388.
+func TestBuildRestocking_SellerNotCoPresent(t *testing.T) {
+	subj := &sim.ActorSnapshot{
+		Inventory:       map[sim.ItemKind]int{"ale": 1},
+		RestockPolicy:   buyPolicy("ale", 20),
+		CurrentHuddleID: "h1",
+	}
+	supplier := &sim.ActorSnapshot{
+		DisplayName:     "Anders Brewer",
+		WorkStructureID: "brewery",
+		Inventory:       map[sim.ItemKind]int{"ale": 40},
+		CurrentHuddleID: "h2", // different huddle → not co-present
+	}
+	snap := &sim.Snapshot{
+		Actors:            map[sim.ActorID]*sim.ActorSnapshot{"merchant": subj, "brewer": supplier},
+		Structures:        map[sim.StructureID]*sim.Structure{"brewery": {ID: "brewery", DisplayName: "The Brewery"}},
+		ItemKinds:         restockCatalog(),
+		RestockReorderPct: 25,
+	}
+	v := buildRestocking(snap, "merchant", subj)
+	if v == nil || len(v.Items) != 1 {
+		t.Fatalf("want 1 item, got %+v", v)
+	}
+	if v.Items[0].CoPresentSeller != "" {
+		t.Errorf("CoPresentSeller = %q, want empty (different huddle)", v.Items[0].CoPresentSeller)
+	}
+	if len(v.Items[0].Vendors) != 1 {
+		t.Errorf("walk-to vendor cue should still resolve, got %+v", v.Items[0].Vendors)
+	}
+}
+
+// TestRenderRestocking_BuyHereImperative: a co-present seller renders a concrete
+// pay_with_item imperative (naming the seller + canonical item + consume_now),
+// suppresses the generic walk-to line for that item, and carries no "ask"/"price".
+// ZBBS-HOME-388.
+func TestRenderRestocking_BuyHereImperative(t *testing.T) {
+	v := &RestockingView{Items: []RestockItemView{
+		{
+			ItemLabel: "milk", CurrentQty: 0, Cap: 20, kind: "milk",
+			CoPresentSeller: "Elizabeth Ellis",
+			Vendors:         []RestockVendor{{StructureLabel: "Ellis Farm", StructureID: "ellis"}},
+		},
+	}}
+	var b strings.Builder
+	renderRestocking(&b, v)
+	out := b.String()
+	if !strings.Contains(out, "Elizabeth Ellis is here with you") {
+		t.Errorf("missing co-present seller imperative:\n%s", out)
+	}
+	if !strings.Contains(out, `pay_with_item with seller "Elizabeth Ellis", item "milk"`) {
+		t.Errorf("missing concrete pay_with_item example:\n%s", out)
+	}
+	if !strings.Contains(out, "consume_now false") {
+		t.Errorf("example must spell out consume_now:\n%s", out)
+	}
+	// ZBBS-HOME-388: order pay before speech and name the speak TOOL explicitly
+	// (bubbles spawn only from speak; "say a word" alone may be satisfied as plain
+	// text), so the trade both happens and is visible as a bubble.
+	if !strings.Contains(out, "first call pay_with_item") || !strings.Contains(out, "use speak") {
+		t.Errorf("buy-here imperative should order pay before speech:\n%s", out)
+	}
+	if strings.Contains(out, "buy from Ellis Farm") {
+		t.Errorf("co-present item should suppress the walk-to line:\n%s", out)
+	}
+	lower := strings.ToLower(out)
+	if strings.Contains(lower, "ask") || strings.Contains(lower, "price") {
+		t.Errorf("imperative must not contain ask/price:\n%s", out)
+	}
+}
+
+// TestBuildRestocking_CoPresentSeller_Deterministic: with two co-present sellers
+// of the item, the imperative names the lowest-VendorID one deterministically so
+// the cue is stable regardless of snapshot map-iteration order. Looped to catch
+// nondeterminism, same posture as TestFindItemVendors_DedupeByStructure. ZBBS-HOME-388.
+func TestBuildRestocking_CoPresentSeller_Deterministic(t *testing.T) {
+	subj := &sim.ActorSnapshot{
+		Inventory:       map[sim.ItemKind]int{"ale": 1},
+		RestockPolicy:   buyPolicy("ale", 20),
+		CurrentHuddleID: "h1",
+	}
+	ann := &sim.ActorSnapshot{DisplayName: "Ann", WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}, CurrentHuddleID: "h1"}
+	zed := &sim.ActorSnapshot{DisplayName: "Zed", WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}, CurrentHuddleID: "h1"}
+	snap := &sim.Snapshot{
+		Actors:            map[sim.ActorID]*sim.ActorSnapshot{"merchant": subj, "z_seller": zed, "a_seller": ann},
+		Structures:        map[sim.StructureID]*sim.Structure{"brewery": {ID: "brewery", DisplayName: "The Brewery"}},
+		ItemKinds:         restockCatalog(),
+		RestockReorderPct: 25,
+	}
+	for i := 0; i < 30; i++ {
+		v := buildRestocking(snap, "merchant", subj)
+		if v == nil || len(v.Items) != 1 {
+			t.Fatalf("want 1 item, got %+v", v)
+		}
+		// lowest VendorID ("a_seller" < "z_seller") → Ann, regardless of map order.
+		if v.Items[0].CoPresentSeller != "Ann" {
+			t.Fatalf("CoPresentSeller = %q, want 'Ann' (lowest-VendorID rep)", v.Items[0].CoPresentSeller)
+		}
+	}
+}
+
 // TestBuildRestocking_VendorExclusions: self, PC suppliers, no-workplace, and
 // unresolvable-structure suppliers are all excluded.
 func TestBuildRestocking_VendorExclusions(t *testing.T) {
@@ -255,7 +387,8 @@ func TestRenderRestocking_Shape(t *testing.T) {
 	if !strings.Contains(out, "move_to") || !strings.Contains(out, "pay_with_item") {
 		t.Errorf("section should name the move_to + pay_with_item action:\n%s", out)
 	}
-	if strings.Contains(out, "ask") || strings.Contains(out, "price") {
+	lower := strings.ToLower(out)
+	if strings.Contains(lower, "ask") || strings.Contains(lower, "price") {
 		t.Errorf("cue should not contain 'ask'/'price' (primes the speak-loop):\n%s", out)
 	}
 }
