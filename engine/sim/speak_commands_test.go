@@ -98,10 +98,12 @@ func captureSpoke(t *testing.T, w *sim.World) *[]sim.Spoke {
 	return &out
 }
 
-// --- TestSpeak_NoHuddle commits with empty RecipientIDs, no writes, no
-// warrants. The "speaker has no current huddle" branch from the design
-// walkthrough — commit + no writes.
-func TestSpeak_NoHuddle(t *testing.T) {
+// --- TestSpeak_NoAudienceNPCRejected: an NPC speaking with no huddle peers is
+// REJECTED (ZBBS-HOME-402). The line would reach no one; committing it only
+// produced inert void lines and, at scale, the empty-room re-pitch storm. No
+// Spoke event is emitted and no relationships are written. (PC no-audience
+// speaks still commit — covered by TestSpeakTo_NoHuddle_AddresseeEmpty.)
+func TestSpeak_NoAudienceNPCRejected(t *testing.T) {
 	w, stop := buildSpeakTestWorld(t,
 		actorSpec{id: "hannah", displayName: "Hannah", kind: sim.KindNPCShared},
 		// ezekiel exists but is in NO huddle (separate from hannah)
@@ -111,27 +113,14 @@ func TestSpeak_NoHuddle(t *testing.T) {
 
 	captured := captureSpoke(t, w)
 	at := time.Now().UTC()
-	if _, err := w.Send(sim.Speak("hannah", "Anyone there?", at)); err != nil {
-		t.Fatalf("Speak: %v", err)
+	if _, err := w.Send(sim.Speak("hannah", "Anyone there?", at)); err == nil {
+		t.Fatal("Speak with no audience: want rejection error, got nil")
 	}
-	if len(*captured) != 1 {
-		t.Fatalf("Spoke events emitted = %d, want 1", len(*captured))
-	}
-	got := (*captured)[0]
-	if got.SpeakerID != "hannah" {
-		t.Errorf("SpeakerID = %q, want hannah", got.SpeakerID)
-	}
-	if got.HuddleID != "" {
-		t.Errorf("HuddleID = %q, want empty", got.HuddleID)
-	}
-	if len(got.RecipientIDs) != 0 {
-		t.Errorf("RecipientIDs = %v, want empty", got.RecipientIDs)
-	}
-	if got.Text != "Anyone there?" {
-		t.Errorf("Text = %q, want %q", got.Text, "Anyone there?")
+	if len(*captured) != 0 {
+		t.Fatalf("Spoke events emitted = %d, want 0 (no-audience NPC speak rejected)", len(*captured))
 	}
 
-	// No-huddle case writes no relationships.
+	// Rejected speak writes no relationships.
 	snap := w.Published()
 	if rel := snap.Actors["hannah"].Relationships; len(rel) != 0 {
 		t.Errorf("hannah Relationships = %v, want empty", rel)

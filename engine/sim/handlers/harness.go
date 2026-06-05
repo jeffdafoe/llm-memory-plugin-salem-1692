@@ -48,6 +48,21 @@ const (
 	// recalls can't loop forever: the hard per-tick ceiling is
 	// IterationBudget + MaxObservationRounds total LLM rounds.
 	DefaultMaxObservationRounds = 3
+
+	// DefaultMaxSpeaksPerTick is the per-tick committed-speak count past which the
+	// harness STOPS RE-PROMPTING the model and ends the tick (ZBBS-HOME-402).
+	// The post-speak nudge (commitResultContent) ASKS the model to call done()
+	// once it has spoken; a weak stateful model ignores it and re-pitches a
+	// REWORDED line the exact same-tick dedup can't catch (live: Josiah's 13
+	// reworded greetings in 35s). This is checked at the ROUND boundary, so a
+	// model that says its piece and calls done() still ends cleanly as Done
+	// first (the cap never fires); it bites only a model that keeps speaking
+	// WITHOUT done(). 2 preserves the legitimate greet-THEN-distinct-answer
+	// two-beat (the case HOME-381's hard one-speak cap wrongly cut). Note: a
+	// single response may still commit more than this many speaks in one batch
+	// (bounded by MaxToolCallsPerResponse + the same-tick dedup) — the cap caps
+	// ROUNDS of speaking, not speaks within one response.
+	DefaultMaxSpeaksPerTick = 2
 )
 
 // HarnessConfig is the wiring + budgets the Harness needs. Client and
@@ -80,6 +95,12 @@ type HarnessConfig struct {
 	// MaxToolCallsPerResponse caps the number of tool calls processed
 	// per LLM response. Zero → DefaultMaxToolCallsPerResponse.
 	MaxToolCallsPerResponse int
+
+	// MaxSpeaksPerTick caps how many speaks an actor may COMMIT per tick
+	// before the harness ends the tick (ZBBS-HOME-402 — teeth for the
+	// post-speak done() nudge the weak model ignores). Zero →
+	// DefaultMaxSpeaksPerTick.
+	MaxSpeaksPerTick int
 
 	// PerceptionRenderConfig controls prompt-render limits. Zero-valued
 	// fields fall back to perception.DefaultRenderConfig() defaults.
@@ -121,6 +142,7 @@ type Harness struct {
 	iterationBudget         int
 	maxObservationRounds    int
 	maxToolCallsPerResponse int
+	maxSpeaksPerTick        int
 	renderConfig            perception.RenderConfig
 	toolDispatchTimeout     time.Duration
 
@@ -158,6 +180,9 @@ func NewHarness(cfg HarnessConfig) (*Harness, error) {
 	if cfg.MaxToolCallsPerResponse <= 0 {
 		cfg.MaxToolCallsPerResponse = DefaultMaxToolCallsPerResponse
 	}
+	if cfg.MaxSpeaksPerTick <= 0 {
+		cfg.MaxSpeaksPerTick = DefaultMaxSpeaksPerTick
+	}
 	clk := cfg.Clock
 	if clk == nil {
 		clk = time.Now
@@ -169,6 +194,7 @@ func NewHarness(cfg HarnessConfig) (*Harness, error) {
 		iterationBudget:         cfg.IterationBudget,
 		maxObservationRounds:    cfg.MaxObservationRounds,
 		maxToolCallsPerResponse: cfg.MaxToolCallsPerResponse,
+		maxSpeaksPerTick:        cfg.MaxSpeaksPerTick,
 		renderConfig:            cfg.PerceptionRenderConfig,
 		toolDispatchTimeout:     cfg.ToolDispatchTimeout,
 		promptSink:              cfg.PromptSink,
@@ -372,6 +398,11 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 	// See payOfferKey for the keying rationale (price AND qty deliberately
 	// excluded).
 	offeredThisTick := map[string]struct{}{}
+	// speaksThisTick counts SUCCESSFUL speaks this tick (ZBBS-HOME-402). When it
+	// reaches maxSpeaksPerTick the loop ends the tick — teeth for the post-speak
+	// done() nudge the weak model ignores. Counts committed speaks only (a
+	// bounced or deduped speak reached no one), mirroring spokenThisTick.
+	speaksThisTick := 0
 	for round := 0; round < maxTotalRounds; round++ {
 		result.IterationCount = round + 1
 
@@ -545,6 +576,7 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 				// against, and the model still gets to retry the bounced line.
 				if norm, isSpeak := speakUtteranceKey(vc); isSpeak {
 					spokenThisTick[norm] = struct{}{}
+					speaksThisTick++
 				}
 				// ZBBS-HOME-395: record a placed offer so a later round (or a
 				// later call in this same batch) re-offering the same (seller,
@@ -586,6 +618,24 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 		_ = endedAt
 		if batchEnded {
 			result.TerminalStatus = endedStatus
+			return result
+		}
+
+		// ZBBS-HOME-402: speak cap — teeth for the post-speak done() nudge the
+		// weak stateful model ignores. The same-tick dedup (above) blocks verbatim
+		// repeats and commitResultContent ASKS the model to call done() once it has
+		// spoken, but the model re-pitches a REWORDED line the exact-dedup can't
+		// catch (live: Josiah's 13 reworded greetings in 35s). Once it has
+		// committed maxSpeaksPerTick speaks this tick, end the tick: it has had its
+		// say. Deliberately checked HERE, after the batchEnded return above — a
+		// model that says its piece and calls done() in the same batch returns Done
+		// before this fires (the legitimate greet-then-answer-then-done two-beat);
+		// this bites only a model that keeps speaking WITHOUT done(). Reuses
+		// BudgetForced — a per-tick cap was hit and the rendered inputs were
+		// addressed (the actor did act), so warrants don't re-fire.
+		if speaksThisTick >= h.maxSpeaksPerTick {
+			result.TerminalStatus = sim.TickStatusBudgetForced
+			result.BudgetHit = true
 			return result
 		}
 
