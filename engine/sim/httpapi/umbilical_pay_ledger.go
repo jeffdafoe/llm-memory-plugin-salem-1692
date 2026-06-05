@@ -22,20 +22,20 @@ import (
 // decision-relevant fields. The causal-trail event ids and co-presence scene/
 // huddle ids are deliberately omitted (noise for economy debugging).
 type PayLedgerEntryDTO struct {
-	ID            int64     `json:"id"`
-	BuyerID       string    `json:"buyer_id"`
-	SellerID      string    `json:"seller_id"`
-	ItemKind      string    `json:"item_kind"`
-	Qty           int       `json:"qty"`
-	ConsumeNow    bool      `json:"consume_now"`
-	ConsumerIDs   []string  `json:"consumer_ids,omitempty"`
-	Amount        int       `json:"amount"` // coins offered
-	State         string    `json:"state"`
-	QuoteID       int64     `json:"quote_id,omitempty"`
-	ParentID      int64     `json:"parent_id,omitempty"`
-	Depth         int       `json:"depth,omitempty"`
-	CounterAmount int       `json:"counter_amount,omitempty"`
-	Message       string    `json:"message,omitempty"`
+	ID            int64      `json:"id"`
+	BuyerID       string     `json:"buyer_id"`
+	SellerID      string     `json:"seller_id"`
+	ItemKind      string     `json:"item_kind"`
+	Qty           int        `json:"qty"`
+	ConsumeNow    bool       `json:"consume_now"`
+	ConsumerIDs   []string   `json:"consumer_ids,omitempty"`
+	Amount        int        `json:"amount"` // coins offered
+	State         string     `json:"state"`
+	QuoteID       int64      `json:"quote_id,omitempty"`
+	ParentID      int64      `json:"parent_id,omitempty"`
+	Depth         int        `json:"depth,omitempty"`
+	CounterAmount int        `json:"counter_amount,omitempty"`
+	Message       string     `json:"message,omitempty"`
 	CreatedAt     time.Time  `json:"created_at"`
 	ResolvedAt    *time.Time `json:"resolved_at,omitempty"` // nil while pending (zero time → null, not 0001-…)
 	ExpiresAt     *time.Time `json:"expires_at,omitempty"`
