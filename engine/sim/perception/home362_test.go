@@ -9,6 +9,8 @@ import (
 
 // ZBBS-HOME-362 — a red need defers the duty steer, and a tired keeper at its
 // own post is told it can rest in place (take_break) rather than walking off.
+// (ZBBS-HOME-400 later widened the TO-WORK arm to also defer on a mild-or-worse
+// need — see TestBuildDutySteer_MildNeed_SuppressesToWork below.)
 //
 // Reuses dutySnap/dutyAnchors from duty_steer_test.go (same package). The
 // tiredness need key uses the canonical "tiredness" string; with empty
@@ -33,22 +35,23 @@ func home362OnShiftAwayActor(tiredness int) *sim.ActorSnapshot {
 func TestBuildDutySteer_RedNeed_Suppressed(t *testing.T) {
 	snap := dutySnap(600, 360, 1080) // 10:00, on shift via dawn/dusk window
 	a := home362OnShiftAwayActor(24) // tiredness maxed → red
-	if steer := buildDutySteer(snap, a, dutyAnchors); steer != nil {
+	if steer := dutySteer(snap, a, dutyAnchors); steer != nil {
 		t.Errorf("expected no steer while a need is red, got %+v", steer)
 	}
 }
 
-// TestBuildDutySteer_NeedBelowRed_StillSteers: the suppression is gated on the
-// red threshold — a sub-threshold need does not disable the steer.
-func TestBuildDutySteer_NeedBelowRed_StillSteers(t *testing.T) {
-	snap := dutySnap(600, 360, 1080)
-	a := home362OnShiftAwayActor(10) // below the tiredness red threshold
-	steer := buildDutySteer(snap, a, dutyAnchors)
-	if steer == nil {
-		t.Fatal("expected a steer when no need is red, got nil")
-	}
-	if !steer.ToWork || steer.TargetID != dutyAnchors.WorkID {
-		t.Errorf("steer = %+v, want ToWork=true TargetID=%s", steer, dutyAnchors.WorkID)
+// TestBuildDutySteer_MildNeed_SuppressesToWork: ZBBS-HOME-400 Option B SUPERSEDED
+// HOME-362's old "a sub-red need still steers to work" behavior. The to-work cue
+// now defers on a mild-or-worse need too (matching the shift-duty warrant, which
+// already need-suppressed the to-work nudge), so a mild tiredness (10, in the
+// [8, red=20) mild band) no longer marches the NPC to its post. Red still
+// suppresses BOTH arms; the go-home arm is never need-suppressed — both covered
+// by TestBuildDutySteer_OptionBSuppression.
+func TestBuildDutySteer_MildNeed_SuppressesToWork(t *testing.T) {
+	snap := dutySnap(600, 360, 1080) // 10:00, on shift via dawn/dusk window
+	a := home362OnShiftAwayActor(10) // mild tiredness ([8,20)), not red
+	if steer := dutySteer(snap, a, dutyAnchors); steer != nil {
+		t.Fatalf("want nil — a mild need now suppresses the to-work steer (HOME-400), got %+v", steer)
 	}
 }
 
