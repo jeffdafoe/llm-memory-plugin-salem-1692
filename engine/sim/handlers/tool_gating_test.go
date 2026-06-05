@@ -250,3 +250,38 @@ func TestGateTools_Recall_AdvertisedOnlyToDedicatedVA(t *testing.T) {
 		t.Errorf("recall must be dropped when the actor can't be resolved (nil snapshot); count %d", nilSnap["recall"])
 	}
 }
+
+// gatingRegistryWithDeliverOrder extends the gating test registry with the
+// deliver_order tool, for the ZBBS-HOME-398 narrow-advertising gate.
+func gatingRegistryWithDeliverOrder(t *testing.T) *Registry {
+	t.Helper()
+	r := gatingTestRegistry(t)
+	if err := RegisterDeliverOrder(r); err != nil {
+		t.Fatalf("RegisterDeliverOrder: %v", err)
+	}
+	return r
+}
+
+// TestGateTools_DeliverOrder_AdvertisedOnlyWithReadyOrder — ZBBS-HOME-398:
+// deliver_order is advertised only to a keeper who actually has a Ready order
+// to fulfill (a pending delivery in the payload). After 397 that's a lodging
+// check-in; physical takeaway delivers at accept and never sits Ready, so a
+// keeper with no pending delivery never sees the tool — it's no longer
+// advertised every tick to every NPC.
+func TestGateTools_DeliverOrder_AdvertisedOnlyWithReadyOrder(t *testing.T) {
+	r := gatingRegistryWithDeliverOrder(t)
+
+	none := specNameSet(gateTools(r, perception.Payload{ActorID: "keeper"}, nil))
+	if none[deliverOrderToolName] != 0 {
+		t.Errorf("deliver_order advertised with no pending delivery; count %d", none[deliverOrderToolName])
+	}
+
+	withOrder := perception.Payload{
+		ActorID:                 "keeper",
+		PendingDeliveriesFromMe: []perception.OrderView{{ID: 1, Item: "nights_stay", Qty: 1}},
+	}
+	got := specNameSet(gateTools(r, withOrder, nil))
+	if got[deliverOrderToolName] != 1 {
+		t.Errorf("deliver_order should be advertised when a Ready order is pending; count %d", got[deliverOrderToolName])
+	}
+}

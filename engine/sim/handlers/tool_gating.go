@@ -82,6 +82,16 @@ var walkIncompatibleTools = map[string]struct{}{
 // a route so the walkIncompatibleTools become usable next tick.
 const stopToolName = "stop"
 
+// deliverOrderToolName — the seller's order check-in/handover tool. Advertised
+// ONLY when the keeper actually has a Ready order to fulfill (a pending
+// delivery in the perception payload). After ZBBS-HOME-398 the only Ready
+// orders are lodging bookings awaiting check-in (physical takeaway hands over
+// immediately at accept, so it never mints a Ready order), so this keeps
+// deliver_order out of every other NPC's prompt instead of advertising it
+// every tick to everyone — the discussion-109 "advertise a tool only with its
+// triggering perception" invariant.
+const deliverOrderToolName = "deliver_order"
+
 // actorIsMoving reports whether the subject has an in-flight move at snapshot
 // time, read from the ZBBS-HOME-336 read-path projection (MoveDestKind is
 // empty when the actor is not moving). False when the actor can't be resolved
@@ -184,6 +194,16 @@ func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []ll
 		// gather consumer (ZBBS-WORK-328): advertise only when loitering at a
 		// gatherable source — keeps the tool out of the prompt everywhere else.
 		if spec.Name == gatherToolName && !atGatherableSource {
+			continue
+		}
+		// deliver_order consumer (ZBBS-HOME-398): advertise only to a keeper
+		// who has a Ready order to fulfill. Post-397 that means a lodging
+		// booking awaiting check-in; physical takeaway delivers at accept and
+		// never sits Ready, so this stops advertising the tool every tick to
+		// every NPC. PendingDeliveriesFromMe is the seller-side Ready-order
+		// view that also drives the "Orders to deliver" perception section, so
+		// the tool and its cue can't drift.
+		if spec.Name == deliverOrderToolName && len(payload.PendingDeliveriesFromMe) == 0 {
 			continue
 		}
 		if _, gated := payOfferResponseTools[spec.Name]; gated {

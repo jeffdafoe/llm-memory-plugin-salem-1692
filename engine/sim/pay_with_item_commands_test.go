@@ -819,8 +819,10 @@ func TestPayWithItem_FastPath_HappyPath_Takeaway(t *testing.T) {
 		t.Errorf("TerminalState = %q, want accepted", events.Resolved[0].TerminalState)
 	}
 
-	// Coin transfer landed. Post-S6: goods stay in seller's inventory
-	// until deliver_order; an Order is minted at accept-time instead.
+	// Coin transfer landed. ZBBS-HOME-398: physical takeaway is delivered to
+	// the buyer at accept — the goods move now, and the Order is minted then
+	// immediately flipped to Delivered (it stays in the map as a Delivered row
+	// so its durable pay_ledger row persists for the price-book seed).
 	snap := w.Published()
 	if got := snap.Actors["alice"].Coins; got != 46 {
 		t.Errorf("alice.Coins = %d, want 46", got)
@@ -828,19 +830,27 @@ func TestPayWithItem_FastPath_HappyPath_Takeaway(t *testing.T) {
 	if got := snap.Actors["bob"].Coins; got != 4 {
 		t.Errorf("bob.Coins = %d, want 4", got)
 	}
-	if got := snap.Actors["alice"].InventoryHash; got != 0 {
-		t.Errorf("alice.InventoryHash = %d, want 0 (S6: goods deferred to deliver_order)", got)
+	a := readHoldings(t, w, "alice")
+	b := readHoldings(t, w, "bob")
+	if a.inv["stew"] != 1 {
+		t.Errorf("alice.stew = %d, want 1 (physical takeaway delivered at accept)", a.inv["stew"])
 	}
-	// Order minted at accept-time.
+	if b.inv["stew"] != 4 {
+		t.Errorf("bob.stew = %d, want 4 (physical takeaway delivered at accept)", b.inv["stew"])
+	}
+	// Order minted then immediately delivered (never left Ready).
 	var foundOrder *sim.Order
 	for _, o := range snap.Orders {
-		if o != nil && o.SellerID == "bob" && o.BuyerID == "alice" && o.State == sim.OrderStateReady {
+		if o != nil && o.SellerID == "bob" && o.BuyerID == "alice" {
 			foundOrder = o
 			break
 		}
 	}
 	if foundOrder == nil {
-		t.Fatalf("no Ready Order minted at fast-path accept; snapshot.Orders = %+v", snap.Orders)
+		t.Fatalf("no Order recorded at fast-path accept; snapshot.Orders = %+v", snap.Orders)
+	}
+	if foundOrder.State != sim.OrderStateDelivered {
+		t.Errorf("order State = %q, want delivered (immediate handover)", foundOrder.State)
 	}
 
 	// No ItemConsumed events on takeaway.
@@ -1077,13 +1087,14 @@ func TestAcceptPay_HappyPath(t *testing.T) {
 	}
 }
 
-// TestAcceptPay_StockReservation_PreventsOverselling is the PR S6 R1
-// code_review regression test. Pre-fix: post-S6, accept no longer
-// moves goods, so two pending offers against the same 1-stew
-// inventory could both accept (gate-10 only saw the raw seller
-// inventory, not the outstanding Order obligations). Post-fix:
-// outstandingReadyOrderQty subtracts Ready-Order obligations from
-// visible inventory before the stock comparison.
+// TestAcceptPay_StockReservation_PreventsOverselling guards against two
+// pending offers against the same 1-stew inventory both succeeding. After
+// ZBBS-HOME-398 physical takeaway is delivered at accept, so the first accept
+// drains bob's stew immediately and the second accept fails the gate-10 stock
+// check on the now-empty inventory. (Pre-397, goods stayed until deliver_order
+// and the over-selling guard was outstandingReadyOrderQty's reservation
+// accounting; that reservation still protects deferred orders and is covered
+// by TestAcceptPay_StockReservation_OverflowFailsClosed.)
 func TestAcceptPay_StockReservation_PreventsOverselling(t *testing.T) {
 	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
 		{id: "alice", displayName: "Alice", kind: sim.KindNPCShared, huddleID: "h1", coins: 50},
@@ -1109,8 +1120,8 @@ func TestAcceptPay_StockReservation_PreventsOverselling(t *testing.T) {
 		SceneID: "sc1", HuddleID: "h1",
 	})
 
-	// First accept succeeds, mints an Order (S6 takeaway path), and
-	// reserves the stew.
+	// First accept succeeds and delivers the stew to alice immediately
+	// (ZBBS-HOME-398 physical takeaway), draining bob's only stew.
 	if _, err := w.Send(sim.AcceptPay("bob", 1, at)); err != nil {
 		t.Fatalf("first AcceptPay: %v", err)
 	}
@@ -1118,21 +1129,17 @@ func TestAcceptPay_StockReservation_PreventsOverselling(t *testing.T) {
 	if ledger[1].State != sim.PayLedgerStateAccepted {
 		t.Errorf("ledger[1].State = %q, want accepted", ledger[1].State)
 	}
-	// Bob's inventory still shows 1 stew (goods stay until deliver_order).
-	snap := w.Published()
-	if got := snap.Actors["bob"].InventoryHash; got != 1 {
-		t.Errorf("bob.InventoryHash = %d, want 1 (goods retained)", got)
+	a := readHoldings(t, w, "alice")
+	b := readHoldings(t, w, "bob")
+	if a.inv["stew"] != 1 {
+		t.Errorf("alice.stew = %d, want 1 (delivered at accept)", a.inv["stew"])
 	}
-	// But outstandingReadyOrderQty reports 1 stew reserved.
-	got, _ := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		return sim.OutstandingReadyOrderQty(world, "bob", "stew"), nil
-	}})
-	if got.(int) != 1 {
-		t.Errorf("outstandingReadyOrderQty = %d, want 1 (reservation)", got)
+	if b.inv["stew"] != 0 {
+		t.Errorf("bob.stew = %d, want 0 (delivered at accept, inventory drained)", b.inv["stew"])
 	}
 
-	// Second accept must FAIL — visible inventory (1) - reserved (1)
-	// = 0, less than required (1). Flip to FailedInsufficientStock.
+	// Second accept must FAIL — bob's inventory is now 0, less than the
+	// required 1. Flip to FailedInsufficientStock.
 	if _, err := w.Send(sim.AcceptPay("bob", 2, at)); err != nil {
 		t.Fatalf("second AcceptPay (transitioning): %v", err)
 	}
@@ -1142,7 +1149,7 @@ func TestAcceptPay_StockReservation_PreventsOverselling(t *testing.T) {
 	}
 
 	// Carol got her coins back (atomic transfer didn't fire).
-	snap = w.Published()
+	snap := w.Published()
 	if got := snap.Actors["carol"].Coins; got != 50 {
 		t.Errorf("carol.Coins = %d, want 50 (no transfer on stock-fail)", got)
 	}

@@ -201,10 +201,53 @@ func effectiveOrderSweepCadence(s WorldSettings) time.Duration {
 // main.go wires the pg sink), this function preserves the legacy
 // no-prune behavior so existing tests still pass.
 func finalizeOrderTerminal(w *World, o *Order, terminal OrderState, at time.Time) {
-	if o == nil {
+	if o == nil || !terminal.IsTerminal() {
 		return
 	}
-	if !terminal.IsTerminal() {
+	flipOrderTerminal(w, o, terminal, at)
+
+	// Slice 6: write-through + prune. Skip entirely when no sink is
+	// installed (legacy no-prune behavior; tests, pre-cutover builds).
+	sink := w.terminalOrderSink
+	if sink == nil {
+		return
+	}
+	if err := sink.WriteTerminal(w.LifecycleContext(), o); err != nil {
+		// Log and leave the entry in w.Orders at its terminal state.
+		// Brief memory-vs-pg divergence resolves at next checkpoint;
+		// the OrderDelivered/OrderExpired event has already fired so
+		// narrative subscribers aren't re-notified on the next run.
+		log.Printf("sim/order: terminal write-through for order %d (%s) failed: %v",
+			o.ID, terminal, err)
+		return
+	}
+	delete(w.Orders, o.ID)
+}
+
+// flipOrderTerminal flips an Order to a terminal state, stamps the
+// terminal timestamps, and emits the matching OrderDelivered/OrderExpired
+// event — WITHOUT the durable sink write-through or the in-memory prune
+// that finalizeOrderTerminal performs.
+//
+// Use this when the durable pay_ledger row is NOT yet persisted at flip
+// time — specifically the same-tick mint-then-deliver path (ZBBS-HOME-398
+// immediate handover): the order is born at accept and delivered in the
+// same command, so no checkpoint has INSERTed its row yet and the eager
+// WriteTerminal UPDATE would no-op (0 rows) and log an error on every
+// purchase. Leaving the terminal Order in w.Orders lets the next checkpoint
+// SaveSnapshot persist it as 'delivered' (BuildCheckpointSnapshot copies the
+// whole map; the LoadAll restart filter is Ready+Pending-only, so the
+// delivered row never reloads as a ghost). The retained terminal entry is
+// the same "bloat, not data loss" the no-sink path already tolerates and
+// resets on restart.
+//
+// finalizeOrderTerminal wraps this with the sink write-through + prune for
+// the deferred-delivery path, where a prior checkpoint has already INSERTed
+// the Ready row so the UPDATE lands.
+//
+// MUST be called from inside a Command.Fn (world goroutine).
+func flipOrderTerminal(w *World, o *Order, terminal OrderState, at time.Time) {
+	if o == nil || !terminal.IsTerminal() {
 		return
 	}
 	o.State = terminal
@@ -235,23 +278,6 @@ func finalizeOrderTerminal(w *World, o *Order, terminal OrderState, at time.Time
 			At:          at,
 		})
 	}
-
-	// Slice 6: write-through + prune. Skip entirely when no sink is
-	// installed (legacy no-prune behavior; tests, pre-cutover builds).
-	sink := w.terminalOrderSink
-	if sink == nil {
-		return
-	}
-	if err := sink.WriteTerminal(w.LifecycleContext(), o); err != nil {
-		// Log and leave the entry in w.Orders at its terminal state.
-		// Brief memory-vs-pg divergence resolves at next checkpoint;
-		// the OrderDelivered/OrderExpired event has already fired so
-		// narrative subscribers aren't re-notified on the next run.
-		log.Printf("sim/order: terminal write-through for order %d (%s) failed: %v",
-			o.ID, terminal, err)
-		return
-	}
-	delete(w.Orders, o.ID)
 }
 
 // outstandingReadyOrderQty returns the total quantity of `item` that
