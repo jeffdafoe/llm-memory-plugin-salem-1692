@@ -72,11 +72,16 @@ import (
 //     (handlers/speech_reactor.go) mints NPCSpeechWarrantReason warrants
 //     on each recipient
 //
-// No-huddle case: a speaker with no current huddle (CurrentHuddleID == "")
-// still commits — the event emits with empty RecipientIDs, no
-// RecordInteraction calls fire, the subscriber stamps no warrants. By
-// design (per the PR A design walkthrough): "speaking to no one" is a
-// legitimate narrative beat we don't punish.
+// No-audience case (ZBBS-HOME-402): an NPC speaker with no huddle peers is
+// REJECTED — speaking to no one reaches no one (the event would emit with empty
+// RecipientIDs, fire no RecordInteraction, stamp no warrants), so committing it
+// only littered the action log and, at scale, drove the empty-room re-pitch
+// storm the exact-dedup can't catch (live: Josiah greeting his own empty store
+// ~13x in 35s). A PC speaker with no huddle STILL commits (empty RecipientIDs,
+// no writes) — the kind exemption mirrors the walk / vocative / prose /
+// turn-state gates: a human may speak to anyone, anytime. This supersedes the
+// old "speaking to no one is a legitimate narrative beat" allowance, which only
+// ever produced inert void lines.
 func SpeakTo(speakerID ActorID, text, to string, hasNewNews bool, at time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
@@ -103,6 +108,19 @@ func SpeakTo(speakerID ActorID, text, to string, hasNewNews bool, at time.Time) 
 			// reactor warrant ordering. Speaker is excluded.
 			huddleID := actor.CurrentHuddleID
 			peerSet, peerIDs := buildHuddlePeerSet(w, speakerID, huddleID)
+
+			// ZBBS-HOME-402: no-audience gate. An NPC with no huddle peers is
+			// speaking to the void — the Spoke would reach no one, so reject it
+			// model-facing instead, steering the model to call done() or move to
+			// someone. PCs are exempt (a human may speak to no one), same posture
+			// as the walk / vocative / prose / turn-state gates below. The speak
+			// handler's EnsureColocatedHuddle already formed an indoor huddle with
+			// any co-located actors before this command ran, so an empty peer set
+			// here means genuinely no one is present to hear.
+			if actor.Kind != KindPC && len(peerIDs) == 0 {
+				return nil, errors.New(
+					"there is no one here to hear you — call done(), or move_to someone before speaking.")
+			}
 
 			// Vocative stale-addressee gate. Scans text for sentence-position
 			// vocative names (e.g. "Ezekiel, ...") that match a non-peer

@@ -259,3 +259,93 @@ func TestHarness_SameTickDedup_NormalizesCaseAndWhitespace(t *testing.T) {
 		t.Errorf("ToolsFailedRejected should include the normalized repeat, got %v", result.ToolsFailedRejected)
 	}
 }
+
+// ZBBS-HOME-402: the speak cap. commitResultContent ASKS the model to call
+// done() after a speak; a weak model ignores it and re-pitches a REWORDED line
+// the exact same-tick dedup can't catch (live: Josiah's 13 reworded greetings in
+// 35s). After MaxSpeaksPerTick (default 2) DISTINCT speaks land, the harness ends
+// the tick (budget_forced) — teeth for the nudge. Distinct lines are used so the
+// WORK-375 verbatim dedup never fires; this isolates the cap.
+func TestHarness_SpeakCap_EndsTickAfterMaxSpeaks(t *testing.T) {
+	w, cancel := newHarnessWorld(t, "attempt-A")
+	defer cancel()
+
+	// Default MaxSpeaksPerTick is 2. Three distinct speaks, EACH IN ITS OWN
+	// response (round); the third round never runs because the round-boundary cap
+	// ends the tick after the second committed speak. (The multi-speak-in-one-
+	// response case is locked by TestHarness_SpeakCap_MultiSpeakInOneResponseAllCommit.)
+	client := llm.NewFakeClient(
+		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c1", 0, "speak", `{"text":"Good evening to you."}`)}}},
+		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c2", 0, "speak", `{"text":"What goods have you today?"}`)}}},
+		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c3", 0, "speak", `{"text":"A third distinct line."}`)}}},
+	)
+	h, spokeLog := newSpeakDedupHarness(t, client)
+
+	result := h.RunTick(context.Background(), w, newTestJob("attempt-A", nil))
+
+	if result.TerminalStatus != sim.TickStatusBudgetForced {
+		t.Errorf("status: got %v, want BudgetForced (tick ended at the speak cap)", result.TerminalStatus)
+	}
+	if got := *spokeLog; len(got) != 2 {
+		t.Errorf("utterances committed: got %d %q, want 2 (cap stops the third)", len(got), got)
+	}
+	if result.IterationCount != 2 {
+		t.Errorf("IterationCount: got %d, want 2 (the third round never ran)", result.IterationCount)
+	}
+	if !result.BudgetHit {
+		t.Error("BudgetHit should be true when the speak cap ends the tick")
+	}
+}
+
+// The cap does NOT fire below the limit: a single speak then done() ends as Done
+// with one utterance — a normal one-beat turn is untouched (ZBBS-HOME-402).
+func TestHarness_SpeakCap_SingleSpeakUnaffected(t *testing.T) {
+	w, cancel := newHarnessWorld(t, "attempt-A")
+	defer cancel()
+
+	client := llm.NewFakeClient(
+		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c1", 0, "speak", `{"text":"Good evening to you."}`)}}},
+		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c2", 0, "done", `{}`)}}},
+	)
+	h, spokeLog := newSpeakDedupHarness(t, client)
+
+	result := h.RunTick(context.Background(), w, newTestJob("attempt-A", nil))
+
+	if result.TerminalStatus != sim.TickStatusDone {
+		t.Errorf("status: got %v, want Done (one speak, under the cap)", result.TerminalStatus)
+	}
+	if got := *spokeLog; len(got) != 1 {
+		t.Errorf("utterances committed: got %d %q, want 1", len(got), got)
+	}
+}
+
+// Round-boundary semantics (ZBBS-HOME-402): the cap caps ROUNDS of speaking, not
+// speaks within a single response. A single response emitting 3 distinct speaks
+// (no done()) commits ALL three, THEN the tick ends at the round boundary as
+// BudgetForced — bounded by MaxToolCallsPerResponse + the same-tick dedup. This
+// locks the deliberate behavior (vs. a strict mid-batch cap, which would wrongly
+// flip the legit greet-then-answer-then-done batch in
+// TestHarness_SameTickDedup_AllowsDistinctFollowup from Done to BudgetForced).
+func TestHarness_SpeakCap_MultiSpeakInOneResponseAllCommit(t *testing.T) {
+	w, cancel := newHarnessWorld(t, "attempt-A")
+	defer cancel()
+
+	client := llm.NewFakeClient(llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{
+		newToolCall("c1", 0, "speak", `{"text":"Good evening to you."}`),
+		newToolCall("c2", 1, "speak", `{"text":"What goods have you today?"}`),
+		newToolCall("c3", 2, "speak", `{"text":"A third distinct line."}`),
+	}}})
+	h, spokeLog := newSpeakDedupHarness(t, client)
+
+	result := h.RunTick(context.Background(), w, newTestJob("attempt-A", nil))
+
+	if result.TerminalStatus != sim.TickStatusBudgetForced {
+		t.Errorf("status: got %v, want BudgetForced (tick ends at the round boundary after the cap)", result.TerminalStatus)
+	}
+	if got := *spokeLog; len(got) != 3 {
+		t.Errorf("utterances committed: got %d %q, want 3 (whole response batch commits before the round-boundary cap)", len(got), got)
+	}
+	if result.IterationCount != 1 {
+		t.Errorf("IterationCount: got %d, want 1 (single response)", result.IterationCount)
+	}
+}

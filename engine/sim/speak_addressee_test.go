@@ -113,10 +113,12 @@ func TestSpeakTo_AddresseeResolution(t *testing.T) {
 }
 
 // TestSpeakTo_NoHuddle_AddresseeEmpty — a speaker with no huddle has no peers,
-// so even an explicit `to` resolves to empty (whole-huddle / no one).
+// so even an explicit `to` resolves to empty (whole-huddle / no one). Uses a PC
+// speaker: an NPC with no audience is now rejected (ZBBS-HOME-402), so the
+// no-huddle COMMIT path this test exercises is PC-only.
 func TestSpeakTo_NoHuddle_AddresseeEmpty(t *testing.T) {
 	w, stop := buildSpeakTestWorld(t,
-		actorSpec{id: "hannah", displayName: "Hannah", kind: sim.KindNPCShared},
+		actorSpec{id: "hannah", displayName: "Hannah", kind: sim.KindPC},
 		actorSpec{id: "ezekiel", displayName: "Ezekiel Crane", kind: sim.KindNPCShared},
 	)
 	defer stop()
