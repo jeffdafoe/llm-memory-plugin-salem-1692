@@ -239,12 +239,14 @@ func RunCheckpointer(ctx context.Context, w *World, save CheckpointFunc, health 
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	log.Printf("sim/checkpoint: periodic checkpointer started (interval %s)", interval)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			start := time.Now()
 			err := CheckpointNow(ctx, w, save)
 			// A shutdown racing this tick cancels the in-flight write; that's
 			// not a real failure, so don't record or log it — the <-ctx.Done()
@@ -256,7 +258,16 @@ func RunCheckpointer(ctx context.Context, w *World, save CheckpointFunc, health 
 				health.RecordFailure(time.Now(), err)
 				log.Printf("sim/checkpoint: %v", err)
 			} else {
-				health.RecordSuccess(time.Now())
+				finished := time.Now()
+				health.RecordSuccess(finished)
+				// ZBBS-HOME-399: log every successful periodic checkpoint so an
+				// operator can confirm checkpointing is alive — and spot duration
+				// creep — from journalctl alone, instead of polling the DB's
+				// snapshot_gen. Each line IS one gen advance. One line per
+				// interval (default 60s) is negligible under default journald
+				// rotation. Failures already log above; shutdown's final
+				// checkpoint logs separately (cmd/engine).
+				log.Printf("sim/checkpoint: written ok (%s)", finished.Sub(start).Round(time.Millisecond))
 			}
 		}
 	}
