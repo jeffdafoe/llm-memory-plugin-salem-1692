@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -22,6 +22,17 @@ import (
 // pushTimeout bounds a single conversation-day POST. The endpoint distills +
 // saveNotes server-side but returns a small ack; 30s is generous headroom.
 const pushTimeout = 30 * time.Second
+
+// errSkippedNonSim and errSkippedUnknown mark the two contract-expected,
+// non-fatal PostDay outcomes: the API rejects an agent that isn't in sim
+// dream_mode (400) or doesn't know the agent at all (404). The engine pushes for
+// every agentized actor and the API filters, so these are routine. They are
+// returned (not logged here) so the dispatcher can fold them into a single
+// per-day summary instead of one alarming "api 400" line per actor.
+var (
+	errSkippedNonSim  = errors.New("agent not in sim dream_mode")
+	errSkippedUnknown = errors.New("agent unknown to API")
+)
 
 // pushEvent is one row in the POST body — the wire shape of a sim.SimDayEvent.
 // The API narrates each by Kind (sim-conversation-distiller.js narrateEvent).
@@ -68,10 +79,14 @@ func NewHTTPPoster(baseURL, apiKey string) *HTTPPoster {
 // PostDay marshals and POSTs one (agent, day, events) batch.
 //
 // 400 (agent not dream_mode=sim) and 404 (agent unknown to the API) are
-// non-fatal — the engine pushes for every agentized actor and the API filters,
-// so these are expected and returned as nil. Other non-2xx and transport
-// failures are errors, so the dispatcher leaves the day's cursor un-stamped and
-// retries. Ported from v1's postSimDay.
+// contract-expected, non-fatal outcomes — the engine pushes for every agentized
+// actor and the API filters — so they are returned as the errSkippedNonSim /
+// errSkippedUnknown sentinels rather than logged here. The dispatcher recognizes
+// them and folds them into a single per-day summary instead of one line per
+// actor (a backlog boot would otherwise emit one alarming "api 400" line per
+// non-dreaming actor for every caught-up day). Other non-2xx and transport
+// failures are real errors, so the dispatcher leaves the day's cursor un-stamped
+// and retries. Ported from v1's postSimDay.
 func (p *HTTPPoster) PostDay(ctx context.Context, agent, day string, events []sim.SimDayEvent) error {
 	body, err := json.Marshal(pushBody{
 		Agent:  agent,
@@ -101,14 +116,13 @@ func (p *HTTPPoster) PostDay(ctx context.Context, agent, day string, events []si
 
 	switch {
 	case resp.StatusCode == http.StatusBadRequest:
-		// Most common: agent isn't dream_mode=sim. Non-fatal.
-		log.Printf("simpush: %s %s: api 400 (likely non-sim): %s", agent, day, string(respBody))
-		return nil
+		// Most common: agent isn't dream_mode=sim. Contract-expected; the
+		// dispatcher counts these, it does not treat them as a failure.
+		return errSkippedNonSim
 	case resp.StatusCode == http.StatusNotFound:
 		// Agent unknown to the API (e.g. a decorative NPC with no
-		// agent_configuration row). Non-fatal.
-		log.Printf("simpush: %s %s: api 404 (unknown agent): %s", agent, day, string(respBody))
-		return nil
+		// agent_configuration row). Contract-expected.
+		return errSkippedUnknown
 	case resp.StatusCode >= 300:
 		return fmt.Errorf("api %d: %s", resp.StatusCode, string(respBody))
 	}

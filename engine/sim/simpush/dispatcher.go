@@ -14,6 +14,7 @@ package simpush
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -206,6 +207,8 @@ func (d *Dispatcher) pushDay(ctx context.Context, day string) error {
 	}
 
 	hadFailure := false
+	skippedNonSim := 0
+	skippedUnknown := 0
 	for _, a := range actors {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -216,11 +219,22 @@ func (d *Dispatcher) pushDay(ctx context.Context, day string) error {
 			hadFailure = true
 			continue
 		}
-		if err := d.poster.PostDay(ctx, a.Agent, day, events); err != nil {
+		switch err := d.poster.PostDay(ctx, a.Agent, day, events); {
+		case errors.Is(err, errSkippedNonSim):
+			skippedNonSim++
+		case errors.Is(err, errSkippedUnknown):
+			skippedUnknown++
+		case err != nil:
 			log.Printf("simpush: %s %s: post: %v", a.Agent, day, err)
 			hadFailure = true
-			continue
 		}
+	}
+	// Fold the contract-expected non-sim / unknown skips into one benign line per
+	// day rather than one alarming "api 400" line per actor: a backlog boot pushes
+	// every agentized actor for every caught-up day, and most are non-dreaming
+	// shared VAs whose 400 is by-design (see Poster).
+	if skippedNonSim > 0 || skippedUnknown > 0 {
+		log.Printf("simpush: %s: skipped %d non-sim, %d unknown agent(s) (expected, not pushed)", day, skippedNonSim, skippedUnknown)
 	}
 	if hadFailure {
 		return fmt.Errorf("one or more agent pushes failed for %s", day)

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -114,13 +115,21 @@ func TestPostDay_EmptyEventsIsArray(t *testing.T) {
 }
 
 // TestPostDay_NonFatalStatuses: 400 (non-sim) and 404 (unknown agent) are
-// swallowed — the engine pushes for every agentized actor and the API filters.
+// contract-expected — returned as the recognizable sentinels (not nil, not a
+// hard error) so the dispatcher folds them into its per-day skip summary.
 func TestPostDay_NonFatalStatuses(t *testing.T) {
-	for _, status := range []int{http.StatusBadRequest, http.StatusNotFound} {
+	cases := []struct {
+		status int
+		want   error
+	}{
+		{http.StatusBadRequest, errSkippedNonSim},
+		{http.StatusNotFound, errSkippedUnknown},
+	}
+	for _, tc := range cases {
 		cap := &capture{}
-		p := posterServer(t, status, cap)
-		if err := p.PostDay(context.Background(), "salem-x", "2026-06-03", nil); err != nil {
-			t.Errorf("status %d: PostDay returned %v, want nil (non-fatal)", status, err)
+		p := posterServer(t, tc.status, cap)
+		if err := p.PostDay(context.Background(), "salem-x", "2026-06-03", nil); !errors.Is(err, tc.want) {
+			t.Errorf("status %d: PostDay returned %v, want %v", tc.status, err, tc.want)
 		}
 	}
 }
