@@ -200,75 +200,13 @@ func DeliverOrder(sellerID ActorID, orderID OrderID, at time.Time) Command {
 				return nil, fmt.Errorf("deliver_order: item %q no longer in catalog", o.Item)
 			}
 
-			// Fulfillment. A "lodging"-capability item (e.g. nights_stay)
-			// grants/extends a private bedroom (ZBBS-HOME-296) instead of
-			// transferring a good — this is what wires the otherwise-dead
-			// AssignBedroomForLodger. Everything else moves goods to each
-			// consumer. Co-presence (gate 6), catalog (gate 7), the shared
-			// RecordInteraction, and finalizeOrderTerminal run for both.
-			//
-			// Capability contract: lodging IMPLIES service (no inventory).
-			// The gate-5 stock skip keys on "service" while fulfillment keys
-			// on "lodging"; a lodging-but-not-service item would pass gate 5
-			// only if it held stock, then consume none here. Reject that
-			// misconfiguration loudly rather than let it behave as an
-			// unconsumed physical good.
-			isLodging := itemHasCapability(w, o.Item, "lodging")
-			if isLodging && !itemHasCapability(w, o.Item, "service") {
-				return nil, fmt.Errorf("deliver_order: item %q has the lodging capability without service (order %d) — misconfigured catalog", o.Item, orderID)
-			}
-			if isLodging {
-				// Lodging grants the room — and physically beds the lodger via
-				// InsideRoomID — to the BUYER. Gate 6 validated co-presence of
-				// the CONSUMERS, so enforce the single-self-consumer scope:
-				// without this, a buyer-not-in-consumers (or multi-consumer)
-				// order would grant + teleport an actor whose co-presence was
-				// never checked and strand the listed consumers. Booking a room
-				// on another's behalf is out of scope; reject it rather than
-				// misbehave silently.
-				if len(o.ConsumerIDs) != 1 || o.ConsumerIDs[0] != o.BuyerID {
-					return nil, fmt.Errorf("deliver_order: lodging order %d must have the buyer as its sole consumer (buyer=%q consumers=%v)", orderID, o.BuyerID, o.ConsumerIDs)
-				}
-				if seller.WorkStructureID == "" {
-					return nil, fmt.Errorf("deliver_order: keeper %q has no work structure to lodge in (order %d)", sellerID, orderID)
-				}
-				expiresAt := ComputeLodgerUntil(o.CreatedAt, o.Qty, w.Settings.LodgingCheckOutHour, w.Settings.Location)
-				res, err := AssignBedroomForLodger(StructureID(seller.WorkStructureID), o.BuyerID, int64(o.LedgerID), expiresAt).Fn(w)
-				if err != nil {
-					if err == ErrNoPrivateRooms {
-						return nil, fmt.Errorf("deliver_order: %s has no bedrooms — not set up for lodging (order %d)", seller.DisplayName, orderID)
-					}
-					return nil, fmt.Errorf("deliver_order: assign bedroom for order %d: %w", orderID, err)
-				}
-				abr, _ := res.(AssignBedroomResult)
-				if abr.RoomID == 0 {
-					return nil, fmt.Errorf("deliver_order: all bedrooms at %s are occupied — try again shortly (order %d)", seller.DisplayName, orderID)
-				}
-			} else {
-				// All gates pass. The atomic-commit contract requires every
-				// per-consumer transfer to succeed or none of them to mutate
-				// state. transferItem can fail on three modes (qty <= 0,
-				// missing actor, insufficient stock) — gates above already
-				// ruled out all three for the live world state. Preflight
-				// each prospective transfer in a dry-run loop so any
-				// surprise failure (future transferItem mode, or a corrupt
-				// loaded Order) is caught BEFORE any mutation lands.
-				for _, consumer := range consumers {
-					if consumer == nil {
-						return nil, fmt.Errorf("deliver_order: nil consumer in preflight")
-					}
-				}
-				// All preflights passed — commit per-consumer transfers.
-				// gate-5 + gate-6 + preflight together guarantee these
-				// cannot fail; the residual error path is defensive.
-				for _, consumer := range consumers {
-					if err := transferItem(w, seller, consumer, o.Item, o.Qty); err != nil {
-						// Reaching here is a substrate invariant
-						// violation, not a domain failure. The earlier
-						// gates + preflight should have caught it.
-						return nil, fmt.Errorf("deliver_order: transferItem to %q: %w", consumer.ID, err)
-					}
-				}
+			// Fulfillment — shared with the ZBBS-HOME-398 immediate-handover
+			// path (commitPayTransfer). transferOrderGoods grants the lodging
+			// room or moves the goods to each consumer. Co-presence (gate 6),
+			// catalog (gate 7), the SalientFacts below, and finalizeOrderTerminal
+			// stay on this deferred-delivery caller.
+			if err := transferOrderGoods(w, o, seller, consumers); err != nil {
+				return nil, err
 			}
 
 			// Bidirectional buyer↔seller SalientFacts. Multi-consumer
@@ -296,6 +234,145 @@ func DeliverOrder(sellerID ActorID, orderID OrderID, at time.Time) Command {
 			return nil, nil
 		},
 	}
+}
+
+// transferOrderGoods executes an Order's physical handover: it grants the
+// lodging room for a "lodging"-capability item, or moves the goods to each
+// consumer for an ordinary item. It does NOT flip the Order state, write
+// SalientFacts, or run the deliver_order gate matrix — the caller owns those.
+//
+// Shared by two callers:
+//   - DeliverOrder (the deferred deliver_order tool — lodging check-in and
+//     future craft), after its 7-gate matrix and before its Delivered
+//     SalientFacts + finalize. This is the only caller that exercises the
+//     lodging branch below.
+//   - fulfillTakeHomeOrderAtAccept (ZBBS-HOME-398 immediate handover), right
+//     after a PHYSICAL order is minted at accept; the accept gate matrix
+//     already validated co-presence and stock, so the error paths below are
+//     defensive there (and the lodging branch is never reached via that path).
+//
+// consumers MUST be the resolved, non-nil *Actor pointers for o.ConsumerIDs,
+// already validated co-present with the seller by the caller. MUST run on the
+// world goroutine.
+//
+// Capability contract: lodging IMPLIES service (no inventory). A
+// lodging-but-not-service item is a misconfigured catalog and is rejected
+// loudly rather than treated as an unconsumed physical good.
+func transferOrderGoods(w *World, o *Order, seller *Actor, consumers []*Actor) error {
+	isLodging := itemHasCapability(w, o.Item, "lodging")
+	if isLodging && !itemHasCapability(w, o.Item, "service") {
+		return fmt.Errorf("order %d: item %q has the lodging capability without service — misconfigured catalog", o.ID, o.Item)
+	}
+	if isLodging {
+		// Lodging grants the room — and physically beds the lodger via
+		// InsideRoomID — to the BUYER. The caller validated co-presence of the
+		// CONSUMERS, so enforce the single-self-consumer scope: a
+		// buyer-not-in-consumers (or multi-consumer) order would grant +
+		// teleport an actor whose co-presence was never checked and strand the
+		// listed consumers. Booking a room on another's behalf is out of scope.
+		if len(o.ConsumerIDs) != 1 || o.ConsumerIDs[0] != o.BuyerID {
+			return fmt.Errorf("order %d: lodging order must have the buyer as its sole consumer (buyer=%q consumers=%v)", o.ID, o.BuyerID, o.ConsumerIDs)
+		}
+		if seller.WorkStructureID == "" {
+			return fmt.Errorf("order %d: keeper %q has no work structure to lodge in", o.ID, seller.ID)
+		}
+		expiresAt := ComputeLodgerUntil(o.CreatedAt, o.Qty, w.Settings.LodgingCheckOutHour, w.Settings.Location)
+		res, err := AssignBedroomForLodger(StructureID(seller.WorkStructureID), o.BuyerID, int64(o.LedgerID), expiresAt).Fn(w)
+		if err != nil {
+			if err == ErrNoPrivateRooms {
+				return fmt.Errorf("order %d: %s has no bedrooms — not set up for lodging", o.ID, seller.DisplayName)
+			}
+			return fmt.Errorf("order %d: assign bedroom: %w", o.ID, err)
+		}
+		abr, _ := res.(AssignBedroomResult)
+		if abr.RoomID == 0 {
+			return fmt.Errorf("order %d: all bedrooms at %s are occupied — try again shortly", o.ID, seller.DisplayName)
+		}
+		return nil
+	}
+	// Ordinary goods. The atomic-commit contract requires every per-consumer
+	// transfer to succeed or none to mutate state. Preflight the AGGREGATE
+	// required stock (and nil consumers) BEFORE any mutation so a multi-consumer
+	// order can't half-commit — transfer to the first consumer, then fail on a
+	// later one. Both callers' gates already validate this (DeliverOrder gate 5;
+	// pay-accept gate 10), so this makes the helper self-enforce the atomicity
+	// contract rather than trust the caller. "service" items carry no inventory
+	// (infinite stock) — skip their stock check, mirroring gate 5 (lodging,
+	// which implies service, already returned above).
+	n := len(consumers)
+	if n == 0 {
+		return fmt.Errorf("order %d: no consumers", o.ID)
+	}
+	for _, consumer := range consumers {
+		if consumer == nil {
+			return fmt.Errorf("order %d: nil consumer in preflight", o.ID)
+		}
+	}
+	if !itemHasCapability(w, o.Item, "service") {
+		if o.Qty <= 0 {
+			return fmt.Errorf("order %d: invalid quantity %d", o.ID, o.Qty)
+		}
+		if o.Qty > math.MaxInt/n {
+			return fmt.Errorf("order %d: aggregate quantity overflows int (qty=%d consumers=%d)", o.ID, o.Qty, n)
+		}
+		if required := o.Qty * n; seller.Inventory[o.Item] < required {
+			return fmt.Errorf("order %d: insufficient stock for %d consumers (have %d, need %d)",
+				o.ID, n, seller.Inventory[o.Item], required)
+		}
+	}
+	for _, consumer := range consumers {
+		if err := transferItem(w, seller, consumer, o.Item, o.Qty); err != nil {
+			// A substrate invariant violation, not a domain failure — the
+			// gates + preflight should have caught it.
+			return fmt.Errorf("order %d: transferItem to %q: %w", o.ID, consumer.ID, err)
+		}
+	}
+	return nil
+}
+
+// mintAndTransferTakeHomeOrder mints the take-home Order for an accepted
+// PHYSICAL !ConsumeNow offer and moves the goods to the buyer in the same tick
+// (ZBBS-HOME-398), returning the still-Ready Order. The caller (commitPayTransfer)
+// flips it to Delivered AFTER writing the Paid/PaidBy facts, so OrderDelivered
+// fires after the payment facts exist (a subscriber on OrderDelivered can
+// assume the Paid facts are already present). Lodging is routed elsewhere by
+// the caller — it keeps the deferred book→check-in flow — so this path only
+// ever sees ordinary goods.
+//
+// The order is handed over at accept (no deferred deliver_order beat, no
+// buyer-seller rendezvous), so the buyer can never be charged for goods that
+// then fail to be delivered. The Order is still MINTED (not skipped) so that,
+// once the caller flips it to Delivered, its durable pay_ledger row persists at
+// the next checkpoint — that row is what the price-book restart seed reads
+// (OrdersRepo.LoadRecentPrices, state='accepted' regardless of
+// fulfillment_status). Skipping the Order entirely would silently drop
+// cross-restart price memory for every purchase. (A crash between accept and
+// the next checkpoint loses this tick whole — the coin debit, the goods move,
+// and the price observation together — so the durability matches the engine's
+// transient-state-lossy / persistent-state-consistent crash model.)
+//
+// The accept gate matrix already validated co-presence and aggregate stock, so
+// transferOrderGoods cannot fail in practice; a non-nil return is a substrate
+// invariant violation surfaced to the caller, consistent with its other
+// defensive-error returns. MUST run on the world goroutine.
+func mintAndTransferTakeHomeOrder(w *World, entry *PayLedgerEntry, seller *Actor, at time.Time) (*Order, error) {
+	id := createOrderForPayWithItem(w, entry, at)
+	o := w.Orders[id]
+	if o == nil {
+		return nil, fmt.Errorf("order %d: vanished immediately after mint", id)
+	}
+	consumers := make([]*Actor, 0, len(o.ConsumerIDs))
+	for _, cid := range o.ConsumerIDs {
+		c, ok := w.Actors[cid]
+		if !ok || c == nil {
+			return nil, fmt.Errorf("order %d: consumer %q not found at immediate handover", id, cid)
+		}
+		consumers = append(consumers, c)
+	}
+	if err := transferOrderGoods(w, o, seller, consumers); err != nil {
+		return nil, err
+	}
+	return o, nil
 }
 
 // orderDeliveredFactText composes the InteractionDelivered /

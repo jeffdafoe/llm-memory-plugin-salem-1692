@@ -1583,14 +1583,21 @@ func finalizePayLedgerTerminal(
 //
 // Item flow:
 //
-//   - ConsumeNow=false: stock STAYS in seller's inventory. An Order
-//     is minted via createOrderForPayWithItem and OrderCreated is
-//     emitted. Goods transfer happens at deliver_order time on the
-//     seller's subsequent reactor tick (Phase 3 PR S6 — the
-//     post-acceptance fulfillment state machine). Pre-S6 this branch
-//     transferred goods immediately at accept; the architecture lock
-//     (ledger-substrate § 2) moved goods movement to deliver_order
-//     so the seller has narrative agency in the handover.
+//   - ConsumeNow=false, "lodging" item: a deferred booking. The Order is
+//     minted at Ready and left for the keeper to check the guest in via
+//     deliver_order (the room grant happens there; the eviction exemption is
+//     gated on that check-in). This is the designed two-phase lodging flow —
+//     see the salem-engine-v2/lodging codebase note — and is NOT flattened.
+//   - ConsumeNow=false, everything else (physical takeaway): the Order is
+//     minted AND immediately delivered in the same tick via
+//     fulfillTakeHomeOrderAtAccept (ZBBS-HOME-398) — goods move to the buyer
+//     right here at accept, and the Order is flipped to Delivered so its
+//     durable pay_ledger row still persists (the price-book restart seed reads
+//     accepted rows). At accept the buyer is co-present and the seller holds
+//     the stock, so there is nothing to defer and no window for the HOME-396
+//     takeaway-expiry robbery. Phase 3 PR S6 originally deferred even this to
+//     a separate deliver_order beat for seller narrative agency, but the
+//     buyer-seller rendezvous gap made deferral a routine robbery path.
 //   - ConsumeNow=true: stock leaves seller's inventory, but does NOT
 //     land on the consumer's. Instead, the consumer's needs decrement
 //     per the ItemKind's Satisfies list (mirrors sim.Consume), dwell
@@ -1673,6 +1680,12 @@ func commitPayTransfer(
 		consumers = []ActorID{entry.BuyerID}
 	}
 
+	// deliveredTakeHome holds a physical take-home Order that was minted +
+	// goods-transferred this tick but NOT yet flipped to Delivered — the flip
+	// is deferred until after the Paid/PaidBy facts below so OrderDelivered
+	// fires after the payment facts exist (ZBBS-HOME-398; code_review).
+	var deliveredTakeHome *Order
+
 	def := w.ItemKinds[entry.ItemKind]
 	if entry.ConsumeNow {
 		// Eat-on-the-spot: stock leaves seller, consumer needs
@@ -1733,12 +1746,30 @@ func commitPayTransfer(
 				})
 			}
 		}
-	} else {
-		// Take-home: stock STAYS in seller's inventory. Mint an Order
-		// to track the pending delivery; the seller's deliver_order
-		// tool call will transfer goods to each consumer when the
-		// handover narrative beat fires (Phase 3 PR S6).
+	} else if itemHasCapability(w, entry.ItemKind, "lodging") {
+		// Lodging is a deferred booking, NOT an immediate handover: mint the
+		// Order at Ready and leave it for the keeper to check the guest in via
+		// deliver_order. That check-in is the designed mechanic — the room
+		// grant (AssignBedroomForLodger) happens there, and the eviction
+		// exemption is gated on it ("the keeper has to do their job"). See the
+		// salem-engine-v2/lodging codebase note. Restoring the rest of the v1
+		// order book (ready_by advance booking, future-bookings perception,
+		// overdue cues) is tracked separately (ZBBS-HOME-399).
 		createOrderForPayWithItem(w, entry, at)
+	} else {
+		// Physical take-home (ZBBS-HOME-398): mint the Order and move the goods
+		// to the buyer right now, at accept, while the parties are co-present and
+		// the seller holds the stock. Nothing to defer, so no window for the
+		// takeaway-expiry robbery (HOME-396). The Order is minted (so its durable
+		// pay_ledger row persists for the price-book restart seed) but the flip to
+		// Delivered is held until after the Paid/PaidBy facts below. A non-nil
+		// return is a substrate invariant violation (gates guaranteed
+		// fulfillment), handled like the ConsumeNow drift errors above.
+		o, err := mintAndTransferTakeHomeOrder(w, entry, seller, at)
+		if err != nil {
+			return err
+		}
+		deliveredTakeHome = o
 	}
 
 	// Bidirectional Paid / PaidBy SalientFacts for the buyer↔seller
@@ -1756,6 +1787,17 @@ func commitPayTransfer(
 	}
 	if _, err := RecordInteraction(entry.SellerID, entry.BuyerID, InteractionPaidBy, sellerFact, at).Fn(w); err != nil {
 		log.Printf("sim.commitPayTransfer: RecordInteraction seller→buyer %q→%q: %v", entry.SellerID, entry.BuyerID, err)
+	}
+
+	// ZBBS-HOME-398: now that the Paid/PaidBy facts exist, flip the
+	// immediately-delivered physical take-home Order to Delivered — so
+	// OrderDelivered fires AFTER the payment facts (code_review). The
+	// Delivered/Received facts are intentionally NOT written: paid and received
+	// coincide in this same instant, so the Paid/PaidBy pair above already
+	// records the exchange (unlike the deferred deliver_order path, where the
+	// handover is a separate later beat with its own facts).
+	if deliveredTakeHome != nil {
+		flipOrderTerminal(w, deliveredTakeHome, OrderStateDelivered, at)
 	}
 	return nil
 }

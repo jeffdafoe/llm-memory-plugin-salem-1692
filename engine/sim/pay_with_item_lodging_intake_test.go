@@ -140,6 +140,62 @@ func TestPayWithItem_Lodging_OnePrivateRoom_Passes(t *testing.T) {
 	}
 }
 
+// TestAcceptPay_Lodging_StaysDeferred — accepting a nights_stay (lodging)
+// offer mints a Ready Order for the keeper to check the guest in via
+// deliver_order; it is NOT handed over at accept like physical takeaway
+// (ZBBS-HOME-398). The room grant (AssignBedroomForLodger) happens at the
+// deliver_order check-in, so the buyer holds no RoomAccess yet — this is the
+// designed two-phase booking flow, preserved.
+func TestAcceptPay_Lodging_StaysDeferred(t *testing.T) {
+	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
+		{id: "alice", displayName: "Alice", kind: sim.KindNPCStateful, huddleID: "h1", coins: 100},
+		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1"},
+	})
+	defer stop()
+	seedLodgingFixture(t, w, "bob", []*sim.Room{
+		{ID: 1, StructureID: "inn", Kind: sim.RoomKindCommon, Name: "common"},
+		{ID: 2, StructureID: "inn", Kind: sim.RoomKindPrivate, Name: "bedroom_1"},
+	})
+	at := time.Now().UTC()
+
+	res, err := w.Send(sim.PayWithItem("alice", "Bob", "nights_stay", 1, 4, false, nil, nil, 0, 0, "", at))
+	if err != nil {
+		t.Fatalf("PayWithItem: %v", err)
+	}
+	ledgerID := res.(sim.PayWithItemResult).LedgerID
+	if _, err := w.Send(sim.AcceptPay("bob", ledgerID, at)); err != nil {
+		t.Fatalf("AcceptPay: %v", err)
+	}
+
+	var orderState sim.OrderState
+	var orderCount, aliceRooms, aliceCoins int
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		aliceRooms = len(world.Actors["alice"].RoomAccess)
+		aliceCoins = world.Actors["alice"].Coins
+		for _, o := range world.Orders {
+			if o != nil && o.SellerID == "bob" && o.BuyerID == "alice" {
+				orderState = o.State
+				orderCount++
+			}
+		}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("read world: %v", err)
+	}
+	if orderCount != 1 {
+		t.Fatalf("lodging order count = %d, want 1", orderCount)
+	}
+	if orderState != sim.OrderStateReady {
+		t.Errorf("lodging order State = %q, want ready (deferred check-in, not immediate handover)", orderState)
+	}
+	if aliceRooms != 0 {
+		t.Errorf("alice holds %d RoomAccess at accept, want 0 (room granted at deliver_order check-in)", aliceRooms)
+	}
+	if aliceCoins != 96 {
+		t.Errorf("alice.Coins = %d, want 96 (booking paid at accept)", aliceCoins)
+	}
+}
+
 // TestPayWithItem_Lodging_OnePrivateRoomOccupied_StillPasses pins the
 // v1-deliberate scope: intake doesn't tighten to "available rooms".
 // Occupancy is transient (existing lodgers check out in the morning), so
