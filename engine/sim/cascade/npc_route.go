@@ -238,6 +238,12 @@ func handleActorArrivedAdvanceRoute(w *sim.World, evt sim.Event) {
 // coexist with a still-pending route walk — abandoning never discards a route
 // that could otherwise have kept progressing.
 //
+// MAINTAINER NOTE: this broad abandon is load-bearing on the engine-wide
+// single-MoveIntent invariant. Do NOT narrow it to MovementAttemptID correlation
+// unless route dispatch also gains an independent expiry/watchdog — otherwise the
+// supersede-then-fail case strands the route (and, via shiftDutyTarget, the
+// actor's shift-duty) again.
+//
 // We abandon rather than re-walk because emitMoveStopped clears MoveIntent AFTER
 // the emit (finishArrival clears it BEFORE emitting ActorArrived), so a MoveActor
 // dispatched from this synchronously-run subscriber would be nil'd by the ticker
