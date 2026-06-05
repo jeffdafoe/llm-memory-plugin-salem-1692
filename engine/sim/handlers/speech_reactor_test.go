@@ -162,10 +162,12 @@ func TestSpeechReactor_WarrantShape(t *testing.T) {
 
 // --- TestSpeechReactor_NoHuddleNoWarrants ----------------------------
 // Speaker with no huddle: Spoke event emits with empty RecipientIDs,
-// subscriber sees empty list, no warrants minted.
+// subscriber sees empty list, no warrants minted. Uses a PC speaker — an NPC
+// with no audience is now rejected before emit (ZBBS-HOME-402), so the
+// empty-recipient EMIT path this test exercises is PC-only.
 func TestSpeechReactor_NoHuddleNoWarrants(t *testing.T) {
 	w, stop := buildSpeechReactorWorld(t,
-		speakActor{id: "hannah", displayName: "Hannah", kind: sim.KindNPCShared},
+		speakActor{id: "hannah", displayName: "Hannah", kind: sim.KindPC},
 		speakActor{id: "bob", displayName: "Bob", kind: sim.KindNPCShared},
 	)
 	defer stop()
