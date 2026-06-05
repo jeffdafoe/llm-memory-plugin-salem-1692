@@ -222,7 +222,7 @@ func TestBuildSatiation_CoPresentPeer_Acquainted(t *testing.T) {
 	var b strings.Builder
 	renderSatiation(&b, v)
 	out := b.String()
-	want := "Hannah is here with you, carrying stew (a hearty meal) — you could offer to buy it from them now with pay_with_item. No need to walk anywhere."
+	want := "Hannah is here with you, carrying stew (a hearty meal) — you could offer to buy it from them now with pay_with_item, paying with coins or goods you carry (pay_items). No need to walk anywhere."
 	if !strings.Contains(out, want) {
 		t.Errorf("co-present line missing/!exact:\nwant: %s\ngot:\n%s", want, out)
 	}

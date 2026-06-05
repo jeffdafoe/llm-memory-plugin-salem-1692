@@ -115,6 +115,14 @@ const (
 	// the seller's tick). Terminal.
 	PayLedgerStateFailedInsufficientStock PayLedgerState = "failed_insufficient_stock"
 
+	// PayLedgerStateFailedInsufficientGoods — accept-time revalidation
+	// found the buyer no longer holds every PayItem they offered to pay
+	// WITH (the barter leg, ZBBS-HOME-393). Buyer-side material failure,
+	// the goods-payment counterpart to FailedInsufficientFunds (which
+	// covers the coin leg). Distinct terminal so admin/telemetry can tell
+	// a coin shortfall from a goods shortfall. Terminal.
+	PayLedgerStateFailedInsufficientGoods PayLedgerState = "failed_insufficient_goods"
+
 	// PayLedgerStateFailedUnavailable — umbrella for "social context
 	// broken at accept time": seller on break, item kind deprecated
 	// from catalog, consumers left the huddle, co-presence lost between
@@ -137,6 +145,7 @@ const (
 	PayTerminalStateExpired                 PayTerminalState = "expired"
 	PayTerminalStateFailedInsufficientFunds PayTerminalState = "failed_insufficient_funds"
 	PayTerminalStateFailedInsufficientStock PayTerminalState = "failed_insufficient_stock"
+	PayTerminalStateFailedInsufficientGoods PayTerminalState = "failed_insufficient_goods"
 	PayTerminalStateFailedUnavailable       PayTerminalState = "failed_unavailable"
 )
 
@@ -172,6 +181,32 @@ const PayLedgerSweepCadenceDefault = 60 * time.Second
 // re-asserts that floor even if the setting is configured shorter, so a
 // buyer's pending counter-response can never dangle.
 const PayLedgerTerminalRetentionDefault = PayLedgerInResponseToWindow
+
+// ItemKindQty is a canonical item kind paired with a positive quantity.
+// It is the shape of one goods line on a barter offer — the goods a buyer
+// pays WITH (PayLedgerEntry.PayItems) or the goods a seller demands in a
+// counter (PayLedgerEntry.CounterPayItems). ZBBS-HOME-393.
+//
+// Kind is already resolved to canonical form (the Command Fn runs the
+// free-text tool input through resolveItemKind before building this), so
+// downstream readers compare against Actor.Inventory keys directly.
+type ItemKindQty struct {
+	Kind ItemKind
+	Qty  int
+}
+
+// cloneItemKindQtys returns a deep copy of a goods-line slice (nil-safe,
+// preserving nil vs empty). Used by ClonePayLedgerEntry and the event /
+// warrant snapshot paths so a published copy can't reach back into world
+// state through the slice.
+func cloneItemKindQtys(in []ItemKindQty) []ItemKindQty {
+	if in == nil {
+		return nil
+	}
+	out := make([]ItemKindQty, len(in))
+	copy(out, in)
+	return out
+}
 
 // PayLedgerEntry is the in-memory state of one buyer-staked pay offer.
 // Lives in World.PayLedger keyed by ID. In-memory only — pending
@@ -217,11 +252,21 @@ type PayLedgerEntry struct {
 	ConsumeNow  bool
 	ConsumerIDs []ActorID
 
-	// Amount is the offered total in coins. Always > 0 at intake (the
-	// pay_with_item handler decode rejects 0/negative). For a countered
-	// entry, Amount is the buyer's ORIGINAL offer; CounterAmount is the
-	// seller's counter-proposal terms.
+	// Amount is the offered total in coins. >= 0 — an offer may pay with
+	// coins, goods (PayItems), or both, but must carry at least one of the
+	// two (the intake gate rejects an all-zero offer; ZBBS-HOME-393, which
+	// also closes the free-goods hole). For a countered entry, Amount is
+	// the buyer's ORIGINAL coin offer; CounterAmount is the seller's
+	// counter-proposal coins.
 	Amount int
+
+	// PayItems are the goods the buyer offers to pay WITH (barter leg,
+	// ZBBS-HOME-393). Empty for a pure-coin offer. Kinds are canonical
+	// (resolved at intake) and validated to be held by the buyer at mint
+	// (point-in-time, not reserved) and again at accept. The two-way swap
+	// in commitPayTransfer moves each PayItem buyer→seller alongside the
+	// coin debit.
+	PayItems []ItemKindQty
 
 	// QuoteID is non-zero when the buyer's pay_with_item call referenced
 	// a quote_id. Zero for a slow-path offer. Denormalized — cheap to
@@ -240,9 +285,18 @@ type PayLedgerEntry struct {
 	Depth int
 
 	// CounterAmount is populated only when State == Countered. Carries
-	// the seller's counter-proposal price; the buyer's optional response
-	// is a fresh entry with this entry as ParentID.
+	// the seller's counter-proposal coin price (may be 0 when the seller
+	// counters with goods only); the buyer's optional response is a fresh
+	// entry with this entry as ParentID.
 	CounterAmount int
+
+	// CounterPayItems is populated only when State == Countered and the
+	// seller's counter demands different goods (the symmetric-barter
+	// counter, ZBBS-HOME-393). Empty for a pure-coin counter. These are
+	// the goods TERMS the seller proposes; nothing moves on a counter —
+	// the buyer's in_response_to response restates whatever payment they
+	// choose.
+	CounterPayItems []ItemKindQty
 
 	// Message is the free-text payload whose meaning is driven by State:
 	//   - Countered          → seller's counter message
@@ -294,6 +348,8 @@ func ClonePayLedgerEntry(e *PayLedgerEntry) *PayLedgerEntry {
 		cp.ConsumerIDs = make([]ActorID, len(e.ConsumerIDs))
 		copy(cp.ConsumerIDs, e.ConsumerIDs)
 	}
+	cp.PayItems = cloneItemKindQtys(e.PayItems)
+	cp.CounterPayItems = cloneItemKindQtys(e.CounterPayItems)
 	return &cp
 }
 
@@ -486,6 +542,7 @@ func restartReStampPayOfferWarrants(w *World, now time.Time) {
 				Item:        e.ItemKind,
 				Qty:         e.Qty,
 				Amount:      e.Amount,
+				PayItems:    cloneItemKindQtys(e.PayItems),
 				ConsumeNow:  e.ConsumeNow,
 				ConsumerIDs: append([]ActorID(nil), e.ConsumerIDs...),
 				ExpiresAt:   e.ExpiresAt,

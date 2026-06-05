@@ -68,7 +68,7 @@ func TestPayWithItem_Lodging_NoPrivateRooms_Rejected(t *testing.T) {
 		{ID: 1, StructureID: "inn", Kind: sim.RoomKindCommon, Name: "common"},
 	})
 
-	_, err := w.Send(sim.PayWithItem("alice", "Bob", "nights_stay", 1, 4, false, nil, 0, 0, "", time.Now().UTC()))
+	_, err := w.Send(sim.PayWithItem("alice", "Bob", "nights_stay", 1, 4, false, nil, nil, 0, 0, "", time.Now().UTC()))
 	if err == nil || !strings.Contains(err.Error(), "no bedrooms") {
 		t.Fatalf("want no-bedrooms reject, got %v", err)
 	}
@@ -103,7 +103,7 @@ func TestPayWithItem_Lodging_NoWorkStructure_Rejected(t *testing.T) {
 		t.Fatalf("seed nights_stay: %v", err)
 	}
 
-	_, err := w.Send(sim.PayWithItem("alice", "Bob", "nights_stay", 1, 4, false, nil, 0, 0, "", time.Now().UTC()))
+	_, err := w.Send(sim.PayWithItem("alice", "Bob", "nights_stay", 1, 4, false, nil, nil, 0, 0, "", time.Now().UTC()))
 	if err == nil || !strings.Contains(err.Error(), "no work structure") {
 		t.Fatalf("want no-work-structure reject, got %v", err)
 	}
@@ -127,7 +127,7 @@ func TestPayWithItem_Lodging_OnePrivateRoom_Passes(t *testing.T) {
 		{ID: 2, StructureID: "inn", Kind: sim.RoomKindPrivate, Name: "bedroom_1"},
 	})
 
-	res, err := w.Send(sim.PayWithItem("alice", "Bob", "nights_stay", 1, 4, false, nil, 0, 0, "", time.Now().UTC()))
+	res, err := w.Send(sim.PayWithItem("alice", "Bob", "nights_stay", 1, 4, false, nil, nil, 0, 0, "", time.Now().UTC()))
 	if err != nil {
 		t.Fatalf("PayWithItem: %v", err)
 	}
@@ -176,7 +176,7 @@ func TestPayWithItem_Lodging_OnePrivateRoomOccupied_StillPasses(t *testing.T) {
 		t.Fatalf("seed occupancy: %v", err)
 	}
 
-	res, err := w.Send(sim.PayWithItem("alice", "Bob", "nights_stay", 1, 4, false, nil, 0, 0, "", time.Now().UTC()))
+	res, err := w.Send(sim.PayWithItem("alice", "Bob", "nights_stay", 1, 4, false, nil, nil, 0, 0, "", time.Now().UTC()))
 	if err != nil {
 		t.Fatalf("PayWithItem: %v (intake should pass — occupancy stays at delivery)", err)
 	}
@@ -204,7 +204,7 @@ func TestPayWithItem_LodgingTakeHome_NonBuyerConsumer_Rejected(t *testing.T) {
 		{ID: 2, StructureID: "inn", Kind: sim.RoomKindPrivate, Name: "bedroom_1"},
 	})
 
-	_, err := w.Send(sim.PayWithItem("alice", "Bob", "nights_stay", 1, 4, false, []string{"Carol"}, 0, 0, "", time.Now().UTC()))
+	_, err := w.Send(sim.PayWithItem("alice", "Bob", "nights_stay", 1, 4, false, []string{"Carol"}, nil, 0, 0, "", time.Now().UTC()))
 	if err == nil || !strings.Contains(err.Error(), "for someone else") {
 		t.Fatalf("want non-buyer-consumer reject, got %v", err)
 	}
@@ -227,7 +227,7 @@ func TestPayWithItem_LodgingTakeHome_BuyerAsSoleConsumer_Passes(t *testing.T) {
 		{ID: 2, StructureID: "inn", Kind: sim.RoomKindPrivate, Name: "bedroom_1"},
 	})
 
-	res, err := w.Send(sim.PayWithItem("alice", "Bob", "nights_stay", 1, 4, false, []string{"Alice"}, 0, 0, "", time.Now().UTC()))
+	res, err := w.Send(sim.PayWithItem("alice", "Bob", "nights_stay", 1, 4, false, []string{"Alice"}, nil, 0, 0, "", time.Now().UTC()))
 	if err != nil {
 		t.Fatalf("PayWithItem: %v (redundant self-consumer should pass)", err)
 	}
@@ -255,7 +255,7 @@ func TestPayWithItem_LodgingConsumeNow_NonBuyerConsumer_Passes(t *testing.T) {
 		{ID: 2, StructureID: "inn", Kind: sim.RoomKindPrivate, Name: "bedroom_1"},
 	})
 
-	res, err := w.Send(sim.PayWithItem("alice", "Bob", "nights_stay", 1, 4, true, []string{"Carol"}, 0, 0, "", time.Now().UTC()))
+	res, err := w.Send(sim.PayWithItem("alice", "Bob", "nights_stay", 1, 4, true, []string{"Carol"}, nil, 0, 0, "", time.Now().UTC()))
 	if err != nil {
 		t.Fatalf("PayWithItem: %v (WORK-344 gate scopes to take-home only)", err)
 	}

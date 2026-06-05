@@ -77,6 +77,12 @@ type PayOfferReceived struct {
 	ConsumerIDs    []ActorID
 	Amount         int
 
+	// PayItems are the goods the buyer offers to pay WITH (barter leg,
+	// ZBBS-HOME-393). Empty for a pure-coin offer. Snapshotted from the
+	// entry so the pay-offer warrant subscriber can stamp them onto the
+	// seller's warrant without a live ledger lookup.
+	PayItems []ItemKindQty
+
 	// QuoteID is non-zero when the buyer's pay_with_item call
 	// referenced a quote_id. Zero for a slow-path offer that didn't
 	// engage quote matching.
@@ -139,7 +145,14 @@ type PayCountered struct {
 
 	OriginalAmount int
 	CounterAmount  int
-	Message        string
+
+	// CounterPayItems are the goods the seller demands in the counter
+	// (symmetric-barter counter, ZBBS-HOME-393). Empty for a pure-coin
+	// counter. Carried so the buyer's perception can render the seller's
+	// goods terms without a ledger lookup.
+	CounterPayItems []ItemKindQty
+
+	Message string
 
 	SceneID  SceneID
 	HuddleID HuddleID

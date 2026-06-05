@@ -110,6 +110,52 @@ func TestRender_PayOfferSingularCoin(t *testing.T) {
 	}
 }
 
+// TestRender_PayOffer_Barter — a barter offer (goods, or coins + goods)
+// renders the goods the seller is being asked to weigh (ZBBS-HOME-393),
+// joined into the payment phrase, with the load-bearing ledger_id intact.
+func TestRender_PayOffer_Barter(t *testing.T) {
+	// Pure barter: 5 nails for 1 stew.
+	pureGoods := sim.WarrantMeta{
+		TriggerActorID: "bob",
+		Reason: sim.PayOfferWarrantReason{
+			LedgerID: 7, Buyer: "bob", Item: "stew", Qty: 1, Amount: 0,
+			PayItems: []sim.ItemKindQty{{Kind: "nail", Qty: 5}},
+		},
+		SourceEventID: 7,
+	}
+	out := combinedPrompt(Render(Payload{
+		ActorID:           "seller",
+		Warrants:          []sim.WarrantMeta{pureGoods},
+		WarrantActorNames: map[sim.ActorID]string{"bob": "bob"},
+		Baseline:          BaselinePresent,
+	}, DefaultRenderConfig()))
+	if !strings.Contains(out, "offers 5 nail for 1 stew") {
+		t.Errorf("pure-barter offer line missing goods\n%s", out)
+	}
+	if !strings.Contains(out, "offer id 7") {
+		t.Errorf("ledger_id missing on barter offer\n%s", out)
+	}
+
+	// Mixed: 3 nails + 2 coins.
+	mixed := sim.WarrantMeta{
+		TriggerActorID: "bob",
+		Reason: sim.PayOfferWarrantReason{
+			LedgerID: 8, Buyer: "bob", Item: "ale", Qty: 1, Amount: 2,
+			PayItems: []sim.ItemKindQty{{Kind: "nail", Qty: 3}},
+		},
+		SourceEventID: 8,
+	}
+	out = combinedPrompt(Render(Payload{
+		ActorID:           "seller",
+		Warrants:          []sim.WarrantMeta{mixed},
+		WarrantActorNames: map[sim.ActorID]string{"bob": "bob"},
+		Baseline:          BaselinePresent,
+	}, DefaultRenderConfig()))
+	if !strings.Contains(out, "offers 3 nail and 2 coins for 1 ale") {
+		t.Errorf("mixed coins+goods offer line wrong\n%s", out)
+	}
+}
+
 // TestRender_PayOfferPlusOtherWarrant — an offer and a non-offer warrant in
 // the same batch both render: the offer in its decision section, the other in
 // the generic "what just happened" list (which is NOT suppressed).

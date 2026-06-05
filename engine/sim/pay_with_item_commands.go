@@ -87,6 +87,23 @@ const MaxPayWithItemQty = math.MaxInt32
 // prompt cost bounded, generous enough for "round of ale at the tavern."
 const MaxPayWithItemConsumers = SceneQuoteMaxConsumers
 
+// MaxPayWithItemPayItems caps len(PayItems) on a barter offer — the
+// distinct goods lines a buyer may pay WITH (or a seller may demand in a
+// counter). ZBBS-HOME-393. 8 matches MaxPayWithItemConsumers: small
+// enough to keep the seller's offer-decision prompt line bounded,
+// generous enough for a realistic mixed-goods payment.
+const MaxPayWithItemPayItems = 8
+
+// PayItemInput is one goods line on a barter offer as it arrives from the
+// tool layer: a free-text item NAME (resolved to a canonical ItemKind
+// inside the Command Fn via resolveItemKind) and a positive quantity.
+// The Command turns a []PayItemInput into the resolved []ItemKindQty it
+// stores on the entry. ZBBS-HOME-393.
+type PayItemInput struct {
+	Item string
+	Qty  int
+}
+
 // MaxPayMessageRunes caps the rune length of model-controlled free text
 // stored on PayLedgerEntry.Message — counter message, decline reason,
 // withdraw note. 220 runes matches MaxSalientFactTextLen so a counter /
@@ -176,6 +193,7 @@ func PayWithItem(
 	amount int,
 	consumeNow bool,
 	consumerNames []string,
+	payItems []PayItemInput,
 	quoteID QuoteID,
 	parentID LedgerID,
 	forText string,
@@ -185,11 +203,23 @@ func PayWithItem(
 		Fn: func(w *World) (any, error) {
 			// Numeric defense. PayWithItem is exported — non-handler
 			// callers could pass shapes the decode side rejects.
-			if amount < 1 {
-				return nil, fmt.Errorf("PayWithItem: amount must be at least 1 (got %d)", amount)
+			//
+			// Coins are now OPTIONAL (>= 0): an offer may pay with coins,
+			// goods (payItems), or both, but must carry at least one of the
+			// two. The "must offer something" rule is enforced after
+			// payItems are validated (it also closes the free-goods hole —
+			// an all-zero offer was the ZBBS-HOME-391 economy bug).
+			if amount < 0 {
+				return nil, fmt.Errorf("PayWithItem: amount cannot be negative (got %d)", amount)
 			}
 			if amount > MaxPayWithItemAmount {
 				return nil, fmt.Errorf("PayWithItem: amount exceeds maximum (got %d, max %d)", amount, MaxPayWithItemAmount)
+			}
+			if len(payItems) > MaxPayWithItemPayItems {
+				return nil, fmt.Errorf(
+					"PayWithItem: too many goods lines (got %d, max %d) — combine into fewer lines.",
+					len(payItems), MaxPayWithItemPayItems,
+				)
 			}
 			if qty < 1 {
 				return nil, fmt.Errorf("PayWithItem: qty must be at least 1 (got %d)", qty)
@@ -213,6 +243,16 @@ func PayWithItem(
 			if quoteID != 0 && parentID != 0 {
 				return nil, errors.New(
 					"an offer can either accept a quote (quote_id) or respond to a counter (in_response_to), not both — drop one.",
+				)
+			}
+			// Barter is slow-path only (ZBBS-HOME-393). A posted quote is a
+			// coin-priced sale; taking it with goods has no defined match
+			// semantics (the fast-path's exact-term predicate is coin-only).
+			// Reject the combination outright rather than silently dropping
+			// the goods.
+			if quoteID != 0 && len(payItems) > 0 {
+				return nil, errors.New(
+					"you can't pay a posted quote with goods — a quote is a coin price. Drop quote_id to make a barter offer, or drop the goods to take the quote.",
 				)
 			}
 
@@ -280,6 +320,24 @@ func PayWithItem(
 			consumerIDs, err := resolvePayConsumers(w, buyer, sellerID, consumerNames)
 			if err != nil {
 				return nil, err
+			}
+
+			// Resolve the barter goods the buyer offers to pay WITH
+			// (ZBBS-HOME-393). Each free-text name → canonical ItemKind;
+			// duplicate kinds and non-positive qty reject. Empty for a
+			// pure-coin offer.
+			resolvedPayItems, err := resolvePayItems(w, payItems)
+			if err != nil {
+				return nil, err
+			}
+
+			// Must offer something. An offer with no coins AND no goods is
+			// the free-goods hole (ZBBS-HOME-391) — reject it. Coins-only,
+			// goods-only, and mixed all pass.
+			if amount == 0 && len(resolvedPayItems) == 0 {
+				return nil, errors.New(
+					"an offer must include coins or goods — set an amount, add pay_items, or both.",
+				)
 			}
 
 			// Lodging-shape intake gates (ZBBS-WORK-343 + WORK-344). Both
@@ -397,11 +455,8 @@ func PayWithItem(
 			// acceptance. A pending offer staked against an on-break or
 			// out-of-stock seller is harmless — it resolves at accept
 			// time, or is withdrawn / expires first.
-			if !buyerCanAfford(buyer, amount) {
-				return nil, fmt.Errorf(
-					"insufficient coins (have %d, need %d) — quote a smaller offer.",
-					buyer.Coins, amount,
-				)
+			if err := payOfferShortfall(buyer, amount, resolvedPayItems); err != nil {
+				return nil, err
 			}
 
 			id := w.nextLedgerSeq()
@@ -423,6 +478,7 @@ func PayWithItem(
 				ConsumeNow:  consumeNow,
 				ConsumerIDs: append([]ActorID(nil), consumerIDs...),
 				Amount:      amount,
+				PayItems:    cloneItemKindQtys(resolvedPayItems),
 				QuoteID:     0, // slow path didn't reference a quote
 				ParentID:    parentRefForLineage,
 				Depth:       depth,
@@ -443,6 +499,7 @@ func PayWithItem(
 				ConsumeNow:     consumeNow,
 				ConsumerIDs:    cloneActorIDs(consumerIDs),
 				Amount:         amount,
+				PayItems:       cloneItemKindQtys(resolvedPayItems),
 				QuoteID:        0,
 				ParentID:       parentRefForLineage,
 				Depth:          depth,
@@ -864,6 +921,15 @@ func acceptPendingOffer(w *World, seller *Actor, entry *PayLedgerEntry, at time.
 	if !buyerCanAfford(buyer, entry.Amount) {
 		return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedInsufficientFunds, "", at), nil
 	}
+	// Gate 12: barter goods (ZBBS-HOME-393). The buyer must still hold
+	// every PayItem they offered to pay WITH. Like funds, this is a
+	// drift backstop — the mint fast-fail already rejected an
+	// uncoverable offer, but the buyer's holdings can change between
+	// mint and accept. Flip to the goods-specific terminal so admin /
+	// telemetry can distinguish a goods shortfall from a coin one.
+	if !buyerHoldsPayItems(buyer, entry.PayItems) {
+		return finalizePayLedgerTerminal(w, entry, PayTerminalStateFailedInsufficientGoods, "", at), nil
+	}
 	// Seller balance overflow guard — symmetric with PR B's Pay
 	// and the fast-path predicate 6.
 	if seller.Coins > math.MaxInt-entry.Amount {
@@ -960,16 +1026,22 @@ func DeclinePay(callerID ActorID, ledgerID LedgerID, reason string, at time.Time
 // (in_response_to=parent_id) is what re-runs validation.
 //
 // On all-pass: flip parent entry to Countered terminal, populate
-// entry.CounterAmount with the seller's terms + entry.Message with
-// the trimmed/truncated counter text + entry.ResolvedAt, emit
-// PayCountered (NOT PayWithItemResolved — distinct event family per
+// entry.CounterAmount + entry.CounterPayItems with the seller's terms +
+// entry.Message with the trimmed/truncated counter text + entry.ResolvedAt,
+// emit PayCountered (NOT PayWithItemResolved — distinct event family per
 // EOS-26 architecture lock).
 //
-// PayCountered.OriginalAmount carries the buyer's original offer for
-// the buyer's perception prompt; CounterAmount carries the seller's
-// counter terms. The buyer's optional response is a fresh PayWithItem
-// call with parentID set to this entry's ID.
-func CounterPay(callerID ActorID, ledgerID LedgerID, counterAmount int, message string, at time.Time) Command {
+// Symmetric barter (ZBBS-HOME-393): a counter may propose coins
+// (counterAmount), goods (counterPayItems), or both — but must propose at
+// least one. counterAmount is now optional (>= 0): a seller can counter
+// with pure goods terms ("I want 6 nails, not 5"). The buyer's optional
+// response is a fresh PayWithItem (in_response_to=parent_id) restating
+// whatever payment they choose.
+//
+// PayCountered.OriginalAmount carries the buyer's original coin offer for
+// the buyer's perception prompt; CounterAmount + CounterPayItems carry the
+// seller's counter terms.
+func CounterPay(callerID ActorID, ledgerID LedgerID, counterAmount int, counterPayItems []PayItemInput, message string, at time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
 			caller, ok := w.Actors[callerID]
@@ -995,13 +1067,30 @@ func CounterPay(callerID ActorID, ledgerID LedgerID, counterAmount int, message 
 					ledgerID, entry.State,
 				)
 			}
-			if counterAmount < 1 {
-				return nil, fmt.Errorf("CounterPay: counter amount must be at least 1 (got %d)", counterAmount)
+			if counterAmount < 0 {
+				return nil, fmt.Errorf("CounterPay: counter amount cannot be negative (got %d)", counterAmount)
 			}
 			if counterAmount > MaxPayWithItemAmount {
 				return nil, fmt.Errorf(
 					"CounterPay: counter amount exceeds maximum (got %d, max %d)",
 					counterAmount, MaxPayWithItemAmount,
+				)
+			}
+			if len(counterPayItems) > MaxPayWithItemPayItems {
+				return nil, fmt.Errorf(
+					"CounterPay: too many goods lines (got %d, max %d) — combine into fewer lines.",
+					len(counterPayItems), MaxPayWithItemPayItems,
+				)
+			}
+			resolvedCounterItems, err := resolvePayItems(w, counterPayItems)
+			if err != nil {
+				return nil, err
+			}
+			// A counter must propose something — coins, goods, or both
+			// (symmetric with the offer-side rule, ZBBS-HOME-393).
+			if counterAmount == 0 && len(resolvedCounterItems) == 0 {
+				return nil, errors.New(
+					"a counter must propose coins or goods — set an amount, add pay_items, or both.",
 				)
 			}
 
@@ -1016,7 +1105,14 @@ func CounterPay(callerID ActorID, ledgerID LedgerID, counterAmount int, message 
 			// yes. Gates 1-4 are already satisfied above (caller exists,
 			// entry exists, caller == seller, state == pending), so the
 			// shared accept path takes it from gate 5.
-			if counterAmount <= entry.Amount {
+			//
+			// Coercion applies ONLY to pure-coin haggles: if either the
+			// original offer OR the counter involves goods (ZBBS-HOME-393),
+			// the coin comparison is meaningless (you can't say "5 nails <=
+			// 4 coins"), so any goods-bearing counter is a real counter and
+			// flips to Countered for the buyer to weigh.
+			pureCoinHaggle := len(entry.PayItems) == 0 && len(resolvedCounterItems) == 0
+			if pureCoinHaggle && counterAmount <= entry.Amount {
 				state, err := acceptPendingOffer(w, caller, entry, at)
 				return state, err
 			}
@@ -1024,23 +1120,25 @@ func CounterPay(callerID ActorID, ledgerID LedgerID, counterAmount int, message 
 			normalizedMessage := truncatePayMessage(message)
 			entry.State = PayLedgerStateCountered
 			entry.CounterAmount = counterAmount
+			entry.CounterPayItems = cloneItemKindQtys(resolvedCounterItems)
 			entry.Message = normalizedMessage
 			entry.ResolvedAt = at
 
 			evt := &PayCountered{
-				ParentID:       entry.ID,
-				BuyerID:        entry.BuyerID,
-				SellerID:       entry.SellerID,
-				ItemKind:       entry.ItemKind,
-				QtyPerConsumer: entry.Qty,
-				ConsumeNow:     entry.ConsumeNow,
-				ConsumerIDs:    cloneActorIDs(entry.ConsumerIDs),
-				OriginalAmount: entry.Amount,
-				CounterAmount:  counterAmount,
-				Message:        normalizedMessage,
-				SceneID:        entry.SceneID,
-				HuddleID:       entry.HuddleID,
-				At:             at,
+				ParentID:        entry.ID,
+				BuyerID:         entry.BuyerID,
+				SellerID:        entry.SellerID,
+				ItemKind:        entry.ItemKind,
+				QtyPerConsumer:  entry.Qty,
+				ConsumeNow:      entry.ConsumeNow,
+				ConsumerIDs:     cloneActorIDs(entry.ConsumerIDs),
+				OriginalAmount:  entry.Amount,
+				CounterAmount:   counterAmount,
+				CounterPayItems: cloneItemKindQtys(resolvedCounterItems),
+				Message:         normalizedMessage,
+				SceneID:         entry.SceneID,
+				HuddleID:        entry.HuddleID,
+				At:              at,
 			}
 			w.emit(evt)
 
@@ -1049,8 +1147,8 @@ func CounterPay(callerID ActorID, ledgerID LedgerID, counterAmount int, message 
 			// social move — worth capturing on both sides.
 			buyerName := actorDisplayName(w, entry.BuyerID)
 			sellerName := actorDisplayName(w, entry.SellerID)
-			buyerFact := payCounteredFactText(buyerName, sellerName, entry.Amount, counterAmount, entry.ItemKind, entry.Qty, normalizedMessage, true)
-			sellerFact := payCounteredFactText(buyerName, sellerName, entry.Amount, counterAmount, entry.ItemKind, entry.Qty, normalizedMessage, false)
+			buyerFact := payCounteredFactText(buyerName, sellerName, entry.Amount, entry.PayItems, counterAmount, resolvedCounterItems, entry.ItemKind, entry.Qty, normalizedMessage, true)
+			sellerFact := payCounteredFactText(buyerName, sellerName, entry.Amount, entry.PayItems, counterAmount, resolvedCounterItems, entry.ItemKind, entry.Qty, normalizedMessage, false)
 			if _, err := RecordInteraction(entry.BuyerID, entry.SellerID, InteractionCounteredBy, buyerFact, at).Fn(w); err != nil {
 				log.Printf("sim.CounterPay: RecordInteraction buyer→seller %q→%q: %v", entry.BuyerID, entry.SellerID, err)
 			}
@@ -1127,6 +1225,118 @@ func WithdrawPay(callerID ActorID, ledgerID LedgerID, message string, at time.Ti
 // one of those behaviors onto the other.
 func buyerCanAfford(buyer *Actor, amount int) bool {
 	return buyer.Coins >= amount
+}
+
+// buyerHoldsPayItems reports whether the buyer currently holds every goods
+// line they offered to pay WITH (the barter leg, ZBBS-HOME-393). The
+// goods counterpart to buyerCanAfford. Like the coin check, the ACTION on
+// false differs by lifecycle stage (mint → tool-error reject; accept →
+// failed_insufficient_goods terminal), so only the predicate is shared.
+// An empty list (pure-coin offer) trivially holds.
+func buyerHoldsPayItems(buyer *Actor, payItems []ItemKindQty) bool {
+	for _, pi := range payItems {
+		if buyer.Inventory[pi.Kind] < pi.Qty {
+			return false
+		}
+	}
+	return true
+}
+
+// payOfferShortfall returns a descriptive tool error if the buyer can't
+// cover the offer's coins + goods at this instant, or nil if they can.
+// The offer-time fast-fail (mint + fast-path) — an OPTIMIZATION that
+// spares a wasted seller deliberation tick, not a reservation. Coins are
+// reported first, then the first goods line short. ZBBS-HOME-393.
+func payOfferShortfall(buyer *Actor, amount int, payItems []ItemKindQty) error {
+	if !buyerCanAfford(buyer, amount) {
+		return fmt.Errorf(
+			"insufficient coins (have %d, need %d) — offer fewer coins or pay with goods you carry.",
+			buyer.Coins, amount,
+		)
+	}
+	for _, pi := range payItems {
+		if buyer.Inventory[pi.Kind] < pi.Qty {
+			return fmt.Errorf(
+				"you don't have %d %s to offer (you carry %d) — offer goods you actually hold.",
+				pi.Qty, pi.Kind, buyer.Inventory[pi.Kind],
+			)
+		}
+	}
+	return nil
+}
+
+// resolvePayItems resolves a barter offer's free-text goods lines to
+// canonical ItemKindQty. Each name → resolveItemKind (case-insensitive +
+// trim); a kind may appear at most once (callers should net duplicates);
+// qty must be positive and within MaxPayWithItemQty. Empty input returns
+// nil (a pure-coin offer). ZBBS-HOME-393.
+//
+// Shared by PayWithItem (the buyer's pay_items) and CounterPay (the
+// seller's counter goods) so the two resolve goods identically.
+func resolvePayItems(w *World, payItems []PayItemInput) ([]ItemKindQty, error) {
+	if len(payItems) == 0 {
+		return nil, nil
+	}
+	resolved := make([]ItemKindQty, 0, len(payItems))
+	seen := make(map[ItemKind]struct{}, len(payItems))
+	for _, pi := range payItems {
+		if pi.Qty < 1 {
+			return nil, fmt.Errorf("pay_items: quantity must be at least 1 (got %d)", pi.Qty)
+		}
+		if pi.Qty > MaxPayWithItemQty {
+			return nil, fmt.Errorf("pay_items: quantity exceeds maximum (got %d, max %d)", pi.Qty, MaxPayWithItemQty)
+		}
+		kind, ok := resolveItemKind(w, pi.Item)
+		if !ok {
+			return nil, fmt.Errorf(
+				"unknown item kind %q in pay_items — check the items you carry before offering.",
+				pi.Item,
+			)
+		}
+		if _, dup := seen[kind]; dup {
+			return nil, fmt.Errorf(
+				"%q appears more than once in pay_items — combine it into a single line.",
+				pi.Item,
+			)
+		}
+		seen[kind] = struct{}{}
+		resolved = append(resolved, ItemKindQty{Kind: kind, Qty: pi.Qty})
+	}
+	return resolved, nil
+}
+
+// formatPayment renders an offer's payment terms as prose for SalientFact
+// memory and perception lines: coins, goods, or both. ZBBS-HOME-393.
+//
+//	formatPayment(5, nil)                       → "5 coins"
+//	formatPayment(0, [{nails,5}])               → "5 nails"
+//	formatPayment(3, [{nails,5}])               → "5 nails and 3 coins"
+//	formatPayment(3, [{nails,5},{hammer,2}])    → "5 nails, 2 hammers and 3 coins"
+//
+// Returns "nothing" only for an all-empty payment, a state the intake
+// gates reject — so callers always get a non-empty phrase in practice.
+func formatPayment(amount int, payItems []ItemKindQty) string {
+	parts := make([]string, 0, len(payItems)+1)
+	for _, pi := range payItems {
+		parts = append(parts, fmt.Sprintf("%d %s", pi.Qty, pi.Kind))
+	}
+	if amount > 0 {
+		coins := "coins"
+		if amount == 1 {
+			coins = "coin"
+		}
+		parts = append(parts, fmt.Sprintf("%d %s", amount, coins))
+	}
+	switch len(parts) {
+	case 0:
+		return "nothing"
+	case 1:
+		return parts[0]
+	case 2:
+		return parts[0] + " and " + parts[1]
+	default:
+		return strings.Join(parts[:len(parts)-1], ", ") + " and " + parts[len(parts)-1]
+	}
 }
 
 // effectivePayConsumerCount returns max(1, len(consumerIDs)). Empty
@@ -1349,8 +1559,8 @@ func finalizePayLedgerTerminal(
 	if terminal == PayTerminalStateDeclined {
 		buyerName := actorDisplayName(w, entry.BuyerID)
 		sellerName := actorDisplayName(w, entry.SellerID)
-		buyerFact := payDeclinedFactText(buyerName, sellerName, entry.Amount, entry.ItemKind, entry.Qty, message, true)
-		sellerFact := payDeclinedFactText(buyerName, sellerName, entry.Amount, entry.ItemKind, entry.Qty, message, false)
+		buyerFact := payDeclinedFactText(buyerName, sellerName, entry.Amount, entry.PayItems, entry.ItemKind, entry.Qty, message, true)
+		sellerFact := payDeclinedFactText(buyerName, sellerName, entry.Amount, entry.PayItems, entry.ItemKind, entry.Qty, message, false)
 		if _, err := RecordInteraction(entry.BuyerID, entry.SellerID, InteractionPayDeclinedBy, buyerFact, at).Fn(w); err != nil {
 			log.Printf("sim.finalizePayLedgerTerminal: RecordInteraction buyer→seller %q→%q: %v", entry.BuyerID, entry.SellerID, err)
 		}
@@ -1399,9 +1609,46 @@ func commitPayTransfer(
 	at time.Time,
 	forText string,
 ) error {
-	// Coin debit + credit. Overflow guarded by caller.
+	// Two-way swap (ZBBS-HOME-393): the buyer pays with coins AND/OR goods.
+	// Validate the goods leg in full BEFORE mutating anything so a single
+	// bad line aborts the whole swap (validate-all-then-apply, mirroring
+	// AdjustActorHoldings). The coin leg's seller-overflow was already
+	// guarded by the caller's gates; buyer-holds was revalidated at gate 12,
+	// but re-check here defensively — a subscriber firing mid-accept could
+	// have moved the buyer's holdings.
+	type payItemMove struct {
+		kind          ItemKind
+		buyerPostQty  int // >= 0, validated
+		sellerPostQty int // overflow-checked
+	}
+	moves := make([]payItemMove, 0, len(entry.PayItems))
+	for _, pi := range entry.PayItems {
+		have := buyer.Inventory[pi.Kind]
+		if have < pi.Qty {
+			return fmt.Errorf("commitPayTransfer: buyer %q lacks %d %s mid-commit (have %d)", buyer.ID, pi.Qty, pi.Kind, have)
+		}
+		sellerPost, err := addChecked(seller.Inventory[pi.Kind], pi.Qty)
+		if err != nil {
+			return fmt.Errorf("commitPayTransfer: seller %q %s balance would overflow", seller.ID, pi.Kind)
+		}
+		moves = append(moves, payItemMove{kind: pi.Kind, buyerPostQty: have - pi.Qty, sellerPostQty: sellerPost})
+	}
+
+	// All legs validated — apply coins + goods together. Coin overflow
+	// guarded by caller.
 	buyer.Coins -= entry.Amount
 	seller.Coins += entry.Amount
+	for _, m := range moves {
+		if m.buyerPostQty == 0 {
+			delete(buyer.Inventory, m.kind) // delete-on-zero invariant
+		} else {
+			buyer.Inventory[m.kind] = m.buyerPostQty
+		}
+		if seller.Inventory == nil {
+			seller.Inventory = make(map[ItemKind]int)
+		}
+		seller.Inventory[m.kind] = m.sellerPostQty
+	}
 
 	consumers := entry.ConsumerIDs
 	implicitBuyerConsumer := len(consumers) == 0
@@ -1485,8 +1732,8 @@ func commitPayTransfer(
 	// signal they need.
 	buyerName := buyer.DisplayName
 	sellerName := seller.DisplayName
-	buyerFact := payAcceptedFactText(buyerName, sellerName, entry.Amount, entry.ItemKind, entry.Qty, len(entry.ConsumerIDs), forText, true)
-	sellerFact := payAcceptedFactText(buyerName, sellerName, entry.Amount, entry.ItemKind, entry.Qty, len(entry.ConsumerIDs), forText, false)
+	buyerFact := payAcceptedFactText(buyerName, sellerName, entry.Amount, entry.PayItems, entry.ItemKind, entry.Qty, len(entry.ConsumerIDs), forText, true)
+	sellerFact := payAcceptedFactText(buyerName, sellerName, entry.Amount, entry.PayItems, entry.ItemKind, entry.Qty, len(entry.ConsumerIDs), forText, false)
 	if _, err := RecordInteraction(entry.BuyerID, entry.SellerID, InteractionPaid, buyerFact, at).Fn(w); err != nil {
 		log.Printf("sim.commitPayTransfer: RecordInteraction buyer→seller %q→%q: %v", entry.BuyerID, entry.SellerID, err)
 	}
@@ -1552,13 +1799,13 @@ func actorDisplayName(w *World, id ActorID) string {
 //	                  "I paid Aldous 5 coins for 2 stew × 3."
 //	buyerSide=false: "Hannah paid me 5 coins for 2 stew."
 //
+// payItems folds the barter goods into the payment phrase via formatPayment
+// ("5 nails", "5 nails and 3 coins"), so a goods trade reads "I paid Aldous
+// 5 nails for 2 stew." (ZBBS-HOME-393).
+//
 // forText is folded in as " for <trim>" before the final period when
 // non-empty (mirrors PR B's payFactText).
-func payAcceptedFactText(buyerName, sellerName string, amount int, kind ItemKind, qty, consumerCount int, forText string, buyerSide bool) string {
-	coins := "coins"
-	if amount == 1 {
-		coins = "coin"
-	}
+func payAcceptedFactText(buyerName, sellerName string, amount int, payItems []ItemKindQty, kind ItemKind, qty, consumerCount int, forText string, buyerSide bool) string {
 	subject, object, verb := buyerName, sellerName, "paid"
 	if buyerSide {
 		subject = "I"
@@ -1566,7 +1813,7 @@ func payAcceptedFactText(buyerName, sellerName string, amount int, kind ItemKind
 		object = "me"
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s %s %s %d %s for %d %s", subject, verb, object, amount, coins, qty, kind)
+	fmt.Fprintf(&b, "%s %s %s %s for %d %s", subject, verb, object, formatPayment(amount, payItems), qty, kind)
 	if consumerCount > 1 {
 		fmt.Fprintf(&b, " × %d", consumerCount)
 	}
@@ -1584,16 +1831,15 @@ func payAcceptedFactText(buyerName, sellerName string, amount int, kind ItemKind
 //	                  + " Reason: <reason>." when reason non-empty.
 //	buyerSide=false: "I declined Hannah's offer of 5 coins for 2 stew."
 //	                  + " Reason: <reason>." when reason non-empty.
-func payDeclinedFactText(buyerName, sellerName string, amount int, kind ItemKind, qty int, reason string, buyerSide bool) string {
-	coins := "coins"
-	if amount == 1 {
-		coins = "coin"
-	}
+//
+// payItems folds the barter goods into the offer phrase (ZBBS-HOME-393).
+func payDeclinedFactText(buyerName, sellerName string, amount int, payItems []ItemKindQty, kind ItemKind, qty int, reason string, buyerSide bool) string {
+	offer := formatPayment(amount, payItems)
 	var b strings.Builder
 	if buyerSide {
-		fmt.Fprintf(&b, "%s declined my offer of %d %s for %d %s", sellerName, amount, coins, qty, kind)
+		fmt.Fprintf(&b, "%s declined my offer of %s for %d %s", sellerName, offer, qty, kind)
 	} else {
-		fmt.Fprintf(&b, "I declined %s's offer of %d %s for %d %s", buyerName, amount, coins, qty, kind)
+		fmt.Fprintf(&b, "I declined %s's offer of %s for %d %s", buyerName, offer, qty, kind)
 	}
 	if reason != "" {
 		fmt.Fprintf(&b, ". Reason: %s", reason)
@@ -1604,20 +1850,22 @@ func payDeclinedFactText(buyerName, sellerName string, amount int, kind ItemKind
 
 // payCounteredFactText renders a SalientFact for a counter.
 //
-//	buyerSide=true:  "Aldous countered my offer of 5 coins for 2 stew with 7."
+//	buyerSide=true:  "Aldous countered my offer of 5 coins for 2 stew with 7 coins."
 //	                  + " Note: <message>." when message non-empty.
-//	buyerSide=false: "I countered Hannah's offer of 5 coins for 2 stew with 7."
+//	buyerSide=false: "I countered Hannah's offer of 5 coins for 2 stew with 7 coins."
 //	                  + " Note: <message>." when message non-empty.
-func payCounteredFactText(buyerName, sellerName string, originalAmount, counterAmount int, kind ItemKind, qty int, message string, buyerSide bool) string {
-	coins := "coins"
-	if originalAmount == 1 {
-		coins = "coin"
-	}
+//
+// originalPayItems / counterPayItems fold the barter goods into the offer
+// and counter phrases respectively (ZBBS-HOME-393), so a goods haggle reads
+// "Aldous countered my offer of 5 nails for 2 stew with 6 nails."
+func payCounteredFactText(buyerName, sellerName string, originalAmount int, originalPayItems []ItemKindQty, counterAmount int, counterPayItems []ItemKindQty, kind ItemKind, qty int, message string, buyerSide bool) string {
+	offer := formatPayment(originalAmount, originalPayItems)
+	counter := formatPayment(counterAmount, counterPayItems)
 	var b strings.Builder
 	if buyerSide {
-		fmt.Fprintf(&b, "%s countered my offer of %d %s for %d %s with %d", sellerName, originalAmount, coins, qty, kind, counterAmount)
+		fmt.Fprintf(&b, "%s countered my offer of %s for %d %s with %s", sellerName, offer, qty, kind, counter)
 	} else {
-		fmt.Fprintf(&b, "I countered %s's offer of %d %s for %d %s with %d", buyerName, originalAmount, coins, qty, kind, counterAmount)
+		fmt.Fprintf(&b, "I countered %s's offer of %s for %d %s with %s", buyerName, offer, qty, kind, counter)
 	}
 	if message != "" {
 		fmt.Fprintf(&b, ". Note: %s", message)

@@ -53,6 +53,36 @@ func TestDecodePayWithItem_OmittedOptionalsAreZero(t *testing.T) {
 	}
 }
 
+// TestDecodePayWithItem_Barter — goods-only and mixed coin+goods offers
+// decode (ZBBS-HOME-393): amount is optional, pay_items carries the goods,
+// and a goods-bearing offer passes the must-offer-something rule.
+func TestDecodePayWithItem_Barter(t *testing.T) {
+	// Goods only (no amount).
+	args, err := DecodePayWithItemArgs(json.RawMessage(`{
+        "seller":"Aldous","item":"stew","qty":1,"consume_now":false,
+        "pay_items":[{"item":"nail","qty":5},{"item":"hammer","qty":1}]
+    }`))
+	if err != nil {
+		t.Fatalf("goods-only decode: %v", err)
+	}
+	got := args.(PayWithItemArgs)
+	if got.Amount != 0 {
+		t.Errorf("Amount = %d, want 0 (omitted)", got.Amount)
+	}
+	if len(got.PayItems) != 2 || got.PayItems[0].Item != "nail" || got.PayItems[0].Qty != 5 ||
+		got.PayItems[1].Item != "hammer" || got.PayItems[1].Qty != 1 {
+		t.Errorf("PayItems = %+v", got.PayItems)
+	}
+
+	// Mixed coins + goods.
+	if _, err := DecodePayWithItemArgs(json.RawMessage(`{
+        "seller":"Aldous","item":"stew","qty":1,"amount":2,"consume_now":false,
+        "pay_items":[{"item":"nail","qty":3}]
+    }`)); err != nil {
+		t.Fatalf("mixed decode: %v", err)
+	}
+}
+
 func TestDecodePayWithItem_RejectsShapeErrors(t *testing.T) {
 	cases := []struct {
 		name string
@@ -68,13 +98,17 @@ func TestDecodePayWithItem_RejectsShapeErrors(t *testing.T) {
 		{"missing_item", `{"seller":"A","qty":1,"amount":4,"consume_now":false}`, "item is required"},
 		{"zero_qty", `{"seller":"A","item":"stew","qty":0,"amount":4,"consume_now":false}`, "qty must be at least 1"},
 		{"negative_qty", `{"seller":"A","item":"stew","qty":-1,"amount":4,"consume_now":false}`, "qty must be at least 1"},
-		{"zero_amount", `{"seller":"A","item":"stew","qty":1,"amount":0,"consume_now":false}`, "amount must be at least 1"},
+		{"zero_amount_no_goods", `{"seller":"A","item":"stew","qty":1,"amount":0,"consume_now":false}`, "must include coins or goods"},
+		{"negative_amount", `{"seller":"A","item":"stew","qty":1,"amount":-5,"consume_now":false}`, "amount cannot be negative"},
 		{"over_max_amount", `{"seller":"A","item":"stew","qty":1,"amount":2147483648,"consume_now":false}`, "amount exceeds maximum"},
 		{"fractional_amount", `{"seller":"A","item":"stew","qty":1,"amount":3.5,"consume_now":false}`, "malformed arguments"},
 		{"too_many_consumers", `{"seller":"A","item":"stew","qty":1,"amount":4,"consume_now":false,"consumers":["a","b","c","d","e","f","g","h","i"]}`, "consumers exceeds"},
 		{"seller_over_cap", `{"seller":"` + strings.Repeat("a", 101) + `","item":"stew","qty":1,"amount":4,"consume_now":false}`, "seller exceeds"},
 		{"item_over_cap", `{"seller":"A","item":"` + strings.Repeat("a", 65) + `","qty":1,"amount":4,"consume_now":false}`, "item exceeds"},
 		{"for_over_cap", `{"seller":"A","item":"stew","qty":1,"amount":4,"consume_now":false,"for":"` + strings.Repeat("a", 201) + `"}`, "'for' text exceeds"},
+		{"pay_items_zero_qty", `{"seller":"A","item":"stew","qty":1,"consume_now":false,"pay_items":[{"item":"nail","qty":0}]}`, "pay_items[0].qty must be at least 1"},
+		{"pay_items_too_many", `{"seller":"A","item":"stew","qty":1,"consume_now":false,"pay_items":[{"item":"a","qty":1},{"item":"b","qty":1},{"item":"c","qty":1},{"item":"d","qty":1},{"item":"e","qty":1},{"item":"f","qty":1},{"item":"g","qty":1},{"item":"h","qty":1},{"item":"i","qty":1}]}`, "pay_items exceeds"},
+		{"pay_items_unknown_nested_field", `{"seller":"A","item":"stew","qty":1,"consume_now":false,"pay_items":[{"item":"nail","qty":2,"extra":1}]}`, "malformed arguments"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -273,8 +307,10 @@ func TestDecodeCounterPay(t *testing.T) {
 	}{
 		{"valid", `{"ledger_id":42,"amount":7,"message":"how about seven"}`, ""},
 		{"valid_no_message", `{"ledger_id":42,"amount":7}`, ""},
-		{"missing_amount", `{"ledger_id":42}`, "at least 1"},
-		{"zero_amount", `{"ledger_id":42,"amount":0}`, "at least 1"},
+		{"missing_amount_no_goods", `{"ledger_id":42}`, "must propose coins or goods"},
+		{"zero_amount_no_goods", `{"ledger_id":42,"amount":0}`, "must propose coins or goods"},
+		{"goods_only", `{"ledger_id":42,"pay_items":[{"item":"nail","qty":5}]}`, ""},
+		{"negative_amount", `{"ledger_id":42,"amount":-5}`, "amount cannot be negative"},
 		{"over_max_amount", `{"ledger_id":42,"amount":2147483648}`, "amount exceeds maximum"},
 		{"missing_ledger", `{"amount":7}`, "at least 1"},
 		{"zero_ledger", `{"ledger_id":0,"amount":7}`, "at least 1"},

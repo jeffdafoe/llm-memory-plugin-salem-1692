@@ -269,8 +269,10 @@ func payWithItemPCCommand(
 			now := time.Now().UTC()
 			sim.TouchPCInput(world, actorID, now)
 			return sim.PayWithItem(
+				// PC-side barter (pay_items) is a follow-on slice
+				// (ZBBS-HOME-393); the PC pay route stays coin-only for now.
 				actorID, seller, item, qty, amount, consumeNow,
-				consumers, quoteID, parentID, forText, now,
+				consumers, nil, quoteID, parentID, forText, now,
 			).Fn(world)
 		},
 	}
