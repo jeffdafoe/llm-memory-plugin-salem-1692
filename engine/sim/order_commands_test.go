@@ -102,29 +102,31 @@ func buildOrderTestWorld(t *testing.T) (*sim.World, func()) {
 	}
 }
 
-// mintReadyOrderSeq hands each mintReadyOrder call a distinct pay_ledger
-// id. Order.ID == LedgerID (ZBBS-HOME-394), so minting two orders with the
-// same entry.ID would collide in World.Orders; production draws distinct ids
-// from World.payLedgerSeq and the helper mirrors that with this counter.
-var mintReadyOrderSeq sim.LedgerID
-
-// mintReadyOrder creates a Ready Order via createOrderForPayWithItem
-// for hannah→jefferey with the given consumer set and qty. Returns
-// the OrderID so callers can DeliverOrder against it.
+// mintReadyOrder creates a Ready Order via createOrderForPayWithItem for
+// hannah→jefferey with the given consumer set and qty. Returns the OrderID
+// so callers can DeliverOrder against it. The pay_ledger id is chosen from
+// this world's current orders (Order.ID == LedgerID, ZBBS-HOME-394, so ids
+// must be distinct) — scoped per-world, so no shared/global counter leaks
+// state across tests.
 func mintReadyOrder(t *testing.T, w *sim.World, consumers []sim.ActorID, qty int, at time.Time) sim.OrderID {
 	t.Helper()
-	mintReadyOrderSeq++
-	entry := &sim.PayLedgerEntry{
-		ID:          mintReadyOrderSeq,
-		BuyerID:     "jefferey",
-		SellerID:    "hannah",
-		ItemKind:    "stew",
-		Qty:         qty,
-		Amount:      qty * 4 * max(1, len(consumers)),
-		ConsumerIDs: consumers,
-		ConsumeNow:  false,
-	}
 	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		var nextID sim.LedgerID = 1
+		for id := range world.Orders {
+			if sim.LedgerID(id) >= nextID {
+				nextID = sim.LedgerID(id) + 1
+			}
+		}
+		entry := &sim.PayLedgerEntry{
+			ID:          nextID,
+			BuyerID:     "jefferey",
+			SellerID:    "hannah",
+			ItemKind:    "stew",
+			Qty:         qty,
+			Amount:      qty * 4 * max(1, len(consumers)),
+			ConsumerIDs: consumers,
+			ConsumeNow:  false,
+		}
 		return sim.CreateOrderForPayWithItem(world, entry, at), nil
 	}})
 	if err != nil {

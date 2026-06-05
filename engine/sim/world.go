@@ -2,6 +2,7 @@ package sim
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"sort"
 	"sync/atomic"
@@ -998,7 +999,9 @@ func LoadWorld(ctx context.Context, repo Repository) (*World, error) {
 	}
 	w.VillageObjects = villageObjects
 
-	w.FinalizeLoad(ctx)
+	if err := w.FinalizeLoad(ctx); err != nil {
+		return nil, err
+	}
 	return w, nil
 }
 
@@ -1018,7 +1021,7 @@ func LoadWorld(ctx context.Context, repo Repository) (*World, error) {
 // for pg.LoadWorld, after the cross-aggregate consistency checks and the
 // actor carry-forwards (reconcileActorHuddleMembership in particular,
 // since rebuildIndices reads actor.CurrentHuddleID).
-func (w *World) FinalizeLoad(ctx context.Context) {
+func (w *World) FinalizeLoad(ctx context.Context) error {
 	normalizeOutdoorSceneRadius(&w.Settings)
 
 	w.rebuildIndices()
@@ -1091,11 +1094,15 @@ func (w *World) FinalizeLoad(ctx context.Context) {
 	// historical row. The authoritative high-water mark is the DB max(id):
 	// the in-memory PayLedger map holds only restart-lossy pending entries
 	// (empty here) and w.Orders only the in-flight subset, so neither sees
-	// terminal-row ids. On a query error, log loudly and continue rather than
-	// refuse the boot — the floor only matters once mints happen.
-	if maxID, err := w.repo.Orders.MaxLedgerID(ctx); err != nil {
-		log.Printf("sim: FinalizeLoad ledger-seq floor: MaxLedgerID: %v (continuing — risk of id reuse until the next clean checkpoint)", err)
-	} else if uint64(maxID) > w.payLedgerSeq {
+	// terminal-row ids. This is persistence safety, not optional enrichment:
+	// fail the load on a query error rather than start in a state where a mint
+	// could reuse an id and the checkpoint upsert corrupt a historical row
+	// (code_review). maxID>0 guards the (unreachable) negative before uint64.
+	maxID, err := w.repo.Orders.MaxLedgerID(ctx)
+	if err != nil {
+		return fmt.Errorf("sim: FinalizeLoad: seed pay-ledger id allocator from MaxLedgerID: %w", err)
+	}
+	if maxID > 0 && uint64(maxID) > w.payLedgerSeq {
 		w.payLedgerSeq = uint64(maxID)
 	}
 	// Belt-and-suspenders: also floor from any in-memory pending entries
@@ -1158,6 +1165,7 @@ func (w *World) FinalizeLoad(ctx context.Context) {
 	}
 
 	w.republish()
+	return nil
 }
 
 // Run owns the world goroutine. Processes commands until ctx is cancelled

@@ -137,7 +137,7 @@ ON CONFLICT (id) DO UPDATE SET
 // / non-fulfillment-tracking). Both surface as a substrate-level error.
 const writeTerminalSQL = `
 UPDATE pay_ledger
-SET fulfillment_status = $2,
+SET fulfillment_status = $2::text,
     delivered_on       = $3,
     expires_at         = CASE WHEN $2::text = 'expired' THEN NOW() ELSE expires_at END
 WHERE id = $1
