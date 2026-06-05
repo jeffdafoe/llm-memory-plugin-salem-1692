@@ -87,6 +87,12 @@ type runtime struct {
 	// enabled; run wires it to BOTH the harness (ChatSink) and the server
 	// (SetChat). Nil = no chat capture.
 	ChatRing *chatlog.RingSink
+	// MemoryAPIBaseURL is the llm-memory-api root the umbilical /turns route
+	// (ZBBS-HOME-396) proxies raw-LLM-turn queries to, forwarding the operator's
+	// bearer token. The full turn (system_prompt, tokens, cost, provider status)
+	// lives only in memory-api; the engine never sees it. Wired by run via
+	// SetMemoryAPIBaseURL when the umbilical is enabled.
+	MemoryAPIBaseURL string
 	// ActionLog is the durable agent_action_log writer (ZBBS-WORK-376). Its
 	// Append is already installed on the World (SetActionLogSink in main); run
 	// owns the writer-goroutine lifecycle — started before world.Run, drained
@@ -204,6 +210,7 @@ func main() {
 		UmbilicalControl: umbilicalControl,
 		PromptRing:       promptRing,
 		ChatRing:         chatRing,
+		MemoryAPIBaseURL: llmMemoryURL,
 		ActionLog:        actionLogSink,
 		SimPush:          simPush,
 	}
@@ -376,8 +383,9 @@ func run(rt runtime, stop <-chan struct{}) error {
 		// is unset → SetTelemetry not called → routes never registered.
 		if rt.Umbilical != nil {
 			server.SetTelemetry(rt.Umbilical)
-			server.SetPrompts(rt.PromptRing) // backs /umbilical/agent/prompts (ZBBS-HOME-360)
-			server.SetChat(rt.ChatRing)      // backs /umbilical/chat (ZBBS-HOME-382)
+			server.SetPrompts(rt.PromptRing)                // backs /umbilical/agent/prompts (ZBBS-HOME-360)
+			server.SetChat(rt.ChatRing)                     // backs /umbilical/chat (ZBBS-HOME-382)
+			server.SetMemoryAPIBaseURL(rt.MemoryAPIBaseURL) // backs /umbilical/turns (ZBBS-HOME-396)
 			server.SetCheckpointHealth(checkpointHealth)
 			if rt.UmbilicalControl {
 				server.SetControlEnabled(true)
