@@ -832,7 +832,9 @@ func commitResultContent(vc *ValidatedCall) string {
 			}
 		}
 	}
-	if vc.Name == "pay_with_item" {
+	// offer_trade lowers onto a PayWithItemArgs (ZBBS-HOME-407), so it carries
+	// the same decoded shape and earns the same post-offer steer.
+	if vc.Name == "pay_with_item" || vc.Name == "offer_trade" {
 		if args, ok := vc.DecodedArgs.(PayWithItemArgs); ok {
 			// A plain new offer (no quote_id / in_response_to) is now a pending
 			// ledger entry the seller must accept, decline, or counter — the
@@ -848,15 +850,22 @@ func commitResultContent(vc *ValidatedCall) string {
 				if item == "" {
 					item = "those goods"
 				}
-				seller := strings.TrimSpace(args.Seller)
-				if seller == "" {
-					seller = "the seller"
+				other := strings.TrimSpace(args.Seller)
+				if other == "" {
+					other = "them"
+				}
+				// offer_trade is a proposer-framed barter ("trade for X with Y");
+				// a plain pay_with_item buys ("buy X from Y"). Same pending-offer
+				// mechanics, different lead clause for legibility.
+				lead := fmt.Sprintf("Your offer to buy %d %s from %s", args.Qty, item, other)
+				if vc.Name == "offer_trade" {
+					lead = fmt.Sprintf("Your offer to trade for %d %s with %s", args.Qty, item, other)
 				}
 				return fmt.Sprintf(
-					"[ok] Your offer to buy %d %s from %s is now before them, awaiting "+
-						"their answer. Do not offer again — call done() and let them accept, "+
-						"decline, or counter. Offer again only after they have responded.",
-					args.Qty, item, seller,
+					"[ok] %s is now before them, awaiting their answer. Do not offer "+
+						"again — call done() and let them accept, decline, or counter. "+
+						"Offer again only after they have responded.",
+					lead,
 				)
 			}
 		}
@@ -910,7 +919,9 @@ func speakUtteranceKey(vc *ValidatedCall) (string, bool) {
 // drift in a repeat still matches. The disposition byte (keep vs consume-now)
 // keeps a genuine "buy one to keep AND one to eat now" pair distinct.
 func payOfferKey(vc *ValidatedCall) (string, bool) {
-	if vc == nil || vc.Name != "pay_with_item" {
+	// offer_trade lowers onto a PayWithItemArgs (ZBBS-HOME-407), so it mints
+	// the same kind of pending offer and earns the same same-tick dedup.
+	if vc == nil || (vc.Name != "pay_with_item" && vc.Name != "offer_trade") {
 		return "", false
 	}
 	args, ok := vc.DecodedArgs.(PayWithItemArgs)

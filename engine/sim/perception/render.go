@@ -765,6 +765,11 @@ func renderOfferableCustomers(b *strings.Builder, v *OfferableCustomersView) {
 		return
 	}
 	fmt.Fprintf(b, "%s %s here with you. If interest is shown in your wares, name a fair price and offer it — call scene_quote with the item, the quantity, and your price in coins. Use target_buyer only for a named person you know; for a stranger or someone known only by trade, omit target_buyer to offer the whole room. The buyer is then free to take it or leave it.\n", who, verb)
+	// ZBBS-HOME-407: the barter counterpart to the coin-sale cue above. When a
+	// customer is carrying goods the keeper would rather have than coin, point
+	// at offer_trade so a goods-for-goods swap has a legible execution path
+	// instead of dissolving into a verbal agreement nothing commits.
+	fmt.Fprintf(b, "If one of them is carrying something you would rather have than coin, you can instead propose a direct trade — call offer_trade with the goods you will give and what you want from them. They are then free to accept, decline, or counter.\n")
 	fmt.Fprintf(b, "Your goods to sell: %s.\n\n", strings.Join(goods, ", "))
 }
 

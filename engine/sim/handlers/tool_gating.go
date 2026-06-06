@@ -74,6 +74,7 @@ var walkIncompatibleTools = map[string]struct{}{
 	"gather":        {},
 	"pay":           {},
 	"pay_with_item": {},
+	"offer_trade":   {}, // ZBBS-HOME-407: same substrate as pay_with_item (walk-in-flight reject)
 }
 
 // stopToolName — the voluntary-halt tool (ZBBS-HOME-338). The inverse of the
