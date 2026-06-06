@@ -138,3 +138,35 @@ func TestClearRestForReset_NonAgentNilsWindowsOnly(t *testing.T) {
 		t.Errorf("non-agent State = %q, want %q (left untouched)", a.State, StateResting)
 	}
 }
+
+// TestEndRestState_DualWindow locks the postcondition for the malformed overlap
+// where an actor holds BOTH a break and a sleep window (mutually exclusive in
+// normal operation, but endRestState defends it): after the call both windows
+// are nil, the recovery cursor is dropped, and State is idle — regardless of
+// which rest enum the actor carried. Guards against a future endBreak/wakeNPC
+// refactor silently breaking the dual-window path (the reviewed concern).
+func TestEndRestState_DualWindow(t *testing.T) {
+	now := time.Date(2026, 6, 6, 16, 0, 0, 0, time.UTC)
+	future := now.Add(time.Hour)
+	for _, st := range []ActorState{StateResting, StateSleeping} {
+		a := npc("dual", KindNPCStateful)
+		a.BreakUntil = &future
+		a.SleepingUntil = &future
+		cur := now.Add(-5 * time.Minute)
+		a.LastTirednessRecoveryAt = &cur
+		a.State = st
+		w := sleepTestWorld(a)
+
+		endRestState(w, a)
+
+		if a.BreakUntil != nil || a.SleepingUntil != nil {
+			t.Errorf("start=%q: windows not both cleared: break=%v sleep=%v", st, a.BreakUntil, a.SleepingUntil)
+		}
+		if a.LastTirednessRecoveryAt != nil {
+			t.Errorf("start=%q: recovery cursor not dropped: %v", st, a.LastTirednessRecoveryAt)
+		}
+		if a.State != StateIdle {
+			t.Errorf("start=%q: State = %q, want %q", st, a.State, StateIdle)
+		}
+	}
+}

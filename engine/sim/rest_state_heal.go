@@ -39,6 +39,14 @@ package sim
 // shop re-opens). It fires on the enum OR a live window, so it also resets a
 // stranded enum whose window is already nil. No-op when the actor is in neither
 // rest state. Runs on the world goroutine.
+//
+// Dual-window safety (break and sleep are mutually exclusive in normal operation,
+// but this defends the overlap): endBreak clears BreakUntil UNCONDITIONALLY (its
+// SleepingUntil guard only wraps the State/cursor reset), and wakeNPC — running
+// SECOND — clears SleepingUntil and sets State=idle unconditionally. So an actor
+// that somehow held both windows lands fully idle with neither window. The order
+// is load-bearing: wakeNPC must run last so its State=idle wins over endBreak's
+// SleepingUntil-guarded (skipped) reset. TestEndRestState_DualWindow locks this.
 func endRestState(w *World, a *Actor) {
 	if a.BreakUntil != nil || a.State == StateResting {
 		endBreak(w, a)
