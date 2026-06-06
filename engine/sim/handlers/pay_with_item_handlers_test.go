@@ -99,6 +99,40 @@ func TestDecodePayWithItem_Barter(t *testing.T) {
 	}
 }
 
+// TestDecodePayWithItem_StringifiedPayItems — llama-3.3 intermittently emits
+// pay_items as a STRINGIFIED JSON array (seen live in the Josiah/Elizabeth
+// episode); the lenient payItemList decode accepts it (ZBBS-HOME-407).
+func TestDecodePayWithItem_StringifiedPayItems(t *testing.T) {
+	args, err := DecodePayWithItemArgs(json.RawMessage(`{
+        "seller":"Aldous","item":"stew","qty":1,"consume_now":false,
+        "pay_items":"[{\"item\": \"nail\", \"qty\": 5}]"
+    }`))
+	if err != nil {
+		t.Fatalf("stringified pay_items decode: %v", err)
+	}
+	got := args.(PayWithItemArgs)
+	if len(got.PayItems) != 1 || got.PayItems[0].Item != "nail" || got.PayItems[0].Qty != 5 {
+		t.Errorf("PayItems = %+v, want [{nail 5}]", got.PayItems)
+	}
+}
+
+// TestDecodeCounterPay_StringifiedPayItems — counter_pay's pay_items uses the
+// same lenient payItemList type, so a stringified counter array must also
+// decode (ZBBS-HOME-407 follow-up; guards the counter decoder path).
+func TestDecodeCounterPay_StringifiedPayItems(t *testing.T) {
+	decoded, err := DecodeCounterPayArgs(json.RawMessage(`{
+        "ledger_id":7,
+        "pay_items":"[{\"item\": \"nail\", \"qty\": 3}]"
+    }`))
+	if err != nil {
+		t.Fatalf("stringified counter pay_items decode: %v", err)
+	}
+	got := decoded.(CounterPayArgs)
+	if len(got.PayItems) != 1 || got.PayItems[0].Item != "nail" || got.PayItems[0].Qty != 3 {
+		t.Errorf("PayItems = %+v, want [{nail 3}]", got.PayItems)
+	}
+}
+
 func TestDecodePayWithItem_RejectsShapeErrors(t *testing.T) {
 	cases := []struct {
 		name string

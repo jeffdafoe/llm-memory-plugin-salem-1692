@@ -87,6 +87,69 @@ type payItemArg struct {
 	Qty  int    `json:"qty"`
 }
 
+// payItemList is the decode type for a barter goods array (pay_items on
+// pay_with_item / counter_pay; give on offer_trade). It exists to tolerate a
+// quirk of the weak stateful-NPC model (llama-3.3-70b): it INTERMITTENTLY
+// emits the array as a STRINGIFIED JSON array — `"[{\"item\":\"milk\",
+// \"qty\":2}]"` — instead of a real array. The ZBBS-HOME-407 live-verify
+// caught this bouncing ~half of Elizabeth's offer_trade calls (and it hit
+// pay_with_item the same way in the original Josiah/Elizabeth episode).
+// UnmarshalJSON unwraps a single JSON-string layer before decoding, so both
+// the well-formed array and the stringified array parse to the same result;
+// a real array is unaffected. The schema still advertises an array (that's
+// the form we want the model to send) — this is a tolerance layer, not a
+// contract change.
+type payItemList []payItemArg
+
+// UnmarshalJSON decodes a goods array that may arrive either as a real JSON
+// array or as a JSON string wrapping one (the weak-model stringified-array
+// case). Unknown fields in the elements are still rejected and trailing data
+// after the array is still an error, so the strict-shape guarantees the rest
+// of the pay family relies on are preserved.
+func (p *payItemList) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	// Empty input isn't valid JSON — encoding/json never hands UnmarshalJSON
+	// empty bytes during normal struct decoding, but a direct call might, and
+	// silently accepting it would be more lenient than JSON itself.
+	if len(trimmed) == 0 {
+		return io.ErrUnexpectedEOF
+	}
+	// json calls UnmarshalJSON for null too — treat it as "no goods".
+	if string(trimmed) == "null" {
+		*p = nil
+		return nil
+	}
+	// Stringified-array case: unwrap exactly one JSON-string layer, then decode
+	// the inner text as the array it was meant to be.
+	if trimmed[0] == '"' {
+		var s string
+		if err := json.Unmarshal(trimmed, &s); err != nil {
+			return err
+		}
+		s = strings.TrimSpace(s)
+		if s == "" {
+			*p = nil
+			return nil
+		}
+		trimmed = []byte(s)
+	}
+	dec := json.NewDecoder(bytes.NewReader(trimmed))
+	dec.DisallowUnknownFields()
+	var arr []payItemArg
+	if err := dec.Decode(&arr); err != nil {
+		return err
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return errors.New("unexpected trailing data after goods array")
+		}
+		return err
+	}
+	*p = arr
+	return nil
+}
+
 // payItemsSchemaFragment is the shared JSON-schema fragment for a
 // pay_items array — embedded into both the pay_with_item and counter_pay
 // schemas so the two stay identical. maxItems mirrors
@@ -128,17 +191,17 @@ const payItemsSchemaFragment = `{
 //   - in_response_to: integer (optional), minimum 1
 //   - for:            string (optional), maxLength MaxPayWithItemForChars
 type PayWithItemArgs struct {
-	Seller       string       `json:"seller"`
-	Item         string       `json:"item"`
-	Qty          int          `json:"qty"`
-	Amount       int          `json:"amount"`
-	ConsumeNow   bool         `json:"consume_now"`
-	Consumers    []string     `json:"consumers"`
-	PayItems     []payItemArg `json:"pay_items"`
-	QuoteID      uint64       `json:"quote_id"`
-	InResponseTo uint64       `json:"in_response_to"`
-	For          string       `json:"for"`
-	ReadyInDays  int          `json:"ready_in_days"`
+	Seller       string      `json:"seller"`
+	Item         string      `json:"item"`
+	Qty          int         `json:"qty"`
+	Amount       int         `json:"amount"`
+	ConsumeNow   bool        `json:"consume_now"`
+	Consumers    []string    `json:"consumers"`
+	PayItems     payItemList `json:"pay_items"`
+	QuoteID      uint64      `json:"quote_id"`
+	InResponseTo uint64      `json:"in_response_to"`
+	For          string      `json:"for"`
+	ReadyInDays  int         `json:"ready_in_days"`
 }
 
 var payWithItemSchema = json.RawMessage(`{
@@ -548,10 +611,10 @@ func HandleDeclinePay(in HandlerInput) (sim.Command, error) {
 
 // CounterPayArgs is the decoded shape of the counter_pay tool's arguments.
 type CounterPayArgs struct {
-	LedgerID uint64       `json:"ledger_id"`
-	Amount   int          `json:"amount"`
-	PayItems []payItemArg `json:"pay_items"`
-	Message  string       `json:"message"`
+	LedgerID uint64      `json:"ledger_id"`
+	Amount   int         `json:"amount"`
+	PayItems payItemList `json:"pay_items"`
+	Message  string      `json:"message"`
 }
 
 var counterPaySchema = json.RawMessage(`{
