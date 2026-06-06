@@ -228,6 +228,17 @@ func SceneQuoteCreate(
 				}
 			}
 
+			// ZBBS-HOME-408: detect a no-op re-post (full key INCLUDING
+			// amount already live) BEFORE supersede flips the prior. The
+			// weak stateful-NPC model re-fires an identical scene_quote
+			// several times a tick (the bare-[ok] storm); a buyer-facing
+			// announce only makes sense for a NEW or RE-PRICED offer, so an
+			// unchanged re-post must not spam the PC's talk panel with
+			// duplicate lines. Computed here while the prior quote is still
+			// Active. (The underlying re-fire itself is a separate harness
+			// fix — the HOME-395 feedback/dedup applied to scene_quote.)
+			unchanged := hasIdenticalActiveQuote(w, scene, sellerID, kind, qty, amount, consumeNow, targetBuyerID, consumerIDs)
+
 			// Gate 9: duplicate-key resolution. Non-Amount key —
 			// the legitimate use case for "same key, new amount"
 			// IS re-pricing. Replace any matching active quote in
@@ -267,18 +278,30 @@ func SceneQuoteCreate(
 			w.Quotes[id] = q
 			scene.QuoteIDs = append(scene.QuoteIDs, id)
 
+			// ZBBS-HOME-408: stamp the buyer-facing wire-frame audience —
+			// the scene's PC participants — so the translator can surface this
+			// offer to a human player's client. Skipped on an unchanged re-post
+			// (leaves PCRecipientIDs empty → the translator drops the frame, no
+			// duplicate talk-panel line).
+			var pcRecipients []ActorID
+			if !unchanged {
+				pcRecipients = scenePCParticipants(w, scene, sellerID, at)
+			}
+
 			evt := &SceneQuoteCreated{
-				QuoteID:     id,
-				SceneID:     sceneID,
-				SellerID:    sellerID,
-				TargetBuyer: targetBuyerID,
-				ItemKind:    kind,
-				Qty:         qty,
-				Amount:      amount,
-				ConsumeNow:  consumeNow,
-				ConsumerIDs: cloneActorIDs(consumerIDs),
-				ExpiresAt:   expiresAt,
-				At:          at,
+				QuoteID:        id,
+				SceneID:        sceneID,
+				SellerID:       sellerID,
+				TargetBuyer:    targetBuyerID,
+				ItemKind:       kind,
+				Qty:            qty,
+				Amount:         amount,
+				ConsumeNow:     consumeNow,
+				ConsumerIDs:    cloneActorIDs(consumerIDs),
+				ExpiresAt:      expiresAt,
+				At:             at,
+				HuddleID:       seller.CurrentHuddleID,
+				PCRecipientIDs: pcRecipients,
 			}
 			w.emit(evt)
 
@@ -574,6 +597,93 @@ func actorIDSetsEqual(a, b []ActorID) bool {
 		}
 	}
 	return true
+}
+
+// hasIdenticalActiveQuote reports whether an active quote already exists in
+// (sellerID, scene) matching the FULL key INCLUDING amount — i.e. the
+// incoming quote would change nothing. supersedeMatchingQuotes matches on
+// the non-Amount key (re-pricing is a legitimate change); this is the
+// stricter "nothing changed" test ZBBS-HOME-408 uses to suppress a duplicate
+// buyer-facing announcement when the weak model re-fires the same offer.
+func hasIdenticalActiveQuote(
+	w *World,
+	scene *Scene,
+	sellerID ActorID,
+	kind ItemKind,
+	qty int,
+	amount int,
+	consumeNow bool,
+	targetBuyerID ActorID,
+	consumerIDs []ActorID,
+) bool {
+	if scene == nil {
+		return false
+	}
+	for _, qid := range scene.QuoteIDs {
+		q, ok := w.Quotes[qid]
+		if !ok || q == nil || q.State != SceneQuoteStateActive {
+			continue
+		}
+		if q.SellerID != sellerID {
+			continue
+		}
+		if q.ItemKind != kind || q.Qty != qty || q.Amount != amount ||
+			q.ConsumeNow != consumeNow || q.TargetBuyer != targetBuyerID {
+			continue
+		}
+		if !actorIDSetsEqual(q.ConsumerIDs, consumerIDs) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// scenePCParticipants returns the distinct, PRESENT PC actor ids participating
+// in the quote's scene (across every huddle the scene observes), excluding the
+// seller, in sorted order for a stable wire-frame recipient list. ZBBS-HOME-408
+// — the buyer-facing audience: only a human player's client needs the offer
+// frame (NPC buyers perceive the quote on their next tick via the pull-based
+// render path).
+//
+// A PC indexed in the huddle but stale per PCPresenceStale (closed tab /
+// never-polled ghost) is excluded — the same presence gate colocated_huddle.go
+// applies when forming huddles. Otherwise a quote frame would be addressed to a
+// disconnected PC that the index hasn't reclaimed yet. `seen` is marked only
+// AFTER the lookup/kind/presence checks pass, so a stale or missing index entry
+// in one huddle never masks the same actor surfacing valid via another.
+func scenePCParticipants(w *World, scene *Scene, sellerID ActorID, now time.Time) []ActorID {
+	if scene == nil {
+		return nil
+	}
+	staleAfter := PCPresenceStaleAfter(w)
+	var pcs []ActorID
+	seen := make(map[ActorID]struct{})
+	for huddleID := range scene.Huddles {
+		members, ok := w.actorsByHuddle[huddleID]
+		if !ok {
+			continue
+		}
+		for actorID := range members {
+			if actorID == sellerID {
+				continue
+			}
+			actor, ok := w.Actors[actorID]
+			if !ok || actor.Kind != KindPC {
+				continue
+			}
+			if PCPresenceStale(actor.LastPCSeenAt, now, staleAfter) {
+				continue
+			}
+			if _, dup := seen[actorID]; dup {
+				continue
+			}
+			seen[actorID] = struct{}{}
+			pcs = append(pcs, actorID)
+		}
+	}
+	sort.Slice(pcs, func(i, j int) bool { return pcs[i] < pcs[j] })
+	return pcs
 }
 
 // cloneActorIDs returns an independent copy of ids. Used to give

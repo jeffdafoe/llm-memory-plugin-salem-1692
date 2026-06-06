@@ -1,6 +1,8 @@
 package httpapi
 
 import (
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
@@ -96,6 +98,37 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			Text:         e.Text,
 			SpeechID:     uint64(e.EventID()),
 			At:           e.At.UTC().Format(time.RFC3339),
+		}}, true
+	case *sim.SceneQuoteCreated:
+		// ZBBS-HOME-408: surface a vendor's posted offer to a PC buyer. A
+		// scene_quote is otherwise silent to a human player — it feeds NPC
+		// perception (the pull-based render path), but the v2 client only learns
+		// a vendor's item + price from an npc_spoke frame's mentions /
+		// mention_prices (the channel v1's speak.price carried; v2 split quoting
+		// into a standalone tool and never re-fed the PC half). So derive a
+		// buyer-facing npc_spoke from the quote: an engine-authored offer line
+		// plus the structured item + unit price the client's Pay modal pre-fills
+		// from. PCRecipientIDs is the scene's PC audience; it is empty when no PC
+		// is present OR on a no-op re-post (an identical re-fire), and an empty
+		// audience drops the frame so the talk panel isn't spammed with
+		// duplicates.
+		if len(e.PCRecipientIDs) == 0 {
+			return WireFrame{}, false
+		}
+		recipients := make([]string, len(e.PCRecipientIDs))
+		for i, id := range e.PCRecipientIDs {
+			recipients[i] = string(id)
+		}
+		item := string(e.ItemKind)
+		return WireFrame{Type: "npc_spoke", Data: spokeWireDTO{
+			ID:            string(e.SellerID),
+			HuddleID:      string(e.HuddleID),
+			RecipientIDs:  recipients,
+			Text:          sceneQuoteOfferLine(item, e.Qty, e.Amount, e.ConsumeNow),
+			Mentions:      []string{item},
+			MentionPrices: map[string]int{item: sceneQuoteUnitPrice(e.Amount, e.Qty, len(e.ConsumerIDs))},
+			SpeechID:      uint64(e.EventID()),
+			At:            e.At.UTC().Format(time.RFC3339),
 		}}, true
 	case *sim.PhaseApplied:
 		return WireFrame{Type: "world_phase_changed", Data: phaseChangedWireDTO{
@@ -414,13 +447,57 @@ type insideChangedWireDTO struct {
 // when speaking to no one — a valid v2 state). speech_id (= the event id) lets a
 // client correlate its own optimistic bubble with this authoritative event and
 // dedupe. No x/y — v2 speech is huddle-scoped, not proximity-based (unlike v1).
+//
+// mentions + mention_prices are the structured offer hints (ZBBS-HOME-408):
+// the item kinds a vendor is offering and their unit price in coins. The
+// client's _on_npc_spoke fills the Pay-modal item dropdown from mentions and
+// pre-fills the amount from mention_prices. A real Spoke carries neither (both
+// nil → omitempty drops them, leaving normal speech frames byte-identical);
+// only the SceneQuoteCreated-derived frame populates them.
 type spokeWireDTO struct {
-	ID           string   `json:"id"`
-	HuddleID     string   `json:"huddle_id,omitempty"`
-	RecipientIDs []string `json:"recipient_ids"`
-	Text         string   `json:"text"`
-	SpeechID     uint64   `json:"speech_id"`
-	At           string   `json:"at"`
+	ID            string         `json:"id"`
+	HuddleID      string         `json:"huddle_id,omitempty"`
+	RecipientIDs  []string       `json:"recipient_ids"`
+	Text          string         `json:"text"`
+	Mentions      []string       `json:"mentions,omitempty"`
+	MentionPrices map[string]int `json:"mention_prices,omitempty"`
+	SpeechID      uint64         `json:"speech_id"`
+	At            string         `json:"at"`
+}
+
+// sceneQuoteUnitPrice converts a quote's bundle total into a per-item unit
+// price for the client's Pay-modal pre-fill (mention_prices carries unit
+// prices, matching v1's speak.price semantics). amount is the whole-bundle
+// coin total; the bundle is qty items per consumer across max(1, consumers)
+// consumers. Integer division — a bundle priced below one coin per item floors
+// to 0, which the client reads as "no price hint" (it only pre-fills when
+// unit > 0), leaving the buyer to enter the amount.
+func sceneQuoteUnitPrice(amount, qty, consumers int) int {
+	perBundle := qty
+	if consumers > 1 {
+		perBundle = qty * consumers
+	}
+	if perBundle < 1 {
+		perBundle = 1
+	}
+	return amount / perBundle
+}
+
+// sceneQuoteOfferLine is the engine-authored speech line shown to a PC when a
+// vendor posts a quote — deterministic copy (no LLM), so the offer is legible
+// in the talk panel even though the model only called the silent scene_quote
+// tool. consume_now distinguishes eat/drink-here from takeaway so the buyer
+// knows whether to check "Take it home" in the Pay modal.
+func sceneQuoteOfferLine(item string, qty, amount int, consumeNow bool) string {
+	coin := "coins"
+	if amount == 1 {
+		coin = "coin"
+	}
+	goods := strings.ToLower(strings.TrimSpace(item))
+	if consumeNow {
+		return fmt.Sprintf("I can serve you %d %s here for %d %s.", qty, goods, amount, coin)
+	}
+	return fmt.Sprintf("I can let you take %d %s for %d %s.", qty, goods, amount, coin)
 }
 
 // phaseChangedWireDTO is the world_phase_changed payload — the day/night
