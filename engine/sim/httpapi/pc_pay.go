@@ -70,6 +70,10 @@ type pcPayRequest struct {
 	QuoteID      uint64   `json:"quote_id,omitempty"`
 	InResponseTo uint64   `json:"in_response_to,omitempty"`
 	For          string   `json:"for,omitempty"`
+	// ReadyInDays is the optional lodging advance-booking offset (ZBBS-HOME-403):
+	// 0/omitted = a room for tonight, N = book N days ahead. Ignored for
+	// non-lodging items (the command rejects N>0 there).
+	ReadyInDays int `json:"ready_in_days,omitempty"`
 }
 
 // pcPayResponse reports the minted offer. On the slow path state is "pending"
@@ -119,7 +123,7 @@ func (s *Server) handlePCPay(w http.ResponseWriter, r *http.Request) {
 	res, err := s.world.SendContext(r.Context(), payWithItemPCCommand(
 		user.Username, seller, item, req.Qty, req.Amount,
 		req.ConsumeNow, consumers, sim.QuoteID(req.QuoteID),
-		sim.LedgerID(req.InResponseTo), forText,
+		sim.LedgerID(req.InResponseTo), forText, req.ReadyInDays,
 	))
 	if err != nil {
 		// Client disconnected / deadline lapsed before the world replied —
@@ -168,6 +172,11 @@ func validatePayFields(req pcPayRequest) (seller, item string, consumers []strin
 	// for the NPC/tool callers that bypass this handler.
 	if req.QuoteID != 0 && req.InResponseTo != 0 {
 		return "", "", nil, "", "quote_id and in_response_to cannot both be set"
+	}
+	// ready_in_days bounds (ZBBS-HOME-403). The command re-enforces this and the
+	// lodging-only rule; checked here so a malformed offset is a clean 400.
+	if req.ReadyInDays < 0 || req.ReadyInDays > sim.MaxOrderReadyInDays {
+		return "", "", nil, "", "ready_in_days out of range"
 	}
 
 	seller = strings.TrimSpace(req.Seller)
@@ -257,6 +266,7 @@ func payWithItemPCCommand(
 	quoteID sim.QuoteID,
 	parentID sim.LedgerID,
 	forText string,
+	readyInDays int,
 ) sim.Command {
 	return sim.Command{
 		Fn: func(world *sim.World) (any, error) {
@@ -272,7 +282,7 @@ func payWithItemPCCommand(
 				// PC-side barter (pay_items) is a follow-on slice
 				// (ZBBS-HOME-393); the PC pay route stays coin-only for now.
 				actorID, seller, item, qty, amount, consumeNow,
-				consumers, nil, quoteID, parentID, forText, now,
+				consumers, nil, quoteID, parentID, forText, now, readyInDays,
 			).Fn(world)
 		},
 	}

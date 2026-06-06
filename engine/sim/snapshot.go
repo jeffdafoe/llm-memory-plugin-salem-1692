@@ -79,6 +79,16 @@ type Snapshot struct {
 	// hand-built snapshot (nil) is distinguishable from real midnight (0).
 	LocalMinuteOfDay *int
 
+	// LocalDateUTC is midnight UTC of the village's current calendar DATE (the
+	// date in WorldSettings.Location), computed once at publish via
+	// orderDateUTC. It is the "today" the order-book perception split compares
+	// ReadyBy against (ZBBS-HOME-403) — using the same world-TZ-date-as-midnight-
+	// UTC convention ReadyBy itself is built with, so the ready/future/overdue
+	// classification doesn't drift by the UTC offset near the day boundary.
+	// Zero on a hand-built snapshot (no clock); perception falls back to the
+	// host UTC day then.
+	LocalDateUTC time.Time
+
 	// DawnMinute / DuskMinute are the world's dawn/dusk boundary times as
 	// minute-of-day (e.g. 420 = 07:00, 1140 = 19:00), parsed once at publish
 	// from WorldSettings.DawnTime/DuskTime. They are the day-active window used

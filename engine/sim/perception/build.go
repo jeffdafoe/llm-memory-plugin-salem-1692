@@ -53,6 +53,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 	p.Businessowner = actorSnap.BusinessownerState != nil
 	p.Relationships = buildRelationships(actorSnap, p.Surroundings.HuddleMembers, currentHeardExcerpts(p.Warrants))
 	p.PendingDeliveriesFromMe, p.PendingDeliveriesToMe = buildPendingOrderViews(snap, actorID)
+	p.LocalDateUTC = snap.LocalDateUTC // world "today" for the order-book date split (ZBBS-HOME-403)
 	p.RecoveryOptions = buildRecoveryOptions(snap, actorID, actorSnap)
 	p.Satiation = buildSatiation(snap, actorID, actorSnap)
 	p.Restocking = buildRestocking(snap, actorID, actorSnap)
@@ -1205,6 +1206,7 @@ func buildPendingOrderViews(snap *sim.Snapshot, subject sim.ActorID) (fromMe, to
 			SellerName: resolveName(o.SellerID),
 			CreatedAt:  o.CreatedAt,
 			ExpiresAt:  o.ExpiresAt,
+			ReadyBy:    o.ReadyBy,
 		}
 		// Only populate ConsumerNames when there's more than just
 		// the implicit buyer-as-consumer entry.

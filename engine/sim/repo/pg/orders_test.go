@@ -58,21 +58,25 @@ func TestOrdersRepo_LoadAll_HappyPath(t *testing.T) {
 	now := time.Now().UTC()
 	delivered := now.Add(time.Minute)
 	expires := now.Add(15 * time.Minute)
+	// ready_by round-trips as midnight UTC of the booked date. o1 is an
+	// advance booking (2 days ahead) so we can prove ReadyBy is loaded
+	// distinctly from created_at. ZBBS-HOME-403.
+	readyBy := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, 2)
 
 	rows := pgxmock.NewRows([]string{
 		"id", "buyer_id", "seller_id", "item_kind", "qty",
 		"offered_amount", "consumer_actor_ids", "fulfillment_status",
-		"created_at", "delivered_on", "expires_at",
+		"created_at", "delivered_on", "expires_at", "ready_by",
 	}).
 		AddRow(int64(1), "alice", "bob", "stew", 2,
 			6, []string{"alice", "carol"}, "ready",
-			now, (*time.Time)(nil), &expires).
+			now, (*time.Time)(nil), &expires, readyBy).
 		AddRow(int64(2), "dave", "bob", "ale", 1,
 			3, []string{}, "pending",
-			now, (*time.Time)(nil), &expires).
+			now, (*time.Time)(nil), &expires, readyBy).
 		AddRow(int64(3), "eve", "bob", "bread", 1,
 			2, []string{}, "ready",
-			now, &delivered, (*time.Time)(nil)) // legacy row: NULL expires_at
+			now, &delivered, (*time.Time)(nil), readyBy) // legacy row: NULL expires_at
 
 	mock.ExpectQuery(`SELECT[\s\S]+FROM pay_ledger[\s\S]+WHERE state = 'accepted'[\s\S]+ORDER BY id`).
 		WillReturnRows(rows)
@@ -97,6 +101,9 @@ func TestOrdersRepo_LoadAll_HappyPath(t *testing.T) {
 	}
 	if !o1.ExpiresAt.Equal(expires) {
 		t.Errorf("o1.ExpiresAt = %v, want %v", o1.ExpiresAt, expires)
+	}
+	if !o1.ReadyBy.Equal(readyBy) {
+		t.Errorf("o1.ReadyBy = %v, want %v", o1.ReadyBy, readyBy)
 	}
 
 	// Pending maps to Ready in the runtime view (per orders.go mapping
@@ -137,11 +144,11 @@ func TestOrdersRepo_LoadAll_UnknownStatusErrors(t *testing.T) {
 	rows := pgxmock.NewRows([]string{
 		"id", "buyer_id", "seller_id", "item_kind", "qty",
 		"offered_amount", "consumer_actor_ids", "fulfillment_status",
-		"created_at", "delivered_on", "expires_at",
+		"created_at", "delivered_on", "expires_at", "ready_by",
 	}).
 		AddRow(int64(1), "alice", "bob", "stew", 1,
 			3, []string{}, "weirdo_status",
-			now, (*time.Time)(nil), &expires)
+			now, (*time.Time)(nil), &expires, now)
 
 	mock.ExpectQuery(`SELECT[\s\S]+FROM pay_ledger`).WillReturnRows(rows)
 
@@ -184,6 +191,10 @@ func TestOrdersRepo_SaveSnapshot_UpsertsEachOrder(t *testing.T) {
 	now := time.Now().UTC()
 	expires := now.Add(time.Hour)
 	delivered := now.Add(time.Minute)
+	// o1 is an advance booking: its ready_by ($9) is a distinct future date,
+	// so this proves the upsert binds o.ReadyBy (not o.CreatedAt) to ready_by.
+	// o2 books for today, so its ready_by == now. ZBBS-HOME-403.
+	readyBy := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, 2)
 
 	// SaveSnapshot now does two steps inside the Tx: expire absent
 	// rows first, then upsert. The expire-absent UPDATE accepts the
@@ -198,7 +209,7 @@ func TestOrdersRepo_SaveSnapshot_UpsertsEachOrder(t *testing.T) {
 		WithArgs(
 			int64(1), "alice", "bob", "stew", 2, 6,
 			[]string{"alice"}, "ready",
-			now, expires, now, (*time.Time)(nil),
+			readyBy, expires, now, (*time.Time)(nil),
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 
@@ -222,6 +233,7 @@ func TestOrdersRepo_SaveSnapshot_UpsertsEachOrder(t *testing.T) {
 			ConsumerIDs: []sim.ActorID{"alice"},
 			LedgerID:    1,
 			CreatedAt:   now,
+			ReadyBy:     readyBy,
 			ExpiresAt:   expires,
 		},
 		2: {
@@ -235,6 +247,7 @@ func TestOrdersRepo_SaveSnapshot_UpsertsEachOrder(t *testing.T) {
 			ConsumerIDs: []sim.ActorID{},
 			LedgerID:    2,
 			CreatedAt:   now,
+			ReadyBy:     now,
 			DeliveredAt: &delivered,
 			ExpiresAt:   expires,
 		},

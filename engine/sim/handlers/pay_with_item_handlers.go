@@ -138,6 +138,7 @@ type PayWithItemArgs struct {
 	QuoteID      uint64       `json:"quote_id"`
 	InResponseTo uint64       `json:"in_response_to"`
 	For          string       `json:"for"`
+	ReadyInDays  int          `json:"ready_in_days"`
 }
 
 var payWithItemSchema = json.RawMessage(`{
@@ -196,6 +197,12 @@ var payWithItemSchema = json.RawMessage(`{
             "type": "string",
             "maxLength": 200,
             "description": "Optional brief note describing what the purchase is for."
+        },
+        "ready_in_days": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 30,
+            "description": "Lodging only: book a room starting this many days from now (0 or omitted = a room for tonight). Ignored for anything else — ordinary goods are handed over when you pay. Max 30."
         }
     },
     "required": ["seller", "item", "qty", "consume_now"],
@@ -303,6 +310,15 @@ func DecodePayWithItemArgs(raw json.RawMessage) (any, error) {
 			MaxPayWithItemForChars, n,
 		)
 	}
+	// ready_in_days bounds (ZBBS-HOME-403 advance booking). The substrate
+	// re-enforces the same cap and the lodging-only rule; this is defense in
+	// depth at intake. Literal 30 mirrors sim.MaxOrderReadyInDays.
+	if args.ReadyInDays < 0 {
+		return nil, fmt.Errorf("pay_with_item: ready_in_days cannot be negative (got %d)", args.ReadyInDays)
+	}
+	if args.ReadyInDays > sim.MaxOrderReadyInDays {
+		return nil, fmt.Errorf("pay_with_item: ready_in_days too far ahead (got %d, max %d)", args.ReadyInDays, sim.MaxOrderReadyInDays)
+	}
 	return args, nil
 }
 
@@ -398,6 +414,7 @@ func HandlePayWithItem(in HandlerInput) (sim.Command, error) {
 		sim.LedgerID(args.InResponseTo),
 		forText,
 		now,
+		args.ReadyInDays,
 	)), nil
 }
 

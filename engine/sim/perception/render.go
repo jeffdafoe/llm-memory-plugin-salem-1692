@@ -128,8 +128,8 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderAnchors(&ephemeral, p.Anchors)
 	renderDutySteer(&ephemeral, p.DutySteer)
 	renderRelationships(&ephemeral, p.Relationships)
-	renderPendingDeliveriesFromMe(&ephemeral, p.PendingDeliveriesFromMe)
-	renderPendingDeliveriesToMe(&ephemeral, p.PendingDeliveriesToMe)
+	renderPendingDeliveriesFromMe(&ephemeral, p.PendingDeliveriesFromMe, p.LocalDateUTC)
+	renderPendingDeliveriesToMe(&ephemeral, p.PendingDeliveriesToMe, p.LocalDateUTC)
 	renderRecoveryOptions(&ephemeral, p.RecoveryOptions)
 	renderSatiation(&ephemeral, p.Satiation)
 	renderRestocking(&ephemeral, p.Restocking)
@@ -764,15 +764,41 @@ func renderRelationships(b *strings.Builder, peers []RelationshipPeerView) {
 	b.WriteString("\n")
 }
 
-// renderPendingDeliveriesFromMe writes the "Orders to deliver:" section
-// for the seller side. One line per pending Order — item + qty,
-// buyer name, optional consumer-list if this is a group order, and a
-// time-remaining hint. Empty list skips the section.
+// renderPendingDeliveriesFromMe writes the seller-side order book, split by the
+// order's ReadyBy date (ZBBS-HOME-403): orders due today (or earlier) render as
+// "## Orders to deliver" — the actionable hand-over section — and orders booked
+// for a future day render as "## Upcoming bookings" — a passive reservation
+// list with no deliver_order nudge. Empty list skips both.
 //
 // Phase 3 PR S6 — surfacing pending deliveries to the seller's LLM
 // is the load-bearing perception mechanism (no warrant kind for
 // Order state; the seller relies on baseline perception to remember
 // to call deliver_order).
+func renderPendingDeliveriesFromMe(b *strings.Builder, orders []OrderView, today time.Time) {
+	if len(orders) == 0 {
+		return
+	}
+	if today.IsZero() {
+		// Hand-built payload with no world clock — fall back to the host UTC
+		// day. A running engine always supplies Payload.LocalDateUTC.
+		today = startOfUTCDay(time.Now())
+	}
+	var ready, future []OrderView
+	for _, o := range orders {
+		// A future booking renders as a reservation; everything else (due
+		// today, overdue, or with no booked date) is ready to hand over now.
+		if !o.ReadyBy.IsZero() && startOfUTCDay(o.ReadyBy).After(today) {
+			future = append(future, o)
+		} else {
+			ready = append(ready, o)
+		}
+	}
+	renderOrdersReadyToHandOver(b, ready)
+	renderFutureReservations(b, future)
+}
+
+// renderOrdersReadyToHandOver writes the actionable "## Orders to deliver"
+// section — one line per order due now, with the deliver_order nudge.
 //
 // ZBBS-WORK-372 — the section closes with an explicit actionable
 // instruction naming the deliver_order tool + order_id arg, mirroring
@@ -785,7 +811,7 @@ func renderRelationships(b *strings.Builder, peers []RelationshipPeerView) {
 // stepped away renders passively ("waiting for X to return"), and the actionable
 // instruction is suppressed unless at least one order is deliverable now — the
 // keeper isn't cued to chase an absent buyer (boot-collapse Finding 6 bundle).
-func renderPendingDeliveriesFromMe(b *strings.Builder, orders []OrderView) {
+func renderOrdersReadyToHandOver(b *strings.Builder, orders []OrderView) {
 	if len(orders) == 0 {
 		return
 	}
@@ -830,15 +856,60 @@ func renderPendingDeliveriesFromMe(b *strings.Builder, orders []OrderView) {
 	b.WriteString("\n")
 }
 
-// renderPendingDeliveriesToMe writes the "Orders you're waiting on:"
-// section for the buyer/consumer side. One line per pending Order —
-// item + qty, seller name, time-remaining hint. Empty list skips
-// the section.
+// renderFutureReservations writes the seller's upcoming bookings — orders whose
+// ReadyBy hasn't arrived yet. Framed as reservations, not deliveries, with an
+// explicit "don't hand over yet" so the keeper doesn't waste a deliver_order on
+// a booking that isn't due (DeliverOrder's gate 4b rejects a premature check-in,
+// so the call would fail anyway) or forget the booking exists. The live case is
+// an advance lodging booking. ZBBS-HOME-403.
+func renderFutureReservations(b *strings.Builder, orders []OrderView) {
+	if len(orders) == 0 {
+		return
+	}
+	b.WriteString("## Upcoming bookings\n")
+	for _, o := range orders {
+		itemDesc := string(o.Item)
+		if o.Qty > 1 {
+			itemDesc = fmt.Sprintf("%d %s", o.Qty, o.Item)
+		}
+		buyer := sanitizeInline(o.BuyerName)
+		fmt.Fprintf(b, "- #%d: %s for %s — booked for %s\n",
+			uint64(o.ID), itemDesc, buyer, o.ReadyBy.Format("Mon Jan 2"))
+	}
+	b.WriteString("These aren't due yet — don't hand them over until the booked day arrives.\n\n")
+}
+
+// renderPendingDeliveriesToMe writes the buyer/consumer-side view, split by the
+// order's ReadyBy date (ZBBS-HOME-403): orders still within their window render
+// as "## Orders you're waiting on", and orders whose ReadyBy has passed without
+// delivery render as "## Overdue — paid but not delivered" — the buyer-side
+// robbery cue. Empty list skips both.
 //
 // Phase 3 PR S6 — gives the buyer's LLM a structured "I'm waiting
 // for X from Y" cue so they can speak follow-ups ("Hannah, where's
 // my stew?") or make wait/depart decisions.
-func renderPendingDeliveriesToMe(b *strings.Builder, orders []OrderView) {
+func renderPendingDeliveriesToMe(b *strings.Builder, orders []OrderView, today time.Time) {
+	if len(orders) == 0 {
+		return
+	}
+	if today.IsZero() {
+		today = startOfUTCDay(time.Now())
+	}
+	var waiting, overdue []OrderView
+	for _, o := range orders {
+		if !o.ReadyBy.IsZero() && startOfUTCDay(o.ReadyBy).Before(today) {
+			overdue = append(overdue, o)
+		} else {
+			waiting = append(waiting, o)
+		}
+	}
+	renderOrdersWaitingOn(b, waiting)
+	renderOverdueOrders(b, overdue)
+}
+
+// renderOrdersWaitingOn writes the buyer's "## Orders you're waiting on"
+// section — one line per order still within its delivery window.
+func renderOrdersWaitingOn(b *strings.Builder, orders []OrderView) {
 	if len(orders) == 0 {
 		return
 	}
@@ -856,6 +927,39 @@ func renderPendingDeliveriesToMe(b *strings.Builder, orders []OrderView) {
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
+}
+
+// renderOverdueOrders writes the buyer's "## Overdue" section — orders the buyer
+// paid for whose ReadyBy has passed but the seller still hasn't delivered (the
+// orders carried here are all still Ready; buildPendingOrderViews drops terminal
+// ones). The live case is a lodging booking the keeper never honored. The cue is
+// informative, not prescriptive — the LLM decides whether to chase, complain, or
+// let it go; the engine refunds the coins when the order finally expires
+// (ZBBS-HOME-403).
+func renderOverdueOrders(b *strings.Builder, orders []OrderView) {
+	if len(orders) == 0 {
+		return
+	}
+	b.WriteString("## Overdue — paid but not delivered\n")
+	for _, o := range orders {
+		itemDesc := string(o.Item)
+		if o.Qty > 1 {
+			itemDesc = fmt.Sprintf("%d %s", o.Qty, o.Item)
+		}
+		seller := sanitizeInline(o.SellerName)
+		fmt.Fprintf(b, "- #%d: %s from %s — was due %s, still not delivered\n",
+			uint64(o.ID), itemDesc, seller, o.ReadyBy.Format("Mon Jan 2"))
+	}
+	b.WriteString("\n")
+}
+
+// startOfUTCDay returns midnight UTC of the calendar date `t` falls on. Shared
+// by the order-book date splits; ReadyBy is already midnight UTC of its date, so
+// applying this to it is a defensive normalization (and gives a single notion of
+// "today" to compare against). ZBBS-HOME-403.
+func startOfUTCDay(t time.Time) time.Time {
+	u := t.UTC()
+	return time.Date(u.Year(), u.Month(), u.Day(), 0, 0, 0, 0, time.UTC)
 }
 
 // maxRenderableExpiryHorizon bounds how far out an order deadline can be and
