@@ -313,15 +313,16 @@ func TestMoveToStructure_ClearsStaleSupplierMemoryForDestination(t *testing.T) {
 	now := time.Now().UTC()
 
 	// Seed walker with shut + out-of-stock memories for the destination (inn)
-	// AND for an unrelated business (well), inside a command so the test
+	// AND for an unrelated structure (gazebo), inside a command so the test
 	// goroutine never touches live world state.
+	const other = sim.StructureID("gazebo")
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		a := world.Actors["walker"]
-		a.ClosedBusinessObs = map[sim.StructureID]time.Time{"inn": now, "well": now}
+		a.ClosedBusinessObs = map[sim.StructureID]time.Time{"inn": now, other: now}
 		a.OutOfStockObs = map[sim.OutOfStockKey]time.Time{
-			{StructureID: "inn", ItemKind: "meat"}:  now,
-			{StructureID: "inn", ItemKind: "milk"}:  now,
-			{StructureID: "well", ItemKind: "meat"}: now,
+			{StructureID: "inn", ItemKind: "meat"}: now,
+			{StructureID: "inn", ItemKind: "milk"}: now,
+			{StructureID: other, ItemKind: "meat"}: now,
 		}
 		return nil, nil
 	}}); err != nil {
@@ -332,23 +333,13 @@ func TestMoveToStructure_ClearsStaleSupplierMemoryForDestination(t *testing.T) {
 		t.Fatalf("MoveToStructure(inn): %v", err)
 	}
 
-	// Read the maps back inside a command.
-	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		a := world.Actors["walker"]
-		return [2]any{a.ClosedBusinessObs, a.OutOfStockObs}, nil
-	}})
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	pair := res.([2]any)
-	closed := pair[0].(map[sim.StructureID]time.Time)
-	oos := pair[1].(map[sim.OutOfStockKey]time.Time)
+	closed, oos := supplierMemoryOf(t, w, "walker")
 
 	if _, ok := closed["inn"]; ok {
 		t.Error("ClosedBusinessObs[inn] should be cleared after move_to(inn)")
 	}
-	if _, ok := closed["well"]; !ok {
-		t.Error("ClosedBusinessObs[well] should be untouched — destination-only clear")
+	if _, ok := closed[other]; !ok {
+		t.Errorf("ClosedBusinessObs[%s] should be untouched — destination-only clear", other)
 	}
 	if _, ok := oos[sim.OutOfStockKey{StructureID: "inn", ItemKind: "meat"}]; ok {
 		t.Error("OutOfStockObs{inn,meat} should be cleared after move_to(inn)")
@@ -356,7 +347,79 @@ func TestMoveToStructure_ClearsStaleSupplierMemoryForDestination(t *testing.T) {
 	if _, ok := oos[sim.OutOfStockKey{StructureID: "inn", ItemKind: "milk"}]; ok {
 		t.Error("OutOfStockObs{inn,milk} should be cleared after move_to(inn)")
 	}
-	if _, ok := oos[sim.OutOfStockKey{StructureID: "well", ItemKind: "meat"}]; !ok {
-		t.Error("OutOfStockObs{well,meat} should be untouched — destination-only clear")
+	if _, ok := oos[sim.OutOfStockKey{StructureID: other, ItemKind: "meat"}]; !ok {
+		t.Errorf("OutOfStockObs{%s,meat} should be untouched — destination-only clear", other)
+	}
+}
+
+// supplierMemoryOf reads back an actor's ClosedBusinessObs + OutOfStockObs
+// inside a command so the test goroutine never touches live world state.
+func supplierMemoryOf(t *testing.T, w *sim.World, id sim.ActorID) (map[sim.StructureID]time.Time, map[sim.OutOfStockKey]time.Time) {
+	t.Helper()
+	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := world.Actors[id]
+		return [2]any{a.ClosedBusinessObs, a.OutOfStockObs}, nil
+	}})
+	if err != nil {
+		t.Fatalf("supplierMemoryOf: %v", err)
+	}
+	pair := res.([2]any)
+	return pair[0].(map[sim.StructureID]time.Time), pair[1].(map[sim.OutOfStockKey]time.Time)
+}
+
+// TestMoveToStructure_KeepsMemoryWhenAlreadyOnTheWay asserts the clear fires
+// only on a genuinely new walk: re-issuing move_to for a destination already in
+// flight hits the "already on your way" guard, which returns before the clear —
+// so stale memory seeded after the walk started survives (ZBBS-HOME-405).
+func TestMoveToStructure_KeepsMemoryWhenAlreadyOnTheWay(t *testing.T) {
+	w, cancel, _ := buildMoveTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	// Start the walk first (this clears any memory for inn), THEN seed memory so
+	// the re-issue below is what we're testing.
+	if _, err := w.Send(sim.MoveToStructure("walker", "inn", now)); err != nil {
+		t.Fatalf("MoveToStructure(inn): %v", err)
+	}
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["walker"].ClosedBusinessObs = map[sim.StructureID]time.Time{"inn": now}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Re-issuing the in-flight destination is rejected — and must NOT clear.
+	if _, err := w.Send(sim.MoveToStructure("walker", "inn", now)); err == nil {
+		t.Fatal("re-issuing in-flight move_to(inn) should be rejected")
+	}
+	closed, _ := supplierMemoryOf(t, w, "walker")
+	if _, ok := closed["inn"]; !ok {
+		t.Error("ClosedBusinessObs[inn] should survive a rejected (already-on-the-way) move_to")
+	}
+}
+
+// TestMoveToStructure_KeepsMemoryWhenAlreadyInside asserts the already-inside
+// guard also returns before the clear, so memory for that structure survives a
+// no-op walk to where the actor already stands (ZBBS-HOME-405).
+func TestMoveToStructure_KeepsMemoryWhenAlreadyInside(t *testing.T) {
+	w, cancel, _ := buildMoveTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := world.Actors["walker"]
+		a.InsideStructureID = "inn"
+		a.ClosedBusinessObs = map[sim.StructureID]time.Time{"inn": now}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if _, err := w.Send(sim.MoveToStructure("walker", "inn", now)); err == nil {
+		t.Fatal("move_to to the structure the actor is already inside should be rejected")
+	}
+	closed, _ := supplierMemoryOf(t, w, "walker")
+	if _, ok := closed["inn"]; !ok {
+		t.Error("ClosedBusinessObs[inn] should survive a rejected (already-inside) move_to")
 	}
 }
