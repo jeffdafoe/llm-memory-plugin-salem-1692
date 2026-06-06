@@ -414,3 +414,76 @@ func TestRenderRestocking_NoPriceOmitsCost(t *testing.T) {
 		t.Errorf("empty CostText should not render a trailing cost clause:\n%s", out)
 	}
 }
+
+// --- live keeper-asleep gate (ZBBS-HOME-406) --------------------------
+
+// TestBuildRestocking_ClosedNowWhenKeeperAsleep: a supplier whose only keeper of
+// the low item is asleep is annotated ClosedNow (a live snapshot read), so the
+// cue can read "no one tending it just now" rather than baiting the merchant to
+// petition an unreachable seller in a loop (the Josiah↔Tavern spiral). The
+// buyer-side mirror of satiation's keeper-asleep gate (ZBBS-HOME-387).
+func TestBuildRestocking_ClosedNowWhenKeeperAsleep(t *testing.T) {
+	subj := &sim.ActorSnapshot{Inventory: map[sim.ItemKind]int{"ale": 2}, RestockPolicy: buyPolicy("ale", 20)}
+	supplier := &sim.ActorSnapshot{WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}, State: sim.StateSleeping}
+	snap := &sim.Snapshot{
+		Actors:            map[sim.ActorID]*sim.ActorSnapshot{"merchant": subj, "brewer": supplier},
+		Structures:        map[sim.StructureID]*sim.Structure{"brewery": {ID: "brewery", DisplayName: "The Brewery"}},
+		ItemKinds:         restockCatalog(),
+		RestockReorderPct: 25,
+	}
+	v := buildRestocking(snap, "merchant", subj)
+	if v == nil || len(v.Items) != 1 || len(v.Items[0].Vendors) != 1 {
+		t.Fatalf("want 1 vendor cue, got %+v", v)
+	}
+	if !v.Items[0].Vendors[0].ClosedNow {
+		t.Error("supplier whose only keeper is asleep should be ClosedNow")
+	}
+}
+
+// TestBuildRestocking_NotClosedWhenAnotherKeeperAwake: ClosedNow is structure-
+// WIDE. The deduped representative is the lowest VendorID, which is arbitrary
+// w.r.t. wakefulness — so when the representative ("anders") is asleep but
+// ANOTHER keeper of the item at the same structure ("bramble") is awake, the cue
+// must NOT be closed. Keying ClosedNow off the representative alone would
+// false-close a staffed shop and steer the buyer away from a valid supplier —
+// the very failure this fix removes. ZBBS-HOME-406.
+func TestBuildRestocking_NotClosedWhenAnotherKeeperAwake(t *testing.T) {
+	subj := &sim.ActorSnapshot{Inventory: map[sim.ItemKind]int{"ale": 2}, RestockPolicy: buyPolicy("ale", 20)}
+	anders := &sim.ActorSnapshot{WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}, State: sim.StateSleeping}
+	bramble := &sim.ActorSnapshot{WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}, State: sim.StateIdle}
+	snap := &sim.Snapshot{
+		Actors:            map[sim.ActorID]*sim.ActorSnapshot{"merchant": subj, "anders": anders, "bramble": bramble},
+		Structures:        map[sim.StructureID]*sim.Structure{"brewery": {ID: "brewery", DisplayName: "The Brewery"}},
+		ItemKinds:         restockCatalog(),
+		RestockReorderPct: 25,
+	}
+	v := buildRestocking(snap, "merchant", subj)
+	if v == nil || len(v.Items) != 1 || len(v.Items[0].Vendors) != 1 {
+		t.Fatalf("want 1 deduped vendor cue, got %+v", v)
+	}
+	if v.Items[0].Vendors[0].ClosedNow {
+		t.Error("structure with an awake keeper of the item should NOT be ClosedNow")
+	}
+}
+
+// TestRenderRestocking_ClosedNowPreferredOverShut: when both the live ClosedNow
+// and the stale Shut memory point at the same supplier, render emits the
+// present-tense "no one tending it just now" and NOT the decaying "found it shut"
+// recollection — live state beats stale memory (mirrors satiation, HOME-387/406).
+func TestRenderRestocking_ClosedNowPreferredOverShut(t *testing.T) {
+	v := &RestockingView{Items: []RestockItemView{
+		{
+			ItemLabel: "ale", CurrentQty: 2, Cap: 20,
+			Vendors: []RestockVendor{{StructureLabel: "The Brewery", StructureID: "brewery", Shut: true, ClosedNow: true}},
+		},
+	}}
+	var b strings.Builder
+	renderRestocking(&b, v)
+	out := b.String()
+	if !strings.Contains(out, closedNowAnnotation) {
+		t.Errorf("expected live closed-now annotation:\n%s", out)
+	}
+	if strings.Contains(out, closedBusinessAnnotation) {
+		t.Errorf("live ClosedNow should suppress the stale Shut annotation:\n%s", out)
+	}
+}
