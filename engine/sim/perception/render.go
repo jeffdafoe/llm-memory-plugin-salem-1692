@@ -128,6 +128,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderAnchors(&ephemeral, p.Anchors)
 	renderDutySteer(&ephemeral, p.DutySteer)
 	renderRelationships(&ephemeral, p.Relationships)
+	renderOfferableCustomers(&ephemeral, p.OfferableCustomers)
 	renderPendingDeliveriesFromMe(&ephemeral, p.PendingDeliveriesFromMe, p.LocalDateUTC)
 	renderPendingDeliveriesToMe(&ephemeral, p.PendingDeliveriesToMe, p.LocalDateUTC)
 	renderRecoveryOptions(&ephemeral, p.RecoveryOptions)
@@ -729,6 +730,42 @@ func renderVendorOperating(b *strings.Builder, businessowner bool) {
 	b.WriteString("- If someone only greets you, greet them and let them state their business — don't quote prices or pitch your goods or rooms unless they ask or show interest.\n")
 	b.WriteString("- When trade is slow, make a reasonable deal rather than hold the line on price; decline plainly if a stranger's purse is short.\n")
 	b.WriteString("Plain 1692 New England speech; no modern idioms.\n\n")
+}
+
+// renderOfferableCustomers writes the seller-side "offer your wares" cue
+// (ZBBS-HOME-404): the businessowner's co-present customers, the goods they
+// carry, and the scene_quote mechanism with its args spelled out — so the
+// keeper LLM can proactively offer a sale instead of only reacting to a buyer's
+// pay_with_item. It names the tool + arg form (the Finding-1 idiom: an
+// actionable cue, not the bare "what goes unsold earns nothing" exhortation),
+// but the decision stays with the model — it judges interest (the vendor
+// block's "don't pitch unless they show interest" rule still governs) and sets
+// the price, and the buyer keeps full accept/decline agency via pay_with_item.
+// Content-gated: a nil/empty view skips the section. Build guarantees both
+// slices are non-empty when the view is non-nil.
+func renderOfferableCustomers(b *strings.Builder, v *OfferableCustomersView) {
+	if v == nil || len(v.CustomerNames) == 0 || len(v.Goods) == 0 {
+		return
+	}
+	b.WriteString("## Custom at hand\n")
+	who := joinNames(v.CustomerNames) // sanitizes each name inline
+	verb := "is"
+	if len(v.CustomerNames) > 1 {
+		verb = "are"
+	}
+	goods := make([]string, 0, len(v.Goods))
+	for _, g := range v.Goods {
+		if s := sanitizeInline(g); s != "" {
+			goods = append(goods, s)
+		}
+	}
+	if len(goods) == 0 {
+		// Defensive: Build filters raw empty labels, but a label could sanitize
+		// down to empty — render nothing rather than an empty goods list.
+		return
+	}
+	fmt.Fprintf(b, "%s %s here with you. If interest is shown in your wares, name a fair price and offer it — call scene_quote with the item, the quantity, and your price in coins. Use target_buyer only for a named person you know; for a stranger or someone known only by trade, omit target_buyer to offer the whole room. The buyer is then free to take it or leave it.\n", who, verb)
+	fmt.Fprintf(b, "Your goods to sell: %s.\n\n", strings.Join(goods, ", "))
 }
 
 // renderRelationships writes the "What you remember of those here:"

@@ -52,6 +52,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 	p.NarrativeState = buildNarrativeState(actorSnap)
 	p.Businessowner = actorSnap.BusinessownerState != nil
 	p.Relationships = buildRelationships(actorSnap, p.Surroundings.HuddleMembers, currentHeardExcerpts(p.Warrants))
+	p.OfferableCustomers = buildOfferableCustomers(snap, actorID, p.Businessowner, p.Surroundings.HuddleMembers, p.Actor.Inventory)
 	p.PendingDeliveriesFromMe, p.PendingDeliveriesToMe = buildPendingOrderViews(snap, actorID)
 	p.LocalDateUTC = snap.LocalDateUTC // world "today" for the order-book date split (ZBBS-HOME-403)
 	p.RecoveryOptions = buildRecoveryOptions(snap, actorID, actorSnap)
@@ -1021,6 +1022,97 @@ func hasPendingOutgoingOffer(snap *sim.Snapshot, actorID sim.ActorID) bool {
 	}
 	for _, e := range snap.PayLedger {
 		if e != nil && e.BuyerID == actorID && e.State == sim.PayLedgerStatePending {
+			return true
+		}
+	}
+	return false
+}
+
+// buildOfferableCustomers builds the seller-side "offer your wares" cue
+// (ZBBS-HOME-404). When a businessowner is co-present with one or more
+// customers, it surfaces those customers by name alongside the seller's
+// sellable goods, so the keeper LLM can proactively offer a sale via
+// scene_quote rather than only reacting to a buyer's pay_with_item. This makes
+// the existing seller-initiated path LEGIBLE (the Finding-1 lesson applied to
+// the sell side); it does not auto-complete anything — the seller decides
+// whether/what/at-what-price and the buyer keeps full accept/decline agency, so
+// any future "this seller won't deal" reason needs no new mechanism.
+//
+// Co-presence is the huddle (an active interaction), not mere loiter-presence —
+// so the cue doesn't fire at someone merely passing the stall, and the vendor
+// block's "don't pitch unless they show interest" rule still governs whether
+// the model actually offers.
+//
+// Returns nil — Render content-gates — when the subject isn't a businessowner,
+// has no co-present customer, or carries nothing to sell.
+//
+// Two storm guards drop a customer from the cue (the pay-offer / order-chase
+// dedup discipline, so a stuck cue can't drive a re-offer loop):
+//   - the customer already has a pending pay_with_item offer with this seller —
+//     renderPayOffers already cues accept/decline/counter, so don't also drive
+//     the seller to offer them; and
+//   - the seller already has a live (Active) scene_quote out to that customer —
+//     they've offered and await the buyer; re-cueing would re-post every tick.
+func buildOfferableCustomers(snap *sim.Snapshot, subject sim.ActorID, businessowner bool, members []HuddleMember, inventory []InventoryItem) *OfferableCustomersView {
+	if !businessowner || len(members) == 0 || len(inventory) == 0 {
+		return nil
+	}
+	goods := make([]string, 0, len(inventory))
+	for _, it := range inventory {
+		if it.Label == "" {
+			continue
+		}
+		goods = append(goods, it.Label)
+	}
+	if len(goods) == 0 {
+		return nil
+	}
+	// members is already sorted by ID (buildSurroundings), so names is deterministic.
+	var names []string
+	for _, m := range members {
+		if customerHasPendingOfferWithSeller(snap, m.ID, subject) {
+			continue
+		}
+		if sellerHasActiveQuoteToBuyer(snap, subject, m.ID) {
+			continue
+		}
+		names = append(names, descriptorLabel(m.DisplayName, m.Role, m.Acquainted))
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	return &OfferableCustomersView{CustomerNames: names, Goods: goods}
+}
+
+// customerHasPendingOfferWithSeller reports whether `buyer` has a pending
+// pay_with_item offer awaiting `seller`'s response. The reactive case is
+// already cued by renderPayOffers (accept/decline/counter), so the proactive
+// offer cue suppresses that customer to avoid double-driving the seller toward
+// the same person. Nil-safe.
+func customerHasPendingOfferWithSeller(snap *sim.Snapshot, buyer, seller sim.ActorID) bool {
+	if snap == nil {
+		return false
+	}
+	for _, e := range snap.PayLedger {
+		if e != nil && e.BuyerID == buyer && e.SellerID == seller && e.State == sim.PayLedgerStatePending {
+			return true
+		}
+	}
+	return false
+}
+
+// sellerHasActiveQuoteToBuyer reports whether `seller` already has a live
+// (Active) scene_quote targeted at `buyer`. While one stands, the buyer can take
+// it via pay_with_item — re-cueing the offer would have the seller re-post the
+// same quote every tick (the re-offer storm hard-capped in ZBBS-HOME-395/381). A
+// public (untargeted) quote is deliberately NOT counted: it isn't directed at
+// this customer, so it doesn't pre-empt a directed offer. Nil-safe.
+func sellerHasActiveQuoteToBuyer(snap *sim.Snapshot, seller, buyer sim.ActorID) bool {
+	if snap == nil {
+		return false
+	}
+	for _, q := range snap.Quotes {
+		if q != nil && q.SellerID == seller && q.TargetBuyer == buyer && q.State == sim.SceneQuoteStateActive {
 			return true
 		}
 	}

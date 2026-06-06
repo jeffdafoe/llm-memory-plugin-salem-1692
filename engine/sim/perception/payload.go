@@ -157,6 +157,19 @@ type Payload struct {
 	// code-owned and the rules sit at the decision point. ZBBS-WORK-374.
 	Businessowner bool
 
+	// OfferableCustomers is the seller-side "offer your wares" cue
+	// (ZBBS-HOME-404): non-nil when the subject is a businessowner co-present
+	// with one or more customers it could proactively offer goods to. Carries
+	// the customers' acquaintance-gated names plus the seller's sellable goods,
+	// so the keeper LLM can drive a sale via scene_quote instead of only
+	// reacting to a buyer's pay_with_item. This only makes the existing
+	// seller-initiated path LEGIBLE (the Finding-1 lesson applied to the sell
+	// side) — the seller still decides whether/what/at-what-price, and the
+	// buyer keeps full accept/decline agency. nil (render content-gates) when
+	// the subject isn't a businessowner, has no co-present customer, or carries
+	// nothing to sell. Built by buildOfferableCustomers.
+	OfferableCustomers *OfferableCustomersView
+
 	// PendingDeliveriesFromMe lists open Orders where the subject is
 	// the seller — items they owe to a buyer/consumers from a previously
 	// accepted pay-with-item offer that hasn't been delivered yet.
@@ -295,6 +308,19 @@ type OrderView struct {
 	// ready-to-hand-over-now vs upcoming reservations, and the buyer view into
 	// waiting-on vs overdue. ZBBS-HOME-403.
 	ReadyBy time.Time
+}
+
+// OfferableCustomersView is the seller-side "offer your wares" cue's content
+// (ZBBS-HOME-404). CustomerNames are the acquaintance-gated labels
+// (descriptorLabel) of the co-present customers the businessowner may offer to
+// — the same name a known buyer would carry into scene_quote's target_buyer.
+// Goods are the seller's sellable item labels (their carried inventory's
+// DisplayLabels), surfaced as the menu next to the tool so the model has the
+// item_kind candidates in hand. Both non-empty when the view is non-nil (Build
+// returns nil rather than an empty view). Render is content-gated on both.
+type OfferableCustomersView struct {
+	CustomerNames []string
+	Goods         []string
 }
 
 // NarrativeStateView is the kind-aware "Who you are:" content. Slim by
