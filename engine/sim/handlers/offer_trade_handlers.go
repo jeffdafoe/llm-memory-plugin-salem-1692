@@ -60,12 +60,12 @@ import (
 // lowered onto a PayWithItemArgs. Private — callers only ever see the
 // PayWithItemArgs that DecodeOfferTradeArgs returns.
 type offerTradeArgs struct {
-	With     string       `json:"with"`
-	Give     []payItemArg `json:"give"`
-	Coins    int          `json:"coins"`
-	WantItem string       `json:"want_item"`
-	WantQty  int          `json:"want_qty"`
-	For      string       `json:"for"`
+	With     string      `json:"with"`
+	Give     payItemList `json:"give"`
+	Coins    int         `json:"coins"`
+	WantItem string      `json:"want_item"`
+	WantQty  int         `json:"want_qty"`
+	For      string      `json:"for"`
 }
 
 var offerTradeSchema = json.RawMessage(`{
