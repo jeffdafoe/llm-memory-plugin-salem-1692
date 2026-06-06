@@ -75,6 +75,15 @@ type RestockVendor struct {
 	// this supplier shut (no keeper) within the decay window — render annotates
 	// the line so the model deprioritizes the trip. ZBBS-HOME-353.
 	Shut bool
+
+	// ClosedNow is true when this structure stocks the item but every vendor of
+	// it here is asleep right now — a LIVE read off the snapshot, not the
+	// decaying Shut memory. Render prefers it over Shut (live state beats stale
+	// recollection). The buyer-side mirror of satiation's keeper-asleep gate
+	// (ZBBS-HOME-387): without it the restock cue named an asleep keeper's shop
+	// as an open supplier, so a merchant petitioned an unreachable seller in a
+	// loop (the Josiah↔Tavern spiral). ZBBS-HOME-406.
+	ClosedNow bool
 }
 
 // buildRestocking builds the restock view for actorSnap, or nil when the actor
@@ -138,9 +147,20 @@ func findItemVendors(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *sim.Act
 		structure *sim.Structure
 	}
 	best := map[sim.StructureID]pick{}
+	// anyAwake[structureID] is true once a NON-asleep vendor of itemKind is seen
+	// at that structure. ClosedNow is its negation: the shop stocks the item but
+	// no one awake is tending it. Checked structure-wide (not just on the
+	// representative pick) because the representative is the lowest VendorID,
+	// which is arbitrary w.r.t. wakefulness — keying ClosedNow off it could
+	// false-close a structure whose lowest-id keeper sleeps while another tends,
+	// re-creating the very "avoid a valid supplier" bug this fixes. ZBBS-HOME-406.
+	anyAwake := map[sim.StructureID]bool{}
 	eachVendorOffer(snap, buyerID, func(o vendorOffer) {
 		if o.Kind != itemKind {
 			return
+		}
+		if !vendorKeeperAsleep(snap, o.VendorID) {
+			anyAwake[o.StructureID] = true
 		}
 		if cur, ok := best[o.StructureID]; ok && cur.vendorID <= o.VendorID {
 			return // keep the lowest VendorID at this structure
@@ -159,8 +179,9 @@ func findItemVendors(snap *sim.Snapshot, buyerID sim.ActorID, buyerSnap *sim.Act
 			// which invited the reseller to SPEAK a price question instead of
 			// calling pay_with_item — ZBBS-HOME-386). With "", renderRestocking
 			// omits the cost clause entirely; the header carries the action.
-			CostText:       buyerLastPaidText(snap, buyerID, p.vendorID, itemKind, ""),
-			Shut:           businessRememberedShut(snap, buyerSnap, structureID),
+			CostText:  buyerLastPaidText(snap, buyerID, p.vendorID, itemKind, ""),
+			Shut:      businessRememberedShut(snap, buyerSnap, structureID),
+			ClosedNow: !anyAwake[structureID],
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -258,7 +279,13 @@ func renderRestocking(b *strings.Builder, v *RestockingView) {
 			if vd.CostText != "" {
 				fmt.Fprintf(b, ", %s", vd.CostText)
 			}
-			if vd.Shut {
+			// Live "closed now" (keeper asleep) takes precedence over the stale
+			// experiential Shut memory — a present-tense read beats a decaying
+			// recollection when both point at the same shop (mirrors satiation,
+			// ZBBS-HOME-387/406).
+			if vd.ClosedNow {
+				b.WriteString(closedNowAnnotation)
+			} else if vd.Shut {
 				b.WriteString(closedBusinessAnnotation)
 			}
 			b.WriteString("\n")
