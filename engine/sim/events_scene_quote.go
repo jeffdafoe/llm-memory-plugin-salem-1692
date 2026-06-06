@@ -40,6 +40,19 @@ type SceneQuoteCreated struct {
 	ConsumerIDs []ActorID
 	ExpiresAt   time.Time
 	At          time.Time
+
+	// HuddleID + PCRecipientIDs carry the buyer-facing wire-frame audience
+	// (ZBBS-HOME-408). The httpapi EventTranslator turns a quote into an
+	// npc_spoke frame so a human player's client can SEE and pay against a
+	// posted offer — v2 otherwise surfaces quotes only into NPC perception
+	// (the pull-based render path), so a PC buyer got silence. Only PCs are
+	// listed: NPC buyers need no frame (they perceive the quote on their next
+	// tick), so carrying the full audience would just be wasted broadcast.
+	// Both are populated by SceneQuoteCreate ONLY when a PC is present in the
+	// scene AND the quote is new or re-priced; an empty PCRecipientIDs (no PC,
+	// or an unchanged re-post) makes the translator drop the frame.
+	HuddleID       HuddleID
+	PCRecipientIDs []ActorID
 }
 
 func (SceneQuoteCreated) isSimEvent() {}
