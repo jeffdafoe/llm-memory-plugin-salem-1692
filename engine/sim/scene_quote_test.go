@@ -20,12 +20,13 @@ import (
 
 // quoteTestActor — minimal Actor seed for scene-quote tests.
 type quoteTestActor struct {
-	id          sim.ActorID
-	displayName string
-	kind        sim.ActorKind
-	huddleID    sim.HuddleID
-	inventory   map[sim.ItemKind]int
-	breakUntil  *time.Time
+	id           sim.ActorID
+	displayName  string
+	kind         sim.ActorKind
+	huddleID     sim.HuddleID
+	inventory    map[sim.ItemKind]int
+	breakUntil   *time.Time
+	lastPCSeenAt *time.Time // PC presence stamp (ZBBS-HOME-408); nil = stale/ghost
 }
 
 // buildQuoteTestWorld constructs a world with:
@@ -67,6 +68,7 @@ func buildQuoteTestWorld(
 			Inventory:        s.inventory,
 			CurrentHuddleID:  s.huddleID,
 			BreakUntil:       s.breakUntil,
+			LastPCSeenAt:     s.lastPCSeenAt,
 			RecentActions:    sim.NewRingBuffer[sim.Action](4),
 			RecentStateTrans: sim.NewRingBuffer[sim.StateTransition](4),
 		}
@@ -245,6 +247,105 @@ func TestSceneQuoteCreate_HappyPath_Public(t *testing.T) {
 	}
 	if ids := view.SceneIdx["sc1"]; len(ids) != 1 || ids[0] != result.QuoteID {
 		t.Errorf("scene index = %v, want [%d]", ids, result.QuoteID)
+	}
+}
+
+// TestSceneQuoteCreate_HOME408_PCAudience: a quote posted to a scene that
+// holds a PC stamps that PC onto the event's PCRecipientIDs (the buyer-facing
+// wire-frame audience) along with the seller's HuddleID. An identical re-post
+// stamps an EMPTY audience (so the translator drops the duplicate frame — the
+// weak-model storm guard), while a re-PRICED quote re-populates it.
+func TestSceneQuoteCreate_HOME408_PCAudience(t *testing.T) {
+	present := time.Now().UTC()
+	w, stop := buildQuoteTestWorld(t, "h1", "sc1", []quoteTestActor{
+		{id: "josiah", displayName: "Josiah", kind: sim.KindNPCStateful, huddleID: "h1", inventory: map[sim.ItemKind]int{"bread": 5}},
+		{id: "jefferey", displayName: "Jefferey", kind: sim.KindPC, huddleID: "h1", lastPCSeenAt: &present},
+		{id: "bram", displayName: "Bram", kind: sim.KindNPCShared, huddleID: "h1"},
+	})
+	defer stop()
+
+	captured := captureSceneQuoteCreated(t, w)
+	at := present
+
+	// First post — PC present, fresh offer: audience = [jefferey].
+	if _, err := w.Send(sim.SceneQuoteCreate("josiah", "bread", 1, 1, false, "", nil, at)); err != nil {
+		t.Fatalf("first SceneQuoteCreate: %v", err)
+	}
+	// Identical re-post — no-op: empty audience.
+	if _, err := w.Send(sim.SceneQuoteCreate("josiah", "bread", 1, 1, false, "", nil, at)); err != nil {
+		t.Fatalf("re-post SceneQuoteCreate: %v", err)
+	}
+	// Re-priced (amount 1 -> 2) — changed: audience repopulated.
+	if _, err := w.Send(sim.SceneQuoteCreate("josiah", "bread", 1, 2, false, "", nil, at)); err != nil {
+		t.Fatalf("re-priced SceneQuoteCreate: %v", err)
+	}
+
+	if len(*captured) != 3 {
+		t.Fatalf("SceneQuoteCreated events = %d, want 3", len(*captured))
+	}
+	first, repost, repriced := (*captured)[0], (*captured)[1], (*captured)[2]
+
+	if first.HuddleID != "h1" {
+		t.Errorf("first.HuddleID = %q, want h1", first.HuddleID)
+	}
+	if len(first.PCRecipientIDs) != 1 || first.PCRecipientIDs[0] != "jefferey" {
+		t.Errorf("first.PCRecipientIDs = %v, want [jefferey]", first.PCRecipientIDs)
+	}
+	if len(repost.PCRecipientIDs) != 0 {
+		t.Errorf("identical re-post PCRecipientIDs = %v, want empty (no duplicate frame)", repost.PCRecipientIDs)
+	}
+	if len(repriced.PCRecipientIDs) != 1 || repriced.PCRecipientIDs[0] != "jefferey" {
+		t.Errorf("re-priced PCRecipientIDs = %v, want [jefferey]", repriced.PCRecipientIDs)
+	}
+}
+
+// TestSceneQuoteCreate_HOME408_NoPCEmptyAudience: an NPC-only scene leaves
+// PCRecipientIDs empty — NPC buyers perceive the quote on their next tick, so
+// no wire frame is needed (the translator drops it). ZBBS-HOME-408.
+func TestSceneQuoteCreate_HOME408_NoPCEmptyAudience(t *testing.T) {
+	w, stop := buildQuoteTestWorld(t, "h1", "sc1", []quoteTestActor{
+		{id: "josiah", displayName: "Josiah", kind: sim.KindNPCStateful, huddleID: "h1", inventory: map[sim.ItemKind]int{"bread": 5}},
+		{id: "bram", displayName: "Bram", kind: sim.KindNPCShared, huddleID: "h1"},
+	})
+	defer stop()
+
+	captured := captureSceneQuoteCreated(t, w)
+	if _, err := w.Send(sim.SceneQuoteCreate("josiah", "bread", 1, 1, false, "", nil, time.Now().UTC())); err != nil {
+		t.Fatalf("SceneQuoteCreate: %v", err)
+	}
+	if len(*captured) != 1 {
+		t.Fatalf("events = %d, want 1", len(*captured))
+	}
+	if len((*captured)[0].PCRecipientIDs) != 0 {
+		t.Errorf("PCRecipientIDs = %v, want empty (no PC in scene)", (*captured)[0].PCRecipientIDs)
+	}
+}
+
+// TestSceneQuoteCreate_HOME408_StalePCExcluded: a PC still indexed in the
+// scene's huddle but stale (nil LastPCSeenAt — a closed-tab / never-polled
+// ghost) is NOT addressed by the offer frame, matching the colocated-huddle
+// presence gate. ZBBS-HOME-408.
+func TestSceneQuoteCreate_HOME408_StalePCExcluded(t *testing.T) {
+	present := time.Now().UTC()
+	stale := present.Add(-2 * sim.DefaultPCPresenceStaleAfter)
+	w, stop := buildQuoteTestWorld(t, "h1", "sc1", []quoteTestActor{
+		{id: "josiah", displayName: "Josiah", kind: sim.KindNPCStateful, huddleID: "h1", inventory: map[sim.ItemKind]int{"bread": 5}},
+		// ghost: never polled (nil stamp).
+		{id: "ghost", displayName: "Ghost", kind: sim.KindPC, huddleID: "h1"},
+		// also stale: last poll well beyond the staleness window.
+		{id: "lagged", displayName: "Lagged", kind: sim.KindPC, huddleID: "h1", lastPCSeenAt: &stale},
+	})
+	defer stop()
+
+	captured := captureSceneQuoteCreated(t, w)
+	if _, err := w.Send(sim.SceneQuoteCreate("josiah", "bread", 1, 1, false, "", nil, present)); err != nil {
+		t.Fatalf("SceneQuoteCreate: %v", err)
+	}
+	if len(*captured) != 1 {
+		t.Fatalf("events = %d, want 1", len(*captured))
+	}
+	if len((*captured)[0].PCRecipientIDs) != 0 {
+		t.Errorf("PCRecipientIDs = %v, want empty (both PCs stale)", (*captured)[0].PCRecipientIDs)
 	}
 }
 
