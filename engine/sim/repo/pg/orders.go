@@ -49,7 +49,7 @@ SELECT
     created_at,
     delivered_on,
     expires_at,
-    COALESCE(ready_by, created_at::date)
+    COALESCE(ready_by, (created_at AT TIME ZONE 'UTC')::date)
 FROM pay_ledger
 WHERE state = 'accepted'
   AND fulfillment_status IN ('ready', 'pending')
@@ -222,6 +222,12 @@ func (r *OrdersRepo) LoadAll(ctx context.Context) (map[sim.OrderID]*sim.Order, e
 		); err != nil {
 			return nil, fmt.Errorf("pg orders LoadAll scan: %w", err)
 		}
+		// Defensive: offered_amount feeds Order.Amount, which the refund and
+		// event paths trust. A negative coin amount is corrupt/legacy data, not
+		// a valid order — surface it loudly rather than materialize a bad order.
+		if offeredAmt < 0 {
+			return nil, fmt.Errorf("pg orders LoadAll: order id=%d has negative offered_amount %d", id, offeredAmt)
+		}
 		state, err := fulfillmentToOrderState(status)
 		if err != nil {
 			// loadAllSQL filters fulfillment_status IN
@@ -259,9 +265,12 @@ func (r *OrdersRepo) LoadAll(ctx context.Context) (map[sim.OrderID]*sim.Order, e
 			LedgerID:    sim.LedgerID(id),
 			CreatedAt:   createdAt,
 			// ready_by round-trips as midnight UTC of the booked date (DATE
-			// column); COALESCE backfills legacy NULL rows with created_at's
-			// date so the perception date-split always has a value.
-			// ZBBS-HOME-403.
+			// column). For rows written by this code it is the world-TZ booked
+			// date (orderDateUTC). Legacy NULL rows (pre-ZBBS-HOME-403) fall back
+			// to created_at's UTC date via COALESCE — a deterministic UTC date,
+			// but NOT necessarily the world-TZ date (the repo has no world
+			// Location); acceptable since such rows are old and unlikely to still
+			// be in-flight. ZBBS-HOME-403.
 			ReadyBy:     readyBy,
 			DeliveredAt: deliveredOn,
 			ExpiresAt:   expires,

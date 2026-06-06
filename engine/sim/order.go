@@ -397,6 +397,7 @@ func refundExpiredOrder(w *World, o *Order) {
 	}
 	buyer := w.Actors[o.BuyerID]
 	seller := w.Actors[o.SellerID]
+	credited := false
 	switch {
 	case buyer == nil:
 		log.Printf("sim/order: expired order %d buyer %q is gone — no one to refund", o.ID, o.BuyerID)
@@ -405,11 +406,18 @@ func refundExpiredOrder(w *World, o *Order) {
 			o.ID, o.BuyerID, buyer.Coins, o.Amount)
 	default:
 		buyer.Coins += o.Amount
+		credited = true
 		log.Printf("sim/order: refunded %d coins to buyer %q for expired order %d", o.Amount, o.BuyerID, o.ID)
+	}
+	// Only debit the seller when the buyer was actually credited — a debit
+	// without a matching credit would destroy coins and penalize the seller for
+	// a refund that didn't happen.
+	if !credited {
+		return
 	}
 	switch {
 	case seller == nil:
-		log.Printf("sim/order: expired order %d seller %q is gone — refund not balanced (buyer credited)", o.ID, o.SellerID)
+		log.Printf("sim/order: expired order %d seller %q is gone — buyer credited, debit skipped (slight inflation)", o.ID, o.SellerID)
 	case seller.Coins < math.MinInt+o.Amount:
 		log.Printf("sim/order: refund of expired order %d would underflow seller %q (have %d, -%d) — seller not debited",
 			o.ID, o.SellerID, seller.Coins, o.Amount)

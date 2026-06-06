@@ -215,6 +215,18 @@ func DeliverOrder(sellerID ActorID, orderID OrderID, at time.Time) Command {
 				return nil, fmt.Errorf("deliver_order: order %d expired at %v", orderID, o.ExpiresAt)
 			}
 
+			// Gate 4b: advance booking not yet due (ZBBS-HOME-403). A lodging
+			// order booked for a future date can't be checked in early. Enforced
+			// here, not only in perception — a direct/tool deliver_order with the
+			// id would otherwise grant the room before the guest's booked date.
+			// Same-day bookings (ReadyBy == today) pass; the immediate take-home
+			// path never reaches DeliverOrder.
+			today := orderDateUTC(at, w.Settings.Location)
+			if !o.ReadyBy.IsZero() && o.ReadyBy.After(today) {
+				return nil, fmt.Errorf("deliver_order: order %d is booked for %s — not ready to deliver yet",
+					orderID, o.ReadyBy.Format("2006-01-02"))
+			}
+
 			// Defensive Order-shape gates (PR S6 R1 code_review fix):
 			// invalid Qty / empty ConsumerIDs / overflow can come from
 			// future repo loads or test hooks; reject before the stock

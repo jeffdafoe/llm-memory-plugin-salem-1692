@@ -858,10 +858,10 @@ func renderOrdersReadyToHandOver(b *strings.Builder, orders []OrderView) {
 
 // renderFutureReservations writes the seller's upcoming bookings — orders whose
 // ReadyBy hasn't arrived yet. Framed as reservations, not deliveries, with an
-// explicit "don't hand over yet" so the keeper neither wastes a deliver_order
-// (DeliverOrder isn't gated on ready_by, so it would actually check the guest
-// in early) nor forgets the booking exists. The live case is an advance lodging
-// booking. ZBBS-HOME-403.
+// explicit "don't hand over yet" so the keeper doesn't waste a deliver_order on
+// a booking that isn't due (DeliverOrder's gate 4b rejects a premature check-in,
+// so the call would fail anyway) or forget the booking exists. The live case is
+// an advance lodging booking. ZBBS-HOME-403.
 func renderFutureReservations(b *strings.Builder, orders []OrderView) {
 	if len(orders) == 0 {
 		return

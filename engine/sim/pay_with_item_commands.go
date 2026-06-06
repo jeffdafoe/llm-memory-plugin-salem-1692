@@ -441,9 +441,16 @@ func PayWithItem(
 					"ready_in_days needs consume_now=false — an advance booking is a deferred order, not taken on the spot.",
 				)
 			}
-			readyBy, err := resolveOrderReadyBy(w, kind, parentID, days, at)
-			if err != nil {
-				return nil, err
+			// A consume_now offer mints no Order to hold a booked date, so it is
+			// always same-day — never carry a parent's future booking onto it
+			// (that would write a future ReadyBy onto an accepted entry with no
+			// order waiting for it). Only the deferred path resolves carry/advance.
+			readyBy := orderDateUTC(at, w.Settings.Location)
+			if !consumeNow {
+				readyBy, err = resolveOrderReadyBy(w, kind, parentID, days, at)
+				if err != nil {
+					return nil, err
+				}
 			}
 
 			// Overflow guard on qty * effectiveConsumers — Inventory[kind]

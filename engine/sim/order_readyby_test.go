@@ -1,6 +1,7 @@
 package sim_test
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -209,5 +210,61 @@ func TestFinalizeOrderTerminal_DeliveredDoesNotRefund(t *testing.T) {
 	}
 	if got := w.Actors["bob"].Coins; got != 30 {
 		t.Errorf("seller coins = %d, want 30 (delivered — no refund)", got)
+	}
+}
+
+// TestFinalizeOrderTerminal_ExpiredRefundIsIdempotent — re-finalizing an
+// already-expired order must NOT refund a second time (flipOrderTerminal's
+// already-terminal guard). ZBBS-HOME-403.
+func TestFinalizeOrderTerminal_ExpiredRefundIsIdempotent(t *testing.T) {
+	w := newReadyByWorld(t)
+	at := time.Now().UTC()
+	w.Actors["alice"] = &sim.Actor{ID: "alice", Coins: 5}
+	w.Actors["bob"] = &sim.Actor{ID: "bob", Coins: 30}
+
+	o := &sim.Order{
+		ID: 1, State: sim.OrderStateReady,
+		BuyerID: "alice", SellerID: "bob",
+		Item: "nights_stay", Qty: 1, Amount: 20,
+		ConsumerIDs: []sim.ActorID{"alice"},
+		ExpiresAt:   at.Add(-time.Minute),
+	}
+	w.Orders[o.ID] = o
+
+	sim.FinalizeOrderTerminal(w, o, sim.OrderStateExpired, at)
+	sim.FinalizeOrderTerminal(w, o, sim.OrderStateExpired, at.Add(time.Second))
+
+	if got := w.Actors["alice"].Coins; got != 25 {
+		t.Errorf("buyer coins = %d, want 25 (refunded exactly once)", got)
+	}
+	if got := w.Actors["bob"].Coins; got != 10 {
+		t.Errorf("seller coins = %d, want 10 (debited exactly once)", got)
+	}
+}
+
+// TestDeliverOrder_RejectsFutureBooking — gate 4b (ZBBS-HOME-403): a lodging
+// order booked for a future date can't be checked in early via deliver_order,
+// even by a direct tool call with the id. The gate fires before the
+// stock/co-presence gates, so no seller/huddle setup is needed.
+func TestDeliverOrder_RejectsFutureBooking(t *testing.T) {
+	w := newReadyByWorld(t)
+	at := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
+	future := midnightUTC(at).AddDate(0, 0, 2)
+
+	w.Orders[1] = &sim.Order{
+		ID: 1, State: sim.OrderStateReady,
+		BuyerID: "alice", SellerID: "bob",
+		Item: "nights_stay", Qty: 1, Amount: 28,
+		ConsumerIDs: []sim.ActorID{"alice"},
+		ReadyBy:     future,
+		ExpiresAt:   sim.ComputeLodgerUntil(future, 1, 11, time.UTC),
+	}
+
+	_, err := sim.DeliverOrder("bob", 1, at).Fn(w)
+	if err == nil || !strings.Contains(err.Error(), "booked for") {
+		t.Fatalf("expected a not-ready-yet rejection, got %v", err)
+	}
+	if w.Orders[1].State != sim.OrderStateReady {
+		t.Errorf("order state = %q, want still Ready (premature deliver rejected)", w.Orders[1].State)
 	}
 }
