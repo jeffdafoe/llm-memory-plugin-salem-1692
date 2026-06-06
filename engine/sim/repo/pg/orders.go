@@ -48,7 +48,8 @@ SELECT
     fulfillment_status,
     created_at,
     delivered_on,
-    expires_at
+    expires_at,
+    COALESCE(ready_by, created_at::date)
 FROM pay_ledger
 WHERE state = 'accepted'
   AND fulfillment_status IN ('ready', 'pending')
@@ -69,9 +70,12 @@ ORDER BY id`
 // CHECK ((state = 'pending') = (resolved_at IS NULL)) requires a
 // non-NULL resolved_at on any non-pending row.
 //
-// ready_by mirrors v1's non-craft backfill: created_at::date. Future
-// craft-lead-time orders write a future date; today every Order is
-// non-craft.
+// ready_by carries the order's booked date — for lodging, the buyer's
+// requested check-in date (ZBBS-HOME-403 advance booking). It is
+// Order.ReadyBy (midnight UTC of a calendar date), DATE-cast in SQL.
+// Same-day / immediate orders carry today's date, so an ordinary
+// take-home order is unchanged. Immutable post-acceptance: the conflict
+// path below deliberately does not UPDATE it.
 //
 // On conflict, only the fields the in-memory Order owns get updated.
 // We deliberately don't UPDATE buyer_id, seller_id, item_kind, qty,
@@ -210,10 +214,11 @@ func (r *OrdersRepo) LoadAll(ctx context.Context) (map[sim.OrderID]*sim.Order, e
 			createdAt   time.Time
 			deliveredOn *time.Time
 			expiresAt   *time.Time
+			readyBy     time.Time
 		)
 		if err := rows.Scan(
 			&id, &buyerID, &sellerID, &itemKind, &qty, &offeredAmt,
-			&consumerIDs, &status, &createdAt, &deliveredOn, &expiresAt,
+			&consumerIDs, &status, &createdAt, &deliveredOn, &expiresAt, &readyBy,
 		); err != nil {
 			return nil, fmt.Errorf("pg orders LoadAll scan: %w", err)
 		}
@@ -253,6 +258,11 @@ func (r *OrdersRepo) LoadAll(ctx context.Context) (map[sim.OrderID]*sim.Order, e
 			ConsumerIDs: consumers,
 			LedgerID:    sim.LedgerID(id),
 			CreatedAt:   createdAt,
+			// ready_by round-trips as midnight UTC of the booked date (DATE
+			// column); COALESCE backfills legacy NULL rows with created_at's
+			// date so the perception date-split always has a value.
+			// ZBBS-HOME-403.
+			ReadyBy:     readyBy,
 			DeliveredAt: deliveredOn,
 			ExpiresAt:   expires,
 		}
@@ -328,6 +338,15 @@ func (r *OrdersRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, orders map[sim
 		for i, a := range o.ConsumerIDs {
 			consumerIDs[i] = string(a)
 		}
+		// Never bind Go's zero time (year 0001) to the ready_by DATE column.
+		// createOrderForPayWithItem always sets ReadyBy, but a hand-built /
+		// legacy Order reaching SaveSnapshot might not; fall back to the
+		// creation date (the pre-ZBBS-HOME-403 binding) so the row stays sane.
+		readyBy := o.ReadyBy
+		if readyBy.IsZero() {
+			c := o.CreatedAt.UTC()
+			readyBy = time.Date(c.Year(), c.Month(), c.Day(), 0, 0, 0, 0, time.UTC)
+		}
 		if _, err := tx.Exec(ctx, upsertSQL,
 			int64(o.ID),        // $1 id
 			string(o.BuyerID),  // $2 buyer_id
@@ -337,7 +356,7 @@ func (r *OrdersRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, orders map[sim
 			o.Amount,           // $6 offered_amount
 			consumerIDs,        // $7 consumer_actor_ids
 			status,             // $8 fulfillment_status
-			o.CreatedAt,        // $9 ready_by (DATE-cast in SQL)
+			readyBy,            // $9 ready_by (DATE-cast in SQL) — ZBBS-HOME-403
 			o.ExpiresAt,        // $10 expires_at
 			o.CreatedAt,        // $11 created_at + resolved_at
 			o.DeliveredAt,      // $12 delivered_on

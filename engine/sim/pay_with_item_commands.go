@@ -198,6 +198,11 @@ func PayWithItem(
 	parentID LedgerID,
 	forText string,
 	at time.Time,
+	// readyInDays is the optional advance-booking offset (ZBBS-HOME-403):
+	// 0/absent = deliver/check-in today, N = book N days ahead (lodging only).
+	// Variadic so the ~30 existing call sites that don't book ahead compile
+	// unchanged; only the buyer-facing tool + PC routes pass it.
+	readyInDays ...int,
 ) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
@@ -399,7 +404,46 @@ func PayWithItem(
 							)
 						}
 					}
+
+					// ZBBS-HOME-403: a deferred lodging booking must be paid in
+					// coins. A barter (pay_items) leg can't be reversed on expiry —
+					// the Order carries only the coin Amount, not the goods — so an
+					// expired goods-paid booking couldn't refund them. Reject up
+					// front rather than mint an unrefundable order. Mixed coin+goods
+					// is rejected too: the goods leg would still be lost.
+					if len(resolvedPayItems) > 0 {
+						return nil, errors.New(
+							"a room booking must be paid in coins — set an amount instead of offering goods (pay_items).",
+						)
+					}
 				}
+			}
+
+			// Resolve the booked date (ZBBS-HOME-403). Advance booking
+			// (ready_in_days > 0) is lodging-only — a physical good is handed
+			// over when paid for, so a future date would just strand the
+			// order — and a counter-response carries the parent's booked date
+			// forward (a price haggle never moves the date the buyer asked
+			// for). Validated here, before any entry is staked.
+			if len(readyInDays) > 1 {
+				return nil, errors.New("PayWithItem: at most one ready_in_days value may be passed")
+			}
+			days := 0
+			if len(readyInDays) == 1 {
+				days = readyInDays[0]
+			}
+			// Advance booking requires a deferred order to hold the future date;
+			// a consume_now (eat/check-in-on-the-spot) offer mints no Order, so a
+			// future ready_in_days would be silently lost. Reject it (days==0 is
+			// fine — that's same-day). ZBBS-HOME-403.
+			if consumeNow && days > 0 {
+				return nil, errors.New(
+					"ready_in_days needs consume_now=false — an advance booking is a deferred order, not taken on the spot.",
+				)
+			}
+			readyBy, err := resolveOrderReadyBy(w, kind, parentID, days, at)
+			if err != nil {
+				return nil, err
 			}
 
 			// Overflow guard on qty * effectiveConsumers — Inventory[kind]
@@ -431,7 +475,7 @@ func PayWithItem(
 				return runPayWithItemFastPath(
 					w, buyer, seller, sellerID, sceneID, kind, qty,
 					amount, consumeNow, consumerIDs, needed, quoteID,
-					parentID, forText, at,
+					parentID, forText, at, readyBy,
 				)
 			}
 
@@ -477,6 +521,7 @@ func PayWithItem(
 				Qty:         qty,
 				ConsumeNow:  consumeNow,
 				ConsumerIDs: append([]ActorID(nil), consumerIDs...),
+				ReadyBy:     readyBy,
 				Amount:      amount,
 				PayItems:    cloneItemKindQtys(resolvedPayItems),
 				QuoteID:     0, // slow path didn't reference a quote
@@ -558,6 +603,7 @@ func runPayWithItemFastPath(
 	parentID LedgerID,
 	forText string,
 	at time.Time,
+	readyBy time.Time,
 ) (any, error) {
 	quote, ok := w.Quotes[quoteID]
 	if !ok || quote == nil {
@@ -695,6 +741,7 @@ func runPayWithItemFastPath(
 		Qty:         qty,
 		ConsumeNow:  consumeNow,
 		ConsumerIDs: append([]ActorID(nil), consumerIDs...),
+		ReadyBy:     readyBy,
 		Amount:      amount,
 		QuoteID:     quoteID,
 		ParentID:    parentRefForLineage,

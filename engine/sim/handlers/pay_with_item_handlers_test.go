@@ -56,6 +56,22 @@ func TestDecodePayWithItem_OmittedOptionalsAreZero(t *testing.T) {
 // TestDecodePayWithItem_Barter — goods-only and mixed coin+goods offers
 // decode (ZBBS-HOME-393): amount is optional, pay_items carries the goods,
 // and a goods-bearing offer passes the must-offer-something rule.
+// TestDecodePayWithItem_ReadyInDays — the advance-booking offset decodes
+// within bounds (ZBBS-HOME-403); the lodging-only rule is enforced in the
+// command, not the decoder.
+func TestDecodePayWithItem_ReadyInDays(t *testing.T) {
+	args, err := DecodePayWithItemArgs(json.RawMessage(`{
+        "seller":"Aldous","item":"nights_stay","qty":2,"amount":56,
+        "consume_now":false,"ready_in_days":3
+    }`))
+	if err != nil {
+		t.Fatalf("DecodePayWithItemArgs: %v", err)
+	}
+	if got := args.(PayWithItemArgs).ReadyInDays; got != 3 {
+		t.Errorf("ReadyInDays = %d, want 3", got)
+	}
+}
+
 func TestDecodePayWithItem_Barter(t *testing.T) {
 	// Goods only (no amount).
 	args, err := DecodePayWithItemArgs(json.RawMessage(`{
@@ -109,6 +125,8 @@ func TestDecodePayWithItem_RejectsShapeErrors(t *testing.T) {
 		{"pay_items_zero_qty", `{"seller":"A","item":"stew","qty":1,"consume_now":false,"pay_items":[{"item":"nail","qty":0}]}`, "pay_items[0].qty must be at least 1"},
 		{"pay_items_too_many", `{"seller":"A","item":"stew","qty":1,"consume_now":false,"pay_items":[{"item":"a","qty":1},{"item":"b","qty":1},{"item":"c","qty":1},{"item":"d","qty":1},{"item":"e","qty":1},{"item":"f","qty":1},{"item":"g","qty":1},{"item":"h","qty":1},{"item":"i","qty":1}]}`, "pay_items exceeds"},
 		{"pay_items_unknown_nested_field", `{"seller":"A","item":"stew","qty":1,"consume_now":false,"pay_items":[{"item":"nail","qty":2,"extra":1}]}`, "malformed arguments"},
+		{"ready_in_days_negative", `{"seller":"A","item":"stew","qty":1,"amount":4,"consume_now":false,"ready_in_days":-1}`, "ready_in_days cannot be negative"},
+		{"ready_in_days_over_cap", `{"seller":"A","item":"stew","qty":1,"amount":4,"consume_now":false,"ready_in_days":31}`, "ready_in_days too far ahead"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

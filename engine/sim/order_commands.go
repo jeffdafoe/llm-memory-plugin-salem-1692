@@ -23,6 +23,67 @@ import (
 //     goods to each consumer, writes bidirectional buyer↔seller
 //     SalientFacts, and flips the Order to Delivered.
 
+// MaxOrderReadyInDays caps how far ahead a lodging booking can be placed.
+// A month is plenty for the village's cadence and it bounds the derived
+// ExpiresAt horizon, so a fat-fingered ready_in_days can't park an order
+// Ready for years. ZBBS-HOME-403.
+const MaxOrderReadyInDays = 30
+
+// resolveOrderReadyBy computes an order's booked date from the buyer's
+// ready_in_days offset, returning midnight UTC of the resolved calendar date
+// (orderDateUTC). Rules (ZBBS-HOME-403):
+//
+//   - days <= 0 → carry the parent's booked date when this is a
+//     counter-response (a price haggle never moves the date the buyer asked
+//     for), else today (immediate / same-day — the default for every
+//     non-lodging order and for lodging booked for tonight). ready_in_days
+//     decodes to 0 whether omitted or explicitly today, so a haggle that
+//     leaves it out preserves the original booking. A carried FUTURE date is
+//     still subject to the lodging-only rule, so a counter can't swap a
+//     lodging booking for a non-lodging item and keep the future date.
+//   - days > 0 → advance booking, lodging-only, and it overrides any parent
+//     date (the buyer is re-specifying terms, as in_response_to already
+//     allows for qty/item). A physical good is handed over when paid for, so
+//     a future date on a non-lodging item would just strand the order at
+//     Ready until it expired; reject it up front with a model-legible reason.
+//     Capped at MaxOrderReadyInDays.
+//
+// MUST be called from inside a Command.Fn (reads w.PayLedger / w.Settings).
+func resolveOrderReadyBy(w *World, kind ItemKind, parentID LedgerID, days int, at time.Time) (time.Time, error) {
+	today := orderDateUTC(at, w.Settings.Location)
+	if days <= 0 {
+		if parentID != 0 {
+			if parent := w.PayLedger[parentID]; parent != nil && !parent.ReadyBy.IsZero() {
+				// A carried FUTURE date is an advance booking and is lodging-only,
+				// same as a fresh ready_in_days — so a counter that swaps a lodging
+				// booking for a non-lodging item can't inherit the future date. A
+				// same-day-or-past carried date is harmless on any item.
+				if parent.ReadyBy.After(today) && !itemHasCapability(w, kind, "lodging") {
+					return time.Time{}, fmt.Errorf(
+						"ready_in_days is only for booking lodging ahead — %s is delivered when you pay for it.",
+						kind,
+					)
+				}
+				return parent.ReadyBy, nil
+			}
+		}
+		return today, nil
+	}
+	if !itemHasCapability(w, kind, "lodging") {
+		return time.Time{}, fmt.Errorf(
+			"ready_in_days is only for booking lodging ahead — %s is delivered when you pay for it (drop ready_in_days).",
+			kind,
+		)
+	}
+	if days > MaxOrderReadyInDays {
+		return time.Time{}, fmt.Errorf(
+			"ready_in_days is too far ahead (got %d, max %d).",
+			days, MaxOrderReadyInDays,
+		)
+	}
+	return today.AddDate(0, 0, days), nil
+}
+
 // createOrderForPayWithItem mints a new Order for a !ConsumeNow
 // pay-with-item acceptance. Called from commitPayTransfer on the
 // world goroutine. Returns the new OrderID.
@@ -40,7 +101,15 @@ func createOrderForPayWithItem(w *World, entry *PayLedgerEntry, at time.Time) Or
 	if len(consumers) == 0 {
 		consumers = []ActorID{entry.BuyerID}
 	}
-	ttl := effectiveOrderTTL(w.Settings)
+	// ReadyBy defaults to the creation date for a same-day / immediate order;
+	// a lodging advance booking carries a future date stamped at intake
+	// (ZBBS-HOME-403). The lodging-aware ExpiresAt derives from it so a future
+	// booking survives until it is actually due rather than expiring on the
+	// 10-minute takeaway TTL.
+	readyBy := entry.ReadyBy
+	if readyBy.IsZero() {
+		readyBy = orderDateUTC(at, w.Settings.Location)
+	}
 	// Order.ID IS the pay_ledger row id (== LedgerID): an Order is its
 	// durable pay_ledger row, 1:1. Adopt entry.ID rather than a separate
 	// per-run counter so Order.ID == LedgerID — the domain invariant the
@@ -59,7 +128,8 @@ func createOrderForPayWithItem(w *World, entry *PayLedgerEntry, at time.Time) Or
 		ConsumerIDs: consumers,
 		LedgerID:    entry.ID,
 		CreatedAt:   at,
-		ExpiresAt:   at.Add(ttl),
+		ReadyBy:     readyBy,
+		ExpiresAt:   orderExpiresAt(w, entry.ItemKind, readyBy, at),
 	}
 	w.Orders[id] = o
 	w.emit(&OrderCreated{
@@ -276,7 +346,12 @@ func transferOrderGoods(w *World, o *Order, seller *Actor, consumers []*Actor) e
 		if seller.WorkStructureID == "" {
 			return fmt.Errorf("order %d: keeper %q has no work structure to lodge in", o.ID, seller.ID)
 		}
-		expiresAt := ComputeLodgerUntil(o.CreatedAt, o.Qty, w.Settings.LodgingCheckOutHour, w.Settings.Location)
+		// The grant runs for o.Qty nights from the booked date (ReadyBy), not
+		// from the check-in instant — an advance booking checked in on its
+		// ready_by date still gets the nights it paid for. ReadyBy == the
+		// creation date for a same-day booking, so this is unchanged for the
+		// common path. ZBBS-HOME-403.
+		expiresAt := ComputeLodgerUntil(o.ReadyBy, o.Qty, w.Settings.LodgingCheckOutHour, w.Settings.Location)
 		res, err := AssignBedroomForLodger(StructureID(seller.WorkStructureID), o.BuyerID, int64(o.LedgerID), expiresAt).Fn(w)
 		if err != nil {
 			if err == ErrNoPrivateRooms {

@@ -22,6 +22,12 @@ import (
 //     also covered by the pre-existing sweep tests; here we assert
 //     it explicitly so the slice-6 contract has its own anchor.
 //
+// Note: axes 1–2 are the DELIVERED path. ZBBS-HOME-403 carves out the
+// EXPIRED path: an Expired transition refunds coins in-memory, so it skips
+// the eager sink write-through entirely (the refunded balances persist with
+// the terminal status at the next checkpoint Tx — never split across a crash)
+// and the entry is retained for that checkpoint. Asserted explicitly below.
+//
 // Plus: SetTerminalOrderSink can install and clear (nil clears).
 // Plus: OrderDelivered carries Amount end-to-end through the emit.
 
@@ -83,10 +89,11 @@ func TestFinalizeOrderTerminal_PrunesWhenSinkSucceeds(t *testing.T) {
 	}
 }
 
-// TestFinalizeOrderTerminal_LeavesEntryWhenSinkErrors — failure mode.
-// Sink returns an error; entry stays in w.Orders at its terminal
-// state. The OrderDelivered/OrderExpired event has already fired
-// (asserted via the in-memory state flip having taken effect).
+// TestFinalizeOrderTerminal_LeavesEntryWhenSinkErrors — failure mode on the
+// DELIVERED path (the path that still uses the sink; ZBBS-HOME-403 routes
+// Expired around it). Sink returns an error; entry stays in w.Orders at its
+// terminal state. The OrderDelivered event has already fired (asserted via the
+// in-memory state flip having taken effect).
 func TestFinalizeOrderTerminal_LeavesEntryWhenSinkErrors(t *testing.T) {
 	repo, _ := mem.NewRepository()
 	w := sim.NewWorld(repo)
@@ -103,17 +110,53 @@ func TestFinalizeOrderTerminal_LeavesEntryWhenSinkErrors(t *testing.T) {
 	}
 	w.Orders[o.ID] = o
 
-	sim.FinalizeOrderTerminal(w, o, sim.OrderStateExpired, at)
+	sim.FinalizeOrderTerminal(w, o, sim.OrderStateDelivered, at)
 
 	gotO, ok := w.Orders[2]
 	if !ok {
 		t.Fatal("Order pruned despite sink error; want retained for next SaveSnapshot")
 	}
-	if gotO.State != sim.OrderStateExpired {
-		t.Errorf("retained Order state = %q, want %q", gotO.State, sim.OrderStateExpired)
+	if gotO.State != sim.OrderStateDelivered {
+		t.Errorf("retained Order state = %q, want %q", gotO.State, sim.OrderStateDelivered)
 	}
 	if len(sink.calls) != 1 {
 		t.Errorf("sink WriteTerminal called %d times, want 1", len(sink.calls))
+	}
+}
+
+// TestFinalizeOrderTerminal_ExpiredSkipsSink — ZBBS-HOME-403. An Expired
+// transition refunds the buyer in-memory, so finalizeOrderTerminal must NOT
+// write it through the sink (that would let a crash strand the buyer: order
+// durably expired, refund not yet persisted, restart won't re-expire). The
+// entry is retained in w.Orders for the next checkpoint, which persists the
+// terminal status and the refunded balances together.
+func TestFinalizeOrderTerminal_ExpiredSkipsSink(t *testing.T) {
+	repo, _ := mem.NewRepository()
+	w := sim.NewWorld(repo)
+	sink := &recordingTerminalOrderSink{}
+	w.SetTerminalOrderSink(sink)
+
+	at := time.Now().UTC()
+	o := &sim.Order{
+		ID:          8,
+		State:       sim.OrderStateReady,
+		ExpiresAt:   at.Add(time.Hour),
+		ConsumerIDs: []sim.ActorID{"alice"},
+		Qty:         1,
+	}
+	w.Orders[o.ID] = o
+
+	sim.FinalizeOrderTerminal(w, o, sim.OrderStateExpired, at)
+
+	gotO, ok := w.Orders[8]
+	if !ok {
+		t.Fatal("Expired order pruned; want retained for the next checkpoint")
+	}
+	if gotO.State != sim.OrderStateExpired {
+		t.Errorf("retained Order state = %q, want %q", gotO.State, sim.OrderStateExpired)
+	}
+	if len(sink.calls) != 0 {
+		t.Errorf("sink WriteTerminal called %d times for Expired, want 0 (skipped)", len(sink.calls))
 	}
 }
 
@@ -209,12 +252,13 @@ func TestFinalizeOrderTerminal_DeliveredCarriesAmount(t *testing.T) {
 	}
 }
 
-// TestRestartExpirePendingOrders_WriteThroughOnRestart — wiring order
-// contract. SetTerminalOrderSink → seed stale Ready in w.Orders →
-// restartExpirePendingOrders → sink receives the Expired and entry
-// is pruned. Documents the main.go assembly requirement
-// (SetTerminalOrderSink before LoadWorld).
-func TestRestartExpirePendingOrders_WriteThroughOnRestart(t *testing.T) {
+// TestRestartExpirePendingOrders_ExpiredDefersToCheckpoint — restart re-expiry
+// produces Expired transitions, which ZBBS-HOME-403 routes around the eager
+// sink (the in-memory refund and the terminal status must persist together at
+// the next checkpoint, not be split across a crash). So a stale Ready order is
+// flipped to Expired and RETAINED in w.Orders (sink untouched); a fresh Ready
+// order is left alone.
+func TestRestartExpirePendingOrders_ExpiredDefersToCheckpoint(t *testing.T) {
 	repo, _ := mem.NewRepository()
 	w := sim.NewWorld(repo)
 	sink := &recordingTerminalOrderSink{}
@@ -232,16 +276,21 @@ func TestRestartExpirePendingOrders_WriteThroughOnRestart(t *testing.T) {
 
 	sim.RestartExpirePendingOrders(w, at)
 
-	if _, ok := w.Orders[6]; ok {
-		t.Error("Stale Ready not pruned after restart-flip + write-through")
+	stale, ok := w.Orders[6]
+	if !ok {
+		t.Fatal("Stale order pruned at restart; Expired should be retained for the next checkpoint")
 	}
-	if _, ok := w.Orders[7]; !ok {
-		t.Error("Fresh Ready pruned at restart; should survive")
+	if stale.State != sim.OrderStateExpired {
+		t.Errorf("stale order state = %q, want %q", stale.State, sim.OrderStateExpired)
 	}
-	if len(sink.calls) != 1 {
-		t.Errorf("sink received %d calls, want 1 (only stale)", len(sink.calls))
+	fresh, ok := w.Orders[7]
+	if !ok {
+		t.Fatal("Fresh Ready dropped at restart; should survive")
 	}
-	if len(sink.calls) > 0 && sink.calls[0].ID != 6 {
-		t.Errorf("sink received order %d, want 6", sink.calls[0].ID)
+	if fresh.State != sim.OrderStateReady {
+		t.Errorf("fresh order state = %q, want %q", fresh.State, sim.OrderStateReady)
+	}
+	if len(sink.calls) != 0 {
+		t.Errorf("sink received %d calls, want 0 (Expired skips the eager sink)", len(sink.calls))
 	}
 }

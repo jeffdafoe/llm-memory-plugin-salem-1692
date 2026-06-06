@@ -252,6 +252,15 @@ type PayLedgerEntry struct {
 	ConsumeNow  bool
 	ConsumerIDs []ActorID
 
+	// ReadyBy is the buyer-requested delivery/check-in date for a deferred
+	// order (lodging advance booking; ZBBS-HOME-403). Zero for a same-day /
+	// immediate offer — createOrderForPayWithItem defaults it to the creation
+	// date when zero. Materialized as midnight UTC of a calendar date (the
+	// ready_by DATE column round-trips as midnight UTC). Carried forward
+	// unchanged across a counter chain — a price haggle never moves the
+	// booked date.
+	ReadyBy time.Time
+
 	// Amount is the offered total in coins. >= 0 — an offer may pay with
 	// coins, goods (PayItems), or both, but must carry at least one of the
 	// two (the intake gate rejects an all-zero offer; ZBBS-HOME-393, which
