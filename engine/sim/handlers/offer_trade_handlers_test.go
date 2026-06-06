@@ -99,6 +99,79 @@ func TestDecodeOfferTrade_CoinsOnly(t *testing.T) {
 	}
 }
 
+// TestDecodeOfferTrade_StringifiedGive — the weak model (llama-3.3-70b)
+// intermittently emits `give` as a STRINGIFIED JSON array; the lenient decode
+// must accept it and map identically. This is the ZBBS-HOME-407 live-verify
+// finding (Elizabeth's offer_trade bounced on `give: "[{...}]"`).
+func TestDecodeOfferTrade_StringifiedGive(t *testing.T) {
+	decoded, err := DecodeOfferTradeArgs(json.RawMessage(`{
+        "with":"Josiah Thorne",
+        "give":"[{\"item\": \"Milk\", \"qty\": 2}]",
+        "want_item":"Bread","want_qty":1
+    }`))
+	if err != nil {
+		t.Fatalf("stringified give decode: %v", err)
+	}
+	got := decoded.(PayWithItemArgs)
+	if len(got.PayItems) != 1 || got.PayItems[0].Item != "Milk" || got.PayItems[0].Qty != 2 {
+		t.Errorf("PayItems = %+v, want [{Milk 2}] (stringified give must parse like a real array)", got.PayItems)
+	}
+}
+
+// TestPayItemList_LenientStringifiedArray — the shared goods-array decode
+// accepts both a real array and a stringified one, and treats null / empty
+// string as no goods.
+func TestPayItemList_LenientStringifiedArray(t *testing.T) {
+	want := payItemList{{Item: "milk", Qty: 2}, {Item: "nail", Qty: 5}}
+	cases := []struct {
+		name string
+		raw  string
+		want payItemList
+	}{
+		{"real_array", `[{"item":"milk","qty":2},{"item":"nail","qty":5}]`, want},
+		{"stringified_array", `"[{\"item\":\"milk\",\"qty\":2},{\"item\":\"nail\",\"qty\":5}]"`, want},
+		{"null", `null`, nil},
+		{"empty_string", `""`, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got payItemList
+			if err := json.Unmarshal([]byte(tc.raw), &got); err != nil {
+				t.Fatalf("Unmarshal(%s): %v", tc.raw, err)
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("len = %d %+v, want %d", len(got), got, len(tc.want))
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("[%d] = %+v, want %+v", i, got[i], tc.want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestPayItemList_RejectsBadForms — the tolerance is one stringified layer of a
+// VALID array; everything else still rejects (unknown element fields, trailing
+// junk, a non-array string, a non-array value).
+func TestPayItemList_RejectsBadForms(t *testing.T) {
+	cases := []struct{ name, raw string }{
+		{"string_not_array", `"hello"`},
+		{"stringified_unknown_field", `"[{\"item\":\"milk\",\"qty\":2,\"extra\":1}]"`},
+		{"array_unknown_field", `[{"item":"milk","qty":2,"extra":1}]`},
+		{"stringified_trailing_junk", `"[{\"item\":\"milk\",\"qty\":2}] oops"`},
+		{"object_not_array", `{"item":"milk"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got payItemList
+			if err := json.Unmarshal([]byte(tc.raw), &got); err == nil {
+				t.Fatalf("want error for %s, got %+v", tc.raw, got)
+			}
+		})
+	}
+}
+
 func TestDecodeOfferTrade_RejectsShapeErrors(t *testing.T) {
 	cases := []struct {
 		name string
