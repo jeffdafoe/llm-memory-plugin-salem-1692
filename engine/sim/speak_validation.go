@@ -167,7 +167,7 @@ func validateSpeechClaims(w *World, speaker *Actor, text string, now time.Time) 
 					names[i] = string(m)
 				}
 				return fmt.Sprintf(
-					"Your words (%q + %s) describe handing over an item, but speech alone doesn't move anything. To actually give or sell %s, use pay_with_item (or let the buyer pay) — then say it once the transfer is real.",
+					"Your words (%q + %s) describe handing over an item, but speech alone doesn't move anything. To actually give or trade %s, use offer_trade (propose your goods for theirs); to buy, use pay_with_item; or let the buyer pay — then say it once the transfer is real.",
 					strings.ToLower(verb), strings.Join(names, ", "), strings.Join(names, ", "),
 				)
 			}

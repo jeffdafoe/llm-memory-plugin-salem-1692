@@ -499,11 +499,12 @@ func registerTools(r *handlers.Registry, searcher llm.MemorySearcher) error {
 		{"scene_quote", handlers.RegisterSceneQuote},
 		{"deliver_order", handlers.RegisterDeliverOrder},
 		{"pay_with_item_family", handlers.RegisterPayWithItemFamily},
-		{"take_break", handlers.RegisterTakeBreak}, // ZBBS-HOME-284 #4
-		{"move_to", handlers.RegisterMoveTo},       // ZBBS-HOME-285
-		{"summon", handlers.RegisterSummon},        // ZBBS-HOME-311
-		{"gather", handlers.RegisterGather},        // ZBBS-WORK-328
-		{"stop", handlers.RegisterStop},            // ZBBS-HOME-338
+		{"offer_trade", handlers.RegisterOfferTrade}, // ZBBS-HOME-407
+		{"take_break", handlers.RegisterTakeBreak},   // ZBBS-HOME-284 #4
+		{"move_to", handlers.RegisterMoveTo},         // ZBBS-HOME-285
+		{"summon", handlers.RegisterSummon},          // ZBBS-HOME-311
+		{"gather", handlers.RegisterGather},          // ZBBS-WORK-328
+		{"stop", handlers.RegisterStop},              // ZBBS-HOME-338
 		// `done` — the universal terminal tool. The NPC's instructions tell it
 		// to end its turn with done, and the v2 harness ends the tick on a
 		// ClassTerminal dispatch (sim.TickStatusDone, see sim/reactor_commands.go).
