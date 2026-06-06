@@ -566,7 +566,7 @@ func (s *Server) handleUmbilicalSetNeeds(w http.ResponseWriter, r *http.Request)
 		out := umbilicalSetNeedsResponse{Actors: []UmbilicalActorRowDTO{}}
 		if req.All {
 			for _, a := range world.Actors {
-				setActorNeeds(a, values, zeroAll)
+				setActorNeeds(world, a, values, zeroAll)
 				out.Actors = append(out.Actors, actorRowDTO(a))
 			}
 		} else {
@@ -574,7 +574,7 @@ func (s *Server) handleUmbilicalSetNeeds(w http.ResponseWriter, r *http.Request)
 			if !ok {
 				return nil, errAgentNotFound
 			}
-			setActorNeeds(a, values, zeroAll)
+			setActorNeeds(world, a, values, zeroAll)
 			out.Actors = append(out.Actors, actorRowDTO(a))
 		}
 		out.Set = len(out.Actors)
@@ -610,14 +610,17 @@ const needKeyTiredness = sim.NeedKey("tiredness")
 // unlisted needs untouched. A nil/empty Needs map means the actor tracks no needs,
 // so the writes are a no-op for it.
 //
-// Setting tiredness to 0 ALSO clears any active rest window (BreakUntil /
-// SleepingUntil): those windows are tiredness-recovery state, so at 0 tiredness
-// the actor has no reason to stay parked. Without this, an actor mid-break stays
-// `resting` despite the change (the live Elizabeth Ellis case — pinned on a
-// break_until the old reset couldn't touch), which would defeat a
-// food/water-seeking test. A non-zero tiredness leaves rest windows alone. Must
-// run on the world goroutine (it mutates the live *Actor).
-func setActorNeeds(a *sim.Actor, values map[sim.NeedKey]int, zeroAll bool) {
+// Setting tiredness to 0 ALSO ends any active rest (BreakUntil / SleepingUntil):
+// those windows are tiredness-recovery state, so at 0 tiredness the actor has no
+// reason to stay parked. Without this, an actor mid-break stays `resting` despite
+// the change (the live Elizabeth Ellis case — pinned on a break_until the old
+// reset couldn't touch), which would defeat a food/water-seeking test. The reset
+// routes through sim.ClearRestForReset, which for an agent NPC ends the rest
+// PROPERLY (macro-state → idle, occupancy refresh) rather than nil-ing the window
+// alone — leaving the StateResting enum behind would strand the actor as a
+// reactor-shelved orphan (ZBBS-HOME-410). A non-zero tiredness leaves rest alone.
+// Must run on the world goroutine (it mutates the live *Actor).
+func setActorNeeds(world *sim.World, a *sim.Actor, values map[sim.NeedKey]int, zeroAll bool) {
 	clearRest := false
 	if zeroAll {
 		for k := range a.Needs {
@@ -637,8 +640,12 @@ func setActorNeeds(a *sim.Actor, values map[sim.NeedKey]int, zeroAll bool) {
 		}
 	}
 	if clearRest {
-		a.BreakUntil = nil
-		a.SleepingUntil = nil
+		// End any active rest PROPERLY (ZBBS-HOME-410): reset the macro-state and
+		// refresh occupancy, not just nil the window. Nil-ing the window alone
+		// stranded an agent NPC in StateResting / StateSleeping with no window —
+		// invisible to the expiry sweeps and shelved by the reactor rest gate
+		// forever (the live Ezekiel Crane / Prudence Ward stuck-stall case).
+		sim.ClearRestForReset(world, a)
 	}
 }
 

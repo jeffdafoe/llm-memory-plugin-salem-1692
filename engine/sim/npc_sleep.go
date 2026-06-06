@@ -417,6 +417,19 @@ func runSleepTickIteration(ctx context.Context, w *World) {
 		}
 		return
 	}
+	// Heal any actor stranded in a rest macro-state with no live window
+	// (ZBBS-HOME-410): the wake + break-expiry passes above clear only a window
+	// that is still SET, so a StateResting / StateSleeping enum left behind
+	// WITHOUT a window (a set-needs tiredness reset, or a checkpoint reload of a
+	// stale state) survives them and would otherwise pin the actor —
+	// reactor-shelved — forever. Runs before the auto-bed pass so a freshly-healed
+	// off-shift-at-home NPC can be re-bedded with a proper window the same tick.
+	if _, err := w.SendContext(ctx, HealOrphanedRestStates()); err != nil {
+		if ctx.Err() == nil {
+			log.Printf("sim/npc_sleep: rest-state heal sweep failed: %v", err)
+		}
+		return
+	}
 	if _, err := w.SendContext(ctx, AutoBedAtHomeNPCs(now)); err != nil {
 		if ctx.Err() == nil {
 			log.Printf("sim/npc_sleep: auto-bed sweep failed: %v", err)

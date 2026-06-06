@@ -376,9 +376,9 @@ func TestUmbilicalSetNeeds(t *testing.T) {
 }
 
 // TestUmbilicalSetNeeds_RestWindow covers the tiredness/rest-window coupling
-// (carried from HOME-383 into HOME-384): setting tiredness to 0 clears
-// BreakUntil/SleepingUntil, while setting a non-zero tiredness leaves the rest
-// window alone.
+// (carried from HOME-383 into HOME-384, extended HOME-410): setting tiredness to
+// 0 ends the rest — clears BreakUntil/SleepingUntil AND resets the StateResting
+// macro-state to idle — while setting a non-zero tiredness leaves the rest alone.
 func TestUmbilicalSetNeeds_RestWindow(t *testing.T) {
 	srv, h := controlServer(t, operatorPerms)
 	// Seed maxed needs + an active break window on hannah.
@@ -389,6 +389,7 @@ func TestUmbilicalSetNeeds_RestWindow(t *testing.T) {
 			a.Needs = map[sim.NeedKey]int{"hunger": sim.NeedMax, "thirst": sim.NeedMax, "tiredness": sim.NeedMax}
 			a.BreakUntil = &until
 			a.SleepingUntil = &until
+			a.State = sim.StateResting
 			return nil, nil
 		}})
 		if err != nil {
@@ -403,11 +404,11 @@ func TestUmbilicalSetNeeds_RestWindow(t *testing.T) {
 	}
 	res, _ := srv.world.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		a := world.Actors["hannah"]
-		return []any{a.Needs["tiredness"], a.Needs["hunger"], a.BreakUntil == nil, a.SleepingUntil == nil}, nil
+		return []any{a.Needs["tiredness"], a.Needs["hunger"], a.BreakUntil == nil, a.SleepingUntil == nil, a.State == sim.StateIdle}, nil
 	}})
 	v, _ := res.([]any)
-	if v[0].(int) != 0 || v[1].(int) != sim.NeedMax || v[2] != true || v[3] != true {
-		t.Errorf("set tiredness 0: tiredness=%v hunger=%v breakNil=%v sleepNil=%v, want 0/%d/true/true", v[0], v[1], v[2], v[3], sim.NeedMax)
+	if v[0].(int) != 0 || v[1].(int) != sim.NeedMax || v[2] != true || v[3] != true || v[4] != true {
+		t.Errorf("set tiredness 0: tiredness=%v hunger=%v breakNil=%v sleepNil=%v stateIdle=%v, want 0/%d/true/true/true", v[0], v[1], v[2], v[3], v[4], sim.NeedMax)
 	}
 
 	// Non-zero tiredness leaves the rest window alone.
@@ -417,11 +418,11 @@ func TestUmbilicalSetNeeds_RestWindow(t *testing.T) {
 	}
 	res, _ = srv.world.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
 		a := world.Actors["hannah"]
-		return []any{a.Needs["tiredness"], a.BreakUntil != nil}, nil
+		return []any{a.Needs["tiredness"], a.BreakUntil != nil, a.State == sim.StateResting}, nil
 	}})
 	v, _ = res.([]any)
-	if v[0].(int) != 5 || v[1] != true {
-		t.Errorf("set tiredness 5: tiredness=%v breakStillSet=%v, want 5/true", v[0], v[1])
+	if v[0].(int) != 5 || v[1] != true || v[2] != true {
+		t.Errorf("set tiredness 5: tiredness=%v breakStillSet=%v stillResting=%v, want 5/true/true", v[0], v[1], v[2])
 	}
 }
 
