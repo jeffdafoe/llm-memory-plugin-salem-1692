@@ -367,6 +367,11 @@ func MoveToStructure(actorID ActorID, structureID StructureID, now time.Time) Co
 				return MoveActorResult{}, fmt.Errorf(
 					"you are already on your way to %q — keep walking; pick a different action this turn", structureID)
 			}
+			// The actor has chosen to walk to structureID — deciding to GO there
+			// supersedes any stale "I found it shut/dry" belief about it, so drop
+			// that experiential memory now (ZBBS-HOME-405). Placed after the
+			// guards above so it fires only on a genuinely new walk.
+			forgetSupplierStaleMemory(a, structureID)
 			dest := moveToDestinationFor(w, a, structureID, now)
 			// leaveHuddleFirst=true: choosing to walk somewhere ends any
 			// conversation the actor is in (ZBBS-HOME-285 — matches v1's
@@ -376,6 +381,34 @@ func MoveToStructure(actorID ActorID, structureID StructureID, now time.Time) Co
 			// huddle cleanly only when it chooses to move.
 			return MoveActor(actorID, dest, true, now).Fn(w)
 		},
+	}
+}
+
+// forgetSupplierStaleMemory drops the actor's experiential "found it shut"
+// (ClosedBusinessObs, ZBBS-HOME-353) and "found it dry" (OutOfStockObs,
+// ZBBS-HOME-363) memories for structureID — the destination the actor is now
+// committing to walk to (ZBBS-HOME-405).
+//
+// Deciding to GO somewhere supersedes a stale belief about it. Without this, a
+// mid-walk reactor tick re-reads the old "shut" annotation and steers the actor
+// AWAY from the very destination it is en route to (the live Josiah↔Ellis Farm
+// thrash: he arrived just as the keeper was present, but a re-decision off the
+// stale shut label had already redirected him, yanking him out of the
+// just-formed huddle before he could buy). The deprioritization still applies at
+// DECISION time — the cue shows the annotation when the actor first weighs the
+// trip — and the arrival subscribers re-stamp the memory if the place really is
+// shut/dry on arrival; we clear it only once the actor has chosen to go.
+//
+// Destination-scoped on purpose (Jeff, 2026-06-06): clearing memory for OTHER
+// businesses would make the actor re-attempt shops it legitimately knows are
+// shut. nil-safe — delete on a nil map is a no-op, and ranging a nil map yields
+// nothing. Deleting keys mid-range is permitted by the Go spec.
+func forgetSupplierStaleMemory(a *Actor, structureID StructureID) {
+	delete(a.ClosedBusinessObs, structureID)
+	for key := range a.OutOfStockObs {
+		if key.StructureID == structureID {
+			delete(a.OutOfStockObs, key)
+		}
 	}
 }
 

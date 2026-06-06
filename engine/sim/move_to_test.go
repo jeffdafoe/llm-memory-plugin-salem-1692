@@ -298,3 +298,65 @@ func TestMoveToStructure_LeavesHuddleOnMove(t *testing.T) {
 		t.Error("move_to while huddled left no MoveIntent; want a walk in flight")
 	}
 }
+
+// --- stale supplier-memory clear on commit (ZBBS-HOME-405) -------------
+
+// TestMoveToStructure_ClearsStaleSupplierMemoryForDestination asserts that
+// committing a walk to a structure drops the actor's experiential "found it
+// shut" (ClosedBusinessObs) and "found it dry" (OutOfStockObs) memories for THAT
+// destination only — leaving memories about other businesses intact. Without
+// this, a mid-walk re-decision off the stale "shut" annotation steers the actor
+// away from the destination it is en route to (the Josiah↔Ellis Farm thrash).
+func TestMoveToStructure_ClearsStaleSupplierMemoryForDestination(t *testing.T) {
+	w, cancel, _ := buildMoveTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	// Seed walker with shut + out-of-stock memories for the destination (inn)
+	// AND for an unrelated business (well), inside a command so the test
+	// goroutine never touches live world state.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := world.Actors["walker"]
+		a.ClosedBusinessObs = map[sim.StructureID]time.Time{"inn": now, "well": now}
+		a.OutOfStockObs = map[sim.OutOfStockKey]time.Time{
+			{StructureID: "inn", ItemKind: "meat"}:  now,
+			{StructureID: "inn", ItemKind: "milk"}:  now,
+			{StructureID: "well", ItemKind: "meat"}: now,
+		}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if _, err := w.Send(sim.MoveToStructure("walker", "inn", now)); err != nil {
+		t.Fatalf("MoveToStructure(inn): %v", err)
+	}
+
+	// Read the maps back inside a command.
+	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := world.Actors["walker"]
+		return [2]any{a.ClosedBusinessObs, a.OutOfStockObs}, nil
+	}})
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	pair := res.([2]any)
+	closed := pair[0].(map[sim.StructureID]time.Time)
+	oos := pair[1].(map[sim.OutOfStockKey]time.Time)
+
+	if _, ok := closed["inn"]; ok {
+		t.Error("ClosedBusinessObs[inn] should be cleared after move_to(inn)")
+	}
+	if _, ok := closed["well"]; !ok {
+		t.Error("ClosedBusinessObs[well] should be untouched — destination-only clear")
+	}
+	if _, ok := oos[sim.OutOfStockKey{StructureID: "inn", ItemKind: "meat"}]; ok {
+		t.Error("OutOfStockObs{inn,meat} should be cleared after move_to(inn)")
+	}
+	if _, ok := oos[sim.OutOfStockKey{StructureID: "inn", ItemKind: "milk"}]; ok {
+		t.Error("OutOfStockObs{inn,milk} should be cleared after move_to(inn)")
+	}
+	if _, ok := oos[sim.OutOfStockKey{StructureID: "well", ItemKind: "meat"}]; !ok {
+		t.Error("OutOfStockObs{well,meat} should be untouched — destination-only clear")
+	}
+}
