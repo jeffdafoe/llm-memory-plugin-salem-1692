@@ -62,9 +62,9 @@ func TestRenderPendingDeliveries_SentinelOmitsExpiry(t *testing.T) {
 	}}
 
 	var from strings.Builder
-	renderPendingDeliveriesFromMe(&from, view)
+	renderPendingDeliveriesFromMe(&from, view, startOfUTCDay(time.Now()))
 	var to strings.Builder
-	renderPendingDeliveriesToMe(&to, view)
+	renderPendingDeliveriesToMe(&to, view, startOfUTCDay(time.Now()))
 
 	for _, out := range []string{from.String(), to.String()} {
 		if !strings.Contains(out, "#102") || !strings.Contains(out, "milk") {
@@ -87,7 +87,7 @@ func TestRenderPendingDeliveries_RealTTLStillRenders(t *testing.T) {
 		ExpiresAt: time.Now().Add(8 * time.Minute),
 	}}
 	var b strings.Builder
-	renderPendingDeliveriesToMe(&b, view)
+	renderPendingDeliveriesToMe(&b, view, startOfUTCDay(time.Now()))
 	if !strings.Contains(b.String(), "expires in") {
 		t.Errorf("a real TTL must still render its expiry:\n%s", b.String())
 	}

@@ -352,6 +352,14 @@ func CreateOrderForPayWithItem(w *World, entry *PayLedgerEntry, at time.Time) Or
 	return createOrderForPayWithItem(w, entry, at)
 }
 
+// ResolveOrderReadyBy exposes the ready_in_days → ReadyBy resolver
+// (advance booking: lodging-only, counter-carry, today default, cap) so
+// order_readyby_test.go can exercise it without a full PayWithItem flow.
+// ZBBS-HOME-403.
+func ResolveOrderReadyBy(w *World, kind ItemKind, parentID LedgerID, days int, at time.Time) (time.Time, error) {
+	return resolveOrderReadyBy(w, kind, parentID, days, at)
+}
+
 // FinalizeOrderTerminal exposes the helper used by both DeliverOrder
 // and EvaluateOrderSweep so direct sweep-skip tests can pre-flip an
 // Order's state without running the full sweep.

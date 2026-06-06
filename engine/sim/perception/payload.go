@@ -183,6 +183,15 @@ type Payload struct {
 	// Ordering: sorted by Order.ID for determinism.
 	PendingDeliveriesToMe []OrderView
 
+	// LocalDateUTC is midnight UTC of the village's current calendar date,
+	// copied from Snapshot.LocalDateUTC. Render's order-book split
+	// (renderPendingDeliveries*) compares it against each OrderView.ReadyBy so
+	// the ready/future/overdue classification uses the same world-TZ date that
+	// ReadyBy was built from — not the host UTC day, which drifts by the UTC
+	// offset near the boundary. Zero when the snapshot has no clock (hand-built
+	// payloads); the renderer falls back to the host UTC day then. ZBBS-HOME-403.
+	LocalDateUTC time.Time
+
 	// RecoveryOptions surfaces how a tired-or-homeless actor could rest —
 	// free tiredness-bearing objects (shade trees) and inns to rent a room.
 	// nil when the actor isn't tired/homeless or no options exist (the
@@ -280,6 +289,12 @@ type OrderView struct {
 	AbsentRecipientNames []string
 	CreatedAt            time.Time
 	ExpiresAt            time.Time
+	// ReadyBy is the order's booked date (lodging check-in date for an
+	// advance booking; the creation date for a same-day order). Midnight UTC
+	// of a calendar date. Render uses it to split the seller view into
+	// ready-to-hand-over-now vs upcoming reservations, and the buyer view into
+	// waiting-on vs overdue. ZBBS-HOME-403.
+	ReadyBy time.Time
 }
 
 // NarrativeStateView is the kind-aware "Who you are:" content. Slim by

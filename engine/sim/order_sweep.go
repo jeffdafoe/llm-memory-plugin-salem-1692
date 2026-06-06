@@ -11,9 +11,10 @@ import (
 //
 // RunOrderSweep periodically scans World.Orders for entries in
 // OrderStateReady whose ExpiresAt has passed and flips them to
-// OrderStateExpired terminal, emitting OrderExpired per flip. Pure
-// state flip — goods stay in seller's inventory, coins stay with
-// seller (per design call 5 option A; no automatic refund in MVP).
+// OrderStateExpired terminal, emitting OrderExpired per flip. Goods
+// stay in the seller's inventory (they never moved); the buyer's coins
+// are refunded on the flip (ZBBS-HOME-403, finalizeOrderTerminal →
+// flipOrderTerminal) so a lapsed booking doesn't leave the buyer charged.
 //
 // Same coalesced AfterFunc self-rearm shape as the PR S3 scene-quote
 // sweep and PR S4 pay-ledger sweep. See pay_ledger_sweep.go for

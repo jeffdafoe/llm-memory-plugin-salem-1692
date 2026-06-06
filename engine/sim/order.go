@@ -63,10 +63,12 @@ type OrderID uint64
 //
 //   - OrderStateReady — initial state at creation, awaiting deliver_order.
 //   - OrderStateDelivered — terminal happy path; goods transferred.
-//   - OrderStateExpired — terminal safety-net; TTL elapsed at Ready without
-//     a successful deliver_order call. Pure state flip — goods stay in
-//     seller's inventory, coins stay with seller. Signals a stuck-order
-//     case for admin investigation.
+//   - OrderStateExpired — terminal safety-net; the deadline elapsed at Ready
+//     without a successful deliver_order call. Goods stay in the seller's
+//     inventory (they never moved), but the buyer's coins ARE refunded
+//     (ZBBS-HOME-403 — reversed in flipOrderTerminal); a stuck order should
+//     not leave the buyer charged for goods they never received. Still signals
+//     a fulfillment miss worth admin attention.
 //
 // Pending state (for craft items with lead time) is intentionally deferred
 // — every Order today goes straight to Ready at creation. Withdrawn state
@@ -119,7 +121,23 @@ type Order struct {
 
 	CreatedAt   time.Time  // = pay-accept time
 	DeliveredAt *time.Time // set on transition to Delivered
-	ExpiresAt   time.Time  // = CreatedAt + WorldSettings.OrderTTL (sweep flips Ready→Expired past this)
+
+	// ReadyBy is the date the order becomes deliverable — for lodging, the
+	// buyer's check-in date (advance booking; ZBBS-HOME-403). Materialized as
+	// midnight UTC of a calendar date (the DATE round-trip convention; see
+	// repo/pg/orders.go). Defaults to the creation date for an ordinary /
+	// same-day order, so a non-lodging take-home order's ReadyBy == today and
+	// the perception split treats it as ready-now. Drives the lodging room
+	// grant window (ComputeLodgerUntil) and the lodging ExpiresAt below.
+	ReadyBy time.Time
+
+	// ExpiresAt is the deadline past which the sweep flips Ready→Expired (and
+	// refunds — ZBBS-HOME-403). For an ordinary take-home order it is
+	// CreatedAt + WorldSettings.OrderTTL; for a lodging order it is the
+	// check-in deadline derived from ReadyBy (the morning after the booked
+	// night), so a future booking survives until it is actually due rather
+	// than expiring on the 10-minute takeaway TTL.
+	ExpiresAt time.Time
 }
 
 // CloneOrder deep-copies an Order. ConsumerIDs slice is copied (Order
@@ -175,6 +193,35 @@ func effectiveOrderSweepCadence(s WorldSettings) time.Duration {
 	return OrderSweepCadenceDefault
 }
 
+// orderDateUTC returns midnight UTC of the calendar date that `at` falls on in
+// loc. ReadyBy is a DATE conceptually (ready_by column), round-tripped from pg
+// as midnight UTC; building it this way keeps the in-memory ReadyBy
+// byte-identical to the value reloaded after a restart and sidesteps the
+// session-TZ ::date truncation drift the v1 perception code worked around.
+// ZBBS-HOME-403.
+func orderDateUTC(at time.Time, loc *time.Location) time.Time {
+	if loc == nil {
+		loc = time.UTC
+	}
+	local := at.In(loc)
+	return time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, time.UTC)
+}
+
+// orderExpiresAt resolves an Order's ExpiresAt at creation. A lodging order's
+// expiry is the check-in deadline — the morning after the booked night
+// (ComputeLodgerUntil(readyBy, 1, checkOutHour)) — so a future booking survives
+// until it is actually due rather than lapsing on the short takeaway TTL, and a
+// same-day booking still gets the overnight window before it expires (and
+// refunds, ZBBS-HOME-403). Every other order keeps the flat OrderTTL from
+// creation; physical take-home is delivered in the same tick anyway, so its TTL
+// is only a defensive backstop.
+func orderExpiresAt(w *World, item ItemKind, readyBy, at time.Time) time.Time {
+	if itemHasCapability(w, item, "lodging") {
+		return ComputeLodgerUntil(readyBy, 1, w.Settings.LodgingCheckOutHour, w.Settings.Location)
+	}
+	return at.Add(effectiveOrderTTL(w.Settings))
+}
+
 // finalizeOrderTerminal flips an Order to a terminal state, stamps the
 // terminal timestamps, emits the matching event, and (when a sink is
 // installed) write-through-prunes the entry from World.Orders. Shared
@@ -188,8 +235,8 @@ func effectiveOrderSweepCadence(s WorldSettings) time.Duration {
 // terminal must be a real terminal state (OrderStateDelivered or
 // OrderStateExpired). For Delivered, DeliveredAt is stamped (the
 // caller has already done the per-consumer transferItem calls).
-// For Expired, only the State field changes — no goods move, no
-// coins refund (per design call 5 option A).
+// For Expired, no goods move (they never left the seller) but the
+// buyer's coins are refunded (ZBBS-HOME-403, in flipOrderTerminal).
 //
 // Slice 6 write-through-then-prune (active only when a non-nil
 // TerminalOrderSink is wired): after the existing event emit, the
@@ -204,7 +251,26 @@ func finalizeOrderTerminal(w *World, o *Order, terminal OrderState, at time.Time
 	if o == nil || !terminal.IsTerminal() {
 		return
 	}
-	flipOrderTerminal(w, o, terminal, at)
+	if !flipOrderTerminal(w, o, terminal, at) {
+		// Already terminal (or invalid) — nothing flipped, so nothing to
+		// persist or prune. Guards against a double sink-write / double prune.
+		return
+	}
+
+	// ZBBS-HOME-403: an Expired transition refunds the buyer's coins in
+	// flipOrderTerminal (in-memory only). Persisting the terminal eagerly via
+	// the sink while the refunded coins land only at the next actor checkpoint
+	// would let a crash between the two strand the buyer — the order durably
+	// 'expired' (so restart's Ready/Pending-only LoadAll won't reload and
+	// re-expire it), the coins not yet returned. So skip the write-through for
+	// Expired and let the next checkpoint persist the terminal status and the
+	// refunded balances atomically (orders + actors SaveSnapshot share one
+	// checkpoint Tx). The retained terminal entry is the same "bloat, not data
+	// loss" the no-sink path already tolerates: SaveSnapshot upserts it as
+	// 'expired' and LoadAll's filter drops it on the next restart.
+	if terminal == OrderStateExpired {
+		return
+	}
 
 	// Slice 6: write-through + prune. Skip entirely when no sink is
 	// installed (legacy no-prune behavior; tests, pre-cutover builds).
@@ -245,10 +311,19 @@ func finalizeOrderTerminal(w *World, o *Order, terminal OrderState, at time.Time
 // the deferred-delivery path, where a prior checkpoint has already INSERTed
 // the Ready row so the UPDATE lands.
 //
+// Returns true when it flipped a live (non-terminal) Order, false when the
+// Order was nil, the target wasn't terminal, or the Order was ALREADY terminal.
+// The already-terminal guard is the idempotency backstop (ZBBS-HOME-403): a
+// second call with OrderStateExpired must not refund twice or re-emit. Every
+// caller filters to Ready first, but the shared chokepoint guards itself.
+//
 // MUST be called from inside a Command.Fn (world goroutine).
-func flipOrderTerminal(w *World, o *Order, terminal OrderState, at time.Time) {
+func flipOrderTerminal(w *World, o *Order, terminal OrderState, at time.Time) bool {
 	if o == nil || !terminal.IsTerminal() {
-		return
+		return false
+	}
+	if o.State.IsTerminal() {
+		return false
 	}
 	o.State = terminal
 	switch terminal {
@@ -267,6 +342,12 @@ func flipOrderTerminal(w *World, o *Order, terminal OrderState, at time.Time) {
 			At:          at,
 		})
 	case OrderStateExpired:
+		// Refund the buyer's coins before the event fires so any
+		// OrderExpired subscriber observes the reversed balances. The
+		// caller (finalizeOrderTerminal) skips the eager durable
+		// write-through for Expired so this refund + the terminal status
+		// persist together at the next checkpoint. ZBBS-HOME-403.
+		refundExpiredOrder(w, o)
 		w.emit(&OrderExpired{
 			OrderID:     o.ID,
 			BuyerID:     o.BuyerID,
@@ -277,6 +358,71 @@ func flipOrderTerminal(w *World, o *Order, terminal OrderState, at time.Time) {
 			LedgerID:    o.LedgerID,
 			At:          at,
 		})
+	}
+	return true
+}
+
+// refundExpiredOrder returns the coins a buyer paid for an order that expired
+// undelivered — the deferred-path counterpart to ZBBS-HOME-398's immediate
+// handover (which closed the robbery window for in-stock take-home). In v2 the
+// only orders that defer to a later deliver_order are lodging bookings (a
+// service item paid in coins), so a Ready→Expired transition means the buyer
+// paid for a room the keeper never checked them into; reverse the coin leg the
+// accept committed (buyer += Amount, seller -= Amount). Goods never moved on a
+// deferred order (they transfer at deliver_order), so only coins need
+// reversing.
+//
+// Conserves the closed economy's coin supply: the seller is debited exactly
+// what the buyer is credited, even if that briefly pushes the seller negative
+// (a debt they earn back) — making the buyer whole is the point of the refund.
+//
+// Lodging in the live economy is coin-paid, so a barter (pay_items) leg can't
+// reach here — the intake rejects a goods-paid lodging booking (ZBBS-HOME-403),
+// keeping every deferred order coin-only and fully reversible.
+//
+// Best-effort per leg so the make-whole guarantee never hinges on the seller:
+//   - Credit the buyer (the leg that matters). Skipped only on the pathological
+//     overflow — a buyer already at ~MaxInt coins isn't being robbed — or when
+//     the buyer has left the world (a visitor who despawned: no one to refund).
+//   - Debit the seller (the conservation leg). Skipped on the symmetric
+//     underflow or an absent seller — a credited-buyer / absent-seller refund
+//     is a touch of inflation, which beats failing to make the buyer whole.
+//
+// So a real buyer with a real booking is ALWAYS refunded; only the
+// pathological / actor-gone edges fall back, all logged. No-op when Amount <= 0.
+// MUST run on the world goroutine (mutates Actor balances).
+func refundExpiredOrder(w *World, o *Order) {
+	if o == nil || o.Amount <= 0 {
+		return
+	}
+	buyer := w.Actors[o.BuyerID]
+	seller := w.Actors[o.SellerID]
+	credited := false
+	switch {
+	case buyer == nil:
+		log.Printf("sim/order: expired order %d buyer %q is gone — no one to refund", o.ID, o.BuyerID)
+	case buyer.Coins > math.MaxInt-o.Amount:
+		log.Printf("sim/order: refund of expired order %d would overflow buyer %q (have %d, +%d) — buyer not credited",
+			o.ID, o.BuyerID, buyer.Coins, o.Amount)
+	default:
+		buyer.Coins += o.Amount
+		credited = true
+		log.Printf("sim/order: refunded %d coins to buyer %q for expired order %d", o.Amount, o.BuyerID, o.ID)
+	}
+	// Only debit the seller when the buyer was actually credited — a debit
+	// without a matching credit would destroy coins and penalize the seller for
+	// a refund that didn't happen.
+	if !credited {
+		return
+	}
+	switch {
+	case seller == nil:
+		log.Printf("sim/order: expired order %d seller %q is gone — buyer credited, debit skipped (slight inflation)", o.ID, o.SellerID)
+	case seller.Coins < math.MinInt+o.Amount:
+		log.Printf("sim/order: refund of expired order %d would underflow seller %q (have %d, -%d) — seller not debited",
+			o.ID, o.SellerID, seller.Coins, o.Amount)
+	default:
+		seller.Coins -= o.Amount
 	}
 }
 
@@ -345,8 +491,12 @@ func outstandingReadyOrderQty(w *World, sellerID ActorID, item ItemKind) int {
 // event.
 //
 // MUST be called from inside Run-equivalent (LoadWorld) or a Command.Fn.
-// Currently called from LoadWorld after the OrdersRepo (when it exists)
-// loads the map.
+// Currently called from World.FinalizeLoad, which runs AFTER both the OrdersRepo
+// and the ActorsRepo have loaded (see repo/pg/load_world.go) — so the
+// ZBBS-HOME-403 refund this triggers can find the buyer/seller actors and make
+// a booking that lapsed during downtime whole. (The refund is best-effort: if
+// an actor genuinely didn't survive the restart, refundExpiredOrder logs and
+// the order still terminalizes — see its doc.)
 func restartExpirePendingOrders(w *World, now time.Time) {
 	for _, o := range w.Orders {
 		if o == nil || o.State != OrderStateReady {
