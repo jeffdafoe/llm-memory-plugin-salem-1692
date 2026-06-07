@@ -98,3 +98,43 @@ func TestHarness_PostSpeakBodySwap_NoSwapOnBouncedSpeak(t *testing.T) {
 		t.Errorf("a bounced speak must NOT trigger the body-swap; round 2 should still be the full furniture, got:\n%s", reqs[1].EphemeralContext)
 	}
 }
+
+// The swap survives a later deduped repeat (pins the WORK-375 × HOME-411 seam):
+// round 1 speaks (commit → swap), round 2 repeats the normalized line (rejected
+// by the same-tick dedup before dispatch, never reaching the success block),
+// round 3 done(). Rounds 2 and 3 must both carry the continuation body — the
+// dedup rejection neither un-swaps nor double-swaps it, and only the one
+// committed speak lands.
+func TestHarness_PostSpeakBodySwap_StaysSwappedThroughDedupedRepeat(t *testing.T) {
+	w, cancel := newHarnessWorld(t, "attempt-A")
+	defer cancel()
+
+	const line = `A room is four coins.`
+	client := llm.NewFakeClient(
+		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c1", 0, "speak", `{"text":"`+line+`"}`)}}},
+		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c2", 0, "speak", `{"text":"`+line+`"}`)}}},
+		llm.ScriptedTurn{Response: llm.Response{ToolCalls: []llm.RawToolCall{newToolCall("c3", 0, "done", `{}`)}}},
+	)
+	h, spokeLog := newSpeakDedupHarness(t, client)
+
+	result := h.RunTick(context.Background(), w, newTestJob("attempt-A", nil))
+	if result.TerminalStatus != sim.TickStatusDone {
+		t.Fatalf("status: got %v, want Done", result.TerminalStatus)
+	}
+	if got := *spokeLog; len(got) != 1 {
+		t.Fatalf("utterances committed: got %d %q, want 1 (the repeat was deduped)", len(got), got)
+	}
+
+	reqs := client.Requests()
+	if len(reqs) != 3 {
+		t.Fatalf("requests: got %d, want 3", len(reqs))
+	}
+	if strings.Contains(reqs[0].EphemeralContext, "already spoken") {
+		t.Errorf("round 1 must be the full furniture, got:\n%s", reqs[0].EphemeralContext)
+	}
+	for i := 1; i <= 2; i++ {
+		if !strings.Contains(reqs[i].EphemeralContext, "already spoken") {
+			t.Errorf("round %d must carry the continuation body (swap persists through the deduped repeat), got:\n%s", i+1, reqs[i].EphemeralContext)
+		}
+	}
+}

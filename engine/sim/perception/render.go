@@ -105,11 +105,13 @@ type RenderedPrompt struct {
 // rounds AFTER the actor has already spoken this tick (RenderedPrompt.
 // ContinuationText, ZBBS-HOME-411). It replaces EphemeralText's affordances +
 // act-now coda with a stop-biased decision, mirroring the WORK-375 per-speak
-// tool-result steer so the two stop-signals agree. Static: within a single tick
-// no new warrant arrives (new external events spawn separate ticks via the
-// reactor), so "nothing new" is always true on a continuation round.
+// tool-result steer so the two stop-signals agree. It deliberately omits any
+// "unless something new arrived" clause: within a single tick no new external
+// event is incorporated (the prompt is rendered once; new events spawn separate
+// ticks via the reactor), so there is nothing new for the model to inspect, and
+// naming the possibility would only invite it to invent one (code_review, HOME-411).
 const continuationDecisionText = "## Decide\n" +
-	"You have already spoken this turn — let others respond. Call done() unless a new event has arrived, a prior tool result needs a word, you owe a distinct answer someone asked of you, or a needed non-speaking action remains (such as moving or resting). Do not greet again, re-pitch, or rephrase what you have already said.\n"
+	"You have already spoken this turn — let others respond. Call done() unless a prior tool result needs a word, you owe a distinct answer someone asked of you, or a needed non-speaking action remains (such as moving or resting). Do not greet again, re-pitch, or rephrase what you have already said.\n"
 
 // Render turns a Payload into a prompt string. It is a pure function:
 // deterministic ordering (already applied in Build) is preserved, the
