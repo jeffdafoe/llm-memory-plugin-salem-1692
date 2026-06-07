@@ -403,6 +403,13 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 	// done() nudge the weak model ignores. Counts committed speaks only (a
 	// bounced or deduped speak reached no one), mirroring spokenThisTick.
 	speaksThisTick := 0
+	// ephemeralText is the recency-dominant decision-support body sent with each
+	// round's Complete call. It starts as the full per-tick perception furniture
+	// (affordances + act-now coda) and swaps to the lean continuation body after
+	// the first committed speak (ZBBS-HOME-411), so a model that has already
+	// spoken reads a stop-biased decision instead of the affordances that prime a
+	// re-pitch. See perception.RenderedPrompt.ContinuationText.
+	ephemeralText := rendered.EphemeralText
 	for round := 0; round < maxTotalRounds; round++ {
 		result.IterationCount = round + 1
 
@@ -418,7 +425,7 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 			ConversationID:   conversationID,
 			Messages:         transcript,
 			Tools:            tools,
-			EphemeralContext: rendered.EphemeralText,
+			EphemeralContext: ephemeralText,
 		})
 		if err != nil {
 			cls := llm.Classify(err)
@@ -577,6 +584,11 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 				if norm, isSpeak := speakUtteranceKey(vc); isSpeak {
 					spokenThisTick[norm] = struct{}{}
 					speaksThisTick++
+					// ZBBS-HOME-411: after the first committed speak, swap the
+					// recency-dominant ephemeral to the lean continuation body —
+					// dropping the affordances (inn/food/rest cues, act-now coda)
+					// that prime a re-pitch. Idempotent on later speaks.
+					ephemeralText = rendered.ContinuationText
 				}
 				// ZBBS-HOME-395: record a placed offer so a later round (or a
 				// later call in this same batch) re-offering the same (seller,
