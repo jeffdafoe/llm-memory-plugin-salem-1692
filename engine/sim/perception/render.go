@@ -150,6 +150,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderAnchors(&ephemeral, p.Anchors)
 	renderDutySteer(&ephemeral, p.DutySteer)
 	renderRelationships(&ephemeral, p.Relationships)
+	renderRecentConversation(&ephemeral, p.RecentConversation)
 	renderOfferableCustomers(&ephemeral, p.OfferableCustomers)
 	renderPendingDeliveriesFromMe(&ephemeral, p.PendingDeliveriesFromMe, p.LocalDateUTC)
 	renderPendingDeliveriesToMe(&ephemeral, p.PendingDeliveriesToMe, p.LocalDateUTC)
@@ -796,35 +797,62 @@ func renderOfferableCustomers(b *strings.Builder, v *OfferableCustomersView) {
 	fmt.Fprintf(b, "Your goods to sell: %s.\n\n", strings.Join(goods, ", "))
 }
 
-// renderRelationships writes the "What you remember of those here:"
-// section. One subsection per co-huddle peer the subject actor has a
-// Relationship row for — summary line first, then up to N most-recent
-// salient facts (Build already truncated and reversed to most-recent-
-// first). Empty when there are no per-peer entries (Build returns nil
-// for non-shared actors and for huddles with no relationships).
+// renderRelationships writes the "## What you remember of those here" section —
+// the consolidated per-peer SUMMARY only. ZBBS-HOME-412 moved the turn-by-turn
+// to "## Recent conversation here" (renderRecentConversation, sourced from the
+// huddle ring for ALL NPCs), so the per-peer RecentFacts list is no longer
+// rendered here — in particular the [heard] re-surface that drove the cross-tick
+// re-pitch (a remembered ask read as a live one). A peer with no consolidated
+// summary contributes nothing now, so the section is skipped entirely when no
+// peer has one. (Still shared-VA-only: Build leaves Relationships nil for
+// stateful/PC kinds.)
 func renderRelationships(b *strings.Builder, peers []RelationshipPeerView) {
 	if len(peers) == 0 {
 		return
 	}
-	b.WriteString("## What you remember of those here\n")
+	wrote := false
 	for _, p := range peers {
+		if strings.TrimSpace(p.SummaryText) == "" {
+			continue
+		}
+		if !wrote {
+			b.WriteString("## What you remember of those here\n")
+			wrote = true
+		}
 		name := sanitizeInline(p.PeerName)
 		if name == "" {
 			name = string(p.PeerID)
 		}
-		fmt.Fprintf(b, "- %s:", name)
-		if p.SummaryText != "" {
-			fmt.Fprintf(b, " %s", sanitizeInline(p.SummaryText))
-		}
+		fmt.Fprintf(b, "- %s: %s\n", name, sanitizeInline(p.SummaryText))
+	}
+	if wrote {
 		b.WriteString("\n")
-		for _, f := range p.RecentFacts {
-			excerpt, _ := sanitizeText(f.Text, 0)
-			kind := string(f.Kind)
-			if kind == "" {
-				kind = "noted"
-			}
-			fmt.Fprintf(b, "  - [%s] %s\n", kind, excerpt)
+	}
+}
+
+// renderRecentConversation writes the "## Recent conversation here" section
+// (ZBBS-HOME-412) — the huddle's last few spoken turns, oldest-first, marking
+// the subject's own lines "You said" and everyone else "<Name> said". This is
+// the cross-tick conversational continuity EVERY NPC (stateful included) and the
+// player's own lines feed into, so a re-engaging actor sees that it already
+// spoke and what was just asked, instead of re-pitching. Empty list skips the
+// section.
+func renderRecentConversation(b *strings.Builder, lines []UtteranceView) {
+	if len(lines) == 0 {
+		return
+	}
+	b.WriteString("## Recent conversation here\n")
+	for _, u := range lines {
+		text, _ := sanitizeText(u.Text, 0)
+		if u.IsSelf {
+			fmt.Fprintf(b, "- You said: %s\n", text)
+			continue
 		}
+		name := sanitizeInline(u.SpeakerName)
+		if name == "" {
+			name = "someone"
+		}
+		fmt.Fprintf(b, "- %s said: %s\n", name, text)
 	}
 	b.WriteString("\n")
 }

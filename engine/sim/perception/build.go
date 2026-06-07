@@ -51,7 +51,9 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 	p.Anchors = buildAnchors(snap, actorSnap)
 	p.NarrativeState = buildNarrativeState(actorSnap)
 	p.Businessowner = actorSnap.BusinessownerState != nil
-	p.Relationships = buildRelationships(actorSnap, p.Surroundings.HuddleMembers, currentHeardExcerpts(p.Warrants))
+	heardNow := currentHeardExcerpts(p.Warrants)
+	p.Relationships = buildRelationships(actorSnap, p.Surroundings.HuddleMembers, heardNow)
+	p.RecentConversation = buildRecentConversation(snap, actorID, actorSnap, heardNow)
 	p.OfferableCustomers = buildOfferableCustomers(snap, actorID, p.Businessowner, p.Surroundings.HuddleMembers, p.Actor.Inventory)
 	p.PendingDeliveriesFromMe, p.PendingDeliveriesToMe = buildPendingOrderViews(snap, actorID)
 	p.LocalDateUTC = snap.LocalDateUTC // world "today" for the order-book date split (ZBBS-HOME-403)
@@ -1190,6 +1192,54 @@ func buildRelationships(a *sim.ActorSnapshot, members []HuddleMember, heardNow m
 			PeerName:    m.DisplayName,
 			SummaryText: rel.SummaryText,
 			RecentFacts: recentFactsMostRecentFirst(facts, recentSalientFactsPerPeer),
+		})
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// recentConversationDedupKey truncates an utterance to MaxSalientFactTextLen the
+// same way the warrant Excerpt is, so a ring line can be matched against
+// currentHeardExcerpts (which keys on the truncated form). Short lines (the
+// common case) are returned unchanged.
+func recentConversationDedupKey(text string) string {
+	r := []rune(text)
+	if len(r) > sim.MaxSalientFactTextLen {
+		return string(r[:sim.MaxSalientFactTextLen])
+	}
+	return text
+}
+
+// buildRecentConversation projects the subject's current-huddle RecentUtterances
+// ring into the "## Recent conversation here" view (ZBBS-HOME-412), oldest-first.
+// Populated for EVERY actor with a live huddle — NOT gated to shared VAs like
+// buildRelationships — so stateful NPCs and PC-facing vendors get cross-tick
+// conversational continuity (they see their own prior lines and the player's).
+// The subject's own lines are marked IsSelf. A line whose text matches an
+// utterance already surfaced in this tick's "## What just happened" (heardNow) is
+// dropped so the live turn isn't shown twice — the same de-dup buildRelationships
+// applies to heard facts (ZBBS-WORK-374). Returns nil when the subject has no
+// huddle or nothing survives the de-dup.
+func buildRecentConversation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSnapshot, heardNow map[sim.ActorID]map[string]bool) []UtteranceView {
+	huddleID := actorSnap.CurrentHuddleID
+	if huddleID == "" {
+		return nil
+	}
+	h := snap.Huddles[huddleID]
+	if h == nil || len(h.RecentUtterances) == 0 {
+		return nil
+	}
+	out := make([]UtteranceView, 0, len(h.RecentUtterances))
+	for _, u := range h.RecentUtterances {
+		if dups := heardNow[u.SpeakerID]; dups != nil && dups[recentConversationDedupKey(u.Text)] {
+			continue // already rendered in "## What just happened" this tick
+		}
+		out = append(out, UtteranceView{
+			SpeakerName: u.SpeakerName,
+			Text:        u.Text,
+			IsSelf:      u.SpeakerID == actorID,
 		})
 	}
 	if len(out) == 0 {

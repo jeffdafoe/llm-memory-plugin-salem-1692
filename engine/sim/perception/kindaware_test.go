@@ -299,17 +299,88 @@ func TestRender_WhatYouRememberSection(t *testing.T) {
 	}
 
 	rendered := Render(Build(snap, "hannah", nil), DefaultRenderConfig())
-	if !strings.Contains(combinedPrompt(rendered), "## What you remember of those here") {
+	combined := combinedPrompt(rendered)
+	if !strings.Contains(combined, "## What you remember of those here") {
 		t.Error("missing 'What you remember' section")
 	}
-	if !strings.Contains(combinedPrompt(rendered), "Ezekiel Crane:") {
-		t.Error("missing peer name in 'What you remember'")
+	if !strings.Contains(combined, "Ezekiel Crane: The blacksmith. Often buys ale.") {
+		t.Error("missing peer summary line in 'What you remember'")
 	}
-	if !strings.Contains(combinedPrompt(rendered), "Often buys ale.") {
-		t.Error("missing summary in 'What you remember'")
+	// ZBBS-HOME-412: the section is summary-ONLY now. Per-peer salient facts —
+	// the [heard] re-pitch driver and other [kind] facts alike — are no longer
+	// rendered here; the turn-by-turn moved to '## Recent conversation here'
+	// (the huddle ring, populated for all NPCs).
+	if strings.Contains(combined, "[paid_by]") {
+		t.Error("salient facts must no longer render in 'What you remember' (summary-only since HOME-412)")
 	}
-	if !strings.Contains(combinedPrompt(rendered), "[paid_by] Paid 4 coins for ale.") {
-		t.Error("missing salient fact in 'What you remember'")
+}
+
+// A peer with a relationship row but NO consolidated summary contributes
+// nothing now that the per-peer facts are gone — the whole section is skipped
+// rather than emitting a bare "- Name:" line (ZBBS-HOME-412).
+func TestRender_WhatYouRememberSection_SkippedWhenNoSummary(t *testing.T) {
+	a := sharedSnap("hannah", "Hannah", "h1")
+	a.Relationships = map[sim.ActorID]*sim.Relationship{
+		"ezekiel": {
+			SalientFacts: []sim.SalientFact{
+				{At: time.Now(), Kind: sim.InteractionHeard, Text: "Ezekiel Crane said: a room, please."},
+			},
+		},
+	}
+	snap := &sim.Snapshot{
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			"hannah":  a,
+			"ezekiel": peerSnap("ezekiel", "Ezekiel Crane", "blacksmith", sim.KindNPCStateful, "h1"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			"h1": {ID: "h1", Members: map[sim.ActorID]struct{}{"hannah": {}, "ezekiel": {}}},
+		},
+	}
+
+	combined := combinedPrompt(Render(Build(snap, "hannah", nil), DefaultRenderConfig()))
+	if strings.Contains(combined, "## What you remember of those here") {
+		t.Errorf("section must be skipped when no peer has a summary, got:\n%s", combined)
+	}
+}
+
+// ZBBS-HOME-412: the huddle's recent-conversation ring renders as
+// '## Recent conversation here', oldest-first, marking the subject's own lines
+// "You said". Crucially it is populated for a STATEFUL subject (whose
+// Relationships are nil), proving the cross-tick continuity reaches the NPCs the
+// per-pair relationship trail deliberately skips.
+func TestRender_RecentConversationSection_StatefulSubject(t *testing.T) {
+	subject := peerSnap("ezekiel", "Ezekiel Crane", "blacksmith", sim.KindNPCStateful, "h1")
+	now := time.Now()
+	snap := &sim.Snapshot{
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			"ezekiel": subject,
+			"hannah":  peerSnap("hannah", "Hannah Boggs", "innkeeper", sim.KindNPCShared, "h1"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			"h1": {
+				ID:      "h1",
+				Members: map[sim.ActorID]struct{}{"ezekiel": {}, "hannah": {}},
+				RecentUtterances: []sim.Utterance{
+					{SpeakerID: "ezekiel", SpeakerName: "Ezekiel Crane", Text: "Might I have a room?", At: now},
+					{SpeakerID: "hannah", SpeakerName: "Hannah Boggs", Text: "Four coins for the night.", At: now.Add(time.Second)},
+				},
+			},
+		},
+	}
+
+	combined := combinedPrompt(Render(Build(snap, "ezekiel", nil), DefaultRenderConfig()))
+	if !strings.Contains(combined, "## Recent conversation here") {
+		t.Fatalf("missing '## Recent conversation here' for a stateful subject, got:\n%s", combined)
+	}
+	if !strings.Contains(combined, "- You said: Might I have a room?") {
+		t.Errorf("subject's own line should render as 'You said', got:\n%s", combined)
+	}
+	if !strings.Contains(combined, "- Hannah Boggs said: Four coins for the night.") {
+		t.Errorf("peer line should render as '<Name> said', got:\n%s", combined)
+	}
+	// Oldest-first: the subject's question precedes Hannah's reply.
+	if strings.Index(combined, "Might I have a room?") > strings.Index(combined, "Four coins for the night.") {
+		t.Error("recent conversation must render oldest-first")
 	}
 }
 

@@ -221,6 +221,20 @@ func SpeakTo(speakerID ActorID, text, to string, hasNewNews bool, at time.Time) 
 				At:           at,
 			})
 
+			// ZBBS-HOME-412: record the utterance in the huddle's transient
+			// recent-conversation ring so every co-present NPC — stateful included,
+			// which the per-pair RecordInteraction writes below deliberately skip —
+			// sees the live turn-by-turn cross-tick ("## Recent conversation here").
+			// Unconditional on actor kind: this is the one record that must include
+			// the PC's own lines (PC speech reaches here via sim.Speak), so an NPC
+			// sees what the player just asked. A void speak with no huddle has
+			// nowhere to land and is skipped.
+			if huddleID != "" {
+				if h, ok := w.Huddles[huddleID]; ok && h.ConcludedAt == nil {
+					h.AppendUtterance(speakerID, actor.DisplayName, text, at)
+				}
+			}
+
 			// Per-peer bidirectional relationship writes. The KindNPCShared
 			// gate inside RecordInteraction filters which writes persist —
 			// stateful-VA NPCs get their per-peer continuity from their VA's
