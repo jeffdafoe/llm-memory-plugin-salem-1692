@@ -43,6 +43,20 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 		return p
 	}
 
+	// ZBBS-HOME-413: drop any seller-side pay-offer warrant whose ledger entry
+	// is no longer pending. The PayOfferWarrant is stamped once (on
+	// PayOfferReceived) and only cleared when the seller's next reactor tick
+	// consumes it; resolution stamps the BUYER, never the seller's standing
+	// warrant. So an offer that resolves out-of-band (buyer withdrew, TTL
+	// expired, or the seller was rest-gated and couldn't tick) before the
+	// seller consumes it would otherwise render a dead offer under "## Offers
+	// awaiting your decision" AND keep the accept/decline/counter tools gated
+	// open (both key off PayOfferWarrants). Build runs on the immutable
+	// snapshot, so checking live ledger state is race-free here — the renderer
+	// can't (it reads terms off the warrant payload by design). Filtering at
+	// Build is the single chokepoint that fixes render + tool-gate together.
+	p.Warrants = filterStalePayOfferWarrants(p.Warrants, snap)
+
 	p.Actor = buildActorView(snap, actorSnap)
 	p.WarrantActorNames = buildWarrantActorNames(snap, actorSnap, actorID, p.Warrants)
 	p.WarrantPlaceNames = buildWarrantPlaceNames(snap, p.Warrants)
@@ -56,6 +70,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 	p.RecentConversation = buildRecentConversation(snap, actorID, actorSnap, heardNow)
 	p.OfferableCustomers = buildOfferableCustomers(snap, actorID, p.Businessowner, p.Surroundings.HuddleMembers, p.Actor.Inventory)
 	p.PendingDeliveriesFromMe, p.PendingDeliveriesToMe = buildPendingOrderViews(snap, actorID)
+	p.PendingOffersFromMe = buildPendingOffersFromMe(snap, actorID, actorSnap)
 	p.LocalDateUTC = snap.LocalDateUTC // world "today" for the order-book date split (ZBBS-HOME-403)
 	p.RecoveryOptions = buildRecoveryOptions(snap, actorID, actorSnap)
 	p.Satiation = buildSatiation(snap, actorID, actorSnap)
@@ -1405,6 +1420,109 @@ func absentRecipientNames(snap *sim.Snapshot, seller *sim.ActorSnapshot, o *sim.
 	}
 	sort.Strings(absent)
 	return absent
+}
+
+// buildPendingOffersFromMe scans snap.PayLedger for the subject's OWN still-
+// pending pay-with-item offers — entries where the subject is the BUYER and the
+// state is Pending (the only non-terminal pay-ledger state) — and projects each
+// to a PendingOfferView for the "## Your pending offers" cue (ZBBS-HOME-413).
+//
+// This is the buyer-side counterpart to the seller's PayOfferWarrants: the
+// seller learns of an offer via a warrant stamped on them, but the buyer gets
+// NO warrant for an offer they placed, so without this scan a buyer has no
+// cross-tick memory of an outstanding offer and re-stakes the same one every
+// tick (the repeat-offer storm). The data comes from the ledger, not a warrant,
+// for exactly that reason.
+//
+// The seller's name is acquaintance-gated (descriptorLabel against the
+// subject's Acquaintances) — the same name-vs-descriptor gating the seller side
+// applies to the buyer. Returns nil for no pending offers so render content-
+// gates cheaply. Ordering: by LedgerID ascending, deterministic across runs.
+func buildPendingOffersFromMe(snap *sim.Snapshot, subject sim.ActorID, subjectSnap *sim.ActorSnapshot) []PendingOfferView {
+	if snap == nil || len(snap.PayLedger) == 0 {
+		return nil
+	}
+	// Pre-collect IDs so the views sort deterministically by LedgerID.
+	var ids []sim.LedgerID
+	for id, e := range snap.PayLedger {
+		if e == nil || e.State != sim.PayLedgerStatePending {
+			continue
+		}
+		if e.BuyerID != subject {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+
+	resolveSeller := func(id sim.ActorID) string {
+		seller := snap.Actors[id]
+		if seller == nil {
+			return string(id)
+		}
+		acquainted := false
+		if subjectSnap != nil && seller.DisplayName != "" {
+			_, acquainted = subjectSnap.Acquaintances[seller.DisplayName]
+		}
+		return descriptorLabel(seller.DisplayName, seller.Role, acquainted)
+	}
+
+	views := make([]PendingOfferView, 0, len(ids))
+	for _, id := range ids {
+		e := snap.PayLedger[id]
+		views = append(views, PendingOfferView{
+			LedgerID:   e.ID,
+			SellerName: resolveSeller(e.SellerID),
+			Item:       e.ItemKind,
+			Qty:        e.Qty,
+			Amount:     e.Amount,
+			// snap.PayLedger entries are deep-cloned at publish, so the
+			// snapshot's PayItems slice is already isolated from world state;
+			// aliasing it into the (read-only, per-tick) view is safe.
+			PayItems: e.PayItems,
+		})
+	}
+	return views
+}
+
+// filterStalePayOfferWarrants removes PayOfferWarrantReason warrants whose
+// pay-ledger entry is missing or no longer pending (ZBBS-HOME-413). See the
+// callsite in Build for the why. All other warrant kinds pass through
+// untouched, and the input slice is returned unchanged (same backing array)
+// when nothing is stale — the common case, so the steady state allocates
+// nothing.
+func filterStalePayOfferWarrants(warrants []sim.WarrantMeta, snap *sim.Snapshot) []sim.WarrantMeta {
+	if len(warrants) == 0 || snap == nil {
+		return warrants
+	}
+	stale := func(w sim.WarrantMeta) bool {
+		r, ok := w.Reason.(sim.PayOfferWarrantReason)
+		if !ok {
+			return false
+		}
+		e := snap.PayLedger[r.LedgerID]
+		return e == nil || e.State != sim.PayLedgerStatePending
+	}
+	anyStale := false
+	for _, w := range warrants {
+		if stale(w) {
+			anyStale = true
+			break
+		}
+	}
+	if !anyStale {
+		return warrants
+	}
+	out := make([]sim.WarrantMeta, 0, len(warrants))
+	for _, w := range warrants {
+		if !stale(w) {
+			out = append(out, w)
+		}
+	}
+	return out
 }
 
 // recentFactsMostRecentFirst returns up to n facts from the tail of

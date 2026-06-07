@@ -154,6 +154,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	renderOfferableCustomers(&ephemeral, p.OfferableCustomers)
 	renderPendingDeliveriesFromMe(&ephemeral, p.PendingDeliveriesFromMe, p.LocalDateUTC)
 	renderPendingDeliveriesToMe(&ephemeral, p.PendingDeliveriesToMe, p.LocalDateUTC)
+	renderPendingOffersFromMe(&ephemeral, p.PendingOffersFromMe)
 	renderRecoveryOptions(&ephemeral, p.RecoveryOptions)
 	renderSatiation(&ephemeral, p.Satiation)
 	renderRestocking(&ephemeral, p.Restocking)
@@ -1285,6 +1286,42 @@ func renderPayOffers(b *strings.Builder, offers []sim.PayOfferWarrantReason, nam
 	// rather than just "say a word", which a weak model may satisfy as plain text).
 	// ZBBS-HOME-388.
 	b.WriteString("Respond first with accept_pay, decline_pay, or counter_pay, passing the offer id as ledger_id. Then also use speak for a brief reply, because the pay response itself passes in silence.\n")
+}
+
+// renderPendingOffersFromMe renders the buyer-side "## Your pending offers"
+// section — the subject's OWN pay-with-item offers still awaiting the seller's
+// answer (ZBBS-HOME-413). It is the mirror of renderPayOffers (the seller's
+// "offers awaiting your decision"): the seller sees offers staked AGAINST them;
+// the buyer sees offers they HAVE staked. Its job is suppression — a hungry
+// buyer who already has an open offer should wait, not re-stake the same offer
+// next tick (the cross-tick repeat-offer storm). One line per offer; the
+// closing line is an explicit "don't re-offer" instruction.
+//
+// Uncapped by design, like renderPayOffers: pending outgoing offers are bounded
+// by the buyer's own tool calls (few), and the whole point is that every open
+// offer is visible so none gets re-staked. SellerName is already acquaintance-
+// gated at build time; item kinds are sanitized inline here (they reach the
+// prompt). Payment terms reuse formatOfferPayment so the buyer reads the same
+// "5 nails and 3 coins" shape the seller sees.
+func renderPendingOffersFromMe(b *strings.Builder, offers []PendingOfferView) {
+	if len(offers) == 0 {
+		return
+	}
+	b.WriteString("## Your pending offers\n")
+	for i, o := range offers {
+		seller := sanitizeInline(o.SellerName)
+		if seller == "" {
+			seller = "someone"
+		}
+		item := sanitizeInline(string(o.Item))
+		if item == "" {
+			item = "item"
+		}
+		payment := formatOfferPayment(o.Amount, o.PayItems)
+		fmt.Fprintf(b, "%d. You offered %s for %d %s to %s — awaiting their answer (offer id %d)\n",
+			i+1, payment, o.Qty, item, seller, o.LedgerID)
+	}
+	b.WriteString("Wait for their answer — do not place another offer while one for the same goods is still pending.\n")
 }
 
 func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(sim.ActorID) string, placeNameOf func(string) string, cfg RenderConfig, out *RenderedPrompt) {
