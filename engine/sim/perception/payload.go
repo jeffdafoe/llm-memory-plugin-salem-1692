@@ -207,6 +207,22 @@ type Payload struct {
 	// Ordering: sorted by Order.ID for determinism.
 	PendingDeliveriesToMe []OrderView
 
+	// PendingOffersFromMe lists the subject's OWN still-pending pay-with-item
+	// offers — the buyer-side mirror of the seller's "## Offers awaiting your
+	// decision" (renderPayOffers). The seller sees offers staked against them;
+	// without this the buyer has no symmetric awareness of an offer they
+	// already placed, so a hungry NPC re-perceives "I'm hungry, they have
+	// meat" every tick and stakes the SAME offer again — a cross-tick
+	// repeat-offer storm (ZBBS-HOME-413; the pay-path twin of the speech
+	// re-pitch ZBBS-HOME-412 fixed). HOME-395's offeredThisTick guard only
+	// dedups WITHIN a tick; these offers are ticks apart.
+	//
+	// Sourced from snap.PayLedger (entries where BuyerID == subject and
+	// State == Pending) — NOT from a warrant, because pay offers warrant the
+	// seller only. nil (render content-gates) when the subject has no pending
+	// offers outstanding. Ordering: by LedgerID ascending for determinism.
+	PendingOffersFromMe []PendingOfferView
+
 	// LocalDateUTC is midnight UTC of the village's current calendar date,
 	// copied from Snapshot.LocalDateUTC. Render's order-book split
 	// (renderPendingDeliveries*) compares it against each OrderView.ReadyBy so
@@ -319,6 +335,27 @@ type OrderView struct {
 	// ready-to-hand-over-now vs upcoming reservations, and the buyer view into
 	// waiting-on vs overdue. ZBBS-HOME-403.
 	ReadyBy time.Time
+}
+
+// PendingOfferView is the buyer-side projection of one of the subject's own
+// pending pay-with-item offers (ZBBS-HOME-413). Renders in "## Your pending
+// offers" as a "you already offered X for Y — wait, don't re-offer" cue. The
+// LedgerID is carried for parity with the seller-side line and so the buyer
+// could withdraw_pay it, though the section's primary job is suppression of a
+// duplicate offer, not driving a new tool call.
+//
+// SellerName is the acquaintance-gated label (descriptorLabel) — the same
+// name-vs-descriptor gating the seller side uses for the buyer. PayItems are
+// the goods offered to pay WITH (barter leg); Amount is the coin leg. Item/Qty
+// are the goods being bought. Built from snap.PayLedger; no untrusted free text
+// reaches the render (item kinds are sanitized inline at render time).
+type PendingOfferView struct {
+	LedgerID   sim.LedgerID
+	SellerName string
+	Item       sim.ItemKind
+	Qty        int
+	Amount     int
+	PayItems   []sim.ItemKindQty
 }
 
 // OfferableCustomersView is the seller-side "offer your wares" cue's content

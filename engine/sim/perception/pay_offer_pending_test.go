@@ -1,0 +1,280 @@
+package perception
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
+)
+
+// pay_offer_pending_test.go — ZBBS-HOME-413. Two surfaces:
+//   - the buyer-side "## Your pending offers" cue (buildPendingOffersFromMe +
+//     renderPendingOffersFromMe), the cross-tick repeat-offer-storm fix; and
+//   - filterStalePayOfferWarrants, which drops a seller's standing pay-offer
+//     warrant once its ledger entry has resolved (so a dead offer stops
+//     rendering as "awaiting your decision" and gating the response tools).
+//
+// The fixture mirrors the live incident: Prudence Ward (buyer) staking
+// pay-with-item offers against Elizabeth Ellis (seller).
+
+// offerEntry builds a PayLedgerEntry in the given state for tests.
+func offerEntry(id sim.LedgerID, buyer, seller sim.ActorID, item sim.ItemKind, qty, amount int, state sim.PayLedgerState) *sim.PayLedgerEntry {
+	return &sim.PayLedgerEntry{
+		ID:       id,
+		BuyerID:  buyer,
+		SellerID: seller,
+		ItemKind: item,
+		Qty:      qty,
+		Amount:   amount,
+		State:    state,
+	}
+}
+
+// offerSnap builds a minimal *sim.Snapshot with the buyer/seller/bystander
+// actors and the supplied PayLedger. prudence (buyer) knows nobody by default,
+// so a seller name resolves to the role descriptor until Acquaintances is set.
+func offerSnap(ledger map[sim.LedgerID]*sim.PayLedgerEntry) *sim.Snapshot {
+	return &sim.Snapshot{
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			"prudence":  {DisplayName: "Prudence Ward", Role: "apothecary", Kind: sim.KindNPCStateful, Needs: map[sim.NeedKey]int{}},
+			"elizabeth": {DisplayName: "Elizabeth Ellis", Role: "dairykeeper", Kind: sim.KindNPCShared, Needs: map[sim.NeedKey]int{}},
+			"mary":      {DisplayName: "Mary", Role: "weaver", Kind: sim.KindNPCStateful, Needs: map[sim.NeedKey]int{}},
+		},
+		PayLedger:  ledger,
+		Scenes:     map[sim.SceneID]*sim.Scene{},
+		Huddles:    map[sim.HuddleID]*sim.Huddle{},
+		Structures: map[sim.StructureID]*sim.Structure{},
+	}
+}
+
+// --- Part 1: buyer-side pending-offer build -------------------------------
+
+func TestBuildPendingOffersFromMe_NilAndEmpty(t *testing.T) {
+	if got := buildPendingOffersFromMe(nil, "prudence", nil); got != nil {
+		t.Errorf("nil snap: got %v, want nil", got)
+	}
+	snap := offerSnap(nil)
+	if got := buildPendingOffersFromMe(snap, "prudence", snap.Actors["prudence"]); got != nil {
+		t.Errorf("empty ledger: got %v, want nil", got)
+	}
+}
+
+// The buyer sees an offer they staked, with the load-bearing ledger id, the
+// goods, the payment, and a role-gated seller name (Prudence doesn't yet know
+// Elizabeth → "the dairykeeper").
+func TestBuildPendingOffersFromMe_BuyerSeesOwnPendingOffer(t *testing.T) {
+	snap := offerSnap(map[sim.LedgerID]*sim.PayLedgerEntry{
+		236: offerEntry(236, "prudence", "elizabeth", "meat", 10, 48, sim.PayLedgerStatePending),
+	})
+	views := buildPendingOffersFromMe(snap, "prudence", snap.Actors["prudence"])
+	if len(views) != 1 {
+		t.Fatalf("views = %v, want one pending offer", views)
+	}
+	v := views[0]
+	if v.LedgerID != 236 || v.Item != "meat" || v.Qty != 10 || v.Amount != 48 {
+		t.Errorf("view fields = %+v, want ledger 236 / meat / qty 10 / amount 48", v)
+	}
+	if v.SellerName != "the dairykeeper" {
+		t.Errorf("SellerName = %q, want role-gated %q (Prudence doesn't know Elizabeth)", v.SellerName, "the dairykeeper")
+	}
+}
+
+// Once the buyer is acquainted with the seller, the display name is used.
+func TestBuildPendingOffersFromMe_AcquaintedUsesDisplayName(t *testing.T) {
+	snap := offerSnap(map[sim.LedgerID]*sim.PayLedgerEntry{
+		236: offerEntry(236, "prudence", "elizabeth", "meat", 10, 48, sim.PayLedgerStatePending),
+	})
+	snap.Actors["prudence"].Acquaintances = map[string]sim.Acquaintance{"Elizabeth Ellis": {}}
+	views := buildPendingOffersFromMe(snap, "prudence", snap.Actors["prudence"])
+	if len(views) != 1 || views[0].SellerName != "Elizabeth Ellis" {
+		t.Errorf("SellerName = %q, want %q once acquainted", views[0].SellerName, "Elizabeth Ellis")
+	}
+}
+
+// The SELLER an offer is staked against does NOT get a "your pending offers"
+// view — those are offers staked by the buyer. The seller learns of them via
+// the seller-side warrant path (renderPayOffers), not this one.
+func TestBuildPendingOffersFromMe_SellerSubjectGetsNone(t *testing.T) {
+	snap := offerSnap(map[sim.LedgerID]*sim.PayLedgerEntry{
+		236: offerEntry(236, "prudence", "elizabeth", "meat", 10, 48, sim.PayLedgerStatePending),
+	})
+	if got := buildPendingOffersFromMe(snap, "elizabeth", snap.Actors["elizabeth"]); got != nil {
+		t.Errorf("seller subject got %v, want nil (offer is staked against them, not by them)", got)
+	}
+}
+
+// Only Pending entries surface — every terminal state is filtered out.
+func TestBuildPendingOffersFromMe_TerminalFiltered(t *testing.T) {
+	terminals := []sim.PayLedgerState{
+		sim.PayLedgerStateAccepted,
+		sim.PayLedgerStateDeclined,
+		sim.PayLedgerStateExpired,
+		sim.PayLedgerStateFailedInsufficientFunds,
+		sim.PayLedgerStateWithdrawnByBuyer,
+	}
+	for _, st := range terminals {
+		snap := offerSnap(map[sim.LedgerID]*sim.PayLedgerEntry{
+			236: offerEntry(236, "prudence", "elizabeth", "meat", 10, 48, st),
+		})
+		if got := buildPendingOffersFromMe(snap, "prudence", snap.Actors["prudence"]); got != nil {
+			t.Errorf("state %q: got %v, want nil (terminal filtered)", st, got)
+		}
+	}
+}
+
+// Multiple pending offers sort by LedgerID ascending (deterministic).
+func TestBuildPendingOffersFromMe_DeterministicOrder(t *testing.T) {
+	snap := offerSnap(map[sim.LedgerID]*sim.PayLedgerEntry{
+		237: offerEntry(237, "prudence", "elizabeth", "meat", 10, 48, sim.PayLedgerStatePending),
+		235: offerEntry(235, "prudence", "elizabeth", "meat", 10, 48, sim.PayLedgerStatePending),
+		236: offerEntry(236, "prudence", "elizabeth", "meat", 10, 48, sim.PayLedgerStatePending),
+	})
+	views := buildPendingOffersFromMe(snap, "prudence", snap.Actors["prudence"])
+	if len(views) != 3 {
+		t.Fatalf("views count = %d, want 3", len(views))
+	}
+	for i, want := range []sim.LedgerID{235, 236, 237} {
+		if views[i].LedgerID != want {
+			t.Errorf("views[%d].LedgerID = %d, want %d", i, views[i].LedgerID, want)
+		}
+	}
+}
+
+// --- Part 1: buyer-side pending-offer render ------------------------------
+
+func TestRenderPendingOffersFromMe_HappyPath(t *testing.T) {
+	var b strings.Builder
+	renderPendingOffersFromMe(&b, []PendingOfferView{
+		{LedgerID: 236, SellerName: "Elizabeth Ellis", Item: "meat", Qty: 10, Amount: 48},
+	})
+	out := b.String()
+	for _, must := range []string{
+		"## Your pending offers",
+		"offer id 236",
+		"48 coins",
+		"10 meat",
+		"Elizabeth Ellis",
+		"do not place another offer",
+	} {
+		if !strings.Contains(out, must) {
+			t.Errorf("missing %q\n--- output ---\n%s", must, out)
+		}
+	}
+}
+
+// A barter offer (goods, or goods + coins) renders the goods being offered.
+func TestRenderPendingOffersFromMe_Barter(t *testing.T) {
+	var b strings.Builder
+	renderPendingOffersFromMe(&b, []PendingOfferView{
+		{LedgerID: 9, SellerName: "the dairykeeper", Item: "stew", Qty: 1, Amount: 0,
+			PayItems: []sim.ItemKindQty{{Kind: "nail", Qty: 5}}},
+	})
+	out := b.String()
+	if !strings.Contains(out, "5 nail for 1 stew") {
+		t.Errorf("barter offer line missing the goods offered\n%s", out)
+	}
+	if !strings.Contains(out, "offer id 9") {
+		t.Errorf("ledger id missing on barter offer\n%s", out)
+	}
+}
+
+// Content-gated: an empty list produces no section at all.
+func TestRenderPendingOffersFromMe_EmptyGated(t *testing.T) {
+	var b strings.Builder
+	renderPendingOffersFromMe(&b, nil)
+	if b.Len() != 0 {
+		t.Errorf("empty list produced output: %q", b.String())
+	}
+}
+
+// The cue appears end-to-end through Build+Render for a buyer with a pending
+// offer.
+func TestRender_BuyerPendingOfferSection(t *testing.T) {
+	snap := offerSnap(map[sim.LedgerID]*sim.PayLedgerEntry{
+		236: offerEntry(236, "prudence", "elizabeth", "meat", 10, 48, sim.PayLedgerStatePending),
+	})
+	p := Build(snap, "prudence", nil)
+	out := combinedPrompt(Render(p, DefaultRenderConfig()))
+	if !strings.Contains(out, "## Your pending offers") || !strings.Contains(out, "offer id 236") {
+		t.Errorf("buyer pending-offer cue missing from full prompt\n%s", out)
+	}
+}
+
+// --- Part 3: stale seller-warrant filter ----------------------------------
+
+// A pay-offer warrant whose ledger entry has resolved (terminal) or vanished is
+// dropped; a still-pending one and any non-pay warrant pass through.
+func TestFilterStalePayOfferWarrants_DropsResolvedAndMissing(t *testing.T) {
+	snap := offerSnap(map[sim.LedgerID]*sim.PayLedgerEntry{
+		235: offerEntry(235, "prudence", "elizabeth", "meat", 10, 48, sim.PayLedgerStateExpired),
+		236: offerEntry(236, "prudence", "elizabeth", "meat", 10, 48, sim.PayLedgerStatePending),
+		// 237 intentionally absent from the ledger (reaped) → its warrant is stale.
+	})
+	warrants := []sim.WarrantMeta{
+		payOfferWarrant(235, "prudence", "meat", 10, 48, false), // terminal → drop
+		payOfferWarrant(236, "prudence", "meat", 10, 48, false), // pending → keep
+		payOfferWarrant(237, "prudence", "meat", 10, 48, false), // missing → drop
+		speechWarrant(40, "s1", "mary", "good evening"),         // non-pay → keep
+	}
+	got := filterStalePayOfferWarrants(warrants, snap)
+	if len(got) != 2 {
+		t.Fatalf("filtered len = %d, want 2 (pending offer + speech)\n%+v", len(got), got)
+	}
+	offers := 0
+	for _, w := range got {
+		if r, ok := w.Reason.(sim.PayOfferWarrantReason); ok {
+			offers++
+			if r.LedgerID != 236 {
+				t.Errorf("surviving pay-offer warrant ledger = %d, want only 236", r.LedgerID)
+			}
+		}
+	}
+	if offers != 1 {
+		t.Errorf("surviving pay-offer warrants = %d, want 1", offers)
+	}
+}
+
+// When nothing is stale, the original slice is returned unchanged (no alloc).
+func TestFilterStalePayOfferWarrants_NoStaleReturnsInput(t *testing.T) {
+	snap := offerSnap(map[sim.LedgerID]*sim.PayLedgerEntry{
+		236: offerEntry(236, "prudence", "elizabeth", "meat", 10, 48, sim.PayLedgerStatePending),
+	})
+	warrants := []sim.WarrantMeta{
+		payOfferWarrant(236, "prudence", "meat", 10, 48, false),
+		speechWarrant(40, "s1", "mary", "good evening"),
+	}
+	got := filterStalePayOfferWarrants(warrants, snap)
+	if len(got) != len(warrants) {
+		t.Fatalf("filtered len = %d, want %d (nothing stale)", len(got), len(warrants))
+	}
+}
+
+// Wired into Build: a seller carrying a standing pay-offer warrant whose entry
+// has resolved no longer sees it via PayOfferWarrants (so renderPayOffers and
+// the tool gate both stop treating the dead offer as actionable).
+func TestBuild_DropsResolvedSellerOfferWarrant(t *testing.T) {
+	snap := offerSnap(map[sim.LedgerID]*sim.PayLedgerEntry{
+		236: offerEntry(236, "prudence", "elizabeth", "meat", 10, 48, sim.PayLedgerStateAccepted),
+	})
+	warrants := []sim.WarrantMeta{payOfferWarrant(236, "prudence", "meat", 10, 48, false)}
+	p := Build(snap, "elizabeth", warrants)
+	if got := PayOfferWarrants(p); len(got) != 0 {
+		t.Errorf("PayOfferWarrants = %d, want 0 (resolved offer filtered at Build)", len(got))
+	}
+	out := combinedPrompt(Render(p, DefaultRenderConfig()))
+	if strings.Contains(out, "## Offers awaiting your decision") {
+		t.Errorf("resolved offer should not render as awaiting decision\n%s", out)
+	}
+}
+
+// The pending counterpart survives Build and still drives the seller section.
+func TestBuild_KeepsPendingSellerOfferWarrant(t *testing.T) {
+	snap := offerSnap(map[sim.LedgerID]*sim.PayLedgerEntry{
+		236: offerEntry(236, "prudence", "elizabeth", "meat", 10, 48, sim.PayLedgerStatePending),
+	})
+	warrants := []sim.WarrantMeta{payOfferWarrant(236, "prudence", "meat", 10, 48, false)}
+	p := Build(snap, "elizabeth", warrants)
+	if got := PayOfferWarrants(p); len(got) != 1 {
+		t.Fatalf("PayOfferWarrants = %d, want 1 (pending offer retained)", len(got))
+	}
+}
