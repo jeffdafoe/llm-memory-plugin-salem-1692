@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -398,6 +399,15 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 	// See payOfferKey for the keying rationale (price AND qty deliberately
 	// excluded).
 	offeredThisTick := map[string]struct{}{}
+	// triedThisTick holds the identical-call key (name + canonical decoded args)
+	// of every action this actor has ATTEMPTED this tick under the ZBBS-HOME-414
+	// general guard — the action tools without their own same-tick guard. Recorded
+	// on FIRST attempt regardless of outcome (unlike spokenThisTick/offeredThisTick,
+	// which record on success), so a byte-identical retry of a call that itself
+	// FAILED is rejected, not just a repeat of a successful one — the degenerate
+	// case is precisely accept_pay(234) re-fired after "no longer pending". See the
+	// guard in the dispatch loop and genericCallKey for what is in/out of scope.
+	triedThisTick := map[string]struct{}{}
 	// speaksThisTick counts SUCCESSFUL speaks this tick (ZBBS-HOME-402). When it
 	// reaches maxSpeaksPerTick the loop ends the tick — teeth for the post-speak
 	// done() nudge the weak model ignores. Counts committed speaks only (a
@@ -545,6 +555,29 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 					transcript = append(transcript, toolResultMsg(call.ID, "[error: already_offered] you already made an offer for that item to that seller this turn — wait for their answer, or call done()."))
 					continue
 				}
+			}
+
+			// ZBBS-HOME-414: tool-agnostic same-tick identical-call guard for the
+			// action tools that lack their own (accept_pay / decline_pay /
+			// counter_pay / deliver_order / withdraw_pay / consume / move_to). The
+			// weak model re-fires a byte-identical call until the iteration budget —
+			// accept_pay(234) after it is already accepted, consume(Milk x1) six
+			// times, move_to(here) again — burning rounds and bloating the durable
+			// transcript later ticks replay. Unlike the speak/offer guards above
+			// (record on SUCCESS, so a bounced line may be retried after the
+			// situation changes), this records on the FIRST attempt regardless of
+			// outcome: the degenerate case IS the identical retry of a call that
+			// FAILED, which a record-on-success guard would never catch. An identical
+			// repeat is provably useless for these tools, so rejecting it model-facing
+			// costs nothing and steers the model to a different action or done().
+			if key, ok := genericCallKey(vc); ok {
+				if _, dup := triedThisTick[key]; dup {
+					observationOnly = false
+					result.ToolsFailedRejected = append(result.ToolsFailedRejected, call.Name)
+					transcript = append(transcript, toolResultMsg(call.ID, "[error: already_did_that] you already tried that exact action this turn — it won't change anything; do something different or call done()."))
+					continue
+				}
+				triedThisTick[key] = struct{}{}
 			}
 
 			// Dispatch by class.
@@ -953,6 +986,55 @@ func payOfferKey(vc *ValidatedCall) (string, bool) {
 		disposition = "consume"
 	}
 	return seller + "\x00" + item + "\x00" + disposition, true
+}
+
+// genericCallKey returns the same-tick identical-call dedup key for the
+// ZBBS-HOME-414 guard: the tool name plus a canonical JSON rendering of the
+// DECODED args. Returns ("", false) — the guard does NOT apply — unless the tool
+// is on the explicit action allowlist below.
+//
+// The allowlist (rather than a broad "any non-observation commit" test) is
+// deliberate: the guard is tool-agnostic in MECHANISM but explicit in SCOPE, so
+// (a) a newly-added commit tool does not silently inherit same-args dedup that
+// may be wrong for it, and (b) the boundary the code enforces matches the
+// boundary this comment documents (code_review HOME-414). speak and the offer
+// family are also excluded — they own their own broader, success-only same-tick
+// guards (speakUtteranceKey / payOfferKey) — as are observation-class calls
+// (pure thinking is not penalized, ZBBS-WORK-321).
+//
+// The key is canonical JSON (json.Marshal), not %#v: for structs encoding/json
+// preserves field order and for maps it sorts keys, so the "canonical decoded
+// args" claim holds for any future allowlisted tool's arg shape rather than
+// relying on the implicit invariant that every arg type is a flat struct.
+func genericCallKey(vc *ValidatedCall) (string, bool) {
+	if vc == nil || vc.Entry == nil {
+		return "", false
+	}
+	if _, isSpeak := speakUtteranceKey(vc); isSpeak {
+		return "", false
+	}
+	if _, isOffer := payOfferKey(vc); isOffer {
+		return "", false
+	}
+	if vc.Entry.Class == ClassObservation {
+		return "", false
+	}
+	switch vc.Name {
+	case "accept_pay", "decline_pay", "counter_pay", "deliver_order", "withdraw_pay", "consume", "move_to":
+		// The action tools where a byte-identical repeat in one tick is provably
+		// useless: a resolve-by-id call cannot resolve the same id twice, consume
+		// should pass a larger qty, move_to to your current place is a no-op.
+	default:
+		return "", false
+	}
+	b, err := json.Marshal(vc.DecodedArgs)
+	if err != nil {
+		// A non-marshalable args value can't be keyed — fail open (no dedup)
+		// rather than risk a wrong collision. Not expected for any allowlisted
+		// tool's args.
+		return "", false
+	}
+	return vc.Name + "\x00" + string(b), true
 }
 
 // conversationIDFromPayload returns the narrative-beat scene id the perception
