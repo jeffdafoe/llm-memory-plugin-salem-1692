@@ -259,6 +259,20 @@ func CompleteReactorTick(actorID ActorID, attemptID TickAttemptID, result TickRe
 			actor.TickInFlight = false
 			actor.TickAttemptID = ""
 			actor.inFlightSourceKeys = nil
+
+			// ZBBS-HOME-413: a noop-skipped tick is the moment to dissolve a dead
+			// solo huddle. The skip gate (shouldSkipNoop) only fires when the actor
+			// has NO co-present huddle peer, so a skip while still pinned in a
+			// one-member huddle means the conversation is over and no one is left —
+			// yet post-WORK-367 the lone member never ticks itself out (its
+			// HuddlePeerLeft is low-info, so every subsequent tick re-skips without
+			// leaving). Left alone it stays stranded forever, rendering a departed
+			// peer in its perception (the live Elizabeth-Ellis case). Concluding it
+			// here, where we've just confirmed the actor won't act, is the precise
+			// fix; the actor re-huddles for free on the next co-located speak.
+			if result.TerminalStatus == TickStatusSkipped {
+				dissolveSoloHuddleAfterSkip(w, actor, now)
+			}
 			return CompleteReactorTickResult{Stale: false}, nil
 		},
 	}
@@ -314,6 +328,42 @@ func applyTerminalWarrantPolicy(w *World, actor *Actor, result TickResult, now t
 		}
 		rememberConsumedSourceKey(actor, key, now)
 	}
+}
+
+// dissolveSoloHuddleAfterSkip leaves+concludes the actor's current huddle when
+// the actor is its only remaining member (ZBBS-HOME-413). Called from
+// CompleteReactorTick after a noop-skipped tick — see that callsite for the why.
+//
+// No-op unless the actor is the SOLE member: a skip with other members still in
+// the huddle means peers drifted out of co-presence without leaving the
+// membership set (a broader stale-huddle desync, boot-collapse Finding 6), which
+// is deliberately out of scope here — dissolving a still-populated huddle would
+// strand the OTHER members. A stale back-ref (huddle missing from w.Huddles) is
+// also left untouched; leaveCurrentHuddle's own stale-ref path owns that.
+//
+// The membership re-check matters: len(Members)==1 alone only proves the huddle
+// has one member, not that it's THIS actor. If actor.CurrentHuddleID is a stale
+// back-ref to a huddle whose lone member is someone else, calling
+// leaveCurrentHuddle(actor) would stamp a spurious HuddlePeerLeft on that
+// bystander and could conclude their huddle. So we confirm the actor is actually
+// in the membership set before leaving (code_review).
+//
+// When the actor is genuinely the lone member, leaveCurrentHuddle removes it,
+// finds the huddle empty, and concludes it (emitting HuddleLeft + HuddleConcluded
+// and detaching it from any scenes) — the same teardown the normal last-leaver
+// path runs.
+func dissolveSoloHuddleAfterSkip(w *World, actor *Actor, now time.Time) {
+	if actor.CurrentHuddleID == "" {
+		return
+	}
+	huddle, ok := w.Huddles[actor.CurrentHuddleID]
+	if !ok || len(huddle.Members) != 1 {
+		return
+	}
+	if _, isMember := huddle.Members[actor.ID]; !isMember {
+		return
+	}
+	leaveCurrentHuddle(w, actor, now)
 }
 
 // terminalStatusAddresses reports whether a terminal status means the turn
