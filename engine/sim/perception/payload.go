@@ -149,6 +149,17 @@ type Payload struct {
 	// Ordering: sorted by PeerID for determinism.
 	Relationships []RelationshipPeerView
 
+	// RecentConversation is the last few spoken lines in the subject's current
+	// huddle, oldest-first — the cross-tick "## Recent conversation here" section
+	// (ZBBS-HOME-412). Unlike Relationships (shared-VA only), this is populated
+	// for EVERY actor with a huddle — stateful NPCs included — and reflects the
+	// PC's own lines, so a re-engaging actor sees that it already spoke and what
+	// the player asked. This is the cross-tick re-pitch driver the per-pair
+	// relationship trail and the within-tick HOME-411 swap both miss. Sourced
+	// from the huddle's transient RecentUtterances ring; nil when the subject has
+	// no huddle. The subject's own lines carry IsSelf for "You said" rendering.
+	RecentConversation []UtteranceView
+
 	// Businessowner reports whether the subject actor runs a business
 	// (Actor.BusinessownerState != nil — the existing keeper predicate).
 	// Drives the engine-side vendor operating-block (renderVendorOperating):
@@ -340,6 +351,16 @@ type RelationshipPeerView struct {
 	PeerName    string
 	SummaryText string
 	RecentFacts []sim.SalientFact
+}
+
+// UtteranceView is one line in the "## Recent conversation here" section
+// (ZBBS-HOME-412), projected from a Huddle's RecentUtterances ring. IsSelf marks
+// the subject's own lines so the render reads "You said" vs "<Name> said",
+// making turn-taking legible. SpeakerName is the speaker's display name.
+type UtteranceView struct {
+	SpeakerName string
+	Text        string
+	IsSelf      bool
 }
 
 // ActorView is the subject actor's own current state, lifted from the
