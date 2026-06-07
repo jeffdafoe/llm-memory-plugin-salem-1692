@@ -459,6 +459,39 @@ func TestRender_DurableEphemeralSplit(t *testing.T) {
 	}
 }
 
+// TestRender_ContinuationText_LeanAndStopBiased pins the post-speak body-swap
+// source (ZBBS-HOME-411): ContinuationText is the lean, stop-biased decision the
+// harness swaps in after the first committed speak this tick. It must bias toward
+// done() and forbid re-pitch, and must NOT carry the act-now coda that
+// EphemeralText uses (the recency pressure that primes the re-pitch). A
+// regression setting ContinuationText = EphemeralText would re-introduce the
+// "4 rooms available / choose one action" pressure this fix removes.
+func TestRender_ContinuationText_LeanAndStopBiased(t *testing.T) {
+	p := Payload{
+		ActorID:           "moses",
+		Actor:             ActorView{State: sim.StateIdle, Needs: map[sim.NeedKey]int{"hunger": sim.NeedMax}},
+		Warrants:          []sim.WarrantMeta{speechWarrant(1, "s1", "bob", "good morrow")},
+		WarrantActorNames: map[sim.ActorID]string{"bob": "bob"},
+	}
+	out := Render(p, DefaultRenderConfig())
+
+	if out.ContinuationText == "" {
+		t.Fatal("ContinuationText must be populated")
+	}
+	for _, want := range []string{"done()", "re-pitch", "already spoken"} {
+		if !strings.Contains(out.ContinuationText, want) {
+			t.Errorf("ContinuationText must contain %q (stop-biased), got:\n%s", want, out.ContinuationText)
+		}
+	}
+	// Lean: it replaces the act-now coda rather than including it.
+	if strings.Contains(out.ContinuationText, triageMarker) {
+		t.Errorf("ContinuationText must NOT carry the act-now coda, got:\n%s", out.ContinuationText)
+	}
+	if out.ContinuationText == out.EphemeralText {
+		t.Error("ContinuationText must differ from the full EphemeralText (it is the lean swap-in)")
+	}
+}
+
 // --- config normalization ------------------------------------------------
 
 func TestRender_ZeroConfigUsesDefaults(t *testing.T) {

@@ -74,6 +74,16 @@ type RenderedPrompt struct {
 	// once per historical tick.
 	EphemeralText string
 
+	// ContinuationText is the lean post-speak decision body the harness swaps in
+	// after the actor's first committed speak this tick (ZBBS-HOME-411). It drops
+	// the actionable affordances carried in EphemeralText — the inn/food/rest cues
+	// and the act-now coda that prime a re-pitch — and presents a stop-biased
+	// decision instead. Round 1 sends EphemeralText (the model may act); once the
+	// actor has spoken, the recency-dominant text biases it to done() rather than
+	// re-offer what it just said. Pairs with HOME-402's speak cap (the backstop)
+	// and the WORK-375 per-speak tool-result steer.
+	ContinuationText string
+
 	// RenderedWarrantCount is how many warrants made it into the prompt.
 	RenderedWarrantCount int
 
@@ -90,6 +100,16 @@ type RenderedPrompt struct {
 	// exists to eliminate.
 	DroppedWarrants []sim.WarrantMeta
 }
+
+// continuationDecisionText is the recency-dominant body the harness sends on
+// rounds AFTER the actor has already spoken this tick (RenderedPrompt.
+// ContinuationText, ZBBS-HOME-411). It replaces EphemeralText's affordances +
+// act-now coda with a stop-biased decision, mirroring the WORK-375 per-speak
+// tool-result steer so the two stop-signals agree. Static: within a single tick
+// no new warrant arrives (new external events spawn separate ticks via the
+// reactor), so "nothing new" is always true on a continuation round.
+const continuationDecisionText = "## Decide\n" +
+	"You have already spoken this turn — let others respond. Call done() unless a new event has arrived, a prior tool result needs a word, you owe a distinct answer someone asked of you, or a needed non-speaking action remains (such as moving or resting). Do not greet again, re-pitch, or rephrase what you have already said.\n"
 
 // Render turns a Payload into a prompt string. It is a pure function:
 // deterministic ordering (already applied in Build) is preserved, the
@@ -209,6 +229,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 
 	out.Text = durable.String()
 	out.EphemeralText = ephemeral.String()
+	out.ContinuationText = continuationDecisionText
 	return out
 }
 
