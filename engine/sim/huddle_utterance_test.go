@@ -94,3 +94,38 @@ func TestSpeak_RecordsUtteranceInHuddleRing(t *testing.T) {
 		t.Errorf("ring entry: got %+v", ring[0])
 	}
 }
+
+// The PC's own lines are recorded too: the player's /pc/speak reaches SpeakTo in
+// v2, so the single hook captures them — an NPC re-reading the ring next tick
+// sees what the player just said (ZBBS-HOME-412). This is the "PC bridge for
+// free" claim, pinned.
+func TestSpeak_RecordsUtteranceInHuddleRing_PCSpeaker(t *testing.T) {
+	const hid = sim.HuddleID("h1")
+	w, cancel := buildSpeakTestWorld(t,
+		actorSpec{id: "jeff", displayName: "Jeff", kind: sim.KindPC, huddleID: hid},
+		actorSpec{id: "hannah", displayName: "Hannah", kind: sim.KindNPCShared, huddleID: hid},
+	)
+	defer cancel()
+
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Huddles[hid] = &sim.Huddle{ID: hid, Members: map[sim.ActorID]struct{}{"jeff": {}, "hannah": {}}}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed huddle: %v", err)
+	}
+
+	if _, err := w.Send(sim.SpeakTo("jeff", "Have you a room tonight?", "", true, time.Now())); err != nil {
+		t.Fatalf("SpeakTo (PC): %v", err)
+	}
+
+	v, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return append([]sim.Utterance(nil), world.Huddles[hid].RecentUtterances...), nil
+	}})
+	if err != nil {
+		t.Fatalf("read ring: %v", err)
+	}
+	ring, _ := v.([]sim.Utterance)
+	if len(ring) != 1 || ring[0].SpeakerID != "jeff" || ring[0].Text != "Have you a room tonight?" {
+		t.Fatalf("PC line must be recorded in the ring, got %+v", ring)
+	}
+}

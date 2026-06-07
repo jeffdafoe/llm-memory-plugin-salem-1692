@@ -231,7 +231,14 @@ func SpeakTo(speakerID ActorID, text, to string, hasNewNews bool, at time.Time) 
 			// nowhere to land and is skipped.
 			if huddleID != "" {
 				if h, ok := w.Huddles[huddleID]; ok && h.ConcludedAt == nil {
-					h.AppendUtterance(speakerID, actor.DisplayName, text, at)
+					// Membership guard: by the huddle invariant (Members[a] iff
+					// Actor[a].CurrentHuddleID == h.ID) the speaker is a member here,
+					// but check explicitly so a future invariant regression can't
+					// silently append to a huddle the speaker already left
+					// (code_review, ZBBS-HOME-412).
+					if _, member := h.Members[speakerID]; member {
+						h.AppendUtterance(speakerID, actor.DisplayName, text, at)
+					}
 				}
 			}
 

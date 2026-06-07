@@ -384,6 +384,40 @@ func TestRender_RecentConversationSection_StatefulSubject(t *testing.T) {
 	}
 }
 
+// A ring line that is ALSO the current speech warrant this tick is shown only
+// once — under "## What just happened", de-duped out of "## Recent conversation
+// here" (ZBBS-HOME-412, mirroring the heard-fact de-dup WORK-374 added). Pins the
+// truncation-key match between the ring text and the warrant excerpt.
+func TestRender_RecentConversation_DedupsCurrentWarrant(t *testing.T) {
+	const line = "Might I have a room?"
+	subject := peerSnap("ezekiel", "Ezekiel Crane", "blacksmith", sim.KindNPCStateful, "h1")
+	snap := &sim.Snapshot{
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			"ezekiel": subject,
+			"hannah":  peerSnap("hannah", "Hannah Boggs", "innkeeper", sim.KindNPCShared, "h1"),
+		},
+		Huddles: map[sim.HuddleID]*sim.Huddle{
+			"h1": {
+				ID:      "h1",
+				Members: map[sim.ActorID]struct{}{"ezekiel": {}, "hannah": {}},
+				RecentUtterances: []sim.Utterance{
+					{SpeakerID: "hannah", SpeakerName: "Hannah Boggs", Text: line, At: time.Now()},
+				},
+			},
+		},
+	}
+	// The same line is the speech warrant Ezekiel is reacting to this tick.
+	warrants := []sim.WarrantMeta{speechWarrant(1, "s1", "hannah", line)}
+
+	combined := combinedPrompt(Render(Build(snap, "ezekiel", warrants), DefaultRenderConfig()))
+	if !strings.Contains(combined, "## What just happened") {
+		t.Fatalf("the warrant should render in '## What just happened', got:\n%s", combined)
+	}
+	if strings.Contains(combined, "## Recent conversation here") {
+		t.Errorf("the only ring line matched the current warrant and must be de-duped, so the section should be absent, got:\n%s", combined)
+	}
+}
+
 func TestRender_AcquaintanceGatesNameInSurroundings(t *testing.T) {
 	a := sharedSnap("hannah", "Hannah", "h1")
 	a.Acquaintances = map[string]sim.Acquaintance{
