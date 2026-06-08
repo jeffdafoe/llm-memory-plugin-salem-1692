@@ -333,6 +333,59 @@ func TestRegisterAtmosphere_TickerFiresRepeatedly(t *testing.T) {
 	t.Fatalf("ticker fired only %d times, want >= 3 within 1s", client.CallCount())
 }
 
+// TestRegisterAtmosphere_RefreshesOnPhaseFlip covers the phase-driven refresh
+// (ZBBS-WORK-379): a PhaseApplied event nudges an out-of-cadence sweep. The
+// ticker is pinned to an hour so the only thing that can produce a second
+// sweep inside the test window is the phase flip itself.
+func TestRegisterAtmosphere_RefreshesOnPhaseFlip(t *testing.T) {
+	w, stop := buildAtmosphereDriverWorld(t)
+	defer stop()
+
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Settings.AtmosphereRefreshInterval = time.Hour
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed settings: %v", err)
+	}
+
+	client := llm.NewFakeClient()
+	for i := 0; i < 20; i++ {
+		client.Push(llm.ScriptedTurn{Response: llm.Response{Content: "prose-" + string(rune('A'+i))}})
+	}
+
+	driverCtx, driverCancel := context.WithCancel(context.Background())
+	defer driverCancel()
+	RegisterAtmosphere(driverCtx, w, client)
+
+	// Wait for the immediate first sweep to land.
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if client.CallCount() >= 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if client.CallCount() < 1 {
+		t.Fatal("immediate first sweep did not run")
+	}
+
+	// Flip the phase. ApplyPhaseTransition emits PhaseApplied unconditionally;
+	// the world default phase is day, so this is a real day→night flip.
+	if _, err := w.Send(sim.ApplyPhaseTransition(sim.PhaseNight)); err != nil {
+		t.Fatalf("apply phase transition: %v", err)
+	}
+
+	// The flip should drive a second sweep well before the 1h ticker would.
+	deadline = time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if client.CallCount() >= 2 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("phase flip did not trigger a refresh sweep; CallCount=%d, want >= 2", client.CallCount())
+}
+
 func TestRegisterAtmosphere_CtxCancelExitsGoroutine(t *testing.T) {
 	w, stop := buildAtmosphereDriverWorld(t)
 	defer stop()

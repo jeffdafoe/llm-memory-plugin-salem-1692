@@ -390,9 +390,22 @@ func fireScheduledFlip(w *World, flip PendingFlip) {
 // Reads dawn/dusk/timezone from World.Settings via a snapshot command (so
 // it stays single-threaded with respect to the world goroutine). v1 reads
 // once per tick — config changes mid-day take effect on the next tick.
+//
+// Boot check (ZBBS-WORK-379): runs one checkAndTransition immediately,
+// before the ticker loop — mirroring the atmosphere sweep's
+// immediate-first-sweep. The persisted Phase is restored verbatim at load
+// (world.go), so a village saved at night and restarted mid-morning comes
+// up with w.Phase == night and keeps it until the first tick fires (up to
+// PhaseTickerInterval later). That stale window is what makes the
+// atmosphere's own immediate boot sweep author night prose in the morning;
+// correcting the phase at once both fixes phase-dependent reads and emits
+// the PhaseApplied that drives the atmosphere phase-refresh subscriber.
 func RunPhaseTicker(ctx context.Context, w *World) {
 	t := time.NewTicker(PhaseTickerInterval)
 	defer t.Stop()
+
+	checkAndTransition(ctx, w)
+
 	for {
 		select {
 		case <-ctx.Done():
