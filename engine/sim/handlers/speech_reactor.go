@@ -24,9 +24,8 @@ import (
 //     mints PCSpeechWarrantReason. The split matters downstream:
 //     actorCanReactNow lets a PC-speech warrant interrupt a listener's
 //     break (a player addressing you in person outranks your nap) while
-//     NPC-speech stays gated, and a PC speaker bypasses the heard-speech
-//     circuit breaker (the player is never damped as a chatter loop). The
-//     mid-walk gate still applies to all speakers (see the loop).
+//     NPC-speech stays gated. The mid-walk gate still applies to all
+//     speakers (see the loop).
 //   - Force: false. v2's MinReactorTickGap default is 5s, 60x looser
 //     than v1's 5-minute floor that motivated v1's force=true. Force is
 //     reserved for the Admin warrant kind.
@@ -55,12 +54,12 @@ func handleSpokeWarrants(w *sim.World, evt sim.Event) {
 	now := time.Now().UTC()
 	excerpt := truncateRunes(spoke.Text, sim.MaxSalientFactTextLen)
 	// ZBBS-HOME-377: is the speaker a PC (the player)? A player's words are a
-	// deliberate, in-person address — they must reach recipients even when a
-	// recipient is on a break (PCSpeechWarrantReason interrupts a break in
-	// actorCanReactNow) and must not be damped by the NPC<->NPC loop gates (the
-	// mid-walk skip and the heard-speech circuit breaker exist to stop NPC
-	// chatter ping-pong, not to silence the player). NPC speech keeps both gates
-	// and stamps the parallel NPCSpeechWarrantReason.
+	// deliberate, in-person address — they stamp PCSpeechWarrantReason so they
+	// reach a recipient even when it is on a break (PCSpeechWarrantReason
+	// interrupts a break in actorCanReactNow; a player addressing you in person
+	// outranks your nap). The mid-walk skip below still applies to ALL speakers,
+	// PC included — a walking listener can't act on the warrant either way. NPC
+	// speech stamps the parallel NPCSpeechWarrantReason.
 	//
 	// Fail-closed to NPC if the speaker isn't a known PC. sim.Speak (the
 	// /pc/speak path since ZBBS-HOME-358) is the only Spoke producer that can
@@ -97,24 +96,6 @@ func handleSpokeWarrants(w *sim.World, evt sim.Event) {
 		// either, since the warranted tick would just fail the same way — the
 		// listeners a player actually talks to are stationary.
 		if peer.MoveIntent != nil {
-			continue
-		}
-		// ZBBS-HOME-331: heard-speech loop terminator. Record this utterance
-		// against the per-(speaker, listener) breaker and skip if the circuit is
-		// open — the speaker has warranted this listener heardSpeechMissThreshold
-		// times with no productive reply, and the pair hasn't gone quiet long
-		// enough to recover. NoteHeardSpeech is called for EVERY heard utterance
-		// (including the suppressed ones it reports) so the recovery clock
-		// measures real silence, not the last admitted warrant. Closes the
-		// stationary-listener half HOME-330 left open (it gated only mid-walk
-		// listeners). Resets when the listener speaks into the huddle (sim.Speak)
-		// or after the recovery window. See engine/sim/heard_speech_circuit.go.
-		//
-		// ZBBS-HOME-377: NPC speakers only. A PC's address must never be damped
-		// as a chatter loop, and PC utterances must not count toward the per-pair
-		// breaker — so a PC speaker skips it entirely (neither checked nor
-		// recorded).
-		if !speakerIsPC && peer.NoteHeardSpeech(spoke.SpeakerID, now) {
 			continue
 		}
 		var reason sim.WarrantReason

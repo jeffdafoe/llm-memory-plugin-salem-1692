@@ -29,13 +29,13 @@ import "time"
 // perception turn-line + act-now-coda swap read the same edge off the published
 // snapshot (perception/build.go buildTurnState).
 //
-// State lives on the SPEAKER, ephemeral like heardSpeechMisses and the rest of
-// the reactor bookkeeping (wiped on LoadWorld; a post-restart conversation
-// simply starts with no pending turns — a UX wrinkle, not a correctness
-// failure). This is the deliberate generalization of HOME-331's heardSpeechMiss
-// cell: same per-(actor, interlocutor) shape, same two mutation callsites
-// (sim.Speak sets/clears; departure drops), upgraded from a miss-count into the
-// full directed turn edge. All methods MUST run on the world goroutine.
+// State lives on the SPEAKER, ephemeral like the rest of the reactor
+// bookkeeping (wiped on LoadWorld; a post-restart conversation simply starts
+// with no pending turns — a UX wrinkle, not a correctness failure). It
+// superseded HOME-331's heard-speech miss-counter (retired in ZBBS-WORK-371):
+// same per-(actor, interlocutor) shape, same two mutation callsites (sim.Speak
+// sets/clears; departure drops), upgraded from a miss-count into the full
+// directed turn edge. All methods MUST run on the world goroutine.
 
 // awaitReply records that this actor (the speaker) just addressed `addressee`
 // and is now awaiting their reply, stamped at `now`. A later utterance by

@@ -582,17 +582,6 @@ type Actor struct {
 	// Unexported; ephemeral — wiped on LoadWorld.
 	recentlyConsumedSourceKeys map[WarrantSourceKey]time.Time
 
-	// heardSpeechMisses is the per-(speaker) heard-speech circuit-breaker state
-	// for THIS actor as a listener: how many consecutive heard-speech warrants a
-	// given speaker has minted on it since it last spoke, plus the timestamp of
-	// the most recent one. Drives the ZBBS-HOME-331 loop terminator — once a
-	// speaker crosses heardSpeechMissThreshold with no productive reply, further
-	// heard-speech warrants from that speaker are dropped until this actor speaks
-	// again or the pair goes quiet for heardSpeechRecoveryWindow. Keyed by
-	// speaker ActorID. See heard_speech_circuit.go. Unexported; ephemeral —
-	// wiped on LoadWorld.
-	heardSpeechMisses map[ActorID]heardSpeechMiss
-
 	// awaitingReplyFrom is this actor's turn-state as a SPEAKER: for each
 	// peer it has addressed and is awaiting a reply from, the wall-clock
 	// time it last addressed them. The single authoritative directed edge
@@ -604,7 +593,8 @@ type Actor struct {
 	// leave/conclude. Keyed by addressee ActorID. Drives the ZBBS-WORK-370
 	// turn-taking gate: the sim.Speak backstop reads it to reject an idle
 	// re-pitch (turn_state.go), and perception renders a turn-line off the
-	// snapshot copy. Generalizes heardSpeechMisses (HOME-331). Unexported;
+	// snapshot copy. (Supersedes the retired HOME-331 heard-speech miss-counter,
+	// ZBBS-WORK-371.) Unexported;
 	// ephemeral — wiped on LoadWorld, copied in CloneActor so the published
 	// snapshot sees it.
 	awaitingReplyFrom map[ActorID]time.Time
@@ -860,12 +850,6 @@ func CloneActor(a *Actor) *Actor {
 		cp.recentlyConsumedSourceKeys = make(map[WarrantSourceKey]time.Time, len(a.recentlyConsumedSourceKeys))
 		for k, v := range a.recentlyConsumedSourceKeys {
 			cp.recentlyConsumedSourceKeys[k] = v
-		}
-	}
-	if a.heardSpeechMisses != nil {
-		cp.heardSpeechMisses = make(map[ActorID]heardSpeechMiss, len(a.heardSpeechMisses))
-		for k, v := range a.heardSpeechMisses {
-			cp.heardSpeechMisses[k] = v
 		}
 	}
 	if a.awaitingReplyFrom != nil {
