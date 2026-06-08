@@ -837,3 +837,39 @@ func TestRebuildSceneQuoteIndex(t *testing.T) {
 		t.Error("bogus pre-rebuild entry 999 not cleared")
 	}
 }
+
+// TestSceneQuoteCreate_ServiceItem_SkipsStockGate — a "service"-capability item
+// (nights_stay) carries no inventory, so scene_quote must let a keeper post a
+// room quote despite 0 stock — the lodging-booking front door (ZBBS-WORK-382),
+// mirroring the deliver_order / pay_with_item service stock-skip. A non-service
+// item at 0 stock still rejects, so the bypass stays scoped to services.
+func TestSceneQuoteCreate_ServiceItem_SkipsStockGate(t *testing.T) {
+	w, stop := buildQuoteTestWorld(t, "h1", "sc1", []quoteTestActor{
+		{id: "hannah", displayName: "Hannah", kind: sim.KindNPCStateful, huddleID: "h1"},
+		{id: "ezekiel", displayName: "Ezekiel", kind: sim.KindNPCStateful, huddleID: "h1"},
+	})
+	defer stop()
+
+	// nights_stay is a service+lodging item nobody stocks (minted on transfer).
+	w.ItemKinds["nights_stay"] = &sim.ItemKindDef{
+		Name:         "nights_stay",
+		DisplayLabel: "a night's stay",
+		Capabilities: []string{"service", "lodging"},
+	}
+	at := time.Now().UTC()
+
+	// Hannah holds 0 nights_stay; the service bypass still lets her quote a room.
+	res, err := w.Send(sim.SceneQuoteCreate("hannah", "nights_stay", 2, 8, false, "", nil, at))
+	if err != nil {
+		t.Fatalf("service-item quote rejected (stock bypass failed): %v", err)
+	}
+	if _, ok := res.(sim.SceneQuoteCreateResult); !ok {
+		t.Fatalf("result type = %T, want SceneQuoteCreateResult", res)
+	}
+
+	// Control: a non-service item at 0 stock still hits the stock gate.
+	_, err = w.Send(sim.SceneQuoteCreate("hannah", "ale", 1, 2, false, "", nil, at))
+	if err == nil || !strings.Contains(err.Error(), "insufficient stock") {
+		t.Fatalf("non-service item at 0 stock must reject with insufficient stock, got %v", err)
+	}
+}

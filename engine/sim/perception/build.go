@@ -81,6 +81,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 	p.DutySteer = buildDutySteer(snap, actorID, actorSnap, p.Anchors, p.Restocking != nil)
 	p.Lodging = buildLodgingView(snap, actorSnap)
 	p.KeeperLodging = buildKeeperLodgingView(snap, actorSnap)
+	p.LodgingOffer = buildLodgingOfferCue(snap, actorID, p.KeeperLodging, p.Surroundings.HuddleMembers)
 	p.SummonsForYou = buildSummonsForYou(actorSnap)
 	p.SummonRefusal = buildSummonRefusal(actorSnap)
 

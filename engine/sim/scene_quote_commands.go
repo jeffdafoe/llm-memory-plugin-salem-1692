@@ -208,11 +208,19 @@ func SceneQuoteCreate(
 				)
 			}
 			needed := qty * effectiveConsumers
-			if seller.Inventory[kind] < needed {
-				return nil, fmt.Errorf(
-					"insufficient stock (have %d %s, need %d) — quote a smaller quantity before posting.",
-					seller.Inventory[kind], kind, needed,
-				)
+			// Service-capability items (e.g. nights_stay) carry no inventory —
+			// they're a capacity grant, not stock — so the stock check is skipped
+			// for them, mirroring the deliver_order gate (order_commands.go:
+			// "lodging IMPLIES service (no inventory)"). Lodging capacity is
+			// enforced downstream at AssignBedroomForLodger (ErrNoPrivateRooms /
+			// all-bedrooms-occupied), not here. A non-service item still stock-gates.
+			if !itemHasCapability(w, kind, "service") {
+				if seller.Inventory[kind] < needed {
+					return nil, fmt.Errorf(
+						"insufficient stock (have %d %s, need %d) — quote a smaller quantity before posting.",
+						seller.Inventory[kind], kind, needed,
+					)
+				}
 			}
 
 			// Gate 5: TargetBuyer resolution. Empty stays empty
