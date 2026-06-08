@@ -355,7 +355,7 @@ func renderLodgingOffer(b *strings.Builder, v *LodgingOfferView) {
 	if len(v.SeekerNames) > 1 {
 		beVerb, haveVerb = "are", "have"
 	}
-	fmt.Fprintf(b, "%s %s here with you and %s nowhere to stay. If they want a room, offer it — call scene_quote with item \"nights_stay\", consume_now false, qty set to the number of nights, and amount set to nights × %d coins (your nightly rate). A room is for the one guest, so leave consumers empty; set target_buyer to the guest when you know their name. They are then free to take it or leave it.\n", who, beVerb, haveVerb, v.NightlyRate)
+	fmt.Fprintf(b, "%s %s here with you and %s nowhere to stay. If they want a room, offer it — call scene_quote with item \"nights_stay\", consume_now false, qty set to the number of nights, and amount set to nights × %d coins (your nightly rate). A room is for the one guest, so leave consumers empty; use target_buyer only if you know the guest's name, otherwise leave it empty and anyone here may take the offer. They are then free to take it or leave it.\n", who, beVerb, haveVerb, v.NightlyRate)
 	roomWord := "rooms"
 	if v.RoomsAvailable == 1 {
 		roomWord = "room"
