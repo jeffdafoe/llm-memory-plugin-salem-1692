@@ -2,7 +2,6 @@ package handlers_test
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 
@@ -337,10 +336,9 @@ func TestSpeechReactor_PCSpeakerStampsPCSpeechReason(t *testing.T) {
 }
 
 // --- TestSpeechReactor_PCSpeakerStillSkipsMovingListener --------------
-// ZBBS-HOME-377: the PC carve-out is for the heard-speech circuit breaker only;
-// the HOME-330 mid-walk gate still applies to a PC speaker, because a walking
-// NPC can't act on the warrant either way (the speak handler would reject it).
-// A stationary peer is warranted as normal.
+// ZBBS-HOME-330: the mid-walk gate applies to a PC speaker too — a walking NPC
+// can't act on the warrant either way (the speak handler would reject it), so a
+// moving listener is skipped while a stationary peer is warranted as normal.
 func TestSpeechReactor_PCSpeakerStillSkipsMovingListener(t *testing.T) {
 	w, stop := buildSpeechReactorWorld(t,
 		speakActor{id: "player", displayName: "Jefferey", kind: sim.KindPC, huddleID: "h1"},
@@ -368,58 +366,12 @@ func TestSpeechReactor_PCSpeakerStillSkipsMovingListener(t *testing.T) {
 	}
 }
 
-// --- TestSpeechReactor_PCSpeakerBypassesTrippedCircuitBreaker ---------
-// ZBBS-HOME-377 code_review #3: even with the HOME-331 heard-speech circuit
-// breaker already OPEN against "player", a PC utterance still warrants the
-// listener. In production the breaker can only ever trip against an NPC speaker
-// (the PC path never calls NoteHeardSpeech), so we trip it artificially here to
-// pin the guarantee directly: a player's address is never damped as a chatter
-// loop, regardless of breaker state.
-func TestSpeechReactor_PCSpeakerBypassesTrippedCircuitBreaker(t *testing.T) {
-	w, stop := buildSpeechReactorWorld(t,
-		speakActor{id: "player", displayName: "Jefferey", kind: sim.KindPC, huddleID: "h1"},
-		speakActor{id: "bob", displayName: "Bob", kind: sim.KindNPCStateful, huddleID: "h1"},
-	)
-	defer stop()
-
-	now := time.Now().UTC()
-	// Drive bob's breaker for "player" until it suppresses (bounded loop so the
-	// test doesn't depend on the exact private threshold const).
-	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		bob := world.Actors["bob"]
-		tripped := false
-		for n := 0; n < 8 && !tripped; n++ {
-			tripped = bob.NoteHeardSpeech("player", now)
-		}
-		if !tripped {
-			// Return the failure so the outer t.Fatalf aborts the test, rather
-			// than t.Error-ing from inside the command (which wouldn't abort).
-			return nil, fmt.Errorf("precondition failed: breaker never tripped against player")
-		}
-		return nil, nil
-	}}); err != nil {
-		t.Fatalf("trip breaker: %v", err)
-	}
-
-	if _, err := w.Send(sim.Speak("player", "John, are you there?", now)); err != nil {
-		t.Fatalf("Speak: %v", err)
-	}
-
-	bobWarrants := peekWarrants(t, w, "bob")
-	if len(bobWarrants) != 1 {
-		t.Fatalf("bob warrants with tripped breaker = %d, want 1 (PC bypasses the breaker)", len(bobWarrants))
-	}
-	if bobWarrants[0].Kind() != sim.WarrantKindPCSpoke {
-		t.Errorf("Kind = %q, want pc_spoke", bobWarrants[0].Kind())
-	}
-}
-
 // --- TestSpeechReactor_PCSpeechNeverSuppressedUnderRepetition ---------
-// ZBBS-HOME-377 code_review #3 (second half): PC speech does not pass through
-// the heard-speech breaker at all, so it can never accrue misses and suppress
-// itself. Five PC utterances (well past the threshold-3 breaker) each warrant
-// the listener — if the PC path went through the breaker, the 4th and 5th would
-// be dropped and bob would cap at 3.
+// Repeated speech is never rate-damped: five distinct PC utterances each warrant
+// the listener (distinct timestamps → distinct Spoke events → no source-dedup
+// collapse). Was a ZBBS-HOME-377 guard that the PC path bypassed the heard-speech
+// breaker; the breaker was retired in ZBBS-WORK-371, so this now pins only that
+// the reactor does not collapse repeated utterances.
 func TestSpeechReactor_PCSpeechNeverSuppressedUnderRepetition(t *testing.T) {
 	w, stop := buildSpeechReactorWorld(t,
 		speakActor{id: "player", displayName: "Jefferey", kind: sim.KindPC, huddleID: "h1"},
@@ -440,7 +392,7 @@ func TestSpeechReactor_PCSpeechNeverSuppressedUnderRepetition(t *testing.T) {
 
 	bobWarrants := peekWarrants(t, w, "bob")
 	if len(bobWarrants) != utterances {
-		t.Fatalf("bob warrants after %d PC utterances = %d, want %d (breaker must not suppress the player)", utterances, len(bobWarrants), utterances)
+		t.Fatalf("bob warrants after %d PC utterances = %d, want %d (repeated speech is not collapsed)", utterances, len(bobWarrants), utterances)
 	}
 	for i, m := range bobWarrants {
 		if m.Kind() != sim.WarrantKindPCSpoke {

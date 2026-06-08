@@ -733,7 +733,6 @@ func resetReactorStateOnLoad(a *Actor) {
 	a.RecentReactorTicks = nil
 	a.inFlightSourceKeys = nil
 	a.recentlyConsumedSourceKeys = nil
-	a.heardSpeechMisses = nil
 	a.awaitingReplyFrom = nil // ZBBS-WORK-370 turn-state — ephemeral
 	// Red-need backstop pacing (ZBBS-HOME-363) — ephemeral, like the
 	// rate-gate history above. A fresh-loaded actor starts un-paced so a
