@@ -269,6 +269,14 @@ type Payload struct {
 	// (it needs a typed vendor_persona projection + the keeper data seed).
 	KeeperLodging *KeeperLodgingView
 
+	// LodgingOffer is the seller-side "offer a room" cue: when a lodging keeper
+	// (free private rooms, a configured nightly rate) shares a huddle with a
+	// structural lodging-seeker (no home, no active grant), it names that seeker
+	// + the nights_stay scene_quote call so the keeper proactively offers the
+	// room. nil when the subject isn't a keeper-with-vacancy or no seeker is
+	// co-present. Built by buildLodgingOfferCue. ZBBS-WORK-382.
+	LodgingOffer *LodgingOfferView
+
 	// SummonsForYou surfaces a pending summons delivered to the subject by a
 	// messenger — "<summoner> asks you to come to <place>" — driving them to
 	// move_to. nil when the actor has no pending summons. Fades after the

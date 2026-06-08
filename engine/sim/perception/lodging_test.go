@@ -327,3 +327,72 @@ func TestRenderKeeperLodging_Gated(t *testing.T) {
 		t.Errorf("keeper render = %q, want header + occupancy", out)
 	}
 }
+
+// --- lodging offer cue (ZBBS-WORK-382) ---
+
+func TestBuildLodgingOfferCue_HomelessSeeker_Offers(t *testing.T) {
+	seeker := &sim.ActorSnapshot{} // no home, no room access → nowhere to sleep
+	snap := lodgingSnap(seeker, nil)
+	keeper := &KeeperLodgingView{InnName: "Hannah's Inn", RoomsAvailable: 2, NightlyRate: 4}
+	members := []HuddleMember{{ID: "ezekiel", DisplayName: "Ezekiel Crane", Acquainted: true}}
+	v := buildLodgingOfferCue(snap, "hannah", keeper, members)
+	if v == nil {
+		t.Fatal("want an offer cue for a homeless co-present seeker, got nil")
+	}
+	if len(v.SeekerNames) != 1 || v.SeekerNames[0] != "Ezekiel Crane" {
+		t.Errorf("SeekerNames = %v, want [Ezekiel Crane]", v.SeekerNames)
+	}
+}
+
+func TestBuildLodgingOfferCue_SeekerHasHome_Nil(t *testing.T) {
+	seeker := &sim.ActorSnapshot{HomeStructureID: "cottage"}
+	snap := lodgingSnap(seeker, nil)
+	keeper := &KeeperLodgingView{InnName: "Hannah's Inn", RoomsAvailable: 2, NightlyRate: 4}
+	members := []HuddleMember{{ID: "ezekiel", DisplayName: "Ezekiel Crane", Acquainted: true}}
+	if v := buildLodgingOfferCue(snap, "hannah", keeper, members); v != nil {
+		t.Errorf("a seeker with a home sleeps there — want nil, got %+v", v)
+	}
+}
+
+func TestBuildLodgingOfferCue_SeekerAlreadyLodging_Nil(t *testing.T) {
+	seeker := &sim.ActorSnapshot{RoomAccess: map[sim.RoomAccessKey]*sim.RoomAccess{
+		{RoomID: 2, Source: sim.AccessSourceLedger}: ledgerAccess(2, 72*time.Hour),
+	}}
+	snap := lodgingSnap(seeker, nil)
+	keeper := &KeeperLodgingView{InnName: "Hannah's Inn", RoomsAvailable: 2, NightlyRate: 4}
+	members := []HuddleMember{{ID: "ezekiel", DisplayName: "Ezekiel Crane", Acquainted: true}}
+	if v := buildLodgingOfferCue(snap, "hannah", keeper, members); v != nil {
+		t.Errorf("a seeker already holding a grant beds there — want nil, got %+v", v)
+	}
+}
+
+func TestBuildLodgingOfferCue_NoVacancyNoRateNonKeeper_Nil(t *testing.T) {
+	seeker := &sim.ActorSnapshot{}
+	snap := lodgingSnap(seeker, nil)
+	members := []HuddleMember{{ID: "ezekiel", DisplayName: "Ezekiel Crane", Acquainted: true}}
+	if v := buildLodgingOfferCue(snap, "hannah", &KeeperLodgingView{InnName: "X", RoomsAvailable: 0, NightlyRate: 4}, members); v != nil {
+		t.Errorf("full inn must not offer — want nil, got %+v", v)
+	}
+	if v := buildLodgingOfferCue(snap, "hannah", &KeeperLodgingView{InnName: "X", RoomsAvailable: 2, NightlyRate: 0}, members); v != nil {
+		t.Errorf("disabled rate (0) must not offer — want nil, got %+v", v)
+	}
+	if v := buildLodgingOfferCue(snap, "hannah", nil, members); v != nil {
+		t.Errorf("a non-keeper must not offer — want nil, got %+v", v)
+	}
+}
+
+func TestRenderLodgingOffer_NamesActionAndNights(t *testing.T) {
+	var b strings.Builder
+	renderLodgingOffer(&b, &LodgingOfferView{
+		SeekerNames:    []string{"Ezekiel Crane"},
+		InnName:        "Hannah's Inn",
+		RoomsAvailable: 2,
+		NightlyRate:    4,
+	})
+	out := b.String()
+	for _, want := range []string{"## A room to let", "Ezekiel Crane", "nights_stay", "scene_quote", "number of nights", "consume_now false"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("offer cue missing %q, got %q", want, out)
+		}
+	}
+}

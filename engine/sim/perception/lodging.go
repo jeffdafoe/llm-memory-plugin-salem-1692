@@ -145,6 +145,94 @@ func buildKeeperLodgingView(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) *K
 	}
 }
 
+// LodgingOfferView is the seller-side "offer a room" cue (ZBBS-WORK-382). When
+// a lodging keeper (works at a structure with free private bedrooms at a
+// configured nightly rate) shares a huddle with a structural lodging-seeker —
+// an actor with no home AND no active lodging grant, i.e. someone with nowhere
+// to sleep — this surfaces that seeker by name alongside the scene_quote call
+// for a nights_stay, so the keeper LLM proactively offers the room instead of
+// narrating a stock greeting. It is the Finding-1 legibility idiom applied to
+// lodging: scene_quote is the only seller path for a room, but the weak model
+// never connects "asked about a room" to it (and scene_quote's own schema
+// frames qty as per-consumer goods, which misleads for a nights booking). The
+// decision stays with the model and the buyer keeps full accept/decline agency
+// via pay_with_item. nil/empty skips the section.
+type LodgingOfferView struct {
+	// SeekerNames are the acquaintance-gated labels (descriptorLabel) of the
+	// co-present lodging-seekers the keeper may offer a room to.
+	SeekerNames []string
+
+	// InnName is the keeper's inn display name (from KeeperLodgingView).
+	InnName string
+
+	// RoomsAvailable is the keeper's current vacancy (from KeeperLodgingView);
+	// the cue only builds when this is > 0.
+	RoomsAvailable int
+
+	// NightlyRate is the per-night rent the keeper quotes; the cue only builds
+	// when this is > 0 (a 0 rate means lodging pricing is disabled).
+	NightlyRate int
+}
+
+// buildLodgingOfferCue builds the seller-side "offer a room" cue. It reuses the
+// already-computed KeeperLodgingView (so the subject is confirmed a keeper with
+// vacancy + a live nightly rate) and scans the keeper's co-present huddle for
+// structural lodging-seekers — actors with no home and no active lodging grant.
+// Mirrors buildOfferableCustomers' two storm guards so a stuck cue can't drive
+// a re-offer loop: a seeker already mid-pay-offer with this keeper, or one the
+// keeper already has a live quote out to, is dropped. Returns nil (Render
+// content-gates) when the subject isn't a keeper-with-vacancy or no seeker is
+// co-present. Pure over the snapshot. ZBBS-WORK-382.
+func buildLodgingOfferCue(snap *sim.Snapshot, subject sim.ActorID, keeper *KeeperLodgingView, members []HuddleMember) *LodgingOfferView {
+	if snap == nil || keeper == nil || keeper.RoomsAvailable <= 0 || keeper.NightlyRate <= 0 {
+		return nil
+	}
+	now := snap.PublishedAt
+	// members is already sorted by ID (buildSurroundings), so names is deterministic.
+	var seekers []string
+	for _, m := range members {
+		if m.ID == subject {
+			continue // never offer a room to yourself
+		}
+		if !actorSnapIsLodgingSeeker(snap.Actors[m.ID], now) {
+			continue
+		}
+		if customerHasPendingOfferWithSeller(snap, m.ID, subject) {
+			continue // already booking — renderPayOffers cues accept/decline/counter
+		}
+		if sellerHasActiveQuoteToBuyer(snap, subject, m.ID) {
+			continue // already offered, awaiting the buyer — don't re-post every tick
+		}
+		seekers = append(seekers, descriptorLabel(m.DisplayName, m.Role, m.Acquainted))
+	}
+	if len(seekers) == 0 {
+		return nil
+	}
+	return &LodgingOfferView{
+		SeekerNames:    seekers,
+		InnName:        keeper.InnName,
+		RoomsAvailable: keeper.RoomsAvailable,
+		NightlyRate:    keeper.NightlyRate,
+	}
+}
+
+// actorSnapIsLodgingSeeker reports whether a snapshot actor has nowhere of its
+// own to sleep — no HomeStructureID AND no active ledger RoomAccess. Such an
+// actor beds nowhere via the auto-sleep machine (the home arm needs a home, the
+// lodger arm needs a grant), so it is a candidate to be offered a room. Nil-safe
+// (a missing snapshot is not a seeker). ZBBS-WORK-382.
+func actorSnapIsLodgingSeeker(as *sim.ActorSnapshot, now time.Time) bool {
+	if as == nil || as.HomeStructureID != "" {
+		return false
+	}
+	for _, ra := range as.RoomAccess {
+		if sim.IsActiveLedgerGrant(ra, now) {
+			return false
+		}
+	}
+	return true
+}
+
 // structureForRoom returns the structure that contains roomID, or nil when
 // no structure declares it. Linear over the snapshot's structures/rooms —
 // fine at Salem's scale (mirrors sim.findRoom, which works on the live world).
@@ -246,4 +334,31 @@ func renderKeeperLodging(b *strings.Builder, v *KeeperLodgingView) {
 		fmt.Fprintf(b, ", %d coins a night", v.NightlyRate)
 	}
 	b.WriteString(".\n\n")
+}
+
+// renderLodgingOffer writes the seller-side "offer a room" cue (ZBBS-WORK-382):
+// a co-present lodging-seeker by name plus the scene_quote call for a
+// nights_stay with its lodging-specific args spelled out — qty is the number of
+// NIGHTS (not rooms or guests), consume_now is false (a booking, not eat-here),
+// and the room is for the single guest (omit consumers). scene_quote's own
+// schema frames qty as "per consumer" goods, so without this spelled out the
+// weak keeper model misreads a nights booking. Phrased conditionally ("if they
+// want a room") so it respects the vendor block's "don't pitch unless they show
+// interest" rule. Content-gated: a nil/empty view skips the section.
+func renderLodgingOffer(b *strings.Builder, v *LodgingOfferView) {
+	if v == nil || len(v.SeekerNames) == 0 {
+		return
+	}
+	b.WriteString("## A room to let\n")
+	who := joinNames(v.SeekerNames) // sanitizes each name inline
+	beVerb, haveVerb := "is", "has"
+	if len(v.SeekerNames) > 1 {
+		beVerb, haveVerb = "are", "have"
+	}
+	fmt.Fprintf(b, "%s %s here with you and %s nowhere to stay. If they want a room, offer it — call scene_quote with item \"nights_stay\", consume_now false, qty set to the number of nights, and amount set to nights × %d coins (your nightly rate). A room is for the one guest, so leave consumers empty; set target_buyer to the guest when you know their name. They are then free to take it or leave it.\n", who, beVerb, haveVerb, v.NightlyRate)
+	roomWord := "rooms"
+	if v.RoomsAvailable == 1 {
+		roomWord = "room"
+	}
+	fmt.Fprintf(b, "You have %d %s free at %s.\n\n", v.RoomsAvailable, roomWord, sanitizeInline(v.InnName))
 }
