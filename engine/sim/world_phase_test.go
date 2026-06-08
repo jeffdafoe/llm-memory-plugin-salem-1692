@@ -196,3 +196,55 @@ func TestEnvironmentRepoSeed(t *testing.T) {
 		t.Errorf("dawn time after load = %q, want 06:30", w.Settings.DawnTime)
 	}
 }
+
+// TestRunPhaseTicker_ImmediateBootCheckCorrectsStalePhase covers the boot
+// check added in ZBBS-WORK-379: RunPhaseTicker re-derives the phase from the
+// wall clock immediately, instead of leaving a checkpoint-restored stale
+// phase in place until the first tick (up to PhaseTickerInterval later). The
+// expected phase is computed via MostRecentBoundary so the assertion is
+// independent of when the test runs; the world is seeded with the opposite
+// phase plus a long-ago LastTransitionAt, so a flip is guaranteed.
+func TestRunPhaseTicker_ImmediateBootCheckCorrectsStalePhase(t *testing.T) {
+	loc := time.UTC
+	now := time.Now().In(loc)
+	// Dawn 00:00 / dusk 23:59. We don't rely on the resulting window — the
+	// expected phase is derived the same way the ticker derives it.
+	expected, _ := sim.MostRecentBoundary(now, 0, 0, 23, 59)
+
+	stale := sim.PhaseDay
+	if expected == sim.PhaseDay {
+		stale = sim.PhaseNight
+	}
+
+	repo, handles := mem.NewRepository()
+	handles.Environment.Seed(
+		sim.WorldEnvironment{LastTransitionAt: now.Add(-365 * 24 * time.Hour)},
+		stale,
+		sim.WorldSettings{DawnTime: "00:00", DuskTime: "23:59", Timezone: "UTC", Location: loc},
+	)
+
+	w, err := sim.LoadWorld(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("LoadWorld: %v", err)
+	}
+	if w.Phase != stale {
+		t.Fatalf("seeded phase = %q, want stale %q", w.Phase, stale)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go w.Run(ctx)
+	go sim.RunPhaseTicker(ctx, w)
+
+	// The boot check corrects the phase far faster than the one-minute
+	// PhaseTickerInterval; if it were missing this would only flip after ~60s.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if w.Published().Phase == expected {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("boot check did not correct phase to %q within 2s; still %q",
+		expected, w.Published().Phase)
+}

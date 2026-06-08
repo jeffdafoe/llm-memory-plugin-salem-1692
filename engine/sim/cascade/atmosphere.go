@@ -29,9 +29,12 @@ import (
 // Lifecycle:
 //
 //   RegisterAtmosphere(ctx, w, client)
-//   └─> go runAtmosphereSweep(ctx, w, client)
+//   ├─> w.Subscribe(PhaseApplied → nudge refresh chan)   (ZBBS-WORK-379)
+//   └─> go runAtmosphereSweep(ctx, w, client, refresh)
 //        ├─> immediate first sweep (no initial-interval wait)
-//        └─> time.Ticker @ AtmosphereRefreshInterval until ctx.Done
+//        ├─> time.Ticker @ AtmosphereRefreshInterval until ctx.Done
+//        └─> refresh chan: a phase flip (dawn/dusk, or RunPhaseTicker's
+//            boot correction) re-authors the mood line out of cadence
 //
 // Failure modes (per consolidation):
 //
@@ -78,6 +81,17 @@ const atmosphereLLMModel = "salem-generic"
 //
 // Panics on nil w or nil client to fail fast at wiring time rather
 // than silently no-op.
+//
+// Phase-driven refresh (ZBBS-WORK-379): subscribes to PhaseApplied so a
+// day/night flip re-authors the mood line immediately, instead of letting
+// it lag up to a full AtmosphereRefreshInterval behind the dawn/dusk
+// boundary (the "night is fallen" prose still rendering at 09:00). The
+// subscriber runs inline on the world goroutine inside emit, so it MUST NOT
+// block or issue world commands — it only nudges the sweep goroutine via a
+// buffered, coalescing channel. The off-world LLM sweep stays in
+// runAtmosphereSweep; routing every refresh through that one goroutine keeps
+// sweeps serialized, so a phase-triggered sweep can't race or clobber an
+// in-flight boot sweep (and it is the one that reads the corrected phase).
 func RegisterAtmosphere(ctx context.Context, w *sim.World, client llm.Client) {
 	if w == nil {
 		panic("cascade: RegisterAtmosphere requires a non-nil world")
@@ -85,17 +99,34 @@ func RegisterAtmosphere(ctx context.Context, w *sim.World, client llm.Client) {
 	if client == nil {
 		panic("cascade: RegisterAtmosphere requires a non-nil LLM client")
 	}
-	go runAtmosphereSweep(ctx, w, client)
+
+	refresh := make(chan struct{}, 1)
+	w.Subscribe(sim.SubscriberFunc(func(_ *sim.World, evt sim.Event) {
+		if _, ok := evt.(*sim.PhaseApplied); !ok {
+			return
+		}
+		select {
+		case refresh <- struct{}{}:
+		default:
+			// A refresh is already queued; one sweep covers the flip.
+		}
+	}))
+
+	go runAtmosphereSweep(ctx, w, client, refresh)
 }
 
 // runAtmosphereSweep is the goroutine body. Runs an immediate first
 // sweep on entry (so a fresh-loaded world's stale-or-empty atmosphere
 // doesn't have to wait a full 4h before its first refresh), then ticks
-// at AtmosphereRefreshInterval.
+// at AtmosphereRefreshInterval. Also re-sweeps out of cadence whenever
+// `refresh` fires — the PhaseApplied subscriber installed by
+// RegisterAtmosphere nudges it on each day/night flip (ZBBS-WORK-379).
+// Every sweep runs on this one goroutine, so the ticker, boot, and
+// phase-driven paths never overlap.
 //
 // Exported as a package-private symbol for tests; integration tests
 // drive single sweeps via runOneAtmosphereSweep directly.
-func runAtmosphereSweep(ctx context.Context, w *sim.World, client llm.Client) {
+func runAtmosphereSweep(ctx context.Context, w *sim.World, client llm.Client, refresh <-chan struct{}) {
 	interval := readAtmosphereRefreshInterval(ctx, w)
 	if ctx.Err() != nil {
 		return
@@ -112,6 +143,11 @@ func runAtmosphereSweep(ctx context.Context, w *sim.World, client llm.Client) {
 			return
 		case <-ticker.C:
 			w.BeatTicker("atmosphere")
+			runOneAtmosphereSweep(ctx, w, client)
+		case <-refresh:
+			// Day/night phase flipped (dawn/dusk boundary, or the
+			// immediate boot correction in RunPhaseTicker). Re-author the
+			// mood line against the new phase out of the normal cadence.
 			runOneAtmosphereSweep(ctx, w, client)
 		}
 	}
