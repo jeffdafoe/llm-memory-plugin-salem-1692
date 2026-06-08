@@ -54,12 +54,12 @@ func handleSpokeWarrants(w *sim.World, evt sim.Event) {
 	now := time.Now().UTC()
 	excerpt := truncateRunes(spoke.Text, sim.MaxSalientFactTextLen)
 	// ZBBS-HOME-377: is the speaker a PC (the player)? A player's words are a
-	// deliberate, in-person address — they must reach recipients even when a
-	// recipient is on a break (PCSpeechWarrantReason interrupts a break in
-	// actorCanReactNow) and must not be damped by the NPC<->NPC mid-walk skip
-	// (which exists to stop a wasted tick on a walking listener, not to silence
-	// the player). NPC speech keeps that gate and stamps the parallel
-	// NPCSpeechWarrantReason.
+	// deliberate, in-person address — they stamp PCSpeechWarrantReason so they
+	// reach a recipient even when it is on a break (PCSpeechWarrantReason
+	// interrupts a break in actorCanReactNow; a player addressing you in person
+	// outranks your nap). The mid-walk skip below still applies to ALL speakers,
+	// PC included — a walking listener can't act on the warrant either way. NPC
+	// speech stamps the parallel NPCSpeechWarrantReason.
 	//
 	// Fail-closed to NPC if the speaker isn't a known PC. sim.Speak (the
 	// /pc/speak path since ZBBS-HOME-358) is the only Spoke producer that can
