@@ -4,7 +4,7 @@ project_name: salem-1692
 
 builds:
   - id: salem
-    main: .
+    main: ./sim/cmd/engine
     dir: engine
     binary: salem
     ldflags:
