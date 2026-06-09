@@ -82,6 +82,11 @@ const (
 	// append time (usually empty — a break closes the post).
 	ActionTypeTookBreak ActionType = "took_break"
 
+	// ActionTypeStayedOpen — committed stay_open tool call (ZBBS-WORK-387).
+	// ActorID is the keeper that committed to staying open late; Text is the
+	// model-supplied reason; HuddleID is the keeper's huddle at append time.
+	ActionTypeStayedOpen ActionType = "stayed_open"
+
 	// ActionTypeSummoned — a summon messenger delivered a summons to the
 	// target (ZBBS-HOME-311). ActorID is the TARGET (the summons is the
 	// event that happened to them, not an action they took); Text is the

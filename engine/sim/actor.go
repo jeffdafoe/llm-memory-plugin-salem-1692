@@ -450,6 +450,24 @@ type Actor struct {
 	BreakUntil    *time.Time
 	SleepingUntil *time.Time
 
+	// OpenUntil is a keeper's commitment to stay open past the end of its shift,
+	// until this instant (ZBBS-WORK-387 stay_open). The inverse of BreakUntil:
+	// while set it SUPPRESSES the off-shift wind-down (the go-home / to-inn duty
+	// in shiftDutyTarget and the renderDutySteer perception cue) so the
+	// level-triggered shift producer stops re-ticking the keeper home every
+	// cycle — UNLESS the keeper is peak-exhausted, in which case the needs floor
+	// wins and it closes early. Set by sim.StayOpen, read by shiftDutyTarget;
+	// mirrored onto ActorSnapshot.OpenUntil for buildDutySteer.
+	//
+	// TRANSIENT — deliberately NOT checkpointed (no repo round-trip), unlike
+	// BreakUntil. Restart-loss is benign: a lost commitment just reverts the
+	// keeper to the default close-on-schedule (the safe direction), self-heals via
+	// the level-triggered shift producer, and couples with no persistent write
+	// (open/closed is presence-derived in occupancy.go, not a stored flag).
+	// Contrast BreakUntil, which IS checkpointed because it gates an in-flight
+	// needs-recovery process whose interruption is a real regression (WORK-410).
+	OpenUntil *time.Time
+
 	// LastTirednessRecoveryAt is the cursor the tiredness-recovery sweep
 	// advances as it credits recovery while BreakUntil/SleepingUntil are
 	// open. It doubles as the fractional carry: the sweep advances it by
@@ -791,6 +809,10 @@ func CloneActor(a *Actor) *Actor {
 		t := *a.SleepingUntil
 		cp.SleepingUntil = &t
 	}
+	if a.OpenUntil != nil {
+		t := *a.OpenUntil
+		cp.OpenUntil = &t
+	}
 	if a.LastTirednessRecoveryAt != nil {
 		t := *a.LastTirednessRecoveryAt
 		cp.LastTirednessRecoveryAt = &t
@@ -1085,6 +1107,15 @@ type ActorSnapshot struct {
 	// cloneRoomAccess) so published snapshots don't alias the world's
 	// mutable grant map. Keyed by (RoomID, Source) like Actor.RoomAccess.
 	RoomAccess map[RoomAccessKey]*RoomAccess
+
+	// OpenUntil mirrors the live Actor's stay-open commitment at snapshot time
+	// (ZBBS-WORK-387) so buildDutySteer can suppress the off-shift wind-down cue
+	// for a keeper that has committed to staying open late — agreeing with the
+	// shiftDutyTarget warrant, which reads the live Actor.OpenUntil. nil when no
+	// commitment is held. Carried by CloneActorSnapshot's struct copy like the
+	// other *time.Time snapshot fields (the published snapshot is immutable, so
+	// no per-clone deep copy is needed). See Actor.OpenUntil.
+	OpenUntil *time.Time
 
 	// Inventory mirrors the live Actor's item-kind→quantity map at snapshot
 	// time so the read surface (httpapi pc/me) can serve a player's held
