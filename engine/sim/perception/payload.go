@@ -162,11 +162,20 @@ type Payload struct {
 
 	// Businessowner reports whether the subject actor runs a business
 	// (Actor.BusinessownerState != nil — the existing keeper predicate).
-	// Drives the engine-side vendor operating-block (renderVendorOperating):
-	// the trade conduct rules that used to live in salem-vendor's
+	// Carries the trade conduct rules that used to live in salem-vendor's
 	// startup_instructions, moved engine-side so the whole decision prompt is
 	// code-owned and the rules sit at the decision point. ZBBS-WORK-374.
+	// The vendor cues no longer gate on this directly — see AtOwnBusiness.
 	Businessowner bool
+
+	// AtOwnBusiness narrows Businessowner: true iff the subject runs a business
+	// AND is physically at it (InsideStructureID == WorkStructureID, both set —
+	// the "you keep your trade at X" anchor). The vendor cues — renderVendorOperating
+	// and the OfferableCustomers "offer your wares" cue — gate on THIS, so a keeper
+	// away from their post (a hungry customer in someone else's tavern) isn't
+	// prompted to sell. Expresses WHERE the keeper is, not just WHO they are.
+	// ZBBS-WORK-385.
+	AtOwnBusiness bool
 
 	// OfferableCustomers is the seller-side "offer your wares" cue
 	// (ZBBS-HOME-404): non-nil when the subject is a businessowner co-present
@@ -177,8 +186,8 @@ type Payload struct {
 	// seller-initiated path LEGIBLE (the Finding-1 lesson applied to the sell
 	// side) — the seller still decides whether/what/at-what-price, and the
 	// buyer keeps full accept/decline agency. nil (render content-gates) when
-	// the subject isn't a businessowner, has no co-present customer, or carries
-	// nothing to sell. Built by buildOfferableCustomers.
+	// the subject isn't a businessowner at their own post (ZBBS-WORK-385), has no
+	// co-present customer, or carries nothing to sell. Built by buildOfferableCustomers.
 	OfferableCustomers *OfferableCustomersView
 
 	// PendingDeliveriesFromMe lists open Orders where the subject is

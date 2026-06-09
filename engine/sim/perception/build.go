@@ -65,10 +65,17 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 	p.Anchors = buildAnchors(snap, actorSnap)
 	p.NarrativeState = buildNarrativeState(actorSnap)
 	p.Businessowner = actorSnap.BusinessownerState != nil
+	// AtOwnBusiness narrows Businessowner to "at my own post" — a businessowner is
+	// only open for trade while physically at their business structure (the
+	// WorkStructureID anchor that renders as "you keep your trade at X"). The vendor
+	// cues gate on this, not bare Businessowner, so a keeper who is a customer
+	// elsewhere (Prudence pitching Water mid-meal in John Ellis's tavern) isn't told
+	// to sell. ZBBS-WORK-385.
+	p.AtOwnBusiness = p.Businessowner && actorSnap.WorkStructureID != "" && actorSnap.InsideStructureID == actorSnap.WorkStructureID
 	heardNow := currentHeardExcerpts(p.Warrants)
 	p.Relationships = buildRelationships(actorSnap, p.Surroundings.HuddleMembers, heardNow)
 	p.RecentConversation = buildRecentConversation(snap, actorID, actorSnap, heardNow)
-	p.OfferableCustomers = buildOfferableCustomers(snap, actorID, p.Businessowner, p.Surroundings.HuddleMembers, p.Actor.Inventory)
+	p.OfferableCustomers = buildOfferableCustomers(snap, actorID, p.AtOwnBusiness, p.Surroundings.HuddleMembers, p.Actor.Inventory)
 	p.PendingDeliveriesFromMe, p.PendingDeliveriesToMe = buildPendingOrderViews(snap, actorID)
 	p.PendingOffersFromMe = buildPendingOffersFromMe(snap, actorID, actorSnap)
 	p.LocalDateUTC = snap.LocalDateUTC // world "today" for the order-book date split (ZBBS-HOME-403)
@@ -1071,8 +1078,8 @@ func hasPendingOutgoingOffer(snap *sim.Snapshot, actorID sim.ActorID) bool {
 //     the seller to offer them; and
 //   - the seller already has a live (Active) scene_quote out to that customer —
 //     they've offered and await the buyer; re-cueing would re-post every tick.
-func buildOfferableCustomers(snap *sim.Snapshot, subject sim.ActorID, businessowner bool, members []HuddleMember, inventory []InventoryItem) *OfferableCustomersView {
-	if !businessowner || len(members) == 0 || len(inventory) == 0 {
+func buildOfferableCustomers(snap *sim.Snapshot, subject sim.ActorID, atOwnBusiness bool, members []HuddleMember, inventory []InventoryItem) *OfferableCustomersView {
+	if !atOwnBusiness || len(members) == 0 || len(inventory) == 0 {
 		return nil
 	}
 	goods := make([]string, 0, len(inventory))

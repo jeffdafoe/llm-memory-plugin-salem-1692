@@ -227,6 +227,9 @@ func TestBuild_OfferableCustomers_WiredForBusinessownerInHuddle(t *testing.T) {
 		BusinessownerState: &sim.BusinessownerState{},
 		Inventory:          map[sim.ItemKind]int{"stew": 5},
 		Acquaintances:      map[string]sim.Acquaintance{"Goodwife Mary": {}},
+		// At her own post — the vendor cues gate on AtOwnBusiness (ZBBS-WORK-385).
+		WorkStructureID:   "tavern",
+		InsideStructureID: "tavern",
 	}
 	customer := &sim.ActorSnapshot{
 		DisplayName:     "Goodwife Mary",
