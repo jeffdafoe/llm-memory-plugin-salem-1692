@@ -6,10 +6,11 @@ import (
 	"time"
 )
 
-// speak_validation_test.go — ZBBS-WORK-323. Unit coverage of the three speak
-// prose-validation gates (item-presence, transfer-verb, state-claim) + the
-// helpers (isAskShapeSpeech, extractItemMentions). Internal (package sim) so it
-// can call the unexported gate functions directly on a hand-built World.
+// speak_validation_test.go — ZBBS-WORK-323. Unit coverage of the speak
+// prose-validation gates (transfer-verb, state-claim; item-presence removed in
+// ZBBS-HOME-416) + the helpers (isAskShapeSpeech, extractItemMentions). Internal
+// (package sim) so it can call the unexported gate functions directly on a
+// hand-built World.
 
 func gateCatalog() map[ItemKind]*ItemKindDef {
 	return map[ItemKind]*ItemKindDef{
@@ -80,22 +81,31 @@ func gateActor(id ActorID, inv map[ItemKind]int) *Actor {
 	return &Actor{ID: id, Kind: KindNPCShared, Inventory: inv}
 }
 
-func TestValidateSpeechClaims_ItemPresence(t *testing.T) {
+// TestValidateSpeechClaims_ItemPresenceRemoved pins the ZBBS-HOME-416 removal of
+// the item-presence gate: naming an item the speaker doesn't hold is no longer
+// rejected here (integrity lives at the transfer commands). The motivating false
+// positives — a buyer naming the goods it wants, and an honest "I don't stock
+// that" disclaimer — now pass. Possession-backed transfer narration is still
+// caught by gate 2 (covered in TestValidateSpeechClaims_TransferVerb).
+func TestValidateSpeechClaims_ItemPresenceRemoved(t *testing.T) {
 	w := &World{ItemKinds: gateCatalog(), Actors: map[ActorID]*Actor{}}
 	now := time.Now().UTC()
+	a := gateActor("ezekiel", map[ItemKind]int{}) // holds nothing
 
-	// Claims bread it doesn't have → reject.
-	a := gateActor("hannah", map[ItemKind]int{"stew": 2})
-	if msg := validateSpeechClaims(w, a, "I have fresh bread for you", now); msg == "" || !strings.Contains(msg, "bread") {
-		t.Errorf("expected item-presence reject naming bread, got %q", msg)
+	// Declarative buyer acceptance naming the seller's goods — the live Ezekiel
+	// false positive. Assert it is NOT ask-shape first, so this proves gate-1
+	// removal rather than passing for the wrong reason if askShapeRegex ever
+	// changes to cover "shall buy".
+	buyerLine := "I shall buy a mug of ale from thee for 2 coins"
+	if isAskShapeSpeech(buyerLine) {
+		t.Fatalf("fixture unexpectedly matched ask-shape, can't prove gate-1 removal: %q", buyerLine)
 	}
-	// Has the stew it mentions → pass.
-	if msg := validateSpeechClaims(w, a, "I have hot stew today", now); msg != "" {
-		t.Errorf("expected pass for stew-in-hand, got %q", msg)
+	if msg := validateSpeechClaims(w, a, buyerLine, now); msg != "" {
+		t.Errorf("buyer naming goods to purchase should pass after gate-1 removal, got %q", msg)
 	}
-	// Ask-shape skips the gate even though bread isn't held.
-	if msg := validateSpeechClaims(w, a, "Do you have any bread?", now); msg != "" {
-		t.Errorf("ask-shape should skip item gate, got %q", msg)
+	// A bare sell-claim for an unheld item is no longer gated here either.
+	if msg := validateSpeechClaims(w, a, "I have fresh bread for you", now); msg != "" {
+		t.Errorf("unheld-item mention should pass after gate-1 removal, got %q", msg)
 	}
 }
 
