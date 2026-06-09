@@ -52,6 +52,23 @@ func (s ItemSatisfaction) HasDwell() bool {
 	return s.DwellAmount > 0 && s.DwellPeriodMinutes > 0 && s.DwellTotalTicks > 0
 }
 
+// HasActiveItemDwell reports whether the credits map holds a live item-source
+// dwell credit — i.e. the actor is mid-meal/mid-drink, finishing a consumed item
+// whose slow-burn eases a need only while it stays put. Exhausted credits are
+// deleted by ApplyDwellTick, so a present item credit is by definition still
+// active. Shared by the engine shift-duty producer (shiftDutyTarget) and the
+// perception wind-down cue (buildDutySteer) so both suppress the off-shift "head
+// home" duty while a meal is in progress — the meal is finite and both producers
+// are level-triggered, so the duty re-fires once it ends. ZBBS-WORK-386.
+func HasActiveItemDwell(credits map[DwellCreditKey]*DwellCredit) bool {
+	for k := range credits {
+		if k.Source == DwellSourceItem {
+			return true
+		}
+	}
+	return false
+}
+
 // UpsertItemDwellCredits stamps source="item" dwell credit rows on the
 // actor for any satisfaction with a complete dwell triple, pinned to
 // the supplied structureID. Returns the list of credits that were

@@ -298,7 +298,17 @@ func shiftDutyTarget(w *World, a *Actor, nowMinute int, now time.Time) (target S
 		}
 		return a.WorkStructureID, true, true
 	case !onShift && a.HomeStructureID != "" && !atHome:
-		// Heading home — NOT need-suppressed; going home is how an NPC rests.
+		// Heading home — NOT need-suppressed; going home is how an NPC rests. But a
+		// mid-meal NPC is left alone (same "busy, leave it alone" class as the rest
+		// suppressors above): while an item-source dwell credit is live the actor is
+		// finishing a consumed item whose slow-burn pays out only while it stays put,
+		// so the off-shift "head home" duty would yank it off the meal and forfeit the
+		// recovery. The meal is finite and this producer is level-triggered, so the
+		// duty re-fires once the dwell ends — "finish your meal, then head home". The
+		// to-work arm is left as-is (its own need-gate governs it). ZBBS-WORK-386.
+		if HasActiveItemDwell(a.DwellCredits) {
+			return "", false, false
+		}
 		return a.HomeStructureID, false, true
 	default:
 		return "", false, false
