@@ -48,6 +48,10 @@ func TestRenderVendorOperating_Gate(t *testing.T) {
 func TestBuild_BusinessownerFlag(t *testing.T) {
 	keeper := sharedSnap("moses", "Moses", "")
 	keeper.BusinessownerState = &sim.BusinessownerState{Flavor: "reserved"}
+	// Place Moses at his own post so the vendor block renders — the cue now gates
+	// on AtOwnBusiness (InsideStructureID == WorkStructureID). ZBBS-WORK-385.
+	keeper.WorkStructureID = "post"
+	keeper.InsideStructureID = "post"
 	snap := &sim.Snapshot{Actors: map[sim.ActorID]*sim.ActorSnapshot{"moses": keeper}}
 	p := Build(snap, "moses", nil)
 	if !p.Businessowner {
@@ -64,6 +68,67 @@ func TestBuild_BusinessownerFlag(t *testing.T) {
 	}
 	if got := combinedPrompt(Render(pp, DefaultRenderConfig())); strings.Contains(got, vendorOperatingMarker) {
 		t.Errorf("non-businessowner prompt should not carry the operating block:\n%s", got)
+	}
+}
+
+// TestBuild_VendorCues_GatedOnAtOwnBusiness covers ZBBS-WORK-385: the vendor
+// operating block AND the OfferableCustomers "offer your wares" cue fire only
+// when a businessowner is physically at their own business (InsideStructureID ==
+// WorkStructureID). A keeper huddled with a customer carrying sellable goods but
+// AWAY from their post — a customer in someone else's establishment — gets
+// neither cue, even though Businessowner stays true. Expresses WHERE they are,
+// not just WHO they are.
+func TestBuild_VendorCues_GatedOnAtOwnBusiness(t *testing.T) {
+	// inside varies; her business is always "tavern".
+	newSnap := func(inside sim.StructureID) *sim.Snapshot {
+		seller := &sim.ActorSnapshot{
+			DisplayName:        "Goodwife Ellis",
+			Kind:               sim.KindNPCShared,
+			CurrentHuddleID:    "h1",
+			BusinessownerState: &sim.BusinessownerState{},
+			Inventory:          map[sim.ItemKind]int{"stew": 5},
+			Acquaintances:      map[string]sim.Acquaintance{"Goodwife Mary": {}},
+			WorkStructureID:    "tavern",
+			InsideStructureID:  inside,
+		}
+		customer := &sim.ActorSnapshot{
+			DisplayName:     "Goodwife Mary",
+			Kind:            sim.KindNPCStateful,
+			CurrentHuddleID: "h1",
+		}
+		return &sim.Snapshot{
+			Actors: map[sim.ActorID]*sim.ActorSnapshot{"ellis": seller, "mary": customer},
+			Huddles: map[sim.HuddleID]*sim.Huddle{
+				"h1": {ID: "h1", Members: map[sim.ActorID]struct{}{"ellis": {}, "mary": {}}},
+			},
+		}
+	}
+
+	// Off-post: huddled at "market" while her business is "tavern" → neither cue.
+	off := Build(newSnap("market"), "ellis", nil)
+	if !off.Businessowner {
+		t.Fatal("Businessowner should stay true off-post")
+	}
+	if off.AtOwnBusiness {
+		t.Fatal("AtOwnBusiness should be false when InsideStructureID != WorkStructureID")
+	}
+	if off.OfferableCustomers != nil {
+		t.Error("off-post businessowner should get no OfferableCustomers cue")
+	}
+	if got := combinedPrompt(Render(off, DefaultRenderConfig())); strings.Contains(got, vendorOperatingMarker) {
+		t.Errorf("off-post businessowner should not carry the operating block:\n%s", got)
+	}
+
+	// On-post: huddled at "tavern", her own business → both cues fire.
+	on := Build(newSnap("tavern"), "ellis", nil)
+	if !on.AtOwnBusiness {
+		t.Fatal("AtOwnBusiness should be true when InsideStructureID == WorkStructureID")
+	}
+	if on.OfferableCustomers == nil {
+		t.Error("on-post businessowner huddled with a customer should get the OfferableCustomers cue")
+	}
+	if got := combinedPrompt(Render(on, DefaultRenderConfig())); !strings.Contains(got, vendorOperatingMarker) {
+		t.Errorf("on-post businessowner prompt missing the operating block:\n%s", got)
 	}
 }
 
