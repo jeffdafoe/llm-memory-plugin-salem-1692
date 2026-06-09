@@ -16,18 +16,24 @@ import (
 // apparent existence ("here's your stew", "yes, you're booked") that no tool call
 // actually performed, so the words misrepresent engine state to listeners.
 //
-// Three gates, run from sim.Speak's Fn (so they see live World state):
+// Gates run from sim.Speak's Fn (so they see live World state). Numbering is kept
+// stable across the gate-1 removal below:
 //
-//  1. ITEM-PRESENCE (v1 ZBBS-WORK-227/230) — scan the speech for item-kind names
-//     and reject any the speaker doesn't actually hold. The isAskShapeSpeech
-//     guard skips buyer questions / vendor declines ("do you have bread?",
-//     "I'm out of ale") so only possession/offer claims are gated.
+//  1. ITEM-PRESENCE — REMOVED in ZBBS-HOME-416. It scanned speech for item-kind
+//     names and rejected any the speaker didn't hold. The scan was purely lexical
+//     (no speech-act awareness), so it punished legitimate buyer / procurement /
+//     disclaimer speech ("I shall buy the ale", "I must restock on meat", "I have
+//     no meat to sell, I'm but a blacksmith") far more than it caught seller lies
+//     — across the 2026-06-05..08 corpus its true-positive rate was ~0. Economic
+//     integrity (you cannot transfer stock you don't hold) is enforced at the
+//     transfer commands (pay_ledger / pay_with_item), not here; the gate only
+//     governed chat accuracy, which the perception's "You are carrying:" line owns.
 //  2. TRANSFER-VERB (v1 ZBBS-HOME-265, RELOCATED from act → speak per the WORK-323
-//     option-B decision). A speaker who HAS the item (gate 1 passes) can still
-//     fabricate a handover by narrating it ("served stew to Ezekiel"); speech
-//     doesn't move items. v1 gated this only on the `act` verb, which is being
-//     dropped (ZBBS, 2026-05-25 — ~2% of speak, headline use was fabrication),
-//     so its coverage relocates here rather than vanishing.
+//     option-B decision). Narrating a completed handover ("served stew to Ezekiel")
+//     doesn't move items — speech can't perform a transfer. v1 gated this only on
+//     the `act` verb, which is being dropped (ZBBS, 2026-05-25 — ~2% of speak,
+//     headline use was fabrication), so its coverage relocates here rather than
+//     vanishing.
 //  3. STATE-CLAIM (v1 ZBBS-HOME-270) — reject *completed* second-person booking
 //     ("you are booked", "your room is ready", "welcome, lodger") and payment
 //     ("you've paid me", "you've settled up") claims that lack a backing
@@ -45,11 +51,11 @@ import (
 const recentPaymentWindow = 5 * time.Minute
 
 // askShapeRegex matches speech that reads as a buyer-side request or a vendor
-// decline rather than a possession claim — these skip the item-presence/transfer
-// gates so legitimate "do you have bread?" / "I'm out of ale" dialog isn't
-// rejected for naming an item the speaker doesn't stock. Ported verbatim from v1
-// (engine/inventory.go); WORK-230 added it because the raw item gate was
-// rejecting vendors *asking* each other about goods.
+// decline rather than a completed-transfer claim — these skip the transfer-verb
+// gate so request/decline dialog that names catalog items ("do you have bread?",
+// "I'm out of ale") isn't treated as handover narration. Ported verbatim from v1
+// (engine/inventory.go); WORK-230 originally added it to stop the now-removed
+// (HOME-416) item-presence gate from rejecting vendors *asking* about goods.
 var askShapeRegex = regexp.MustCompile(`(?i)(\?|\bdo you\b|\bhave you\b|\b(may|can|could)\s+i\b|\bi\s+(want|need)\b|\b(i'?d|i would)\s+(want|need|like|love|take|have|buy|get|prefer)\b|\bi'?ll\s+(take|have|buy|get|need|like)\b|\bi'?m\s+(looking|after|seeking)\b|\bi'?m\s+out\s+of\b|\bout\s+of\s+\w+\b|\bdon'?t\s+(have|carry|stock|sell)\b|\bran\s+out\b|\bno\s+more\s+\w+\b|\bi\s+haven'?t\s+(any|got)\b)`)
 
 // transferVerbRegex matches past-tense transfer-implying verbs that, combined
@@ -140,27 +146,16 @@ func extractItemMentions(w *World, text string) []ItemKind {
 // validate against). There is no transient-error path because all reads are
 // in-memory on the serialized world goroutine.
 func validateSpeechClaims(w *World, speaker *Actor, text string, now time.Time) string {
-	// Gates 1 + 2 share the item-mention scan. Ask-shape speech (questions,
-	// declines) skips both — naming an item you're asking about isn't a claim.
+	// Gate 2 (transfer-verb) needs the item-mention scan. Ask-shape speech
+	// (questions, declines) skips it — naming an item you're asking about isn't a
+	// claim. The former gate 1 (item-presence) was removed in ZBBS-HOME-416 (see
+	// the file header); integrity lives at the transfer commands, not here.
 	if !isAskShapeSpeech(text) {
 		mentions := extractItemMentions(w, text)
 		if len(mentions) > 0 {
-			// Gate 1: item-presence. Reject any mentioned item not on hand.
-			var bogus []string
-			for _, m := range mentions {
-				if speaker.Inventory[m] <= 0 {
-					bogus = append(bogus, string(m))
-				}
-			}
-			if len(bogus) > 0 {
-				return fmt.Sprintf(
-					"You don't have these items in your inventory: %s. Don't mention items you can't actually offer — naming goods you don't stock misleads listeners.",
-					strings.Join(bogus, ", "),
-				)
-			}
-			// Gate 2: transfer-verb (relocated from act). The speaker HAS the
-			// items (gate 1 passed), but narrating a handover via speech doesn't
-			// move them.
+			// Gate 2: transfer-verb (relocated from act). Narrating a completed
+			// handover via speech doesn't move items, even when the speaker holds
+			// them.
 			if verb := transferVerbRegex.FindString(text); verb != "" {
 				names := make([]string, len(mentions))
 				for i, m := range mentions {

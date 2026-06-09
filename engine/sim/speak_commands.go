@@ -26,7 +26,7 @@ import (
 //
 // Scope: the structural shape of v1 — empty-text reject, walk-in-flight
 // reject, vocative stale-addressee reject (in-memory), the WORK-323 prose-
-// validation gates (item-presence + transfer-verb + state-claim, see
+// validation gates (transfer-verb + state-claim, see
 // validateSpeechClaims in speak_validation.go), event emit, paired
 // RecordInteraction writes per huddle peer (KindNPCShared-gated inside
 // RecordInteraction). Still deferred: the structured `mentions[]` schema field
@@ -142,8 +142,8 @@ func SpeakTo(speakerID ActorID, text, to string, hasNewNews bool, at time.Time) 
 				}
 			}
 
-			// Prose-validation gates (ZBBS-WORK-323): item-presence, transfer-verb,
-			// and transactional state-claim — the defense against speaking a
+			// Prose-validation gates (ZBBS-WORK-323): transfer-verb and
+			// transactional state-claim — the defense against speaking a
 			// service/transaction into apparent existence that no tool performed.
 			// PC speech is exempt (players may roleplay assertions); only NPC LLM
 			// hallucination is gated. See speak_validation.go.
