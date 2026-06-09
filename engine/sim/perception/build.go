@@ -985,6 +985,14 @@ func buildDutySteer(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapsho
 		}
 		return &DutySteerView{ToWork: true, TargetID: anchors.WorkID, TargetLabel: anchors.WorkLabel}
 	case !onShift && anchors.HomeID != "" && !atHome:
+		// Mid-meal yields the wind-down: while an item-source dwell credit is live
+		// the NPC is finishing a consumed item (its slow-burn pays out only while it
+		// stays put), so suppress the "head home now" cue rather than have it abandon
+		// the meal. Mirrors shiftDutyTarget's go-home suppressor so cue and warrant
+		// agree; the cue re-fires once the dwell ends. ZBBS-WORK-386.
+		if sim.HasActiveItemDwell(a.DwellCredits) {
+			return nil
+		}
 		return &DutySteerView{ToWork: false, TargetID: anchors.HomeID, TargetLabel: anchors.HomeLabel}
 	default:
 		return nil
