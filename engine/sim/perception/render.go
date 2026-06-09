@@ -685,11 +685,37 @@ func renderDutySteer(b *strings.Builder, v *DutySteerView) {
 			anchorPlace(v.TargetLabel, "your workplace"), v.TargetID)
 		return
 	}
-	if l := sanitizeInline(v.TargetLabel); l != "" {
-		fmt.Fprintf(b, "Your working hours are over and you are not yet home — head home to %s (structure_id: %s) now.\n\n", l, v.TargetID)
-	} else {
-		fmt.Fprintf(b, "Your working hours are over and you are not yet home — head home (structure_id: %s) now.\n\n", v.TargetID)
+	// Off-shift wind-down (ZBBS-WORK-387). Housing-dependent target line, plus —
+	// for a keeper standing at its post — the stay_open choice appended after it.
+	switch {
+	case v.TargetID == "":
+		// Homeless: no fixed place. The WHERE (rent a room / a shade tree) is
+		// carried by the recovery-options cue; this is only the schedule beat.
+		b.WriteString("Your working hours are over — it is time to close up for the night and find yourself a place to rest.")
+	case v.Lodging:
+		if l := sanitizeInline(v.TargetLabel); l != "" {
+			fmt.Fprintf(b, "Your working hours are over — close up and head to your rented room at %s (structure_id: %s) to rest for the night.", l, v.TargetID)
+		} else {
+			fmt.Fprintf(b, "Your working hours are over — close up and head to your rented room at the inn (structure_id: %s) to rest for the night.", v.TargetID)
+		}
+	default:
+		if l := sanitizeInline(v.TargetLabel); l != "" {
+			fmt.Fprintf(b, "Your working hours are over and you are not yet home — head home to %s (structure_id: %s) now.", l, v.TargetID)
+		} else {
+			fmt.Fprintf(b, "Your working hours are over and you are not yet home — head home (structure_id: %s) now.", v.TargetID)
+		}
 	}
+	// The stay-open choice: encouraged when a concrete reason is present, else
+	// offered as a discretionary option. Always names that the closing hour must
+	// be supplied (until_hour) — the stay_open tool requires it.
+	if v.OfferStayOpen {
+		if v.StayOpenReason != "" {
+			fmt.Fprintf(b, " However, %s — if you wish to keep your business open later instead, call stay_open and state the hour you will close (until_hour).", v.StayOpenReason)
+		} else {
+			b.WriteString(" Or, if you have reason to keep your business open later instead, you may call stay_open and state the hour you will close (until_hour).")
+		}
+	}
+	b.WriteString("\n\n")
 }
 
 // joinHuddleMembers renders co-huddle peers with name-vs-descriptor

@@ -1616,6 +1616,7 @@ func snapshotActor(a *Actor, atTick uint64) *ActorSnapshot {
 		ClosedBusinessObs:   cloneClosedBusinessObs(a.ClosedBusinessObs),
 		OutOfStockObs:       cloneOutOfStockObs(a.OutOfStockObs),
 		RoomAccess:          cloneRoomAccess(a.RoomAccess),
+		OpenUntil:           copyTimePtr(a.OpenUntil),
 		RestockPolicy:       a.RestockPolicy,
 		TickInFlight:        a.TickInFlight,
 		TickAttemptID:       a.TickAttemptID,

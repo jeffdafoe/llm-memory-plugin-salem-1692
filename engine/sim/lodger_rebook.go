@@ -182,7 +182,13 @@ func soonestActiveLedgerGrant(a *Actor, now time.Time) *RoomAccess {
 		if !IsActiveLedgerGrant(ra, now) {
 			continue
 		}
-		if best == nil || ra.ExpiresAt.Before(*best.ExpiresAt) {
+		// Tie-break equal expiries by RoomID so the selection is deterministic
+		// across the map's randomized iteration order — otherwise two grants with
+		// identical ExpiresAt could resolve to different rooms on different reads,
+		// and the wind-down cue (perception lodgerInn) could disagree with this
+		// warrant on which inn to steer toward (ZBBS-WORK-387).
+		if best == nil || ra.ExpiresAt.Before(*best.ExpiresAt) ||
+			(ra.ExpiresAt.Equal(*best.ExpiresAt) && ra.RoomID < best.RoomID) {
 			best = ra
 		}
 	}

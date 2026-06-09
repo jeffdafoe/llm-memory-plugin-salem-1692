@@ -621,14 +621,30 @@ type AnchorsView struct {
 	SamePlace bool
 }
 
-// DutySteerView is the standing return-to-post cue (ZBBS-HOME-352). ToWork
-// distinguishes the two directions; TargetID/TargetLabel name the destination
-// (reused from the actor's AnchorsView, so the structure_id the model needs is
-// already in the adjacent "## Where you belong" section). See buildDutySteer.
+// DutySteerView is the standing return-to-post / wind-down cue (ZBBS-HOME-352,
+// reframed by ZBBS-WORK-387). ToWork distinguishes the two directions. On the
+// off-shift wind-down side the target is housing-dependent: the actor's own home,
+// a lodger's rented inn room (Lodging), or — for a homeless keeper — no fixed
+// place at all (TargetID == "", a directionless "find your rest" nudge;
+// recovery_options carries the where). For a keeper standing at its own post the
+// cue also surfaces the stay_open choice (OfferStayOpen). See buildDutySteer.
 type DutySteerView struct {
-	ToWork      bool // true = on-shift, head to work; false = off-shift, head home
+	ToWork      bool // true = on-shift, head to work; false = off-shift, wind down for the night
 	TargetID    sim.StructureID
-	TargetLabel string // resolved DisplayName; may be empty (render falls back)
+	TargetLabel string // resolved DisplayName; may be empty (render falls back). Empty TargetID on an off-shift cue = homeless (no fixed place).
+
+	// Lodging marks the off-shift target as the actor's RENTED room at an inn
+	// (a lodger) rather than its own home — render says "head to your rented room
+	// at X". Only meaningful when !ToWork && TargetID != "". ZBBS-WORK-387.
+	Lodging bool
+
+	// OfferStayOpen surfaces the stay_open choice on an off-shift wind-down cue,
+	// set only for a keeper standing at its own business (the close-or-stay-open
+	// moment). When StayOpenReason is non-empty the cue ACTIVELY encourages
+	// staying open (a concrete reason — owed order / co-present buyer / pending
+	// offer); otherwise it is offered as a discretionary option. ZBBS-WORK-387.
+	OfferStayOpen  bool
+	StayOpenReason string
 }
 
 // SceneView describes the primary scene and, when a baseline could be

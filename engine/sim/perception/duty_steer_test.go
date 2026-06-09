@@ -3,6 +3,7 @@ package perception
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
@@ -335,5 +336,161 @@ func TestRender_DutySteerCarriesStructureID(t *testing.T) {
 	out := Render(p, DefaultRenderConfig())
 	if !strings.Contains(combinedPrompt(out), "structure_id: tavern") {
 		t.Errorf("rendered prompt must carry the duty target structure_id, got:\n%s", combinedPrompt(out))
+	}
+}
+
+// TestBuildDutySteer_OpenUntilSuppression — ZBBS-WORK-387. A stay_open "open
+// until" commitment suppresses the off-shift wind-down cue, but yields to peak
+// exhaustion (the needs floor wins) and is inert once lapsed.
+func TestBuildDutySteer_OpenUntilSuppression(t *testing.T) {
+	now := lodgingNow
+	mkSnap := func() *sim.Snapshot {
+		m := 600 // 10:00 — off the 16:00–03:00 schedule below
+		return &sim.Snapshot{LocalMinuteOfDay: &m, PublishedAt: now, NeedThresholds: sim.DefaultNeedThresholds()}
+	}
+	base := func() *sim.ActorSnapshot {
+		return &sim.ActorSnapshot{
+			Kind:              sim.KindNPCStateful,
+			ScheduleStartMin:  dutyMinPtr(960),
+			ScheduleEndMin:    dutyMinPtr(180),
+			InsideStructureID: "tavern", // off-shift, away from home (cottage) → wind-down
+			Needs:             map[sim.NeedKey]int{"tiredness": 0},
+		}
+	}
+
+	// Precondition: no commitment → wind-down fires (home=cottage).
+	if v := buildDutySteer(mkSnap(), "ez", base(), dutyAnchors, false); v == nil || v.ToWork || v.TargetID != "cottage" {
+		t.Fatalf("precondition: want home=cottage, got %+v", v)
+	}
+
+	// Unlapsed OpenUntil, not peak → suppressed.
+	committed := base()
+	committed.OpenUntil = ptrTime(now.Add(2 * time.Hour))
+	if v := buildDutySteer(mkSnap(), "ez", committed, dutyAnchors, false); v != nil {
+		t.Errorf("OpenUntil (not peak) should suppress the wind-down, got %+v", v)
+	}
+
+	// At peak exhaustion the wind-down CUE is silenced by the red-need gate
+	// (hasRedNeed, HOME-362) regardless of OpenUntil — peak is a strict subset of
+	// red. The "peak overrides the commitment" property lives on the engine side
+	// (the force-bed MarchHome), asserted in sim/stay_open_test.go; the cue layer
+	// just goes quiet here.
+	peak := base()
+	peak.OpenUntil = ptrTime(now.Add(2 * time.Hour))
+	peak.Needs["tiredness"] = 24
+	if v := buildDutySteer(mkSnap(), "ez", peak, dutyAnchors, false); v != nil {
+		t.Errorf("at peak the wind-down cue should be silent (red-need gate), got %+v", v)
+	}
+
+	// Lapsed OpenUntil → inert.
+	lapsed := base()
+	lapsed.OpenUntil = ptrTime(now.Add(-time.Hour))
+	if v := buildDutySteer(mkSnap(), "ez", lapsed, dutyAnchors, false); v == nil || v.TargetID != "cottage" {
+		t.Errorf("lapsed OpenUntil should not suppress, got %+v", v)
+	}
+}
+
+// TestBuildDutySteer_LodgerWindsDownToInn — ZBBS-WORK-387. A lodger (no home,
+// active ledger grant) winds down toward the inn it rents, with Lodging set.
+func TestBuildDutySteer_LodgerWindsDownToInn(t *testing.T) {
+	m := 600 // off-shift
+	lodgerAnchors := &AnchorsView{WorkID: "smithy", WorkLabel: "The Smithy"} // no home
+	subj := &sim.ActorSnapshot{
+		Kind:              sim.KindNPCStateful,
+		ScheduleStartMin:  dutyMinPtr(960),
+		ScheduleEndMin:    dutyMinPtr(180),
+		InsideStructureID: "smithy", // away from the inn
+		WorkStructureID:   "smithy",
+		RoomAccess: map[sim.RoomAccessKey]*sim.RoomAccess{
+			{RoomID: 2, Source: sim.AccessSourceLedger}: ledgerAccess(2, 72*time.Hour),
+		},
+	}
+	structs := map[sim.StructureID]*sim.Structure{"inn": innStructureN("inn", "Hannah's Inn", 1)}
+	snap := &sim.Snapshot{LocalMinuteOfDay: &m, PublishedAt: lodgingNow, Structures: structs, NeedThresholds: sim.DefaultNeedThresholds()}
+
+	v := buildDutySteer(snap, "ezekiel", subj, lodgerAnchors, false)
+	if v == nil || v.ToWork || v.TargetID != "inn" || !v.Lodging {
+		t.Fatalf("want lodger wind-down to inn (Lodging=true), got %+v", v)
+	}
+
+	// Already at the inn → nil.
+	subj.InsideStructureID = "inn"
+	if v := buildDutySteer(snap, "ezekiel", subj, lodgerAnchors, false); v != nil {
+		t.Errorf("lodger at the inn should have no wind-down cue, got %+v", v)
+	}
+}
+
+// TestBuildDutySteer_HomelessNudgeAtPost — ZBBS-WORK-387. A homeless keeper (no
+// home, no grant) gets a placeless wind-down nudge (TargetID == "") only while
+// still at its work post; off the post it gets nothing (recovery_options + the
+// homeless rest floor take over).
+func TestBuildDutySteer_HomelessNudgeAtPost(t *testing.T) {
+	m := 600
+	anchors := &AnchorsView{WorkID: "smithy", WorkLabel: "The Smithy"} // no home
+	snap := &sim.Snapshot{LocalMinuteOfDay: &m, PublishedAt: lodgingNow, NeedThresholds: sim.DefaultNeedThresholds()}
+
+	atPost := &sim.ActorSnapshot{
+		Kind: sim.KindNPCStateful, ScheduleStartMin: dutyMinPtr(960), ScheduleEndMin: dutyMinPtr(180),
+		WorkStructureID: "smithy", InsideStructureID: "smithy",
+	}
+	if v := buildDutySteer(snap, "vagrant", atPost, anchors, false); v == nil || v.ToWork || v.TargetID != "" || v.Lodging {
+		t.Fatalf("want placeless homeless wind-down (empty TargetID), got %+v", v)
+	}
+
+	offPost := &sim.ActorSnapshot{
+		Kind: sim.KindNPCStateful, ScheduleStartMin: dutyMinPtr(960), ScheduleEndMin: dutyMinPtr(180),
+		WorkStructureID: "smithy", InsideStructureID: "market",
+	}
+	if v := buildDutySteer(snap, "vagrant", offPost, anchors, false); v != nil {
+		t.Errorf("homeless off the post should get no wind-down cue, got %+v", v)
+	}
+}
+
+func TestStayOpenReason(t *testing.T) {
+	if r := stayOpenReason(true, false, false); !strings.Contains(r, "orders") {
+		t.Errorf("owed-orders reason, got %q", r)
+	}
+	if r := stayOpenReason(false, true, false); !strings.Contains(r, "customer") {
+		t.Errorf("co-present-buyer reason, got %q", r)
+	}
+	if r := stayOpenReason(false, false, true); !strings.Contains(r, "offer") {
+		t.Errorf("pending-offer reason, got %q", r)
+	}
+	if r := stayOpenReason(false, false, false); r != "" {
+		t.Errorf("no signal → empty, got %q", r)
+	}
+	if r := stayOpenReason(true, true, true); !strings.Contains(r, "orders") {
+		t.Errorf("owed orders should take precedence, got %q", r)
+	}
+}
+
+// TestRenderDutySteer_WindDownVariants covers the ZBBS-WORK-387 prose: lodger,
+// homeless (placeless), and the stay_open clause (encouraged + discretionary,
+// both naming until_hour).
+func TestRenderDutySteer_WindDownVariants(t *testing.T) {
+	render := func(v *DutySteerView) string {
+		var b strings.Builder
+		renderDutySteer(&b, v)
+		return b.String()
+	}
+
+	lodger := render(&DutySteerView{TargetID: "inn", TargetLabel: "Hannah's Inn", Lodging: true})
+	if !strings.Contains(lodger, "rented room at Hannah's Inn") || !strings.Contains(lodger, "structure_id: inn") {
+		t.Errorf("lodger prose missing pieces, got %q", lodger)
+	}
+
+	homeless := render(&DutySteerView{})
+	if !strings.Contains(homeless, "find yourself a place to rest") || strings.Contains(homeless, "structure_id") {
+		t.Errorf("homeless prose should be placeless, got %q", homeless)
+	}
+
+	enc := render(&DutySteerView{TargetID: "cottage", TargetLabel: "Ellis Cottage", OfferStayOpen: true, StayOpenReason: "you still have orders to deliver"})
+	if !strings.Contains(enc, "stay_open") || !strings.Contains(enc, "until_hour") || !strings.Contains(enc, "orders to deliver") {
+		t.Errorf("encouraged stay-open prose missing pieces, got %q", enc)
+	}
+
+	disc := render(&DutySteerView{TargetID: "cottage", TargetLabel: "Ellis Cottage", OfferStayOpen: true})
+	if !strings.Contains(disc, "stay_open") || !strings.Contains(disc, "until_hour") {
+		t.Errorf("discretionary stay-open prose missing pieces, got %q", disc)
 	}
 }

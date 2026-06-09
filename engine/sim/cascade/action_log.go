@@ -10,10 +10,10 @@ import (
 )
 
 // action_log.go — append-only in-memory action log substrate driver.
-// Wires six event subscribers (Spoke / Paid / ItemConsumed /
-// OrderDelivered / ActorArrived / TookBreak) to translate engine events
-// into sim.ActionLogEntry rows, and spawns a sweep goroutine that
-// periodically compacts the log via sim.CompactActionLog.
+// Wires seven event subscribers (Spoke / Paid / ItemConsumed /
+// OrderDelivered / ActorArrived / TookBreak / StayingOpen) to translate
+// engine events into sim.ActionLogEntry rows, and spawns a sweep goroutine
+// that periodically compacts the log via sim.CompactActionLog.
 //
 // Subscribers run inline on the world goroutine via emit dispatch;
 // the sweep goroutine runs off-world and routes mutations through
@@ -29,6 +29,7 @@ import (
 //   ├─> w.Subscribe(handleOrderDeliveredActionLog)
 //   ├─> w.Subscribe(handleActorArrivedActionLog)
 //   ├─> w.Subscribe(handleTookBreakActionLog)
+//   ├─> w.Subscribe(handleStayedOpenActionLog)
 //   └─> go runActionLogSweep(ctx, w)
 //        ├─> immediate first compaction
 //        └─> time.Ticker @ ActionLogSweepInterval until ctx.Done
@@ -75,6 +76,7 @@ func RegisterActionLog(ctx context.Context, w *sim.World) {
 	w.Subscribe(sim.SubscriberFunc(handleOrderDeliveredActionLog))
 	w.Subscribe(sim.SubscriberFunc(handleActorArrivedActionLog))
 	w.Subscribe(sim.SubscriberFunc(handleTookBreakActionLog))
+	w.Subscribe(sim.SubscriberFunc(handleStayedOpenActionLog))
 	go runActionLogSweep(ctx, w)
 }
 
@@ -353,6 +355,49 @@ func handleTookBreakActionLog(w *sim.World, evt sim.Event) {
 		ActorID:     broke.ActorID,
 		OccurredAt:  broke.At,
 		ActionType:  sim.ActionTypeTookBreak,
+		Payload:     payload,
+		SpeakerName: display,
+		HuddleID:    huddleID,
+		Source:      source,
+	})
+}
+
+// handleStayedOpenActionLog appends a row when a stay_open tool call commits
+// (ZBBS-WORK-387). ActorID is the keeper that committed to staying open late;
+// Text is the model-supplied reason; HuddleID is the keeper's huddle at append
+// time (usually a customer huddle — staying open keeps the post manned).
+func handleStayedOpenActionLog(w *sim.World, evt sim.Event) {
+	stayed, ok := evt.(*sim.StayingOpen)
+	if !ok {
+		return
+	}
+	huddleID := sim.HuddleID("")
+	if actor, ok := w.Actors[stayed.ActorID]; ok {
+		huddleID = actor.CurrentHuddleID
+	}
+	entry := sim.ActionLogEntry{
+		ActorID:    stayed.ActorID,
+		OccurredAt: stayed.At,
+		ActionType: sim.ActionTypeStayedOpen,
+		Text:       stayed.Reason,
+		HuddleID:   huddleID,
+	}
+	if _, err := sim.AppendActionLogEntry(entry).Fn(w); err != nil {
+		log.Printf("cascade/action_log: append stayed_open (actor %q event %d): %v",
+			stayed.ActorID, stayed.EventID(), err)
+		return
+	}
+	// Durable mirror (ZBBS-WORK-376): the model-supplied reason as a structured
+	// field (omitted when empty).
+	display, source := actorDisplayAndSource(w, stayed.ActorID)
+	payload := map[string]any{}
+	if stayed.Reason != "" {
+		payload["reason"] = stayed.Reason
+	}
+	w.AppendActionLogDurable(sim.DurableActionLogRow{
+		ActorID:     stayed.ActorID,
+		OccurredAt:  stayed.At,
+		ActionType:  sim.ActionTypeStayedOpen,
 		Payload:     payload,
 		SpeakerName: display,
 		HuddleID:    huddleID,
