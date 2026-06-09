@@ -145,7 +145,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// Ephemeral: identity, surroundings, anchors, steers, relationships, owed
 	// orders, recovery/satiation/restock/lodging affordances, summons, scene.
 	renderNarrativeState(&ephemeral, p.NarrativeState)
-	renderVendorOperating(&ephemeral, p.Businessowner)
+	renderVendorOperating(&ephemeral, p.AtOwnBusiness)
 	renderSurroundings(&ephemeral, p.Surroundings)
 	renderAnchors(&ephemeral, p.Anchors)
 	renderDutySteer(&ephemeral, p.DutySteer)
@@ -739,16 +739,17 @@ func renderNarrativeState(b *strings.Builder, n *NarrativeStateView) {
 // memory-api <Instructions> system block) and drove the "instant room pitch on a
 // bare Hello" sell-pressure. Moved engine-side (ZBBS-WORK-374) so the whole
 // decision prompt is code-owned and the rules sit near the decision point rather
-// than in a detached, far-away system preamble. Gated on Businessowner (the
-// Actor.BusinessownerState != nil keeper predicate), so it reaches vendors
-// (innkeeper, farmers, shopkeepers) but not visitors or stateful NPCs. The
+// than in a detached, far-away system preamble. Gated on AtOwnBusiness — a
+// businessowner physically at their own post (ZBBS-WORK-385) — so it reaches
+// vendors (innkeeper, farmers, shopkeepers) tending their business, but not
+// visitors, stateful NPCs, or a keeper off-post in someone else's place. The
 // scoped wording replaces "always be closing" with "a greeting is not a sale".
 // ZBBS-HOME-385 restores the "tend to your trade" working framing that the
 // WORK-374 port dropped (the producers were drifting off-post with nothing to
 // do); kept generic ("your trade", not "your stall") since a vendor may keep a
 // stall or a building.
-func renderVendorOperating(b *strings.Builder, businessowner bool) {
-	if !businessowner {
+func renderVendorOperating(b *strings.Builder, atOwnBusiness bool) {
+	if !atOwnBusiness {
 		return
 	}
 	b.WriteString("How you trade:\n")
