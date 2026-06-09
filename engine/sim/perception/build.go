@@ -86,6 +86,20 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 	// return-to-post cue is now suppressed while a restock errand is active —
 	// p.Restocking != nil is exactly that signal.
 	p.DutySteer = buildDutySteer(snap, actorID, actorSnap, p.Anchors, p.Restocking != nil)
+	// Stay-open choice (ZBBS-WORK-387): a keeper standing at its own post on an
+	// off-shift wind-down may keep its business open instead of closing up. Surface
+	// the option, and encourage it when a concrete reason is present (the hybrid
+	// gate — an owed order, a co-present buyer, or a pending offer; the same class
+	// of "unfinished business" signal the HOME-400 to-work gate reads). Computed
+	// here, after buildDutySteer, off the already-built order/offer/customer views.
+	if p.DutySteer != nil && !p.DutySteer.ToWork && p.AtOwnBusiness {
+		p.DutySteer.OfferStayOpen = true
+		p.DutySteer.StayOpenReason = stayOpenReason(
+			len(p.PendingDeliveriesFromMe) > 0,
+			p.OfferableCustomers != nil,
+			len(p.PendingOffersFromMe) > 0,
+		)
+	}
 	p.Lodging = buildLodgingView(snap, actorSnap)
 	p.KeeperLodging = buildKeeperLodgingView(snap, actorSnap)
 	p.LodgingOffer = buildLodgingOfferCue(snap, actorID, p.KeeperLodging, p.Surroundings.HuddleMembers)
@@ -984,19 +998,122 @@ func buildDutySteer(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapsho
 			return nil
 		}
 		return &DutySteerView{ToWork: true, TargetID: anchors.WorkID, TargetLabel: anchors.WorkLabel}
-	case !onShift && anchors.HomeID != "" && !atHome:
-		// Mid-meal yields the wind-down: while an item-source dwell credit is live
-		// the NPC is finishing a consumed item (its slow-burn pays out only while it
-		// stays put), so suppress the "head home now" cue rather than have it abandon
-		// the meal. Mirrors shiftDutyTarget's go-home suppressor so cue and warrant
-		// agree; the cue re-fires once the dwell ends. ZBBS-WORK-386.
-		if sim.HasActiveItemDwell(a.DwellCredits) {
-			return nil
+	case !onShift:
+		// Off-shift wind-down (ZBBS-WORK-387) — housing-dependent target. The
+		// suppressors (windDownSuppressed: a mid-meal item dwell — WORK-386; an
+		// unlapsed stay_open "open until" commitment while not peak-exhausted)
+		// mirror shiftDutyTarget's go-home arm so cue and warrant agree.
+		switch {
+		case anchors.HomeID != "":
+			// Homed → head home (the long-standing behavior).
+			if atHome {
+				return nil
+			}
+			if windDownSuppressed(a, snap) {
+				return nil
+			}
+			return &DutySteerView{ToWork: false, TargetID: anchors.HomeID, TargetLabel: anchors.HomeLabel}
+		default:
+			// No home. Lodger → head to the rented room at the inn it lodges in
+			// (the same soonest-active-grant the engine's windDownTarget resolves,
+			// so cue and warrant agree).
+			if innID, innName, ok := lodgerInn(snap, a); ok {
+				if a.InsideStructureID == innID {
+					return nil
+				}
+				if windDownSuppressed(a, snap) {
+					return nil
+				}
+				return &DutySteerView{ToWork: false, TargetID: innID, TargetLabel: innName, Lodging: true}
+			}
+			// Homeless → a directionless "find your rest for the night" nudge, fired
+			// only while still lingering at the work post (atWork); once off the post
+			// recovery_options + the homeless rest floor take over, and there is no
+			// fixed place to march to. No TargetID — render gives the placeless line.
+			if !atWork {
+				return nil
+			}
+			if windDownSuppressed(a, snap) {
+				return nil
+			}
+			return &DutySteerView{ToWork: false}
 		}
-		return &DutySteerView{ToWork: false, TargetID: anchors.HomeID, TargetLabel: anchors.HomeLabel}
 	default:
 		return nil
 	}
+}
+
+// windDownSuppressed reports whether the off-shift wind-down cue should be held
+// back this tick despite the actor being off-shift and not yet wound down.
+// Mirrors shiftDutyTarget's go-home suppressors so the perception cue and the
+// engine warrant agree (ZBBS-WORK-386 + ZBBS-WORK-387):
+//   - a live item-source dwell credit (mid-meal) — don't prompt it to abandon
+//     the meal mid-dwell; the cue re-fires once the dwell ends.
+//   - an unlapsed stay_open "open until" commitment — the keeper has chosen to
+//     stay open, so suppress the routine wind-down.
+//
+// The peak-exhaustion override shiftDutyTarget applies (OpenUntil yields to peak,
+// so the engine still force-beds an exhausted keeper) is deliberately NOT
+// mirrored here: buildDutySteer already returns nil for ANY red-or-worse need
+// (hasRedNeed, HOME-362) before this is reached, and peak is a strict subset of
+// red — so a peak-exhausted keeper's wind-down cue is already silenced upstream
+// and the engine's force-bed floor (MarchHome) / recovery_options drive the rest.
+// When this runs, the actor is always sub-red.
+func windDownSuppressed(a *sim.ActorSnapshot, snap *sim.Snapshot) bool {
+	if sim.HasActiveItemDwell(a.DwellCredits) {
+		return true
+	}
+	if a.OpenUntil != nil && a.OpenUntil.After(snap.PublishedAt) {
+		return true
+	}
+	return false
+}
+
+// lodgerInn resolves the inn structure (id + display label) where the actor
+// holds its soonest-expiring active ledger room grant, or ok=false when it holds
+// none (i.e. isn't a lodger). The grant selection matches buildLodgingView and
+// the engine's soonestActiveLedgerGrant, so the wind-down cue, the lodging
+// section, and the engine warrant all point at the same inn. ZBBS-WORK-387.
+func lodgerInn(snap *sim.Snapshot, a *sim.ActorSnapshot) (sim.StructureID, string, bool) {
+	now := snap.PublishedAt
+	var best *sim.RoomAccess
+	for _, ra := range a.RoomAccess {
+		if !sim.IsActiveLedgerGrant(ra, now) {
+			continue
+		}
+		// Tie-break equal expiries by RoomID — deterministic across the map's
+		// randomized iteration order, and matching the engine's
+		// soonestActiveLedgerGrant so the cue and the warrant pick the same inn
+		// when an actor holds two equally-expiring grants (ZBBS-WORK-387).
+		if best == nil || ra.ExpiresAt.Before(*best.ExpiresAt) ||
+			(ra.ExpiresAt.Equal(*best.ExpiresAt) && ra.RoomID < best.RoomID) {
+			best = ra
+		}
+	}
+	if best == nil {
+		return "", "", false
+	}
+	s := structureForRoom(snap, best.RoomID)
+	if s == nil {
+		return "", "", false
+	}
+	return s.ID, innLabel(s), true
+}
+
+// stayOpenReason returns the concrete reason to ENCOURAGE a wind-down keeper to
+// stay open (the hybrid gate, ZBBS-WORK-387 design C), or "" when none is present
+// (the keeper is still OFFERED stay_open, just not actively encouraged). Ordered
+// most-concrete-commitment first.
+func stayOpenReason(hasOwedOrders, hasCoPresentBuyer, hasPendingOffer bool) string {
+	switch {
+	case hasOwedOrders:
+		return "you still have orders to deliver"
+	case hasCoPresentBuyer:
+		return "a customer is still here with you"
+	case hasPendingOffer:
+		return "you have an offer still awaiting payment"
+	}
+	return ""
 }
 
 // hasRedNeed reports whether any of the actor's tracked needs is at or over its

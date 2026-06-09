@@ -501,6 +501,7 @@ func registerTools(r *handlers.Registry, searcher llm.MemorySearcher) error {
 		{"pay_with_item_family", handlers.RegisterPayWithItemFamily},
 		{"offer_trade", handlers.RegisterOfferTrade}, // ZBBS-HOME-407
 		{"take_break", handlers.RegisterTakeBreak},   // ZBBS-HOME-284 #4
+		{"stay_open", handlers.RegisterStayOpen},     // ZBBS-WORK-387
 		{"move_to", handlers.RegisterMoveTo},         // ZBBS-HOME-285
 		{"summon", handlers.RegisterSummon},          // ZBBS-HOME-311
 		{"gather", handlers.RegisterGather},          // ZBBS-WORK-328

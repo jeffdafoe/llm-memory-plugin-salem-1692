@@ -203,11 +203,20 @@ func endBreak(w *World, a *Actor) {
 // minute-grained sweep covers both. Without this the recovery sweep's
 // expired-window clear is the only thing that nils a stale BreakUntil, and the
 // shop's occupancy wouldn't re-light until something else moved through it.
+//
+// It also nils a lapsed stay_open OpenUntil window (ZBBS-WORK-387). OpenUntil is
+// inert once past (every reader gates on .After(now)), but clearing it here keeps
+// a non-nil OpenUntil meaning a LIVE commitment, so future code can treat
+// non-nil as "is committed" without re-checking expiry. No occupancy/state reset
+// is needed — unlike a break, OpenUntil stamps nothing else on the actor.
 func ExpireEndedBreaks(now time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
 			ended := 0
 			for _, a := range w.Actors {
+				if a.OpenUntil != nil && !a.OpenUntil.After(now) {
+					a.OpenUntil = nil
+				}
 				if a.BreakUntil == nil || a.BreakUntil.After(now) {
 					continue
 				}

@@ -225,6 +225,33 @@ func classifyAgentDuty(w *World, a *Actor, target StructureID, toWork bool) agen
 	return agentDutyWarrant
 }
 
+// windDownTarget resolves where an off-shift agent should head to wind down for
+// the night, by housing relationship (ZBBS-WORK-387):
+//
+//   - Homed   → its HomeStructureID (the long-standing behavior).
+//   - Lodger  → the inn (structure) where it holds an active ledger room grant
+//     (soonestActiveLedgerGrant → the grant's room → that room's StructureID),
+//     so the wind-down warrant + the renderDutySteer cue agree on the rented
+//     room as the target. Today lodger routing-to-the-inn is purely LLM-driven;
+//     this gives a lodger the same standing wind-down warrant a homed NPC gets.
+//   - Homeless → no engine target (ok=false). A bed-less keeper has no single
+//     place to march to, so its wind-down is a perception-only nudge
+//     (renderDutySteer) that defers to recovery_options' rent-a-room / shade-tree
+//     affordances, with RouteHomelessToRest as the red-tiredness floor.
+//
+// MUST be called from inside a Command.Fn (findRoom reads world state).
+func windDownTarget(w *World, a *Actor, now time.Time) (StructureID, bool) {
+	if a.HomeStructureID != "" {
+		return a.HomeStructureID, true
+	}
+	if grant := soonestActiveLedgerGrant(a, now); grant != nil {
+		if room := findRoom(w, grant.RoomID); room != nil && room.StructureID != "" {
+			return room.StructureID, true
+		}
+	}
+	return "", false
+}
+
 // shiftDutyTarget computes the actor's standing shift duty as of nowMinute:
 // where it should be and isn't. Returns ok=false when there's no duty (already
 // where it belongs, out of scope, resting, or a to-work nudge suppressed by an
@@ -272,7 +299,6 @@ func shiftDutyTarget(w *World, a *Actor, nowMinute int, now time.Time) (target S
 	onShift := minuteInShiftWindow(start, end, nowMinute)
 
 	atWork := a.WorkStructureID != "" && a.InsideStructureID == a.WorkStructureID
-	atHome := a.HomeStructureID != "" && a.InsideStructureID == a.HomeStructureID
 
 	switch {
 	case onShift && a.WorkStructureID != "" && !atWork:
@@ -297,19 +323,41 @@ func shiftDutyTarget(w *World, a *Actor, nowMinute int, now time.Time) (target S
 			}
 		}
 		return a.WorkStructureID, true, true
-	case !onShift && a.HomeStructureID != "" && !atHome:
-		// Heading home — NOT need-suppressed; going home is how an NPC rests. But a
-		// mid-meal NPC is left alone (same "busy, leave it alone" class as the rest
-		// suppressors above): while an item-source dwell credit is live the actor is
-		// finishing a consumed item whose slow-burn pays out only while it stays put,
-		// so the off-shift "head home" duty would yank it off the meal and forfeit the
-		// recovery. The meal is finite and this producer is level-triggered, so the
-		// duty re-fires once the dwell ends — "finish your meal, then head home". The
-		// to-work arm is left as-is (its own need-gate governs it). ZBBS-WORK-386.
+	case !onShift:
+		// Off-shift wind-down. The target is housing-dependent (ZBBS-WORK-387):
+		// a homed NPC heads home; a lodger heads to the inn it rents. A homeless
+		// NPC has no engine target (windDownTarget ok=false) — its wind-down is a
+		// perception-only nudge that defers to recovery_options — so it falls
+		// through here to no duty (preserving the prior homeless behavior, which
+		// also produced no shift duty for a homeless off-shift actor).
+		target, ok := windDownTarget(w, a, now)
+		if !ok {
+			return "", false, false
+		}
+		if a.InsideStructureID == target {
+			return "", false, false // already wound down at the target
+		}
+		// "Open until" commit window (stay_open): a keeper that has committed to
+		// staying open late suppresses the routine wind-down — but ONLY while not
+		// peak-exhausted. At peak the needs floor must still win (the homed
+		// MarchHome in classifyAgentDuty; a lodger's standing inn warrant), so the
+		// commitment yields to exhaustion. Same "needs trump duty" layering as the
+		// red-need gate on the to-work arm. OpenUntil is read live here; the
+		// perception cue reads the ActorSnapshot mirror so warrant and cue agree.
+		if a.OpenUntil != nil && a.OpenUntil.After(now) && !atPeakTiredness(w, a) {
+			return "", false, false
+		}
+		// Heading to the wind-down target is NOT need-suppressed; resting is how an
+		// NPC recovers. But a mid-meal NPC is left alone (same "busy, leave it
+		// alone" class as the rest suppressors above): while an item-source dwell
+		// credit is live the actor is finishing a consumed item whose slow-burn pays
+		// out only while it stays put, so the wind-down duty would yank it off the
+		// meal and forfeit the recovery. The meal is finite and this producer is
+		// level-triggered, so the duty re-fires once the dwell ends. ZBBS-WORK-386.
 		if HasActiveItemDwell(a.DwellCredits) {
 			return "", false, false
 		}
-		return a.HomeStructureID, false, true
+		return target, false, true
 	default:
 		return "", false, false
 	}
