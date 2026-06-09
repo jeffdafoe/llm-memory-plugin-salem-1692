@@ -207,6 +207,42 @@ func TestShiftDutyTarget_RestingSkipped(t *testing.T) {
 	}
 }
 
+// TestShiftDutyTarget_MidMealSuppressesGoHome — ZBBS-WORK-386. The off-shift
+// go-home duty yields while the NPC holds a live item-source dwell credit
+// (mid-meal), so the engine doesn't drive it home off its meal. Object-source
+// dwell (resting) is out of scope and does not suppress.
+func TestShiftDutyTarget_MidMealSuppressesGoHome(t *testing.T) {
+	a := shiftNPC("n", KindNPCStateful, "shop", "home", "shop") // at work, off shift
+	a.ScheduleStartMin = intptr(420)
+	a.ScheduleEndMin = intptr(960)
+	w := sleepTestWorld(a)
+
+	// Precondition: off-shift away from home → go-home duty.
+	if target, toWork, ok := shiftDutyTarget(w, a, 1300, time.Now()); !ok || target != "home" || toWork {
+		t.Fatalf("precondition: want (home,false,true); got (%q,%v,%v)", target, toWork, ok)
+	}
+
+	// A live item-source dwell credit (mid-meal) suppresses the go-home duty.
+	a.DwellCredits = map[DwellCreditKey]*DwellCredit{
+		{ObjectID: "shop", Attribute: "hunger", Source: DwellSourceItem}: {
+			ObjectID: "shop", Attribute: "hunger", Source: DwellSourceItem,
+		},
+	}
+	if _, _, ok := shiftDutyTarget(w, a, 1300, time.Now()); ok {
+		t.Error("mid-meal NPC should not be sent home; want go-home duty suppressed")
+	}
+
+	// An object-source dwell (resting) is out of scope — go-home duty still fires.
+	a.DwellCredits = map[DwellCreditKey]*DwellCredit{
+		{ObjectID: "well", Attribute: "thirst", Source: DwellSourceObject}: {
+			ObjectID: "well", Attribute: "thirst", Source: DwellSourceObject,
+		},
+	}
+	if _, _, ok := shiftDutyTarget(w, a, 1300, time.Now()); !ok {
+		t.Error("object-source dwell should NOT suppress the go-home duty")
+	}
+}
+
 func TestShiftDutyTarget_ScopeExclusions(t *testing.T) {
 	w := sleepTestWorld()
 	// PC excluded.

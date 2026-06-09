@@ -154,6 +154,50 @@ func TestBuildDutySteer(t *testing.T) {
 	})
 }
 
+// TestBuildDutySteer_MidMealSuppressesGoHome — ZBBS-WORK-386. The off-shift
+// "head home now" cue yields while the NPC holds a live item-source dwell credit
+// (mid-meal), so it isn't prompted to abandon the meal mid-dwell (the Prudence
+// stew walk-away). Object-source dwell (resting at a tree/well) is out of scope
+// and does not suppress.
+func TestBuildDutySteer_MidMealSuppressesGoHome(t *testing.T) {
+	// Off shift (now=10:00 vs schedule 16:00-03:00 wrap), away from home → go-home arm.
+	base := func() *sim.ActorSnapshot {
+		return &sim.ActorSnapshot{
+			Kind:              sim.KindNPCStateful,
+			ScheduleStartMin:  dutyMinPtr(960),
+			ScheduleEndMin:    dutyMinPtr(180),
+			InsideStructureID: "tavern",
+		}
+	}
+
+	// Precondition: with no dwell, the go-home cue fires.
+	if v := dutySteer(dutySnap(600, 420, 1140), base(), dutyAnchors); v == nil || v.ToWork || v.TargetID != "cottage" {
+		t.Fatalf("precondition: want home=cottage, got %+v", v)
+	}
+
+	// A live item-source dwell credit (mid-meal) suppresses the go-home cue.
+	eating := base()
+	eating.DwellCredits = map[sim.DwellCreditKey]*sim.DwellCredit{
+		{ObjectID: "tavern", Attribute: "hunger", Source: sim.DwellSourceItem}: {
+			ObjectID: "tavern", Attribute: "hunger", Source: sim.DwellSourceItem,
+		},
+	}
+	if v := dutySteer(dutySnap(600, 420, 1140), eating, dutyAnchors); v != nil {
+		t.Errorf("mid-meal should suppress the go-home cue, got %+v", v)
+	}
+
+	// An object-source dwell (resting) is out of scope — the go-home cue still fires.
+	resting := base()
+	resting.DwellCredits = map[sim.DwellCreditKey]*sim.DwellCredit{
+		{ObjectID: "well", Attribute: "thirst", Source: sim.DwellSourceObject}: {
+			ObjectID: "well", Attribute: "thirst", Source: sim.DwellSourceObject,
+		},
+	}
+	if v := dutySteer(dutySnap(600, 420, 1140), resting, dutyAnchors); v == nil || v.ToWork {
+		t.Errorf("object-source dwell should NOT suppress the go-home cue, got %+v", v)
+	}
+}
+
 // TestBuildDutySteer_OptionBSuppression — ZBBS-HOME-400. The to-work cue is
 // suppressed while the agent is mid-business — a pressing (mild-or-worse) need,
 // an active restock errand, or a pending outgoing offer — matching the shift-duty
