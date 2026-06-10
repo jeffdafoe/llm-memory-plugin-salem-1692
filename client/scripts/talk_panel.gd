@@ -68,9 +68,10 @@ var log_vbox: VBoxContainer
 var speech_input: TextEdit
 var speak_button: Button
 ## Pay flow — small button next to Speak opens a modal (built lazily)
-## with recipient dropdown, amount, optional item / qty / take-home.
-## Submit fires POST /api/village/pc/pay and re-polls /pc/me on success
-## so the top bar's coin chip refreshes immediately.
+## with recipient dropdown, item / qty / amount, and take-home or
+## booking (days-ahead) controls. Submit fires POST /api/village/pc/pay
+## (v2 pay-with-item contract, ZBBS-WORK-287) and re-polls /pc/me on
+## success so the top bar's coin chip refreshes immediately.
 var pay_button: Button = null
 var pay_modal: CanvasLayer = null
 var pay_recipient_option: OptionButton = null
@@ -78,6 +79,11 @@ var pay_amount_spin: SpinBox = null
 var pay_item_option: OptionButton = null
 var pay_qty_spin: SpinBox = null
 var pay_take_home_check: CheckBox = null
+# Lodging bookings (item "nights_stay") carry ZBBS-HOME-403's
+# ready_in_days offset. The row is hidden for ordinary goods — see
+# _update_pay_booking_controls.
+var pay_days_ahead_spin: SpinBox = null
+var pay_days_ahead_row: Control = null
 var pay_status_label: Label = null
 var pay_confirm_button: Button = null
 var pay_cancel_button: Button = null
@@ -1241,13 +1247,14 @@ func _ensure_pay_modal_built() -> void:
     pay_amount_spin.value = 1
     vbox.add_child(_label_with("Amount (coins):", pay_amount_spin))
 
-    # Phase C: item is a dropdown sourced from the recipient vendor's
-    # accumulated speak.mentions for this huddle session. "(none)" is
-    # always present so the customer can do a coins-only pay (tipping,
-    # generic transfer). When the recipient changes, the dropdown is
-    # repopulated.
+    # Item is a dropdown sourced from the recipient vendor's accumulated
+    # speak.mentions for this huddle session (spoken mentions + posted
+    # scene quotes). The v2 pc/pay route requires an item, so there is
+    # no coins-only entry (ZBBS-HOME-423). When the recipient changes,
+    # the dropdown is repopulated.
     pay_item_option = OptionButton.new()
     pay_item_option.get_popup().theme = panel.theme
+    pay_item_option.item_selected.connect(_on_pay_item_changed)
     vbox.add_child(_label_with("Item:", pay_item_option))
 
     pay_qty_spin = SpinBox.new()
@@ -1255,11 +1262,24 @@ func _ensure_pay_modal_built() -> void:
     pay_qty_spin.max_value = 99
     pay_qty_spin.step = 1
     pay_qty_spin.value = 1
+    pay_qty_spin.value_changed.connect(_on_pay_qty_changed)
     vbox.add_child(_label_with("Quantity:", pay_qty_spin))
 
     pay_take_home_check = CheckBox.new()
     pay_take_home_check.text = "Take it home (don't consume now)"
     vbox.add_child(pay_take_home_check)
+
+    # Booking offset for lodging (ZBBS-HOME-403): 0 = a room for tonight,
+    # N = book N days ahead. Max mirrors sim.MaxOrderReadyInDays. Hidden
+    # unless the selected item is "nights_stay".
+    pay_days_ahead_spin = SpinBox.new()
+    pay_days_ahead_spin.min_value = 0
+    pay_days_ahead_spin.max_value = 30
+    pay_days_ahead_spin.step = 1
+    pay_days_ahead_spin.value = 0
+    pay_days_ahead_row = _label_with("Days ahead (0 = tonight):", pay_days_ahead_spin)
+    pay_days_ahead_row.visible = false
+    vbox.add_child(pay_days_ahead_row)
 
     pay_status_label = Label.new()
     pay_status_label.text = ""
@@ -1435,39 +1455,53 @@ func _on_pay_pressed() -> void:
     pay_amount_spin.value = 1
     pay_qty_spin.value = 1
     pay_take_home_check.button_pressed = false
+    pay_days_ahead_spin.value = 0
     _refresh_pay_item_dropdown()
     var first_recipient: String = ""
     if pay_recipient_option.selected >= 0 and pay_recipient_option.selected < pay_modal_recipients.size():
         first_recipient = pay_modal_recipients[pay_recipient_option.selected]
     _apply_pay_defaults_for_recipient(first_recipient)
+    _update_pay_booking_controls()
     pay_modal.visible = true
     modal_open_changed.emit(true)
 
 
 ## Repopulate the item dropdown from the currently-selected recipient's
-## accumulated speak.mentions. Always has "(none)" as the first entry
-## for coins-only pays (tipping). If the recipient hasn't mentioned
-## anything in this huddle yet, the dropdown only has "(none)".
+## accumulated speak.mentions (spoken mentions + posted scene quotes).
+## The v2 pc/pay route requires an item (ZBBS-WORK-287), so there is no
+## coins-only entry and Confirm stays disarmed until the vendor has
+## actually offered something.
 func _refresh_pay_item_dropdown() -> void:
     if pay_item_option == null:
         return
     pay_item_option.clear()
-    pay_item_option.add_item("(none — coins only)")
-    pay_item_option.set_item_metadata(0, "")  # empty item_kind
     var recipient: String = ""
     if pay_recipient_option != null and pay_recipient_option.selected >= 0 and pay_recipient_option.selected < pay_modal_recipients.size():
         recipient = pay_modal_recipients[pay_recipient_option.selected]
-    if recipient.is_empty():
-        return
-    var mentions = vendor_mentions.get(recipient, null)
-    if typeof(mentions) != TYPE_ARRAY and typeof(mentions) != TYPE_PACKED_STRING_ARRAY:
-        return
-    for kind in mentions:
-        var s := str(kind)
-        if s.is_empty():
-            continue
-        pay_item_option.add_item(s)
-        pay_item_option.set_item_metadata(pay_item_option.item_count - 1, s)
+    if not recipient.is_empty():
+        var mentions = vendor_mentions.get(recipient, null)
+        if typeof(mentions) == TYPE_ARRAY or typeof(mentions) == TYPE_PACKED_STRING_ARRAY:
+            for kind in mentions:
+                var s := str(kind)
+                if s.is_empty():
+                    continue
+                pay_item_option.add_item(s)
+                pay_item_option.set_item_metadata(pay_item_option.item_count - 1, s)
+    if pay_confirm_button != null:
+        pay_confirm_button.disabled = pay_item_option.item_count == 0
+    if pay_item_option.item_count > 0:
+        # clear() can leave selected == -1 even after items are added —
+        # select explicitly so Confirm-enabled always implies a valid
+        # selection for _selected_pay_item(). (code_review)
+        if pay_item_option.selected < 0:
+            pay_item_option.select(0)
+        if pay_status_label != null:
+            pay_status_label.text = ""
+    elif not recipient.is_empty() and pay_status_label != null:
+        # No corresponding clear needed above this branch: the hint is
+        # re-evaluated on every refresh, so switching from an offerless
+        # vendor to one with goods wipes the stale line. (code_review)
+        pay_status_label.text = "%s hasn't named anything for sale yet." % recipient
 
 
 func _on_pay_recipient_changed(_idx: int) -> void:
@@ -1476,6 +1510,7 @@ func _on_pay_recipient_changed(_idx: int) -> void:
     if pay_recipient_option != null and pay_recipient_option.selected >= 0 and pay_recipient_option.selected < pay_modal_recipients.size():
         recipient = pay_modal_recipients[pay_recipient_option.selected]
     _apply_pay_defaults_for_recipient(recipient)
+    _update_pay_booking_controls()
 
 
 ## When the recipient has mentioned exactly one item in this huddle,
@@ -1524,6 +1559,60 @@ func _apply_pay_defaults_for_recipient(recipient: String) -> void:
             pay_qty_spin.value = 1
 
 
+## The lowercase item_kind metadata of the currently-selected item, or
+## "" when the dropdown is empty.
+func _selected_pay_item() -> String:
+    if pay_item_option == null or pay_item_option.selected < 0:
+        return ""
+    var meta = pay_item_option.get_item_metadata(pay_item_option.selected)
+    if typeof(meta) == TYPE_STRING:
+        return str(meta)
+    return ""
+
+
+## Toggle the booking-specific controls for the selected item. A
+## "nights_stay" purchase is a lodging booking, not an eat-it-here
+## consume: the take-home checkbox is meaningless for it (submit forces
+## consume_now false) and the days-ahead offset row appears instead.
+func _update_pay_booking_controls() -> void:
+    if pay_item_option == null or pay_take_home_check == null or pay_days_ahead_row == null:
+        return
+    var booking := _selected_pay_item() == "nights_stay"
+    pay_take_home_check.visible = not booking
+    pay_days_ahead_row.visible = booking
+
+
+func _on_pay_item_changed(_idx: int) -> void:
+    _update_pay_booking_controls()
+    _recompute_pay_amount()
+
+
+func _on_pay_qty_changed(_value: float) -> void:
+    _recompute_pay_amount()
+
+
+## Keep amount = unit price × qty while the vendor's quoted unit price
+## for the selected item is known. amount is the BUNDLE total on the
+## wire, so a qty bump without this would silently offer a 1-unit price
+## for an N-unit ask.
+func _recompute_pay_amount() -> void:
+    if pay_amount_spin == null or pay_qty_spin == null:
+        return
+    var item := _selected_pay_item()
+    if item.is_empty():
+        return
+    var recipient: String = ""
+    if pay_recipient_option != null and pay_recipient_option.selected >= 0 and pay_recipient_option.selected < pay_modal_recipients.size():
+        recipient = pay_modal_recipients[pay_recipient_option.selected]
+    if recipient.is_empty():
+        return
+    var prices = vendor_mention_prices.get(recipient, {})
+    if typeof(prices) == TYPE_DICTIONARY and prices.has(item):
+        var unit := int(prices[item])
+        if unit > 0:
+            pay_amount_spin.value = unit * int(pay_qty_spin.value)
+
+
 func _close_pay_modal() -> void:
     if pay_modal != null:
         pay_modal.visible = false
@@ -1538,32 +1627,38 @@ func _on_pay_confirm() -> void:
         return
     var recipient: String = pay_modal_recipients[idx]
     var amount := int(pay_amount_spin.value)
-    # Phase C: item is read from the OptionButton's metadata (lowercase
-    # item_kind, or "" for "(none — coins only)"). No more free-text
-    # input — only the vendor's mentions are selectable.
-    var item := ""
-    if pay_item_option.selected >= 0:
-        var meta = pay_item_option.get_item_metadata(pay_item_option.selected)
-        if typeof(meta) == TYPE_STRING:
-            item = str(meta)
+    var item := _selected_pay_item()
     var qty := int(pay_qty_spin.value)
-    var consume_now := not pay_take_home_check.button_pressed
+    # A lodging booking is never consumed on the spot; everything else
+    # follows the take-home checkbox.
+    var booking := item == "nights_stay"
+    var consume_now := false if booking else not pay_take_home_check.button_pressed
 
-    if amount < 0:
-        pay_status_label.text = "Amount cannot be negative."
+    if item.is_empty():
+        pay_status_label.text = "Pick an item — wait for them to offer something."
+        return
+    if amount < 1:
+        pay_status_label.text = "Amount must be at least 1 coin."
+        return
+    if qty < 1:
+        pay_status_label.text = "Quantity must be at least 1."
         return
     if amount > pc_coins:
         pay_status_label.text = "You only have %d coins." % pc_coins
         return
 
+    # v2 pc/pay contract (ZBBS-WORK-287): seller + item + qty + amount
+    # required; the buyer is the session PC. ready_in_days (ZBBS-HOME-403)
+    # only rides a booking, and 0 already means tonight.
     var body := {
-        "recipient": recipient,
+        "seller": recipient,
+        "item": item,
+        "qty": qty,
         "amount": amount,
         "consume_now": consume_now,
     }
-    if item != "":
-        body["item"] = item
-        body["qty"] = qty
+    if booking and pay_days_ahead_spin != null and int(pay_days_ahead_spin.value) > 0:
+        body["ready_in_days"] = int(pay_days_ahead_spin.value)
     pay_status_label.text = "Sending…"
     pay_confirm_button.disabled = true
 
@@ -1596,13 +1691,23 @@ func _on_pay_completed(result: int, response_code: int, _headers: PackedStringAr
     if typeof(parsed) != TYPE_DICTIONARY:
         pay_status_label.text = "Bad response."
         return
-    var status := str(parsed.get("result", ""))
-    if status != "ok":
-        pay_status_label.text = str(parsed.get("error", "Rejected."))
+    # v2 pc/pay answers {ledger_id, state, fast_path} (ZBBS-WORK-287) —
+    # there is no "result" field. Any 2xx means the offer was minted;
+    # "pending" means the seller answers on a later tick (the resolution
+    # broadcast narrates the outcome in the room log when it lands).
+    var state := str(parsed.get("state", ""))
+    if state.is_empty():
+        pay_status_label.text = "Bad response."
         return
-    # Success — close the modal and re-poll /pc/me so the coin chip
-    # and inventory snapshot refresh immediately. The room_event
-    # broadcast will surface the line in the room log on its own.
+    if state == "pending":
+        var seller_name := ""
+        if pay_recipient_option != null and pay_recipient_option.selected >= 0 and pay_recipient_option.selected < pay_modal_recipients.size():
+            seller_name = pay_modal_recipients[pay_recipient_option.selected]
+        if seller_name.is_empty():
+            seller_name = "the seller"
+        _append_log_line("", "Your offer is before %s — awaiting their answer." % seller_name, "act", false, Time.get_datetime_string_from_system(true))
+    # Close the modal and re-poll /pc/me so the coin chip and inventory
+    # snapshot refresh immediately.
     _close_pay_modal()
     _refresh_state()
 
@@ -1713,7 +1818,15 @@ func _on_npc_spoke(speaker_id: String, speaker_name: String, text: String, kind:
                 seen[k] = true
                 updated.append(k)
         vendor_mentions[speaker_name] = updated
-        vendor_latest_mentions[speaker_name] = this_speak
+        # Pre-fill (vendor_latest_mentions) only follows lines aimed at
+        # US — an addressee-stamped line to someone else (the vendor
+        # countering or quoting another buyer) must not overwrite what
+        # this player is about to pay for. The union + prices still
+        # accumulate from every line so the dropdown stays complete.
+        # (ZBBS-HOME-423: John's "1 ale for 6 coins" to Hannah was
+        # clobbering the PC's 4-coin room context.)
+        if addressee_id.is_empty() or pc_actor_id.is_empty() or addressee_id == pc_actor_id:
+            vendor_latest_mentions[speaker_name] = this_speak
         # Merge mention_prices into per-speaker price cache. Newer
         # quotes override older — vendor's most recent price wins.
         if not mention_prices.is_empty():
@@ -1732,6 +1845,7 @@ func _on_npc_spoke(speaker_id: String, speaker_name: String, text: String, kind:
             if sel >= 0 and sel < pay_modal_recipients.size() and pay_modal_recipients[sel] == speaker_name:
                 _refresh_pay_item_dropdown()
                 _apply_pay_defaults_for_recipient(speaker_name)
+                _update_pay_booking_controls()
 
 
 # Generic room-event handler. Engine emits these for narration-worthy
