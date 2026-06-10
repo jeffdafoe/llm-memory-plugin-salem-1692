@@ -121,8 +121,8 @@ func check_contract_version(server_version: int) -> bool:
 ## through here so the existing _place_npc meta-setters + editor panels pick
 ## them up. The schedule/social *_minute fields are forwarded RAW (null
 ## preserved, not coerced) because _place_npc gates "set vs inherit dawn/dusk"
-## on null. Fields v2 still doesn't carry (needs: hunger/thirst/tiredness,
-## lateness_window_minutes) remain omitted and degrade to the panel's defaults.
+## on null. Fields v2 still doesn't carry (needs: hunger/thirst/tiredness)
+## remain omitted and degrade to the panel's defaults.
 func normalize_agent(dto: Dictionary) -> Dictionary:
     var inside_structure_id: String = str(dto.get("inside_structure_id", ""))
     var world_pos := tile_to_world(int(dto.get("x", 0)), int(dto.get("y", 0)))
