@@ -1519,7 +1519,9 @@ func _refresh_pay_item_dropdown() -> void:
         pay_item_option.add_separator()
     for name in pay_item_catalog_order:
         var n := str(name)
-        if n.is_empty() or listed.has(n):
+        # Dedup key is lowercase (mentions are stored lowercased); the
+        # metadata keeps the wire-exact name. (code_review)
+        if n.is_empty() or listed.has(n.to_lower()):
             continue
         pay_item_option.add_item(_pay_item_label(n))
         pay_item_option.set_item_metadata(pay_item_option.item_count - 1, n)
@@ -1553,8 +1555,8 @@ func _on_pay_recipient_changed(_idx: int) -> void:
 ## auto-select it in the dropdown and pre-fill amount from any quoted
 ## unit_price. Saves the player from re-entering values they already
 ## heard in conversation. With multiple mentioned items (or none), the
-## modal stays at "(none — coins only)" with amount=1, qty=1 and the
-## player picks consciously.
+## dropdown keeps its default selection and the player picks
+## consciously.
 ##
 ## Called on modal open and on recipient change. Does nothing if the
 ## modal hasn't been built yet.
@@ -1576,15 +1578,13 @@ func _apply_pay_defaults_for_recipient(recipient: String) -> void:
     var kind := str(mentions[0]).strip_edges().to_lower()
     if kind.is_empty():
         return
-    # Locate the matching dropdown entry by metadata (stored as the
-    # lowercase item_kind). Index 0 is always "(none — coins only)";
-    # the accumulated vendor_mentions union may put the latest single
-    # mention at any index >= 1, so a hard-coded selected = 1 would
-    # pick the wrong item once the vendor has listed several wares
-    # earlier in the conversation.
+    # Locate the matching dropdown entry by metadata. The mention block
+    # stores lowercase names and the catalog block keeps wire case, so
+    # match case-insensitively; the union may put the latest single
+    # mention at any index, so no position can be hard-coded.
     for i in range(pay_item_option.item_count):
         var meta = pay_item_option.get_item_metadata(i)
-        if typeof(meta) == TYPE_STRING and str(meta) == kind:
+        if typeof(meta) == TYPE_STRING and str(meta).to_lower() == kind:
             pay_item_option.selected = i
             break
     var prices = vendor_mention_prices.get(recipient, {})
@@ -1625,12 +1625,16 @@ func _on_items_completed(result: int, response_code: int, _headers: PackedString
     for entry in parsed:
         if typeof(entry) != TYPE_DICTIONARY:
             continue
-        var name := str(entry.get("name", "")).strip_edges().to_lower()
+        # Preserve the exact wire name — it becomes the metadata submitted
+        # back to pc/pay, so the client must not mutate its case. Lowercase
+        # is only a LOOKUP key (labels, dedup against the lowercased
+        # mentions accumulator). (code_review)
+        var name := str(entry.get("name", "")).strip_edges()
         if name.is_empty():
             continue
         pay_item_catalog_order.append(name)
         var label := str(entry.get("display_label", "")).strip_edges()
-        pay_item_catalog_labels[name] = label if not label.is_empty() else name
+        pay_item_catalog_labels[name.to_lower()] = label if not label.is_empty() else name
     # The catalog may land while the modal is already open — refresh so
     # the full list appears without reopening.
     if pay_modal != null and pay_modal.visible:
@@ -1639,10 +1643,12 @@ func _on_items_completed(result: int, response_code: int, _headers: PackedString
 
 
 ## Display label for an item name: vendor-facing catalog label when
-## known, the raw wire name otherwise.
+## known, the raw name otherwise. Lookup is case-insensitive (the
+## mentions accumulator lowercases; catalog names keep wire case).
 func _pay_item_label(name: String) -> String:
-    if pay_item_catalog_labels.has(name):
-        return str(pay_item_catalog_labels[name])
+    var key := name.to_lower()
+    if pay_item_catalog_labels.has(key):
+        return str(pay_item_catalog_labels[key])
     return name
 
 
@@ -1664,7 +1670,7 @@ func _selected_pay_item() -> String:
 func _update_pay_booking_controls() -> void:
     if pay_item_option == null or pay_take_home_check == null or pay_days_ahead_row == null:
         return
-    var booking := _selected_pay_item() == "nights_stay"
+    var booking := _selected_pay_item().to_lower() == "nights_stay"
     pay_take_home_check.visible = not booking
     pay_days_ahead_row.visible = booking
 
@@ -1694,8 +1700,9 @@ func _recompute_pay_amount() -> void:
     if recipient.is_empty():
         return
     var prices = vendor_mention_prices.get(recipient, {})
-    if typeof(prices) == TYPE_DICTIONARY and prices.has(item):
-        var unit := int(prices[item])
+    var key := item.to_lower()
+    if typeof(prices) == TYPE_DICTIONARY and prices.has(key):
+        var unit := int(prices[key])
         if unit > 0:
             pay_amount_spin.value = unit * int(pay_qty_spin.value)
 
@@ -1718,7 +1725,7 @@ func _on_pay_confirm() -> void:
     var qty := int(pay_qty_spin.value)
     # A lodging booking is never consumed on the spot; everything else
     # follows the take-home checkbox.
-    var booking := item == "nights_stay"
+    var booking := item.to_lower() == "nights_stay"
     var consume_now := false if booking else not pay_take_home_check.button_pressed
 
     if item.is_empty():
