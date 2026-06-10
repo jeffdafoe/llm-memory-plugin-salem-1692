@@ -248,6 +248,11 @@ func TestClearConversationalHuddlesOnBoot(t *testing.T) {
 	if got := post.Actors["alice"].CurrentHuddleID; got != "" {
 		t.Errorf("alice CurrentHuddleID after boot-clear = %q, want cleared", got)
 	}
+	for _, id := range []sim.ActorID{"bob", "charlie"} {
+		if got := post.Actors[id].CurrentHuddleID; got != "" {
+			t.Errorf("%s CurrentHuddleID after boot-clear = %q, want cleared", id, got)
+		}
+	}
 	// Durable scenes survive; their observed-huddle refs are cleared.
 	for sid, s := range post.Scenes {
 		if len(s.Huddles) != 0 {
