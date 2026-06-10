@@ -194,7 +194,9 @@ func TestJoinHuddle_StampsActivity(t *testing.T) {
 
 // TestClearConversationalHuddlesOnBoot covers the boot-clear: every huddle is
 // dropped, actor back-refs cleared, and scene observed-huddle refs cleared —
-// while the durable scenes themselves remain.
+// while the durable scenes themselves remain. Area-bound scenes are the
+// exception (ZBBS-WORK-393): they are 1:1 with their huddle, so the clear
+// deletes them outright instead of leaving an immortal orphan behind.
 func TestClearConversationalHuddlesOnBoot(t *testing.T) {
 	w, cancel := buildHuddleTestWorld(t)
 	defer cancel()
@@ -213,6 +215,13 @@ func TestClearConversationalHuddlesOnBoot(t *testing.T) {
 	}}).(sim.JoinHuddleResult)
 	huddleID := res.HuddleID
 
+	// A live outdoor conversation: its area scene must NOT survive the clear
+	// (this is the restart-while-outdoor-conversation-live leak).
+	outdoor := sendT(t, w, sim.Command{Fn: func(world *sim.World) (any, error) {
+		return sim.StartOutdoorHuddle([]sim.ActorID{"bob", "charlie"}, sim.Position{}, 3, nil, now).Fn(world)
+	}}).(sim.StartOutdoorHuddleResult)
+	areaSceneID := outdoor.SceneID
+
 	// Sanity: huddle + back-ref + scene ref all present pre-clear.
 	pre := w.Published()
 	if _, ok := pre.Huddles[huddleID]; !ok {
@@ -220,6 +229,9 @@ func TestClearConversationalHuddlesOnBoot(t *testing.T) {
 	}
 	if pre.Actors["alice"].CurrentHuddleID != huddleID {
 		t.Fatal("alice should reference the huddle before boot-clear")
+	}
+	if _, ok := pre.Scenes[areaSceneID]; !ok {
+		t.Fatal("area scene should exist before boot-clear")
 	}
 
 	// Boot-clear (direct, pre-Run semantics — but safe here under Send since we
@@ -236,6 +248,11 @@ func TestClearConversationalHuddlesOnBoot(t *testing.T) {
 	if got := post.Actors["alice"].CurrentHuddleID; got != "" {
 		t.Errorf("alice CurrentHuddleID after boot-clear = %q, want cleared", got)
 	}
+	for _, id := range []sim.ActorID{"bob", "charlie"} {
+		if got := post.Actors[id].CurrentHuddleID; got != "" {
+			t.Errorf("%s CurrentHuddleID after boot-clear = %q, want cleared", id, got)
+		}
+	}
 	// Durable scenes survive; their observed-huddle refs are cleared.
 	for sid, s := range post.Scenes {
 		if len(s.Huddles) != 0 {
@@ -244,5 +261,9 @@ func TestClearConversationalHuddlesOnBoot(t *testing.T) {
 	}
 	if len(post.Scenes) == 0 {
 		t.Error("durable scenes should NOT be removed by boot-clear")
+	}
+	// The area scene is gone — not kept as a huddle-less orphan.
+	if _, ok := post.Scenes[areaSceneID]; ok {
+		t.Errorf("area scene %q survived boot-clear, want deleted (1:1 with its huddle)", areaSceneID)
 	}
 }
