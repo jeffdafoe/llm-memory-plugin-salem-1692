@@ -1489,7 +1489,18 @@ func _refresh_pay_item_dropdown() -> void:
                 pay_item_option.set_item_metadata(pay_item_option.item_count - 1, s)
     if pay_confirm_button != null:
         pay_confirm_button.disabled = pay_item_option.item_count == 0
-    if pay_item_option.item_count == 0 and not recipient.is_empty() and pay_status_label != null:
+    if pay_item_option.item_count > 0:
+        # clear() can leave selected == -1 even after items are added —
+        # select explicitly so Confirm-enabled always implies a valid
+        # selection for _selected_pay_item(). (code_review)
+        if pay_item_option.selected < 0:
+            pay_item_option.select(0)
+        if pay_status_label != null:
+            pay_status_label.text = ""
+    elif not recipient.is_empty() and pay_status_label != null:
+        # No corresponding clear needed above this branch: the hint is
+        # re-evaluated on every refresh, so switching from an offerless
+        # vendor to one with goods wipes the stale line. (code_review)
         pay_status_label.text = "%s hasn't named anything for sale yet." % recipient
 
 
@@ -1629,6 +1640,9 @@ func _on_pay_confirm() -> void:
     if amount < 1:
         pay_status_label.text = "Amount must be at least 1 coin."
         return
+    if qty < 1:
+        pay_status_label.text = "Quantity must be at least 1."
+        return
     if amount > pc_coins:
         pay_status_label.text = "You only have %d coins." % pc_coins
         return
@@ -1689,6 +1703,8 @@ func _on_pay_completed(result: int, response_code: int, _headers: PackedStringAr
         var seller_name := ""
         if pay_recipient_option != null and pay_recipient_option.selected >= 0 and pay_recipient_option.selected < pay_modal_recipients.size():
             seller_name = pay_modal_recipients[pay_recipient_option.selected]
+        if seller_name.is_empty():
+            seller_name = "the seller"
         _append_log_line("", "Your offer is before %s — awaiting their answer." % seller_name, "act", false, Time.get_datetime_string_from_system(true))
     # Close the modal and re-poll /pc/me so the coin chip and inventory
     # snapshot refresh immediately.
