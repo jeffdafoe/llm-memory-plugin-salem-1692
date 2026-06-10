@@ -51,6 +51,13 @@ type SatiationNeedView struct {
 	Need sim.NeedKey // "hunger" | "thirst"
 	Verb string      // "eat" | "drink"
 
+	// Level is the actor's CURRENT level of this need at build time, feeding
+	// the per-unit sufficiency clause (ZBBS-WORK-392): when one unit of an
+	// offered item would fully zero it, the render says so ("a single one
+	// would fully satisfy your hunger") — the informed-buying fact whose
+	// absence let a starving buyer accept a seller-pitched 10-meat bundle.
+	Level int
+
 	OwnStock []OwnStockItem // satisfiers the actor already carries (shared shape)
 
 	// CoPresentPeers are huddle peers standing with the subject RIGHT NOW who
@@ -159,6 +166,7 @@ func buildSatiation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Acto
 		needs = append(needs, SatiationNeedView{
 			Need:           need,
 			Verb:           satiationVerb(need),
+			Level:          actorSnap.Needs[need],
 			OwnStock:       own,
 			CoPresentPeers: peers,
 			FreeSources:    free,
@@ -470,7 +478,7 @@ func renderSatiation(b *strings.Builder, v *SatiationView) {
 	b.WriteString("## What you can eat or drink\n")
 	for _, n := range v.Needs {
 		if len(n.OwnStock) > 0 {
-			fmt.Fprintf(b, "You have %s on hand — consume to %s.\n", renderOwnStockLine(n.OwnStock, n.Need), n.Verb)
+			fmt.Fprintf(b, "You have %s on hand — consume to %s.\n", renderOwnStockLine(n.OwnStock, n.Need, n.Level), n.Verb)
 		}
 		// Co-present peers come BEFORE the walk-to-vendor list: a peer standing
 		// with you is immediately actionable (pay_with_item resolves them as the
@@ -479,7 +487,7 @@ func renderSatiation(b *strings.Builder, v *SatiationView) {
 		// structure_id would only tempt a needless move_to (ZBBS-HOME-342).
 		for _, pr := range n.CoPresentPeers {
 			fmt.Fprintf(b, "%s is here with you, carrying %s (%s) — you could offer to buy it from them now with pay_with_item, paying with coins or goods you carry (pay_items). No need to walk anywhere.\n",
-				sanitizeInline(pr.PeerLabel), sanitizeInline(pr.ItemLabel), itemFeltAmount(pr.Magnitude, n.Need))
+				sanitizeInline(pr.PeerLabel), sanitizeInline(pr.ItemLabel), feltAmountWithSufficiency(pr.Magnitude, n.Need, n.Level))
 		}
 		// Free public sources come BEFORE the walk-to-vendor list: water at a
 		// well costs nothing, so it shouldn't read as second to a shop you'd pay
@@ -513,7 +521,7 @@ func renderSatiation(b *strings.Builder, v *SatiationView) {
 				b.WriteString(sanitizeInline(vd.StructureLabel))
 				fmt.Fprintf(b, " — buy %s", sanitizeInline(vd.ItemLabel))
 				if vd.Magnitude > 0 {
-					fmt.Fprintf(b, " (%s)", itemFeltAmount(vd.Magnitude, n.Need))
+					fmt.Fprintf(b, " (%s)", feltAmountWithSufficiency(vd.Magnitude, n.Need, n.Level))
 				}
 				if vd.CostText != "" {
 					fmt.Fprintf(b, ", %s", vd.CostText)
