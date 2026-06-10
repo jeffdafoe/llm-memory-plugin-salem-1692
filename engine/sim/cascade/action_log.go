@@ -195,12 +195,18 @@ func handleConsumedActionLog(w *sim.World, evt sim.Event) {
 		return
 	}
 	// Durable mirror (ZBBS-WORK-376): item + qty as structured fields.
+	// "kept" (ZBBS-WORK-391) records needs-clamp surplus the actor pocketed,
+	// only when non-zero — keeps the common row shape unchanged.
+	payload := map[string]any{"item": string(consumed.Kind), "qty": consumed.Qty}
+	if consumed.Kept > 0 {
+		payload["kept"] = consumed.Kept
+	}
 	display, source := actorDisplayAndSource(w, consumed.ActorID)
 	w.AppendActionLogDurable(sim.DurableActionLogRow{
 		ActorID:     consumed.ActorID,
 		OccurredAt:  consumed.At,
 		ActionType:  sim.ActionTypeConsumed,
-		Payload:     map[string]any{"item": string(consumed.Kind), "qty": consumed.Qty},
+		Payload:     payload,
 		SpeakerName: display,
 		HuddleID:    huddleID,
 		Source:      source,

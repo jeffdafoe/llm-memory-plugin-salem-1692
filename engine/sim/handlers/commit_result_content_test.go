@@ -1,6 +1,10 @@
 package handlers
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
+)
 
 // TestCommitResultContent_SpeakEchoesLine pins the speak tool result: a
 // successful speak returns its own line back to the model (quoted, the
@@ -55,7 +59,7 @@ func TestCommitResultContent_SpeakEchoesLine(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := commitResultContent(&tc.vc)
+			got := commitResultContent(&tc.vc, nil)
 			if got != tc.want {
 				t.Errorf("commitResultContent\n got:  %q\n want: %q", got, tc.want)
 			}
@@ -117,7 +121,7 @@ func TestCommitResultContent_PayWithItemSteer(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := commitResultContent(&tc.vc)
+			got := commitResultContent(&tc.vc, nil)
 			if got != tc.want {
 				t.Errorf("commitResultContent\n got:  %q\n want: %q", got, tc.want)
 			}
@@ -180,5 +184,27 @@ func TestPayOfferKey(t *testing.T) {
 	}
 	if _, ok := payOfferKey(&ValidatedCall{Name: "speak", DecodedArgs: SpeakArgs{Text: "hi"}}); ok {
 		t.Error("non-pay tool must return false")
+	}
+}
+
+// TestCommitResultContent_ConsumeClamp pins the ZBBS-WORK-391 clamped-consume
+// result: when the needs-clamp held units back (Kept > 0) the model is told
+// the eaten/kept split — a bare [ok] after "consume 10" reads as ten eaten
+// and drives a re-consume of the surplus. Unclamped consumes and non-result
+// payloads keep the generic [ok].
+func TestCommitResultContent_ConsumeClamp(t *testing.T) {
+	vc := ValidatedCall{Name: "consume", DecodedArgs: ConsumeArgs{Item: "meat", Qty: 10}}
+
+	got := commitResultContent(&vc, sim.ConsumeResult{Kind: "meat", Requested: 10, Consumed: 2, Kept: 8})
+	want := "[ok] You consume 2 meat — that satisfies you; the remaining 8 stay in your pack. Do not consume more now."
+	if got != want {
+		t.Errorf("clamped consume content:\n got %q\nwant %q", got, want)
+	}
+
+	if got := commitResultContent(&vc, sim.ConsumeResult{Kind: "meat", Requested: 1, Consumed: 1, Kept: 0}); got != "[ok]" {
+		t.Errorf("unclamped consume = %q, want [ok]", got)
+	}
+	if got := commitResultContent(&vc, nil); got != "[ok]" {
+		t.Errorf("nil result = %q, want [ok]", got)
 	}
 }

@@ -225,11 +225,18 @@ func Consume(actorID ActorID, itemName string, qty int, at time.Time) Command {
 				)
 			}
 
+			// ZBBS-WORK-391: consume only what the actor's needs can absorb;
+			// the surplus stays in inventory rather than burning into an
+			// already-zeroed need. Shares consumableUnits with the
+			// commitPayTransfer consume_now clamp so a pocketed purchase
+			// surplus can't be wasted by a follow-up consume either.
+			eat := consumableUnits(actor, def, qty)
+
 			// Mutate inventory: decrement (delete-on-zero invariant). Same
 			// invariant transferItem enforces — keeps inventory iteration
 			// sites (perception, S3 scene_quote, future inventory-render)
 			// free of `> 0` guards.
-			actor.Inventory[kind] -= qty
+			actor.Inventory[kind] -= eat
 			if actor.Inventory[kind] == 0 {
 				delete(actor.Inventory, kind)
 			}
@@ -249,7 +256,7 @@ func Consume(actorID ActorID, itemName string, qty int, at time.Time) Command {
 					continue
 				}
 				pre := actor.Needs[s.Attribute]
-				post := ClampNeed(pre - s.Immediate*qty)
+				post := ClampNeed(pre - s.Immediate*eat)
 				if pre == post {
 					continue
 				}
@@ -284,7 +291,8 @@ func Consume(actorID ActorID, itemName string, qty int, at time.Time) Command {
 			w.emit(&ItemConsumed{
 				ActorID: actorID,
 				Kind:    kind,
-				Qty:     qty,
+				Qty:     eat,
+				Kept:    qty - eat,
 				Applied: applied,
 				At:      at,
 			})
@@ -298,7 +306,21 @@ func Consume(actorID ActorID, itemName string, qty int, at time.Time) Command {
 					At:            at,
 				})
 			}
-			return nil, nil
+			return ConsumeResult{Kind: kind, Requested: qty, Consumed: eat, Kept: qty - eat}, nil
 		},
 	}
+}
+
+// ConsumeResult reports what a Consume command actually did once the
+// ZBBS-WORK-391 needs-clamp has applied: Consumed units left inventory and
+// eased needs; Kept (= Requested - Consumed) stayed in the actor's pack
+// because their needs couldn't absorb more. The harness uses Kept > 0 to
+// tell the model its over-sized consume was clamped — without that signal a
+// "consume 10" answered by a bare [ok] reads as fully eaten, and the model
+// re-consumes the surplus it doesn't know it still holds.
+type ConsumeResult struct {
+	Kind      ItemKind
+	Requested int
+	Consumed  int
+	Kept      int
 }
