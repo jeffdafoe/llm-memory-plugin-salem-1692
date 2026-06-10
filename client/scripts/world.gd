@@ -506,9 +506,9 @@ func apply_npc_work_structure_change(data: Dictionary) -> void:
 
 ## Apply a server-broadcast schedule update. Mirrors the PATCH payload:
 ## start_minute/end_minute may be null (worker inherits dawn/dusk),
-## interval/start/end are null when cadence is off, lateness is always
-## present. Emits npc_metadata_changed so the editor panel re-populates
-## when this NPC is the current selection on another client.
+## interval/start/end are null when cadence is off. Emits
+## npc_metadata_changed so the editor panel re-populates when this NPC
+## is the current selection on another client.
 func apply_npc_schedule_change(data: Dictionary) -> void:
     var npc_id: String = data.get("id", "")
     if npc_id == "":
@@ -516,7 +516,6 @@ func apply_npc_schedule_change(data: Dictionary) -> void:
     var container: Node2D = placed_npcs.get(npc_id, null)
     if container == null:
         return
-    container.set_meta("lateness_window_minutes", int(data.get("lateness_window_minutes", 0)))
     var start_min = data.get("schedule_start_minute", null)
     var end_min = data.get("schedule_end_minute", null)
     if start_min == null or end_min == null:
@@ -694,7 +693,6 @@ func _render_npc(npc: Dictionary) -> void:
     container.set_meta("llm_memory_agent", npc.get("llm_memory_agent", ""))
     container.set_meta("home_structure_id", npc.get("home_structure_id", ""))
     container.set_meta("work_structure_id", npc.get("work_structure_id", ""))
-    container.set_meta("lateness_window_minutes", int(npc.get("lateness_window_minutes", 0)))
     # Worker work-window (ZBBS-071) — carry only when both are set so the
     # editor panel can distinguish "NULL inherits dawn/dusk" from the
     # 0/0 minute literal.
@@ -1811,24 +1809,21 @@ func set_npc_work_structure(container: Node2D, structure_id: String) -> void:
 
 ## Update the NPC's schedule in one atomic PATCH. start_min/end_min are
 ## sent as null when -1 (worker inherits dawn/dusk); otherwise as
-## integers. lateness is the per-NPC lateness_window_minutes (ZBBS-067).
+## integers.
 ##
 ## ZBBS-HOME-251 dropped the legacy interval/start_h/end_h trio. Calls
 ## that still pass them at compile sites must be updated.
-func set_npc_schedule(container: Node2D, start_min: int, end_min: int, lateness: int) -> void:
+func set_npc_schedule(container: Node2D, start_min: int, end_min: int) -> void:
     var npc_id = container.get_meta("npc_id", null)
     if npc_id == null:
         return
-    var payload: Dictionary = {
-        "lateness_window_minutes": lateness,
-    }
+    var payload: Dictionary = {}
     if start_min >= 0 and end_min >= 0:
         payload["schedule_start_minute"] = start_min
         payload["schedule_end_minute"] = end_min
     else:
         payload["schedule_start_minute"] = null
         payload["schedule_end_minute"] = null
-    container.set_meta("lateness_window_minutes", lateness)
     if start_min >= 0 and end_min >= 0:
         container.set_meta("schedule_start_minute", start_min)
         container.set_meta("schedule_end_minute", end_min)

@@ -33,15 +33,15 @@ import (
 // their continuity rows are never written.
 //
 // v1↔v2 column scope. v2 reads/writes only the subset of `actor`
-// columns the engine actually tracks. v1-only columns (`inside`,
-// `lateness_window_minutes`, `social_*`, the visitor cluster,
-// PC-liveness stamps, etc.) are not in the UPSERT column list — on
-// existing rows they retain their values across checkpoint
-// (`ON CONFLICT DO UPDATE SET` only touches the listed columns); on
-// newly-INSERTed actors they fall back to schema defaults. Visitor
-// actors are filtered out of SaveSnapshot entirely (per visitor
-// codebase note "No durable visitor row persistence"); their parent
-// rows in v1 will be cleaned up by a separate cutover-prep migration.
+// columns the engine actually tracks. The v1-only bookkeeping columns
+// that used to ride along frozen (`inside`, `lateness_window_minutes`,
+// the visitor cluster, PC-liveness stamps, etc.) were dropped by the
+// ZBBS-WORK-389 migration after sitting years-stale with zero readers;
+// that migration also deleted any surviving visitor actor rows (the
+// cleanup an earlier revision of this comment deferred to "a separate
+// cutover-prep migration"). Visitor actors are filtered out of
+// SaveSnapshot entirely (per visitor codebase note "No durable visitor
+// row persistence").
 //
 // `sprite_id` and `facing` graduated into the v2-tracked set with the
 // agent-sprite work (ZBBS-WORK-257) — they back the client read surface's
@@ -76,19 +76,13 @@ func NewActorsRepo(pool Pool) *ActorsRepo {
 	return &ActorsRepo{pool: pool}
 }
 
-// loadAllSQLA selects the v2-owned column subset from `actor`. v1-only
-// columns are deliberately omitted — they exist in the schema but no
-// v2 code reads them and including them would burn bandwidth on the
-// cold-start path. snapshot_gen omitted — pure sync bookkeeping.
+// loadAllSQLA selects the v2-owned column subset from `actor`
+// (post-WORK-389 that is nearly the whole table; snapshot_gen is
+// omitted — pure sync bookkeeping, and `admin` is read here but never
+// written back, see upsertSQLA).
 //
 // `::text` casts on UUID columns let pgx scan straight into `*string`
 // scan targets, matching the rest of the slice's nullable-ID pattern.
-//
-// Visitor rows are NOT filtered out at the SQL layer — the design's
-// posture is "v2 never reads/writes visitor columns; cutover-prep
-// migration will delete visitor rows before cutover." Filtering at
-// load time would mask schema drift; let LoadWorld see them and the
-// orchestrator policy decide.
 const loadAllSQLA = `
 SELECT
     id::text,
@@ -134,10 +128,11 @@ const loadAllInventorySQLA = `
 SELECT actor_id::text, item_kind, quantity
   FROM actor_inventory`
 
-// upsertSQLA writes one actor row. Column list = v2-owned subset only;
-// v1-only columns are untouched on UPDATE (ON CONFLICT preserves them)
-// and fall back to schema defaults on INSERT. snapshot_gen carries the
-// new checkpoint gen so the trailing DELETE can prune absent rows.
+// upsertSQLA writes one actor row. Column list = v2-owned subset only
+// (ON CONFLICT touches only listed columns; anything unlisted keeps its
+// stored value on UPDATE and falls back to the schema default on
+// INSERT). snapshot_gen carries the new checkpoint gen so the trailing
+// DELETE can prune absent rows.
 //
 // `admin` is deliberately ABSENT here. It is externally-managed
 // authorization state (set directly in the DB for village operators),

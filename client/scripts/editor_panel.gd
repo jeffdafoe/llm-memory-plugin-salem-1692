@@ -20,8 +20,7 @@ signal npc_work_structure_changed(structure_id: String)
 #     -1 means "inherit dawn/dusk" (sent to server as null/null). All-or-none
 #     mirrors the schedule_window_all_or_none DB CHECK.
 #   interval / start / end: rotation cadence triple. -1 means "no cadence".
-#   lateness: lateness_window_minutes (0–180). Always sent.
-signal npc_schedule_changed(start_min: int, end_min: int, lateness: int)
+signal npc_schedule_changed(start_min: int, end_min: int)
 # Social-hour overlay (ZBBS-068, minute-precision since ZBBS-071). Empty tag
 # == "clear the schedule" (and start_min/end_min are ignored in that case).
 # Applied all-or-none server-side.
@@ -224,7 +223,7 @@ var _npc_hunger_label: Label = null
 var _npc_thirst_label: Label = null
 var _npc_tiredness_label: Label = null
 # Schedule section — absolute work-window pair (HH:MM start / HH:MM end)
-# + lateness + cadence triple. The start/end pair is nullable: when both
+# + cadence triple. The start/end pair is nullable: when both
 # server values are NULL the worker inherits the global dawn/dusk window,
 # and the spinners display those defaults so the admin can see what the
 # NPC is actually doing. _npc_schedule_window_is_null tracks whether the
@@ -237,7 +236,6 @@ var _npc_start_minute_spin: SpinBox = null
 var _npc_end_hour_spin: SpinBox = null
 var _npc_end_minute_spin: SpinBox = null
 var _npc_schedule_window_is_null: bool = true
-var _npc_lateness_spin: SpinBox = null
 var _npc_schedule_save_button: Button = null
 # Social-hour overlay UI (ZBBS-068). Like the work window, it's gated by a checkbox
 # so the panel can express "no social schedule" distinct from "scheduled at
@@ -989,28 +987,6 @@ func _ready() -> void:
     _npc_schedule_section.add_child(end_row.row)
     _npc_end_hour_spin = end_row.hour_spin
     _npc_end_minute_spin = end_row.minute_spin
-
-    # Lateness window — fuzzes the actual firing time within [nominal,
-    # nominal+window) minutes. Per-NPC, per-boundary offset is
-    # deterministic (seeded by NPC id + boundary) so the village feels
-    # organic but any single NPC stays predictable across restarts.
-    var lateness_row = HBoxContainer.new()
-    lateness_row.add_theme_constant_override("separation", 6)
-    _npc_schedule_section.add_child(lateness_row)
-    var lateness_lbl = Label.new()
-    lateness_lbl.text = "Lateness window (min)"
-    lateness_lbl.add_theme_color_override("font_color", COLOR_TEXT_DIM)
-    lateness_lbl.add_theme_font_size_override("font_size", 11)
-    lateness_lbl.tooltip_text = "Fuzzes the actual fire time within [nominal, nominal+window) minutes. 0 = always fires exactly at the nominal boundary. 30 = NPC fires 0-29 min after nominal, always late, never early. Offset is seeded by NPC id + boundary so it's stable across ticks and server restarts."
-    lateness_row.add_child(lateness_lbl)
-    _npc_lateness_spin = SpinBox.new()
-    _npc_lateness_spin.min_value = 0
-    _npc_lateness_spin.max_value = 180
-    _npc_lateness_spin.step = 1
-    _npc_lateness_spin.update_on_text_changed = true
-    _npc_lateness_spin.value_changed.connect(_on_schedule_field_changed)
-    _npc_lateness_spin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-    lateness_row.add_child(_npc_lateness_spin)
 
     _npc_schedule_save_button = Button.new()
     _npc_schedule_save_button.text = "Save Schedule"
@@ -1786,7 +1762,7 @@ func _on_schedule_save_pressed() -> void:
     _emit_schedule_changed()
 
 ## Auto-save on any SpinBox value change for fields that don't affect the
-## window's NULL state (lateness, cadence). Matches the behavior / home /
+## window's NULL state (cadence). Matches the behavior / home /
 ## work pickers that also save immediately on change, so admins don't need
 ## a separate Save button to make the SCHEDULE section stick.
 func _on_schedule_field_changed(_value: float) -> void:
@@ -1815,8 +1791,7 @@ func _emit_schedule_changed() -> void:
     if not _npc_schedule_window_is_null:
         start_min = int(_npc_start_hour_spin.value) * 60 + int(_npc_start_minute_spin.value)
         end_min = int(_npc_end_hour_spin.value) * 60 + int(_npc_end_minute_spin.value)
-    var lateness: int = int(_npc_lateness_spin.value) if _npc_lateness_spin != null else 0
-    npc_schedule_changed.emit(start_min, end_min, lateness)
+    npc_schedule_changed.emit(start_min, end_min)
 
 ## Build a reusable Start/End HH:MM row. Returns a dict with the row
 ## container plus the two SpinBox children, so the caller can wire them
@@ -2719,8 +2694,6 @@ func show_npc_selection(info: Dictionary) -> void:
     if _npc_end_hour_spin != null:
         _npc_end_hour_spin.value = end_min / 60
         _npc_end_minute_spin.value = end_min % 60
-    if _npc_lateness_spin != null:
-        _npc_lateness_spin.value = int(info.get("lateness_window_minutes", 0))
     # Social-hour fields — same all-or-none shape as the work-window pair. Minute
     # precision since ZBBS-071.
     var social_tag_raw = info.get("social_tag", null)

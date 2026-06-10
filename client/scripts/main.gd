@@ -767,9 +767,9 @@ func _on_npc_work_structure_changed(structure_id: String) -> void:
 ## Admin edited the schedule fields and hit Save. start_min/end_min are -1
 ## when the work-window is NULL-inheriting dawn/dusk — world.set_npc_schedule
 ## maps the -1 sentinels to null in the JSON payload.
-func _on_npc_schedule_changed(start_min: int, end_min: int, lateness: int) -> void:
+func _on_npc_schedule_changed(start_min: int, end_min: int) -> void:
     if editor.selected_npc != null:
-        world.set_npc_schedule(editor.selected_npc, start_min, end_min, lateness)
+        world.set_npc_schedule(editor.selected_npc, start_min, end_min)
 
 ## Social-hour schedule changed (ZBBS-068, minute precision since ZBBS-071).
 ## Empty tag clears the schedule (start_min/end_min ignored in that case).
@@ -1232,7 +1232,6 @@ func _on_npc_metadata_changed(npc_id: String) -> void:
         "llm_memory_agent": container.get_meta("llm_memory_agent", ""),
         "home_structure_id": container.get_meta("home_structure_id", ""),
         "work_structure_id": container.get_meta("work_structure_id", ""),
-        "lateness_window_minutes": container.get_meta("lateness_window_minutes", 0),
     }
     # Worker work-window: present only when the NPC has overridden the
     # global dawn/dusk default. Missing keys signal "inherit" to the panel.

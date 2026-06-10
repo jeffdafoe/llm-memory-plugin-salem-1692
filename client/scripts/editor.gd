@@ -762,7 +762,6 @@ func _select_npc(container: Node2D) -> void:
         "llm_memory_agent": container.get_meta("llm_memory_agent", ""),
         "home_structure_id": container.get_meta("home_structure_id", ""),
         "work_structure_id": container.get_meta("work_structure_id", ""),
-        "lateness_window_minutes": container.get_meta("lateness_window_minutes", 0),
     }
     # Worker work-window: present only when the NPC has overridden the
     # global dawn/dusk default. Missing keys signal "inherit" to the panel.
