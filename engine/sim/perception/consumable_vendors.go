@@ -210,19 +210,27 @@ func renderOwnStockLine(items []OwnStockItem, need sim.NeedKey, needLevel int) s
 func feltAmountWithSufficiency(magnitude int, need sim.NeedKey, needLevel int) string {
 	felt := itemFeltAmount(magnitude, need)
 	if magnitude > 0 && needLevel > 0 && magnitude >= needLevel {
-		felt += " — a single one would fully " + needSufficiencyPhrase(need)
+		if phrase := needSufficiencyPhrase(need); phrase != "" {
+			felt += " — a single one would fully " + phrase
+		}
 	}
 	return felt
 }
 
 // needSufficiencyPhrase is the per-need tail of the sufficiency clause, kept
-// in the same felt-language register as itemFeltAmount.
+// in the same felt-language register as itemFeltAmount. Explicitly scoped to
+// the needs with authored prose — an unsupported need (e.g. a future caller
+// passing a live tiredness level through the shared renderOwnStockLine)
+// renders the bare tier rather than accidental bad prose like "satisfy your
+// tiredness" (code_review).
 func needSufficiencyPhrase(need sim.NeedKey) string {
 	switch need {
+	case "hunger":
+		return "satisfy your hunger"
 	case "thirst":
 		return "quench your thirst"
 	default:
-		return "satisfy your " + string(need)
+		return ""
 	}
 }
 

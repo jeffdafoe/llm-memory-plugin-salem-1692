@@ -618,3 +618,12 @@ func TestRenderSatiation_SufficiencyClause(t *testing.T) {
 		t.Errorf("clause rendered for a need no single unit covers:\n%s", b.String())
 	}
 }
+
+// TestFeltAmountWithSufficiency_UnsupportedNeedStaysBare — a need without
+// authored clause prose (tiredness, via the shared renderOwnStockLine) renders
+// the bare tier even at a covering magnitude, instead of accidental bad prose.
+func TestFeltAmountWithSufficiency_UnsupportedNeedStaysBare(t *testing.T) {
+	if got := feltAmountWithSufficiency(12, "tiredness", 6); got != "a thorough waking" {
+		t.Errorf("unsupported need = %q, want bare tier %q", got, "a thorough waking")
+	}
+}
