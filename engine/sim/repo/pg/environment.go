@@ -270,6 +270,10 @@ func buildSettings(values map[string]string) sim.WorldSettings {
 	s.OrderTTL = parseDurationSetting(values, "order_ttl_minutes", 10*time.Minute)
 	s.OrderSweepCadence = parseDurationSetting(values, "order_sweep_cadence_seconds", 60*time.Second)
 
+	// Huddle silence conclusion (ZBBS-HOME-417).
+	s.HuddleSilenceTimeout = parseDurationSetting(values, "huddle_silence_timeout_minutes", sim.HuddleSilenceTimeoutDefault)
+	s.HuddleSilenceSweepCadence = parseDurationSetting(values, "huddle_silence_sweep_cadence_seconds", sim.HuddleSilenceSweepCadenceDefault)
+
 	// PC presence staleness (ZBBS-WORK-326).
 	s.PCPresenceStaleAfter = parseDurationSetting(values, "pc_presence_stale_seconds", sim.DefaultPCPresenceStaleAfter)
 

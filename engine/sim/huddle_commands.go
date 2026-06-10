@@ -350,6 +350,11 @@ func JoinHuddle(actorID ActorID, structureID StructureID, sceneID SceneID, now t
 
 			huddle.Members[actorID] = struct{}{}
 			actor.CurrentHuddleID = huddleID
+			// ZBBS-HOME-417: a join (new huddle or an arrival into an existing
+			// one) is conversational activity — stamp it so the silence sweep
+			// counts the dormancy window from the latest arrival, not a stale
+			// StartedAt.
+			huddle.LastActivityAt = now
 			if w.actorsByHuddle[huddleID] == nil {
 				w.actorsByHuddle[huddleID] = make(map[ActorID]struct{})
 			}
@@ -468,54 +473,123 @@ func LeaveHuddle(actorID ActorID, now time.Time) Command {
 func ConcludeHuddle(huddleID HuddleID, now time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
-			huddle, ok := w.Huddles[huddleID]
-			if !ok {
-				return nil, fmt.Errorf("huddle %q not found", huddleID)
-			}
-			if huddle.ConcludedAt != nil {
-				return nil, nil
-			}
-
-			members := make([]ActorID, 0, len(huddle.Members))
-			for id := range huddle.Members {
-				members = append(members, id)
-			}
-			for _, actorID := range members {
-				if actor, ok := w.Actors[actorID]; ok {
-					actor.CurrentHuddleID = ""
-					// ZBBS-WORK-370: dissolving the conversation makes every
-					// member's pending turn edges moot.
-					actor.dropAwaitingReplies()
-				}
-			}
-			huddle.Members = make(map[ActorID]struct{})
-			t := now
-			huddle.ConcludedAt = &t
-			delete(w.actorsByHuddle, huddleID)
-			orphanedAreaScenes := detachHuddleFromAllScenes(w, huddleID)
-			concludeOrphanedAreaScenes(w, orphanedAreaScenes)
-
-			concludedEvt := &HuddleConcluded{
-				HuddleID:    huddleID,
-				StructureID: huddle.StructureID,
-				At:          now,
-			}
-			w.emit(concludedEvt)
-
-			for _, actorID := range members {
-				if actor, ok := w.Actors[actorID]; ok {
-					tryStampWarrant(w, actor, WarrantMeta{
-						SourceEventID: concludedEvt.EventID(),
-						RootEventID:   concludedEvt.RootEventID(),
-						HuddleID:      huddleID,
-						OccurredAt:    now,
-						Reason:        BasicWarrantReason{K: WarrantKindHuddleConcluded},
-					}, now)
-				}
-			}
+			concludeHuddleInner(w, huddleID, now, true)
 			return nil, nil
 		},
 	}
+}
+
+// concludeHuddleInner is the shared body of huddle conclusion. With
+// stampWarrants=true it matches the legacy ConcludeHuddle behaviour — each
+// evicted member gets a WarrantKindHuddleConcluded warrant ("Your conversation
+// has broken up.") that wakes their reactor. With stampWarrants=false the
+// conclusion is SILENT: members are evicted and scenes detached, but no
+// warrant is stamped, so no member is woken and no perception line renders.
+//
+// The silent path is what the ZBBS-HOME-417 silence sweep uses: concluding a
+// dormant huddle must not itself manufacture a round of LLM ticks (which would
+// re-pitch / re-greet storm), and the HuddleConcluded EVENT is still emitted so
+// scene detach, snapshots, and telemetry stay consistent — only the per-member
+// warrant (the tick driver, render.go) is withheld. The action log has no
+// HuddleConcluded subscriber, so a silent conclusion leaves no memory trace.
+//
+// Idempotent: re-concluding an already-concluded (or missing) huddle no-ops.
+// MUST run on the world goroutine.
+func concludeHuddleInner(w *World, huddleID HuddleID, now time.Time, stampWarrants bool) {
+	huddle, ok := w.Huddles[huddleID]
+	if !ok || huddle.ConcludedAt != nil {
+		return
+	}
+
+	members := make([]ActorID, 0, len(huddle.Members))
+	for id := range huddle.Members {
+		members = append(members, id)
+	}
+	for _, actorID := range members {
+		if actor, ok := w.Actors[actorID]; ok {
+			actor.CurrentHuddleID = ""
+			// ZBBS-WORK-370: dissolving the conversation makes every
+			// member's pending turn edges moot.
+			actor.dropAwaitingReplies()
+		}
+	}
+	huddle.Members = make(map[ActorID]struct{})
+	t := now
+	huddle.ConcludedAt = &t
+	delete(w.actorsByHuddle, huddleID)
+	orphanedAreaScenes := detachHuddleFromAllScenes(w, huddleID)
+	concludeOrphanedAreaScenes(w, orphanedAreaScenes)
+
+	concludedEvt := &HuddleConcluded{
+		HuddleID:    huddleID,
+		StructureID: huddle.StructureID,
+		At:          now,
+	}
+	w.emit(concludedEvt)
+
+	if !stampWarrants {
+		return
+	}
+	for _, actorID := range members {
+		if actor, ok := w.Actors[actorID]; ok {
+			tryStampWarrant(w, actor, WarrantMeta{
+				SourceEventID: concludedEvt.EventID(),
+				RootEventID:   concludedEvt.RootEventID(),
+				HuddleID:      huddleID,
+				OccurredAt:    now,
+				Reason:        BasicWarrantReason{K: WarrantKindHuddleConcluded},
+			}, now)
+		}
+	}
+}
+
+// touchHuddleActivity stamps a huddle's LastActivityAt to `now`, marking it as
+// conversationally alive so the silence sweep (ZBBS-HOME-417) doesn't conclude
+// it. Called from the activity sites: a spoken line landing in the huddle, a
+// member joining, and a completed transaction. No-op on a missing or already-
+// concluded huddle. MUST run on the world goroutine.
+func touchHuddleActivity(w *World, huddleID HuddleID, now time.Time) {
+	if huddleID == "" {
+		return
+	}
+	if h, ok := w.Huddles[huddleID]; ok && h.ConcludedAt == nil {
+		h.LastActivityAt = now
+	}
+}
+
+// ClearConversationalHuddlesOnBoot drops every huddle from the world and clears
+// the conversational back-references that point at them (ZBBS-HOME-417). A
+// huddle is transient conversational state; a conversation that "resumes" hours
+// later across an engine restart is not meaningful, and a checkpoint-reloaded
+// standing huddle is exactly what let a structure's huddle live for days. Boot,
+// not shutdown: crash/OOM/kill paths never run a graceful shutdown sweep, so
+// clearing at load is the only place that covers every way the prior process
+// can have died — mirroring the WORK-379 "re-derive transient state at boot"
+// posture. The durable structure scenes are intentionally LEFT intact (commerce
+// context the pay ledger anchors to); only their observed-active-huddle refs are
+// cleared. The next speak re-forms a fresh huddle on the same scene.
+//
+// MUST be called during the single-threaded boot window (after LoadWorld, before
+// World.Run starts) — it mutates world maps directly without the command
+// channel. No events are emitted (there is no audience pre-Run; the persisted
+// huddles simply never come alive).
+func ClearConversationalHuddlesOnBoot(w *World) {
+	if w == nil {
+		return
+	}
+	for _, a := range w.Actors {
+		if a != nil {
+			a.CurrentHuddleID = ""
+			a.dropAwaitingReplies()
+		}
+	}
+	for _, s := range w.Scenes {
+		if s != nil && len(s.Huddles) > 0 {
+			s.Huddles = make(map[HuddleID]struct{})
+		}
+	}
+	w.Huddles = make(map[HuddleID]*Huddle)
+	w.actorsByHuddle = make(map[HuddleID]map[ActorID]struct{})
 }
 
 // leaveCurrentHuddle implements the leave half of join (atomic transition)

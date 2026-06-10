@@ -27,6 +27,21 @@ type Huddle struct {
 	StartedAt   time.Time
 	ConcludedAt *time.Time
 
+	// LastActivityAt is the wall-clock time of the last conversational
+	// activity in this huddle — a spoken line, a member joining, or a
+	// completed transaction. The silence sweep (RunHuddleSilenceSweep,
+	// ZBBS-HOME-417) concludes a huddle once now-LastActivityAt exceeds
+	// HuddleSilenceTimeout, which is the ONLY routine conclusion path at a
+	// staffed structure: leaveCurrentHuddle's last-member-leave path never
+	// fires while the keeper stands present, so without this a structure's
+	// huddle accreted every exchange for days. Zero-valued is treated as
+	// StartedAt by the sweep, so a creation site that forgets to stamp still
+	// gets a sane dormancy baseline. In-memory only: NOT checkpointed (no
+	// column) and reset on restart by design — the boot-clear drops every
+	// huddle anyway, so a conversation never spans a restart. Same
+	// transient-state posture as RecentUtterances.
+	LastActivityAt time.Time
+
 	// RecentUtterances is a transient, capped ring of the last few spoken lines
 	// in this huddle — the cross-tick "## Recent conversation here" perception
 	// source (ZBBS-HOME-412). Populated by SpeakTo for EVERY speaker, NPC and PC
