@@ -88,6 +88,15 @@ var pay_status_label: Label = null
 var pay_confirm_button: Button = null
 var pay_cancel_button: Button = null
 var http_pay: HTTPRequest = null
+# Item-kind catalog from GET /api/village/items (ZBBS-HOME-423) — lets the
+# player compose an offer for ANY good, not just formally-quoted ones (a
+# vendor's verbal "thou shalt have a room for 4 coins" posts no quote, so a
+# mentions-only dropdown couldn't express the purchase). Fetched once on
+# first Pay open; boot-immutable server-side so never re-polled.
+var http_items: HTTPRequest = null
+var pay_item_catalog_order: Array = []      # item names in server sort order
+var pay_item_catalog_labels: Dictionary = {} # item name -> display label
+var pay_items_catalog_requested: bool = false
 
 # Phase C of sales-and-gifts: per-vendor accumulator of item_kinds
 # they've mentioned in this huddle session. Sourced from npc_spoke's
@@ -257,6 +266,9 @@ func _build_tree() -> void:
 
     http_pay = HTTPRequest.new()
     add_child(http_pay)
+
+    http_items = HTTPRequest.new()
+    add_child(http_items)
 
     refresh_timer = Timer.new()
     refresh_timer.wait_time = REFRESH_INTERVAL
@@ -661,6 +673,8 @@ func _connect_signals() -> void:
     http_speak.request_completed.connect(_on_speak_completed)
     if http_pay != null:
         http_pay.request_completed.connect(_on_pay_completed)
+    if http_items != null:
+        http_items.request_completed.connect(_on_items_completed)
 
     speech_input.focus_entered.connect(_on_input_focus_entered)
     speech_input.focus_exited.connect(_on_input_focus_exited)
@@ -1429,6 +1443,7 @@ func _label_with(text: String, control: Control) -> Control:
 
 func _on_pay_pressed() -> void:
     _ensure_pay_modal_built()
+    _ensure_pay_items_catalog()
     # Repopulate the recipient list each open — huddle membership
     # changes (NPCs come and go) so the cached list at modal-build time
     # would go stale fast.
@@ -1466,11 +1481,14 @@ func _on_pay_pressed() -> void:
     modal_open_changed.emit(true)
 
 
-## Repopulate the item dropdown from the currently-selected recipient's
-## accumulated speak.mentions (spoken mentions + posted scene quotes).
-## The v2 pc/pay route requires an item (ZBBS-WORK-287), so there is no
-## coins-only entry and Confirm stays disarmed until the vendor has
-## actually offered something.
+## Repopulate the item dropdown for the currently-selected recipient:
+## the vendor's offered items first (accumulated speak.mentions — spoken
+## mentions + posted scene quotes — with the quoted unit price in the
+## label when known), then the rest of the item-kind catalog so the
+## player can compose an offer for anything (ZBBS-HOME-423 — a verbal
+## offer posts no quote, but the v2 slow path takes any item). The v2
+## pc/pay route requires an item (ZBBS-WORK-287), so there is no
+## coins-only entry.
 func _refresh_pay_item_dropdown() -> void:
     if pay_item_option == null:
         return
@@ -1478,15 +1496,33 @@ func _refresh_pay_item_dropdown() -> void:
     var recipient: String = ""
     if pay_recipient_option != null and pay_recipient_option.selected >= 0 and pay_recipient_option.selected < pay_modal_recipients.size():
         recipient = pay_modal_recipients[pay_recipient_option.selected]
+    var listed := {}
     if not recipient.is_empty():
+        var prices = vendor_mention_prices.get(recipient, {})
+        if typeof(prices) != TYPE_DICTIONARY:
+            prices = {}
         var mentions = vendor_mentions.get(recipient, null)
         if typeof(mentions) == TYPE_ARRAY or typeof(mentions) == TYPE_PACKED_STRING_ARRAY:
             for kind in mentions:
                 var s := str(kind)
-                if s.is_empty():
+                if s.is_empty() or listed.has(s):
                     continue
-                pay_item_option.add_item(s)
+                listed[s] = true
+                var label := _pay_item_label(s)
+                if prices.has(s) and int(prices[s]) > 0:
+                    label = "%s — %d coins" % [label, int(prices[s])]
+                pay_item_option.add_item(label)
                 pay_item_option.set_item_metadata(pay_item_option.item_count - 1, s)
+    # Everything else the village trades in, below a separator. Metadata
+    # stays the wire item name; separators carry none and are unselectable.
+    if not listed.is_empty() and not pay_item_catalog_order.is_empty():
+        pay_item_option.add_separator()
+    for name in pay_item_catalog_order:
+        var n := str(name)
+        if n.is_empty() or listed.has(n):
+            continue
+        pay_item_option.add_item(_pay_item_label(n))
+        pay_item_option.set_item_metadata(pay_item_option.item_count - 1, n)
     if pay_confirm_button != null:
         pay_confirm_button.disabled = pay_item_option.item_count == 0
     if pay_item_option.item_count > 0:
@@ -1498,9 +1534,9 @@ func _refresh_pay_item_dropdown() -> void:
         if pay_status_label != null:
             pay_status_label.text = ""
     elif not recipient.is_empty() and pay_status_label != null:
-        # No corresponding clear needed above this branch: the hint is
-        # re-evaluated on every refresh, so switching from an offerless
-        # vendor to one with goods wipes the stale line. (code_review)
+        # Only reachable before the catalog fetch lands (or if it failed):
+        # re-evaluated on every refresh, so the hint clears itself once
+        # items exist. (code_review)
         pay_status_label.text = "%s hasn't named anything for sale yet." % recipient
 
 
@@ -1557,6 +1593,57 @@ func _apply_pay_defaults_for_recipient(recipient: String) -> void:
         if unit_price > 0:
             pay_amount_spin.value = unit_price
             pay_qty_spin.value = 1
+
+
+## Fetch the item-kind catalog once. The response repopulates the open
+## dropdown via _on_items_completed; a failed fetch degrades to the old
+## mentions-only behavior (and a later modal open retries).
+func _ensure_pay_items_catalog() -> void:
+    if pay_items_catalog_requested or http_items == null:
+        return
+    pay_items_catalog_requested = true
+    var err := http_items.request(
+        _api_url("/api/village/items"),
+        _auth_headers(),
+        HTTPClient.METHOD_GET,
+    )
+    if err != OK:
+        pay_items_catalog_requested = false
+
+
+func _on_items_completed(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
+    if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
+        # Allow a retry on the next modal open rather than caching failure.
+        pay_items_catalog_requested = false
+        return
+    var parsed = JSON.parse_string(body.get_string_from_utf8())
+    if typeof(parsed) != TYPE_ARRAY:
+        pay_items_catalog_requested = false
+        return
+    pay_item_catalog_order.clear()
+    pay_item_catalog_labels.clear()
+    for entry in parsed:
+        if typeof(entry) != TYPE_DICTIONARY:
+            continue
+        var name := str(entry.get("name", "")).strip_edges().to_lower()
+        if name.is_empty():
+            continue
+        pay_item_catalog_order.append(name)
+        var label := str(entry.get("display_label", "")).strip_edges()
+        pay_item_catalog_labels[name] = label if not label.is_empty() else name
+    # The catalog may land while the modal is already open — refresh so
+    # the full list appears without reopening.
+    if pay_modal != null and pay_modal.visible:
+        _refresh_pay_item_dropdown()
+        _update_pay_booking_controls()
+
+
+## Display label for an item name: vendor-facing catalog label when
+## known, the raw wire name otherwise.
+func _pay_item_label(name: String) -> String:
+    if pay_item_catalog_labels.has(name):
+        return str(pay_item_catalog_labels[name])
+    return name
 
 
 ## The lowercase item_kind metadata of the currently-selected item, or
