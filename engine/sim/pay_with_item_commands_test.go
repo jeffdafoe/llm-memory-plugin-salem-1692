@@ -1781,3 +1781,169 @@ func TestWithdrawPay_NoCoPresenceRequired(t *testing.T) {
 		t.Fatalf("WithdrawPay after leaving huddle: %v", err)
 	}
 }
+
+// ============================================================
+// ZBBS-WORK-391 — cross-tick duplicate-pending-offer gate +
+// consume_now needs-clamp (pocket the surplus)
+// ============================================================
+
+// TestPayWithItem_SlowPath_DuplicatePendingOffer_Rejected: a new offer
+// matching a still-Pending entry on (buyer, seller, item, disposition) is
+// rejected at intake, naming the pending offer id. Key mirrors payOfferKey:
+// price/qty differences still match; a different item or disposition is a
+// different offer and passes.
+func TestPayWithItem_SlowPath_DuplicatePendingOffer_Rejected(t *testing.T) {
+	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
+		{id: "alice", displayName: "Alice", kind: sim.KindNPCShared, huddleID: "h1", coins: 100},
+		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1", inventory: map[sim.ItemKind]int{"stew": 5, "bread": 5}},
+	})
+	defer stop()
+	at := time.Now().UTC()
+	seedLedgerEntry(t, w, sim.PayLedgerEntry{
+		ID: 7, BuyerID: "alice", SellerID: "bob",
+		ItemKind: "stew", Qty: 1, Amount: 4, ConsumeNow: false,
+		State: sim.PayLedgerStatePending, ExpiresAt: at.Add(3 * time.Minute),
+		SceneID: "sc1", HuddleID: "h1",
+	})
+	events := capturePayWithItemEvents(t, w)
+
+	// Same (buyer, seller, item, disposition) at DIFFERENT terms — rejected.
+	_, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 3, 9, false, nil, nil, 0, 0, "", at))
+	if err == nil || !strings.Contains(err.Error(), "already have an offer") || !strings.Contains(err.Error(), "offer id 7") {
+		t.Fatalf("want duplicate-pending rejection naming offer id 7, got %v", err)
+	}
+	if len(events.Offer) != 0 {
+		t.Errorf("PayOfferReceived emitted for rejected duplicate: %v", events.Offer)
+	}
+	if ledger := readPayLedger(t, w); len(ledger) != 1 {
+		t.Errorf("ledger entries = %d, want 1 (no duplicate minted)", len(ledger))
+	}
+
+	// Same item, OTHER disposition (consume_now) — a different offer, passes.
+	if _, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, true, nil, nil, 0, 0, "", at)); err != nil {
+		t.Errorf("consume_now stew offer should pass the gate (different disposition): %v", err)
+	}
+	// Different item — passes.
+	if _, err := w.Send(sim.PayWithItem("alice", "Bob", "bread", 1, 2, false, nil, nil, 0, 0, "", at)); err != nil {
+		t.Errorf("bread offer should pass the gate (different item): %v", err)
+	}
+}
+
+// TestPayWithItem_SlowPath_ExpiredPendingOffer_NotBlocking: a Pending entry
+// past its ExpiresAt no longer blocks a fresh offer — the buyer isn't held
+// hostage to the sweep's cadence.
+func TestPayWithItem_SlowPath_ExpiredPendingOffer_NotBlocking(t *testing.T) {
+	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
+		{id: "alice", displayName: "Alice", kind: sim.KindNPCShared, huddleID: "h1", coins: 100},
+		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1", inventory: map[sim.ItemKind]int{"stew": 5}},
+	})
+	defer stop()
+	at := time.Now().UTC()
+	seedLedgerEntry(t, w, sim.PayLedgerEntry{
+		ID: 7, BuyerID: "alice", SellerID: "bob",
+		ItemKind: "stew", Qty: 1, Amount: 4, ConsumeNow: false,
+		State: sim.PayLedgerStatePending, ExpiresAt: at.Add(-time.Minute),
+		SceneID: "sc1", HuddleID: "h1",
+	})
+	if _, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, nil, 0, 0, "", at)); err != nil {
+		t.Errorf("offer against an expired pending entry should mint: %v", err)
+	}
+}
+
+// TestPayWithItem_InResponseTo_ExemptFromPendingGate: a counter-response
+// (in_response_to) is a distinct lifecycle move and bypasses the duplicate-
+// pending gate even when an unrelated Pending entry matches its key.
+func TestPayWithItem_InResponseTo_ExemptFromPendingGate(t *testing.T) {
+	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
+		{id: "alice", displayName: "Alice", kind: sim.KindNPCShared, huddleID: "h1", coins: 100},
+		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1", inventory: map[sim.ItemKind]int{"stew": 5}},
+	})
+	defer stop()
+	at := time.Now().UTC()
+	// The countered parent the response answers.
+	seedLedgerEntry(t, w, sim.PayLedgerEntry{
+		ID: 42, BuyerID: "alice", SellerID: "bob",
+		ItemKind: "stew", Qty: 1, Amount: 4, ConsumeNow: false,
+		State: sim.PayLedgerStateCountered, CounterAmount: 6,
+		CreatedAt: at.Add(-2 * time.Minute), ResolvedAt: at.Add(-time.Minute),
+		SceneID: "sc1", HuddleID: "h1",
+	})
+	// An unrelated Pending entry that matches the response's key.
+	seedLedgerEntry(t, w, sim.PayLedgerEntry{
+		ID: 43, BuyerID: "alice", SellerID: "bob",
+		ItemKind: "stew", Qty: 1, Amount: 5, ConsumeNow: false,
+		State: sim.PayLedgerStatePending, ExpiresAt: at.Add(3 * time.Minute),
+		SceneID: "sc1", HuddleID: "h1",
+	})
+	if _, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 6, false, nil, nil, 0, 42, "", at)); err != nil {
+		t.Errorf("counter-response should bypass the pending gate: %v", err)
+	}
+}
+
+// TestAcceptPay_ConsumeNow_ClampsToNeed_PocketsSurplus: accepting a
+// consume_now bundle eats only what the consumer's needs absorb and pockets
+// the surplus into the BUYER's inventory. The purchase itself is untouched:
+// full price paid, full qty leaves the seller. This is the Prudence fix —
+// a 10-unit seller-pitched bundle against a small hunger no longer burns
+// nine units into a zeroed need.
+func TestAcceptPay_ConsumeNow_ClampsToNeed_PocketsSurplus(t *testing.T) {
+	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
+		{id: "alice", displayName: "Alice", kind: sim.KindNPCShared, huddleID: "h1", coins: 50},
+		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1", inventory: map[sim.ItemKind]int{"stew": 10}},
+	})
+	defer stop()
+	at := time.Now().UTC()
+	// Hunger 6 against stew (Immediate=4): absorbs ceil(6/4)=2 units.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["alice"].Needs = map[sim.NeedKey]int{"hunger": 6}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed needs: %v", err)
+	}
+	seedLedgerEntry(t, w, sim.PayLedgerEntry{
+		ID: 1, BuyerID: "alice", SellerID: "bob",
+		ItemKind: "stew", Qty: 10, Amount: 20, ConsumeNow: true,
+		State: sim.PayLedgerStatePending, ExpiresAt: at.Add(3 * time.Minute),
+		SceneID: "sc1", HuddleID: "h1",
+	})
+	events := capturePayWithItemEvents(t, w)
+	if _, err := w.Send(sim.AcceptPay("bob", 1, at)); err != nil {
+		t.Fatalf("AcceptPay: %v", err)
+	}
+
+	if len(events.Consumed) != 1 {
+		t.Fatalf("ItemConsumed = %d, want 1", len(events.Consumed))
+	}
+	evt := events.Consumed[0]
+	if evt.Qty != 2 || evt.Kept != 8 {
+		t.Errorf("event Qty/Kept = %d/%d, want 2/8", evt.Qty, evt.Kept)
+	}
+	if got := evt.Applied["hunger"]; got != 6 {
+		t.Errorf("Applied[hunger] = %d, want 6", got)
+	}
+
+	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		alice := world.Actors["alice"]
+		bob := world.Actors["bob"]
+		return []int{alice.Inventory["stew"], alice.Needs["hunger"], alice.Coins, bob.Inventory["stew"], bob.Coins}, nil
+	}})
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	got := res.([]int)
+	if got[0] != 8 {
+		t.Errorf("alice pocketed stew = %d, want 8", got[0])
+	}
+	if got[1] != 0 {
+		t.Errorf("alice hunger = %d, want 0", got[1])
+	}
+	if got[2] != 30 {
+		t.Errorf("alice coins = %d, want 30 (paid the full 20)", got[2])
+	}
+	if got[3] != 0 {
+		t.Errorf("bob stew = %d, want 0 (full qty left the seller)", got[3])
+	}
+	if got[4] != 20 {
+		t.Errorf("bob coins = %d, want 20 (received the full amount)", got[4])
+	}
+}

@@ -486,6 +486,39 @@ func PayWithItem(
 				)
 			}
 
+			// Cross-tick duplicate-offer gate (ZBBS-WORK-391). The same-tick
+			// repeat-offer guard (ZBBS-HOME-395, harness) resets every tick by
+			// design, and the buyer-side pending-offers cue (ZBBS-HOME-413) is
+			// perception-only — a weak model reads "do not place another offer
+			// while one is still pending" and offers again anyway (observed
+			// live: Prudence staked three identical meat offers across three
+			// ticks while the first sat unanswered, then ate the accepted
+			// duplicates back-to-back). This is the ledger-backed rung: a NEW
+			// offer matching a still-Pending entry on (buyer, seller, item,
+			// disposition) is rejected model-facing. The key deliberately
+			// mirrors payOfferKey — price and qty excluded, so a re-offer at
+			// drifted terms still matches; counter-responses (parentID != 0)
+			// are a distinct lifecycle and exempt, and quote-takes never reach
+			// the slow path. Entries past ExpiresAt are skipped rather than
+			// blocking the buyer on the sweep's cadence.
+			if parentID == 0 {
+				for _, e := range w.PayLedger {
+					if e == nil || e.State != PayLedgerStatePending {
+						continue
+					}
+					if e.BuyerID != buyerID || e.SellerID != sellerID || e.ItemKind != kind || e.ConsumeNow != consumeNow {
+						continue
+					}
+					if !at.Before(e.ExpiresAt) {
+						continue
+					}
+					return nil, fmt.Errorf(
+						"you already have an offer for %s before %s, awaiting their answer (offer id %d) — wait for their response, or withdraw_pay it before offering again.",
+						kind, seller.DisplayName, e.ID,
+					)
+				}
+			}
+
 			// Slow path: mint pending entry + emit PayOfferReceived.
 			//
 			// Offer-time funds fast-fail (ZBBS-WORK-231) — an
@@ -1777,7 +1810,29 @@ func commitPayTransfer(
 					delete(seller.Inventory, entry.ItemKind)
 				}
 			}
-			applied := applyConsumeSatisfactions(consumer, def, entry.Qty)
+			// ZBBS-WORK-391: consume only what the consumer's needs can
+			// absorb; the surplus goes to the BUYER's inventory instead of
+			// burning into an already-zeroed need (the Prudence case: a
+			// seller-pitched 10-meat bundle eaten in one go against a hunger
+			// one unit would have cleared). The purchase itself is untouched —
+			// the buyer pays the full amount and the seller's stock drops by
+			// the full qty; only the eat-vs-pocket split changes. Surplus is
+			// routed to the buyer (not the consumer) because the buyer paid
+			// for it; for the common implicit-self-consumer offer they are the
+			// same actor anyway.
+			eat := consumableUnits(consumer, def, entry.Qty)
+			kept := entry.Qty - eat
+			if kept > 0 {
+				if buyer.Inventory == nil {
+					buyer.Inventory = make(map[ItemKind]int)
+				}
+				post, err := addChecked(buyer.Inventory[entry.ItemKind], kept)
+				if err != nil {
+					return fmt.Errorf("commitPayTransfer: buyer %q %s balance would overflow pocketing surplus", buyer.ID, entry.ItemKind)
+				}
+				buyer.Inventory[entry.ItemKind] = post
+			}
+			applied := applyConsumeSatisfactions(consumer, def, eat)
 			structureID, _ := resolveLoiteringObject(w, consumer.Pos, LoiterAttributionTiles)
 			var stamped []DwellCreditSnapshot
 			if structureID != "" && def != nil {
@@ -1786,7 +1841,8 @@ func commitPayTransfer(
 			w.emit(&ItemConsumed{
 				ActorID: cid,
 				Kind:    entry.ItemKind,
-				Qty:     entry.Qty,
+				Qty:     eat,
+				Kept:    kept,
 				Applied: applied,
 				At:      at,
 			})
@@ -1859,6 +1915,42 @@ func commitPayTransfer(
 		flipOrderTerminal(w, deliveredTakeHome, OrderStateDelivered, at)
 	}
 	return nil
+}
+
+// consumableUnits returns how many of maxQty units the actor's current
+// needs can actually absorb — the largest per-attribute ceil(need /
+// per-unit-restore) across the item's immediate satisfactions, clamped to
+// [1, maxQty]. The floor of 1 is deliberate: a consume was asked for, so
+// one unit is always eaten even when every need is already at zero (the
+// in-world beat is "you eat one and are full; the rest you keep", not a
+// purchase that eats nothing). Both consume paths share this so the
+// accept-time clamp can't be defeated by re-consuming the pocketed
+// surplus next tick (ZBBS-WORK-391).
+func consumableUnits(actor *Actor, def *ItemKindDef, maxQty int) int {
+	if maxQty <= 1 || actor == nil || def == nil {
+		return maxQty
+	}
+	units := 0
+	for _, s := range def.Satisfies {
+		if s.Immediate <= 0 {
+			continue
+		}
+		need := actor.Needs[s.Attribute]
+		if need <= 0 {
+			continue
+		}
+		n := (need + s.Immediate - 1) / s.Immediate
+		if n > units {
+			units = n
+		}
+	}
+	if units < 1 {
+		units = 1
+	}
+	if units > maxQty {
+		units = maxQty
+	}
+	return units
 }
 
 // applyConsumeSatisfactions applies a Consume's per-qty satisfaction

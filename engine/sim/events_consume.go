@@ -40,6 +40,13 @@ type ItemConsumed struct {
 	ActorID ActorID
 	Kind    ItemKind
 	Qty     int
+	// Kept counts units the ZBBS-WORK-391 needs-clamp held back from an
+	// over-sized consume: Qty units were actually eaten; Kept units stayed
+	// with the actor (consume tool: left in their inventory; consume_now
+	// accept: pocketed into the BUYER's inventory). Zero when the request
+	// fit the need. Subscribers rendering the consume beat append the
+	// "you keep the rest" clause off this field.
+	Kept    int
 	Applied map[NeedKey]int
 	At      time.Time
 }

@@ -785,7 +785,7 @@ func (h *Harness) dispatch(ctx context.Context, w *sim.World, job tickJob, vc *V
 			defer cancel()
 		}
 
-		_, err = w.SendContext(dispatchCtx, sim.RunTickToolCommand(job.actorID, job.attemptID, job.rootEventID, cmd))
+		cmdResult, err := w.SendContext(dispatchCtx, sim.RunTickToolCommand(job.actorID, job.attemptID, job.rootEventID, cmd))
 		if err != nil {
 			if errors.Is(err, sim.ErrTickAttemptStale) {
 				return "[error: stale] tick attempt superseded", dispatchOutcome{stale: true}
@@ -815,7 +815,7 @@ func (h *Harness) dispatch(ctx context.Context, w *sim.World, job tickJob, vc *V
 		if ended {
 			out.terminalStatus = sim.TickStatusSuccess
 		}
-		return commitResultContent(vc), out
+		return commitResultContent(vc, cmdResult), out
 
 	case ClassTerminal:
 		return "[done]", dispatchOutcome{
@@ -862,7 +862,24 @@ func (h *Harness) dispatch(ctx context.Context, w *sim.World, job tickJob, vc *V
 // the success branch is only reached after the speak command committed, so the
 // utterance is non-empty and control-char-clean by then. %q quotes + escapes
 // it, so an utterance containing a quote can't break the echo's framing.
-func commitResultContent(vc *ValidatedCall) string {
+// cmdResult is the value the committed world command returned through
+// RunTickToolCommand (nil for commands that return nothing). Most content
+// below is composed from the call's decoded args alone; the consume branch
+// needs the result because the ZBBS-WORK-391 needs-clamp decides the
+// eaten/kept split on the world goroutine, after the args are fixed.
+func commitResultContent(vc *ValidatedCall, cmdResult any) string {
+	// A clamped consume must tell the model what actually happened: a bare
+	// [ok] after "consume 10" reads as ten eaten, and the model either
+	// re-consumes the surplus it doesn't know it holds or distrusts its
+	// inventory. Unclamped consumes (Kept == 0) keep the generic [ok].
+	if vc.Name == "consume" {
+		if r, ok := cmdResult.(sim.ConsumeResult); ok && r.Kept > 0 {
+			return fmt.Sprintf(
+				"[ok] You consume %d %s — that satisfies you; the remaining %d stay in your pack. Do not consume more now.",
+				r.Consumed, r.Kind, r.Kept,
+			)
+		}
+	}
 	if vc.Name == "speak" {
 		if args, ok := vc.DecodedArgs.(SpeakArgs); ok {
 			text := strings.TrimSpace(args.Text)

@@ -37,6 +37,12 @@ func handleConsumedNarrationWarrants(w *sim.World, evt sim.Event) {
 	if narration == "" {
 		return
 	}
+	// ZBBS-WORK-391: when the needs-clamp held units back, say so in the
+	// same felt beat — the actor should know the surplus is in their pack,
+	// not gone.
+	if consumed.Kept > 0 {
+		narration += " The rest you tuck away for later."
+	}
 	actor, ok := w.Actors[consumed.ActorID]
 	if !ok || actor == nil {
 		return
