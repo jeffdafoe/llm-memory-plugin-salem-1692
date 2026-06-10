@@ -486,6 +486,37 @@ func PayWithItem(
 				)
 			}
 
+			// Opportunistic quote auto-match (ZBBS-HOME-424). The explicit
+			// fast path requires the model to echo a quote_id, but a weak
+			// buyer model routinely answers a seller's standing quote with a
+			// bare pay_with_item — minting a CROSSING offer for goods the
+			// seller is already offering. The two pending intents then
+			// deadlock: the seller's quote waits on the buyer, the buyer's
+			// offer waits on the seller, and the duplicate gate below
+			// rejects every retry (observed live: nine minutes to settle a
+			// 4-coin water, conversation hud-6c849d…). When a bare coin
+			// offer matches an open quote on every term predicate, take the
+			// quote instead of minting its mirror image. Barter offers are
+			// exempt (a quote is a coin price — ZBBS-HOME-393), as are
+			// counter-responses (their lifecycle is the counter chain). On
+			// any fast-path failure the offer falls through to the slow
+			// path unchanged — runPayWithItemFastPath mutates nothing
+			// before all predicates pass, and the strict-reject contract
+			// only binds an EXPLICIT quote_id.
+			if parentID == 0 && len(resolvedPayItems) == 0 {
+				if matchID := findAutoMatchQuote(w, buyer, sellerID, sceneID, kind, qty, amount, consumeNow, consumerIDs, at); matchID != 0 {
+					res, fastErr := runPayWithItemFastPath(
+						w, buyer, seller, sellerID, sceneID, kind, qty,
+						amount, consumeNow, consumerIDs, needed, matchID,
+						parentID, forText, at, readyBy,
+					)
+					if fastErr == nil {
+						withdrawCrossingOffers(w, buyerID, sellerID, kind, at)
+						return res, nil
+					}
+				}
+			}
+
 			// Cross-tick duplicate-offer gate (ZBBS-WORK-391). The same-tick
 			// repeat-offer guard (ZBBS-HOME-395, harness) resets every tick by
 			// design, and the buyer-side pending-offers cue (ZBBS-HOME-413) is
@@ -1306,6 +1337,80 @@ func WithdrawPay(callerID ActorID, ledgerID LedgerID, message string, at time.Ti
 
 // ---- shared helpers --------------------------------------------------
 
+// findAutoMatchQuote returns the id of an open quote a bare (quote_id-less)
+// coin offer can take — same seller, same scene, buyer-eligible, exact term
+// match, amount at or above the quote's floor — or 0 when none qualifies.
+// The predicates mirror the fast path's 1–5; gate 6 (stock, coins, break)
+// stays in runPayWithItemFastPath, which re-validates everything, so a miss
+// there falls back to the slow path rather than erroring. A below-floor
+// amount is a haggle, not a take — the slow path stakes it for the seller to
+// counter. Cheapest floor wins, then lowest id, so a duplicate-quote field
+// resolves deterministically. ZBBS-HOME-424.
+func findAutoMatchQuote(
+	w *World,
+	buyer *Actor,
+	sellerID ActorID,
+	sceneID SceneID,
+	kind ItemKind,
+	qty int,
+	amount int,
+	consumeNow bool,
+	consumerIDs []ActorID,
+	at time.Time,
+) QuoteID {
+	var best *SceneQuote
+	for _, q := range w.Quotes {
+		if q == nil || q.State != SceneQuoteStateActive {
+			continue
+		}
+		if !q.ExpiresAt.IsZero() && !at.Before(q.ExpiresAt) {
+			continue
+		}
+		if q.SellerID != sellerID || q.SceneID != sceneID {
+			continue
+		}
+		if q.TargetBuyer != "" && q.TargetBuyer != buyer.ID {
+			continue
+		}
+		if q.ItemKind != kind || q.Qty != qty || q.ConsumeNow != consumeNow {
+			continue
+		}
+		if !actorIDSetsEqual(q.ConsumerIDs, consumerIDs) {
+			continue
+		}
+		if amount < q.Amount {
+			continue
+		}
+		if best == nil || q.Amount < best.Amount || (q.Amount == best.Amount && q.ID < best.ID) {
+			best = q
+		}
+	}
+	if best == nil {
+		return 0
+	}
+	return best.ID
+}
+
+// withdrawCrossingOffers resolves the buyer's OWN still-pending offers to
+// `seller` for `kind` after a quote auto-match settles the purchase: those
+// entries were attempts at the very transaction that just completed, and
+// left pending they invite a later double-settle (the seller accepting a
+// stale mirror of a sale already made). WithdrawnByBuyer is the buyer-drove-
+// this terminal — the reactor skips notifying the seller of it, and the
+// seller's stale offer warrant drops via filterStalePayOfferWarrants.
+// ZBBS-HOME-424.
+func withdrawCrossingOffers(w *World, buyerID, sellerID ActorID, kind ItemKind, at time.Time) {
+	for _, e := range w.PayLedger {
+		if e == nil || e.State != PayLedgerStatePending {
+			continue
+		}
+		if e.BuyerID != buyerID || e.SellerID != sellerID || e.ItemKind != kind {
+			continue
+		}
+		finalizePayLedgerTerminal(w, e, PayTerminalStateWithdrawnByBuyer, "superseded — settled against the seller's open offer", at)
+	}
+}
+
 // buyerCanAfford reports whether buyer holds at least amount coins. It
 // is the single definition of the funds comparison, shared by all three
 // sites that ask it: the offer-time fast-fail in PayWithItem's slow
@@ -1392,6 +1497,19 @@ func resolvePayItems(w *World, payItems []PayItemInput) ([]ItemKindQty, error) {
 		if _, dup := seen[kind]; dup {
 			return nil, fmt.Errorf(
 				"%q appears more than once in pay_items — combine it into a single line.",
+				pi.Item,
+			)
+		}
+		// A "service" item is not a transferable good — its delivery is an
+		// effect bound to the SELLER's establishment (lodging grants a room
+		// there), so handing one over as payment is meaningless. Without this
+		// gate an innkeeper holding a vestigial nights_stay token could barter
+		// a room for a drink (observed live: "1 nights_stay for 1 water",
+		// conversation hud-6c849d…). Applies to counter goods too — both
+		// directions resolve through here. ZBBS-HOME-424.
+		if itemHasCapability(w, kind, "service") {
+			return nil, fmt.Errorf(
+				"%q is a service, not a carryable good — it can't be offered as payment. Pay with coins or physical goods.",
 				pi.Item,
 			)
 		}

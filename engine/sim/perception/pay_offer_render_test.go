@@ -95,6 +95,65 @@ func TestRender_PayOfferDecisionSection(t *testing.T) {
 	}
 }
 
+// TestRender_PayOfferSection_AboveAffordances (ZBBS-HOME-424): the decision
+// section renders ABOVE the affordance dumps (satiation, lodging) — a buyer's
+// coin on the table is the seller's most actionable fact, and burying it
+// under eat/drink cues let a hungry seller ignore a waiting customer for
+// minutes. The triage coda carries the matching settle-first imperative.
+func TestRender_PayOfferSection_AboveAffordances(t *testing.T) {
+	p := Payload{
+		ActorID:           "seller",
+		Actor:             ActorView{State: sim.StateIdle},
+		Warrants:          []sim.WarrantMeta{payOfferWarrant(17, "bob", "stew", 2, 12, true)},
+		WarrantActorNames: map[sim.ActorID]string{"bob": "bob"},
+		Satiation: &SatiationView{Needs: []SatiationNeedView{{
+			Need: "hunger", Verb: "eat",
+			OwnStock: []OwnStockItem{{Label: "bread", Magnitude: 6}},
+		}}},
+		Baseline: BaselinePresent,
+	}
+	out := combinedPrompt(Render(p, DefaultRenderConfig()))
+
+	offerIdx := strings.Index(out, "## Offers awaiting your decision")
+	eatIdx := strings.Index(out, "## What you can eat or drink")
+	if offerIdx == -1 || eatIdx == -1 {
+		t.Fatalf("both sections must render (offer %d, eat %d)\n%s", offerIdx, eatIdx, out)
+	}
+	if offerIdx > eatIdx {
+		t.Errorf("decision section must render above the satiation dump (offer %d, eat %d)\n%s", offerIdx, eatIdx, out)
+	}
+	if !strings.Contains(out, "A buyer's offer awaits your answer — settle it first") {
+		t.Errorf("triage coda missing the settle-first imperative\n%s", out)
+	}
+}
+
+// TestRender_QuoteWarrantLine_CarriesQuoteID (ZBBS-HOME-424): the targeted-
+// quote warrant line names the fast-path take with its quote_id. Without it
+// the buyer model answered a standing quote with a bare pay_with_item,
+// minting a crossing offer that deadlocked against the quote.
+func TestRender_QuoteWarrantLine_CarriesQuoteID(t *testing.T) {
+	quote := sim.WarrantMeta{
+		TriggerActorID: "john",
+		Reason: sim.SceneQuoteTargetedWarrantReason{
+			QuoteID: 9, SellerID: "john", ItemKind: "water", Qty: 1, Amount: 4, ConsumeNow: true,
+		},
+		SourceEventID: 31,
+	}
+	out := combinedPrompt(Render(Payload{
+		ActorID:           "hannah",
+		Warrants:          []sim.WarrantMeta{quote},
+		WarrantActorNames: map[sim.ActorID]string{"john": "John Ellis"},
+		Baseline:          BaselinePresent,
+	}, DefaultRenderConfig()))
+
+	if !strings.Contains(out, "John Ellis offers you water for 4 coins.") {
+		t.Errorf("quote warrant line missing terms\n%s", out)
+	}
+	if !strings.Contains(out, "quote_id 9") || !strings.Contains(out, "settles at once") {
+		t.Errorf("quote warrant line missing the fast-path take instruction\n%s", out)
+	}
+}
+
 // TestRender_PayOfferSingularCoin — amount of 1 renders "coin", not "coins".
 func TestRender_PayOfferSingularCoin(t *testing.T) {
 	p := Payload{
