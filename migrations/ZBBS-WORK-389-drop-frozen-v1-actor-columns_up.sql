@@ -39,7 +39,14 @@
 
 BEGIN;
 
-DELETE FROM public.actor WHERE visitor_archetype IS NOT NULL;
+-- Predicate spans the whole visitor cluster, not just archetype: v1 is
+-- deleted so "archetype was always set" is unprovable, and a partial
+-- v1 write surviving past the drop would be an unidentifiable orphan.
+DELETE FROM public.actor
+ WHERE visitor_archetype IS NOT NULL
+    OR visitor_expires_at IS NOT NULL
+    OR visitor_origin IS NOT NULL
+    OR visitor_disposition IS NOT NULL;
 
 ALTER TABLE public.actor
     DROP COLUMN inside,
