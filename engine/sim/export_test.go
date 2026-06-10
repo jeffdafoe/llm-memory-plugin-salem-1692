@@ -309,6 +309,21 @@ func EffectivePayLedgerTTL(s WorldSettings) time.Duration { return effectivePayL
 func EffectivePayLedgerSweepCadence(s WorldSettings) time.Duration {
 	return effectivePayLedgerSweepCadence(s)
 }
+
+// Huddle silence sweep (ZBBS-HOME-417) — wrap the WorldSettings → default
+// fallbacks for direct table tests, mirroring the pay-ledger wrappers.
+func EffectiveHuddleSilenceTimeout(s WorldSettings) time.Duration {
+	return effectiveHuddleSilenceTimeout(s)
+}
+func EffectiveHuddleSilenceSweepCadence(s WorldSettings) time.Duration {
+	return effectiveHuddleSilenceSweepCadence(s)
+}
+
+// TouchHuddleActivity exposes the activity stamp for direct tests (the same
+// helper the speak / pay-accept sites call). MUST run inside a Command.Fn.
+func TouchHuddleActivity(w *World, id HuddleID, now time.Time) {
+	touchHuddleActivity(w, id, now)
+}
 func RestartExpirePendingEntries(w *World, now time.Time)  { restartExpirePendingEntries(w, now) }
 func ReapTerminalPayLedgerEntries(w *World, now time.Time) { reapTerminalPayLedgerEntries(w, now) }
 func EffectivePayLedgerTerminalRetention(s WorldSettings) time.Duration {

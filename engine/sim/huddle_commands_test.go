@@ -357,6 +357,21 @@ func TestConcludeHuddle_IdempotentOnConcluded(t *testing.T) {
 	}
 }
 
+// TestConcludeHuddle_MissingHuddleErrors locks the public command's not-found
+// error (ZBBS-HOME-417 code_review): the HOME-417 refactor routes ConcludeHuddle
+// through the shared concludeHuddleInner helper, which no-ops on a missing
+// huddle for the silence sweep's idempotent use — but the explicit admin/
+// shutdown command must still surface a missing huddle id as a caller bug.
+func TestConcludeHuddle_MissingHuddleErrors(t *testing.T) {
+	w, cancel := buildHuddleTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	if _, err := w.Send(sim.ConcludeHuddle("no-such-huddle", now)); err == nil {
+		t.Error("ConcludeHuddle on a missing huddle should error, not silently succeed")
+	}
+}
+
 // TestCreateScene_CapturesParticipantsAtOriginStructure covers the diff
 // seam: when a scene is minted at a structure that has actors inside it,
 // the scene captures snapshots of every actor present at mint, keyed by

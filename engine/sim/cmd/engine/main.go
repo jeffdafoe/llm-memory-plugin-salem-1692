@@ -166,6 +166,14 @@ func main() {
 		log.Fatalf("engine: load world: %v", err)
 	}
 
+	// ZBBS-HOME-417: drop every checkpoint-reloaded huddle before the world
+	// goroutine starts. A conversation is transient state — a standing huddle
+	// "resuming" hours later across a restart is meaningless, and reloading them
+	// is what let a structure's huddle live for days. Durable scenes are kept.
+	// Safe to mutate directly here: World.Run hasn't started, so the world is
+	// single-threaded in this boot window.
+	sim.ClearConversationalHuddlesOnBoot(world)
+
 	// Install the durable terminal-order sink. Without it, finalizeOrderTerminal
 	// runs its legacy no-prune path: terminal Orders are never written through to
 	// pg at transition time NOR pruned from w.Orders, so they accumulate in memory
@@ -548,6 +556,7 @@ func startTickers(ctx context.Context, w *sim.World) {
 	go sim.RunObjectRefreshRegen(ctx, w)
 	go sim.RunOrderSweep(ctx, w)
 	go sim.RunPayLedgerSweep(ctx, w)
+	go sim.RunHuddleSilenceSweep(ctx, w) // ZBBS-HOME-417: conclude dormant huddles
 	go sim.RunRoomSweep(ctx, w)
 	go sim.RunPCPresenceSweep(ctx, w) // ZBBS-WORK-326: reclaim ghost (closed-tab) PCs
 	go sim.RunSceneQuoteSweep(ctx, w)
