@@ -384,6 +384,26 @@ type WorldSettings struct {
 	// via PCPresenceStaleAfter); tunable via the pc_presence_stale_seconds
 	// setting.
 	PCPresenceStaleAfter time.Duration
+
+	// Huddle silence-conclusion tunables (ZBBS-HOME-417). A staffed
+	// structure's huddle has no last-member-leave path (the keeper is always
+	// present), so the silence sweep is the only routine conclusion: a huddle
+	// idle past HuddleSilenceTimeout is concluded, which also re-keys its
+	// conversation_id for the next exchange.
+	//
+	// HuddleSilenceTimeout: how long a huddle may go with no spoken line,
+	// join, or completed transaction before the sweep concludes it. Default
+	// 2h (HuddleSilenceTimeoutDefault) — long enough that a returning patron
+	// resumes the same conversation rather than a fresh one, short enough that
+	// a structure's day breaks into per-session conversations instead of one
+	// multi-day blob. Tunable via huddle_silence_timeout_minutes (minutes,
+	// matching the scene-quote / pay-ledger / order TTL convention).
+	//
+	// HuddleSilenceSweepCadence: how often the sweep scans World.Huddles.
+	// Default 60s (HuddleSilenceSweepCadenceDefault) — matches the pay-ledger
+	// / scene-quote / order sweeps so admin tuning sees one mental model.
+	HuddleSilenceTimeout      time.Duration
+	HuddleSilenceSweepCadence time.Duration
 }
 
 // DefaultOutdoorSceneRadiusValue is the fallback radius used when
@@ -450,6 +470,13 @@ type sceneQuoteSweepState struct {
 // aging sweep's AfterFunc self-rearm chain (Phase 3 PR S4 step 8).
 // Same shape and rules as sceneQuoteSweepState.
 type payLedgerSweepState struct {
+	scheduled bool
+}
+
+// huddleSilenceSweepState carries the coalescing flag for the huddle
+// silence-conclusion sweep's AfterFunc self-rearm chain (ZBBS-HOME-417).
+// Same shape and rules as payLedgerSweepState.
+type huddleSilenceSweepState struct {
 	scheduled bool
 }
 
@@ -676,12 +703,13 @@ type World struct {
 	// MinReactorTickGap pacing floor and rate gate both rely on.
 	LoadedAt time.Time
 
-	Speech          *SpeechHelper
-	reactorEval     reactorEvaluatorState
-	locomotionTick  locomotionTickerState
-	sceneQuoteSweep sceneQuoteSweepState
-	payLedgerSweep  payLedgerSweepState
-	orderSweep      orderSweepState
+	Speech             *SpeechHelper
+	reactorEval        reactorEvaluatorState
+	locomotionTick     locomotionTickerState
+	sceneQuoteSweep    sceneQuoteSweepState
+	payLedgerSweep     payLedgerSweepState
+	orderSweep         orderSweepState
+	huddleSilenceSweep huddleSilenceSweepState
 
 	// quoteSeq is the monotonic per-run QuoteID counter — same shape
 	// and rules as eventSeq. Incremented before assignment; first

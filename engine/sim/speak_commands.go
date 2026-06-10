@@ -238,6 +238,10 @@ func SpeakTo(speakerID ActorID, text, to string, hasNewNews bool, at time.Time) 
 					// (code_review, ZBBS-HOME-412).
 					if _, member := h.Members[speakerID]; member {
 						h.AppendUtterance(speakerID, actor.DisplayName, text, at)
+						// ZBBS-HOME-417: a spoken line is the primary "this
+						// conversation is alive" signal — reset the silence
+						// sweep's dormancy clock.
+						h.LastActivityAt = at
 					}
 				}
 			}

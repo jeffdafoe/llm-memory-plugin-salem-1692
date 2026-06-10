@@ -335,7 +335,7 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 	// ZBBS-HOME-397: the conversation_id grouping key, threaded alongside the
 	// per-tick sceneID so memory-api can group the whole exchange under one
 	// conversation in the admin chat viewer (see conversationIDFromPayload).
-	conversationID := conversationIDFromPayload(payload)
+	conversationID := conversationIDForChat(actor, payload)
 
 	// ZBBS-HOME-382: capture the rendered perception (tx) into the per-scene
 	// chat ring so the umbilical /chat route shows what the model was sent
@@ -1050,6 +1050,27 @@ func conversationIDFromPayload(p perception.Payload) string {
 		return ""
 	}
 	return string(p.Primary.SceneID)
+}
+
+// conversationIDForChat derives the conversation_id grouping key for the chat
+// rows this tick emits (ZBBS-HOME-417). It prefers the actor's huddle id — the
+// actual conversation unit, which begins when an exchange starts and ends when
+// the silence sweep concludes it — so the admin viewer groups one exchange per
+// huddle. It falls back to the scene id (conversationIDFromPayload) for
+// huddle-less speech (a solo tick), preserving that case's prior grouping.
+//
+// Why the huddle, not the scene: an indoor structure scene is intentionally
+// durable and reused across every conversation at the structure (it anchors the
+// pay ledger), so keying conversation_id on it collapsed a busy structure's
+// entire multi-day history into one "conversation" in the viewer. The huddle
+// rotates per exchange — which is the grouping HOME-397 intended. The admin
+// chat viewer is the only consumer of conversation_id, so this is a pure
+// grouping-granularity change with no behavioral effect.
+func conversationIDForChat(actor *sim.ActorSnapshot, p perception.Payload) string {
+	if actor != nil && actor.CurrentHuddleID != "" {
+		return string(actor.CurrentHuddleID)
+	}
+	return conversationIDFromPayload(p)
 }
 
 // fullPerceptionPrompt joins the durable turn and the ephemeral current-tick
