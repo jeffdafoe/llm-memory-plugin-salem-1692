@@ -41,7 +41,7 @@ import (
 // returns resumes the same conversation rather than triggering a fresh one,
 // short enough that a structure's day breaks into per-session conversations
 // instead of one multi-day blob. Tunable down from data via the
-// huddle_silence_timeout_seconds setting.
+// huddle_silence_timeout_minutes setting.
 const HuddleSilenceTimeoutDefault = 2 * time.Hour
 
 // HuddleSilenceSweepCadenceDefault is the default scan cadence when

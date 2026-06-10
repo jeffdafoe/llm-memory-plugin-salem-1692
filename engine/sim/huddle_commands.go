@@ -473,6 +473,18 @@ func LeaveHuddle(actorID ActorID, now time.Time) Command {
 func ConcludeHuddle(huddleID HuddleID, now time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
+			// Preserve the public command's not-found error (code_review,
+			// ZBBS-HOME-417): an explicit admin/shutdown conclude of a huddle
+			// that doesn't exist is a caller bug worth surfacing, even though
+			// concludeHuddleInner itself no-ops on missing for the sweep's
+			// idempotent use.
+			huddle, ok := w.Huddles[huddleID]
+			if !ok {
+				return nil, fmt.Errorf("huddle %q not found", huddleID)
+			}
+			if huddle.ConcludedAt != nil {
+				return nil, nil
+			}
 			concludeHuddleInner(w, huddleID, now, true)
 			return nil, nil
 		},

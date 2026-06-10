@@ -396,7 +396,8 @@ type WorldSettings struct {
 	// 2h (HuddleSilenceTimeoutDefault) — long enough that a returning patron
 	// resumes the same conversation rather than a fresh one, short enough that
 	// a structure's day breaks into per-session conversations instead of one
-	// multi-day blob. Tunable via huddle_silence_timeout_seconds.
+	// multi-day blob. Tunable via huddle_silence_timeout_minutes (minutes,
+	// matching the scene-quote / pay-ledger / order TTL convention).
 	//
 	// HuddleSilenceSweepCadence: how often the sweep scans World.Huddles.
 	// Default 60s (HuddleSilenceSweepCadenceDefault) — matches the pay-ledger
