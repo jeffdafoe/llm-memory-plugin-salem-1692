@@ -1947,3 +1947,25 @@ func TestAcceptPay_ConsumeNow_ClampsToNeed_PocketsSurplus(t *testing.T) {
 		t.Errorf("bob coins = %d, want 20 (received the full amount)", got[4])
 	}
 }
+
+// TestPayWithItem_SlowPath_ZeroExpiryPendingOffer_StillBlocks: a Pending
+// entry with a zero ExpiresAt (legacy/seeded shape) is never-expiring, not
+// always-expired — the gate must still reject the duplicate.
+func TestPayWithItem_SlowPath_ZeroExpiryPendingOffer_StillBlocks(t *testing.T) {
+	w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
+		{id: "alice", displayName: "Alice", kind: sim.KindNPCShared, huddleID: "h1", coins: 100},
+		{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1", inventory: map[sim.ItemKind]int{"stew": 5}},
+	})
+	defer stop()
+	at := time.Now().UTC()
+	seedLedgerEntry(t, w, sim.PayLedgerEntry{
+		ID: 7, BuyerID: "alice", SellerID: "bob",
+		ItemKind: "stew", Qty: 1, Amount: 4, ConsumeNow: false,
+		State:   sim.PayLedgerStatePending, // ExpiresAt deliberately zero
+		SceneID: "sc1", HuddleID: "h1",
+	})
+	_, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, nil, 0, 0, "", at))
+	if err == nil || !strings.Contains(err.Error(), "offer id 7") {
+		t.Fatalf("zero-ExpiresAt pending entry should still block, got %v", err)
+	}
+}

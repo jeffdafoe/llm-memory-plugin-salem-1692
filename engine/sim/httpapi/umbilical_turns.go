@@ -48,9 +48,11 @@ type rawTurnsUpstreamRequest struct {
 	SceneID string `json:"scene_id,omitempty"`
 	Agent   string `json:"agent,omitempty"`
 	Since   string `json:"since,omitempty"`
-	// Until is the created_at upper bound (ZBBS-WORK-391) — the walk-back
-	// cursor for episodes buried behind newer turns, since memory-api returns
-	// newest-first with no offset pagination.
+	// Until is the EXCLUSIVE created_at upper bound (ZBBS-WORK-391) — the
+	// walk-back cursor for episodes buried behind newer turns, since
+	// memory-api returns newest-first with no offset pagination. Exclusive so
+	// the oldest row's created_at can be passed verbatim without repeating
+	// the boundary row.
 	Until  string `json:"until,omitempty"`
 	Status string `json:"status,omitempty"`
 	Limit  int    `json:"limit,omitempty"`

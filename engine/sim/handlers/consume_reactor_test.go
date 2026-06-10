@@ -134,3 +134,44 @@ func TestConsumeSubscriberSilentOnNoOp(t *testing.T) {
 		t.Error("ConsumedWarrantReason stamped on a no-op consume (no need moved); want none")
 	}
 }
+
+// TestConsumeSubscriberKeptFallbackBeat — a fully-sated clamped consume
+// (ZBBS-WORK-391: hunger 0, qty 2 → eat 1, kept 1) moves no need, but the
+// kept surplus still produces a beat of its own. This is the one channel
+// telling an actor whose consume_now surplus was pocketed on the seller's
+// tick that the food is in their pack, so silence here would leave them
+// blind to it.
+func TestConsumeSubscriberKeptFallbackBeat(t *testing.T) {
+	w, stop := buildConsumeReactorWorld(t, 0)
+	defer stop()
+
+	if _, err := w.Send(sim.Consume("hannah", "stew", 2, time.Now().UTC())); err != nil {
+		t.Fatalf("Consume: %v", err)
+	}
+	got, ok := consumeWarrantReason(t, w, "hannah")
+	if !ok {
+		t.Fatal("no ConsumedWarrantReason stamped for a sated clamped consume (Kept > 0); want the pocket beat")
+	}
+	if got.NarrationText != "You eat your fill; the rest you tuck away for later." {
+		t.Errorf("NarrationText = %q, want the kept-fallback line", got.NarrationText)
+	}
+}
+
+// TestConsumeSubscriberKeptAppendsToBeat — a clamped consume that DID move a
+// need appends the pocket clause to the normal felt line.
+func TestConsumeSubscriberKeptAppendsToBeat(t *testing.T) {
+	w, stop := buildConsumeReactorWorld(t, 3) // stew Immediate=4: one unit overshoots, second is surplus
+	defer stop()
+
+	if _, err := w.Send(sim.Consume("hannah", "stew", 2, time.Now().UTC())); err != nil {
+		t.Fatalf("Consume: %v", err)
+	}
+	got, ok := consumeWarrantReason(t, w, "hannah")
+	if !ok {
+		t.Fatal("no ConsumedWarrantReason stamped after a need-moving clamped consume")
+	}
+	want := "You eat the stew; the gnawing ebbs. The rest you tuck away for later."
+	if got.NarrationText != want {
+		t.Errorf("NarrationText = %q, want %q", got.NarrationText, want)
+	}
+}

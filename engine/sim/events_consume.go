@@ -41,9 +41,12 @@ type ItemConsumed struct {
 	Kind    ItemKind
 	Qty     int
 	// Kept counts units the ZBBS-WORK-391 needs-clamp held back from an
-	// over-sized consume: Qty units were actually eaten; Kept units stayed
-	// with the actor (consume tool: left in their inventory; consume_now
-	// accept: pocketed into the BUYER's inventory). Zero when the request
+	// over-sized consume, and is only ever stamped when those units landed
+	// with THIS event's actor: for the consume tool they stay in the actor's
+	// inventory; for a consume_now accept the surplus is pocketed into the
+	// BUYER's inventory, so Kept is stamped only on the buyer's own consume
+	// event and is zero on a non-buyer consumer's (their "you keep the rest"
+	// beat would otherwise address the wrong actor). Zero when the request
 	// fit the need. Subscribers rendering the consume beat append the
 	// "you keep the rest" clause off this field.
 	Kept    int
