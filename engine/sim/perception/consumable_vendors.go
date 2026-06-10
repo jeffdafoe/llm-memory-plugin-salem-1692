@@ -184,12 +184,46 @@ func gatherOwnStock(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot, need sim.N
 // Shared by the satiation section (need = hunger/thirst) and the
 // recovery-options tiredness line (need = tiredness). The felt phrase replaces
 // the raw "(~N)" magnitude the LLM couldn't calibrate against (ZBBS-HOME-339).
-func renderOwnStockLine(items []OwnStockItem, need sim.NeedKey) string {
+//
+// needLevel is the actor's CURRENT level of the need, for the ZBBS-WORK-392
+// sufficiency clause (see feltAmountWithSufficiency); the recovery-options
+// tiredness caller passes 0 to keep its line bare.
+func renderOwnStockLine(items []OwnStockItem, need sim.NeedKey, needLevel int) string {
 	parts := make([]string, len(items))
 	for i, it := range items {
-		parts[i] = fmt.Sprintf("%s (%s)", sanitizeInline(it.Label), itemFeltAmount(it.Magnitude, need))
+		parts[i] = fmt.Sprintf("%s (%s)", sanitizeInline(it.Label), feltAmountWithSufficiency(it.Magnitude, need, needLevel))
 	}
 	return strings.Join(parts, ", ")
+}
+
+// feltAmountWithSufficiency renders the felt tier, appending the per-unit
+// sufficiency fact when a SINGLE unit would fully zero the actor's current
+// need: "a hearty meal — a single one would fully satisfy your hunger"
+// (ZBBS-WORK-392, the perception half of the Prudence over-buy fix — the
+// WORK-391 clamp makes the waste mechanically impossible; this makes the buy
+// decision informed in the first place). Facts only, never a quantity
+// recommendation (the c′ intent rule): the clause renders ONLY when one unit
+// suffices — "you would need three" reads as a buy-three nudge, and
+// under-buying self-corrects (still hungry next tick, cue still present). A
+// reseller correctly ignores the fact; a needLevel of 0 (caller without a
+// live level, or need not pressing) renders the bare tier.
+func feltAmountWithSufficiency(magnitude int, need sim.NeedKey, needLevel int) string {
+	felt := itemFeltAmount(magnitude, need)
+	if magnitude > 0 && needLevel > 0 && magnitude >= needLevel {
+		felt += " — a single one would fully " + needSufficiencyPhrase(need)
+	}
+	return felt
+}
+
+// needSufficiencyPhrase is the per-need tail of the sufficiency clause, kept
+// in the same felt-language register as itemFeltAmount.
+func needSufficiencyPhrase(need sim.NeedKey) string {
+	switch need {
+	case "thirst":
+		return "quench your thirst"
+	default:
+		return "satisfy your " + string(need)
+	}
 }
 
 // itemFeltAmount maps an item's immediate need-satisfaction magnitude to a

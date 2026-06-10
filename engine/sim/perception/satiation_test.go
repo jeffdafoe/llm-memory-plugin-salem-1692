@@ -536,3 +536,85 @@ func TestRenderSatiation_StructureIDRendered(t *testing.T) {
 		}
 	}
 }
+
+// ---- ZBBS-WORK-392: per-unit sufficiency clause ----
+
+// TestFeltAmountWithSufficiency pins the clause arithmetic: rendered only when
+// one unit fully zeroes the CURRENT need (magnitude >= level), never as a
+// "you would need N" quantity nudge, bare tier when no live level is passed.
+func TestFeltAmountWithSufficiency(t *testing.T) {
+	cases := []struct {
+		name      string
+		magnitude int
+		need      sim.NeedKey
+		level     int
+		want      string
+	}{
+		{"one unit covers", 10, "hunger", 6, "a hearty meal — a single one would fully satisfy your hunger"},
+		{"exact fit counts", 6, "hunger", 6, "a good meal — a single one would fully satisfy your hunger"},
+		{"multi-unit need stays bare", 6, "hunger", 16, "a good meal"},
+		{"thirst phrasing", 8, "thirst", 8, "a deep drink — a single one would fully quench your thirst"},
+		{"no live level stays bare", 10, "hunger", 0, "a hearty meal"},
+		{"zero magnitude stays bare", 0, "hunger", 6, "a nibble"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := feltAmountWithSufficiency(tc.magnitude, tc.need, tc.level); got != tc.want {
+				t.Errorf("feltAmountWithSufficiency(%d, %s, %d) = %q, want %q", tc.magnitude, tc.need, tc.level, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestBuildSatiation_LevelCarried — the view carries the actor's live need
+// level so render can compute sufficiency without re-reading the snapshot.
+func TestBuildSatiation_LevelCarried(t *testing.T) {
+	subj := &sim.ActorSnapshot{
+		Needs:     map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold},
+		Inventory: map[sim.ItemKind]int{"bread": 1},
+	}
+	snap := &sim.Snapshot{
+		Actors:    map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj},
+		ItemKinds: foodDrinkCatalog(),
+	}
+	v := buildSatiation(snap, "ezekiel", subj)
+	if v == nil || len(v.Needs) != 1 {
+		t.Fatalf("want 1 pressing need, got %+v", v)
+	}
+	if v.Needs[0].Level != sim.DefaultHungerRedThreshold {
+		t.Errorf("Level = %d, want %d", v.Needs[0].Level, sim.DefaultHungerRedThreshold)
+	}
+}
+
+// TestRenderSatiation_SufficiencyClause — the clause lands on all three
+// buy/eat arms (own stock, co-present peer, vendor) when one unit covers the
+// level, and on NONE of them when the need is too deep for a single unit.
+func TestRenderSatiation_SufficiencyClause(t *testing.T) {
+	view := func(level int) *SatiationView {
+		return &SatiationView{Needs: []SatiationNeedView{{
+			Need: "hunger", Verb: "eat", Level: level,
+			OwnStock:       []OwnStockItem{{Label: "stew", Magnitude: 12}},
+			CoPresentPeers: []SatiationPeerOffer{{PeerLabel: "Hannah", ItemLabel: "bread", Magnitude: 6}},
+			Vendors:        []SatiationVendor{{StructureLabel: "Tavern", StructureID: "s1", ItemLabel: "meat", Magnitude: 10, CostText: "ask the seller"}},
+		}}}
+	}
+
+	var b strings.Builder
+	renderSatiation(&b, view(6))
+	out := b.String()
+	for _, want := range []string{
+		"stew (a hearty meal — a single one would fully satisfy your hunger)",
+		"bread (a good meal — a single one would fully satisfy your hunger)",
+		"buy meat (a hearty meal — a single one would fully satisfy your hunger)",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rendered section missing %q:\n%s", want, out)
+		}
+	}
+
+	b.Reset()
+	renderSatiation(&b, view(20)) // deeper than any single unit (max magnitude 12)
+	if strings.Contains(b.String(), "a single one") {
+		t.Errorf("clause rendered for a need no single unit covers:\n%s", b.String())
+	}
+}
