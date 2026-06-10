@@ -581,6 +581,13 @@ func touchHuddleActivity(w *World, huddleID HuddleID, now time.Time) {
 // context the pay ledger anchors to); only their observed-active-huddle refs are
 // cleared. The next speak re-forms a fresh huddle on the same scene.
 //
+// Area-bound scenes are DELETED outright (ZBBS-WORK-393): an area scene is 1:1
+// with its huddle (the PR 4a invariant), and every huddle dies here — so no
+// area scene can legitimately survive a boot-clear. Wiping only its refs would
+// mint exactly the immortal orphan concludeOrphanedAreaScenes exists to
+// prevent (nothing ever revisits an already-orphaned area scene). Deleting
+// here also reaps any orphan fossils accumulated in older checkpoints.
+//
 // MUST be called during the single-threaded boot window (after LoadWorld, before
 // World.Run starts) — it mutates world maps directly without the command
 // channel. No events are emitted (there is no audience pre-Run; the persisted
@@ -595,8 +602,15 @@ func ClearConversationalHuddlesOnBoot(w *World) {
 			a.dropAwaitingReplies()
 		}
 	}
-	for _, s := range w.Scenes {
-		if s != nil && len(s.Huddles) > 0 {
+	for id, s := range w.Scenes {
+		if s == nil {
+			continue
+		}
+		if s.Bound.Kind == SceneBoundArea {
+			delete(w.Scenes, id)
+			continue
+		}
+		if len(s.Huddles) > 0 {
 			s.Huddles = make(map[HuddleID]struct{})
 		}
 	}
