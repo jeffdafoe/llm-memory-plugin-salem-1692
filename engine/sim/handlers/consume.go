@@ -102,6 +102,8 @@ var consumeSchema = json.RawMessage(`{
 // versus walk away after consuming.
 const consumeDescription = "Consume an item from your own inventory — eat food, drink a drink. " +
 	"Decrements the item from your inventory and reduces the matching need (hunger, thirst). " +
+	"If you ask for more than your needs can absorb, you consume only what satisfies you and " +
+	"the rest stays in your inventory. " +
 	"Some items (stew, e.g.) have a slow-burn effect that keeps reducing the need over the " +
 	"next several minutes IF you stay near where you ate; walking away ends the slow-burn early."
 

@@ -267,7 +267,7 @@ func TestCommitResultContent_OfferTradeSteer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeOfferTradeArgs: %v", err)
 	}
-	got := commitResultContent(&ValidatedCall{Name: "offer_trade", DecodedArgs: decoded.(PayWithItemArgs)})
+	got := commitResultContent(&ValidatedCall{Name: "offer_trade", DecodedArgs: decoded.(PayWithItemArgs)}, nil)
 	for _, want := range []string{"trade for 5 bread with Josiah Thorne", "call done()", "accept, decline, or counter"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("steer missing %q\ngot: %s", want, got)

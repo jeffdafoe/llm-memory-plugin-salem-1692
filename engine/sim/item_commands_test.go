@@ -839,3 +839,104 @@ func TestResolveItemKind_KeyBeatsLabel(t *testing.T) {
 // The dwell-pin lookup (formerly findNearestVillageObject) is now
 // resolveLoiteringObject, covered directly by loiter_resolve_test.go. Its
 // end-to-end use in Consume is covered by TestConsume_DwellPin_* above.
+
+// ---- ZBBS-WORK-391: needs-clamp (pocket the surplus) ----
+
+// TestConsume_ClampToNeed_KeepsSurplus: an over-sized consume eats only what
+// the need can absorb and leaves the rest in inventory. hunger=10 against
+// bread (Immediate=8) absorbs ceil(10/8)=2 units; the other 8 of the
+// requested 10 stay in the pack. The event and the ConsumeResult both carry
+// the eaten/kept split.
+func TestConsume_ClampToNeed_KeepsSurplus(t *testing.T) {
+	w, stop := buildConsumeTestWorld(t, []consumeActorSpec{
+		{id: "a1", displayName: "Eater", inventory: map[sim.ItemKind]int{"bread": 10}, needs: map[sim.NeedKey]int{"hunger": 10}},
+	}, nil)
+	defer stop()
+	events := captureItemConsumed(t, w)
+
+	res, err := w.Send(sim.Consume("a1", "bread", 10, time.Now().UTC()))
+	if err != nil {
+		t.Fatalf("Consume: %v", err)
+	}
+	result, ok := res.(sim.ConsumeResult)
+	if !ok {
+		t.Fatalf("result type = %T, want ConsumeResult", res)
+	}
+	if result.Requested != 10 || result.Consumed != 2 || result.Kept != 8 || result.Kind != "bread" {
+		t.Errorf("ConsumeResult = %+v, want {bread 10 2 8}", result)
+	}
+
+	view := readLiveActor(t, w, "a1")
+	if got := view.Inventory["bread"]; got != 8 {
+		t.Errorf("inventory bread = %d, want 8 (surplus stays)", got)
+	}
+	if got := view.Needs["hunger"]; got != 0 {
+		t.Errorf("hunger = %d, want 0", got)
+	}
+	if len(*events) != 1 {
+		t.Fatalf("ItemConsumed events = %d, want 1", len(*events))
+	}
+	evt := (*events)[0]
+	if evt.Qty != 2 || evt.Kept != 8 {
+		t.Errorf("event Qty/Kept = %d/%d, want 2/8", evt.Qty, evt.Kept)
+	}
+	if got := evt.Applied["hunger"]; got != 10 {
+		t.Errorf("Applied[hunger] = %d, want 10 (clamped at zero)", got)
+	}
+}
+
+// TestConsume_ZeroNeed_EatsOneKeepsRest: the clamp floors at one unit — a
+// consume was asked for, so one unit is eaten even when no need moves; the
+// surplus stays. Applied stays empty (no need moved), matching the no-beat
+// contract for sated consumes.
+func TestConsume_ZeroNeed_EatsOneKeepsRest(t *testing.T) {
+	w, stop := buildConsumeTestWorld(t, []consumeActorSpec{
+		{id: "a1", displayName: "Sated", inventory: map[sim.ItemKind]int{"bread": 3}},
+	}, nil)
+	defer stop()
+	events := captureItemConsumed(t, w)
+
+	res, err := w.Send(sim.Consume("a1", "bread", 3, time.Now().UTC()))
+	if err != nil {
+		t.Fatalf("Consume: %v", err)
+	}
+	result := res.(sim.ConsumeResult)
+	if result.Consumed != 1 || result.Kept != 2 {
+		t.Errorf("ConsumeResult = %+v, want Consumed 1 Kept 2", result)
+	}
+	view := readLiveActor(t, w, "a1")
+	if got := view.Inventory["bread"]; got != 2 {
+		t.Errorf("inventory bread = %d, want 2", got)
+	}
+	if len(*events) != 1 {
+		t.Fatalf("ItemConsumed events = %d, want 1", len(*events))
+	}
+	if evt := (*events)[0]; evt.Qty != 1 || evt.Kept != 2 || len(evt.Applied) != 0 {
+		t.Errorf("event = Qty %d Kept %d Applied %v, want 1/2/empty", evt.Qty, evt.Kept, evt.Applied)
+	}
+}
+
+// TestConsume_ExactFit_NoClamp: a consume the needs fully absorb behaves
+// exactly as before — everything eaten, nothing kept, generic result shape.
+func TestConsume_ExactFit_NoClamp(t *testing.T) {
+	w, stop := buildConsumeTestWorld(t, []consumeActorSpec{
+		{id: "a1", displayName: "Hungry", inventory: map[sim.ItemKind]int{"bread": 2}, needs: map[sim.NeedKey]int{"hunger": 16}},
+	}, nil)
+	defer stop()
+
+	res, err := w.Send(sim.Consume("a1", "bread", 2, time.Now().UTC()))
+	if err != nil {
+		t.Fatalf("Consume: %v", err)
+	}
+	result := res.(sim.ConsumeResult)
+	if result.Consumed != 2 || result.Kept != 0 {
+		t.Errorf("ConsumeResult = %+v, want Consumed 2 Kept 0", result)
+	}
+	view := readLiveActor(t, w, "a1")
+	if _, still := view.Inventory["bread"]; still {
+		t.Errorf("bread should be fully consumed (delete-on-zero), inventory = %v", view.Inventory)
+	}
+	if got := view.Needs["hunger"]; got != 0 {
+		t.Errorf("hunger = %d, want 0", got)
+	}
+}

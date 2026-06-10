@@ -48,13 +48,19 @@ type rawTurnsUpstreamRequest struct {
 	SceneID string `json:"scene_id,omitempty"`
 	Agent   string `json:"agent,omitempty"`
 	Since   string `json:"since,omitempty"`
-	Status  string `json:"status,omitempty"`
-	Limit   int    `json:"limit,omitempty"`
+	// Until is the EXCLUSIVE created_at upper bound (ZBBS-WORK-391) — the
+	// walk-back cursor for episodes buried behind newer turns, since
+	// memory-api returns newest-first with no offset pagination. Exclusive so
+	// the oldest row's created_at can be passed verbatim without repeating
+	// the boundary row.
+	Until  string `json:"until,omitempty"`
+	Status string `json:"status,omitempty"`
+	Limit  int    `json:"limit,omitempty"`
 }
 
 // handleUmbilicalTurns proxies a raw-LLM-turn query to memory-api, forwarding the
 // operator's bearer token. Query params (all optional): scene, agent, since,
-// status, limit. memory-api owns the response contract (it returns the
+// until, status, limit. memory-api owns the response contract (it returns the
 // virtual_agent_calls rows), so the engine relays its status + body verbatim
 // rather than re-modeling the row schema — deliberately the one umbilical read
 // that doesn't wrap its payload in a contract_version DTO.
@@ -73,6 +79,7 @@ func (s *Server) handleUmbilicalTurns(w http.ResponseWriter, r *http.Request) {
 		SceneID: q.Get("scene"),
 		Agent:   q.Get("agent"),
 		Since:   q.Get("since"),
+		Until:   q.Get("until"),
 		Status:  q.Get("status"),
 	}
 	// Parse limit leniently — a valid positive int is forwarded; anything else
