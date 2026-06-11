@@ -317,6 +317,26 @@ func PayWithItem(
 				)
 			}
 
+			// ZBBS-WORK-403: a PC's purchase of a non-portable consumable
+			// always settles eat-here, clamped HERE on the world goroutine so
+			// it holds regardless of what the client sent — a failed catalog
+			// fetch or a direct API call must not carry stew out of the
+			// tavern (the `portable` capability was seeded in the item data
+			// precisely to prevent that; code_review). Scoped to PC buyers
+			// only: NPC flows (restock buys, auto-match) move goods with
+			// their own dispositions and stay untouched. Sits before the
+			// duplicate-offer gate and both settle paths, so the clamped
+			// value is the offer's identity everywhere. Service kinds are
+			// excluded — they clamp the OTHER way (fast path, WORK-402).
+			if buyer.Kind == KindPC && !consumeNow {
+				if def := w.ItemKinds[kind]; def != nil &&
+					def.Consumable() &&
+					!def.HasCapability("service") &&
+					!def.HasCapability("portable") {
+					consumeNow = true
+				}
+			}
+
 			// Consumer resolution. Empty list = buyer is implicit single
 			// consumer. Non-empty enforces huddle membership +
 			// case-insensitive name resolution + duplicate rejection +

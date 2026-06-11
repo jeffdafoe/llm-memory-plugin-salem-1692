@@ -2267,12 +2267,16 @@ func _pay_quote_row_label(q: Dictionary) -> String:
         line = "%s offers %s for %d coins" % [seller, what, amount]
     if qty > 1:
         line += " total"
-    # Disposition clause (ZBBS-WORK-402): choice-class items carry NONE —
-    # the "Take eligible offers as" toggle governs the take, so asserting
-    # the quote's preference here would mislead. Unknown class (catalog
-    # fetch not landed/failed) keeps the quote-verbatim clause, matching
-    # exactly what the Take will send in that degraded state.
-    if dispo == "" and item != "nights_stay":
+    # Disposition clause (ZBBS-WORK-402/403): choice-class items carry
+    # NONE — the "Take eligible offers as" toggle governs the take, so
+    # asserting the quote's preference here would mislead. eat_here-class
+    # items say so plainly (a PC take always settles eat-here for them).
+    # Unknown class (catalog fetch not landed/failed) keeps the
+    # quote-verbatim clause, matching exactly what the Take will send in
+    # that degraded state.
+    if dispo == "eat_here":
+        line += ", to eat here"
+    elif dispo == "" and item != "nights_stay":
         if bool(q.get("consume_now", false)):
             line += ", to eat here"
         else:
@@ -2348,15 +2352,19 @@ func _on_pay_take_pressed(q: Dictionary) -> void:
     if amount > pc_coins:
         pay_status_label.text = "You only have %d coins." % pc_coins
         return
-    # Disposition (ZBBS-WORK-402): the buyer's standing toggle governs
-    # choice-class items — the fast path no longer requires the quote's
-    # consume_now to match, the buyer's term rides the entry. "tonight" /
-    # unknown-class items send the quote verbatim (the engine clamps
+    # Disposition (ZBBS-WORK-402/403): the buyer's standing toggle governs
+    # choice-class items; eat_here-class items (non-portable consumables —
+    # the original "people can't carry stew" data ruling) always settle
+    # eat-here for a PC, even when the quote proposed carry-home. "tonight"
+    # / unknown-class items send the quote verbatim (the engine clamps
     # services regardless, and verbatim is the safe degrade when the
     # catalog hasn't landed).
+    var take_dispo := _pay_item_dispo(str(q.get("item", "")))
     var consume_now := bool(q.get("consume_now", false))
-    if _pay_item_dispo(str(q.get("item", ""))) == "choice" and pay_dispo_eat_button != null:
+    if take_dispo == "choice" and pay_dispo_eat_button != null:
         consume_now = pay_dispo_eat_button.button_pressed
+    elif take_dispo == "eat_here":
+        consume_now = true
     var body := {
         "seller": str(q.get("seller", "")),
         "item": str(q.get("item", "")),
@@ -2410,7 +2418,11 @@ func _update_pay_booking_controls() -> void:
     if pay_item_option == null or pay_take_home_check == null or pay_days_ahead_row == null:
         return
     var booking := _selected_pay_item().to_lower() == "nights_stay"
-    pay_take_home_check.visible = not booking
+    # eat_here-class items (non-portable consumables, ZBBS-WORK-403) hide
+    # the take-home checkbox like bookings do — the compose submit forces
+    # consume_now for them, so showing an inert checkbox would lie.
+    var eat_only := _pay_item_dispo(_selected_pay_item()) == "eat_here"
+    pay_take_home_check.visible = not booking and not eat_only
     pay_days_ahead_row.visible = booking
 
 
@@ -2462,10 +2474,16 @@ func _on_pay_confirm() -> void:
     var amount := int(pay_amount_spin.value)
     var item := _selected_pay_item()
     var qty := int(pay_qty_spin.value)
-    # A lodging booking is never consumed on the spot; everything else
-    # follows the take-home checkbox.
+    # A lodging booking is never consumed on the spot; an eat_here-class
+    # item (non-portable consumable, ZBBS-WORK-403) is ALWAYS consumed on
+    # the spot; everything else follows the take-home checkbox.
     var booking := item.to_lower() == "nights_stay"
-    var consume_now := false if booking else not pay_take_home_check.button_pressed
+    var eat_only := _pay_item_dispo(item) == "eat_here"
+    var consume_now := true
+    if booking:
+        consume_now = false
+    elif not eat_only:
+        consume_now = not pay_take_home_check.button_pressed
 
     if item.is_empty():
         pay_status_label.text = "Pick an item — wait for them to offer something."

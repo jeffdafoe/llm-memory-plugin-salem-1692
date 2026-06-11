@@ -30,23 +30,32 @@ type itemKindDTO struct {
 	DisplayLabel string `json:"display_label"`
 	Category     string `json:"category"`
 	SortOrder    int    `json:"sort_order"`
-	// Disposition: "choice" (buyer picks eat-here vs take-home) or
-	// "tonight" (service kinds — no physical good, the engine forces the
-	// service shape on settle; nights_stay).
+	// Disposition: "choice" (buyer picks eat-here vs take-home), "eat_here"
+	// (non-portable consumable — can't leave the premises), or "tonight"
+	// (service kinds — no physical good, the engine forces the service
+	// shape on settle; nights_stay).
 	Disposition string `json:"disposition"`
 }
 
 // itemDispositionClass derives the buyer-facing disposition class for an
-// item kind (ZBBS-WORK-402): "tonight" for service kinds, "choice" for
-// everything else. A future "eat_here" class (stew-in-a-bowl, poured ale —
-// forced immediate consumption) deliberately waits on the `portable`
-// capability actually being seeded: it's a v1 token no v2 data populates
-// yet (no migration sets it; the column defaults empty), so deriving
-// non-portability from its absence today would misclassify every ordinary
-// good as eat-here-only.
+// item kind: "tonight" for service kinds, "eat_here" for consumables
+// without the portable capability, "choice" for everything else.
+//
+// The eat_here rule (ZBBS-WORK-403) leans on `portable` being genuinely
+// seeded in the live item data — Jeff confirmed it was set early on
+// precisely so stew can't be carried off (the WORK-402 deferral assumed
+// it was unseeded because no migration populates it; the live DB was
+// seeded by hand). Non-consumables (tools — no Satisfies rows) stay
+// "choice": eat-here is meaningless for them and carry-home is the only
+// sane outcome, which the buyer toggle covers; an unseeded consumable
+// also degrades to "choice" (permissive) rather than getting wrongly
+// locked.
 func itemDispositionClass(def *sim.ItemKindDef) string {
 	if def.HasCapability("service") {
 		return "tonight"
+	}
+	if def.Consumable() && !def.HasCapability("portable") {
+		return "eat_here"
 	}
 	return "choice"
 }

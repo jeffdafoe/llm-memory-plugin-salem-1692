@@ -2189,3 +2189,58 @@ func TestPayWithItem_FastPath_ServiceClampsDisposition(t *testing.T) {
 		t.Errorf("ItemConsumed on a service take: %+v", events.Consumed)
 	}
 }
+
+// TestPayWithItem_PCEatHereClampServerSide (ZBBS-WORK-403): a PC buying a
+// non-portable consumable settles eat-here no matter what the request said
+// — clamped on the world goroutine, so a failed catalog fetch or a direct
+// API call can't carry stew out. NPC buyers are exempt (restock/auto-match
+// flows keep their own dispositions).
+func TestPayWithItem_PCEatHereClampServerSide(t *testing.T) {
+	w, stop, at := buildFastPathFixture(t, 7)
+	defer stop()
+	// Make stew a non-portable consumable and the buyer a PC.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.ItemKinds["stew"] = &sim.ItemKindDef{
+			Name: "stew", DisplayLabel: "a bowl of stew",
+			Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger"}},
+		}
+		world.Actors["alice"].Kind = sim.KindPC
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// The quote proposes takeaway and the PC requests takeaway — the clamp
+	// still forces eat-here.
+	res, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, nil, 7, 0, "", at))
+	if err != nil {
+		t.Fatalf("PayWithItem PC take: %v", err)
+	}
+	r := res.(sim.PayWithItemResult)
+	if entry := readPayLedger(t, w)[r.LedgerID]; !entry.ConsumeNow {
+		t.Error("PC ledger ConsumeNow = false, want true (server-side eat-here clamp)")
+	}
+}
+
+// The NPC contrast for the clamp above: same item shape, NPC buyer — the
+// requested takeaway disposition survives.
+func TestPayWithItem_NPCBuyerNotEatHereClamped(t *testing.T) {
+	w, stop, at := buildFastPathFixture(t, 7)
+	defer stop()
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.ItemKinds["stew"] = &sim.ItemKindDef{
+			Name: "stew", DisplayLabel: "a bowl of stew",
+			Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger"}},
+		}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	res, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, nil, 7, 0, "", at))
+	if err != nil {
+		t.Fatalf("PayWithItem NPC take: %v", err)
+	}
+	r := res.(sim.PayWithItemResult)
+	if entry := readPayLedger(t, w)[r.LedgerID]; entry.ConsumeNow {
+		t.Error("NPC ledger ConsumeNow = true, want false (clamp is PC-scoped)")
+	}
+}
