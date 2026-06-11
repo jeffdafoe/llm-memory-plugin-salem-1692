@@ -802,7 +802,9 @@ func TestJoinHuddle_PCJoinerNeverWarranted(t *testing.T) {
 	defer cancel()
 	now := time.Now().UTC()
 
-	// bob is the human player; alice stays an NPC (seeded zero Kind).
+	// bob is the human player; alice is explicitly an NPC so the test keeps
+	// proving "PC refused, NPC accepted" even if fixture defaults change.
+	setActor(t, w, "alice", func(a *sim.Actor) { a.Kind = sim.KindNPCStateful })
 	setActor(t, w, "bob", func(a *sim.Actor) { a.Kind = sim.KindPC })
 
 	sendT(t, w, sim.JoinHuddle("alice", "tavern", "", now))
