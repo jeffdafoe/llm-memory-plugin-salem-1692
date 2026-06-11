@@ -302,9 +302,11 @@ func TestDecodeSpeakArgs_WithMentions(t *testing.T) {
 }
 
 // TestDecodeSpeakArgs_MentionShapeRejects — defense-in-depth bounds on the
-// mentions array: count cap, empty item, oversized item, negative price,
-// unknown nested fields. Content validity (real item? sellable?) is
-// deliberately NOT rejected here — that filters silently world-side.
+// mentions array: count cap, empty item, oversized item, unknown nested
+// fields. Content validity (real item? sellable?) is deliberately NOT
+// rejected here — that filters silently world-side. A negative price also
+// passes decode (clamped to 0 by filterSpeakMentions): a bogus mention must
+// degrade, never reject the utterance (code_review round 1).
 func TestDecodeSpeakArgs_MentionShapeRejects(t *testing.T) {
 	cases := []struct {
 		name string
@@ -313,7 +315,6 @@ func TestDecodeSpeakArgs_MentionShapeRejects(t *testing.T) {
 		{"over count cap", `{"text":"x","mentions":[{"item":"a"},{"item":"b"},{"item":"c"},{"item":"d"},{"item":"e"},{"item":"f"}]}`},
 		{"empty item", `{"text":"x","mentions":[{"item":"  "}]}`},
 		{"oversized item", `{"text":"x","mentions":[{"item":"` + strings.Repeat("y", 65) + `"}]}`},
-		{"negative price", `{"text":"x","mentions":[{"item":"stew","price":-1}]}`},
 		{"unknown nested field", `{"text":"x","mentions":[{"item":"stew","qty":2}]}`},
 	}
 	for _, tc := range cases {
@@ -322,5 +323,23 @@ func TestDecodeSpeakArgs_MentionShapeRejects(t *testing.T) {
 				t.Errorf("DecodeSpeakArgs(%s) succeeded, want error", tc.raw)
 			}
 		})
+	}
+}
+
+// TestDecodeSpeakArgs_NegativeMentionPricePasses — pins the degrade-don't-
+// reject policy: a negative price survives decode untouched and clamps to 0
+// world-side (filterSpeakMentions), so a bogus side-channel value can never
+// reject the utterance itself.
+func TestDecodeSpeakArgs_NegativeMentionPricePasses(t *testing.T) {
+	args, err := DecodeSpeakArgs(json.RawMessage(`{"text":"x","mentions":[{"item":"stew","price":-1}]}`))
+	if err != nil {
+		t.Fatalf("DecodeSpeakArgs: %v", err)
+	}
+	got, ok := args.(SpeakArgs)
+	if !ok {
+		t.Fatalf("Decoded type = %T, want SpeakArgs", args)
+	}
+	if len(got.Mentions) != 1 || got.Mentions[0].Price != -1 {
+		t.Errorf("Mentions = %+v, want price -1 preserved for the world-side clamp", got.Mentions)
 	}
 }

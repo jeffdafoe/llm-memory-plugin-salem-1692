@@ -2008,7 +2008,10 @@ func _refresh_pay_quote_rows() -> void:
     for q in pay_quotes:
         if typeof(q) != TYPE_DICTIONARY:
             continue
-        covered["%s|%s" % [str(q.get("seller", "")), str(q.get("item", "")).to_lower()]] = true
+        # Lowercase BOTH key halves: quote seller casing comes off the wire,
+        # mention sellers come from the huddle roster — a casing mismatch
+        # would render duplicate rows for the same offer. (code_review)
+        covered["%s|%s" % [str(q.get("seller", "")).to_lower(), str(q.get("item", "")).to_lower()]] = true
         var row := HBoxContainer.new()
         row.add_theme_constant_override("separation", 8)
 
@@ -2043,7 +2046,7 @@ func _refresh_pay_quote_rows() -> void:
             var item := str(kind)
             if item.is_empty():
                 continue
-            var cover_key := "%s|%s" % [seller_name, item.to_lower()]
+            var cover_key := "%s|%s" % [seller_name.to_lower(), item.to_lower()]
             if covered.has(cover_key):
                 continue
             covered[cover_key] = true
@@ -2100,7 +2103,8 @@ func _on_pay_mention_pressed(seller: String, item: String) -> void:
     if idx < 0:
         # The seller left the huddle between render and click; the next
         # rebuild drops their rows.
-        pay_status_label.text = "%s is no longer here." % seller
+        if pay_status_label != null:
+            pay_status_label.text = "%s is no longer here." % seller
         return
     # select() doesn't fire item_selected for programmatic changes, so run
     # the recipient-change chain by hand.
@@ -2112,12 +2116,23 @@ func _on_pay_mention_pressed(seller: String, item: String) -> void:
         if typeof(meta) == TYPE_STRING and str(meta).to_lower() == key:
             pay_item_option.select(i)
             break
+    # Amount: the heard price when the vendor named one, else reset to the
+    # modal-open default — never silently keep a previous row's amount.
+    # (code_review)
+    var heard := 0
     var prices = vendor_mention_prices.get(seller, {})
-    if typeof(prices) == TYPE_DICTIONARY and prices.has(key) and int(prices[key]) > 0:
-        pay_amount_spin.value = int(prices[key])
-    pay_qty_spin.value = 1
+    if typeof(prices) == TYPE_DICTIONARY:
+        heard = int(prices.get(key, 0))
+    if pay_amount_spin != null:
+        if heard > 0:
+            pay_amount_spin.value = heard
+        else:
+            pay_amount_spin.value = 1
+    if pay_qty_spin != null:
+        pay_qty_spin.value = 1
     _update_pay_booking_controls()
-    pay_status_label.text = "Review the terms below, then Confirm."
+    if pay_status_label != null:
+        pay_status_label.text = "Review the terms below, then Confirm."
 
 
 ## One-line description of a quote row: seller, label, qty, bundle price,

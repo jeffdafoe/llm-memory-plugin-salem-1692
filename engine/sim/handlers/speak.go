@@ -205,9 +205,11 @@ func DecodeSpeakArgs(raw json.RawMessage) (any, error) {
 				i, MaxSpeakMentionItemChars, n,
 			)
 		}
-		if m.Price < 0 {
-			return nil, fmt.Errorf("speak: mentions[%d].price must not be negative", i)
-		}
+		// No negative-price rejection here (code_review round 1): the
+		// stated policy is that a bogus mention degrades silently, never
+		// rejects the utterance. filterSpeakMentions clamps negatives to
+		// 0 world-side; the schema's minimum:1 already steers providers
+		// with constrained decoding away from emitting them at all.
 	}
 	return args, nil
 }
