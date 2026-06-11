@@ -730,8 +730,14 @@ func _append_village_line(e: Dictionary) -> bool:
     rich.text = "%s[color=%s]%s[/color]" % [prefix, color, _bbcode_escape(line)]
     village_vbox.add_child(rich)
 
+    # remove_child before queue_free: a queued node stays in the tree (and
+    # in get_child_count()) until end-of-frame, so queue_free alone never
+    # shrinks the count and this loop spins forever — the ZBBS-HOME-429
+    # village lockup.
     while village_vbox.get_child_count() > MAX_LOG_LINES:
-        village_vbox.get_child(0).queue_free()
+        var old := village_vbox.get_child(0)
+        village_vbox.remove_child(old)
+        old.queue_free()
     return true
 
 
@@ -3022,8 +3028,13 @@ func _append_log_line(speaker: String, text: String, kind: String = "", is_backl
 
     log_vbox.add_child(entry)
 
+    # remove_child before queue_free — same end-of-frame trap as the village
+    # feed's prune loop (ZBBS-HOME-429); without it this spins once the room
+    # log crosses MAX_LOG_LINES in a session.
     while log_vbox.get_child_count() > MAX_LOG_LINES:
-        log_vbox.get_child(0).queue_free()
+        var old := log_vbox.get_child(0)
+        log_vbox.remove_child(old)
+        old.queue_free()
 
     if is_open:
         if was_at_bottom:
