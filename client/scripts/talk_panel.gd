@@ -123,6 +123,15 @@ var http_pay: HTTPRequest = null
 # satisfies the server fast path's exact-term predicates by construction.
 var http_quotes: HTTPRequest = null
 var pay_quotes: Array = []
+# ZBBS-WORK-401: locally-dismissed offer rows — declining is UI
+# housekeeping, NOT an in-world action (refusing socially = just tell the
+# vendor; their LLM hears speech). Quote rows dismiss by quote_id (a
+# re-post/revision is a new id, so it legitimately reappears; expiry
+# cleans up). Mention rows dismiss per lowercased "seller|item" and
+# resurface when a FRESH mention of that item arrives. Both clear on
+# huddle change with the mention accumulators.
+var pay_dismissed_quotes: Dictionary = {}
+var pay_dismissed_mentions: Dictionary = {}
 var pay_quotes_header: Label = null
 var pay_quote_rows_box: VBoxContainer = null
 var pay_quotes_separator: HSeparator = null
@@ -1190,6 +1199,10 @@ func _maybe_apply_recent_speech(data: Dictionary) -> void:
     vendor_mentions.clear()
     vendor_mention_prices.clear()
     vendor_latest_mentions.clear()
+    # Dismissals share the accumulators' lifecycle: walk away and come
+    # back = clean slate. (ZBBS-WORK-401)
+    pay_dismissed_quotes.clear()
+    pay_dismissed_mentions.clear()
 
     if current_structure.is_empty():
         return
@@ -2011,7 +2024,13 @@ func _refresh_pay_quote_rows() -> void:
         # Lowercase BOTH key halves: quote seller casing comes off the wire,
         # mention sellers come from the huddle roster — a casing mismatch
         # would render duplicate rows for the same offer. (code_review)
+        # Coverage registers BEFORE the dismiss skip: dismissing a quote
+        # hides the offer entirely — its mention sibling must not pop back
+        # up in its place. (ZBBS-WORK-401)
         covered["%s|%s" % [str(q.get("seller", "")).to_lower(), str(q.get("item", "")).to_lower()]] = true
+        var qid := int(q.get("quote_id", 0))
+        if qid != 0 and pay_dismissed_quotes.has(qid):
+            continue
         var row := HBoxContainer.new()
         row.add_theme_constant_override("separation", 8)
 
@@ -2028,6 +2047,8 @@ func _refresh_pay_quote_rows() -> void:
         take.add_theme_font_size_override("font_size", 12)
         take.pressed.connect(_on_pay_take_pressed.bind(q))
         row.add_child(take)
+
+        row.add_child(_make_pay_row_dismiss(_on_pay_quote_dismissed.bind(qid)))
 
         pay_quote_rows_box.add_child(row)
         shown += 1
@@ -2050,6 +2071,8 @@ func _refresh_pay_quote_rows() -> void:
             if covered.has(cover_key):
                 continue
             covered[cover_key] = true
+            if pay_dismissed_mentions.has(cover_key):
+                continue
 
             var row := HBoxContainer.new()
             row.add_theme_constant_override("separation", 8)
@@ -2071,6 +2094,8 @@ func _refresh_pay_quote_rows() -> void:
             offer.pressed.connect(_on_pay_mention_pressed.bind(seller_name, item))
             row.add_child(offer)
 
+            row.add_child(_make_pay_row_dismiss(_on_pay_mention_dismissed.bind(cover_key)))
+
             pay_quote_rows_box.add_child(row)
             shown += 1
     var any := shown > 0
@@ -2081,16 +2106,17 @@ func _refresh_pay_quote_rows() -> void:
         pay_quotes_separator.visible = any
 
 
-## One-line description of a mention row: seller, label, price when the
-## vendor named one, and the "(mentioned)" marker distinguishing it from a
-## formal quote row.
+## One-line PROSE description of a mention row. "Spoke of" (vs the quote
+## rows' "offers") keeps the formal-vs-casual distinction the buttons act
+## on: a quote settles on Take, a mention only pre-fills. Mention prices
+## are per-unit on the wire, so the price reads "N coins each".
 func _pay_mention_row_label(seller: String, item: String, prices: Dictionary) -> String:
     var label := _pay_item_label(item)
-    var price_part := ""
     var key := item.to_lower()
+    var line := "%s spoke of %s" % [seller, label]
     if prices.has(key) and int(prices[key]) > 0:
-        price_part = " — %d coins" % int(prices[key])
-    return "%s: %s%s (mentioned)" % [seller, label, price_part]
+        line += " — %d coins each" % int(prices[key])
+    return line + "."
 
 
 ## A mention row's Offer button: pre-fill the compose form with the seller,
@@ -2135,29 +2161,79 @@ func _on_pay_mention_pressed(seller: String, item: String) -> void:
         pay_status_label.text = "Review the terms below, then Confirm."
 
 
-## One-line description of a quote row: seller, label, qty, bundle price,
-## disposition, and a "for you" marker on targeted quotes.
+## One-line PROSE description of a quote row (ZBBS-WORK-401, Jeff: "should
+## read nice — 'Josiah offered to sell X for Y'"). Carries qty, whether the
+## price is each-or-total, the disposition, and the "for you" marker.
+## The disposition phrase stays for now because a Take still settles at the
+## QUOTE's consume_now — it is a binding term until the buyer-decides
+## disposition work (WORK-402) ships; drop it there, not here.
 func _pay_quote_row_label(q: Dictionary) -> String:
+    var seller := str(q.get("seller", ""))
     var label := str(q.get("display_label", q.get("item", "")))
     var qty := int(q.get("qty", 1))
     var amount := int(q.get("amount", 0))
     var item := str(q.get("item", "")).to_lower()
-    var disposition := ""
-    if item == "nights_stay":
-        disposition = "tonight"
-    elif bool(q.get("consume_now", false)):
-        disposition = "eat here"
-    else:
-        disposition = "take home"
-    var qty_part := ""
+    # "a bowl of stew" pluralizes badly in the generic case, so qty > 1
+    # reads "2× bowl of stew" with the leading article stripped, and the
+    # bundle amount gains an explicit "total" so each-vs-total is never
+    # ambiguous (quote amounts are bundle totals on the wire).
+    var what := label
     if qty > 1:
-        qty_part = " ×%d" % qty
-    var target_part := ""
+        what = "%d× %s" % [qty, _strip_leading_article(label)]
+    var line: String
+    if item == "nights_stay":
+        line = "%s offers %s tonight for %d coins" % [seller, what, amount]
+    else:
+        line = "%s offers %s for %d coins" % [seller, what, amount]
+    if qty > 1:
+        line += " total"
+    if item != "nights_stay":
+        if bool(q.get("consume_now", false)):
+            line += ", to eat here"
+        else:
+            line += ", to take home"
+    line += "."
     if bool(q.get("targeted", false)):
-        target_part = " — for you"
-    return "%s: %s%s — %d coins (%s)%s" % [
-        str(q.get("seller", "")), label, qty_part, amount, disposition, target_part,
-    ]
+        line += " — for you"
+    return line
+
+
+## Strips a leading English article from a display label so qty-prefixed
+## prose reads "2× bowl of stew" rather than "2× a bowl of stew".
+func _strip_leading_article(label: String) -> String:
+    var lower := label.to_lower()
+    if lower.begins_with("a "):
+        return label.substr(2)
+    if lower.begins_with("an "):
+        return label.substr(3)
+    if lower.begins_with("the "):
+        return label.substr(4)
+    return label
+
+
+## Small (x) shared by quote and mention rows (ZBBS-WORK-401). Dismissal is
+## local housekeeping — to refuse the vendor socially, the player just says
+## so in chat.
+func _make_pay_row_dismiss(on_pressed: Callable) -> Button:
+    var dismiss := Button.new()
+    dismiss.text = "×"
+    dismiss.custom_minimum_size = Vector2(22, 0)
+    dismiss.focus_mode = Control.FOCUS_NONE
+    dismiss.add_theme_font_size_override("font_size", 12)
+    dismiss.tooltip_text = "Hide this offer"
+    dismiss.pressed.connect(on_pressed)
+    return dismiss
+
+
+func _on_pay_quote_dismissed(quote_id: int) -> void:
+    if quote_id != 0:
+        pay_dismissed_quotes[quote_id] = true
+    _refresh_pay_quote_rows()
+
+
+func _on_pay_mention_dismissed(cover_key: String) -> void:
+    pay_dismissed_mentions[cover_key] = true
+    _refresh_pay_quote_rows()
 
 
 ## Submit a quote take: pc/pay with quote_id + the quote's terms verbatim.
@@ -2476,6 +2552,10 @@ func _on_npc_spoke(speaker_id: String, speaker_name: String, text: String, kind:
                 continue
             this_seen[k] = true
             this_speak.append(k)
+            # A fresh mention resurfaces a previously-dismissed row for
+            # this (seller, item) — the vendor brought it up again.
+            # (ZBBS-WORK-401)
+            pay_dismissed_mentions.erase("%s|%s" % [speaker_name.to_lower(), k])
             if not seen.has(k):
                 seen[k] = true
                 updated.append(k)
