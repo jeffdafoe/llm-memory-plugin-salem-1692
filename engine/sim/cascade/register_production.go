@@ -80,6 +80,10 @@ func RegisterProductionCascades(ctx context.Context, w *sim.World, client llm.Cl
 	// Single-subscriber engine cascades that drive engine-authored
 	// speech / state, no LLM call but a richer-than-substrate role.
 	RegisterBusinessowner(ctx, w)
+	// After RegisterBusinessowner in reading order because its whole
+	// purpose is feeding that greet path (ZBBS-HOME-425); registration
+	// order itself is not load-bearing.
+	RegisterBusinessArrival(w)
 	RegisterVisitor(ctx, w)
 
 	// LLM-bearing cascades — atmosphere prose, per-pair consolidation,
