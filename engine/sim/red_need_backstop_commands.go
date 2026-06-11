@@ -45,9 +45,9 @@ import "time"
 // Stamped is how many actors got a fresh red-need warrant this sweep; the
 // Skipped* breakdown is why the rest didn't, for telemetry + the unit tests.
 type RedNeedBackstopTelemetry struct {
-	Stamped             int
-	SkippedScope        int // not KindNPCStateful / KindNPCShared, or a visitor
-	SkippedNoRedNeed    int // no actionable red need (backoff state cleared)
+	Stamped              int
+	SkippedScope         int // not KindNPCStateful / KindNPCShared, or a visitor
+	SkippedNoRedNeed     int // no actionable red need (backoff state cleared)
 	SkippedWarranted     int // open WarrantedSince cycle
 	SkippedTickInFlight  int // mid-tick
 	SkippedBackoff       int // stalled need still inside its backoff window
