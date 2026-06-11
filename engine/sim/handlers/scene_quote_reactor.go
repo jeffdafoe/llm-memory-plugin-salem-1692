@@ -11,8 +11,17 @@ import (
 // Phase 3 PR S3.
 //
 // Mints one SceneQuoteTargetedWarrantReason on the TargetBuyer when:
-//   - TargetBuyer is non-empty (public quotes do NOT stamp warrants;
-//     they surface via the pull-based perception render path).
+//   - TargetBuyer is non-empty. A PUBLIC quote (TargetBuyer == "")
+//     posted while the seller is in an active huddle instead fans the
+//     same warrant out to the seller's NPC huddle peers (ZBBS-HOME-431,
+//     see fanOutPublicQuoteWarrants) — speak parity: the client renders
+//     a posted quote as the seller's speech, so the people standing in
+//     the conversation must "hear" it too. Pre-431 a public quote
+//     stamped nothing and an idle NPC buyer never learned of the offer
+//     (the 2026-06-11 Ezekiel bread stall: quote posted seconds after
+//     his tick ended, no warrant, deal frozen until an operator nudge).
+//     A public quote from a seller in no active huddle still stamps
+//     nothing — the pull-based perception render covers passers-by.
 //   - TargetBuyer is an NPC (KindNPCStateful or KindNPCShared). PCs
 //     don't reactor-tick, so a warrant on a PC would be inert —
 //     PC perception of targeted quotes comes through the client's
@@ -46,7 +55,10 @@ func handleSceneQuoteWarrants(w *sim.World, evt sim.Event) {
 		return
 	}
 	if created.TargetBuyer == "" {
-		return // public quote — no warrant stamp; perception render handles it
+		// Public quote: warrant the seller's huddle peers instead
+		// (ZBBS-HOME-431) — they heard the offer.
+		fanOutPublicQuoteWarrants(w, created)
+		return
 	}
 	if created.TargetBuyer == created.SellerID {
 		// Defensive — Command Fn gate-5 rejects self-targeting,
@@ -66,7 +78,22 @@ func handleSceneQuoteWarrants(w *sim.World, evt sim.Event) {
 	}
 
 	now := time.Now().UTC()
-	meta := sim.WarrantMeta{
+	if _, err := sim.StampWarrant(created.TargetBuyer, sceneQuoteWarrantMeta(created, false), now).Fn(w); err != nil {
+		log.Printf(
+			"handlers: scene-quote-reactor StampWarrant for target %q (quote %d, event %d): %v",
+			created.TargetBuyer, created.QuoteID, created.EventID(), err,
+		)
+	}
+}
+
+// sceneQuoteWarrantMeta builds the warrant meta for a SceneQuoteCreated event
+// — shared by the targeted stamp and the public huddle fan-out so both paths
+// render the same quote warrant line (seller, item, amount, the quote_id
+// fast-path take instruction). overheard distinguishes the fan-out path: the
+// render says "offers" rather than "offers you" for a peer who merely heard a
+// public quote announced to the conversation.
+func sceneQuoteWarrantMeta(created *sim.SceneQuoteCreated, overheard bool) sim.WarrantMeta {
+	return sim.WarrantMeta{
 		TriggerActorID: created.SellerID,
 		Force:          false,
 		Reason: sim.SceneQuoteTargetedWarrantReason{
@@ -77,6 +104,7 @@ func handleSceneQuoteWarrants(w *sim.World, evt sim.Event) {
 			Amount:     created.Amount,
 			ConsumeNow: created.ConsumeNow,
 			ExpiresAt:  created.ExpiresAt,
+			Overheard:  overheard,
 		},
 		SourceEventID: created.EventID(),
 		RootEventID:   created.RootEventID(),
@@ -85,11 +113,56 @@ func handleSceneQuoteWarrants(w *sim.World, evt sim.Event) {
 		// HuddleID intentionally empty — see doc above.
 		OccurredAt: created.At,
 	}
-	if _, err := sim.StampWarrant(created.TargetBuyer, meta, now).Fn(w); err != nil {
-		log.Printf(
-			"handlers: scene-quote-reactor StampWarrant for target %q (quote %d, event %d): %v",
-			created.TargetBuyer, created.QuoteID, created.EventID(), err,
-		)
+}
+
+// fanOutPublicQuoteWarrants stamps the quote warrant on the seller's NPC
+// huddle peers when a PUBLIC quote (no TargetBuyer) is posted from inside an
+// active huddle (ZBBS-HOME-431). Speak parity: the client renders the posted
+// quote as the seller's speech (httpapi sceneQuoteOfferLine), so the actors
+// standing in that conversation must hear it the way they hear a Spoke event
+// — otherwise an idle NPC buyer never learns the offer exists and the deal
+// stalls until something else happens to warrant them.
+//
+// Peer gates, mirroring the speech reactor (handleSpokeWarrants):
+//   - NPC kinds only (stateful / shared) — PCs see quotes client-side,
+//     decoratives don't react.
+//   - mid-walk peers are skipped (ZBBS-HOME-330 rationale: a walking actor's
+//     tick can only command-fail; it re-discovers the quote via perception
+//     when it arrives).
+//   - the seller is never stamped.
+//
+// A seller in no huddle (or a concluded one) stamps nothing — the pull-based
+// perception render still surfaces fresh scene quotes to whoever ticks.
+func fanOutPublicQuoteWarrants(w *sim.World, created *sim.SceneQuoteCreated) {
+	seller, ok := w.Actors[created.SellerID]
+	if !ok || seller.CurrentHuddleID == "" {
+		return
+	}
+	huddle, ok := w.Huddles[seller.CurrentHuddleID]
+	if !ok || huddle.ConcludedAt != nil {
+		return
+	}
+	now := time.Now().UTC()
+	for peerID := range huddle.Members {
+		if peerID == created.SellerID {
+			continue
+		}
+		peer, ok := w.Actors[peerID]
+		if !ok {
+			continue
+		}
+		if peer.Kind != sim.KindNPCStateful && peer.Kind != sim.KindNPCShared {
+			continue
+		}
+		if peer.MoveIntent != nil {
+			continue
+		}
+		if _, err := sim.StampWarrant(peerID, sceneQuoteWarrantMeta(created, true), now).Fn(w); err != nil {
+			log.Printf(
+				"handlers: scene-quote-reactor StampWarrant for huddle peer %q (public quote %d, event %d): %v",
+				peerID, created.QuoteID, created.EventID(), err,
+			)
+		}
 	}
 }
 

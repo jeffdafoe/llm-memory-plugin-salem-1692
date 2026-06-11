@@ -154,6 +154,36 @@ func TestRender_QuoteWarrantLine_CarriesQuoteID(t *testing.T) {
 	}
 }
 
+// TestRender_QuoteWarrantLine_Overheard (ZBBS-HOME-431): a public quote that
+// reached this actor via the huddle fan-out renders "offers" — not the
+// targeted "offers you" — so an overheard ad isn't perceived as a direct
+// address. The fast-path take instruction is unchanged.
+func TestRender_QuoteWarrantLine_Overheard(t *testing.T) {
+	quote := sim.WarrantMeta{
+		TriggerActorID: "john",
+		Reason: sim.SceneQuoteTargetedWarrantReason{
+			QuoteID: 12, SellerID: "john", ItemKind: "bread", Qty: 1, Amount: 4, Overheard: true,
+		},
+		SourceEventID: 32,
+	}
+	out := combinedPrompt(Render(Payload{
+		ActorID:           "ezekiel",
+		Warrants:          []sim.WarrantMeta{quote},
+		WarrantActorNames: map[sim.ActorID]string{"john": "John Ellis"},
+		Baseline:          BaselinePresent,
+	}, DefaultRenderConfig()))
+
+	if !strings.Contains(out, "John Ellis offers bread for 4 coins.") {
+		t.Errorf("overheard quote warrant line missing neutral terms\n%s", out)
+	}
+	if strings.Contains(out, "offers you") {
+		t.Errorf("overheard quote rendered as a direct address\n%s", out)
+	}
+	if !strings.Contains(out, "quote_id 12") || !strings.Contains(out, "settles at once") {
+		t.Errorf("overheard quote warrant line missing the fast-path take instruction\n%s", out)
+	}
+}
+
 // TestRender_QuoteWarrantLine_EatHereFact (ZBBS-WORK-405): when the quoted
 // kind is in the payload's EatHereKinds set, the line states the disposition
 // fact so the buyer never plans a carry-out the clamp would quietly rewrite.
