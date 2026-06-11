@@ -87,9 +87,11 @@ var village_vbox: VBoxContainer = null
 var village_poll_timer: Timer = null
 var http_village: HTTPRequest = null
 var village_loading := false
-# Newest occurred_at rendered, echoed back verbatim as ?since= so each poll
-# only returns what's new. Server-side filter is strictly-after.
-var village_since := ""
+# Newest seq rendered, echoed back as ?since_seq= so each poll only returns
+# what's new. Seq (not occurred_at): timestamps can collide within an engine
+# batch, and the server's strictly-greater filter would drop same-instant
+# stragglers. 0 = no cursor yet → the server sends a newest-tail backload.
+var village_since_seq := 0
 var input_row: HBoxContainer = null
 ## Pay flow — small button next to Speak opens a modal (built lazily)
 ## with recipient dropdown, item / qty / amount, and take-home or
@@ -583,8 +585,13 @@ func _set_active_tab(village: bool) -> void:
         input_row.visible = not village
     village_scroll.visible = village
     _update_tab_buttons()
+    # Poll lifecycle only reacts when the panel is actually open — open()
+    # selects the initial tab BEFORE setting is_open, and starts the poll
+    # itself afterwards. Without the guard the pre-open tab selection fires
+    # a doomed request (code_review round 1).
     if village:
-        _start_village_poll()
+        if is_open:
+            _start_village_poll()
         _scroll_village_to_bottom_deferred()
     else:
         _stop_village_poll()
@@ -626,8 +633,8 @@ func _poll_village_activity() -> void:
         return
     village_loading = true
     var path := "/api/village/activity/recent?limit=200"
-    if village_since != "":
-        path += "&since=" + village_since.uri_encode()
+    if village_since_seq > 0:
+        path += "&since_seq=%d" % village_since_seq
     var err := http_village.request(_api_url(path), _auth_headers(), HTTPClient.METHOD_GET, "")
     if err != OK:
         # Next timer tick retries; the flag must not stay latched.
@@ -648,6 +655,13 @@ func _on_village_activity_completed(result: int, response_code: int, _headers: P
     var json: Variant = JSON.parse_string(body.get_string_from_utf8())
     if typeof(json) != TYPE_DICTIONARY:
         return
+    # Cursor ahead of the server's newest seq means the engine restarted
+    # (the seq counter and the log reset together). Drop the cursor; the
+    # next poll backloads the fresh log's tail.
+    var latest_seq := int(json.get("latest_seq", 0))
+    if village_since_seq > latest_seq:
+        village_since_seq = 0
+        return
     var entries: Variant = json.get("entries", [])
     if typeof(entries) != TYPE_ARRAY:
         return
@@ -657,9 +671,9 @@ func _on_village_activity_completed(result: int, response_code: int, _headers: P
             continue
         if _append_village_line(e):
             appended += 1
-        var at := str(e.get("occurred_at", ""))
-        if at != "":
-            village_since = at
+        var seq := int(e.get("seq", 0))
+        if seq > village_since_seq:
+            village_since_seq = seq
     if appended > 0:
         _scroll_village_to_bottom_deferred()
 
@@ -928,10 +942,14 @@ func _connect_signals() -> void:
     if http_quotes != null:
         http_quotes.request_completed.connect(_on_quotes_completed)
 
-    room_tab_button.pressed.connect(_on_room_tab_pressed)
-    village_tab_button.pressed.connect(_on_village_tab_pressed)
-    village_poll_timer.timeout.connect(_poll_village_activity)
-    http_village.request_completed.connect(_on_village_activity_completed)
+    if room_tab_button != null:
+        room_tab_button.pressed.connect(_on_room_tab_pressed)
+    if village_tab_button != null:
+        village_tab_button.pressed.connect(_on_village_tab_pressed)
+    if village_poll_timer != null:
+        village_poll_timer.timeout.connect(_poll_village_activity)
+    if http_village != null:
+        http_village.request_completed.connect(_on_village_activity_completed)
 
     speech_input.focus_entered.connect(_on_input_focus_entered)
     speech_input.focus_exited.connect(_on_input_focus_exited)

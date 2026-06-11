@@ -79,6 +79,11 @@ func TestAppendActionLogEntry_HappyPath(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("len(ActionLog) = %d, want 2", len(got))
 	}
+	// The funnel assigns Seq (1, 2, ... per append) — fold it into the
+	// expected values so the exact-equality checks still cover every
+	// other field.
+	e0.Seq = 1
+	e1.Seq = 2
 	if got[0] != e0 {
 		t.Errorf("got[0] = %+v, want %+v", got[0], e0)
 	}

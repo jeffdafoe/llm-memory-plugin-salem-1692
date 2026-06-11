@@ -607,6 +607,12 @@ type World struct {
 	// re-snapshots from current state.
 	ActionLog []ActionLogEntry
 
+	// actionLogSeq backs ActionLogEntry.Seq — strictly increasing,
+	// incremented by AppendActionLogEntry on the world goroutine.
+	// Starts at zero each boot (the log itself is restart-lossy);
+	// cursor readers detect the reset via the feed's latest_seq.
+	actionLogSeq uint64
+
 	// PriceBook is the in-memory per-(seller, item) ring buffer of
 	// recent accepted-price observations — v2's substrate for v1's
 	// price-history perception cues ("you paid X coins last time").
