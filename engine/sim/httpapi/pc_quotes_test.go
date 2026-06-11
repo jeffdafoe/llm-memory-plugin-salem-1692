@@ -41,9 +41,24 @@ func quotesWorld(t *testing.T) *sim.World {
 			ID: "npc-mary", DisplayName: "Mary", Kind: sim.KindNPCShared,
 			State: sim.StateIdle, Pos: sim.TilePos{X: 3, Y: 4},
 		}
+		// Two co-huddled "Bob"s: pc/pay's seller-by-display-name resolution
+		// rejects the ambiguous match (case-insensitively), so Bob's quote
+		// must be filtered too.
+		world.Actors["npc-bob1"] = &sim.Actor{
+			ID: "npc-bob1", DisplayName: "Bob", Kind: sim.KindNPCShared,
+			State: sim.StateIdle, Pos: sim.TilePos{X: 3, Y: 4},
+			CurrentHuddleID: "h1",
+		}
+		world.Actors["npc-bob2"] = &sim.Actor{
+			ID: "npc-bob2", DisplayName: "bob", Kind: sim.KindNPCShared,
+			State: sim.StateIdle, Pos: sim.TilePos{X: 3, Y: 4},
+			CurrentHuddleID: "h1",
+		}
 		world.Huddles["h1"] = &sim.Huddle{
-			ID:      "h1",
-			Members: map[sim.ActorID]struct{}{"pc-tester": {}, "npc-john": {}},
+			ID: "h1",
+			Members: map[sim.ActorID]struct{}{
+				"pc-tester": {}, "npc-john": {}, "npc-bob1": {}, "npc-bob2": {},
+			},
 		}
 		world.Scenes["sc1"] = &sim.Scene{
 			ID: "sc1", Bound: sim.NewUnboundedBound(),
@@ -89,6 +104,11 @@ func quotesWorld(t *testing.T) *sim.World {
 			8: {ID: 8, SceneID: "sc1", SellerID: "npc-mary", ItemKind: "stew",
 				Qty: 1, Amount: 2, ConsumeNow: true,
 				State: sim.SceneQuoteStateActive, CreatedAt: now, ExpiresAt: live},
+			// Excluded: seller's display name is ambiguous within the huddle
+			// (the other Bob), so a take's seller resolution would reject.
+			9: {ID: 9, SceneID: "sc1", SellerID: "npc-bob1", ItemKind: "stew",
+				Qty: 1, Amount: 2, ConsumeNow: true,
+				State: sim.SceneQuoteStateActive, CreatedAt: now, ExpiresAt: live},
 		}
 		return nil, nil
 	}}); err != nil {
@@ -109,7 +129,7 @@ func TestHandlePCQuotes_EligibilityMatrix(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 	if len(res.Quotes) != 2 {
-		t.Fatalf("len = %d, want 2 (quotes 2 + 1); body=%s", len(res.Quotes), rec.Body.String())
+		t.Fatalf("len = %d, want 2 (quotes 2 + 1; 3-9 excluded); body=%s", len(res.Quotes), rec.Body.String())
 	}
 
 	// Targeted-at-me sorts first.

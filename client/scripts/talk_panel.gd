@@ -1690,16 +1690,25 @@ func _on_items_completed(result: int, response_code: int, _headers: PackedString
 
 ## Fetch the live take-able quotes for this PC (ZBBS-HOME-426). Called on
 ## every modal open — quotes expire, get taken, and get superseded, so a
-## cached list goes stale within minutes. ERR_BUSY (a previous fetch still
-## in flight) is ignored; its completion lands shortly anyway.
+## cached list goes stale within minutes.
 func _request_pay_quotes() -> void:
     if http_quotes == null:
         return
-    http_quotes.request(
+    # Cancel any in-flight fetch first: an older response must never
+    # repopulate rows a newer open just cleared (it could be from another
+    # huddle), and a lingering request would otherwise ERR_BUSY this one
+    # into silently showing nothing. (code_review)
+    if http_quotes.get_http_client_status() != HTTPClient.STATUS_DISCONNECTED:
+        http_quotes.cancel_request()
+    var err := http_quotes.request(
         _api_url("/api/village/pc/quotes"),
         _auth_headers(),
         HTTPClient.METHOD_GET,
     )
+    if err != OK:
+        # Degrade to the compose form for this open — rows stay hidden.
+        pay_quotes = []
+        _refresh_pay_quote_rows()
 
 
 func _on_quotes_completed(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
@@ -1789,6 +1798,14 @@ func _pay_quote_row_label(q: Dictionary) -> String:
 ## expired or was taken between render and click) surfaces there and
 ## triggers a list re-fetch.
 func _on_pay_take_pressed(q: Dictionary) -> void:
+    # One pay submit at a time: a second Take (or a Take during a compose
+    # submit) would ERR_BUSY against the shared http_pay node, and its
+    # error path would clear pay_take_in_flight out from under the
+    # ORIGINAL in-flight take — losing the stale-row re-fetch when that
+    # take's rejection finally lands. (code_review)
+    if pay_take_in_flight or (http_pay != null and http_pay.get_http_client_status() != HTTPClient.STATUS_DISCONNECTED):
+        pay_status_label.text = "Request already in progress."
+        return
     var amount := int(q.get("amount", 0))
     if amount > pc_coins:
         pay_status_label.text = "You only have %d coins." % pc_coins

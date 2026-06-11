@@ -3,6 +3,7 @@ package httpapi
 import (
 	"net/http"
 	"sort"
+	"strings"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
@@ -115,6 +116,14 @@ func (s *Server) handlePCQuotes(w http.ResponseWriter, r *http.Request) {
 		if seller == nil || seller.CurrentHuddleID != pc.CurrentHuddleID {
 			continue
 		}
+		// pc/pay resolves the seller by display name within the huddle and
+		// REJECTS an ambiguous match (findHuddlePeerByDisplayName, EqualFold).
+		// The take echoes seller.DisplayName back, so a quote whose seller
+		// shares a display name with another co-huddled actor would render a
+		// row that can only strict-reject — filter it here instead.
+		if huddlePeerNameAmbiguous(snap, pc.CurrentHuddleID, pcID, q.SellerID, seller.DisplayName) {
+			continue
+		}
 
 		label := string(q.ItemKind)
 		if def := snap.ItemKinds[q.ItemKind]; def != nil && def.DisplayLabel != "" {
@@ -152,4 +161,23 @@ func (s *Server) handlePCQuotes(w http.ResponseWriter, r *http.Request) {
 	})
 
 	writeJSON(w, resp)
+}
+
+// huddlePeerNameAmbiguous reports whether any OTHER actor in the huddle
+// (besides the buyer and the seller itself) carries the seller's display
+// name, case-insensitively — the same EqualFold match and buyer exclusion
+// findHuddlePeerByDisplayName applies when pc/pay resolves the seller.
+func huddlePeerNameAmbiguous(snap *sim.Snapshot, huddleID sim.HuddleID, buyerID, sellerID sim.ActorID, sellerName string) bool {
+	for id, a := range snap.Actors {
+		if a == nil || id == buyerID || id == sellerID {
+			continue
+		}
+		if a.CurrentHuddleID != huddleID {
+			continue
+		}
+		if strings.EqualFold(a.DisplayName, sellerName) {
+			return true
+		}
+	}
+	return false
 }
