@@ -26,13 +26,13 @@ import (
 //
 // Scope: the structural shape of v1 — empty-text reject, walk-in-flight
 // reject, vocative stale-addressee reject (in-memory), the WORK-323 prose-
-// validation gates (transfer-verb + state-claim, see
-// validateSpeechClaims in speak_validation.go), event emit, paired
-// RecordInteraction writes per huddle peer (KindNPCShared-gated inside
-// RecordInteraction). Still deferred: the structured `mentions[]` schema field
-// (ZBBS-WORK-223 — only needed for the PC sellable dropdown + price-quoting; the
-// WORK-323 item gates use an implicit text scan instead, so no prompt cache-bust)
-// and price-quoting (ZBBS-124, needs scene_quote).
+// validation gate (state-claim, see validateStateClaims in speak_validation.go;
+// the item-presence and transfer-verb gates were removed in ZBBS-HOME-416 and
+// ZBBS-WORK-397), event emit, paired RecordInteraction writes per huddle peer
+// (KindNPCShared-gated inside RecordInteraction). Still deferred: the
+// structured `mentions[]` schema field (ZBBS-WORK-223 — only needed for the PC
+// sellable dropdown + price-quoting) and price-quoting (ZBBS-124, needs
+// scene_quote).
 //
 // Pre-conditions the caller (the speak handlers.CommitFn) is responsible
 // for, NOT re-checked here:
@@ -55,9 +55,8 @@ import (
 //   - actor.MoveIntent == nil (not walk-in-flight)
 //   - no vocative-position name in text matches a non-peer actor's
 //     first-name (vocative stale-addressee gate; see findVocativeAbsentees)
-//   - (NPC speakers only) the WORK-323 prose gates pass: no item mentioned that
-//     the speaker doesn't hold, no transfer-verb-narrated handover, no unbacked
-//     booking/payment state-claim (see validateSpeechClaims)
+//   - (NPC speakers only) the WORK-323 prose gate passes: no unbacked
+//     booking/payment state-claim (see validateStateClaims)
 //   - (NPC speakers only) the turn-state backstop passes: not an idle re-pitch
 //     of a peer already addressed and not yet replied (see below)
 //
@@ -142,13 +141,13 @@ func SpeakTo(speakerID ActorID, text, to string, hasNewNews bool, at time.Time) 
 				}
 			}
 
-			// Prose-validation gates (ZBBS-WORK-323): transfer-verb and
-			// transactional state-claim — the defense against speaking a
-			// service/transaction into apparent existence that no tool performed.
-			// PC speech is exempt (players may roleplay assertions); only NPC LLM
-			// hallucination is gated. See speak_validation.go.
+			// Prose-validation gate (ZBBS-WORK-323): transactional state-claim —
+			// the defense against speaking a service/transaction into apparent
+			// existence that no tool performed. PC speech is exempt (players may
+			// roleplay assertions); only NPC LLM hallucination is gated. See
+			// speak_validation.go.
 			if actor.Kind != KindPC {
-				if reject := validateSpeechClaims(w, actor, text, at); reject != "" {
+				if reject := validateStateClaims(w, actor, text, at); reject != "" {
 					return nil, errors.New(reject)
 				}
 			}
