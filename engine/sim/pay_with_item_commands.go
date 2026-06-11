@@ -655,8 +655,11 @@ func PayWithItem(
 //     buyer.
 //  3. Co-presence. Buyer's scene matches quote's scene, AND buyer +
 //     seller share a non-empty huddle.
-//  4. Exact term match. ItemKind, Qty, ConsumeNow, and consumer set
-//     (order-independent) all agree.
+//  4. Exact term match. ItemKind, Qty, and consumer set
+//     (order-independent) all agree. ConsumeNow is deliberately NOT
+//     matched (ZBBS-WORK-402): disposition is the buyer's term — the
+//     buyer's value rides the entry, and service kinds clamp to the
+//     service shape.
 //  5. Amount at-or-above floor. Quote's Amount is the minimum;
 //     overpayment is tipping.
 //  6. Independent preconditions — seller stock, buyer coins, seller
@@ -730,11 +733,16 @@ func runPayWithItemFastPath(
 			quoteID, quote.Qty, qty,
 		)
 	}
-	if quote.ConsumeNow != consumeNow {
-		return nil, fmt.Errorf(
-			"quote %d has different terms: consume_now=%v, not %v",
-			quoteID, quote.ConsumeNow, consumeNow,
-		)
+	// Disposition is the BUYER's term, not the quote's (ZBBS-WORK-402 —
+	// the quote's ConsumeNow survives as the UI row default, but a take no
+	// longer has to match it: whether goods are consumed on the spot or
+	// carried home is the buyer's call, same as the slow path's
+	// buyer-supplied consume_now). Service kinds have no choice — no
+	// physical good exists, so the engine forces the service shape rather
+	// than rejecting a confused caller (mirrors the client's forced
+	// handling for bookings, HOME-423).
+	if itemHasCapability(w, kind, "service") {
+		consumeNow = false
 	}
 	if !actorIDSetsEqual(quote.ConsumerIDs, consumerIDs) {
 		return nil, fmt.Errorf(

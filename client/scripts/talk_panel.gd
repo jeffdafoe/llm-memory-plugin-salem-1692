@@ -148,6 +148,17 @@ var http_items: HTTPRequest = null
 var pay_item_catalog_order: Array = []      # item names in server sort order
 var pay_item_catalog_labels: Dictionary = {} # item name -> display label
 var pay_items_catalog_requested: bool = false
+# item name (lowercase) -> disposition class from the catalog (ZBBS-WORK-402):
+# "choice" (buyer picks eat-here vs carry-home) or "tonight" (service — the
+# engine forces the service shape). Unknown/missing (catalog fetch failed)
+# degrades to quote-verbatim takes, the pre-402 behavior.
+var pay_item_catalog_dispo: Dictionary = {}
+# The buyer's standing disposition intent for one-click takes of eligible
+# goods (designer-recommended segmented toggle). Persists for the session —
+# deliberately NOT reset on modal open.
+var pay_disposition_row: HBoxContainer = null
+var pay_dispo_eat_button: Button = null
+var pay_dispo_carry_button: Button = null
 
 # Phase C of sales-and-gifts: per-vendor accumulator of item_kinds
 # they've mentioned in this huddle session. Sourced from npc_spoke's
@@ -1563,6 +1574,49 @@ func _ensure_pay_modal_built() -> void:
     pay_quotes_header.visible = false
     vbox.add_child(pay_quotes_header)
 
+    # ZBBS-WORK-402: the buyer's standing disposition intent for one-click
+    # takes — a segmented two-button radio pair (designer-recommended over
+    # a checkbox: both outcomes visible, one click to flip). Visually
+    # scoped to the offer rows (directly under the header) so it reads as
+    # part of the offer-taking apparatus, not a modal preference. Shown
+    # only when at least one visible Take row's item allows the choice
+    # (see _refresh_pay_quote_rows); rows that allow none ignore it and
+    # say so in their prose ("tonight").
+    pay_disposition_row = HBoxContainer.new()
+    pay_disposition_row.add_theme_constant_override("separation", 6)
+    pay_disposition_row.visible = false
+    var dispo_label := Label.new()
+    dispo_label.text = "Take eligible offers as:"
+    dispo_label.add_theme_color_override("font_color", Color(0.78, 0.68, 0.50))
+    dispo_label.add_theme_font_size_override("font_size", 12)
+    pay_disposition_row.add_child(dispo_label)
+    var dispo_group := ButtonGroup.new()
+    # Radio semantics, stated explicitly: re-pressing the active segment
+    # must not unpress it — exactly one disposition is always selected.
+    # (false is the Godot 4 default; pinned so an engine default change
+    # can't silently introduce a neither-pressed state. code_review)
+    dispo_group.allow_unpress = false
+    pay_dispo_eat_button = Button.new()
+    pay_dispo_eat_button.text = "Eat/drink now"
+    pay_dispo_eat_button.toggle_mode = true
+    pay_dispo_eat_button.button_group = dispo_group
+    pay_dispo_eat_button.focus_mode = Control.FOCUS_NONE
+    pay_dispo_eat_button.custom_minimum_size = Vector2(0, 24)
+    pay_dispo_eat_button.add_theme_font_size_override("font_size", 12)
+    pay_disposition_row.add_child(pay_dispo_eat_button)
+    pay_dispo_carry_button = Button.new()
+    pay_dispo_carry_button.text = "Carry home"
+    pay_dispo_carry_button.toggle_mode = true
+    pay_dispo_carry_button.button_group = dispo_group
+    pay_dispo_carry_button.focus_mode = Control.FOCUS_NONE
+    pay_dispo_carry_button.custom_minimum_size = Vector2(0, 24)
+    pay_dispo_carry_button.add_theme_font_size_override("font_size", 12)
+    # Carry home is the default for portable goods (designer rec) — the
+    # session-persisting choice; never reset on open.
+    pay_dispo_carry_button.button_pressed = true
+    pay_disposition_row.add_child(pay_dispo_carry_button)
+    vbox.add_child(pay_disposition_row)
+
     pay_quote_rows_box = VBoxContainer.new()
     pay_quote_rows_box.add_theme_constant_override("separation", 4)
     pay_quote_rows_box.visible = false
@@ -1943,6 +1997,7 @@ func _on_items_completed(result: int, response_code: int, _headers: PackedString
         return
     pay_item_catalog_order.clear()
     pay_item_catalog_labels.clear()
+    pay_item_catalog_dispo.clear()
     for entry in parsed:
         if typeof(entry) != TYPE_DICTIONARY:
             continue
@@ -1956,10 +2011,14 @@ func _on_items_completed(result: int, response_code: int, _headers: PackedString
         pay_item_catalog_order.append(name)
         var label := str(entry.get("display_label", "")).strip_edges()
         pay_item_catalog_labels[name.to_lower()] = label if not label.is_empty() else name
+        var dispo := str(entry.get("disposition", "")).strip_edges()
+        if not dispo.is_empty():
+            pay_item_catalog_dispo[name.to_lower()] = dispo
     # The catalog may land while the modal is already open — refresh so
     # the full list appears without reopening.
     if pay_modal != null and pay_modal.visible:
         _refresh_pay_item_dropdown()
+        _refresh_pay_quote_rows()
         _update_pay_booking_controls()
 
 
@@ -2015,6 +2074,9 @@ func _refresh_pay_quote_rows() -> void:
     for child in pay_quote_rows_box.get_children():
         child.queue_free()
     var shown := 0
+    # Visible Take rows whose item permits a disposition choice — drives the
+    # "Take eligible offers as" toggle's visibility (ZBBS-WORK-402).
+    var choice_rows := 0
     # A formal quote supersedes a verbal mention of the same (seller, item):
     # track coverage so each pairing renders exactly one row, quote first.
     var covered := {}
@@ -2052,6 +2114,11 @@ func _refresh_pay_quote_rows() -> void:
 
         pay_quote_rows_box.add_child(row)
         shown += 1
+        # Counted HERE, with the row actually added, so the toggle's
+        # visibility can never claim a choice row that a future skip
+        # condition filtered out. (code_review)
+        if _pay_item_dispo(str(q.get("item", ""))) == "choice":
+            choice_rows += 1
     # Verbal-mention rows, one per (huddle seller, mentioned item) not
     # already quoted. Sellers iterate in recipient order so the rows group
     # stably by vendor across rebuilds.
@@ -2104,6 +2171,12 @@ func _refresh_pay_quote_rows() -> void:
     pay_quote_rows_box.visible = any
     if pay_quotes_separator != null:
         pay_quotes_separator.visible = any
+    # The disposition toggle shows only when it can actually govern
+    # something — at least one visible Take row with a choice-class item.
+    # Mention rows don't count: they route through compose, where the
+    # checkbox stays authoritative. (ZBBS-WORK-402)
+    if pay_disposition_row != null:
+        pay_disposition_row.visible = any and choice_rows > 0
 
 
 ## One-line PROSE description of a mention row. "Spoke of" (vs the quote
@@ -2156,6 +2229,12 @@ func _on_pay_mention_pressed(seller: String, item: String) -> void:
             pay_amount_spin.value = 1
     if pay_qty_spin != null:
         pay_qty_spin.value = 1
+    # Sync the compose checkbox from the standing toggle for choice-class
+    # items (ZBBS-WORK-402, designer rec) — an Offer pre-fill lands with
+    # the same disposition the take rows would use, so the modal reads
+    # coherently end to end. The player can still flip the checkbox.
+    if _pay_item_dispo(item) == "choice" and pay_take_home_check != null and pay_dispo_carry_button != null:
+        pay_take_home_check.button_pressed = pay_dispo_carry_button.button_pressed
     _update_pay_booking_controls()
     if pay_status_label != null:
         pay_status_label.text = "Review the terms below, then Confirm."
@@ -2180,14 +2259,20 @@ func _pay_quote_row_label(q: Dictionary) -> String:
     var what := label
     if qty > 1:
         what = "%d× %s" % [qty, _strip_leading_article(label)]
+    var dispo := _pay_item_dispo(item)
     var line: String
-    if item == "nights_stay":
+    if dispo == "tonight" or item == "nights_stay":
         line = "%s offers %s tonight for %d coins" % [seller, what, amount]
     else:
         line = "%s offers %s for %d coins" % [seller, what, amount]
     if qty > 1:
         line += " total"
-    if item != "nights_stay":
+    # Disposition clause (ZBBS-WORK-402): choice-class items carry NONE —
+    # the "Take eligible offers as" toggle governs the take, so asserting
+    # the quote's preference here would mislead. Unknown class (catalog
+    # fetch not landed/failed) keeps the quote-verbatim clause, matching
+    # exactly what the Take will send in that degraded state.
+    if dispo == "" and item != "nights_stay":
         if bool(q.get("consume_now", false)):
             line += ", to eat here"
         else:
@@ -2196,6 +2281,14 @@ func _pay_quote_row_label(q: Dictionary) -> String:
         line += " — for you"
     line += "."
     return line
+
+
+## Disposition class for an item from the catalog (ZBBS-WORK-402):
+## "choice" (buyer's toggle governs takes), "tonight" (service — engine
+## forces the shape), or "" when the catalog hasn't landed/failed —
+## unknown degrades to quote-verbatim takes, the pre-402 behavior.
+func _pay_item_dispo(item: String) -> String:
+    return str(pay_item_catalog_dispo.get(item.to_lower(), ""))
 
 
 ## Strips a leading English article from a display label so qty-prefixed
@@ -2255,12 +2348,21 @@ func _on_pay_take_pressed(q: Dictionary) -> void:
     if amount > pc_coins:
         pay_status_label.text = "You only have %d coins." % pc_coins
         return
+    # Disposition (ZBBS-WORK-402): the buyer's standing toggle governs
+    # choice-class items — the fast path no longer requires the quote's
+    # consume_now to match, the buyer's term rides the entry. "tonight" /
+    # unknown-class items send the quote verbatim (the engine clamps
+    # services regardless, and verbatim is the safe degrade when the
+    # catalog hasn't landed).
+    var consume_now := bool(q.get("consume_now", false))
+    if _pay_item_dispo(str(q.get("item", ""))) == "choice" and pay_dispo_eat_button != null:
+        consume_now = pay_dispo_eat_button.button_pressed
     var body := {
         "seller": str(q.get("seller", "")),
         "item": str(q.get("item", "")),
         "qty": int(q.get("qty", 1)),
         "amount": amount,
-        "consume_now": bool(q.get("consume_now", false)),
+        "consume_now": consume_now,
         "quote_id": int(q.get("quote_id", 0)),
     }
     pay_status_label.text = "Taking the offer…"
