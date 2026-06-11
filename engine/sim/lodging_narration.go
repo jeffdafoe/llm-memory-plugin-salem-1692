@@ -41,18 +41,24 @@ var lodgingNarrationPools = map[string][]string{
 var lodgingNarrationRand = rand.New(rand.NewSource(time.Now().UnixNano()))
 
 // pickLodgingNarration returns a random phrase from the pool for reason, or ""
-// when reason has no pool — callers treat "" as "emit no narration".
-func pickLodgingNarration(reason string) string {
-	pool := lodgingNarrationPools[reason]
+// when reason has no pool — callers treat "" as "emit no narration". The pool
+// comes from the world's narration registry (ZBBS-WORK-399: the seed lines
+// above plus any LLM-expanded extras), so the draw is counted toward the
+// pool's expansion threshold. World method because of that registry access;
+// still world-goroutine-only, same as before.
+func (w *World) pickLodgingNarration(reason string) string {
+	pool := w.narrationDraw(reason)
 	if len(pool) == 0 {
 		return ""
 	}
 	return pool[lodgingNarrationRand.Intn(len(pool))]
 }
 
-// LodgingNarrationPool returns a copy of the phrase pool for reason (nil for an
-// unknown reason). Exported so tests can assert a picked line is a pool member
-// without reaching the unexported map.
+// LodgingNarrationPool returns a copy of the SEED phrase pool for reason (nil
+// for an unknown reason). Exported so tests can assert a picked line is a pool
+// member without reaching the unexported map. Runtime draws may also produce
+// LLM-expanded lines beyond the seed (World.NarrationPools) — tests built on
+// a fresh world see seed-only pools, so membership assertions remain valid.
 func LodgingNarrationPool(reason string) []string {
 	pool := lodgingNarrationPools[reason]
 	if pool == nil {

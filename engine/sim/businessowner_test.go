@@ -36,14 +36,28 @@ func TestBusinessownerFlavorsExhaustive(t *testing.T) {
 	}
 }
 
+// hospitalityPool resolves one businessowner pool from a world's
+// narration registry the way EmitBusinessownerSpeech does (ZBBS-WORK-399:
+// pools live on the World now, not in a package map). Nil for an unknown
+// flavor/trigger — the registry simply has no such key.
+func hospitalityPool(t *testing.T, w *sim.World, flavor string, trigger sim.BusinessownerTrigger) []string {
+	t.Helper()
+	p := w.NarrationPools[sim.BusinessownerNarrationKey(flavor, trigger)]
+	if p == nil {
+		return nil
+	}
+	return p.Phrases()
+}
+
 // TestRenderBusinessownerPhrase covers the rendering helper's branches:
 // known + interpolated, empty customer name (token-stripped), unknown
-// flavor / trigger (empty), nil rand (empty).
+// flavor / trigger (empty pool → empty), nil rand (empty).
 func TestRenderBusinessownerPhrase(t *testing.T) {
 	r := rand.New(rand.NewSource(1))
+	w := newBusinessownerWorld(t)
 
 	t.Run("known flavor + greet interpolates customer", func(t *testing.T) {
-		got := sim.RenderBusinessownerPhrase(r, "flamboyant", sim.BusinessownerTriggerGreet, "Jefferey")
+		got := sim.RenderBusinessownerPhrase(r, hospitalityPool(t, w, "flamboyant", sim.BusinessownerTriggerGreet), "Jefferey")
 		if got == "" {
 			t.Fatalf("expected non-empty render")
 		}
@@ -55,7 +69,7 @@ func TestRenderBusinessownerPhrase(t *testing.T) {
 	t.Run("reserved flavor + greet works", func(t *testing.T) {
 		// Reserved pool has some phrases without {customer}; ensure they
 		// also render cleanly.
-		got := sim.RenderBusinessownerPhrase(r, "reserved", sim.BusinessownerTriggerGreet, "Jefferey")
+		got := sim.RenderBusinessownerPhrase(r, hospitalityPool(t, w, "reserved", sim.BusinessownerTriggerGreet), "Jefferey")
 		if got == "" {
 			t.Fatalf("expected non-empty render for reserved/greet")
 		}
@@ -68,7 +82,7 @@ func TestRenderBusinessownerPhrase(t *testing.T) {
 		// Pull every phrase from the pool — none should retain {customer}
 		// after the empty-name fallback.
 		for i := 0; i < 50; i++ {
-			got := sim.RenderBusinessownerPhrase(r, "flamboyant", sim.BusinessownerTriggerGreet, "")
+			got := sim.RenderBusinessownerPhrase(r, hospitalityPool(t, w, "flamboyant", sim.BusinessownerTriggerGreet), "")
 			if strings.Contains(got, "{customer}") {
 				t.Errorf("empty-name render still contains {customer}: %q", got)
 			}
@@ -78,22 +92,22 @@ func TestRenderBusinessownerPhrase(t *testing.T) {
 		}
 	})
 
-	t.Run("unknown flavor returns empty", func(t *testing.T) {
-		got := sim.RenderBusinessownerPhrase(r, "no-such-flavor", sim.BusinessownerTriggerGreet, "Jefferey")
+	t.Run("unknown flavor resolves no pool, returns empty", func(t *testing.T) {
+		got := sim.RenderBusinessownerPhrase(r, hospitalityPool(t, w, "no-such-flavor", sim.BusinessownerTriggerGreet), "Jefferey")
 		if got != "" {
 			t.Errorf("unknown flavor: got %q, want empty", got)
 		}
 	})
 
-	t.Run("unknown trigger returns empty", func(t *testing.T) {
-		got := sim.RenderBusinessownerPhrase(r, "flamboyant", sim.BusinessownerTrigger("no-such-trigger"), "Jefferey")
+	t.Run("unknown trigger resolves no pool, returns empty", func(t *testing.T) {
+		got := sim.RenderBusinessownerPhrase(r, hospitalityPool(t, w, "flamboyant", sim.BusinessownerTrigger("no-such-trigger")), "Jefferey")
 		if got != "" {
 			t.Errorf("unknown trigger: got %q, want empty", got)
 		}
 	})
 
 	t.Run("nil rand returns empty", func(t *testing.T) {
-		got := sim.RenderBusinessownerPhrase(nil, "flamboyant", sim.BusinessownerTriggerGreet, "Jefferey")
+		got := sim.RenderBusinessownerPhrase(nil, hospitalityPool(t, w, "flamboyant", sim.BusinessownerTriggerGreet), "Jefferey")
 		if got != "" {
 			t.Errorf("nil rand: got %q, want empty", got)
 		}

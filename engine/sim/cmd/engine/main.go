@@ -191,6 +191,19 @@ func main() {
 	actionLogSink := pg.NewActionLogRepo(pool)
 	world.SetActionLogSink(actionLogSink)
 
+	// Narration pool expansion (ZBBS-WORK-399): merge previously generated
+	// narration lines into the seed pools, and install the durable sink the
+	// expansion cascade writes new lines through. Merge failure is non-fatal
+	// — the engine runs fine on seed-only pools; it just loses accumulated
+	// variety until the table is reachable again.
+	narrationRepo := pg.NewNarrationExpansionRepo(pool)
+	if expansions, err := narrationRepo.LoadAll(context.Background()); err != nil {
+		log.Printf("main: narration expansion load failed (continuing with seed pools): %v", err)
+	} else {
+		world.MergeNarrationExpansions(expansions)
+	}
+	world.SetNarrationExpansionSink(narrationRepo)
+
 	// Daily sim-conversation push (ZBBS-WORK-376 piece 3). Reads the durable
 	// agent_action_log the sink above writes, plus the actor roster + push
 	// cursor, and POSTs each agentized actor's completed-day rows to
