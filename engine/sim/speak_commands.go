@@ -81,7 +81,7 @@ import (
 // turn-state gates: a human may speak to anyone, anytime. This supersedes the
 // old "speaking to no one is a legitimate narrative beat" allowance, which only
 // ever produced inert void lines.
-func SpeakTo(speakerID ActorID, text, to string, hasNewNews bool, at time.Time) Command {
+func SpeakTo(speakerID ActorID, text, to string, mentions []SpeakMention, hasNewNews bool, at time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
 			actor, ok := w.Actors[speakerID]
@@ -218,6 +218,7 @@ func SpeakTo(speakerID ActorID, text, to string, hasNewNews bool, at time.Time) 
 				AddressedID:  addressedID,
 				Text:         text,
 				At:           at,
+				Mentions:     filterSpeakMentions(w, actor, mentions),
 			})
 
 			// ZBBS-HOME-412: record the utterance in the huddle's transient
@@ -293,7 +294,54 @@ func Speak(speakerID ActorID, text string, at time.Time) Command {
 	// the Kind check anyway, and internal/test callers declare "fresh news"
 	// unconditionally so the backstop only ever fires for an NPC speak tool call
 	// that threads the harness-computed flag through SpeakTo.
-	return SpeakTo(speakerID, text, "", true, at)
+	//
+	// mentions=nil: the PC client has no mentions side-channel (the player's
+	// offers go through the Pay modal), and pre-WORK-400 callers carry none.
+	return SpeakTo(speakerID, text, "", nil, true, at)
+}
+
+// filterSpeakMentions canonicalizes and filters the speak tool's structured
+// sale hints (ZBBS-WORK-400), keeping only mentions that name an item kind
+// the speaker can actually sell. Mirrors SceneQuoteCreate's stock posture:
+// the kind must resolve in the catalog, and a non-service kind needs at
+// least one unit in the speaker's inventory (service kinds, e.g. nights_stay,
+// are capacity grants with no stock rows). First occurrence wins on
+// duplicate kinds; negative prices are clamped to 0 ("no price named").
+//
+// Drops are SILENT by design. Mentions are a side-channel hint feeding the
+// PC's Pay UI — a bogus entry (hallucinated kind, someone else's goods)
+// must degrade to "no hint", never reject the utterance itself. That keeps
+// this consistent with the deliberate removal of the speech text-scan gates
+// (HOME-416 item-presence, WORK-397 transfer-verb): the engine filters the
+// structured field, it does not police what was said.
+func filterSpeakMentions(w *World, speaker *Actor, mentions []SpeakMention) []SpeakMention {
+	if len(mentions) == 0 {
+		return nil
+	}
+	kept := make([]SpeakMention, 0, len(mentions))
+	seen := make(map[ItemKind]bool, len(mentions))
+	for _, m := range mentions {
+		kind, ok := resolveItemKind(w, string(m.Item))
+		if !ok {
+			continue
+		}
+		if seen[kind] {
+			continue
+		}
+		if !itemHasCapability(w, kind, "service") && speaker.Inventory[kind] < 1 {
+			continue
+		}
+		seen[kind] = true
+		price := m.Price
+		if price < 0 {
+			price = 0
+		}
+		kept = append(kept, SpeakMention{Item: kind, Price: price})
+	}
+	if len(kept) == 0 {
+		return nil
+	}
+	return kept
 }
 
 // resolveAddressee picks the single huddle peer a speak is directed at,

@@ -42,6 +42,21 @@ type SpeakArgs struct {
 	// huddle. Optional — the model may address the whole huddle by omitting
 	// it. omitempty so a to-less call serializes without the field.
 	To string `json:"to,omitempty"`
+	// Mentions are the optional structured sale hints (ZBBS-WORK-400):
+	// when the utterance tells people what the speaker has for sale or
+	// names prices, the model lists those items here so a human listener's
+	// Pay UI can act on them. World-side, sim.filterSpeakMentions silently
+	// drops entries the speaker can't actually sell — a bad mention never
+	// rejects the speak itself, so decode only bounds the shape.
+	Mentions []SpeakMentionArg `json:"mentions,omitempty"`
+}
+
+// SpeakMentionArg is one entry in SpeakArgs.Mentions as the model emits
+// it: a raw item-kind string (canonicalized world-side by resolveItemKind)
+// and the optional per-unit price in coins.
+type SpeakMentionArg struct {
+	Item  string `json:"item"`
+	Price int    `json:"price,omitempty"`
 }
 
 // MaxSpeakTextChars is the rune (character) length cap for raw speak
@@ -54,14 +69,24 @@ type SpeakArgs struct {
 // would silently fail multi-byte text the schema lets through.
 const MaxSpeakTextChars = 1000
 
+// MaxSpeakMentions caps the mentions array (ZBBS-WORK-400) — matches the
+// schema's maxItems. Five distinct sale items in one utterance is already
+// generous; anything past that is the model dumping inventory.
+const MaxSpeakMentions = 5
+
+// MaxSpeakMentionItemChars caps each mention's item-kind length — same
+// value as MaxSceneQuoteItemChars (same catalog, same headroom).
+const MaxSpeakMentionItemChars = 64
+
 // speakSchema is the JSON Schema bytes shipped to the LLM provider via
-// llm.ToolSpec.Schema. Narrow on purpose — advertises only `text`. The
-// WORK-323 item/transfer/state-claim validation gates (sim/speak_validation.go)
-// operate on an IMPLICIT scan of `text`, so they need no schema field and don't
-// cache-bust the system prompt. A structured `mentions[]` field stays deferred
-// (its only remaining consumers are the PC sellable-items dropdown + price-
-// quoting, ZBBS-124); advertising fields the engine ignores would pollute the
-// model's understanding of the tool, so it's omitted until those land.
+// llm.ToolSpec.Schema. The WORK-323 state-claim validation gate
+// (sim/speak_validation.go) operates on an IMPLICIT scan of `text`, so it
+// needs no schema field. `mentions` (ZBBS-WORK-400) is the structured
+// sale-hint side channel the PC Pay UI consumes — v1 parity for
+// speak.mentions/price, deferred at the Phase 3 port and revived now that
+// the client renders per-seller offer rows from it. The schema bounds are
+// defense-in-depth restated in DecodeSpeakArgs (MaxSpeakMentions /
+// MaxSpeakMentionItemChars).
 var speakSchema = json.RawMessage(`{
     "type": "object",
     "properties": {
@@ -76,6 +101,30 @@ var speakSchema = json.RawMessage(`{
             "minLength": 1,
             "maxLength": 100,
             "description": "Optional. The name of the one person in your conversation you are speaking to. Omit it to address everyone present."
+        },
+        "mentions": {
+            "type": "array",
+            "maxItems": 5,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "item": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 64,
+                        "description": "Canonical item kind from your own inventory (e.g. 'ale', 'stew', 'bread')."
+                    },
+                    "price": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 2147483647,
+                        "description": "Optional. The per-unit price in coins, if your message names one."
+                    }
+                },
+                "required": ["item"],
+                "additionalProperties": false
+            },
+            "description": "Optional. When your message tells people what you have for sale or names prices for your goods, list those items here so listeners can act on your words. Only your own goods — omit when not discussing things you sell."
         }
     },
     "required": ["text"],
@@ -135,6 +184,31 @@ func DecodeSpeakArgs(raw json.RawMessage) (any, error) {
 			MaxSpeakTextChars, n,
 		)
 	}
+	// Mentions shape bounds (ZBBS-WORK-400) — defense in depth vs the
+	// schema, same posture as the text length re-check above. Content
+	// validity (is this a real item kind the speaker can sell) is NOT
+	// checked here: that needs world state, and a bad mention silently
+	// drops world-side rather than failing the speak.
+	if len(args.Mentions) > MaxSpeakMentions {
+		return nil, fmt.Errorf(
+			"speak: at most %d mentions allowed (got %d)",
+			MaxSpeakMentions, len(args.Mentions),
+		)
+	}
+	for i, m := range args.Mentions {
+		if strings.TrimSpace(m.Item) == "" {
+			return nil, fmt.Errorf("speak: mentions[%d].item is required", i)
+		}
+		if n := utf8.RuneCountInString(m.Item); n > MaxSpeakMentionItemChars {
+			return nil, fmt.Errorf(
+				"speak: mentions[%d].item exceeds %d-character cap (got %d characters)",
+				i, MaxSpeakMentionItemChars, n,
+			)
+		}
+		if m.Price < 0 {
+			return nil, fmt.Errorf("speak: mentions[%d].price must not be negative", i)
+		}
+	}
 	return args, nil
 }
 
@@ -175,6 +249,13 @@ func HandleSpeak(in HandlerInput) (sim.Command, error) {
 	}
 	actorID := in.ActorID
 	to := args.To
+	// Mentions pass through as raw model strings; canonicalization +
+	// sellability filtering happens world-side in sim.filterSpeakMentions
+	// (it needs the catalog + the speaker's live inventory).
+	var mentions []sim.SpeakMention
+	for _, m := range args.Mentions {
+		mentions = append(mentions, sim.SpeakMention{Item: sim.ItemKind(m.Item), Price: m.Price})
+	}
 	// Captured outside the closure (the harness may reuse `in` across iterations):
 	// the turn-state new-news exemption for this tick (ZBBS-WORK-370).
 	hasNewNews := in.HasNewNews
@@ -191,7 +272,7 @@ func HandleSpeak(in HandlerInput) (sim.Command, error) {
 		if _, err := sim.EnsureColocatedHuddle(actorID, now).Fn(w); err != nil {
 			return nil, err
 		}
-		return sim.SpeakTo(actorID, text, to, hasNewNews, now).Fn(w)
+		return sim.SpeakTo(actorID, text, to, mentions, hasNewNews, now).Fn(w)
 	}}, nil
 }
 

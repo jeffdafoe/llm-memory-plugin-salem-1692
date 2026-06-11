@@ -54,6 +54,25 @@ type Spoke struct {
 	AddressedID  ActorID
 	Text         string
 	At           time.Time
+
+	// Mentions are the structured sale hints riding the utterance
+	// (ZBBS-WORK-400): item kinds the speaker named as their own goods in
+	// Text, with optional per-unit prices. Already filtered at commit time
+	// to kinds the speaker can actually sell (filterSpeakMentions), so
+	// consumers may trust them. Nil for PC speech and mention-less NPC
+	// speech. The httpapi translator forwards them on the npc_spoke frame
+	// (the channel v1's speak.mentions/price carried) so a vendor's VERBAL
+	// offer surfaces in the PC's Pay UI without requiring a formal
+	// scene_quote.
+	Mentions []SpeakMention
+}
+
+// SpeakMention is one structured sale hint on a Spoke: a catalog item
+// kind the speaker is telling people about, with the per-unit price in
+// coins when one was named (0 = no price given).
+type SpeakMention struct {
+	Item  ItemKind
+	Price int
 }
 
 func (Spoke) isSimEvent() {}

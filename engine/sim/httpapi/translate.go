@@ -91,13 +91,31 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 		for i, id := range e.RecipientIDs {
 			recipients[i] = string(id)
 		}
+		// Structured sale hints (ZBBS-WORK-400): forward the commit-time-
+		// filtered mentions on the same wire fields the scene_quote frame
+		// below uses, so a vendor's VERBAL offer feeds the PC Pay UI's
+		// offer rows without a formal quote. Price 0 = "no price named" —
+		// the item still lands in mentions, just with no mention_prices row.
+		var mentionItems []string
+		var mentionPrices map[string]int
+		for _, m := range e.Mentions {
+			mentionItems = append(mentionItems, string(m.Item))
+			if m.Price > 0 {
+				if mentionPrices == nil {
+					mentionPrices = make(map[string]int, len(e.Mentions))
+				}
+				mentionPrices[string(m.Item)] = m.Price
+			}
+		}
 		return WireFrame{Type: "npc_spoke", Data: spokeWireDTO{
-			ID:           string(e.SpeakerID),
-			HuddleID:     string(e.HuddleID),
-			RecipientIDs: recipients,
-			Text:         e.Text,
-			SpeechID:     uint64(e.EventID()),
-			At:           e.At.UTC().Format(time.RFC3339),
+			ID:            string(e.SpeakerID),
+			HuddleID:      string(e.HuddleID),
+			RecipientIDs:  recipients,
+			Text:          e.Text,
+			Mentions:      mentionItems,
+			MentionPrices: mentionPrices,
+			SpeechID:      uint64(e.EventID()),
+			At:            e.At.UTC().Format(time.RFC3339),
 		}}, true
 	case *sim.SceneQuoteCreated:
 		// ZBBS-HOME-408: surface a vendor's posted offer to a PC buyer. A

@@ -282,3 +282,45 @@ func TestIndexInvalidControlChar(t *testing.T) {
 		})
 	}
 }
+
+// TestDecodeSpeakArgs_WithMentions — the optional ZBBS-WORK-400 sale hints
+// decode alongside text; price is optional per entry.
+func TestDecodeSpeakArgs_WithMentions(t *testing.T) {
+	args, err := DecodeSpeakArgs(json.RawMessage(
+		`{"text":"Stew tonight, three coins.","mentions":[{"item":"stew","price":3},{"item":"bread"}]}`))
+	if err != nil {
+		t.Fatalf("DecodeSpeakArgs: %v", err)
+	}
+	got, ok := args.(SpeakArgs)
+	if !ok {
+		t.Fatalf("Decoded type = %T, want SpeakArgs", args)
+	}
+	want := []SpeakMentionArg{{Item: "stew", Price: 3}, {Item: "bread"}}
+	if len(got.Mentions) != 2 || got.Mentions[0] != want[0] || got.Mentions[1] != want[1] {
+		t.Errorf("Mentions = %+v, want %+v", got.Mentions, want)
+	}
+}
+
+// TestDecodeSpeakArgs_MentionShapeRejects — defense-in-depth bounds on the
+// mentions array: count cap, empty item, oversized item, negative price,
+// unknown nested fields. Content validity (real item? sellable?) is
+// deliberately NOT rejected here — that filters silently world-side.
+func TestDecodeSpeakArgs_MentionShapeRejects(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+	}{
+		{"over count cap", `{"text":"x","mentions":[{"item":"a"},{"item":"b"},{"item":"c"},{"item":"d"},{"item":"e"},{"item":"f"}]}`},
+		{"empty item", `{"text":"x","mentions":[{"item":"  "}]}`},
+		{"oversized item", `{"text":"x","mentions":[{"item":"` + strings.Repeat("y", 65) + `"}]}`},
+		{"negative price", `{"text":"x","mentions":[{"item":"stew","price":-1}]}`},
+		{"unknown nested field", `{"text":"x","mentions":[{"item":"stew","qty":2}]}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := DecodeSpeakArgs(json.RawMessage(tc.raw)); err == nil {
+				t.Errorf("DecodeSpeakArgs(%s) succeeded, want error", tc.raw)
+			}
+		})
+	}
+}
