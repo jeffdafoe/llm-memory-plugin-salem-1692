@@ -950,12 +950,6 @@ func TestPayWithItem_FastPath_StrictRejectPredicates(t *testing.T) {
 			want: "different terms: qty",
 		},
 		{
-			name:    "consume_now_mismatch",
-			argItem: "stew", argQty: 1, argAmount: 4,
-			argConsumeNow: true,
-			want:          "different terms: consume_now",
-		},
-		{
 			name:    "amount_below_floor",
 			argItem: "stew", argQty: 1, argAmount: 3,
 			want: "requires at least",
@@ -2123,5 +2117,75 @@ func TestPayWithItem_PayItems_ServiceRejected(t *testing.T) {
 		[]sim.PayItemInput{{Item: "nights_stay", Qty: 1}}, 0, 0, "", at))
 	if err == nil || !strings.Contains(err.Error(), "service") {
 		t.Fatalf("want service-payment rejection, got %v", err)
+	}
+}
+
+// TestPayWithItem_FastPath_BuyerDispositionWins (ZBBS-WORK-402): the quote
+// is takeaway, the buyer takes it eat-here — the take settles on the fast
+// path with the BUYER's disposition (ItemConsumed fires, the entry carries
+// the buyer's term) instead of rejecting on a consume_now mismatch.
+func TestPayWithItem_FastPath_BuyerDispositionWins(t *testing.T) {
+	w, stop, at := buildFastPathFixture(t, 7)
+	defer stop()
+	events := capturePayWithItemEvents(t, w)
+	res, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, true, nil, nil, 7, 0, "", at))
+	if err != nil {
+		t.Fatalf("PayWithItem buyer-disposition take: %v", err)
+	}
+	r := res.(sim.PayWithItemResult)
+	if !r.FastPath {
+		t.Error("FastPath = false, want true (disposition no longer gates the match)")
+	}
+	if len(events.Consumed) != 1 || events.Consumed[0].ActorID != "alice" {
+		t.Fatalf("ItemConsumed = %+v, want one consume by alice (buyer chose eat-here)", events.Consumed)
+	}
+	if entry := readPayLedger(t, w)[r.LedgerID]; !entry.ConsumeNow {
+		t.Error("ledger ConsumeNow = false, want true (buyer's term rides the entry)")
+	}
+}
+
+// TestPayWithItem_FastPath_ServiceClampsDisposition (ZBBS-WORK-402): a
+// service kind has no eat-here/take-home choice — whatever the buyer sends,
+// the engine forces the service shape (consume_now=false) rather than
+// rejecting. Uses the production service shape (service+lodging, like
+// nights_stay): the clamp keeps a confused consume_now=true take OFF the
+// eat-on-the-spot branch and on the lodging Order branch — the room grant
+// happens at the keeper's deliver_order, not at accept, so no bedroom
+// machinery is needed here.
+func TestPayWithItem_FastPath_ServiceClampsDisposition(t *testing.T) {
+	w, stop, at := buildFastPathFixture(t, 7)
+	defer stop()
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.ItemKinds["nights_stay"] = &sim.ItemKindDef{
+			Name: "nights_stay", DisplayLabel: "a night's stay",
+			Capabilities: []string{"service", "lodging"},
+		}
+		world.Structures["inn"] = &sim.Structure{ID: "inn", DisplayName: "The Inn", Rooms: []*sim.Room{
+			{ID: 1, StructureID: "inn", Kind: sim.RoomKindPrivate, Name: "bedroom_1"},
+		}}
+		world.Actors["bob"].WorkStructureID = "inn"
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed service kind: %v", err)
+	}
+	seedQuote(t, w, sim.SceneQuote{
+		ID: 8, SceneID: "sc1", SellerID: "bob", ItemKind: "nights_stay",
+		Qty: 1, Amount: 2, State: sim.SceneQuoteStateActive,
+		CreatedAt: at, ExpiresAt: at.Add(10 * time.Minute),
+	})
+	events := capturePayWithItemEvents(t, w)
+	res, err := w.Send(sim.PayWithItem("alice", "Bob", "nights_stay", 1, 2, true, nil, nil, 8, 0, "", at))
+	if err != nil {
+		t.Fatalf("PayWithItem service take: %v", err)
+	}
+	r := res.(sim.PayWithItemResult)
+	if !r.FastPath {
+		t.Error("FastPath = false, want true")
+	}
+	if entry := readPayLedger(t, w)[r.LedgerID]; entry.ConsumeNow {
+		t.Error("ledger ConsumeNow = true, want false (service shape forced)")
+	}
+	if len(events.Consumed) != 0 {
+		t.Errorf("ItemConsumed on a service take: %+v", events.Consumed)
 	}
 }
