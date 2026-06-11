@@ -452,6 +452,18 @@ func EvaluateReactors(now time.Time) Command {
 					continue
 				}
 
+				// Agent-less kinds never tick (ZBBS-HOME-428). The stamping
+				// funnel refuses them, so a due cycle here can only mean
+				// direct field mutation (tests, future code) or pre-fix
+				// state carried in memory — clear it rather than skip, or
+				// the dead cycle would re-enter this scan forever. This is
+				// the structural backstop for the reopenWarrants path, which
+				// bypasses the funnel by design.
+				if actor.Kind != KindNPCStateful && actor.Kind != KindNPCShared {
+					clearWarrant(actor)
+					continue
+				}
+
 				eligible, stale := actorCanReactNow(w, actor, now)
 				if stale {
 					clearWarrant(actor)

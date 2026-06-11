@@ -1452,3 +1452,60 @@ func TestNewTickAttemptID_UniqueAndPrefixed(t *testing.T) {
 		seen[id] = true
 	}
 }
+
+// TestEvaluateReactors_AgentlessWarrantCycleCleared pins the evaluator-side
+// half of ZBBS-HOME-428: a warrant cycle sitting on an agent-less actor
+// (direct field mutation, or pre-fix state carried in memory — the stamping
+// funnel refuses such stamps) must emit NO tick and be CLEARED, not skipped,
+// so the dead cycle can't re-enter the scan forever. This is the structural
+// backstop for the reopenWarrants carry-forward path, which bypasses the
+// funnel by design — exactly the path that made the live failure permanent.
+func TestEvaluateReactors_AgentlessWarrantCycleCleared(t *testing.T) {
+	w, cancel := buildReactorTestWorld(t)
+	defer cancel()
+
+	now := time.Now().UTC()
+	due := now.Add(-time.Millisecond)
+
+	var received []*sim.ReactorTickDue
+	var mu sync.Mutex
+	_, _ = w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			world.Subscribe(sim.SubscriberFunc(func(_ *sim.World, evt sim.Event) {
+				if e, ok := evt.(*sim.ReactorTickDue); ok {
+					mu.Lock()
+					defer mu.Unlock()
+					received = append(received, e)
+				}
+			}))
+			a := world.Actors["alice"]
+			a.Kind = sim.KindPC
+			t1 := now.Add(-50 * time.Millisecond)
+			a.WarrantedSince = &t1
+			a.WarrantDueAt = &due
+			a.Warrants = []sim.WarrantMeta{
+				{TriggerActorID: "bob", Reason: sim.BasicWarrantReason{K: sim.WarrantKindHuddlePeerJoined}},
+			}
+			return nil, nil
+		},
+	})
+
+	_, _ = w.Send(sim.EvaluateReactors(now))
+
+	mu.Lock()
+	if len(received) != 0 {
+		mu.Unlock()
+		t.Fatalf("ReactorTickDue events = %d, want 0 (agent-less actor must not tick)", len(received))
+	}
+	mu.Unlock()
+
+	inspectActor(t, w, "alice", func(a *sim.Actor) {
+		if a.WarrantedSince != nil || a.WarrantDueAt != nil || a.Warrants != nil {
+			t.Errorf("agent-less warrant cycle not cleared: since=%v due=%v warrants=%v",
+				a.WarrantedSince, a.WarrantDueAt, a.Warrants)
+		}
+		if a.TickInFlight {
+			t.Error("TickInFlight set for an agent-less actor")
+		}
+	})
+}

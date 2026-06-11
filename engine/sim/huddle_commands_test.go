@@ -789,3 +789,41 @@ func TestConcludeHuddle_DetachesFromScenes(t *testing.T) {
 		t.Error("scene still references force-concluded huddle")
 	}
 }
+
+// TestJoinHuddle_PCJoinerNeverWarranted pins ZBBS-HOME-428 at the producer
+// that leaked live: huddle join stamps the joiner and every prior member,
+// and before the funnel's kind gate a PC swept into a huddle got a
+// HuddleJoined warrant — the reactor then ticked the agent-less human in a
+// permanent failed_before_render retry loop. A PC joiner must end the join
+// with NO warrant cycle, while the NPC already present still gets its
+// HuddlePeerJoined stamp from the arrival.
+func TestJoinHuddle_PCJoinerNeverWarranted(t *testing.T) {
+	w, cancel := buildHuddleTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	// bob is the human player; alice is explicitly an NPC so the test keeps
+	// proving "PC refused, NPC accepted" even if fixture defaults change.
+	setActor(t, w, "alice", func(a *sim.Actor) { a.Kind = sim.KindNPCStateful })
+	setActor(t, w, "bob", func(a *sim.Actor) { a.Kind = sim.KindPC })
+
+	sendT(t, w, sim.JoinHuddle("alice", "tavern", "", now))
+	// Clear alice's own-join warrant so the assertion isolates the stamp
+	// from bob's arrival.
+	setActor(t, w, "alice", func(a *sim.Actor) {
+		a.WarrantedSince = nil
+		a.Warrants = nil
+	})
+
+	sendT(t, w, sim.JoinHuddle("bob", "tavern", "", now.Add(time.Second)))
+
+	state := sendT(t, w, sim.Command{Fn: func(world *sim.World) (any, error) {
+		return [2]*time.Time{world.Actors["alice"].WarrantedSince, world.Actors["bob"].WarrantedSince}, nil
+	}}).([2]*time.Time)
+	if state[0] == nil {
+		t.Error("alice (NPC) should be warranted by the PC's arrival (HuddlePeerJoined)")
+	}
+	if state[1] != nil {
+		t.Error("bob (PC) must not be warranted by his own join — agent-less kinds never tick")
+	}
+}

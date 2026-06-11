@@ -583,12 +583,29 @@ func (m WarrantMeta) Kind() WarrantKind {
 //
 // Returns true when the warrant was recorded (a fresh cycle opened, or the
 // meta appended to an open cycle), false when the funnel declined it (nil
-// args, or a source-dedup hit). Most callers ignore the result — they stamp
-// and move on. The red-need backstop (ZBBS-HOME-363) consults it because it
-// advances real per-actor backoff pacing on a stamp, and must not pace an
-// actor for a deliberation that the funnel never produced.
+// args, an agent-less actor kind, or a source-dedup hit). Most callers ignore
+// the result — they stamp and move on. The red-need backstop (ZBBS-HOME-363)
+// consults it because it advances real per-actor backoff pacing on a stamp,
+// and must not pace an actor for a deliberation that the funnel never
+// produced.
 func tryStampWarrant(w *World, actor *Actor, meta WarrantMeta, now time.Time) bool {
 	if actor == nil || meta.Reason == nil {
+		return false
+	}
+
+	// Only agent-backed NPC kinds are ever warranted: a warrant exists to
+	// drive an LLM reactor tick, and PCs / decoratives have no agent to
+	// drive (ZBBS-HOME-428). This invariant used to live in each producer's
+	// scope check by convention, and the huddle join/leave producers missed
+	// it — a PC swept into a huddle got a HuddleJoined / HuddlePeerJoined
+	// warrant, the reactor ticked the agent-less human, the tick died before
+	// render (failed_before_render / malformed), and the before-render
+	// carry-forward re-opened the same warrant in a permanent retry loop
+	// (the 2026-06-10 play session's "52 malformed" telemetry). Gating at
+	// the single stamping funnel closes every producer path at once;
+	// warrants are wiped on load (resetReactorStateOnLoad), so a stale PC
+	// cycle can't survive a boot either.
+	if actor.Kind != KindNPCStateful && actor.Kind != KindNPCShared {
 		return false
 	}
 
