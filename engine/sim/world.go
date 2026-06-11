@@ -626,6 +626,17 @@ type World struct {
 	// nil-readable as empty.
 	PriceBook map[PriceBookKey]*RingBuffer[PriceObservation]
 
+	// NarrationPools is the expandable narration phrase registry
+	// (ZBBS-WORK-399) — businessowner hospitality, lodging day-cycle,
+	// NPC retire farewell. Seeded by NewWorld from the compile-time
+	// authoring tables; DB-persisted expansions merge in at boot via
+	// MergeNarrationExpansions and accrue at runtime via
+	// FinishNarrationExpansion. Draw counters inside each pool are
+	// transient; generated phrases are durable in the
+	// narration_pool_expansion table (write-through, not checkpointed).
+	// World-goroutine-only — see engine/sim/narration_pool.go.
+	NarrationPools map[string]*NarrationPool
+
 	// Asset catalog — reference state, loaded at startup. Looked up by
 	// VillageObject.AssetID for state resolution, footprint, anchor, etc.
 	Assets map[AssetID]*Asset
@@ -759,6 +770,17 @@ type World struct {
 	// goroutine drains to pg off-goroutine. See the ActionLogSink doc.
 	actionLogSink ActionLogSink
 
+	// narrationExpandCh is the buffered nudge channel narrationDraw pokes
+	// when a pool crosses its expansion threshold (ZBBS-WORK-399). Nil by
+	// default (pools never expand); cascade.RegisterNarrationExpansion
+	// installs it via SetNarrationExpansionTrigger. Send is non-blocking.
+	narrationExpandCh chan<- string
+
+	// narrationExpansionSink is the durable narration_pool_expansion
+	// writer. Nil by default (in-memory-only expansion); main.go installs
+	// the pg impl via SetNarrationExpansionSink before Run.
+	narrationExpansionSink NarrationExpansionSink
+
 	cmds      chan Command
 	published atomic.Pointer[Snapshot]
 
@@ -873,6 +895,7 @@ func NewWorld(repo Repository) *World {
 		AttributeDefinitions: make(map[string]*AttributeDefinition),
 		Recipes:              make(map[ItemKind]*ItemRecipe),
 		ItemKinds:            make(map[ItemKind]*ItemKindDef),
+		NarrationPools:       narrationSeedPools(),
 		actorsByStructure:    make(map[StructureID]map[ActorID]struct{}),
 		actorsByHuddle:       make(map[HuddleID]map[ActorID]struct{}),
 		outdoorActors:        make(map[ActorID]struct{}),

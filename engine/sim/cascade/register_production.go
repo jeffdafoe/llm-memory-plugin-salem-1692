@@ -48,9 +48,9 @@ import (
 // through w.LifecycleContext after Run starts.
 //
 // client is the production LLM adapter (engine/sim/llm/memapi.Client).
-// The LLM-bearing cascades (atmosphere, consolidation, narrative
-// consolidation, noticeboard) call client.Chat with their own scene-
-// scoped Requests; the non-LLM cascades ignore it.
+// The LLM-bearing cascades (atmosphere, consolidation, narration
+// expansion, narrative consolidation, noticeboard) call client.Chat
+// with their own scene-scoped Requests; the non-LLM cascades ignore it.
 //
 // Panics on nil w (via each Register*'s wiring guard). Nil client is
 // rejected here rather than later: a non-nil client is required by
@@ -87,11 +87,13 @@ func RegisterProductionCascades(ctx context.Context, w *sim.World, client llm.Cl
 	RegisterVisitor(ctx, w)
 
 	// LLM-bearing cascades — atmosphere prose, per-pair consolidation,
-	// per-actor narrative consolidation, and noticeboard authoring.
-	// Each fires LLM calls through the supplied client. Order among
-	// them is irrelevant; alphabetical for predictable reading.
+	// narration pool expansion, per-actor narrative consolidation, and
+	// noticeboard authoring. Each fires LLM calls through the supplied
+	// client. Order among them is irrelevant; alphabetical for
+	// predictable reading.
 	RegisterAtmosphere(ctx, w, client)
 	RegisterConsolidation(ctx, w, client)
+	RegisterNarrationExpansion(ctx, w, client)
 	RegisterNarrativeConsolidation(ctx, w, client)
 	RegisterNoticeboard(ctx, w, client)
 }

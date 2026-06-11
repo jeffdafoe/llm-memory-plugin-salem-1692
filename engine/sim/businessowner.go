@@ -240,27 +240,28 @@ func BusinessownerFlavors() []string {
 	return out
 }
 
-// RenderBusinessownerPhrase picks a random line from the flavor's pool
-// for the given trigger and interpolates {customer}. Returns "" when the
-// flavor or trigger is unknown — caller treats empty as "skip the fire"
-// so a misconfigured BusinessownerState.Flavor degrades to silence rather
-// than a panic during runtime. r is non-nil; production callers thread a
-// per-driver seeded rand, tests use a deterministic seed.
+// RenderBusinessownerPhrase picks a random line from pool and
+// interpolates {customer}. Returns "" on an empty pool — caller treats
+// empty as "skip the fire", so a misconfigured BusinessownerState.Flavor
+// (which resolves to no registry pool via BusinessownerNarrationKey)
+// degrades to silence rather than a panic during runtime. r is non-nil;
+// production callers thread a per-driver seeded rand, tests use a
+// deterministic seed.
+//
+// The pool comes from the world's narration registry (ZBBS-WORK-399:
+// seed lines + any LLM-expanded extras), drawn by the caller via
+// narrationDraw so the draw is counted; this function stays pure
+// selection + interpolation.
 //
 // customerName empty falls back to a token-stripped form: ", {customer}"
 // and " {customer}" tokens are removed (preserving grammar), and bare
 // "{customer}" tokens become empty. Lets a missing display name still
 // produce a sensible line rather than literal "Welcome, {customer}!".
-func RenderBusinessownerPhrase(r *rand.Rand, flavor string, trigger BusinessownerTrigger, customerName string) string {
+func RenderBusinessownerPhrase(r *rand.Rand, pool []string, customerName string) string {
 	if r == nil {
 		return ""
 	}
-	pools, ok := businessownerPhrases[flavor]
-	if !ok {
-		return ""
-	}
-	pool, ok := pools[trigger]
-	if !ok || len(pool) == 0 {
+	if len(pool) == 0 {
 		return ""
 	}
 	line := pool[r.Intn(len(pool))]
@@ -451,7 +452,7 @@ func EmitBusinessownerSpeech(args BusinessownerSpeechArgs) Command {
 				res.SkipReason = "cooldown active"
 				return res, nil
 			}
-			text := RenderBusinessownerPhrase(args.Rand, flavor, args.Trigger, args.ListenerName)
+			text := RenderBusinessownerPhrase(args.Rand, w.narrationDraw(BusinessownerNarrationKey(flavor, args.Trigger)), args.ListenerName)
 			if text == "" {
 				// Unknown flavor or trigger reaching here means the gate
 				// above missed something — defensive skip rather than emit
