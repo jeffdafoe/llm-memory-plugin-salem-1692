@@ -15,8 +15,11 @@ func sleepTestWorld(actors ...*Actor) *World {
 		m[a.ID] = a
 	}
 	return &World{
-		Actors:   m,
-		Settings: WorldSettings{Location: time.UTC, NPCSleepMaxDurationHours: 12},
+		Actors: m,
+		// Narration registry so the retire-farewell draw has its pool
+		// (ZBBS-WORK-399) — NewWorld seeds this in production.
+		NarrationPools: narrationSeedPools(),
+		Settings:       WorldSettings{Location: time.UTC, NPCSleepMaxDurationHours: 12},
 	}
 }
 
@@ -131,8 +134,8 @@ func TestExecuteNPCSleep_LeavesHuddleWithFarewell(t *testing.T) {
 	if got.SpeakerID != "sleeper" {
 		t.Errorf("farewell SpeakerID = %q, want sleeper", got.SpeakerID)
 	}
-	if got.Text != renderRetireLine("sleeper", now) {
-		t.Errorf("farewell Text = %q, want the deterministic retire line %q", got.Text, renderRetireLine("sleeper", now))
+	if got.Text != w.renderRetireLine("sleeper", now) {
+		t.Errorf("farewell Text = %q, want the deterministic retire line %q", got.Text, w.renderRetireLine("sleeper", now))
 	}
 	if len(got.RecipientIDs) != 1 || got.RecipientIDs[0] != "partner" {
 		t.Errorf("farewell RecipientIDs = %v, want [partner]", got.RecipientIDs)

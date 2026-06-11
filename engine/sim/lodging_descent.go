@@ -50,7 +50,7 @@ func handleLodgingMorningDescent(w *World, evt Event) {
 	if common == 0 || common == actor.InsideRoomID {
 		return
 	}
-	text := pickLodgingNarration(LodgingReasonMorning)
+	text := w.pickLodgingNarration(LodgingReasonMorning)
 	if text == "" {
 		return
 	}

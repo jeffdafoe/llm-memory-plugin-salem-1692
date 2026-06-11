@@ -176,11 +176,18 @@ var retireLines = []string{
 // renderRetireLine picks a retire line deterministically from the pool. Hashed
 // on the actor plus the bed-down minute so the same NPC doesn't repeat one line
 // every night yet a given (actor, time) is stable for tests — the same
-// no-rand-threaded approach pickVisitorSlot uses for slot selection.
-func renderRetireLine(actorID ActorID, now time.Time) string {
+// no-rand-threaded approach pickVisitorSlot uses for slot selection. The pool
+// comes from the world's narration registry (ZBBS-WORK-399: the retireLines
+// seed plus any LLM-expanded extras), so the draw is counted toward the pool's
+// expansion threshold; world-goroutine-only like every caller in this file.
+func (w *World) renderRetireLine(actorID ActorID, now time.Time) string {
+	pool := w.narrationDraw(NarrationKeyNPCRetire)
+	if len(pool) == 0 {
+		return ""
+	}
 	minute := uint32(now.Unix() / 60)
-	idx := (hashActorID(actorID) + minute) % uint32(len(retireLines))
-	return retireLines[idx]
+	idx := (hashActorID(actorID) + minute) % uint32(len(pool))
+	return pool[idx]
 }
 
 // speakRetireFarewell emits a deterministic farewell Spoke to the bedding
@@ -210,14 +217,20 @@ func speakRetireFarewell(w *World, a *Actor, now time.Time) {
 	// fires at zero members), so an active-huddle gate alone isn't enough to
 	// guarantee an audience — don't emit a farewell to an empty room. Leave the
 	// huddle regardless (LeaveHuddle then concludes the now-empty huddle).
+	// Empty text (a literal-built World with no narration registry) skips the
+	// emit the same way an empty room does. Recipients are checked BEFORE the
+	// draw so a silent bed-down doesn't count against the pool's expansion
+	// threshold.
 	if len(recipients) > 0 {
-		w.emit(&Spoke{
-			SpeakerID:    a.ID,
-			HuddleID:     a.CurrentHuddleID,
-			RecipientIDs: recipients,
-			Text:         renderRetireLine(a.ID, now),
-			At:           now,
-		})
+		if text := w.renderRetireLine(a.ID, now); text != "" {
+			w.emit(&Spoke{
+				SpeakerID:    a.ID,
+				HuddleID:     a.CurrentHuddleID,
+				RecipientIDs: recipients,
+				Text:         text,
+				At:           now,
+			})
+		}
 	}
 	LeaveHuddle(a.ID, now).Fn(w)
 }

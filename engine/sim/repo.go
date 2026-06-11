@@ -254,6 +254,20 @@ type ActionLogSink interface {
 	Append(ctx context.Context, row DurableActionLogRow) error
 }
 
+// NarrationExpansionSink durably persists LLM-generated narration pool
+// phrases to the narration_pool_expansion table (ZBBS-WORK-399) —
+// write-through at expansion time, OUTSIDE the checkpoint tx. Unlike
+// ActionLogSink this is SYNCHRONOUS: Append is called from the expansion
+// cascade goroutine (never the world goroutine), and the cascade must
+// know the write landed before applying the phrases in memory
+// (durable-first — a phrase the DB never saw would vanish on restart).
+// Production impl: repo/pg NarrationExpansionRepo. Loading the persisted
+// rows back happens at boot in main.go (LoadAll → MergeNarrationExpansions),
+// not through this interface.
+type NarrationExpansionSink interface {
+	Append(ctx context.Context, poolKey string, phrases []string, generatedBy string) error
+}
+
 // TickTelemetryRecord is one entry in the per-tick lifecycle telemetry
 // stream. PR 3a owns the minimal contract because the reactor evaluator is
 // the first writer (the "deferred" record, written when admission control
