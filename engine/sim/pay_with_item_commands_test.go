@@ -1994,17 +1994,28 @@ func TestPayWithItem_AutoMatch_BareOfferTakesOpenQuote(t *testing.T) {
 }
 
 // TestPayWithItem_AutoMatch_WithdrawsCrossingOffer — when the auto-match
-// settles, the buyer's own older pending offer for the same goods to the
-// same seller resolves WithdrawnByBuyer instead of staying pending (a stale
-// mirror the seller could later accept → double settle). The pre-seeded
-// crossing entry also proves ordering: the auto-match runs BEFORE the
-// cross-tick duplicate gate, which would otherwise reject this very call.
+// settles, the buyer's own older pending offer MIRRORING the settled terms
+// (same scene/kind/qty/disposition/consumers) resolves WithdrawnByBuyer
+// instead of staying pending (a stale mirror the seller could later accept
+// → double settle), while a DISTINCT live order for the same goods at
+// different terms survives untouched (code_review). The pre-seeded crossing
+// entry also proves ordering: the auto-match runs BEFORE the cross-tick
+// duplicate gate, which would otherwise reject this very call.
 func TestPayWithItem_AutoMatch_WithdrawsCrossingOffer(t *testing.T) {
 	w, stop, at := buildFastPathFixture(t, 7)
 	defer stop()
+	// The mirror: same scene, kind, qty, disposition, consumers as the take.
 	seedLedgerEntry(t, w, sim.PayLedgerEntry{
 		ID: 55, BuyerID: "alice", SellerID: "bob",
 		ItemKind: "stew", Qty: 1, Amount: 4, ConsumeNow: false,
+		State: sim.PayLedgerStatePending, CreatedAt: at.Add(-time.Minute),
+		ExpiresAt: at.Add(10 * time.Minute), SceneID: "sc1", HuddleID: "h1",
+	})
+	// A distinct live order: same goods, different qty + disposition — the
+	// 10-water-take-home case. Must NOT be withdrawn by the 1-stew take.
+	seedLedgerEntry(t, w, sim.PayLedgerEntry{
+		ID: 56, BuyerID: "alice", SellerID: "bob",
+		ItemKind: "stew", Qty: 3, Amount: 12, ConsumeNow: true,
 		State: sim.PayLedgerStatePending, CreatedAt: at.Add(-time.Minute),
 		ExpiresAt: at.Add(10 * time.Minute), SceneID: "sc1", HuddleID: "h1",
 	})
@@ -2019,7 +2030,10 @@ func TestPayWithItem_AutoMatch_WithdrawsCrossingOffer(t *testing.T) {
 
 	ledger := readPayLedger(t, w)
 	if got := ledger[55].State; got != sim.PayLedgerStateWithdrawnByBuyer {
-		t.Errorf("crossing offer state = %q, want withdrawn_by_buyer", got)
+		t.Errorf("mirror offer state = %q, want withdrawn_by_buyer", got)
+	}
+	if got := ledger[56].State; got != sim.PayLedgerStatePending {
+		t.Errorf("distinct-terms offer state = %q, want pending (must survive the sweep)", got)
 	}
 }
 

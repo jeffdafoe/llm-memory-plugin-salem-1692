@@ -511,7 +511,7 @@ func PayWithItem(
 						parentID, forText, at, readyBy,
 					)
 					if fastErr == nil {
-						withdrawCrossingOffers(w, buyerID, sellerID, kind, at)
+						withdrawCrossingOffers(w, buyerID, sellerID, sceneID, kind, qty, consumeNow, consumerIDs, at)
 						return res, nil
 					}
 				}
@@ -1391,20 +1391,41 @@ func findAutoMatchQuote(
 	return best.ID
 }
 
-// withdrawCrossingOffers resolves the buyer's OWN still-pending offers to
-// `seller` for `kind` after a quote auto-match settles the purchase: those
-// entries were attempts at the very transaction that just completed, and
-// left pending they invite a later double-settle (the seller accepting a
-// stale mirror of a sale already made). WithdrawnByBuyer is the buyer-drove-
-// this terminal — the reactor skips notifying the seller of it, and the
-// seller's stale offer warrant drops via filterStalePayOfferWarrants.
-// ZBBS-HOME-424.
-func withdrawCrossingOffers(w *World, buyerID, sellerID ActorID, kind ItemKind, at time.Time) {
+// withdrawCrossingOffers resolves the buyer's OWN still-pending offers that
+// mirror the transaction a quote auto-match just settled: left pending they
+// invite a later double-settle (the seller accepting a stale mirror of a
+// sale already made). "Mirror" is the settled take's term identity — same
+// scene, kind, qty, disposition, and consumer set — NOT every same-goods
+// offer: a distinct live order (different qty/disposition, e.g. a 10-water
+// take-home staked before a 1-water consume-now quote take) must survive
+// (code_review). Amount is excluded because above-floor overpayment is
+// allowed on the take, and the duplicate gate's own key excludes price.
+// Counter-chain entries (ParentID != 0) are skipped — a distinct lifecycle,
+// same exemption the duplicate gate applies. WithdrawnByBuyer is the
+// buyer-drove-this terminal — the reactor skips notifying the seller of it,
+// and the seller's stale offer warrant drops via
+// filterStalePayOfferWarrants. ZBBS-HOME-424.
+func withdrawCrossingOffers(
+	w *World,
+	buyerID, sellerID ActorID,
+	sceneID SceneID,
+	kind ItemKind,
+	qty int,
+	consumeNow bool,
+	consumerIDs []ActorID,
+	at time.Time,
+) {
 	for _, e := range w.PayLedger {
-		if e == nil || e.State != PayLedgerStatePending {
+		if e == nil || e.State != PayLedgerStatePending || e.ParentID != 0 {
 			continue
 		}
 		if e.BuyerID != buyerID || e.SellerID != sellerID || e.ItemKind != kind {
+			continue
+		}
+		if e.SceneID != sceneID || e.Qty != qty || e.ConsumeNow != consumeNow {
+			continue
+		}
+		if !actorIDSetsEqual(e.ConsumerIDs, consumerIDs) {
 			continue
 		}
 		finalizePayLedgerTerminal(w, e, PayTerminalStateWithdrawnByBuyer, "superseded — settled against the seller's open offer", at)
