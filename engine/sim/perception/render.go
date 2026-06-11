@@ -1555,10 +1555,17 @@ func renderQuoteWarrantLine(n int, seller string, r sim.SceneQuoteTargetedWarran
 		disposition = ", to eat here (it can't be carried away)"
 	}
 	take := fmt.Sprintf(" To take it, call pay_with_item with quote_id %d and the same item, qty, and amount — it settles at once.", r.QuoteID)
-	if r.Qty > 1 {
-		return fmt.Sprintf("%d. %s offers you %d %s for %d %s%s.%s\n", n, seller, r.Qty, item, r.Amount, unit, disposition, take)
+	// An overheard public quote (huddle fan-out, ZBBS-HOME-431) is an ad
+	// announced to the conversation, not a direct address — "offers" not
+	// "offers you", so the actor doesn't perceive a personal offer.
+	offers := "offers you"
+	if r.Overheard {
+		offers = "offers"
 	}
-	return fmt.Sprintf("%d. %s offers you %s for %d %s%s.%s\n", n, seller, item, r.Amount, unit, disposition, take)
+	if r.Qty > 1 {
+		return fmt.Sprintf("%d. %s %s %d %s for %d %s%s.%s\n", n, seller, offers, r.Qty, item, r.Amount, unit, disposition, take)
+	}
+	return fmt.Sprintf("%d. %s %s %s for %d %s%s.%s\n", n, seller, offers, item, r.Amount, unit, disposition, take)
 }
 
 // renderPayResolvedWarrantLine renders, to the buyer, how the seller resolved

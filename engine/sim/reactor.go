@@ -238,6 +238,11 @@ type SceneQuoteTargetedWarrantReason struct {
 	Amount     int
 	ConsumeNow bool
 	ExpiresAt  time.Time
+	// Overheard marks a PUBLIC quote that reached this actor via the
+	// huddle fan-out (ZBBS-HOME-431) rather than a target_buyer stamp.
+	// The warrant line renders "offers <item>" instead of "offers you
+	// <item>" so an overheard ad isn't perceived as a direct address.
+	Overheard bool
 }
 
 func (SceneQuoteTargetedWarrantReason) isWarrantReason()             {}

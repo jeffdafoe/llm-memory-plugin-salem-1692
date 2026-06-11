@@ -241,6 +241,9 @@ func TestSceneQuoteReactor_PublicQuote_FansOutToHuddlePeers(t *testing.T) {
 		if reason.QuoteID != qid || reason.SellerID != "aldous" || reason.ItemKind != "ale" || reason.Amount != 4 {
 			t.Errorf("%s warrant terms = %+v, want quote %d from aldous", id, reason, qid)
 		}
+		if !reason.Overheard {
+			t.Errorf("%s fan-out warrant Overheard = false, want true (renders \"offers\" not \"offers you\")", id)
+		}
 	}
 	for _, id := range []sim.ActorID{"aldous", "pcplayer", "dec", "walker"} {
 		if got := len(peekActorWarrantsForQuoteTest(t, w, id)); got != 0 {

@@ -78,7 +78,7 @@ func handleSceneQuoteWarrants(w *sim.World, evt sim.Event) {
 	}
 
 	now := time.Now().UTC()
-	if _, err := sim.StampWarrant(created.TargetBuyer, sceneQuoteWarrantMeta(created), now).Fn(w); err != nil {
+	if _, err := sim.StampWarrant(created.TargetBuyer, sceneQuoteWarrantMeta(created, false), now).Fn(w); err != nil {
 		log.Printf(
 			"handlers: scene-quote-reactor StampWarrant for target %q (quote %d, event %d): %v",
 			created.TargetBuyer, created.QuoteID, created.EventID(), err,
@@ -88,9 +88,11 @@ func handleSceneQuoteWarrants(w *sim.World, evt sim.Event) {
 
 // sceneQuoteWarrantMeta builds the warrant meta for a SceneQuoteCreated event
 // — shared by the targeted stamp and the public huddle fan-out so both paths
-// render the identical quote warrant line (seller, item, amount, the quote_id
-// fast-path take instruction).
-func sceneQuoteWarrantMeta(created *sim.SceneQuoteCreated) sim.WarrantMeta {
+// render the same quote warrant line (seller, item, amount, the quote_id
+// fast-path take instruction). overheard distinguishes the fan-out path: the
+// render says "offers" rather than "offers you" for a peer who merely heard a
+// public quote announced to the conversation.
+func sceneQuoteWarrantMeta(created *sim.SceneQuoteCreated, overheard bool) sim.WarrantMeta {
 	return sim.WarrantMeta{
 		TriggerActorID: created.SellerID,
 		Force:          false,
@@ -102,6 +104,7 @@ func sceneQuoteWarrantMeta(created *sim.SceneQuoteCreated) sim.WarrantMeta {
 			Amount:     created.Amount,
 			ConsumeNow: created.ConsumeNow,
 			ExpiresAt:  created.ExpiresAt,
+			Overheard:  overheard,
 		},
 		SourceEventID: created.EventID(),
 		RootEventID:   created.RootEventID(),
@@ -154,7 +157,7 @@ func fanOutPublicQuoteWarrants(w *sim.World, created *sim.SceneQuoteCreated) {
 		if peer.MoveIntent != nil {
 			continue
 		}
-		if _, err := sim.StampWarrant(peerID, sceneQuoteWarrantMeta(created), now).Fn(w); err != nil {
+		if _, err := sim.StampWarrant(peerID, sceneQuoteWarrantMeta(created, true), now).Fn(w); err != nil {
 			log.Printf(
 				"handlers: scene-quote-reactor StampWarrant for huddle peer %q (public quote %d, event %d): %v",
 				peerID, created.QuoteID, created.EventID(), err,
