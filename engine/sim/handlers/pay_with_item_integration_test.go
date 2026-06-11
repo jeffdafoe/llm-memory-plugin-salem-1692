@@ -70,7 +70,7 @@ func buildIntegrationWorld(t *testing.T) (*sim.World, func()) {
 		"bob": {
 			ID: "bob", DisplayName: "Bob", Kind: sim.KindNPCShared,
 			State: sim.StateIdle, StateEnteredAt: now,
-			Inventory:        map[sim.ItemKind]int{"stew": 5},
+			Inventory:        map[sim.ItemKind]int{"bread": 5},
 			CurrentHuddleID:  "h1",
 			RecentActions:    sim.NewRingBuffer[sim.Action](4),
 			RecentStateTrans: sim.NewRingBuffer[sim.StateTransition](4),
@@ -110,7 +110,7 @@ func buildIntegrationWorld(t *testing.T) (*sim.World, func()) {
 //  2. PayOfferReceived subscriber stamps PayOfferWarrantReason on Bob.
 //  3. Bob calls accept_pay.
 //  4. At accept, coins move (4 alice→bob) AND the physical takeaway is
-//     delivered immediately (ZBBS-HOME-398): bob's stew drops 5→4 and alice
+//     delivered immediately (ZBBS-HOME-398): bob's bread drops 5→4 and alice
 //     receives 1. The Order is minted then flipped straight to Delivered (no
 //     deferred deliver_order beat for physical goods — that's lodging-only).
 //  5. PayWithItemResolved subscriber stamps PayResolvedWarrantReason
@@ -123,7 +123,7 @@ func TestIntegration_SlowPathAcceptedHappyPath(t *testing.T) {
 		ActorID:   "alice",
 		AttemptID: "tk-1",
 		Args: handlers.PayWithItemArgs{
-			Seller: "Bob", Item: "stew", Qty: 1, Amount: 4,
+			Seller: "Bob", Item: "bread", Qty: 1, Amount: 4,
 			ConsumeNow: false,
 		},
 	})
@@ -159,20 +159,20 @@ func TestIntegration_SlowPathAcceptedHappyPath(t *testing.T) {
 		t.Errorf("bob.Coins = %d, want 4", got)
 	}
 	// ZBBS-HOME-398: physical takeaway is delivered to alice at accept —
-	// bob's stew drops 5→4 and alice receives 1.
+	// bob's bread drops 5→4 and alice receives 1.
 	var aliceStew, bobStew int
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
-		aliceStew = world.Actors["alice"].Inventory["stew"]
-		bobStew = world.Actors["bob"].Inventory["stew"]
+		aliceStew = world.Actors["alice"].Inventory["bread"]
+		bobStew = world.Actors["bob"].Inventory["bread"]
 		return nil, nil
 	}}); err != nil {
 		t.Fatalf("read inventory: %v", err)
 	}
 	if aliceStew != 1 {
-		t.Errorf("alice stew = %d, want 1 (delivered at accept)", aliceStew)
+		t.Errorf("alice bread = %d, want 1 (delivered at accept)", aliceStew)
 	}
 	if bobStew != 4 {
-		t.Errorf("bob stew = %d, want 4 (delivered at accept)", bobStew)
+		t.Errorf("bob bread = %d, want 4 (delivered at accept)", bobStew)
 	}
 	// The Order was minted then immediately delivered (never left Ready).
 	var foundOrder *sim.Order
@@ -188,8 +188,8 @@ func TestIntegration_SlowPathAcceptedHappyPath(t *testing.T) {
 	if foundOrder.State != sim.OrderStateDelivered {
 		t.Errorf("order State = %q, want delivered (immediate handover)", foundOrder.State)
 	}
-	if foundOrder.Item != "stew" || foundOrder.Qty != 1 {
-		t.Errorf("Order item/qty = %s/%d, want stew/1", foundOrder.Item, foundOrder.Qty)
+	if foundOrder.Item != "bread" || foundOrder.Qty != 1 {
+		t.Errorf("Order item/qty = %s/%d, want bread/1", foundOrder.Item, foundOrder.Qty)
 	}
 
 	// Alice (buyer) carries a PayResolvedWarrant from the accept.
@@ -213,7 +213,7 @@ func TestIntegration_CounterChain(t *testing.T) {
 	// Round 1: alice offers 4 coins.
 	offer, err := handlers.HandlePayWithItem(handlers.HandlerInput{
 		ActorID: "alice", AttemptID: "tk-1",
-		Args: handlers.PayWithItemArgs{Seller: "Bob", Item: "stew", Qty: 1, Amount: 4, ConsumeNow: false},
+		Args: handlers.PayWithItemArgs{Seller: "Bob", Item: "bread", Qty: 1, Amount: 4, ConsumeNow: false},
 	})
 	if err != nil {
 		t.Fatalf("HandlePayWithItem: %v", err)
@@ -240,7 +240,7 @@ func TestIntegration_CounterChain(t *testing.T) {
 	response, err := handlers.HandlePayWithItem(handlers.HandlerInput{
 		ActorID: "alice", AttemptID: "tk-3",
 		Args: handlers.PayWithItemArgs{
-			Seller: "Bob", Item: "stew", Qty: 1, Amount: 6,
+			Seller: "Bob", Item: "bread", Qty: 1, Amount: 6,
 			ConsumeNow: false, InResponseTo: uint64(parentID),
 		},
 	})
@@ -310,7 +310,7 @@ func TestIntegration_ExpiredViaSweep(t *testing.T) {
 
 	offer, _ := handlers.HandlePayWithItem(handlers.HandlerInput{
 		ActorID: "alice", AttemptID: "tk-1",
-		Args: handlers.PayWithItemArgs{Seller: "Bob", Item: "stew", Qty: 1, Amount: 4, ConsumeNow: false},
+		Args: handlers.PayWithItemArgs{Seller: "Bob", Item: "bread", Qty: 1, Amount: 4, ConsumeNow: false},
 	})
 	res, _ := w.Send(offer)
 	ledgerID := res.(sim.PayWithItemResult).LedgerID
@@ -354,7 +354,7 @@ func TestIntegration_AcceptPastTTL(t *testing.T) {
 
 	offer, _ := handlers.HandlePayWithItem(handlers.HandlerInput{
 		ActorID: "alice", AttemptID: "tk-1",
-		Args: handlers.PayWithItemArgs{Seller: "Bob", Item: "stew", Qty: 1, Amount: 4, ConsumeNow: false},
+		Args: handlers.PayWithItemArgs{Seller: "Bob", Item: "bread", Qty: 1, Amount: 4, ConsumeNow: false},
 	})
 	res, _ := w.Send(offer)
 	ledgerID := res.(sim.PayWithItemResult).LedgerID
@@ -391,10 +391,10 @@ func TestIntegration_QuoteFastPath(t *testing.T) {
 	defer stop()
 	events := captureIntegrationEvents(t, w)
 
-	// Bob posts a quote for 1 stew at 4 coins.
+	// Bob posts a quote for 1 bread at 4 coins.
 	quoteCmd, err := handlers.HandleSceneQuote(handlers.HandlerInput{
 		ActorID: "bob", AttemptID: "tk-1",
-		Args: handlers.SceneQuoteArgs{ItemKind: "stew", Qty: 1, Amount: 4, ConsumeNow: false},
+		Args: handlers.SceneQuoteArgs{ItemKind: "bread", Qty: 1, Amount: 4, ConsumeNow: false},
 	})
 	if err != nil {
 		t.Fatalf("HandleSceneQuote: %v", err)
@@ -409,7 +409,7 @@ func TestIntegration_QuoteFastPath(t *testing.T) {
 	payCmd, err := handlers.HandlePayWithItem(handlers.HandlerInput{
 		ActorID: "alice", AttemptID: "tk-2",
 		Args: handlers.PayWithItemArgs{
-			Seller: "Bob", Item: "stew", Qty: 1, Amount: 4,
+			Seller: "Bob", Item: "bread", Qty: 1, Amount: 4,
 			ConsumeNow: false, QuoteID: uint64(quoteID),
 		},
 	})

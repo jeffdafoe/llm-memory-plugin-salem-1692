@@ -73,6 +73,12 @@ func SeedItemKinds() map[sim.ItemKind]*sim.ItemKindDef {
 			DisplayLabel: "Bread",
 			Category:     sim.ItemCategoryFood,
 			SortOrder:    120,
+			// portable mirrors the hand-seeded live data: bread is the
+			// canonical carry-home consumable, stew the canonical
+			// eat-here one. With the WORK-405 clamp applying to every
+			// buyer, a take-home test needs a portable kind or the
+			// disposition silently flips to eat-here.
+			Capabilities: []string{"portable"},
 			Satisfies: []sim.ItemSatisfaction{
 				{Attribute: "hunger", Immediate: 8},
 			},

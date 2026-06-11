@@ -795,7 +795,19 @@ func TestPayWithItem_FastPath_HappyPath_Takeaway(t *testing.T) {
 	defer stop()
 	events := capturePayWithItemEvents(t, w)
 
-	res, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, nil, 7, 0, "", at))
+	// ZBBS-WORK-405: the eat-here clamp now applies to NPC buyers too, so a
+	// takeaway test needs the portable kind — bread, mirroring the live data
+	// split (bread carries, stew doesn't).
+	mustSend(t, w, func(world *sim.World) {
+		world.Actors["bob"].Inventory["bread"] = 5
+	})
+	seedQuote(t, w, sim.SceneQuote{
+		ID: 8, SceneID: "sc1", SellerID: "bob", ItemKind: "bread",
+		Qty: 1, Amount: 4, State: sim.SceneQuoteStateActive,
+		CreatedAt: at, ExpiresAt: at.Add(10 * time.Minute),
+	})
+
+	res, err := w.Send(sim.PayWithItem("alice", "Bob", "bread", 1, 4, false, nil, nil, 8, 0, "", at))
 	if err != nil {
 		t.Fatalf("PayWithItem fast-path: %v", err)
 	}
@@ -832,11 +844,11 @@ func TestPayWithItem_FastPath_HappyPath_Takeaway(t *testing.T) {
 	}
 	a := readHoldings(t, w, "alice")
 	b := readHoldings(t, w, "bob")
-	if a.inv["stew"] != 1 {
-		t.Errorf("alice.stew = %d, want 1 (physical takeaway delivered at accept)", a.inv["stew"])
+	if a.inv["bread"] != 1 {
+		t.Errorf("alice.bread = %d, want 1 (physical takeaway delivered at accept)", a.inv["bread"])
 	}
-	if b.inv["stew"] != 4 {
-		t.Errorf("bob.stew = %d, want 4 (physical takeaway delivered at accept)", b.inv["stew"])
+	if b.inv["bread"] != 4 {
+		t.Errorf("bob.bread = %d, want 4 (physical takeaway delivered at accept)", b.inv["bread"])
 	}
 	// Order minted then immediately delivered (never left Ready).
 	var foundOrder *sim.Order
@@ -1793,16 +1805,19 @@ func TestPayWithItem_SlowPath_DuplicatePendingOffer_Rejected(t *testing.T) {
 	})
 	defer stop()
 	at := time.Now().UTC()
+	// bread, not stew: the WORK-405 eat-here clamp would flip a stew offer's
+	// take-home disposition before the gate keys it, and this test is about
+	// the key, not the clamp.
 	seedLedgerEntry(t, w, sim.PayLedgerEntry{
 		ID: 7, BuyerID: "alice", SellerID: "bob",
-		ItemKind: "stew", Qty: 1, Amount: 4, ConsumeNow: false,
+		ItemKind: "bread", Qty: 1, Amount: 4, ConsumeNow: false,
 		State: sim.PayLedgerStatePending, ExpiresAt: at.Add(3 * time.Minute),
 		SceneID: "sc1", HuddleID: "h1",
 	})
 	events := capturePayWithItemEvents(t, w)
 
 	// Same (buyer, seller, item, disposition) at DIFFERENT terms — rejected.
-	_, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 3, 9, false, nil, nil, 0, 0, "", at))
+	_, err := w.Send(sim.PayWithItem("alice", "Bob", "bread", 3, 9, false, nil, nil, 0, 0, "", at))
 	if err == nil || !strings.Contains(err.Error(), "already have an offer") || !strings.Contains(err.Error(), "offer id 7") {
 		t.Fatalf("want duplicate-pending rejection naming offer id 7, got %v", err)
 	}
@@ -1814,12 +1829,12 @@ func TestPayWithItem_SlowPath_DuplicatePendingOffer_Rejected(t *testing.T) {
 	}
 
 	// Same item, OTHER disposition (consume_now) — a different offer, passes.
-	if _, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, true, nil, nil, 0, 0, "", at)); err != nil {
-		t.Errorf("consume_now stew offer should pass the gate (different disposition): %v", err)
+	if _, err := w.Send(sim.PayWithItem("alice", "Bob", "bread", 1, 4, true, nil, nil, 0, 0, "", at)); err != nil {
+		t.Errorf("consume_now bread offer should pass the gate (different disposition): %v", err)
 	}
 	// Different item — passes.
-	if _, err := w.Send(sim.PayWithItem("alice", "Bob", "bread", 1, 2, false, nil, nil, 0, 0, "", at)); err != nil {
-		t.Errorf("bread offer should pass the gate (different item): %v", err)
+	if _, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 2, false, nil, nil, 0, 0, "", at)); err != nil {
+		t.Errorf("stew offer should pass the gate (different item): %v", err)
 	}
 }
 
@@ -1952,13 +1967,15 @@ func TestPayWithItem_SlowPath_ZeroExpiryPendingOffer_StillBlocks(t *testing.T) {
 	})
 	defer stop()
 	at := time.Now().UTC()
+	// bread for the same reason as the duplicate-gate test above: keep the
+	// WORK-405 clamp out of a test about expiry semantics.
 	seedLedgerEntry(t, w, sim.PayLedgerEntry{
 		ID: 7, BuyerID: "alice", SellerID: "bob",
-		ItemKind: "stew", Qty: 1, Amount: 4, ConsumeNow: false,
+		ItemKind: "bread", Qty: 1, Amount: 4, ConsumeNow: false,
 		State:   sim.PayLedgerStatePending, // ExpiresAt deliberately zero
 		SceneID: "sc1", HuddleID: "h1",
 	})
-	_, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, nil, 0, 0, "", at))
+	_, err := w.Send(sim.PayWithItem("alice", "Bob", "bread", 1, 4, false, nil, nil, 0, 0, "", at))
 	if err == nil || !strings.Contains(err.Error(), "offer id 7") {
 		t.Fatalf("zero-ExpiresAt pending entry should still block, got %v", err)
 	}
@@ -1973,8 +1990,19 @@ func TestPayWithItem_SlowPath_ZeroExpiryPendingOffer_StillBlocks(t *testing.T) {
 func TestPayWithItem_AutoMatch_BareOfferTakesOpenQuote(t *testing.T) {
 	w, stop, at := buildFastPathFixture(t, 7)
 	defer stop()
+	// bread quote, not the fixture's stew one: the WORK-405 eat-here clamp
+	// would flip the bare offer's take-home disposition and the auto-match
+	// term predicates require disposition equality with the quote.
+	mustSend(t, w, func(world *sim.World) {
+		world.Actors["bob"].Inventory["bread"] = 5
+	})
+	seedQuote(t, w, sim.SceneQuote{
+		ID: 8, SceneID: "sc1", SellerID: "bob", ItemKind: "bread",
+		Qty: 1, Amount: 4, State: sim.SceneQuoteStateActive,
+		CreatedAt: at, ExpiresAt: at.Add(10 * time.Minute),
+	})
 
-	res, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, nil, 0, 0, "", at))
+	res, err := w.Send(sim.PayWithItem("alice", "Bob", "bread", 1, 4, false, nil, nil, 0, 0, "", at))
 	if err != nil {
 		t.Fatalf("PayWithItem bare offer: %v", err)
 	}
@@ -1998,23 +2026,33 @@ func TestPayWithItem_AutoMatch_BareOfferTakesOpenQuote(t *testing.T) {
 func TestPayWithItem_AutoMatch_WithdrawsCrossingOffer(t *testing.T) {
 	w, stop, at := buildFastPathFixture(t, 7)
 	defer stop()
+	// bread throughout, for the same WORK-405 reason as the auto-match test
+	// above — this test pins crossing-offer hygiene, not the clamp.
+	mustSend(t, w, func(world *sim.World) {
+		world.Actors["bob"].Inventory["bread"] = 5
+	})
+	seedQuote(t, w, sim.SceneQuote{
+		ID: 8, SceneID: "sc1", SellerID: "bob", ItemKind: "bread",
+		Qty: 1, Amount: 4, State: sim.SceneQuoteStateActive,
+		CreatedAt: at, ExpiresAt: at.Add(10 * time.Minute),
+	})
 	// The mirror: same scene, kind, qty, disposition, consumers as the take.
 	seedLedgerEntry(t, w, sim.PayLedgerEntry{
 		ID: 55, BuyerID: "alice", SellerID: "bob",
-		ItemKind: "stew", Qty: 1, Amount: 4, ConsumeNow: false,
+		ItemKind: "bread", Qty: 1, Amount: 4, ConsumeNow: false,
 		State: sim.PayLedgerStatePending, CreatedAt: at.Add(-time.Minute),
 		ExpiresAt: at.Add(10 * time.Minute), SceneID: "sc1", HuddleID: "h1",
 	})
 	// A distinct live order: same goods, different qty + disposition — the
-	// 10-water-take-home case. Must NOT be withdrawn by the 1-stew take.
+	// 10-water-take-home case. Must NOT be withdrawn by the 1-bread take.
 	seedLedgerEntry(t, w, sim.PayLedgerEntry{
 		ID: 56, BuyerID: "alice", SellerID: "bob",
-		ItemKind: "stew", Qty: 3, Amount: 12, ConsumeNow: true,
+		ItemKind: "bread", Qty: 3, Amount: 12, ConsumeNow: true,
 		State: sim.PayLedgerStatePending, CreatedAt: at.Add(-time.Minute),
 		ExpiresAt: at.Add(10 * time.Minute), SceneID: "sc1", HuddleID: "h1",
 	})
 
-	res, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, false, nil, nil, 0, 0, "", at))
+	res, err := w.Send(sim.PayWithItem("alice", "Bob", "bread", 1, 4, false, nil, nil, 0, 0, "", at))
 	if err != nil {
 		t.Fatalf("PayWithItem bare offer with crossing entry: %v", err)
 	}
@@ -2193,8 +2231,7 @@ func TestPayWithItem_FastPath_ServiceClampsDisposition(t *testing.T) {
 // TestPayWithItem_PCEatHereClampServerSide (ZBBS-WORK-403): a PC buying a
 // non-portable consumable settles eat-here no matter what the request said
 // — clamped on the world goroutine, so a failed catalog fetch or a direct
-// API call can't carry stew out. NPC buyers are exempt (restock/auto-match
-// flows keep their own dispositions).
+// API call can't carry stew out.
 func TestPayWithItem_PCEatHereClampServerSide(t *testing.T) {
 	w, stop, at := buildFastPathFixture(t, 7)
 	defer stop()
@@ -2219,11 +2256,17 @@ func TestPayWithItem_PCEatHereClampServerSide(t *testing.T) {
 	if entry := readPayLedger(t, w)[r.LedgerID]; !entry.ConsumeNow {
 		t.Error("PC ledger ConsumeNow = false, want true (server-side eat-here clamp)")
 	}
+	if !r.EatHereClamped {
+		t.Error("PC result EatHereClamped = false, want true")
+	}
 }
 
-// The NPC contrast for the clamp above: same item shape, NPC buyer — the
-// requested takeaway disposition survives.
-func TestPayWithItem_NPCBuyerNotEatHereClamped(t *testing.T) {
+// TestPayWithItem_NPCBuyerEatHereClamped (ZBBS-WORK-405): same item shape,
+// NPC buyer — the clamp applies to every buyer kind. v1 gated take-home of
+// non-portables for all actors; no valid NPC flow buys non-portables
+// take-home (such a purchase is a config bug, not a disposition to
+// preserve). Until WORK-405 this test asserted the inverse (NPC exempt).
+func TestPayWithItem_NPCBuyerEatHereClamped(t *testing.T) {
 	w, stop, at := buildFastPathFixture(t, 7)
 	defer stop()
 	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
@@ -2240,7 +2283,10 @@ func TestPayWithItem_NPCBuyerNotEatHereClamped(t *testing.T) {
 		t.Fatalf("PayWithItem NPC take: %v", err)
 	}
 	r := res.(sim.PayWithItemResult)
-	if entry := readPayLedger(t, w)[r.LedgerID]; entry.ConsumeNow {
-		t.Error("NPC ledger ConsumeNow = true, want false (clamp is PC-scoped)")
+	if entry := readPayLedger(t, w)[r.LedgerID]; !entry.ConsumeNow {
+		t.Error("NPC ledger ConsumeNow = false, want true (clamp applies to all buyers, WORK-405)")
+	}
+	if !r.EatHereClamped {
+		t.Error("NPC result EatHereClamped = false, want true")
 	}
 }

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
@@ -192,6 +193,55 @@ func TestPayOfferKey(t *testing.T) {
 // the eaten/kept split — a bare [ok] after "consume 10" reads as ten eaten
 // and drives a re-consume of the surplus. Unclamped consumes and non-result
 // payloads keep the generic [ok].
+// TestCommitResultContent_PayEatHereClampNote (ZBBS-WORK-405): when the
+// command clamped a take-home request to eat-here (non-portable
+// consumable), the feedback says so — on the pending-offer steer AND the
+// generic-[ok] flows (quote take, counter-response). Unclamped results
+// keep the existing texts byte-identical.
+func TestCommitResultContent_PayEatHereClampNote(t *testing.T) {
+	const note = " Mind: stew can't be carried away — this settles eat-here, taken on the spot."
+
+	// Pending-offer steer carries the note.
+	vc := ValidatedCall{Name: "pay_with_item", DecodedArgs: PayWithItemArgs{Seller: "Moses James", Item: "Stew", Qty: 1, Amount: 4}}
+	got := commitResultContent(&vc, sim.PayWithItemResult{State: sim.PayLedgerStatePending, EatHereClamped: true})
+	want := "[ok] Your offer to buy 1 stew is before Moses James — bide for their answer. Make no second offer; call done() and let them accept, decline, or counter." + note
+	if got != want {
+		t.Errorf("clamped steer:\n got %q\nwant %q", got, want)
+	}
+
+	// Quote take (generic-[ok] flow) carries the note too.
+	vc = ValidatedCall{Name: "pay_with_item", DecodedArgs: PayWithItemArgs{Seller: "Moses James", Item: "Stew", Qty: 1, Amount: 4, QuoteID: 7}}
+	if got := commitResultContent(&vc, sim.PayWithItemResult{State: sim.PayLedgerStateAccepted, FastPath: true, EatHereClamped: true}); got != "[ok]"+note {
+		t.Errorf("clamped quote take = %q, want %q", got, "[ok]"+note)
+	}
+
+	// Unclamped result: steer unchanged.
+	vc = ValidatedCall{Name: "pay_with_item", DecodedArgs: PayWithItemArgs{Seller: "Moses James", Item: "Stew", Qty: 1, Amount: 4}}
+	if got := commitResultContent(&vc, sim.PayWithItemResult{State: sim.PayLedgerStatePending}); !strings.HasSuffix(got, "counter.") {
+		t.Errorf("unclamped steer should end at the steer text, got %q", got)
+	}
+}
+
+// TestCommitResultContent_SceneQuoteEatHereClampNote (ZBBS-WORK-405): a
+// scene_quote whose proposed take-home was clamped to eat-here tells the
+// seller model so; an unclamped quote keeps the generic [ok].
+func TestCommitResultContent_SceneQuoteEatHereClampNote(t *testing.T) {
+	vc := ValidatedCall{Name: "scene_quote", DecodedArgs: SceneQuoteArgs{ItemKind: "Stew", Qty: 1, Amount: 4, ConsumeNow: false}}
+
+	got := commitResultContent(&vc, sim.SceneQuoteCreateResult{QuoteID: 3, EatHereClamped: true})
+	want := "[ok] Mind: stew can't be carried away — your offer stands as eat-here, taken on the spot."
+	if got != want {
+		t.Errorf("clamped scene_quote:\n got %q\nwant %q", got, want)
+	}
+
+	if got := commitResultContent(&vc, sim.SceneQuoteCreateResult{QuoteID: 3}); got != "[ok]" {
+		t.Errorf("unclamped scene_quote = %q, want [ok]", got)
+	}
+	if got := commitResultContent(&vc, nil); got != "[ok]" {
+		t.Errorf("nil result = %q, want [ok]", got)
+	}
+}
+
 func TestCommitResultContent_ConsumeClamp(t *testing.T) {
 	vc := ValidatedCall{Name: "consume", DecodedArgs: ConsumeArgs{Item: "meat", Qty: 10}}
 

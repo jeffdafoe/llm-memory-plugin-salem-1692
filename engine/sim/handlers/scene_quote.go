@@ -100,7 +100,7 @@ var sceneQuoteSchema = json.RawMessage(`{
         },
         "consume_now": {
             "type": "boolean",
-            "description": "True for eat-here / drink-here (immediate consumption); false for takeaway (the buyer gets the item to take with them)."
+            "description": "True for eat-here / drink-here (immediate consumption); false for takeaway (the buyer gets the item to take with them). Some goods (a served meal, a poured drink) can't be carried away — quotes for those always stand as eat-here regardless."
         },
         "target_buyer": {
             "type": "string",

@@ -250,6 +250,48 @@ func TestSceneQuoteCreate_HappyPath_Public(t *testing.T) {
 	}
 }
 
+// TestSceneQuoteCreate_EatHereClamp (ZBBS-WORK-405): a quote for a
+// non-portable consumable proposed as take-home stands as eat-here — the
+// seller-side mirror of the pay_with_item buyer clamp — and the result
+// reports the adjustment so tool feedback can tell the seller model. A
+// portable kind keeps the proposed take-home.
+func TestSceneQuoteCreate_EatHereClamp(t *testing.T) {
+	w, stop := buildQuoteTestWorld(t, "h1", "sc1", []quoteTestActor{
+		{id: "aldous", displayName: "Aldous", kind: sim.KindNPCStateful, huddleID: "h1", inventory: map[sim.ItemKind]int{"ale": 3, "bread": 3}},
+		{id: "bea", displayName: "Bea", kind: sim.KindNPCStateful, huddleID: "h1"},
+	})
+	defer stop()
+	at := time.Now().UTC()
+
+	// ale: consumable, no portable capability in the fixture — clamps.
+	res, err := w.Send(sim.SceneQuoteCreate("aldous", "ale", 1, 2, false, "", nil, at))
+	if err != nil {
+		t.Fatalf("SceneQuoteCreate ale: %v", err)
+	}
+	result := res.(sim.SceneQuoteCreateResult)
+	if !result.EatHereClamped {
+		t.Error("ale result EatHereClamped = false, want true")
+	}
+	view := readLiveQuotes(t, w)
+	if q := view.Quotes[result.QuoteID]; !q.ConsumeNow {
+		t.Error("ale quote ConsumeNow = false, want true (eat-here clamp)")
+	}
+
+	// bread: portable in the fixture — the proposed take-home survives.
+	res, err = w.Send(sim.SceneQuoteCreate("aldous", "bread", 1, 2, false, "", nil, at))
+	if err != nil {
+		t.Fatalf("SceneQuoteCreate bread: %v", err)
+	}
+	result = res.(sim.SceneQuoteCreateResult)
+	if result.EatHereClamped {
+		t.Error("bread result EatHereClamped = true, want false (portable)")
+	}
+	view = readLiveQuotes(t, w)
+	if q := view.Quotes[result.QuoteID]; q.ConsumeNow {
+		t.Error("bread quote ConsumeNow = true, want false (take-home survives)")
+	}
+}
+
 // TestSceneQuoteCreate_HOME408_PCAudience: a quote posted to a scene that
 // holds a PC stamps that PC onto the event's PCRecipientIDs (the buyer-facing
 // wire-frame audience) along with the seller's HuddleID. An identical re-post

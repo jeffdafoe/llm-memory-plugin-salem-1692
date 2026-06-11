@@ -154,6 +154,38 @@ func TestRender_QuoteWarrantLine_CarriesQuoteID(t *testing.T) {
 	}
 }
 
+// TestRender_QuoteWarrantLine_EatHereFact (ZBBS-WORK-405): when the quoted
+// kind is in the payload's EatHereKinds set, the line states the disposition
+// fact so the buyer never plans a carry-out the clamp would quietly rewrite.
+// Absent from the set (portable / unknown kind), the line is unchanged.
+func TestRender_QuoteWarrantLine_EatHereFact(t *testing.T) {
+	quote := sim.WarrantMeta{
+		TriggerActorID: "john",
+		Reason: sim.SceneQuoteTargetedWarrantReason{
+			QuoteID: 9, SellerID: "john", ItemKind: "stew", Qty: 1, Amount: 4, ConsumeNow: true,
+		},
+		SourceEventID: 31,
+	}
+	p := Payload{
+		ActorID:           "hannah",
+		Warrants:          []sim.WarrantMeta{quote},
+		WarrantActorNames: map[sim.ActorID]string{"john": "John Ellis"},
+		Baseline:          BaselinePresent,
+	}
+
+	p.EatHereKinds = map[sim.ItemKind]bool{"stew": true}
+	out := combinedPrompt(Render(p, DefaultRenderConfig()))
+	if !strings.Contains(out, "John Ellis offers you stew for 4 coins, to eat here (it can't be carried away).") {
+		t.Errorf("quote warrant line missing the eat-here fact\n%s", out)
+	}
+
+	p.EatHereKinds = nil
+	out = combinedPrompt(Render(p, DefaultRenderConfig()))
+	if !strings.Contains(out, "John Ellis offers you stew for 4 coins.") {
+		t.Errorf("quote warrant line should be tag-free when the kind isn't eat-here-only\n%s", out)
+	}
+}
+
 // TestRender_PayOfferSingularCoin — amount of 1 renders "coin", not "coins".
 func TestRender_PayOfferSingularCoin(t *testing.T) {
 	p := Payload{

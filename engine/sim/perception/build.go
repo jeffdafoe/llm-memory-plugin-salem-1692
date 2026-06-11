@@ -60,6 +60,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 	p.Actor = buildActorView(snap, actorSnap)
 	p.WarrantActorNames = buildWarrantActorNames(snap, actorSnap, actorID, p.Warrants)
 	p.WarrantPlaceNames = buildWarrantPlaceNames(snap, p.Warrants)
+	p.EatHereKinds = buildEatHereKinds(snap)
 	p.Surroundings = buildSurroundings(snap, actorID, actorSnap)
 	p.TurnState = buildTurnState(snap, actorID, actorSnap, p.Surroundings.HuddleMembers)
 	p.Anchors = buildAnchors(snap, actorSnap)
@@ -864,6 +865,27 @@ func buildWarrantPlaceNames(snap *sim.Snapshot, warrants []sim.WarrantMeta) map[
 		}
 	}
 	return names
+}
+
+// buildEatHereKinds collects the kinds that always settle eat-here
+// (ItemKindDef.EatHereOnly — consumable, neither service nor portable),
+// so Render can state the disposition fact on a quote warrant line
+// instead of leaving the model to discover the WORK-405 clamp by
+// tripping it. Returns nil when the catalog has no eat-here-only kind.
+func buildEatHereKinds(snap *sim.Snapshot) map[sim.ItemKind]bool {
+	if snap == nil {
+		return nil
+	}
+	var kinds map[sim.ItemKind]bool
+	for kind, def := range snap.ItemKinds {
+		if def.EatHereOnly() {
+			if kinds == nil {
+				kinds = make(map[sim.ItemKind]bool)
+			}
+			kinds[kind] = true
+		}
+	}
+	return kinds
 }
 
 // buildWarrantActorNames resolves every OTHER actor referenced by a warrant in
