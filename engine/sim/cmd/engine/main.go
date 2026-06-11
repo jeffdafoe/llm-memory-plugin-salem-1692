@@ -515,7 +515,12 @@ func registerTools(r *handlers.Registry, searcher llm.MemorySearcher) error {
 		fn   func(*handlers.Registry) error
 	}{
 		{"speak", handlers.RegisterSpeak},
-		{"pay", handlers.RegisterPay},
+		// `pay` (bare-coin transfer) is deliberately NOT registered
+		// (ZBBS-HOME-430). Every production use was an item/lodging purchase
+		// that belongs to the pay_with_item ledger flow — bare pay moved
+		// coins without moving goods (and double-charged when it followed a
+		// settled ledger purchase, e.g. the 2026-06-11 Hannah ale buy). PCs
+		// pay via /pc/pay; RegisterPay stays available for composition.
 		{"consume", handlers.RegisterConsume},
 		{"scene_quote", handlers.RegisterSceneQuote},
 		{"deliver_order", handlers.RegisterDeliverOrder},

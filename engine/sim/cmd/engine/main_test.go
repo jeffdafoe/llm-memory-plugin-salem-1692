@@ -148,6 +148,25 @@ func TestRegisterTools_RegistersDoneTerminal(t *testing.T) {
 	}
 }
 
+// TestRegisterTools_NoBareCoinPay guards ZBBS-HOME-430: the bare-coin `pay`
+// tool must stay OUT of the production registry. Every production bare pay
+// was an item/lodging purchase that belongs to the pay_with_item ledger flow
+// — bare pay moved coins without moving goods (double-charges, phantom
+// lodging). RegisterPay remains a library helper for composed registries;
+// this test catches an accidental re-registration in registerTools.
+func TestRegisterTools_NoBareCoinPay(t *testing.T) {
+	r := handlers.NewRegistry()
+	if err := registerTools(r, stubSearcher{}); err != nil {
+		t.Fatalf("registerTools: %v", err)
+	}
+	if _, ok := r.Lookup("pay"); ok {
+		t.Error("registerTools registered the bare-coin `pay` tool — removed by ZBBS-HOME-430, NPC commerce goes through pay_with_item")
+	}
+	if _, ok := r.Lookup("pay_with_item"); !ok {
+		t.Error("registerTools did not register `pay_with_item` — the ledger flow must remain the NPC commerce path")
+	}
+}
+
 // TestRun_WiresOffWorldCascades proves run() reaches the off-world LLM cascade
 // set (RegisterProductionCascades wires atmosphere / consolidation / narrative
 // consolidation / noticeboard + the ActionLog substrate) into the live runtime
