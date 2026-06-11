@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"strings"
 
@@ -104,7 +105,11 @@ func runOneNarrationExpansion(ctx context.Context, w *sim.World, client llm.Clie
 	}
 	nctx, ok := res.(sim.NarrationExpansionContext)
 	if !ok {
+		// Unreachable with the current Command, but the fetch succeeded for
+		// this key — the pool exists, so its in-flight flag must not leak
+		// set (code_review R1 finding #2).
 		log.Printf("cascade/narration_expansion: fetch %q returned %T, want sim.NarrationExpansionContext", key, res)
+		finishNarrationExpansion(ctx, w, key, nil)
 		return
 	}
 	if nctx.Wanted <= 0 {
@@ -235,9 +240,15 @@ func parseNarrationExpansionReply(content string, c sim.NarrationExpansionContex
 		return nil, fmt.Sprintf("not the contract JSON: %v", err)
 	}
 	// Trailing content after the object (a second object, prose) is a
-	// contract violation too.
-	if dec.More() {
-		return nil, "trailing content after the JSON object"
+	// contract violation too. Decoder.More is an array/object-element
+	// check, not a top-level-EOF proof — decode a second value and
+	// require io.EOF instead (code_review R1 finding #1).
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return nil, "trailing content after the JSON object"
+		}
+		return nil, fmt.Sprintf("trailing content after the JSON object: %v", err)
 	}
 	if len(reply.Phrases) != c.Wanted {
 		return nil, fmt.Sprintf("wanted exactly %d phrases, got %d", c.Wanted, len(reply.Phrases))

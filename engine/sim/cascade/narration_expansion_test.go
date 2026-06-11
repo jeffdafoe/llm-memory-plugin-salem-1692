@@ -39,13 +39,17 @@ func (s *narrationFakeSink) Append(_ context.Context, poolKey string, phrases []
 	return nil
 }
 
-func buildNarrationDriverWorld(t *testing.T) (*sim.World, func()) {
+// buildNarrationDriverWorld loads a world, installs sink BEFORE starting
+// the world goroutine (the setter contract: before Run, or from a
+// Command), and runs it until the returned stop func.
+func buildNarrationDriverWorld(t *testing.T, sink sim.NarrationExpansionSink) (*sim.World, func()) {
 	t.Helper()
 	repo, _ := mem.NewRepository()
 	w, err := sim.LoadWorld(context.Background(), repo)
 	if err != nil {
 		t.Fatalf("LoadWorld: %v", err)
 	}
+	w.SetNarrationExpansionSink(sink)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() {
@@ -79,11 +83,9 @@ func retireReplyJSON(n int) string {
 }
 
 func TestRunOneNarrationExpansion_HappyPath(t *testing.T) {
-	w, stop := buildNarrationDriverWorld(t)
-	defer stop()
-
 	sink := &narrationFakeSink{}
-	w.SetNarrationExpansionSink(sink)
+	w, stop := buildNarrationDriverWorld(t, sink)
+	defer stop()
 
 	before := fetchNarrationContext(t, w, sim.NarrationKeyNPCRetire)
 	client := llm.NewFakeClient(llm.ScriptedTurn{
@@ -147,14 +149,14 @@ func TestRunOneNarrationExpansion_RejectsContractViolations(t *testing.T) {
 		{"unknown field", `{"phrases": ["A line.", "B line.", "C line.", "D line.", "E line."], "note": "hi"}`},
 		{"forbidden token", `{"phrases": ["Goodnight, {customer}.", "B line.", "C line.", "D line.", "E line."]}`},
 		{"in-batch duplicate", `{"phrases": ["Same line.", "same line.", "C line.", "D line.", "E line."]}`},
-		{"trailing content", retireReplyJSON(sim.NarrationExpansionBatchSize) + ` {"phrases": []}`},
+		{"trailing JSON object", retireReplyJSON(sim.NarrationExpansionBatchSize) + ` {"phrases": []}`},
+		{"trailing prose", retireReplyJSON(sim.NarrationExpansionBatchSize) + "\nThere you go — five fresh lines!"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			w, stop := buildNarrationDriverWorld(t)
-			defer stop()
 			sink := &narrationFakeSink{}
-			w.SetNarrationExpansionSink(sink)
+			w, stop := buildNarrationDriverWorld(t, sink)
+			defer stop()
 
 			before := fetchNarrationContext(t, w, sim.NarrationKeyNPCRetire)
 			client := llm.NewFakeClient(llm.ScriptedTurn{Response: llm.Response{Content: tc.reply}})
@@ -173,10 +175,9 @@ func TestRunOneNarrationExpansion_RejectsContractViolations(t *testing.T) {
 }
 
 func TestRunOneNarrationExpansion_DropsPoolDuplicates(t *testing.T) {
-	w, stop := buildNarrationDriverWorld(t)
-	defer stop()
 	sink := &narrationFakeSink{}
-	w.SetNarrationExpansionSink(sink)
+	w, stop := buildNarrationDriverWorld(t, sink)
+	defer stop()
 
 	before := fetchNarrationContext(t, w, sim.NarrationKeyNPCRetire)
 	// Contract-valid batch where two lines already exist in the pool —
@@ -197,10 +198,9 @@ func TestRunOneNarrationExpansion_DropsPoolDuplicates(t *testing.T) {
 }
 
 func TestRunOneNarrationExpansion_PersistFailureDiscards(t *testing.T) {
-	w, stop := buildNarrationDriverWorld(t)
-	defer stop()
 	sink := &narrationFakeSink{err: errors.New("pg down")}
-	w.SetNarrationExpansionSink(sink)
+	w, stop := buildNarrationDriverWorld(t, sink)
+	defer stop()
 
 	before := fetchNarrationContext(t, w, sim.NarrationKeyNPCRetire)
 	client := llm.NewFakeClient(llm.ScriptedTurn{
@@ -216,10 +216,9 @@ func TestRunOneNarrationExpansion_PersistFailureDiscards(t *testing.T) {
 }
 
 func TestRunOneNarrationExpansion_LLMErrorLeavesPoolUntouched(t *testing.T) {
-	w, stop := buildNarrationDriverWorld(t)
-	defer stop()
 	sink := &narrationFakeSink{}
-	w.SetNarrationExpansionSink(sink)
+	w, stop := buildNarrationDriverWorld(t, sink)
+	defer stop()
 
 	before := fetchNarrationContext(t, w, sim.NarrationKeyNPCRetire)
 	client := llm.NewFakeClient(llm.ScriptedTurn{
@@ -266,7 +265,7 @@ func TestStripCodeFence(t *testing.T) {
 }
 
 func TestRegisterNarrationExpansion_NilGuards(t *testing.T) {
-	w, stop := buildNarrationDriverWorld(t)
+	w, stop := buildNarrationDriverWorld(t, &narrationFakeSink{})
 	defer stop()
 	assertPanics := func(name string, fn func()) {
 		t.Helper()
