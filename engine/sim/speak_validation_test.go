@@ -25,6 +25,10 @@ func gateCatalog() map[ItemKind]*ItemKindDef {
 // 1-2 rejected (or risked rejecting) now pass speak validation. Each line was a
 // real or corpus-identified false positive of the gate named in its comment.
 func TestStateClaims_RemovedGatesStayRemoved(t *testing.T) {
+	// The catalog + inventory are inert for validateStateClaims today — they're
+	// populated deliberately so a future re-introduced item-scanning gate would
+	// actually trigger on these lines instead of failing open on an empty
+	// catalog, which would let this pin pass vacuously.
 	w := &World{ItemKinds: gateCatalog(), Actors: map[ActorID]*Actor{}}
 	now := time.Now().UTC()
 	a := &Actor{ID: "hannah", Kind: KindNPCShared, Inventory: map[ItemKind]int{"stew": 5}}
