@@ -88,6 +88,22 @@ var pay_status_label: Label = null
 var pay_confirm_button: Button = null
 var pay_cancel_button: Button = null
 var http_pay: HTTPRequest = null
+
+# Live take-able quotes rendered as "Offers on the table" rows at the top
+# of the pay modal (ZBBS-HOME-426). Fetched fresh on EVERY modal open —
+# quotes are mutable world state with a ~10-minute TTL, unlike the
+# boot-immutable item catalog which is fetched once. A Take row submits
+# pc/pay with the quote_id and the quote's terms copied verbatim, which
+# satisfies the server fast path's exact-term predicates by construction.
+var http_quotes: HTTPRequest = null
+var pay_quotes: Array = []
+var pay_quotes_header: Label = null
+var pay_quote_rows_box: VBoxContainer = null
+var pay_quotes_separator: HSeparator = null
+# True while the in-flight pc/pay submit came from a Take row — a reject
+# then means the row went stale (quote expired/taken), so the list is
+# re-fetched alongside surfacing the error.
+var pay_take_in_flight: bool = false
 # Item-kind catalog from GET /api/village/items (ZBBS-HOME-423) — lets the
 # player compose an offer for ANY good, not just formally-quoted ones (a
 # vendor's verbal "thou shalt have a room for 4 coins" posts no quote, so a
@@ -269,6 +285,9 @@ func _build_tree() -> void:
 
     http_items = HTTPRequest.new()
     add_child(http_items)
+
+    http_quotes = HTTPRequest.new()
+    add_child(http_quotes)
 
     refresh_timer = Timer.new()
     refresh_timer.wait_time = REFRESH_INTERVAL
@@ -675,6 +694,8 @@ func _connect_signals() -> void:
         http_pay.request_completed.connect(_on_pay_completed)
     if http_items != null:
         http_items.request_completed.connect(_on_items_completed)
+    if http_quotes != null:
+        http_quotes.request_completed.connect(_on_quotes_completed)
 
     speech_input.focus_entered.connect(_on_input_focus_entered)
     speech_input.focus_exited.connect(_on_input_focus_exited)
@@ -1250,6 +1271,26 @@ func _ensure_pay_modal_built() -> void:
     title.add_theme_font_size_override("font_size", 16)
     vbox.add_child(title)
 
+    # Live offers section (ZBBS-HOME-426): one take-able row per quote the
+    # PC is currently eligible for, ahead of the compose form — taking a
+    # standing offer is the primary path, composing one the fallback. The
+    # header/box/separator hide as a unit when the fetch returns nothing.
+    pay_quotes_header = Label.new()
+    pay_quotes_header.text = "Offers on the table:"
+    pay_quotes_header.add_theme_color_override("font_color", Color(0.85, 0.72, 0.42))
+    pay_quotes_header.add_theme_font_size_override("font_size", 13)
+    pay_quotes_header.visible = false
+    vbox.add_child(pay_quotes_header)
+
+    pay_quote_rows_box = VBoxContainer.new()
+    pay_quote_rows_box.add_theme_constant_override("separation", 4)
+    pay_quote_rows_box.visible = false
+    vbox.add_child(pay_quote_rows_box)
+
+    pay_quotes_separator = HSeparator.new()
+    pay_quotes_separator.visible = false
+    vbox.add_child(pay_quotes_separator)
+
     pay_recipient_option = OptionButton.new()
     pay_recipient_option.get_popup().theme = panel.theme
     vbox.add_child(_label_with("Recipient:", pay_recipient_option))
@@ -1444,6 +1485,11 @@ func _label_with(text: String, control: Control) -> Control:
 func _on_pay_pressed() -> void:
     _ensure_pay_modal_built()
     _ensure_pay_items_catalog()
+    # Drop the previous open's quote rows before fetching — they may be
+    # from another huddle or already expired; the response repopulates.
+    pay_quotes = []
+    _refresh_pay_quote_rows()
+    _request_pay_quotes()
     # Repopulate the recipient list each open — huddle membership
     # changes (NPCs come and go) so the cached list at modal-build time
     # would go stale fast.
@@ -1642,6 +1688,152 @@ func _on_items_completed(result: int, response_code: int, _headers: PackedString
         _update_pay_booking_controls()
 
 
+## Fetch the live take-able quotes for this PC (ZBBS-HOME-426). Called on
+## every modal open — quotes expire, get taken, and get superseded, so a
+## cached list goes stale within minutes.
+func _request_pay_quotes() -> void:
+    if http_quotes == null:
+        return
+    # Cancel any in-flight fetch first: an older response must never
+    # repopulate rows a newer open just cleared (it could be from another
+    # huddle), and a lingering request would otherwise ERR_BUSY this one
+    # into silently showing nothing. (code_review)
+    if http_quotes.get_http_client_status() != HTTPClient.STATUS_DISCONNECTED:
+        http_quotes.cancel_request()
+    var err := http_quotes.request(
+        _api_url("/api/village/pc/quotes"),
+        _auth_headers(),
+        HTTPClient.METHOD_GET,
+    )
+    if err != OK:
+        # Degrade to the compose form for this open — rows stay hidden.
+        pay_quotes = []
+        _refresh_pay_quote_rows()
+
+
+func _on_quotes_completed(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
+    if result != HTTPRequest.RESULT_SUCCESS or response_code != 200:
+        # Degrade silently to the compose form — the quote rows are a
+        # convenience layer over the same pc/pay contract.
+        return
+    var parsed = JSON.parse_string(body.get_string_from_utf8())
+    if typeof(parsed) != TYPE_DICTIONARY:
+        return
+    var quotes = parsed.get("quotes", [])
+    if typeof(quotes) != TYPE_ARRAY:
+        return
+    pay_quotes = quotes
+    if pay_modal != null and pay_modal.visible:
+        _refresh_pay_quote_rows()
+
+
+## Rebuild the "Offers on the table" rows from the last fetch. Each row is
+## the quote's terms plus a Take button; Take submits the quote verbatim,
+## so what the player reads is exactly what the fast path matches.
+func _refresh_pay_quote_rows() -> void:
+    if pay_quote_rows_box == null:
+        return
+    for child in pay_quote_rows_box.get_children():
+        child.queue_free()
+    var shown := 0
+    for q in pay_quotes:
+        if typeof(q) != TYPE_DICTIONARY:
+            continue
+        var row := HBoxContainer.new()
+        row.add_theme_constant_override("separation", 8)
+
+        var text := Label.new()
+        text.text = _pay_quote_row_label(q)
+        text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+        text.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+        text.custom_minimum_size = Vector2(220, 0)
+        text.add_theme_font_size_override("font_size", 12)
+        row.add_child(text)
+
+        var take := Button.new()
+        take.text = "Take it"
+        take.add_theme_font_size_override("font_size", 12)
+        take.pressed.connect(_on_pay_take_pressed.bind(q))
+        row.add_child(take)
+
+        pay_quote_rows_box.add_child(row)
+        shown += 1
+    var any := shown > 0
+    if pay_quotes_header != null:
+        pay_quotes_header.visible = any
+    pay_quote_rows_box.visible = any
+    if pay_quotes_separator != null:
+        pay_quotes_separator.visible = any
+
+
+## One-line description of a quote row: seller, label, qty, bundle price,
+## disposition, and a "for you" marker on targeted quotes.
+func _pay_quote_row_label(q: Dictionary) -> String:
+    var label := str(q.get("display_label", q.get("item", "")))
+    var qty := int(q.get("qty", 1))
+    var amount := int(q.get("amount", 0))
+    var item := str(q.get("item", "")).to_lower()
+    var disposition := ""
+    if item == "nights_stay":
+        disposition = "tonight"
+    elif bool(q.get("consume_now", false)):
+        disposition = "eat here"
+    else:
+        disposition = "take home"
+    var qty_part := ""
+    if qty > 1:
+        qty_part = " ×%d" % qty
+    var target_part := ""
+    if bool(q.get("targeted", false)):
+        target_part = " — for you"
+    return "%s: %s%s — %d coins (%s)%s" % [
+        str(q.get("seller", "")), label, qty_part, amount, disposition, target_part,
+    ]
+
+
+## Submit a quote take: pc/pay with quote_id + the quote's terms verbatim.
+## ready_in_days is deliberately omitted (same-day) — an advance booking
+## composes a date the quote doesn't carry, so it stays on the compose
+## form. Reuses http_pay / _on_pay_completed; a strict-reject (the quote
+## expired or was taken between render and click) surfaces there and
+## triggers a list re-fetch.
+func _on_pay_take_pressed(q: Dictionary) -> void:
+    # One pay submit at a time: a second Take (or a Take during a compose
+    # submit) would ERR_BUSY against the shared http_pay node, and its
+    # error path would clear pay_take_in_flight out from under the
+    # ORIGINAL in-flight take — losing the stale-row re-fetch when that
+    # take's rejection finally lands. (code_review)
+    if pay_take_in_flight or (http_pay != null and http_pay.get_http_client_status() != HTTPClient.STATUS_DISCONNECTED):
+        pay_status_label.text = "Request already in progress."
+        return
+    var amount := int(q.get("amount", 0))
+    if amount > pc_coins:
+        pay_status_label.text = "You only have %d coins." % pc_coins
+        return
+    var body := {
+        "seller": str(q.get("seller", "")),
+        "item": str(q.get("item", "")),
+        "qty": int(q.get("qty", 1)),
+        "amount": amount,
+        "consume_now": bool(q.get("consume_now", false)),
+        "quote_id": int(q.get("quote_id", 0)),
+    }
+    pay_status_label.text = "Taking the offer…"
+    pay_confirm_button.disabled = true
+    pay_take_in_flight = true
+
+    var err := http_pay.request(
+        _api_url("/api/village/pc/pay"),
+        _auth_headers(),
+        HTTPClient.METHOD_POST,
+        JSON.stringify(body),
+    )
+    if err != OK:
+        pay_status_label.text = "Request failed (%s)." % err
+        pay_confirm_button.disabled = false
+        pay_take_in_flight = false
+
+
 ## Display label for an item name: vendor-facing catalog label when
 ## known, the raw name otherwise. Lookup is case-insensitive (the
 ## mentions accumulator lowercases; catalog names keep wire case).
@@ -1770,6 +1962,8 @@ func _on_pay_confirm() -> void:
 
 
 func _on_pay_completed(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
+    var was_take := pay_take_in_flight
+    pay_take_in_flight = false
     pay_confirm_button.disabled = false
     if result != HTTPRequest.RESULT_SUCCESS:
         pay_status_label.text = "Network error."
@@ -1781,6 +1975,11 @@ func _on_pay_completed(result: int, response_code: int, _headers: PackedStringAr
         if typeof(parsed) == TYPE_DICTIONARY:
             msg = str(parsed.get("error", msg))
         pay_status_label.text = msg
+        # A rejected take means the row went stale (the explicit quote_id
+        # path is strict-reject — the quote expired, was taken, or the
+        # scene moved on). Re-fetch so the list reflects reality.
+        if was_take:
+            _request_pay_quotes()
         return
     if typeof(parsed) != TYPE_DICTIONARY:
         pay_status_label.text = "Bad response."
