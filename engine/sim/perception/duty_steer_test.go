@@ -393,7 +393,7 @@ func TestBuildDutySteer_OpenUntilSuppression(t *testing.T) {
 // TestBuildDutySteer_LodgerWindsDownToInn — ZBBS-WORK-387. A lodger (no home,
 // active ledger grant) winds down toward the inn it rents, with Lodging set.
 func TestBuildDutySteer_LodgerWindsDownToInn(t *testing.T) {
-	m := 600 // off-shift
+	m := 600                                                                 // off-shift
 	lodgerAnchors := &AnchorsView{WorkID: "smithy", WorkLabel: "The Smithy"} // no home
 	subj := &sim.ActorSnapshot{
 		Kind:              sim.KindNPCStateful,
