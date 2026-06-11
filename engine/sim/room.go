@@ -250,4 +250,3 @@ func LodgingNightlyRate(weeklyRate int) int {
 	}
 	return weeklyRate / 7
 }
-
