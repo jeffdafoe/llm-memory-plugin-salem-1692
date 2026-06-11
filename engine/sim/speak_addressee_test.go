@@ -85,7 +85,7 @@ func TestSpeakTo_AddresseeResolution(t *testing.T) {
 			defer stop()
 
 			captured := captureSpoke(t, w)
-			if _, err := w.Send(sim.SpeakTo("hannah", tc.text, tc.to, true, time.Now().UTC())); err != nil {
+			if _, err := w.Send(sim.SpeakTo("hannah", tc.text, tc.to, nil, true, time.Now().UTC())); err != nil {
 				t.Fatalf("SpeakTo: %v", err)
 			}
 			if len(*captured) != 1 {
@@ -124,7 +124,7 @@ func TestSpeakTo_NoHuddle_AddresseeEmpty(t *testing.T) {
 	defer stop()
 
 	captured := captureSpoke(t, w)
-	if _, err := w.Send(sim.SpeakTo("hannah", "Good morrow.", "Ezekiel", true, time.Now().UTC())); err != nil {
+	if _, err := w.Send(sim.SpeakTo("hannah", "Good morrow.", "Ezekiel", nil, true, time.Now().UTC())); err != nil {
 		t.Fatalf("SpeakTo: %v", err)
 	}
 	if len(*captured) != 1 {
