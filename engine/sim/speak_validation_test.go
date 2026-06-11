@@ -7,10 +7,10 @@ import (
 )
 
 // speak_validation_test.go — ZBBS-WORK-323. Unit coverage of the speak
-// prose-validation gates (transfer-verb, state-claim; item-presence removed in
-// ZBBS-HOME-416) + the helpers (isAskShapeSpeech, extractItemMentions). Internal
-// (package sim) so it can call the unexported gate functions directly on a
-// hand-built World.
+// prose-validation gate (state-claim; item-presence removed in ZBBS-HOME-416,
+// transfer-verb in ZBBS-WORK-397 — see the speak_validation.go header).
+// Internal (package sim) so it can call the unexported gate functions directly
+// on a hand-built World.
 
 func gateCatalog() map[ItemKind]*ItemKindDef {
 	return map[ItemKind]*ItemKindDef{
@@ -20,116 +20,28 @@ func gateCatalog() map[ItemKind]*ItemKindDef {
 	}
 }
 
-func TestIsAskShapeSpeech(t *testing.T) {
-	cases := []struct {
-		text string
-		want bool
-	}{
-		{"Do you have any bread?", true},
-		{"I'd like some stew.", true},
-		{"I'll take an ale.", true},
-		{"I'm out of bread.", true},
-		{"We don't stock ale.", true},
-		{"Can I get a stew?", true},
-		{"Here is fresh bread for sale.", false},
-		{"I have hot stew today.", false},
-		{"", false},
-	}
-	for _, c := range cases {
-		if got := isAskShapeSpeech(c.text); got != c.want {
-			t.Errorf("isAskShapeSpeech(%q) = %v, want %v", c.text, got, c.want)
-		}
-	}
-}
-
-func TestExtractItemMentions(t *testing.T) {
-	w := &World{ItemKinds: gateCatalog()}
-	cases := []struct {
-		text string
-		want []ItemKind
-	}{
-		{"fresh bread and ale", []ItemKind{"ale", "bread"}}, // sorted
-		{"ALE, please", []ItemKind{"ale"}},                  // case-insensitive + punctuation boundary
-		{"a fine ale-house", []ItemKind{"ale"}},             // hyphen boundary
-		{"the sale is on", nil},                             // "sale" must NOT match "ale"
-		{"this stale bread", []ItemKind{"bread"}},           // "stale" must NOT match "ale"; bread does
-		{"stew stew stew", []ItemKind{"stew"}},              // dedup
-		{"nothing on the menu", nil},
-		{"", nil},
-	}
-	for _, c := range cases {
-		got := extractItemMentions(w, c.text)
-		if len(got) != len(c.want) {
-			t.Errorf("extractItemMentions(%q) = %v, want %v", c.text, got, c.want)
-			continue
-		}
-		for i := range got {
-			if got[i] != c.want[i] {
-				t.Errorf("extractItemMentions(%q) = %v, want %v", c.text, got, c.want)
-				break
-			}
-		}
-	}
-	// Empty catalog → no mentions (fail-open).
-	if got := extractItemMentions(&World{}, "fresh bread and ale"); got != nil {
-		t.Errorf("empty catalog should yield nil, got %v", got)
-	}
-}
-
-// gateActor is a minimal NPC speaker for the gate tests.
-func gateActor(id ActorID, inv map[ItemKind]int) *Actor {
-	return &Actor{ID: id, Kind: KindNPCShared, Inventory: inv}
-}
-
-// TestValidateSpeechClaims_ItemPresenceRemoved pins the ZBBS-HOME-416 removal of
-// the item-presence gate: naming an item the speaker doesn't hold is no longer
-// rejected here (integrity lives at the transfer commands). The motivating false
-// positives — a buyer naming the goods it wants, and an honest "I don't stock
-// that" disclaimer — now pass. Possession-backed transfer narration is still
-// caught by gate 2 (covered in TestValidateSpeechClaims_TransferVerb).
-func TestValidateSpeechClaims_ItemPresenceRemoved(t *testing.T) {
+// TestStateClaims_RemovedGatesStayRemoved pins the ZBBS-HOME-416 and
+// ZBBS-WORK-397 removals: item-talk and transfer-narration that the old gates
+// 1-2 rejected (or risked rejecting) now pass speak validation. Each line was a
+// real or corpus-identified false positive of the gate named in its comment.
+func TestStateClaims_RemovedGatesStayRemoved(t *testing.T) {
 	w := &World{ItemKinds: gateCatalog(), Actors: map[ActorID]*Actor{}}
 	now := time.Now().UTC()
-	a := gateActor("ezekiel", map[ItemKind]int{}) // holds nothing
+	a := &Actor{ID: "hannah", Kind: KindNPCShared, Inventory: map[ItemKind]int{"stew": 5}}
 
-	// Declarative buyer acceptance naming the seller's goods — the live Ezekiel
-	// false positive. Assert it is NOT ask-shape first, so this proves gate-1
-	// removal rather than passing for the wrong reason if askShapeRegex ever
-	// changes to cover "shall buy".
-	buyerLine := "I shall buy a mug of ale from thee for 2 coins"
-	if isAskShapeSpeech(buyerLine) {
-		t.Fatalf("fixture unexpectedly matched ask-shape, can't prove gate-1 removal: %q", buyerLine)
+	cases := []struct {
+		text string
+		why  string
+	}{
+		{"I shall buy a mug of ale from thee for 2 coins", "gate-1 class: buyer naming goods to purchase (live Ezekiel FP)"},
+		{"I have fresh bread for you", "gate-1 class: unheld-item sell-claim"},
+		{"served stew to Ezekiel", "gate-2 class: possession-backed handover narration"},
+		{"I am still waiting on water and bread from John Ellis, and I must see to it that these goods are delivered promptly.", "gate-2 class: the one corpus-eligible line — buyer-side passive receipt (Prudence, 2026-06-05)"},
 	}
-	if msg := validateSpeechClaims(w, a, buyerLine, now); msg != "" {
-		t.Errorf("buyer naming goods to purchase should pass after gate-1 removal, got %q", msg)
-	}
-	// A bare sell-claim for an unheld item is no longer gated here either.
-	if msg := validateSpeechClaims(w, a, "I have fresh bread for you", now); msg != "" {
-		t.Errorf("unheld-item mention should pass after gate-1 removal, got %q", msg)
-	}
-}
-
-func TestValidateSpeechClaims_TransferVerb(t *testing.T) {
-	w := &World{ItemKinds: gateCatalog(), Actors: map[ActorID]*Actor{}}
-	now := time.Now().UTC()
-	a := gateActor("hannah", map[ItemKind]int{"stew": 5, "ale": 5})
-
-	// Has stew, but narrates a handover → transfer-verb reject (option B).
-	msg := validateSpeechClaims(w, a, "served stew to Ezekiel", now)
-	if msg == "" || !strings.Contains(msg, "pay_with_item") {
-		t.Errorf("expected transfer-verb reject pointing at pay_with_item, got %q", msg)
-	}
-	// Has ale, just advertises it (no transfer verb) → pass.
-	if msg := validateSpeechClaims(w, a, "I have cold ale on tap", now); msg != "" {
-		t.Errorf("advertising in-stock ale should pass, got %q", msg)
-	}
-	// Transfer verb with NO item mention → pass (not a transfer claim).
-	if msg := validateSpeechClaims(w, a, "I served this town for thirty years", now); msg != "" {
-		t.Errorf("transfer verb without item should pass, got %q", msg)
-	}
-	// Ask-shape with verb+item → skip.
-	if msg := validateSpeechClaims(w, a, "Did you want me to serve you stew?", now); msg != "" {
-		t.Errorf("ask-shape transfer should skip, got %q", msg)
+	for _, c := range cases {
+		if msg := validateStateClaims(w, a, c.text, now); msg != "" {
+			t.Errorf("%s: %q should pass after the gate removals, got %q", c.why, c.text, msg)
+		}
 	}
 }
 
@@ -259,9 +171,11 @@ func TestValidateStateClaims_Huddleless(t *testing.T) {
 	}
 }
 
-// TestSpeak_PCExempt confirms the gates fire for NPCs but not PCs (the Kind
-// check lives in the Speak command). A PC and an NPC both speak the same
-// unbacked item claim; only the NPC is rejected.
+// TestSpeak_PCExempt confirms the NPC-discipline gates fire for NPCs but not
+// PCs (the Kind check lives in the Speak command). Both speakers are huddleless,
+// so what actually rejects the NPC here is the ZBBS-HOME-402 no-audience gate
+// (the item-presence gate this fixture originally drove was removed in
+// ZBBS-HOME-416) — the PC commits the same line untouched.
 func TestSpeak_PCExempt(t *testing.T) {
 	now := time.Now().UTC()
 	npc := &Actor{ID: "hannah", Kind: KindNPCShared, Inventory: map[ItemKind]int{}}
@@ -269,7 +183,7 @@ func TestSpeak_PCExempt(t *testing.T) {
 	w := &World{Actors: map[ActorID]*Actor{"hannah": npc, "jeff": pc}, ItemKinds: gateCatalog()}
 
 	if _, err := Speak("hannah", "I have fresh bread", now).Fn(w); err == nil {
-		t.Error("NPC fabricating bread should be rejected by the gate")
+		t.Error("huddleless NPC speech should be rejected (no-audience gate)")
 	}
 	if _, err := Speak("jeff", "I have fresh bread", now).Fn(w); err != nil {
 		t.Errorf("PC speech should be exempt from the gates, got error: %v", err)

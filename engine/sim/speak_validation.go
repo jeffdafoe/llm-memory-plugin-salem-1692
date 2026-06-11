@@ -3,21 +3,18 @@ package sim
 import (
 	"fmt"
 	"regexp"
-	"sort"
-	"strings"
 	"time"
-	"unicode"
 )
 
-// speak_validation.go — ZBBS-WORK-323. The three speak-side prose-validation
-// gates ported from v1 (engine/inventory.go + engine/speech_state_claim_gate.go),
-// reworked as in-memory reads on the world goroutine. They defend against the
-// narration-vs-mechanism desync: an NPC *speaking* a transaction/service into
-// apparent existence ("here's your stew", "yes, you're booked") that no tool call
-// actually performed, so the words misrepresent engine state to listeners.
+// speak_validation.go — ZBBS-WORK-323. The speak-side prose-validation gate
+// ported from v1 (engine/speech_state_claim_gate.go), reworked as in-memory
+// reads on the world goroutine. It defends against the narration-vs-mechanism
+// desync: an NPC *speaking* a transaction/service into apparent existence
+// ("yes, you're booked") that no tool call actually performed, so the words
+// misrepresent engine state to listeners.
 //
-// Gates run from sim.Speak's Fn (so they see live World state). Numbering is kept
-// stable across the gate-1 removal below:
+// The gate runs from sim.Speak's Fn (so it sees live World state). Numbering is
+// kept stable across the gate-1 and gate-2 removals below:
 //
 //  1. ITEM-PRESENCE — REMOVED in ZBBS-HOME-416. It scanned speech for item-kind
 //     names and rejected any the speaker didn't hold. The scan was purely lexical
@@ -28,12 +25,20 @@ import (
 //     integrity (you cannot transfer stock you don't hold) is enforced at the
 //     transfer commands (pay_ledger / pay_with_item), not here; the gate only
 //     governed chat accuracy, which the perception's "You are carrying:" line owns.
-//  2. TRANSFER-VERB (v1 ZBBS-HOME-265, RELOCATED from act → speak per the WORK-323
-//     option-B decision). Narrating a completed handover ("served stew to Ezekiel")
-//     doesn't move items — speech can't perform a transfer. v1 gated this only on
-//     the `act` verb, which is being dropped (ZBBS, 2026-05-25 — ~2% of speak,
-//     headline use was fabrication), so its coverage relocates here rather than
-//     vanishing.
+//  2. TRANSFER-VERB — REMOVED in ZBBS-WORK-397 (was v1 ZBBS-HOME-265, relocated
+//     act → speak per the WORK-323 option-B decision). It rejected past-tense
+//     handover narration ("served stew to Ezekiel") that named a catalog item.
+//     The HOME-420 full-corpus read (2026-06-10) found ZERO fires across the
+//     gate's entire production life (Feb→Jun transcript store + all of
+//     virtual_agent_calls), zero true positives in a raw trigger-surface scan
+//     of every speak call ever emitted (the one genuinely eligible line was a
+//     buyer-side false positive — the HOME-420 class the gate existed to risk),
+//     and a structural blind spot: ~66% of speech contains "?" and skipped the
+//     gate wholesale via the ask-shape exemption. Decorative coverage plus a
+//     real false-positive class. Economic integrity lives at the transfer
+//     commands; fabricated-handover pressure died with the prompt improvements
+//     (carrying-line, seller cues, act-then-speak) — item-talk rejections fell
+//     1,421→40/day across 06-05→06-09 before removal.
 //  3. STATE-CLAIM (v1 ZBBS-HOME-270) — reject *completed* second-person booking
 //     ("you are booked", "your room is ready", "welcome, lodger") and payment
 //     ("you've paid me", "you've settled up") claims that lack a backing
@@ -49,23 +54,6 @@ import (
 // transaction acknowledgment, not an open-ended historical claim. Matches v1's
 // 5-minute window.
 const recentPaymentWindow = 5 * time.Minute
-
-// askShapeRegex matches speech that reads as a buyer-side request or a vendor
-// decline rather than a completed-transfer claim — these skip the transfer-verb
-// gate so request/decline dialog that names catalog items ("do you have bread?",
-// "I'm out of ale") isn't treated as handover narration. Ported verbatim from v1
-// (engine/inventory.go); WORK-230 originally added it to stop the now-removed
-// (HOME-416) item-presence gate from rejecting vendors *asking* about goods.
-var askShapeRegex = regexp.MustCompile(`(?i)(\?|\bdo you\b|\bhave you\b|\b(may|can|could)\s+i\b|\bi\s+(want|need)\b|\b(i'?d|i would)\s+(want|need|like|love|take|have|buy|get|prefer)\b|\bi'?ll\s+(take|have|buy|get|need|like)\b|\bi'?m\s+(looking|after|seeking)\b|\bi'?m\s+out\s+of\b|\bout\s+of\s+\w+\b|\bdon'?t\s+(have|carry|stock|sell)\b|\bran\s+out\b|\bno\s+more\s+\w+\b|\bi\s+haven'?t\s+(any|got)\b)`)
-
-// transferVerbRegex matches past-tense transfer-implying verbs that, combined
-// with an item mention, assert a completed handover speech can't perform. Item
-// transfers must route through pay_with_item (or a buyer's pay). Conservative on
-// purpose — ambiguous candidates ("offered" can be a verbal price; "poured" /
-// "brought" can be intransitive movement) are excluded to avoid false rejections
-// on flavor narration. Ported verbatim from v1 (engine/inventory.go
-// actTransferVerbsRegex).
-var transferVerbRegex = regexp.MustCompile(`(?i)\b(handed|gave|served|delivered|dished|ladled|doled)\b`)
 
 // speechClaimKind tags which backing lookup a matched state-claim phrase needs.
 type speechClaimKind int
@@ -94,88 +82,15 @@ var stateClaimPatterns = []stateClaimPattern{
 	{regexp.MustCompile(`(?i)\byou(?:'ve| have) settled (?:up|your bill|your account|in full)\b`), claimPayment},
 }
 
-// isAskShapeSpeech reports whether the speech reads as a buyer request or vendor
-// decline rather than a possession/offer claim. Empty text returns false.
-func isAskShapeSpeech(text string) bool {
-	if text == "" {
-		return false
-	}
-	return askShapeRegex.MatchString(text)
-}
-
-// extractItemMentions returns the distinct item-kind names that appear as whole
-// words in text, matched case-insensitively against the loaded catalog
-// (w.ItemKinds). Tokenization splits on any rune that isn't a letter, digit, or
-// underscore, so "ale" matches "ale," and "ale-house" but NOT "sale" or "stale"
-// — the v2 equivalent of v1's \b-anchored item-kind alternation regex, without a
-// per-call regex compile. Returned sorted for deterministic reject messages.
-func extractItemMentions(w *World, text string) []ItemKind {
-	if w == nil || len(w.ItemKinds) == 0 || text == "" {
-		return nil
-	}
-	byLower := make(map[string]ItemKind, len(w.ItemKinds))
-	for kind := range w.ItemKinds {
-		byLower[strings.ToLower(string(kind))] = kind
-	}
-	tokens := strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
-		return !(unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_')
-	})
-	seen := make(map[ItemKind]struct{})
-	var out []ItemKind
-	for _, tok := range tokens {
-		if kind, ok := byLower[tok]; ok {
-			if _, dup := seen[kind]; !dup {
-				seen[kind] = struct{}{}
-				out = append(out, kind)
-			}
-		}
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
-	return out
-}
-
-// validateSpeechClaims runs the three gates against text spoken by `speaker` and
-// returns a reject message (surfaced to the model as a tool error so it retries)
+// validateStateClaims is gate 3 (the sole surviving gate — see the file header
+// numbering) — booking/payment completed-state assertions must be backed by a
+// real grant for someone in the speaker's huddle. Returns a reject message
+// (surfaced to the model as a tool error so it retries with corrected phrasing)
 // or "" to allow. MUST be called from inside sim.Speak's Fn — it reads live
-// World state (Inventory, PayLedger, RoomAccess, huddle membership). The caller
-// skips PCs and treats a non-empty return as the speech rejection.
-//
-// Fail-open by construction: every lookup that can't resolve a backing fact
-// either returns a reject (state claims — an unbacked claim is the failure mode)
-// or allows (item gates — a missing catalog / empty inventory means nothing to
-// validate against). There is no transient-error path because all reads are
-// in-memory on the serialized world goroutine.
-func validateSpeechClaims(w *World, speaker *Actor, text string, now time.Time) string {
-	// Gate 2 (transfer-verb) needs the item-mention scan. Ask-shape speech
-	// (questions, declines) skips it — naming an item you're asking about isn't a
-	// claim. The former gate 1 (item-presence) was removed in ZBBS-HOME-416 (see
-	// the file header); integrity lives at the transfer commands, not here.
-	if !isAskShapeSpeech(text) {
-		mentions := extractItemMentions(w, text)
-		if len(mentions) > 0 {
-			// Gate 2: transfer-verb (relocated from act). Narrating a completed
-			// handover via speech doesn't move items, even when the speaker holds
-			// them.
-			if verb := transferVerbRegex.FindString(text); verb != "" {
-				names := make([]string, len(mentions))
-				for i, m := range mentions {
-					names[i] = string(m)
-				}
-				return fmt.Sprintf(
-					"Your words (%q + %s) describe handing over an item, but speech alone doesn't move anything. To actually give or trade %s, use offer_trade (propose your goods for theirs); to buy, use pay_with_item; or let the buyer pay — then say it once the transfer is real.",
-					strings.ToLower(verb), strings.Join(names, ", "), strings.Join(names, ", "),
-				)
-			}
-		}
-	}
-
-	// Gate 3: transactional state-claim.
-	return validateStateClaims(w, speaker, text, now)
-}
-
-// validateStateClaims is gate 3 — booking/payment completed-state assertions
-// must be backed by a real grant for someone in the speaker's huddle. Returns a
-// reject message or "".
+// World state (PayLedger, RoomAccess, huddle membership). The caller skips PCs
+// and treats a non-empty return as the speech rejection. An unbacked claim is
+// the failure mode, so unresolvable lookups reject; there is no transient-error
+// path because all reads are in-memory on the serialized world goroutine.
 func validateStateClaims(w *World, speaker *Actor, text string, now time.Time) string {
 	var matched map[speechClaimKind]string
 	for _, p := range stateClaimPatterns {
