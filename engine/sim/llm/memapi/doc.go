@@ -54,7 +54,9 @@
 //
 //	5xx, Do() failure       → llm.ErrorTransport
 //	ctx.Err()               → llm.ErrorContextCancelled
-//	4xx                     → llm.ErrorMalformed (caller-side bug)
+//	429                     → llm.ErrorRateLimited (VA in rate-limit
+//	                          cooldown at the memory-api boundary)
+//	other 4xx               → llm.ErrorMalformed (caller-side bug)
 //	parse fail / missing    → llm.ErrorMalformed
 //	reply field
 //
