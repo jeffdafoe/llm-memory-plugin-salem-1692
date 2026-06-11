@@ -2192,9 +2192,9 @@ func _pay_quote_row_label(q: Dictionary) -> String:
             line += ", to eat here"
         else:
             line += ", to take home"
-    line += "."
     if bool(q.get("targeted", false)):
         line += " — for you"
+    line += "."
     return line
 
 
