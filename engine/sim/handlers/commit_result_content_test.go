@@ -222,23 +222,25 @@ func TestCommitResultContent_PayEatHereClampNote(t *testing.T) {
 	}
 }
 
-// TestCommitResultContent_SceneQuoteEatHereClampNote (ZBBS-WORK-405): a
-// scene_quote whose proposed take-home was clamped to eat-here tells the
-// seller model so; an unclamped quote keeps the generic [ok].
+// TestCommitResultContent_SceneQuoteEatHereClampNote (ZBBS-WORK-405 +
+// ZBBS-HOME-433): a scene_quote whose proposed take-home was clamped to
+// eat-here tells the seller model so; every successful quote — clamped or
+// not — carries the post-quote steer so the model stops re-posting it.
 func TestCommitResultContent_SceneQuoteEatHereClampNote(t *testing.T) {
 	vc := ValidatedCall{Name: "scene_quote", DecodedArgs: SceneQuoteArgs{ItemKind: "Stew", Qty: 1, Amount: 4, ConsumeNow: false}}
+	const steer = "The room has heard your offer — await an answer or call done(). Do not post the same offer again."
 
 	got := commitResultContent(&vc, sim.SceneQuoteCreateResult{QuoteID: 3, EatHereClamped: true})
-	want := "[ok] Mind: stew can't be carried away — your offer stands as eat-here, taken on the spot."
+	want := "[ok] Mind: stew can't be carried away — your offer stands as eat-here, taken on the spot. " + steer
 	if got != want {
 		t.Errorf("clamped scene_quote:\n got %q\nwant %q", got, want)
 	}
 
-	if got := commitResultContent(&vc, sim.SceneQuoteCreateResult{QuoteID: 3}); got != "[ok]" {
-		t.Errorf("unclamped scene_quote = %q, want [ok]", got)
+	if got := commitResultContent(&vc, sim.SceneQuoteCreateResult{QuoteID: 3}); got != "[ok] Your offer now stands. "+steer {
+		t.Errorf("unclamped scene_quote = %q, want standing-offer steer", got)
 	}
-	if got := commitResultContent(&vc, nil); got != "[ok]" {
-		t.Errorf("nil result = %q, want [ok]", got)
+	if got := commitResultContent(&vc, nil); got != "[ok] Your offer now stands. "+steer {
+		t.Errorf("nil result = %q, want standing-offer steer", got)
 	}
 }
 
