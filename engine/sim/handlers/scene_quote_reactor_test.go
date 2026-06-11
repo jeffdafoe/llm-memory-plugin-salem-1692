@@ -154,10 +154,13 @@ func TestSceneQuoteReactor_NPCTarget_StampsWarrant(t *testing.T) {
 	}
 }
 
-// TestSceneQuoteReactor_PublicQuote_NoStamp: a quote with empty
-// TargetBuyer must NOT stamp a warrant on anyone (public quotes
-// surface via perception render, not reactor activation).
-func TestSceneQuoteReactor_PublicQuote_NoStamp(t *testing.T) {
+// TestSceneQuoteReactor_PublicQuote_NoActiveHuddle_NoStamp: a public
+// quote (empty TargetBuyer) from a seller with no ACTIVE huddle stamps
+// nothing (ZBBS-HOME-431 fans out only to a live huddle; without one,
+// public quotes surface via perception render, not reactor activation).
+// The helper never seeds w.Huddles, so the actors' h1 membership has no
+// live Huddle object — the fan-out's huddle lookup misses.
+func TestSceneQuoteReactor_PublicQuote_NoActiveHuddle_NoStamp(t *testing.T) {
 	w, stop := buildSceneQuoteReactorWorld(t,
 		sceneQuoteReactorActor{id: "aldous", displayName: "Aldous", kind: sim.KindNPCStateful, huddleID: "h1", inventory: map[sim.ItemKind]int{"ale": 5}},
 		sceneQuoteReactorActor{id: "bea", displayName: "Bea", kind: sim.KindNPCStateful, huddleID: "h1"},
@@ -168,10 +171,103 @@ func TestSceneQuoteReactor_PublicQuote_NoStamp(t *testing.T) {
 		t.Fatalf("SceneQuoteCreate public: %v", err)
 	}
 	if got := len(peekActorWarrantsForQuoteTest(t, w, "bea")); got != 0 {
-		t.Errorf("bea got %d warrant(s) from public quote, want 0", got)
+		t.Errorf("bea got %d warrant(s) from public quote without live huddle, want 0", got)
 	}
 	if got := len(peekActorWarrantsForQuoteTest(t, w, "aldous")); got != 0 {
 		t.Errorf("aldous (seller) got %d warrant(s), want 0", got)
+	}
+}
+
+// seedQuoteTestHuddle installs a live Huddle object for the given members
+// (optionally concluded), satisfying the Members<->CurrentHuddleID
+// invariant the fan-out reads. Run via Command on the world goroutine.
+func seedQuoteTestHuddle(t *testing.T, w *sim.World, id sim.HuddleID, concluded bool, members ...sim.ActorID) {
+	t.Helper()
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		set := make(map[sim.ActorID]struct{}, len(members))
+		for _, m := range members {
+			set[m] = struct{}{}
+		}
+		h := &sim.Huddle{ID: id, Members: set, StartedAt: time.Now().UTC()}
+		if concluded {
+			at := time.Now().UTC()
+			h.ConcludedAt = &at
+		}
+		world.Huddles[id] = h
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed huddle %s: %v", id, err)
+	}
+}
+
+// TestSceneQuoteReactor_PublicQuote_FansOutToHuddlePeers: ZBBS-HOME-431
+// — a public quote posted from inside an active huddle warrants the
+// seller's NPC peers (stateful AND shared) with the same quote-shaped
+// reason a targeted stamp carries. PCs, decoratives, mid-walk peers,
+// and the seller are skipped.
+func TestSceneQuoteReactor_PublicQuote_FansOutToHuddlePeers(t *testing.T) {
+	w, stop := buildSceneQuoteReactorWorld(t,
+		sceneQuoteReactorActor{id: "aldous", displayName: "Aldous", kind: sim.KindNPCStateful, huddleID: "h1", inventory: map[sim.ItemKind]int{"ale": 5}},
+		sceneQuoteReactorActor{id: "bea", displayName: "Bea", kind: sim.KindNPCStateful, huddleID: "h1"},
+		sceneQuoteReactorActor{id: "cee", displayName: "Cee", kind: sim.KindNPCShared, huddleID: "h1"},
+		sceneQuoteReactorActor{id: "pcplayer", displayName: "PCPlayer", kind: sim.KindPC, huddleID: "h1"},
+		sceneQuoteReactorActor{id: "dec", displayName: "Dec", kind: sim.KindDecorative, huddleID: "h1"},
+		sceneQuoteReactorActor{id: "walker", displayName: "Walker", kind: sim.KindNPCStateful, huddleID: "h1"},
+	)
+	defer stop()
+	seedQuoteTestHuddle(t, w, "h1", false, "aldous", "bea", "cee", "pcplayer", "dec", "walker")
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["walker"].MoveIntent = &sim.MoveIntent{}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("set walker MoveIntent: %v", err)
+	}
+
+	res, err := w.Send(sim.SceneQuoteCreate("aldous", "ale", 1, 4, false, "", nil, time.Now().UTC()))
+	if err != nil {
+		t.Fatalf("SceneQuoteCreate public: %v", err)
+	}
+	qid := res.(sim.SceneQuoteCreateResult).QuoteID
+
+	for _, id := range []sim.ActorID{"bea", "cee"} {
+		ws := peekActorWarrantsForQuoteTest(t, w, id)
+		if len(ws) != 1 {
+			t.Fatalf("%s.Warrants = %d, want 1", id, len(ws))
+		}
+		reason, ok := ws[0].Reason.(sim.SceneQuoteTargetedWarrantReason)
+		if !ok {
+			t.Fatalf("%s Warrants[0].Reason type = %T, want SceneQuoteTargetedWarrantReason", id, ws[0].Reason)
+		}
+		if reason.QuoteID != qid || reason.SellerID != "aldous" || reason.ItemKind != "ale" || reason.Amount != 4 {
+			t.Errorf("%s warrant terms = %+v, want quote %d from aldous", id, reason, qid)
+		}
+		if !reason.Overheard {
+			t.Errorf("%s fan-out warrant Overheard = false, want true (renders \"offers\" not \"offers you\")", id)
+		}
+	}
+	for _, id := range []sim.ActorID{"aldous", "pcplayer", "dec", "walker"} {
+		if got := len(peekActorWarrantsForQuoteTest(t, w, id)); got != 0 {
+			t.Errorf("%s got %d warrant(s) from public quote, want 0", id, got)
+		}
+	}
+}
+
+// TestSceneQuoteReactor_PublicQuote_ConcludedHuddle_NoStamp: the
+// fan-out only fires for a live huddle — a concluded huddle's members
+// are not "in the conversation" anymore.
+func TestSceneQuoteReactor_PublicQuote_ConcludedHuddle_NoStamp(t *testing.T) {
+	w, stop := buildSceneQuoteReactorWorld(t,
+		sceneQuoteReactorActor{id: "aldous", displayName: "Aldous", kind: sim.KindNPCStateful, huddleID: "h1", inventory: map[sim.ItemKind]int{"ale": 5}},
+		sceneQuoteReactorActor{id: "bea", displayName: "Bea", kind: sim.KindNPCStateful, huddleID: "h1"},
+	)
+	defer stop()
+	seedQuoteTestHuddle(t, w, "h1", true, "aldous", "bea")
+
+	if _, err := w.Send(sim.SceneQuoteCreate("aldous", "ale", 1, 2, false, "", nil, time.Now().UTC())); err != nil {
+		t.Fatalf("SceneQuoteCreate public: %v", err)
+	}
+	if got := len(peekActorWarrantsForQuoteTest(t, w, "bea")); got != 0 {
+		t.Errorf("bea got %d warrant(s) from concluded-huddle public quote, want 0", got)
 	}
 }
 

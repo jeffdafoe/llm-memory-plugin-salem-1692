@@ -19,9 +19,12 @@ import "time"
 // non-empty AND the targeted actor is an NPC; PC TargetBuyers see the
 // quote via Snapshot.Quotes in their client perception.
 //
-// Public quotes (TargetBuyer == "") fire the same event but no warrant
-// is stamped — scene participants pick the quote up at perception
-// build via the pull-based render path (see scene-quote-design § 7).
+// Public quotes (TargetBuyer == "") fire the same event; when the
+// seller is in an active huddle the subscriber fans the warrant out to
+// the seller's NPC huddle peers instead (ZBBS-HOME-431 — they heard
+// the offer). Outside a huddle no warrant is stamped and scene
+// participants pick the quote up at perception build via the
+// pull-based render path (see scene-quote-design § 7).
 //
 // All quote terms ride on the event for downstream subscribers (admin
 // projection, telemetry). Same one-ID-flows-through pattern as
