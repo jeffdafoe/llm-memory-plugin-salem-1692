@@ -132,7 +132,7 @@ func TestRenderTriage_CodaSwap(t *testing.T) {
 	thresholds := sim.NeedThresholds{}
 
 	var awaiting strings.Builder
-	renderTriage(&awaiting, needs, thresholds, true)
+	renderTriage(&awaiting, needs, thresholds, true, false)
 	got := awaiting.String()
 	if strings.Contains(got, "Choose one action") {
 		t.Errorf("awaiting coda must not command an action:\n%s", got)
@@ -145,8 +145,35 @@ func TestRenderTriage_CodaSwap(t *testing.T) {
 	// command ("Choose one action") — but now pairs it with the yield-after-speak
 	// turn discipline.
 	var normal strings.Builder
-	renderTriage(&normal, needs, thresholds, false)
+	renderTriage(&normal, needs, thresholds, false, false)
 	if !strings.Contains(normal.String(), "Choose one action") {
 		t.Errorf("non-awaiting coda should keep the act-now imperative:\n%s", normal.String())
+	}
+}
+
+// TestRenderTriage_PayOffersFirst — when offers await the actor's decision,
+// the coda leads with settle-the-offer-first, ranking a buyer's money above
+// the actor's own felt needs in BOTH coda variants (ZBBS-HOME-424).
+func TestRenderTriage_PayOffersFirst(t *testing.T) {
+	needs := map[sim.NeedKey]int{}
+	thresholds := sim.NeedThresholds{}
+
+	for _, awaiting := range []bool{false, true} {
+		var b strings.Builder
+		renderTriage(&b, needs, thresholds, awaiting, true)
+		got := b.String()
+		if !strings.Contains(got, "settle it first with accept_pay") {
+			t.Errorf("awaiting=%v: coda should lead with the offer decision:\n%s", awaiting, got)
+		}
+		if !strings.HasPrefix(got, "A buyer's offer awaits your answer") {
+			t.Errorf("awaiting=%v: offer-first line must come before the generic coda:\n%s", awaiting, got)
+		}
+	}
+
+	// And absent offers, the line must not render.
+	var b strings.Builder
+	renderTriage(&b, needs, thresholds, false, false)
+	if strings.Contains(b.String(), "accept_pay") {
+		t.Errorf("no-offers coda must not mention accept_pay:\n%s", b.String())
 	}
 }

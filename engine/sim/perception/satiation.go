@@ -427,6 +427,16 @@ func gatherCoPresentPeerOffers(snap *sim.Snapshot, actorID sim.ActorID, actorSna
 			if mag <= 0 {
 				continue
 			}
+			// A purchase already in flight must not be re-urged: the cross-tick
+			// duplicate gate (ZBBS-WORK-391) rejects exactly the pay_with_item
+			// this line cues, so rendering it puts the prompt at war with the
+			// gate — the model obeys the cue, collects [error: already_offered],
+			// and loops (the hud-6c849d… churn, ZBBS-HOME-424). The "## Your
+			// pending offers" section already says to wait; other peers/items
+			// stay listed as legitimate alternatives.
+			if hasPendingOfferTo(snap, actorID, peerID, kind) {
+				continue
+			}
 			out = append(out, SatiationPeerOffer{
 				PeerLabel: label,
 				ItemLabel: itemDisplayLabel(snap, kind),
@@ -458,6 +468,30 @@ func gatherCoPresentPeerOffers(snap *sim.Snapshot, actorID sim.ActorID, actorSna
 		return out[i].itemKind < out[j].itemKind
 	})
 	return out
+}
+
+// hasPendingOfferTo reports whether `buyer` already has a still-pending
+// pay-ledger offer to `seller` for `kind`, regardless of disposition or terms.
+// Deliberately BROADER than the duplicate gate's (buyer, seller, item,
+// disposition) key: any live offer for the same goods to the same peer means
+// "wait", whatever the disposition — the cue's job is to surface NEW options,
+// not re-urge an in-flight one. Expired-but-unswept entries don't suppress
+// (mirrors the gate's expiry skip). ZBBS-HOME-424.
+func hasPendingOfferTo(snap *sim.Snapshot, buyer, seller sim.ActorID, kind sim.ItemKind) bool {
+	now := snap.PublishedAt
+	for _, e := range snap.PayLedger {
+		if e == nil || e.State != sim.PayLedgerStatePending {
+			continue
+		}
+		if e.BuyerID != buyer || e.SellerID != seller || e.ItemKind != kind {
+			continue
+		}
+		if !e.ExpiresAt.IsZero() && !now.Before(e.ExpiresAt) {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 // satiationVerb is the consume verb for the need's dominant modality.
