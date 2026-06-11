@@ -1591,6 +1591,11 @@ func _ensure_pay_modal_built() -> void:
     dispo_label.add_theme_font_size_override("font_size", 12)
     pay_disposition_row.add_child(dispo_label)
     var dispo_group := ButtonGroup.new()
+    # Radio semantics, stated explicitly: re-pressing the active segment
+    # must not unpress it — exactly one disposition is always selected.
+    # (false is the Godot 4 default; pinned so an engine default change
+    # can't silently introduce a neither-pressed state. code_review)
+    dispo_group.allow_unpress = false
     pay_dispo_eat_button = Button.new()
     pay_dispo_eat_button.text = "Eat/drink now"
     pay_dispo_eat_button.toggle_mode = true
@@ -2088,8 +2093,6 @@ func _refresh_pay_quote_rows() -> void:
         var qid := int(q.get("quote_id", 0))
         if qid != 0 and pay_dismissed_quotes.has(qid):
             continue
-        if _pay_item_dispo(str(q.get("item", ""))) == "choice":
-            choice_rows += 1
         var row := HBoxContainer.new()
         row.add_theme_constant_override("separation", 8)
 
@@ -2111,6 +2114,11 @@ func _refresh_pay_quote_rows() -> void:
 
         pay_quote_rows_box.add_child(row)
         shown += 1
+        # Counted HERE, with the row actually added, so the toggle's
+        # visibility can never claim a choice row that a future skip
+        # condition filtered out. (code_review)
+        if _pay_item_dispo(str(q.get("item", ""))) == "choice":
+            choice_rows += 1
     # Verbal-mention rows, one per (huddle seller, mentioned item) not
     # already quoted. Sellers iterate in recipient order so the rows group
     # stably by vendor across rebuilds.
