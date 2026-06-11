@@ -77,6 +77,7 @@ func TestErrorClassString_StableLabels(t *testing.T) {
 		ErrorMalformed:        "malformed",
 		ErrorTooLarge:         "too_large",
 		ErrorProviderRefusal:  "provider_refusal",
+		ErrorRateLimited:      "rate_limited",
 		ErrorUnknown:          "unknown",
 	}
 	for c, want := range cases {

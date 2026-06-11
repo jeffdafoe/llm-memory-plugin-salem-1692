@@ -561,11 +561,17 @@ func toLLMError(err error) error {
 	if errors.As(err, &typed) {
 		return typed
 	}
-	// Status-bearing — split 4xx/5xx.
+	// Status-bearing — split 429/4xx/5xx.
 	var se *statusError
 	if errors.As(err, &se) {
 		class := llm.ErrorTransport
-		if se.status >= 400 && se.status < 500 {
+		if se.status == 429 {
+			// memory-api rejects calls to a VA in rate-limit cooldown
+			// with 429 (ZBBS-WORK-404). Not a caller-side bug and not
+			// model output — classify honestly so telemetry doesn't
+			// book cooldown windows as malformed.
+			class = llm.ErrorRateLimited
+		} else if se.status >= 400 && se.status < 500 {
 			class = llm.ErrorMalformed
 		}
 		return &llm.Error{

@@ -369,6 +369,24 @@ func TestComplete_4xxIsMalformed(t *testing.T) {
 	}
 }
 
+func TestComplete_429IsRateLimited(t *testing.T) {
+	// memory-api answers the wait-call with 429 when the target VA is in
+	// rate-limit cooldown (ZBBS-WORK-404). Distinct from malformed — the
+	// model never ran.
+	ts := newTestServer(t)
+	ts.pushResponse(serverResponse{status: 429, body: `{"error":{"code":"RATE_LIMITED","message":"Rate limited — too many API calls","resumes_in_seconds":287}}`})
+	c := newTestClient(t, ts)
+
+	_, err := c.Complete(context.Background(), llm.Request{
+		Model:    "x",
+		Messages: []llm.Message{{Role: llm.RoleUser, Content: "p"}},
+	})
+	var typed *llm.Error
+	if !errors.As(err, &typed) || typed.Class != llm.ErrorRateLimited {
+		t.Errorf("got %v (%T), want RateLimited", err, err)
+	}
+}
+
 func TestComplete_ParseFailIsMalformed(t *testing.T) {
 	ts := newTestServer(t)
 	ts.pushResponse(serverResponse{status: 200, body: `not json`})
