@@ -113,6 +113,14 @@ const (
 // ring stays cheap. Text is left structurally unchanged so the C2
 // consolidation prompt the NPCs' memory is built from is unaffected.
 type ActionLogEntry struct {
+	// Seq is the append sequence — strictly increasing, world-scoped,
+	// assigned by AppendActionLogEntry (ZBBS-WORK-399). It exists because
+	// OccurredAt is only approximately monotonic and can collide within a
+	// world-goroutine batch: cursor-style readers (the Village activity
+	// feed) page by Seq, which is collision-free and total-ordered by
+	// construction. Slice order == Seq order (tail-append only; compaction
+	// preserves order). Resets each boot with the rest of the log.
+	Seq        uint64
 	ActorID    ActorID
 	OccurredAt time.Time
 	ActionType ActionType
