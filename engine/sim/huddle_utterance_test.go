@@ -76,7 +76,7 @@ func TestSpeak_RecordsUtteranceInHuddleRing(t *testing.T) {
 		t.Fatalf("seed huddle: %v", err)
 	}
 
-	if _, err := w.Send(sim.SpeakTo("ann", "Good morrow, Bob.", "", true, time.Now())); err != nil {
+	if _, err := w.Send(sim.SpeakTo("ann", "Good morrow, Bob.", "", nil, true, time.Now())); err != nil {
 		t.Fatalf("SpeakTo: %v", err)
 	}
 
@@ -114,7 +114,7 @@ func TestSpeak_RecordsUtteranceInHuddleRing_PCSpeaker(t *testing.T) {
 		t.Fatalf("seed huddle: %v", err)
 	}
 
-	if _, err := w.Send(sim.SpeakTo("jeff", "Have you a room tonight?", "", true, time.Now())); err != nil {
+	if _, err := w.Send(sim.SpeakTo("jeff", "Have you a room tonight?", "", nil, true, time.Now())); err != nil {
 		t.Fatalf("SpeakTo (PC): %v", err)
 	}
 

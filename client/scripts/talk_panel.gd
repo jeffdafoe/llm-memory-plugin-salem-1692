@@ -1756,7 +1756,6 @@ func _on_pay_pressed() -> void:
     # Drop the previous open's quote rows before fetching — they may be
     # from another huddle or already expired; the response repopulates.
     pay_quotes = []
-    _refresh_pay_quote_rows()
     _request_pay_quotes()
     # Repopulate the recipient list each open — huddle membership
     # changes (NPCs come and go) so the cached list at modal-build time
@@ -1777,6 +1776,11 @@ func _on_pay_pressed() -> void:
     # is built lazily and reused across opens.
     if not pay_recipient_option.item_selected.is_connected(_on_pay_recipient_changed):
         pay_recipient_option.item_selected.connect(_on_pay_recipient_changed)
+    # Rows render only after the recipient list above refreshes: mention
+    # rows (ZBBS-WORK-400) derive their sellers from pay_modal_recipients,
+    # so the rebuild must see THIS huddle's members, not the previous
+    # open's. Quote rows re-render again when the in-flight fetch lands.
+    _refresh_pay_quote_rows()
     if pay_modal_recipients.is_empty():
         pay_status_label.text = "Nobody here to pay."
     else:
@@ -1795,14 +1799,15 @@ func _on_pay_pressed() -> void:
     modal_open_changed.emit(true)
 
 
-## Repopulate the item dropdown for the currently-selected recipient:
-## the vendor's offered items first (accumulated speak.mentions — spoken
-## mentions + posted scene quotes — with the quoted unit price in the
-## label when known), then the rest of the item-kind catalog so the
-## player can compose an offer for anything (ZBBS-HOME-423 — a verbal
-## offer posts no quote, but the v2 slow path takes any item). The v2
-## pc/pay route requires an item (ZBBS-WORK-287), so there is no
-## coins-only entry.
+## Repopulate the item dropdown for the currently-selected recipient: the
+## vendor's offered items only — accumulated speak.mentions (verbal,
+## ZBBS-WORK-400) + posted scene quotes — with the heard unit price in the
+## label when known. The full item-kind catalog is deliberately NOT listed
+## (ZBBS-WORK-400, Jeff's ruling — reverses ZBBS-HOME-423's catalog
+## dropdown): conversation is the catalog. Want something the vendor
+## hasn't named? Ask them — their LLM answers with a mention or a quote,
+## and the item appears here. The v2 pc/pay route requires an item
+## (ZBBS-WORK-287), so there is no coins-only entry.
 func _refresh_pay_item_dropdown() -> void:
     if pay_item_option == null:
         return
@@ -1827,18 +1832,6 @@ func _refresh_pay_item_dropdown() -> void:
                     label = "%s — %d coins" % [label, int(prices[s])]
                 pay_item_option.add_item(label)
                 pay_item_option.set_item_metadata(pay_item_option.item_count - 1, s)
-    # Everything else the village trades in, below a separator. Metadata
-    # stays the wire item name; separators carry none and are unselectable.
-    if not listed.is_empty() and not pay_item_catalog_order.is_empty():
-        pay_item_option.add_separator()
-    for name in pay_item_catalog_order:
-        var n := str(name)
-        # Dedup key is lowercase (mentions are stored lowercased); the
-        # metadata keeps the wire-exact name. (code_review)
-        if n.is_empty() or listed.has(n.to_lower()):
-            continue
-        pay_item_option.add_item(_pay_item_label(n))
-        pay_item_option.set_item_metadata(pay_item_option.item_count - 1, n)
     if pay_confirm_button != null:
         pay_confirm_button.disabled = pay_item_option.item_count == 0
     if pay_item_option.item_count > 0:
@@ -1850,10 +1843,11 @@ func _refresh_pay_item_dropdown() -> void:
         if pay_status_label != null:
             pay_status_label.text = ""
     elif not recipient.is_empty() and pay_status_label != null:
-        # Only reachable before the catalog fetch lands (or if it failed):
-        # re-evaluated on every refresh, so the hint clears itself once
-        # items exist. (code_review)
-        pay_status_label.text = "%s hasn't named anything for sale yet." % recipient
+        # With the catalog listing gone (ZBBS-WORK-400) this is the normal
+        # state for a vendor who hasn't named any goods yet: the hint tells
+        # the player the move is to ASK. Re-evaluated on every refresh, so
+        # it clears itself once a mention or quote lands.
+        pay_status_label.text = "%s hasn't named anything for sale yet — ask them." % recipient
 
 
 func _on_pay_recipient_changed(_idx: int) -> void:
@@ -1995,18 +1989,29 @@ func _on_quotes_completed(result: int, response_code: int, _headers: PackedStrin
         _refresh_pay_quote_rows()
 
 
-## Rebuild the "Offers on the table" rows from the last fetch. Each row is
-## the quote's terms plus a Take button; Take submits the quote verbatim,
-## so what the player reads is exactly what the fast path matches.
+## Rebuild the "Offers on the table" rows: formal quotes from the last
+## /pc/quotes fetch, then verbal mentions (ZBBS-WORK-400). A quote row's
+## Take button submits the quote verbatim (fast path); a mention row's
+## Offer button only PRE-FILLS the compose form — a remark in conversation
+## is not a binding offer, so the player reviews and confirms. With several
+## vendors pitching at once, each (seller, item) is its own labeled row —
+## the player picks between visible offers instead of navigating dropdowns.
 func _refresh_pay_quote_rows() -> void:
     if pay_quote_rows_box == null:
         return
     for child in pay_quote_rows_box.get_children():
         child.queue_free()
     var shown := 0
+    # A formal quote supersedes a verbal mention of the same (seller, item):
+    # track coverage so each pairing renders exactly one row, quote first.
+    var covered := {}
     for q in pay_quotes:
         if typeof(q) != TYPE_DICTIONARY:
             continue
+        # Lowercase BOTH key halves: quote seller casing comes off the wire,
+        # mention sellers come from the huddle roster — a casing mismatch
+        # would render duplicate rows for the same offer. (code_review)
+        covered["%s|%s" % [str(q.get("seller", "")).to_lower(), str(q.get("item", "")).to_lower()]] = true
         var row := HBoxContainer.new()
         row.add_theme_constant_override("separation", 8)
 
@@ -2026,12 +2031,108 @@ func _refresh_pay_quote_rows() -> void:
 
         pay_quote_rows_box.add_child(row)
         shown += 1
+    # Verbal-mention rows, one per (huddle seller, mentioned item) not
+    # already quoted. Sellers iterate in recipient order so the rows group
+    # stably by vendor across rebuilds.
+    for seller in pay_modal_recipients:
+        var seller_name := str(seller)
+        var mentions = vendor_mentions.get(seller_name, null)
+        if typeof(mentions) != TYPE_ARRAY and typeof(mentions) != TYPE_PACKED_STRING_ARRAY:
+            continue
+        var prices = vendor_mention_prices.get(seller_name, {})
+        if typeof(prices) != TYPE_DICTIONARY:
+            prices = {}
+        for kind in mentions:
+            var item := str(kind)
+            if item.is_empty():
+                continue
+            var cover_key := "%s|%s" % [seller_name.to_lower(), item.to_lower()]
+            if covered.has(cover_key):
+                continue
+            covered[cover_key] = true
+
+            var row := HBoxContainer.new()
+            row.add_theme_constant_override("separation", 8)
+
+            var text := Label.new()
+            text.text = _pay_mention_row_label(seller_name, item, prices)
+            text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+            text.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+            text.custom_minimum_size = Vector2(220, 0)
+            text.add_theme_font_size_override("font_size", 12)
+            # Slightly dimmed vs quote rows: a mention is softer than a
+            # posted offer, and the tint cues the different button behavior.
+            text.add_theme_color_override("font_color", Color(0.78, 0.70, 0.55))
+            row.add_child(text)
+
+            var offer := Button.new()
+            offer.text = "Offer"
+            offer.add_theme_font_size_override("font_size", 12)
+            offer.pressed.connect(_on_pay_mention_pressed.bind(seller_name, item))
+            row.add_child(offer)
+
+            pay_quote_rows_box.add_child(row)
+            shown += 1
     var any := shown > 0
     if pay_quotes_header != null:
         pay_quotes_header.visible = any
     pay_quote_rows_box.visible = any
     if pay_quotes_separator != null:
         pay_quotes_separator.visible = any
+
+
+## One-line description of a mention row: seller, label, price when the
+## vendor named one, and the "(mentioned)" marker distinguishing it from a
+## formal quote row.
+func _pay_mention_row_label(seller: String, item: String, prices: Dictionary) -> String:
+    var label := _pay_item_label(item)
+    var price_part := ""
+    var key := item.to_lower()
+    if prices.has(key) and int(prices[key]) > 0:
+        price_part = " — %d coins" % int(prices[key])
+    return "%s: %s%s (mentioned)" % [seller, label, price_part]
+
+
+## A mention row's Offer button: pre-fill the compose form with the seller,
+## item, and any heard price, then let the player adjust and Confirm. No
+## submit happens here — mentions are conversation, not commitments.
+func _on_pay_mention_pressed(seller: String, item: String) -> void:
+    if pay_recipient_option == null or pay_item_option == null:
+        return
+    var idx := pay_modal_recipients.find(seller)
+    if idx < 0:
+        # The seller left the huddle between render and click; the next
+        # rebuild drops their rows.
+        if pay_status_label != null:
+            pay_status_label.text = "%s is no longer here." % seller
+        return
+    # select() doesn't fire item_selected for programmatic changes, so run
+    # the recipient-change chain by hand.
+    pay_recipient_option.select(idx)
+    _refresh_pay_item_dropdown()
+    var key := item.to_lower()
+    for i in range(pay_item_option.item_count):
+        var meta = pay_item_option.get_item_metadata(i)
+        if typeof(meta) == TYPE_STRING and str(meta).to_lower() == key:
+            pay_item_option.select(i)
+            break
+    # Amount: the heard price when the vendor named one, else reset to the
+    # modal-open default — never silently keep a previous row's amount.
+    # (code_review)
+    var heard := 0
+    var prices = vendor_mention_prices.get(seller, {})
+    if typeof(prices) == TYPE_DICTIONARY:
+        heard = int(prices.get(key, 0))
+    if pay_amount_spin != null:
+        if heard > 0:
+            pay_amount_spin.value = heard
+        else:
+            pay_amount_spin.value = 1
+    if pay_qty_spin != null:
+        pay_qty_spin.value = 1
+    _update_pay_booking_controls()
+    if pay_status_label != null:
+        pay_status_label.text = "Review the terms below, then Confirm."
 
 
 ## One-line description of a quote row: seller, label, qty, bundle price,
@@ -2399,14 +2500,17 @@ func _on_npc_spoke(speaker_id: String, speaker_name: String, text: String, kind:
                 if price > 0:
                     existing_prices[str(k).strip_edges().to_lower()] = price
             vendor_mention_prices[speaker_name] = existing_prices
-        # Live-refresh the pay item dropdown when it's currently open
-        # and pointing at this speaker.
-        if pay_modal != null and pay_modal.visible and pay_recipient_option != null:
-            var sel: int = pay_recipient_option.selected
-            if sel >= 0 and sel < pay_modal_recipients.size() and pay_modal_recipients[sel] == speaker_name:
-                _refresh_pay_item_dropdown()
-                _apply_pay_defaults_for_recipient(speaker_name)
-                _update_pay_booking_controls()
+        # Live-refresh the open pay modal: the offer rows always (a new
+        # mention from ANY huddle vendor is a new row, ZBBS-WORK-400), the
+        # item dropdown + defaults only when it's pointing at this speaker.
+        if pay_modal != null and pay_modal.visible:
+            _refresh_pay_quote_rows()
+            if pay_recipient_option != null:
+                var sel: int = pay_recipient_option.selected
+                if sel >= 0 and sel < pay_modal_recipients.size() and pay_modal_recipients[sel] == speaker_name:
+                    _refresh_pay_item_dropdown()
+                    _apply_pay_defaults_for_recipient(speaker_name)
+                    _update_pay_booking_controls()
 
 
 # Generic room-event handler. Engine emits these for narration-worthy

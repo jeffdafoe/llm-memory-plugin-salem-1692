@@ -282,3 +282,64 @@ func TestIndexInvalidControlChar(t *testing.T) {
 		})
 	}
 }
+
+// TestDecodeSpeakArgs_WithMentions — the optional ZBBS-WORK-400 sale hints
+// decode alongside text; price is optional per entry.
+func TestDecodeSpeakArgs_WithMentions(t *testing.T) {
+	args, err := DecodeSpeakArgs(json.RawMessage(
+		`{"text":"Stew tonight, three coins.","mentions":[{"item":"stew","price":3},{"item":"bread"}]}`))
+	if err != nil {
+		t.Fatalf("DecodeSpeakArgs: %v", err)
+	}
+	got, ok := args.(SpeakArgs)
+	if !ok {
+		t.Fatalf("Decoded type = %T, want SpeakArgs", args)
+	}
+	want := []SpeakMentionArg{{Item: "stew", Price: 3}, {Item: "bread"}}
+	if len(got.Mentions) != 2 || got.Mentions[0] != want[0] || got.Mentions[1] != want[1] {
+		t.Errorf("Mentions = %+v, want %+v", got.Mentions, want)
+	}
+}
+
+// TestDecodeSpeakArgs_MentionShapeRejects — defense-in-depth bounds on the
+// mentions array: count cap, empty item, oversized item, unknown nested
+// fields. Content validity (real item? sellable?) is deliberately NOT
+// rejected here — that filters silently world-side. A negative price also
+// passes decode (clamped to 0 by filterSpeakMentions): a bogus mention must
+// degrade, never reject the utterance (code_review round 1).
+func TestDecodeSpeakArgs_MentionShapeRejects(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+	}{
+		{"over count cap", `{"text":"x","mentions":[{"item":"a"},{"item":"b"},{"item":"c"},{"item":"d"},{"item":"e"},{"item":"f"}]}`},
+		{"empty item", `{"text":"x","mentions":[{"item":"  "}]}`},
+		{"oversized item", `{"text":"x","mentions":[{"item":"` + strings.Repeat("y", 65) + `"}]}`},
+		{"unknown nested field", `{"text":"x","mentions":[{"item":"stew","qty":2}]}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := DecodeSpeakArgs(json.RawMessage(tc.raw)); err == nil {
+				t.Errorf("DecodeSpeakArgs(%s) succeeded, want error", tc.raw)
+			}
+		})
+	}
+}
+
+// TestDecodeSpeakArgs_NegativeMentionPricePasses — pins the degrade-don't-
+// reject policy: a negative price survives decode untouched and clamps to 0
+// world-side (filterSpeakMentions), so a bogus side-channel value can never
+// reject the utterance itself.
+func TestDecodeSpeakArgs_NegativeMentionPricePasses(t *testing.T) {
+	args, err := DecodeSpeakArgs(json.RawMessage(`{"text":"x","mentions":[{"item":"stew","price":-1}]}`))
+	if err != nil {
+		t.Fatalf("DecodeSpeakArgs: %v", err)
+	}
+	got, ok := args.(SpeakArgs)
+	if !ok {
+		t.Fatalf("Decoded type = %T, want SpeakArgs", args)
+	}
+	if len(got.Mentions) != 1 || got.Mentions[0].Price != -1 {
+		t.Errorf("Mentions = %+v, want price -1 preserved for the world-side clamp", got.Mentions)
+	}
+}

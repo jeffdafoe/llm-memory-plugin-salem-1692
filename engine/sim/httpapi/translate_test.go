@@ -750,3 +750,47 @@ func TestTranslateEvent_SceneQuoteCreated_ConsumeNowGroupUnitPrice(t *testing.T)
 		t.Errorf("text = %q, want %q", d.Text, wantText)
 	}
 }
+
+// TestTranslateEvent_SpokeWithMentions — ZBBS-WORK-400: commit-time-filtered
+// mentions ride the npc_spoke frame on the same fields the scene_quote frame
+// uses. A price of 0 means "no price named": the item appears in mentions
+// but gets no mention_prices row.
+func TestTranslateEvent_SpokeWithMentions(t *testing.T) {
+	frame, ok := TranslateEvent(&sim.Spoke{
+		SpeakerID:    "john",
+		HuddleID:     "huddle-1",
+		RecipientIDs: []sim.ActorID{"pc"},
+		Text:         "Stew tonight, three coins. Bread as well.",
+		At:           time.Date(2026, 6, 11, 18, 0, 0, 0, time.UTC),
+		Mentions: []sim.SpeakMention{
+			{Item: "stew", Price: 3},
+			{Item: "bread", Price: 0},
+		},
+	})
+	if !ok {
+		t.Fatal("Spoke should translate")
+	}
+	d, isType := frame.Data.(spokeWireDTO)
+	if !isType {
+		t.Fatalf("data type = %T, want spokeWireDTO", frame.Data)
+	}
+	if !reflect.DeepEqual(d.Mentions, []string{"stew", "bread"}) {
+		t.Errorf("mentions = %+v, want [stew bread]", d.Mentions)
+	}
+	if !reflect.DeepEqual(d.MentionPrices, map[string]int{"stew": 3}) {
+		t.Errorf("mention_prices = %+v, want map[stew:3] (price-0 bread omitted)", d.MentionPrices)
+	}
+}
+
+// TestTranslateEvent_SpokeNoMentions — a mention-less Spoke keeps both wire
+// fields nil so omitempty drops them from the frame (the pre-WORK-400 shape).
+func TestTranslateEvent_SpokeNoMentions(t *testing.T) {
+	frame, ok := TranslateEvent(&sim.Spoke{SpeakerID: "hannah", Text: "Good evening."})
+	if !ok {
+		t.Fatal("Spoke should translate")
+	}
+	d := frame.Data.(spokeWireDTO)
+	if d.Mentions != nil || d.MentionPrices != nil {
+		t.Errorf("mentions/mention_prices = %+v/%+v, want nil/nil", d.Mentions, d.MentionPrices)
+	}
+}

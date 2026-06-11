@@ -56,7 +56,7 @@ func TestTurnState_SpeakToAddresseeSetsEdge(t *testing.T) {
 	defer stop()
 
 	at := time.Now().UTC()
-	if _, err := w.Send(sim.SpeakTo("hannah", "Good morrow.", "Ezekiel", true, at)); err != nil {
+	if _, err := w.Send(sim.SpeakTo("hannah", "Good morrow.", "Ezekiel", nil, true, at)); err != nil {
 		t.Fatalf("SpeakTo: %v", err)
 	}
 	ts, ok := awaitingReplyAt(t, w, "hannah", "ezekiel")
@@ -98,7 +98,7 @@ func TestTurnState_AwaitedPartySpeakingClearsEdge(t *testing.T) {
 	defer stop()
 
 	t1 := time.Now().UTC()
-	if _, err := w.Send(sim.SpeakTo("hannah", "Good morrow.", "Ezekiel", true, t1)); err != nil {
+	if _, err := w.Send(sim.SpeakTo("hannah", "Good morrow.", "Ezekiel", nil, true, t1)); err != nil {
 		t.Fatalf("SpeakTo: %v", err)
 	}
 	if _, ok := awaitingReplyAt(t, w, "hannah", "ezekiel"); !ok {
@@ -124,7 +124,7 @@ func TestTurnState_ConcludeHuddleDropsEdges(t *testing.T) {
 	now := time.Now().UTC()
 	sendT(t, w, sim.JoinHuddle("alice", "tavern", "", now))
 	sendT(t, w, sim.JoinHuddle("bob", "tavern", "", now))
-	sendT(t, w, sim.SpeakTo("alice", "Good morrow.", "Bob", true, now.Add(time.Second)))
+	sendT(t, w, sim.SpeakTo("alice", "Good morrow.", "Bob", nil, true, now.Add(time.Second)))
 	if _, ok := awaitingReplyAt(t, w, "alice", "bob"); !ok {
 		t.Fatal("precondition: alice should await bob")
 	}
@@ -147,7 +147,7 @@ func TestTurnState_LeaveByAwaitedPeerClearsRemainingEdge(t *testing.T) {
 	now := time.Now().UTC()
 	sendT(t, w, sim.JoinHuddle("alice", "tavern", "", now))
 	sendT(t, w, sim.JoinHuddle("bob", "tavern", "", now))
-	sendT(t, w, sim.SpeakTo("alice", "Good morrow.", "Bob", true, now.Add(time.Second)))
+	sendT(t, w, sim.SpeakTo("alice", "Good morrow.", "Bob", nil, true, now.Add(time.Second)))
 	if _, ok := awaitingReplyAt(t, w, "alice", "bob"); !ok {
 		t.Fatal("precondition: alice should await bob")
 	}
@@ -167,7 +167,7 @@ func TestTurnState_LeaveByAwaiterDropsOwnEdge(t *testing.T) {
 	now := time.Now().UTC()
 	sendT(t, w, sim.JoinHuddle("alice", "tavern", "", now))
 	sendT(t, w, sim.JoinHuddle("bob", "tavern", "", now))
-	sendT(t, w, sim.SpeakTo("alice", "Good morrow.", "Bob", true, now.Add(time.Second)))
+	sendT(t, w, sim.SpeakTo("alice", "Good morrow.", "Bob", nil, true, now.Add(time.Second)))
 	if _, ok := awaitingReplyAt(t, w, "alice", "bob"); !ok {
 		t.Fatal("precondition: alice should await bob")
 	}

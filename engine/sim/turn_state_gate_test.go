@@ -28,12 +28,12 @@ func TestTurnStateGate_IdleRepitchRejected(t *testing.T) {
 	defer stop()
 
 	// First address opens hannah's awaiting-reply edge toward ezekiel.
-	if _, err := w.Send(sim.SpeakTo("hannah", "Care for bread?", "Ezekiel", true, gateBase)); err != nil {
+	if _, err := w.Send(sim.SpeakTo("hannah", "Care for bread?", "Ezekiel", nil, true, gateBase)); err != nil {
 		t.Fatalf("first speak (opens edge): %v", err)
 	}
 	captured := captureSpoke(t, w)
 	// Idle re-pitch a second later, no new news → rejected.
-	_, err := w.Send(sim.SpeakTo("hannah", "Still want bread?", "Ezekiel", false, gateBase.Add(time.Second)))
+	_, err := w.Send(sim.SpeakTo("hannah", "Still want bread?", "Ezekiel", nil, false, gateBase.Add(time.Second)))
 	if err == nil {
 		t.Fatal("idle re-pitch should be rejected by the turn-state backstop")
 	}
@@ -55,11 +55,11 @@ func TestTurnStateGate_NewNewsExempt(t *testing.T) {
 	)
 	defer stop()
 
-	if _, err := w.Send(sim.SpeakTo("hannah", "Care for bread?", "Ezekiel", true, gateBase)); err != nil {
+	if _, err := w.Send(sim.SpeakTo("hannah", "Care for bread?", "Ezekiel", nil, true, gateBase)); err != nil {
 		t.Fatalf("first speak: %v", err)
 	}
 	// hasNewNews=true → exempt even while awaiting the reply.
-	if _, err := w.Send(sim.SpeakTo("hannah", "Here is your bread.", "Ezekiel", true, gateBase.Add(time.Second))); err != nil {
+	if _, err := w.Send(sim.SpeakTo("hannah", "Here is your bread.", "Ezekiel", nil, true, gateBase.Add(time.Second))); err != nil {
 		t.Errorf("new-news follow-up should be allowed, got: %v", err)
 	}
 }
@@ -77,11 +77,11 @@ func TestTurnStateGate_ReplyToAddresserAllowed(t *testing.T) {
 	defer stop()
 
 	// bob addresses hannah → bob awaits hannah; hannah holds no edge toward bob.
-	if _, err := w.Send(sim.SpeakTo("bob", "Hannah, a word?", "Hannah", true, gateBase)); err != nil {
+	if _, err := w.Send(sim.SpeakTo("bob", "Hannah, a word?", "Hannah", nil, true, gateBase)); err != nil {
 		t.Fatalf("bob->hannah: %v", err)
 	}
 	// hannah replies to bob, no news → allowed (she has no live edge toward bob).
-	if _, err := w.Send(sim.SpeakTo("hannah", "Aye, Bob?", "Bob", false, gateBase.Add(time.Second))); err != nil {
+	if _, err := w.Send(sim.SpeakTo("hannah", "Aye, Bob?", "Bob", nil, false, gateBase.Add(time.Second))); err != nil {
 		t.Errorf("a reply to the peer that addressed you should be allowed, got: %v", err)
 	}
 }
@@ -99,17 +99,17 @@ func TestTurnStateGate_ThirdPartyEdgeDoesNotExempt(t *testing.T) {
 	)
 	defer stop()
 
-	if _, err := w.Send(sim.SpeakTo("hannah", "Care for bread?", "Ezekiel", true, gateBase)); err != nil {
+	if _, err := w.Send(sim.SpeakTo("hannah", "Care for bread?", "Ezekiel", nil, true, gateBase)); err != nil {
 		t.Fatalf("hannah->ezekiel: %v", err)
 	}
 	// bob addresses hannah. bob speaking only clears edges against bob, so
 	// hannah's edge toward ezekiel survives.
-	if _, err := w.Send(sim.SpeakTo("bob", "Hannah, a word?", "Hannah", true, gateBase.Add(time.Second))); err != nil {
+	if _, err := w.Send(sim.SpeakTo("bob", "Hannah, a word?", "Hannah", nil, true, gateBase.Add(time.Second))); err != nil {
 		t.Fatalf("bob->hannah: %v", err)
 	}
 	// hannah re-pitches ezekiel, no news → still rejected (the bob->hannah edge
 	// is unrelated to whether hannah may re-address ezekiel).
-	_, err := w.Send(sim.SpeakTo("hannah", "Still want bread?", "Ezekiel", false, gateBase.Add(2*time.Second)))
+	_, err := w.Send(sim.SpeakTo("hannah", "Still want bread?", "Ezekiel", nil, false, gateBase.Add(2*time.Second)))
 	if err == nil {
 		t.Fatal("an idle re-pitch of ezekiel must be rejected despite an unrelated bob->hannah edge")
 	}
@@ -128,12 +128,12 @@ func TestTurnStateGate_PCNeverGated(t *testing.T) {
 	)
 	defer stop()
 
-	if _, err := w.Send(sim.SpeakTo("jeff", "Ezekiel, hello.", "Ezekiel", true, gateBase)); err != nil {
+	if _, err := w.Send(sim.SpeakTo("jeff", "Ezekiel, hello.", "Ezekiel", nil, true, gateBase)); err != nil {
 		t.Fatalf("first PC speak: %v", err)
 	}
 	// Even with hasNewNews=false and a live edge, the PC is exempt via the Kind
 	// check.
-	if _, err := w.Send(sim.SpeakTo("jeff", "Ezekiel, you there?", "Ezekiel", false, gateBase.Add(time.Second))); err != nil {
+	if _, err := w.Send(sim.SpeakTo("jeff", "Ezekiel, you there?", "Ezekiel", nil, false, gateBase.Add(time.Second))); err != nil {
 		t.Errorf("PC speak must never be gated, got: %v", err)
 	}
 }
@@ -148,15 +148,15 @@ func TestTurnStateGate_WindowExpiryReopens(t *testing.T) {
 	)
 	defer stop()
 
-	if _, err := w.Send(sim.SpeakTo("hannah", "Care for bread?", "Ezekiel", true, gateBase)); err != nil {
+	if _, err := w.Send(sim.SpeakTo("hannah", "Care for bread?", "Ezekiel", nil, true, gateBase)); err != nil {
 		t.Fatalf("first speak: %v", err)
 	}
 	// Within the default 60s NPC window → still gated.
-	if _, err := w.Send(sim.SpeakTo("hannah", "Bread?", "Ezekiel", false, gateBase.Add(30*time.Second))); err == nil {
+	if _, err := w.Send(sim.SpeakTo("hannah", "Bread?", "Ezekiel", nil, false, gateBase.Add(30*time.Second))); err == nil {
 		t.Error("within the window, the re-pitch should still be gated")
 	}
 	// Past the window → the edge lapsed → allowed.
-	if _, err := w.Send(sim.SpeakTo("hannah", "Bread, perhaps?", "Ezekiel", false, gateBase.Add(2*time.Minute))); err != nil {
+	if _, err := w.Send(sim.SpeakTo("hannah", "Bread, perhaps?", "Ezekiel", nil, false, gateBase.Add(2*time.Minute))); err != nil {
 		t.Errorf("after the window lapses, the re-initiation should be allowed, got: %v", err)
 	}
 }
@@ -171,11 +171,11 @@ func TestTurnStateGate_WholeHuddleNotGated(t *testing.T) {
 	)
 	defer stop()
 
-	if _, err := w.Send(sim.SpeakTo("hannah", "Care for bread?", "Ezekiel", true, gateBase)); err != nil {
+	if _, err := w.Send(sim.SpeakTo("hannah", "Care for bread?", "Ezekiel", nil, true, gateBase)); err != nil {
 		t.Fatalf("first speak: %v", err)
 	}
 	// Whole-huddle (no `to`, no vocative) → addressedID empty → not gated.
-	if _, err := w.Send(sim.SpeakTo("hannah", "A fine morning to all.", "", false, gateBase.Add(time.Second))); err != nil {
+	if _, err := w.Send(sim.SpeakTo("hannah", "A fine morning to all.", "", nil, false, gateBase.Add(time.Second))); err != nil {
 		t.Errorf("a whole-huddle utterance must not be gated, got: %v", err)
 	}
 }
