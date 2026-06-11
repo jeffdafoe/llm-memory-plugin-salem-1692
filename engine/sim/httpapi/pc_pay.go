@@ -278,6 +278,18 @@ func payWithItemPCCommand(
 			// PC (ZBBS-WORK-324) before the offer. One clock for both.
 			now := time.Now().UTC()
 			sim.TouchPCInput(world, actorID, now)
+			// ZBBS-HOME-427: form the conversation on the explicit pay action,
+			// mirroring pc/speak (ZBBS-HOME-358) and the NPC pay/quote tools'
+			// withHuddleBootstrap (ZBBS-HOME-400). sim.PayWithItem gates on the
+			// buyer's CurrentHuddleID, and a PC who walked into an open structure
+			// has none (a plain walk-in mints no huddle; the huddle can also have
+			// concluded while the pay modal sat open, ZBBS-HOME-417's silence
+			// sweep) — so without this a well-formed offer to a co-present keeper
+			// rejects "not in a conversation". No-op when already huddled, alone,
+			// or outdoors, so it never disturbs an existing conversation.
+			if _, err := sim.EnsureColocatedHuddle(actorID, now).Fn(world); err != nil {
+				return nil, err
+			}
 			return sim.PayWithItem(
 				// PC-side barter (pay_items) is a follow-on slice
 				// (ZBBS-HOME-393); the PC pay route stays coin-only for now.

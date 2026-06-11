@@ -102,8 +102,10 @@ func TestHandlePCPay_PCNotFound(t *testing.T) {
 }
 
 func TestHandlePCPay_NotInHuddle(t *testing.T) {
-	// A login-bound PC with no current huddle: the request is well-formed but
-	// sim.PayWithItem rejects (no conversation) → 422.
+	// A login-bound PC with no current huddle, standing outdoors: the request is
+	// well-formed but sim.PayWithItem rejects (no conversation) → 422. The
+	// ZBBS-HOME-427 bootstrap is indoor-only (EnsureColocatedHuddle no-ops
+	// outdoors), so an outdoor PC still requires speak-first.
 	w := seededWorld(t)
 	seedPC(t, w, "pc-tester", "tester", 10, 10)
 	srv := NewServer(w, okAuth{})
@@ -111,6 +113,76 @@ func TestHandlePCPay_NotInHuddle(t *testing.T) {
 		`{"seller":"Hannah","item":"stew","qty":1,"amount":2}`)
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d, want 422; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestHandlePCPay_CoLocatedNoHuddle reproduces the live ZBBS-HOME-427 gap: a PC
+// walks into the tavern (a plain walk-in mints no huddle), the keeper verbally
+// offers an item, the PC composes a valid offer in the Pay modal — and
+// sim.PayWithItem rejects "not in a conversation", because pc/pay, unlike
+// pc/speak (ZBBS-HOME-358) and the NPC pay tools (ZBBS-HOME-400), never ran the
+// huddle bootstrap. After the fix the handler forms the co-located structure
+// huddle first (which also anchors the structure scene resolveSellerScene
+// needs, ZBBS-HOME-375), so the offer lands as a slow-path Pending entry.
+func TestHandlePCPay_CoLocatedNoHuddle(t *testing.T) {
+	w := seededWorld(t)
+	// The Tavern as a real structure + placement — JoinHuddle requires the
+	// structure to exist (it is the indoor huddle anchor). Same seed as the
+	// pc/speak bootstrap test, plus the item catalog (offer intake validates
+	// the item kind, unlike sim.Speak).
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Structures["tavern"] = &sim.Structure{ID: "tavern", DisplayName: "The Tavern"}
+		world.VillageObjects["tavern"] = &sim.VillageObject{
+			ID: "tavern", AssetID: "tavern-asset", DisplayName: "The Tavern",
+			Pos: sim.WorldPos{X: 100, Y: 100},
+		}
+		world.ItemKinds = mem.SeedItemKinds()
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed tavern: %v", err)
+	}
+	seedActorInStructure(t, w, &sim.Actor{
+		ID: "pc-tester", DisplayName: "Tester", Kind: sim.KindPC,
+		State: sim.StateIdle, Pos: sim.TilePos{X: 3, Y: 4},
+		LoginUsername: "tester", InsideStructureID: "tavern", Coins: 100,
+	})
+	seedActorInStructure(t, w, &sim.Actor{
+		ID: "npc-john", DisplayName: "John Ellis", Kind: sim.KindNPCStateful,
+		State: sim.StateIdle, Pos: sim.TilePos{X: 3, Y: 4},
+		InsideStructureID: "tavern",
+		Inventory:         map[sim.ItemKind]int{"stew": 5},
+	})
+	srv := NewServer(w, okAuth{})
+
+	rec := post(t, srv, "/api/village/pc/pay",
+		`{"seller":"John Ellis","item":"stew","qty":1,"amount":2,"consume_now":true}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("pay from a co-located unhuddled PC: want 200, got %d (body %s)",
+			rec.Code, rec.Body.String())
+	}
+	var res pcPayResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if res.LedgerID == 0 {
+		t.Errorf("ledger_id = 0, want a minted entry id")
+	}
+	if res.State != string(sim.PayLedgerStatePending) {
+		t.Errorf("state = %q, want %q", res.State, sim.PayLedgerStatePending)
+	}
+
+	// The substance of the fix: a REAL huddle formed, buyer and seller
+	// co-huddled — not merely a 200 from some other path.
+	var pcH, npcH sim.HuddleID
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		pcH = world.Actors["pc-tester"].CurrentHuddleID
+		npcH = world.Actors["npc-john"].CurrentHuddleID
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("read huddles: %v", err)
+	}
+	if pcH == "" || pcH != npcH {
+		t.Fatalf("not co-huddled after pay: pc=%q npc=%q", pcH, npcH)
 	}
 }
 
