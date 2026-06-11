@@ -74,7 +74,7 @@ func TestCommitResultContent_SpeakEchoesLine(t *testing.T) {
 // quote-take and counter-response paths keep the generic "[ok]" (they don't
 // storm), and any non-offer or wrong-typed call degrades to "[ok]".
 func TestCommitResultContent_PayWithItemSteer(t *testing.T) {
-	const steer = "[ok] Your offer to buy 20 carrots from Moses James is now before them, awaiting their answer. Do not offer again — call done() and let them accept, decline, or counter. Offer again only after they have responded."
+	const steer = "[ok] Your offer to buy 20 carrots is before Moses James — bide for their answer. Make no second offer; call done() and let them accept, decline, or counter."
 	cases := []struct {
 		name string
 		vc   ValidatedCall
@@ -110,7 +110,7 @@ func TestCommitResultContent_PayWithItemSteer(t *testing.T) {
 			// it), but the steer must not render "buy 1 " with a gap.
 			name: "empty item falls back to those goods",
 			vc:   ValidatedCall{Name: "pay_with_item", DecodedArgs: PayWithItemArgs{Seller: "Moses James", Item: "", Qty: 1}},
-			want: "[ok] Your offer to buy 1 those goods from Moses James is now before them, awaiting their answer. Do not offer again — call done() and let them accept, decline, or counter. Offer again only after they have responded.",
+			want: "[ok] Your offer to buy 1 those goods is before Moses James — bide for their answer. Make no second offer; call done() and let them accept, decline, or counter.",
 		},
 		{
 			name: "wrong args type falls back to generic ok",

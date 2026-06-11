@@ -257,7 +257,7 @@ func TestPayOfferKey_OfferTrade(t *testing.T) {
 }
 
 // TestCommitResultContent_OfferTradeSteer — a placed offer_trade gets the
-// "now before them, call done()" steer (storm-prevention), phrased as a
+// "before them, call done()" steer (storm-prevention), phrased as a
 // trade rather than a buy.
 func TestCommitResultContent_OfferTradeSteer(t *testing.T) {
 	decoded, err := DecodeOfferTradeArgs(json.RawMessage(`{
@@ -268,7 +268,7 @@ func TestCommitResultContent_OfferTradeSteer(t *testing.T) {
 		t.Fatalf("DecodeOfferTradeArgs: %v", err)
 	}
 	got := commitResultContent(&ValidatedCall{Name: "offer_trade", DecodedArgs: decoded.(PayWithItemArgs)}, nil)
-	for _, want := range []string{"trade for 5 bread with Josiah Thorne", "call done()", "accept, decline, or counter"} {
+	for _, want := range []string{"trade for 5 bread is before Josiah Thorne", "call done()", "accept, decline, or counter"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("steer missing %q\ngot: %s", want, got)
 		}

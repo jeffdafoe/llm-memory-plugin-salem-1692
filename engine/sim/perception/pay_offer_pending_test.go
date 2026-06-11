@@ -8,7 +8,7 @@ import (
 )
 
 // pay_offer_pending_test.go — ZBBS-HOME-413. Two surfaces:
-//   - the buyer-side "## Your pending offers" cue (buildPendingOffersFromMe +
+//   - the buyer-side "## Offers you have standing" cue (buildPendingOffersFromMe +
 //     renderPendingOffersFromMe), the cross-tick repeat-offer-storm fix; and
 //   - filterStalePayOfferWarrants, which drops a seller's standing pay-offer
 //     warrant once its ledger entry has resolved (so a dead offer stops
@@ -149,12 +149,12 @@ func TestRenderPendingOffersFromMe_HappyPath(t *testing.T) {
 	})
 	out := b.String()
 	for _, must := range []string{
-		"## Your pending offers",
+		"## Offers you have standing",
 		"offer id 236",
 		"48 coins",
 		"10 meat",
 		"Elizabeth Ellis",
-		"do not place another offer",
+		"make no second offer",
 	} {
 		if !strings.Contains(out, must) {
 			t.Errorf("missing %q\n--- output ---\n%s", must, out)
@@ -170,7 +170,7 @@ func TestRenderPendingOffersFromMe_Barter(t *testing.T) {
 			PayItems: []sim.ItemKindQty{{Kind: "nail", Qty: 5}}},
 	})
 	out := b.String()
-	if !strings.Contains(out, "5 nail for 1 stew") {
+	if !strings.Contains(out, "for 1 stew, 5 nail offered") {
 		t.Errorf("barter offer line missing the goods offered\n%s", out)
 	}
 	if !strings.Contains(out, "offer id 9") {
@@ -195,7 +195,7 @@ func TestRender_BuyerPendingOfferSection(t *testing.T) {
 	})
 	p := Build(snap, "prudence", nil)
 	out := combinedPrompt(Render(p, DefaultRenderConfig()))
-	if !strings.Contains(out, "## Your pending offers") || !strings.Contains(out, "offer id 236") {
+	if !strings.Contains(out, "## Offers you have standing") || !strings.Contains(out, "offer id 236") {
 		t.Errorf("buyer pending-offer cue missing from full prompt\n%s", out)
 	}
 }
