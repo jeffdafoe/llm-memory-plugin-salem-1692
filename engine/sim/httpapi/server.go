@@ -190,6 +190,9 @@ func (s *Server) Handler() http.Handler {
 	// PC bootstrap read. POST to match the v1 verb + the client, but it's a
 	// pure snapshot read (no command channel) — see pc_me.go.
 	mux.HandleFunc("POST /api/village/pc/me", s.requireAuth(s.handlePCMe))
+	// Live take-able scene quotes for the Pay modal (ZBBS-HOME-426) — pure
+	// snapshot read over Snapshot.Quotes; see pc_quotes.go.
+	mux.HandleFunc("GET /api/village/pc/quotes", s.requireAuth(s.handlePCQuotes))
 	// Write routes — same requireAuth gate; the mutation runs through the
 	// world command channel (see write_handlers.go).
 	mux.HandleFunc("POST /api/village/pc/move", s.requireAuth(s.handlePCMove))
