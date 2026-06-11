@@ -320,6 +320,15 @@ type Payload struct {
 	// structure and object ids share one space (the shared-identity bridge).
 	// Empty when no arrival warrant names a place.
 	WarrantPlaceNames map[string]string
+
+	// EatHereKinds is the set of item kinds that always settle eat-here
+	// (consumable, neither service nor portable — ItemKindDef.EatHereOnly).
+	// Render consults it so a quote warrant line can state the disposition
+	// fact ("offers you stew for 4 coins, to eat here") instead of leaving
+	// the model to discover the WORK-405 clamp by tripping it. Built once
+	// from the snapshot's catalog; empty when no kind is eat-here-only.
+	// ZBBS-WORK-405.
+	EatHereKinds map[sim.ItemKind]bool
 }
 
 // OrderView is the perception-side projection of one sim.Order.

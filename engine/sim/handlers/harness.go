@@ -894,9 +894,45 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 			}
 		}
 	}
+	// scene_quote: a clamped disposition must be reported for the same
+	// reason as the pay clamp below (ZBBS-WORK-405) — the seller model
+	// would otherwise believe it posted a take-home quote it didn't.
+	if vc.Name == "scene_quote" {
+		if r, ok := cmdResult.(sim.SceneQuoteCreateResult); ok && r.EatHereClamped {
+			item := "those goods"
+			if args, ok := vc.DecodedArgs.(SceneQuoteArgs); ok {
+				if it := strings.ToLower(strings.Join(strings.Fields(args.ItemKind), " ")); it != "" {
+					item = it
+				}
+			}
+			return fmt.Sprintf(
+				"[ok] Mind: %s can't be carried away — your offer stands as eat-here, taken on the spot.",
+				item,
+			)
+		}
+	}
 	// offer_trade lowers onto a PayWithItemArgs (ZBBS-HOME-407), so it carries
 	// the same decoded shape and earns the same post-offer steer.
 	if vc.Name == "pay_with_item" || vc.Name == "offer_trade" {
+		// ZBBS-WORK-405: when the engine clamped a take-home request to
+		// eat-here (non-portable consumable), the feedback must say so —
+		// same reasoning as the consume clamp above: a silently adjusted
+		// action leaves the model believing it carried off goods it never
+		// held. Rides the pending-offer steer below AND the generic [ok]
+		// flows (quote take, counter-response).
+		clampNote := ""
+		if r, ok := cmdResult.(sim.PayWithItemResult); ok && r.EatHereClamped {
+			clampItem := "those goods"
+			if args, ok := vc.DecodedArgs.(PayWithItemArgs); ok {
+				if it := strings.ToLower(strings.Join(strings.Fields(args.Item), " ")); it != "" {
+					clampItem = it
+				}
+			}
+			clampNote = fmt.Sprintf(
+				" Mind: %s can't be carried away — this settles eat-here, taken on the spot.",
+				clampItem,
+			)
+		}
 		if args, ok := vc.DecodedArgs.(PayWithItemArgs); ok {
 			// A plain new offer (no quote_id / in_response_to) is now a pending
 			// ledger entry the seller must accept, decline, or counter — the
@@ -929,10 +965,13 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 				}
 				return fmt.Sprintf(
 					"[ok] %s is before %s — bide for their answer. Make no second "+
-						"offer; call done() and let them accept, decline, or counter.",
-					lead, other,
+						"offer; call done() and let them accept, decline, or counter.%s",
+					lead, other, clampNote,
 				)
 			}
+		}
+		if clampNote != "" {
+			return "[ok]" + clampNote
 		}
 	}
 	return "[ok]"

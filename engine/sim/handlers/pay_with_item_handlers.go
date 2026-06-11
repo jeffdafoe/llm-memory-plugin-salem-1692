@@ -233,7 +233,7 @@ var payWithItemSchema = json.RawMessage(`{
         },
         "consume_now": {
             "type": "boolean",
-            "description": "True for eat-here / drink-here (immediate consumption); false for takeaway."
+            "description": "True for eat-here / drink-here (immediate consumption); false for takeaway. Some goods (a served meal, a poured drink) can't be carried away — those always settle eat-here regardless."
         },
         "consumers": {
             "type": "array",

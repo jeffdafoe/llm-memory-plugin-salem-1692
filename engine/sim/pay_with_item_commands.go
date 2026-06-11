@@ -151,6 +151,12 @@ type PayWithItemResult struct {
 	// any entry is minted — no silent fall-through, scene-quote-design
 	// § 8).
 	FastPath bool
+	// EatHereClamped is true when the buyer asked for take-home but the
+	// engine forced eat-here (non-portable consumable, ZBBS-WORK-403/405).
+	// Carried on the result so an LLM buyer's tool feedback can state the
+	// adjusted disposition instead of leaving the model believing it
+	// carried the goods off.
+	EatHereClamped bool
 }
 
 // PayWithItem returns the Command for the buyer-initiated pay-with-item
@@ -317,24 +323,28 @@ func PayWithItem(
 				)
 			}
 
-			// ZBBS-WORK-403: a PC's purchase of a non-portable consumable
-			// always settles eat-here, clamped HERE on the world goroutine so
+			// ZBBS-WORK-403: a purchase of a non-portable consumable always
+			// settles eat-here, clamped HERE on the world goroutine so
 			// it holds regardless of what the client sent — a failed catalog
 			// fetch or a direct API call must not carry stew out of the
 			// tavern (the `portable` capability was seeded in the item data
-			// precisely to prevent that; code_review). Scoped to PC buyers
-			// only: NPC flows (restock buys, auto-match) move goods with
-			// their own dispositions and stay untouched. Sits before the
-			// duplicate-offer gate and both settle paths, so the clamped
-			// value is the offer's identity everywhere. Service kinds are
-			// excluded — they clamp the OTHER way (fast path, WORK-402).
-			if buyer.Kind == KindPC && !consumeNow {
-				if def := w.ItemKinds[kind]; def != nil &&
-					def.Consumable() &&
-					!def.HasCapability("service") &&
-					!def.HasCapability("portable") {
-					consumeNow = true
-				}
+			// precisely to prevent that; code_review). ZBBS-WORK-405 widened
+			// the clamp from PC-only to every buyer: v1 gated take-home of
+			// non-portables for all actors (v1 pay.go/serve.go rejected it
+			// outright), and no valid NPC flow buys non-portables take-home
+			// — such a purchase is a config bug, not a disposition to
+			// preserve. Sits before the duplicate-offer gate and both settle
+			// paths, so the clamped value is the offer's identity
+			// everywhere. Service kinds are excluded — they clamp the OTHER
+			// way (fast path, WORK-402). eatHereClamped rides the result so
+			// an LLM buyer's tool feedback can say what actually happened
+			// (the consume-clamp precedent: a silently adjusted action
+			// leaves the model believing it carried off goods it never
+			// held).
+			eatHereClamped := false
+			if !consumeNow && w.ItemKinds[kind].EatHereOnly() {
+				consumeNow = true
+				eatHereClamped = true
 			}
 
 			// Consumer resolution. Empty list = buyer is implicit single
@@ -499,11 +509,15 @@ func PayWithItem(
 			// predicates must pass; any failure is a strict-reject tool
 			// error.
 			if quoteID != 0 {
-				return runPayWithItemFastPath(
+				res, fastErr := runPayWithItemFastPath(
 					w, buyer, seller, sellerID, sceneID, kind, qty,
 					amount, consumeNow, consumerIDs, needed, quoteID,
 					parentID, forText, at, readyBy,
 				)
+				if fastErr != nil {
+					return nil, fastErr
+				}
+				return stampEatHereClamped(res, eatHereClamped), nil
 			}
 
 			// Opportunistic quote auto-match (ZBBS-HOME-424). The explicit
@@ -532,7 +546,7 @@ func PayWithItem(
 					)
 					if fastErr == nil {
 						withdrawCrossingOffers(w, buyerID, sellerID, sceneID, kind, qty, consumeNow, consumerIDs, at)
-						return res, nil
+						return stampEatHereClamped(res, eatHereClamped), nil
 					}
 				}
 			}
@@ -653,12 +667,30 @@ func PayWithItem(
 			entry.SourceEventID = evt.EventID()
 
 			return PayWithItemResult{
-				LedgerID: id,
-				State:    PayLedgerStatePending,
-				FastPath: false,
+				LedgerID:       id,
+				State:          PayLedgerStatePending,
+				FastPath:       false,
+				EatHereClamped: eatHereClamped,
 			}, nil
 		},
 	}
+}
+
+// stampEatHereClamped marks a settle-path result with the upstream
+// disposition clamp (ZBBS-WORK-405) so tool feedback can state what
+// actually happened. The fast path doesn't know about the clamp — it
+// received the already-clamped consumeNow — so the stamp happens at the
+// call sites that do. No-op when nothing was clamped or the value isn't
+// a PayWithItemResult.
+func stampEatHereClamped(res any, clamped bool) any {
+	if !clamped {
+		return res
+	}
+	if r, ok := res.(PayWithItemResult); ok {
+		r.EatHereClamped = true
+		return r
+	}
+	return res
 }
 
 // runPayWithItemFastPath validates the six fast-path predicates and, on

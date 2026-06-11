@@ -17,7 +17,7 @@ import (
 // eases tiredness (the isolation control — must NOT appear in satiation).
 func foodDrinkCatalog() map[sim.ItemKind]*sim.ItemKindDef {
 	return map[sim.ItemKind]*sim.ItemKindDef{
-		"bread":    {Name: "bread", DisplayLabel: "bread", Category: sim.ItemCategoryFood, Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 6}}},
+		"bread":    {Name: "bread", DisplayLabel: "bread", Category: sim.ItemCategoryFood, Capabilities: []string{"portable"}, Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 6}}},
 		"stew":     {Name: "stew", DisplayLabel: "stew", Category: sim.ItemCategoryFood, Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger", Immediate: 12}}},
 		"water":    {Name: "water", DisplayLabel: "water", Category: sim.ItemCategoryDrink, Satisfies: []sim.ItemSatisfaction{{Attribute: "thirst", Immediate: 5}}},
 		"coca_tea": {Name: "coca_tea", DisplayLabel: "coca tea", Category: sim.ItemCategoryDrink, Satisfies: []sim.ItemSatisfaction{{Attribute: "tiredness", Immediate: 12}}},
@@ -130,6 +130,43 @@ func TestBuildSatiation_VendorCueThirst(t *testing.T) {
 	}
 	if vd.StructureID != "well_house" {
 		t.Errorf("vendor StructureID = %q, want 'well_house' (the move_to target)", vd.StructureID)
+	}
+}
+
+// TestBuildSatiation_VendorEatHereFact (ZBBS-WORK-405): a vendor cue for an
+// eat-here-only kind (consumable, neither service nor portable) states the
+// disposition fact on the line, so the buyer plans a sit-down rather than a
+// carry-out the clamp would quietly rewrite. A portable kind carries no tag.
+func TestBuildSatiation_VendorEatHereFact(t *testing.T) {
+	subj := &sim.ActorSnapshot{Needs: map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold}}
+	cook := &sim.ActorSnapshot{WorkStructureID: "tavern", Inventory: map[sim.ItemKind]int{"stew": 5}}
+	baker := &sim.ActorSnapshot{WorkStructureID: "bakery", Inventory: map[sim.ItemKind]int{"bread": 5}}
+	snap := &sim.Snapshot{
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj, "cook": cook, "baker": baker},
+		Structures: map[sim.StructureID]*sim.Structure{
+			"tavern": {ID: "tavern", DisplayName: "The Tavern"},
+			"bakery": {ID: "bakery", DisplayName: "The Bakery"},
+		},
+		ItemKinds: foodDrinkCatalog(),
+	}
+	v := buildSatiation(snap, "ezekiel", subj)
+	if v == nil || len(v.Needs) != 1 || len(v.Needs[0].Vendors) != 2 {
+		t.Fatalf("want 2 vendor cues (tavern stew + bakery bread), got %+v", v)
+	}
+	var b strings.Builder
+	renderSatiation(&b, v)
+	out := b.String()
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "stew") && strings.Contains(line, "The Tavern") {
+			if !strings.Contains(line, ", to eat there (it can't be carried away)") {
+				t.Errorf("stew vendor line missing the eat-here fact:\n%s", line)
+			}
+		}
+		if strings.Contains(line, "bread") {
+			if strings.Contains(line, "to eat there") {
+				t.Errorf("bread (portable) vendor line must NOT carry the eat-here fact:\n%s", line)
+			}
+		}
 	}
 }
 
