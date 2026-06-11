@@ -82,6 +82,14 @@ const (
 	// Treated as a terminal failure; the harness ends the tick with
 	// TerminalStatus=FailedAfterRender.
 	ErrorProviderRefusal
+
+	// ErrorRateLimited — the memory-api boundary rejected the call with
+	// HTTP 429 because the target VA tripped its rate-limit cooldown
+	// (ZBBS-HOME-332). The model never ran — the opposite of
+	// ErrorMalformed — so the distinct class keeps cooldown windows from
+	// masquerading as model-output failures in tick telemetry (the
+	// misattribution behind reactor-liveness finding #13).
+	ErrorRateLimited
 )
 
 // String renders the class as a stable lowercase label — used in
@@ -99,6 +107,8 @@ func (c ErrorClass) String() string {
 		return "too_large"
 	case ErrorProviderRefusal:
 		return "provider_refusal"
+	case ErrorRateLimited:
+		return "rate_limited"
 	default:
 		return "unknown"
 	}
