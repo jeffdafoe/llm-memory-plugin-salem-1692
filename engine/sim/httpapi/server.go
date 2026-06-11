@@ -176,6 +176,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/village/sprites", s.requireAuth(s.handleSprites))
 	mux.HandleFunc("GET /api/village/npc-behaviors", s.requireAuth(s.handleNPCBehaviors))
 	mux.HandleFunc("GET /api/village/refresh-attributes", s.requireAuth(s.handleRefreshAttributes))
+	// Item-kind catalog for the Pay modal's compose-an-offer dropdown
+	// (ZBBS-HOME-423) — boot-immutable reference data, see items.go.
+	mux.HandleFunc("GET /api/village/items", s.requireAuth(s.handleItems))
 	// Static editor allowlists (vocabulary the editor's tag dropdowns render).
 	// Hardcoded reference data — no World map, no DB; see catalog_tags.go.
 	mux.HandleFunc("GET /api/village/object-tags", s.requireAuth(s.handleObjectTags))
