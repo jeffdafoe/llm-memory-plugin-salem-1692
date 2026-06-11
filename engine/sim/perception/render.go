@@ -142,33 +142,6 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	durable.WriteString("# Your turn\n\n")
 	renderActor(&durable, p.Actor)
 
-	// Ephemeral: identity, surroundings, anchors, steers, relationships, owed
-	// orders, recovery/satiation/restock/lodging affordances, summons, scene.
-	renderNarrativeState(&ephemeral, p.NarrativeState)
-	renderVendorOperating(&ephemeral, p.AtOwnBusiness)
-	renderSurroundings(&ephemeral, p.Surroundings)
-	renderAnchors(&ephemeral, p.Anchors)
-	renderDutySteer(&ephemeral, p.DutySteer)
-	renderRelationships(&ephemeral, p.Relationships)
-	renderRecentConversation(&ephemeral, p.RecentConversation)
-	renderOfferableCustomers(&ephemeral, p.OfferableCustomers)
-	renderPendingDeliveriesFromMe(&ephemeral, p.PendingDeliveriesFromMe, p.LocalDateUTC)
-	renderPendingDeliveriesToMe(&ephemeral, p.PendingDeliveriesToMe, p.LocalDateUTC)
-	renderPendingOffersFromMe(&ephemeral, p.PendingOffersFromMe)
-	renderRecoveryOptions(&ephemeral, p.RecoveryOptions)
-	renderSatiation(&ephemeral, p.Satiation)
-	renderRestocking(&ephemeral, p.Restocking)
-	renderLodging(&ephemeral, p.Lodging)
-	renderKeeperLodging(&ephemeral, p.KeeperLodging)
-	renderLodgingOffer(&ephemeral, p.LodgingOffer)
-	renderSummonsForYou(&ephemeral, p.SummonsForYou)
-	renderSummonRefusal(&ephemeral, p.SummonRefusal)
-	renderScene(&ephemeral, p)
-	// "## Other scenes in play" (renderSecondary) was dropped — it surfaced raw
-	// scene/huddle UUIDs and a "N signal(s)" count the LLM can't act on
-	// (ZBBS-HOME-339). Secondary-scene warrants still render in the flat
-	// "what just happened" list; only the machine telemetry block is gone.
-
 	// nameOf resolves an actor UUID to the subject's name for them — "you" for
 	// self, the acquaintance-gated label (Build's WarrantActorNames) for
 	// others, "someone" when unresolvable. The fix for warrant lines leaking
@@ -205,7 +178,41 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// warrant line) guarantees the ledger_id is present whenever the tools are
 	// advertised.
 	payOffers := PayOfferWarrants(p)
+
+	// Ephemeral: identity, surroundings, anchors, steers, relationships, the
+	// offers awaiting this actor's decision, owed orders, recovery/satiation/
+	// restock/lodging affordances, summons, scene.
+	renderNarrativeState(&ephemeral, p.NarrativeState)
+	renderVendorOperating(&ephemeral, p.AtOwnBusiness)
+	renderSurroundings(&ephemeral, p.Surroundings)
+	renderAnchors(&ephemeral, p.Anchors)
+	renderDutySteer(&ephemeral, p.DutySteer)
+	renderRelationships(&ephemeral, p.Relationships)
+	renderRecentConversation(&ephemeral, p.RecentConversation)
+	// The decision section renders ABOVE the affordance dumps (it used to land
+	// after them): a buyer's coin on the table is the seller's most actionable
+	// fact, and burying it under eat/drink and room-to-let cues let the
+	// seller's own mild needs outrank a waiting customer for whole minutes
+	// (conversation hud-6c849d…, ZBBS-HOME-424). renderTriage reinforces the
+	// same priority at the decision point.
 	renderPayOffers(&ephemeral, payOffers, nameOf)
+	renderOfferableCustomers(&ephemeral, p.OfferableCustomers)
+	renderPendingDeliveriesFromMe(&ephemeral, p.PendingDeliveriesFromMe, p.LocalDateUTC)
+	renderPendingDeliveriesToMe(&ephemeral, p.PendingDeliveriesToMe, p.LocalDateUTC)
+	renderPendingOffersFromMe(&ephemeral, p.PendingOffersFromMe)
+	renderRecoveryOptions(&ephemeral, p.RecoveryOptions)
+	renderSatiation(&ephemeral, p.Satiation)
+	renderRestocking(&ephemeral, p.Restocking)
+	renderLodging(&ephemeral, p.Lodging)
+	renderKeeperLodging(&ephemeral, p.KeeperLodging)
+	renderLodgingOffer(&ephemeral, p.LodgingOffer)
+	renderSummonsForYou(&ephemeral, p.SummonsForYou)
+	renderSummonRefusal(&ephemeral, p.SummonRefusal)
+	renderScene(&ephemeral, p)
+	// "## Other scenes in play" (renderSecondary) was dropped — it surfaced raw
+	// scene/huddle UUIDs and a "N signal(s)" count the LLM can't act on
+	// (ZBBS-HOME-339). Secondary-scene warrants still render in the flat
+	// "what just happened" list; only the machine telemetry block is gone.
 
 	// Shift-duty warrants drive the wake tick but are NOT rendered — the standing
 	// DutySteer cue (renderDutySteer, above) is the single voice for
@@ -230,7 +237,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// before the coda so the coda's "weigh everything above" sees it; the coda
 	// itself swaps to a wait-framing when the actor is awaiting a reply.
 	renderTurnState(&ephemeral, p.TurnState)
-	renderTriage(&ephemeral, p.Actor.Needs, p.Actor.NeedThresholds, p.TurnState.AwaitingReply())
+	renderTriage(&ephemeral, p.Actor.Needs, p.Actor.NeedThresholds, p.TurnState.AwaitingReply(), len(payOffers) > 0)
 
 	out.Text = durable.String()
 	out.EphemeralText = ephemeral.String()
@@ -288,7 +295,15 @@ func joinNames(names []string) string {
 // wandering exposed: obligations to others and pressing needs over idle drift.
 // Rendered unconditionally — Render is only called on the NPC reactor-tick path
 // (handlers.Harness.RunTick), never for a PC.
-func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.NeedThresholds, awaitingReply bool) {
+func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.NeedThresholds, awaitingReply bool, hasPayOffers bool) {
+	// A buyer's offer awaiting this actor's answer outranks everything below —
+	// including the actor's own felt needs, which the coda's "pressing needs"
+	// phrasing otherwise licenses to win. Without this, a starving seller read
+	// his own hunger as the obligation and let a customer's coin sit for whole
+	// minutes (conversation hud-6c849d…, ZBBS-HOME-424).
+	if hasPayOffers {
+		b.WriteString("A buyer's offer awaits your answer — settle it first with accept_pay, decline_pay, or counter_pay, before tending to your own needs.\n")
+	}
 	if awaitingReply {
 		// Turn-state coda (ZBBS-WORK-370): the actor has spoken and is awaiting a
 		// reply. The default "choose one thing and do it" imperative is exactly
@@ -1505,17 +1520,21 @@ func renderNeedNudgeLine(n int, need sim.NeedKey) string {
 
 // renderQuoteWarrantLine renders a vendor's scene quote aimed directly at this
 // actor — a standing offer they can take by paying. Names the seller; the
-// terms come straight off the warrant payload.
+// terms come straight off the warrant payload. The take-instruction carries
+// the quote_id: without it the buyer model answered a standing quote with a
+// bare pay_with_item, minting a crossing offer that deadlocked against the
+// quote (ZBBS-HOME-424) — the fast path existed but was never legible.
 func renderQuoteWarrantLine(n int, seller string, r sim.SceneQuoteTargetedWarrantReason) string {
 	unit := "coins"
 	if r.Amount == 1 {
 		unit = "coin"
 	}
 	item := sanitizeInline(string(r.ItemKind))
+	take := fmt.Sprintf(" To take it, call pay_with_item with quote_id %d and the same item, qty, and amount — it settles at once.", r.QuoteID)
 	if r.Qty > 1 {
-		return fmt.Sprintf("%d. %s offers you %d %s for %d %s.\n", n, seller, r.Qty, item, r.Amount, unit)
+		return fmt.Sprintf("%d. %s offers you %d %s for %d %s.%s\n", n, seller, r.Qty, item, r.Amount, unit, take)
 	}
-	return fmt.Sprintf("%d. %s offers you %s for %d %s.\n", n, seller, item, r.Amount, unit)
+	return fmt.Sprintf("%d. %s offers you %s for %d %s.%s\n", n, seller, item, r.Amount, unit, take)
 }
 
 // renderPayResolvedWarrantLine renders, to the buyer, how the seller resolved

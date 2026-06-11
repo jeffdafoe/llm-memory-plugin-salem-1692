@@ -231,6 +231,49 @@ func TestBuildSatiation_CoPresentPeer_Acquainted(t *testing.T) {
 	}
 }
 
+// TestBuildSatiation_CoPresentPeer_PendingOfferSuppressed (ZBBS-HOME-424): a
+// (peer, item) pair the subject ALREADY has a pending pay-ledger offer on is
+// not re-cued — the cross-tick duplicate gate (ZBBS-WORK-391) rejects the
+// very pay_with_item the line urges, so cueing it manufactures error loops.
+// Other peers carrying the same satisfier stay listed as alternatives.
+func TestBuildSatiation_CoPresentPeer_PendingOfferSuppressed(t *testing.T) {
+	hid, h := huddleWith("hannah", "john", "ezekiel")
+	subj := &sim.ActorSnapshot{
+		Needs:           map[sim.NeedKey]int{"thirst": sim.DefaultThirstRedThreshold},
+		CurrentHuddleID: hid,
+		Acquaintances:   map[string]sim.Acquaintance{"John Ellis": {}, "Ezekiel Crane": {}},
+	}
+	john := &sim.ActorSnapshot{DisplayName: "John Ellis", Role: "tavernkeeper", Inventory: map[sim.ItemKind]int{"water": 9}}
+	ezekiel := &sim.ActorSnapshot{DisplayName: "Ezekiel Crane", Role: "blacksmith", Inventory: map[sim.ItemKind]int{"water": 1}}
+	now := time.Now().UTC()
+	snap := &sim.Snapshot{
+		PublishedAt: now,
+		Actors:      map[sim.ActorID]*sim.ActorSnapshot{"hannah": subj, "john": john, "ezekiel": ezekiel},
+		Huddles:     map[sim.HuddleID]*sim.Huddle{hid: h},
+		ItemKinds:   foodDrinkCatalog(),
+		PayLedger: map[sim.LedgerID]*sim.PayLedgerEntry{
+			11: {ID: 11, BuyerID: "hannah", SellerID: "john", ItemKind: "water",
+				State: sim.PayLedgerStatePending, ExpiresAt: now.Add(10 * time.Minute)},
+		},
+	}
+	v := buildSatiation(snap, "hannah", subj)
+	if v == nil || len(v.Needs) != 1 {
+		t.Fatalf("want 1 pressing need, got %+v", v)
+	}
+	peers := v.Needs[0].CoPresentPeers
+	if len(peers) != 1 || peers[0].PeerLabel != "Ezekiel Crane" {
+		t.Fatalf("want only Ezekiel's water offer (John's suppressed by pending offer 11), got %+v", peers)
+	}
+
+	// An expired-but-unswept entry must NOT suppress (mirrors the duplicate
+	// gate's expiry skip — the gate would let a fresh offer through).
+	snap.PayLedger[11].ExpiresAt = now.Add(-time.Minute)
+	v = buildSatiation(snap, "hannah", subj)
+	if got := len(v.Needs[0].CoPresentPeers); got != 2 {
+		t.Fatalf("expired entry must not suppress — want 2 peer offers, got %d", got)
+	}
+}
+
 // TestBuildSatiation_CoPresentPeer_Unacquainted: an unacquainted peer is named by
 // the acquaintance-gated descriptor ("the <role>"), never their DisplayName.
 func TestBuildSatiation_CoPresentPeer_Unacquainted(t *testing.T) {

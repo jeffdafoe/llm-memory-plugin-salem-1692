@@ -102,7 +102,19 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 	}
 	p.Lodging = buildLodgingView(snap, actorSnap)
 	p.KeeperLodging = buildKeeperLodgingView(snap, actorSnap)
-	p.LodgingOffer = buildLodgingOfferCue(snap, actorID, p.KeeperLodging, p.Surroundings.HuddleMembers)
+	// The offer cue is location-bound the way vendor cues are (ZBBS-WORK-385's
+	// at-own-post principle): a keeper drinking at someone ELSE's
+	// establishment must not be steered to sell their own rooms into that
+	// huddle (observed live: Hannah pitching her Inn's rooms from inside
+	// John's Tavern, and a guest buying one there — ZBBS-HOME-424). Gated on
+	// the location predicate directly rather than p.AtOwnBusiness because the
+	// keeper-lodging views key on WorkStructureID alone, not on
+	// BusinessownerState — an innkeeper without vendor state still keeps
+	// rooms. The informational "## Your inn" status section stays ungated;
+	// only the act-now instruction is location-bound.
+	if actorSnap.WorkStructureID != "" && actorSnap.InsideStructureID == actorSnap.WorkStructureID {
+		p.LodgingOffer = buildLodgingOfferCue(snap, actorID, p.KeeperLodging, p.Surroundings.HuddleMembers)
+	}
 	p.SummonsForYou = buildSummonsForYou(actorSnap)
 	p.SummonRefusal = buildSummonRefusal(actorSnap)
 

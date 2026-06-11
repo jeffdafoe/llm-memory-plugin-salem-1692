@@ -381,6 +381,59 @@ func TestBuildLodgingOfferCue_NoVacancyNoRateNonKeeper_Nil(t *testing.T) {
 	}
 }
 
+// TestBuild_LodgingOfferCue_GatedOnAtOwnStructure (ZBBS-HOME-424): the room-
+// to-let cue fires only while the keeper is physically at the structure
+// whose rooms they keep — a keeper who is a guest in someone else's
+// establishment must not be steered to sell rooms into that huddle (observed
+// live: Hannah pitching her Inn's rooms from inside John's Tavern). The
+// informational "## Your inn" keeper view stays location-independent.
+func TestBuild_LodgingOfferCue_GatedOnAtOwnStructure(t *testing.T) {
+	newSnap := func(inside sim.StructureID) *sim.Snapshot {
+		keeper := &sim.ActorSnapshot{
+			DisplayName:       "Hannah Boggs",
+			Kind:              sim.KindNPCShared,
+			CurrentHuddleID:   "h1",
+			WorkStructureID:   "inn",
+			InsideStructureID: inside,
+			Acquaintances:     map[string]sim.Acquaintance{"Ezekiel Crane": {}},
+		}
+		// No home, no room access → a structural lodging seeker.
+		seeker := &sim.ActorSnapshot{
+			DisplayName:     "Ezekiel Crane",
+			Kind:            sim.KindNPCStateful,
+			CurrentHuddleID: "h1",
+		}
+		snap := &sim.Snapshot{
+			PublishedAt: lodgingNow,
+			Actors:      map[sim.ActorID]*sim.ActorSnapshot{"hannah": keeper, "ezekiel": seeker},
+			Huddles: map[sim.HuddleID]*sim.Huddle{
+				"h1": {ID: "h1", Members: map[sim.ActorID]struct{}{"hannah": {}, "ezekiel": {}}},
+			},
+			Structures: map[sim.StructureID]*sim.Structure{
+				"inn": innStructureN("inn", "Hannah's Inn", 2),
+			},
+		}
+		snap.LodgingDefaultWeeklyRate = 28 // nightly 4
+		return snap
+	}
+
+	off := Build(newSnap("tavern"), "hannah", nil)
+	if off.LodgingOffer != nil {
+		t.Errorf("keeper away from her inn must not get the room-to-let cue, got %+v", off.LodgingOffer)
+	}
+	if off.KeeperLodging == nil {
+		t.Error("the informational keeper view should stay, location-independent")
+	}
+
+	on := Build(newSnap("inn"), "hannah", nil)
+	if on.LodgingOffer == nil {
+		t.Fatal("keeper at her inn with a co-present seeker should get the room-to-let cue")
+	}
+	if len(on.LodgingOffer.SeekerNames) != 1 || on.LodgingOffer.SeekerNames[0] != "Ezekiel Crane" {
+		t.Errorf("SeekerNames = %v, want [Ezekiel Crane]", on.LodgingOffer.SeekerNames)
+	}
+}
+
 func TestRenderLodgingOffer_NamesActionAndNights(t *testing.T) {
 	var b strings.Builder
 	renderLodgingOffer(&b, &LodgingOfferView{
