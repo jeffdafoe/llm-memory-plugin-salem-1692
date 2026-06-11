@@ -30,9 +30,10 @@ func handleBusinessArrival(w *sim.World, evt sim.Event) {
 	if arrived.FinalStructureID == "" {
 		return // outdoor — the encounter cascade owns it
 	}
-	// The Command never returns an error (it logs and degrades internally),
-	// so there is nothing to handle here.
-	_, _ = sim.EnsureArrivalBusinessHuddle(arrived.ActorID, arrived.At).Fn(w)
+	// The event's final structure rides into the Command, which verifies the
+	// actor is still inside it (stale-arrival guard). The Command never
+	// returns an error (it logs and degrades internally).
+	_, _ = sim.EnsureArrivalBusinessHuddle(arrived.ActorID, arrived.FinalStructureID, arrived.At).Fn(w)
 }
 
 // RegisterBusinessArrival wires the indoor-arrival hospitality subscriber.

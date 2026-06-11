@@ -30,7 +30,7 @@ import (
 // FIRST, the arriver LAST, so the greet subscriber sees the keeper among
 // HuddleJoined.OtherMembers when the arriver's join fires — the existing
 // greet path (at-post check, cooldowns, reactor suppression) runs unchanged.
-func EnsureArrivalBusinessHuddle(actorID ActorID, now time.Time) Command {
+func EnsureArrivalBusinessHuddle(actorID ActorID, structureID StructureID, now time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
 			actor, ok := w.Actors[actorID]
@@ -47,9 +47,13 @@ func EnsureArrivalBusinessHuddle(actorID ActorID, now time.Time) Command {
 			if actor.CurrentHuddleID != "" {
 				return nil, nil // already conversing
 			}
-			structureID := actor.InsideStructureID
-			if structureID == "" {
-				return nil, nil // outdoor arrivals belong to the encounter cascade
+			// structureID is the EVENT's final structure. Stale-arrival
+			// guard (code_review): the actor must still actually be there —
+			// a delayed ActorArrived must not bootstrap a huddle at whatever
+			// structure the actor has since wandered into. Same posture as
+			// the encounter cascade's freshness invariant.
+			if structureID == "" || actor.InsideStructureID != structureID {
+				return nil, nil
 			}
 			// The structure's own keeper returning to post greets no one.
 			if actor.BusinessownerState != nil && actor.WorkStructureID == structureID {
@@ -96,7 +100,11 @@ func EnsureArrivalBusinessHuddle(actorID ActorID, now time.Time) Command {
 					if p == nil || p.BusinessownerState == nil || p.CurrentHuddleID != huddleID {
 						continue
 					}
-					if p.WorkStructureID == structureID && p.State != StateSleeping && p.State != StateResting {
+					// Full mirror of the keeper-collection gate, including
+					// physically-inside — index drift must not let an
+					// absent keeper count as receptive. (code_review)
+					if p.WorkStructureID == structureID && p.InsideStructureID == structureID &&
+						p.State != StateSleeping && p.State != StateResting {
 						activeHasKeeper = true
 						break
 					}

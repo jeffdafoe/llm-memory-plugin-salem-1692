@@ -183,9 +183,12 @@ func readHuddleOf(t *testing.T, w *sim.World, actorID sim.ActorID) sim.HuddleID 
 	return res.(sim.HuddleID)
 }
 
-func freshStamp() *time.Time {
-	now := time.Now().UTC()
-	return &now
+// freshStampAt pins the PC presence stamp to the same clock the arrival
+// event uses, so the presence gate can't race a slow test run.
+// (code_review)
+func freshStampAt(now time.Time) *time.Time {
+	t := now
+	return &t
 }
 
 const tavern = sim.StructureID("tavern")
@@ -197,7 +200,7 @@ func TestArrivalBusinessHuddle_PCGreetedByAtPostKeeper(t *testing.T) {
 	now := time.Now().UTC()
 	w, rec, cancel := buildBusinessArrivalWorld(t, []businessArrivalActor{
 		{id: "keeper", inside: tavern, kind: sim.KindNPCShared, keeperOf: tavern},
-		{id: "pc", inside: tavern, kind: sim.KindPC, lastPCSeenAt: freshStamp()},
+		{id: "pc", inside: tavern, kind: sim.KindPC, lastPCSeenAt: freshStampAt(now)},
 	})
 	defer cancel()
 
@@ -240,7 +243,7 @@ func TestArrivalBusinessHuddle_NoKeeperNoHuddle(t *testing.T) {
 	now := time.Now().UTC()
 	w, rec, cancel := buildBusinessArrivalWorld(t, []businessArrivalActor{
 		{id: "villager", inside: "house", kind: sim.KindNPCShared},
-		{id: "pc", inside: "house", kind: sim.KindPC, lastPCSeenAt: freshStamp()},
+		{id: "pc", inside: "house", kind: sim.KindPC, lastPCSeenAt: freshStampAt(now)},
 	})
 	defer cancel()
 
@@ -259,7 +262,7 @@ func TestArrivalBusinessHuddle_SleepingKeeperNoHuddle(t *testing.T) {
 	now := time.Now().UTC()
 	w, _, cancel := buildBusinessArrivalWorld(t, []businessArrivalActor{
 		{id: "keeper", inside: tavern, kind: sim.KindNPCShared, keeperOf: tavern, state: sim.StateSleeping},
-		{id: "pc", inside: tavern, kind: sim.KindPC, lastPCSeenAt: freshStamp()},
+		{id: "pc", inside: tavern, kind: sim.KindPC, lastPCSeenAt: freshStampAt(now)},
 	})
 	defer cancel()
 
@@ -275,7 +278,7 @@ func TestArrivalBusinessHuddle_KeeperReturningToPostNoOp(t *testing.T) {
 	now := time.Now().UTC()
 	w, rec, cancel := buildBusinessArrivalWorld(t, []businessArrivalActor{
 		{id: "keeper", inside: tavern, kind: sim.KindNPCShared, keeperOf: tavern},
-		{id: "pc", inside: tavern, kind: sim.KindPC, lastPCSeenAt: freshStamp()},
+		{id: "pc", inside: tavern, kind: sim.KindPC, lastPCSeenAt: freshStampAt(now)},
 	})
 	defer cancel()
 
@@ -309,6 +312,40 @@ func TestArrivalBusinessHuddle_StalePCNotGreeted(t *testing.T) {
 	}
 }
 
+// A stale ActorArrived — the event names a structure the actor has since
+// left — must not bootstrap a huddle at the actor's CURRENT (also staffed)
+// structure. (code_review: the command acts only when the event's final
+// structure still matches live state.)
+func TestArrivalBusinessHuddle_StaleEventForOtherStructureNoOp(t *testing.T) {
+	now := time.Now().UTC()
+	w, rec, cancel := buildBusinessArrivalWorld(t, []businessArrivalActor{
+		{id: "keeper", inside: "smithy", kind: sim.KindNPCShared, keeperOf: "smithy"},
+		{id: "pc", inside: "smithy", kind: sim.KindPC, lastPCSeenAt: freshStampAt(now)},
+	})
+	defer cancel()
+
+	// Event claims the PC arrived at the tavern; the PC is actually inside
+	// the smithy (with an at-post keeper that must NOT be bootstrapped off
+	// this unrelated event).
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		sim.EmitForTest(world, &sim.ActorArrived{
+			ActorID:          "pc",
+			FinalStructureID: tavern,
+			At:               now,
+		})
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("emit stale arrival: %v", err)
+	}
+
+	if h := readHuddleOf(t, w, "pc"); h != "" {
+		t.Fatalf("pc huddle = %q, want none (stale event)", h)
+	}
+	if got := len(rec.spokes); got != 0 {
+		t.Fatalf("spokes = %d, want 0", got)
+	}
+}
+
 // A keeper already conversing: the arriver joins THAT huddle and the
 // greet still fires (keeper is among OtherMembers for the join).
 func TestArrivalBusinessHuddle_JoinsExistingKeeperHuddle(t *testing.T) {
@@ -316,7 +353,7 @@ func TestArrivalBusinessHuddle_JoinsExistingKeeperHuddle(t *testing.T) {
 	w, rec, cancel := buildBusinessArrivalWorld(t, []businessArrivalActor{
 		{id: "keeper", inside: tavern, kind: sim.KindNPCShared, keeperOf: tavern, huddleID: "hud-existing"},
 		{id: "regular", inside: tavern, kind: sim.KindNPCStateful, huddleID: "hud-existing"},
-		{id: "pc", inside: tavern, kind: sim.KindPC, lastPCSeenAt: freshStamp()},
+		{id: "pc", inside: tavern, kind: sim.KindPC, lastPCSeenAt: freshStampAt(now)},
 	})
 	defer cancel()
 
