@@ -21,7 +21,6 @@ func walkGatingRegistry(t *testing.T) *Registry {
 		"speak":         RegisterSpeak,
 		"consume":       RegisterConsume,
 		"gather":        RegisterGather,
-		"pay":           RegisterPay,
 		"pay_with_item": RegisterPayWithItemFamily,
 		"move_to":       RegisterMoveTo,
 		"stop":          RegisterStop,
@@ -56,7 +55,7 @@ func TestGateTools_Moving_DropsWalkIncompatible_AdvertisesStop(t *testing.T) {
 	specs := gateTools(r, payload, movingSnap("walker", true))
 	names := specNameSet(specs)
 
-	for _, gated := range []string{"consume", "speak", "gather", "pay", "pay_with_item"} {
+	for _, gated := range []string{"consume", "speak", "gather", "pay_with_item"} {
 		if names[gated] != 0 {
 			t.Errorf("tool %q advertised while moving — want it gated out", gated)
 		}
@@ -76,7 +75,7 @@ func TestGateTools_Stationary_AdvertisesWalkTools_DropsStop(t *testing.T) {
 	specs := gateTools(r, payload, movingSnap("walker", false))
 	names := specNameSet(specs)
 
-	for _, ungated := range []string{"consume", "speak", "pay", "pay_with_item"} {
+	for _, ungated := range []string{"consume", "speak", "pay_with_item"} {
 		if names[ungated] != 1 {
 			t.Errorf("tool %q advertised %d times while stationary — want 1", ungated, names[ungated])
 		}
