@@ -57,3 +57,37 @@ func TestHandleItems_EmptyCatalogIsArray(t *testing.T) {
 		t.Errorf("body = %q, want []", got)
 	}
 }
+
+// TestItemDispositionClass (ZBBS-WORK-402/403) — the derived class the Pay
+// modal's disposition machinery keys off: service → tonight, non-portable
+// consumable → eat_here (the "people can't carry stew" data ruling),
+// portable consumable / non-consumable / unseeded → choice (permissive).
+func TestItemDispositionClass(t *testing.T) {
+	cases := []struct {
+		name string
+		def  *sim.ItemKindDef
+		want string
+	}{
+		{"service is tonight", &sim.ItemKindDef{
+			Name: "nights_stay", Capabilities: []string{"service", "lodging"},
+		}, "tonight"},
+		{"non-portable consumable is eat_here", &sim.ItemKindDef{
+			Name:      "stew",
+			Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger"}},
+		}, "eat_here"},
+		{"portable consumable is choice", &sim.ItemKindDef{
+			Name: "bread", Capabilities: []string{"portable"},
+			Satisfies: []sim.ItemSatisfaction{{Attribute: "hunger"}},
+		}, "choice"},
+		{"non-consumable is choice even without portable", &sim.ItemKindDef{
+			Name: "iron_tongs",
+		}, "choice"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := itemDispositionClass(tc.def); got != tc.want {
+				t.Errorf("itemDispositionClass(%s) = %q, want %q", tc.def.Name, got, tc.want)
+			}
+		})
+	}
+}
