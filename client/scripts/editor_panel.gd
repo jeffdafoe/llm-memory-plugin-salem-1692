@@ -103,6 +103,10 @@ var _active_view: String = "catalog"
 # npc_id → row PanelContainer, so selection sync can scroll to and
 # highlight the currently-selected villager without rebuilding.
 var _villager_rows: Dictionary = {}
+# Re-renders villager-row text (location + needs) in place while the list
+# is visible (ZBBS-HOME-374). Movement has no per-step broadcast to hook,
+# so the rows' "inside <structure>" line went stale once built.
+var _villager_text_refresh_timer: Timer = null
 # The npc_id currently highlighted in the Villagers list (empty = none).
 var _villagers_selected_id: String = ""
 var _selected_item: Control = null
@@ -1115,6 +1119,17 @@ func _ready() -> void:
     _villagers_list.add_theme_constant_override("separation", 2)
     _villagers_list.size_flags_horizontal = Control.SIZE_EXPAND_FILL
     villagers_body.add_child(_villagers_list)
+
+    # ZBBS-HOME-374: the rows' location/needs text is rendered once at
+    # build time, and NPC movement emits no metadata broadcast to rebuild
+    # on — so a row showed "inside the Tavern" long after the NPC walked
+    # out. A 2s in-place text refresh while the list is visible keeps the
+    # rows honest without the scroll-position reset a full rebuild causes.
+    _villager_text_refresh_timer = Timer.new()
+    _villager_text_refresh_timer.wait_time = 2.0
+    _villager_text_refresh_timer.autostart = true
+    _villager_text_refresh_timer.timeout.connect(_refresh_villager_rows_text)
+    add_child(_villager_text_refresh_timer)
 
 ## Build the catalog UI from the loaded asset data.
 ## Called after Catalog.catalog_loaded.
@@ -2323,6 +2338,24 @@ func _set_villager_need_label(label: Label, name: String, value: int, red_thresh
         label.add_theme_color_override("font_color", Color(0.95, 0.45, 0.45))
     else:
         label.add_theme_color_override("font_color", COLOR_TEXT_DIM)
+
+## Timer-driven in-place refresh of every villager row's location + needs
+## text (ZBBS-HOME-374). Structural changes (rename / attribute / create /
+## delete) still rebuild the whole list via npc_metadata_changed; this pass
+## covers what that signal never fires for — plain movement — and writes
+## only label text, so selection highlight and scroll position survive.
+## No-op while the Villagers tab (or the whole editor panel) is hidden.
+func _refresh_villager_rows_text() -> void:
+    if world == null or _villagers_scroll == null or not _villagers_scroll.is_visible_in_tree():
+        return
+    for npc_id in _villager_rows:
+        var row = _villager_rows[npc_id]
+        if row == null or not is_instance_valid(row):
+            continue
+        var container = world.placed_npcs.get(npc_id, null)
+        if container == null or not is_instance_valid(container):
+            continue
+        _update_villager_row_text(row, container)
 
 ## Build a human-readable location string. Inside a structure → its name.
 ## Outside → nearest placed_object by world distance, no distance cap
