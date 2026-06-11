@@ -140,6 +140,12 @@ type SatiationVendor struct {
 	// the experiential Shut memory: this is a LIVE state read, so it takes
 	// precedence over Shut in render. ZBBS-HOME-387.
 	ClosedNow bool
+
+	// EatHere is true when the item always settles eat-here (consumable,
+	// neither service nor portable — ItemKindDef.EatHereOnly). Render states
+	// the fact on the line so the buyer plans a sit-down, not a carry-out
+	// the WORK-405 clamp would quietly rewrite. ZBBS-WORK-405.
+	EatHere bool
 }
 
 // buildSatiation builds the eat/drink view for actorSnap, or nil when no
@@ -224,6 +230,7 @@ func gatherSatiationVendors(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *
 				Shut:           businessRememberedShut(snap, actorSnap, vc.StructureID),
 				OutOfStock:     outOfStock,
 				ClosedNow:      vendorKeeperAsleep(snap, vc.VendorID),
+				EatHere:        snap.ItemKinds[vc.ItemKind].EatHereOnly(),
 			},
 			distTiles:  vendorStructureDistanceTiles(snap, actorSnap, vc.StructureID),
 			outOfStock: outOfStock,
@@ -559,6 +566,12 @@ func renderSatiation(b *strings.Builder, v *SatiationView) {
 				}
 				if vd.CostText != "" {
 					fmt.Fprintf(b, ", %s", vd.CostText)
+				}
+				// Eat-here disposition fact (ZBBS-WORK-405): this class of
+				// goods can't be carried away, so the buyer should plan a
+				// sit-down, not a carry-out the clamp would quietly rewrite.
+				if vd.EatHere {
+					b.WriteString(", to eat there (it can't be carried away)")
 				}
 				// The structure_id is the load-bearing field: move_to(structure_id)
 				// is how the buyer actually walks here, and the tool rejects a bare

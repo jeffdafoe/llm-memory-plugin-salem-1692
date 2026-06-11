@@ -45,6 +45,13 @@ const MaxSceneQuoteQty = math.MaxInt32
 type SceneQuoteCreateResult struct {
 	QuoteID   QuoteID
 	ExpiresAt time.Time
+	// EatHereClamped is true when the seller proposed take-home but the
+	// engine forced eat-here (non-portable consumable, ZBBS-WORK-405 —
+	// the seller-side mirror of the pay_with_item buyer clamp). Carried
+	// on the result so the seller model's tool feedback can state the
+	// adjusted disposition instead of leaving it believing it posted a
+	// take-home quote.
+	EatHereClamped bool
 }
 
 // SceneQuoteCreate returns a Command that mints a SceneQuote on the
@@ -144,6 +151,21 @@ func SceneQuoteCreate(
 					"unknown item kind %q — check the items available in this world before quoting.",
 					itemName,
 				)
+			}
+
+			// ZBBS-WORK-405: a quote for a non-portable consumable always
+			// proposes eat-here — the seller-side mirror of the
+			// pay_with_item buyer clamp, applied before the quote becomes
+			// anything (dedup key, supersede match, the persisted quote,
+			// the Created event). Without this a take-home stew quote
+			// could exist that no clamped buyer offer can opportunistically
+			// match (the HOME-424 auto-match requires disposition
+			// equality), and the seller model would believe it posted a
+			// take-home offer it didn't.
+			eatHereClamped := false
+			if !consumeNow && w.ItemKinds[kind].EatHereOnly() {
+				consumeNow = true
+				eatHereClamped = true
 			}
 
 			// Gate 3: closed-shop / break gate (simple-strict).
@@ -324,8 +346,9 @@ func SceneQuoteCreate(
 			q.SourceEventID = evt.EventID()
 
 			return SceneQuoteCreateResult{
-				QuoteID:   id,
-				ExpiresAt: expiresAt,
+				QuoteID:        id,
+				ExpiresAt:      expiresAt,
+				EatHereClamped: eatHereClamped,
 			}, nil
 		},
 	}

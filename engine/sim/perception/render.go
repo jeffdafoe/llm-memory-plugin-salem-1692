@@ -169,6 +169,13 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 		return sanitizeInline(p.WarrantPlaceNames[id])
 	}
 
+	// eatHereKind reports whether a kind always settles eat-here (Build's
+	// EatHereKinds set, ZBBS-WORK-405) — the quote warrant line states the
+	// disposition fact so the model never plans a carry-out it can't have.
+	eatHereKind := func(kind sim.ItemKind) bool {
+		return p.EatHereKinds[kind]
+	}
+
 	// Pay offers are pulled out of the generic warrant list and rendered as
 	// an actionable decision section (renderPayOffers) so the seller gets the
 	// ledger_id it must echo into accept_pay/decline_pay/counter_pay. The same
@@ -229,7 +236,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// routine-check-in line for the genuinely-empty case). Warrant caps +
 	// carry-forward accounting land in `out` as before.
 	if len(warrants) > 0 || len(payOffers) == 0 {
-		renderWarrants(&durable, warrants, nameOf, placeNameOf, cfg, &out)
+		renderWarrants(&durable, warrants, nameOf, placeNameOf, eatHereKind, cfg, &out)
 	}
 
 	// Ephemeral: the turn-state nudge, the act-now coda, and the rest-first steer
@@ -1371,7 +1378,13 @@ func renderPendingOffersFromMe(b *strings.Builder, offers []PendingOfferView) {
 	b.WriteString("Bide for their answer; make no second offer for the same goods while this one stands. Should you think better of it, withdraw_pay recalls it.\n")
 }
 
-func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(sim.ActorID) string, placeNameOf func(string) string, cfg RenderConfig, out *RenderedPrompt) {
+func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(sim.ActorID) string, placeNameOf func(string) string, eatHereKind func(sim.ItemKind) bool, cfg RenderConfig, out *RenderedPrompt) {
+	// Nil-safe for direct/test callers — the main Render path always passes
+	// its closure, but the signature grew by a callback (ZBBS-WORK-405) and
+	// a nil here must degrade to "no eat-here tag", not panic (code_review).
+	if eatHereKind == nil {
+		eatHereKind = func(sim.ItemKind) bool { return false }
+	}
 	b.WriteString("## What just happened — address these\n")
 	if len(warrants) == 0 {
 		b.WriteString("(nothing specific — this is a routine check-in)\n")
@@ -1389,7 +1402,7 @@ func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(
 			cutoff = i
 			break
 		}
-		line, truncated := renderWarrantLine(i+1, w, nameOf, placeNameOf, cfg.MaxBytesPerWarrant)
+		line, truncated := renderWarrantLine(i+1, w, nameOf, placeNameOf, eatHereKind, cfg.MaxBytesPerWarrant)
 		if sectionBytes+len(line) > cfg.MaxSectionBytes && i > 0 {
 			// At least one warrant already rendered; this one would
 			// overflow the section cap — stop here and carry the rest.
@@ -1421,7 +1434,7 @@ func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(
 // sentence. The untrusted free-text payload (a speech excerpt) is sanitized and
 // capped; the returned bool reports whether that text was truncated.
 // ZBBS-HOME-339.
-func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string, placeNameOf func(string) string, maxTextBytes int) (string, bool) {
+func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string, placeNameOf func(string) string, eatHereKind func(sim.ItemKind) bool, maxTextBytes int) (string, bool) {
 	switch r := w.Reason.(type) {
 	case sim.PCSpeechWarrantReason:
 		return renderSpeechWarrantLine(n, nameOf(r.Speaker), r.Excerpt, maxTextBytes)
@@ -1446,7 +1459,7 @@ func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string
 	case sim.NeedThresholdWarrantReason:
 		return renderNeedNudgeLine(n, r.Need), false
 	case sim.SceneQuoteTargetedWarrantReason:
-		return renderQuoteWarrantLine(n, nameOf(r.SellerID), r), false
+		return renderQuoteWarrantLine(n, nameOf(r.SellerID), r, eatHereKind(r.ItemKind)), false
 	case sim.PayResolvedWarrantReason:
 		return renderPayResolvedWarrantLine(n, nameOf(r.Seller), r, maxTextBytes), false
 	default:
@@ -1528,17 +1541,24 @@ func renderNeedNudgeLine(n int, need sim.NeedKey) string {
 // the quote_id: without it the buyer model answered a standing quote with a
 // bare pay_with_item, minting a crossing offer that deadlocked against the
 // quote (ZBBS-HOME-424) — the fast path existed but was never legible.
-func renderQuoteWarrantLine(n int, seller string, r sim.SceneQuoteTargetedWarrantReason) string {
+func renderQuoteWarrantLine(n int, seller string, r sim.SceneQuoteTargetedWarrantReason, eatHere bool) string {
 	unit := "coins"
 	if r.Amount == 1 {
 		unit = "coin"
 	}
 	item := sanitizeInline(string(r.ItemKind))
+	// The eat-here disposition fact (ZBBS-WORK-405): goods of this class
+	// can't be carried away, so say so up front rather than letting the
+	// buyer plan a take-home the clamp will quietly rewrite.
+	disposition := ""
+	if eatHere {
+		disposition = ", to eat here (it can't be carried away)"
+	}
 	take := fmt.Sprintf(" To take it, call pay_with_item with quote_id %d and the same item, qty, and amount — it settles at once.", r.QuoteID)
 	if r.Qty > 1 {
-		return fmt.Sprintf("%d. %s offers you %d %s for %d %s.%s\n", n, seller, r.Qty, item, r.Amount, unit, take)
+		return fmt.Sprintf("%d. %s offers you %d %s for %d %s%s.%s\n", n, seller, r.Qty, item, r.Amount, unit, disposition, take)
 	}
-	return fmt.Sprintf("%d. %s offers you %s for %d %s.%s\n", n, seller, item, r.Amount, unit, take)
+	return fmt.Sprintf("%d. %s offers you %s for %d %s%s.%s\n", n, seller, item, r.Amount, unit, disposition, take)
 }
 
 // renderPayResolvedWarrantLine renders, to the buyer, how the seller resolved

@@ -98,6 +98,22 @@ func (d *ItemKindDef) Consumable() bool {
 	return len(d.Satisfies) > 0
 }
 
+// EatHereOnly reports whether this kind always settles eat-here: a
+// consumable that is neither a service nor portable (stew, a poured
+// drink) cannot leave the seller's premises — "people can't carry stew",
+// the hand-seeded data ruling behind ZBBS-WORK-403/405. Centralized so
+// the pay clamp, the quote clamp, and the perception facts all derive
+// the same class from the same predicate. Nil-safe: an unseeded kind is
+// not eat-here-only (degrades permissive, mirroring itemDispositionClass).
+func (d *ItemKindDef) EatHereOnly() bool {
+	if d == nil {
+		return false
+	}
+	return d.Consumable() &&
+		!d.HasCapability("service") &&
+		!d.HasCapability("portable")
+}
+
 // HasCapability reports whether this item kind carries the given capability
 // token (e.g. "service", "lodging", "portable"). Linear over the small
 // Capabilities slice — capability sets are tiny (a handful of tokens).
