@@ -520,8 +520,8 @@ func PayWithItem(
 			// Cross-tick duplicate-offer gate (ZBBS-WORK-391). The same-tick
 			// repeat-offer guard (ZBBS-HOME-395, harness) resets every tick by
 			// design, and the buyer-side pending-offers cue (ZBBS-HOME-413) is
-			// perception-only — a weak model reads "do not place another offer
-			// while one is still pending" and offers again anyway (observed
+			// perception-only — a weak model reads "make no second offer for
+			// the same goods while this one stands" and offers again anyway (observed
 			// live: Prudence staked three identical meat offers across three
 			// ticks while the first sat unanswered, then ate the accepted
 			// duplicates back-to-back). This is the ledger-backed rung: a NEW

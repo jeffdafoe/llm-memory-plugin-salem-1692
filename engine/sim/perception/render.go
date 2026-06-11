@@ -1331,9 +1331,13 @@ func renderPayOffers(b *strings.Builder, offers []sim.PayOfferWarrantReason, nam
 	b.WriteString("Respond first with accept_pay, decline_pay, or counter_pay, passing the offer id as ledger_id. Then also use speak for a brief reply, because the pay response itself passes in silence.\n")
 }
 
-// renderPendingOffersFromMe renders the buyer-side "## Your pending offers"
-// section — the subject's OWN pay-with-item offers still awaiting the seller's
-// answer (ZBBS-HOME-413). It is the mirror of renderPayOffers (the seller's
+// renderPendingOffersFromMe renders the buyer-side "## Offers you have
+// standing" section — the subject's OWN pay-with-item offers still awaiting the
+// seller's answer (ZBBS-HOME-413; copy re-registered to light period voice in
+// ZBBS-HOME-421 — NPCs mirror the register of what they read, and the old
+// contract language came back out of their mouths verbatim). Semantics and
+// functional tokens (offer ids, tool names, counts) are load-bearing; rewordings
+// must keep them intact. It is the mirror of renderPayOffers (the seller's
 // "offers awaiting your decision"): the seller sees offers staked AGAINST them;
 // the buyer sees offers they HAVE staked. Its job is suppression — a hungry
 // buyer who already has an open offer should wait, not re-stake the same offer
@@ -1350,7 +1354,7 @@ func renderPendingOffersFromMe(b *strings.Builder, offers []PendingOfferView) {
 	if len(offers) == 0 {
 		return
 	}
-	b.WriteString("## Your pending offers\n")
+	b.WriteString("## Offers you have standing\n")
 	for i, o := range offers {
 		seller := sanitizeInline(o.SellerName)
 		if seller == "" {
@@ -1361,10 +1365,10 @@ func renderPendingOffersFromMe(b *strings.Builder, offers []PendingOfferView) {
 			item = "item"
 		}
 		payment := formatOfferPayment(o.Amount, o.PayItems)
-		fmt.Fprintf(b, "%d. You offered %s for %d %s to %s — awaiting their answer (offer id %d)\n",
-			i+1, payment, o.Qty, item, seller, o.LedgerID)
+		fmt.Fprintf(b, "%d. You have asked %s for %d %s, %s offered — they have yet to give their answer (offer id %d).\n",
+			i+1, seller, o.Qty, item, payment, o.LedgerID)
 	}
-	b.WriteString("Wait for their answer — do not place another offer while one for the same goods is still pending.\n")
+	b.WriteString("Bide for their answer; make no second offer for the same goods while this one stands. Should you think better of it, withdraw_pay recalls it.\n")
 }
 
 func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(sim.ActorID) string, placeNameOf func(string) string, cfg RenderConfig, out *RenderedPrompt) {
