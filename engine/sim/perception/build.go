@@ -1570,7 +1570,7 @@ func absentRecipientNames(snap *sim.Snapshot, seller *sim.ActorSnapshot, o *sim.
 // buildPendingOffersFromMe scans snap.PayLedger for the subject's OWN still-
 // pending pay-with-item offers — entries where the subject is the BUYER and the
 // state is Pending (the only non-terminal pay-ledger state) — and projects each
-// to a PendingOfferView for the "## Your pending offers" cue (ZBBS-HOME-413).
+// to a PendingOfferView for the "## Offers you have standing" cue (ZBBS-HOME-413).
 //
 // This is the buyer-side counterpart to the seller's PayOfferWarrants: the
 // seller learns of an offer via a warrant stamped on them, but the buyer gets

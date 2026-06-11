@@ -916,18 +916,21 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 				if other == "" {
 					other = "them"
 				}
-				// offer_trade is a proposer-framed barter ("trade for X with Y");
-				// a plain pay_with_item buys ("buy X from Y"). Same pending-offer
-				// mechanics, different lead clause for legibility.
-				lead := fmt.Sprintf("Your offer to buy %d %s from %s", args.Qty, item, other)
+				// offer_trade is a proposer-framed barter ("trade for X");
+				// a plain pay_with_item buys ("buy X"). Same pending-offer
+				// mechanics, different lead verb for legibility. Copy is light
+				// period voice (ZBBS-HOME-421): NPCs mirror the register of what
+				// they read, and the old contract language came back out of their
+				// mouths verbatim. Keep the functional tokens (qty, item, seller,
+				// done(), accept/decline/counter) intact in any rewording.
+				lead := fmt.Sprintf("Your offer to buy %d %s", args.Qty, item)
 				if vc.Name == "offer_trade" {
-					lead = fmt.Sprintf("Your offer to trade for %d %s with %s", args.Qty, item, other)
+					lead = fmt.Sprintf("Your offer to trade for %d %s", args.Qty, item)
 				}
 				return fmt.Sprintf(
-					"[ok] %s is now before them, awaiting their answer. Do not offer "+
-						"again — call done() and let them accept, decline, or counter. "+
-						"Offer again only after they have responded.",
-					lead,
+					"[ok] %s is before %s — bide for their answer. Make no second "+
+						"offer; call done() and let them accept, decline, or counter.",
+					lead, other,
 				)
 			}
 		}
