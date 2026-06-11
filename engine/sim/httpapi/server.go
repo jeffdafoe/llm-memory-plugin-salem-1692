@@ -208,6 +208,13 @@ func (s *Server) Handler() http.Handler {
 	// IsAdmin gate (adminCommand inside handleConfig), so it stays off the
 	// public /world poll and reads live settings. See config_handlers.go.
 	mux.HandleFunc("GET /api/village/config", s.requireAuth(s.handleConfig))
+	// Village-activity feed for the talk panel's admin-only Village tab
+	// (ZBBS-WORK-399). requireOperator (plugins/administer) rather than the
+	// in-command IsAdmin gate: it's a snapshot read that never touches the
+	// world goroutine, and the capability is the same one pc/me's can_edit
+	// mirrors — the flag the client uses to show the tab. See
+	// village_activity.go.
+	mux.HandleFunc("GET /api/village/activity/recent", s.requireOperator(s.handleVillageActivity))
 	// Admin write routes — requireAuth PLUS an in-command admin gate (the
 	// caller's actor must have admin = true; see adminCommand in
 	// write_handlers.go). Distinct from pc/* whose ownership is structural.

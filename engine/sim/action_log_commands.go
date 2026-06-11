@@ -44,6 +44,8 @@ func AppendActionLogEntry(entry ActionLogEntry) Command {
 				runes := []rune(entry.Text)
 				entry.Text = string(runes[:MaxActionLogTextLen])
 			}
+			w.actionLogSeq++
+			entry.Seq = w.actionLogSeq
 			w.ActionLog = append(w.ActionLog, entry)
 			return nil, nil
 		},

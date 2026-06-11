@@ -20,6 +20,10 @@ extends CanvasLayer
 ##   - POST /api/village/pc/speak {text}  → broadcast (indoor: huddle scope; outdoor: proximity broadcast with speaker_x/speaker_y)
 
 const REFRESH_INTERVAL := 10.0
+# ZBBS-WORK-399: Village tab poll cadence. Runs only while the tab is the
+# active view; each poll is an incremental ?since= fetch, so the steady-state
+# response is tiny.
+const VILLAGE_POLL_INTERVAL := 5.0
 # Default panel size on first open / when no persisted size exists.
 const DESKTOP_MIN_WIDTH := 580.0
 const DESKTOP_MIN_HEIGHT := 400.0
@@ -67,6 +71,28 @@ var log_scroll: ScrollContainer
 var log_vbox: VBoxContainer
 var speech_input: TextEdit
 var speak_button: Button
+
+# ZBBS-WORK-399: admin-only Village tab — a village-wide action-log feed for
+# troubleshooting, fed by GET /api/village/activity/recent. The route is
+# operator-gated server-side (the same plugins/administer capability that
+# drives Auth.can_edit), so the tab buttons are purely presentation: hidden
+# for non-admins, but a modified client still gets 403s. Read-only view —
+# no nearby chips, no speech input. Distinct from the dead v1 Village tab
+# (ZBBS-HOME-313 removed it): this one polls, no WS frames involved.
+var village_tab_active := false
+var room_tab_button: Button = null
+var village_tab_button: Button = null
+var village_scroll: ScrollContainer = null
+var village_vbox: VBoxContainer = null
+var village_poll_timer: Timer = null
+var http_village: HTTPRequest = null
+var village_loading := false
+# Newest seq rendered, echoed back as ?since_seq= so each poll only returns
+# what's new. Seq (not occurred_at): timestamps can collide within an engine
+# batch, and the server's strictly-greater filter would drop same-instant
+# stragglers. 0 = no cursor yet → the server sends a newest-tail backload.
+var village_since_seq := 0
+var input_row: HBoxContainer = null
 ## Pay flow — small button next to Speak opens a modal (built lazily)
 ## with recipient dropdown, item / qty / amount, and take-home or
 ## booking (days-ahead) controls. Submit fires POST /api/village/pc/pay
@@ -289,10 +315,18 @@ func _build_tree() -> void:
     http_quotes = HTTPRequest.new()
     add_child(http_quotes)
 
+    http_village = HTTPRequest.new()
+    add_child(http_village)
+
     refresh_timer = Timer.new()
     refresh_timer.wait_time = REFRESH_INTERVAL
     refresh_timer.one_shot = false
     add_child(refresh_timer)
+
+    village_poll_timer = Timer.new()
+    village_poll_timer.wait_time = VILLAGE_POLL_INTERVAL
+    village_poll_timer.one_shot = false
+    add_child(village_poll_timer)
 
 
 func _build_launcher() -> void:
@@ -385,6 +419,7 @@ func _build_sheet() -> void:
     _build_header(vbox)
     _build_nearby(vbox)
     _build_log(vbox)
+    _build_village_log(vbox)
     _build_input(vbox)
     _build_resize_grip()
     _restore_persisted_panel_size()
@@ -417,6 +452,25 @@ func _build_header(parent: Control) -> void:
     # .text continues to compile, but never added to the layout.
     subcontext_label = Label.new()
     subcontext_label.visible = false
+
+    # ZBBS-WORK-399: Room/Village toggle, admin-only (see _update_tab_buttons).
+    # Hidden by default; visibility re-evaluates on every open(). The active
+    # tab's button renders disabled — that's the "you are here" marker.
+    room_tab_button = Button.new()
+    room_tab_button.text = "Room"
+    room_tab_button.custom_minimum_size = Vector2(0, 20)
+    room_tab_button.focus_mode = Control.FOCUS_NONE
+    room_tab_button.add_theme_font_size_override("font_size", 11)
+    room_tab_button.visible = false
+    header.add_child(room_tab_button)
+
+    village_tab_button = Button.new()
+    village_tab_button.text = "Village"
+    village_tab_button.custom_minimum_size = Vector2(0, 20)
+    village_tab_button.focus_mode = Control.FOCUS_NONE
+    village_tab_button.add_theme_font_size_override("font_size", 11)
+    village_tab_button.visible = false
+    header.add_child(village_tab_button)
 
     close_button = Button.new()
     close_button.text = "×"
@@ -478,6 +532,25 @@ func _build_log(parent: Control) -> void:
         log_bar.gui_input.connect(_on_log_scroll_gui_input)
 
 
+## ZBBS-WORK-399: the Village tab's scrollback — structurally a sibling of the
+## room log, swapped in/out by _set_active_tab. Always follows the bottom (no
+## stick-bottom tracking like the room log; a troubleshooting feed wants the
+## newest line in view).
+func _build_village_log(parent: Control) -> void:
+    village_scroll = ScrollContainer.new()
+    village_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    village_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+    village_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+    village_scroll.vertical_scroll_mode = ScrollContainer.SCROLL_MODE_AUTO
+    village_scroll.visible = false
+    parent.add_child(village_scroll)
+
+    village_vbox = VBoxContainer.new()
+    village_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    village_vbox.add_theme_constant_override("separation", 2)
+    village_scroll.add_child(village_vbox)
+
+
 ## Auto-open hook for knock-success (main.gd's pc/move response handler).
 ## _refresh_state runs an HTTPRequest, so huddle_members isn't populated
 ## yet at the moment we want to open. Defer to the next _on_me_completed
@@ -489,8 +562,180 @@ func force_open_after_refresh() -> void:
     _open_after_next_refresh = true
 
 
+# --- ZBBS-WORK-399: Village activity tab -----------------------------------
+
+
+func _on_room_tab_pressed() -> void:
+    _set_active_tab(false)
+
+
+func _on_village_tab_pressed() -> void:
+    _set_active_tab(true)
+
+
+## Swap the panel between the Room view (log + chips + input) and the
+## read-only Village feed. The poll runs only while Village is the active
+## view — switching away stops it, switching back resumes from the since
+## cursor, so the accumulated scrollback survives tab flips for free.
+func _set_active_tab(village: bool) -> void:
+    village_tab_active = village
+    log_scroll.visible = not village
+    nearby_scroll.visible = not village
+    if input_row != null:
+        input_row.visible = not village
+    village_scroll.visible = village
+    _update_tab_buttons()
+    # Poll lifecycle only reacts when the panel is actually open — open()
+    # selects the initial tab BEFORE setting is_open, and starts the poll
+    # itself afterwards. Without the guard the pre-open tab selection fires
+    # a doomed request (code_review round 1).
+    if village:
+        if is_open:
+            _start_village_poll()
+        _scroll_village_to_bottom_deferred()
+    else:
+        _stop_village_poll()
+        if is_open:
+            _focus_input_after_open()
+            _scroll_log_to_bottom_deferred()
+
+
+## Tab buttons are admin-only chrome: visible only when Auth.can_edit. The
+## active tab's button renders disabled — that's the current-view marker. If
+## the capability vanished (token re-verify demoted), force the Room view so
+## a non-admin can never sit on the Village tab.
+func _update_tab_buttons() -> void:
+    if room_tab_button == null or village_tab_button == null:
+        return
+    var show: bool = Auth.can_edit
+    room_tab_button.visible = show
+    village_tab_button.visible = show
+    if not show and village_tab_active:
+        _set_active_tab(false)
+        return
+    room_tab_button.disabled = not village_tab_active
+    village_tab_button.disabled = village_tab_active
+
+
+func _start_village_poll() -> void:
+    village_poll_timer.start()
+    _poll_village_activity()
+
+
+func _stop_village_poll() -> void:
+    village_poll_timer.stop()
+
+
+func _poll_village_activity() -> void:
+    if not is_open or not village_tab_active:
+        return
+    if village_loading:
+        return
+    village_loading = true
+    var path := "/api/village/activity/recent?limit=200"
+    if village_since_seq > 0:
+        path += "&since_seq=%d" % village_since_seq
+    var err := http_village.request(_api_url(path), _auth_headers(), HTTPClient.METHOD_GET, "")
+    if err != OK:
+        # Next timer tick retries; the flag must not stay latched.
+        village_loading = false
+
+
+func _on_village_activity_completed(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray) -> void:
+    village_loading = false
+    if not is_open or not village_tab_active:
+        # Stale response after a tab flip or close — drop it. The since
+        # cursor wasn't advanced, so nothing is lost on resume.
+        return
+    if result != HTTPRequest.RESULT_SUCCESS or response_code < 200 or response_code >= 300:
+        # Transient failure — the next poll retries from the same since
+        # cursor. (403 can't normally happen: the tab only shows for
+        # can_edit and the route checks the same capability.)
+        return
+    var json: Variant = JSON.parse_string(body.get_string_from_utf8())
+    if typeof(json) != TYPE_DICTIONARY:
+        return
+    # Cursor ahead of the server's newest seq means the engine restarted
+    # (the seq counter and the log reset together). Drop the cursor; the
+    # next poll backloads the fresh log's tail.
+    var latest_seq := int(json.get("latest_seq", 0))
+    if village_since_seq > latest_seq:
+        village_since_seq = 0
+        return
+    var entries: Variant = json.get("entries", [])
+    if typeof(entries) != TYPE_ARRAY:
+        return
+    var appended := 0
+    for e in entries:
+        if typeof(e) != TYPE_DICTIONARY:
+            continue
+        if _append_village_line(e):
+            appended += 1
+        var seq := int(e.get("seq", 0))
+        if seq > village_since_seq:
+            village_since_seq = seq
+    if appended > 0:
+        _scroll_village_to_bottom_deferred()
+
+
+## One rendered feed row. The server pre-renders `line` (names embedded), so
+## the client only styles by kind: speech in the room log's speech tones, act
+## narration in its muted tan, and `raw` rows (renderer-less ActionTypes,
+## orphan actor ids) in a cool telemetry gray that visually flags them as
+## mechanical — those are the rows an admin is usually hunting.
+func _append_village_line(e: Dictionary) -> bool:
+    var line := str(e.get("line", ""))
+    if line == "":
+        return false
+    var kind := str(e.get("kind", ""))
+    var color := "#a09377"
+    if kind == "speech_player":
+        color = "#f2dbad"
+    elif kind == "speech_npc":
+        color = "#d1c2a3"
+    elif kind == "raw":
+        color = "#8d97a8"
+
+    var rich := RichTextLabel.new()
+    rich.bbcode_enabled = true
+    rich.fit_content = true
+    rich.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+    rich.scroll_active = false
+    rich.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+    rich.add_theme_font_size_override("normal_font_size", 13)
+    var prefix := ""
+    var time_prefix := _format_timestamp(str(e.get("occurred_at", "")))
+    if time_prefix != "":
+        prefix = "[color=#7a6f59]%s[/color] " % time_prefix
+    rich.text = "%s[color=%s]%s[/color]" % [prefix, color, _bbcode_escape(line)]
+    village_vbox.add_child(rich)
+
+    while village_vbox.get_child_count() > MAX_LOG_LINES:
+        village_vbox.get_child(0).queue_free()
+    return true
+
+
+func _scroll_village_to_bottom_deferred() -> void:
+    call_deferred("_scroll_village_to_bottom")
+
+
+func _scroll_village_to_bottom() -> void:
+    if village_scroll == null:
+        return
+    # Two frames: visibility/layout settle, then RichTextLabel fit_content
+    # expansion — same dance as the room log's scroll helper.
+    await get_tree().process_frame
+    await get_tree().process_frame
+    var bar := village_scroll.get_v_scroll_bar()
+    if bar != null:
+        village_scroll.scroll_vertical = int(bar.max_value)
+
+
 func _build_input(parent: Control) -> void:
     var row := HBoxContainer.new()
+    # ZBBS-WORK-399: held so the Village tab can hide the speech input —
+    # the village view is read-only.
+    input_row = row
     # Two-line input: ~52px fits 2 visual lines at font_size=12 plus the
     # 4px top/bottom content margins on the input stylebox. The TextEdit
     # itself handles internal scroll past 2 lines, so a long message
@@ -697,6 +942,15 @@ func _connect_signals() -> void:
     if http_quotes != null:
         http_quotes.request_completed.connect(_on_quotes_completed)
 
+    if room_tab_button != null:
+        room_tab_button.pressed.connect(_on_room_tab_pressed)
+    if village_tab_button != null:
+        village_tab_button.pressed.connect(_on_village_tab_pressed)
+    if village_poll_timer != null:
+        village_poll_timer.timeout.connect(_poll_village_activity)
+    if http_village != null:
+        http_village.request_completed.connect(_on_village_activity_completed)
+
     speech_input.focus_entered.connect(_on_input_focus_entered)
     speech_input.focus_exited.connect(_on_input_focus_exited)
     speech_input.gui_input.connect(_on_speech_input_gui_input)
@@ -744,8 +998,15 @@ func get_launcher_control() -> Control:
 
 
 func open() -> void:
-    if not pc_exists or huddle_members.is_empty():
+    if not pc_exists:
         return
+    if huddle_members.is_empty():
+        # ZBBS-WORK-399: alone in the village there's no room conversation
+        # to show, but an admin still gets the panel — the Village activity
+        # tab is its troubleshooting purpose. Land directly on Village.
+        if not Auth.can_edit:
+            return
+        _set_active_tab(true)
 
     is_open = true
     user_closed = false
@@ -754,14 +1015,19 @@ func open() -> void:
     sheet_anchor.visible = true
     talk_launcher.visible = false
 
+    _update_tab_buttons()
     _update_launcher_text()
-    _focus_input_after_open()
+    if village_tab_active:
+        _start_village_poll()
+    else:
+        _focus_input_after_open()
     _scroll_log_to_bottom_deferred()
 
 
 func close() -> void:
     is_open = false
     user_closed = true
+    _stop_village_poll()
     sheet_anchor.visible = false
     _update_visibility_from_state()
 
@@ -1042,8 +1308,10 @@ func _update_visibility_from_state() -> void:
         sheet_anchor.visible = false
         # Launcher chip is only useful when there's a huddle to enter
         # — if the player is alone in the open village, hide the chip
-        # rather than offer a no-op tap target.
-        talk_launcher.visible = not huddle_members.is_empty()
+        # rather than offer a no-op tap target. Exception (ZBBS-WORK-399):
+        # admins keep the chip while alone, because open() lands them on
+        # the Village activity tab.
+        talk_launcher.visible = not huddle_members.is_empty() or Auth.can_edit
 
 
 func _update_context_labels() -> void:
