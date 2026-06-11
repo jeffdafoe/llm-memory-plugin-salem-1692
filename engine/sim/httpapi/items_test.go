@@ -91,3 +91,17 @@ func TestItemDispositionClass(t *testing.T) {
 		})
 	}
 }
+
+// Precedence: service beats eat_here — a service kind that also carries
+// Satisfies rows is still "tonight" (the implementation checks service
+// first; this pins the ordering). (code_review)
+func TestItemDispositionClass_ServiceBeatsEatHere(t *testing.T) {
+	def := &sim.ItemKindDef{
+		Name:         "weird_service_food",
+		Capabilities: []string{"service"},
+		Satisfies:    []sim.ItemSatisfaction{{Attribute: "hunger"}},
+	}
+	if got := itemDispositionClass(def); got != "tonight" {
+		t.Errorf("itemDispositionClass(service+consumable) = %q, want tonight", got)
+	}
+}
