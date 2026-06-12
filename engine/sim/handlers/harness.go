@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -404,9 +405,9 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 	// of offeredThisTick). Pre-433 a posted quote came back as a bare [ok], so
 	// the model had no within-tick reason to stop and re-posted the identical
 	// quote every round to the iteration budget (the live John×Ezekiel bread
-	// storm: five scene_quote calls in one tick). One quote per (item,
+	// storm: five scene_quote calls in one tick). One quote per (item, qty,
 	// disposition, target) per tick; see sceneQuoteKey for the keying
-	// rationale (price and qty deliberately excluded).
+	// rationale (price deliberately excluded, qty kept).
 	quotedThisTick := map[string]struct{}{}
 	// triedThisTick holds the identical-call key (name + canonical decoded args)
 	// of every action this actor has ATTEMPTED this tick under the ZBBS-HOME-414
@@ -934,19 +935,25 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 	// teeth.
 	if vc.Name == "scene_quote" {
 		const quoteSteer = "The room has heard your offer — await an answer or call done(). Do not post the same offer again."
-		if r, ok := cmdResult.(sim.SceneQuoteCreateResult); ok && r.EatHereClamped {
-			item := "those goods"
-			if args, ok := vc.DecodedArgs.(SceneQuoteArgs); ok {
-				if it := strings.ToLower(strings.Join(strings.Fields(args.ItemKind), " ")); it != "" {
-					item = it
+		// "Your offer now stands" only when the result proves a quote was
+		// actually created (code_review #415) — an unexpected result shape
+		// still steers, but doesn't assert state without evidence.
+		if r, ok := cmdResult.(sim.SceneQuoteCreateResult); ok {
+			if r.EatHereClamped {
+				item := "those goods"
+				if args, ok := vc.DecodedArgs.(SceneQuoteArgs); ok {
+					if it := strings.ToLower(strings.Join(strings.Fields(args.ItemKind), " ")); it != "" {
+						item = it
+					}
 				}
+				return fmt.Sprintf(
+					"[ok] Mind: %s can't be carried away — your offer stands as eat-here, taken on the spot. %s",
+					item, quoteSteer,
+				)
 			}
-			return fmt.Sprintf(
-				"[ok] Mind: %s can't be carried away — your offer stands as eat-here, taken on the spot. %s",
-				item, quoteSteer,
-			)
+			return "[ok] Your offer now stands. " + quoteSteer
 		}
-		return "[ok] Your offer now stands. " + quoteSteer
+		return "[ok] " + quoteSteer
 	}
 	// offer_trade lowers onto a PayWithItemArgs (ZBBS-HOME-407), so it carries
 	// the same decoded shape and earns the same post-offer steer.
@@ -1086,13 +1093,16 @@ func payOfferKey(vc *ValidatedCall) (string, bool) {
 
 // sceneQuoteKey returns the same-tick repeat-QUOTE dedup key for a scene_quote
 // call (ZBBS-HOME-433 — the seller-side analogue of payOfferKey). One quote per
-// (item, disposition, target) per tick: price and qty are deliberately
-// EXCLUDED, so a re-post at drifting terms (4 coins, then 5) still matches —
-// within one tick a re-quote of the same goods is churn at any price (the live
+// (item, qty, disposition, target) per tick: price (amount) is deliberately
+// EXCLUDED, so a re-post at a drifting price (4 coins, then 5) still matches —
+// within one tick a re-quote of the same lot is churn at any price (the live
 // John×Ezekiel bread storm: five identical scene_quote calls in one tick, all
-// succeeding, terminal budget_forced). Cross-tick re-pricing stays legal and
-// rides the substrate's supersede path. Returns ("", false) for non-quote
-// calls or undecodable args.
+// succeeding, terminal budget_forced). Qty IS part of the key — unlike a
+// buyer's pending offer, a different lot size (1 bread vs 3 bread) is a
+// genuinely distinct standing offer, and the substrate's own supersede/coexist
+// rules should decide its fate (code_review #415). Cross-tick re-pricing stays
+// legal and rides the supersede path. Returns ("", false) for non-quote calls
+// or undecodable args.
 func sceneQuoteKey(vc *ValidatedCall) (string, bool) {
 	if vc == nil || vc.Name != "scene_quote" {
 		return "", false
@@ -1110,7 +1120,7 @@ func sceneQuoteKey(vc *ValidatedCall) (string, bool) {
 	if args.ConsumeNow {
 		disposition = "consume"
 	}
-	return item + "\x00" + disposition + "\x00" + target, true
+	return item + "\x00" + disposition + "\x00" + target + "\x00" + strconv.Itoa(args.Qty), true
 }
 
 // genericCallKey returns the same-tick identical-call dedup key for the

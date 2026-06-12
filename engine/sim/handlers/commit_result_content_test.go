@@ -239,8 +239,11 @@ func TestCommitResultContent_SceneQuoteEatHereClampNote(t *testing.T) {
 	if got := commitResultContent(&vc, sim.SceneQuoteCreateResult{QuoteID: 3}); got != "[ok] Your offer now stands. "+steer {
 		t.Errorf("unclamped scene_quote = %q, want standing-offer steer", got)
 	}
-	if got := commitResultContent(&vc, nil); got != "[ok] Your offer now stands. "+steer {
-		t.Errorf("nil result = %q, want standing-offer steer", got)
+	// An unexpected result shape (nil / wrong type) still steers but must not
+	// assert "now stands" without a SceneQuoteCreateResult as evidence
+	// (code_review #415).
+	if got := commitResultContent(&vc, nil); got != "[ok] "+steer {
+		t.Errorf("nil result = %q, want soft steer without the standing claim", got)
 	}
 }
 

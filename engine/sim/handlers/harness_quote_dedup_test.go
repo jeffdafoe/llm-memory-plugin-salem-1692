@@ -70,14 +70,14 @@ func TestSceneQuoteKey_ProductionDecoderShape(t *testing.T) {
 	if !ok {
 		t.Fatal("sceneQuoteKey ok=false for a production-decoded quote — dedup would be silently disabled in production")
 	}
-	if want := "bread\x00keep\x00"; key != want {
+	if want := "bread\x00keep\x00\x001"; key != want {
 		t.Errorf("key = %q, want %q", key, want)
 	}
 }
 
 // TestSceneQuoteKey_TargetAndDisposition: a targeted quote and a public one
-// for the same goods key differently, as do consume-now vs take-away — but
-// price and qty are excluded.
+// for the same goods key differently, as do consume-now vs take-away and
+// different lot sizes — but price is excluded.
 func TestSceneQuoteKey_TargetAndDisposition(t *testing.T) {
 	base := SceneQuoteArgs{ItemKind: "Bread", Qty: 1, Amount: 4}
 	key := func(a SceneQuoteArgs) string {
@@ -90,9 +90,17 @@ func TestSceneQuoteKey_TargetAndDisposition(t *testing.T) {
 
 	repriced := base
 	repriced.Amount = 9
-	repriced.Qty = 3
 	if key(base) != key(repriced) {
-		t.Error("price/qty drift must not change the key")
+		t.Error("price drift must not change the key")
+	}
+
+	// A different lot size is a genuinely distinct standing offer — the
+	// substrate's supersede/coexist rules decide its fate, not the guard
+	// (code_review #415).
+	differentLot := base
+	differentLot.Qty = 3
+	if key(base) == key(differentLot) {
+		t.Error("different qty must change the key")
 	}
 
 	targeted := base
