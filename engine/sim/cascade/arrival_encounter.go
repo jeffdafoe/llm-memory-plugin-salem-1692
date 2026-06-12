@@ -26,8 +26,31 @@ import (
 //     stationary NPC in silence instead of being yelled at, and is the
 //     replacement for the removed locomotion "bilateral pause" — a mover is
 //     never joined to a huddle in the first place, so a walk is never frozen.
-func outdoorEncounterExcludesActor(a *sim.Actor, now time.Time, staleAfter time.Duration) bool {
+//   - An actor with an active scheduled route (ZBBS-HOME-452) is mid-task in
+//     exactly the HOME-340 sense, but invisibly to the MoveIntent check:
+//     finishArrival clears the intent BEFORE emitting ActorArrived, so at an
+//     intermediate route stop the actor looks "stopped" while it is actually
+//     between stop N and stop N+1. Without this exclusion, arriving at a stop
+//     within radius of a standing actor formed a huddle on the SAME emit whose
+//     route-advance subscriber then had its next-walk dispatch rejected by
+//     that huddle — clearing the route (remaining stops never flipped) and,
+//     for a decorative NPC + silent PC pair, parking the actor at the stop for
+//     the full 2h huddle-silence-sweep window (the 2026-06-12 lamplighter
+//     wedge). Applies to both directions: a route actor must not initiate an
+//     encounter at its own stop, and must not be grabbed as a bystander while
+//     standing at one. The returning-home leg is excluded too — the actor is
+//     on duty until the route is actually done (advanceReturningRoute deletes
+//     it on home arrival).
+//
+// w must be non-nil by contract: the only callers are handleArrivalEncounter's
+// initiator and participant checks, which run as event subscribers on the
+// world goroutine and always hold the real World. A nil-tolerant guard here
+// would silently skip route-awareness on a caller bug instead of surfacing it.
+func outdoorEncounterExcludesActor(w *sim.World, a *sim.Actor, now time.Time, staleAfter time.Duration) bool {
 	if a.MoveIntent != nil {
+		return true
+	}
+	if _, onRoute := w.ActiveRoutes[a.ID]; onRoute {
 		return true
 	}
 	return a.Kind == sim.KindPC && sim.PCPresenceStale(a.LastPCSeenAt, now, staleAfter)
@@ -138,7 +161,7 @@ func handleArrivalEncounter(w *sim.World, evt sim.Event) {
 	// be skipped as a nearby participant — otherwise a ghost arriving (e.g. an
 	// in-flight move that completes after the tab closed) would still pull nearby
 	// NPCs into a greeting huddle (ZBBS-WORK-326, code_review R1).
-	if outdoorEncounterExcludesActor(arriver, arrived.At, staleAfter) {
+	if outdoorEncounterExcludesActor(w, arriver, arrived.At, staleAfter) {
 		return
 	}
 
@@ -162,7 +185,7 @@ func handleArrivalEncounter(w *sim.World, evt sim.Event) {
 		if a.CurrentHuddleID != "" {
 			return true
 		}
-		if outdoorEncounterExcludesActor(a, arrived.At, staleAfter) {
+		if outdoorEncounterExcludesActor(w, a, arrived.At, staleAfter) {
 			return true
 		}
 		if !bound.Contains(w, a) {
