@@ -1080,6 +1080,12 @@ func buildDutySteer(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapsho
 // reads as off-shift all day and would emit a perpetual "head home" cue
 // (code_review).
 func shiftWindowBounds(snap *sim.Snapshot, a *sim.ActorSnapshot) (start, end int, ok bool) {
+	// Nil-safe on its own: both current callers pre-check, but the helper's
+	// contract shouldn't depend on that — a future caller skipping the guard
+	// would panic on the field derefs below (code_review, HOME-442).
+	if snap == nil || a == nil {
+		return 0, 0, false
+	}
 	switch {
 	case a.ScheduleStartMin != nil && a.ScheduleEndMin != nil:
 		return *a.ScheduleStartMin, *a.ScheduleEndMin, true
