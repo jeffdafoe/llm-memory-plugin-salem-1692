@@ -10,10 +10,11 @@ import (
 )
 
 // action_log.go — append-only in-memory action log substrate driver.
-// Wires seven event subscribers (Spoke / Paid / ItemConsumed /
-// OrderDelivered / ActorArrived / TookBreak / StayingOpen) to translate
-// engine events into sim.ActionLogEntry rows, and spawns a sweep goroutine
-// that periodically compacts the log via sim.CompactActionLog.
+// Wires eight event subscribers (Spoke / Paid / PayWithItemResolved /
+// ItemConsumed / OrderDelivered / ActorArrived / TookBreak / StayingOpen)
+// to translate engine events into sim.ActionLogEntry rows, and spawns a
+// sweep goroutine that periodically compacts the log via
+// sim.CompactActionLog.
 //
 // Subscribers run inline on the world goroutine via emit dispatch;
 // the sweep goroutine runs off-world and routes mutations through
@@ -25,6 +26,7 @@ import (
 //   RegisterActionLog(ctx, w)
 //   ├─> w.Subscribe(handleSpokeActionLog)
 //   ├─> w.Subscribe(handlePaidActionLog)
+//   ├─> w.Subscribe(handlePayResolvedActionLog)
 //   ├─> w.Subscribe(handleConsumedActionLog)
 //   ├─> w.Subscribe(handleOrderDeliveredActionLog)
 //   ├─> w.Subscribe(handleActorArrivedActionLog)
@@ -55,7 +57,7 @@ import (
 // controls how promptly memory is reclaimed.
 const defaultActionLogSweepInterval = 1 * time.Hour
 
-// RegisterActionLog wires the five event subscribers and spawns the
+// RegisterActionLog wires the eight event subscribers and spawns the
 // compaction sweep goroutine. Must run on the world goroutine — call
 // before World.Run, or from inside a Command.Fn.
 //
@@ -72,6 +74,7 @@ func RegisterActionLog(ctx context.Context, w *sim.World) {
 	}
 	w.Subscribe(sim.SubscriberFunc(handleSpokeActionLog))
 	w.Subscribe(sim.SubscriberFunc(handlePaidActionLog))
+	w.Subscribe(sim.SubscriberFunc(handlePayResolvedActionLog))
 	w.Subscribe(sim.SubscriberFunc(handleConsumedActionLog))
 	w.Subscribe(sim.SubscriberFunc(handleOrderDeliveredActionLog))
 	w.Subscribe(sim.SubscriberFunc(handleActorArrivedActionLog))
@@ -166,6 +169,67 @@ func handlePaidActionLog(w *sim.World, evt sim.Event) {
 		Payload:     payload,
 		SpeakerName: display,
 		HuddleID:    huddleID,
+		Source:      source,
+	})
+}
+
+// handlePayResolvedActionLog appends a Paid row when a pay-with-item ledger
+// entry settles ACCEPTED (ZBBS-HOME-434). The Paid event only fires from the
+// bare-coin sim.Pay command — since ZBBS-HOME-430 NPC commerce goes
+// exclusively through the ledger, so without this bridge no transaction ever
+// reached the action log: the Village activity tab and the dream-feeding
+// durable log both showed speech and consumption but never the sale between
+// them. Same buyer-side single-row shape as handlePaidActionLog; the
+// renderer's existing ActionTypePaid case narrates it ("X pays Y N coins for
+// Z."). Non-accepted terminals (declined / withdrawn / expired / failed_*)
+// append nothing — no money moved.
+func handlePayResolvedActionLog(w *sim.World, evt sim.Event) {
+	resolved, ok := evt.(*sim.PayWithItemResolved)
+	if !ok {
+		return
+	}
+	if resolved.TerminalState != sim.PayTerminalStateAccepted {
+		return
+	}
+	// Total quantity across consumers — the event carries per-consumer qty
+	// (group orders), and the narrated beat should state the whole bundle.
+	// Empty ConsumerIDs is the buyer-only shape (the common single-buyer
+	// purchase snapshots no consumer list) and counts as one consumer.
+	consumerCount := len(resolved.ConsumerIDs)
+	if consumerCount == 0 {
+		consumerCount = 1
+	}
+	qty := resolved.QtyPerConsumer * consumerCount
+	forText := formatItemQty(resolved.ItemKind, qty)
+	entry := sim.ActionLogEntry{
+		ActorID:          resolved.BuyerID,
+		OccurredAt:       resolved.At,
+		ActionType:       sim.ActionTypePaid,
+		Text:             forText,
+		HuddleID:         resolved.HuddleID,
+		CounterpartyName: actorDisplayNameOrEmpty(w, resolved.SellerID),
+		Amount:           resolved.Amount,
+	}
+	if _, err := sim.AppendActionLogEntry(entry).Fn(w); err != nil {
+		log.Printf("cascade/action_log: append pay-resolved (buyer %q ledger %d event %d): %v",
+			resolved.BuyerID, resolved.LedgerID, resolved.EventID(), err)
+		return
+	}
+	// Durable mirror (ZBBS-WORK-376) — same shape as the bare-pay row so the
+	// dream distiller reads both identically.
+	display, source := actorDisplayAndSource(w, resolved.BuyerID)
+	payload := map[string]any{
+		"recipient": actorDisplayName(w, resolved.SellerID),
+		"amount":    resolved.Amount,
+		"for":       forText,
+	}
+	w.AppendActionLogDurable(sim.DurableActionLogRow{
+		ActorID:     resolved.BuyerID,
+		OccurredAt:  resolved.At,
+		ActionType:  sim.ActionTypePaid,
+		Payload:     payload,
+		SpeakerName: display,
+		HuddleID:    resolved.HuddleID,
 		Source:      source,
 	})
 }

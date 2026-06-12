@@ -201,6 +201,108 @@ func TestHandlePaidActionLog_UnknownBuyerHuddleEmpty(t *testing.T) {
 	}
 }
 
+// --- TestHandlePayResolvedActionLog ---------------------------------
+// ZBBS-HOME-434: an ACCEPTED ledger settle appends a buyer-side Paid row
+// (the bridge that puts pay_with_item commerce into the action log — the
+// Paid event only fires from the bare-coin path, which HOME-430 removed
+// from NPC toolsets). Non-accepted terminals append nothing.
+func TestHandlePayResolvedActionLog_AcceptedAppendsPaidRow(t *testing.T) {
+	w, stop := buildActionLogCascadeWorld(t)
+	defer stop()
+
+	at := time.Now().UTC()
+	invokeOnWorld(t, w, func(world *sim.World) {
+		handlePayResolvedActionLog(world, &sim.PayWithItemResolved{
+			LedgerID:       77,
+			BuyerID:        "hannah",
+			SellerID:       "bob",
+			ItemKind:       "ale",
+			QtyPerConsumer: 1,
+			Amount:         4,
+			TerminalState:  sim.PayTerminalStateAccepted,
+			HuddleID:       "h1",
+			At:             at,
+		})
+	})
+
+	got := readActionLog(t, w)
+	if len(got) != 1 {
+		t.Fatalf("len(ActionLog) = %d, want 1", len(got))
+	}
+	e := got[0]
+	if e.ActorID != "hannah" {
+		t.Errorf("ActorID = %q, want hannah (buyer)", e.ActorID)
+	}
+	if e.ActionType != sim.ActionTypePaid {
+		t.Errorf("ActionType = %q, want %q", e.ActionType, sim.ActionTypePaid)
+	}
+	if e.Text != "ale" {
+		t.Errorf("Text = %q, want %q", e.Text, "ale")
+	}
+	if e.HuddleID != "h1" {
+		t.Errorf("HuddleID = %q, want h1 (from the event)", e.HuddleID)
+	}
+	if e.CounterpartyName != "Bob" {
+		t.Errorf("CounterpartyName = %q, want Bob (seller)", e.CounterpartyName)
+	}
+	if e.Amount != 4 {
+		t.Errorf("Amount = %d, want 4", e.Amount)
+	}
+}
+
+func TestHandlePayResolvedActionLog_GroupOrderTotalsQty(t *testing.T) {
+	w, stop := buildActionLogCascadeWorld(t)
+	defer stop()
+
+	invokeOnWorld(t, w, func(world *sim.World) {
+		handlePayResolvedActionLog(world, &sim.PayWithItemResolved{
+			BuyerID:        "hannah",
+			SellerID:       "bob",
+			ItemKind:       "stew",
+			QtyPerConsumer: 2,
+			ConsumerIDs:    []sim.ActorID{"hannah", "bob", "cara"},
+			Amount:         12,
+			TerminalState:  sim.PayTerminalStateAccepted,
+			At:             time.Now().UTC(),
+		})
+	})
+
+	got := readActionLog(t, w)
+	if len(got) != 1 {
+		t.Fatalf("len(ActionLog) = %d, want 1", len(got))
+	}
+	if got[0].Text != "6x stew" {
+		t.Errorf("Text = %q, want %q (qty-per-consumer × consumers)", got[0].Text, "6x stew")
+	}
+}
+
+func TestHandlePayResolvedActionLog_NonAcceptedAppendsNothing(t *testing.T) {
+	w, stop := buildActionLogCascadeWorld(t)
+	defer stop()
+
+	for _, terminal := range []sim.PayTerminalState{
+		sim.PayTerminalStateDeclined,
+		sim.PayTerminalStateWithdrawnByBuyer,
+		sim.PayTerminalStateExpired,
+	} {
+		invokeOnWorld(t, w, func(world *sim.World) {
+			handlePayResolvedActionLog(world, &sim.PayWithItemResolved{
+				BuyerID:        "hannah",
+				SellerID:       "bob",
+				ItemKind:       "ale",
+				QtyPerConsumer: 1,
+				Amount:         4,
+				TerminalState:  terminal,
+				At:             time.Now().UTC(),
+			})
+		})
+	}
+
+	if got := readActionLog(t, w); len(got) != 0 {
+		t.Errorf("len(ActionLog) = %d, want 0 (no money moved on non-accepted terminals)", len(got))
+	}
+}
+
 // --- TestHandleConsumedActionLog_FormatsText -----------------------
 // Qty 1 → bare kind; Qty > 1 → "Nx kind".
 func TestHandleConsumedActionLog_FormatsText(t *testing.T) {
