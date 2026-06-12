@@ -197,6 +197,21 @@ func MoveActor(actorID ActorID, dest MoveDestination, leaveHuddleFirst bool, now
 				actor.CurrentHuddleID = ""
 			}
 
+			// Step 5.5 — committed movement implies awake (ZBBS-HOME-435:
+			// "you can't be asleep and use move_to"). An agent NPC can reach
+			// here bedded when an auto-sleep stamp races its in-flight tick
+			// (live 2026-06-11: the sweep bedded Prudence Ward 8s after her
+			// tick was admitted; the tick then committed move_to and she
+			// walked to the tavern flagged asleep, where the reactor rest
+			// gate silently ate every warrant for 12h). Getting up and
+			// walking IS waking — clear the rest window exactly like the
+			// shift-start wake. After the validation gates so a failed move
+			// leaves the sleeper undisturbed. PCs have their own input-wake
+			// on the /pc routes; decoratives never receive MoveActor.
+			if isAgentNPC(actor) && actor.SleepingUntil != nil {
+				wakeNPC(w, actor)
+			}
+
 			// Step 6 — supersede any in-flight intent. The old attempt
 			// dies silently; no ActorMoveStopped is emitted.
 			var superseded MovementAttemptID
