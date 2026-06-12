@@ -87,6 +87,7 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 	// return-to-post cue is now suppressed while a restock errand is active —
 	// p.Restocking != nil is exactly that signal.
 	p.DutySteer = buildDutySteer(snap, actorID, actorSnap, p.Anchors, p.Restocking != nil)
+	p.DutyPending = buildDutyPending(snap, actorSnap, p.Anchors)
 	// Stay-open choice (ZBBS-WORK-387): a keeper standing at its own post on an
 	// off-shift wind-down may keep its business open instead of closing up. Surface
 	// the option, and encourage it when a concrete reason is present (the hybrid
@@ -997,18 +998,8 @@ func buildDutySteer(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapsho
 	}
 	nowMin := *snap.LocalMinuteOfDay
 
-	var start, end int
-	switch {
-	case a.ScheduleStartMin != nil && a.ScheduleEndMin != nil:
-		start, end = *a.ScheduleStartMin, *a.ScheduleEndMin
-	case snap.DawnDuskMinuteOK && snap.DawnMinute != snap.DuskMinute:
-		// World day-active fallback for an NPC with no explicit schedule.
-		// DawnDuskMinuteOK rejects a partial/failed parse (which would otherwise
-		// derive a bogus window from one good + one zero bound); the inequality
-		// rejects a degenerate dawn==dusk empty window that reads as off-shift all
-		// day and would emit a perpetual "head home" cue (code_review).
-		start, end = snap.DawnMinute, snap.DuskMinute
-	default:
+	start, end, windowOK := shiftWindowBounds(snap, a)
+	if !windowOK {
 		return nil // unscheduled and no usable day-active window
 	}
 
@@ -1075,6 +1066,62 @@ func buildDutySteer(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapsho
 	default:
 		return nil
 	}
+}
+
+// shiftWindowBounds resolves the actor's effective shift window: its own
+// schedule when both bounds are set, else the world day-active (dawn/dusk)
+// window from the snapshot. ok=false when neither is usable. Shared by
+// buildDutySteer and buildDutyPending so the cue and the gate signal agree
+// on what "the shift window" is.
+//
+// The day-active fallback: DawnDuskMinuteOK rejects a partial/failed parse
+// (which would otherwise derive a bogus window from one good + one zero
+// bound); the inequality rejects a degenerate dawn==dusk empty window that
+// reads as off-shift all day and would emit a perpetual "head home" cue
+// (code_review).
+func shiftWindowBounds(snap *sim.Snapshot, a *sim.ActorSnapshot) (start, end int, ok bool) {
+	switch {
+	case a.ScheduleStartMin != nil && a.ScheduleEndMin != nil:
+		return *a.ScheduleStartMin, *a.ScheduleEndMin, true
+	case snap.DawnDuskMinuteOK && snap.DawnMinute != snap.DuskMinute:
+		return snap.DawnMinute, snap.DuskMinute, true
+	default:
+		return 0, 0, false
+	}
+}
+
+// buildDutyPending reports whether the actor is off-post inside its shift
+// window — to-work duty APPLIES this minute — computed WITHOUT the cue-side
+// suppressors that can nil buildDutySteer's to-work arm (the HOME-362
+// red-need gate; HOME-400 Option B's mild-need / restock-errand /
+// pending-offer gate). The noop-skip gate consumes it (ZBBS-HOME-442): an
+// off-post on-shift keeper with a need in the mild band had NO rendered
+// steer (Option B) and NO red need, so the gate ate its idle-backstops and
+// it stood skip-locked for hours (the live Josiah case the HOME-441 steer
+// condition turned out not to cover). The signal opens the gate; the cue
+// stays suppressed — the tick that runs voices the mild need with no
+// to-work line, the model addresses the need, and once every need drops
+// below mild the steer renders and the next tick walks the actor to post.
+//
+// Strictly the TO-WORK arm: the go-home/wind-down side keeps its existing
+// behavior (a rendered go-home steer already opens the gate via DutySteer;
+// its suppressors — mid-meal dwell, stay-open — describe an actor that is
+// mid-action, not stuck).
+func buildDutyPending(snap *sim.Snapshot, a *sim.ActorSnapshot, anchors *AnchorsView) bool {
+	if snap == nil || a == nil || anchors == nil || snap.LocalMinuteOfDay == nil {
+		return false
+	}
+	if a.Kind != sim.KindNPCStateful && a.Kind != sim.KindNPCShared {
+		return false
+	}
+	start, end, ok := shiftWindowBounds(snap, a)
+	if !ok {
+		return false
+	}
+	if !minuteInWindow(start, end, *snap.LocalMinuteOfDay) {
+		return false
+	}
+	return anchors.WorkID != "" && a.InsideStructureID != anchors.WorkID
 }
 
 // windDownSuppressed reports whether the off-shift wind-down cue should be held

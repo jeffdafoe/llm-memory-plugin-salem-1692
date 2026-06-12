@@ -100,6 +100,17 @@ type Payload struct {
 	// scope, or the clock/anchors are unknown. See buildDutySteer.
 	DutySteer *DutySteerView
 
+	// DutyPending reports that the subject is off-post inside its shift window,
+	// computed WITHOUT the cue-side suppressors that can nil DutySteer (the
+	// HOME-362 red-need gate; HOME-400 Option B's mild-need / restock-errand /
+	// pending-offer gate). It answers "does to-work duty APPLY this minute",
+	// not "should the cue RENDER" — the noop-skip gate consumes it
+	// (ZBBS-HOME-442) so an off-post keeper whose steer is suppressed by a
+	// mild need still gets the tick that lets it address the need. Never
+	// rendered. True whenever DutySteer is a to-work steer, and also through
+	// the suppressed band. See buildDutyPending.
+	DutyPending bool
+
 	// Warrants is every consumed warrant, ordered by SourceEventID
 	// ascending — PR 3a's monotonic EventID is the authoritative causal
 	// order. Zero-lineage warrants (SourceEventID == 0, legacy/non-event-
