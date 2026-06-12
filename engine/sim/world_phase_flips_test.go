@@ -149,7 +149,7 @@ func TestSetVillageObjectStateApplied(t *testing.T) {
 	w, cancel := buildPhaseTestWorld(t)
 	defer cancel()
 
-	res, err := w.Send(sim.SetVillageObjectState("lamp-A", "unlit", 0))
+	res, err := w.Send(sim.SetVillageObjectState("lamp-A", "unlit"))
 	if err != nil {
 		t.Fatalf("set: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestSetVillageObjectStateAlreadyAtTarget(t *testing.T) {
 	w, cancel := buildPhaseTestWorld(t)
 	defer cancel()
 
-	res, _ := w.Send(sim.SetVillageObjectState("lamp-B", "unlit", 0))
+	res, _ := w.Send(sim.SetVillageObjectState("lamp-B", "unlit"))
 	sr := res.(sim.SetStateResult)
 	if sr.Applied || sr.Reason != "already_at_target" {
 		t.Errorf("result = %+v, want Applied=false Reason=already_at_target", sr)
@@ -179,35 +179,38 @@ func TestSetVillageObjectStateNotFound(t *testing.T) {
 	w, cancel := buildPhaseTestWorld(t)
 	defer cancel()
 
-	res, _ := w.Send(sim.SetVillageObjectState("ghost", "unlit", 0))
+	res, _ := w.Send(sim.SetVillageObjectState("ghost", "unlit"))
 	sr := res.(sim.SetStateResult)
 	if sr.Applied || sr.Reason != "not_found" {
 		t.Errorf("result = %+v, want Applied=false Reason=not_found", sr)
 	}
 }
 
-// TestSetVillageObjectStateSuperseded covers the generation guard — the
-// critical safety net protecting against rapid phase reversals.
-func TestSetVillageObjectStateSuperseded(t *testing.T) {
+// TestApplyScheduledFlipSuperseded covers the generation guard — the
+// critical safety net protecting against rapid phase reversals. The
+// guard compares the flip's Gen against ITS OWN domain counter.
+func TestApplyScheduledFlipSuperseded(t *testing.T) {
 	w, cancel := buildPhaseTestWorld(t)
 	defer cancel()
 
-	// Bump WorldEventGen to a non-zero value, then capture, then bump
+	// Bump PhaseFlipGen to a non-zero value, then capture, then bump
 	// again — gives us a "captured" gen that is genuinely stale relative
-	// to "current" by the time we issue the SetVillageObjectState call.
+	// to "current" by the time the flip fires.
 	bump := func() {
 		_, _ = w.Send(sim.Command{
 			Fn: func(world *sim.World) (any, error) {
-				world.WorldEventGen.Add(1)
+				world.PhaseFlipGen.Add(1)
 				return nil, nil
 			},
 		})
 	}
 	bump()
-	stale := w.WorldEventGen.Load()
+	stale := w.PhaseFlipGen.Load()
 	bump()
 
-	res, _ := w.Send(sim.SetVillageObjectState("lamp-A", "unlit", stale))
+	res, _ := w.Send(sim.ApplyScheduledFlip(sim.PendingFlip{
+		ObjectID: "lamp-A", NewState: "unlit", Gen: stale, Domain: sim.FlipDomainPhase,
+	}))
 	sr := res.(sim.SetStateResult)
 	if sr.Applied || sr.Reason != "superseded" {
 		t.Errorf("stale gen: result = %+v, want Applied=false Reason=superseded", sr)
@@ -216,6 +219,47 @@ func TestSetVillageObjectStateSuperseded(t *testing.T) {
 	// stale flip from overwriting.
 	if w.Published().VillageObjects["lamp-A"].CurrentState != "lit" {
 		t.Errorf("supersede leaked through: lamp-A state = %q",
+			w.Published().VillageObjects["lamp-A"].CurrentState)
+	}
+}
+
+// TestApplyScheduledFlipCrossDomainImmune is the ZBBS-HOME-447
+// regression: a ROTATION applying while a PHASE flip is in its spread
+// window must NOT invalidate that flip. Pre-447 a shared WorldEventGen
+// made the rotation's bump strand the phase flip ("superseded") — the
+// campfires-stayed-lit-all-day bug at boot catch-up after an overnight
+// stop spanning both midnight and dawn.
+func TestApplyScheduledFlipCrossDomainImmune(t *testing.T) {
+	w, cancel := buildPhaseTestWorld(t)
+	defer cancel()
+
+	// The phase flip's gen, as ApplyPhaseTransition would stamp it.
+	var phaseGen uint64
+	_, _ = w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			phaseGen = world.PhaseFlipGen.Add(1)
+			return nil, nil
+		},
+	})
+
+	// A rotation applies before the spread flip fires — bumps ONLY its
+	// own counter (as ApplyDailyRotation does post-447).
+	_, _ = w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			world.RotationFlipGen.Add(1)
+			return nil, nil
+		},
+	})
+
+	res, _ := w.Send(sim.ApplyScheduledFlip(sim.PendingFlip{
+		ObjectID: "lamp-A", NewState: "unlit", Gen: phaseGen, Domain: sim.FlipDomainPhase,
+	}))
+	sr := res.(sim.SetStateResult)
+	if !sr.Applied {
+		t.Fatalf("phase flip invalidated by a rotation: %+v", sr)
+	}
+	if w.Published().VillageObjects["lamp-A"].CurrentState != "unlit" {
+		t.Errorf("flip did not land: lamp-A state = %q",
 			w.Published().VillageObjects["lamp-A"].CurrentState)
 	}
 }

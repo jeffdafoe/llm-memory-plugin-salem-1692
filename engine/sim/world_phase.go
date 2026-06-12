@@ -7,6 +7,7 @@ import (
 	mathrand "math/rand/v2"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -133,23 +134,53 @@ type PhaseTransitionResult struct {
 	From            Phase
 	To              Phase
 	At              time.Time
-	Gen             uint64 // WorldEventGen at the time of transition
+	Gen             uint64 // PhaseFlipGen at the time of transition
 	ObjectsAffected int    // count of pending flips scheduled
 }
 
+// FlipDomain names which subsystem scheduled a PendingFlip — and
+// therefore which generation counter guards it (World.PhaseFlipGen vs
+// World.RotationFlipGen). Phase and rotation flip disjoint object sets,
+// so one subsystem advancing must not invalidate the other's in-flight
+// flips (ZBBS-HOME-447 — see the counter docs in world.go).
+type FlipDomain string
+
+const (
+	FlipDomainPhase    FlipDomain = "phase"
+	FlipDomainRotation FlipDomain = "rotation"
+)
+
+// flipGen returns the generation counter guarding flips of the given
+// domain. ok=false for an unknown (or zero-value) domain — the caller
+// fails closed rather than silently guarding against the wrong counter,
+// so a mis-constructed PendingFlip surfaces instead of half-working.
+func (w *World) flipGen(d FlipDomain) (*atomic.Uint64, bool) {
+	switch d {
+	case FlipDomainPhase:
+		return &w.PhaseFlipGen, true
+	case FlipDomainRotation:
+		return &w.RotationFlipGen, true
+	default:
+		return nil, false
+	}
+}
+
 // PendingFlip is one per-object state change scheduled by a phase
-// transition. Carries the WorldEventGen captured at schedule time so a
-// rapid force-day → force-night sequence cleanly invalidates the older
-// transition's pending flips.
+// transition or a daily rotation. Carries the scheduling subsystem's
+// generation (and which subsystem, via Domain) captured at schedule
+// time, so a rapid force-day → force-night sequence — or a rapid
+// double rotation — cleanly invalidates the older pass's pending flips
+// without cross-subsystem collateral.
 type PendingFlip struct {
 	ObjectID      VillageObjectID
 	NewState      string
-	SpreadSeconds int    // 0 = fire immediately
-	Gen           uint64 // WorldEventGen at the time of scheduling
+	SpreadSeconds int        // 0 = fire immediately
+	Gen           uint64     // the Domain counter's value at scheduling
+	Domain        FlipDomain // which counter guards this flip
 }
 
 // ApplyPhaseTransition returns a Command that moves the world to newPhase,
-// stamps LastTransitionAt, bumps WorldEventGen, and schedules per-object
+// stamps LastTransitionAt, bumps PhaseFlipGen, and schedules per-object
 // state flips for every village_object whose asset has a state tagged with
 // the target phase's tag. Idempotent on already-applied flips (the
 // SetVillageObjectState command skips when current_state already matches).
@@ -157,8 +188,10 @@ type PendingFlip struct {
 // Flips fire asynchronously via time.AfterFunc with a uniform random delay
 // in [0, asset.TransitionSpreadSeconds) seconds — the visual stagger lamps
 // got on the legacy engine. Each fire is generation-checked against
-// WorldEventGen so a subsequent transition supersedes its predecessor's
-// pending flips cleanly.
+// PhaseFlipGen so a subsequent transition supersedes its predecessor's
+// pending flips cleanly — and ONLY a phase transition can do that: a
+// daily rotation applying inside the spread window (boot catch-up after
+// an overnight stop) bumps its own counter and leaves these flips alone.
 //
 // LAMPLIGHTER carve-out: lamplighter-target objects are excluded from
 // the bulk flip when (and only when) an actor carries AttrLamplighter
@@ -211,12 +244,13 @@ func ApplyPhaseTransition(newPhase Phase) Command {
 			flips := determineTransitionFlips(w, newPhase, excludeTag)
 
 			// Bump generation AFTER the mutation. Anything racing against
-			// us via WorldEventGen.Load() will see one of two consistent
+			// us via PhaseFlipGen.Load() will see one of two consistent
 			// snapshots — either the pre-transition gen with pre-transition
 			// phase, or the post-transition gen with post-transition phase.
-			gen := w.WorldEventGen.Add(1)
+			gen := w.PhaseFlipGen.Add(1)
 			for i := range flips {
 				flips[i].Gen = gen
+				flips[i].Domain = FlipDomainPhase
 			}
 
 			// Schedule the timers. Launches goroutines but returns
@@ -269,8 +303,8 @@ func ApplyPhaseTransition(newPhase Phase) Command {
 // excludeTag is dropped from the bulk flip — these are objects expected
 // to be handled by another mechanism (e.g. lamplighter route).
 //
-// Gen is left zero by this function; callers stamp it after bumping
-// WorldEventGen.
+// Gen and Domain are left zero by this function; callers stamp them
+// after bumping their subsystem's flip generation.
 //
 // Deterministic ordering: VillageObjects map iteration is randomized in
 // Go, so the returned slice is unordered. Callers that need a stable
@@ -322,12 +356,13 @@ func determineTransitionFlips(w *World, newPhase Phase, excludeTag string) []Pen
 // the world goroutine).
 //
 // Each fired flip uses SendContext (not Submit) so non-applied results
-// can be logged and shutdown unblocks the timer cleanly. If the world has
-// moved on (WorldEventGen advanced past Gen), the command returns
-// Applied=false / Reason="superseded" — the stale flip evaporates without
-// overwriting fresh state. Expected non-applied reasons ("superseded",
-// "already_at_target") are silent; anything else is logged so latent
-// scheduling bugs surface in ops logs instead of disappearing.
+// can be logged and shutdown unblocks the timer cleanly. If the flip's
+// own subsystem has moved on (its Domain counter advanced past Gen),
+// ApplyScheduledFlip returns Applied=false / Reason="superseded" — the
+// stale flip evaporates without overwriting fresh state. Expected
+// non-applied reasons ("superseded", "already_at_target") are silent;
+// anything else is logged so latent scheduling bugs surface in ops logs
+// instead of disappearing.
 //
 // Fire-and-forget: scheduleFlips returns no error, the timer goroutines
 // own the rest of the lifecycle. Unexported by design.
@@ -354,7 +389,7 @@ func scheduleFlips(w *World, flips []PendingFlip) {
 // can be many seconds.
 func fireScheduledFlip(w *World, flip PendingFlip) {
 	ctx := w.LifecycleContext()
-	res, err := w.SendContext(ctx, SetVillageObjectState(flip.ObjectID, flip.NewState, flip.Gen))
+	res, err := w.SendContext(ctx, ApplyScheduledFlip(flip))
 	if err != nil {
 		// Shutdown isn't an error worth shouting about; any other
 		// failure is.
@@ -377,6 +412,38 @@ func fireScheduledFlip(w *World, flip PendingFlip) {
 	default:
 		log.Printf("sim/world_phase: scheduled flip for %s -> %s skipped: %+v",
 			flip.ObjectID, flip.NewState, sr)
+	}
+}
+
+// ApplyScheduledFlip returns a Command that lands one scheduled flip:
+// the staleness check against the flip's OWN subsystem counter
+// (Gen != current ⇒ a newer pass of the same subsystem superseded this
+// flip), then the plain state set. The check lives here — not in
+// SetVillageObjectState — because supersede-by-generation is a property
+// of the scheduled-flip mechanism, not of object-state writes in
+// general; every other state-write path (routes, admin, occupancy) is
+// unguarded.
+//
+// Gen == 0 skips the check (a hand-built flip with no stamped
+// generation — tests). A non-zero Gen with an unknown Domain fails
+// closed with Reason="unknown_domain" — that reason is NOT in
+// fireScheduledFlip's expected-silent set, so a mis-constructed flip
+// shows up in the ops log instead of half-working against the wrong
+// counter.
+func ApplyScheduledFlip(flip PendingFlip) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			if flip.Gen != 0 {
+				gen, ok := w.flipGen(flip.Domain)
+				if !ok {
+					return SetStateResult{Applied: false, Reason: "unknown_domain"}, nil
+				}
+				if flip.Gen != gen.Load() {
+					return SetStateResult{Applied: false, Reason: "superseded"}, nil
+				}
+			}
+			return SetVillageObjectState(flip.ObjectID, flip.NewState).Fn(w)
+		},
 	}
 }
 

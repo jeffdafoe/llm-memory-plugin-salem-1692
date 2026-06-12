@@ -191,7 +191,7 @@ func TestRunNoticeboardAuthor_HappyPath(t *testing.T) {
 	// Move the board to "posted" so the authoring is for that state.
 	// (Authoring is invoked directly; we just want a non-blank state
 	// to capture as atState.)
-	if _, err := w.Send(sim.SetVillageObjectState("board", "posted", 0)); err != nil {
+	if _, err := w.Send(sim.SetVillageObjectState("board", "posted")); err != nil {
 		t.Fatalf("set state: %v", err)
 	}
 
@@ -243,7 +243,7 @@ func TestRunNoticeboardAuthor_MintsFreshSceneID(t *testing.T) {
 		llm.ScriptedTurn{Response: llm.Response{Content: "first notice"}},
 		llm.ScriptedTurn{Response: llm.Response{Content: "second notice"}},
 	)
-	if _, err := w.Send(sim.SetVillageObjectState("board", "posted", 0)); err != nil {
+	if _, err := w.Send(sim.SetVillageObjectState("board", "posted")); err != nil {
 		t.Fatalf("set state: %v", err)
 	}
 
@@ -272,7 +272,7 @@ func TestRunNoticeboardAuthor_EmptyReply(t *testing.T) {
 	client := llm.NewFakeClient(llm.ScriptedTurn{
 		Response: llm.Response{Content: "   \n  "},
 	})
-	if _, err := w.Send(sim.SetVillageObjectState("board", "posted", 0)); err != nil {
+	if _, err := w.Send(sim.SetVillageObjectState("board", "posted")); err != nil {
 		t.Fatalf("set state: %v", err)
 	}
 	runNoticeboardAuthor(context.Background(), w, client, "board", "posted", "Notice Board", "")
@@ -294,11 +294,11 @@ func TestRunNoticeboardAuthor_StaleStateDropsSave(t *testing.T) {
 		Response: llm.Response{Content: "stale text"},
 	})
 	// Set state to "posted"; authoring captures "posted" as atState.
-	if _, err := w.Send(sim.SetVillageObjectState("board", "posted", 0)); err != nil {
+	if _, err := w.Send(sim.SetVillageObjectState("board", "posted")); err != nil {
 		t.Fatalf("set state: %v", err)
 	}
 	// But before the goroutine runs, rotate again to "blank".
-	if _, err := w.Send(sim.SetVillageObjectState("board", "blank", 0)); err != nil {
+	if _, err := w.Send(sim.SetVillageObjectState("board", "blank")); err != nil {
 		t.Fatalf("rotate: %v", err)
 	}
 	runNoticeboardAuthor(context.Background(), w, client, "board", "posted", "Notice Board", "")
@@ -323,7 +323,7 @@ func TestNoticeboardSubscriber_GatesOnTags(t *testing.T) {
 
 	// Flip the non-board object (plain-thing). New state lacks both
 	// tags; subscriber should ignore.
-	if _, err := w.Send(sim.SetVillageObjectState("non-board", "other", 0)); err != nil {
+	if _, err := w.Send(sim.SetVillageObjectState("non-board", "other")); err != nil {
 		t.Fatalf("set state: %v", err)
 	}
 	// Yield briefly to give the subscriber a chance to (wrongly)

@@ -944,7 +944,7 @@ func (s *Server) handleAdminObjectSetState(w http.ResponseWriter, r *http.Reques
 	}
 
 	res, err := s.world.SendContext(r.Context(), adminCommand(user.Username, func(world *sim.World) (any, error) {
-		out, err := sim.SetVillageObjectState(sim.VillageObjectID(req.ObjectID), req.State, 0).Fn(world)
+		out, err := sim.SetVillageObjectState(sim.VillageObjectID(req.ObjectID), req.State).Fn(world)
 		if err != nil {
 			return nil, err
 		}

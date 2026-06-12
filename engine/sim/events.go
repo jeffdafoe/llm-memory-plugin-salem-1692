@@ -253,10 +253,10 @@ func (ActorDeparted) isSimEvent() {}
 
 // RotationApplied fires when the daily rotation cascade completes a
 // rotation pass. ObjectsAffected is the count of village_object flips
-// scheduled this pass (after scope filtering); Gen is the WorldEventGen
+// scheduled this pass (after scope filtering); Gen is the RotationFlipGen
 // stamped on each flip (generation-checked at flip-fire time so
-// rotations that complete during a subsequent transition don't overwrite
-// fresh state).
+// rotations that complete during a subsequent rotation pass don't
+// overwrite fresh state).
 //
 // ExcludedTags carries the scope.ExcludeTags from the calling
 // ApplyDailyRotation. The emitter defensively copies the caller's slice
@@ -292,10 +292,10 @@ func (RotationApplied) isSimEvent() {}
 // idempotent re-applies (admin force-phase to the current phase) still
 // emit with From == To.
 //
-// Gen is the WorldEventGen value after the bump — subscribers stamping
-// their own follow-up flips can use it as the guardGen on
-// SetVillageObjectState so a rapid re-transition supersedes their work
-// cleanly (same pattern as the bulk pass's PendingFlip.Gen).
+// Gen is the PhaseFlipGen value after the bump — subscribers stamping
+// their own follow-up flips can carry it into an ApplyScheduledFlip
+// (Domain=FlipDomainPhase) so a rapid re-transition supersedes their
+// work cleanly (same pattern as the bulk pass's PendingFlip.Gen).
 //
 // ObjectsAffected counts the bulk-pass flips scheduled; objects carved
 // out for an NPC route are NOT counted here (the route's own per-stop
@@ -324,9 +324,9 @@ func (PhaseApplied) isSimEvent() {}
 //
 // FromState / ToState carry the pre-mutation + post-mutation state
 // names. At is the wall-clock instant the command landed. The
-// post-mutation WorldEventGen is NOT included here — subscribers
+// post-mutation flip generations are NOT included here — subscribers
 // that need to gate against generation drift consult
-// World.WorldEventGen.Load() themselves.
+// World.PhaseFlipGen / World.RotationFlipGen themselves.
 type VillageObjectStateChanged struct {
 	EventBase
 	ObjectID  VillageObjectID

@@ -329,10 +329,11 @@ type AdvanceNPCRouteResult struct {
 //     as the actor stepped onto the home structure's door tile (for
 //     StructureEnter destinations) or position. Returns "arrived_home".
 //
-// The per-stop flip passes guardGen=0 (no gen check). The route is
-// not gen-tied: a phase or rotation transition that happens mid-walk
-// doesn't kill the route, and the per-stop flip is meant to land
-// regardless of whether WorldEventGen has advanced since route start.
+// The per-stop flip uses the plain unguarded SetVillageObjectState
+// (not ApplyScheduledFlip). The route is not gen-tied: a phase or
+// rotation transition that happens mid-walk doesn't kill the route,
+// and the per-stop flip is meant to land regardless of how the flip
+// generations have advanced since route start.
 // SetVillageObjectState's "already_at_target" reason absorbs the
 // converged case (object already at NewState — happens when a fresher
 // bulk pass overwrote the same object).
@@ -441,7 +442,7 @@ func advanceActiveRoute(w *World, route *NPCRoute) (AdvanceNPCRouteResult, error
 	// rotation/transition that overwrote the same object since route
 	// start would just bounce off SetVillageObjectState's
 	// "already_at_target" path (no-op).
-	flipCmd := SetVillageObjectState(stop.ObjectID, stop.NewState, 0)
+	flipCmd := SetVillageObjectState(stop.ObjectID, stop.NewState)
 	if _, err := flipCmd.Fn(w); err != nil {
 		log.Printf("sim/npc_route: %q stop %d (%q -> %q): flip failed: %v",
 			route.NPCID, route.StopIdx, stop.ObjectID, stop.NewState, err)
