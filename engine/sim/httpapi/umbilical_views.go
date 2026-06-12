@@ -119,14 +119,12 @@ type UmbilicalAgentDTO struct {
 
 	// Tick scheduling + reactor-evaluator state — the "is this agent queued /
 	// mid-tick / idle" picture that's NOT on the published snapshot.
-	LastTickedAt       *time.Time `json:"last_ticked_at,omitempty"`
-	NextSelfTickAt     *time.Time `json:"next_self_tick_at,omitempty"`
-	NextSelfTickReason string     `json:"next_self_tick_reason,omitempty"`
-	WarrantedSince     *time.Time `json:"warranted_since,omitempty"`
-	WarrantDueAt       *time.Time `json:"warrant_due_at,omitempty"`
-	WarrantCount       int        `json:"warrant_count"`
-	TickInFlight       bool       `json:"tick_in_flight"`
-	TickAttemptID      string     `json:"tick_attempt_id,omitempty"`
+	LastTickedAt   *time.Time `json:"last_ticked_at,omitempty"`
+	WarrantedSince *time.Time `json:"warranted_since,omitempty"`
+	WarrantDueAt   *time.Time `json:"warrant_due_at,omitempty"`
+	WarrantCount   int        `json:"warrant_count"`
+	TickInFlight   bool       `json:"tick_in_flight"`
+	TickAttemptID  string     `json:"tick_attempt_id,omitempty"`
 
 	// In-flight movement target — empty/false when the actor isn't moving. For
 	// diagnosing stuck or off-grid walks: MoveTargetTile is the resolved goal
@@ -165,33 +163,31 @@ func (s *Server) handleUmbilicalAgent(w http.ResponseWriter, r *http.Request) {
 			return nil, errAgentNotFound
 		}
 		dto := UmbilicalAgentDTO{
-			ContractVersion:    ContractVersion,
-			ID:                 string(a.ID),
-			DisplayName:        a.DisplayName,
-			Role:               a.Role,
-			Kind:               actorKindString(a.Kind),
-			LLMAgent:           a.LLMAgent,
-			LoginUsername:      a.LoginUsername,
-			IsAdmin:            a.IsAdmin,
-			TileX:              a.Pos.X,
-			TileY:              a.Pos.Y,
-			State:              string(a.State),
-			InsideStructureID:  string(a.InsideStructureID),
-			InsideRoomID:       int64(a.InsideRoomID),
-			CurrentHuddleID:    string(a.CurrentHuddleID),
-			HomeStructureID:    string(a.HomeStructureID),
-			WorkStructureID:    string(a.WorkStructureID),
-			Coins:              a.Coins,
-			BreakUntil:         clonePtrTime(a.BreakUntil),
-			SleepingUntil:      clonePtrTime(a.SleepingUntil),
-			LastTickedAt:       clonePtrTime(a.LastTickedAt),
-			NextSelfTickAt:     clonePtrTime(a.NextSelfTickAt),
-			NextSelfTickReason: a.NextSelfTickReason,
-			WarrantedSince:     clonePtrTime(a.WarrantedSince),
-			WarrantDueAt:       clonePtrTime(a.WarrantDueAt),
-			WarrantCount:       len(a.Warrants),
-			TickInFlight:       a.TickInFlight,
-			TickAttemptID:      string(a.TickAttemptID),
+			ContractVersion:   ContractVersion,
+			ID:                string(a.ID),
+			DisplayName:       a.DisplayName,
+			Role:              a.Role,
+			Kind:              actorKindString(a.Kind),
+			LLMAgent:          a.LLMAgent,
+			LoginUsername:     a.LoginUsername,
+			IsAdmin:           a.IsAdmin,
+			TileX:             a.Pos.X,
+			TileY:             a.Pos.Y,
+			State:             string(a.State),
+			InsideStructureID: string(a.InsideStructureID),
+			InsideRoomID:      int64(a.InsideRoomID),
+			CurrentHuddleID:   string(a.CurrentHuddleID),
+			HomeStructureID:   string(a.HomeStructureID),
+			WorkStructureID:   string(a.WorkStructureID),
+			Coins:             a.Coins,
+			BreakUntil:        clonePtrTime(a.BreakUntil),
+			SleepingUntil:     clonePtrTime(a.SleepingUntil),
+			LastTickedAt:      clonePtrTime(a.LastTickedAt),
+			WarrantedSince:    clonePtrTime(a.WarrantedSince),
+			WarrantDueAt:      clonePtrTime(a.WarrantDueAt),
+			WarrantCount:      len(a.Warrants),
+			TickInFlight:      a.TickInFlight,
+			TickAttemptID:     string(a.TickAttemptID),
 		}
 		if len(a.Needs) > 0 {
 			dto.Needs = make(map[string]int, len(a.Needs))

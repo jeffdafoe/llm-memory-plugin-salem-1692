@@ -520,9 +520,7 @@ type Actor struct {
 	LastPCSeenAt *time.Time
 
 	// Tick scheduling.
-	LastTickedAt       *time.Time
-	NextSelfTickAt     *time.Time
-	NextSelfTickReason string
+	LastTickedAt *time.Time
 
 	// Reactor-evaluator state — Phase 2 PR 2. WarrantedSince + WarrantDueAt
 	// + Warrants together form the actor's tick-eligibility record:
@@ -766,7 +764,7 @@ func cloneSummonRefusal(r *SummonRefusal) *SummonRefusal {
 // serialization boundary. Mutated containers (Needs, Inventory,
 // DwellCredits, RoomAccess, ProduceState, Acquaintances, Relationships)
 // and pointer fields commands rebind (BreakUntil, SleepingUntil,
-// LastTickedAt, NextSelfTickAt, SocialLastBoundaryAt, Narrative) are cloned.
+// LastTickedAt, SocialLastBoundaryAt, Narrative) are cloned.
 // Attributes is
 // deep-cloned including each []byte payload. The two RingBuffers are
 // cloned via RingBuffer.Clone. MoveIntent is deep-cloned via
@@ -836,10 +834,6 @@ func CloneActor(a *Actor) *Actor {
 	if a.LastTickedAt != nil {
 		t := *a.LastTickedAt
 		cp.LastTickedAt = &t
-	}
-	if a.NextSelfTickAt != nil {
-		t := *a.NextSelfTickAt
-		cp.NextSelfTickAt = &t
 	}
 	if a.WarrantedSince != nil {
 		t := *a.WarrantedSince

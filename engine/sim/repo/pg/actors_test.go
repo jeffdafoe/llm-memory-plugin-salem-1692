@@ -72,7 +72,6 @@ const (
 var (
 	tsTickedAt = time.Date(2026, 5, 19, 14, 30, 0, 0, time.UTC)
 	tsBreak    = time.Date(2026, 5, 19, 15, 0, 0, 0, time.UTC)
-	tsNextSelf = time.Date(2026, 5, 19, 15, 5, 0, 0, time.UTC)
 	tsSleep    = time.Date(2026, 5, 19, 22, 0, 0, 0, time.UTC)
 	tsEntered  = time.Date(2026, 5, 19, 8, 0, 0, 0, time.UTC)
 )
@@ -97,8 +96,7 @@ func actorParentColumns() []string {
 		"home_structure_id", "work_structure_id",
 		"coins", "llm_memory_agent", "role", "login_username",
 		"schedule_start_minute", "schedule_end_minute",
-		"last_agent_tick_at", "break_until", "next_self_tick_at",
-		"next_self_tick_reason", "sleeping_until",
+		"last_agent_tick_at", "break_until", "sleeping_until",
 		"move_attempt_counter", "sim_state", "sim_state_entered_at",
 		"sprite_id", "facing",
 		"social_tag", "social_start_minute", "social_end_minute", "social_last_boundary_at",
@@ -152,7 +150,6 @@ func oneBareActorRows() *pgxmock.Rows {
 		20, (*string)(nil), (*string)(nil), (*string)(nil),
 		(*int16)(nil), (*int16)(nil),
 		(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
-		(*string)(nil), (*time.Time)(nil),
 		int64(0), "idle", tsEntered,
 		(*string)(nil), "south",
 		(*string)(nil), (*int16)(nil), (*int16)(nil), (*time.Time)(nil),
@@ -304,7 +301,6 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 	roomID := int64(42)
 	startMin := int16(540) // 09:00
 	endMin := int16(1020)  // 17:00
-	reason := "low_tiredness"
 	socialTag := "tavern_evening"
 	socialStartM := int16(1080) // 18:00
 	socialEndM := int16(1320)   // 22:00
@@ -317,7 +313,7 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 				&homeStr, &workStr,
 				20, ptrStr("mira-agent"), ptrStr("tavernkeeper"), (*string)(nil),
 				&startMin, &endMin,
-				&tsTickedAt, &tsBreak, &tsNextSelf, ptrStr(reason), &tsSleep,
+				&tsTickedAt, &tsBreak, &tsSleep,
 				int64(7), "working", tsEntered,
 				ptrStr("00000000-0000-0000-0000-5555eeeeeeee"), "east",
 				&socialTag, &socialStartM, &socialEndM, &tsBreak,
@@ -330,7 +326,6 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 				20, (*string)(nil), (*string)(nil), (*string)(nil),
 				(*int16)(nil), (*int16)(nil),
 				(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
-				(*string)(nil), (*time.Time)(nil),
 				int64(0), "idle", tsEntered,
 				(*string)(nil), "south",
 				(*string)(nil), (*int16)(nil), (*int16)(nil), (*time.Time)(nil),
@@ -404,12 +399,6 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 	if a.BreakUntil == nil || !a.BreakUntil.Equal(tsBreak) {
 		t.Errorf("BreakUntil = %v", a.BreakUntil)
 	}
-	if a.NextSelfTickAt == nil || !a.NextSelfTickAt.Equal(tsNextSelf) {
-		t.Errorf("NextSelfTickAt = %v", a.NextSelfTickAt)
-	}
-	if a.NextSelfTickReason != reason {
-		t.Errorf("NextSelfTickReason = %q", a.NextSelfTickReason)
-	}
 	if a.SleepingUntil == nil || !a.SleepingUntil.Equal(tsSleep) {
 		t.Errorf("SleepingUntil = %v", a.SleepingUntil)
 	}
@@ -478,11 +467,8 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 		t.Errorf("actB social not empty/nil: tag=%q start=%v end=%v boundary=%v",
 			b.SocialTag, b.SocialStartMin, b.SocialEndMin, b.SocialLastBoundaryAt)
 	}
-	if b.LastTickedAt != nil || b.BreakUntil != nil || b.NextSelfTickAt != nil || b.SleepingUntil != nil {
+	if b.LastTickedAt != nil || b.BreakUntil != nil || b.SleepingUntil != nil {
 		t.Errorf("actB time ptrs not nil")
-	}
-	if b.NextSelfTickReason != "" {
-		t.Errorf("actB NextSelfTickReason = %q", b.NextSelfTickReason)
 	}
 	if b.SpriteID != "" {
 		t.Errorf("actB SpriteID = %q, want empty (NULL sprite_id)", b.SpriteID)
@@ -594,7 +580,7 @@ func TestActorsRepo_SaveSnapshot_FullActor(t *testing.T) {
 			"00000000-0000-0000-0000-4444dddddddd",
 			20, "mira-agent", "tavernkeeper", nil,
 			int16(540), int16(1020),
-			&tsTickedAt, &tsBreak, &tsNextSelf, "low_tiredness", &tsSleep,
+			&tsTickedAt, &tsBreak, &tsSleep,
 			int64(7), "working", tsEntered,
 			"00000000-0000-0000-0000-5555eeeeeeee", "east",
 			"tavern_evening", int16(1080), int16(1320), &tsBreak,
@@ -645,8 +631,6 @@ func TestActorsRepo_SaveSnapshot_FullActor(t *testing.T) {
 			ScheduleEndMin:       &endMin,
 			LastTickedAt:         &tsTickedAt,
 			BreakUntil:           &tsBreak,
-			NextSelfTickAt:       &tsNextSelf,
-			NextSelfTickReason:   "low_tiredness",
 			SleepingUntil:        &tsSleep,
 			MoveAttemptCounter:   7,
 			State:                "working",
@@ -685,8 +669,7 @@ func TestActorsRepo_SaveSnapshot_BareActor(t *testing.T) {
 			nil, nil, // Home/Work StructureID
 			20, nil, nil, nil, // Coins, LLMAgent, Role, LoginUsername
 			nil, nil, // schedule
-			(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil), // time pointers
-			nil, (*time.Time)(nil), // NextSelfTickReason, SleepingUntil
+			(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil), // LastTickedAt, BreakUntil, SleepingUntil
 			int64(0), "idle", tsEntered, // counter, state, entered
 			nil, "south", // sprite_id (empty→NULL), facing (empty→default 'south')
 			nil, nil, nil, (*time.Time)(nil), // social (all NULL)
@@ -796,7 +779,6 @@ func TestActorsRepo_SaveSnapshot_ZeroQtyInventoryDropped(t *testing.T) {
 			20, nil, nil, nil,
 			nil, nil,
 			(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
-			nil, (*time.Time)(nil),
 			int64(0), "idle", tsEntered,
 			nil, "south",
 			nil, nil, nil, (*time.Time)(nil), // social (all NULL)
@@ -1165,7 +1147,6 @@ func TestActorsRepo_LoadAll_Continuity(t *testing.T) {
 				20, (*string)(nil), (*string)(nil), (*string)(nil),
 				(*int16)(nil), (*int16)(nil),
 				(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
-				(*string)(nil), (*time.Time)(nil),
 				int64(0), "idle", tsEntered,
 				(*string)(nil), "south",
 				(*string)(nil), (*int16)(nil), (*int16)(nil), (*time.Time)(nil),
@@ -1364,7 +1345,6 @@ func TestActorsRepo_SaveSnapshot_Continuity(t *testing.T) {
 			20, nil, nil, nil,
 			nil, nil,
 			(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
-			nil, (*time.Time)(nil),
 			int64(0), "idle", tsEntered,
 			nil, "south",
 			nil, nil, nil, (*time.Time)(nil), // social (all NULL)
@@ -1466,7 +1446,6 @@ func TestActorsRepo_SaveSnapshot_EmptySalientFacts(t *testing.T) {
 			20, nil, nil, nil,
 			nil, nil,
 			(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
-			nil, (*time.Time)(nil),
 			int64(0), "idle", tsEntered,
 			nil, "south",
 			nil, nil, nil, (*time.Time)(nil), // social (all NULL)
@@ -1609,7 +1588,6 @@ func TestActorsRepo_SaveSnapshot_AcquaintanceMultibyteWithinLimit(t *testing.T) 
 			20, nil, nil, nil,
 			nil, nil,
 			(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
-			nil, (*time.Time)(nil),
 			int64(0), "idle", tsEntered,
 			nil, "south",
 			nil, nil, nil, (*time.Time)(nil), // social (all NULL)
@@ -1879,7 +1857,6 @@ func TestActorsRepo_SaveSnapshot_Slice3(t *testing.T) {
 			20, nil, nil, nil,
 			nil, nil,
 			(*time.Time)(nil), (*time.Time)(nil), (*time.Time)(nil),
-			nil, (*time.Time)(nil),
 			int64(0), "idle", tsEntered,
 			nil, "south",
 			nil, nil, nil, (*time.Time)(nil), // social (all NULL)
