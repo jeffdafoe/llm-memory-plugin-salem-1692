@@ -540,6 +540,18 @@ func renderActionLogEntry(snap *sim.Snapshot, e sim.ActionLogEntry) (speaker, te
 		if e.Text == "" {
 			return "", "", "", false
 		}
+		// ZBBS-HOME-432: a lodging delivery is a check-in, not a parcel
+		// handoff — "delivers nights_stay to Jefferey" read as the keeper
+		// handing over a sack labeled lodging. A qty-1 delivered Text is the
+		// raw item kind verbatim (formatItemQty), so a catalog hit with the
+		// lodging capability identifies it; multi-qty ("2x …") falls back to
+		// the generic line.
+		if def := snap.ItemKinds[sim.ItemKind(e.Text)]; def != nil && def.HasCapability("lodging") {
+			if e.CounterpartyName != "" {
+				return name, name + " shows " + e.CounterpartyName + " to a room — it's theirs for the night.", "act", true
+			}
+			return name, name + " readies a room for a guest.", "act", true
+		}
 		// ZBBS-WORK-377: name the recipient when known.
 		line := name + " delivers " + e.Text
 		if e.CounterpartyName != "" {
