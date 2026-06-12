@@ -86,6 +86,18 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			Inside:            e.InsideStructureID != "",
 			InsideStructureID: string(e.InsideStructureID),
 		}}, true
+	case *sim.ActorTeleported:
+		// An operator teleport (ZBBS-HOME-448) reuses the npc_arrived frame —
+		// the client's authoritative snap-to-tile — so the viewer updates with
+		// no client change. AttemptID 0: there was no movement attempt, and the
+		// client's arrived handler snaps unconditionally without correlating it.
+		return WireFrame{Type: "npc_arrived", Data: arrivedWireDTO{
+			ID:          string(e.ActorID),
+			X:           e.ToPosition.X,
+			Y:           e.ToPosition.Y,
+			StructureID: string(e.InsideStructureID),
+			AttemptID:   0,
+		}}, true
 	case *sim.Spoke:
 		// recipient_ids is the frame's RENDER audience: huddle members plus
 		// the PC bystanders within earshot (ZBBS-HOME-437). The hub

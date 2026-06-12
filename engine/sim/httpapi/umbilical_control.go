@@ -649,6 +649,96 @@ func setActorNeeds(world *sim.World, a *sim.Actor, values map[sim.NeedKey]int, z
 	}
 }
 
+// umbilicalSetPositionRequest is the POST /api/village/umbilical/set-position
+// body: which actor to teleport and the target TILE coordinates (the same
+// padded internal-grid units /actors and /agent report as tile_x/tile_y —
+// NOT world pixels). X and Y are pointers so an omitted coordinate is a 400
+// rather than silently teleporting to 0.
+type umbilicalSetPositionRequest struct {
+	ActorID string `json:"actor_id"`
+	X       *int   `json:"x"`
+	Y       *int   `json:"y"`
+}
+
+// umbilicalSetPositionResponse reports the applied teleport: where the actor
+// came from, where it landed, the post-teleport inside-structure attribution,
+// and which transient state the displacement cleaned up (a cancelled walk, a
+// huddle it was removed from).
+type umbilicalSetPositionResponse struct {
+	ActorID           string `json:"actor_id"`
+	FromX             int    `json:"from_x"`
+	FromY             int    `json:"from_y"`
+	X                 int    `json:"x"`
+	Y                 int    `json:"y"`
+	InsideStructureID string `json:"inside_structure_id,omitempty"`
+	MoveCancelled     bool   `json:"move_cancelled"`
+	LeftHuddleID      string `json:"left_huddle_id,omitempty"`
+}
+
+// handleUmbilicalSetPosition teleports an actor to a walkable tile — the
+// recovery lever for stranded/limbo actors (parked on a structure footprint,
+// marooned in a huddle) that previously needed an engine restart or a
+// checkpoint-footgunned direct DB write. Routed through sim.SetActorPosition
+// so MoveIntent, inside-structure attribution, and huddle membership move
+// with the position. Unwalkable / out-of-bounds targets are refused (422) —
+// a naive teleport onto a footprint would recreate the exact pathology this
+// route exists to fix. 400 missing actor_id/x/y; 404 unknown actor; 200 with
+// the applied teleport.
+func (s *Server) handleUmbilicalSetPosition(w http.ResponseWriter, r *http.Request) {
+	user := userFromContext(r.Context())
+	if user == nil {
+		writeAuthError(w, "invalid")
+		return
+	}
+	var req umbilicalSetPositionRequest
+	if !decodeUmbilicalBody(w, r, &req) {
+		return
+	}
+	if req.ActorID == "" {
+		writeError(w, http.StatusBadRequest, "actor_id is required")
+		return
+	}
+	if req.X == nil || req.Y == nil {
+		writeError(w, http.StatusBadRequest, "x and y tile coordinates are required")
+		return
+	}
+
+	// Audit the attempt up front so a later rejection is still on the record.
+	auditUmbilical(user.Username, "set-position", fmt.Sprintf("actor=%s to=(%d,%d)", req.ActorID, *req.X, *req.Y))
+
+	res, err := s.world.SendContext(r.Context(), sim.SetActorPosition(
+		sim.ActorID(req.ActorID), sim.Position{X: *req.X, Y: *req.Y}, time.Now()))
+	if err != nil {
+		switch {
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+			return
+		case errors.Is(err, sim.ErrActorNotFound):
+			writeError(w, http.StatusNotFound, "actor not found")
+		case errors.Is(err, sim.ErrTileNotWalkable):
+			// Client-correctable: the error message names the refused tile.
+			writeError(w, http.StatusUnprocessableEntity, err.Error())
+		default:
+			writeError(w, http.StatusUnprocessableEntity, err.Error())
+		}
+		return
+	}
+	out, ok := res.(sim.SetActorPositionResult)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "unexpected set-position result")
+		return
+	}
+	writeJSON(w, umbilicalSetPositionResponse{
+		ActorID:           string(out.ActorID),
+		FromX:             out.From.X,
+		FromY:             out.From.Y,
+		X:                 out.To.X,
+		Y:                 out.To.Y,
+		InsideStructureID: string(out.InsideStructureID),
+		MoveCancelled:     out.MoveCancelled,
+		LeftHuddleID:      string(out.LeftHuddleID),
+	})
+}
+
 // validateNeedValues converts the request need map to canonical NeedKeys with
 // range-checked values: each key must be in the canonical needs registry
 // (sim.FindNeed) and each value in [0, NeedMax], else a 400-worthy error. An
