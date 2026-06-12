@@ -44,6 +44,16 @@ func AppendActionLogEntry(entry ActionLogEntry) Command {
 				runes := []rune(entry.Text)
 				entry.Text = string(runes[:MaxActionLogTextLen])
 			}
+			// Stamp the actor's conversational scope at action time
+			// (ZBBS-HOME-437) — append runs synchronously in the emitting
+			// subscriber, so the actor hasn't moved since the action. Done
+			// centrally here so every ActionType gets the scope without each
+			// cascade handler repeating it. Missing actor (e.g. a test
+			// appending for a synthetic id) leaves the zero public scope.
+			if actor, ok := w.Actors[entry.ActorID]; ok && actor != nil {
+				entry.StructureID = conversationalScopeStructure(w, actor)
+				entry.RoomID = audienceRoomScope(w, actor)
+			}
 			w.actionLogSeq++
 			entry.Seq = w.actionLogSeq
 			w.ActionLog = append(w.ActionLog, entry)

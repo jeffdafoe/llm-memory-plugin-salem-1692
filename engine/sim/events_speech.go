@@ -65,6 +65,18 @@ type Spoke struct {
 	// offer surfaces in the PC's Pay UI without requiring a formal
 	// scene_quote.
 	Mentions []SpeakMention
+
+	// PCBystanderIDs (ZBBS-HOME-437) are co-present PCs within earshot of
+	// the speaker who are NOT huddle members — same structure scope and room
+	// subspace, or outdoor proximity. They are a WIRE-FRAME audience only:
+	// the httpapi translator merges them into the npc_spoke frame's
+	// recipient_ids so a bystanding player's talk panel overhears room
+	// conversation (the v1 structure-scoped behavior v2's huddle scoping
+	// dropped — live gap: a PC stood in the Tavern through an NPC↔NPC meat
+	// sale and saw none of it). Engine-side consumers (RecordInteraction,
+	// the speech-warrant reactor) read RecipientIDs and deliberately ignore
+	// this list — overhearing must not stamp warrants or relationship facts.
+	PCBystanderIDs []ActorID
 }
 
 // SpeakMention is one structured sale hint on a Spoke: a catalog item

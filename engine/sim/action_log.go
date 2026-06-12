@@ -127,6 +127,17 @@ type ActionLogEntry struct {
 	Text       string   // freeform, rune-bounded at write time
 	HuddleID   HuddleID // "" for outdoor / pre-huddle / non-huddle actions
 
+	// StructureID / RoomID are the actor's conversational scope AT ACTION
+	// TIME, stamped centrally by AppendActionLogEntry (ZBBS-HOME-437):
+	// structure = the inside-or-loiter-pin scope (conversationalScopeStructure),
+	// room = the private/staff subspace or 0 for public (audienceRoomScope).
+	// They exist so the talk-panel backload can show a huddle-less PC what was
+	// recently said in the room it is standing in — the huddle key alone
+	// cannot, because huddles conclude and their ids stop resolving. Zero
+	// values for actors out of any scope (open ground).
+	StructureID StructureID
+	RoomID      RoomID
+
 	// CounterpartyName is the other party in a two-sided action: the
 	// seller for ActionTypePaid, the buyer for ActionTypeDelivered. Empty
 	// when the counterparty has no display name (the renderer falls back
