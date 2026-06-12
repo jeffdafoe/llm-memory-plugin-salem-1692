@@ -3,21 +3,27 @@ package cascade
 import (
 	"context"
 	"log"
+	"math/rand"
 	"sort"
+	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
 
 // npc_route.go — Phase 3 Group A scheduled-route cascade driver.
 //
-// Three event subscribers wire the lamplighter / washerwoman /
-// town_crier behaviors onto their respective triggers; one shared
-// subscriber on ActorArrived advances any active route by one stop, and
-// one on ActorMoveStopped abandons a route whose walk failed.
+// The lamplighter is event-triggered; the washerwoman and town_crier
+// are schedule-triggered (ZBBS-HOME-446 — previously RotationApplied
+// at the daily rotation boundary). One shared subscriber on
+// ActorArrived advances any active route by one stop, and one on
+// ActorMoveStopped abandons a route whose walk failed.
 //
-//   - PhaseApplied     → start lamplighter route over carved-out lamps
-//   - RotationApplied   → start washerwoman route over laundry tiles
-//   - RotationApplied   → start town_crier route over notice boards
+//   - PhaseApplied            → start lamplighter route over carved-out lamps
+//   - schedule-window boundary → start washerwoman route (hang laundry out
+//     at window start, bring it in at window end) and town_crier route
+//     (read + flip the notice boards, same tour at both boundaries) —
+//     observed by RunRouteScheduleTicker once a minute, edge-triggered
+//     via sim.RouteBoundaryDue / sim.StampRouteBoundary
 //   - ActorArrived     → advance the arrived actor's route (no-op if none)
 //   - ActorMoveStopped → abandon the actor's route if its walk failed
 //                        (no-op if none) — otherwise a stopped walk leaves
@@ -30,21 +36,19 @@ import (
 // are tolerated but only the first (sorted by ActorID) runs the
 // triggered cycle.
 //
-// Carve-out coupling. For lamplighter the substrate already wires
-// excludeTag=TagLamplighterTarget on ApplyPhaseTransition — every
-// PhaseApplied event implies the carve-out happened, and the
-// lamplighter subscriber unconditionally tries to dispatch the route.
-// For washerwoman / town_crier the carve-out is dynamic
-// (RotationApplied.ExcludedTags) — the cutover layer chooses what to
-// carve out by wiring RunRotationTicker with the right scope. The
-// subscribers check whether THEIR tag is in ExcludedTags; only then do
-// they build a route, because outside the carve-out the bulk rotation
-// already flipped the candidates and a route would be redundant /
-// would re-flip newly-rotated state.
+// Window source: the carrier's own schedule_start/end_minute pair via
+// the shift machinery's effectiveShiftWindow — an unscheduled carrier
+// falls back to the world's dawn/dusk day window (Hope James runs on
+// the fallback: laundry out at dawn, in at dusk; Grace Edwards carries
+// an explicit 9:00–18:00 window).
 //
-// Town_crier walks silently in Slice 2. The on-stop "say something"
-// hook lives in npc_route.go's AdvanceNPCRoute and is currently empty
-// — Slice 3 wires the LLM-authored saying broadcast there.
+// Carve-out coupling. For lamplighter the substrate already wires
+// excludeTag=TagLamplighterTarget on ApplyPhaseTransition. Laundry and
+// notice boards stay in RunRotationTicker's ExcludeTags (cmd/engine
+// wiring) so the bulk midnight rotation never touches them — the
+// schedule-triggered routes are those domains' sole mutators. Unlike
+// the pre-446 shape, the exclusion no longer doubles as the route
+// trigger; it only keeps the bulk pass out of the way.
 
 // RegisterNPCRoutes wires the subscribers needed for the Slice 2
 // scheduled-route slice. Must run on the world goroutine — call before
@@ -67,10 +71,117 @@ func RegisterNPCRoutes(_ context.Context, w *sim.World) {
 		panic("cascade: RegisterNPCRoutes requires a non-nil world")
 	}
 	w.Subscribe(sim.SubscriberFunc(handlePhaseAppliedLamplighter))
-	w.Subscribe(sim.SubscriberFunc(handleRotationAppliedWasherwoman))
-	w.Subscribe(sim.SubscriberFunc(handleRotationAppliedTownCrier))
 	w.Subscribe(sim.SubscriberFunc(handleActorArrivedAdvanceRoute))
 	w.Subscribe(sim.SubscriberFunc(handleActorMoveStoppedAdvanceRoute))
+}
+
+// RouteScheduleTickerInterval — once a minute, matching the sim
+// package's RunShiftTicker / RunSocialTicker cadence. A boundary fires
+// at worst ~60s late.
+const RouteScheduleTickerInterval = time.Minute
+
+// RunRouteScheduleTicker owns the schedule-route goroutine: once a
+// minute, submit a RouteScheduleTick. Started by cmd/engine alongside
+// the core sim tickers — deliberately NOT inside RegisterNPCRoutes, so
+// the Register* helpers stay pure subscriber wiring and tests that
+// install synthetic routes aren't raced by the ticker's catch-up
+// dispatch.
+//
+// Immediate first check at goroutine entry: a freshly-booted world has
+// no boundary stamps, so the most recent window boundary fires right
+// away — the boot catch-up that re-hangs (or brings in) laundry and
+// re-tours the boards for the current time of day instead of waiting
+// for the next boundary. Pairs with KickstartNoticeboards: the
+// kickstart authors content for the boards' current states, and the
+// crier's catch-up tour then reads it aloud.
+//
+// The *rand.Rand is seeded once at goroutine entry and threaded into
+// every pass (same idiom as RunRotationTicker) — it feeds the
+// washerwoman's per-object variant pick. It is only ever read while
+// this goroutine is parked inside SendContext, so there's no
+// concurrent access.
+func RunRouteScheduleTicker(ctx context.Context, w *sim.World) {
+	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+	if _, err := w.SendContext(ctx, RouteScheduleTick(time.Now().UTC(), rng)); err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		log.Printf("cascade/npc_route: schedule tick failed: %v", err)
+	}
+	t := time.NewTicker(RouteScheduleTickerInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if _, err := w.SendContext(ctx, RouteScheduleTick(time.Now().UTC(), rng)); err != nil {
+				if ctx.Err() == nil {
+					log.Printf("cascade/npc_route: schedule tick failed: %v", err)
+				}
+			}
+		}
+	}
+}
+
+// RouteScheduleTick returns a Command that runs one boundary check for
+// each schedule-triggered route behavior. Exported so tests drive it
+// deterministically without the ticker goroutine. A nil rng gets a
+// now-seeded fallback rather than panicking inside the washerwoman's
+// variant pick.
+func RouteScheduleTick(now time.Time, rng *rand.Rand) sim.Command {
+	if rng == nil {
+		rng = rand.New(rand.NewSource(now.UnixNano()))
+	}
+	return sim.Command{
+		Fn: func(w *sim.World) (any, error) {
+			runScheduledRoute(w, sim.AttrWasherwoman, now, func(w *sim.World, isStart bool) []sim.RouteCandidate {
+				return buildLaundryCandidates(w, isStart, rng)
+			})
+			runScheduledRoute(w, sim.AttrTownCrier, now, func(w *sim.World, _ bool) []sim.RouteCandidate {
+				return buildNoticeboardCandidates(w)
+			})
+			return nil, nil
+		},
+	}
+}
+
+// runScheduledRoute is the shared per-behavior body of a schedule
+// tick: find the attribute carrier, ask the substrate whether a window
+// boundary is due, build the (direction-aware) candidate list, start
+// the route, and stamp the boundary.
+//
+// Stamping discipline: a successful StartNPCRoute — including the
+// zero-candidate no-op (nothing to hang out / bring in) — stamps the
+// boundary so it can't re-fire for the rest of the window. A dispatch
+// ERROR leaves the stamp unset so the same boundary retries next tick
+// (mirrors the social scheduler's no-stamp-on-failed-walk). A missing
+// carrier skips without stamping — the per-tick re-check is two cheap
+// map scans.
+//
+// An in-flight route on the carrier is superseded by the new dispatch —
+// that's StartNPCRoute's documented contract (same shape as MoveActor's
+// supersede), and the pre-446 rotation triggers had the same property.
+// In practice it can only bite an actor carrying two route attributes
+// (a tolerated misconfiguration); ActiveRoutes is empty at boot, so the
+// catch-up dispatch never clobbers a real in-progress route.
+func runScheduledRoute(w *sim.World, attrSlug string, now time.Time, build func(*sim.World, bool) []sim.RouteCandidate) {
+	actor := findActorWithAttribute(w, attrSlug)
+	if actor == nil {
+		return
+	}
+	boundary, isStart, due := sim.RouteBoundaryDue(w, actor, attrSlug, now)
+	if !due {
+		return
+	}
+	candidates := build(w, isStart)
+	cmd := sim.StartNPCRoute(actor.ID, attrSlug, homeDestinationFor(actor), candidates, now)
+	if _, err := cmd.Fn(w); err != nil {
+		log.Printf("cascade/npc_route: %s boundary dispatch (actor %q): %v",
+			attrSlug, actor.ID, err)
+		return
+	}
+	sim.StampRouteBoundary(w, attrSlug, boundary)
 }
 
 // handlePhaseAppliedLamplighter starts the lamplighter route on each
@@ -108,54 +219,25 @@ func handlePhaseAppliedLamplighter(w *sim.World, evt sim.Event) {
 	}
 }
 
-// handleRotationAppliedWasherwoman starts the washerwoman route on
-// RotationApplied when TagLaundry is in the event's ExcludedTags slice
-// (= the bulk pass carved out laundry for the washerwoman). When
-// TagLaundry isn't excluded the bulk pass already rotated the laundry
-// objects; a route would just re-flip the same state.
-func handleRotationAppliedWasherwoman(w *sim.World, evt sim.Event) {
-	applied, ok := evt.(*sim.RotationApplied)
-	if !ok {
-		return
-	}
-	if !excludedTagsContain(applied.ExcludedTags, sim.TagLaundry) {
-		return
-	}
-	dispatchRotationRoute(w, applied, sim.AttrWasherwoman, sim.TagLaundry)
-}
-
-// handleRotationAppliedTownCrier is washerwoman's twin for the
-// notice-board tag. Walks silently in Slice 2 — the on-stop LLM-
-// authored saying hook lands in Slice 3 inside AdvanceNPCRoute.
-func handleRotationAppliedTownCrier(w *sim.World, evt sim.Event) {
-	applied, ok := evt.(*sim.RotationApplied)
-	if !ok {
-		return
-	}
-	if !excludedTagsContain(applied.ExcludedTags, sim.TagNoticeBoard) {
-		return
-	}
-	dispatchRotationRoute(w, applied, sim.AttrTownCrier, sim.TagNoticeBoard)
-}
-
 // handleActorArrivedAdvanceRoute is the cascade-wide arrival hook for
 // NPC routes. Most arrivals match no entry in World.ActiveRoutes and
 // the AdvanceNPCRoute command no-ops cheaply.
 //
 // Town crier branch: BEFORE dispatching AdvanceNPCRoute (which flips
-// the noticeboard state), read this-cycle's NoticeboardContent for
+// the noticeboard state), read the board's NoticeboardContent for
 // the current stop's object and emit a Spoke via
 // EmitTownCrierAnnouncement. The crier "reads what's currently
-// posted" — which was authored by the previous rotation cycle's
-// flip-triggered authoring. After the read, AdvanceNPCRoute flips
-// the state; that flip emits VillageObjectStateChanged which the
+// posted" — which was authored by the previous visit's flip-triggered
+// authoring (or the boot kickstart). After the read, AdvanceNPCRoute
+// flips the state; that flip emits VillageObjectStateChanged which the
 // noticeboard cascade subscribes to, spawning fresh authoring for
 // the NEW state (consumed next time the board is read).
 //
 // Cold-start: a freshly-loaded world has no NoticeboardContent
-// stamped. The first crier cycle reads nothing (silent stops); the
-// flip-triggered authoring lands content for the next cycle. From
-// the second cycle on, crier reads + boards rotate normally.
+// stamped — KickstartNoticeboards authors it shortly after boot. A
+// crier arrival that beats the kickstart's LLM call reads nothing
+// (silent stop); the flip-triggered authoring lands content for the
+// next visit either way.
 func handleActorArrivedAdvanceRoute(w *sim.World, evt sim.Event) {
 	arrived, ok := evt.(*sim.ActorArrived)
 	if !ok {
@@ -265,26 +347,6 @@ func handleActorMoveStoppedAdvanceRoute(w *sim.World, evt sim.Event) {
 		stopped.ActorID, stopped.Reason)
 }
 
-// dispatchRotationRoute is the shared body for washerwoman / town_crier
-// route dispatch. domainTag narrows candidates to AssetStates carrying
-// that tag (TagLaundry or TagNoticeBoard); label is the route label
-// (= the attribute slug).
-func dispatchRotationRoute(w *sim.World, applied *sim.RotationApplied, attrSlug, domainTag string) {
-	actor := findActorWithAttribute(w, attrSlug)
-	if actor == nil {
-		return
-	}
-	candidates := buildRotationCandidates(w, domainTag)
-	if len(candidates) == 0 {
-		return
-	}
-	cmd := sim.StartNPCRoute(actor.ID, attrSlug, homeDestinationFor(actor), candidates, applied.At)
-	if _, err := cmd.Fn(w); err != nil {
-		log.Printf("cascade/npc_route: %s dispatch (actor %q event %d): %v",
-			attrSlug, actor.ID, applied.EventID(), err)
-	}
-}
-
 // findActorWithAttribute returns the deterministic-first actor carrying
 // the given attribute slug (sorted by ActorID), or nil. The sort is
 // load-bearing — w.Actors map iteration is non-deterministic, and we
@@ -346,26 +408,27 @@ func buildLamplighterCandidates(w *sim.World, targetTag string) []sim.RouteCandi
 	return sortCandidatesByID(out)
 }
 
-// buildRotationCandidates collects the village_objects in domainTag
-// that need rotation. Predicate per object:
+// buildLaundryCandidates collects the laundry objects the washerwoman
+// visits, direction-aware (ZBBS-HOME-446):
 //
-//   - Its asset has RotationAlgo == RotationAlgoDeterministic.
-//   - Its CurrentState carries TagRotatable AND domainTag.
-//   - The asset's rotatable pool has at least one non-current state to
-//     flip to.
+//   - hangOut=true (window start): objects sitting at their asset's
+//     DefaultState (the bare line — "empty" on every production laundry
+//     asset) flip to a randomly-picked non-default state from the
+//     rotatable pool. Random per object for visual variety, the same
+//     spirit as the assets' random_per_object bulk algo.
+//   - hangOut=false (window end): objects NOT at DefaultState flip back
+//     to it.
 //
-// Non-deterministic algos (random_per_object / random_per_asset) are
-// skipped: the route's per-stop pick happens outside the bulk
-// rotation pass, so we'd need to reproduce the bulk's rand source to
-// stay consistent with what the bulk would have done — and the route
-// has no shared rand. Domain assets in production today (laundry,
-// noticeboards) are deterministic; if a random algo is ever wanted on
-// a route-domain asset, factor the bulk picker into a shared helper +
-// thread rand through this path. Today: just skip and log.
+// Directionality is keyed on Asset.DefaultState rather than a
+// hardcoded state name or the RotationAlgo — both legs are idempotent
+// (an already-hung line is skipped on hang-out; an already-bare line
+// on bring-in), which is what makes the boot catch-up safe to re-fire.
 //
-// The deterministic pick uses nextPoolState — same semantic as the
-// substrate's pickDeterministicNext (next pool entry wrapping).
-func buildRotationCandidates(w *sim.World, domainTag string) []sim.RouteCandidate {
+// Note the pre-446 builder gated on RotationAlgo == deterministic —
+// which silently excluded EVERY production laundry and notice-board
+// asset (all random_per_object), so the routes never built a stop.
+// The directional/cycling builders don't consult the algo at all.
+func buildLaundryCandidates(w *sim.World, hangOut bool, rng *rand.Rand) []sim.RouteCandidate {
 	var out []sim.RouteCandidate
 	for id, obj := range w.VillageObjects {
 		if obj == nil {
@@ -375,18 +438,63 @@ func buildRotationCandidates(w *sim.World, domainTag string) []sim.RouteCandidat
 		if !ok {
 			continue
 		}
-		if asset.RotationAlgo != sim.RotationAlgoDeterministic {
-			if asset.RotationAlgo != "" {
-				log.Printf("cascade/npc_route: skipping route candidate %q — asset %q uses non-deterministic RotationAlgo %q",
-					id, obj.AssetID, asset.RotationAlgo)
+		current := asset.FindState(obj.CurrentState)
+		if current == nil || !current.HasTag(sim.TagLaundry) {
+			continue
+		}
+		if hangOut {
+			if obj.CurrentState != asset.DefaultState {
+				continue // already hung out
 			}
+			var variants []string
+			for _, s := range asset.RotatablePool() {
+				if s.State != asset.DefaultState {
+					variants = append(variants, s.State)
+				}
+			}
+			if len(variants) == 0 {
+				continue
+			}
+			out = append(out, sim.RouteCandidate{
+				ObjectID: id,
+				NewState: variants[rng.Intn(len(variants))],
+				WorldX:   obj.Pos.X, WorldY: obj.Pos.Y,
+			})
+			continue
+		}
+		if obj.CurrentState == asset.DefaultState {
+			continue // already brought in
+		}
+		if asset.FindState(asset.DefaultState) == nil {
+			continue // misconfigured asset — no default to return to
+		}
+		out = append(out, sim.RouteCandidate{
+			ObjectID: id,
+			NewState: asset.DefaultState,
+			WorldX:   obj.Pos.X, WorldY: obj.Pos.Y,
+		})
+	}
+	return sortCandidatesByID(out)
+}
+
+// buildNoticeboardCandidates collects the notice boards the town crier
+// visits. Every board whose current state carries TagNoticeBoard +
+// TagRotatable advances to the next rotatable-pool state (wrapping) —
+// the flip is what triggers fresh prose authoring for the next visit,
+// so WHICH state it lands on doesn't matter, only that it changes.
+// Same tour at both window boundaries.
+func buildNoticeboardCandidates(w *sim.World) []sim.RouteCandidate {
+	var out []sim.RouteCandidate
+	for id, obj := range w.VillageObjects {
+		if obj == nil {
+			continue
+		}
+		asset, ok := w.Assets[obj.AssetID]
+		if !ok {
 			continue
 		}
 		current := asset.FindState(obj.CurrentState)
-		if current == nil || !current.HasTag(sim.TagRotatable) {
-			continue
-		}
-		if !current.HasTag(domainTag) {
+		if current == nil || !current.HasTag(sim.TagRotatable) || !current.HasTag(sim.TagNoticeBoard) {
 			continue
 		}
 		pool := asset.RotatablePool()
@@ -436,17 +544,6 @@ func assetStateForBothTags(asset *sim.Asset, tagA, tagB string) *sim.AssetState 
 		}
 	}
 	return best
-}
-
-// excludedTagsContain reports whether tag is in tags. Linear scan;
-// ExcludedTags is at most a single-digit slice in production.
-func excludedTagsContain(tags []string, tag string) bool {
-	for _, t := range tags {
-		if t == tag {
-			return true
-		}
-	}
-	return false
 }
 
 // sortCandidatesByID sorts in-place by ObjectID. Stable iteration of

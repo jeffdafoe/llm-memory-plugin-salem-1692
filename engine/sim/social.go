@@ -49,12 +49,12 @@ import (
 // / RunSleepTicker / RunPhaseTicker.
 const SocialTickerInterval = time.Minute
 
-// socialBoundaryAt returns the wall-clock instant of minuteOfDay on the local
+// windowBoundaryAt returns the wall-clock instant of minuteOfDay on the local
 // day containing `day`, in the world timezone. Built with time.Date (not
 // Duration arithmetic) so it stays correct across DST transitions — minute-of-
 // day is a wall-clock concept, not an elapsed-duration one. minuteOfDay may
 // exceed 59; time.Date normalizes it into the hour.
-func socialBoundaryAt(w *World, day time.Time, minuteOfDay int) time.Time {
+func windowBoundaryAt(w *World, day time.Time, minuteOfDay int) time.Time {
 	loc := w.Settings.Location
 	if loc == nil {
 		loc = time.UTC
@@ -63,16 +63,19 @@ func socialBoundaryAt(w *World, day time.Time, minuteOfDay int) time.Time {
 	return time.Date(d.Year(), d.Month(), d.Day(), 0, minuteOfDay, 0, 0, loc)
 }
 
-// mostRecentSocialBoundary returns the most recent social boundary at-or-before
+// mostRecentWindowBoundary returns the most recent window boundary at-or-before
 // `now` for the [startMin, endMin) window, and whether that boundary is the
 // ENTER (start) one. It considers today's and yesterday's enter/leave instants
 // so a window straddling midnight (e.g. 22:00–02:00) resolves correctly — the
 // most recent boundary before a 00:30 `now` is yesterday's 22:00 enter.
+// Shared by the social scheduler and the route-schedule trigger
+// (RouteBoundaryDue in npc_route.go) — both are edge-triggered two-boundary
+// movers over a minute-of-day window.
 //
 // ok=false when startMin == endMin: a zero-width window has no distinct
 // enter/leave boundaries, so there's nothing to drive (same "equal endpoints =
 // empty, not all-day" convention the shift window uses).
-func mostRecentSocialBoundary(w *World, startMin, endMin int, now time.Time) (boundary time.Time, isEnter, ok bool) {
+func mostRecentWindowBoundary(w *World, startMin, endMin int, now time.Time) (boundary time.Time, isEnter, ok bool) {
 	if startMin == endMin {
 		return time.Time{}, false, false
 	}
@@ -82,10 +85,10 @@ func mostRecentSocialBoundary(w *World, startMin, endMin int, now time.Time) (bo
 		isEnter bool
 	}
 	cands := [...]cand{
-		{socialBoundaryAt(w, now, startMin), true},
-		{socialBoundaryAt(w, now, endMin), false},
-		{socialBoundaryAt(w, yesterday, startMin), true},
-		{socialBoundaryAt(w, yesterday, endMin), false},
+		{windowBoundaryAt(w, now, startMin), true},
+		{windowBoundaryAt(w, now, endMin), false},
+		{windowBoundaryAt(w, yesterday, startMin), true},
+		{windowBoundaryAt(w, yesterday, endMin), false},
 	}
 	var best cand
 	found := false
@@ -194,7 +197,7 @@ func socialMove(w *World, a *Actor, now time.Time) (walkTo StructureID, boundary
 		return "", time.Time{}, false
 	}
 
-	boundary, isEnter, ok := mostRecentSocialBoundary(w, *a.SocialStartMin, *a.SocialEndMin, now)
+	boundary, isEnter, ok := mostRecentWindowBoundary(w, *a.SocialStartMin, *a.SocialEndMin, now)
 	if !ok {
 		return "", time.Time{}, false
 	}
