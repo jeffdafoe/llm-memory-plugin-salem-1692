@@ -191,7 +191,7 @@ func (o *VillageObject) EffectiveLoiterOffset(catalogX, catalogY int) (int, int)
 // the world. The Reason field carries which.
 type SetStateResult struct {
 	Applied bool
-	Reason  string // "applied" | "superseded" | "already_at_target" | "not_found"
+	Reason  string // "applied" | "superseded" | "already_at_target" | "not_found" | "unknown_domain"
 }
 
 // SetVillageObjectState returns a Command that sets a village object's

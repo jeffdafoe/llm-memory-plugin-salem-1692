@@ -151,13 +151,18 @@ const (
 )
 
 // flipGen returns the generation counter guarding flips of the given
-// domain. Unknown domains map to the phase counter — PendingFlips are
-// only built by the two subsystems, so this is unreachable in practice.
-func (w *World) flipGen(d FlipDomain) *atomic.Uint64 {
-	if d == FlipDomainRotation {
-		return &w.RotationFlipGen
+// domain. ok=false for an unknown (or zero-value) domain — the caller
+// fails closed rather than silently guarding against the wrong counter,
+// so a mis-constructed PendingFlip surfaces instead of half-working.
+func (w *World) flipGen(d FlipDomain) (*atomic.Uint64, bool) {
+	switch d {
+	case FlipDomainPhase:
+		return &w.PhaseFlipGen, true
+	case FlipDomainRotation:
+		return &w.RotationFlipGen, true
+	default:
+		return nil, false
 	}
-	return &w.PhaseFlipGen
 }
 
 // PendingFlip is one per-object state change scheduled by a phase
@@ -420,12 +425,22 @@ func fireScheduledFlip(w *World, flip PendingFlip) {
 // unguarded.
 //
 // Gen == 0 skips the check (a hand-built flip with no stamped
-// generation — tests).
+// generation — tests). A non-zero Gen with an unknown Domain fails
+// closed with Reason="unknown_domain" — that reason is NOT in
+// fireScheduledFlip's expected-silent set, so a mis-constructed flip
+// shows up in the ops log instead of half-working against the wrong
+// counter.
 func ApplyScheduledFlip(flip PendingFlip) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
-			if flip.Gen != 0 && flip.Gen != w.flipGen(flip.Domain).Load() {
-				return SetStateResult{Applied: false, Reason: "superseded"}, nil
+			if flip.Gen != 0 {
+				gen, ok := w.flipGen(flip.Domain)
+				if !ok {
+					return SetStateResult{Applied: false, Reason: "unknown_domain"}, nil
+				}
+				if flip.Gen != gen.Load() {
+					return SetStateResult{Applied: false, Reason: "superseded"}, nil
+				}
 			}
 			return SetVillageObjectState(flip.ObjectID, flip.NewState).Fn(w)
 		},
