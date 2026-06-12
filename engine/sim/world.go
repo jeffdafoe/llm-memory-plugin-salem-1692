@@ -818,16 +818,26 @@ type World struct {
 	// can pick it up without going through the command channel.
 	runCtx atomic.Pointer[context.Context]
 
-	// WorldEventGen is bumped after any world-level state change that could
-	// invalidate scheduled follow-ups (phase transitions, occupancy refresh,
-	// asset rotation). Long-running scheduled work (e.g. spread-out object
-	// flips fired via time.AfterFunc) captures the generation at schedule
-	// time and skips itself when the world has moved on.
+	// PhaseFlipGen / RotationFlipGen invalidate scheduled object flips,
+	// PER SUBSYSTEM: phase transitions bump PhaseFlipGen, daily rotations
+	// bump RotationFlipGen, and a spread-out flip (time.AfterFunc) captures
+	// its own subsystem's generation at schedule time, skipping itself when
+	// that subsystem has moved on (a rapid force-day -> force-night
+	// sequence, a second rotation).
 	//
-	// Atomic so the goroutine-launched scheduler can read it without
+	// Deliberately TWO counters, not one (ZBBS-HOME-447): the subsystems
+	// flip disjoint object sets, and the previous shared counter let a
+	// rotation silently invalidate in-flight phase flips. That bit at boot
+	// catch-up — an engine started after dawn having also missed midnight
+	// applies both boundaries back-to-back, and the rotation's bump landed
+	// inside the phase flips' spread window, stranding the campfires lit
+	// all day (2026-06-12).
+	//
+	// Atomic so the goroutine-launched scheduler can read them without
 	// going through the command channel. Writers (inside the world
 	// goroutine) use Add to make the bump observable.
-	WorldEventGen atomic.Uint64
+	PhaseFlipGen    atomic.Uint64
+	RotationFlipGen atomic.Uint64
 
 	// subscribers receive in-world Events emitted from command handlers.
 	// Registered via Subscribe before Run starts; each event is dispatched

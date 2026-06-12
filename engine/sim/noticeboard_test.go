@@ -73,7 +73,7 @@ func TestSetVillageObjectStateEmitsEvent(t *testing.T) {
 	w, rec, _, stop := buildNoticeboardTestWorld(t)
 	defer stop()
 
-	if _, err := w.Send(sim.SetVillageObjectState("board", "posted", 0)); err != nil {
+	if _, err := w.Send(sim.SetVillageObjectState("board", "posted")); err != nil {
 		t.Fatalf("SetVillageObjectState: %v", err)
 	}
 	got := rec.collect()
@@ -93,7 +93,7 @@ func TestSetVillageObjectStateNoEventOnNoOp(t *testing.T) {
 	defer stop()
 
 	// Same-state set — should be already_at_target, no event.
-	if _, err := w.Send(sim.SetVillageObjectState("board", "blank", 0)); err != nil {
+	if _, err := w.Send(sim.SetVillageObjectState("board", "blank")); err != nil {
 		t.Fatalf("SetVillageObjectState: %v", err)
 	}
 	if got := rec.collect(); len(got) != 0 {
