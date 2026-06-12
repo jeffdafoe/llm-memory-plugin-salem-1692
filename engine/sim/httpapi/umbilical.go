@@ -381,6 +381,7 @@ func (s *Server) umbilicalRoutes() []umbilicalRoute {
 		{http.MethodPost, umbilicalBasePath + "/settings/need-threshold", "Live-tune one need's red-line threshold (ephemeral; resets on restart). Body: {need, value}.", true, s.handleUmbilicalNeedThreshold},
 		{http.MethodPost, umbilicalBasePath + "/grant", "Give or claw back coins/items to/from any actor. Body: {actor_id, coins?, items?}.", true, s.handleUmbilicalGrant},
 		{http.MethodPost, umbilicalBasePath + "/set-needs", "Set an actor's needs to ABSOLUTE values [0..24]. Body: {actor_id} or {all:true}, plus {needs:{\"hunger\":20,\"tiredness\":0}} (unlisted needs untouched). Omit needs to set every need to 0 (back-to-0 shortcut). Setting tiredness to 0 also clears the actor's rest window.", true, s.handleUmbilicalSetNeeds},
+		{http.MethodPost, umbilicalBasePath + "/set-position", "Teleport an actor to a walkable TILE coordinate (the units /actors reports). Cancels any in-flight walk, reconciles inside-structure attribution, and removes the actor from a huddle it was displaced away from. Unwalkable/out-of-bounds targets are refused. Body: {actor_id, x, y}.", true, s.handleUmbilicalSetPosition},
 	}
 }
 

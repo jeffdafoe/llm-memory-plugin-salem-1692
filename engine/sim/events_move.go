@@ -143,6 +143,26 @@ type ActorInsideChanged struct {
 
 func (ActorInsideChanged) isSimEvent() {}
 
+// ActorTeleported fires when an operator displaces an actor via the
+// umbilical set-position command (ZBBS-HOME-448) — an out-of-world
+// position mutation with no walk. Deliberately a DISTINCT type from
+// ActorArrived: the arrival cascades (encounter huddles, route advance,
+// knock service-huddles) subscribe to the ActorArrived Go type and must
+// not react to a teleport as if the actor walked somewhere. The wire
+// translator maps this to the SAME npc_arrived frame ActorArrived uses
+// (the client's authoritative snap-to-tile), so the viewer updates with
+// no client change while the engine-side arrival machinery stays silent.
+type ActorTeleported struct {
+	EventBase
+	ActorID           ActorID
+	FromPosition      Position
+	ToPosition        Position
+	InsideStructureID StructureID // post-teleport attribution; empty = outdoors
+	At                time.Time
+}
+
+func (ActorTeleported) isSimEvent() {}
+
 // MoveStoppedReason discriminates why an accepted movement attempt failed
 // to reach its destination.
 type MoveStoppedReason string

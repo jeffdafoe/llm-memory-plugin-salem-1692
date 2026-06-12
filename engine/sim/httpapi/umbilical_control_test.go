@@ -432,6 +432,7 @@ func TestUmbilicalControl_NewRoutesGated(t *testing.T) {
 		"/api/village/umbilical/rotate",
 		"/api/village/umbilical/settings/need-threshold",
 		"/api/village/umbilical/set-needs",
+		"/api/village/umbilical/set-position",
 	}
 	// Umbilical on but control NOT enabled → 404.
 	srv := NewServer(seededWorld(t), permAuth{operatorPerms})
@@ -470,5 +471,78 @@ func TestUmbilicalPhase_Flips(t *testing.T) {
 	// Bad phase → 400.
 	if rec := postReq(t, h, "/api/village/umbilical/phase", "tok", `{"phase":"dusk"}`); rec.Code != http.StatusBadRequest {
 		t.Errorf("bad phase = %d, want 400", rec.Code)
+	}
+}
+
+// TestUmbilicalSetPosition_Teleports: the happy path — hannah teleports from
+// her seeded tile (3,4) to the walkable dirt tile (0,0), the response reports
+// the displacement, and the live actor's position + inside attribution moved.
+func TestUmbilicalSetPosition_Teleports(t *testing.T) {
+	srv, h := controlServer(t, operatorPerms)
+
+	rec := postReq(t, h, "/api/village/umbilical/set-position", "tok", `{"actor_id":"hannah","x":0,"y":0}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("set-position = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var out umbilicalSetPositionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.ActorID != "hannah" || out.FromX != 3 || out.FromY != 4 || out.X != 0 || out.Y != 0 {
+		t.Errorf("response = %+v, want hannah (3,4)→(0,0)", out)
+	}
+	// Tile (0,0) is owned by no structure footprint, so the seeded
+	// InsideStructureID ("tavern") reconciles to outdoors.
+	if out.InsideStructureID != "" {
+		t.Errorf("InsideStructureID = %q, want empty (outdoors)", out.InsideStructureID)
+	}
+
+	res, err := srv.world.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := world.Actors["hannah"]
+		return []any{a.Pos, a.InsideStructureID}, nil
+	}})
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+	v, _ := res.([]any)
+	if v[0].(sim.Position) != (sim.Position{X: 0, Y: 0}) || v[1].(sim.StructureID) != "" {
+		t.Errorf("live actor = pos %v inside %q, want (0,0) outdoors", v[0], v[1])
+	}
+}
+
+// TestUmbilicalSetPosition_Validation covers the rejection matrix: missing
+// actor_id / missing coordinates (400), unknown actor (404), and an
+// unwalkable target — the seeded deep-water tile (2,1) — refused (422)
+// without moving the actor.
+func TestUmbilicalSetPosition_Validation(t *testing.T) {
+	srv, h := controlServer(t, operatorPerms)
+
+	cases := []struct {
+		name string
+		body string
+		want int
+	}{
+		{"missing actor_id", `{"x":0,"y":0}`, http.StatusBadRequest},
+		{"missing y", `{"actor_id":"hannah","x":0}`, http.StatusBadRequest},
+		{"missing x and y", `{"actor_id":"hannah"}`, http.StatusBadRequest},
+		{"unknown actor", `{"actor_id":"ghost","x":0,"y":0}`, http.StatusNotFound},
+		{"unwalkable water tile", `{"actor_id":"hannah","x":2,"y":1}`, http.StatusUnprocessableEntity},
+		{"out of bounds", `{"actor_id":"hannah","x":-5,"y":0}`, http.StatusUnprocessableEntity},
+	}
+	for _, c := range cases {
+		if rec := postReq(t, h, "/api/village/umbilical/set-position", "tok", c.body); rec.Code != c.want {
+			t.Errorf("%s = %d, want %d; body=%s", c.name, rec.Code, c.want, rec.Body.String())
+		}
+	}
+
+	// None of the rejected calls moved her off the seeded tile.
+	res, err := srv.world.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return world.Actors["hannah"].Pos, nil
+	}})
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+	if pos, _ := res.(sim.Position); pos != (sim.Position{X: 3, Y: 4}) {
+		t.Errorf("hannah moved to %v by a rejected set-position", pos)
 	}
 }
