@@ -136,10 +136,12 @@ func TestKickstartNoticeboards_SkipsBoardsWithContent(t *testing.T) {
 	client := llm.NewFakeClient()
 	KickstartNoticeboards(context.Background(), w, client)
 
-	// Synchronize on the world goroutine: the enumeration runs as a Command,
-	// so a follow-up Send returning means enumeration finished. No author
-	// goroutine should have been spawned (nothing to wait for) — give any
-	// stray one a beat to surface, then assert.
+	// KickstartNoticeboards is synchronous through enumeration (its
+	// SendContext command completes before it returns) and spawns no
+	// author goroutines when every board has content — so nothing is
+	// legitimately in flight here. The short sleep only gives a BUGGY
+	// stray goroutine a beat to surface in CallCount before the assert
+	// (code_review, HOME-443).
 	time.Sleep(50 * time.Millisecond)
 	if calls := client.CallCount(); calls != 0 {
 		t.Errorf("client.CallCount = %d, want 0 (board already has content)", calls)
