@@ -231,6 +231,12 @@ func ResolveMoveTargetTile(w *World, a *Actor) (TilePos, bool) {
 const (
 	LoiterAttributionTiles = 1
 	AudienceScopeTiles     = 2
+	// OutdoorEarshotTiles (ZBBS-HOME-437) is the Chebyshev radius within
+	// which open-ground speech reaches a bystanding PC. Matches the client's
+	// OUTDOOR_SPEECH_RANGE filter and httpapi's outdoor roster radius
+	// (pcOutdoorRosterTiles references this) so "near enough to hear" agrees
+	// across the speech audience, the talk roster, and the client.
+	OutdoorEarshotTiles = 6
 )
 
 // ResolveLoiteringObject returns the id of the NAMED village object whose

@@ -2,6 +2,7 @@ package sim_test
 
 import (
 	"context"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -127,6 +128,99 @@ func TestSpeak_NoAudienceNPCRejected(t *testing.T) {
 	}
 	if rel := snap.Actors["ezekiel"].Relationships; len(rel) != 0 {
 		t.Errorf("ezekiel Relationships = %v, want empty", rel)
+	}
+}
+
+// --- TestSpeak_PCBystanderAudience (ZBBS-HOME-437): a co-present PC outside
+// the speaker's huddle rides the Spoke as a wire-frame bystander
+// (PCBystanderIDs) so its talk panel overhears the room. The engine audience
+// (RecipientIDs) is untouched; a PC who IS a huddle peer stays a recipient
+// (not a bystander); a PC in a different structure hears nothing.
+func TestSpeak_PCBystanderAudience(t *testing.T) {
+	w, stop := buildSpeakTestWorld(t,
+		actorSpec{id: "hannah", displayName: "Hannah", kind: sim.KindNPCShared, huddleID: "h1"},
+		actorSpec{id: "ezekiel", displayName: "Ezekiel Crane", kind: sim.KindNPCShared, huddleID: "h1"},
+		actorSpec{id: "pc-peer", displayName: "Wendy", kind: sim.KindPC, huddleID: "h1"},
+		actorSpec{id: "pc-bystander", displayName: "Jefferey", kind: sim.KindPC},
+		actorSpec{id: "pc-elsewhere", displayName: "Roger", kind: sim.KindPC},
+	)
+	defer stop()
+	for id, structure := range map[sim.ActorID]sim.StructureID{
+		"hannah": "tavern", "ezekiel": "tavern", "pc-peer": "tavern",
+		"pc-bystander": "tavern", "pc-elsewhere": "inn",
+	} {
+		setActor(t, w, id, func(a *sim.Actor) { a.InsideStructureID = structure })
+	}
+
+	captured := captureSpoke(t, w)
+	if _, err := w.Send(sim.Speak("hannah", "Fresh meat today.", time.Now().UTC())); err != nil {
+		t.Fatalf("Speak: %v", err)
+	}
+	if len(*captured) != 1 {
+		t.Fatalf("Spoke events = %d, want 1", len(*captured))
+	}
+	got := (*captured)[0]
+	if want := []sim.ActorID{"ezekiel", "pc-peer"}; !reflect.DeepEqual(got.RecipientIDs, want) {
+		t.Errorf("RecipientIDs = %v, want %v (huddle peers only)", got.RecipientIDs, want)
+	}
+	if want := []sim.ActorID{"pc-bystander"}; !reflect.DeepEqual(got.PCBystanderIDs, want) {
+		t.Errorf("PCBystanderIDs = %v, want %v (co-present non-peer PC only)", got.PCBystanderIDs, want)
+	}
+}
+
+// --- TestSpeak_PCBystanderOutdoorRange (ZBBS-HOME-437): open-ground speech
+// reaches a bystanding PC within OutdoorEarshotTiles (Chebyshev) and not one
+// beyond it. An indoor PC never overhears outdoor speech — and neither does
+// an outdoor PC whose conversational scope resolves to a loiter pin (it
+// hears the stall, not the road; code_review).
+func TestSpeak_PCBystanderOutdoorRange(t *testing.T) {
+	w, stop := buildSpeakTestWorld(t,
+		actorSpec{id: "hannah", displayName: "Hannah", kind: sim.KindNPCShared, huddleID: "h1"},
+		actorSpec{id: "ezekiel", displayName: "Ezekiel Crane", kind: sim.KindNPCShared, huddleID: "h1"},
+		actorSpec{id: "pc-near", displayName: "Near", kind: sim.KindPC},
+		actorSpec{id: "pc-far", displayName: "Far", kind: sim.KindPC},
+		actorSpec{id: "pc-inside", displayName: "Inside", kind: sim.KindPC},
+		actorSpec{id: "pc-stall", displayName: "Loiterer", kind: sim.KindPC},
+	)
+	defer stop()
+	// A named stall whose loiter pin sits at WorldToTile(0,0) (per-instance
+	// zero offsets). The loiter-scoped PC stands ON the pin; the speaker
+	// stands 3 tiles east — outside the stall's AudienceScopeTiles (so the
+	// speaker stays open-ground) but within earshot of every PC here.
+	pin := sim.WorldToTile(0, 0)
+	zero := 0
+	sendT(t, w, sim.Command{Fn: func(world *sim.World) (any, error) {
+		// ResolveLoiteringObject skips objects with a dangling asset_id, so
+		// the stall needs a (minimal) asset on the world.
+		world.Assets["a"] = &sim.Asset{ID: "a"}
+		world.VillageObjects["stall"] = &sim.VillageObject{
+			ID: "stall", DisplayName: "Stall", AssetID: "a",
+			Pos: sim.WorldPos{X: 0, Y: 0}, LoiterOffsetX: &zero, LoiterOffsetY: &zero,
+		}
+		return nil, nil
+	}})
+	speakerPos := sim.TilePos{X: pin.X + 3, Y: pin.Y}
+	setActor(t, w, "hannah", func(a *sim.Actor) { a.Pos = speakerPos })
+	setActor(t, w, "pc-near", func(a *sim.Actor) { a.Pos = sim.TilePos{X: speakerPos.X + sim.OutdoorEarshotTiles, Y: speakerPos.Y} })
+	setActor(t, w, "pc-far", func(a *sim.Actor) {
+		a.Pos = sim.TilePos{X: speakerPos.X + sim.OutdoorEarshotTiles + 1, Y: speakerPos.Y}
+	})
+	setActor(t, w, "pc-inside", func(a *sim.Actor) {
+		a.Pos = speakerPos
+		a.InsideStructureID = "tavern"
+	})
+	setActor(t, w, "pc-stall", func(a *sim.Actor) { a.Pos = pin })
+
+	captured := captureSpoke(t, w)
+	if _, err := w.Send(sim.Speak("hannah", "Hail, the road.", time.Now().UTC())); err != nil {
+		t.Fatalf("Speak: %v", err)
+	}
+	if len(*captured) != 1 {
+		t.Fatalf("Spoke events = %d, want 1", len(*captured))
+	}
+	got := (*captured)[0]
+	if want := []sim.ActorID{"pc-near"}; !reflect.DeepEqual(got.PCBystanderIDs, want) {
+		t.Errorf("PCBystanderIDs = %v, want %v (in earshot, open-ground scope only)", got.PCBystanderIDs, want)
 	}
 }
 

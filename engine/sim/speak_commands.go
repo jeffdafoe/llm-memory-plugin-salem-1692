@@ -210,15 +210,18 @@ func SpeakTo(speakerID ActorID, text, to string, mentions []SpeakMention, hasNew
 
 			// Emit the Spoke event. World.emit stamps EventID + RootEventID
 			// and dispatches subscribers synchronously inside the world
-			// goroutine.
+			// goroutine. PCBystanderIDs is the overhearing wire audience
+			// (ZBBS-HOME-437) — co-present PCs outside the huddle whose talk
+			// panel should still show this line; engine subscribers ignore it.
 			w.emit(&Spoke{
-				SpeakerID:    speakerID,
-				HuddleID:     huddleID,
-				RecipientIDs: peerIDs,
-				AddressedID:  addressedID,
-				Text:         text,
-				At:           at,
-				Mentions:     filterSpeakMentions(w, actor, mentions),
+				SpeakerID:      speakerID,
+				HuddleID:       huddleID,
+				RecipientIDs:   peerIDs,
+				PCBystanderIDs: pcBystanders(w, actor, peerSet),
+				AddressedID:    addressedID,
+				Text:           text,
+				At:             at,
+				Mentions:       filterSpeakMentions(w, actor, mentions),
 			})
 
 			// ZBBS-HOME-412: record the utterance in the huddle's transient

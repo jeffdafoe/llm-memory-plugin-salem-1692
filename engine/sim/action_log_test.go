@@ -92,6 +92,60 @@ func TestAppendActionLogEntry_HappyPath(t *testing.T) {
 	}
 }
 
+// TestAppendActionLogEntry_StampsConversationalScope (ZBBS-HOME-437): the
+// append command stamps the actor's structure scope and room subspace at
+// action time, centrally, so the talk-panel backload can structure-filter
+// entries for a huddle-less PC after the entry's huddle has concluded. A
+// private room scopes; a common-room or roomless actor stamps public (0);
+// an unknown actor id leaves the zero scope.
+func TestAppendActionLogEntry_StampsConversationalScope(t *testing.T) {
+	w, cancel := buildActionLogWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+	sendT(t, w, sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["hannah"] = &sim.Actor{
+			ID: "hannah", DisplayName: "Hannah", Kind: sim.KindNPCShared,
+			State: sim.StateIdle, InsideStructureID: "inn", InsideRoomID: 2,
+		}
+		world.Actors["bob"] = &sim.Actor{
+			ID: "bob", DisplayName: "Bob", Kind: sim.KindNPCShared,
+			State: sim.StateIdle, InsideStructureID: "inn",
+		}
+		world.Structures["inn"] = &sim.Structure{
+			ID: "inn", DisplayName: "The Inn",
+			Rooms: []*sim.Room{
+				{ID: 1, StructureID: "inn", Kind: sim.RoomKindCommon, Name: "common"},
+				{ID: 2, StructureID: "inn", Kind: sim.RoomKindPrivate, Name: "bedroom_1"},
+			},
+		}
+		return nil, nil
+	}})
+
+	for _, actor := range []sim.ActorID{"hannah", "bob", "ghost"} {
+		entry := sim.ActionLogEntry{
+			ActorID: actor, OccurredAt: now,
+			ActionType: sim.ActionTypeSpoke, Text: "hello",
+		}
+		if _, err := w.Send(sim.AppendActionLogEntry(entry)); err != nil {
+			t.Fatalf("Append for %s: %v", actor, err)
+		}
+	}
+
+	got := readActionLog(t, w)
+	if len(got) != 3 {
+		t.Fatalf("len(ActionLog) = %d, want 3", len(got))
+	}
+	if got[0].StructureID != "inn" || got[0].RoomID != 2 {
+		t.Errorf("hannah scope = (%q, %d), want (inn, 2) — private room scopes", got[0].StructureID, got[0].RoomID)
+	}
+	if got[1].StructureID != "inn" || got[1].RoomID != 0 {
+		t.Errorf("bob scope = (%q, %d), want (inn, 0) — roomless is public", got[1].StructureID, got[1].RoomID)
+	}
+	if got[2].StructureID != "" || got[2].RoomID != 0 {
+		t.Errorf("ghost scope = (%q, %d), want zero scope for an unknown actor", got[2].StructureID, got[2].RoomID)
+	}
+}
+
 // --- TestAppendActionLogEntry_RejectsEmptyActorID -------------------
 func TestAppendActionLogEntry_RejectsEmptyActorID(t *testing.T) {
 	w, cancel := buildActionLogWorld(t)

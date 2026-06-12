@@ -290,6 +290,50 @@ func TestHandlePCMe_CommonRoomPublicScope(t *testing.T) {
 	}
 }
 
+// TestHandlePCMe_HuddlelessStructureBackload (ZBBS-HOME-437): a PC standing
+// in a structure WITHOUT a huddle backloads the entries stamped with that
+// structure's scope and a matching (public) room subspace — what the room
+// recently heard — instead of the pre-437 nil. Entries from another
+// structure, a private room, or with no stamp (pre-437 rows, open ground)
+// stay out.
+func TestHandlePCMe_HuddlelessStructureBackload(t *testing.T) {
+	w := pcMeWorld(t, 1)
+	now := time.Now().UTC()
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["p1"].CurrentHuddleID = ""
+		world.ActionLog = []sim.ActionLogEntry{
+			// In scope: the inn's public space, huddle long concluded.
+			{ActorID: "hannah", OccurredAt: now.Add(-3 * time.Minute), ActionType: sim.ActionTypeSpoke, Text: "Fresh meat today", HuddleID: "gone-1", StructureID: "inn"},
+			{ActorID: "p2", OccurredAt: now.Add(-2 * time.Minute), ActionType: sim.ActionTypeSpoke, Text: "I will take one", HuddleID: "gone-1", StructureID: "inn"},
+			// Different structure — out.
+			{ActorID: "hannah", OccurredAt: now, ActionType: sim.ActionTypeSpoke, Text: "tavern talk", HuddleID: "gone-2", StructureID: "tavern"},
+			// Same structure, private room — out for a common-room PC.
+			{ActorID: "hannah", OccurredAt: now, ActionType: sim.ActionTypeSpoke, Text: "bedroom whisper", HuddleID: "gone-3", StructureID: "inn", RoomID: 2},
+			// Unstamped (pre-437 row / open ground) — out.
+			{ActorID: "hannah", OccurredAt: now, ActionType: sim.ActionTypeSpoke, Text: "road chatter", HuddleID: "gone-4"},
+		}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("reseed: %v", err)
+	}
+
+	srv := NewServer(w, okAuth{})
+	resp := pcMe(t, srv)
+	want := []pcRecentSpeech{
+		{SpeakerName: "Hannah", Text: "Fresh meat today", Kind: "speech_npc"},
+		{SpeakerName: "Otherguy", Text: "I will take one", Kind: "speech_player"},
+	}
+	if len(resp.RecentSpeech) != len(want) {
+		t.Fatalf("len(recent_speech) = %d, want %d; got %+v", len(resp.RecentSpeech), len(want), resp.RecentSpeech)
+	}
+	for i, w := range want {
+		got := resp.RecentSpeech[i]
+		if got.SpeakerName != w.SpeakerName || got.Text != w.Text || got.Kind != w.Kind {
+			t.Errorf("recent_speech[%d] = %+v, want %+v", i, got, w)
+		}
+	}
+}
+
 func TestHandlePCMe_StaleRoomPublicScope(t *testing.T) {
 	// InsideRoomID points at a room not in the PC's structure (stale ref after
 	// a transition) → fails closed to public scope, no audience room.
@@ -319,9 +363,12 @@ func TestHandlePCMe_OutdoorAudienceScopeAndRoster(t *testing.T) {
 	if len(resp.HuddleMembers) != 1 || resp.HuddleMembers[0].Name != "Nearby" {
 		t.Errorf("huddle_members = %+v, want just [Nearby]", resp.HuddleMembers)
 	}
-	// No huddle → no backload.
+	// No huddle and no entries stamped with the well's scope → no backload.
+	// (Post-437 a huddle-less PC DOES backload its structure scope's entries
+	// — TestHandlePCMe_HuddlelessStructureBackload — but this world's log has
+	// none for "well".)
 	if resp.RecentSpeech != nil {
-		t.Errorf("recent_speech = %+v, want nil for a huddle-less PC", resp.RecentSpeech)
+		t.Errorf("recent_speech = %+v, want nil with no in-scope entries", resp.RecentSpeech)
 	}
 }
 

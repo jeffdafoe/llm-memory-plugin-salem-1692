@@ -221,6 +221,90 @@ func colocatedConversational(a *Actor, now time.Time, staleAfter time.Duration) 
 	return a.State != StateSleeping
 }
 
+// pcBystanders (ZBBS-HOME-437) returns the ids (sorted) of PCs within earshot
+// of a speaker who are NOT in peerSet (huddle members already receive the
+// Spoke via RecipientIDs) — the wire-frame overhearing audience carried on
+// Spoke.PCBystanderIDs.
+//
+// Earshot:
+//   - structure scope: the PC's conversationalScopeStructure equals the
+//     speaker's (inside↔inside, inside↔loiter-pin, loiter↔loiter at the same
+//     stall) AND the room subspaces match — common-room speech stays out of
+//     bedrooms and vice versa, mirroring the client's v1 room filter.
+//   - open ground (neither has a structure scope): Chebyshev within
+//     OutdoorEarshotTiles, the same radius the client's outdoor filter and
+//     the talk roster use.
+//
+// Deliberately NOT gated on sleep or PC-presence staleness: this list only
+// widens a broadcast frame's render audience. A sleeping player still gets the
+// room's chatter in their log (the sleep gate on colocatedConversational is
+// about huddle MEMBERSHIP — never drag a sleeper into a conversation), and a
+// stale PC's client has no socket to render on, so inclusion is inert. No
+// engine-side consumer reads this list, so nothing else can over-trigger.
+func pcBystanders(w *World, speaker *Actor, peerSet map[ActorID]struct{}) []ActorID {
+	speakerScope := conversationalScopeStructure(w, speaker)
+	var out []ActorID
+	for id, a := range w.Actors {
+		if a == nil || id == speaker.ID || a.Kind != KindPC {
+			continue
+		}
+		if _, isPeer := peerSet[id]; isPeer {
+			continue
+		}
+		if speakerScope != "" {
+			if conversationalScopeStructure(w, a) != speakerScope {
+				continue
+			}
+			if audienceRoomScope(w, a) != audienceRoomScope(w, speaker) {
+				continue
+			}
+		} else {
+			// Open ground means NEITHER side has a structure scope — a PC
+			// loitering at a stall's pin is conversationally scoped to that
+			// stall (it hears the stall, not the road), so this must check
+			// the full conversationalScopeStructure, not just
+			// InsideStructureID (code_review).
+			if conversationalScopeStructure(w, a) != "" {
+				continue
+			}
+			if speaker.Pos.Chebyshev(a.Pos) > OutdoorEarshotTiles {
+				continue
+			}
+		}
+		out = append(out, id)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+// audienceRoomScope returns the room id that scopes an actor's speech
+// audience, or 0 for public scope. Only a private/staff room scopes — a
+// common room, an unknown/stale room id, and outdoors all resolve to public
+// (0), so two actors in the same structure's public space match even when one
+// carries the common room's id and the other carries none. The live-world
+// mirror of httpapi.pcAudienceRoom / v1's actorPrivateRoomScope; failing open
+// to public is the safe direction (slightly-over-heard speech beats speech
+// that vanishes for the right audience). ZBBS-HOME-437.
+func audienceRoomScope(w *World, a *Actor) RoomID {
+	if a.InsideRoomID == 0 || a.InsideStructureID == "" {
+		return 0
+	}
+	st := w.Structures[a.InsideStructureID]
+	if st == nil {
+		return 0
+	}
+	for _, rm := range st.Rooms {
+		if rm == nil || rm.ID != a.InsideRoomID {
+			continue
+		}
+		if rm.Kind == RoomKindPrivate || rm.Kind == RoomKindStaff {
+			return a.InsideRoomID
+		}
+		return 0
+	}
+	return 0
+}
+
 // colocatedHuddleSceneOrigin is the Scene.OriginKind stamped on the
 // structure-bound scene that anchors an indoor explicit-talk huddle
 // (ZBBS-HOME-375). The outdoor counterpart is outdoorEncounterOriginKind.
