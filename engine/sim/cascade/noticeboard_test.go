@@ -83,6 +83,97 @@ func TestRegisterNoticeboard_NilClientPanics(t *testing.T) {
 	RegisterNoticeboard(context.Background(), w, nil)
 }
 
+// TestKickstartNoticeboards_AuthorsBlankBoards — ZBBS-HOME-443. A board in a
+// rotatable+notice-board state with no in-memory content gets one authoring
+// cycle at kickstart; non-board objects don't. (The restart-gap closer:
+// content is transient and the daily rotation won't re-fire until the next
+// midnight boundary.)
+func TestKickstartNoticeboards_AuthorsBlankBoards(t *testing.T) {
+	w, _ := buildNoticeboardCascadeWorld(t)
+	stop := runNoticeboardCascadeWorld(t, w)
+	defer stop()
+
+	client := llm.NewFakeClient(llm.ScriptedTurn{
+		Response: llm.Response{Content: "A town meeting is called for Friday next."},
+	})
+
+	KickstartNoticeboards(context.Background(), w, client)
+
+	// The author runs on a spawned goroutine — poll for the save to land.
+	deadline := time.After(2 * time.Second)
+	for readBoardContent(t, w, "board") == nil {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for kickstart authoring to save")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	got := readBoardContent(t, w, "board")
+	if got.Text != "A town meeting is called for Friday next." {
+		t.Errorf("Text = %q, want the scripted reply", got.Text)
+	}
+	if got.AtState != "blank" {
+		t.Errorf("AtState = %q, want blank (the state captured at kickstart)", got.AtState)
+	}
+	if calls := client.CallCount(); calls != 1 {
+		t.Errorf("client.CallCount = %d, want 1 (the board only, not the non-board)", calls)
+	}
+}
+
+// TestKickstartNoticeboards_SkipsBoardsWithContent — a board that already
+// has content (e.g. the rotation flip's author won the same-boot race) is
+// left alone: kickstart must not burn an LLM call or overwrite it.
+func TestKickstartNoticeboards_SkipsBoardsWithContent(t *testing.T) {
+	w, _ := buildNoticeboardCascadeWorld(t)
+	stop := runNoticeboardCascadeWorld(t, w)
+	defer stop()
+
+	if _, err := w.Send(sim.SaveNoticeboardContent("board", "Wares offered at the Ordinary.", "blank", time.Now())); err != nil {
+		t.Fatalf("seed content: %v", err)
+	}
+
+	client := llm.NewFakeClient()
+	KickstartNoticeboards(context.Background(), w, client)
+
+	// KickstartNoticeboards is synchronous through enumeration (its
+	// SendContext command completes before it returns) and spawns no
+	// author goroutines when every board has content — so nothing is
+	// legitimately in flight here. The short sleep only gives a BUGGY
+	// stray goroutine a beat to surface in CallCount before the assert
+	// (code_review, HOME-443).
+	time.Sleep(50 * time.Millisecond)
+	if calls := client.CallCount(); calls != 0 {
+		t.Errorf("client.CallCount = %d, want 0 (board already has content)", calls)
+	}
+	got := readBoardContent(t, w, "board")
+	if got == nil || got.Text != "Wares offered at the Ordinary." {
+		t.Errorf("content = %+v, want the seeded text untouched", got)
+	}
+}
+
+// TestKickstartNoticeboards_NilGuards — wiring-time panics, same posture
+// as RegisterNoticeboard.
+func TestKickstartNoticeboards_NilGuards(t *testing.T) {
+	t.Run("nil world", func(t *testing.T) {
+		defer func() {
+			if r := recover(); r == nil {
+				t.Error("KickstartNoticeboards(nil world) did not panic")
+			}
+		}()
+		KickstartNoticeboards(context.Background(), nil, llm.NewFakeClient())
+	})
+	t.Run("nil client", func(t *testing.T) {
+		w, _ := buildNoticeboardCascadeWorld(t)
+		defer func() {
+			if r := recover(); r == nil {
+				t.Error("KickstartNoticeboards(nil client) did not panic")
+			}
+		}()
+		KickstartNoticeboards(context.Background(), w, nil)
+	})
+}
+
 // TestRunNoticeboardAuthor_HappyPath: drives one authoring cycle
 // directly via runNoticeboardAuthor (bypassing the goroutine spawn
 // for deterministic test timing). Verifies FakeClient.Complete is

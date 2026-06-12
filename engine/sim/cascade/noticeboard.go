@@ -82,6 +82,87 @@ func RegisterNoticeboard(ctx context.Context, w *sim.World, client llm.Client) {
 	}))
 }
 
+// kickstartBoard is one blank board found by KickstartNoticeboards'
+// world-goroutine enumeration — the trigger-time capture (id, state,
+// label) runNoticeboardAuthor needs, mirroring what the state-change
+// subscriber captures.
+type kickstartBoard struct {
+	id      sim.VillageObjectID
+	atState string
+	label   string
+}
+
+// KickstartNoticeboards authors content for every noticeboard that has
+// none — the restart-gap closer (ZBBS-HOME-443). World.NoticeboardContent
+// is transient by design ("first cycle after restart authors fresh"), but
+// the daily rotation that triggers authoring won't re-fire until the next
+// midnight boundary, so a mid-day engine restart left every board blank —
+// and unreadable in the client, which gates the read modal on non-empty
+// content — for the rest of the day. It also closes the designed
+// cold-start gap: the crier's first stop of the day now has content to
+// read instead of a silent first cycle.
+//
+// Call once in a goroutine after World.Run starts (it needs the command
+// loop). Enumerates boards on the world goroutine, then spawns one
+// runNoticeboardAuthor per blank board. A same-boot rotation flip racing
+// this is benign: SaveNoticeboardContent's atState stale-guard drops
+// whichever save lost, and the flip-triggered author re-runs for the new
+// state.
+//
+// Panics on nil w or nil client to fail fast at wiring time (same posture
+// as RegisterNoticeboard).
+func KickstartNoticeboards(ctx context.Context, w *sim.World, client llm.Client) {
+	if w == nil {
+		panic("cascade: KickstartNoticeboards requires a non-nil world")
+	}
+	if client == nil {
+		panic("cascade: KickstartNoticeboards requires a non-nil LLM client")
+	}
+	res, err := w.SendContext(ctx, sim.Command{Fn: func(world *sim.World) (any, error) {
+		var blanks []kickstartBoard
+		for id, obj := range world.VillageObjects {
+			if obj == nil {
+				continue
+			}
+			asset, ok := world.Assets[obj.AssetID]
+			if !ok {
+				continue
+			}
+			state := asset.FindState(obj.CurrentState)
+			if state == nil || !state.HasTag(sim.TagRotatable) || !state.HasTag(sim.TagNoticeBoard) {
+				continue
+			}
+			if nc := world.NoticeboardContent[id]; nc != nil {
+				continue
+			}
+			blanks = append(blanks, kickstartBoard{
+				id:      id,
+				atState: obj.CurrentState,
+				label:   obj.EffectiveDisplayName(asset.Name),
+			})
+		}
+		return blanks, nil
+	}})
+	if err != nil {
+		if ctx.Err() == nil {
+			log.Printf("cascade/noticeboard: kickstart enumerate: %v", err)
+		}
+		return
+	}
+	blanks, ok := res.([]kickstartBoard)
+	if !ok {
+		log.Printf("cascade/noticeboard: unexpected kickstart result type %T", res)
+		return
+	}
+	if len(blanks) == 0 {
+		return
+	}
+	log.Printf("cascade/noticeboard: kickstart authoring %d blank board(s)", len(blanks))
+	for _, b := range blanks {
+		go runNoticeboardAuthor(ctx, w, client, b.id, b.atState, b.label, "")
+	}
+}
+
 // handleNoticeboardStateChange is the VillageObjectStateChanged
 // subscriber. Gates on the new state carrying TagRotatable +
 // TagNoticeBoard (noticeboards are the only state-change kind we
