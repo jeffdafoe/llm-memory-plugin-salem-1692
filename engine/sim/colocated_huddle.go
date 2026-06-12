@@ -13,8 +13,9 @@ import (
 // arrival-encounter cascade (cascade/arrival_encounter.go) is OUTDOOR-only
 // (it skips any arriver with InsideStructureID != "") and forms huddles via
 // StartOutdoorHuddle. The indoor counterpart was the explicit talk/knock path —
-// but EnterOrKnock only forms a huddle on a KNOCK (owner-only structure,
-// non-member); a plain walk-in through an open door joins nobody. So an actor
+// but the knock bootstrap only forms a huddle on a KNOCK (owner-only structure,
+// non-member; since ZBBS-HOME-445 it runs on arrival, in
+// EnsureKnockServiceHuddle); a plain walk-in through an open door joins nobody. So an actor
 // standing in the Tavern with others had CurrentHuddleID == "", and sim.Speak
 // (audience = huddle peers) either rejected a name-address (the vocative gate
 // sees the other as a non-peer → 422) or emitted to no one — and the
@@ -24,7 +25,7 @@ import (
 // EnsureColocatedHuddle closes that gap: run from the speak path, it forms the
 // conversation ON the talk action. It delegates to JoinHuddle, which
 // find-or-creates the single active huddle at a structure (the same primitive
-// EnterOrKnock uses for the knock service-huddle, called with an empty
+// the knock bootstrap EnsureKnockServiceHuddle uses, called with an empty
 // sceneID) — so an actor whose structure already has an active huddle JOINS it
 // rather than minting a second.
 //

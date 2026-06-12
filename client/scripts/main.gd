@@ -110,12 +110,21 @@ var _pc_initial_camera_centered: bool = false
 # unless they specifically clicked it again.
 var _pending_notice_object_id: String = ""
 
+# Walk-then-knock state (ZBBS-HOME-445). The server forms the knock
+# service-huddle on ARRIVAL at the loiter slot, not in the /pc/move
+# response — so a knocked=true response arms this flag and the PC's own
+# npc_arrived triggers the talk-panel refresh + auto-open. Any later
+# successful non-knock move clears it (the walk that carried the knock
+# was superseded server-side along with its MoveIntent).
+var _pending_knock: bool = false
+
 # Discriminator for the in-flight /pc/move so the shared completion
 # handler can decide which side-effects to roll back on a non-2xx.
 # Today only "noticeboard" needs explicit cleanup (clear the pending
-# flag); knock-narration / huddle-join paths self-recover on the
-# next /pc/me poll. Empty when no /pc/move is in flight or the most
-# recent one was a non-noticeboard click.
+# flag); the knock path self-recovers (a rejected move never sets
+# _pending_knock, and the periodic /pc/me poll covers any drift).
+# Empty when no /pc/move is in flight or the most recent one was a
+# non-noticeboard click.
 var _pc_move_purpose: String = ""
 
 # Modal blocker set. Multiple panels (notice, talk pay-modal, config,
@@ -1059,28 +1068,19 @@ func _post_pc_move_to_screen(screen_pos: Vector2) -> void:
                 _pc_move_purpose = ""
                 return
             _pc_move_purpose = ""
-            # Knock outcome (ZBBS-101): the server resolved the structure
-            # click as a knock and either (a) joined the PC into a service
-            # huddle with the vendor inside, or (b) reported the structure
-            # as unattended. Case (a) needs an immediate /pc/me poll so the
-            # talk panel pops open right away with the vendor as an
-            # addressee — without it the player waits up to 10s for the
-            # next refresh tick. Case (b) renders narration in the panel
-            # log so the player understands why the click went nowhere.
+            # Knock outcome (ZBBS-101 / ZBBS-HOME-445): the server resolved
+            # the structure click as a knock. The service huddle forms on
+            # ARRIVAL at the loiter slot (server-side), so all this handler
+            # does is arm the walk-then-knock flag — the PC's own
+            # npc_arrived refreshes the talk panel and auto-opens it once
+            # huddle_members populates. Narration, when present, explains a
+            # knock that looks like it will go unanswered (no receptive
+            # receiver inside at click time); the flag stays armed anyway
+            # since a receiver who returns mid-walk still answers.
             var parsed = JSON.parse_string(b.get_string_from_utf8())
-            if parsed is Dictionary and bool(parsed.get("knocked", false)):
-                if bool(parsed.get("huddle_joined", false)):
-                    if talk_panel_layer != null and talk_panel_layer.has_method("_refresh_state"):
-                        talk_panel_layer._refresh_state()
-                    # Auto-open the panel: a successful knock means the
-                    # player wants to talk to the vendor, and the launcher
-                    # pill alone is too easy to miss in the heat of play.
-                    # _refresh_state is async (HTTPRequest); defer the
-                    # open() so huddle_members has had time to populate
-                    # via the /pc/me response.
-                    if talk_panel_layer != null and talk_panel_layer.has_method("force_open_after_refresh"):
-                        talk_panel_layer.force_open_after_refresh()
-                else:
+            if parsed is Dictionary:
+                _pending_knock = bool(parsed.get("knocked", false))
+                if _pending_knock:
                     var narration: String = str(parsed.get("knock_narration", ""))
                     if narration != "" and talk_panel_layer != null and talk_panel_layer.has_method("append_local_narration"):
                         talk_panel_layer.append_local_narration(narration)
@@ -1180,6 +1180,18 @@ func _is_readable_noticeboard(object_id: String) -> bool:
 ## panel. Stale content (board cleared between dispatch and arrival)
 ## closes the pending state silently — no panel pops on a bare board.
 func _on_event_npc_arrived(npc_id: String, _x: float, _y: float, _facing: String) -> void:
+    # Walk-then-knock (ZBBS-HOME-445): the server formed the service huddle
+    # as part of this arrival (when someone was in to answer). Refresh the
+    # talk panel now rather than waiting up to 10s for the periodic tick,
+    # and auto-open it once huddle_members populates. An unanswered knock
+    # degrades to a no-op: force_open_after_refresh only fires on a
+    # non-empty huddle.
+    if _pending_knock and _pc_actor_id != "" and npc_id == _pc_actor_id:
+        _pending_knock = false
+        if talk_panel_layer != null and talk_panel_layer.has_method("_refresh_state"):
+            talk_panel_layer._refresh_state()
+        if talk_panel_layer != null and talk_panel_layer.has_method("force_open_after_refresh"):
+            talk_panel_layer.force_open_after_refresh()
     if _pending_notice_object_id == "":
         return
     if _pc_actor_id == "" or npc_id != _pc_actor_id:

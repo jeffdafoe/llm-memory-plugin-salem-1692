@@ -98,6 +98,15 @@ func handleArrivalEncounter(w *sim.World, evt sim.Event) {
 	if !ok {
 		return
 	}
+	// A knock arrival belongs to the knock service-huddle bootstrap
+	// (ZBBS-HOME-445, business_arrival.go) — the knocker's attention is on
+	// the door, not on passersby. Explicit skip rather than relying on
+	// subscriber registration order: if the encounter fired first it would
+	// grab the knocker into an outdoor huddle and the knock bootstrap's
+	// already-huddled gate would then drop the knock on the floor.
+	if arrived.Knocked {
+		return
+	}
 	arriver, ok := w.Actors[arrived.ActorID]
 	if !ok {
 		return

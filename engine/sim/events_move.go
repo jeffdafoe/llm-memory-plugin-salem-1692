@@ -108,6 +108,13 @@ type ActorArrived struct {
 	DestObjectID      VillageObjectID // destination target (ObjectVisit), else ""
 	MovementAttemptID MovementAttemptID
 	At                time.Time
+
+	// Knocked — the walk was EnterOrKnock's knock routing (ZBBS-HOME-445):
+	// DestStructureID is the knocked structure and the actor stopped at its
+	// loiter slot. The knock-arrival subscriber forms the service huddle
+	// with the receiver(s) inside; the outdoor encounter cascade skips the
+	// arrival (the knocker's attention is on the door, not on passersby).
+	Knocked bool
 }
 
 func (ActorArrived) isSimEvent() {}
