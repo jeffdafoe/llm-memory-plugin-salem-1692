@@ -932,3 +932,87 @@ func TestStartOutdoorHuddle_TeardownConcludesScene(t *testing.T) {
 		t.Error("orphaned area scene was not auto-concluded after the last participant left")
 	}
 }
+
+// TestMoveActor_WakesBeddedAgentNPC (ZBBS-HOME-435): a committed move clears
+// an agent NPC's sleep window — getting up and walking IS waking. Without
+// this, an auto-sleep stamp racing an in-flight tick produced a walking
+// sleeper (bedded on paper, body in the tavern, reactor rest gate eating
+// every warrant for 12h — the live Prudence Ward stall).
+func TestMoveActor_WakesBeddedAgentNPC(t *testing.T) {
+	now := time.Now().UTC()
+	w, cancel, _ := buildMoveTestWorld(t)
+	defer cancel()
+
+	wake := now.Add(12 * time.Hour)
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := world.Actors["walker"]
+		a.Kind = sim.KindNPCStateful
+		a.SleepingUntil = &wake
+		a.LastTirednessRecoveryAt = &now
+		a.State = sim.StateSleeping
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed bedded walker: %v", err)
+	}
+
+	dest := sim.NewPositionDestination(sim.Position{X: sim.PadX + 5, Y: sim.PadY + 5})
+	if _, err := w.Send(sim.MoveActor("walker", dest, false, now)); err != nil {
+		t.Fatalf("MoveActor rejected: %v", err)
+	}
+
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := world.Actors["walker"]
+		if a.SleepingUntil != nil {
+			t.Errorf("SleepingUntil = %v, want nil (committed move wakes)", a.SleepingUntil)
+		}
+		if a.LastTirednessRecoveryAt != nil {
+			t.Errorf("LastTirednessRecoveryAt = %v, want nil (window closed)", a.LastTirednessRecoveryAt)
+		}
+		if a.State == sim.StateSleeping {
+			t.Error("State still sleeping after a committed move")
+		}
+		if a.MoveIntent == nil {
+			t.Error("MoveIntent not stamped — the move itself must still commit")
+		}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("inspect walker: %v", err)
+	}
+}
+
+// TestMoveActor_RejectedMoveLeavesSleeperBedded: the wake sits AFTER the
+// validation gates — a move that fails to validate must not disturb the
+// sleeper.
+func TestMoveActor_RejectedMoveLeavesSleeperBedded(t *testing.T) {
+	now := time.Now().UTC()
+	w, cancel, _ := buildMoveTestWorld(t)
+	defer cancel()
+
+	wake := now.Add(12 * time.Hour)
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := world.Actors["walker"]
+		a.Kind = sim.KindNPCStateful
+		a.SleepingUntil = &wake
+		a.State = sim.StateSleeping
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed bedded walker: %v", err)
+	}
+
+	if _, err := w.Send(sim.MoveActor("walker", sim.NewStructureEnterDestination("no-such-structure"), false, now)); err == nil {
+		t.Fatal("MoveActor to a nonexistent structure should reject")
+	}
+
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := world.Actors["walker"]
+		if a.SleepingUntil == nil {
+			t.Error("rejected move cleared the sleep window — wake must follow validation")
+		}
+		if a.State != sim.StateSleeping {
+			t.Errorf("State = %v, want sleeping after a rejected move", a.State)
+		}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("inspect walker: %v", err)
+	}
+}

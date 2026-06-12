@@ -440,3 +440,48 @@ func TestWakeExpiredNPCSleepers(t *testing.T) {
 		t.Error("off-shift NPC under the cap should stay asleep (no tiredness wake)")
 	}
 }
+
+// TestAutoBedAtHomeNPCs_SkipsInFlightAndWalking (ZBBS-HOME-435): the sweep
+// never beds an actor whose reactor tick is in flight (the bed-stamp would
+// race the tick's commits — the live Prudence Ward walking sleeper) or one
+// mid-walk (passing through home, not resting). Both re-qualify next sweep.
+func TestAutoBedAtHomeNPCs_SkipsInFlightAndWalking(t *testing.T) {
+	now := time.Date(2026, 5, 22, 22, 0, 0, 0, time.UTC)
+
+	midTick := npc("deliberating", KindNPCStateful)
+	midTick.TickInFlight = true
+	midWalk := npc("walking", KindNPCStateful)
+	midWalk.MoveIntent = &MoveIntent{}
+	settled := npc("settled", KindNPCShared)
+
+	w := sleepTestWorld(midTick, midWalk, settled)
+	res, _ := AutoBedAtHomeNPCs(now).Fn(w)
+	if n := res.(int); n != 1 {
+		t.Fatalf("bedded = %d, want 1 (only the settled NPC)", n)
+	}
+	if midTick.SleepingUntil != nil {
+		t.Error("NPC with tick in flight was bedded — races the tick's commits")
+	}
+	if midWalk.SleepingUntil != nil {
+		t.Error("mid-walk NPC was bedded — it is passing through, not resting")
+	}
+	if settled.SleepingUntil == nil {
+		t.Error("settled at-home NPC should still be bedded")
+	}
+}
+
+// TestAutoSleepOnArrival_SkipsInFlightTick (ZBBS-HOME-435): same race on the
+// arrival path — an arrival landing while the actor's tick is in flight must
+// not bed them mid-deliberation.
+func TestAutoSleepOnArrival_SkipsInFlightTick(t *testing.T) {
+	offShift := time.Date(2026, 5, 22, 22, 0, 0, 0, time.UTC)
+	a := npc("k", KindNPCStateful)
+	a.TickInFlight = true
+	w := sleepTestWorld(a)
+
+	handleAutoSleepOnArrival(w, &ActorArrived{ActorID: a.ID, FinalStructureID: "home", At: offShift})
+
+	if a.SleepingUntil != nil {
+		t.Errorf("NPC with tick in flight was bedded on arrival: SleepingUntil = %v", a.SleepingUntil)
+	}
+}

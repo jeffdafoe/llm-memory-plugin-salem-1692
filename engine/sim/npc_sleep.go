@@ -278,6 +278,12 @@ func handleAutoSleepOnArrival(w *World, evt Event) {
 	if a.InsideStructureID != arr.FinalStructureID {
 		return
 	}
+	// ZBBS-HOME-435: don't bed an actor mid-deliberation — its in-flight tick
+	// can still commit actions (a move_to would carry a just-bedded actor away
+	// as a walking sleeper). The sweep beds them once the tick settles.
+	if a.TickInFlight {
+		return
+	}
 	// At home, or a lodger arriving at the inn it rents (ZBBS-HOME-296 2c).
 	// npcSleepHere applies the right off-shift / bedtime-window gate per
 	// relationship.
@@ -323,6 +329,15 @@ func AutoBedAtHomeNPCs(now time.Time) Command {
 				}
 				if a.BreakUntil != nil && a.BreakUntil.After(now) {
 					continue // on break — awake by choice
+				}
+				// ZBBS-HOME-435: never bed an actor mid-deliberation or
+				// mid-walk. A bed-stamp racing an in-flight tick produced the
+				// walking sleeper (the tick's committed move_to carried a
+				// just-bedded actor away); a mid-walk actor whose path crosses
+				// its home footprint is passing through, not resting. Both
+				// re-qualify on the next sweep once settled.
+				if a.TickInFlight || a.MoveIntent != nil {
+					continue
 				}
 				if !npcSleepHere(w, a, now) {
 					continue
