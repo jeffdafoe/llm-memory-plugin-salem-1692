@@ -365,6 +365,13 @@ func run(rt runtime, stop <-chan struct{}) error {
 	tickPool.Start(worldCtx)
 	startTickers(worldCtx, rt.World)
 
+	// Re-author any noticeboard left blank by the restart (ZBBS-HOME-443):
+	// board content is in-memory only, and the daily rotation that would
+	// re-author it won't fire again until the next midnight boundary — so
+	// without this kick, a mid-day restart left every board blank (and
+	// unreadable in the client) for the rest of the day.
+	go cascade.KickstartNoticeboards(worldCtx, rt.World, rt.LLMClient)
+
 	// Daily sim-conversation push (ZBBS-WORK-376 piece 3). Bound to worldCtx so
 	// it stops with the world; it reads pg + POSTs to the API, independent of
 	// the world goroutine. Nil in the headless lifecycle test (no pg). Waited at
@@ -578,7 +585,15 @@ func startTickers(ctx context.Context, w *sim.World) {
 	go sim.RunRoomSweep(ctx, w)
 	go sim.RunPCPresenceSweep(ctx, w) // ZBBS-WORK-326: reclaim ghost (closed-tab) PCs
 	go sim.RunSceneQuoteSweep(ctx, w)
-	go sim.RunRotationTicker(ctx, w, sim.RotationScope{}) // empty scope = bulk-rotate everything
+	// ZBBS-HOME-443: carve laundry + notice boards out of the bulk rotation —
+	// their daily flips are owned by the washerwoman / town-crier routes, whose
+	// RotationApplied dispatches (cascade/npc_route.go) only fire when their
+	// domain tag is in ExcludedTags. This is the npc_behaviors cutover wiring
+	// that the empty-scope default deferred; without it the routes never
+	// dispatched and the crier never walked.
+	go sim.RunRotationTicker(ctx, w, sim.RotationScope{
+		ExcludeTags: []string{sim.TagLaundry, sim.TagNoticeBoard},
+	})
 }
 
 // requireEnv reads an environment variable or exits if missing.
