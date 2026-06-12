@@ -94,9 +94,12 @@ func TestCommitResultContent_PayWithItemSteer(t *testing.T) {
 			want: steer,
 		},
 		{
-			// A quote take closes instantly — not a pending offer — so it keeps
-			// the generic ok and is exempt from the dedup key.
-			name: "quote take returns generic ok",
+			// A quote take closes instantly, but with a nil cmdResult there is
+			// no FastPath evidence to voice a settle (ZBBS-HOME-436 mirrors the
+			// scene_quote "don't assert state without evidence" rule) — generic
+			// ok. The settled message is pinned in
+			// TestCommitResultContent_SettledQuoteTake.
+			name: "quote take with nil result returns generic ok",
 			vc:   ValidatedCall{Name: "pay_with_item", DecodedArgs: PayWithItemArgs{Seller: "Moses James", Item: "carrots", Qty: 20, Amount: 10, QuoteID: 7}},
 			want: "[ok]",
 		},
@@ -209,10 +212,13 @@ func TestCommitResultContent_PayEatHereClampNote(t *testing.T) {
 		t.Errorf("clamped steer:\n got %q\nwant %q", got, want)
 	}
 
-	// Quote take (generic-[ok] flow) carries the note too.
+	// Quote take (settled flow, ZBBS-HOME-436) carries the note inside the
+	// settled message.
 	vc = ValidatedCall{Name: "pay_with_item", DecodedArgs: PayWithItemArgs{Seller: "Moses James", Item: "Stew", Qty: 1, Amount: 4, QuoteID: 7}}
-	if got := commitResultContent(&vc, sim.PayWithItemResult{State: sim.PayLedgerStateAccepted, FastPath: true, EatHereClamped: true}); got != "[ok]"+note {
-		t.Errorf("clamped quote take = %q, want %q", got, "[ok]"+note)
+	got = commitResultContent(&vc, sim.PayWithItemResult{State: sim.PayLedgerStateAccepted, FastPath: true, EatHereClamped: true})
+	want = "[ok] Settled on the spot — you pay Moses James 4 coins for 1 stew." + note + " Call done() now unless something else needs you."
+	if got != want {
+		t.Errorf("clamped quote take:\n got %q\nwant %q", got, want)
 	}
 
 	// Unclamped result: steer unchanged.
@@ -244,6 +250,106 @@ func TestCommitResultContent_SceneQuoteEatHereClampNote(t *testing.T) {
 	// (code_review #415).
 	if got := commitResultContent(&vc, nil); got != "[ok] "+steer {
 		t.Errorf("nil result = %q, want soft steer without the standing claim", got)
+	}
+}
+
+// TestCommitResultContent_SettledQuoteTake pins the ZBBS-HOME-436 settled
+// quote-take feedback. An instant settle (HOME-424 fast path) used to return
+// the bare "[ok]" — the model read "nothing happened", and with the
+// within-tick perception body frozen at tick-start needs, it re-bought the
+// same item to the iteration budget (the Ezekiel six-meat morning, live
+// 2026-06-12). The settled message voices the payment, the meal or handover,
+// and the buyer's post-meal felt state computed from live commit-time needs.
+func TestCommitResultContent_SettledQuoteTake(t *testing.T) {
+	const steer = " Call done() now unless something else needs you."
+	args := func(item string, qty, amount int) PayWithItemArgs {
+		return PayWithItemArgs{Seller: "John Ellis", Item: item, Qty: qty, Amount: amount, QuoteID: 1, ConsumeNow: true}
+	}
+	cases := []struct {
+		name   string
+		vc     ValidatedCall
+		result sim.PayWithItemResult
+		want   string
+	}{
+		{
+			// The Ezekiel case: ate one, hunger met — explicit stop steer.
+			name:   "eat now, sated",
+			vc:     ValidatedCall{Name: "pay_with_item", DecodedArgs: args("Meat", 1, 4)},
+			result: sim.PayWithItemResult{State: sim.PayLedgerStateAccepted, FastPath: true, BuyerAte: 1, SatisfiesNeed: "hunger", FeltAfter: ""},
+			want:   "[ok] Settled on the spot — you pay John Ellis 4 coins for 1 meat. You eat it now. Your hunger is met — buy no more food now." + steer,
+		},
+		{
+			// Still hungry after the meal — honest state, no stop steer; a
+			// second purchase is then a legitimate model choice.
+			name:   "eat now, still hungry",
+			vc:     ValidatedCall{Name: "pay_with_item", DecodedArgs: args("Meat", 1, 4)},
+			result: sim.PayWithItemResult{State: sim.PayLedgerStateAccepted, FastPath: true, BuyerAte: 1, SatisfiesNeed: "hunger", FeltAfter: "hungry"},
+			want:   "[ok] Settled on the spot — you pay John Ellis 4 coins for 1 meat. You eat it now. You still feel hungry." + steer,
+		},
+		{
+			name:   "thirst variant, sated",
+			vc:     ValidatedCall{Name: "pay_with_item", DecodedArgs: args("Ale", 1, 2)},
+			result: sim.PayWithItemResult{State: sim.PayLedgerStateAccepted, FastPath: true, BuyerAte: 1, SatisfiesNeed: "thirst"},
+			want:   "[ok] Settled on the spot — you pay John Ellis 2 coins for 1 ale. You eat it now. Your thirst is met — buy no more drink now." + steer,
+		},
+		{
+			// WORK-391 needs-clamp split on a multi-unit order.
+			name:   "eat/kept split voiced",
+			vc:     ValidatedCall{Name: "pay_with_item", DecodedArgs: args("Bread", 4, 8)},
+			result: sim.PayWithItemResult{State: sim.PayLedgerStateAccepted, FastPath: true, BuyerAte: 2, KeptToInventory: 2, SatisfiesNeed: "hunger"},
+			want:   "[ok] Settled on the spot — you pay John Ellis 8 coins for 4 bread. You eat 2 now; 2 goes into your pack — you can absorb no more. Your hunger is met — buy no more food now." + steer,
+		},
+		{
+			// Take-home settle: no meal, goods handed over at accept.
+			name:   "take-home settle",
+			vc:     ValidatedCall{Name: "pay_with_item", DecodedArgs: PayWithItemArgs{Seller: "John Ellis", Item: "Bread", Qty: 2, Amount: 4, QuoteID: 1}},
+			result: sim.PayWithItemResult{State: sim.PayLedgerStateAccepted, FastPath: true, TookHome: true},
+			want:   "[ok] Settled on the spot — you pay John Ellis 4 coins for 2 bread. The goods are in your pack." + steer,
+		},
+		{
+			// Lodging settle: booking minted, check-in is the keeper's beat.
+			name:   "lodging booking",
+			vc:     ValidatedCall{Name: "pay_with_item", DecodedArgs: PayWithItemArgs{Seller: "John Ellis", Item: "nights_stay", Qty: 1, Amount: 4, QuoteID: 1}},
+			result: sim.PayWithItemResult{State: sim.PayLedgerStateAccepted, FastPath: true, Booked: true},
+			want:   "[ok] Settled on the spot — you pay John Ellis 4 coins for 1 nights_stay. Your lodging is booked — the keeper will see you checked in." + steer,
+		},
+		{
+			// A free quote (~0 coins) must not render "you pay 0 coins".
+			name:   "zero-coin settle",
+			vc:     ValidatedCall{Name: "pay_with_item", DecodedArgs: args("Water", 1, 0)},
+			result: sim.PayWithItemResult{State: sim.PayLedgerStateAccepted, FastPath: true, BuyerAte: 1, SatisfiesNeed: "thirst"},
+			want:   "[ok] Settled on the spot — John Ellis hands over 1 water for nothing. You eat it now. Your thirst is met — buy no more drink now." + steer,
+		},
+		{
+			name:   "single coin is singular",
+			vc:     ValidatedCall{Name: "pay_with_item", DecodedArgs: args("Bread", 1, 1)},
+			result: sim.PayWithItemResult{State: sim.PayLedgerStateAccepted, FastPath: true, BuyerAte: 1, SatisfiesNeed: "hunger", FeltAfter: "peckish"},
+			want:   "[ok] Settled on the spot — you pay John Ellis 1 coin for 1 bread. You eat it now. You still feel peckish." + steer,
+		},
+		{
+			// Group order where the buyer ate nothing: surplus still voiced.
+			name:   "buyer not a consumer, surplus pocketed",
+			vc:     ValidatedCall{Name: "pay_with_item", DecodedArgs: args("Stew", 3, 6)},
+			result: sim.PayWithItemResult{State: sim.PayLedgerStateAccepted, FastPath: true, KeptToInventory: 1},
+			want:   "[ok] Settled on the spot — you pay John Ellis 6 coins for 3 stew. 1 uneaten goes into your pack." + steer,
+		},
+		{
+			// Defensive: a FastPath result with wrong-typed args still must not
+			// claim details it can't render.
+			name:   "wrong args type degrades to generic ok",
+			vc:     ValidatedCall{Name: "pay_with_item", DecodedArgs: struct{ X int }{X: 1}},
+			result: sim.PayWithItemResult{State: sim.PayLedgerStateAccepted, FastPath: true},
+			want:   "[ok]",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := commitResultContent(&tc.vc, tc.result)
+			if got != tc.want {
+				t.Errorf("commitResultContent\n got:  %q\n want: %q", got, tc.want)
+			}
+		})
 	}
 }
 

@@ -977,6 +977,26 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 				clampItem,
 			)
 		}
+		// A quote-take settles INSTANTLY (ZBBS-HOME-424): payment, goods,
+		// and any consume_now meal all land inside this one tool call. The
+		// old generic "[ok]" told the model nothing happened — and the
+		// within-tick continuation body re-renders from the tick-start
+		// snapshot, so the buyer's felt needs never legibly move either.
+		// The model re-bought the same item to the iteration budget (six
+		// meats in six seconds, live 2026-06-12). Voice what the settle
+		// actually did — money, goods, the meal, and the post-meal felt
+		// state computed from LIVE world state at commit — and steer to
+		// done(). ZBBS-HOME-436; supersedes the pre-424 "quote-take
+		// doesn't storm" assumption recorded below.
+		if r, ok := cmdResult.(sim.PayWithItemResult); ok && r.FastPath {
+			if args, ok := vc.DecodedArgs.(PayWithItemArgs); ok {
+				return settledPayContent(args, r, clampNote)
+			}
+			if clampNote != "" {
+				return "[ok]" + clampNote
+			}
+			return "[ok]"
+		}
 		if args, ok := vc.DecodedArgs.(PayWithItemArgs); ok {
 			// A plain new offer (no quote_id / in_response_to) is now a pending
 			// ledger entry the seller must accept, decline, or counter — the
@@ -985,8 +1005,8 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 			// re-offer storm. Echo what was offered for salience (Llama-3.3 emits
 			// empty assistant content on a tool call — the same weak-salience gap
 			// the speak echo above closes) and steer to done(), forbidding the
-			// re-offer. Quote-take (instant close) and counter-response are
-			// distinct flows that don't storm, so they keep the generic "[ok]".
+			// re-offer. Counter-responses are a distinct flow that doesn't
+			// storm, so they keep the generic "[ok]".
 			if args.QuoteID == 0 && args.InResponseTo == 0 {
 				item := strings.ToLower(strings.Join(strings.Fields(args.Item), " "))
 				if item == "" {
@@ -1019,6 +1039,67 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 		}
 	}
 	return "[ok]"
+}
+
+// settledPayContent composes the buyer's tool feedback for an instantly-
+// settled quote-take (ZBBS-HOME-436). The copy is light period voice
+// (ZBBS-HOME-421) with the functional tokens (done()) intact. Each sentence
+// states something the model cannot see anywhere else this tick: the settle
+// happened, what it ate vs pocketed, and how it feels NOW — the perception
+// body it re-reads after this message still shows tick-start needs.
+func settledPayContent(args PayWithItemArgs, r sim.PayWithItemResult, clampNote string) string {
+	item := strings.ToLower(strings.Join(strings.Fields(args.Item), " "))
+	if item == "" {
+		item = "those goods"
+	}
+	seller := strings.TrimSpace(args.Seller)
+	if seller == "" {
+		seller = "them"
+	}
+	var b strings.Builder
+	if args.Amount > 0 {
+		coinWord := "coins"
+		if args.Amount == 1 {
+			coinWord = "coin"
+		}
+		fmt.Fprintf(&b, "[ok] Settled on the spot — you pay %s %d %s for %d %s.", seller, args.Amount, coinWord, args.Qty, item)
+	} else {
+		fmt.Fprintf(&b, "[ok] Settled on the spot — %s hands over %d %s for nothing.", seller, args.Qty, item)
+	}
+	b.WriteString(clampNote)
+	switch {
+	case r.BuyerAte > 0 && r.KeptToInventory > 0:
+		fmt.Fprintf(&b, " You eat %d now; %d goes into your pack — you can absorb no more.", r.BuyerAte, r.KeptToInventory)
+	case r.BuyerAte == 1:
+		b.WriteString(" You eat it now.")
+	case r.BuyerAte > 1:
+		fmt.Fprintf(&b, " You eat %d now.", r.BuyerAte)
+	case r.KeptToInventory > 0:
+		// Group order: others ate, the surplus pockets to the buyer.
+		fmt.Fprintf(&b, " %d uneaten goes into your pack.", r.KeptToInventory)
+	}
+	if r.BuyerAte > 0 {
+		if r.FeltAfter != "" {
+			fmt.Fprintf(&b, " You still feel %s.", r.FeltAfter)
+		} else {
+			switch r.SatisfiesNeed {
+			case "hunger":
+				b.WriteString(" Your hunger is met — buy no more food now.")
+			case "thirst":
+				b.WriteString(" Your thirst is met — buy no more drink now.")
+			default:
+				b.WriteString(" You are satisfied — buy no more now.")
+			}
+		}
+	}
+	if r.TookHome {
+		b.WriteString(" The goods are in your pack.")
+	}
+	if r.Booked {
+		b.WriteString(" Your lodging is booked — the keeper will see you checked in.")
+	}
+	b.WriteString(" Call done() now unless something else needs you.")
+	return b.String()
 }
 
 // speakUtteranceKey returns the normalized dedup key for a speak call and true,

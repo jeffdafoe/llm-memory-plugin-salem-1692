@@ -818,6 +818,13 @@ func TestPayWithItem_FastPath_HappyPath_Takeaway(t *testing.T) {
 	if result.State != sim.PayLedgerStateAccepted {
 		t.Errorf("State = %q, want accepted", result.State)
 	}
+	// ZBBS-HOME-436: a takeaway settle reports the handover, no meal.
+	if !result.TookHome {
+		t.Error("TookHome = false, want true (physical takeaway delivered at accept)")
+	}
+	if result.BuyerAte != 0 || result.KeptToInventory != 0 || result.Booked {
+		t.Errorf("takeaway settle should carry no meal/booking: %+v", result)
+	}
 
 	// No PayOfferReceived on fast path; PayWithItemResolved{Accepted}
 	// is the only resolution event.
@@ -889,6 +896,19 @@ func TestPayWithItem_FastPath_HappyPath_ConsumeNow(t *testing.T) {
 	if !res.(sim.PayWithItemResult).FastPath {
 		t.Error("FastPath = false")
 	}
+	// ZBBS-HOME-436: the settle reports the buyer's meal and post-meal felt
+	// state. Alice's needs are all zero here, so the meal leaves her below
+	// the awareness floor — sated, nothing left to voice.
+	result := res.(sim.PayWithItemResult)
+	if result.BuyerAte != 1 {
+		t.Errorf("BuyerAte = %d, want 1 (implicit buyer-consumer)", result.BuyerAte)
+	}
+	if result.SatisfiesNeed != "hunger" {
+		t.Errorf("SatisfiesNeed = %q, want hunger (stew's primary restore)", result.SatisfiesNeed)
+	}
+	if result.FeltAfter != "" {
+		t.Errorf("FeltAfter = %q, want empty (sated)", result.FeltAfter)
+	}
 	if len(events.Consumed) != 1 {
 		t.Fatalf("ItemConsumed = %d, want 1 (buyer is implicit consumer)", len(events.Consumed))
 	}
@@ -899,6 +919,39 @@ func TestPayWithItem_FastPath_HappyPath_ConsumeNow(t *testing.T) {
 	snap := w.Published()
 	if got := snap.Actors["alice"].InventoryHash; got != 0 {
 		t.Errorf("alice.InventoryHash = %d, want 0 (consumed, not stocked)", got)
+	}
+}
+
+// TestPayWithItem_FastPath_ConsumeNow_StillHungryFelt (ZBBS-HOME-436): when
+// one unit doesn't clear the buyer's need, the settle result voices the
+// remaining felt state from LIVE post-commit needs — the within-tick
+// perception body is frozen at tick-start values and cannot. A deep-red
+// hunger minus stew's immediate 4 stays red, so FeltAfter carries the red
+// label and the model has an honest within-tick reason to buy once more —
+// and, when FeltAfter later empties, to stop.
+func TestPayWithItem_FastPath_ConsumeNow_StillHungryFelt(t *testing.T) {
+	w, stop, at := buildFastPathFixture(t, 7)
+	defer stop()
+	mustSend(t, w, func(world *sim.World) {
+		world.Quotes[7].ConsumeNow = true
+		world.Actors["alice"].Needs = map[sim.NeedKey]int{"hunger": sim.NeedMax}
+	})
+
+	res, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 4, true, nil, nil, 7, 0, "", at))
+	if err != nil {
+		t.Fatalf("PayWithItem fast-path consume_now: %v", err)
+	}
+	result := res.(sim.PayWithItemResult)
+	if result.BuyerAte != 1 {
+		t.Errorf("BuyerAte = %d, want 1", result.BuyerAte)
+	}
+	if result.SatisfiesNeed != "hunger" {
+		t.Errorf("SatisfiesNeed = %q, want hunger", result.SatisfiesNeed)
+	}
+	// NeedMax (24) - stew immediate (4) = 20, still at or above the default
+	// red threshold — the red label, not mild.
+	if result.FeltAfter != "hungry" {
+		t.Errorf("FeltAfter = %q, want %q", result.FeltAfter, "hungry")
 	}
 }
 

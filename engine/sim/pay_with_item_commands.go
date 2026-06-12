@@ -157,6 +157,21 @@ type PayWithItemResult struct {
 	// adjusted disposition instead of leaving the model believing it
 	// carried the goods off.
 	EatHereClamped bool
+	// Fast-path settle summary (ZBBS-HOME-436). A quote-take settles, pays,
+	// and (consume_now) feeds the buyer inside this one tool call, but the
+	// buyer's feedback was a bare [ok] — and the within-tick perception body
+	// re-renders from the tick-start snapshot, so the buyer's felt needs
+	// never legibly move. The model read "nothing happened" and re-bought to
+	// the iteration budget (the Ezekiel six-meat morning, live 2026-06-12).
+	// These fields let the harness voice what the settle actually did,
+	// computed on the world goroutine from LIVE post-commit state. All zero
+	// for slow-path (pending) entries.
+	BuyerAte        int     // units the buyer themself ate now
+	KeptToInventory int     // surplus units pocketed into the buyer's pack (needs-clamp)
+	TookHome        bool    // physical goods handed over at accept
+	Booked          bool    // lodging Order minted, awaiting keeper check-in
+	SatisfiesNeed   NeedKey // primary need the consumed item satisfies ("" when n/a)
+	FeltAfter       string  // buyer's post-meal felt label(s) for the item's needs; "" = sated
 }
 
 // PayWithItem returns the Command for the buyer-initiated pay-with-item
@@ -896,7 +911,8 @@ func runPayWithItemFastPath(
 	// subsequent step somehow drifts), then item movement + ConsumeNow
 	// application + relationship writes. All on the world goroutine,
 	// serialized by construction — no rollback needed.
-	if err := commitPayTransfer(w, buyer, seller, entry, at, forText); err != nil {
+	out, err := commitPayTransfer(w, buyer, seller, entry, at, forText)
+	if err != nil {
 		// Theoretically unreachable — predicates 6 covered every
 		// mutation failure mode. If it ever fires, that's a bug, not
 		// a domain error.
@@ -925,9 +941,15 @@ func runPayWithItemFastPath(
 	entry.SourceEventID = evt.EventID()
 
 	return PayWithItemResult{
-		LedgerID: id,
-		State:    PayLedgerStateAccepted,
-		FastPath: true,
+		LedgerID:        id,
+		State:           PayLedgerStateAccepted,
+		FastPath:        true,
+		BuyerAte:        out.buyerAte,
+		KeptToInventory: out.keptToInventory,
+		TookHome:        out.tookHome,
+		Booked:          out.booked,
+		SatisfiesNeed:   out.satisfiesNeed,
+		FeltAfter:       out.feltAfter,
 	}, nil
 }
 
@@ -1119,7 +1141,7 @@ func acceptPendingOffer(w *World, seller *Actor, entry *PayLedgerEntry, at time.
 	}
 
 	// All gates pass. Atomic transfer + state flip + emit.
-	if err := commitPayTransfer(w, buyer, seller, entry, at, ""); err != nil {
+	if _, err := commitPayTransfer(w, buyer, seller, entry, at, ""); err != nil {
 		// Theoretically unreachable — gates covered every path.
 		return entry.State, fmt.Errorf("acceptPendingOffer: transfer for ledger %d: %w", entry.ID, err)
 	}
@@ -1866,6 +1888,49 @@ func finalizePayLedgerTerminal(
 	return entry.State
 }
 
+// payTransferOutcome is commitPayTransfer's buyer-visible summary of the
+// atomic commit, carried onto PayWithItemResult for fast-path settles so the
+// buyer's tool feedback can voice what actually happened (ZBBS-HOME-436).
+type payTransferOutcome struct {
+	buyerAte        int     // units the buyer themself consumed now
+	keptToInventory int     // surplus units pocketed into the buyer's pack
+	tookHome        bool    // physical take-home handed over at accept
+	booked          bool    // lodging Order minted for keeper check-in
+	satisfiesNeed   NeedKey // primary need the consumed item satisfies
+	feltAfter       string  // buyer's post-consume felt label(s); "" = sated
+}
+
+// buyerFeltAfterConsume reports the buyer's post-consume felt state for the
+// need(s) the item satisfies: the primary need key (largest per-unit restore)
+// and the joined felt labels for every satisfied need still at or above the
+// awareness floor. An empty felt string means the meal left the buyer below
+// the floor — sated, nothing to voice. Runs on the world goroutine against
+// live post-commit needs, which the once-per-tick perception render cannot
+// show the model mid-tick. ZBBS-HOME-436.
+func buyerFeltAfterConsume(buyer *Actor, def *ItemKindDef, thresholds NeedThresholds) (NeedKey, string) {
+	if buyer == nil || def == nil {
+		return "", ""
+	}
+	primary, best := NeedKey(""), 0
+	var felt []string
+	for _, s := range def.Satisfies {
+		if s.Immediate <= 0 {
+			continue
+		}
+		if s.Immediate > best {
+			best, primary = s.Immediate, s.Attribute
+		}
+		n, ok := FindNeed(s.Attribute)
+		if !ok {
+			continue
+		}
+		if label := n.Label(n.Tier(buyer.Needs[s.Attribute], thresholds.Get(s.Attribute))); label != "" {
+			felt = append(felt, label)
+		}
+	}
+	return primary, strings.Join(felt, ", ")
+}
+
 // commitPayTransfer performs the AcceptPay / fast-path-accept atomic
 // commit: coin debit + item movement + ConsumeNow per-consumer apply +
 // bidirectional buyer/seller relationship writes + per-consumer
@@ -1904,13 +1969,18 @@ func finalizePayLedgerTerminal(
 // forText (slow-path: empty; fast-path: the buyer's flavor text on the
 // pay_with_item call) is folded into the buyer/seller SalientFact via
 // payAcceptedFactText.
+//
+// The returned payTransferOutcome summarizes the buyer-visible effects so
+// the fast path can voice them in the buyer's tool feedback (ZBBS-HOME-436).
+// AcceptPay discards it — the buyer isn't the actor reading that result.
 func commitPayTransfer(
 	w *World,
 	buyer, seller *Actor,
 	entry *PayLedgerEntry,
 	at time.Time,
 	forText string,
-) error {
+) (payTransferOutcome, error) {
+	var out payTransferOutcome
 	// Two-way swap (ZBBS-HOME-393): the buyer pays with coins AND/OR goods.
 	// Validate the goods leg in full BEFORE mutating anything so a single
 	// bad line aborts the whole swap (validate-all-then-apply, mirroring
@@ -1932,11 +2002,11 @@ func commitPayTransfer(
 	totals := make(map[ItemKind]int, len(entry.PayItems))
 	for _, pi := range entry.PayItems {
 		if pi.Qty < 1 {
-			return fmt.Errorf("commitPayTransfer: invalid pay_item qty %d for %s", pi.Qty, pi.Kind)
+			return payTransferOutcome{}, fmt.Errorf("commitPayTransfer: invalid pay_item qty %d for %s", pi.Qty, pi.Kind)
 		}
 		next, err := addChecked(totals[pi.Kind], pi.Qty)
 		if err != nil {
-			return fmt.Errorf("commitPayTransfer: pay_item total for %s would overflow", pi.Kind)
+			return payTransferOutcome{}, fmt.Errorf("commitPayTransfer: pay_item total for %s would overflow", pi.Kind)
 		}
 		totals[pi.Kind] = next
 	}
@@ -1944,11 +2014,11 @@ func commitPayTransfer(
 	for kind, qty := range totals {
 		have := buyer.Inventory[kind]
 		if have < qty {
-			return fmt.Errorf("commitPayTransfer: buyer %q lacks %d %s mid-commit (have %d)", buyer.ID, qty, kind, have)
+			return payTransferOutcome{}, fmt.Errorf("commitPayTransfer: buyer %q lacks %d %s mid-commit (have %d)", buyer.ID, qty, kind, have)
 		}
 		sellerPost, err := addChecked(seller.Inventory[kind], qty)
 		if err != nil {
-			return fmt.Errorf("commitPayTransfer: seller %q %s balance would overflow", seller.ID, kind)
+			return payTransferOutcome{}, fmt.Errorf("commitPayTransfer: seller %q %s balance would overflow", seller.ID, kind)
 		}
 		moves = append(moves, payItemMove{kind: kind, buyerPostQty: have - qty, sellerPostQty: sellerPost})
 	}
@@ -2024,9 +2094,10 @@ func commitPayTransfer(
 		}
 		if totalKept > 0 {
 			if _, err := addChecked(buyer.Inventory[entry.ItemKind], totalKept); err != nil {
-				return fmt.Errorf("commitPayTransfer: buyer %q %s balance would overflow pocketing surplus", buyer.ID, entry.ItemKind)
+				return payTransferOutcome{}, fmt.Errorf("commitPayTransfer: buyer %q %s balance would overflow pocketing surplus", buyer.ID, entry.ItemKind)
 			}
 		}
+		out.keptToInventory = totalKept
 		for _, sp := range splits {
 			cid, consumer, eat, kept := sp.cid, sp.consumer, sp.eat, sp.kept
 			// "service"-capability items (e.g. nights_stay) carry no
@@ -2042,7 +2113,7 @@ func commitPayTransfer(
 					// Defensive — gate 10 ensured `seller.Inventory[kind]
 					// >= Qty * effectiveConsumers`. If a subscriber fired
 					// mid-loop somehow drained inventory, abort transfer.
-					return fmt.Errorf("commitPayTransfer: seller %q inventory drained mid-commit", seller.ID)
+					return payTransferOutcome{}, fmt.Errorf("commitPayTransfer: seller %q inventory drained mid-commit", seller.ID)
 				}
 				seller.Inventory[entry.ItemKind] = have - entry.Qty
 				if seller.Inventory[entry.ItemKind] == 0 {
@@ -2072,6 +2143,7 @@ func commitPayTransfer(
 			eventKept := 0
 			if cid == entry.BuyerID {
 				eventKept = kept
+				out.buyerAte = eat
 			}
 			w.emit(&ItemConsumed{
 				ActorID: cid,
@@ -2096,7 +2168,11 @@ func commitPayTransfer(
 				})
 			}
 		}
+		if out.buyerAte > 0 {
+			out.satisfiesNeed, out.feltAfter = buyerFeltAfterConsume(buyer, def, w.Settings.NeedThresholds)
+		}
 	} else if itemHasCapability(w, entry.ItemKind, "lodging") {
+		out.booked = true
 		// Lodging is a deferred booking, NOT an immediate handover: mint the
 		// Order at Ready and leave it for the keeper to check the guest in via
 		// deliver_order. That check-in is the designed mechanic — the room
@@ -2117,9 +2193,10 @@ func commitPayTransfer(
 		// fulfillment), handled like the ConsumeNow drift errors above.
 		o, err := mintAndTransferTakeHomeOrder(w, entry, seller, at)
 		if err != nil {
-			return err
+			return payTransferOutcome{}, err
 		}
 		deliveredTakeHome = o
+		out.tookHome = true
 	}
 
 	// Bidirectional Paid / PaidBy SalientFacts for the buyer↔seller
@@ -2149,7 +2226,7 @@ func commitPayTransfer(
 	if deliveredTakeHome != nil {
 		flipOrderTerminal(w, deliveredTakeHome, OrderStateDelivered, at)
 	}
-	return nil
+	return out, nil
 }
 
 // consumableUnits returns how many of maxQty units the actor's current
