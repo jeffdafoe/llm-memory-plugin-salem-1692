@@ -244,7 +244,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// before the coda so the coda's "weigh everything above" sees it; the coda
 	// itself swaps to a wait-framing when the actor is awaiting a reply.
 	renderTurnState(&ephemeral, p.TurnState)
-	renderTriage(&ephemeral, p.Actor.Needs, p.Actor.NeedThresholds, p.TurnState.AwaitingReply(), len(payOffers) > 0)
+	renderTriage(&ephemeral, p.Actor.Needs, p.Actor.NeedThresholds, p.TurnState.AwaitingReply(), len(payOffers) > 0, p.Actor.InFlightMove)
 
 	out.Text = durable.String()
 	out.EphemeralText = ephemeral.String()
@@ -302,7 +302,7 @@ func joinNames(names []string) string {
 // wandering exposed: obligations to others and pressing needs over idle drift.
 // Rendered unconditionally — Render is only called on the NPC reactor-tick path
 // (handlers.Harness.RunTick), never for a PC.
-func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.NeedThresholds, awaitingReply bool, hasPayOffers bool) {
+func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.NeedThresholds, awaitingReply bool, hasPayOffers bool, inFlightMove *InFlightMoveView) {
 	// A buyer's offer awaiting this actor's answer outranks everything below —
 	// including the actor's own felt needs, which the coda's "pressing needs"
 	// phrasing otherwise licenses to win. Without this, a starving seller read
@@ -311,7 +311,23 @@ func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.
 	if hasPayOffers {
 		b.WriteString("A buyer's offer awaits your answer — settle it first with accept_pay, decline_pay, or counter_pay, before tending to your own needs.\n")
 	}
-	if awaitingReply {
+	switch {
+	case inFlightMove != nil:
+		// Mid-walk coda (ZBBS-HOME-439) — the walking analogue of WORK-370's
+		// awaiting-reply swap. A tick that fires while the actor has a
+		// committed walk used to render the act-now coda ("Choose one
+		// action") against a toolset the walk gating had narrowed to
+		// essentially stop / move_to / done — and the model obliged with
+		// stop, killing its own commute (live: Josiah cancelled both of his
+		// morning walks to the General Store within seconds, 2026-06-12).
+		// Make continuing the legible default; stop stays available for a
+		// genuine change of course prompted by what the tick surfaced.
+		fmt.Fprintf(b,
+			"You are already %s. Weigh what's above — unless it gives you a real "+
+				"reason to change course, call done() and keep walking. Do not stop "+
+				"without cause.\n",
+			renderInFlightMove(*inFlightMove))
+	case awaitingReply:
 		// Turn-state coda (ZBBS-WORK-370): the actor has spoken and is awaiting a
 		// reply. The default "choose one thing and do it" imperative is exactly
 		// what drove the re-pitch loop (live-trace finding #2) — it commands an
@@ -320,7 +336,7 @@ func renderTriage(b *strings.Builder, needs map[sim.NeedKey]int, thresholds sim.
 		// action, but "nothing new to add" now resolves to done() instead of a
 		// repeated pitch.
 		b.WriteString("Weigh everything above. If the most pressing matter is simply awaiting someone's reply, do not repeat yourself — wait and call done(). Otherwise act on what matters most: obligations to others and pressing needs come before idle matters.\n")
-	} else {
+	default:
 		// Universal decision section (ZBBS-WORK-374), replacing the bare HOME-355
 		// "choose one thing and do it" coda. Same intent — weigh the context, act
 		// on what matters — but it now carries the turn-discipline at the decision
