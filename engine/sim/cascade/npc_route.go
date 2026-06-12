@@ -176,11 +176,28 @@ func runScheduledRoute(w *sim.World, attrSlug string, now time.Time, build func(
 	}
 	candidates := build(w, isStart)
 	cmd := sim.StartNPCRoute(actor.ID, attrSlug, homeDestinationFor(actor), candidates, now)
-	if _, err := cmd.Fn(w); err != nil {
+	res, err := cmd.Fn(w)
+	if err != nil {
 		log.Printf("cascade/npc_route: %s boundary dispatch (actor %q): %v",
 			attrSlug, actor.ID, err)
 		return
 	}
+	// Log EVERY boundary fire, including the silent-before-this no-op
+	// shapes (0 candidates = nothing to do; candidates>0 with 0 stops =
+	// nothing REACHABLE — the distinction matters when diagnosing a
+	// route NPC that never walks). StartNPCRoute itself only logs when
+	// stops > 0.
+	started, ok := res.(sim.StartNPCRouteResult)
+	if !ok {
+		// Don't collapse a broken result contract into "0 reachable
+		// stops" — that's exactly the shape this log exists to diagnose.
+		log.Printf("cascade/npc_route: %s boundary fired (start=%v, boundary=%s) — %d candidate(s), unexpected StartNPCRoute result %T",
+			attrSlug, isStart, boundary.Format(time.RFC3339), len(candidates), res)
+		sim.StampRouteBoundary(w, attrSlug, boundary)
+		return
+	}
+	log.Printf("cascade/npc_route: %s boundary fired (start=%v, boundary=%s) — %d candidate(s), %d stop(s), replaced=%v",
+		attrSlug, isStart, boundary.Format(time.RFC3339), len(candidates), started.Stops, started.Replaced)
 	sim.StampRouteBoundary(w, attrSlug, boundary)
 }
 
