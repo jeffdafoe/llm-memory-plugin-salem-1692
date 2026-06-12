@@ -231,6 +231,26 @@ func TestTranslateEvent_Spoke(t *testing.T) {
 	if d.At != at.UTC().Format(time.RFC3339) {
 		t.Errorf("at = %q, want %q", d.At, at.UTC().Format(time.RFC3339))
 	}
+
+	// ZBBS-HOME-437: PC bystanders merge into the frame's recipient_ids (the
+	// client's render-audience check) after the huddle members. The hub
+	// broadcasts every frame to every client; this merged list is what lets a
+	// non-member PC's talk panel overhear the line.
+	frame2, ok2 := TranslateEvent(&sim.Spoke{
+		SpeakerID:      "hannah",
+		HuddleID:       "huddle-1",
+		RecipientIDs:   []sim.ActorID{"bram", "ezekiel"},
+		PCBystanderIDs: []sim.ActorID{"pc-1"},
+		Text:           "Good evening.",
+		At:             at,
+	})
+	if !ok2 {
+		t.Fatal("Spoke with bystanders should translate")
+	}
+	d2 := frame2.Data.(spokeWireDTO)
+	if !reflect.DeepEqual(d2.RecipientIDs, []string{"bram", "ezekiel", "pc-1"}) {
+		t.Errorf("recipients with bystander = %+v, want [bram ezekiel pc-1]", d2.RecipientIDs)
+	}
 	// SpeechID aliases the event's EventID, which is 0 until World.emit stamps
 	// it. This event was constructed directly (never emitted), so 0 is expected
 	// here; the live path stamps it via emit. Asserted so a mapping change is caught.

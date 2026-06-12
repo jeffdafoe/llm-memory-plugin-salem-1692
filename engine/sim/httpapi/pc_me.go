@@ -220,7 +220,7 @@ func (s *Server) handlePCMe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp.HuddleMembers = pcHuddleRoster(snap, pc, pcID, audienceStructureID, snap.PublishedAt, sim.PCPresenceStaleAfter(s.world))
-	resp.RecentSpeech = pcRecentSpeechBackload(snap, pc)
+	resp.RecentSpeech = pcRecentSpeechBackload(snap, pc, audienceStructureID)
 	resp.Inventory = pcInventoryEntries(pc.Inventory, s.world.ItemKinds)
 
 	for k, v := range pc.Needs {
@@ -452,22 +452,37 @@ func pcHuddleMemberOf(a *sim.ActorSnapshot) pcHuddleMember {
 	return m
 }
 
-// pcRecentSpeechBackload renders the talk-panel backload from the action log,
-// scoped to the PC's current huddle. v2's ActionLog is huddle-keyed and stores
-// raw Text, so this filters Snapshot.ActionLog by the PC's HuddleID within the
-// cutoff window and renders each entry's prose here. A huddle-less PC (just
-// arrived / outdoors) gets no backload and fills the panel from live WS instead.
+// pcRecentSpeechBackload renders the talk-panel backload from the action log.
+// A huddled PC gets its huddle's thread (the conversation is the pocket); a
+// huddle-less PC standing in a conversational scope gets the entries stamped
+// with that STRUCTURE scope and a matching room subspace (ZBBS-HOME-437) — so
+// walking into the Tavern after an NPC↔NPC sale still shows what the room
+// recently heard, even though those huddles have concluded and their ids no
+// longer resolve. A PC in a private/staff room only backloads that room's
+// entries; a public-scope PC only public ones — mirroring the live npc_spoke
+// filter. Out of any scope (open ground, in transit) → no backload; the panel
+// fills from live WS instead.
 // ActionLog is append-ordered (oldest→newest); the client appends in that order,
 // so the last pcRecentSpeechLimit entries are returned oldest→newest.
-func pcRecentSpeechBackload(snap *sim.Snapshot, pc *sim.ActorSnapshot) []pcRecentSpeech {
-	if pc.CurrentHuddleID == "" {
+func pcRecentSpeechBackload(snap *sim.Snapshot, pc *sim.ActorSnapshot, audienceStructureID string) []pcRecentSpeech {
+	if pc.CurrentHuddleID == "" && audienceStructureID == "" {
 		return nil
+	}
+	// The PC's room subspace for structure-scope matching: its room id when
+	// that room is private/staff (pcAudienceRoom ok), else 0 = public.
+	pcRoomScope := sim.RoomID(0)
+	if _, ok := pcAudienceRoom(snap, pc); ok {
+		pcRoomScope = pc.InsideRoomID
 	}
 	cutoff := snap.PublishedAt.Add(-pcRecentSpeechCutoff)
 	out := []pcRecentSpeech{}
 	for i := range snap.ActionLog {
 		e := snap.ActionLog[i]
-		if e.HuddleID != pc.CurrentHuddleID {
+		if pc.CurrentHuddleID != "" {
+			if e.HuddleID != pc.CurrentHuddleID {
+				continue
+			}
+		} else if string(e.StructureID) != audienceStructureID || e.RoomID != pcRoomScope {
 			continue
 		}
 		if e.OccurredAt.Before(cutoff) {

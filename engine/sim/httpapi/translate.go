@@ -87,9 +87,19 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			InsideStructureID: string(e.InsideStructureID),
 		}}, true
 	case *sim.Spoke:
-		recipients := make([]string, len(e.RecipientIDs))
-		for i, id := range e.RecipientIDs {
-			recipients[i] = string(id)
+		// recipient_ids is the frame's RENDER audience: huddle members plus
+		// the PC bystanders within earshot (ZBBS-HOME-437). The hub
+		// broadcasts every frame to every client; this list is what a
+		// client's talk panel checks itself against, so merging bystanders
+		// here is what lets a player overhear room conversation without
+		// being a huddle member. Engine-side speech consumers read the
+		// EVENT's RecipientIDs and never see this merge.
+		recipients := make([]string, 0, len(e.RecipientIDs)+len(e.PCBystanderIDs))
+		for _, id := range e.RecipientIDs {
+			recipients = append(recipients, string(id))
+		}
+		for _, id := range e.PCBystanderIDs {
+			recipients = append(recipients, string(id))
 		}
 		// Structured sale hints (ZBBS-WORK-400): forward the commit-time-
 		// filtered mentions on the same wire fields the scene_quote frame
