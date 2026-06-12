@@ -491,7 +491,7 @@ const (
 //
 // The follow-up command re-reads the errand by id and bails if it's gone or
 // has moved on (superseded by an abandon, or the world advanced) — the
-// errand-generation check is the WorldEventGen-free analog of the phase
+// errand-generation check is the counter-free analog of the phase
 // flip's guard: identity by (id, expected state) rather than a generation
 // counter, since an errand is single-owner and can only legitimately be in
 // one state when its beat fires.

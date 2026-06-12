@@ -72,7 +72,8 @@ func TestScheduledFlipReturnsAfterShutdown(t *testing.T) {
 		sim.FireScheduledFlip(w, sim.PendingFlip{
 			ObjectID: "lamp-1",
 			NewState: "lit",
-			Gen:      w.WorldEventGen.Load(),
+			Gen:      w.PhaseFlipGen.Load(),
+			Domain:   sim.FlipDomainPhase,
 		})
 		close(done)
 	}()

@@ -37,8 +37,9 @@ import (
 //     will own those once npc_behaviors ports).
 //
 // Flips fire asynchronously via the shared scheduleFlips helper, each
-// stamped with WorldEventGen so a later transition cleanly invalidates
-// stale flips (same mechanism as ApplyPhaseTransition).
+// stamped with RotationFlipGen so a later rotation cleanly invalidates
+// stale flips (same mechanism as ApplyPhaseTransition, on its own
+// counter — see ZBBS-HOME-447).
 //
 // What's deferred:
 //
@@ -155,7 +156,9 @@ type RotationResult struct {
 //  1. Computes the per-object PendingFlip list via DetermineRotationFlips
 //     against (world, scope, inputs.Rand).
 //  2. Stamps World.Environment.LastRotationAt = inputs.Now.
-//  3. Bumps WorldEventGen and stamps it onto every flip.
+//  3. Bumps RotationFlipGen and stamps it (+ FlipDomainRotation) onto
+//     every flip — its own counter, so an in-flight phase transition's
+//     spread flips are not invalidated (ZBBS-HOME-447).
 //  4. Schedules the flips via scheduleFlips (same helper the phase path
 //     uses — async fire with TransitionSpreadSeconds stagger).
 //  5. Emits a RotationApplied event so subscribers (npc_behaviors cascade,
@@ -184,9 +187,10 @@ func ApplyDailyRotation(inputs RotationTickInputs, scope RotationScope) Command 
 			flips := determineRotationFlips(w, scope, inputs.Rand)
 
 			w.Environment.LastRotationAt = now
-			gen := w.WorldEventGen.Add(1)
+			gen := w.RotationFlipGen.Add(1)
 			for i := range flips {
 				flips[i].Gen = gen
+				flips[i].Domain = FlipDomainRotation
 			}
 
 			scheduleFlips(w, flips)
