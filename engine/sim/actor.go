@@ -646,6 +646,15 @@ type Actor struct {
 	// so a walk that ends normally clears its column on the next write.
 	ResumeDestination *MoveDestination
 
+	// lastStrandedWarrantAt rate-limits the anomalous-position backstop
+	// (ZBBS-HOME-450): the idle-backstop sweep stamps at most one
+	// StrandedWarrantReason per strandedWarrantCooldown on a still-
+	// stranded actor, so an actor that deliberates and CHOOSES to stand
+	// in the open doesn't burn an LLM call every sweep. In-memory,
+	// restart-lossy on purpose — the first post-boot sweep re-fires for a
+	// still-stranded actor, which doubles as boot recovery.
+	lastStrandedWarrantAt time.Time
+
 	// Relationships (per-actor views, not a global graph).
 	Acquaintances map[string]Acquaintance
 	Relationships map[ActorID]*Relationship

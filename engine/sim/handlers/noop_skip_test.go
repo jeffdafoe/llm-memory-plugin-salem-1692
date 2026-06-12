@@ -434,3 +434,17 @@ func TestHarness_NoopSkip_HighInfoWarrant_FiresLLMCall(t *testing.T) {
 // terminalStatusAddresses(TickStatusSkipped) == true. The end-to-end
 // flow (RunTick → Skipped → CompleteReactorTick → recently-consumed) is
 // implicit in those two pieces composing.
+
+// TestShouldSkipNoop_StrandedRuns: the anomalous-position backstop warrant
+// (ZBBS-HOME-450) is high-info by classification — the whole point is that
+// the tick RUNS so the stranded actor perceives standing in the open and
+// re-decides. A quiet payload must not eat it.
+func TestShouldSkipNoop_StrandedRuns(t *testing.T) {
+	w := sim.WarrantMeta{
+		TriggerActorID: "alice",
+		Reason:         sim.StrandedWarrantReason{},
+	}
+	if shouldSkipNoop(quietPayload(), defaultThresholds(), []sim.WarrantMeta{w}) {
+		t.Fatalf("expected skip=false for the stranded backstop warrant")
+	}
+}
