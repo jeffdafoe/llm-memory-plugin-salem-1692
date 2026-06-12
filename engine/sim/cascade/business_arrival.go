@@ -28,7 +28,15 @@ func handleBusinessArrival(w *sim.World, evt sim.Event) {
 		return
 	}
 	if arrived.FinalStructureID == "" {
-		return // outdoor — the encounter cascade owns it
+		// Outdoor arrival. A knock (ZBBS-HOME-445) lands here by definition —
+		// the knocker stops at the loiter slot, outside — and DestStructureID
+		// names the knocked structure; the knock bootstrap forms the
+		// across-the-doorway service huddle. Every other outdoor arrival
+		// belongs to the encounter cascade (which skips Knocked ones).
+		if arrived.Knocked && arrived.DestStructureID != "" {
+			_, _ = sim.EnsureKnockServiceHuddle(arrived.ActorID, arrived.DestStructureID, arrived.At).Fn(w)
+		}
+		return
 	}
 	// The event's final structure rides into the Command, which verifies the
 	// actor is still inside it (stale-arrival guard). The Command never

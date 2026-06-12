@@ -7,9 +7,9 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
 
-// setInside marks an actor as physically inside a structure (the keeper-present
-// precondition for a knock to form a service huddle). buildMembershipTestWorld
-// seeds everyone outside, so tests opt an actor in explicitly.
+// setInside marks an actor as physically inside a structure (the receiver-present
+// precondition for a knock to be answered). buildMembershipTestWorld seeds
+// everyone outside, so tests opt an actor in explicitly.
 func setInside(t *testing.T, w *sim.World, actorID sim.ActorID, sid sim.StructureID) {
 	t.Helper()
 	// Use the real setter (exported for tests) so the outdoor-actors index and
@@ -57,6 +57,17 @@ func insideOf(t *testing.T, w *sim.World, actorID sim.ActorID) sim.StructureID {
 	return res.(sim.StructureID)
 }
 
+// knockFlagOf reads the Knock stamp off the actor's in-flight MoveIntent
+// destination. Fails the test when no MoveIntent is in flight.
+func knockFlagOf(t *testing.T, w *sim.World, actorID sim.ActorID) bool {
+	t.Helper()
+	mi := moveIntentOf(t, w, actorID)
+	if mi == nil {
+		t.Fatalf("%s has no MoveIntent in flight", actorID)
+	}
+	return mi.Destination.Knock
+}
+
 // TestEnterOrKnock_MemberEnters: a member of an owner-only structure is routed
 // through the door, not turned away — Knocked stays false and no service huddle
 // forms (the inside flip happens on arrival, as for a bare StructureEnter).
@@ -73,24 +84,30 @@ func TestEnterOrKnock_MemberEnters(t *testing.T) {
 	if out.Knocked {
 		t.Error("a member should enter, not knock")
 	}
-	if out.HuddleJoined {
-		t.Error("a member entering should not form a knock huddle")
+	if got := huddleOf(t, w, "spouse"); got != "" {
+		t.Errorf("a member entering should not be huddled; got %q", got)
 	}
 	if out.MovementAttemptID == 0 {
 		t.Error("expected a movement attempt to be stamped")
 	}
+	if knockFlagOf(t, w, "spouse") {
+		t.Error("a member's enter walk should not carry the Knock stamp")
+	}
 }
 
 // TestEnterOrKnock_StrangerKnocksKeeperInside: a non-member at an owner-only
-// structure with an associated keeper inside knocks — routed to the loiter slot
-// (stays outside), and shares a newly-formed service huddle with the keeper so
-// speak/pay (both huddle-scoped) work across the doorway.
+// structure with a receptive receiver inside knocks — routed to the loiter slot
+// with the destination stamped Knock=true. NO huddle forms at click
+// (ZBBS-HOME-445: the service huddle forms on arrival, so the locomotion
+// ticker's mover-leave rule has no mid-walk membership to evict and the
+// businessowner farewell cascade sees no phantom departure), and the narration
+// stays empty — the arrival-time greet is the "door answered" feedback.
 func TestEnterOrKnock_StrangerKnocksKeeperInside(t *testing.T) {
 	w, cancel := buildMembershipTestWorld(t)
 	defer cancel()
 	now := time.Now().UTC()
 
-	setInside(t, w, "servant", "cottage") // servant's WorkStructureID is cottage → the keeper
+	setInside(t, w, "servant", "cottage") // servant's WorkStructureID is cottage → the receiver
 
 	res, err := w.Send(sim.EnterOrKnock("stranger", "cottage", true, now))
 	if err != nil {
@@ -100,24 +117,24 @@ func TestEnterOrKnock_StrangerKnocksKeeperInside(t *testing.T) {
 	if !out.Knocked {
 		t.Error("a non-member at an owner-only structure should knock")
 	}
-	if !out.HuddleJoined {
-		t.Error("a keeper is inside, so a service huddle should form")
+	if out.KnockNarration != "" {
+		t.Errorf("a receiver is in — narration should be empty (the arrival greet is the feedback); got %q", out.KnockNarration)
 	}
-	if out.KnockNarration == "" {
-		t.Error("a knock should carry narration")
+	if !knockFlagOf(t, w, "stranger") {
+		t.Error("the knock walk should carry the Knock destination stamp")
 	}
-	if got := insideOf(t, w, "stranger"); got != "" {
-		t.Errorf("knocker should stay physically outside; InsideStructureID = %q", got)
+	if got := huddleOf(t, w, "stranger"); got != "" {
+		t.Errorf("no huddle should form at click time; knocker in %q", got)
 	}
-	stranger, keeper := huddleOf(t, w, "stranger"), huddleOf(t, w, "servant")
-	if stranger == "" || stranger != keeper {
-		t.Errorf("knocker and keeper should share one huddle; stranger=%q servant=%q", stranger, keeper)
+	if got := huddleOf(t, w, "servant"); got != "" {
+		t.Errorf("no huddle should form at click time; receiver in %q", got)
 	}
 }
 
-// TestEnterOrKnock_StrangerKnocksNoKeeper: a non-member knocking with no keeper
-// inside is still routed to the loiter slot and knocks, but no huddle is minted
-// (don't strand the knocker alone in a one-person service huddle).
+// TestEnterOrKnock_StrangerKnocksNoKeeper: a non-member knocking with no
+// receptive receiver inside still knocks (Knock stamp rides the walk — a
+// receiver who returns mid-walk answers on arrival), and the click-time
+// narration explains the likely-unanswered door.
 func TestEnterOrKnock_StrangerKnocksNoKeeper(t *testing.T) {
 	w, cancel := buildMembershipTestWorld(t)
 	defer cancel()
@@ -131,20 +148,47 @@ func TestEnterOrKnock_StrangerKnocksNoKeeper(t *testing.T) {
 	if !out.Knocked {
 		t.Error("a non-member at an owner-only structure should knock")
 	}
-	if out.HuddleJoined {
-		t.Error("no keeper inside → no service huddle should form")
-	}
 	if out.KnockNarration == "" {
-		t.Error("an unanswered knock should still carry narration")
+		t.Error("an unanswered-looking knock should carry narration")
+	}
+	if !knockFlagOf(t, w, "stranger") {
+		t.Error("the Knock stamp should ride the walk even with no receiver at click time")
 	}
 	if got := huddleOf(t, w, "stranger"); got != "" {
 		t.Errorf("an unanswered knock should not put the knocker in a huddle; got %q", got)
 	}
 }
 
+// TestEnterOrKnock_SleepingReceiverIsNoReceiver: a receiver who is asleep
+// inside does not answer — the click narrates the unanswered door, exactly as
+// if no one were in (receptiveKnockReceivers applies the same standard the
+// arrival join uses).
+func TestEnterOrKnock_SleepingReceiverIsNoReceiver(t *testing.T) {
+	w, cancel := buildMembershipTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	setInside(t, w, "servant", "cottage")
+	mutate(t, w, func(world *sim.World) {
+		world.Actors["servant"].State = sim.StateSleeping
+	})
+
+	res, err := w.Send(sim.EnterOrKnock("stranger", "cottage", true, now))
+	if err != nil {
+		t.Fatalf("stranger EnterOrKnock: %v", err)
+	}
+	out := res.(sim.EnterOrKnockResult)
+	if !out.Knocked {
+		t.Error("a non-member at an owner-only structure should knock")
+	}
+	if out.KnockNarration == "" {
+		t.Error("a sleeping receiver answers no knock — narration should say so")
+	}
+}
+
 // TestEnterOrKnock_DoorlessOwnerOnlyIsVisit: an owner-only structure with no
 // door offset can't be knocked on — a non-member routes to a plain visit, not a
-// knock, and no service huddle forms even with a keeper inside.
+// knock, and the walk carries no Knock stamp even with a receiver inside.
 func TestEnterOrKnock_DoorlessOwnerOnlyIsVisit(t *testing.T) {
 	w, cancel := buildMembershipTestWorld(t)
 	defer cancel()
@@ -164,8 +208,8 @@ func TestEnterOrKnock_DoorlessOwnerOnlyIsVisit(t *testing.T) {
 	if out.Knocked {
 		t.Error("a doorless structure has no door to knock on — expected a plain visit")
 	}
-	if out.HuddleJoined {
-		t.Error("a doorless visit should not form a service huddle")
+	if knockFlagOf(t, w, "stranger") {
+		t.Error("a doorless visit should not carry the Knock stamp")
 	}
 	if got := huddleOf(t, w, "stranger"); got != "" {
 		t.Errorf("doorless visit should not huddle the visitor; got %q", got)
@@ -174,7 +218,7 @@ func TestEnterOrKnock_DoorlessOwnerOnlyIsVisit(t *testing.T) {
 
 // TestEnterOrKnock_ClosedPolicyIsVisit: a closed structure (well-like, no
 // interior) routes a structure_enter click to a plain visit — not a knock, no
-// huddle — even for a non-member.
+// Knock stamp — even for a non-member.
 func TestEnterOrKnock_ClosedPolicyIsVisit(t *testing.T) {
 	w, cancel := buildMembershipTestWorld(t)
 	defer cancel()
@@ -192,39 +236,8 @@ func TestEnterOrKnock_ClosedPolicyIsVisit(t *testing.T) {
 	if out.Knocked {
 		t.Error("a closed structure is a plain visit, not a knock")
 	}
-	if out.HuddleJoined {
-		t.Error("a closed-structure visit should not form a huddle")
-	}
-}
-
-// TestEnterOrKnock_MultipleKeepersAllJoin: with several associated keepers
-// inside, the knock pulls them all into one shared service huddle with the
-// knocker (deterministic sorted join order, same resulting huddle).
-func TestEnterOrKnock_MultipleKeepersAllJoin(t *testing.T) {
-	w, cancel := buildMembershipTestWorld(t)
-	defer cancel()
-	now := time.Now().UTC()
-
-	setInside(t, w, "servant", "cottage") // WorkStructureID == cottage
-	setInside(t, w, "spouse", "cottage")  // HomeStructureID == cottage
-
-	res, err := w.Send(sim.EnterOrKnock("stranger", "cottage", true, now))
-	if err != nil {
-		t.Fatalf("multi-keeper EnterOrKnock: %v", err)
-	}
-	out := res.(sim.EnterOrKnockResult)
-	if !out.HuddleJoined {
-		t.Fatal("keepers inside → a service huddle should form")
-	}
-	h := huddleOf(t, w, "stranger")
-	if h == "" {
-		t.Fatal("knocker should be in a huddle")
-	}
-	if got := huddleOf(t, w, "servant"); got != h {
-		t.Errorf("servant should share the knocker's huddle; got %q want %q", got, h)
-	}
-	if got := huddleOf(t, w, "spouse"); got != h {
-		t.Errorf("spouse should share the knocker's huddle; got %q want %q", got, h)
+	if knockFlagOf(t, w, "stranger") {
+		t.Error("a closed-structure visit should not carry the Knock stamp")
 	}
 }
 

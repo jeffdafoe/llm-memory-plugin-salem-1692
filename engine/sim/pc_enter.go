@@ -9,22 +9,20 @@ import (
 // EnterOrKnockResult is the outcome of an EnterOrKnock command. It embeds the
 // MoveActorResult for the walk that was started — to the door tile when the
 // actor may enter, or to a loiter slot when they may not — and adds the
-// knock-specific signals the PC client renders (it already reads knocked /
-// huddle_joined / knock_narration off the /pc/move response).
+// knock-specific signals the PC client renders (it reads knocked /
+// knock_narration off the /pc/move response).
 type EnterOrKnockResult struct {
 	MoveActorResult
 	// Knocked is true when the actor was turned away from an owner-only
 	// structure they are not a member of and routed to the loiter slot rather
-	// than through the door — the v1 ZBBS-101 knock.
+	// than through the door — the v1 ZBBS-101 knock. The service huddle forms
+	// on ARRIVAL at the slot, not now (ZBBS-HOME-445) — the client polls its
+	// huddle state to open the talk panel once the door is answered.
 	Knocked bool
-	// HuddleJoined is true when the knock formed a service huddle: an
-	// associated keeper was inside, so the knocker and that keeper now share
-	// the structure's huddle and can speak/pay across the doorway (both are
-	// huddle-scoped in v2).
-	HuddleJoined bool
-	// KnockNarration is a short line describing the knock outcome (a keeper
-	// answered, or no one is home), rendered in the talk panel. Empty when the
-	// actor entered normally.
+	// KnockNarration is a short line rendered in the talk panel when the
+	// knock looks like it will go unanswered (no receiver inside at click
+	// time). Empty when the actor entered normally or a receiver is in —
+	// there the arrival-time hospitality greet is the feedback.
 	KnockNarration string
 }
 
@@ -35,20 +33,33 @@ type EnterOrKnockResult struct {
 //   - The actor MAY enter (open policy, or owner-only and a member) and the
 //     structure has a door → walk to the door tile (StructureEnter); the inside
 //     flip happens on arrival exactly as a bare StructureEnter would.
+//
 //   - Otherwise → walk to a loiter slot (StructureVisit, which has no membership
 //     gate). When the rejection was specifically the owner-only membership gate
-//     this is a KNOCK: if an associated keeper is currently inside, the knocker
-//     and that keeper are pulled into the structure's huddle so the talk panel
-//     opens and pay/speak work across the doorway. The knocker stays physically
-//     outside (no inside flip) — the huddle is conversational scope, not presence.
+//     this is a KNOCK: the visit destination is stamped Knock=true, and ON
+//     ARRIVAL at the slot the knock-arrival subscriber (cascade/business_arrival
+//     → EnsureKnockServiceHuddle) pulls the knocker and any associated receiver
+//     inside into the structure's huddle, so the talk panel opens and pay/speak
+//     work across the doorway. The knocker stays physically outside (no inside
+//     flip) — the huddle is conversational scope, not presence.
+//
+//     ZBBS-HOME-445: the join used to happen HERE, at click time, "so the talk
+//     panel opens immediately." That membership never survived: the locomotion
+//     ticker's mover-leave rule (ZBBS-HOME-340) evicted the walking knocker on
+//     the next tick, and the businessowner farewell cascade read the eviction
+//     as a customer departure — the keeper said "Until next time" to a customer
+//     still walking IN, and the knocker arrived huddle-less with the keeper
+//     stranded in a one-member huddle. Joining on arrival removes the mid-walk
+//     membership entirely; the speak gate was already pacing speech to arrival,
+//     so click-time membership bought nothing real.
 //
 // leaveHuddleFirst is threaded to the underlying move; PC click-moves pass true
 // so a deliberate navigation ends any current conversation (v1's service-huddle
 // cleanup) and a PC already in a huddle can move at all.
 //
-// MUST be called from inside a Command.Fn. It composes MoveActor and JoinHuddle
-// by invoking their Fns inline against the same world — every emitted event
-// stays under the caller command's causal root.
+// MUST be called from inside a Command.Fn. It composes MoveActor by invoking
+// its Fn inline against the same world — every emitted event stays under the
+// caller command's causal root.
 func EnterOrKnock(actorID ActorID, structureID StructureID, leaveHuddleFirst bool, now time.Time) Command {
 	return Command{
 		Fn: func(w *World) (any, error) {
@@ -87,6 +98,9 @@ func EnterOrKnock(actorID ActorID, structureID StructureID, leaveHuddleFirst boo
 				dest = NewStructureEnterDestination(structureID)
 			} else {
 				dest = NewStructureVisitDestination(structureID)
+				// The arrival forms the service huddle, not this command —
+				// see the doc comment (ZBBS-HOME-445).
+				dest.Knock = knocked
 			}
 
 			raw, err := MoveActor(actorID, dest, leaveHuddleFirst, now).Fn(w)
@@ -103,31 +117,18 @@ func EnterOrKnock(actorID ActorID, structureID StructureID, leaveHuddleFirst boo
 				return out, nil
 			}
 
-			// Knock: pull the knocker and any associated keeper(s) currently
-			// inside into the structure's huddle so the conversation can begin
-			// across the doorway. With no keeper inside the door goes unanswered
-			// — don't mint a lone-knocker huddle.
-			//
-			// The service huddle forms NOW, on the accepted knock — not on arrival
-			// at the loiter slot. This is deliberate v1 parity: the talk panel
-			// opens on click so the player can address the keeper immediately. The
-			// PC may still be walking to the slot; Speak's own "finish your move
-			// first" gate paces actual speech until arrival.
-			keepers := insideAssociatedActors(w, structureID)
-			if len(keepers) == 0 {
+			// Click-time narration covers only the unanswered-looking case: no
+			// receptive receiver inside right now, so the player learns why
+			// the click will probably go nowhere. Predictive by nature — a
+			// receiver who returns home (or wakes) mid-walk still answers on
+			// arrival (EnsureKnockServiceHuddle re-checks live state). When
+			// someone IS in, say nothing here: the arrival-time hospitality
+			// greet is the "door answered" feedback, and a click-time "you are
+			// bid to wait" would be the same premature speech this ticket
+			// removed.
+			if len(receptiveKnockReceivers(w, structureID)) == 0 {
 				out.KnockNarration = "You knock, but the door is shut fast and no one answers."
-				return out, nil
 			}
-			if _, err := JoinHuddle(actorID, structureID, "", now).Fn(w); err != nil {
-				return EnterOrKnockResult{}, fmt.Errorf("knock huddle join (knocker %q): %w", actorID, err)
-			}
-			for _, keeperID := range keepers {
-				if _, err := JoinHuddle(keeperID, structureID, "", now).Fn(w); err != nil {
-					return EnterOrKnockResult{}, fmt.Errorf("knock huddle join (keeper %q): %w", keeperID, err)
-				}
-			}
-			out.HuddleJoined = true
-			out.KnockNarration = "You knock and are bid to wait while the keeper attends you."
 			return out, nil
 		},
 	}
