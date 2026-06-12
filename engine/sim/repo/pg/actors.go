@@ -57,10 +57,10 @@ import (
 //     (InsideStructureID, CurrentHuddleID, Home/Work StructureID):
 //     scan target is `*string`; Go-side empty → SQL NULL on write.
 //   - Plain string fields where empty-string is the sentinel
-//     (Role, LLMAgent, LoginUsername, NextSelfTickReason): same.
-//   - Pointer time fields (BreakUntil, SleepingUntil, LastTickedAt,
-//     NextSelfTickAt): scan target is `*time.Time`; nil-or-value
-//     round-trips through SQL NULL.
+//     (Role, LLMAgent, LoginUsername): same.
+//   - Pointer time fields (BreakUntil, SleepingUntil, LastTickedAt):
+//     scan target is `*time.Time`; nil-or-value round-trips through
+//     SQL NULL.
 //   - Pointer int fields (ScheduleStartMin/EndMin): scan target is
 //     `*int16` matching the SMALLINT column; Go-side `*int` converted
 //     at the boundary.
@@ -102,8 +102,6 @@ SELECT
     schedule_end_minute,
     last_agent_tick_at,
     break_until,
-    next_self_tick_at,
-    next_self_tick_reason,
     sleeping_until,
     move_attempt_counter,
     sim_state,
@@ -147,8 +145,7 @@ INSERT INTO actor (
     home_structure_id, work_structure_id,
     coins, llm_memory_agent, role, login_username,
     schedule_start_minute, schedule_end_minute,
-    last_agent_tick_at, break_until, next_self_tick_at,
-    next_self_tick_reason, sleeping_until,
+    last_agent_tick_at, break_until, sleeping_until,
     move_attempt_counter, sim_state, sim_state_entered_at,
     sprite_id, facing,
     social_tag, social_start_minute, social_end_minute, social_last_boundary_at,
@@ -160,11 +157,10 @@ INSERT INTO actor (
     $10, $11, $12, $13,
     $14, $15,
     $16, $17, $18,
-    $19, $20,
-    $21, $22, $23,
-    $24, $25,
-    $26, $27, $28, $29,
-    $30
+    $19, $20, $21,
+    $22, $23,
+    $24, $25, $26, $27,
+    $28
 )
 ON CONFLICT (id) DO UPDATE SET
     display_name           = EXCLUDED.display_name,
@@ -183,8 +179,6 @@ ON CONFLICT (id) DO UPDATE SET
     schedule_end_minute    = EXCLUDED.schedule_end_minute,
     last_agent_tick_at     = EXCLUDED.last_agent_tick_at,
     break_until            = EXCLUDED.break_until,
-    next_self_tick_at      = EXCLUDED.next_self_tick_at,
-    next_self_tick_reason  = EXCLUDED.next_self_tick_reason,
     sleeping_until         = EXCLUDED.sleeping_until,
     move_attempt_counter   = EXCLUDED.move_attempt_counter,
     sim_state              = EXCLUDED.sim_state,
@@ -506,8 +500,6 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			scheduleEndMinute    *int16
 			lastAgentTickAt      *time.Time
 			breakUntil           *time.Time
-			nextSelfTickAt       *time.Time
-			nextSelfTickReason   *string
 			sleepingUntil        *time.Time
 			moveAttemptCounter   int64
 			simState             string
@@ -526,8 +518,7 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			&homeStructureID, &workStructureID,
 			&coins, &llmMemoryAgent, &role, &loginUsername,
 			&scheduleStartMinute, &scheduleEndMinute,
-			&lastAgentTickAt, &breakUntil, &nextSelfTickAt,
-			&nextSelfTickReason, &sleepingUntil,
+			&lastAgentTickAt, &breakUntil, &sleepingUntil,
 			&moveAttemptCounter, &simState, &simStateEnteredAt,
 			&spriteID, &facing,
 			&socialTag, &socialStartMinute, &socialEndMinute, &socialLastBoundaryAt,
@@ -559,8 +550,6 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			ScheduleEndMin:       derefInt16(scheduleEndMinute),
 			LastTickedAt:         lastAgentTickAt,
 			BreakUntil:           breakUntil,
-			NextSelfTickAt:       nextSelfTickAt,
-			NextSelfTickReason:   deref(nextSelfTickReason),
 			SleepingUntil:        sleepingUntil,
 			MoveAttemptCounter:   sim.MovementAttemptID(moveAttemptCounter),
 			State:                sim.ActorState(simState),
@@ -1376,19 +1365,17 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 			intPtrToSQL(a.ScheduleEndMin),           // $15 schedule_end_minute
 			a.LastTickedAt,                          // $16 last_agent_tick_at
 			a.BreakUntil,                            // $17 break_until
-			a.NextSelfTickAt,                        // $18 next_self_tick_at
-			nilOnEmpty(a.NextSelfTickReason),        // $19 next_self_tick_reason
-			a.SleepingUntil,                         // $20 sleeping_until
-			int64(a.MoveAttemptCounter),             // $21 move_attempt_counter
-			string(a.State),                         // $22 sim_state
-			a.StateEnteredAt,                        // $23 sim_state_entered_at
-			nilOnEmpty(string(a.SpriteID)),          // $24 sprite_id (nullable uuid)
-			facing,                                  // $25 facing (validated above)
-			nilOnEmpty(a.SocialTag),                 // $26 social_tag
-			intPtrToSQL(a.SocialStartMin),           // $27 social_start_minute
-			intPtrToSQL(a.SocialEndMin),             // $28 social_end_minute
-			a.SocialLastBoundaryAt,                  // $29 social_last_boundary_at
-			actorGen,                                // $30 snapshot_gen
+			a.SleepingUntil,                         // $18 sleeping_until
+			int64(a.MoveAttemptCounter),             // $19 move_attempt_counter
+			string(a.State),                         // $20 sim_state
+			a.StateEnteredAt,                        // $21 sim_state_entered_at
+			nilOnEmpty(string(a.SpriteID)),          // $22 sprite_id (nullable uuid)
+			facing,                                  // $23 facing (validated above)
+			nilOnEmpty(a.SocialTag),                 // $24 social_tag
+			intPtrToSQL(a.SocialStartMin),           // $25 social_start_minute
+			intPtrToSQL(a.SocialEndMin),             // $26 social_end_minute
+			a.SocialLastBoundaryAt,                  // $27 social_last_boundary_at
+			actorGen,                                // $28 snapshot_gen
 		); err != nil {
 			return fmt.Errorf("pg actors SaveSnapshot: upsert actor id=%s: %w", a.ID, err)
 		}
