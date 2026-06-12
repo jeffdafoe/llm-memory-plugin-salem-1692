@@ -585,6 +585,10 @@ func TestRenderActionLogEntry(t *testing.T) {
 			"npc": {DisplayName: "Hannah"},
 			"pc":  {DisplayName: "Tester", LoginUsername: "tester"},
 		},
+		ItemKinds: map[sim.ItemKind]*sim.ItemKindDef{
+			"nights_stay": {Name: "nights_stay", DisplayLabel: "Night's Stay", Capabilities: []string{"service", "lodging"}},
+			"ale":         {Name: "ale", DisplayLabel: "Ale"},
+		},
 	}
 	cases := []struct {
 		name        string
@@ -606,6 +610,13 @@ func TestRenderActionLogEntry(t *testing.T) {
 		{"consumed empty skipped", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeConsumed, Text: ""}, "", "", "", false},
 		{"delivered with recipient", sim.ActionLogEntry{ActorID: "npc", ActionType: sim.ActionTypeDelivered, Text: "ale", CounterpartyName: "Tester"}, "Hannah", "Hannah delivers ale to Tester.", "act", true},
 		{"delivered no recipient", sim.ActionLogEntry{ActorID: "npc", ActionType: sim.ActionTypeDelivered, Text: "ale"}, "Hannah", "Hannah delivers ale.", "act", true},
+		// ZBBS-HOME-432: a lodging-capability delivery narrates as a check-in,
+		// not a parcel handoff.
+		{"delivered lodging is a check-in", sim.ActionLogEntry{ActorID: "npc", ActionType: sim.ActionTypeDelivered, Text: "nights_stay", CounterpartyName: "Tester"}, "Hannah", "Hannah shows Tester to a room — it's theirs for the night.", "act", true},
+		{"delivered lodging no recipient", sim.ActionLogEntry{ActorID: "npc", ActionType: sim.ActionTypeDelivered, Text: "nights_stay"}, "Hannah", "Hannah readies a room for a guest.", "act", true},
+		// Multi-qty lodging text ("2x nights_stay") misses the catalog and
+		// falls back to the generic delivery line.
+		{"delivered multi-qty lodging falls back", sim.ActionLogEntry{ActorID: "npc", ActionType: sim.ActionTypeDelivered, Text: "2x nights_stay", CounterpartyName: "Tester"}, "Hannah", "Hannah delivers 2x nights_stay to Tester.", "act", true},
 		{"walked to dest", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeWalked, Text: "The Inn"}, "Tester", "Tester arrives at The Inn.", "act", true},
 		{"walked no dest", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeWalked, Text: ""}, "Tester", "Tester arrives.", "act", true},
 		{"took break", sim.ActionLogEntry{ActorID: "pc", ActionType: sim.ActionTypeTookBreak, Text: "tired"}, "Tester", "Tester steps away.", "act", true},
