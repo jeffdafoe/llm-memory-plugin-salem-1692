@@ -65,6 +65,18 @@ type MoveDestination struct {
 	StructureID *StructureID     // set iff Kind is StructureEnter or StructureVisit
 	ObjectID    *VillageObjectID // set iff Kind is ObjectVisit
 	Position    *Position        // set iff Kind is Position
+
+	// Knock marks a StructureVisit as a deliberate knock (ZBBS-HOME-445):
+	// EnterOrKnock routed an owner-only non-member to the loiter slot. The
+	// flag rides the MoveIntent so the ARRIVAL can form the knock service
+	// huddle. The join deliberately does not happen at click time: a
+	// mid-walk huddle membership is destroyed by the locomotion ticker's
+	// mover-leave rule (ZBBS-HOME-340) within a tick, and that eviction
+	// read as a customer departure to the businessowner farewell cascade —
+	// a keeper said "Until next time" to a customer still walking IN. A
+	// superseding MoveActor replaces the whole intent, so an abandoned
+	// knock dies with its walk.
+	Knock bool
 }
 
 // NewStructureEnterDestination returns a MoveDestination that walks the
@@ -103,7 +115,7 @@ func NewPositionDestination(pos Position) MoveDestination {
 // published-Snapshot and mem-repo boundary once MoveIntent rides on
 // Actor. Mirrors cloneSceneBound.
 func cloneMoveDestination(d MoveDestination) MoveDestination {
-	cp := MoveDestination{Kind: d.Kind}
+	cp := MoveDestination{Kind: d.Kind, Knock: d.Knock}
 	if d.StructureID != nil {
 		id := *d.StructureID
 		cp.StructureID = &id

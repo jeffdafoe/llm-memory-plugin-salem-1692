@@ -76,14 +76,15 @@ type positionRequest struct {
 // pcMoveResponse is the accepted-move outcome (sim.MoveActorResult on the wire).
 // The knock fields are populated only for a structure_enter that resolved to a
 // loiter-slot knock (an owner-only structure the PC isn't a member of) — see
-// sim.EnterOrKnock. The client reads them to open the talk panel on a service
-// huddle, or render the knock narration when no one answers.
+// sim.EnterOrKnock. The service huddle forms on ARRIVAL, not in this response
+// (ZBBS-HOME-445): the client reads knocked to start watching its huddle state
+// for the talk panel, and knock_narration to explain a knock that looks like
+// it will go unanswered.
 type pcMoveResponse struct {
 	MovementAttemptID   uint64 `json:"movement_attempt_id"`
 	SupersededAttemptID uint64 `json:"superseded_attempt_id"`
 	LeftHuddleID        string `json:"left_huddle_id,omitempty"`
 	Knocked             bool   `json:"knocked,omitempty"`
-	HuddleJoined        bool   `json:"huddle_joined,omitempty"`
 	KnockNarration      string `json:"knock_narration,omitempty"`
 }
 
@@ -176,7 +177,6 @@ func pcMoveResponseFromResult(res any) (pcMoveResponse, bool) {
 			SupersededAttemptID: uint64(out.SupersededAttemptID),
 			LeftHuddleID:        string(out.LeftHuddleID),
 			Knocked:             out.Knocked,
-			HuddleJoined:        out.HuddleJoined,
 			KnockNarration:      out.KnockNarration,
 		}, true
 	case sim.MoveActorResult:

@@ -710,6 +710,7 @@ func finishArrival(w *World, actor *Actor, dest MoveDestination, attemptID Movem
 		DestObjectID:      destObject,
 		MovementAttemptID: attemptID,
 		At:                now,
+		Knocked:           dest.Knock,
 	}
 	w.emit(arrivedEvt)
 	// Arrival-warrant suppression hook (ZBBS-HOME-311). An active summon-
