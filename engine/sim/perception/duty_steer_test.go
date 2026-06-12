@@ -155,6 +155,105 @@ func TestBuildDutySteer(t *testing.T) {
 	})
 }
 
+// TestBuildDutyPending — ZBBS-HOME-442. The pre-suppression "to-work duty
+// applies" predicate the noop-skip gate consumes. The load-bearing case is
+// the divergence: a mild need nils the to-work STEER (Option B, HOME-400)
+// but must NOT clear duty-pending — that band is exactly where the gate
+// skip-locked Josiah after HOME-441 shipped.
+func TestBuildDutyPending(t *testing.T) {
+	agentSched := func(inside sim.StructureID) *sim.ActorSnapshot {
+		return &sim.ActorSnapshot{
+			Kind:              sim.KindNPCStateful,
+			ScheduleStartMin:  dutyMinPtr(540),  // 9:00
+			ScheduleEndMin:    dutyMinPtr(1260), // 21:00
+			InsideStructureID: inside,
+		}
+	}
+
+	t.Run("off-post on-shift -> pending", func(t *testing.T) {
+		if !buildDutyPending(dutySnap(600, 420, 1140), agentSched(""), dutyAnchors) {
+			t.Fatal("want duty-pending for an off-post on-shift agent")
+		}
+	})
+	t.Run("mild need: steer suppressed, duty still pending (the 442 divergence)", func(t *testing.T) {
+		snap := dutySnap(600, 420, 1140)
+		snap.NeedThresholds = sim.DefaultNeedThresholds()
+		a := agentSched("")
+		a.Needs = map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold - 4} // mild band
+		if v := buildDutySteer(snap, "", a, dutyAnchors, false); v != nil {
+			t.Fatalf("precondition: Option B must nil the to-work steer at mild, got %+v", v)
+		}
+		if !buildDutyPending(snap, a, dutyAnchors) {
+			t.Fatal("want duty-pending despite the Option B steer suppression")
+		}
+	})
+	t.Run("red need: steer suppressed, duty still pending", func(t *testing.T) {
+		// The red-need gate (HOME-362) is deliberately NOT mirrored here —
+		// duty-pending is a pure "duty applies" predicate. Harmless to the
+		// gate: a red need already opens it via the needs condition.
+		snap := dutySnap(600, 420, 1140)
+		snap.NeedThresholds = sim.DefaultNeedThresholds()
+		a := agentSched("")
+		a.Needs = map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold + 2}
+		if v := buildDutySteer(snap, "", a, dutyAnchors, false); v != nil {
+			t.Fatalf("precondition: red need must nil the steer, got %+v", v)
+		}
+		if !buildDutyPending(snap, a, dutyAnchors) {
+			t.Fatal("want duty-pending at red (pure predicate)")
+		}
+	})
+	t.Run("at post -> not pending", func(t *testing.T) {
+		if buildDutyPending(dutySnap(600, 420, 1140), agentSched("tavern"), dutyAnchors) {
+			t.Fatal("want no duty-pending at post")
+		}
+	})
+	t.Run("off shift -> not pending", func(t *testing.T) {
+		if buildDutyPending(dutySnap(300, 420, 1140), agentSched(""), dutyAnchors) {
+			t.Fatal("want no duty-pending off shift (5:00 before a 9:00 start)")
+		}
+	})
+	t.Run("unscheduled NPC uses dawn/dusk window", func(t *testing.T) {
+		a := &sim.ActorSnapshot{Kind: sim.KindNPCShared, InsideStructureID: ""}
+		if !buildDutyPending(dutySnap(600, 420, 1140), a, dutyAnchors) {
+			t.Fatal("want duty-pending via dawn/dusk fallback")
+		}
+	})
+	t.Run("unscheduled + unknown window -> not pending", func(t *testing.T) {
+		a := &sim.ActorSnapshot{Kind: sim.KindNPCShared, InsideStructureID: ""}
+		if buildDutyPending(dutySnap(600, 0, 0), a, dutyAnchors) {
+			t.Fatal("want no duty-pending without a usable window")
+		}
+	})
+	t.Run("no work anchor -> not pending", func(t *testing.T) {
+		anchors := &AnchorsView{HomeID: "cottage", HomeLabel: "Ellis Cottage"}
+		if buildDutyPending(dutySnap(600, 420, 1140), agentSched(""), anchors) {
+			t.Fatal("want no duty-pending without a work anchor")
+		}
+	})
+	t.Run("PC -> not pending", func(t *testing.T) {
+		a := agentSched("")
+		a.Kind = sim.KindPC
+		if buildDutyPending(dutySnap(600, 420, 1140), a, dutyAnchors) {
+			t.Fatal("want no duty-pending for a PC")
+		}
+	})
+	t.Run("nil clock / nil actor / nil snap / nil anchors -> not pending", func(t *testing.T) {
+		noClock := &sim.Snapshot{DawnMinute: 420, DuskMinute: 1140, DawnDuskMinuteOK: true}
+		if buildDutyPending(noClock, agentSched(""), dutyAnchors) {
+			t.Fatal("want no duty-pending with a nil clock")
+		}
+		if buildDutyPending(dutySnap(600, 420, 1140), nil, dutyAnchors) {
+			t.Fatal("want no duty-pending with a nil actor")
+		}
+		if buildDutyPending(nil, agentSched(""), dutyAnchors) {
+			t.Fatal("want no duty-pending with a nil snapshot")
+		}
+		if buildDutyPending(dutySnap(600, 420, 1140), agentSched(""), nil) {
+			t.Fatal("want no duty-pending with nil anchors")
+		}
+	})
+}
+
 // TestBuildDutySteer_MidMealSuppressesGoHome — ZBBS-WORK-386. The off-shift
 // "head home now" cue yields while the NPC holds a live item-source dwell credit
 // (mid-meal), so it isn't prompted to abandon the meal mid-dwell (the Prudence

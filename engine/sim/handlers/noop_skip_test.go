@@ -158,6 +158,21 @@ func TestShouldSkipNoop_DutySteerPresent_DoesNotSkip(t *testing.T) {
 	// quietPayload carries no DutySteer.
 }
 
+func TestShouldSkipNoop_DutyPending_DoesNotSkip(t *testing.T) {
+	// ZBBS-HOME-442: an off-post on-shift keeper whose to-work steer is
+	// Option-B-suppressed by a MILD need carries DutyPending instead of a
+	// rendered steer. The gate must still step aside — this band is where
+	// Josiah stayed skip-locked after the HOME-441 steer condition shipped.
+	pl := quietPayload()
+	pl.DutyPending = true
+	if shouldSkipNoop(pl, defaultThresholds(), []sim.WarrantMeta{idleBackstopWarrant()}) {
+		t.Fatalf("expected skip=false when payload carries duty-pending")
+	}
+	// The false baseline (skip=true) is pinned by
+	// TestShouldSkipNoop_IdleBackstopAlone_NoPeerNoNeeds_Skips —
+	// quietPayload carries DutyPending=false.
+}
+
 func TestShouldSkipNoop_HighInfoWarrantInBatch_DoesNotSkip(t *testing.T) {
 	cases := []sim.WarrantKind{
 		sim.WarrantKindNPCSpoke,

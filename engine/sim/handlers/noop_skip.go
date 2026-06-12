@@ -46,19 +46,28 @@ import (
 //     peer-joined, need-threshold, scene-quote, admin — counts as fresh
 //     news worth one LLM call, and the gate steps aside.
 //
-//  5. No duty steer in the payload. A non-nil DutySteer is a standing,
-//     actionable signal even with no peers and sub-red needs — the actor
-//     is off-post inside its shift window ("head to work") or away from
-//     home/lodging off-shift ("head home"). The tick must run so the
-//     steer can be read: the only warrants a solo idle NPC receives are
-//     idle-backstops, so eating them here skip-locks the actor until a
-//     need crosses red — hours (ZBBS-HOME-441: Josiah stood at his
-//     doorstep all morning; v2 has no recurring shift warrant because
-//     HOME-352 made duty a perception steer, which only renders if a
-//     tick actually runs). buildDutySteer already returns nil at-post /
-//     at-home, for red needs, outside the shift scope, and for non-agent
-//     kinds — so the extra ticks are exactly the steerable cases, and
-//     they self-extinguish on arrival.
+//  5. No duty steer in the payload, AND no duty pending. A non-nil
+//     DutySteer is a standing, actionable signal even with no peers and
+//     sub-red needs — the actor is off-post inside its shift window
+//     ("head to work") or away from home/lodging off-shift ("head
+//     home"). The tick must run so the steer can be read: the only
+//     warrants a solo idle NPC receives are idle-backstops, so eating
+//     them here skip-locks the actor until a need crosses red — hours
+//     (ZBBS-HOME-441: Josiah stood at his doorstep all morning; v2 has
+//     no recurring shift warrant because HOME-352 made duty a perception
+//     steer, which only renders if a tick actually runs).
+//
+//     DutyPending covers the band the steer alone missed (ZBBS-HOME-442):
+//     Option B (HOME-400) suppresses the to-work steer for a MILD need,
+//     so an off-post on-shift keeper with hunger in [mild, red) had nil
+//     DutySteer and still skip-locked — the suppression assumed the tick
+//     would run so the model could address the need first, but the gate
+//     meant it never ran at all. DutyPending is the pre-suppression
+//     "to-work duty applies" predicate; the cue stays suppressed, the
+//     tick voices the mild need, the model addresses it, and once needs
+//     drop below mild the steer renders and walks the actor to post.
+//     The extra ticks are bounded to the off-post-on-shift case and
+//     self-extinguish on arrival.
 //
 // Replaces v1's salem-vendor-only skip in engine/agent_tick.go (lines
 // 211-221, ZBBS-WORK-235). v1 narrowed by agent slug because the
@@ -101,7 +110,7 @@ func shouldSkipNoop(payload perception.Payload, thresholds sim.NeedThresholds, w
 			return false
 		}
 	}
-	if payload.DutySteer != nil {
+	if payload.DutySteer != nil || payload.DutyPending {
 		return false
 	}
 	return true
