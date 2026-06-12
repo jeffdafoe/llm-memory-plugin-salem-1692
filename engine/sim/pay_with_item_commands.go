@@ -1911,8 +1911,12 @@ func buyerFeltAfterConsume(buyer *Actor, def *ItemKindDef, thresholds NeedThresh
 	if buyer == nil || def == nil {
 		return "", ""
 	}
+	// Strict > keeps the FIRST def.Satisfies entry on an Immediate tie —
+	// item def order is the authoritative priority, matching how
+	// consumableUnits and the dwell-credit upsert walk the same slice.
 	primary, best := NeedKey(""), 0
 	var felt []string
+	seen := make(map[string]bool)
 	for _, s := range def.Satisfies {
 		if s.Immediate <= 0 {
 			continue
@@ -1924,7 +1928,10 @@ func buyerFeltAfterConsume(buyer *Actor, def *ItemKindDef, thresholds NeedThresh
 		if !ok {
 			continue
 		}
-		if label := n.Label(n.Tier(buyer.Needs[s.Attribute], thresholds.Get(s.Attribute))); label != "" {
+		// Dedup so two Satisfies lines on the same attribute (or needs
+		// sharing a vocabulary word) can't render "hungry, hungry".
+		if label := n.Label(n.Tier(buyer.Needs[s.Attribute], thresholds.Get(s.Attribute))); label != "" && !seen[label] {
+			seen[label] = true
 			felt = append(felt, label)
 		}
 	}
@@ -1973,6 +1980,9 @@ func buyerFeltAfterConsume(buyer *Actor, def *ItemKindDef, thresholds NeedThresh
 // The returned payTransferOutcome summarizes the buyer-visible effects so
 // the fast path can voice them in the buyer's tool feedback (ZBBS-HOME-436).
 // AcceptPay discards it — the buyer isn't the actor reading that result.
+// On a non-nil error the outcome is meaningless and MUST be discarded:
+// error paths return a zero outcome, but some fire after partial mutation,
+// so the outcome never doubles as a rollback record (code_review).
 func commitPayTransfer(
 	w *World,
 	buyer, seller *Actor,
@@ -2172,7 +2182,6 @@ func commitPayTransfer(
 			out.satisfiesNeed, out.feltAfter = buyerFeltAfterConsume(buyer, def, w.Settings.NeedThresholds)
 		}
 	} else if itemHasCapability(w, entry.ItemKind, "lodging") {
-		out.booked = true
 		// Lodging is a deferred booking, NOT an immediate handover: mint the
 		// Order at Ready and leave it for the keeper to check the guest in via
 		// deliver_order. That check-in is the designed mechanic — the room
@@ -2182,6 +2191,7 @@ func commitPayTransfer(
 		// order book (ready_by advance booking, future-bookings perception,
 		// overdue cues) is tracked separately (ZBBS-HOME-399).
 		createOrderForPayWithItem(w, entry, at)
+		out.booked = true
 	} else {
 		// Physical take-home (ZBBS-HOME-398): mint the Order and move the goods
 		// to the buyer right now, at accept, while the parties are co-present and

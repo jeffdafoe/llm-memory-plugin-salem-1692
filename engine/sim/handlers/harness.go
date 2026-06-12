@@ -987,8 +987,10 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 		// actually did — money, goods, the meal, and the post-meal felt
 		// state computed from LIVE world state at commit — and steer to
 		// done(). ZBBS-HOME-436; supersedes the pre-424 "quote-take
-		// doesn't storm" assumption recorded below.
-		if r, ok := cmdResult.(sim.PayWithItemResult); ok && r.FastPath {
+		// doesn't storm" assumption recorded below. Gated on Accepted so a
+		// future fast-path result in any other state can't voice a settle
+		// that didn't happen (code_review).
+		if r, ok := cmdResult.(sim.PayWithItemResult); ok && r.FastPath && r.State == sim.PayLedgerStateAccepted {
 			if args, ok := vc.DecodedArgs.(PayWithItemArgs); ok {
 				return settledPayContent(args, r, clampNote)
 			}
@@ -1048,6 +1050,18 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 // happened, what it ate vs pocketed, and how it feels NOW — the perception
 // body it re-reads after this message still shows tick-start needs.
 func settledPayContent(args PayWithItemArgs, r sim.PayWithItemResult, clampNote string) string {
+	// Defensive: decoded args drive the display. The command layer rejects
+	// qty < 1 / amount < 0 before any settle, so these can't co-occur with
+	// an Accepted result — but if they ever do, degrade to the generic ok
+	// rather than voice a nonsensical settle ("0 meat", a negative price
+	// normalized into a free purchase). Same no-claims-without-evidence
+	// rule as the nil-result path (code_review).
+	if args.Qty <= 0 || args.Amount < 0 {
+		if clampNote != "" {
+			return "[ok]" + clampNote
+		}
+		return "[ok]"
+	}
 	item := strings.ToLower(strings.Join(strings.Fields(args.Item), " "))
 	if item == "" {
 		item = "those goods"

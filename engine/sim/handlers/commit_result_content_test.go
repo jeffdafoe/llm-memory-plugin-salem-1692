@@ -341,6 +341,31 @@ func TestCommitResultContent_SettledQuoteTake(t *testing.T) {
 			result: sim.PayWithItemResult{State: sim.PayLedgerStateAccepted, FastPath: true},
 			want:   "[ok]",
 		},
+		{
+			// Defensive: FastPath in any non-accepted state must not voice a
+			// settle that didn't happen (code_review).
+			name:   "fast path without accepted state degrades to generic ok",
+			vc:     ValidatedCall{Name: "pay_with_item", DecodedArgs: args("Meat", 1, 4)},
+			result: sim.PayWithItemResult{State: sim.PayLedgerStatePending, FastPath: true, BuyerAte: 1},
+			want:   "[ok]",
+		},
+		{
+			// Defensive: nonsense quantities can't reach an accepted settle
+			// (the command layer rejects qty < 1), but the display must not
+			// voice "0 meat" if they ever do (code_review).
+			name:   "non-positive qty degrades to generic ok",
+			vc:     ValidatedCall{Name: "pay_with_item", DecodedArgs: args("Meat", 0, 4)},
+			result: sim.PayWithItemResult{State: sim.PayLedgerStateAccepted, FastPath: true, BuyerAte: 1},
+			want:   "[ok]",
+		},
+		{
+			// Defensive: a negative amount must not normalize into the
+			// "hands over ... for nothing" free-purchase line (code_review).
+			name:   "negative amount degrades to generic ok",
+			vc:     ValidatedCall{Name: "pay_with_item", DecodedArgs: args("Meat", 1, -4)},
+			result: sim.PayWithItemResult{State: sim.PayLedgerStateAccepted, FastPath: true, BuyerAte: 1},
+			want:   "[ok]",
+		},
 	}
 
 	for _, tc := range cases {
