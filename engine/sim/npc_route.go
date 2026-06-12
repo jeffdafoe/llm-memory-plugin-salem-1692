@@ -7,8 +7,10 @@ import (
 )
 
 // npc_route.go — substrate for scheduled NPC routes. Lamplighter walks
-// the lamps at dawn/dusk; washerwoman walks laundry tiles at the daily
-// rotation boundary; town_crier walks notice boards at the same boundary.
+// the lamps at dawn/dusk; washerwoman and town_crier walk their domains
+// (laundry tiles / notice boards) at their own schedule-window
+// boundaries — once at window start, once at window end (ZBBS-HOME-446;
+// previously both hung off the daily rotation boundary).
 //
 // All three share the same skeleton: a list of RouteStop entries (each
 // an object to visit with a pre-decided NewState), a phase ("active"
@@ -17,10 +19,11 @@ import (
 // state to land in) lives in the cascade driver — it builds the
 // candidate list and calls StartNPCRoute.
 //
-// The driver wires the lifecycle event-by-event:
+// The driver wires the lifecycle:
 //
-//   - PhaseApplied (lamplighter) / RotationApplied (washerwoman /
-//     town_crier) → start route via StartNPCRoute
+//   - PhaseApplied (lamplighter) / a schedule-window boundary observed
+//     by the cascade route-schedule ticker (washerwoman / town_crier,
+//     via RouteBoundaryDue below) → start route via StartNPCRoute
 //   - ActorArrived for an actor with an entry in World.ActiveRoutes →
 //     advance route via AdvanceNPCRoute (flip current stop's state,
 //     dispatch next walk OR transition to returning OR clear)
@@ -64,14 +67,16 @@ const (
 	// carriers exist.
 	AttrLamplighter = "lamplighter"
 
-	// AttrWasherwoman — actor walks the laundry-tagged rotatable
-	// objects at the daily rotation boundary, rotating each per the
-	// asset's RotationAlgo.
+	// AttrWasherwoman — actor walks the laundry-tagged objects at her
+	// schedule-window boundaries: hangs laundry out (default state →
+	// variant) at window start, brings it in (variant → default state)
+	// at window end.
 	AttrWasherwoman = "washerwoman"
 
-	// AttrTownCrier — actor walks the notice-board-tagged rotatable
-	// objects at the daily rotation boundary. Slice 2 walks silently;
-	// Slice 3 will wire an LLM-authored saying broadcast on each stop.
+	// AttrTownCrier — actor walks the notice-board-tagged objects at
+	// her schedule-window boundaries (same walk at both): reads each
+	// board's authored prose aloud on arrival, then flips the board so
+	// fresh prose is authored for the next visit.
 	AttrTownCrier = "town_crier"
 )
 
@@ -485,6 +490,53 @@ func advanceActiveRoute(w *World, route *NPCRoute) (AdvanceNPCRouteResult, error
 func advanceReturningRoute(w *World, route *NPCRoute) (AdvanceNPCRouteResult, error) {
 	delete(w.ActiveRoutes, route.NPCID)
 	return AdvanceNPCRouteResult{NPCID: route.NPCID, Reason: "arrived_home"}, nil
+}
+
+// RouteBoundaryDue reports whether the actor's schedule window has an
+// unprocessed boundary at-or-before now — the route-schedule trigger's
+// pure decision (ZBBS-HOME-446). The window comes from
+// effectiveShiftWindow (the actor's schedule_start/end_minute pair, or
+// the world's dawn/dusk day window when unscheduled), the boundary from
+// mostRecentWindowBoundary (wrap-midnight safe), and the re-fire guard
+// from World.RouteBoundaryStamps[attrSlug].
+//
+// isStart=true means the boundary is the window START (washerwoman
+// hangs laundry out); false means window END (brings it in). The town
+// crier ignores the direction — both boundaries trigger the same tour.
+//
+// A nil/missing stamp fires the most recent boundary immediately: that
+// is the boot catch-up (stamps are in-memory and restart-lossy on
+// purpose — see the World.RouteBoundaryStamps doc).
+//
+// MUST be called from inside a Command.Fn (reads world state).
+func RouteBoundaryDue(w *World, a *Actor, attrSlug string, now time.Time) (boundary time.Time, isStart bool, due bool) {
+	start, end, ok := effectiveShiftWindow(w, a)
+	if !ok {
+		return time.Time{}, false, false
+	}
+	boundary, isStart, ok = mostRecentWindowBoundary(w, start, end, now)
+	if !ok {
+		return time.Time{}, false, false
+	}
+	if last, has := w.RouteBoundaryStamps[attrSlug]; has && !last.Before(boundary) {
+		return time.Time{}, false, false
+	}
+	return boundary, isStart, true
+}
+
+// StampRouteBoundary records boundary as processed for attrSlug, so
+// RouteBoundaryDue stops re-firing it for the rest of the window.
+// Callers stamp after a successful StartNPCRoute dispatch — including
+// the zero-candidate no-op — but NOT after a dispatch error, so a
+// transient failure retries on the next tick (same posture as the
+// social scheduler's no-stamp-on-failed-walk).
+//
+// MUST be called from inside a Command.Fn (mutates world state).
+func StampRouteBoundary(w *World, attrSlug string, boundary time.Time) {
+	if w.RouteBoundaryStamps == nil {
+		w.RouteBoundaryStamps = map[string]time.Time{}
+	}
+	w.RouteBoundaryStamps[attrSlug] = boundary
 }
 
 // buildRouteStops lays out an ordered nearest-neighbor walk over the

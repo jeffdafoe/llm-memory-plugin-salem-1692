@@ -6,7 +6,7 @@ import (
 )
 
 // social_test.go — ZBBS-WORK-279 slice 4b, tick-driver producer #4 (social).
-// Covers the boundary math (mostRecentSocialBoundary, incl. wrap-midnight), the
+// Covers the boundary math (mostRecentWindowBoundary, incl. wrap-midnight), the
 // tag/nearest helpers, and the pure socialMove decision (subject filters, the
 // enter/leave guards, idempotency via the boundary stamp). The actual MoveActor
 // walk dispatch is exercised by MoveActor's own tests — socialMove returns the
@@ -69,7 +69,7 @@ func TestMostRecentSocialBoundary(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			b, isEnter, ok := mostRecentSocialBoundary(w, start, end, c.now)
+			b, isEnter, ok := mostRecentWindowBoundary(w, start, end, c.now)
 			if !ok {
 				t.Fatal("ok=false, want a boundary")
 			}
@@ -96,7 +96,7 @@ func TestMostRecentSocialBoundary_WrapMidnight(t *testing.T) {
 
 	// At 00:30, the most recent boundary is YESTERDAY's 22:00 enter (today's
 	// 22:00 enter and 02:00 leave are both still in the future).
-	b, isEnter, ok := mostRecentSocialBoundary(w, start, end, at(0, 30))
+	b, isEnter, ok := mostRecentWindowBoundary(w, start, end, at(0, 30))
 	if !ok || !isEnter {
 		t.Fatalf("got (enter=%v, ok=%v), want enter=true ok=true", isEnter, ok)
 	}
@@ -105,7 +105,7 @@ func TestMostRecentSocialBoundary_WrapMidnight(t *testing.T) {
 	}
 
 	// At 02:30, the most recent boundary is today's 02:00 leave.
-	b, isEnter, ok = mostRecentSocialBoundary(w, start, end, at(2, 30))
+	b, isEnter, ok = mostRecentWindowBoundary(w, start, end, at(2, 30))
 	if !ok || isEnter {
 		t.Fatalf("got (enter=%v, ok=%v), want enter=false ok=true", isEnter, ok)
 	}
@@ -116,7 +116,7 @@ func TestMostRecentSocialBoundary_WrapMidnight(t *testing.T) {
 
 func TestMostRecentSocialBoundary_EqualEndpointsEmpty(t *testing.T) {
 	w := socialTestWorld()
-	if _, _, ok := mostRecentSocialBoundary(w, 600, 600, at(12, 0)); ok {
+	if _, _, ok := mostRecentWindowBoundary(w, 600, 600, at(12, 0)); ok {
 		t.Error("start==end should be an empty window (ok=false)")
 	}
 }

@@ -33,17 +33,23 @@ func buildRouteCascadeWorld(t *testing.T) (*sim.World, func()) {
 				{ID: 11, State: "lit", Tags: []string{"night-active", "lamplighter-target"}},
 			},
 		},
+		// Both route-domain assets deliberately mirror production:
+		// random_per_object RotationAlgo (the pre-446 builder's
+		// deterministic-only gate silently skipped ALL production
+		// laundry/notice-board objects — regression coverage), and the
+		// laundry shape is DefaultState=empty + hung variants.
 		"laundry-line": {
-			ID: "laundry-line", Category: "prop", DefaultState: "dirty",
-			RotationAlgo: sim.RotationAlgoDeterministic,
+			ID: "laundry-line", Category: "prop", DefaultState: "empty",
+			RotationAlgo: sim.RotationAlgoRandomPerObject,
 			States: []sim.AssetState{
-				{ID: 20, State: "dirty", Tags: []string{"rotatable", "laundry"}},
-				{ID: 21, State: "clean", Tags: []string{"rotatable", "laundry"}},
+				{ID: 20, State: "empty", Tags: []string{"rotatable", "laundry"}},
+				{ID: 21, State: "hung-1", Tags: []string{"rotatable", "laundry"}},
+				{ID: 22, State: "hung-2", Tags: []string{"rotatable", "laundry"}},
 			},
 		},
 		"notice-board": {
 			ID: "notice-board", Category: "prop", DefaultState: "blank",
-			RotationAlgo: sim.RotationAlgoDeterministic,
+			RotationAlgo: sim.RotationAlgoRandomPerObject,
 			States: []sim.AssetState{
 				{ID: 30, State: "blank", Tags: []string{"rotatable", "notice-board"}},
 				{ID: 31, State: "posted", Tags: []string{"rotatable", "notice-board"}},
@@ -55,7 +61,7 @@ func buildRouteCascadeWorld(t *testing.T) (*sim.World, func()) {
 		"home":    {ID: "home", AssetID: "house", Pos: sim.WorldPos{X: 320, Y: 320}},
 		"lamp-A":  {ID: "lamp-A", AssetID: "lamp", CurrentState: "lit", Pos: sim.WorldPos{X: 640, Y: 320}},
 		"lamp-B":  {ID: "lamp-B", AssetID: "lamp", CurrentState: "lit", Pos: sim.WorldPos{X: 960, Y: 320}},
-		"laundry": {ID: "laundry", AssetID: "laundry-line", CurrentState: "dirty", Pos: sim.WorldPos{X: 640, Y: 640}},
+		"laundry": {ID: "laundry", AssetID: "laundry-line", CurrentState: "empty", Pos: sim.WorldPos{X: 640, Y: 640}},
 		"notice":  {ID: "notice", AssetID: "notice-board", CurrentState: "blank", Pos: sim.WorldPos{X: 960, Y: 640}},
 	})
 	handles.Structures.Seed(map[sim.StructureID]*sim.Structure{
@@ -76,6 +82,10 @@ func buildRouteCascadeWorld(t *testing.T) (*sim.World, func()) {
 	if err != nil {
 		t.Fatalf("LoadWorld: %v", err)
 	}
+	// Pin the world timezone so the schedule-boundary tests' fixed UTC
+	// instants resolve deterministically regardless of the host's local
+	// zone (same convention as sim's socialTestWorld).
+	w.Settings.Location = time.UTC
 	return w, func() {}
 }
 
@@ -239,59 +249,211 @@ func TestRouteAbandonedOnMoveStopped(t *testing.T) {
 	}
 }
 
-// TestWasherwomanDispatchesOnRotationApplied: ApplyDailyRotation with
-// TagLaundry in ExcludeTags fires the washerwoman.
-func TestWasherwomanDispatchesOnRotationApplied(t *testing.T) {
-	w, _ := buildRouteCascadeWorld(t)
-	seedActorAttribute(w, sim.AttrWasherwoman)
-	RegisterNPCRoutes(context.Background(), w)
-	cancel := runRouteCascadeWorld(t, w)
-	defer cancel()
+// seedRunnerSchedule sets the runner's schedule window (minute-of-day).
+// Must be called BEFORE runRouteCascadeWorld, same as seedActorAttribute.
+func seedRunnerSchedule(w *sim.World, startMin, endMin int) {
+	actor := w.Actors["runner"]
+	actor.ScheduleStartMin = &startMin
+	actor.ScheduleEndMin = &endMin
+}
 
-	r := newDeterministicRand()
-	scope := sim.RotationScope{ExcludeTags: []string{sim.TagLaundry, sim.TagNoticeBoard}}
-	if _, err := w.Send(sim.ApplyDailyRotation(sim.RotationTickInputs{Now: time.Now().UTC(), Rand: r}, scope)); err != nil {
-		t.Fatalf("rotate: %v", err)
+// routeStopStates returns the NewState of every stop on the runner's
+// active route (nil when no route).
+func routeStopStates(t *testing.T, w *sim.World) []string {
+	t.Helper()
+	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		route, ok := world.ActiveRoutes["runner"]
+		if !ok {
+			return []string(nil), nil
+		}
+		var states []string
+		for _, s := range route.Stops {
+			states = append(states, s.NewState)
+		}
+		return states, nil
+	}})
+	if err != nil {
+		t.Fatalf("routeStopStates: %v", err)
 	}
-	if !hasActiveRoute(t, w) {
-		t.Error("expected washerwoman route after RotationApplied with TagLaundry excluded")
+	return res.([]string)
+}
+
+// clearRunnerRoute deletes the runner's active route (so a follow-up
+// tick's "no new route" assertion isn't masked by the old one).
+func clearRunnerRoute(t *testing.T, w *sim.World) {
+	t.Helper()
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		delete(world.ActiveRoutes, "runner")
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("clearRunnerRoute: %v", err)
 	}
 }
 
-// TestWasherwomanSkipsWhenTagNotExcluded: ApplyDailyRotation with empty
-// ExcludeTags — the bulk pass rotates laundry directly, washerwoman skips.
-func TestWasherwomanSkipsWhenTagNotExcluded(t *testing.T) {
+// at builds a UTC instant on a fixed test day at h:m. The test world has
+// no Settings.Location, so window boundaries resolve in UTC too.
+func at(h, m int) time.Time {
+	return time.Date(2026, 6, 12, h, m, 0, 0, time.UTC)
+}
+
+// TestWasherwomanHangsOutAtWindowStart: a schedule tick inside the
+// window (start boundary unprocessed) starts a route whose stop flips
+// the empty laundry line to a hung variant. The fixture asset is
+// random_per_object, regression-proving the builder no longer gates on
+// a deterministic RotationAlgo (the pre-446 bug that built zero stops
+// against every production laundry/board asset).
+func TestWasherwomanHangsOutAtWindowStart(t *testing.T) {
 	w, _ := buildRouteCascadeWorld(t)
 	seedActorAttribute(w, sim.AttrWasherwoman)
+	seedRunnerSchedule(w, 540, 1080) // 9:00–18:00
 	RegisterNPCRoutes(context.Background(), w)
 	cancel := runRouteCascadeWorld(t, w)
 	defer cancel()
 
-	r := newDeterministicRand()
-	if _, err := w.Send(sim.ApplyDailyRotation(sim.RotationTickInputs{Now: time.Now().UTC(), Rand: r}, sim.RotationScope{})); err != nil {
-		t.Fatalf("rotate: %v", err)
+	if _, err := w.Send(RouteScheduleTick(at(10, 0), newDeterministicRand())); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	states := routeStopStates(t, w)
+	if len(states) != 1 {
+		t.Fatalf("route stops = %v, want exactly the laundry object", states)
+	}
+	if states[0] != "hung-1" && states[0] != "hung-2" {
+		t.Errorf("hang-out NewState = %q, want a hung variant", states[0])
+	}
+}
+
+// TestWasherwomanBringsInAtWindowEnd: past the window end, the route's
+// stop flips a hung line back to the asset's DefaultState.
+func TestWasherwomanBringsInAtWindowEnd(t *testing.T) {
+	w, _ := buildRouteCascadeWorld(t)
+	seedActorAttribute(w, sim.AttrWasherwoman)
+	seedRunnerSchedule(w, 540, 1080)
+	w.VillageObjects["laundry"].CurrentState = "hung-2"
+	RegisterNPCRoutes(context.Background(), w)
+	cancel := runRouteCascadeWorld(t, w)
+	defer cancel()
+
+	if _, err := w.Send(RouteScheduleTick(at(19, 0), newDeterministicRand())); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	states := routeStopStates(t, w)
+	if len(states) != 1 || states[0] != "empty" {
+		t.Errorf("bring-in stops = %v, want [empty]", states)
+	}
+}
+
+// TestWasherwomanBoundaryFiresOnce: a processed boundary is stamped and
+// doesn't re-fire — the second tick at the same instant starts no new
+// route. Also covers the idempotent no-op stamp: laundry already hung at
+// the start boundary builds zero candidates, yet the boundary still
+// stamps (no per-tick re-evaluation for the rest of the window).
+func TestWasherwomanBoundaryFiresOnce(t *testing.T) {
+	w, _ := buildRouteCascadeWorld(t)
+	seedActorAttribute(w, sim.AttrWasherwoman)
+	seedRunnerSchedule(w, 540, 1080)
+	RegisterNPCRoutes(context.Background(), w)
+	cancel := runRouteCascadeWorld(t, w)
+	defer cancel()
+
+	rng := newDeterministicRand()
+	if _, err := w.Send(RouteScheduleTick(at(10, 0), rng)); err != nil {
+		t.Fatalf("tick 1: %v", err)
+	}
+	if !hasActiveRoute(t, w) {
+		t.Fatal("expected route after first start-boundary tick")
+	}
+	clearRunnerRoute(t, w)
+	if _, err := w.Send(RouteScheduleTick(at(10, 5), rng)); err != nil {
+		t.Fatalf("tick 2: %v", err)
 	}
 	if hasActiveRoute(t, w) {
-		t.Error("expected no washerwoman route — TagLaundry not in ExcludeTags")
+		t.Error("start boundary re-fired — expected the stamp to suppress it")
+	}
+
+	// Idempotent no-op at a boundary: hung laundry + a fresh world whose
+	// start boundary is due → zero candidates, no route, but stamped.
+	w2, _ := buildRouteCascadeWorld(t)
+	seedActorAttribute(w2, sim.AttrWasherwoman)
+	seedRunnerSchedule(w2, 540, 1080)
+	w2.VillageObjects["laundry"].CurrentState = "hung-1"
+	RegisterNPCRoutes(context.Background(), w2)
+	cancel2 := runRouteCascadeWorld(t, w2)
+	defer cancel2()
+
+	if _, err := w2.Send(RouteScheduleTick(at(10, 0), rng)); err != nil {
+		t.Fatalf("w2 tick: %v", err)
+	}
+	if hasActiveRoute(t, w2) {
+		t.Error("expected no route — laundry already hung (zero candidates)")
+	}
+	res, err := w2.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		_, stamped := world.RouteBoundaryStamps[sim.AttrWasherwoman]
+		return stamped, nil
+	}})
+	if err != nil {
+		t.Fatalf("read stamp: %v", err)
+	}
+	if !res.(bool) {
+		t.Error("zero-candidate boundary was not stamped — would re-evaluate every tick")
 	}
 }
 
-// TestTownCrierDispatchesOnRotationApplied: TagNoticeBoard variant of
-// the washerwoman test.
-func TestTownCrierDispatchesOnRotationApplied(t *testing.T) {
+// TestTownCrierToursAtBothBoundaries: the crier route fires at the
+// window start AND again at the window end (the end boundary is a later
+// instant than the stamped start, so it passes the edge guard), flipping
+// the board each time.
+func TestTownCrierToursAtBothBoundaries(t *testing.T) {
 	w, _ := buildRouteCascadeWorld(t)
 	seedActorAttribute(w, sim.AttrTownCrier)
+	seedRunnerSchedule(w, 540, 1080)
 	RegisterNPCRoutes(context.Background(), w)
 	cancel := runRouteCascadeWorld(t, w)
 	defer cancel()
 
-	r := newDeterministicRand()
-	scope := sim.RotationScope{ExcludeTags: []string{sim.TagLaundry, sim.TagNoticeBoard}}
-	if _, err := w.Send(sim.ApplyDailyRotation(sim.RotationTickInputs{Now: time.Now().UTC(), Rand: r}, scope)); err != nil {
-		t.Fatalf("rotate: %v", err)
+	rng := newDeterministicRand()
+	if _, err := w.Send(RouteScheduleTick(at(10, 0), rng)); err != nil {
+		t.Fatalf("start tick: %v", err)
+	}
+	states := routeStopStates(t, w)
+	if len(states) != 1 || states[0] != "posted" {
+		t.Fatalf("start-boundary stops = %v, want [posted] (blank board advances)", states)
+	}
+	clearRunnerRoute(t, w)
+
+	// End boundary: a fresh route even though the start stamp is set.
+	if _, err := w.Send(RouteScheduleTick(at(19, 0), rng)); err != nil {
+		t.Fatalf("end tick: %v", err)
 	}
 	if !hasActiveRoute(t, w) {
-		t.Error("expected town_crier route after RotationApplied with TagNoticeBoard excluded")
+		t.Error("expected crier route at the window-end boundary")
+	}
+}
+
+// TestRouteScheduleNoCarrier: no actor carries the attribute — no route,
+// no stamp (the next tick re-checks; a carrier added at runtime starts
+// getting boundaries without a restart).
+func TestRouteScheduleNoCarrier(t *testing.T) {
+	w, _ := buildRouteCascadeWorld(t)
+	// Deliberately no seedActorAttribute.
+	seedRunnerSchedule(w, 540, 1080)
+	RegisterNPCRoutes(context.Background(), w)
+	cancel := runRouteCascadeWorld(t, w)
+	defer cancel()
+
+	if _, err := w.Send(RouteScheduleTick(at(10, 0), newDeterministicRand())); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	if hasActiveRoute(t, w) {
+		t.Error("expected no route — no attribute carrier")
+	}
+	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		return len(world.RouteBoundaryStamps), nil
+	}})
+	if err != nil {
+		t.Fatalf("read stamps: %v", err)
+	}
+	if res.(int) != 0 {
+		t.Error("stamped a boundary with no carrier present")
 	}
 }
 

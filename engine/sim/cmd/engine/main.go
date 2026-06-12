@@ -366,11 +366,20 @@ func run(rt runtime, stop <-chan struct{}) error {
 	startTickers(worldCtx, rt.World)
 
 	// Re-author any noticeboard left blank by the restart (ZBBS-HOME-443):
-	// board content is in-memory only, and the daily rotation that would
-	// re-author it won't fire again until the next midnight boundary — so
-	// without this kick, a mid-day restart left every board blank (and
-	// unreadable in the client) for the rest of the day.
+	// board content is in-memory only, so without this kick a restart left
+	// every board blank (and unreadable in the client) until the crier's
+	// next scheduled tour. The route-schedule ticker's boot catch-up
+	// (ZBBS-HOME-446) then has readable prose to announce when the crier
+	// re-tours shortly after boot.
 	go cascade.KickstartNoticeboards(worldCtx, rt.World, rt.LLMClient)
+
+	// Schedule-window trigger for the washerwoman / town-crier routes
+	// (ZBBS-HOME-446): once a minute, fire a route at the carrier's
+	// window start and end boundaries (laundry out at start / in at end;
+	// crier tours the boards at both). Lives in cascade but is wired here
+	// with the other tickers so RegisterNPCRoutes stays pure subscriber
+	// wiring.
+	go cascade.RunRouteScheduleTicker(worldCtx, rt.World)
 
 	// Daily sim-conversation push (ZBBS-WORK-376 piece 3). Bound to worldCtx so
 	// it stops with the world; it reads pg + POSTs to the API, independent of
@@ -585,12 +594,13 @@ func startTickers(ctx context.Context, w *sim.World) {
 	go sim.RunRoomSweep(ctx, w)
 	go sim.RunPCPresenceSweep(ctx, w) // ZBBS-WORK-326: reclaim ghost (closed-tab) PCs
 	go sim.RunSceneQuoteSweep(ctx, w)
-	// ZBBS-HOME-443: carve laundry + notice boards out of the bulk rotation —
-	// their daily flips are owned by the washerwoman / town-crier routes, whose
-	// RotationApplied dispatches (cascade/npc_route.go) only fire when their
-	// domain tag is in ExcludedTags. This is the npc_behaviors cutover wiring
-	// that the empty-scope default deferred; without it the routes never
-	// dispatched and the crier never walked.
+	// ZBBS-HOME-443/446: carve laundry + notice boards out of the bulk
+	// rotation — those domains are mutated exclusively by the washerwoman /
+	// town-crier routes, which since ZBBS-HOME-446 fire on the carriers' own
+	// schedule-window boundaries (see RunRouteScheduleTicker above), not on
+	// RotationApplied. The exclusion no longer doubles as the route trigger;
+	// it only keeps the midnight bulk pass from re-flipping route-owned
+	// objects.
 	go sim.RunRotationTicker(ctx, w, sim.RotationScope{
 		ExcludeTags: []string{sim.TagLaundry, sim.TagNoticeBoard},
 	})
