@@ -718,7 +718,11 @@ func (s *Server) handleUmbilicalSetPosition(w http.ResponseWriter, r *http.Reque
 			// Client-correctable: the error message names the refused tile.
 			writeError(w, http.StatusUnprocessableEntity, err.Error())
 		default:
-			writeError(w, http.StatusUnprocessableEntity, err.Error())
+			// Anything else is an internal command failure (e.g. walk-grid
+			// construction), not a correctable request — don't leak the
+			// internal error text to the wire.
+			log.Printf("umbilical set-position: actor=%s to=(%d,%d): %v", req.ActorID, *req.X, *req.Y, err)
+			writeError(w, http.StatusInternalServerError, "set-position failed")
 		}
 		return
 	}
