@@ -429,6 +429,60 @@ func TestTownCrierToursAtBothBoundaries(t *testing.T) {
 	}
 }
 
+// TestRouteScheduleWrapMidnightWindow: the stamp comparison stays sound
+// across a wrap-midnight window (22:00–02:00). The start boundary
+// resolves to YESTERDAY's 22:00 for an early-morning tick; the stamp
+// must suppress its re-fire yet still let today's 02:00 end boundary
+// through (a later instant than the stamped start).
+func TestRouteScheduleWrapMidnightWindow(t *testing.T) {
+	w, _ := buildRouteCascadeWorld(t)
+	seedActorAttribute(w, sim.AttrWasherwoman)
+	seedRunnerSchedule(w, 1320, 120) // 22:00–02:00
+	RegisterNPCRoutes(context.Background(), w)
+	cancel := runRouteCascadeWorld(t, w)
+	defer cancel()
+
+	rng := newDeterministicRand()
+	// 00:30 — inside the window; most recent boundary is yesterday's
+	// 22:00 start → hang-out route.
+	if _, err := w.Send(RouteScheduleTick(at(0, 30), rng)); err != nil {
+		t.Fatalf("tick 00:30: %v", err)
+	}
+	states := routeStopStates(t, w)
+	if len(states) != 1 || states[0] == "empty" {
+		t.Fatalf("00:30 stops = %v, want one hung variant (yesterday's start boundary)", states)
+	}
+	clearRunnerRoute(t, w)
+
+	// 00:35 — same boundary, stamped → no re-fire.
+	if _, err := w.Send(RouteScheduleTick(at(0, 35), rng)); err != nil {
+		t.Fatalf("tick 00:35: %v", err)
+	}
+	if hasActiveRoute(t, w) {
+		t.Error("start boundary re-fired at 00:35 despite the stamp")
+	}
+
+	// The 00:30 hang-out stamped, but its route was cleared before any
+	// stop flipped — hang the laundry manually so the end boundary has
+	// something to bring in.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.VillageObjects["laundry"].CurrentState = "hung-1"
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("hang laundry: %v", err)
+	}
+
+	// 02:30 — past the window end; today's 02:00 end boundary is later
+	// than the stamped start → bring-in route fires.
+	if _, err := w.Send(RouteScheduleTick(at(2, 30), rng)); err != nil {
+		t.Fatalf("tick 02:30: %v", err)
+	}
+	states = routeStopStates(t, w)
+	if len(states) != 1 || states[0] != "empty" {
+		t.Errorf("02:30 stops = %v, want [empty] (end boundary past the start stamp)", states)
+	}
+}
+
 // TestRouteScheduleNoCarrier: no actor carries the attribute — no route,
 // no stamp (the next tick re-checks; a carrier added at runtime starts
 // getting boundaries without a restart).

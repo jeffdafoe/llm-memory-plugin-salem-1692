@@ -126,8 +126,13 @@ func RunRouteScheduleTicker(ctx context.Context, w *sim.World) {
 
 // RouteScheduleTick returns a Command that runs one boundary check for
 // each schedule-triggered route behavior. Exported so tests drive it
-// deterministically without the ticker goroutine.
+// deterministically without the ticker goroutine. A nil rng gets a
+// now-seeded fallback rather than panicking inside the washerwoman's
+// variant pick.
 func RouteScheduleTick(now time.Time, rng *rand.Rand) sim.Command {
+	if rng == nil {
+		rng = rand.New(rand.NewSource(now.UnixNano()))
+	}
 	return sim.Command{
 		Fn: func(w *sim.World) (any, error) {
 			runScheduledRoute(w, sim.AttrWasherwoman, now, func(w *sim.World, isStart bool) []sim.RouteCandidate {
@@ -153,6 +158,13 @@ func RouteScheduleTick(now time.Time, rng *rand.Rand) sim.Command {
 // (mirrors the social scheduler's no-stamp-on-failed-walk). A missing
 // carrier skips without stamping — the per-tick re-check is two cheap
 // map scans.
+//
+// An in-flight route on the carrier is superseded by the new dispatch —
+// that's StartNPCRoute's documented contract (same shape as MoveActor's
+// supersede), and the pre-446 rotation triggers had the same property.
+// In practice it can only bite an actor carrying two route attributes
+// (a tolerated misconfiguration); ActiveRoutes is empty at boot, so the
+// catch-up dispatch never clobbers a real in-progress route.
 func runScheduledRoute(w *sim.World, attrSlug string, now time.Time, build func(*sim.World, bool) []sim.RouteCandidate) {
 	actor := findActorWithAttribute(w, attrSlug)
 	if actor == nil {

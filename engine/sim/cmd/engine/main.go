@@ -368,9 +368,10 @@ func run(rt runtime, stop <-chan struct{}) error {
 	// Re-author any noticeboard left blank by the restart (ZBBS-HOME-443):
 	// board content is in-memory only, so without this kick a restart left
 	// every board blank (and unreadable in the client) until the crier's
-	// next scheduled tour. The route-schedule ticker's boot catch-up
-	// (ZBBS-HOME-446) then has readable prose to announce when the crier
-	// re-tours shortly after boot.
+	// next scheduled tour. The route-schedule ticker below also fires a
+	// catch-up tour at boot — the two goroutines race, and a crier arrival
+	// that beats the kickstart's LLM call reads nothing (silent stop, by
+	// design); her flip still triggers fresh authoring either way.
 	go cascade.KickstartNoticeboards(worldCtx, rt.World, rt.LLMClient)
 
 	// Schedule-window trigger for the washerwoman / town-crier routes
