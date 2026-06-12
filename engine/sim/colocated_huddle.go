@@ -259,7 +259,12 @@ func pcBystanders(w *World, speaker *Actor, peerSet map[ActorID]struct{}) []Acto
 				continue
 			}
 		} else {
-			if a.InsideStructureID != "" {
+			// Open ground means NEITHER side has a structure scope — a PC
+			// loitering at a stall's pin is conversationally scoped to that
+			// stall (it hears the stall, not the road), so this must check
+			// the full conversationalScopeStructure, not just
+			// InsideStructureID (code_review).
+			if conversationalScopeStructure(w, a) != "" {
 				continue
 			}
 			if speaker.Pos.Chebyshev(a.Pos) > OutdoorEarshotTiles {

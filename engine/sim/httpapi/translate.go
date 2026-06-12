@@ -94,12 +94,20 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 		// here is what lets a player overhear room conversation without
 		// being a huddle member. Engine-side speech consumers read the
 		// EVENT's RecipientIDs and never see this merge.
+		// Dedup while preserving order (code_review): pcBystanders never
+		// overlaps RecipientIDs today, but the translator defines the wire
+		// contract and can be fed arbitrary events — recipient_ids must
+		// stay a set.
 		recipients := make([]string, 0, len(e.RecipientIDs)+len(e.PCBystanderIDs))
-		for _, id := range e.RecipientIDs {
-			recipients = append(recipients, string(id))
-		}
-		for _, id := range e.PCBystanderIDs {
-			recipients = append(recipients, string(id))
+		seen := make(map[sim.ActorID]struct{}, len(e.RecipientIDs)+len(e.PCBystanderIDs))
+		for _, list := range [][]sim.ActorID{e.RecipientIDs, e.PCBystanderIDs} {
+			for _, id := range list {
+				if _, dup := seen[id]; dup {
+					continue
+				}
+				seen[id] = struct{}{}
+				recipients = append(recipients, string(id))
+			}
 		}
 		// Structured sale hints (ZBBS-WORK-400): forward the commit-time-
 		// filtered mentions on the same wire fields the scene_quote frame

@@ -170,7 +170,9 @@ func TestSpeak_PCBystanderAudience(t *testing.T) {
 
 // --- TestSpeak_PCBystanderOutdoorRange (ZBBS-HOME-437): open-ground speech
 // reaches a bystanding PC within OutdoorEarshotTiles (Chebyshev) and not one
-// beyond it; an indoor PC never overhears outdoor speech.
+// beyond it. An indoor PC never overhears outdoor speech — and neither does
+// an outdoor PC whose conversational scope resolves to a loiter pin (it
+// hears the stall, not the road; code_review).
 func TestSpeak_PCBystanderOutdoorRange(t *testing.T) {
 	w, stop := buildSpeakTestWorld(t,
 		actorSpec{id: "hannah", displayName: "Hannah", kind: sim.KindNPCShared, huddleID: "h1"},
@@ -178,15 +180,36 @@ func TestSpeak_PCBystanderOutdoorRange(t *testing.T) {
 		actorSpec{id: "pc-near", displayName: "Near", kind: sim.KindPC},
 		actorSpec{id: "pc-far", displayName: "Far", kind: sim.KindPC},
 		actorSpec{id: "pc-inside", displayName: "Inside", kind: sim.KindPC},
+		actorSpec{id: "pc-stall", displayName: "Loiterer", kind: sim.KindPC},
 	)
 	defer stop()
-	setActor(t, w, "hannah", func(a *sim.Actor) { a.Pos = sim.TilePos{X: 50, Y: 50} })
-	setActor(t, w, "pc-near", func(a *sim.Actor) { a.Pos = sim.TilePos{X: 50 + sim.OutdoorEarshotTiles, Y: 50} })
-	setActor(t, w, "pc-far", func(a *sim.Actor) { a.Pos = sim.TilePos{X: 50 + sim.OutdoorEarshotTiles + 1, Y: 50} })
+	// A named stall whose loiter pin sits at WorldToTile(0,0) (per-instance
+	// zero offsets). The loiter-scoped PC stands ON the pin; the speaker
+	// stands 3 tiles east — outside the stall's AudienceScopeTiles (so the
+	// speaker stays open-ground) but within earshot of every PC here.
+	pin := sim.WorldToTile(0, 0)
+	zero := 0
+	sendT(t, w, sim.Command{Fn: func(world *sim.World) (any, error) {
+		// ResolveLoiteringObject skips objects with a dangling asset_id, so
+		// the stall needs a (minimal) asset on the world.
+		world.Assets["a"] = &sim.Asset{ID: "a"}
+		world.VillageObjects["stall"] = &sim.VillageObject{
+			ID: "stall", DisplayName: "Stall", AssetID: "a",
+			Pos: sim.WorldPos{X: 0, Y: 0}, LoiterOffsetX: &zero, LoiterOffsetY: &zero,
+		}
+		return nil, nil
+	}})
+	speakerPos := sim.TilePos{X: pin.X + 3, Y: pin.Y}
+	setActor(t, w, "hannah", func(a *sim.Actor) { a.Pos = speakerPos })
+	setActor(t, w, "pc-near", func(a *sim.Actor) { a.Pos = sim.TilePos{X: speakerPos.X + sim.OutdoorEarshotTiles, Y: speakerPos.Y} })
+	setActor(t, w, "pc-far", func(a *sim.Actor) {
+		a.Pos = sim.TilePos{X: speakerPos.X + sim.OutdoorEarshotTiles + 1, Y: speakerPos.Y}
+	})
 	setActor(t, w, "pc-inside", func(a *sim.Actor) {
-		a.Pos = sim.TilePos{X: 50, Y: 50}
+		a.Pos = speakerPos
 		a.InsideStructureID = "tavern"
 	})
+	setActor(t, w, "pc-stall", func(a *sim.Actor) { a.Pos = pin })
 
 	captured := captureSpoke(t, w)
 	if _, err := w.Send(sim.Speak("hannah", "Hail, the road.", time.Now().UTC())); err != nil {
@@ -197,7 +220,7 @@ func TestSpeak_PCBystanderOutdoorRange(t *testing.T) {
 	}
 	got := (*captured)[0]
 	if want := []sim.ActorID{"pc-near"}; !reflect.DeepEqual(got.PCBystanderIDs, want) {
-		t.Errorf("PCBystanderIDs = %v, want %v (within earshot, outdoors only)", got.PCBystanderIDs, want)
+		t.Errorf("PCBystanderIDs = %v, want %v (in earshot, open-ground scope only)", got.PCBystanderIDs, want)
 	}
 }
 
