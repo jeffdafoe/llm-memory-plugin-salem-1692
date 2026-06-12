@@ -16,7 +16,8 @@ ALTER TABLE public.actor
     ADD COLUMN next_self_tick_at timestamp with time zone,
     ADD COLUMN next_self_tick_reason text;
 
-CREATE INDEX idx_actor_next_self_tick_at ON public.actor USING btree (next_self_tick_at)
+CREATE INDEX IF NOT EXISTS idx_actor_next_self_tick_at
+    ON public.actor USING btree (next_self_tick_at)
     WHERE (next_self_tick_at IS NOT NULL);
 
 COMMIT;
