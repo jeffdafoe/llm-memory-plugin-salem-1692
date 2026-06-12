@@ -64,6 +64,20 @@ func ResumeCheckpointedWalks(now time.Time) Command {
 				if actor.MoveIntent != nil {
 					continue
 				}
+				// A sleeping/resting actor stays put. MoveActor treats a
+				// committed move as waking (ZBBS-HOME-435), so resuming here
+				// would yank a legitimately-bedded actor out of bed to finish
+				// a walk that predates the rest — the rest is the LATER
+				// decision and wins. Checked on both the window pointers and
+				// the macro-state so a stale half-set combination from a
+				// crash boundary still vetoes.
+				if actor.SleepingUntil != nil || actor.BreakUntil != nil ||
+					actor.State == StateSleeping || actor.State == StateResting {
+					log.Printf("sim/resume_walks: %q checkpointed walk (kind=%s) dropped — actor is sleeping/resting",
+						id, dest.Kind)
+					res.Dropped++
+					continue
+				}
 				moveCmd := MoveActor(id, cloneMoveDestination(dest), false, now)
 				if _, err := moveCmd.Fn(w); err != nil {
 					log.Printf("sim/resume_walks: %q checkpointed walk (kind=%s) not resumable: %v",

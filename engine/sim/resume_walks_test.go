@@ -128,3 +128,38 @@ func TestResumeCheckpointedWalks_SkipsAlreadyMoving(t *testing.T) {
 		t.Error("ResumeDestination not consumed on the skip path")
 	}
 }
+
+// TestResumeCheckpointedWalks_SleeperKeepsSleeping: an actor who bedded
+// down between the walk dispatch and shutdown does NOT get yanked out of
+// bed by the stale walk — MoveActor treats a committed move as waking
+// (ZBBS-HOME-435), so the sweep drops the walk instead of dispatching it.
+func TestResumeCheckpointedWalks_SleeperKeepsSleeping(t *testing.T) {
+	w, cancel, _ := buildSetPositionTestWorld(t)
+	defer cancel()
+	setResumeDestination(t, w, "walker", sim.NewPositionDestination(sim.Position{X: sim.PadX + 5, Y: sim.PadY + 5}))
+	wake := time.Now().Add(4 * time.Hour)
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.Actors["walker"].SleepingUntil = &wake
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed sleep: %v", err)
+	}
+
+	res, err := w.Send(sim.ResumeCheckpointedWalks(time.Now()))
+	if err != nil {
+		t.Fatalf("ResumeCheckpointedWalks: %v", err)
+	}
+	out := res.(sim.ResumeWalksResult)
+	if out.Resumed != 0 || out.Dropped != 1 {
+		t.Errorf("result = %+v, want 0 resumed / 1 dropped", out)
+	}
+
+	state, _ := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := world.Actors["walker"]
+		return []any{a.MoveIntent == nil, a.SleepingUntil != nil, a.ResumeDestination == nil}, nil
+	}})
+	v := state.([]any)
+	if v[0] != true || v[1] != true || v[2] != true {
+		t.Errorf("sleeper state: intentNil=%v stillSleeping=%v resumeCleared=%v, want all true", v[0], v[1], v[2])
+	}
+}
