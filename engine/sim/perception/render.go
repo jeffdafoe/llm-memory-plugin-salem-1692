@@ -1460,6 +1460,8 @@ func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string
 		return renderPaidWarrantLine(n, nameOf(r.Buyer), r.Amount, r.ForText, maxTextBytes)
 	case sim.IdleBackstopWarrantReason:
 		return renderIdleBackstopWarrantLine(n, r.QuietDuration), false
+	case sim.StrandedWarrantReason:
+		return renderStrandedWarrantLine(n), false
 	case sim.RestockWarrantReason:
 		return renderRestockWarrantLine(n, r.Item), false
 	case sim.ConsumedWarrantReason:
@@ -1690,6 +1692,16 @@ func renderIdleBackstopWarrantLine(n int, quiet time.Duration) string {
 	}
 	return fmt.Sprintf("%d. You've been quiet for %s — consider what to do next.\n",
 		n, quiet.Round(time.Second))
+}
+
+// renderStrandedWarrantLine renders the anomalous-position backstop line
+// (ZBBS-HOME-450): the actor is standing in the open at no anchor with
+// nothing under way. The wording is a neutral observation of the actor's
+// situation — it names where they are, not what to do, so the model
+// re-decides freely (the same no-coercion discipline as the felt-impulse
+// and atmosphere lines). Fixed prose, no untrusted payload.
+func renderStrandedWarrantLine(n int) string {
+	return fmt.Sprintf("%d. You find yourself standing out in the open, between places, with nothing under way.\n", n)
 }
 
 // renderRestockWarrantLine renders the warrant line for a RestockWarrantReason —

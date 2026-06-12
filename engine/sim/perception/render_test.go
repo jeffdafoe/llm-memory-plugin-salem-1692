@@ -734,3 +734,20 @@ func TestRender_ImpulseWarrantLine_SanitizesAndCaps(t *testing.T) {
 		t.Errorf("truncated impulse line is %d bytes, expected the cap to bound it", len(line))
 	}
 }
+
+// TestRenderWarrantLine_Stranded covers the ZBBS-HOME-450 anomalous-position
+// backstop line: a fixed, neutral observation of the actor's situation — no
+// imperative, no destination steering.
+func TestRenderWarrantLine_Stranded(t *testing.T) {
+	line, truncated := renderWarrantLine(1, sim.WarrantMeta{
+		TriggerActorID: "zeke",
+		Reason:         sim.StrandedWarrantReason{},
+	}, func(sim.ActorID) string { return "you" }, func(string) string { return "" }, func(sim.ItemKind) bool { return false }, 200)
+	want := "1. You find yourself standing out in the open, between places, with nothing under way.\n"
+	if line != want {
+		t.Errorf("stranded line = %q, want %q", line, want)
+	}
+	if truncated {
+		t.Error("stranded line reported truncation — it has no free-text payload")
+	}
+}

@@ -65,6 +65,7 @@ const (
 	WarrantKindConsumed           WarrantKind = "consumed" // immediate consume self-narration beat
 	WarrantKindAdmin              WarrantKind = "admin"    // operator forced a bare tick
 	WarrantKindImpulse            WarrantKind = "impulse"  // operator-injected in-world felt impulse (umbilical directive nudge)
+	WarrantKindStranded           WarrantKind = "stranded" // anomalous-position backstop: standing in the open at no anchor (ZBBS-HOME-450)
 )
 
 // WarrantReason is the marker interface for kind-specific warrant payloads.
@@ -411,6 +412,27 @@ type IdleBackstopWarrantReason struct {
 func (IdleBackstopWarrantReason) isWarrantReason()           {}
 func (IdleBackstopWarrantReason) Kind() WarrantKind          { return WarrantKindIdleBackstop }
 func (IdleBackstopWarrantReason) DedupDiscriminator() uint64 { return 0 }
+
+// StrandedWarrantReason is the anomalous-position backstop (ZBBS-HOME-450):
+// the idle-backstop sweep found the actor standing in the open at no anchor
+// — outdoors, off-shift, outside any social window, no walk or route in
+// flight, no huddle, not resting — a state no legible activity explains.
+// Stranding has no self-healing trigger (the live cases: a restart-killed
+// walk, a footprint-parked fossil position), and the plain idle-backstop
+// kind is low-info so the noop-skip gate eats it. This kind is HIGH-info by
+// classification (not in isLowInfoWarrantKind), so the tick runs and the
+// actor perceives standing in the open and re-decides on its own —
+// perception-is-legibility, no scripted recovery move.
+//
+// Zero-sourced like IdleBackstopWarrantReason (fires from a detected state,
+// not a stimulus event). Rate-limited by Actor.lastStrandedWarrantAt
+// (in-memory; restart-lossy ON PURPOSE — the first post-boot sweep re-fires
+// for a still-stranded actor, which doubles as boot recovery).
+type StrandedWarrantReason struct{}
+
+func (StrandedWarrantReason) isWarrantReason()           {}
+func (StrandedWarrantReason) Kind() WarrantKind          { return WarrantKindStranded }
+func (StrandedWarrantReason) DedupDiscriminator() uint64 { return 0 }
 
 // AdminDirectiveWarrantReason carries an operator-authored directive injected
 // via the umbilical /nudge route (ZBBS-WORK-329 — the "if you see an NPC stuck,

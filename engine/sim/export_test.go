@@ -491,3 +491,8 @@ func SuppressArrivalWarrantForTest(w *World, actorID ActorID) bool {
 	}
 	return w.suppressArrivalWarrant(a)
 }
+
+// SetActorLastStrandedWarrantAt seeds the ZBBS-HOME-450 anomalous-position
+// cooldown stamp so sim_test can arrange cooldown scenarios without waiting
+// out the real strandedWarrantCooldown.
+func SetActorLastStrandedWarrantAt(a *Actor, at time.Time) { a.lastStrandedWarrantAt = at }
