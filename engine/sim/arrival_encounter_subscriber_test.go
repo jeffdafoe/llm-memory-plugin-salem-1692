@@ -566,6 +566,72 @@ func TestArrivalEncounter_WalkingActorNotPulledIn(t *testing.T) {
 	}
 }
 
+// seedActiveRoute installs a minimal active route for actorID — presence in
+// w.ActiveRoutes is what the encounter exclusion keys on (ZBBS-HOME-452).
+func seedActiveRoute(t *testing.T, w *sim.World, actorID sim.ActorID) {
+	t.Helper()
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		if world.ActiveRoutes == nil {
+			world.ActiveRoutes = map[sim.ActorID]*sim.NPCRoute{}
+		}
+		world.ActiveRoutes[actorID] = &sim.NPCRoute{NPCID: actorID, Label: "lamplighter"}
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed active route: %v", err)
+	}
+}
+
+// TestArrivalEncounter_RouteActorDoesNotInitiate — ZBBS-HOME-452 regression.
+// An actor arriving at an intermediate stop of an active route has no
+// MoveIntent (finishArrival cleared it before the emit) but is still
+// mid-task: forming a huddle here gets the route's own next-walk dispatch
+// rejected on the same emit, clearing the route and parking the actor (the
+// 2026-06-12 lamplighter wedge — stuck at the torch for the 2h silence
+// sweep, third lamp never lit). The arriver must be excluded while its
+// route is active.
+func TestArrivalEncounter_RouteActorDoesNotInitiate(t *testing.T) {
+	w, cancel := buildEncounterWorld(t, []encounterActor{
+		{id: "lamplighter", x: 100, y: 100},
+		{id: "bystander", x: 101, y: 100},
+	}, true)
+	defer cancel()
+
+	seedActiveRoute(t, w, "lamplighter")
+	emitArrivalFor(t, w, "lamplighter", time.Now().UTC())
+
+	st := readEncounterHuddleState(t, w)
+	if st.activeHuddleCount != 0 {
+		t.Fatalf("route actor's stop arrival minted %d huddles, want 0", st.activeHuddleCount)
+	}
+	if st.memberToHuddleIDs["lamplighter"] != "" {
+		t.Errorf("lamplighter should not be in a huddle mid-route, got %q", st.memberToHuddleIDs["lamplighter"])
+	}
+}
+
+// TestArrivalEncounter_RouteActorNotPulledInAsBystander — the same
+// exclusion in the participant direction: an actor standing at a route
+// stop (between arrival and the next dispatch, or mid stale-retry) must
+// not be grabbed into someone else's encounter — that huddle would block
+// its next walk identically.
+func TestArrivalEncounter_RouteActorNotPulledInAsBystander(t *testing.T) {
+	w, cancel := buildEncounterWorld(t, []encounterActor{
+		{id: "ann", x: 100, y: 100},
+		{id: "lamplighter", x: 101, y: 100},
+	}, true)
+	defer cancel()
+
+	seedActiveRoute(t, w, "lamplighter")
+	emitArrivalFor(t, w, "ann", time.Now().UTC())
+
+	st := readEncounterHuddleState(t, w)
+	if st.activeHuddleCount != 0 {
+		t.Fatalf("expected no huddle (only nearby actor is on an active route), got %d", st.activeHuddleCount)
+	}
+	if st.memberToHuddleIDs["lamplighter"] != "" {
+		t.Errorf("lamplighter should not be pulled into a huddle while on a route, got %q", st.memberToHuddleIDs["lamplighter"])
+	}
+}
+
 // sortedActorIDsForDebug returns a stable-sorted copy, used by ad-hoc
 // debugging if a test fails locally.
 //
