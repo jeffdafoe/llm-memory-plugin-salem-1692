@@ -72,10 +72,68 @@ import "time"
 // telemetry / admin dashboards and load-bearing for the unit tests.
 type IdleBackstopTelemetry struct {
 	Stamped               int
+	StampedStranded       int // subset of Stamped that carried StrandedWarrantReason (ZBBS-HOME-450)
 	SkippedScope          int // not KindNPCStateful / KindNPCShared
 	SkippedRecentlyTicked int // lastReactorTickAt within threshold
 	SkippedWarranted      int // open WarrantedSince cycle
 	SkippedTickInFlight   int // mid-tick
+}
+
+// strandedWarrantCooldown bounds how often the anomalous-position backstop
+// (ZBBS-HOME-450) re-stamps a still-stranded actor. The stranded warrant is
+// high-info (the noop-skip gate runs the tick), so without a cooldown an
+// actor that deliberates and chooses to keep standing in the open would burn
+// an LLM call on every sweep. Two hours keeps recovery prompt while bounding
+// the worst case to ~12 calls/day for a contentedly-stranded actor.
+const strandedWarrantCooldown = 2 * time.Hour
+
+// actorStrandedInOpen reports whether the actor is in the anomalous-position
+// state the ZBBS-HOME-450 backstop exists for: standing in the open with no
+// legible reason — no walk, no route, no huddle, no rest, off-shift, outside
+// any social window, and at no anchor (not inside a structure, not at any
+// named object's loiter pin). The live strand classes that motivated it: a
+// restart-killed walk (Ezekiel mid-road) and a fossil footprint position
+// (Grace). Every condition is an EXEMPTION for a legitimate way to be
+// standing around:
+//
+//   - on-shift actors are the duty steer/pending machinery's job (the
+//     noop-skip gate already opens for them);
+//   - social-window loiterers and summon-errand participants stand around
+//     by design;
+//   - a loiter-pin attribution (LoiterAttributionTiles) covers visitors,
+//     dwellers, and anyone parked AT a named place — the well, a stall, a
+//     shade oak.
+//
+// MUST be called from inside a Command.Fn (reads world state).
+func actorStrandedInOpen(w *World, a *Actor, now time.Time) bool {
+	if a.InsideStructureID != "" || a.MoveIntent != nil {
+		return false
+	}
+	if w.ActiveRoutes != nil && w.ActiveRoutes[a.ID] != nil {
+		return false
+	}
+	if actorInActiveHuddle(w, a) {
+		return false
+	}
+	if a.SleepingUntil != nil || a.BreakUntil != nil ||
+		a.State == StateSleeping || a.State == StateResting {
+		return false
+	}
+	if a.PendingSummon != nil {
+		return false
+	}
+	nowMinute := localMinuteOfDay(w, now)
+	if start, end, ok := effectiveShiftWindow(w, a); ok && minuteInShiftWindow(start, end, nowMinute) {
+		return false
+	}
+	if a.SocialStartMin != nil && a.SocialEndMin != nil &&
+		minuteInShiftWindow(*a.SocialStartMin, *a.SocialEndMin, nowMinute) {
+		return false
+	}
+	if _, atPin := resolveLoiteringObject(w, a.Pos, LoiterAttributionTiles); atPin {
+		return false
+	}
+	return true
 }
 
 // EvaluateIdleBackstop returns a Command that scans the world's actors,
@@ -159,10 +217,23 @@ func EvaluateIdleBackstop(now time.Time) Command {
 				// stamp. So t.Stamped++ is accurate; the return is ignored
 				// here (the red-need backstop is the consumer that checks
 				// it — ZBBS-HOME-363).
+				// Anomalous-position upgrade (ZBBS-HOME-450): a stranded
+				// actor gets the HIGH-info stranded reason instead of the
+				// low-info idle one, so the noop-skip gate runs the tick and
+				// the actor perceives standing in the open. Rate-limited per
+				// actor — past the cooldown window the plain idle warrant
+				// stamps as before (and the gate eats it as usual).
+				reason := WarrantReason(IdleBackstopWarrantReason{QuietDuration: quiet})
+				if (a.lastStrandedWarrantAt.IsZero() || now.Sub(a.lastStrandedWarrantAt) > strandedWarrantCooldown) &&
+					actorStrandedInOpen(w, a, now) {
+					reason = StrandedWarrantReason{}
+					a.lastStrandedWarrantAt = now
+					t.StampedStranded++
+				}
 				tryStampWarrant(w, a, WarrantMeta{
 					TriggerActorID: a.ID,
 					Force:          false,
-					Reason:         IdleBackstopWarrantReason{QuietDuration: quiet},
+					Reason:         reason,
 				}, now)
 				t.Stamped++
 			}
