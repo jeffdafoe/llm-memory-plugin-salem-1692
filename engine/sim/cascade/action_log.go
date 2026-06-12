@@ -193,10 +193,13 @@ func handlePayResolvedActionLog(w *sim.World, evt sim.Event) {
 	}
 	// Total quantity across consumers — the event carries per-consumer qty
 	// (group orders), and the narrated beat should state the whole bundle.
-	qty := resolved.QtyPerConsumer
-	if n := len(resolved.ConsumerIDs); n > 1 {
-		qty *= n
+	// Empty ConsumerIDs is the buyer-only shape (the common single-buyer
+	// purchase snapshots no consumer list) and counts as one consumer.
+	consumerCount := len(resolved.ConsumerIDs)
+	if consumerCount == 0 {
+		consumerCount = 1
 	}
+	qty := resolved.QtyPerConsumer * consumerCount
 	forText := formatItemQty(resolved.ItemKind, qty)
 	entry := sim.ActionLogEntry{
 		ActorID:          resolved.BuyerID,
