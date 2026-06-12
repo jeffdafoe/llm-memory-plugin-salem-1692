@@ -53,20 +53,29 @@ import (
 // checkpoint writer), so this is the all-or-nothing contract, not a
 // limitation.
 //
-// # Write order is NOT FK-load-bearing
+// # Write order IS FK-load-bearing: Orders before Actors
 //
-// The order below mirrors LoadWorld's dependency narrative (roots first)
-// for readability, but it is not required for referential safety. The v2
-// rewrite deliberately DROPPED every cross-aggregate FK among these tables
+// The v2 rewrite dropped nearly every cross-aggregate FK among these tables
 // (Slices 11-13: actor->huddle, scene_huddle->village_object, actor->
 // structure/room were all dropped, and the new scene table's structure /
 // huddle refs were created as TEXT soft-refs with no FK), moving that
-// consistency to Go-side validation at LoadWorld. The only FKs left on
-// checkpoint tables are within-aggregate child->parent ON DELETE CASCADE
-// (e.g. actor_need->actor, structure_room->structure, scene_huddle_ref->
-// scene), which each SaveSnapshot already orders parent-before-children
-// internally. So the Tx is order-independent across aggregates; no
-// DEFERRABLE FK is needed.
+// consistency to Go-side validation at LoadWorld. ONE cross-aggregate FK
+// survived the purge: room_access.granted_via_ledger_id -> pay_ledger(id)
+// (subspace_access_granted_via_ledger_id_fkey, NOT deferred — checked at
+// statement time). room_access is written by Actors.SaveSnapshot;
+// pay_ledger by Orders.SaveSnapshot. So Orders MUST run before Actors:
+// when an order is minted, accepted, and delivered with a room grant all
+// inside one checkpoint window (instant-settle lodging does this in ~3s),
+// both rows are new to the same SaveWorld, and saving the grant before its
+// ledger row aborts the checkpoint — permanently, since the same snapshot
+// state re-fails every cycle (ZBBS-HOME-451, live wedge 2026-06-12).
+// pay_ledger's only outbound FKs are item_kind (startup reference data)
+// and its parent_id self-ref, so running Orders early is safe. The
+// remaining FKs on checkpoint tables are within-aggregate child->parent
+// ON DELETE CASCADE (e.g. actor_need->actor, structure_room->structure,
+// scene_huddle_ref->scene), which each SaveSnapshot already orders
+// parent-before-children internally — those impose no cross-aggregate
+// ordering.
 //
 // # Concurrency
 //
@@ -110,11 +119,14 @@ func SaveWorld(ctx context.Context, repo sim.Repository, cp *sim.CheckpointSnaps
 	if err := repo.Scenes.SaveSnapshot(ctx, tx, cp.Scenes); err != nil {
 		return fmt.Errorf("pg SaveWorld: Scenes.SaveSnapshot: %w", err)
 	}
-	if err := repo.Actors.SaveSnapshot(ctx, tx, cp.Actors); err != nil {
-		return fmt.Errorf("pg SaveWorld: Actors.SaveSnapshot: %w", err)
-	}
+	// Orders before Actors — room_access (actors aggregate) carries a real,
+	// non-deferred FK to pay_ledger (orders aggregate); see the write-order
+	// section in the doc comment above (ZBBS-HOME-451).
 	if err := repo.Orders.SaveSnapshot(ctx, tx, cp.Orders); err != nil {
 		return fmt.Errorf("pg SaveWorld: Orders.SaveSnapshot: %w", err)
+	}
+	if err := repo.Actors.SaveSnapshot(ctx, tx, cp.Actors); err != nil {
+		return fmt.Errorf("pg SaveWorld: Actors.SaveSnapshot: %w", err)
 	}
 	if err := repo.Environment.SaveSnapshot(ctx, tx, cp.Environment, cp.Phase); err != nil {
 		return fmt.Errorf("pg SaveWorld: Environment.SaveSnapshot: %w", err)

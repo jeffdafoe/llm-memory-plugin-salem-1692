@@ -150,9 +150,11 @@ func saveSpyRepo(rec *saveRecorder, tx *spyTx, beginErr error) sim.Repository {
 }
 
 // expectedSaveOrder is the dependency order SaveWorld drives. Roots first,
-// mirroring LoadWorld's narrative (not FK-load-bearing — see save_world.go).
+// mirroring LoadWorld's narrative — and Orders strictly before Actors,
+// which IS FK-load-bearing (room_access.granted_via_ledger_id ->
+// pay_ledger, ZBBS-HOME-451; see save_world.go).
 var expectedSaveOrder = []string{
-	"VillageObjects", "Structures", "Huddles", "Scenes", "Actors", "Orders", "Environment",
+	"VillageObjects", "Structures", "Huddles", "Scenes", "Orders", "Actors", "Environment",
 }
 
 func sameOrder(a, b []string) bool {
@@ -208,7 +210,7 @@ func TestSaveWorld_AbortsAndRollsBackMidCheckpoint(t *testing.T) {
 	}
 	wantOrder := []string{"VillageObjects", "Structures", "Huddles", "Scenes"}
 	if !sameOrder(rec.order, wantOrder) {
-		t.Errorf("save order = %v, want %v (aborts at Scenes, Actors/Orders/Environment untouched)", rec.order, wantOrder)
+		t.Errorf("save order = %v, want %v (aborts at Scenes, Orders/Actors/Environment untouched)", rec.order, wantOrder)
 	}
 	if tx.committed {
 		t.Error("must not commit after a SaveSnapshot failure")
