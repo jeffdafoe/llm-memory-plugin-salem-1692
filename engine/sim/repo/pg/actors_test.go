@@ -100,7 +100,7 @@ func actorParentColumns() []string {
 		"move_attempt_counter", "sim_state", "sim_state_entered_at",
 		"sprite_id", "facing",
 		"social_tag", "social_start_minute", "social_end_minute", "social_last_boundary_at",
-		"admin",
+		"admin", "move_destination",
 	}
 }
 
@@ -153,7 +153,7 @@ func oneBareActorRows() *pgxmock.Rows {
 		int64(0), "idle", tsEntered,
 		(*string)(nil), "south",
 		(*string)(nil), (*int16)(nil), (*int16)(nil), (*time.Time)(nil),
-		false,
+		false, []byte(nil),
 	)
 }
 
@@ -317,7 +317,7 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 				int64(7), "working", tsEntered,
 				ptrStr("00000000-0000-0000-0000-5555eeeeeeee"), "east",
 				&socialTag, &socialStartM, &socialEndM, &tsBreak,
-				true,
+				true, []byte(`{"kind":"structure_enter","structure_id":"00000000-0000-0000-0000-3333cccccccc"}`),
 			).
 			AddRow(
 				actB, "Bare", 0, 0,
@@ -329,7 +329,7 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 				int64(0), "idle", tsEntered,
 				(*string)(nil), "south",
 				(*string)(nil), (*int16)(nil), (*int16)(nil), (*time.Time)(nil),
-				false,
+				false, []byte(nil),
 			))
 
 	mock.ExpectQuery(`FROM actor_need\b`).
@@ -432,6 +432,12 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 	if !a.IsAdmin {
 		t.Errorf("IsAdmin = false, want true (admin column loaded)")
 	}
+	if a.ResumeDestination == nil ||
+		a.ResumeDestination.Kind != sim.MoveDestinationStructureEnter ||
+		a.ResumeDestination.StructureID == nil ||
+		string(*a.ResumeDestination.StructureID) != homeStr {
+		t.Errorf("ResumeDestination = %+v, want structure_enter %q (ZBBS-HOME-449)", a.ResumeDestination, homeStr)
+	}
 	if len(a.Needs) != 2 || a.Needs["hunger"] != 4 || a.Needs["tiredness"] != 18 {
 		t.Errorf("Needs = %v", a.Needs)
 	}
@@ -469,6 +475,9 @@ func TestActorsRepo_LoadAll_HappyPath(t *testing.T) {
 	}
 	if b.LastTickedAt != nil || b.BreakUntil != nil || b.SleepingUntil != nil {
 		t.Errorf("actB time ptrs not nil")
+	}
+	if b.ResumeDestination != nil {
+		t.Errorf("actB ResumeDestination = %+v, want nil (NULL move_destination)", b.ResumeDestination)
 	}
 	if b.SpriteID != "" {
 		t.Errorf("actB SpriteID = %q, want empty (NULL sprite_id)", b.SpriteID)
@@ -585,6 +594,7 @@ func TestActorsRepo_SaveSnapshot_FullActor(t *testing.T) {
 			"00000000-0000-0000-0000-5555eeeeeeee", "east",
 			"tavern_evening", int16(1080), int16(1320), &tsBreak,
 			int64(101),
+			nil,
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 
@@ -674,6 +684,7 @@ func TestActorsRepo_SaveSnapshot_BareActor(t *testing.T) {
 			nil, "south", // sprite_id (empty→NULL), facing (empty→default 'south')
 			nil, nil, nil, (*time.Time)(nil), // social (all NULL)
 			int64(102),
+			nil,
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
@@ -783,6 +794,7 @@ func TestActorsRepo_SaveSnapshot_ZeroQtyInventoryDropped(t *testing.T) {
 			nil, "south",
 			nil, nil, nil, (*time.Time)(nil), // social (all NULL)
 			int64(105),
+			nil,
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
@@ -1150,7 +1162,7 @@ func TestActorsRepo_LoadAll_Continuity(t *testing.T) {
 				int64(0), "idle", tsEntered,
 				(*string)(nil), "south",
 				(*string)(nil), (*int16)(nil), (*int16)(nil), (*time.Time)(nil),
-				false,
+				false, []byte(nil),
 			))
 	mock.ExpectQuery(`FROM actor_need\b`).WillReturnRows(emptyNeedRows())
 	mock.ExpectQuery(`FROM actor_inventory\b`).WillReturnRows(emptyInvRows())
@@ -1349,6 +1361,7 @@ func TestActorsRepo_SaveSnapshot_Continuity(t *testing.T) {
 			nil, "south",
 			nil, nil, nil, (*time.Time)(nil), // social (all NULL)
 			int64(701),
+			nil,
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
@@ -1450,6 +1463,7 @@ func TestActorsRepo_SaveSnapshot_EmptySalientFacts(t *testing.T) {
 			nil, "south",
 			nil, nil, nil, (*time.Time)(nil), // social (all NULL)
 			int64(702),
+			nil,
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
@@ -1592,6 +1606,7 @@ func TestActorsRepo_SaveSnapshot_AcquaintanceMultibyteWithinLimit(t *testing.T) 
 			nil, "south",
 			nil, nil, nil, (*time.Time)(nil), // social (all NULL)
 			int64(706),
+			nil,
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
@@ -1861,6 +1876,7 @@ func TestActorsRepo_SaveSnapshot_Slice3(t *testing.T) {
 			nil, "south",
 			nil, nil, nil, (*time.Time)(nil), // social (all NULL)
 			int64(710),
+			nil,
 		).
 		WillReturnResult(pgconn.NewCommandTag("INSERT 0 1"))
 	mock.ExpectExec(`DELETE FROM actor .*WHERE snapshot_gen < \$1`).
@@ -2086,3 +2102,65 @@ func ptrStr(s string) *string { return &s }
 
 // ptrInt64 returns &v as *int64 for AddRow nullable-column fixtures.
 func ptrInt64(v int64) *int64 { return &v }
+
+// TestMoveDestinationCodec round-trips every MoveDestination kind through
+// the actor.move_destination jsonb codec (ZBBS-HOME-449), plus the
+// nil/garbage edges: a non-moving actor encodes to SQL NULL, a NULL blob
+// decodes to no destination, and malformed/incomplete blobs error rather
+// than producing a half-built destination.
+func TestMoveDestinationCodec(t *testing.T) {
+	if got := encodeMoveDestination(nil); got != nil {
+		t.Errorf("encode(nil intent) = %v, want nil (SQL NULL)", got)
+	}
+	if dest, err := decodeMoveDestination(nil); err != nil || dest != nil {
+		t.Errorf("decode(NULL) = %+v, %v; want nil, nil", dest, err)
+	}
+
+	for _, want := range []sim.MoveDestination{
+		sim.NewStructureEnterDestination("struct-1"),
+		sim.NewStructureVisitDestination("struct-2"),
+		sim.NewObjectVisitDestination("obj-1"),
+		sim.NewPositionDestination(sim.Position{X: 87, Y: 145}),
+	} {
+		blob := encodeMoveDestination(&sim.MoveIntent{Destination: want})
+		raw, ok := blob.([]byte)
+		if !ok {
+			t.Fatalf("kind %s: encode returned %T, want []byte", want.Kind, blob)
+		}
+		got, err := decodeMoveDestination(raw)
+		if err != nil {
+			t.Fatalf("kind %s: decode: %v", want.Kind, err)
+		}
+		if got.Kind != want.Kind || got.Knock != want.Knock {
+			t.Errorf("kind %s: round-trip = %+v", want.Kind, got)
+		}
+		switch {
+		case want.StructureID != nil && (got.StructureID == nil || *got.StructureID != *want.StructureID):
+			t.Errorf("kind %s: StructureID = %v", want.Kind, got.StructureID)
+		case want.ObjectID != nil && (got.ObjectID == nil || *got.ObjectID != *want.ObjectID):
+			t.Errorf("kind %s: ObjectID = %v", want.Kind, got.ObjectID)
+		case want.Position != nil && (got.Position == nil || *got.Position != *want.Position):
+			t.Errorf("kind %s: Position = %v", want.Kind, got.Position)
+		}
+	}
+
+	// Knock survives the trip (it rides a structure_visit).
+	knock := sim.NewStructureVisitDestination("shop")
+	knock.Knock = true
+	blob := encodeMoveDestination(&sim.MoveIntent{Destination: knock}).([]byte)
+	if got, err := decodeMoveDestination(blob); err != nil || !got.Knock {
+		t.Errorf("knock round-trip = %+v, %v; want Knock=true", got, err)
+	}
+
+	for name, bad := range map[string][]byte{
+		"garbage":            []byte(`{not json`),
+		"unknown kind":       []byte(`{"kind":"warp"}`),
+		"enter no structure": []byte(`{"kind":"structure_enter"}`),
+		"object no id":       []byte(`{"kind":"object_visit"}`),
+		"position no coords": []byte(`{"kind":"position","x":3}`),
+	} {
+		if dest, err := decodeMoveDestination(bad); err == nil {
+			t.Errorf("%s: decode = %+v, want error", name, dest)
+		}
+	}
+}

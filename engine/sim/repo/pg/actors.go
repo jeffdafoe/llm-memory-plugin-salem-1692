@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -112,7 +113,8 @@ SELECT
     social_start_minute,
     social_end_minute,
     social_last_boundary_at,
-    admin
+    admin,
+    move_destination
   FROM actor`
 
 // loadAllNeedsSQLA selects every actor_need row. Joined to actors in
@@ -149,7 +151,7 @@ INSERT INTO actor (
     move_attempt_counter, sim_state, sim_state_entered_at,
     sprite_id, facing,
     social_tag, social_start_minute, social_end_minute, social_last_boundary_at,
-    snapshot_gen
+    snapshot_gen, move_destination
 ) VALUES (
     $1, $2, $3, $4,
     $5, $6, $7,
@@ -160,7 +162,7 @@ INSERT INTO actor (
     $19, $20, $21,
     $22, $23,
     $24, $25, $26, $27,
-    $28
+    $28, $29
 )
 ON CONFLICT (id) DO UPDATE SET
     display_name           = EXCLUDED.display_name,
@@ -189,7 +191,8 @@ ON CONFLICT (id) DO UPDATE SET
     social_start_minute    = EXCLUDED.social_start_minute,
     social_end_minute      = EXCLUDED.social_end_minute,
     social_last_boundary_at = EXCLUDED.social_last_boundary_at,
-    snapshot_gen           = EXCLUDED.snapshot_gen`
+    snapshot_gen           = EXCLUDED.snapshot_gen,
+    move_destination       = EXCLUDED.move_destination`
 
 // upsertNeedSQLA writes one actor_need row. PK is (actor_id, key)
 // per the table definition — UPSERT inserts new (actor, need)
@@ -511,6 +514,7 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			socialEndMinute      *int16
 			socialLastBoundaryAt *time.Time
 			isAdmin              bool
+			moveDestination      []byte
 		)
 		if err := rows.Scan(
 			&id, &displayName, &currentX, &currentY,
@@ -522,9 +526,17 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			&moveAttemptCounter, &simState, &simStateEnteredAt,
 			&spriteID, &facing,
 			&socialTag, &socialStartMinute, &socialEndMinute, &socialLastBoundaryAt,
-			&isAdmin,
+			&isAdmin, &moveDestination,
 		); err != nil {
 			return nil, fmt.Errorf("pg actors LoadAll scan: %w", err)
+		}
+
+		resumeDest, err := decodeMoveDestination(moveDestination)
+		if err != nil {
+			// A malformed blob must not block the world load — the walk is
+			// best-effort recovery state, not substrate. Log and drop it.
+			log.Printf("pg actors LoadAll: actor %s: dropping malformed move_destination: %v", id, err)
+			resumeDest = nil
 		}
 
 		var roomID sim.RoomID
@@ -561,6 +573,7 @@ func (r *ActorsRepo) LoadAll(ctx context.Context) (map[sim.ActorID]*sim.Actor, e
 			SocialEndMin:         derefInt16(socialEndMinute),
 			SocialLastBoundaryAt: socialLastBoundaryAt,
 			IsAdmin:              isAdmin,
+			ResumeDestination:    resumeDest,
 			Needs:                make(map[sim.NeedKey]int),
 			Inventory:            make(map[sim.ItemKind]int),
 			Relationships:        make(map[sim.ActorID]*sim.Relationship),
@@ -1376,6 +1389,7 @@ func (r *ActorsRepo) SaveSnapshot(ctx context.Context, tx sim.Tx, actors map[sim
 			intPtrToSQL(a.SocialEndMin),             // $26 social_end_minute
 			a.SocialLastBoundaryAt,                  // $27 social_last_boundary_at
 			actorGen,                                // $28 snapshot_gen
+			encodeMoveDestination(a.MoveIntent),     // $29 move_destination
 		); err != nil {
 			return fmt.Errorf("pg actors SaveSnapshot: upsert actor id=%s: %w", a.ID, err)
 		}
@@ -1770,6 +1784,90 @@ func nilOnZeroTime(t time.Time) any {
 		return nil
 	}
 	return t
+}
+
+// moveDestinationJSON is the actor.move_destination wire shape
+// (ZBBS-HOME-449): the in-flight walk's destination, checkpointed so a
+// restart can resume the walk. A dedicated struct rather than
+// json-tagging sim.MoveDestination keeps the persisted format an
+// explicit, owned contract of this layer (sim types stay wire-free).
+type moveDestinationJSON struct {
+	Kind        string `json:"kind"`
+	StructureID string `json:"structure_id,omitempty"`
+	ObjectID    string `json:"object_id,omitempty"`
+	X           *int   `json:"x,omitempty"`
+	Y           *int   `json:"y,omitempty"`
+	Knock       bool   `json:"knock,omitempty"`
+}
+
+// encodeMoveDestination derives the move_destination column value from
+// the actor's live MoveIntent at checkpoint-write time: NULL when the
+// actor isn't walking, else the destination as jsonb. Deriving from the
+// live intent (instead of a parallel persisted field) means a walk that
+// ends normally clears its column on the next checkpoint for free.
+func encodeMoveDestination(mi *sim.MoveIntent) any {
+	if mi == nil {
+		return nil
+	}
+	d := mi.Destination
+	out := moveDestinationJSON{Kind: string(d.Kind), Knock: d.Knock}
+	if d.StructureID != nil {
+		out.StructureID = string(*d.StructureID)
+	}
+	if d.ObjectID != nil {
+		out.ObjectID = string(*d.ObjectID)
+	}
+	if d.Position != nil {
+		x, y := d.Position.X, d.Position.Y
+		out.X, out.Y = &x, &y
+	}
+	blob, err := json.Marshal(out)
+	if err != nil {
+		// Marshal of a flat struct of strings/ints cannot fail; treat a
+		// failure as "no walk" rather than aborting the checkpoint.
+		return nil
+	}
+	return blob
+}
+
+// decodeMoveDestination parses a move_destination blob back into a
+// sim.MoveDestination for Actor.ResumeDestination. nil blob (SQL NULL —
+// the actor wasn't walking) returns nil. Field-level validation is
+// deliberately shallow: kind must be known and its required target
+// present; whether the target still RESOLVES (structure deleted during
+// downtime) is the boot re-dispatch's job, where MoveActor rejects it
+// with a logged, per-actor failure.
+func decodeMoveDestination(blob []byte) (*sim.MoveDestination, error) {
+	if len(blob) == 0 {
+		return nil, nil
+	}
+	var in moveDestinationJSON
+	if err := json.Unmarshal(blob, &in); err != nil {
+		return nil, fmt.Errorf("unmarshal: %w", err)
+	}
+	out := sim.MoveDestination{Kind: sim.MoveDestinationKind(in.Kind), Knock: in.Knock}
+	switch out.Kind {
+	case sim.MoveDestinationStructureEnter, sim.MoveDestinationStructureVisit:
+		if in.StructureID == "" {
+			return nil, fmt.Errorf("kind %q missing structure_id", in.Kind)
+		}
+		id := sim.StructureID(in.StructureID)
+		out.StructureID = &id
+	case sim.MoveDestinationObjectVisit:
+		if in.ObjectID == "" {
+			return nil, fmt.Errorf("kind %q missing object_id", in.Kind)
+		}
+		id := sim.VillageObjectID(in.ObjectID)
+		out.ObjectID = &id
+	case sim.MoveDestinationPosition:
+		if in.X == nil || in.Y == nil {
+			return nil, fmt.Errorf("kind %q missing x/y", in.Kind)
+		}
+		out.Position = &sim.Position{X: *in.X, Y: *in.Y}
+	default:
+		return nil, fmt.Errorf("unknown kind %q", in.Kind)
+	}
+	return &out, nil
 }
 
 // roomKindForSource synthesizes the NOT-NULL room_access.kind column
