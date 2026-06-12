@@ -475,7 +475,9 @@ func _build_header(parent: Control) -> void:
 
     # ZBBS-WORK-399: Room/Village toggle, admin-only (see _update_tab_buttons).
     # Hidden by default; visibility re-evaluates on every open(). The active
-    # tab's button renders disabled — that's the "you are here" marker.
+    # tab's button is DISABLED (click-block) and restyled as the highlight —
+    # bright on an accent plate (see _apply_theme, ZBBS-HOME-438); the
+    # clickable inactive tab renders muted.
     room_tab_button = Button.new()
     room_tab_button.text = "Room"
     room_tab_button.custom_minimum_size = Vector2(0, 20)
@@ -3309,6 +3311,28 @@ func _apply_theme() -> void:
     subcontext_label.add_theme_color_override("font_color", Color(0.68, 0.58, 0.43, 1.0))
     speech_input.add_theme_color_override("font_color", Color(0.92, 0.84, 0.70, 1.0))
     speech_input.add_theme_color_override("font_placeholder_color", Color(0.58, 0.50, 0.40, 1.0))
+
+    # ZBBS-HOME-438: the Room/Village toggle marks the ACTIVE tab by disabling
+    # its button (click-block), but Godot's default disabled look is DIM — so
+    # the tab you were on read as off and the clickable one read as lit,
+    # exactly backwards. Restyle the disabled state as the highlight (bright
+    # gold on an accent plate) and mute the enabled/normal state, so the
+    # "you are here" marker actually looks like it.
+    var active_tab_style := StyleBoxFlat.new()
+    active_tab_style.bg_color = Color(0.34, 0.25, 0.13, 0.95)
+    active_tab_style.border_color = Color(0.55, 0.42, 0.24, 0.95)
+    active_tab_style.border_width_bottom = 2
+    active_tab_style.corner_radius_top_left = 4
+    active_tab_style.corner_radius_top_right = 4
+    active_tab_style.corner_radius_bottom_left = 4
+    active_tab_style.corner_radius_bottom_right = 4
+    for tab_button in [room_tab_button, village_tab_button]:
+        if tab_button == null:
+            continue
+        tab_button.add_theme_stylebox_override("disabled", active_tab_style)
+        tab_button.add_theme_color_override("font_disabled_color", Color(0.95, 0.82, 0.58, 1.0))
+        tab_button.add_theme_color_override("font_color", Color(0.58, 0.50, 0.40, 1.0))
+        tab_button.add_theme_color_override("font_hover_color", Color(0.85, 0.74, 0.58, 1.0))
 
 
 func _api_url(path: String) -> String:
