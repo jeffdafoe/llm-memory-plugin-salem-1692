@@ -432,14 +432,14 @@ func pickDeterministicNext(pool []*AssetState, current string) string {
 // Caller starts this in a goroutine alongside World.Run + RunPhaseTicker.
 // Returns when ctx is cancelled.
 //
-// scope is the default rotation scope for ticker-driven passes — today
-// the ticker fires with an empty scope (bulk-rotate everything). When
-// npc_behaviors ports, the cutover layer can choose to wire the ticker
-// with ExcludeTags populated by NPC on-duty status, OR keep the empty
-// default and have the npc_behaviors slice issue a separate
-// ApplyDailyRotation invocation with its preferred scope. Both shapes
-// preserve correctness — the second invocation is a no-op if the first
-// already cleared everything.
+// scope is the rotation scope for ticker-driven passes. Production wires
+// ExcludeTags: {TagLaundry, TagNoticeBoard} (ZBBS-HOME-443, cmd/engine
+// startTickers) — the npc_behaviors cutover carve-out: the washerwoman /
+// town-crier route dispatches fire on RotationApplied only when their
+// domain tag is excluded from the bulk pass, and they flip those objects
+// stop-by-stop instead. An empty scope bulk-rotates everything and
+// leaves the routes dormant (the pre-443 production state, which kept
+// the crier from ever walking).
 //
 // A per-driver *rand.Rand is seeded once at goroutine entry from
 // time.Now().UnixNano() and threaded through every ApplyDailyRotation
