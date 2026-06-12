@@ -116,6 +116,29 @@ func TestTranslateEvent_Arrived(t *testing.T) {
 	}
 }
 
+// TestTranslateEvent_Teleported covers the ZBBS-HOME-448 operator teleport:
+// ActorTeleported reuses the npc_arrived frame (the client's authoritative
+// snap-to-tile) with AttemptID 0 — there was no movement attempt.
+func TestTranslateEvent_Teleported(t *testing.T) {
+	frame, ok := TranslateEvent(&sim.ActorTeleported{
+		ActorID:           "grace",
+		FromPosition:      sim.Position{X: 85, Y: 143},
+		ToPosition:        sim.Position{X: 87, Y: 145},
+		InsideStructureID: "",
+	})
+	if !ok {
+		t.Fatal("ActorTeleported should translate")
+	}
+	if frame.Type != "npc_arrived" {
+		t.Fatalf("type = %q, want npc_arrived", frame.Type)
+	}
+	d := frame.Data.(arrivedWireDTO)
+	want := arrivedWireDTO{ID: "grace", X: 87, Y: 145, StructureID: "", AttemptID: 0}
+	if d != want {
+		t.Errorf("teleported payload = %+v, want %+v", d, want)
+	}
+}
+
 // TestTranslateEvent_InsideChanged covers the ZBBS-WORK-373 inside-state push:
 // an actor inside a structure maps to npc_inside_changed with inside=true and
 // the structure id, the exact frame the client's apply_npc_inside_change handler
