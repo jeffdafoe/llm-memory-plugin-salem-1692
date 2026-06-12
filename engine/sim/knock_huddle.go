@@ -37,9 +37,17 @@ import (
 // instead of the spurious farewell.
 
 // receptiveKnockReceivers returns the actors inside structureID who are
-// associated with it (home or work anchor) and awake to answer a knock.
-// A sleeping or resting receiver is no receiver — the door stays
-// unanswered. Sorted for deterministic join order.
+// associated with it (home or work anchor) and available to answer a
+// knock. A sleeping or resting receiver is no receiver — the door stays
+// unanswered. A MOVING receiver (MoveIntent in flight — a keeper heading
+// out the door) is no receiver either: joining a walker would hand the
+// HOME-340 mover-leave rule a fresh membership to evict, recreating the
+// phantom-farewell bug on the receiver's side (code_review). Sorted for
+// deterministic join order.
+//
+// An already-huddled receiver IS receptive — they're mid-conversation at
+// this structure (with another customer), and the knocker joins that same
+// huddle; JoinHuddle is idempotent for them.
 //
 // Shared by EnterOrKnock (click-time "no one answers" narration) and
 // EnsureKnockServiceHuddle (the arrival join), so the click-time
@@ -48,7 +56,7 @@ func receptiveKnockReceivers(w *World, structureID StructureID) []ActorID {
 	var ids []ActorID
 	for _, id := range insideAssociatedActors(w, structureID) {
 		a := w.Actors[id]
-		if a == nil || a.State == StateSleeping || a.State == StateResting {
+		if a == nil || a.State == StateSleeping || a.State == StateResting || a.MoveIntent != nil {
 			continue
 		}
 		ids = append(ids, id)
@@ -110,10 +118,27 @@ func EnsureKnockServiceHuddle(actorID ActorID, structureID StructureID, now time
 			// comment). JoinHuddle is idempotent for a receiver already in
 			// the structure's active huddle (e.g. mid-conversation with
 			// another customer), so this never churns an existing huddle.
+			// Each earlier join emits synchronously (subscribers dispatch
+			// inline), so re-check a receiver's availability right before
+			// its own join — a cascade reaction to a prior join must not
+			// pull in a receiver that just stopped qualifying (code_review).
+			joined := 0
 			for _, id := range receivers {
+				a := w.Actors[id]
+				if a == nil || a.InsideStructureID != structureID ||
+					a.State == StateSleeping || a.State == StateResting || a.MoveIntent != nil {
+					continue
+				}
 				if _, err := JoinHuddle(id, structureID, sceneID, now).Fn(w); err != nil {
 					log.Printf("sim: EnsureKnockServiceHuddle join receiver %q at %q: %v", id, structureID, err)
+					continue
 				}
+				joined++
+			}
+			// Every receiver dropped out between the pre-check and its join
+			// (or all joins failed) — don't mint a lone-knocker huddle.
+			if joined == 0 {
+				return nil, nil
 			}
 			if _, err := JoinHuddle(actor.ID, structureID, sceneID, now).Fn(w); err != nil {
 				log.Printf("sim: EnsureKnockServiceHuddle join knocker %q at %q: %v", actor.ID, structureID, err)

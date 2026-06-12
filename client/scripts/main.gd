@@ -1077,6 +1077,13 @@ func _post_pc_move_to_screen(screen_pos: Vector2) -> void:
             # knock that looks like it will go unanswered (no receptive
             # receiver inside at click time); the flag stays armed anyway
             # since a receiver who returns mid-walk still answers.
+            # Response ordering note: _pc_http_move is a single reused
+            # HTTPRequest with at most one request in flight (a click
+            # during an in-flight move gets ERR_BUSY below and never
+            # sends), so responses cannot arrive out of order — a
+            # knocked=false response here is always the NEWEST accepted
+            # move and rightly clears a prior knock (the server
+            # superseded that walk's MoveIntent, killing its Knock stamp).
             var parsed = JSON.parse_string(b.get_string_from_utf8())
             if parsed is Dictionary:
                 _pending_knock = bool(parsed.get("knocked", false))

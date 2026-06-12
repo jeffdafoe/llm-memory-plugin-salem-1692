@@ -76,6 +76,33 @@ func TestEnsureKnockServiceHuddle_NoReceiverNoHuddle(t *testing.T) {
 	}
 }
 
+// TestEnsureKnockServiceHuddle_MovingReceiverNoHuddle: a receiver with a
+// MoveIntent in flight (a keeper heading out the door) is no receiver —
+// joining a walker would hand the HOME-340 mover-leave rule a fresh
+// membership to evict, recreating the phantom farewell on the receiver's
+// side. No lone-knocker huddle forms either.
+func TestEnsureKnockServiceHuddle_MovingReceiverNoHuddle(t *testing.T) {
+	w, cancel := buildMembershipTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	setInside(t, w, "servant", "cottage")
+	if _, err := w.Send(sim.MoveActor("servant",
+		sim.NewPositionDestination(sim.Position{X: sim.PadX + 8, Y: sim.PadY + 8}), true, now)); err != nil {
+		t.Fatalf("seed receiver walk: %v", err)
+	}
+
+	if _, err := w.Send(sim.EnsureKnockServiceHuddle("stranger", "cottage", now)); err != nil {
+		t.Fatalf("EnsureKnockServiceHuddle: %v", err)
+	}
+	if got := huddleOf(t, w, "servant"); got != "" {
+		t.Errorf("a moving receiver must not be huddled (HOME-340 would evict it next tick); got %q", got)
+	}
+	if got := huddleOf(t, w, "stranger"); got != "" {
+		t.Errorf("no receptive receiver → no lone-knocker huddle; got %q", got)
+	}
+}
+
 // TestEnsureKnockServiceHuddle_SleepingReceiverNoHuddle: a sleeping receiver
 // is no receiver — same standard the click-time narration applies.
 func TestEnsureKnockServiceHuddle_SleepingReceiverNoHuddle(t *testing.T) {
