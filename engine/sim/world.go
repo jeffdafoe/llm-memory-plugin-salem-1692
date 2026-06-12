@@ -581,6 +581,20 @@ type World struct {
 	// correctness failure.
 	ActiveRoutes map[ActorID]*NPCRoute
 
+	// RouteBoundaryStamps records, per route attribute slug (washerwoman /
+	// town_crier), the schedule-window boundary last acted on by the
+	// route-schedule trigger (ZBBS-HOME-446) — the edge re-fire guard, same
+	// role SocialLastBoundaryAt plays for the social scheduler. Keyed by
+	// attribute slug rather than actor because each route attribute has a
+	// single carrier; nil-readable as empty (lazy-allocated on first stamp).
+	//
+	// World-goroutine-only; restart-loss is DESIRABLE here, not just
+	// acceptable: a missing stamp makes the most recent boundary fire once
+	// on the first tick after boot, which is the boot catch-up that lands
+	// laundry/boards in the right state for the current time of day. The
+	// directional candidate builders make that catch-up idempotent.
+	RouteBoundaryStamps map[string]time.Time
+
 	// NoticeboardContent stores per-board authored prose — what the
 	// town crier reads on arrival, what NPCs loitering at the board
 	// will perceive once that read path ports. Keyed by VillageObjectID
