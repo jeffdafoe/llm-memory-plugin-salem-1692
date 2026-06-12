@@ -360,6 +360,16 @@ func run(rt runtime, stop <-chan struct{}) error {
 		close(actionLogWriterDone)
 	}
 
+	// Resume walks the previous process had in flight at shutdown
+	// (ZBBS-HOME-449): each checkpointed move_destination re-dispatches
+	// through the normal MoveActor, so a deploy restart no longer strands
+	// mid-walk actors wherever the final checkpoint caught them. Runs
+	// before the tickers start so the resumed walks win any race with
+	// producers that would re-target an apparently-idle actor.
+	if _, err := rt.World.SendContext(worldCtx, sim.ResumeCheckpointedWalks(time.Now().UTC())); err != nil {
+		log.Printf("engine: resume checkpointed walks: %v", err)
+	}
+
 	// Launch the worker pool (workers complete ticks via SendContext to world)
 	// and every periodic ticker/sweep, all bound to worldCtx.
 	tickPool.Start(worldCtx)

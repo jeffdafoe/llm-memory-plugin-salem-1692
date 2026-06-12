@@ -626,12 +626,25 @@ type Actor struct {
 	// new MoveIntent.AttemptID, so async subscribers can tell a
 	// superseded attempt's events from the current one.
 	//
-	// Both survive checkpoint reload — MoveDestination is a closed tagged
-	// struct (unlike the interface-typed reactor payloads), so MoveIntent
-	// serializes cleanly, and the counter must persist to stay monotonic
-	// across restarts.
+	// The counter is checkpointed (it must stay monotonic across
+	// restarts). MoveIntent itself is NOT — what the checkpoint carries
+	// is the intent's DESTINATION (actor.move_destination, derived from
+	// the live MoveIntent at every checkpoint write), which comes back as
+	// ResumeDestination below and is re-dispatched through MoveActor at
+	// boot. ZBBS-HOME-449: without that, a deploy restart stranded any
+	// mid-walk actor wherever the final checkpoint caught them.
 	MoveIntent         *MoveIntent
 	MoveAttemptCounter MovementAttemptID
+
+	// ResumeDestination is the checkpointed destination of a walk the
+	// PREVIOUS process had in flight at shutdown (ZBBS-HOME-449).
+	// Load-only: pg LoadAll populates it from actor.move_destination; the
+	// boot resume sweep (ResumeCheckpointedWalks) re-dispatches it through
+	// the normal MoveActor — path re-planned from the checkpointed tile,
+	// arrival warrant fires as usual — and clears it. Never written back:
+	// checkpoint writes derive move_destination from the live MoveIntent,
+	// so a walk that ends normally clears its column on the next write.
+	ResumeDestination *MoveDestination
 
 	// Relationships (per-actor views, not a global graph).
 	Acquaintances map[string]Acquaintance
@@ -923,6 +936,10 @@ func CloneActor(a *Actor) *Actor {
 	}
 	if a.MoveIntent != nil {
 		cp.MoveIntent = cloneMoveIntent(a.MoveIntent)
+	}
+	if a.ResumeDestination != nil {
+		dest := cloneMoveDestination(*a.ResumeDestination)
+		cp.ResumeDestination = &dest
 	}
 	if a.PendingSummon != nil {
 		cp.PendingSummon = clonePendingSummon(a.PendingSummon)
