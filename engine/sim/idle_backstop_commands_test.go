@@ -590,3 +590,47 @@ func TestEvaluateIdleBackstop_StrandedExemptions(t *testing.T) {
 		})
 	}
 }
+
+// TestEvaluateIdleBackstop_StrandedExpiredRestWindow: a lingering, already-
+// expired BreakUntil/SleepingUntil (stale rest metadata the expiry sweeps
+// haven't cleared) must NOT suppress the stranded upgrade — that stale
+// state is itself a strand shape (code_review on the 450 diff).
+func TestEvaluateIdleBackstop_StrandedExpiredRestWindow(t *testing.T) {
+	actor := strandedActor("ezekiel")
+	w, cancel := buildIdleBackstopWorld(t, map[sim.ActorID]*sim.Actor{"ezekiel": actor})
+	defer cancel()
+
+	loadAt := loadTimeOf(t, w, "ezekiel")
+	now := loadAt.Add(31 * time.Minute)
+	expired := now.Add(-10 * time.Minute)
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := world.Actors["ezekiel"]
+		a.BreakUntil = &expired
+		a.SleepingUntil = &expired
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed expired windows: %v", err)
+	}
+
+	tm := runEvaluate(t, w, now)
+	if tm.StampedStranded != 1 {
+		t.Errorf("StampedStranded = %d, want 1 (expired windows must not exempt); telemetry=%+v", tm.StampedStranded, tm)
+	}
+
+	// A LIVE window still exempts.
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		a := world.Actors["ezekiel"]
+		a.WarrantedSince = nil
+		a.WarrantDueAt = nil
+		a.Warrants = nil
+		sim.SetActorLastStrandedWarrantAt(a, time.Time{})
+		live := now.Add(time.Hour)
+		a.BreakUntil = &live
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed live window: %v", err)
+	}
+	if tm := runEvaluate(t, w, now); tm.StampedStranded != 0 {
+		t.Errorf("StampedStranded = %d, want 0 (live BreakUntil exempts)", tm.StampedStranded)
+	}
+}

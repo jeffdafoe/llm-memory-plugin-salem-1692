@@ -115,7 +115,15 @@ func actorStrandedInOpen(w *World, a *Actor, now time.Time) bool {
 	if actorInActiveHuddle(w, a) {
 		return false
 	}
-	if a.SleepingUntil != nil || a.BreakUntil != nil ||
+	// Rest windows are time-bounded: an EXPIRED SleepingUntil/BreakUntil
+	// that lingered past its end (cleared lazily by the expiry sweeps) is
+	// exactly the kind of stale metadata a stranded actor can carry — it
+	// must not suppress the upgrade forever. The macro-states stay
+	// unconditional: a sleeping/resting State with no window is the
+	// HOME-410 orphan shape, and waking those is the rest machinery's
+	// job, not this backstop's.
+	if (a.SleepingUntil != nil && now.Before(*a.SleepingUntil)) ||
+		(a.BreakUntil != nil && now.Before(*a.BreakUntil)) ||
 		a.State == StateSleeping || a.State == StateResting {
 		return false
 	}
