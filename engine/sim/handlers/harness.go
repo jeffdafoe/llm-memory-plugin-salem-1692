@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -399,6 +400,15 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 	// See payOfferKey for the keying rationale (price AND qty deliberately
 	// excluded).
 	offeredThisTick := map[string]struct{}{}
+	// quotedThisTick holds the dedup key of every scene_quote this actor has
+	// successfully POSTED this tick (ZBBS-HOME-433 — the seller-side analogue
+	// of offeredThisTick). Pre-433 a posted quote came back as a bare [ok], so
+	// the model had no within-tick reason to stop and re-posted the identical
+	// quote every round to the iteration budget (the live John×Ezekiel bread
+	// storm: five scene_quote calls in one tick). One quote per (item, qty,
+	// disposition, target) per tick; see sceneQuoteKey for the keying
+	// rationale (price deliberately excluded, qty kept).
+	quotedThisTick := map[string]struct{}{}
 	// triedThisTick holds the identical-call key (name + canonical decoded args)
 	// of every action this actor has ATTEMPTED this tick under the ZBBS-HOME-414
 	// general guard — the action tools without their own same-tick guard. Recorded
@@ -557,6 +567,19 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 				}
 			}
 
+			// ZBBS-HOME-433: same-tick repeat-QUOTE guard, the seller-side
+			// analogue of the offer guard above. A posted quote already stands
+			// before the whole scene — re-posting it (at any price) buys
+			// nothing within this tick; the buyer answers on their own tick.
+			if key, isQuote := sceneQuoteKey(vc); isQuote {
+				if _, dup := quotedThisTick[key]; dup {
+					observationOnly = false
+					result.ToolsFailedRejected = append(result.ToolsFailedRejected, call.Name)
+					transcript = append(transcript, toolResultMsg(call.ID, "[error: already_quoted] your offer for that item already stands from this turn — the room has heard it; await an answer or call done()."))
+					continue
+				}
+			}
+
 			// ZBBS-HOME-414: tool-agnostic same-tick identical-call guard for the
 			// action tools that lack their own (accept_pay / decline_pay /
 			// counter_pay / deliver_order / withdraw_pay / consume / move_to). The
@@ -631,6 +654,14 @@ func (h *Harness) RunTick(ctx context.Context, w *sim.World, job tickJob) (resul
 				// may retry the bounced offer.
 				if key, isOffer := payOfferKey(vc); isOffer {
 					offeredThisTick[key] = struct{}{}
+				}
+				// ZBBS-HOME-433: record a posted quote so a later round (or a
+				// later call in this same batch) re-posting the same (item,
+				// disposition, target) is rejected by the guard above. Success-
+				// only, like the offer record — a bounced quote created nothing
+				// and may be retried.
+				if key, isQuote := sceneQuoteKey(vc); isQuote {
+					quotedThisTick[key] = struct{}{}
 				}
 			} else {
 				result.ToolsFailedRejected = append(result.ToolsFailedRejected, call.Name)
@@ -896,20 +927,33 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 	}
 	// scene_quote: a clamped disposition must be reported for the same
 	// reason as the pay clamp below (ZBBS-WORK-405) — the seller model
-	// would otherwise believe it posted a take-home quote it didn't.
+	// would otherwise believe it posted a take-home quote it didn't. Both
+	// variants carry the post-quote steer (ZBBS-HOME-433): pre-433 a posted
+	// quote returned a bare [ok], so the model had no within-tick reason to
+	// stop and re-posted the identical quote to the iteration budget. The
+	// steer is the soft half; quotedThisTick's already_quoted reject is the
+	// teeth.
 	if vc.Name == "scene_quote" {
-		if r, ok := cmdResult.(sim.SceneQuoteCreateResult); ok && r.EatHereClamped {
-			item := "those goods"
-			if args, ok := vc.DecodedArgs.(SceneQuoteArgs); ok {
-				if it := strings.ToLower(strings.Join(strings.Fields(args.ItemKind), " ")); it != "" {
-					item = it
+		const quoteSteer = "The room has heard your offer — await an answer or call done(). Do not post the same offer again."
+		// "Your offer now stands" only when the result proves a quote was
+		// actually created (code_review #415) — an unexpected result shape
+		// still steers, but doesn't assert state without evidence.
+		if r, ok := cmdResult.(sim.SceneQuoteCreateResult); ok {
+			if r.EatHereClamped {
+				item := "those goods"
+				if args, ok := vc.DecodedArgs.(SceneQuoteArgs); ok {
+					if it := strings.ToLower(strings.Join(strings.Fields(args.ItemKind), " ")); it != "" {
+						item = it
+					}
 				}
+				return fmt.Sprintf(
+					"[ok] Mind: %s can't be carried away — your offer stands as eat-here, taken on the spot. %s",
+					item, quoteSteer,
+				)
 			}
-			return fmt.Sprintf(
-				"[ok] Mind: %s can't be carried away — your offer stands as eat-here, taken on the spot.",
-				item,
-			)
+			return "[ok] Your offer now stands. " + quoteSteer
 		}
+		return "[ok] " + quoteSteer
 	}
 	// offer_trade lowers onto a PayWithItemArgs (ZBBS-HOME-407), so it carries
 	// the same decoded shape and earns the same post-offer steer.
@@ -1045,6 +1089,38 @@ func payOfferKey(vc *ValidatedCall) (string, bool) {
 		disposition = "consume"
 	}
 	return seller + "\x00" + item + "\x00" + disposition, true
+}
+
+// sceneQuoteKey returns the same-tick repeat-QUOTE dedup key for a scene_quote
+// call (ZBBS-HOME-433 — the seller-side analogue of payOfferKey). One quote per
+// (item, qty, disposition, target) per tick: price (amount) is deliberately
+// EXCLUDED, so a re-post at a drifting price (4 coins, then 5) still matches —
+// within one tick a re-quote of the same lot is churn at any price (the live
+// John×Ezekiel bread storm: five identical scene_quote calls in one tick, all
+// succeeding, terminal budget_forced). Qty IS part of the key — unlike a
+// buyer's pending offer, a different lot size (1 bread vs 3 bread) is a
+// genuinely distinct standing offer, and the substrate's own supersede/coexist
+// rules should decide its fate (code_review #415). Cross-tick re-pricing stays
+// legal and rides the supersede path. Returns ("", false) for non-quote calls
+// or undecodable args.
+func sceneQuoteKey(vc *ValidatedCall) (string, bool) {
+	if vc == nil || vc.Name != "scene_quote" {
+		return "", false
+	}
+	args, ok := vc.DecodedArgs.(SceneQuoteArgs)
+	if !ok {
+		return "", false
+	}
+	item := strings.ToLower(strings.Join(strings.Fields(args.ItemKind), " "))
+	if item == "" {
+		return "", false
+	}
+	target := strings.ToLower(strings.Join(strings.Fields(args.TargetBuyer), " "))
+	disposition := "keep"
+	if args.ConsumeNow {
+		disposition = "consume"
+	}
+	return item + "\x00" + disposition + "\x00" + target + "\x00" + strconv.Itoa(args.Qty), true
 }
 
 // genericCallKey returns the same-tick identical-call dedup key for the
