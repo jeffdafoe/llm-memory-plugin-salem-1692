@@ -46,6 +46,20 @@ import (
 //     peer-joined, need-threshold, scene-quote, admin — counts as fresh
 //     news worth one LLM call, and the gate steps aside.
 //
+//  5. No duty steer in the payload. A non-nil DutySteer is a standing,
+//     actionable signal even with no peers and sub-red needs — the actor
+//     is off-post inside its shift window ("head to work") or away from
+//     home/lodging off-shift ("head home"). The tick must run so the
+//     steer can be read: the only warrants a solo idle NPC receives are
+//     idle-backstops, so eating them here skip-locks the actor until a
+//     need crosses red — hours (ZBBS-HOME-441: Josiah stood at his
+//     doorstep all morning; v2 has no recurring shift warrant because
+//     HOME-352 made duty a perception steer, which only renders if a
+//     tick actually runs). buildDutySteer already returns nil at-post /
+//     at-home, for red needs, outside the shift scope, and for non-agent
+//     kinds — so the extra ticks are exactly the steerable cases, and
+//     they self-extinguish on arrival.
+//
 // Replaces v1's salem-vendor-only skip in engine/agent_tick.go (lines
 // 211-221, ZBBS-WORK-235). v1 narrowed by agent slug because the
 // "shared VA with cache_prompts=false / learning_enabled=false" pattern
@@ -86,6 +100,9 @@ func shouldSkipNoop(payload perception.Payload, thresholds sim.NeedThresholds, w
 		if !isLowInfoWarrantKind(m.Kind()) {
 			return false
 		}
+	}
+	if payload.DutySteer != nil {
+		return false
 	}
 	return true
 }

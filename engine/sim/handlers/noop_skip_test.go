@@ -134,6 +134,30 @@ func TestShouldSkipNoop_NeedSubRed_StillSkipsForLowInfoBatch(t *testing.T) {
 	}
 }
 
+func TestShouldSkipNoop_DutySteerPresent_DoesNotSkip(t *testing.T) {
+	// ZBBS-HOME-441: an off-post on-shift (or away-from-home off-shift)
+	// actor carries a standing duty steer even when alone with sub-red
+	// needs. The gate must step aside so the steer can be read — the
+	// idle-backstop is the actor's only revival path, and eating it
+	// skip-locks them until a need crosses red.
+	directions := map[string]*perception.DutySteerView{
+		"to-work": {ToWork: true, TargetID: "store", TargetLabel: "the General Store"},
+		"go-home": {ToWork: false, TargetID: "cottage", TargetLabel: "Thorne Cottage"},
+	}
+	for name, steer := range directions {
+		t.Run(name, func(t *testing.T) {
+			pl := quietPayload()
+			pl.DutySteer = steer
+			if shouldSkipNoop(pl, defaultThresholds(), []sim.WarrantMeta{idleBackstopWarrant()}) {
+				t.Fatalf("expected skip=false when payload carries a %s duty steer", name)
+			}
+		})
+	}
+	// The nil-steer baseline (skip=true) is pinned by
+	// TestShouldSkipNoop_IdleBackstopAlone_NoPeerNoNeeds_Skips —
+	// quietPayload carries no DutySteer.
+}
+
 func TestShouldSkipNoop_HighInfoWarrantInBatch_DoesNotSkip(t *testing.T) {
 	cases := []sim.WarrantKind{
 		sim.WarrantKindNPCSpoke,
