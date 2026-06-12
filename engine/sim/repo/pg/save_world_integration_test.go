@@ -152,3 +152,97 @@ func TestIntegration_SaveWorld_DeleteStaleAcrossCheckpoints(t *testing.T) {
 		t.Error("obj2 should have been pruned by the delete-stale sweep")
 	}
 }
+
+// TestIntegration_SaveWorld_SameWindowOrderAndRoomGrant — ZBBS-HOME-451
+// regression. An order minted, accepted, and delivered with a room grant
+// all inside ONE checkpoint window means the pay_ledger row and the
+// room_access row referencing it (granted_via_ledger_id, the one
+// cross-aggregate FK that survived the v2 purge — and it is NOT deferred)
+// are both new to the same SaveWorld. Saving Actors before Orders aborts
+// the checkpoint at statement time — permanently, since the same snapshot
+// re-fails every cycle (the 2026-06-12 live wedge: instant-settle lodging
+// hits this in ~3s). SaveWorld must run Orders before Actors so the FK
+// target exists when the grant upserts.
+func TestIntegration_SaveWorld_SameWindowOrderAndRoomGrant(t *testing.T) {
+	f := newFixture(t)
+	ctx := t.Context()
+	repo := NewRepository(f.Pool)
+
+	// pay_ledger.item_kind carries a real FK to the item_kind reference
+	// table, which the engine loads at startup and never checkpoints.
+	if _, err := f.Pool.Exec(ctx,
+		`INSERT INTO item_kind (name, display_label, category) VALUES ('nights_stay', 'Lodging', 'lodging')`); err != nil {
+		t.Fatalf("seed item_kind: %v", err)
+	}
+
+	const (
+		lodgerID = sim.ActorID("aaaaaaaa-0000-0000-0000-00000000a451")
+		keeperID = sim.ActorID("bbbbbbbb-0000-0000-0000-00000000b451")
+		innID    = sim.StructureID("cccccccc-0000-0000-0000-00000000c451")
+		roomID   = sim.RoomID(22)
+		ledgerID = 259
+	)
+	ts := time.Date(2026, 6, 12, 22, 1, 49, 0, time.UTC)
+	checkout := ts.Add(17 * time.Hour)
+
+	w := checkpointableWorld(repo)
+	// A structure shares its id with a village_object (the shared-identity
+	// bridge LoadWorld enforces), so the inn needs both rows.
+	w.VillageObjects = map[sim.VillageObjectID]*sim.VillageObject{
+		sim.VillageObjectID(innID): {ID: sim.VillageObjectID(innID), AssetID: sim.AssetID(uuidAssetWell), EntryPolicy: sim.EntryPolicyOpen},
+	}
+	w.Structures = map[sim.StructureID]*sim.Structure{
+		innID: {ID: innID, DisplayName: "Inn", Rooms: []*sim.Room{
+			{ID: roomID, StructureID: innID, Kind: sim.RoomKindPrivate, Name: "bedroom_1"},
+		}},
+	}
+	w.Actors = map[sim.ActorID]*sim.Actor{
+		lodgerID: {ID: lodgerID, DisplayName: "Lodger", State: sim.StateIdle, StateEnteredAt: ts, Coins: 65,
+			RoomAccess: map[sim.RoomAccessKey]*sim.RoomAccess{
+				{RoomID: roomID, Source: sim.AccessSourceLedger}: {
+					RoomID: roomID, Source: sim.AccessSourceLedger,
+					LedgerID: ledgerID, ExpiresAt: &checkout, Active: true, CreatedAt: ts,
+				},
+			}},
+		keeperID: {ID: keeperID, DisplayName: "Keeper", State: sim.StateIdle, StateEnteredAt: ts, Coins: 85},
+	}
+	delivered := ts.Add(3 * time.Second)
+	w.Orders = map[sim.OrderID]*sim.Order{
+		ledgerID: {
+			ID: ledgerID, LedgerID: ledgerID, State: sim.OrderStateDelivered,
+			BuyerID: lodgerID, SellerID: keeperID, Item: "nights_stay", Qty: 1, Amount: 4,
+			ConsumerIDs: []sim.ActorID{lodgerID},
+			CreatedAt:   ts, DeliveredAt: &delivered, ReadyBy: ts.Truncate(24 * time.Hour), ExpiresAt: checkout,
+		},
+	}
+
+	if err := SaveWorld(ctx, repo, w.BuildCheckpointSnapshot()); err != nil {
+		t.Fatalf("SaveWorld (same-window order + room grant): %v", err)
+	}
+
+	loaded, err := LoadWorld(ctx, repo, true /*requireAllImpl*/)
+	if err != nil {
+		t.Fatalf("LoadWorld after same-window checkpoint: %v", err)
+	}
+	lodger := loaded.Actors[lodgerID]
+	if lodger == nil {
+		t.Fatal("lodger did not round-trip")
+	}
+	grant := lodger.RoomAccess[sim.RoomAccessKey{RoomID: roomID, Source: sim.AccessSourceLedger}]
+	if grant == nil {
+		t.Fatal("room grant did not round-trip")
+	}
+	if grant.LedgerID != ledgerID || !grant.Active {
+		t.Errorf("grant = ledger %d active %v, want ledger %d active true", grant.LedgerID, grant.Active, ledgerID)
+	}
+	// The delivered order is terminal, so LoadWorld doesn't rehydrate it —
+	// assert the durable pay_ledger row (the FK target) landed instead.
+	var ledgerState string
+	if err := f.Pool.QueryRow(ctx,
+		`SELECT state FROM pay_ledger WHERE id = $1`, ledgerID).Scan(&ledgerState); err != nil {
+		t.Fatalf("pay_ledger row %d did not persist: %v", ledgerID, err)
+	}
+	if ledgerState != "accepted" {
+		t.Errorf("pay_ledger state = %q, want accepted", ledgerState)
+	}
+}
