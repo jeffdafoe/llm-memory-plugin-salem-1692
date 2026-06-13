@@ -91,6 +91,16 @@ const LocomotionTickInterval = 2 * time.Second / 3
 // of the real failures.
 const DeadlockStuckThreshold = 5
 
+// LivelockNoProgressThreshold is the net-progress watchdog's budget
+// (ZBBS-HOME-458): consecutive locomotion ticks a mover may fail to reduce
+// its shortest-path distance to goal before being squeezed through the next
+// tile. ~5.3s at the 666.67ms tick. Deliberately ABOVE DeadlockStuckThreshold
+// so a mover that is stably blocked (StuckTicks climbing, distance also flat)
+// resolves through the deadlock path FIRST — preserving its DeadlockEntry /
+// /deadlocks diagnostics — and only a true oscillation, where the reroute keeps
+// "succeeding" so StuckTicks never climbs, reaches this watchdog instead.
+const LivelockNoProgressThreshold = 8
+
 // RunLocomotionTicker owns the locomotion ticker's periodic schedule.
 // Caller starts this in a goroutine alongside World.Run; it returns when
 // ctx is cancelled. Kicks off the first tick immediately so a MoveIntent
@@ -286,11 +296,70 @@ func advanceActorLocomotion(w *World, actor *Actor, grid *WalkGrid, now time.Tim
 		return
 	}
 
+	// Net-progress accounting for the livelock watchdog (ZBBS-HOME-458).
+	// StuckTicks (the deadlock counter below) only climbs when the soft-block
+	// reroute EXHAUSTS — a mover that can't step at all. It does nothing for a
+	// LIVELOCK: a mover that steps every tick (so each reroute "succeeds" and
+	// resets StuckTicks) yet never gets closer, oscillating between tiles
+	// around a blocker the reroute keeps detouring past. len(path)-1 is the
+	// true shortest-path distance to the goal; on any productive walk it
+	// strictly decreases each tick (even when routing around a wall), so a
+	// distance that fails to beat its running minimum for the whole window is
+	// net-zero progress. The watchdog FIRES below, after the blocker
+	// classification, so it only ever squeezes through an actual actor.
+	remaining := len(path) - 1
+	mi := actor.MoveIntent
+	if mi.BestRemaining < 0 || remaining < mi.BestRemaining {
+		mi.BestRemaining = remaining
+		mi.NoProgressTicks = 0
+	} else {
+		mi.NoProgressTicks++
+	}
+
 	nextTile := Position{X: path[1].X, Y: path[1].Y}
 	hard, soft := classifyTileBlocker(grid, w, nextTile, actor.ID)
 	if hard {
 		emitMoveStopped(w, actor, dest, MoveStoppedBlocked, attemptID, now)
 		actor.MoveIntent = nil
+		return
+	}
+
+	// Livelock watchdog (ZBBS-HOME-458). The mover has gone the whole window
+	// without reducing its distance to goal AND the next shortest-path tile is
+	// an actor it keeps detouring around (soft). Squeeze straight through it —
+	// the same recovery a stable deadlock gets (ZBBS-HOME-327) — instead of
+	// taking another fruitless detour that resets StuckTicks and never closes
+	// on the goal. Gated on `soft`: on the other half of an A↔B oscillation
+	// nextTile is the CLEAR tile, so the watchdog holds and the straight step
+	// below takes that (backward) step; the squeeze lands on the next tick that
+	// actually faces the blocker. Re-baseline BestRemaining to unset so the
+	// next tick stamps the true post-step distance — no assumption about how a
+	// given destination kind measures arrival vs. path length — and the
+	// watchdog gets a fresh window.
+	if soft && mi.NoProgressTicks >= LivelockNoProgressThreshold {
+		from := actor.Pos
+		fromStructure := actor.InsideStructureID
+		actor.Pos = nextTile
+		updateInsideStructureIDFromTileOwnership(w, actor)
+		mi.StuckTicks = 0
+		mi.NoProgressTicks = 0
+		mi.BestRemaining = -1
+
+		w.emit(&ActorMoved{
+			ActorID:           actor.ID,
+			FromPosition:      from,
+			ToPosition:        actor.Pos,
+			FromStructureID:   fromStructure,
+			ToStructureID:     actor.InsideStructureID,
+			MovementAttemptID: attemptID,
+			At:                now,
+		})
+
+		checkHuddleDriftAfterPositionMutation(w, actor.ID, now)
+
+		if arrivedAtDestination(w, actor, dest) {
+			finishArrival(w, actor, dest, attemptID, now)
+		}
 		return
 	}
 	if soft {

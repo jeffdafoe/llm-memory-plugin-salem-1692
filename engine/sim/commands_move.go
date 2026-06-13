@@ -225,8 +225,9 @@ func MoveActor(actorID ActorID, dest MoveDestination, leaveHuddleFirst bool, now
 			actor.MoveAttemptCounter++
 			attemptID := actor.MoveAttemptCounter
 			actor.MoveIntent = &MoveIntent{
-				Destination: cloneMoveDestination(dest),
-				AttemptID:   attemptID,
+				Destination:   cloneMoveDestination(dest),
+				AttemptID:     attemptID,
+				BestRemaining: -1, // unset — first tick stamps the real distance
 			}
 
 			// Step 8 - announce the walk to the client read surface. Carries

@@ -829,6 +829,88 @@ func TestLocomotion_SoftBlocker_StuckCounterResetsOnSuccessfulStep(t *testing.T)
 	}
 }
 
+// TestLocomotion_Livelock_NetProgressWatchdogSqueezesThrough covers the
+// net-progress watchdog (ZBBS-HOME-458). A mover whose direct progress tile is
+// permanently soft-blocked, with BOTH lateral detours also soft-blocked and
+// only the tile behind it clear, gets funneled into a back-and-forth between
+// two equidistant tiles: every tick it takes a "successful" reroute/straight
+// step — so StuckTicks (the stable-deadlock counter) never climbs and the
+// HOME-327 walk-through never fires — yet its shortest-path distance to goal
+// never improves. This is the Grace-the-crier livelock that bounced for 75
+// minutes. The watchdog tracks no-net-progress and, after
+// LivelockNoProgressThreshold ticks, squeezes the mover through the blocking
+// tile, WITHOUT engaging the deadlock machinery (StuckTicks stays 0, no
+// DeadlockSnapshot entry) — distinguishing a livelock from a stable block.
+func TestLocomotion_Livelock_NetProgressWatchdogSqueezesThrough(t *testing.T) {
+	w, cancel, _ := buildLocomotionTestWorld(t)
+	defer cancel()
+	now := time.Now().UTC()
+
+	goal := sim.Position{X: sim.PadX + 5, Y: sim.PadY + 3}
+	progressTile := sim.Position{X: sim.PadX + 5, Y: sim.PadY + 4} // the only tile that closes on the goal
+	oscA := sim.Position{X: sim.PadX + 5, Y: sim.PadY + 5}         // walker start
+	oscB := sim.Position{X: sim.PadX + 5, Y: sim.PadY + 6}         // the clear tile it bounces to and back
+
+	// Block the progress tile and both lateral detours, leaving only oscB
+	// (south) clear. The reroute keeps "succeeding" by stepping to oscB (then
+	// straight back to oscA) without ever closing on the goal.
+	if _, err := w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			world.Actors["center_blocker"] = &sim.Actor{ID: "center_blocker", DisplayName: "Center", Pos: progressTile}
+			world.Actors["west_blocker"] = &sim.Actor{ID: "west_blocker", DisplayName: "West", Pos: sim.TilePos{X: sim.PadX + 4, Y: sim.PadY + 5}}
+			world.Actors["east_blocker"] = &sim.Actor{ID: "east_blocker", DisplayName: "East", Pos: sim.TilePos{X: sim.PadX + 6, Y: sim.PadY + 5}}
+			return nil, nil
+		},
+	}); err != nil {
+		t.Fatalf("seed blockers: %v", err)
+	}
+	if _, err := w.Send(sim.MoveActor("walker", sim.NewPositionDestination(goal), false, now)); err != nil {
+		t.Fatalf("MoveActor: %v", err)
+	}
+
+	brokeThroughAt := -1
+	for tick := 0; tick < sim.LivelockNoProgressThreshold+3; tick++ {
+		if intent := moveIntentOf(t, w, "walker"); intent != nil && intent.StuckTicks != 0 {
+			t.Fatalf("tick %d: StuckTicks = %d, want 0 — a livelock must not engage the stable-deadlock counter", tick, intent.StuckTicks)
+		}
+		tickLoco(t, w, now)
+		if got := w.DeadlockSnapshot(); len(got) != 0 {
+			t.Fatalf("tick %d: DeadlockSnapshot has %d entries — recovered via the deadlock path, not the watchdog", tick, len(got))
+		}
+		pos, _ := actorSpatial(t, w, "walker")
+		if brokeThroughAt < 0 && (pos == progressTile || pos == goal) {
+			brokeThroughAt = tick
+		}
+		if brokeThroughAt < 0 && pos != oscA && pos != oscB {
+			t.Fatalf("tick %d: walker at %+v before breakthrough — expected oscillation between %+v and %+v", tick, pos, oscA, oscB)
+		}
+		if pos == goal {
+			break
+		}
+	}
+
+	if brokeThroughAt < 0 {
+		t.Fatal("walker never squeezed through the blocker — the watchdog did not fire")
+	}
+	if brokeThroughAt < sim.LivelockNoProgressThreshold-1 {
+		t.Errorf("watchdog fired on tick %d, before its %d-tick window elapsed", brokeThroughAt, sim.LivelockNoProgressThreshold)
+	}
+
+	// Full recovery: the squeeze-through lands the walker on the progress tile;
+	// from there it walks on to the goal and arrival clears the intent.
+	pos, _ := actorSpatial(t, w, "walker")
+	if pos != goal {
+		tickLoco(t, w, now)
+		pos, _ = actorSpatial(t, w, "walker")
+	}
+	if pos != goal {
+		t.Errorf("walker did not reach the goal after breakthrough: at %+v, want %+v", pos, goal)
+	}
+	if intent := moveIntentOf(t, w, "walker"); intent != nil {
+		t.Errorf("MoveIntent survived arrival: %+v", intent)
+	}
+}
+
 // TestLocomotion_SoftBlocker_DeadlockEntryReplanFailedFalse_OnMutualBlockShape
 // covers the ReplanFailed classification on the mutual-block / clogged-
 // corridor flavor (ZBBS-WORK-340). When every cardinal neighbor is
