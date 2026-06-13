@@ -42,6 +42,11 @@ import (
 // Command calls RecordInteraction per peer; emitting Spoke directly
 // from EmitBusinessownerSpeech bypasses it deliberately.
 //
+// We DO, since ZBBS-HOME-461, record the line in the speaker's huddle
+// RecentUtterances ring (the transient "## Recent conversation here" source) —
+// per-tick conversational context, not a durable salient-fact trail — so the
+// keeper's model sees what the engine just said for it and won't repeat it.
+//
 // Cross-cascade gating: BusinessownerState != nil is the predicate, but
 // no cascade currently SKIPS based on it (cf. visitor's VisitorState !=
 // nil skips). Businessowners are persistent KindNPCShared NPCs that
@@ -485,6 +490,28 @@ func EmitBusinessownerSpeech(args BusinessownerSpeechArgs) Command {
 				Text:         text,
 				At:           args.Now,
 			})
+			// ZBBS-HOME-461: record the engine line in the keeper's huddle
+			// recent-conversation ring so the keeper's model sees what it
+			// "already said" on its next tick. AppendUtterance otherwise runs
+			// only in the LLM speak command path (speak_commands.go), so
+			// engine-authored hospitality was invisible to the model — the root
+			// of the double-greet (a model greet seconds after the engine
+			// greet) and the re-greet-of-a-returning-customer-as-a-stranger
+			// (ZBBS-HOME-411/412).
+			//
+			// Guard on membership, not just a non-nil huddle: this is a generic
+			// Command, so a caller passing a stale/wrong HuddleID (or a speaker
+			// who has since left) must not inject an utterance into a
+			// conversation the speaker isn't part of. All three current callers
+			// pass the speaker's own live huddle — greet/handover via the
+			// keeper's CurrentHuddleID, farewell via the huddle the keeper
+			// REMAINS in after the customer leaves — so the guard passes for
+			// them and fails closed for anything anomalous.
+			if h := w.Huddles[args.HuddleID]; h != nil {
+				if _, isMember := h.Members[args.SpeakerID]; isMember {
+					h.AppendUtterance(args.SpeakerID, args.SpeakerName, text, args.Now)
+				}
+			}
 			if args.CooldownMinutes > 0 {
 				stampBusinessownerCooldown(w, args.SpeakerID, args.ListenerID, args.Trigger, args.Now)
 			}

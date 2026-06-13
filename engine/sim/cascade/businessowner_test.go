@@ -109,8 +109,11 @@ func TestRegisterBusinessowner_NilWorldPanics(t *testing.T) {
 	RegisterBusinessowner(context.Background(), nil)
 }
 
-// TestHandleHuddleJoined_FiresGreet — happy path. A non-keeper joins a
-// huddle the keeper is in at their work structure; greet emits.
+// TestHandleHuddleJoined_FiresGreet — non-LLM-keeper path. A non-keeper joins
+// a huddle the keeper is in at their work structure; the engine greet emits.
+// The fixture keeper has no LLMAgent, so the ZBBS-HOME-461 gate does not apply
+// here — this exercises the agent-less fallback that still engine-greets. The
+// VA-backed gate is covered by TestHandleHuddleJoined_LLMKeeperSkipsEngineGreet.
 func TestHandleHuddleJoined_FiresGreet(t *testing.T) {
 	w, cleanup := buildBusinessownerCascadeWorld(t)
 	defer cleanup()
@@ -134,6 +137,36 @@ func TestHandleHuddleJoined_FiresGreet(t *testing.T) {
 	}
 	if spokes[0].SpeakerID != "hannah" {
 		t.Errorf("speaker = %q, want hannah", spokes[0].SpeakerID)
+	}
+}
+
+// TestHandleHuddleJoined_LLMKeeperSkipsEngineGreet — ZBBS-HOME-461. A keeper
+// backed by a VA greets in character on its own huddle-peer-joined tick, so
+// the engine greet is suppressed to avoid the double-greet observed live
+// (Prudence: engine "Greetings, Jefferey" then a model greet seconds later).
+func TestHandleHuddleJoined_LLMKeeperSkipsEngineGreet(t *testing.T) {
+	w, cleanup := buildBusinessownerCascadeWorld(t)
+	defer cleanup()
+	getSpokes := observeSpokes(t, w)
+
+	// Back the keeper with a VA — the production state for every keeper.
+	invokeBusinessownerOnWorld(t, w, func(world *sim.World) {
+		world.Actors["hannah"].LLMAgent = "salem-vendor"
+	})
+
+	r := rand.New(rand.NewSource(42))
+	invokeBusinessownerOnWorld(t, w, func(world *sim.World) {
+		evt := &sim.HuddleJoined{
+			ActorID:      "jefferey",
+			HuddleID:     "h1",
+			StructureID:  "tavern",
+			OtherMembers: []sim.ActorID{"hannah"},
+			At:           time.Now().UTC(),
+		}
+		handleHuddleJoinedBusinessowner(world, evt, r)
+	})
+	if got := getSpokes(); len(got) != 0 {
+		t.Errorf("got %d Spoke events, want 0 (VA-backed keeper greets via its own tick)", len(got))
 	}
 }
 

@@ -88,6 +88,10 @@ func RegisterBusinessowner(_ context.Context, w *sim.World) {
 //  2. At least one OtherMember of the new huddle has BusinessownerState
 //     != nil AND WorkStructureID == event.StructureID (at-post check).
 //  3. The keeper is not sleeping or resting.
+//  4. The keeper has no LLM agent (ZBBS-HOME-461). A VA-backed keeper greets
+//     in character on its own huddle-peer-joined tick, so the engine greet
+//     would only duplicate it; the engine greet is kept for an agent-less
+//     keeper (none seeded today, but the gate degrades gracefully).
 //
 // Cooldown check + emit happen inside EmitBusinessownerSpeech atomically.
 func handleHuddleJoinedBusinessowner(w *sim.World, evt sim.Event, r *rand.Rand) {
@@ -132,6 +136,16 @@ func handleHuddleJoinedBusinessowner(w *sim.World, evt sim.Event, r *rand.Rand) 
 			continue
 		}
 		if keeper.State == sim.StateSleeping || keeper.State == sim.StateResting {
+			continue
+		}
+		// ZBBS-HOME-461: an LLM-backed keeper greets in character on its own
+		// huddle-peer-joined tick (WarrantKindHuddlePeerJoined) the moment the
+		// customer joins, so the engine greet only duplicates it — and its 5s
+		// reactor suppression actually delays the real, in-character line. Skip
+		// the engine greet when the keeper has a VA; keep it for an agent-less
+		// keeper (none today, graceful). Handover/farewell stay unconditional —
+		// no model tick reliably covers those moments.
+		if keeper.LLMAgent != "" {
 			continue
 		}
 		// Build the Spoke recipient set: every OtherMember EXCEPT this
