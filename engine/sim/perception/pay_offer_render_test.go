@@ -7,46 +7,55 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
 
+// payOfferReason builds a seller-side pending-offer view entry for tests —
+// the shape Build's snap.PayLedger scan (buildPayOffersForMe) produces.
+func payOfferReason(ledger sim.LedgerID, buyer sim.ActorID, item sim.ItemKind, qty, amount int, consumeNow bool) sim.PayOfferWarrantReason {
+	return sim.PayOfferWarrantReason{
+		LedgerID:   ledger,
+		Buyer:      buyer,
+		Item:       item,
+		Qty:        qty,
+		Amount:     amount,
+		ConsumeNow: consumeNow,
+	}
+}
+
 // payOfferWarrant builds a seller-side pending-offer warrant for tests.
 func payOfferWarrant(ledger sim.LedgerID, buyer sim.ActorID, item sim.ItemKind, qty, amount int, consumeNow bool) sim.WarrantMeta {
 	return sim.WarrantMeta{
 		TriggerActorID: buyer,
-		Reason: sim.PayOfferWarrantReason{
-			LedgerID:   ledger,
-			Buyer:      buyer,
-			Item:       item,
-			Qty:        qty,
-			Amount:     amount,
-			ConsumeNow: consumeNow,
-		},
-		SourceEventID: sim.EventID(ledger),
+		Reason:         payOfferReason(ledger, buyer, item, qty, amount, consumeNow),
+		SourceEventID:  sim.EventID(ledger),
 	}
 }
 
-// TestPayOfferWarrants_FiltersBatch — the shared predicate returns only the
-// pay-offer warrants in the consumed batch (and is the same set both the
-// render section and the handlers tool-gate key off, so they can't drift).
-func TestPayOfferWarrants_FiltersBatch(t *testing.T) {
+// TestPendingPayOffers_ReadsStandingViewNotWarrants — the shared predicate
+// (the same set both the render section and the handlers tool-gate key off,
+// so they can't drift) returns the standing ledger view, and ONLY the
+// standing ledger view: a pay-offer warrant in the consumed batch without a
+// matching view entry contributes nothing. ZBBS-HOME-453 — the warrant is a
+// one-shot wake-up; the view is the cross-tick memory.
+func TestPendingPayOffers_ReadsStandingViewNotWarrants(t *testing.T) {
 	p := Payload{
-		ActorID: "seller",
-		Warrants: []sim.WarrantMeta{
-			speechWarrant(1, "s1", "bob", "hello"),
-			payOfferWarrant(17, "bob", "stew", 2, 12, true),
-			payOfferWarrant(18, "cara", "ale", 1, 4, false),
+		ActorID:  "seller",
+		Warrants: []sim.WarrantMeta{speechWarrant(1, "s1", "bob", "hello")},
+		PayOffersForMe: []sim.PayOfferWarrantReason{
+			payOfferReason(17, "bob", "stew", 2, 12, true),
+			payOfferReason(18, "cara", "ale", 1, 4, false),
 		},
 	}
-	offers := PayOfferWarrants(p)
+	offers := PendingPayOffers(p)
 	if len(offers) != 2 {
-		t.Fatalf("PayOfferWarrants len = %d, want 2", len(offers))
+		t.Fatalf("PendingPayOffers len = %d, want 2", len(offers))
 	}
 	if offers[0].LedgerID != 17 || offers[1].LedgerID != 18 {
 		t.Errorf("offer ledger ids = %d, %d; want 17, 18", offers[0].LedgerID, offers[1].LedgerID)
 	}
 
-	// Empty / no-offer batch.
-	none := Payload{ActorID: "seller", Warrants: []sim.WarrantMeta{speechWarrant(1, "s1", "bob", "hi")}}
-	if got := PayOfferWarrants(none); len(got) != 0 {
-		t.Errorf("PayOfferWarrants on no-offer batch = %d, want 0", len(got))
+	// A warrant alone (no standing view entry) no longer drives the predicate.
+	warrantOnly := Payload{ActorID: "seller", Warrants: []sim.WarrantMeta{payOfferWarrant(17, "bob", "stew", 2, 12, true)}}
+	if got := PendingPayOffers(warrantOnly); len(got) != 0 {
+		t.Errorf("PendingPayOffers on warrant-only payload = %d, want 0 (view is the only source)", len(got))
 	}
 }
 
@@ -55,10 +64,13 @@ func TestPayOfferWarrants_FiltersBatch(t *testing.T) {
 // ledger_id plus buyer/qty/item/amount/disposition, and does NOT also appear
 // as a generic "what just happened" warrant line.
 func TestRender_PayOfferDecisionSection(t *testing.T) {
+	// First-tick shape: the wake-up warrant AND the standing view both carry
+	// the offer (Build scans the ledger on every tick, warranted or not).
 	p := Payload{
 		ActorID:           "seller",
 		Actor:             ActorView{State: sim.StateIdle},
 		Warrants:          []sim.WarrantMeta{payOfferWarrant(17, "bob", "stew", 2, 12, true)},
+		PayOffersForMe:    []sim.PayOfferWarrantReason{payOfferReason(17, "bob", "stew", 2, 12, true)},
 		WarrantActorNames: map[sim.ActorID]string{"bob": "bob"},
 		Baseline:          BaselinePresent,
 	}
@@ -104,7 +116,7 @@ func TestRender_PayOfferSection_AboveAffordances(t *testing.T) {
 	p := Payload{
 		ActorID:           "seller",
 		Actor:             ActorView{State: sim.StateIdle},
-		Warrants:          []sim.WarrantMeta{payOfferWarrant(17, "bob", "stew", 2, 12, true)},
+		PayOffersForMe:    []sim.PayOfferWarrantReason{payOfferReason(17, "bob", "stew", 2, 12, true)},
 		WarrantActorNames: map[sim.ActorID]string{"bob": "bob"},
 		Satiation: &SatiationView{Needs: []SatiationNeedView{{
 			Need: "hunger", Verb: "eat",
@@ -217,10 +229,11 @@ func TestRender_QuoteWarrantLine_EatHereFact(t *testing.T) {
 }
 
 // TestRender_PayOfferSingularCoin — amount of 1 renders "coin", not "coins".
+// Also exercises the warrant-less standing tick (view only, empty batch).
 func TestRender_PayOfferSingularCoin(t *testing.T) {
 	p := Payload{
-		ActorID:  "seller",
-		Warrants: []sim.WarrantMeta{payOfferWarrant(5, "bob", "ale", 1, 1, false)},
+		ActorID:        "seller",
+		PayOffersForMe: []sim.PayOfferWarrantReason{payOfferReason(5, "bob", "ale", 1, 1, false)},
 	}
 	out := combinedPrompt(Render(p, DefaultRenderConfig()))
 	if !strings.Contains(out, "1 coin for") {
@@ -236,17 +249,13 @@ func TestRender_PayOfferSingularCoin(t *testing.T) {
 // joined into the payment phrase, with the load-bearing ledger_id intact.
 func TestRender_PayOffer_Barter(t *testing.T) {
 	// Pure barter: 5 nails for 1 stew.
-	pureGoods := sim.WarrantMeta{
-		TriggerActorID: "bob",
-		Reason: sim.PayOfferWarrantReason{
-			LedgerID: 7, Buyer: "bob", Item: "stew", Qty: 1, Amount: 0,
-			PayItems: []sim.ItemKindQty{{Kind: "nail", Qty: 5}},
-		},
-		SourceEventID: 7,
+	pureGoods := sim.PayOfferWarrantReason{
+		LedgerID: 7, Buyer: "bob", Item: "stew", Qty: 1, Amount: 0,
+		PayItems: []sim.ItemKindQty{{Kind: "nail", Qty: 5}},
 	}
 	out := combinedPrompt(Render(Payload{
 		ActorID:           "seller",
-		Warrants:          []sim.WarrantMeta{pureGoods},
+		PayOffersForMe:    []sim.PayOfferWarrantReason{pureGoods},
 		WarrantActorNames: map[sim.ActorID]string{"bob": "bob"},
 		Baseline:          BaselinePresent,
 	}, DefaultRenderConfig()))
@@ -258,17 +267,13 @@ func TestRender_PayOffer_Barter(t *testing.T) {
 	}
 
 	// Mixed: 3 nails + 2 coins.
-	mixed := sim.WarrantMeta{
-		TriggerActorID: "bob",
-		Reason: sim.PayOfferWarrantReason{
-			LedgerID: 8, Buyer: "bob", Item: "ale", Qty: 1, Amount: 2,
-			PayItems: []sim.ItemKindQty{{Kind: "nail", Qty: 3}},
-		},
-		SourceEventID: 8,
+	mixed := sim.PayOfferWarrantReason{
+		LedgerID: 8, Buyer: "bob", Item: "ale", Qty: 1, Amount: 2,
+		PayItems: []sim.ItemKindQty{{Kind: "nail", Qty: 3}},
 	}
 	out = combinedPrompt(Render(Payload{
 		ActorID:           "seller",
-		Warrants:          []sim.WarrantMeta{mixed},
+		PayOffersForMe:    []sim.PayOfferWarrantReason{mixed},
 		WarrantActorNames: map[sim.ActorID]string{"bob": "bob"},
 		Baseline:          BaselinePresent,
 	}, DefaultRenderConfig()))
@@ -287,7 +292,8 @@ func TestRender_PayOfferPlusOtherWarrant(t *testing.T) {
 			payOfferWarrant(17, "bob", "stew", 2, 12, true),
 			speechWarrant(20, "s1", "cara", "good evening"),
 		},
-		Baseline: BaselinePresent,
+		PayOffersForMe: []sim.PayOfferWarrantReason{payOfferReason(17, "bob", "stew", 2, 12, true)},
+		Baseline:       BaselinePresent,
 	}
 	out := combinedPrompt(Render(p, DefaultRenderConfig()))
 
@@ -303,5 +309,33 @@ func TestRender_PayOfferPlusOtherWarrant(t *testing.T) {
 	// The offer must not be double-rendered as a generic [pay_offer] line.
 	if strings.Contains(out, "[pay_offer]") {
 		t.Errorf("pay offer leaked into the generic warrant list\n%s", out)
+	}
+}
+
+// TestRender_StandingOfferWithoutWarrant — the ZBBS-HOME-453 regression: a
+// later tick whose consumed batch carries NO pay-offer warrant (the seller
+// already burned it speaking — the 06-12 Ellis deadlock shape) still renders
+// the full decision section off the standing ledger view, with the
+// load-bearing ledger_id and the response instruction intact.
+func TestRender_StandingOfferWithoutWarrant(t *testing.T) {
+	p := Payload{
+		ActorID:           "seller",
+		Actor:             ActorView{State: sim.StateIdle},
+		Warrants:          []sim.WarrantMeta{speechWarrant(21, "s1", "bob", "two fifty and that is robbery")},
+		PayOffersForMe:    []sim.PayOfferWarrantReason{payOfferReason(17, "bob", "stew", 2, 12, false)},
+		WarrantActorNames: map[sim.ActorID]string{"bob": "bob"},
+		Baseline:          BaselinePresent,
+	}
+	out := combinedPrompt(Render(p, DefaultRenderConfig()))
+
+	if !strings.Contains(out, "## Offers awaiting your decision") || !strings.Contains(out, "offer id 17") {
+		t.Errorf("standing offer section missing on a warrant-less tick\n%s", out)
+	}
+	if !strings.Contains(out, "Respond first with accept_pay") {
+		t.Errorf("response instruction missing on a warrant-less tick\n%s", out)
+	}
+	// The triage coda keeps the settle-first imperative standing too.
+	if !strings.Contains(out, "A buyer's offer awaits your answer — settle it first") {
+		t.Errorf("triage settle-first imperative missing on a warrant-less tick\n%s", out)
 	}
 }

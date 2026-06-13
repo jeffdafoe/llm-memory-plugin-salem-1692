@@ -268,12 +268,14 @@ func (r SceneQuoteTargetedWarrantReason) DedupDiscriminator() uint64 { return ui
 // doesn't produce duplicate warrants).
 //
 // All offer terms travel on the warrant payload (LedgerID + Buyer +
-// item terms + ExpiresAt) so the seller's tick prompt builder can
-// render the offer directly off WarrantMeta without a separate
-// World.PayLedger lookup. Same posture as SceneQuoteTargetedWarrantReason
-// — prompt build runs on the world goroutine via Snapshot, and pulling
-// the live ledger entry at prompt time would race the world's owning
-// goroutine.
+// item terms + ExpiresAt) for dedup and trigger context. Since
+// ZBBS-HOME-453 the warrant's job is to WAKE the seller's tick — the
+// rendered "## Offers awaiting your decision" section and the
+// accept/decline/counter tool gate read the standing
+// Payload.PayOffersForMe view instead, scanned from the snapshot's
+// PayLedger every tick, so a seller who speaks through the warranted
+// tick still sees (and can settle) the offer on later ticks. The same
+// struct doubles as that view's projection shape.
 //
 // Buyer is the actor whose pay_with_item tool call staked the offer.
 // Surfaces in the seller's perception prompt as the offerer.

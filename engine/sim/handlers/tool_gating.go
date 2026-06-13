@@ -17,7 +17,8 @@ import (
 
 // payOfferResponseTools are the seller-side pay-deliberation tools that are
 // advertised ONLY when the actor's perception carries a pending pay offer
-// (a PayOfferWarrantReason). Mapped to a set for O(1) membership.
+// (the standing PayOffersForMe ledger view, ZBBS-HOME-453). Mapped to a set
+// for O(1) membership.
 //
 // These stay AvailabilityAvailable in the registry — gating is an
 // *advertising* decision, not a *dispatch* one — so a call that does arrive
@@ -131,9 +132,11 @@ func actorHasDedicatedVA(actorID sim.ActorID, snap *sim.Snapshot) bool {
 //
 // Pay-offer consumer: the seller-response tools (accept/decline/counter) are
 // advertised only when a pending pay offer is present in the payload. The
-// same predicate (perception.PayOfferWarrants) drives the perception
+// same predicate (perception.PendingPayOffers — the standing ledger view,
+// not the one-shot warrant batch, ZBBS-HOME-453) drives the perception
 // offer-decision section, so the rendered offer and the advertised tools
-// cannot drift (discussion 109 invariant).
+// cannot drift (discussion 109 invariant), and both persist across ticks
+// until the offer resolves or expires.
 //
 // counter_pay carries an ADDITIONAL gate (ZBBS-WORK-320, pc/pay scar #4):
 // it is dropped when every pending offer is already at the counter-chain
@@ -159,7 +162,7 @@ func actorHasDedicatedVA(actorID sim.ActorID, snap *sim.Snapshot) bool {
 // payload.
 func gateTools(r *Registry, payload perception.Payload, snap *sim.Snapshot) []llm.ToolSpec {
 	all := r.AdvertisedSpecs()
-	offers := perception.PayOfferWarrants(payload)
+	offers := perception.PendingPayOffers(payload)
 	hasPayOffer := len(offers) > 0
 	canCounter := anyOfferCounterable(offers)
 	dedicatedVA := actorHasDedicatedVA(payload.ActorID, snap)

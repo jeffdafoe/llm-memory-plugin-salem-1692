@@ -176,15 +176,18 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 		return p.EatHereKinds[kind]
 	}
 
-	// Pay offers are pulled out of the generic warrant list and rendered as
-	// an actionable decision section (renderPayOffers) so the seller gets the
-	// ledger_id it must echo into accept_pay/decline_pay/counter_pay. The same
-	// PayOfferWarrants(p) predicate drives the handlers tool-gate (gateTools),
-	// so the rendered offer and the advertised response tools cannot drift.
-	// Rendering them in a dedicated, uncapped section (rather than as a capped
-	// warrant line) guarantees the ledger_id is present whenever the tools are
-	// advertised.
-	payOffers := PayOfferWarrants(p)
+	// Pay offers render as an actionable decision section (renderPayOffers)
+	// so the seller gets the ledger_id it must echo into accept_pay/
+	// decline_pay/counter_pay. Sourced from the standing ledger scan
+	// (Payload.PayOffersForMe, ZBBS-HOME-453), NOT the consumed warrant
+	// batch — the offer warrant only wakes the seller's first tick, and a
+	// seller who speaks through that tick must keep seeing the offer until
+	// it resolves or expires. The same PendingPayOffers(p) predicate drives
+	// the handlers tool-gate (gateTools), so the rendered offer and the
+	// advertised response tools cannot drift. Rendering them in a dedicated,
+	// uncapped section (rather than as a capped warrant line) guarantees the
+	// ledger_id is present whenever the tools are advertised.
+	payOffers := PendingPayOffers(p)
 
 	// Ephemeral: identity, surroundings, anchors, steers, relationships, the
 	// offers awaiting this actor's decision, owed orders, recovery/satiation/
@@ -1226,24 +1229,22 @@ func renderDiff(d *Diff) string {
 // RenderedPrompt accounting. Warrants arrive already ordered by
 // SourceEventID (Build's job); the caps are applied here, after ordering,
 // and any warrant past a cap is moved to DroppedWarrants for carry-forward.
-// PayOfferWarrants returns the pending pay-offer warrants in the payload's
-// consumed batch (the PayOfferWarrantReason entries). It is the single
-// source of truth shared by the perception offer-decision section
-// (renderPayOffers, below) and the handlers tool-gate (gateTools): the
-// rendered offer and the advertised accept_pay/decline_pay/counter_pay tools
-// both key off this one predicate so they cannot drift.
+// PendingPayOffers returns the offers currently pending against this actor
+// as seller — the payload's standing ledger view (Build's buildPayOffersForMe
+// scan over snap.PayLedger, ZBBS-HOME-453). It is the single source of truth
+// shared by the perception offer-decision section (renderPayOffers, below)
+// and the handlers tool-gate (gateTools): the rendered offer and the
+// advertised accept_pay/decline_pay/counter_pay tools both key off this one
+// predicate so they cannot drift.
 //
-// Pay offers warrant the SELLER only (the PayOfferReceived subscriber stamps
-// the seller, never the buyer), so a non-empty result means "this actor is
-// the seller of one or more pending offers awaiting their decision".
-func PayOfferWarrants(p Payload) []sim.PayOfferWarrantReason {
-	var offers []sim.PayOfferWarrantReason
-	for _, w := range p.Warrants {
-		if r, ok := w.Reason.(sim.PayOfferWarrantReason); ok {
-			offers = append(offers, r)
-		}
-	}
-	return offers
+// Until HOME-453 this read the consumed warrant batch instead — which gave
+// the seller exactly ONE tick with the cue and the tools (the warrant is
+// consumed by the tick it triggers), and a seller who spoke through it was
+// locked out of resolving until the TTL sweep expired the offer. A non-empty
+// result means "this actor is the seller of one or more pending offers
+// awaiting their decision", on every tick that's true.
+func PendingPayOffers(p Payload) []sim.PayOfferWarrantReason {
+	return p.PayOffersForMe
 }
 
 // nonPayOfferWarrants returns the consumed batch with pay-offer warrants
