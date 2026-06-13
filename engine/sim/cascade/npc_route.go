@@ -283,6 +283,9 @@ func handleActorArrivedAdvanceRoute(w *sim.World, evt sim.Event) {
 	//    code mutating CurrentState without clearing content).
 	//    The crier must not voice content authored for a
 	//    different state.
+	voicedNotices := 0
+	crierStopIdx := -1
+	var crierBoardID sim.VillageObjectID
 	if route.Label == sim.AttrTownCrier &&
 		route.Phase == sim.RoutePhaseActive &&
 		route.StopIdx < len(route.Stops) {
@@ -293,9 +296,57 @@ func handleActorArrivedAdvanceRoute(w *sim.World, evt sim.Event) {
 			content, present := w.NoticeboardContent[stop.ObjectID]
 			obj, hasObj := w.VillageObjects[stop.ObjectID]
 			if present && content != nil && content.Text != "" && hasObj && obj != nil && content.AtState == obj.CurrentState {
-				voiceCrierNotices(w, arrived.ActorID, content.Text, arrived.At)
+				voicedNotices = voiceCrierNotices(w, arrived.ActorID, content.Text, arrived.At)
+				crierStopIdx = route.StopIdx
+				crierBoardID = stop.ObjectID
 			}
 		}
+	}
+
+	// Advance the route (flip the board to its next state + dispatch the next
+	// walk). For a MULTI-notice crier read the flip/advance is DEFERRED until the
+	// crier has voiced every notice (ZBBS-HOME-457): the staggered beats run over
+	// crierNoticeBeatDelay each, and AdvanceNPCRoute flips the board's sprite (and
+	// clears/re-authors its content) — so advancing immediately rotated the board
+	// out from under the crier mid-spiel (the "reading at an empty board" bug).
+	// The crier now dwells at the stop for the full voicing, then flips and walks
+	// on. Single-notice and non-crier arrivals advance inline as before — a single
+	// read is synchronous, so there is nothing pending to rotate past.
+	//
+	// Dwell = voicedNotices * crierNoticeBeatDelay. The last notice is voiced at
+	// (voicedNotices-1)*delay; the trailing beat gives that final bubble the same
+	// one-beat on-screen window every earlier notice gets before being replaced —
+	// so the board never rotates while a notice is still displayed. Noticeboards
+	// are excluded from the bulk rotation ticker (main.go RotationScope.ExcludeTags
+	// = {TagLaundry, TagNoticeBoard}), so the crier's own flip is the ONLY thing
+	// that rotates a board — nothing external can flip it during the dwell.
+	if voicedNotices > 1 {
+		actorID := arrived.ActorID
+		stopIdx := crierStopIdx
+		boardID := crierBoardID
+		dwell := time.Duration(voicedNotices) * crierNoticeBeatDelay
+		time.AfterFunc(dwell, func() {
+			ctx := w.LifecycleContext()
+			if ctx.Err() != nil {
+				return // shutdown raced the dwell
+			}
+			// Stale-guard: only advance if the crier is STILL on the same active
+			// route at the same stop reading the same board. The dwell window could
+			// in principle outlive a route re-dispatch (a fresh tour), and the
+			// deferred advance must not act on the new route.
+			guarded := sim.Command{Fn: func(world *sim.World) (any, error) {
+				r, ok := world.ActiveRoutes[actorID]
+				if !ok || r == nil || r.Label != sim.AttrTownCrier || r.Phase != sim.RoutePhaseActive ||
+					r.StopIdx != stopIdx || r.StopIdx >= len(r.Stops) || r.Stops[r.StopIdx].ObjectID != boardID {
+					return nil, nil // route changed during the dwell — drop the advance
+				}
+				return sim.AdvanceNPCRoute(actorID).Fn(world)
+			}}
+			if _, err := w.SendContext(ctx, guarded); err != nil && ctx.Err() == nil {
+				log.Printf("cascade/npc_route: deferred crier advance (actor %q): %v", actorID, err)
+			}
+		})
+		return
 	}
 
 	cmd := sim.AdvanceNPCRoute(arrived.ActorID)
@@ -310,8 +361,10 @@ func handleActorArrivedAdvanceRoute(w *sim.World, evt sim.Event) {
 // before the next replaces it — the client shows a single bubble per speaker
 // (a fresh line replaces the prior) and scales its lifetime to text length, so
 // firing all notices at once would show only the last. A board is read twice a
-// day, so the cadence is deliberately unhurried.
-const crierNoticeBeatDelay = 4 * time.Second
+// day, so the cadence is deliberately unhurried. A var (not const) only so tests
+// can shrink it to drive the deferred-flip timing deterministically; production
+// never reassigns it.
+var crierNoticeBeatDelay = 4 * time.Second
 
 // voiceCrierNotices voices a (possibly multi-line) board aloud: the first
 // notice immediately (inline, on the world goroutine we're already on), each
@@ -321,10 +374,13 @@ const crierNoticeBeatDelay = 4 * time.Second
 // pattern the silence/pay-ledger sweeps use. EmitTownCrierAnnouncement
 // re-checks the speaker each beat, so a crier that despawns or loses its
 // town-crier attribute mid-tour simply stops voicing.
-func voiceCrierNotices(w *sim.World, crierID sim.ActorID, content string, at time.Time) {
+//
+// Returns the number of notices voiced (0 if empty) so the caller can defer the
+// route flip/advance until the spiel finishes (ZBBS-HOME-457).
+func voiceCrierNotices(w *sim.World, crierID sim.ActorID, content string, at time.Time) int {
 	lines := splitNoticeLines(content)
 	if len(lines) == 0 {
-		return
+		return 0
 	}
 	if _, err := sim.EmitTownCrierAnnouncement(crierID, lines[0], at).Fn(w); err != nil {
 		log.Printf("cascade/npc_route: town_crier announce (actor %q): %v", crierID, err)
@@ -341,6 +397,7 @@ func voiceCrierNotices(w *sim.World, crierID sim.ActorID, content string, at tim
 			}
 		})
 	}
+	return len(lines)
 }
 
 // splitNoticeLines splits stored multi-line board content into individual

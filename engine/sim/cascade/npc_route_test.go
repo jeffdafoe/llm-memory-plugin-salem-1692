@@ -672,6 +672,127 @@ func TestTownCrierVoicesMultiLineFirstBeatImmediately(t *testing.T) {
 	}
 }
 
+// TestTownCrierMultiLineDefersFlip (ZBBS-HOME-457): a multi-notice crier read
+// must NOT flip the board immediately — the flip/advance is deferred until the
+// crier finishes voicing, so the board doesn't rotate/empty mid-spiel. We assert
+// the board's CurrentState is unchanged right after the handler returns (the
+// deferred AdvanceNPCRoute fires on a timer long after this synchronous check).
+// Contrast TestTownCrierReadsBoardContentBeforeFlip, where a single-notice read
+// advances inline.
+func TestTownCrierMultiLineDefersFlip(t *testing.T) {
+	w, _ := buildRouteCascadeWorld(t)
+	seedActorAttribute(w, sim.AttrTownCrier)
+
+	noticeStop := sim.RouteStop{
+		ObjectID: "notice",
+		WalkTo:   sim.Position{X: sim.PadX + 30, Y: sim.PadY + 21},
+		NewState: "posted",
+	}
+	if w.ActiveRoutes == nil {
+		w.ActiveRoutes = map[sim.ActorID]*sim.NPCRoute{}
+	}
+	w.ActiveRoutes["runner"] = &sim.NPCRoute{
+		NPCID:           "runner",
+		Label:           sim.AttrTownCrier,
+		Stops:           []sim.RouteStop{noticeStop},
+		StopIdx:         0,
+		Phase:           sim.RoutePhaseActive,
+		HomeDestination: sim.NewPositionDestination(sim.Position{X: sim.PadX + 10, Y: sim.PadY + 10}),
+	}
+	w.Actors["runner"].Pos.X = noticeStop.WalkTo.X
+	w.Actors["runner"].Pos.Y = noticeStop.WalkTo.Y
+	stateBefore := w.VillageObjects["notice"].CurrentState
+	w.NoticeboardContent = map[sim.VillageObjectID]*sim.NoticeboardContent{
+		"notice": {Text: "First notice.\nSecond notice.\nThird notice.", PostedAt: time.Now(), AtState: stateBefore},
+	}
+
+	spokeRec := &cascadeSpokeRecorder{}
+	w.Subscribe(sim.SubscriberFunc(spokeRec.handle))
+	RegisterNPCRoutes(context.Background(), w)
+	cancel := runRouteCascadeWorld(t, w)
+	defer cancel()
+
+	arrivedEvt := &sim.ActorArrived{ActorID: "runner", FinalPosition: noticeStop.WalkTo, At: time.Now()}
+	res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		handleActorArrivedAdvanceRoute(world, arrivedEvt)
+		return world.VillageObjects["notice"].CurrentState, nil
+	}})
+	if err != nil {
+		t.Fatalf("invoke handler: %v", err)
+	}
+	if stateAfter, _ := res.(string); stateAfter != stateBefore {
+		t.Errorf("board flipped immediately on multi-notice read: %q -> %q (flip should be deferred)", stateBefore, stateAfter)
+	}
+	if got := spokeRec.collect(); len(got) == 0 || got[0].Text != "First notice." {
+		t.Errorf("first notice not voiced inline; got %v", got)
+	}
+}
+
+// TestTownCrierMultiLineFlipAfterDwell (ZBBS-HOME-457): the deferred flip DOES
+// fire after the dwell — the board rotates once the crier has finished voicing.
+// Shrinks crierNoticeBeatDelay so the timer fires in milliseconds.
+func TestTownCrierMultiLineFlipAfterDwell(t *testing.T) {
+	orig := crierNoticeBeatDelay
+	crierNoticeBeatDelay = 5 * time.Millisecond
+	defer func() { crierNoticeBeatDelay = orig }()
+
+	w, _ := buildRouteCascadeWorld(t)
+	seedActorAttribute(w, sim.AttrTownCrier)
+	noticeStop := sim.RouteStop{
+		ObjectID: "notice",
+		WalkTo:   sim.Position{X: sim.PadX + 30, Y: sim.PadY + 21},
+		NewState: "posted",
+	}
+	if w.ActiveRoutes == nil {
+		w.ActiveRoutes = map[sim.ActorID]*sim.NPCRoute{}
+	}
+	w.ActiveRoutes["runner"] = &sim.NPCRoute{
+		NPCID:           "runner",
+		Label:           sim.AttrTownCrier,
+		Stops:           []sim.RouteStop{noticeStop},
+		StopIdx:         0,
+		Phase:           sim.RoutePhaseActive,
+		HomeDestination: sim.NewPositionDestination(sim.Position{X: sim.PadX + 10, Y: sim.PadY + 10}),
+	}
+	w.Actors["runner"].Pos.X = noticeStop.WalkTo.X
+	w.Actors["runner"].Pos.Y = noticeStop.WalkTo.Y
+	stateBefore := w.VillageObjects["notice"].CurrentState
+	w.NoticeboardContent = map[sim.VillageObjectID]*sim.NoticeboardContent{
+		"notice": {Text: "First notice.\nSecond notice.", PostedAt: time.Now(), AtState: stateBefore},
+	}
+
+	RegisterNPCRoutes(context.Background(), w)
+	cancel := runRouteCascadeWorld(t, w)
+	defer cancel()
+
+	arrivedEvt := &sim.ActorArrived{ActorID: "runner", FinalPosition: noticeStop.WalkTo, At: time.Now()}
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		handleActorArrivedAdvanceRoute(world, arrivedEvt)
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("invoke handler: %v", err)
+	}
+
+	readState := func() string {
+		res, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+			return world.VillageObjects["notice"].CurrentState, nil
+		}})
+		if err != nil {
+			t.Fatalf("read state: %v", err)
+		}
+		s, _ := res.(string)
+		return s
+	}
+	deadline := time.After(2 * time.Second)
+	for readState() == stateBefore {
+		select {
+		case <-deadline:
+			t.Fatalf("deferred flip never fired after dwell (state still %q)", stateBefore)
+		case <-time.After(3 * time.Millisecond):
+		}
+	}
+}
+
 // TestTownCrierSilentOnStaleAtState: town_crier arrives at a stop
 // whose NoticeboardContent.AtState DOES NOT match the board's
 // current CurrentState — content is stale (from a previous rotation
