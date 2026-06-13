@@ -1308,12 +1308,12 @@ func buildOfferableCustomers(snap *sim.Snapshot, subject sim.ActorID, atOwnBusin
 	if !atOwnBusiness || len(members) == 0 || len(inventory) == 0 {
 		return nil
 	}
-	goods := make([]string, 0, len(inventory))
+	goods := make([]OfferableGood, 0, len(inventory))
 	for _, it := range inventory {
 		if it.Label == "" {
 			continue
 		}
-		goods = append(goods, it.Label)
+		goods = append(goods, OfferableGood{Label: it.Label, OnHand: it.Qty})
 	}
 	if len(goods) == 0 {
 		return nil

@@ -176,6 +176,20 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 		return p.EatHereKinds[kind]
 	}
 
+	// stockOf reports the subject's current on-hand of a kind and whether they
+	// stock it at all — the seller-side bound for the pay-offer cue
+	// (ZBBS-HOME-459). Built from the standing inventory readout (real goods,
+	// qty>0); a service or never-stocked kind is absent, so stocked is false and
+	// the cue's "you hold only N" annotation is skipped for it.
+	sellerStock := make(map[sim.ItemKind]int, len(p.Actor.Inventory))
+	for _, it := range p.Actor.Inventory {
+		sellerStock[it.kind] = it.Qty
+	}
+	stockOf := func(kind sim.ItemKind) (int, bool) {
+		qty, ok := sellerStock[kind]
+		return qty, ok
+	}
+
 	// Pay offers render as an actionable decision section (renderPayOffers)
 	// so the seller gets the ledger_id it must echo into accept_pay/
 	// decline_pay/counter_pay. Sourced from the standing ledger scan
@@ -205,7 +219,7 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// seller's own mild needs outrank a waiting customer for whole minutes
 	// (conversation hud-6c849d…, ZBBS-HOME-424). renderTriage reinforces the
 	// same priority at the decision point.
-	renderPayOffers(&ephemeral, payOffers, nameOf)
+	renderPayOffers(&ephemeral, payOffers, nameOf, stockOf)
 	renderOfferableCustomers(&ephemeral, p.OfferableCustomers)
 	renderPendingDeliveriesFromMe(&ephemeral, p.PendingDeliveriesFromMe, p.LocalDateUTC)
 	renderPendingDeliveriesToMe(&ephemeral, p.PendingDeliveriesToMe, p.LocalDateUTC)
@@ -849,8 +863,10 @@ func renderOfferableCustomers(b *strings.Builder, v *OfferableCustomersView) {
 	}
 	goods := make([]string, 0, len(v.Goods))
 	for _, g := range v.Goods {
-		if s := sanitizeInline(g); s != "" {
-			goods = append(goods, s)
+		if s := sanitizeInline(g.Label); s != "" {
+			// The on-hand count is the sizing fact (ZBBS-HOME-459): the cue asks
+			// the seller to name a quantity, so it must see what it actually holds.
+			goods = append(goods, fmt.Sprintf("%s (%d on hand)", s, g.OnHand))
 		}
 	}
 	if len(goods) == 0 {
@@ -1328,7 +1344,7 @@ func formatOfferPayment(amount int, payItems []sim.ItemKindQty) string {
 	}
 }
 
-func renderPayOffers(b *strings.Builder, offers []sim.PayOfferWarrantReason, nameOf func(sim.ActorID) string) {
+func renderPayOffers(b *strings.Builder, offers []sim.PayOfferWarrantReason, nameOf func(sim.ActorID) string, stockOf func(sim.ItemKind) (int, bool)) {
 	if len(offers) == 0 {
 		return
 	}
@@ -1347,8 +1363,20 @@ func renderPayOffers(b *strings.Builder, offers []sim.PayOfferWarrantReason, nam
 		// render whatever the buyer offered so the seller judges the goods
 		// the same way they judge coins.
 		payment := formatOfferPayment(o.Amount, o.PayItems)
-		fmt.Fprintf(b, "%d. %s offers %s for %d %s %s (offer id %d)\n",
+		fmt.Fprintf(b, "%d. %s offers %s for %d %s %s (offer id %d)",
 			i+1, buyer, payment, o.Qty, item, disposition, o.LedgerID)
+		// ZBBS-HOME-459: when the buyer asks for more than the seller actually
+		// holds, surface the gap so they counter or decline against real stock
+		// instead of accepting an offer the deliver gate would then bounce. Fact
+		// only, and only when it bites — sufficient stock adds nothing. stockOf
+		// reports (on-hand, stocked); a service or never-stocked kind returns
+		// stocked=false and is skipped (no inventory to compare against).
+		if stockOf != nil {
+			if have, stocked := stockOf(o.Item); stocked && o.Qty > have {
+				fmt.Fprintf(b, " — you hold only %d %s", have, item)
+			}
+		}
+		b.WriteString("\n")
 	}
 	// Action first, then an explicit speak: accept/decline/counter pass in silence,
 	// so prompt the speak TOOL alongside the response — same "say a word as you pass
