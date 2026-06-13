@@ -591,6 +591,87 @@ func TestTownCrierReadsBoardContentBeforeFlip(t *testing.T) {
 	}
 }
 
+// TestSplitNoticeLines (ZBBS-HOME-456): splits stored content into trimmed,
+// non-empty notice lines.
+func TestSplitNoticeLines(t *testing.T) {
+	got := splitNoticeLines("  a \n\n b \n  \nc\n")
+	want := []string{"a", "b", "c"}
+	if len(got) != len(want) {
+		t.Fatalf("got %d lines %v, want %d", len(got), got, len(want))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("line %d = %q, want %q", i, got[i], want[i])
+		}
+	}
+	if n := len(splitNoticeLines("   \n  ")); n != 0 {
+		t.Errorf("all-blank input yielded %d lines, want 0", n)
+	}
+}
+
+// TestTownCrierVoicesMultiLineFirstBeatImmediately (ZBBS-HOME-456): a multi-line
+// board voices its FIRST notice immediately (inline on the world goroutine);
+// the remaining notices are scheduled as later AfterFunc beats (not observed in
+// this synchronous test). Confirms multi-line content is split and the first
+// line lands at once carrying the crier as speaker.
+func TestTownCrierVoicesMultiLineFirstBeatImmediately(t *testing.T) {
+	w, _ := buildRouteCascadeWorld(t)
+	seedActorAttribute(w, sim.AttrTownCrier)
+
+	noticeStop := sim.RouteStop{
+		ObjectID: "notice",
+		WalkTo:   sim.Position{X: sim.PadX + 30, Y: sim.PadY + 21},
+		NewState: "posted",
+	}
+	if w.ActiveRoutes == nil {
+		w.ActiveRoutes = map[sim.ActorID]*sim.NPCRoute{}
+	}
+	w.ActiveRoutes["runner"] = &sim.NPCRoute{
+		NPCID:           "runner",
+		Label:           sim.AttrTownCrier,
+		Stops:           []sim.RouteStop{noticeStop},
+		StopIdx:         0,
+		Phase:           sim.RoutePhaseActive,
+		HomeDestination: sim.NewPositionDestination(sim.Position{X: sim.PadX + 10, Y: sim.PadY + 10}),
+	}
+	w.Actors["runner"].Pos.X = noticeStop.WalkTo.X
+	w.Actors["runner"].Pos.Y = noticeStop.WalkTo.Y
+
+	first := "A town meeting is called for Friday next."
+	w.NoticeboardContent = map[sim.VillageObjectID]*sim.NoticeboardContent{
+		"notice": {
+			Text:     first + "\nWolves are seen upon the Andover road.\nA shawl was found at the meeting house.",
+			PostedAt: time.Now(),
+			AtState:  "blank",
+		},
+	}
+
+	spokeRec := &cascadeSpokeRecorder{}
+	w.Subscribe(sim.SubscriberFunc(spokeRec.handle))
+	RegisterNPCRoutes(context.Background(), w)
+	cancel := runRouteCascadeWorld(t, w)
+	defer cancel()
+
+	arrivedEvt := &sim.ActorArrived{ActorID: "runner", FinalPosition: noticeStop.WalkTo, At: time.Now()}
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		handleActorArrivedAdvanceRoute(world, arrivedEvt)
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("invoke handler: %v", err)
+	}
+
+	got := spokeRec.collect()
+	if len(got) == 0 {
+		t.Fatal("no Spoke emitted for multi-line board")
+	}
+	if got[0].SpeakerID != "runner" {
+		t.Errorf("first beat SpeakerID = %q, want runner", got[0].SpeakerID)
+	}
+	if got[0].Text != first {
+		t.Errorf("first beat Text = %q, want the first notice %q", got[0].Text, first)
+	}
+}
+
 // TestTownCrierSilentOnStaleAtState: town_crier arrives at a stop
 // whose NoticeboardContent.AtState DOES NOT match the board's
 // current CurrentState — content is stale (from a previous rotation
