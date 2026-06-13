@@ -87,9 +87,26 @@ func RegisterNoticeboard(ctx context.Context, w *sim.World, client llm.Client) {
 // label) runNoticeboardAuthor needs, mirroring what the state-change
 // subscriber captures.
 type kickstartBoard struct {
+	id       sim.VillageObjectID
+	atState  string
+	label    string
+	capacity int
+}
+
+// kickstartClear is a board sitting in a zero-capacity (empty) state that still
+// holds stored content — collected during the enumeration and cleared after, so
+// the "an empty board holds no content" invariant the runtime rotation path
+// enforces also holds at boot.
+type kickstartClear struct {
 	id      sim.VillageObjectID
 	atState string
-	label   string
+}
+
+// kickstartScan is the enumeration result: blank capacity>0 boards to author
+// and zero-capacity boards with stale content to clear.
+type kickstartScan struct {
+	blanks []kickstartBoard
+	clears []kickstartClear
 }
 
 // KickstartNoticeboards authors content for every noticeboard that has
@@ -119,7 +136,7 @@ func KickstartNoticeboards(ctx context.Context, w *sim.World, client llm.Client)
 		panic("cascade: KickstartNoticeboards requires a non-nil LLM client")
 	}
 	res, err := w.SendContext(ctx, sim.Command{Fn: func(world *sim.World) (any, error) {
-		var blanks []kickstartBoard
+		scan := kickstartScan{}
 		for id, obj := range world.VillageObjects {
 			if obj == nil {
 				continue
@@ -132,16 +149,31 @@ func KickstartNoticeboards(ctx context.Context, w *sim.World, client llm.Client)
 			if state == nil || !state.HasTag(sim.TagRotatable) || !state.HasTag(sim.TagNoticeBoard) {
 				continue
 			}
+			capacity := sim.ContentCapacityForState(state)
+			if capacity <= 0 {
+				// Empty board: nothing to author. Clear any stale content
+				// left on it (e.g. by an older binary that authored for this
+				// state) so the "a zero-capacity board holds no content"
+				// invariant holds at boot, not just on a runtime rotation
+				// into the empty state. NoticeboardContent is transient
+				// today, so this is normally a no-op — it fails closed if
+				// that changes.
+				if nc := world.NoticeboardContent[id]; nc != nil {
+					scan.clears = append(scan.clears, kickstartClear{id: id, atState: obj.CurrentState})
+				}
+				continue
+			}
 			if nc := world.NoticeboardContent[id]; nc != nil {
 				continue
 			}
-			blanks = append(blanks, kickstartBoard{
-				id:      id,
-				atState: obj.CurrentState,
-				label:   obj.EffectiveDisplayName(asset.Name),
+			scan.blanks = append(scan.blanks, kickstartBoard{
+				id:       id,
+				atState:  obj.CurrentState,
+				label:    obj.EffectiveDisplayName(asset.Name),
+				capacity: capacity,
 			})
 		}
-		return blanks, nil
+		return scan, nil
 	}})
 	if err != nil {
 		if ctx.Err() == nil {
@@ -149,17 +181,24 @@ func KickstartNoticeboards(ctx context.Context, w *sim.World, client llm.Client)
 		}
 		return
 	}
-	blanks, ok := res.([]kickstartBoard)
+	scan, ok := res.(kickstartScan)
 	if !ok {
 		log.Printf("cascade/noticeboard: unexpected kickstart result type %T", res)
 		return
 	}
-	if len(blanks) == 0 {
+	// Clear stale content on empty boards first (cheap, world-goroutine
+	// Commands), then author the blanks.
+	for _, c := range scan.clears {
+		if _, err := w.SendContext(ctx, sim.ClearNoticeboardContent(c.id, c.atState, time.Now())); err != nil && ctx.Err() == nil {
+			log.Printf("cascade/noticeboard: kickstart clear board %q state=%q: %v", c.id, c.atState, err)
+		}
+	}
+	if len(scan.blanks) == 0 {
 		return
 	}
-	log.Printf("cascade/noticeboard: kickstart authoring %d blank board(s)", len(blanks))
-	for _, b := range blanks {
-		go runNoticeboardAuthor(ctx, w, client, b.id, b.atState, b.label, "")
+	log.Printf("cascade/noticeboard: kickstart authoring %d blank board(s)", len(scan.blanks))
+	for _, b := range scan.blanks {
+		go runNoticeboardAuthor(ctx, w, client, b.id, b.atState, b.label, "", b.capacity)
 	}
 }
 
@@ -189,6 +228,15 @@ func handleNoticeboardStateChange(ctx context.Context, w *sim.World, evt sim.Eve
 	if !state.HasTag(sim.TagRotatable) || !state.HasTag(sim.TagNoticeBoard) {
 		return
 	}
+	capacity := sim.ContentCapacityForState(state)
+	if capacity <= 0 {
+		// Rotated to a zero-capacity (empty) board state — clear any prior
+		// content so the emptied board stops showing/voicing a stale notice
+		// (v1 ZBBS-112 behavior). Inline on the world goroutine (we're in a
+		// subscriber, like the crier-read branch); cheap, no LLM call.
+		sim.ClearNoticeboardContent(changed.ObjectID, changed.ToState, time.Now()).Fn(w)
+		return
+	}
 	var priorText string
 	if w.NoticeboardContent != nil {
 		if prior, ok := w.NoticeboardContent[changed.ObjectID]; ok && prior != nil {
@@ -196,13 +244,13 @@ func handleNoticeboardStateChange(ctx context.Context, w *sim.World, evt sim.Eve
 		}
 	}
 	boardLabel := obj.EffectiveDisplayName(asset.Name)
-	go runNoticeboardAuthor(ctx, w, client, changed.ObjectID, changed.ToState, boardLabel, priorText)
+	go runNoticeboardAuthor(ctx, w, client, changed.ObjectID, changed.ToState, boardLabel, priorText, capacity)
 }
 
 // runNoticeboardAuthor is the off-world goroutine body. Fetches a
 // fresh village snapshot, builds the prompt, calls salem-generic,
 // applies the result via SaveNoticeboardContent.
-func runNoticeboardAuthor(ctx context.Context, w *sim.World, client llm.Client, objectID sim.VillageObjectID, atState, boardLabel, priorText string) {
+func runNoticeboardAuthor(ctx context.Context, w *sim.World, client llm.Client, objectID sim.VillageObjectID, atState, boardLabel, priorText string, capacity int) {
 	// Cap the LLM-call budget so a wedged provider doesn't pin this
 	// goroutine forever.
 	callCtx, cancel := context.WithTimeout(ctx, noticeboardLLMTimeout)
@@ -224,12 +272,14 @@ func runNoticeboardAuthor(ctx context.Context, w *sim.World, client llm.Client, 
 		return
 	}
 
-	messages := buildNoticeboardPrompt(snap, boardLabel, priorText)
+	messages := buildNoticeboardPrompt(snap, boardLabel, priorText, capacity)
 	resp, err := client.Complete(callCtx, llm.Request{
 		Messages:    messages,
 		Model:       noticeboardLLMModel,
 		Temperature: 0.7,
-		MaxTokens:   200,
+		// Scale the budget to the board's line capacity — up to 4 short
+		// notices need more room than one. ~100 tokens/line plus a base.
+		MaxTokens:   noticeboardMaxTokens(capacity),
 		// Fresh scene per authoring call: memory-api's chat_messages
 		// history loader filters by scene_id when set, so each notice
 		// authoring is its own isolated conversation — without this,
@@ -254,6 +304,16 @@ func runNoticeboardAuthor(ctx context.Context, w *sim.World, client llm.Client, 
 	text = strings.TrimSpace(text)
 	if text == "" {
 		log.Printf("cascade/noticeboard: empty after unquote for %q state=%q", objectID, atState)
+		return
+	}
+
+	// Clamp to the board's capacity contract: at most N notice lines (one per
+	// sprite slip), each within the per-line cap, newline-separated. The model
+	// is asked for N lines but may over- or under-produce; this is the
+	// authoritative shaping before the content lands.
+	text = sim.ClampNoticeboardContent(text, capacity, sim.MaxNoticeboardLineLen)
+	if text == "" {
+		log.Printf("cascade/noticeboard: empty after clamp for %q state=%q", objectID, atState)
 		return
 	}
 
@@ -302,11 +362,21 @@ func runNoticeboardAuthor(ctx context.Context, w *sim.World, client llm.Client, 
 //     snapshot at all.
 //   - Roster (NPCs by structure) — same anti-surveillance posture
 //     ("Goodman X is at the smithy" is the exact anti-pattern).
-func buildNoticeboardPrompt(snap sim.VillageContext, boardLabel, priorText string) []llm.Message {
+func buildNoticeboardPrompt(snap sim.VillageContext, boardLabel, priorText string, capacity int) []llm.Message {
 	return []llm.Message{
-		{Role: llm.RoleSystem, Content: noticeboardSystemPrompt()},
-		{Role: llm.RoleUser, Content: buildNoticeboardUserPrompt(snap, boardLabel, priorText)},
+		{Role: llm.RoleSystem, Content: noticeboardSystemPrompt(capacity)},
+		{Role: llm.RoleUser, Content: buildNoticeboardUserPrompt(snap, boardLabel, priorText, capacity)},
 	}
+}
+
+// noticeboardMaxTokens scales the completion budget to the board's line
+// capacity — one short notice fits comfortably in ~200 tokens, and each
+// additional line needs roughly another 100.
+func noticeboardMaxTokens(capacity int) int {
+	if capacity < 1 {
+		capacity = 1
+	}
+	return 100 + 100*capacity
 }
 
 // noticeboardSystemPrompt is the static system message — role + genre
@@ -318,11 +388,14 @@ func buildNoticeboardPrompt(snap sim.VillageContext, boardLabel, priorText strin
 // shared/notes/codebase/salem/object-content-and-noticeboards
 // "Prompt content and voice"). Anti-pattern callouts are the
 // v1-hardened guard against surveillance-shaped prose.
-func noticeboardSystemPrompt() string {
+func noticeboardSystemPrompt(capacity int) string {
+	if capacity < 1 {
+		capacity = 1
+	}
 	return strings.Join([]string{
-		"You are composing a single notice for a noticeboard in a Salem, Massachusetts village in the year 1692.",
+		noticeboardIntroLine(capacity),
 		"",
-		"GENRES of notices that are appropriate (one notice falls into one genre):",
+		"GENRES of notices that are appropriate (each notice falls into one genre):",
 		"  - Civic announcements: town meetings, militia musters, sermon hours, court days, public fasts.",
 		"      Example: \"A town meeting is called for Friday next, at the meeting house, third hour after noon.\"",
 		"  - News of visitors arriving: a peddler, surgeon, preacher, or other traveller has come to the village.",
@@ -347,19 +420,52 @@ func noticeboardSystemPrompt() string {
 		"",
 		"VOICE:",
 		"  - The voice of a 1692 New England villager. Formal for civic announcements; plain for offerings and warnings.",
-		"  - One short sentence, no preamble, no salutation, no signature.",
+		noticeboardVoiceCountLine(capacity),
 		"  - No quotation marks around the notice itself.",
 		"",
-		"OUTPUT FORMAT: Return only the notice text itself, on a single line. No prefatory \"Here is the notice:\" or similar. No surrounding quotes.",
+		noticeboardOutputFormatLine(capacity),
 	}, "\n")
+}
+
+// noticeboardIntroLine is the capacity-aware opening of the system prompt —
+// singular for a one-line board, plural with the slot count otherwise.
+func noticeboardIntroLine(capacity int) string {
+	if capacity == 1 {
+		return "You are composing a single notice for a noticeboard in a Salem, Massachusetts village in the year 1692."
+	}
+	return fmt.Sprintf("You are composing %d distinct notices for a noticeboard in a Salem, Massachusetts village in the year 1692. The board has room for %d notices pinned together.", capacity, capacity)
+}
+
+// noticeboardVoiceCountLine is the VOICE bullet governing notice length.
+func noticeboardVoiceCountLine(capacity int) string {
+	if capacity == 1 {
+		return "  - One short sentence, no preamble, no salutation, no signature."
+	}
+	return "  - Each notice is one short sentence, no preamble, no salutation, no signature."
+}
+
+// noticeboardOutputFormatLine is the OUTPUT FORMAT instruction — one line vs.
+// exactly N lines, one notice per line.
+func noticeboardOutputFormatLine(capacity int) string {
+	if capacity == 1 {
+		return "OUTPUT FORMAT: Return only the notice text itself, on a single line. No prefatory \"Here is the notice:\" or similar. No surrounding quotes."
+	}
+	return fmt.Sprintf("OUTPUT FORMAT: Return exactly %d notices, one per line, each on its own line. No blank lines, no numbering, no bullet points, no prefatory text, and no surrounding quotes. Each notice stands alone and concerns a different matter.", capacity)
 }
 
 // buildNoticeboardUserPrompt renders the dynamic per-call context:
 // board label + curated village state + framing instruction.
-func buildNoticeboardUserPrompt(snap sim.VillageContext, boardLabel, priorText string) string {
+func buildNoticeboardUserPrompt(snap sim.VillageContext, boardLabel, priorText string, capacity int) string {
+	if capacity < 1 {
+		capacity = 1
+	}
 	var b strings.Builder
 
-	fmt.Fprintf(&b, "Compose a single notice for the board: %s.\n\n", strings.TrimSpace(boardLabel))
+	if capacity == 1 {
+		fmt.Fprintf(&b, "Compose a single notice for the board: %s.\n\n", strings.TrimSpace(boardLabel))
+	} else {
+		fmt.Fprintf(&b, "Compose %d notices for the board: %s.\n\n", capacity, strings.TrimSpace(boardLabel))
+	}
 
 	if len(snap.Visitors) > 0 {
 		b.WriteString("Visitors lately come to the village:\n")
@@ -406,7 +512,11 @@ func buildNoticeboardUserPrompt(snap sim.VillageContext, boardLabel, priorText s
 		b.WriteString("(Do not repeat or paraphrase the prior notice. Write something genuinely different.)\n\n")
 	}
 
-	b.WriteString("Now compose today's single notice for this board, drawing on the genre catalog and the village context above.")
+	if capacity == 1 {
+		b.WriteString("Now compose today's single notice for this board, drawing on the genre catalog and the village context above.")
+	} else {
+		fmt.Fprintf(&b, "Now compose today's %d notices for this board — one per line, each concerning a different matter — drawing on the genre catalog and the village context above.", capacity)
+	}
 	return b.String()
 }
 

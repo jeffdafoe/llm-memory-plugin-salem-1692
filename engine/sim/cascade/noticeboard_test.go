@@ -28,8 +28,14 @@ func buildNoticeboardCascadeWorld(t *testing.T) (*sim.World, func()) {
 			DefaultState: "blank",
 			RotationAlgo: sim.RotationAlgoDeterministic,
 			States: []sim.AssetState{
-				{ID: 30, State: "blank", Tags: []string{"rotatable", "notice-board"}},
-				{ID: 31, State: "posted", Tags: []string{"rotatable", "notice-board"}},
+				// "blank"/"posted" carry capacity 1 — the pre-456 single-notice
+				// behaviour the existing tests assert.
+				{ID: 30, State: "blank", Tags: []string{"rotatable", "notice-board", "content-capacity-1"}},
+				{ID: 31, State: "posted", Tags: []string{"rotatable", "notice-board", "content-capacity-1"}},
+				// "empty" carries no capacity tag (0) — the empty-board sprite that
+				// clears content on rotation. "three" holds 3 notices (multi-line).
+				{ID: 32, State: "empty", Tags: []string{"rotatable", "notice-board"}},
+				{ID: 33, State: "three", Tags: []string{"rotatable", "notice-board", "content-capacity-3"}},
 			},
 		},
 		"plain-thing": {
@@ -195,7 +201,7 @@ func TestRunNoticeboardAuthor_HappyPath(t *testing.T) {
 		t.Fatalf("set state: %v", err)
 	}
 
-	runNoticeboardAuthor(context.Background(), w, client, "board", "posted", "Notice Board", "")
+	runNoticeboardAuthor(context.Background(), w, client, "board", "posted", "Notice Board", "", 1)
 
 	if got := client.CallCount(); got != 1 {
 		t.Errorf("client.CallCount = %d, want 1", got)
@@ -247,8 +253,8 @@ func TestRunNoticeboardAuthor_MintsFreshSceneID(t *testing.T) {
 		t.Fatalf("set state: %v", err)
 	}
 
-	runNoticeboardAuthor(context.Background(), w, client, "board", "posted", "Notice Board", "")
-	runNoticeboardAuthor(context.Background(), w, client, "board", "posted", "Notice Board", "")
+	runNoticeboardAuthor(context.Background(), w, client, "board", "posted", "Notice Board", "", 1)
+	runNoticeboardAuthor(context.Background(), w, client, "board", "posted", "Notice Board", "", 1)
 
 	reqs := client.Requests()
 	if len(reqs) != 2 {
@@ -275,7 +281,7 @@ func TestRunNoticeboardAuthor_EmptyReply(t *testing.T) {
 	if _, err := w.Send(sim.SetVillageObjectState("board", "posted")); err != nil {
 		t.Fatalf("set state: %v", err)
 	}
-	runNoticeboardAuthor(context.Background(), w, client, "board", "posted", "Notice Board", "")
+	runNoticeboardAuthor(context.Background(), w, client, "board", "posted", "Notice Board", "", 1)
 
 	if got := readBoardContent(t, w, "board"); got != nil {
 		t.Errorf("content saved despite empty reply: %+v", got)
@@ -301,7 +307,7 @@ func TestRunNoticeboardAuthor_StaleStateDropsSave(t *testing.T) {
 	if _, err := w.Send(sim.SetVillageObjectState("board", "blank")); err != nil {
 		t.Fatalf("rotate: %v", err)
 	}
-	runNoticeboardAuthor(context.Background(), w, client, "board", "posted", "Notice Board", "")
+	runNoticeboardAuthor(context.Background(), w, client, "board", "posted", "Notice Board", "", 1)
 
 	if got := readBoardContent(t, w, "board"); got != nil {
 		t.Errorf("content saved despite stale state: %+v", got)
@@ -354,7 +360,7 @@ func TestBuildNoticeboardPrompt_IncludesVisitorsAndCatalog(t *testing.T) {
 		},
 		PriorAtmosphere: "The village rests under heavy mist.",
 	}
-	msgs := buildNoticeboardPrompt(snap, "The Notice Board", "Previous notice: a found shawl.")
+	msgs := buildNoticeboardPrompt(snap, "The Notice Board", "Previous notice: a found shawl.", 1)
 	if len(msgs) != 2 {
 		t.Fatalf("len(msgs) = %d, want 2", len(msgs))
 	}
@@ -392,7 +398,7 @@ func TestBuildNoticeboardPrompt_IncludesVisitorsAndCatalog(t *testing.T) {
 // carries the v1-hardened anti-surveillance instructions (the
 // fabrication-resistance core).
 func TestNoticeboardSystemPrompt_AntiSurveillance(t *testing.T) {
-	sys := noticeboardSystemPrompt()
+	sys := noticeboardSystemPrompt(1)
 	if !strings.Contains(sys, "DO NOT") {
 		t.Error("system prompt missing DO NOT anti-pattern callouts")
 	}
@@ -403,6 +409,108 @@ func TestNoticeboardSystemPrompt_AntiSurveillance(t *testing.T) {
 	// the load-bearing concrete examples).
 	if !strings.Contains(sys, "Goodman Reeves is at the forge") {
 		t.Error("system prompt missing the at-location surveillance example")
+	}
+}
+
+// TestRunNoticeboardAuthor_MultiLineCapacity (ZBBS-HOME-456): a board in a
+// capacity-3 state is authored as up to 3 newline-separated notices, the prompt
+// asks for 3, and an over-producing model is clamped down to 3.
+func TestRunNoticeboardAuthor_MultiLineCapacity(t *testing.T) {
+	w, _ := buildNoticeboardCascadeWorld(t)
+	stop := runNoticeboardCascadeWorld(t, w)
+	defer stop()
+
+	// Five lines back from the model — the capacity-3 clamp must keep 3.
+	client := llm.NewFakeClient(llm.ScriptedTurn{
+		Response: llm.Response{Content: "A town meeting is called for Friday next.\nWolves are seen upon the Andover road.\nA plain shawl was left at the meeting house.\nThe surgeon lodges at the Ordinary.\nHands are wanted at the Whittredge raising."},
+	})
+	if _, err := w.Send(sim.SetVillageObjectState("board", "three")); err != nil {
+		t.Fatalf("set state: %v", err)
+	}
+
+	runNoticeboardAuthor(context.Background(), w, client, "board", "three", "Notice Board", "", 3)
+
+	got := readBoardContent(t, w, "board")
+	if got == nil {
+		t.Fatal("content missing after multi-line authoring")
+	}
+	lines := strings.Split(got.Text, "\n")
+	if len(lines) != 3 {
+		t.Fatalf("stored %d lines, want 3 (capacity clamp):\n%s", len(lines), got.Text)
+	}
+	for i, ln := range lines {
+		if strings.TrimSpace(ln) == "" {
+			t.Errorf("line %d empty after clamp", i)
+		}
+	}
+	reqs := client.Requests()
+	if len(reqs) != 1 {
+		t.Fatalf("reqs = %d, want 1", len(reqs))
+	}
+	if !strings.Contains(reqs[0].Messages[0].Content, "exactly 3 notices") {
+		t.Errorf("system prompt missing the 3-notice output instruction; got:\n%s", reqs[0].Messages[0].Content)
+	}
+}
+
+// TestNoticeboardSubscriber_ClearsOnZeroCapacityState (ZBBS-HOME-456): rotating
+// a board to a state with no content-capacity tag clears any prior content and
+// does NOT spawn an authoring call (v1 cleared content on flip to an empty
+// board sprite).
+func TestNoticeboardSubscriber_ClearsOnZeroCapacityState(t *testing.T) {
+	w, _ := buildNoticeboardCascadeWorld(t)
+	client := llm.NewFakeClient() // empty script — a stray author would error
+	RegisterNoticeboard(context.Background(), w, client)
+	stop := runNoticeboardCascadeWorld(t, w)
+	defer stop()
+
+	// Seed content while the board sits in a capacity-1 state ("blank").
+	if _, err := w.Send(sim.SaveNoticeboardContent("board", "A shawl found at the meeting house.", "blank", time.Now())); err != nil {
+		t.Fatalf("seed content: %v", err)
+	}
+	// Rotate to the zero-capacity sprite — the subscriber clears inline.
+	if _, err := w.Send(sim.SetVillageObjectState("board", "empty")); err != nil {
+		t.Fatalf("flip to empty: %v", err)
+	}
+
+	deadline := time.After(2 * time.Second)
+	for readBoardContent(t, w, "board") != nil {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for content to clear on zero-capacity flip")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	time.Sleep(50 * time.Millisecond) // give any (buggy) author goroutine a beat
+	if got := client.CallCount(); got != 0 {
+		t.Errorf("CallCount = %d, want 0 (zero-capacity flip must not author)", got)
+	}
+}
+
+// TestKickstartNoticeboards_ClearsZeroCapacityBoard (ZBBS-HOME-456): a board
+// sitting in a zero-capacity state that still holds stale content has it cleared
+// at kickstart, with no authoring call — the boot-time half of the empty-board
+// invariant.
+func TestKickstartNoticeboards_ClearsZeroCapacityBoard(t *testing.T) {
+	w, _ := buildNoticeboardCascadeWorld(t)
+	stop := runNoticeboardCascadeWorld(t, w)
+	defer stop()
+
+	if _, err := w.Send(sim.SetVillageObjectState("board", "empty")); err != nil {
+		t.Fatalf("set empty state: %v", err)
+	}
+	if _, err := w.Send(sim.SaveNoticeboardContent("board", "A stale notice.", "empty", time.Now())); err != nil {
+		t.Fatalf("seed stale content: %v", err)
+	}
+
+	client := llm.NewFakeClient() // empty script — must not author
+	KickstartNoticeboards(context.Background(), w, client)
+
+	if got := readBoardContent(t, w, "board"); got != nil {
+		t.Errorf("content present after kickstart on zero-capacity board: %+v", got)
+	}
+	time.Sleep(50 * time.Millisecond) // surface any stray author goroutine
+	if calls := client.CallCount(); calls != 0 {
+		t.Errorf("CallCount = %d, want 0 (no authoring for empty board)", calls)
 	}
 }
 

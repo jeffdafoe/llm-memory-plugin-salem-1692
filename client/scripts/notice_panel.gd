@@ -192,15 +192,37 @@ func _set_title(display_name: String) -> void:
 
 
 func _set_content(content_text, content_posted_at) -> void:
-    if content_text == null or str(content_text) == "":
+    var rendered := "" if content_text == null else _render_notices(str(content_text))
+    if rendered == "":
         body_label.text = "(The board is bare.)"
         posted_label.text = ""
         return
-    body_label.text = str(content_text)
+    body_label.text = rendered
     if content_posted_at != null and str(content_posted_at) != "":
         posted_label.text = "Posted " + _format_posted_at(str(content_posted_at))
     else:
         posted_label.text = ""
+
+
+## Render the board's stored content for display. Content arrives as N
+## newline-separated notice lines (ZBBS-HOME-456: one line per slip the board
+## sprite depicts). A single notice renders as plain text; multiple notices
+## render as bulleted postings separated by a blank line, so the board reads as
+## several pinned slips rather than one run-on paragraph.
+func _render_notices(content_text: String) -> String:
+    var notices: Array[String] = []
+    for ln in content_text.split("\n", false):
+        var t: String = ln.strip_edges()
+        if t != "":
+            notices.append(t)
+    if notices.is_empty():
+        return ""
+    if notices.size() == 1:
+        return notices[0]
+    var bulleted: Array[String] = []
+    for n in notices:
+        bulleted.append("• " + n)
+    return "\n\n".join(bulleted)
 
 
 ## Light-touch formatter — content_posted_at arrives as RFC3339 from the

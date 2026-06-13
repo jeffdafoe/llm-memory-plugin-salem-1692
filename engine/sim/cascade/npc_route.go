@@ -5,6 +5,7 @@ import (
 	"log"
 	"math/rand"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
@@ -292,11 +293,7 @@ func handleActorArrivedAdvanceRoute(w *sim.World, evt sim.Event) {
 			content, present := w.NoticeboardContent[stop.ObjectID]
 			obj, hasObj := w.VillageObjects[stop.ObjectID]
 			if present && content != nil && content.Text != "" && hasObj && obj != nil && content.AtState == obj.CurrentState {
-				emitCmd := sim.EmitTownCrierAnnouncement(arrived.ActorID, content.Text, arrived.At)
-				if _, err := emitCmd.Fn(w); err != nil {
-					log.Printf("cascade/npc_route: town_crier announce (actor %q event %d): %v",
-						arrived.ActorID, arrived.EventID(), err)
-				}
+				voiceCrierNotices(w, arrived.ActorID, content.Text, arrived.At)
 			}
 		}
 	}
@@ -306,6 +303,58 @@ func handleActorArrivedAdvanceRoute(w *sim.World, evt sim.Event) {
 		log.Printf("cascade/npc_route: advance (actor %q event %d): %v",
 			arrived.ActorID, arrived.EventID(), err)
 	}
+}
+
+// crierNoticeBeatDelay spaces the crier's spoken notice lines so each board
+// notice lands as its own speech bubble and stays up long enough to read
+// before the next replaces it — the client shows a single bubble per speaker
+// (a fresh line replaces the prior) and scales its lifetime to text length, so
+// firing all notices at once would show only the last. A board is read twice a
+// day, so the cadence is deliberately unhurried.
+const crierNoticeBeatDelay = 4 * time.Second
+
+// voiceCrierNotices voices a (possibly multi-line) board aloud: the first
+// notice immediately (inline, on the world goroutine we're already on), each
+// subsequent notice one crierNoticeBeatDelay later via time.AfterFunc. The
+// delayed beats marshal back onto the world goroutine through SendContext and
+// are shutdown-guarded via the world's LifecycleContext — the same AfterFunc
+// pattern the silence/pay-ledger sweeps use. EmitTownCrierAnnouncement
+// re-checks the speaker each beat, so a crier that despawns or loses its
+// town-crier attribute mid-tour simply stops voicing.
+func voiceCrierNotices(w *sim.World, crierID sim.ActorID, content string, at time.Time) {
+	lines := splitNoticeLines(content)
+	if len(lines) == 0 {
+		return
+	}
+	if _, err := sim.EmitTownCrierAnnouncement(crierID, lines[0], at).Fn(w); err != nil {
+		log.Printf("cascade/npc_route: town_crier announce (actor %q): %v", crierID, err)
+	}
+	for i := 1; i < len(lines); i++ {
+		line := lines[i]
+		time.AfterFunc(time.Duration(i)*crierNoticeBeatDelay, func() {
+			ctx := w.LifecycleContext()
+			if ctx.Err() != nil {
+				return // shutdown raced the beat
+			}
+			if _, err := w.SendContext(ctx, sim.EmitTownCrierAnnouncement(crierID, line, time.Now())); err != nil && ctx.Err() == nil {
+				log.Printf("cascade/npc_route: town_crier delayed announce (actor %q): %v", crierID, err)
+			}
+		})
+	}
+}
+
+// splitNoticeLines splits stored multi-line board content into individual
+// trimmed, non-empty notice lines — the inverse of ClampNoticeboardContent's
+// newline join.
+func splitNoticeLines(content string) []string {
+	raw := strings.Split(content, "\n")
+	out := make([]string, 0, len(raw))
+	for _, line := range raw {
+		if t := strings.TrimSpace(line); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // handleActorMoveStoppedAdvanceRoute abandons a route when the routed actor's
