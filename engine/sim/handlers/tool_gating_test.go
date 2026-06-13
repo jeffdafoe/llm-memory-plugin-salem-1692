@@ -33,30 +33,28 @@ func specNameSet(specs []llm.ToolSpec) map[string]int {
 	return counts
 }
 
+// payOfferPayload builds a payload whose standing ledger view carries one
+// pending offer per supplied ledger id. Since ZBBS-HOME-453 the gate keys off
+// Payload.PayOffersForMe (the per-tick snap.PayLedger scan), not the consumed
+// warrant batch — so the fixture populates the view directly.
 func payOfferPayload(ledgers ...sim.LedgerID) perception.Payload {
-	var warrants []sim.WarrantMeta
+	var offers []sim.PayOfferWarrantReason
 	for _, id := range ledgers {
-		warrants = append(warrants, sim.WarrantMeta{
-			TriggerActorID: "bob",
-			Reason:         sim.PayOfferWarrantReason{LedgerID: id, Buyer: "bob", Item: "stew", Qty: 1, Amount: 5},
-		})
+		offers = append(offers, sim.PayOfferWarrantReason{LedgerID: id, Buyer: "bob", Item: "stew", Qty: 1, Amount: 5})
 	}
-	return perception.Payload{ActorID: "seller", Warrants: warrants}
+	return perception.Payload{ActorID: "seller", PayOffersForMe: offers}
 }
 
 // payOfferPayloadDepths builds a payload with one pending offer per supplied
 // depth (ledger ids assigned 1..n). Used by the scar-#4 counter-cap tests.
 func payOfferPayloadDepths(depths ...int) perception.Payload {
-	var warrants []sim.WarrantMeta
+	var offers []sim.PayOfferWarrantReason
 	for i, d := range depths {
-		warrants = append(warrants, sim.WarrantMeta{
-			TriggerActorID: "bob",
-			Reason: sim.PayOfferWarrantReason{
-				LedgerID: sim.LedgerID(i + 1), Buyer: "bob", Item: "stew", Qty: 1, Amount: 5, Depth: d,
-			},
+		offers = append(offers, sim.PayOfferWarrantReason{
+			LedgerID: sim.LedgerID(i + 1), Buyer: "bob", Item: "stew", Qty: 1, Amount: 5, Depth: d,
 		})
 	}
-	return perception.Payload{ActorID: "seller", Warrants: warrants}
+	return perception.Payload{ActorID: "seller", PayOffersForMe: offers}
 }
 
 // TestGateTools_NoOffer_DropsSellerResponseTools — with no pending offer in

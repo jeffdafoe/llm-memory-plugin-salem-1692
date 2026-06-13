@@ -243,6 +243,27 @@ type Payload struct {
 	// offers outstanding. Ordering: by LedgerID ascending for determinism.
 	PendingOffersFromMe []PendingOfferView
 
+	// PayOffersForMe lists the still-pending pay-with-item offers staked
+	// AGAINST the subject (entries where SellerID == subject and State ==
+	// Pending) — the standing seller-side decision view that drives the
+	// "## Offers awaiting your decision" section (renderPayOffers) and the
+	// accept_pay/decline_pay/counter_pay tool gate, via PendingPayOffers.
+	//
+	// Sourced from snap.PayLedger every tick, NOT from the consumed warrant
+	// batch (ZBBS-HOME-453): the PayOfferWarrant only wakes the seller's
+	// first tick and is consumed by it, so a seller who SPOKE through that
+	// tick instead of resolving used to lose both the cue and the response
+	// tools while the offer sat pending — a structural deadlock until the
+	// TTL sweep expired the entry (the 2026-06-12 Ellis meat negotiation).
+	// The ledger scan keeps cue + tools standing until the entry leaves
+	// Pending. Reuses sim.PayOfferWarrantReason as the projection shape —
+	// it carries exactly the offer terms render and gate need, and the
+	// restart re-stamp already projects entry → reason the same way.
+	//
+	// nil when nothing is pending against the subject. Ordering: by
+	// LedgerID ascending for determinism.
+	PayOffersForMe []sim.PayOfferWarrantReason
+
 	// LocalDateUTC is midnight UTC of the village's current calendar date,
 	// copied from Snapshot.LocalDateUTC. Render's order-book split
 	// (renderPendingDeliveries*) compares it against each OrderView.ReadyBy so

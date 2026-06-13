@@ -49,16 +49,23 @@ func Build(snap *sim.Snapshot, actorID sim.ActorID, warrants []sim.WarrantMeta) 
 	// consumes it; resolution stamps the BUYER, never the seller's standing
 	// warrant. So an offer that resolves out-of-band (buyer withdrew, TTL
 	// expired, or the seller was rest-gated and couldn't tick) before the
-	// seller consumes it would otherwise render a dead offer under "## Offers
-	// awaiting your decision" AND keep the accept/decline/counter tools gated
-	// open (both key off PayOfferWarrants). Build runs on the immutable
-	// snapshot, so checking live ledger state is race-free here — the renderer
-	// can't (it reads terms off the warrant payload by design). Filtering at
-	// Build is the single chokepoint that fixes render + tool-gate together.
+	// seller consumes it would otherwise render a dead "what just happened"
+	// line. Build runs on the immutable snapshot, so checking live ledger
+	// state is race-free here. (Since ZBBS-HOME-453 the decision section and
+	// the tool gate no longer read the warrant batch — see PayOffersForMe
+	// below — so this filter now only protects the generic warrant render.)
 	p.Warrants = filterStalePayOfferWarrants(p.Warrants, snap)
 
+	// ZBBS-HOME-453: the standing seller-side offer view, scanned from
+	// snap.PayLedger every tick. The warrant above only WAKES the seller's
+	// first tick; this scan is what keeps "## Offers awaiting your decision"
+	// and the accept/decline/counter tools present until the entry leaves
+	// Pending, so a seller who speaks through the warranted tick instead of
+	// resolving can still settle the offer on any later tick.
+	p.PayOffersForMe = buildPayOffersForMe(snap, actorID)
+
 	p.Actor = buildActorView(snap, actorSnap)
-	p.WarrantActorNames = buildWarrantActorNames(snap, actorSnap, actorID, p.Warrants)
+	p.WarrantActorNames = buildWarrantActorNames(snap, actorSnap, actorID, p.Warrants, p.PayOffersForMe)
 	p.WarrantPlaceNames = buildWarrantPlaceNames(snap, p.Warrants)
 	p.EatHereKinds = buildEatHereKinds(snap)
 	p.Surroundings = buildSurroundings(snap, actorID, actorSnap)
@@ -894,7 +901,7 @@ func buildEatHereKinds(snap *sim.Snapshot) map[sim.ItemKind]bool {
 // UUID into the "## What just happened" lines (ZBBS-HOME-339). The subject's
 // own ID is excluded — Render resolves self to "you". Returns nil when no
 // warrant references another actor (the common single-actor tick).
-func buildWarrantActorNames(snap *sim.Snapshot, subject *sim.ActorSnapshot, subjectID sim.ActorID, warrants []sim.WarrantMeta) map[sim.ActorID]string {
+func buildWarrantActorNames(snap *sim.Snapshot, subject *sim.ActorSnapshot, subjectID sim.ActorID, warrants []sim.WarrantMeta, payOffers []sim.PayOfferWarrantReason) map[sim.ActorID]string {
 	var names map[sim.ActorID]string
 	add := func(id sim.ActorID) {
 		if id == "" || id == subjectID {
@@ -934,6 +941,13 @@ func buildWarrantActorNames(snap *sim.Snapshot, subject *sim.ActorSnapshot, subj
 		case sim.PayResolvedWarrantReason:
 			add(r.Seller)
 		}
+	}
+	// The standing offer view renders buyers on ticks that carry no offer
+	// warrant (ZBBS-HOME-453), so their labels must resolve here too —
+	// otherwise renderPayOffers falls back to "someone" the moment the
+	// warranted tick has passed.
+	for _, o := range payOffers {
+		add(o.Buyer)
 	}
 	return names
 }
@@ -1706,6 +1720,65 @@ func buildPendingOffersFromMe(snap *sim.Snapshot, subject sim.ActorID, subjectSn
 		})
 	}
 	return views
+}
+
+// buildPayOffersForMe scans snap.PayLedger for the still-pending offers staked
+// AGAINST the subject — entries where the subject is the SELLER and the state
+// is Pending — and projects each to a sim.PayOfferWarrantReason for the
+// standing "## Offers awaiting your decision" section and the
+// accept/decline/counter tool gate (ZBBS-HOME-453).
+//
+// This is the seller-side counterpart to buildPendingOffersFromMe (the
+// buyer's HOME-413 scan), and it exists for the same reason: a warrant is a
+// one-shot wake-up, not cross-tick memory. The PayOfferWarrant is consumed by
+// the first tick it triggers, so a seller who speaks through that tick
+// instead of resolving used to lose the cue AND the response tools while the
+// offer sat pending — structurally unable to accept until the TTL sweep
+// expired the entry (the 2026-06-12 Ellis meat deadlock). The data comes
+// from the ledger, not the warrant, for exactly that reason.
+//
+// The projection mirrors restartReStampPayOfferWarrants' entry → reason
+// mapping. snap.PayLedger entries are deep-cloned at publish, so aliasing
+// PayItems / ConsumerIDs into the (read-only, per-tick) view is safe — same
+// posture as buildPendingOffersFromMe. Returns nil for no pending offers so
+// render and gate content-gate cheaply. Ordering: by LedgerID ascending,
+// deterministic across runs.
+func buildPayOffersForMe(snap *sim.Snapshot, subject sim.ActorID) []sim.PayOfferWarrantReason {
+	if snap == nil || len(snap.PayLedger) == 0 {
+		return nil
+	}
+	var ids []sim.LedgerID
+	for id, e := range snap.PayLedger {
+		if e == nil || e.State != sim.PayLedgerStatePending {
+			continue
+		}
+		if e.SellerID != subject {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+
+	offers := make([]sim.PayOfferWarrantReason, 0, len(ids))
+	for _, id := range ids {
+		e := snap.PayLedger[id]
+		offers = append(offers, sim.PayOfferWarrantReason{
+			LedgerID:    e.ID,
+			Buyer:       e.BuyerID,
+			Item:        e.ItemKind,
+			Qty:         e.Qty,
+			Amount:      e.Amount,
+			PayItems:    e.PayItems,
+			ConsumeNow:  e.ConsumeNow,
+			ConsumerIDs: e.ConsumerIDs,
+			ExpiresAt:   e.ExpiresAt,
+			Depth:       e.Depth,
+		})
+	}
+	return offers
 }
 
 // filterStalePayOfferWarrants removes PayOfferWarrantReason warrants whose
