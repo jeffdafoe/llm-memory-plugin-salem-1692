@@ -109,10 +109,27 @@ func Pay(buyerID ActorID, recipientName string, amount int, forText string, at t
 				)
 			}
 			if !ok {
-				return nil, fmt.Errorf(
-					"no one named %q in this conversation — re-check who is here before paying.",
-					recipientName,
-				)
+				// Reroute a workplace name to the worker (ZBBS-HOME-460). The
+				// buy cues name the structure ("buy from Ellis Farm"), so the
+				// model passes the building where the tool wants the co-present
+				// person. If exactly one peer here works at a structure by that
+				// name, pay them rather than rejecting and forcing a retry.
+				peerID, structureName, peerOK, peerAmbiguous := findHuddlePeerByWorkplaceName(w, buyerID, buyer.CurrentHuddleID, recipientName)
+				if peerAmbiguous {
+					return nil, fmt.Errorf(
+						"more than one person here works at %q — name the person you want to pay.",
+						recipientName,
+					)
+				}
+				if !peerOK {
+					return nil, fmt.Errorf(
+						"no one named %q in this conversation — re-check who is here before paying.",
+						recipientName,
+					)
+				}
+				sellerID = peerID
+				log.Printf("sim.Pay: rerouted payment from building %q to its worker %q (buyer %q)",
+					structureName, peerID, buyerID)
 			}
 			if sellerID == buyerID {
 				// Defensive — findHuddlePeerByDisplayName excludes the buyer
@@ -232,6 +249,114 @@ func findHuddlePeerByDisplayName(w *World, buyerID ActorID, huddleID HuddleID, n
 		return "", false, false
 	}
 	return found, true, false
+}
+
+// findHuddlePeerByWorkplaceName resolves a building/structure name to the
+// huddle peer who WORKS there — the reroute for when the model names a
+// vendor's workplace instead of the vendor (ZBBS-HOME-460). The buy cues
+// model "where to buy" as a place ("buy from Ellis Farm (structure_id: …)" —
+// a shop doesn't move, the vendor does), so the weak shared-NPC model
+// faithfully passes the structure's name where the tool wants the co-present
+// person (Elizabeth Ellis, who works the farm). Rather than reject and force
+// a retry, we map the place back to the worker standing in the conversation.
+//
+// Scope is the SAME safe set as findHuddlePeerByDisplayName: peers in the
+// buyer's own huddle only. A peer matches when its WorkStructureID resolves
+// to a Structure whose DisplayName equals `name` (case-insensitive). This
+// POSITIVELY identifies `name` as a present peer's workplace — so an absent
+// third party's name (or a typo) never silently routes a payment to whoever
+// happens to be standing here; only a real building kept by a real, present
+// worker matches.
+//
+// Returns (peerID, structureName, ok, ambiguous):
+//
+//   - (id, "<DisplayName>", true, false)  — exactly one present peer works at
+//     a structure named `name`, OR several work at the SAME such structure and
+//     exactly one of them owns it
+//   - ("", "", false, false)              — no present peer works at a place
+//     by that name (caller falls through to its person-not-found reject)
+//   - ("", "", false, true)               — ambiguous: present peers work at
+//     two DIFFERENT structures sharing this display name (a name is not a
+//     positive id of one building), or several share one structure and
+//     ownership can't break the tie; reject rather than route money
+//     non-deterministically
+//
+// Worker, not owner, is the base key: Ellis Farm carries no owner, yet
+// Elizabeth works it and is the real seller. Ownership only breaks a tie among
+// several hands at ONE structure (owner vs hired hand). Different buildings
+// that merely share a name are never resolved by ownership — that stays
+// ambiguous.
+func findHuddlePeerByWorkplaceName(w *World, buyerID ActorID, huddleID HuddleID, name string) (ActorID, string, bool, bool) {
+	target := strings.TrimSpace(name)
+	if target == "" {
+		return "", "", false, false
+	}
+	members, ok := w.actorsByHuddle[huddleID]
+	if !ok {
+		return "", "", false, false
+	}
+	var (
+		found            ActorID
+		foundStructName  string
+		foundIsOwner     bool
+		matchedStructure StructureID
+		sameStructure    = true
+		matchCount       int
+		ownerCount       int
+	)
+	for peerID := range members {
+		if peerID == buyerID {
+			continue
+		}
+		peer, ok := w.Actors[peerID]
+		if !ok || peer.WorkStructureID == "" {
+			continue
+		}
+		structure, ok := w.Structures[peer.WorkStructureID]
+		if !ok || !strings.EqualFold(structure.DisplayName, target) {
+			continue
+		}
+		// Track whether every match is the SAME structure. Two different
+		// buildings that merely share a display name are NOT a positive id of
+		// one place — that stays ambiguous even if one has an owner.
+		if matchCount == 0 {
+			matchedStructure = peer.WorkStructureID
+		} else if peer.WorkStructureID != matchedStructure {
+			sameStructure = false
+		}
+		matchCount++
+		// Within one matched structure, BusinessownerState marks its proprietor:
+		// the engine flags a structure's keeper as BusinessownerState != nil with
+		// WorkStructureID == that structure (arrival_business_huddle.go uses the
+		// same pairing). A hired hand has WorkStructureID set but no
+		// BusinessownerState. The owner-vs-hand tiebreak is only consulted in the
+		// same-structure switch case below, so this can't cross-attribute
+		// ownership from some other business.
+		isOwner := peer.BusinessownerState != nil
+		if isOwner {
+			ownerCount++
+		}
+		// Keep the best candidate, preferring an owner over a hired hand.
+		if found == "" || (isOwner && !foundIsOwner) {
+			found, foundStructName, foundIsOwner = peerID, structure.DisplayName, isOwner
+		}
+	}
+	switch {
+	case found == "":
+		return "", "", false, false
+	case matchCount == 1:
+		return found, foundStructName, true, false
+	case !sameStructure:
+		// Present peers work at two DIFFERENT structures sharing this name —
+		// reject rather than guess which building was meant.
+		return "", "", false, true
+	case ownerCount == 1 && foundIsOwner:
+		// Several hands at the SAME shop, exactly one its proprietor — the
+		// owner is the seller (the loop left `found` on that owner).
+		return found, foundStructName, true, false
+	default:
+		return "", "", false, true
+	}
 }
 
 // payFactText renders the SalientFact text for a pay write. Both sides use
