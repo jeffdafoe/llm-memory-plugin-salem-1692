@@ -433,7 +433,7 @@ func TestBuildRouteStops_GreedyNearestNeighbor(t *testing.T) {
 				{ObjectID: "far", NewState: "x", WorldX: 960, WorldY: 320},
 				{ObjectID: "near", NewState: "x", WorldX: 320, WorldY: 320},
 			}
-			stops := sim.BuildRouteStopsForTest(grid, sim.PadX+15, sim.PadY+15, cands)
+			stops := sim.BuildRouteStopsForTest(world, grid, sim.PadX+15, sim.PadY+15, cands)
 			return result{stops: stops}, nil
 		},
 	})
@@ -449,6 +449,46 @@ func TestBuildRouteStops_GreedyNearestNeighbor(t *testing.T) {
 	}
 	if got[1].ObjectID != "far" {
 		t.Errorf("second stop = %q, want far", got[1].ObjectID)
+	}
+}
+
+// TestBuildRouteStops_PrefersLoiterPin: a candidate whose object has a
+// resolvable, walkable loiter pin gets WalkTo == that pin, not merely a
+// tile abutting the object's footprint (ZBBS-HOME-458 — routing one tile
+// short of the pin jammed the town crier against a noticeboard in a
+// one-lane chokepoint a single passer-by could wedge). lamp-A (WorldPos
+// 640,320, asset "lamp": no door offset, footprint 0) resolves through
+// computeLoiterTile's footprint-fallback branch to anchor+(0,2), which on
+// the all-grass test terrain is walkable and reachable — so the pin wins
+// over the adjacent-tile fallback.
+func TestBuildRouteStops_PrefersLoiterPin(t *testing.T) {
+	w, cancel := buildRouteTestWorld(t)
+	defer cancel()
+
+	anchor := sim.WorldToTile(640, 320)
+	wantPin := sim.Position{X: anchor.X, Y: anchor.Y + 2}
+
+	res, err := w.Send(sim.Command{
+		Fn: func(world *sim.World) (any, error) {
+			grid, err := sim.BuildWalkGridForTest(world)
+			if err != nil {
+				return nil, err
+			}
+			cands := []sim.RouteCandidate{
+				{ObjectID: "lamp-A", NewState: "unlit", WorldX: 640, WorldY: 320},
+			}
+			return sim.BuildRouteStopsForTest(world, grid, sim.PadX+10, sim.PadY+10, cands), nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	stops := res.([]sim.RouteStop)
+	if len(stops) != 1 {
+		t.Fatalf("stops len = %d, want 1", len(stops))
+	}
+	if stops[0].WalkTo != wantPin {
+		t.Errorf("WalkTo = %+v, want loiter pin %+v", stops[0].WalkTo, wantPin)
 	}
 }
 

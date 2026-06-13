@@ -158,6 +158,17 @@ type MoveIntent struct {
 	// rather than hard-stopping it. See locomotion_ticker.go, ZBBS-WORK-340,
 	// and ZBBS-HOME-327 for the design.
 	StuckTicks int
+
+	// BestRemaining / NoProgressTicks drive the net-progress watchdog
+	// (ZBBS-HOME-458) — the livelock sibling of StuckTicks. BestRemaining is
+	// the smallest shortest-path tile-distance to the goal seen this intent
+	// (-1 = unset, stamped at construction). NoProgressTicks counts
+	// consecutive ticks the distance failed to beat that minimum. Where
+	// StuckTicks catches a mover that can't step at all, this catches a mover
+	// that steps every tick yet never gets closer — oscillating around a
+	// blocker the reroute keeps detouring past. See advanceActorLocomotion.
+	BestRemaining   int
+	NoProgressTicks int
 }
 
 // cloneMoveIntent deep-copies a MoveIntent (nil-safe). Wired into
