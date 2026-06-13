@@ -219,7 +219,7 @@ func StartNPCRoute(actorID ActorID, label string, homeDest MoveDestination, cand
 			if err != nil {
 				return StartNPCRouteResult{}, fmt.Errorf("build walk grid: %w", err)
 			}
-			stops := buildRouteStops(grid, actor.Pos.X, actor.Pos.Y, candidates)
+			stops := buildRouteStops(w, grid, actor.Pos.X, actor.Pos.Y, candidates)
 
 			// Whether or not we have any stops, an in-flight prior route
 			// is superseded. The supersede signal is the route start
@@ -543,12 +543,21 @@ func StampRouteBoundary(w *World, attrSlug string, boundary time.Time) {
 // buildRouteStops lays out an ordered nearest-neighbor walk over the
 // candidates from (startX, startY). At each step:
 //
-//   - Try every remaining candidate, using FindPathToAdjacent to find
-//     an adjacent walkable tile and the path length from the cursor.
-//   - Pick the candidate with the shortest path; record the chosen
-//     neighbor tile as the RouteStop's WalkTo; advance the cursor.
+//   - For every remaining candidate, resolve the tile the actor stands on
+//     to visit it (routeStopWalkTarget) and the path length to it from
+//     the cursor.
+//   - Pick the candidate with the shortest path; record its stand tile as
+//     the RouteStop's WalkTo; advance the cursor.
 //   - Unreachable candidates are skipped (no path → that candidate
 //     can't be visited this cycle).
+//
+// The stand tile prefers the object's loiter pin — the deliberate
+// standing tile the editor's green marker designates (e.g. the open tile
+// two south of a noticeboard) — over whatever walkable tile merely abuts
+// the footprint. Routing to the pin keeps a route off the cramped
+// one-lane tile jammed against an object's base, where a single passer-by
+// (the PC) could wedge the actor indefinitely (ZBBS-HOME-458). See
+// routeStopWalkTarget for the fallback.
 //
 // O(n²) FindPath calls in the worst case (n candidates, each iteration
 // scans the remainder). Fine for the dozen-or-so stops a village-scale
@@ -560,7 +569,10 @@ func StampRouteBoundary(w *World, attrSlug string, boundary time.Time) {
 // (lower index in the input) wins. Callers pre-sort candidates by
 // ObjectID before calling if they want deterministic tie-breaking
 // across runs.
-func buildRouteStops(grid *WalkGrid, startX, startY int, candidates []RouteCandidate) []RouteStop {
+//
+// MUST be called from inside a Command.Fn — routeStopWalkTarget reads
+// w.VillageObjects / w.Assets to resolve each candidate's loiter pin.
+func buildRouteStops(w *World, grid *WalkGrid, startX, startY int, candidates []RouteCandidate) []RouteStop {
 	if len(candidates) == 0 {
 		return nil
 	}
@@ -571,17 +583,16 @@ func buildRouteStops(grid *WalkGrid, startX, startY int, candidates []RouteCandi
 	stops := make([]RouteStop, 0, len(remaining))
 	for len(remaining) > 0 {
 		bestIdx := -1
-		bestNeighbor := GridPoint{}
+		bestWalkTo := GridPoint{}
 		bestLen := -1
 		for i, c := range remaining {
-			objTile := WorldToTile(c.WorldX, c.WorldY)
-			path, neighbor := FindPathToAdjacent(grid, cursor, objTile)
+			walkTo, path := routeStopWalkTarget(w, grid, cursor, c)
 			if path == nil {
 				continue
 			}
 			if bestLen < 0 || len(path) < bestLen {
 				bestIdx = i
-				bestNeighbor = neighbor
+				bestWalkTo = walkTo
 				bestLen = len(path)
 			}
 		}
@@ -591,11 +602,35 @@ func buildRouteStops(grid *WalkGrid, startX, startY int, candidates []RouteCandi
 		chosen := remaining[bestIdx]
 		stops = append(stops, RouteStop{
 			ObjectID: chosen.ObjectID,
-			WalkTo:   Position{X: bestNeighbor.X, Y: bestNeighbor.Y},
+			WalkTo:   Position{X: bestWalkTo.X, Y: bestWalkTo.Y},
 			NewState: chosen.NewState,
 		})
-		cursor = bestNeighbor
+		cursor = bestWalkTo
 		remaining = append(remaining[:bestIdx], remaining[bestIdx+1:]...)
 	}
 	return stops
+}
+
+// routeStopWalkTarget resolves the tile an actor stands on to visit a
+// route candidate, and the path to it from cursor (a nil path means the
+// candidate is unreachable this cycle — skip it). It prefers the object's
+// loiter pin — the tile visitors are meant to occupy
+// (effectiveObjectLoiterTile, the same pin the editor draws and
+// structure/object visitors ring) — and falls back to any walkable tile
+// adjacent to the object's footprint (FindPathToAdjacent, the prior
+// behaviour) when the object has no resolvable pin, the pin centre is
+// itself unwalkable (e.g. a well's centre), or the pin is unreachable
+// from the cursor this cycle.
+func routeStopWalkTarget(w *World, grid *WalkGrid, cursor GridPoint, c RouteCandidate) (GridPoint, []GridPoint) {
+	if pin, ok := effectiveObjectLoiterTile(w, c.ObjectID); ok {
+		pinPt := GridPoint{X: pin.X, Y: pin.Y}
+		if grid.CanWalk(pinPt.X, pinPt.Y) {
+			if path := FindPath(grid, cursor, pinPt); path != nil {
+				return pinPt, path
+			}
+		}
+	}
+	objTile := WorldToTile(c.WorldX, c.WorldY)
+	path, neighbor := FindPathToAdjacent(grid, cursor, objTile)
+	return neighbor, path
 }
