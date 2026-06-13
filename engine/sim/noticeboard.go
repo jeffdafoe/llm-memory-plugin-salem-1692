@@ -2,6 +2,7 @@ package sim
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -29,27 +30,104 @@ import (
 // suppression, no listener-specific recipients (atmospheric speech,
 // not interactive).
 //
+// Per-state content capacity (ZBBS-HOME-456, v1 ZBBS-112 parity): a board
+// state declares how many notice lines it holds via a content-capacity-N
+// asset_state_tag — the Notice Board asset's variant-2..5 carry
+// content-capacity-1..4, and variant-1 carries none (an empty board). The
+// authoring cascade sizes its request to the current state's capacity and
+// SaveNoticeboardContent stores N newline-separated lines, so the number of
+// notices shown matches the number depicted on the sprite. Rotating to a
+// zero-capacity state clears prior content (see ClearNoticeboardContent).
+//
 // What's deferred:
 //
-//   - Per-state content-capacity-N tags (v1's ZBBS-112 supported
-//     variable line counts; v2 MVP is single-line per state).
 //   - Per-instance noticeboard opt-in tag (v1's ZBBS-112 let admins
 //     opt specific placements in via village_object_tag; v2 MVP
 //     treats every rotatable + notice-board-tagged state as a
 //     content surface).
 //   - Concerns layer (v1's ZBBS-117 added a `{notice, concerns}` JSON
 //     envelope tying notices to named-entity facts; v2 MVP authors
-//     a flat string).
+//     flat lines).
 //   - NPC perception line for actors loitering at a noticeboard
 //     (v1's `noticeBoardLineForLoiterer`); will land with the
 //     loiter-perception slot.
 
-// MaxNoticeboardContentLen caps content text at write time to defend
-// downstream surfaces (Spoke event text, perception rendering)
-// against runaway LLM output that ignored the prompt's "one short
-// line" instruction. Rune-aware, mirrors MaxSalientFactTextLen's
-// posture but sized larger for a notice-line vs a per-fact excerpt.
-const MaxNoticeboardContentLen = 280
+// objectContentCapacityTagPrefix is the asset_state_tag prefix declaring how
+// many notice lines a board state holds. The suffix is the integer capacity,
+// parsed at lookup time (see ContentCapacityForState). Matches v1's ZBBS-112
+// tag form so the live asset data (variant-2..5 → content-capacity-1..4) is
+// reused as-is.
+const objectContentCapacityTagPrefix = "content-capacity-"
+
+// MaxNoticeboardLineLen caps each individual notice line (rune-aware). One
+// line is what the crier voices per beat and what a panel row renders, so the
+// per-line cap — not the total — is the defensive bound against a runaway
+// model line. Mirrors v1's per-line clamp.
+const MaxNoticeboardLineLen = 240
+
+// MaxNoticeboardContentLen caps the total stored content (all lines joined
+// with newlines). Sized to hold the maximum board capacity (4) of
+// MaxNoticeboardLineLen lines plus separators, with headroom. The authoring
+// cascade already clamps to the state's exact capacity via
+// ClampNoticeboardContent; this is the substrate's defensive backstop against
+// a caller that skips that clamp.
+const MaxNoticeboardContentLen = 1024
+
+// ContentCapacityForState returns the notice-line capacity declared by the
+// state's content-capacity-N tag, or 0 when the state carries no such tag (an
+// empty board). A missing, malformed, negative, or duplicated capacity tag is
+// treated as 0 — controlled reference data, but never panic on a bad tag.
+func ContentCapacityForState(state *AssetState) int {
+	if state == nil {
+		return 0
+	}
+	capacity, found := 0, 0
+	for _, t := range state.Tags {
+		if !strings.HasPrefix(t, objectContentCapacityTagPrefix) {
+			continue
+		}
+		n, err := strconv.Atoi(strings.TrimPrefix(t, objectContentCapacityTagPrefix))
+		if err != nil || n < 0 {
+			return 0
+		}
+		capacity = n
+		found++
+	}
+	if found != 1 {
+		return 0
+	}
+	return capacity
+}
+
+// ClampNoticeboardContent normalizes authored text to a board's capacity
+// contract: trims, splits on newlines, drops empty lines, caps the count to
+// maxLines, truncates each surviving line to maxLineLen runes (rune-aware so a
+// multi-byte sequence is never split), and rejoins with "\n". Returns "" when
+// nothing survives or maxLines <= 0. Port of v1's clampNoticeContent
+// (ZBBS-112): the stored shape is exactly N notice lines, one per sprite slip.
+func ClampNoticeboardContent(text string, maxLines, maxLineLen int) string {
+	if maxLines <= 0 {
+		return ""
+	}
+	lines := strings.Split(strings.TrimSpace(text), "\n")
+	out := make([]string, 0, maxLines)
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		if maxLineLen > 0 {
+			if runes := []rune(trimmed); len(runes) > maxLineLen {
+				trimmed = string(runes[:maxLineLen])
+			}
+		}
+		out = append(out, trimmed)
+		if len(out) == maxLines {
+			break
+		}
+	}
+	return strings.Join(out, "\n")
+}
 
 // NoticeboardContent is one board's authored prose at a given state.
 // AtState is the state name the content was authored for — the
@@ -131,6 +209,44 @@ func SaveNoticeboardContent(id VillageObjectID, text, atState string, at time.Ti
 	}
 }
 
+// ClearNoticeboardContent removes any stored content for a board, gated on the
+// object's CurrentState still matching atState (the same stale-guard
+// SaveNoticeboardContent uses). The authoring cascade calls this when a board
+// rotates to a zero-capacity state (the empty sprite) — v1 cleared prior
+// content on such a flip so an emptied board doesn't keep voicing/showing a
+// stale notice. Emits NoticeboardContentChanged with empty Text so the client
+// clears its panel. Returns Applied=false + "nothing_to_clear" when no content
+// was stored.
+//
+// MUST be invoked on the world goroutine.
+func ClearNoticeboardContent(id VillageObjectID, atState string, at time.Time) Command {
+	return Command{
+		Fn: func(w *World) (any, error) {
+			obj, ok := w.VillageObjects[id]
+			if !ok {
+				return SaveNoticeboardContentResult{Applied: false, SkipReason: "not_found"}, nil
+			}
+			if obj.CurrentState != atState {
+				return SaveNoticeboardContentResult{Applied: false, SkipReason: "stale_state"}, nil
+			}
+			if w.NoticeboardContent == nil {
+				return SaveNoticeboardContentResult{Applied: false, SkipReason: "nothing_to_clear"}, nil
+			}
+			if _, present := w.NoticeboardContent[id]; !present {
+				return SaveNoticeboardContentResult{Applied: false, SkipReason: "nothing_to_clear"}, nil
+			}
+			delete(w.NoticeboardContent, id)
+			w.emit(&NoticeboardContentChanged{
+				ObjectID: id,
+				Text:     "",
+				PostedAt: at,
+				At:       at,
+			})
+			return SaveNoticeboardContentResult{Applied: true}, nil
+		},
+	}
+}
+
 // EmitTownCrierAnnouncementResult is the typed reply from
 // EmitTownCrierAnnouncement. Fired=true iff a Spoke event was
 // emitted; SkipReason describes the "not fired" cases:
@@ -152,10 +268,11 @@ type EmitTownCrierAnnouncementResult struct {
 // stamped); HuddleID is empty (outdoor). The standard Spoke
 // subscribers handle ActionLog + downstream propagation.
 //
-// Content is trimmed + rune-truncated to MaxNoticeboardContentLen
-// (mirrors SaveNoticeboardContent's defensive cap; the typical caller
-// pulls from NoticeboardContent which is already capped, but the
-// guard defends against future authoring paths that skip the cap).
+// Content is one notice line — the crier voices a multi-line board one
+// line per call (each its own Spoke beat). It is trimmed + rune-truncated
+// to MaxNoticeboardLineLen (the per-line bound; the typical caller passes a
+// single ClampNoticeboardContent line which is already within it, but the
+// guard defends against callers that skip that clamp).
 //
 // Speaker MUST carry AttrTownCrier — this Command is the engine-
 // authored town crier voice, NOT a general atmospheric speech
@@ -175,8 +292,8 @@ func EmitTownCrierAnnouncement(speakerID ActorID, content string, at time.Time) 
 			if trimmed == "" {
 				return EmitTownCrierAnnouncementResult{Fired: false, SkipReason: "empty_content"}, nil
 			}
-			if runes := []rune(trimmed); len(runes) > MaxNoticeboardContentLen {
-				trimmed = string(runes[:MaxNoticeboardContentLen])
+			if runes := []rune(trimmed); len(runes) > MaxNoticeboardLineLen {
+				trimmed = string(runes[:MaxNoticeboardLineLen])
 			}
 			actor, ok := w.Actors[speakerID]
 			if !ok || actor == nil {

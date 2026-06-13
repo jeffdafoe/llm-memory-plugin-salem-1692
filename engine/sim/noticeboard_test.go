@@ -340,6 +340,96 @@ func TestEmitTownCrierAnnouncement_SpeakerNotTownCrier(t *testing.T) {
 	}
 }
 
+// TestContentCapacityForState (ZBBS-HOME-456): a content-capacity-N tag parses
+// to N; no tag / malformed / negative / duplicate / nil all yield 0.
+func TestContentCapacityForState(t *testing.T) {
+	cases := []struct {
+		name  string
+		state *sim.AssetState
+		want  int
+	}{
+		{"nil state", nil, 0},
+		{"no capacity tag", &sim.AssetState{Tags: []string{"rotatable", "notice-board"}}, 0},
+		{"capacity 1", &sim.AssetState{Tags: []string{"notice-board", "content-capacity-1"}}, 1},
+		{"capacity 4", &sim.AssetState{Tags: []string{"content-capacity-4"}}, 4},
+		{"capacity 0 explicit", &sim.AssetState{Tags: []string{"content-capacity-0"}}, 0},
+		{"malformed suffix", &sim.AssetState{Tags: []string{"content-capacity-x"}}, 0},
+		{"negative", &sim.AssetState{Tags: []string{"content-capacity--2"}}, 0},
+		{"duplicate tags", &sim.AssetState{Tags: []string{"content-capacity-2", "content-capacity-3"}}, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := sim.ContentCapacityForState(c.state); got != c.want {
+				t.Errorf("ContentCapacityForState = %d, want %d", got, c.want)
+			}
+		})
+	}
+}
+
+// TestClampNoticeboardContent (ZBBS-HOME-456): splits on newlines, drops blank
+// lines, caps the line count to maxLines, truncates each line to maxLineLen
+// runes, rejoins with "\n".
+func TestClampNoticeboardContent(t *testing.T) {
+	if got := sim.ClampNoticeboardContent("a\nb\n\n  \nc\nd\ne", 3, 240); got != "a\nb\nc" {
+		t.Errorf("over-count clamp = %q, want %q", got, "a\nb\nc")
+	}
+	if got := sim.ClampNoticeboardContent(strings.Repeat("x", 300), 2, 10); got != strings.Repeat("x", 10) {
+		t.Errorf("per-line truncation = %q, want 10 runes", got)
+	}
+	if got := sim.ClampNoticeboardContent("   \n  \n", 3, 240); got != "" {
+		t.Errorf("blank input = %q, want empty", got)
+	}
+	if got := sim.ClampNoticeboardContent("a\nb", 0, 240); got != "" {
+		t.Errorf("zero maxLines = %q, want empty", got)
+	}
+}
+
+// TestClearNoticeboardContent (ZBBS-HOME-456): clears stored content, emits a
+// NoticeboardContentChanged with empty Text, honours the stale-state guard, and
+// reports nothing_to_clear when there's nothing stored.
+func TestClearNoticeboardContent(t *testing.T) {
+	w, evtRec, _, stop := buildNoticeboardTestWorld(t)
+	defer stop()
+
+	now := time.Now()
+	if _, err := w.Send(sim.SaveNoticeboardContent("board", "A notice.", "blank", now)); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Stale atState → not cleared, content remains.
+	res, _ := w.Send(sim.ClearNoticeboardContent("board", "posted", now))
+	if r := res.(sim.SaveNoticeboardContentResult); r.Applied || r.SkipReason != "stale_state" {
+		t.Errorf("stale clear = %+v, want Applied=false stale_state", r)
+	}
+	if readNoticeboardContent(t, w, "board") == nil {
+		t.Fatal("content gone after stale clear (should remain)")
+	}
+
+	// Matching atState → cleared.
+	res, _ = w.Send(sim.ClearNoticeboardContent("board", "blank", now))
+	if r := res.(sim.SaveNoticeboardContentResult); !r.Applied {
+		t.Errorf("clear = %+v, want Applied=true", r)
+	}
+	if got := readNoticeboardContent(t, w, "board"); got != nil {
+		t.Errorf("content present after clear: %+v", got)
+	}
+	var sawEmpty bool
+	for _, e := range evtRec.collectContent() {
+		if e.ObjectID == "board" && e.Text == "" {
+			sawEmpty = true
+		}
+	}
+	if !sawEmpty {
+		t.Error("no empty-Text NoticeboardContentChanged emitted on clear")
+	}
+
+	// Second clear → nothing_to_clear.
+	res, _ = w.Send(sim.ClearNoticeboardContent("board", "blank", now))
+	if r := res.(sim.SaveNoticeboardContentResult); r.Applied || r.SkipReason != "nothing_to_clear" {
+		t.Errorf("re-clear = %+v, want Applied=false nothing_to_clear", r)
+	}
+}
+
 // --- helpers ---
 
 type eventRecorder struct {
