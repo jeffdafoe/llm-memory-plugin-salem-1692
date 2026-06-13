@@ -7,12 +7,15 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
 
-// pay_offer_pending_test.go — ZBBS-HOME-413. Two surfaces:
+// pay_offer_pending_test.go — ZBBS-HOME-413 + ZBBS-HOME-453. Three surfaces:
 //   - the buyer-side "## Offers you have standing" cue (buildPendingOffersFromMe +
-//     renderPendingOffersFromMe), the cross-tick repeat-offer-storm fix; and
-//   - filterStalePayOfferWarrants, which drops a seller's standing pay-offer
-//     warrant once its ledger entry has resolved (so a dead offer stops
-//     rendering as "awaiting your decision" and gating the response tools).
+//     renderPendingOffersFromMe), the cross-tick repeat-offer-storm fix;
+//   - filterStalePayOfferWarrants, which drops a seller's pay-offer warrant
+//     once its ledger entry has resolved (so a dead offer doesn't render a
+//     stale "what just happened" line); and
+//   - the seller-side standing offer view (buildPayOffersForMe), the
+//     cross-tick "## Offers awaiting your decision" + response-tool source —
+//     the seller deadlock fix.
 //
 // The fixture mirrors the live incident: Prudence Ward (buyer) staking
 // pay-with-item offers against Elizabeth Ellis (seller).
@@ -93,7 +96,8 @@ func TestBuildPendingOffersFromMe_AcquaintedUsesDisplayName(t *testing.T) {
 
 // The SELLER an offer is staked against does NOT get a "your pending offers"
 // view — those are offers staked by the buyer. The seller learns of them via
-// the seller-side warrant path (renderPayOffers), not this one.
+// the standing seller-side view (buildPayOffersForMe → renderPayOffers), not
+// this one.
 func TestBuildPendingOffersFromMe_SellerSubjectGetsNone(t *testing.T) {
 	snap := offerSnap(map[sim.LedgerID]*sim.PayLedgerEntry{
 		236: offerEntry(236, "prudence", "elizabeth", "meat", 10, 48, sim.PayLedgerStatePending),
@@ -250,7 +254,7 @@ func TestFilterStalePayOfferWarrants_NoStaleReturnsInput(t *testing.T) {
 }
 
 // Wired into Build: a seller carrying a standing pay-offer warrant whose entry
-// has resolved no longer sees it via PayOfferWarrants (so renderPayOffers and
+// has resolved no longer sees it via PendingPayOffers (so renderPayOffers and
 // the tool gate both stop treating the dead offer as actionable).
 func TestBuild_DropsResolvedSellerOfferWarrant(t *testing.T) {
 	snap := offerSnap(map[sim.LedgerID]*sim.PayLedgerEntry{
@@ -258,8 +262,8 @@ func TestBuild_DropsResolvedSellerOfferWarrant(t *testing.T) {
 	})
 	warrants := []sim.WarrantMeta{payOfferWarrant(236, "prudence", "meat", 10, 48, false)}
 	p := Build(snap, "elizabeth", warrants)
-	if got := PayOfferWarrants(p); len(got) != 0 {
-		t.Errorf("PayOfferWarrants = %d, want 0 (resolved offer filtered at Build)", len(got))
+	if got := PendingPayOffers(p); len(got) != 0 {
+		t.Errorf("PendingPayOffers = %d, want 0 (resolved offer absent from the ledger scan)", len(got))
 	}
 	out := combinedPrompt(Render(p, DefaultRenderConfig()))
 	if strings.Contains(out, "## Offers awaiting your decision") {
@@ -274,7 +278,71 @@ func TestBuild_KeepsPendingSellerOfferWarrant(t *testing.T) {
 	})
 	warrants := []sim.WarrantMeta{payOfferWarrant(236, "prudence", "meat", 10, 48, false)}
 	p := Build(snap, "elizabeth", warrants)
-	if got := PayOfferWarrants(p); len(got) != 1 {
-		t.Fatalf("PayOfferWarrants = %d, want 1 (pending offer retained)", len(got))
+	if got := PendingPayOffers(p); len(got) != 1 {
+		t.Fatalf("PendingPayOffers = %d, want 1 (pending offer retained)", len(got))
+	}
+}
+
+// --- Part 4: standing seller-side offer view (ZBBS-HOME-453) ---------------
+
+// buildPayOffersForMe scans the ledger for offers staked AGAINST the subject:
+// pending only, seller-match only, LedgerID-ascending, terms + Depth projected.
+func TestBuildPayOffersForMe_ScanShape(t *testing.T) {
+	ledger := map[sim.LedgerID]*sim.PayLedgerEntry{
+		237: offerEntry(237, "prudence", "elizabeth", "meat", 10, 48, sim.PayLedgerStatePending),
+		235: offerEntry(235, "mary", "elizabeth", "cheese", 2, 9, sim.PayLedgerStatePending),
+		236: offerEntry(236, "prudence", "elizabeth", "meat", 5, 20, sim.PayLedgerStateDeclined), // terminal → out
+		238: offerEntry(238, "elizabeth", "prudence", "herbs", 1, 3, sim.PayLedgerStatePending),  // elizabeth is BUYER → out
+	}
+	ledger[237].Depth = 1
+	snap := offerSnap(ledger)
+
+	offers := buildPayOffersForMe(snap, "elizabeth")
+	if len(offers) != 2 {
+		t.Fatalf("offers = %+v, want the two pending entries staked against elizabeth", offers)
+	}
+	if offers[0].LedgerID != 235 || offers[1].LedgerID != 237 {
+		t.Errorf("ledger ids = %d, %d; want 235, 237 (ascending)", offers[0].LedgerID, offers[1].LedgerID)
+	}
+	if offers[0].Buyer != "mary" || offers[0].Item != "cheese" || offers[0].Qty != 2 || offers[0].Amount != 9 {
+		t.Errorf("offer terms not projected: %+v", offers[0])
+	}
+	if offers[1].Depth != 1 {
+		t.Errorf("Depth = %d, want 1 (the counter-cap tool gate reads it)", offers[1].Depth)
+	}
+
+	if got := buildPayOffersForMe(nil, "elizabeth"); got != nil {
+		t.Errorf("nil snap: got %v, want nil", got)
+	}
+	if got := buildPayOffersForMe(snap, "mary"); got != nil {
+		t.Errorf("non-seller subject: got %v, want nil", got)
+	}
+}
+
+// The ZBBS-HOME-453 regression, end-to-end through Build+Render: a seller
+// tick with NO pay-offer warrant (it was consumed by an earlier tick the
+// model spent speaking — the 06-12 Ellis meat deadlock) still gets the full
+// decision section, with the buyer's label resolved off the standing view
+// rather than the warrant batch.
+func TestBuild_StandingOfferSurvivesConsumedWarrant(t *testing.T) {
+	snap := offerSnap(map[sim.LedgerID]*sim.PayLedgerEntry{
+		259: offerEntry(259, "prudence", "elizabeth", "meat", 25, 248, sim.PayLedgerStatePending),
+	})
+	p := Build(snap, "elizabeth", nil) // empty consumed batch — the warrant is gone
+	if got := PendingPayOffers(p); len(got) != 1 || got[0].LedgerID != 259 {
+		t.Fatalf("PendingPayOffers = %+v, want the standing ledger-259 offer", got)
+	}
+	out := combinedPrompt(Render(p, DefaultRenderConfig()))
+	for _, must := range []string{
+		"## Offers awaiting your decision",
+		"offer id 259",
+		"248 coins",
+		"25 meat",
+		"the apothecary", // buyer label resolved without a warrant (elizabeth doesn't know prudence)
+		"Respond first with accept_pay",
+	} {
+		if !strings.Contains(out, must) {
+			t.Errorf("warrant-less seller tick missing %q\n--- output ---\n%s", must, out)
+		}
 	}
 }
