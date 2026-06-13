@@ -1240,9 +1240,14 @@ func renderDiff(d *Diff) string {
 // Until HOME-453 this read the consumed warrant batch instead — which gave
 // the seller exactly ONE tick with the cue and the tools (the warrant is
 // consumed by the tick it triggers), and a seller who spoke through it was
-// locked out of resolving until the TTL sweep expired the offer. A non-empty
-// result means "this actor is the seller of one or more pending offers
-// awaiting their decision", on every tick that's true.
+// locked out of resolving until the TTL sweep expired the offer.
+//
+// Contract: the "these offers are pending against p.ActorID as seller"
+// invariant is established by Build (buildPayOffersForMe filters on
+// SellerID == subject and State == Pending); this accessor trusts the
+// field and does not re-verify it — the projection shape carries no
+// SellerID to verify against. A payload assembled outside Build (tests)
+// is responsible for honoring that invariant itself.
 func PendingPayOffers(p Payload) []sim.PayOfferWarrantReason {
 	return p.PayOffersForMe
 }
