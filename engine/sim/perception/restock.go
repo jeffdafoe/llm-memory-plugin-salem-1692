@@ -2,6 +2,7 @@ package perception
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 
@@ -32,6 +33,11 @@ import (
 // empty Items) means render omits the section.
 type RestockingView struct {
 	Items []RestockItemView
+
+	// BuyerCoins is the reseller's coin balance at build time. Rendered into the
+	// per-item affordability fact (ZBBS-HOME-459) when coins are the binding
+	// limit — see RestockItemView.AffordableQty.
+	BuyerCoins int
 }
 
 // RestockItemView is one low `buy` item the reseller could replenish: its label,
@@ -55,6 +61,15 @@ type RestockItemView struct {
 	// when the imperative must become concrete. Empty when no seller of the item
 	// is co-present (then the walk-to list renders as before).
 	CoPresentSeller string
+
+	// AffordableQty is how many units the reseller's purse covers at the rate
+	// they last paid for this item (newest price-book observation, across all
+	// sellers). -1 when no price is on record, in which case the
+	// affordability fact stays silent (ZBBS-HOME-459 — the buyer-purse mirror of
+	// the WORK-392 sufficiency fact). Render shows it only when coins bind before
+	// the cap (AffordableQty < headroom), so a purse that comfortably covers the
+	// headroom adds no line.
+	AffordableQty int
 
 	// kind is the final sort tie-break so two item kinds sharing a display label
 	// order deterministically (BuyEntries order is stable, but the sort makes the
@@ -105,12 +120,20 @@ func buildRestocking(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 		if !sim.RestockReorderThresholdMet(current, cap, pct) {
 			continue
 		}
+		// Coins-bound the buy plan (ZBBS-HOME-459). -1 (no price on record)
+		// leaves the fact silent; render further gates it to the case where coins
+		// bind before the cap.
+		affordable := -1
+		if qty, ok := buyerLastPaidAffordableQty(snap, actorID, e.Item, actorSnap.Coins); ok {
+			affordable = qty
+		}
 		items = append(items, RestockItemView{
 			ItemLabel:       itemDisplayLabel(snap, e.Item),
 			CurrentQty:      current,
 			Cap:             cap,
 			Vendors:         findItemVendors(snap, actorID, actorSnap, e.Item),
 			CoPresentSeller: coPresentSellerForItem(snap, actorID, actorSnap, e.Item),
+			AffordableQty:   affordable,
 			kind:            e.Item,
 		})
 	}
@@ -126,7 +149,69 @@ func buildRestocking(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.Act
 		}
 		return items[i].kind < items[j].kind
 	})
-	return &RestockingView{Items: items}
+	return &RestockingView{Items: items, BuyerCoins: actorSnap.Coins}
+}
+
+// buyerLastPaidAffordableQty returns how many units `coins` covers at the
+// buyer's most recent accepted purchase RATE for `item` (across all sellers) in
+// the snapshot's PriceBook, and whether any such observation exists. The numeric
+// sibling of buyerLastPaidText (recovery_options.go): that renders a per-seller
+// bundle "~N coins" hint; this answers "how many can my purse cover" for the
+// restock affordability fact. Price knowledge is per-buyer — a buyer who has
+// never bought the item gets ok=false and the fact stays silent. Perception runs
+// off the world goroutine, so it reads Snapshot.PriceBook, not the live World
+// accessor.
+//
+// The affordable count is computed straight from the observed bundle ratio
+// (coins * units / bundlePrice), NOT via an intermediate floored unit price —
+// flooring the unit price first OVERSTATES the count (last paid 5 coins for 2
+// units floors to 2/unit, so 9 coins reads as 4 affordable when the true ratio
+// covers only 3), which is exactly the over-promise this cue exists to prevent
+// (code_review). int64 throughout guards the multiply-before-divide on a 32-bit
+// int build; the result is clamped into int range.
+func buyerLastPaidAffordableQty(snap *sim.Snapshot, buyerID sim.ActorID, item sim.ItemKind, coins int) (int, bool) {
+	if snap == nil || snap.PriceBook == nil {
+		return 0, false
+	}
+	var newest sim.PriceObservation
+	var newestSeller sim.ActorID
+	found := false
+	for key, buf := range snap.PriceBook {
+		if key.Item != item || buf == nil || buf.Len() == 0 {
+			continue
+		}
+		// Snapshot() is oldest-first; keep the globally newest match for the buyer
+		// across every seller's ring. On an exact-timestamp tie, the lowest seller
+		// id wins so the pick is deterministic regardless of map-iteration order
+		// (code_review).
+		for _, obs := range buf.Snapshot() {
+			if obs.BuyerID != buyerID {
+				continue
+			}
+			if !found || obs.At.After(newest.At) ||
+				(obs.At.Equal(newest.At) && key.SellerID < newestSeller) {
+				newest = obs
+				newestSeller = key.SellerID
+				found = true
+			}
+		}
+	}
+	if !found || newest.Amount < 1 {
+		return 0, false
+	}
+	consumers := newest.Consumers
+	if consumers < 1 {
+		consumers = 1
+	}
+	units := int64(newest.Qty) * int64(consumers)
+	if units < 1 {
+		return 0, false
+	}
+	affordable := int64(coins) * units / int64(newest.Amount)
+	if affordable > int64(math.MaxInt32) {
+		affordable = int64(math.MaxInt32)
+	}
+	return int(affordable), true
 }
 
 // findItemVendors resolves the suppliers selling itemKind, ONE cue per workplace
@@ -257,6 +342,20 @@ func renderRestocking(b *strings.Builder, v *RestockingView) {
 		}
 		fmt.Fprintf(b, "- %s: %d on hand of %d cap (room for %d more).",
 			sanitizeInline(it.ItemLabel), it.CurrentQty, it.Cap, headroom)
+		// ZBBS-HOME-459: when the reseller's purse covers fewer units than the cap
+		// leaves room for, coins are the binding limit — state it as a fact so the
+		// model sizes the buy to the purse instead of the headroom and then
+		// over-offers (the John Ellis 25-meat-on-248-coins case). Gated to a known
+		// unit price (AffordableQty >= 0) AND coins binding before the cap
+		// (AffordableQty < headroom); a purse that covers the headroom adds
+		// nothing. The wording carries no "ask"/"price"/"cost" token, staying
+		// clear of the HOME-386 speaking-loop trap — and the walk-to vendor list
+		// below already prints a numeric "~N coins" hint, so a bare purse fact is
+		// consistent with the cue. The "can't afford even one" case (AffordableQty
+		// 0) stays silent; the pay_with_item rejection steer catches an attempt.
+		if it.AffordableQty >= 1 && it.AffordableQty < headroom {
+			fmt.Fprintf(b, " Your %d coins cover about %d at what you last paid.", v.BuyerCoins, it.AffordableQty)
+		}
 		// A seller of this item is in the conversation right now: give the exact
 		// pay_with_item call and skip the walk-to list — he is already there.
 		if it.CoPresentSeller != "" {

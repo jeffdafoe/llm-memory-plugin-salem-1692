@@ -623,7 +623,7 @@ func PayWithItem(
 			// acceptance. A pending offer staked against an on-break or
 			// out-of-stock seller is harmless — it resolves at accept
 			// time, or is withdrawn / expires first.
-			if err := payOfferShortfall(buyer, amount, resolvedPayItems); err != nil {
+			if err := payOfferShortfall(buyer, amount, qty, resolvedPayItems); err != nil {
 				return nil, err
 			}
 
@@ -1551,11 +1551,31 @@ func buyerHoldsPayItems(buyer *Actor, payItems []ItemKindQty) bool {
 // The offer-time fast-fail (mint + fast-path) — an OPTIMIZATION that
 // spares a wasted seller deliberation tick, not a reservation. Coins are
 // reported first, then the first goods line short. ZBBS-HOME-393.
-func payOfferShortfall(buyer *Actor, amount int, payItems []ItemKindQty) error {
+func payOfferShortfall(buyer *Actor, amount, qty int, payItems []ItemKindQty) error {
 	if !buyerCanAfford(buyer, amount) {
+		// Name the quantity the purse actually covers at the offered unit price,
+		// so the model lowers the QUANTITY rather than just the coins
+		// (ZBBS-HOME-459). The old "offer fewer coins" steer pointed at the wrong
+		// lever: the buyer dropped coins, kept the quantity, and re-offered
+		// underpriced (the John Ellis 25-meat-on-248-coins case). amount>=1 here
+		// (amount==0 can't be unaffordable) and qty>=1 (validated upstream).
+		// Multiply before dividing to keep the floor honest; int64 guards the
+		// product against overflow on a 32-bit int build, clamped back into int
+		// range (code_review).
+		affordable64 := int64(buyer.Coins) * int64(qty) / int64(amount)
+		if affordable64 > int64(math.MaxInt32) {
+			affordable64 = int64(math.MaxInt32)
+		}
+		affordable := int(affordable64)
+		if affordable < 1 {
+			return fmt.Errorf(
+				"insufficient coins (have %d, need %d) — you can't afford even one at this price; lower the quantity or pay with goods you carry.",
+				buyer.Coins, amount,
+			)
+		}
 		return fmt.Errorf(
-			"insufficient coins (have %d, need %d) — offer fewer coins or pay with goods you carry.",
-			buyer.Coins, amount,
+			"insufficient coins (have %d, need %d) — at this price you can afford %d; lower the quantity or pay with goods you carry.",
+			buyer.Coins, amount, affordable,
 		)
 	}
 	for _, pi := range payItems {

@@ -426,7 +426,17 @@ type PendingOfferView struct {
 // returns nil rather than an empty view). Render is content-gated on both.
 type OfferableCustomersView struct {
 	CustomerNames []string
-	Goods         []string
+	Goods         []OfferableGood
+}
+
+// OfferableGood is one sellable good in the "## Custom at hand" cue, carrying
+// its on-hand count so the seller sizes a scene_quote against real stock rather
+// than naming a round number it can't deliver (ZBBS-HOME-459 — the seller-side
+// mirror of the buyer's ZBBS-WORK-392 sufficiency fact). OnHand is the seller's
+// current Inventory[kind] at build time.
+type OfferableGood struct {
+	Label  string
+	OnHand int
 }
 
 // NarrativeStateView is the kind-aware "Who you are:" content. Slim by

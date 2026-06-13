@@ -345,6 +345,108 @@ func TestBuildRestocking_PriceFromPriceBook(t *testing.T) {
 	}
 }
 
+// TestBuildRestocking_AffordabilityFromBundleRatio (ZBBS-HOME-459 / code_review):
+// the affordable count comes straight from the observed bundle ratio, not a
+// floored unit price. Last paid 5 coins for 2 ale; 9 coins covers 3 at that rate
+// — a floored unit price (5/2 = 2) would wrongly read 9/2 = 4 and over-promise.
+func TestBuildRestocking_AffordabilityFromBundleRatio(t *testing.T) {
+	subj := &sim.ActorSnapshot{Coins: 9, Inventory: map[sim.ItemKind]int{"ale": 1}, RestockPolicy: buyPolicy("ale", 20)}
+	supplier := &sim.ActorSnapshot{WorkStructureID: "brewery", Inventory: map[sim.ItemKind]int{"ale": 40}}
+	pb := sim.NewRingBuffer[sim.PriceObservation](4)
+	pb.Push(sim.PriceObservation{BuyerID: "merchant", Amount: 5, Qty: 2, Consumers: 1, At: time.Now().UTC()})
+	snap := &sim.Snapshot{
+		Actors:     map[sim.ActorID]*sim.ActorSnapshot{"merchant": subj, "brewer": supplier},
+		Structures: map[sim.StructureID]*sim.Structure{"brewery": {ID: "brewery", DisplayName: "The Brewery"}},
+		ItemKinds:  restockCatalog(),
+		PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
+			{SellerID: "brewer", Item: "ale"}: pb,
+		},
+		RestockReorderPct: 25,
+	}
+	v := buildRestocking(snap, "merchant", subj)
+	if v == nil || len(v.Items) != 1 {
+		t.Fatalf("want 1 item, got %+v", v)
+	}
+	if got := v.Items[0].AffordableQty; got != 3 {
+		t.Errorf("AffordableQty = %d, want 3 (9 coins at the 5-for-2 rate, not the floored-unit-price 4)", got)
+	}
+	var b strings.Builder
+	renderRestocking(&b, v)
+	if out := b.String(); !strings.Contains(out, "cover about 3") || strings.Contains(out, "cover about 4") {
+		t.Errorf("want 'cover about 3' (not 4):\n%s", out)
+	}
+}
+
+// TestBuildRestocking_AffordabilityDeterministicOnTimestampTie (code_review):
+// two sellers, identical observation timestamp, different rates — the lowest
+// seller id must win deterministically rather than tracking map-iteration order.
+func TestBuildRestocking_AffordabilityDeterministicOnTimestampTie(t *testing.T) {
+	subj := &sim.ActorSnapshot{Coins: 100, Inventory: map[sim.ItemKind]int{"ale": 1}, RestockPolicy: buyPolicy("ale", 20)}
+	at := time.Now().UTC()
+	pbAnders := sim.NewRingBuffer[sim.PriceObservation](4)
+	pbAnders.Push(sim.PriceObservation{BuyerID: "merchant", Amount: 10, Qty: 1, Consumers: 1, At: at}) // 10/unit → 10 affordable
+	pbBramble := sim.NewRingBuffer[sim.PriceObservation](4)
+	pbBramble.Push(sim.PriceObservation{BuyerID: "merchant", Amount: 5, Qty: 1, Consumers: 1, At: at}) // 5/unit → 20 affordable
+	snap := &sim.Snapshot{
+		Actors:    map[sim.ActorID]*sim.ActorSnapshot{"merchant": subj},
+		ItemKinds: restockCatalog(),
+		PriceBook: map[sim.PriceBookKey]*sim.RingBuffer[sim.PriceObservation]{
+			{SellerID: "anders", Item: "ale"}:  pbAnders,
+			{SellerID: "bramble", Item: "ale"}: pbBramble,
+		},
+		RestockReorderPct: 25,
+	}
+	for i := 0; i < 30; i++ {
+		v := buildRestocking(snap, "merchant", subj)
+		if v == nil || len(v.Items) != 1 {
+			t.Fatalf("want 1 item, got %+v", v)
+		}
+		// anders (lowest id) at 10/unit → 100 coins cover 10, never bramble's 20.
+		if got := v.Items[0].AffordableQty; got != 10 {
+			t.Fatalf("AffordableQty = %d, want 10 (anders wins the timestamp tie deterministically)", got)
+		}
+	}
+}
+
+// TestRenderRestocking_AffordabilityFact (ZBBS-HOME-459): the per-item purse
+// fact appears only when coins are the binding limit (fewer affordable than the
+// cap leaves room for) and a unit price is on record. The wording carries no
+// "ask"/"price"/"cost" token (HOME-386-safe).
+func TestRenderRestocking_AffordabilityFact(t *testing.T) {
+	// Coins bind before the cap: headroom 18, purse covers 6 → fact renders.
+	var bind strings.Builder
+	renderRestocking(&bind, &RestockingView{
+		BuyerCoins: 60,
+		Items:      []RestockItemView{{ItemLabel: "meat", CurrentQty: 2, Cap: 20, AffordableQty: 6}},
+	})
+	if out := bind.String(); !strings.Contains(out, "Your 60 coins cover about 6 at what you last paid.") {
+		t.Errorf("binding-purse fact missing:\n%s", out)
+	}
+	if out := bind.String(); strings.Contains(out, "price") || strings.Contains(out, "ask") || strings.Contains(out, "cost") {
+		t.Errorf("affordability fact leaked an ask/price/cost token (HOME-386):\n%s", out)
+	}
+
+	// Purse covers more than the cap leaves room for → coins aren't the limit.
+	var slack strings.Builder
+	renderRestocking(&slack, &RestockingView{
+		BuyerCoins: 1000,
+		Items:      []RestockItemView{{ItemLabel: "meat", CurrentQty: 2, Cap: 20, AffordableQty: 50}},
+	})
+	if out := slack.String(); strings.Contains(out, "cover about") {
+		t.Errorf("purse covering the headroom should add no fact:\n%s", out)
+	}
+
+	// No price on record (-1) → silent.
+	var unknown strings.Builder
+	renderRestocking(&unknown, &RestockingView{
+		BuyerCoins: 60,
+		Items:      []RestockItemView{{ItemLabel: "meat", CurrentQty: 2, Cap: 20, AffordableQty: -1}},
+	})
+	if out := unknown.String(); strings.Contains(out, "cover about") {
+		t.Errorf("unknown price should render no affordability fact:\n%s", out)
+	}
+}
+
 func TestRenderRestocking_NilAndEmpty(t *testing.T) {
 	var b strings.Builder
 	renderRestocking(&b, nil)
