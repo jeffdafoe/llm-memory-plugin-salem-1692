@@ -46,8 +46,10 @@ func TestBuildOfferableCustomers_HappyPath(t *testing.T) {
 	if len(v.CustomerNames) != 1 || v.CustomerNames[0] != "Goodwife Mary" {
 		t.Errorf("CustomerNames = %v, want [Goodwife Mary]", v.CustomerNames)
 	}
-	if strings.Join(v.Goods, "|") != "Stew|Ale" {
-		t.Errorf("Goods = %v, want [Stew Ale]", v.Goods)
+	if len(v.Goods) != 2 ||
+		v.Goods[0] != (OfferableGood{Label: "Stew", OnHand: 5}) ||
+		v.Goods[1] != (OfferableGood{Label: "Ale", OnHand: 20}) {
+		t.Errorf("Goods = %v, want [{Stew 5} {Ale 20}]", v.Goods)
 	}
 }
 
@@ -187,7 +189,7 @@ func TestRenderOfferableCustomers_SingleCustomer(t *testing.T) {
 	var b strings.Builder
 	renderOfferableCustomers(&b, &OfferableCustomersView{
 		CustomerNames: []string{"Goodwife Mary"},
-		Goods:         []string{"Stew", "Ale"},
+		Goods:         []OfferableGood{{Label: "Stew", OnHand: 5}, {Label: "Ale", OnHand: 20}},
 	})
 	out := b.String()
 	for _, want := range []string{
@@ -195,7 +197,7 @@ func TestRenderOfferableCustomers_SingleCustomer(t *testing.T) {
 		"Goodwife Mary is here with you",
 		"scene_quote",
 		"target_buyer",
-		"Your goods to sell: Stew, Ale.",
+		"Your goods to sell: Stew (5 on hand), Ale (20 on hand).",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q\n--- got ---\n%s", want, out)
@@ -207,7 +209,7 @@ func TestRenderOfferableCustomers_MultipleCustomersPluralVerb(t *testing.T) {
 	var b strings.Builder
 	renderOfferableCustomers(&b, &OfferableCustomersView{
 		CustomerNames: []string{"Goodwife Mary", "John Procter"},
-		Goods:         []string{"Stew"},
+		Goods:         []OfferableGood{{Label: "Stew", OnHand: 3}},
 	})
 	out := b.String()
 	if !strings.Contains(out, "Goodwife Mary and John Procter are here with you") {

@@ -299,6 +299,40 @@ func TestPayWithItem_SlowPath_InsufficientFunds_FastFail(t *testing.T) {
 	}
 }
 
+// TestPayWithItem_InsufficientFunds_SteerNamesAffordableQuantity (ZBBS-HOME-459):
+// the coin-shortfall steer names the quantity the purse covers at the offered
+// unit price, pointing the model at the QUANTITY lever rather than the old
+// "offer fewer coins" (which had the buyer drop coins, keep the quantity, and
+// re-offer underpriced — the John Ellis 25-meat-on-248-coins case).
+func TestPayWithItem_InsufficientFunds_SteerNamesAffordableQuantity(t *testing.T) {
+	cases := []struct {
+		name               string
+		coins, qty, amount int
+		want               string
+	}{
+		// 248 coins, 25 units at 250 → affords 24; steer points at the quantity.
+		{"affords_some", 248, 25, 250, "you can afford 24"},
+		// Nearly broke — can't cover even one unit at this price.
+		{"affords_none", 2, 1, 10, "can't afford even one"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w, stop := buildPayWithItemWorld(t, "h1", "sc1", []pwiActor{
+				{id: "alice", displayName: "Alice", kind: sim.KindNPCShared, huddleID: "h1", coins: tc.coins},
+				{id: "bob", displayName: "Bob", kind: sim.KindNPCShared, huddleID: "h1", inventory: map[sim.ItemKind]int{"stew": 100}},
+			})
+			defer stop()
+			_, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", tc.qty, tc.amount, false, nil, nil, 0, 0, "", time.Now().UTC()))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("want error containing %q, got %v", tc.want, err)
+			}
+			if strings.Contains(err.Error(), "offer fewer coins") {
+				t.Errorf("old wrong-lever steer still present: %v", err)
+			}
+		})
+	}
+}
+
 func TestPayWithItem_SlowPath_NumericGates(t *testing.T) {
 	cases := []struct {
 		name   string

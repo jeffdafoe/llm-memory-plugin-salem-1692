@@ -107,6 +107,48 @@ func TestRender_PayOfferDecisionSection(t *testing.T) {
 	}
 }
 
+// TestRender_PayOfferStockAnnotation (ZBBS-HOME-459): when a buyer asks for more
+// than the seller holds, the offer line surfaces "you hold only N" so the seller
+// counters/declines against real stock instead of accepting an undeliverable
+// offer. Sufficient stock adds nothing.
+func TestRender_PayOfferStockAnnotation(t *testing.T) {
+	render := func(askQty, onHand int) string {
+		p := Payload{
+			ActorID:           "seller",
+			Actor:             ActorView{State: sim.StateIdle, Inventory: []InventoryItem{{Label: "meat", Qty: onHand, kind: "meat"}}},
+			PayOffersForMe:    []sim.PayOfferWarrantReason{payOfferReason(7, "john", "meat", askQty, 250, false)},
+			WarrantActorNames: map[sim.ActorID]string{"john": "John Ellis"},
+			Baseline:          BaselinePresent,
+		}
+		return combinedPrompt(Render(p, DefaultRenderConfig()))
+	}
+	// Asked 25, holds 20 → annotate the gap.
+	if out := render(25, 20); !strings.Contains(out, "you hold only 20 meat") {
+		t.Errorf("over-ask offer should surface the stock gap\n%s", out)
+	}
+	// Asked 5, holds 20 → no annotation.
+	if out := render(5, 20); strings.Contains(out, "you hold only") {
+		t.Errorf("sufficient stock should not annotate\n%s", out)
+	}
+}
+
+// TestRender_PayOfferStockAnnotation_SkipsUnstockedKind (ZBBS-HOME-459): an item
+// absent from the seller's standing inventory (e.g. a service grant like
+// nights_stay, which carries no stock) has nothing to compare against, so the
+// annotation is skipped rather than falsely reading "you hold only 0".
+func TestRender_PayOfferStockAnnotation_SkipsUnstockedKind(t *testing.T) {
+	p := Payload{
+		ActorID:           "seller",
+		Actor:             ActorView{State: sim.StateIdle}, // no inventory
+		PayOffersForMe:    []sim.PayOfferWarrantReason{payOfferReason(9, "guest", "nights_stay", 1, 6, false)},
+		WarrantActorNames: map[sim.ActorID]string{"guest": "A Guest"},
+		Baseline:          BaselinePresent,
+	}
+	if out := combinedPrompt(Render(p, DefaultRenderConfig())); strings.Contains(out, "you hold only") {
+		t.Errorf("unstocked/service kind should not be annotated\n%s", out)
+	}
+}
+
 // TestRender_PayOfferSection_AboveAffordances (ZBBS-HOME-424): the decision
 // section renders ABOVE the affordance dumps (satiation, lodging) — a buyer's
 // coin on the table is the seller's most actionable fact, and burying it
