@@ -1015,6 +1015,13 @@ func commitResultContent(vc *ValidatedCall, cmdResult any) string {
 					item = "those goods"
 				}
 				other := strings.TrimSpace(args.Seller)
+				// A workplace-name reroute (ZBBS-HOME-460) resolved the offer to
+				// the worker, not the building the model named — echo the real
+				// recipient so "bide for their answer" points at a person who
+				// can actually answer.
+				if r, ok := cmdResult.(sim.PayWithItemResult); ok && r.ReroutedSellerName != "" {
+					other = r.ReroutedSellerName
+				}
 				if other == "" {
 					other = "them"
 				}

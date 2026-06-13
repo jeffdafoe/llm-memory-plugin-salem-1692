@@ -172,6 +172,12 @@ type PayWithItemResult struct {
 	Booked          bool    // lodging Order minted, awaiting keeper check-in
 	SatisfiesNeed   NeedKey // primary need the consumed item satisfies ("" when n/a)
 	FeltAfter       string  // buyer's post-meal felt label(s) for the item's needs; "" = sated
+	// ReroutedSellerName is the worker's display name when the model named a
+	// building (its workplace) instead of the person and the engine rerouted
+	// the offer to them (ZBBS-HOME-460). Empty on the common path. The harness
+	// echo prefers it over the original seller arg so "bide for their answer"
+	// names a person who can actually answer.
+	ReroutedSellerName string
 }
 
 // PayWithItem returns the Command for the buyer-initiated pay-with-item
@@ -316,11 +322,35 @@ func PayWithItem(
 					sellerName,
 				)
 			}
+			// reroutedSellerName carries the worker's display name when the
+			// model named a building instead of the person (set below), so the
+			// tool-result echo names the real recipient. Empty on the common
+			// path. ZBBS-HOME-460.
+			var reroutedSellerName string
 			if !ok {
-				return nil, fmt.Errorf(
-					"no one named %q in this conversation — re-check who is here before offering.",
-					sellerName,
-				)
+				// Reroute a workplace name to the worker — see sim.Pay's note.
+				// The restock/satiation buy cues name the structure ("buy from
+				// Ellis Farm"), so the model offers to the place where the
+				// co-present worker is wanted.
+				peerID, structureName, peerOK, peerAmbiguous := findHuddlePeerByWorkplaceName(w, buyerID, buyer.CurrentHuddleID, sellerName)
+				if peerAmbiguous {
+					return nil, fmt.Errorf(
+						"more than one person here works at %q — name the person you want to offer to.",
+						sellerName,
+					)
+				}
+				if !peerOK {
+					return nil, fmt.Errorf(
+						"no one named %q in this conversation — re-check who is here before offering.",
+						sellerName,
+					)
+				}
+				sellerID = peerID
+				if peer, peerExists := w.Actors[peerID]; peerExists {
+					reroutedSellerName = peer.DisplayName
+				}
+				log.Printf("sim.PayWithItem: rerouted offer from building %q to its worker %q (buyer %q)",
+					structureName, peerID, buyerID)
 			}
 			if sellerID == buyerID {
 				return nil, errors.New("you cannot make an offer to yourself")
@@ -682,10 +712,11 @@ func PayWithItem(
 			entry.SourceEventID = evt.EventID()
 
 			return PayWithItemResult{
-				LedgerID:       id,
-				State:          PayLedgerStatePending,
-				FastPath:       false,
-				EatHereClamped: eatHereClamped,
+				LedgerID:           id,
+				State:              PayLedgerStatePending,
+				FastPath:           false,
+				EatHereClamped:     eatHereClamped,
+				ReroutedSellerName: reroutedSellerName,
 			}, nil
 		},
 	}
