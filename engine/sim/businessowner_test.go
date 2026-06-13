@@ -210,6 +210,130 @@ func TestEmitBusinessownerSpeech_HappyPath(t *testing.T) {
 	}
 }
 
+// TestEmitBusinessownerSpeech_RecordsUtterance — ZBBS-HOME-461. A fired engine
+// line lands in the speaker's huddle recent-conversation ring so the keeper's
+// model sees what it "already said" on its next tick; a fire with no live
+// huddle records nothing and does not panic.
+func TestEmitBusinessownerSpeech_RecordsUtterance(t *testing.T) {
+	t.Run("records the emitted line into the speaker's huddle ring", func(t *testing.T) {
+		w := newBusinessownerWorld(t)
+		w.Actors["keeper"] = &sim.Actor{
+			ID: "keeper", DisplayName: "Hannah", Kind: sim.KindNPCShared,
+			BusinessownerState: &sim.BusinessownerState{Flavor: "flamboyant"},
+		}
+		w.Actors["customer"] = &sim.Actor{ID: "customer", DisplayName: "Jefferey", Kind: sim.KindPC}
+		w.Huddles = map[sim.HuddleID]*sim.Huddle{
+			"h1": {ID: "h1", Members: map[sim.ActorID]struct{}{"keeper": {}, "customer": {}}},
+		}
+
+		// Capture the emitted Spoke so we can pin the ring to its exact text.
+		var spokes []*sim.Spoke
+		w.Subscribe(sim.SubscriberFunc(func(_ *sim.World, evt sim.Event) {
+			if s, ok := evt.(*sim.Spoke); ok {
+				spokes = append(spokes, s)
+			}
+		}))
+
+		now := time.Now().UTC()
+		args := sim.BusinessownerSpeechArgs{
+			SpeakerID: "keeper", SpeakerName: "Hannah",
+			ListenerID: "customer", ListenerName: "Jefferey",
+			Trigger: sim.BusinessownerTriggerFarewell, HuddleID: "h1",
+			RecipientIDs:    []sim.ActorID{"customer"},
+			CooldownMinutes: 30,
+			Rand:            rand.New(rand.NewSource(1)),
+			Now:             now,
+		}
+		out, err := sim.EmitBusinessownerSpeech(args).Fn(w)
+		if err != nil {
+			t.Fatalf("EmitBusinessownerSpeech: %v", err)
+		}
+		if !out.(sim.BusinessownerSpeechResult).Fired {
+			t.Fatalf("fire skipped")
+		}
+		if len(spokes) != 1 {
+			t.Fatalf("got %d Spoke events, want 1", len(spokes))
+		}
+		ring := w.Huddles["h1"].RecentUtterances
+		if len(ring) != 1 {
+			t.Fatalf("RecentUtterances len = %d, want 1", len(ring))
+		}
+		if ring[0].SpeakerID != "keeper" {
+			t.Errorf("utterance speaker = %q, want keeper", ring[0].SpeakerID)
+		}
+		// The model must see the SAME line the world emitted — pin the ring text
+		// to the emitted (post-render, post-truncation) Spoke.Text exactly.
+		if ring[0].Text != spokes[0].Text {
+			t.Errorf("ring text = %q, want emitted Spoke text %q", ring[0].Text, spokes[0].Text)
+		}
+		if strings.Contains(ring[0].Text, "{customer}") {
+			t.Errorf("unrendered token in ring text: %q", ring[0].Text)
+		}
+	})
+
+	t.Run("no live huddle records nothing", func(t *testing.T) {
+		w := newBusinessownerWorld(t)
+		w.Actors["keeper"] = &sim.Actor{
+			ID: "keeper", DisplayName: "Hannah", Kind: sim.KindNPCShared,
+			BusinessownerState: &sim.BusinessownerState{Flavor: "flamboyant"},
+		}
+		w.Actors["customer"] = &sim.Actor{ID: "customer", DisplayName: "Jefferey", Kind: sim.KindPC}
+
+		args := sim.BusinessownerSpeechArgs{
+			SpeakerID: "keeper", SpeakerName: "Hannah",
+			ListenerID: "customer", ListenerName: "Jefferey",
+			Trigger: sim.BusinessownerTriggerHandover, HuddleID: "",
+			RecipientIDs:    []sim.ActorID{"customer"},
+			CooldownMinutes: 0,
+			Rand:            rand.New(rand.NewSource(1)),
+			Now:             time.Now().UTC(),
+		}
+		out, err := sim.EmitBusinessownerSpeech(args).Fn(w)
+		if err != nil {
+			t.Fatalf("EmitBusinessownerSpeech: %v", err)
+		}
+		if !out.(sim.BusinessownerSpeechResult).Fired {
+			t.Fatalf("fire skipped (handover with empty huddle should still emit a Spoke)")
+		}
+	})
+
+	// ZBBS-HOME-461 membership guard: a fire whose HuddleID resolves to a huddle
+	// the speaker is NOT a member of must emit the Spoke but record nothing — a
+	// stale/wrong HuddleID must never inject into someone else's conversation.
+	t.Run("speaker not in the huddle records nothing", func(t *testing.T) {
+		w := newBusinessownerWorld(t)
+		w.Actors["keeper"] = &sim.Actor{
+			ID: "keeper", DisplayName: "Hannah", Kind: sim.KindNPCShared,
+			BusinessownerState: &sim.BusinessownerState{Flavor: "flamboyant"},
+		}
+		w.Actors["customer"] = &sim.Actor{ID: "customer", DisplayName: "Jefferey", Kind: sim.KindPC}
+		// The huddle exists but the keeper is NOT a member of it.
+		w.Huddles = map[sim.HuddleID]*sim.Huddle{
+			"other": {ID: "other", Members: map[sim.ActorID]struct{}{"customer": {}}},
+		}
+
+		args := sim.BusinessownerSpeechArgs{
+			SpeakerID: "keeper", SpeakerName: "Hannah",
+			ListenerID: "customer", ListenerName: "Jefferey",
+			Trigger: sim.BusinessownerTriggerFarewell, HuddleID: "other",
+			RecipientIDs:    []sim.ActorID{"customer"},
+			CooldownMinutes: 30,
+			Rand:            rand.New(rand.NewSource(1)),
+			Now:             time.Now().UTC(),
+		}
+		out, err := sim.EmitBusinessownerSpeech(args).Fn(w)
+		if err != nil {
+			t.Fatalf("EmitBusinessownerSpeech: %v", err)
+		}
+		if !out.(sim.BusinessownerSpeechResult).Fired {
+			t.Fatalf("fire skipped (Spoke should still emit even when the ring is skipped)")
+		}
+		if got := len(w.Huddles["other"].RecentUtterances); got != 0 {
+			t.Errorf("appended into a huddle the speaker isn't in: %d utterances", got)
+		}
+	})
+}
+
 // TestEmitBusinessownerSpeech_CooldownActive verifies a second fire
 // within the cooldown window is skipped (no new Spoke emission, cooldown
 // stamp unchanged).
