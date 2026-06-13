@@ -3594,7 +3594,7 @@ func _fetch_items_catalog(then_load_actor_id: String) -> void:
     add_child(http)
     http.request_completed.connect(_on_items_catalog_response.bind(http, then_load_actor_id))
     var headers := Auth.auth_headers(false)
-    http.request(Auth.api_base + "/api/items", headers)
+    http.request(Auth.api_base + "/api/village/items", headers)
 
 func _on_items_catalog_response(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest, then_load_actor_id: String) -> void:
     http.queue_free()
