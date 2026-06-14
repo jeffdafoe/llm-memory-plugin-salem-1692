@@ -51,9 +51,9 @@ func TestBuildSatiation_MorningBreakfastRelaxesHungerGate(t *testing.T) {
 	morning := morningBreakfastStartMinute + 60 // inside [start, end)
 	afternoon := morningBreakfastEndMinute + 60 // outside the morning band
 
-	newSnap := func(minute *int) (*sim.Snapshot, *sim.ActorSnapshot) {
+	newSnap := func(minute *int, hunger int) (*sim.Snapshot, *sim.ActorSnapshot) {
 		subj := &sim.ActorSnapshot{
-			Needs:     map[sim.NeedKey]int{"hunger": mild, "thirst": mild},
+			Needs:     map[sim.NeedKey]int{"hunger": hunger, "thirst": hunger},
 			Inventory: map[sim.ItemKind]int{"bread": 3},
 		}
 		return &sim.Snapshot{
@@ -64,20 +64,26 @@ func TestBuildSatiation_MorningBreakfastRelaxesHungerGate(t *testing.T) {
 	}
 
 	// Morning: hunger is relaxed in; thirst (also mild) stays red-gated.
-	snap, subj := newSnap(&morning)
+	snap, subj := newSnap(&morning, mild)
 	v := buildSatiation(snap, "ezekiel", subj)
 	if v == nil || len(v.Needs) != 1 || v.Needs[0].Need != "hunger" {
 		t.Fatalf("morning: want only hunger surfaced at mild, got %+v", v)
 	}
 
 	// Afternoon: the same mild hunger is gated out again.
-	snap, subj = newSnap(&afternoon)
+	snap, subj = newSnap(&afternoon, mild)
 	if v := buildSatiation(snap, "ezekiel", subj); v != nil {
 		t.Errorf("afternoon: want nil at mild hunger outside the morning band, got %+v", v)
 	}
 
+	// Morning but below the felt floor: still gated (covers the floor boundary).
+	snap, subj = newSnap(&morning, morningBreakfastHungerFloor-1)
+	if v := buildSatiation(snap, "ezekiel", subj); v != nil {
+		t.Errorf("morning below floor: want nil, got %+v", v)
+	}
+
 	// Clock unestablished: the normal red gate stands.
-	snap, subj = newSnap(nil)
+	snap, subj = newSnap(nil, mild)
 	if v := buildSatiation(snap, "ezekiel", subj); v != nil {
 		t.Errorf("nil clock: want nil at mild hunger, got %+v", v)
 	}

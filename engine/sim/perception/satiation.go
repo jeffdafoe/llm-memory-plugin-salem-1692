@@ -51,19 +51,20 @@ var satiationNeeds = []sim.NeedKey{"hunger", "thirst"}
 // perception silent floor (sim's unexported needSilentFloor = 8) — at or above it
 // the NPC already "feels peckish", so it should also be told where to eat.
 const (
-	morningBreakfastStartMinute = 420 // 07:00 — start of the "morning" band
-	morningBreakfastEndMinute   = 720 // 12:00 — end of the "morning" band
-	morningBreakfastHungerFloor = 8   // = sim needSilentFloor: at/over it hunger is felt
+	morningBreakfastStartMinute = 420 // 07:00 — mirrors timeOfDayProse's "morning" band start
+	morningBreakfastEndMinute   = 720 // 12:00 — mirrors timeOfDayProse's "morning" band end (exclusive)
+	morningBreakfastHungerFloor = 8   // mirrors sim's unexported needSilentFloor: at/over it hunger is felt
 )
 
-var satiationHungerNeed = sim.NeedKey("hunger")
+const satiationHungerNeed = sim.NeedKey("hunger")
 
 // morningBreakfastCue reports whether the morning-breakfast relaxation applies to
 // this need: it is hunger, the village clock is within the morning band, and the
-// actor is at least mildly hungry (felt — at/over the silent floor). Off when the
-// clock isn't established (nil LocalMinuteOfDay); then the normal red gate stands.
+// actor is at least mildly hungry (felt — at/over the silent floor). Defensive
+// against a nil snapshot or an unestablished clock (nil LocalMinuteOfDay); in
+// either case the normal red gate stands.
 func morningBreakfastCue(snap *sim.Snapshot, need sim.NeedKey, value int) bool {
-	if need != satiationHungerNeed || snap.LocalMinuteOfDay == nil {
+	if snap == nil || need != satiationHungerNeed || snap.LocalMinuteOfDay == nil {
 		return false
 	}
 	m := *snap.LocalMinuteOfDay
