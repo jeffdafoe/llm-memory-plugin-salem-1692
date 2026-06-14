@@ -53,6 +53,8 @@ func seededWorld(t *testing.T) *sim.World {
 			SocialTag:        "tavern",
 			SocialStartMin:   intPtr(1140),
 			SocialEndMin:     intPtr(1320),
+			// Live needs (ZBBS-HOME-462) — asserted on the wire by TestHandleAgents.
+			Needs: map[sim.NeedKey]int{"hunger": 14, "thirst": 9, "tiredness": 3},
 		}
 		world.Actors["bram"] = &sim.Actor{
 			ID: "bram", DisplayName: "Bram", Kind: sim.KindPC,
@@ -216,6 +218,15 @@ func TestHandleAgents(t *testing.T) {
 	// bram has no LLMAgent → omitted from the wire (editor picker skips it).
 	if bram.LLMAgent != "" {
 		t.Errorf("bram.llm_memory_agent = %q, want empty", bram.LLMAgent)
+	}
+	// Live needs (ZBBS-HOME-462) — carried on the wire for the editor readout.
+	if hannah.Hunger != 14 || hannah.Thirst != 9 || hannah.Tiredness != 3 {
+		t.Errorf("hannah needs = %d/%d/%d, want 14/9/3", hannah.Hunger, hannah.Thirst, hannah.Tiredness)
+	}
+	// bram has no needs seeded → nil map → 0/0/0 on the wire. The fields are not
+	// omitempty, so a fresh actor reports zeros rather than omitting the keys.
+	if bram.Hunger != 0 || bram.Thirst != 0 || bram.Tiredness != 0 {
+		t.Errorf("bram needs = %d/%d/%d, want 0/0/0", bram.Hunger, bram.Thirst, bram.Tiredness)
 	}
 	// hannah has a sprite_id that resolves against the seeded catalog: the
 	// inline sprite carries the render subset (no pack) and the animation rows.

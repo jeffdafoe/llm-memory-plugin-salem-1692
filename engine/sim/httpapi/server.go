@@ -365,6 +365,7 @@ func worldStateFromSnapshot(s *sim.Snapshot) WorldStateDTO {
 func agentsFromSnapshot(s *sim.Snapshot, sprites map[sim.SpriteID]*sim.Sprite) []AgentDTO {
 	out := make([]AgentDTO, 0, len(s.Actors))
 	for id, a := range s.Actors {
+		hunger, thirst, tiredness := sim.DisplayNeeds(a.Needs)
 		out = append(out, AgentDTO{
 			ID:                string(id),
 			DisplayName:       a.DisplayName,
@@ -378,6 +379,9 @@ func agentsFromSnapshot(s *sim.Snapshot, sprites map[sim.SpriteID]*sim.Sprite) [
 			InsideStructureID: string(a.InsideStructureID),
 			CurrentHuddleID:   string(a.CurrentHuddleID),
 			Sprite:            resolveAgentSprite(a.SpriteID, sprites),
+			Hunger:            hunger,
+			Thirst:            thirst,
+			Tiredness:         tiredness,
 			Attributes:        a.AttributeSlugs,
 			HomeStructureID:   string(a.HomeStructureID),
 			WorkStructureID:   string(a.WorkStructureID),

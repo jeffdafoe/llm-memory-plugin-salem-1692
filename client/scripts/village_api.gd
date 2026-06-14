@@ -121,8 +121,9 @@ func check_contract_version(server_version: int) -> bool:
 ## through here so the existing _place_npc meta-setters + editor panels pick
 ## them up. The schedule/social *_minute fields are forwarded RAW (null
 ## preserved, not coerced) because _place_npc gates "set vs inherit dawn/dusk"
-## on null. Fields v2 still doesn't carry (needs: hunger/thirst/tiredness)
-## remain omitted and degrade to the panel's defaults.
+## on null. Needs (hunger/thirst/tiredness, ZBBS-HOME-462) are carried too — the
+## editor's per-NPC readout renders them; live updates arrive via the
+## npc_needs_changed WS event (apply_npc_needs_changed).
 func normalize_agent(dto: Dictionary) -> Dictionary:
     var inside_structure_id: String = str(dto.get("inside_structure_id", ""))
     var world_pos := tile_to_world(int(dto.get("x", 0)), int(dto.get("y", 0)))
@@ -149,6 +150,12 @@ func normalize_agent(dto: Dictionary) -> Dictionary:
         "social_tag": dto.get("social_tag", null),
         "social_start_minute": dto.get("social_start_minute", null),
         "social_end_minute": dto.get("social_end_minute", null),
+        # Live needs (ZBBS-HOME-462) — the editor needs readout reads these off the
+        # agent row; _place_npc seeds them as container meta. Coerced to int (default
+        # 0) since a decorative / sprite-less actor may omit them.
+        "hunger": int(dto.get("hunger", 0)),
+        "thirst": int(dto.get("thirst", 0)),
+        "tiredness": int(dto.get("tiredness", 0)),
     }
     # Sprite is already inlined on the v2 DTO in the exact render subset the
     # renderer expects (sheet / frame_width / frame_height / id / name /
