@@ -1285,7 +1285,12 @@ func (w *World) Run(ctx context.Context) {
 				value, err = cmd.Fn(w)
 			}
 			w.TickCounter++
+			// Capture the pre-republish published snapshot so emitNeedsDeltas can
+			// diff this command's need changes against it. Loaded before republish
+			// overwrites it; this is the state as of the previous command.
+			prevSnap := w.published.Load()
 			w.republish()
+			w.emitNeedsDeltas(prevSnap)
 			if cmd.Reply != nil {
 				cmd.Reply <- CommandResult{Value: value, Err: err}
 			}
@@ -1594,6 +1599,51 @@ func (w *World) republish() {
 		snap.NoticeboardContent[id] = &nc
 	}
 	w.published.Store(snap)
+}
+
+// emitNeedsDeltas broadcasts an NPCNeedsChanged for every actor whose
+// hunger/thirst/tiredness changed between the prior published snapshot (prev)
+// and the one republish just stored. Called once per command from the command
+// loop, immediately after republish — a single change-detection point that
+// covers every need-mutation path (hourly tick, consumption, movement fatigue,
+// item consume, dwell, the tiredness-recovery sweep) without each one emitting.
+//
+// Needs are a pure display projection: the only consumer is the client's editor
+// needs readout (apply_npc_needs_changed). Nothing in the cascade substrate
+// reacts — every substrate subscriber is type-switched on its own events, so a
+// new event type is inert there. Emitting here (post-command, no ambient root)
+// is the supported "fresh root" path in emit().
+//
+// A newly created actor is absent from prev: its baseline is treated as 0/0/0
+// (what npc_created delivers, since that frame's AgentDTO carries no needs), so it
+// emits a correcting delta only when it spawned with non-zero needs — never a
+// redundant zero frame for the common fresh-at-zero case.
+func (w *World) emitNeedsDeltas(prev *Snapshot) {
+	if prev == nil {
+		return
+	}
+	cur := w.published.Load()
+	if cur == nil {
+		return
+	}
+	now := time.Now().UTC()
+	for id, a := range cur.Actors {
+		hunger, thirst, tiredness := DisplayNeeds(a.Needs)
+		var prevHunger, prevThirst, prevTiredness int
+		if prevActor, ok := prev.Actors[id]; ok {
+			prevHunger, prevThirst, prevTiredness = DisplayNeeds(prevActor.Needs)
+		}
+		if prevHunger == hunger && prevThirst == thirst && prevTiredness == tiredness {
+			continue
+		}
+		w.emit(&NPCNeedsChanged{
+			ActorID:   id,
+			Hunger:    hunger,
+			Thirst:    thirst,
+			Tiredness: tiredness,
+			At:        now,
+		})
+	}
 }
 
 // snapshotActor produces an ActorSnapshot — the slim immutable view of an

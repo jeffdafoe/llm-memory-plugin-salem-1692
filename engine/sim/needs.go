@@ -288,3 +288,12 @@ func (s NeedSet) GetOK(key NeedKey) (int, bool) {
 	v, ok := s[key]
 	return v, ok
 }
+
+// DisplayNeeds returns hunger, thirst, and tiredness in that fixed order — the
+// triple the editor needs readout (AgentDTO) and the npc_needs_changed frame
+// both carry. One place for the three registry keys so the read surface and the
+// change-detection diff (World.emitNeedsDeltas) can't drift apart. Nil-safe: a
+// missing key (or nil map) reads as 0.
+func DisplayNeeds(needs map[NeedKey]int) (hunger, thirst, tiredness int) {
+	return needs["hunger"], needs["thirst"], needs["tiredness"]
+}
