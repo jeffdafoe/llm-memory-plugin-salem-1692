@@ -575,6 +575,26 @@ type NPCAttributesChanged struct {
 
 func (NPCAttributesChanged) isSimEvent() {}
 
+// NPCNeedsChanged — an actor's hunger/thirst/tiredness AFTER a change (the full
+// post-change triple, never a delta, same authoritative-full-state posture as
+// NPCAttributesChanged) so the client's editor needs readout converges on one
+// source of truth regardless of which mutation produced it (hourly tick,
+// consumption, movement fatigue, item consume, dwell recovery, the tiredness-
+// recovery sweep). Emitted by World.emitNeedsDeltas at the command-loop publish
+// boundary — a change-detection diff against the prior published snapshot — so
+// every need-mutation path is covered without per-site emits. Frame:
+// npc_needs_changed.
+type NPCNeedsChanged struct {
+	EventBase
+	ActorID   ActorID
+	Hunger    int
+	Thirst    int
+	Tiredness int
+	At        time.Time
+}
+
+func (NPCNeedsChanged) isSimEvent() {}
+
 // NPCSpriteChanged is emitted by SetActorSprite when an NPC's sprite actually
 // changes. Carries the resolved *Sprite inline (same posture as NPCCreated) so
 // the hub builds an npc_sprite_changed frame with the full render data the

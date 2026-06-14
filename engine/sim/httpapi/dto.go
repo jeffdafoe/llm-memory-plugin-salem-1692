@@ -104,6 +104,15 @@ type AgentDTO struct {
 	CurrentHuddleID   string          `json:"current_huddle_id,omitempty"`
 	Sprite            *AgentSpriteDTO `json:"sprite,omitempty"`
 
+	// Live needs (ZBBS-HOME-462) — current hunger/thirst/tiredness in [0, NeedMax].
+	// The editor's per-NPC needs readout renders these; v1's /npcs row carried them
+	// but the v2 port dropped them, so the panel defaulted to 0/0/0. NOT omitempty —
+	// a need of 0 is a real value, and a fresh npc_created actor correctly reports
+	// 0/0/0. Live updates ride the npc_needs_changed frame (World.emitNeedsDeltas).
+	Hunger    int `json:"hunger"`
+	Thirst    int `json:"thirst"`
+	Tiredness int `json:"tiredness"`
+
 	// Editor metadata (ZBBS-HOME-290) — the NPC config the Godot editor/HUD
 	// shows + edits, ported from v1. Additive, no contract_version bump.
 	// Attributes is the sorted slug set the editor renders as behavior chips

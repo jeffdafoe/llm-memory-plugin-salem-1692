@@ -342,6 +342,16 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			ID:         string(e.ActorID),
 			Attributes: attrs,
 		}}, true
+	case *sim.NPCNeedsChanged:
+		// Full post-change triple (not a delta); the client's
+		// apply_npc_needs_changed patches each meta and refreshes the editor
+		// readout. See World.emitNeedsDeltas for the change-detection source.
+		return WireFrame{Type: "npc_needs_changed", Data: npcNeedsChangedWireDTO{
+			ID:        string(e.ActorID),
+			Hunger:    e.Hunger,
+			Thirst:    e.Thirst,
+			Tiredness: e.Tiredness,
+		}}, true
 	case *sim.PayOfferReceived:
 		return WireFrame{Type: "pay_offer", Data: payOfferWireDTO{
 			LedgerID:   uint64(e.LedgerID),
@@ -701,6 +711,13 @@ type npcSocialUpdatedWireDTO struct {
 type npcAttributesChangedWireDTO struct {
 	ID         string   `json:"id"`
 	Attributes []string `json:"attributes"`
+}
+
+type npcNeedsChangedWireDTO struct {
+	ID        string `json:"id"`
+	Hunger    int    `json:"hunger"`
+	Thirst    int    `json:"thirst"`
+	Tiredness int    `json:"tiredness"`
 }
 
 type npcSpriteChangedWireDTO struct {
