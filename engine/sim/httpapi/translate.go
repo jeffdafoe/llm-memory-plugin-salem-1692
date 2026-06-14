@@ -85,6 +85,8 @@ func TranslateEvent(evt sim.Event) (WireFrame, bool) {
 			ID:                string(e.ActorID),
 			Inside:            e.InsideStructureID != "",
 			InsideStructureID: string(e.InsideStructureID),
+			X:                 e.X,
+			Y:                 e.Y,
 		}}, true
 	case *sim.ActorTeleported:
 		// An operator teleport (ZBBS-HOME-448) reuses the npc_arrived frame —
@@ -490,12 +492,16 @@ type moveStoppedWireDTO struct {
 // re-derives sprite visibility (plain houses hide; see-through stalls stay
 // visible) and the behind-the-counter stand offset from it. inside is sent
 // explicitly; inside_structure_id is omitted when outdoors (the client reads a
-// missing value as ""). Restores the v1 broadcast the rewrite dropped
-// (ZBBS-WORK-373).
+// missing value as ""). x/y are the actor's padded-grid tile at the flip; the
+// client snaps the sprite to it before changing visibility so a not-yet-rendered
+// walk doesn't strand it at a stale spot (ZBBS-HOME-464). Restores the v1
+// broadcast the rewrite dropped (ZBBS-WORK-373).
 type insideChangedWireDTO struct {
 	ID                string `json:"id"`
 	Inside            bool   `json:"inside"`
 	InsideStructureID string `json:"inside_structure_id,omitempty"`
+	X                 int    `json:"x"`
+	Y                 int    `json:"y"`
 }
 
 // spokeWireDTO is the npc_spoke payload — one utterance the client renders as a

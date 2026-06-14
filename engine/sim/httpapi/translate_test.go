@@ -147,6 +147,8 @@ func TestTranslateEvent_InsideChanged(t *testing.T) {
 	frame, ok := TranslateEvent(&sim.ActorInsideChanged{
 		ActorID:           "john",
 		InsideStructureID: "tavern",
+		X:                 12,
+		Y:                 34,
 	})
 	if !ok {
 		t.Fatal("ActorInsideChanged should translate")
@@ -155,7 +157,9 @@ func TestTranslateEvent_InsideChanged(t *testing.T) {
 		t.Fatalf("type = %q, want npc_inside_changed", frame.Type)
 	}
 	d := frame.Data.(insideChangedWireDTO)
-	want := insideChangedWireDTO{ID: "john", Inside: true, InsideStructureID: "tavern"}
+	// X/Y carry the actor's tile so the client snaps the sprite to engine truth
+	// before flipping visibility (ZBBS-HOME-464).
+	want := insideChangedWireDTO{ID: "john", Inside: true, InsideStructureID: "tavern", X: 12, Y: 34}
 	if d != want {
 		t.Errorf("inside_changed payload = %+v, want %+v", d, want)
 	}
@@ -186,14 +190,19 @@ func TestTranslateEvent_InsideChangedOutdoors(t *testing.T) {
 // omitempty tag — a struct type-assertion wouldn't catch a tag/remarshal
 // regression). code_review follow-up.
 func TestTranslateEvent_InsideChangedWireOmitsStructureOutdoors(t *testing.T) {
-	// Outdoors: inside:false present, inside_structure_id absent.
-	outFrame, _ := TranslateEvent(&sim.ActorInsideChanged{ActorID: "john", InsideStructureID: ""})
+	// Outdoors: inside:false present, inside_structure_id absent, x/y present.
+	// X:0 proves a zero tile is still sent — omitempty would wrongly drop a real
+	// edge-of-grid coordinate (ZBBS-HOME-464).
+	outFrame, _ := TranslateEvent(&sim.ActorInsideChanged{ActorID: "john", InsideStructureID: "", X: 0, Y: 5})
 	out, err := json.Marshal(outFrame.Data)
 	if err != nil {
 		t.Fatalf("marshal outdoors: %v", err)
 	}
 	if got := string(out); !strings.Contains(got, `"inside":false`) || strings.Contains(got, "inside_structure_id") {
 		t.Errorf("outdoors frame should carry \"inside\":false and omit inside_structure_id; got %s", got)
+	}
+	if got := string(out); !strings.Contains(got, `"x":0`) || !strings.Contains(got, `"y":5`) {
+		t.Errorf("outdoors frame should carry x/y (including a zero tile); got %s", got)
 	}
 	// Inside: inside:true + the structure id present.
 	inFrame, _ := TranslateEvent(&sim.ActorInsideChanged{ActorID: "john", InsideStructureID: "tavern"})

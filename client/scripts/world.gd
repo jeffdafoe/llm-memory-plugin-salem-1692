@@ -442,6 +442,16 @@ func apply_npc_inside_change(data: Dictionary) -> void:
     var inside: bool = bool(data.get("inside", false))
     var inside_structure_id_val = data.get("inside_structure_id", null)
     var inside_structure_id: String = str(inside_structure_id_val) if inside_structure_id_val != null else ""
+    # Reconcile the sprite to the engine's authoritative tile before flipping
+    # visibility (ZBBS-HOME-464). npc_inside_changed can fire while the client's
+    # blind walk interpolation still has the sprite at a stale tile — a
+    # not-yet-rendered walk home — so hiding in place stranded the NPC at the old
+    # spot (the "vanished at the last lamp" disappear). Snapping first makes a
+    # missed walk hide the NPC at home instead, and seats a see-through
+    # structure's occupant on the real tile. x/y are engine padded-grid tiles;
+    # guarded so a pre-464 frame without them is a no-op.
+    if data.has("x") and data.has("y"):
+        container.position = VillageApi.tile_to_world(int(data.get("x", 0)), int(data.get("y", 0)))
     container.set_meta("inside", inside)
     container.set_meta("inside_structure_id", inside_structure_id)
     container.visible = _compute_npc_visible(inside, inside_structure_id)

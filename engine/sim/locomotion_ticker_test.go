@@ -219,12 +219,23 @@ func TestLocomotion_InsideChangeEmitsBroadcast(t *testing.T) {
 	if _, inside := actorSpatial(t, w, "walker"); inside != "cottage" {
 		t.Fatalf("after enter: InsideStructureID = %q, want cottage", inside)
 	}
+	var enteredX, enteredY int
 	enteredCottage := rec.countEvents(func(e sim.Event) bool {
 		c, ok := e.(*sim.ActorInsideChanged)
-		return ok && c.ActorID == "walker" && c.InsideStructureID == "cottage"
+		if ok && c.ActorID == "walker" && c.InsideStructureID == "cottage" {
+			enteredX, enteredY = c.X, c.Y
+			return true
+		}
+		return false
 	})
 	if enteredCottage != 1 {
 		t.Errorf("ActorInsideChanged{cottage} count = %d, want 1", enteredCottage)
+	}
+	// ZBBS-HOME-464: the inside flip carries the actor's tile so the client can
+	// snap the sprite to engine truth before hiding. It must be the walker's
+	// real tile at the flip, not the zero value.
+	if pos, _ := actorSpatial(t, w, "walker"); enteredX != pos.X || enteredY != pos.Y {
+		t.Errorf("inside-flip tile = (%d,%d), want walker tile (%d,%d)", enteredX, enteredY, pos.X, pos.Y)
 	}
 
 	// Walk back out to open ground: the cottage→"" flip is the leave the client
