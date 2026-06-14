@@ -38,6 +38,51 @@ func TestBuildSatiation_NotPressing_Nil(t *testing.T) {
 	}
 }
 
+// TestBuildSatiation_MorningBreakfastRelaxesHungerGate — ZBBS-HOME-465. During the
+// morning band a mildly-hungry NPC (below the red threshold) is shown the food
+// menu so it can break its fast on waking; outside the band the same mild hunger
+// is gated out, the relaxation is hunger-only (thirst stays red-gated), and an
+// unestablished clock leaves the normal red gate in force.
+func TestBuildSatiation_MorningBreakfastRelaxesHungerGate(t *testing.T) {
+	mild := morningBreakfastHungerFloor + 2 // felt, but below the red threshold
+	if mild >= sim.DefaultHungerRedThreshold || mild >= sim.DefaultThirstRedThreshold {
+		t.Fatalf("test setup: mild value %d must be below both red thresholds", mild)
+	}
+	morning := morningBreakfastStartMinute + 60 // inside [start, end)
+	afternoon := morningBreakfastEndMinute + 60 // outside the morning band
+
+	newSnap := func(minute *int) (*sim.Snapshot, *sim.ActorSnapshot) {
+		subj := &sim.ActorSnapshot{
+			Needs:     map[sim.NeedKey]int{"hunger": mild, "thirst": mild},
+			Inventory: map[sim.ItemKind]int{"bread": 3},
+		}
+		return &sim.Snapshot{
+			Actors:           map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj},
+			ItemKinds:        foodDrinkCatalog(),
+			LocalMinuteOfDay: minute,
+		}, subj
+	}
+
+	// Morning: hunger is relaxed in; thirst (also mild) stays red-gated.
+	snap, subj := newSnap(&morning)
+	v := buildSatiation(snap, "ezekiel", subj)
+	if v == nil || len(v.Needs) != 1 || v.Needs[0].Need != "hunger" {
+		t.Fatalf("morning: want only hunger surfaced at mild, got %+v", v)
+	}
+
+	// Afternoon: the same mild hunger is gated out again.
+	snap, subj = newSnap(&afternoon)
+	if v := buildSatiation(snap, "ezekiel", subj); v != nil {
+		t.Errorf("afternoon: want nil at mild hunger outside the morning band, got %+v", v)
+	}
+
+	// Clock unestablished: the normal red gate stands.
+	snap, subj = newSnap(nil)
+	if v := buildSatiation(snap, "ezekiel", subj); v != nil {
+		t.Errorf("nil clock: want nil at mild hunger, got %+v", v)
+	}
+}
+
 func TestBuildSatiation_OwnStockHunger(t *testing.T) {
 	subj := &sim.ActorSnapshot{
 		Needs:     map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold},
