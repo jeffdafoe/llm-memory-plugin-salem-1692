@@ -1024,16 +1024,15 @@ func buildDutySteer(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnapsho
 	switch {
 	case onShift && anchors.WorkID != "" && !atWork:
 		// ZBBS-HOME-400 Option B: don't yank an agent back to its post while it's
-		// mid-business — a pressing (mild-or-worse) need, an active restock errand,
-		// or a pending outgoing offer awaiting the seller's accept_pay. This brings
-		// the perception cue into line with the shift-duty WARRANT, which already
-		// need-suppresses the to-work nudge; the cue deliberately did NOT (the
-		// HOME-352 "let the model prioritize" choice), which let the weak stateful
-		// model thrash between an errand and its post (the live Josiah restock loop).
-		// Scope: the to-work arm ONLY — the go-home arm stays unsuppressed (going
-		// home is how an NPC rests), and a RED need already suppresses BOTH arms
-		// above (HOME-362), so this softer gate only adds the mild-but-not-red case.
-		if anyNeedMildOrWorse(a, snap) || hasRestockErrand || hasPendingOutgoingOffer(snap, actorID) {
+		// mid-business — an active restock errand or a pending outgoing offer
+		// awaiting the seller's accept_pay (matching the shift-duty WARRANT). A RED
+		// need already suppresses BOTH arms above (HOME-362). The mild-but-not-red
+		// need gate HOME-400 also added here was REMOVED (ZBBS-HOME-463): a merely
+		// peckish NPC should still clock in, and the mild gate stranded chronically-
+		// needy NPCs (blocked from work yet not red enough to be driven to resolve —
+		// e.g. a homeless blacksmith parked at the inn all shift). Scope: the to-work
+		// arm ONLY — the go-home arm stays unsuppressed (going home is how an NPC rests).
+		if hasRestockErrand || hasPendingOutgoingOffer(snap, actorID) {
 			return nil
 		}
 		return &DutySteerView{ToWork: true, TargetID: anchors.WorkID, TargetLabel: anchors.WorkLabel}
@@ -1230,29 +1229,6 @@ func hasRedNeed(a *sim.ActorSnapshot, snap *sim.Snapshot) bool {
 	}
 	for _, n := range sim.Needs {
 		if a.Needs[n.Key] >= snap.NeedThresholds.Get(n.Key) {
-			return true
-		}
-	}
-	return false
-}
-
-// anyNeedMildOrWorse reports whether the actor has any tracked need at the mild
-// tier or above. Mirrors sim.anyNeedMildOrWorse (the shift-duty WARRANT's
-// to-work suppressor) so the return-to-post perception cue and the warrant agree
-// on when an agent is too busy with its needs to be sent to work (ZBBS-HOME-400
-// Option B). This is a SOFTER gate than hasRedNeed (which suppresses BOTH duty
-// arms at red, HOME-362); this one gates only the to-work arm. snap.NeedThresholds.Get
-// falls back to the registry default when unset. Nil-safe.
-func anyNeedMildOrWorse(a *sim.ActorSnapshot, snap *sim.Snapshot) bool {
-	if a == nil || snap == nil {
-		return false
-	}
-	for _, n := range sim.Needs {
-		value, ok := a.Needs[n.Key]
-		if !ok {
-			continue // a missing need is not an unmet need
-		}
-		if sim.NeedLabelTier(value, snap.NeedThresholds.Get(n.Key)) >= sim.NeedMild {
 			return true
 		}
 	}

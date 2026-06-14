@@ -156,10 +156,12 @@ func TestBuildDutySteer(t *testing.T) {
 }
 
 // TestBuildDutyPending — ZBBS-HOME-442. The pre-suppression "to-work duty
-// applies" predicate the noop-skip gate consumes. The load-bearing case is
-// the divergence: a mild need nils the to-work STEER (Option B, HOME-400)
-// but must NOT clear duty-pending — that band is exactly where the gate
-// skip-locked Josiah after HOME-441 shipped.
+// applies" predicate the noop-skip gate consumes. The load-bearing case is the
+// divergence — the to-work STEER is nil but duty-pending stays true — which keeps
+// the gate from skip-locking an off-post NPC (the Josiah HOME-441 failure). Since
+// ZBBS-HOME-463 that divergence is driven by a RED need (or a restock errand /
+// pending offer), not a mild need: a mild need now renders the steer, so steer and
+// duty-pending agree there.
 func TestBuildDutyPending(t *testing.T) {
 	agentSched := func(inside sim.StructureID) *sim.ActorSnapshot {
 		return &sim.ActorSnapshot{
@@ -175,16 +177,18 @@ func TestBuildDutyPending(t *testing.T) {
 			t.Fatal("want duty-pending for an off-post on-shift agent")
 		}
 	})
-	t.Run("mild need: steer suppressed, duty still pending (the 442 divergence)", func(t *testing.T) {
+	t.Run("mild need: steer renders AND duty pending (no divergence since HOME-463)", func(t *testing.T) {
+		// HOME-463 removed the Option B mild-need steer suppression, so at mild the
+		// to-work steer renders — steer and duty-pending now agree (no divergence).
 		snap := dutySnap(600, 420, 1140)
 		snap.NeedThresholds = sim.DefaultNeedThresholds()
 		a := agentSched("")
 		a.Needs = map[sim.NeedKey]int{"hunger": sim.DefaultHungerRedThreshold - 4} // mild band
-		if v := buildDutySteer(snap, "", a, dutyAnchors, false); v != nil {
-			t.Fatalf("precondition: Option B must nil the to-work steer at mild, got %+v", v)
+		if v := buildDutySteer(snap, "", a, dutyAnchors, false); v == nil || !v.ToWork {
+			t.Fatalf("a mild need must NOT nil the to-work steer since HOME-463, got %+v", v)
 		}
 		if !buildDutyPending(snap, a, dutyAnchors) {
-			t.Fatal("want duty-pending despite the Option B steer suppression")
+			t.Fatal("want duty-pending for an off-post on-shift agent")
 		}
 	})
 	t.Run("red need: steer suppressed, duty still pending", func(t *testing.T) {
@@ -298,10 +302,12 @@ func TestBuildDutySteer_MidMealSuppressesGoHome(t *testing.T) {
 	}
 }
 
-// TestBuildDutySteer_OptionBSuppression — ZBBS-HOME-400. The to-work cue is
-// suppressed while the agent is mid-business — a pressing (mild-or-worse) need,
-// an active restock errand, or a pending outgoing offer — matching the shift-duty
-// warrant. The go-home arm is never suppressed by these signals.
+// TestBuildDutySteer_OptionBSuppression — ZBBS-HOME-400, amended by ZBBS-HOME-463.
+// The to-work cue is suppressed while the agent is mid-business — an active
+// restock errand or a pending outgoing offer — matching the shift-duty warrant. A
+// RED need suppresses both arms via the separate gate above; a merely MILD need no
+// longer suppresses the commute (HOME-463). The go-home arm is never suppressed by
+// these signals.
 func TestBuildDutySteer_OptionBSuppression(t *testing.T) {
 	// On-shift (now 18:20 in [16:00,03:00)), away from work — the baseline that
 	// fires the to-work cue when no suppressor is present.
@@ -326,14 +332,23 @@ func TestBuildDutySteer_OptionBSuppression(t *testing.T) {
 			t.Fatalf("want nil (restock errand suppresses to-work), got %+v", v)
 		}
 	})
-	t.Run("mild (sub-red) need suppresses toWork", func(t *testing.T) {
+	t.Run("mild (sub-red) need does NOT suppress toWork", func(t *testing.T) {
 		snap, a := onShiftAway()
-		// hunger 10 with the default red threshold (20) is MILD ([8,20)), so it
-		// is NOT caught by the existing red-need whole-steer suppressor — this
-		// pins the new mild-or-worse to-work gate specifically.
+		// hunger 10 with the default red threshold (20) is MILD ([8,20)). Since
+		// HOME-463 only a RED need defers the commute, so a peckish NPC still
+		// clocks in (the mild gate that stranded chronically-needy NPCs is gone).
 		a.Needs = map[sim.NeedKey]int{"hunger": 10}
+		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false); v == nil || !v.ToWork {
+			t.Fatalf("want toWork (mild need must NOT suppress since HOME-463), got %+v", v)
+		}
+	})
+	t.Run("red need suppresses toWork", func(t *testing.T) {
+		snap, a := onShiftAway()
+		// hunger 22 >= the red threshold (20) → caught by the red-need gate
+		// (HOME-362) above the switch, which suppresses both duty arms.
+		a.Needs = map[sim.NeedKey]int{"hunger": 22}
 		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false); v != nil {
-			t.Fatalf("want nil (mild need suppresses to-work), got %+v", v)
+			t.Fatalf("want nil (red need suppresses to-work), got %+v", v)
 		}
 	})
 	t.Run("pending outgoing offer suppresses toWork", func(t *testing.T) {
@@ -366,12 +381,12 @@ func TestBuildDutySteer_OptionBSuppression(t *testing.T) {
 		}
 	})
 	t.Run("a silent (sub-mild) need does not suppress", func(t *testing.T) {
-		// hunger 5 is below the silent floor (8), so it tiers below mild and must
-		// NOT suppress — pins the lower boundary of anyNeedMildOrWorse (code_review).
+		// hunger 5 is below the silent floor (8). Since HOME-463 no sub-red need
+		// suppresses the to-work commute; this remains a valid lower-boundary case.
 		snap, a := onShiftAway()
 		a.Needs = map[sim.NeedKey]int{"hunger": 5}
 		if v := buildDutySteer(snap, "moses", a, dutyAnchors, false); v == nil || !v.ToWork {
-			t.Fatalf("want toWork (sub-mild need does not suppress), got %+v", v)
+			t.Fatalf("want toWork (sub-red need does not suppress), got %+v", v)
 		}
 	})
 	t.Run("go-home arm is NOT suppressed by these signals", func(t *testing.T) {
