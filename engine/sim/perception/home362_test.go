@@ -40,18 +40,19 @@ func TestBuildDutySteer_RedNeed_Suppressed(t *testing.T) {
 	}
 }
 
-// TestBuildDutySteer_MildNeed_SuppressesToWork: ZBBS-HOME-400 Option B SUPERSEDED
-// HOME-362's old "a sub-red need still steers to work" behavior. The to-work cue
-// now defers on a mild-or-worse need too (matching the shift-duty warrant, which
-// already need-suppressed the to-work nudge), so a mild tiredness (10, in the
-// [8, red=20) mild band) no longer marches the NPC to its post. Red still
-// suppresses BOTH arms; the go-home arm is never need-suppressed — both covered
-// by TestBuildDutySteer_OptionBSuppression.
-func TestBuildDutySteer_MildNeed_SuppressesToWork(t *testing.T) {
+// TestBuildDutySteer_MildNeed_DoesNotSuppressToWork: ZBBS-HOME-463 narrowed the
+// to-work gate back to RED-only. HOME-400 Option B had deferred the commute on any
+// mild-or-worse need; that stranded chronically-needy NPCs in the mild-but-not-red
+// band (blocked from work, yet not red enough to be driven to resolve). A mild
+// tiredness (10, in the [8, red=20) band) now still steers the NPC to its post. Red
+// still suppresses BOTH arms (TestBuildDutySteer_RedNeed_Suppressed); the restock/
+// offer suppressors and the go-home arm are covered by TestBuildDutySteer_OptionBSuppression.
+func TestBuildDutySteer_MildNeed_DoesNotSuppressToWork(t *testing.T) {
 	snap := dutySnap(600, 360, 1080) // 10:00, on shift via dawn/dusk window
 	a := home362OnShiftAwayActor(10) // mild tiredness ([8,20)), not red
-	if steer := dutySteer(snap, a, dutyAnchors); steer != nil {
-		t.Fatalf("want nil — a mild need now suppresses the to-work steer (HOME-400), got %+v", steer)
+	steer := dutySteer(snap, a, dutyAnchors)
+	if steer == nil || !steer.ToWork {
+		t.Fatalf("want a to-work steer — a mild need must NOT suppress it (HOME-463), got %+v", steer)
 	}
 }
 
