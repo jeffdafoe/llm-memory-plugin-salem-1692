@@ -132,13 +132,18 @@ func (ActorArrived) isSimEvent() {}
 // structure removed out from under a standing actor, an admin move) and
 // backstops a dropped npc_walking. ZBBS-WORK-373.
 //
-// Empty InsideStructureID = the actor is now outdoors. No At field: the wire
-// frame carries only id + inside + inside_structure_id, so no wall-clock is
-// needed and the emit needs no `now` threaded through its callers.
+// Empty InsideStructureID = the actor is now outdoors. X/Y are the actor's
+// padded-grid tile at the flip (ZBBS-HOME-464): the client snaps the sprite to
+// that tile before changing visibility, so an inside flip landing while a walk
+// is still un-rendered hides or reveals the NPC at its real tile rather than a
+// stale one. No At field: the wire frame carries no wall-clock, so no `now` is
+// threaded through callers.
 type ActorInsideChanged struct {
 	EventBase
 	ActorID           ActorID
 	InsideStructureID StructureID // empty = now outdoors
+	X                 int         // actor's padded-grid tile at the flip (ZBBS-HOME-464)
+	Y                 int
 }
 
 func (ActorInsideChanged) isSimEvent() {}
