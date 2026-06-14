@@ -149,14 +149,25 @@ func TestShiftDutyTarget_NoDutyWhenWhereItBelongs(t *testing.T) {
 
 func TestShiftDutyTarget_NeedSuppressesToWorkButNotToHome(t *testing.T) {
 	w := sleepTestWorld()
-	// On-shift, not at work, but hungry (>= needSilentFloor) → to-work suppressed.
-	hungry := shiftNPC("a", KindNPCStateful, "shop", "home", "home")
-	hungry.ScheduleStartMin = intptr(420)
-	hungry.ScheduleEndMin = intptr(960)
-	hungry.Needs["hunger"] = 10 // mild tier (>= 8)
-	w.Actors["a"] = hungry
-	if _, _, ok := shiftDutyTarget(w, hungry, 600, time.Now()); ok {
-		t.Error("on-shift to-work nudge should be suppressed by a mild+ need")
+	// On-shift, not at work, with a RED need → to-work suppressed (resolve the
+	// pressing need first). ZBBS-HOME-463: only red suppresses now, not mild.
+	redNeed := shiftNPC("a", KindNPCStateful, "shop", "home", "home")
+	redNeed.ScheduleStartMin = intptr(420)
+	redNeed.ScheduleEndMin = intptr(960)
+	redNeed.Needs["hunger"] = 22 // red tier (>= the default red threshold)
+	w.Actors["a"] = redNeed
+	if _, _, ok := shiftDutyTarget(w, redNeed, 600, time.Now()); ok {
+		t.Error("on-shift to-work nudge should be suppressed by a RED need")
+	}
+	// A merely MILD need no longer suppresses the to-work commute (ZBBS-HOME-463) —
+	// the old mild gate stranded chronically-needy NPCs short of their post.
+	mild := shiftNPC("c", KindNPCStateful, "shop", "home", "home")
+	mild.ScheduleStartMin = intptr(420)
+	mild.ScheduleEndMin = intptr(960)
+	mild.Needs["hunger"] = 10 // mild tier ([8, 18))
+	w.Actors["c"] = mild
+	if target, toWork, ok := shiftDutyTarget(w, mild, 600, time.Now()); !ok || target != "shop" || !toWork {
+		t.Errorf("mild need must NOT suppress to-work; got (%q,%v,%v)", target, toWork, ok)
 	}
 	// Same need value, but off-shift at work → to-home is NOT suppressed.
 	tiredAtWork := shiftNPC("b", KindNPCStateful, "shop", "home", "shop")

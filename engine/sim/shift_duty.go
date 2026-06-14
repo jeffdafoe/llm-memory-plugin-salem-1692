@@ -141,17 +141,22 @@ func effectiveShiftWindow(w *World, a *Actor) (start, end int, ok bool) {
 	return dawnH*60 + dawnM, duskH*60 + duskM, true
 }
 
-// anyNeedMildOrWorse reports whether the actor has any need at mild tier or
-// above (value >= needSilentFloor). Suppresses the return-to-WORK nudge so a
-// hungry/tired NPC deals with its need first (v1 WORK-234).
-func anyNeedMildOrWorse(w *World, a *Actor) bool {
+// anyNeedRedOrWorse reports whether the actor has any need at the red tier or
+// above (value >= the need's red threshold). Suppresses the to-WORK commute so a
+// genuinely distressed NPC resolves the pressing need first. ZBBS-HOME-463
+// narrowed this from the old mild-or-worse gate (v1 WORK-234): the mild gate
+// stranded chronically-needy NPCs in the mild-but-not-red band — blocked from
+// work, yet not yet driven to resolve (need-resolution only fires at red) — e.g.
+// a homeless blacksmith parked at the inn all shift. Aligning the commute gate
+// with the resolution threshold (red) closes that dead zone.
+func anyNeedRedOrWorse(w *World, a *Actor) bool {
 	for _, n := range Needs {
 		value, ok := a.Needs[n.Key]
 		if !ok {
 			continue // a missing need is not an unmet need — don't suppress on it
 		}
 		threshold := w.Settings.NeedThresholds.Get(n.Key)
-		if NeedLabelTier(value, threshold) >= NeedMild {
+		if NeedLabelTier(value, threshold) >= NeedRed {
 			return true
 		}
 	}
@@ -302,9 +307,10 @@ func shiftDutyTarget(w *World, a *Actor, nowMinute int, now time.Time) (target S
 
 	switch {
 	case onShift && a.WorkStructureID != "" && !atWork:
-		// Heading to work — suppressed for an agent with an unmet need (resolve
-		// it first; decoratives have no real needs, so they always go).
-		if isAgent && anyNeedMildOrWorse(w, a) {
+		// Heading to work — suppressed only for an agent with a RED (pressing)
+		// need, so it resolves that first; a merely mild need no longer defers the
+		// commute (ZBBS-HOME-463). Decoratives have no real needs, so they always go.
+		if isAgent && anyNeedRedOrWorse(w, a) {
 			return "", false, false
 		}
 		// Arrival stagger (ZBBS-HOME-309): delay the to-work duty's INITIAL
