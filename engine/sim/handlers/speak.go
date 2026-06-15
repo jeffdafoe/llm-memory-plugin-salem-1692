@@ -3,7 +3,6 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -171,15 +170,15 @@ func DecodeSpeakArgs(raw json.RawMessage) (any, error) {
 	var extra any
 	if err := dec.Decode(&extra); err != io.EOF {
 		if err == nil {
-			return nil, errors.New("speak: trailing data after JSON object")
+			return nil, modelSafef("speak: trailing data after JSON object")
 		}
 		return nil, fmt.Errorf("speak: malformed trailing data: %w", err)
 	}
 	if args.Text == "" {
-		return nil, errors.New("speak: text is required")
+		return nil, modelSafef("speak: text is required")
 	}
 	if n := utf8.RuneCountInString(args.Text); n > MaxSpeakTextChars {
-		return nil, fmt.Errorf(
+		return nil, modelSafef(
 			"speak: text exceeds %d-character cap (got %d characters)",
 			MaxSpeakTextChars, n,
 		)
@@ -190,17 +189,17 @@ func DecodeSpeakArgs(raw json.RawMessage) (any, error) {
 	// checked here: that needs world state, and a bad mention silently
 	// drops world-side rather than failing the speak.
 	if len(args.Mentions) > MaxSpeakMentions {
-		return nil, fmt.Errorf(
+		return nil, modelSafef(
 			"speak: at most %d mentions allowed (got %d)",
 			MaxSpeakMentions, len(args.Mentions),
 		)
 	}
 	for i, m := range args.Mentions {
 		if strings.TrimSpace(m.Item) == "" {
-			return nil, fmt.Errorf("speak: mentions[%d].item is required", i)
+			return nil, modelSafef("speak: mentions[%d].item is required", i)
 		}
 		if n := utf8.RuneCountInString(m.Item); n > MaxSpeakMentionItemChars {
-			return nil, fmt.Errorf(
+			return nil, modelSafef(
 				"speak: mentions[%d].item exceeds %d-character cap (got %d characters)",
 				i, MaxSpeakMentionItemChars, n,
 			)
@@ -234,7 +233,7 @@ func HandleSpeak(in HandlerInput) (sim.Command, error) {
 	}
 	text := strings.TrimSpace(args.Text)
 	if text == "" {
-		return sim.Command{}, errors.New("speak: text is empty after trim — nothing to say")
+		return sim.Command{}, modelSafef("speak: text is empty after trim — nothing to say")
 	}
 	// Control-character scan: reject anything outside \n \r \t and the
 	// printable Unicode range. Catches paste mistakes (null bytes,
@@ -245,7 +244,7 @@ func HandleSpeak(in HandlerInput) (sim.Command, error) {
 	// + the warrant excerpt will both be re-rendered into other actors'
 	// perception prompts — control codes there would derail rendering.
 	if i := indexInvalidControlChar(text); i >= 0 {
-		return sim.Command{}, fmt.Errorf(
+		return sim.Command{}, modelSafef(
 			"speak: text contains a disallowed control character at byte offset %d "+
 				"(only \\n, \\r, \\t allowed)", i)
 	}

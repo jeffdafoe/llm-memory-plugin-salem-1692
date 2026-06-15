@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/llm"
@@ -97,10 +98,25 @@ func (v *Validator) Validate(call llm.RawToolCall) (*ValidatedCall, *ValidationE
 
 	decoded, err := entry.Decode(call.Arguments)
 	if err != nil {
+		// Decode errors split two ways. Hand-authored validation failures
+		// (missing required field, out-of-range bound, length cap) are
+		// model-safe by construction — they echo only the model's own
+		// arguments — so the decoder tags them modelSafeError and we
+		// surface the reason verbatim, letting a weak model self-correct
+		// instead of looping on an opaque "decode failed" (ZBBS-WORK-413).
+		// Raw encoding/json failures can quote arbitrary input fragments,
+		// so they stay generic; Cause carries the detail for logs either
+		// way. Mirrors the command layer's sim.ModelFacingError handling in
+		// the harness dispatch path.
+		msg := "argument decode failed"
+		var safe modelSafeError
+		if errors.As(err, &safe) {
+			msg = safe.Error()
+		}
 		return nil, &ValidationError{
 			Kind:    ValidationErrorMalformedArgs,
 			Tool:    call.Name,
-			Message: "argument decode failed",
+			Message: msg,
 			Cause:   err,
 		}
 	}
@@ -112,4 +128,38 @@ func (v *Validator) Validate(call llm.RawToolCall) (*ValidatedCall, *ValidationE
 		RawCallID:   call.ID,
 		Index:       call.Index,
 	}, nil
+}
+
+// modelSafeError marks a validation failure whose message is safe to show
+// the model verbatim. Two layers return it (via modelSafef):
+//   - decoders, for hand-authored argument checks (required field, min/max
+//     bound, length cap, structural shape); Validate surfaces the reason as
+//     the malformed_args message.
+//   - commit/observation handlers, for post-decode static checks (empty
+//     after trim, control character, duplicate name); the harness dispatch
+//     surfaces the reason instead of the generic handler_failed.
+//
+// Either way the message only ever echoes the model's own arguments — never
+// internal state, file paths, or secrets — so a weak model can self-correct.
+// Every OTHER error stays generic: a raw encoding/json failure (which can
+// quote arbitrary input) or a genuinely internal handler error (a search,
+// API, or registration failure). Fail-closed — only an explicit
+// modelSafeError surfaces. This is the handlers-package analogue of
+// sim.ModelFacingError, which does the same for world-command rejections.
+type modelSafeError struct {
+	msg string
+}
+
+func (e modelSafeError) Error() string {
+	return e.msg
+}
+
+// modelSafef builds a model-safe error (see modelSafeError) — a tool-error
+// reason the model is allowed to read. Use it for hand-authored argument and
+// post-decode static-validation checks; NEVER use it to wrap a
+// json.Decode/Unmarshal error or any internal failure — those must stay
+// generic, so keep them on fmt.Errorf("...: %w", err) (or a plain error the
+// dispatch genericizes).
+func modelSafef(format string, a ...any) error {
+	return modelSafeError{msg: fmt.Sprintf(format, a...)}
 }

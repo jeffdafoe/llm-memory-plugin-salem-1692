@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -85,7 +84,7 @@ const recallDescription = "Try to remember something — search your past notes,
 func DecodeRecallArgs(raw json.RawMessage) (any, error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return nil, errors.New("recall: arguments must be a JSON object")
+		return nil, modelSafef("recall: arguments must be a JSON object")
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
@@ -96,7 +95,7 @@ func DecodeRecallArgs(raw json.RawMessage) (any, error) {
 	var extra any
 	if err := dec.Decode(&extra); err != io.EOF {
 		if err == nil {
-			return nil, errors.New("recall: trailing data after JSON object")
+			return nil, modelSafef("recall: trailing data after JSON object")
 		}
 		return nil, fmt.Errorf("recall: malformed trailing data: %w", err)
 	}
