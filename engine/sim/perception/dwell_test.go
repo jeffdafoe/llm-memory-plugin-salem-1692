@@ -169,3 +169,48 @@ func TestBuildActorView_AliasIsolatedFromWorld(t *testing.T) {
 		t.Errorf("snapshot RemainingTicks corrupted: %d", rt)
 	}
 }
+
+// TestRenderActiveDwellCredit_StayMessage pins the ZBBS-WORK-409 dwell line —
+// the persistent perception cue that keeps an NPC seated through a meal. It must
+// name the time to FINISH and the stake of leaving (no "coins": an item dwell
+// can be self-consumed pack food), stay food-agnostic via the need, and leave
+// object dwells (no countdown) untouched.
+func TestRenderActiveDwellCredit_StayMessage(t *testing.T) {
+	rt := 6
+	cases := []struct {
+		name string
+		c    DwellCreditView
+		want string
+	}{
+		{
+			name: "item meal: time-to-finish + stake, no coins",
+			c: DwellCreditView{
+				Source: sim.DwellSourceItem, Kind: "porridge", Attribute: "hunger",
+				StructureLabel: "the Inn", RemainingTicks: &rt, PeriodMinutes: 2,
+			},
+			want: "eating porridge at the Inn, it will take you 12 more minute(s) to finish eating it all. If you leave now you will waste the rest, and you will remain hungry",
+		},
+		{
+			name: "item drink: drink wording",
+			c: DwellCreditView{
+				Source: sim.DwellSourceItem, Kind: "ale", Attribute: "thirst",
+				StructureLabel: "the Tavern", RemainingTicks: &rt, PeriodMinutes: 2,
+			},
+			want: "drinking ale at the Tavern, it will take you 12 more minute(s) to finish drinking it all. If you leave now you will waste the rest, and you will remain thirsty",
+		},
+		{
+			name: "object dwell (no countdown): unchanged, no stay clause",
+			c: DwellCreditView{
+				Source: sim.DwellSourceObject, Attribute: "tiredness", StructureLabel: "the old oak",
+			},
+			want: "resting at the old oak",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := renderActiveDwellCredit(tc.c); got != tc.want {
+				t.Errorf("renderActiveDwellCredit\n got:  %q\n want: %q", got, tc.want)
+			}
+		})
+	}
+}

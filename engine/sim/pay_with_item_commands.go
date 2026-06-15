@@ -172,6 +172,12 @@ type PayWithItemResult struct {
 	Booked          bool    // lodging Order minted, awaiting keeper check-in
 	SatisfiesNeed   NeedKey // primary need the consumed item satisfies ("" when n/a)
 	FeltAfter       string  // buyer's post-meal felt label(s) for the item's needs; "" = sated
+	// MealMinutes is the buyer's eat-here dwell duration in minutes when this
+	// settle started a sit-down meal/drink (0 otherwise — take-home, immediate-
+	// only items, or eating-while-walking). The slow-burn payoff is collected
+	// only by staying put, so the settle feedback uses this to tell the buyer to
+	// stay and finish instead of walking off and wasting it (ZBBS-WORK-409).
+	MealMinutes int
 	// ReroutedSellerName is the worker's display name when the model named a
 	// building (its workplace) instead of the person and the engine rerouted
 	// the offer to them (ZBBS-HOME-460). Empty on the common path. The harness
@@ -981,6 +987,7 @@ func runPayWithItemFastPath(
 		Booked:          out.booked,
 		SatisfiesNeed:   out.satisfiesNeed,
 		FeltAfter:       out.feltAfter,
+		MealMinutes:     out.mealMinutes,
 	}, nil
 }
 
@@ -1949,6 +1956,27 @@ type payTransferOutcome struct {
 	booked          bool    // lodging Order minted for keeper check-in
 	satisfiesNeed   NeedKey // primary need the consumed item satisfies
 	feltAfter       string  // buyer's post-consume felt label(s); "" = sated
+	mealMinutes     int     // buyer's eat-here dwell duration in minutes; 0 = no ongoing meal/drink (ZBBS-WORK-409)
+}
+
+// maxDwellMinutes returns the longest remaining dwell duration in minutes across
+// the stamped item-dwell snapshots (0 when none carry a countdown). An eat-here
+// meal or drink keeps easing a need for this long after the first bite, but the
+// buyer collects it only by staying put — walking off deletes the credit. The
+// settle feedback uses this to tell the buyer to stay and finish rather than
+// bolt and forfeit the food and the coins (ZBBS-WORK-409).
+func maxDwellMinutes(stamped []DwellCreditSnapshot) int {
+	best := 0
+	for _, s := range stamped {
+		if s.RemainingTicks == nil {
+			continue
+		}
+		m := (*s.RemainingTicks) * s.PeriodMinutes
+		if m > best {
+			best = m
+		}
+	}
+	return best
 }
 
 // buyerFeltAfterConsume reports the buyer's post-consume felt state for the
@@ -2205,6 +2233,7 @@ func commitPayTransfer(
 			if cid == entry.BuyerID {
 				eventKept = kept
 				out.buyerAte = eat
+				out.mealMinutes = maxDwellMinutes(stamped)
 			}
 			w.emit(&ItemConsumed{
 				ActorID: cid,

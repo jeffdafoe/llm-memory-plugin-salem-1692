@@ -1088,6 +1088,34 @@ func settledPayContent(args PayWithItemArgs, r sim.PayWithItemResult, clampNote 
 		fmt.Fprintf(&b, "[ok] Settled on the spot — %s hands over %d %s for nothing.", seller, args.Qty, item)
 	}
 	b.WriteString(clampNote)
+	// ZBBS-WORK-409: an eat-here meal/drink keeps easing the need for MealMinutes
+	// after the first bite, but only while the buyer stays put — walking off
+	// deletes the dwell credit, wasting the food and the coins and leaving the
+	// need to return. The generic "call done() now unless something else needs
+	// you" closer read as "free to leave" and let NPCs bolt mid-meal (Prudence,
+	// Inn, 2026-06-15), since nothing told them a sit-down meal means staying.
+	// Voice the same stay message as the perception dwell line (sim.DwellStayClause)
+	// so the buyer hears it consistently, fold in the WORK-391/405 anti-rebuy
+	// guard, and make clear done() keeps them seated. Gated to hunger/thirst —
+	// the only needs purchasable eat-here items satisfy; any other dwell falls
+	// through to the generic closer below.
+	if r.MealMinutes > 0 && (r.SatisfiesNeed == "hunger" || r.SatisfiesNeed == "thirst") {
+		gerund := "eating"
+		noMore := " Buy no more food now."
+		if r.SatisfiesNeed == "thirst" {
+			gerund = "drinking"
+			noMore = " Buy no more drink now."
+		}
+		stay := sim.DwellStayClause(r.MealMinutes, r.SatisfiesNeed, " and the coins you paid")
+		stay = strings.ToUpper(stay[:1]) + stay[1:]
+		fmt.Fprintf(&b, " You start %s it now. %s.", gerund, stay)
+		if r.KeptToInventory > 0 {
+			fmt.Fprintf(&b, " The other %d goes into your pack.", r.KeptToInventory)
+		}
+		b.WriteString(noMore)
+		fmt.Fprintf(&b, " Call done() to keep %s where you sit.", gerund)
+		return b.String()
+	}
 	switch {
 	case r.BuyerAte > 0 && r.KeptToInventory > 0:
 		fmt.Fprintf(&b, " You eat %d now; %d goes into your pack — you can absorb no more.", r.BuyerAte, r.KeptToInventory)

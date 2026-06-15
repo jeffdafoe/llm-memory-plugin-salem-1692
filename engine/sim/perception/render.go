@@ -554,8 +554,9 @@ func renderInFlightMove(m InFlightMoveView) string {
 }
 
 // renderActiveDwellCredit produces the felt-language self-perception
-// line for one in-progress dwell credit ("eating stew at the tavern,
-// ~14 minutes remaining"). The load-bearing prompt line that keeps
+// line for one in-progress dwell credit ("eating stew at the tavern, it
+// will take you 14 more minutes to finish eating it all. ..."). The
+// load-bearing prompt line that keeps
 // LLM-driven NPCs from walking away mid-meal: every perception build
 // during the meal renders this, so plan-stage always sees the active
 // effect even if no per-tick narration warrant landed this turn.
@@ -581,8 +582,16 @@ func renderActiveDwellCredit(c DwellCreditView) string {
 		subject = fmt.Sprintf("%s at %s", subject, sanitizeInline(where))
 	}
 	if c.RemainingTicks != nil && c.PeriodMinutes > 0 {
+		// ZBBS-WORK-409: "~N minute(s) remaining" never said remaining OF WHAT —
+		// it read as a countdown until the actor was free to go, so NPCs walked
+		// off mid-meal and forfeited the slow-burn payoff (the credit deletes on
+		// walk-away). Spell out, in prose, how long it takes to FINISH and what
+		// leaving costs (sim.DwellStayClause — shared with the settle feedback so
+		// the buyer hears one consistent message), so this load-bearing parking
+		// line does its job instead of inviting an exit. No coins clause here: an
+		// item dwell can also be self-consumed pack food, not a purchase.
 		minutes := (*c.RemainingTicks) * c.PeriodMinutes
-		subject = fmt.Sprintf("%s, ~%d minute(s) remaining", subject, minutes)
+		subject = fmt.Sprintf("%s, %s", subject, sim.DwellStayClause(minutes, c.Attribute, ""))
 	}
 	return subject
 }
