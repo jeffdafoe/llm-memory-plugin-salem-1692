@@ -54,8 +54,8 @@ func TestRenderSurroundings_InsideHuddleLinesOmitIDs(t *testing.T) {
 	insideOut := render(SurroundingsView{
 		InsideStructureID: "tavern", StructureName: "Tavern",
 	})
-	if !strings.Contains(insideOut, "You are inside Tavern.\n") {
-		t.Errorf("inside line should read 'You are inside Tavern.':\n%s", insideOut)
+	if !strings.Contains(insideOut, "You are inside Tavern, with no one else here to hear you speak.\n") {
+		t.Errorf("inside (alone) line should read 'You are inside Tavern, with no one else here to hear you speak.':\n%s", insideOut)
 	}
 	if strings.Contains(insideOut, "[tavern]") || strings.Contains(insideOut, "tavern\n") {
 		t.Errorf("inside line still leaks the StructureID:\n%s", insideOut)
@@ -77,8 +77,8 @@ func TestRenderSurroundings_InsideHuddleLinesOmitIDs(t *testing.T) {
 
 	// Solo huddle (a 1-member huddle is just "alone") — no id, no "only member".
 	soloOut := render(SurroundingsView{HuddleID: "h1"})
-	if !strings.Contains(soloOut, "You are outdoors.\n") {
-		t.Errorf("solo huddle should read 'You are outdoors.':\n%s", soloOut)
+	if !strings.Contains(soloOut, "You are outdoors, with no one else here to hear you speak.\n") {
+		t.Errorf("solo huddle (alone) should read 'You are outdoors, with no one else here to hear you speak.':\n%s", soloOut)
 	}
 	if strings.Contains(soloOut, "h1") || strings.Contains(soloOut, "huddle") {
 		t.Errorf("solo line still leaks huddle jargon/id:\n%s", soloOut)
@@ -86,8 +86,8 @@ func TestRenderSurroundings_InsideHuddleLinesOmitIDs(t *testing.T) {
 
 	// No huddle: plain outdoors, no jargon.
 	noHuddleOut := render(SurroundingsView{})
-	if !strings.Contains(noHuddleOut, "You are outdoors.\n") {
-		t.Errorf("no-huddle line should read 'You are outdoors.':\n%s", noHuddleOut)
+	if !strings.Contains(noHuddleOut, "You are outdoors, with no one else here to hear you speak.\n") {
+		t.Errorf("no-huddle (alone) line should read 'You are outdoors, with no one else here to hear you speak.':\n%s", noHuddleOut)
 	}
 	if strings.Contains(noHuddleOut, "huddle") {
 		t.Errorf("no-huddle line still leaks the word 'huddle':\n%s", noHuddleOut)

@@ -684,12 +684,31 @@ func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 	default:
 		location = "outdoors"
 	}
-	if len(s.HuddleMembers) > 0 {
+	switch {
+	case len(s.HuddleMembers) > 0:
 		// A huddle is a conversational cluster, so "with" names who the actor
 		// is gathered with — the speak tool reaches exactly these people.
 		fmt.Fprintf(b, "You are %s, with %s.\n", location, joinHuddleMembers(s.HuddleMembers))
-	} else {
-		fmt.Fprintf(b, "You are %s.\n", location)
+	case len(s.CoPresent) > 0:
+		// Not conversing, but others are within earshot. Name them (every turn) so
+		// the actor can address someone and start talking, instead of discovering
+		// "no one here to hear you" by tripping the speak gate. This is the SAME
+		// set the speak path would reach (ZBBS-WORK-407).
+		names := make([]string, len(s.CoPresent))
+		for i, m := range s.CoPresent {
+			names[i] = descriptorLabel(m.DisplayName, m.Role, m.Acquainted)
+		}
+		verb := "is"
+		if len(names) > 1 {
+			verb = "are"
+		}
+		fmt.Fprintf(b, "You are %s. %s %s here with you — speak to start talking.\n",
+			location, joinNames(names), verb)
+	default:
+		// No one within earshot. State it plainly, every turn, so the actor turns
+		// to a solo task or moves to find company rather than speaking to an empty
+		// room. Echoes the speak gate's wording ("no one here to hear you").
+		fmt.Fprintf(b, "You are %s, with no one else here to hear you speak.\n", location)
 	}
 
 	// Time of day as ambient prose (ZBBS-HOME-351). v2 rendered no clock at all,
