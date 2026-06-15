@@ -199,11 +199,18 @@ func TestRenderActiveDwellCredit_StayMessage(t *testing.T) {
 			want: "drinking ale at the Tavern, it will take you 12 more minute(s) to finish drinking it all. If you leave now you will waste the rest, and you will remain thirsty",
 		},
 		{
-			name: "object dwell (no countdown): unchanged, no stay clause",
+			name: "object dwell (tiredness): open-ended stay clause, no countdown/coins",
 			c: DwellCreditView{
 				Source: sim.DwellSourceObject, Attribute: "tiredness", StructureLabel: "the old oak",
 			},
-			want: "resting at the old oak",
+			want: "resting at the old oak, the longer you stay the more you recover, until you are rested. If you leave now you will stop recovering, and you will remain tired",
+		},
+		{
+			name: "object dwell (thirst at a well): drink-source wording",
+			c: DwellCreditView{
+				Source: sim.DwellSourceObject, Attribute: "thirst", StructureLabel: "the well",
+			},
+			want: "drinking at the well, the longer you stay the more you recover, until your thirst is quenched. If you leave now you will stop recovering, and you will remain thirsty",
 		},
 	}
 	for _, tc := range cases {
