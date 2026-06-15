@@ -61,27 +61,33 @@ func (c RenderConfig) normalized() RenderConfig {
 // RenderedPrompt is the output of Render: the prompt text plus the
 // accounting the harness loop needs.
 type RenderedPrompt struct {
-	// Text is the DURABLE turn — felt-state (## You) + the "what just
-	// happened" events. This is what the chat adapter persists and replays as
-	// conversation history (lean sim-history, ZBBS-WORK-364).
+	// Text is the DURABLE turn — the "what just happened" events, what the NPC
+	// should REMEMBER. This is what the chat adapter persists and replays as
+	// conversation history (lean sim-history, ZBBS-WORK-364). Self-state (## You)
+	// was moved OUT of here into EphemeralText by ZBBS-WORK-410 — it is point-in-
+	// time and a prior tick's stale "Coins in your purse: 0" was replaying as if
+	// it were the actor's current balance.
 	Text string
 
 	// EphemeralText is per-tick decision-support that must NOT persist into
-	// history: identity, surroundings, affordances (rest/food/lodging), owed
-	// orders, pay offers, and the act-now coda. The adapter attaches it to the
-	// CURRENT turn only (memory-api: /chat/send ephemeral_context). Splitting
-	// it out keeps replayed history lean — the static furniture can't pile up
-	// once per historical tick.
+	// history: the ## You self-state (coins/needs/carried goods, ZBBS-WORK-410),
+	// identity, surroundings, affordances (rest/food/lodging), owed orders, pay
+	// offers, and the act-now coda. The adapter attaches it to the CURRENT turn
+	// only (memory-api: /chat/send ephemeral_context). Splitting it out keeps
+	// replayed history lean — neither the static furniture nor the stale self-
+	// state can pile up once per historical tick.
 	EphemeralText string
 
 	// ContinuationText is the lean post-speak decision body the harness swaps in
-	// after the actor's first committed speak this tick (ZBBS-HOME-411). It drops
-	// the actionable affordances carried in EphemeralText — the inn/food/rest cues
-	// and the act-now coda that prime a re-pitch — and presents a stop-biased
-	// decision instead. Round 1 sends EphemeralText (the model may act); once the
-	// actor has spoken, the recency-dominant text biases it to done() rather than
-	// re-offer what it just said. Pairs with HOME-402's speak cap (the backstop)
-	// and the WORK-375 per-speak tool-result steer.
+	// after the actor's first committed speak this tick (ZBBS-HOME-411). It leads
+	// with the current ## You self-state (ZBBS-WORK-410, so a multi-round tick
+	// keeps live coins/needs in view once EphemeralText is swapped out), then
+	// drops the actionable affordances EphemeralText carries — the inn/food/rest
+	// cues and the act-now coda that prime a re-pitch — for a stop-biased decision
+	// instead. Round 1 sends EphemeralText (the model may act); once the actor has
+	// spoken, the recency-dominant text biases it to done() rather than re-offer
+	// what it just said. Pairs with HOME-402's speak cap (the backstop) and the
+	// WORK-375 per-speak tool-result steer.
 	ContinuationText string
 
 	// RenderedWarrantCount is how many warrants made it into the prompt.
@@ -127,20 +133,30 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	cfg = cfg.normalized()
 
 	var out RenderedPrompt
-	// Two streams (lean sim-history, ZBBS-WORK-364). `durable` is the felt-
-	// state (## You) + the "what just happened" events — what the NPC should
-	// REMEMBER; the chat adapter persists and replays it as conversation
-	// history. `ephemeral` is per-tick decision-support (identity, surroundings,
-	// affordances, owed orders, pay offers, the act-now coda) the adapter
-	// attaches to the CURRENT turn only and never persists, so the static
-	// furniture can't accumulate once per historical tick. The split is by
-	// SECTION — each renderer below is routed to one stream.
+	// Two streams (lean sim-history, ZBBS-WORK-364). `durable` is the "what just
+	// happened" events — what the NPC should REMEMBER; the chat adapter persists
+	// and replays it as conversation history. `ephemeral` is per-tick decision-
+	// support (self-state, identity, surroundings, affordances, owed orders, pay
+	// offers, the act-now coda) the adapter attaches to the CURRENT turn only and
+	// never persists, so the static furniture can't accumulate once per historical
+	// tick. The split is by SECTION — each renderer below is routed to one stream.
 	var durable strings.Builder
 	var ephemeral strings.Builder
 
-	// Durable: felt-state.
+	// Self-state (## You: coins, felt needs, carried goods) is per-tick decision-
+	// support, NOT durable memory — it is point-in-time and goes stale the instant
+	// the tick ends. It rides the EPHEMERAL stream (and is prepended to the post-
+	// speak continuation body below), so it shows on every round of the CURRENT
+	// tick but never enters the persisted/replayed history. When it was durable, a
+	// prior tick's "Coins in your purse: 0" replayed as if current and the NPC
+	// behaved as though broke (ZBBS-WORK-410). Rendered once, reused for both
+	// ephemeral bodies.
+	var selfState strings.Builder
+	renderActor(&selfState, p.Actor)
+
+	// Durable: just the turn header here; the "what just happened" events append
+	// below (## You is ephemeral now — ZBBS-WORK-410).
 	durable.WriteString("# Your turn\n\n")
-	renderActor(&durable, p.Actor)
 
 	// nameOf resolves an actor UUID to the subject's name for them — "you" for
 	// self, the acquaintance-gated label (Build's WarrantActorNames) for
@@ -203,9 +219,10 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 	// ledger_id is present whenever the tools are advertised.
 	payOffers := PendingPayOffers(p)
 
-	// Ephemeral: identity, surroundings, anchors, steers, relationships, the
-	// offers awaiting this actor's decision, owed orders, recovery/satiation/
-	// restock/lodging affordances, summons, scene.
+	// Ephemeral: self-state first (ZBBS-WORK-410), then identity, surroundings,
+	// anchors, steers, relationships, the offers awaiting this actor's decision,
+	// owed orders, recovery/satiation/restock/lodging affordances, summons, scene.
+	ephemeral.WriteString(selfState.String())
 	renderNarrativeState(&ephemeral, p.NarrativeState)
 	renderVendorOperating(&ephemeral, p.AtOwnBusiness)
 	renderSurroundings(&ephemeral, p.Surroundings)
@@ -265,7 +282,10 @@ func Render(p Payload, cfg RenderConfig) RenderedPrompt {
 
 	out.Text = durable.String()
 	out.EphemeralText = ephemeral.String()
-	out.ContinuationText = continuationDecisionText
+	// The post-speak continuation body also leads with current self-state so a
+	// multi-round tick keeps live coins/needs in view when EphemeralText's
+	// affordance furniture is swapped out (ZBBS-WORK-410).
+	out.ContinuationText = selfState.String() + continuationDecisionText
 	return out
 }
 
