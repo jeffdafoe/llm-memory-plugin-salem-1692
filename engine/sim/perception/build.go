@@ -623,22 +623,39 @@ func buildSurroundings(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnap
 				if memberID == actorID {
 					continue
 				}
-				m := HuddleMember{ID: memberID}
-				if peer := snap.Actors[memberID]; peer != nil {
-					m.DisplayName = peer.DisplayName
-					m.Role = peer.Role
-				}
-				if m.DisplayName != "" {
-					_, m.Acquainted = a.Acquaintances[m.DisplayName]
-				}
-				s.HuddleMembers = append(s.HuddleMembers, m)
+				s.HuddleMembers = append(s.HuddleMembers, resolveCoPresentMember(snap, a, memberID))
 			}
 			sort.Slice(s.HuddleMembers, func(i, j int) bool {
 				return s.HuddleMembers[i].ID < s.HuddleMembers[j].ID
 			})
 		}
+	} else {
+		// Not huddled: surface who is within earshot — the set the speak path would
+		// reach if the actor spoke now (ActorSnapshot.ColocatedAudienceIDs, computed
+		// world-side so this line and the speak no-audience gate share one scope
+		// rule). Same acquaintance gating as the huddle roster; the IDs arrive
+		// pre-sorted from the world-side helper. ZBBS-WORK-407.
+		for _, id := range a.ColocatedAudienceIDs {
+			s.CoPresent = append(s.CoPresent, resolveCoPresentMember(snap, a, id))
+		}
 	}
 	return s
+}
+
+// resolveCoPresentMember builds a HuddleMember view for memberID: display name +
+// role from the snapshot, acquaintance status from the subject's Acquaintances
+// map. Shared by the huddle roster and the co-presence line (ZBBS-WORK-407) so
+// both render with identical name-vs-descriptor gating.
+func resolveCoPresentMember(snap *sim.Snapshot, subj *sim.ActorSnapshot, memberID sim.ActorID) HuddleMember {
+	m := HuddleMember{ID: memberID}
+	if peer := snap.Actors[memberID]; peer != nil {
+		m.DisplayName = peer.DisplayName
+		m.Role = peer.Role
+	}
+	if m.DisplayName != "" {
+		_, m.Acquainted = subj.Acquaintances[m.DisplayName]
+	}
+	return m
 }
 
 // buildTurnState derives the subject's conversation turn-state (ZBBS-WORK-370)

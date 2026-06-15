@@ -684,12 +684,31 @@ func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 	default:
 		location = "outdoors"
 	}
-	if len(s.HuddleMembers) > 0 {
+	switch {
+	case len(s.HuddleMembers) > 0:
 		// A huddle is a conversational cluster, so "with" names who the actor
 		// is gathered with — the speak tool reaches exactly these people.
 		fmt.Fprintf(b, "You are %s, with %s.\n", location, joinHuddleMembers(s.HuddleMembers))
-	} else {
-		fmt.Fprintf(b, "You are %s.\n", location)
+	case len(s.CoPresent) > 0:
+		// Not conversing, but others are within earshot. Name them (every turn) so
+		// the actor can address someone and start talking, instead of discovering
+		// "no one here to hear you" by tripping the speak gate. This is the SAME
+		// set the speak path would reach (ZBBS-WORK-407).
+		names := make([]string, len(s.CoPresent))
+		for i, m := range s.CoPresent {
+			names[i] = descriptorLabel(m.DisplayName, m.Role, m.Acquainted)
+		}
+		verb := "is"
+		if len(names) > 1 {
+			verb = "are"
+		}
+		fmt.Fprintf(b, "You are %s. %s %s here with you — speak to start talking.\n",
+			location, joinNames(names), verb)
+	default:
+		// No one within earshot. State it plainly, every turn, so the actor turns
+		// to a solo task or moves to find company rather than speaking to an empty
+		// room. Echoes the speak gate's wording ("no one here to hear you").
+		fmt.Fprintf(b, "You are %s, with no one else here to hear you speak.\n", location)
 	}
 
 	// Time of day as ambient prose (ZBBS-HOME-351). v2 rendered no clock at all,
@@ -1466,6 +1485,22 @@ func renderPendingOffersFromMe(b *strings.Builder, offers []PendingOfferView) {
 	b.WriteString("Bide for their answer; make no second offer for the same goods while this one stands. Should you think better of it, withdraw_pay recalls it.\n")
 }
 
+// isSectionSurfacedKind reports whether a warrant kind is already surfaced by a
+// dedicated perception section, so renderWarrants must NOT also emit a generic
+// "what just happened" line for it — that produced the vague "something happened
+// nearby" catch-all (ZBBS-WORK-407). These warrants still wake the actor; their
+// content lives in their own section:
+//   - pay_offer  -> "## Offers awaiting your decision" (PayOffersForMe)
+//   - shift_duty -> the return-to-post steer (DutySteer)
+func isSectionSurfacedKind(k sim.WarrantKind) bool {
+	switch k {
+	case sim.WarrantKindPayOffer, sim.WarrantKindShiftDuty:
+		return true
+	default:
+		return false
+	}
+}
+
 func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(sim.ActorID) string, placeNameOf func(string) string, eatHereKind func(sim.ItemKind) bool, cfg RenderConfig, out *RenderedPrompt) {
 	// Nil-safe for direct/test callers — the main Render path always passes
 	// its closure, but the signature grew by a callback (ZBBS-WORK-405) and
@@ -1473,6 +1508,20 @@ func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(
 	if eatHereKind == nil {
 		eatHereKind = func(sim.ItemKind) bool { return false }
 	}
+	// ZBBS-WORK-407: drop warrants already surfaced by a dedicated section so they
+	// don't double-render as the vague "something happened nearby" catch-all. They
+	// still WAKE the actor (the reactor consumed them — that's how it ticks to read
+	// the section); they just have no standalone "what just happened" line. Filter
+	// a local copy so the caller's p.Warrants (scene grouping, telemetry) is
+	// untouched and the surviving lines keep contiguous numbering.
+	renderable := warrants[:0:0]
+	for _, wm := range warrants {
+		if isSectionSurfacedKind(wm.Kind()) {
+			continue
+		}
+		renderable = append(renderable, wm)
+	}
+	warrants = renderable
 	b.WriteString("## What just happened — address these\n")
 	if len(warrants) == 0 {
 		b.WriteString("(nothing specific — this is a routine check-in)\n")
@@ -1541,6 +1590,13 @@ func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string
 	case sim.DwellStartedWarrantReason:
 		return renderNarrationWarrantLine(n, w.Kind(), r.NarrationText, nameOf(w.TriggerActorID), maxTextBytes)
 	case sim.DwellEndedWarrantReason:
+		return renderNarrationWarrantLine(n, w.Kind(), r.NarrationText, nameOf(w.TriggerActorID), maxTextBytes)
+	case sim.DwellTickAppliedWarrantReason:
+		// ZBBS-WORK-407: the per-tick beat used to be suppressed (fell through to
+		// the vague "something happened" fallback) because it fired every minute.
+		// The wake is now cadenced to the red-tier boundary (handlers/dwell_reactor.go),
+		// so this fires at most once per dwell — render its felt line like its
+		// DwellStarted / DwellEnded siblings.
 		return renderNarrationWarrantLine(n, w.Kind(), r.NarrationText, nameOf(w.TriggerActorID), maxTextBytes)
 	case sim.AdminDirectiveWarrantReason:
 		return renderImpulseWarrantLine(n, r.Message, maxTextBytes)
