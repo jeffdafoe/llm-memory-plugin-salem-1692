@@ -3,7 +3,6 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -122,7 +121,7 @@ func DecodePayArgs(raw json.RawMessage) (any, error) {
 	// crisper error matches the contract.
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return nil, decodeErrf("pay: arguments must be a JSON object")
+		return nil, modelSafef("pay: arguments must be a JSON object")
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
@@ -135,27 +134,27 @@ func DecodePayArgs(raw json.RawMessage) (any, error) {
 	var extra any
 	if err := dec.Decode(&extra); err != io.EOF {
 		if err == nil {
-			return nil, decodeErrf("pay: trailing data after JSON object")
+			return nil, modelSafef("pay: trailing data after JSON object")
 		}
 		return nil, fmt.Errorf("pay: malformed trailing data: %w", err)
 	}
 	if args.Recipient == "" {
-		return nil, decodeErrf("pay: recipient is required")
+		return nil, modelSafef("pay: recipient is required")
 	}
 	if n := utf8.RuneCountInString(args.Recipient); n > MaxPayRecipientChars {
-		return nil, decodeErrf(
+		return nil, modelSafef(
 			"pay: recipient exceeds %d-character cap (got %d characters)",
 			MaxPayRecipientChars, n,
 		)
 	}
 	if args.Amount < 1 {
-		return nil, decodeErrf("pay: amount must be at least 1 (got %d)", args.Amount)
+		return nil, modelSafef("pay: amount must be at least 1 (got %d)", args.Amount)
 	}
 	if args.Amount > sim.MaxPayAmount {
-		return nil, decodeErrf("pay: amount exceeds maximum (got %d, max %d)", args.Amount, sim.MaxPayAmount)
+		return nil, modelSafef("pay: amount exceeds maximum (got %d, max %d)", args.Amount, sim.MaxPayAmount)
 	}
 	if n := utf8.RuneCountInString(args.For); n > MaxPayForChars {
-		return nil, decodeErrf(
+		return nil, modelSafef(
 			"pay: 'for' text exceeds %d-character cap (got %d characters)",
 			MaxPayForChars, n,
 		)
@@ -183,7 +182,7 @@ func HandlePay(in HandlerInput) (sim.Command, error) {
 	}
 	recipient := strings.TrimSpace(args.Recipient)
 	if recipient == "" {
-		return sim.Command{}, errors.New("pay: recipient is empty after trim")
+		return sim.Command{}, modelSafef("pay: recipient is empty after trim")
 	}
 	// Normalize ForText whitespace + reject ALL control chars. Unlike
 	// speak's freeform `text` (where \n / \r / \t are legitimate paragraph
@@ -198,7 +197,7 @@ func HandlePay(in HandlerInput) (sim.Command, error) {
 	forText := strings.Join(strings.Fields(args.For), " ")
 	if forText != "" {
 		if i := indexInvalidControlChar(forText); i >= 0 {
-			return sim.Command{}, fmt.Errorf(
+			return sim.Command{}, modelSafef(
 				"pay: 'for' contains a disallowed control character at byte offset %d", i)
 		}
 	}

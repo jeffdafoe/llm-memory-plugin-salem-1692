@@ -143,7 +143,7 @@ const offerTradeDescription = "Propose a direct trade (barter) with someone in y
 func DecodeOfferTradeArgs(raw json.RawMessage) (any, error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return nil, decodeErrf("offer_trade: arguments must be a JSON object")
+		return nil, modelSafef("offer_trade: arguments must be a JSON object")
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
@@ -154,43 +154,43 @@ func DecodeOfferTradeArgs(raw json.RawMessage) (any, error) {
 	var extra any
 	if err := dec.Decode(&extra); err != io.EOF {
 		if err == nil {
-			return nil, decodeErrf("offer_trade: trailing data after JSON object")
+			return nil, modelSafef("offer_trade: trailing data after JSON object")
 		}
 		return nil, fmt.Errorf("offer_trade: malformed trailing data: %w", err)
 	}
 
 	if args.With == "" {
-		return nil, decodeErrf("offer_trade: with is required")
+		return nil, modelSafef("offer_trade: with is required")
 	}
 	if n := utf8.RuneCountInString(args.With); n > MaxPayWithItemNameChars {
-		return nil, decodeErrf(
+		return nil, modelSafef(
 			"offer_trade: with exceeds %d-character cap (got %d characters)",
 			MaxPayWithItemNameChars, n,
 		)
 	}
 	if args.WantItem == "" {
-		return nil, decodeErrf("offer_trade: want_item is required")
+		return nil, modelSafef("offer_trade: want_item is required")
 	}
 	if n := utf8.RuneCountInString(args.WantItem); n > MaxPayWithItemItemChars {
-		return nil, decodeErrf(
+		return nil, modelSafef(
 			"offer_trade: want_item exceeds %d-character cap (got %d characters)",
 			MaxPayWithItemItemChars, n,
 		)
 	}
 	if args.WantQty < 1 {
-		return nil, decodeErrf("offer_trade: want_qty must be at least 1 (got %d)", args.WantQty)
+		return nil, modelSafef("offer_trade: want_qty must be at least 1 (got %d)", args.WantQty)
 	}
 	if args.WantQty > sim.MaxPayWithItemQty {
-		return nil, decodeErrf("offer_trade: want_qty exceeds maximum (got %d, max %d)", args.WantQty, sim.MaxPayWithItemQty)
+		return nil, modelSafef("offer_trade: want_qty exceeds maximum (got %d, max %d)", args.WantQty, sim.MaxPayWithItemQty)
 	}
 	// Coins are optional (>= 0) — a trade may give goods, coins, or both,
 	// but must give at least one. The "must give something" rule is checked
 	// after the give-items decode below.
 	if args.Coins < 0 {
-		return nil, decodeErrf("offer_trade: coins cannot be negative (got %d)", args.Coins)
+		return nil, modelSafef("offer_trade: coins cannot be negative (got %d)", args.Coins)
 	}
 	if args.Coins > sim.MaxPayWithItemAmount {
-		return nil, decodeErrf("offer_trade: coins exceeds maximum (got %d, max %d)", args.Coins, sim.MaxPayWithItemAmount)
+		return nil, modelSafef("offer_trade: coins exceeds maximum (got %d, max %d)", args.Coins, sim.MaxPayWithItemAmount)
 	}
 	// Reuse the pay_items decode checks (count cap, rune cap, qty bounds) on
 	// the give lines — they share the payItemArg shape — but scope the error
@@ -199,10 +199,10 @@ func DecodeOfferTradeArgs(raw json.RawMessage) (any, error) {
 		return nil, err
 	}
 	if args.Coins == 0 && len(args.Give) == 0 {
-		return nil, decodeErrf("offer_trade: trade must give goods or coins (add give lines, set coins, or both)")
+		return nil, modelSafef("offer_trade: trade must give goods or coins (add give lines, set coins, or both)")
 	}
 	if n := utf8.RuneCountInString(args.For); n > MaxPayWithItemForChars {
-		return nil, decodeErrf(
+		return nil, modelSafef(
 			"offer_trade: 'for' text exceeds %d-character cap (got %d characters)",
 			MaxPayWithItemForChars, n,
 		)
@@ -228,23 +228,23 @@ func DecodeOfferTradeArgs(raw json.RawMessage) (any, error) {
 // proposer sees the field name they actually used.
 func validateGiveItemsDecode(items []payItemArg) error {
 	if len(items) > MaxPayWithItemPayItemsHandler {
-		return decodeErrf(
+		return modelSafef(
 			"offer_trade: give exceeds %d-entry cap (got %d)",
 			MaxPayWithItemPayItemsHandler, len(items),
 		)
 	}
 	for i, pi := range items {
 		if n := utf8.RuneCountInString(pi.Item); n > MaxPayWithItemItemChars {
-			return decodeErrf(
+			return modelSafef(
 				"offer_trade: give[%d].item exceeds %d-character cap (got %d characters)",
 				i, MaxPayWithItemItemChars, n,
 			)
 		}
 		if pi.Qty < 1 {
-			return decodeErrf("offer_trade: give[%d].qty must be at least 1 (got %d)", i, pi.Qty)
+			return modelSafef("offer_trade: give[%d].qty must be at least 1 (got %d)", i, pi.Qty)
 		}
 		if pi.Qty > sim.MaxPayWithItemQty {
-			return decodeErrf("offer_trade: give[%d].qty exceeds maximum (got %d, max %d)", i, pi.Qty, sim.MaxPayWithItemQty)
+			return modelSafef("offer_trade: give[%d].qty exceeds maximum (got %d, max %d)", i, pi.Qty, sim.MaxPayWithItemQty)
 		}
 	}
 	return nil

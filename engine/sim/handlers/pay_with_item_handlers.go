@@ -298,7 +298,7 @@ const payWithItemDescription = "Offer to buy items from another villager in your
 func DecodePayWithItemArgs(raw json.RawMessage) (any, error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return nil, decodeErrf("pay_with_item: arguments must be a JSON object")
+		return nil, modelSafef("pay_with_item: arguments must be a JSON object")
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
@@ -309,66 +309,66 @@ func DecodePayWithItemArgs(raw json.RawMessage) (any, error) {
 	var extra any
 	if err := dec.Decode(&extra); err != io.EOF {
 		if err == nil {
-			return nil, decodeErrf("pay_with_item: trailing data after JSON object")
+			return nil, modelSafef("pay_with_item: trailing data after JSON object")
 		}
 		return nil, fmt.Errorf("pay_with_item: malformed trailing data: %w", err)
 	}
 
 	if args.Seller == "" {
-		return nil, decodeErrf("pay_with_item: seller is required")
+		return nil, modelSafef("pay_with_item: seller is required")
 	}
 	if n := utf8.RuneCountInString(args.Seller); n > MaxPayWithItemNameChars {
-		return nil, decodeErrf(
+		return nil, modelSafef(
 			"pay_with_item: seller exceeds %d-character cap (got %d characters)",
 			MaxPayWithItemNameChars, n,
 		)
 	}
 	if args.Item == "" {
-		return nil, decodeErrf("pay_with_item: item is required")
+		return nil, modelSafef("pay_with_item: item is required")
 	}
 	if n := utf8.RuneCountInString(args.Item); n > MaxPayWithItemItemChars {
-		return nil, decodeErrf(
+		return nil, modelSafef(
 			"pay_with_item: item exceeds %d-character cap (got %d characters)",
 			MaxPayWithItemItemChars, n,
 		)
 	}
 	if args.Qty < 1 {
-		return nil, decodeErrf("pay_with_item: qty must be at least 1 (got %d)", args.Qty)
+		return nil, modelSafef("pay_with_item: qty must be at least 1 (got %d)", args.Qty)
 	}
 	if args.Qty > sim.MaxPayWithItemQty {
-		return nil, decodeErrf("pay_with_item: qty exceeds maximum (got %d, max %d)", args.Qty, sim.MaxPayWithItemQty)
+		return nil, modelSafef("pay_with_item: qty exceeds maximum (got %d, max %d)", args.Qty, sim.MaxPayWithItemQty)
 	}
 	// Coins are optional (>= 0) — an offer may pay with coins, goods
 	// (pay_items), or both, but must carry at least one. The "must offer
 	// something" rule is checked after pay_items decode below.
 	if args.Amount < 0 {
-		return nil, decodeErrf("pay_with_item: amount cannot be negative (got %d)", args.Amount)
+		return nil, modelSafef("pay_with_item: amount cannot be negative (got %d)", args.Amount)
 	}
 	if args.Amount > sim.MaxPayWithItemAmount {
-		return nil, decodeErrf("pay_with_item: amount exceeds maximum (got %d, max %d)", args.Amount, sim.MaxPayWithItemAmount)
+		return nil, modelSafef("pay_with_item: amount exceeds maximum (got %d, max %d)", args.Amount, sim.MaxPayWithItemAmount)
 	}
 	if err := validatePayItemsDecode("pay_with_item", args.PayItems); err != nil {
 		return nil, err
 	}
 	if args.Amount == 0 && len(args.PayItems) == 0 {
-		return nil, decodeErrf("pay_with_item: offer must include coins or goods (set amount, add pay_items, or both)")
+		return nil, modelSafef("pay_with_item: offer must include coins or goods (set amount, add pay_items, or both)")
 	}
 	if len(args.Consumers) > MaxPayWithItemConsumersHandler {
-		return nil, decodeErrf(
+		return nil, modelSafef(
 			"pay_with_item: consumers exceeds %d-entry cap (got %d)",
 			MaxPayWithItemConsumersHandler, len(args.Consumers),
 		)
 	}
 	for i, c := range args.Consumers {
 		if n := utf8.RuneCountInString(c); n > MaxPayWithItemNameChars {
-			return nil, decodeErrf(
+			return nil, modelSafef(
 				"pay_with_item: consumers[%d] exceeds %d-character cap (got %d characters)",
 				i, MaxPayWithItemNameChars, n,
 			)
 		}
 	}
 	if n := utf8.RuneCountInString(args.For); n > MaxPayWithItemForChars {
-		return nil, decodeErrf(
+		return nil, modelSafef(
 			"pay_with_item: 'for' text exceeds %d-character cap (got %d characters)",
 			MaxPayWithItemForChars, n,
 		)
@@ -377,10 +377,10 @@ func DecodePayWithItemArgs(raw json.RawMessage) (any, error) {
 	// re-enforces the same cap and the lodging-only rule; this is defense in
 	// depth at intake. Literal 30 mirrors sim.MaxOrderReadyInDays.
 	if args.ReadyInDays < 0 {
-		return nil, decodeErrf("pay_with_item: ready_in_days cannot be negative (got %d)", args.ReadyInDays)
+		return nil, modelSafef("pay_with_item: ready_in_days cannot be negative (got %d)", args.ReadyInDays)
 	}
 	if args.ReadyInDays > sim.MaxOrderReadyInDays {
-		return nil, decodeErrf("pay_with_item: ready_in_days too far ahead (got %d, max %d)", args.ReadyInDays, sim.MaxOrderReadyInDays)
+		return nil, modelSafef("pay_with_item: ready_in_days too far ahead (got %d, max %d)", args.ReadyInDays, sim.MaxOrderReadyInDays)
 	}
 	return args, nil
 }
@@ -397,19 +397,19 @@ func HandlePayWithItem(in HandlerInput) (sim.Command, error) {
 
 	seller := strings.TrimSpace(args.Seller)
 	if seller == "" {
-		return sim.Command{}, errors.New("pay_with_item: seller is empty after trim")
+		return sim.Command{}, modelSafef("pay_with_item: seller is empty after trim")
 	}
 	if i := indexStrictControlChar(seller); i >= 0 {
-		return sim.Command{}, fmt.Errorf(
+		return sim.Command{}, modelSafef(
 			"pay_with_item: seller contains a disallowed control character at byte offset %d", i)
 	}
 
 	item := strings.TrimSpace(args.Item)
 	if item == "" {
-		return sim.Command{}, errors.New("pay_with_item: item is empty after trim")
+		return sim.Command{}, modelSafef("pay_with_item: item is empty after trim")
 	}
 	if i := indexStrictControlChar(item); i >= 0 {
-		return sim.Command{}, fmt.Errorf(
+		return sim.Command{}, modelSafef(
 			"pay_with_item: item contains a disallowed control character at byte offset %d", i)
 	}
 
@@ -425,16 +425,16 @@ func HandlePayWithItem(in HandlerInput) (sim.Command, error) {
 		for i, raw := range args.Consumers {
 			trimmed := strings.TrimSpace(raw)
 			if trimmed == "" {
-				return sim.Command{}, fmt.Errorf(
+				return sim.Command{}, modelSafef(
 					"pay_with_item: consumers[%d] is empty after trim — every consumer must have a name.", i)
 			}
 			if idx := indexStrictControlChar(trimmed); idx >= 0 {
-				return sim.Command{}, fmt.Errorf(
+				return sim.Command{}, modelSafef(
 					"pay_with_item: consumers[%d] contains a disallowed control character at byte offset %d", i, idx)
 			}
 			key := strings.ToLower(trimmed)
 			if _, dup := seen[key]; dup {
-				return sim.Command{}, fmt.Errorf(
+				return sim.Command{}, modelSafef(
 					"pay_with_item: %q appears more than once in the consumer list — list each person only once.", trimmed)
 			}
 			seen[key] = struct{}{}
@@ -448,7 +448,7 @@ func HandlePayWithItem(in HandlerInput) (sim.Command, error) {
 	forText := strings.Join(strings.Fields(args.For), " ")
 	if forText != "" {
 		if i := indexInvalidControlChar(forText); i >= 0 {
-			return sim.Command{}, fmt.Errorf(
+			return sim.Command{}, modelSafef(
 				"pay_with_item: 'for' contains a disallowed control character at byte offset %d", i)
 		}
 	}
@@ -562,7 +562,7 @@ const declinePayDescription = "Decline a pending offer from a buyer in your curr
 func DecodeDeclinePayArgs(raw json.RawMessage) (any, error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return nil, decodeErrf("decline_pay: arguments must be a JSON object")
+		return nil, modelSafef("decline_pay: arguments must be a JSON object")
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
@@ -573,15 +573,15 @@ func DecodeDeclinePayArgs(raw json.RawMessage) (any, error) {
 	var extra any
 	if err := dec.Decode(&extra); err != io.EOF {
 		if err == nil {
-			return nil, decodeErrf("decline_pay: trailing data after JSON object")
+			return nil, modelSafef("decline_pay: trailing data after JSON object")
 		}
 		return nil, fmt.Errorf("decline_pay: malformed trailing data: %w", err)
 	}
 	if args.LedgerID < 1 {
-		return nil, decodeErrf("decline_pay: ledger_id must be at least 1 (got %d)", args.LedgerID)
+		return nil, modelSafef("decline_pay: ledger_id must be at least 1 (got %d)", args.LedgerID)
 	}
 	if n := utf8.RuneCountInString(args.Reason); n > MaxPayMessageHandlerRunes {
-		return nil, decodeErrf(
+		return nil, modelSafef(
 			"decline_pay: reason exceeds %d-character cap (got %d characters)",
 			MaxPayMessageHandlerRunes, n,
 		)
@@ -598,7 +598,7 @@ func HandleDeclinePay(in HandlerInput) (sim.Command, error) {
 	reason := normalizeShortMessage(args.Reason)
 	if reason != "" {
 		if i := indexInvalidControlChar(reason); i >= 0 {
-			return sim.Command{}, fmt.Errorf(
+			return sim.Command{}, modelSafef(
 				"decline_pay: reason contains a disallowed control character at byte offset %d", i)
 		}
 	}
@@ -649,7 +649,7 @@ const counterPayDescription = "Counter a pending offer with different terms. No 
 func DecodeCounterPayArgs(raw json.RawMessage) (any, error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return nil, decodeErrf("counter_pay: arguments must be a JSON object")
+		return nil, modelSafef("counter_pay: arguments must be a JSON object")
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
@@ -660,29 +660,29 @@ func DecodeCounterPayArgs(raw json.RawMessage) (any, error) {
 	var extra any
 	if err := dec.Decode(&extra); err != io.EOF {
 		if err == nil {
-			return nil, decodeErrf("counter_pay: trailing data after JSON object")
+			return nil, modelSafef("counter_pay: trailing data after JSON object")
 		}
 		return nil, fmt.Errorf("counter_pay: malformed trailing data: %w", err)
 	}
 	if args.LedgerID < 1 {
-		return nil, decodeErrf("counter_pay: ledger_id must be at least 1 (got %d)", args.LedgerID)
+		return nil, modelSafef("counter_pay: ledger_id must be at least 1 (got %d)", args.LedgerID)
 	}
 	// Coins are optional (>= 0) — a counter may propose coins, goods
 	// (pay_items), or both, but must propose at least one.
 	if args.Amount < 0 {
-		return nil, decodeErrf("counter_pay: amount cannot be negative (got %d)", args.Amount)
+		return nil, modelSafef("counter_pay: amount cannot be negative (got %d)", args.Amount)
 	}
 	if args.Amount > sim.MaxPayWithItemAmount {
-		return nil, decodeErrf("counter_pay: amount exceeds maximum (got %d, max %d)", args.Amount, sim.MaxPayWithItemAmount)
+		return nil, modelSafef("counter_pay: amount exceeds maximum (got %d, max %d)", args.Amount, sim.MaxPayWithItemAmount)
 	}
 	if err := validatePayItemsDecode("counter_pay", args.PayItems); err != nil {
 		return nil, err
 	}
 	if args.Amount == 0 && len(args.PayItems) == 0 {
-		return nil, decodeErrf("counter_pay: counter must propose coins or goods (set amount, add pay_items, or both)")
+		return nil, modelSafef("counter_pay: counter must propose coins or goods (set amount, add pay_items, or both)")
 	}
 	if n := utf8.RuneCountInString(args.Message); n > MaxPayMessageHandlerRunes {
-		return nil, decodeErrf(
+		return nil, modelSafef(
 			"counter_pay: message exceeds %d-character cap (got %d characters)",
 			MaxPayMessageHandlerRunes, n,
 		)
@@ -699,7 +699,7 @@ func HandleCounterPay(in HandlerInput) (sim.Command, error) {
 	message := normalizeShortMessage(args.Message)
 	if message != "" {
 		if i := indexInvalidControlChar(message); i >= 0 {
-			return sim.Command{}, fmt.Errorf(
+			return sim.Command{}, modelSafef(
 				"counter_pay: message contains a disallowed control character at byte offset %d", i)
 		}
 	}
@@ -746,7 +746,7 @@ const withdrawPayDescription = "Withdraw one of your own pending offers. You can
 func DecodeWithdrawPayArgs(raw json.RawMessage) (any, error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return nil, decodeErrf("withdraw_pay: arguments must be a JSON object")
+		return nil, modelSafef("withdraw_pay: arguments must be a JSON object")
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
@@ -757,15 +757,15 @@ func DecodeWithdrawPayArgs(raw json.RawMessage) (any, error) {
 	var extra any
 	if err := dec.Decode(&extra); err != io.EOF {
 		if err == nil {
-			return nil, decodeErrf("withdraw_pay: trailing data after JSON object")
+			return nil, modelSafef("withdraw_pay: trailing data after JSON object")
 		}
 		return nil, fmt.Errorf("withdraw_pay: malformed trailing data: %w", err)
 	}
 	if args.LedgerID < 1 {
-		return nil, decodeErrf("withdraw_pay: ledger_id must be at least 1 (got %d)", args.LedgerID)
+		return nil, modelSafef("withdraw_pay: ledger_id must be at least 1 (got %d)", args.LedgerID)
 	}
 	if n := utf8.RuneCountInString(args.Message); n > MaxPayMessageHandlerRunes {
-		return nil, decodeErrf(
+		return nil, modelSafef(
 			"withdraw_pay: message exceeds %d-character cap (got %d characters)",
 			MaxPayMessageHandlerRunes, n,
 		)
@@ -782,7 +782,7 @@ func HandleWithdrawPay(in HandlerInput) (sim.Command, error) {
 	message := normalizeShortMessage(args.Message)
 	if message != "" {
 		if i := indexInvalidControlChar(message); i >= 0 {
-			return sim.Command{}, fmt.Errorf(
+			return sim.Command{}, modelSafef(
 				"withdraw_pay: message contains a disallowed control character at byte offset %d", i)
 		}
 	}
@@ -805,7 +805,7 @@ type ledgerOnlyArgs struct {
 func decodeLedgerOnly(raw json.RawMessage, toolName string) (ledgerOnlyArgs, error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return ledgerOnlyArgs{}, decodeErrf("%s: arguments must be a JSON object", toolName)
+		return ledgerOnlyArgs{}, modelSafef("%s: arguments must be a JSON object", toolName)
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
@@ -816,12 +816,12 @@ func decodeLedgerOnly(raw json.RawMessage, toolName string) (ledgerOnlyArgs, err
 	var extra any
 	if err := dec.Decode(&extra); err != io.EOF {
 		if err == nil {
-			return ledgerOnlyArgs{}, decodeErrf("%s: trailing data after JSON object", toolName)
+			return ledgerOnlyArgs{}, modelSafef("%s: trailing data after JSON object", toolName)
 		}
 		return ledgerOnlyArgs{}, fmt.Errorf("%s: malformed trailing data: %w", toolName, err)
 	}
 	if args.LedgerID < 1 {
-		return ledgerOnlyArgs{}, decodeErrf("%s: ledger_id must be at least 1 (got %d)", toolName, args.LedgerID)
+		return ledgerOnlyArgs{}, modelSafef("%s: ledger_id must be at least 1 (got %d)", toolName, args.LedgerID)
 	}
 	return args, nil
 }
@@ -844,23 +844,23 @@ func normalizeShortMessage(s string) string {
 // error messages.
 func validatePayItemsDecode(toolName string, items []payItemArg) error {
 	if len(items) > MaxPayWithItemPayItemsHandler {
-		return decodeErrf(
+		return modelSafef(
 			"%s: pay_items exceeds %d-entry cap (got %d)",
 			toolName, MaxPayWithItemPayItemsHandler, len(items),
 		)
 	}
 	for i, pi := range items {
 		if n := utf8.RuneCountInString(pi.Item); n > MaxPayWithItemItemChars {
-			return decodeErrf(
+			return modelSafef(
 				"%s: pay_items[%d].item exceeds %d-character cap (got %d characters)",
 				toolName, i, MaxPayWithItemItemChars, n,
 			)
 		}
 		if pi.Qty < 1 {
-			return decodeErrf("%s: pay_items[%d].qty must be at least 1 (got %d)", toolName, i, pi.Qty)
+			return modelSafef("%s: pay_items[%d].qty must be at least 1 (got %d)", toolName, i, pi.Qty)
 		}
 		if pi.Qty > sim.MaxPayWithItemQty {
-			return decodeErrf("%s: pay_items[%d].qty exceeds maximum (got %d, max %d)", toolName, i, pi.Qty, sim.MaxPayWithItemQty)
+			return modelSafef("%s: pay_items[%d].qty exceeds maximum (got %d, max %d)", toolName, i, pi.Qty, sim.MaxPayWithItemQty)
 		}
 	}
 	return nil
@@ -880,15 +880,15 @@ func buildPayItemInputs(toolName string, items []payItemArg) ([]sim.PayItemInput
 	for i, pi := range items {
 		item := strings.TrimSpace(pi.Item)
 		if item == "" {
-			return nil, fmt.Errorf("%s: pay_items[%d].item is empty after trim", toolName, i)
+			return nil, modelSafef("%s: pay_items[%d].item is empty after trim", toolName, i)
 		}
 		if idx := indexStrictControlChar(item); idx >= 0 {
-			return nil, fmt.Errorf(
+			return nil, modelSafef(
 				"%s: pay_items[%d].item contains a disallowed control character at byte offset %d", toolName, i, idx)
 		}
 		key := strings.ToLower(item)
 		if _, dup := seen[key]; dup {
-			return nil, fmt.Errorf(
+			return nil, modelSafef(
 				"%s: %q appears more than once in pay_items — combine it into a single line.", toolName, item)
 		}
 		seen[key] = struct{}{}

@@ -3,7 +3,6 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -87,7 +86,7 @@ const summonDescription = "Send for another villager. A messenger will walk to t
 func DecodeSummonArgs(raw json.RawMessage) (any, error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return nil, decodeErrf("summon: arguments must be a JSON object")
+		return nil, modelSafef("summon: arguments must be a JSON object")
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
@@ -98,19 +97,19 @@ func DecodeSummonArgs(raw json.RawMessage) (any, error) {
 	var extra any
 	if err := dec.Decode(&extra); err != io.EOF {
 		if err == nil {
-			return nil, decodeErrf("summon: trailing data after JSON object")
+			return nil, modelSafef("summon: trailing data after JSON object")
 		}
 		return nil, fmt.Errorf("summon: malformed trailing data: %w", err)
 	}
 	if args.Target == "" {
-		return nil, decodeErrf("summon: target is required")
+		return nil, modelSafef("summon: target is required")
 	}
 	if n := utf8.RuneCountInString(args.Target); n > MaxSummonTargetChars {
-		return nil, decodeErrf(
+		return nil, modelSafef(
 			"summon: target exceeds %d-character cap (got %d characters)", MaxSummonTargetChars, n)
 	}
 	if n := utf8.RuneCountInString(args.Reason); n > MaxSummonReasonChars {
-		return nil, decodeErrf(
+		return nil, modelSafef(
 			"summon: reason exceeds %d-character cap (got %d characters)", MaxSummonReasonChars, n)
 	}
 	return args, nil
@@ -128,16 +127,16 @@ func HandleSummon(in HandlerInput) (sim.Command, error) {
 	}
 	target := strings.TrimSpace(args.Target)
 	if target == "" {
-		return sim.Command{}, errors.New("summon: target is empty after trim")
+		return sim.Command{}, modelSafef("summon: target is empty after trim")
 	}
 	if i := indexInvalidControlChar(target); i >= 0 {
-		return sim.Command{}, fmt.Errorf(
+		return sim.Command{}, modelSafef(
 			"summon: target contains a disallowed control character at byte offset %d", i)
 	}
 	reason := strings.TrimSpace(args.Reason)
 	if reason != "" {
 		if i := indexInvalidControlChar(reason); i >= 0 {
-			return sim.Command{}, fmt.Errorf(
+			return sim.Command{}, modelSafef(
 				"summon: reason contains a disallowed control character at byte offset %d", i)
 		}
 	}

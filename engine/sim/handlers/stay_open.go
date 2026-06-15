@@ -3,7 +3,6 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -91,7 +90,7 @@ func DecodeStayOpenArgs(raw json.RawMessage) (any, error) {
 	// misleading "reason is required" instead of a crisp "must be a JSON object".
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return nil, decodeErrf("stay_open: arguments must be a JSON object")
+		return nil, modelSafef("stay_open: arguments must be a JSON object")
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
@@ -103,15 +102,15 @@ func DecodeStayOpenArgs(raw json.RawMessage) (any, error) {
 	var extra any
 	if err := dec.Decode(&extra); err != io.EOF {
 		if err == nil {
-			return nil, decodeErrf("stay_open: trailing data after JSON object")
+			return nil, modelSafef("stay_open: trailing data after JSON object")
 		}
 		return nil, fmt.Errorf("stay_open: malformed trailing data: %w", err)
 	}
 	if args.Reason == "" {
-		return nil, decodeErrf("stay_open: reason is required")
+		return nil, modelSafef("stay_open: reason is required")
 	}
 	if n := utf8.RuneCountInString(args.Reason); n > MaxStayOpenReasonChars {
-		return nil, decodeErrf(
+		return nil, modelSafef(
 			"stay_open: reason exceeds %d-character cap (got %d characters)",
 			MaxStayOpenReasonChars, n,
 		)
@@ -119,10 +118,10 @@ func DecodeStayOpenArgs(raw json.RawMessage) (any, error) {
 	// until_hour is REQUIRED — committing to stay open means committing to a
 	// closing hour. An omitted hour is a contract violation, not a default request.
 	if args.UntilHour == nil {
-		return nil, decodeErrf("stay_open: until_hour is required (the hour you will close, 0..23)")
+		return nil, modelSafef("stay_open: until_hour is required (the hour you will close, 0..23)")
 	}
 	if *args.UntilHour < 0 || *args.UntilHour > 23 {
-		return nil, decodeErrf(
+		return nil, modelSafef(
 			"stay_open: until_hour must be between 0 and 23 (got %d)",
 			*args.UntilHour,
 		)
@@ -142,19 +141,19 @@ func HandleStayOpen(in HandlerInput) (sim.Command, error) {
 	}
 	reason := strings.TrimSpace(args.Reason)
 	if reason == "" {
-		return sim.Command{}, errors.New("stay_open: reason is empty after trim")
+		return sim.Command{}, modelSafef("stay_open: reason is empty after trim")
 	}
 	// reason is freeform prose recorded in the action log — allow the same
 	// \n/\r/\t set the speak/pay/take_break freeform text fields allow, reject
 	// other control characters (typos at best, prompt-forge attempts at worst).
 	if i := indexInvalidControlChar(reason); i >= 0 {
-		return sim.Command{}, fmt.Errorf(
+		return sim.Command{}, modelSafef(
 			"stay_open: reason contains a disallowed control character at byte offset %d", i)
 	}
 	// until_hour is required; DecodeStayOpenArgs guarantees a non-nil, in-range
 	// pointer, but guard defensively for direct/test callers.
 	if args.UntilHour == nil {
-		return sim.Command{}, errors.New("stay_open: until_hour is required")
+		return sim.Command{}, modelSafef("stay_open: until_hour is required")
 	}
 	// until_hour resolution (timezone-anchored, next-occurrence, 24h cap) happens
 	// inside sim.StayOpen on the world goroutine, where the commit clock +

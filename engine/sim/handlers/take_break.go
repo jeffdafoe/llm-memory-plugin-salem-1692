@@ -3,7 +3,6 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -96,7 +95,7 @@ func DecodeTakeBreakArgs(raw json.RawMessage) (any, error) {
 	// object".
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return nil, decodeErrf("take_break: arguments must be a JSON object")
+		return nil, modelSafef("take_break: arguments must be a JSON object")
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
@@ -108,15 +107,15 @@ func DecodeTakeBreakArgs(raw json.RawMessage) (any, error) {
 	var extra any
 	if err := dec.Decode(&extra); err != io.EOF {
 		if err == nil {
-			return nil, decodeErrf("take_break: trailing data after JSON object")
+			return nil, modelSafef("take_break: trailing data after JSON object")
 		}
 		return nil, fmt.Errorf("take_break: malformed trailing data: %w", err)
 	}
 	if args.Reason == "" {
-		return nil, decodeErrf("take_break: reason is required")
+		return nil, modelSafef("take_break: reason is required")
 	}
 	if n := utf8.RuneCountInString(args.Reason); n > MaxTakeBreakReasonChars {
-		return nil, decodeErrf(
+		return nil, modelSafef(
 			"take_break: reason exceeds %d-character cap (got %d characters)",
 			MaxTakeBreakReasonChars, n,
 		)
@@ -128,7 +127,7 @@ func DecodeTakeBreakArgs(raw json.RawMessage) (any, error) {
 	// schema also bounds this, but Decode is the self-contained enforcement
 	// layer.
 	if args.UntilHour != nil && (*args.UntilHour < 1 || *args.UntilHour > 23) {
-		return nil, decodeErrf(
+		return nil, modelSafef(
 			"take_break: until_hour must be between 1 and 23 (got %d); omit it for a default-length break",
 			*args.UntilHour,
 		)
@@ -148,13 +147,13 @@ func HandleTakeBreak(in HandlerInput) (sim.Command, error) {
 	}
 	reason := strings.TrimSpace(args.Reason)
 	if reason == "" {
-		return sim.Command{}, errors.New("take_break: reason is empty after trim")
+		return sim.Command{}, modelSafef("take_break: reason is empty after trim")
 	}
 	// reason is freeform prose recorded in the action log — allow the same
 	// \n/\r/\t set the speak/pay freeform text fields allow, reject other
 	// control characters (typos at best, prompt-forge attempts at worst).
 	if i := indexInvalidControlChar(reason); i >= 0 {
-		return sim.Command{}, fmt.Errorf(
+		return sim.Command{}, modelSafef(
 			"take_break: reason contains a disallowed control character at byte offset %d", i)
 	}
 	// Normalize the optional pointer: omitted (nil) → 0, which sim.TakeBreak

@@ -330,5 +330,5 @@ func strictNoArgsDecode(raw json.RawMessage) (any, error) {
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("{}")) || bytes.Equal(trimmed, []byte("null")) {
 		return struct{}{}, nil
 	}
-	return nil, decodeErrf("terminal tool takes no arguments; got %s", string(trimmed))
+	return nil, modelSafef("terminal tool takes no arguments; got %s", string(trimmed))
 }

@@ -3,7 +3,6 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -135,7 +134,7 @@ func DecodeConsumeArgs(raw json.RawMessage) (any, error) {
 	// JSON object" signal.
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return nil, decodeErrf("consume: arguments must be a JSON object")
+		return nil, modelSafef("consume: arguments must be a JSON object")
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
@@ -147,24 +146,24 @@ func DecodeConsumeArgs(raw json.RawMessage) (any, error) {
 	var extra any
 	if err := dec.Decode(&extra); err != io.EOF {
 		if err == nil {
-			return nil, decodeErrf("consume: trailing data after JSON object")
+			return nil, modelSafef("consume: trailing data after JSON object")
 		}
 		return nil, fmt.Errorf("consume: malformed trailing data: %w", err)
 	}
 	if args.Item == "" {
-		return nil, decodeErrf("consume: item is required")
+		return nil, modelSafef("consume: item is required")
 	}
 	if n := utf8.RuneCountInString(args.Item); n > MaxConsumeItemChars {
-		return nil, decodeErrf(
+		return nil, modelSafef(
 			"consume: item exceeds %d-character cap (got %d characters)",
 			MaxConsumeItemChars, n,
 		)
 	}
 	if args.Qty < 1 {
-		return nil, decodeErrf("consume: qty must be at least 1 (got %d)", args.Qty)
+		return nil, modelSafef("consume: qty must be at least 1 (got %d)", args.Qty)
 	}
 	if args.Qty > sim.MaxConsumeQty {
-		return nil, decodeErrf("consume: qty exceeds maximum (got %d, max %d)", args.Qty, sim.MaxConsumeQty)
+		return nil, modelSafef("consume: qty exceeds maximum (got %d, max %d)", args.Qty, sim.MaxConsumeQty)
 	}
 	return args, nil
 }
@@ -189,7 +188,7 @@ func HandleConsume(in HandlerInput) (sim.Command, error) {
 	}
 	item := strings.TrimSpace(args.Item)
 	if item == "" {
-		return sim.Command{}, errors.New("consume: item is empty after trim")
+		return sim.Command{}, modelSafef("consume: item is empty after trim")
 	}
 	// Reject control characters in the item name with a stricter scan than
 	// indexInvalidControlChar (which exempts \n/\r/\t for speak/pay freeform
@@ -197,7 +196,7 @@ func HandleConsume(in HandlerInput) (sim.Command, error) {
 	// lookup — newlines, tabs, and carriage returns in there are typos at
 	// best and prompt-shaping forge attempts at worst.
 	if i := indexStrictControlChar(item); i >= 0 {
-		return sim.Command{}, fmt.Errorf(
+		return sim.Command{}, modelSafef(
 			"consume: item contains a disallowed control character at byte offset %d", i)
 	}
 	// Item case + resolution to canonical ItemKind happens inside
