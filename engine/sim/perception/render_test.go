@@ -10,10 +10,10 @@ import (
 
 // combinedPrompt returns the durable turn + the ephemeral current-tick context
 // as the model sees them on the current turn. The lean-history split
-// (ZBBS-WORK-364) routes affordances, identity, the "Since you got here"
-// baseline, pay-offers, and the act-now coda to EphemeralText; .Text is now
-// just the durable felt-state (## You) + the "what just happened" events. Tests
-// that assert on a moved section use this.
+// (ZBBS-WORK-364, extended by ZBBS-WORK-410) routes the ## You self-state,
+// affordances, identity, the "Since you got here" baseline, pay-offers, and the
+// act-now coda to EphemeralText; .Text is now just the "what just happened"
+// events. Tests that assert on a moved section use this.
 func combinedPrompt(r RenderedPrompt) string {
 	if r.EphemeralText == "" {
 		return r.Text
@@ -421,13 +421,14 @@ func TestRender_BaselinePresentNoChange_SaysSo(t *testing.T) {
 
 // --- lean-history durable/ephemeral split --------------------------------
 
-// TestRender_DurableEphemeralSplit pins the lean-history split (ZBBS-WORK-364):
-// the felt-state (## You) and the "what just happened" events land in the
-// durable Text (persisted + replayed as history), while the act-now coda (and
-// the rest of the per-tick furniture) lands in EphemeralText (attached to the
-// current turn, never persisted). A future render edit that put furniture back
-// in Text — or events into Ephemeral — would re-introduce the history bloat
-// this split removes, so both directions are guarded.
+// TestRender_DurableEphemeralSplit pins the lean-history split (ZBBS-WORK-364,
+// extended by ZBBS-WORK-410): only the "what just happened" events land in the
+// durable Text (persisted + replayed as history), while the ## You self-state,
+// the act-now coda, and the rest of the per-tick furniture land in EphemeralText
+// (attached to the current turn, never persisted). A future render edit that put
+// furniture or self-state back in Text — or events into Ephemeral — would
+// re-introduce the history bloat (and the stale-coin replay WORK-410 fixed), so
+// both directions are guarded.
 func TestRender_DurableEphemeralSplit(t *testing.T) {
 	p := Payload{
 		ActorID:           "moses",
@@ -437,9 +438,10 @@ func TestRender_DurableEphemeralSplit(t *testing.T) {
 	}
 	out := Render(p, DefaultRenderConfig())
 
-	// Durable carries the felt-state + the events.
-	if !strings.Contains(out.Text, "## You") {
-		t.Errorf("durable Text must carry the ## You felt-state, got:\n%s", out.Text)
+	// Durable carries the events — but NOT the ## You self-state (ZBBS-WORK-410:
+	// it is point-in-time and would replay a stale coin/need readout as current).
+	if strings.Contains(out.Text, "## You") {
+		t.Errorf("durable Text must NOT carry the ## You self-state (it would replay stale coins/needs), got:\n%s", out.Text)
 	}
 	if !strings.Contains(out.Text, "## What just happened") || !strings.Contains(out.Text, "good morrow") {
 		t.Errorf("durable Text must carry the what-just-happened events, got:\n%s", out.Text)
@@ -449,7 +451,10 @@ func TestRender_DurableEphemeralSplit(t *testing.T) {
 		t.Errorf("durable Text must NOT carry the act-now coda (it would persist into history), got:\n%s", out.Text)
 	}
 
-	// Ephemeral carries the act-now coda...
+	// Ephemeral carries the ## You self-state, the act-now coda...
+	if !strings.Contains(out.EphemeralText, "## You") {
+		t.Errorf("ephemeral must carry the ## You self-state (ZBBS-WORK-410), got:\n%s", out.EphemeralText)
+	}
 	if !strings.Contains(out.EphemeralText, triageMarker) {
 		t.Errorf("ephemeral must carry the act-now coda, got:\n%s", out.EphemeralText)
 	}
@@ -477,6 +482,12 @@ func TestRender_ContinuationText_LeanAndStopBiased(t *testing.T) {
 
 	if out.ContinuationText == "" {
 		t.Fatal("ContinuationText must be populated")
+	}
+	// ZBBS-WORK-410: the continuation body leads with current self-state so a
+	// multi-round tick keeps live coins/needs in view after EphemeralText is
+	// swapped out for this leaner body.
+	if !strings.Contains(out.ContinuationText, "## You") {
+		t.Errorf("ContinuationText must carry the ## You self-state (ZBBS-WORK-410), got:\n%s", out.ContinuationText)
 	}
 	for _, want := range []string{"done()", "re-pitch", "already spoken"} {
 		if !strings.Contains(out.ContinuationText, want) {
