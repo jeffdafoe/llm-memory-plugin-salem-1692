@@ -1,6 +1,9 @@
 package sim
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // Dwell mechanic (ZBBS-172) — in-memory port of engine/dwell.go +
 // dwell_tick.go.
@@ -237,6 +240,57 @@ func consumeVerb(attribute NeedKey) string {
 	default:
 		return "take"
 	}
+}
+
+// dwellFinishPhrase is the "finish ___" object for the stay message: a buyer
+// finishes "eating it all" for a meal, "drinking it all" for a drink, or a bare
+// "it" for anything else.
+func dwellFinishPhrase(attribute NeedKey) string {
+	switch attribute {
+	case "hunger":
+		return "eating it all"
+	case "thirst":
+		return "drinking it all"
+	}
+	return "it"
+}
+
+// needAdjective renders the felt state an actor falls back to if it abandons an
+// unfinished dwell — "hungry" for a half-eaten meal, etc. Returns "" for needs
+// with no natural adjective, so the caller drops the "you will remain ___" tail.
+func needAdjective(attribute NeedKey) string {
+	switch attribute {
+	case "hunger":
+		return "hungry"
+	case "thirst":
+		return "thirsty"
+	case "tiredness":
+		return "tired"
+	}
+	return ""
+}
+
+// DwellStayClause is the shared ZBBS-WORK-409 prose that keeps an LLM-driven NPC
+// seated through a timed eat-here dwell. These models read flowing prose far
+// better than terse status fragments and reason poorly about a bare time count,
+// so the line states plainly how long the action takes to FINISH and the concrete
+// cost of leaving early (the rest is wasted, the need comes back). Used by BOTH
+// the persistent perception dwell line and the one-time settle feedback so the
+// buyer hears one consistent message; attribute drives the food/drink wording so
+// it reads right for a meal, a drink, or any future timed consumable.
+//
+// wasteExtra is appended inside the "you will waste the rest___" clause: the
+// settle path passes " and the coins you paid" (a settle is always a purchase),
+// while the generic dwell line passes "" because an item dwell can also come
+// from eating one's own pack food (item_commands.go consume), where no coins
+// changed hands this turn. Returned WITHOUT a trailing period so each caller can
+// punctuate it in context (mid-sentence after a comma, or as its own sentence).
+func DwellStayClause(minutes int, attribute NeedKey, wasteExtra string) string {
+	clause := fmt.Sprintf("it will take you %d more minute(s) to finish %s. If you leave now you will waste the rest%s", minutes, dwellFinishPhrase(attribute), wasteExtra)
+	if adj := needAdjective(attribute); adj != "" {
+		clause += ", and you will remain " + adj
+	}
+	return clause
 }
 
 // consumeNeedOrder is the stable tiebreak order when several needs moved on one

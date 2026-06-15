@@ -13,6 +13,7 @@ import "time"
 // caller, that's a signal you should be issuing a Command instead.
 var (
 	BuildWalkGrid            = buildWalkGrid
+	MaxDwellMinutes          = maxDwellMinutes
 	CommonRoomForStructure   = commonRoomForStructure
 	CanEnterRoom             = canEnterRoom
 	DetermineTransitionFlips = determineTransitionFlips
