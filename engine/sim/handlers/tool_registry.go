@@ -330,5 +330,8 @@ func strictNoArgsDecode(raw json.RawMessage) (any, error) {
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("{}")) || bytes.Equal(trimmed, []byte("null")) {
 		return struct{}{}, nil
 	}
-	return nil, fmt.Errorf("terminal tool takes no arguments; got %s", string(trimmed))
+	// Don't echo the raw args back: arbitrary tool-call argument text can carry
+	// injection / secrets / large blobs, and there's no field-level cap here.
+	// Keep the correction structural — tell the model how to call it right.
+	return nil, modelSafef("terminal tool takes no arguments; pass {} or null")
 }

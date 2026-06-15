@@ -789,9 +789,18 @@ func (h *Harness) dispatch(ctx context.Context, w *sim.World, job tickJob, vc *V
 		}
 		content, err := fn(ctx, in)
 		if err != nil {
-			// Log the detailed error; surface a stable label to the model
-			// so handler-internal details (file paths, stack traces, API
-			// responses) don't leak into the LLM transcript.
+			// A modelSafeError is a hand-authored, model-safe rejection (a
+			// post-decode static check the handler ran — empty-after-trim, a
+			// control char): surface its reason so the model self-corrects,
+			// matching the command layer's sim.ModelFacingError echo below
+			// (ZBBS-WORK-413). Every other handler error stays generic —
+			// handler-internal detail (file paths, stack traces, API
+			// responses) must not leak into the LLM transcript.
+			var safe modelSafeError
+			if errors.As(err, &safe) {
+				log.Printf("handlers: dispatch %q: observation handler rejected: %v", vc.Name, err)
+				return fmt.Sprintf("[error] %s", safe.Error()), dispatchOutcome{}
+			}
 			log.Printf("handlers: dispatch %q: observation handler failed: %v", vc.Name, err)
 			return "[error: handler_failed] tool handler returned an error", dispatchOutcome{}
 		}
@@ -805,6 +814,14 @@ func (h *Harness) dispatch(ctx context.Context, w *sim.World, job tickJob, vc *V
 		}
 		cmd, err := fn(in)
 		if err != nil {
+			// Model-safe post-decode static-validation rejection → surface the
+			// reason; any other build error stays generic (see the observation
+			// branch above and ZBBS-WORK-413).
+			var safe modelSafeError
+			if errors.As(err, &safe) {
+				log.Printf("handlers: dispatch %q: commit handler rejected: %v", vc.Name, err)
+				return fmt.Sprintf("[error] %s", safe.Error()), dispatchOutcome{}
+			}
 			log.Printf("handlers: dispatch %q: commit handler failed: %v", vc.Name, err)
 			return "[error: handler_failed] tool handler returned an error", dispatchOutcome{}
 		}

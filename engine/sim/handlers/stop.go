@@ -54,7 +54,7 @@ func DecodeStopArgs(raw json.RawMessage) (any, error) {
 	var extra any
 	if err := dec.Decode(&extra); err != io.EOF {
 		if err == nil {
-			return nil, fmt.Errorf("stop: trailing data after JSON object")
+			return nil, modelSafef("stop: trailing data after JSON object")
 		}
 		return nil, fmt.Errorf("stop: trailing data after JSON object: %w", err)
 	}

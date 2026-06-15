@@ -3,7 +3,6 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -63,7 +62,7 @@ const deliverOrderDescription = "Hand over goods you sold but haven't delivered 
 func DecodeDeliverOrderArgs(raw json.RawMessage) (any, error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return nil, errors.New("deliver_order: arguments must be a JSON object")
+		return nil, modelSafef("deliver_order: arguments must be a JSON object")
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
@@ -74,12 +73,12 @@ func DecodeDeliverOrderArgs(raw json.RawMessage) (any, error) {
 	var extra any
 	if err := dec.Decode(&extra); err != io.EOF {
 		if err == nil {
-			return nil, errors.New("deliver_order: trailing data after JSON object")
+			return nil, modelSafef("deliver_order: trailing data after JSON object")
 		}
 		return nil, fmt.Errorf("deliver_order: malformed trailing data: %w", err)
 	}
 	if args.OrderID < 1 {
-		return nil, fmt.Errorf("deliver_order: order_id must be at least 1 (got %d)", args.OrderID)
+		return nil, modelSafef("deliver_order: order_id must be at least 1 (got %d)", args.OrderID)
 	}
 	return args, nil
 }
