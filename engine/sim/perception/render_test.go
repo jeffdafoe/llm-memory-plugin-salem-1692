@@ -137,14 +137,16 @@ func TestRender_NarrationWarrants(t *testing.T) {
 	if out := render(sim.DwellEndedWarrantReason{Attribute: "hunger", NarrationText: "You feel full."}); !strings.Contains(out, "You feel full.") {
 		t.Errorf("dwell-ended narration not rendered\n%s", out)
 	}
-	// Per-tick dwell beat is intentionally NOT surfaced — its NarrationText must
-	// not appear; the bare [dwell_tick_applied] line stands instead.
+	// ZBBS-WORK-407: the per-tick beat used to be suppressed to the vague
+	// "something happened" fallback because it fired every minute. The wake is now
+	// cadenced to the red-tier boundary (handlers/dwell_reactor.go), so it fires at
+	// most once per dwell and renders its felt line like the other dwell beats.
 	tickOut := render(sim.DwellTickAppliedWarrantReason{Attribute: "hunger", NarrationText: "You take another bite, the gnawing ebbs."})
-	if strings.Contains(tickOut, "You take another bite, the gnawing ebbs.") {
-		t.Errorf("per-tick dwell narration leaked into the prompt (should be suppressed)\n%s", tickOut)
+	if !strings.Contains(tickOut, "You take another bite, the gnawing ebbs.") {
+		t.Errorf("dwell-tick narration should render now that the wake is boundary-cadenced\n%s", tickOut)
 	}
-	if !strings.Contains(tickOut, "## What just happened") || !strings.Contains(tickOut, "1. Something happened") {
-		t.Errorf("per-tick dwell warrant missing its bare fallback line\n%s", tickOut)
+	if strings.Contains(tickOut, "Something happened") {
+		t.Errorf("dwell-tick should render its felt line, not the vague fallback\n%s", tickOut)
 	}
 	// Empty narration (catalog-unknown dwell end) falls back to the generic line —
 	// no engine kind tag, no raw actor id.

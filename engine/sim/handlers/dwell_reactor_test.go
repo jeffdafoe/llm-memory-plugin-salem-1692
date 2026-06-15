@@ -119,9 +119,11 @@ func TestDwellStartedSubscriberStampsWarrant(t *testing.T) {
 	}
 }
 
-// TestDwellTickAppliedSubscriberStampsWarrant — ApplyDwellTick fires
-// DwellTickApplied, subscriber stamps DwellTickAppliedWarrantReason
-// with per-tick narration pre-rendered.
+// TestDwellTickAppliedSubscriberStampsWarrant — a DwellTickApplied that crosses
+// the need out of its red tier fires the boundary wake (ZBBS-WORK-407): the
+// subscriber stamps DwellTickAppliedWarrantReason with per-tick narration
+// pre-rendered. A tick that crosses no boundary stamps nothing (the NoWake tests
+// below).
 func TestDwellTickAppliedSubscriberStampsWarrant(t *testing.T) {
 	w, stop := buildDwellReactorWorld(t)
 	defer stop()
@@ -142,6 +144,9 @@ func TestDwellTickAppliedSubscriberStampsWarrant(t *testing.T) {
 				DwellPeriodMinutes: 2,
 			},
 		}
+		// ZBBS-WORK-407: park hunger AT its red threshold so this -1 tick crosses
+		// out of the red tier — the boundary the wake is now cadenced to.
+		world.Actors["hannah"].Needs["hunger"] = world.Settings.NeedThresholds.Get("hunger")
 		// Clear any existing warrants so the assertion target stays
 		// uncluttered.
 		world.Actors["hannah"].Warrants = nil
@@ -177,6 +182,102 @@ func TestDwellTickAppliedSubscriberStampsWarrant(t *testing.T) {
 	}
 	if got.PeriodMinutes != 2 {
 		t.Errorf("PeriodMinutes = %d, want 2", got.PeriodMinutes)
+	}
+}
+
+// TestDwellTickApplied_NoWakeMidDwell — ZBBS-WORK-407. A per-minute tick whose
+// recovery leaves the need still inside its red tier crosses no boundary, so the
+// subscriber stamps no warrant — the actor isn't woken for a mid-meal minute
+// that changes nothing. (Recovery + HUD still happen via the event.)
+func TestDwellTickApplied_NoWakeMidDwell(t *testing.T) {
+	w, stop := buildDwellReactorWorld(t)
+	defer stop()
+
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		remaining := 3
+		world.Actors["hannah"].DwellCredits = map[sim.DwellCreditKey]*sim.DwellCredit{
+			{ObjectID: "tavern", Attribute: "hunger", Source: sim.DwellSourceItem}: {
+				ObjectID:           "tavern",
+				Kind:               "stew",
+				Attribute:          "hunger",
+				Source:             sim.DwellSourceItem,
+				LastCreditedAt:     time.Now().UTC().Add(-5 * time.Minute),
+				RemainingTicks:     &remaining,
+				DwellDelta:         -1,
+				DwellPeriodMinutes: 2,
+			},
+		}
+		// Well inside red: a -1 tick leaves it still >= threshold, so no boundary
+		// is crossed and no wake warrant should be stamped.
+		world.Actors["hannah"].Needs["hunger"] = world.Settings.NeedThresholds.Get("hunger") + 10
+		world.Actors["hannah"].Warrants = nil
+		world.Actors["hannah"].WarrantedSince = nil
+		world.Actors["hannah"].WarrantDueAt = nil
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if _, err := w.Send(sim.ApplyDwellTick(time.Now().UTC())); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	for _, m := range peekDwellActorWarrants(t, w, "hannah") {
+		if _, ok := m.Reason.(sim.DwellTickAppliedWarrantReason); ok {
+			t.Fatalf("a mid-dwell tick that crossed no boundary stamped a wake warrant: %+v", m.Reason)
+		}
+	}
+}
+
+// TestDwellTickApplied_NoWakeOnTerminalTick — ZBBS-WORK-407. The terminal tick
+// would cross the boundary, but completion is DwellEnded's beat, so the tick
+// subscriber defers: no DwellTickAppliedWarrantReason, and DwellEnded still wakes
+// the actor.
+func TestDwellTickApplied_NoWakeOnTerminalTick(t *testing.T) {
+	w, stop := buildDwellReactorWorld(t)
+	defer stop()
+
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		remaining := 1 // post-decrement -> 0 this tick: terminal, DwellEnded fires
+		world.Actors["hannah"].DwellCredits = map[sim.DwellCreditKey]*sim.DwellCredit{
+			{ObjectID: "tavern", Attribute: "hunger", Source: sim.DwellSourceItem}: {
+				ObjectID:           "tavern",
+				Kind:               "stew",
+				Attribute:          "hunger",
+				Source:             sim.DwellSourceItem,
+				LastCreditedAt:     time.Now().UTC().Add(-5 * time.Minute),
+				RemainingTicks:     &remaining,
+				DwellDelta:         -1,
+				DwellPeriodMinutes: 2,
+			},
+		}
+		// At the threshold: the tick WOULD cross out of red, but the terminal-tick
+		// guard makes it defer to DwellEnded.
+		world.Actors["hannah"].Needs["hunger"] = world.Settings.NeedThresholds.Get("hunger")
+		world.Actors["hannah"].Warrants = nil
+		world.Actors["hannah"].WarrantedSince = nil
+		world.Actors["hannah"].WarrantDueAt = nil
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if _, err := w.Send(sim.ApplyDwellTick(time.Now().UTC())); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+	var sawTick, sawEnded bool
+	for _, m := range peekDwellActorWarrants(t, w, "hannah") {
+		switch m.Reason.(type) {
+		case sim.DwellTickAppliedWarrantReason:
+			sawTick = true
+		case sim.DwellEndedWarrantReason:
+			sawEnded = true
+		}
+	}
+	if sawTick {
+		t.Errorf("terminal tick stamped a dwell-tick wake warrant; DwellEnded should own the completion beat")
+	}
+	if !sawEnded {
+		t.Errorf("terminal tick should still wake via DwellEnded (completion beat)")
 	}
 }
 

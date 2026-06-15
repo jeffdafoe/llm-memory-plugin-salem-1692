@@ -1485,6 +1485,22 @@ func renderPendingOffersFromMe(b *strings.Builder, offers []PendingOfferView) {
 	b.WriteString("Bide for their answer; make no second offer for the same goods while this one stands. Should you think better of it, withdraw_pay recalls it.\n")
 }
 
+// isSectionSurfacedKind reports whether a warrant kind is already surfaced by a
+// dedicated perception section, so renderWarrants must NOT also emit a generic
+// "what just happened" line for it — that produced the vague "something happened
+// nearby" catch-all (ZBBS-WORK-407). These warrants still wake the actor; their
+// content lives in their own section:
+//   - pay_offer  -> "## Offers awaiting your decision" (PayOffersForMe)
+//   - shift_duty -> the return-to-post steer (DutySteer)
+func isSectionSurfacedKind(k sim.WarrantKind) bool {
+	switch k {
+	case sim.WarrantKindPayOffer, sim.WarrantKindShiftDuty:
+		return true
+	default:
+		return false
+	}
+}
+
 func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(sim.ActorID) string, placeNameOf func(string) string, eatHereKind func(sim.ItemKind) bool, cfg RenderConfig, out *RenderedPrompt) {
 	// Nil-safe for direct/test callers — the main Render path always passes
 	// its closure, but the signature grew by a callback (ZBBS-WORK-405) and
@@ -1492,6 +1508,20 @@ func renderWarrants(b *strings.Builder, warrants []sim.WarrantMeta, nameOf func(
 	if eatHereKind == nil {
 		eatHereKind = func(sim.ItemKind) bool { return false }
 	}
+	// ZBBS-WORK-407: drop warrants already surfaced by a dedicated section so they
+	// don't double-render as the vague "something happened nearby" catch-all. They
+	// still WAKE the actor (the reactor consumed them — that's how it ticks to read
+	// the section); they just have no standalone "what just happened" line. Filter
+	// a local copy so the caller's p.Warrants (scene grouping, telemetry) is
+	// untouched and the surviving lines keep contiguous numbering.
+	renderable := warrants[:0:0]
+	for _, wm := range warrants {
+		if isSectionSurfacedKind(wm.Kind()) {
+			continue
+		}
+		renderable = append(renderable, wm)
+	}
+	warrants = renderable
 	b.WriteString("## What just happened — address these\n")
 	if len(warrants) == 0 {
 		b.WriteString("(nothing specific — this is a routine check-in)\n")
@@ -1560,6 +1590,13 @@ func renderWarrantLine(n int, w sim.WarrantMeta, nameOf func(sim.ActorID) string
 	case sim.DwellStartedWarrantReason:
 		return renderNarrationWarrantLine(n, w.Kind(), r.NarrationText, nameOf(w.TriggerActorID), maxTextBytes)
 	case sim.DwellEndedWarrantReason:
+		return renderNarrationWarrantLine(n, w.Kind(), r.NarrationText, nameOf(w.TriggerActorID), maxTextBytes)
+	case sim.DwellTickAppliedWarrantReason:
+		// ZBBS-WORK-407: the per-tick beat used to be suppressed (fell through to
+		// the vague "something happened" fallback) because it fired every minute.
+		// The wake is now cadenced to the red-tier boundary (handlers/dwell_reactor.go),
+		// so this fires at most once per dwell — render its felt line like its
+		// DwellStarted / DwellEnded siblings.
 		return renderNarrationWarrantLine(n, w.Kind(), r.NarrationText, nameOf(w.TriggerActorID), maxTextBytes)
 	case sim.AdminDirectiveWarrantReason:
 		return renderImpulseWarrantLine(n, r.Message, maxTextBytes)
