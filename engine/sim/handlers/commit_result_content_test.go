@@ -293,6 +293,23 @@ func TestCommitResultContent_SettledQuoteTake(t *testing.T) {
 			want:   "[ok] Settled on the spot — you pay John Ellis 2 coins for 1 ale. You eat it now. Your thirst is met — buy no more drink now." + steer,
 		},
 		{
+			// ZBBS-WORK-409: an eat-here dwell meal (MealMinutes > 0) replaces the
+			// "free to leave" closer with a stay-and-finish message naming the
+			// time-to-finish and the cost of bolting, so NPCs stop walking off
+			// mid-meal. Shares sim.DwellStayClause with the perception dwell line.
+			name:   "eat-here dwell meal: stay-and-finish closer",
+			vc:     ValidatedCall{Name: "pay_with_item", DecodedArgs: args("Porridge", 1, 10)},
+			result: sim.PayWithItemResult{State: sim.PayLedgerStateAccepted, FastPath: true, BuyerAte: 1, SatisfiesNeed: "hunger", MealMinutes: 12},
+			want:   "[ok] Settled on the spot — you pay John Ellis 10 coins for 1 porridge. You start eating it now. It will take you 12 more minute(s) to finish eating it all. If you leave now you will waste the rest and the coins you paid, and you will remain hungry. Buy no more food now. Call done() to keep eating where you sit.",
+		},
+		{
+			// Drink dwell: same shape, drink wording (food-agnostic via need).
+			name:   "eat-here dwell drink: drink wording",
+			vc:     ValidatedCall{Name: "pay_with_item", DecodedArgs: args("Ale", 1, 2)},
+			result: sim.PayWithItemResult{State: sim.PayLedgerStateAccepted, FastPath: true, BuyerAte: 1, SatisfiesNeed: "thirst", MealMinutes: 8},
+			want:   "[ok] Settled on the spot — you pay John Ellis 2 coins for 1 ale. You start drinking it now. It will take you 8 more minute(s) to finish drinking it all. If you leave now you will waste the rest and the coins you paid, and you will remain thirsty. Buy no more drink now. Call done() to keep drinking where you sit.",
+		},
+		{
 			// WORK-391 needs-clamp split on a multi-unit order.
 			name:   "eat/kept split voiced",
 			vc:     ValidatedCall{Name: "pay_with_item", DecodedArgs: args("Bread", 4, 8)},

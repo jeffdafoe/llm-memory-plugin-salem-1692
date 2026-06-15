@@ -462,6 +462,89 @@ func TestUpsertItemDwellCreditsResetsExisting(t *testing.T) {
 	}
 }
 
+// TestDwellStayClause pins the ZBBS-WORK-409 shared stay message: prose that
+// names how long the dwell takes to FINISH and the cost of leaving early. The
+// food/drink wording and the "remain ___" tail are driven by the need; the
+// wasteExtra arg carries " and the coins you paid" on the settle path only (the
+// generic dwell line omits it, since an item dwell can be self-consumed food).
+func TestDwellStayClause(t *testing.T) {
+	cases := []struct {
+		name       string
+		minutes    int
+		attribute  sim.NeedKey
+		wasteExtra string
+		want       string
+	}{
+		{
+			name:      "hunger without coins (dwell line / self-consumed food)",
+			minutes:   12,
+			attribute: "hunger",
+			want:      "it will take you 12 more minute(s) to finish eating it all. If you leave now you will waste the rest, and you will remain hungry",
+		},
+		{
+			name:       "hunger with coins (settle path)",
+			minutes:    12,
+			attribute:  "hunger",
+			wasteExtra: " and the coins you paid",
+			want:       "it will take you 12 more minute(s) to finish eating it all. If you leave now you will waste the rest and the coins you paid, and you will remain hungry",
+		},
+		{
+			name:      "thirst uses drink wording",
+			minutes:   8,
+			attribute: "thirst",
+			want:      "it will take you 8 more minute(s) to finish drinking it all. If you leave now you will waste the rest, and you will remain thirsty",
+		},
+		{
+			name:      "tiredness: generic finish phrase, tired adjective",
+			minutes:   5,
+			attribute: "tiredness",
+			want:      "it will take you 5 more minute(s) to finish it. If you leave now you will waste the rest, and you will remain tired",
+		},
+		{
+			name:      "unknown need: generic finish, no remain clause",
+			minutes:   3,
+			attribute: "mana",
+			want:      "it will take you 3 more minute(s) to finish it. If you leave now you will waste the rest",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sim.DwellStayClause(tc.minutes, tc.attribute, tc.wasteExtra); got != tc.want {
+				t.Errorf("DwellStayClause\n got:  %q\n want: %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestMaxDwellMinutes covers the settle-feedback helper that picks the longest
+// remaining dwell (minutes) across the stamped snapshots, skipping object-style
+// credits with no countdown (RemainingTicks == nil). ZBBS-WORK-409.
+func TestMaxDwellMinutes(t *testing.T) {
+	mk := func(remaining, period int) sim.DwellCreditSnapshot {
+		r := remaining
+		return sim.DwellCreditSnapshot{RemainingTicks: &r, PeriodMinutes: period}
+	}
+	noCount := sim.DwellCreditSnapshot{PeriodMinutes: 10} // RemainingTicks nil
+	cases := []struct {
+		name    string
+		stamped []sim.DwellCreditSnapshot
+		want    int
+	}{
+		{"none", nil, 0},
+		{"single", []sim.DwellCreditSnapshot{mk(6, 2)}, 12},
+		{"longest wins", []sim.DwellCreditSnapshot{mk(3, 2), mk(6, 2), mk(1, 2)}, 12},
+		{"nil countdown skipped", []sim.DwellCreditSnapshot{noCount, mk(4, 2)}, 8},
+		{"all nil countdown", []sim.DwellCreditSnapshot{noCount}, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sim.MaxDwellMinutes(tc.stamped); got != tc.want {
+				t.Errorf("MaxDwellMinutes = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestDwellCompletionNarrationVocab covers vocabulary by attribute,
 // including the precedence rule (item-exhausted over floor-hit) and
 // the v2-new walked-away branch.
