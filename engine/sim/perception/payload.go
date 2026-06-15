@@ -589,6 +589,15 @@ type SurroundingsView struct {
 	// descriptor without re-reading the snapshot.
 	HuddleMembers []HuddleMember
 
+	// CoPresent are the other conversational actors within earshot when the
+	// subject is NOT in a huddle — the read projection of ActorSnapshot.
+	// ColocatedAudienceIDs (the set the speak path would reach), each carrying the
+	// same acquaintance info as HuddleMembers so Render names or describes them
+	// with identical gating. Empty when the actor is huddled (HuddleMembers carries
+	// its company then) or genuinely alone in scope. Already sorted by ID (the
+	// world-side helper sorts; Build preserves the order). ZBBS-WORK-407.
+	CoPresent []HuddleMember
+
 	// Atmosphere is the village-wide ambient line authored by the atmosphere
 	// cascade (Environment.Atmosphere — LLM-phrased by the cheap salem-generic
 	// VA ~every 4h on phase transitions, NOT the v1 chronicler). Surfaced into

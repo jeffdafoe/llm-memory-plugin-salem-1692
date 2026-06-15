@@ -1568,7 +1568,20 @@ func (w *World) republish() {
 		ItemKinds: w.ItemKinds,
 	}
 	for id, a := range w.Actors {
-		snap.Actors[id] = snapshotActor(a, w.TickCounter)
+		sa := snapshotActor(a, w.TickCounter)
+		// Co-presence for the unhuddled (ZBBS-WORK-407): precompute who an
+		// unhuddled conversational NPC would reach if it spoke now, so perception's
+		// "## Around you" line and the speak no-audience gate share one scope rule
+		// (colocatedAudienceIDs). Skip the huddled (their company is the huddle
+		// roster) and non-conversational kinds (PCs and decoratives get no NPC
+		// decision prompt, so the line is never rendered for them).
+		if a.CurrentHuddleID == "" {
+			switch a.Kind {
+			case KindNPCStateful, KindNPCShared:
+				sa.ColocatedAudienceIDs = colocatedAudienceIDs(w, a, now)
+			}
+		}
+		snap.Actors[id] = sa
 	}
 	for id, h := range w.Huddles {
 		snap.Huddles[id] = CloneHuddle(h)

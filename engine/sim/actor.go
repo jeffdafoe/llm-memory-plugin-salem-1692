@@ -1080,6 +1080,20 @@ type ActorSnapshot struct {
 	// snapshot copy is the read-path view.
 	AwaitingReplyFrom map[ActorID]time.Time
 
+	// ColocatedAudienceIDs are the conversational actors an UNHUDDLED actor would
+	// reach if it spoke from its current position — the non-mutating read mirror
+	// of the audience the speak path assembles (EnsureColocatedHuddle forms/joins
+	// the structure huddle, then buildHuddlePeerSet). Computed world-side by
+	// colocatedAudienceIDs at publish time so perception's "## Around you"
+	// co-presence line and the speak "there is no one here to hear you" gate
+	// derive from ONE scope rule rather than two that can drift (ZBBS-WORK-407).
+	// Empty for a huddled actor (its company is the huddle, surfaced via
+	// SurroundingsView.HuddleMembers) and for an actor genuinely alone in scope.
+	// A derived per-publish read projection — NOT checkpointed (the checkpoint
+	// serializes the live *Actor's columns, not this struct), recomputed each
+	// republish like the MoveDest* projections above.
+	ColocatedAudienceIDs []ActorID
+
 	// VisitorState mirrors the live Actor's transient-visitor state at
 	// snapshot time. Non-nil marks the actor as a salem-visitor; the
 	// perception "Visitors here" block reads Archetype/Origin/Disposition

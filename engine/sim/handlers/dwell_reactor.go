@@ -29,6 +29,15 @@ import (
 //
 // Force: false. Dwell cues are atmosphere, not emergencies; jitter and
 // the per-minute rate gate apply normally.
+//
+// Wake cadence (ZBBS-WORK-407): the per-minute DwellTickApplied still fires —
+// it applies the recovery and updates the client HUD — but its WARRANT (the
+// thing that wakes a reactor tick / LLM call) is stamped only when the recovery
+// crosses a stat boundary that changes the actor's situation: the driving need
+// falling out of its red tier. A mid-meal minute that merely nudges a still-red
+// or already-sated need stamps nothing, so a long meal or a rest under the shade
+// tree no longer burns an LLM call every minute. Completion is its own beat
+// (DwellEnded), so the terminal tick defers to it rather than double-waking.
 
 // handleDwellStartedWarrants is the DwellStarted subscriber. Stamps
 // DwellStartedWarrantReason on the eater. Skip emit when the event
@@ -70,10 +79,13 @@ func handleDwellStartedWarrants(w *sim.World, evt sim.Event) {
 	}
 }
 
-// handleDwellTickAppliedWarrants is the DwellTickApplied subscriber.
-// Stamps DwellTickAppliedWarrantReason on the eater/rester. Renders
-// the per-tick narration at stamp time so subscribers don't need to
-// re-run DwellTickNarration at perception build.
+// handleDwellTickAppliedWarrants is the DwellTickApplied subscriber. It stamps
+// DwellTickAppliedWarrantReason on the eater/rester ONLY when this tick crosses
+// the recovering need out of its red tier (the boundary wake, ZBBS-WORK-407) and
+// the dwell isn't completing this tick (DwellEnded carries the completion beat).
+// A non-boundary minute applies its recovery + HUD update via the event but
+// stamps no warrant, so it wakes no LLM tick. The per-tick narration is rendered
+// at stamp time so perception build doesn't re-run DwellTickNarration.
 func handleDwellTickAppliedWarrants(w *sim.World, evt sim.Event) {
 	applied, ok := evt.(*sim.DwellTickApplied)
 	if !ok {
@@ -84,6 +96,19 @@ func handleDwellTickAppliedWarrants(w *sim.World, evt sim.Event) {
 	}
 	actor, ok := w.Actors[applied.ActorID]
 	if !ok || actor == nil {
+		return
+	}
+	// Boundary-cadenced wake (ZBBS-WORK-407). The recovery is already applied;
+	// only wake the LLM when this tick crossed the driving need OUT of its red
+	// tier (value was >= threshold, now < threshold) — the moment the actor's
+	// options actually change (it can stop eating / get up now). A still-red or
+	// already-sated nudge isn't worth a reactor tick. The terminal tick defers to
+	// DwellEnded so completion isn't double-stamped.
+	threshold := w.Settings.NeedThresholds.Get(applied.Attribute)
+	before := applied.NewNeedValue - applied.NeedDelta // NeedDelta is the signed recovery already applied
+	crossedOutOfRed := before >= threshold && applied.NewNeedValue < threshold
+	terminalTick := applied.RemainingTicks != nil && *applied.RemainingTicks == 0
+	if !crossedOutOfRed || terminalTick {
 		return
 	}
 	now := time.Now().UTC()

@@ -344,3 +344,60 @@ func findOrCreateStructureScene(w *World, structureID StructureID, now time.Time
 	}
 	return sceneAny.(SceneID), nil
 }
+
+// colocatedAudienceIDs returns the conversational actors an UNHUDDLED speaker
+// would reach if it spoke from its current position right now — a sorted,
+// self-excluded id slice. It is the non-mutating read mirror of the huddle the
+// speak path forms on a speak: EnsureColocatedHuddle joins the speaker into the
+// structure's huddle (pulling in co-located unhuddled actors), and the audience
+// is then that huddle's peers (buildHuddlePeerSet). Surfacing it in perception
+// (ZBBS-WORK-407) lets the "## Around you" co-presence line and the speak
+// "there is no one here to hear you" gate derive from ONE scope rule — both go
+// through conversationalScopeStructure + colocatedConversationalActors, so they
+// cannot drift.
+//
+// An empty result means the speaker is genuinely alone in scope, so a speak
+// would trip the no-audience gate. Open ground with no stall loiter-scope
+// (structureID == "") is always empty, matching EnsureColocatedHuddle's own bail.
+//
+// Only meaningful for an UNHUDDLED speaker: a huddled actor's audience is its
+// existing huddle peers (already surfaced by the huddle roster), so the caller
+// (republish) computes this only when CurrentHuddleID == "". MUST run on the
+// world goroutine.
+func colocatedAudienceIDs(w *World, speaker *Actor, now time.Time) []ActorID {
+	structureID := conversationalScopeStructure(w, speaker)
+	if structureID == "" {
+		return nil
+	}
+	seen := make(map[ActorID]struct{})
+	var out []ActorID
+	add := func(id ActorID) {
+		if id == speaker.ID {
+			return
+		}
+		if _, dup := seen[id]; dup {
+			return
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	// The unhuddled co-located conversationalists EnsureColocatedHuddle would pull
+	// into the huddle on the speak.
+	for _, id := range colocatedConversationalActors(w, speaker, structureID, now) {
+		add(id)
+	}
+	// Anyone ALREADY in an active huddle at this structure: EnsureColocatedHuddle
+	// joins the speaker into that huddle (find-or-create), so its members are part
+	// of the reachable audience too. colocatedConversationalActors deliberately
+	// skips already-huddled actors (to avoid leave-first yanking them), so this is
+	// the arm that covers the live "walk into a room where two are already talking"
+	// case. Read from actorsByHuddle — the same membership index buildHuddlePeerSet
+	// uses to commit the speak audience.
+	if hid, ok := findActiveHuddleAt(w, structureID); ok {
+		for id := range w.actorsByHuddle[hid] {
+			add(id)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
