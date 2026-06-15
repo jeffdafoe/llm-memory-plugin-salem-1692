@@ -42,6 +42,9 @@ type CheckpointSnapshot struct {
 	Environment     WorldEnvironment
 	Phase           Phase
 	MutableSettings MutableWorldSettings
+	// DiscoveredKinds — engine-minted item kinds (ZBBS-WORK-412), upserted into
+	// item_kind by SaveWorld so an agent's invented good survives restart.
+	DiscoveredKinds []DiscoveredKind
 }
 
 // MutableWorldSettings is the runtime-tunable subset of WorldSettings the admin
@@ -55,6 +58,19 @@ type MutableWorldSettings struct {
 	ZoomMinAdmin     float64
 	ZoomMinRegular   float64
 	AgentTicksPaused bool
+}
+
+// DiscoveredKind is the minimal persist-tuple for an engine-minted item kind
+// (ZBBS-WORK-412). SaveWorld upserts these into item_kind so a good an agent
+// NPC invented survives restart and shows in the Village Config items table.
+// Only name/display_label/category are written — discovered kinds carry no
+// satisfies/recipe/price (hand-wired when an operator sources the kind) — and
+// the upsert is INSERT ... ON CONFLICT (name) DO NOTHING, so it never clobbers
+// an authored row or an operator's later edit.
+type DiscoveredKind struct {
+	Name         ItemKind
+	DisplayLabel string
+	Category     ItemCategory
 }
 
 // BuildCheckpointSnapshot deep-clones the seven checkpoint aggregates into an
@@ -82,6 +98,19 @@ func (w *World) BuildCheckpointSnapshot() *CheckpointSnapshot {
 			ZoomMinRegular:   w.Settings.ZoomMinRegular,
 			AgentTicksPaused: w.Settings.AgentTicksPaused,
 		},
+	}
+	// ZBBS-WORK-412: carry the engine-minted (unknown-category) item kinds so
+	// the checkpoint persists them. Authored kinds (food/drink/material/craft)
+	// stay reference data, never written by the loop — only discoveries are.
+	for kind, def := range w.ItemKinds {
+		if def == nil || def.Category != ItemCategoryUnknown {
+			continue
+		}
+		cp.DiscoveredKinds = append(cp.DiscoveredKinds, DiscoveredKind{
+			Name:         kind,
+			DisplayLabel: def.DisplayLabel,
+			Category:     def.Category,
+		})
 	}
 	for id, a := range w.Actors {
 		cp.Actors[id] = CloneActor(a)

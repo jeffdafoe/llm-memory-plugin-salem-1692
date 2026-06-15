@@ -412,8 +412,12 @@ func TestConsume_UnknownKind(t *testing.T) {
 	if err == nil {
 		t.Fatal("Consume: want error for unknown kind, got nil")
 	}
-	if !errors.Is(err, sim.ErrUnknownItemKind) {
-		t.Errorf("want ErrUnknownItemKind; got %v", err)
+	// ZBBS-WORK-412: "moonbeam" is now MINTED at qty 0 (a discovery), so the
+	// failure is no longer ErrUnknownItemKind — the minted kind exists but has
+	// no satisfactions, so it's ErrNotConsumable. (That this is ErrNotConsumable
+	// rather than ErrUnknownItemKind is itself proof the mint happened.)
+	if !errors.Is(err, sim.ErrNotConsumable) {
+		t.Errorf("want ErrNotConsumable for the minted kind; got %v", err)
 	}
 	if !strings.Contains(err.Error(), `"moonbeam"`) {
 		t.Errorf("error should echo the unknown kind: %v", err)
