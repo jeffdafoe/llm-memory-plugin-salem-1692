@@ -83,6 +83,15 @@ const (
 	ItemCategoryDrink    ItemCategory = "drink"
 	ItemCategoryMaterial ItemCategory = "material"
 	ItemCategoryCraft    ItemCategory = "craft"
+
+	// ItemCategoryUnknown tags a kind the engine MINTED from an agent NPC's
+	// reference to a good not in the catalog (ZBBS-WORK-412 hallucinated-item
+	// discovery). It carries no recipe/price/satisfies and zero instances —
+	// inert until an operator sources it (recipe/price/gather) or deletes the
+	// row. The category doubles as the discovery marker: the Village Config
+	// items table renders it "unknown" at "0 in world", and the checkpoint
+	// persists exactly the unknown-category kinds.
+	ItemCategoryUnknown ItemCategory = "unknown"
 )
 
 // Consumable reports whether this item kind satisfies any need when a unit

@@ -10,13 +10,27 @@ import (
 
 // items_test.go — ZBBS-HOME-423 catalog read for the Pay modal.
 
+// setItemKinds installs a catalog on the running test world via a command, so
+// the assignment lands on the world goroutine AND the post-command republish
+// makes it visible through w.Published() — which handleItems reads as of
+// ZBBS-WORK-412 (the catalog is no longer write-once after startup).
+func setItemKinds(t *testing.T, w *sim.World, kinds map[sim.ItemKind]*sim.ItemKindDef) {
+	t.Helper()
+	if _, err := w.Send(sim.Command{Fn: func(world *sim.World) (any, error) {
+		world.ItemKinds = kinds
+		return nil, nil
+	}}); err != nil {
+		t.Fatalf("setItemKinds: %v", err)
+	}
+}
+
 func TestHandleItems_SortedCatalog(t *testing.T) {
 	w := seededWorld(t)
-	w.ItemKinds = map[sim.ItemKind]*sim.ItemKindDef{
+	setItemKinds(t, w, map[sim.ItemKind]*sim.ItemKindDef{
 		"stew":        {Name: "stew", DisplayLabel: "Stew", Category: "food", SortOrder: 2},
 		"ale":         {Name: "ale", DisplayLabel: "Ale", Category: "drink", SortOrder: 1},
 		"nights_stay": {Name: "nights_stay", DisplayLabel: "Night's Stay", Category: "service", SortOrder: 1},
-	}
+	})
 	srv := NewServer(w, okAuth{})
 
 	rec := get(t, srv, "/api/village/items")
@@ -46,7 +60,7 @@ func TestHandleItems_SortedCatalog(t *testing.T) {
 // array-shape check doesn't trip.
 func TestHandleItems_EmptyCatalogIsArray(t *testing.T) {
 	w := seededWorld(t)
-	w.ItemKinds = nil
+	setItemKinds(t, w, nil)
 	srv := NewServer(w, okAuth{})
 
 	rec := get(t, srv, "/api/village/items")

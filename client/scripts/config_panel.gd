@@ -674,17 +674,20 @@ func _on_agent_ticks_toggled(pressed: bool) -> void:
     http.request(Auth.api_base + "/api/village/admin/agent-ticks",
         headers, HTTPClient.METHOD_POST, payload)
 
-## GET /api/items — fetch the read-only catalog of every item_kind in
-## the village and render it as a 4-column grid. Called once on each
-## visibility transition; item_kind doesn't change between admin sessions
-## (only across migrations) so polling buys nothing.
+## GET /api/village/items/catalog — fetch the admin items catalog (every
+## item_kind with its satisfies/capabilities + a live in-world stock rollup)
+## and render it as a 5-column grid. Admin-gated; ZBBS-WORK-412 revived this
+## from the dead v1 /api/items route. Fetched on each visibility transition:
+## the catalog now DOES change within a session — engine-minted discovered
+## kinds (category "unknown") accrue as NPCs name unknown goods, and the stock
+## counts move — so a fresh open shows current state.
 func _fetch_items() -> void:
     var http = HTTPRequest.new()
     http.accept_gzip = false
     add_child(http)
     http.request_completed.connect(_on_items_response.bind(http))
     var headers := Auth.auth_headers(false)
-    http.request(Auth.api_base + "/api/items", headers)
+    http.request(Auth.api_base + "/api/village/items/catalog", headers)
 
 func _on_items_response(result: int, response_code: int, _headers: PackedStringArray, body: PackedByteArray, http: HTTPRequest) -> void:
     http.queue_free()

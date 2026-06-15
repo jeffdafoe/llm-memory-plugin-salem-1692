@@ -148,3 +148,29 @@ func (r *ItemKindsRepo) attachSatisfactions(ctx context.Context, defs map[sim.It
 	}
 	return nil
 }
+
+// upsertDiscoveredItemKindSQL inserts an engine-minted kind (ZBBS-WORK-412) and
+// does nothing if the name already exists — so the checkpoint never clobbers an
+// authored row or an operator's later edit to a discovered kind (e.g. once they
+// source it and re-categorize it food). Only the three columns a discovery
+// carries are written; sort_order/capabilities/consume_dwell_narration take
+// their column defaults and no item_satisfies rows are added.
+const upsertDiscoveredItemKindSQL = `
+INSERT INTO item_kind (name, display_label, category)
+VALUES ($1, $2, $3)
+ON CONFLICT (name) DO NOTHING`
+
+// saveDiscoveredKinds upserts the discovered (engine-minted) item kinds carried
+// on the checkpoint snapshot. Called from SaveWorld inside the checkpoint Tx so
+// a crash can't split it from the rest of the checkpoint. Package-private and
+// SQL-co-located here (rather than an ItemKindsRepo interface method) because
+// it's a pg-only write with no mem/test-fake counterpart — the catalog is
+// reference data everywhere else.
+func saveDiscoveredKinds(ctx context.Context, tx sim.Tx, kinds []sim.DiscoveredKind) error {
+	for _, k := range kinds {
+		if _, err := tx.Exec(ctx, upsertDiscoveredItemKindSQL, string(k.Name), k.DisplayLabel, string(k.Category)); err != nil {
+			return fmt.Errorf("pg item_kinds saveDiscoveredKinds: upsert %q: %w", k.Name, err)
+		}
+	}
+	return nil
+}

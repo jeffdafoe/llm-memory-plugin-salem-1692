@@ -177,8 +177,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/village/npc-behaviors", s.requireAuth(s.handleNPCBehaviors))
 	mux.HandleFunc("GET /api/village/refresh-attributes", s.requireAuth(s.handleRefreshAttributes))
 	// Item-kind catalog for the Pay modal's compose-an-offer dropdown
-	// (ZBBS-HOME-423) — boot-immutable reference data, see items.go.
+	// (ZBBS-HOME-423) — lean reference data, see items.go. No longer
+	// boot-immutable: ZBBS-WORK-412 mints discovered kinds at runtime, so the
+	// handler reads the published snapshot (and filters discoveries out).
 	mux.HandleFunc("GET /api/village/items", s.requireAuth(s.handleItems))
+	// Rich admin items catalog for the Village Config panel: full defs + a live
+	// in-world stock rollup, admin-gated. Revives the v1 ZBBS-114 catalog
+	// (ZBBS-WORK-412). Separate from the lean route above so the hot Pay-modal
+	// path doesn't pay for the all-actor inventory scan.
+	mux.HandleFunc("GET /api/village/items/catalog", s.requireAuth(s.handleItemCatalog))
 	// Static editor allowlists (vocabulary the editor's tag dropdowns render).
 	// Hardcoded reference data — no World map, no DB; see catalog_tags.go.
 	mux.HandleFunc("GET /api/village/object-tags", s.requireAuth(s.handleObjectTags))

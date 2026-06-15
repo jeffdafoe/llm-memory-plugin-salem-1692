@@ -477,9 +477,12 @@ func TestSceneQuoteCreate_Reject_UnknownItem(t *testing.T) {
 	})
 	defer stop()
 
+	// ZBBS-WORK-412: an unknown quoted good is now MINTED (a discovery); the
+	// quote then fails the stock gate (Aldous holds 0 of the minted kind) rather
+	// than "unknown item kind".
 	_, err := w.Send(sim.SceneQuoteCreate("aldous", "moonshine", 1, 2, false, "", nil, time.Now().UTC()))
-	if err == nil || !strings.Contains(err.Error(), "unknown item kind") {
-		t.Fatalf("err = %v, want 'unknown item kind'", err)
+	if err == nil || !strings.Contains(err.Error(), "insufficient stock") {
+		t.Fatalf("err = %v, want 'insufficient stock' (moonshine minted at qty 0)", err)
 	}
 }
 

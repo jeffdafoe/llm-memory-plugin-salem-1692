@@ -143,9 +143,11 @@ func SceneQuoteCreate(
 			}
 			scene := w.Scenes[sceneID]
 
-			// Gate 2: ItemKind exists in catalog. resolveItemKind
-			// handles trim + case-insensitive match.
-			kind, ok := resolveItemKind(w, itemName)
+			// Gate 2: resolve the ItemKind. ZBBS-WORK-412: on a miss, mint it
+			// at qty 0 — a seller quoting a good the world doesn't have yet is a
+			// discovery signal. The seller holds 0 of a freshly-minted kind, so
+			// the stock gate below still rejects the quote.
+			kind, ok := resolveOrMintItemKind(w, itemName)
 			if !ok {
 				return nil, fmt.Errorf(
 					"unknown item kind %q — check the items available in this world before quoting.",

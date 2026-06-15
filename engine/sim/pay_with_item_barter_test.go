@@ -94,8 +94,11 @@ func TestPayWithItem_Barter_UnknownAndDupGoodsReject(t *testing.T) {
 	defer stop()
 	at := time.Now().UTC()
 	if _, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 0, false, nil,
-		[]sim.PayItemInput{{Item: "fizzbuzz", Qty: 1}}, 0, 0, "", at)); err == nil || !strings.Contains(err.Error(), "unknown item kind") {
-		t.Errorf("unknown pay_item: want reject, got %v", err)
+		[]sim.PayItemInput{{Item: "fizzbuzz", Qty: 1}}, 0, 0, "", at)); err == nil || !strings.Contains(err.Error(), "offer goods you actually hold") {
+		// ZBBS-WORK-412: the unknown pay-with good is now MINTED, so it no longer
+		// fails "unknown item kind" — it fails the holdings shortfall (Alice
+		// carries 0 of the freshly-minted good).
+		t.Errorf("unknown pay_item: want holdings-shortfall reject, got %v", err)
 	}
 	if _, err := w.Send(sim.PayWithItem("alice", "Bob", "stew", 1, 0, false, nil,
 		[]sim.PayItemInput{{Item: "bread", Qty: 1}, {Item: "bread", Qty: 2}}, 0, 0, "", at)); err == nil || !strings.Contains(err.Error(), "more than once") {
