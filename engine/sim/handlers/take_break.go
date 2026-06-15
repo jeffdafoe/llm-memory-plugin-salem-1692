@@ -96,7 +96,7 @@ func DecodeTakeBreakArgs(raw json.RawMessage) (any, error) {
 	// object".
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return nil, errors.New("take_break: arguments must be a JSON object")
+		return nil, decodeErrf("take_break: arguments must be a JSON object")
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
@@ -108,15 +108,15 @@ func DecodeTakeBreakArgs(raw json.RawMessage) (any, error) {
 	var extra any
 	if err := dec.Decode(&extra); err != io.EOF {
 		if err == nil {
-			return nil, errors.New("take_break: trailing data after JSON object")
+			return nil, decodeErrf("take_break: trailing data after JSON object")
 		}
 		return nil, fmt.Errorf("take_break: malformed trailing data: %w", err)
 	}
 	if args.Reason == "" {
-		return nil, errors.New("take_break: reason is required")
+		return nil, decodeErrf("take_break: reason is required")
 	}
 	if n := utf8.RuneCountInString(args.Reason); n > MaxTakeBreakReasonChars {
-		return nil, fmt.Errorf(
+		return nil, decodeErrf(
 			"take_break: reason exceeds %d-character cap (got %d characters)",
 			MaxTakeBreakReasonChars, n,
 		)
@@ -128,7 +128,7 @@ func DecodeTakeBreakArgs(raw json.RawMessage) (any, error) {
 	// schema also bounds this, but Decode is the self-contained enforcement
 	// layer.
 	if args.UntilHour != nil && (*args.UntilHour < 1 || *args.UntilHour > 23) {
-		return nil, fmt.Errorf(
+		return nil, decodeErrf(
 			"take_break: until_hour must be between 1 and 23 (got %d); omit it for a default-length break",
 			*args.UntilHour,
 		)

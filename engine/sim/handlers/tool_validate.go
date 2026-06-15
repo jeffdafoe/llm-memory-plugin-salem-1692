@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim/llm"
@@ -97,10 +98,25 @@ func (v *Validator) Validate(call llm.RawToolCall) (*ValidatedCall, *ValidationE
 
 	decoded, err := entry.Decode(call.Arguments)
 	if err != nil {
+		// Decode errors split two ways. Hand-authored validation failures
+		// (missing required field, out-of-range bound, length cap) are
+		// model-safe by construction — they echo only the model's own
+		// arguments — so the decoder tags them modelDecodeError and we
+		// surface the reason verbatim, letting a weak model self-correct
+		// instead of looping on an opaque "decode failed" (ZBBS-WORK-413).
+		// Raw encoding/json failures can quote arbitrary input fragments,
+		// so they stay generic; Cause carries the detail for logs either
+		// way. Mirrors the command layer's sim.ModelFacingError handling in
+		// the harness dispatch path.
+		msg := "argument decode failed"
+		var safe modelDecodeError
+		if errors.As(err, &safe) {
+			msg = safe.Error()
+		}
 		return nil, &ValidationError{
 			Kind:    ValidationErrorMalformedArgs,
 			Tool:    call.Name,
-			Message: "argument decode failed",
+			Message: msg,
 			Cause:   err,
 		}
 	}
@@ -112,4 +128,29 @@ func (v *Validator) Validate(call llm.RawToolCall) (*ValidatedCall, *ValidationE
 		RawCallID:   call.ID,
 		Index:       call.Index,
 	}, nil
+}
+
+// modelDecodeError marks a decode-stage validation failure whose message
+// is safe to show the model verbatim. Decoders return it (via decodeErrf)
+// for their hand-authored argument checks — required-field, min/max bound,
+// length cap, structural shape — which only ever echo the model's own
+// arguments, never internal state, file paths, or secrets. Validate
+// surfaces these as the tool-error reason so a weak model can self-correct;
+// every other decode error (a raw encoding/json failure, which can quote
+// arbitrary input) stays generic. This is the decode-layer analogue of
+// sim.ModelFacingError, which does the same for world-command rejections.
+type modelDecodeError struct {
+	msg string
+}
+
+func (e modelDecodeError) Error() string {
+	return e.msg
+}
+
+// decodeErrf builds a model-safe decode validation error (see
+// modelDecodeError). Use it for hand-authored argument checks; do NOT use
+// it to wrap a json.Decode/Unmarshal error — those must stay generic, so
+// keep them on fmt.Errorf("...: %w", err).
+func decodeErrf(format string, a ...any) error {
+	return modelDecodeError{msg: fmt.Sprintf(format, a...)}
 }

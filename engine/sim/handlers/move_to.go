@@ -99,7 +99,7 @@ func DecodeMoveToArgs(raw json.RawMessage) (any, error) {
 	// JSON object".
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return nil, errors.New("move_to: arguments must be a JSON object")
+		return nil, decodeErrf("move_to: arguments must be a JSON object")
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
@@ -111,7 +111,7 @@ func DecodeMoveToArgs(raw json.RawMessage) (any, error) {
 	var extra any
 	if err := dec.Decode(&extra); err != io.EOF {
 		if err == nil {
-			return nil, errors.New("move_to: trailing data after JSON object")
+			return nil, decodeErrf("move_to: trailing data after JSON object")
 		}
 		return nil, fmt.Errorf("move_to: malformed trailing data: %w", err)
 	}
@@ -127,18 +127,18 @@ func DecodeMoveToArgs(raw json.RawMessage) (any, error) {
 	hasName := args.StructureName != ""
 	switch {
 	case !hasID && !hasName:
-		return nil, errors.New("move_to: provide structure_id or structure_name")
+		return nil, decodeErrf("move_to: provide structure_id or structure_name")
 	case hasID && hasName:
-		return nil, errors.New("move_to: provide structure_id OR structure_name, not both")
+		return nil, decodeErrf("move_to: provide structure_id OR structure_name, not both")
 	}
 	if n := utf8.RuneCountInString(args.StructureID); n > MaxMoveToStructureIDChars {
-		return nil, fmt.Errorf(
+		return nil, decodeErrf(
 			"move_to: structure_id exceeds %d-character cap (got %d characters)",
 			MaxMoveToStructureIDChars, n,
 		)
 	}
 	if n := utf8.RuneCountInString(args.StructureName); n > MaxMoveToStructureIDChars {
-		return nil, fmt.Errorf(
+		return nil, decodeErrf(
 			"move_to: structure_name exceeds %d-character cap (got %d characters)",
 			MaxMoveToStructureIDChars, n,
 		)
@@ -147,10 +147,10 @@ func DecodeMoveToArgs(raw json.RawMessage) (any, error) {
 	// controls). Done here at decode so an invalid value is rejected regardless
 	// of which handler consumes the args; HandleMoveTo keeps a defensive re-check.
 	if i := indexInvalidControlChar(args.StructureID); i >= 0 {
-		return nil, fmt.Errorf("move_to: structure_id contains a disallowed control character at byte offset %d", i)
+		return nil, decodeErrf("move_to: structure_id contains a disallowed control character at byte offset %d", i)
 	}
 	if i := indexInvalidControlChar(args.StructureName); i >= 0 {
-		return nil, fmt.Errorf("move_to: structure_name contains a disallowed control character at byte offset %d", i)
+		return nil, decodeErrf("move_to: structure_name contains a disallowed control character at byte offset %d", i)
 	}
 	return args, nil
 }

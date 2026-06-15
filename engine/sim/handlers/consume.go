@@ -135,7 +135,7 @@ func DecodeConsumeArgs(raw json.RawMessage) (any, error) {
 	// JSON object" signal.
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return nil, errors.New("consume: arguments must be a JSON object")
+		return nil, decodeErrf("consume: arguments must be a JSON object")
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
@@ -147,24 +147,24 @@ func DecodeConsumeArgs(raw json.RawMessage) (any, error) {
 	var extra any
 	if err := dec.Decode(&extra); err != io.EOF {
 		if err == nil {
-			return nil, errors.New("consume: trailing data after JSON object")
+			return nil, decodeErrf("consume: trailing data after JSON object")
 		}
 		return nil, fmt.Errorf("consume: malformed trailing data: %w", err)
 	}
 	if args.Item == "" {
-		return nil, errors.New("consume: item is required")
+		return nil, decodeErrf("consume: item is required")
 	}
 	if n := utf8.RuneCountInString(args.Item); n > MaxConsumeItemChars {
-		return nil, fmt.Errorf(
+		return nil, decodeErrf(
 			"consume: item exceeds %d-character cap (got %d characters)",
 			MaxConsumeItemChars, n,
 		)
 	}
 	if args.Qty < 1 {
-		return nil, fmt.Errorf("consume: qty must be at least 1 (got %d)", args.Qty)
+		return nil, decodeErrf("consume: qty must be at least 1 (got %d)", args.Qty)
 	}
 	if args.Qty > sim.MaxConsumeQty {
-		return nil, fmt.Errorf("consume: qty exceeds maximum (got %d, max %d)", args.Qty, sim.MaxConsumeQty)
+		return nil, decodeErrf("consume: qty exceeds maximum (got %d, max %d)", args.Qty, sim.MaxConsumeQty)
 	}
 	return args, nil
 }

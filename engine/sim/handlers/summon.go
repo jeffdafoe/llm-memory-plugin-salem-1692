@@ -87,7 +87,7 @@ const summonDescription = "Send for another villager. A messenger will walk to t
 func DecodeSummonArgs(raw json.RawMessage) (any, error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return nil, errors.New("summon: arguments must be a JSON object")
+		return nil, decodeErrf("summon: arguments must be a JSON object")
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
@@ -98,19 +98,19 @@ func DecodeSummonArgs(raw json.RawMessage) (any, error) {
 	var extra any
 	if err := dec.Decode(&extra); err != io.EOF {
 		if err == nil {
-			return nil, errors.New("summon: trailing data after JSON object")
+			return nil, decodeErrf("summon: trailing data after JSON object")
 		}
 		return nil, fmt.Errorf("summon: malformed trailing data: %w", err)
 	}
 	if args.Target == "" {
-		return nil, errors.New("summon: target is required")
+		return nil, decodeErrf("summon: target is required")
 	}
 	if n := utf8.RuneCountInString(args.Target); n > MaxSummonTargetChars {
-		return nil, fmt.Errorf(
+		return nil, decodeErrf(
 			"summon: target exceeds %d-character cap (got %d characters)", MaxSummonTargetChars, n)
 	}
 	if n := utf8.RuneCountInString(args.Reason); n > MaxSummonReasonChars {
-		return nil, fmt.Errorf(
+		return nil, decodeErrf(
 			"summon: reason exceeds %d-character cap (got %d characters)", MaxSummonReasonChars, n)
 	}
 	return args, nil

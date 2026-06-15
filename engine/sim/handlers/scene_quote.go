@@ -166,7 +166,7 @@ func DecodeSceneQuoteArgs(raw json.RawMessage) (any, error) {
 	// values, producing misleading downstream errors.
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return nil, errors.New("scene_quote: arguments must be a JSON object")
+		return nil, decodeErrf("scene_quote: arguments must be a JSON object")
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
@@ -178,47 +178,47 @@ func DecodeSceneQuoteArgs(raw json.RawMessage) (any, error) {
 	var extra any
 	if err := dec.Decode(&extra); err != io.EOF {
 		if err == nil {
-			return nil, errors.New("scene_quote: trailing data after JSON object")
+			return nil, decodeErrf("scene_quote: trailing data after JSON object")
 		}
 		return nil, fmt.Errorf("scene_quote: malformed trailing data: %w", err)
 	}
 
 	if args.ItemKind == "" {
-		return nil, errors.New("scene_quote: item_kind is required")
+		return nil, decodeErrf("scene_quote: item_kind is required")
 	}
 	if n := utf8.RuneCountInString(args.ItemKind); n > MaxSceneQuoteItemChars {
-		return nil, fmt.Errorf(
+		return nil, decodeErrf(
 			"scene_quote: item_kind exceeds %d-character cap (got %d characters)",
 			MaxSceneQuoteItemChars, n,
 		)
 	}
 	if args.Qty < 1 {
-		return nil, fmt.Errorf("scene_quote: qty must be at least 1 (got %d)", args.Qty)
+		return nil, decodeErrf("scene_quote: qty must be at least 1 (got %d)", args.Qty)
 	}
 	if args.Qty > sim.MaxSceneQuoteQty {
-		return nil, fmt.Errorf("scene_quote: qty exceeds maximum (got %d, max %d)", args.Qty, sim.MaxSceneQuoteQty)
+		return nil, decodeErrf("scene_quote: qty exceeds maximum (got %d, max %d)", args.Qty, sim.MaxSceneQuoteQty)
 	}
 	if args.Amount < 1 {
-		return nil, fmt.Errorf("scene_quote: amount must be at least 1 (got %d)", args.Amount)
+		return nil, decodeErrf("scene_quote: amount must be at least 1 (got %d)", args.Amount)
 	}
 	if args.Amount > sim.MaxSceneQuoteAmount {
-		return nil, fmt.Errorf("scene_quote: amount exceeds maximum (got %d, max %d)", args.Amount, sim.MaxSceneQuoteAmount)
+		return nil, decodeErrf("scene_quote: amount exceeds maximum (got %d, max %d)", args.Amount, sim.MaxSceneQuoteAmount)
 	}
 	if n := utf8.RuneCountInString(args.TargetBuyer); n > MaxSceneQuoteNameChars {
-		return nil, fmt.Errorf(
+		return nil, decodeErrf(
 			"scene_quote: target_buyer exceeds %d-character cap (got %d characters)",
 			MaxSceneQuoteNameChars, n,
 		)
 	}
 	if len(args.Consumers) > MaxSceneQuoteConsumers {
-		return nil, fmt.Errorf(
+		return nil, decodeErrf(
 			"scene_quote: consumers exceeds %d-entry cap (got %d)",
 			MaxSceneQuoteConsumers, len(args.Consumers),
 		)
 	}
 	for i, c := range args.Consumers {
 		if n := utf8.RuneCountInString(c); n > MaxSceneQuoteNameChars {
-			return nil, fmt.Errorf(
+			return nil, decodeErrf(
 				"scene_quote: consumers[%d] exceeds %d-character cap (got %d characters)",
 				i, MaxSceneQuoteNameChars, n,
 			)

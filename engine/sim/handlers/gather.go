@@ -3,7 +3,6 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -74,7 +73,7 @@ func DecodeGatherArgs(raw json.RawMessage) (any, error) {
 		return GatherArgs{}, nil
 	}
 	if trimmed[0] != '{' {
-		return nil, errors.New("gather: arguments must be a JSON object")
+		return nil, decodeErrf("gather: arguments must be a JSON object")
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
@@ -85,7 +84,7 @@ func DecodeGatherArgs(raw json.RawMessage) (any, error) {
 	var extra any
 	if err := dec.Decode(&extra); err != io.EOF {
 		if err == nil {
-			return nil, errors.New("gather: trailing data after JSON object")
+			return nil, decodeErrf("gather: trailing data after JSON object")
 		}
 		return nil, fmt.Errorf("gather: malformed trailing data: %w", err)
 	}
@@ -93,10 +92,10 @@ func DecodeGatherArgs(raw json.RawMessage) (any, error) {
 	// (>= 1); explicit 0 / negative is rejected here rather than coerced.
 	if args.Qty != nil {
 		if *args.Qty < 1 {
-			return nil, fmt.Errorf("gather: qty must be at least 1 when provided (got %d)", *args.Qty)
+			return nil, decodeErrf("gather: qty must be at least 1 when provided (got %d)", *args.Qty)
 		}
 		if *args.Qty > sim.MaxGatherQty {
-			return nil, fmt.Errorf("gather: qty exceeds maximum (got %d, max %d)", *args.Qty, sim.MaxGatherQty)
+			return nil, decodeErrf("gather: qty exceeds maximum (got %d, max %d)", *args.Qty, sim.MaxGatherQty)
 		}
 	}
 	return args, nil

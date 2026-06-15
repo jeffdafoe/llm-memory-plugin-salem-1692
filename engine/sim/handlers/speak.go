@@ -171,15 +171,15 @@ func DecodeSpeakArgs(raw json.RawMessage) (any, error) {
 	var extra any
 	if err := dec.Decode(&extra); err != io.EOF {
 		if err == nil {
-			return nil, errors.New("speak: trailing data after JSON object")
+			return nil, decodeErrf("speak: trailing data after JSON object")
 		}
 		return nil, fmt.Errorf("speak: malformed trailing data: %w", err)
 	}
 	if args.Text == "" {
-		return nil, errors.New("speak: text is required")
+		return nil, decodeErrf("speak: text is required")
 	}
 	if n := utf8.RuneCountInString(args.Text); n > MaxSpeakTextChars {
-		return nil, fmt.Errorf(
+		return nil, decodeErrf(
 			"speak: text exceeds %d-character cap (got %d characters)",
 			MaxSpeakTextChars, n,
 		)
@@ -190,17 +190,17 @@ func DecodeSpeakArgs(raw json.RawMessage) (any, error) {
 	// checked here: that needs world state, and a bad mention silently
 	// drops world-side rather than failing the speak.
 	if len(args.Mentions) > MaxSpeakMentions {
-		return nil, fmt.Errorf(
+		return nil, decodeErrf(
 			"speak: at most %d mentions allowed (got %d)",
 			MaxSpeakMentions, len(args.Mentions),
 		)
 	}
 	for i, m := range args.Mentions {
 		if strings.TrimSpace(m.Item) == "" {
-			return nil, fmt.Errorf("speak: mentions[%d].item is required", i)
+			return nil, decodeErrf("speak: mentions[%d].item is required", i)
 		}
 		if n := utf8.RuneCountInString(m.Item); n > MaxSpeakMentionItemChars {
-			return nil, fmt.Errorf(
+			return nil, decodeErrf(
 				"speak: mentions[%d].item exceeds %d-character cap (got %d characters)",
 				i, MaxSpeakMentionItemChars, n,
 			)

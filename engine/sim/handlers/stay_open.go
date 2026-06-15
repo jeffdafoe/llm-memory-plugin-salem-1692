@@ -91,7 +91,7 @@ func DecodeStayOpenArgs(raw json.RawMessage) (any, error) {
 	// misleading "reason is required" instead of a crisp "must be a JSON object".
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || trimmed[0] != '{' {
-		return nil, errors.New("stay_open: arguments must be a JSON object")
+		return nil, decodeErrf("stay_open: arguments must be a JSON object")
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
@@ -103,15 +103,15 @@ func DecodeStayOpenArgs(raw json.RawMessage) (any, error) {
 	var extra any
 	if err := dec.Decode(&extra); err != io.EOF {
 		if err == nil {
-			return nil, errors.New("stay_open: trailing data after JSON object")
+			return nil, decodeErrf("stay_open: trailing data after JSON object")
 		}
 		return nil, fmt.Errorf("stay_open: malformed trailing data: %w", err)
 	}
 	if args.Reason == "" {
-		return nil, errors.New("stay_open: reason is required")
+		return nil, decodeErrf("stay_open: reason is required")
 	}
 	if n := utf8.RuneCountInString(args.Reason); n > MaxStayOpenReasonChars {
-		return nil, fmt.Errorf(
+		return nil, decodeErrf(
 			"stay_open: reason exceeds %d-character cap (got %d characters)",
 			MaxStayOpenReasonChars, n,
 		)
@@ -119,10 +119,10 @@ func DecodeStayOpenArgs(raw json.RawMessage) (any, error) {
 	// until_hour is REQUIRED — committing to stay open means committing to a
 	// closing hour. An omitted hour is a contract violation, not a default request.
 	if args.UntilHour == nil {
-		return nil, errors.New("stay_open: until_hour is required (the hour you will close, 0..23)")
+		return nil, decodeErrf("stay_open: until_hour is required (the hour you will close, 0..23)")
 	}
 	if *args.UntilHour < 0 || *args.UntilHour > 23 {
-		return nil, fmt.Errorf(
+		return nil, decodeErrf(
 			"stay_open: until_hour must be between 0 and 23 (got %d)",
 			*args.UntilHour,
 		)
