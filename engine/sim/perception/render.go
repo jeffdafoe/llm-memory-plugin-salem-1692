@@ -592,6 +592,15 @@ func renderActiveDwellCredit(c DwellCreditView) string {
 		// item dwell can also be self-consumed pack food, not a purchase.
 		minutes := (*c.RemainingTicks) * c.PeriodMinutes
 		subject = fmt.Sprintf("%s, %s", subject, sim.DwellStayClause(minutes, c.Attribute, ""))
+	} else if c.Source == sim.DwellSourceObject {
+		// ZBBS-WORK-411: object dwells (shade tree, well, berry bush) are free,
+		// open-ended recovery sources with no countdown, so they skip the item
+		// branch above and would otherwise render bare ("You are resting at the
+		// old oak") — no stake, leaving NPCs free to wander off mid-recovery while
+		// the duty-steer / "## How you can rest" alternatives pull them away. The
+		// open-ended sibling clause says staying keeps easing the need and that
+		// leaving stops it.
+		subject = fmt.Sprintf("%s, %s", subject, sim.ObjectDwellStayClause(c.Attribute))
 	}
 	return subject
 }

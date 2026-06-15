@@ -293,6 +293,41 @@ func DwellStayClause(minutes int, attribute NeedKey, wasteExtra string) string {
 	return clause
 }
 
+// dwellRecoveredEndpoint names the finished-recovering state a free dwell source
+// builds toward — "you are rested" for a shade tree, etc. "" for an unhandled
+// need, so the caller drops the "until ___" phrase rather than print a blank.
+func dwellRecoveredEndpoint(attribute NeedKey) string {
+	switch attribute {
+	case "tiredness":
+		return "you are rested"
+	case "thirst":
+		return "your thirst is quenched"
+	case "hunger":
+		return "you are full"
+	}
+	return ""
+}
+
+// ObjectDwellStayClause is the open-ended sibling of DwellStayClause for object-
+// source dwells — free natural recovery sources (a shade tree, a well, a berry
+// bush) the actor draws from while it stays on the loiter pin. These have no
+// countdown (recovery runs until the need clears or the actor leaves) and cost
+// nothing, so it drops the "N minutes to finish" / "coins you paid" framing the
+// meal version carries: it says staying keeps easing the need (toward a named
+// endpoint) and that leaving stops it. Returned WITHOUT a trailing period, like
+// DwellStayClause. ZBBS-WORK-411.
+func ObjectDwellStayClause(attribute NeedKey) string {
+	clause := "the longer you stay the more you recover"
+	if end := dwellRecoveredEndpoint(attribute); end != "" {
+		clause += ", until " + end
+	}
+	clause += ". If you leave now you will stop recovering"
+	if adj := needAdjective(attribute); adj != "" {
+		clause += ", and you will remain " + adj
+	}
+	return clause
+}
+
 // consumeNeedOrder is the stable tiebreak order when several needs moved on one
 // consume — the canonical need ordering, so primaryEasedNeed is deterministic
 // regardless of the Applied map's iteration order.

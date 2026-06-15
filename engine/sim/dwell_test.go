@@ -516,6 +516,45 @@ func TestDwellStayClause(t *testing.T) {
 	}
 }
 
+// TestObjectDwellStayClause covers the open-ended object-dwell sibling: no
+// countdown, no coins; a named recovery endpoint by need and the "stop
+// recovering / remain ___" stake. ZBBS-WORK-411.
+func TestObjectDwellStayClause(t *testing.T) {
+	cases := []struct {
+		name      string
+		attribute sim.NeedKey
+		want      string
+	}{
+		{
+			name:      "tiredness (shade tree)",
+			attribute: "tiredness",
+			want:      "the longer you stay the more you recover, until you are rested. If you leave now you will stop recovering, and you will remain tired",
+		},
+		{
+			name:      "thirst (well)",
+			attribute: "thirst",
+			want:      "the longer you stay the more you recover, until your thirst is quenched. If you leave now you will stop recovering, and you will remain thirsty",
+		},
+		{
+			name:      "hunger (berry bush)",
+			attribute: "hunger",
+			want:      "the longer you stay the more you recover, until you are full. If you leave now you will stop recovering, and you will remain hungry",
+		},
+		{
+			name:      "unknown need: no endpoint, no remain clause",
+			attribute: "mana",
+			want:      "the longer you stay the more you recover. If you leave now you will stop recovering",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sim.ObjectDwellStayClause(tc.attribute); got != tc.want {
+				t.Errorf("ObjectDwellStayClause\n got:  %q\n want: %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestMaxDwellMinutes covers the settle-feedback helper that picks the longest
 // remaining dwell (minutes) across the stamped snapshots, skipping object-style
 // credits with no countdown (RemainingTicks == nil). ZBBS-WORK-409.
