@@ -366,6 +366,13 @@ func PayWithItem(
 				return nil, fmt.Errorf("PayWithItem: seller %q vanished mid-resolve", sellerID)
 			}
 
+			// ZBBS-WORK-412 deliberately does NOT mint here. This is the BUY
+			// path (the buyer names the good to receive); unlike the sell /
+			// pay-with sites, a mint wouldn't reject the same tick — PayWithItem
+			// would register a pending offer the seller can't fill, recreating
+			// the poisoned-ledger retry loop (salem-multi-item-pay-protocol).
+			// Discovery mint is scoped to same-tick-rejecting sites: consume,
+			// scene_quote, and pay_items goods (resolvePayItems).
 			kind, ok := resolveItemKind(w, itemName)
 			if !ok {
 				return nil, fmt.Errorf(
@@ -1648,7 +1655,11 @@ func resolvePayItems(w *World, payItems []PayItemInput) ([]ItemKindQty, error) {
 		if pi.Qty > MaxPayWithItemQty {
 			return nil, fmt.Errorf("pay_items: quantity exceeds maximum (got %d, max %d)", pi.Qty, MaxPayWithItemQty)
 		}
-		kind, ok := resolveItemKind(w, pi.Item)
+		// ZBBS-WORK-412: mint an unknown pay-with good at qty 0 (an NPC offering
+		// to pay with a good it names is a discovery signal). The offerer holds 0
+		// of a freshly-minted kind, so the holdings shortfall check rejects the
+		// offer with a "you have no X to give" steer.
+		kind, ok := resolveOrMintItemKind(w, pi.Item)
 		if !ok {
 			return nil, fmt.Errorf(
 				"unknown item kind %q in pay_items — check the items you carry before offering.",

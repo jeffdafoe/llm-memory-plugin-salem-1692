@@ -199,7 +199,11 @@ func Consume(actorID ActorID, itemName string, qty int, at time.Time) Command {
 				return nil, fmt.Errorf("Consume: qty exceeds maximum (got %d, max %d)", qty, MaxConsumeQty)
 			}
 
-			kind, ok := resolveItemKind(w, itemName)
+			// ZBBS-WORK-412: mint an unknown kind at qty 0 instead of failing
+			// with ErrUnknownItemKind. The actor holds 0 of a freshly-minted
+			// kind, so this consume still fails below (non-consumable / no
+			// stock) — but the discovery is captured for the config catalog.
+			kind, ok := resolveOrMintItemKind(w, itemName)
 			if !ok {
 				return nil, fmt.Errorf("Consume: %w %q", ErrUnknownItemKind, itemName)
 			}

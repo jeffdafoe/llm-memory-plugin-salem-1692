@@ -32,9 +32,12 @@ import (
 //
 // # Not checkpointed (deliberately)
 //
-//   - Assets / Recipes / ItemKinds / Terrain — reference data, loaded at
-//     startup and hot-reloaded on SIGHUP, never written by the engine loop.
-//     They have no SaveSnapshot.
+//   - Assets / Recipes / Terrain — reference data, loaded at startup and
+//     hot-reloaded on SIGHUP, never written by the engine loop. They have no
+//     SaveSnapshot. ItemKinds is reference data too, with ONE exception:
+//     engine-minted DISCOVERED kinds (ZBBS-WORK-412, category "unknown") are
+//     upserted via saveDiscoveredKinds below so an agent's invented good
+//     survives restart; authored kinds are still never written.
 //   - ActionLog / TickTelemetry — append-only sinks, not snapshot state.
 //   - Quotes / PayLedger — intentionally restart-lossy: no repo in the
 //     sim.Repository facade and none planned. Pending entries lock no
@@ -135,6 +138,13 @@ func SaveWorld(ctx context.Context, repo sim.Repository, cp *sim.CheckpointSnaps
 	// same Tx so a crash can't split a config save from the rest of the checkpoint.
 	if err := repo.Environment.SaveMutableSettings(ctx, tx, cp.MutableSettings); err != nil {
 		return fmt.Errorf("pg SaveWorld: Environment.SaveMutableSettings: %w", err)
+	}
+	// Discovered (engine-minted) item kinds (ZBBS-WORK-412) — upserted in the
+	// same Tx so a crash can't split a discovery from the rest of the checkpoint.
+	// INSERT ... ON CONFLICT DO NOTHING: only unknown-category discoveries are
+	// written; authored item_kind rows stay reference data (SIGHUP hot-reload).
+	if err := saveDiscoveredKinds(ctx, tx, cp.DiscoveredKinds); err != nil {
+		return fmt.Errorf("pg SaveWorld: saveDiscoveredKinds: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
