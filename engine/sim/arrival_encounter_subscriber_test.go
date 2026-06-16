@@ -29,6 +29,7 @@ type encounterActor struct {
 	currentHuddleID   sim.HuddleID    // empty = not in a huddle
 	kind              sim.ActorKind   // zero value = default (NPC); set KindPC for PC tests
 	lastPCSeenAt      *time.Time      // PC presence stamp (ZBBS-WORK-326); nil = never polled
+	state             sim.ActorState  // zero value = "" (no macro-state); set StateSleeping/StateResting for sleep tests (ZBBS-WORK-425)
 }
 
 // buildEncounterWorld seeds a running world for arrival-encounter
@@ -53,6 +54,7 @@ func buildEncounterWorld(t *testing.T, actors []encounterActor, register bool) (
 			CurrentHuddleID:   a.currentHuddleID,
 			Kind:              a.kind,
 			LastPCSeenAt:      a.lastPCSeenAt,
+			State:             a.state,
 		}
 		if a.insideStructureID != "" {
 			if _, exists := structures[a.insideStructureID]; !exists {
@@ -629,6 +631,54 @@ func TestArrivalEncounter_RouteActorNotPulledInAsBystander(t *testing.T) {
 	}
 	if st.memberToHuddleIDs["lamplighter"] != "" {
 		t.Errorf("lamplighter should not be pulled into a huddle while on a route, got %q", st.memberToHuddleIDs["lamplighter"])
+	}
+}
+
+// TestArrivalEncounter_SleepingActorNotPulledInAsBystander — ZBBS-WORK-425
+// (residual of HOME-436). A nearby actor that is asleep (StateSleeping) must
+// not be grabbed into another actor's arrival encounter: a sleeper can't hold
+// up its end of a greeting, and the would-be greeters read the silence as
+// rudeness. The realistic vector is the bystander direction — a sleeping actor
+// doesn't emit ActorArrived (committed movement wakes it), so it never
+// initiates; outdoorEncounterExcludesActor gates both directions via one rule.
+func TestArrivalEncounter_SleepingActorNotPulledInAsBystander(t *testing.T) {
+	w, cancel := buildEncounterWorld(t, []encounterActor{
+		{id: "ann", x: 100, y: 100},
+		{id: "sleeper", x: 101, y: 100, state: sim.StateSleeping},
+	}, true)
+	defer cancel()
+
+	emitArrivalFor(t, w, "ann", time.Now().UTC())
+
+	st := readEncounterHuddleState(t, w)
+	if st.activeHuddleCount != 0 {
+		t.Fatalf("expected no huddle (only nearby actor is asleep), got %d", st.activeHuddleCount)
+	}
+	if st.memberToHuddleIDs["sleeper"] != "" {
+		t.Errorf("sleeping actor should not be pulled into a huddle, got %q", st.memberToHuddleIDs["sleeper"])
+	}
+}
+
+// TestArrivalEncounter_RestingActorNotPulledInAsBystander — the StateResting
+// half of the same gate. Resting is the state actually reachable outdoors (an
+// NPC on a take_break or dwelling at a shade tree), so this is the case the
+// HOME-436 fix is really about: a villager walking up to a resting neighbor no
+// longer forms a huddle that greets someone who has stepped away.
+func TestArrivalEncounter_RestingActorNotPulledInAsBystander(t *testing.T) {
+	w, cancel := buildEncounterWorld(t, []encounterActor{
+		{id: "ann", x: 100, y: 100},
+		{id: "rester", x: 101, y: 100, state: sim.StateResting},
+	}, true)
+	defer cancel()
+
+	emitArrivalFor(t, w, "ann", time.Now().UTC())
+
+	st := readEncounterHuddleState(t, w)
+	if st.activeHuddleCount != 0 {
+		t.Fatalf("expected no huddle (only nearby actor is resting), got %d", st.activeHuddleCount)
+	}
+	if st.memberToHuddleIDs["rester"] != "" {
+		t.Errorf("resting actor should not be pulled into a huddle, got %q", st.memberToHuddleIDs["rester"])
 	}
 }
 
