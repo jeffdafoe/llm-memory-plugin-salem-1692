@@ -1094,6 +1094,18 @@ type ActorSnapshot struct {
 	// republish like the MoveDest* projections above.
 	ColocatedAudienceIDs []ActorID
 
+	// ColocatedSleeperIDs are the co-present SLEEPING conversational actors an
+	// UNHUDDLED actor can see in its scope — the asleep counterpart to
+	// ColocatedAudienceIDs, which omits sleepers. Surfaced so perception's
+	// "## Around you" can mark a sleeper "(asleep)" instead of dropping it (a
+	// sleeper used to vanish from the speaker's view entirely, who then
+	// addressed it expecting a reply — ZBBS-WORK-426, residual of HOME-436).
+	// Sleepers stay OUT of ColocatedAudienceIDs, so they are never a speak
+	// target and the no-audience gate is unchanged. Same per-publish projection
+	// posture as ColocatedAudienceIDs — NOT checkpointed, recomputed each
+	// republish.
+	ColocatedSleeperIDs []ActorID
+
 	// VisitorState mirrors the live Actor's transient-visitor state at
 	// snapshot time. Non-nil marks the actor as a salem-visitor; the
 	// perception "Visitors here" block reads Archetype/Origin/Disposition

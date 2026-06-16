@@ -327,6 +327,50 @@ func joinNames(names []string) string {
 	}
 }
 
+// dormantClause renders the co-present sleepers and resters as a single
+// not-addressable clause, e.g. " Prudence Ward is asleep and Goodman Stark is
+// resting; neither will respond if you speak to them." (leading space, trailing
+// period, so it appends cleanly after a presence line). Same-state members are
+// grouped ("X and Y are asleep") and the two groups joined; the tail agrees in
+// number. Empty when no one nearby is dormant. ZBBS-WORK-426.
+func dormantClause(asleep, resting []HuddleMember) string {
+	n := len(asleep) + len(resting)
+	if n == 0 {
+		return ""
+	}
+	groups := make([]string, 0, 2)
+	if len(asleep) > 0 {
+		groups = append(groups, stateGroup(asleep, "asleep"))
+	}
+	if len(resting) > 0 {
+		groups = append(groups, stateGroup(resting, "resting"))
+	}
+	if n == 1 {
+		return fmt.Sprintf(" %s and won't respond if you speak to them.", groups[0])
+	}
+	tail := "neither will respond if you speak to them"
+	if n >= 3 {
+		tail = "none of them will respond if you speak to them"
+	}
+	// At most two groups (asleep, resting), so a plain " and " join reads right.
+	return fmt.Sprintf(" %s; %s.", strings.Join(groups, " and "), tail)
+}
+
+// stateGroup renders one same-state set of dormant actors with name-vs-descriptor
+// gating, e.g. "Prudence Ward and the farmer are asleep" / "Goodman Stark is
+// resting". ZBBS-WORK-426.
+func stateGroup(members []HuddleMember, state string) string {
+	names := make([]string, len(members))
+	for i, m := range members {
+		names[i] = descriptorLabel(m.DisplayName, m.Role, m.Acquainted)
+	}
+	verb := "is"
+	if len(names) > 1 {
+		verb = "are"
+	}
+	return joinNames(names) + " " + verb + " " + state
+}
+
 // renderTriage writes the closing prioritization instruction — the synthesis
 // keystone (ZBBS-HOME-355). The per-tick prompt is a set of equal-weight context
 // sections (felt needs, return-to-post, owed orders, vendor cues, what-just-
@@ -684,16 +728,25 @@ func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 	default:
 		location = "outdoors"
 	}
+	// Co-present sleepers and resters are visible but not addressable by THIS
+	// actor — sleep is never interrupted by speech, and an NPC's speech can't
+	// rouse a rester either (reactor.go actorCanReactNow; only a PC / red-tier
+	// need / operator nudge wakes a rester). Render them in a distinct
+	// not-addressable clause so the actor doesn't talk to someone who won't
+	// answer and read the silence as rudeness (ZBBS-WORK-426).
+	dormant := dormantClause(s.CoPresentAsleep, s.CoPresentResting)
 	switch {
 	case len(s.HuddleMembers) > 0:
 		// A huddle is a conversational cluster, so "with" names who the actor
 		// is gathered with — the speak tool reaches exactly these people.
+		// (CoPresentAsleep/Resting are only populated for an unhuddled actor, so
+		// there is no dormant clause to append in this case.)
 		fmt.Fprintf(b, "You are %s, with %s.\n", location, joinHuddleMembers(s.HuddleMembers))
 	case len(s.CoPresent) > 0:
 		// Not conversing, but others are within earshot. Name them (every turn) so
-		// the actor can address someone and start talking, instead of discovering
-		// "no one here to hear you" by tripping the speak gate. This is the SAME
-		// set the speak path would reach (ZBBS-WORK-407).
+		// the actor can address someone and start conversing, instead of
+		// discovering "no one here to hear you" by tripping the speak gate. This is
+		// the SAME set the speak path would reach (ZBBS-WORK-407).
 		names := make([]string, len(s.CoPresent))
 		for i, m := range s.CoPresent {
 			label := descriptorLabel(m.DisplayName, m.Role, m.Acquainted)
@@ -710,8 +763,14 @@ func renderSurroundings(b *strings.Builder, s SurroundingsView) {
 		if len(names) > 1 {
 			verb = "are"
 		}
-		fmt.Fprintf(b, "You are %s. %s %s here with you — speak to start talking.\n",
-			location, joinNames(names), verb)
+		fmt.Fprintf(b, "You are %s. %s %s here with you — speak to start conversing with them.%s\n",
+			location, joinNames(names), verb, dormant)
+	case len(s.CoPresentAsleep) > 0 || len(s.CoPresentResting) > 0:
+		// No one awake within earshot, but someone is here asleep or resting. Name
+		// them so the actor knows the room isn't empty, while making clear there's
+		// no one it can talk to right now (ZBBS-WORK-426).
+		fmt.Fprintf(b, "You are %s.%s There is no one awake here to hear you speak.\n",
+			location, dormant)
 	default:
 		// No one within earshot. State it plainly, every turn, so the actor turns
 		// to a solo task or moves to find company rather than speaking to an empty

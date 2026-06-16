@@ -80,6 +80,45 @@ func TestColocatedAudienceIDs_ExcludesSleeperAndDecorative(t *testing.T) {
 	}
 }
 
+// ZBBS-WORK-426. colocatedSleeperIDs is the asleep counterpart to
+// colocatedAudienceIDs: co-present SLEEPING conversational actors in the same
+// scope, surfaced so perception can mark them "(asleep)" while they stay OUT of
+// the audience above.
+
+func TestColocatedSleeperIDs_SurfacesCoPresentSleepers(t *testing.T) {
+	w := audienceTestWorld()
+	w.Actors["prudence"] = &Actor{ID: "prudence", Kind: KindNPCShared, InsideStructureID: "inn"}
+	w.Actors["sleeper"] = &Actor{ID: "sleeper", Kind: KindNPCStateful, InsideStructureID: "inn", State: StateSleeping}
+	w.Actors["sleeper2"] = &Actor{ID: "sleeper2", Kind: KindNPCShared, InsideStructureID: "inn", State: StateSleeping}
+	w.Actors["awake"] = &Actor{ID: "awake", Kind: KindNPCShared, InsideStructureID: "inn"}
+	w.Actors["statue"] = &Actor{ID: "statue", Kind: KindDecorative, InsideStructureID: "inn", State: StateSleeping}
+	w.Actors["faraway"] = &Actor{ID: "faraway", Kind: KindNPCStateful, InsideStructureID: "tavern", State: StateSleeping}
+	got := colocatedSleeperIDs(w, w.Actors["prudence"], audienceNow())
+	if !sameIDs(got, "sleeper", "sleeper2") {
+		t.Errorf("got %v, want [sleeper sleeper2] (awake, decorative, other-structure, self excluded)", got)
+	}
+}
+
+func TestColocatedSleeperIDs_OpenGroundIsEmpty(t *testing.T) {
+	w := audienceTestWorld()
+	w.Actors["prudence"] = &Actor{ID: "prudence", Kind: KindNPCShared} // no structure scope
+	w.Actors["sleeper"] = &Actor{ID: "sleeper", Kind: KindNPCStateful, State: StateSleeping}
+	if got := colocatedSleeperIDs(w, w.Actors["prudence"], audienceNow()); got != nil {
+		t.Errorf("open ground: got %v, want nil", got)
+	}
+}
+
+func TestColocatedSleeperIDs_ExcludesHuddledSleeper(t *testing.T) {
+	// A sleeper has left its huddle on bedding (HOME-435); the already-huddled
+	// skip is belt-and-suspenders, matching the audience scan.
+	w := audienceTestWorld()
+	w.Actors["prudence"] = &Actor{ID: "prudence", Kind: KindNPCShared, InsideStructureID: "inn"}
+	w.Actors["sleeper"] = &Actor{ID: "sleeper", Kind: KindNPCStateful, InsideStructureID: "inn", State: StateSleeping, CurrentHuddleID: "h1"}
+	if got := colocatedSleeperIDs(w, w.Actors["prudence"], audienceNow()); got != nil {
+		t.Errorf("huddled sleeper: got %v, want nil", got)
+	}
+}
+
 func TestColocatedAudienceIDs_JoinsActiveHuddleMembers(t *testing.T) {
 	// Prudence (unhuddled) stands in the inn where John + Ezekiel are already
 	// huddled. colocatedConversationalActors skips them (already huddled, never

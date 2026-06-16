@@ -637,8 +637,25 @@ func buildSurroundings(snap *sim.Snapshot, actorID sim.ActorID, a *sim.ActorSnap
 		// pre-sorted from the world-side helper. ZBBS-WORK-407.
 		for _, id := range a.ColocatedAudienceIDs {
 			m := resolveCoPresentMember(snap, a, id)
+			// A resting audience member can't be roused by THIS NPC's speech
+			// (NPC-to-NPC speech doesn't interrupt rest — reactor.go
+			// actorCanReactNow; only a PC / red-tier need / operator nudge does),
+			// so it would sit silent if addressed. Route it to the not-addressable
+			// clause like a sleeper. It stays in ColocatedAudienceIDs (the shared
+			// audience / speak-gate set), so a PC — who CAN wake a rester — is
+			// unaffected (ZBBS-WORK-426).
+			if peer := snap.Actors[id]; peer != nil && peer.State == sim.StateResting {
+				s.CoPresentResting = append(s.CoPresentResting, m)
+				continue
+			}
 			m.JustArrived = coPresentJustArrived(snap, id)
 			s.CoPresent = append(s.CoPresent, m)
+		}
+		// Co-present sleepers (ZBBS-WORK-426): excluded from the audience entirely
+		// (colocatedSleeperIDs), surfaced here so Render marks them not-addressable
+		// rather than dropping them from the actor's view.
+		for _, id := range a.ColocatedSleeperIDs {
+			s.CoPresentAsleep = append(s.CoPresentAsleep, resolveCoPresentMember(snap, a, id))
 		}
 	}
 	return s
