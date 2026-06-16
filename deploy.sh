@@ -15,7 +15,12 @@ fi
 # Pull latest
 echo -e "\033[1m[1/3] Pulling latest code...\033[0m"
 cd /opt/llm-memory-salem-1692
-git pull
+# fetch + hard reset rather than "git pull": a force-pushed / rewritten main (e.g. a
+# history scrub) shares no common ancestor with the local clone, so a pull's merge dies
+# with "refusing to merge unrelated histories" and wedges the deploy. Reset is immune.
+# (Matches llm-memory-api's deploy.sh.) Untracked files like clients/ are left in place.
+git fetch origin
+git reset --hard origin/main
 
 # Run deploy playbook
 echo -e "\033[1m[2/3] Running deploy...\033[0m"
