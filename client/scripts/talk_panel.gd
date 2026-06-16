@@ -2722,7 +2722,8 @@ func _on_npc_spoke(speaker_id: String, speaker_name: String, text: String, kind:
 
 
 # Generic room-event handler. Engine emits these for narration-worthy
-# things that aren't speech (acts, departures, eventually arrivals/pays).
+# things that aren't speech — acts, departures, and peer arrivals
+# (ZBBS-WORK-422: "X arrives at Y" surfaced to co-present PCs).
 # Each event scopes itself to a structure_id; we ignore events outside
 # the room the player is currently in.
 func _on_room_event(data: Dictionary) -> void:
@@ -2732,10 +2733,6 @@ func _on_room_event(data: Dictionary) -> void:
     var kind := str(data.get("kind", "act"))
     var at := str(data.get("at", ""))
     var private_event := bool(data.get("private", false))
-    # TEMP DEBUG: trace every room_event delivery and the filter outcome.
-    # Investigating arrival-not-rendering bug — see if the structure_id
-    # comparison or the empty-fields guard is dropping the row.
-    print("[TALK] room_event kind=", kind, " event_structure=", event_structure, " loaded=", loaded_structure_id, " actor=", actor_name, " private=", private_event, " text=", text)
     # Private events are felt-language narrations meant only for the
     # acting player — refresh effects ("the parching ebbs"), future
     # consume reactions, etc. Render only when this client's PC is the
@@ -2754,7 +2751,6 @@ func _on_room_event(data: Dictionary) -> void:
         elif not actor_name.is_empty() and not character_name.is_empty():
             matches = (actor_name == character_name)
         if not matches:
-            print("[TALK]   -> dropped: private event for different actor")
             return
         # Private events bypass the room scope filter — your felt
         # experience follows you regardless of which structure you're
@@ -2762,7 +2758,6 @@ func _on_room_event(data: Dictionary) -> void:
         # the structure_id reflects where you WERE, which may not
         # match the panel's loaded scope after a quick walk.
     elif event_structure != loaded_structure_id:
-        print("[TALK]   -> dropped: structure mismatch")
         return
     else:
         # Subspace filter (Phase 1.5): event room_id must match the PC's
@@ -2772,7 +2767,6 @@ func _on_room_event(data: Dictionary) -> void:
         # through the actor-name guard above and bypass the room scope).
         var event_room := str(data.get("room_id", ""))
         if event_room != loaded_room_id:
-            print("[TALK]   -> dropped: room mismatch (event=", event_room, " loaded=", loaded_room_id, ")")
             return
     # Empty-actor drop applies only to public events. Private events
     # have already passed the actor_id-or-name match above and are
@@ -2784,7 +2778,6 @@ func _on_room_event(data: Dictionary) -> void:
     # latent bug that swallowed all such narrations after the
     # ZBBS-128 empty-check landed; lifted in ZBBS-181.
     if text.is_empty() or (not private_event and actor_name.is_empty()):
-        print("[TALK]   -> dropped: empty actor/text")
         return
     _append_log_line(actor_name, text, kind, false, at)
     # Private events bump the unread counter on the launcher pill when

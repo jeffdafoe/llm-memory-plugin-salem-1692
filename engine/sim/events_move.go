@@ -119,6 +119,60 @@ type ActorArrived struct {
 
 func (ActorArrived) isSimEvent() {}
 
+// ActorArrivalNarrated is a WIRE-ONLY event (no engine subscriber) carrying the
+// observer-facing "X arrives at Y" narration for a structured arrival to
+// co-present PCs (ZBBS-WORK-422). finishArrival emits it right after
+// ActorArrived, gated to a conversational arriver standing in a PUBLIC structure
+// or loiter scope with at least one PC in earshot. TranslateEvent maps it to a
+// non-private room_event the talk panel renders as a narration line.
+//
+// It is a separate event from ActorArrived because that one is the
+// map-authoritative npc_arrived frame (one event → one wire frame) and the
+// arrival narration is a distinct, audience-scoped concern. StructureID is the
+// arriver's conversational scope (the structure entered, or the stall whose
+// loiter pin it stands at); the client filters the room_event by it. No RoomID:
+// the emit is public-scope only, so the structure-scoped frame delivers to
+// co-present common-room PCs without leaking a back-room arrival to them — a
+// private/staff-room arrival is left to the panel backload.
+type ActorArrivalNarrated struct {
+	EventBase
+	ActorID     ActorID
+	ActorName   string
+	StructureID StructureID
+	Text        string // pre-rendered "X arrives at Y." — matches the action-log backload phrasing
+	At          time.Time
+}
+
+func (ActorArrivalNarrated) isSimEvent() {}
+
+// ArrivalDestinationName resolves the DisplayName of the place an arrival landed
+// at: the destination structure (StructureEnter/StructureVisit/knock — names the
+// shop even when the actor stopped at a loiter slot OUTSIDE it), or the
+// destination village object (ObjectVisit: well/tree/pile), falling back to the
+// structure the actor physically ended inside for a bare Position arrival. Empty
+// for an outdoor Position arrival with no nameable place. Shared by the
+// action-log walked entry (ZBBS-WORK-359) and the arrival narration
+// (ZBBS-WORK-422) so the panel's live line and its backload name the same place.
+func ArrivalDestinationName(w *World, e *ActorArrived) string {
+	var name string
+	switch {
+	case e.DestStructureID != "":
+		if s, ok := w.Structures[e.DestStructureID]; ok {
+			name = s.DisplayName
+		}
+	case e.DestObjectID != "":
+		if o, ok := w.VillageObjects[e.DestObjectID]; ok {
+			name = o.DisplayName
+		}
+	}
+	if name == "" && e.FinalStructureID != "" {
+		if s, ok := w.Structures[e.FinalStructureID]; ok {
+			name = s.DisplayName
+		}
+	}
+	return name
+}
+
 // ActorInsideChanged fires when an actor's InsideStructureID actually
 // changes (setActorInsideStructure no-ops an unchanged value, so every emit
 // is a real flip). It is the authoritative inside-state push the client uses
