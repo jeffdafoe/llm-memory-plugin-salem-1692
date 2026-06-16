@@ -137,6 +137,29 @@ func TestBuildLodgingView_UnknownStructure_GenericName(t *testing.T) {
 	}
 }
 
+// TestBuildLodgingView_KeeperAsleepFlagged — ZBBS-WORK-416. When the inn keeper is
+// asleep the lodging view flags it, and renderLodging discloses that the renewal
+// can't be done right now — so the lodger waits rather than walking to a sleeping
+// keeper.
+func TestBuildLodgingView_KeeperAsleepFlagged(t *testing.T) {
+	subj := &sim.ActorSnapshot{
+		RoomAccess: map[sim.RoomAccessKey]*sim.RoomAccess{
+			{RoomID: 2, Source: sim.AccessSourceLedger}: ledgerAccess(2, 30*time.Hour),
+		},
+	}
+	structs := map[sim.StructureID]*sim.Structure{"inn": innStructure("inn", "Hannah's Inn")}
+	keeper := &sim.ActorSnapshot{WorkStructureID: "inn", State: sim.StateSleeping}
+	v := buildLodgingView(lodgingSnap(subj, structs, keeper), subj)
+	if v == nil || !v.KeeperAsleep {
+		t.Fatalf("want KeeperAsleep set when the inn keeper sleeps, got %+v", v)
+	}
+	var b strings.Builder
+	renderLodging(&b, v)
+	if !strings.Contains(b.String(), "abed just now") {
+		t.Errorf("rendered lodging missing the asleep-keeper caveat:\n%s", b.String())
+	}
+}
+
 // --- escalation tiers ---
 
 func TestLodgingStatusLine_Tiers(t *testing.T) {

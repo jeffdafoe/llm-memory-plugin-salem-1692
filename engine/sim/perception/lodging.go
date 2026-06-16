@@ -44,6 +44,12 @@ type LodgingView struct {
 	// cue compares it against NightlyRate to decide whether to warn of a
 	// shortfall.
 	Coins int
+
+	// KeeperAsleep is true when the inn's keeper is asleep at snapshot time, so
+	// the "see the keeper to renew" cue is unactionable right now. Render flags it
+	// (within the renewal window) so the lodger waits rather than walking to a
+	// sleeping keeper. ZBBS-WORK-416.
+	KeeperAsleep bool
 }
 
 // buildLodgingView returns the lodging view for actorSnap, or nil when the
@@ -71,14 +77,17 @@ func buildLodgingView(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) *Lodging
 	}
 
 	innName := "the inn"
+	keeperAsleep := false
 	if s := structureForRoom(snap, best.RoomID); s != nil {
 		innName = innLabel(s) // shared with the recovery-options inn finder
+		keeperAsleep = vendorKeeperAsleep(snap, keeperOf(snap, s.ID))
 	}
 	return &LodgingView{
-		InnName:     innName,
-		ExpiresAt:   *best.ExpiresAt,
-		NightlyRate: sim.LodgingNightlyRate(snap.LodgingDefaultWeeklyRate),
-		Coins:       actorSnap.Coins,
+		InnName:      innName,
+		ExpiresAt:    *best.ExpiresAt,
+		NightlyRate:  sim.LodgingNightlyRate(snap.LodgingDefaultWeeklyRate),
+		Coins:        actorSnap.Coins,
+		KeeperAsleep: keeperAsleep,
 	}
 }
 
@@ -311,6 +320,12 @@ func renderLodging(b *strings.Builder, v *LodgingView) {
 	b.WriteString(lodgingStatusLine(v.InnName, v.ExpiresAt, now))
 	if v.NightlyRate > 0 {
 		fmt.Fprintf(b, " Renewing is %d coins a night.", v.NightlyRate)
+	}
+	// An asleep keeper can't take the renewal right now — within the renewal
+	// window, flag it so the lodger waits rather than walking to a sleeping
+	// keeper (ZBBS-WORK-416).
+	if v.KeeperAsleep && v.ExpiresAt.Sub(now) <= 48*time.Hour {
+		b.WriteString(" The keeper is abed just now — renew once they are next tending the desk.")
 	}
 	b.WriteString("\n")
 	if cue := lodgingAffordabilityCue(v, now); cue != "" {
