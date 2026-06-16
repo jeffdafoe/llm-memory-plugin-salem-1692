@@ -364,7 +364,7 @@ func handleActorArrivedAdvanceRoute(w *sim.World, evt sim.Event) {
 // day, so the cadence is deliberately unhurried. A var (not const) only so tests
 // can shrink it to drive the deferred-flip timing deterministically; production
 // never reassigns it.
-var crierNoticeBeatDelay = 4 * time.Second
+var crierNoticeBeatDelay = 8 * time.Second
 
 // voiceCrierNotices voices a (possibly multi-line) board aloud: the first
 // notice immediately (inline, on the world goroutine we're already on), each
