@@ -7,11 +7,12 @@ import (
 	"github.com/jeffdafoe/llm-memory-plugin-salem-1692/engine/sim"
 )
 
-// ZBBS-WORK-407 render layer: warrants already surfaced by a dedicated section
-// (pay offers -> "## Offers awaiting your decision"; shift duty -> the duty
-// steer) must NOT also render as the vague "something happened nearby" catch-all
-// in "## What just happened". They are dropped from that section; they still wake
-// the actor, their own section carries the content.
+// Render layer (ZBBS-WORK-407 / -418): warrants that wake the actor but carry no
+// standalone event content -- pay offers ("## Offers awaiting your decision"),
+// shift duty (the duty steer), and the bare operator nudge (WarrantKindAdmin,
+// which has no in-world content at all) -- must NOT render as the vague "something
+// happened nearby" catch-all in "## What just happened". They are dropped from
+// that list; they still wake the actor.
 
 func TestRenderWarrants_SuppressesSectionSurfacedKinds(t *testing.T) {
 	nameOf := func(sim.ActorID) string { return "someone" }
@@ -19,6 +20,7 @@ func TestRenderWarrants_SuppressesSectionSurfacedKinds(t *testing.T) {
 	for _, w := range []sim.WarrantMeta{
 		{Reason: sim.PayOfferWarrantReason{}},
 		{Reason: sim.ShiftDutyWarrantReason{}},
+		{Reason: sim.BasicWarrantReason{K: sim.WarrantKindAdmin}}, // bare operator nudge (ZBBS-WORK-418)
 	} {
 		var b strings.Builder
 		out := &RenderedPrompt{}
