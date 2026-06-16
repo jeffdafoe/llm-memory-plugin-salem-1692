@@ -54,6 +54,35 @@ func TestBuildRecoveryOptions_HomelessFiresWhenRested(t *testing.T) {
 	}
 }
 
+// TestBuildRecoveryOptions_RentedRoomSuppressesBootstrap — ZBBS-WORK-415. An
+// actor with no owned home (HomeStructureID == "") but holding an active lodging
+// grant is NOT homeless for the bootstrap cue — it already has a room. The rest
+// section stays closed when the actor is also rested, even with a free rest spot
+// in range (which the homeless arm would otherwise surface).
+func TestBuildRecoveryOptions_RentedRoomSuppressesBootstrap(t *testing.T) {
+	subj := &sim.ActorSnapshot{
+		Needs:           map[sim.NeedKey]int{"tiredness": 1}, // rested
+		HomeStructureID: "",                                  // no owned home
+		RoomAccess: map[sim.RoomAccessKey]*sim.RoomAccess{
+			{RoomID: 2, Source: sim.AccessSourceLedger}: ledgerAccess(2, 72*time.Hour),
+		},
+	}
+	snap := &sim.Snapshot{
+		PublishedAt:    lodgingNow, // ledgerAccess expiry is relative to lodgingNow
+		Actors:         map[sim.ActorID]*sim.ActorSnapshot{"ezekiel": subj},
+		VillageObjects: map[sim.VillageObjectID]*sim.VillageObject{"oak": tirednessObject("oak", "the old oak", 96, 0, -12)},
+	}
+	if v := buildRecoveryOptions(snap, "ezekiel", subj); v != nil {
+		t.Fatalf("rented-room holder (rested) must not get the homeless bootstrap, got %+v", v)
+	}
+
+	// Sanity: the SAME actor, once genuinely tired, still gets the rest section.
+	subj.Needs["tiredness"] = sim.DefaultTirednessRedThreshold
+	if v := buildRecoveryOptions(snap, "ezekiel", subj); v == nil {
+		t.Fatal("a tired rented-room holder must still get recovery options")
+	}
+}
+
 func TestBuildRecoveryOptions_TiredWithHomeFires(t *testing.T) {
 	subj := &sim.ActorSnapshot{Needs: map[sim.NeedKey]int{"tiredness": sim.DefaultTirednessRedThreshold}, HomeStructureID: "cottage"}
 	snap := &sim.Snapshot{
@@ -158,6 +187,30 @@ func TestBuildRecoveryOptions_KeeperlessInnSkipped(t *testing.T) {
 	}
 	if v := buildRecoveryOptions(snap, "ezekiel", subj); v != nil {
 		t.Errorf("an inn with no keeper must be skipped; want nil, got %+v", v)
+	}
+}
+
+// TestBuildRecoveryOptions_InnClosedWhenKeeperAsleep — ZBBS-WORK-416. An inn whose
+// keeper is asleep can't take a booking right now, so the rest cue is flagged
+// ClosedNow and the render appends the "no one is tending it just now" caveat
+// instead of advertising it as freely bookable.
+func TestBuildRecoveryOptions_InnClosedWhenKeeperAsleep(t *testing.T) {
+	subj := &sim.ActorSnapshot{Needs: map[sim.NeedKey]int{"tiredness": 1}, HomeStructureID: ""} // homeless → fires
+	snap := &sim.Snapshot{
+		Actors: map[sim.ActorID]*sim.ActorSnapshot{
+			"ezekiel": subj,
+			"hannah":  {WorkStructureID: "inn", State: sim.StateSleeping},
+		},
+		Structures: map[sim.StructureID]*sim.Structure{"inn": innStructure("inn", "Hannah's Inn")},
+	}
+	v := buildRecoveryOptions(snap, "ezekiel", subj)
+	if v == nil || len(v.Options) != 1 || !v.Options[0].ClosedNow {
+		t.Fatalf("want 1 inn option flagged ClosedNow, got %+v", v)
+	}
+	var b strings.Builder
+	renderRecoveryOptions(&b, v)
+	if !strings.Contains(b.String(), closedNowAnnotation) {
+		t.Errorf("rendered rest section missing the closed-now caveat:\n%s", b.String())
 	}
 }
 

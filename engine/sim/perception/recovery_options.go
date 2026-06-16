@@ -55,6 +55,12 @@ type RecoveryOption struct {
 	Distance  string // qualitative ("a short walk"); "" when unknown (inns, remedies)
 	Direction string // cardinal ("northeast"); "" when unknown (inns, remedies)
 
+	// ClosedNow marks an inn whose keeper is asleep at snapshot time — the room
+	// can't be booked right now (booking pays the keeper), so render appends the
+	// same "no one is tending it just now" caveat the buy cues use. Set only for
+	// the "inn" kind. ZBBS-WORK-416.
+	ClosedNow bool
+
 	// StructureID is the move_to target for the structure-backed kinds (inn,
 	// home, remedy vendor's workplace). It is what the model passes to
 	// move_to(structure_id) to actually walk here — the tool rejects a bare
@@ -98,17 +104,23 @@ func buildRecoveryOptions(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *si
 		return nil
 	}
 
-	// Firing gate: tired (tiredness at/over the red threshold) OR homeless
-	// (no home structure). The homeless arm fires every tick regardless of
-	// tiredness — that's the lodging bootstrap cue. The tired arm reads the
-	// configured red threshold off the snapshot (NeedThresholds.Get falls
-	// back to the default when unset) so this satisfier-cue fires on the same
-	// boundary as the need-threshold producer's warrant — if an admin tunes
+	// Firing gate: tired (tiredness at/over the red threshold) OR homeless (no
+	// home structure AND no rented room). The homeless arm fires every tick
+	// regardless of tiredness — that's the lodging bootstrap cue. The tired arm
+	// reads the configured red threshold off the snapshot (NeedThresholds.Get
+	// falls back to the default when unset) so this satisfier-cue fires on the
+	// same boundary as the need-threshold producer's warrant — if an admin tunes
 	// tiredness_red_threshold, the warrant and the rest options stay in sync
 	// rather than leaving a gap where the NPC is told "you're tired" with no
 	// options.
 	tired := actorSnap.Needs[recoveryTirednessNeed] >= snap.NeedThresholds.Get(recoveryTirednessNeed)
-	homeless := actorSnap.HomeStructureID == ""
+	// "Homeless" for the bootstrap means no place to sleep — which a renter
+	// holding an active lodging grant is NOT. Keying purely on HomeStructureID
+	// (ownership) left a renter permanently "homeless", so the every-tick "go
+	// book a room" cue kept firing at an NPC who already has a room (the "## Your
+	// lodging" renewal cue covers that case). Exclude active grant-holders so the
+	// bootstrap only nudges the genuinely unlodged. ZBBS-WORK-415.
+	homeless := actorSnap.HomeStructureID == "" && !hasActiveLodgingGrant(snap, actorSnap)
 	if !tired && !homeless {
 		return nil
 	}
@@ -157,6 +169,20 @@ func buildRecoveryOptions(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *si
 		return opts[i].sourceKey < opts[j].sourceKey
 	})
 	return &RecoveryOptionsView{Options: opts, OwnStock: ownStock, RestInPlace: restInPlace}
+}
+
+// hasActiveLodgingGrant reports whether actorSnap holds an active ledger lodging
+// grant (a rented room) at the snapshot instant. A renter has somewhere to sleep,
+// so the homeless rest-bootstrap shouldn't fire for them. Mirrors buildLodgingView's
+// gate (sim.IsActiveLedgerGrant). ZBBS-WORK-415.
+func hasActiveLodgingGrant(snap *sim.Snapshot, actorSnap *sim.ActorSnapshot) bool {
+	now := snap.PublishedAt
+	for _, ra := range actorSnap.RoomAccess {
+		if sim.IsActiveLedgerGrant(ra, now) {
+			return true
+		}
+	}
+	return false
 }
 
 // gatherHomeRestSpot returns the actor's own home as a "sleep in your own bed"
@@ -273,6 +299,7 @@ func gatherInnRestSpots(snap *sim.Snapshot, actorID sim.ActorID) []RecoveryOptio
 			Kind:        "inn",
 			Label:       innLabel(s),
 			CostText:    innCostText(snap, actorID, keeperID),
+			ClosedNow:   vendorKeeperAsleep(snap, keeperID),
 			StructureID: id,
 			sortKey:     innSortKey,
 			sourceKey:   string(id),
@@ -449,6 +476,11 @@ func renderRecoveryOptions(b *strings.Builder, v *RecoveryOptionsView) {
 			if o.Direction != "" {
 				fmt.Fprintf(b, " %s", o.Direction)
 			}
+		}
+		// An asleep keeper can't take a booking right now — say so, the same live
+		// caveat the buy cues use (ZBBS-WORK-416).
+		if o.ClosedNow {
+			b.WriteString(closedNowAnnotation)
 		}
 		// The id is what makes the cue actionable: move_to(structure_id) walks the
 		// actor here, and the tool rejects a bare name. Keyed on Kind so each kind

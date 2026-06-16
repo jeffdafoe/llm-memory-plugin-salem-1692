@@ -40,37 +40,6 @@ import (
 // order pressing needs appear elsewhere in the prompt.
 var satiationNeeds = []sim.NeedKey{"hunger", "thirst"}
 
-// ZBBS-HOME-465: morning breakfast cue. The food menu below is normally gated to
-// the RED need threshold (the same boundary the need-threshold warrant fires on),
-// so a mildly-hungry NPC isn't shown where to eat until it is nearly starving.
-// During the morning that gate is relaxed for HUNGER, so a waking, peckish NPC is
-// prompted with what is available (the Inn's porridge — an open breakfast while
-// the night-shift Tavern is shut) and can choose to break its fast. This renders
-// the moment legibly rather than forcing a scheduled meal. The window matches the
-// "morning" time-of-day band (timeOfDayProse, 07:00–12:00); the floor matches the
-// perception silent floor (sim's unexported needSilentFloor = 8) — at or above it
-// the NPC already "feels peckish", so it should also be told where to eat.
-const (
-	morningBreakfastStartMinute = 420 // 07:00 — mirrors timeOfDayProse's "morning" band start
-	morningBreakfastEndMinute   = 720 // 12:00 — mirrors timeOfDayProse's "morning" band end (exclusive)
-	morningBreakfastHungerFloor = 8   // mirrors sim's unexported needSilentFloor: at/over it hunger is felt
-)
-
-const satiationHungerNeed = sim.NeedKey("hunger")
-
-// morningBreakfastCue reports whether the morning-breakfast relaxation applies to
-// this need: it is hunger, the village clock is within the morning band, and the
-// actor is at least mildly hungry (felt — at/over the silent floor). Defensive
-// against a nil snapshot or an unestablished clock (nil LocalMinuteOfDay); in
-// either case the normal red gate stands.
-func morningBreakfastCue(snap *sim.Snapshot, need sim.NeedKey, value int) bool {
-	if snap == nil || need != satiationHungerNeed || snap.LocalMinuteOfDay == nil {
-		return false
-	}
-	m := *snap.LocalMinuteOfDay
-	return m >= morningBreakfastStartMinute && m < morningBreakfastEndMinute && value >= morningBreakfastHungerFloor
-}
-
 // SatiationView is the content-gated "## What you can eat or drink" section.
 // A nil view (or empty Needs) means render omits the section.
 type SatiationView struct {
@@ -180,19 +149,23 @@ type SatiationVendor struct {
 }
 
 // buildSatiation builds the eat/drink view for actorSnap, or nil when no
-// consumable need is pressing or no satisfier exists. Pure over the snapshot.
+// consumable need is felt or no satisfier exists. Pure over the snapshot.
 func buildSatiation(snap *sim.Snapshot, actorID sim.ActorID, actorSnap *sim.ActorSnapshot) *SatiationView {
 	if snap == nil || actorSnap == nil {
 		return nil
 	}
 	var needs []SatiationNeedView
 	for _, need := range satiationNeeds {
-		// Pressing = at/over the configured red threshold, the same boundary the
-		// need-threshold producer's warrant fires on (NeedThresholds.Get falls
-		// back to the registry default when unset). ZBBS-HOME-465 also opens the
-		// menu for morning hunger at the milder felt floor (morningBreakfastCue),
-		// so a waking NPC is prompted with breakfast before it is starving.
-		if actorSnap.Needs[need] < snap.NeedThresholds.Get(need) && !morningBreakfastCue(snap, need, actorSnap.Needs[need]) {
+		// Gate on AWARENESS, not distress: the eat/drink options surface on the
+		// SAME boundary as the "You feel …" line (renderFeltNeeds → the NeedSilent
+		// floor), not the higher red threshold. Gating the resolution at red while
+		// the felt line fired at the silent floor opened a dead zone — the NPC was
+		// told it felt thirsty yet shown no way to slake it until nearly parched,
+		// so it wandered toward a remembered tavern instead of the free well (the
+		// Ezekiel well-blind cycle, ZBBS-WORK-414). If a need is felt, its options
+		// ride along; below the silent floor it isn't aware of the need, so the
+		// section stays closed — and the felt line is silent there too.
+		if sim.NeedLabelTier(actorSnap.Needs[need], snap.NeedThresholds.Get(need)) == sim.NeedSilent {
 			continue
 		}
 		own := gatherOwnStock(snap, actorSnap, need)
